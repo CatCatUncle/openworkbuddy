@@ -71,14 +71,44 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
     return feishuToken.value;
   }
 
-  async function feishuReply(chatId, text) {
-    const token = await getFeishuToken();
-    await fetch("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
+  async function feishuSend(token, chatId, msgType, content) {
+    const resp = await fetch("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ receive_id: chatId, msg_type: "text", content: JSON.stringify({ text }) }),
+      body: JSON.stringify({ receive_id: chatId, msg_type: msgType, content: JSON.stringify(content) }),
       signal: AbortSignal.timeout(15000),
     });
+    return resp.json();
+  }
+
+  async function feishuReply(chatId, text) {
+    const token = await getFeishuToken();
+    // 纯文本消息（msg_type=text）不渲染 Markdown，# 和表格会裸奔；
+    // 交互卡片的 markdown 组件（schema 2.0）支持标题/表格/代码块/列表
+    const summary = text
+      .split("\n")
+      .map((l) => l.replace(/[#*`|>\-]/g, "").trim())
+      .find(Boolean);
+    const card = {
+      schema: "2.0",
+      config: {
+        update_multi: true,
+        enable_forward: true,
+        width_mode: "fill",
+        ...(summary ? { summary: { content: summary.slice(0, 40) } } : {}),
+      },
+      body: {
+        direction: "vertical",
+        vertical_spacing: "medium",
+        elements: [{ tag: "markdown", content: text }],
+      },
+    };
+    const r = await feishuSend(token, chatId, "interactive", card);
+    if (r.code !== 0) {
+      // 卡片被拒（个别 Markdown 语法不兼容等）→ 降级纯文本，保证消息必达
+      console.warn(`[飞书] 卡片发送失败(code ${r.code}: ${r.msg})，降级纯文本`);
+      await feishuSend(token, chatId, "text", { text });
+    }
     logIm("feishu", "out", text, { chat: chatId });
   }
 
