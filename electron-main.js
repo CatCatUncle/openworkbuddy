@@ -32,8 +32,8 @@ app.whenReady().then(async () => {
   win = new BrowserWindow({
     width: 1520,
     height: 900,
-    minWidth: 1080,
-    minHeight: 640,
+    minWidth: 680,
+    minHeight: 480,
     title: "WorkBuddy 复刻版",
     autoHideMenuBar: true,
     backgroundColor: "#ffffff",

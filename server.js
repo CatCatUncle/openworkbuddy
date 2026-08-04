@@ -555,6 +555,78 @@ app.post("/api/open-workspace", (_req, res) => {
   res.json({ ok: true });
 });
 
+// ---- 缓存清理：界面缓存(Electron chromium) + 各项目 .tmp 临时脚本；不动会话记录/工作区文件/登录态 ----
+const CHROMIUM_CACHE_DIRS = ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "blob_storage", "Shared Dictionary"];
+function wbUserDataDir() {
+  if (process.versions.electron) {
+    try { return require("electron").app.getPath("userData"); } catch {}
+  }
+  const home = require("os").homedir();
+  if (process.platform === "darwin") return path.join(home, "Library", "Application Support", "workbuddy-clone");
+  if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "workbuddy-clone");
+  return path.join(home, ".config", "workbuddy-clone");
+}
+function dirSize(p) {
+  let n = 0;
+  try {
+    for (const e of fs.readdirSync(p)) {
+      const fp = path.join(p, e);
+      try {
+        const st = fs.lstatSync(fp); // lstat：.tmp/node_modules 软链绝不能跟进去统计/删除
+        if (st.isSymbolicLink()) continue;
+        n += st.isDirectory() ? dirSize(fp) : st.size;
+      } catch {}
+    }
+  } catch {}
+  return n;
+}
+function cacheTmpDirs() {
+  const set = new Set([path.join(getWorkspaceDir(), ".tmp")]);
+  for (const p of config.projects || []) if (p && p.dir) set.add(path.join(p.dir, ".tmp"));
+  return [...set];
+}
+function cacheStats() {
+  const ud = wbUserDataDir();
+  const ui = CHROMIUM_CACHE_DIRS.reduce((n, d) => n + dirSize(path.join(ud, d)), 0);
+  const tmp = cacheTmpDirs().reduce((n, d) => n + dirSize(d), 0);
+  return { ui, tmp, total: ui + tmp };
+}
+app.get("/api/cache", (_req, res) => res.json(cacheStats()));
+app.post("/api/cache/clear", async (_req, res) => {
+  const before = cacheStats();
+  if (process.versions.electron) {
+    // 桌面版走官方 API：HTTP 缓存/代码缓存/着色器缓存；Cookie 与 localStorage（登录态、主题）不动
+    try {
+      const ses = require("electron").session.defaultSession;
+      await ses.clearCache();
+      try { await ses.clearCodeCaches({}); } catch {}
+      try { await ses.clearStorageData({ storages: ["shadercache", "cachestorage"] }); } catch {}
+    } catch (e) { console.warn("[缓存] Electron 清理失败:", e.message); }
+  }
+  const ud = wbUserDataDir();
+  for (const d of CHROMIUM_CACHE_DIRS) {
+    const dir = path.join(ud, d);
+    try {
+      for (const e of fs.readdirSync(dir)) {
+        try { fs.rmSync(path.join(dir, e), { recursive: true, force: true }); } catch {} // 被占用就跳过
+      }
+    } catch {}
+  }
+  for (const dir of cacheTmpDirs()) {
+    try {
+      for (const e of fs.readdirSync(dir)) {
+        const fp = path.join(dir, e);
+        try {
+          if (fs.lstatSync(fp).isSymbolicLink()) fs.unlinkSync(fp); // node_modules 软链只解链，下次 runNode 自动重建
+          else fs.rmSync(fp, { recursive: true, force: true });
+        } catch {}
+      }
+    } catch {}
+  }
+  const after = cacheStats();
+  res.json({ ok: true, freed: Math.max(0, before.total - after.total), before: before.total, after: after.total });
+});
+
 function pick(obj, keys) {
   const out = {};
   for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k];

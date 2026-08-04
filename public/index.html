@@ -212,6 +212,32 @@
   /* ---- 快捷键 / 对话内搜索 / 命令审批 / 侧栏折叠 ---- */
   body.side-collapsed aside { display: none; }
   .main { position: relative; }
+  /* ---------- 响应式：窗口任意拉伸自适应 ---------- */
+  #toggle-side { border: none; background: transparent; font-size: 16px; color: var(--wb-text-2); cursor: pointer; padding: 4px 10px; border-radius: 8px; margin-left: -8px; }
+  #toggle-side:hover { background: var(--wb-bg-hover); }
+  .topbar .title { flex: 1; margin: 0 12px; }
+  @media (min-width: 1720px) { :root { --wb-content-w: 1020px; } }
+  @media (max-width: 1180px) {
+    aside { width: 210px; }
+    .topbar { padding: 0 14px; }
+    .preview-panel.show { min-width: 300px; max-width: calc(100vw - 210px - 320px); }
+  }
+  @media (max-width: 900px) {
+    .main { min-width: 0; }
+    aside { display: none; }
+    body.side-open aside { display: flex; position: fixed; left: 0; top: 0; bottom: 0; z-index: 45; box-shadow: 8px 0 28px rgba(23,24,28,.22); }
+    .files-panel.show { position: fixed; right: 0; top: 56px; bottom: 0; width: min(280px, 86vw); z-index: 40; box-shadow: -8px 0 28px rgba(23,24,28,.15); }
+    .preview-panel.show { position: fixed; right: 0; top: 56px; bottom: 0; width: min(520px, 92vw); min-width: 0; max-width: none; z-index: 39; box-shadow: -8px 0 28px rgba(23,24,28,.15); }
+    .chat-col { padding: 16px 12px 8px; }
+    .empty { padding-top: 5vh; }
+    .empty h1 { font-size: 26px; }
+    .scene-tabs { flex-wrap: wrap; justify-content: center; }
+    .scene-tabs button { padding: 8px 14px; font-size: 13px; }
+  }
+  @media (max-width: 700px) {
+    .settings-nav { width: 110px; padding: 12px 4px; }
+    .modal { max-height: 90vh; }
+  }
   .sc-kbd { background: var(--wb-bg-hover); border: 1px solid var(--wb-border); border-radius: 6px; padding: 3px 10px; font-size: 12px; font-family: inherit; min-width: 52px; text-align: center; display: inline-block; }
   .sc-edit { cursor: pointer; }
   .sc-edit:hover, .sc-edit.armed { border-color: var(--wb-brand); color: var(--wb-brand); }
@@ -370,6 +396,7 @@
 
 <div class="main">
   <div class="topbar">
+    <button id="toggle-side" title="收起/展开侧栏">☰</button>
     <div class="title" id="session-title">新任务</div>
     <div class="right"><button id="toggle-files">📁 成果文件</button></div>
   </div>
@@ -1092,6 +1119,16 @@ function autoPreviewNewHtml(files) {
   for (const f of files || []) fileSnapshot[f.name] = f.mtime;
 }
 document.getElementById("toggle-files").onclick = () => document.getElementById("files-panel").classList.toggle("show");
+// 侧栏开关：窄窗（≤900px）走浮层抽屉 side-open，宽窗走常规折叠 side-collapsed
+function toggleSidebar() {
+  if (window.innerWidth <= 900) document.body.classList.toggle("side-open");
+  else document.body.classList.toggle("side-collapsed");
+}
+document.getElementById("toggle-side").onclick = toggleSidebar;
+window.addEventListener("resize", () => { if (window.innerWidth > 900) document.body.classList.remove("side-open"); });
+document.querySelector(".main").addEventListener("click", () => {
+  if (document.body.classList.contains("side-open")) document.body.classList.remove("side-open");
+}, true);
 document.getElementById("open-ws").onclick = (e) => { e.preventDefault(); fetch("/api/open-workspace", { method: "POST" }); };
 
 // ================= 下拉菜单通用 =================
@@ -1569,7 +1606,7 @@ const SHORTCUT_ACTIONS = {
   },
   "prev-task": () => navTask(-1),
   "next-task": () => navTask(1),
-  "toggle-sidebar": () => document.body.classList.toggle("side-collapsed"),
+  "toggle-sidebar": () => toggleSidebar(),
   "toggle-files": () => document.getElementById("files-panel").classList.toggle("show"),
   "fullscreen": toggleAppFullscreen,
   "toggle-window": () => {}, // 系统级快捷键由桌面版主进程注册，网页端无动作
@@ -2341,6 +2378,7 @@ function renderModelsPane(pane, s) {
           <div class="d" style="font-size:11px">${esc(m.base_url || "Anthropic 官方")}</div>
         </div>
         <a href="#" class="link" data-edit="${i}">编辑</a>
+        <a href="#" class="link" data-dup="${i}" title="复用此条的接口地址和 Key，换个模型名即成新模型">复制</a>
         <a href="#" class="link danger" data-del="${i}">删除</a>
       </div>`).join("")}
     </div>
@@ -2392,6 +2430,13 @@ function renderModelsPane(pane, s) {
   pane.querySelector("#mf-new").onclick = () => { editIndex = -1; showForm(null); };
   pane.querySelector("#mf-cancel").onclick = () => (form.style.display = "none");
   pane.querySelectorAll("a[data-edit]").forEach(a => a.onclick = (e) => { e.preventDefault(); editIndex = +a.dataset.edit; showForm(s.models[editIndex]); });
+  // 复制：复用同一接口地址和 Key 快速配另一个模型（OpenRouter 换模型场景），只需填名称和模型名
+  pane.querySelectorAll("a[data-dup]").forEach(a => a.onclick = (e) => {
+    e.preventDefault();
+    editIndex = -1;
+    showForm({ ...s.models[+a.dataset.dup], name: "", model: "" });
+    pane.querySelector("#mf-name").focus();
+  });
   pane.querySelectorAll("a[data-del]").forEach(a => a.onclick = async (e) => {
     e.preventDefault();
     if (!confirm("确认删除该模型？")) return;
@@ -2535,6 +2580,11 @@ function renderDataPane(pane, s) {
       </div>
     </div>
     <div class="card-item">
+      <div class="t">清理缓存</div>
+      <div class="d" id="cache-desc">统计中…</div>
+      <div style="margin-top:8px"><button class="btn-brand" id="cache-clear">🧹 清理缓存</button><span class="ok-msg" id="cache-msg"></span></div>
+    </div>
+    <div class="card-item">
       <div class="t">数据说明</div>
       <div class="d">会话记录持久化在 data/sessions/ · 定时任务在 schedules.json · 配置在 config.json（含 API Key，默认不入 git）· 记忆在 data/memory.md</div>
     </div>`;
@@ -2546,6 +2596,21 @@ function renderDataPane(pane, s) {
   pane.querySelector("#ws-save").onclick = () => saveSettings({ workspace_dir: pane.querySelector("#ws-dir").value.trim() }, pane.querySelector("#ws-msg"))
     .then(ok => { if (ok) fetch("/api/files").then(r => r.json()).then(renderFiles); });
   pane.querySelector("#ws-open").onclick = () => fetch("/api/open-workspace", { method: "POST" });
+  const cacheDesc = pane.querySelector("#cache-desc");
+  const loadCache = () => fetch("/api/cache").then(r => r.json()).then(c => {
+    cacheDesc.textContent = `界面缓存 ${fmtSize(c.ui)} · 临时脚本 ${fmtSize(c.tmp)}，共 ${fmtSize(c.total)}。只清可再生的缓存，不动会话记录、工作区文件和登录态。`;
+  }).catch(() => { cacheDesc.textContent = "统计失败"; });
+  loadCache();
+  pane.querySelector("#cache-clear").onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = "清理中…";
+    try {
+      const r = await fetch("/api/cache/clear", { method: "POST" }).then(r => r.json());
+      pane.querySelector("#cache-msg").textContent = r.ok ? `已释放 ${fmtSize(r.freed)}` : (r.error || "清理失败");
+    } catch { pane.querySelector("#cache-msg").textContent = "清理失败"; }
+    btn.disabled = false; btn.textContent = "🧹 清理缓存";
+    loadCache();
+  };
 }
 function renderImPane(pane, s) {
   pane.innerHTML = `
