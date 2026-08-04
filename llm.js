@@ -131,6 +131,7 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, signal }) 
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
+      ...(cfg.extra_body || {}), // 模型条目可带厂商特有参数（如 OpenRouter 的 reasoning）；核心字段在后，不会被覆盖
       model: cfg.model,
       stream: useStream,
       ...(useStream ? { stream_options: { include_usage: true } } : {}), // 流式也带回 token 用量（DeepSeek/OpenRouter 等均支持）
