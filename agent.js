@@ -4,7 +4,7 @@
  * 主 Agent 是"协调者"：可直接干活，也可通过 delegate_to_expert 把子任务委派给专家子智能体。
  */
 
-const { TOOL_DEFS, executeTool, outputFiles } = require("./tools");
+const { TOOL_DEFS, executeTool, outputFiles, getWorkspaceDir } = require("./tools");
 const { loadSkills } = require("./skills");
 
 const DELEGATE_TOOL = {
@@ -57,7 +57,53 @@ const USE_SKILL_TOOL = {
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const MEMORY_FILE = path.join(__dirname, "data", "memory.md");
+
+// ================= 成果核验（治「幻觉执行」） =================
+// 模型有时在文本里"表演"跑命令并声称文件已生成，实际一个工具都没调。
+// 收尾前核对它声称的产物是否真在磁盘上，不在就打回去要求真实执行。
+const CLAIM_RE = /(生成成功|导出成功|保存成功|创建成功|已生成|已保存|已导出|已创建|已写入|生成完毕|制作完成|下载|✅)/;
+const DELIVER_EXTS = "pptx|pptm|docx|doc|xlsx|xls|pdf|zip|mp4|mov|png|jpe?g|gif|csv|html|md|svg";
+
+function existsInWorkspace(name) {
+  let root;
+  try { root = getWorkspaceDir(); } catch { return false; }
+  const stack = [[root, 0]];
+  let visited = 0;
+  while (stack.length && visited < 3000) {
+    const [dir, d] = stack.pop();
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      visited++;
+      if (e.isFile() && e.name === name) return true;
+      if (e.isDirectory() && d < 4 && e.name !== "node_modules" && !e.name.startsWith(".")) stack.push([path.join(dir, e.name), d + 1]);
+    }
+  }
+  return false;
+}
+
+function missingDeliverables(text) {
+  if (!text || !CLAIM_RE.test(text)) return [];
+  const found = new Set();
+  const pathRe = new RegExp(`(?:~|\\/(?:Users|home|tmp|private|var))\\/[^\\s"'\`（）()<>|,;：:*?]+\\.(?:${DELIVER_EXTS})\\b`, "gi");
+  for (const m of text.match(pathRe) || []) found.add(m);
+  const bareRe = new RegExp(`(?:^|[\\s"'\`（(：:、，=])([\\w\\u4e00-\\u9fff().&＆_-]+\\.(?:${DELIVER_EXTS}))\\b`, "gim");
+  let mm;
+  while ((mm = bareRe.exec(text))) { if (!mm[1].includes("/")) found.add(mm[1]); }
+  const missing = [];
+  for (const p of found) {
+    if (path.isAbsolute(p)) {
+      try { fs.accessSync(p); } catch { missing.push(p); }
+    } else if (p.startsWith("~")) {
+      try { fs.accessSync(path.join(os.homedir(), p.slice(1))); } catch { missing.push(p); }
+    } else if (!existsInWorkspace(p)) {
+      missing.push(p);
+    }
+  }
+  return missing;
+}
 
 function readMemory() {
   try {
@@ -101,6 +147,8 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
 4. 完成后简要总结做了什么、生成了哪些文件。
 5. 始终用中文交流。
 6. 用户消息里的「@某文件名」指工作目录中的文件（用 read_file 读取）；「/某技能名」表示要求使用该技能（先 use_skill 加载）；「【任务类型：X】」是场景标签，按该场景的最佳实践来做。
+7. 工具能做到的事必须自己调工具真正执行，严禁把命令贴在回复里让用户代跑（除非确实需要用户本人登录/授权才能做的事）。
+8. 严禁虚构执行结果（红线）：没有真实调用工具，绝不能声称「已生成/已保存/生成成功」，不能编造文件大小、页数、命令输出或下载链接（sandbox: 开头的链接是假的，禁止输出）。做不到就如实说做不到。系统会自动核验你声称生成的文件是否真实存在，虚构会被当场打回重做。
 
 ## 回复排版（重要）
 - 结构固定三段式：**动手前**先用一两句说明你准备做什么、怎么做；**过程中**工具调用之间的过渡叙述控制在一两句话（界面会把中间过程折叠收起）；**收尾**最后一条消息必须是完整、自洽的最终结论/交付说明——用户默认只看到开场白和这段结论，别把关键信息只写在中间过程里。
@@ -229,6 +277,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
     if (!stats) stats = { prompt: 0, completion: 0, calls: 0, startedAt: Date.now() };
     let finalText = "";
     let stopNote = "";
+    let honestyRetries = 0;
 
     for (let step = 0; step < maxSteps; step++) {
       if (stopSignal && stopSignal.aborted) {
@@ -283,7 +332,21 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
       });
       if (result.text) finalText = result.text;
 
-      if (!result.toolCalls.length) break;
+      if (!result.toolCalls.length) {
+        // 成果核验：声称已生成的文件不在磁盘上 → 打回去要求真实执行（最多打回 2 次）
+        const missing = missingDeliverables(result.text);
+        if (missing.length && honestyRetries < 2 && Date.now() < deadline - 30000) {
+          honestyRetries++;
+          const list = missing.slice(0, 5).join("、");
+          history.push({
+            role: "user",
+            content: `【系统自动核验】你上一条回复声称已生成/可获取这些文件，但磁盘上并不存在：${list}。你并没有真正调用工具执行——在文字里写命令和"✅ 生成成功"不等于执行。现在立即用 run_shell / run_node 等工具真实执行生成，完成后如实汇报真实存在的文件路径；如果执行失败，就如实报告失败原因和报错内容。严禁再声称不存在的文件已生成。`,
+          });
+          emit({ type: "text", delta: `\n\n> ⚠️ **成果核验未通过**：声称生成的文件不存在（${list}），已自动打回要求真实执行。\n\n`, depth });
+          continue;
+        }
+        break;
+      }
 
       const toolResults = [];
       for (const tc of result.toolCalls) {
