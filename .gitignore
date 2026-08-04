@@ -1,0 +1,11 @@
+node_modules/
+workspace/
+schedules.json
+config.json
+*.log
+.DS_Store
+data/
+
+# 第三方安装的大体积技能包（可在应用内从 GitHub 重装）
+skills/ppt-master/
+.tmp/

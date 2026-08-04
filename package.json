@@ -1,0 +1,26 @@
+{
+  "name": "workbuddy-clone",
+  "version": "0.1.0",
+  "description": "WorkBuddy 复刻版 — AI Agent 办公工作台（自然语言下任务，AI 自主规划执行，交付 PPT/Word/Excel 等成果文件）",
+  "type": "commonjs",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "node server.js",
+    "app": "electron .",
+    "test": "node test/e2e.js",
+    "cli": "node cli.js"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.72.0",
+    "docx": "^9.0.0",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.0",
+    "pptxgenjs": "^3.12.0"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0"
+  },
+  "bin": {
+    "wb": "./cli.js"
+  }
+}
