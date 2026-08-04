@@ -1,0 +1,108 @@
+{
+  "_说明": "provider 可选 'anthropic'（Claude 官方）或 'openai'（OpenAI 兼容接口：DeepSeek/通义Qwen/智谱GLM/Kimi/Ollama 本地模型都用这个）。api_key 也可以用环境变量 ANTHROPIC_API_KEY / OPENAI_API_KEY 提供。",
+  "provider": "openai",
+  "anthropic": {
+    "api_key": "",
+    "model": "claude-opus-5"
+  },
+  "openai": {
+    "_预设示例": {
+      "DeepSeek": {
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "deepseek-chat"
+      },
+      "通义Qwen": {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-max"
+      },
+      "智谱GLM": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4-plus"
+      },
+      "Kimi": {
+        "base_url": "https://api.moonshot.cn/v1",
+        "model": "moonshot-v1-32k"
+      },
+      "Ollama本地": {
+        "base_url": "http://localhost:11434/v1",
+        "model": "qwen3:14b"
+      }
+    },
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "",
+    "model": "deepseek-chat"
+  },
+  "server": {
+    "port": 3800
+  },
+  "agent": {
+    "max_steps": 25,
+    "tool_timeout_ms": 120000,
+    "max_runtime_ms": 600000,
+    "llm_timeout_ms": 300000
+  },
+  "search": {
+    "_说明": "web_search 工具的搜索 API。provider=jina 时用 s.jina.ai（去 jina.ai 免费领 key）；api_key 留空则自动回退免费 DuckDuckGo",
+    "provider": "jina",
+    "api_key": ""
+  },
+  "mcp_servers": [],
+  "_mcp_示例": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "D:/某个目录"
+      ]
+    }
+  ],
+  "im": {
+    "feishu": {
+      "app_id": "",
+      "app_secret": "",
+      "verification_token": ""
+    },
+    "wecom_bot_webhook": "",
+    "webhook_secret": "workbuddy-secret-请修改"
+  },
+  "models": [
+    {
+      "name": "DeepSeek",
+      "provider": "openai",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "",
+      "model": "deepseek-chat"
+    },
+    {
+      "name": "通义Qwen",
+      "provider": "openai",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key": "",
+      "model": "qwen-max"
+    },
+    {
+      "name": "智谱GLM",
+      "provider": "openai",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "api_key": "",
+      "model": "glm-4-plus"
+    },
+    {
+      "name": "Kimi",
+      "provider": "openai",
+      "base_url": "https://api.moonshot.cn/v1",
+      "api_key": "",
+      "model": "moonshot-v1-32k"
+    },
+    {
+      "name": "Ollama本地",
+      "provider": "openai",
+      "base_url": "http://localhost:11434/v1",
+      "api_key": "",
+      "model": "qwen3:14b"
+    }
+  ],
+  "active_model": "DeepSeek"
+}

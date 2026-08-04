@@ -1,0 +1,2887 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WorkBuddy 复刻版</title>
+<style>
+  :root {
+    --wb-brand: #5b5ff7; --wb-brand-weak: #eef0ff; --wb-brand-grad: linear-gradient(135deg,#5b5ff7,#8b5cf6);
+    --wb-bg: #ffffff; --wb-bg-side: #f7f8fa; --wb-bg-hover: #eef0f4;
+    --wb-border: #e9ebf0; --wb-text: #17181c; --wb-text-2: #6a6f7d; --wb-text-3: #9aa0ad;
+    --wb-ok: #16a34a; --wb-err: #e5484d;
+    --wb-content-w: 832px; --wb-code-bg: #16181f; --wb-code-text: #d5dcec;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--wb-bg); color: var(--wb-text); display: flex; overflow: hidden; font-size: 14px;
+  }
+  input, select, textarea, button { font-family: inherit; }
+  /* ---------- 左侧导航 ---------- */
+  aside { width: 250px; flex-shrink: 0; background: var(--wb-bg-side); border-right: 1px solid var(--wb-border); display: flex; flex-direction: column; padding: 14px 10px; }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 14px; }
+  .brand .mark { width: 30px; height: 30px; border-radius: 9px; background: var(--wb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; }
+  .brand .name { font-size: 14px; font-weight: 600; }
+  .brand .tag { font-size: 10px; color: var(--wb-text-3); }
+  #new-task { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 4px 14px; padding: 9px; border: none; border-radius: 10px; background: var(--wb-brand-grad); color: #fff; font-size: 13px; font-weight: 500; cursor: pointer; }
+  .assist-box { margin: 0 4px 14px; border: 1px solid var(--wb-border); border-radius: 10px; padding: 8px; background: var(--wb-bg); }
+  .ab-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 600; padding: 2px 4px 6px; cursor: pointer; user-select: none; }
+  .ab-head .ab-sub { font-weight: 400; font-size: 11px; color: var(--wb-text-3); }
+  .ab-ch { display: flex; align-items: center; gap: 6px; padding: 5px 4px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .ab-ch:hover { background: var(--wb-bg-hover); }
+  .ab-ch .st { margin-left: auto; font-size: 11px; color: var(--wb-text-3); }
+  .ab-ch .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wb-text-3); flex: none; }
+  .ab-ch .dot.ok { background: var(--wb-ok); }
+  .ab-ch .dot.err { background: var(--wb-err); }
+  .ab-empty { font-size: 11px; color: var(--wb-text-3); padding: 4px; }
+  .im-strip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--wb-border); border-radius: 10px; font-size: 13px; margin-bottom: 12px; }
+  .im-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--wb-text-2); }
+  .im-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wb-text-3); }
+  .im-chip .dot.ok { background: var(--wb-ok); }
+  .im-chip .dot.err { background: var(--wb-err); }
+  .im-feed { display: flex; flex-direction: column; gap: 8px; max-height: 55vh; overflow-y: auto; padding: 4px 2px; }
+  .im-b { max-width: 76%; padding: 8px 12px; border-radius: 10px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+  .im-b.in { align-self: flex-start; background: var(--wb-bg-hover); }
+  .im-b.out { align-self: flex-end; background: var(--wb-brand-weak); }
+  .im-b.error { align-self: center; color: var(--wb-err); font-size: 12px; background: none; }
+  .im-b .m { font-size: 11px; color: var(--wb-text-3); margin-bottom: 2px; }
+  .side-label { font-size: 11px; color: var(--wb-text-3); padding: 4px 10px 6px; }
+  #history { flex: 1; overflow-y: auto; min-height: 0; }
+  .hist-item { padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hist-item:hover { background: var(--wb-bg-hover); }
+  .hist-item.active { background: var(--wb-brand-weak); color: var(--wb-brand); }
+  .side-nav { border-top: 1px solid var(--wb-border); padding-top: 8px; margin-top: 8px; }
+  .side-nav .item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
+  .side-nav .item:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
+  /* ---------- 主区域 ---------- */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .topbar { height: 56px; flex: 0 0 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--wb-border); }
+  .topbar .title { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar .right { display: flex; align-items: center; gap: 10px; }
+  #toggle-files { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 5px 12px; font-size: 12px; color: var(--wb-text-2); cursor: pointer; }
+  #chat-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+  .chat-col { max-width: var(--wb-content-w); margin: 0 auto; padding: 24px 20px 12px; }
+  .empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding-top: 10vh; }
+  .empty h1 { font-size: 34px; font-weight: 700; margin-bottom: 24px; letter-spacing: 1px; }
+  .scene-tabs { display: flex; background: var(--wb-bg-side); border-radius: 26px; padding: 4px; gap: 2px; margin-bottom: 34px; }
+  .scene-tabs button { border: none; background: transparent; border-radius: 22px; padding: 9px 22px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  .scene-tabs button.active { background: #17181c; color: #fff; font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 720px; }
+  .chips button { padding: 9px 18px; border-radius: 22px; border: 1px solid var(--wb-border); background: var(--wb-bg); font-size: 13.5px; color: var(--wb-text); cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  .chips button:hover { border-color: var(--wb-brand); color: var(--wb-brand); background: var(--wb-brand-weak); }
+  .scene-tag { display: inline-flex; align-items: center; gap: 6px; background: #d7f5e9; color: #0f8a5f; font-size: 12.5px; border-radius: 14px; padding: 4px 12px; margin-bottom: 6px; }
+  .scene-tag b { cursor: pointer; font-weight: 400; opacity: .7; }
+  /* @ / 自动补全菜单 */
+  .mention-menu { display: none; position: absolute; bottom: 100%; left: 12px; margin-bottom: 8px; min-width: 260px; max-width: 420px; max-height: 260px; overflow-y: auto; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: 0 10px 32px rgba(23,24,28,.16); padding: 6px; z-index: 40; }
+  .mention-menu.show { display: block; }
+  .mention-menu .mi { padding: 8px 12px; border-radius: 8px; font-size: 13px; cursor: pointer; }
+  .mention-menu .mi:hover, .mention-menu .mi.sel { background: var(--wb-bg-hover); }
+  .mention-menu .mi .sub { font-size: 11px; color: var(--wb-text-3); display: block; }
+  .mention-menu .mh { font-size: 11px; color: var(--wb-text-3); padding: 4px 12px; }
+  .turn { margin-bottom: 22px; }
+  .u-msg { display: flex; justify-content: flex-end; }
+  .u-msg .bubble { max-width: 78%; background: var(--wb-brand); color: #fff; border-radius: 14px 14px 3px 14px; padding: 10px 15px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+  .a-msg { display: flex; gap: 10px; margin-top: 16px; }
+  .a-msg .avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: 9px; background: var(--wb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; }
+  .a-msg .body { min-width: 0; flex: 1; }
+  .a-text { line-height: 1.7; word-break: break-word; margin: 3px 0 6px; }
+  .a-text p { margin: 6px 0; }
+  .a-text h1, .a-text h2, .a-text h3, .a-text h4 { margin: 12px 0 6px; font-size: 15px; }
+  .a-text h1 { font-size: 17px; }
+  .a-text h2 { font-size: 16px; }
+  .a-text ul, .a-text ol { margin: 6px 0; padding-left: 22px; }
+  .a-text li { margin: 3px 0; }
+  .a-text blockquote { border-left: 3px solid var(--wb-brand); background: var(--wb-brand-weak); padding: 8px 12px; margin: 8px 0; border-radius: 0 8px 8px 0; color: var(--wb-text-2); }
+  .a-text blockquote p { margin: 2px 0; }
+  .a-text code { background: var(--wb-bg-hover); border-radius: 4px; padding: 1px 5px; font-size: 12.5px; font-family: Consolas, monospace; }
+  .a-text pre { background: var(--wb-code-bg); color: var(--wb-code-text); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 8px 0; }
+  .a-text pre code { background: none; color: inherit; padding: 0; }
+  .code-wrap { margin: 8px 0; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,.06); }
+  .code-head { display: flex; justify-content: space-between; align-items: center; background: #23252e; color: #8b92a5; font-size: 11px; padding: 5px 12px; font-family: Consolas, ui-monospace, monospace; }
+  .code-head .code-copy { cursor: pointer; color: #8b92a5; user-select: none; }
+  .code-head .code-copy:hover { color: #fff; }
+  .code-wrap pre { margin: 0; border-radius: 0; }
+  .md-table-wrap { overflow-x: auto; margin: 8px 0; }
+  .a-text table { border-collapse: collapse; font-size: 13px; min-width: 60%; }
+  .a-text th, .a-text td { border: 1px solid var(--wb-border); padding: 5px 10px; text-align: left; }
+  .a-text th { background: var(--wb-bg-hover); font-weight: 600; }
+  .a-text hr { border: none; border-top: 1px solid var(--wb-border); margin: 10px 0; }
+  .a-text a { color: var(--wb-brand); }
+  .step-card { border: 1px solid var(--wb-border); border-radius: 10px; margin: 8px 0; overflow: hidden; background: #fbfcfe; }
+  .step-card .head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; user-select: none; font-size: 13px; }
+  .tag { font-size: 11px; padding: 2px 9px; border-radius: 10px; background: var(--wb-brand-weak); color: var(--wb-brand); white-space: nowrap; }
+  .tag.ok { background: #e6f6ec; color: var(--wb-ok); }
+  .tag.err { background: #fdebec; color: var(--wb-err); }
+  .step-card .desc { color: var(--wb-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .step-card pre { display: none; background: var(--wb-code-bg); color: var(--wb-code-text); padding: 12px; font-size: 12px; line-height: 1.5; max-height: 320px; overflow: auto; }
+  .step-card.open pre { display: block; }
+  /* 执行过程折叠条（仿官方「已完成 12s ›」） */
+  .proc-wrap { margin: 2px 0 8px; }
+  .proc-head { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--wb-text-3); cursor: pointer; user-select: none; padding: 2px 0; }
+  .proc-head:hover { color: var(--wb-text-2); }
+  .proc-head .arrow { font-size: 12px; display: inline-block; transition: transform .15s; }
+  .proc-wrap.open .proc-head .arrow { transform: rotate(90deg); }
+  .proc-body { display: none; padding-left: 10px; border-left: 2px solid var(--wb-border); margin: 4px 0 4px 4px; }
+  .proc-wrap.open .proc-body { display: block; }
+  .proc-body .a-text { color: var(--wb-text-2); font-size: 13px; }
+  /* 回复底部操作条（复制/评价/重新生成 + 消耗/模型，仿官方） */
+  .turn-actions { display: flex; align-items: center; gap: 2px; margin-top: 10px; }
+  .ta-btn { border: none; background: none; cursor: pointer; font-size: 13px; color: var(--wb-text-3); padding: 4px 7px; border-radius: 6px; line-height: 1; }
+  .ta-btn:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
+  .ta-btn.on { color: var(--wb-brand); }
+  .ta-meta { margin-left: auto; font-size: 12px; color: var(--wb-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 本地助理主视图消息行 */
+  .im-row { display: flex; gap: 8px; margin: 2px 0; }
+  .im-row.out { justify-content: flex-end; }
+  .im-row .im-ava { width: 26px; height: 26px; border-radius: 8px; background: var(--wb-bg-hover); display: flex; align-items: center; justify-content: center; font-size: 14px; flex: none; }
+  .assist-page .im-feed { max-height: none; overflow: visible; }
+  /* 侧栏项目列表 */
+  .proj-item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
+  .proj-item:hover { background: var(--wb-bg-hover); }
+  .proj-item.active { background: var(--wb-brand-weak); color: var(--wb-brand); font-weight: 600; }
+  .proj-item .pn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proj-item .del { visibility: hidden; color: var(--wb-text-3); padding: 0 2px; }
+  .proj-item:hover .del { visibility: visible; }
+  .proj-item .del:hover { color: var(--wb-err); }
+  .im-row .m { font-size: 11px; color: var(--wb-text-3); margin-bottom: 2px; }
+  #send.stop { background: var(--wb-err); font-size: 11px; }
+  .hist-item { display: flex; align-items: center; gap: 4px; }
+  .hist-item .ht { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-item .hx { visibility: hidden; color: var(--wb-text-3); padding: 0 3px; border-radius: 4px; flex: none; }
+  .hist-item:hover .hx { visibility: visible; }
+  .hist-item .hx:hover { color: var(--wb-err); }
+  .lib-cols { display: flex; gap: 16px; align-items: flex-start; }
+  .lib-cols > div { flex: 1; min-width: 0; }
+  .lib-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--wb-border); border-radius: 8px; margin-bottom: 6px; font-size: 13px; }
+  .lib-row .ln { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-row .lm { color: var(--wb-text-3); font-size: 11px; flex: none; }
+  .lib-note { border: 1px solid var(--wb-border); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+  .lib-note .lm { color: var(--wb-text-3); font-size: 11px; margin-top: 4px; display: flex; gap: 10px; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--wb-brand-weak); border-top-color: var(--wb-brand); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* ---------- 输入区（仿官方：大卡片 + 底部工具行 + 卡片下快捷栏） ---------- */
+  .input-wrap { padding: 8px 20px 14px; }
+  .input-inner { max-width: var(--wb-content-w); margin: 0 auto; }
+  .input-card { border: 1.5px solid var(--wb-border); border-radius: 18px; background: var(--wb-bg); padding: 14px 16px 10px; box-shadow: 0 6px 24px rgba(23,24,28,.05); transition: border-color .15s; }
+  .input-card:focus-within { border-color: var(--wb-brand); }
+  textarea#input { width: 100%; border: none; outline: none; resize: none; font-size: 14px; line-height: 1.6; max-height: 160px; background: transparent; color: var(--wb-text); }
+  textarea#input::placeholder { color: var(--wb-text-3); }
+  .card-toolbar { display: flex; align-items: center; margin-top: 8px; gap: 8px; }
+  .icon-btn { width: 32px; height: 32px; border: none; background: transparent; border-radius: 8px; font-size: 18px; color: var(--wb-text-2); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .icon-btn:hover { background: var(--wb-bg-hover); }
+  .card-toolbar .grow { flex: 1; }
+  .picker { position: relative; }
+  .picker-btn { display: flex; align-items: center; gap: 5px; border: none; background: transparent; border-radius: 8px; padding: 6px 10px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
+  .picker-btn:hover { background: var(--wb-bg-hover); }
+  .picker-menu { display: none; position: absolute; bottom: 40px; right: 0; min-width: 200px; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: 0 10px 32px rgba(23,24,28,.14); padding: 6px; z-index: 30; }
+  .picker-menu.up-left { right: auto; left: 0; }
+  .picker-menu.show { display: block; }
+  .picker-menu .mi { padding: 8px 12px; border-radius: 8px; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .picker-menu .mi:hover { background: var(--wb-bg-hover); }
+  .picker-menu .mi.on { color: var(--wb-brand); background: var(--wb-brand-weak); }
+  .picker-menu .mi .sub { font-size: 11px; color: var(--wb-text-3); }
+  #send { width: 34px; height: 34px; border: none; border-radius: 50%; background: var(--wb-brand-grad); color: #fff; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  #send:disabled { opacity: .45; cursor: not-allowed; }
+  .quick-bar { display: flex; align-items: center; gap: 4px; padding: 8px 6px 0; }
+  .quick-bar .picker-btn { font-size: 12.5px; }
+  .plan-list { border: 1px solid var(--wb-border); border-radius: 10px; padding: 10px 14px; margin: 8px 0; background: var(--wb-bg-side); }
+  .plan-list .pl-head { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .plan-list .pl-item { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; font-size: 13px; cursor: pointer; }
+  .plan-list .pl-item input { margin-top: 3px; accent-color: var(--wb-brand); }
+  .plan-list .pl-item input:checked + span { color: var(--wb-text-3); text-decoration: line-through; }
+  .plan-list .pl-run { margin-top: 8px; border: none; background: var(--wb-brand); color: #fff; border-radius: 8px; padding: 6px 14px; font-size: 12px; cursor: pointer; }
+  .attach-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .attach-chips span { font-size: 12px; background: var(--wb-bg-hover); border-radius: 8px; padding: 3px 10px; color: var(--wb-text-2); }
+  /* ---------- 右侧预览面板（HTML/图片/文档实时预览） ---------- */
+  .main { min-width: 460px; }
+  .preview-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg); overflow: hidden; transition: width .2s; display: flex; flex-direction: column; }
+  .preview-panel.show { width: 44%; min-width: 360px; max-width: calc(100vw - 250px - 470px); }
+  .pv-head { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--wb-border); font-size: 13px; }
+  .pv-head .pv-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pv-head button { border: none; background: transparent; font-size: 14px; cursor: pointer; color: var(--wb-text-2); padding: 4px 8px; border-radius: 6px; }
+  .pv-head button:hover { background: var(--wb-bg-hover); }
+  #pv-body { flex: 1; min-height: 0; overflow: auto; }
+  #pv-body iframe { width: 100%; height: 100%; border: none; background: #fff; }
+  #pv-body img { max-width: 100%; display: block; margin: 20px auto; }
+  #pv-body .pv-text { padding: 16px 20px; font-size: 13px; line-height: 1.7; }
+  /* ---------- 右侧成果面板 ---------- */
+  .files-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg-side); overflow: hidden; transition: width .2s; display: flex; flex-direction: column; }
+  .files-panel.show { width: 280px; }
+  /* ---- 快捷键 / 对话内搜索 / 命令审批 / 侧栏折叠 ---- */
+  body.side-collapsed aside { display: none; }
+  .main { position: relative; }
+  .sc-kbd { background: var(--wb-bg-hover); border: 1px solid var(--wb-border); border-radius: 6px; padding: 3px 10px; font-size: 12px; font-family: inherit; min-width: 52px; text-align: center; display: inline-block; }
+  .sc-edit { cursor: pointer; }
+  .sc-edit:hover, .sc-edit.armed { border-color: var(--wb-brand); color: var(--wb-brand); }
+  #wb-toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(30,30,30,.92); color: #fff; padding: 8px 18px; border-radius: 10px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 999; }
+  #wb-toast.show { opacity: 1; }
+  #chat-search { display: none; position: absolute; top: 50px; right: 20px; z-index: 50; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,.1); padding: 6px 8px; gap: 6px; align-items: center; }
+  #chat-search input { margin: 0; width: 200px; border: none; outline: none; background: none; font-size: 13px; }
+  #chat-search button { border: none; background: none; cursor: pointer; color: var(--wb-text-2); padding: 3px 6px; border-radius: 6px; }
+  #chat-search button:hover { background: var(--wb-bg-hover); }
+  .search-hit { outline: 2px solid var(--wb-brand); outline-offset: 2px; border-radius: 6px; }
+  .ap-row { display: flex; align-items: center; gap: 8px; background: #fff7ed; border: 1px solid #fdba74; border-radius: 10px; padding: 8px 12px; margin-bottom: 6px; font-size: 13px; }
+  .ap-row .ap-cmd { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; font-size: 12px; color: var(--wb-text-2); }
+  .ap-row button { border: none; border-radius: 8px; padding: 5px 14px; cursor: pointer; font-size: 12px; }
+  .ap-row .ap-ok { background: var(--wb-brand); color: #fff; }
+  .ap-row .ap-no { background: var(--wb-bg-hover); color: var(--wb-text-2); }
+  /* ---------- 输入框 @文件 //技能 token 高亮（镜像层） ---------- */
+  #input-box { position: relative; }
+  #input-hl { position: absolute; inset: 0; pointer-events: none; overflow: hidden; white-space: pre-wrap; word-break: break-word; color: transparent; font-size: 14px; line-height: 1.6; z-index: 0; }
+  #input-hl .tk { background: var(--wb-brand-weak); box-shadow: 0 0 0 2px var(--wb-brand-weak), 0 0 0 3px rgba(91,95,247,.28); border-radius: 5px; }
+  textarea#input { position: relative; z-index: 1; display: block; }
+  .u-msg .bubble .tk-b { background: rgba(255,255,255,.24); border: 1px solid rgba(255,255,255,.3); border-radius: 5px; padding: 0 4px; font-weight: 500; }
+  /* ---------- 侧栏底部：头像行 + 设置齿轮 + 账号菜单 ---------- */
+  .user-row { position: relative; display: flex; align-items: center; gap: 6px; margin: 8px 4px 0; }
+  .user-row .user-chip { flex: 1; margin: 0; min-width: 0; }
+  #gear-btn { flex: none; width: 36px; height: 36px; border: 1px solid var(--wb-border); border-radius: 10px; background: var(--wb-bg); font-size: 15px; cursor: pointer; color: var(--wb-text-2); }
+  #gear-btn:hover { background: var(--wb-bg-hover); }
+  .user-menu { display: none; position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: 0 10px 32px rgba(23,24,28,.18); padding: 6px; z-index: 60; font-size: 13px; }
+  .user-menu.show { display: block; }
+  .um-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 10px; border-bottom: 1px solid var(--wb-border); margin-bottom: 4px; cursor: pointer; border-radius: 8px 8px 0 0; }
+  .um-head:hover { background: var(--wb-bg-hover); }
+  .um-head .n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .um-head .s { font-size: 11px; color: var(--wb-text-3); }
+  .um-i { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+  .um-i:hover { background: var(--wb-bg-hover); }
+  .um-i .hint { margin-left: auto; font-size: 12px; color: var(--wb-text-3); }
+  .um-sub { padding: 2px 4px 4px 26px; }
+  .um-opt { padding: 6px 10px; border-radius: 8px; cursor: pointer; color: var(--wb-text-2); font-size: 12px; }
+  .um-opt:hover { background: var(--wb-bg-hover); }
+  .um-opt .ck { float: right; color: var(--wb-brand); font-weight: 700; }
+  /* ---------- 深色外观（外观菜单切换，跟随系统时随 prefers-color-scheme） ---------- */
+  html[data-theme="dark"] {
+    --wb-brand-weak: #2e3054;
+    --wb-bg: #1e1f24; --wb-bg-side: #17181c; --wb-bg-hover: #2b2d34;
+    --wb-border: #34363e; --wb-text: #e8eaf0; --wb-text-2: #a4a9b6; --wb-text-3: #7a8090;
+    --wb-code-bg: #101218; --wb-code-text: #d5dcec;
+  }
+  html[data-theme="dark"] .auth-mask { background: rgba(18,19,23,.96); }
+  html[data-theme="dark"] .ap-row { background: #3a2d16; border-color: #8a6a33; }
+  html[data-theme="dark"] #input-hl .tk { box-shadow: 0 0 0 2px var(--wb-brand-weak), 0 0 0 3px rgba(139,143,255,.35); }
+  .file-item .dl { margin-left: auto; color: var(--wb-text-3); text-decoration: none; padding: 2px 6px; border-radius: 6px; }
+  .file-item .dl:hover { background: var(--wb-border); color: var(--wb-brand); }
+  .files-panel h2 { font-size: 13px; font-weight: 600; color: var(--wb-text-2); padding: 16px 16px 8px; white-space: nowrap; }
+  #file-list { flex: 1; overflow-y: auto; padding: 0 10px 12px; }
+  .file-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; text-decoration: none; color: var(--wb-text); font-size: 13px; }
+  .file-item:hover { background: var(--wb-bg-hover); }
+  .file-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-item .meta { font-size: 11px; color: var(--wb-text-3); }
+  .file-item.nested { padding-left: 30px; }
+  .dir-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; user-select: none; }
+  .dir-head:hover { background: var(--wb-bg-hover); }
+  .dir-head .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dir-head .cnt { font-size: 11px; color: var(--wb-text-3); }
+  /* ---------- 弹窗 ---------- */
+  .modal-mask { display: none; position: fixed; inset: 0; background: rgba(23,24,28,.35); z-index: 50; align-items: center; justify-content: center; }
+  .modal-mask.show { display: flex; }
+  .modal { width: 640px; max-width: 94vw; max-height: 82vh; background: var(--wb-bg); border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(23,24,28,.2); }
+  .modal.wide { width: 820px; }
+  .m-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--wb-border); flex-shrink: 0; }
+  .m-head h3 { font-size: 15px; }
+  .m-close { border: none; background: none; font-size: 18px; cursor: pointer; color: var(--wb-text-3); }
+  .m-body { padding: 14px 20px 20px; overflow-y: auto; font-size: 13px; flex: 1; }
+  .card-item { border: 1px solid var(--wb-border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .card-item .t { font-weight: 600; margin-bottom: 4px; }
+  .card-item .d { color: var(--wb-text-2); line-height: 1.6; }
+  .m-body input, .m-body textarea, .m-body select { width: 100%; font-size: 13px; padding: 8px 10px; border: 1px solid var(--wb-border); border-radius: 8px; margin-bottom: 8px; outline: none; background: var(--wb-bg); }
+  .m-body input:focus, .m-body textarea:focus { border-color: var(--wb-brand); }
+  .btn-brand { border: none; background: var(--wb-brand-grad); color: #fff; border-radius: 8px; padding: 8px 18px; font-size: 13px; cursor: pointer; }
+  .btn-plain { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 7px 14px; font-size: 12px; cursor: pointer; color: var(--wb-text-2); }
+  .link { color: var(--wb-brand); cursor: pointer; text-decoration: none; }
+  .link.danger { color: var(--wb-err); }
+  .settings-layout { display: flex; height: 60vh; }
+  .settings-nav { width: 160px; flex-shrink: 0; border-right: 1px solid var(--wb-border); padding: 12px 8px; overflow-y: auto; }
+  .settings-nav .cat { padding: 8px 12px; border-radius: 8px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; margin-bottom: 2px; }
+  .settings-nav .cat:hover { background: var(--wb-bg-hover); }
+  .settings-nav .cat.active { background: var(--wb-brand-weak); color: var(--wb-brand); font-weight: 600; }
+  .settings-pane { flex: 1; padding: 16px 20px; overflow-y: auto; font-size: 13px; }
+  .form-row { display: flex; gap: 8px; }
+  .form-row > * { flex: 1; }
+  .ok-msg { font-size: 12px; color: var(--wb-ok); margin-left: 8px; }
+  /* ---------- 账号 / 积分 ---------- */
+  .user-chip { display: flex; align-items: center; gap: 8px; margin: 8px 4px 0; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--wb-border); background: var(--wb-bg); font-size: 12px; cursor: pointer; }
+  .user-chip:hover { background: var(--wb-bg-hover); }
+  .user-chip .ava { width: 26px; height: 26px; border-radius: 50%; background: var(--wb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; flex: none; }
+  .user-chip .un { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .user-chip .uc { margin-left: auto; color: var(--wb-brand); font-weight: 600; flex: none; }
+  .auth-mask { position: fixed; inset: 0; z-index: 200; background: rgba(247,248,250,.96); display: none; align-items: center; justify-content: center; }
+  .auth-mask.show { display: flex; }
+  .auth-card { width: 340px; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 16px; padding: 28px 26px; box-shadow: 0 12px 40px rgba(0,0,0,.08); }
+  .auth-card h2 { font-size: 18px; margin-bottom: 4px; }
+  .auth-card .sub { font-size: 12px; color: var(--wb-text-3); margin-bottom: 18px; }
+  .auth-card input { width: 100%; margin-bottom: 10px; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: 10px; font-size: 13px; }
+  .auth-card button.go { width: 100%; padding: 10px; border: none; border-radius: 10px; background: var(--wb-brand-grad); color: #fff; font-size: 14px; cursor: pointer; }
+  .auth-card .alt { font-size: 12px; color: var(--wb-text-3); text-align: center; margin-top: 12px; }
+  .auth-card .alt a { color: var(--wb-brand); cursor: pointer; }
+  .auth-card .err { font-size: 12px; color: var(--wb-err); min-height: 16px; margin-bottom: 6px; }
+  /* ---------- 排队 / 插队 ---------- */
+  .queue-bar { display: none; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 2px 6px; font-size: 12px; color: var(--wb-text-3); }
+  .queue-bar.show { display: flex; }
+  .q-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 260px; padding: 4px 10px; border-radius: 999px; background: var(--wb-brand-weak); color: var(--wb-brand); font-size: 12px; }
+  .q-chip .qt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q-chip .qx { cursor: pointer; opacity: .7; }
+  #interject-btn { display: none; border: 1px solid var(--wb-brand); color: var(--wb-brand); background: none; border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  #interject-btn.show { display: inline-block; }
+  .interject-note { align-self: flex-end; max-width: 70%; margin: 6px 0; padding: 8px 12px; border-radius: 10px; background: var(--wb-brand-weak); color: var(--wb-brand); font-size: 13px; }
+  .interject-note .lb { font-size: 11px; opacity: .75; margin-bottom: 2px; }
+  /* ---------- 用量面板 ---------- */
+  .usage-grid { display: flex; gap: 10px; margin-bottom: 12px; }
+  .usage-cell { flex: 1; border: 1px solid var(--wb-border); border-radius: 10px; padding: 10px 12px; }
+  .usage-cell .n { font-size: 18px; font-weight: 700; }
+  .usage-cell .l { font-size: 11px; color: var(--wb-text-3); margin-top: 2px; }
+  .usage-bars { display: flex; align-items: flex-end; gap: 6px; height: 64px; margin: 6px 0 2px; }
+  .usage-bars .b { flex: 1; background: var(--wb-brand-weak); border-radius: 4px 4px 0 0; position: relative; min-height: 2px; }
+  .usage-bars .b i { position: absolute; bottom: -16px; left: 0; right: 0; text-align: center; font-style: normal; font-size: 10px; color: var(--wb-text-3); }
+  .usage-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .usage-table th, .usage-table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--wb-border); white-space: nowrap; }
+  .usage-table th { color: var(--wb-text-3); font-weight: 500; }
+</style>
+</head>
+<body>
+<aside>
+  <div class="brand">
+    <div class="mark">W</div>
+    <div><div class="name">WorkBuddy</div><div class="tag">复刻版 · 一句话让 AI 替你上班</div></div>
+  </div>
+  <button id="new-task">＋ 新建任务</button>
+  <div class="assist-box" id="assist-box">
+    <div class="ab-head" id="ab-head" title="点击打开本地助理（IM 消息流）"><span>🤖 本地助理</span><span class="ab-sub">IM 远程指挥</span></div>
+    <div id="ab-channels"><div class="ab-empty">状态加载中…</div></div>
+  </div>
+  <div class="side-label" style="display:flex;align-items:center;justify-content:space-between">项目<a href="#" id="proj-add" title="新建项目" style="text-decoration:none;color:var(--wb-text-3);font-size:14px;padding:0 4px">＋</a></div>
+  <div id="proj-list"></div>
+  <div class="side-label">任务历史</div>
+  <div id="history"></div>
+  <div class="side-nav">
+    <div class="item" data-modal="library">📚 资料库·灵感</div>
+    <div class="item" data-modal="skills">📦 技能库</div>
+    <div class="item" data-modal="experts">👥 专家团</div>
+    <div class="item" data-modal="sched">⏰ 定时任务</div>
+  </div>
+  <div class="user-row" id="user-row" style="display:none">
+    <div class="user-menu" id="user-menu"></div>
+    <div class="user-chip" id="user-chip" title="账号菜单"></div>
+    <button id="gear-btn" title="设置">⚙️</button>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <div class="title" id="session-title">新任务</div>
+    <div class="right"><button id="toggle-files">📁 成果文件</button></div>
+  </div>
+  <div id="chat-scroll"><div class="chat-col" id="chat-col"></div></div>
+
+  <div class="input-wrap">
+    <div class="input-inner">
+      <div class="queue-bar" id="queue-bar"></div>
+      <div class="input-card" style="position:relative">
+        <div class="mention-menu" id="mention-menu"></div>
+        <div id="scene-tag-box"></div>
+        <div class="attach-chips" id="attach-chips"></div>
+        <div id="input-box"><div id="input-hl" aria-hidden="true"></div><textarea id="input" rows="2" placeholder="今天帮你做些什么？@ 引用文件，/ 调用技能与指令"></textarea></div>
+        <div class="card-toolbar">
+          <button class="icon-btn" id="attach-btn" title="上传文件到工作空间，任务中可直接使用">＋</button>
+          <input type="file" id="file-input" multiple style="display:none">
+          <div class="grow"></div>
+          <div class="picker" id="model-picker">
+            <button class="picker-btn" id="model-btn"><span style="font-size:14px">✦</span> <span id="model-label">模型</span> <span style="font-size:10px">▾</span></button>
+            <div class="picker-menu" id="model-menu"></div>
+          </div>
+          <button id="interject-btn" title="不等当前任务结束，把这条消息立即注入正在执行的任务">⚡ 插队</button>
+          <button id="send" title="发送">↑</button>
+        </div>
+      </div>
+      <div class="quick-bar">
+        <div class="picker">
+          <button class="picker-btn">🖥️ 本地任务</button>
+        </div>
+        <div class="picker" id="ws-picker">
+          <button class="picker-btn" id="ws-btn">📁 <span id="ws-label">选择工作空间</span> <span style="font-size:10px">▾</span></button>
+          <div class="picker-menu up-left" id="ws-menu"></div>
+        </div>
+        <div class="picker" id="mode-picker">
+          <button class="picker-btn" id="mode-btn">✅ <span id="mode-label">Craft · 执行</span> <span style="font-size:10px">▾</span></button>
+          <div class="picker-menu up-left" id="mode-menu">
+            <div class="mi" data-mode="craft">✅ Craft · 执行 <span class="sub">完整执行并交付成果</span></div>
+            <div class="mi" data-mode="plan">🗺️ Plan · 规划 <span class="sub">只出执行计划不动手</span></div>
+            <div class="mi" data-mode="ask">💬 Ask · 问答 <span class="sub">只读问答不改文件</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="preview-panel" id="preview-panel">
+  <div class="pv-head">
+    <span class="pv-name" id="pv-name"></span>
+    <button id="pv-sys" title="用系统默认程序打开">🗔</button>
+    <a id="pv-dl" href="#" download title="下载" style="text-decoration:none;padding:4px 8px">⬇</a>
+    <button id="pv-close" title="关闭">✕</button>
+  </div>
+  <div id="pv-body"></div>
+</div>
+
+<div class="files-panel" id="files-panel">
+  <h2>📁 成果文件 <a href="#" id="open-ws" class="link" style="font-weight:400;font-size:11px">打开文件夹</a></h2>
+  <div id="file-list"></div>
+</div>
+
+<div class="modal-mask" id="modal-mask">
+  <div class="modal" id="modal-box">
+    <div class="m-head"><h3 id="m-title"></h3><button class="m-close" id="m-close">✕</button></div>
+    <div class="m-body" id="m-body"></div>
+  </div>
+</div>
+
+<div class="auth-mask" id="auth-mask">
+  <div class="auth-card">
+    <h2 id="auth-title">登录</h2>
+    <div class="sub" id="auth-sub">登录后使用你自己的积分与任务历史</div>
+    <div class="err" id="auth-err"></div>
+    <input id="auth-user" placeholder="用户名" autocomplete="username">
+    <input id="auth-pass" type="password" placeholder="密码（至少 6 位）" autocomplete="current-password">
+    <button class="go" id="auth-go">登录</button>
+    <div class="alt" id="auth-alt">还没有账号？<a id="auth-switch">注册一个</a></div>
+  </div>
+</div>
+
+<script>
+// ================= 基础状态 =================
+let sessionId = null;
+let currentMode = "craft";
+let settingsCache = null;
+let projects = [];
+let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前声明（初始化就会用到）
+let currentUser = null; // 登录后由 initAuth() 填充
+let SESS_KEY = "wb_sessions"; // 登录后切换为 wb_sessions:<用户名>（每人一份任务历史）
+let sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
+const chatCol = document.getElementById("chat-col");
+const chatScroll = document.getElementById("chat-scroll");
+const inputEl = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+const mask = document.getElementById("modal-mask");
+const modalBox = document.getElementById("modal-box");
+const mTitle = document.getElementById("m-title");
+const mBody = document.getElementById("m-body");
+
+function saveSessions() { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 50))); }
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function scrollBottom() { chatScroll.scrollTop = chatScroll.scrollHeight; }
+
+// ================= Markdown 渲染（先转义防注入） =================
+// 模型偶尔输出「裸语言名 + 无围栏代码」（DeepSeek 常见）：识别后补成 ``` 围栏再走正常渲染
+function repairBareCode(str) {
+  const LANG = /^(text|plaintext|javascript|js|typescript|ts|python|py|bash|sh|shell|zsh|json|html|xml|svg|css|scss|sql|yaml|yml|java|go|rust|cpp|csharp|ruby|php|swift|kotlin|jsx|tsx|markdown|md)$/i;
+  // 「像代码/命令/文件树/日志」的行（文本已 HTML 转义）：缩进、注释、树形符、路径、标记符号、常见命令与语法开头
+  const CODE = /^(\s+\S|[│├└─┌┬┴┼]|\/[\w.]|\/\/|#|&lt;|&gt;|["']|\{|\}|\(|\)|\[|`|[■□▶◆●]|[-*]\s|\d+[.)]\s|(const|let|var|function|import|export|from|class|def|async|await|print|python3?|node|npm|npx|pnpm|pip3?|git|cd|ls|cat|curl|wget|brew|docker|ffmpeg|mkdir|cp|mv|echo|source|ssh|chmod)\s|return\b|if\s*\(|for\s*\(|while\s*\(|console\.|\$|[A-Za-z_$][\w$.]*\s*[=({:.]|-{2,})/;
+  const lines = str.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const t = l.trim();
+    if (LANG.test(t)) {
+      // 语言名后允许隔 1-2 个空行再开始代码
+      let j = i + 1, blanks = 0;
+      while (j < lines.length && lines[j].trim() === "" && blanks < 2) { j++; blanks++; }
+      if (j < lines.length && CODE.test(lines[j])) {
+        const buf = [];
+        while (j < lines.length) {
+          const cur = lines[j];
+          if (cur.trim() === "") {
+            // 空行后若还是代码行则把空行收进块内，否则代码块到此结束
+            let k = j + 1;
+            while (k < lines.length && lines[k].trim() === "") k++;
+            if (k < lines.length && CODE.test(lines[k])) { while (j < k) buf.push(lines[j++]); continue; }
+            break;
+          }
+          if (!CODE.test(cur)) break;
+          buf.push(cur); j++;
+        }
+        if (buf.length >= 1) {
+          out.push("```" + t.toLowerCase(), ...buf, "```");
+          i = j - 1;
+          continue;
+        }
+      }
+    }
+    out.push(l);
+  }
+  return out.join("\n");
+}
+
+function renderMd(src) {
+  if (!src) return "";
+  let s = esc(src);
+  const codeBlocks = [];
+  const pushCode = (lang, code) => {
+    codeBlocks.push(`<div class="code-wrap"><div class="code-head"><span>${esc(lang || "")}</span><a class="code-copy" title="复制代码">复制</a></div><pre><code>${code.replace(/\n$/, "")}</code></pre></div>`);
+    return `\x00CODE${codeBlocks.length - 1}\x00`;
+  };
+  const extract = (str) => str.replace(/```(\w*)[^\S\n]*\n?([\s\S]*?)```/g, (_, lang, code) => pushCode(lang, code));
+  s = extract(s);
+  s = repairBareCode(s);
+  s = extract(s);
+  // 未闭合围栏（流式输出中 / 模型忘了闭合）：从 ``` 到文末也按代码块渲染
+  s = s.replace(/(^|\n)```(\w*)[^\S\n]*\n?([\s\S]*)$/, (_, pre, lang, code) => pre + pushCode(lang, code));
+  s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const lines = s.split("\n");
+  const out = [];
+  let listType = null, inQuote = false, para = [], tableRows = null;
+  const flushPara = () => { if (para.length) { out.push("<p>" + para.join("<br>") + "</p>"); para = []; } };
+  const closeList = () => { if (listType) { out.push(listType === "ul" ? "</ul>" : "</ol>"); listType = null; } };
+  const closeQuote = () => { if (inQuote) { out.push("</blockquote>"); inQuote = false; } };
+  const closeTable = () => {
+    if (!tableRows) return;
+    const [head, ...rest] = tableRows;
+    out.push('<div class="md-table-wrap"><table><thead><tr>' + head.map(c => `<th>${c}</th>`).join("") + "</tr></thead><tbody>"
+      + rest.map(r => "<tr>" + r.map(c => `<td>${c}</td>`).join("") + "</tr>").join("") + "</tbody></table></div>");
+    tableRows = null;
+  };
+  for (let raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    let m;
+    // 表格：| a | b | 行；分隔行 |---|---| 跳过
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      const cells = line.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+      if (cells.every(c => /^:?-{3,}:?$/.test(c))) continue;
+      flushPara(); closeList(); closeQuote();
+      (tableRows = tableRows || []).push(cells);
+      continue;
+    }
+    closeTable();
+    // 代码块占位符独立成块，不并进段落（<div> 不能进 <p>）
+    if (/^\s*\x00CODE\d+\x00\s*$/.test(line)) {
+      flushPara(); closeList(); closeQuote();
+      out.push(line.trim());
+      continue;
+    }
+    if ((m = line.match(/^(?:&gt;)\s?(.*)$/))) {
+      flushPara(); closeList();
+      if (!inQuote) { out.push("<blockquote>"); inQuote = true; }
+      out.push("<p>" + (m[1] || "") + "</p>");
+      continue;
+    }
+    closeQuote();
+    if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
+      flushPara(); closeList();
+      out.push(`<h${m[1].length}>${m[2]}</h${m[1].length}>`);
+    } else if (/^(-{3,}|\*{3,})$/.test(line)) {
+      flushPara(); closeList(); out.push("<hr>");
+    } else if ((m = line.match(/^\s*[-*]\s+(.*)$/))) {
+      flushPara();
+      if (listType !== "ul") { closeList(); out.push("<ul>"); listType = "ul"; }
+      out.push("<li>" + m[1] + "</li>");
+    } else if ((m = line.match(/^\s*\d+[.、]\s+(.*)$/))) {
+      flushPara();
+      if (listType !== "ol") { closeList(); out.push("<ol>"); listType = "ol"; }
+      out.push("<li>" + m[1] + "</li>");
+    } else if (line.trim() === "") {
+      flushPara(); closeList();
+    } else {
+      closeList();
+      para.push(line);
+    }
+  }
+  flushPara(); closeList(); closeQuote(); closeTable();
+  return out.join("\n").replace(/\x00CODE(\d+)\x00/g, (_, i) => codeBlocks[+i]);
+}
+
+// ================= 回合渲染（实时流式与历史回放共用） =================
+function createTurnUI(userText, turnMode) {
+  document.getElementById("empty")?.remove();
+  const turn = document.createElement("div");
+  turn.className = "turn";
+  turn.innerHTML = `<div class="u-msg"><div class="bubble"></div></div>
+    <div class="a-msg"><div class="avatar">W</div><div class="body"></div></div>`;
+  turn.querySelector(".bubble").innerHTML = hlTokens(userText, "tk-b");
+  chatCol.appendChild(turn);
+  // 新回合出现后，旧回合的「重新生成」按钮全部撤掉（只允许重生成最后一轮）
+  chatCol.querySelectorAll(".turn-actions [data-a=regen]").forEach(b => { if (!turn.contains(b)) b.remove(); });
+  const body = turn.querySelector(".body");
+  turn._userText = userText;
+  turn._mode = turnMode;
+  let currentText = null;
+
+  // 执行过程折叠区（仿官方「已完成 12s ›」）：过程卡片都收进去，正文文本在外面
+  let procWrap = null, procBody = null, procTimer = null;
+  const t0 = Date.now();
+  const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
+  const ensureProc = () => {
+    if (!procBody) {
+      procWrap = document.createElement("div");
+      procWrap.className = "proc-wrap open";
+      procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="arrow">›</span></div><div class="proc-body"></div>`;
+      procBody = procWrap.querySelector(".proc-body");
+      procWrap.querySelector(".proc-head").onclick = () => procWrap.classList.toggle("open");
+      // 追加（不是 prepend）：开场白留在折叠区上方可见，仿官方「先说在做什么 → 过程收起 → 结论在外」
+      body.appendChild(procWrap);
+      procTimer = setInterval(() => {
+        const pt = procWrap.querySelector(".pt");
+        if (pt) pt.textContent = `运行中 ${fmtDur(Date.now() - t0)}`;
+      }, 1000);
+    }
+    return procBody;
+  };
+
+  const ensureText = () => {
+    if (!currentText) {
+      currentText = document.createElement("div");
+      currentText.className = "a-text";
+      currentText._raw = "";
+      // 过程区一旦出现，后续文字都算"过程叙述"进折叠区；finish() 会把最后一段（最终结论）提出来
+      (procBody || body).appendChild(currentText);
+    }
+    return currentText;
+  };
+  const appendText = (delta) => {
+    const el = ensureText();
+    el._raw += delta;
+    el.innerHTML = renderMd(el._raw);
+  };
+
+  function handleEvent(ev) {
+    if (ev.type === "step_start") {
+      if (ev.depth > 0) return;
+      body.querySelector(".thinking-hint")?.remove();
+      const hint = document.createElement("div");
+      hint.className = "thinking-hint";
+      hint.style.cssText = "font-size:12px;color:var(--wb-text-3);margin:6px 0;display:flex;align-items:center;gap:6px";
+      hint.innerHTML = `<span class="spinner"></span> 第 ${ev.step} 步 · 思考规划中…`;
+      // 首步的提示放正文（此时还没有过程区，别为它建一个）；后续步的提示进过程区
+      (procBody || body).appendChild(hint);
+      currentText = null;
+    } else if (ev.type === "text") {
+      if (ev.depth > 0) return;
+      body.querySelector(".thinking-hint")?.remove();
+      appendText(ev.delta);
+    } else if (ev.type === "expert_start") {
+      currentText = null;
+      const banner = document.createElement("div");
+      banner.className = "step-card";
+      banner.innerHTML = `<div class="head"><span class="tag">👥 ${esc(ev.expert)}</span><span class="desc">专家接手子任务：${esc((ev.task || "").slice(0, 60))}</span></div>`;
+      ensureProc().appendChild(banner);
+    } else if (ev.type === "tool_use") {
+      body.querySelector(".thinking-hint")?.remove();
+      currentText = null;
+      const card = document.createElement("div");
+      card.className = "step-card";
+      const who = ev.expert ? `${esc(ev.expert)} · ` : "";
+      card.innerHTML =
+        `<div class="head"><span class="tag">⚙ ${who}${esc(ev.name)}</span>` +
+        `<span class="desc">${esc(ev.purpose || "")}</span><span class="spinner"></span></div>` +
+        `<pre>${esc(ev.input_preview || "")}</pre>`;
+      card.querySelector(".head").onclick = () => card.classList.toggle("open");
+      ensureProc().appendChild(card);
+      // 未完成卡片入栈；专家的内层工具卡与协调者的委派卡按 depth 区分，防止张冠李戴
+      card._depth = ev.depth || 0;
+      (body._openCards = body._openCards || []).push(card);
+    } else if (ev.type === "tool_result") {
+      const stack = body._openCards || [];
+      let card = null;
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i]._depth === (ev.depth || 0)) { card = stack.splice(i, 1)[0]; break; }
+      }
+      if (!card) card = stack.pop();
+      if (card) {
+        card.querySelector(".spinner")?.remove();
+        const tag = document.createElement("span");
+        tag.className = "tag " + (ev.isError ? "err" : "ok");
+        tag.textContent = ev.isError ? "失败" : "完成";
+        card.querySelector(".head").appendChild(tag);
+        card.querySelector("pre").textContent += "\n\n── 执行结果 ──\n" + (ev.preview || "");
+        if (ev.isError) card.classList.add("open");
+      }
+    } else if (ev.type === "limit") {
+      currentText = null;
+      const note = document.createElement("div");
+      note.style.cssText = "font-size:12px;color:var(--wb-err);margin:6px 0";
+      note.textContent = `⏱ ${ev.note || "已达执行上限"}，任务强制收尾`;
+      ensureProc().appendChild(note);
+      procWrap?.classList.add("open");
+      turn._limited = true;
+    } else if (ev.type === "usage") {
+      // 插队会触发多轮 runTask、发多个 usage 事件 → 累加而不是覆盖
+      if (!turn._usage) turn._usage = { ...ev };
+      else {
+        turn._usage.prompt += ev.prompt || 0;
+        turn._usage.completion += ev.completion || 0;
+        turn._usage.calls += ev.calls || 0;
+        turn._usage.elapsed_ms += ev.elapsed_ms || 0;
+      }
+    } else if (ev.type === "interject") {
+      currentText = null;
+      const note = document.createElement("div");
+      note.className = "interject-note";
+      note.innerHTML = `<div class="lb">⚡ 插队补充</div>${esc(ev.text || "")}`;
+      body.appendChild(note);
+    } else if (ev.type === "credits") {
+      turn._credits = ev; // 结束时由操作条展示「扣 X 积分 · 余额 Y」
+      if (currentUser) { currentUser.credits = ev.balance; renderUserChip(); }
+    } else if (ev.type === "files") {
+      renderFiles(ev.files);
+      autoPreviewNewHtml(ev.files);
+      // 预览打开时不再展开文件面板，避免挤压聊天区
+      if (ev.files && ev.files.length && !pvPanel.classList.contains("show")) {
+        document.getElementById("files-panel").classList.add("show");
+      } else if (pvPanel.classList.contains("show")) {
+        document.getElementById("files-panel").classList.remove("show");
+      }
+    } else if (ev.type === "error") {
+      currentText = null;
+      const t = document.createElement("div");
+      t.className = "a-text";
+      t.style.color = "var(--wb-err)";
+      t.textContent = "出错了：" + (ev.message || "");
+      body.appendChild(t); // 错误必须留在正文可见，不进折叠区
+    }
+    scrollBottom();
+  }
+
+  function finish() {
+    body.querySelector(".thinking-hint")?.remove();
+    // 回合结束后不允许再有任何转圈（含未收到结果的工具卡，统一标记中止）
+    turn.querySelectorAll(".step-card .spinner").forEach(s => {
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = "中止";
+      s.closest(".head")?.appendChild(tag);
+      s.remove();
+    });
+    turn.querySelectorAll(".spinner").forEach(s => s.remove());
+    // 过程折叠区收尾：停计时、写「已完成 Xs」、默认折叠（出错/被截断则保持展开）
+    if (procTimer) { clearInterval(procTimer); procTimer = null; }
+    if (procWrap) {
+      // 最后一段正文是最终结论 → 提出折叠区保持可见（开场白在上、结论在下、过程收起）
+      const texts = procBody.querySelectorAll(":scope > .a-text");
+      if (texts.length) body.appendChild(texts[texts.length - 1]);
+      if (!procBody.childElementCount) {
+        procWrap.remove();
+      } else {
+        const ms = (turn._usage && turn._usage.elapsed_ms) || Date.now() - t0;
+        const n = procBody.querySelectorAll(".step-card").length;
+        procWrap.querySelector(".pt").textContent = `已完成 ${fmtDur(ms)}` + (n ? ` · ${n} 步` : "");
+        const hasErr = !!procBody.querySelector(".tag.err") || turn._limited;
+        if (!hasErr) procWrap.classList.remove("open");
+      }
+    }
+    addActionsBar();
+    if (turnMode === "plan") renderPlanChecklist();
+  }
+
+  // 官方式回复操作条：复制 / 👍👎 / 重新生成 + 共消耗 tokens · 模型
+  function addActionsBar() {
+    if (turn.querySelector(".turn-actions")) return;
+    const bar = document.createElement("div");
+    bar.className = "turn-actions";
+    bar.innerHTML =
+      `<button class="ta-btn" data-a="copy" title="复制回复">⧉</button>` +
+      `<button class="ta-btn" data-a="up" title="有帮助">👍</button>` +
+      `<button class="ta-btn" data-a="down" title="没帮助">👎</button>` +
+      `<button class="ta-btn" data-a="regen" title="重新生成">↻ 重新生成</button>` +
+      `<span class="ta-meta"></span>`;
+    const u = turn._usage;
+    const meta = bar.querySelector(".ta-meta");
+    if (u && (u.prompt || u.completion)) {
+      meta.textContent = `共消耗 ✧ ${(u.prompt + u.completion).toLocaleString()} tokens · ${u.provider || ""}（${u.model || ""}）`;
+      meta.title = `输入 ${u.prompt.toLocaleString()} + 输出 ${u.completion.toLocaleString()} tokens · ${u.calls} 次模型调用`;
+    } else if (u) {
+      meta.textContent = `${u.provider || ""}（${u.model || ""}）`;
+    }
+    if (turn._credits) {
+      meta.textContent += `${meta.textContent ? " · " : ""}扣 ${turn._credits.spent} 积分（余 ${(+turn._credits.balance).toLocaleString()}）`;
+    }
+    bar.querySelector("[data-a=copy]").onclick = (e) => {
+      const texts = [...body.querySelectorAll(".a-text")].map(t => t._raw || t.textContent).join("\n\n");
+      navigator.clipboard?.writeText(texts).then(() => {
+        e.target.textContent = "✓"; setTimeout(() => { e.target.textContent = "⧉"; }, 1200);
+      });
+    };
+    bar.querySelector("[data-a=up]").onclick = (e) => {
+      e.target.classList.toggle("on"); bar.querySelector("[data-a=down]").classList.remove("on");
+    };
+    bar.querySelector("[data-a=down]").onclick = (e) => {
+      e.target.classList.toggle("on"); bar.querySelector("[data-a=up]").classList.remove("on");
+    };
+    bar.querySelector("[data-a=regen]").onclick = () => {
+      if (taskBusy) return;
+      const text = turn._userText, mode = turn._mode;
+      turn.remove();
+      doSend(text, mode, true);
+    };
+    body.appendChild(bar);
+  }
+
+  // Plan 模式：把执行计划解析成任务列表卡片
+  function renderPlanChecklist() {
+    const texts = body.querySelectorAll(".a-text");
+    const raw = texts.length ? texts[texts.length - 1]._raw || "" : "";
+    let steps = [...raw.matchAll(/^\s*\d+[.、)]\s+(.+)$/gm)].map(m => m[1]);
+    if (steps.length < 2) steps = [...raw.matchAll(/^\s*[-*]\s+(.+)$/gm)].map(m => m[1]);
+    steps = steps.map(s => s.replace(/\*\*/g, "").trim()).filter(s => s.length > 2).slice(0, 20);
+    if (steps.length < 2) return;
+    const card = document.createElement("div");
+    card.className = "plan-list";
+    card.innerHTML = `<div class="pl-head">📋 计划任务列表（${steps.length} 步）</div>`
+      + steps.map(s => `<label class="pl-item"><input type="checkbox"> <span>${esc(s)}</span></label>`).join("")
+      + `<button class="pl-run">▶ 切换 Craft 按此计划执行</button>`;
+    card.querySelector(".pl-run").onclick = () => {
+      setMode("craft");
+      inputEl.value = "请严格按照以下计划执行，每完成一步简要汇报：\n" + steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
+      syncInputHl();
+      inputEl.focus();
+      scrollBottom();
+    };
+    body.appendChild(card);
+    scrollBottom();
+  }
+  return { handleEvent, finish };
+}
+
+// ================= 空状态（场景 tab + 分类胶囊，仿官方首页） =================
+const SCENES = {
+  "日常办公": ["📄 文档处理", "📊 数据分析及可视化", "🔍 深度研究", "📽 幻灯片制作", "🗓 周报总结", "💹 金融服务"],
+  "代码开发": ["💻 日常开发", "🌐 网站开发", "🤖 Agent 应用", "🛠 Skill 开发", "📚 技术文档"],
+  "设计创意": ["🖥 网站设计", "📽 PPT设计", "🎨 视觉海报", "📱 移动端App", "🧩 设计系统", "🌐 Web App"],
+};
+let sceneTag = null; // 选中的任务类型标签
+function setSceneTag(label) {
+  sceneTag = label;
+  const box = document.getElementById("scene-tag-box");
+  box.innerHTML = label ? `<span class="scene-tag">${esc(label)} <b onclick="setSceneTag(null)">✕</b></span>` : "";
+  inputEl.focus();
+}
+function buildEmpty() {
+  const tpl = document.createElement("div");
+  tpl.className = "empty"; tpl.id = "empty";
+  tpl.innerHTML = `<h1>WorkBuddy, 我帮你</h1>
+    <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
+      `<button class="${i === 0 ? "active" : ""}" data-scene="${k}">${["⏱","💻","🎨"][i]} ${k}</button>`).join("")}</div>
+    <div class="chips" id="scene-chips"></div>`;
+  const chipsEl = tpl.querySelector("#scene-chips");
+  const renderChips = (scene) => {
+    chipsEl.innerHTML = SCENES[scene].map(c => `<button>${c}</button>`).join("");
+  };
+  renderChips("日常办公");
+  tpl.querySelector(".scene-tabs").addEventListener("click", (e) => {
+    if (e.target.tagName !== "BUTTON") return;
+    tpl.querySelectorAll(".scene-tabs button").forEach(b => b.classList.toggle("active", b === e.target));
+    renderChips(e.target.dataset.scene);
+  });
+  chipsEl.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (b) setSceneTag(b.textContent.trim());
+  });
+  return tpl;
+}
+chatCol.appendChild(buildEmpty());
+
+// ================= @ 引用文件 / 调用技能 自动补全 =================
+let filesCache = [], skillsCache = [];
+fetch("/api/skills").then(r => r.json()).then(l => skillsCache = l).catch(() => {});
+const mentionMenu = document.getElementById("mention-menu");
+let mentionState = null; // {trigger:'@'|'/', start, query}
+
+function detectMention() {
+  const pos = inputEl.selectionStart;
+  const before = inputEl.value.slice(0, pos);
+  const m = before.match(/(?:^|[\s（(])([@/])([^\s@/]*)$/);
+  if (!m) { mentionState = null; mentionMenu.classList.remove("show"); return; }
+  mentionState = { trigger: m[1], query: m[2], start: pos - m[2].length - 1 };
+  if (m[1] === "@") refreshFilesCache();
+  renderMentionMenu();
+}
+let filesFetchAt = 0;
+function refreshFilesCache() {
+  if (Date.now() - filesFetchAt < 3000) return; // 3 秒内不重复拉
+  filesFetchAt = Date.now();
+  fetch("/api/files").then(r => r.json()).then(f => {
+    filesCache = f || [];
+    if (mentionState && mentionState.trigger === "@") renderMentionMenu();
+  }).catch(() => {});
+}
+function renderMentionMenu() {
+  const { trigger, query } = mentionState;
+  let items = [];
+  if (trigger === "@") {
+    items = filesCache.filter(f => f.name.toLowerCase().includes(query.toLowerCase()))
+      .slice(0, 12).map(f => ({ label: `${fileIcon(f.name)} ${f.name}`, insert: "@" + f.name, sub: "工作空间文件" }));
+    if (!items.length) items = [{ label: "（工作空间还没有文件，可点 ＋ 上传）", insert: null }];
+  } else {
+    items = skillsCache.filter(s => s.name.toLowerCase().includes(query.toLowerCase()) || s.description.includes(query))
+      .slice(0, 12).map(s => ({ label: "📦 /" + s.name, insert: "/" + s.name, sub: s.description }));
+    if (!items.length) items = [{ label: "（没有匹配的技能）", insert: null }];
+  }
+  mentionMenu.innerHTML = `<div class="mh">${trigger === "@" ? "引用工作空间文件" : "调用技能"}</div>` +
+    items.map((it, i) => `<div class="mi ${i === 0 && it.insert ? "sel" : ""}" data-insert="${esc(it.insert || "")}">${it.label}${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ""}</div>`).join("");
+  mentionMenu.classList.add("show");
+  mentionMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => applyMention(mi.dataset.insert));
+}
+function applyMention(insert) {
+  if (!insert || !mentionState) { mentionMenu.classList.remove("show"); return; }
+  const pos = inputEl.selectionStart;
+  inputEl.value = inputEl.value.slice(0, mentionState.start) + insert + " " + inputEl.value.slice(pos);
+  const newPos = mentionState.start + insert.length + 1;
+  inputEl.setSelectionRange(newPos, newPos);
+  mentionState = null;
+  mentionMenu.classList.remove("show");
+  inputEl.focus();
+  syncInputHl();
+}
+
+// ---------- @文件 //技能 token 高亮：镜像层与 textarea 逐字对齐，只画底色不碰文字 ----------
+const inputHl = document.getElementById("input-hl");
+{
+  const cs = getComputedStyle(inputEl);
+  for (const p of ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "fontFamily", "fontSize", "lineHeight", "letterSpacing"]) inputHl.style[p] = cs[p];
+}
+function hlTokens(text, cls) {
+  // /token 只在命中已装技能时高亮（避免把 /Users/... 这类路径误当指令）；@token 一律高亮
+  return esc(text).replace(/(^|[\s（(：:，,])(@[^\s@，。！？；：、（）()<>"']+|\/[^\s@/，。！？；：、（）()<>"']+)/g, (m, pre, tok) => {
+    if (tok[0] === "/" && !skillsCache.some(s => tok.slice(1).toLowerCase() === String(s.name).toLowerCase())) return m;
+    return pre + `<span class="${cls}">${tok}</span>`;
+  });
+}
+function syncInputHl() {
+  inputHl.innerHTML = inputEl.value ? hlTokens(inputEl.value, "tk") + "\n" : "";
+  inputHl.scrollTop = inputEl.scrollTop;
+}
+inputEl.addEventListener("input", syncInputHl);
+inputEl.addEventListener("scroll", () => { inputHl.scrollTop = inputEl.scrollTop; });
+
+inputEl.addEventListener("input", detectMention);
+inputEl.addEventListener("click", detectMention);
+inputEl.addEventListener("keydown", (e) => {
+  if (mentionMenu.classList.contains("show")) {
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      const sel = mentionMenu.querySelector(".mi.sel") || mentionMenu.querySelector(".mi[data-insert]:not([data-insert=''])");
+      applyMention(sel ? sel.dataset.insert : null);
+      return;
+    }
+    if (e.key === "Escape") { mentionMenu.classList.remove("show"); mentionState = null; }
+  }
+}, true);
+
+// ================= 成果文件 =================
+function fileIcon(name) {
+  if (/\.pptx?$/i.test(name)) return "📊";
+  if (/\.docx?$/i.test(name)) return "📄";
+  if (/\.xlsx?$/i.test(name)) return "📈";
+  if (/\.(md|txt)$/i.test(name)) return "📝";
+  if (/\.csv$/i.test(name)) return "🗂️";
+  return "📎";
+}
+function fmtSize(n) { return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B"; }
+const openDirs = new Set(); // 记住展开状态，刷新列表不回弹
+function renderFiles(files) {
+  filesCache = files || [];
+  const el = document.getElementById("file-list");
+  if (!files || !files.length) { el.innerHTML = '<div style="padding:10px;color:var(--wb-text-3);font-size:12px">暂无成果文件</div>'; return; }
+  const fileRow = (f, nested) =>
+    `<div class="file-item${nested ? " nested" : ""}" style="cursor:pointer" data-name="${esc(f.name)}" title="${esc(f.name)}">
+      <span>${fileIcon(f.name)}</span>
+      <span style="min-width:0"><div class="name">${esc(f.name.split("/").pop())}</div><div class="meta">${fmtSize(f.size)}</div></span>
+      <a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>
+    </div>`;
+  // 根目录文件（智能体产出）置顶按时间排；子目录归成可折叠分组
+  const rootFiles = files.filter(f => !f.name.includes("/"));
+  const groups = {};
+  for (const f of files) {
+    if (!f.name.includes("/")) continue;
+    const dir = f.name.slice(0, f.name.lastIndexOf("/"));
+    (groups[dir] = groups[dir] || []).push(f);
+  }
+  let html = rootFiles.map(f => fileRow(f, false)).join("");
+  for (const dir of Object.keys(groups).sort((a, b) => a.localeCompare(b, "zh"))) {
+    const open = openDirs.has(dir);
+    html += `<div class="dir-head" data-dir="${esc(dir)}"><span>${open ? "▾" : "▸"}</span><span>📁</span><div class="name">${esc(dir)}</div><span class="cnt">${groups[dir].length}</span></div>`;
+    if (open) html += groups[dir].sort((a, b) => a.name.localeCompare(b.name, "zh")).map(f => fileRow(f, true)).join("");
+  }
+  el.innerHTML = html;
+  el.querySelectorAll(".dir-head").forEach(h => h.onclick = () => {
+    openDirs.has(h.dataset.dir) ? openDirs.delete(h.dataset.dir) : openDirs.add(h.dataset.dir);
+    renderFiles(filesCache);
+  });
+  el.querySelectorAll(".file-item").forEach(item => item.onclick = (e) => {
+    if (e.target.closest(".dl")) return; // 下载按钮不拦截
+    e.preventDefault();
+    previewFile(item.dataset.name);
+  });
+}
+fetch("/api/files").then(r => r.json()).then(f => { if (Array.isArray(f)) { renderFiles(f); snapshotFiles(f); } }).catch(() => {});
+
+// ================= 助理模式（IM 通道状态 + 最近消息） =================
+const WS_STATE_TXT = { connected: "已连接", connecting: "连接中…", reconnecting: "重连中…", failed: "连接失败", idle: "已断开", off: "未启动", unknown: "未知" };
+async function refreshImStatus() {
+  try {
+    const s = await fetch("/im/status").then(r => r.json());
+    const f = s.feishu;
+    const fs = !f.configured ? ["", "未配置"]
+      : f.ws.state === "connected" ? ["ok", "已连接"]
+      : f.ws.state === "failed" ? ["err", "连接失败"]
+      : ["", WS_STATE_TXT[f.ws.state] || f.ws.state];
+    const chs = [
+      { icon: "🕊️", name: "飞书", dot: fs[0], st: fs[1] },
+      { icon: "💼", name: "企业微信", dot: s.wecom.configured ? "ok" : "", st: s.wecom.configured ? "已配置推送" : "未配置" },
+      { icon: "🔗", name: "Webhook", dot: "ok", st: s.webhook.secret_set ? "已启用" : "已启用·无密钥" },
+    ];
+    const box = document.getElementById("ab-channels");
+    box.innerHTML = chs.map(c =>
+      `<div class="ab-ch" title="点击打开本地助理"><span class="dot ${c.dot}"></span>${c.icon} ${c.name}<span class="st">${c.st}</span></div>`).join("");
+    box.querySelectorAll(".ab-ch").forEach(el => el.onclick = () => openAssistView());
+  } catch {}
+}
+document.getElementById("ab-head").onclick = () => openAssistView();
+refreshImStatus();
+setInterval(refreshImStatus, 15000);
+
+// ---------------- 文件预览 ----------------
+const OFFICE_RE = /\.(docx?|pptx?|xlsx?)$/i;
+const pvPanel = document.getElementById("preview-panel");
+let pvCurrent = null;
+
+async function previewFile(name) {
+  if (OFFICE_RE.test(name)) {
+    // Office 文件交给本机 Office/WPS 打开
+    await fetch("/api/files/open/" + encodeURIComponent(name), { method: "POST" });
+    return;
+  }
+  pvCurrent = name;
+  document.getElementById("files-panel").classList.remove("show"); // 预览时收起文件列表，给聊天区留空间
+  document.getElementById("pv-name").textContent = name;
+  document.getElementById("pv-dl").href = "/api/files/download/" + encodeURIComponent(name);
+  const body = document.getElementById("pv-body");
+  const url = "/api/files/view/" + encodeURIComponent(name) + "?t=" + Date.now();
+  if (/\.(html?|pdf)$/i.test(name)) {
+    body.innerHTML = `<iframe src="${url}"></iframe>`;
+  } else if (/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name)) {
+    body.innerHTML = `<img src="${url}">`;
+  } else if (/\.(md|markdown)$/i.test(name)) {
+    const text = await fetch(url).then(r => r.text()).catch(() => "加载失败");
+    body.innerHTML = `<div class="pv-text a-text">${renderMd(text)}</div>`;
+  } else if (/\.(txt|csv|json|js|cjs|css|xml|log|yml|yaml)$/i.test(name)) {
+    const text = await fetch(url).then(r => r.text()).catch(() => "加载失败");
+    body.innerHTML = `<div class="pv-text"><pre style="white-space:pre-wrap;word-break:break-all">${esc(text.slice(0, 100000))}</pre></div>`;
+  } else {
+    body.innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">该格式暂不支持应用内预览，可点右上 🗔 用系统程序打开，或 ⬇ 下载。</div>`;
+  }
+  pvPanel.classList.add("show");
+}
+document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; };
+document.getElementById("pv-sys").onclick = () => { if (pvCurrent) fetch("/api/files/open/" + encodeURIComponent(pvCurrent), { method: "POST" }); };
+
+// 任务产出/更新 HTML 时，自动在右侧实时展示
+let fileSnapshot = {};
+function snapshotFiles(files) {
+  fileSnapshot = {};
+  for (const f of files || []) fileSnapshot[f.name] = f.mtime;
+}
+function autoPreviewNewHtml(files) {
+  // 任务产出/更新 html 或 md 时自动在右侧预览（html 优先）
+  const changed = (files || []).filter(f => fileSnapshot[f.name] !== f.mtime);
+  const target = changed.find(f => /\.html?$/i.test(f.name)) || changed.find(f => /\.(md|markdown)$/i.test(f.name));
+  if (target) previewFile(target.name);
+  for (const f of files || []) fileSnapshot[f.name] = f.mtime;
+}
+document.getElementById("toggle-files").onclick = () => document.getElementById("files-panel").classList.toggle("show");
+document.getElementById("open-ws").onclick = (e) => { e.preventDefault(); fetch("/api/open-workspace", { method: "POST" }); };
+
+// ================= 下拉菜单通用 =================
+function setupPicker(btnId, menuId) {
+  const btn = document.getElementById(btnId);
+  const menu = document.getElementById(menuId);
+  btn.onclick = (e) => { e.stopPropagation(); closeAllMenus(menu); menu.classList.toggle("show"); };
+  return menu;
+}
+function closeAllMenus(except) {
+  document.querySelectorAll(".picker-menu").forEach(m => { if (m !== except) m.classList.remove("show"); });
+}
+document.addEventListener("click", () => closeAllMenus());
+
+// ================= 模型选择（输入卡片右下角，仿官方 Auto ▾） =================
+const modelMenu = setupPicker("model-btn", "model-menu");
+async function refreshSettingsCache() {
+  settingsCache = await fetch("/api/settings").then(r => r.json()).catch(() => null);
+  if (settingsCache && settingsCache.error) settingsCache = null; // 未登录时 401 JSON，不当配置用
+  if (settingsCache) {
+    document.getElementById("model-label").textContent = settingsCache.active_model;
+    document.getElementById("ws-label").textContent = settingsCache.workspace_dir.split(/[\\/]/).pop() || "工作空间";
+    renderModelMenu();
+    renderWsMenu();
+  }
+}
+function renderModelMenu() {
+  modelMenu.innerHTML = settingsCache.models.map(m => {
+    const on = m.name === settingsCache.active_model;
+    return `<div class="mi ${on ? "on" : ""}" data-name="${esc(m.name)}" style="justify-content:space-between">
+      <span>✦ ${esc(m.name)} <span class="sub">${esc(m.model)}${m.api_key ? "" : " · ⚠ 未填Key"}</span></span>
+      ${on ? '<span style="color:var(--wb-ok)">✓</span>' : ""}</div>`;
+  }).join("")
+    + `<div class="mi" data-act="manage" style="border-top:1px solid var(--wb-border);margin-top:4px">⚙️ 管理模型…</div>`;
+  modelMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
+    modelMenu.classList.remove("show");
+    if (mi.dataset.act === "manage") return openModal("settings", "models");
+    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active_model: mi.dataset.name }) });
+    refreshSettingsCache();
+  });
+}
+
+// ================= 工作空间选择（快捷栏，仿官方"选择工作空间"） =================
+const wsMenu = setupPicker("ws-btn", "ws-menu");
+function renderWsMenu() {
+  wsMenu.innerHTML =
+    `<div class="mi" data-act="cur">📁 ${esc(settingsCache.workspace_dir)}</div>
+     <div class="mi" data-act="pick">📂 选择新文件夹…</div>
+     <div class="mi" data-act="open">🗂 打开当前文件夹</div>`;
+  wsMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
+    wsMenu.classList.remove("show");
+    if (mi.dataset.act === "pick") {
+      const r = await fetch("/api/pick-folder", { method: "POST" }).then(r => r.json()).catch(() => ({}));
+      if (r.path) {
+        await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspace_dir: r.path }) });
+        refreshSettingsCache();
+        fetch("/api/files").then(r => r.json()).then(renderFiles);
+      } else if (r.error) {
+        const p = prompt("输入工作空间文件夹的完整路径：", settingsCache.workspace_dir);
+        if (p) {
+          await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspace_dir: p }) });
+          refreshSettingsCache();
+        }
+      }
+    } else if (mi.dataset.act === "open") fetch("/api/open-workspace", { method: "POST" });
+  });
+}
+refreshSettingsCache();
+
+// ================= 模式选择（快捷栏"默认权限"式下拉） =================
+const modeMenu = setupPicker("mode-btn", "mode-menu");
+const MODE_LABEL = { craft: "✅ Craft · 执行", plan: "🗺️ Plan · 规划", ask: "💬 Ask · 问答" };
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById("mode-label").textContent = MODE_LABEL[mode].slice(2).trim();
+  modeMenu.querySelectorAll(".mi").forEach(x => x.classList.toggle("on", x.dataset.mode === mode));
+  inputEl.placeholder = mode === "ask" ? "问我任何问题（不会修改文件）…"
+    : mode === "plan" ? "描述任务，我先给你出执行计划…"
+    : "今天帮你做些什么？可以让我处理数据、写报告、做 PPT、联网调研…";
+}
+modeMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => {
+  setMode(mi.dataset.mode);
+  modeMenu.classList.remove("show");
+});
+
+// ================= ＋ 上传文件到工作空间 =================
+const attachChips = document.getElementById("attach-chips");
+document.getElementById("attach-btn").onclick = () => document.getElementById("file-input").click();
+document.getElementById("file-input").addEventListener("change", async (e) => {
+  for (const file of e.target.files) {
+    if (file.size > 30 * 1048576) { alert(`${file.name} 超过 30MB，跳过`); continue; }
+    const buf = await file.arrayBuffer();
+    const b64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ""));
+    const resp = await fetch("/api/upload", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: file.name, data_b64: b64 }),
+    });
+    if (resp.ok) {
+      const chip = document.createElement("span");
+      chip.textContent = "📎 " + file.name;
+      attachChips.appendChild(chip);
+      inputEl.value = (inputEl.value ? inputEl.value + " " : "") + `（已上传文件：${file.name}）`;
+      syncInputHl();
+      fetch("/api/files").then(r => r.json()).then(renderFiles);
+    } else alert("上传失败: " + file.name);
+  }
+  e.target.value = "";
+});
+
+// ================= 会话历史（服务端持久化 + 回放，按项目过滤） =================
+function renderHistory() {
+  const list = sessions.filter(s => (s.project || "默认项目") === activeProject);
+  document.getElementById("history").innerHTML = list.map(s =>
+    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(s.title)}"><span class="ht">${esc(s.title)}</span><span class="hx" title="删除该任务">✕</span></div>`).join("")
+    || '<div style="font-size:12px;color:var(--wb-text-3);padding:4px 10px">该项目还没有任务</div>';
+}
+document.getElementById("history").addEventListener("click", async (e) => {
+  const item = e.target.closest(".hist-item");
+  if (!item) return;
+  if (e.target.classList.contains("hx")) {
+    if (!confirm("删除该任务及其对话记录？")) return;
+    const id = item.dataset.id;
+    sessions = sessions.filter(s => s.id !== id);
+    saveSessions();
+    fetch("/api/session/" + encodeURIComponent(id), { method: "DELETE" }).catch(() => {});
+    if (sessionId === id) document.getElementById("new-task").click();
+    else renderHistory();
+    return;
+  }
+  closeAssistView();
+  sessionId = item.dataset.id;
+  const s = sessions.find(x => x.id === sessionId);
+  document.getElementById("session-title").textContent = s ? s.title : "任务";
+  renderHistory();
+  // 回放服务端保存的完整对话（含工具执行过程）
+  chatCol.innerHTML = "";
+  const data = await fetch("/api/session/" + encodeURIComponent(sessionId)).then(r => r.json()).catch(() => ({ transcript: [] }));
+  let ui = null;
+  for (const entry of data.transcript || []) {
+    if (entry.type === "user") {
+      ui = createTurnUI(entry.text, entry.mode);
+    } else if (entry.type === "assistant" && ui) {
+      for (const ev of entry.events || []) ui.handleEvent(ev);
+      ui.finish();
+    }
+  }
+  if (!(data.transcript || []).length) {
+    chatCol.innerHTML = '<div style="text-align:center;color:var(--wb-text-3);font-size:12px;padding:20px">该任务还没有保存的对话记录（可能创建于旧版本），继续对话即可。</div>';
+  }
+  scrollBottom();
+});
+document.getElementById("new-task").onclick = () => {
+  closeAssistView();
+  sessionId = null;
+  document.getElementById("session-title").textContent = "新任务";
+  chatCol.innerHTML = "";
+  chatCol.appendChild(buildEmpty());
+  renderHistory();
+};
+renderHistory();
+
+// ================= 项目（多工作空间，任务历史按项目分组；projects/activeProject 声明在顶部基础状态区） =================
+async function refreshProjects() {
+  try {
+    const data = await fetch("/api/projects").then(r => r.json());
+    projects = data.projects || [];
+    activeProject = data.active || "默认项目";
+  } catch {}
+  renderProjects();
+  renderHistory();
+}
+function renderProjects() {
+  const box = document.getElementById("proj-list");
+  if (!box) return;
+  box.innerHTML = projects.map(p =>
+    `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">📂 <span class="pn">${esc(p.name)}</span>${projects.length > 1 ? '<span class="del" title="移除项目（不删文件）">✕</span>' : ""}</div>`).join("");
+  box.querySelectorAll(".proj-item").forEach(el => el.onclick = async (e) => {
+    const name = el.dataset.name;
+    if (e.target.classList.contains("del")) {
+      if (!confirm(`把项目「${name}」从列表移除？（目录和文件不会删除）`)) return;
+      await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" });
+      refreshProjects().then(refreshSettingsCache);
+      return;
+    }
+    if (name === activeProject) return;
+    await fetch("/api/projects/switch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    activeProject = name;
+    document.getElementById("new-task").click();
+    renderProjects();
+    refreshSettingsCache();
+    fetch("/api/files").then(r => r.json()).then(renderFiles);
+  });
+}
+document.getElementById("proj-add").onclick = (e) => {
+  e.preventDefault();
+  const box = document.getElementById("proj-list");
+  if (box.querySelector("#proj-new")) { box.querySelector("#proj-new").focus(); return; }
+  const row = document.createElement("div");
+  row.style.cssText = "padding:4px 6px";
+  row.innerHTML = '<input id="proj-new" placeholder="项目名，回车创建" style="width:100%;font-size:12px;padding:5px 8px">';
+  box.prepend(row);
+  const inp = row.querySelector("#proj-new");
+  inp.focus();
+  inp.onkeydown = async (ev) => {
+    if (ev.key === "Escape") { row.remove(); return; }
+    if (ev.key !== "Enter") return;
+    const name = inp.value.trim();
+    if (!name) return;
+    const resp = await fetch("/api/projects", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) { alert(data.error || "创建失败"); return; }
+    document.getElementById("new-task").click();
+    refreshProjects().then(refreshSettingsCache);
+  };
+};
+refreshProjects();
+
+// ================= 发送（运行中按钮变「停止」） =================
+let taskBusy = false;
+const msgQueue = []; // 任务运行中新发的消息先排队，当前任务结束后按序自动执行
+function setSendBusy(on) {
+  taskBusy = on;
+  sendBtn.classList.toggle("stop", on);
+  sendBtn.textContent = on ? "◼" : "↑";
+  sendBtn.title = on ? "停止任务" : "发送";
+  document.getElementById("interject-btn").classList.toggle("show", on);
+  renderQueueBar();
+}
+function renderQueueBar() {
+  const bar = document.getElementById("queue-bar");
+  if (!taskBusy && !msgQueue.length) { bar.classList.remove("show"); bar.innerHTML = ""; return; }
+  bar.classList.add("show");
+  bar.innerHTML =
+    msgQueue.map((m, i) => `<span class="q-chip" title="${esc(m.text)}"><span class="qt">⏳ ${esc(m.text.slice(0, 30))}</span><span class="qx" data-i="${i}" title="取消这条">✕</span></span>`).join("") +
+    (taskBusy ? `<span>任务运行中：Enter 发送=排队等下一轮 · ⚡ 插队=立即注入当前任务 · ◼ 停止</span>` : "");
+  bar.querySelectorAll(".qx").forEach(x => x.onclick = () => { msgQueue.splice(+x.dataset.i, 1); renderQueueBar(); });
+}
+function drainQueue() {
+  if (taskBusy || !msgQueue.length) return;
+  const m = msgQueue.shift();
+  renderQueueBar();
+  doSend(m.text, m.mode);
+}
+async function interject() {
+  const text = inputEl.value.trim();
+  if (!text || !sessionId) return;
+  const resp = await fetch("/api/chat/interject", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, message: text }),
+  }).catch(() => null);
+  const d = resp ? await resp.json().catch(() => ({})) : {};
+  if (resp && resp.ok) {
+    inputEl.value = "";
+    syncInputHl();
+  } else {
+    // 任务恰好刚结束 → 转排队立即执行
+    msgQueue.push({ text, mode: currentMode });
+    inputEl.value = "";
+    syncInputHl();
+    renderQueueBar();
+    drainQueue();
+  }
+}
+document.getElementById("interject-btn").onclick = interject;
+async function stopTask() {
+  if (!sessionId) return;
+  sendBtn.textContent = "…";
+  await fetch("/api/chat/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId }),
+  }).catch(() => {});
+}
+async function send() {
+  let text = inputEl.value.trim();
+  if (!text) return;
+  if (sceneTag) {
+    text = `【任务类型：${sceneTag.replace(/^[^一-龥A-Za-z]+\s*/, "")}】` + text;
+    setSceneTag(null);
+  }
+  inputEl.value = "";
+  syncInputHl();
+  attachChips.innerHTML = "";
+  mentionMenu.classList.remove("show");
+  if (taskBusy) {
+    // 任务运行中 → 排队，当前任务结束后按序自动执行（要立即介入用 ⚡ 插队）
+    msgQueue.push({ text, mode: currentMode });
+    renderQueueBar();
+    return;
+  }
+  await doSend(text, currentMode);
+}
+
+// regen=true 表示「重新生成」：服务端回滚最后一轮再重跑同一条消息
+async function doSend(text, mode, regen) {
+  if (taskBusy) return;
+  setSendBusy(true);
+  closeAssistView();
+
+  if (!sessionId) {
+    sessionId = "s_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+    sessions.unshift({ id: sessionId, title: text.slice(0, 24), at: Date.now(), project: activeProject });
+    saveSessions();
+    document.getElementById("session-title").textContent = text.slice(0, 24);
+    renderHistory();
+  }
+
+  const ui = createTurnUI(text, mode);
+  scrollBottom();
+
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, message: text, mode, regen: !!regen }),
+    });
+    if (!resp.ok) {
+      const d = await resp.json().catch(() => ({}));
+      ui.handleEvent({ type: "error", message: d.error || `请求失败（HTTP ${resp.status}）` });
+      if (resp.status === 401) showAuth(!!d.setup);
+    } else {
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const part of parts) {
+          if (!part.startsWith("data: ")) continue;
+          try { ui.handleEvent(JSON.parse(part.slice(6))); } catch {}
+        }
+      }
+    }
+  } catch (e) {
+    ui.handleEvent({ type: "error", message: e.message });
+  }
+
+  ui.finish();
+  setSendBusy(false);
+  inputEl.focus();
+  drainQueue(); // 运行期间排队的消息按序自动执行
+}
+sendBtn.onclick = () => (taskBusy ? stopTask() : send());
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+// ================= 弹窗（技能/专家/定时/设置中心） =================
+document.getElementById("m-close").onclick = () => mask.classList.remove("show");
+mask.addEventListener("click", (e) => { if (e.target === mask) mask.classList.remove("show"); });
+document.querySelector(".side-nav").addEventListener("click", (e) => {
+  const item = e.target.closest(".item");
+  if (item) openModal(item.dataset.modal);
+});
+
+async function openModal(kind, subTab) {
+  mask.classList.add("show");
+  modalBox.classList.toggle("wide", ["settings", "library", "experts", "account", "skills"].includes(kind));
+  if (kind === "skills") {
+    mTitle.textContent = "📦 技能库";
+    await renderSkills();
+  } else if (kind === "experts") {
+    mTitle.textContent = "👥 专家团";
+    await renderExperts();
+  } else if (kind === "account") {
+    mTitle.textContent = "👤 账号 · 用量";
+    await renderAccount();
+  } else if (kind === "sched") {
+    mTitle.textContent = "⏰ 定时任务";
+    await renderSched();
+  } else if (kind === "settings") {
+    mTitle.textContent = "⚙️ 设置";
+    renderSettings(subTab || "models");
+  } else if (kind === "library") {
+    mTitle.textContent = "📚 资料库 · 灵感";
+    await renderLibrary();
+  }
+}
+
+// ================= 快捷键引擎 =================
+// [id, 名称, 默认键, 固定?, 系统级?]；用户改绑存 config.shortcuts（只存改过的项）
+const SHORTCUT_DEFS = [
+  ["open-settings", "打开设置", "Meta+Comma"],
+  ["voice-record", "语音录制开关", "Meta+D"],
+  ["chat-search", "对话内搜索", "Meta+F"],
+  ["send", "发送消息", "Enter", true],
+  ["newline", "输入时换行", "Shift+Enter", true],
+  ["new-chat", "新建对话", "Meta+N"],
+  ["stop", "停止生成 / 关闭弹层", "Escape"],
+  ["prev-task", "上一个任务", "Meta+BracketLeft"],
+  ["next-task", "下一个任务", "Meta+BracketRight"],
+  ["toggle-sidebar", "切换左侧栏", "Meta+B"],
+  ["toggle-files", "切换右侧产物面板", "Shift+Meta+B"],
+  ["fullscreen", "进入/退出全屏", "Ctrl+Meta+F"],
+  ["toggle-window", "唤起/隐藏主窗口", "Shift+Alt+W", false, true],
+  ["open-skills", "打开技能库", "Shift+Meta+K"],
+  ["open-experts", "打开专家团", "Shift+Meta+E"],
+  ["open-library", "打开资料库", "Shift+Meta+L"],
+  ["open-sched", "打开定时任务", "Shift+Meta+T"],
+  ["open-assistant", "打开本地助理", "Shift+Meta+A"],
+];
+function canonAccel(a) {
+  const mods = [], keys = [];
+  for (const p of String(a || "").split("+").map(x => x.trim()).filter(Boolean)) {
+    const m = { meta: "Meta", cmd: "Meta", command: "Meta", ctrl: "Ctrl", control: "Ctrl", alt: "Alt", option: "Alt", shift: "Shift" }[p.toLowerCase()];
+    if (m) { if (!mods.includes(m)) mods.push(m); } else keys.push(p);
+  }
+  const order = { Ctrl: 0, Alt: 1, Shift: 2, Meta: 3 };
+  mods.sort((x, y) => order[x] - order[y]);
+  return mods.concat(keys).join("+");
+}
+function accelFromEvent(e) {
+  if (/^(Meta|Control|Alt|Shift)/.test(e.code)) return null; // 只按了修饰键
+  const parts = [];
+  if (e.ctrlKey) parts.push("Ctrl");
+  if (e.altKey) parts.push("Alt");
+  if (e.shiftKey) parts.push("Shift");
+  if (e.metaKey) parts.push("Meta");
+  parts.push(e.code.replace(/^Key/, "").replace(/^Digit/, ""));
+  return parts.join("+");
+}
+function accelDisplay(a) {
+  const KEY = { Comma: ",", Period: ".", BracketLeft: "[", BracketRight: "]", Escape: "Esc", Enter: "⏎", Space: "空格", Minus: "-", Equal: "=", Slash: "/", Backslash: "\\", Semicolon: ";", Quote: "'", Backquote: "`" };
+  const MOD = { Meta: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧" };
+  const parts = canonAccel(a).split("+");
+  // mac 习惯顺序 ⌃⌥⇧⌘
+  const mods = ["Ctrl", "Alt", "Shift", "Meta"].filter(m => parts.includes(m)).map(m => MOD[m]);
+  return mods.join("") + parts.filter(p => !MOD[p]).map(p => KEY[p] || p).join("");
+}
+let toastTimer = null;
+function toast(msg) {
+  let t = document.getElementById("wb-toast");
+  if (!t) { t = document.createElement("div"); t.id = "wb-toast"; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+}
+async function toggleAppFullscreen() {
+  const r = await fetch("/api/app/fullscreen", { method: "POST" }).then(x => x.json()).catch(() => ({ ok: false }));
+  if (!r.ok) { // Web 模式走浏览器全屏兜底
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else document.documentElement.requestFullscreen().catch(() => {});
+  }
+}
+function navTask(dir) {
+  const list = sessions.filter(s => (s.project || "默认项目") === activeProject);
+  if (!list.length) return;
+  let i = list.findIndex(s => s.id === sessionId);
+  i = i < 0 ? 0 : Math.min(list.length - 1, Math.max(0, i + dir));
+  if (list[i].id === sessionId) return;
+  const el = document.querySelector(`.hist-item[data-id="${list[i].id}"]`);
+  if (el) el.click();
+}
+const SHORTCUT_ACTIONS = {
+  "open-settings": () => openModal("settings"),
+  "voice-record": () => toast("🎤 语音录制暂未支持（复刻版）"),
+  "chat-search": () => openChatSearch(),
+  "new-chat": () => document.getElementById("new-task").click(),
+  "stop": () => {
+    const cs = document.getElementById("chat-search");
+    if (mask.classList.contains("show")) mask.classList.remove("show");
+    else if (cs && cs.style.display === "flex") closeChatSearch();
+    else if (taskBusy) stopTask();
+  },
+  "prev-task": () => navTask(-1),
+  "next-task": () => navTask(1),
+  "toggle-sidebar": () => document.body.classList.toggle("side-collapsed"),
+  "toggle-files": () => document.getElementById("files-panel").classList.toggle("show"),
+  "fullscreen": toggleAppFullscreen,
+  "toggle-window": () => {}, // 系统级快捷键由桌面版主进程注册，网页端无动作
+  "open-skills": () => openModal("skills"),
+  "open-experts": () => openModal("experts"),
+  "open-library": () => openModal("library"),
+  "open-sched": () => openModal("sched"),
+  "open-assistant": () => openAssistView(),
+};
+document.addEventListener("keydown", (e) => {
+  if (window.__scRebinding) return; // 设置页改绑捕获中，不触发动作
+  const acc = accelFromEvent(e);
+  if (!acc) return;
+  const canon = canonAccel(acc);
+  const inText = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName || "") || e.target.isContentEditable;
+  const map = (settingsCache && settingsCache.shortcuts) || {};
+  for (const [id, , def, fixed] of SHORTCUT_DEFS) {
+    if (fixed || !SHORTCUT_ACTIONS[id]) continue;
+    if (canonAccel(map[id] || def) !== canon) continue;
+    if (!/Meta|Ctrl|Alt/.test(canon) && inText && canon !== "Escape") return; // 无修饰键的组合在输入框里只放行 Esc
+    e.preventDefault();
+    SHORTCUT_ACTIONS[id]();
+    return;
+  }
+});
+
+// ================= 对话内搜索（⌘F） =================
+let csMatches = [], csIdx = -1;
+function openChatSearch() {
+  let bar = document.getElementById("chat-search");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "chat-search";
+    bar.innerHTML = `<input id="cs-input" placeholder="搜索对话内容…"><span id="cs-count" style="color:var(--wb-text-3);font-size:12px;white-space:nowrap"></span><button id="cs-prev" title="上一个">↑</button><button id="cs-next" title="下一个">↓</button><button id="cs-close" title="关闭 (Esc)">✕</button>`;
+    document.querySelector(".main").appendChild(bar);
+    bar.querySelector("#cs-input").oninput = runChatSearch;
+    bar.querySelector("#cs-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); csNav(e.shiftKey ? -1 : 1); }
+      if (e.key === "Escape") { e.stopPropagation(); closeChatSearch(); }
+    });
+    bar.querySelector("#cs-prev").onclick = () => csNav(-1);
+    bar.querySelector("#cs-next").onclick = () => csNav(1);
+    bar.querySelector("#cs-close").onclick = closeChatSearch;
+  }
+  bar.style.display = "flex";
+  bar.querySelector("#cs-input").focus();
+  bar.querySelector("#cs-input").select();
+}
+function closeChatSearch() {
+  const bar = document.getElementById("chat-search");
+  if (bar) bar.style.display = "none";
+  csMatches.forEach(m => m.classList.remove("search-hit"));
+  csMatches = [];
+  csIdx = -1;
+  inputEl.focus();
+}
+function runChatSearch() {
+  csMatches.forEach(m => m.classList.remove("search-hit"));
+  csMatches = [];
+  csIdx = -1;
+  const q = document.getElementById("cs-input").value.trim().toLowerCase();
+  const cnt = document.getElementById("cs-count");
+  if (!q) { cnt.textContent = ""; return; }
+  for (const el of chatCol.querySelectorAll(".u-msg .bubble, .a-text")) {
+    if (el.textContent.toLowerCase().includes(q)) csMatches.push(el);
+  }
+  cnt.textContent = csMatches.length ? `0/${csMatches.length}` : "无结果";
+  if (csMatches.length) csNav(1);
+}
+function csNav(dir) {
+  if (!csMatches.length) return;
+  if (csIdx >= 0) csMatches[csIdx].classList.remove("search-hit");
+  csIdx = (csIdx + dir + csMatches.length) % csMatches.length;
+  csMatches[csIdx].classList.add("search-hit");
+  csMatches[csIdx].scrollIntoView({ block: "center", behavior: "smooth" });
+  document.getElementById("cs-count").textContent = `${csIdx + 1}/${csMatches.length}`;
+}
+
+// ================= 命令审批条（安全中心「询问名单」命中时挂起等这里批准） =================
+async function pollApprovals() {
+  const list = await fetch("/api/security/approvals").then(r => (r.ok ? r.json() : [])).catch(() => []);
+  let bar = document.getElementById("approval-bar");
+  if (!Array.isArray(list) || !list.length) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "approval-bar";
+    const inner = document.querySelector(".input-inner");
+    inner.insertBefore(bar, inner.querySelector(".input-card"));
+  }
+  bar.innerHTML = list.map(a => `
+    <div class="ap-row">
+      <span style="white-space:nowrap">🛡️ ${esc(a.kind)}待审批</span>
+      <code class="ap-cmd" title="${esc(a.text)}">${esc(a.text.slice(0, 90))}</code>
+      <button class="ap-ok" data-id="${esc(a.id)}">批准执行</button>
+      <button class="ap-no" data-id="${esc(a.id)}">拒绝</button>
+    </div>`).join("");
+  bar.querySelectorAll("button").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    await fetch("/api/security/approvals/" + encodeURIComponent(b.dataset.id), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allow: b.classList.contains("ap-ok") }),
+    }).catch(() => {});
+    pollApprovals();
+  });
+}
+setInterval(pollApprovals, 3000);
+
+// ================= 技能库管理（安装/新建/编辑/删除，全部热生效） =================
+async function renderSkills() {
+  mBody.innerHTML = '<div class="ab-empty">加载中…</div>';
+  const list = await fetch("/api/skills").then(r => r.json()).catch(() => []);
+  const form = (x) => `
+    <input class="sk-name" placeholder="技能名（英文/中文均可，如 feishu-doc）" value="${esc(x?.name || "")}">
+    <input class="sk-desc" placeholder="一句话描述（AI 据此判断什么任务该用这个技能）" value="${esc(x?.description || "")}">
+    <textarea class="sk-content" rows="8" placeholder="技能正文（Markdown）：操作步骤、代码示例、注意事项…" style="font-family:var(--mono,monospace);font-size:12px">${esc(x?.content || "")}</textarea>
+    <div style="margin-top:8px"><button class="btn-brand sk-save">保存</button> <button class="sk-cancel" style="padding:6px 14px">取消</button></div>`;
+  mBody.innerHTML =
+    `<div class="card-item">
+      <div class="t">⬇️ 从 GitHub 安装</div>
+      <div class="d" style="margin-bottom:8px">支持整仓库、tree 子目录、blob 单文件、raw 直链；目录里的 skill.md / SKILL.md 会被识别为技能（子目录多个技能会全部安装）。例：https://github.com/anthropics/skills/tree/main/skills/docx</div>
+      <div style="display:flex;gap:8px">
+        <input id="sk-url" placeholder="https://github.com/用户/仓库 或 .../tree/main/某技能目录" style="flex:1">
+        <button class="btn-brand" id="sk-install" style="flex:none">安装</button>
+      </div>
+      <div id="sk-install-msg" class="d" style="margin-top:6px"></div>
+    </div>`
+    + list.map((x, i) => `
+      <div class="card-item sk-item" data-name="${esc(x.name)}">
+        <div class="t">${esc(x.name)}
+          <span style="float:right">
+            <button class="sk-view" style="padding:2px 10px;font-size:12px">查看</button>
+            <button class="sk-edit" style="padding:2px 10px;font-size:12px">编辑</button>
+            <button class="sk-del" style="padding:2px 10px;font-size:12px;color:var(--wb-err)">删除</button>
+          </span>
+        </div>
+        <div class="d">${esc(x.description || "（无描述）")}</div>
+        <pre class="sk-preview" style="display:none;margin-top:8px;max-height:300px;overflow:auto;background:var(--wb-bg-2,#f7f7f9);padding:10px;border-radius:8px;font-size:12px;white-space:pre-wrap"></pre>
+        <div class="sk-form" style="display:none;margin-top:8px"></div>
+      </div>`).join("")
+    + `<div class="card-item"><div class="t">➕ 新建技能</div><div class="sk-form">${form(null)}</div></div>`;
+  const save = async (body) => {
+    const resp = await fetch("/api/skills", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) { alert(d.error || "保存失败"); return; }
+    renderSkills();
+  };
+  const bindForm = (box, original) => {
+    box.querySelector(".sk-save").onclick = () => save({
+      name: box.querySelector(".sk-name").value.trim(),
+      description: box.querySelector(".sk-desc").value.trim(),
+      content: box.querySelector(".sk-content").value,
+      original_name: original || undefined,
+    });
+    box.querySelector(".sk-cancel").onclick = () => renderSkills();
+  };
+  bindForm(mBody.querySelector(".card-item:last-child .sk-form"), null);
+  mBody.querySelector("#sk-install").onclick = async () => {
+    const url = mBody.querySelector("#sk-url").value.trim();
+    const msg = mBody.querySelector("#sk-install-msg");
+    if (!url) return;
+    msg.style.color = "";
+    msg.textContent = "安装中…（整仓库首次下载可能要十几秒）";
+    try {
+      const resp = await fetch("/api/skills/install", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(d.error || "安装失败");
+      msg.textContent = `✅ 已安装 ${d.installed.length} 个技能：${d.installed.map(s => s.name).join("、")}（已生效，无需重启）`;
+      setTimeout(renderSkills, 1200);
+    } catch (e) {
+      msg.style.color = "var(--wb-err)";
+      msg.textContent = "❌ " + e.message;
+    }
+  };
+  mBody.querySelectorAll(".sk-item").forEach(item => {
+    const name = item.dataset.name;
+    item.querySelector(".sk-view").onclick = async () => {
+      const pre = item.querySelector(".sk-preview");
+      if (pre.style.display !== "none") { pre.style.display = "none"; return; }
+      const d = await fetch("/api/skills/" + encodeURIComponent(name)).then(r => r.json()).catch(() => null);
+      pre.textContent = d ? d.content : "加载失败";
+      pre.style.display = "";
+    };
+    item.querySelector(".sk-edit").onclick = async () => {
+      const d = await fetch("/api/skills/" + encodeURIComponent(name)).then(r => r.json()).catch(() => null);
+      if (!d) return alert("加载失败");
+      const f = item.querySelector(".sk-form");
+      f.style.display = "";
+      f.innerHTML = form(d);
+      bindForm(f, name);
+    };
+    item.querySelector(".sk-del").onclick = async () => {
+      if (!confirm(`删除技能「${name}」？（会删掉整个技能目录）`)) return;
+      await fetch("/api/skills/" + encodeURIComponent(name), { method: "DELETE" });
+      renderSkills();
+    };
+  });
+}
+
+// ================= 专家团管理（增删改热生效，无需重启） =================
+async function renderExperts() {
+  mBody.innerHTML = '<div class="ab-empty">加载中…</div>';
+  const list = await fetch("/api/experts").then(r => r.json()).catch(() => []);
+  const form = (x) => `
+    <input class="ex-name" placeholder="专家名称（如 调研专员）" value="${esc(x?.name || "")}">
+    <input class="ex-desc" placeholder="一句话说明擅长什么（协调者据此决定何时委派）" value="${esc(x?.description || "")}">
+    <textarea class="ex-sys" rows="4" placeholder="角色设定（system prompt）：它是谁、怎么干活、产出标准">${esc(x?.system || "")}</textarea>
+    <div style="margin-top:8px"><button class="btn-brand ex-save">保存</button> <button class="ex-cancel" style="padding:6px 14px">取消</button></div>`;
+  mBody.innerHTML =
+    `<div class="card-item"><div class="d">主智能体（协调者）在 <b>Craft 模式</b>下会把复杂任务拆解后自动委派给合适的专家；也可以直接在任务里点名：「把调研部分委派给调研专员」。增删改即时生效。</div></div>`
+    + list.map((x, i) => `
+      <div class="card-item ex-item" data-i="${i}">
+        <div class="t">${esc(x.name)}
+          <span style="float:right">
+            <button class="ex-edit" style="padding:2px 10px;font-size:12px">编辑</button>
+            <button class="ex-del" style="padding:2px 10px;font-size:12px;color:var(--wb-err)">删除</button>
+          </span>
+        </div>
+        <div class="d">${esc(x.description)}</div>
+        <div class="ex-form" style="display:none;margin-top:8px"></div>
+      </div>`).join("")
+    + `<div class="card-item"><div class="t">➕ 新增专家</div><div class="ex-form">${form(null)}</div></div>`;
+  const save = async (body) => {
+    const resp = await fetch("/api/experts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) { alert(d.error || "保存失败"); return; }
+    renderExperts();
+  };
+  const bindForm = (box, original) => {
+    box.querySelector(".ex-save").onclick = () => save({
+      name: box.querySelector(".ex-name").value.trim(),
+      description: box.querySelector(".ex-desc").value.trim(),
+      system: box.querySelector(".ex-sys").value.trim(),
+      original_name: original || undefined,
+    });
+    box.querySelector(".ex-cancel").onclick = () => renderExperts();
+  };
+  bindForm(mBody.querySelector(".card-item:last-child .ex-form"), null);
+  mBody.querySelectorAll(".ex-item").forEach(item => {
+    const x = list[+item.dataset.i];
+    item.querySelector(".ex-edit").onclick = () => {
+      const f = item.querySelector(".ex-form");
+      f.style.display = "";
+      f.innerHTML = form(x);
+      bindForm(f, x.name);
+    };
+    item.querySelector(".ex-del").onclick = async () => {
+      if (!confirm(`删除专家「${x.name}」？`)) return;
+      await fetch("/api/experts/" + encodeURIComponent(x.name), { method: "DELETE" });
+      renderExperts();
+    };
+  });
+}
+
+// ================= 账号 · 积分 · 用量 =================
+function renderUserChip() {
+  const row = document.getElementById("user-row"), chip = document.getElementById("user-chip");
+  if (!currentUser) { row.style.display = "none"; return; }
+  row.style.display = "flex";
+  chip.innerHTML = `<span class="ava">${esc(currentUser.username.slice(0, 1).toUpperCase())}</span>`
+    + `<span class="un">${esc(currentUser.username)}${currentUser.role === "admin" ? " · 管理员" : ""}</span>`
+    + `<span class="uc">✦ ${(+currentUser.credits).toLocaleString()}</span>`;
+  chip.onclick = (e) => { e.stopPropagation(); toggleUserMenu(); };
+}
+document.getElementById("gear-btn").onclick = () => { closeUserMenu(); openModal("settings"); };
+
+// ---------- 外观（浅色/深色/跟随系统，存本机） ----------
+const THEME_LABEL = { light: "浅色", dark: "深色", system: "跟随系统" };
+const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+function getTheme() { const t = localStorage.getItem("wb-theme"); return THEME_LABEL[t] ? t : "system"; }
+function applyTheme() {
+  const t = getTheme();
+  document.documentElement.dataset.theme = t === "dark" || (t === "system" && themeMedia.matches) ? "dark" : "light";
+}
+themeMedia.addEventListener("change", applyTheme);
+function setTheme(t) { localStorage.setItem("wb-theme", t); applyTheme(); }
+applyTheme();
+
+// ---------- 头像菜单：设置 / 外观 / 帮助与反馈 / 检查更新 / 退出登录 ----------
+const userMenu = document.getElementById("user-menu");
+function closeUserMenu() { userMenu.classList.remove("show"); }
+function toggleUserMenu() { userMenu.classList.contains("show") ? closeUserMenu() : openUserMenu(); }
+function openUserMenu() {
+  if (!currentUser) return;
+  userMenu.innerHTML = `
+    <div class="um-head" data-act="account" title="点击查看积分 · 用量明细">
+      <span class="ava" style="width:30px;height:30px;border-radius:50%;background:var(--wb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;flex:none">${esc(currentUser.username.slice(0, 1).toUpperCase())}</span>
+      <div style="min-width:0"><div class="n">${esc(currentUser.username)}${currentUser.role === "admin" ? " · 管理员" : ""}</div>
+      <div class="s">✦ ${(+currentUser.credits).toLocaleString()} 积分 · 账号与用量</div></div>
+    </div>
+    <div class="um-i" data-act="settings">⚙️ 设置</div>
+    <div class="um-i" data-act="appearance">🌗 外观 <span class="hint">${THEME_LABEL[getTheme()]} ▾</span></div>
+    <div class="um-sub" id="um-theme" style="display:none">${Object.entries(THEME_LABEL).map(([k, l]) =>
+      `<div class="um-opt" data-theme="${k}">${l}${getTheme() === k ? '<span class="ck">✓</span>' : ""}</div>`).join("")}</div>
+    <div class="um-i" data-act="help">💬 帮助与反馈</div>
+    <div class="um-i" data-act="update">🔄 检查更新</div>
+    <div class="um-i" data-act="logout" style="color:var(--wb-err)">↪ 退出登录</div>`;
+  userMenu.querySelectorAll("[data-act]").forEach(el => el.onclick = async (e) => {
+    e.stopPropagation();
+    const act = el.dataset.act;
+    if (act === "appearance") {
+      const sub = document.getElementById("um-theme");
+      sub.style.display = sub.style.display === "none" ? "block" : "none";
+      return;
+    }
+    closeUserMenu();
+    if (act === "account") openModal("account");
+    else if (act === "settings") openModal("settings");
+    else if (act === "help") openModal("settings", "about");
+    else if (act === "update") checkUpdate();
+    else if (act === "logout") { await fetch("/api/auth/logout", { method: "POST" }); location.reload(); }
+  });
+  userMenu.querySelectorAll(".um-opt").forEach(el => el.onclick = (e) => {
+    e.stopPropagation();
+    setTheme(el.dataset.theme);
+    openUserMenu(); // 重画勾选状态，菜单保持展开
+    document.getElementById("um-theme").style.display = "block";
+  });
+  userMenu.classList.add("show");
+}
+document.addEventListener("click", (e) => { if (!e.target.closest("#user-row")) closeUserMenu(); });
+
+// 代码块「复制」按钮（事件委托，覆盖所有历史与流式渲染出的代码块）
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".code-copy");
+  if (!btn) return;
+  const pre = btn.closest(".code-wrap")?.querySelector("pre");
+  if (!pre) return;
+  const text = pre.textContent || "";
+  const done = () => { btn.textContent = "已复制 ✓"; setTimeout(() => { btn.textContent = "复制"; }, 1500); };
+  if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done)); }
+  else fallbackCopy(text, done);
+  function fallbackCopy(t, cb) {
+    const ta = document.createElement("textarea");
+    ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch {}
+    document.body.removeChild(ta); cb();
+  }
+});
+
+async function checkUpdate() {
+  toast("正在检查更新…");
+  const r = await fetch("/api/app/update-check", { method: "POST" }).then(x => x.json()).catch(() => null);
+  if (!r) return toast("检查更新失败：接口无响应");
+  if (!r.ok) return toast(`当前版本 v${r.version || "?"} · ${r.reason}`);
+  toast(r.behind > 0 ? `发现新版本：本地落后 ${r.behind} 个提交，在项目目录执行 git pull 后重启即可` : `已是最新版本（v${r.version}）`);
+}
+const SRC_TXT = { web: "网页", cli: "CLI", im: "IM", schedule: "定时" };
+async function renderAccount() {
+  mBody.innerHTML = '<div class="ab-empty">加载中…</div>';
+  const d = await fetch("/api/usage").then(r => r.json()).catch(() => null);
+  if (!d) { mBody.innerHTML = '<div class="ab-empty">加载失败（未登录？）</div>'; return; }
+  currentUser = d.user; renderUserChip();
+  const maxT = Math.max(1, ...d.last7.map(x => x.tokens));
+  const isAdmin = d.user.role === "admin";
+  mBody.innerHTML = `
+    <div class="card-item">
+      <div class="t">👤 ${esc(d.user.username)}（${d.user.role === "admin" ? "管理员" : "成员"}）
+        <button id="acc-logout" style="float:right;padding:2px 10px;font-size:12px">退出登录</button>
+        <button id="acc-pass" style="float:right;padding:2px 10px;font-size:12px;margin-right:6px">改密码</button>
+      </div>
+      <div class="d">积分余额 <b style="color:var(--wb-brand);font-size:16px">✦ ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）</div>
+      ${isAdmin ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <input id="topup-user" placeholder="给谁充（留空=自己）" style="max-width:150px">
+        <input id="topup-amt" type="number" placeholder="积分数" style="max-width:110px">
+        <button class="btn-brand" id="topup-go" style="padding:6px 14px">充值</button><span class="ok-msg" id="topup-msg"></span>
+      </div>` : ""}
+    </div>
+    <div class="usage-grid">
+      <div class="usage-cell"><div class="n">${d.today.runs}</div><div class="l">今日任务 · ${d.today.tokens.toLocaleString()} tokens · ${d.today.credits} 积分</div></div>
+      <div class="usage-cell"><div class="n">${d.month.runs}</div><div class="l">本月任务 · ${d.month.tokens.toLocaleString()} tokens · ${d.month.credits} 积分</div></div>
+    </div>
+    <div class="card-item">
+      <div class="t">近 7 天消耗（tokens）</div>
+      <div class="usage-bars">${d.last7.map(x => `<div class="b" style="height:${Math.round(x.tokens / maxT * 100)}%" title="${x.day}：${x.tokens.toLocaleString()} tokens · ${x.runs} 次 · ${x.credits} 积分"><i>${x.day.slice(5)}</i></div>`).join("")}</div>
+      <div style="height:16px"></div>
+    </div>
+    <div class="card-item">
+      <div class="t">最近流水${isAdmin ? "（全员）" : ""}</div>
+      <div style="overflow-x:auto"><table class="usage-table">
+        <tr><th>时间</th><th>类型</th>${isAdmin ? "<th>用户</th>" : ""}<th>来源</th><th>tokens</th><th>积分</th><th>模型</th></tr>
+        ${d.recent.map(e => `<tr>
+          <td>${esc((e.ts || "").slice(5, 16).replace("T", " "))}</td>
+          <td>${e.kind === "topup" ? "💰 充值" : "任务"}</td>
+          ${isAdmin ? `<td>${esc(e.user)}</td>` : ""}
+          <td>${e.kind === "topup" ? `by ${esc(e.by || "")}` : esc(SRC_TXT[e.source] || e.source || "")}</td>
+          <td>${e.kind === "topup" ? "—" : ((e.prompt || 0) + (e.completion || 0)).toLocaleString()}</td>
+          <td>${e.kind === "topup" ? "+" : "-"}${e.credits}</td>
+          <td>${esc(e.model || "—")}</td>
+        </tr>`).join("") || `<tr><td colspan="7" style="color:var(--wb-text-3)">还没有用量记录</td></tr>`}
+      </table></div>
+    </div>`;
+  document.getElementById("acc-logout").onclick = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    location.reload();
+  };
+  document.getElementById("acc-pass").onclick = async () => {
+    mBody.innerHTML = `<div class="card-item"><div class="t">修改密码</div>
+      <input id="pw-old" type="password" placeholder="原密码">
+      <input id="pw-new" type="password" placeholder="新密码（至少 6 位）">
+      <div style="margin-top:8px"><button class="btn-brand" id="pw-go">确认修改</button> <button id="pw-back" style="padding:6px 14px">返回</button> <span class="ok-msg" id="pw-msg"></span></div></div>`;
+    document.getElementById("pw-back").onclick = () => renderAccount();
+    document.getElementById("pw-go").onclick = async () => {
+      const resp = await fetch("/api/auth/password", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_password: document.getElementById("pw-old").value, new_password: document.getElementById("pw-new").value }),
+      });
+      const r = await resp.json().catch(() => ({}));
+      const msg = document.getElementById("pw-msg");
+      if (resp.ok) { msg.textContent = "✅ 已修改"; setTimeout(() => renderAccount(), 800); }
+      else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "修改失败"; }
+    };
+  };
+  const topupGo = document.getElementById("topup-go");
+  if (topupGo) topupGo.onclick = async () => {
+    const resp = await fetch("/api/credits/topup", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: document.getElementById("topup-user").value.trim() || undefined, amount: +document.getElementById("topup-amt").value }),
+    });
+    const r = await resp.json().catch(() => ({}));
+    const msg = document.getElementById("topup-msg");
+    if (resp.ok) { msg.textContent = `✅ ${r.username} 余额 ${(+r.balance).toLocaleString()}`; setTimeout(() => renderAccount(), 900); }
+    else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "充值失败"; }
+  };
+}
+
+// ================= 登录 / 注册 =================
+let authMode = "login"; // login | register
+function showAuth(setup) {
+  authMode = setup ? "register" : "login";
+  applyAuthMode(setup);
+  document.getElementById("auth-mask").classList.add("show");
+  setTimeout(() => document.getElementById("auth-user").focus(), 50);
+}
+function applyAuthMode(setup) {
+  const reg = authMode === "register";
+  document.getElementById("auth-title").textContent = setup ? "创建管理员账号" : reg ? "注册" : "登录";
+  document.getElementById("auth-sub").textContent = setup
+    ? "首次使用：第一个注册的账号就是管理员（10000 积分，可给成员充值）"
+    : reg ? "新账号默认为成员（1000 积分）" : "登录后使用你自己的积分与任务历史";
+  document.getElementById("auth-go").textContent = reg ? "注册并登录" : "登录";
+  document.getElementById("auth-alt").style.display = setup ? "none" : "";
+  document.getElementById("auth-alt").innerHTML = reg
+    ? '已有账号？<a id="auth-switch">去登录</a>'
+    : '还没有账号？<a id="auth-switch">注册一个</a>';
+  document.getElementById("auth-switch")?.addEventListener("click", () => { authMode = reg ? "login" : "register"; applyAuthMode(false); });
+  document.getElementById("auth-err").textContent = "";
+}
+async function submitAuth() {
+  const username = document.getElementById("auth-user").value.trim();
+  const password = document.getElementById("auth-pass").value;
+  const errEl = document.getElementById("auth-err");
+  if (!username || !password) { errEl.textContent = "用户名和密码都要填"; return; }
+  const resp = await fetch(authMode === "register" ? "/api/auth/register" : "/api/auth/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  }).catch(() => null);
+  const d = resp ? await resp.json().catch(() => ({})) : {};
+  if (resp && resp.ok) location.reload(); // 带上 cookie 重新初始化整个界面（最省事也最不易漏）
+  else errEl.textContent = d.error || "失败了，稍后再试";
+}
+document.getElementById("auth-go").onclick = submitAuth;
+document.getElementById("auth-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
+document.getElementById("auth-user").addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("auth-pass").focus(); });
+
+async function initAuth() {
+  const st = await fetch("/api/auth/state").then(r => r.json()).catch(() => null);
+  if (!st) return; // 服务器没起来时不挡界面
+  if (!st.authed) { showAuth(st.users === 0); return; }
+  currentUser = st.user;
+  renderUserChip();
+  // 每人一份任务历史：切到带用户名的 key；首个用户继承旧的公共列表
+  SESS_KEY = "wb_sessions:" + st.user.username;
+  if (!localStorage.getItem(SESS_KEY) && localStorage.getItem("wb_sessions")) {
+    localStorage.setItem(SESS_KEY, localStorage.getItem("wb_sessions"));
+    localStorage.removeItem("wb_sessions");
+  }
+  sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
+  renderHistory();
+}
+initAuth();
+
+// ================= 本地助理（主区页面视图：通道横条 + IM 聊天流，仿官方） =================
+let assistViewOn = false;
+let assistTimer = null;
+function openAssistView() {
+  if (assistViewOn) return;
+  assistViewOn = true;
+  sessionId = null;
+  document.getElementById("session-title").textContent = "🤖 本地助理";
+  document.querySelector(".input-wrap").style.display = "none";
+  renderHistory();
+  chatCol.innerHTML = '<div class="assist-page" id="assist-page"></div>';
+  renderAssistPage();
+  if (assistTimer) clearInterval(assistTimer);
+  assistTimer = setInterval(async () => {
+    if (!assistViewOn || !document.getElementById("im-feed")) { clearInterval(assistTimer); assistTimer = null; return; }
+    renderAssistFeed(await fetch("/im/log").then(r => r.json()).catch(() => []));
+  }, 5000);
+}
+function closeAssistView() {
+  if (!assistViewOn) return;
+  assistViewOn = false;
+  if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
+  document.querySelector(".input-wrap").style.display = "";
+}
+async function renderAssistPage() {
+  const page = document.getElementById("assist-page");
+  if (!page) return;
+  const [s, log] = await Promise.all([
+    fetch("/im/status").then(r => r.json()).catch(() => null),
+    fetch("/im/log").then(r => r.json()).catch(() => []),
+  ]);
+  if (!s) { page.innerHTML = '<div class="ab-empty">状态读取失败</div>'; return; }
+  const f = s.feishu;
+  const fOk = f.configured && f.ws.state === "connected";
+  const chip = (icon, name, cls, st) =>
+    `<span class="im-chip"><span class="dot ${cls}"></span>${icon} ${name} · ${st}</span>`;
+  page.innerHTML = `
+    <div class="im-strip">
+      <b>已连接：</b>
+      ${chip("🕊️", "飞书", fOk ? "ok" : f.configured ? "err" : "", !f.configured ? "未配置" : WS_STATE_TXT[f.ws.state] || f.ws.state)}
+      ${chip("💼", "企业微信", s.wecom.configured ? "ok" : "", s.wecom.configured ? "推送已配" : "未配置")}
+      ${chip("🔗", "Webhook", "ok", "已启用")}
+      <button class="btn-brand" id="im-cfg" style="margin-left:auto;padding:3px 12px;font-size:12px">⚙️ 配置</button>
+    </div>
+    <div class="im-feed" id="im-feed"></div>
+    <div style="text-align:center;color:var(--wb-text-3);font-size:12px;margin-top:10px">在飞书私聊或群里 @机器人 发消息，任务在这台电脑上执行，结果直接回到 IM。</div>`;
+  page.querySelector("#im-cfg").onclick = () => openModal("settings", "im");
+  renderAssistFeed(log);
+}
+function renderAssistFeed(log) {
+  const feed = document.getElementById("im-feed");
+  if (!feed) return;
+  const CH_TXT = { feishu: "飞书", wecom: "企业微信", webhook: "Webhook" };
+  const n = (log || []).length;
+  if (feed._n === n) return; // 没有新消息就不重绘，避免打断用户滚动/选中
+  feed._n = n;
+  const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
+  feed.innerHTML = n
+    ? log.slice().reverse().map(m => {
+        if (m.dir === "error") return `<div class="im-b error">⚠ ${esc(m.text)}</div>`;
+        const meta = `${CH_TXT[m.channel] || m.channel} · ${m.dir === "in" ? "用户" : "助理"} · ${m.ts.slice(11, 19)}`;
+        if (m.dir === "in") {
+          return `<div class="im-row in"><div class="im-ava">🕊️</div><div><div class="m">${meta}</div><div class="im-b in">${esc(m.text)}</div></div></div>`;
+        }
+        return `<div class="im-row out"><div style="text-align:right"><div class="m">${meta}</div><div class="im-b out">${esc(m.text)}</div></div><div class="im-ava">🤖</div></div>`;
+      }).join("")
+    : '<div class="ab-empty">还没有 IM 消息。在飞书私聊或 @机器人 发条消息试试。</div>';
+  if (atBottom || feed._first === undefined) { feed.scrollTop = feed.scrollHeight; feed._first = 1; }
+}
+
+// ================= 资料库 · 灵感（跨项目共享，agent 可用 library_list/read 读取） =================
+async function renderLibrary() {
+  const data = await fetch("/api/library").then(r => r.json()).catch(() => ({ files: [], notes: [] }));
+  const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+  mBody.innerHTML = `
+    <div style="color:var(--wb-text-2);font-size:12px;margin-bottom:12px">跨项目共享的长期参考资料。执行任务时 AI 会按需查阅这里的文件和灵感笔记（library_list / library_read 工具）。</div>
+    <div class="lib-cols">
+      <div>
+        <div style="font-weight:600;margin-bottom:8px">💡 灵感笔记</div>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input id="lib-note" placeholder="随手记一条灵感/偏好，回车保存" style="flex:1">
+          <button class="btn-brand" id="lib-note-save" style="flex:none">保存</button>
+        </div>
+        <div id="lib-notes">${(data.notes || []).map(n =>
+          `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span><a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a></div></div>`).join("")
+          || '<div class="ab-empty">还没有灵感笔记</div>'}</div>
+      </div>
+      <div>
+        <div style="font-weight:600;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">📁 参考资料
+          <button class="btn-plain" id="lib-up" style="font-size:12px;padding:3px 10px">＋ 上传文件</button>
+          <input type="file" id="lib-file" multiple style="display:none">
+        </div>
+        <div id="lib-files">${(data.files || []).map(f =>
+          `<div class="lib-row"><span class="ln" title="${esc(f.name)}">${esc(f.name)}</span><span class="lm">${fmtSize(f.size)}</span>` +
+          `<a class="link" href="/api/library/file/${encodeURIComponent(f.name)}" download>下载</a>` +
+          `<a href="#" class="link danger" data-fname="${encodeURIComponent(f.name)}">删除</a></div>`).join("")
+          || '<div class="ab-empty">还没有参考资料文件</div>'}</div>
+      </div>
+    </div>`;
+  const saveNote = async () => {
+    const text = mBody.querySelector("#lib-note").value.trim();
+    if (!text) return;
+    await fetch("/api/library/note", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    renderLibrary();
+  };
+  mBody.querySelector("#lib-note-save").onclick = saveNote;
+  mBody.querySelector("#lib-note").onkeydown = (e) => { if (e.key === "Enter") saveNote(); };
+  mBody.querySelectorAll("a[data-nid]").forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    await fetch("/api/library/note/" + encodeURIComponent(a.dataset.nid), { method: "DELETE" });
+    renderLibrary();
+  });
+  mBody.querySelector("#lib-up").onclick = () => mBody.querySelector("#lib-file").click();
+  mBody.querySelector("#lib-file").onchange = async (e) => {
+    for (const file of e.target.files) {
+      const data_b64 = await new Promise((ok) => {
+        const rd = new FileReader();
+        rd.onload = () => ok(rd.result.split(",")[1]);
+        rd.readAsDataURL(file);
+      });
+      await fetch("/api/library/upload", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: file.name, data_b64 }),
+      });
+    }
+    renderLibrary();
+  };
+  mBody.querySelectorAll("a[data-fname]").forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    const name = decodeURIComponent(a.dataset.fname);
+    if (!confirm(`删除资料「${name}」？`)) return;
+    await fetch("/api/library/file/" + a.dataset.fname, { method: "DELETE" });
+    renderLibrary();
+  });
+}
+
+// ================= 定时任务（可视化，不写 cron） =================
+function buildCron() {
+  const freq = mBody.querySelector("#sf-freq").value;
+  const t = (mBody.querySelector("#sf-time").value || "09:00").split(":");
+  const m = +t[1] || 0, h = +t[0] || 9;
+  switch (freq) {
+    case "daily": return `${m} ${h} * * *`;
+    case "workday": return `${m} ${h} * * 1-5`;
+    case "weekly": return `${m} ${h} * * ${mBody.querySelector("#sf-dow").value}`;
+    case "monthly": return `${m} ${h} ${mBody.querySelector("#sf-dom").value} * *`;
+    case "hourly": return `${m} * * * *`;
+    case "half-hour": return `*/30 * * * *`;
+    case "custom": return mBody.querySelector("#sf-cron").value.trim();
+  }
+}
+function cronToHuman(cron) {
+  const m = cron.match(/^(\d+) (\d+) (\S+) \* (\S+)$/);
+  if (cron.startsWith("*/30")) return "每 30 分钟";
+  if (m) {
+    const time = `${m[2].padStart(2,"0")}:${m[1].padStart(2,"0")}`;
+    if (m[3] === "*" && m[4] === "*") return `每天 ${time}`;
+    if (m[4] === "1-5") return `工作日 ${time}`;
+    if (m[3] === "*" && /^\d$/.test(m[4])) return `每周${"日一二三四五六"[+m[4]]} ${time}`;
+    if (/^\d+$/.test(m[3])) return `每月 ${m[3]} 日 ${time}`;
+  }
+  if (/^(\d+) \* \* \* \*$/.test(cron)) return `每小时第 ${cron.split(" ")[0]} 分`;
+  return cron;
+}
+async function renderSched() {
+  const list = await fetch("/api/schedules").then(r => r.json()).catch(() => []);
+  mBody.innerHTML =
+    (list.length ? list.map(t =>
+      `<div class="card-item">
+        <div class="t">${esc(t.name)} ${t.enabled ? "" : "（已停用）"}</div>
+        <div class="d">${esc(cronToHuman(t.cron))} · ${esc(t.task.slice(0, 60))}${t.last_run ? "<br>上次执行: " + esc(t.last_run.slice(0, 16).replace("T", " ")) : ""}${t.last_result ? " · " + esc(t.last_result.slice(0, 100)) + (t.last_result.length > 100 ? "…" : "") : ""}</div>
+        <div style="margin-top:6px">
+          <a class="link" data-act="run" data-id="${t.id}" href="#">立即执行</a> ·
+          <a class="link" data-act="toggle" data-id="${t.id}" data-en="${t.enabled}" href="#">${t.enabled ? "停用" : "启用"}</a> ·
+          <a class="link danger" data-act="del" data-id="${t.id}" href="#">删除</a>
+        </div>
+      </div>`).join("") : `<div style="color:var(--wb-text-3);margin-bottom:10px">还没有定时任务，添加一个吧 👇</div>`)
+    + `<div style="border-top:1px solid var(--wb-border);padding-top:12px;margin-top:4px">
+        <input id="sf-name" placeholder="任务名（如：每日晨报）">
+        <div class="form-row">
+          <select id="sf-freq">
+            <option value="daily">每天</option>
+            <option value="workday">工作日（周一到周五）</option>
+            <option value="weekly">每周某天</option>
+            <option value="monthly">每月某日</option>
+            <option value="hourly">每小时</option>
+            <option value="half-hour">每 30 分钟</option>
+            <option value="custom">自定义 cron</option>
+          </select>
+          <select id="sf-dow" style="display:none">
+            <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
+            <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option>
+          </select>
+          <select id="sf-dom" style="display:none">${Array.from({length:28},(_,i)=>`<option value="${i+1}">${i+1} 日</option>`).join("")}</select>
+          <input id="sf-time" type="time" value="09:00">
+        </div>
+        <input id="sf-cron" placeholder="cron 表达式：分 时 日 月 周" style="display:none">
+        <textarea id="sf-task" rows="2" placeholder="要自动执行的任务描述，如：抓取今天的 AI 新闻生成晨报"></textarea>
+        <button class="btn-brand" id="sf-add">添加定时任务</button>
+      </div>`;
+  const freqEl = mBody.querySelector("#sf-freq");
+  freqEl.onchange = () => {
+    const v = freqEl.value;
+    mBody.querySelector("#sf-dow").style.display = v === "weekly" ? "" : "none";
+    mBody.querySelector("#sf-dom").style.display = v === "monthly" ? "" : "none";
+    mBody.querySelector("#sf-cron").style.display = v === "custom" ? "" : "none";
+    mBody.querySelector("#sf-time").style.display = ["hourly","half-hour","custom"].includes(v) ? "none" : "";
+  };
+  mBody.querySelector("#sf-add").onclick = async () => {
+    const name = mBody.querySelector("#sf-name").value.trim();
+    const task = mBody.querySelector("#sf-task").value.trim();
+    const cron = buildCron();
+    if (!task) return alert("请填写任务描述");
+    if (!cron) return alert("请完成时间设置");
+    const resp = await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task }) });
+    if (!resp.ok) return alert((await resp.json()).error || "添加失败");
+    renderSched();
+  };
+  mBody.querySelectorAll("a[data-act]").forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    const id = a.dataset.id;
+    if (a.dataset.act === "del") { if (!confirm("确认删除该定时任务？")) return; await fetch("/api/schedules/" + id, { method: "DELETE" }); }
+    else if (a.dataset.act === "toggle") await fetch(`/api/schedules/${id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: a.dataset.en !== "true" }) });
+    else if (a.dataset.act === "run") { a.textContent = "执行中…"; await fetch(`/api/schedules/${id}/run`, { method: "POST" }); fetch("/api/files").then(r => r.json()).then(renderFiles); }
+    renderSched();
+  });
+}
+
+// ================= 设置中心 =================
+const SETTING_CATS = [
+  ["models", "模型"],
+  ["search", "联网搜索"],
+  ["agent", "智能体设置"],
+  ["security", "安全中心"],
+  ["shortcuts", "快捷键"],
+  ["persona", "个性化"],
+  ["memory", "记忆"],
+  ["data", "数据管理"],
+  ["im", "助理设置"],
+  ["mcp", "MCP 连接器"],
+  ["about", "关于"],
+];
+async function renderSettings(active) {
+  const s = await fetch("/api/settings").then(r => r.json());
+  mBody.innerHTML = `<div class="settings-layout">
+    <div class="settings-nav">${SETTING_CATS.map(([k, label]) =>
+      `<div class="cat ${k === active ? "active" : ""}" data-cat="${k}">${label}</div>`).join("")}</div>
+    <div class="settings-pane" id="settings-pane"></div>
+  </div>`;
+  mBody.querySelector(".settings-nav").addEventListener("click", (e) => {
+    const cat = e.target.closest(".cat");
+    if (cat) renderSettings(cat.dataset.cat);
+  });
+  const pane = mBody.querySelector("#settings-pane");
+  if (active === "models") renderModelsPane(pane, s);
+  else if (active === "search") renderSearchPane(pane, s);
+  else if (active === "agent") renderAgentPane(pane, s);
+  else if (active === "persona") renderPersonaPane(pane, s);
+  else if (active === "memory") renderMemoryPane(pane);
+  else if (active === "data") renderDataPane(pane, s);
+  else if (active === "security") renderSecurityPane(pane, s);
+  else if (active === "shortcuts") renderShortcutsPane(pane, s);
+  else if (active === "im") renderImPane(pane, s);
+  else if (active === "mcp") renderMcpPane(pane);
+  else renderAboutPane(pane);
+}
+async function saveSettings(patch, msgEl) {
+  const resp = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+  const data = await resp.json().catch(() => ({}));
+  if (msgEl) msgEl.textContent = resp.ok ? "✓ 已保存并生效" : (data.error || "保存失败");
+  if (resp.ok) refreshSettingsCache();
+  return resp.ok;
+}
+function renderModelsPane(pane, s) {
+  const md = { image: {}, video: {}, ...(s.media || {}) };
+  pane.innerHTML = `
+    <div style="color:var(--wb-text-2);margin-bottom:10px">选择当前使用的模型，或添加自定义模型（任何 OpenAI 兼容接口都支持）。也可以在输入框右下角快速切换。</div>
+    <div id="model-list">${s.models.map((m, i) => `
+      <div class="card-item" style="display:flex;align-items:center;gap:10px">
+        <input type="radio" name="active" style="width:auto;margin:0" ${m.name === s.active_model ? "checked" : ""} data-i="${i}">
+        <div style="flex:1;min-width:0">
+          <div class="t">${esc(m.name)} <span style="font-weight:400;color:var(--wb-text-3);font-size:11px">${esc(m.model)}${m.api_key ? "" : " · ⚠ 未填 Key"}</span></div>
+          <div class="d" style="font-size:11px">${esc(m.base_url || "Anthropic 官方")}</div>
+        </div>
+        <a href="#" class="link" data-edit="${i}">编辑</a>
+        <a href="#" class="link danger" data-del="${i}">删除</a>
+      </div>`).join("")}
+    </div>
+    <div id="model-form" style="display:none;border-top:1px solid var(--wb-border);padding-top:10px">
+      <input id="mf-name" placeholder="名称（如：我的vLLM）">
+      <div class="form-row">
+        <select id="mf-provider"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select>
+        <input id="mf-model" placeholder="模型名（如 deepseek-chat）">
+      </div>
+      <input id="mf-base" placeholder="Base URL（如 https://api.deepseek.com/v1）">
+      <input id="mf-key" type="password" placeholder="API Key">
+      <button class="btn-brand" id="mf-save">保存模型</button>
+      <button class="btn-plain" id="mf-cancel">取消</button>
+    </div>
+    <button class="btn-plain" id="mf-new" style="margin-top:6px">＋ 添加自定义模型</button>
+    <div style="border-top:1px solid var(--wb-border);margin-top:14px;padding-top:12px">
+      <div class="card-item">
+        <div class="t">🎨 图像模型</div>
+        <div class="d" style="margin-bottom:6px">给 agent 的 generate_image 工具用（对话里说「画一张…」即可，成图存进工作空间）。支持 OpenAI 兼容 /images/generations（含 new-api 等聚合网关）；接口地址含 dashscope 时自动走通义 qwen-image 原生协议。</div>
+        <input id="mi-base" placeholder="接口地址（如 https://dashscope.aliyuncs.com/api/v1 或 https://api.openai.com/v1）" value="${esc(md.image.base_url || "")}">
+        <div class="form-row">
+          <input id="mi-key" type="password" placeholder="API Key" value="${esc(md.image.api_key || "")}">
+          <input id="mi-model" placeholder="模型名（如 qwen-image / gpt-image-1）" value="${esc(md.image.model || "")}">
+        </div>
+      </div>
+      <div class="card-item">
+        <div class="t">🎬 视频模型</div>
+        <div class="d" style="margin-bottom:6px">给 generate_video 工具用，生成通常 1~5 分钟。支持 DashScope 万相（地址含 dashscope，模型如 wan2.2-t2v-plus）与火山方舟 Seedance（地址含 ark/volces）两种协议。</div>
+        <input id="mv-base" placeholder="接口地址（如 https://dashscope.aliyuncs.com/api/v1）" value="${esc(md.video.base_url || "")}">
+        <div class="form-row">
+          <input id="mv-key" type="password" placeholder="API Key" value="${esc(md.video.api_key || "")}">
+          <input id="mv-model" placeholder="模型名（如 wan2.2-t2v-plus / doubao-seedance-1-0-pro-250528）" value="${esc(md.video.model || "")}">
+        </div>
+      </div>
+      <button class="btn-brand" id="media-save">保存图像 / 视频模型</button>
+    </div>
+    <span class="ok-msg" id="models-msg"></span>`;
+  const msg = pane.querySelector("#models-msg");
+  let editIndex = -1;
+  const form = pane.querySelector("#model-form");
+  const showForm = (m) => {
+    form.style.display = "";
+    pane.querySelector("#mf-name").value = m?.name || "";
+    pane.querySelector("#mf-provider").value = m?.provider || "openai";
+    pane.querySelector("#mf-model").value = m?.model || "";
+    pane.querySelector("#mf-base").value = m?.base_url || "";
+    pane.querySelector("#mf-key").value = m?.api_key || "";
+  };
+  pane.querySelector("#mf-new").onclick = () => { editIndex = -1; showForm(null); };
+  pane.querySelector("#mf-cancel").onclick = () => (form.style.display = "none");
+  pane.querySelectorAll("a[data-edit]").forEach(a => a.onclick = (e) => { e.preventDefault(); editIndex = +a.dataset.edit; showForm(s.models[editIndex]); });
+  pane.querySelectorAll("a[data-del]").forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    if (!confirm("确认删除该模型？")) return;
+    s.models.splice(+a.dataset.del, 1);
+    await saveSettings({ models: s.models }, msg);
+    renderSettings("models");
+  });
+  pane.querySelectorAll("input[name=active]").forEach(r => r.onchange = async () => {
+    await saveSettings({ active_model: s.models[+r.dataset.i].name }, msg);
+    renderSettings("models");
+  });
+  pane.querySelector("#media-save").onclick = async () => {
+    const v = (id) => pane.querySelector("#" + id).value.trim();
+    await saveSettings({
+      media: {
+        image: { base_url: v("mi-base"), api_key: v("mi-key"), model: v("mi-model") },
+        video: { base_url: v("mv-base"), api_key: v("mv-key"), model: v("mv-model") },
+      },
+    }, msg);
+  };
+  pane.querySelector("#mf-save").onclick = async () => {
+    const entry = {
+      name: pane.querySelector("#mf-name").value.trim(),
+      provider: pane.querySelector("#mf-provider").value,
+      model: pane.querySelector("#mf-model").value.trim(),
+      base_url: pane.querySelector("#mf-base").value.trim(),
+      api_key: pane.querySelector("#mf-key").value.trim(),
+    };
+    if (!entry.name || !entry.model) return alert("名称和模型名必填");
+    if (editIndex >= 0) s.models[editIndex] = entry; else s.models.push(entry);
+    await saveSettings({ models: s.models }, msg);
+    renderSettings("models");
+  };
+}
+// 联网搜索：provider 可切（Jina / Tavily / Brave），各自独立 key；没 key 自动退免费 DuckDuckGo
+function renderSearchPane(pane, s) {
+  const sc = s.search || {};
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">搜索服务商</div>
+      <div class="d" style="margin-bottom:6px">web_search 工具用哪家搜索 API。所选服务商没填 Key 或调用失败时，自动回退到免费 DuckDuckGo。</div>
+      <select id="sr-provider">
+        <option value="jina">Jina（s.jina.ai）</option>
+        <option value="tavily">Tavily</option>
+        <option value="brave">Brave Search</option>
+      </select>
+      <div class="t" style="margin-top:10px">Jina API Key</div>
+      <input id="sr-jina" type="password" placeholder="jina_..." value="${esc(sc.jina_key || "")}">
+      <div class="t" style="margin-top:8px">Tavily API Key</div>
+      <input id="sr-tavily" type="password" placeholder="tvly-..." value="${esc(sc.tavily_key || "")}">
+      <div class="t" style="margin-top:8px">Brave API Key</div>
+      <input id="sr-brave" type="password" placeholder="BSA..." value="${esc(sc.brave_key || "")}">
+    </div>
+    <button class="btn-brand" id="sr-save">保存</button>
+    <button class="btn-plain" id="sr-test">测试搜索</button>
+    <span class="ok-msg" id="sr-msg"></span>`;
+  pane.querySelector("#sr-provider").value = sc.provider || "jina";
+  const msg = pane.querySelector("#sr-msg");
+  const collect = () => ({
+    provider: pane.querySelector("#sr-provider").value,
+    jina_key: pane.querySelector("#sr-jina").value.trim(),
+    tavily_key: pane.querySelector("#sr-tavily").value.trim(),
+    brave_key: pane.querySelector("#sr-brave").value.trim(),
+  });
+  pane.querySelector("#sr-save").onclick = () => saveSettings({ search: collect() }, msg);
+  pane.querySelector("#sr-test").onclick = async (e) => {
+    e.target.disabled = true;
+    msg.textContent = "保存并测试中…";
+    const ok = await saveSettings({ search: collect() });
+    if (ok) {
+      const r = await fetch("/api/search/test").then(x => x.json()).catch(() => ({ error: "请求失败" }));
+      msg.textContent = r.ok ? `✓ ${r.provider} 可用：${r.sample}` : `✗ ${r.error || "测试失败"}`;
+    } else msg.textContent = "保存失败";
+    e.target.disabled = false;
+  };
+}
+function renderAgentPane(pane, s) {
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">执行权限模式</div>
+      <div class="d">输入框下方「权限」下拉可随时切换：Ask 只问答 · Plan 只出计划 · Craft 完整执行交付</div>
+    </div>
+    <div class="card-item">
+      <div class="t">最大执行步数</div>
+      <div class="d" style="margin-bottom:6px">单个任务 Agent 循环上限，防止失控（默认 25）</div>
+      <input id="ag-steps" type="number" min="1" max="100" value="${s.agent.max_steps}">
+      <div class="t" style="margin-top:8px">单工具超时（秒）</div>
+      <input id="ag-timeout" type="number" min="5" value="${Math.round(s.agent.tool_timeout_ms / 1000)}">
+      <div class="t" style="margin-top:8px">任务最大运行时间（分钟）</div>
+      <div class="d" style="margin-bottom:6px">整个任务（含专家子代理）的墙上时间预算，超时强制收尾（默认 10）</div>
+      <input id="ag-runtime" type="number" min="1" value="${Math.round((s.agent.max_runtime_ms || 600000) / 60000)}">
+      <div class="t" style="margin-top:8px">单次模型调用超时（秒）</div>
+      <input id="ag-llm-timeout" type="number" min="30" value="${Math.round((s.agent.llm_timeout_ms || 300000) / 1000)}">
+    </div>
+    <button class="btn-brand" id="ag-save">保存</button><span class="ok-msg" id="ag-msg"></span>`;
+  pane.querySelector("#ag-save").onclick = () =>
+    saveSettings({ agent: {
+      max_steps: +pane.querySelector("#ag-steps").value,
+      tool_timeout_ms: +pane.querySelector("#ag-timeout").value * 1000,
+      max_runtime_ms: +pane.querySelector("#ag-runtime").value * 60000,
+      llm_timeout_ms: +pane.querySelector("#ag-llm-timeout").value * 1000,
+    } }, pane.querySelector("#ag-msg"));
+}
+function renderPersonaPane(pane, s) {
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">个性化偏好</div>
+      <div class="d" style="margin-bottom:8px">希望 WorkBuddy 遵循的风格与偏好，会注入每次任务。例如：回复简洁；PPT 用深色科技风；周报署名"张三"。</div>
+      <textarea id="ps-text" rows="8" placeholder="例如：所有文档默认用简体中文；数据分析结论放最前面…">${esc(s.persona)}</textarea>
+    </div>
+    <button class="btn-brand" id="ps-save">保存</button><span class="ok-msg" id="ps-msg"></span>`;
+  pane.querySelector("#ps-save").onclick = () => saveSettings({ persona: pane.querySelector("#ps-text").value }, pane.querySelector("#ps-msg"));
+}
+async function renderMemoryPane(pane) {
+  const m = await fetch("/api/memory").then(r => r.json());
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">长期记忆</div>
+      <div class="d" style="margin-bottom:8px">每次执行任务都会带上这里的内容。适合放：团队/业务背景、常用数据口径、固定模板要求。</div>
+      <textarea id="mem-text" rows="10" placeholder="例如：我们公司是做跨境电商的，主营美妆品类；周报收件人是运营部…">${esc(m.content)}</textarea>
+    </div>
+    <button class="btn-brand" id="mem-save">保存记忆</button><span class="ok-msg" id="mem-msg"></span>`;
+  pane.querySelector("#mem-save").onclick = async () => {
+    const resp = await fetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: pane.querySelector("#mem-text").value }) });
+    pane.querySelector("#mem-msg").textContent = resp.ok ? "✓ 已保存" : "保存失败";
+  };
+}
+function renderDataPane(pane, s) {
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">工作空间</div>
+      <div class="d" style="margin-bottom:8px">Agent 读写文件与成果输出的文件夹（输入框下方也可快速切换）。</div>
+      <div class="form-row">
+        <input id="ws-dir" value="${esc(s.workspace_dir)}" placeholder="D:\\我的工作区">
+        <button class="btn-plain" id="ws-pick" style="flex:0 0 auto">📂 选择文件夹</button>
+      </div>
+      <div style="margin-top:4px">
+        <button class="btn-brand" id="ws-save">保存</button>
+        <button class="btn-plain" id="ws-open">打开当前文件夹</button>
+        <span class="ok-msg" id="ws-msg"></span>
+      </div>
+    </div>
+    <div class="card-item">
+      <div class="t">数据说明</div>
+      <div class="d">会话记录持久化在 data/sessions/ · 定时任务在 schedules.json · 配置在 config.json（含 API Key，默认不入 git）· 记忆在 data/memory.md</div>
+    </div>`;
+  pane.querySelector("#ws-pick").onclick = async () => {
+    const r = await fetch("/api/pick-folder", { method: "POST" }).then(r => r.json()).catch(() => ({}));
+    if (r.path) pane.querySelector("#ws-dir").value = r.path;
+    else if (r.error) alert(r.error);
+  };
+  pane.querySelector("#ws-save").onclick = () => saveSettings({ workspace_dir: pane.querySelector("#ws-dir").value.trim() }, pane.querySelector("#ws-msg"))
+    .then(ok => { if (ok) fetch("/api/files").then(r => r.json()).then(renderFiles); });
+  pane.querySelector("#ws-open").onclick = () => fetch("/api/open-workspace", { method: "POST" });
+}
+function renderImPane(pane, s) {
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">飞书机器人（长连接，无需公网地址）</div>
+      <div class="d" style="margin-bottom:8px">飞书开放平台创建自建应用：① 添加「机器人」能力 ② 权限开通 im:message 与 im:message:send_as_bot ③ 事件订阅方式选「<b>使用长连接接收事件</b>」并添加 im.message.receive_v1 ④ 发布一个版本。填好凭证保存后自动建立长连接，在飞书私聊或 @机器人 即可远程下任务。</div>
+      <input id="fs-appid" placeholder="App ID" value="${esc(s.im.feishu.app_id)}">
+      <input id="fs-secret" type="password" placeholder="App Secret" value="${esc(s.im.feishu.app_secret)}">
+      <input id="fs-vtoken" placeholder="Verification Token（可选，仅旧回调模式用）" value="${esc(s.im.feishu.verification_token)}">
+      <div style="margin-top:8px"><button class="btn-brand" id="fs-test">测试连接</button><span class="ok-msg" id="fs-test-r"></span></div>
+    </div>
+    <div class="card-item">
+      <div class="t">飞书云文档凭证（可选）</div>
+      <div class="d" style="margin-bottom:8px">AI 用 feishu_doc_create 工具直接生成飞书云文档。默认用上面机器人的凭证；若那个应用没开「云文档」权限，可在这里另填一组开通了 <b>docx:document</b>（建议再加 drive:drive）权限的应用凭证。</div>
+      <input id="fs-docid" placeholder="云文档 App ID（留空=用机器人凭证）" value="${esc(s.im.feishu.doc_app_id || "")}">
+      <input id="fs-docsecret" type="password" placeholder="云文档 App Secret" value="${esc(s.im.feishu.doc_app_secret || "")}">
+    </div>
+    <div class="card-item">
+      <div class="t">企业微信群推送</div>
+      <div class="d" style="margin-bottom:8px">群里添加"群机器人"，webhook 地址粘贴到这里，任务与定时任务结果自动推送到群。</div>
+      <input id="wc-hook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." value="${esc(s.im.wecom_bot_webhook)}">
+    </div>
+    <div class="card-item">
+      <div class="t">钉钉机器人推送</div>
+      <div class="d" style="margin-bottom:8px">钉钉群 → 群设置 → 机器人 → 添加「自定义机器人」，安全设置选<b>加签</b>，把 webhook 与加签密钥填到这里，任务与定时任务结果自动推送到群。</div>
+      <input id="dt-hook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." value="${esc(s.im.dingtalk_webhook || "")}">
+      <input id="dt-secret" type="password" placeholder="加签密钥 SEC...（安全设置未选加签则留空）" value="${esc(s.im.dingtalk_secret || "")}">
+    </div>
+    <div class="card-item">
+      <div class="t">通用 Webhook 密钥</div>
+      <div class="d" style="margin-bottom:8px">外部工具（微信框架/钉钉 outgoing/快捷指令）调用 POST /im/task 时的校验密钥。</div>
+      <input id="wh-secret" placeholder="自定义一个密钥" value="${esc(s.im.webhook_secret)}">
+    </div>
+    <div class="card-item">
+      <div class="t">会话管理</div>
+      <div class="d" style="margin-bottom:8px">IM 里长时间没对话后，下一条消息自动开启新会话（旧上下文不再带入，节省 token、避免话题串味）。设为 0 关闭。</div>
+      <div style="display:flex;align-items:center;gap:8px;font-size:13px">超过 <input id="im-idle" type="number" min="0" max="720" style="width:80px;margin:0" value="${esc(String(s.im.session_idle_hours ?? 0))}"> 小时未对话，自动开启新会话</div>
+    </div>
+    <div class="card-item">
+      <div class="t">其他助理通道</div>
+      <div class="d">以下官方通道依赖微信/QQ 的企业接入资质，复刻版<b>暂未内置</b>（不做假连接）：微信小程序 · 微信助理 · 微信客服号 · 企微助理 · QQ 机器人。已有第三方微信/QQ 框架的话，用上面的「通用 Webhook」即可桥接同样效果。</div>
+    </div>
+    <button class="btn-brand" id="im-save">保存</button><span class="ok-msg" id="im-msg"></span>`;
+  pane.querySelector("#im-save").onclick = () =>
+    saveSettings({
+      im: {
+        feishu: {
+          app_id: pane.querySelector("#fs-appid").value.trim(),
+          app_secret: pane.querySelector("#fs-secret").value.trim(),
+          verification_token: pane.querySelector("#fs-vtoken").value.trim(),
+          doc_app_id: pane.querySelector("#fs-docid").value.trim(),
+          doc_app_secret: pane.querySelector("#fs-docsecret").value.trim(),
+        },
+        wecom_bot_webhook: pane.querySelector("#wc-hook").value.trim(),
+        dingtalk_webhook: pane.querySelector("#dt-hook").value.trim(),
+        dingtalk_secret: pane.querySelector("#dt-secret").value.trim(),
+        session_idle_hours: +pane.querySelector("#im-idle").value || 0,
+        webhook_secret: pane.querySelector("#wh-secret").value.trim(),
+      },
+    }, pane.querySelector("#im-msg")).then(ok => { if (ok) setTimeout(refreshImStatus, 1500); });
+  pane.querySelector("#fs-test").onclick = async () => {
+    const r = pane.querySelector("#fs-test-r");
+    r.style.color = "";
+    r.textContent = "测试中…";
+    try {
+      const resp = await fetch("/im/feishu/test", { method: "POST" });
+      const d = await resp.json();
+      if (d.ok) {
+        r.textContent = `✅ 凭证有效${d.bot_name ? `，机器人「${d.bot_name}」` : ""}，长连接：${WS_STATE_TXT[d.ws.state] || d.ws.state}`;
+      } else {
+        r.style.color = "var(--wb-err)";
+        r.textContent = `❌ ${d.error || "测试失败"}`;
+      }
+    } catch (e) {
+      r.style.color = "var(--wb-err)";
+      r.textContent = `❌ ${e.message}`;
+    }
+    refreshImStatus();
+  };
+}
+
+// ================= 安全中心面板 =================
+function renderSecurityPane(pane, s) {
+  const sec = s.security || {};
+  const joinLines = (a) => esc((a || []).join("\n"));
+  const chk = (id, on, label, desc) => `
+    <label style="display:flex;align-items:flex-start;gap:8px;margin:7px 0;cursor:pointer;font-size:13px">
+      <input type="checkbox" id="${id}" ${on ? "checked" : ""} style="width:auto;margin:3px 0 0">
+      <span><b>${label}</b><span style="color:var(--wb-text-3)"> — ${desc}</span></span>
+    </label>`;
+  const listCol = (title, id, val, rows) => `
+    <div style="flex:1;min-width:0"><div style="font-size:12px;color:var(--wb-text-2);margin:6px 0 4px">${title}</div>
+    <textarea id="${id}" rows="${rows || 4}" style="width:100%;font-size:12px;font-family:Consolas,monospace;resize:vertical">${val}</textarea></div>`;
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">🛡️ 数据安全</div>
+      ${chk("sec-gateway", sec.gateway !== false, "安全网关", "总开关：命令审批与文件/网络黑白名单的硬拦截由它启用，关闭后只记审计不拦截")}
+      ${chk("sec-delprot", sec.delete_protect !== false, "删除保护", "rm 类删除命令必须在界面上批准后才执行")}
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:13px;margin:7px 0">
+        批量删除审批阈值 <input id="sec-batch" type="number" min="1" style="width:70px;margin:0" value="${esc(String(sec.batch_delete_threshold ?? 50))}"> 个文件 ·
+        审批等待上限 <input id="sec-aptimeout" type="number" min="10" style="width:70px;margin:0" value="${esc(String(sec.approval_timeout_s ?? 120))}"> 秒（超时按拒绝）
+      </div>
+      <div style="font-size:12px;color:var(--wb-text-3)">传输加密：前后端走本机回环地址通信不经公网；对外仅按你配置的通道（飞书/企微/钉钉官方 HTTPS API）传输。</div>
+    </div>
+    <div class="card-item">
+      <div class="t">📁 沙箱安全 · 文件</div>
+      <div class="d">工作目录内默认可读写；黑名单永远拦截；工作目录之外只有白名单目录可访问。每行一条，支持 ~ 与 &lt;app&gt;（应用目录）。</div>
+      <div style="display:flex;gap:10px">
+        ${listCol("白名单（workspace 外可访问）", "sec-fwl", joinLines(sec.file_whitelist))}
+        ${listCol("黑名单（永远拦截）", "sec-fbl", joinLines(sec.file_blacklist))}
+      </div>
+    </div>
+    <div class="card-item">
+      <div class="t">⌨️ 沙箱安全 · 命令</div>
+      <div class="d">run_shell 的命令按前缀逐段核对：放行名单直接执行；询问名单挂起，输入框上方弹出审批条等你批准。每行一个命令前缀。</div>
+      <div style="display:flex;gap:10px">
+        ${listCol("放行名单（直接执行）", "sec-cal", joinLines(sec.cmd_allow))}
+        ${listCol("询问名单（需批准）", "sec-cak", joinLines(sec.cmd_ask))}
+      </div>
+    </div>
+    <div class="card-item">
+      <div class="t">🌐 沙箱安全 · 网络</div>
+      <div class="d">fetch_url 抓取的域名规则（自动含子域名）。黑名单拦截；白名单非空时只允许名单内域名。每行一个域名。</div>
+      <div style="display:flex;gap:10px">
+        ${listCol("白名单（非空=只允许这些）", "sec-uwl", joinLines(sec.url_whitelist), 3)}
+        ${listCol("黑名单（拦截）", "sec-ubl", joinLines(sec.url_blacklist), 3)}
+      </div>
+    </div>
+    <div class="card-item">
+      <div class="t">⚙️ 内置运行时</div>
+      ${chk("sec-node", sec.runtime_node !== false, "Node.js（run_node）", "关闭后 AI 不能执行 Node 代码")}
+      ${chk("sec-py", sec.runtime_python !== false, "Python（run_shell 里的 python/pip）", "关闭后 python/pip 命令直接拒绝")}
+    </div>
+    <div class="card-item">
+      <div class="t">🖥️ 系统授权（macOS）</div>
+      <div id="sec-sys" style="font-size:13px;color:var(--wb-text-3)">检测中…</div>
+    </div>
+    <div class="card-item">
+      <div class="t">📋 审计中心 <span style="float:right;font-weight:400;font-size:12px"><a href="#" class="link" id="audit-all">查看全部</a> · <a class="link" href="/api/security/audit/export" download>导出日志</a> · <a href="#" class="link danger" id="audit-clear">清空记录</a></span></div>
+      <div id="audit-list" style="max-height:260px;overflow:auto;font-size:12px;margin-top:6px"></div>
+    </div>
+    <button class="btn-brand" id="sec-save">保存</button><span class="ok-msg" id="sec-msg"></span>`;
+
+  const linesOf = (sel) => pane.querySelector(sel).value.split(/\n/).map(x => x.trim()).filter(Boolean);
+  pane.querySelector("#sec-save").onclick = () => saveSettings({
+    security: {
+      gateway: pane.querySelector("#sec-gateway").checked,
+      delete_protect: pane.querySelector("#sec-delprot").checked,
+      batch_delete_threshold: +pane.querySelector("#sec-batch").value || 50,
+      approval_timeout_s: +pane.querySelector("#sec-aptimeout").value || 120,
+      file_whitelist: linesOf("#sec-fwl"),
+      file_blacklist: linesOf("#sec-fbl"),
+      cmd_allow: linesOf("#sec-cal"),
+      cmd_ask: linesOf("#sec-cak"),
+      url_whitelist: linesOf("#sec-uwl"),
+      url_blacklist: linesOf("#sec-ubl"),
+      runtime_node: pane.querySelector("#sec-node").checked,
+      runtime_python: pane.querySelector("#sec-py").checked,
+    },
+  }, pane.querySelector("#sec-msg"));
+
+  // ---- 审计 ----
+  let auditLimit = 15;
+  async function renderAudit() {
+    const list = await fetch("/api/security/audit?limit=" + auditLimit).then(r => r.json()).catch(() => []);
+    const box = pane.querySelector("#audit-list");
+    if (!box) return;
+    box.innerHTML = (Array.isArray(list) && list.length)
+      ? list.map(e => `<div style="padding:4px 0;border-bottom:1px solid var(--wb-border)"><span style="color:var(--wb-text-3)">${esc(String(e.ts || "").replace("T", " ").slice(5, 19))}</span> <b>[${esc(e.type)}]</b> ${esc(e.text)} <span style="color:${/拦截|拒绝/.test(e.action) ? "var(--wb-err)" : "var(--wb-ok)"}">${esc(e.action)}</span></div>`).join("")
+      : '<div style="color:var(--wb-text-3);padding:6px 0">还没有记录。AI 执行命令 / 联网访问时会自动记录在这里。</div>';
+  }
+  renderAudit();
+  pane.querySelector("#audit-all").onclick = (e) => { e.preventDefault(); auditLimit = 1000; renderAudit(); };
+  pane.querySelector("#audit-clear").onclick = async (e) => {
+    e.preventDefault();
+    if (!confirm("清空全部审计记录？")) return;
+    await fetch("/api/security/audit/clear", { method: "POST" });
+    renderAudit();
+  };
+
+  // ---- 系统授权 ----
+  let autoState = null; // 自动化探测会触发系统弹窗，只在用户点「检测/授权」时查
+  async function renderSys() {
+    const el = pane.querySelector("#sec-sys");
+    if (!el) return;
+    const d = await fetch("/api/security/system").then(r => r.json()).catch(() => null);
+    if (!d) { el.textContent = "读取失败"; return; }
+    const txt = {
+      granted: '<span style="color:var(--wb-ok)">✅ 已授权</span>',
+      denied: '<span style="color:var(--wb-err)">未授权</span>',
+      unknown: '<span style="color:var(--wb-text-3)">无法检测</span>',
+      unchecked: '<span style="color:var(--wb-text-3)">未检测</span>',
+    };
+    const row = (name, key, st, extra) =>
+      `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--wb-border)"><span style="flex:1;color:var(--wb-text)"><b>${name}</b></span>${txt[st] || esc(String(st))}${extra || ""}<a href="#" class="link" data-pane="${key}">去授权</a></div>`;
+    el.innerHTML =
+      row("完全磁盘访问权限", "fulldisk", d.fulldisk) +
+      row("辅助功能", "accessibility", d.accessibility) +
+      row("自动化（Apple Events）", "automation", autoState || d.automation, ' <a href="#" class="link" id="sec-autochk">检测/授权</a>') +
+      (d.desktop ? "" : '<div style="font-size:12px;color:var(--wb-text-3);margin-top:6px">当前是 Web 模式：授权对象是启动本服务的终端；「辅助功能」状态仅桌面版（npm run app）能查询。</div>');
+    el.querySelectorAll("[data-pane]").forEach(a => a.onclick = (ev) => {
+      ev.preventDefault();
+      fetch("/api/security/system/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pane: a.dataset.pane }) });
+    });
+    const ac = el.querySelector("#sec-autochk");
+    if (ac) ac.onclick = async (ev) => {
+      ev.preventDefault();
+      ac.textContent = "检测中…（可能弹出系统授权框）";
+      const r = await fetch("/api/security/system/check-automation", { method: "POST" }).then(x => x.json()).catch(() => ({}));
+      autoState = r.automation || "unknown";
+      renderSys();
+    };
+  }
+  renderSys();
+}
+
+// ================= 快捷键面板 =================
+function renderShortcutsPane(pane, s) {
+  const cur = { ...(s.shortcuts || {}) };
+  pane.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <input id="sc-search" placeholder="搜索快捷键" style="flex:1;margin:0">
+      <button class="btn-brand" id="sc-reset" style="white-space:nowrap">全部恢复默认</button>
+    </div>
+    <div class="d" style="margin-bottom:4px">共 ${SHORTCUT_DEFS.length} 条 · 点击右侧按键，然后直接按下新组合键即可改绑（Esc 取消）。「唤起/隐藏主窗口」是系统级快捷键，仅桌面版生效。</div>
+    <div id="sc-list"></div><span class="ok-msg" id="sc-msg" style="display:block;margin-top:8px"></span>`;
+  const draw = (filter) => {
+    pane.querySelector("#sc-list").innerHTML = SHORTCUT_DEFS
+      .filter(([id, label]) => !filter || label.includes(filter) || id.includes(filter.toLowerCase()))
+      .map(([id, label, def, fixed, isGlobal]) => {
+        const acc = cur[id] || def;
+        const changed = cur[id] && canonAccel(cur[id]) !== canonAccel(def);
+        return `<div style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--wb-border);font-size:13px">
+          <span style="flex:1">${esc(label)}${isGlobal ? ' <span style="font-size:11px;color:var(--wb-text-3)">系统级</span>' : ""}${changed ? ` <a href="#" class="link" style="font-size:11px" data-restore="${id}">恢复默认</a>` : ""}</span>
+          ${fixed
+            ? `<span style="color:var(--wb-text-3);font-size:11px">固定</span><kbd class="sc-kbd">${esc(accelDisplay(acc))}</kbd>`
+            : `<kbd class="sc-kbd sc-edit" data-id="${id}" title="点击后按下新组合键">${esc(accelDisplay(acc))}</kbd>`}
+        </div>`;
+      }).join("") || '<div style="color:var(--wb-text-3);padding:10px 4px;font-size:13px">没有匹配的快捷键</div>';
+    bindRows();
+  };
+  const save = () => saveSettings({ shortcuts: cur }, pane.querySelector("#sc-msg"))
+    .then(() => draw(pane.querySelector("#sc-search").value.trim()));
+  function bindRows() {
+    pane.querySelectorAll("[data-restore]").forEach(a => a.onclick = (e) => { e.preventDefault(); delete cur[a.dataset.restore]; save(); });
+    pane.querySelectorAll(".sc-edit").forEach(k => k.onclick = () => {
+      if (window.__scRebinding) return;
+      window.__scRebinding = true;
+      k.textContent = "按下新组合键…";
+      k.classList.add("armed");
+      const cleanup = () => { document.removeEventListener("keydown", onKey, true); window.__scRebinding = false; };
+      const onKey = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) { cleanup(); draw(pane.querySelector("#sc-search").value.trim()); return; }
+        const acc = accelFromEvent(e);
+        if (!acc) return; // 只按了修饰键，继续等主键
+        const canon = canonAccel(acc);
+        const clash = SHORTCUT_DEFS.find(([id2, , def2]) => id2 !== k.dataset.id && canonAccel(cur[id2] || def2) === canon);
+        if (clash) { k.textContent = `与「${clash[1]}」冲突，换一个`; return; }
+        cur[k.dataset.id] = canon;
+        cleanup();
+        save();
+      };
+      document.addEventListener("keydown", onKey, true);
+    });
+  }
+  pane.querySelector("#sc-search").oninput = (e) => draw(e.target.value.trim());
+  pane.querySelector("#sc-reset").onclick = () => {
+    if (!confirm("全部恢复默认快捷键？")) return;
+    for (const key of Object.keys(cur)) delete cur[key];
+    save();
+  };
+  draw("");
+}
+
+async function renderMcpPane(pane) {
+  pane.innerHTML = '<div class="ab-empty">加载中…</div>';
+  const data = await fetch("/api/mcp").then(r => r.json()).catch(() => ({ servers: [], total_tools: 0 }));
+  const dot = ok => `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(${ok ? "--wb-ok" : "--wb-err"});margin-right:6px"></span>`;
+  const rows = data.servers.map((sv, i) => `
+    <div class="card-item">
+      <div class="t">${dot(sv.connected)}${esc(sv.name)}<button class="btn-brand mcp-del" data-i="${i}" style="float:right;padding:2px 10px;font-size:12px">删除</button></div>
+      <div class="d">${esc(sv.command)} ${esc((sv.args || []).join(" "))}</div>
+      <div class="d">${sv.connected
+        ? `已连接 · ${sv.tools.length} 个工具：${esc(sv.tools.map(t => t.name).join("、"))}`
+        : "未连接（命令启动失败或工具握手超时，详见应用日志）"}</div>
+    </div>`).join("");
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">MCP 连接器</div>
+      <div class="d">通过 Model Context Protocol 给智能体接入外部工具（stdio 方式）。当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入智能体，任务中可直接调用。增删后自动重连、热生效。</div>
+    </div>
+    ${rows || ""}
+    <div class="card-item">
+      <div class="t">添加服务器</div>
+      <input id="mcp-name" placeholder="名称，如 filesystem">
+      <input id="mcp-cmd" placeholder="命令，如 npx">
+      <input id="mcp-args" placeholder="参数（空格分隔），如 -y @modelcontextprotocol/server-filesystem /Users/你的用户名/Documents">
+      <div style="margin-top:8px"><button class="btn-brand" id="mcp-add">添加并连接</button><span class="ok-msg" id="mcp-msg"></span></div>
+    </div>`;
+  const keep = sv => ({ name: sv.name, command: sv.command, args: sv.args, env: sv.env });
+  const save = async (servers) => {
+    const msg = pane.querySelector("#mcp-msg");
+    if (msg) msg.textContent = "连接中…（npx 首次要下载包，最长约 1 分钟）";
+    const resp = await fetch("/api/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ servers }) });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) alert(d.error || "保存失败");
+    renderMcpPane(pane);
+  };
+  pane.querySelectorAll(".mcp-del").forEach(b => b.onclick = () => save(data.servers.filter((_, i) => i !== +b.dataset.i).map(keep)));
+  pane.querySelector("#mcp-add").onclick = () => {
+    const name = pane.querySelector("#mcp-name").value.trim();
+    const cmd = pane.querySelector("#mcp-cmd").value.trim();
+    const args = pane.querySelector("#mcp-args").value.trim().split(/\s+/).filter(Boolean);
+    if (!name || !cmd) { alert("名称和命令必填"); return; }
+    save(data.servers.map(keep).concat([{ name, command: cmd, args, env: {} }]));
+  };
+}
+function renderAboutPane(pane) {
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">WorkBuddy 复刻版</div>
+      <div class="d">开源复刻的 AI Agent 办公工作台。功能：Agent 自主执行 · Ask/Plan/Craft 模式 · 技能系统 · MCP 连接器 · 专家团多智能体 · 定时自动化 · 飞书/企业微信/Webhook 远程指挥 · 多模型可插拔 · 会话持久化与回放 · 文件上传 · 工作空间切换。</div>
+    </div>
+    <div class="card-item">
+      <div class="t">运行方式</div>
+      <div class="d">桌面版：npm run app（或桌面快捷方式）· Web 版：npm start 后浏览器打开 localhost:3800 · 测试：npm test</div>
+    </div>
+    <div class="card-item">
+      <div class="t">💬 帮助与反馈</div>
+      <div class="d">快速上手：输入框里 <b>@</b> 引用工作空间文件、<b>/</b> 调用技能；侧栏「技能库 / 专家团 / 定时任务」都支持增删改热生效；手机远程用 设置→助理设置 绑定飞书或企业微信。<br>
+      遇到问题：先看 设置→安全中心→审计中心 是不是被安全闸拦了；LLM 报 503 是上游服务繁忙（已内置自动重试，连续失败可到 设置→模型 换渠道）。<br>
+      反馈：本地部署版没有云端客服，问题与建议直接发给维护它的 AI 助理（就是让我改），改完重启即生效。</div>
+    </div>`;
+}
+</script>
+</body>
+</html>
