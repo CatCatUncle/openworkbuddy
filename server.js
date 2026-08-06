@@ -157,6 +157,8 @@ app.get("/api/settings", (_req, res) => {
       qq: (config.im || {}).qq || { app_id: "", app_secret: "" },
       wecom_app: (config.im || {}).wecom_app || { corp_id: "", agent_id: "", secret: "", token: "", aes_key: "" },
       wechat_mp: (config.im || {}).wechat_mp || { app_id: "", app_secret: "", token: "", aes_key: "" },
+      // iLink 的 bot_token 是扫码换来的长期凭证，不回给前端（前端只需要知道连没连上，状态走 /im/status）
+      wechat_ilink: { bot_id: ((config.im || {}).wechat_ilink || {}).ilink_bot_id || "" },
       wecom_bot_webhook: (config.im || {}).wecom_bot_webhook || "",
       dingtalk_webhook: (config.im || {}).dingtalk_webhook || "",
       dingtalk_secret: (config.im || {}).dingtalk_secret || "",
@@ -907,7 +909,7 @@ async function main() {
   });
 
   // IM 远程指挥路由（飞书/QQ 长连接 · 企业微信与公众号回调 · 通用 webhook）
-  imBridge = createImRouter({ config, runtime: accountedRuntime(runtime, "im"), sessions, outputFiles });
+  imBridge = createImRouter({ config, runtime: accountedRuntime(runtime, "im"), sessions, outputFiles, saveConfig });
   app.use(imBridge.router);
   imBridge
     .startFeishuWs()
@@ -917,6 +919,10 @@ async function main() {
     .startQQ()
     .then((s) => { if (s.configured) console.log(`QQ 长连接: ${s.state}`); })
     .catch((e) => console.warn("[QQ] 长连接启动失败:", e.message));
+  imBridge
+    .startIlink()
+    .then((s) => { if (s.configured) console.log(`微信 iLink 长轮询: ${s.state}`); })
+    .catch((e) => console.warn("[微信iLink] 长轮询启动失败:", e.message));
 
   const port = config.server.port || 3800;
   const server = app.listen(port, () => {

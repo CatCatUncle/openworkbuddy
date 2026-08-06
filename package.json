@@ -15,7 +15,8 @@
     "docx": "^9.0.0",
     "exceljs": "^4.4.0",
     "express": "^4.21.0",
-    "pptxgenjs": "^3.12.0"
+    "pptxgenjs": "^3.12.0",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "electron": "^43.2.0"
