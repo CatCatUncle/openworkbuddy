@@ -214,7 +214,8 @@ function usageSummary(user) {
 }
 
 // ---------- Express 路由与守卫 ----------
-const PUBLIC_IM = new Set(["/im/task", "/im/feishu/events"]); // 外部回调有自己的密钥校验，不走登录
+// 外部回调有自己的签名/密钥校验，不走登录（微信侧还有 AES 解密这道闸）
+const PUBLIC_IM = new Set(["/im/task", "/im/feishu/events", "/im/wecom/events", "/im/mp/events"]);
 
 /** 登录守卫：/api/*（除 /api/auth/*）与 UI 用的 /im/status 等需要已登录，其余放行 */
 function authGuard(req, res, next) {

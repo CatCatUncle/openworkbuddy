@@ -23,11 +23,16 @@
 
 const express = require("express");
 const notify = require("./notify");
+const { createQQConnection } = require("./im-qq");
+const { createWecomApp, createWechatMp } = require("./im-wechat");
 
 function createImRouter({ config, runtime, sessions, outputFiles }) {
   const router = express.Router();
   const imCfg = () => config.im || {};
   const fsCfg = () => (config.im || {}).feishu || {};
+  const qqCfg = () => (config.im || {}).qq || {};
+  const wecomCfg = () => (config.im || {}).wecom_app || {};
+  const mpCfg = () => (config.im || {}).wechat_mp || {};
 
   // ---------- 会话管理：超过 N 小时未对话自动开新会话（节省 token，官方同款） ----------
 
@@ -109,7 +114,6 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
       console.warn(`[飞书] 卡片发送失败(code ${r.code}: ${r.msg})，降级纯文本`);
       await feishuSend(token, chatId, "text", { text });
     }
-    logIm("feishu", "out", text, { chat: chatId });
   }
 
   // ---------- 飞书消息处理（长连接与事件回调共用） ----------
@@ -123,6 +127,45 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
       if (taskQueues.get(key) === tail) taskQueues.delete(key);
     });
     return tail;
+  }
+
+  const CH_NAME = { feishu: "飞书", qq: "QQ", wecom_app: "企业微信", wechat_mp: "公众号", webhook: "Webhook" };
+
+  /**
+   * 各 IM 通道共用的入站处理：同会话串行排队 → 跑任务 → 回结果 → 转推其他机器人。
+   * @param {object} p
+   * @param {string} p.channel     通道标识（用于日志）
+   * @param {string} p.sessionKey  会话键（同一 key 共享上下文并串行）
+   * @param {string} p.text        用户消息
+   * @param {(out:string)=>Promise<void>} p.reply  回复函数
+   * @param {object} [p.logExtra]  日志附加字段
+   */
+  function runInbound({ channel, sessionKey, text, reply, logExtra = {} }) {
+    logIm(channel, "in", text, logExtra);
+    maybeResetIdleSession(sessionKey, channel);
+    return enqueueTask(sessionKey, async () => {
+      try {
+        if (!sessions.has(sessionKey)) sessions.set(sessionKey, []);
+        const history = sessions.get(sessionKey);
+        history.push({ role: "user", content: text });
+
+        const { finalText } = await runtime.runTask({ history });
+        const rootFiles = outputFiles().filter((f) => !f.name.includes("/")); // 只报根目录的成果，不刷用户素材
+        let out = finalText || "任务已执行完成。";
+        if (rootFiles.length) {
+          out += `\n\n📁 成果文件（在 WorkBuddy 工作台可下载）：\n` + rootFiles.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
+        }
+        await reply(out);
+        logIm(channel, "out", out, logExtra);
+        await pushBots(`【WorkBuddy·${CH_NAME[channel] || channel}任务完成】\n任务：${text.slice(0, 80)}\n${out.slice(0, 500)}`);
+      } catch (e) {
+        console.error(`[${CH_NAME[channel] || channel}] 任务执行出错:`, e.message);
+        logIm(channel, "error", `任务执行出错: ${e.message}`, logExtra);
+        try {
+          await reply(`❌ 任务执行出错：${String(e.message).slice(0, 300)}`);
+        } catch {}
+      }
+    });
   }
 
   const handledMsgs = new Set(); // message_id 去重（飞书会重试推送）
@@ -141,32 +184,13 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
     if (!text) return;
 
     const chatId = msg.chat_id;
-    logIm("feishu", "in", text, { chat: chatId });
-    const sessionKey = `feishu_${chatId}`;
-    maybeResetIdleSession(sessionKey, "feishu");
     // 不发「收到任务/已排队」之类的确认（用户明确要求直接回结果）；排队靠 enqueueTask 自然串行
-
-    await enqueueTask(sessionKey, async () => {
-      try {
-        if (!sessions.has(sessionKey)) sessions.set(sessionKey, []);
-        const history = sessions.get(sessionKey);
-        history.push({ role: "user", content: text });
-
-        const { finalText } = await runtime.runTask({ history });
-        const rootFiles = outputFiles().filter((f) => !f.name.includes("/")); // 只报根目录的成果，不刷用户素材
-        let reply = finalText || "任务已执行完成。";
-        if (rootFiles.length) {
-          reply += `\n\n📁 成果文件（在 WorkBuddy 工作台可下载）：\n` + rootFiles.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
-        }
-        await feishuReply(chatId, reply.slice(0, 3500));
-        await pushBots(`【WorkBuddy·飞书任务完成】\n任务：${text.slice(0, 80)}\n${reply.slice(0, 500)}`);
-      } catch (e) {
-        console.error("[飞书] 任务执行出错:", e.message);
-        logIm("feishu", "error", `任务执行出错: ${e.message}`);
-        try {
-          await feishuReply(chatId, `❌ 任务执行出错：${String(e.message).slice(0, 300)}`);
-        } catch {}
-      }
+    await runInbound({
+      channel: "feishu",
+      sessionKey: `feishu_${chatId}`,
+      text,
+      logExtra: { chat: chatId },
+      reply: (out) => feishuReply(chatId, out.slice(0, 3500)),
     });
   }
 
@@ -218,6 +242,128 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
     }
   }
 
+  // ---------- QQ 官方机器人（长连接，无需公网地址） ----------
+
+  const qq = createQQConnection({
+    getConfig: qqCfg,
+    log: (level, text) => {
+      if (level === "error") logIm("qq", "error", text);
+      console[level === "error" ? "error" : "log"](`[QQ] ${text}`);
+    },
+    onMessage: async ({ chatType, openid, text, senderName, chatName, reply }) => {
+      await runInbound({
+        channel: "qq",
+        sessionKey: `qq_${chatType}_${openid}`,
+        text,
+        logExtra: { chat: chatName || senderName },
+        reply,
+      });
+    },
+  });
+
+  async function startQQ(force = false) {
+    return qq.start(force);
+  }
+
+  router.post("/im/qq/test", async (_req, res) => {
+    try {
+      await qq.getToken(true); // 先验凭证，错的直接报出来而不是进重连循环
+      const st = await qq.start(true);
+      res.json({ ok: true, qq: st });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // ---------- 微信：企业微信自建应用 + 公众号（腾讯回调制，需公网地址） ----------
+
+  const wecom = createWecomApp({ getConfig: wecomCfg, log: (l, t) => console.log(`[企业微信] ${t}`) });
+  const mp = createWechatMp({ getConfig: mpCfg, log: (l, t) => console.log(`[公众号] ${t}`) });
+  const wxSeen = new Set(); // MsgId 去重（腾讯回调会重试 3 次）
+  const rawXml = express.text({ type: "*/*", limit: "1mb" });
+
+  function wxDedupe(msgId) {
+    if (!msgId) return false;
+    if (wxSeen.has(msgId)) return true;
+    wxSeen.add(msgId);
+    if (wxSeen.size > 2000) wxSeen.clear();
+    return false;
+  }
+
+  // 企业微信：GET 用于后台保存回调地址时的 URL 验证，POST 收消息
+  router.get("/im/wecom/events", (req, res) => {
+    try {
+      res.type("text/plain").send(wecom.verifyUrl(req.query));
+    } catch (e) {
+      console.warn("[企业微信] URL 验证失败:", e.message);
+      res.status(400).send(e.message);
+    }
+  });
+
+  router.post("/im/wecom/events", rawXml, (req, res) => {
+    let msg;
+    try {
+      msg = wecom.parseCallback(req.query, req.body);
+    } catch (e) {
+      console.warn("[企业微信] 回调解析失败:", e.message);
+      return res.status(400).send("");
+    }
+    res.send(""); // 腾讯要求 5 秒内应答，先回空串再异步跑，避免被判超时重推
+    if (msg.msgType !== "text" || !msg.text.trim() || wxDedupe(msg.msgId)) return;
+    runInbound({
+      channel: "wecom_app",
+      sessionKey: `wecom_${msg.fromUser}`,
+      text: msg.text.trim(),
+      logExtra: { chat: msg.fromUser },
+      reply: (out) => wecom.push(msg.fromUser, out),
+    }).catch((e) => console.error("[企业微信] 任务出错:", e.message));
+  });
+
+  // 公众号：GET 验证服务器配置，POST 收消息
+  router.get("/im/mp/events", (req, res) => {
+    try {
+      res.type("text/plain").send(mp.verifyUrl(req.query));
+    } catch (e) {
+      console.warn("[公众号] URL 验证失败:", e.message);
+      res.status(400).send(e.message);
+    }
+  });
+
+  router.post("/im/mp/events", rawXml, (req, res) => {
+    let msg;
+    try {
+      msg = mp.parseCallback(req.query, req.body);
+    } catch (e) {
+      console.warn("[公众号] 回调解析失败:", e.message);
+      return res.status(400).send("");
+    }
+    res.send("success"); // 必须立刻应答，否则微信重推 3 次并给用户显示「该公众号暂时无法提供服务」
+    if (msg.msgType !== "text" || !msg.text.trim() || wxDedupe(msg.msgId)) return;
+    runInbound({
+      channel: "wechat_mp",
+      sessionKey: `mp_${msg.fromUser}`,
+      text: msg.text.trim(),
+      logExtra: { chat: msg.fromUser },
+      reply: (out) => mp.push(msg.fromUser, out),
+    }).catch((e) => console.error("[公众号] 任务出错:", e.message));
+  });
+
+  // 凭证连通性自测：只换 access_token，不发任何消息
+  router.post("/im/wechat/test", async (req, res) => {
+    const which = (req.body && req.body.which) === "mp" ? "mp" : "wecom";
+    const url =
+      which === "mp"
+        ? `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${encodeURIComponent(mpCfg().app_id || "")}&secret=${encodeURIComponent(mpCfg().app_secret || "")}`
+        : `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${encodeURIComponent(wecomCfg().corp_id || "")}&corpsecret=${encodeURIComponent(wecomCfg().secret || "")}`;
+    try {
+      const d = await fetch(url, { signal: AbortSignal.timeout(15000) }).then((r) => r.json());
+      if (d.errcode) throw new Error(`${d.errmsg}（${d.errcode}）`);
+      res.json({ ok: true, expires_in: d.expires_in });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
   // ---------- 飞书事件回调（旧模式，有公网地址时可用） ----------
 
   router.post("/im/feishu/events", async (req, res) => {
@@ -244,6 +390,9 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
     const f = fsCfg();
     res.json({
       feishu: { configured: !!(f.app_id && f.app_secret), ws: wsStatus() },
+      qq: qq.status(),
+      wecom_app: wecom.status(),
+      wechat_mp: mp.status(),
       wecom: { configured: !!imCfg().wecom_bot_webhook },
       dingtalk: { configured: !!imCfg().dingtalk_webhook },
       webhook: { configured: true, secret_set: !!imCfg().webhook_secret },
@@ -305,7 +454,7 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
     }
   });
 
-  return { router, startFeishuWs };
+  return { router, startFeishuWs, startQQ };
 }
 
 module.exports = { createImRouter };

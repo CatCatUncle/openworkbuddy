@@ -154,6 +154,9 @@ app.get("/api/settings", (_req, res) => {
     },
     im: {
       feishu: (config.im || {}).feishu || { app_id: "", app_secret: "", verification_token: "" },
+      qq: (config.im || {}).qq || { app_id: "", app_secret: "" },
+      wecom_app: (config.im || {}).wecom_app || { corp_id: "", agent_id: "", secret: "", token: "", aes_key: "" },
+      wechat_mp: (config.im || {}).wechat_mp || { app_id: "", app_secret: "", token: "", aes_key: "" },
       wecom_bot_webhook: (config.im || {}).wecom_bot_webhook || "",
       dingtalk_webhook: (config.im || {}).dingtalk_webhook || "",
       dingtalk_secret: (config.im || {}).dingtalk_secret || "",
@@ -210,6 +213,9 @@ app.post("/api/settings", (req, res) => {
     config.im = config.im || {};
     if (b.im) {
       if (b.im.feishu) Object.assign((config.im.feishu = config.im.feishu || {}), pick(b.im.feishu, ["app_id", "app_secret", "verification_token", "doc_app_id", "doc_app_secret"]));
+      if (b.im.qq) Object.assign((config.im.qq = config.im.qq || {}), pick(b.im.qq, ["app_id", "app_secret"]));
+      if (b.im.wecom_app) Object.assign((config.im.wecom_app = config.im.wecom_app || {}), pick(b.im.wecom_app, ["corp_id", "agent_id", "secret", "token", "aes_key"]));
+      if (b.im.wechat_mp) Object.assign((config.im.wechat_mp = config.im.wechat_mp || {}), pick(b.im.wechat_mp, ["app_id", "app_secret", "token", "aes_key"]));
       if (b.im.wecom_bot_webhook !== undefined) config.im.wecom_bot_webhook = b.im.wecom_bot_webhook;
       if (b.im.dingtalk_webhook !== undefined) config.im.dingtalk_webhook = String(b.im.dingtalk_webhook).trim();
       if (b.im.dingtalk_secret !== undefined) config.im.dingtalk_secret = String(b.im.dingtalk_secret).trim();
@@ -250,6 +256,9 @@ app.post("/api/settings", (req, res) => {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
     if (b.im && b.im.feishu && imBridge) {
       imBridge.startFeishuWs(true).catch((e) => console.warn("[飞书] 长连接重启失败:", e.message)); // 飞书配置变更后重建长连接
+    }
+    if (b.im && b.im.qq && imBridge) {
+      imBridge.startQQ(true).catch((e) => console.warn("[QQ] 长连接重启失败:", e.message));
     }
     res.json({ ok: true, provider: llm.provider, model: llm.model });
   } catch (e) {
@@ -897,13 +906,17 @@ async function main() {
       notify.pushBots(config, `【WorkBuddy·定时任务】${item.name}\n${(text || "").slice(0, 800)}`),
   });
 
-  // IM 远程指挥路由（飞书长连接+事件回调 / 企业微信推送 / 通用 webhook）
+  // IM 远程指挥路由（飞书/QQ 长连接 · 企业微信与公众号回调 · 通用 webhook）
   imBridge = createImRouter({ config, runtime: accountedRuntime(runtime, "im"), sessions, outputFiles });
   app.use(imBridge.router);
   imBridge
     .startFeishuWs()
     .then((s) => { if (s.state !== "off") console.log(`飞书长连接: ${s.state}`); })
     .catch((e) => console.warn("[飞书] 长连接启动失败:", e.message));
+  imBridge
+    .startQQ()
+    .then((s) => { if (s.configured) console.log(`QQ 长连接: ${s.state}`); })
+    .catch((e) => console.warn("[QQ] 长连接启动失败:", e.message));
 
   const port = config.server.port || 3800;
   const server = app.listen(port, () => {

@@ -1055,9 +1055,22 @@ async function refreshImStatus() {
       : f.ws.state === "connected" ? ["ok", "已连接"]
       : f.ws.state === "failed" ? ["err", "连接失败"]
       : ["", WS_STATE_TXT[f.ws.state] || f.ws.state];
+    const q = s.qq || { configured: false, state: "off" };
+    const qs = !q.configured ? ["", "未配置"]
+      : q.state === "connected" ? ["ok", "已连接"]
+      : q.state === "failed" ? ["err", "连接失败"]
+      : ["", WS_STATE_TXT[q.state] || q.state];
+    // 微信两条只能靠腾讯回调，本地探不了活：只报配置齐不齐，不假装"已连接"
+    const wxSt = (c) => !c.configured ? ["", "未配置"]
+      : !c.callback_ready ? ["err", "缺回调配置"]
+      : ["ok", "等腾讯回调"];
+    const wa = wxSt(s.wecom_app || {}), mp = wxSt(s.wechat_mp || {});
     const chs = [
       { icon: "🕊️", name: "飞书", dot: fs[0], st: fs[1] },
-      { icon: "💼", name: "企业微信", dot: s.wecom.configured ? "ok" : "", st: s.wecom.configured ? "已配置推送" : "未配置" },
+      { icon: "🐧", name: "QQ", dot: qs[0], st: qs[1] },
+      { icon: "🏢", name: "企微应用", dot: wa[0], st: wa[1] },
+      { icon: "🟢", name: "公众号", dot: mp[0], st: mp[1] },
+      { icon: "💼", name: "企微群推送", dot: s.wecom.configured ? "ok" : "", st: s.wecom.configured ? "已配置推送" : "未配置" },
       { icon: "🔗", name: "Webhook", dot: "ok", st: s.webhook.secret_set ? "已启用" : "已启用·无密钥" },
     ];
     const box = document.getElementById("ab-channels");
@@ -2124,25 +2137,33 @@ async function renderAssistPage() {
   if (!s) { page.innerHTML = '<div class="ab-empty">状态读取失败</div>'; return; }
   const f = s.feishu;
   const fOk = f.configured && f.ws.state === "connected";
+  const q = s.qq || { configured: false, state: "off" };
+  const qOk = q.configured && q.state === "connected";
+  // 微信侧靠腾讯回调，本地探不了活，只报配置齐不齐
+  const wxChip = (c = {}) => !c.configured ? ["", "未配置"] : !c.callback_ready ? ["err", "缺回调配置"] : ["ok", "等腾讯回调"];
   const chip = (icon, name, cls, st) =>
     `<span class="im-chip"><span class="dot ${cls}"></span>${icon} ${name} · ${st}</span>`;
   page.innerHTML = `
     <div class="im-strip">
       <b>已连接：</b>
       ${chip("🕊️", "飞书", fOk ? "ok" : f.configured ? "err" : "", !f.configured ? "未配置" : WS_STATE_TXT[f.ws.state] || f.ws.state)}
-      ${chip("💼", "企业微信", s.wecom.configured ? "ok" : "", s.wecom.configured ? "推送已配" : "未配置")}
+      ${chip("🐧", "QQ", qOk ? "ok" : q.configured ? "err" : "", !q.configured ? "未配置" : WS_STATE_TXT[q.state] || q.state)}
+      ${chip("🏢", "企微应用", wxChip(s.wecom_app)[0], wxChip(s.wecom_app)[1])}
+      ${chip("🟢", "公众号", wxChip(s.wechat_mp)[0], wxChip(s.wechat_mp)[1])}
+      ${chip("💼", "企微群推送", s.wecom.configured ? "ok" : "", s.wecom.configured ? "推送已配" : "未配置")}
       ${chip("🔗", "Webhook", "ok", "已启用")}
       <button class="btn-brand" id="im-cfg" style="margin-left:auto;padding:3px 12px;font-size:12px">⚙️ 配置</button>
     </div>
     <div class="im-feed" id="im-feed"></div>
-    <div style="text-align:center;color:var(--wb-text-3);font-size:12px;margin-top:10px">在飞书私聊或群里 @机器人 发消息，任务在这台电脑上执行，结果直接回到 IM。</div>`;
+    <div style="text-align:center;color:var(--wb-text-3);font-size:12px;margin-top:10px">在飞书/QQ 私聊或群里 @机器人 发消息，任务在这台电脑上执行，结果直接回到 IM。微信两条需要公网 HTTPS 回调地址才能收消息。</div>`;
   page.querySelector("#im-cfg").onclick = () => openModal("settings", "im");
   renderAssistFeed(log);
 }
 function renderAssistFeed(log) {
   const feed = document.getElementById("im-feed");
   if (!feed) return;
-  const CH_TXT = { feishu: "飞书", wecom: "企业微信", webhook: "Webhook" };
+  const CH_TXT = { feishu: "飞书", qq: "QQ", wecom_app: "企业微信", wechat_mp: "公众号", wecom: "企业微信", webhook: "Webhook" };
+  const CH_ICON = { feishu: "🕊️", qq: "🐧", wecom_app: "🏢", wechat_mp: "🟢" };
   const n = (log || []).length;
   if (feed._n === n) return; // 没有新消息就不重绘，避免打断用户滚动/选中
   feed._n = n;
@@ -2152,7 +2173,7 @@ function renderAssistFeed(log) {
         if (m.dir === "error") return `<div class="im-b error">⚠ ${esc(m.text)}</div>`;
         const meta = `${CH_TXT[m.channel] || m.channel} · ${m.dir === "in" ? "用户" : "助理"} · ${m.ts.slice(11, 19)}`;
         if (m.dir === "in") {
-          return `<div class="im-row in"><div class="im-ava">🕊️</div><div><div class="m">${meta}</div><div class="im-b in">${esc(m.text)}</div></div></div>`;
+          return `<div class="im-row in"><div class="im-ava">${CH_ICON[m.channel] || "🔗"}</div><div><div class="m">${meta}</div><div class="im-b in">${esc(m.text)}</div></div></div>`;
         }
         return `<div class="im-row out"><div style="text-align:right"><div class="m">${meta}</div><div class="im-b out">${esc(m.text)}</div></div><div class="im-ava">🤖</div></div>`;
       }).join("")
@@ -2629,8 +2650,34 @@ function renderImPane(pane, s) {
       <input id="fs-docsecret" type="password" placeholder="云文档 App Secret" value="${esc(s.im.feishu.doc_app_secret || "")}">
     </div>
     <div class="card-item">
+      <div class="t">QQ 官方机器人（长连接，无需公网地址）</div>
+      <div class="d" style="margin-bottom:8px">QQ 开放平台 <b>q.qq.com</b> 创建「机器人」：① 开发设置里拿 AppID / AppSecret ② 功能配置 → 消息列表里开启<b>私聊消息</b>和<b>群聊 @机器人 消息</b> ③ 沙箱环境只对白名单群/好友生效，正式使用需提交审核发布。填好保存后自动建立长连接，私聊机器人或群里 @它即可下任务。</div>
+      <input id="qq-appid" placeholder="AppID" value="${esc(s.im.qq.app_id)}">
+      <input id="qq-secret" type="password" placeholder="AppSecret" value="${esc(s.im.qq.app_secret)}">
+      <div style="margin-top:8px"><button class="btn-brand" id="qq-test">测试连接</button><span class="ok-msg" id="qq-test-r"></span></div>
+    </div>
+    <div class="card-item">
+      <div class="t">企业微信自建应用（双向对话，需公网地址）</div>
+      <div class="d" style="margin-bottom:8px">微信侧没有长连接模式，只能腾讯回调你：需要一个公网 HTTPS 地址指向本机（内网穿透/反向代理都行），回调路径填 <code>https://你的域名/im/wecom/events</code>。<br>企业微信管理后台 → 应用管理 → 自建应用：拿 AgentId 与 Secret，「我的企业」拿 CorpID；「接收消息 → 设置 API 接收」里随机生成 Token 与 EncodingAESKey 回填这里，再点保存让腾讯验证地址。结果通过应用消息主动推送，agent 跑几分钟也不怕超时。</div>
+      <input id="wca-corp" placeholder="CorpID（我的企业 → 企业信息）" value="${esc(s.im.wecom_app.corp_id)}">
+      <input id="wca-agent" placeholder="AgentId（自建应用页，纯数字）" value="${esc(s.im.wecom_app.agent_id)}">
+      <input id="wca-secret" type="password" placeholder="应用 Secret" value="${esc(s.im.wecom_app.secret)}">
+      <input id="wca-token" placeholder="Token（接收消息设置里生成）" value="${esc(s.im.wecom_app.token)}">
+      <input id="wca-aes" type="password" placeholder="EncodingAESKey（43 位）" value="${esc(s.im.wecom_app.aes_key)}">
+      <div style="margin-top:8px"><button class="btn-brand" id="wca-test">测试凭证</button><span class="ok-msg" id="wca-test-r"></span></div>
+    </div>
+    <div class="card-item">
+      <div class="t">微信公众号（消息落在微信里，需公网地址 + 认证号）</div>
+      <div class="d" style="margin-bottom:8px">公众平台 → 开发 → 基本配置：拿 AppID / AppSecret，服务器配置 URL 填 <code>https://你的域名/im/mp/events</code>，消息加解密方式选<b>安全模式</b>，Token 与 EncodingAESKey 回填这里。<br>⚠️ agent 执行常超过 5 秒，来不及走被动回复，结果走「客服消息」异步推送——该接口<b>需要已认证的服务号</b>，未认证订阅号会返回 48001，这里会如实报错不会假装成功。</div>
+      <input id="mp-appid" placeholder="AppID" value="${esc(s.im.wechat_mp.app_id)}">
+      <input id="mp-secret" type="password" placeholder="AppSecret" value="${esc(s.im.wechat_mp.app_secret)}">
+      <input id="mp-token" placeholder="Token（服务器配置里自定义）" value="${esc(s.im.wechat_mp.token)}">
+      <input id="mp-aes" type="password" placeholder="EncodingAESKey（43 位，安全模式必填）" value="${esc(s.im.wechat_mp.aes_key)}">
+      <div style="margin-top:8px"><button class="btn-brand" id="mp-test">测试凭证</button><span class="ok-msg" id="mp-test-r"></span></div>
+    </div>
+    <div class="card-item">
       <div class="t">企业微信群推送</div>
-      <div class="d" style="margin-bottom:8px">群里添加"群机器人"，webhook 地址粘贴到这里，任务与定时任务结果自动推送到群。</div>
+      <div class="d" style="margin-bottom:8px">群里添加"群机器人"，webhook 地址粘贴到这里，任务与定时任务结果自动推送到群。只出不进，要双向对话用上面的自建应用。</div>
       <input id="wc-hook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." value="${esc(s.im.wecom_bot_webhook)}">
     </div>
     <div class="card-item">
@@ -2651,11 +2698,10 @@ function renderImPane(pane, s) {
     </div>
     <div class="card-item">
       <div class="t">其他助理通道</div>
-      <div class="d">以下官方通道依赖微信/QQ 的企业接入资质，复刻版<b>暂未内置</b>（不做假连接）：微信小程序 · 微信助理 · 微信客服号 · 企微助理 · QQ 机器人。已有第三方微信/QQ 框架的话，用上面的「通用 Webhook」即可桥接同样效果。</div>
+      <div class="d">微信客服号、微信小程序、企微「智能助理」等入口依赖腾讯的定向接入资质，复刻版<b>暂未内置</b>（不做假连接）。已有第三方微信/QQ 框架的话，用上面的「通用 Webhook」即可桥接同样效果。</div>
     </div>
     <button class="btn-brand" id="im-save">保存</button><span class="ok-msg" id="im-msg"></span>`;
-  pane.querySelector("#im-save").onclick = () =>
-    saveSettings({
+  const imPayload = () => ({
       im: {
         feishu: {
           app_id: pane.querySelector("#fs-appid").value.trim(),
@@ -2664,13 +2710,32 @@ function renderImPane(pane, s) {
           doc_app_id: pane.querySelector("#fs-docid").value.trim(),
           doc_app_secret: pane.querySelector("#fs-docsecret").value.trim(),
         },
+        qq: {
+          app_id: pane.querySelector("#qq-appid").value.trim(),
+          app_secret: pane.querySelector("#qq-secret").value.trim(),
+        },
+        wecom_app: {
+          corp_id: pane.querySelector("#wca-corp").value.trim(),
+          agent_id: pane.querySelector("#wca-agent").value.trim(),
+          secret: pane.querySelector("#wca-secret").value.trim(),
+          token: pane.querySelector("#wca-token").value.trim(),
+          aes_key: pane.querySelector("#wca-aes").value.trim(),
+        },
+        wechat_mp: {
+          app_id: pane.querySelector("#mp-appid").value.trim(),
+          app_secret: pane.querySelector("#mp-secret").value.trim(),
+          token: pane.querySelector("#mp-token").value.trim(),
+          aes_key: pane.querySelector("#mp-aes").value.trim(),
+        },
         wecom_bot_webhook: pane.querySelector("#wc-hook").value.trim(),
         dingtalk_webhook: pane.querySelector("#dt-hook").value.trim(),
         dingtalk_secret: pane.querySelector("#dt-secret").value.trim(),
         session_idle_hours: +pane.querySelector("#im-idle").value || 0,
         webhook_secret: pane.querySelector("#wh-secret").value.trim(),
       },
-    }, pane.querySelector("#im-msg")).then(ok => { if (ok) setTimeout(refreshImStatus, 1500); });
+    });
+  pane.querySelector("#im-save").onclick = () =>
+    saveSettings(imPayload(), pane.querySelector("#im-msg")).then(ok => { if (ok) setTimeout(refreshImStatus, 1500); });
   pane.querySelector("#fs-test").onclick = async () => {
     const r = pane.querySelector("#fs-test-r");
     r.style.color = "";
@@ -2690,6 +2755,42 @@ function renderImPane(pane, s) {
     }
     refreshImStatus();
   };
+  // 测试按钮先保存再测：服务端拿的是 config 里的值，不先落盘就会测出「未配置」
+  const wireTest = (btnId, outId, url, body, onOk) => {
+    pane.querySelector(btnId).onclick = async () => {
+      const r = pane.querySelector(outId);
+      r.style.color = "";
+      r.textContent = "保存中…";
+      try {
+        if (!(await saveSettings(imPayload(), pane.querySelector("#im-msg")))) {
+          r.textContent = "";
+          return;
+        }
+        r.textContent = "测试中…";
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body || {}),
+        });
+        const d = await resp.json();
+        if (d.ok) r.textContent = onOk(d);
+        else {
+          r.style.color = "var(--wb-err)";
+          r.textContent = `❌ ${d.error || "测试失败"}`;
+        }
+      } catch (e) {
+        r.style.color = "var(--wb-err)";
+        r.textContent = `❌ ${e.message}`;
+      }
+      refreshImStatus();
+    };
+  };
+  wireTest("#qq-test", "#qq-test-r", "/im/qq/test", {},
+    (d) => `✅ 凭证有效，长连接：${WS_STATE_TXT[d.ws && d.ws.state] || (d.ws && d.ws.state) || "启动中"}`);
+  wireTest("#wca-test", "#wca-test-r", "/im/wechat/test", { which: "wecom" },
+    () => "✅ 凭证有效（CorpID + Secret 能换到 access_token）。回调地址还需你自己暴露公网 HTTPS 并在后台点「保存」验证。");
+  wireTest("#mp-test", "#mp-test-r", "/im/wechat/test", { which: "mp" },
+    () => "✅ 凭证有效（AppID + AppSecret 能换到 access_token）。回调地址还需你自己暴露公网 HTTPS 并在公众平台点「提交」验证。");
 }
 
 // ================= 安全中心面板 =================
