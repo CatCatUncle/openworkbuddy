@@ -1065,9 +1065,16 @@ async function refreshImStatus() {
       : !c.callback_ready ? ["err", "缺回调配置"]
       : ["ok", "等腾讯回调"];
     const wa = wxSt(s.wecom_app || {}), mp = wxSt(s.wechat_mp || {});
+    // iLink 是本机主动长轮询，跟飞书/QQ 一样能真探到活
+    const il = s.wechat_ilink || { configured: false, state: "off" };
+    const ils = !il.configured ? ["", "未扫码"]
+      : il.state === "connected" ? ["ok", "已连接"]
+      : il.state === "failed" ? ["err", il.error && il.error.includes("-14") ? "登录已失效" : "连接失败"]
+      : ["", WS_STATE_TXT[il.state] || il.state];
     const chs = [
       { icon: "🕊️", name: "飞书", dot: fs[0], st: fs[1] },
       { icon: "🐧", name: "QQ", dot: qs[0], st: qs[1] },
+      { icon: "💬", name: "微信", dot: ils[0], st: ils[1] },
       { icon: "🏢", name: "企微应用", dot: wa[0], st: wa[1] },
       { icon: "🟢", name: "公众号", dot: mp[0], st: mp[1] },
       { icon: "💼", name: "企微群推送", dot: s.wecom.configured ? "ok" : "", st: s.wecom.configured ? "已配置推送" : "未配置" },
@@ -2141,6 +2148,8 @@ async function renderAssistPage() {
   const qOk = q.configured && q.state === "connected";
   // 微信侧靠腾讯回调，本地探不了活，只报配置齐不齐
   const wxChip = (c = {}) => !c.configured ? ["", "未配置"] : !c.callback_ready ? ["err", "缺回调配置"] : ["ok", "等腾讯回调"];
+  const il = s.wechat_ilink || { configured: false, state: "off" };
+  const ilOk = il.configured && il.state === "connected";
   const chip = (icon, name, cls, st) =>
     `<span class="im-chip"><span class="dot ${cls}"></span>${icon} ${name} · ${st}</span>`;
   page.innerHTML = `
@@ -2148,6 +2157,7 @@ async function renderAssistPage() {
       <b>已连接：</b>
       ${chip("🕊️", "飞书", fOk ? "ok" : f.configured ? "err" : "", !f.configured ? "未配置" : WS_STATE_TXT[f.ws.state] || f.ws.state)}
       ${chip("🐧", "QQ", qOk ? "ok" : q.configured ? "err" : "", !q.configured ? "未配置" : WS_STATE_TXT[q.state] || q.state)}
+      ${chip("💬", "微信", ilOk ? "ok" : il.configured ? "err" : "", !il.configured ? "未扫码" : WS_STATE_TXT[il.state] || il.state)}
       ${chip("🏢", "企微应用", wxChip(s.wecom_app)[0], wxChip(s.wecom_app)[1])}
       ${chip("🟢", "公众号", wxChip(s.wechat_mp)[0], wxChip(s.wechat_mp)[1])}
       ${chip("💼", "企微群推送", s.wecom.configured ? "ok" : "", s.wecom.configured ? "推送已配" : "未配置")}
@@ -2155,15 +2165,15 @@ async function renderAssistPage() {
       <button class="btn-brand" id="im-cfg" style="margin-left:auto;padding:3px 12px;font-size:12px">⚙️ 配置</button>
     </div>
     <div class="im-feed" id="im-feed"></div>
-    <div style="text-align:center;color:var(--wb-text-3);font-size:12px;margin-top:10px">在飞书/QQ 私聊或群里 @机器人 发消息，任务在这台电脑上执行，结果直接回到 IM。微信两条需要公网 HTTPS 回调地址才能收消息。</div>`;
+    <div style="text-align:center;color:var(--wb-text-3);font-size:12px;margin-top:10px">在飞书/QQ/微信私聊或群里 @机器人 发消息，任务在这台电脑上执行，结果直接回到 IM。微信走扫码登录；企微应用与公众号得有公网 HTTPS 回调地址才能收消息。</div>`;
   page.querySelector("#im-cfg").onclick = () => openModal("settings", "im");
   renderAssistFeed(log);
 }
 function renderAssistFeed(log) {
   const feed = document.getElementById("im-feed");
   if (!feed) return;
-  const CH_TXT = { feishu: "飞书", qq: "QQ", wecom_app: "企业微信", wechat_mp: "公众号", wecom: "企业微信", webhook: "Webhook" };
-  const CH_ICON = { feishu: "🕊️", qq: "🐧", wecom_app: "🏢", wechat_mp: "🟢" };
+  const CH_TXT = { feishu: "飞书", qq: "QQ", wechat_ilink: "微信", wecom_app: "企业微信", wechat_mp: "公众号", wecom: "企业微信", webhook: "Webhook" };
+  const CH_ICON = { feishu: "🕊️", qq: "🐧", wechat_ilink: "💬", wecom_app: "🏢", wechat_mp: "🟢" };
   const n = (log || []).length;
   if (feed._n === n) return; // 没有新消息就不重绘，避免打断用户滚动/选中
   feed._n = n;
@@ -2657,6 +2667,18 @@ function renderImPane(pane, s) {
       <div style="margin-top:8px"><button class="btn-brand" id="qq-test">测试连接</button><span class="ok-msg" id="qq-test-r"></span></div>
     </div>
     <div class="card-item">
+      <div class="t">微信（扫码登录，无需公网地址）</div>
+      <div class="d" style="margin-bottom:8px">微信自己的机器人通道：点下面按钮出二维码，用<b>要当机器人的那个微信号</b>扫码确认，之后本机主动长轮询收发消息，<b>不需要公网地址</b>。别人给这个微信号发消息就等于给 WorkBuddy 下任务，结果直接回到微信聊天里。<br>⚠️ 登录态由微信控制，失效（服务端返回 -14）后需要重新扫码；图片/文件/视频本版只识别为占位标签，语音有微信自带转写就用转写文字。</div>
+      <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
+        <div>
+          <button class="btn-brand" id="ilk-qr">获取二维码</button>
+          <button class="btn-ghost" id="ilk-off" style="margin-left:6px">断开登录</button>
+        </div>
+        <div id="ilk-box" style="display:none"><img id="ilk-img" alt="微信登录二维码" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:6px"></div>
+      </div>
+      <div class="ok-msg" id="ilk-r" style="margin-top:8px">${(s.im.wechat_ilink || {}).bot_id ? "已绑定微信号，状态见上方助理面板" : ""}</div>
+    </div>
+    <div class="card-item">
       <div class="t">企业微信自建应用（双向对话，需公网地址）</div>
       <div class="d" style="margin-bottom:8px">微信侧没有长连接模式，只能腾讯回调你：需要一个公网 HTTPS 地址指向本机（内网穿透/反向代理都行），回调路径填 <code>https://你的域名/im/wecom/events</code>。<br>企业微信管理后台 → 应用管理 → 自建应用：拿 AgentId 与 Secret，「我的企业」拿 CorpID；「接收消息 → 设置 API 接收」里随机生成 Token 与 EncodingAESKey 回填这里，再点保存让腾讯验证地址。结果通过应用消息主动推送，agent 跑几分钟也不怕超时。</div>
       <input id="wca-corp" placeholder="CorpID（我的企业 → 企业信息）" value="${esc(s.im.wecom_app.corp_id)}">
@@ -2791,6 +2813,56 @@ function renderImPane(pane, s) {
     () => "✅ 凭证有效（CorpID + Secret 能换到 access_token）。回调地址还需你自己暴露公网 HTTPS 并在后台点「保存」验证。");
   wireTest("#mp-test", "#mp-test-r", "/im/wechat/test", { which: "mp" },
     () => "✅ 凭证有效（AppID + AppSecret 能换到 access_token）。回调地址还需你自己暴露公网 HTTPS 并在公众平台点「提交」验证。");
+
+  // 微信扫码登录：取码 → 轮询状态（服务端一次挂最多 35 秒，回 wait 就接着问）
+  const ilkR = pane.querySelector("#ilk-r"), ilkBox = pane.querySelector("#ilk-box"), ilkImg = pane.querySelector("#ilk-img");
+  let ilkRun = 0; // 每次点「获取二维码」自增，旧轮询看见对不上就自己退出，防止两轮并行
+  const ilkSay = (txt, err) => { ilkR.style.color = err ? "var(--wb-err)" : ""; ilkR.textContent = txt; };
+  pane.querySelector("#ilk-qr").onclick = async () => {
+    const run = ++ilkRun;
+    ilkBox.style.display = "none";
+    ilkSay("正在取二维码…");
+    let qrcode;
+    try {
+      const d = await fetch("/im/wechat/qrcode", { method: "POST" }).then(r => r.json());
+      if (!d.ok) return ilkSay(`❌ ${d.error || "取二维码失败"}`, true);
+      if (!d.image) return ilkSay("❌ 二维码渲染失败（服务端缺 qrcode 依赖）", true);
+      qrcode = d.qrcode;
+      ilkImg.src = d.image;
+      ilkBox.style.display = "";
+      ilkSay("请用要当机器人的微信扫码，并在手机上点确认");
+    } catch (e) { return ilkSay(`❌ ${e.message}`, true); }
+    for (;;) {
+      if (run !== ilkRun) return; // 已经重新取码了，这轮作废
+      let d;
+      try {
+        d = await fetch(`/im/wechat/qrcode-status?qrcode=${encodeURIComponent(qrcode)}`).then(r => r.json());
+      } catch (e) { await new Promise(z => setTimeout(z, 2000)); continue; } // 网络抖动不算失败，接着问
+      if (run !== ilkRun) return;
+      if (!d.ok) return ilkSay(`❌ ${d.error || "轮询失败"}`, true);
+      if (d.status === "confirmed") {
+        ilkBox.style.display = "none";
+        ilkSay(`✅ 已连接微信${d.ilink && d.ilink.bot_id ? `（${d.ilink.bot_id}）` : ""}，现在给这个微信号发消息即可下任务`);
+        refreshImStatus();
+        return;
+      }
+      if (d.status === "expired") {
+        ilkBox.style.display = "none";
+        return ilkSay("二维码已过期，请重新获取", true);
+      }
+      if (d.status === "scaned") ilkSay("已扫码，请在手机上点确认");
+    }
+  };
+  pane.querySelector("#ilk-off").onclick = async () => {
+    ilkRun++; // 断开也要作废在跑的轮询，否则它扫码成功后又把登录态写回来
+    ilkBox.style.display = "none";
+    ilkSay("断开中…");
+    try {
+      const d = await fetch("/im/wechat/disconnect", { method: "POST" }).then(r => r.json());
+      ilkSay(d.ok ? "已断开，登录态已清除" : `❌ ${d.error || "断开失败"}`, !d.ok);
+    } catch (e) { ilkSay(`❌ ${e.message}`, true); }
+    refreshImStatus();
+  };
 }
 
 // ================= 安全中心面板 =================

@@ -10,10 +10,16 @@
  *    - config.json 填 im.feishu.app_id / app_secret，应用启动即自动建立长连接
  *    - 兼容旧的事件回调模式：POST /im/feishu/events 仍然保留（有公网地址时可用）
  *
- * 2) 企业微信群机器人（推送模式）：config.json 填 im.wecom_bot_webhook（群机器人 webhook 地址），
+ * 2) 微信 iLink 机器人（扫码登录，同样无需公网地址）：设置里点「获取二维码」→ 微信扫码确认，
+ *    之后走长轮询收发消息。实现在 im-ilink.js。
+ *
+ * 3) 企业微信自建应用 / 公众号（腾讯回调制，必须有公网 HTTPS）：见 im-wechat.js，
+ *    回调地址分别是 /im/wecom/events 与 /im/mp/events。
+ *
+ * 4) 企业微信群机器人（推送模式）：config.json 填 im.wecom_bot_webhook（群机器人 webhook 地址），
  *    任务完成结果会推送到该群。
  *
- * 3) 通用 Webhook：POST /im/task  { "message": "任务", "secret": "配置的密钥" }
+ * 5) 通用 Webhook：POST /im/task  { "message": "任务", "secret": "配置的密钥" }
  *    同步等待执行完成，返回 { reply, files }。任何能发 HTTP 的 IM/自动化工具（微信框架、
  *    钉钉 outgoing、iOS 快捷指令等）都可以借此桥接。
  *
@@ -25,14 +31,16 @@ const express = require("express");
 const notify = require("./notify");
 const { createQQConnection } = require("./im-qq");
 const { createWecomApp, createWechatMp } = require("./im-wechat");
+const ilinkApi = require("./im-ilink");
 
-function createImRouter({ config, runtime, sessions, outputFiles }) {
+function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = () => {} }) {
   const router = express.Router();
   const imCfg = () => config.im || {};
   const fsCfg = () => (config.im || {}).feishu || {};
   const qqCfg = () => (config.im || {}).qq || {};
   const wecomCfg = () => (config.im || {}).wecom_app || {};
   const mpCfg = () => (config.im || {}).wechat_mp || {};
+  const ilinkCfg = () => (config.im || {}).wechat_ilink || {};
 
   // ---------- 会话管理：超过 N 小时未对话自动开新会话（节省 token，官方同款） ----------
 
@@ -129,7 +137,7 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
     return tail;
   }
 
-  const CH_NAME = { feishu: "飞书", qq: "QQ", wecom_app: "企业微信", wechat_mp: "公众号", webhook: "Webhook" };
+  const CH_NAME = { feishu: "飞书", qq: "QQ", wecom_app: "企业微信", wechat_mp: "公众号", wechat_ilink: "微信", webhook: "Webhook" };
 
   /**
    * 各 IM 通道共用的入站处理：同会话串行排队 → 跑任务 → 回结果 → 转推其他机器人。
@@ -364,6 +372,89 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
     }
   });
 
+  // ---------- 微信 iLink 机器人（扫码登录 + 长轮询，不需要公网地址） ----------
+
+  const ilink = ilinkApi.createIlinkConnection({
+    getConfig: ilinkCfg,
+    log: console, // 模块自己已经带 [微信iLink] 前缀了
+    // 收消息游标：不落盘的话重启会把已处理的消息再收一遍
+    onCursor: (buf) => {
+      config.im = config.im || {};
+      config.im.wechat_ilink = config.im.wechat_ilink || {};
+      config.im.wechat_ilink.get_updates_buf = buf;
+      saveConfig();
+    },
+    onMessage: ({ userId, text }) => {
+      const t = String(text || "").trim();
+      if (!t) return;
+      return runInbound({
+        channel: "wechat_ilink",
+        sessionKey: `ilink_${userId}`,
+        text: t,
+        logExtra: { chat: userId },
+        reply: (out) => ilink.send(userId, out),
+      });
+    },
+  });
+
+  async function startIlink(force = false) {
+    return ilink.start(force);
+  }
+
+  // 扫码登录第一步：取二维码。qrcode_img_content 是条微信深链，必须编成二维码图片才能扫
+  router.post("/im/wechat/qrcode", async (_req, res) => {
+    try {
+      const { qrcode, deepLink } = await ilinkApi.fetchQrcode(ilinkCfg().base_url);
+      let dataUrl = "";
+      try {
+        dataUrl = await require("qrcode").toDataURL(deepLink, { width: 512, margin: 2 });
+      } catch (e) {
+        console.warn(`[微信iLink] 二维码渲染失败: ${e.message}`);
+      }
+      res.json({ ok: true, qrcode, image: dataUrl, deep_link: deepLink });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // 第二步：轮询扫码状态。服务端本身是长轮询（最长约 35 秒才回），前端拿到 wait 直接再问一次即可
+  router.get("/im/wechat/qrcode-status", async (req, res) => {
+    const qrcode = String(req.query.qrcode || "");
+    if (!qrcode) return res.status(400).json({ ok: false, error: "缺少 qrcode" });
+    try {
+      const r = await ilinkApi.pollQrStatus(qrcode, ilinkCfg().base_url);
+      if (r.status === "confirmed") {
+        config.im = config.im || {};
+        // 换了新号就是新会话，旧游标必须清掉，否则拿别人的游标去取更新会直接失效
+        config.im.wechat_ilink = {
+          bot_token: r.botToken,
+          ilink_bot_id: r.ilinkBotId,
+          // 服务端可能下发专属 baseurl；没下发就沿用当前这条（扫码就是在它上面完成的）
+          base_url: r.baseUrl || ilinkCfg().base_url || ilinkApi.DEFAULT_BASE_URL,
+          get_updates_buf: "",
+          enabled: true,
+        };
+        saveConfig();
+        await ilink.start(true);
+      }
+      res.json({ ok: true, status: r.status, ilink: ilink.status() });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  router.post("/im/wechat/disconnect", async (_req, res) => {
+    try {
+      await ilink.stop();
+      config.im = config.im || {};
+      config.im.wechat_ilink = { bot_token: "", ilink_bot_id: "", base_url: "", get_updates_buf: "", enabled: false };
+      saveConfig();
+      res.json({ ok: true, ilink: ilink.status() });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
   // ---------- 飞书事件回调（旧模式，有公网地址时可用） ----------
 
   router.post("/im/feishu/events", async (req, res) => {
@@ -393,6 +484,7 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
       qq: qq.status(),
       wecom_app: wecom.status(),
       wechat_mp: mp.status(),
+      wechat_ilink: ilink.status(),
       wecom: { configured: !!imCfg().wecom_bot_webhook },
       dingtalk: { configured: !!imCfg().dingtalk_webhook },
       webhook: { configured: true, secret_set: !!imCfg().webhook_secret },
@@ -454,7 +546,7 @@ function createImRouter({ config, runtime, sessions, outputFiles }) {
     }
   });
 
-  return { router, startFeishuWs, startQQ };
+  return { router, startFeishuWs, startQQ, startIlink };
 }
 
 module.exports = { createImRouter };
