@@ -157,11 +157,15 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         const history = sessions.get(sessionKey);
         history.push({ role: "user", content: text });
 
+        // 跑之前先记一份快照：outputFiles() 给的是整个工作区，不做差集的话
+        // 每条回复都会把历史文件全抖出来（打个招呼也附一堆 .png），用户实际反馈过
+        const before = new Map(outputFiles().map((f) => [f.name, f.mtime]));
         const { finalText } = await runtime.runTask({ history });
-        const rootFiles = outputFiles().filter((f) => !f.name.includes("/")); // 只报根目录的成果，不刷用户素材
+        const fresh = outputFiles().filter((f) => before.get(f.name) !== f.mtime); // 新建或被改过的才算这次的产出
         let out = finalText || "任务已执行完成。";
-        if (rootFiles.length) {
-          out += `\n\n📁 成果文件（在 WorkBuddy 工作台可下载）：\n` + rootFiles.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
+        if (fresh.length) {
+          out += `\n\n📁 成果文件（在 WorkBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
+          if (fresh.length > 8) out += `\n… 另有 ${fresh.length - 8} 个`;
         }
         await reply(out);
         logIm(channel, "out", out, logExtra);
