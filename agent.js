@@ -422,6 +422,42 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   }
 
   /**
+   * 强制收尾时的最后一句话。不给工具、单独一小段超时预算（撞的就是时间上限，不能再等 5 分钟），
+   * 失败就悄悄算了——收尾说明没拿到，也不该把整个任务变成一次报错。
+   */
+  async function wrapUp({ history, system, stopNote, emit, depth, stats }) {
+    history.push({
+      role: "user",
+      content: `【系统】任务已到上限被强制收尾（${stopNote}）。现在不要再调用任何工具，直接给用户一段收尾说明：
+1. 已经做完了什么、产出了哪些文件（只写真实存在的文件名，没生成就别写）；
+2. 还差哪些没做完；
+3. 下次接着做的话，从哪一步继续最省事。
+用中文，简明扼要，不要客套。`,
+    });
+    try {
+      trimHistory(history, config.agent.max_context_chars || 120000); // 最后一次工具输出可能刚把上下文顶爆，先压一压
+      const result = await llm.chat({
+        system,
+        history,
+        tools: [],
+        signal: AbortSignal.timeout(Math.min(90000, config.agent.llm_timeout_ms || 300000)),
+        onTextDelta: (delta) => emit({ type: "text", delta, depth }),
+      });
+      if (result.usage) {
+        stats.prompt += result.usage.prompt;
+        stats.completion += result.usage.completion;
+        stats.calls++;
+      }
+      history.push({ role: "assistant", text: result.text, toolCalls: [], raw: result.raw });
+      return result.text || "";
+    } catch (e) {
+      console.warn("[agent] 收尾说明没拿到:", e.message);
+      history.pop(); // 把那条【系统】指令撤掉，免得下一轮对话里挂着一句没人回的话
+      return "";
+    }
+  }
+
+  /**
    * 运行一次 Agent 任务循环。
    * @param history 统一格式会话历史（会被就地追加）
    * @param emit    事件回调（SSE / IM 进度）
@@ -564,6 +600,12 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 
     if (stopNote) {
       emit({ type: "limit", note: stopNote, depth });
+      // 撞上限时，finalText 往往是半句过程叙述（"我先看一下这个文件"），直接抛给用户等于没有交代。
+      // 再花一次调用让它把话说完：做到哪、有什么、还差什么。手动停止的不做——用户喊停就是不想再花钱。
+      if (!(stopSignal && stopSignal.aborted)) {
+        const wrapped = await wrapUp({ history, system, stopNote, emit, depth, stats });
+        if (wrapped) finalText = wrapped;
+      }
       const notice = `⚠️ ${stopNote}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
       finalText = finalText ? `${finalText}\n\n${notice}` : notice;
     }

@@ -69,11 +69,17 @@ async function anthropicChat(cfg, { system, history, tools, onTextDelta, signal 
       max_tokens: 32000,
       system,
       messages: toAnthropicMessages(history),
-      tools: tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.input_schema,
-      })),
+      // 空数组要整个字段不发：不给工具是一种正当用法（比如强制收尾那一问），
+      // 而一部分服务端会把 tools: [] 判成参数非法直接 400
+      ...(tools && tools.length
+        ? {
+            tools: tools.map((t) => ({
+              name: t.name,
+              description: t.description,
+              input_schema: t.input_schema,
+            })),
+          }
+        : {}),
     },
     { signal }
   );
@@ -136,10 +142,15 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, signal }) 
       stream: useStream,
       ...(useStream ? { stream_options: { include_usage: true } } : {}), // 流式也带回 token 用量（DeepSeek/OpenRouter 等均支持）
       messages: toOpenAIMessages(system, history),
-      tools: tools.map((t) => ({
-        type: "function",
-        function: { name: t.name, description: t.description, parameters: t.input_schema },
-      })),
+      // 同上：OpenAI 兼容接口对 tools: [] 一律报「数组不能为空」，没有工具就别带这个字段
+      ...(tools && tools.length
+        ? {
+            tools: tools.map((t) => ({
+              type: "function",
+              function: { name: t.name, description: t.description, parameters: t.input_schema },
+            })),
+          }
+        : {}),
     }),
   });
 
