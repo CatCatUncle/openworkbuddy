@@ -671,6 +671,46 @@ async function testSchedulerRuntime() {
   console.log("✅ 定时任务运行时：睡过头补跑一次 / 不叠跑 / 结果真落盘");
 }
 
+function testAccountStore() {
+  const { readStore, writeStoreAtomic, createLimiter, isHttps } = require("../account")._internals;
+  const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-acct-"));
+  const file = path.join(dir, "users.json");
+
+  // 文件不在 = 头一次跑，给个空账本
+  assert.deepStrictEqual(readStore(file, { users: [] }), { users: [] }, "没有文件时应当返回空账本");
+
+  writeStoreAtomic(file, { users: [{ username: "甲", credits: 7 }] }, true);
+  assert.strictEqual(readStore(file, null).users[0].credits, 7, "写进去的读不回来");
+  assert(!fs.readdirSync(dir).some((f) => f.endsWith(".tmp")), "临时文件没清掉");
+
+  writeStoreAtomic(file, { users: [{ username: "甲", credits: 9 }] }, true);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file + ".bak", "utf8")).users[0].credits, 7, ".bak 没留住上一版");
+
+  // 关键的一条：文件坏了必须抛错，绝不能装作「没有用户」——
+  // 那样下一次写盘就把所有账号和积分覆盖成空的，还会让下一个注册的人当上管理员
+  fs.writeFileSync(file, '{"users": [坏了', "utf8");
+  assert.throws(() => readStore(file, { users: [] }), /坏了/, "账本读不出来时不该悄悄返回空账本");
+  fs.rmSync(dir, { recursive: true, force: true });
+
+  // 登录闸：时钟自己喂，不然测一次要等 15 分钟
+  let now = 1000;
+  const lim = createLimiter({ windowMs: 60000, now: () => now });
+  for (let i = 0; i < 3; i++) {
+    assert.strictEqual(lim.retryAfter("a", 3), 0, `第 ${i + 1} 次就被拦了`);
+    lim.fail("a");
+  }
+  assert(lim.retryAfter("a", 3) > 0, "打满次数后没拦住");
+  assert.strictEqual(lim.retryAfter("b", 3), 0, "拦 a 不该连累 b");
+  now += 61000;
+  assert.strictEqual(lim.retryAfter("a", 3), 0, "过了窗口还在拦");
+  lim.fail("a"); lim.pass("a");
+  assert.strictEqual(lim.retryAfter("a", 1), 0, "登录成功后没把失败次数清掉");
+
+  assert.strictEqual(isHttps({ headers: { "x-forwarded-proto": "https, http" } }), true, "nginx 转发的 https 没认出来");
+  assert.strictEqual(isHttps({ headers: {} }), false, "普通 http 不该当成 https");
+  console.log("✅ 账本：坏文件不覆盖 / 写盘原子 / 登录限流 / https 认得出");
+}
+
 function testPathSafety() {
   const { safePath } = require("../tools");
   let threw = false;
@@ -682,6 +722,7 @@ function testPathSafety() {
 async function main() {
   console.log("=== OpenWorkBuddy e2e 测试 ===");
   testCron();
+  testAccountStore();
   testPathSafety();
   testDeliverableGate();
   testContextBudget();
