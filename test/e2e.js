@@ -671,6 +671,46 @@ async function testSchedulerRuntime() {
   console.log("✅ 定时任务运行时：睡过头补跑一次 / 不叠跑 / 结果真落盘");
 }
 
+function testCommandGate() {
+  const security = require("../security");
+  const sec = { ...security.DEFAULTS };
+  // 都是以前能一句话绕过去的：换行 / $() / 反引号 / 子 shell / 环境变量前缀 / 绝对路径 / 包装词
+  const mustAsk = [
+    "rm -rf ~/x",
+    "echo hi\nrm -rf ~/x",
+    "echo $(rm -rf ~/x)",
+    "echo `rm -rf ~/x`",
+    'echo "$(rm -rf ~/x)"',
+    "( rm -rf ~/x )",
+    "FOO=1 rm -rf ~/x",
+    "/bin/rm -rf ~/x",
+    "nohup rm -rf ~/x",
+    'find . -name "*.log" -delete',
+    "find . -exec rm {} ;",
+    "cat ~/.ssh/id_rsa", // 有 shell 在手，文件黑名单本来形同虚设
+    "cat $HOME/.ssh/id_rsa",
+  ];
+  for (const cmd of mustAsk) {
+    assert.strictEqual(security.checkCommand(sec, cmd).action, "ask", `这条应当要审批：${JSON.stringify(cmd)}`);
+  }
+  // 别把正常命令也拦了，天天弹审批没人受得了
+  const mustPass = ["ls -la", 'grep "a|b" f.txt', 'echo "记得 rm 掉旧文件"', "git status && npm test", "node build.js"];
+  for (const cmd of mustPass) {
+    assert.strictEqual(security.checkCommand(sec, cmd).action, "allow", `这条不该被拦：${JSON.stringify(cmd)}`);
+  }
+  // 放行名单不能把黑名单一起放过去
+  assert.strictEqual(security.checkCommand({ ...sec, cmd_allow: ["cat "] }, "cat ~/.ssh/id_rsa").action, "ask", "放行名单越过了文件黑名单");
+  assert.strictEqual(security.checkCommand({ ...sec, cmd_allow: ["cat "] }, "cat a.txt").action, "allow", "放行名单没生效");
+  // 网关关掉就只记账不拦
+  assert.strictEqual(security.checkCommand({ ...sec, gateway: false }, "cat ~/.ssh/id_rsa").action, "allow", "网关关了还在拦黑名单路径");
+
+  // 代码闸：命令闸守得再严，一句 require("child_process") 就从旁边过去了
+  assert.strictEqual(security.checkCode(sec, 'require("child_process").execSync("rm -rf ~/x")').action, "ask", "代码开子进程没拦");
+  assert.strictEqual(security.checkCode(sec, 'fs.readFileSync(process.env.HOME + "/.ssh/id_rsa")').action, "ask", "代码碰黑名单没拦");
+  assert.strictEqual(security.checkCode(sec, 'const fs=require("fs");fs.writeFileSync("a.txt","hi")').action, "allow", "正常代码被拦了");
+  console.log("✅ 命令闸：换行/$()/反引号/子shell/包装词全拆得开，黑名单压得住放行名单，代码闸补上子进程这条路");
+}
+
 function testAccountStore() {
   const { readStore, writeStoreAtomic, createLimiter, isHttps } = require("../account")._internals;
   const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-acct-"));
@@ -722,6 +762,7 @@ function testPathSafety() {
 async function main() {
   console.log("=== OpenWorkBuddy e2e 测试 ===");
   testCron();
+  testCommandGate();
   testAccountStore();
   testPathSafety();
   testDeliverableGate();

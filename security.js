@@ -102,21 +102,146 @@ function resolvePathWithPolicy(sec, rel, workspaceDir) {
 
 // ---------- 命令安全 ----------
 
-/** 命令按 ;&| 拆段逐段核对前缀；返回 allow / ask（附命中的规则） */
-function checkCommand(sec, command) {
-  const segs = String(command || "")
-    .split(/[;&|]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  for (const seg of segs) {
-    if ((sec.cmd_allow || []).some((p) => p && seg.startsWith(p.trim()))) continue;
-    const hitAsk = (sec.cmd_ask || []).find((p) => p && seg.startsWith(p.trim()));
-    if (hitAsk) return { action: "ask", rule: `命令询问名单「${hitAsk.trim()}」`, seg };
-    if (sec.delete_protect && /^(rm|rmdir|srm)\s/.test(seg)) {
-      return { action: "ask", rule: "删除保护（rm 类命令需审批）", seg };
+/** 只是包在真命令外面的东西，判断「这段到底在跑什么」时要先剥掉 */
+const WRAPPERS = new Set(["nohup", "command", "builtin", "exec", "env", "time", "nice", "ionice", "xargs", "then", "else", "do", "{", "("]);
+/** 会真的把文件弄没的命令 */
+const DELETE_CMDS = new Set(["rm", "rmdir", "srm", "unlink", "shred"]);
+const SUB_DEPTH_MAX = 4;
+
+/**
+ * 把一条命令拆成一段段真正会被执行的东西。
+ *
+ * 除了 `;` `&&` `||` `|` `&`，还有两件事以前是漏的，而且都能一句话废掉整个命令闸：
+ *   - **换行**：agent 写的是多行脚本，`echo hi\nrm -rf ~/x` 以前算一整段，开头是 echo，删除保护看都看不见；
+ *   - **`$(...)` 和反引号**：`echo $(rm -rf ~/x)` 同理，得把括号里的东西挖出来单独算一段。
+ * 引号里的分隔符不算分隔符（`grep "a|b"` 不该被拆开），但双引号里的 `$()` 照样会执行，所以照挖。
+ */
+function splitSegments(command, out = [], depth = 0) {
+  const src = String(command || "");
+  let cur = "";
+  let quote = null;
+  const push = () => {
+    const s = cur.trim();
+    if (s) out.push(s);
+    cur = "";
+  };
+  /** 吃掉一段替换（$(...) 或 `...`），把里面的内容当独立命令继续拆，返回结束位置 */
+  const grab = (i, open, close) => {
+    let d = 1;
+    let j = i;
+    let inner = "";
+    for (; j < src.length && d > 0; j++) {
+      const ch = src[j];
+      if (ch === "\\") { inner += ch + (src[j + 1] || ""); j++; continue; }
+      if (ch === open && open !== close) d++;
+      else if (ch === close) { d--; if (!d) break; }
+      inner += ch;
     }
-    if (!sec.runtime_python && /^(python3?|pip3?)\s/.test(seg)) {
+    if (depth < SUB_DEPTH_MAX) splitSegments(inner, out, depth + 1);
+    else if (inner.trim()) out.push(inner.trim());
+    return j;
+  };
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (c === "\\" && quote !== "'") { cur += c + (src[i + 1] || ""); i++; continue; }
+    if (quote) {
+      if (c === quote) { quote = null; cur += c; continue; }
+      if (quote === '"' && c === "$" && src[i + 1] === "(") { i = grab(i + 2, "(", ")"); continue; }
+      if (quote === '"' && c === "`") { i = grab(i + 1, "`", "`"); continue; }
+      cur += c;
+      continue;
+    }
+    if (c === "'" || c === '"') { quote = c; cur += c; continue; }
+    if (c === "$" && src[i + 1] === "(") { i = grab(i + 2, "(", ")"); continue; }
+    if (c === "`") { i = grab(i + 1, "`", "`"); continue; }
+    // 子 shell 和进程替换：( rm -x )、diff <(rm -x)
+    if (c === ";" || c === "\n" || c === "|" || c === "&" || c === "(" || c === ")") { push(); continue; }
+    cur += c;
+  }
+  push();
+  return out;
+}
+
+/** 去掉开头的环境变量赋值：`FOO=1 rm -rf x` 里那个 rm 也得算数 */
+function stripEnvAssign(seg) {
+  return seg.replace(/^(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, "");
+}
+/** 剥到真正在跑的那条命令：包装词去掉、`/bin/rm` 还原成 `rm` */
+function bareCommand(seg) {
+  let s = stripEnvAssign(seg).trim();
+  for (let i = 0; i < 5; i++) {
+    const tok = s.split(/\s+/)[0] || "";
+    if (!WRAPPERS.has(tok)) break;
+    s = s.slice(tok.length).trim();
+  }
+  const tok = s.split(/\s+/)[0] || "";
+  return tok.includes("/") ? path.basename(tok) + s.slice(tok.length) : s;
+}
+
+/** 一条黑名单路径在命令行里可能长什么样 */
+function pathNeedles(entry) {
+  const raw = String(entry).trim();
+  if (!raw) return [];
+  const out = [raw.toLowerCase(), expandPath(raw).toLowerCase()];
+  const tail = raw.replace(/^~|^<app>/, "");
+  // `~/.ssh` 写成 `$HOME/.ssh` 也要认出来；但 `/config.json` 这种太泛的尾巴不认，免得天天弹审批
+  const parts = tail.split("/").filter(Boolean);
+  if (tail.startsWith("/") && (parts.length > 1 || (parts[0] || "").startsWith("."))) out.push(tail.toLowerCase());
+  return out;
+}
+
+/**
+ * 命令闸。返回 allow / ask / deny（附命中的规则）。
+ * 顺序是有讲究的：文件黑名单排在放行名单前面——黑名单是「永远拦」，
+ * 不能因为用户放行了 `cat ` 就把 `cat ~/.ssh/id_rsa` 一起放过去。
+ */
+function checkCommand(sec, command) {
+  const segs = splitSegments(command);
+  const needles = sec.gateway ? (sec.file_blacklist || []).map((b) => ({ raw: String(b).trim(), needles: pathNeedles(b) })) : [];
+  for (const seg of segs) {
+    const low = seg.toLowerCase();
+    for (const b of needles) {
+      if (b.needles.some((n) => n && low.includes(n))) {
+        // 有 shell 在手，文件黑名单本来是形同虚设的（read_file 拦得住，`cat` 拦不住）
+        return { action: "ask", rule: `命令碰到了文件黑名单（${b.raw}）`, seg };
+      }
+    }
+    const env = stripEnvAssign(seg);
+    const bare = bareCommand(seg);
+    const tok = bare.split(/\s+/)[0] || "";
+    if ((sec.cmd_allow || []).some((p) => p && (seg.startsWith(p.trim()) || env.startsWith(p.trim())))) continue;
+    const hitAsk = (sec.cmd_ask || []).find((p) => p && (seg.startsWith(p.trim()) || env.startsWith(p.trim()) || bare.startsWith(p.trim())));
+    if (hitAsk) return { action: "ask", rule: `命令询问名单「${hitAsk.trim()}」`, seg };
+    if (sec.delete_protect) {
+      const findDeletes = tok === "find" && /(\s-delete\b|-exec\s+(\S*\/)?rm\b)/.test(bare);
+      if (DELETE_CMDS.has(tok) || findDeletes) return { action: "ask", rule: "删除保护（rm 类命令需审批）", seg };
+    }
+    if (!sec.runtime_python && /^(python3?|pip3?)$/.test(tok)) {
       return { action: "deny", rule: "内置运行时 Python 已停用", seg };
+    }
+  }
+  return { action: "allow" };
+}
+
+/**
+ * 代码闸（run_node / 未来的其它运行时）。
+ *
+ * 命令闸拦得再严，一句 `require("child_process").execSync("rm -rf ~")` 就全绕过去了——
+ * 代码是从同一个 agent 嘴里出来的，不能只看 run_shell 那扇门。
+ * 这里不做沙箱（做不到），只做一件事：**代码要开子进程、或者伸手去碰文件黑名单，就得你点头**。
+ */
+function checkCode(sec, code) {
+  const src = String(code || "");
+  if (!sec.gateway) return { action: "allow" };
+  const shellOut = /child_process|execSync|execFileSync|spawnSync|process\.binding|node:child_process/.exec(src);
+  if (shellOut) {
+    return { action: "ask", rule: "代码里要开子进程（等于绕过命令闸）", seg: shellOut[0] };
+  }
+  const low = src.toLowerCase();
+  for (const b of sec.file_blacklist || []) {
+    const raw = String(b).trim();
+    if (pathNeedles(b).some((n) => n && low.includes(n))) {
+      return { action: "ask", rule: `代码碰到了文件黑名单（${raw}）`, seg: raw };
     }
   }
   return { action: "allow" };
@@ -233,6 +358,8 @@ module.exports = {
   auditExport,
   resolvePathWithPolicy,
   checkCommand,
+  checkCode,
+  splitSegments, // 给测试用：命令拆段是整个命令闸的地基，得能单独验
   checkUrl,
   requestApproval,
   listApprovals,

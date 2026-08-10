@@ -615,37 +615,47 @@ async function executeTool(name, input, opts = {}) {
     }
     return r.path;
   };
+  /**
+   * 闸门统一走这里：拦下就返回一段给模型看的说明，放行返回 null。
+   * run_shell 和 run_node 用的是同一套 —— 只守 shell 那扇门是守不住的，
+   * 一句 require("child_process") 就从旁边过去了。
+   */
+  const passGate = async (verdict, label, text) => {
+    if (!sec.gateway || verdict.action === "allow") return null;
+    if (verdict.action === "deny") {
+      security.audit(label + "拦截", text, "拦截");
+      return { content: `${label}被安全中心拦截：${verdict.rule}（命中「${verdict.seg}」）`, isError: true };
+    }
+    security.audit(label + "审批", text, "等待审批");
+    const waitMs = Math.min(
+      (sec.approval_timeout_s || 120) * 1000,
+      opts.deadline ? Math.max(5000, opts.deadline - Date.now() - 10000) : Infinity
+    );
+    const ok = await security.requestApproval(label + "执行", text, { timeoutMs: waitMs, stopSignal: opts.stopSignal });
+    security.audit(label + "审批", text, ok ? "已批准" : "已拒绝");
+    if (ok) return null;
+    return {
+      content: `${label}未获批准（${verdict.rule}）。已在界面弹出审批请求但被拒绝或超时。可以换一种不需要它的做法，或让用户在 设置 → 安全中心 调整名单。`,
+      isError: true,
+    };
+  };
   try {
     ensureDirs();
     switch (name) {
-      case "run_node":
+      case "run_node": {
         if (sec.runtime_node === false) {
           security.audit("命令拦截", "run_node（内置 Node.js 运行时已停用）", "拦截");
           return { content: "内置 Node.js 运行时已在 设置 → 安全中心 停用，无法执行代码。", isError: true };
         }
-        return await runNode(input.code, timeoutMs);
+        const code = String(input.code || "");
+        const blocked = await passGate(security.checkCode(sec, code), "代码", code.slice(0, 500));
+        if (blocked) return blocked;
+        return await runNode(code, timeoutMs);
+      }
       case "run_shell": {
         const cmd = String(input.command || "");
-        const verdict = security.checkCommand(sec, cmd);
-        if (verdict.action === "deny" && sec.gateway) {
-          security.audit("命令拦截", cmd, "拦截");
-          return { content: `命令被安全中心拦截：${verdict.rule}（命中「${verdict.seg}」）`, isError: true };
-        }
-        if (verdict.action === "ask" && sec.gateway) {
-          security.audit("命令审批", cmd, "等待审批");
-          const waitMs = Math.min(
-            (sec.approval_timeout_s || 120) * 1000,
-            opts.deadline ? Math.max(5000, opts.deadline - Date.now() - 10000) : Infinity
-          );
-          const ok = await security.requestApproval("命令执行", cmd, { timeoutMs: waitMs, stopSignal: opts.stopSignal });
-          security.audit("命令审批", cmd, ok ? "已批准" : "已拒绝");
-          if (!ok) {
-            return {
-              content: `命令未获批准（${verdict.rule}）。已在界面弹出审批请求但被拒绝或超时。可以换一种不需要该命令的做法，或让用户在 设置 → 安全中心 → 命令安全 调整名单。`,
-              isError: true,
-            };
-          }
-        }
+        const blocked = await passGate(security.checkCommand(sec, cmd), "命令", cmd);
+        if (blocked) return blocked;
         security.audit("命令执行", cmd, "放行");
         return await runShell(cmd, timeoutMs);
       }
