@@ -239,6 +239,8 @@ class McpManager {
    */
   async startAll(serverConfigs = []) {
     for (const cfg of serverConfigs) {
+      // 同名的先停掉再起，否则旧的子进程没人管，成了孤儿还占着端口/句柄
+      this.stop([cfg.name]);
       const client = new McpClient(cfg.name, cfg);
       try {
         const tools = await client.start();
@@ -252,6 +254,36 @@ class McpManager {
         client.stop();
       }
     }
+  }
+
+  /**
+   * 停掉指定的几台服务器，并把它们上一次的失败记录一并清掉。
+   * 不清失败记录的话，重试成功了连接器页面还挂着那条旧的红字。
+   */
+  stop(names = []) {
+    const want = new Set(names);
+    const stopped = [];
+    for (const n of want) {
+      const c = this.clients.get(n);
+      if (!c) continue;
+      try {
+        c.stop();
+      } catch (e) {
+        console.warn(`[MCP] ${n} 停止时报错（忽略）: ${e.message}`);
+      }
+      this.clients.delete(n);
+      stopped.push(n);
+    }
+    this.failures = this.failures.filter((f) => !want.has(f.name));
+    return stopped;
+  }
+
+  /** 停掉某个插件带来的全部服务器（卸载插件时用） */
+  stopPlugin(pluginName) {
+    const names = [...this.clients.values()].filter((c) => c.plugin === pluginName).map((c) => c.name);
+    const stopped = this.stop(names);
+    this.failures = this.failures.filter((f) => f.plugin !== pluginName);
+    return stopped;
   }
 
   /** 已连接的服务器概况（名字 / 传输 / 工具数 / 来源插件） */
@@ -294,7 +326,7 @@ class McpManager {
   }
 
   stopAll() {
-    for (const c of this.clients.values()) c.stop();
+    return this.stop([...this.clients.keys()]);
   }
 }
 

@@ -119,13 +119,18 @@ description: 一句话说清什么时候该用它（agent 靠这句判断）
 
 ## MCP 连接器
 
-`config.json` 的 `mcp_servers`：
+`config.json` 的 `mcp_servers`，本地进程和远程服务两种都能接：
 
 ```json
 "mcp_servers": [
-  { "name": "filesystem", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/data"] }
+  { "name": "filesystem", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/data"] },
+  { "name": "notion", "url": "https://mcp.example.com/mcp", "headers": { "Authorization": "Bearer 你的令牌" } }
 ]
 ```
+
+- 填 `command` 就是本地 stdio；填 `url` 就是远程 Streamable HTTP，界面上也有对应的两个选项。
+- 请求头里多半是令牌，所以 `GET /api/mcp` 只回**头的名字**不回值；在界面上改别的字段存回去时，原来的令牌会自动沿用。
+- 带请求头又走明文 `http://` 的远程地址会被拒（本机 `localhost` 除外）——令牌不该在路上裸奔。
 
 服务器暴露的工具会以 `mcp__服务器名__工具名` 的形式自动注入。界面里 **专家 · 技能 · 连接器 → 连接器** 页也能管。
 
@@ -193,7 +198,14 @@ https://github.com/owner/repo/tree/main/plugins/xxx    仓库里的某个子目�
 **先在临时目录验一遍清单，不合规就不落盘**，免得 `plugins/` 里堆一堆装不上的垃圾。
 也可以直接把目录拷进 `plugins/`，重启即生效。
 
-技能立刻生效；MCP 服务器要重启一次才连上（卸载同理，进程得停）。
+技能和 MCP 服务器都是**装完立刻生效、卸载立刻停**，不用重启应用——
+卸载是先停进程再删目录（顺序反了就查不出它带过哪些服务器，子进程会一直挂着）。
+
+### 更新
+
+从地址装的插件，卡片上会多一个「更新」按钮，按当初那个地址重新拉一遍。
+安装来源记在 `data/plugin-sources.json`（记在插件目录**外面**，不然重装时正好被自己删掉）。
+版本号没变也照拉——上游经常只改内容不动版本。手动拷进 `plugins/` 的没有来源，也就没有这个按钮。
 
 ### 一致性范围（本客户端实现到哪）
 

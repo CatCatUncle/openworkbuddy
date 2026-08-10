@@ -444,9 +444,12 @@ app.get("/api/mcp", (_req, res) => {
     const failure = mcpManager.failures.find((f) => f.name === s.name);
     return {
       name: s.name,
-      command: s.command || s.url || "",
+      command: s.command || "",
       args: s.args || [],
       env: s.env || {},
+      url: s.url || "",
+      // 请求头里常有 token，界面上只说有几个，不回传值
+      header_keys: Object.keys(s.headers || {}),
       transport: s.transport || (s.command ? "stdio" : "streamable-http"),
       plugin, // 插件带来的：界面上只读，不许当成 config 里的条目存回去
       error: failure ? failure.error : "",
@@ -463,24 +466,65 @@ app.get("/api/mcp", (_req, res) => {
   res.json({ servers, total_tools: mcpManager.toolDefs().length });
 });
 
+/** 一条连接器配置规整成后端认的形状；stdio 看 command，远程看 url */
+function normalizeMcpServer(s, i, prevByName = new Map()) {
+  const at = `第 ${i + 1} 个连接器`;
+  const name = String(s.name || "").trim();
+  if (!name) throw new Error(`${at}缺少 name`);
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`${at}的 name「${name}」只能用字母、数字、- 和 _（工具名要按 mcp__服务器__工具 拼）`);
+  const url = String(s.url || "").trim();
+  const command = String(s.command || "").trim();
+  if (!command && !url) throw new Error(`${at}要么填 command（本地进程），要么填 url（远程 Streamable HTTP）`);
+  if (url) {
+    let u;
+    try { u = new URL(url); } catch { throw new Error(`${at}的 url 不是合法地址：${url}`); }
+    if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error(`${at}的 url 只支持 http/https`);
+    // 请求头里多半是 Authorization，GET 只回 header_keys 不回值；
+    // 前端原样存回来时没带 headers，就沿用原来那份，别把令牌洗没了。
+    const prev = prevByName.get(name);
+    const headers = s.headers && typeof s.headers === "object"
+      ? Object.fromEntries(Object.entries(s.headers).map(([k, v]) => [String(k), String(v)]))
+      : (prev && prev.headers) || {};
+    const local = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "::1";
+    if (Object.keys(headers).length && u.protocol === "http:" && !local) {
+      throw new Error(`${at}带了请求头（多半是令牌）却走明文 http，令牌会在路上被看光——请改成 https`);
+    }
+    return { name, transport: "streamable-http", url, headers };
+  }
+  return {
+    name,
+    transport: "stdio",
+    command,
+    args: Array.isArray(s.args) ? s.args.map(String) : [],
+    env: s.env && typeof s.env === "object" ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [String(k), String(v)])) : {},
+  };
+}
+
 app.post("/api/mcp", async (req, res) => {
   try {
     const list = (req.body || {}).servers;
     if (!Array.isArray(list)) throw new Error("需要 servers 数组");
-    for (const s of list) {
-      if (!s.name || !s.command) throw new Error("每个服务器需要 name 和 command 字段");
-    }
-    config.mcp_servers = list.map((s) => ({
-      name: String(s.name),
-      command: String(s.command),
-      args: Array.isArray(s.args) ? s.args.map(String) : [],
-      env: s.env && typeof s.env === "object" ? s.env : {},
-    }));
+    const prevByName = new Map((config.mcp_servers || []).map((s) => [s.name, s]));
+    const next = list.map((s, i) => normalizeMcpServer(s, i, prevByName));
+    const dup = next.map((s) => s.name).find((n, i, a) => a.indexOf(n) !== i);
+    if (dup) throw new Error(`连接器名字重复：${dup}`);
+
+    config.mcp_servers = next;
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
-    mcpManager.stopAll();
-    mcpManager.clients.clear();
-    await mcpManager.startAll(config.mcp_servers); // 失败的单独在日志告警，不阻塞其他
-    res.json({ ok: true, total_tools: mcpManager.toolDefs().length, connected: [...mcpManager.clients.keys()] });
+
+    // 插件带来的服务器也要一起重启：只重启 config 里的会把插件连接器整批打没，
+    // 而它们不在 config 里，重启前根本救不回来（旧版就是这个 bug）。
+    let fromPlugins = [];
+    try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该拖累连接器保存 */ }
+    const servers = [...config.mcp_servers, ...fromPlugins];
+    mcpManager.stop([...mcpManager.clients.keys(), ...mcpManager.failures.map((f) => f.name), ...servers.map((s) => s.name)]);
+    await mcpManager.startAll(servers); // 失败的单独在日志告警，不阻塞其他
+    res.json({
+      ok: true,
+      total_tools: mcpManager.toolDefs().length,
+      connected: [...mcpManager.clients.keys()],
+      failures: mcpManager.failures,
+    });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -937,6 +981,7 @@ app.get("/api/plugins", (_req, res) => {
     skills: (p.skills || []).map((s) => ({ name: s.name, description: s.description })),
     mcp_servers: (p.mcpServers || []).map((s) => ({ name: s.name, transport: s.transport })),
     bytes: p.ok ? skillsMgr.dirSize(p.dir) : 0,
+    source: pluginsMgr.pluginSource(p.name), // 有来源才给「更新」按钮
   }));
   res.json({ spec: pluginsMgr.SPEC_VERSION, plugins: list, mcp: mcpManager.status() });
 });
@@ -950,10 +995,31 @@ app.post("/api/plugins/install", async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
+app.post("/api/plugins/:name/update", async (req, res) => {
+  try {
+    const name = req.params.name;
+    // 旧的先停干净：重装会把目录整个换掉，老进程留着还指着已经删掉的文件
+    mcpManager.stopPlugin(name);
+    const info = await pluginsMgr.updatePlugin(name);
+    const started = await startPluginMcp(info.name);
+    res.json({ ok: true, updated: info, mcp_started: started });
+  } catch (e) {
+    // 更新失败也得把停掉的服务器捞回来，不然用户点一下「更新」反而把能用的搞没了
+    try { await startPluginMcp(req.params.name); } catch { /* 插件目录可能已经没了 */ }
+    res.status(400).json({ error: e.message });
+  }
+});
 app.delete("/api/plugins/:name", (req, res) => {
   try {
+    // 先停进程再删目录：目录一删就查不出它带过哪些服务器，子进程会一直挂到重启应用
+    const stopped = mcpManager.stopPlugin(req.params.name);
     const ok = pluginsMgr.removePlugin(req.params.name);
-    res.json({ ok, note: ok ? "插件已卸载；它带的 MCP 服务器要重启应用才会真正停掉" : "没有这个插件" });
+    if (!ok) return res.json({ ok: false, note: "没有这个插件" });
+    res.json({
+      ok: true,
+      mcp_stopped: stopped,
+      note: stopped.length ? `插件已卸载，同时停掉了它带的 ${stopped.length} 个 MCP 服务器` : "插件已卸载",
+    });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
