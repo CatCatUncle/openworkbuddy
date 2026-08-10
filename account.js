@@ -17,34 +17,62 @@ const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
 
-const USERS_FILE = path.join(__dirname, "data", "users.json");
-const USAGE_FILE = path.join(__dirname, "data", "usage.json");
+// WB_DATA_DIR 只为测试留的口子：跑测试时指到临时目录，免得动到真账本
+const DATA_DIR = process.env.WB_DATA_DIR || path.join(__dirname, "data");
+const USERS_FILE = path.join(DATA_DIR, "users.json");
+const USAGE_FILE = path.join(DATA_DIR, "usage.json");
 const TOKEN_COOKIE = "wb_token";
 const TOKEN_TTL_MS = 90 * 86400 * 1000;
 
 // ---------- 存储 ----------
-function loadUsers() {
+/**
+ * 读账本。文件不在 → 空账本（第一次跑）；文件在、却读不出来 → **抛错**。
+ * 这里绝不能把「读不出来」当成「没有用户」：那样接下来任何一次写盘都会拿这个
+ * 空壳把整本账（所有账号、密码、积分）覆盖掉，而且用户第一次注册还会当上管理员。
+ */
+function readStore(file, empty) {
+  let text;
   try {
-    const d = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
-    return { users: d.users || [], tokens: d.tokens || {} };
-  } catch {
-    return { users: [], tokens: {} };
+    text = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return empty;
+    throw new Error(`${path.basename(file)} 打不开（${e.message}）`);
   }
+  if (!text.trim()) return empty; // 空文件按新账本算，写坏成 0 字节也能自愈
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error(`${path.basename(file)} 内容坏了（${e.message}）。旁边有 .bak 可以恢复；在修好之前程序不会碰它，免得把账本覆盖成空的`);
+  }
+}
+
+/** 写盘：先落临时文件再改名。改名在同一分区上是原子的，别人读到的要么是旧的要么是新的，不会是半个 */
+function writeStoreAtomic(file, data, pretty) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, pretty ? 2 : 0), "utf8");
+  try { fs.copyFileSync(file, file + ".bak"); } catch {} // 上一版留个底，第一次没有就算了
+  fs.renameSync(tmp, file);
+}
+
+function loadUsers() {
+  const d = readStore(USERS_FILE, { users: [], tokens: {} });
+  // settings 要原样带着走：这里丢一个字段，下一次 saveUsers 就把它从盘上抹掉了
+  return { users: d.users || [], tokens: d.tokens || {}, settings: d.settings || {} };
+}
+/** 已经有账号之后还让不让别人自己注册。默认不让——这东西挂到公网上就是给陌生人发积分 */
+function openRegister(st) {
+  return !!(st || loadUsers()).settings.open_register;
 }
 function saveUsers(state) {
-  fs.mkdirSync(path.dirname(USERS_FILE), { recursive: true });
-  fs.writeFileSync(USERS_FILE, JSON.stringify(state, null, 2), "utf8");
+  writeStoreAtomic(USERS_FILE, state, true);
 }
 function loadUsage() {
-  try {
-    return JSON.parse(fs.readFileSync(USAGE_FILE, "utf8")) || [];
-  } catch {
-    return [];
-  }
+  const d = readStore(USAGE_FILE, []);
+  return Array.isArray(d) ? d : [];
 }
 function saveUsage(list) {
-  fs.mkdirSync(path.dirname(USAGE_FILE), { recursive: true });
-  fs.writeFileSync(USAGE_FILE, JSON.stringify(list.slice(0, 2000)), "utf8");
+  writeStoreAtomic(USAGE_FILE, list.slice(0, 2000));
 }
 function localDay(d) {
   const t = d || new Date();
@@ -112,6 +140,15 @@ function issueToken(username) {
   return token;
 }
 
+/** 换密码后把这个人别的会话全踢掉 —— 密码泄露了才改的密码，旧 cookie 还能用就等于没改 */
+function revokeTokens(username, keepToken) {
+  const st = loadUsers();
+  for (const [t, info] of Object.entries(st.tokens)) {
+    if (info.user === username && t !== keepToken) delete st.tokens[t];
+  }
+  saveUsers(st);
+}
+
 function tokenFromReq(req) {
   const m = /(?:^|;\s*)wb_token=([\w]+)/.exec(req.headers.cookie || "");
   return m ? m[1] : null;
@@ -124,11 +161,65 @@ function userFromReq(req) {
   if (!info || Date.now() - info.at > TOKEN_TTL_MS) return null;
   return st.users.find((u) => u.username === info.user) || null;
 }
-function setTokenCookie(res, token) {
-  res.setHeader("Set-Cookie", `${TOKEN_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(TOKEN_TTL_MS / 1000)}`);
+/** 是不是 https 进来的（部署时前面一般挂 nginx，真正的 TLS 在它那一层） */
+function isHttps(req) {
+  return !!(req && (req.secure || String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() === "https"));
 }
-function clearTokenCookie(res) {
-  res.setHeader("Set-Cookie", `${TOKEN_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+function setTokenCookie(res, token, req) {
+  // https 下补上 Secure：否则同一个域名只要有一次 http 请求，令牌就明文躺在路上了
+  const secure = isHttps(req) ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `${TOKEN_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=${Math.floor(TOKEN_TTL_MS / 1000)}`);
+}
+function clearTokenCookie(res, req) {
+  const secure = isHttps(req) ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `${TOKEN_COOKIE}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`);
+}
+
+// ---------- 登录闸 ----------
+/**
+ * 密码是 scrypt 算的，一次几十毫秒，而 server 就跑在 Electron 主进程里——
+ * 不拦着的话，一个字典跑上来界面先卡死，密码也早晚被撞开。
+ * 只在内存里记，重启就清空：这是防连打，不是封号。
+ */
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+function createLimiter({ windowMs = LOGIN_WINDOW_MS, now = () => Date.now() } = {}) {
+  const hits = new Map(); // key → { fails, first }
+  function prune(t) {
+    for (const [k, v] of hits) if (t - v.first > windowMs) hits.delete(k);
+  }
+  return {
+    /** 还要等多少秒才能再试；能试就返回 0 */
+    retryAfter(key, max) {
+      const t = now();
+      prune(t);
+      const v = hits.get(key);
+      if (!v || v.fails < max) return 0;
+      return Math.max(1, Math.ceil((v.first + windowMs - t) / 1000));
+    },
+    fail(key) {
+      const t = now();
+      prune(t);
+      const v = hits.get(key) || { fails: 0, first: t };
+      v.fails++;
+      hits.set(key, v);
+    },
+    pass(key) {
+      hits.delete(key);
+    },
+  };
+}
+const loginLimiter = createLimiter();
+const FAILS_PER_USER = 8; // 盯着一个账号打
+const FAILS_PER_IP = 30; // 换着账号打
+const REGS_PER_IP = 5; // 注册也得拦，不然一个脚本能把账本刷满
+
+/**
+ * 只认 socket 上的地址，不认 X-Forwarded-For：那个头谁都能伪造，
+ * 认了就等于把 IP 闸拆了（换一行头就是一个新 IP）。
+ * 代价是前面挂 nginx 时所有人共用一个 IP 桶——所以真正兜底的是按账号的那道闸。
+ */
+function clientIp(req) {
+  return (req.socket && req.socket.remoteAddress) || req.ip || "?";
 }
 
 // ---------- 积分与用量 ----------
@@ -234,15 +325,23 @@ function createRouter() {
   const router = express.Router();
 
   router.get("/api/auth/state", (req, res) => {
+    const st = loadUsers();
     const user = userFromReq(req);
-    res.json({ users: loadUsers().users.length, authed: !!user, user: publicUser(user) });
+    res.json({ users: st.users.length, authed: !!user, user: publicUser(user), open_register: openRegister(st) });
   });
 
   router.post("/api/auth/register", (req, res) => {
+    const ip = clientIp(req);
+    const wait = loginLimiter.retryAfter("reg|" + ip, REGS_PER_IP);
+    if (wait) return res.status(429).json({ error: `注册太频繁了，${wait} 秒后再试` });
     try {
       const { username, password } = req.body || {};
+      const st = loadUsers();
+      // 第一个账号永远放行（就是拿它开管理员），之后要不要开放注册由管理员说了算
+      if (st.users.length && !openRegister(st)) throw new Error("管理员没有开放注册，找他给你开一个");
+      loginLimiter.fail("reg|" + ip);
       const user = register(username, password);
-      setTokenCookie(res, issueToken(user.username));
+      setTokenCookie(res, issueToken(user.username), req);
       res.json({ ok: true, user: publicUser(user) });
     } catch (e) {
       res.status(400).json({ error: e.message });
@@ -251,9 +350,21 @@ function createRouter() {
 
   router.post("/api/auth/login", (req, res) => {
     const { username, password } = req.body || {};
-    const user = verify(username, password);
-    if (!user) return res.status(401).json({ error: "用户名或密码不对" });
-    setTokenCookie(res, issueToken(user.username));
+    const name = String(username || "").trim();
+    const ipKey = "ip|" + clientIp(req);
+    const userKey = "user|" + name.toLowerCase();
+    const wait = loginLimiter.retryAfter(userKey, FAILS_PER_USER) || loginLimiter.retryAfter(ipKey, FAILS_PER_IP);
+    // 先看闸再算密码：scrypt 是重活，让它连打就等于替对方把 CPU 也占了
+    if (wait) return res.status(429).json({ error: `试太多次了，${wait} 秒后再试` });
+    const user = verify(name, password);
+    if (!user) {
+      loginLimiter.fail(userKey);
+      loginLimiter.fail(ipKey);
+      return res.status(401).json({ error: "用户名或密码不对" });
+    }
+    loginLimiter.pass(userKey);
+    loginLimiter.pass(ipKey);
+    setTokenCookie(res, issueToken(user.username), req);
     res.json({ ok: true, user: publicUser(user) });
   });
 
@@ -264,7 +375,7 @@ function createRouter() {
       delete st.tokens[token];
       saveUsers(st);
     }
-    clearTokenCookie(res);
+    clearTokenCookie(res, req);
     res.json({ ok: true });
   });
 
@@ -285,7 +396,20 @@ function createRouter() {
     u.salt = crypto.randomBytes(16).toString("hex");
     u.hash = hashPassword(new_password, u.salt);
     saveUsers(st);
+    // 改完密码把别处的会话全踢下线，只留当前这一个
+    revokeTokens(user.username, tokenFromReq(req));
     res.json({ ok: true });
+  });
+
+  /** 开不开放注册：只有管理员能改 */
+  router.post("/api/auth/open-register", (req, res) => {
+    const user = userFromReq(req);
+    if (!user) return res.status(401).json({ error: "未登录" });
+    if (user.role !== "admin") return res.status(403).json({ error: "只有管理员能改" });
+    const st = loadUsers();
+    st.settings = { ...(st.settings || {}), open_register: !!(req.body || {}).open_register };
+    saveUsers(st);
+    res.json({ ok: true, open_register: st.settings.open_register });
   });
 
   router.get("/api/usage", (req, res) => {
@@ -319,4 +443,6 @@ module.exports = {
   usageSummary,
   authGuard,
   createRouter,
+  // 下面这些只给测试用：账本读写和登录闸得能在临时目录里单独验，不然一跑测试就动到真账号
+  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps },
 };

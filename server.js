@@ -1422,6 +1422,14 @@ async function main() {
     .then((s) => { if (s.configured) console.log(`微信 iLink 长轮询: ${s.state}`); })
     .catch((e) => console.warn("[微信iLink] 长轮询启动失败:", e.message));
 
+  // 兜底：任何路由里没接住的异常都变成 JSON，别甩一整页 HTML 堆栈给前端
+  // （前端一律 r.json()，甩 HTML 的话界面只会显示「加载失败」，真正的原因谁也看不见）
+  app.use((err, req, res, next) => {
+    console.error(`[${req.method} ${req.path}]`, err.message);
+    if (res.headersSent) return next(err);
+    res.status(err.status || 500).json({ error: err.message || "服务器内部错误" });
+  });
+
   const port = +process.env.PORT || config.server.port || 3800;
   // 默认只听本机：这个进程手里有 run_shell 和整个文件系统，绑 0.0.0.0 等于把 shell 挂到公网。
   // 要放出去（Docker / 服务器）必须显式 HOST=0.0.0.0，并且自己在前面套 HTTPS + 反代。
