@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * WorkBuddy CLI — 终端里直接跑 agent 任务，与 Web/IM 共用同一套运行时与配置。
+ * OpenBuddy CLI — 终端里直接跑 agent 任务，与 Web/IM 共用同一套运行时与配置。
  *
  * 用法：
  *   node cli.js "帮我调研xxx并写成报告"     # 单发任务，跑完即退出
@@ -37,7 +37,7 @@ for (let i = 0; i < argv.length; i++) {
 const oneShot = words.join(" ").trim();
 
 function printHelp() {
-  console.log(`WorkBuddy CLI
+  console.log(`OpenBuddy CLI
 用法：
   wb "任务描述"                 单发任务
   wb                            交互式对话（/help 看内置命令）
@@ -67,7 +67,12 @@ if (config.workspace_dir) {
 }
 const llm = createLLM(config);
 let experts = [];
-try { experts = JSON.parse(fs.readFileSync(path.join(__dirname, "experts.json"), "utf8")).experts || []; } catch {}
+let expertTeams = [];
+try {
+  const d = JSON.parse(fs.readFileSync(path.join(__dirname, "experts.json"), "utf8"));
+  experts = d.experts || [];
+  expertTeams = d.teams || [];
+} catch {}
 const mcpManager = new McpManager();
 
 // ---------- 会话持久化（与 server.js 同一目录同一结构） ----------
@@ -180,7 +185,7 @@ async function runOnce(runtime, text, mode) {
     await mcpManager.startAll(config.mcp_servers);
     console.log(dim(`${mcpManager.toolDefs().length} 个工具`));
   }
-  const runtime = createAgentRuntime({ config, llm, mcpManager, experts });
+  const runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });
   console.log(dim(`模型 ${llm.provider}（${llm.model}）· 模式 ${opts.mode} · 工作目录 ${getWorkspaceDir()}${opts.session ? ` · 会话 ${sessionId}` : ""}`));
 
   if (oneShot) {
@@ -190,7 +195,7 @@ async function runOnce(runtime, text, mode) {
   }
 
   // ---- REPL ----
-  console.log(bold("WorkBuddy CLI 交互模式") + dim("（/mode 切模式 /new 清上下文 /files 看成果 /exit 退出）"));
+  console.log(bold("OpenBuddy CLI 交互模式") + dim("（/mode 切模式 /new 清上下文 /files 看成果 /exit 退出）"));
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const ask = () => new Promise((ok) => rl.question(tty ? "\x1b[36mwb>\x1b[0m " : "wb> ", ok));
   for (;;) {

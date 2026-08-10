@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WorkBuddy 复刻版</title>
+<title>OpenBuddy</title>
 <style>
   :root {
     --wb-brand: #5b5ff7; --wb-brand-weak: #eef0ff; --wb-brand-grad: linear-gradient(135deg,#5b5ff7,#8b5cf6);
@@ -53,8 +53,27 @@
   .hist-item:hover { background: var(--wb-bg-hover); }
   .hist-item.active { background: var(--wb-brand-weak); color: var(--wb-brand); }
   .side-nav { border-top: 1px solid var(--wb-border); padding-top: 8px; margin-top: 8px; }
+  /* 主导航挪到「项目」下面，跟任务历史之间用一条线隔开（历史是列表，导航是入口，别混在一起） */
+  .side-nav.top { border-top: none; border-bottom: 1px solid var(--wb-border); padding: 0 0 8px; margin: 6px 0 8px; }
   .side-nav .item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
   .side-nav .item:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
+  .side-nav .item.active { background: var(--wb-brand-weak); color: var(--wb-brand); font-weight: 500; }
+  /* 官方 WorkBuddy 的侧栏项是两行：主标题 + 灰色副标题（专家/技能·连接器、自动化/定时任务、更多/资料库·灵感） */
+  .side-nav .item .tx { display: flex; flex-direction: column; line-height: 1.35; min-width: 0; }
+  .side-nav .item .tx .sub { font-size: 11px; color: var(--wb-text-3); font-weight: 400; }
+  .side-nav .item.active .tx .sub { color: var(--wb-brand); opacity: .7; }
+  .side-nav .more-toggle { justify-content: space-between; color: var(--wb-text-3); }
+  .side-nav .more-toggle .caret { margin-left: auto; }
+  /* 项目是分组表头：整行不可点，只有右边的 ＋ 可点 */
+  .side-nav .nav-head { cursor: default; }
+  .side-nav .nav-head:hover { background: none; color: var(--wb-text-2); }
+  .side-nav .nav-head #proj-add { margin-left: auto; text-decoration: none; color: var(--wb-text-3); font-size: 14px; padding: 0 4px; border-radius: 6px; }
+  .side-nav .nav-head #proj-add:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
+  .side-nav #proj-list { margin: 0 0 4px; }
+  .side-nav .more-toggle .caret { font-size: 10px; transition: transform .15s; }
+  .side-nav .more-toggle.open .caret { transform: rotate(180deg); }
+  .more-box { display: none; padding-left: 8px; }
+  .more-box.open { display: block; }
   /* ---------- 主区域 ---------- */
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .topbar { height: 56px; flex: 0 0 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--wb-border); }
@@ -63,6 +82,8 @@
   #toggle-files { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 5px 12px; font-size: 12px; color: var(--wb-text-2); cursor: pointer; }
   #chat-scroll { flex: 1; overflow-y: auto; min-height: 0; }
   .chat-col { max-width: var(--wb-content-w); margin: 0 auto; padding: 24px 20px 12px; }
+  /* 广场类页面（专家/技能/连接器、模板库）是卡片网格，832px 的阅读宽度会挤成一列 */
+  .chat-col.wide-page { max-width: 1120px; }
   .empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding-top: 10vh; }
   .empty h1 { font-size: 34px; font-weight: 700; margin-bottom: 24px; letter-spacing: 1px; }
   .scene-tabs { display: flex; background: var(--wb-bg-side); border-radius: 26px; padding: 4px; gap: 2px; margin-bottom: 34px; }
@@ -126,6 +147,23 @@
   .proc-body { display: none; padding-left: 10px; border-left: 2px solid var(--wb-border); margin: 4px 0 4px 4px; }
   .proc-wrap.open .proc-body { display: block; }
   .proc-body .a-text { color: var(--wb-text-2); font-size: 13px; }
+  /* 本次产出：把成果文件直接摆在对话里，点开就看，不用去右侧文件面板翻 */
+  .out-block { margin: 12px 0 4px; }
+  .out-hd { font-size: 12px; color: var(--wb-text-3); margin-bottom: 8px; }
+  .out-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .out-card { width: 240px; border: 1px solid var(--wb-border); border-radius: 12px; overflow: hidden; background: var(--wb-bg); cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+  .out-card:hover { border-color: var(--wb-brand); box-shadow: 0 4px 12px rgba(91,95,247,.12); }
+  /* 缩略图：真的把网页/图片缩着渲染出来，比一个通用图标有用得多 */
+  .out-thumb { height: 132px; background: var(--wb-bg-side); border-bottom: 1px solid var(--wb-border); position: relative; overflow: hidden; }
+  .out-thumb iframe { width: 400%; height: 400%; border: 0; transform: scale(.25); transform-origin: 0 0; pointer-events: none; background: #fff; }
+  .out-thumb img { width: 100%; height: 100%; object-fit: contain; }
+  .out-thumb .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 40px; }
+  .out-info { padding: 8px 12px; }
+  .out-name { font-size: 13px; font-weight: 500; color: var(--wb-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .out-meta { font-size: 12px; color: var(--wb-text-3); margin-top: 2px; }
+  .out-acts { display: flex; gap: 4px; padding: 0 8px 8px; }
+  .out-acts button, .out-acts a { flex: 1; text-align: center; border: 1px solid var(--wb-border); background: none; color: var(--wb-text-2); font-size: 12px; padding: 4px 0; border-radius: 6px; cursor: pointer; text-decoration: none; line-height: 1.5; }
+  .out-acts button:hover, .out-acts a:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   /* 回复底部操作条（复制/评价/重新生成 + 消耗/模型，仿官方） */
   .turn-actions { display: flex; align-items: center; gap: 2px; margin-top: 10px; }
   .ta-btn { border: none; background: none; cursor: pointer; font-size: 13px; color: var(--wb-text-3); padding: 4px 7px; border-radius: 6px; line-height: 1; }
@@ -202,6 +240,12 @@
   .pv-head .pv-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pv-head button { border: none; background: transparent; font-size: 14px; cursor: pointer; color: var(--wb-text-2); padding: 4px 8px; border-radius: 6px; }
   .pv-head button:hover { background: var(--wb-bg-hover); }
+  .pv-deploy { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; font-size: 12px; color: var(--wb-text-2); background: var(--wb-brand-weak); border-bottom: 1px solid var(--wb-border); }
+  .pv-deploy button { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 7px; padding: 3px 10px; font-size: 12px; color: var(--wb-text-2); cursor: pointer; }
+  .pv-deploy button.primary { background: var(--wb-brand); border-color: var(--wb-brand); color: #fff; }
+  .pv-deploy button:hover { border-color: var(--wb-brand); }
+  .pv-deploy button.primary:hover { opacity: .9; }
+  .pv-deploy code { font-size: 11px; background: var(--wb-bg); border-radius: 5px; padding: 2px 6px; user-select: all; }
   #pv-body { flex: 1; min-height: 0; overflow: auto; }
   #pv-body iframe { width: 100%; height: 100%; border: none; background: #fff; }
   #pv-body img { max-width: 100%; display: block; margin: 20px auto; }
@@ -343,6 +387,13 @@
   .auth-card .alt { font-size: 12px; color: var(--wb-text-3); text-align: center; margin-top: 12px; }
   .auth-card .alt a { color: var(--wb-brand); cursor: pointer; }
   .auth-card .err { font-size: 12px; color: var(--wb-err); min-height: 16px; margin-bottom: 6px; }
+  .onb-card { width: 420px; }
+  .onb-card .onb-lb { display: block; font-size: 12px; color: var(--wb-text-2); margin: 10px 0 6px; }
+  .onb-card select { width: 100%; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: 10px; font-size: 13px; background: var(--wb-bg); color: var(--wb-text); }
+  .onb-card .onb-tip { font-size: 12px; color: var(--wb-text-3); margin-top: 6px; line-height: 1.6; }
+  .onb-card .onb-tip a { color: var(--wb-brand); }
+  .onb-card button.go { margin-top: 18px; }
+  .onb-card button.go:disabled { opacity: .6; cursor: default; }
   /* ---------- 排队 / 插队 ---------- */
   .queue-bar { display: none; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 2px 6px; font-size: 12px; color: var(--wb-text-3); }
   .queue-bar.show { display: flex; }
@@ -364,29 +415,105 @@
   .usage-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .usage-table th, .usage-table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--wb-border); white-space: nowrap; }
   .usage-table th { color: var(--wb-text-3); font-weight: 500; }
+  /* ---------- 专家 · 技能 · 连接器（主区页面） ---------- */
+  .hub-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+  .hub-tabs { display: flex; gap: 4px; background: var(--wb-bg-side); border-radius: 10px; padding: 3px; }
+  .hub-tabs button { border: none; background: transparent; border-radius: 8px; padding: 7px 16px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
+  .hub-tabs button.active { background: var(--wb-bg); color: var(--wb-text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .hub-search { flex: 1; min-width: 160px; position: relative; }
+  .hub-search input { width: 100%; padding: 8px 12px 8px 30px; border: 1px solid var(--wb-border); border-radius: 10px; font-size: 13px; background: var(--wb-bg); }
+  .hub-search::before { content: "🔍"; position: absolute; left: 9px; top: 50%; transform: translateY(-50%); font-size: 12px; opacity: .5; }
+  .hub-sec-title { font-size: 14px; font-weight: 600; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .hub-sec-title .sub { font-size: 11px; font-weight: 400; color: var(--wb-text-3); }
+  /* 精选场景：横滑不换行，窄屏也不撑破主区 */
+  .feat-scroll { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 10px; margin-bottom: 6px; scrollbar-width: thin; }
+  .feat-card { flex: 0 0 232px; border: 1px solid var(--wb-border); border-radius: 12px; padding: 12px 14px; cursor: pointer; background: var(--wb-bg); transition: border-color .15s, transform .15s; }
+  .feat-card:hover { border-color: var(--wb-brand); transform: translateY(-1px); }
+  .feat-card .ic { font-size: 20px; margin-bottom: 6px; }
+  .feat-card .tt { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .feat-card .dd { font-size: 12px; color: var(--wb-text-2); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .feat-card .go { font-size: 11px; color: var(--wb-brand); margin-top: 8px; }
+  .hub-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 12px; }
+  .hub-sub { display: flex; gap: 16px; }
+  .hub-sub button { border: none; background: none; padding: 4px 0; font-size: 14px; font-weight: 600; color: var(--wb-text-3); cursor: pointer; border-bottom: 2px solid transparent; }
+  .hub-sub button.active { color: var(--wb-text); border-bottom-color: var(--wb-brand); }
+  /* 叫 hub-chips 不叫 chips：首屏空状态那套 .chips 是居中 + max-width:720px 的，重名会串味 */
+  .hub-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 20px; padding: 4px 12px; font-size: 12px; color: var(--wb-text-2); cursor: pointer; line-height: 1.6; }
+  .chip:hover { border-color: var(--wb-brand); color: var(--wb-brand); }
+  .chip.active { background: var(--wb-brand-weak); border-color: var(--wb-brand); color: var(--wb-brand); font-weight: 500; }
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 12px; }
+  .ex-card { border: 1px solid var(--wb-border); border-radius: 12px; padding: 14px; background: var(--wb-bg); display: flex; flex-direction: column; gap: 8px; position: relative; }
+  .ex-card:hover { border-color: var(--wb-brand); }
+  .ex-card .hd { display: flex; align-items: center; gap: 10px; }
+  .ex-card .av { width: 38px; height: 38px; flex: none; border-radius: 10px; background: var(--wb-brand-weak); display: flex; align-items: center; justify-content: center; font-size: 19px; }
+  .ex-card .nm { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .ex-card .nm span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ex-card .al { font-size: 11px; color: var(--wb-text-3); font-weight: 400; flex: none; }
+  .ex-card .ds { font-size: 12px; color: var(--wb-text-2); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 40px; }
+  .ex-card .tg { display: flex; gap: 5px; flex-wrap: wrap; }
+  .ex-card .tg i { font-style: normal; font-size: 11px; color: var(--wb-text-3); background: var(--wb-bg-side); border-radius: 5px; padding: 2px 7px; }
+  .ex-card .ops { display: flex; gap: 6px; margin-top: auto; padding-top: 4px; }
+  .ex-card .ops button { flex: 1; border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 5px 0; font-size: 12px; color: var(--wb-text-2); cursor: pointer; }
+  .ex-card .ops button:hover { border-color: var(--wb-brand); color: var(--wb-brand); }
+  .ex-card .ops button.primary { background: var(--wb-brand); border-color: var(--wb-brand); color: #fff; }
+  .ex-card.add { align-items: center; justify-content: center; border-style: dashed; cursor: pointer; color: var(--wb-text-3); min-height: 150px; text-align: center; }
+  .ex-card.add:hover { color: var(--wb-brand); }
+  .ex-card.add .add-sub { display: block; margin-top: 6px; font-size: 11px; color: var(--wb-text-3); }
+  .hub-sub button .beta { font-style: normal; font-size: 10px; font-weight: 600; color: var(--wb-brand); background: var(--wb-brand-weak); border-radius: 4px; padding: 1px 4px; vertical-align: 2px; }
+  .hub-count { grid-column: 1 / -1; font-size: 12px; color: var(--wb-text-3); padding: 4px 2px 0; }
+  .hub-desc { font-size: 12px; color: var(--wb-text-3); margin: -4px 0 10px; }
+  .ex-card .flag { position: absolute; top: 10px; right: 10px; font-size: 10px; color: var(--wb-text-3); background: var(--wb-bg-side); border-radius: 5px; padding: 1px 6px; }
+  .ex-card .sk-preview { margin: 0; max-height: 260px; overflow: auto; background: var(--wb-bg-side); padding: 10px; border-radius: 8px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+  .hub-empty { color: var(--wb-text-3); font-size: 13px; padding: 30px; text-align: center; }
+  /* 专家编辑抽屉 */
+  .ex-editor { border: 1px solid var(--wb-brand); border-radius: 12px; padding: 16px; margin-bottom: 14px; background: var(--wb-bg); }
+  .ex-editor .row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .ex-editor .row > * { min-width: 0; }
+  .ex-editor label { display: block; font-size: 12px; color: var(--wb-text-2); margin-bottom: 4px; }
+  .ex-editor input, .ex-editor textarea, .ex-editor select { width: 100%; }
+  .sk-pick { display: flex; gap: 6px; flex-wrap: wrap; }
+  .sk-pick label { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--wb-border); border-radius: 20px; padding: 4px 11px; font-size: 12px; cursor: pointer; margin: 0; }
+  .sk-pick label.on { background: var(--wb-brand-weak); border-color: var(--wb-brand); color: var(--wb-brand); }
+  .sk-pick input { display: none; }
+  /* ---------- 参考模板库 ---------- */
+  .tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .tpl-card { border: 1px solid var(--wb-border); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .tpl-card .hd { display: flex; align-items: center; gap: 7px; }
+  .tpl-card .ic { font-size: 16px; }
+  .tpl-card .tt { font-size: 13px; font-weight: 600; }
+  .tpl-card .ct { margin-left: auto; font-size: 11px; color: var(--wb-text-3); background: var(--wb-bg-side); border-radius: 5px; padding: 1px 7px; }
+  .tpl-card .dd { font-size: 12px; color: var(--wb-text-2); line-height: 1.5; }
+  .tpl-card pre { background: var(--wb-bg-side); border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 190px; overflow: auto; color: var(--wb-text); }
+  .tpl-card .ops { display: flex; gap: 6px; margin-top: auto; }
+  .tpl-card .ops button { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer; color: var(--wb-text-2); }
+  .tpl-card .ops button.primary { background: var(--wb-brand); border-color: var(--wb-brand); color: #fff; }
 </style>
 </head>
 <body>
 <aside>
   <div class="brand">
     <div class="mark">W</div>
-    <div><div class="name">WorkBuddy</div><div class="tag">复刻版 · 一句话让 AI 替你上班</div></div>
+    <div><div class="name">OpenBuddy</div><div class="tag">开源版 · 一句话让 AI 替你上班</div></div>
   </div>
   <button id="new-task">＋ 新建任务</button>
   <div class="assist-box" id="assist-box">
-    <div class="ab-head" id="ab-head" title="点击打开本地助理（IM 消息流）"><span>🤖 本地助理</span><span class="ab-sub">IM 远程指挥</span></div>
+    <div class="ab-head" id="ab-head" title="点击打开本地助理（IM 消息流）"><span>🤖 助理</span><span class="ab-sub">IM 远程指挥</span></div>
     <div id="ab-channels"><div class="ab-empty">状态加载中…</div></div>
   </div>
-  <div class="side-label" style="display:flex;align-items:center;justify-content:space-between">项目<a href="#" id="proj-add" title="新建项目" style="text-decoration:none;color:var(--wb-text-3);font-size:14px;padding:0 4px">＋</a></div>
-  <div id="proj-list"></div>
+  <div class="side-nav top">
+    <div class="item nav-head"><span class="ic">📂</span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目">＋</a></div>
+    <div id="proj-list"></div>
+    <div class="item" data-view="hub"><span class="ic">🧩</span><span class="tx">专家<span class="sub">技能 · 连接器</span></span></div>
+    <div class="item" data-modal="sched"><span class="ic">⏰</span><span class="tx">自动化<span class="sub">定时任务</span></span></div>
+    <div class="item more-toggle" id="more-toggle"><span class="ic">⋯</span><span class="tx">更多<span class="sub">资料库 · 灵感</span></span><span class="caret" id="more-caret">▾</span></div>
+    <div class="more-box" id="more-box">
+      <div class="item" data-view="prompts"><span class="ic">📚</span><span class="tx">参考模板库<span class="sub">提示词范例</span></span></div>
+      <div class="item" data-modal="library"><span class="ic">💡</span><span class="tx">资料库<span class="sub">知识 · 灵感</span></span></div>
+    </div>
+  </div>
   <div class="side-label">任务历史</div>
   <div id="history"></div>
-  <div class="side-nav">
-    <div class="item" data-modal="library">📚 资料库·灵感</div>
-    <div class="item" data-modal="skills">📦 技能库</div>
-    <div class="item" data-modal="experts">👥 专家团</div>
-    <div class="item" data-modal="sched">⏰ 定时任务</div>
-  </div>
   <div class="user-row" id="user-row" style="display:none">
     <div class="user-menu" id="user-menu"></div>
     <div class="user-chip" id="user-chip" title="账号菜单"></div>
@@ -450,6 +577,7 @@
     <a id="pv-dl" href="#" download title="下载" style="text-decoration:none;padding:4px 8px">⬇</a>
     <button id="pv-close" title="关闭">✕</button>
   </div>
+  <div class="pv-deploy" id="pv-deploy" style="display:none"></div>
   <div id="pv-body"></div>
 </div>
 
@@ -477,6 +605,26 @@
   </div>
 </div>
 
+<!-- 首次开箱：没有模型 Key 时界面点什么都白点，先把这一步走完 -->
+<div class="auth-mask" id="onb-mask">
+  <div class="auth-card onb-card">
+    <h2>先给它接上一个大模型</h2>
+    <div class="sub">OpenBuddy 自己不含模型。挑一家服务商、把 API Key 填进来，我会当场发一条测试请求验活。</div>
+    <div class="err" id="onb-err"></div>
+    <label class="onb-lb">模型服务商</label>
+    <select id="onb-model"></select>
+    <div class="onb-tip" id="onb-tip"></div>
+    <label class="onb-lb">API Key</label>
+    <input id="onb-key" type="password" placeholder="粘贴 API Key" autocomplete="off" spellcheck="false">
+    <label class="onb-lb">工作目录（成果文件都放这儿）</label>
+    <input id="onb-dir" placeholder="留空就用默认目录">
+    <button class="go" id="onb-go">验活并保存</button>
+    <div class="alt">
+      <a id="onb-skip">先跳过，我一会儿去设置里填</a>
+    </div>
+  </div>
+</div>
+
 <script>
 // ================= 基础状态 =================
 let sessionId = null;
@@ -485,6 +633,7 @@ let settingsCache = null;
 let projects = [];
 let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前声明（初始化就会用到）
 let currentUser = null; // 登录后由 initAuth() 填充
+let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
 let SESS_KEY = "wb_sessions"; // 登录后切换为 wb_sessions:<用户名>（每人一份任务历史）
 let sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
 const chatCol = document.getElementById("chat-col");
@@ -734,6 +883,17 @@ function createTurnUI(userText, turnMode) {
       ensureProc().appendChild(note);
       procWrap?.classList.add("open");
       turn._limited = true;
+    } else if (ev.type === "trim") {
+      // 历史太长，较早的工具原文被截短了。一条任务只留一行提示，累计数字滚动更新
+      const proc = ensureProc();
+      let note = proc.querySelector(".trim-note");
+      if (!note) {
+        note = document.createElement("div");
+        note.className = "trim-note";
+        note.style.cssText = "font-size:12px;color:var(--wb-text-3);margin:6px 0";
+        proc.appendChild(note);
+      }
+      note.textContent = `✂️ 历史过长，已截短较早的工具输出（约 ${Math.round((ev.chars || 0) / 1000)} 千字符），最近几步保留原文。可在 设置→智能体设置 调大上下文预算`;
     } else if (ev.type === "usage") {
       // 插队会触发多轮 runTask、发多个 usage 事件 → 累加而不是覆盖
       if (!turn._usage) turn._usage = { ...ev };
@@ -753,13 +913,23 @@ function createTurnUI(userText, turnMode) {
       turn._credits = ev; // 结束时由操作条展示「扣 X 积分 · 余额 Y」
       if (currentUser) { currentUser.credits = ev.balance; renderUserChip(); }
     } else if (ev.type === "files") {
-      renderFiles(ev.files);
-      autoPreviewNewHtml(ev.files);
-      // 预览打开时不再展开文件面板，避免挤压聊天区
-      if (ev.files && ev.files.length && !pvPanel.classList.contains("show")) {
-        document.getElementById("files-panel").classList.add("show");
-      } else if (pvPanel.classList.contains("show")) {
-        document.getElementById("files-panel").classList.remove("show");
+      // ev.changed 是服务端在任务开头打的快照上算出来的，历史回放也还原得出来；
+      // 老版本存下来的记录里没有这个字段，退回本地 mtime 差异
+      const turnOut = ev.changed
+        ? (ev.files || []).filter(f => ev.changed.includes(f.name))
+        : changedFiles(ev.files);
+      renderTurnOutputs(body, turnOut); // 先算差异，autoPreviewNewHtml 里才会推进快照
+      // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的，
+      // 自动预览更会莫名其妙弹出一个几天前的文件。产出卡片照摆，其余一律不动。
+      if (!isReplaying) {
+        renderFiles(ev.files);
+        autoPreviewNewHtml(ev.files);
+        // 预览打开时不再展开文件面板，避免挤压聊天区
+        if (ev.files && ev.files.length && !pvPanel.classList.contains("show")) {
+          document.getElementById("files-panel").classList.add("show");
+        } else if (pvPanel.classList.contains("show")) {
+          document.getElementById("files-panel").classList.remove("show");
+        }
       }
     } else if (ev.type === "error") {
       currentText = null;
@@ -799,6 +969,9 @@ function createTurnUI(userText, turnMode) {
         if (!hasErr) procWrap.classList.remove("open");
       }
     }
+    // 产出卡片是回合的结论物，挪到最后——否则会卡在中途正文和最终结论之间
+    const outBlock = body.querySelector(":scope > .out-block");
+    if (outBlock) body.appendChild(outBlock);
     addActionsBar();
     if (turnMode === "plan") renderPlanChecklist();
   }
@@ -888,7 +1061,7 @@ function setSceneTag(label) {
 function buildEmpty() {
   const tpl = document.createElement("div");
   tpl.className = "empty"; tpl.id = "empty";
-  tpl.innerHTML = `<h1>WorkBuddy, 我帮你</h1>
+  tpl.innerHTML = `<h1>OpenBuddy, 我帮你</h1>
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
       `<button class="${i === 0 ? "active" : ""}" data-scene="${k}">${["⏱","💻","🎨"][i]} ${k}</button>`).join("")}</div>
     <div class="chips" id="scene-chips"></div>`;
@@ -1004,6 +1177,10 @@ function fileIcon(name) {
   if (/\.xlsx?$/i.test(name)) return "📈";
   if (/\.(md|txt)$/i.test(name)) return "📝";
   if (/\.csv$/i.test(name)) return "🗂️";
+  if (/\.html?$/i.test(name)) return "🌐";
+  if (/\.pdf$/i.test(name)) return "📕";
+  if (/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name)) return "🖼️";
+  if (/\.(mp4|mov|webm|m4v)$/i.test(name)) return "🎬";
   return "📎";
 }
 function fmtSize(n) { return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B"; }
@@ -1121,23 +1298,142 @@ async function previewFile(name) {
     body.innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">该格式暂不支持应用内预览，可点右上 🗔 用系统程序打开，或 ⬇ 下载。</div>`;
   }
   pvPanel.classList.add("show");
+  renderDeployBar();
 }
 document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; };
 document.getElementById("pv-sys").onclick = () => { if (pvCurrent) fetch("/api/files/open/" + encodeURIComponent(pvCurrent), { method: "POST" }); };
 
+// ---- 本地部署预览：iframe 里看长相够了，但真网页要有自己的 origin（相对路径/fetch/localStorage/手机上开）----
+let previewSrv = { running: false };
+async function renderDeployBar() {
+  const bar = document.getElementById("pv-deploy");
+  if (!pvCurrent || !/\.html?$/i.test(pvCurrent)) { bar.style.display = "none"; return; }
+  bar.style.display = "";
+  if (!previewSrv.running) {
+    bar.innerHTML = `<span>这是个网页，要不要本地部署预览？（起一个本机服务，相对路径和 fetch 才正常）</span>
+      <button class="primary" id="pv-serve">本地部署预览</button>`;
+    bar.querySelector("#pv-serve").onclick = async (e) => {
+      e.target.disabled = true; e.target.textContent = "启动中…";
+      previewSrv = await startPreview(false); // 默认只听本机，要给手机看再单独放开
+      if (!previewSrv.running) { toast("本地预览服务启动失败"); }
+      renderDeployBar();
+    };
+    return;
+  }
+  const url = previewSrv.url + encodeURIComponent(pvCurrent);
+  const lan = previewSrv.lan_url ? previewSrv.lan_url + encodeURIComponent(pvCurrent) : null;
+  bar.innerHTML = `<span>✅ 已本地部署</span><code>${esc(url)}</code>
+    ${lan
+      ? `<span style="color:var(--wb-text-3)">手机同 Wi-Fi 可开</span><code>${esc(lan)}</code>`
+      : `<button id="pv-lan" title="同一个 Wi-Fi 下的人都能翻你的工作目录，看完记得停">放开给手机看</button>`}
+    <button id="pv-open-br">在浏览器打开</button><button id="pv-serve-stop">停止</button>`;
+  bar.querySelector("#pv-open-br").onclick = async (e) => {
+    // 传当前的 lan 状态，别把已经放开给手机的服务悄悄收回本机
+    e.target.disabled = true;
+    const st = await startPreview(previewSrv.lan_open, pvCurrent);
+    e.target.disabled = false;
+    if (st.running) previewSrv = st; else toast(st.error || "本地预览服务没起来，打不开");
+  };
+  const lanBtn = bar.querySelector("#pv-lan");
+  if (lanBtn) lanBtn.onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = "切换中…";
+    previewSrv = await startPreview(true);
+    if (!previewSrv.lan_url) toast("这台机器没找到局域网地址（没连 Wi-Fi？）");
+    renderDeployBar();
+  };
+  bar.querySelector("#pv-serve-stop").onclick = async () => {
+    previewSrv = await fetch("/api/preview/stop", { method: "POST" }).then(r => r.json()).catch(() => ({ running: false }));
+    renderDeployBar();
+  };
+}
+function startPreview(lan, open) {
+  return fetch("/api/preview/start", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lan: !!lan, open: open || undefined }),
+  }).then(r => r.json()).catch(() => ({ running: false }));
+}
+fetch("/api/preview/status").then(r => r.json()).then(s => { previewSrv = s; }).catch(() => {});
+
 // 任务产出/更新 HTML 时，自动在右侧实时展示
-let fileSnapshot = {};
+let fileSnapshot = null; // null = 基线还没建（首屏 /api/files 还没回来）
 function snapshotFiles(files) {
   fileSnapshot = {};
   for (const f of files || []) fileSnapshot[f.name] = f.mtime;
 }
+// 和上一次快照比，挑出这次任务真正新增/改动过的文件（不改快照，调用方决定什么时候推进）
+// 基线没建好就先拿这次当基线：否则首屏没加载完就发任务，整个工作目录都会被当成"本次产出"糊一屏卡片
+function changedFiles(files) {
+  if (!fileSnapshot) { snapshotFiles(files); return []; }
+  return (files || []).filter(f => fileSnapshot[f.name] !== f.mtime);
+}
 function autoPreviewNewHtml(files) {
   // 任务产出/更新 html 或 md 时自动在右侧预览（html 优先）
-  const changed = (files || []).filter(f => fileSnapshot[f.name] !== f.mtime);
+  const changed = changedFiles(files);
   const target = changed.find(f => /\.html?$/i.test(f.name)) || changed.find(f => /\.(md|markdown)$/i.test(f.name));
   if (target) previewFile(target.name);
+  if (!fileSnapshot) fileSnapshot = {};
   for (const f of files || []) fileSnapshot[f.name] = f.mtime;
 }
+
+// 把本回合的产出做成卡片挂在对话里。右侧文件面板是"所有文件"，这里是"这次产出的"——
+// 用户要的是聊完直接点开，而不是回头去面板里认哪个是刚才那个。
+const OUT_CARD_MAX = 8;                                   // 一屏摆得下的量；超了只提示条数，别把对话冲垮
+const DELIVER_RE = /\.(html?|pptx?|docx?|xlsx?|pdf|md|markdown|csv|png|jpe?g|gif|webp|svg|mp4|mov)$/i;
+function renderTurnOutputs(body, changed) {
+  if (!body || !changed || !changed.length) return;
+  // 成果文件排前面：中间产物（.json 缓存、.txt 草稿）不该把真正要交付的东西挤出卡位
+  changed = changed.slice().sort((a, b) => (DELIVER_RE.test(b.name) ? 1 : 0) - (DELIVER_RE.test(a.name) ? 1 : 0));
+  let block = body.querySelector(":scope > .out-block");
+  if (!block) {
+    block = document.createElement("div");
+    block.className = "out-block";
+    block.innerHTML = `<div class="out-hd">📦 本次产出</div><div class="out-grid"></div>`;
+    body.appendChild(block);
+  }
+  const grid = block.querySelector(".out-grid");
+  let more = 0;
+  for (const f of changed) {
+    if (grid.querySelectorAll(".out-card").length >= OUT_CARD_MAX && !grid.querySelector(`[data-name="${cssEsc(f.name)}"]`)) { more++; continue; }
+    if (grid.querySelector(`[data-name="${cssEsc(f.name)}"]`)) continue; // 同一个文件被改多次只留一张卡
+    const url = "/api/files/view/" + encodeURIComponent(f.name) + "?t=" + Date.now();
+    const isHtml = /\.html?$/i.test(f.name);
+    const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name);
+    const thumb = isHtml ? `<iframe src="${url}" scrolling="no" tabindex="-1" aria-hidden="true"></iframe>`
+      : isImg ? `<img src="${url}" alt="">`
+      : `<div class="ph">${fileIcon(f.name)}</div>`;
+    const card = document.createElement("div");
+    card.className = "out-card";
+    card.dataset.name = f.name;
+    card.title = f.name;
+    card.innerHTML = `<div class="out-thumb">${thumb}</div>
+      <div class="out-info"><div class="out-name">${esc(f.name.split("/").pop())}</div>
+        <div class="out-meta">${fmtSize(f.size)} · 点击预览</div></div>
+      <div class="out-acts">${isHtml ? `<button data-a="br">在浏览器打开</button>` : ""}
+        <a href="/api/files/download/${encodeURIComponent(f.name)}" download>下载</a></div>`;
+    card.onclick = (e) => {
+      if (e.target.closest("a")) return;
+      if (e.target.closest('[data-a="br"]')) {
+        e.stopPropagation();
+        startPreview(previewSrv.lan_open, f.name).then(st => {
+          if (st.running) previewSrv = st; else toast(st.error || "本地预览服务没起来，打不开");
+        });
+        return;
+      }
+      previewFile(f.name);
+    };
+    grid.appendChild(card);
+  }
+  // 装不下的部分如实说有多少，别让用户以为就产出了这几个
+  let tip = block.querySelector(".out-more");
+  const shown = grid.querySelectorAll(".out-card").length;
+  if (more) {
+    if (!tip) { tip = document.createElement("div"); tip.className = "out-hd out-more"; block.appendChild(tip); }
+    tip.dataset.n = String(Number(tip.dataset.n || 0) + more);
+    tip.textContent = `另有 ${tip.dataset.n} 个文件未展示（共 ${shown + Number(tip.dataset.n)} 个），在右侧文件面板里看`;
+  }
+}
+// 文件名进 CSS 属性选择器要转义（含空格、中文括号、引号的名字很常见）
+function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
 document.getElementById("toggle-files").onclick = () => document.getElementById("files-panel").classList.toggle("show");
 // 侧栏开关：窄窗（≤900px）走浮层抽屉 side-open，宽窗走常规折叠 side-collapsed
 function toggleSidebar() {
@@ -1287,14 +1583,17 @@ document.getElementById("history").addEventListener("click", async (e) => {
   chatCol.innerHTML = "";
   const data = await fetch("/api/session/" + encodeURIComponent(sessionId)).then(r => r.json()).catch(() => ({ transcript: [] }));
   let ui = null;
-  for (const entry of data.transcript || []) {
-    if (entry.type === "user") {
-      ui = createTurnUI(entry.text, entry.mode);
-    } else if (entry.type === "assistant" && ui) {
-      for (const ev of entry.events || []) ui.handleEvent(ev);
-      ui.finish();
+  isReplaying = true;
+  try {
+    for (const entry of data.transcript || []) {
+      if (entry.type === "user") {
+        ui = createTurnUI(entry.text, entry.mode);
+      } else if (entry.type === "assistant" && ui) {
+        for (const ev of entry.events || []) ui.handleEvent(ev);
+        ui.finish();
+      }
     }
-  }
+  } finally { isReplaying = false; }
   if (!(data.transcript || []).length) {
     chatCol.innerHTML = '<div style="text-align:center;color:var(--wb-text-3);font-size:12px;padding:20px">该任务还没有保存的对话记录（可能创建于旧版本），继续对话即可。</div>';
   }
@@ -1509,21 +1808,34 @@ inputEl.addEventListener("keydown", (e) => {
 // ================= 弹窗（技能/专家/定时/设置中心） =================
 document.getElementById("m-close").onclick = () => mask.classList.remove("show");
 mask.addEventListener("click", (e) => { if (e.target === mask) mask.classList.remove("show"); });
-document.querySelector(".side-nav").addEventListener("click", (e) => {
+document.querySelectorAll(".side-nav").forEach((nav) => nav.addEventListener("click", (e) => {
   const item = e.target.closest(".item");
-  if (item) openModal(item.dataset.modal);
-});
+  if (!item) return;
+  if (item.id === "more-toggle") {
+    item.classList.toggle("open");
+    document.getElementById("more-box").classList.toggle("open");
+    return;
+  }
+  if (item.dataset.view) return openPageView(item.dataset.view); // 主区页面（不是弹窗）
+  if (item.dataset.modal) openModal(item.dataset.modal);
+}));
+
+/** 打开「专家 · 技能 · 连接器」主区页并直接落到某个 Tab */
+function openHub(tab) {
+  hubState.tab = tab || "experts";
+  hubState.cat = "全部"; hubState.q = ""; hubState.mine = false; hubState.editing = null;
+  if (tab === "team") { hubState.tab = "experts"; hubState.sub = "team"; }
+  else if (tab === "experts") hubState.sub = "expert";
+  openPageView("hub");
+}
 
 async function openModal(kind, subTab) {
+  // 技能/专家已经从弹窗搬到主区的「专家·技能·连接器」页，老入口（快捷键等）改成跳页
+  if (kind === "skills") return openHub("skills");
+  if (kind === "experts") return openHub("team");
   mask.classList.add("show");
-  modalBox.classList.toggle("wide", ["settings", "library", "experts", "account", "skills"].includes(kind));
-  if (kind === "skills") {
-    mTitle.textContent = "📦 技能库";
-    await renderSkills();
-  } else if (kind === "experts") {
-    mTitle.textContent = "👥 专家团";
-    await renderExperts();
-  } else if (kind === "account") {
+  modalBox.classList.toggle("wide", ["settings", "library", "account"].includes(kind));
+  if (kind === "account") {
     mTitle.textContent = "👤 账号 · 用量";
     await renderAccount();
   } else if (kind === "sched") {
@@ -1554,8 +1866,9 @@ const SHORTCUT_DEFS = [
   ["toggle-files", "切换右侧产物面板", "Shift+Meta+B"],
   ["fullscreen", "进入/退出全屏", "Ctrl+Meta+F"],
   ["toggle-window", "唤起/隐藏主窗口", "Shift+Alt+W", false, true],
-  ["open-skills", "打开技能库", "Shift+Meta+K"],
+  ["open-skills", "打开技能广场", "Shift+Meta+K"],
   ["open-experts", "打开专家团", "Shift+Meta+E"],
+  ["open-prompts", "打开参考模板库", "Shift+Meta+P"],
   ["open-library", "打开资料库", "Shift+Meta+L"],
   ["open-sched", "打开定时任务", "Shift+Meta+T"],
   ["open-assistant", "打开本地助理", "Shift+Meta+A"],
@@ -1630,8 +1943,9 @@ const SHORTCUT_ACTIONS = {
   "toggle-files": () => document.getElementById("files-panel").classList.toggle("show"),
   "fullscreen": toggleAppFullscreen,
   "toggle-window": () => {}, // 系统级快捷键由桌面版主进程注册，网页端无动作
-  "open-skills": () => openModal("skills"),
-  "open-experts": () => openModal("experts"),
+  "open-skills": () => openHub("skills"),
+  "open-experts": () => openHub("team"),
+  "open-prompts": () => openPageView("prompts"),
   "open-library": () => openModal("library"),
   "open-sched": () => openModal("sched"),
   "open-assistant": () => openAssistView(),
@@ -1735,151 +2049,6 @@ async function pollApprovals() {
 }
 setInterval(pollApprovals, 3000);
 
-// ================= 技能库管理（安装/新建/编辑/删除，全部热生效） =================
-async function renderSkills() {
-  mBody.innerHTML = '<div class="ab-empty">加载中…</div>';
-  const list = await fetch("/api/skills").then(r => r.json()).catch(() => []);
-  const form = (x) => `
-    <input class="sk-name" placeholder="技能名（英文/中文均可，如 feishu-doc）" value="${esc(x?.name || "")}">
-    <input class="sk-desc" placeholder="一句话描述（AI 据此判断什么任务该用这个技能）" value="${esc(x?.description || "")}">
-    <textarea class="sk-content" rows="8" placeholder="技能正文（Markdown）：操作步骤、代码示例、注意事项…" style="font-family:var(--mono,monospace);font-size:12px">${esc(x?.content || "")}</textarea>
-    <div style="margin-top:8px"><button class="btn-brand sk-save">保存</button> <button class="sk-cancel" style="padding:6px 14px">取消</button></div>`;
-  mBody.innerHTML =
-    `<div class="card-item">
-      <div class="t">⬇️ 从 GitHub 安装</div>
-      <div class="d" style="margin-bottom:8px">支持整仓库、tree 子目录、blob 单文件、raw 直链；目录里的 skill.md / SKILL.md 会被识别为技能（子目录多个技能会全部安装）。例：https://github.com/anthropics/skills/tree/main/skills/docx</div>
-      <div style="display:flex;gap:8px">
-        <input id="sk-url" placeholder="https://github.com/用户/仓库 或 .../tree/main/某技能目录" style="flex:1">
-        <button class="btn-brand" id="sk-install" style="flex:none">安装</button>
-      </div>
-      <div id="sk-install-msg" class="d" style="margin-top:6px"></div>
-    </div>`
-    + list.map((x, i) => `
-      <div class="card-item sk-item" data-name="${esc(x.name)}">
-        <div class="t">${esc(x.name)}
-          <span style="float:right">
-            <button class="sk-view" style="padding:2px 10px;font-size:12px">查看</button>
-            <button class="sk-edit" style="padding:2px 10px;font-size:12px">编辑</button>
-            <button class="sk-del" style="padding:2px 10px;font-size:12px;color:var(--wb-err)">删除</button>
-          </span>
-        </div>
-        <div class="d">${esc(x.description || "（无描述）")}</div>
-        <pre class="sk-preview" style="display:none;margin-top:8px;max-height:300px;overflow:auto;background:var(--wb-bg-2,#f7f7f9);padding:10px;border-radius:8px;font-size:12px;white-space:pre-wrap"></pre>
-        <div class="sk-form" style="display:none;margin-top:8px"></div>
-      </div>`).join("")
-    + `<div class="card-item"><div class="t">➕ 新建技能</div><div class="sk-form">${form(null)}</div></div>`;
-  const save = async (body) => {
-    const resp = await fetch("/api/skills", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const d = await resp.json().catch(() => ({}));
-    if (!resp.ok) { alert(d.error || "保存失败"); return; }
-    renderSkills();
-  };
-  const bindForm = (box, original) => {
-    box.querySelector(".sk-save").onclick = () => save({
-      name: box.querySelector(".sk-name").value.trim(),
-      description: box.querySelector(".sk-desc").value.trim(),
-      content: box.querySelector(".sk-content").value,
-      original_name: original || undefined,
-    });
-    box.querySelector(".sk-cancel").onclick = () => renderSkills();
-  };
-  bindForm(mBody.querySelector(".card-item:last-child .sk-form"), null);
-  mBody.querySelector("#sk-install").onclick = async () => {
-    const url = mBody.querySelector("#sk-url").value.trim();
-    const msg = mBody.querySelector("#sk-install-msg");
-    if (!url) return;
-    msg.style.color = "";
-    msg.textContent = "安装中…（整仓库首次下载可能要十几秒）";
-    try {
-      const resp = await fetch("/api/skills/install", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
-      const d = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(d.error || "安装失败");
-      msg.textContent = `✅ 已安装 ${d.installed.length} 个技能：${d.installed.map(s => s.name).join("、")}（已生效，无需重启）`;
-      setTimeout(renderSkills, 1200);
-    } catch (e) {
-      msg.style.color = "var(--wb-err)";
-      msg.textContent = "❌ " + e.message;
-    }
-  };
-  mBody.querySelectorAll(".sk-item").forEach(item => {
-    const name = item.dataset.name;
-    item.querySelector(".sk-view").onclick = async () => {
-      const pre = item.querySelector(".sk-preview");
-      if (pre.style.display !== "none") { pre.style.display = "none"; return; }
-      const d = await fetch("/api/skills/" + encodeURIComponent(name)).then(r => r.json()).catch(() => null);
-      pre.textContent = d ? d.content : "加载失败";
-      pre.style.display = "";
-    };
-    item.querySelector(".sk-edit").onclick = async () => {
-      const d = await fetch("/api/skills/" + encodeURIComponent(name)).then(r => r.json()).catch(() => null);
-      if (!d) return alert("加载失败");
-      const f = item.querySelector(".sk-form");
-      f.style.display = "";
-      f.innerHTML = form(d);
-      bindForm(f, name);
-    };
-    item.querySelector(".sk-del").onclick = async () => {
-      if (!confirm(`删除技能「${name}」？（会删掉整个技能目录）`)) return;
-      await fetch("/api/skills/" + encodeURIComponent(name), { method: "DELETE" });
-      renderSkills();
-    };
-  });
-}
-
-// ================= 专家团管理（增删改热生效，无需重启） =================
-async function renderExperts() {
-  mBody.innerHTML = '<div class="ab-empty">加载中…</div>';
-  const list = await fetch("/api/experts").then(r => r.json()).catch(() => []);
-  const form = (x) => `
-    <input class="ex-name" placeholder="专家名称（如 调研专员）" value="${esc(x?.name || "")}">
-    <input class="ex-desc" placeholder="一句话说明擅长什么（协调者据此决定何时委派）" value="${esc(x?.description || "")}">
-    <textarea class="ex-sys" rows="4" placeholder="角色设定（system prompt）：它是谁、怎么干活、产出标准">${esc(x?.system || "")}</textarea>
-    <div style="margin-top:8px"><button class="btn-brand ex-save">保存</button> <button class="ex-cancel" style="padding:6px 14px">取消</button></div>`;
-  mBody.innerHTML =
-    `<div class="card-item"><div class="d">主智能体（协调者）在 <b>Craft 模式</b>下会把复杂任务拆解后自动委派给合适的专家；也可以直接在任务里点名：「把调研部分委派给调研专员」。增删改即时生效。</div></div>`
-    + list.map((x, i) => `
-      <div class="card-item ex-item" data-i="${i}">
-        <div class="t">${esc(x.name)}
-          <span style="float:right">
-            <button class="ex-edit" style="padding:2px 10px;font-size:12px">编辑</button>
-            <button class="ex-del" style="padding:2px 10px;font-size:12px;color:var(--wb-err)">删除</button>
-          </span>
-        </div>
-        <div class="d">${esc(x.description)}</div>
-        <div class="ex-form" style="display:none;margin-top:8px"></div>
-      </div>`).join("")
-    + `<div class="card-item"><div class="t">➕ 新增专家</div><div class="ex-form">${form(null)}</div></div>`;
-  const save = async (body) => {
-    const resp = await fetch("/api/experts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const d = await resp.json().catch(() => ({}));
-    if (!resp.ok) { alert(d.error || "保存失败"); return; }
-    renderExperts();
-  };
-  const bindForm = (box, original) => {
-    box.querySelector(".ex-save").onclick = () => save({
-      name: box.querySelector(".ex-name").value.trim(),
-      description: box.querySelector(".ex-desc").value.trim(),
-      system: box.querySelector(".ex-sys").value.trim(),
-      original_name: original || undefined,
-    });
-    box.querySelector(".ex-cancel").onclick = () => renderExperts();
-  };
-  bindForm(mBody.querySelector(".card-item:last-child .ex-form"), null);
-  mBody.querySelectorAll(".ex-item").forEach(item => {
-    const x = list[+item.dataset.i];
-    item.querySelector(".ex-edit").onclick = () => {
-      const f = item.querySelector(".ex-form");
-      f.style.display = "";
-      f.innerHTML = form(x);
-      bindForm(f, x.name);
-    };
-    item.querySelector(".ex-del").onclick = async () => {
-      if (!confirm(`删除专家「${x.name}」？`)) return;
-      await fetch("/api/experts/" + encodeURIComponent(x.name), { method: "DELETE" });
-      renderExperts();
-    };
-  });
-}
 
 // ================= 账号 · 积分 · 用量 =================
 function renderUserChip() {
@@ -2107,31 +2276,114 @@ async function initAuth() {
   }
   sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
   renderHistory();
+  maybeOnboard();
 }
 initAuth();
 
-// ================= 本地助理（主区页面视图：通道横条 + IM 聊天流，仿官方） =================
+// ================= 首次开箱：引导填模型 Key =================
+// 没 key 的话，用户发第一条消息才会看到一句上游报错，然后完全不知道该去哪儿修。
+// 所以登录之后先拦一道；只看服务端回的布尔值，界面上永远不显示已存的 key 原文。
+const ONB_TIPS = {
+  "https://openrouter.ai/api/v1": '一个 Key 通吃几十家模型，国内可直连，新号有免费额度。去 <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> 拿。',
+  "https://api.deepseek.com/v1": '国产、便宜、中文强，适合当日常主力。去 <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a> 拿。',
+  "https://dashscope.aliyuncs.com/compatible-mode/v1": '阿里云通义，控制台开通百炼后在「API-KEY 管理」里拿。',
+  "https://open.bigmodel.cn/api/paas/v4": '智谱 GLM，去 <a href="https://open.bigmodel.cn" target="_blank">open.bigmodel.cn</a> 控制台拿。',
+  "https://api.moonshot.cn/v1": '月之暗面 Kimi，去 <a href="https://platform.moonshot.cn" target="_blank">platform.moonshot.cn</a> 拿。',
+};
+async function maybeOnboard() {
+  const st = await fetch("/api/onboarding").then(r => r.json()).catch(() => null);
+  if (!st || !st.needs_setup) return;
+  if (sessionStorage.getItem("wb_onb_skipped")) return; // 本次窗口内跳过一次就别再烦人
+
+  const sel = document.getElementById("onb-model");
+  sel.innerHTML = st.models.map(m =>
+    `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-local="${m.local ? 1 : 0}">${esc(m.name)} · ${esc(m.model)}${m.has_key ? "（已配）" : ""}</option>`
+  ).join("");
+  // 默认选中第一个还没配 key 的云端模型，用户十有八九就是要配它
+  const first = st.models.find(m => !m.has_key && !m.local) || st.models[0];
+  if (first) sel.value = first.name;
+  document.getElementById("onb-dir").placeholder = st.workspace_dir || "留空就用默认目录";
+
+  const keyEl = document.getElementById("onb-key");
+  const tipEl = document.getElementById("onb-tip");
+  const syncTip = () => {
+    const opt = sel.selectedOptions[0];
+    const local = opt.dataset.local === "1";
+    tipEl.innerHTML = local
+      ? "本地模型不需要 Key，确认 Ollama 已经在跑就行。"
+      : (ONB_TIPS[opt.dataset.url] || "去这家服务商的控制台拿 API Key。");
+    keyEl.disabled = local;
+    keyEl.placeholder = local ? "本地模型不用填" : "粘贴 API Key";
+  };
+  sel.onchange = syncTip;
+  syncTip();
+
+  const err = document.getElementById("onb-err");
+  const go = document.getElementById("onb-go");
+  go.onclick = async () => {
+    err.textContent = "";
+    go.disabled = true;
+    go.textContent = "正在验活…（发一条真实请求，可能要十几秒）";
+    const r = await fetch("/api/onboarding", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: sel.value, api_key: keyEl.value.trim(), workspace_dir: document.getElementById("onb-dir").value.trim() || undefined }),
+    }).then(r => r.json()).catch(() => ({ ok: false, error: "请求失败，服务没起来？" }));
+    go.disabled = false;
+    go.textContent = "验活并保存";
+    if (!r.ok) { err.textContent = r.error || "验活没通过"; return; }
+    document.getElementById("onb-mask").classList.remove("show");
+    toast(`✅ 已接上 ${r.active_model}，可以开始干活了`);
+    refreshSettingsCache(); // 输入卡片右下角的模型名/工作空间跟着刷新
+  };
+  document.getElementById("onb-skip").onclick = () => {
+    sessionStorage.setItem("wb_onb_skipped", "1");
+    document.getElementById("onb-mask").classList.remove("show");
+    toast("跳过了。随时可以在 设置 → 模型 里补上 API Key");
+  };
+  document.getElementById("onb-mask").classList.add("show");
+  setTimeout(() => keyEl.focus(), 60);
+}
+
+// ================= 主区页面视图（助理 / 专家广场 / 模板库，都占主区而不是弹窗） =================
+// assistViewOn 保留原名：全站多处用它判断"当前不是在聊天"，改名会牵一大片。
 let assistViewOn = false;
+let pageKind = null;
 let assistTimer = null;
-function openAssistView() {
-  if (assistViewOn) return;
+const PAGE_VIEWS = {
+  assist: { title: "🤖 助理", render: () => renderAssistPage() },
+  hub: { title: "🧩 专家 · 技能 · 连接器", wide: true, render: () => renderHubPage() },
+  prompts: { title: "📚 参考模板库", wide: true, render: () => renderPromptPage() },
+};
+function openPageView(kind) {
+  const v = PAGE_VIEWS[kind];
+  if (!v || pageKind === kind) return;
+  if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
   assistViewOn = true;
+  pageKind = kind;
   sessionId = null;
-  document.getElementById("session-title").textContent = "🤖 本地助理";
+  document.getElementById("session-title").textContent = v.title;
   document.querySelector(".input-wrap").style.display = "none";
   renderHistory();
+  document.querySelectorAll(".side-nav .item").forEach(el => el.classList.toggle("active", el.dataset.view === kind));
+  chatCol.classList.toggle("wide-page", !!v.wide);
   chatCol.innerHTML = '<div class="assist-page" id="assist-page"></div>';
-  renderAssistPage();
-  if (assistTimer) clearInterval(assistTimer);
+  v.render();
+}
+function openAssistView() {
+  if (pageKind === "assist") return;
+  openPageView("assist");
   assistTimer = setInterval(async () => {
-    if (!assistViewOn || !document.getElementById("im-feed")) { clearInterval(assistTimer); assistTimer = null; return; }
+    if (pageKind !== "assist" || !document.getElementById("im-feed")) { clearInterval(assistTimer); assistTimer = null; return; }
     renderAssistFeed(await fetch("/im/log").then(r => r.json()).catch(() => []));
   }, 5000);
 }
 function closeAssistView() {
   if (!assistViewOn) return;
   assistViewOn = false;
+  pageKind = null;
   if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
+  document.querySelectorAll(".side-nav .item.active").forEach(el => el.classList.remove("active"));
+  chatCol.classList.remove("wide-page");
   document.querySelector(".input-wrap").style.display = "";
 }
 async function renderAssistPage() {
@@ -2189,6 +2441,514 @@ function renderAssistFeed(log) {
       }).join("")
     : '<div class="ab-empty">还没有 IM 消息。在飞书私聊或 @机器人 发条消息试试。</div>';
   if (atBottom || feed._first === undefined) { feed.scrollTop = feed.scrollHeight; feed._first = 1; }
+}
+
+// ================= 专家 · 技能 · 连接器（主区页面，三合一） =================
+// 把原来分散在三个弹窗里的专家/技能/MCP 合成一页：左边挑 Tab，右边搜索，中间是卡片广场。
+const hubState = { tab: "experts", sub: "expert", cat: "全部", q: "", mine: false, editing: null };
+// 精选场景：点一下就带着写好的提示词开一条新任务。全是本地已具备的能力，不画饼。
+const HUB_SCENES = [
+  { ic: "📊", tt: "把 Excel 变成周报", dd: "读数据 → 算指标 → 生成带图表的周报文档", p: "把工作区里的数据文件读进来，算出核心指标的环比变化，生成一份带图表的周报（Word），结论写在最前面。" },
+  { ic: "🔍", tt: "一个课题深挖到底", dd: "多轮检索取证 + 自我挑刺，出带来源的研究报告", p: "帮我深度研究「」这个课题：先拆成子问题，逐个联网查证并读原文，写完初稿后自己找一轮反面证据，最后输出带来源清单的研究报告。" },
+  { ic: "🎨", tt: "做一个能直接开的网页", dd: "单文件 HTML，手机上不塌，做完自动自检", p: "做一个「」主题的单页网站：单文件 HTML，CSS/JS 内联不依赖外部资源，移动端优先，深浅色都要好看。做完读回文件自查一遍再交付。" },
+  { ic: "🖼️", tt: "把材料做成 PPT", dd: "整理要点 → 排版 → 输出 16:9 演示文稿", p: "把工作区里的材料整理成一份 16:9 的 PPT：每页一个主题，标题写结论不写标签，数据页配图表。" },
+  { ic: "⚖️", tt: "竞品横向对比", dd: "定维度 → 逐条查证 → 出对比表和差异化建议", p: "帮我对比「A / B / C」这几个产品：先定出对比维度，逐个联网查证填表（查不到写「未公开」不许猜），最后出对比表 + 我方该走的差异化路线。" },
+  { ic: "📝", tt: "会议记录变纪要", dd: "提炼决议、待办（谁/做什么/什么时候）、待议项", p: "把我贴的这段会议记录整理成纪要：分「结论与决议」「待办（谁·做什么·何时前）」「待议」三段，原文没说的不许推断。" },
+];
+const HUB_TABS = [["experts", "专家"], ["skills", "技能"], ["mcp", "连接器"]];
+
+async function renderHubPage() {
+  const page = document.getElementById("assist-page");
+  if (!page) return;
+  page.innerHTML = '<div class="hub-empty">加载中…</div>';
+  const [experts, teams, skills] = await Promise.all([
+    fetch("/api/experts").then(r => r.json()).catch(() => []),
+    fetch("/api/expert-teams").then(r => r.json()).catch(() => []),
+    fetch("/api/skills").then(r => r.json()).catch(() => []),
+  ]);
+  hubState._experts = experts; hubState._teams = teams; hubState._skills = skills;
+  // 「只看我的」只在有真实依据的 Tab 上出现：专家有 builtin 标记、连接器有 connected 状态，技能两者都没有就不画。
+  const mineLabel = { experts: "我创建的", mcp: "只看已连接" }[hubState.tab];
+  const qHint = { experts: "搜索专家职称或描述", skills: "搜索技能", mcp: "搜索连接器" }[hubState.tab];
+  page.innerHTML = `
+    <div class="hub-head">
+      <div class="hub-tabs">${HUB_TABS.map(([k, n]) => `<button data-tab="${k}" class="${hubState.tab === k ? "active" : ""}">${n}</button>`).join("")}</div>
+      <div class="hub-search"><input id="hub-q" placeholder="${qHint}" value="${esc(hubState.q)}"></div>
+      ${mineLabel ? `<button class="chip ${hubState.mine ? "active" : ""}" id="hub-mine">${mineLabel}</button>` : ""}
+    </div>
+    <div class="hub-desc">${{
+      experts: "按行业分类浏览专家，召唤他们为你服务",
+      skills: "技能是写给智能体看的操作说明书，装上就能用",
+      mcp: "通过 MCP 给智能体接上外部系统和数据",
+    }[hubState.tab]}</div>
+    <div id="hub-body"></div>`;
+  page.querySelectorAll(".hub-tabs button").forEach(b => b.onclick = () => {
+    hubState.tab = b.dataset.tab; hubState.cat = "全部"; hubState.mine = false; hubState.editing = null;
+    renderHubPage();
+  });
+  const qi = page.querySelector("#hub-q");
+  qi.oninput = () => { hubState.q = qi.value; renderHubBody(); };
+  const mineBtn = page.querySelector("#hub-mine");
+  if (mineBtn) mineBtn.onclick = () => { hubState.mine = !hubState.mine; renderHubPage(); };
+  renderHubBody();
+}
+
+function renderHubBody() {
+  const box = document.getElementById("hub-body");
+  if (!box) return;
+  if (hubState.tab === "experts") renderHubExperts(box);
+  else if (hubState.tab === "skills") renderHubSkills(box);
+  else renderHubMcp(box);
+}
+
+const hubMatch = (q, ...fields) => !q || fields.filter(Boolean).join(" ").toLowerCase().includes(q.trim().toLowerCase());
+
+// ---- Tab 1：专家 / 专家团 ----
+function renderHubExperts(box) {
+  const { _experts: experts, _teams: teams, _skills: skills } = hubState;
+  const cats = ["全部", ...new Set(experts.map(e => e.category || "未分类"))];
+  const scenes = hubState.mine || hubState.q ? "" : `
+    <div class="hub-sec-title">精选场景 <span class="sub">点一下带着写好的提示词开新任务</span></div>
+    <div class="feat-scroll">${HUB_SCENES.map((s, i) =>
+      `<div class="feat-card" data-scene="${i}"><div class="ic">${s.ic}</div><div class="tt">${esc(s.tt)}</div><div class="dd">${esc(s.dd)}</div><div class="go">用这个开始 →</div></div>`).join("")}</div>`;
+  box.innerHTML = scenes + `
+    <div class="hub-bar">
+      <div class="hub-sub">
+        <button data-sub="expert" class="${hubState.sub === "expert" ? "active" : ""}">专家</button>
+        <button data-sub="team" class="${hubState.sub === "team" ? "active" : ""}">专家团 <em class="beta">Beta</em></button>
+      </div>
+      ${hubState.sub === "expert" ? `<div class="hub-chips" style="margin-left:auto">${cats.map(c =>
+        `<span class="chip ${hubState.cat === c ? "active" : ""}" data-cat="${esc(c)}">${esc(c)}</span>`).join("")}</div>` : ""}
+    </div>
+    <div id="hub-editor"></div>
+    <div class="card-grid" id="hub-grid"></div>`;
+  box.querySelectorAll(".feat-card").forEach(c => c.onclick = () => startTaskWith(HUB_SCENES[+c.dataset.scene].p));
+  box.querySelectorAll(".hub-sub button").forEach(b => b.onclick = () => { hubState.sub = b.dataset.sub; hubState.editing = null; renderHubBody(); });
+  box.querySelectorAll(".chip[data-cat]").forEach(c => c.onclick = () => { hubState.cat = c.dataset.cat; renderHubBody(); });
+
+  const grid = box.querySelector("#hub-grid");
+  if (hubState.sub === "team") {
+    const list = teams.filter(t => hubMatch(hubState.q, t.name, t.description, t.members.join(" ")));
+    grid.innerHTML =
+      `<div class="ex-card add" id="team-add">＋ 创建专家团</div>` +
+      list.map((t, i) => `
+        <div class="ex-card" data-ti="${i}">
+          <div class="hd"><div class="av">${esc(t.avatar || "👥")}</div><div class="nm"><span>${esc(t.name)}</span><span class="al">${t.members.length} 位成员</span></div></div>
+          <div class="ds">${esc(t.description || "（无说明）")}</div>
+          <div class="tg">${t.members.map((m, j) => `<i>${j + 1}. ${esc(m)}</i>`).join("")}</div>
+          <div class="ops"><button class="primary t-use">整团召唤</button><button class="t-edit">修改</button><button class="t-del">解散</button></div>
+        </div>`).join("") +
+      (list.length ? "" : `<div class="hub-empty">${hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的专家团` : "暂无专家团"}</div>`);
+    grid.querySelector("#team-add").onclick = () => { hubState.editing = { type: "team", data: null }; renderHubEditor(); };
+    grid.querySelectorAll(".ex-card[data-ti]").forEach(card => {
+      const t = list[+card.dataset.ti];
+      card.querySelector(".t-use").onclick = () => { startTaskWith(`请把下面这个任务整体委派给专家团「${t.name}」（用 delegate_to_team）：\n\n`); toast(`已成功召唤专家团「${t.name}」`); };
+      card.querySelector(".t-edit").onclick = () => { hubState.editing = { type: "team", data: t }; renderHubEditor(); };
+      card.querySelector(".t-del").onclick = async () => {
+        if (!confirm(`解散专家团「${t.name}」？（团里的专家本身不受影响）`)) return;
+        await fetch("/api/expert-teams/" + encodeURIComponent(t.name), { method: "DELETE" });
+        renderHubPage();
+      };
+    });
+  } else {
+    const list = experts.filter(e =>
+      (hubState.cat === "全部" || (e.category || "未分类") === hubState.cat) &&
+      (!hubState.mine || !e.builtin) &&
+      hubMatch(hubState.q, e.name, e.alias, e.description, (e.tags || []).join(" ")));
+    grid.innerHTML =
+      `<div class="ex-card add" id="ex-add">＋ 创建专家<span class="add-sub">创建属于你的专家，分享专业知识</span></div>` +
+      list.map((e, i) => `
+        <div class="ex-card" data-ei="${i}">
+          ${e.builtin ? '<span class="flag">官方</span>' : ""}
+          <div class="hd"><div class="av">${esc(e.avatar || "🧑‍💼")}</div>
+            <div class="nm"><span>${esc(e.name)}</span>${e.alias ? `<span class="al">${esc(e.alias)}</span>` : ""}</div></div>
+          <div class="ds">${esc(e.description || "（无说明）")}</div>
+          <div class="tg">${(e.tags || []).map(t => `<i>${esc(t)}</i>`).join("")}${(e.skills || []).map(s => `<i>🧰 ${esc(s)}</i>`).join("")}</div>
+          <div class="ops"><button class="primary e-use">立即召唤</button><button class="e-edit">修改</button><button class="e-del">删除</button></div>
+        </div>`).join("") +
+      (list.length ? "" : `<div class="hub-empty">${
+        hubState.mine ? "还没有创建任何专家" :
+        hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的专家，试试其他关键词` : "暂无该分类的专家"}</div>`) +
+      (hubState.q && list.length ? `<div class="hub-count">搜索「${esc(hubState.q)}」找到 ${list.length} 位专家</div>` : "");
+    grid.querySelector("#ex-add").onclick = () => { hubState.editing = { type: "expert", data: null }; renderHubEditor(); };
+    grid.querySelectorAll(".ex-card[data-ei]").forEach(card => {
+      const e = list[+card.dataset.ei];
+      card.querySelector(".e-use").onclick = () => { startTaskWith(`请把下面这个任务委派给专家「${e.name}」：\n\n`); toast(`已成功召唤专家「${e.name}」`); };
+      card.querySelector(".e-edit").onclick = () => { hubState.editing = { type: "expert", data: e }; renderHubEditor(); };
+      card.querySelector(".e-del").onclick = async () => {
+        if (!confirm(`删除专家「${e.name}」？${e.builtin ? "（这是内置专家，删了可以从 experts.json 恢复）" : ""}`)) return;
+        await fetch("/api/experts/" + encodeURIComponent(e.name), { method: "DELETE" });
+        renderHubPage();
+      };
+    });
+  }
+  renderHubEditor();
+}
+
+// ---- 专家 / 专家团 编辑器 ----
+function renderHubEditor() {
+  const box = document.getElementById("hub-editor");
+  if (!box) return;
+  const ed = hubState.editing;
+  if (!ed || (ed.type !== "expert" && ed.type !== "team")) { box.innerHTML = ""; return; }
+  const { _experts: experts, _skills: skills } = hubState;
+  if (ed.type === "expert") {
+    const x = ed.data || {};
+    box.innerHTML = `
+      <div class="ex-editor">
+        <div class="hub-sec-title">${x.name ? `编辑专家「${esc(x.name)}」` : "新建专家"} <span class="sub">专家 = 头像 + 说明 + 绑定技能 + 默认提示词 的智能体</span></div>
+        <div class="row">
+          <div style="flex:0 0 90px"><label>头像</label><input id="ef-avatar" maxlength="4" value="${esc(x.avatar || "🧑‍💼")}" style="text-align:center;font-size:18px"></div>
+          <div style="flex:1 1 160px"><label>名字（≤20 字，委派时用它点名）</label><input id="ef-name" value="${esc(x.name || "")}" placeholder="如 调研专员"></div>
+          <div style="flex:1 1 120px"><label>花名（可空）</label><input id="ef-alias" value="${esc(x.alias || "")}" placeholder="如 查得深"></div>
+          <div style="flex:1 1 120px"><label>分类</label><input id="ef-cat" value="${esc(x.category || "")}" placeholder="如 研究分析" list="ef-cats">
+            <datalist id="ef-cats">${[...new Set(experts.map(e => e.category))].map(c => `<option value="${esc(c)}">`).join("")}</datalist></div>
+        </div>
+        <div class="row"><div style="flex:1"><label>一句话说明（协调者据此决定什么活派给它）</label>
+          <input id="ef-desc" value="${esc(x.description || "")}" placeholder="擅长什么、什么时候该委派给它"></div></div>
+        <div class="row"><div style="flex:1"><label>能力标签（逗号分隔，只用于展示和搜索）</label>
+          <input id="ef-tags" value="${esc((x.tags || []).join("，"))}" placeholder="行业调研，信息核实"></div></div>
+        <div class="row"><div style="flex:1"><label>绑定技能（干活前会提示它先加载这些技能包）</label>
+          <div class="sk-pick" id="ef-skills">${skills.map(s =>
+            `<label class="${(x.skills || []).includes(s.name) ? "on" : ""}"><input type="checkbox" value="${esc(s.name)}" ${(x.skills || []).includes(s.name) ? "checked" : ""}>${esc(s.name)}</label>`).join("") || '<span class="ab-empty">还没有技能，去「技能」页装一个</span>'}</div></div></div>
+        <div class="row"><div style="flex:1"><label>默认提示词（真正喂给这个智能体的角色设定）</label>
+          <textarea id="ef-sys" rows="8" placeholder="你是一名…&#10;&#10;工作方式：&#10;1) …&#10;&#10;红线：不编造数据和来源。">${esc(x.system || "")}</textarea></div></div>
+        <div style="display:flex;gap:8px"><button class="btn-brand" id="ef-save">保存</button>
+          <button id="ef-cancel" style="padding:6px 14px">取消</button>
+          <span class="ab-empty" style="margin-left:auto">保存即生效，不用重启</span></div>
+      </div>`;
+    box.querySelectorAll("#ef-skills label").forEach(l => l.onclick = () => setTimeout(() => l.classList.toggle("on", l.querySelector("input").checked), 0));
+    box.querySelector("#ef-cancel").onclick = () => { hubState.editing = null; renderHubEditor(); };
+    box.querySelector("#ef-save").onclick = async () => {
+      const g = (id) => box.querySelector("#" + id).value.trim();
+      const body = {
+        name: g("ef-name"), alias: g("ef-alias"), avatar: g("ef-avatar"), category: g("ef-cat"),
+        description: g("ef-desc"),
+        tags: g("ef-tags").split(/[，,]/).map(s => s.trim()).filter(Boolean),
+        skills: [...box.querySelectorAll("#ef-skills input:checked")].map(i => i.value),
+        system: box.querySelector("#ef-sys").value.trim(),
+        original_name: x.name || undefined,
+      };
+      const resp = await fetch("/api/experts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok) return alert(d.error || "保存失败");
+      hubState.editing = null;
+      toast("专家已保存，立即生效");
+      renderHubPage();
+    };
+  } else {
+    const t = ed.data || {};
+    const picked = t.members || [];
+    box.innerHTML = `
+      <div class="ex-editor">
+        <div class="hub-sec-title">${t.name ? `编辑专家团「${esc(t.name)}」` : "组建专家团"} <span class="sub">一支按顺序接力的智能体团队：后一位能看到前一位的汇报和产出文件</span></div>
+        <div class="row">
+          <div style="flex:0 0 90px"><label>头像</label><input id="tf-avatar" maxlength="4" value="${esc(t.avatar || "👥")}" style="text-align:center;font-size:18px"></div>
+          <div style="flex:1"><label>团队名称</label><input id="tf-name" value="${esc(t.name || "")}" placeholder="如 汇报三件套"></div>
+        </div>
+        <div class="row"><div style="flex:1"><label>说明（协调者据此决定什么活整团派）</label>
+          <input id="tf-desc" value="${esc(t.description || "")}" placeholder="这个团适合干什么"></div></div>
+        <div class="row"><div style="flex:1"><label>成员与顺序（至少 2 位；点击加入，再点移除。列表顺序＝执行顺序）</label>
+          <div class="sk-pick" id="tf-pool">${experts.map(e =>
+            `<label class="${picked.includes(e.name) ? "on" : ""}" data-n="${esc(e.name)}">${esc(e.avatar || "🧑‍💼")} ${esc(e.name)}</label>`).join("")}</div>
+          <div id="tf-order" style="margin-top:10px;font-size:13px"></div></div></div>
+        <div style="display:flex;gap:8px"><button class="btn-brand" id="tf-save">保存</button>
+          <button id="tf-cancel" style="padding:6px 14px">取消</button></div>
+      </div>`;
+    const order = [...picked];
+    const drawOrder = () => {
+      const el = box.querySelector("#tf-order");
+      el.innerHTML = order.length
+        ? `执行顺序：` + order.map((n, i) =>
+            `<span class="chip active" style="margin:0 4px 4px 0;display:inline-flex;gap:6px;align-items:center">${i + 1}. ${esc(n)}` +
+            `<a href="#" data-up="${i}" title="前移" style="text-decoration:none">↑</a><a href="#" data-rm="${i}" title="移除" style="text-decoration:none">✕</a></span>`).join("")
+        : '<span class="ab-empty">还没选成员</span>';
+      el.querySelectorAll("a[data-up]").forEach(a => a.onclick = (ev) => {
+        ev.preventDefault();
+        const i = +a.dataset.up;
+        if (i > 0) { [order[i - 1], order[i]] = [order[i], order[i - 1]]; drawOrder(); }
+      });
+      el.querySelectorAll("a[data-rm]").forEach(a => a.onclick = (ev) => {
+        ev.preventDefault();
+        const n = order.splice(+a.dataset.rm, 1)[0];
+        box.querySelector(`#tf-pool label[data-n="${CSS.escape(n)}"]`)?.classList.remove("on");
+        drawOrder();
+      });
+    };
+    drawOrder();
+    box.querySelectorAll("#tf-pool label").forEach(l => l.onclick = () => {
+      const n = l.dataset.n;
+      const i = order.indexOf(n);
+      if (i >= 0) { order.splice(i, 1); l.classList.remove("on"); }
+      else { order.push(n); l.classList.add("on"); }
+      drawOrder();
+    });
+    box.querySelector("#tf-cancel").onclick = () => { hubState.editing = null; renderHubEditor(); };
+    box.querySelector("#tf-save").onclick = async () => {
+      const body = {
+        name: box.querySelector("#tf-name").value.trim(),
+        avatar: box.querySelector("#tf-avatar").value.trim(),
+        description: box.querySelector("#tf-desc").value.trim(),
+        members: order,
+        original_name: t.name || undefined,
+      };
+      const resp = await fetch("/api/expert-teams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok) return alert(d.error || "保存失败");
+      hubState.editing = null;
+      toast("专家团已保存，立即生效");
+      renderHubPage();
+    };
+  }
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// ---- Tab 2：技能（技能包＝可热装的能力说明书） ----
+function renderHubSkills(box) {
+  const list = hubState._skills.filter(s => hubMatch(hubState.q, s.name, s.description));
+  box.innerHTML = `
+    <div class="ex-editor" style="margin-top:14px">
+      <div class="hub-sec-title">⬇️ 从 GitHub 安装 <span class="sub">整仓库 / tree 子目录 / blob 单文件 / raw 直链都行，装完立即生效不用重启</span></div>
+      <div class="row"><input id="sk-url" placeholder="https://github.com/anthropics/skills/tree/main/skills/docx" style="flex:1">
+        <button class="btn-brand" id="sk-install" style="flex:none">安装</button></div>
+      <div id="sk-install-msg" class="ab-empty" style="margin-top:6px"></div>
+    </div>
+    <div id="hub-editor"></div>
+    <div class="card-grid" id="hub-grid">
+      <div class="ex-card add" id="sk-add">＋ 添加技能<span class="add-sub">手写一份操作说明书，智能体按需加载</span></div>
+      ${list.map((s, i) => `
+        <div class="ex-card" data-si="${i}">
+          <div class="hd"><div class="av">🧰</div><div class="nm"><span>${esc(s.name)}</span></div></div>
+          <div class="ds">${esc(s.description || "（无描述）")}</div>
+          <div class="ops"><button class="primary sk-use">立即使用</button><button class="sk-view">正文</button><button class="sk-edit">修改</button><button class="sk-del">删除</button></div>
+          <pre class="sk-preview" style="display:none"></pre>
+        </div>`).join("")}
+      ${list.length ? "" : `<div class="hub-empty">${hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的技能` : "暂无技能"}</div>`}
+    </div>`;
+  box.querySelector("#sk-add").onclick = () => { hubState.editing = { type: "skill", data: null }; renderHubSkillEditor(); };
+  box.querySelector("#sk-install").onclick = async () => {
+    const url = box.querySelector("#sk-url").value.trim();
+    const msg = box.querySelector("#sk-install-msg");
+    if (!url) return;
+    msg.style.color = ""; msg.textContent = "安装中…（整仓库首次下载可能要十几秒）";
+    try {
+      const resp = await fetch("/api/skills/install", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(d.error || "安装失败");
+      msg.textContent = `✅ 已安装 ${d.installed.length} 个：${d.installed.map(s => s.name).join("、")}`;
+      setTimeout(renderHubPage, 1000);
+    } catch (e) { msg.style.color = "var(--wb-err)"; msg.textContent = "❌ " + e.message; }
+  };
+  box.querySelectorAll(".ex-card[data-si]").forEach(card => {
+    const s = list[+card.dataset.si];
+    card.querySelector(".sk-use").onclick = () => startTaskWith(`用「${s.name}」技能帮我：`);
+    card.querySelector(".sk-view").onclick = async () => {
+      const pre = card.querySelector(".sk-preview");
+      if (pre.style.display !== "none") { pre.style.display = "none"; return; }
+      const d = await fetch("/api/skills/" + encodeURIComponent(s.name)).then(r => r.json()).catch(() => null);
+      pre.textContent = d ? d.content : "加载失败";
+      pre.style.display = "";
+    };
+    card.querySelector(".sk-edit").onclick = async () => {
+      const d = await fetch("/api/skills/" + encodeURIComponent(s.name)).then(r => r.json()).catch(() => null);
+      if (!d) return alert("加载失败");
+      hubState.editing = { type: "skill", data: d };
+      renderHubSkillEditor();
+    };
+    card.querySelector(".sk-del").onclick = async () => {
+      if (!confirm(`删除技能「${s.name}」？（会删掉整个技能目录）`)) return;
+      await fetch("/api/skills/" + encodeURIComponent(s.name), { method: "DELETE" });
+      renderHubPage();
+    };
+  });
+  renderHubSkillEditor();
+}
+
+function renderHubSkillEditor() {
+  const box = document.getElementById("hub-editor");
+  if (!box) return;
+  const ed = hubState.editing;
+  if (!ed || ed.type !== "skill") { box.innerHTML = ""; return; }
+  const x = ed.data || {};
+  box.innerHTML = `
+    <div class="ex-editor">
+      <div class="hub-sec-title">${x.name ? `编辑技能「${esc(x.name)}」` : "手写一个技能"} <span class="sub">技能＝写给智能体看的操作说明书，它按需加载</span></div>
+      <div class="row"><div style="flex:1 1 200px"><label>技能名</label><input id="skf-name" value="${esc(x.name || "")}" placeholder="如 feishu-doc"></div>
+        <div style="flex:2 1 300px"><label>一句话描述（AI 据此判断什么任务该用它）</label><input id="skf-desc" value="${esc(x.description || "")}"></div></div>
+      <div class="row"><div style="flex:1"><label>正文（Markdown：步骤、代码示例、注意事项）</label>
+        <textarea id="skf-content" rows="14" style="font-family:var(--mono,ui-monospace,monospace);font-size:12px">${esc(x.content || "")}</textarea></div></div>
+      <div style="display:flex;gap:8px"><button class="btn-brand" id="skf-save">保存</button>
+        <button id="skf-cancel" style="padding:6px 14px">取消</button></div>
+    </div>`;
+  box.querySelector("#skf-cancel").onclick = () => { hubState.editing = null; renderHubSkillEditor(); };
+  box.querySelector("#skf-save").onclick = async () => {
+    const resp = await fetch("/api/skills", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: box.querySelector("#skf-name").value.trim(),
+        description: box.querySelector("#skf-desc").value.trim(),
+        content: box.querySelector("#skf-content").value,
+        original_name: x.name || undefined,
+      }) });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) return alert(d.error || "保存失败");
+    hubState.editing = null;
+    toast("技能已保存，立即生效");
+    renderHubPage();
+  };
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// ---- Tab 3：连接器（MCP）----
+async function renderHubMcp(box) {
+  box.innerHTML = '<div class="hub-empty">加载中…</div>';
+  const data = await fetch("/api/mcp").then(r => r.json()).catch(() => ({ servers: [], total_tools: 0 }));
+  const list = data.servers
+    .map((sv, i) => ({ sv, i }))
+    .filter(({ sv }) => (!hubState.mine || sv.connected) && hubMatch(hubState.q, sv.name, sv.command, (sv.args || []).join(" ")));
+  const keep = sv => ({ name: sv.name, command: sv.command, args: sv.args, env: sv.env });
+  const save = async (servers) => {
+    const msg = box.querySelector("#mcp-msg");
+    if (msg) msg.textContent = "连接中…（npx 首次要下载包，最长约 1 分钟）";
+    const resp = await fetch("/api/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ servers }) });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) alert(d.error || "保存失败");
+    renderHubBody();
+  };
+  box.innerHTML = `
+    <div class="hub-sec-title" style="margin-top:14px">已接入的外部工具
+      <span class="sub">通过 MCP（stdio）给智能体接外部能力，当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入，任务里可直接调用</span></div>
+    <div class="card-grid">
+      <div class="ex-card add" id="mcp-open-add">＋ 添加连接器</div>
+      ${list.map(({ sv, i }) => `
+        <div class="ex-card" data-mi="${i}">
+          <div class="hd"><div class="av">${sv.connected ? "🔌" : "⚠️"}</div>
+            <div class="nm"><span>${esc(sv.name)}</span><span class="al" style="color:var(${sv.connected ? "--wb-ok" : "--wb-err"})">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
+          <div class="ds" style="font-family:var(--mono,ui-monospace,monospace);font-size:11px">${esc(sv.command)} ${esc((sv.args || []).join(" "))}</div>
+          <div class="tg">${sv.connected
+            ? (sv.tools || []).slice(0, 8).map(t => `<i title="${esc(t.description || "")}">${esc(t.name)}</i>`).join("") + ((sv.tools || []).length > 8 ? `<i>…共 ${sv.tools.length} 个</i>` : "")
+            : '<i style="color:var(--wb-err)">命令启动失败或握手超时，详见应用日志</i>'}</div>
+          <div class="ops"><button class="mcp-del">删除</button></div>
+        </div>`).join("")}
+      ${list.length ? "" : `<div class="hub-empty">${hubState.mine ? "没有已连接的连接器" : "还没有连接器"}</div>`}
+    </div>
+    <div class="ex-editor" id="mcp-add-form" style="display:none">
+      <div class="hub-sec-title">添加连接器</div>
+      <div class="row"><div style="flex:1 1 150px"><label>名称</label><input id="mcp-name" placeholder="filesystem"></div>
+        <div style="flex:1 1 120px"><label>命令</label><input id="mcp-cmd" placeholder="npx"></div>
+        <div style="flex:2 1 320px"><label>参数（空格分隔）</label><input id="mcp-args" placeholder="-y @modelcontextprotocol/server-filesystem /Users/你的用户名/Documents"></div></div>
+      <div style="display:flex;gap:8px;align-items:center"><button class="btn-brand" id="mcp-add">添加并连接</button>
+        <button id="mcp-cancel" style="padding:6px 14px">取消</button><span class="ab-empty" id="mcp-msg"></span></div>
+    </div>`;
+  const form = box.querySelector("#mcp-add-form");
+  box.querySelector("#mcp-open-add").onclick = () => { form.style.display = ""; form.scrollIntoView({ behavior: "smooth", block: "nearest" }); };
+  box.querySelector("#mcp-cancel").onclick = () => { form.style.display = "none"; };
+  box.querySelectorAll(".ex-card[data-mi]").forEach(card => {
+    const sv = data.servers[+card.dataset.mi];
+    card.querySelector(".mcp-del").onclick = () => {
+      if (!confirm(`删除连接器「${sv.name}」？`)) return;
+      save(data.servers.filter((_, i) => i !== +card.dataset.mi).map(keep));
+    };
+  });
+  box.querySelector("#mcp-add").onclick = () => {
+    const name = box.querySelector("#mcp-name").value.trim();
+    const cmd = box.querySelector("#mcp-cmd").value.trim();
+    const args = box.querySelector("#mcp-args").value.trim().split(/\s+/).filter(Boolean);
+    if (!name || !cmd) return alert("名称和命令必填");
+    save(data.servers.map(keep).concat([{ name, command: cmd, args, env: {} }]));
+  };
+}
+
+// ================= 参考模板库（照着抄的提示词，点一下填进输入框） =================
+// 每条都对应本地真实具备的能力（技能包 / 工具 / 专家团），不写做不到的画饼模板。
+const PROMPT_TPLS = [
+  { c: "网页", ic: "🖥️", t: "做一个工作台/仪表盘", d: "多卡片布局的单页应用，能直接双击打开",
+    p: `做一个「__主题__工作台」单页网站：\n\n【内容】顶部标题栏 + 关键指标卡 4 个 + 主区域（__放什么__）+ 侧边__放什么__\n【数据】用我工作区里的 __文件名__；没有数据就先造 8 条像真的示例数据，并在页面上标注「示例数据」\n【技术】单文件 HTML，CSS/JS 全部内联，不依赖任何外部 CDN，断网也能打开\n【体验】移动端优先，深浅色都要好看；交互要有 hover/点击反馈\n\n做完把文件读回来自查一遍：有没有引用外部资源、有没有空的 onclick。` },
+  { c: "网页", ic: "🎯", t: "做一个产品落地页", d: "首屏＋卖点＋FAQ＋行动召唤",
+    p: `帮我做一个「__产品名__」的落地页（单文件 HTML）：\n\n首屏一句话说清「给谁解决什么问题」，别写形容词堆砌；\n三个核心卖点，每个配一句具体的场景说明（不要「高效」「智能」这种空词）；\n一段常见问题 FAQ（5 条）；\n底部行动召唤按钮。\n\n风格：__简洁克制 / 科技感 / 温暖__。CSS 内联，移动端优先。` },
+  { c: "研究", ic: "🔍", t: "深度研究一个课题", d: "拆子问题→逐个查证→自我挑刺→带来源报告",
+    p: `帮我深度研究「__课题__」：\n\n1) 先把它拆成 5 个以内的子问题，列出来给我看；\n2) 逐个联网检索并打开原文核对，不要只看搜索摘要；\n3) 写完初稿后自己找一轮反面证据，能推翻的结论就改掉；\n4) 输出研究报告：结论先行 → 论据 → 不确定的地方 → 来源清单（带链接和日期）。\n\n查不到的就写「未找到公开信息」，绝对不许编数字和来源。` },
+  { c: "研究", ic: "⚖️", t: "竞品横向对比", d: "先定维度再逐条填表，出差异化建议",
+    p: `帮我对比「__A__ / __B__ / __C__」：\n\n先定出 6-8 个对比维度（定价、目标用户、核心能力、部署方式、生态、短板…），列出来；\n逐条联网查证填表，每格标注信息来源和获取日期；查不到写「未公开」，不许推测；\n最后给：① 对比表 ② 各自最适合谁 ③ 如果我要做同类产品，切哪个缝隙。` },
+  { c: "数据", ic: "📊", t: "数据文件变分析报告", d: "读数→算指标→画图→写结论",
+    p: `读取工作区里的 __文件名__，做一份分析：\n\n1) 先告诉我这份数据有多少行、有哪些字段、有没有缺失或异常值；\n2) 算出这几个指标：__指标1__、__指标2__ 的环比/同比变化；\n3) 画 2-3 张图（趋势 + 构成），存成图片；\n4) 输出一份 Word 报告：结论写最前面，图表跟在对应结论后面。\n\n算不出来的指标直接说算不出来，别用估计值糊弄。` },
+  { c: "数据", ic: "📈", t: "把结论做成图表", d: "指定图表类型，输出可直接用的图片",
+    p: `把下面这组数据画成图：\n\n__粘贴数据__\n\n要求：__折线/柱状/饼图/散点__，中文标签不要乱码，坐标轴带单位，标题写结论不写「XX图」。\n生成图片存到工作区，并告诉我文件名。` },
+  { c: "办公", ic: "🖼️", t: "材料整理成 PPT", d: "16:9，每页一个主题，标题写结论",
+    p: `把 __工作区里的 XX 文件 / 下面这段内容__ 整理成一份 16:9 的 PPT：\n\n页数控制在 __10__ 页以内；\n每页一个主题，标题直接写结论（比如「获客成本降了 32%」而不是「获客成本分析」）；\n有数据的页配图表，没数据的页别硬凑图；\n最后一页是行动建议，具体到谁在什么时候做什么。` },
+  { c: "办公", ic: "📝", t: "会议记录变纪要", d: "决议 / 待办 / 待议 三段式",
+    p: `把下面这段会议记录整理成纪要：\n\n__粘贴记录__\n\n分三段：\n【结论与决议】已经拍板的事；\n【待办】谁 · 做什么 · 什么时候前完成（没说负责人就写「待认领」）；\n【待议】有争议或没结论的。\n\n原文里没说的一律不许补充推断。` },
+  { c: "办公", ic: "🗓️", t: "写本周周报", d: "读工作区产出，自动汇总成周报",
+    p: `帮我写这周的周报：\n\n先看看工作区里这周新增/修改了哪些文件，作为素材；\n补充这些我口述的进展：__…__\n\n格式：本周完成（带可验证的结果，不写「推进了」这种虚词）→ 下周计划 → 需要支持的事。\n控制在一页内。` },
+  { c: "内容", ic: "✍️", t: "写一篇公众号文章", d: "先给选题角度再动笔",
+    p: `写一篇关于「__主题__」的公众号文章：\n\n先给我 3 个不同的切入角度，我选一个你再动笔；\n目标读者是 __谁__，他们最关心 __什么__；\n开头 3 句话内必须让读者觉得「这说的是我」；\n中间要有具体的例子或数字，不要通篇讲道理；\n字数 __1500__ 字左右。` },
+  { c: "内容", ic: "📮", t: "一条内容改成多平台版本", d: "同一个内核，不同平台的话术",
+    p: `把下面这条内容改写成三个版本：\n\n__粘贴原文__\n\n① 公众号（正式、有结构、能读 3 分钟）\n② 小红书（口语、有情绪、带 emoji 和话题标签）\n③ 朋友圈（100 字内，一句话钩子）\n\n内核信息保持一致，别为了适配平台把事实改了。` },
+  { c: "团队", ic: "👥", t: "整团派活（专家团接力）", d: "一句话把复杂任务交给一支团队",
+    p: `请把下面这个任务整体委派给专家团「__团队名__」（用 delegate_to_team）：\n\n__任务描述，越具体越好：要什么、给谁看、什么格式、什么时候要__\n\n拿回结果后你自己核一遍：说生成的文件真的存在吗？数据有出处吗？没问题再交给我。` },
+  { c: "团队", ic: "🧑‍💼", t: "指名派给某个专家", d: "点名让某位专家单独干",
+    p: `请把这件事委派给专家「__专家名__」：\n\n__任务描述__\n\n它汇报完你要替我核一遍再转给我。` },
+  { c: "自动化", ic: "⏰", t: "让它每天自动干一件事", d: "配合侧栏「自动化」建定时任务",
+    p: `每天早上帮我做这件事（我待会去「自动化」里把它设成定时任务）：\n\n__要做什么__\n\n输出格式：__…__。如果当天没有值得说的变化，就明确回一句「今天无异常」，不要为了凑字数编内容。` },
+];
+
+function renderPromptPage() {
+  const page = document.getElementById("assist-page");
+  if (!page) return;
+  const cats = ["全部", ...new Set(PROMPT_TPLS.map(t => t.c))];
+  if (!renderPromptPage._cat) renderPromptPage._cat = "全部";
+  const draw = () => {
+    const cat = renderPromptPage._cat;
+    const q = (page.querySelector("#tpl-q")?.value || "").trim().toLowerCase();
+    const list = PROMPT_TPLS.filter(t =>
+      (cat === "全部" || t.c === cat) &&
+      (!q || (t.t + t.d + t.p).toLowerCase().includes(q)));
+    page.querySelector("#tpl-grid").innerHTML = list.map((t, i) => `
+      <div class="tpl-card" data-i="${PROMPT_TPLS.indexOf(t)}">
+        <div class="hd"><span class="ic">${t.ic}</span><span class="tt">${esc(t.t)}</span><span class="ct">${esc(t.c)}</span></div>
+        <div class="dd">${esc(t.d)}</div>
+        <pre>${esc(t.p)}</pre>
+        <div class="ops"><button class="primary tpl-use">填进输入框</button><button class="tpl-copy">复制</button></div>
+      </div>`).join("") || '<div class="hub-empty">没有匹配的模板</div>';
+    page.querySelectorAll(".tpl-card").forEach(card => {
+      const t = PROMPT_TPLS[+card.dataset.i];
+      card.querySelector(".tpl-use").onclick = () => startTaskWith(t.p);
+      card.querySelector(".tpl-copy").onclick = async (e) => {
+        try { await navigator.clipboard.writeText(t.p); e.target.textContent = "已复制"; setTimeout(() => e.target.textContent = "复制", 1200); }
+        catch { alert("复制失败，手动选中上面的文字吧"); }
+      };
+    });
+  };
+  page.innerHTML = `
+    <div class="hub-head">
+      <div class="hub-sec-title" style="margin:0">照着抄就行 <span class="sub">带 __下划线__ 的地方换成你自己的内容；点「填进输入框」会开一条新任务</span></div>
+      <div class="hub-search" style="margin-left:auto"><input id="tpl-q" placeholder="搜模板…"></div>
+    </div>
+    <div class="hub-chips" style="margin:4px 0 14px">${cats.map(c =>
+      `<span class="chip ${renderPromptPage._cat === c ? "active" : ""}" data-c="${esc(c)}">${esc(c)}</span>`).join("")}</div>
+    <div class="tpl-grid" id="tpl-grid"></div>`;
+  page.querySelectorAll(".chip[data-c]").forEach(c => c.onclick = () => {
+    renderPromptPage._cat = c.dataset.c;
+    page.querySelectorAll(".chip[data-c]").forEach(x => x.classList.toggle("active", x === c));
+    draw();
+  });
+  page.querySelector("#tpl-q").oninput = draw;
+  draw();
+}
+
+/**
+ * 从广场里点「派活」/「填进输入框」：回到新任务并把提示词填进输入框。
+ * 模板里的 __占位__ 直接选中第一个，用户接着打字就替换掉了；没有占位符就把光标放末尾。
+ */
+function startTaskWith(text) {
+  document.getElementById("new-task").click();
+  inputEl.value = text;
+  inputEl.dispatchEvent(new Event("input"));   // 先让输入框按新内容撑高，否则下面的定位会被这次改高冲掉
+  inputEl.focus();
+  const m = /__[^_\n]*__/.exec(text);
+  if (m) inputEl.setSelectionRange(m.index, m.index + m[0].length);
+  else inputEl.setSelectionRange(text.length, text.length);
+  // 长模板会把输入框滚到末尾，用户看不见开头。选区在开头就直接滚回顶部。
+  inputEl.scrollTop = 0;
 }
 
 // ================= 资料库 · 灵感（跨项目共享，agent 可用 library_list/read 读取） =================
@@ -2363,7 +3123,6 @@ const SETTING_CATS = [
   ["memory", "记忆"],
   ["data", "数据管理"],
   ["im", "助理设置"],
-  ["mcp", "MCP 连接器"],
   ["about", "关于"],
 ];
 async function renderSettings(active) {
@@ -2387,7 +3146,6 @@ async function renderSettings(active) {
   else if (active === "security") renderSecurityPane(pane, s);
   else if (active === "shortcuts") renderShortcutsPane(pane, s);
   else if (active === "im") renderImPane(pane, s);
-  else if (active === "mcp") renderMcpPane(pane);
   else renderAboutPane(pane);
 }
 async function saveSettings(patch, msgEl) {
@@ -2561,6 +3319,9 @@ function renderAgentPane(pane, s) {
       <input id="ag-runtime" type="number" min="1" value="${Math.round((s.agent.max_runtime_ms || 600000) / 60000)}">
       <div class="t" style="margin-top:8px">单次模型调用超时（秒）</div>
       <input id="ag-llm-timeout" type="number" min="30" value="${Math.round((s.agent.llm_timeout_ms || 300000) / 1000)}">
+      <div class="t" style="margin-top:8px">上下文预算（千字符）</div>
+      <div class="d" style="margin-bottom:6px">超出后自动截短较早的工具输出（最近 3 步始终保留原文），避免长任务撞模型上下文上限整个失败。上下文大的模型可以调高（默认 120）</div>
+      <input id="ag-ctx" type="number" min="20" max="2000" value="${Math.round((s.agent.max_context_chars || 120000) / 1000)}">
     </div>
     <button class="btn-brand" id="ag-save">保存</button><span class="ok-msg" id="ag-msg"></span>`;
   pane.querySelector("#ag-save").onclick = () =>
@@ -2569,13 +3330,14 @@ function renderAgentPane(pane, s) {
       tool_timeout_ms: +pane.querySelector("#ag-timeout").value * 1000,
       max_runtime_ms: +pane.querySelector("#ag-runtime").value * 60000,
       llm_timeout_ms: +pane.querySelector("#ag-llm-timeout").value * 1000,
+      max_context_chars: +pane.querySelector("#ag-ctx").value * 1000,
     } }, pane.querySelector("#ag-msg"));
 }
 function renderPersonaPane(pane, s) {
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">个性化偏好</div>
-      <div class="d" style="margin-bottom:8px">希望 WorkBuddy 遵循的风格与偏好，会注入每次任务。例如：回复简洁；PPT 用深色科技风；周报署名"张三"。</div>
+      <div class="d" style="margin-bottom:8px">希望 OpenBuddy 遵循的风格与偏好，会注入每次任务。例如：回复简洁；PPT 用深色科技风；周报署名"张三"。</div>
       <textarea id="ps-text" rows="8" placeholder="例如：所有文档默认用简体中文；数据分析结论放最前面…">${esc(s.persona)}</textarea>
     </div>
     <button class="btn-brand" id="ps-save">保存</button><span class="ok-msg" id="ps-msg"></span>`;
@@ -2643,6 +3405,83 @@ function renderDataPane(pane, s) {
     loadCache();
   };
 }
+// 飞书扫码授权面板：靠本机 lark-cli 跑飞书官方设备码流程
+let larkQrPoll = null;
+async function renderLarkQr(pane) {
+  const box = pane.querySelector("#fs-qr-body");
+  if (!box) return;
+  const st = await fetch("/api/feishu/lark-cli").then(r => r.json()).catch(() => ({ installed: false }));
+  const btn = (id, txt, primary) => `<button class="${primary ? "btn-brand" : ""}" id="${id}" style="margin-right:6px">${txt}</button>`;
+  if (!st.installed) {
+    box.innerHTML = `本机没找到 lark-cli。装一下再回来：<br><code>npx @larksuite/cli@latest install</code><br>
+      <div style="margin-top:8px">${btn("lk-recheck", "装好了，重新检测")}</div>`;
+    box.querySelector("#lk-recheck").onclick = () => renderLarkQr(pane);
+    return;
+  }
+  if (!st.configured) {
+    box.innerHTML = `lark-cli v${esc(st.version)} 已装，但还没绑定飞书应用。
+      把上面填的 App ID / App Secret 写进去就能扫码了（凭证走标准输入，不会出现在进程列表里）。
+      <div style="margin-top:8px">${btn("lk-bind", "用上面的凭证绑定", true)}<span class="ok-msg" id="lk-msg"></span></div>`;
+    box.querySelector("#lk-bind").onclick = async (e) => {
+      const msg = box.querySelector("#lk-msg");
+      e.target.disabled = true; msg.textContent = "绑定中…"; msg.style.color = "";
+      const d = await fetch("/api/feishu/lark-cli/bind", { method: "POST" }).then(r => r.json()).catch(() => ({ error: "请求失败" }));
+      if (d.ok) renderLarkQr(pane);
+      else { e.target.disabled = false; msg.style.color = "var(--wb-err)"; msg.textContent = "❌ " + d.error; }
+    };
+    return;
+  }
+  const fsAppId = (pane.querySelector("#fs-appid") || {}).value;
+  box.innerHTML = `lark-cli v${esc(st.version)} · 应用 <code>${esc(st.app_id)}</code>${st.users ? ` · 已授权：${esc(st.users)}` : " · 还没有用户授权"}
+    <div style="margin-top:8px">${btn("lk-login", st.users ? "重新扫码授权" : "扫码授权", true)}${
+      st.has_secret && fsAppId !== st.app_id ? btn("lk-import", "把这个应用的凭证填到上面") : ""}<span class="ok-msg" id="lk-msg"></span></div>
+    <div id="lk-qr" style="margin-top:10px"></div>`;
+  const msg = box.querySelector("#lk-msg");
+  const imp = box.querySelector("#lk-import");
+  if (imp) imp.onclick = async (e) => {
+    e.target.disabled = true; msg.textContent = "导入中…"; msg.style.color = "";
+    const d = await fetch("/api/feishu/lark-cli/import", { method: "POST" }).then(r => r.json()).catch(() => ({ error: "请求失败" }));
+    if (d.ok) { msg.style.color = "var(--wb-ok)"; msg.textContent = "✅ 已填入并保存，可以点上面的「测试连接」了"; renderSettings("im"); }
+    else { e.target.disabled = false; msg.style.color = "var(--wb-err)"; msg.textContent = "❌ " + d.error; }
+  };
+  box.querySelector("#lk-login").onclick = async (e) => {
+    const qr = box.querySelector("#lk-qr");
+    e.target.disabled = true; msg.textContent = "取授权链接…"; msg.style.color = "";
+    const d = await fetch("/api/feishu/qr/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(r => r.json()).catch(() => ({ error: "请求失败" }));
+    e.target.disabled = false;
+    if (!d.ok) { msg.style.color = "var(--wb-err)"; msg.textContent = "❌ " + (d.error || "启动失败"); return; }
+    msg.textContent = "";
+    qr.innerHTML = `<div style="display:flex;gap:12px;align-items:flex-start">
+      ${d.qr ? `<img src="${d.qr}" width="176" height="176" style="border:1px solid var(--wb-border);border-radius:8px;image-rendering:pixelated">` : ""}
+      <div style="min-width:0">
+        <div><b>用飞书 App 扫这个码</b>，或在浏览器打开下面的链接：</div>
+        <div style="margin:6px 0"><a href="${esc(d.url)}" target="_blank" rel="noreferrer" style="word-break:break-all">${esc(d.url)}</a></div>
+        <div id="lk-qr-st" style="color:var(--wb-text-3)">等待授权…（${d.expires_in} 秒内有效）</div>
+        <div style="margin-top:8px"><button id="lk-cancel">取消</button></div>
+      </div></div>`;
+    qr.querySelector("#lk-cancel").onclick = () => {
+      clearInterval(larkQrPoll); larkQrPoll = null;
+      fetch("/api/feishu/qr/cancel", { method: "POST" }).catch(() => {});
+      qr.innerHTML = "";
+    };
+    clearInterval(larkQrPoll);
+    larkQrPoll = setInterval(async () => {
+      const s2 = await fetch("/api/feishu/qr/status").then(r => r.json()).catch(() => null);
+      const line = qr.querySelector("#lk-qr-st");
+      if (!s2 || !line) { clearInterval(larkQrPoll); larkQrPoll = null; return; }
+      if (s2.state === "ok") {
+        clearInterval(larkQrPoll); larkQrPoll = null;
+        qr.innerHTML = `<div style="color:var(--wb-ok)">✅ 授权成功${s2.user ? "：" + esc(s2.user) : ""}。现在 AI 可以用 lark-cli 以你的身份操作飞书了。</div>`;
+        renderLarkQr(pane);
+      } else if (s2.state === "error") {
+        clearInterval(larkQrPoll); larkQrPoll = null;
+        line.style.color = "var(--wb-err)";
+        line.textContent = "❌ " + (s2.error || "授权失败");
+      }
+    }, 2500);
+  };
+}
 function renderImPane(pane, s) {
   pane.innerHTML = `
     <div class="card-item">
@@ -2652,6 +3491,11 @@ function renderImPane(pane, s) {
       <input id="fs-secret" type="password" placeholder="App Secret" value="${esc(s.im.feishu.app_secret)}">
       <input id="fs-vtoken" placeholder="Verification Token（可选，仅旧回调模式用）" value="${esc(s.im.feishu.verification_token)}">
       <div style="margin-top:8px"><button class="btn-brand" id="fs-test">测试连接</button><span class="ok-msg" id="fs-test-r"></span></div>
+    </div>
+    <div class="card-item" id="fs-qr-card">
+      <div class="t">扫码授权「你本人」的飞书身份（可选）</div>
+      <div class="d" style="margin-bottom:8px">上面那组凭证是<b>机器人</b>的身份，只够收发消息。要让 AI 以<b>你本人</b>的身份读日历、翻云文档、查邮件、建表格，就在这里扫码授权一次——走飞书官方设备码流程，密码不经过 OpenBuddy。<br>依赖本机的 <a href="https://github.com/larksuite/cli" target="_blank" rel="noreferrer">lark-cli</a>（MIT），没装的话：<code>npx @larksuite/cli@latest install</code>。</div>
+      <div id="fs-qr-body" class="d">检测 lark-cli…</div>
     </div>
     <div class="card-item">
       <div class="t">飞书云文档凭证（可选）</div>
@@ -2668,7 +3512,7 @@ function renderImPane(pane, s) {
     </div>
     <div class="card-item">
       <div class="t">微信（扫码登录，无需公网地址）</div>
-      <div class="d" style="margin-bottom:8px">微信自己的机器人通道：点下面按钮出二维码，用<b>要当机器人的那个微信号</b>扫码确认，之后本机主动长轮询收发消息，<b>不需要公网地址</b>。别人给这个微信号发消息就等于给 WorkBuddy 下任务，结果直接回到微信聊天里。<br>⚠️ 登录态由微信控制，失效（服务端返回 -14）后需要重新扫码；图片/文件/视频本版只识别为占位标签，语音有微信自带转写就用转写文字。</div>
+      <div class="d" style="margin-bottom:8px">微信自己的机器人通道：点下面按钮出二维码，用<b>要当机器人的那个微信号</b>扫码确认，之后本机主动长轮询收发消息，<b>不需要公网地址</b>。别人给这个微信号发消息就等于给 OpenBuddy 下任务，结果直接回到微信聊天里。<br>⚠️ 登录态由微信控制，失效（服务端返回 -14）后需要重新扫码；图片/文件/视频本版只识别为占位标签，语音有微信自带转写就用转写文字。</div>
       <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
         <div>
           <button class="btn-brand" id="ilk-qr">获取二维码</button>
@@ -2777,6 +3621,7 @@ function renderImPane(pane, s) {
     }
     refreshImStatus();
   };
+  renderLarkQr(pane);
   // 测试按钮先保存再测：服务端拿的是 config 里的值，不先落盘就会测出「未配置」
   const wireTest = (btnId, outId, url, body, onOk) => {
     pane.querySelector(btnId).onclick = async () => {
@@ -3060,53 +3905,10 @@ function renderShortcutsPane(pane, s) {
   draw("");
 }
 
-async function renderMcpPane(pane) {
-  pane.innerHTML = '<div class="ab-empty">加载中…</div>';
-  const data = await fetch("/api/mcp").then(r => r.json()).catch(() => ({ servers: [], total_tools: 0 }));
-  const dot = ok => `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(${ok ? "--wb-ok" : "--wb-err"});margin-right:6px"></span>`;
-  const rows = data.servers.map((sv, i) => `
-    <div class="card-item">
-      <div class="t">${dot(sv.connected)}${esc(sv.name)}<button class="btn-brand mcp-del" data-i="${i}" style="float:right;padding:2px 10px;font-size:12px">删除</button></div>
-      <div class="d">${esc(sv.command)} ${esc((sv.args || []).join(" "))}</div>
-      <div class="d">${sv.connected
-        ? `已连接 · ${sv.tools.length} 个工具：${esc(sv.tools.map(t => t.name).join("、"))}`
-        : "未连接（命令启动失败或工具握手超时，详见应用日志）"}</div>
-    </div>`).join("");
-  pane.innerHTML = `
-    <div class="card-item">
-      <div class="t">MCP 连接器</div>
-      <div class="d">通过 Model Context Protocol 给智能体接入外部工具（stdio 方式）。当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入智能体，任务中可直接调用。增删后自动重连、热生效。</div>
-    </div>
-    ${rows || ""}
-    <div class="card-item">
-      <div class="t">添加服务器</div>
-      <input id="mcp-name" placeholder="名称，如 filesystem">
-      <input id="mcp-cmd" placeholder="命令，如 npx">
-      <input id="mcp-args" placeholder="参数（空格分隔），如 -y @modelcontextprotocol/server-filesystem /Users/你的用户名/Documents">
-      <div style="margin-top:8px"><button class="btn-brand" id="mcp-add">添加并连接</button><span class="ok-msg" id="mcp-msg"></span></div>
-    </div>`;
-  const keep = sv => ({ name: sv.name, command: sv.command, args: sv.args, env: sv.env });
-  const save = async (servers) => {
-    const msg = pane.querySelector("#mcp-msg");
-    if (msg) msg.textContent = "连接中…（npx 首次要下载包，最长约 1 分钟）";
-    const resp = await fetch("/api/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ servers }) });
-    const d = await resp.json().catch(() => ({}));
-    if (!resp.ok) alert(d.error || "保存失败");
-    renderMcpPane(pane);
-  };
-  pane.querySelectorAll(".mcp-del").forEach(b => b.onclick = () => save(data.servers.filter((_, i) => i !== +b.dataset.i).map(keep)));
-  pane.querySelector("#mcp-add").onclick = () => {
-    const name = pane.querySelector("#mcp-name").value.trim();
-    const cmd = pane.querySelector("#mcp-cmd").value.trim();
-    const args = pane.querySelector("#mcp-args").value.trim().split(/\s+/).filter(Boolean);
-    if (!name || !cmd) { alert("名称和命令必填"); return; }
-    save(data.servers.map(keep).concat([{ name, command: cmd, args, env: {} }]));
-  };
-}
 function renderAboutPane(pane) {
   pane.innerHTML = `
     <div class="card-item">
-      <div class="t">WorkBuddy 复刻版</div>
+      <div class="t">OpenBuddy</div>
       <div class="d">开源复刻的 AI Agent 办公工作台。功能：Agent 自主执行 · Ask/Plan/Craft 模式 · 技能系统 · MCP 连接器 · 专家团多智能体 · 定时自动化 · 飞书/企业微信/Webhook 远程指挥 · 多模型可插拔 · 会话持久化与回放 · 文件上传 · 工作空间切换。</div>
     </div>
     <div class="card-item">

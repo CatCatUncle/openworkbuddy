@@ -1,0 +1,19 @@
+services:
+  openbuddy:
+    build: .
+    image: openbuddy:latest
+    container_name: openbuddy
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3800
+    ports:
+      # 只绑本机回环，外面用 nginx/caddy 反代过来。
+      # 想直接对公网开就改成 "3800:3800"——那之前请先看 deploy/README.md 的风险那节。
+      - "127.0.0.1:3800:3800"
+    volumes:
+      - ./config.json:/app/config.json      # 模型 Key 等配置（首次跑之前先 cp config.example.json config.json）
+      - ./data:/app/data                    # 账号、积分、会话
+      - ./workspace:/app/workspace          # 成果文件
+      - ./skills:/app/skills                # 技能（改完立刻生效，不用重建镜像）
+      - ./experts.json:/app/experts.json
