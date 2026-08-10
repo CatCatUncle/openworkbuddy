@@ -1537,7 +1537,7 @@ const attachChips = document.getElementById("attach-chips");
 document.getElementById("attach-btn").onclick = () => document.getElementById("file-input").click();
 document.getElementById("file-input").addEventListener("change", async (e) => {
   for (const file of e.target.files) {
-    if (file.size > 30 * 1048576) { alert(`${file.name} 超过 30MB，跳过`); continue; }
+    if (file.size > 30 * 1048576) { toast(`${file.name} 超过 30MB，跳过`); continue; }
     const buf = await file.arrayBuffer();
     const b64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ""));
     const resp = await fetch("/api/upload", {
@@ -1551,7 +1551,7 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
       inputEl.value = (inputEl.value ? inputEl.value + " " : "") + `（已上传文件：${file.name}）`;
       syncInputHl();
       fetch("/api/files").then(r => r.json()).then(renderFiles);
-    } else alert("上传失败: " + file.name);
+    } else toast("❌ 上传失败: " + file.name);
   }
   e.target.value = "";
 });
@@ -1666,7 +1666,7 @@ document.getElementById("proj-add").onclick = (e) => {
       body: JSON.stringify({ name }),
     });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) { alert(data.error || "创建失败"); return; }
+    if (!resp.ok) { toast("❌ " + (data.error || "创建失败")); return; }
     document.getElementById("new-task").click();
     refreshProjects().then(refreshSettingsCache);
   };
@@ -1910,7 +1910,8 @@ function toast(msg) {
   t.textContent = msg;
   t.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+  // 长消息（多半是报错原因）多留一会儿，2.2 秒读不完一句「分字段「*/0」的步长必须 ≥ 1」
+  toastTimer = setTimeout(() => t.classList.remove("show"), Math.min(6000, Math.max(2200, String(msg).length * 120)));
 }
 async function toggleAppFullscreen() {
   const r = await fetch("/api/app/fullscreen", { method: "POST" }).then(x => x.json()).catch(() => ({ ok: false }));
@@ -2637,7 +2638,7 @@ function renderHubEditor() {
       };
       const resp = await fetch("/api/experts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const d = await resp.json().catch(() => ({}));
-      if (!resp.ok) return alert(d.error || "保存失败");
+      if (!resp.ok) return toast("❌ " + (d.error || "保存失败"));
       hubState.editing = null;
       toast("专家已保存，立即生效");
       renderHubPage();
@@ -2700,7 +2701,7 @@ function renderHubEditor() {
       };
       const resp = await fetch("/api/expert-teams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const d = await resp.json().catch(() => ({}));
-      if (!resp.ok) return alert(d.error || "保存失败");
+      if (!resp.ok) return toast("❌ " + (d.error || "保存失败"));
       hubState.editing = null;
       toast("专家团已保存，立即生效");
       renderHubPage();
@@ -2820,7 +2821,7 @@ async function renderHubSkills(box) {
     const edit = card.querySelector(".sk-edit");
     if (edit) edit.onclick = async () => {
       const d = await fetch("/api/skills/" + encodeURIComponent(s.name)).then(r => r.json()).catch(() => null);
-      if (!d) return alert("加载失败");
+      if (!d) return toast("❌ 加载失败");
       hubState.editing = { type: "skill", data: d };
       renderHubSkillEditor();
     };
@@ -2828,7 +2829,7 @@ async function renderHubSkills(box) {
     if (del) del.onclick = async () => {
       if (!confirm(`删除技能「${s.name}」？（会删掉整个技能目录）`)) return;
       const resp = await fetch("/api/skills/" + encodeURIComponent(s.name), { method: "DELETE" });
-      if (!resp.ok) { const d = await resp.json().catch(() => ({})); return alert(d.error || "删除失败"); }
+      if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast("❌ " + (d.error || "删除失败")); }
       renderHubPage();
     };
   });
@@ -2861,7 +2862,7 @@ function renderHubSkillEditor() {
         original_name: x.name || undefined,
       }) });
     const d = await resp.json().catch(() => ({}));
-    if (!resp.ok) return alert(d.error || "保存失败");
+    if (!resp.ok) return toast("❌ " + (d.error || "保存失败"));
     hubState.editing = null;
     toast("技能已保存，立即生效");
     renderHubPage();
@@ -2939,13 +2940,13 @@ async function renderHubPlugins(box) {
           ? `✅ ${u.name} 已从 v${u.from_version} 更到 v${u.version || "?"}`
           : `✅ ${u.name} 已是最新（v${u.version || "?"}，重新拉了一遍）`);
         renderHubBody();
-      } catch (e) { upd.disabled = false; upd.textContent = "更新"; alert("❌ " + e.message); }
+      } catch (e) { upd.disabled = false; upd.textContent = "更新"; toast("❌ " + e.message); }
     };
     card.querySelector(".pl-del").onclick = async () => {
       if (!confirm(`卸载插件「${p.name}」？它带的技能和连接器会一起消失（插件产生的数据会保留，重装还在）`)) return;
       const resp = await fetch("/api/plugins/" + encodeURIComponent(p.name), { method: "DELETE" });
       const d = await resp.json().catch(() => ({}));
-      if (!resp.ok) return alert(d.error || "卸载失败");
+      if (!resp.ok) return toast("❌ " + (d.error || "卸载失败"));
       if (d.note) toast(d.note);
       renderHubBody();
     };
@@ -2971,7 +2972,7 @@ async function renderHubMcp(box) {
     if (msg) msg.textContent = "连接中…（npx 首次要下载包，最长约 1 分钟）";
     const resp = await fetch("/api/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ servers }) });
     const d = await resp.json().catch(() => ({}));
-    if (!resp.ok) alert(d.error || "保存失败");
+    if (!resp.ok) toast("❌ " + (d.error || "保存失败"));
     renderHubBody();
   };
   box.innerHTML = `
@@ -3030,10 +3031,10 @@ async function renderHubMcp(box) {
   });
   box.querySelector("#mcp-add").onclick = () => {
     const name = box.querySelector("#mcp-name").value.trim();
-    if (!name) return alert("名称必填");
+    if (!name) return toast("❌ 名称必填");
     if (kindOf() === "http") {
       const url = box.querySelector("#mcp-url").value.trim();
-      if (!url) return alert("远程连接器要填地址");
+      if (!url) return toast("❌ 远程连接器要填地址");
       // 「Key: Value」按第一个冒号切，令牌里本身带冒号也不会被切坏
       const headers = {};
       box.querySelector("#mcp-headers").value.split(/[\n;]+/).map(s => s.trim()).filter(Boolean).forEach(line => {
@@ -3044,7 +3045,7 @@ async function renderHubMcp(box) {
     }
     const cmd = box.querySelector("#mcp-cmd").value.trim();
     const args = box.querySelector("#mcp-args").value.trim().split(/\s+/).filter(Boolean);
-    if (!cmd) return alert("本地连接器要填命令");
+    if (!cmd) return toast("❌ 本地连接器要填命令");
     save(ownServers().concat([{ name, command: cmd, args, env: {} }]));
   };
 }
@@ -3105,7 +3106,7 @@ function renderPromptPage() {
       card.querySelector(".tpl-use").onclick = () => startTaskWith(t.p);
       card.querySelector(".tpl-copy").onclick = async (e) => {
         try { await navigator.clipboard.writeText(t.p); e.target.textContent = "已复制"; setTimeout(() => e.target.textContent = "复制", 1200); }
-        catch { alert("复制失败，手动选中上面的文字吧"); }
+        catch { toast("❌ 复制失败，手动选中上面的文字吧"); }
       };
     });
   };
@@ -3244,11 +3245,12 @@ async function renderSched() {
   mBody.innerHTML =
     (list.length ? list.map(t =>
       `<div class="card-item">
-        <div class="t">${esc(t.name)} ${t.enabled ? "" : "（已停用）"}</div>
-        <div class="d">${esc(cronToHuman(t.cron))} · ${esc(t.task.slice(0, 60))}${t.last_run ? "<br>上次执行: " + esc(t.last_run.slice(0, 16).replace("T", " ")) : ""}${t.last_result ? " · " + esc(t.last_result.slice(0, 100)) + (t.last_result.length > 100 ? "…" : "") : ""}</div>
+        <div class="t">${esc(t.name)} ${t.running ? "· 执行中…" : t.enabled ? "" : "（已停用）"}</div>
+        <div class="d">${esc(cronToHuman(t.cron))} · ${esc(t.task.slice(0, 60))}${t.catch_up === false ? " · 错过不补" : ""}${t.last_run ? "<br>上次执行: " + esc(t.last_run.slice(0, 16).replace("T", " ")) + (t.last_trigger && t.last_trigger !== "cron" ? "（" + esc(t.last_trigger) + "）" : "") : ""}${t.last_result ? " · " + esc(t.last_result.slice(0, 100)) + (t.last_result.length > 100 ? "…" : "") : ""}</div>
         <div style="margin-top:6px">
           <a class="link" data-act="run" data-id="${t.id}" href="#">立即执行</a> ·
           <a class="link" data-act="toggle" data-id="${t.id}" data-en="${t.enabled}" href="#">${t.enabled ? "停用" : "启用"}</a> ·
+          <a class="link" data-act="catchup" data-id="${t.id}" data-cu="${t.catch_up !== false}" href="#" title="电脑睡着或应用没开时错过了这次，下次开机补跑一遍（一段时间里错过多次也只补一次）">${t.catch_up === false ? "开启补跑" : "关闭补跑"}</a> ·
           <a class="link danger" data-act="del" data-id="${t.id}" href="#">删除</a>
         </div>
       </div>`).join("") : `<div style="color:var(--wb-text-3);margin-bottom:10px">还没有定时任务，添加一个吧 👇</div>`)
@@ -3287,10 +3289,10 @@ async function renderSched() {
     const name = mBody.querySelector("#sf-name").value.trim();
     const task = mBody.querySelector("#sf-task").value.trim();
     const cron = buildCron();
-    if (!task) return alert("请填写任务描述");
-    if (!cron) return alert("请完成时间设置");
+    if (!task) return toast("❌ 请填写任务描述");
+    if (!cron) return toast("❌ 请完成时间设置");
     const resp = await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task }) });
-    if (!resp.ok) return alert((await resp.json()).error || "添加失败");
+    if (!resp.ok) return toast("❌ " + ((await resp.json()).error || "添加失败"));
     renderSched();
   };
   mBody.querySelectorAll("a[data-act]").forEach(a => a.onclick = async (e) => {
@@ -3298,7 +3300,16 @@ async function renderSched() {
     const id = a.dataset.id;
     if (a.dataset.act === "del") { if (!confirm("确认删除该定时任务？")) return; await fetch("/api/schedules/" + id, { method: "DELETE" }); }
     else if (a.dataset.act === "toggle") await fetch(`/api/schedules/${id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: a.dataset.en !== "true" }) });
-    else if (a.dataset.act === "run") { a.textContent = "执行中…"; await fetch(`/api/schedules/${id}/run`, { method: "POST" }); fetch("/api/files").then(r => r.json()).then(renderFiles); }
+    else if (a.dataset.act === "catchup") await fetch(`/api/schedules/${id}/catchup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ catch_up: a.dataset.cu !== "true" }) });
+    else if (a.dataset.act === "run") {
+      a.textContent = "执行中…";
+      // 以前这里不看返回：跑挂了界面照样刷新一下就完事，用户只当它跑成功了
+      const r = await fetch(`/api/schedules/${id}/run`, { method: "POST" }).catch(() => null);
+      const j = r ? await r.json().catch(() => ({})) : {};
+      if (!r || !r.ok) toast("❌ " + (j.error || "执行失败"));
+      else toast("✅ 执行完成");
+      fetch("/api/files").then(r => r.json()).then(renderFiles);
+    }
     renderSched();
   });
 }
@@ -3445,7 +3456,7 @@ function renderModelsPane(pane, s) {
       base_url: pane.querySelector("#mf-base").value.trim(),
       api_key: pane.querySelector("#mf-key").value.trim(),
     };
-    if (!entry.name || !entry.model) return alert("名称和模型名必填");
+    if (!entry.name || !entry.model) return toast("❌ 名称和模型名必填");
     if (editIndex >= 0) s.models[editIndex] = entry; else s.models.push(entry);
     await saveSettings({ models: s.models }, msg);
     renderSettings("models");
@@ -3575,7 +3586,7 @@ function renderDataPane(pane, s) {
   pane.querySelector("#ws-pick").onclick = async () => {
     const r = await fetch("/api/pick-folder", { method: "POST" }).then(r => r.json()).catch(() => ({}));
     if (r.path) pane.querySelector("#ws-dir").value = r.path;
-    else if (r.error) alert(r.error);
+    else if (r.error) toast("❌ " + r.error);
   };
   pane.querySelector("#ws-save").onclick = () => saveSettings({ workspace_dir: pane.querySelector("#ws-dir").value.trim() }, pane.querySelector("#ws-msg"))
     .then(ok => { if (ok) fetch("/api/files").then(r => r.json()).then(renderFiles); });
