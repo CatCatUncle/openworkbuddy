@@ -1,6 +1,6 @@
 # 商业授权说明 / Commercial License
 
-OpenBuddy 采用 **PolyForm Noncommercial License 1.0.0**（见 [LICENSE](./LICENSE)）。
+OpenWorkBuddy 采用 **PolyForm Noncommercial License 1.0.0**（见 [LICENSE](./LICENSE)）。
 著作权人：**开发者猫叔**。
 
 一句话：**自己用、学习用、非营利机构用 —— 免费；拿去赚钱 —— 需要单独向作者购买商业授权。**

@@ -1,4 +1,4 @@
-# OpenBuddy
+# OpenWorkBuddy
 
 **腾讯 WorkBuddy 的开源复刻版。** 一句话下任务，AI 自己规划、拆解、动手，交付能打开验收的成果文件——PPT、Word、Excel、网页、调研报告、公众号推文。
 
@@ -39,7 +39,8 @@ npm run cli -- "帮我写一份本周周报"   # 命令行
 | 🧩 **专家 · 技能 · 连接器** | 三合一广场：召唤专家、装技能、接 MCP 连接器 |
 | 👥 **专家 与 专家团** | 12 位内置专家 + 4 个专家团；也可以自己建：头像、职称、说明、绑技能、默认提示词 |
 | 📦 **技能系统** | 一个 Markdown 文件就是一个技能，**改完下一条任务就生效**，不用重启 |
-| 🔌 **MCP 连接器** | 标准 Model Context Protocol（stdio），接进来的工具自动注入 agent |
+| 🔌 **MCP 连接器** | 标准 Model Context Protocol（stdio / Streamable HTTP），接进来的工具自动注入 agent |
+| 🧷 **Agent Plugins** | 支持 [Agent Plugins 1.0.0](https://agent-plugins.org) 开放插件标准，一个包同时带技能和 MCP，粘个 GitHub 地址就装 |
 | 📱 **IM 远程指挥** | 飞书、QQ、企业微信（自建应用 / 群机器人）、微信（iLink 扫码 / 公众号）、钉钉、通用 Webhook |
 | ⏰ **自动化定时任务** | cron 定时跑（每天 9 点出晨报这种），结果推到 IM |
 | 🔐 **安全中心** | 命令审批闸门、命令黑白名单、删文件保护、URL 白名单、运行时开关、审计日志 |
@@ -130,6 +131,98 @@ description: 一句话说清什么时候该用它（agent 靠这句判断）
 
 ---
 
+## Agent Plugins（开放插件标准）
+
+OpenWorkBuddy 支持 [**Agent Plugins 1.0.0**](https://agent-plugins.org)——由 Vercel 等厂商共同制定的、
+不绑定任何客户端的插件格式。**一个包同时带技能和 MCP 连接器，装一次两样都进来**，
+在别的支持这个标准的客户端里也能用同一个包。
+
+### 插件长什么样
+
+一个目录，根上放一份 `plugin.json`：
+
+```
+my-plugin/
+├── plugin.json           必需，插件清单
+├── skills/               Agent Skills，每个子目录一份 SKILL.md
+│   └── my-skill/SKILL.md
+├── mcp.json              MCP 服务器声明
+└── com.example.client/   别家客户端的私有扩展（反向域名命名，我们原样忽略）
+```
+
+`plugin.json` 最小可用形态：
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "my-plugin",
+  "version": "1.0.0",
+  "description": "一句话说清它是干什么的",
+  "license": "MIT"
+}
+```
+
+`mcp.json` 和 MCP 官方配置一个样，多了两个可以在 `args` / `env` 值 / `cwd` 里展开的变量：
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "notes": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/bin/server.js", "--data", "${PLUGIN_DATA}"]
+    }
+  }
+}
+```
+
+`${PLUGIN_ROOT}` 是插件装在哪，`${PLUGIN_DATA}` 是给它的可写数据目录——
+落在 `data/plugin-data/<插件名>`，**卸载插件不会删它**，重装数据还在（规范要求跨升级保留）。
+
+### 怎么装
+
+界面 **专家 · 技能 · 连接器 → 插件** 页，粘一个 GitHub 地址点安装：
+
+```
+https://github.com/owner/repo                          仓库根就是插件
+https://github.com/owner/repo/tree/main/plugins/xxx    仓库里的某个子目录
+```
+
+走稀疏浅克隆（`--depth 1 --filter=blob:none --sparse`），只拉那一个子目录。
+**先在临时目录验一遍清单，不合规就不落盘**，免得 `plugins/` 里堆一堆装不上的垃圾。
+也可以直接把目录拷进 `plugins/`，重启即生效。
+
+技能立刻生效；MCP 服务器要重启一次才连上（卸载同理，进程得停）。
+
+### 一致性范围（本客户端实现到哪）
+
+| | |
+|---|---|
+| 规范版本 | 1.0.0（`$schema` 按本地已知常量校验，**加载时不联网取 schema**，规范明令禁止） |
+| 组件类型 | `skills` + `mcp.json` 两类都实现 |
+| MCP 传输 | `stdio`、`streamable-http`。`sse`（遗留 HTTP+SSE）规范里是可选项，**没实现**，遇到会跳过那一条并报出来 |
+| 客户端扩展 | `extensions` 字段和 `com.*/` 目录一律不解读、不校验——那是别家客户端的地盘 |
+| 技能发现 | 只认 `skills/` 的直接子目录里名字**正好是 `SKILL.md`** 的文件，不递归（macOS 文件系统不分大小写，这里是逐个比目录项名，不是 `stat` 一下就算） |
+| HTTP 安全 | `redirect: "manual"`——配置里的 `headers` 绝不会跟着跳转发到别的域 |
+
+### 坏零件不连坐
+
+规范定了五级失败边界，这里照着实现：
+
+1. **清单不合规** → 整个插件不加载（只有两种例外是非致命的：顶层多了不认识的字段、`extensions` 不是对象，这两种报一声继续装）
+2. **`mcp.json` 顶层坏了** → 只关掉这个插件的 MCP，技能照常用
+3. **某个技能目录坏了** → 只跳过那一个技能
+4. **某条 MCP 条目坏了** → 只跳过那一条服务器
+5. **路径想往插件目录外跑** → 直接拒绝
+
+被跳过的零件不会闷声吞掉，插件卡片上会列出来（「⚠️ 有零件被跳过」）。
+
+插件带来的技能和连接器在界面上是**只读**的——技能页没有改 / 删按钮，连接器页也不会把它们存回你的 `config.json`，
+要去掉就去插件页卸载整个插件。
+
+---
+
 ## 专家与专家团
 
 `experts.json` 定义专家——每个专家就是一份独立系统提示的子智能体，和主 Agent 共享工作目录。
@@ -169,7 +262,7 @@ curl -X POST http://localhost:3800/im/task \
 ### 飞书扫码授权
 
 **设置 → 助理设置 → 飞书 → 扫码授权**，用飞书 App 扫一下，AI 就能以**你本人**的身份读日历、翻云文档、
-查邮件、写多维表格（走飞书官方设备码流程，密码不经过 OpenBuddy）。依赖本机的
+查邮件、写多维表格（走飞书官方设备码流程，密码不经过 OpenWorkBuddy）。依赖本机的
 [lark-cli](https://github.com/larksuite/cli)（MIT）：`npx @larksuite/cli@latest install`。
 
 > 说清楚免得误会：机器人**收消息**必须有应用的 `app_id` + `app_secret`，这是飞书的设计，扫码替代不了。
@@ -212,7 +305,8 @@ agent.js         Agent 运行时（协调者/专家循环、工具路由、系�
 llm.js           LLM 适配层（OpenAI 兼容 + Anthropic）
 tools.js         内置工具
 skills.js        技能加载器            skills/       技能包
-mcp.js           MCP 客户端（stdio）
+plugins.js       Agent Plugins 1.0.0   plugins/      已装插件
+mcp.js           MCP 客户端（stdio / Streamable HTTP）
 account.js       账号 / 积分 / 鉴权
 security.js      安全中心（审批闸门、黑白名单、审计）
 experts.json     专家与专家团定义
@@ -234,7 +328,10 @@ npm test          # 端到端，用模拟 LLM，不需要 API Key
 ```
 
 覆盖：cron 解析、workspace 路径越界拦截、成果核验闸门（缺文件 / 0 字节空壳）、
-`run_node` 语法预检、上下文预算截断、Word/PPT/Excel 生成、Agent 全管线（技能加载 → 代码执行 → 专家委派 → 事件流）。
+`run_node` 语法预检、上下文预算截断、Word/PPT/Excel 生成、
+Agent Plugins（清单校验 / 坏零件隔离 / `${PLUGIN_ROOT}` 展开 / 技能并流与重名让位）、
+MCP Streamable HTTP（JSON 与 SSE 两种响应、会话 ID）、
+Agent 全管线（技能加载 → 代码执行 → 专家委派 → 事件流）。
 
 ---
 

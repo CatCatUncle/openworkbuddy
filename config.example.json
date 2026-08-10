@@ -65,7 +65,7 @@
       "verification_token": ""
     },
     "wecom_bot_webhook": "",
-    "webhook_secret": "openbuddy-secret-请修改"
+    "webhook_secret": "openworkbuddy-secret-请修改"
   },
   "models": [
     {

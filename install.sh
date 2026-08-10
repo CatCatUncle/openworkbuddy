@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# OpenBuddy 一键安装（macOS / Linux）
+# OpenWorkBuddy 一键安装（macOS / Linux）
 #
 #   curl -fsSL https://raw.githubusercontent.com/<你的仓库>/main/install.sh | bash
 # 或者克隆下来后：
@@ -10,8 +10,8 @@
 
 set -euo pipefail
 
-REPO_URL="${OPENBUDDY_REPO:-https://github.com/kaifazhemaoshu/openbuddy.git}"
-DIR="${OPENBUDDY_DIR:-$HOME/openbuddy}"
+REPO_URL="${OPENWORKBUDDY_REPO:-https://github.com/CatCatUncle/openworkbuddy.git}"
+DIR="${OPENWORKBUDDY_DIR:-$HOME/openworkbuddy}"
 PORT="${PORT:-3800}"
 
 say()  { printf "\033[1;34m▸\033[0m %s\n" "$*"; }
@@ -27,7 +27,7 @@ NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 ok "Node v$(node -p 'process.versions.node')"
 
 # ---------- 2. 取代码 ----------
-if [ -f "package.json" ] && grep -q '"name": "openbuddy"' package.json 2>/dev/null; then
+if [ -f "package.json" ] && grep -q '"name": "openworkbuddy"' package.json 2>/dev/null; then
   DIR="$(pwd)"                      # 已经在项目目录里跑，就地安装
   say "就在当前目录安装：$DIR"
 elif [ -d "$DIR/.git" ]; then
@@ -80,7 +80,7 @@ $(ok "装完了")
 
 EOF
 
-if [ "${OPENBUDDY_AUTOSTART:-1}" = "1" ] && [ -t 1 ]; then
+if [ "${OPENWORKBUDDY_AUTOSTART:-1}" = "1" ] && [ -t 1 ]; then
   read -r -p "现在就起服务吗？[Y/n] " ans
   case "${ans:-Y}" in
     [Yy]*|"") exec npm start ;;

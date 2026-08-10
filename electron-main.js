@@ -5,18 +5,22 @@ const { app, BrowserWindow, shell, globalShortcut } = require("electron");
 const path = require("path");
 const fs = require("fs");
 
-// 更名 workbuddy-clone → openbuddy 时，Electron 的 userData 目录跟着 package.json 的 name 走，
-// 不搬家的话老用户会丢 localStorage（表现为莫名其妙被登出）。只在新目录不存在时搬一次。
-// ⚠️ 只认「workbuddy-clone」这个精确名字：同级还躺着腾讯官方 WorkBuddy 的目录，绝不能碰。
+// 改过两次名（workbuddy-clone → openbuddy → openworkbuddy）。Electron 的 userData 目录跟着
+// package.json 的 name 走，不搬家的话老用户会丢 localStorage（表现为莫名其妙被登出）。
+// 按时间倒序找最近的一个旧目录搬过来，只在新目录不存在时搬一次。
+// ⚠️ 白名单里只有我们自己用过的精确名字：同级还躺着腾讯官方 WorkBuddy 的目录，绝不能碰。
+const LEGACY_USERDATA = ["openbuddy", "workbuddy-clone"];
 (function migrateUserData() {
   try {
     const base = app.getPath("appData");
-    const from = path.join(base, "workbuddy-clone");
-    const to = path.join(base, "openbuddy");
-    if (path.basename(from) !== "workbuddy-clone") return; // 防手滑改错常量
-    if (fs.existsSync(from) && !fs.existsSync(to)) {
+    const to = path.join(base, "openworkbuddy");
+    if (fs.existsSync(to)) return;
+    for (const name of LEGACY_USERDATA) {
+      const from = path.join(base, name);
+      if (!fs.existsSync(from)) continue;
       fs.renameSync(from, to);
-      console.log("[迁移] userData 已从 workbuddy-clone 搬到 openbuddy");
+      console.log(`[迁移] userData 已从 ${name} 搬到 openworkbuddy`);
+      return;
     }
   } catch (e) {
     console.warn("[迁移] userData 搬家失败（不影响使用，只是要重新登录一次）:", e.message);
@@ -53,7 +57,7 @@ app.whenReady().then(async () => {
     height: 900,
     minWidth: 680,
     minHeight: 480,
-    title: "OpenBuddy",
+    title: "OpenWorkBuddy",
     autoHideMenuBar: true,
     backgroundColor: "#ffffff",
   });

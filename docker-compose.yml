@@ -1,8 +1,8 @@
 services:
-  openbuddy:
+  openworkbuddy:
     build: .
-    image: openbuddy:latest
-    container_name: openbuddy
+    image: openworkbuddy:latest
+    container_name: openworkbuddy
     restart: unless-stopped
     environment:
       HOST: 0.0.0.0

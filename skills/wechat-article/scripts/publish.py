@@ -10,7 +10,7 @@
 
 凭据来源（按优先级）：
   1. 环境变量 WECHAT_APPID / WECHAT_SECRET
-  2. ~/.openbuddy/wechat.json  ->  {"appid": "...", "secret": "..."}
+  2. ~/.openworkbuddy/wechat.json  ->  {"appid": "...", "secret": "..."}
   这个文件不要提交到仓库。
 
 ⚠️ 最容易踩的坑：errcode 40164 = 「invalid ip, not in whitelist」
@@ -43,7 +43,19 @@ except Exception:  # 没有也能跑，直连场景用标准库
     _HAS_REQUESTS = False
 
 API = "https://api.weixin.qq.com/cgi-bin"
-TOKEN_CACHE = os.path.expanduser("~/.openbuddy/wechat_token.json")
+
+
+def _conf_path(name):
+    """配置目录改过名（~/.openbuddy → ~/.openworkbuddy）。新目录优先，
+    老用户的凭据还在老目录里就接着用，别让人重填一遍 appid/secret。"""
+    new = os.path.expanduser(os.path.join("~", ".openworkbuddy", name))
+    if os.path.exists(new):
+        return new
+    old = os.path.expanduser(os.path.join("~", ".openbuddy", name))
+    return old if os.path.exists(old) else new
+
+
+TOKEN_CACHE = _conf_path("wechat_token.json")
 
 
 # ---------- HTTP ----------
@@ -115,7 +127,7 @@ def credentials():
     secret = os.environ.get("WECHAT_SECRET")
     if appid and secret:
         return appid, secret
-    path = os.path.expanduser("~/.openbuddy/wechat.json")
+    path = _conf_path("wechat.json")
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             c = json.load(f)
@@ -123,7 +135,7 @@ def credentials():
             return c["appid"], c["secret"]
     die(
         "没找到公众号凭据。设置环境变量 WECHAT_APPID / WECHAT_SECRET，\n"
-        "   或写入 ~/.openbuddy/wechat.json：{\"appid\": \"...\", \"secret\": \"...\"}"
+        "   或写入 ~/.openworkbuddy/wechat.json：{\"appid\": \"...\", \"secret\": \"...\"}"
     )
 
 

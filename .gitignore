@@ -8,6 +8,15 @@ __pycache__/
 *.pyc
 data/
 
-# 第三方安装的大体积技能包（可在应用内从 GitHub 重装）
+# 第三方技能包：仓库不打包别人的代码，在应用内一键从上游装（技能页 → 推荐技能）
 skills/ppt-master/
+skills/frontend-design/
+skills/canvas-design/
+skills/theme-factory/
+skills/brand-guidelines/
+skills/webapp-testing/
+skills/mcp-builder/
+
+# 用户自己装的 Agent Plugins 插件（plugins.js 是代码，plugins/ 是数据）
+plugins/
 .tmp/

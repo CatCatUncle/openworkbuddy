@@ -1,11 +1,11 @@
-# OpenBuddy 服务端镜像
+# OpenWorkBuddy 服务端镜像
 #
 # ⚠️ 这个容器里的 agent 能执行 shell、读写文件。容器给了一层隔离，但请务必：
 #    1. 只把端口暴露给反向代理，不要直接 -p 0.0.0.0:3800:3800 挂公网
 #    2. 前面套 HTTPS
 #    3. 第一次打开先注册管理员账号（第一个注册的就是管理员），别留着空库对外
 #
-# 构建：docker build -t openbuddy .
+# 构建：docker build -t openworkbuddy .
 # 运行：见 docker-compose.yml
 
 FROM node:20-bookworm-slim

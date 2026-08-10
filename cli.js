@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * OpenBuddy CLI — 终端里直接跑 agent 任务，与 Web/IM 共用同一套运行时与配置。
+ * OpenWorkBuddy CLI — 终端里直接跑 agent 任务，与 Web/IM 共用同一套运行时与配置。
  *
  * 用法：
  *   node cli.js "帮我调研xxx并写成报告"     # 单发任务，跑完即退出
@@ -37,7 +37,7 @@ for (let i = 0; i < argv.length; i++) {
 const oneShot = words.join(" ").trim();
 
 function printHelp() {
-  console.log(`OpenBuddy CLI
+  console.log(`OpenWorkBuddy CLI
 用法：
   wb "任务描述"                 单发任务
   wb                            交互式对话（/help 看内置命令）
@@ -195,7 +195,7 @@ async function runOnce(runtime, text, mode) {
   }
 
   // ---- REPL ----
-  console.log(bold("OpenBuddy CLI 交互模式") + dim("（/mode 切模式 /new 清上下文 /files 看成果 /exit 退出）"));
+  console.log(bold("OpenWorkBuddy CLI 交互模式") + dim("（/mode 切模式 /new 清上下文 /files 看成果 /exit 退出）"));
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const ask = () => new Promise((ok) => rl.question(tty ? "\x1b[36mwb>\x1b[0m " : "wb> ", ok));
   for (;;) {

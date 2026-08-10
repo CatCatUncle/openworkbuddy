@@ -24,11 +24,11 @@ bash install.sh
 ## Docker 部署到服务器
 
 ```bash
-git clone <你的仓库> openbuddy && cd openbuddy
+git clone <你的仓库> openworkbuddy && cd openworkbuddy
 cp config.example.json config.json          # 必须先有这个文件，compose 是按文件挂的
 mkdir -p data workspace
 docker compose up -d
-docker compose logs -f openbuddy            # 看它起来没
+docker compose logs -f openworkbuddy            # 看它起来没
 ```
 
 默认只把端口绑在 `127.0.0.1:3800`，外面用 nginx / Caddy 反代：
@@ -73,7 +73,7 @@ buddy.example.com {
 ```bash
 npm install -g pm2
 cp config.example.json config.json
-HOST=127.0.0.1 PORT=3800 pm2 start server.js --name openbuddy
+HOST=127.0.0.1 PORT=3800 pm2 start server.js --name openworkbuddy
 pm2 save && pm2 startup
 ```
 
