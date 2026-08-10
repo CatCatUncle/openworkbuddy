@@ -25,7 +25,10 @@ if (!fs.existsSync(CONFIG_PATH)) {
   fs.copyFileSync(path.join(__dirname, "config.example.json"), CONFIG_PATH);
   console.log("已从 config.example.json 生成 config.json，请填入你的模型 API Key");
 }
-const config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+// 配置读坏了不能就这么空着起来：那样界面上所有 Key 都变成空的，用户随手一保存就把
+// 真 Key 覆盖没了。store 会先拿 .bak 顶（Key 原样还在），实在顶不住才把坏文件改名隔离、
+// 退回模板——原文还在 .corrupt-时间戳 里，Key 捞得回来。
+const config = store.readJson(CONFIG_PATH, JSON.parse(fs.readFileSync(path.join(__dirname, "config.example.json"), "utf8")));
 
 // 旧配置迁移：生成 models 列表（内置国产模型预设 + 自定义），active_model 指定当前使用
 if (!Array.isArray(config.models) || !config.models.length) {
@@ -38,7 +41,7 @@ if (!Array.isArray(config.models) || !config.models.length) {
     { name: "Ollama本地", provider: "openai", base_url: "http://localhost:11434/v1", api_key: "", model: "qwen3:14b" },
   ];
   config.active_model = "DeepSeek";
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+  saveConfig();
 }
 
 security.getSecurity(config); // 补齐安全中心默认策略
@@ -62,15 +65,11 @@ const llm = {
 const EXPERTS_FILE = path.join(__dirname, "experts.json");
 const experts = [];
 const expertTeams = []; // 专家团 = 智能体团队，同样是被 runtime 闭包持有的活引用
-let expertsMeta = {};
-try {
-  const d = JSON.parse(fs.readFileSync(EXPERTS_FILE, "utf8"));
-  expertsMeta = d;
-  experts.push(...(d.experts || []));
-  expertTeams.push(...(d.teams || []));
-} catch {}
+let expertsMeta = store.readJson(EXPERTS_FILE, {}) || {};
+experts.push(...(expertsMeta.experts || []));
+expertTeams.push(...(expertsMeta.teams || []));
 function saveExperts() {
-  fs.writeFileSync(EXPERTS_FILE, JSON.stringify({ ...expertsMeta, experts, teams: expertTeams }, null, 2), "utf8");
+  store.writeJsonAtomic(EXPERTS_FILE, { ...expertsMeta, experts, teams: expertTeams }, { pretty: true });
 }
 const mcpManager = new McpManager();
 let imBridge = null; // IM 桥（含飞书长连接控制），init() 里创建
@@ -280,7 +279,7 @@ app.post("/api/settings", (req, res) => {
       if (global.__wbRegisterShortcuts) global.__wbRegisterShortcuts(config.shortcuts); // 桌面版重注册全局快捷键
     }
     llmInner = createLLM(config); // 模型热切换
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+    saveConfig();
     if (b.im && b.im.feishu && imBridge) {
       imBridge.startFeishuWs(true).catch((e) => console.warn("[飞书] 长连接重启失败:", e.message)); // 飞书配置变更后重建长连接
     }
@@ -373,7 +372,7 @@ app.post("/api/onboarding", async (req, res) => {
       if (ap) ap.dir = config.workspace_dir;
     }
     llmInner = createLLM(config);
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+    saveConfig();
     res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
@@ -529,7 +528,7 @@ app.post("/api/mcp", async (req, res) => {
     if (dup) throw new Error(`连接器名字重复：${dup}`);
 
     config.mcp_servers = next;
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+    saveConfig();
 
     // 插件带来的服务器也要一起重启：只重启 config 里的会把插件连接器整批打没，
     // 而它们不在 config 里，重启前根本救不回来（旧版就是这个 bug）。
@@ -557,8 +556,12 @@ function ensureProjects() {
   }
   if (!config.projects.some((p) => p.name === config.active_project)) config.active_project = config.projects[0].name;
 }
+/**
+ * config.json 是唯一一份存着所有 API Key 的文件，还不入 git——写坏了就是全丢。
+ * 所以全应用只留这一个写入口，走原子改名 + .bak。
+ */
 function saveConfig() {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+  store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true });
 }
 
 app.get("/api/projects", (_req, res) => {
@@ -771,7 +774,7 @@ app.post("/api/feishu/lark-cli/import", async (_req, res) => {
   }
   config.im = config.im || {};
   config.im.feishu = Object.assign(config.im.feishu || {}, { app_id: cfg.appId, app_secret: cfg.appSecret });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+  saveConfig();
   if (imBridge) imBridge.startFeishuWs(true).catch((e) => console.warn("[飞书] 长连接重启失败:", e.message));
   res.json({ ok: true, app_id: cfg.appId }); // secret 不回前端
 });
