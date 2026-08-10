@@ -4,8 +4,8 @@
  * 任务持久化在 schedules.json；cron 5 字段：分 时 日 月 周（支持 * , - 和 星号/步长）。
  */
 
-const fs = require("fs");
 const path = require("path");
+const jsonStore = require("./store");
 
 const STORE = path.join(__dirname, "schedules.json");
 
@@ -15,18 +15,14 @@ const MAX_CATCHUP_MS = 24 * 3600 * 1000;
 const GAP_MS = 90 * 1000;
 
 function loadStore(file) {
-  try {
-    const j = JSON.parse(fs.readFileSync(file, "utf8"));
-    return { tasks: Array.isArray(j.tasks) ? j.tasks : [], last_tick_at: j.last_tick_at || "" };
-  } catch {
-    return { tasks: [], last_tick_at: "" };
-  }
+  // 坏文件先拿 .bak 顶，再不行改名隔离——原来是静默当空表，紧接着一次保存就把
+  // 用户攒的所有定时任务永久抹掉了，全程一句提示都没有
+  const j = jsonStore.readJson(file, {}) || {};
+  return { tasks: Array.isArray(j.tasks) ? j.tasks : [], last_tick_at: j.last_tick_at || "" };
 }
 function saveStore(store, file) {
   // 先写临时文件再改名：直接覆写的话，写到一半断电就只剩半个 JSON，整张任务表就没了
-  const tmp = file + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(store, null, 2), "utf8");
-  fs.renameSync(tmp, file);
+  jsonStore.writeJsonAtomic(file, store, { pretty: true });
 }
 
 // ---------- 迷你 cron 解析 ----------

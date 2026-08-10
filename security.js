@@ -14,12 +14,11 @@ const path = require("path");
 const os = require("os");
 const { spawn } = require("child_process");
 
+const jsonStore = require("./store");
+
 const AUDIT_FILE = path.join(__dirname, "data", "audit.json");
-let auditLog = [];
-try {
-  auditLog = JSON.parse(fs.readFileSync(AUDIT_FILE, "utf8"));
-  if (!Array.isArray(auditLog)) auditLog = [];
-} catch {}
+let auditLog = jsonStore.readJson(AUDIT_FILE, []);
+if (!Array.isArray(auditLog)) auditLog = [];
 
 const DEFAULTS = {
   gateway: true, // 安全网关总开关：关闭后黑名单/审批闸不再拦截（审计照记）
@@ -53,8 +52,8 @@ function audit(type, text, action) {
     setTimeout(() => {
       auditDirty = false;
       try {
-        fs.mkdirSync(path.dirname(AUDIT_FILE), { recursive: true });
-        fs.writeFileSync(AUDIT_FILE, JSON.stringify(auditLog), "utf8");
+        // 审计是出事之后唯一的凭证：宁可写慢一点，也不能让断电把它截成半个 JSON
+        jsonStore.writeJsonAtomic(AUDIT_FILE, auditLog, { backup: false });
       } catch {}
     }, 500);
   }

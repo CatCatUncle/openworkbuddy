@@ -12,10 +12,10 @@
  * 所有读写都直接落盘（读-改-写），CLI 与常驻服务两个进程共享同一账本不打架。
  */
 
-const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
+const store = require("./store");
 
 // WB_DATA_DIR 只为测试留的口子：跑测试时指到临时目录，免得动到真账本
 const DATA_DIR = process.env.WB_DATA_DIR || path.join(__dirname, "data");
@@ -26,33 +26,16 @@ const TOKEN_TTL_MS = 90 * 86400 * 1000;
 
 // ---------- 存储 ----------
 /**
- * 读账本。文件不在 → 空账本（第一次跑）；文件在、却读不出来 → **抛错**。
+ * 读账本走 store.js 的 strict 模式：文件不在 → 空账本（第一次跑）；文件在、却读不出来 → **抛错**。
  * 这里绝不能把「读不出来」当成「没有用户」：那样接下来任何一次写盘都会拿这个
  * 空壳把整本账（所有账号、密码、积分）覆盖掉，而且用户第一次注册还会当上管理员。
+ * 也不自动回退 .bak——账本回退一版可能正好吞掉一笔充值，这种事得让人自己拍板。
  */
 function readStore(file, empty) {
-  let text;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (e) {
-    if (e.code === "ENOENT") return empty;
-    throw new Error(`${path.basename(file)} 打不开（${e.message}）`);
-  }
-  if (!text.trim()) return empty; // 空文件按新账本算，写坏成 0 字节也能自愈
-  try {
-    return JSON.parse(text);
-  } catch (e) {
-    throw new Error(`${path.basename(file)} 内容坏了（${e.message}）。旁边有 .bak 可以恢复；在修好之前程序不会碰它，免得把账本覆盖成空的`);
-  }
+  return store.readJson(file, empty, { strict: true });
 }
-
-/** 写盘：先落临时文件再改名。改名在同一分区上是原子的，别人读到的要么是旧的要么是新的，不会是半个 */
 function writeStoreAtomic(file, data, pretty) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, pretty ? 2 : 0), "utf8");
-  try { fs.copyFileSync(file, file + ".bak"); } catch {} // 上一版留个底，第一次没有就算了
-  fs.renameSync(tmp, file);
+  store.writeJsonAtomic(file, data, { pretty: !!pretty });
 }
 
 function loadUsers() {

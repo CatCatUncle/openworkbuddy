@@ -44,6 +44,11 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   // ---------- 会话管理：超过 N 小时未对话自动开新会话（节省 token，官方同款） ----------
 
+  // 会话存盘。server.js 传进来的是个会落盘的仓库，测试里传普通 Map 就是纯内存，两边都能跑
+  const saveSession = (key) => {
+    if (typeof sessions.save === "function") sessions.save(key);
+  };
+
   const lastActive = new Map(); // sessionKey -> 上次消息时间戳
   function maybeResetIdleSession(sessionKey, channel) {
     const hours = +imCfg().session_idle_hours || 0;
@@ -156,11 +161,13 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         if (!sessions.has(sessionKey)) sessions.set(sessionKey, []);
         const history = sessions.get(sessionKey);
         history.push({ role: "user", content: text });
+        saveSession(sessionKey); // 先把用户这句话落盘，跑一半崩了至少问题还在
 
         // 跑之前先记一份快照：outputFiles() 给的是整个工作区，不做差集的话
         // 每条回复都会把历史文件全抖出来（打个招呼也附一堆 .png），用户实际反馈过
         const before = new Map(outputFiles().map((f) => [f.name, f.mtime]));
         const { finalText } = await runtime.runTask({ history });
+        saveSession(sessionKey); // runTask 是就地往 history 里追加的，得自己招呼一声存盘
         const fresh = outputFiles().filter((f) => before.get(f.name) !== f.mtime); // 新建或被改过的才算这次的产出
         let out = finalText || "任务已执行完成。";
         if (fresh.length) {
@@ -538,9 +545,11 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     if (!sessions.has(sessionKey)) sessions.set(sessionKey, []);
     const history = sessions.get(sessionKey);
     history.push({ role: "user", content: message });
+    saveSession(sessionKey);
 
     try {
       const { finalText } = await runtime.runTask({ history });
+      saveSession(sessionKey);
       const files = outputFiles().filter((f) => !f.name.includes("/"));
       logIm("webhook", "out", finalText || "(空回复)", { session: session || "default" });
       await pushWecom(`【OpenWorkBuddy·任务完成】\n任务：${message.slice(0, 80)}\n${(finalText || "").slice(0, 500)}`);

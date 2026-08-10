@@ -1,6 +1,8 @@
 node_modules/
 workspace/
 schedules.json
+schedules.json.bak
+schedules.json.corrupt*
 config.json
 *.log
 .DS_Store
