@@ -751,6 +751,83 @@ function testAccountStore() {
   console.log("✅ 账本：坏文件不覆盖 / 写盘原子 / 登录限流 / https 认得出");
 }
 
+// 撞上限强制收尾：最终回复必须是"交代"，不能是半句过程叙述；用户手动停止则不该再花一次调用
+async function testForcedWrapUp() {
+  const busyLLM = (onWrap) => {
+    let calls = 0;
+    return {
+      provider: "mock",
+      model: "scripted",
+      calls: () => calls,
+      async chat({ history, tools }) {
+        calls++;
+        if (!tools.length) {
+          const last = history[history.length - 1];
+          assert(last.role === "user" && last.content.includes("强制收尾"), "收尾指令没进历史");
+          onWrap && onWrap();
+          return {
+            text: "已经把资料收集完了，报告正文还没开始写；下次从写正文接着做。",
+            toolCalls: [],
+            stopReason: "end",
+            usage: { prompt: 10, completion: 5 },
+          };
+        }
+        return {
+          text: "我先看一下这个文件。",
+          toolCalls: [{ id: "tc_" + calls, name: "run_node", input: { code: "console.log('ok')", purpose: "占位" } }],
+          stopReason: "tool_use",
+          usage: { prompt: 10, completion: 5 },
+        };
+      },
+    };
+  };
+
+  // ① 撞最大步数
+  let wrapped = false;
+  const llm1 = busyLLM(() => (wrapped = true));
+  const rt1 = createAgentRuntime({
+    config: { agent: { max_steps: 2, tool_timeout_ms: 60000 } },
+    llm: llm1,
+    mcpManager: new McpManager(),
+    experts,
+  });
+  const events = [];
+  const r1 = await rt1.runTask({
+    history: [{ role: "user", content: "写一份很长的报告" }],
+    emit: (ev) => events.push(ev),
+  });
+  assert(wrapped, "撞上限后没发那次「不带工具」的收尾请求");
+  assert(!r1.finalText.includes("我先看一下这个文件"), "半句过程叙述不该当成最终回复");
+  assert(r1.finalText.includes("报告正文还没开始写"), "收尾说明没进最终回复");
+  assert(r1.finalText.includes("已达最大步数"), "缺少上限提示");
+  assert(events.some((e) => e.type === "limit"), "缺少 limit 事件");
+  assert.strictEqual(r1.usage.calls, 3, "收尾那次调用要计进用量（2 步 + 1 次收尾）");
+
+  // ② 用户手动停止：不再多花一次调用
+  const ctrl = new AbortController();
+  let wrapped2 = false;
+  const llm2 = busyLLM(() => (wrapped2 = true));
+  const rt2 = createAgentRuntime({
+    config: { agent: { max_steps: 5, tool_timeout_ms: 60000 } },
+    llm: llm2,
+    mcpManager: new McpManager(),
+    experts,
+  });
+  const origChat = llm2.chat.bind(llm2);
+  llm2.chat = async (args) => {
+    const out = await origChat(args);
+    ctrl.abort(); // 第一次调用后用户按了停止
+    return out;
+  };
+  const r2 = await rt2.runTask({
+    history: [{ role: "user", content: "写一份很长的报告" }],
+    stopSignal: ctrl.signal,
+  });
+  assert(!wrapped2, "手动停止不该再花一次收尾调用");
+  assert(r2.finalText.includes("已手动停止"), "手动停止提示缺失");
+  console.log("✅ 强制收尾：撞上限补一次交代 / 手动停止不多花钱 通过");
+}
+
 function testPathSafety() {
   const { safePath } = require("../tools");
   let threw = false;
@@ -778,6 +855,7 @@ async function main() {
   await testNodeSyntaxPrecheck();
   await testOfficeLibs();
   await testAgentPipeline();
+  await testForcedWrapUp();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
