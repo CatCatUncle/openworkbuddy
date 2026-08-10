@@ -4,6 +4,8 @@ schedules.json
 config.json
 *.log
 .DS_Store
+__pycache__/
+*.pyc
 data/
 
 # 第三方安装的大体积技能包（可在应用内从 GitHub 重装）

@@ -298,8 +298,45 @@ async function generateVideo(media, input, opts = {}) {
   return { content: `视频已生成并存入工作空间：${fname}（模型 ${cfg.model}）`, isError: false };
 }
 
+/**
+ * 上机前先编译一遍。模型最常翻车的写法是在 run_node 里用模板字符串拼 HTML——
+ * 网页正文里的反引号、${...}、</script> 会把外层模板字面量提前截断，剩下的正文变成裸代码，
+ * 必然 SyntaxError。与其烧一次进程去撞、再把一坨 stderr 丢回去让它自己猜，
+ * 不如当场把出错行和正确做法一起说清楚。返回 null 表示语法没问题。
+ */
+function precheckSyntax(code) {
+  try {
+    // compileFunction 把代码当函数体编译：顶层 return 合法、顶层 await 非法，和 CommonJS 语义一致
+    require("vm").compileFunction(code, [], { filename: "script.cjs" });
+    return null;
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) return null; // 只拦语法错，其它一律照常执行
+    const m = /script\.cjs:(\d+)/.exec(e.stack || "");
+    const line = m ? Number(m[1]) : 0;
+    const src = code.split("\n");
+    let msg = `❌ 代码没有执行：语法错误${line ? `（第 ${line} 行）` : ""}\n`;
+    if (line) {
+      for (let i = Math.max(0, line - 2); i < Math.min(src.length, line + 1); i++) {
+        msg += `${i + 1 === line ? ">" : " "} ${i + 1} | ${src[i]}\n`;
+      }
+    }
+    msg += `SyntaxError: ${e.message}\n`;
+    // 代码里有反引号 + 写的是网页/文本类文件 → 几乎可以确定是模板字符串被正文截断
+    if (code.includes("`") && /\.(html?|md|markdown|css|json|txt|xml|svg)\b/i.test(code)) {
+      msg += `\n【最可能的原因】你在用模板字符串（反引号）拼网页/文本正文。正文里只要出现反引号、\${...} 或 </script>，外层模板字面量就会被提前截断，后面的正文全变成裸代码。
+【正确做法】HTML / Markdown / CSS / JSON / 纯文本一律改用 write_file 工具直接写内容，不要在 run_node 里拼。run_node 只留给真需要跑逻辑的活（pptxgenjs 出 PPT、docx 出 Word、exceljs 出 Excel、批量处理、算数据）。
+现在直接改用 write_file 重写这个文件，不要再试着转义模板字符串。`;
+    } else {
+      msg += `\n先把这一行的语法改对再重跑；不确定就把这段逻辑拆小、分几次执行。`;
+    }
+    return msg;
+  }
+}
+
 function runNode(code, timeoutMs) {
   ensureDirs();
+  const syntaxErr = precheckSyntax(code);
+  if (syntaxErr) return Promise.resolve({ content: syntaxErr, isError: true });
   // 脚本在 workspace/.tmp 下执行，向上解析不到本项目的 node_modules；软链一份进去，
   // require("docx"/"pptxgenjs"/"exceljs") 才能稳定命中（NODE_PATH 只是兜底）
   const link = path.join(tmpDir(), "node_modules");
@@ -421,7 +458,7 @@ function listFiles(target) {
 async function fetchUrl(url) {
   const resp = await fetch(url, {
     redirect: "follow",
-    headers: { "User-Agent": "Mozilla/5.0 (WorkBuddy-Clone)" },
+    headers: { "User-Agent": "Mozilla/5.0 (OpenBuddy)" },
     signal: AbortSignal.timeout(30000),
   });
   const ct = resp.headers.get("content-type") || "";
@@ -692,4 +729,4 @@ function outputFiles() {
   return out.sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
-module.exports = { TOOL_DEFS, executeTool, outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey };
+module.exports = { TOOL_DEFS, executeTool, outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };

@@ -1,6 +1,6 @@
 "use strict";
 /**
- * IM 远程指挥 — 在飞书/企业微信等 IM 里给 WorkBuddy 下任务。
+ * IM 远程指挥 — 在飞书/企业微信等 IM 里给 OpenBuddy 下任务。
  *
  * 1) 飞书机器人（推荐：长连接模式，无需公网地址）：
  *    - 飞书开放平台创建自建应用 → 添加「机器人」能力
@@ -164,12 +164,12 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         const fresh = outputFiles().filter((f) => before.get(f.name) !== f.mtime); // 新建或被改过的才算这次的产出
         let out = finalText || "任务已执行完成。";
         if (fresh.length) {
-          out += `\n\n📁 成果文件（在 WorkBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
+          out += `\n\n📁 成果文件（在 OpenBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
           if (fresh.length > 8) out += `\n… 另有 ${fresh.length - 8} 个`;
         }
         await reply(out);
         logIm(channel, "out", out, logExtra);
-        await pushBots(`【WorkBuddy·${CH_NAME[channel] || channel}任务完成】\n任务：${text.slice(0, 80)}\n${out.slice(0, 500)}`);
+        await pushBots(`【OpenBuddy·${CH_NAME[channel] || channel}任务完成】\n任务：${text.slice(0, 80)}\n${out.slice(0, 500)}`);
       } catch (e) {
         console.error(`[${CH_NAME[channel] || channel}] 任务执行出错:`, e.message);
         logIm(channel, "error", `任务执行出错: ${e.message}`, logExtra);
@@ -543,7 +543,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       const { finalText } = await runtime.runTask({ history });
       const files = outputFiles().filter((f) => !f.name.includes("/"));
       logIm("webhook", "out", finalText || "(空回复)", { session: session || "default" });
-      await pushWecom(`【WorkBuddy·任务完成】\n任务：${message.slice(0, 80)}\n${(finalText || "").slice(0, 500)}`);
+      await pushWecom(`【OpenBuddy·任务完成】\n任务：${message.slice(0, 80)}\n${(finalText || "").slice(0, 500)}`);
       res.json({ reply: finalText, files });
     } catch (e) {
       res.status(500).json({ error: e.message });

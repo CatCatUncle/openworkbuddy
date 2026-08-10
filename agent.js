@@ -24,6 +24,23 @@ const DELEGATE_TOOL = {
   },
 };
 
+const DELEGATE_TEAM_TOOL = {
+  name: "delegate_to_team",
+  description:
+    "把一个完整任务交给一个专家团（智能体团队）。团里的专家会按名单顺序接力：每位都能看到前面同事的汇报和产出文件，做完交给下一位，最后返回全队的汇报汇总。适合一句话就要走完「调研→分析→成稿→做PPT」整条流水线的任务；只需要一个环节时用 delegate_to_expert 更省时间。",
+  input_schema: {
+    type: "object",
+    properties: {
+      team: { type: "string", description: "专家团名称，必须是专家团列表中的一个" },
+      task: {
+        type: "string",
+        description: "交给整个团的任务描述。要自包含：目标、已有输入（文件名）、最终期望交付物。团里每位专家都会看到这段原文。",
+      },
+    },
+    required: ["team", "task"],
+  },
+};
+
 const FEISHU_DOC_TOOL = {
   name: "feishu_doc_create",
   description:
@@ -66,9 +83,10 @@ const MEMORY_FILE = path.join(__dirname, "data", "memory.md");
 const CLAIM_RE = /(生成成功|导出成功|保存成功|创建成功|已生成|已保存|已导出|已创建|已写入|生成完毕|制作完成|下载|✅)/;
 const DELIVER_EXTS = "pptx|pptm|docx|doc|xlsx|xls|pdf|zip|mp4|mov|png|jpe?g|gif|csv|html|md|svg";
 
-function existsInWorkspace(name) {
+/** 在工作目录里按文件名找：返回字节数，找不到返回 -1 */
+function sizeInWorkspace(name) {
   let root;
-  try { root = getWorkspaceDir(); } catch { return false; }
+  try { root = getWorkspaceDir(); } catch { return -1; }
   const stack = [[root, 0]];
   let visited = 0;
   while (stack.length && visited < 3000) {
@@ -77,13 +95,24 @@ function existsInWorkspace(name) {
     try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       visited++;
-      if (e.isFile() && e.name === name) return true;
+      if (e.isFile() && e.name === name) {
+        try { return fs.statSync(path.join(dir, e.name)).size; } catch { return -1; }
+      }
       if (e.isDirectory() && d < 4 && e.name !== "node_modules" && !e.name.startsWith(".")) stack.push([path.join(dir, e.name), d + 1]);
     }
   }
-  return false;
+  return -1;
 }
 
+function sizeOf(p) {
+  try { return fs.statSync(p).size; } catch { return -1; }
+}
+
+/**
+ * 返回 [{ name, why }]：why = "missing"（磁盘上根本没有）或 "empty"（文件在但 0 字节）。
+ * 空文件也必须打回——写到一半失败、编码出错都会留下一个 0 字节的壳，
+ * 只查存在性的话这种"交付"会被判为成功，用户点开才发现是空的。
+ */
 function missingDeliverables(text) {
   if (!text || !CLAIM_RE.test(text)) return [];
   const found = new Set();
@@ -92,17 +121,69 @@ function missingDeliverables(text) {
   const bareRe = new RegExp(`(?:^|[\\s"'\`（(：:、，=])([\\w\\u4e00-\\u9fff().&＆_-]+\\.(?:${DELIVER_EXTS}))\\b`, "gim");
   let mm;
   while ((mm = bareRe.exec(text))) { if (!mm[1].includes("/")) found.add(mm[1]); }
-  const missing = [];
+  const bad = [];
   for (const p of found) {
-    if (path.isAbsolute(p)) {
-      try { fs.accessSync(p); } catch { missing.push(p); }
-    } else if (p.startsWith("~")) {
-      try { fs.accessSync(path.join(os.homedir(), p.slice(1))); } catch { missing.push(p); }
-    } else if (!existsInWorkspace(p)) {
-      missing.push(p);
+    let size;
+    if (path.isAbsolute(p)) size = sizeOf(p);
+    else if (p.startsWith("~")) size = sizeOf(path.join(os.homedir(), p.slice(1)));
+    else size = sizeInWorkspace(p);
+    if (size < 0) bad.push({ name: p, why: "missing" });
+    else if (size === 0) bad.push({ name: p, why: "empty" });
+  }
+  return bad;
+}
+
+// ================= 上下文预算（治「跑到一半突然 400」） =================
+// 工具结果是上下文的绝对大头：read_file 5 万字、fetch_url 2 万字、run_shell 3 万字，
+// 一个跑满 25 步的深度调研任务能堆到几十万字符，把模型上下文撑爆——表现是任务跑到一半
+// 突然报 LLM 接口错误 400，前面做的全丢。这里在每次请求前把「老的」工具结果截短：
+// 模型真正需要原文的是刚做完那几步，更早的它已经把结论写进自己的回复里了。
+// 只截 tool 结果、不删任何消息——OpenAI 侧 tool_calls 必须有对应的 tool 消息应答，删了就是 400。
+const CTX_KEEP_HEAD = 300; // 老结果保留的开头字符数（够模型认出这步干了什么）
+
+function historyChars(history) {
+  let n = 0;
+  for (const e of history) {
+    if (e.role === "user") n += String(e.content || "").length;
+    // Claude 路径回传的是 raw（含 thinking 块，往往比 text 大好几倍），要按真正发出去的那份算
+    else if (e.role === "assistant") n += e.raw ? JSON.stringify(e.raw).length : String(e.text || "").length + JSON.stringify(e.toolCalls || []).length;
+    else if (e.role === "tool") for (const r of e.results || []) n += String(r.content || "").length;
+  }
+  return n;
+}
+
+/** 就地截短老工具结果直到进预算，返回省下的字符数（0 = 本来就没超） */
+function trimHistory(history, maxChars, keepRecent = 3) {
+  let total = historyChars(history);
+  if (total <= maxChars) return 0;
+  const toolIdx = [];
+  history.forEach((e, i) => { if (e.role === "tool") toolIdx.push(i); });
+  // 最近 keepRecent 轮工具结果留原文，从最老的开始截
+  const older = toolIdx.slice(0, Math.max(0, toolIdx.length - keepRecent));
+  let saved = 0;
+  for (const i of older) {
+    for (const r of history[i].results || []) {
+      const s = String(r.content || "");
+      if (s.length <= CTX_KEEP_HEAD * 2) continue;
+      r.content = s.slice(0, CTX_KEEP_HEAD) + `\n…（原输出 ${s.length} 字符，为控制上下文长度已截断。需要完整内容请重新调用工具获取。）`;
+      const cut = s.length - r.content.length;
+      saved += cut;
+      total -= cut;
+      if (total <= maxChars) return saved;
     }
   }
-  return missing;
+  return saved;
+}
+
+/** 系统提示词里注入真实日期：不给的话模型会拿训练截止日当"今天"，凡是"最新/本周"的任务全歪 */
+function envToday() {
+  const d = new Date();
+  const week = "日一二三四五六"[d.getDay()];
+  return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日（星期${week}）`;
+}
+
+function safeWorkspaceDir() {
+  try { return getWorkspaceDir(); } catch { return "（未设置）"; }
 }
 
 function readMemory() {
@@ -113,7 +194,11 @@ function readMemory() {
   }
 }
 
-function createAgentRuntime({ config, llm, mcpManager, experts }) {
+function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [] }) {
+  /** 团里挂着的成员可能已被删掉，取用时按当前专家表过一遍 */
+  function teamMembers(team) {
+    return (team.members || []).map((n) => experts.find((e) => e.name === n)).filter(Boolean);
+  }
   // 技能每次任务实时加载（save_skill 新建的技能立即可用）
   function getSkills() {
     return loadSkills();
@@ -121,7 +206,12 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
 
   function baseSystemPrompt() {
     const skills = getSkills();
-    let p = `你是 WorkBuddy，一个 AI 办公智能体。用户用自然语言下达办公任务，你自主思考、拆解任务、规划步骤、调用工具执行，最终交付可验证的成果。
+    let p = `你是 OpenBuddy，一个 AI 办公智能体。用户用自然语言下达办公任务，你自主思考、拆解任务、规划步骤、调用工具执行，最终交付可验证的成果。
+
+## 当前环境
+- 今天是 ${envToday()}。凡是涉及"最新/今年/近期/本周"的判断一律以这个日期为准，不要用你训练数据里的时间。需要最新事实（价格、政策、版本号、人事、榜单）必须 web_search 现查，不许凭记忆答。
+- 工作目录（成果文件都放这里）：${safeWorkspaceDir()}
+- 运行环境：${process.platform === "darwin" ? "macOS" : process.platform}，本机执行，run_shell 拿到的是用户的真实电脑。
 
 ## 工具能力
 - run_node：执行 Node.js 代码。已安装库：pptxgenjs(PPT)、docx(Word)、exceljs(Excel)，以及 Node 内置模块。
@@ -141,14 +231,17 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
     p += `
 
 ## 工作规范
-1. 接到任务先简短说明计划（2-4 句），然后立即执行，不要等用户确认。
-2. 成果文件写到工作目录根目录，文件名有意义。
-3. 代码报错要读懂原因、修正重试，不要放弃。
-4. 完成后简要总结做了什么、生成了哪些文件。
-5. 始终用中文交流。
-6. 用户消息里的「@某文件名」指工作目录中的文件（用 read_file 读取）；「/某技能名」表示要求使用该技能（先 use_skill 加载）；「【任务类型：X】」是场景标签，按该场景的最佳实践来做。
-7. 工具能做到的事必须自己调工具真正执行，严禁把命令贴在回复里让用户代跑（除非确实需要用户本人登录/授权才能做的事）。
-8. 严禁虚构执行结果（红线）：没有真实调用工具，绝不能声称「已生成/已保存/生成成功」，不能编造文件大小、页数、命令输出或下载链接（sandbox: 开头的链接是假的，禁止输出）。做不到就如实说做不到。系统会自动核验你声称生成的文件是否真实存在，虚构会被当场打回重做。
+1. 接到任务先简短说明计划（2-4 句），然后立即执行，不要等用户确认。信息不全时不要停下来反问，自己挑一个最合理的默认假设、写在开场白里继续做；只有缺了它整件事会白做的关键信息（比如要发给谁、用哪个账号）才允许问，且一次问完。
+2. 涉及已有文件/项目的任务，动手前先 list_files、read_file 把现场看清楚，不要凭文件名猜内容，更不要把用户已有的文件直接覆盖掉。
+3. 成果文件写到工作目录根目录，文件名有意义。**HTML / Markdown / CSS / JSON / 纯文本一律用 write_file 直接写内容，绝不要在 run_node 里用模板字符串拼**——网页正文里几乎必然出现 \`\${...}\`、反引号或 </script\>，会把外层模板字面量截断，直接 SyntaxError。run_node 只留给真的需要跑逻辑的活（pptxgenjs 出 PPT、docx 出 Word、exceljs 出 Excel、批量处理、算数据）。
+4. 交付前自检：凡是生成的文件，写完必须再 read_file / list_files 读回来确认真的存在、内容完整（长文档至少核对开头结尾和篇幅），发现残缺就当场修好再交付。
+5. 代码报错要读懂原因、修正重试，不要放弃；同一处连续失败 3 次就换思路，别在死路上空转。
+6. 完成后简要总结做了什么、生成了哪些文件。
+7. 始终用中文交流——包括报错说明、失败复盘、自我纠正这些中途叙述，任何时候都不许切成英文。工具返回的英文报错要翻成人话讲给用户听（原始报错可以放进代码块，但结论必须是中文）。
+8. 用户消息里的「@某文件名」指工作目录中的文件（用 read_file 读取）；「/某技能名」表示要求使用该技能（先 use_skill 加载）；「【任务类型：X】」是场景标签，按该场景的最佳实践来做。
+9. 工具能做到的事必须自己调工具真正执行，严禁把命令贴在回复里让用户代跑（除非确实需要用户本人登录/授权才能做的事）。
+10. 严禁虚构执行结果（红线）：没有真实调用工具，绝不能声称「已生成/已保存/生成成功」，不能编造文件大小、页数、命令输出或下载链接（sandbox: 开头的链接是假的，禁止输出）。做不到就如实说做不到。系统会自动核验你声称生成的文件是否真实存在，虚构会被当场打回重做。
+11. 严禁虚构事实（红线）：数字、日期、人名、机构、政策条款、引用链接，只能来自工具真实拿到的内容。查不到就写「未查到公开信息」，不许用"大约""据业内估算"糊过去，更不许编造看起来很像的 URL。交付物里每个关键数字都要能指回来源。
 
 ## 回复排版（重要）
 - 结构固定三段式：**动手前**先用一两句说明你准备做什么、怎么做；**过程中**工具调用之间的过渡叙述控制在一两句话（界面会把中间过程折叠收起）；**收尾**最后一条消息必须是完整、自洽的最终结论/交付说明——用户默认只看到开场白和这段结论，别把关键信息只写在中间过程里。
@@ -169,18 +262,36 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
   function coordinatorSystemPrompt() {
     let p = baseSystemPrompt();
     if (experts.length) {
-      p += `\n\n## 专家团（可用 delegate_to_expert 委派子任务）\n`;
-      p += experts.map((e) => `- ${e.name}：${e.description}`).join("\n");
-      p += `\n委派原则：复杂任务（如"调研+写报告+做PPT"）应拆解后按阶段委派给对应专家；简单任务自己直接做。委派时把上一阶段产出的文件名传给下一位专家。`;
+      p += `\n\n## 可委派的专家（delegate_to_expert）\n`;
+      p += experts
+        .map((e) => `- ${e.name}${e.alias ? `·${e.alias}` : ""}：${e.description}${(e.skills || []).length ? `（擅长技能：${e.skills.join("、")}）` : ""}`)
+        .join("\n");
+    }
+    const teams = expertTeams.filter((t) => teamMembers(t).length >= 2);
+    if (teams.length) {
+      p += `\n\n## 可委派的专家团（delegate_to_team，整队接力）\n`;
+      p += teams.map((t) => `- ${t.name}：${t.description || "（无说明）"}｜成员依次为 ${teamMembers(t).map((e) => e.name).join(" → ")}`).join("\n");
+    }
+    if (experts.length) {
+      p += `\n\n委派原则：
+- 简单任务自己直接做，别为了"显得专业"绕一圈委派，那只是白烧 token 和时间。
+- 需要单一环节的专业能力（只是查资料 / 只是做 PPT）→ delegate_to_expert。
+- 一句话要走完整条流水线（调研→分析→成稿→做图/做 PPT）→ 直接 delegate_to_team，别自己一个个串。
+- 委派时任务描述必须自包含：目标、输入文件名、期望产出文件名。专家看不到你和用户的对话历史。
+- 拿回专家汇报后，你要自己核一遍：说生成的文件真的存在吗？结论和用户要的对得上吗？不对就补做或再委派，别直接把专家的话转述给用户就收工。`;
     }
     return p;
   }
 
   function expertSystemPrompt(expert) {
-    return (
+    let p =
       baseSystemPrompt() +
-      `\n\n## 你的专家角色\n${expert.system}\n\n你是被主协调者委派的专家，完成任务后用一段简明汇报结束（做了什么、产出文件名、关键结论）。`
-    );
+      `\n\n## 你的专家角色：${expert.name}${expert.alias ? `（花名「${expert.alias}」）` : ""}\n${expert.system}`;
+    if ((expert.skills || []).length) {
+      p += `\n\n## 你的专属技能（动手前先 use_skill 加载，再按技能里的规范做）\n${expert.skills.map((s) => `- ${s}`).join("\n")}`;
+    }
+    p += `\n\n你是被主协调者委派的专家。完成后用一段简明汇报结束：做了什么、产出了哪些文件（写真实文件名）、关键结论、还有什么没做完。汇报会被原样交回协调者，别写客套话。`;
+    return p;
   }
 
   const READ_ONLY_TOOLS = ["read_file", "list_files", "fetch_url", "web_search", "library_list", "library_read"];
@@ -192,6 +303,8 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
     const tools = [...TOOL_DEFS, USE_SKILL_TOOL, ...mcpManager.toolDefs()];
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) tools.push(FEISHU_DOC_TOOL);
     if (depth === 0 && experts.length) tools.push(DELEGATE_TOOL);
+    // 团委派只给主协调者：专家在团里接力时 depth 已经 >0，再让它组团会套娃
+    if (depth === 0 && expertTeams.some((t) => teamMembers(t).length >= 2)) tools.push(DELEGATE_TEAM_TOOL);
     return tools;
   }
 
@@ -251,6 +364,53 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
       emit({ type: "expert_done", expert: expert.name });
       return { content: `【专家 ${expert.name} 的汇报】\n${sub.finalText || "(无文字汇报)"}`, isError: false };
     }
+    if (tc.name === "delegate_to_team") {
+      if (depth > 0) return { content: "专家不能再委派他人，请直接完成任务。", isError: true };
+      const team = expertTeams.find((t) => t.name === (tc.input.team || "").trim());
+      if (!team) {
+        return { content: `专家团不存在: ${tc.input.team}。可用: ${expertTeams.map((t) => t.name).join(", ") || "（无）"}`, isError: true };
+      }
+      const members = teamMembers(team);
+      if (members.length < 2) return { content: `专家团「${team.name}」的成员已不足 2 人，请改用 delegate_to_expert。`, isError: true };
+
+      emit({ type: "team_start", team: team.name, members: members.map((m) => m.name), task: tc.input.task });
+      const reports = [];
+      for (let i = 0; i < members.length; i++) {
+        const m = members[i];
+        if (stopSignal && stopSignal.aborted) break;
+        // 时间预算是全队共享的一份，兜不住就诚实收尾，不要让后面的人空跑一轮再超时
+        if (Date.now() >= deadline) {
+          reports.push({ name: m.name, text: "（未执行：全队已达最大运行时间）" });
+          break;
+        }
+        // 每位成员看到的是「原始任务 + 前面同事的汇报」，接力靠这段拼装，不靠共享上下文
+        const brief =
+          `【全队任务】${tc.input.task}\n\n` +
+          `【你的位置】你是第 ${i + 1}/${members.length} 棒${i === members.length - 1 ? "（最后一棒，你要产出最终交付物）" : ""}\n\n` +
+          (reports.length
+            ? `【前面同事的汇报】\n${reports.map((r) => `— ${r.name}：\n${r.text}`).join("\n\n")}\n\n只做你这一棒该做的部分，直接用同事已产出的文件，不要重做他们做过的事。`
+            : `你是第一棒，从零开始。`);
+        emit({ type: "expert_start", expert: m.name, team: team.name, task: brief });
+        const sub = await runTask({
+          history: [{ role: "user", content: brief }],
+          emit: (ev) => emit({ ...ev, expert: m.name, team: team.name }),
+          systemPrompt: expertSystemPrompt(m),
+          depth: depth + 1,
+          deadline,
+          stats,
+          stopSignal,
+        });
+        emit({ type: "expert_done", expert: m.name, team: team.name });
+        reports.push({ name: m.name, text: sub.finalText || "(无文字汇报)" });
+      }
+      emit({ type: "team_done", team: team.name });
+      return {
+        content:
+          `【专家团「${team.name}」的全队汇报】（${reports.length}/${members.length} 棒完成）\n\n` +
+          reports.map((r) => `— ${r.name}：\n${r.text}`).join("\n\n"),
+        isError: false,
+      };
+    }
     return await executeTool(tc.name, tc.input, {
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
@@ -278,6 +438,17 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
     let finalText = "";
     let stopNote = "";
     let honestyRetries = 0;
+    let trimmedChars = 0; // 本次任务累计被上下文预算截掉的工具输出字符数
+    // 任务开始时先记一份工作目录快照，files 事件带上「这一轮真正新增/改动的文件」。
+    // 这件事必须在服务端算：前端那份 mtime 快照是活的，历史回放时早就对不上了，算出来永远是空。
+    const baseline = new Map();
+    for (const f of outputFiles()) baseline.set(f.name, f.mtime);
+    const emitFiles = () => {
+      const files = outputFiles();
+      const changed = files.filter((f) => baseline.get(f.name) !== f.mtime).map((f) => f.name);
+      for (const f of files) baseline.set(f.name, f.mtime);
+      emit({ type: "files", files, changed });
+    };
 
     for (let step = 0; step < maxSteps; step++) {
       if (stopSignal && stopSignal.aborted) {
@@ -296,6 +467,15 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
         break;
       }
       emit({ type: "step_start", step: step + 1, depth });
+
+      // 发请求前先把老工具结果压进上下文预算，宁可丢细节也不能让整个任务撞 400 全丢
+      const trimmed = trimHistory(history, config.agent.max_context_chars || 120000);
+      if (trimmed) {
+        trimmedChars += trimmed;
+        console.warn(`[agent] 上下文超预算，已截断历史工具输出 ${trimmed} 字符（depth=${depth} step=${step + 1}）`);
+        // 丢了东西就明说，别让用户以为模型一直看得见全部原文
+        emit({ type: "trim", chars: trimmedChars, depth });
+      }
 
       // 单次模型调用超时 = min(剩余预算, llm_timeout_ms)，防止请求挂死；「停止」信号也能立即掐断请求
       const llmTimeout = Math.max(10000, Math.min(deadline - Date.now(), config.agent.llm_timeout_ms || 300000));
@@ -333,16 +513,21 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
       if (result.text) finalText = result.text;
 
       if (!result.toolCalls.length) {
-        // 成果核验：声称已生成的文件不在磁盘上 → 打回去要求真实执行（最多打回 2 次）
-        const missing = missingDeliverables(result.text);
-        if (missing.length && honestyRetries < 2 && Date.now() < deadline - 30000) {
+        // 成果核验：声称已生成的文件不在磁盘上、或者只是个 0 字节空壳 → 打回去重做（最多打回 2 次）
+        const bad = missingDeliverables(result.text);
+        if (bad.length && honestyRetries < 2 && Date.now() < deadline - 30000) {
           honestyRetries++;
-          const list = missing.slice(0, 5).join("、");
+          const gone = bad.filter((b) => b.why === "missing").map((b) => b.name);
+          const empty = bad.filter((b) => b.why === "empty").map((b) => b.name);
+          const parts = [];
+          if (gone.length) parts.push(`磁盘上根本不存在：${gone.slice(0, 5).join("、")}`);
+          if (empty.length) parts.push(`文件在但是 0 字节空文件：${empty.slice(0, 5).join("、")}`);
+          const list = parts.join("；");
           history.push({
             role: "user",
-            content: `【系统自动核验】你上一条回复声称已生成/可获取这些文件，但磁盘上并不存在：${list}。你并没有真正调用工具执行——在文字里写命令和"✅ 生成成功"不等于执行。现在立即用 run_shell / run_node 等工具真实执行生成，完成后如实汇报真实存在的文件路径；如果执行失败，就如实报告失败原因和报错内容。严禁再声称不存在的文件已生成。`,
+            content: `【系统自动核验】你上一条回复声称已生成/可获取这些文件，但核验不通过——${list}。在文字里写命令和"✅ 生成成功"不等于执行；写出来是空文件也不算交付。现在立即用 write_file / run_node / run_shell 真实生成一遍，写完用 read_file 或 list_files 读回来确认内容真的在里面，再如实汇报。如果执行失败，就如实报告失败原因和报错内容。严禁再声称不存在或空的文件已生成。`,
           });
-          emit({ type: "text", delta: `\n\n> ⚠️ **成果核验未通过**：声称生成的文件不存在（${list}），已自动打回要求真实执行。\n\n`, depth });
+          emit({ type: "text", delta: `\n\n> ⚠️ **成果核验未通过**：${list}，已自动打回要求真实执行。\n\n`, depth });
           continue;
         }
         break;
@@ -372,7 +557,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts }) {
         toolResults.push({ id: tc.id, content: String(r.content), isError: r.isError });
       }
       history.push({ role: "tool", results: toolResults });
-      emit({ type: "files", files: outputFiles() });
+      emitFiles();
 
       if (step === maxSteps - 1) stopNote = `已达最大步数（${maxSteps} 步）`;
     }
@@ -402,6 +587,7 @@ function previewInput(tc) {
   if (tc.name === "run_node") return (tc.input.code || "").slice(0, 1500);
   if (tc.name === "run_shell") return (tc.input.command || "").slice(0, 1500);
   if (tc.name === "delegate_to_expert") return `委派给「${tc.input.expert}」：\n${(tc.input.task || "").slice(0, 800)}`;
+  if (tc.name === "delegate_to_team") return `委派给专家团「${tc.input.team}」：\n${(tc.input.task || "").slice(0, 800)}`;
   try {
     return JSON.stringify(tc.input).slice(0, 500);
   } catch {
@@ -409,4 +595,4 @@ function previewInput(tc) {
   }
 }
 
-module.exports = { createAgentRuntime };
+module.exports = { createAgentRuntime, missingDeliverables, trimHistory, historyChars };

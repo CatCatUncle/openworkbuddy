@@ -3,6 +3,25 @@
 
 const { app, BrowserWindow, shell, globalShortcut } = require("electron");
 const path = require("path");
+const fs = require("fs");
+
+// 更名 workbuddy-clone → openbuddy 时，Electron 的 userData 目录跟着 package.json 的 name 走，
+// 不搬家的话老用户会丢 localStorage（表现为莫名其妙被登出）。只在新目录不存在时搬一次。
+// ⚠️ 只认「workbuddy-clone」这个精确名字：同级还躺着腾讯官方 WorkBuddy 的目录，绝不能碰。
+(function migrateUserData() {
+  try {
+    const base = app.getPath("appData");
+    const from = path.join(base, "workbuddy-clone");
+    const to = path.join(base, "openbuddy");
+    if (path.basename(from) !== "workbuddy-clone") return; // 防手滑改错常量
+    if (fs.existsSync(from) && !fs.existsSync(to)) {
+      fs.renameSync(from, to);
+      console.log("[迁移] userData 已从 workbuddy-clone 搬到 openbuddy");
+    }
+  } catch (e) {
+    console.warn("[迁移] userData 搬家失败（不影响使用，只是要重新登录一次）:", e.message);
+  }
+})();
 
 const PORT = (() => {
   try {
@@ -34,7 +53,7 @@ app.whenReady().then(async () => {
     height: 900,
     minWidth: 680,
     minHeight: 480,
-    title: "WorkBuddy 复刻版",
+    title: "OpenBuddy",
     autoHideMenuBar: true,
     backgroundColor: "#ffffff",
   });

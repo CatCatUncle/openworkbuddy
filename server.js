@@ -1,6 +1,6 @@
 "use strict";
 /**
- * WorkBuddy 复刻版 — 服务器主入口。
+ * OpenBuddy — 服务器主入口。
  * 功能：Web 工作台（SSE 流式）、技能系统、MCP 连接器、专家团多智能体、IM 远程指挥（飞书/企业微信/通用 Webhook）。
  */
 
@@ -8,7 +8,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const { createLLM } = require("./llm");
-const { outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey } = require("./tools");
+const { outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
 const { createImRouter } = require("./im");
@@ -59,14 +59,16 @@ const llm = {
 // 专家团：数组引用被 runtime 闭包持有，增删改都就地改这个数组（热生效，无需重启）
 const EXPERTS_FILE = path.join(__dirname, "experts.json");
 const experts = [];
+const expertTeams = []; // 专家团 = 智能体团队，同样是被 runtime 闭包持有的活引用
 let expertsMeta = {};
 try {
   const d = JSON.parse(fs.readFileSync(EXPERTS_FILE, "utf8"));
   expertsMeta = d;
   experts.push(...(d.experts || []));
+  expertTeams.push(...(d.teams || []));
 } catch {}
 function saveExperts() {
-  fs.writeFileSync(EXPERTS_FILE, JSON.stringify({ ...expertsMeta, experts }, null, 2), "utf8");
+  fs.writeFileSync(EXPERTS_FILE, JSON.stringify({ ...expertsMeta, experts, teams: expertTeams }, null, 2), "utf8");
 }
 const mcpManager = new McpManager();
 let imBridge = null; // IM 桥（含飞书长连接控制），init() 里创建
@@ -107,7 +109,7 @@ function recordingEmit(send, events) {
       const last = events[events.length - 1];
       if (last && last.type === "text") last.delta += ev.delta;
       else events.push({ type: "text", delta: ev.delta });
-    } else if (["tool_use", "tool_result", "expert_start", "expert_done", "error", "limit", "usage", "interject", "credits"].includes(ev.type)) {
+    } else if (["tool_use", "tool_result", "expert_start", "expert_done", "error", "limit", "trim", "usage", "interject", "credits"].includes(ev.type)) {
       events.push(ev);
     }
   };
@@ -144,6 +146,7 @@ app.get("/api/settings", (_req, res) => {
       tool_timeout_ms: config.agent.tool_timeout_ms,
       max_runtime_ms: config.agent.max_runtime_ms || 1800000,
       llm_timeout_ms: config.agent.llm_timeout_ms || 300000,
+      max_context_chars: config.agent.max_context_chars || 120000,
     },
     persona: config.persona || "",
     search: {
@@ -193,6 +196,8 @@ app.post("/api/settings", (req, res) => {
       if (b.agent.tool_timeout_ms) config.agent.tool_timeout_ms = Math.max(5000, +b.agent.tool_timeout_ms);
       if (b.agent.max_runtime_ms) config.agent.max_runtime_ms = Math.max(60000, +b.agent.max_runtime_ms);
       if (b.agent.llm_timeout_ms) config.agent.llm_timeout_ms = Math.max(30000, +b.agent.llm_timeout_ms);
+      // 下限 2 万字符：再小连最近几步的工具原文都留不住，agent 会失忆式反复重做
+      if (b.agent.max_context_chars) config.agent.max_context_chars = Math.max(20000, Math.min(2000000, +b.agent.max_context_chars));
     }
     if (b.persona !== undefined) config.persona = String(b.persona).slice(0, 4000);
     if (b.search) {
@@ -268,6 +273,93 @@ app.post("/api/settings", (req, res) => {
   }
 });
 
+// ---------- 首次开箱引导：没有 API Key 时，什么都干不了，得先把这一步走完 ----------
+// 只回布尔值，绝不把 key 原文吐给前端（设置页要改 key 走 /api/settings）
+function isLocalModel(m) {
+  return /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(m.base_url || "");
+}
+function hasKey(m) {
+  return isLocalModel(m) || !!String(m.api_key || "").trim();
+}
+
+/** 发一条最小的真实请求验活。返回 null = 通过，返回字符串 = 人话版失败原因。
+ *  刻意不走 createLLM：它会把工具 schema 一起发过去，这里只想知道"这个 key 认不认"。 */
+async function probeModel(m) {
+  const anthropic = m.provider === "anthropic";
+  const base = (m.base_url || (anthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1")).replace(/\/$/, "");
+  const url = anthropic ? `${base}/messages` : `${base}/chat/completions`;
+  const headers = anthropic
+    ? { "Content-Type": "application/json", "x-api-key": m.api_key || "", "anthropic-version": "2023-06-01" }
+    : { "Content-Type": "application/json", Authorization: `Bearer ${m.api_key || "ollama"}` };
+  const body = anthropic
+    ? { model: m.model, max_tokens: 8, messages: [{ role: "user", content: "ping" }] }
+    : { model: m.model, max_tokens: 8, stream: false, messages: [{ role: "user", content: "ping" }] };
+  try {
+    const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
+    if (r.ok) return null;
+    const txt = (await r.text()).slice(0, 300);
+    if (r.status === 401 || r.status === 403) return "这个 Key 上游不认（HTTP " + r.status + "），检查有没有复制全、是不是这家服务商的 Key";
+    if (r.status === 402) return "Key 有效但余额不足 / 未开通付费，去服务商控制台充值后再试";
+    if (r.status === 404) return `模型名「${m.model}」在这家服务商不存在（HTTP 404），去 设置 → 模型 改成它支持的名字`;
+    if (r.status === 429) return "被限流了（429），等一会儿再试，或换个渠道";
+    return `上游返回 HTTP ${r.status}：${txt}`;
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    if (/timeout|abort/i.test(msg)) return "连不上（30 秒超时）。国外服务商在国内直连经常打不通，挂代理或换国产渠道";
+    return "连不上：" + msg.slice(0, 200);
+  }
+}
+
+app.get("/api/onboarding", (_req, res) => {
+  const models = (config.models || []).map((m) => ({
+    name: m.name,
+    model: m.model,
+    base_url: m.base_url || "",
+    local: isLocalModel(m),
+    has_key: hasKey(m),
+  }));
+  const active = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0];
+  res.json({
+    // 当前选中的模型没 key = 一句话都发不出去，必须弹引导
+    needs_setup: !active || !hasKey(active),
+    active_model: config.active_model,
+    workspace_dir: getWorkspaceDir(),
+    models,
+    any_key: models.some((m) => m.has_key && !m.local),
+    search: { provider: (config.search || {}).provider || "jina", has_key: !!searchProviderKey(config.search || {}, (config.search || {}).provider || "jina") },
+  });
+});
+
+// 填 key → 真发一条最小请求验活 → 通过才落盘。不验就存等于把坑留到用户第一次提问时才炸
+app.post("/api/onboarding", async (req, res) => {
+  try {
+    const b = req.body || {};
+    const entry = (config.models || []).find((m) => m.name === b.model);
+    if (!entry) throw new Error("没有这个模型：" + b.model);
+    const key = String(b.api_key || "").trim();
+    if (!key && !isLocalModel(entry)) throw new Error("API Key 不能为空");
+
+    if (b.skip_test !== true) {
+      const bad = await probeModel({ ...entry, api_key: key || entry.api_key });
+      if (bad) return res.json({ ok: false, error: bad });
+    }
+
+    if (key) entry.api_key = key;
+    config.active_model = entry.name;
+    if (b.workspace_dir) {
+      config.workspace_dir = setWorkspaceDir(b.workspace_dir);
+      ensureProjects();
+      const ap = config.projects.find((p) => p.name === config.active_project);
+      if (ap) ap.dir = config.workspace_dir;
+    }
+    llmInner = createLLM(config);
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+    res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
 // 直连所配搜索服务商测活（不走 DDG 回退，测的就是这家 key 能不能用）
 app.get("/api/search/test", async (_req, res) => {
   try {
@@ -293,7 +385,7 @@ app.post("/api/security/audit/clear", (_req, res) => {
 });
 app.get("/api/security/audit/export", (_req, res) => {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="workbuddy-audit-${new Date().toISOString().slice(0, 10)}.log"`);
+  res.setHeader("Content-Disposition", `attachment; filename="openbuddy-audit-${new Date().toISOString().slice(0, 10)}.log"`);
   res.send(security.auditExport());
 });
 app.get("/api/security/approvals", (_req, res) => res.json(security.listApprovals()));
@@ -566,6 +658,127 @@ app.post("/api/open-workspace", (_req, res) => {
   res.json({ ok: true });
 });
 
+// ================= 飞书：扫码授权（借本机 lark-cli 的设备码流程，larksuite/cli，MIT） =================
+// 说明一句免得误解：机器人「收消息」必须有应用的 app_id + app_secret，这是飞书的设计，扫码替代不了。
+// 扫码解决的是另一半——把「你本人」的身份授权出来，之后读日历/文档/邮件是以你的身份调的。
+const LARK_TMP = path.join(require("os").tmpdir(), "openbuddy-lark");
+function larkRun(args, { timeout = 60000, cwd } = {}) {
+  return new Promise((resolve) => {
+    const child = require("child_process").execFile(
+      "lark-cli", args,
+      { timeout, cwd: cwd || LARK_TMP, env: { ...process.env, PATH: shellPath() }, maxBuffer: 4 << 20 },
+      (err, stdout, stderr) => resolve({ ok: !err, code: err ? err.code : 0, stdout: stdout || "", stderr: stderr || "" }),
+    );
+    child.on("error", () => {});
+  });
+}
+function larkJson(s) { try { return JSON.parse(String(s).trim()); } catch { return null; } }
+
+app.get("/api/feishu/lark-cli", async (_req, res) => {
+  fs.mkdirSync(LARK_TMP, { recursive: true });
+  const v = await larkRun(["--version"], { timeout: 15000 });
+  if (!v.ok) return res.json({ installed: false, install_cmd: "npx @larksuite/cli@latest install" });
+  const version = (v.stdout.match(/[\d.]+/) || [""])[0];
+  const cfg = larkJson((await larkRun(["config", "show"], { timeout: 15000 })).stdout.split("\n\nConfig file path")[0]);
+  // 只回布尔和非敏感字段，app_secret 一个字节都不出后端
+  res.json({
+    installed: true, version,
+    configured: !!(cfg && cfg.appId),
+    app_id: (cfg && cfg.appId) || "",
+    brand: (cfg && cfg.brand) || "",
+    has_secret: !!(cfg && cfg.appSecret),
+    users: (cfg && cfg.users) || "",
+  });
+});
+
+// 把 lark-cli 里已经配好的应用凭证搬进 OpenBuddy 的飞书通道，省掉手动复制两串东西
+app.post("/api/feishu/lark-cli/import", async (_req, res) => {
+  fs.mkdirSync(LARK_TMP, { recursive: true });
+  const r = await larkRun(["config", "show"], { timeout: 15000 });
+  const cfg = larkJson(r.stdout.split("\n\nConfig file path")[0]);
+  if (!cfg || !cfg.appId || !cfg.appSecret) {
+    return res.status(400).json({ error: "lark-cli 还没配置应用凭证，先跑 lark-cli config init" });
+  }
+  config.im = config.im || {};
+  config.im.feishu = Object.assign(config.im.feishu || {}, { app_id: cfg.appId, app_secret: cfg.appSecret });
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+  if (imBridge) imBridge.startFeishuWs(true).catch((e) => console.warn("[飞书] 长连接重启失败:", e.message));
+  res.json({ ok: true, app_id: cfg.appId }); // secret 不回前端
+});
+
+// 反向：把 OpenBuddy 里填好的凭证写进 lark-cli，这样才能开始扫码（设备码流程需要一个已绑定的应用）
+app.post("/api/feishu/lark-cli/bind", (_req, res) => {
+  const f = (config.im || {}).feishu || {};
+  if (!f.app_id || !f.app_secret) return res.status(400).json({ error: "先在上面填好 App ID / App Secret 并保存" });
+  fs.mkdirSync(LARK_TMP, { recursive: true });
+  // secret 走 stdin，不进进程参数表（ps 能看到 argv）
+  const child = require("child_process").execFile(
+    "lark-cli", ["config", "init", "--app-id", f.app_id, "--app-secret-stdin", "--brand", "feishu", "--lang", "zh"],
+    { timeout: 60000, cwd: LARK_TMP, env: { ...process.env, PATH: shellPath() } },
+    (err, stdout, stderr) => {
+      if (res.headersSent) return;
+      if (err) return res.status(400).json({ error: ((stderr || stdout || err.message) + "").slice(0, 300) });
+      res.json({ ok: true });
+    },
+  );
+  child.on("error", (e) => { if (!res.headersSent) res.status(400).json({ error: "lark-cli 没装或调不起来：" + e.message }); });
+  try { child.stdin.end(f.app_secret + "\n"); } catch {}
+});
+
+// 设备码流程：start 拿二维码 → 用户在飞书里扫 → 后台那条 --device-code 自己会跑完 → status 变 ok
+let larkQr = null; // { device_code, url, expires_at, state, error, child }
+app.post("/api/feishu/qr/start", async (req, res) => {
+  fs.mkdirSync(LARK_TMP, { recursive: true });
+  if (larkQr && larkQr.child) { try { larkQr.child.kill(); } catch {} }
+  const domains = String((req.body && req.body.domains) || "im,docs,drive,calendar,task");
+  const r = await larkRun(["auth", "login", "--no-wait", "--json", "--domain", domains], { timeout: 60000 });
+  const j = larkJson(r.stdout);
+  if (!j || !j.verification_url || !j.device_code) {
+    const msg = (r.stderr || r.stdout || "").slice(0, 300);
+    return res.status(400).json({ error: /config init|app.?id/i.test(msg)
+      ? "lark-cli 还没绑定应用：先在上面填好 App ID / App Secret 并「写入 lark-cli」，或自己跑 lark-cli config init"
+      : "拿不到授权链接：" + (msg || "lark-cli 没有返回内容") });
+  }
+  // 出二维码：写进临时目录再读成 data URI，前端直接 <img>，不落工作区
+  const png = "qr-" + Date.now() + ".png";
+  await larkRun(["auth", "qrcode", j.verification_url, "-o", png, "--size", "256"], { timeout: 20000 });
+  let dataUri = null;
+  try {
+    dataUri = "data:image/png;base64," + fs.readFileSync(path.join(LARK_TMP, png)).toString("base64");
+    fs.unlinkSync(path.join(LARK_TMP, png));
+  } catch {}
+
+  // 阻塞式轮询交给后台子进程，前端只问我们自己的 status
+  const child = require("child_process").execFile(
+    "lark-cli", ["auth", "login", "--device-code", j.device_code, "--json"],
+    { timeout: (j.expires_in || 600) * 1000 + 15000, cwd: LARK_TMP, env: { ...process.env, PATH: shellPath() } },
+    (err, stdout, stderr) => {
+      if (!larkQr || larkQr.device_code !== j.device_code) return; // 已被新的一轮顶掉
+      if (err) { larkQr.state = "error"; larkQr.error = ((stderr || stdout || err.message) + "").slice(0, 300); }
+      else { larkQr.state = "ok"; larkQr.result = larkJson(stdout) || {}; }
+    },
+  );
+  child.on("error", (e) => { if (larkQr) { larkQr.state = "error"; larkQr.error = e.message; } });
+  larkQr = { device_code: j.device_code, url: j.verification_url, expires_at: Date.now() + (j.expires_in || 600) * 1000, state: "pending", child };
+  res.json({ ok: true, url: j.verification_url, qr: dataUri, expires_in: j.expires_in || 600 });
+});
+
+app.get("/api/feishu/qr/status", async (_req, res) => {
+  if (!larkQr) return res.json({ state: "idle" });
+  if (larkQr.state === "pending" && Date.now() > larkQr.expires_at) {
+    larkQr.state = "error"; larkQr.error = "二维码超时失效，重新点一次生成";
+  }
+  if (larkQr.state !== "ok") return res.json({ state: larkQr.state, error: larkQr.error || null });
+  const who = larkJson((await larkRun(["whoami"], { timeout: 15000 })).stdout) || {};
+  res.json({ state: "ok", identity: who.identity || "", app_id: who.appId || "", user: larkQr.result && larkQr.result.user_name || "" });
+});
+
+app.post("/api/feishu/qr/cancel", (_req, res) => {
+  if (larkQr && larkQr.child) { try { larkQr.child.kill(); } catch {} }
+  larkQr = null;
+  res.json({ ok: true });
+});
+
 // ---- 缓存清理：界面缓存(Electron chromium) + 各项目 .tmp 临时脚本；不动会话记录/工作区文件/登录态 ----
 const CHROMIUM_CACHE_DIRS = ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "blob_storage", "Shared Dictionary"];
 function wbUserDataDir() {
@@ -573,9 +786,9 @@ function wbUserDataDir() {
     try { return require("electron").app.getPath("userData"); } catch {}
   }
   const home = require("os").homedir();
-  if (process.platform === "darwin") return path.join(home, "Library", "Application Support", "workbuddy-clone");
-  if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "workbuddy-clone");
-  return path.join(home, ".config", "workbuddy-clone");
+  if (process.platform === "darwin") return path.join(home, "Library", "Application Support", "openbuddy");
+  if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "openbuddy");
+  return path.join(home, ".config", "openbuddy");
 }
 function dirSize(p) {
   let n = 0;
@@ -688,29 +901,98 @@ app.post("/api/upload", (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
-// 专家团管理：增删改就地改 experts 数组（runtime 闭包同一引用，热生效）+ 持久化 experts.json
-app.get("/api/experts", (_req, res) =>
-  res.json(experts.map((e) => ({ name: e.name, description: e.description, system: e.system })))
-);
+// 专家管理：增删改就地改 experts 数组（runtime 闭包同一引用，热生效）+ 持久化 experts.json
+// 一个专家 = 头像 + 名字 + 花名 + 说明 + 绑定技能 + 默认提示词 的智能体，用户可自建。
+const EXPERT_FIELDS = ["name", "alias", "avatar", "category", "tags", "description", "skills", "system"];
+function publicExpert(e) {
+  return {
+    name: e.name,
+    alias: e.alias || "",
+    avatar: e.avatar || "🧑‍💼",
+    category: e.category || "未分类",
+    tags: Array.isArray(e.tags) ? e.tags : [],
+    description: e.description || "",
+    skills: Array.isArray(e.skills) ? e.skills : [],
+    system: e.system || "",
+    builtin: !!e.builtin,
+  };
+}
+app.get("/api/experts", (_req, res) => res.json(experts.map(publicExpert)));
 app.post("/api/experts", (req, res) => {
-  const { name, description, system, original_name } = req.body || {};
-  const n = String(name || "").trim();
-  if (!n || !String(system || "").trim()) return res.status(400).json({ error: "专家名称与角色设定（system）不能为空" });
+  const b = req.body || {};
+  const n = String(b.name || "").trim();
+  if (!n || !String(b.system || "").trim()) return res.status(400).json({ error: "专家名称与角色设定（提示词）不能为空" });
   if (n === "delegate_to_expert" || n.length > 20) return res.status(400).json({ error: "专家名称不合法（≤20 字）" });
-  const idx = experts.findIndex((e) => e.name === (original_name || n));
-  const entry = { name: n, description: String(description || "").trim(), system: String(system).trim() };
-  if (idx >= 0) experts.splice(idx, 1, entry);
-  else {
-    if (experts.some((e) => e.name === n)) return res.status(400).json({ error: "同名专家已存在" });
-    experts.push(entry);
-  }
+  const arr = (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 12) : []);
+  const idx = experts.findIndex((e) => e.name === (b.original_name || n));
+  // 改名时要保证新名字没被别人占着
+  if (experts.some((e, i) => e.name === n && i !== idx)) return res.status(400).json({ error: "同名专家已存在" });
+  const entry = {
+    name: n,
+    alias: String(b.alias || "").trim().slice(0, 12),
+    avatar: String(b.avatar || "🧑‍💼").trim().slice(0, 8) || "🧑‍💼",
+    category: String(b.category || "未分类").trim().slice(0, 12) || "未分类",
+    tags: arr(b.tags),
+    description: String(b.description || "").trim(),
+    skills: arr(b.skills),
+    system: String(b.system).trim(),
+  };
+  if (idx >= 0) {
+    entry.builtin = !!experts[idx].builtin; // 内置标记只由 experts.json 决定，接口改不动
+    experts.splice(idx, 1, entry);
+    // 改了名字的话，团队成员名单要跟着改，否则团里挂着一个不存在的人
+    if (b.original_name && b.original_name !== n) {
+      for (const t of expertTeams) t.members = t.members.map((m) => (m === b.original_name ? n : m));
+    }
+  } else experts.push(entry);
   saveExperts();
-  res.json({ ok: true, experts: experts.map((e) => e.name) });
+  res.json({ ok: true, expert: publicExpert(entry) });
 });
 app.delete("/api/experts/:name", (req, res) => {
   const idx = experts.findIndex((e) => e.name === req.params.name);
   if (idx < 0) return res.status(404).json({ error: "专家不存在" });
-  experts.splice(idx, 1);
+  const [gone] = experts.splice(idx, 1);
+  for (const t of expertTeams) t.members = t.members.filter((m) => m !== gone.name); // 顺手把团里的他摘掉
+  saveExperts();
+  res.json({ ok: true });
+});
+
+// 专家团 = 智能体团队：把若干专家编成一队，一次委派整队按顺序接力完成
+app.get("/api/expert-teams", (_req, res) =>
+  res.json(
+    expertTeams.map((t) => ({
+      name: t.name,
+      avatar: t.avatar || "👥",
+      description: t.description || "",
+      members: (t.members || []).filter((m) => experts.some((e) => e.name === m)),
+    }))
+  )
+);
+app.post("/api/expert-teams", (req, res) => {
+  const b = req.body || {};
+  const n = String(b.name || "").trim();
+  if (!n || n.length > 20) return res.status(400).json({ error: "团队名称不合法（1~20 字）" });
+  const members = (Array.isArray(b.members) ? b.members : [])
+    .map((m) => String(m).trim())
+    .filter((m) => experts.some((e) => e.name === m));
+  if (members.length < 2) return res.status(400).json({ error: "一个团至少要有 2 位专家（成员必须是已存在的专家）" });
+  const idx = expertTeams.findIndex((t) => t.name === (b.original_name || n));
+  if (expertTeams.some((t, i) => t.name === n && i !== idx)) return res.status(400).json({ error: "同名专家团已存在" });
+  const entry = {
+    name: n,
+    avatar: String(b.avatar || "👥").trim().slice(0, 8) || "👥",
+    description: String(b.description || "").trim(),
+    members: [...new Set(members)].slice(0, 8), // 接力式执行，人多了会把时间预算耗光
+  };
+  if (idx >= 0) expertTeams.splice(idx, 1, entry);
+  else expertTeams.push(entry);
+  saveExperts();
+  res.json({ ok: true, team: entry });
+});
+app.delete("/api/expert-teams/:name", (req, res) => {
+  const idx = expertTeams.findIndex((t) => t.name === req.params.name);
+  if (idx < 0) return res.status(404).json({ error: "专家团不存在" });
+  expertTeams.splice(idx, 1);
   saveExperts();
   res.json({ ok: true });
 });
@@ -734,6 +1016,63 @@ app.get("/api/files/view/:name", (req, res) => {
   } catch (e) {
     res.status(400).send(e.message);
   }
+});
+
+// ---- 本地部署预览：把工作目录当静态站点跑在一个独立端口上 ----
+// 应用内 iframe 预览走 /api/files/view，够看长相；但真正的网页要有自己的 origin 才对
+// （相对路径引资源、fetch、localStorage、手机上开来看）。这里起一个只监听本机的静态服务器。
+let previewServer = null; // { srv, port, dir }
+function lanAddress() {
+  const nets = require("os").networkInterfaces();
+  for (const list of Object.values(nets)) {
+    for (const ni of list || []) {
+      if (ni.family === "IPv4" && !ni.internal) return ni.address;
+    }
+  }
+  return null;
+}
+function previewState() {
+  if (!previewServer) return { running: false };
+  const lan = previewServer.lanOpen ? lanAddress() : null;
+  return {
+    running: true,
+    port: previewServer.port,
+    dir: previewServer.dir,
+    lan_open: !!previewServer.lanOpen,
+    url: `http://127.0.0.1:${previewServer.port}/`,
+    lan_url: lan ? `http://${lan}:${previewServer.port}/` : null,
+  };
+}
+app.get("/api/preview/status", (_req, res) => res.json(previewState()));
+app.post("/api/preview/start", (req, res) => {
+  const dir = getWorkspaceDir();
+  // lan=true 才对局域网开放：开了手机能扫，但同一个 Wi-Fi 下的人也能翻整个工作目录，所以默认关
+  const lanOpen = !!(req.body && req.body.lan);
+  // open=文件名：服务就绪后用系统默认浏览器打开它
+  const openName = req.body && req.body.open ? String(req.body.open).replace(/^\/+/, "") : null;
+  const done = (st) => {
+    if (openName) openWithSystem(st.url + encodeURIComponent(openName));
+    res.json(st);
+  };
+  // 已经在跑且参数一致：不用重起，但该开的浏览器还是得开。
+  // （这里以前是直接 return，把 open 一起吞了——而「在浏览器打开」按钮只在服务已启动时才出现，
+  //   必然走这条分支，所以那个按钮点了从来没反应过。）
+  if (previewServer && previewServer.dir === dir && previewServer.lanOpen === lanOpen) return done(previewState());
+  if (previewServer) { try { previewServer.srv.close(); } catch {} previewServer = null; }
+  const site = express();
+  site.use(express.static(dir, { extensions: ["html"] }));
+  // 端口 0 = 让系统分配空闲端口，避免和用户本机其它服务撞车
+  const srv = site.listen(0, lanOpen ? "0.0.0.0" : "127.0.0.1", () => {
+    previewServer = { srv, port: srv.address().port, dir, lanOpen };
+    done(previewState());
+  });
+  srv.on("error", (e) => {
+    if (!res.headersSent) res.status(500).json({ error: "本地预览服务起不来：" + e.message });
+  });
+});
+app.post("/api/preview/stop", (_req, res) => {
+  if (previewServer) { try { previewServer.srv.close(); } catch {} previewServer = null; }
+  res.json({ running: false });
 });
 
 // 用系统默认程序打开（Word/PPT/Excel 等交给本机 Office/WPS）
@@ -900,12 +1239,12 @@ function accountedRuntime(baseRuntime, source) {
 
 async function main() {
   await mcpManager.startAll(config.mcp_servers || []);
-  runtime = createAgentRuntime({ config, llm, mcpManager, experts });
+  runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });
 
   scheduler = createScheduler({
     runtime: accountedRuntime(runtime, "schedule"),
     onResult: (item, text) =>
-      notify.pushBots(config, `【WorkBuddy·定时任务】${item.name}\n${(text || "").slice(0, 800)}`),
+      notify.pushBots(config, `【OpenBuddy·定时任务】${item.name}\n${(text || "").slice(0, 800)}`),
   });
 
   // IM 远程指挥路由（飞书/QQ 长连接 · 企业微信与公众号回调 · 通用 webhook）
@@ -924,9 +1263,15 @@ async function main() {
     .then((s) => { if (s.configured) console.log(`微信 iLink 长轮询: ${s.state}`); })
     .catch((e) => console.warn("[微信iLink] 长轮询启动失败:", e.message));
 
-  const port = config.server.port || 3800;
-  const server = app.listen(port, () => {
-    console.log(`WorkBuddy 复刻版已启动: http://localhost:${port}`);
+  const port = +process.env.PORT || config.server.port || 3800;
+  // 默认只听本机：这个进程手里有 run_shell 和整个文件系统，绑 0.0.0.0 等于把 shell 挂到公网。
+  // 要放出去（Docker / 服务器）必须显式 HOST=0.0.0.0，并且自己在前面套 HTTPS + 反代。
+  const host = process.env.HOST || config.server.host || "127.0.0.1";
+  const server = app.listen(port, host, () => {
+    if (host !== "127.0.0.1" && host !== "localhost") {
+      console.warn(`⚠️  正在监听 ${host}:${port}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
+    }
+    console.log(`OpenBuddy 已启动: http://localhost:${port}`);
     console.log(`模型: ${llm.provider} / ${llm.model}`);
     console.log(`技能: ${runtime.getSkills().map((s) => s.name).join(", ") || "无"}`);
     console.log(`专家团: ${experts.map((e) => e.name).join(", ") || "无"}`);

@@ -37,7 +37,7 @@ class McpClient {
       {
         protocolVersion: "2024-11-05",
         capabilities: {},
-        clientInfo: { name: "workbuddy-clone", version: "0.1.0" },
+        clientInfo: { name: "openbuddy", version: "0.1.0" },
       },
       timeoutMs
     );

@@ -1,6 +1,6 @@
 "use strict";
 /**
- * 技能（Skills）系统 — 仿 WorkBuddy 技能包。
+ * 技能（Skills）系统 — 对标腾讯 WorkBuddy 的技能包机制。
  * skills/<技能名>/skill.md，带 frontmatter：
  *   ---
  *   name: ppt-design

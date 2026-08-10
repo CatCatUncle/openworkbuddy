@@ -1,7 +1,7 @@
 {
-  "name": "workbuddy-clone",
+  "name": "openbuddy",
   "version": "0.1.0",
-  "description": "WorkBuddy 复刻版 — AI Agent 办公工作台（自然语言下任务，AI 自主规划执行，交付 PPT/Word/Excel 等成果文件）",
+  "description": "OpenBuddy — AI Agent 办公工作台（自然语言下任务，AI 自主规划执行，交付 PPT/Word/Excel 等成果文件）",
   "type": "commonjs",
   "main": "electron-main.js",
   "scripts": {

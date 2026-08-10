@@ -145,6 +145,13 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, signal }) 
 
   if (!resp.ok) {
     const body = await resp.text();
+    // 上下文超限是最常见的 400，原文是一坨英文 JSON，翻成用户能照着做的话
+    if (resp.status === 400 && /context length|context_length|maximum context|too many tokens|reduce the length/i.test(body)) {
+      throw new Error(
+        `这次请求超出了模型的上下文长度上限。可以在 设置 → 智能体设置 调小「上下文预算」或「单任务最大步数」，` +
+          `也可以换一个上下文更大的模型；这条任务的历史已经很长，新开一个任务接着做更稳。\n原始报错：${body.slice(0, 300)}`
+      );
+    }
     throw new Error(`LLM 接口错误 ${resp.status}: ${body.slice(0, 500)}`);
   }
 

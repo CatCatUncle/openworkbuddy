@@ -1,144 +1,253 @@
-# WorkBuddy 复刻版 — AI Agent 办公工作台
+# OpenBuddy
 
-开源复刻腾讯 WorkBuddy 的核心能力：**一句话下任务，AI 自主规划、拆解、执行，交付可验证的成果文件**（PPT / Word / Excel / 报告等）。
+**腾讯 WorkBuddy 的开源复刻版。** 一句话下任务，AI 自己规划、拆解、动手，交付能打开验收的成果文件——PPT、Word、Excel、网页、调研报告、公众号推文。
 
-不绑定任何一家大模型：默认走 OpenAI 兼容接口（DeepSeek / 通义 Qwen / 智谱 GLM / Kimi / Ollama 本地模型），Claude 仅为可选适配器。
+不绑定任何一家大模型。DeepSeek / 通义 Qwen / 智谱 GLM / Kimi / OpenRouter / Ollama 本地模型，界面里点一下就切。
 
-## 功能总览
+> 作者：开发者猫叔 · 个人与非商业用途免费，商业使用需要单独授权（见 [LICENSE](LICENSE) 与 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)）
 
-| 功能 | 说明 |
-|---|---|
-| 🤖 Agent 自主执行 | 自然语言任务 → 规划 → 工具调用循环 → 交付成果，工作台实时展示每一步 |
-| 🎚️ Ask / Plan / Craft 模式 | 问答（只读）/ 规划（只出计划）/ 执行（完整交付），输入框旁一键切换 |
-| ⚙️ 设置中心 | 仿官方设置中心：模型管理（预设+自定义模型切换）、智能体参数、个性化、长期记忆、工作空间（原生文件夹选择）、IM 配置——全部界面可改、保存即热生效 |
-| 🛠️ 代码执行 | 内置 Node.js 沙箱执行，pptxgenjs / docx / exceljs 生成办公文件 |
-| 📦 技能系统 | `skills/` 目录放技能包（markdown），agent 按需加载；内置 PPT 设计、Excel 报表、周报三个技能 |
-| 🔌 MCP 连接器 | 标准 Model Context Protocol 客户端（stdio），接入任意 MCP 服务器，工具自动注入 |
-| 👥 专家与专家团 | 多智能体：主协调者把子任务委派给调研专员/数据分析师/文案写手/PPT设计师等专家子代理 |
-| 📱 IM 远程指挥 | 飞书机器人（发消息下任务）、企业微信群机器人（结果推送）、通用 Webhook（任意 IM 桥接） |
-| ⏰ 自动化定时任务 | cron 定时自动执行任务（如每天 9 点生成晨报），结果推送企业微信 |
-| 🔄 多模型可插拔 | DeepSeek / Qwen / GLM / Kimi / Ollama / OpenAI / Claude，改配置即切换 |
+---
 
-## 快速开始
+## 30 秒跑起来
+
+```bash
+bash install.sh          # 查环境 → 装依赖 → 生成配置 → 起服务
+```
+
+或者手动：
 
 ```bash
 npm install
-# 首次启动会自动从 config.example.json 生成 config.json，填入你的模型 API Key（推荐 DeepSeek）
-
-npm start        # 方式一：Web 版，浏览器打开 http://localhost:3800
-npm run app      # 方式二：桌面版（Electron 独立窗口）
-npm test         # 端到端测试（模拟 LLM，不需要 API Key）
+npm run app              # 桌面版（Electron 窗口，推荐）
+npm start                # 纯服务端，浏览器开 http://localhost:3800
+npm run cli -- "帮我写一份本周周报"   # 命令行
 ```
 
-> 国内下载 Electron 建议先设置镜像：`set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`
+**API Key 不用手动填进配置文件。** 第一次打开会弹引导页，选服务商、粘 Key，
+它会当场发一条真实请求验活，通过了才保存——不会让你等到发第一条消息才发现 Key 是错的。
 
-### 模型配置（config.json）
+国内装 Electron 慢的话：`export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`
 
-默认使用 OpenAI 兼容接口。常用配置：
+---
+
+## 它能干什么
+
+| | |
+|---|---|
+| 🤖 **Agent 自主执行** | 自然语言 → 规划 → 工具循环 → 交付文件，每一步在工作台实时可见 |
+| 🎚️ **Ask / Plan / Craft** | 只问答 / 只出计划 / 完整执行，输入框旁一键切换 |
+| 🧩 **专家 · 技能 · 连接器** | 三合一广场：召唤专家、装技能、接 MCP 连接器 |
+| 👥 **专家 与 专家团** | 12 位内置专家 + 4 个专家团；也可以自己建：头像、职称、说明、绑技能、默认提示词 |
+| 📦 **技能系统** | 一个 Markdown 文件就是一个技能，**改完下一条任务就生效**，不用重启 |
+| 🔌 **MCP 连接器** | 标准 Model Context Protocol（stdio），接进来的工具自动注入 agent |
+| 📱 **IM 远程指挥** | 飞书、QQ、企业微信（自建应用 / 群机器人）、微信（iLink 扫码 / 公众号）、钉钉、通用 Webhook |
+| ⏰ **自动化定时任务** | cron 定时跑（每天 9 点出晨报这种），结果推到 IM |
+| 🔐 **安全中心** | 命令审批闸门、命令黑白名单、删文件保护、URL 白名单、运行时开关、审计日志 |
+| 👤 **账号与积分** | 多用户、管理员开号、按任务扣积分、用量统计 |
+| 📚 **参考模板库** | 提示词范例，不知道怎么开口的时候抄一份改 |
+| 🌐 **本地部署预览** | 做完网页一键起本机服务，相对路径 / fetch / localStorage 才是真的能用；可放开给手机看 |
+
+### 内置技能
+
+`deep-research` 深度调研 · `html-page` 网页生成 · `ppt-design` PPT · `docx` Word ·
+`excel-report` Excel 报表 · `data-viz` 数据可视化 · `weekly-report` 周报 ·
+`wechat-article` 公众号推文（排版 + 推草稿箱）· `feishu-doc` 飞书文档 ·
+`lark-cli` 飞书全家桶命令行（消息/文档/多维表格/日历/任务/审批/邮件）· `skill-creator` 让它自己写技能
+
+### 内置工具
+
+`run_node` `run_shell` `write_file` `read_file` `list_files` `fetch_url` `web_search`
+`save_skill` `library_list` `library_read` `generate_image` `generate_video`
+
+---
+
+## 模型配置
+
+界面里 **设置 → 模型** 直接改，保存即热生效。手动改 `config.json` 也行：
 
 ```jsonc
 {
-  "provider": "openai",
-  "openai": {
-    // DeepSeek（推荐，便宜且 agent 能力强）
-    "base_url": "https://api.deepseek.com/v1",
-    "api_key": "sk-...",
-    "model": "deepseek-chat"
-  }
+  "models": [
+    {
+      "name": "DeepSeek",                          // 界面上显示的名字
+      "provider": "openai",                        // openai 兼容 / anthropic
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "sk-...",
+      "model": "deepseek-chat"
+    }
+  ],
+  "active_model": "DeepSeek"
 }
 ```
 
-其它选择（改 base_url / model 即可）：
-
-| 提供商 | base_url | model 示例 |
+| 服务商 | base_url | model 示例 |
 |---|---|---|
+| OpenRouter（一个 Key 通吃） | `https://openrouter.ai/api/v1` | `deepseek/deepseek-chat` |
 | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
 | 通义 Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-max` |
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
 | Kimi | `https://api.moonshot.cn/v1` | `moonshot-v1-32k` |
 | Ollama 本地 | `http://localhost:11434/v1` | `qwen3:14b` |
 
-API Key 也可用环境变量提供：`OPENAI_API_KEY`（或 Claude 的 `ANTHROPIC_API_KEY`）。
+模型条目还能带 `extra_body`，透传厂商私有参数（比如 OpenRouter 的 `reasoning`）。
 
-> 使用 Claude 时需额外安装可选依赖：`npm install @anthropic-ai/sdk`，并把 `provider` 改为 `anthropic`。
+---
 
-## 技能系统
+## 技能：一个 Markdown 文件
 
-在 `skills/<名称>/skill.md` 添加技能包：
+`skills/<名称>/skill.md`：
 
 ```markdown
 ---
 name: my-skill
-description: 一句话描述（agent 据此判断何时使用）
+description: 一句话说清什么时候该用它（agent 靠这句判断）
 ---
-详细操作指南 / 代码模板……
+
+## 操作步骤
+1. ……
 ```
 
-启动时技能描述会注入系统提示；agent 执行相关任务时通过 `use_skill` 工具加载完整内容。
+启动时只把 `description` 注入系统提示；agent 觉得用得上，才用 `use_skill` 加载正文——
+所以技能可以写得很长，不占上下文。同目录下放 `scripts/`、`templates/` 都行，agent 能用到。
+
+**技能是热的**：每次任务重读磁盘，改完存盘，下一条任务就是新的。
+
+不想自己写？让它写：`skill-creator` 技能就是干这个的。
+
+---
 
 ## MCP 连接器
 
-在 `config.json` 的 `mcp_servers` 配置：
+`config.json` 的 `mcp_servers`：
 
 ```json
 "mcp_servers": [
-  { "name": "filesystem", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/data"] }
+  { "name": "filesystem", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/data"] }
 ]
 ```
 
-服务器暴露的工具自动注入 agent（命名 `mcp__服务器__工具`）。
+服务器暴露的工具会以 `mcp__服务器名__工具名` 的形式自动注入。界面里 **专家 · 技能 · 连接器 → 连接器** 页也能管。
+
+---
 
 ## 专家与专家团
 
-`experts.json` 定义专家（独立系统提示的子智能体）。主 Agent 收到复杂任务会拆解并用 `delegate_to_expert` 逐阶段委派（调研 → 分析 → 写作 → 做 PPT），专家与主 Agent 共享工作目录。可自行增删专家。
+`experts.json` 定义专家——每个专家就是一份独立系统提示的子智能体，和主 Agent 共享工作目录。
+主 Agent 拿到复杂任务会自己拆（调研 → 分析 → 写作 → 做 PPT），用 `delegate_to_expert` 逐段委派。
+
+**专家团**是打包好的多人协作阵型（调研出报告、汇报三件套、网页交付组、内容发布组），
+`delegate_to_team` 一次派整团。
+
+界面上可以自己建专家：头像、职称、一句话说明、绑哪些技能、默认提示词。
+
+---
 
 ## IM 远程指挥
 
-### 飞书机器人
-1. [飞书开放平台](https://open.feishu.cn) 创建自建应用，开通机器人能力与 `im.message.receive_v1` 事件
-2. 事件回调地址填 `http(s)://你的公网地址/im/feishu/events`（加密方式选"不加密"）
-3. `config.json` 填 `im.feishu.app_id / app_secret`
-4. 在飞书私聊或 @机器人 发任务，执行完自动回复
+在手机上给它下任务，干完推回来。
 
-### 企业微信
-群里添加"群机器人"，把 webhook 地址填到 `im.wecom_bot_webhook` —— 任务完成、定时任务结果会推送到群。
+| 渠道 | 要不要公网 | 说明 |
+|---|---|---|
+| 飞书 | 不要 | 长连接，填 `app_id` / `app_secret` 就行；另可**扫码**授权你本人的身份（见下） |
+| QQ | 不要 | 官方机器人 WebSocket 长连接 |
+| 微信 iLink | 不要 | 扫码登录 + 长轮询 |
+| 企业微信自建应用 | 要 | 回调地址得能被访问到 |
+| 微信公众号 | 要 | 同上 |
+| 企业微信群机器人 / 钉钉 | 不要 | 只推结果，不收指令 |
+| 通用 Webhook | 看你怎么接 | 桥接任何东西 |
 
-### 通用 Webhook（桥接任意 IM / 自动化工具）
+通用 Webhook 长这样：
+
 ```bash
 curl -X POST http://localhost:3800/im/task \
   -H "Content-Type: application/json" \
-  -d '{"message": "帮我生成本周周报", "secret": "配置的密钥"}'
+  -d '{"message": "帮我生成本周周报", "secret": "你配的密钥"}'
 ```
-同步返回 `{ reply, files }`。微信个人号框架、钉钉、iOS 快捷指令等都可以通过它接入。
 
-## 自动化定时任务
+同步返回 `{ reply, files }`。iOS 快捷指令、自动化平台、你自己的脚本，都能接。
 
-Web 界面右侧面板直接添加，或调 API：
+### 飞书扫码授权
+
+**设置 → 助理设置 → 飞书 → 扫码授权**，用飞书 App 扫一下，AI 就能以**你本人**的身份读日历、翻云文档、
+查邮件、写多维表格（走飞书官方设备码流程，密码不经过 OpenBuddy）。依赖本机的
+[lark-cli](https://github.com/larksuite/cli)（MIT）：`npx @larksuite/cli@latest install`。
+
+> 说清楚免得误会：机器人**收消息**必须有应用的 `app_id` + `app_secret`，这是飞书的设计，扫码替代不了。
+> 扫码解决的是另一半——用户身份的 API 调用。两者互不冲突，可以只配一个。
+
+---
+
+## 定时任务
+
+界面 **自动化 → 定时任务** 里加，或者调 API：
 
 ```bash
 curl -X POST http://localhost:3800/api/schedules \
   -H "Content-Type: application/json" \
-  -d '{"name": "每日晨报", "cron": "0 9 * * 1-5", "task": "抓取今天的AI行业新闻，生成晨报 markdown"}'
+  -d '{"name": "每日晨报", "cron": "0 9 * * 1-5", "task": "抓今天的 AI 行业新闻，生成晨报 markdown"}'
 ```
 
-cron 5 字段（分 时 日 月 周），支持 `*` `,` `-` `*/n`。结果自动推送企业微信（如已配置）。
+cron 5 字段（分 时 日 月 周），支持 `*` `,` `-` `*/n`。
+
+---
+
+## 部署
+
+```bash
+docker compose up -d
+```
+
+细节、反代配置、PM2 跑法、以及**安全须知**都在 [deploy/README.md](deploy/README.md)。
+
+> ⚠️ 这个 agent 手里有 `run_shell`。**把它挂到公网 = 把这台机器的 shell 挂到公网。**
+> 默认只监听 `127.0.0.1`；要放出去，先看部署文档那节安全须知，别裸奔。
+
+---
 
 ## 项目结构
 
 ```
-server.js      服务器入口（Web API + SSE + 定时任务 API）
-agent.js       Agent 核心运行时（协调者/专家循环、工具路由）
-llm.js         LLM 适配层（OpenAI 兼容 + 可选 Anthropic）
-tools.js       内置工具（run_node/文件读写/网页抓取）
-skills.js      技能加载器          skills/     技能包
-mcp.js         MCP 客户端（stdio）
-experts.json   专家团定义
-im.js          飞书/企业微信/通用 Webhook
-scheduler.js   定时任务调度器
-public/        Web 工作台前端      workspace/  成果文件输出目录
+server.js        Web API + SSE + 各种端点
+agent.js         Agent 运行时（协调者/专家循环、工具路由、系统提示）
+llm.js           LLM 适配层（OpenAI 兼容 + Anthropic）
+tools.js         内置工具
+skills.js        技能加载器            skills/       技能包
+mcp.js           MCP 客户端（stdio）
+account.js       账号 / 积分 / 鉴权
+security.js      安全中心（审批闸门、黑白名单、审计）
+experts.json     专家与专家团定义
+im.js            IM 总线            im-qq.js / im-wechat.js / im-ilink.js
+scheduler.js     定时任务
+electron-main.js 桌面壳             cli.js        命令行
+public/          前端（单文件，没有构建步骤）
+workspace/       成果文件输出        data/         账号与会话
 ```
 
-## 安全提示
+前端是一个手写的 `public/index.html`，没有框架、没有打包器。改完刷新就行。
 
-- `run_node` 会真实执行模型生成的代码，请只在个人/受信环境使用；对外暴露服务时务必设置 `im.webhook_secret` 并加反向代理鉴权。
-- 成果文件目录 `workspace/` 对 Web 界面可下载，不要放敏感文件。
+---
+
+## 测试
+
+```bash
+npm test          # 端到端，用模拟 LLM，不需要 API Key
+```
+
+覆盖：cron 解析、workspace 路径越界拦截、成果核验闸门（缺文件 / 0 字节空壳）、
+`run_node` 语法预检、上下文预算截断、Word/PPT/Excel 生成、Agent 全管线（技能加载 → 代码执行 → 专家委派 → 事件流）。
+
+---
+
+## 协议
+
+[PolyForm Noncommercial 1.0.0](LICENSE)：个人、学习、学术、非营利、政府用途**免费**。
+公司内部使用、对外提供服务、二次销售等商业场景，需要单独授权 —— 见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
+
+Copyright (c) 2026 开发者猫叔
+
+---
+
+## 免责
+
+本项目是对腾讯 WorkBuddy 产品形态的独立开源实现，与腾讯没有任何关系，不含其任何代码或资源。
+「WorkBuddy」是其权利人的商标。
