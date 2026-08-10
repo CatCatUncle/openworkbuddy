@@ -751,6 +751,85 @@ function testAccountStore() {
   console.log("✅ 账本：坏文件不覆盖 / 写盘原子 / 登录限流 / https 认得出");
 }
 
+// JSON 小仓库：坏文件先拿 .bak 顶，顶不住就隔离——绝不静默当空的然后覆盖掉
+function testJsonStore() {
+  const { readJson, writeJsonAtomic } = require("../store");
+  const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-store-"));
+  const file = path.join(dir, "sess.json");
+
+  assert.deepStrictEqual(readJson(file, { a: 1 }), { a: 1 }, "文件不在时应返回默认值");
+  fs.writeFileSync(file, "   \n", "utf8");
+  assert.deepStrictEqual(readJson(file, { a: 1 }), { a: 1 }, "0 字节/空白文件应当自愈成默认值");
+
+  writeJsonAtomic(file, { turn: 1 });
+  writeJsonAtomic(file, { turn: 2 });
+  fs.writeFileSync(file, '{"turn": 2, 坏了', "utf8"); // 模拟写到一半断电
+  const back = readJson(file, null);
+  assert.strictEqual(back && back.turn, 1, "坏文件没回退到 .bak");
+  assert.strictEqual(readJson(file, null).turn, 1, "恢复出来的内容没写回去，下次读还得再恢复一遍");
+  assert(fs.existsSync(file + ".corrupt"), "坏的那份没留底");
+
+  // 连 .bak 都没有 → 隔离改名，原文件不能被就地覆盖成空的
+  const lone = path.join(dir, "lone.json");
+  fs.writeFileSync(lone, "{坏了", "utf8");
+  assert.deepStrictEqual(readJson(lone, []), [], "没有 .bak 时应返回默认值");
+  assert(!fs.existsSync(lone), "坏文件没被改名隔离");
+  assert(fs.readdirSync(dir).some((f) => f.startsWith("lone.json.corrupt-")), "隔离文件不见了，用户没法捞回来");
+
+  // 账本用 strict：宁可停下来报错，也不能自作主张回退一版（可能正好吞掉一笔充值）
+  const led = path.join(dir, "users.json");
+  writeJsonAtomic(led, { users: ["甲"] });
+  writeJsonAtomic(led, { users: ["甲", "乙"] });
+  fs.writeFileSync(led, "{坏", "utf8");
+  assert.throws(() => readJson(led, {}, { strict: true }), /坏了/, "strict 模式没抛错");
+  assert.strictEqual(fs.readFileSync(led, "utf8"), "{坏", "strict 模式不该动原文件");
+
+  assert(!fs.readdirSync(dir).some((f) => f.endsWith(".tmp")), "临时文件没清掉");
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.log("✅ JSON 仓库：空文件自愈 / 坏文件回退 .bak / 无 .bak 则隔离 / 账本 strict 抛错");
+}
+
+// IM 会话：重启不丢上下文；历史砍长度只能从一整轮的开头下刀
+function testImSessionStore() {
+  const { createImSessionStore } = require("../im-store");
+  const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-imsess-"));
+
+  const s1 = createImSessionStore({ dir });
+  assert.strictEqual(s1.has("feishu_oc_1"), false, "新会话不该凭空存在");
+  s1.set("feishu_oc_1", []);
+  const h = s1.get("feishu_oc_1");
+  h.push({ role: "user", content: "上次说到哪了" });
+  h.push({ role: "assistant", text: "说到第三章" });
+  s1.save("feishu_oc_1"); // runTask 是就地追加的，得手动招呼一声
+
+  // 换一个实例 = 应用重启
+  const s2 = createImSessionStore({ dir });
+  assert.strictEqual(s2.has("feishu_oc_1"), true, "重启后会话没读回来");
+  assert.strictEqual(s2.get("feishu_oc_1").length, 2, "重启后上下文丢了");
+  assert.strictEqual(s2.get("feishu_oc_1")[1].text, "说到第三章", "读回来的内容不对");
+  assert.strictEqual(s2.has("qq_c2c_9"), false, "别的会话不该被顺带创建");
+
+  // 砍长度：不能把 tool_use 和它的结果劈开，切口必须落在 user 上
+  const s3 = createImSessionStore({ dir, maxEntries: 4 });
+  const long = [];
+  for (let i = 0; i < 4; i++) {
+    long.push({ role: "user", content: "问" + i });
+    long.push({ role: "assistant", text: "答", toolCalls: [{ id: "t" + i }] });
+    long.push({ role: "tool", results: [{ id: "t" + i, content: "结果" }] });
+  }
+  s3.set("wecom_u", long);
+  const kept = JSON.parse(fs.readFileSync(path.join(dir, "wecom_u.json"), "utf8"));
+  assert(kept.length <= 6, `砍完还剩 ${kept.length} 条，超了`);
+  assert.strictEqual(kept[0].role, "user", "切口没落在一轮的开头，工具调用会被劈成两半");
+  for (let i = 0; i < kept.length; i++) {
+    if (kept[i].role === "tool") assert(kept[i - 1] && kept[i - 1].toolCalls, "工具结果前面没有对应的调用");
+  }
+  assert.strictEqual(long.length, kept.length, "砍历史必须就地改数组，不能换一个新的（调用方还攥着旧引用）");
+
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.log("✅ IM 会话：重启后上下文还在 / 砍历史只从整轮开头下刀");
+}
+
 // 撞上限强制收尾：最终回复必须是"交代"，不能是半句过程叙述；用户手动停止则不该再花一次调用
 async function testForcedWrapUp() {
   const busyLLM = (onWrap) => {
@@ -840,6 +919,8 @@ async function main() {
   console.log("=== OpenWorkBuddy e2e 测试 ===");
   testCron();
   testCommandGate();
+  testJsonStore();
+  testImSessionStore();
   testAccountStore();
   testPathSafety();
   testDeliverableGate();

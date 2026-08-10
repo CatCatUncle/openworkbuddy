@@ -16,6 +16,8 @@ const { createScheduler } = require("./scheduler");
 const account = require("./account");
 const security = require("./security");
 const notify = require("./notify");
+const store = require("./store");
+const { createImSessionStore } = require("./im-store");
 
 // config.json 不入 git（可能含 API Key）；首次运行自动从模板复制
 const CONFIG_PATH = path.join(__dirname, "config.json");
@@ -84,24 +86,39 @@ function sessFile(id) {
 }
 function getSession(id) {
   if (!sessions.has(id)) {
-    let data = { history: [], transcript: [], title: "", updated_at: null };
-    try {
-      data = JSON.parse(fs.readFileSync(sessFile(id), "utf8"));
-    } catch {}
+    // 会话文件坏了不抛错（不能因为一条对话打不开就让整个工作台起不来），
+    // 但也绝不装作没有过这条对话：store 会先拿 .bak 顶上，实在不行把坏文件改名隔离
+    const data = store.readJson(sessFile(id), { history: [], transcript: [], title: "", updated_at: null });
     sessions.set(id, data);
   }
   return sessions.get(id);
 }
 function saveSession(id) {
   const s = sessions.get(id);
-  if (!s) return;
+  if (!s || !s.history) return;
   s.updated_at = new Date().toISOString();
-  fs.mkdirSync(SESS_DIR, { recursive: true });
-  fs.writeFileSync(sessFile(id), JSON.stringify(s), "utf8");
+  store.writeJsonAtomic(sessFile(id), s);
 }
 
-/** 包装 emit：把事件同时记录到 transcript（文本增量合并，跳过噪音事件） */
-function recordingEmit(send, events) {
+// 任务跑一半崩了 / 用户直接退出 App，这一轮的过程就全没了——中途也存，最多每 5 秒一次。
+// 存的是同一份对象，落盘又是原子改名，跟收尾时那次 saveSession 不会打架。
+const sessSaveAt = new Map();
+function autosaveSession(id, minGapMs = 5000) {
+  const now = Date.now();
+  if (now - (sessSaveAt.get(id) || 0) < minGapMs) return;
+  sessSaveAt.set(id, now);
+  try {
+    saveSession(id);
+  } catch (e) {
+    console.warn(`[会话] 中途存盘失败（${id}）：${e.message}`);
+  }
+}
+
+// IM 会话跟网页会话分开存（data/im-sessions/<键>.json），重启不丢上下文
+const imSessions = createImSessionStore({ dir: path.join(__dirname, "data", "im-sessions") });
+
+/** 包装 emit：把事件同时记录到 transcript（文本增量合并，跳过噪音事件），顺便中途存盘 */
+function recordingEmit(send, events, sessionId) {
   return (ev) => {
     send(ev);
     if (ev.type === "text") {
@@ -111,6 +128,8 @@ function recordingEmit(send, events) {
       else events.push({ type: "text", delta: ev.delta });
     } else if (["tool_use", "tool_result", "expert_start", "expert_done", "error", "limit", "trim", "usage", "interject", "credits"].includes(ev.type)) {
       events.push(ev);
+      // 一步走完就是个存盘点：跑了半小时的任务不该因为一次崩溃从头再来
+      if (sessionId && ev.type === "tool_result") autosaveSession(sessionId);
     }
   };
 }
@@ -603,15 +622,11 @@ app.delete("/api/projects/:name", (req, res) => {
 const LIB_DIR = path.join(__dirname, "data", "library");
 const NOTES_FILE = path.join(__dirname, "data", "inspirations.json");
 function readNotes() {
-  try {
-    return JSON.parse(fs.readFileSync(NOTES_FILE, "utf8"));
-  } catch {
-    return [];
-  }
+  const list = store.readJson(NOTES_FILE, []);
+  return Array.isArray(list) ? list : [];
 }
 function writeNotes(notes) {
-  fs.mkdirSync(path.dirname(NOTES_FILE), { recursive: true });
-  fs.writeFileSync(NOTES_FILE, JSON.stringify(notes, null, 2), "utf8");
+  store.writeJsonAtomic(NOTES_FILE, notes, { pretty: true });
 }
 function libSafe(name) {
   const base = path.basename(String(name || ""));
@@ -1261,10 +1276,11 @@ app.post("/api/chat", async (req, res) => {
   sess.transcript.push({ type: "user", text: message, mode });
   const asstEvents = [];
   sess.transcript.push({ type: "assistant", events: asstEvents });
+  autosaveSession(sessionId, 0); // 先把用户这句话落盘，后面再崩至少问题还在
 
   const runState = { ctrl: new AbortController(), interject: [] };
   activeRuns.set(sessionId, runState);
-  const emitFn = recordingEmit(send, asstEvents);
+  const emitFn = recordingEmit(send, asstEvents, sessionId);
   const total = { prompt: 0, completion: 0, calls: 0, elapsed_ms: 0 };
   try {
     // 任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
@@ -1407,7 +1423,7 @@ async function main() {
   });
 
   // IM 远程指挥路由（飞书/QQ 长连接 · 企业微信与公众号回调 · 通用 webhook）
-  imBridge = createImRouter({ config, runtime: accountedRuntime(runtime, "im"), sessions, outputFiles, saveConfig });
+  imBridge = createImRouter({ config, runtime: accountedRuntime(runtime, "im"), sessions: imSessions, outputFiles, saveConfig });
   app.use(imBridge.router);
   imBridge
     .startFeishuWs()
