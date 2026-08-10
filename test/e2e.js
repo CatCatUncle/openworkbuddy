@@ -11,7 +11,7 @@ const path = require("path");
 const assert = require("assert");
 const { createAgentRuntime, missingDeliverables, trimHistory, historyChars } = require("../agent");
 const { McpManager } = require("../mcp");
-const { parseCron } = require("../scheduler");
+const { parseCron, cronMatches } = require("../scheduler");
 const { getWorkspaceDir } = require("../tools");
 const WORKSPACE = getWorkspaceDir();
 
@@ -587,7 +587,88 @@ function testCron() {
   let threw = false;
   try { parseCron("bad cron"); } catch { threw = true; }
   assert(threw, "非法 cron 未报错");
-  console.log("✅ 定时任务：cron 解析通过");
+
+  // 越界/写反的一律要报错。收下不报的后果最坏：界面上看它一切正常，任务却永远不触发
+  for (const bad of ["70 * * * *", "* 25 * * *", "0 9 * * 8", "5-1 * * * *", "0 9 32 * *", "* * * 13 *", "*/x * * * *"]) {
+    let t = false;
+    try { parseCron(bad); } catch { t = true; }
+    assert(t, `非法 cron「${bad}」被静默收下了，任务会永远不触发`);
+  }
+  // 步长 0 以前会在 for 里死循环，把 Electron 主进程连界面一起冻住
+  let zeroThrew = false;
+  try { parseCron("*/0 * * * *"); } catch { zeroThrew = true; }
+  assert(zeroThrew, "步长 0 没被拦下（这会死循环卡死整个进程）");
+
+  const ranged = parseCron("1-30/10 * * * *");
+  assert(ranged.minute.has(1) && ranged.minute.has(11) && ranged.minute.has(21) && !ranged.minute.has(31), "范围带步长解析错误");
+  assert(parseCron("5/10 * * * *").minute.has(55), "「5/10」应当是从 5 开始每 10 分钟");
+  assert(parseCron("0 9 * * 7").dow.has(0), "标准 cron 里 7 也是周日");
+
+  // 日和周都限定时，标准 cron 取「或」：每月 1 号 或 每周一
+  const orCron = parseCron("0 9 1 * 1");
+  const mon5th = new Date(2026, 0, 5, 9, 0);   // 周一，非 1 号
+  const thu1st = new Date(2026, 0, 1, 9, 0);   // 1 号，周四
+  const tue6th = new Date(2026, 0, 6, 9, 0);   // 都不是
+  assert(cronMatches(orCron, mon5th) && cronMatches(orCron, thu1st) && !cronMatches(orCron, tue6th), "日/周同时限定时应取或");
+  assert(!cronMatches(parseCron("0 9 * * 1"), thu1st), "只限定周时不该跟日期取或");
+  console.log("✅ 定时任务：cron 解析通过（越界/步长 0/日周取或全覆盖）");
+}
+
+/** 调度器运行时：补跑、不叠跑、跑完的结果要真存下来 */
+async function testSchedulerRuntime() {
+  const { createScheduler } = require("../scheduler");
+  // 绝不能碰真的 schedules.json
+  const storePath = path.join(fs.mkdtempSync(path.join(require("os").tmpdir(), "e2e-sched-")), "schedules.json");
+  let runs = [];
+  let hold = null;
+  const runtime = { runTask: async () => { if (hold) await hold; runs.push(Date.now()); return { finalText: "跑完了" }; } };
+  const sch = createScheduler({ runtime, storePath });
+  sch.stop(); // 关掉定时器，测试里手动驱动
+
+  const daily = sch.add({ name: "晨报", cron: "0 9 * * *", task: "写晨报" });
+  const noCatch = sch.add({ name: "不补的", cron: "0 9 * * *", task: "写日报", catch_up: false });
+  assert.strictEqual(daily.catch_up, true, "补跑默认应该开着");
+  let threw = "";
+  try { sch.add({ cron: "0 9 * * *", task: "  " }); } catch (e) { threw = e.message; }
+  assert(threw.includes("任务描述"), "空任务描述没被拦下");
+
+  // 电脑从 08:00 睡到 10:00，中间的 09:00 那次谁也没执行
+  const from = new Date(2026, 0, 15, 8, 0).getTime();
+  const to = new Date(2026, 0, 15, 10, 0).getTime();
+  const fired = sch.catchUp(from, to);
+  assert.strictEqual(fired.size, 1, `错过的应当补跑 1 个（关了补跑的那个不算），实际 ${fired.size}`);
+  assert(fired.has(daily.id) && !fired.has(noCatch.id), "补跑挑错了任务");
+  await new Promise((r) => setTimeout(r, 50));
+  assert.strictEqual(runs.length, 1, "补跑应当只跑一次");
+  const after = sch.list().find((t) => t.id === daily.id);
+  assert(after.missed_at && after.last_trigger === "补跑", "补跑没在任务上留下记录");
+  assert(after.last_result === "跑完了", "执行结果没写回本体（list() 给的是副本，跑的时候要换回本体）");
+  assert(JSON.parse(fs.readFileSync(storePath, "utf8")).tasks.find((t) => t.id === daily.id).last_result === "跑完了", "执行结果没落盘");
+
+  // 一段里错过好几次也只补一次：每小时的任务睡了 5 小时，不该醒来连开 5 枪
+  const hourly = sch.add({ name: "每小时", cron: "0 * * * *", task: "看一眼" });
+  runs = [];
+  const fired2 = sch.catchUp(new Date(2026, 0, 15, 3, 0).getTime(), new Date(2026, 0, 15, 8, 30).getTime());
+  await new Promise((r) => setTimeout(r, 50));
+  assert(fired2.has(hourly.id), "每小时任务错过了却没补");
+  assert.strictEqual(runs.length, fired2.size, `补跑应当每个任务只跑一次，实际跑了 ${runs.length} 次`);
+  assert.strictEqual(sch.list().find((t) => t.id === hourly.id).missed_at, new Date(2026, 0, 15, 8, 0).toISOString(), "补的应当是最近该跑的那次");
+
+  // 上一次还没跑完，第二次不许叠上去
+  let release;
+  hold = new Promise((r) => (release = r));
+  const first = sch.runOne(daily.id, "手动");
+  await new Promise((r) => setTimeout(r, 10));
+  assert(sch.list().find((t) => t.id === daily.id).running === true, "跑起来了却没标记 running");
+  let lockMsg = "";
+  await sch.runOne(daily.id, "手动").catch((e) => (lockMsg = e.message));
+  assert(lockMsg.includes("正在跑"), "同一个任务被允许叠着跑了");
+  release(); hold = null; await first;
+  assert(!sch.list().find((t) => t.id === daily.id).running, "跑完了 running 标记没清掉");
+
+  await assert.rejects(() => sch.runOne("sch_不存在", "手动"), /任务不存在/, "不存在的任务应当报错");
+  fs.rmSync(storePath, { force: true });
+  console.log("✅ 定时任务运行时：睡过头补跑一次 / 不叠跑 / 结果真落盘");
 }
 
 function testPathSafety() {
@@ -610,6 +691,7 @@ async function main() {
   testPluginSkillsIntegration();
   testDefaultSkillsManifest();
   await testMcpStreamableHttp();
+  await testSchedulerRuntime();
   await testMcpManagerLifecycle();
   await testNodeSyntaxPrecheck();
   await testOfficeLibs();

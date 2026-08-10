@@ -1354,11 +1354,16 @@ app.delete("/api/schedules/:id", (req, res) => res.json({ ok: scheduler.remove(r
 app.post("/api/schedules/:id/toggle", (req, res) =>
   res.json({ ok: scheduler.toggle(req.params.id, !!(req.body || {}).enabled) })
 );
+app.post("/api/schedules/:id/catchup", (req, res) =>
+  res.json({ ok: scheduler.setCatchUp(req.params.id, !!(req.body || {}).catch_up) })
+);
 app.post("/api/schedules/:id/run", async (req, res) => {
   const item = scheduler.list().find((t) => t.id === req.params.id);
   if (!item) return res.status(404).json({ error: "任务不存在" });
+  if (item.running) return res.status(409).json({ error: "这个任务正在跑，等它跑完再点" });
   try {
-    const reply = await scheduler.runOne(item, "手动");
+    // 传 id 不传对象：list() 给出去的是副本，拿副本去跑的话执行结果写在副本上，存不下来
+    const reply = await scheduler.runOne(item.id, "手动");
     res.json({ ok: true, reply });
   } catch (e) {
     res.status(500).json({ error: e.message });
