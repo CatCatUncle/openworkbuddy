@@ -21,6 +21,7 @@ const { setWorkspaceDir, getWorkspaceDir } = require("./tools");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
 const account = require("./account");
+const store = require("./store");
 
 // ---------- 参数解析 ----------
 const argv = process.argv.slice(2);
@@ -61,30 +62,25 @@ if (!fs.existsSync(CONFIG_PATH)) {
   console.error(red("找不到 config.json，请先运行一次 npm start 生成，或从 config.example.json 复制。"));
   process.exit(1);
 }
-const config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+const config = store.readJson(CONFIG_PATH, {});
 if (config.workspace_dir) {
   try { setWorkspaceDir(config.workspace_dir); } catch {}
 }
 const llm = createLLM(config);
-let experts = [];
-let expertTeams = [];
-try {
-  const d = JSON.parse(fs.readFileSync(path.join(__dirname, "experts.json"), "utf8"));
-  experts = d.experts || [];
-  expertTeams = d.teams || [];
-} catch {}
+const expertsDoc = store.readJson(path.join(__dirname, "experts.json"), {}) || {};
+let experts = expertsDoc.experts || [];
+let expertTeams = expertsDoc.teams || [];
 const mcpManager = new McpManager();
 
 // ---------- 会话持久化（与 server.js 同一目录同一结构） ----------
 const SESS_DIR = path.join(__dirname, "data", "sessions");
 const sessionId = opts.session || "cli_" + new Date().toISOString().slice(0, 10).replace(/-/g, "");
 const sessFile = path.join(SESS_DIR, sessionId.replace(/[^\w-]/g, "_") + ".json");
-let sess = { history: [], transcript: [], title: "" };
-try { sess = JSON.parse(fs.readFileSync(sessFile, "utf8")); } catch {}
+// 跟网页端是同一批文件，写法也得一样：原子改名 + .bak，坏了先回退别直接覆盖
+let sess = store.readJson(sessFile, { history: [], transcript: [], title: "" });
 function saveSess() {
   sess.updated_at = new Date().toISOString();
-  fs.mkdirSync(SESS_DIR, { recursive: true });
-  fs.writeFileSync(sessFile, JSON.stringify(sess), "utf8");
+  store.writeJsonAtomic(sessFile, sess);
 }
 
 // ---------- 事件渲染 ----------

@@ -4,6 +4,8 @@ schedules.json
 schedules.json.bak
 schedules.json.corrupt*
 config.json
+config.json.bak
+config.json.corrupt*
 *.log
 .DS_Store
 __pycache__/
