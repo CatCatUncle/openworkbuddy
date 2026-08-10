@@ -27,6 +27,8 @@ const MCP_SCHEMA = `https://agent-plugins.org/schemas/${SPEC_VERSION}/mcp.schema
 const PLUGINS_DIR = path.join(__dirname, "plugins");
 // PLUGIN_DATA 要跨插件升级保留，所以放 data/ 下而不是插件目录里（插件目录重装会被整个删掉）
 const PLUGIN_DATA_ROOT = path.join(__dirname, "data", "plugin-data");
+// 装到哪来的记在插件目录外面：记在里面会被当成插件自己的文件，重装时又正好被删掉
+const SOURCES_PATH = path.join(__dirname, "data", "plugin-sources.json");
 
 const NAME_RE = /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 const MANIFEST_FIELDS = ["$schema", "name", "version", "description", "author", "homepage", "repository", "license", "keywords", "extensions"];
@@ -330,6 +332,24 @@ function safePluginDirName(name) {
   return n;
 }
 
+/** 安装来源登记簿：{ 插件名: { url, at } }，坏了就当空的，不许拖累加载 */
+function readSources() {
+  try {
+    const j = JSON.parse(fs.readFileSync(SOURCES_PATH, "utf8"));
+    return isPlainObject(j) ? j : {};
+  } catch {
+    return {};
+  }
+}
+function writeSources(map) {
+  fs.mkdirSync(path.dirname(SOURCES_PATH), { recursive: true });
+  fs.writeFileSync(SOURCES_PATH, JSON.stringify(map, null, 2), "utf8");
+}
+function pluginSource(name) {
+  const e = readSources()[name];
+  return e && e.url ? e.url : "";
+}
+
 /** 从 GitHub 装一个插件（仓库根是插件，或 tree 子目录是插件）。装之前先校验，坏的不落盘。 */
 async function installPluginFromGitHub(url) {
   const u = String(url || "").trim().replace(/\/+$/, "");
@@ -367,6 +387,12 @@ async function installPluginFromGitHub(url) {
     fs.rmSync(dest, { recursive: true, force: true });
     copyTree(src, dest);
     const loaded = loadPlugin(dest);
+    // 记下来源，之后「更新」才有地方去拉；写失败不影响这次安装
+    try {
+      writeSources({ ...readSources(), [loaded.name]: { url: u, at: new Date().toISOString() } });
+    } catch (e) {
+      console.warn(`[插件] 来源没记上（不影响使用）：${e.message}`);
+    }
     return {
       name: loaded.name,
       version: loaded.manifest?.version || "",
@@ -398,11 +424,25 @@ function removePlugin(name) {
   const dir = path.join(PLUGINS_DIR, safePluginDirName(name));
   if (!fs.existsSync(dir)) return false;
   fs.rmSync(dir, { recursive: true, force: true });
+  try {
+    const map = readSources();
+    if (map[name]) { delete map[name]; writeSources(map); }
+  } catch { /* 登记簿写不动不该让卸载失败 */ }
   return true; // PLUGIN_DATA 故意留着：规范要求跨升级保留，用户重装插件数据还在
 }
 
+/** 按记下来的来源重新拉一遍（版本没变也照拉，上游可能只改了内容没改版本号） */
+async function updatePlugin(name) {
+  const url = pluginSource(name);
+  if (!url) throw new PluginError("这个插件没有记录安装来源（多半是手动拷进 plugins/ 的），请用「装插件」重新填地址");
+  const before = loadPlugin(path.join(PLUGINS_DIR, safePluginDirName(name)));
+  const info = await installPluginFromGitHub(url);
+  if (info.name !== name) throw new PluginError(`来源里的插件现在叫「${info.name}」，和「${name}」对不上，已按新名字装好，旧的请手动卸载`);
+  return { ...info, from_version: before.ok ? before.manifest?.version || "" : "" };
+}
+
 module.exports = {
-  SPEC_VERSION, PLUGIN_SCHEMA, MCP_SCHEMA, PLUGINS_DIR, PLUGIN_DATA_ROOT,
+  SPEC_VERSION, PLUGIN_SCHEMA, MCP_SCHEMA, PLUGINS_DIR, PLUGIN_DATA_ROOT, SOURCES_PATH,
   loadPlugin, loadPlugins, pluginSkills, pluginMcpServers,
-  installPluginFromGitHub, removePlugin, containedIn, expandVars,
+  installPluginFromGitHub, removePlugin, updatePlugin, pluginSource, containedIn, expandVars,
 };

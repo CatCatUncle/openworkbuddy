@@ -462,10 +462,9 @@ function testPluginSkillsIntegration() {
   }
 }
 
-// Streamable HTTP 传输：起一个假 MCP 服务器，JSON 和 SSE 两种响应体都要能吃
-async function testMcpStreamableHttp() {
+// 起一个假的 Streamable HTTP MCP 服务器，返回 { url, seen, close }
+async function startFakeMcpHttp() {
   const http = require("http");
-  const { McpClient } = require("../mcp");
   const seen = { sessionEchoed: 0, protoHeader: "" };
   const server = http.createServer((req, res) => {
     let body = "";
@@ -496,7 +495,17 @@ async function testMcpStreamableHttp() {
     });
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  const url = `http://127.0.0.1:${server.address().port}/mcp`;
+  return {
+    url: `http://127.0.0.1:${server.address().port}/mcp`,
+    seen,
+    close: () => new Promise((r) => server.close(r)),
+  };
+}
+
+// Streamable HTTP 传输：起一个假 MCP 服务器，JSON 和 SSE 两种响应体都要能吃
+async function testMcpStreamableHttp() {
+  const { McpClient } = require("../mcp");
+  const { url, seen, close } = await startFakeMcpHttp();
   try {
     const client = new McpClient("fake", { transport: "streamable-http", url });
     assert.strictEqual(client.kind, "streamable-http", "传输类型判定错了");
@@ -510,7 +519,45 @@ async function testMcpStreamableHttp() {
     client.stop();
     console.log("✅ MCP Streamable HTTP：JSON / SSE 两种响应 + 会话 id 回带 + 协议版本协商");
   } finally {
-    await new Promise((r) => server.close(r));
+    await close();
+  }
+}
+
+// 连接器的生死：按名字停、按插件停、重连不留孤儿、修好之后旧的红字要消失
+async function testMcpManagerLifecycle() {
+  const { url, close } = await startFakeMcpHttp();
+  const mgr = new McpManager();
+  const remote = (name, plugin) => ({ name, transport: "streamable-http", url, plugin });
+  const dead = { name: "dead", transport: "streamable-http", url: "http://127.0.0.1:1/mcp" };
+  try {
+    await mgr.startAll([remote("a"), remote("b", "demo-plug"), dead]);
+    assert.strictEqual(mgr.clients.size, 2, "两台好的应该都连上");
+    assert.strictEqual(mgr.failures.length, 1, "连不上的那台应该记一笔");
+    assert.strictEqual(mgr.toolDefs().length, 2, "工具没按服务器数注入");
+
+    // 重复起同名的：不该出现两个 client，也不该把旧的丢在那没人停
+    const first = mgr.clients.get("a");
+    await mgr.startAll([remote("a")]);
+    assert.strictEqual(mgr.clients.size, 2, "重启同名服务器后数量不对");
+    assert(mgr.clients.get("a") !== first, "同名重启没换成新 client");
+
+    // 按名字停：客户端要摘掉，它那条失败记录也要一并清掉
+    assert.deepStrictEqual(mgr.stop(["dead", "nobody"]), [], "dead 从来没连上，不该报告停掉了它");
+    assert.strictEqual(mgr.failures.length, 0, "停掉之后旧的失败记录还挂着，界面会一直显示红字");
+    assert.deepStrictEqual(mgr.stop(["a"]), ["a"], "按名字停失败");
+    assert(!mgr.clients.has("a"), "停掉的服务器还在表里");
+
+    // 按插件停：只动这个插件的
+    await mgr.startAll([remote("c")]);
+    assert.deepStrictEqual(mgr.stopPlugin("demo-plug"), ["b"], "按插件停没停对");
+    assert.deepStrictEqual([...mgr.clients.keys()], ["c"], "按插件停误伤了别人的连接器");
+
+    mgr.stopAll();
+    assert.strictEqual(mgr.clients.size, 0, "stopAll 之后表没清空（旧版只 stop 不删，重启后会残留）");
+    console.log("✅ MCP 连接器生命周期：按名/按插件停、同名重启不留孤儿、修好后失败记录清掉");
+  } finally {
+    mgr.stopAll();
+    await close();
   }
 }
 
@@ -563,6 +610,7 @@ async function main() {
   testPluginSkillsIntegration();
   testDefaultSkillsManifest();
   await testMcpStreamableHttp();
+  await testMcpManagerLifecycle();
   await testNodeSyntaxPrecheck();
   await testOfficeLibs();
   await testAgentPipeline();

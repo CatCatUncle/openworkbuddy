@@ -447,8 +447,10 @@
   .ex-card:hover { border-color: var(--wb-brand); }
   .ex-card .hd { display: flex; align-items: center; gap: 10px; }
   .ex-card .av { width: 38px; height: 38px; flex: none; border-radius: 10px; background: var(--wb-brand-weak); display: flex; align-items: center; justify-content: center; font-size: 19px; }
-  .ex-card .nm { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .ex-card .nm { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
   .ex-card .nm span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 右边的状态字长的时候，别把名字挤成 0 宽（连接器卡片踩过这个坑） */
+  .ex-card .nm > span:first-child { flex: 1 1 auto; min-width: 4em; }
   .ex-card .al { font-size: 11px; color: var(--wb-text-3); font-weight: 400; flex: none; }
   .ex-card .ds { font-size: 12px; color: var(--wb-text-2); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 40px; }
   .ex-card .tg { display: flex; gap: 5px; flex-wrap: wrap; }
@@ -2886,7 +2888,7 @@ async function renderHubPlugins(box) {
       <div id="pl-msg" class="ab-empty" style="margin-top:6px"></div>
     </div>
     <div class="hub-sec-title" style="margin-top:14px">已装插件
-      <span class="sub">共 ${list.length} 个 · 技能立即生效；MCP 服务器装完自动起，卸载后要重启应用才真正停掉</span></div>
+      <span class="sub">共 ${list.length} 个 · 技能立即生效；它带的 MCP 服务器装完自动连上、卸载时自动停掉</span></div>
     <div class="card-grid">
       ${list.map((p, i) => `
         <div class="ex-card" data-pi="${i}">
@@ -2901,7 +2903,7 @@ async function renderHubPlugins(box) {
             <i>💾 ${fmtBytes(p.bytes)}</i></div>` : ""}
           ${(p.warnings || []).length ? `<div class="ds" style="font-size:11px;color:var(--wb-warn,#b26a00)">⚠️ 有零件被跳过：<br>${p.warnings.map(w => "· " + esc(w)).join("<br>")}</div>` : ""}
           ${p.homepage || p.repository ? `<div class="ds" style="font-size:11px"><a href="${esc(p.homepage || p.repository)}" target="_blank" rel="noreferrer" style="word-break:break-all">${esc(p.homepage || p.repository)}</a></div>` : ""}
-          <div class="ops"><button class="pl-del">卸载</button></div>
+          <div class="ops">${p.source ? '<button class="pl-upd" title="从当初安装的地址重新拉一遍">更新</button>' : ""}<button class="pl-del">卸载</button></div>
         </div>`).join("")}
       ${list.length ? "" : `<div class="hub-empty">${hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的插件` : "还没装插件。上面填一个带 plugin.json 的 GitHub 地址就能装"}</div>`}
     </div>`;
@@ -2925,6 +2927,20 @@ async function renderHubPlugins(box) {
   };
   box.querySelectorAll(".ex-card[data-pi]").forEach(card => {
     const p = list[+card.dataset.pi];
+    const upd = card.querySelector(".pl-upd");
+    if (upd) upd.onclick = async () => {
+      upd.disabled = true; upd.textContent = "更新中…";
+      try {
+        const resp = await fetch("/api/plugins/" + encodeURIComponent(p.name) + "/update", { method: "POST" });
+        const d = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(d.error || "更新失败");
+        const u = d.updated || {};
+        toast(u.from_version && u.from_version !== u.version
+          ? `✅ ${u.name} 已从 v${u.from_version} 更到 v${u.version || "?"}`
+          : `✅ ${u.name} 已是最新（v${u.version || "?"}，重新拉了一遍）`);
+        renderHubBody();
+      } catch (e) { upd.disabled = false; upd.textContent = "更新"; alert("❌ " + e.message); }
+    };
     card.querySelector(".pl-del").onclick = async () => {
       if (!confirm(`卸载插件「${p.name}」？它带的技能和连接器会一起消失（插件产生的数据会保留，重装还在）`)) return;
       const resp = await fetch("/api/plugins/" + encodeURIComponent(p.name), { method: "DELETE" });
@@ -2942,8 +2958,12 @@ async function renderHubMcp(box) {
   const data = await fetch("/api/mcp").then(r => r.json()).catch(() => ({ servers: [], total_tools: 0 }));
   const list = data.servers
     .map((sv, i) => ({ sv, i }))
-    .filter(({ sv }) => (!hubState.mine || sv.connected) && hubMatch(hubState.q, sv.name, sv.command, (sv.args || []).join(" ")));
-  const keep = sv => ({ name: sv.name, command: sv.command, args: sv.args, env: sv.env });
+    .filter(({ sv }) => (!hubState.mine || sv.connected) && hubMatch(hubState.q, sv.name, sv.command, sv.url, (sv.args || []).join(" ")));
+  // 原样存回去用的形状：远程的只回 name+url，请求头后端会沿用原来那份（GET 不回令牌）
+  const isRemote = sv => sv.transport === "streamable-http" || (!sv.command && !!sv.url);
+  const keep = sv => isRemote(sv)
+    ? { name: sv.name, url: sv.url }
+    : { name: sv.name, command: sv.command, args: sv.args, env: sv.env };
   // 插件声明的服务器归插件管：存回 config 会把它复制成一条我们自己的配置，卸载插件也删不掉了
   const ownServers = () => data.servers.filter(sv => !sv.plugin).map(keep);
   const save = async (servers) => {
@@ -2956,15 +2976,17 @@ async function renderHubMcp(box) {
   };
   box.innerHTML = `
     <div class="hub-sec-title" style="margin-top:14px">已接入的外部工具
-      <span class="sub">通过 MCP（stdio）给智能体接外部能力，当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入，任务里可直接调用</span></div>
+      <span class="sub">通过 MCP（本地 stdio / 远程 Streamable HTTP）给智能体接外部能力，当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入，任务里可直接调用</span></div>
     <div class="card-grid">
       <div class="ex-card add" id="mcp-open-add">＋ 添加连接器</div>
       ${list.map(({ sv, i }) => `
         <div class="ex-card" data-mi="${i}">
           ${sv.plugin ? `<span class="flag">来自插件 ${esc(sv.plugin)}</span>` : ""}
           <div class="hd"><div class="av">${sv.connected ? "🔌" : "⚠️"}</div>
-            <div class="nm"><span>${esc(sv.name)}</span><span class="al" style="color:var(${sv.connected ? "--wb-ok" : "--wb-err"})">${sv.connected ? `已连接 · ${sv.tools.length} 个工具 · ${esc(sv.transport || "stdio")}` : "未连接"}</span></div></div>
-          <div class="ds" style="font-family:var(--mono,ui-monospace,monospace);font-size:11px">${esc(sv.command)} ${esc((sv.args || []).join(" "))}</div>
+            <div class="nm"><span>${esc(sv.name)}</span><span class="al" style="color:var(${sv.connected ? "--wb-ok" : "--wb-err"})">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
+          <div class="ds" style="font-family:var(--mono,ui-monospace,monospace);font-size:11px;word-break:break-all">${isRemote(sv)
+            ? `<b style="font-family:inherit;opacity:.6">远程 ·</b> ` + esc(sv.url) + ((sv.header_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.header_keys.length} 个请求头：${esc(sv.header_keys.join("、"))}）</span>` : "")
+            : `<b style="font-family:inherit;opacity:.6">本地 ·</b> ` + esc(sv.command) + " " + esc((sv.args || []).join(" "))}</div>
           <div class="tg">${sv.connected
             ? (sv.tools || []).slice(0, 8).map(t => `<i title="${esc(t.description || "")}">${esc(t.name)}</i>`).join("") + ((sv.tools || []).length > 8 ? `<i>…共 ${sv.tools.length} 个</i>` : "")
             : `<i style="color:var(--wb-err)">${esc(sv.error || "命令启动失败或握手超时，详见应用日志")}</i>`}</div>
@@ -2975,10 +2997,17 @@ async function renderHubMcp(box) {
       ${list.length ? "" : `<div class="hub-empty">${hubState.mine ? "没有已连接的连接器" : "还没有连接器"}</div>`}
     </div>
     <div class="ex-editor" id="mcp-add-form" style="display:none">
-      <div class="hub-sec-title">添加连接器</div>
+      <div class="hub-sec-title">添加连接器
+        <span class="sub">本地进程走 stdio；托管在别人服务器上的走 Streamable HTTP，填地址就行</span></div>
+      <div class="row" style="gap:14px">
+        <label style="display:flex;gap:5px;align-items:center;flex:none"><input type="radio" name="mcp-kind" value="stdio" checked style="width:auto">本地命令（stdio）</label>
+        <label style="display:flex;gap:5px;align-items:center;flex:none"><input type="radio" name="mcp-kind" value="http" style="width:auto">远程地址（Streamable HTTP）</label>
+      </div>
       <div class="row"><div style="flex:1 1 150px"><label>名称</label><input id="mcp-name" placeholder="filesystem"></div>
-        <div style="flex:1 1 120px"><label>命令</label><input id="mcp-cmd" placeholder="npx"></div>
-        <div style="flex:2 1 320px"><label>参数（空格分隔）</label><input id="mcp-args" placeholder="-y @modelcontextprotocol/server-filesystem /Users/你的用户名/Documents"></div></div>
+        <div class="mcp-f-stdio" style="flex:1 1 120px"><label>命令</label><input id="mcp-cmd" placeholder="npx"></div>
+        <div class="mcp-f-stdio" style="flex:2 1 320px"><label>参数（空格分隔）</label><input id="mcp-args" placeholder="-y @modelcontextprotocol/server-filesystem /Users/你的用户名/Documents"></div>
+        <div class="mcp-f-http" style="flex:2 1 320px;display:none"><label>地址</label><input id="mcp-url" placeholder="https://example.com/mcp"></div>
+        <div class="mcp-f-http" style="flex:2 1 320px;display:none"><label>请求头（可选，每行 Key: Value）</label><input id="mcp-headers" placeholder="Authorization: Bearer 你的令牌"></div></div>
       <div style="display:flex;gap:8px;align-items:center"><button class="btn-brand" id="mcp-add">添加并连接</button>
         <button id="mcp-cancel" style="padding:6px 14px">取消</button><span class="ab-empty" id="mcp-msg"></span></div>
     </div>`;
@@ -2993,11 +3022,29 @@ async function renderHubMcp(box) {
       save(data.servers.filter(x => !x.plugin && x.name !== sv.name).map(keep));
     };
   });
+  const kindOf = () => (box.querySelector('input[name="mcp-kind"]:checked') || {}).value || "stdio";
+  box.querySelectorAll('input[name="mcp-kind"]').forEach(r => r.onchange = () => {
+    const http = kindOf() === "http";
+    box.querySelectorAll(".mcp-f-stdio").forEach(el => el.style.display = http ? "none" : "");
+    box.querySelectorAll(".mcp-f-http").forEach(el => el.style.display = http ? "" : "none");
+  });
   box.querySelector("#mcp-add").onclick = () => {
     const name = box.querySelector("#mcp-name").value.trim();
+    if (!name) return alert("名称必填");
+    if (kindOf() === "http") {
+      const url = box.querySelector("#mcp-url").value.trim();
+      if (!url) return alert("远程连接器要填地址");
+      // 「Key: Value」按第一个冒号切，令牌里本身带冒号也不会被切坏
+      const headers = {};
+      box.querySelector("#mcp-headers").value.split(/[\n;]+/).map(s => s.trim()).filter(Boolean).forEach(line => {
+        const at = line.indexOf(":");
+        if (at > 0) headers[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+      });
+      return save(ownServers().concat([{ name, url, headers }]));
+    }
     const cmd = box.querySelector("#mcp-cmd").value.trim();
     const args = box.querySelector("#mcp-args").value.trim().split(/\s+/).filter(Boolean);
-    if (!name || !cmd) return alert("名称和命令必填");
+    if (!cmd) return alert("本地连接器要填命令");
     save(ownServers().concat([{ name, command: cmd, args, env: {} }]));
   };
 }
