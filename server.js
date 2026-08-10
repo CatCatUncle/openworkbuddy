@@ -1,6 +1,6 @@
 "use strict";
 /**
- * OpenBuddy — 服务器主入口。
+ * OpenWorkBuddy — 服务器主入口。
  * 功能：Web 工作台（SSE 流式）、技能系统、MCP 连接器、专家团多智能体、IM 远程指挥（飞书/企业微信/通用 Webhook）。
  */
 
@@ -130,6 +130,7 @@ app.get("/api/info", (_req, res) => {
     skills: runtime ? runtime.getSkills().map((s) => s.name) : [],
     experts: experts.map((e) => e.name),
     mcp_tools: mcpManager.toolDefs().length,
+    agent_plugins_spec: require("./plugins").SPEC_VERSION,
   });
 });
 
@@ -385,7 +386,7 @@ app.post("/api/security/audit/clear", (_req, res) => {
 });
 app.get("/api/security/audit/export", (_req, res) => {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="openbuddy-audit-${new Date().toISOString().slice(0, 10)}.log"`);
+  res.setHeader("Content-Disposition", `attachment; filename="openworkbuddy-audit-${new Date().toISOString().slice(0, 10)}.log"`);
   res.send(security.auditExport());
 });
 app.get("/api/security/approvals", (_req, res) => res.json(security.listApprovals()));
@@ -438,17 +439,27 @@ app.post("/api/app/update-check", (_req, res) => {
 
 // ---------- MCP 连接器管理 ----------
 app.get("/api/mcp", (_req, res) => {
-  const servers = (config.mcp_servers || []).map((s) => {
+  const view = (s, plugin) => {
     const client = mcpManager.clients.get(s.name);
+    const failure = mcpManager.failures.find((f) => f.name === s.name);
     return {
       name: s.name,
-      command: s.command,
+      command: s.command || s.url || "",
       args: s.args || [],
       env: s.env || {},
+      transport: s.transport || (s.command ? "stdio" : "streamable-http"),
+      plugin, // 插件带来的：界面上只读，不许当成 config 里的条目存回去
+      error: failure ? failure.error : "",
       connected: !!client,
       tools: client ? client.tools.map((t) => ({ name: t.name, description: (t.description || "").slice(0, 200) })) : [],
     };
-  });
+  };
+  // config.json 里配的 + 插件 mcp.json 里声明的，一起列出来，
+  // 否则「已注入 N 个工具」的 N 里有一半找不到对应的卡片，用户以为是幻觉。
+  let fromPlugins = [];
+  try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该让连接器页打不开 */ }
+  const servers = (config.mcp_servers || []).map((s) => view(s, ""))
+    .concat(fromPlugins.map((s) => view(s, s.plugin)));
   res.json({ servers, total_tools: mcpManager.toolDefs().length });
 });
 
@@ -661,7 +672,7 @@ app.post("/api/open-workspace", (_req, res) => {
 // ================= 飞书：扫码授权（借本机 lark-cli 的设备码流程，larksuite/cli，MIT） =================
 // 说明一句免得误解：机器人「收消息」必须有应用的 app_id + app_secret，这是飞书的设计，扫码替代不了。
 // 扫码解决的是另一半——把「你本人」的身份授权出来，之后读日历/文档/邮件是以你的身份调的。
-const LARK_TMP = path.join(require("os").tmpdir(), "openbuddy-lark");
+const LARK_TMP = path.join(require("os").tmpdir(), "openworkbuddy-lark");
 function larkRun(args, { timeout = 60000, cwd } = {}) {
   return new Promise((resolve) => {
     const child = require("child_process").execFile(
@@ -691,7 +702,7 @@ app.get("/api/feishu/lark-cli", async (_req, res) => {
   });
 });
 
-// 把 lark-cli 里已经配好的应用凭证搬进 OpenBuddy 的飞书通道，省掉手动复制两串东西
+// 把 lark-cli 里已经配好的应用凭证搬进 OpenWorkBuddy 的飞书通道，省掉手动复制两串东西
 app.post("/api/feishu/lark-cli/import", async (_req, res) => {
   fs.mkdirSync(LARK_TMP, { recursive: true });
   const r = await larkRun(["config", "show"], { timeout: 15000 });
@@ -706,7 +717,7 @@ app.post("/api/feishu/lark-cli/import", async (_req, res) => {
   res.json({ ok: true, app_id: cfg.appId }); // secret 不回前端
 });
 
-// 反向：把 OpenBuddy 里填好的凭证写进 lark-cli，这样才能开始扫码（设备码流程需要一个已绑定的应用）
+// 反向：把 OpenWorkBuddy 里填好的凭证写进 lark-cli，这样才能开始扫码（设备码流程需要一个已绑定的应用）
 app.post("/api/feishu/lark-cli/bind", (_req, res) => {
   const f = (config.im || {}).feishu || {};
   if (!f.app_id || !f.app_secret) return res.status(400).json({ error: "先在上面填好 App ID / App Secret 并保存" });
@@ -786,9 +797,9 @@ function wbUserDataDir() {
     try { return require("electron").app.getPath("userData"); } catch {}
   }
   const home = require("os").homedir();
-  if (process.platform === "darwin") return path.join(home, "Library", "Application Support", "openbuddy");
-  if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "openbuddy");
-  return path.join(home, ".config", "openbuddy");
+  if (process.platform === "darwin") return path.join(home, "Library", "Application Support", "openworkbuddy");
+  if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "openworkbuddy");
+  return path.join(home, ".config", "openworkbuddy");
 }
 function dirSize(p) {
   let n = 0;
@@ -858,7 +869,8 @@ function pick(obj, keys) {
 }
 
 app.get("/api/skills", (_req, res) =>
-  res.json((runtime ? runtime.getSkills() : []).map((s) => ({ name: s.name, description: s.description })))
+  // plugin 字段标出技能来自哪个 Agent Plugins 插件（本地技能没有这个字段），界面据此禁用编辑/删除
+  res.json((runtime ? runtime.getSkills() : []).map((s) => ({ name: s.name, description: s.description, plugin: s.plugin || "" })))
 );
 // 技能管理：getSkills 每次现读磁盘，增删改/安装即热生效，无需重启
 const skillsMgr = require("./skills");
@@ -878,7 +890,11 @@ app.post("/api/skills", (req, res) => {
   }
 });
 app.delete("/api/skills/:name", (req, res) => {
-  res.json({ ok: skillsMgr.deleteSkill(req.params.name) });
+  try {
+    res.json({ ok: skillsMgr.deleteSkill(req.params.name) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 app.post("/api/skills/install", async (req, res) => {
   try {
@@ -888,6 +904,68 @@ app.post("/api/skills/install", async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
+
+// ---- 默认技能：不随仓库打包，点一下从上游装 ----
+app.get("/api/skills/defaults/list", (_req, res) => res.json(skillsMgr.listDefaultSkills()));
+app.post("/api/skills/defaults/install", async (req, res) => {
+  try {
+    const { names, force } = req.body || {};
+    const results = await skillsMgr.ensureDefaultSkills({
+      only: Array.isArray(names) && names.length ? names : null,
+      force: !!force, // 「重新下载」要真的重下，不然点了没反应
+    });
+    res.json({ ok: true, results });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---- Agent Plugins 1.0.0 插件 ----
+const pluginsMgr = require("./plugins");
+app.get("/api/plugins", (_req, res) => {
+  const list = pluginsMgr.loadPlugins().map((p) => ({
+    ok: p.ok,
+    name: p.name,
+    error: p.error || "",
+    warnings: p.warnings || [],
+    version: p.manifest?.version || "",
+    description: p.manifest?.description || "",
+    license: p.manifest?.license || "",
+    author: p.manifest?.author?.name || "",
+    homepage: p.manifest?.homepage || "",
+    repository: p.manifest?.repository || "",
+    skills: (p.skills || []).map((s) => ({ name: s.name, description: s.description })),
+    mcp_servers: (p.mcpServers || []).map((s) => ({ name: s.name, transport: s.transport })),
+    bytes: p.ok ? skillsMgr.dirSize(p.dir) : 0,
+  }));
+  res.json({ spec: pluginsMgr.SPEC_VERSION, plugins: list, mcp: mcpManager.status() });
+});
+app.post("/api/plugins/install", async (req, res) => {
+  try {
+    const info = await pluginsMgr.installPluginFromGitHub((req.body || {}).url);
+    // 插件带的 MCP 服务器要现起才能用；技能是每次任务现读磁盘的，不用管
+    const started = await startPluginMcp(info.name);
+    res.json({ ok: true, installed: info, mcp_started: started });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.delete("/api/plugins/:name", (req, res) => {
+  try {
+    const ok = pluginsMgr.removePlugin(req.params.name);
+    res.json({ ok, note: ok ? "插件已卸载；它带的 MCP 服务器要重启应用才会真正停掉" : "没有这个插件" });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/** 只起某个插件里还没连上的 MCP 服务器（装完立刻可用，不用重启） */
+async function startPluginMcp(pluginName) {
+  const want = pluginsMgr.pluginMcpServers().filter((s) => s.plugin === pluginName && !mcpManager.clients.has(s.name));
+  if (!want.length) return [];
+  await mcpManager.startAll(want);
+  return want.filter((s) => mcpManager.clients.has(s.name)).map((s) => s.name);
+}
 
 // 文件上传到工作空间（输入框 ＋ 按钮）
 app.post("/api/upload", (req, res) => {
@@ -1238,13 +1316,23 @@ function accountedRuntime(baseRuntime, source) {
 }
 
 async function main() {
-  await mcpManager.startAll(config.mcp_servers || []);
+  // config.json 里配的 + Agent Plugins 插件 mcp.json 里声明的，一起起。
+  // 插件那边坏一条只跳过一条（规范要求的失败隔离），不影响 config 里的服务器。
+  let pluginServers = [];
+  try {
+    pluginServers = pluginsMgr.pluginMcpServers();
+  } catch (e) {
+    console.warn("[插件] MCP 配置读取失败:", e.message);
+  }
+  await mcpManager.startAll([...(config.mcp_servers || []), ...pluginServers]);
+  const badPlugins = pluginsMgr.loadPlugins().filter((p) => !p.ok);
+  for (const p of badPlugins) console.warn(`[插件] ${p.name} 装不上: ${p.error}`);
   runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });
 
   scheduler = createScheduler({
     runtime: accountedRuntime(runtime, "schedule"),
     onResult: (item, text) =>
-      notify.pushBots(config, `【OpenBuddy·定时任务】${item.name}\n${(text || "").slice(0, 800)}`),
+      notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${(text || "").slice(0, 800)}`),
   });
 
   // IM 远程指挥路由（飞书/QQ 长连接 · 企业微信与公众号回调 · 通用 webhook）
@@ -1271,11 +1359,13 @@ async function main() {
     if (host !== "127.0.0.1" && host !== "localhost") {
       console.warn(`⚠️  正在监听 ${host}:${port}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
     }
-    console.log(`OpenBuddy 已启动: http://localhost:${port}`);
+    console.log(`OpenWorkBuddy 已启动: http://localhost:${port}`);
     console.log(`模型: ${llm.provider} / ${llm.model}`);
     console.log(`技能: ${runtime.getSkills().map((s) => s.name).join(", ") || "无"}`);
     console.log(`专家团: ${experts.map((e) => e.name).join(", ") || "无"}`);
     console.log(`MCP 工具: ${mcpManager.toolDefs().length} 个`);
+    const okPlugins = pluginsMgr.loadPlugins().filter((p) => p.ok);
+    if (okPlugins.length) console.log(`Agent Plugins: ${okPlugins.map((p) => p.name).join(", ")}`);
     console.log(`工作目录: ${getWorkspaceDir()}`);
   });
   server.on("error", (e) => {

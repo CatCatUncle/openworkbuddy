@@ -458,7 +458,7 @@ function listFiles(target) {
 async function fetchUrl(url) {
   const resp = await fetch(url, {
     redirect: "follow",
-    headers: { "User-Agent": "Mozilla/5.0 (OpenBuddy)" },
+    headers: { "User-Agent": "Mozilla/5.0 (OpenWorkBuddy)" },
     signal: AbortSignal.timeout(30000),
   });
   const ct = resp.headers.get("content-type") || "";

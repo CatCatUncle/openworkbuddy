@@ -73,7 +73,7 @@ python3 skills/wechat-article/scripts/publish.py \
   --html 文章.html --title "标题" --cover 封面.jpg --author "开发者猫叔"
 ```
 
-- 凭据：环境变量 `WECHAT_APPID` / `WECHAT_SECRET`，或 `~/.openbuddy/wechat.json`
+- 凭据：环境变量 `WECHAT_APPID` / `WECHAT_SECRET`，或 `~/.openworkbuddy/wechat.json`
   （`{"appid": "...", "secret": "..."}`，**别提交进仓库**）
 - **脚本只推草稿，永远不群发**。发布是用户在后台自己点的，我们不替他按下不可逆的按钮。
 - 正文里的图片必须先传成公众号自己的域名，外链图会被吞掉：
@@ -98,7 +98,7 @@ python3 skills/wechat-article/scripts/publish.py \
   只点保存不扫码是静默不生效的——这一点后台不会提示你。
 
 ### 其他
-- `access_token` 有效期 7200 秒且日调用次数有限，脚本已经缓存到 `~/.openbuddy/wechat_token.json`，
+- `access_token` 有效期 7200 秒且日调用次数有限，脚本已经缓存到 `~/.openworkbuddy/wechat_token.json`，
   **别反复重取**，会撞 45009 超频。
 - 标题限 64 字，摘要不填公众号会自动截前 54 字。
 - 代码块在手机上会横向滚动，长代码尽量截图或精简到 60 字符以内一行。
