@@ -771,6 +771,26 @@ function testAccountStore() {
   console.log("✅ 账本：坏文件不覆盖 / 写盘原子 / 登录限流 / https 认得出");
 }
 
+// 头像校验：用户头像和助理头像共用这一份规则，它松了两边一起松
+function testAvatarRules() {
+  const { normalizeAvatar } = require("../account")._internals;
+  assert.strictEqual(normalizeAvatar(""), "", "空值应当原样放过（= 用默认头像）");
+  assert.strictEqual(normalizeAvatar("  🐱  "), "🐱", "emoji 前后空格没去掉");
+  assert.strictEqual(normalizeAvatar("猫"), "猫", "汉字当头像也该收");
+  // 一个 👨‍👩‍👧 是好几个码位拼的：按 .length 算会误判成超长，必须按字素簇算
+  assert.strictEqual(normalizeAvatar("👨‍👩‍👧"), "👨‍👩‍👧", "组合 emoji 被当成超长挡掉了");
+  assert.throws(() => normalizeAvatar("一二三"), /最多两个/, "三个字符该挡下来");
+  assert.throws(() => normalizeAvatar("https://x.example/a.png"), /emoji 或上传图片/, "外链头像必须挡：每次渲染都会去请求那个域名");
+  assert.throws(() => normalizeAvatar('<img src=x onerror=alert(1)>'), /emoji 或上传图片/, "带标签的头像必须挡");
+  assert.throws(() => normalizeAvatar("data:text/html;base64,PHNjcmlwdD4="), /emoji 或上传图片/, "非图片 data URI 必须挡");
+
+  const png = "data:image/png;base64," + "A".repeat(64);
+  assert.strictEqual(normalizeAvatar(png), png, "正常的图片 data URI 被挡了");
+  assert.throws(() => normalizeAvatar("data:image/png;base64," + "A".repeat(300 * 1024)), /256KB/,
+    "超大图必须挡：账本是个 JSON 文件，塞张大图进去整个读写都会被拖垮");
+  console.log("✅ 头像规则：emoji 按字素簇算长度 / 只收 data:image / 挡外链与标签 / 限 256KB");
+}
+
 // JSON 小仓库：坏文件先拿 .bak 顶，顶不住就隔离——绝不静默当空的然后覆盖掉
 function testJsonStore() {
   const { readJson, writeJsonAtomic } = require("../store");
@@ -1057,6 +1077,7 @@ async function main() {
   testJsonStore();
   testImSessionStore();
   testAccountStore();
+  testAvatarRules();
   testPathSafety();
   testDeliverableGate();
   testContextBudget();
