@@ -932,6 +932,12 @@ function createTurnUI(userText, turnMode) {
       banner.className = "step-card";
       banner.innerHTML = `<div class="head"><span class="tag">👥 ${esc(ev.expert)}</span><span class="desc">专家接手子任务：${esc((ev.task || "").slice(0, 60))}</span></div>`;
       ensureProc().appendChild(banner);
+    } else if (ev.type === "parallel") {
+      // 这一批全是只读工具，同时开跑。说一句，免得用户看到好几张卡一起转以为卡住了
+      const note = document.createElement("div");
+      note.style.cssText = "font-size:12px;color:var(--wb-text-3);margin:6px 0";
+      note.textContent = `⚡ ${ev.count} 个只读工具并发执行（搜索/抓页面互不影响，一起跑更快）`;
+      ensureProc().appendChild(note);
     } else if (ev.type === "tool_use") {
       body.querySelector(".thinking-hint")?.remove();
       currentText = null;
@@ -946,12 +952,20 @@ function createTurnUI(userText, turnMode) {
       ensureProc().appendChild(card);
       // 未完成卡片入栈；专家的内层工具卡与协调者的委派卡按 depth 区分，防止张冠李戴
       card._depth = ev.depth || 0;
+      card._tid = ev.id || "";
       (body._openCards = body._openCards || []).push(card);
     } else if (ev.type === "tool_result") {
       const stack = body._openCards || [];
       let card = null;
-      for (let i = stack.length - 1; i >= 0; i--) {
-        if (stack[i]._depth === (ev.depth || 0)) { card = stack.splice(i, 1)[0]; break; }
+      // 只读工具是并发跑的，谁先回来不一定——认调用 id 才不会把 A 的结果贴到 B 的卡上
+      if (ev.id) {
+        const i = stack.findIndex((c) => c._tid === ev.id);
+        if (i >= 0) card = stack.splice(i, 1)[0];
+      }
+      if (!card) {
+        for (let i = stack.length - 1; i >= 0; i--) {
+          if (stack[i]._depth === (ev.depth || 0)) { card = stack.splice(i, 1)[0]; break; }
+        }
       }
       if (!card) card = stack.pop();
       if (card) {

@@ -93,12 +93,19 @@ function makeEmit(state) {
     } else if (ev.type === "step_start") {
       if (ev.depth === 0) process.stdout.write(dim(`\n· 第 ${ev.step} 步 思考中…`));
       state.streamed = false;
+    } else if (ev.type === "parallel") {
+      process.stdout.write(dim(`\n  ⚡ ${ev.count} 个只读工具并发执行`));
+      state.streamed = false;
     } else if (ev.type === "tool_use") {
       const who = ev.expert ? `${ev.expert} · ` : "";
       process.stdout.write(dim(`\n  ⚙ ${who}${ev.name}${ev.purpose ? `（${String(ev.purpose).slice(0, 60)}）` : ""}`));
+      state.lastToolId = ev.id;
       state.streamed = false;
     } else if (ev.type === "tool_result") {
+      // 并发跑的时候回来的顺序不一定，勾不能盲目贴在最后一行——那是别人的行
+      if (ev.id && state.lastToolId !== ev.id) process.stdout.write(dim(`\n  ⚙ ${ev.name}`));
       process.stdout.write(ev.isError ? red(" ✗") : green(" ✓"));
+      state.lastToolId = null;
       if (ev.isError && ev.preview) process.stdout.write(dim("\n    " + String(ev.preview).slice(0, 200).replace(/\n/g, " ")));
     } else if (ev.type === "expert_start") {
       process.stdout.write(yellow(`\n  👥 委派专家「${ev.expert}」`) + dim(`：${String(ev.task || "").slice(0, 60)}`));

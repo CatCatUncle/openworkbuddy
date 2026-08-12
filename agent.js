@@ -83,10 +83,14 @@ const MEMORY_FILE = path.join(__dirname, "data", "memory.md");
 const CLAIM_RE = /(生成成功|导出成功|保存成功|创建成功|已生成|已保存|已导出|已创建|已写入|生成完毕|制作完成|下载|✅)/;
 const DELIVER_EXTS = "pptx|pptm|docx|doc|xlsx|xls|pdf|zip|mp4|mov|png|jpe?g|gif|csv|html|md|svg";
 
-/** 在工作目录里按文件名找：返回字节数，找不到返回 -1 */
-function sizeInWorkspace(name) {
+/**
+ * 工作目录里所有文件名 → 字节数。一条回复往往声称生成了好几个文件，
+ * 一个名字走一遍目录树等于同一棵树扫好几遍，扫一次记下来就够了。
+ */
+function workspaceIndex() {
+  const idx = new Map();
   let root;
-  try { root = getWorkspaceDir(); } catch { return -1; }
+  try { root = getWorkspaceDir(); } catch { return idx; }
   const stack = [[root, 0]];
   let visited = 0;
   while (stack.length && visited < 3000) {
@@ -95,13 +99,17 @@ function sizeInWorkspace(name) {
     try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of ents) {
       visited++;
-      if (e.isFile() && e.name === name) {
-        try { return fs.statSync(path.join(dir, e.name)).size; } catch { return -1; }
+      if (e.isFile()) {
+        // 同名文件出现在多个子目录时，非空的那份说了算——否则一个残留的空壳会把真交付判成"空文件"
+        if (!idx.has(e.name) || idx.get(e.name) === 0) {
+          try { idx.set(e.name, fs.statSync(path.join(dir, e.name)).size); } catch { idx.set(e.name, -1); }
+        }
+      } else if (e.isDirectory() && d < 4 && e.name !== "node_modules" && !e.name.startsWith(".")) {
+        stack.push([path.join(dir, e.name), d + 1]);
       }
-      if (e.isDirectory() && d < 4 && e.name !== "node_modules" && !e.name.startsWith(".")) stack.push([path.join(dir, e.name), d + 1]);
     }
   }
-  return -1;
+  return idx;
 }
 
 function sizeOf(p) {
@@ -122,11 +130,15 @@ function missingDeliverables(text) {
   let mm;
   while ((mm = bareRe.exec(text))) { if (!mm[1].includes("/")) found.add(mm[1]); }
   const bad = [];
+  let idx = null;
   for (const p of found) {
     let size;
     if (path.isAbsolute(p)) size = sizeOf(p);
     else if (p.startsWith("~")) size = sizeOf(path.join(os.homedir(), p.slice(1)));
-    else size = sizeInWorkspace(p);
+    else {
+      if (!idx) idx = workspaceIndex(); // 真有相对文件名要查时才扫目录
+      size = idx.has(p) ? idx.get(p) : -1;
+    }
     if (size < 0) bad.push({ name: p, why: "missing" });
     else if (size === 0) bad.push({ name: p, why: "empty" });
   }
@@ -246,6 +258,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
    - 还是不行 → web_search 搜同样的内容，从能打开的转载页/镜像站/第三方数据站拿。
    把「需要登录 Cookie / 需要官方 API 权限」当结论直接停手，是不合格的交付。真要用户的登录态才继续，先把不需要登录也能拿到的那部分做完再说。
 5.2 **不许把选择题丢给用户**：严禁用「请告诉我你的选择：1... 2... 3...」「需要我尝试哪种方式？」这类问句结束回合。你有工具，方案的优劣你自己判断得了——挑最可能成的那个直接动手，失败了再换。同理，严禁把代码贴在回复里说"我能这样做"——能跑就 run_node / run_shell 真跑，回复里只放结论。
+5.3 **只读的活一次性并发发出去**：要查 5 个关键词、要抓 6 个链接、要读 3 个文件时，在同一轮里一口气发多个工具调用（web_search / fetch_url / render_page / read_file / list_files / library_read），系统会并发执行，只花最慢那一个的时间；一个一个来是把等待时间叠加。会写文件、跑命令、委派专家的调用不要和别的混在一轮里发——那些的先后顺序有意义，混在一起会被退回串行。
 6. 完成后简要总结做了什么、生成了哪些文件。
 7. 始终用中文交流——包括报错说明、失败复盘、自我纠正这些中途叙述，任何时候都不许切成英文。工具返回的英文报错要翻成人话讲给用户听（原始报错可以放进代码块，但结论必须是中文）。
 8. 用户消息里的「@某文件名」指工作目录中的文件（用 read_file 读取）；「/某技能名」表示要求使用该技能（先 use_skill 加载）；「【任务类型：X】」是场景标签，按该场景的最佳实践来做。
@@ -591,14 +604,11 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         break;
       }
 
-      const toolResults = [];
-      for (const tc of result.toolCalls) {
-        if (stopSignal && stopSignal.aborted) {
-          toolResults.push({ id: tc.id, content: "（用户已停止任务，该工具未执行）", isError: true });
-          continue;
-        }
+      const runOne = async (tc) => {
+        if (stopSignal && stopSignal.aborted) return { id: tc.id, content: "（用户已停止任务，该工具未执行）", isError: true };
         emit({
           type: "tool_use",
+          id: tc.id,
           name: tc.name,
           depth,
           purpose: tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
@@ -607,6 +617,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal });
         emit({
           type: "tool_result",
+          id: tc.id,
           name: tc.name,
           depth,
           isError: r.isError,
@@ -616,7 +627,20 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           const srcs = collectSources(tc.name, tc.input, r.content);
           if (srcs.length) emit({ type: "sources", items: srcs, depth });
         }
-        toolResults.push({ id: tc.id, content: String(r.content), isError: r.isError });
+        return { id: tc.id, content: String(r.content), isError: r.isError };
+      };
+
+      // 一批全是只读工具（搜索/抓网页/读文件）就并发跑。深度研究经常一口气要抓五个链接，
+      // 串行是五次网络等待叠加，并发只花最慢那一次。只要里面有一个会动文件、跑命令或委派专家，
+      // 整批退回串行——那些工具的先后顺序本身就是语义，打乱了就是改了它的意思。
+      const canParallel = result.toolCalls.length > 1 && result.toolCalls.every((tc) => READ_ONLY_TOOLS.includes(tc.name));
+      let toolResults;
+      if (canParallel) {
+        emit({ type: "parallel", count: result.toolCalls.length, depth });
+        toolResults = await mapPool(result.toolCalls, PARALLEL_MAX, runOne);
+      } else {
+        toolResults = [];
+        for (const tc of result.toolCalls) toolResults.push(await runOne(tc));
       }
       history.push({ role: "tool", results: toolResults });
       emitFiles();
@@ -649,6 +673,24 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   }
 
   return { runTask, getSkills };
+}
+
+// 并发上限：抓页面是等网络，开太多既没有更快，还容易被对方站点当成扫站封 IP
+const PARALLEL_MAX = 3;
+
+/** 限流并发跑一批，结果按原顺序返回（工具结果的顺序要和 tool_calls 对得上） */
+async function mapPool(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i], i);
+      }
+    })
+  );
+  return out;
 }
 
 function previewInput(tc) {
@@ -685,4 +727,4 @@ function collectSources(name, input, content) {
   return [];
 }
 
-module.exports = { createAgentRuntime, missingDeliverables, trimHistory, historyChars, collectSources };
+module.exports = { createAgentRuntime, missingDeliverables, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX };
