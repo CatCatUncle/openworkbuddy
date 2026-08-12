@@ -124,10 +124,27 @@ const TOOL_DEFS = [
   },
   {
     name: "fetch_url",
-    description: "抓取一个网页 URL，返回其文本内容（HTML 会粗略去标签，最多 20000 字符）。用于联网查资料。",
+    description:
+      "抓取一个 URL 的内容（最多 20000 字符）。带真实浏览器请求头，网页会去标签转纯文本，JSON 接口原样返回——查资料和直接调数据接口都用它。静态 HTML 是空壳时会自动用内置浏览器渲染一遍再读。",
     input_schema: {
       type: "object",
-      properties: { url: { type: "string" } },
+      properties: {
+        url: { type: "string" },
+        render: { type: "boolean", description: "是否允许在抓到空壳时自动渲染兜底，默认 true" },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "render_page",
+    description:
+      "用内置浏览器真实打开一个页面、等 JS 渲染完再取正文。专治 fetch_url 只拿到空壳的动态站点（B 站、微博、各类单页应用）。比 fetch_url 慢几秒，所以先用 fetch_url，读不到再用它。",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        wait_ms: { type: "number", description: "每轮等待渲染的毫秒数，默认 2500，内容多的页面可调大" },
+      },
       required: ["url"],
     },
   },
@@ -455,22 +472,132 @@ function listFiles(target) {
   return entries.length ? entries.join("\n") : "（空目录）";
 }
 
-async function fetchUrl(url) {
-  const resp = await fetch(url, {
-    redirect: "follow",
-    headers: { "User-Agent": "Mozilla/5.0 (OpenWorkBuddy)" },
-    signal: AbortSignal.timeout(30000),
-  });
+// 自报家门式的 UA（"Mozilla/5.0 (OpenWorkBuddy)"）会被相当多的站点直接判成爬虫：
+// B 站回 412 风控页、知乎/微信回跳转页。用真实浏览器的头，拿到的才是用户在浏览器里看到的东西。
+const BROWSER_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+function browserHeaders(url) {
+  const h = {
+    "User-Agent": BROWSER_UA,
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+  };
+  // 不少接口（B 站、微博、小红书）只认同源 Referer，缺了就当越权
+  try {
+    const u = new URL(url);
+    h.Referer = `${u.protocol}//${u.host}/`;
+    h.Origin = `${u.protocol}//${u.host}`;
+  } catch {}
+  return h;
+}
+
+/** 抓回来的东西是不是"没有正文"——SPA 只给了个空壳，或者被反爬挡了 */
+function looksEmptyPage(text, status) {
+  if (status >= 400) return true;
+  const t = (text || "").trim();
+  if (t.length < 200) return true;
+  return /(请开启\s*JavaScript|enable\s+JavaScript|<noscript)/i.test(t) && t.length < 2000;
+}
+
+async function fetchUrl(url, { render } = {}) {
+  let resp;
+  try {
+    resp = await fetch(url, { redirect: "follow", headers: browserHeaders(url), signal: AbortSignal.timeout(30000) });
+  } catch (e) {
+    throw new Error(`抓取失败：${e.name === "TimeoutError" ? "30 秒还没响应（站点太慢或需要代理）" : e.message}`);
+  }
   const ct = resp.headers.get("content-type") || "";
-  let text = await resp.text();
-  if (ct.includes("html")) {
-    text = text
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s{2,}/g, " ");
+  const body = await resp.text();
+  // JSON 别去标签：那会把 {"a":"<b>"} 洗成一堆空格，接口返回值全废了
+  if (ct.includes("json") || /^\s*[[{]/.test(body)) {
+    return `HTTP ${resp.status}（${ct || "json"}）\n${body.slice(0, 20000)}`;
+  }
+  let text = body;
+  if (ct.includes("html") || /<html/i.test(body)) {
+    text = htmlToText(body);
+  }
+
+  // 空壳/被拦：能渲染就渲染一遍，渲染不了也要把原因说清楚，别让模型以为"这个网站读不到"就此收手
+  if (render !== false && looksEmptyPage(text, resp.status)) {
+    const rendered = await renderPage(url).catch((e) => ({ error: e.message }));
+    if (rendered && rendered.text && rendered.text.length > text.length) {
+      return `HTTP ${resp.status}（静态 HTML 是空壳，已用内置浏览器渲染后读取）\n${rendered.text.slice(0, 20000)}`;
+    }
+    const why =
+      resp.status === 412 || resp.status === 403
+        ? `对方站点把这次请求判成了爬虫（HTTP ${resp.status}）`
+        : resp.status >= 400
+          ? `对方站点返回 HTTP ${resp.status}`
+          : "这个页面的正文是 JavaScript 动态渲染的，静态 HTML 里没有内容";
+    return (
+      `⚠️ 没能拿到正文：${why}。${rendered && rendered.error ? `（渲染兜底也失败：${rendered.error}）` : ""}\n` +
+      `别就此打住，换条路：① 找这个页面背后的数据接口直接请求（浏览器 F12 网络面板里那种 api 地址）；` +
+      `② 用 run_shell 调本机已装的命令行工具（curl 带完整浏览器请求头、yt-dlp 取视频站元数据等）；` +
+      `③ web_search 搜这个页面的内容，从能打开的镜像/转载页拿。至少换三种路子都不行，才算真做不到。\n` +
+      `原始返回（前 2000 字）：\n${text.slice(0, 2000)}`
+    );
   }
   return `HTTP ${resp.status}\n${text.slice(0, 20000)}`;
+}
+
+function htmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<\/(p|div|li|tr|h[1-6]|section|article)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * 用内置浏览器真渲染一遍再取正文。
+ * 应用本体跑在 Electron 主进程里，等于随身带了个 Chrome——不装 puppeteer 也能读动态页面。
+ * CLI 模式下没有 Electron，如实抛错让上层换路子，不要假装读到了。
+ */
+async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
+  let electron;
+  try {
+    electron = require("electron");
+  } catch {
+    throw new Error("当前不在桌面应用里跑，没有内置浏览器可用");
+  }
+  if (!electron || !electron.BrowserWindow || !electron.app || !electron.app.isReady()) {
+    throw new Error("内置浏览器不可用（命令行模式）");
+  }
+  const win = new electron.BrowserWindow({
+    show: false,
+    width: 1440,
+    height: 1000,
+    webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true, sandbox: true },
+  });
+  try {
+    win.webContents.setUserAgent(BROWSER_UA);
+    await win.loadURL(url);
+    let text = "";
+    const deadline = Date.now() + maxWaitMs;
+    // 首屏挂上以后正文还在异步请求，等到内容不再变长（或超时）为止
+    for (let last = -1; Date.now() < deadline; ) {
+      await new Promise((r) => setTimeout(r, waitMs));
+      text = await win.webContents.executeJavaScript("document.body ? document.body.innerText : ''");
+      if (text.length > 400 && text.length === last) break;
+      last = text.length;
+    }
+    return { text: (text || "").replace(/\n{3,}/g, "\n\n").trim() };
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+    // 渲染期间用户把主窗口关了：window-all-closed 那会儿这个隐藏窗口还活着，没触发退出。
+    // 这里补一刀，免得应用变成看不见的僵尸进程。
+    if (!electron.BrowserWindow.getAllWindows().length) electron.app.quit();
+  }
 }
 
 function stripTags(s) {
@@ -697,7 +824,22 @@ async function executeTool(name, input, opts = {}) {
           return { content: `网络访问被安全中心拦截：${gate.reason}（设置 → 安全中心 → 网络安全）`, isError: true };
         }
         security.audit("网络访问", `网络访问已执行：${input.url}`, "放行");
-        return { content: await fetchUrl(input.url), isError: false };
+        return { content: await fetchUrl(input.url, { render: input.render !== false }), isError: false };
+      }
+      case "render_page": {
+        const gate = security.checkUrl(sec, input.url);
+        if (!gate.allowed) {
+          security.audit("网络拦截", input.url, "拦截");
+          return { content: `网络访问被安全中心拦截：${gate.reason}（设置 → 安全中心 → 网络安全）`, isError: true };
+        }
+        security.audit("网络访问", `浏览器渲染已执行：${input.url}`, "放行");
+        try {
+          const r = await renderPage(input.url, { waitMs: Math.min(Math.max(input.wait_ms || 2500, 500), 8000) });
+          if (!r.text) return { content: "渲染成功但页面正文为空——多半是要登录，或者内容在 iframe / canvas 里。", isError: true };
+          return { content: r.text.slice(0, 20000), isError: false };
+        } catch (e) {
+          return { content: `渲染失败：${e.message}`, isError: true };
+        }
       }
       case "web_search":
         security.audit("网络访问", `联网搜索：${input.query}`, "放行");
@@ -739,4 +881,4 @@ function outputFiles() {
   return out.sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
-module.exports = { TOOL_DEFS, executeTool, outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+module.exports = { TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };

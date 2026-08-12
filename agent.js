@@ -218,7 +218,8 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - run_shell：执行 shell 命令（macOS zsh），可用系统已装的 CLI 工具（git、curl、ffmpeg、lark-cli 等）。调现成命令行工具用它，写程序逻辑用 run_node。
 - write_file / read_file / list_files：读写工作目录中的文件
 - web_search：联网搜索（标题/链接/摘要），查资料先搜索定位来源
-- fetch_url：抓取网页全文（配合 web_search 的结果 URL 用）
+- fetch_url：抓取网页全文或直接调 JSON 接口（带真实浏览器请求头；配合 web_search 的结果 URL 用）
+- render_page：用内置浏览器真打开页面、等 JS 渲染完再取正文，专治动态站点（B 站、微博、单页应用）
 - use_skill：加载技能包（做对应任务前先加载）
 - library_list / library_read：查看用户的资料库与灵感笔记（跨项目共享的长期参考资料，任务涉及用户偏好/素材时先查）`;
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) {
@@ -236,6 +237,13 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 3. 成果文件写到工作目录根目录，文件名有意义。**HTML / Markdown / CSS / JSON / 纯文本一律用 write_file 直接写内容，绝不要在 run_node 里用模板字符串拼**——网页正文里几乎必然出现 \`\${...}\`、反引号或 </script\>，会把外层模板字面量截断，直接 SyntaxError。run_node 只留给真的需要跑逻辑的活（pptxgenjs 出 PPT、docx 出 Word、exceljs 出 Excel、批量处理、算数据）。
 4. 交付前自检：凡是生成的文件，写完必须再 read_file / list_files 读回来确认真的存在、内容完整（长文档至少核对开头结尾和篇幅），发现残缺就当场修好再交付。
 5. 代码报错要读懂原因、修正重试，不要放弃；同一处连续失败 3 次就换思路，别在死路上空转。
+5.1 抓不到网页不等于做不到（高频翻车点）。一条路走不通就换下一条，**同一个目标至少真试满三种路子**才允许说抓不到：
+   - fetch_url 拿回来是空壳 → 用 render_page 真渲染一遍；
+   - 页面正文是异步加载的 → 去找它背后的数据接口（站点常见的 api.xxx.com/... 形式）直接 fetch_url，接口返回 JSON 比解析 HTML 靠谱得多；
+   - 接口要签名/被风控挡 → 用 run_shell 调本机现成的命令行工具（curl 带完整请求头、yt-dlp 取视频站元数据、rss 源等），本机装了什么先 \`which\` 一下再说没有；
+   - 还是不行 → web_search 搜同样的内容，从能打开的转载页/镜像站/第三方数据站拿。
+   把「需要登录 Cookie / 需要官方 API 权限」当结论直接停手，是不合格的交付。真要用户的登录态才继续，先把不需要登录也能拿到的那部分做完再说。
+5.2 **不许把选择题丢给用户**：严禁用「请告诉我你的选择：1... 2... 3...」「需要我尝试哪种方式？」这类问句结束回合。你有工具，方案的优劣你自己判断得了——挑最可能成的那个直接动手，失败了再换。同理，严禁把代码贴在回复里说"我能这样做"——能跑就 run_node / run_shell 真跑，回复里只放结论。
 6. 完成后简要总结做了什么、生成了哪些文件。
 7. 始终用中文交流——包括报错说明、失败复盘、自我纠正这些中途叙述，任何时候都不许切成英文。工具返回的英文报错要翻成人话讲给用户听（原始报错可以放进代码块，但结论必须是中文）。
 8. 用户消息里的「@某文件名」指工作目录中的文件（用 read_file 读取）；「/某技能名」表示要求使用该技能（先 use_skill 加载）；「【任务类型：X】」是场景标签，按该场景的最佳实践来做。
@@ -294,7 +302,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     return p;
   }
 
-  const READ_ONLY_TOOLS = ["read_file", "list_files", "fetch_url", "web_search", "library_list", "library_read"];
+  const READ_ONLY_TOOLS = ["read_file", "list_files", "fetch_url", "render_page", "web_search", "library_list", "library_read"];
 
   function toolList(depth, mode) {
     if (mode === "ask" || mode === "plan") {

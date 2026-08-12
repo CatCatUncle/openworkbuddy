@@ -126,6 +126,87 @@ function toOpenAIMessages(system, history) {
   return messages;
 }
 
+// ---------- 把「说出来」的工具调用救回来 ----------
+// DeepSeek 一类模型的工具调用在权重里是特殊 token（<｜tool▁sep｜> 等）。经过某些
+// 中转/兼容层时它们不会被解析进 tool_calls 字段，而是原样解码进正文——于是模型以为
+// 自己调了工具，实际什么都没发生，接着开始编造"抓取结果"。这不是提示词能治的，
+// 只能在解析层认出来并还原成真正的工具调用。
+const LEAK_MARK = /[<＜][|｜]tool[_▁]?(?:calls?[_▁]?)?(?:begin|sep)[|｜][>＞]/;
+const LEAK_SEP = /[<＜][|｜]tool[_▁]?sep[|｜][>＞]\s*([A-Za-z_][\w.-]*)/g;
+
+/**
+ * 从正文里抠出被"说"出来的工具调用。
+ * 返回 { text, toolCalls }：text 是剔掉这些标记后的干净正文（通常剩不下什么）。
+ */
+function rescueLeakedToolCalls(raw) {
+  if (!raw || !LEAK_MARK.test(raw)) return { text: raw, toolCalls: [] };
+  const toolCalls = [];
+  LEAK_SEP.lastIndex = 0;
+  let m;
+  while ((m = LEAK_SEP.exec(raw))) {
+    const name = m[1];
+    const rest = raw.slice(m.index + m[0].length);
+    // 参数紧跟在后面，可能裹在 ```json 围栏里，也可能是裸的 {...}
+    const fence = rest.match(/^\s*```(?:json)?\s*([\s\S]*?)```/);
+    const body = fence ? fence[1] : sliceFirstObject(rest);
+    // 参数没读全（有 { 但配不上对，说明被截断了）就宁可丢掉这次调用，
+    // 拿半截参数去执行比不执行更糟。真正不带参数的工具（rest 里压根没有 {）才按 {} 放行。
+    if (body === null && rest.includes("{")) continue;
+    let input = {};
+    try {
+      input = JSON.parse((body || "{}").trim());
+    } catch {
+      continue;
+    }
+    toolCalls.push({ id: `rescued_${toolCalls.length}`, name, input });
+  }
+  // 标记之前的那段还是模型的正常叙述，留着；标记之后全是调用负载，砍掉
+  const cut = raw.search(LEAK_MARK);
+  return { text: (cut > 0 ? raw.slice(0, cut) : "").replace(/\bfunction\s*$/, "").trimEnd(), toolCalls };
+}
+
+/** 从字符串开头找出第一个花括号对（按深度配平，跳过字符串字面量） */
+function sliceFirstObject(s) {
+  const start = s.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (esc) { esc = false; continue; }
+    if (c === "\\") { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return s.slice(start, i + 1);
+  }
+  return null;
+}
+
+/**
+ * 流式转发时的闸门：一旦冒出特殊 token 的开头就停止往界面吐字。
+ * 后面全是工具调用负载，让用户看见一堆 <｜tool▁sep｜> 只会以为程序坏了。
+ */
+function createLeakGuard(onTextDelta) {
+  let leaking = false;
+  let hold = ""; // 标记可能被切在两个 chunk 中间，留一个字符不发
+  return (delta) => {
+    if (!onTextDelta) return;
+    if (leaking) return;
+    const s = hold + delta;
+    const i = s.search(/[<＜][|｜]/);
+    if (i >= 0) {
+      leaking = true;
+      hold = "";
+      if (i > 0) onTextDelta(s.slice(0, i));
+      return;
+    }
+    // 结尾恰好是 "<" 时先扣住：下一片可能接上 "｜" 组成标记
+    if (/[<＜]$/.test(s)) { hold = s.slice(-1); onTextDelta(s.slice(0, -1)); return; }
+    hold = "";
+    onTextDelta(s);
+  };
+}
+
 async function openaiChat(cfg, { system, history, tools, onTextDelta, signal }) {
   const apiKey = cfg.api_key || process.env.OPENAI_API_KEY || "ollama";
   const useStream = cfg.stream !== false;
@@ -180,6 +261,7 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, signal }) 
   let finishReason = null;
   let usage = null; // 最后一个 chunk 里的 token 用量（stream_options.include_usage）
   const tcByIndex = new Map(); // index -> {id, name, args}
+  const guard = createLeakGuard(onTextDelta);
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -207,7 +289,7 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, signal }) 
       const delta = choice.delta || {};
       if (delta.content) {
         text += delta.content;
-        if (onTextDelta) onTextDelta(delta.content);
+        guard(delta.content);
       }
       for (const tc of delta.tool_calls || []) {
         const slot = tcByIndex.get(tc.index) || { id: "", name: "", args: "" };
@@ -231,12 +313,27 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, signal }) 
       return { id: s.id || `call_${i}`, name: s.name, input };
     });
 
+  // 正经的 tool_calls 字段是空的，但正文里躺着工具调用的特殊 token —— 救回来
+  if (!toolCalls.length) {
+    const rescued = rescueLeakedToolCalls(text);
+    if (rescued.toolCalls.length) {
+      console.warn(`[llm] 模型把 ${rescued.toolCalls.map((t) => t.name).join("、")} 当成正文吐了出来，已还原成真正的调用`);
+      return { text: rescued.text, toolCalls: rescued.toolCalls, stopReason: "tool_calls", usage };
+    }
+  }
+
   return { text, toolCalls, stopReason: finishReason, usage };
 }
 
 function parseOpenAIChoice(choice, onTextDelta, usage) {
   if (!choice) throw new Error("LLM 返回为空");
-  const text = choice.message.content || "";
+  let text = choice.message.content || "";
+  const rescued = (choice.message.tool_calls || []).length ? null : rescueLeakedToolCalls(text);
+  if (rescued && rescued.toolCalls.length) {
+    console.warn(`[llm] 模型把 ${rescued.toolCalls.map((t) => t.name).join("、")} 当成正文吐了出来，已还原成真正的调用`);
+    if (rescued.text && onTextDelta) onTextDelta(rescued.text);
+    return { text: rescued.text, toolCalls: rescued.toolCalls, stopReason: "tool_calls", usage: usage || null };
+  }
   if (text && onTextDelta) onTextDelta(text);
   const toolCalls = (choice.message.tool_calls || []).map((tc) => {
     let input = {};
@@ -320,4 +417,4 @@ function createLLM(config) {
   throw new Error(`未知 provider: ${provider}（可选 anthropic / openai）`);
 }
 
-module.exports = { createLLM };
+module.exports = { createLLM, _internals: { rescueLeakedToolCalls, createLeakGuard } };
