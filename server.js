@@ -125,7 +125,7 @@ function recordingEmit(send, events, sessionId) {
       const last = events[events.length - 1];
       if (last && last.type === "text") last.delta += ev.delta;
       else events.push({ type: "text", delta: ev.delta });
-    } else if (["tool_use", "tool_result", "expert_start", "expert_done", "error", "limit", "trim", "usage", "interject", "credits"].includes(ev.type)) {
+    } else if (["tool_use", "tool_result", "expert_start", "expert_done", "error", "limit", "trim", "usage", "interject", "credits", "sources"].includes(ev.type)) {
       events.push(ev);
       // 一步走完就是个存盘点：跑了半小时的任务不该因为一次崩溃从头再来
       if (sessionId && ev.type === "tool_result") autosaveSession(sessionId);
@@ -1177,6 +1177,25 @@ app.get("/api/files/view/:name", (req, res) => {
     res.sendFile(p);
   } catch (e) {
     res.status(400).send(e.message);
+  }
+});
+
+// 对话里的内联图表「存为文件」：内容是前端已经渲染过的东西，落盘到工作目录就能进成果面板、
+// 能下载、能被后续回合当素材继续用。扩展名白名单挡住"顺手写个 .sh/.command 再让我打开"的路子。
+const SAVE_EXT_OK = /\.(svg|png|jpe?g|html?|md|markdown|txt|csv|json)$/i;
+app.post("/api/files/save", (req, res) => {
+  try {
+    const name = String(req.body?.name || "").trim();
+    const content = req.body?.content;
+    if (!name || typeof content !== "string") return res.status(400).json({ error: "缺少 name 或 content" });
+    if (!SAVE_EXT_OK.test(name)) return res.status(400).json({ error: "不支持保存这种类型的文件" });
+    const p = safePath(name);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const b64 = content.match(/^data:[^;]+;base64,(.*)$/s);
+    fs.writeFileSync(p, b64 ? Buffer.from(b64[1], "base64") : content);
+    res.json({ ok: true, name, files: outputFiles() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
