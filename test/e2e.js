@@ -907,6 +907,85 @@ async function testForcedWrapUp() {
   console.log("✅ 强制收尾：撞上限补一次交代 / 手动停止不多花钱 通过");
 }
 
+function testLeakedToolCallRescue() {
+  const { rescueLeakedToolCalls, createLeakGuard } = require("../llm")._internals;
+  // DeepSeek 经中转层时的真实翻车样本：工具调用的特殊 token 被当正文解码了
+  const leaked =
+    "稍等，我先抓取该UP主的视频列表进行分析。\n\n" +
+    "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>fetch_url\n" +
+    '```json\n{"url":"https://space.bilibili.com/163637592/"}\n```' +
+    "<｜tool▁call▁end｜><｜tool▁calls▁end｜>";
+  const r = rescueLeakedToolCalls(leaked);
+  assert(r.toolCalls.length === 1, "泄漏的工具调用没救回来");
+  assert(r.toolCalls[0].name === "fetch_url", "救回的工具名不对");
+  assert(r.toolCalls[0].input.url.includes("163637592"), "救回的参数不对");
+  assert(!/tool▁sep/.test(r.text), "正文里还留着特殊 token");
+  assert(r.text.includes("我先抓取"), "标记之前的正常叙述被误删");
+
+  // 没有围栏、裸 JSON 的变体也要认
+  const bare = rescueLeakedToolCalls('好的<｜tool▁sep｜>run_shell {"command":"ls -l"} 然后我再看看');
+  assert(bare.toolCalls.length === 1 && bare.toolCalls[0].input.command === "ls -l", "裸对象参数没解析出来");
+
+  // 正常回复不能被误伤
+  const clean = rescueLeakedToolCalls("这是一段普通回复，里面有 a < b 和 <div> 标签。");
+  assert(clean.toolCalls.length === 0 && clean.text.includes("<div>"), "正常回复被误改");
+
+  // 参数只吐了一半时，宁可不调也不能拿半截参数去执行
+  const half = rescueLeakedToolCalls('<｜tool▁sep｜>write_file\n```json\n{"path":"a.md","cont');
+  assert(half.toolCalls.length === 0, "半截参数不该被当成有效调用");
+
+  // 流式闸门：一个字一个字喂进去，界面上不能出现任何特殊 token
+  let shown = "";
+  const guard = createLeakGuard((d) => (shown += d));
+  for (const ch of leaked) guard(ch);
+  assert(!/[<＜][|｜]/.test(shown), "特殊 token 漏到界面上了");
+  assert(shown.includes("我先抓取"), "闸门把正常文字也吞了");
+  console.log("✅ 工具调用泄漏救援：还原成真调用 / 半截参数丢弃 / 特殊 token 不进界面 通过");
+}
+
+async function testFetchUrlShapes() {
+  const http = require("http");
+  const { fetchUrl } = require("../tools");
+  const routes = {
+    "/json": [200, "application/json", '{"code":0,"data":{"title":"<b>标签不能被洗掉</b>"}}'],
+    "/html": [200, "text/html", "<html><head><style>p{}</style></head><body><h1>标题</h1><p>正文一</p><p>正文二</p>" + "内容".repeat(200) + "</body></html>"],
+    "/shell": [200, "text/html", "<html><body><div id=app></div><noscript>请开启 JavaScript</noscript></body></html>"],
+    "/blocked": [412, "text/html", "<html><body>风控校验失败</body></html>"],
+  };
+  const srv = http.createServer((req, res) => {
+    const [code, ct, body] = routes[req.url] || [404, "text/plain", "no"];
+    // 顺带验一下请求头：伪装成爬虫的 UA 是这次要修掉的毛病
+    if (!/Chrome\//.test(req.headers["user-agent"] || "") || !req.headers.referer) {
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      return res.end("请求头不像浏览器");
+    }
+    res.writeHead(code, { "Content-Type": ct });
+    res.end(body);
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    const j = await fetchUrl(`${base}/json`);
+    assert(j.includes('"<b>标签不能被洗掉</b>"'), "JSON 被当 HTML 洗了标签");
+
+    const h = await fetchUrl(`${base}/html`);
+    assert(h.includes("标题") && h.includes("正文一") && !h.includes("<h1>"), "HTML 转文本不对");
+    assert(!h.includes("p{}"), "style 内容没去掉");
+
+    // 空壳与被拦：渲染兜底在测试环境（非 Electron）用不了，此时必须如实说清楚并给出下一步，
+    // 绝不能返回一段看着像正文的空内容让模型以为读到了
+    const s = await fetchUrl(`${base}/shell`);
+    assert(s.includes("没能拿到正文") && s.includes("JavaScript 动态渲染"), "空壳页没给出诊断");
+    assert(s.includes("run_shell") && s.includes("web_search"), "空壳页没给出换路子的建议");
+
+    const b = await fetchUrl(`${base}/blocked`);
+    assert(b.includes("判成了爬虫") && b.includes("412"), "反爬拦截没被识别");
+  } finally {
+    srv.close();
+  }
+  console.log("✅ 抓取：JSON 原样返回 / HTML 转文本 / 空壳与反爬如实报告并给下一步 通过");
+}
+
 function testPathSafety() {
   const { safePath } = require("../tools");
   let threw = false;
@@ -919,6 +998,7 @@ async function main() {
   console.log("=== OpenWorkBuddy e2e 测试 ===");
   testCron();
   testCommandGate();
+  testLeakedToolCallRescue();
   testJsonStore();
   testImSessionStore();
   testAccountStore();
@@ -930,6 +1010,7 @@ async function main() {
   testPluginMcpRuntime();
   testPluginSkillsIntegration();
   testDefaultSkillsManifest();
+  await testFetchUrlShapes();
   await testMcpStreamableHttp();
   await testSchedulerRuntime();
   await testMcpManagerLifecycle();
