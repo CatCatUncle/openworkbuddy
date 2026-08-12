@@ -517,12 +517,15 @@ async function fetchUrl(url, { render } = {}) {
   if (ct.includes("html") || /<html/i.test(body)) {
     text = htmlToText(body);
   }
+  // 标题写进首行：模型引用来源时有个人话名字，界面底下的「来源」也直接拿它当标签
+  const title = pageTitle(body);
+  const head = `HTTP ${resp.status}${title ? ` · ${title}` : ""}`;
 
   // 空壳/被拦：能渲染就渲染一遍，渲染不了也要把原因说清楚，别让模型以为"这个网站读不到"就此收手
   if (render !== false && looksEmptyPage(text, resp.status)) {
     const rendered = await renderPage(url).catch((e) => ({ error: e.message }));
     if (rendered && rendered.text && rendered.text.length > text.length) {
-      return `HTTP ${resp.status}（静态 HTML 是空壳，已用内置浏览器渲染后读取）\n${rendered.text.slice(0, 20000)}`;
+      return `HTTP ${resp.status}${rendered.title || title ? ` · ${rendered.title || title}` : ""}（静态 HTML 是空壳，已用内置浏览器渲染后读取）\n${rendered.text.slice(0, 20000)}`;
     }
     const why =
       resp.status === 412 || resp.status === 403
@@ -538,7 +541,18 @@ async function fetchUrl(url, { render } = {}) {
       `原始返回（前 2000 字）：\n${text.slice(0, 2000)}`
     );
   }
-  return `HTTP ${resp.status}\n${text.slice(0, 20000)}`;
+  return `${head}\n${text.slice(0, 20000)}`;
+}
+
+/** 从 HTML 里取 <title>，实体解码后压成一行 */
+function pageTitle(html) {
+  const m = String(html || "").match(/<title[^>]*>([\s\S]{0,300}?)<\/title>/i);
+  if (!m) return "";
+  return m[1]
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
 }
 
 function htmlToText(html) {
@@ -591,7 +605,8 @@ async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
       if (text.length > 400 && text.length === last) break;
       last = text.length;
     }
-    return { text: (text || "").replace(/\n{3,}/g, "\n\n").trim() };
+    const title = await win.webContents.executeJavaScript("document.title || ''").catch(() => "");
+    return { text: (text || "").replace(/\n{3,}/g, "\n\n").trim(), title: String(title || "").trim().slice(0, 80) };
   } finally {
     if (!win.isDestroyed()) win.destroy();
     // 渲染期间用户把主窗口关了：window-all-closed 那会儿这个隐藏窗口还活着，没触发退出。
@@ -836,7 +851,7 @@ async function executeTool(name, input, opts = {}) {
         try {
           const r = await renderPage(input.url, { waitMs: Math.min(Math.max(input.wait_ms || 2500, 500), 8000) });
           if (!r.text) return { content: "渲染成功但页面正文为空——多半是要登录，或者内容在 iframe / canvas 里。", isError: true };
-          return { content: r.text.slice(0, 20000), isError: false };
+          return { content: (r.title ? `HTTP 200 · ${r.title}\n` : "") + r.text.slice(0, 20000), isError: false };
         } catch (e) {
           return { content: `渲染失败：${e.message}`, isError: true };
         }

@@ -9,7 +9,7 @@
 const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
-const { createAgentRuntime, missingDeliverables, trimHistory, historyChars } = require("../agent");
+const { createAgentRuntime, missingDeliverables, trimHistory, historyChars, collectSources } = require("../agent");
 const { McpManager } = require("../mcp");
 const { parseCron, cronMatches } = require("../scheduler");
 const { getWorkspaceDir } = require("../tools");
@@ -562,6 +562,26 @@ async function testMcpManagerLifecycle() {
 }
 
 // 默认技能清单：字段齐全、URL 拼得对、别混进非开源协议的条目
+// 前端的 SVG 信息图渲染要真浏览器才测得准（清洗靠的是 DOM 解析、作用域靠的是真 CSS 匹配），
+// 所以单独开一个 electron 子进程跑 test/frontend.js。纯服务端部署没装 electron 就跳过，不算失败。
+async function testFrontendSvgFigures() {
+  const { spawnSync } = require("child_process");
+  let electronBin;
+  try { electronBin = require("electron"); } catch { }
+  if (typeof electronBin !== "string" || !fs.existsSync(electronBin)) {
+    console.log("⏭️  前端：未安装 electron，跳过内联 SVG 信息图测试");
+    return;
+  }
+  const r = spawnSync(electronBin, [path.join(__dirname, "frontend.js")], {
+    encoding: "utf8",
+    env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "1" },
+  });
+  const out = (r.stdout || "") + (r.stderr || "");
+  if (r.status !== 0) throw new Error("前端 SVG 测试未通过：\n" + out.trim().split("\n").slice(-12).join("\n"));
+  const line = out.split("\n").find((l) => l.startsWith("✅ 前端"));
+  console.log(line || "✅ 前端：内联 SVG 信息图测试通过");
+}
+
 function testDefaultSkillsManifest() {
   const skillsMgr = require("../skills");
   const list = skillsMgr.listDefaultSkills();
@@ -907,6 +927,40 @@ async function testForcedWrapUp() {
   console.log("✅ 强制收尾：撞上限补一次交代 / 手动停止不多花钱 通过");
 }
 
+// 「来源」只认工具真访问到的页面。抓失败的、模型嘴上说参考了的，都不许混进去——
+// 那等于给用户一个"我看过这页"的假凭证。
+function testCollectSources() {
+  const one = collectSources("fetch_url", { url: "https://example.com/a" }, "HTTP 200 · 示例页面标题\n正文若干");
+  assert.strictEqual(one.length, 1, "fetch_url 应产出 1 条来源");
+  assert.strictEqual(one[0].url, "https://example.com/a");
+  assert.strictEqual(one[0].title, "示例页面标题", "标题应从首行取到，实得：" + one[0].title);
+
+  const rendered = collectSources("render_page", { url: "https://example.com/spa" }, "HTTP 200 · 动态页（已渲染）\n内容");
+  assert.strictEqual(rendered[0].title, "动态页", "括号后的说明不该混进标题：" + rendered[0].title);
+
+  const noTitle = collectSources("fetch_url", { url: "https://example.com/b" }, "HTTP 200\n没有 title 标签的页面");
+  assert.strictEqual(noTitle.length, 1, "没标题也该记来源");
+  assert.strictEqual(noTitle[0].title, "", "没标题就留空，别拿正文首行凑数");
+
+  const failed = collectSources("fetch_url", { url: "https://example.com/c" }, "⚠️ 没能拿到正文：对方站点把这次请求判成了爬虫（HTTP 412）。别就此打住");
+  assert.strictEqual(failed.length, 0, "抓失败的不能算来源");
+
+  const localFile = collectSources("fetch_url", { url: "file:///etc/passwd" }, "HTTP 200 · x\ny");
+  assert.strictEqual(localFile.length, 0, "非 http(s) 不该进来源");
+
+  const search = collectSources(
+    "web_search",
+    { query: "x" },
+    "1. 第一条标题\n   https://a.example/1\n   摘要一\n\n2. 第二条标题\n   https://b.example/2\n   摘要二"
+  );
+  assert.strictEqual(search.length, 2, "搜索结果应拆出 2 条来源");
+  assert.deepStrictEqual(search.map((s) => s.url), ["https://a.example/1", "https://b.example/2"]);
+  assert.strictEqual(search[1].title, "第二条标题");
+
+  assert.strictEqual(collectSources("write_file", { path: "a.txt" }, "ok").length, 0, "非联网工具不该产出来源");
+  console.log("✅ 来源：只收录真访问到的页面（抓失败/本地文件/非联网工具一律不计）通过");
+}
+
 function testLeakedToolCallRescue() {
   const { rescueLeakedToolCalls, createLeakGuard } = require("../llm")._internals;
   // DeepSeek 经中转层时的真实翻车样本：工具调用的特殊 token 被当正文解码了
@@ -999,6 +1053,7 @@ async function main() {
   testCron();
   testCommandGate();
   testLeakedToolCallRescue();
+  testCollectSources();
   testJsonStore();
   testImSessionStore();
   testAccountStore();
@@ -1010,6 +1065,7 @@ async function main() {
   testPluginMcpRuntime();
   testPluginSkillsIntegration();
   testDefaultSkillsManifest();
+  await testFrontendSvgFigures();
   await testFetchUrlShapes();
   await testMcpStreamableHttp();
   await testSchedulerRuntime();

@@ -11,6 +11,12 @@
     --wb-border: #e9ebf0; --wb-text: #17181c; --wb-text-2: #6a6f7d; --wb-text-3: #9aa0ad;
     --wb-ok: #16a34a; --wb-err: #e5484d;
     --wb-content-w: 832px; --wb-code-bg: #16181f; --wb-code-text: #d5dcec;
+    /* 给模型画的内联 SVG 信息图用的一套语义色/字体变量。图里写 var(--color-text-primary)
+       而不是写死 #333，暗色模式下才不会变成黑底黑字。名字沿用通行叫法，模型不用学新词。 */
+    --color-text-primary: #2c2c2a; --color-text-secondary: #5f5e5a; --color-text-tertiary: #888780;
+    --color-border-primary: #b4b2a9; --color-border-secondary: #d3d1c7; --color-border-tertiary: #e4e2da;
+    --color-bg-subtle: #f7f8fa;
+    --font-sans: "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
@@ -119,6 +125,33 @@
   .a-text code { background: var(--wb-bg-hover); border-radius: 4px; padding: 1px 5px; font-size: 12.5px; font-family: Consolas, monospace; }
   .a-text pre { background: var(--wb-code-bg); color: var(--wb-code-text); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 8px 0; }
   .a-text pre code { background: none; color: inherit; padding: 0; }
+  /* ---------- 模型直接画在正文里的 SVG 信息图 ---------- */
+  .svg-fig { margin: 12px 0; border: 1px solid var(--wb-border); border-radius: 12px; background: var(--wb-bg);
+    overflow: hidden; position: relative; }
+  .svg-fig > .svg-body { padding: 8px 10px; overflow-x: auto; }
+  .svg-fig svg { display: block; max-width: 100%; height: auto; }
+  .svg-fig .svg-acts { display: flex; gap: 6px; justify-content: flex-end; align-items: center;
+    padding: 5px 8px; border-top: 1px solid var(--wb-border); background: var(--wb-bg-side); }
+  .svg-fig .svg-acts button { font-size: 11px; color: var(--wb-text-2); background: none; border: 1px solid var(--wb-border);
+    border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+  .svg-fig .svg-acts button:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
+  .svg-fig .svg-acts .growing { margin-right: auto; font-size: 11px; color: var(--wb-text-3); }
+  .svg-fig .svg-acts .growing::after { content: "▍"; animation: svgblink 1s steps(2) infinite; }
+  @keyframes svgblink { 50% { opacity: 0; } }
+  .svg-fig .svg-raw { margin: 0; border-top: 1px solid var(--wb-border); border-radius: 0; max-height: 300px; font-size: 12px; }
+  /* ---------- 来源 ---------- */
+  .src-block { margin: 12px 0 4px; border-top: 1px solid var(--wb-border); padding-top: 8px; }
+  .src-hd { font-size: 12px; color: var(--wb-text-2); margin-bottom: 6px; cursor: pointer; user-select: none; }
+  .src-hd::before { content: "▸ "; }
+  .src-block.open .src-hd::before { content: "▾ "; }
+  .src-list { display: none; flex-wrap: wrap; gap: 6px; }
+  .src-block.open .src-list { display: flex; }
+  .src-item { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; font-size: 12px;
+    color: var(--wb-text-2); text-decoration: none; background: var(--wb-bg-side);
+    border: 1px solid var(--wb-border); border-radius: 999px; padding: 3px 10px; }
+  .src-item:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
+  .src-item .n { color: var(--wb-text-3); font-variant-numeric: tabular-nums; }
+  .src-item .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
   .code-wrap { margin: 8px 0; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,.06); }
   .code-head { display: flex; justify-content: space-between; align-items: center; background: #23252e; color: #8b92a5; font-size: 11px; padding: 5px 12px; font-family: Consolas, ui-monospace, monospace; }
   .code-head .code-copy { cursor: pointer; color: #8b92a5; user-select: none; }
@@ -150,6 +183,9 @@
   /* 本次产出：把成果文件直接摆在对话里，点开就看，不用去右侧文件面板翻 */
   .out-block { margin: 12px 0 4px; }
   .out-hd { font-size: 12px; color: var(--wb-text-3); margin-bottom: 8px; }
+  .out-hd.out-toggle { cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 4px; }
+  .out-hd.out-toggle:hover { color: var(--wb-text-2); }
+  .out-block.fold .out-grid, .out-block.fold .out-more { display: none; }
   .out-grid { display: flex; flex-wrap: wrap; gap: 8px; }
   .out-card { width: 240px; border: 1px solid var(--wb-border); border-radius: 12px; overflow: hidden; background: var(--wb-bg); cursor: pointer; transition: border-color .15s, box-shadow .15s; }
   .out-card:hover { border-color: var(--wb-brand); box-shadow: 0 4px 12px rgba(91,95,247,.12); }
@@ -327,6 +363,9 @@
     --wb-bg: #1e1f24; --wb-bg-side: #17181c; --wb-bg-hover: #2b2d34;
     --wb-border: #34363e; --wb-text: #e8eaf0; --wb-text-2: #a4a9b6; --wb-text-3: #7a8090;
     --wb-code-bg: #101218; --wb-code-text: #d5dcec;
+    --color-text-primary: #e8eaf0; --color-text-secondary: #a4a9b6; --color-text-tertiary: #7a8090;
+    --color-border-primary: #4a4d57; --color-border-secondary: #3a3d45; --color-border-tertiary: #2f323a;
+    --color-bg-subtle: #24262c;
   }
   html[data-theme="dark"] .auth-mask { background: rgba(18,19,23,.96); }
   html[data-theme="dark"] .ap-row { background: #3a2d16; border-color: #8a6a33; }
@@ -627,6 +666,7 @@
   </div>
 </div>
 
+<script src="svgfig.js"></script>
 <script>
 // ================= 基础状态 =================
 let sessionId = null;
@@ -694,7 +734,9 @@ function repairBareCode(str) {
 
 function renderMd(src) {
   if (!src) return "";
-  let s = esc(src);
+  // 先把正文里的 <svg> 抠出来换成占位符（在 esc 之前——它们要当图渲染，不能被转义成文字）
+  const { text: pre, figs } = SvgFig.extractSvgFigures(src);
+  let s = esc(pre);
   const codeBlocks = [];
   const pushCode = (lang, code) => {
     codeBlocks.push(`<div class="code-wrap"><div class="code-head"><span>${esc(lang || "")}</span><a class="code-copy" title="复制代码">复制</a></div><pre><code>${code.replace(/\n$/, "")}</code></pre></div>`);
@@ -735,8 +777,8 @@ function renderMd(src) {
       continue;
     }
     closeTable();
-    // 代码块占位符独立成块，不并进段落（<div> 不能进 <p>）
-    if (/^\s*\x00CODE\d+\x00\s*$/.test(line)) {
+    // 代码块／SVG 占位符独立成块，不并进段落（<div> 不能进 <p>）
+    if (/^\s*\x00(?:CODE|SVG)\d+\x00\s*$/.test(line)) {
       flushPara(); closeList(); closeQuote();
       out.push(line.trim());
       continue;
@@ -769,7 +811,10 @@ function renderMd(src) {
     }
   }
   flushPara(); closeList(); closeQuote(); closeTable();
-  return out.join("\n").replace(/\x00CODE(\d+)\x00/g, (_, i) => codeBlocks[+i]);
+  return out
+    .join("\n")
+    .replace(/\x00CODE(\d+)\x00/g, (_, i) => codeBlocks[+i])
+    .replace(/\x00SVG(\d+)\x00/g, (_, i) => figs[+i]);
 }
 
 // ================= 回合渲染（实时流式与历史回放共用） =================
@@ -939,6 +984,8 @@ function createTurnUI(userText, turnMode) {
           snapshotFiles(ev.files); // 没产出也要把基线推进，免得下一轮把旧文件误当成新的
         }
       }
+    } else if (ev.type === "sources") {
+      renderSources(body, ev.items || []);
     } else if (ev.type === "error") {
       currentText = null;
       const t = document.createElement("div");
@@ -977,7 +1024,9 @@ function createTurnUI(userText, turnMode) {
         if (!hasErr) procWrap.classList.remove("open");
       }
     }
-    // 产出卡片是回合的结论物，挪到最后——否则会卡在中途正文和最终结论之间
+    // 来源、产出卡片都是回合的结论物，挪到最后——否则会卡在中途正文和最终结论之间
+    const srcBlock = body.querySelector(":scope > .src-block");
+    if (srcBlock) body.appendChild(srcBlock);
     const outBlock = body.querySelector(":scope > .out-block");
     if (outBlock) body.appendChild(outBlock);
     addActionsBar();
@@ -1384,6 +1433,37 @@ function autoPreviewNewHtml(files, changed) {
   for (const f of files || []) fileSnapshot[f.name] = f.mtime;
 }
 
+// 来源：这一回合真正打开过的网页。不是"模型说它参考了什么"，而是工具层记下来的实际访问记录，
+// 所以点进去一定打得开，也能拿它反查结论是不是有出处。
+function renderSources(body, items) {
+  if (!items || !items.length) return;
+  let block = body.querySelector(":scope > .src-block");
+  if (!block) {
+    block = document.createElement("div");
+    block.className = "src-block";
+    block.innerHTML = `<div class="src-hd"></div><div class="src-list"></div>`;
+    block.querySelector(".src-hd").onclick = () => block.classList.toggle("open");
+    body.appendChild(block);
+  }
+  const list = block.querySelector(".src-list");
+  const seen = block._seen || (block._seen = new Set());
+  for (const it of items) {
+    const url = String(it && it.url || "").trim();
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    const a = document.createElement("a");
+    a.className = "src-item";
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noreferrer noopener";
+    a.title = (it.title ? it.title + "\n" : "") + url;
+    a.innerHTML = `<span class="n">${seen.size}</span><span class="t">${esc(it.title || hostOf(url))}</span><span class="n">${esc(hostOf(url))}</span>`;
+    list.appendChild(a);
+  }
+  block.querySelector(".src-hd").textContent = `来源 (${seen.size})`;
+}
+function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return String(u).slice(0, 30); } }
+
 // 把本回合的产出做成卡片挂在对话里。右侧文件面板是"所有文件"，这里是"这次产出的"——
 // 用户要的是聊完直接点开，而不是回头去面板里认哪个是刚才那个。
 const OUT_CARD_MAX = 8;                                   // 一屏摆得下的量；超了只提示条数，别把对话冲垮
@@ -1396,8 +1476,12 @@ function renderTurnOutputs(body, changed) {
   if (!block) {
     block = document.createElement("div");
     block.className = "out-block";
-    block.innerHTML = `<div class="out-hd">📦 本次产出</div><div class="out-grid"></div>`;
+    block.innerHTML = `<div class="out-hd out-toggle"><span class="ar">▾</span> 查看所有变更 <span class="n"></span></div><div class="out-grid"></div>`;
     body.appendChild(block);
+    block.querySelector(".out-toggle").onclick = () => {
+      const fold = block.classList.toggle("fold");
+      block.querySelector(".ar").textContent = fold ? "▸" : "▾";
+    };
   }
   const grid = block.querySelector(".out-grid");
   let more = 0;
@@ -1440,6 +1524,7 @@ function renderTurnOutputs(body, changed) {
     tip.dataset.n = String(Number(tip.dataset.n || 0) + more);
     tip.textContent = `另有 ${tip.dataset.n} 个文件未展示（共 ${shown + Number(tip.dataset.n)} 个），在右侧文件面板里看`;
   }
+  block.querySelector(".out-hd .n").textContent = `(${shown + Number(tip?.dataset.n || 0)})`;
 }
 // 文件名进 CSS 属性选择器要转义（含空格、中文括号、引号的名字很常见）
 function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
@@ -2146,6 +2231,45 @@ document.addEventListener("click", (e) => {
     document.body.removeChild(ta); cb();
   }
 });
+
+// 内联 SVG 图表的三个动作（事件委托，历史回放与流式渲染共用）
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".svg-fig .svg-acts button");
+  if (!btn) return;
+  const fig = btn.closest(".svg-fig");
+  const raw = fig.dataset.src || "";
+  const act = btn.dataset.a;
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+  if (act === "svg-code") {
+    const box = fig.querySelector(".svg-raw");
+    if (box) { box.remove(); btn.textContent = "源码"; return; }
+    const pre = document.createElement("pre");
+    pre.className = "svg-raw";
+    pre.textContent = raw;
+    fig.insertBefore(pre, fig.querySelector(".svg-acts"));
+    btn.textContent = "收起源码";
+    return;
+  }
+  if (act === "svg-save") return saveInlineFile(`图表-${stamp}.svg`, fig.querySelector("svg").outerHTML, btn);
+  if (act === "svg-png") {
+    btn.disabled = true;
+    try { await saveInlineFile(`图表-${stamp}.png`, await SvgFig.svgToPngDataUrl(fig.querySelector("svg")), btn); }
+    catch (err) { toast("转图片失败：" + err.message); }
+    finally { btn.disabled = false; }
+  }
+});
+async function saveInlineFile(name, content, btn) {
+  const r = await fetch("/api/files/save", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, content }),
+  }).then(x => x.json()).catch(() => null);
+  if (!r?.ok) return toast("保存失败：" + (r?.error || "接口无响应"));
+  if (r.files) renderFiles(r.files);
+  const old = btn.textContent;
+  btn.textContent = "已存 ✓";
+  setTimeout(() => { btn.textContent = old; }, 1600);
+  toast(`已存到工作目录：${name}`);
+}
 
 async function checkUpdate() {
   toast("正在检查更新…");

@@ -254,9 +254,20 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 ## 回复排版（重要）
 - 结构固定三段式：**动手前**先用一两句说明你准备做什么、怎么做；**过程中**工具调用之间的过渡叙述控制在一两句话（界面会把中间过程折叠收起）；**收尾**最后一条消息必须是完整、自洽的最终结论/交付说明——用户默认只看到开场白和这段结论，别把关键信息只写在中间过程里。
 - 回复用 Markdown 结构化输出：小标题（##/###）分段、要点用列表、关键结论/数字用**加粗**、代码和命令放代码块、对比数据用表格。
-- 代码块必须用三反引号围栏包裹并标注语言（\`\`\`python、\`\`\`bash、\`\`\`text 等），围栏要成对闭合。严禁把语言名单独写一行然后直接贴裸代码——那样界面无法渲染成代码块。凡是代码、命令、文件树、日志、SVG/XML 片段，一律进围栏。
+- 代码块必须用三反引号围栏包裹并标注语言（\`\`\`python、\`\`\`bash、\`\`\`text 等），围栏要成对闭合。严禁把语言名单独写一行然后直接贴裸代码——那样界面无法渲染成代码块。凡是代码、命令、文件树、日志、XML 片段，一律进围栏（SVG 信息图见下一节，用 \`\`\`svg 围栏会被直接渲染成图）。
 - 结论先行，再给必要细节；不要把内心推演过程大段写出来（"让我想想""我先检查一下"这类只保留一句即可）。
-- 不要虚构进度和等待（"预计耗时X秒，请稍候""正在生成中"这类话不要说）：要么直接调工具真的去做，要么直接给结果。`;
+- 不要虚构进度和等待（"预计耗时X秒，请稍候""正在生成中"这类话不要说）：要么直接调工具真的去做，要么直接给结果。
+
+## 画信息图（内联 SVG，强烈推荐）
+把结构化的结论画成一张图，比十行文字管用。**直接在回复正文里写 \`\`\`svg 围栏**，界面会边输出边把它画出来（用户看到图自己长出来），不用写文件、不用调工具。
+- 什么时候画：人物/品牌/产品「画像」、方案对比、流程与时间线、数据拆解、能力雷达、结构总览——凡是"几个维度 + 每个维度几条结论"的东西都适合。一次回复最多 1～2 张，别刷屏。
+- 图是结论的可视化，**不能代替文字结论**：图前面照样要有一段说人话的总结。图里的每个数字都必须是工具真拿到的，编数字画得再好看也是红线。
+- 硬性写法（不遵守就会显示不出来或在暗色模式下变成黑底黑字）：
+  1. 根元素必须带 \`viewBox\`，**不要写死 width/height 的像素值**，界面会自适应铺满；
+  2. 文字颜色、描边颜色只用这几个语义变量：\`var(--color-text-primary)\`（标题/正文）、\`var(--color-text-secondary)\`（次要说明）、\`var(--color-text-tertiary)\`（弱化标注）、\`var(--color-border-primary|secondary|tertiary)\`（分隔线/边框）、\`var(--color-bg-subtle)\`（浅底块）；字体统一 \`font-family="var(--font-sans)"\`。品牌色/强调色（高亮标签、数据条）可以直接写 hex；
+  3. SVG **不会自动折行**：中文长句要自己拆成多个 \`<tspan x="…" dy="…">\`，或者提前断句，别指望它自己换行；
+  4. \`<script>\`、\`<foreignObject>\`、外链图片/字体一律会被安全层清掉，别用；要用 \`<style>\` 就用类名，界面会自动把它限死在这张图里。
+- 排版参考：竖版长图（viewBox 宽 680、高按内容给）最稳；顶部大标题+副标题，中间分区块，每块一个小节标题+若干条目，区块之间用细分隔线，末尾可以留一行数据来源。`;
     if (config.persona) {
       p += `\n\n## 用户的个性化偏好\n${config.persona}`;
     }
@@ -429,6 +440,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     });
   }
 
+
   /**
    * 强制收尾时的最后一句话。不给工具、单独一小段超时预算（撞的就是时间上限，不能再等 5 分钟），
    * 失败就悄悄算了——收尾说明没拿到，也不该把整个任务变成一次报错。
@@ -598,6 +610,10 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           isError: r.isError,
           preview: String(r.content).slice(0, 800),
         });
+        if (!r.isError) {
+          const srcs = collectSources(tc.name, tc.input, r.content);
+          if (srcs.length) emit({ type: "sources", items: srcs, depth });
+        }
         toolResults.push({ id: tc.id, content: String(r.content), isError: r.isError });
       }
       history.push({ role: "tool", results: toolResults });
@@ -645,4 +661,26 @@ function previewInput(tc) {
   }
 }
 
-module.exports = { createAgentRuntime, missingDeliverables, trimHistory, historyChars };
+/**
+ * 从一次工具调用里挖出"这一步真访问了哪些网页"，给回复底下的「来源」用。
+ * 只认工具层的实际入参与实际返回，不认模型嘴上说参考了什么——那种"来源"经常是编的。
+ */
+function collectSources(name, input, content) {
+  const text = String(content || "");
+  if (name === "fetch_url" || name === "render_page") {
+    const url = String(input?.url || "");
+    // 抓失败的不算来源——放进「来源」里等于告诉用户"我看过这页"，其实没看到
+    if (!/^https?:\/\//i.test(url) || /没能拿到正文/.test(text.slice(0, 200))) return [];
+    const title = (text.match(/^HTTP\s+\d+\s*·\s*([^\n（(]+)/) || [])[1] || "";
+    return [{ url, title: title.trim().slice(0, 80) }];
+  }
+  if (name === "web_search") {
+    // webSearch 的输出是「序号. 标题 \n 缩进的 URL \n 摘要」
+    return [...text.matchAll(/^\s*\d+\.\s*(.+)\n\s+(https?:\/\/\S+)/gm)]
+      .map((m) => ({ title: m[1].trim().slice(0, 80), url: m[2] }))
+      .slice(0, 10);
+  }
+  return [];
+}
+
+module.exports = { createAgentRuntime, missingDeliverables, trimHistory, historyChars, collectSources };
