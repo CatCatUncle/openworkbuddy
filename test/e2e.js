@@ -1025,6 +1025,18 @@ async function testFetchUrlShapes() {
     "/html": [200, "text/html", "<html><head><style>p{}</style></head><body><h1>标题</h1><p>正文一</p><p>正文二</p>" + "内容".repeat(200) + "</body></html>"],
     "/shell": [200, "text/html", "<html><body><div id=app></div><noscript>请开启 JavaScript</noscript></body></html>"],
     "/blocked": [412, "text/html", "<html><body>风控校验失败</body></html>"],
+    // 每页都有的导航/页脚/侧栏：抓十个页面就是把同一堆链接抄十遍，白占正文的额度
+    "/noise": [200, "text/html",
+      "<html><body><nav>导航垃圾一 导航垃圾二</nav><header>站点页头垃圾</header>" +
+      "<article><h1>真正的标题</h1><p>这里是文章正文。</p>" + "有效内容".repeat(120) + "</article>" +
+      "<aside>侧栏推荐垃圾</aside><footer>版权页脚垃圾</footer></body></html>"],
+    "/paper.pdf": [200, "application/pdf", Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(300, 0x7f)])],
+    // GBK 老站点：.text() 一律按 UTF-8 解会整页乱码，模型看到问号就以为"这站抓不到"
+    "/gbk": [200, "text/html; charset=gbk", Buffer.concat([
+      Buffer.from("<html><body><p>" + "filler ".repeat(60) + "</p><p>"),
+      Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0xb2, 0xe2, 0xca, 0xd4]), // 「中文测试」的 GBK 字节
+      Buffer.from("</p></body></html>"),
+    ])],
   };
   const srv = http.createServer((req, res) => {
     const [code, ct, body] = routes[req.url] || [404, "text/plain", "no"];
@@ -1054,10 +1066,102 @@ async function testFetchUrlShapes() {
 
     const b = await fetchUrl(`${base}/blocked`);
     assert(b.includes("判成了爬虫") && b.includes("412"), "反爬拦截没被识别");
+
+    const n = await fetchUrl(`${base}/noise`);
+    assert(n.includes("真正的标题") && n.includes("这里是文章正文"), "正文被抽没了");
+    for (const junk of ["导航垃圾", "站点页头垃圾", "侧栏推荐垃圾", "版权页脚垃圾"]) {
+      assert(!n.includes(junk), `导航/页脚噪声没清掉：${junk}`);
+    }
+
+    const g = await fetchUrl(`${base}/gbk`);
+    assert(g.includes("中文测试"), "GBK 页面没按声明的字符集解码（拿到的是乱码）");
+
+    // PDF 按文本读出来是一坨乱码，20000 字乱码进上下文既污染判断又白烧钱
+    const pdfPath = path.join(WORKSPACE, "paper.pdf");
+    fs.rmSync(pdfPath, { force: true });
+    try {
+      const p = await fetchUrl(`${base}/paper.pdf`);
+      assert(p.includes("二进制文件") && p.includes("paper.pdf"), "PDF 没被识别成二进制文件");
+      assert(p.includes("pdftotext"), "PDF 没给出取文字的下一步");
+      assert(!/%PDF/.test(p), "PDF 原始字节被当正文塞回上下文了");
+      assert(fs.existsSync(pdfPath), "PDF 没有下载到工作目录");
+      // 重名不覆盖：目录里可能躺着用户自己的同名文件
+      const again = await fetchUrl(`${base}/paper.pdf`);
+      assert(again.includes("paper_2.pdf"), "同名下载把已有文件覆盖了");
+    } finally {
+      fs.rmSync(pdfPath, { force: true });
+      fs.rmSync(path.join(WORKSPACE, "paper_2.pdf"), { force: true });
+    }
   } finally {
     srv.close();
   }
-  console.log("✅ 抓取：JSON 原样返回 / HTML 转文本 / 空壳与反爬如实报告并给下一步 通过");
+  console.log("✅ 抓取：JSON 原样返回 / 导航页脚清掉 / GBK 正确解码 / PDF 存文件不塞乱码 / 空壳与反爬如实报告 通过");
+}
+
+/**
+ * 只读工具并发执行。深度研究经常一口气要抓五个链接，串行是五次网络等待叠加；
+ * 但只要一批里混进会写东西的工具，顺序就是语义，必须整批退回串行。
+ */
+async function testParallelToolBatch() {
+  const http = require("http");
+  let live = 0, peak = 0;
+  const srv = http.createServer((req, res) => {
+    live++;
+    peak = Math.max(peak, live);
+    setTimeout(() => {
+      live--;
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<html><body><article><h1>页面${req.url}</h1><p>${"正文内容".repeat(120)}</p></article></body></html>`);
+    }, 150);
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const scripted = (batches) => {
+    let i = 0;
+    return {
+      provider: "mock",
+      model: "scripted",
+      async chat() {
+        const b = batches[i++];
+        return b ? { text: "", toolCalls: b, stopReason: "tool_use" } : { text: "完成。", toolCalls: [], stopReason: "end" };
+      },
+    };
+  };
+  const fetchCall = (n) => ({ id: `t${n}`, name: "fetch_url", input: { url: `${base}/p${n}` } });
+  const tmpFile = "e2e-并发混批.txt";
+  try {
+    // 全只读 → 并发
+    let events = [];
+    let hist = [{ role: "user", content: "抓三个页面" }];
+    await createAgentRuntime({ config, llm: scripted([[fetchCall(1), fetchCall(2), fetchCall(3)]]), mcpManager: new McpManager(), experts })
+      .runTask({ history: hist, emit: (ev) => events.push(ev) });
+    assert.strictEqual(peak, 3, `三个只读工具没有并发跑（实际最高并发 ${peak}）`);
+    const par = events.find((e) => e.type === "parallel");
+    assert(par && par.count === 3, "缺少 parallel 事件");
+    const results = hist.find((h) => h.role === "tool").results;
+    assert.deepStrictEqual(results.map((r) => r.id), ["t1", "t2", "t3"], "工具结果的顺序/ID 和 tool_calls 对不上");
+    results.forEach((r, i) => assert(r.content.includes(`/p${i + 1}`), `第 ${i + 1} 个结果串到别的 URL 上了`));
+    // 每张卡都要能按 id 配对，否则界面会把 A 的结果贴到 B 的卡上
+    const uses = events.filter((e) => e.type === "tool_use");
+    assert(uses.every((e) => e.id) && events.filter((e) => e.type === "tool_result").every((e) => e.id), "工具事件缺少 id");
+
+    // 混进一个会写文件的 → 整批串行
+    peak = 0;
+    events = [];
+    hist = [{ role: "user", content: "抓两个页面再写文件" }];
+    await createAgentRuntime({
+      config,
+      llm: scripted([[fetchCall(1), fetchCall(2), { id: "t9", name: "write_file", input: { path: tmpFile, content: "x" } }]]),
+      mcpManager: new McpManager(),
+      experts,
+    }).runTask({ history: hist, emit: (ev) => events.push(ev) });
+    assert.strictEqual(peak, 1, `批里有写文件的工具，不该并发（实际最高并发 ${peak}）`);
+    assert(!events.some((e) => e.type === "parallel"), "混合批不该发 parallel 事件");
+  } finally {
+    srv.close();
+    fs.rmSync(path.join(WORKSPACE, tmpFile), { force: true });
+  }
+  console.log("✅ 并发：只读批并发跑 / 结果顺序与 ID 不串 / 混入写操作整批退回串行");
 }
 
 function testPathSafety() {
@@ -1088,6 +1192,7 @@ async function main() {
   testDefaultSkillsManifest();
   await testFrontendSvgFigures();
   await testFetchUrlShapes();
+  await testParallelToolBatch();
   await testMcpStreamableHttp();
   await testSchedulerRuntime();
   await testMcpManagerLifecycle();

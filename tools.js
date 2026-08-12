@@ -125,7 +125,7 @@ const TOOL_DEFS = [
   {
     name: "fetch_url",
     description:
-      "抓取一个 URL 的内容（最多 20000 字符）。带真实浏览器请求头，网页会去标签转纯文本，JSON 接口原样返回——查资料和直接调数据接口都用它。静态 HTML 是空壳时会自动用内置浏览器渲染一遍再读。",
+      "抓取一个 URL 的内容（最多 20000 字符）。带真实浏览器请求头，网页会去掉导航/页脚只留正文，JSON 接口原样返回——查资料和直接调数据接口都用它。静态 HTML 是空壳时会自动用内置浏览器渲染一遍再读；地址是 PDF/图片/压缩包时会自动下载到工作目录并告诉你文件名（不会把二进制乱码返回给你）。要抓多个地址就在同一轮里一次性发多个 fetch_url，系统会并发执行。",
     input_schema: {
       type: "object",
       properties: {
@@ -500,6 +500,68 @@ function looksEmptyPage(text, status) {
   return /(请开启\s*JavaScript|enable\s+JavaScript|<noscript)/i.test(t) && t.length < 2000;
 }
 
+// PDF / 压缩包 / 图片这类东西按文本读出来是一堆乱码，20000 字乱码进上下文既污染判断又白烧钱。
+// content-type 常常是错的（不少站点一律回 octet-stream 甚至 text/html），所以再看一眼文件头。
+const BIN_CT = /^(image|audio|video|font)\/|^application\/(pdf|zip|gzip|x-[\w.+-]+|octet-stream|msword|vnd\.)/i;
+
+function looksBinary(ct, buf) {
+  if (BIN_CT.test(ct)) return true;
+  const h = Buffer.from(buf.slice(0, 8));
+  if (h.slice(0, 4).toString("latin1") === "%PDF") return true;
+  if (h[0] === 0x50 && h[1] === 0x4b && (h[2] === 3 || h[2] === 5)) return true; // PK.. → zip/docx/xlsx/pptx
+  if (h[0] === 0x89 && h.slice(1, 4).toString("latin1") === "PNG") return true;
+  if (h[0] === 0xff && h[1] === 0xd8) return true; // jpeg
+  if (h.slice(0, 3).toString("latin1") === "GIF") return true;
+  return false;
+}
+
+/**
+ * 按 URL 猜个文件名存进工作目录，重名不覆盖——目录里可能已经躺着用户自己的 report.pdf。
+ * 用 wx 独占创建而不是"先看在不在再写"：只读工具是并发跑的，两条 fetch 撞同一个名字时
+ * 检查和写入之间那道缝会让后一个把前一个盖掉。
+ */
+function saveDownload(url, ct, buf) {
+  ensureDirs();
+  let base = "";
+  try { base = decodeURIComponent(path.basename(new URL(url).pathname || "")); } catch {}
+  base = base.replace(/[\/\\:*?"<>|\s]/g, "_").slice(0, 80);
+  if (!/\.[a-z0-9]{1,6}$/i.test(base)) {
+    const m = /^(?:image|audio|video)\/([\w.+-]+)/i.exec(ct) || /^application\/(pdf|zip)/i.exec(ct);
+    base = (base || "download") + (m ? "." + m[1].replace(/^x-/, "").replace(/\+.*$/, "") : ".bin");
+  }
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  const data = Buffer.from(buf);
+  for (let i = 1; i < 50; i++) {
+    const name = i === 1 ? base : `${stem}_${i}${ext}`;
+    try {
+      fs.writeFileSync(path.join(workspaceDir, name), data, { flag: "wx" });
+      return name;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+  }
+  const name = `${stem}_${Date.now()}${ext}`;
+  fs.writeFileSync(path.join(workspaceDir, name), data);
+  return name;
+}
+
+/**
+ * 按真实字符集解码。fetch 的 .text() 一律当 UTF-8 读，
+ * 遇到国内那些还在用 GBK 的老站点会整页乱码——模型看到的就是一堆问号，然后判定"这站抓不到"。
+ */
+function decodeBody(buf, ct) {
+  let cs = (String(ct).match(/charset=["']?([\w-]+)/i) || [])[1];
+  if (!cs) cs = (Buffer.from(buf.slice(0, 4096)).toString("latin1").match(/charset=["']?([\w-]+)/i) || [])[1];
+  cs = String(cs || "utf-8").toLowerCase();
+  if (/^(utf-?8|us-ascii|ascii)$/.test(cs)) return Buffer.from(buf).toString("utf8");
+  try {
+    return new TextDecoder(cs).decode(buf);
+  } catch {
+    return Buffer.from(buf).toString("utf8");
+  }
+}
+
 async function fetchUrl(url, { render } = {}) {
   let resp;
   try {
@@ -508,7 +570,23 @@ async function fetchUrl(url, { render } = {}) {
     throw new Error(`抓取失败：${e.name === "TimeoutError" ? "30 秒还没响应（站点太慢或需要代理）" : e.message}`);
   }
   const ct = resp.headers.get("content-type") || "";
-  const body = await resp.text();
+  const declared = Number(resp.headers.get("content-length") || 0);
+  if (declared > 30 * 1024 * 1024) {
+    return `⚠️ 这个地址是个 ${(declared / 1048576).toFixed(1)} MB 的大文件（${ct || "类型未知"}），没有下载，它也不是网页正文。真需要的话用 run_shell 跑 \`curl -L -o 文件名 "${url}"\` 存下来再处理。`;
+  }
+  const buf = await resp.arrayBuffer();
+  if (looksBinary(ct, buf)) {
+    const name = saveDownload(url, ct, buf);
+    const kind = /pdf/i.test(ct) || Buffer.from(buf.slice(0, 4)).toString("latin1") === "%PDF" ? "pdf" : "";
+    return (
+      `这不是网页，是二进制文件（${ct || "类型未知"}，${buf.byteLength} 字节），已下载到工作目录：${name}\n` +
+      (kind === "pdf"
+        ? `读它的文字：先 run_shell 跑 \`which pdftotext\`，装了就 \`pdftotext -layout "${name}" -\`；没装就在 run_node 里解析。`
+        : `按类型处理：Office 文档用 docx/exceljs 读，压缩包先 unzip，图片音视频直接当素材用。`) +
+      `\n别再把这个地址当网页正文抓一遍了。`
+    );
+  }
+  const body = decodeBody(buf, ct);
   // JSON 别去标签：那会把 {"a":"<b>"} 洗成一堆空格，接口返回值全废了
   if (ct.includes("json") || /^\s*[[{]/.test(body)) {
     return `HTTP ${resp.status}（${ct || "json"}）\n${body.slice(0, 20000)}`;
@@ -555,7 +633,32 @@ function pageTitle(html) {
     .slice(0, 80);
 }
 
+// 导航、页头页脚、侧栏、表单：每页都有、每页都一样，抓十个页面等于把同一堆链接抄十遍。
+// 20000 字的预算是有限的，噪声占掉的每一行都是正文没进去的一行。
+const NOISE_TAGS = /<(script|style|noscript|template|svg|nav|header|footer|aside|form|iframe|select)\b[^>]*>[\s\S]*?<\/\1>/gi;
+
+/** 正文容器优先：<article> 最准，其次 <main>，都没有就退回 <body>。挑最长的那块，侧栏里的小 article 不算 */
+function mainRegion(html) {
+  for (const tag of ["article", "main"]) {
+    const blocks = [...html.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi"))].map((m) => m[1]);
+    if (!blocks.length) continue;
+    const best = blocks.sort((a, b) => b.length - a.length)[0];
+    if (best && best.length > 400) return best;
+  }
+  const body = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  return body ? body[1] : html;
+}
+
 function htmlToText(html) {
+  const cleaned = String(html || "").replace(/<!--[\s\S]*?-->/g, " ").replace(NOISE_TAGS, " ");
+  const text = tagsToText(mainRegion(cleaned));
+  // 抽过头了（结构不规范、正文压根不在 article/main 里）就退回整页：宁可带点噪声，也不能把内容弄丢
+  if (text.length >= 200) return text;
+  const full = tagsToText(cleaned);
+  return full.length > text.length ? full : text;
+}
+
+function tagsToText(html) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
