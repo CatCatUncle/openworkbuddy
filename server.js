@@ -1322,7 +1322,9 @@ app.post("/api/chat", async (req, res) => {
   }
 
   saveSession(sessionId);
-  send({ type: "files", files: outputFiles() });
+  // 收尾只是刷一遍完整文件列表，不是"本回合有产出"的通报：changed 明确给空，
+  // 免得前端拿本地 mtime 猜一把，把工作目录里的旧文件当成新成果又把面板弹出来
+  send({ type: "files", files: outputFiles(), changed: [] });
   send({ type: "done" });
   res.end();
 });

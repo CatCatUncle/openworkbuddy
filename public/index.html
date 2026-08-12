@@ -925,12 +925,18 @@ function createTurnUI(userText, turnMode) {
       // 自动预览更会莫名其妙弹出一个几天前的文件。产出卡片照摆，其余一律不动。
       if (!isReplaying) {
         renderFiles(ev.files);
-        autoPreviewNewHtml(ev.files);
-        // 预览打开时不再展开文件面板，避免挤压聊天区
-        if (ev.files && ev.files.length && !pvPanel.classList.contains("show")) {
-          document.getElementById("files-panel").classList.add("show");
-        } else if (pvPanel.classList.contains("show")) {
-          document.getElementById("files-panel").classList.remove("show");
+        // 这一回合真产出了东西才自动预览、才把文件面板弹出来。
+        // 工作目录里本来就躺着一堆旧文件，拿"目录非空"当理由每次聊天都弹一次，
+        // 只是白白挤掉聊天区——用户明确反馈过。
+        if (turnOut.length) {
+          autoPreviewNewHtml(ev.files, turnOut);
+          if (pvPanel.classList.contains("show")) {
+            document.getElementById("files-panel").classList.remove("show"); // 预览占了位就别再挤
+          } else {
+            document.getElementById("files-panel").classList.add("show");
+          }
+        } else {
+          snapshotFiles(ev.files); // 没产出也要把基线推进，免得下一轮把旧文件误当成新的
         }
       }
     } else if (ev.type === "error") {
@@ -1368,9 +1374,10 @@ function changedFiles(files) {
   if (!fileSnapshot) { snapshotFiles(files); return []; }
   return (files || []).filter(f => fileSnapshot[f.name] !== f.mtime);
 }
-function autoPreviewNewHtml(files) {
-  // 任务产出/更新 html 或 md 时自动在右侧预览（html 优先）
-  const changed = changedFiles(files);
+function autoPreviewNewHtml(files, changed) {
+  // 任务产出/更新 html 或 md 时自动在右侧预览（html 优先）。
+  // changed 由调用方给（服务端算的更准），没给才退回本地 mtime 差异
+  changed = changed || changedFiles(files);
   const target = changed.find(f => /\.html?$/i.test(f.name)) || changed.find(f => /\.(md|markdown)$/i.test(f.name));
   if (target) previewFile(target.name);
   if (!fileSnapshot) fileSnapshot = {};
