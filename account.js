@@ -67,7 +67,33 @@ function hashPassword(password, salt) {
   return crypto.scryptSync(String(password), salt, 32).toString("hex");
 }
 function publicUser(u) {
-  return u ? { username: u.username, role: u.role, credits: u.credits, created_at: u.created_at } : null;
+  if (!u) return null;
+  return {
+    username: u.username,          // 登录名，不可改：改了就是换了个账号
+    nickname: u.nickname || "",     // 昵称，界面上显示的名字
+    avatar: u.avatar || "",         // 一两个 emoji，或者 data:image/... 的小图
+    role: u.role,
+    credits: u.credits,
+    created_at: u.created_at,
+  };
+}
+
+// 头像允许两种：emoji（存字符）和用户自己上传的小图（存 data URI）。
+// 只收 data:image/*，且限 256KB——账本是个 JSON 文件，塞张大图进去会把整个读写拖垮。
+const AVATAR_MAX = 256 * 1024;
+function normalizeAvatar(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return "";
+  if (/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(s)) {
+    if (s.length > AVATAR_MAX) throw new Error("头像图片太大了（超过 256KB），换张小的或者用 emoji");
+    return s;
+  }
+  // data: 开头但没过上面那关的，是伪装成图片的别的东西（data:text/html 之类），直接挡
+  if (/^data:/i.test(s) || /^(https?:)?\/\//.test(s) || s.includes("<")) throw new Error("头像只支持 emoji 或上传图片");
+  // emoji 按「字素簇」算长度：一个 👨‍👩‍👧 是好几个码位拼的，用 .length 会误判成超长
+  const chars = [...new Intl.Segmenter().segment(s)].length;
+  if (chars > 2) throw new Error("头像最多两个字符");
+  return s;
 }
 function hasUsers() {
   return loadUsers().users.length > 0;
@@ -368,6 +394,28 @@ function createRouter() {
     res.json(publicUser(user));
   });
 
+  // 改昵称 / 头像。登录名不动——它是账号本身，改了历史用量和积分就对不上人了。
+  router.post("/api/auth/profile", (req, res) => {
+    const user = userFromReq(req);
+    if (!user) return res.status(401).json({ error: "未登录" });
+    const body = req.body || {};
+    const st = loadUsers();
+    const u = st.users.find((x) => x.username === user.username);
+    if (!u) return res.status(404).json({ error: "账号不存在" });
+    try {
+      if ("nickname" in body) {
+        const nick = String(body.nickname || "").replace(/\s+/g, " ").trim();
+        if (nick.length > 24) throw new Error("昵称最多 24 个字");
+        u.nickname = nick;
+      }
+      if ("avatar" in body) u.avatar = normalizeAvatar(body.avatar);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+    saveUsers(st);
+    res.json({ ok: true, user: publicUser(u) });
+  });
+
   router.post("/api/auth/password", (req, res) => {
     const user = userFromReq(req);
     if (!user) return res.status(401).json({ error: "未登录" });
@@ -427,5 +475,5 @@ module.exports = {
   authGuard,
   createRouter,
   // 下面这些只给测试用：账本读写和登录闸得能在临时目录里单独验，不然一跑测试就动到真账号
-  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps },
+  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps, normalizeAvatar },
 };

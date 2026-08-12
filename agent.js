@@ -206,7 +206,9 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 
   function baseSystemPrompt() {
     const skills = getSkills();
-    let p = `你是 OpenWorkBuddy，一个 AI 办公智能体。用户用自然语言下达办公任务，你自主思考、拆解任务、规划步骤、调用工具执行，最终交付可验证的成果。
+    // 用户可以给助理改名（设置 → 个性化）。名字得进提示词，不然用户喊"小秘"它一脸茫然
+    const myName = String((config.assistant || {}).name || "").trim() || "OpenWorkBuddy";
+    let p = `你是 ${myName}，一个 AI 办公智能体。用户用自然语言下达办公任务，你自主思考、拆解任务、规划步骤、调用工具执行，最终交付可验证的成果。用户叫你「${myName}」，被问到你是谁就用这个名字。
 
 ## 当前环境
 - 今天是 ${envToday()}。凡是涉及"最新/今年/近期/本周"的判断一律以这个日期为准，不要用你训练数据里的时间。需要最新事实（价格、政策、版本号、人事、榜单）必须 web_search 现查，不许凭记忆答。

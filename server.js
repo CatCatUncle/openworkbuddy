@@ -46,6 +46,9 @@ if (!Array.isArray(config.models) || !config.models.length) {
 
 security.getSecurity(config); // 补齐安全中心默认策略
 config.shortcuts = config.shortcuts || {}; // 快捷键自定义绑定（只存改过的项，默认值在前端定义）
+// 助理的名字和头像：想叫它「小秘」就叫「小秘」。界面（气泡头像/侧栏/品牌位）和系统提示词都跟着这里走
+const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "🤖" };
+config.assistant = { ...ASSISTANT_DEFAULT, ...(config.assistant || {}) };
 
 if (config.workspace_dir) {
   try {
@@ -154,6 +157,9 @@ app.get("/api/info", (_req, res) => {
 
 app.get("/api/files", (_req, res) => res.json(outputFiles()));
 
+// 助理身份：界面一进来就要拿它画头像，所以单开一个轻接口，不用为了个名字去拉整份设置
+app.get("/api/assistant", (_req, res) => res.json(config.assistant));
+
 // ---------- 应用内设置（模型 + IM），保存到 config.json 并热生效 ----------
 app.get("/api/settings", (_req, res) => {
   res.json({
@@ -168,6 +174,7 @@ app.get("/api/settings", (_req, res) => {
       max_context_chars: config.agent.max_context_chars || 120000,
     },
     persona: config.persona || "",
+    assistant: config.assistant,
     search: {
       provider: (config.search || {}).provider || "jina",
       jina_key: (config.search || {}).jina_key || (config.search || {}).api_key || "",
@@ -219,6 +226,15 @@ app.post("/api/settings", (req, res) => {
       if (b.agent.max_context_chars) config.agent.max_context_chars = Math.max(20000, Math.min(2000000, +b.agent.max_context_chars));
     }
     if (b.persona !== undefined) config.persona = String(b.persona).slice(0, 4000);
+    if (b.assistant) {
+      if (b.assistant.name !== undefined) {
+        const n = String(b.assistant.name).replace(/\s+/g, " ").trim();
+        if (n.length > 24) throw new Error("助理名字最多 24 个字");
+        config.assistant.name = n || ASSISTANT_DEFAULT.name; // 清空就退回默认，别让它变成没名字的空气
+      }
+      // 头像的校验规则和用户头像完全一样（emoji 或 ≤256KB 的 data URI），共用一处免得两边规则跑偏
+      if (b.assistant.avatar !== undefined) config.assistant.avatar = account._internals.normalizeAvatar(b.assistant.avatar) || ASSISTANT_DEFAULT.avatar;
+    }
     if (b.search) {
       config.search = config.search || {};
       if (b.search.provider !== undefined) {

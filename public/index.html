@@ -113,6 +113,15 @@
   .a-msg { display: flex; gap: 10px; margin-top: 16px; }
   .a-msg .avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: 9px; background: var(--wb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; }
   .a-msg .body { min-width: 0; flex: 1; }
+  /* 头像可以是首字母、emoji 或用户传的图。传了图就让图铺满整块，底下的品牌渐变自然被盖住；
+     emoji 则换成中性底，不然彩色 emoji 压在紫色渐变上很脏。 */
+  img.ava-img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
+  .emo { background: var(--wb-bg-hover) !important; }
+  .brand .mark.emo, .a-msg .avatar.emo, .user-chip .ava.emo, .um-head .ava.emo { font-size: 15px; }
+  .ab-ava { width: 17px; height: 17px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; vertical-align: -4px; font-size: 13px; }
+  .ab-ava.emo { background: none !important; }
+  .ava-pick { cursor: pointer; font-size: 17px; line-height: 1; padding: 4px 5px; border-radius: 7px; border: 1px solid transparent; }
+  .ava-pick:hover { background: var(--wb-bg-hover); border-color: var(--wb-border); }
   .a-text { line-height: 1.7; word-break: break-word; margin: 3px 0 6px; }
   .a-text p { margin: 6px 0; }
   .a-text h1, .a-text h2, .a-text h3, .a-text h4 { margin: 12px 0 6px; font-size: 15px; }
@@ -539,7 +548,7 @@
   </div>
   <button id="new-task">＋ 新建任务</button>
   <div class="assist-box" id="assist-box">
-    <div class="ab-head" id="ab-head" title="点击打开本地助理（IM 消息流）"><span>🤖 助理</span><span class="ab-sub">IM 远程指挥</span></div>
+    <div class="ab-head" id="ab-head" title="点击打开本地助理（IM 消息流）"><span id="ab-name"><span class="ab-ava">🤖</span> 助理</span><span class="ab-sub">IM 远程指挥</span></div>
     <div id="ab-channels"><div class="ab-empty">状态加载中…</div></div>
   </div>
   <div class="side-nav top">
@@ -675,6 +684,7 @@ let settingsCache = null;
 let projects = [];
 let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前声明（初始化就会用到）
 let currentUser = null; // 登录后由 initAuth() 填充
+let assistant = { name: "OpenWorkBuddy", avatar: "🤖" }; // 助理的名字/头像，可在设置里改；登录后拉真值
 let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
 let SESS_KEY = "wb_sessions"; // 登录后切换为 wb_sessions:<用户名>（每人一份任务历史）
 let sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
@@ -689,6 +699,36 @@ const mBody = document.getElementById("m-body");
 
 function saveSessions() { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 50))); }
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+/** 头像内容：传了图就是 <img>，emoji 就直接放字符，都没有就退回名字首字母。
+ *  返回 {html, cls}——cls 要挂到外层那个圆/方块上（emoji 得换中性底色）。 */
+function avatarBits(av, fallbackName) {
+  const s = String(av || "").trim();
+  if (s.startsWith("data:image/")) return { html: `<img class="ava-img" src="${esc(s)}" alt="">`, cls: "" };
+  if (s) return { html: esc(s), cls: "emo" };
+  return { html: esc(String(fallbackName || "?").trim().slice(0, 1).toUpperCase()), cls: "" };
+}
+function paintAvatar(el, av, fallbackName) {
+  if (!el) return;
+  const { html, cls } = avatarBits(av, fallbackName);
+  el.innerHTML = html;
+  el.classList.toggle("emo", cls === "emo");
+}
+/** 界面上该怎么称呼当前用户：昵称优先，没设就用登录名 */
+function displayName(u) { return (u && (u.nickname || u.username)) || ""; }
+/** 助理身份变了，把界面上所有露脸的地方一次性刷新（品牌位、侧栏、历史气泡头像） */
+function applyAssistantIdentity() {
+  document.title = assistant.name;
+  document.querySelector(".brand .name").textContent = assistant.name;
+  paintAvatar(document.querySelector(".brand .mark"), assistant.avatar, assistant.name);
+  const abName = document.getElementById("ab-name");
+  if (abName) {
+    const a = avatarBits(assistant.avatar, assistant.name);
+    abName.innerHTML = `<span class="ab-ava${a.cls ? " " + a.cls : ""}">${a.html}</span> ${esc(assistant.name)}`;
+  }
+  document.querySelectorAll(".a-msg .avatar").forEach(el => paintAvatar(el, assistant.avatar, assistant.name));
+  const h1 = document.querySelector("#empty h1");
+  if (h1) h1.textContent = `${assistant.name}, 我帮你`;
+}
 function scrollBottom() { chatScroll.scrollTop = chatScroll.scrollHeight; }
 
 // ================= Markdown 渲染（先转义防注入） =================
@@ -822,8 +862,9 @@ function createTurnUI(userText, turnMode) {
   document.getElementById("empty")?.remove();
   const turn = document.createElement("div");
   turn.className = "turn";
+  const av = avatarBits(assistant.avatar, assistant.name);
   turn.innerHTML = `<div class="u-msg"><div class="bubble"></div></div>
-    <div class="a-msg"><div class="avatar">W</div><div class="body"></div></div>`;
+    <div class="a-msg"><div class="avatar${av.cls ? " " + av.cls : ""}">${av.html}</div><div class="body"></div></div>`;
   turn.querySelector(".bubble").innerHTML = hlTokens(userText, "tk-b");
   chatCol.appendChild(turn);
   // 新回合出现后，旧回合的「重新生成」按钮全部撤掉（只允许重生成最后一轮）
@@ -1118,7 +1159,7 @@ function setSceneTag(label) {
 function buildEmpty() {
   const tpl = document.createElement("div");
   tpl.className = "empty"; tpl.id = "empty";
-  tpl.innerHTML = `<h1>OpenWorkBuddy, 我帮你</h1>
+  tpl.innerHTML = `<h1>${esc(assistant.name)}, 我帮你</h1>
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
       `<button class="${i === 0 ? "active" : ""}" data-scene="${k}">${["⏱","💻","🎨"][i]} ${k}</button>`).join("")}</div>
     <div class="chips" id="scene-chips"></div>`;
@@ -2145,13 +2186,126 @@ async function pollApprovals() {
 setInterval(pollApprovals, 3000);
 
 
+// ================= 头像编辑器（用户资料和助理设置共用一份） =================
+const AVATAR_PRESETS = ["🤖", "🐱", "🐶", "🦊", "🐼", "🦉", "🧑‍💼", "👩‍💻", "🧠", "✨", "🚀", "🌈", "🍀", "☕️", "🎯"];
+/** 把用户选的图压成方形小图再转 data URI：账号库/配置都是 JSON 文件，原图几 MB 塞进去会把读写拖垮 */
+function shrinkImage(fileObj, size) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error("读取失败"));
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("这不是一张能显示的图片"));
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = c.height = size;
+        const g = c.getContext("2d");
+        const side = Math.min(img.width, img.height); // 居中裁成正方形，免得头像被拉扁
+        g.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+        let url = c.toDataURL("image/png");
+        if (url.length > 120000) { // 照片类 PNG 压不下来，退成 JPEG（先垫白底，不然透明区会变黑）
+          g.globalCompositeOperation = "destination-over";
+          g.fillStyle = "#fff";
+          g.fillRect(0, 0, size, size);
+          url = c.toDataURL("image/jpeg", 0.88);
+        }
+        resolve(url);
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(fileObj);
+  });
+}
+function avatarEditorHtml(p, av, fallback) {
+  const a = avatarBits(av, fallback);
+  return `<div style="display:flex;gap:12px;align-items:flex-start">
+    <span id="${p}-prev" class="ava${a.cls ? " " + a.cls : ""}" style="width:52px;height:52px;border-radius:14px;background:var(--wb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:600;flex:none;overflow:hidden">${a.html}</span>
+    <div style="flex:1;min-width:0">
+      <div class="form-row" style="align-items:center">
+        <input id="${p}-emoji" placeholder="放一两个 emoji，或者上传一张图" value="${a.cls === "emo" ? esc(av) : ""}" style="flex:1">
+        <button id="${p}-up" style="flex:none;padding:6px 12px;white-space:nowrap">上传图片</button>
+        <button id="${p}-clr" style="flex:none;padding:6px 12px;white-space:nowrap">恢复默认</button>
+      </div>
+      <div id="${p}-presets" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:2px">${AVATAR_PRESETS.map(e => `<span class="ava-pick" data-e="${e}">${e}</span>`).join("")}</div>
+      <input type="file" id="${p}-file" accept="image/*" style="display:none">
+    </div>
+  </div>`;
+}
+/** 绑上事件，返回 { value() } 取当前选中的头像值（emoji 字符串 / data URI / 空=用默认） */
+function bindAvatarEditor(root, p, initial, fallback) {
+  const q = (suffix) => root.querySelector("#" + p + "-" + suffix);
+  const state = { av: String(initial || "") };
+  const nameNow = () => (typeof fallback === "function" ? fallback() : fallback);
+  const paint = () => paintAvatar(q("prev"), state.av, nameNow());
+  q("emoji").oninput = () => {
+    const v = q("emoji").value.trim();
+    // 输入框空着又已经传过图：那是"图还在，只是没打字"，别把图清掉
+    if (v || !state.av.startsWith("data:")) { state.av = v; paint(); }
+  };
+  q("presets").onclick = (e) => {
+    const pick = e.target.closest(".ava-pick");
+    if (!pick) return;
+    q("emoji").value = pick.dataset.e;
+    state.av = pick.dataset.e;
+    paint();
+  };
+  q("up").onclick = () => q("file").click();
+  q("clr").onclick = () => { q("emoji").value = ""; state.av = ""; paint(); };
+  q("file").onchange = async () => {
+    const f = q("file").files && q("file").files[0];
+    q("file").value = ""; // 允许连续选同一个文件
+    if (!f) return;
+    try {
+      state.av = await shrinkImage(f, 128);
+      q("emoji").value = "";
+      paint();
+    } catch (e) { toast("图片用不了：" + e.message); }
+  };
+  return { value: () => state.av };
+}
+
 // ================= 账号 · 积分 · 用量 =================
+/** 改昵称 / 换头像。登录名不给改：积分和历史用量都挂在它名下 */
+function renderProfile() {
+  const u = currentUser || {};
+  mTitle.textContent = "🪪 个人资料";
+  mBody.innerHTML = `<div class="card-item">
+      <div class="t">头像</div>
+      <div class="d" style="margin-bottom:8px">emoji 或者一张图都行，图会自动裁成方的压到 128px。</div>
+      ${avatarEditorHtml("pf", u.avatar, u.username)}
+    </div>
+    <div class="card-item">
+      <div class="t">昵称</div>
+      <div class="d" style="margin-bottom:8px">界面上显示的名字，留空就用登录名。登录名 <b>${esc(u.username)}</b> 不能改——改了积分和历史用量就对不上人了。</div>
+      <input id="pf-nick" maxlength="24" placeholder="${esc(u.username)}" value="${esc(u.nickname || "")}">
+    </div>
+    <button class="btn-brand" id="pf-save">保存</button>
+    <button id="pf-back" style="padding:6px 14px;margin-left:6px">返回账号</button>
+    <span class="ok-msg" id="pf-msg"></span>`;
+  const ed = bindAvatarEditor(mBody, "pf", u.avatar, () => mBody.querySelector("#pf-nick").value.trim() || u.username);
+  mBody.querySelector("#pf-back").onclick = () => { mTitle.textContent = "👤 账号 · 用量"; renderAccount(); };
+  mBody.querySelector("#pf-save").onclick = async () => {
+    const msg = mBody.querySelector("#pf-msg");
+    const resp = await fetch("/api/auth/profile", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nickname: mBody.querySelector("#pf-nick").value, avatar: ed.value() }),
+    }).catch(() => null);
+    const r = resp ? await resp.json().catch(() => ({})) : {};
+    if (resp && resp.ok) {
+      currentUser = r.user;
+      renderUserChip();
+      msg.style.color = "";
+      msg.textContent = "✅ 已保存";
+    } else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "保存失败"; }
+  };
+}
 function renderUserChip() {
   const row = document.getElementById("user-row"), chip = document.getElementById("user-chip");
   if (!currentUser) { row.style.display = "none"; return; }
   row.style.display = "flex";
-  chip.innerHTML = `<span class="ava">${esc(currentUser.username.slice(0, 1).toUpperCase())}</span>`
-    + `<span class="un">${esc(currentUser.username)}${currentUser.role === "admin" ? " · 管理员" : ""}</span>`
+  const av = avatarBits(currentUser.avatar, currentUser.username);
+  chip.innerHTML = `<span class="ava${av.cls ? " " + av.cls : ""}">${av.html}</span>`
+    + `<span class="un">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</span>`
     + `<span class="uc">✦ ${(+currentUser.credits).toLocaleString()}</span>`;
   chip.onclick = (e) => { e.stopPropagation(); toggleUserMenu(); };
 }
@@ -2175,12 +2329,14 @@ function closeUserMenu() { userMenu.classList.remove("show"); }
 function toggleUserMenu() { userMenu.classList.contains("show") ? closeUserMenu() : openUserMenu(); }
 function openUserMenu() {
   if (!currentUser) return;
+  const av = avatarBits(currentUser.avatar, currentUser.username);
   userMenu.innerHTML = `
     <div class="um-head" data-act="account" title="点击查看积分 · 用量明细">
-      <span class="ava" style="width:30px;height:30px;border-radius:50%;background:var(--wb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;flex:none">${esc(currentUser.username.slice(0, 1).toUpperCase())}</span>
-      <div style="min-width:0"><div class="n">${esc(currentUser.username)}${currentUser.role === "admin" ? " · 管理员" : ""}</div>
+      <span class="ava${av.cls ? " " + av.cls : ""}" style="width:30px;height:30px;border-radius:50%;background:var(--wb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;flex:none;overflow:hidden">${av.html}</span>
+      <div style="min-width:0"><div class="n">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</div>
       <div class="s">✦ ${(+currentUser.credits).toLocaleString()} 积分 · 账号与用量</div></div>
     </div>
+    <div class="um-i" data-act="profile">🪪 个人资料 <span class="hint">改名字 · 换头像</span></div>
     <div class="um-i" data-act="settings">⚙️ 设置</div>
     <div class="um-i" data-act="appearance">🌗 外观 <span class="hint">${THEME_LABEL[getTheme()]} ▾</span></div>
     <div class="um-sub" id="um-theme" style="display:none">${Object.entries(THEME_LABEL).map(([k, l]) =>
@@ -2198,6 +2354,7 @@ function openUserMenu() {
     }
     closeUserMenu();
     if (act === "account") openModal("account");
+    else if (act === "profile") { await openModal("account"); renderProfile(); }
     else if (act === "settings") openModal("settings");
     else if (act === "help") openModal("settings", "about");
     else if (act === "update") checkUpdate();
@@ -2291,9 +2448,11 @@ async function renderAccount() {
   const isAdmin = d.user.role === "admin";
   mBody.innerHTML = `
     <div class="card-item">
-      <div class="t">👤 ${esc(d.user.username)}（${d.user.role === "admin" ? "管理员" : "成员"}）
+      <div class="t">${(() => { const a = avatarBits(d.user.avatar, d.user.username); return `<span class="ava${a.cls ? " " + a.cls : ""}" style="width:22px;height:22px;border-radius:50%;background:var(--wb-brand-grad);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:12px;overflow:hidden;vertical-align:-6px">${a.html}</span>`; })()}
+        ${esc(displayName(d.user))}（${d.user.role === "admin" ? "管理员" : "成员"}${d.user.nickname ? " · 登录名 " + esc(d.user.username) : ""}）
         <button id="acc-logout" style="float:right;padding:2px 10px;font-size:12px">退出登录</button>
         <button id="acc-pass" style="float:right;padding:2px 10px;font-size:12px;margin-right:6px">改密码</button>
+        <button id="acc-profile" style="float:right;padding:2px 10px;font-size:12px;margin-right:6px">改名字 / 头像</button>
       </div>
       <div class="d">积分余额 <b style="color:var(--wb-brand);font-size:16px">✦ ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）</div>
       ${isAdmin ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
@@ -2335,6 +2494,7 @@ async function renderAccount() {
     await fetch("/api/auth/logout", { method: "POST" });
     location.reload();
   };
+  document.getElementById("acc-profile").onclick = () => renderProfile();
   document.getElementById("acc-pass").onclick = async () => {
     mBody.innerHTML = `<div class="card-item"><div class="t">修改密码</div>
       <input id="pw-old" type="password" placeholder="原密码">
@@ -2423,6 +2583,9 @@ async function initAuth() {
   if (!st.authed) { showAuth(st.users === 0); return; }
   currentUser = st.user;
   renderUserChip();
+  // 助理身份要在第一条消息渲染之前就位，否则头像会先闪一下默认值
+  assistant = { ...assistant, ...(await fetch("/api/assistant").then(r => r.json()).catch(() => null) || {}) };
+  applyAssistantIdentity();
   // 每人一份任务历史：切到带用户名的 key；首个用户继承旧的公共列表
   SESS_KEY = "wb_sessions:" + st.user.username;
   if (!localStorage.getItem(SESS_KEY) && localStorage.getItem("wb_sessions")) {
@@ -3688,13 +3851,29 @@ function renderAgentPane(pane, s) {
     } }, pane.querySelector("#ag-msg"));
 }
 function renderPersonaPane(pane, s) {
+  const a = { name: "OpenWorkBuddy", avatar: "🤖", ...(s.assistant || {}) };
   pane.innerHTML = `
     <div class="card-item">
+      <div class="t">助理的名字和头像</div>
+      <div class="d" style="margin-bottom:10px">给它起个自己顺口的名字。名字会同时改掉界面标题、侧栏和系统提示词——你喊它这个名字它就认。</div>
+      ${avatarEditorHtml("as", a.avatar, a.name)}
+      <input id="as-name" maxlength="24" placeholder="OpenWorkBuddy" value="${esc(a.name)}" style="margin-top:10px">
+      <div style="margin-top:8px"><button class="btn-brand" id="as-save">保存身份</button><span class="ok-msg" id="as-msg"></span></div>
+    </div>
+    <div class="card-item">
       <div class="t">个性化偏好</div>
-      <div class="d" style="margin-bottom:8px">希望 OpenWorkBuddy 遵循的风格与偏好，会注入每次任务。例如：回复简洁；PPT 用深色科技风；周报署名"张三"。</div>
+      <div class="d" style="margin-bottom:8px">希望它遵循的风格与偏好，会注入每次任务。例如：回复简洁；PPT 用深色科技风；周报署名"张三"。</div>
       <textarea id="ps-text" rows="8" placeholder="例如：所有文档默认用简体中文；数据分析结论放最前面…">${esc(s.persona)}</textarea>
     </div>
     <button class="btn-brand" id="ps-save">保存</button><span class="ok-msg" id="ps-msg"></span>`;
+  const ed = bindAvatarEditor(pane, "as", a.avatar, () => pane.querySelector("#as-name").value.trim() || "OpenWorkBuddy");
+  pane.querySelector("#as-save").onclick = async () => {
+    const msg = pane.querySelector("#as-msg");
+    const ok = await saveSettings({ assistant: { name: pane.querySelector("#as-name").value, avatar: ed.value() } }, msg);
+    if (!ok) return;
+    assistant = await fetch("/api/assistant").then(r => r.json()).catch(() => assistant);
+    applyAssistantIdentity();
+  };
   pane.querySelector("#ps-save").onclick = () => saveSettings({ persona: pane.querySelector("#ps-text").value }, pane.querySelector("#ps-msg"));
 }
 async function renderMemoryPane(pane) {
