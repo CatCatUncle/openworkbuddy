@@ -1288,8 +1288,9 @@ app.post("/api/chat", async (req, res) => {
   const { sessionId, message, mode, regen } = req.body || {};
   if (!sessionId || !message) return res.status(400).json({ error: "缺少 sessionId 或 message" });
   const user = req.user; // authGuard 已挂上
-  if (user && user.credits <= 0) {
-    return res.status(402).json({ error: "积分不足，无法执行任务。请在左下角「账号 · 用量」里充值（管理员）后再试。" });
+  // 积分闸门默认是关的（本地个人用不该被自己的账本拦），开了才查余额
+  if (user && account.creditsEnabled() && user.credits <= 0) {
+    return res.status(402).json({ error: "积分不足，无法执行任务。管理员可以在左下角「账号 · 用量」里充值，或者干脆把「积分限额」关掉。" });
   }
   if (activeRuns.has(sessionId)) {
     return res.status(409).json({ error: "该会话已有任务在运行，可用「插队」把补充说明注入当前任务。" });
@@ -1353,7 +1354,8 @@ app.post("/api/chat", async (req, res) => {
   // 记账：按整个任务（含插队追加轮）的总 tokens 扣积分
   if (user && total.calls > 0) {
     const spent = account.chargeRun(user, { ...total, model: llm.model, provider: llm.provider, source: "web", sessionId });
-    emitFn({ type: "credits", spent, balance: user.credits });
+    // 不限额时 spent 是 0，就别在结果下面挂一行「扣 0 积分」了，那只是噪声
+    if (spent > 0) emitFn({ type: "credits", spent, balance: user.credits });
   }
 
   saveSession(sessionId);
@@ -1426,13 +1428,15 @@ app.post("/api/schedules/:id/run", async (req, res) => {
   }
 });
 
-/** 给 IM / 定时任务的 runtime 包一层记账：消耗记到管理员（首个用户）名下，0 积分时拒跑 */
+/** 给 IM / 定时任务的 runtime 包一层记账：消耗记到管理员（首个用户）名下，开了积分闸门才在 0 分时拒跑 */
 function accountedRuntime(baseRuntime, source) {
   return {
     ...baseRuntime,
     runTask: async (args) => {
       const owner = account.defaultUser();
-      if (owner && owner.credits <= 0) throw new Error("积分不足：请在 Web 端「账号 · 用量」里充值后再用");
+      if (owner && account.creditsEnabled() && owner.credits <= 0) {
+        throw new Error("积分不足：管理员可以在 Web 端「账号 · 用量」里充值，或者把「积分限额」关掉");
+      }
       const r = await baseRuntime.runTask(args);
       if (owner && r && r.usage && r.usage.calls > 0) {
         account.chargeRun(owner, { ...r.usage, model: llm.model, provider: llm.provider, source });
