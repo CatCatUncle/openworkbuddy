@@ -646,7 +646,7 @@
 <div class="auth-mask" id="auth-mask">
   <div class="auth-card">
     <h2 id="auth-title">登录</h2>
-    <div class="sub" id="auth-sub">登录后使用你自己的积分与任务历史</div>
+    <div class="sub" id="auth-sub">登录后使用你自己的任务历史</div>
     <div class="err" id="auth-err"></div>
     <input id="auth-user" placeholder="用户名" autocomplete="username">
     <input id="auth-pass" type="password" placeholder="密码（至少 6 位）" autocomplete="current-password">
@@ -2279,6 +2279,10 @@ function bindAvatarEditor(root, p, initial, fallback) {
 }
 
 // ================= 账号 · 积分 · 用量 =================
+// 积分闸门开没开（服务端 /api/auth/state 说了算，默认没开）。关着的时候整套积分 UI
+// 都不出现——余额、充值、扣分提示，一个不显示：本地个人用根本没有额度这回事。
+let creditsOn = false;
+
 /** 改昵称 / 换头像。登录名不给改：积分和历史用量都挂在它名下 */
 function renderProfile() {
   const u = currentUser || {};
@@ -2320,7 +2324,8 @@ function renderUserChip() {
   const av = avatarBits(currentUser.avatar, currentUser.username);
   chip.innerHTML = `<span class="ava${av.cls ? " " + av.cls : ""}">${av.html}</span>`
     + `<span class="un">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</span>`
-    + `<span class="uc">✦ ${(+currentUser.credits).toLocaleString()}</span>`;
+    // 不限额时不显示余额：一个永远不会动、也拦不住任何事的数字挂在那里只会让人担心
+    + (creditsOn ? `<span class="uc">✦ ${(+currentUser.credits).toLocaleString()}</span>` : "");
   chip.onclick = (e) => { e.stopPropagation(); toggleUserMenu(); };
 }
 document.getElementById("gear-btn").onclick = () => { closeUserMenu(); openModal("settings"); };
@@ -2345,10 +2350,10 @@ function openUserMenu() {
   if (!currentUser) return;
   const av = avatarBits(currentUser.avatar, currentUser.username);
   userMenu.innerHTML = `
-    <div class="um-head" data-act="account" title="点击查看积分 · 用量明细">
+    <div class="um-head" data-act="account" title="点击查看用量明细">
       <span class="ava${av.cls ? " " + av.cls : ""}" style="width:30px;height:30px;border-radius:50%;background:var(--wb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;flex:none;overflow:hidden">${av.html}</span>
       <div style="min-width:0"><div class="n">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</div>
-      <div class="s">✦ ${(+currentUser.credits).toLocaleString()} 积分 · 账号与用量</div></div>
+      <div class="s">${creditsOn ? `✦ ${(+currentUser.credits).toLocaleString()} 积分 · ` : ""}账号与用量</div></div>
     </div>
     <div class="um-i" data-act="profile">🪪 个人资料 <span class="hint">改名字 · 换头像</span></div>
     <div class="um-i" data-act="settings">⚙️ 设置</div>
@@ -2457,6 +2462,7 @@ async function renderAccount() {
     fetch("/api/auth/state").then(r => r.json()).catch(() => ({})),
   ]);
   if (!d) { mBody.innerHTML = '<div class="ab-empty">加载失败（未登录？）</div>'; return; }
+  creditsOn = !!authState.credits_enabled;
   currentUser = d.user; renderUserChip();
   const maxT = Math.max(1, ...d.last7.map(x => x.tokens));
   const isAdmin = d.user.role === "admin";
@@ -2468,38 +2474,46 @@ async function renderAccount() {
         <button id="acc-pass" style="float:right;padding:2px 10px;font-size:12px;margin-right:6px">改密码</button>
         <button id="acc-profile" style="float:right;padding:2px 10px;font-size:12px;margin-right:6px">改名字 / 头像</button>
       </div>
-      <div class="d">积分余额 <b style="color:var(--wb-brand);font-size:16px">✦ ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）</div>
-      ${isAdmin ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+      <div class="d">${creditsOn
+        ? `积分余额 <b style="color:var(--wb-brand);font-size:16px">✦ ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）`
+        : `<b style="color:var(--wb-brand)">不限额</b> · 任务想跑多少跑多少，下面的用量只是给你看花了多少 tokens，不会拦人`}</div>
+      ${isAdmin ? `${creditsOn ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
         <input id="topup-user" placeholder="给谁充（留空=自己）" style="max-width:150px">
         <input id="topup-amt" type="number" placeholder="积分数" style="max-width:110px">
         <button class="btn-brand" id="topup-go" style="padding:6px 14px">充值</button><span class="ok-msg" id="topup-msg"></span>
+      </div>` : ""}
+      <div class="d" style="margin-top:8px">
+        <label style="cursor:pointer"><input type="checkbox" id="credits-on" ${creditsOn ? "checked" : ""} style="vertical-align:-2px"> 开启积分限额</label>
+        · 自己一个人用就别开，它拦不住任何真实开销（key 是你的，账单在服务商那边），只会在你干到一半时把任务掐了。
+        多人共用一个 key、要给成员定额度时才有用
+        <span class="ok-msg" id="credits-on-msg"></span>
       </div>
       <div class="d" style="margin-top:8px">
         <label style="cursor:pointer"><input type="checkbox" id="open-reg" ${authState.open_register ? "checked" : ""} style="vertical-align:-2px"> 允许别人自己注册账号</label>
-        · 关着的时候登录页不给注册入口。挂到公网上又开着的话，谁进来都能领 1000 积分花你的 key
+        · 关着的时候登录页不给注册入口。挂到公网上又开着的话，谁进来都能拿你的 key 跑任务
         <span class="ok-msg" id="open-reg-msg"></span>
       </div>` : ""}
     </div>
     <div class="usage-grid">
-      <div class="usage-cell"><div class="n">${d.today.runs}</div><div class="l">今日任务 · ${d.today.tokens.toLocaleString()} tokens · ${d.today.credits} 积分</div></div>
-      <div class="usage-cell"><div class="n">${d.month.runs}</div><div class="l">本月任务 · ${d.month.tokens.toLocaleString()} tokens · ${d.month.credits} 积分</div></div>
+      <div class="usage-cell"><div class="n">${d.today.runs}</div><div class="l">今日任务 · ${d.today.tokens.toLocaleString()} tokens${creditsOn ? ` · ${d.today.credits} 积分` : ""}</div></div>
+      <div class="usage-cell"><div class="n">${d.month.runs}</div><div class="l">本月任务 · ${d.month.tokens.toLocaleString()} tokens${creditsOn ? ` · ${d.month.credits} 积分` : ""}</div></div>
     </div>
     <div class="card-item">
       <div class="t">近 7 天消耗（tokens）</div>
-      <div class="usage-bars">${d.last7.map(x => `<div class="b" style="height:${Math.round(x.tokens / maxT * 100)}%" title="${x.day}：${x.tokens.toLocaleString()} tokens · ${x.runs} 次 · ${x.credits} 积分"><i>${x.day.slice(5)}</i></div>`).join("")}</div>
+      <div class="usage-bars">${d.last7.map(x => `<div class="b" style="height:${Math.round(x.tokens / maxT * 100)}%" title="${x.day}：${x.tokens.toLocaleString()} tokens · ${x.runs} 次${creditsOn ? ` · ${x.credits} 积分` : ""}"><i>${x.day.slice(5)}</i></div>`).join("")}</div>
       <div style="height:16px"></div>
     </div>
     <div class="card-item">
       <div class="t">最近流水${isAdmin ? "（全员）" : ""}</div>
       <div style="overflow-x:auto"><table class="usage-table">
-        <tr><th>时间</th><th>类型</th>${isAdmin ? "<th>用户</th>" : ""}<th>来源</th><th>tokens</th><th>积分</th><th>模型</th></tr>
+        <tr><th>时间</th><th>类型</th>${isAdmin ? "<th>用户</th>" : ""}<th>来源</th><th>tokens</th>${creditsOn ? "<th>积分</th>" : ""}<th>模型</th></tr>
         ${d.recent.map(e => `<tr>
           <td>${esc((e.ts || "").slice(5, 16).replace("T", " "))}</td>
           <td>${e.kind === "topup" ? "💰 充值" : "任务"}</td>
           ${isAdmin ? `<td>${esc(e.user)}</td>` : ""}
           <td>${e.kind === "topup" ? `by ${esc(e.by || "")}` : esc(SRC_TXT[e.source] || e.source || "")}</td>
           <td>${e.kind === "topup" ? "—" : ((e.prompt || 0) + (e.completion || 0)).toLocaleString()}</td>
-          <td>${e.kind === "topup" ? "+" : "-"}${e.credits}</td>
+          ${creditsOn ? `<td>${e.kind === "topup" ? "+" : "-"}${e.credits}</td>` : ""}
           <td>${esc(e.model || "—")}</td>
         </tr>`).join("") || `<tr><td colspan="7" style="color:var(--wb-text-3)">还没有用量记录</td></tr>`}
       </table></div>
@@ -2525,6 +2539,21 @@ async function renderAccount() {
       if (resp.ok) { msg.textContent = "✅ 已修改"; setTimeout(() => renderAccount(), 800); }
       else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "修改失败"; }
     };
+  };
+  const credOn = document.getElementById("credits-on");
+  if (credOn) credOn.onchange = async () => {
+    const msg = document.getElementById("credits-on-msg");
+    const resp = await fetch("/api/auth/credits-enabled", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credits_enabled: credOn.checked }),
+    }).catch(() => null);
+    const r = resp ? await resp.json().catch(() => ({})) : {};
+    if (resp && resp.ok) {
+      creditsOn = !!r.credits_enabled;
+      msg.style.color = ""; msg.textContent = creditsOn ? "✅ 已开启限额" : "✅ 已改成不限额";
+      renderUserChip();
+      setTimeout(() => renderAccount(), 700); // 整块重画，把余额/充值那些跟着显示或收起来
+    } else { credOn.checked = !credOn.checked; msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "改不动"; }
   };
   const openReg = document.getElementById("open-reg");
   if (openReg) openReg.onchange = async () => {
@@ -2563,8 +2592,8 @@ function applyAuthMode(setup) {
   const reg = authMode === "register";
   document.getElementById("auth-title").textContent = setup ? "创建管理员账号" : reg ? "注册" : "登录";
   document.getElementById("auth-sub").textContent = setup
-    ? "首次使用：第一个注册的账号就是管理员（10000 积分，可给成员充值）"
-    : reg ? "新账号默认为成员（1000 积分）" : "登录后使用你自己的积分与任务历史";
+    ? "首次使用：第一个注册的账号就是管理员（能开号、能改全局设置）"
+    : reg ? (creditsOn ? "新账号默认为成员（1000 积分）" : "新账号默认为成员") : "登录后使用你自己的任务历史";
   document.getElementById("auth-go").textContent = reg ? "注册并登录" : "登录";
   document.getElementById("auth-alt").style.display = setup || !canRegister ? "none" : "";
   document.getElementById("auth-alt").innerHTML = reg
@@ -2594,6 +2623,7 @@ async function initAuth() {
   const st = await fetch("/api/auth/state").then(r => r.json()).catch(() => null);
   if (!st) return; // 服务器没起来时不挡界面
   canRegister = !!st.open_register;
+  creditsOn = !!st.credits_enabled;
   if (!st.authed) { showAuth(st.users === 0); return; }
   currentUser = st.user;
   renderUserChip();

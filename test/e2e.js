@@ -771,6 +771,62 @@ function testAccountStore() {
   console.log("✅ 账本：坏文件不覆盖 / 写盘原子 / 登录限流 / https 认得出");
 }
 
+/**
+ * 积分闸门：默认必须是**关**的。本地个人部署时它拦不住任何真实开销（key 是用户自己的，
+ * 账单在服务商那边），却会在干到一半时把任务掐了，还得自己给自己充值。
+ * 账本落在 data/ 下，所以整段丢进子进程跑，WB_DATA_DIR 指到临时目录——测试绝不能碰真账号。
+ */
+function testCreditsGate() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-credits-"));
+  const script = `
+    const assert = require("assert");
+    const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
+    const { register, loadUsers, saveUsers, loadUsage } = acc._internals;
+    const setOn = (on) => { const st = loadUsers(); st.settings = { ...st.settings, credits_enabled: on }; saveUsers(st); };
+    const balance = (n) => loadUsers().users.find((u) => u.username === n).credits;
+    const run = { prompt: 4000, completion: 1000, calls: 3 }; // 5000 tokens = 5 积分
+
+    const u = register("测试甲", "pw123456");
+    assert.strictEqual(acc.creditsEnabled(), false, "积分闸门默认必须是关的");
+
+    // 关着：一分不扣，余额一动不动，但流水照记（用量还是要能看的）
+    assert.strictEqual(acc.chargeRun(u, { ...run, source: "web" }), 0, "不限额时不该扣分");
+    assert.strictEqual(balance("测试甲"), 10000, "不限额时余额被动了");
+    const flow = loadUsage();
+    assert.strictEqual(flow.length, 1, "不限额时流水没记");
+    assert.strictEqual(flow[0].prompt + flow[0].completion, 5000, "流水里的 tokens 不对");
+    assert.strictEqual(flow[0].credits, 0, "不限额时流水里的积分该是 0");
+
+    // 余额见底也照跑：这就是用户遇到的那个"欠费"，关着闸门时不该再拦
+    const st = loadUsers(); st.users[0].credits = 0; saveUsers(st);
+    assert.strictEqual(acc.chargeRun(u, { ...run, source: "cli" }), 0, "余额 0 时不限额仍不该扣");
+    assert.strictEqual(balance("测试甲"), 0, "余额 0 不该被扣成负数");
+
+    // 开了才按老规矩走：多人共用一个 key 时还得能定额度
+    setOn(true);
+    assert.strictEqual(acc.creditsEnabled(), true, "开关打开后没生效");
+    saveUsers(Object.assign(loadUsers(), { users: loadUsers().users.map((x) => ({ ...x, credits: 8 })) }));
+    assert.strictEqual(acc.chargeRun(u, { ...run, source: "web" }), 5, "开了闸门该扣 5 积分");
+    assert.strictEqual(balance("测试甲"), 3, "开了闸门余额没扣对");
+    assert.strictEqual(u.credits, 3, "调用方拿到的余额没同步");
+
+    // 关回去，闸门立刻失效——用户不用重启应用
+    setOn(false);
+    assert.strictEqual(acc.chargeRun(u, { ...run, source: "web" }), 0, "关回去还在扣");
+    assert.strictEqual(balance("测试甲"), 3, "关回去后余额又被动了");
+    console.log("OK");
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], {
+    env: { ...process.env, WB_DATA_DIR: dir },
+    encoding: "utf8",
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "积分闸门测试失败：\n" + (r.stderr || r.stdout));
+  console.log("✅ 积分：默认不限额（余额 0 也照跑、不扣分但记流水）/ 开了才扣才拦 / 开关即时生效");
+}
+
 // 头像校验：用户头像和助理头像共用这一份规则，它松了两边一起松
 function testAvatarRules() {
   const { normalizeAvatar } = require("../account")._internals;
@@ -1181,6 +1237,7 @@ async function main() {
   testJsonStore();
   testImSessionStore();
   testAccountStore();
+  testCreditsGate();
   testAvatarRules();
   testPathSafety();
   testDeliverableGate();

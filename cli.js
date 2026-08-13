@@ -126,7 +126,7 @@ function printSummary(state) {
     const secs = Math.round((u.elapsed_ms || 0) / 1000);
     console.log(dim(`\n✧ 共消耗 ${(u.prompt + u.completion).toLocaleString()} tokens（输入 ${u.prompt.toLocaleString()} / 输出 ${u.completion.toLocaleString()}）· ${u.calls} 次调用 · ${secs}s · ${u.provider}（${u.model}）`));
   }
-  if (state.credits) {
+  if (state.credits && state.credits.spent > 0) {
     console.log(dim(`✦ 本次扣 ${state.credits.spent} 积分 · 余额 ${state.credits.balance.toLocaleString()}`));
   }
   if (state.files && state.files.length) {
@@ -136,10 +136,10 @@ function printSummary(state) {
 
 // ---------- 执行一轮任务（Ctrl+C 停止当前任务而不是直接退出） ----------
 async function runOnce(runtime, text, mode) {
-  // 积分闸门：CLI 消耗记在管理员（首个注册用户）名下；没注册过用户则不拦（老用法兼容）
+  // 积分闸门：默认是关的（本地个人用不限额），开了才拦。CLI 消耗记在管理员（首个注册用户）名下
   const owner = account.defaultUser();
-  if (owner && owner.credits <= 0) {
-    console.error(red(`积分不足（${owner.username} 余额 0），请在 Web 端「账号 · 用量」里充值后再用。`));
+  if (owner && account.creditsEnabled() && owner.credits <= 0) {
+    console.error(red(`积分不足（${owner.username} 余额 0）：去 Web 端「账号 · 用量」里充值，或者把「积分限额」关掉。`));
     return;
   }
   sess.history.push({ role: "user", content: text });

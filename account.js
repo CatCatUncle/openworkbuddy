@@ -47,6 +47,15 @@ function loadUsers() {
 function openRegister(st) {
   return !!(st || loadUsers()).settings.open_register;
 }
+/**
+ * 积分闸门开不开。**默认不开**——本地个人部署时它只会在你干到一半的时候把任务拦下来，
+ * 余额掉到 0 还得自己给自己充值，纯添堵：key 是你自己的，账单在服务商那边，
+ * 这本账拦不住任何真实开销。只有多人共用一个 key、要给成员定额度时才需要打开。
+ * 用量流水跟这个开关无关，永远照记——那是给你看花了多少 tokens 的账，不是闸。
+ */
+function creditsEnabled(st) {
+  return !!(st || loadUsers()).settings.credits_enabled;
+}
 function saveUsers(state) {
   writeStoreAtomic(USERS_FILE, state, true);
 }
@@ -239,15 +248,16 @@ function creditsFor(usage) {
 
 /**
  * 一次任务结束后记账：按 tokens 扣积分 + 写用量流水。
+ * 积分闸门关着（默认）时只写流水不扣数，返回 0——用量该看还得看，额度不该拦人。
  * @param user  users.json 里的用户对象（会同步更新其 credits 字段）
  * @param info  { prompt, completion, calls, elapsed_ms, model, provider, source, sessionId }
- * @returns 本次扣掉的积分数
+ * @returns 本次扣掉的积分数（不限额时为 0）
  */
 function chargeRun(user, info) {
-  const spent = creditsFor(info);
   const st = loadUsers();
+  const spent = creditsEnabled(st) ? creditsFor(info) : 0;
   const u = st.users.find((x) => x.username === user.username);
-  if (u) {
+  if (u && spent) {
     u.credits = Math.max(0, (u.credits || 0) - spent);
     saveUsers(st);
     user.credits = u.credits; // 让调用方拿到最新余额
@@ -336,7 +346,13 @@ function createRouter() {
   router.get("/api/auth/state", (req, res) => {
     const st = loadUsers();
     const user = userFromReq(req);
-    res.json({ users: st.users.length, authed: !!user, user: publicUser(user), open_register: openRegister(st) });
+    res.json({
+      users: st.users.length,
+      authed: !!user,
+      user: publicUser(user),
+      open_register: openRegister(st),
+      credits_enabled: creditsEnabled(st),
+    });
   });
 
   router.post("/api/auth/register", (req, res) => {
@@ -443,6 +459,17 @@ function createRouter() {
     res.json({ ok: true, open_register: st.settings.open_register });
   });
 
+  /** 开不开积分闸门：默认关（不限额），只有管理员能改 */
+  router.post("/api/auth/credits-enabled", (req, res) => {
+    const user = userFromReq(req);
+    if (!user) return res.status(401).json({ error: "未登录" });
+    if (user.role !== "admin") return res.status(403).json({ error: "只有管理员能改" });
+    const st = loadUsers();
+    st.settings = { ...(st.settings || {}), credits_enabled: !!(req.body || {}).credits_enabled };
+    saveUsers(st);
+    res.json({ ok: true, credits_enabled: st.settings.credits_enabled });
+  });
+
   router.get("/api/usage", (req, res) => {
     const user = userFromReq(req);
     if (!user) return res.status(401).json({ error: "未登录" });
@@ -470,10 +497,11 @@ module.exports = {
   defaultUser,
   userFromReq,
   creditsFor,
+  creditsEnabled,
   chargeRun,
   usageSummary,
   authGuard,
   createRouter,
   // 下面这些只给测试用：账本读写和登录闸得能在临时目录里单独验，不然一跑测试就动到真账号
-  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps, normalizeAvatar },
+  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps, normalizeAvatar, register, loadUsers, saveUsers, loadUsage },
 };
