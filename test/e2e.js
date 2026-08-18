@@ -827,6 +827,56 @@ function testCreditsGate() {
   console.log("✅ 积分：默认不限额（余额 0 也照跑、不扣分但记流水）/ 开了才扣才拦 / 开关即时生效");
 }
 
+/**
+ * 改登录名：挂在旧名字底下的东西必须一起搬走，搬漏一样就是历史对不上人。
+ * 同样丢子进程里跑，WB_DATA_DIR 指到临时目录，不碰真账号。
+ */
+function testRenameLogin() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-rename-"));
+  const script = `
+    const assert = require("assert");
+    const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
+    const { register, renameUser, loadUsers, saveUsers, loadUsage, issueToken } = acc._internals;
+    const names = () => loadUsers().users.map((u) => u.username);
+
+    register("老名字", "pw123456");
+    register("别人", "pw123456");
+    const st0 = loadUsers(); st0.settings = { credits_enabled: true }; saveUsers(st0);
+    const me = loadUsers().users[0];
+    acc.chargeRun(me, { prompt: 1000, completion: 0, calls: 1, source: "web" });
+    const tok = issueToken("老名字");
+
+    assert.throws(() => renameUser("老名字", "别人"), /已经有人用/, "撞名没挡住");
+    assert.throws(() => renameUser("老名字", "a"), /2-24/, "太短的名字没挡住");
+    assert.throws(() => renameUser("老名字", "带 空格"), /2-24/, "带空格的名字没挡住");
+    assert.strictEqual(renameUser("老名字", "老名字"), "老名字", "改成同一个名字不该报错");
+
+    renameUser("老名字", "新名字");
+    assert.deepStrictEqual(names(), ["新名字", "别人"], "账本里的名字没改过来");
+    assert.strictEqual(loadUsers().users[0].credits, 9999, "改名把余额弄丢了");
+    assert.strictEqual(loadUsers().tokens[tok].user, "新名字",
+      "登录令牌没跟着搬——用户改完名当场被踢下线，还得重登一次");
+    assert.strictEqual(loadUsage()[0].user, "新名字", "用量流水还挂在旧名字底下");
+
+    // 充值记录里的 by（谁充的）也是个登录名，一样得搬
+    const usage = loadUsage(); usage.unshift({ kind: "topup", user: "别人", by: "新名字", credits: 5 });
+    require("fs").writeFileSync(require("path").join(process.env.WB_DATA_DIR, "usage.json"), JSON.stringify(usage));
+    renameUser("新名字", "更新的名字");
+    assert.strictEqual(loadUsage()[0].by, "更新的名字", "充值记录里的「谁充的」没搬");
+    assert.strictEqual(names()[0], "更新的名字", "第二次改名没生效");
+    console.log("OK");
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], {
+    env: { ...process.env, WB_DATA_DIR: dir },
+    encoding: "utf8",
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "改登录名测试失败：\n" + (r.stderr || r.stdout));
+  console.log("✅ 改登录名：撞名/不合法挡得住 / 账本·登录令牌·用量流水（含充值的 by）一起搬走");
+}
+
 // 头像校验：用户头像和助理头像共用这一份规则，它松了两边一起松
 function testAvatarRules() {
   const { normalizeAvatar } = require("../account")._internals;
@@ -1238,6 +1288,7 @@ async function main() {
   testImSessionStore();
   testAccountStore();
   testCreditsGate();
+  testRenameLogin();
   testAvatarRules();
   testPathSafety();
   testDeliverableGate();
