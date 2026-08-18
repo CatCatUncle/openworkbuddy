@@ -134,6 +134,33 @@ function register(username, password) {
   return user;
 }
 
+/**
+ * 改登录名。原来这儿是写死不给改的，理由写的是"历史用量都挂在它名下"——
+ * 那不是规矩，是把偷懒说成了规矩：真该做的是把挂在它名下的东西一起搬走。
+ * 这里搬账本里的用户、还在有效期内的登录令牌（不搬的话改完当场被踢下线）、
+ * 用量流水（含充值记录的 by）。会话文件的归属由 server 那边接着搬，那是它的地盘。
+ */
+function renameUser(oldName, newName) {
+  newName = String(newName || "").trim();
+  if (!/^[\w一-龥.-]{2,24}$/.test(newName)) throw new Error("用户名需 2-24 位（中英文、数字、_.-）");
+  const st = loadUsers();
+  const u = st.users.find((x) => x.username === oldName);
+  if (!u) throw new Error("账号不存在");
+  if (newName === oldName) return oldName;
+  if (st.users.some((x) => x.username === newName)) throw new Error("这个登录名已经有人用了");
+  u.username = newName;
+  for (const t of Object.keys(st.tokens)) if (st.tokens[t] && st.tokens[t].user === oldName) st.tokens[t].user = newName;
+  saveUsers(st);
+  const usage = loadUsage();
+  let hit = 0;
+  for (const e of usage) {
+    if (e.user === oldName) { e.user = newName; hit++; }
+    if (e.by === oldName) { e.by = newName; hit++; }
+  }
+  if (hit) saveUsage(usage);
+  return newName;
+}
+
 function verify(username, password) {
   const st = loadUsers();
   const user = st.users.find((u) => u.username === String(username || "").trim());
@@ -340,8 +367,13 @@ function authGuard(req, res, next) {
   next();
 }
 
-function createRouter() {
+/**
+ * @param opts.onRename  改登录名之后的回调 (from, to)：会话文件归 server 管，
+ *   它得把那边的归属一起搬走，不然历史任务就成了没主的。
+ */
+function createRouter(opts) {
   const router = express.Router();
+  const onRename = (opts || {}).onRename;
 
   router.get("/api/auth/state", (req, res) => {
     const st = loadUsers();
@@ -432,6 +464,29 @@ function createRouter() {
     res.json({ ok: true, user: publicUser(u) });
   });
 
+  /** 改登录名。改的是身份本身，比改昵称重得多，所以要拿密码确认一次 */
+  router.post("/api/auth/username", (req, res) => {
+    const user = userFromReq(req);
+    if (!user) return res.status(401).json({ error: "未登录" });
+    const { username, password } = req.body || {};
+    if (!verify(user.username, password)) return res.status(400).json({ error: "密码不对" });
+    try {
+      const from = user.username;
+      const to = renameUser(from, username);
+      if (to !== from && onRename) {
+        try {
+          onRename(from, to);
+        } catch (e) {
+          // 名字已经改完了，会话归属没搬动不该让整个操作看起来失败——但必须留痕，不能装没事
+          console.warn(`[账号] ${from} → ${to} 的会话归属没搬动：${e.message}`);
+        }
+      }
+      res.json({ ok: true, user: publicUser(loadUsers().users.find((x) => x.username === to)) });
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
   router.post("/api/auth/password", (req, res) => {
     const user = userFromReq(req);
     if (!user) return res.status(401).json({ error: "未登录" });
@@ -503,5 +558,5 @@ module.exports = {
   authGuard,
   createRouter,
   // 下面这些只给测试用：账本读写和登录闸得能在临时目录里单独验，不然一跑测试就动到真账号
-  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps, normalizeAvatar, register, loadUsers, saveUsers, loadUsage },
+  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps, normalizeAvatar, register, renameUser, loadUsers, saveUsers, loadUsage, verify, issueToken },
 };

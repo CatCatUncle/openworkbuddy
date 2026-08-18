@@ -2283,7 +2283,7 @@ function bindAvatarEditor(root, p, initial, fallback) {
 // 都不出现——余额、充值、扣分提示，一个不显示：本地个人用根本没有额度这回事。
 let creditsOn = false;
 
-/** 改昵称 / 换头像。登录名不给改：积分和历史用量都挂在它名下 */
+/** 改昵称 / 换头像 / 改登录名（要密码确认，历史会话和用量流水会一起搬过去） */
 function renderProfile() {
   const u = currentUser || {};
   mTitle.textContent = "🪪 个人资料";
@@ -2294,12 +2294,23 @@ function renderProfile() {
     </div>
     <div class="card-item">
       <div class="t">昵称</div>
-      <div class="d" style="margin-bottom:8px">界面上显示的名字，留空就用登录名。登录名 <b>${esc(u.username)}</b> 不能改——改了积分和历史用量就对不上人了。</div>
+      <div class="d" style="margin-bottom:8px">界面上显示的名字，留空就用登录名。</div>
       <input id="pf-nick" maxlength="24" placeholder="${esc(u.username)}" value="${esc(u.nickname || "")}">
     </div>
     <button class="btn-brand" id="pf-save">保存</button>
     <button id="pf-back" style="padding:6px 14px;margin-left:6px">返回账号</button>
-    <span class="ok-msg" id="pf-msg"></span>`;
+    <span class="ok-msg" id="pf-msg"></span>
+    <div class="card-item" style="margin-top:14px">
+      <div class="t">登录名</div>
+      <div class="d" style="margin-bottom:8px">登录时输的那个名字，现在是 <b>${esc(u.username)}</b>。
+        改它等于换身份，所以要拿密码确认一次；历史会话、用量流水、登录状态都会一起搬过去，不用重新登录。</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="pf-uname" maxlength="24" placeholder="新的登录名" value="${esc(u.username)}" style="max-width:180px">
+        <input id="pf-upass" type="password" placeholder="当前密码" style="max-width:180px">
+        <button id="pf-uname-go" style="padding:6px 14px">改登录名</button>
+        <span class="ok-msg" id="pf-uname-msg"></span>
+      </div>
+    </div>`;
   const ed = bindAvatarEditor(mBody, "pf", u.avatar, () => mBody.querySelector("#pf-nick").value.trim() || u.username);
   mBody.querySelector("#pf-back").onclick = () => { mTitle.textContent = "👤 账号 · 用量"; renderAccount(); };
   mBody.querySelector("#pf-save").onclick = async () => {
@@ -2315,6 +2326,24 @@ function renderProfile() {
       msg.style.color = "";
       msg.textContent = "✅ 已保存";
     } else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "保存失败"; }
+  };
+  mBody.querySelector("#pf-uname-go").onclick = async () => {
+    const msg = mBody.querySelector("#pf-uname-msg");
+    const name = mBody.querySelector("#pf-uname").value.trim();
+    if (name === u.username) { msg.style.color = ""; msg.textContent = "跟现在一样，没改"; return; }
+    const resp = await fetch("/api/auth/username", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: name, password: mBody.querySelector("#pf-upass").value }),
+    }).catch(() => null);
+    const r = resp ? await resp.json().catch(() => ({})) : {};
+    if (resp && resp.ok) {
+      currentUser = r.user;
+      renderUserChip();
+      msg.style.color = "";
+      msg.textContent = `✅ 已改成 ${r.user.username}`;
+      mBody.querySelector("#pf-upass").value = "";
+      setTimeout(() => renderProfile(), 900); // 重画一遍，把"现在是 xxx"那句更新掉
+    } else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "改不动"; }
   };
 }
 function renderUserChip() {

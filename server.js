@@ -139,7 +139,28 @@ function recordingEmit(send, events, sessionId) {
 const app = express();
 app.use(express.json({ limit: "60mb" }));
 app.use(express.static(path.join(__dirname, "public")));
-app.use(account.createRouter()); // /api/auth/* /api/usage /api/credits/*
+// /api/auth/* /api/usage /api/credits/*
+app.use(
+  account.createRouter({
+    // 账号改了登录名，历史会话的归属得跟着走，不然那些任务就成了没主的（列表里直接消失）。
+    // 内存和磁盘两头都要改：只改盘上的，下一次 saveSession 会拿内存里的旧名字盖回去。
+    onRename: (from, to) => {
+      for (const s of sessions.values()) if (s && s.user === from) s.user = to;
+      let files = 0;
+      for (const f of fs.existsSync(SESS_DIR) ? fs.readdirSync(SESS_DIR) : []) {
+        if (!f.endsWith(".json")) continue;
+        const p = path.join(SESS_DIR, f);
+        const s = store.readJson(p, null);
+        if (s && s.user === from) {
+          s.user = to;
+          store.writeJsonAtomic(p, s);
+          files++;
+        }
+      }
+      console.log(`[账号] 登录名 ${from} → ${to}，${files} 条会话的归属已迁移`);
+    },
+  })
+);
 app.use(account.authGuard); // 其余 /api/* 与 /im/*（除外部回调）需要登录
 
 let runtime; // MCP 启动后创建
