@@ -28,6 +28,8 @@
  */
 
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const notify = require("./notify");
 const { createQQConnection } = require("./im-qq");
 const { createWecomApp, createWechatMp } = require("./im-wechat");
@@ -60,12 +62,21 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     lastActive.set(sessionKey, Date.now());
   }
 
-  // ---------- IM 消息日志（助理模式面板展示，环形缓冲最多 200 条） ----------
+  // ---------- IM 消息日志（助理模式面板展示，环形缓冲最多 200 条，落盘防重启丢历史） ----------
 
-  const imLog = [];
+  const IM_LOG_FILE = path.join(__dirname, "data", "im-log.json");
+  const imLog = (() => {
+    try { return JSON.parse(fs.readFileSync(IM_LOG_FILE, "utf-8")).slice(-200); } catch { return []; }
+  })();
+  let imLogTimer = null;
   function logIm(channel, dir, text, extra = {}) {
     imLog.push({ ts: new Date().toISOString(), channel, dir, text: String(text || "").slice(0, 500), ...extra });
     if (imLog.length > 200) imLog.splice(0, imLog.length - 200);
+    // 攒 500ms 再写，一轮任务的进出两条只落一次盘
+    if (!imLogTimer) imLogTimer = setTimeout(() => {
+      imLogTimer = null;
+      fs.writeFile(IM_LOG_FILE, JSON.stringify(imLog), () => {});
+    }, 500);
   }
 
   // ---------- 飞书 token / 发消息 ----------
@@ -555,6 +566,29 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       await pushWecom(`【OpenWorkBuddy·任务完成】\n任务：${message.slice(0, 80)}\n${(finalText || "").slice(0, 500)}`);
       res.json({ reply: finalText, files });
     } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // 助理页里直接对话：走「local」通道，与 IM 消息同一份日志、同一套会话闲置重置逻辑。
+  // 不在 PUBLIC_IM 名单里，天然要求已登录，不存在被公网白嫖执行任务的口子。
+  router.post("/im/local", async (req, res) => {
+    const message = String((req.body || {}).message || "").trim();
+    if (!message) return res.status(400).json({ error: "缺少 message" });
+    logIm("local", "in", message);
+    const sessionKey = "local_assist";
+    maybeResetIdleSession(sessionKey, "local");
+    if (!sessions.has(sessionKey)) sessions.set(sessionKey, []);
+    const history = sessions.get(sessionKey);
+    history.push({ role: "user", content: message });
+    saveSession(sessionKey);
+    try {
+      const { finalText } = await runtime.runTask({ history });
+      saveSession(sessionKey);
+      logIm("local", "out", finalText || "(空回复)");
+      res.json({ reply: finalText });
+    } catch (e) {
+      logIm("local", "error", e.message);
       res.status(500).json({ error: e.message });
     }
   });

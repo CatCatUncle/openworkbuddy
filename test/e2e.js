@@ -691,6 +691,360 @@ async function testSchedulerRuntime() {
   console.log("✅ 定时任务运行时：睡过头补跑一次 / 不叠跑 / 结果真落盘");
 }
 
+/**
+ * 权限档位（照着 Claude Code 那套做的：档位 + 记住的批准）。
+ * 这里守的是三条底线：**auto 必须等价于改造前的老行为**（不能因为加了档位把默认变严或变松）、
+ * **文件黑名单在任何档位下都拦得住**（全自动不等于把 ~/.ssh 交出去）、
+ * **记住的批准要按「命令+子命令」记**（批了 git status 不等于批了 git push --force）。
+ */
+function testPermissionModes() {
+  const security = require("../security");
+  const base = { ...security.DEFAULTS };
+  const mode = (m) => ({ ...base, permission_mode: m });
+
+  // 默认档就是 auto，且行为和老版本一致
+  assert.strictEqual(security.permissionMode(base), "auto", "默认档位不是 auto");
+  assert.strictEqual(security.permissionMode({ ...base, permission_mode: "瞎写的" }), "auto", "非法档位没有回落到 auto");
+  assert.strictEqual(security.checkCommand(base, "ls -la").action, "allow");
+  assert.strictEqual(security.checkCommand(base, "rm -rf ~/x").action, "ask");
+  assert.strictEqual(security.checkWrite(base, "a.md").action, "allow", "auto 档不该拦写文件");
+
+  // 只看不动：一条都不放
+  assert.strictEqual(security.checkWrite(mode("plan"), "a.md").action, "deny");
+  assert.strictEqual(security.checkCommand(mode("plan"), "ls").action, "deny");
+  assert.strictEqual(security.checkCode(mode("plan"), "1+1").action, "deny");
+
+  // 每步都问：普通命令也要问，而且要带上「以后别再问这类」的规则
+  const askLs = security.checkCommand(mode("ask"), "ls -la");
+  assert.strictEqual(askLs.action, "ask");
+  assert.strictEqual(askLs.ruleKey, "ls", "ask 档给出的规则粒度不对");
+  assert.strictEqual(security.checkWrite(mode("ask"), "a.md").action, "ask");
+  assert.strictEqual(security.checkWrite(mode("ask"), "a.md").ruleKey, "write:*");
+
+  // 全自动：名单外的也不问，但黑名单和用户关掉的运行时照样拦
+  assert.strictEqual(security.checkCommand(mode("full"), "rm -rf ~/x").action, "allow");
+  assert.strictEqual(security.checkCommand(mode("full"), "cat ~/.ssh/id_rsa").action, "ask", "全自动把文件黑名单也放过去了");
+  assert.strictEqual(security.checkCode(mode("full"), 'fs.readFileSync("~/.ssh/id_rsa")').action, "ask", "全自动把代码碰黑名单也放过去了");
+  assert.strictEqual(
+    security.checkCommand({ ...mode("full"), runtime_python: false }, "python3 x.py").action,
+    "deny",
+    "用户明确关掉的运行时被全自动档打开了"
+  );
+  // 放行名单优先级要高于运行时开关（用户手写进名单的那条是更明确的意思表示）
+  assert.strictEqual(
+    security.checkCommand({ ...base, runtime_python: false, cmd_allow: ["python3 x.py"] }, "python3 x.py").action,
+    "allow",
+    "显式放行名单没能压过运行时开关"
+  );
+
+  // 规则粒度：批一个不等于批一片
+  assert.strictEqual(security.ruleFor("git status"), "git status");
+  assert.strictEqual(security.ruleFor("git push --force origin main"), "git push");
+  assert.strictEqual(security.ruleFor("rm -rf ~/x"), "rm");
+  assert.strictEqual(security.ruleFor("FOO=1 /bin/rm -rf ~/x"), "rm", "包装/环境变量前缀没剥干净");
+
+  // 本会话记住的批准：批过就不再问，清掉就恢复问
+  security.clearSessionAllow();
+  assert.strictEqual(security.checkCommand(base, "rm -rf ~/x").action, "ask");
+  security.addSessionAllow("rm");
+  assert.strictEqual(security.checkCommand(base, "rm -rf ~/x").action, "allow", "本会话放行没生效");
+  assert.strictEqual(security.checkCommand(base, "cat ~/.ssh/id_rsa").action, "ask", "本会话放行把黑名单也放过去了");
+  security.clearSessionAllow();
+  assert.strictEqual(security.checkCommand(base, "rm -rf ~/x").action, "ask", "清掉之后还在放行");
+
+  // resolveApproval 现在返回对象，并且只有 session/always 才写进记忆
+  const pending = security.requestApproval("命令", "rm -rf ~/x", { timeoutMs: 5000, rule: "删除保护", ruleKey: "rm" });
+  const id = security.listApprovals().find((a) => a.ruleKey === "rm").id;
+  const r1 = security.resolveApproval(id, true, "once");
+  assert.strictEqual(r1.ok, true);
+  assert.deepStrictEqual(security.listSessionAllow(), [], "once 不该被记住");
+  const p2 = security.requestApproval("命令", "rm -rf ~/y", { timeoutMs: 5000, ruleKey: "rm" });
+  const id2 = security.listApprovals()[0].id;
+  const r2 = security.resolveApproval(id2, true, "session");
+  assert.strictEqual(r2.ruleKey, "rm");
+  assert.deepStrictEqual(security.listSessionAllow(), ["rm"], "session 没被记住");
+  security.clearSessionAllow();
+  return Promise.all([pending, p2]).then(() => {
+    console.log("✅ 权限档位：auto 等价老行为 / plan 全拒 / ask 全问且带规则 / full 也压不过黑名单与关掉的运行时 / 批准按命令+子命令记");
+  });
+}
+
+/**
+ * 改代码这条链路：edit_file 精确替换、search_files 找调用点、read_file 只读一段。
+ * 重点不是"能改"，而是**改不明白的时候必须报清楚**——匹配不到、匹配到多处，
+ * 都不许闷头改一个地方了事，那是把用户的文件改坏了还告诉他成功了。
+ * 丢子进程跑：要改工作目录、要改记忆目录，都不能碰真的。
+ */
+async function testCodingTools() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-code-"));
+  const ws = path.join(dir, "ws");
+  const script = `
+    const assert = require("assert");
+    const fs = require("fs"), path = require("path");
+    const tools = require(${JSON.stringify(path.join(__dirname, "..", "tools.js"))});
+    const security = require(${JSON.stringify(path.join(__dirname, "..", "security.js"))});
+    const ws = ${JSON.stringify(ws)};
+    tools.setWorkspaceDir(ws);
+    const call = (n, i, o) => tools.executeTool(n, i, o || {});
+    (async () => {
+      fs.writeFileSync(path.join(ws, "app.js"), "function foo() {\\n  return 1;\\n}\\nfoo();\\nfoo();\\n");
+
+      // 精确替换：改一处，别的不动
+      let r = await call("edit_file", { path: "app.js", old_text: "return 1;", new_text: "return 2;" });
+      assert.strictEqual(r.isError, false, r.content);
+      assert.ok(/第 2 行/.test(r.content), "没说清楚改的是哪一行：" + r.content);
+      assert.ok(fs.readFileSync(path.join(ws, "app.js"), "utf8").includes("return 2;"));
+
+      // 匹配到多处：必须拒绝并说明白，不许挑一个改
+      r = await call("edit_file", { path: "app.js", old_text: "foo()", new_text: "bar()" });
+      assert.strictEqual(r.isError, true, "不唯一的替换居然成功了");
+      assert.ok(/3 次|不唯一/.test(r.content), r.content);
+      assert.strictEqual(fs.readFileSync(path.join(ws, "app.js"), "utf8").includes("bar()"), false, "拒绝了却还是改了文件");
+
+      // 明确要全改才全改
+      r = await call("edit_file", { path: "app.js", old_text: "foo()", new_text: "bar()", replace_all: true });
+      assert.strictEqual(r.isError, false, r.content);
+      assert.strictEqual((fs.readFileSync(path.join(ws, "app.js"), "utf8").match(/bar\\(\\)/g) || []).length, 3);
+
+      // 匹配不到：要给下一步怎么办，不是干巴巴一句失败
+      r = await call("edit_file", { path: "app.js", old_text: "return 42;", new_text: "x" });
+      assert.strictEqual(r.isError, true);
+      assert.ok(/read_file/.test(r.content), "没告诉模型下一步该干嘛：" + r.content);
+
+      // 文件不存在 → 指向 write_file
+      r = await call("edit_file", { path: "没有这个.js", old_text: "a", new_text: "b" });
+      assert.strictEqual(r.isError, true);
+      assert.ok(/write_file/.test(r.content), r.content);
+
+      // 搜索：找得到、带行号、能按扩展名缩范围
+      fs.mkdirSync(path.join(ws, "sub"), { recursive: true });
+      fs.writeFileSync(path.join(ws, "sub", "b.md"), "调用 bar() 的说明\\n");
+      fs.mkdirSync(path.join(ws, "node_modules", "junk"), { recursive: true });
+      fs.writeFileSync(path.join(ws, "node_modules", "junk", "c.js"), "bar()\\n");
+      r = await call("search_files", { query: "bar()" });
+      assert.ok(/app\\.js:1:/.test(r.content), "搜索没带文件:行号：" + r.content);
+      assert.ok(/sub\\/b\\.md/.test(r.content), "没搜子目录");
+      assert.strictEqual(/node_modules/.test(r.content), false, "搜到 node_modules 里去了");
+      r = await call("search_files", { query: "bar()", ext: "md" });
+      assert.strictEqual(/app\\.js/.test(r.content), false, "ext 过滤没生效");
+      r = await call("search_files", { query: "绝对搜不到的东西" });
+      assert.ok(/没搜到/.test(r.content), r.content);
+
+      // 只读一段 + 行号
+      r = await call("read_file", { path: "app.js", start_line: 2, end_line: 2 });
+      assert.ok(/^（app\\.js 第 2-2 行/.test(r.content), r.content);
+      assert.ok(/2\\t\\s+return 2;/.test(r.content), "读回来的行没带原缩进和行号：" + r.content);
+      r = await call("read_file", { path: "app.js", start_line: 999 });
+      assert.strictEqual(r.isError, true, "越界行号该报错");
+
+      // 列目录：depth 能一次看清
+      r = await call("list_files", { depth: 2 });
+      assert.ok(/sub\\/b\\.md/.test(r.content), "depth=2 没展开子目录：" + r.content);
+      r = await call("list_files", {});
+      assert.strictEqual(/sub\\/b\\.md/.test(r.content), false, "默认就递归了，会刷屏");
+
+      // 覆盖已有文件要说清楚是覆盖（并提醒该用 edit_file）
+      r = await call("write_file", { path: "app.js", content: "x" });
+      assert.ok(/已覆盖/.test(r.content) && /edit_file/.test(r.content), r.content);
+      r = await call("write_file", { path: "新的.md", content: "x" });
+      assert.ok(/已新建/.test(r.content), r.content);
+
+      // 只看不动档：写和改都要被拦住
+      const plan = { ...security.DEFAULTS, permission_mode: "plan" };
+      r = await call("write_file", { path: "app.js", content: "y" }, { security: plan });
+      assert.strictEqual(r.isError, true, "只看不动档还能写文件");
+      r = await call("edit_file", { path: "app.js", old_text: "x", new_text: "y" }, { security: plan });
+      assert.strictEqual(r.isError, true, "只看不动档还能改文件");
+      assert.strictEqual(fs.readFileSync(path.join(ws, "app.js"), "utf8"), "x", "被拦了文件却变了");
+
+      // 记忆工具挂在同一条链路上
+      r = await call("remember", { text: "周报只要三段：进展/问题/下周计划" }, { memory: { user: "甲" } });
+      assert.strictEqual(r.isError, false, r.content);
+      r = await call("remember", { text: "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456" }, { memory: { user: "甲" } });
+      assert.strictEqual(r.isError, true, "密钥被记进记忆了");
+      r = await call("forget", { text: "周报" }, { memory: { user: "甲" } });
+      assert.strictEqual(r.isError, false, r.content);
+      console.log("OK");
+    })().catch((e) => { console.error(e); process.exit(1); });
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], {
+    env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") },
+    encoding: "utf8",
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "改代码工具测试失败：\n" + (r.stderr || r.stdout));
+  console.log("✅ 改代码工具：精确替换（不唯一/找不到都报清楚且不误改）· 全文搜索跳依赖目录 · 只读一段 · 覆盖有提示 · 只看不动档拦得住");
+}
+
+/**
+ * 交付质量这条链路：写完自检 + 网页验收。
+ *
+ * "改完记得自检"写在提示词里是没用的，模型该忘还是忘，坏文件照样交出去。
+ * 所以把自检压进工具本身：语法坏了、围栏没闭合、网页引了外链 CDN，写完当场顶回去。
+ * 这里守的就是**坏东西不许被判成"已生成"**。
+ */
+async function testDeliverableQuality() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-deliver-"));
+  const ws = path.join(dir, "ws");
+  const script = `
+    const assert = require("assert");
+    const fs = require("fs"), path = require("path");
+    const tools = require(${JSON.stringify(path.join(__dirname, "..", "tools.js"))});
+    tools.setWorkspaceDir(${JSON.stringify(ws)});
+    const ws = ${JSON.stringify(ws)};
+    const call = (n, i) => tools.executeTool(n, i, {});
+    (async () => {
+      // 长文档分节续写：append 不能把前文冲掉
+      let r = await call("write_file", { path: "doc.md", content: "# 标题\\n" });
+      assert.strictEqual(r.isError, false, r.content);
+      r = await call("write_file", { path: "doc.md", content: "## 第一节\\n正文\\n", append: true });
+      assert.strictEqual(r.isError, false, r.content);
+      assert.ok(/已追加/.test(r.content), "追加没说清楚是追加：" + r.content);
+      const doc = fs.readFileSync(path.join(ws, "doc.md"), "utf8");
+      assert.ok(doc.startsWith("# 标题") && doc.includes("第一节"), "append 把前文冲掉了：" + doc);
+
+      // Markdown 代码围栏没闭合 → 界面会把后面正文整块吞掉，必须报出来
+      r = await call("write_file", { path: "bad.md", content: "# X\\n\\n\`\`\`js\\nconst a = 1;\\n" });
+      assert.strictEqual(r.isError, true, "围栏没闭合却判成功了");
+      assert.ok(/围栏/.test(r.content), r.content);
+
+      // JS 语法坏了 → 顶回去，但文件照写（好让它 edit_file 去修）
+      r = await call("write_file", { path: "broken.js", content: "function a( {\\n" });
+      assert.strictEqual(r.isError, true, "语法坏了却判成功了");
+      assert.ok(/JS 语法/.test(r.content), r.content);
+      assert.ok(fs.existsSync(path.join(ws, "broken.js")), "自检不过就不写文件了，那没法改");
+
+      // .js 里写 ESM 是合法的（项目可能 type:module），不许误伤
+      r = await call("write_file", { path: "esm.js", content: "import fs from 'fs';\\nexport const a = 1;\\n" });
+      assert.strictEqual(r.isError, false, "把合法的 ESM 判成语法错误了：" + r.content);
+
+      // JSON 写坏 → 报出来
+      r = await call("write_file", { path: "x.json", content: '{"a": 1,}' });
+      assert.strictEqual(r.isError, true, "坏 JSON 却判成功了");
+      assert.ok(/JSON/.test(r.content), r.content);
+      r = await call("write_file", { path: "ok.json", content: '{"a": 1}' });
+      assert.strictEqual(r.isError, false, r.content);
+
+      // edit_file 也走同一道自检：改坏了当场知道
+      await call("write_file", { path: "good.js", content: "const a = 1;\\nconst b = 2;\\n" });
+      r = await call("edit_file", { path: "good.js", old_text: "const b = 2;", new_text: "const b = (2;" });
+      assert.strictEqual(r.isError, true, "改坏了却判成功了");
+      assert.ok(/JS 语法/.test(r.content), r.content);
+
+      // 网页验收：外链 CDN（换台电脑就白屏）、标签对不上、引用了不存在的本地文件，都要报
+      await call("write_file", { path: "p.html", content:
+        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>测试页</title>' +
+        '<script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></' + 'script></head>' +
+        '<body><div><h1>标题</h1><p>这是一段足够长的正文内容，用来避免被判成空壳页面。</p>' +
+        '<img src="./missing.png"></body></html>' });
+      r = await call("check_page", { path: "p.html" });
+      assert.ok(/外部资源/.test(r.content), "没报外链 CDN：" + r.content);
+      assert.ok(/不存在的本地文件/.test(r.content), "没报缺失的本地资源：" + r.content);
+      assert.ok(/<div> 开 1 个、闭 0 个/.test(r.content), "没报标签对不上：" + r.content);
+      assert.strictEqual(r.isError, true, "有[错]级问题却判成通过");
+      assert.ok(/命令行模式/.test(r.content), "命令行下应当说明浏览器实测跳过了：" + r.content);
+
+      // 干净的页面要能过
+      await call("write_file", { path: "clean.html", content:
+        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>干净页</title></head>' +
+        '<body><h1>标题</h1><p>这是一段足够长的正文内容，用来避免被判成空壳页面。</p></body></html>' });
+      r = await call("check_page", { path: "clean.html" });
+      assert.strictEqual(r.isError, false, "干净的页面被判不合格：" + r.content);
+      assert.ok(/没发现结构问题/.test(r.content), r.content);
+      console.log("OK");
+    })().catch((e) => { console.error(e); process.exit(1); });
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], {
+    env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") },
+    encoding: "utf8",
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "交付质量测试失败：\n" + (r.stderr || r.stdout));
+  console.log("✅ 交付质量：长文档能续写 · JS/JSON 语法坏了当场顶回（合法 ESM 不误伤）· Markdown 围栏没闭合能查出 · 网页外链/断链/标签不闭合都拦得住");
+}
+
+/**
+ * 记忆层。老版本只有一个全局 memory.md，agent 自己记不住任何东西、还所有账号串在一起。
+ * 这里守四条：**按账号隔离**、**去重**、**超量丢最旧的要留痕**（不许闷声吞）、**密钥拒记**。
+ */
+function testMemoryLayer() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-mem-"));
+  const script = `
+    const assert = require("assert");
+    const mem = require(${JSON.stringify(path.join(__dirname, "..", "memory.js"))});
+
+    // 记一条 + 去重（大小写/空白/句末标点不同不算两条）
+    const a = mem.add({ text: "周报只要三段：进展 / 问题 / 下周计划", user: "甲" });
+    assert.strictEqual(a.ok, true, a.note);
+    const dup = mem.add({ text: "周报只要三段：进展/问题/下周计划。", user: "甲" });
+    assert.strictEqual(dup.id, a.id, "同一条被重复记了两遍");
+    assert.ok(/已经记过/.test(dup.note), dup.note);
+
+    // 按账号隔离：乙看不到甲的
+    mem.add({ text: "我习惯用飞书文档交付", user: "乙" });
+    mem.add({ text: "公司名叫艾景特", shared: true });
+    assert.strictEqual(mem.list("甲").length, 2, "甲应当看到自己的 + 共享的");
+    assert.strictEqual(mem.list("乙").length, 2);
+    assert.strictEqual(mem.list("甲").some((x) => /飞书/.test(x.text)), false, "别人的记忆串过来了");
+    assert.ok(mem.promptBlock("甲").includes("周报只要三段"), "记忆没进提示词");
+    assert.strictEqual(/飞书/.test(mem.promptBlock("甲")), false, "提示词里带上了别人的记忆");
+
+    // 忘记：只能忘共享的和自己的
+    const f = mem.forget({ text: "飞书", user: "甲" });
+    assert.strictEqual(f.removed, 0, "甲把乙的记忆删掉了");
+    assert.strictEqual(mem.forget({ text: "周报", user: "甲" }).removed, 1);
+
+    // 密钥一律拒记（记忆是明文存的，还会进每次的系统提示词）
+    for (const bad of [
+      "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz1234",
+      "GitHub 令牌 ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "密码是 hunter2000",
+      "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123",
+    ]) {
+      const r = mem.add({ text: bad, user: "甲" });
+      assert.strictEqual(r.ok, false, "这条应当被拒记：" + bad);
+      assert.ok(/密钥|密码|令牌/.test(r.note), r.note);
+    }
+    // 拒记的内容不许落盘（连日志都不该有）
+    const raw = require("fs").readFileSync(mem._internals.ITEMS_FILE, "utf8");
+    assert.strictEqual(/sk-abcdef|ghp_aaaa|hunter2000/.test(raw), false, "被拒记的敏感内容还是写进文件了");
+
+    // 单条太长 → 直接拒，并说清楚该记结论不是记过程
+    const long = mem.add({ text: "啊".repeat(mem.MAX_TEXT + 1), user: "甲" });
+    assert.strictEqual(long.ok, false);
+    assert.ok(/结论/.test(long.note), long.note);
+
+    // 超量：丢最旧的，而且必须在回执里说出来（闷声吞就等于用户以为记住了其实没有）
+    let last;
+    for (let i = 0; i < mem.MAX_PER_SCOPE + 3; i++) last = mem.add({ text: "第 " + i + " 条偏好", user: "丙" });
+    assert.ok(last.dropped > 0, "超量了却没丢也没说");
+    assert.ok(/丢弃最旧/.test(last.note), last.note);
+    assert.strictEqual(mem.list().filter((x) => x.scope === "丙").length, mem.MAX_PER_SCOPE, "超量后条数不对");
+    assert.strictEqual(mem.list("丙").some((x) => x.text === "第 0 条偏好"), false, "该丢的最旧那条还在");
+
+    // 改登录名：归属要跟着搬，不然那个人的记忆当场变孤儿
+    assert.strictEqual(mem.renameScope("乙", "乙二"), 1);
+    assert.ok(mem.list("乙二").some((x) => /飞书/.test(x.text)), "改名后记忆没跟过去");
+    assert.strictEqual(mem.list("乙").some((x) => /飞书/.test(x.text)), false);
+    console.log("OK");
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], {
+    env: { ...process.env, WB_DATA_DIR: dir },
+    encoding: "utf8",
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "记忆层测试失败：\n" + (r.stderr || r.stdout));
+  console.log("✅ 记忆层：按账号隔离（提示词也不串）· 去重 · 密钥拒记且不落盘 · 超量丢最旧留痕 · 改名跟着搬");
+}
+
 function testCommandGate() {
   const security = require("../security");
   const sec = { ...security.DEFAULTS };
@@ -1282,6 +1636,8 @@ async function main() {
   console.log("=== OpenWorkBuddy e2e 测试 ===");
   testCron();
   testCommandGate();
+  await testPermissionModes();
+  testMemoryLayer();
   testLeakedToolCallRescue();
   testCollectSources();
   testJsonStore();
@@ -1306,6 +1662,8 @@ async function main() {
   await testMcpManagerLifecycle();
   await testNodeSyntaxPrecheck();
   await testOfficeLibs();
+  await testCodingTools();
+  await testDeliverableQuality();
   await testAgentPipeline();
   await testForcedWrapUp();
   // 清理测试产物

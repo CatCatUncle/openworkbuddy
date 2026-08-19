@@ -13,12 +13,20 @@ const STORE = path.join(__dirname, "schedules.json");
 const MAX_CATCHUP_MS = 24 * 3600 * 1000;
 /** 两次 tick 差这么久，就认为中间那段没人看着（睡眠 / 应用关了） */
 const GAP_MS = 90 * 1000;
+/** 运行记录留多少条。留太多每次存盘都要重写一大坨，留太少查不了昨天 */
+const MAX_RUNS = 300;
 
 function loadStore(file) {
   // 坏文件先拿 .bak 顶，再不行改名隔离——原来是静默当空表，紧接着一次保存就把
   // 用户攒的所有定时任务永久抹掉了，全程一句提示都没有
   const j = jsonStore.readJson(file, {}) || {};
-  return { tasks: Array.isArray(j.tasks) ? j.tasks : [], last_tick_at: j.last_tick_at || "" };
+  return {
+    tasks: Array.isArray(j.tasks) ? j.tasks : [],
+    // 运行记录。只有 last_result 的话，昨天跑挂了今天跑好了就查无此事——
+    // 自动化最需要回答的问题恰恰是「它这几天到底跑成什么样」，那得留流水。
+    runs: Array.isArray(j.runs) ? j.runs : [],
+    last_tick_at: j.last_tick_at || "",
+  };
 }
 function saveStore(store, file) {
   // 先写临时文件再改名：直接覆写的话，写到一半断电就只剩半个 JSON，整张任务表就没了
@@ -129,9 +137,34 @@ function createScheduler({ runtime, onResult, storePath }) {
     return item;
   }
 
+  /** 改一个已有任务（名字/时间/内容）。以前只能删了重建，改个时间点就丢了运行记录 */
+  function update(id, patch) {
+    const t = store.tasks.find((t) => t.id === id);
+    if (!t) return null;
+    if (patch.name !== undefined) t.name = String(patch.name).trim() || t.name;
+    if (patch.task !== undefined) {
+      const v = String(patch.task).trim();
+      if (!v) throw new Error("任务描述不能为空");
+      t.task = v;
+    }
+    if (patch.cron !== undefined) {
+      parseCron(patch.cron); // 校验：写坏了当场报，别等到永远不触发才发现
+      t.cron = String(patch.cron).trim();
+    }
+    if (patch.catch_up !== undefined) t.catch_up = !!patch.catch_up;
+    saveStore(store, file);
+    return t;
+  }
+
+  /** 运行记录，最近的在前 */
+  function runs(limit = 100) {
+    return store.runs.slice(-Math.max(1, limit)).reverse();
+  }
+
   function remove(id) {
     const before = store.tasks.length;
     store.tasks = store.tasks.filter((t) => t.id !== id);
+    store.runs = store.runs.filter((r) => r.task_id !== id);
     saveStore(store, file);
     return store.tasks.length < before;
   }
@@ -163,19 +196,41 @@ function createScheduler({ runtime, onResult, storePath }) {
     }
     console.log(`[定时任务] 触发 (${trigger}): ${item.name}`);
     running.set(item.id, Date.now());
+    const startedMs = Date.now();
     item.last_run = new Date().toISOString();
     item.last_trigger = trigger;
+    const run = {
+      id: "run_" + startedMs.toString(36) + Math.random().toString(36).slice(2, 6),
+      task_id: item.id,
+      name: item.name,
+      trigger,
+      started_at: item.last_run,
+      ended_at: null,
+      ok: null,
+      ms: 0,
+      result: "",
+    };
+    store.runs.push(run);
+    if (store.runs.length > MAX_RUNS) store.runs.splice(0, store.runs.length - MAX_RUNS);
     saveStore(store, file);
+    const finish = (ok, text) => {
+      run.ok = ok;
+      run.ended_at = new Date().toISOString();
+      run.ms = Date.now() - startedMs;
+      run.result = String(text || "").slice(0, 500);
+    };
     try {
       // 每次执行用全新会话，避免历史无限增长
       const history = [{ role: "user", content: item.task }];
       const { finalText } = await runtime.runTask({ history });
       item.last_result = (finalText || "完成").slice(0, 500);
+      finish(true, finalText || "完成");
       saveStore(store, file);
       if (onResult) await onResult(item, finalText);
       return finalText;
     } catch (e) {
       item.last_result = "出错: " + e.message;
+      finish(false, "出错: " + e.message);
       saveStore(store, file);
       if (onResult) await onResult(item, "执行出错: " + e.message);
       throw e;
@@ -250,7 +305,7 @@ function createScheduler({ runtime, onResult, storePath }) {
   const timer = setInterval(tick, 20000);
   timer.unref && timer.unref();
 
-  return { list, add, remove, toggle, setCatchUp, runOne, tick, catchUp, stop: () => clearInterval(timer) };
+  return { list, add, update, remove, toggle, setCatchUp, runOne, runs, tick, catchUp, stop: () => clearInterval(timer) };
 }
 
 module.exports = { createScheduler, parseCron, cronMatches };

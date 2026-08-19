@@ -15,6 +15,7 @@ const { createImRouter } = require("./im");
 const { createScheduler } = require("./scheduler");
 const account = require("./account");
 const security = require("./security");
+const memory = require("./memory");
 const notify = require("./notify");
 const store = require("./store");
 const { createImSessionStore } = require("./im-store");
@@ -157,7 +158,8 @@ app.use(
           files++;
         }
       }
-      console.log(`[账号] 登录名 ${from} → ${to}，${files} 条会话的归属已迁移`);
+      const mems = memory.renameScope(from, to); // 记忆也认登录名，不搬就成了孤儿
+      console.log(`[账号] 登录名 ${from} → ${to}，${files} 条会话、${mems} 条记忆的归属已迁移`);
     },
   })
 );
@@ -268,10 +270,12 @@ app.post("/api/settings", (req, res) => {
     }
     if (b.workspace_dir !== undefined && b.workspace_dir !== getWorkspaceDir()) {
       config.workspace_dir = setWorkspaceDir(b.workspace_dir);
-      // 工作空间即当前项目的目录：手动改路径时同步到当前项目，保持两处一致
-      ensureProjects();
-      const ap = config.projects.find((p) => p.name === config.active_project);
-      if (ap) ap.dir = config.workspace_dir;
+      // 输入框旁的快速切换是临时的（新任务会切回项目目录）；设置中心改路径才算改默认，同步进当前项目
+      if (b.workspace_permanent === true) {
+        ensureProjects();
+        const ap = config.projects.find((p) => p.name === config.active_project);
+        if (ap) ap.dir = config.workspace_dir;
+      }
     }
     config.im = config.im || {};
     if (b.im) {
@@ -444,9 +448,42 @@ app.get("/api/security/audit/export", (_req, res) => {
   res.setHeader("Content-Disposition", `attachment; filename="openworkbuddy-audit-${new Date().toISOString().slice(0, 10)}.log"`);
   res.send(security.auditExport());
 });
-app.get("/api/security/approvals", (_req, res) => res.json(security.listApprovals()));
+app.get("/api/security/approvals", (_req, res) =>
+  res.json({ items: security.listApprovals(), mode: security.permissionMode(config.security), session_allow: security.listSessionAllow() })
+);
+/**
+ * 批准/拒绝一条审批。scope：once 只这一次 / session 本次运行期间同类不再问 / always 永久写进放行名单。
+ * always 要落盘——「一直允许」点完重启又来问，等于没这个按钮；落盘的规则在安全中心看得见、删得掉。
+ */
 app.post("/api/security/approvals/:id", (req, res) => {
-  res.json({ ok: security.resolveApproval(req.params.id, !!(req.body || {}).allow) });
+  const body = req.body || {};
+  const scope = ["once", "session", "always"].includes(body.scope) ? body.scope : "once";
+  const r = security.resolveApproval(req.params.id, !!body.allow, scope);
+  if (r.ok && body.allow && scope === "always" && r.ruleKey) {
+    const sec = security.getSecurity(config);
+    const list = Array.isArray(sec.cmd_allow) ? sec.cmd_allow : [...(security.DEFAULTS.cmd_allow || [])];
+    if (!list.includes(r.ruleKey)) {
+      list.push(r.ruleKey);
+      sec.cmd_allow = list;
+      saveConfig();
+    }
+  }
+  res.json(r);
+});
+app.get("/api/security/modes", (_req, res) =>
+  res.json({ modes: security.PERMISSION_MODES, current: security.permissionMode(config.security) })
+);
+app.post("/api/security/mode", (req, res) => {
+  const mode = String((req.body || {}).mode || "");
+  if (!security.PERMISSION_MODES[mode]) return res.status(400).json({ error: "未知的权限档位" });
+  security.getSecurity(config).permission_mode = mode; // 走 getSecurity 补默认值，别把别的字段挤掉
+  saveConfig();
+  security.audit("权限档位", `切换到「${security.PERMISSION_MODES[mode].label}」`, "放行");
+  res.json({ ok: true, mode });
+});
+app.post("/api/security/session-allow/clear", (_req, res) => {
+  security.clearSessionAllow();
+  res.json({ ok: true });
 });
 app.get("/api/security/system", (_req, res) => {
   res.json({
@@ -586,6 +623,45 @@ app.post("/api/mcp", async (req, res) => {
 });
 
 // ---------- 项目（多工作空间，仿官方「项目」：每个项目一个独立工作目录，成果互不混淆） ----------
+/**
+ * 项目自带的「指令」和挂载的专家/技能/连接器。
+ * 指令不是装饰：切到这个项目之后，它会进系统提示词（见 accountedRuntime），
+ * 否则用户在弹窗里写一大段项目背景，agent 一个字都看不见。
+ */
+function projectMeta(body) {
+  const arr = (v) => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean).slice(0, 30) : []);
+  return {
+    instructions: String(body.instructions || "").slice(0, 4000),
+    connectors: arr(body.connectors),
+    experts: arr(body.experts),
+    skills: arr(body.skills),
+  };
+}
+function activeProject() {
+  ensureProjects();
+  return config.projects.find((p) => p.name === config.active_project) || null;
+}
+
+/**
+ * 组装进系统提示词的项目上下文：指令 + 挂载清单。
+ * 挂载在弹窗里勾了才有；勾过但后来被删掉的专家/技能/连接器要过滤掉，不然提示词里指着空气让 agent 用。
+ */
+function projectContextOf(p) {
+  if (!p) return "";
+  const parts = [];
+  if (p.instructions) parts.push(p.instructions);
+  const alive = (names, pool) => (names || []).filter((n) => pool.includes(n));
+  const exps = alive(p.experts, experts.map((e) => e.name));
+  if (exps.length) parts.push(`本项目挂载的专家：${exps.join("、")}。相应领域的子任务优先 delegate_to_expert 委派给他们。`);
+  let skillNames = [];
+  try { skillNames = skillsMgr.loadSkills().map((s) => s.name); } catch {}
+  const sks = alive(p.skills, skillNames);
+  if (sks.length) parts.push(`本项目挂载的技能：${sks.join("、")}。做对应任务前先 use_skill 加载，按技能里的规范执行。`);
+  const conns = alive(p.connectors, (config.mcp_servers || []).map((s) => s.name));
+  if (conns.length) parts.push(`本项目挂载的连接器：${conns.join("、")}。涉及外部系统时优先用这些连接器提供的工具。`);
+  return parts.join("\n\n");
+}
+
 function ensureProjects() {
   if (!Array.isArray(config.projects) || !config.projects.length) {
     config.projects = [{ name: "默认项目", dir: getWorkspaceDir() }];
@@ -616,7 +692,7 @@ app.post("/api/projects", (req, res) => {
     let dir = String((req.body || {}).dir || "").trim();
     if (!dir) dir = path.join(__dirname, "projects", name.replace(/[/\\:*?"<>|]/g, "_"));
     const real = setWorkspaceDir(dir); // 建目录并切换过去
-    config.projects.push({ name, dir: real });
+    config.projects.push({ name, dir: real, ...projectMeta(req.body || {}), created_at: new Date().toISOString() });
     config.active_project = name;
     config.workspace_dir = real;
     saveConfig();
@@ -631,6 +707,21 @@ app.post("/api/projects/switch", (req, res) => {
     ensureProjects();
     const p = config.projects.find((x) => x.name === (req.body || {}).name);
     if (!p) return res.status(404).json({ error: "项目不存在" });
+
+// 新任务回到当前项目自己的目录：输入框里临时切过的文件夹不带进下一个任务
+app.post("/api/workspace/reset", (_req, res) => {
+  try {
+    ensureProjects();
+    const ap = config.projects.find((p) => p.name === config.active_project) || config.projects[0];
+    if (ap && ap.dir && ap.dir !== getWorkspaceDir()) {
+      config.workspace_dir = setWorkspaceDir(ap.dir);
+      saveConfig();
+    }
+    res.json({ ok: true, workspace_dir: getWorkspaceDir() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
     config.workspace_dir = setWorkspaceDir(p.dir);
     config.active_project = p.name;
     saveConfig();
@@ -638,6 +729,22 @@ app.post("/api/projects/switch", (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+// 改项目：名字之外的东西（指令、挂载的专家/技能/连接器）都能改，改完立即对新任务生效
+app.patch("/api/projects/:name", (req, res) => {
+  ensureProjects();
+  const p = config.projects.find((x) => x.name === req.params.name);
+  if (!p) return res.status(404).json({ error: "项目不存在" });
+  Object.assign(p, projectMeta({ ...p, ...(req.body || {}) }));
+  const rename = String((req.body || {}).name || "").trim();
+  if (rename && rename !== p.name) {
+    if (config.projects.some((x) => x.name === rename)) return res.status(400).json({ error: "同名项目已存在" });
+    if (config.active_project === p.name) config.active_project = rename;
+    p.name = rename;
+  }
+  saveConfig();
+  res.json({ ok: true, project: p, projects: config.projects, active: config.active_project });
 });
 
 // 只从列表移除，不删磁盘文件
@@ -735,16 +842,22 @@ app.delete("/api/library/note/:id", (req, res) => {
 });
 
 // ---------- 长期记忆 ----------
-const MEMORY_FILE = path.join(__dirname, "data", "memory.md");
-app.get("/api/memory", (_req, res) => {
-  let content = "";
-  try { content = fs.readFileSync(MEMORY_FILE, "utf8"); } catch {}
-  res.json({ content });
+// 手写区（memory.md，全局共享）+ 条目区（agent 用 remember 自己记的，按账号隔离）
+app.get("/api/memory", (req, res) => {
+  const u = req.user ? req.user.username : undefined;
+  res.json({ content: memory.manual(), items: memory.list(u), shared_tag: memory.SHARED, limits: { max_text: memory.MAX_TEXT, max_items: memory.MAX_PER_SCOPE } });
 });
 app.post("/api/memory", (req, res) => {
-  fs.mkdirSync(path.dirname(MEMORY_FILE), { recursive: true });
-  fs.writeFileSync(MEMORY_FILE, String((req.body || {}).content || ""), "utf8");
+  memory.saveManual((req.body || {}).content || "");
   res.json({ ok: true });
+});
+app.post("/api/memory/item", (req, res) => {
+  const b = req.body || {};
+  const r = memory.add({ text: b.text, user: req.user ? req.user.username : undefined, shared: !!b.shared, source: "user" });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+app.delete("/api/memory/item/:id", (req, res) => {
+  res.json({ ok: true, removed: memory.remove(req.params.id) });
 });
 
 // ---------- 工作空间：原生文件夹选择（桌面版）与打开文件夹 ----------
@@ -1349,6 +1462,8 @@ app.post("/api/chat", async (req, res) => {
         history: sess.history,
         emit: emitFn,
         mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",
+        user: user ? user.username : undefined,
+        projectContext: projectContextOf(activeProject()),
         stopSignal: runState.ctrl.signal,
         getInterject: () => runState.interject.splice(0),
       });
@@ -1422,6 +1537,8 @@ let scheduler;
 
 // ---------- 定时任务管理 API ----------
 app.get("/api/schedules", (_req, res) => res.json(scheduler.list()));
+// 运行记录。只看 last_result 的话，昨天跑挂今天跑好就查无此事
+app.get("/api/schedules/runs", (req, res) => res.json(scheduler.runs(Math.min(+req.query.limit || 100, 300))));
 app.post("/api/schedules", (req, res) => {
   try {
     res.json(scheduler.add(req.body || {}));
@@ -1429,7 +1546,28 @@ app.post("/api/schedules", (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
+app.patch("/api/schedules/:id", (req, res) => {
+  try {
+    const t = scheduler.update(req.params.id, req.body || {});
+    if (!t) return res.status(404).json({ error: "任务不存在" });
+    res.json(t);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
 app.delete("/api/schedules/:id", (req, res) => res.json({ ok: scheduler.remove(req.params.id) }));
+// 批量：一条条点太慢，但批量删是不可逆的，所以要求前端明确传 action
+app.post("/api/schedules/bulk", (req, res) => {
+  const { ids, action } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: "没选中任何任务" });
+  if (!["enable", "disable", "delete"].includes(action)) return res.status(400).json({ error: "未知操作" });
+  let n = 0;
+  for (const id of ids) {
+    if (action === "delete") n += scheduler.remove(id) ? 1 : 0;
+    else n += scheduler.toggle(id, action === "enable") ? 1 : 0;
+  }
+  res.json({ ok: true, count: n });
+});
 app.post("/api/schedules/:id/toggle", (req, res) =>
   res.json({ ok: scheduler.toggle(req.params.id, !!(req.body || {}).enabled) })
 );
@@ -1458,7 +1596,12 @@ function accountedRuntime(baseRuntime, source) {
       if (owner && account.creditsEnabled() && owner.credits <= 0) {
         throw new Error("积分不足：管理员可以在 Web 端「账号 · 用量」里充值，或者把「积分限额」关掉");
       }
-      const r = await baseRuntime.runTask(args);
+      // IM / 定时任务没有登录态，记忆按管理员算（和积分记账口径保持一致）
+      const r = await baseRuntime.runTask({
+        user: owner ? owner.username : undefined,
+        projectContext: projectContextOf(activeProject()),
+        ...args,
+      });
       if (owner && r && r.usage && r.usage.calls > 0) {
         account.chargeRun(owner, { ...r.usage, model: llm.model, provider: llm.provider, source });
       }
@@ -1476,7 +1619,12 @@ async function main() {
   } catch (e) {
     console.warn("[插件] MCP 配置读取失败:", e.message);
   }
-  await mcpManager.startAll([...(config.mcp_servers || []), ...pluginServers]);
+  // MCP 连接不挡启动：窗口秒开，连接器在后台就绪（agent 每次跑任务都是现取 toolDefs，
+  // 晚几秒连上也不丢工具）。首个定时 tick 在 +20s，届时早已连完。
+  mcpManager
+    .startAll([...(config.mcp_servers || []), ...pluginServers])
+    .then(() => console.log(`MCP 工具就绪: ${mcpManager.toolDefs().length} 个`))
+    .catch((e) => console.warn("[MCP] 启动失败:", e.message));
   const badPlugins = pluginsMgr.loadPlugins().filter((p) => !p.ok);
   for (const p of badPlugins) console.warn(`[插件] ${p.name} 装不上: ${p.error}`);
   runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });

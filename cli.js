@@ -158,6 +158,7 @@ async function runOnce(runtime, text, mode) {
       history: sess.history,
       emit: makeEmit(state),
       mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",
+      user: owner ? owner.username : undefined, // 记忆按人取，命令行走管理员这本账
       stopSignal: ctrl.signal,
     });
     finalText = r.finalText || "";

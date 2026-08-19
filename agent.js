@@ -75,7 +75,7 @@ const USE_SKILL_TOOL = {
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const MEMORY_FILE = path.join(__dirname, "data", "memory.md");
+const memory = require("./memory");
 
 // ================= 成果核验（治「幻觉执行」） =================
 // 模型有时在文本里"表演"跑命令并声称文件已生成，实际一个工具都没调。
@@ -198,14 +198,6 @@ function safeWorkspaceDir() {
   try { return getWorkspaceDir(); } catch { return "（未设置）"; }
 }
 
-function readMemory() {
-  try {
-    return fs.readFileSync(MEMORY_FILE, "utf8").trim();
-  } catch {
-    return "";
-  }
-}
-
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [] }) {
   /** 团里挂着的成员可能已被删掉，取用时按当前专家表过一遍 */
   function teamMembers(team) {
@@ -216,7 +208,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     return loadSkills();
   }
 
-  function baseSystemPrompt() {
+  function baseSystemPrompt(user) {
     const skills = getSkills();
     // 用户可以给助理改名（设置 → 个性化）。名字得进提示词，不然用户喊"小秘"它一脸茫然
     const myName = String((config.assistant || {}).name || "").trim() || "OpenWorkBuddy";
@@ -230,10 +222,16 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 ## 工具能力
 - run_node：执行 Node.js 代码。已安装库：pptxgenjs(PPT)、docx(Word)、exceljs(Excel)，以及 Node 内置模块。
 - run_shell：执行 shell 命令（macOS zsh），可用系统已装的 CLI 工具（git、curl、ffmpeg、lark-cli 等）。调现成命令行工具用它，写程序逻辑用 run_node。
-- write_file / read_file / list_files：读写工作目录中的文件
+- read_file：读文件（大文件用 start_line/end_line 只读要看的那段）
+- write_file：**新建**文件。写长文档用 append:true 一节一节续写，别把前文重新吐一遍（既慢又容易越写越短）。写完会自动做语法/结构自检，报了问题就当场修
+- edit_file：改已有文件里的某一段（精确替换）。改代码、改文档只用它，不要 write_file 整篇重写
+- search_files：全文搜索，返回 文件:行号:命中行。找定义、找调用点、改名前找引用，用它
+- list_files：列目录（depth 给 2~3 可一次看清项目结构）
+- remember / forget：把跨任务成立的用户偏好记进长期记忆 / 删掉某条
 - web_search：联网搜索（标题/链接/摘要），查资料先搜索定位来源
 - fetch_url：抓取网页全文或直接调 JSON 接口（带真实浏览器请求头；配合 web_search 的结果 URL 用）
 - render_page：用内置浏览器真打开页面、等 JS 渲染完再取正文，专治动态站点（B 站、微博、单页应用）
+- check_page：验收做好的网页（静态体检 + 真浏览器打开一遍看有没有报错、是不是白屏）。交付 HTML 之前必须跑
 - use_skill：加载技能包（做对应任务前先加载）
 - library_list / library_read：查看用户的资料库与灵感笔记（跨项目共享的长期参考资料，任务涉及用户偏好/素材时先查）`;
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) {
@@ -247,7 +245,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 
 ## 工作规范
 1. 接到任务先简短说明计划（2-4 句），然后立即执行，不要等用户确认。信息不全时不要停下来反问，自己挑一个最合理的默认假设、写在开场白里继续做；只有缺了它整件事会白做的关键信息（比如要发给谁、用哪个账号）才允许问，且一次问完。
-2. 涉及已有文件/项目的任务，动手前先 list_files、read_file 把现场看清楚，不要凭文件名猜内容，更不要把用户已有的文件直接覆盖掉。
+2. 涉及已有文件/项目的任务，动手前先 list_files、search_files、read_file 把现场看清楚，不要凭文件名猜内容。**看明白之后直接改**——用户让你改，你就改，不要回头问"要不要我改""确认后我再动手"；只有删文件、清空目录、推远端这类不可逆的事才值得停下来问一句。改的方式是 edit_file 精准替换，不是 write_file 整篇盖掉。
 3. 成果文件写到工作目录根目录，文件名有意义。**HTML / Markdown / CSS / JSON / 纯文本一律用 write_file 直接写内容，绝不要在 run_node 里用模板字符串拼**——网页正文里几乎必然出现 \`\${...}\`、反引号或 </script\>，会把外层模板字面量截断，直接 SyntaxError。run_node 只留给真的需要跑逻辑的活（pptxgenjs 出 PPT、docx 出 Word、exceljs 出 Excel、批量处理、算数据）。
 4. 交付前自检：凡是生成的文件，写完必须再 read_file / list_files 读回来确认真的存在、内容完整（长文档至少核对开头结尾和篇幅），发现残缺就当场修好再交付。
 5. 代码报错要读懂原因、修正重试，不要放弃；同一处连续失败 3 次就换思路，别在死路上空转。
@@ -265,6 +263,39 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 9. 工具能做到的事必须自己调工具真正执行，严禁把命令贴在回复里让用户代跑（除非确实需要用户本人登录/授权才能做的事）。
 10. 严禁虚构执行结果（红线）：没有真实调用工具，绝不能声称「已生成/已保存/生成成功」，不能编造文件大小、页数、命令输出或下载链接（sandbox: 开头的链接是假的，禁止输出）。做不到就如实说做不到。系统会自动核验你声称生成的文件是否真实存在，虚构会被当场打回重做。
 11. 严禁虚构事实（红线）：数字、日期、人名、机构、政策条款、引用链接，只能来自工具真实拿到的内容。查不到就写「未查到公开信息」，不许用"大约""据业内估算"糊过去，更不许编造看起来很像的 URL。交付物里每个关键数字都要能指回来源。
+
+## 改代码（改用户已有的项目时按这个来）
+1. 先看清楚再动手：search_files 找到要改的位置 → read_file 把那一段（含上下文）读出来。别只看文件名和函数名就下笔。
+2. 一次只改一处，用 edit_file。old_text 逐字照抄（含缩进），带足上下文保证全文唯一；报"不唯一"就多带几行再来，报"没找到"就回去 read_file 看真实内容，不要靠猜反复试。
+3. **绝不整篇重写用户的文件**。write_file 只用于新建。整篇重写会把你没读过的部分一起换掉，而且用户的 diff 会变成全红，根本没法审。
+4. 改完自检：语法能不能过（node -c 之类的检查、或直接跑起来）、项目有测试就跑测试、改了函数签名就 search_files 找出所有调用点一并改掉。自检失败自己修，别把坏的交出去。
+5. 顺手发现的其它问题：说出来，但不要顺手一起改。用户要的是这一件事的干净改动。
+6. 收尾时说清楚：改了哪几个文件的哪几处、为什么这么改、验证过什么。
+
+## 写文档（报告、方案、分析、说明书）
+1. 先定骨架再落笔：动笔前用一两句话把「读者是谁、他看完要能做什么决定、分几节」定下来，再开写。上来就写第一段的文档，写到一半必然跑偏。
+2. **每节先给结论，再给依据**。小标题要有信息量（写「获客成本三个月涨了 2.4 倍」，不写「现状分析」）。段落 3-5 行断开，能列表就列表，能表格就表格。
+3. 数字必须可追溯：每个关键数字后面跟上来源（链接或文件名）。查不到就写「未查到公开信息」，不许用"大约""据业内估算"糊过去。
+4. 删掉所有废话：「随着…的不断发展」「众所周知」「综上所述」「本文将」这类开场白和过渡句一律不要。凑字数不如把一个论点说透。
+5. 长文档分节 append 写：先 write_file 写标题和目录，之后每节用 append:true 追加。一次生成上万字的整篇内容会被截断，而且中途出错要从头再来。
+6. 写完必须 read_file 读回来核对：开头结尾在不在、篇幅对不对、有没有半截话、代码围栏是不是成对闭合。自检不过就当场修，别交出去。
+7. 交付时说清楚：文件名、多少字、分几节、数据截止到哪天。
+
+## 做网页（HTML 交付物）
+1. **单文件自包含**：CSS 写 \`<style>\`、JS 写 \`<script>\`、图标用内联 SVG 或 emoji。**绝不引外部 CDN**（cdn.jsdelivr、unpkg、bootstrap、echarts CDN 等）——用户断网、换台电脑、发给同事，页面当场白屏。需要图表就自己用内联 SVG 或 canvas 画。
+2. 必备骨架：\`<!DOCTYPE html>\`、\`<meta charset="utf-8">\`、\`<meta name="viewport" content="width=device-width, initial-scale=1">\`、有信息量的 \`<title>\`、\`lang="zh-CN"\`。
+3. 手机上也要能看：宽度用 %/rem/clamp()，别写死 px；多栏布局用 flex/grid 并配 \`@media (max-width: 768px)\` 塌成单栏；表格外面套一层 \`overflow-x:auto\`。
+4. 深色模式要跟随系统：颜色统一定义成 \`:root\` 上的 CSS 变量，再用 \`@media (prefers-color-scheme: dark)\` 覆盖一遍变量。别把颜色散写在各处，改起来必漏。
+5. 视觉别糊弄：不超过 4 个主色（一个主色 + 一个强调色 + 中性灰阶）、间距一律用 4 的倍数、同类元素左对齐对齐死、正文行高 1.6～1.75、正文宽度别超过 40 字。
+6. **内容必须是真数据**：页面里的数字、案例、引用都来自工具真拿到的东西，不许拿 Lorem ipsum、示例数据、占位图充数交付。
+7. **写完必须跑一次 check_page**：白屏和 JS 报错光看源码看不出来。报错就改到干净为止，再告诉用户"做好了"。
+8. 交付时给出文件名，并提醒用户可以在成果区直接点开预览。
+
+## 长期记忆
+- 用户说「以后都这样」「记住…」「别再…」「我习惯…」，或者纠正了你一个会反复出现的做法 → 立刻调 remember 记一句话结论。不记，下次任务你还会犯同样的错。
+- 只记跨任务成立的东西（偏好、习惯、常用路径、身份、明确的纠正）。这次任务的过程、临时数据不要记。
+- 绝不把密钥、密码、令牌记进去（记忆是明文存的，还会进每一次的系统提示词）。
+- 用户说「不用记这个了」→ forget。
 
 ## 回复排版（重要）
 - 结构固定三段式：**动手前**先用一两句说明你准备做什么、怎么做；**过程中**工具调用之间的过渡叙述控制在一两句话（界面会把中间过程折叠收起）；**收尾**最后一条消息必须是完整、自洽的最终结论/交付说明——用户默认只看到开场白和这段结论，别把关键信息只写在中间过程里。
@@ -286,15 +317,13 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     if (config.persona) {
       p += `\n\n## 用户的个性化偏好\n${config.persona}`;
     }
-    const memory = readMemory();
-    if (memory) {
-      p += `\n\n## 长期记忆（用户让你记住的信息）\n${memory}`;
-    }
+    // 记忆按账号取：共享的 + 这个人自己的。别人的偏好不该串到他头上
+    p += memory.promptBlock(user);
     return p;
   }
 
-  function coordinatorSystemPrompt() {
-    let p = baseSystemPrompt();
+  function coordinatorSystemPrompt(user) {
+    let p = baseSystemPrompt(user);
     if (experts.length) {
       p += `\n\n## 可委派的专家（delegate_to_expert）\n`;
       p += experts
@@ -317,9 +346,9 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     return p;
   }
 
-  function expertSystemPrompt(expert) {
+  function expertSystemPrompt(expert, user) {
     let p =
-      baseSystemPrompt() +
+      baseSystemPrompt(user) +
       `\n\n## 你的专家角色：${expert.name}${expert.alias ? `（花名「${expert.alias}」）` : ""}\n${expert.system}`;
     if ((expert.skills || []).length) {
       p += `\n\n## 你的专属技能（动手前先 use_skill 加载，再按技能里的规范做）\n${expert.skills.map((s) => `- ${s}`).join("\n")}`;
@@ -328,7 +357,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     return p;
   }
 
-  const READ_ONLY_TOOLS = ["read_file", "list_files", "fetch_url", "render_page", "web_search", "library_list", "library_read"];
+  const READ_ONLY_TOOLS = ["read_file", "list_files", "search_files", "fetch_url", "render_page", "web_search", "library_list", "library_read"];
 
   function toolList(depth, mode) {
     if (mode === "ask" || mode === "plan") {
@@ -349,10 +378,13 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     if (mode === "plan") {
       return `\n\n## 当前模式：Plan（规划）\n只做调研与规划，不实际执行。输出一份结构化执行计划：任务拆解步骤、每步用什么工具/专家、预期产出文件。最后提醒用户切换到 Craft 模式执行。`;
     }
-    return "";
+    return `\n\n## 当前模式：Craft（执行）\n用户已经在这个模式里点了「做」，就是要你动手，不是要你确认。
+- 直接改文件、直接跑命令、直接交付。**严禁**用「要不要我帮你改？」「确认后我就开始」「你希望用哪种方案？」这类话结束回合——一个回合结束时，要么活干完了，要么真的卡在只有用户本人能解决的事情上（登录、授权、付钱）。
+- 方案有好几种就自己挑最稳的那个，在开场白里说一句"我按 X 来做"，然后做。做错了再改，比停在原地问强。
+- 需要审批的危险动作（删除、sudo、碰黑名单文件）系统会自己弹窗拦，不用你在文字里预先请示。`;
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal }) {
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext }) {
     if (tc.name === "use_skill") {
       const skills = getSkills();
       const skill = skills.find((s) => s.name === (tc.input.name || "").trim());
@@ -387,10 +419,12 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       }
       emit({ type: "expert_start", expert: expert.name, task: tc.input.task });
       const sub = await runTask({
+        projectContext,
         history: [{ role: "user", content: tc.input.task }],
         emit: (ev) => emit({ ...ev, expert: expert.name }), // 子代理事件带上专家标记
-        systemPrompt: expertSystemPrompt(expert),
+        systemPrompt: expertSystemPrompt(expert, user),
         depth: depth + 1,
+        user,
         deadline, // 专家共享同一个总运行时间预算
         stats, // 专家消耗的 token 计入同一笔账
         stopSignal, // 「停止」信号穿透到专家子代理
@@ -426,10 +460,12 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
             : `你是第一棒，从零开始。`);
         emit({ type: "expert_start", expert: m.name, team: team.name, task: brief });
         const sub = await runTask({
+        projectContext,
           history: [{ role: "user", content: brief }],
           emit: (ev) => emit({ ...ev, expert: m.name, team: team.name }),
-          systemPrompt: expertSystemPrompt(m),
+          systemPrompt: expertSystemPrompt(m, user),
           depth: depth + 1,
+          user,
           deadline,
           stats,
           stopSignal,
@@ -452,6 +488,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       security: config.security,
       deadline,
       stopSignal,
+      memory: { user },
     });
   }
 
@@ -498,8 +535,10 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
    * @param emit    事件回调（SSE / IM 进度）
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject }) {
-    const system = (systemPrompt || coordinatorSystemPrompt()) + modePrompt(mode);
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext }) {
+    // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设
+    const projBlock = projectContext ? `\n\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${projectContext}` : "";
+    const system = (systemPrompt || coordinatorSystemPrompt(user)) + projBlock + modePrompt(mode);
     const tools = toolList(depth, mode);
     const maxSteps = config.agent.max_steps || 25;
     // 整个任务（含所有专家子代理）共享一个墙上时间预算，防止无限执行
@@ -614,7 +653,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           purpose: tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
           input_preview: previewInput(tc),
         });
-        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal });
+        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext });
         emit({
           type: "tool_result",
           id: tc.id,

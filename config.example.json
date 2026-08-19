@@ -102,6 +102,34 @@
       "base_url": "http://localhost:11434/v1",
       "api_key": "",
       "model": "qwen3:14b"
+    },
+    {
+      "name": "OpenAI",
+      "provider": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "model": "gpt-5.2"
+    },
+    {
+      "name": "Anthropic Claude",
+      "provider": "anthropic",
+      "base_url": "",
+      "api_key": "",
+      "model": "claude-sonnet-5"
+    },
+    {
+      "name": "OpenRouter",
+      "provider": "openai",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "",
+      "model": "deepseek/deepseek-chat"
+    },
+    {
+      "name": "火山方舟",
+      "provider": "openai",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "api_key": "",
+      "model": "doubao-seed-1-6-250615"
     }
   ],
   "active_model": "DeepSeek"

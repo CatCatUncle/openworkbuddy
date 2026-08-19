@@ -20,7 +20,31 @@ const AUDIT_FILE = path.join(__dirname, "data", "audit.json");
 let auditLog = jsonStore.readJson(AUDIT_FILE, []);
 if (!Array.isArray(auditLog)) auditLog = [];
 
+/**
+ * 权限模式：一档一档地决定"要不要问你"。
+ *
+ * 以前只有一套写死的规则（工作目录内随便写、命令按名单问），结果两头不讨好：
+ * 想让它安心改代码的人嫌它烦，想全程盯着的人又觉得它太自由。
+ * 现在把这件事变成一个明确的档位，改档立即生效，界面上一眼看得见自己在第几档。
+ *
+ * 注意：**文件黑名单在任何档位下都拦得住**（`~/.ssh`、config.json 这些）。
+ * 那不是"权限档次"，那是不管你选哪档都不该让 agent 顺手摸到的东西。
+ */
+const PERMISSION_MODES = {
+  plan: { label: "只看不动", desc: "只读：不写文件、不跑命令，适合先让它把现场看明白", write: "deny", cmd: "deny" },
+  ask: { label: "每步都问", desc: "写文件和跑命令都要你点头，最谨慎也最费手", write: "ask", cmd: "ask" },
+  auto: { label: "自动改文件", desc: "工作目录里的文件随便改；命令按名单来（删除、sudo 这些照样问）", write: "allow", cmd: "rules" },
+  full: { label: "全自动", desc: "命令也不问了，只剩文件黑名单和审计。确定它在干什么再开", write: "allow", cmd: "allow" },
+};
+const DEFAULT_MODE = "auto";
+
+function permissionMode(sec) {
+  const m = String((sec || {}).permission_mode || DEFAULT_MODE);
+  return PERMISSION_MODES[m] ? m : DEFAULT_MODE;
+}
+
 const DEFAULTS = {
+  permission_mode: DEFAULT_MODE, // plan / ask / auto / full，见 PERMISSION_MODES
   gateway: true, // 安全网关总开关：关闭后黑名单/审批闸不再拦截（审计照记）
   delete_protect: true, // 删除保护：rm 类命令需要审批
   batch_delete_threshold: 50,
@@ -190,33 +214,100 @@ function pathNeedles(entry) {
 }
 
 /**
+ * 「本会话一直允许」记在这儿。
+ *
+ * 治的是最招人烦的那件事：同一条 `git status` 连着问你八遍。批一次就把这条规则记下来，
+ * 这次进程活着的期间不再问。**只在内存里**——重启就没了，不会悄悄在配置里长出一条你早忘了的放行规则。
+ * 要永久放行是另一个按钮（写进 cmd_allow，看得见、删得掉）。
+ */
+const sessionAllow = new Set();
+function addSessionAllow(rule) {
+  const r = String(rule || "").trim();
+  if (r) sessionAllow.add(r);
+  return [...sessionAllow];
+}
+function listSessionAllow() {
+  return [...sessionAllow];
+}
+function clearSessionAllow() {
+  sessionAllow.clear();
+}
+
+/** 多子命令的工具，规则粒度取到第二个词：放行 `git status` 不等于放行 `git push --force` */
+const SUBCMD_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "npx", "docker", "kubectl", "pm2", "brew", "cargo", "go", "pip", "pip3", "python", "python3", "node", "gh", "systemctl", "ffmpeg"]);
+
+/**
+ * 从一段命令里推出一条「以后遇到这类就别问了」的规则。
+ * 粒度太粗会把危险的一起放过去（放行 `git` 等于放行 `git push -f`），
+ * 太细又等于没记（带具体文件名的规则下次必然不命中）。取「命令 + 子命令」是这两者之间。
+ */
+function ruleFor(text) {
+  const seg = splitSegments(String(text || ""))[0] || String(text || "");
+  const bare = bareCommand(seg).trim();
+  const parts = bare.split(/\s+/).filter(Boolean);
+  if (!parts.length) return "";
+  if (SUBCMD_TOOLS.has(parts[0]) && parts[1] && !parts[1].startsWith("-")) return `${parts[0]} ${parts[1]}`;
+  return parts[0];
+}
+
+function matchesPrefix(list, seg, env, bare) {
+  return (list || []).some((p) => {
+    const q = String(p || "").trim();
+    return q && (seg.startsWith(q) || env.startsWith(q) || bare.startsWith(q));
+  });
+}
+
+/**
+ * 写文件闸。按权限模式决定：只看不动 → 拒；每步都问 → 问；自动/全自动 → 直接写。
+ * 路径本身合不合法（越界、黑名单）是另一条线，在 resolvePathWithPolicy 里管，两者都要过。
+ */
+function checkWrite(sec, relPath) {
+  const mode = permissionMode(sec);
+  const m = PERMISSION_MODES[mode];
+  if (m.write === "deny") return { action: "deny", rule: `当前权限档位是「${m.label}」，不写文件`, seg: String(relPath || "") };
+  if (m.write === "ask") {
+    const rule = `写文件 ${String(relPath || "")}`;
+    if (sessionAllow.has("write:*")) return { action: "allow" };
+    return { action: "ask", rule, seg: String(relPath || ""), ruleKey: "write:*" };
+  }
+  return { action: "allow" };
+}
+
+/**
  * 命令闸。返回 allow / ask / deny（附命中的规则）。
  * 顺序是有讲究的：文件黑名单排在放行名单前面——黑名单是「永远拦」，
  * 不能因为用户放行了 `cat ` 就把 `cat ~/.ssh/id_rsa` 一起放过去。
+ * 权限档位排在黑名单之后、名单之前：全自动也不放开黑名单，只看不动则一条都不放。
  */
 function checkCommand(sec, command) {
   const segs = splitSegments(command);
+  const mode = permissionMode(sec);
   const needles = sec.gateway ? (sec.file_blacklist || []).map((b) => ({ raw: String(b).trim(), needles: pathNeedles(b) })) : [];
   for (const seg of segs) {
     const low = seg.toLowerCase();
     for (const b of needles) {
       if (b.needles.some((n) => n && low.includes(n))) {
         // 有 shell 在手，文件黑名单本来是形同虚设的（read_file 拦得住，`cat` 拦不住）
-        return { action: "ask", rule: `命令碰到了文件黑名单（${b.raw}）`, seg };
+        return { action: "ask", rule: `命令碰到了文件黑名单（${b.raw}）`, seg, ruleKey: "" };
       }
     }
     const env = stripEnvAssign(seg);
     const bare = bareCommand(seg);
     const tok = bare.split(/\s+/)[0] || "";
-    if ((sec.cmd_allow || []).some((p) => p && (seg.startsWith(p.trim()) || env.startsWith(p.trim())))) continue;
-    const hitAsk = (sec.cmd_ask || []).find((p) => p && (seg.startsWith(p.trim()) || env.startsWith(p.trim()) || bare.startsWith(p.trim())));
-    if (hitAsk) return { action: "ask", rule: `命令询问名单「${hitAsk.trim()}」`, seg };
-    if (sec.delete_protect) {
-      const findDeletes = tok === "find" && /(\s-delete\b|-exec\s+(\S*\/)?rm\b)/.test(bare);
-      if (DELETE_CMDS.has(tok) || findDeletes) return { action: "ask", rule: "删除保护（rm 类命令需审批）", seg };
-    }
+    if (mode === "plan") return { action: "deny", rule: `当前权限档位是「${PERMISSION_MODES.plan.label}」，不跑命令`, seg };
+    if (matchesPrefix(sec.cmd_allow, seg, env, bare)) continue; // 永久放行名单
+    if (matchesPrefix([...sessionAllow], seg, env, bare)) continue; // 本会话已经批过同类
+    // 运行时开关是用户明确关掉的东西，不受权限档位影响：全自动也不代表把关掉的运行时打开
     if (!sec.runtime_python && /^(python3?|pip3?)$/.test(tok)) {
       return { action: "deny", rule: "内置运行时 Python 已停用", seg };
+    }
+    if (mode === "full") continue; // 全自动：名单之外的也不问了
+    if (mode === "ask") return { action: "ask", rule: `每步都问模式`, seg, ruleKey: ruleFor(seg) };
+    const hitAsk = (sec.cmd_ask || []).find((p) => p && (seg.startsWith(p.trim()) || env.startsWith(p.trim()) || bare.startsWith(p.trim())));
+    if (hitAsk) return { action: "ask", rule: `命令询问名单「${hitAsk.trim()}」`, seg, ruleKey: ruleFor(seg) };
+    if (sec.delete_protect) {
+      const findDeletes = tok === "find" && /(\s-delete\b|-exec\s+(\S*\/)?rm\b)/.test(bare);
+      if (DELETE_CMDS.has(tok) || findDeletes) return { action: "ask", rule: "删除保护（rm 类命令需审批）", seg, ruleKey: ruleFor(seg) };
     }
   }
   return { action: "allow" };
@@ -231,17 +322,26 @@ function checkCommand(sec, command) {
  */
 function checkCode(sec, code) {
   const src = String(code || "");
+  const mode = permissionMode(sec);
+  if (mode === "plan") return { action: "deny", rule: `当前权限档位是「${PERMISSION_MODES.plan.label}」，不执行代码`, seg: "" };
   if (!sec.gateway) return { action: "allow" };
-  const shellOut = /child_process|execSync|execFileSync|spawnSync|process\.binding|node:child_process/.exec(src);
-  if (shellOut) {
-    return { action: "ask", rule: "代码里要开子进程（等于绕过命令闸）", seg: shellOut[0] };
-  }
   const low = src.toLowerCase();
   for (const b of sec.file_blacklist || []) {
     const raw = String(b).trim();
+    // 黑名单排最前：这条在任何档位下都拦（全自动也不例外），它挡的是 ~/.ssh、config.json 这些
     if (pathNeedles(b).some((n) => n && low.includes(n))) {
-      return { action: "ask", rule: `代码碰到了文件黑名单（${raw}）`, seg: raw };
+      return { action: "ask", rule: `代码碰到了文件黑名单（${raw}）`, seg: raw, ruleKey: "" };
     }
+  }
+  if (mode === "full") return { action: "allow" };
+  const shellOut = /child_process|execSync|execFileSync|spawnSync|process\.binding|node:child_process/.exec(src);
+  if (shellOut) {
+    if (sessionAllow.has("code:child_process")) return { action: "allow" };
+    return { action: "ask", rule: "代码里要开子进程（等于绕过命令闸）", seg: shellOut[0], ruleKey: "code:child_process" };
+  }
+  if (mode === "ask") {
+    if (sessionAllow.has("code:*")) return { action: "allow" };
+    return { action: "ask", rule: "每步都问模式", seg: src.slice(0, 80), ruleKey: "code:*" };
   }
   return { action: "allow" };
 }
@@ -271,7 +371,7 @@ function checkUrl(sec, url) {
 
 const approvals = new Map(); // id -> { id, kind, text, ts, resolve }
 
-function requestApproval(kind, text, { timeoutMs = 120000, stopSignal } = {}) {
+function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "" } = {}) {
   const id = "ap_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
   return new Promise((resolve) => {
     let done = false;
@@ -286,17 +386,32 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal } = {}) {
     const timer = setTimeout(() => finish(false), Math.max(5000, timeoutMs));
     const onAbort = () => finish(false);
     if (stopSignal) stopSignal.addEventListener("abort", onAbort);
-    approvals.set(id, { id, kind, text: String(text || "").slice(0, 500), ts: new Date().toISOString(), resolve: finish });
+    approvals.set(id, {
+      id,
+      kind,
+      text: String(text || "").slice(0, 500),
+      rule: String(rule || ""),
+      // 「以后别再问这类」批的是这条规则；空字符串表示这次的原因不适合记住（比如碰了文件黑名单）
+      ruleKey: String(ruleKey || ""),
+      ts: new Date().toISOString(),
+      resolve: finish,
+    });
   });
 }
 function listApprovals() {
-  return [...approvals.values()].map(({ id, kind, text, ts }) => ({ id, kind, text, ts }));
+  return [...approvals.values()].map(({ id, kind, text, rule, ruleKey, ts }) => ({ id, kind, text, rule, ruleKey, ts }));
 }
-function resolveApproval(id, allow) {
+/**
+ * @param scope once（默认，只放这一次）/ session（本会话同类不再问）/ always（由调用方写进永久放行名单）
+ * @returns { ok, ruleKey, scope } —— always 的持久化在 server 那边做，配置文件归它管
+ */
+function resolveApproval(id, allow, scope = "once") {
   const e = approvals.get(id);
-  if (!e) return false;
+  if (!e) return { ok: false };
+  const key = e.ruleKey;
+  if (allow && key && (scope === "session" || scope === "always")) addSessionAllow(key);
   e.resolve(!!allow);
-  return true;
+  return { ok: true, ruleKey: key, scope };
 }
 
 // ---------- macOS 系统授权 ----------
@@ -356,8 +471,15 @@ module.exports = {
   auditClear,
   auditExport,
   resolvePathWithPolicy,
+  PERMISSION_MODES,
+  permissionMode,
+  checkWrite,
   checkCommand,
   checkCode,
+  ruleFor,
+  addSessionAllow,
+  listSessionAllow,
+  clearSessionAllow,
   splitSegments, // 给测试用：命令拆段是整个命令闸的地基，得能单独验
   checkUrl,
   requestApproval,

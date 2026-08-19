@@ -28,10 +28,15 @@
 | 📦 **技能系统** | 一个 Markdown 文件就是一个技能，**改完下一条任务就生效**，不用重启 |
 | 🔌 **MCP 连接器** | 标准 Model Context Protocol（stdio / Streamable HTTP），接进来的工具自动注入 agent |
 | 🧷 **Agent Plugins** | 支持 [Agent Plugins 1.0.0](https://agent-plugins.org) 开放插件标准，一个包同时带技能和 MCP，粘个 GitHub 地址就装 |
+| 🤝 **助理模式** | 侧栏一个入口进聊天页：直接对话（走本地通道，任务在本机执行），飞书/微信里 @机器人 的对话也流进同一条历史，重启不丢 |
 | 📱 **IM 远程指挥** | 飞书、QQ、企业微信、微信（iLink 扫码 / 公众号）、钉钉、通用 Webhook |
+| 📂 **项目** | 每个项目独立工作目录 + 自带指令 + 挂载专家/技能/连接器——这些都会真的进系统提示词，不是摆设 |
+| 🧠 **双层记忆** | 手写区（全局共享、界面直接编辑）+ 条目区（agent 用 remember 自己记，按账号隔离、可去重可删、超量丢最旧） |
+| 🎛️ **权限档位** | 只看不动 / 每步都问 / 自动改文件 / 全自动，输入框旁一键切换，参考 Claude Code 的权限设计 |
 | ⏰ **定时任务** | cron 定时跑（每天 9 点出晨报这种），结果推到 IM，错过了会补跑 |
 | 🔐 **安全中心** | 命令审批闸门、黑白名单、删文件保护、URL 白名单、审计日志 |
 | 👤 **账号与用量** | 多用户、按人分任务历史、tokens 用量统计、可选的积分额度 |
+| 📚 **资料库** | 把参考资料丢进 `data/library/`，界面里可管理；agent 干活时用 `library_list` / `library_read` 自己查，不用每次贴进对话 |
 | 📚 **参考模板库** | 提示词范例，不知道怎么开口的时候抄一份改 |
 | 🌐 **本地部署预览** | 做完网页一键起本机服务，相对路径 / fetch / localStorage 才是真的能用；可放开给手机看 |
 
@@ -132,7 +137,7 @@ Key 不用手动写进配置文件。以后想改，去 **设置 → 模型**，
 
 ## 配置模型
 
-界面里 **设置 → 模型** 直接改，保存即热生效。手动改 `config.json` 也行：
+界面里 **设置 → 模型** 直接改，保存即热生效。新增模型时表单顶部有**渠道预设**下拉：选一个（OpenAI / Anthropic / OpenRouter / 火山方舟 / 阿里云百炼 / DeepSeek / 智谱 / Kimi / Ollama），接口地址和协议自动填好，只差粘 Key。手动改 `config.json` 也行：
 
 ```jsonc
 {
@@ -152,6 +157,9 @@ Key 不用手动写进配置文件。以后想改，去 **设置 → 模型**，
 | 服务商 | base_url | model 示例 |
 |---|---|---|
 | OpenRouter（一个 Key 通吃） | `https://openrouter.ai/api/v1` | `deepseek/deepseek-chat` |
+| OpenAI | `https://api.openai.com/v1` | `gpt-5.2` |
+| Anthropic Claude | 留空（官方端点） | `claude-sonnet-5`（`provider` 填 `anthropic`） |
+| 火山方舟（豆包） | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-1-6-250615` |
 | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
 | 通义 Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-max` |
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
@@ -370,6 +378,8 @@ my-plugin/
 
 在手机上给它下任务，干完推回来。
 
+侧栏的**助理模式**就是这些渠道的总控台：顶部列出已连接的通道，中间是所有渠道汇成一条的对话历史（落盘保存，重启不丢），底部输入框可以直接跟助理对话——和在飞书里 @它 一样，任务在这台电脑上执行。
+
 | 渠道 | 要不要公网 | 说明 |
 |---|---|---|
 | 飞书 | 不要 | 长连接，填 `app_id` / `app_secret` 就行；另可**扫码**授权你本人的身份（见下） |
@@ -396,7 +406,7 @@ curl -X POST http://localhost:3800/im/task \
 
 ## 定时任务
 
-界面 **自动化 → 定时任务** 里加，或者调 API：
+界面的**自动化**页管这一摊：定时任务、运行记录、批量开关/删除、从模板一键添加。加任务在 **自动化 → 定时任务**，或者调 API：
 
 ```bash
 curl -X POST http://localhost:3800/api/schedules \
@@ -416,6 +426,8 @@ cron 5 字段（分 时 日 月 周），支持 `*` `,` `-` `*/n` `1-30/5` `5/10
 ---
 
 ## 安全（这个 agent 手里有 shell）
+
+先选档位（输入框旁一键切，参考 Claude Code）：**只看不动**（只读，不写文件不跑命令）→ **每步都问** → **自动改文件**（默认：工作目录随便改，删除、sudo 这类命令照样问）→ **全自动**（只剩文件黑名单和审计兜底）。
 
 设置 → 安全中心。每一项都是真闸门：文件黑名单、命令审批、网络白名单、运行时开关、审计日志（`data/audit.json`，环形 1000 条）。审批弹在输入框上方，批准 / 拒绝都行；超时（默认 120 秒）或者点停止都按拒绝算。
 

@@ -6,8 +6,9 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const security = require("./security");
+const memory = require("./memory");
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
 let workspaceDir = path.join(__dirname, "workspace");
@@ -68,31 +69,103 @@ const TOOL_DEFS = [
   },
   {
     name: "write_file",
-    description: "在 workspace 中写入一个文本文件（如 .md 报告、.txt、.csv、.html）。路径相对于 workspace。",
+    description:
+      "写文件（.md 报告、.txt、.csv、.html、代码文件都行）。路径相对于 workspace。**只用于新建**；改已有文件的局部内容用 edit_file。写长文档时用 append:true 一节一节续写，不用把前文重新吐一遍。写完会自动做语法/结构自检（JS/JSON/HTML/Markdown），有问题会直接告诉你。",
     input_schema: {
       type: "object",
       properties: {
         path: { type: "string", description: "相对路径，如 report.md" },
         content: { type: "string" },
+        append: { type: "boolean", description: "true = 追加到文件末尾（长文档分节写、日志累积用），默认 false 覆盖" },
       },
       required: ["path", "content"],
     },
   },
   {
-    name: "read_file",
-    description: "读取 workspace 中的一个文本文件内容（最多返回前 50000 字符）。",
+    name: "edit_file",
+    description:
+      "改已有文件里的一段内容（精确替换）。改代码、改文档的既有内容一律用它，不要用 write_file 整篇重写——重写会把你没看过的部分一起弄没。old_text 必须和文件里的原文逐字一致（含缩进），并且在全文中唯一；不唯一就多带几行上下文再来。",
     input_schema: {
       type: "object",
-      properties: { path: { type: "string", description: "相对路径" } },
+      properties: {
+        path: { type: "string", description: "相对路径" },
+        old_text: { type: "string", description: "要被替换掉的原文（逐字一致，带足上下文保证唯一）" },
+        new_text: { type: "string", description: "替换成的新内容（想删掉就传空字符串）" },
+        replace_all: { type: "boolean", description: "全文替换所有匹配（改变量名这类才用），默认 false" },
+      },
+      required: ["path", "old_text", "new_text"],
+    },
+  },
+  {
+    name: "read_file",
+    description: "读取 workspace 中的一个文本文件内容（最多返回前 50000 字符）。文件很大时用 start_line/end_line 只读要看的那一段。",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "相对路径" },
+        start_line: { type: "number", description: "从第几行开始读（1 起，可选）" },
+        end_line: { type: "number", description: "读到第几行为止（含，可选）" },
+      },
       required: ["path"],
     },
   },
   {
-    name: "list_files",
-    description: "列出 workspace 目录下的文件（名称、大小、修改时间）。",
+    name: "search_files",
+    description:
+      "在 workspace 里按内容搜索，返回 文件:行号: 命中行。找函数定义、找某个字符串在哪些文件里用到、改名前找全部调用点，用它，比一个个 read_file 快得多。自动跳过 node_modules/.git/二进制文件。",
     input_schema: {
       type: "object",
-      properties: { dir: { type: "string", description: "相对子目录，默认根目录" } },
+      properties: {
+        query: { type: "string", description: "要搜的内容（默认按字面量搜）" },
+        regex: { type: "boolean", description: "把 query 当正则处理，默认 false" },
+        dir: { type: "string", description: "只搜某个子目录，默认整个 workspace" },
+        ext: { type: "string", description: "只搜某类扩展名，逗号分隔，如 js,ts,md" },
+        max: { type: "number", description: "最多返回多少条命中，默认 60" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "list_files",
+    description: "列出 workspace 目录下的文件（名称、大小、修改时间）。看项目结构时把 depth 调到 2-3 一次看清，别一层层点。",
+    input_schema: {
+      type: "object",
+      properties: {
+        dir: { type: "string", description: "相对子目录，默认根目录" },
+        depth: { type: "number", description: "递归几层，默认 1（只列当前层），最多 3" },
+      },
+    },
+  },
+  {
+    name: "remember",
+    description:
+      "把一条**跨任务都成立**的长期信息记进记忆（用户的偏好、习惯、常用路径、身份、明确的纠正）。用户说「以后都这样」「记住我喜欢…」「别再…」时必须调用。只记结论、一句话，不要记这次任务的过程；绝不记密钥、密码、令牌。",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "一句话结论，如「周报只要三段：进展/问题/下周计划」" },
+        shared: { type: "boolean", description: "true = 这台机器上所有账号都适用（团队约定）；默认只记给当前用户" },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "forget",
+    description: "删掉之前记住的某条长期记忆（用户说「不用记这个了」「我改主意了」时用）。按内容匹配，只能删共享的和当前用户自己的。",
+    input_schema: {
+      type: "object",
+      properties: { text: { type: "string", description: "要忘掉的那条记忆的内容（可以只给关键片段）" } },
+      required: ["text"],
+    },
+  },
+  {
+    name: "check_page",
+    description:
+      "验收一个做好的网页：静态体检（DOCTYPE/viewport/标题/标签闭合/外链资源/本地引用是否存在/正文是否空壳）+ 真浏览器打开一遍（拿标题、正文长度、控制台报错）。**交付 HTML 之前必须跑一次**——白屏和 JS 报错光看源码看不出来。",
+    input_schema: {
+      type: "object",
+      properties: { path: { type: "string", description: "workspace 里的 .html 相对路径" } },
+      required: ["path"],
     },
   },
   {
@@ -459,17 +532,299 @@ function libraryRead(name) {
   return fs.readFileSync(path.join(LIB_DIR, base), "utf8").slice(0, 50000);
 }
 
-function listFiles(target) {
+const LIST_SKIP = new Set([".tmp", "node_modules", ".git", ".DS_Store"]);
+
+/** 列目录。depth>1 时递归展开——看项目结构时一次看清，比一层层 list_files 省好几轮 */
+function listFiles(target, depth = 1) {
   if (!fs.existsSync(target)) return "（目录不存在）";
-  const entries = fs
-    .readdirSync(target, { withFileTypes: true })
-    .filter((e) => e.name !== ".tmp")
-    .map((e) => {
-      const full = path.join(target, e.name);
-      const st = fs.statSync(full);
-      return `${e.isDirectory() ? "[目录] " : ""}${e.name}\t${st.size} 字节\t${st.mtime.toISOString()}`;
+  const maxDepth = Math.min(Math.max(Number(depth) || 1, 1), 3);
+  const out = [];
+  let truncated = false;
+  (function walk(dir, rel, d) {
+    if (truncated) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (LIST_SKIP.has(e.name)) continue;
+      if (out.length >= 400) {
+        truncated = true;
+        return;
+      }
+      const full = path.join(dir, e.name);
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      let st;
+      try {
+        st = fs.statSync(full);
+      } catch {
+        continue;
+      }
+      if (e.isDirectory()) {
+        out.push(`[目录] ${r}/`);
+        if (d < maxDepth) walk(full, r, d + 1);
+      } else {
+        out.push(`${r}\t${st.size} 字节\t${st.mtime.toISOString()}`);
+      }
+    }
+  })(target, "", 1);
+  if (!out.length) return "（空目录）";
+  return out.join("\n") + (truncated ? "\n（超过 400 项，后面的没列——用 dir 指到具体子目录再看）" : "");
+}
+
+function countAll(hay, needle) {
+  let n = 0,
+    i = hay.indexOf(needle);
+  while (i >= 0) {
+    n++;
+    i = hay.indexOf(needle, i + needle.length);
+  }
+  return n;
+}
+
+/**
+ * 精确替换。改已有文件只走这里，不许整篇重写——
+ * 重写会把模型没读过的部分一起抹掉，而且用户 diff 一看全是红的，根本审不了。
+ * 匹配不上/不唯一都必须报清楚原因（并给出下一步怎么办），不能默默改错地方。
+ */
+function editFile(file, label, { old_text, new_text, replace_all }) {
+  if (!fs.existsSync(file)) throw new Error(`文件不存在：${label}。新建文件请用 write_file。`);
+  const src = fs.readFileSync(file, "utf8");
+  const needle = String(old_text == null ? "" : old_text);
+  const repl = String(new_text == null ? "" : new_text);
+  if (!needle) throw new Error("old_text 是空的：edit_file 必须给出要被替换掉的原文");
+  const idx = src.indexOf(needle);
+  if (idx < 0) {
+    const first = needle.split("\n")[0].trim();
+    const lines = src.split("\n");
+    const near = first
+      ? lines
+          .map((l, i) => [i + 1, l])
+          .filter(([, l]) => l.includes(first.slice(0, 40)))
+          .slice(0, 3)
+          .map(([n, l]) => `  第 ${n} 行: ${l.slice(0, 120)}`)
+          .join("\n")
+      : "";
+    throw new Error(
+      `没找到 old_text（必须和文件里逐字一致，包括缩进和空行）。` +
+        (near ? `\n文件里和它第一行相近的位置：\n${near}\n先 read_file 把那几行原样抄下来再改。` : `\n先 read_file 看看现在的真实内容。`)
+    );
+  }
+  const hits = countAll(src, needle);
+  if (hits > 1 && !replace_all) {
+    throw new Error(`old_text 在 ${label} 里出现了 ${hits} 次，不唯一，不敢猜改哪一处。多带几行上下文让它唯一；确实要全改就传 replace_all=true。`);
+  }
+  const out = replace_all ? src.split(needle).join(repl) : src.slice(0, idx) + repl + src.slice(idx + needle.length);
+  if (out === src) return `${label} 内容没有变化（new_text 和 old_text 一样）`;
+  fs.writeFileSync(file, out, "utf8");
+  const line = src.slice(0, idx).split("\n").length;
+  const where = replace_all && hits > 1 ? `替换了 ${hits} 处` : `在第 ${line} 行替换了 1 处`;
+  return `已修改 ${label}：${where}，${src.length} → ${out.length} 字符`;
+}
+
+/**
+ * 写完/改完立刻做一次自检。
+ *
+ * 「改完自检」写在提示词里是没用的——模型该忘还是忘，坏文件就这么交出去了。
+ * 所以把它挪到工具里：写完当场查，坏了当场把错误和行号顶回去，它想装看不见都不行。
+ * 只查便宜且确定的东西（语法、结构），不做风格评判。
+ */
+function selfCheck(file, rel) {
+  const ext = path.extname(rel).toLowerCase();
+  let src = "";
+  try {
+    src = fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+  if (ext === ".json") {
+    try {
+      JSON.parse(src);
+    } catch (e) {
+      return `\n⚠️ JSON 语法没过：${e.message}。先修好再往下走。`;
+    }
+    return "";
+  }
+  if ([".js", ".cjs", ".mjs"].includes(ext)) {
+    const check = (f) => spawnSync(process.execPath, ["--check", f], { encoding: "utf8", timeout: 15000 });
+    let r = check(file);
+    // .js 里写 ESM（import/export）在 CJS 下必然报错，但项目可能本来就是 type:module —— 换成 .mjs 再判一次，别误伤
+    if (r.status !== 0 && /^\s*(import|export)\s/m.test(src)) {
+      const alt = path.join(tmpDir(), `syntax-${Date.now()}.mjs`);
+      try {
+        fs.mkdirSync(tmpDir(), { recursive: true });
+        fs.writeFileSync(alt, src);
+        if (check(alt).status === 0) r = { status: 0 };
+      } catch {}
+      fs.rmSync(alt, { force: true });
+    }
+    if (r.status !== 0) {
+      const msg = String(r.stderr || "").split("\n").filter((l) => l && !/^\s*at /.test(l)).slice(0, 6).join("\n");
+      return `\n⚠️ JS 语法没过：\n${msg}\n先修好再往下走（用 edit_file 改那一行，别整篇重写）。`;
+    }
+    return "";
+  }
+  if (ext === ".md") {
+    const fences = (src.match(/^```/gm) || []).length;
+    if (fences % 2 === 1) return "\n⚠️ Markdown 里有 ``` 代码围栏没闭合（奇数个），界面会把后面的正文整块吞掉。补上收尾的 ```。";
+    return "";
+  }
+  if (ext === ".html" || ext === ".htm") {
+    const issues = auditHtml(src, path.dirname(file)).filter((x) => x.level === "错");
+    if (issues.length) return `\n⚠️ 页面结构有问题：${issues.map((x) => x.msg).join("；")}。建议再跑一次 check_page 确认。`;
+    return "";
+  }
+  return "";
+}
+
+/** 网页静态体检。只报能确定的问题，不做审美评判 */
+function auditHtml(src, baseDir) {
+  const out = [];
+  const add = (level, msg) => out.push({ level, msg });
+  if (!/<!doctype\s+html/i.test(src)) add("警", "没有 <!DOCTYPE html>（浏览器会退到怪异模式，排版会走样）");
+  if (!/<meta[^>]+name=["']viewport["']/i.test(src)) add("警", "没有 viewport meta，手机上会缩成一团");
+  const title = (src.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1];
+  if (!title || !title.trim()) add("警", "<title> 是空的（浏览器标签页和分享卡片都靠它）");
+  // 标签闭合：只查结构性标签，查全了误报比真问题还多
+  for (const tag of ["html", "head", "body", "div", "section", "main", "header", "footer", "table", "ul", "ol", "script", "style"]) {
+    const open = (src.match(new RegExp(`<${tag}(\\s|>)`, "gi")) || []).length;
+    const close = (src.match(new RegExp(`</${tag}>`, "gi")) || []).length;
+    if (open !== close) add("错", `<${tag}> 开 ${open} 个、闭 ${close} 个，对不上`);
+  }
+  // 外链资源：断网/发给别人就打不开了，单文件页面这是硬伤
+  const ext = [...src.matchAll(/(?:src|href)=["'](https?:\/\/[^"']+)["']/gi)].map((m) => m[1]);
+  const cdn = ext.filter((u) => !/^https?:\/\/(fonts\.googleapis|fonts\.gstatic)\./i.test(u));
+  if (cdn.length) add("警", `引了 ${cdn.length} 个外部资源（${cdn[0].slice(0, 60)}…），断网或换台电脑就白屏；库和图片请内联或下载到本地`);
+  // 本地引用的文件在不在
+  const local = [...src.matchAll(/(?:src|href)=["'](?!https?:|data:|#|mailto:|javascript:)([^"']+)["']/gi)].map((m) => m[1]);
+  for (const rel of local.slice(0, 40)) {
+    const f = path.join(baseDir, rel.split("?")[0].split("#")[0]);
+    if (!fs.existsSync(f)) add("错", `引用了不存在的本地文件：${rel}`);
+  }
+  const text = src.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  if (text.length < 30) add("警", "去掉标签后几乎没有正文（可能是内容全靠 JS 生成，也可能就是个空壳）");
+  return out;
+}
+
+/** 验收网页：静态体检 + 真浏览器打开一遍（拿控制台报错） */
+async function checkPage(file, rel) {
+  const src = fs.readFileSync(file, "utf8");
+  const issues = auditHtml(src, path.dirname(file));
+  const lines = [`【静态体检】${rel}（${Buffer.byteLength(src)} 字节）`];
+  lines.push(issues.length ? issues.map((x) => `- [${x.level}] ${x.msg}`).join("\n") : "- 没发现结构问题");
+
+  let electron = null;
+  try {
+    electron = require("electron");
+  } catch {}
+  if (!electron || !electron.BrowserWindow || !electron.app || !electron.app.isReady()) {
+    lines.push("\n【浏览器实测】跳过（当前是命令行模式，没有内置浏览器）。交付前请在桌面版里再跑一次。");
+    return lines.join("\n");
+  }
+  const win = new electron.BrowserWindow({
+    show: false,
+    width: 1440,
+    height: 1000,
+    webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true, sandbox: true },
+  });
+  const errs = [];
+  try {
+    // 控制台报错是白屏的头号原因，光看源码看不出来
+    win.webContents.on("console-message", (_e, level, message) => {
+      if (level >= 2) errs.push(String(message).slice(0, 300));
     });
-  return entries.length ? entries.join("\n") : "（空目录）";
+    win.webContents.on("did-fail-load", (_e, code, desc, url) => errs.push(`资源加载失败 ${desc}（${String(url).slice(0, 80)}）`));
+    await win.loadURL("file://" + file);
+    await new Promise((r) => setTimeout(r, 1200));
+    const info = await win.webContents.executeJavaScript(
+      "({ t: document.title || '', n: (document.body ? document.body.innerText : '').trim().length, h: document.body ? document.body.scrollHeight : 0 })"
+    );
+    lines.push(`\n【浏览器实测】标题「${info.t}」· 可见正文 ${info.n} 字 · 页面高 ${info.h}px`);
+    if (info.n < 20) lines.push("- [错] 打开后几乎没有可见内容（白屏）。多半是 JS 报错或 CSS 把内容藏了。");
+    lines.push(errs.length ? `- [错] 控制台报错 ${errs.length} 条：\n  ${errs.slice(0, 5).join("\n  ")}` : "- 控制台没有报错");
+  } catch (e) {
+    lines.push(`\n【浏览器实测】打开失败：${e.message}`);
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+    if (!electron.BrowserWindow.getAllWindows().length) electron.app.quit();
+  }
+  return lines.join("\n");
+}
+
+const SEARCH_SKIP = new Set([".tmp", "node_modules", ".git", "dist", "build", ".next", "__pycache__", "venv", ".venv", ".cache"]);
+
+/** 全文搜索：找定义、找调用点、改名前找全部引用。跳过二进制和依赖目录 */
+function searchFiles(root, { query, regex, ext, max }) {
+  const limit = Math.min(Math.max(Number(max) || 60, 1), 300);
+  const q = String(query || "");
+  if (!q) throw new Error("query 是空的");
+  let re;
+  try {
+    re = new RegExp(regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  } catch (e) {
+    throw new Error(`正则不合法：${e.message}`);
+  }
+  const exts = String(ext || "")
+    .split(",")
+    .map((x) => x.trim().replace(/^\./, "").toLowerCase())
+    .filter(Boolean);
+  const hits = [];
+  let scanned = 0,
+    truncated = false;
+  (function walk(dir) {
+    if (truncated) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (truncated) return;
+      if (SEARCH_SKIP.has(e.name)) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!e.isFile()) continue;
+      if (exts.length && !exts.includes(path.extname(e.name).slice(1).toLowerCase())) continue;
+      let st;
+      try {
+        st = fs.statSync(full);
+      } catch {
+        continue;
+      }
+      if (st.size > 2 * 1024 * 1024) continue; // 大文件多半是产物/数据，不是要找的代码
+      let buf;
+      try {
+        buf = fs.readFileSync(full);
+      } catch {
+        continue;
+      }
+      if (buf.includes(0)) continue; // 二进制
+      scanned++;
+      const rel = path.relative(root, full) || e.name;
+      const lines = buf.toString("utf8").split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (!re.test(lines[i])) continue;
+        hits.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+        if (hits.length >= limit) {
+          truncated = true;
+          return;
+        }
+      }
+    }
+  })(root);
+  if (!hits.length) return `（没搜到「${q}」，扫了 ${scanned} 个文本文件）`;
+  return (
+    hits.join("\n") +
+    (truncated
+      ? `\n（到 ${limit} 条上限了，后面还有没列出来的——把关键词写细，或用 dir/ext 缩范围）`
+      : `\n（共 ${hits.length} 条，扫了 ${scanned} 个文本文件）`)
+  );
 }
 
 // 自报家门式的 UA（"Mozilla/5.0 (OpenWorkBuddy)"）会被相当多的站点直接判成爬虫：
@@ -865,8 +1220,9 @@ async function executeTool(name, input, opts = {}) {
    * run_shell 和 run_node 用的是同一套 —— 只守 shell 那扇门是守不住的，
    * 一句 require("child_process") 就从旁边过去了。
    */
-  const passGate = async (verdict, label, text) => {
-    if (!sec.gateway || verdict.action === "allow") return null;
+  const passGate = async (verdict, label, text, { force = false } = {}) => {
+    // force：权限档位（只看不动/每步都问）是用户当场选的档，不受安全闸门总开关影响
+    if ((!sec.gateway && !force) || verdict.action === "allow") return null;
     if (verdict.action === "deny") {
       security.audit(label + "拦截", text, "拦截");
       return { content: `${label}被安全中心拦截：${verdict.rule}（命中「${verdict.seg}」）`, isError: true };
@@ -876,7 +1232,12 @@ async function executeTool(name, input, opts = {}) {
       (sec.approval_timeout_s || 120) * 1000,
       opts.deadline ? Math.max(5000, opts.deadline - Date.now() - 10000) : Infinity
     );
-    const ok = await security.requestApproval(label + "执行", text, { timeoutMs: waitMs, stopSignal: opts.stopSignal });
+    const ok = await security.requestApproval(label + "执行", text, {
+      timeoutMs: waitMs,
+      stopSignal: opts.stopSignal,
+      rule: verdict.rule || "",
+      ruleKey: verdict.ruleKey || "",
+    });
     security.audit(label + "审批", text, ok ? "已批准" : "已拒绝");
     if (ok) return null;
     return {
@@ -905,18 +1266,81 @@ async function executeTool(name, input, opts = {}) {
         return await runShell(cmd, timeoutMs);
       }
       case "write_file": {
-        const p = resolveFile(input.path);
+        const rel = String(input.path || "");
+        const p = resolveFile(rel);
+        const blocked = await passGate(security.checkWrite(sec, rel), "写文件", rel, { force: true });
+        if (blocked) return blocked;
+        const existed = fs.existsSync(p);
+        const oldSize = existed ? fs.statSync(p).size : 0;
         fs.mkdirSync(path.dirname(p), { recursive: true });
-        fs.writeFileSync(p, input.content, "utf8");
-        return { content: `已写入 ${input.path}（${Buffer.byteLength(input.content)} 字节）`, isError: false };
+        const body = String(input.content || "");
+        const n = Buffer.byteLength(body);
+        if (input.append) {
+          fs.appendFileSync(p, body, "utf8");
+          const warn = selfCheck(p, rel);
+          return { content: `已追加到 ${rel}（+${n} 字节，现共 ${fs.statSync(p).size} 字节）${warn}`, isError: !!warn };
+        }
+        fs.writeFileSync(p, body, "utf8");
+        const warn = selfCheck(p, rel);
+        // 覆盖和新建要说清楚：整篇重写一个已有文件，多半是该用 edit_file 却偷懒了
+        return {
+          content:
+            (existed
+              ? `已覆盖 ${rel}（原 ${oldSize} 字节 → 现 ${n} 字节）。提醒：改已有文件的局部内容用 edit_file，整篇重写会连你没读过的部分一起换掉。`
+              : `已新建 ${rel}（${n} 字节）`) + warn,
+          isError: !!warn,
+        };
+      }
+      case "edit_file": {
+        const rel = String(input.path || "");
+        const p = resolveFile(rel);
+        const blocked = await passGate(security.checkWrite(sec, rel), "改文件", rel, { force: true });
+        if (blocked) return blocked;
+        const msg = editFile(p, rel, input);
+        const warn = selfCheck(p, rel);
+        return { content: msg + warn, isError: !!warn };
       }
       case "read_file": {
         const p = resolveFile(input.path);
         const content = fs.readFileSync(p, "utf8");
-        return { content: content.slice(0, 50000), isError: false };
+        const s = Math.max(0, Number(input.start_line) || 0);
+        const e = Math.max(0, Number(input.end_line) || 0);
+        if (s || e) {
+          const lines = content.split("\n");
+          const from = Math.max(1, s || 1);
+          if (from > lines.length) return { content: `${input.path} 只有 ${lines.length} 行，start_line=${from} 超出范围`, isError: true };
+          const to = Math.min(lines.length, e || lines.length);
+          const body = lines
+            .slice(from - 1, to)
+            .map((l, i) => `${from + i}\t${l}`)
+            .join("\n");
+          return { content: `（${input.path} 第 ${from}-${to} 行，全文共 ${lines.length} 行）\n${body}`.slice(0, 50000), isError: false };
+        }
+        const cut = content.length > 50000;
+        return {
+          content: content.slice(0, 50000) + (cut ? `\n\n（文件 ${content.length} 字符，这里只给了前 50000。要看后面用 start_line/end_line）` : ""),
+          isError: false,
+        };
       }
       case "list_files":
-        return { content: listFiles(resolveFile(input.dir || ".")), isError: false };
+        return { content: listFiles(resolveFile(input.dir || "."), input.depth), isError: false };
+      case "search_files":
+        return { content: searchFiles(resolveFile(input.dir || "."), input), isError: false };
+      case "remember": {
+        const r = memory.add({ text: input.text, user: opts.memory && opts.memory.user, shared: !!input.shared });
+        return { content: r.note, isError: !r.ok };
+      }
+      case "forget": {
+        const r = memory.forget({ text: input.text, user: opts.memory && opts.memory.user });
+        return { content: r.note, isError: r.removed === 0 };
+      }
+      case "check_page": {
+        const rel = String(input.path || "");
+        const p = resolveFile(rel);
+        if (!fs.existsSync(p)) return { content: `文件不存在：${rel}`, isError: true };
+        const report = await checkPage(p, rel);
+        return { content: report, isError: /\[错\]/.test(report) };
+      }
       case "save_skill": {
         const name = String(input.name || "").trim();
         if (!/^[a-z0-9][a-z0-9-_]{1,40}$/.test(name)) {
