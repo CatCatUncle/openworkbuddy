@@ -31,6 +31,8 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const notify = require("./notify");
+const security = require("./security");
+const { getWorkspaceDir } = require("./tools");
 const { createQQConnection } = require("./im-qq");
 const { createWecomApp, createWechatMp } = require("./im-wechat");
 const ilinkApi = require("./im-ilink");
@@ -164,17 +166,55 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
    * @param {(out:string)=>Promise<void>} p.reply  回复函数
    * @param {object} [p.logExtra]  日志附加字段
    */
-  function runInbound({ channel, sessionKey, text, reply, status, logExtra = {} }) {
+  // IM 里没人守着屏幕点审批：auto 档下每个待批命令都要干等 120 秒超时，用户看到的就是
+  // 「一直没动静」。所以 IM 任务默认放到「全自动」档（文件黑名单照样拦），可在
+  // config.im.permission_mode 改回 auto/ask。
+  function imSec() {
+    return { ...security.DEFAULTS, ...(config.security || {}), permission_mode: (config.im || {}).permission_mode || "full" };
+  }
+
+  const TOOL_LABELS = {
+    run_shell: "执行命令", run_node: "运行代码", write_file: "写文件", read_file: "读文件",
+    edit_file: "改文件", list_files: "看目录", web_search: "联网搜索", fetch_url: "抓取网页",
+    use_skill: "加载技能", delegate_to_expert: "委派专家", delegate_to_team: "召集团队",
+    create_feishu_doc: "写飞书文档", remember: "记笔记",
+  };
+
+  function runInbound({ channel, sessionKey, text, reply, status, sendFile, logExtra = {} }) {
     logIm(channel, "in", text, logExtra);
     maybeResetIdleSession(sessionKey, channel);
-    // 「正在做」状态消息：收到即发（只在支持撤回的通道传 status），结果出来前撤回，
-    // 聊天里最终只留结果——跟用户「别刷确认消息」的要求不冲突
-    let statusHandle = status ? status.send().catch(() => null) : null;
+    // 「正在做」状态消息：收到即发（只在支持撤回的通道传 status），跑的过程中原地改成
+    // 当前进度，出结果前撤回——聊天里最终只留结果，跟用户「别刷确认消息」的要求不冲突
+    const queued = taskQueues.has(sessionKey);
+    let statusHandle = status ? status.send(queued).catch(() => null) : null;
     const recallStatus = async () => {
       if (!statusHandle) return;
       const h = statusHandle;
       statusHandle = null;
       try { await status.recall(await h); } catch {}
+    };
+    // 进度节流：最快 4 秒改一次状态消息，别撞飞书编辑接口的频控
+    let lastUpd = 0, updTimer = null, progText = "", stepNo = 0;
+    const pushProgress = () => {
+      if (!status || !status.update || !statusHandle) return;
+      const fire = async () => {
+        lastUpd = Date.now();
+        const h = await statusHandle;
+        if (h && statusHandle) await status.update(h, progText).catch(() => {});
+      };
+      const wait = 4000 - (Date.now() - lastUpd);
+      if (wait <= 0) fire();
+      else if (!updTimer) updTimer = setTimeout(() => { updTimer = null; if (statusHandle) fire(); }, wait);
+    };
+    const emitProgress = (ev) => {
+      if (ev.type === "step_start" && !ev.depth) { stepNo = ev.step; return; }
+      if (ev.type === "tool_use") {
+        const det = String(ev.purpose || "").slice(0, 50);
+        progText = `⏳ 正在做 · 第 ${stepNo || 1} 步 · ${TOOL_LABELS[ev.name] || ev.name}${det ? "：" + det : ""}\n（完成后这条会自动撤回）`;
+      } else if (ev.type === "expert_start") {
+        progText = `⏳ 正在做 · 已委派专家「${ev.expert}」\n（完成后这条会自动撤回）`;
+      } else return;
+      pushProgress();
     };
     return enqueueTask(sessionKey, async () => {
       try {
@@ -186,21 +226,44 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         // 跑之前先记一份快照：outputFiles() 给的是整个工作区，不做差集的话
         // 每条回复都会把历史文件全抖出来（打个招呼也附一堆 .png），用户实际反馈过
         const before = new Map(outputFiles().map((f) => [f.name, f.mtime]));
-        const { finalText } = await runtime.runTask({ history });
+        // 告诉 agent 文件是怎么送达的，别再跟用户说「我发不了文件」
+        const imNote = sendFile
+          ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台）。任务完成后，系统会自动把本次新建/修改的文件、以及你最终回复里点到名字的文件，作为附件直接发进聊天。用户要某个文件时：确保它在工作目录里，然后在最终回复里写出这个文件名（含扩展名）即可，绝不要说你发不了文件。"
+          : "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台）。产出的文件请报清楚文件名，用户回头在 OpenWorkBuddy 工作台下载。";
+        const { finalText } = await runtime.runTask({ history, emit: emitProgress, sec: imSec(), projectContext: imNote });
         saveSession(sessionKey); // runTask 是就地往 history 里追加的，得自己招呼一声存盘
         const fresh = outputFiles().filter((f) => before.get(f.name) !== f.mtime); // 新建或被改过的才算这次的产出
         let out = finalText || "任务已执行完成。";
-        if (fresh.length) {
+        // 能把文件直接发进聊天的通道（飞书）：本次新产出 + 回复里点名的文件都作为附件发过去；
+        // 发不了的通道保持老样子，提示去工作台拿
+        let toSend = [];
+        if (sendFile) {
+          const seen = new Set();
+          const mentioned = outputFiles().filter((f) => out.includes(f.name.split("/").pop()));
+          toSend = [...fresh, ...mentioned].filter((f) => !seen.has(f.name) && seen.add(f.name)).slice(0, 5);
+        }
+        if (fresh.length && !toSend.length) {
           out += `\n\n📁 成果文件（在 OpenWorkBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
           if (fresh.length > 8) out += `\n… 另有 ${fresh.length - 8} 个`;
         }
+        if (updTimer) { clearTimeout(updTimer); updTimer = null; }
         await recallStatus();
         await reply(out);
         logIm(channel, "out", out, logExtra);
+        for (const f of toSend) {
+          try {
+            await sendFile(f.name);
+            logIm(channel, "out", `📎 已发送文件：${f.name}`, logExtra);
+          } catch (e) {
+            logIm(channel, "error", `发送文件 ${f.name} 失败: ${e.message}`, logExtra);
+            try { await reply(`📁 「${f.name}」没发出去（${String(e.message).slice(0, 100)}），可在 OpenWorkBuddy 工作台下载。`); } catch {}
+          }
+        }
         await pushBots(`【OpenWorkBuddy·${CH_NAME[channel] || channel}任务完成】\n任务：${text.slice(0, 80)}\n${out.slice(0, 500)}`);
       } catch (e) {
         console.error(`[${CH_NAME[channel] || channel}] 任务执行出错:`, e.message);
         logIm(channel, "error", `任务执行出错: ${e.message}`, logExtra);
+        if (updTimer) { clearTimeout(updTimer); updTimer = null; }
         try {
           await recallStatus();
           await reply(`❌ 任务执行出错：${String(e.message).slice(0, 300)}`);
@@ -209,12 +272,86 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     });
   }
 
-  // 「正在做」状态消息：发一条轻量文本，做完撤回。撤回失败不影响结果送达。
-  async function feishuStatusSend(chatId) {
+  // 「正在做」状态消息：发一条轻量文本，跑的过程中原地编辑成当前进度，做完撤回。
+  async function feishuStatusSend(chatId, queued) {
     const token = await getFeishuToken();
-    const r = await feishuSend(token, chatId, "text", { text: "⏳ 收到，正在做了…（完成后这条会自动撤回）" });
+    const text = queued
+      ? "⏳ 收到，前面还有任务在跑，排队中…（完成后这条会自动撤回）"
+      : "⏳ 收到，正在做了…（完成后这条会自动撤回）";
+    const r = await feishuSend(token, chatId, "text", { text });
     return r.code === 0 ? (r.data || {}).message_id : null;
   }
+  async function feishuStatusUpdate(messageId, text) {
+    if (!messageId) return;
+    const token = await getFeishuToken();
+    await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${messageId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ msg_type: "text", content: JSON.stringify({ text }) }),
+      signal: AbortSignal.timeout(10000),
+    });
+  }
+  const FEISHU_IMG_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp"]);
+  const FEISHU_FILE_TYPE = { pdf: "pdf", doc: "doc", docx: "doc", xls: "xls", xlsx: "xls", ppt: "ppt", pptx: "ppt", mp4: "mp4", opus: "opus" };
+  /** 把工作目录里的文件作为附件发进飞书会话：图片走 images 接口，其余走 files 接口 */
+  async function feishuSendFileMsg(chatId, relName) {
+    const abs = path.join(getWorkspaceDir(), relName);
+    const buf = fs.readFileSync(abs);
+    if (buf.length > 28 * 1024 * 1024) throw new Error("超过飞书 30MB 上传上限");
+    const name = relName.split("/").pop();
+    const ext = (name.split(".").pop() || "").toLowerCase();
+    const token = await getFeishuToken();
+    let msgType, content;
+    if (FEISHU_IMG_EXT.has(ext)) {
+      const fd = new FormData();
+      fd.append("image_type", "message");
+      fd.append("image", new Blob([buf]), name);
+      const r = await (await fetch("https://open.feishu.cn/open-apis/im/v1/images", {
+        method: "POST", headers: { Authorization: `Bearer ${token}` }, body: fd, signal: AbortSignal.timeout(60000),
+      })).json();
+      if (r.code !== 0) throw new Error(`传图失败 code ${r.code}: ${r.msg}`);
+      msgType = "image"; content = { image_key: r.data.image_key };
+    } else {
+      const fd = new FormData();
+      fd.append("file_type", FEISHU_FILE_TYPE[ext] || "stream");
+      fd.append("file_name", name);
+      fd.append("file", new Blob([buf]), name);
+      const r = await (await fetch("https://open.feishu.cn/open-apis/im/v1/files", {
+        method: "POST", headers: { Authorization: `Bearer ${token}` }, body: fd, signal: AbortSignal.timeout(120000),
+      })).json();
+      if (r.code !== 0) throw new Error(`传文件失败 code ${r.code}: ${r.msg}`);
+      msgType = "file"; content = { file_key: r.data.file_key };
+    }
+    const r2 = await feishuSend(token, chatId, msgType, content);
+    if (r2.code !== 0) throw new Error(`发送失败 code ${r2.code}: ${r2.msg}`);
+  }
+  /** 用户在飞书里发来的图片/文件：下载进工作目录，返回落盘文件名 */
+  async function feishuSaveResource(msg) {
+    const c = JSON.parse(msg.content || "{}");
+    const key = c.image_key || c.file_key;
+    if (!key) throw new Error("消息里没有资源 key");
+    const type = msg.message_type === "image" ? "image" : "file";
+    const token = await getFeishuToken();
+    const resp = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${msg.message_id}/resources/${key}?type=${type}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!resp.ok) throw new Error(`下载失败 HTTP ${resp.status}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, "");
+    // 文件名只留最后一段，防路径穿越
+    let name = String(c.file_name || "").split(/[\\/]/).pop() || "";
+    if (!name) name = msg.message_type === "image" ? `飞书图片_${stamp}.png` : `飞书文件_${stamp}`;
+    let dest = path.join(getWorkspaceDir(), name);
+    if (fs.existsSync(dest)) {
+      const dot = name.lastIndexOf(".");
+      name = dot > 0 ? `${name.slice(0, dot)}_${stamp}${name.slice(dot)}` : `${name}_${stamp}`;
+      dest = path.join(getWorkspaceDir(), name);
+    }
+    fs.writeFileSync(dest, buf);
+    return name;
+  }
+
   async function feishuRecall(messageId) {
     if (!messageId) return;
     try {
@@ -231,18 +368,31 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   const handledMsgs = new Set(); // message_id 去重（飞书会重试推送）
   async function handleFeishuMessage(msg) {
-    if (!msg || msg.message_type !== "text") return;
+    if (!msg || !["text", "image", "file", "media"].includes(msg.message_type)) return;
     if (msg.message_id) {
       if (handledMsgs.has(msg.message_id)) return;
       handledMsgs.add(msg.message_id);
       if (handledMsgs.size > 2000) handledMsgs.clear();
     }
     let text = "";
-    try {
-      text = JSON.parse(msg.content).text || "";
-    } catch {}
-    text = text.replace(/@_user_\d+/g, "").trim(); // 去掉 @机器人 占位
-    if (!text) return;
+    if (msg.message_type === "text") {
+      try {
+        text = JSON.parse(msg.content).text || "";
+      } catch {}
+      text = text.replace(/@_user_\d+/g, "").trim(); // 去掉 @机器人 占位
+      if (!text) return;
+    } else {
+      // 图片/文件消息：先把资源下载进工作目录，再让 agent 接手
+      try {
+        const saved = await feishuSaveResource(msg);
+        const kind = msg.message_type === "image" ? "图片" : "文件";
+        text = `[我在飞书发来一个${kind}，已保存到你的工作目录：${saved}]（如果我没说要用它做什么，就确认收到并简述内容）`;
+      } catch (e) {
+        logIm("feishu", "error", `接收文件失败: ${e.message}`, { chat: msg.chat_id });
+        try { await feishuReply(msg.chat_id, `❌ 这个文件没收下来：${String(e.message).slice(0, 150)}`); } catch {}
+        return;
+      }
+    }
 
     const chatId = msg.chat_id;
     // 收到先发「正在做」状态，出结果时撤回状态再回结果；微信 iLink 桥没有撤回接口，不挂 status
@@ -251,7 +401,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       sessionKey: `feishu_${chatId}`,
       text,
       logExtra: { chat: chatId },
-      status: { send: () => feishuStatusSend(chatId), recall: (id) => feishuRecall(id) },
+      status: { send: (q) => feishuStatusSend(chatId, q), update: (id, t) => feishuStatusUpdate(id, t), recall: (id) => feishuRecall(id) },
+      sendFile: (rel) => feishuSendFileMsg(chatId, rel),
       reply: (out) => feishuReply(chatId, out.slice(0, 3500)),
     });
   }
@@ -591,7 +742,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     saveSession(sessionKey);
 
     try {
-      const { finalText } = await runtime.runTask({ history });
+      const { finalText } = await runtime.runTask({ history, sec: imSec() });
       saveSession(sessionKey);
       const files = outputFiles().filter((f) => !f.name.includes("/"));
       logIm("webhook", "out", finalText || "(空回复)", { session: session || "default" });
