@@ -180,6 +180,20 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     create_feishu_doc: "写飞书文档", remember: "记笔记",
   };
 
+  // 正在执行的任务进度：sessionKey -> { text, channel, at }。网页助理页轮询 /im/progress 拿
+  const liveProgress = new Map();
+  // 把 agent 执行事件翻译成一行人话进度：飞书状态消息、网页助理页共用一份文案
+  function progressLine(ev, st) {
+    if (ev.type === "step_start" && !ev.depth) { st.step = ev.step; return null; }
+    if (ev.type === "tool_use") {
+      const det = String(ev.purpose || "").slice(0, 50);
+      return `第 ${st.step || 1} 步 · ${TOOL_LABELS[ev.name] || ev.name}${det ? "：" + det : ""}`;
+    }
+    if (ev.type === "expert_start") return `已委派专家「${ev.expert}」`;
+    if (ev.type === "compact") return "整理长会话上下文（自动压缩早前内容）";
+    return null;
+  }
+
   function runInbound({ channel, sessionKey, text, reply, status, sendFile, logExtra = {} }) {
     logIm(channel, "in", text, logExtra);
     maybeResetIdleSession(sessionKey, channel);
@@ -194,7 +208,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       try { await status.recall(await h); } catch {}
     };
     // 进度节流：最快 4 秒改一次状态消息，别撞飞书编辑接口的频控
-    let lastUpd = 0, updTimer = null, progText = "", stepNo = 0;
+    let lastUpd = 0, updTimer = null, progText = "";
+    const progState = { step: 0 };
     const pushProgress = () => {
       if (!status || !status.update || !statusHandle) return;
       const fire = async () => {
@@ -207,13 +222,10 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       else if (!updTimer) updTimer = setTimeout(() => { updTimer = null; if (statusHandle) fire(); }, wait);
     };
     const emitProgress = (ev) => {
-      if (ev.type === "step_start" && !ev.depth) { stepNo = ev.step; return; }
-      if (ev.type === "tool_use") {
-        const det = String(ev.purpose || "").slice(0, 50);
-        progText = `⏳ 正在做 · 第 ${stepNo || 1} 步 · ${TOOL_LABELS[ev.name] || ev.name}${det ? "：" + det : ""}\n（完成后这条会自动撤回）`;
-      } else if (ev.type === "expert_start") {
-        progText = `⏳ 正在做 · 已委派专家「${ev.expert}」\n（完成后这条会自动撤回）`;
-      } else return;
+      const line = progressLine(ev, progState);
+      if (!line) return;
+      liveProgress.set(sessionKey, { text: line, channel, at: Date.now() }); // 网页助理页的「执行中…」气泡靠这个变活
+      progText = `⏳ 正在做 · ${line}\n（完成后这条会自动撤回）`;
       pushProgress();
     };
     return enqueueTask(sessionKey, async () => {
@@ -228,21 +240,24 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         const before = new Map(outputFiles().map((f) => [f.name, f.mtime]));
         // 告诉 agent 文件是怎么送达的，别再跟用户说「我发不了文件」
         const imNote = sendFile
-          ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台，也看不到你在电脑上弹的任何窗口——别用 open 之类命令给用户「展示」东西，没人看得见）。文件送达机制：任务完成后，系统会自动把本次新建/修改的文件、以及你最终回复里点到名字的文件，作为附件直接发进这个聊天，用户在手机上就能收到。所以用户要某个文件时，只需确保它在工作目录里、并在最终回复里写出文件名（含扩展名），然后告诉用户「文件马上作为附件发给你」。⚠️ 如果本会话早前的历史里你说过「发不了文件/只能放进文件夹/需要扫码授权才能发」，那些是系统升级前的旧信息，已全部作废，禁止再重复。"
+          ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台，也看不到你在电脑上弹的任何窗口——别用 open 之类命令给用户「展示」东西，没人看得见）。文件送达机制：任务完成后，系统会自动把本次新建/修改的文件、以及你最终回复里点到名字的文件，作为附件直接发进这个聊天，用户在手机上就能收到。所以用户要某个文件时，只需确保它在工作目录里、并在最终回复里写出文件名（含扩展名），然后告诉用户「文件马上作为附件发给你」。但注意分清用户要的是「文件」还是「内容」：如果用户说「发我内容/直接贴出来/别发文件」，就把全文原样写进回复正文（别摘要、别截断），并在回复最后单独一行写 [[不发文件]] —— 系统认到这个标记就不附任何文件，标记本身用户看不到。反过来，只要回复里出现了文件名，系统默认会把那个文件附上，所以「只要内容」时必须带 [[不发文件]]。用户的口语指令按最直白的意思执行，别反复追问、别解释机制。⚠️ 如果本会话早前的历史里你说过「发不了文件/只能放进文件夹/需要扫码授权才能发」，那些是系统升级前的旧信息，已全部作废，禁止再重复。"
           : "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台）。产出的文件请报清楚文件名，用户回头在 OpenWorkBuddy 工作台下载。";
         const { finalText } = await runtime.runTask({ history, emit: emitProgress, sec: imSec(), projectContext: imNote });
         saveSession(sessionKey); // runTask 是就地往 history 里追加的，得自己招呼一声存盘
         const fresh = outputFiles().filter((f) => before.get(f.name) !== f.mtime); // 新建或被改过的才算这次的产出
         let out = finalText || "任务已执行完成。";
+        // agent 明确说「本次别发文件」（用户只要内容贴在聊天里）：吃掉标记，附件全免
+        const noAttach = out.includes("[[不发文件]]");
+        if (noAttach) out = out.replace(/\s*\[\[不发文件\]\]\s*/g, "\n").trim();
         // 能把文件直接发进聊天的通道（飞书）：本次新产出 + 回复里点名的文件都作为附件发过去；
         // 发不了的通道保持老样子，提示去工作台拿
         let toSend = [];
-        if (sendFile) {
+        if (sendFile && !noAttach) {
           const seen = new Set();
           const mentioned = outputFiles().filter((f) => out.includes(f.name.split("/").pop()));
           toSend = [...fresh, ...mentioned].filter((f) => !seen.has(f.name) && seen.add(f.name)).slice(0, 5);
         }
-        if (fresh.length && !toSend.length) {
+        if (fresh.length && !toSend.length && !noAttach) {
           out += `\n\n📁 成果文件（在 OpenWorkBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
           if (fresh.length > 8) out += `\n… 另有 ${fresh.length - 8} 个`;
         }
@@ -268,6 +283,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
           await recallStatus();
           await reply(`❌ 任务执行出错：${String(e.message).slice(0, 300)}`);
         } catch {}
+      } finally {
+        liveProgress.delete(sessionKey); // 任务收尾，进度条目摘掉，别让网页一直显示「执行中」
       }
     });
   }
@@ -697,6 +714,12 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   });
 
   router.get("/im/log", (_req, res) => res.json(imLog.slice(-100).reverse()));
+  // 正在执行的任务进度（网页助理页轮询用）。15 分钟没动的当异常残留过滤掉，别吓用户
+  router.get("/im/progress", (_req, res) => {
+    const out = {};
+    for (const [k, v] of liveProgress) if (Date.now() - v.at < 900000) out[k] = v;
+    res.json(out);
+  });
 
   router.post("/im/feishu/test", async (_req, res) => {
     try {
@@ -766,13 +789,19 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     history.push({ role: "user", content: message });
     saveSession(sessionKey);
     try {
-      const { finalText } = await runtime.runTask({ history });
+      const progState = { step: 0 };
+      const { finalText } = await runtime.runTask({
+        history,
+        emit: (ev) => { const line = progressLine(ev, progState); if (line) liveProgress.set(sessionKey, { text: line, channel: "local", at: Date.now() }); },
+      });
       saveSession(sessionKey);
       logIm("local", "out", finalText || "(空回复)");
       res.json({ reply: finalText });
     } catch (e) {
       logIm("local", "error", e.message);
       res.status(500).json({ error: e.message });
+    } finally {
+      liveProgress.delete(sessionKey);
     }
   });
 
