@@ -37,21 +37,20 @@ const PORT = (() => {
 
 let win;
 
-async function waitForServer(url, tries = 60) {
+async function waitForServer(url, tries = 200) {
   for (let i = 0; i < tries; i++) {
     try {
       const r = await fetch(url);
       if (r.ok) return true;
     } catch {}
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 150)); // 服务端 1 秒内就绪，粗轮询白等半秒
   }
   return false;
 }
 
 app.whenReady().then(async () => {
-  // 在 Electron 主进程内直接启动服务端
-  require(path.join(__dirname, "server.js"));
-
+  // 窗口先开（秒响应），服务端在同进程内随后启动，就绪即加载页面。
+  // 顺序反过来的话，用户要盯着 Dock 图标空等服务端把路由全注册完。
   win = new BrowserWindow({
     width: 1520,
     height: 900,
@@ -60,7 +59,13 @@ app.whenReady().then(async () => {
     title: "OpenWorkBuddy",
     autoHideMenuBar: true,
     backgroundColor: "#ffffff",
+    webPreferences: {
+      backgroundThrottling: false, // 窗口隐藏（快捷键收起）时任务还在流式回报，计时器不许被降频
+    },
   });
+
+  // 在 Electron 主进程内直接启动服务端
+  require(path.join(__dirname, "server.js"));
 
   await waitForServer(`http://localhost:${PORT}/api/info`);
   win.loadURL(`http://localhost:${PORT}`);

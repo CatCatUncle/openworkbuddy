@@ -32,7 +32,6 @@
   .brand .name { font-size: 14px; font-weight: 600; }
   .brand .tag { font-size: 10px; color: var(--wb-text-3); }
   #new-task { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 4px 14px; padding: 9px; border: none; border-radius: 10px; background: var(--wb-brand-grad); color: #fff; font-size: 13px; font-weight: 500; cursor: pointer; }
-  .assist-box { margin: 0 4px 14px; border: 1px solid var(--wb-border); border-radius: 10px; padding: 8px; background: var(--wb-bg); }
   .ab-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 600; padding: 2px 4px 6px; cursor: pointer; user-select: none; }
   .ab-head .ab-sub { font-weight: 400; font-size: 11px; color: var(--wb-text-3); }
   .ab-ch { display: flex; align-items: center; gap: 6px; padding: 5px 4px; border-radius: 6px; font-size: 12px; cursor: pointer; }
@@ -70,9 +69,8 @@
   .side-nav .item.active .tx .sub { color: var(--wb-brand); opacity: .7; }
   .side-nav .more-toggle { justify-content: space-between; color: var(--wb-text-3); }
   .side-nav .more-toggle .caret { margin-left: auto; }
-  /* 项目是分组表头：整行不可点，只有右边的 ＋ 可点 */
-  .side-nav .nav-head { cursor: default; }
-  .side-nav .nav-head:hover { background: none; color: var(--wb-text-2); }
+  /* 项目表头：点整行进项目页，点 ＋ 快速新建 */
+  .side-nav .nav-head { cursor: pointer; }
   .side-nav .nav-head #proj-add { margin-left: auto; text-decoration: none; color: var(--wb-text-3); font-size: 14px; padding: 0 4px; border-radius: 6px; }
   .side-nav .nav-head #proj-add:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   .side-nav #proj-list { margin: 0 0 4px; }
@@ -87,6 +85,9 @@
   .topbar .right { display: flex; align-items: center; gap: 10px; }
   #toggle-files { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 5px 12px; font-size: 12px; color: var(--wb-text-2); cursor: pointer; }
   #chat-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+  #to-bottom { position: absolute; right: 24px; bottom: 150px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); font-size: 15px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.12); display: none; z-index: 5; }
+  #to-bottom.show { display: block; }
+  #to-bottom:hover { color: var(--wb-brand); border-color: var(--wb-brand); }
   .chat-col { max-width: var(--wb-content-w); margin: 0 auto; padding: 24px 20px 12px; }
   /* 广场类页面（专家/技能/连接器、模板库）是卡片网格，832px 的阅读宽度会挤成一列 */
   .chat-col.wide-page { max-width: 1120px; }
@@ -194,8 +195,17 @@
   .out-hd { font-size: 12px; color: var(--wb-text-3); margin-bottom: 8px; }
   .out-hd.out-toggle { cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 4px; }
   .out-hd.out-toggle:hover { color: var(--wb-text-2); }
-  .out-block.fold .out-grid, .out-block.fold .out-more { display: none; }
-  .out-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .out-block.fold .out-list { display: none; }
+  .out-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .out-grid:empty { display: none; }
+  /* 变更清单：紧凑行，不是一堆方框卡片 */
+  .out-list { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+  .out-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; font-size: 12.5px; color: var(--wb-text-2); cursor: pointer; }
+  .out-row:hover { background: var(--wb-bg-hover); }
+  .out-row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .out-row .sz { color: var(--wb-text-3); flex: none; }
+  .out-row .dl { color: var(--wb-text-3); text-decoration: none; padding: 0 2px; flex: none; }
+  .out-row .dl:hover { color: var(--wb-brand); }
   .out-card { width: 240px; border: 1px solid var(--wb-border); border-radius: 12px; overflow: hidden; background: var(--wb-bg); cursor: pointer; transition: border-color .15s, box-shadow .15s; }
   .out-card:hover { border-color: var(--wb-brand); box-shadow: 0 4px 12px rgba(91,95,247,.12); }
   /* 缩略图：真的把网页/图片缩着渲染出来，比一个通用图标有用得多 */
@@ -220,6 +230,10 @@
   .im-row.out { justify-content: flex-end; }
   .im-row .im-ava { width: 26px; height: 26px; border-radius: 8px; background: var(--wb-bg-hover); display: flex; align-items: center; justify-content: center; font-size: 14px; flex: none; }
   .assist-page .im-feed { max-height: none; overflow: visible; }
+  .im-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .im-head .btn-plain { flex: none; font-size: 12.5px; padding: 6px 12px; }
+  #ab-ic .ab-ava { width: 18px; height: 18px; font-size: 14px; vertical-align: -4px; }
+  #ab-ic .ab-ava img { width: 100%; height: 100%; object-fit: cover; border-radius: 5px; }
   /* 侧栏项目列表 */
   .proj-item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
   .proj-item:hover { background: var(--wb-bg-hover); }
@@ -337,10 +351,19 @@
   #chat-search button { border: none; background: none; cursor: pointer; color: var(--wb-text-2); padding: 3px 6px; border-radius: 6px; }
   #chat-search button:hover { background: var(--wb-bg-hover); }
   .search-hit { outline: 2px solid var(--wb-brand); outline-offset: 2px; border-radius: 6px; }
-  .ap-row { display: flex; align-items: center; gap: 8px; background: #fff7ed; border: 1px solid #fdba74; border-radius: 10px; padding: 8px 12px; margin-bottom: 6px; font-size: 13px; }
-  .ap-row .ap-cmd { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; font-size: 12px; color: var(--wb-text-2); }
-  .ap-row button { border: none; border-radius: 8px; padding: 5px 14px; cursor: pointer; font-size: 12px; }
+  .mem-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--wb-border); font-size: 13px; }
+  .mem-row .mem-tag { flex: 0 0 auto; font-size: 11px; color: var(--wb-text-3); background: var(--wb-bg-hover); border-radius: 6px; padding: 1px 6px; }
+  .mem-row .mem-txt { flex: 1; min-width: 0; }
+  .mem-row .mem-src { flex: 0 0 auto; font-size: 11px; color: var(--wb-text-3); }
+  .ap-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #fff7ed; border: 1px solid #fdba74; border-radius: 10px; padding: 8px 12px; margin-bottom: 6px; font-size: 13px; }
+  .ap-row .ap-main { flex: 1; min-width: 220px; overflow: hidden; }
+  .ap-row .ap-head { font-size: 12px; margin-bottom: 2px; }
+  .ap-row .ap-why { color: var(--wb-text-3); }
+  .ap-row .ap-cmd { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; font-size: 12px; color: var(--wb-text-2); }
+  .ap-row .ap-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .ap-row button { border: none; border-radius: 8px; padding: 5px 12px; cursor: pointer; font-size: 12px; }
   .ap-row .ap-ok { background: var(--wb-brand); color: #fff; }
+  .ap-row .ap-ok2 { background: var(--wb-bg-hover); color: var(--wb-text); border: 1px solid var(--wb-border); }
   .ap-row .ap-no { background: var(--wb-bg-hover); color: var(--wb-text-2); }
   /* ---------- 输入框 @文件 //技能 token 高亮（镜像层） ---------- */
   #input-box { position: relative; }
@@ -538,6 +561,55 @@
   .tpl-card .ops { display: flex; gap: 6px; margin-top: auto; }
   .tpl-card .ops button { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer; color: var(--wb-text-2); }
   .tpl-card .ops button.primary { background: var(--wb-brand); border-color: var(--wb-brand); color: #fff; }
+
+  /* ===== 项目页 ===== */
+  .pg-hero { margin: 4px 0 18px; }
+  .pg-hero h1 { font-size: 26px; margin: 0 0 4px; }
+  .pg-hero .sub { color: var(--wb-text-2); font-size: 13px; }
+  .proj-card { border: 1px solid var(--wb-border); border-radius: 12px; padding: 14px 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; background: var(--wb-bg); transition: box-shadow .12s; }
+  .proj-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.07); }
+  .proj-card.active { border-color: var(--wb-brand); }
+  .proj-card .tt { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .proj-card .tt .badge { font-size: 10px; color: var(--wb-brand); background: var(--wb-brand-weak); border-radius: 5px; padding: 1px 6px; font-weight: 600; }
+  .proj-card .dd { font-size: 12px; color: var(--wb-text-3); }
+  .proj-card .ops { display: flex; gap: 10px; font-size: 12px; margin-top: 2px; }
+  .proj-form label { display: block; font-weight: 600; font-size: 13px; margin: 14px 0 6px; }
+  .proj-form .cnt { float: right; font-weight: 400; font-size: 11px; color: var(--wb-text-3); }
+  .proj-form .picks { display: flex; flex-wrap: wrap; gap: 6px; }
+  .proj-form .picks .pk { border: 1px solid var(--wb-border); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; color: var(--wb-text-2); user-select: none; }
+  .proj-form .picks .pk.on { border-color: var(--wb-brand); color: var(--wb-brand); background: var(--wb-brand-weak); }
+  .proj-form .foot { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+  .proj-form .foot .hint { font-size: 12px; color: var(--wb-text-3); margin-right: auto; }
+
+  /* ===== 自动化页 ===== */
+  .at-row { display: flex; align-items: center; gap: 12px; padding: 11px 12px; border-bottom: 1px solid var(--wb-border); font-size: 13px; }
+  .at-row:hover { background: var(--wb-bg-hover); }
+  .at-row .nm { font-weight: 600; white-space: nowrap; }
+  .at-row .meta { color: var(--wb-text-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .at-row .ops { display: flex; gap: 10px; font-size: 12px; white-space: nowrap; }
+  .at-row .st { font-size: 12px; color: var(--wb-text-3); white-space: nowrap; }
+  .at-row .st.ok { color: #16a34a; }
+  .at-row .st.err { color: #dc2626; }
+  .at-group { font-size: 12px; color: var(--wb-text-3); margin: 16px 0 4px; }
+  .at-runs td { padding: 8px 10px; border-bottom: 1px solid var(--wb-border); font-size: 12.5px; vertical-align: top; }
+  .at-runs th { padding: 6px 10px; text-align: left; font-size: 12px; color: var(--wb-text-3); font-weight: 500; border-bottom: 1px solid var(--wb-border); }
+  .at-runs { width: 100%; border-collapse: collapse; }
+
+  /* ===== 资料库页 ===== */
+  .lib-page { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 18px; align-items: start; }
+  .lib-side .sec { font-size: 12px; color: var(--wb-text-3); margin: 14px 0 4px; display: flex; align-items: center; justify-content: space-between; }
+  .lib-it { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 8px; font-size: 13px; cursor: pointer; color: var(--wb-text-2); }
+  .lib-it:hover { background: var(--wb-bg-hover); }
+  .lib-it.active { background: var(--wb-brand-weak); color: var(--wb-brand); }
+  .lib-it .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .lib-it .sz { font-size: 11px; color: var(--wb-text-3); }
+  .lib-prev { border: 1px solid var(--wb-border); border-radius: 12px; min-height: 420px; padding: 18px 20px; overflow: auto; }
+  .lib-prev iframe { width: 100%; height: 70vh; border: none; border-radius: 8px; background: #fff; }
+  .lib-prev table.csv { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+  .lib-prev table.csv td, .lib-prev table.csv th { border: 1px solid var(--wb-border); padding: 5px 9px; text-align: left; }
+  .lib-prev table.csv th { background: var(--wb-bg-side); font-weight: 600; }
+  .lib-prev pre.raw { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1.6; }
+  .lib-prev .ph { color: var(--wb-text-3); text-align: center; padding: 80px 20px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -547,19 +619,16 @@
     <div><div class="name">OpenWorkBuddy</div><div class="tag">开源版 · 一句话让 AI 替你上班</div></div>
   </div>
   <button id="new-task">＋ 新建任务</button>
-  <div class="assist-box" id="assist-box">
-    <div class="ab-head" id="ab-head" title="点击打开本地助理（IM 消息流）"><span id="ab-name"><span class="ab-ava">🤖</span> 助理</span><span class="ab-sub">IM 远程指挥</span></div>
-    <div id="ab-channels"><div class="ab-empty">状态加载中…</div></div>
-  </div>
   <div class="side-nav top">
-    <div class="item nav-head"><span class="ic">📂</span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目">＋</a></div>
+    <div class="item" id="ab-head" title="助理模式：IM 远程指挥 + 直接对话"><span class="ic" id="ab-ic">🤖</span><span class="tx"><span id="ab-name">助理模式</span><span class="sub" id="ab-sub">IM 远程指挥</span></span></div>
+    <div class="item nav-head" data-view="proj" title="项目管理"><span class="ic">📂</span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目">＋</a></div>
     <div id="proj-list"></div>
     <div class="item" data-view="hub"><span class="ic">🧩</span><span class="tx">专家<span class="sub">技能 · 连接器</span></span></div>
-    <div class="item" data-modal="sched"><span class="ic">⏰</span><span class="tx">自动化<span class="sub">定时任务</span></span></div>
+    <div class="item" data-view="autom"><span class="ic">⏰</span><span class="tx">自动化<span class="sub">定时 · 运行记录</span></span></div>
     <div class="item more-toggle" id="more-toggle"><span class="ic">⋯</span><span class="tx">更多<span class="sub">资料库 · 灵感</span></span><span class="caret" id="more-caret">▾</span></div>
     <div class="more-box" id="more-box">
       <div class="item" data-view="prompts"><span class="ic">📚</span><span class="tx">参考模板库<span class="sub">提示词范例</span></span></div>
-      <div class="item" data-modal="library"><span class="ic">💡</span><span class="tx">资料库<span class="sub">知识 · 灵感</span></span></div>
+      <div class="item" data-view="lib"><span class="ic">💡</span><span class="tx">资料库<span class="sub">知识 · 灵感</span></span></div>
     </div>
   </div>
   <div class="side-label">任务历史</div>
@@ -578,6 +647,7 @@
     <div class="right"><button id="toggle-files">📁 成果文件</button></div>
   </div>
   <div id="chat-scroll"><div class="chat-col" id="chat-col"></div></div>
+  <button id="to-bottom" title="回到底部">↓</button>
 
   <div class="input-wrap">
     <div class="input-inner">
@@ -606,6 +676,10 @@
         <div class="picker" id="ws-picker">
           <button class="picker-btn" id="ws-btn">📁 <span id="ws-label">选择工作空间</span> <span style="font-size:10px">▾</span></button>
           <div class="picker-menu up-left" id="ws-menu"></div>
+        </div>
+        <div class="picker" id="perm-picker">
+          <button class="picker-btn" id="perm-btn">🛡️ <span id="perm-label">自动改文件</span> <span style="font-size:10px">▾</span></button>
+          <div class="picker-menu up-left" id="perm-menu"></div>
         </div>
         <div class="picker" id="mode-picker">
           <button class="picker-btn" id="mode-btn">✅ <span id="mode-label">Craft · 执行</span> <span style="font-size:10px">▾</span></button>
@@ -720,16 +794,32 @@ function applyAssistantIdentity() {
   document.title = assistant.name;
   document.querySelector(".brand .name").textContent = assistant.name;
   paintAvatar(document.querySelector(".brand .mark"), assistant.avatar, assistant.name);
-  const abName = document.getElementById("ab-name");
-  if (abName) {
+  const abIc = document.getElementById("ab-ic");
+  if (abIc) {
     const a = avatarBits(assistant.avatar, assistant.name);
-    abName.innerHTML = `<span class="ab-ava${a.cls ? " " + a.cls : ""}">${a.html}</span> ${esc(assistant.name)}`;
+    abIc.innerHTML = `<span class="ab-ava${a.cls ? " " + a.cls : ""}">${a.html}</span>`;
   }
   document.querySelectorAll(".a-msg .avatar").forEach(el => paintAvatar(el, assistant.avatar, assistant.name));
   const h1 = document.querySelector("#empty h1");
   if (h1) h1.textContent = `${assistant.name}, 我帮你`;
 }
-function scrollBottom() { chatScroll.scrollTop = chatScroll.scrollHeight; }
+// 生成回复时用户往上翻，就不再往下拽（能安心看历史）；翻回底部附近才恢复跟随
+let chatStick = true;
+chatScroll.addEventListener("scroll", () => {
+  chatStick = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 80;
+  document.getElementById("to-bottom").classList.toggle("show", !chatStick);
+});
+let scrollRaf = 0;
+function scrollBottom(force) {
+  if (force) chatStick = true;
+  if (!chatStick || scrollRaf) return;
+  // 事件流密集时每个事件都设 scrollTop 会逐次强制布局；合并到每帧一次
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = 0;
+    if (chatStick) chatScroll.scrollTop = chatScroll.scrollHeight;
+  });
+}
+document.getElementById("to-bottom").onclick = () => scrollBottom(true);
 
 // ================= Markdown 渲染（先转义防注入） =================
 // 模型偶尔输出「裸语言名 + 无围栏代码」（DeepSeek 常见）：识别后补成 ``` 围栏再走正常渲染
@@ -908,7 +998,15 @@ function createTurnUI(userText, turnMode) {
   const appendText = (delta) => {
     const el = ensureText();
     el._raw += delta;
-    el.innerHTML = renderMd(el._raw);
+    // 流式回复不逐字重排版：每 100ms 渲一次全文。长回复从 O(n²) 次 Markdown 重解析
+    // 降到每秒 10 次，打字机效果看不出差别，但滚动和输入不再卡
+    if (el._pend) return;
+    el._pend = true;
+    setTimeout(() => {
+      el._pend = false;
+      el.innerHTML = renderMd(el._raw);
+      scrollBottom();
+    }, 100);
   };
 
   function handleEvent(ev) {
@@ -1149,7 +1247,7 @@ function createTurnUI(userText, turnMode) {
       inputEl.value = "请严格按照以下计划执行，每完成一步简要汇报：\n" + steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
       syncInputHl();
       inputEl.focus();
-      scrollBottom();
+      scrollBottom(true);
     };
     body.appendChild(card);
     scrollBottom();
@@ -1339,40 +1437,16 @@ const WS_STATE_TXT = { connected: "已连接", connecting: "连接中…", recon
 async function refreshImStatus() {
   try {
     const s = await fetch("/im/status").then(r => r.json());
-    const f = s.feishu;
-    const fs = !f.configured ? ["", "未配置"]
-      : f.ws.state === "connected" ? ["ok", "已连接"]
-      : f.ws.state === "failed" ? ["err", "连接失败"]
-      : ["", WS_STATE_TXT[f.ws.state] || f.ws.state];
-    const q = s.qq || { configured: false, state: "off" };
-    const qs = !q.configured ? ["", "未配置"]
-      : q.state === "connected" ? ["ok", "已连接"]
-      : q.state === "failed" ? ["err", "连接失败"]
-      : ["", WS_STATE_TXT[q.state] || q.state];
-    // 微信两条只能靠腾讯回调，本地探不了活：只报配置齐不齐，不假装"已连接"
-    const wxSt = (c) => !c.configured ? ["", "未配置"]
-      : !c.callback_ready ? ["err", "缺回调配置"]
-      : ["ok", "等腾讯回调"];
-    const wa = wxSt(s.wecom_app || {}), mp = wxSt(s.wechat_mp || {});
-    // iLink 是本机主动长轮询，跟飞书/QQ 一样能真探到活
-    const il = s.wechat_ilink || { configured: false, state: "off" };
-    const ils = !il.configured ? ["", "未扫码"]
-      : il.state === "connected" ? ["ok", "已连接"]
-      : il.state === "failed" ? ["err", il.error && il.error.includes("-14") ? "登录已失效" : "连接失败"]
-      : ["", WS_STATE_TXT[il.state] || il.state];
-    const chs = [
-      { icon: "🕊️", name: "飞书", dot: fs[0], st: fs[1] },
-      { icon: "🐧", name: "QQ", dot: qs[0], st: qs[1] },
-      { icon: "💬", name: "微信", dot: ils[0], st: ils[1] },
-      { icon: "🏢", name: "企微应用", dot: wa[0], st: wa[1] },
-      { icon: "🟢", name: "公众号", dot: mp[0], st: mp[1] },
-      { icon: "💼", name: "企微群推送", dot: s.wecom.configured ? "ok" : "", st: s.wecom.configured ? "已配置推送" : "未配置" },
-      { icon: "🔗", name: "Webhook", dot: "ok", st: s.webhook.secret_set ? "已启用" : "已启用·无密钥" },
-    ];
-    const box = document.getElementById("ab-channels");
-    box.innerHTML = chs.map(c =>
-      `<div class="ab-ch" title="点击打开本地助理"><span class="dot ${c.dot}"></span>${c.icon} ${c.name}<span class="st">${c.st}</span></div>`).join("");
-    box.querySelectorAll(".ab-ch").forEach(el => el.onclick = () => openAssistView());
+    // 只数真在线的：飞书/QQ/微信长连接 connected，企微应用/公众号回调配置齐，企微群推送已配
+    let n = 0;
+    if (s.feishu.configured && s.feishu.ws.state === "connected") n++;
+    if ((s.qq || {}).configured && s.qq.state === "connected") n++;
+    if ((s.wechat_ilink || {}).configured && s.wechat_ilink.state === "connected") n++;
+    if ((s.wecom_app || {}).configured && s.wecom_app.callback_ready) n++;
+    if ((s.wechat_mp || {}).configured && s.wechat_mp.callback_ready) n++;
+    if (s.wecom.configured) n++;
+    const sub = document.getElementById("ab-sub");
+    if (sub) sub.textContent = n ? `${n} 个通道在线` : "IM 远程指挥";
   } catch {}
 }
 document.getElementById("ab-head").onclick = () => openAssistView();
@@ -1522,16 +1596,13 @@ function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } c
 // 把本回合的产出做成卡片挂在对话里。右侧文件面板是"所有文件"，这里是"这次产出的"——
 // 用户要的是聊完直接点开，而不是回头去面板里认哪个是刚才那个。
 const OUT_CARD_MAX = 8;                                   // 一屏摆得下的量；超了只提示条数，别把对话冲垮
-const DELIVER_RE = /\.(html?|pptx?|docx?|xlsx?|pdf|md|markdown|csv|png|jpe?g|gif|webp|svg|mp4|mov)$/i;
 function renderTurnOutputs(body, changed) {
   if (!body || !changed || !changed.length) return;
-  // 成果文件排前面：中间产物（.json 缓存、.txt 草稿）不该把真正要交付的东西挤出卡位
-  changed = changed.slice().sort((a, b) => (DELIVER_RE.test(b.name) ? 1 : 0) - (DELIVER_RE.test(a.name) ? 1 : 0));
   let block = body.querySelector(":scope > .out-block");
   if (!block) {
     block = document.createElement("div");
-    block.className = "out-block";
-    block.innerHTML = `<div class="out-hd out-toggle"><span class="ar">▾</span> 查看所有变更 <span class="n"></span></div><div class="out-grid"></div>`;
+    block.className = "out-block fold"; // 变更清单默认收起，想看再点开
+    block.innerHTML = `<div class="out-grid"></div><div class="out-hd out-toggle"><span class="ar">▸</span> 查看所有变更 <span class="n"></span></div><div class="out-list"></div>`;
     body.appendChild(block);
     block.querySelector(".out-toggle").onclick = () => {
       const fold = block.classList.toggle("fold");
@@ -1539,47 +1610,46 @@ function renderTurnOutputs(body, changed) {
     };
   }
   const grid = block.querySelector(".out-grid");
-  let more = 0;
+  const list = block.querySelector(".out-list");
   for (const f of changed) {
-    if (grid.querySelectorAll(".out-card").length >= OUT_CARD_MAX && !grid.querySelector(`[data-name="${cssEsc(f.name)}"]`)) { more++; continue; }
-    if (grid.querySelector(`[data-name="${cssEsc(f.name)}"]`)) continue; // 同一个文件被改多次只留一张卡
-    const url = "/api/files/view/" + encodeURIComponent(f.name) + "?t=" + Date.now();
     const isHtml = /\.html?$/i.test(f.name);
     const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name);
-    const thumb = isHtml ? `<iframe src="${url}" scrolling="no" tabindex="-1" aria-hidden="true"></iframe>`
-      : isImg ? `<img src="${url}" alt="">`
-      : `<div class="ph">${fileIcon(f.name)}</div>`;
-    const card = document.createElement("div");
-    card.className = "out-card";
-    card.dataset.name = f.name;
-    card.title = f.name;
-    card.innerHTML = `<div class="out-thumb">${thumb}</div>
-      <div class="out-info"><div class="out-name">${esc(f.name.split("/").pop())}</div>
-        <div class="out-meta">${fmtSize(f.size)} · 点击预览</div></div>
-      <div class="out-acts">${isHtml ? `<button data-a="br">在浏览器打开</button>` : ""}
-        <a href="/api/files/download/${encodeURIComponent(f.name)}" download>下载</a></div>`;
-    card.onclick = (e) => {
-      if (e.target.closest("a")) return;
-      if (e.target.closest('[data-a="br"]')) {
-        e.stopPropagation();
-        startPreview(previewSrv.lan_open, f.name).then(st => {
-          if (st.running) previewSrv = st; else toast(st.error || "本地预览服务没起来，打不开");
-        });
-        return;
-      }
-      previewFile(f.name);
-    };
-    grid.appendChild(card);
+    // 真正的展示品（网页/图）才配得上缩略图卡片；其余文件进变更清单，别把对话挡成一屏方框
+    if ((isHtml || isImg) && grid.querySelectorAll(".out-card").length < OUT_CARD_MAX && !grid.querySelector(`[data-name="${cssEsc(f.name)}"]`)) {
+      const url = "/api/files/view/" + encodeURIComponent(f.name) + "?t=" + Date.now();
+      const thumb = isHtml ? `<iframe src="${url}" scrolling="no" tabindex="-1" aria-hidden="true"></iframe>` : `<img src="${url}" alt="">`;
+      const card = document.createElement("div");
+      card.className = "out-card";
+      card.dataset.name = f.name;
+      card.title = f.name;
+      card.innerHTML = `<div class="out-thumb">${thumb}</div>
+        <div class="out-info"><div class="out-name">${esc(f.name.split("/").pop())}</div>
+          <div class="out-meta">${fmtSize(f.size)} · 点击预览</div></div>
+        <div class="out-acts">${isHtml ? `<button data-a="br">在浏览器打开</button>` : ""}
+          <a href="/api/files/download/${encodeURIComponent(f.name)}" download>下载</a></div>`;
+      card.onclick = (e) => {
+        if (e.target.closest("a")) return;
+        if (e.target.closest('[data-a="br"]')) {
+          e.stopPropagation();
+          startPreview(previewSrv.lan_open, f.name).then(st => {
+            if (st.running) previewSrv = st; else toast(st.error || "本地预览服务没起来，打不开");
+          });
+          return;
+        }
+        previewFile(f.name);
+      };
+      grid.appendChild(card);
+    }
+    if (!list.querySelector(`[data-name="${cssEsc(f.name)}"]`)) { // 同一文件改多次只记一行
+      const row = document.createElement("div");
+      row.className = "out-row";
+      row.dataset.name = f.name;
+      row.innerHTML = `<span class="ic">${fileIcon(f.name)}</span><span class="nm">${esc(f.name)}</span><span class="sz">${fmtSize(f.size)}</span><a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>`;
+      row.onclick = (e) => { if (e.target.closest("a")) return; previewFile(f.name); };
+      list.appendChild(row);
+    }
   }
-  // 装不下的部分如实说有多少，别让用户以为就产出了这几个
-  let tip = block.querySelector(".out-more");
-  const shown = grid.querySelectorAll(".out-card").length;
-  if (more) {
-    if (!tip) { tip = document.createElement("div"); tip.className = "out-hd out-more"; block.appendChild(tip); }
-    tip.dataset.n = String(Number(tip.dataset.n || 0) + more);
-    tip.textContent = `另有 ${tip.dataset.n} 个文件未展示（共 ${shown + Number(tip.dataset.n)} 个），在右侧文件面板里看`;
-  }
-  block.querySelector(".out-hd .n").textContent = `(${shown + Number(tip?.dataset.n || 0)})`;
+  block.querySelector(".out-hd .n").textContent = `(${list.querySelectorAll(".out-row").length})`;
 }
 // 文件名进 CSS 属性选择器要转义（含空格、中文括号、引号的名字很常见）
 function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
@@ -1746,7 +1816,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
   if (!(data.transcript || []).length) {
     chatCol.innerHTML = '<div style="text-align:center;color:var(--wb-text-3);font-size:12px;padding:20px">该任务还没有保存的对话记录（可能创建于旧版本），继续对话即可。</div>';
   }
-  scrollBottom();
+  scrollBottom(true);
 });
 document.getElementById("new-task").onclick = () => {
   closeAssistView();
@@ -1755,6 +1825,13 @@ document.getElementById("new-task").onclick = () => {
   chatCol.innerHTML = "";
   chatCol.appendChild(buildEmpty());
   renderHistory();
+  // 上个任务里临时切过的工作文件夹不带进新任务：回到当前项目的默认目录
+  fetch("/api/workspace/reset", { method: "POST" }).then(r => r.json()).then(st => {
+    if (st.workspace_dir && settingsCache && st.workspace_dir !== settingsCache.workspace_dir) {
+      refreshSettingsCache();
+      fetch("/api/files").then(r => r.json()).then(renderFiles);
+    }
+  }).catch(() => {});
 };
 renderHistory();
 
@@ -1888,6 +1965,7 @@ async function send() {
   syncInputHl();
   attachChips.innerHTML = "";
   mentionMenu.classList.remove("show");
+  if (pageKind === "assist") { await sendAssistLocal(text); return; }
   if (taskBusy) {
     // 任务运行中 → 排队，当前任务结束后按序自动执行（要立即介入用 ⚡ 插队）
     msgQueue.push({ text, mode: currentMode });
@@ -1912,7 +1990,7 @@ async function doSend(text, mode, regen) {
   }
 
   const ui = createTurnUI(text, mode);
-  scrollBottom();
+  scrollBottom(true);
 
   try {
     const resp = await fetch("/api/chat", {
@@ -1982,20 +2060,16 @@ async function openModal(kind, subTab) {
   // 技能/专家已经从弹窗搬到主区的「专家·技能·连接器」页，老入口（快捷键等）改成跳页
   if (kind === "skills") return openHub("skills");
   if (kind === "experts") return openHub("team");
+  if (kind === "sched") return openPageView("autom"); // 自动化已从弹窗搬到主区
+  if (kind === "library") return openPageView("lib"); // 资料库同理
   mask.classList.add("show");
-  modalBox.classList.toggle("wide", ["settings", "library", "account"].includes(kind));
+  modalBox.classList.toggle("wide", ["settings", "account", "proj-edit"].includes(kind));
   if (kind === "account") {
     mTitle.textContent = "👤 账号 · 用量";
     await renderAccount();
-  } else if (kind === "sched") {
-    mTitle.textContent = "⏰ 定时任务";
-    await renderSched();
   } else if (kind === "settings") {
     mTitle.textContent = "⚙️ 设置";
     renderSettings(subTab || "models");
-  } else if (kind === "library") {
-    mTitle.textContent = "📚 资料库 · 灵感";
-    await renderLibrary();
   }
 }
 
@@ -2171,33 +2245,81 @@ function csNav(dir) {
 
 // ================= 命令审批条（安全中心「询问名单」命中时挂起等这里批准） =================
 async function pollApprovals() {
-  const list = await fetch("/api/security/approvals").then(r => (r.ok ? r.json() : [])).catch(() => []);
+  const d = await fetch("/api/security/approvals").then(r => (r.ok ? r.json() : null)).catch(() => null);
+  const list = d && Array.isArray(d.items) ? d.items : [];
+  if (d && d.mode) syncPermLabel(d.mode);
   let bar = document.getElementById("approval-bar");
-  if (!Array.isArray(list) || !list.length) { if (bar) bar.remove(); return; }
+  if (!list.length) { if (bar) bar.remove(); return; }
   if (!bar) {
     bar = document.createElement("div");
     bar.id = "approval-bar";
     const inner = document.querySelector(".input-inner");
     inner.insertBefore(bar, inner.querySelector(".input-card"));
   }
+  // ruleKey 为空 = 这次拦截的理由不适合被记住（碰了文件黑名单那种），只给「本次允许」
   bar.innerHTML = list.map(a => `
     <div class="ap-row">
-      <span style="white-space:nowrap">🛡️ ${esc(a.kind)}待审批</span>
-      <code class="ap-cmd" title="${esc(a.text)}">${esc(a.text.slice(0, 90))}</code>
-      <button class="ap-ok" data-id="${esc(a.id)}">批准执行</button>
-      <button class="ap-no" data-id="${esc(a.id)}">拒绝</button>
+      <div class="ap-main">
+        <div class="ap-head">🛡️ ${esc(a.kind)}待审批${a.rule ? ` · <span class="ap-why">${esc(a.rule)}</span>` : ""}</div>
+        <code class="ap-cmd" title="${esc(a.text)}">${esc(a.text.slice(0, 160))}</code>
+      </div>
+      <div class="ap-btns">
+        <button class="ap-ok" data-id="${esc(a.id)}" data-scope="once">本次允许</button>
+        ${a.ruleKey ? `<button class="ap-ok2" data-id="${esc(a.id)}" data-scope="session" title="本次运行期间不再问「${esc(a.ruleKey)}」">本会话一直允许</button>
+        <button class="ap-ok2" data-id="${esc(a.id)}" data-scope="always" title="把「${esc(a.ruleKey)}」写进放行名单，重启也生效">一直允许</button>` : ""}
+        <button class="ap-no" data-id="${esc(a.id)}">拒绝</button>
+      </div>
     </div>`).join("");
   bar.querySelectorAll("button").forEach(b => b.onclick = async () => {
-    b.disabled = true;
-    await fetch("/api/security/approvals/" + encodeURIComponent(b.dataset.id), {
+    bar.querySelectorAll("button").forEach(x => (x.disabled = true));
+    const allow = !b.classList.contains("ap-no");
+    const r = await fetch("/api/security/approvals/" + encodeURIComponent(b.dataset.id), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ allow: b.classList.contains("ap-ok") }),
-    }).catch(() => {});
+      body: JSON.stringify({ allow, scope: b.dataset.scope || "once" }),
+    }).then(r => r.json()).catch(() => ({}));
+    if (allow && b.dataset.scope === "always" && r.ruleKey) toast(`已永久放行「${r.ruleKey}」（可在 设置 → 安全中心 的放行名单里删掉）`);
+    else if (allow && b.dataset.scope === "session" && r.ruleKey) toast(`本次运行期间不再问「${r.ruleKey}」`);
     pollApprovals();
   });
 }
-setInterval(pollApprovals, 3000);
+
+// ================= 权限档位（参考 Claude Code：档位 + 记住的批准） =================
+let permModes = null;
+function syncPermLabel(mode) {
+  const el = document.getElementById("perm-label");
+  if (!el || !permModes || !permModes[mode]) return;
+  el.textContent = permModes[mode].label;
+  document.querySelectorAll("#perm-menu .mi").forEach(x => x.classList.toggle("on", x.dataset.perm === mode));
+}
+async function loadPermModes() {
+  const d = await fetch("/api/security/modes").then(r => r.json()).catch(() => null);
+  if (!d) return;
+  permModes = d.modes;
+  const menu = document.getElementById("perm-menu");
+  menu.innerHTML = Object.entries(d.modes)
+    .map(([k, m]) => `<div class="mi" data-perm="${esc(k)}">${esc(m.label)} <span class="sub">${esc(m.desc)}</span></div>`)
+    .join("");
+  menu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
+    menu.classList.remove("show");
+    await setPermMode(mi.dataset.perm);
+  });
+  syncPermLabel(d.current);
+}
+async function setPermMode(mode) {
+  const r = await fetch("/api/security/mode", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }),
+  }).then(r => r.json()).catch(() => ({}));
+  if (r.ok) { syncPermLabel(mode); toast(`权限档位：${permModes[mode].label}`); }
+  else toast("切换失败");
+}
+setupPicker("perm-btn", "perm-menu");
+loadPermModes();
+// 审批只可能在任务运行中产生：跑任务时 3 秒一查，空闲时降到 15 秒
+// （定时任务/IM 触发的后台任务也会要审批，所以空闲不能完全停）
+(function approvalLoop() {
+  pollApprovals().finally(() => setTimeout(approvalLoop, taskBusy ? 3000 : 15000));
+})();
 
 
 // ================= 头像编辑器（用户资料和助理设置共用一份） =================
@@ -2741,21 +2863,26 @@ let assistViewOn = false;
 let pageKind = null;
 let assistTimer = null;
 const PAGE_VIEWS = {
-  assist: { title: "🤖 助理", render: () => renderAssistPage() },
+  assist: { title: "🤖 助理模式", keepInput: true, render: () => renderAssistPage() },
   hub: { title: "🧩 专家 · 技能 · 连接器", wide: true, render: () => renderHubPage() },
   prompts: { title: "📚 参考模板库", wide: true, render: () => renderPromptPage() },
+  proj: { title: "📂 项目", wide: true, render: () => renderProjPage() },
+  autom: { title: "⏰ 自动化", wide: true, render: () => renderAutomPage() },
+  lib: { title: "📚 资料库", wide: true, render: () => renderLibPage() },
 };
 function openPageView(kind) {
   const v = PAGE_VIEWS[kind];
-  if (!v || pageKind === kind) return;
+  if (!v) return;
+  if (pageKind === kind) { v.render(); return; } // 同页重进 = 刷新内容
   if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
   assistViewOn = true;
   pageKind = kind;
   sessionId = null;
   document.getElementById("session-title").textContent = v.title;
-  document.querySelector(".input-wrap").style.display = "none";
+  document.querySelector(".input-wrap").style.display = v.keepInput ? "" : "none";
+  if (kind === "assist") inputEl.placeholder = "直接给助理发消息，和 IM 里 @它 一样，任务在本机执行…";
   renderHistory();
-  document.querySelectorAll(".side-nav .item").forEach(el => el.classList.toggle("active", el.dataset.view === kind));
+  document.querySelectorAll(".side-nav .item").forEach(el => el.classList.toggle("active", el.dataset.view === kind || (kind === "assist" && el.id === "ab-head")));
   chatCol.classList.toggle("wide-page", !!v.wide);
   chatCol.innerHTML = '<div class="assist-page" id="assist-page"></div>';
   v.render();
@@ -2776,6 +2903,7 @@ function closeAssistView() {
   document.querySelectorAll(".side-nav .item.active").forEach(el => el.classList.remove("active"));
   chatCol.classList.remove("wide-page");
   document.querySelector(".input-wrap").style.display = "";
+  setMode(currentMode); // 还原当前模式的输入提示语
 }
 async function renderAssistPage() {
   const page = document.getElementById("assist-page");
@@ -2794,29 +2922,62 @@ async function renderAssistPage() {
   const il = s.wechat_ilink || { configured: false, state: "off" };
   const ilOk = il.configured && il.state === "connected";
   const chip = (icon, name, cls, st) =>
-    `<span class="im-chip"><span class="dot ${cls}"></span>${icon} ${name} · ${st}</span>`;
+    `<span class="im-chip"><span class="dot ${cls}"></span>${icon} ${name}${st ? " · " + st : ""}</span>`;
+  // 官方的顶栏只列「已连接」的通道，没配的不刷存在感（要配去齿轮里配）
+  const rows = [
+    ["🕊️", "飞书", f.configured, fOk, WS_STATE_TXT[f.ws.state] || f.ws.state],
+    ["🐧", "QQ", q.configured, qOk, WS_STATE_TXT[q.state] || q.state],
+    ["💬", "微信", il.configured, ilOk, !il.configured ? "未扫码" : WS_STATE_TXT[il.state] || il.state],
+    ["🏢", "企微应用", (s.wecom_app || {}).configured, wxChip(s.wecom_app)[0] !== "err" && (s.wecom_app || {}).configured, wxChip(s.wecom_app)[1]],
+    ["🟢", "公众号", (s.wechat_mp || {}).configured, wxChip(s.wechat_mp)[0] !== "err" && (s.wechat_mp || {}).configured, wxChip(s.wechat_mp)[1]],
+    ["💼", "企微群推送", s.wecom.configured, s.wecom.configured, "推送已配"],
+  ];
+  const conn = rows.filter((r) => r[2]);
   page.innerHTML = `
-    <div class="im-strip">
-      <b>已连接：</b>
-      ${chip("🕊️", "飞书", fOk ? "ok" : f.configured ? "err" : "", !f.configured ? "未配置" : WS_STATE_TXT[f.ws.state] || f.ws.state)}
-      ${chip("🐧", "QQ", qOk ? "ok" : q.configured ? "err" : "", !q.configured ? "未配置" : WS_STATE_TXT[q.state] || q.state)}
-      ${chip("💬", "微信", ilOk ? "ok" : il.configured ? "err" : "", !il.configured ? "未扫码" : WS_STATE_TXT[il.state] || il.state)}
-      ${chip("🏢", "企微应用", wxChip(s.wecom_app)[0], wxChip(s.wecom_app)[1])}
-      ${chip("🟢", "公众号", wxChip(s.wechat_mp)[0], wxChip(s.wechat_mp)[1])}
-      ${chip("💼", "企微群推送", s.wecom.configured ? "ok" : "", s.wecom.configured ? "推送已配" : "未配置")}
-      ${chip("🔗", "Webhook", "ok", "已启用")}
-      <button class="btn-brand" id="im-cfg" style="margin-left:auto;padding:3px 12px;font-size:12px">⚙️ 配置</button>
+    <div class="im-head">
+      <div class="im-strip" style="flex:1;border:0;padding:0;background:none">
+        <b style="color:var(--wb-text-2);font-weight:500">已连接：</b>
+        ${conn.length
+          ? conn.map(([ic, nm, _c, ok, st]) => chip(ic, nm, ok ? "ok" : "err", ok ? "" : st)).join("")
+          : '<span style="color:var(--wb-text-3)">还没有连接任何 IM 通道</span>'}
+      </div>
+      <button class="btn-plain" id="im-open-ws">📂 打开所在文件夹</button>
+      <button class="btn-plain" id="im-cfg">⚙️ 设置</button>
     </div>
     <div class="im-feed" id="im-feed"></div>
-    <div style="text-align:center;color:var(--wb-text-3);font-size:12px;margin-top:10px">在飞书/QQ/微信私聊或群里 @机器人 发消息，任务在这台电脑上执行，结果直接回到 IM。微信走扫码登录；企微应用与公众号得有公网 HTTPS 回调地址才能收消息。</div>`;
+    <div style="text-align:center;color:var(--wb-text-3);font-size:12px;margin-top:8px">下方输入框直接对话，和在飞书/QQ/微信里 @机器人 一样，任务在这台电脑上执行。微信走扫码登录；企微应用与公众号得有公网 HTTPS 回调地址才能收消息。</div>`;
   page.querySelector("#im-cfg").onclick = () => openModal("settings", "im");
+  page.querySelector("#im-open-ws").onclick = () => fetch("/api/open-workspace", { method: "POST" });
   renderAssistFeed(log);
+}
+// 助理模式下底部输入框发的消息走 local 通道（与 IM 消息同一条会话流），不新建任务。
+// 连发多条时排队串行：两条并发 runTask 会交叉写同一份会话历史
+let assistChain = Promise.resolve();
+function sendAssistLocal(text) {
+  assistChain = assistChain.then(() => doAssistLocal(text)).catch(() => {});
+  return assistChain;
+}
+async function doAssistLocal(text) {
+  const feed = document.getElementById("im-feed");
+  if (feed) {
+    feed.insertAdjacentHTML("beforeend",
+      `<div class="im-row out"><div style="text-align:right"><div class="m">本地 · 用户</div><div class="im-b out">${esc(text)}</div></div><div class="im-ava">🧑</div></div>` +
+      `<div class="im-row in" id="im-pending"><div class="im-ava">🤖</div><div><div class="im-b in">执行中…</div></div></div>`);
+    feed.scrollTop = feed.scrollHeight;
+  }
+  try {
+    await fetch("/im/local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
+  } catch {}
+  document.getElementById("im-pending")?.remove();
+  const fresh = await fetch("/im/log").then(r => r.json()).catch(() => []);
+  const f2 = document.getElementById("im-feed");
+  if (f2) { f2._n = -1; renderAssistFeed(fresh); f2.scrollTop = f2.scrollHeight; }
 }
 function renderAssistFeed(log) {
   const feed = document.getElementById("im-feed");
   if (!feed) return;
-  const CH_TXT = { feishu: "飞书", qq: "QQ", wechat_ilink: "微信", wecom_app: "企业微信", wechat_mp: "公众号", wecom: "企业微信", webhook: "Webhook" };
-  const CH_ICON = { feishu: "🕊️", qq: "🐧", wechat_ilink: "💬", wecom_app: "🏢", wechat_mp: "🟢" };
+  const CH_TXT = { feishu: "飞书", qq: "QQ", wechat_ilink: "微信", wecom_app: "企业微信", wechat_mp: "公众号", wecom: "企业微信", webhook: "Webhook", local: "本地" };
+  const CH_ICON = { feishu: "🕊️", qq: "🐧", wechat_ilink: "💬", wecom_app: "🏢", wechat_mp: "🟢", local: "💻" };
   const n = (log || []).length;
   if (feed._n === n) return; // 没有新消息就不重绘，避免打断用户滚动/选中
   feed._n = n;
@@ -2830,8 +2991,524 @@ function renderAssistFeed(log) {
         }
         return `<div class="im-row out"><div style="text-align:right"><div class="m">${meta}</div><div class="im-b out">${esc(m.text)}</div></div><div class="im-ava">🤖</div></div>`;
       }).join("")
-    : '<div class="ab-empty">还没有 IM 消息。在飞书私聊或 @机器人 发条消息试试。</div>';
+    : '<div class="ab-empty">还没有对话。直接在下方输入框发条消息，或在飞书/微信里 @机器人。</div>';
   if (atBottom || feed._first === undefined) { feed.scrollTop = feed.scrollHeight; feed._first = 1; }
+}
+
+
+// ================= 项目页（主区：卡片广场 + 模板 + 新建/编辑弹窗） =================
+// 官方 WorkBuddy 的「项目」不只是切目录：一个项目自带指令（背景/规范）和挂载的专家/技能/连接器。
+// 指令会真的进系统提示词（服务端 projectContext），不是摆设。
+const PROJ_TEMPLATES = [
+  { ic: "📋", tt: "产品需求全流程", dd: "从需求规划、PRD 到研发测试验收", ins: "这是一个产品研发项目。输出遵守：需求先写用户故事和验收标准；PRD 用「背景/目标/方案/边界/里程碑」结构；技术方案要列出取舍理由；每个交付物开头放一段 3 句话内的摘要。" },
+  { ic: "🐛", tt: "Bug 跟踪/测试验收", dd: "持续跟踪 Bug，统一测试用例和验收", ins: "这是一个测试与质量项目。报 Bug 必须带：复现步骤、期望结果、实际结果、影响范围、严重级别（P0-P3）。测试用例用表格：编号/前置条件/步骤/期望。验收结论只有「通过/不通过+原因」两种，不许写「基本可用」。" },
+  { ic: "📦", tt: "项目交付", dd: "管理客户需求、计划、风险和周报", ins: "这是一个对客户的交付项目。所有对外文档开头都要有结论摘要；周报固定三段：本周进展/风险与阻塞/下周计划；风险必须写清楚影响和应对，不许只列现象；涉及排期变化要显式标出来。" },
+  { ic: "📣", tt: "内容营销", dd: "选题、成稿、多平台分发一条线", ins: "这是一个内容营销项目。选题先给出目标人群和钩子；正文口语化、短句、多分段；每篇产出都附一条一句话摘要和 3 个候选标题；发布渠道不同措辞不同：公众号可长文，小红书要点化+emoji。" },
+];
+async function renderProjPage() {
+  const page = document.getElementById("assist-page");
+  if (!page) return;
+  await refreshProjects();
+  const q = (page._q || "").toLowerCase();
+  const mine = projects.filter(p => !q || p.name.toLowerCase().includes(q));
+  page.innerHTML = `
+    <div class="pg-hero"><h1>项目</h1><div class="sub">每个项目一个独立工作目录，自带指令与专属配置，任务历史按项目分组</div></div>
+    <div class="hub-head">
+      <button class="btn-brand" id="pj-new" style="padding:8px 16px">＋ 新建项目</button>
+      <div class="hub-search" style="max-width:260px;margin-left:auto"><input id="pj-q" placeholder="搜索项目" value="${esc(page._q || "")}"></div>
+    </div>
+    <div class="hub-sec-title">我的项目</div>
+    <div class="tpl-grid" style="margin-bottom:22px">${mine.map(p => `
+      <div class="proj-card ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}">
+        <div class="tt">📂 ${esc(p.name)} ${p.name === activeProject ? '<span class="badge">当前</span>' : ""}</div>
+        <div class="dd">${p.instructions ? esc(p.instructions.slice(0, 60)) + (p.instructions.length > 60 ? "…" : "") : "还没有写项目指令"}</div>
+        <div class="dd" title="${esc(p.dir)}">${p.created_at ? "添加于 " + esc(p.created_at.slice(0, 10)) : esc(p.dir)}</div>
+        <div class="ops">
+          <a class="link" data-act="open" href="#">${p.name === activeProject ? "去新建任务" : "切换到此项目"}</a>
+          <a class="link" data-act="edit" href="#">编辑</a>
+          ${projects.length > 1 ? '<a class="link danger" data-act="del" href="#">移除</a>' : ""}
+        </div>
+      </div>`).join("") || '<div class="hub-empty">没有匹配的项目</div>'}
+    </div>
+    <div class="hub-sec-title">从模版创建 <span class="sub">带着写好的项目指令开工</span></div>
+    <div class="tpl-grid">${PROJ_TEMPLATES.map((t, i) => `
+      <div class="proj-card" data-tpl="${i}">
+        <div class="tt">${t.ic} ${esc(t.tt)}</div>
+        <div class="dd">${esc(t.dd)}</div>
+        <div class="ops"><a class="link" href="#">用这个模版新建 →</a></div>
+      </div>`).join("")}
+    </div>`;
+  page.querySelector("#pj-new").onclick = () => openProjEditor(null);
+  const qEl = page.querySelector("#pj-q");
+  qEl.oninput = () => { page._q = qEl.value; clearTimeout(page._t); page._t = setTimeout(renderProjPage, 200); };
+  page.querySelectorAll(".proj-card[data-tpl]").forEach(el => el.onclick = (e) => { e.preventDefault(); openProjEditor(null, PROJ_TEMPLATES[+el.dataset.tpl]); });
+  page.querySelectorAll(".proj-card[data-name]").forEach(el => el.onclick = async (e) => {
+    e.preventDefault();
+    const name = el.dataset.name;
+    const act = (e.target.closest("a[data-act]") || {}).dataset ? e.target.closest("a[data-act]").dataset.act : "open";
+    const proj = projects.find(p => p.name === name);
+    if (act === "edit") return openProjEditor(proj);
+    if (act === "del") {
+      if (!confirm(`把项目「${name}」从列表移除？（目录和文件不会删除）`)) return;
+      await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" });
+      refreshProjects().then(refreshSettingsCache);
+      renderProjPage();
+      return;
+    }
+    if (name !== activeProject) {
+      await fetch("/api/projects/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+      activeProject = name;
+      refreshSettingsCache();
+      fetch("/api/files").then(r => r.json()).then(renderFiles);
+    }
+    closeAssistView();
+    document.getElementById("new-task").click();
+  });
+}
+
+/** 新建/编辑项目弹窗（proj 传 null = 新建；tpl 传模板预填指令） */
+async function openProjEditor(proj, tpl) {
+  mask.classList.add("show");
+  modalBox.classList.add("wide");
+  mTitle.textContent = proj ? `编辑项目「${proj.name}」` : "新建项目";
+  // 可挂载的专家/技能/连接器清单（挂载=写进项目配置；任务执行时优先用这些）
+  let [experts, skills, mcp] = await Promise.all([
+    fetch("/api/experts").then(r => r.json()).catch(() => []),
+    fetch("/api/skills").then(r => r.json()).catch(() => []),
+    fetch("/api/mcp").then(r => r.json()).catch(() => []),
+  ]);
+  // /api/mcp 回的是 { servers, total_tools } 不是数组；这里不容错的话整个弹窗都渲染不出来
+  mcp = Array.isArray(mcp) ? mcp : (mcp && Array.isArray(mcp.servers) ? mcp.servers : []);
+  if (!Array.isArray(experts)) experts = [];
+  if (!Array.isArray(skills)) skills = [];
+  const sel = {
+    connectors: new Set((proj || {}).connectors || []),
+    experts: new Set((proj || {}).experts || []),
+    skills: new Set((proj || {}).skills || []),
+  };
+  const pickRow = (key, label, items) => `
+    <label>${label} <span class="cnt">（可选，已选 <span id="pk-n-${key}">${sel[key].size}</span>）</span></label>
+    <div class="picks" data-key="${key}">${items.length
+      ? items.map(n => `<span class="pk ${sel[key].has(n) ? "on" : ""}" data-v="${esc(n)}">${esc(n)}</span>`).join("")
+      : '<span style="font-size:12px;color:var(--wb-text-3)">还没有可挂载的条目</span>'}</div>`;
+  mBody.innerHTML = `<div class="proj-form">
+    <label>项目名称 <span class="cnt"><span id="pj-cnt">0</span>/15</span></label>
+    <input id="pj-name" maxlength="15" placeholder="请输入项目名称" value="${esc((proj || {}).name || (tpl || {}).tt || "")}">
+    <label>指令
+      <select id="pj-tpl" class="cnt" style="float:right;font-size:12px;padding:2px 6px">
+        <option value="">选择模板</option>
+        ${PROJ_TEMPLATES.map((t, i) => `<option value="${i}">${esc(t.tt)}</option>`).join("")}
+      </select>
+    </label>
+    <textarea id="pj-ins" rows="5" placeholder="提供当前项目的背景信息和规范，让 AI 的回复更精准、更符合要求。比如：项目目标、团队习惯、风格偏好、输出约束等">${esc((proj || {}).instructions || (tpl || {}).ins || "")}</textarea>
+    ${pickRow("connectors", "连接器", mcp.map(m => m.name))}
+    ${pickRow("experts", "专家", experts.map(e => e.name))}
+    ${pickRow("skills", "技能", skills.map(k => k.name))}
+    <div class="foot">
+      <span class="hint">切换模版会覆盖当前编辑的指令</span>
+      <button class="btn-plain" id="pj-cancel">取消</button>
+      <button class="btn-brand" id="pj-ok">确定</button>
+    </div>
+  </div>`;
+  const nameEl = mBody.querySelector("#pj-name"), cntEl = mBody.querySelector("#pj-cnt");
+  const syncCnt = () => { cntEl.textContent = nameEl.value.length; };
+  nameEl.oninput = syncCnt; syncCnt();
+  mBody.querySelector("#pj-tpl").onchange = (e) => {
+    const t = PROJ_TEMPLATES[+e.target.value];
+    if (t) { mBody.querySelector("#pj-ins").value = t.ins; if (!nameEl.value.trim()) { nameEl.value = t.tt; syncCnt(); } }
+  };
+  mBody.querySelectorAll(".picks").forEach(box => box.onclick = (e) => {
+    const pk = e.target.closest(".pk");
+    if (!pk) return;
+    const key = box.dataset.key, v = pk.dataset.v;
+    sel[key].has(v) ? sel[key].delete(v) : sel[key].add(v);
+    pk.classList.toggle("on");
+    mBody.querySelector("#pk-n-" + key).textContent = sel[key].size;
+  });
+  mBody.querySelector("#pj-cancel").onclick = () => mask.classList.remove("show");
+  mBody.querySelector("#pj-ok").onclick = async () => {
+    const name = nameEl.value.trim();
+    if (!name) return toast("❌ 项目名称不能为空");
+    const body = {
+      name,
+      instructions: mBody.querySelector("#pj-ins").value.trim(),
+      connectors: [...sel.connectors], experts: [...sel.experts], skills: [...sel.skills],
+    };
+    const resp = proj
+      ? await fetch("/api/projects/" + encodeURIComponent(proj.name), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      : await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) return toast("❌ " + (data.error || "保存失败"));
+    mask.classList.remove("show");
+    toast(proj ? "✅ 项目已更新" : "✅ 项目已创建");
+    refreshProjects().then(refreshSettingsCache);
+    if (pageKind === "proj") renderProjPage();
+  };
+}
+
+// ================= 自动化页（定时任务 + 运行记录 + 批量管理 + 模板） =================
+const AUTOM_TEMPLATES = [
+  { ic: "📰", tt: "每日 AI 新闻晨报", cron: "0 9 * * *", task: "搜索过去 24 小时内 AI 行业的重要新闻（新模型、产品、融资、政策），挑 5-8 条真实可查的，生成一份 Markdown 晨报，每条附来源链接。" },
+  { ic: "🗒️", tt: "每周五工作周报", cron: "0 17 * * 5", task: "读取本周工作目录里新增/修改的成果文件，按「本周进展 / 问题与风险 / 下周计划」三段生成一份周报，进展要具体到产出物。" },
+  { ic: "🛠️", tt: "每小时网站巡检", cron: "0 * * * *", task: "用 fetch_url 检查以下网址是否能正常打开、响应是否异常（先在这里填上你的网址）：https://example.com 。异常时写清楚状态码和现象。" },
+  { ic: "🧹", tt: "每周清理临时文件", cron: "0 10 * * 1", task: "列出工作目录里超过 7 天没动过的 .tmp/.log/中间产物文件，汇总成清单报告（只报告，不要直接删除）。" },
+];
+const automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), editing: null, showForm: false };
+function buildCronFrom(root) {
+  const freq = root.querySelector("#sf-freq").value;
+  const t = (root.querySelector("#sf-time").value || "09:00").split(":");
+  const m = +t[1] || 0, h = +t[0] || 9;
+  switch (freq) {
+    case "daily": return `${m} ${h} * * *`;
+    case "workday": return `${m} ${h} * * 1-5`;
+    case "weekly": return `${m} ${h} * * ${root.querySelector("#sf-dow").value}`;
+    case "monthly": return `${m} ${h} ${root.querySelector("#sf-dom").value} * *`;
+    case "hourly": return `${m} * * * *`;
+    case "half-hour": return `*/30 * * * *`;
+    case "custom": return root.querySelector("#sf-cron").value.trim();
+  }
+}
+/** 反推：已有 cron 回填到表单（编辑时用；反推不出来就落到自定义档） */
+function cronToForm(root, cron) {
+  const set = (id, v) => { root.querySelector(id).value = v; };
+  const m = (cron || "").match(/^(\d+) (\d+) (\S+) \* (\S+)$/);
+  const time = m ? `${m[2].padStart(2, "0")}:${m[1].padStart(2, "0")}` : "09:00";
+  if (cron === "*/30 * * * *") set("#sf-freq", "half-hour");
+  else if (/^\d+ \* \* \* \*$/.test(cron)) { set("#sf-freq", "hourly"); set("#sf-time", `09:${cron.split(" ")[0].padStart(2, "0")}`); }
+  else if (m && m[3] === "*" && m[4] === "*") { set("#sf-freq", "daily"); set("#sf-time", time); }
+  else if (m && m[3] === "*" && m[4] === "1-5") { set("#sf-freq", "workday"); set("#sf-time", time); }
+  else if (m && m[3] === "*" && /^\d$/.test(m[4])) { set("#sf-freq", "weekly"); set("#sf-dow", m[4]); set("#sf-time", time); }
+  else if (m && /^\d+$/.test(m[3]) && m[4] === "*") { set("#sf-freq", "monthly"); set("#sf-dom", m[3]); set("#sf-time", time); }
+  else { set("#sf-freq", "custom"); set("#sf-cron", cron || ""); }
+  root.querySelector("#sf-freq").onchange();
+}
+async function renderAutomPage() {
+  const page = document.getElementById("assist-page");
+  if (!page) return;
+  const st = automState;
+  if (st.tab === "runs") return renderAutomRuns(page);
+  const list = await fetch("/api/schedules").then(r => r.json()).catch(() => []);
+  const q = st.q.toLowerCase();
+  const match = list.filter(t => !q || t.name.toLowerCase().includes(q) || t.task.toLowerCase().includes(q));
+  const on = match.filter(t => t.enabled), off = match.filter(t => !t.enabled);
+  const row = (t) => `
+    <div class="at-row" data-id="${t.id}">
+      ${st.bulk ? `<input type="checkbox" data-sel="${t.id}" ${st.sel.has(t.id) ? "checked" : ""}>` : ""}
+      <span class="nm">${esc(t.name)}</span>
+      <span class="meta" title="${esc(t.task)}">${esc(t.task.slice(0, 50))} · ${esc(cronToHuman(t.cron))}${t.last_run ? " · 上次 " + esc(t.last_run.slice(5, 16).replace("T", " ")) : ""}</span>
+      <span class="st ${t.running ? "" : !t.enabled ? "" : t.last_result ? (/^出错/.test(t.last_result) ? "err" : "ok") : ""}">${t.running ? "执行中…" : !t.enabled ? "已暂停" : t.last_result ? (/^出错/.test(t.last_result) ? "上次失败" : "上次成功") : "待首跑"}</span>
+      <span class="ops">
+        <a class="link" data-act="run" href="#">立即执行</a>
+        <a class="link" data-act="edit" href="#">编辑</a>
+        <a class="link" data-act="toggle" href="#">${t.enabled ? "暂停" : "启用"}</a>
+        <a class="link danger" data-act="del" href="#">删除</a>
+      </span>
+    </div>`;
+  page.innerHTML = `
+    <div class="hub-head">
+      <div class="hub-tabs">
+        <button class="active" data-tab="tasks">⏱️ 定时任务</button>
+        <button data-tab="runs">📜 运行记录</button>
+      </div>
+      <div class="hub-search" style="max-width:240px"><input id="at-q" placeholder="搜索自动化" value="${esc(st.q)}"></div>
+      <button class="btn-plain" id="at-bulk" style="${st.bulk ? "border-color:var(--wb-brand);color:var(--wb-brand)" : ""}">☑️ 批量管理</button>
+      <button class="btn-plain" id="at-tpl">📋 从模版添加</button>
+      <button class="btn-brand" id="at-new">＋ 添加自动化</button>
+    </div>
+    ${st.bulk ? `<div class="hub-bar" style="margin:0 0 8px">
+      <a class="link" id="bk-all" href="#">全选</a>
+      <span style="font-size:12px;color:var(--wb-text-3)">已选 ${st.sel.size} 个</span>
+      <a class="link" id="bk-en" href="#">批量启用</a>
+      <a class="link" id="bk-dis" href="#">批量暂停</a>
+      <a class="link danger" id="bk-del" href="#">批量删除</a>
+    </div>` : ""}
+    <div id="at-form-box"></div>
+    ${on.length ? `<div class="at-group">启用中（${on.length}）</div>` + on.map(row).join("") : ""}
+    ${off.length ? `<div class="at-group">已暂停（${off.length}）</div>` + off.map(row).join("") : ""}
+    ${!match.length ? '<div class="hub-empty">还没有自动化任务。点右上角「＋ 添加自动化」或「从模版添加」建一个。</div>' : ""}`;
+  page.querySelector('[data-tab="runs"]').onclick = () => { st.tab = "runs"; renderAutomPage(); };
+  const qEl = page.querySelector("#at-q");
+  qEl.oninput = () => { st.q = qEl.value; clearTimeout(page._t); page._t = setTimeout(renderAutomPage, 200); };
+  page.querySelector("#at-bulk").onclick = () => { st.bulk = !st.bulk; st.sel.clear(); renderAutomPage(); };
+  page.querySelector("#at-new").onclick = () => { st.editing = null; st.showForm = true; renderAutomForm(page.querySelector("#at-form-box")); };
+  page.querySelector("#at-tpl").onclick = () => renderAutomTplPicker(page.querySelector("#at-form-box"));
+  if (st.showForm) renderAutomForm(page.querySelector("#at-form-box"));
+  page.querySelectorAll("input[data-sel]").forEach(cb => cb.onchange = () => {
+    cb.checked ? st.sel.add(cb.dataset.sel) : st.sel.delete(cb.dataset.sel);
+    renderAutomPage();
+  });
+  if (st.bulk) {
+    page.querySelector("#bk-all").onclick = (e) => { e.preventDefault(); match.forEach(t => st.sel.add(t.id)); renderAutomPage(); };
+    const bulk = async (action, confirmText) => {
+      if (!st.sel.size) return toast("❌ 先勾选要操作的任务");
+      if (confirmText && !confirm(confirmText)) return;
+      const r = await fetch("/api/schedules/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [...st.sel], action }) }).then(r => r.json()).catch(() => ({}));
+      toast(r.ok ? `✅ 已处理 ${r.count} 个` : "❌ " + (r.error || "操作失败"));
+      st.sel.clear();
+      renderAutomPage();
+    };
+    page.querySelector("#bk-en").onclick = (e) => { e.preventDefault(); bulk("enable"); };
+    page.querySelector("#bk-dis").onclick = (e) => { e.preventDefault(); bulk("disable"); };
+    page.querySelector("#bk-del").onclick = (e) => { e.preventDefault(); bulk("delete", `确认删除选中的 ${st.sel.size} 个自动化任务？运行记录会一并清掉`); };
+  }
+  page.querySelectorAll(".at-row a[data-act]").forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    const id = a.closest(".at-row").dataset.id;
+    const t = list.find(x => x.id === id);
+    const act = a.dataset.act;
+    if (act === "edit") { st.editing = t; st.showForm = true; renderAutomForm(page.querySelector("#at-form-box")); window.scrollTo(0, 0); return; }
+    if (act === "del") { if (!confirm(`确认删除「${t.name}」？`)) return; await fetch("/api/schedules/" + id, { method: "DELETE" }); }
+    else if (act === "toggle") await fetch(`/api/schedules/${id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !t.enabled }) });
+    else if (act === "run") {
+      a.textContent = "执行中…";
+      const r = await fetch(`/api/schedules/${id}/run`, { method: "POST" }).catch(() => null);
+      const j = r ? await r.json().catch(() => ({})) : {};
+      toast(!r || !r.ok ? "❌ " + (j.error || "执行失败") : "✅ 执行完成");
+      fetch("/api/files").then(r => r.json()).then(renderFiles);
+    }
+    renderAutomPage();
+  });
+}
+function renderAutomTplPicker(box) {
+  automState.showForm = false;
+  box.innerHTML = `<div class="tpl-grid" style="margin:4px 0 14px">${AUTOM_TEMPLATES.map((t, i) => `
+    <div class="proj-card" data-i="${i}">
+      <div class="tt">${t.ic} ${esc(t.tt)}</div>
+      <div class="dd">${esc(cronToHuman(t.cron))} · ${esc(t.task.slice(0, 46))}…</div>
+      <div class="ops"><a class="link" href="#">用这个模版 →</a></div>
+    </div>`).join("")}</div>`;
+  box.querySelectorAll(".proj-card").forEach(el => el.onclick = (e) => {
+    e.preventDefault();
+    automState.editing = null; automState.showForm = true;
+    renderAutomForm(box, AUTOM_TEMPLATES[+el.dataset.i]);
+  });
+}
+function renderAutomForm(box, tpl) {
+  const ed = automState.editing;
+  box.innerHTML = `<div style="border:1px solid var(--wb-border);border-radius:12px;padding:14px 16px;margin:4px 0 16px">
+    <div style="font-weight:600;margin-bottom:10px">${ed ? `编辑「${esc(ed.name)}」` : "添加自动化"}</div>
+    <input id="sf-name" placeholder="任务名（如：每日晨报）" value="${esc((ed || tpl || {}).name || (tpl || {}).tt || "")}">
+    <div class="form-row">
+      <select id="sf-freq">
+        <option value="daily">每天</option>
+        <option value="workday">工作日（周一到周五）</option>
+        <option value="weekly">每周某天</option>
+        <option value="monthly">每月某日</option>
+        <option value="hourly">每小时</option>
+        <option value="half-hour">每 30 分钟</option>
+        <option value="custom">自定义 cron</option>
+      </select>
+      <select id="sf-dow" style="display:none">
+        <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
+        <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option>
+      </select>
+      <select id="sf-dom" style="display:none">${Array.from({ length: 28 }, (_, i) => `<option value="${i + 1}">${i + 1} 日</option>`).join("")}</select>
+      <input id="sf-time" type="time" value="09:00">
+    </div>
+    <input id="sf-cron" placeholder="cron 表达式：分 时 日 月 周" style="display:none">
+    <textarea id="sf-task" rows="2" placeholder="要自动执行的任务描述，如：抓取今天的 AI 新闻生成晨报">${esc((ed || tpl || {}).task || "")}</textarea>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn-brand" id="sf-add">${ed ? "保存修改" : "添加"}</button>
+      <button class="btn-plain" id="sf-cancel">收起</button>
+    </div>
+  </div>`;
+  const freqEl = box.querySelector("#sf-freq");
+  freqEl.onchange = () => {
+    const v = freqEl.value;
+    box.querySelector("#sf-dow").style.display = v === "weekly" ? "" : "none";
+    box.querySelector("#sf-dom").style.display = v === "monthly" ? "" : "none";
+    box.querySelector("#sf-cron").style.display = v === "custom" ? "" : "none";
+    box.querySelector("#sf-time").style.display = ["hourly", "half-hour", "custom"].includes(v) ? "none" : "";
+  };
+  cronToForm(box, (ed || tpl || {}).cron || "0 9 * * *");
+  box.querySelector("#sf-cancel").onclick = () => { automState.showForm = false; automState.editing = null; box.innerHTML = ""; };
+  box.querySelector("#sf-add").onclick = async () => {
+    const name = box.querySelector("#sf-name").value.trim();
+    const task = box.querySelector("#sf-task").value.trim();
+    const cron = buildCronFrom(box);
+    if (!task) return toast("❌ 请填写任务描述");
+    if (!cron) return toast("❌ 请完成时间设置");
+    const resp = ed
+      ? await fetch("/api/schedules/" + ed.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task }) })
+      : await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task }) });
+    if (!resp.ok) return toast("❌ " + ((await resp.json()).error || "保存失败"));
+    toast(ed ? "✅ 已保存" : "✅ 已添加");
+    automState.showForm = false; automState.editing = null;
+    renderAutomPage();
+  };
+}
+async function renderAutomRuns(page) {
+  const runs = await fetch("/api/schedules/runs?limit=100").then(r => r.json()).catch(() => []);
+  const fmtMs = (ms) => ms >= 60000 ? Math.round(ms / 60000) + " 分" : Math.max(1, Math.round(ms / 1000)) + " 秒";
+  page.innerHTML = `
+    <div class="hub-head">
+      <div class="hub-tabs">
+        <button data-tab="tasks">⏱️ 定时任务</button>
+        <button class="active" data-tab="runs">📜 运行记录</button>
+      </div>
+      <span style="font-size:12px;color:var(--wb-text-3);margin-left:auto">最近 ${runs.length} 次执行，最新在前</span>
+    </div>
+    ${runs.length ? `<table class="at-runs">
+      <tr><th>时间</th><th>任务</th><th>触发</th><th>耗时</th><th>结果</th></tr>
+      ${runs.map(r => `<tr>
+        <td style="white-space:nowrap">${esc((r.started_at || "").slice(5, 16).replace("T", " "))}</td>
+        <td>${esc(r.name)}</td>
+        <td>${esc(r.trigger || "")}</td>
+        <td style="white-space:nowrap">${r.ended_at ? fmtMs(r.ms) : "进行中…"}</td>
+        <td>${r.ok === null ? "⏳" : r.ok ? "✅" : "❌"} ${esc((r.result || "").slice(0, 90))}${(r.result || "").length > 90 ? "…" : ""}</td>
+      </tr>`).join("")}
+    </table>` : '<div class="hub-empty">还没有运行记录。任务跑过之后（定时触发或手动执行）这里会留下每一次的流水。</div>'}`;
+  page.querySelector('[data-tab="tasks"]').onclick = () => { automState.tab = "tasks"; renderAutomPage(); };
+}
+
+// ================= 资料库页（左侧文件树 + 右侧预览：MD 渲染 / CSV 表格 / HTML 真渲染） =================
+const libState = { pick: null, q: "" }; // pick: {src:"lib"|"ws"|"notes", name}
+function csvToTable(text) {
+  // 迷你 CSV 解析（带引号转义）。行数封顶，别让一个 10 万行的表把页面卡死
+  const rows = [];
+  let row = [], cell = "", inQ = false;
+  for (let i = 0; i < text.length && rows.length < 500; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (c === '"') inQ = false;
+      else cell += c;
+    } else if (c === '"') inQ = true;
+    else if (c === ",") { row.push(cell); cell = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell); cell = "";
+      if (row.some(x => x !== "")) rows.push(row);
+      row = [];
+    } else cell += c;
+  }
+  if (cell !== "" || row.length) { row.push(cell); if (row.some(x => x !== "")) rows.push(row); }
+  if (!rows.length) return '<div class="ph">空表</div>';
+  const [head, ...body] = rows;
+  return `<table class="csv"><tr>${head.map(h => `<th>${esc(h)}</th>`).join("")}</tr>` +
+    body.map(r => `<tr>${head.map((_, i) => `<td>${esc(r[i] || "")}</td>`).join("")}</tr>`).join("") +
+    `</table>${rows.length >= 500 ? '<div style="font-size:12px;color:var(--wb-text-3);margin-top:6px">表太长，只显示前 500 行</div>' : ""}`;
+}
+async function renderLibPage() {
+  const page = document.getElementById("assist-page");
+  if (!page) return;
+  const [lib, ws] = await Promise.all([
+    fetch("/api/library").then(r => r.json()).catch(() => ({ files: [], notes: [] })),
+    fetch("/api/files").then(r => r.json()).catch(() => []),
+  ]);
+  const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+  const q = libState.q.toLowerCase();
+  const hit = (n) => !q || n.toLowerCase().includes(q);
+  const icon = (n) => /\.html?$/i.test(n) ? "🌐" : /\.csv$/i.test(n) ? "📊" : /\.(md|markdown)$/i.test(n) ? "📝" : /\.(png|jpe?g|gif|webp|svg)$/i.test(n) ? "🖼️" : /\.pdf$/i.test(n) ? "📕" : "📄";
+  const item = (src, name, size) => `
+    <div class="lib-it ${libState.pick && libState.pick.src === src && libState.pick.name === name ? "active" : ""}" data-src="${src}" data-name="${esc(name)}">
+      <span>${icon(name)}</span><span class="nm" title="${esc(name)}">${esc(name)}</span>${size !== undefined ? `<span class="sz">${fmtSize(size)}</span>` : ""}
+    </div>`;
+  const recents = JSON.parse(localStorage.getItem("wb_lib_recent") || "[]");
+  page.innerHTML = `
+    <div class="lib-page">
+      <div class="lib-side">
+        <div class="hub-search"><input id="lb-q" placeholder="搜索资料" value="${esc(libState.q)}"></div>
+        <div class="lib-it ${libState.pick && libState.pick.src === "notes" ? "active" : ""}" data-src="notes" data-name="" style="margin-top:10px"><span>💡</span><span class="nm">灵感笔记（${(lib.notes || []).length}）</span></div>
+        ${recents.length ? `<div class="sec">最近</div>` + recents.filter(r => hit(r.name)).slice(0, 6).map(r => item(r.src, r.name)).join("") : ""}
+        <div class="sec">我的文档 <a href="#" id="lb-up" class="link" style="font-size:12px">＋ 上传</a><input type="file" id="lb-file" multiple style="display:none"></div>
+        ${(lib.files || []).filter(f => hit(f.name)).map(f => item("lib", f.name, f.size)).join("") || '<div style="font-size:12px;color:var(--wb-text-3);padding:4px 8px">还没有参考资料</div>'}
+        <div class="sec">本地产物（当前项目）</div>
+        ${ws.filter(f => hit(f.name)).slice(0, 60).map(f => item("ws", f.name, f.size)).join("") || '<div style="font-size:12px;color:var(--wb-text-3);padding:4px 8px">工作目录还没有成果文件</div>'}
+      </div>
+      <div class="lib-prev" id="lb-prev"><div class="ph">左边挑一个文件看内容<br><br>📝 Markdown 直接排版 · 📊 CSV 变表格 · 🌐 HTML 真渲染<br>任务里 AI 也能读这里的资料（library_list / library_read）</div></div>
+    </div>`;
+  const qEl = page.querySelector("#lb-q");
+  qEl.oninput = () => { libState.q = qEl.value; clearTimeout(page._t); page._t = setTimeout(renderLibPage, 200); };
+  page.querySelector("#lb-up").onclick = (e) => { e.preventDefault(); page.querySelector("#lb-file").click(); };
+  page.querySelector("#lb-file").onchange = async (e) => {
+    for (const file of e.target.files) {
+      const data_b64 = await new Promise((ok) => { const rd = new FileReader(); rd.onload = () => ok(rd.result.split(",")[1]); rd.readAsDataURL(file); });
+      await fetch("/api/library/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: file.name, data_b64 }) });
+    }
+    toast("✅ 已上传");
+    renderLibPage();
+  };
+  page.querySelectorAll(".lib-it").forEach(el => el.onclick = () => {
+    libState.pick = { src: el.dataset.src, name: el.dataset.name };
+    if (el.dataset.src !== "notes") {
+      const rec = [{ src: el.dataset.src, name: el.dataset.name }, ...recents.filter(r => !(r.src === el.dataset.src && r.name === el.dataset.name))].slice(0, 8);
+      localStorage.setItem("wb_lib_recent", JSON.stringify(rec));
+    }
+    page.querySelectorAll(".lib-it").forEach(x => x.classList.toggle("active", x === el));
+    renderLibPreview(page.querySelector("#lb-prev"), lib);
+  });
+  if (libState.pick) renderLibPreview(page.querySelector("#lb-prev"), lib);
+}
+async function renderLibPreview(prev, lib) {
+  const { src, name } = libState.pick || {};
+  if (!src) return;
+  if (src === "notes") {
+    prev.innerHTML = `
+      <div style="font-weight:600;margin-bottom:10px">💡 灵感笔记</div>
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        <input id="lb-note" placeholder="随手记一条灵感/偏好，回车保存" style="flex:1">
+        <button class="btn-brand" id="lb-note-save" style="flex:none">保存</button>
+      </div>
+      <div>${(lib.notes || []).map(n =>
+        `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span><a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a></div></div>`).join("")
+        || '<div class="ph">还没有灵感笔记</div>'}</div>`;
+    const save = async () => {
+      const text = prev.querySelector("#lb-note").value.trim();
+      if (!text) return;
+      await fetch("/api/library/note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      renderLibPage();
+    };
+    prev.querySelector("#lb-note-save").onclick = save;
+    prev.querySelector("#lb-note").onkeydown = (e) => { if (e.key === "Enter") save(); };
+    prev.querySelectorAll("a[data-nid]").forEach(a => a.onclick = async (e) => {
+      e.preventDefault();
+      await fetch("/api/library/note/" + encodeURIComponent(a.dataset.nid), { method: "DELETE" });
+      renderLibPage();
+    });
+    return;
+  }
+  const url = src === "lib" ? "/api/library/file/" + encodeURIComponent(name) : "/api/files/view/" + encodeURIComponent(name);
+  const bar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+    <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</b>
+    <a class="link" href="${url}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>
+    ${src === "lib" ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
+  </div>`;
+  prev.innerHTML = bar + '<div class="ph">加载中…</div>';
+  const body = prev.lastElementChild;
+  const wireDel = () => {
+    const d = prev.querySelector("#lb-del");
+    if (d) d.onclick = async (e) => {
+      e.preventDefault();
+      if (!confirm(`删除资料「${name}」？`)) return;
+      await fetch("/api/library/file/" + encodeURIComponent(name), { method: "DELETE" });
+      libState.pick = null;
+      renderLibPage();
+    };
+  };
+  try {
+    if (/\.(png|jpe?g|gif|webp|svg)$/i.test(name)) {
+      body.outerHTML = `<img src="${url}" style="max-width:100%;border-radius:8px">`;
+    } else if (/\.pdf$/i.test(name)) {
+      body.outerHTML = `<iframe src="${url}"></iframe>`;
+    } else if (/\.html?$/i.test(name)) {
+      // HTML 真渲染。sandbox 掐掉同源和弹窗：资料是外来的，不能让它碰应用本身
+      const text = await fetch(url).then(r => r.text());
+      const blob = URL.createObjectURL(new Blob([text], { type: "text/html" }));
+      body.outerHTML = `<iframe src="${blob}" sandbox="allow-scripts"></iframe>`;
+    } else {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error("读取失败");
+      const text = await r.text();
+      if (text.length > 400000) body.outerHTML = '<div class="ph">文件太大，预览不动，请下载后本地打开</div>';
+      else if (/\.csv$/i.test(name)) body.outerHTML = csvToTable(text);
+      else if (/\.(md|markdown)$/i.test(name)) body.outerHTML = `<div class="md">${renderMd(text)}</div>`;
+      else body.outerHTML = `<pre class="raw">${esc(text)}</pre>`;
+    }
+  } catch (e) {
+    body.outerHTML = `<div class="ph">预览失败：${esc(e.message)}</div>`;
+  }
+  wireDel();
 }
 
 // ================= 专家 · 技能 · 连接器（主区页面，三合一） =================
@@ -3531,90 +4208,7 @@ function startTaskWith(text) {
   inputEl.scrollTop = 0;
 }
 
-// ================= 资料库 · 灵感（跨项目共享，agent 可用 library_list/read 读取） =================
-async function renderLibrary() {
-  const data = await fetch("/api/library").then(r => r.json()).catch(() => ({ files: [], notes: [] }));
-  const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
-  mBody.innerHTML = `
-    <div style="color:var(--wb-text-2);font-size:12px;margin-bottom:12px">跨项目共享的长期参考资料。执行任务时 AI 会按需查阅这里的文件和灵感笔记（library_list / library_read 工具）。</div>
-    <div class="lib-cols">
-      <div>
-        <div style="font-weight:600;margin-bottom:8px">💡 灵感笔记</div>
-        <div style="display:flex;gap:6px;margin-bottom:8px">
-          <input id="lib-note" placeholder="随手记一条灵感/偏好，回车保存" style="flex:1">
-          <button class="btn-brand" id="lib-note-save" style="flex:none">保存</button>
-        </div>
-        <div id="lib-notes">${(data.notes || []).map(n =>
-          `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span><a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a></div></div>`).join("")
-          || '<div class="ab-empty">还没有灵感笔记</div>'}</div>
-      </div>
-      <div>
-        <div style="font-weight:600;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">📁 参考资料
-          <button class="btn-plain" id="lib-up" style="font-size:12px;padding:3px 10px">＋ 上传文件</button>
-          <input type="file" id="lib-file" multiple style="display:none">
-        </div>
-        <div id="lib-files">${(data.files || []).map(f =>
-          `<div class="lib-row"><span class="ln" title="${esc(f.name)}">${esc(f.name)}</span><span class="lm">${fmtSize(f.size)}</span>` +
-          `<a class="link" href="/api/library/file/${encodeURIComponent(f.name)}" download>下载</a>` +
-          `<a href="#" class="link danger" data-fname="${encodeURIComponent(f.name)}">删除</a></div>`).join("")
-          || '<div class="ab-empty">还没有参考资料文件</div>'}</div>
-      </div>
-    </div>`;
-  const saveNote = async () => {
-    const text = mBody.querySelector("#lib-note").value.trim();
-    if (!text) return;
-    await fetch("/api/library/note", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    renderLibrary();
-  };
-  mBody.querySelector("#lib-note-save").onclick = saveNote;
-  mBody.querySelector("#lib-note").onkeydown = (e) => { if (e.key === "Enter") saveNote(); };
-  mBody.querySelectorAll("a[data-nid]").forEach(a => a.onclick = async (e) => {
-    e.preventDefault();
-    await fetch("/api/library/note/" + encodeURIComponent(a.dataset.nid), { method: "DELETE" });
-    renderLibrary();
-  });
-  mBody.querySelector("#lib-up").onclick = () => mBody.querySelector("#lib-file").click();
-  mBody.querySelector("#lib-file").onchange = async (e) => {
-    for (const file of e.target.files) {
-      const data_b64 = await new Promise((ok) => {
-        const rd = new FileReader();
-        rd.onload = () => ok(rd.result.split(",")[1]);
-        rd.readAsDataURL(file);
-      });
-      await fetch("/api/library/upload", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: file.name, data_b64 }),
-      });
-    }
-    renderLibrary();
-  };
-  mBody.querySelectorAll("a[data-fname]").forEach(a => a.onclick = async (e) => {
-    e.preventDefault();
-    const name = decodeURIComponent(a.dataset.fname);
-    if (!confirm(`删除资料「${name}」？`)) return;
-    await fetch("/api/library/file/" + a.dataset.fname, { method: "DELETE" });
-    renderLibrary();
-  });
-}
-
 // ================= 定时任务（可视化，不写 cron） =================
-function buildCron() {
-  const freq = mBody.querySelector("#sf-freq").value;
-  const t = (mBody.querySelector("#sf-time").value || "09:00").split(":");
-  const m = +t[1] || 0, h = +t[0] || 9;
-  switch (freq) {
-    case "daily": return `${m} ${h} * * *`;
-    case "workday": return `${m} ${h} * * 1-5`;
-    case "weekly": return `${m} ${h} * * ${mBody.querySelector("#sf-dow").value}`;
-    case "monthly": return `${m} ${h} ${mBody.querySelector("#sf-dom").value} * *`;
-    case "hourly": return `${m} * * * *`;
-    case "half-hour": return `*/30 * * * *`;
-    case "custom": return mBody.querySelector("#sf-cron").value.trim();
-  }
-}
 function cronToHuman(cron) {
   const m = cron.match(/^(\d+) (\d+) (\S+) \* (\S+)$/);
   if (cron.startsWith("*/30")) return "每 30 分钟";
@@ -3627,79 +4221,6 @@ function cronToHuman(cron) {
   }
   if (/^(\d+) \* \* \* \*$/.test(cron)) return `每小时第 ${cron.split(" ")[0]} 分`;
   return cron;
-}
-async function renderSched() {
-  const list = await fetch("/api/schedules").then(r => r.json()).catch(() => []);
-  mBody.innerHTML =
-    (list.length ? list.map(t =>
-      `<div class="card-item">
-        <div class="t">${esc(t.name)} ${t.running ? "· 执行中…" : t.enabled ? "" : "（已停用）"}</div>
-        <div class="d">${esc(cronToHuman(t.cron))} · ${esc(t.task.slice(0, 60))}${t.catch_up === false ? " · 错过不补" : ""}${t.last_run ? "<br>上次执行: " + esc(t.last_run.slice(0, 16).replace("T", " ")) + (t.last_trigger && t.last_trigger !== "cron" ? "（" + esc(t.last_trigger) + "）" : "") : ""}${t.last_result ? " · " + esc(t.last_result.slice(0, 100)) + (t.last_result.length > 100 ? "…" : "") : ""}</div>
-        <div style="margin-top:6px">
-          <a class="link" data-act="run" data-id="${t.id}" href="#">立即执行</a> ·
-          <a class="link" data-act="toggle" data-id="${t.id}" data-en="${t.enabled}" href="#">${t.enabled ? "停用" : "启用"}</a> ·
-          <a class="link" data-act="catchup" data-id="${t.id}" data-cu="${t.catch_up !== false}" href="#" title="电脑睡着或应用没开时错过了这次，下次开机补跑一遍（一段时间里错过多次也只补一次）">${t.catch_up === false ? "开启补跑" : "关闭补跑"}</a> ·
-          <a class="link danger" data-act="del" data-id="${t.id}" href="#">删除</a>
-        </div>
-      </div>`).join("") : `<div style="color:var(--wb-text-3);margin-bottom:10px">还没有定时任务，添加一个吧 👇</div>`)
-    + `<div style="border-top:1px solid var(--wb-border);padding-top:12px;margin-top:4px">
-        <input id="sf-name" placeholder="任务名（如：每日晨报）">
-        <div class="form-row">
-          <select id="sf-freq">
-            <option value="daily">每天</option>
-            <option value="workday">工作日（周一到周五）</option>
-            <option value="weekly">每周某天</option>
-            <option value="monthly">每月某日</option>
-            <option value="hourly">每小时</option>
-            <option value="half-hour">每 30 分钟</option>
-            <option value="custom">自定义 cron</option>
-          </select>
-          <select id="sf-dow" style="display:none">
-            <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
-            <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option>
-          </select>
-          <select id="sf-dom" style="display:none">${Array.from({length:28},(_,i)=>`<option value="${i+1}">${i+1} 日</option>`).join("")}</select>
-          <input id="sf-time" type="time" value="09:00">
-        </div>
-        <input id="sf-cron" placeholder="cron 表达式：分 时 日 月 周" style="display:none">
-        <textarea id="sf-task" rows="2" placeholder="要自动执行的任务描述，如：抓取今天的 AI 新闻生成晨报"></textarea>
-        <button class="btn-brand" id="sf-add">添加定时任务</button>
-      </div>`;
-  const freqEl = mBody.querySelector("#sf-freq");
-  freqEl.onchange = () => {
-    const v = freqEl.value;
-    mBody.querySelector("#sf-dow").style.display = v === "weekly" ? "" : "none";
-    mBody.querySelector("#sf-dom").style.display = v === "monthly" ? "" : "none";
-    mBody.querySelector("#sf-cron").style.display = v === "custom" ? "" : "none";
-    mBody.querySelector("#sf-time").style.display = ["hourly","half-hour","custom"].includes(v) ? "none" : "";
-  };
-  mBody.querySelector("#sf-add").onclick = async () => {
-    const name = mBody.querySelector("#sf-name").value.trim();
-    const task = mBody.querySelector("#sf-task").value.trim();
-    const cron = buildCron();
-    if (!task) return toast("❌ 请填写任务描述");
-    if (!cron) return toast("❌ 请完成时间设置");
-    const resp = await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task }) });
-    if (!resp.ok) return toast("❌ " + ((await resp.json()).error || "添加失败"));
-    renderSched();
-  };
-  mBody.querySelectorAll("a[data-act]").forEach(a => a.onclick = async (e) => {
-    e.preventDefault();
-    const id = a.dataset.id;
-    if (a.dataset.act === "del") { if (!confirm("确认删除该定时任务？")) return; await fetch("/api/schedules/" + id, { method: "DELETE" }); }
-    else if (a.dataset.act === "toggle") await fetch(`/api/schedules/${id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: a.dataset.en !== "true" }) });
-    else if (a.dataset.act === "catchup") await fetch(`/api/schedules/${id}/catchup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ catch_up: a.dataset.cu !== "true" }) });
-    else if (a.dataset.act === "run") {
-      a.textContent = "执行中…";
-      // 以前这里不看返回：跑挂了界面照样刷新一下就完事，用户只当它跑成功了
-      const r = await fetch(`/api/schedules/${id}/run`, { method: "POST" }).catch(() => null);
-      const j = r ? await r.json().catch(() => ({})) : {};
-      if (!r || !r.ok) toast("❌ " + (j.error || "执行失败"));
-      else toast("✅ 执行完成");
-      fetch("/api/files").then(r => r.json()).then(renderFiles);
-    }
-    renderSched();
-  });
 }
 
 // ================= 设置中心 =================
@@ -3745,10 +4266,23 @@ async function saveSettings(patch, msgEl) {
   if (resp.ok) refreshSettingsCache();
   return resp.ok;
 }
+// 渠道预设：选一个就把接口地址/协议填好，只差 Key 和模型名
+const CHANNEL_PRESETS = [
+  { label: "选择渠道预设…", provider: "openai", base: "", model: "" },
+  { label: "OpenAI 官方", provider: "openai", base: "https://api.openai.com/v1", model: "gpt-5.2" },
+  { label: "Anthropic Claude 官方", provider: "anthropic", base: "", model: "claude-sonnet-5" },
+  { label: "OpenRouter（聚合）", provider: "openai", base: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-chat" },
+  { label: "火山方舟（豆包/DeepSeek）", provider: "openai", base: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-seed-1-6-250615" },
+  { label: "阿里云百炼（通义）", provider: "openai", base: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-max" },
+  { label: "DeepSeek 官方", provider: "openai", base: "https://api.deepseek.com/v1", model: "deepseek-chat" },
+  { label: "智谱 GLM", provider: "openai", base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-plus" },
+  { label: "Kimi（月之暗面）", provider: "openai", base: "https://api.moonshot.cn/v1", model: "kimi-k2-0905-preview" },
+  { label: "Ollama 本地", provider: "openai", base: "http://localhost:11434/v1", model: "qwen3:14b" },
+];
 function renderModelsPane(pane, s) {
   const md = { image: {}, video: {}, ...(s.media || {}) };
   pane.innerHTML = `
-    <div style="color:var(--wb-text-2);margin-bottom:10px">选择当前使用的模型，或添加自定义模型（任何 OpenAI 兼容接口都支持）。也可以在输入框右下角快速切换。</div>
+    <div style="color:var(--wb-text-2);margin-bottom:10px">选择当前使用的模型，或添加模型。内置 OpenAI / Anthropic / OpenRouter / 火山方舟 / 阿里百炼 / DeepSeek / 智谱 / Kimi / Ollama 渠道预设，任何 OpenAI 兼容接口也都支持。输入框右下角可快速切换。</div>
     <div id="model-list">${s.models.map((m, i) => `
       <div class="card-item" style="display:flex;align-items:center;gap:10px">
         <input type="radio" name="active" style="width:auto;margin:0" ${m.name === s.active_model ? "checked" : ""} data-i="${i}">
@@ -3762,6 +4296,7 @@ function renderModelsPane(pane, s) {
       </div>`).join("")}
     </div>
     <div id="model-form" style="display:none;border-top:1px solid var(--wb-border);padding-top:10px">
+      <select id="mf-channel">${CHANNEL_PRESETS.map((c, i) => `<option value="${i}">${esc(c.label)}</option>`).join("")}</select>
       <input id="mf-name" placeholder="名称（如：我的vLLM）">
       <div class="form-row">
         <select id="mf-provider"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select>
@@ -3805,6 +4340,15 @@ function renderModelsPane(pane, s) {
     pane.querySelector("#mf-model").value = m?.model || "";
     pane.querySelector("#mf-base").value = m?.base_url || "";
     pane.querySelector("#mf-key").value = m?.api_key || "";
+  };
+  pane.querySelector("#mf-channel").onchange = () => {
+    const idx = +pane.querySelector("#mf-channel").value;
+    const c = CHANNEL_PRESETS[idx];
+    if (!c || idx === 0) return; // 第 0 项是占位提示
+    pane.querySelector("#mf-provider").value = c.provider;
+    pane.querySelector("#mf-base").value = c.base;
+    pane.querySelector("#mf-model").value = c.model;
+    if (!pane.querySelector("#mf-name").value) pane.querySelector("#mf-name").value = c.label.replace(/（.*/, "");
   };
   pane.querySelector("#mf-new").onclick = () => { editIndex = -1; showForm(null); };
   pane.querySelector("#mf-cancel").onclick = () => (form.style.display = "none");
@@ -3951,17 +4495,54 @@ function renderPersonaPane(pane, s) {
 }
 async function renderMemoryPane(pane) {
   const m = await fetch("/api/memory").then(r => r.json());
+  const items = m.items || [];
+  const rows = items.length
+    ? items.map(it => `
+      <div class="mem-row">
+        <span class="mem-tag">${it.scope === m.shared_tag ? "共享" : esc(it.scope)}</span>
+        <span class="mem-txt">${esc(it.text)}</span>
+        <span class="mem-src">${it.source === "user" ? "手动" : "AI 记的"}</span>
+        <a href="#" class="link danger" data-del="${esc(it.id)}">删</a>
+      </div>`).join("")
+    : '<div style="color:var(--wb-text-3);font-size:13px;padding:6px 0">还没有。你说「以后都这样」「记住…」时它会自己记一条；也可以在下面手动加。</div>';
   pane.innerHTML = `
     <div class="card-item">
-      <div class="t">长期记忆</div>
-      <div class="d" style="margin-bottom:8px">每次执行任务都会带上这里的内容。适合放：团队/业务背景、常用数据口径、固定模板要求。</div>
-      <textarea id="mem-text" rows="10" placeholder="例如：我们公司是做跨境电商的，主营美妆品类；周报收件人是运营部…">${esc(m.content)}</textarea>
+      <div class="t">📌 记住的事（AI 自己记的 + 你手动加的）</div>
+      <div class="d" style="margin-bottom:8px">一条一句话，跨任务保留。标「共享」的所有账号都看得到，标账号名的只跟着那个人走。每人最多 ${esc(String((m.limits || {}).max_items || 120))} 条。</div>
+      <div id="mem-items">${rows}</div>
+      <div class="form-row" style="margin-top:8px">
+        <input id="mem-new" placeholder="手动加一条，例如：周报只要三段——进展 / 问题 / 下周计划">
+        <button class="btn-plain" id="mem-add" style="flex:0 0 auto">加进去</button>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--wb-text-3);margin-top:6px;cursor:pointer">
+        <input type="checkbox" id="mem-shared" style="width:auto;margin:0"> 这条给这台机器上所有账号共用
+      </label>
     </div>
-    <button class="btn-brand" id="mem-save">保存记忆</button><span class="ok-msg" id="mem-msg"></span>`;
+    <div class="card-item">
+      <div class="t">📝 背景说明（全局共享，原样进提示词）</div>
+      <div class="d" style="margin-bottom:8px">适合放团队/业务背景、常用数据口径、固定模板要求这种成段的东西。所有账号共用一份。</div>
+      <textarea id="mem-text" rows="8" placeholder="例如：我们公司是做跨境电商的，主营美妆品类；周报收件人是运营部…">${esc(m.content)}</textarea>
+    </div>
+    <button class="btn-brand" id="mem-save">保存背景说明</button><span class="ok-msg" id="mem-msg"></span>`;
   pane.querySelector("#mem-save").onclick = async () => {
     const resp = await fetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: pane.querySelector("#mem-text").value }) });
     pane.querySelector("#mem-msg").textContent = resp.ok ? "✓ 已保存" : "保存失败";
   };
+  pane.querySelector("#mem-add").onclick = async () => {
+    const text = pane.querySelector("#mem-new").value.trim();
+    if (!text) return;
+    const r = await fetch("/api/memory/item", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, shared: pane.querySelector("#mem-shared").checked }),
+    }).then(r => r.json()).catch(() => ({ note: "网络错误" }));
+    toast(r.note || (r.ok ? "已记住" : "没记成"));
+    if (r.ok) renderMemoryPane(pane);
+  };
+  pane.querySelectorAll("[data-del]").forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    await fetch("/api/memory/item/" + encodeURIComponent(a.dataset.del), { method: "DELETE" });
+    renderMemoryPane(pane);
+  });
 }
 function renderDataPane(pane, s) {
   pane.innerHTML = `
@@ -3985,14 +4566,14 @@ function renderDataPane(pane, s) {
     </div>
     <div class="card-item">
       <div class="t">数据说明</div>
-      <div class="d">会话记录持久化在 data/sessions/ · 定时任务在 schedules.json · 配置在 config.json（含 API Key，默认不入 git）· 记忆在 data/memory.md</div>
+      <div class="d">会话记录持久化在 data/sessions/ · 定时任务在 schedules.json · 配置在 config.json（含 API Key，默认不入 git）· 记忆在 data/memory.md 与 data/memories.json</div>
     </div>`;
   pane.querySelector("#ws-pick").onclick = async () => {
     const r = await fetch("/api/pick-folder", { method: "POST" }).then(r => r.json()).catch(() => ({}));
     if (r.path) pane.querySelector("#ws-dir").value = r.path;
     else if (r.error) toast("❌ " + r.error);
   };
-  pane.querySelector("#ws-save").onclick = () => saveSettings({ workspace_dir: pane.querySelector("#ws-dir").value.trim() }, pane.querySelector("#ws-msg"))
+  pane.querySelector("#ws-save").onclick = () => saveSettings({ workspace_dir: pane.querySelector("#ws-dir").value.trim(), workspace_permanent: true }, pane.querySelector("#ws-msg"))
     .then(ok => { if (ok) fetch("/api/files").then(r => r.json()).then(renderFiles); });
   pane.querySelector("#ws-open").onclick = () => fetch("/api/open-workspace", { method: "POST" });
   const cacheDesc = pane.querySelector("#cache-desc");
@@ -4330,6 +4911,15 @@ function renderSecurityPane(pane, s) {
     <textarea id="${id}" rows="${rows || 4}" style="width:100%;font-size:12px;font-family:Consolas,monospace;resize:vertical">${val}</textarea></div>`;
   pane.innerHTML = `
     <div class="card-item">
+      <div class="t">🎚️ 权限档位</div>
+      <div class="d">决定 AI 动手前问不问你。改文件、跑命令都按这个档来；文件黑名单在任何档位下都拦得住。输入框下方的「🛡️」下拉也能随时切。</div>
+      <div id="sec-modes" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
+      <div style="margin-top:8px;font-size:12px;color:var(--wb-text-3)">
+        本次运行期间记住的批准：<span id="sec-sess-allow">（无）</span>
+        <a href="#" class="link" id="sec-sess-clear">清掉</a>
+      </div>
+    </div>
+    <div class="card-item">
       <div class="t">🛡️ 数据安全</div>
       ${chk("sec-gateway", sec.gateway !== false, "安全网关", "总开关：命令审批与文件/网络黑白名单的硬拦截由它启用，关闭后只记审计不拦截")}
       ${chk("sec-delprot", sec.delete_protect !== false, "删除保护", "rm 类删除命令必须在界面上批准后才执行")}
@@ -4395,6 +4985,37 @@ function renderSecurityPane(pane, s) {
       runtime_python: pane.querySelector("#sec-py").checked,
     },
   }, pane.querySelector("#sec-msg"));
+
+  // ---- 权限档位 ----
+  async function renderModes() {
+    const d = await fetch("/api/security/modes").then(r => r.json()).catch(() => null);
+    const box = pane.querySelector("#sec-modes");
+    if (!d || !box) return;
+    box.innerHTML = Object.entries(d.modes).map(([k, m]) => `
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px">
+        <input type="radio" name="permmode" value="${esc(k)}" ${k === d.current ? "checked" : ""} style="width:auto;margin:3px 0 0">
+        <span><b>${esc(m.label)}</b><span style="color:var(--wb-text-3)"> — ${esc(m.desc)}</span></span>
+      </label>`).join("");
+    box.querySelectorAll("input[name=permmode]").forEach(r => r.onchange = async () => {
+      await setPermMode(r.value);
+      renderSessAllow();
+    });
+  }
+  async function renderSessAllow() {
+    const d = await fetch("/api/security/approvals").then(r => r.json()).catch(() => null);
+    const el = pane.querySelector("#sec-sess-allow");
+    if (!el) return;
+    const list = (d && d.session_allow) || [];
+    el.textContent = list.length ? list.join("、") : "（无）";
+  }
+  renderModes();
+  renderSessAllow();
+  pane.querySelector("#sec-sess-clear").onclick = async (e) => {
+    e.preventDefault();
+    await fetch("/api/security/session-allow/clear", { method: "POST" });
+    renderSessAllow();
+    toast("已清掉本次运行期间记住的批准");
+  };
 
   // ---- 审计 ----
   let auditLimit = 15;
