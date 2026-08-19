@@ -164,9 +164,18 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
    * @param {(out:string)=>Promise<void>} p.reply  回复函数
    * @param {object} [p.logExtra]  日志附加字段
    */
-  function runInbound({ channel, sessionKey, text, reply, logExtra = {} }) {
+  function runInbound({ channel, sessionKey, text, reply, status, logExtra = {} }) {
     logIm(channel, "in", text, logExtra);
     maybeResetIdleSession(sessionKey, channel);
+    // 「正在做」状态消息：收到即发（只在支持撤回的通道传 status），结果出来前撤回，
+    // 聊天里最终只留结果——跟用户「别刷确认消息」的要求不冲突
+    let statusHandle = status ? status.send().catch(() => null) : null;
+    const recallStatus = async () => {
+      if (!statusHandle) return;
+      const h = statusHandle;
+      statusHandle = null;
+      try { await status.recall(await h); } catch {}
+    };
     return enqueueTask(sessionKey, async () => {
       try {
         if (!sessions.has(sessionKey)) sessions.set(sessionKey, []);
@@ -185,6 +194,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
           out += `\n\n📁 成果文件（在 OpenWorkBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
           if (fresh.length > 8) out += `\n… 另有 ${fresh.length - 8} 个`;
         }
+        await recallStatus();
         await reply(out);
         logIm(channel, "out", out, logExtra);
         await pushBots(`【OpenWorkBuddy·${CH_NAME[channel] || channel}任务完成】\n任务：${text.slice(0, 80)}\n${out.slice(0, 500)}`);
@@ -192,10 +202,31 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         console.error(`[${CH_NAME[channel] || channel}] 任务执行出错:`, e.message);
         logIm(channel, "error", `任务执行出错: ${e.message}`, logExtra);
         try {
+          await recallStatus();
           await reply(`❌ 任务执行出错：${String(e.message).slice(0, 300)}`);
         } catch {}
       }
     });
+  }
+
+  // 「正在做」状态消息：发一条轻量文本，做完撤回。撤回失败不影响结果送达。
+  async function feishuStatusSend(chatId) {
+    const token = await getFeishuToken();
+    const r = await feishuSend(token, chatId, "text", { text: "⏳ 收到，正在做了…（完成后这条会自动撤回）" });
+    return r.code === 0 ? (r.data || {}).message_id : null;
+  }
+  async function feishuRecall(messageId) {
+    if (!messageId) return;
+    try {
+      const token = await getFeishuToken();
+      await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${messageId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch (e) {
+      console.warn("[飞书] 撤回状态消息失败:", e.message);
+    }
   }
 
   const handledMsgs = new Set(); // message_id 去重（飞书会重试推送）
@@ -214,12 +245,13 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     if (!text) return;
 
     const chatId = msg.chat_id;
-    // 不发「收到任务/已排队」之类的确认（用户明确要求直接回结果）；排队靠 enqueueTask 自然串行
+    // 收到先发「正在做」状态，出结果时撤回状态再回结果；微信 iLink 桥没有撤回接口，不挂 status
     await runInbound({
       channel: "feishu",
       sessionKey: `feishu_${chatId}`,
       text,
       logExtra: { chat: chatId },
+      status: { send: () => feishuStatusSend(chatId), recall: (id) => feishuRecall(id) },
       reply: (out) => feishuReply(chatId, out.slice(0, 3500)),
     });
   }
