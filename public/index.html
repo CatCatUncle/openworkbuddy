@@ -1159,6 +1159,13 @@ function createTurnUI(userText, turnMode) {
         proc.appendChild(note);
       }
       note.textContent = `✂️ 历史过长，已截短较早的工具输出（约 ${Math.round((ev.chars || 0) / 1000)} 千字符），最近几步保留原文。可在 设置→智能体设置 调大上下文预算`;
+    } else if (ev.type === "compact") {
+      // 会话超长时后端自动把早期轮次压成一条摘要，这里留一行告知，免得用户觉得"它忘了前面"
+      const proc = ensureProc();
+      const note = document.createElement("div");
+      note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
+      note.textContent = `🗜️ 会话较长，已把早前 ${ev.removed || 0} 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）`;
+      proc.appendChild(note);
     } else if (ev.type === "usage") {
       // 插队会触发多轮 runTask、发多个 usage 事件 → 累加而不是覆盖
       if (!turn._usage) turn._usage = { ...ev };
@@ -2958,6 +2965,7 @@ function openAssistView() {
   assistTimer = setInterval(async () => {
     if (pageKind !== "assist" || !document.getElementById("im-feed")) { clearInterval(assistTimer); assistTimer = null; return; }
     renderAssistFeed(await fetch("/im/log").then(r => r.json()).catch(() => []));
+    updateAssistLive();
   }, 5000);
 }
 function closeAssistView() {
@@ -3030,13 +3038,38 @@ async function doAssistLocal(text) {
       `<div class="im-row bot" id="im-pending"><div class="im-ava">🤖</div><div class="im-col"><div class="im-b bot">执行中…</div></div></div>`);
     feed.scrollTop = feed.scrollHeight;
   }
+  // 等结果期间把「执行中…」气泡变成实时进度（第几步、在用哪个工具），跟飞书状态消息同一份文案
+  const liveT = setInterval(async () => {
+    const el = document.querySelector("#im-pending .im-b");
+    if (!el) return;
+    const p = await fetch("/im/progress").then(r => r.json()).catch(() => null);
+    if (p && p.local_assist && p.local_assist.text) el.textContent = "⏳ " + p.local_assist.text;
+  }, 1500);
   try {
     await fetch("/im/local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
   } catch {}
+  clearInterval(liveT);
   document.getElementById("im-pending")?.remove();
   const fresh = await fetch("/im/log").then(r => r.json()).catch(() => []);
   const f2 = document.getElementById("im-feed");
   if (f2) { f2._n = -1; renderAssistFeed(fresh); f2.scrollTop = f2.scrollHeight; }
+}
+// 远程会话（飞书等）有任务在跑时，助理页尾部挂一行实时进度——不用翻手机也知道它在干嘛
+async function updateAssistLive() {
+  const feed = document.getElementById("im-feed");
+  if (!feed) return;
+  const p = await fetch("/im/progress").then(r => r.json()).catch(() => null);
+  const remote = p ? Object.entries(p).filter(([k, v]) => k !== "local_assist" && v && v.text) : [];
+  let el = document.getElementById("im-remote-live");
+  if (!remote.length) { el?.remove(); return; }
+  const CH = { feishu: "🕊️ 飞书", qq: "🐧 QQ", wechat_ilink: "💬 微信", wecom_app: "🏢 企业微信", webhook: "🔗 Webhook" };
+  const txt = remote.map(([k, v]) => `${CH[v.channel] || v.channel || k} · ${v.text}`).join("；");
+  if (!el) {
+    feed.insertAdjacentHTML("beforeend", `<div class="im-row bot" id="im-remote-live"><div class="im-ava">⏳</div><div class="im-col"><div class="im-b bot" style="color:var(--wb-text-2)"></div></div></div>`);
+    el = document.getElementById("im-remote-live");
+    if (feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120) feed.scrollTop = feed.scrollHeight;
+  }
+  el.querySelector(".im-b").textContent = "远程任务执行中 · " + txt;
 }
 function renderAssistFeed(log) {
   const feed = document.getElementById("im-feed");

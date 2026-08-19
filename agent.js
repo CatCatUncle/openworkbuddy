@@ -532,6 +532,63 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     }
   }
 
+  // ── 长会话自动压缩 ──────────────────────────────────────────────
+  // trimHistory 只截工具输出，对话轮永不清理：会话越聊越大越钝越贵，模型还会拿
+  // 自己几十轮前的旧话当依据（「发不了文件」的幻觉就是这么反复复发的）。
+  // 超阈值时把早期轮次交给模型浓缩成一条接手摘要，只留最近几轮原文。
+  const COMPACT_MARK = "【系统·上下文压缩】";
+  async function compactHistory(history, { emit = () => {}, stats } = {}) {
+    if ((config.agent || {}).compact === false) return;
+    const budget = config.agent.max_context_chars || 120000;
+    const threshold = config.agent.compact_threshold_chars || Math.floor(budget * 0.6);
+    if (historyChars(history) <= threshold) return;
+    const keepTurns = config.agent.compact_keep_turns || 4;
+    const userIdx = [];
+    history.forEach((e, i) => { if (e.role === "user") userIdx.push(i); });
+    if (userIdx.length <= keepTurns) return; // 轮次太少压不动（单轮超长交给 trimHistory 截）
+    const cut = userIdx[userIdx.length - keepTurns]; // 切在用户轮开头，工具调用/结果永远成对保留
+    if (cut < 1) return;
+    const old = history.slice(0, cut);
+    // 老轮次转成纯文本转写；工具结果只留个头，摘要模型不需要全文
+    const lines = [];
+    for (const e of old) {
+      if (e.role === "user") lines.push("用户：" + String(e.content || "").slice(0, 2000));
+      else if (e.role === "assistant") {
+        if (e.text) lines.push("助手：" + String(e.text).slice(0, 2000));
+        for (const c of e.toolCalls || []) lines.push(`（调用 ${c.name} ${JSON.stringify(c.args || c.input || {}).slice(0, 200)}）`);
+      } else if (e.role === "tool") {
+        for (const r of e.results || []) lines.push("（工具结果：" + String(r.content || "").replace(/\s+/g, " ").slice(0, 300) + "）");
+      }
+    }
+    let transcript = lines.join("\n");
+    if (transcript.length > 60000) transcript = "…（更早部分略）\n" + transcript.slice(-60000); // 压缩请求本身也别把上下文顶爆
+    const result = await llm.chat({
+      system:
+        "你是会话压缩器。把用户给你的对话转写压成一份接手备忘录：\n" +
+        "1. 已完成的任务和结论；2. 产出/改动过的文件（写完整文件名）；\n" +
+        "3. 用户表达过的偏好、约束、纠正；4. 未完成事项。\n" +
+        "只写事实不评论，文件名和关键数字一个都别丢。500 字以内，中文。",
+      history: [{ role: "user", content: "以下是需要压缩的对话转写：\n\n" + transcript }],
+      tools: [],
+      signal: AbortSignal.timeout(60000),
+    });
+    if (result.usage && stats) { stats.prompt += result.usage.prompt; stats.completion += result.usage.completion; stats.calls++; }
+    const summary = String(result.text || "").trim();
+    if (!summary) return;
+    // 先归档再动刀：压缩只做搬家不做销毁，真要翻旧账去 data/compact-archive 找
+    try {
+      const dir = path.join(__dirname, "data", "compact-archive");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${Date.now()}.json`), JSON.stringify(old, null, 2));
+    } catch (e) { console.warn("[agent] 压缩归档失败（不拦压缩）:", e.message); }
+    history.splice(0, cut, {
+      role: "user",
+      content: `${COMPACT_MARK}以下是本会话更早内容的自动摘要（原文已归档）：\n${summary}\n（摘要结束。把以上当作既定事实继续，不必向用户复述；若与用户最新要求冲突，以最新要求为准。）`,
+    });
+    emit({ type: "compact", removed: old.length });
+    console.log(`[agent] 上下文已压缩：${old.length} 条 → 1 条摘要（现约 ${historyChars(history)} 字符）`);
+  }
+
   /**
    * 运行一次 Agent 任务循环。
    * @param history 统一格式会话历史（会被就地追加）
@@ -562,6 +619,12 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       for (const f of files) baseline.set(f.name, f.mtime);
       emit({ type: "files", files, changed });
     };
+
+    // 长会话先压缩再开跑：只在顶层任务做（专家子任务的 history 是临时的，压不着）
+    if (depth === 0) {
+      try { await compactHistory(history, { emit, stats }); }
+      catch (e) { console.warn("[agent] 上下文压缩失败，本次跳过:", e.message); }
+    }
 
     for (let step = 0; step < maxSteps; step++) {
       if (stopSignal && stopSignal.aborted) {
