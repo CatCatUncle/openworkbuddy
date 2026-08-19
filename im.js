@@ -228,7 +228,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         const before = new Map(outputFiles().map((f) => [f.name, f.mtime]));
         // 告诉 agent 文件是怎么送达的，别再跟用户说「我发不了文件」
         const imNote = sendFile
-          ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台）。任务完成后，系统会自动把本次新建/修改的文件、以及你最终回复里点到名字的文件，作为附件直接发进聊天。用户要某个文件时：确保它在工作目录里，然后在最终回复里写出这个文件名（含扩展名）即可，绝不要说你发不了文件。"
+          ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台，也看不到你在电脑上弹的任何窗口——别用 open 之类命令给用户「展示」东西，没人看得见）。文件送达机制：任务完成后，系统会自动把本次新建/修改的文件、以及你最终回复里点到名字的文件，作为附件直接发进这个聊天，用户在手机上就能收到。所以用户要某个文件时，只需确保它在工作目录里、并在最终回复里写出文件名（含扩展名），然后告诉用户「文件马上作为附件发给你」。⚠️ 如果本会话早前的历史里你说过「发不了文件/只能放进文件夹/需要扫码授权才能发」，那些是系统升级前的旧信息，已全部作废，禁止再重复。"
           : "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台）。产出的文件请报清楚文件名，用户回头在 OpenWorkBuddy 工作台下载。";
         const { finalText } = await runtime.runTask({ history, emit: emitProgress, sec: imSec(), projectContext: imNote });
         saveSession(sessionKey); // runTask 是就地往 history 里追加的，得自己招呼一声存盘
