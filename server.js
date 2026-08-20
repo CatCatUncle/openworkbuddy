@@ -1433,7 +1433,15 @@ app.post("/api/chat", async (req, res) => {
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
-  const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  res.on("error", () => {});
+  // 客户端可能中途断开（刷新页面/断网/电脑睡眠），任务照跑：
+  // 主连接断了就不再写它，事件继续发给 /api/chat/stream 续流进来的订阅者
+  const runState = { ctrl: new AbortController(), interject: [], subscribers: new Set(), events: null };
+  const send = (event) => {
+    const line = `data: ${JSON.stringify(event)}\n\n`;
+    if (!res.destroyed && !res.writableEnded) { try { res.write(line); } catch {} }
+    for (const sub of runState.subscribers) { try { sub.write(line); } catch {} }
+  };
 
   const sess = getSession(sessionId);
   if (user && !sess.user) sess.user = user.username;
@@ -1451,7 +1459,7 @@ app.post("/api/chat", async (req, res) => {
   sess.transcript.push({ type: "assistant", events: asstEvents });
   autosaveSession(sessionId, 0); // 先把用户这句话落盘，后面再崩至少问题还在
 
-  const runState = { ctrl: new AbortController(), interject: [] };
+  runState.events = asstEvents; // 续流端点靠它补发已记录的事件
   activeRuns.set(sessionId, runState);
   const emitFn = recordingEmit(send, asstEvents, sessionId);
   const total = { prompt: 0, completion: 0, calls: 0, elapsed_ms: 0 };
@@ -1459,6 +1467,7 @@ app.post("/api/chat", async (req, res) => {
     // 任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
     for (;;) {
       const r = await runtime.runTask({
+        taskLabel: sess.title || String(message).slice(0, 24),
         history: sess.history,
         emit: emitFn,
         mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",
@@ -1499,7 +1508,9 @@ app.post("/api/chat", async (req, res) => {
   // 免得前端拿本地 mtime 猜一把，把工作目录里的旧文件当成新成果又把面板弹出来
   send({ type: "files", files: outputFiles(), changed: [] });
   send({ type: "done" });
-  res.end();
+  if (!res.destroyed && !res.writableEnded) { try { res.end(); } catch {} }
+  for (const sub of runState.subscribers) { try { sub.end(); } catch {} }
+  runState.subscribers.clear();
 });
 
 // 插队：往正在运行的任务里注入一条补充消息（agent 在下一个安全间隙读到并继续）
@@ -1511,6 +1522,36 @@ app.post("/api/chat/interject", (req, res) => {
   if (!text) return res.status(400).json({ ok: false, error: "消息为空" });
   run.interject.push(text);
   res.json({ ok: true, queued: run.interject.length });
+});
+
+// 正在运行任务的会话列表：前端刷新后靠它找回后台任务，断流后靠它判断任务是否还活着
+app.get("/api/chat/running", (req, res) => {
+  const ids = [...activeRuns.keys()].filter((id) => {
+    if (!req.user || req.user.role === "admin") return true;
+    const s = sessions.get(id);
+    return !s || !s.user || s.user === req.user.username;
+  });
+  res.json(ids);
+});
+
+// 断点续流：把 transcript 里已记录的事件从 from 序号补发，然后接上直播（页面刷新/断网重连后无缝接回）。
+// textOffset 处理最后一条还在增长的合并文本：客户端已看过前 textOffset 个字符，只补后半段。
+// slice 到加入订阅是同步完成的，中间不会漏事件也不会重复。
+app.get("/api/chat/stream/:id", (req, res) => {
+  const run = activeRuns.get(req.params.id);
+  if (!run || !run.events) return res.status(404).json({ error: "该会话没有正在运行的任务" });
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.on("error", () => {});
+  const from = Math.max(0, parseInt(req.query.from, 10) || 0);
+  const textOffset = Math.max(0, parseInt(req.query.textOffset, 10) || 0);
+  run.events.slice(from).forEach((ev, i) => {
+    const out = i === 0 && textOffset && ev.type === "text" ? { type: "text", delta: String(ev.delta).slice(textOffset) } : ev;
+    try { res.write(`data: ${JSON.stringify(out)}\n\n`); } catch {}
+  });
+  run.subscribers.add(res);
+  req.on("close", () => run.subscribers.delete(res));
 });
 
 // 历史会话回放
@@ -1599,6 +1640,7 @@ function accountedRuntime(baseRuntime, source) {
       // IM / 定时任务没有登录态，记忆按管理员算（和积分记账口径保持一致）
       const r = await baseRuntime.runTask({
         user: owner ? owner.username : undefined,
+        taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? "定时任务" : source,
         projectContext: projectContextOf(activeProject()),
         ...args,
       });

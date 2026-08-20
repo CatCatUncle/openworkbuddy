@@ -371,7 +371,7 @@ function checkUrl(sec, url) {
 
 const approvals = new Map(); // id -> { id, kind, text, ts, resolve }
 
-function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "" } = {}) {
+function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "" } = {}) {
   const id = "ap_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
   return new Promise((resolve) => {
     let done = false;
@@ -393,13 +393,14 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
       rule: String(rule || ""),
       // 「以后别再问这类」批的是这条规则；空字符串表示这次的原因不适合记住（比如碰了文件黑名单）
       ruleKey: String(ruleKey || ""),
+      source: String(source || "").slice(0, 60), // 发起审批的任务标题：多任务并行时用户得知道是谁在求批
       ts: new Date().toISOString(),
       resolve: finish,
     });
   });
 }
 function listApprovals() {
-  return [...approvals.values()].map(({ id, kind, text, rule, ruleKey, ts }) => ({ id, kind, text, rule, ruleKey, ts }));
+  return [...approvals.values()].map(({ id, kind, text, rule, ruleKey, source, ts }) => ({ id, kind, text, rule, ruleKey, source, ts }));
 }
 /**
  * @param scope once（默认，只放这一次）/ session（本会话同类不再问）/ always（由调用方写进永久放行名单）
