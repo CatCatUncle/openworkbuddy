@@ -246,6 +246,8 @@
   #send.stop { background: var(--wb-err); font-size: 12px; }
   .hist-item { display: flex; align-items: center; gap: 4px; }
   .hist-item .ht { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-item .hrun { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--wb-brand); animation: hrun-pulse 1.2s ease-in-out infinite; }
+  @keyframes hrun-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
   .hist-item .hx { visibility: hidden; color: var(--wb-text-3); padding: 0 3px; border-radius: 4px; flex: none; }
   .hist-item:hover .hx { visibility: visible; }
   .hist-item .hx:hover { color: var(--wb-err); }
@@ -831,6 +833,10 @@ let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前
 let currentUser = null; // 登录后由 initAuth() 填充
 let assistant = { name: "OpenWorkBuddy", avatar: "🤖" }; // 助理的名字/头像，可在设置里改；登录后拉真值
 let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
+const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
+const sessionQueues = new Map();   // sessionId -> [{text, mode}] 同一会话内追加的消息才排队
+const curBusy = () => !!(sessionId && runningSessions.has(sessionId));
+const qOf = (sid) => { let q = sessionQueues.get(sid); if (!q) { q = []; sessionQueues.set(sid, q); } return q; };
 let SESS_KEY = "wb_sessions"; // 登录后切换为 wb_sessions:<用户名>（每人一份任务历史）
 let sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
 const chatCol = document.getElementById("chat-col");
@@ -1019,9 +1025,8 @@ function renderMd(src) {
 }
 
 // ================= 回合渲染（实时流式与历史回放共用） =================
-function createTurnUI(userText, turnMode) {
-  const turnSid = sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
-  document.getElementById("empty")?.remove();
+function createTurnUI(userText, turnMode, forSid) {
+  const turnSid = forSid !== undefined ? forSid : sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
   const turn = document.createElement("div");
   turn.className = "turn";
   const av = avatarBits(assistant.avatar, assistant.name);
@@ -1033,7 +1038,11 @@ function createTurnUI(userText, turnMode) {
       e.target.textContent = "✓"; setTimeout(() => { e.target.textContent = "⧉"; }, 1200);
     }).catch(() => toast("❌ 复制失败"));
   };
-  chatCol.appendChild(turn);
+  // 只有"正在看的会话"的回合才上屏；后台会话的回合先游离着更新，切回来时再接上
+  if (turnSid === sessionId) {
+    document.getElementById("empty")?.remove();
+    chatCol.appendChild(turn);
+  }
   // 新回合出现后，旧回合的「重新生成」按钮全部撤掉（只允许重生成最后一轮）
   chatCol.querySelectorAll(".turn-actions [data-a=regen]").forEach(b => { if (!turn.contains(b)) b.remove(); });
   const body = turn.querySelector(".body");
@@ -1332,7 +1341,7 @@ function createTurnUI(userText, turnMode) {
       e.target.classList.toggle("on"); bar.querySelector("[data-a=up]").classList.remove("on");
     };
     bar.querySelector("[data-a=regen]").onclick = () => {
-      if (taskBusy) return;
+      if (curBusy()) return;
       const text = turn._userText, mode = turn._mode;
       turn.remove();
       doSend(text, mode, true);
@@ -1363,7 +1372,7 @@ function createTurnUI(userText, turnMode) {
     body.appendChild(card);
     scrollBottom();
   }
-  return { handleEvent, finish };
+  return { handleEvent, finish, turn, sid: turnSid };
 }
 
 // ================= 空状态（场景 tab + 分类胶囊，仿官方首页） =================
@@ -1896,7 +1905,7 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
 function renderHistory() {
   const list = sessions.filter(s => (s.project || "默认项目") === activeProject);
   document.getElementById("history").innerHTML = list.map(s =>
-    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(s.title)}"><span class="ht">${esc(s.title)}</span><span class="hx" title="删除该任务">✕</span></div>`).join("")
+    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(s.title)}"><span class="ht">${esc(s.title)}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">✕</span></div>`).join("")
     || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 10px">该项目还没有任务</div>';
 }
 document.getElementById("history").addEventListener("click", async (e) => {
@@ -1907,6 +1916,10 @@ document.getElementById("history").addEventListener("click", async (e) => {
     const id = item.dataset.id;
     sessions = sessions.filter(s => s.id !== id);
     saveSessions();
+    if (runningSessions.has(id)) { // 正在跑的任务跟着会话一起停，别留孤儿任务烧钱
+      fetch("/api/chat/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: id }) }).catch(() => {});
+    }
+    sessionQueues.delete(id);
     fetch("/api/session/" + encodeURIComponent(id), { method: "DELETE" }).catch(() => {});
     if (sessionId === id) document.getElementById("new-task").click();
     else renderHistory();
@@ -1923,10 +1936,18 @@ document.getElementById("history").addEventListener("click", async (e) => {
   // 回放服务端保存的完整对话（含工具执行过程）
   chatCol.innerHTML = "";
   const data = await fetch("/api/session/" + encodeURIComponent(sessionId)).then(r => r.json()).catch(() => ({ transcript: [] }));
+  let transcript = data.transcript || [];
+  // 该会话有任务正在后台跑：回放只到本轮之前，正在跑的这轮把"活的"回合元素接回来
+  //（它切走期间一直在后台收事件更新，接上就是完整直播，不用回放+续流拼接）
+  const live = runningSessions.get(sessionId);
+  if (live) {
+    const lastUser = transcript.map(e => e.type).lastIndexOf("user");
+    if (lastUser >= 0) transcript = transcript.slice(0, lastUser);
+  }
   let ui = null;
   isReplaying = true;
   try {
-    for (const entry of data.transcript || []) {
+    for (const entry of transcript) {
       if (entry.type === "user") {
         ui = createTurnUI(entry.text, entry.mode);
       } else if (entry.type === "assistant" && ui) {
@@ -1935,9 +1956,13 @@ document.getElementById("history").addEventListener("click", async (e) => {
       }
     }
   } finally { isReplaying = false; }
-  if (!(data.transcript || []).length) {
+  if (live) {
+    document.getElementById("empty")?.remove();
+    chatCol.appendChild(live.ui.turn);
+  } else if (!transcript.length) {
     chatCol.innerHTML = '<div style="text-align:center;color:var(--wb-text-3);font-size: 13px;padding:20px">该任务还没有保存的对话记录（可能创建于旧版本），继续对话即可。</div>';
   }
+  updateSendUI();
   scrollBottom(true);
 });
 document.getElementById("new-task").onclick = () => {
@@ -1945,6 +1970,7 @@ document.getElementById("new-task").onclick = () => {
   sessionId = null;
   pvPanel.classList.remove("show"); pvCurrent = null;
   document.getElementById("files-panel").classList.remove("show");
+  updateSendUI(); // 新对话不是忙态：别的对话在跑也能立刻并行发任务
   document.getElementById("session-title").textContent = "新任务";
   chatCol.innerHTML = "";
   chatCol.appendChild(buildEmpty());
@@ -2022,30 +2048,32 @@ document.getElementById("proj-add").onclick = (e) => {
 refreshProjects();
 
 // ================= 发送（运行中按钮变「停止」） =================
-let taskBusy = false;
-const msgQueue = []; // 任务运行中新发的消息先排队，当前任务结束后按序自动执行
-function setSendBusy(on) {
-  taskBusy = on;
-  sendBtn.classList.toggle("stop", on);
-  sendBtn.textContent = on ? "◼" : "↑";
-  sendBtn.title = on ? "停止任务" : "发送";
-  document.getElementById("interject-btn").classList.toggle("show", on);
+// ================= 并行任务：运行态/排队按会话隔离，不同对话互不阻塞 =================
+function updateSendUI() {
+  const busy = curBusy();
+  sendBtn.classList.toggle("stop", busy);
+  sendBtn.textContent = busy ? "◼" : "↑";
+  sendBtn.title = busy ? "停止任务" : "发送";
+  document.getElementById("interject-btn").classList.toggle("show", busy);
   renderQueueBar();
+  renderHistory(); // 侧栏「运行中」小圆点跟着刷新
 }
 function renderQueueBar() {
   const bar = document.getElementById("queue-bar");
-  if (!taskBusy && !msgQueue.length) { bar.classList.remove("show"); bar.innerHTML = ""; return; }
+  const q = (sessionId && sessionQueues.get(sessionId)) || [];
+  if (!curBusy() && !q.length) { bar.classList.remove("show"); bar.innerHTML = ""; return; }
   bar.classList.add("show");
   bar.innerHTML =
-    msgQueue.map((m, i) => `<span class="q-chip" title="${esc(m.text)}"><span class="qt">⏳ ${esc(m.text.slice(0, 30))}</span><span class="qx" data-i="${i}" title="取消这条">✕</span></span>`).join("") +
-    (taskBusy ? `<span>任务运行中：Enter 发送=排队等下一轮 · ⚡ 插队=立即注入当前任务 · ◼ 停止</span>` : "");
-  bar.querySelectorAll(".qx").forEach(x => x.onclick = () => { msgQueue.splice(+x.dataset.i, 1); renderQueueBar(); });
+    q.map((m, i) => `<span class="q-chip" title="${esc(m.text)}"><span class="qt">⏳ ${esc(m.text.slice(0, 30))}</span><span class="qx" data-i="${i}" title="取消这条">✕</span></span>`).join("") +
+    (curBusy() ? `<span>本对话任务运行中：Enter=排队等下一轮 · ⚡ 插队=立即注入 · ◼ 停止 · 要并行就「新建任务」另开对话</span>` : "");
+  bar.querySelectorAll(".qx").forEach(x => x.onclick = () => { q.splice(+x.dataset.i, 1); renderQueueBar(); });
 }
-function drainQueue() {
-  if (taskBusy || !msgQueue.length) return;
-  const m = msgQueue.shift();
-  renderQueueBar();
-  doSend(m.text, m.mode);
+function drainQueue(sid) {
+  const q = sessionQueues.get(sid);
+  if (!q || !q.length || runningSessions.has(sid)) return;
+  const m = q.shift();
+  if (sid === sessionId) renderQueueBar();
+  runTurn(sid, m.text, m.mode);
 }
 async function interject() {
   const text = inputEl.value.trim();
@@ -2061,11 +2089,11 @@ async function interject() {
     syncInputHl();
   } else {
     // 任务恰好刚结束 → 转排队立即执行
-    msgQueue.push({ text, mode: currentMode });
+    qOf(sessionId).push({ text, mode: currentMode });
     inputEl.value = "";
     syncInputHl();
     renderQueueBar();
-    drainQueue();
+    drainQueue(sessionId);
   }
 }
 document.getElementById("interject-btn").onclick = interject;
@@ -2090,9 +2118,9 @@ async function send() {
   attachChips.innerHTML = "";
   mentionMenu.classList.remove("show");
   if (pageKind === "assist") { await sendAssistLocal(text); return; }
-  if (taskBusy) {
-    // 任务运行中 → 排队，当前任务结束后按序自动执行（要立即介入用 ⚡ 插队）
-    msgQueue.push({ text, mode: currentMode });
+  if (curBusy()) {
+    // 本对话的任务在跑 → 排到本对话队尾（要立即介入用 ⚡ 插队；要并行请新建任务）
+    qOf(sessionId).push({ text, mode: currentMode });
     renderQueueBar();
     return;
   }
@@ -2101,26 +2129,30 @@ async function send() {
 
 // regen=true 表示「重新生成」：服务端回滚最后一轮再重跑同一条消息
 async function doSend(text, mode, regen) {
-  if (taskBusy) return;
-  setSendBusy(true);
+  if (curBusy()) return;
   closeAssistView();
-
   if (!sessionId) {
     sessionId = "s_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
     sessions.unshift({ id: sessionId, title: text.slice(0, 24), at: Date.now(), project: activeProject });
     saveSessions();
     document.getElementById("session-title").textContent = text.slice(0, 24);
-    renderHistory();
   }
+  await runTurn(sessionId, text, mode, regen);
+}
 
-  const ui = createTurnUI(text, mode);
-  scrollBottom(true);
+// 真正执行一轮任务：绑定 sid 而不是全局 sessionId——用户切走后它继续在后台跑
+async function runTurn(sid, text, mode, regen) {
+  if (runningSessions.has(sid)) { qOf(sid).push({ text, mode }); if (sid === sessionId) renderQueueBar(); return; }
+  const ui = createTurnUI(text, mode, sid);
+  runningSessions.set(sid, { ui });
+  updateSendUI();
+  if (sid === sessionId) scrollBottom(true);
 
   try {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, message: text, mode, regen: !!regen }),
+      body: JSON.stringify({ sessionId: sid, message: text, mode, regen: !!regen }),
     });
     if (!resp.ok) {
       const d = await resp.json().catch(() => ({}));
@@ -2147,11 +2179,12 @@ async function doSend(text, mode, regen) {
   }
 
   ui.finish();
-  setSendBusy(false);
-  inputEl.focus();
-  drainQueue(); // 运行期间排队的消息按序自动执行
+  runningSessions.delete(sid);
+  updateSendUI();
+  if (sid === sessionId) inputEl.focus();
+  drainQueue(sid); // 本会话运行期间排队的消息按序自动执行
 }
-sendBtn.onclick = () => (taskBusy ? stopTask() : send());
+sendBtn.onclick = () => (curBusy() ? stopTask() : send());
 inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
@@ -2283,12 +2316,12 @@ const SHORTCUT_ACTIONS = {
     const cs = document.getElementById("chat-search");
     if (mask.classList.contains("show")) mask.classList.remove("show");
     else if (cs && cs.style.display === "flex") closeChatSearch();
-    else if (taskBusy) stopTask();
+    else if (curBusy()) stopTask();
   },
   "prev-task": () => navTask(-1),
   "next-task": () => navTask(1),
   "toggle-sidebar": () => toggleSidebar(),
-  "toggle-files": () => document.getElementById("files-panel").classList.toggle("show"),
+  "toggle-files": () => document.getElementById("toggle-files").onclick(),
   "fullscreen": toggleAppFullscreen,
   "toggle-window": () => {}, // 系统级快捷键由桌面版主进程注册，网页端无动作
   "open-skills": () => openHub("skills"),
@@ -2442,7 +2475,7 @@ loadPermModes();
 // 审批只可能在任务运行中产生：跑任务时 3 秒一查，空闲时降到 15 秒
 // （定时任务/IM 触发的后台任务也会要审批，所以空闲不能完全停）
 (function approvalLoop() {
-  pollApprovals().finally(() => setTimeout(approvalLoop, taskBusy ? 3000 : 15000));
+  pollApprovals().finally(() => setTimeout(approvalLoop, runningSessions.size ? 3000 : 15000));
 })();
 
 
