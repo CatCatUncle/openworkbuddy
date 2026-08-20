@@ -484,6 +484,7 @@
   #interject-btn.show { display: inline-block; }
   .interject-note { align-self: flex-end; max-width: 70%; margin: 6px 0; padding: 8px 12px; border-radius: 10px; background: var(--wb-brand-weak); color: var(--wb-brand); font-size: 14px; }
   .interject-note .lb { font-size: 12px; opacity: .75; margin-bottom: 2px; }
+  .interject-note.pending { opacity: .6; }
   /* ---------- 用量面板 ---------- */
   .usage-grid { display: flex; gap: 10px; margin-bottom: 12px; }
   .usage-cell { flex: 1; border: 1px solid var(--wb-border); border-radius: 10px; padding: 10px 12px; }
@@ -1204,10 +1205,17 @@ function createTurnUI(userText, turnMode, forSid) {
       if (turnSid === sessionId && ev.title) document.getElementById("session-title").textContent = ev.title;
     } else if (ev.type === "interject") {
       currentText = null;
-      const note = document.createElement("div");
-      note.className = "interject-note";
-      note.innerHTML = `<div class="lb">⚡ 插队补充</div>${esc(ev.text || "")}`;
-      body.appendChild(note);
+      // 插队时前端已经放了「等待注入」占位（服务端按 FIFO 注入，转正最早那个就是它）
+      const pend = body.querySelector(".interject-note.pending");
+      if (pend) {
+        pend.classList.remove("pending");
+        pend.querySelector(".lb").textContent = "⚡ 插队补充";
+      } else {
+        const note = document.createElement("div");
+        note.className = "interject-note";
+        note.innerHTML = `<div class="lb">⚡ 插队补充</div>${esc(ev.text || "")}`;
+        body.appendChild(note);
+      }
     } else if (ev.type === "credits") {
       turn._credits = ev; // 结束时由操作条展示「扣 X 积分 · 余额 Y」
       if (currentUser) { currentUser.credits = ev.balance; renderUserChip(); }
@@ -1378,7 +1386,15 @@ function createTurnUI(userText, turnMode, forSid) {
     body.appendChild(card);
     if (turnSid === sessionId) scrollBottom();
   }
-  return { handleEvent, finish, turn, sid: turnSid };
+  /** 插队请求已被服务端受理但还没到注入间隙：先在对话里放个占位，用户立刻看得到自己说了什么 */
+  function markPendingInterject(text) {
+    const note = document.createElement("div");
+    note.className = "interject-note pending";
+    note.innerHTML = `<div class="lb">⚡ 已插队 · 等当前步骤结束后注入</div>${esc(text)}`;
+    body.appendChild(note);
+    if (turnSid === sessionId) scrollBottom();
+  }
+  return { handleEvent, finish, turn, sid: turnSid, markPendingInterject };
 }
 
 // ================= 空状态（场景 tab + 分类胶囊，仿官方首页） =================
@@ -2090,7 +2106,9 @@ async function interjectText(text) {
     body: JSON.stringify({ sessionId, message: text }),
   }).catch(() => null);
   if (resp && resp.ok) {
-    toast("⚡ 已插队：这条消息会并入当前任务一起处理");
+    const live = runningSessions.get(sessionId);
+    if (live && live.ui.markPendingInterject) live.ui.markPendingInterject(text);
+    else toast("⚡ 已插队：这条消息会并入当前任务一起处理");
   } else {
     qOf(sessionId).push({ text, mode: currentMode });
     renderQueueBar();
@@ -2507,10 +2525,19 @@ function csNav(dir) {
 }
 
 // ================= 命令审批条（安全中心「询问名单」命中时挂起等这里批准） =================
+let apSeen = new Set(); // 已经通知过的审批 id：轮询是重复的，系统通知只发一次
 async function pollApprovals() {
   const d = await fetch("/api/security/approvals").then(r => (r.ok ? r.json() : null)).catch(() => null);
   const list = d && Array.isArray(d.items) ? d.items : [];
   if (d && d.mode) syncPermLabel(d.mode);
+  // 审批默认 120 秒超时按拒绝：窗口不在前台时必须把人喊回来，不然任务白等一场
+  const fresh = list.filter(a => !apSeen.has(a.id));
+  if (apSeen.size > 500) apSeen = new Set();
+  list.forEach(a => apSeen.add(a.id));
+  if (fresh.length && document.hidden && "Notification" in window && Notification.permission === "granted") {
+    const a = fresh[0];
+    try { new Notification("🛡️ OpenWorkBuddy 等你审批", { body: `${a.source ? `「${a.source}」· ` : ""}${a.kind}：${(a.text || "").slice(0, 80)}` }); } catch {}
+  }
   let bar = document.getElementById("approval-bar");
   if (!list.length) { if (bar) bar.remove(); return; }
   if (!bar) {
