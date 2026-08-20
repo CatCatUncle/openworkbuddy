@@ -711,6 +711,8 @@ app.post("/api/projects/switch", (req, res) => {
 // 新任务回到当前项目自己的目录：输入框里临时切过的文件夹不带进下一个任务
 app.post("/api/workspace/reset", (_req, res) => {
   try {
+    // 工作目录是全局的：有任务在跑时重置会把它的写入目录半路拽走，产出散落两处。跳过，等空闲再说
+    if (activeRuns.size) return res.json({ ok: false, busy: true, workspace_dir: getWorkspaceDir() });
     ensureProjects();
     const ap = config.projects.find((p) => p.name === config.active_project) || config.projects[0];
     if (ap && ap.dir && ap.dir !== getWorkspaceDir()) {
@@ -1463,6 +1465,23 @@ app.post("/api/chat", async (req, res) => {
   activeRuns.set(sessionId, runState);
   const emitFn = recordingEmit(send, asstEvents, sessionId);
   const total = { prompt: 0, completion: 0, calls: 0, elapsed_ms: 0 };
+  // 首轮对话：并行起一个真正的短标题（拿消息前 24 个字截断当标题太丑）。
+  // 跟任务并行跑，任务收尾时基本已就绪，不给任务加等待；花的 token 记进同一笔账
+  let titleP = null;
+  if (sess.transcript.filter((e) => e.type === "user").length === 1) {
+    titleP = llm
+      .chat({
+        system: "你给任务起标题。只输出 6~14 个字的中文短标题概括这个任务，不要引号、标点、任何前后缀。",
+        history: [{ role: "user", content: String(message).slice(0, 500) }],
+        tools: [],
+        signal: AbortSignal.timeout(20000),
+      })
+      .then((r) => {
+        if (r && r.usage) { total.prompt += r.usage.prompt || 0; total.completion += r.usage.completion || 0; total.calls += 1; }
+        return r && r.text ? String(r.text) : null;
+      })
+      .catch(() => null);
+  }
   try {
     // 任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
     for (;;) {
@@ -1503,6 +1522,12 @@ app.post("/api/chat", async (req, res) => {
     if (spent > 0) emitFn({ type: "credits", spent, balance: user.credits });
   }
 
+  // 标题生成失败/没赶上就保持截断标题，绝不为它多等
+  if (titleP) {
+    const t = await Promise.race([titleP, new Promise((r) => setTimeout(r, 3000, null))]);
+    const clean = t && t.replace(/[\r\n"“”「」『』]/g, "").trim().slice(0, 20);
+    if (clean) { sess.title = clean; send({ type: "title", title: clean }); }
+  }
   saveSession(sessionId);
   // 收尾只是刷一遍完整文件列表，不是"本回合有产出"的通报：changed 明确给空，
   // 免得前端拿本地 mtime 猜一把，把工作目录里的旧文件当成新成果又把面板弹出来
