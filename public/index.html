@@ -311,19 +311,20 @@
   #pv-body .pv-text { padding: 16px 20px; font-size: 14px; line-height: 1.7; }
   /* ---------- 右侧成果面板 ---------- */
   .files-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg-side); overflow: hidden; transition: width .2s; display: flex; flex-direction: column; }
-  .files-panel.show { width: 280px; }
+  .files-panel.show { width: clamp(230px, 20vw, 300px); }
   /* ---- 快捷键 / 对话内搜索 / 命令审批 / 侧栏折叠 ---- */
   body.side-collapsed aside { display: none; }
   .main { position: relative; }
   /* ---------- 响应式：窗口任意拉伸自适应 ---------- */
   #toggle-side { border: none; background: transparent; font-size: 16px; color: var(--wb-text-2); cursor: pointer; padding: 4px 10px; border-radius: 8px; margin-left: -8px; }
   #toggle-side:hover { background: var(--wb-bg-hover); }
-  .topbar .title { flex: 1; margin: 0 12px; }
+  .topbar .title { flex: 1; margin: 0 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   @media (min-width: 1720px) { :root { --wb-content-w: 1020px; } }
   @media (max-width: 1180px) {
     aside { width: 210px; }
     .topbar { padding: 0 14px; }
     .preview-panel.show { min-width: 300px; max-width: calc(100vw - 210px - 320px); }
+    .files-panel.show { width: 240px; }
   }
   @media (max-width: 900px) {
     .main { min-width: 0; }
@@ -371,6 +372,9 @@
   #input-hl .tk { background: var(--wb-brand-weak); box-shadow: 0 0 0 2px var(--wb-brand-weak), 0 0 0 3px rgba(91,95,247,.28); border-radius: 5px; }
   textarea#input { position: relative; z-index: 1; display: block; }
   .u-msg .bubble .tk-b { background: rgba(255,255,255,.24); border: 1px solid rgba(255,255,255,.3); border-radius: 5px; padding: 0 4px; font-weight: 500; }
+  .u-msg .u-copy { opacity: 0; align-self: flex-end; border: none; background: transparent; cursor: pointer; color: var(--wb-text-3); font-size: 14px; padding: 4px 6px; border-radius: 6px; transition: opacity .15s; }
+  .u-msg:hover .u-copy { opacity: 1; }
+  .u-msg .u-copy:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   /* ---------- 侧栏底部：头像行 + 设置齿轮 + 账号菜单 ---------- */
   .user-row { position: relative; display: flex; align-items: center; gap: 6px; margin: 8px 4px 0; }
   .user-row .user-chip { flex: 1; margin: 0; min-width: 0; }
@@ -404,7 +408,9 @@
   html[data-theme="dark"] #input-hl .tk { box-shadow: 0 0 0 2px var(--wb-brand-weak), 0 0 0 3px rgba(139,143,255,.35); }
   .file-item .dl { margin-left: auto; color: var(--wb-text-3); text-decoration: none; padding: 2px 6px; border-radius: 6px; }
   .file-item .dl:hover { background: var(--wb-border); color: var(--wb-brand); }
-  .files-panel h2 { font-size: 14px; font-weight: 600; color: var(--wb-text-2); padding: 16px 16px 8px; white-space: nowrap; }
+  .files-panel h2 { font-size: 14px; font-weight: 600; color: var(--wb-text-2); padding: 16px 12px 8px 16px; white-space: nowrap; display: flex; align-items: center; gap: 8px; }
+  #fp-close { border: none; background: transparent; font-size: 14px; cursor: pointer; color: var(--wb-text-2); padding: 2px 6px; border-radius: 6px; }
+  #fp-close:hover { background: var(--wb-bg-hover); }
   #file-list { flex: 1; overflow-y: auto; padding: 0 10px 12px; }
   .file-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; text-decoration: none; color: var(--wb-text); font-size: 14px; }
   .file-item:hover { background: var(--wb-bg-hover); }
@@ -771,7 +777,7 @@
 </div>
 
 <div class="files-panel" id="files-panel">
-  <h2>📁 成果文件 <a href="#" id="open-ws" class="link" style="font-weight:400;font-size: 12px">打开文件夹</a></h2>
+  <h2><span>📁 成果文件</span> <a href="#" id="open-ws" class="link" style="font-weight:400;font-size: 12px">打开文件夹</a><span style="flex:1"></span><button id="fp-close" title="关闭">✕</button></h2>
   <div id="file-list"></div>
 </div>
 
@@ -1014,13 +1020,19 @@ function renderMd(src) {
 
 // ================= 回合渲染（实时流式与历史回放共用） =================
 function createTurnUI(userText, turnMode) {
+  const turnSid = sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
   document.getElementById("empty")?.remove();
   const turn = document.createElement("div");
   turn.className = "turn";
   const av = avatarBits(assistant.avatar, assistant.name);
-  turn.innerHTML = `<div class="u-msg"><div class="bubble"></div></div>
+  turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="bubble"></div></div>
     <div class="a-msg"><div class="avatar${av.cls ? " " + av.cls : ""}">${av.html}</div><div class="body"></div></div>`;
   turn.querySelector(".bubble").innerHTML = hlTokens(userText, "tk-b");
+  turn.querySelector(".u-copy").onclick = (e) => {
+    navigator.clipboard?.writeText(userText).then(() => {
+      e.target.textContent = "✓"; setTimeout(() => { e.target.textContent = "⧉"; }, 1200);
+    }).catch(() => toast("❌ 复制失败"));
+  };
   chatCol.appendChild(turn);
   // 新回合出现后，旧回合的「重新生成」按钮全部撤掉（只允许重生成最后一轮）
   chatCol.querySelectorAll(".turn-actions [data-a=regen]").forEach(b => { if (!turn.contains(b)) b.remove(); });
@@ -1198,6 +1210,8 @@ function createTurnUI(userText, turnMode) {
         // 这一回合真产出了东西才自动预览、才把文件面板弹出来。
         // 工作目录里本来就躺着一堆旧文件，拿"目录非空"当理由每次聊天都弹一次，
         // 只是白白挤掉聊天区——用户明确反馈过。
+        // 另外：用户已经切到别的会话时，这个后台回合只推进快照，不许弹面板抢镜
+        if (turnSid !== sessionId) { snapshotFiles(ev.files); return; }
         if (turnOut.length) {
           autoPreviewNewHtml(ev.files, turnOut);
           if (pvPanel.classList.contains("show")) {
@@ -1219,7 +1233,7 @@ function createTurnUI(userText, turnMode) {
       t.textContent = "出错了：" + (ev.message || "");
       body.appendChild(t); // 错误必须留在正文可见，不进折叠区
     }
-    scrollBottom();
+    if (turnSid === sessionId) scrollBottom(); // 已切走的会话在后台跑，别拽当前视图的滚动条
   }
 
   function finish() {
@@ -1280,11 +1294,36 @@ function createTurnUI(userText, turnMode) {
     if (turn._credits) {
       meta.textContent += `${meta.textContent ? " · " : ""}扣 ${turn._credits.spent} 积分（余 ${(+turn._credits.balance).toLocaleString()}）`;
     }
-    bar.querySelector("[data-a=copy]").onclick = (e) => {
-      const texts = [...body.querySelectorAll(".a-text")].map(t => t._raw || t.textContent).join("\n\n");
-      navigator.clipboard?.writeText(texts).then(() => {
-        e.target.textContent = "✓"; setTimeout(() => { e.target.textContent = "⧉"; }, 1200);
+    bar.querySelector("[data-a=copy]").onclick = async (e) => {
+      // 复制"渲染后"的内容而不是 markdown 源码：贴到飞书/Word 里保留格式，
+      // 贴到纯文本框里也不会出现 **、<br> 这类原始标记
+      const parts = [...body.querySelectorAll(".a-text")].map(t => {
+        const c = t.cloneNode(true);
+        c.querySelectorAll(".code-head").forEach(h => { // 代码块的「复制」小工具条不进剪贴板
+          const lang = h.querySelector("span")?.textContent || "";
+          h.replaceWith(Object.assign(document.createElement("div"), { textContent: lang, style: "font-size:12px;color:#888" }));
+        });
+        return c;
       });
+      const html = parts.map(c => c.innerHTML).join("<br>");
+      // innerText 需要元素在文档里才有正确换行，挂到屏外拿完就删
+      const probe = document.createElement("div");
+      probe.style.cssText = "position:fixed;left:-99999px;top:0;width:600px";
+      parts.forEach(c => probe.appendChild(c));
+      document.body.appendChild(probe);
+      const plain = parts.map(c => c.innerText.trim()).filter(Boolean).join("\n\n");
+      probe.remove();
+      const done = () => { e.target.textContent = "✓"; setTimeout(() => { e.target.textContent = "⧉"; }, 1200); };
+      try {
+        if (navigator.clipboard && window.ClipboardItem) {
+          await navigator.clipboard.write([new ClipboardItem({
+            "text/html": new Blob([html], { type: "text/html" }),
+            "text/plain": new Blob([plain], { type: "text/plain" }),
+          })]);
+          return done();
+        }
+      } catch {}
+      navigator.clipboard?.writeText(plain).then(done).catch(() => toast("❌ 复制失败"));
     };
     bar.querySelector("[data-a=up]").onclick = (e) => {
       e.target.classList.toggle("on"); bar.querySelector("[data-a=down]").classList.remove("on");
@@ -1725,7 +1764,15 @@ function renderTurnOutputs(body, changed) {
 }
 // 文件名进 CSS 属性选择器要转义（含空格、中文括号、引号的名字很常见）
 function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
-document.getElementById("toggle-files").onclick = () => document.getElementById("files-panel").classList.toggle("show");
+document.getElementById("toggle-files").onclick = () => {
+  const fp = document.getElementById("files-panel");
+  fp.classList.toggle("show");
+  // 窄窗口下预览+文件双开会把聊天区挤没：开文件面板就收预览
+  if (fp.classList.contains("show") && window.innerWidth < 1400 && pvPanel.classList.contains("show")) {
+    pvPanel.classList.remove("show"); pvCurrent = null;
+  }
+};
+document.getElementById("fp-close").onclick = () => document.getElementById("files-panel").classList.remove("show");
 // 侧栏开关：窄窗（≤900px）走浮层抽屉 side-open，宽窗走常规折叠 side-collapsed
 function toggleSidebar() {
   if (window.innerWidth <= 900) document.body.classList.toggle("side-open");
@@ -1867,6 +1914,9 @@ document.getElementById("history").addEventListener("click", async (e) => {
   }
   closeAssistView();
   sessionId = item.dataset.id;
+  // 上个会话开着的预览/文件面板不带进来
+  pvPanel.classList.remove("show"); pvCurrent = null;
+  document.getElementById("files-panel").classList.remove("show");
   const s = sessions.find(x => x.id === sessionId);
   document.getElementById("session-title").textContent = s ? s.title : "任务";
   renderHistory();
@@ -1893,6 +1943,8 @@ document.getElementById("history").addEventListener("click", async (e) => {
 document.getElementById("new-task").onclick = () => {
   closeAssistView();
   sessionId = null;
+  pvPanel.classList.remove("show"); pvCurrent = null;
+  document.getElementById("files-panel").classList.remove("show");
   document.getElementById("session-title").textContent = "新任务";
   chatCol.innerHTML = "";
   chatCol.appendChild(buildEmpty());
