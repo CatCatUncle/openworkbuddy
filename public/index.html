@@ -1092,7 +1092,7 @@ function createTurnUI(userText, turnMode, forSid) {
     setTimeout(() => {
       el._pend = false;
       el.innerHTML = renderMd(el._raw);
-      scrollBottom();
+      if (turnSid === sessionId) scrollBottom(); // 后台并行会话的增量不许滚动当前看的对话
     }, 100);
   };
 
@@ -1197,6 +1197,11 @@ function createTurnUI(userText, turnMode, forSid) {
         turn._usage.calls += ev.calls || 0;
         turn._usage.elapsed_ms += ev.elapsed_ms || 0;
       }
+    } else if (ev.type === "title") {
+      // 服务端给首轮任务起的短标题（截断标题太丑）；不进 transcript，回放不经过这里
+      const s = sessions.find((x) => x.id === turnSid);
+      if (s && ev.title) { s.title = ev.title; saveSessions(); renderHistory(); }
+      if (turnSid === sessionId && ev.title) document.getElementById("session-title").textContent = ev.title;
     } else if (ev.type === "interject") {
       currentText = null;
       const note = document.createElement("div");
@@ -1371,7 +1376,7 @@ function createTurnUI(userText, turnMode, forSid) {
       scrollBottom(true);
     };
     body.appendChild(card);
-    scrollBottom();
+    if (turnSid === sessionId) scrollBottom();
   }
   return { handleEvent, finish, turn, sid: turnSid };
 }
@@ -2208,8 +2213,22 @@ function endRun(sid, ui) {
   ui.finish();
   runningSessions.delete(sid);
   updateSendUI();
+  if (!(sessionQueues.get(sid) || []).length) notifyRunDone(sid); // 还有排队消息就不算完
   if (sid === sessionId) inputEl.focus();
   drainQueue(sid); // 本会话运行期间排队的消息按序自动执行
+}
+
+/** 并行任务多了得知道哪个跑完了：后台会话完成弹 toast；窗口失焦时发系统通知 */
+function notifyRunDone(sid) {
+  const s = sessions.find((x) => x.id === sid);
+  const name = (s && s.title) || "任务";
+  if (sid !== sessionId) toast(`✅ 「${name}」已完成，点侧栏查看`);
+  if (document.hidden && "Notification" in window) {
+    try {
+      if (Notification.permission === "granted") new Notification("OpenWorkBuddy", { body: `「${name}」已完成` });
+      else if (Notification.permission === "default") Notification.requestPermission();
+    } catch {}
+  }
 }
 
 /** 页面加载时找回还在后台跑的任务：回放已记录的过程 + 断点续流接上直播（刷新不再丢任务画面） */
