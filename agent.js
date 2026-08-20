@@ -549,6 +549,9 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     const cut = userIdx[userIdx.length - keepTurns]; // 切在用户轮开头，工具调用/结果永远成对保留
     if (cut < 1) return;
     const old = history.slice(0, cut);
+    // 大头字符都在保留的最近几轮里时，压旧轮次省不下几个字符，总量照样超阈值，
+    // 下一步又会再触发——变成每步烧一次总结调用的死循环。旧轮次不够肉就不压。
+    if (historyChars(old) < 8000) return;
     // 老轮次转成纯文本转写；工具结果只留个头，摘要模型不需要全文
     const lines = [];
     for (const e of old) {
