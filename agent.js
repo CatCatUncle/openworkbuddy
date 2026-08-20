@@ -384,7 +384,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - 需要审批的危险动作（删除、sudo、碰黑名单文件）系统会自己弹窗拦，不用你在文字里预先请示。`;
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec }) {
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel }) {
     if (tc.name === "use_skill") {
       const skills = getSkills();
       const skill = skills.find((s) => s.name === (tc.input.name || "").trim());
@@ -425,6 +425,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         systemPrompt: expertSystemPrompt(expert, user),
         depth: depth + 1,
         user,
+        taskLabel,
         deadline, // 专家共享同一个总运行时间预算
         stats, // 专家消耗的 token 计入同一笔账
         stopSignal, // 「停止」信号穿透到专家子代理
@@ -467,6 +468,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           systemPrompt: expertSystemPrompt(m, user),
           depth: depth + 1,
           user,
+          taskLabel,
           deadline,
           stats,
           stopSignal,
@@ -491,6 +493,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       security: sec || config.security,
       deadline,
       stopSignal,
+      taskLabel, // 审批卡片上标明发起任务，多任务并行时才分得清是谁在求批
       memory: { user },
     });
   }
@@ -598,7 +601,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
    * @param emit    事件回调（SSE / IM 进度）
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel }) {
     // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设
     const projBlock = projectContext ? `\n\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${projectContext}` : "";
     const system = (systemPrompt || coordinatorSystemPrompt(user)) + projBlock + modePrompt(mode);
@@ -722,7 +725,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           purpose: tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
           input_preview: previewInput(tc),
         });
-        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec });
+        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel });
         emit({
           type: "tool_result",
           id: tc.id,

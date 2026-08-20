@@ -1237,6 +1237,7 @@ async function executeTool(name, input, opts = {}) {
       stopSignal: opts.stopSignal,
       rule: verdict.rule || "",
       ruleKey: verdict.ruleKey || "",
+      source: opts.taskLabel || "",
     });
     security.audit(label + "审批", text, ok ? "已批准" : "已拒绝");
     if (ok) return null;

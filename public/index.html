@@ -362,6 +362,7 @@
   .ap-row .ap-main { flex: 1; min-width: 220px; overflow: hidden; }
   .ap-row .ap-head { font-size: 13px; margin-bottom: 2px; }
   .ap-row .ap-why { color: var(--wb-text-3); }
+  .ap-row .ap-src { color: var(--wb-brand); font-weight: normal; }
   .ap-row .ap-cmd { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; font-size: 13px; color: var(--wb-text-2); }
   .ap-row .ap-btns { display: flex; gap: 6px; flex-wrap: wrap; }
   .ap-row button { border: none; border-radius: 8px; padding: 5px 12px; cursor: pointer; font-size: 13px; }
@@ -1984,6 +1985,7 @@ document.getElementById("new-task").onclick = () => {
   }).catch(() => {});
 };
 renderHistory();
+reattachRunning(); // 刷新页面不丢正在跑的任务：找回并接上直播
 
 // ================= 项目（多工作空间，任务历史按项目分组；projects/activeProject 声明在顶部基础状态区） =================
 async function refreshProjects() {
@@ -2054,7 +2056,7 @@ function updateSendUI() {
   sendBtn.classList.toggle("stop", busy);
   sendBtn.textContent = busy ? "◼" : "↑";
   sendBtn.title = busy ? "停止任务" : "发送";
-  document.getElementById("interject-btn").classList.toggle("show", busy);
+  // ⚡ 插队按钮退役：发消息默认就是插队，按钮常隐（interject() 留给快捷键等旧入口）
   renderQueueBar();
   renderHistory(); // 侧栏「运行中」小圆点跟着刷新
 }
@@ -2065,7 +2067,7 @@ function renderQueueBar() {
   bar.classList.add("show");
   bar.innerHTML =
     q.map((m, i) => `<span class="q-chip" title="${esc(m.text)}"><span class="qt">⏳ ${esc(m.text.slice(0, 30))}</span><span class="qx" data-i="${i}" title="取消这条">✕</span></span>`).join("") +
-    (curBusy() ? `<span>本对话任务运行中：Enter=排队等下一轮 · ⚡ 插队=立即注入 · ◼ 停止 · 要并行就「新建任务」另开对话</span>` : "");
+    (curBusy() ? `<span>任务运行中：发消息会直接插队并入当前任务 · ◼ 停止 · 要另起并行任务点「新建任务」</span>` : "");
   bar.querySelectorAll(".qx").forEach(x => x.onclick = () => { q.splice(+x.dataset.i, 1); renderQueueBar(); });
 }
 function drainQueue(sid) {
@@ -2075,26 +2077,27 @@ function drainQueue(sid) {
   if (sid === sessionId) renderQueueBar();
   runTurn(sid, m.text, m.mode);
 }
-async function interject() {
-  const text = inputEl.value.trim();
-  if (!text || !sessionId) return;
+/** 把一条消息立即注入正在执行的任务；任务恰好刚结束就直接当新一轮跑，两头都不丢消息 */
+async function interjectText(text) {
   const resp = await fetch("/api/chat/interject", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessionId, message: text }),
   }).catch(() => null);
-  const d = resp ? await resp.json().catch(() => ({})) : {};
   if (resp && resp.ok) {
-    inputEl.value = "";
-    syncInputHl();
+    toast("⚡ 已插队：这条消息会并入当前任务一起处理");
   } else {
-    // 任务恰好刚结束 → 转排队立即执行
     qOf(sessionId).push({ text, mode: currentMode });
-    inputEl.value = "";
-    syncInputHl();
     renderQueueBar();
     drainQueue(sessionId);
   }
+}
+async function interject() {
+  const text = inputEl.value.trim();
+  if (!text || !sessionId) return;
+  inputEl.value = "";
+  syncInputHl();
+  await interjectText(text);
 }
 document.getElementById("interject-btn").onclick = interject;
 async function stopTask() {
@@ -2119,9 +2122,8 @@ async function send() {
   mentionMenu.classList.remove("show");
   if (pageKind === "assist") { await sendAssistLocal(text); return; }
   if (curBusy()) {
-    // 本对话的任务在跑 → 排到本对话队尾（要立即介入用 ⚡ 插队；要并行请新建任务）
-    qOf(sessionId).push({ text, mode: currentMode });
-    renderQueueBar();
+    // 本对话的任务在跑 → 默认直接插队：消息立即注入当前任务一起处理（要另起并行任务用「新建任务」）
+    await interjectText(text);
     return;
   }
   await doSend(text, currentMode);
@@ -2141,6 +2143,105 @@ async function doSend(text, mode, regen) {
 }
 
 // 真正执行一轮任务：绑定 sid 而不是全局 sessionId——用户切走后它继续在后台跑
+/** 镜像 server.js recordingEmit 的记录口径：数出服务端 transcript 已记录到第几个事件。
+ *  断流重连时靠它算出准确的 from/textOffset 从断点续流——哪些事件入账、text 怎么合并必须和服务端完全一致 */
+function makeRecCounter() {
+  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "trim", "usage", "interject", "credits", "sources"];
+  const st = { n: 0, lastIsText: false, textLen: 0 };
+  st.feed = (ev) => {
+    if (ev.type === "text") {
+      if (ev.depth > 0) return;
+      if (!st.lastIsText) { st.n++; st.lastIsText = true; st.textLen = 0; }
+      st.textLen += String(ev.delta || "").length;
+    } else if (KEEP.includes(ev.type)) { st.n++; st.lastIsText = false; }
+  };
+  return st;
+}
+
+/** 读一条 SSE 流喂给回合 UI；返回是否收到了正常收尾的 done 事件 */
+async function pumpStream(resp, ui, rc) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "", sawDone = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split("\n\n");
+    buf = parts.pop();
+    for (const part of parts) {
+      if (!part.startsWith("data: ")) continue;
+      try {
+        const ev = JSON.parse(part.slice(6));
+        if (ev.type === "done") sawDone = true;
+        rc.feed(ev);
+        ui.handleEvent(ev);
+      } catch {}
+    }
+  }
+  return sawDone;
+}
+
+/** 主流断了但服务端任务可能还在跑（电脑睡眠/网络抖动/页面刚刷新）：从断点续流接回，直到任务真结束 */
+async function keepAttached(sid, ui, rc, sawDone, netErr) {
+  while (!sawDone) {
+    let still = null;
+    try { const r = await fetch("/api/chat/running"); if (r.ok) still = await r.json(); } catch {}
+    if (!still) break; // 网络彻底不通：把最后攒下的错误亮出来
+    if (!still.includes(sid)) { netErr = null; break; } // 服务端已经跑完：不算错误，安静收尾
+    netErr = null;
+    try {
+      const qs = rc.lastIsText ? `from=${rc.n - 1}&textOffset=${rc.textLen}` : `from=${rc.n}`;
+      const resp = await fetch(`/api/chat/stream/${encodeURIComponent(sid)}?${qs}`);
+      if (!resp.ok) break;
+      sawDone = await pumpStream(resp, ui, rc);
+    } catch (e) {
+      netErr = e;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  if (netErr) ui.handleEvent({ type: "error", message: "连接中断：" + netErr.message });
+}
+
+/** 一轮任务收尾（正常结束/出错/被停止都走这里） */
+function endRun(sid, ui) {
+  ui.finish();
+  runningSessions.delete(sid);
+  updateSendUI();
+  if (sid === sessionId) inputEl.focus();
+  drainQueue(sid); // 本会话运行期间排队的消息按序自动执行
+}
+
+/** 页面加载时找回还在后台跑的任务：回放已记录的过程 + 断点续流接上直播（刷新不再丢任务画面） */
+async function reattachRunning() {
+  let ids = [];
+  try { const r = await fetch("/api/chat/running"); if (r.ok) ids = await r.json(); } catch {}
+  for (const sid of ids) {
+    if (runningSessions.has(sid)) continue;
+    let data = null;
+    try { data = await fetch("/api/session/" + encodeURIComponent(sid)).then((r) => r.json()); } catch {}
+    const t = (data && data.transcript) || [];
+    const lastUser = t.map((e) => e.type).lastIndexOf("user");
+    if (lastUser < 0) continue;
+    const evs = (t[lastUser + 1] && t[lastUser + 1].events) || [];
+    const ui = createTurnUI(t[lastUser].text, t[lastUser].mode, sid);
+    const rc = makeRecCounter();
+    isReplaying = true;
+    try { for (const ev of evs) { rc.feed(ev); ui.handleEvent(ev); } } finally { isReplaying = false; }
+    runningSessions.set(sid, { ui });
+    // 用户手快已经点进了这个会话：把静态回放出来的最后一轮换成活的回合元素
+    if (sid === sessionId) {
+      const turns = chatCol.querySelectorAll(".turn");
+      if (turns.length) turns[turns.length - 1].remove();
+      document.getElementById("empty")?.remove();
+      chatCol.appendChild(ui.turn);
+      scrollBottom(true);
+    }
+    updateSendUI();
+    keepAttached(sid, ui, rc, false, null).then(() => endRun(sid, ui)); // 各会话各自接，互不等待
+  }
+}
+
 async function runTurn(sid, text, mode, regen) {
   if (runningSessions.has(sid)) { qOf(sid).push({ text, mode }); if (sid === sessionId) renderQueueBar(); return; }
   const ui = createTurnUI(text, mode, sid);
@@ -2148,6 +2249,8 @@ async function runTurn(sid, text, mode, regen) {
   updateSendUI();
   if (sid === sessionId) scrollBottom(true);
 
+  const rc = makeRecCounter();
+  let sawDone = false, netErr = null;
   try {
     const resp = await fetch("/api/chat", {
       method: "POST",
@@ -2158,31 +2261,15 @@ async function runTurn(sid, text, mode, regen) {
       const d = await resp.json().catch(() => ({}));
       ui.handleEvent({ type: "error", message: d.error || `请求失败（HTTP ${resp.status}）` });
       if (resp.status === 401) showAuth(!!d.setup);
+      sawDone = true; // 请求根本没被受理，没有可续的流
     } else {
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const parts = buf.split("\n\n");
-        buf = parts.pop();
-        for (const part of parts) {
-          if (!part.startsWith("data: ")) continue;
-          try { ui.handleEvent(JSON.parse(part.slice(6))); } catch {}
-        }
-      }
+      sawDone = await pumpStream(resp, ui, rc);
     }
   } catch (e) {
-    ui.handleEvent({ type: "error", message: e.message });
+    netErr = e;
   }
-
-  ui.finish();
-  runningSessions.delete(sid);
-  updateSendUI();
-  if (sid === sessionId) inputEl.focus();
-  drainQueue(sid); // 本会话运行期间排队的消息按序自动执行
+  await keepAttached(sid, ui, rc, sawDone, netErr);
+  endRun(sid, ui);
 }
 sendBtn.onclick = () => (curBusy() ? stopTask() : send());
 inputEl.addEventListener("keydown", (e) => {
@@ -2417,7 +2504,7 @@ async function pollApprovals() {
   bar.innerHTML = list.map(a => `
     <div class="ap-row">
       <div class="ap-main">
-        <div class="ap-head">🛡️ ${esc(a.kind)}待审批${a.rule ? ` · <span class="ap-why">${esc(a.rule)}</span>` : ""}</div>
+        <div class="ap-head">🛡️ ${esc(a.kind)}待审批${a.source ? ` · <span class="ap-src" title="发起审批的任务">来自「${esc(a.source)}」</span>` : ""}${a.rule ? ` · <span class="ap-why">${esc(a.rule)}</span>` : ""}</div>
         <code class="ap-cmd" title="${esc(a.text)}">${esc(a.text.slice(0, 160))}</code>
       </div>
       <div class="ap-btns">
