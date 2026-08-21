@@ -384,7 +384,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - 需要审批的危险动作（删除、sudo、碰黑名单文件）系统会自己弹窗拦，不用你在文字里预先请示。`;
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken }) {
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir }) {
     if (tc.name === "use_skill") {
       const skills = getSkills();
       const skill = skills.find((s) => s.name === (tc.input.name || "").trim());
@@ -427,6 +427,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         user,
         taskLabel,
         runToken, // 同一任务树共用认领身份，专家的产出算整个任务的
+        baseDir, // 成果子目录也一并继承
         deadline, // 专家共享同一个总运行时间预算
         stats, // 专家消耗的 token 计入同一笔账
         stopSignal, // 「停止」信号穿透到专家子代理
@@ -471,6 +472,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           user,
           taskLabel,
           runToken,
+          baseDir,
           deadline,
           stats,
           stopSignal,
@@ -496,6 +498,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       deadline,
       stopSignal,
       taskLabel, // 审批卡片上标明发起任务，多任务并行时才分得清是谁在求批
+      baseDir, // 相对路径读写、脚本 cwd、产物落点全在本对话的成果子目录
       memory: { user },
     });
   }
@@ -609,7 +612,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   const fileClaims = new Map(); // name -> { owner, mtime }
   let runSeq = 0;
 
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir }) {
     if (!runToken) runToken = ++runSeq; // 专家子任务从父任务继承，同一任务树内不互相抢认领
     // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设
     const projBlock = projectContext ? `\n\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${projectContext}` : "";
@@ -745,7 +748,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           purpose: tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
           input_preview: previewInput(tc),
         });
-        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken });
+        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir });
         emit({
           type: "tool_result",
           id: tc.id,
