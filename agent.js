@@ -384,7 +384,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - 需要审批的危险动作（删除、sudo、碰黑名单文件）系统会自己弹窗拦，不用你在文字里预先请示。`;
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel }) {
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken }) {
     if (tc.name === "use_skill") {
       const skills = getSkills();
       const skill = skills.find((s) => s.name === (tc.input.name || "").trim());
@@ -426,6 +426,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         depth: depth + 1,
         user,
         taskLabel,
+        runToken, // 同一任务树共用认领身份，专家的产出算整个任务的
         deadline, // 专家共享同一个总运行时间预算
         stats, // 专家消耗的 token 计入同一笔账
         stopSignal, // 「停止」信号穿透到专家子代理
@@ -469,6 +470,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           depth: depth + 1,
           user,
           taskLabel,
+          runToken,
           deadline,
           stats,
           stopSignal,
@@ -601,7 +603,14 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
    * @param emit    事件回调（SSE / IM 进度）
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel }) {
+  // 并行任务共用一个工作目录：文件的某个版本（文件名+mtime）谁的差异检测先认领就归谁，
+  // 别的任务再看到同一版本就不算自己的成果——不然 A 对话刚生成的文件会出现在 B 对话的成果卡片里。
+  // 文件再次被改（mtime 变了）允许重新认领。账本只是去重提示，清掉最多短暂多报，不丢数据。
+  const fileClaims = new Map(); // name -> { owner, mtime }
+  let runSeq = 0;
+
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken }) {
+    if (!runToken) runToken = ++runSeq; // 专家子任务从父任务继承，同一任务树内不互相抢认领
     // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设
     const projBlock = projectContext ? `\n\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${projectContext}` : "";
     const system = (systemPrompt || coordinatorSystemPrompt(user)) + projBlock + modePrompt(mode);
@@ -621,8 +630,19 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     for (const f of outputFiles()) baseline.set(f.name, f.mtime);
     const emitFiles = () => {
       const files = outputFiles();
-      const changed = files.filter((f) => baseline.get(f.name) !== f.mtime).map((f) => f.name);
-      for (const f of files) baseline.set(f.name, f.mtime);
+      const changed = [];
+      for (const f of files) {
+        const isNew = baseline.get(f.name) !== f.mtime;
+        baseline.set(f.name, f.mtime);
+        if (!isNew) continue;
+        const claim = fileClaims.get(f.name);
+        // 同一版本已被别的并行任务认领 → 是它的产出。仍有一个小窗口：对方写完文件但
+        // 它那步工具还没跑完、没来得及认领——误报也只是多摆一张卡片，不丢文件
+        if (claim && claim.owner !== runToken && claim.mtime === f.mtime) continue;
+        fileClaims.set(f.name, { owner: runToken, mtime: f.mtime });
+        changed.push(f.name);
+      }
+      if (fileClaims.size > 1000) fileClaims.clear();
       emit({ type: "files", files, changed });
     };
 
@@ -725,7 +745,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           purpose: tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
           input_preview: previewInput(tc),
         });
-        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel });
+        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken });
         emit({
           type: "tool_result",
           id: tc.id,
