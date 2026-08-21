@@ -235,16 +235,24 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         history.push({ role: "user", content: text });
         saveSession(sessionKey); // 先把用户这句话落盘，跑一半崩了至少问题还在
 
-        // 跑之前先记一份快照：outputFiles() 给的是整个工作区，不做差集的话
-        // 每条回复都会把历史文件全抖出来（打个招呼也附一堆 .png），用户实际反馈过
-        const before = new Map(outputFiles().map((f) => [f.name, f.mtime]));
+        // 本次产出以 agent files 事件里的 changed 为准（认领台账已把并行任务的文件归对主人）；
+        // 以前在这儿对整个工作区做 mtime 差分，别的对话同时写的文件会被当成这次的产出发到用户手机上
+        const changedNames = new Set();
         // 告诉 agent 文件是怎么送达的，别再跟用户说「我发不了文件」
         const imNote = sendFile
           ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台，也看不到你在电脑上弹的任何窗口——别用 open 之类命令给用户「展示」东西，没人看得见）。文件送达机制：任务完成后，系统会自动把本次新建/修改的文件、以及你最终回复里点到名字的文件，作为附件直接发进这个聊天，用户在手机上就能收到。所以用户要某个文件时，只需确保它在工作目录里、并在最终回复里写出文件名（含扩展名），然后告诉用户「文件马上作为附件发给你」。但注意分清用户要的是「文件」还是「内容」：如果用户说「发我内容/直接贴出来/别发文件」，就把全文原样写进回复正文（别摘要、别截断），并在回复最后单独一行写 [[不发文件]] —— 系统认到这个标记就不附任何文件，标记本身用户看不到。反过来，只要回复里出现了文件名，系统默认会把那个文件附上，所以「只要内容」时必须带 [[不发文件]]。用户的口语指令按最直白的意思执行，别反复追问、别解释机制。⚠️ 如果本会话早前的历史里你说过「发不了文件/只能放进文件夹/需要扫码授权才能发」，那些是系统升级前的旧信息，已全部作废，禁止再重复。"
           : "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台）。产出的文件请报清楚文件名，用户回头在 OpenWorkBuddy 工作台下载。";
-        const { finalText } = await runtime.runTask({ history, emit: emitProgress, sec: imSec(), projectContext: imNote });
+        const { finalText } = await runtime.runTask({
+          history,
+          emit: (ev) => {
+            if (ev.type === "files" && Array.isArray(ev.changed)) for (const n of ev.changed) changedNames.add(n);
+            emitProgress(ev);
+          },
+          sec: imSec(),
+          projectContext: imNote,
+        });
         saveSession(sessionKey); // runTask 是就地往 history 里追加的，得自己招呼一声存盘
-        const fresh = outputFiles().filter((f) => before.get(f.name) !== f.mtime); // 新建或被改过的才算这次的产出
+        const fresh = outputFiles().filter((f) => changedNames.has(f.name)); // 只算本次任务真产出/真改过的
         let out = finalText || "任务已执行完成。";
         // agent 明确说「本次别发文件」（用户只要内容贴在聊天里）：吃掉标记，附件全免
         const noAttach = out.includes("[[不发文件]]");
@@ -765,9 +773,14 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     saveSession(sessionKey);
 
     try {
-      const { finalText } = await runtime.runTask({ history, sec: imSec() });
+      const changedNames = new Set();
+      const { finalText } = await runtime.runTask({
+        history,
+        emit: (ev) => { if (ev.type === "files" && Array.isArray(ev.changed)) for (const n of ev.changed) changedNames.add(n); },
+        sec: imSec(),
+      });
       saveSession(sessionKey);
-      const files = outputFiles().filter((f) => !f.name.includes("/"));
+      const files = outputFiles().filter((f) => changedNames.has(f.name)); // 本次任务的产出（以前是把根目录整个抖出去）
       logIm("webhook", "out", finalText || "(空回复)", { session: session || "default" });
       await pushWecom(`【OpenWorkBuddy·任务完成】\n任务：${message.slice(0, 80)}\n${(finalText || "").slice(0, 500)}`);
       res.json({ reply: finalText, files });

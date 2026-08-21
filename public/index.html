@@ -424,6 +424,11 @@
   .dir-head:hover { background: var(--wb-bg-hover); }
   .dir-head .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dir-head .cnt { font-size: 12px; color: var(--wb-text-3); }
+  .dir-head.mine .name { color: var(--wb-brand); font-weight: 600; }
+  .dir-head .mine-tag { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 999px; background: var(--wb-brand); color: #fff; font-size: 11px; line-height: 18px; font-weight: normal; vertical-align: 1px; }
+  .dir-head .opendir { color: var(--wb-text-3); padding: 0 2px; }
+  .dir-head .opendir:hover { color: var(--wb-brand); }
+  .out-row .nm .dim { color: var(--wb-text-3); }
   /* ---------- 弹窗 ---------- */
   .modal-mask { display: none; position: fixed; inset: 0; background: rgba(23,24,28,.35); z-index: 50; align-items: center; justify-content: center; }
   .modal-mask.show { display: flex; }
@@ -836,6 +841,7 @@ let currentUser = null; // 登录后由 initAuth() 填充
 let assistant = { name: "OpenWorkBuddy", avatar: "🤖" }; // 助理的名字/头像，可在设置里改；登录后拉真值
 let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
 const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
+const sessionDirs = new Map(); // sessionId -> 该对话在默认工作空间下的成果子文件夹（成果面板标「本对话」）
 const sessionQueues = new Map();   // sessionId -> [{text, mode}] 同一会话内追加的消息才排队
 const curBusy = () => !!(sessionId && runningSessions.has(sessionId));
 const qOf = (sid) => { let q = sessionQueues.get(sid); if (!q) { q = []; sessionQueues.set(sid, q); } return q; };
@@ -1198,6 +1204,13 @@ function createTurnUI(userText, turnMode, forSid) {
         turn._usage.calls += ev.calls || 0;
         turn._usage.elapsed_ms += ev.elapsed_ms || 0;
       }
+    } else if (ev.type === "dir") {
+      // 本对话的成果子文件夹（只发直播不进回放；回放/续接场景由 /api/session 的 dir 字段补上）
+      if (ev.dir && sessionDirs.get(turnSid) !== ev.dir) {
+        sessionDirs.set(turnSid, ev.dir);
+        openDirs.add(ev.dir); // 第一次知道就默认展开；用户手动折叠后不再打扰
+        if (turnSid === sessionId) renderFiles(filesCache);
+      }
     } else if (ev.type === "title") {
       // 服务端给首轮任务起的短标题（截断标题太丑）；不进 transcript，回放不经过这里
       const s = sessions.find((x) => x.id === turnSid);
@@ -1555,10 +1568,11 @@ function renderFiles(files) {
     const dir = f.name.slice(0, f.name.lastIndexOf("/"));
     (groups[dir] = groups[dir] || []).push(f);
   }
+  const curDir = sessionDirs.get(sessionId); // 当前对话的成果文件夹：置顶并标出来
   let html = rootFiles.map(f => fileRow(f, false)).join("");
-  for (const dir of Object.keys(groups).sort((a, b) => a.localeCompare(b, "zh"))) {
+  for (const dir of Object.keys(groups).sort((a, b) => (a === curDir ? -1 : b === curDir ? 1 : a.localeCompare(b, "zh")))) {
     const open = openDirs.has(dir);
-    html += `<div class="dir-head" data-dir="${esc(dir)}"><span>${open ? "▾" : "▸"}</span><span>📁</span><div class="name">${esc(dir)}</div><span class="cnt">${groups[dir].length}</span></div>`;
+    html += `<div class="dir-head${dir === curDir ? " mine" : ""}" data-dir="${esc(dir)}"><span>${open ? "▾" : "▸"}</span><span>📁</span><div class="name">${dir === curDir ? '<span class="mine-tag">本对话</span>' : ""}${esc(dir)}</div><span class="cnt">${groups[dir].length}</span><span class="opendir" data-opendir="${esc(dir)}" title="在 Finder 中打开这个文件夹">↗</span></div>`;
     if (open) html += groups[dir].sort((a, b) => a.name.localeCompare(b.name, "zh")).map(f => fileRow(f, true)).join("");
   }
   el.innerHTML = html;
@@ -1566,6 +1580,10 @@ function renderFiles(files) {
     openDirs.has(h.dataset.dir) ? openDirs.delete(h.dataset.dir) : openDirs.add(h.dataset.dir);
     renderFiles(filesCache);
   });
+  el.querySelectorAll(".opendir").forEach(b => { b.onclick = (e) => {
+    e.stopPropagation();
+    fetch("/api/files/open/" + encodeURIComponent(b.dataset.opendir), { method: "POST" }).catch(() => {});
+  }; });
   el.querySelectorAll(".file-item").forEach(item => item.onclick = (e) => {
     if (e.target.closest(".dl")) return; // 下载按钮不拦截
     e.preventDefault();
@@ -1786,7 +1804,10 @@ function renderTurnOutputs(body, changed) {
       const row = document.createElement("div");
       row.className = "out-row";
       row.dataset.name = f.name;
-      row.innerHTML = `<span class="ic">${fileIcon(f.name)}</span><span class="nm">${esc(f.name)}</span><span class="sz">${fmtSize(f.size)}</span><a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>`;
+      const nmHtml = f.name.includes("/")
+        ? `<span class="dim">${esc(f.name.slice(0, f.name.lastIndexOf("/") + 1))}</span>${esc(f.name.split("/").pop())}`
+        : esc(f.name);
+      row.innerHTML = `<span class="ic">${fileIcon(f.name)}</span><span class="nm">${nmHtml}</span><span class="sz">${fmtSize(f.size)}</span><a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>`;
       row.onclick = (e) => { if (e.target.closest("a")) return; previewFile(f.name); };
       list.appendChild(row);
     }
@@ -1958,6 +1979,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
   // 回放服务端保存的完整对话（含工具执行过程）
   chatCol.innerHTML = "";
   const data = await fetch("/api/session/" + encodeURIComponent(sessionId)).then(r => r.json()).catch(() => ({ transcript: [] }));
+  if (data.dir && sessionDirs.get(sessionId) !== data.dir) { sessionDirs.set(sessionId, data.dir); openDirs.add(data.dir); renderFiles(filesCache); }
   let transcript = data.transcript || [];
   // 该会话有任务正在后台跑：回放只到本轮之前，正在跑的这轮把"活的"回合元素接回来
   //（它切走期间一直在后台收事件更新，接上就是完整直播，不用回放+续流拼接）
@@ -2257,6 +2279,7 @@ async function reattachRunning() {
     if (runningSessions.has(sid)) continue;
     let data = null;
     try { data = await fetch("/api/session/" + encodeURIComponent(sid)).then((r) => r.json()); } catch {}
+    if (data && data.dir) sessionDirs.set(sid, data.dir);
     const t = (data && data.transcript) || [];
     const lastUser = t.map((e) => e.type).lastIndexOf("user");
     if (lastUser < 0) continue;

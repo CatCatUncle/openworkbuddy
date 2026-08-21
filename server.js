@@ -83,6 +83,7 @@ let imBridge = null; // IM 桥（含飞书长连接控制），init() 里创建
 const SESS_DIR = path.join(__dirname, "data", "sessions");
 const sessions = new Map();
 const activeRuns = new Map(); // sessionId -> { ctrl: AbortController, interject: [] }（「停止」与「插队」用）
+const assignedDirs = new Set(); // 刚分配、还没写出文件的对话文件夹名：两个新对话同时起步不许撞同名
 
 function sessFile(id) {
   return path.join(SESS_DIR, id.replace(/[^\w-]/g, "_") + ".json");
@@ -1491,11 +1492,13 @@ app.post("/api/chat", async (req, res) => {
       const stamp = String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
       const slug = String(sess.title || message).replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12) || "对话";
       let dir = `任务_${stamp}_${slug}`;
-      for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)); i++) dir = `任务_${stamp}_${slug}_${i}`;
+      for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)) || assignedDirs.has(dir); i++) dir = `任务_${stamp}_${slug}_${i}`;
+      assignedDirs.add(dir);
       sess.dir = dir; // 存进会话，后续轮次/重启都落同一个文件夹
     }
     taskBaseDir = sess.dir;
   }
+  if (taskBaseDir) send({ type: "dir", dir: taskBaseDir }); // 成果面板标「本对话」用；不进回放记录
   try {
     // 任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
     for (;;) {
@@ -1596,7 +1599,8 @@ app.get("/api/chat/stream/:id", (req, res) => {
 
 // 历史会话回放
 app.get("/api/session/:id", (req, res) => {
-  res.json({ transcript: getSession(req.params.id).transcript });
+  const s = getSession(req.params.id);
+  res.json({ transcript: s.transcript, dir: s.dir || null });
 });
 
 // 删除会话（内存 + 磁盘一起删）
@@ -1681,6 +1685,11 @@ function accountedRuntime(baseRuntime, source) {
       const r = await baseRuntime.runTask({
         user: owner ? owner.username : undefined,
         taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? "定时任务" : source,
+        // IM / 定时任务的产物也各归各的文件夹（仅默认工作空间；调用方可在 args 里覆盖）
+        baseDir:
+          path.resolve(getWorkspaceDir()) === path.join(__dirname, "workspace")
+            ? source === "im" ? "IM_对话" : source === "schedule" ? "定时任务" : null
+            : null,
         projectContext: projectContextOf(activeProject()),
         ...args,
       });
