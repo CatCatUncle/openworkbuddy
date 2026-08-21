@@ -648,7 +648,14 @@ function selfCheck(file, rel) {
     return "";
   }
   if ([".js", ".cjs", ".mjs"].includes(ext)) {
-    const check = (f) => spawnSync(process.execPath, ["--check", f], { encoding: "utf8", timeout: 15000 });
+    // ELECTRON_RUN_AS_NODE 必须带上：桌面版里 execPath 是 Electron 二进制，不带的话每检查一个 .js
+    // 就真的启动一个 Electron 实例去加载用户的文件——满屏弹 JavaScript error 弹窗，还把合法代码误判成语法错误
+    const check = (f) =>
+      spawnSync(process.execPath, ["--check", f], {
+        encoding: "utf8",
+        timeout: 15000,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      });
     let r = check(file);
     // .js 里写 ESM（import/export）在 CJS 下必然报错，但项目可能本来就是 type:module —— 换成 .mjs 再判一次，别误伤
     if (r.status !== 0 && /^\s*(import|export)\s/m.test(src)) {
