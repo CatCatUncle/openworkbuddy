@@ -682,11 +682,20 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         emit({ type: "trim", chars: trimmedChars, depth });
       }
 
-      // 单次模型调用超时 = min(剩余预算, llm_timeout_ms)，防止请求挂死；「停止」信号也能立即掐断请求
-      const llmTimeout = Math.max(10000, Math.min(deadline - Date.now(), config.agent.llm_timeout_ms || 300000));
-      const timeoutSignal = AbortSignal.timeout(llmTimeout);
-      const signal =
-        stopSignal && AbortSignal.any ? AbortSignal.any([timeoutSignal, stopSignal]) : timeoutSignal;
+      // 模型调用超时按「卡壳」判定，不是总时长硬顶：写大文件时全部输出走工具参数流，
+      // 界面上一个字都看不到，按总时长掐会误杀正常的长生成。只要还有数据块在流（正文/思考/工具参数），
+      // 计时器就一直重置；连续 llm_timeout_ms 收不到任何数据才算挂死。总时长由任务 deadline 兜底
+      const stallMs = Math.max(10000, Math.min(deadline - Date.now(), config.agent.llm_timeout_ms || 300000));
+      const stallCtl = new AbortController();
+      let stallTimer = setTimeout(() => stallCtl.abort(), stallMs);
+      const onActivity = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => stallCtl.abort(), stallMs);
+      };
+      const budgetSignal = AbortSignal.timeout(Math.max(10000, deadline - Date.now()));
+      const signal = AbortSignal.any
+        ? AbortSignal.any([stallCtl.signal, budgetSignal, ...(stopSignal ? [stopSignal] : [])])
+        : stallCtl.signal;
       let result;
       try {
         result = await llm.chat({
@@ -694,14 +703,22 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           history,
           tools,
           signal,
+          onActivity,
           onTextDelta: (delta) => emit({ type: "text", delta, depth }),
         });
       } catch (e) {
         if (e.name === "TimeoutError" || e.name === "AbortError") {
-          stopNote = stopSignal && stopSignal.aborted ? "已手动停止" : `模型响应超时（${Math.round(llmTimeout / 1000)} 秒无完整响应）`;
+          stopNote =
+            stopSignal && stopSignal.aborted
+              ? "已手动停止"
+              : stallCtl.signal.aborted
+                ? `模型响应超时（连续 ${Math.round(stallMs / 1000)} 秒没有任何输出，连接已挂起）`
+                : "已达最大运行时间";
           break;
         }
         throw e;
+      } finally {
+        clearTimeout(stallTimer);
       }
 
       if (result.usage) {
