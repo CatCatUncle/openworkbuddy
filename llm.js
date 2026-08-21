@@ -50,7 +50,7 @@ function toAnthropicMessages(history) {
   return messages;
 }
 
-async function anthropicChat(cfg, { system, history, tools, onTextDelta, signal }) {
+async function anthropicChat(cfg, { system, history, tools, onTextDelta, onActivity, signal }) {
   let Anthropic;
   try {
     Anthropic = require("@anthropic-ai/sdk");
@@ -85,6 +85,7 @@ async function anthropicChat(cfg, { system, history, tools, onTextDelta, signal 
   );
 
   if (onTextDelta) stream.on("text", (delta) => onTextDelta(delta));
+  if (onActivity) stream.on("streamEvent", () => onActivity());
 
   const msg = await stream.finalMessage();
 
@@ -207,7 +208,7 @@ function createLeakGuard(onTextDelta) {
   };
 }
 
-async function openaiChat(cfg, { system, history, tools, onTextDelta, signal }) {
+async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity, signal }) {
   const apiKey = cfg.api_key || process.env.OPENAI_API_KEY || "ollama";
   const useStream = cfg.stream !== false;
   const resp = await fetch(`${cfg.base_url.replace(/\/$/, "")}/chat/completions`, {
@@ -282,6 +283,9 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, signal }) 
       } catch {
         continue;
       }
+      // 任何解析成功的数据块都算「模型还活着」：正文、思考(reasoning)、工具参数流全在内。
+      // 排队中的 keep-alive 注释行（如 OpenRouter 的 ": PROCESSING"）不带 data: 前缀，天然不算
+      if (onActivity) onActivity();
       if (chunk.usage) usage = { prompt: chunk.usage.prompt_tokens || 0, completion: chunk.usage.completion_tokens || 0 };
       const choice = chunk.choices && chunk.choices[0];
       if (!choice) continue;

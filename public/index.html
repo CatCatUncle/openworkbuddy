@@ -4831,7 +4831,8 @@ function renderAgentPane(pane, s) {
       <div class="t" style="margin-top:8px">任务最大运行时间（分钟）</div>
       <div class="d" style="margin-bottom:6px">整个任务（含专家子代理）的墙上时间预算，超时强制收尾（默认 10）</div>
       <input id="ag-runtime" type="number" min="1" value="${Math.round((s.agent.max_runtime_ms || 600000) / 60000)}">
-      <div class="t" style="margin-top:8px">单次模型调用超时（秒）</div>
+      <div class="t" style="margin-top:8px">模型卡壳超时（秒）</div>
+      <div class="d" style="margin-bottom:6px">连续这么久收不到模型的任何输出（正文/思考/写文件的参数流都算）才判定连接挂死、强制收尾；只要还在逐字输出就不会掐断（默认 300）</div>
       <input id="ag-llm-timeout" type="number" min="30" value="${Math.round((s.agent.llm_timeout_ms || 300000) / 1000)}">
       <div class="t" style="margin-top:8px">上下文预算（千字符）</div>
       <div class="d" style="margin-bottom:6px">超出后自动截短较早的工具输出（最近 3 步始终保留原文），避免长任务撞模型上下文上限整个失败。上下文大的模型可以调高（默认 120）</div>
