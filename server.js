@@ -1482,11 +1482,26 @@ app.post("/api/chat", async (req, res) => {
       })
       .catch(() => null);
   }
+  // 默认工作空间：每个对话固定一个成果子文件夹（任务_月日_标题），根目录不再越堆越乱；
+  // 用户自选的工作目录 / 项目目录保持原地读写不变（素材要在原文件夹里就地处理）
+  let taskBaseDir = null;
+  if (path.resolve(getWorkspaceDir()) === path.join(__dirname, "workspace")) {
+    if (!sess.dir) {
+      const d = new Date();
+      const stamp = String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+      const slug = String(sess.title || message).replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12) || "对话";
+      let dir = `任务_${stamp}_${slug}`;
+      for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)); i++) dir = `任务_${stamp}_${slug}_${i}`;
+      sess.dir = dir; // 存进会话，后续轮次/重启都落同一个文件夹
+    }
+    taskBaseDir = sess.dir;
+  }
   try {
     // 任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
     for (;;) {
       const r = await runtime.runTask({
         taskLabel: sess.title || String(message).slice(0, 24),
+        baseDir: taskBaseDir,
         history: sess.history,
         emit: emitFn,
         mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",

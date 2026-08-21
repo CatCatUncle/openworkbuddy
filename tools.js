@@ -44,7 +44,7 @@ const TOOL_DEFS = [
   {
     name: "run_node",
     description:
-      "在工作目录(workspace)中执行一段 Node.js (CommonJS) 代码并返回 stdout/stderr。可以 require 以下已安装的库：pptxgenjs(生成PPT)、docx(生成Word)、exceljs(生成Excel)，以及 Node 内置模块(fs/path等)。生成的成果文件必须写到当前工作目录(即 workspace 根目录)。用于数据处理、文件生成、计算等一切需要编程的任务。",
+      "在工作目录(workspace)中执行一段 Node.js (CommonJS) 代码并返回 stdout/stderr。可以 require 以下已安装的库：pptxgenjs(生成PPT)、docx(生成Word)、exceljs(生成Excel)，以及 Node 内置模块(fs/path等)。生成的成果文件必须写到当前工作目录(直接用相对路径/文件名即可，不要写绝对路径)。用于数据处理、文件生成、计算等一切需要编程的任务。",
     input_schema: {
       type: "object",
       properties: {
@@ -272,14 +272,14 @@ function safeOutName(name, ext, stem) {
   return n;
 }
 
-async function downloadToWorkspace(url, fname) {
+async function downloadToWorkspace(url, fname, dir) {
   const r = await fetch(url, { signal: AbortSignal.timeout(180000) });
   if (!r.ok) throw new Error(`下载生成结果失败 HTTP ${r.status}`);
   ensureDirs();
-  fs.writeFileSync(path.join(workspaceDir, fname), Buffer.from(await r.arrayBuffer()));
+  fs.writeFileSync(path.join(dir || workspaceDir, fname), Buffer.from(await r.arrayBuffer()));
 }
 
-async function generateImage(media, input, timeoutMs) {
+async function generateImage(media, input, timeoutMs, saveDir) {
   const cfg = (media || {}).image || {};
   if (!cfg.base_url || !cfg.model) {
     return { content: "图像模型未配置：请在 设置 → 模型 → 图像模型 填写接口地址 / API Key / 模型名后再用。", isError: true };
@@ -317,8 +317,8 @@ async function generateImage(media, input, timeoutMs) {
   }
   if (b64) {
     ensureDirs();
-    fs.writeFileSync(path.join(workspaceDir, fname), Buffer.from(b64, "base64"));
-  } else await downloadToWorkspace(imgUrl, fname);
+    fs.writeFileSync(path.join(saveDir || workspaceDir, fname), Buffer.from(b64, "base64"));
+  } else await downloadToWorkspace(imgUrl, fname, saveDir);
   security.audit("图像生成", `${cfg.model}: ${prompt.slice(0, 120)} → ${fname}`, "放行");
   return { content: `图片已生成并存入工作空间：${fname}（模型 ${cfg.model}）`, isError: false };
 }
@@ -383,7 +383,7 @@ async function generateVideo(media, input, opts = {}) {
     };
   }
   if (!videoUrl) return { content: "视频任务完成但没有返回视频地址", isError: true };
-  await downloadToWorkspace(videoUrl, fname);
+  await downloadToWorkspace(videoUrl, fname, opts.saveDir);
   security.audit("视频生成", `${cfg.model}: ${prompt.slice(0, 120)} → ${fname}`, "放行");
   return { content: `视频已生成并存入工作空间：${fname}（模型 ${cfg.model}）`, isError: false };
 }
@@ -423,7 +423,7 @@ function precheckSyntax(code) {
   }
 }
 
-function runNode(code, timeoutMs) {
+function runNode(code, timeoutMs, cwd) {
   ensureDirs();
   const syntaxErr = precheckSyntax(code);
   if (syntaxErr) return Promise.resolve({ content: syntaxErr, isError: true });
@@ -439,7 +439,7 @@ function runNode(code, timeoutMs) {
   fs.writeFileSync(file, code, "utf8");
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [file], {
-      cwd: workspaceDir,
+      cwd: cwd || workspaceDir,
       timeout: timeoutMs,
       // ELECTRON_RUN_AS_NODE：桌面版里 execPath 是 Electron 二进制，不加这个每跑一次脚本
       // 就弹一个新的 Electron 应用实例（Dock 图标狂蹦）；加了就纯当 node 用
@@ -471,11 +471,11 @@ function shellPath() {
   return cur.concat(extra.filter((p) => p && !cur.includes(p))).join(":");
 }
 
-function runShell(command, timeoutMs) {
+function runShell(command, timeoutMs, cwd) {
   ensureDirs();
   return new Promise((resolve) => {
     const child = spawn("/bin/zsh", ["-c", command], {
-      cwd: workspaceDir,
+      cwd: cwd || workspaceDir,
       timeout: timeoutMs,
       env: { ...process.env, PATH: shellPath() },
     });
@@ -875,7 +875,7 @@ function looksBinary(ct, buf) {
  * 用 wx 独占创建而不是"先看在不在再写"：只读工具是并发跑的，两条 fetch 撞同一个名字时
  * 检查和写入之间那道缝会让后一个把前一个盖掉。
  */
-function saveDownload(url, ct, buf) {
+function saveDownload(url, ct, buf, dir) {
   ensureDirs();
   let base = "";
   try { base = decodeURIComponent(path.basename(new URL(url).pathname || "")); } catch {}
@@ -890,14 +890,14 @@ function saveDownload(url, ct, buf) {
   for (let i = 1; i < 50; i++) {
     const name = i === 1 ? base : `${stem}_${i}${ext}`;
     try {
-      fs.writeFileSync(path.join(workspaceDir, name), data, { flag: "wx" });
+      fs.writeFileSync(path.join(dir || workspaceDir, name), data, { flag: "wx" });
       return name;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
     }
   }
   const name = `${stem}_${Date.now()}${ext}`;
-  fs.writeFileSync(path.join(workspaceDir, name), data);
+  fs.writeFileSync(path.join(dir || workspaceDir, name), data);
   return name;
 }
 
@@ -917,7 +917,7 @@ function decodeBody(buf, ct) {
   }
 }
 
-async function fetchUrl(url, { render } = {}) {
+async function fetchUrl(url, { render, saveDir } = {}) {
   let resp;
   try {
     resp = await fetch(url, { redirect: "follow", headers: browserHeaders(url), signal: AbortSignal.timeout(30000) });
@@ -931,7 +931,7 @@ async function fetchUrl(url, { render } = {}) {
   }
   const buf = await resp.arrayBuffer();
   if (looksBinary(ct, buf)) {
-    const name = saveDownload(url, ct, buf);
+    const name = saveDownload(url, ct, buf, saveDir);
     const kind = /pdf/i.test(ct) || Buffer.from(buf.slice(0, 4)).toString("latin1") === "%PDF" ? "pdf" : "";
     return (
       `这不是网页，是二进制文件（${ct || "类型未知"}，${buf.byteLength} 字节），已下载到工作目录：${name}\n` +
@@ -1206,12 +1206,27 @@ async function executeTool(name, input, opts = {}) {
   const timeoutMs = opts.timeoutMs || 120000;
   // 安全中心策略（settings 里配置）；未传时用纯默认值（等价于旧行为 + 默认黑名单）
   const sec = opts.security || { ...security.DEFAULTS };
+  // 每个对话一个成果子目录（服务器只在默认工作空间下传入）：相对路径读写、脚本 cwd、
+  // 生成/下载的产物都落到这里，多个对话不再把工作空间根目录搅成一锅
+  let fileBase = workspaceDir;
+  if (opts.baseDir) {
+    const b = path.resolve(workspaceDir, String(opts.baseDir));
+    if (b === workspaceDir || b.startsWith(workspaceDir + path.sep)) {
+      fileBase = b;
+      try { fs.mkdirSync(fileBase, { recursive: true }); } catch {}
+    }
+  }
   // 文件工具统一走策略解析：workspace 内默认放行、黑名单硬拦、workspace 外仅白名单
   const resolveFile = (rel) => {
-    const r = security.resolvePathWithPolicy(sec, rel, workspaceDir);
+    const r = security.resolvePathWithPolicy(sec, rel, workspaceDir, fileBase);
     if (!r.allowed) {
       security.audit("文件拦截", `${name}: ${rel}`, "拦截");
       throw new Error(`文件访问被安全中心拦截：${r.reason}`);
+    }
+    // 成果子目录下没有、工作空间根下有 → 用根下那个（读旧对话的产物/共享素材不用写全路径）
+    if (fileBase !== workspaceDir && !fs.existsSync(r.path)) {
+      const r2 = security.resolvePathWithPolicy(sec, rel, workspaceDir);
+      if (r2.allowed && fs.existsSync(r2.path)) return r2.path;
     }
     return r.path;
   };
@@ -1257,14 +1272,14 @@ async function executeTool(name, input, opts = {}) {
         const code = String(input.code || "");
         const blocked = await passGate(security.checkCode(sec, code), "代码", code.slice(0, 500));
         if (blocked) return blocked;
-        return await runNode(code, timeoutMs);
+        return await runNode(code, timeoutMs, fileBase);
       }
       case "run_shell": {
         const cmd = String(input.command || "");
         const blocked = await passGate(security.checkCommand(sec, cmd), "命令", cmd);
         if (blocked) return blocked;
         security.audit("命令执行", cmd, "放行");
-        return await runShell(cmd, timeoutMs);
+        return await runShell(cmd, timeoutMs, fileBase);
       }
       case "write_file": {
         const rel = String(input.path || "");
@@ -1357,9 +1372,9 @@ async function executeTool(name, input, opts = {}) {
       case "library_read":
         return { content: libraryRead(input.name), isError: false };
       case "generate_image":
-        return await generateImage(opts.media, input, timeoutMs);
+        return await generateImage(opts.media, input, timeoutMs, fileBase);
       case "generate_video":
-        return await generateVideo(opts.media, input, opts);
+        return await generateVideo(opts.media, input, { ...opts, saveDir: fileBase });
       case "fetch_url": {
         const gate = security.checkUrl(sec, input.url);
         if (!gate.allowed) {
@@ -1367,7 +1382,7 @@ async function executeTool(name, input, opts = {}) {
           return { content: `网络访问被安全中心拦截：${gate.reason}（设置 → 安全中心 → 网络安全）`, isError: true };
         }
         security.audit("网络访问", `网络访问已执行：${input.url}`, "放行");
-        return { content: await fetchUrl(input.url, { render: input.render !== false }), isError: false };
+        return { content: await fetchUrl(input.url, { render: input.render !== false, saveDir: fileBase }), isError: false };
       }
       case "render_page": {
         const gate = security.checkUrl(sec, input.url);

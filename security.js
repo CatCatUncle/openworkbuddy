@@ -108,8 +108,9 @@ function underPrefix(p, prefix) {
  * 按文件安全策略解析路径。workspace 内默认放行（黑名单除外）；
  * workspace 外仅白名单前缀放行 —— 这也让文件工具获得受控的越界能力。
  */
-function resolvePathWithPolicy(sec, rel, workspaceDir) {
-  const p = path.resolve(workspaceDir, String(rel || ".").replace(/\\/g, "/"));
+function resolvePathWithPolicy(sec, rel, workspaceDir, base) {
+  // base：本次任务的成果子目录（默认工作空间按对话分文件夹）；越界判定仍以整个 workspace 为界
+  const p = path.resolve(base || workspaceDir, String(rel || ".").replace(/\\/g, "/"));
   if (sec.gateway) {
     for (const b of sec.file_blacklist || []) {
       const bp = expandPath(b);
