@@ -690,6 +690,17 @@
   .im-b.usr { background: var(--wb-brand); color: #fff; border-radius: 14px 14px 4px 14px; text-align: left; }
   .im-b.bot { background: var(--wb-bg-hover); border-radius: 4px 14px 14px 14px; white-space: normal; text-align: left; }
   .im-b.bot pre { white-space: pre-wrap; }
+  /* Goal 目标卡：进行中的目标固定在聊天区顶部，验收标准逐条打勾 */
+  #goal-card { max-width: var(--wb-content-w); margin: 10px auto 0; padding: 10px 14px; box-sizing: border-box; width: calc(100% - 40px); background: var(--wb-brand-weak); border: 1px solid var(--wb-border); border-radius: 12px; font-size: 13px; }
+  #goal-card .gc-head { display: flex; align-items: center; gap: 8px; }
+  #goal-card .gc-title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #goal-card .gc-meta { color: var(--wb-text-2); flex-shrink: 0; }
+  #goal-card .gc-done { color: var(--wb-ok); font-weight: 600; }
+  #goal-card .gc-close { border: none; background: none; cursor: pointer; color: var(--wb-text-3); font-size: 13px; padding: 2px 4px; }
+  #goal-card .gc-close:hover { color: var(--wb-err); }
+  #goal-card .gc-list { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+  #goal-card .gc-item { color: var(--wb-text-2); }
+  #goal-card .gc-item.ok { color: var(--wb-text); }
 </style>
 </head>
 <body>
@@ -726,6 +737,7 @@
     <div class="title" id="session-title">新任务</div>
     <div class="right"><button id="toggle-files">📁 成果文件</button></div>
   </div>
+  <div id="goal-card" style="display:none"></div>
   <div id="chat-scroll"><div class="chat-col" id="chat-col"></div></div>
   <button id="to-bottom" title="回到底部">↓</button>
 
@@ -765,6 +777,7 @@
           <button class="picker-btn" id="mode-btn">✅ <span id="mode-label">Craft · 执行</span> <span style="font-size: 11px">▾</span></button>
           <div class="picker-menu up-left" id="mode-menu">
             <div class="mi" data-mode="craft">✅ Craft · 执行 <span class="sub">完整执行并交付成果</span></div>
+            <div class="mi" data-mode="goal">🎯 Goal · 目标 <span class="sub">拆解验收标准，没达成自动再跑</span></div>
             <div class="mi" data-mode="plan">🗺️ Plan · 规划 <span class="sub">只出执行计划不动手</span></div>
             <div class="mi" data-mode="ask">💬 Ask · 问答 <span class="sub">只读问答不改文件</span></div>
           </div>
@@ -842,6 +855,9 @@ let assistant = { name: "OpenWorkBuddy", avatar: "🤖" }; // 助理的名字/�
 let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
 const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
 const sessionDirs = new Map(); // sessionId -> 该对话在默认工作空间下的成果子文件夹（成果面板标「本对话」）
+const sessionModels = new Map(); // sessionId -> 该对话指定的模型名（没有 = 跟随全局默认）
+const sessionGoals = new Map(); // sessionId -> 该对话的目标状态（Goal 模式的目标卡）
+let pendingModel; // 新对话还没发首条消息就选了模型：先记着，会话建好后再落到服务端
 const sessionQueues = new Map();   // sessionId -> [{text, mode}] 同一会话内追加的消息才排队
 const curBusy = () => !!(sessionId && runningSessions.has(sessionId));
 const qOf = (sid) => { let q = sessionQueues.get(sid); if (!q) { q = []; sessionQueues.set(sid, q); } return q; };
@@ -1210,6 +1226,12 @@ function createTurnUI(userText, turnMode, forSid) {
         sessionDirs.set(turnSid, ev.dir);
         openDirs.add(ev.dir); // 第一次知道就默认展开；用户手动折叠后不再打扰
         if (turnSid === sessionId) renderFiles(filesCache);
+      }
+    } else if (ev.type === "goal") {
+      // 目标卡状态直播（拆解完成/每轮验收后各推一次）；不进回放记录，回放由 /api/session 的 goal 字段补上
+      if (ev.goal) {
+        sessionGoals.set(turnSid, ev.goal);
+        if (turnSid === sessionId) renderGoalCard();
       }
     } else if (ev.type === "title") {
       // 服务端给首轮任务起的短标题（截断标题太丑）；不进 transcript，回放不经过这里
@@ -1855,26 +1877,70 @@ async function refreshSettingsCache() {
   settingsCache = await fetch("/api/settings").then(r => r.json()).catch(() => null);
   if (settingsCache && settingsCache.error) settingsCache = null; // 未登录时 401 JSON，不当配置用
   if (settingsCache) {
-    document.getElementById("model-label").textContent = settingsCache.active_model;
+    updateModelLabel();
     document.getElementById("ws-label").textContent = settingsCache.workspace_dir.split(/[\\/]/).pop() || "工作空间";
     renderModelMenu();
     renderWsMenu();
   }
 }
+// 这个选择器只管「当前对话」用哪个模型，不动全局默认（全局默认在 设置 → 模型 里改）。
+// 每个对话可以各选各的：切换对话时标签跟着换，别的对话完全不受影响
+function currentSessModel() {
+  return sessionId === null ? pendingModel : sessionModels.get(sessionId);
+}
+function updateModelLabel() {
+  if (!settingsCache) return;
+  const ov = currentSessModel();
+  document.getElementById("model-label").textContent = ov || settingsCache.active_model;
+  renderModelMenu();
+}
+async function setSessionModel(name) { // name: 模型名；null = 跟随全局默认
+  if (sessionId === null) { pendingModel = name || undefined; updateModelLabel(); return; }
+  try {
+    const r = await fetch("/api/session/" + encodeURIComponent(sessionId) + "/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());
+    if (r && r.error) return toast("⚠️ " + r.error);
+    if (name) sessionModels.set(sessionId, name); else sessionModels.delete(sessionId);
+  } catch {}
+  updateModelLabel();
+}
 function renderModelMenu() {
-  modelMenu.innerHTML = settingsCache.models.map(m => {
-    const on = m.name === settingsCache.active_model;
-    return `<div class="mi ${on ? "on" : ""}" data-name="${esc(m.name)}" style="justify-content:space-between">
+  if (!settingsCache) return;
+  const ov = currentSessModel();
+  modelMenu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
+      <span>↺ 跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}</span></span>${ov ? "" : '<span style="color:var(--wb-ok)">✓</span>'}</div>`
+    + settingsCache.models.map(m => {
+      const on = m.name === ov;
+      return `<div class="mi ${on ? "on" : ""}" data-name="${esc(m.name)}" style="justify-content:space-between">
       <span>✦ ${esc(m.name)} <span class="sub">${esc(m.model)}${m.api_key ? "" : " · ⚠ 未填Key"}</span></span>
       ${on ? '<span style="color:var(--wb-ok)">✓</span>' : ""}</div>`;
-  }).join("")
+    }).join("")
     + `<div class="mi" data-act="manage" style="border-top:1px solid var(--wb-border);margin-top:4px">⚙️ 管理模型…</div>`;
   modelMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
     modelMenu.classList.remove("show");
     if (mi.dataset.act === "manage") return openModal("settings", "models");
-    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active_model: mi.dataset.name }) });
-    refreshSettingsCache();
+    await setSessionModel(mi.dataset.act === "default" ? null : mi.dataset.name);
   });
+}
+
+// ================= Goal 目标卡 =================
+function renderGoalCard() {
+  const card = document.getElementById("goal-card");
+  const g = sessionId && sessionGoals.get(sessionId);
+  if (!g || g.status === "closed") { card.style.display = "none"; card.innerHTML = ""; return; }
+  const doneN = g.criteria.filter(c => c.done).length;
+  card.style.display = "";
+  card.innerHTML = `
+    <div class="gc-head">
+      <span class="gc-title">🎯 ${esc(g.text)}</span>
+      <span class="gc-meta">${g.status === "done" ? '<span class="gc-done">已达成 ✓</span>' : `${doneN}/${g.criteria.length} · 第 ${g.round || 0} 轮`}</span>
+      <button class="gc-close" title="归档目标（不再显示，也不再按它验收）">✕</button>
+    </div>
+    <div class="gc-list">${g.criteria.map(c => `<div class="gc-item ${c.done ? "ok" : ""}">${c.done ? "✅" : "⬜"} ${esc(c.text)}</div>`).join("")}</div>`;
+  card.querySelector(".gc-close").onclick = async () => {
+    try { await fetch("/api/session/" + encodeURIComponent(sessionId) + "/goal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "close" }) }); } catch {}
+    g.status = "closed";
+    renderGoalCard();
+  };
 }
 
 // ================= 工作空间选择（快捷栏，仿官方"选择工作空间"） =================
@@ -1906,12 +1972,13 @@ refreshSettingsCache();
 
 // ================= 模式选择（快捷栏"默认权限"式下拉） =================
 const modeMenu = setupPicker("mode-btn", "mode-menu");
-const MODE_LABEL = { craft: "✅ Craft · 执行", plan: "🗺️ Plan · 规划", ask: "💬 Ask · 问答" };
+const MODE_LABEL = { craft: "✅ Craft · 执行", goal: "🎯 Goal · 目标", plan: "🗺️ Plan · 规划", ask: "💬 Ask · 问答" };
 function setMode(mode) {
   currentMode = mode;
   document.getElementById("mode-label").textContent = MODE_LABEL[mode].slice(2).trim();
   modeMenu.querySelectorAll(".mi").forEach(x => x.classList.toggle("on", x.dataset.mode === mode));
   inputEl.placeholder = mode === "ask" ? "问我任何问题（不会修改文件）…"
+    : mode === "goal" ? "描述你的目标，我拆成验收标准，没达成自动接着跑…"
     : mode === "plan" ? "描述任务，我先给你出执行计划…"
     : "今天帮你做些什么？可以让我处理数据、写报告、做 PPT、联网调研…";
 }
@@ -1980,6 +2047,10 @@ document.getElementById("history").addEventListener("click", async (e) => {
   chatCol.innerHTML = "";
   const data = await fetch("/api/session/" + encodeURIComponent(sessionId)).then(r => r.json()).catch(() => ({ transcript: [] }));
   if (data.dir && sessionDirs.get(sessionId) !== data.dir) { sessionDirs.set(sessionId, data.dir); openDirs.add(data.dir); renderFiles(filesCache); }
+  if (data.model) sessionModels.set(sessionId, data.model); else sessionModels.delete(sessionId);
+  updateModelLabel();
+  if (data.goal) sessionGoals.set(sessionId, data.goal); else sessionGoals.delete(sessionId);
+  renderGoalCard();
   let transcript = data.transcript || [];
   // 该会话有任务正在后台跑：回放只到本轮之前，正在跑的这轮把"活的"回合元素接回来
   //（它切走期间一直在后台收事件更新，接上就是完整直播，不用回放+续流拼接）
@@ -2012,6 +2083,9 @@ document.getElementById("history").addEventListener("click", async (e) => {
 document.getElementById("new-task").onclick = () => {
   closeAssistView();
   sessionId = null;
+  pendingModel = undefined;
+  updateModelLabel();
+  renderGoalCard();
   pvPanel.classList.remove("show"); pvCurrent = null;
   document.getElementById("files-panel").classList.remove("show");
   updateSendUI(); // 新对话不是忙态：别的对话在跑也能立刻并行发任务
@@ -2183,6 +2257,7 @@ async function doSend(text, mode, regen) {
     sessions.unshift({ id: sessionId, title: text.slice(0, 24), at: Date.now(), project: activeProject });
     saveSessions();
     document.getElementById("session-title").textContent = text.slice(0, 24);
+    if (pendingModel) { const pm = pendingModel; pendingModel = undefined; await setSessionModel(pm); }
   }
   await runTurn(sessionId, text, mode, regen);
 }
@@ -2280,6 +2355,8 @@ async function reattachRunning() {
     let data = null;
     try { data = await fetch("/api/session/" + encodeURIComponent(sid)).then((r) => r.json()); } catch {}
     if (data && data.dir) sessionDirs.set(sid, data.dir);
+    if (data && data.model) sessionModels.set(sid, data.model);
+    if (data && data.goal) sessionGoals.set(sid, data.goal);
     const t = (data && data.transcript) || [];
     const lastUser = t.map((e) => e.type).lastIndexOf("user");
     if (lastUser < 0) continue;
@@ -3191,6 +3268,9 @@ function openPageView(kind) {
   assistViewOn = true;
   pageKind = kind;
   sessionId = null;
+  pendingModel = undefined;
+  updateModelLabel();
+  renderGoalCard();
   document.getElementById("session-title").textContent = v.title;
   document.querySelector(".input-wrap").style.display = v.keepInput ? "" : "none";
   if (kind === "assist") inputEl.placeholder = "直接给助理发消息，和 IM 里 @它 一样，任务在本机执行…";
