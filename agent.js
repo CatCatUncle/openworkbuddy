@@ -384,7 +384,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - 需要审批的危险动作（删除、sudo、碰黑名单文件）系统会自己弹窗拦，不用你在文字里预先请示。`;
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir }) {
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride }) {
     if (tc.name === "use_skill") {
       const skills = getSkills();
       const skill = skills.find((s) => s.name === (tc.input.name || "").trim());
@@ -432,6 +432,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         stats, // 专家消耗的 token 计入同一笔账
         stopSignal, // 「停止」信号穿透到专家子代理
         sec, // 权限档位覆盖也一并继承
+        llmOverride, // 对话选的模型，专家也用同一个
       });
       emit({ type: "expert_done", expert: expert.name });
       return { content: `【专家 ${expert.name} 的汇报】\n${sub.finalText || "(无文字汇报)"}`, isError: false };
@@ -477,6 +478,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           stats,
           stopSignal,
           sec,
+          llmOverride,
         });
         emit({ type: "expert_done", expert: m.name, team: team.name });
         reports.push({ name: m.name, text: sub.finalText || "(无文字汇报)" });
@@ -508,7 +510,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
    * 强制收尾时的最后一句话。不给工具、单独一小段超时预算（撞的就是时间上限，不能再等 5 分钟），
    * 失败就悄悄算了——收尾说明没拿到，也不该把整个任务变成一次报错。
    */
-  async function wrapUp({ history, system, stopNote, emit, depth, stats }) {
+  async function wrapUp({ history, system, stopNote, emit, depth, stats, llmOverride }) {
     history.push({
       role: "user",
       content: `【系统】任务已到上限被强制收尾（${stopNote}）。现在不要再调用任何工具，直接给用户一段收尾说明：
@@ -519,7 +521,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     });
     try {
       trimHistory(history, config.agent.max_context_chars || 120000); // 最后一次工具输出可能刚把上下文顶爆，先压一压
-      const result = await llm.chat({
+      const result = await (llmOverride || llm).chat({
         system,
         history,
         tools: [],
@@ -612,7 +614,8 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   const fileClaims = new Map(); // name -> { owner, mtime }
   let runSeq = 0;
 
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride }) {
+    const L = llmOverride || llm; // 按对话选的模型：整棵任务树（含专家）都用它
     if (!runToken) runToken = ++runSeq; // 专家子任务从父任务继承，同一任务树内不互相抢认领
     // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设
     const projBlock = projectContext ? `\n\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${projectContext}` : "";
@@ -698,7 +701,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         : stallCtl.signal;
       let result;
       try {
-        result = await llm.chat({
+        result = await L.chat({
           system,
           history,
           tools,
@@ -765,7 +768,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           purpose: tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
           input_preview: previewInput(tc),
         });
-        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir });
+        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L });
         emit({
           type: "tool_result",
           id: tc.id,
@@ -804,7 +807,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       // 撞上限时，finalText 往往是半句过程叙述（"我先看一下这个文件"），直接抛给用户等于没有交代。
       // 再花一次调用让它把话说完：做到哪、有什么、还差什么。手动停止的不做——用户喊停就是不想再花钱。
       if (!(stopSignal && stopSignal.aborted)) {
-        const wrapped = await wrapUp({ history, system, stopNote, emit, depth, stats });
+        const wrapped = await wrapUp({ history, system, stopNote, emit, depth, stats, llmOverride: L });
         if (wrapped) finalText = wrapped;
       }
       const notice = `⚠️ ${stopNote}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
@@ -818,7 +821,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       elapsed_ms: Date.now() - stats.startedAt,
     };
     if (depth === 0) {
-      emit({ type: "usage", model: llm.model, provider: llm.provider, ...usage });
+      emit({ type: "usage", model: L.model, provider: L.provider, ...usage });
     }
     return { finalText, usage };
   }

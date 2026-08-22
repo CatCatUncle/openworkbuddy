@@ -65,6 +65,20 @@ const llm = {
   get model() { return llmInner.model; },
   chat: (args) => llmInner.chat(args),
 };
+/** 按对话覆盖模型：会话里选过就用会话的，没选跟全局默认。
+ *  选过的模型已被从列表删掉 → 明确报错，绝不悄悄换成别的模型跑 */
+function llmForSession(sess) {
+  const name = sess && sess.model;
+  if (!name) return llm;
+  if (Array.isArray(config.models) && config.models.some((m) => m.name === name)) {
+    return createLLM({ ...config, active_model: name });
+  }
+  return {
+    provider: name,
+    model: name,
+    chat: () => Promise.reject(new Error(`该对话指定的模型「${name}」已不在模型列表里。点输入框右下角的模型按钮重新选一个，或选「跟随全局默认」。`)),
+  };
+}
 // 专家团：数组引用被 runtime 闭包持有，增删改都就地改这个数组（热生效，无需重启）
 const EXPERTS_FILE = path.join(__dirname, "experts.json");
 const experts = [];
@@ -122,6 +136,70 @@ function autosaveSession(id, minGapMs = 5000) {
 const imSessions = createImSessionStore({ dir: path.join(__dirname, "data", "im-sessions") });
 
 /** 包装 emit：把事件同时记录到 transcript（文本增量合并，跳过噪音事件），顺便中途存盘 */
+// ---------- Goal 目标模式 ----------
+// 用户给一个目标，先拆成可验收的标准，跑完一轮就对着标准验收，没达标自动再跑（最多 GOAL_MAX_ROUNDS 轮）。
+// 验收宁严勿宽：拿不准一律算未达成——目标卡上打了勾就必须是真的
+const GOAL_MAX_ROUNDS = 3;
+
+function goalFileInventory(sess) {
+  try {
+    if (!sess.dir) return "（本对话还没有成果文件夹）";
+    const dir = path.join(getWorkspaceDir(), sess.dir);
+    const names = fs.readdirSync(dir).filter((n) => !n.startsWith("."));
+    if (!names.length) return "（成果文件夹是空的）";
+    return names.slice(0, 40).map((n) => {
+      try { const st = fs.statSync(path.join(dir, n)); return `${n}（${st.isDirectory() ? "目录" : st.size + " 字节"}）`; }
+      catch { return n; }
+    }).join("\n");
+  } catch { return "（读取成果文件夹失败）"; }
+}
+
+function parseJsonLoose(text) {
+  const m = String(text || "").match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch { return null; }
+}
+
+/** 把目标拆成 3~6 条可验收标准。失败就用目标原文当唯一标准，绝不让任务卡在拆解上 */
+async function deriveGoalCriteria(sessLLM, goalText, total) {
+  try {
+    const r = await sessLLM.chat({
+      system: '你是验收标准拆解器。把用户的目标拆成 3~6 条具体、可客观核验的验收标准（每条都能对着成果文件/事实判真假，不写"尽量""良好"这种没法验收的词）。只输出 JSON：{"criteria":["标准1","标准2"]}，不要其它任何文字。',
+      history: [{ role: "user", content: String(goalText).slice(0, 2000) }],
+      tools: [],
+      signal: AbortSignal.timeout(30000),
+    });
+    if (r.usage) { total.prompt += r.usage.prompt; total.completion += r.usage.completion; total.calls++; }
+    const j = parseJsonLoose(r.text);
+    const list = (j && Array.isArray(j.criteria) ? j.criteria : []).map((c) => String(c).trim()).filter(Boolean).slice(0, 6);
+    if (list.length) return list;
+  } catch {}
+  return [String(goalText).slice(0, 200)];
+}
+
+/** 对着验收标准验一轮。只认成果文件清单和收尾汇报，拿不准算 false；验收调用挂了就全部保持原状 */
+async function verifyGoal(sess, sessLLM, finalText, total) {
+  const goal = sess.goal;
+  const undone = goal.criteria.map((c, i) => ({ i, c })).filter((x) => !x.c.done);
+  if (!undone.length) return;
+  try {
+    const r = await sessLLM.chat({
+      system: '你是验收员。根据成果文件清单和执行汇报，逐条判断验收标准是否已达成。证据不足一律 false，宁可漏判不可错判。只输出 JSON：{"results":[{"i":0,"done":true},{"i":1,"done":false}]}，i 是标准编号。',
+      history: [{ role: "user", content:
+        `【目标】${goal.text}\n\n【待验收标准】\n${undone.map((x) => `${x.i}. ${x.c.text}`).join("\n")}\n\n【成果文件清单】\n${goalFileInventory(sess)}\n\n【执行汇报】\n${String(finalText || "（无）").slice(0, 3000)}` }],
+      tools: [],
+      signal: AbortSignal.timeout(45000),
+    });
+    if (r.usage) { total.prompt += r.usage.prompt; total.completion += r.usage.completion; total.calls++; }
+    const j = parseJsonLoose(r.text);
+    for (const it of (j && Array.isArray(j.results) ? j.results : [])) {
+      const c = goal.criteria[it.i];
+      if (c && it.done === true) c.done = true;
+    }
+  } catch {}
+  if (goal.criteria.every((c) => c.done)) goal.status = "done";
+}
+
 function recordingEmit(send, events, sessionId) {
   return (ev) => {
     send(ev);
@@ -1448,6 +1526,7 @@ app.post("/api/chat", async (req, res) => {
 
   const sess = getSession(sessionId);
   if (user && !sess.user) sess.user = user.username;
+  const sessLLM = llmForSession(sess); // 本对话生效的模型（含专家子代理、标题、记账）
   if (regen) {
     // 重新生成：回滚掉最后一轮（用户消息及其后的所有内容），下面会把同一条消息重新入队
     const lastUser = sess.history.map((h) => h.role).lastIndexOf("user");
@@ -1470,7 +1549,7 @@ app.post("/api/chat", async (req, res) => {
   // 跟任务并行跑，任务收尾时基本已就绪，不给任务加等待；花的 token 记进同一笔账
   let titleP = null;
   if (sess.transcript.filter((e) => e.type === "user").length === 1) {
-    titleP = llm
+    titleP = sessLLM
       .chat({
         system: "你给任务起标题。只输出 6~14 个字的中文短标题概括这个任务，不要引号、标点、任何前后缀。",
         history: [{ role: "user", content: String(message).slice(0, 500) }],
@@ -1499,32 +1578,65 @@ app.post("/api/chat", async (req, res) => {
     taskBaseDir = sess.dir;
   }
   if (taskBaseDir) send({ type: "dir", dir: taskBaseDir }); // 成果面板标「本对话」用；不进回放记录
+  // Goal 模式：第一次用目标消息建目标（拆成验收标准）；已有进行中的目标就直接接着冲
+  const goalMode = mode === "goal";
+  if (goalMode && (!sess.goal || sess.goal.status !== "active")) {
+    const criteria = await deriveGoalCriteria(sessLLM, message, total);
+    sess.goal = { text: String(message).slice(0, 500), criteria: criteria.map((t) => ({ text: t, done: false })), status: "active", round: 0 };
+    autosaveSession(sessionId, 0);
+  }
+  if (sess.goal) send({ type: "goal", goal: sess.goal }); // 目标卡状态直播；不进回放记录（回放时从会话里取）
   try {
-    // 任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
-    for (;;) {
-      const r = await runtime.runTask({
-        taskLabel: sess.title || String(message).slice(0, 24),
-        baseDir: taskBaseDir,
-        history: sess.history,
-        emit: emitFn,
-        mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",
-        user: user ? user.username : undefined,
-        projectContext: projectContextOf(activeProject()),
-        stopSignal: runState.ctrl.signal,
-        getInterject: () => runState.interject.splice(0),
-      });
-      if (r && r.usage) {
-        total.prompt += r.usage.prompt;
-        total.completion += r.usage.completion;
-        total.calls += r.usage.calls;
-        total.elapsed_ms += r.usage.elapsed_ms;
+    // 外层：目标轮（普通消息只走一轮；goal 模式没达标自动再跑，最多 GOAL_MAX_ROUNDS 轮）
+    let lastFinal = "";
+    for (let goalRound = 0; ; goalRound++) {
+      // 进行中的目标注入任务上下文：agent 每一轮都对着验收标准干活，不跑偏
+      let goalCtx = "";
+      if (sess.goal && sess.goal.status === "active") {
+        goalCtx = `\n\n## 本对话的目标（Goal 模式）\n目标：${sess.goal.text}\n验收标准（打勾的已达成，别重做）：\n` +
+          sess.goal.criteria.map((c, i) => `${i + 1}. [${c.done ? "✓" : " "}] ${c.text}`).join("\n") +
+          `\n交付物必须能通过未达成的验收标准。`;
       }
-      const leftover = runState.interject.splice(0);
-      if (!leftover.length || runState.ctrl.signal.aborted) break;
-      for (const m of leftover) {
-        sess.history.push({ role: "user", content: m });
-        emitFn({ type: "interject", text: m });
+      // 内层：任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
+      for (;;) {
+        const r = await runtime.runTask({
+          taskLabel: sess.title || String(message).slice(0, 24),
+          baseDir: taskBaseDir,
+          llmOverride: sessLLM,
+          history: sess.history,
+          emit: emitFn,
+          mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",
+          user: user ? user.username : undefined,
+          projectContext: (projectContextOf(activeProject()) || "") + goalCtx,
+          stopSignal: runState.ctrl.signal,
+          getInterject: () => runState.interject.splice(0),
+        });
+        if (r && r.usage) {
+          total.prompt += r.usage.prompt;
+          total.completion += r.usage.completion;
+          total.calls += r.usage.calls;
+          total.elapsed_ms += r.usage.elapsed_ms;
+        }
+        if (r && r.finalText) lastFinal = r.finalText;
+        const leftover = runState.interject.splice(0);
+        if (!leftover.length || runState.ctrl.signal.aborted) break;
+        for (const m of leftover) {
+          sess.history.push({ role: "user", content: m });
+          emitFn({ type: "interject", text: m });
+        }
       }
+      // 没有进行中的目标 / 用户已手动停止 → 不验收不加轮
+      if (!sess.goal || sess.goal.status !== "active" || runState.ctrl.signal.aborted) break;
+      await verifyGoal(sess, sessLLM, lastFinal, total);
+      sess.goal.round = (sess.goal.round || 0) + 1;
+      send({ type: "goal", goal: sess.goal });
+      autosaveSession(sessionId, 0);
+      if (!goalMode || sess.goal.status === "done" || goalRound + 1 >= GOAL_MAX_ROUNDS) break;
+      // 没达标 → 把未达成项作为下一轮指令，接着冲（进回放记录，回放时能看懂为什么又跑了一轮）
+      const unmet = sess.goal.criteria.filter((c) => !c.done).map((c) => "· " + c.text).join("\n");
+      const fb = `【目标验收 · 第 ${sess.goal.round} 轮】以下验收标准还没达成：\n${unmet}\n只补这些未达成项，别重做已达成的部分。`;
+      sess.history.push({ role: "user", content: fb });
+      emitFn({ type: "interject", text: fb });
     }
   } catch (e) {
     send({ type: "error", message: e.message });
@@ -1535,7 +1647,7 @@ app.post("/api/chat", async (req, res) => {
 
   // 记账：按整个任务（含插队追加轮）的总 tokens 扣积分
   if (user && total.calls > 0) {
-    const spent = account.chargeRun(user, { ...total, model: llm.model, provider: llm.provider, source: "web", sessionId });
+    const spent = account.chargeRun(user, { ...total, model: sessLLM.model, provider: sessLLM.provider, source: "web", sessionId });
     // 不限额时 spent 是 0，就别在结果下面挂一行「扣 0 积分」了，那只是噪声
     if (spent > 0) emitFn({ type: "credits", spent, balance: user.credits });
   }
@@ -1600,7 +1712,34 @@ app.get("/api/chat/stream/:id", (req, res) => {
 // 历史会话回放
 app.get("/api/session/:id", (req, res) => {
   const s = getSession(req.params.id);
-  res.json({ transcript: s.transcript, dir: s.dir || null });
+  res.json({ transcript: s.transcript, dir: s.dir || null, model: s.model || null, goal: s.goal || null });
+});
+
+// 归档目标：目标卡上点 ✕。已达成/不想要了都走这里，不删记录只改状态
+app.post("/api/session/:id/goal", (req, res) => {
+  const s = getSession(req.params.id);
+  if (!s.goal) return res.status(400).json({ error: "该对话没有目标" });
+  if ((req.body || {}).action === "close") {
+    s.goal.status = "closed";
+    saveSession(req.params.id);
+  }
+  res.json({ ok: true, goal: s.goal });
+});
+
+// 给单个对话指定模型（null = 跟随全局默认）。只影响这一个对话，不动全局 active_model
+app.post("/api/session/:id/model", (req, res) => {
+  const name = (req.body || {}).model;
+  const s = getSession(req.params.id);
+  if (name === null || name === undefined || name === "") {
+    delete s.model;
+  } else {
+    if (!Array.isArray(config.models) || !config.models.some((m) => m.name === name)) {
+      return res.status(400).json({ error: `模型「${name}」不在模型列表里` });
+    }
+    s.model = String(name);
+  }
+  saveSession(req.params.id);
+  res.json({ ok: true, model: s.model || null });
 });
 
 // 删除会话（内存 + 磁盘一起删）
