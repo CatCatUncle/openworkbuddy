@@ -823,7 +823,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     if (depth === 0) {
       emit({ type: "usage", model: L.model, provider: L.provider, ...usage });
     }
-    return { finalText, usage };
+    return { finalText, usage, stopped: stopNote || null };
   }
 
   return { runTask, getSkills };
