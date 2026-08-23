@@ -1589,7 +1589,9 @@ app.post("/api/chat", async (req, res) => {
   try {
     // 外层：目标轮（普通消息只走一轮；goal 模式没达标自动再跑，最多 GOAL_MAX_ROUNDS 轮）
     let lastFinal = "";
+    let roundStopped = null; // 本目标轮里任务被强制收尾的原因（超时/上限/手停）；有它就不再自动开新轮
     for (let goalRound = 0; ; goalRound++) {
+      roundStopped = null;
       // 进行中的目标注入任务上下文：agent 每一轮都对着验收标准干活，不跑偏
       let goalCtx = "";
       if (sess.goal && sess.goal.status === "active") {
@@ -1618,6 +1620,7 @@ app.post("/api/chat", async (req, res) => {
           total.elapsed_ms += r.usage.elapsed_ms;
         }
         if (r && r.finalText) lastFinal = r.finalText;
+        if (r && r.stopped) roundStopped = r.stopped;
         const leftover = runState.interject.splice(0);
         if (!leftover.length || runState.ctrl.signal.aborted) break;
         for (const m of leftover) {
@@ -1632,6 +1635,11 @@ app.post("/api/chat", async (req, res) => {
       send({ type: "goal", goal: sess.goal });
       autosaveSession(sessionId, 0);
       if (!goalMode || sess.goal.status === "done" || goalRound + 1 >= GOAL_MAX_ROUNDS) break;
+      // 这轮是被超时/上限硬切断的：同样的条件再跑一轮大概率原样再撞，别把用户的时间和钱烧在死循环里
+      if (roundStopped) {
+        emitFn({ type: "interject", text: `【目标验收】这轮任务被强制收尾（${roundStopped}），暂停自动补跑。解决后可以直接说「继续」接着冲目标。` });
+        break;
+      }
       // 没达标 → 把未达成项作为下一轮指令，接着冲（进回放记录，回放时能看懂为什么又跑了一轮）
       const unmet = sess.goal.criteria.filter((c) => !c.done).map((c) => "· " + c.text).join("\n");
       const fb = `【目标验收 · 第 ${sess.goal.round} 轮】以下验收标准还没达成：\n${unmet}\n只补这些未达成项，别重做已达成的部分。`;

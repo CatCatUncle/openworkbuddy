@@ -299,6 +299,11 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
       if (chunk.usage) usage = { prompt: chunk.usage.prompt_tokens || 0, completion: chunk.usage.completion_tokens || 0 };
       const choice = chunk.choices && chunk.choices[0];
       if (!choice) continue;
+      // 错误还有一种挂在 choice 上的姿势：{"choices":[{"finish_reason":"error","error":{...}}]}
+      if (choice.error || choice.finish_reason === "error") {
+        const ce = choice.error || {};
+        throw new Error(`LLM 接口错误 ${ce.code || 502}: ${ce.message || "上游在流中途报错（finish_reason=error）"}`);
+      }
       if (choice.finish_reason) finishReason = choice.finish_reason;
       const delta = choice.delta || {};
       if (delta.content) {
@@ -338,7 +343,7 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
 
   // 整条流走完却什么都没有（没正文/没工具调用/没记账/没结束原因）：典型是连上之后立刻被掐断，
   // 或上游异常但没走错误载荷。当失败抛出去让重试接手——以前这里返回空结果，agent 会当成「模型答完了」正常收尾
-  if (!text && !toolCalls.length && !usage && !finishReason) {
+  if (!text && !toolCalls.length && !usage) {
     throw new Error("LLM 返回了空响应（连接建立后没有收到任何内容，上游服务或网络异常）");
   }
   return { text, toolCalls, stopReason: finishReason, usage };

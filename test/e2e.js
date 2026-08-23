@@ -1452,6 +1452,14 @@ async function testLlmStreamFailures() {
       res.write("data: [DONE]\n\n");
     } else if (req.url.startsWith("/empty")) {
       res.write("data: [DONE]\n\n");
+    } else if (req.url.startsWith("/cherr")) {
+      // 错误挂在 choice 上的变种：finish_reason:"error"（OpenRouter 真实姿势之一）
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "error", error: { code: 502, message: "provider crashed" } }] })}\n\n`);
+      res.write("data: [DONE]\n\n");
+    } else if (req.url.startsWith("/finonly")) {
+      // 只给 finish_reason 不给任何内容和 usage（2026-08-24 02:43 真实翻车样本）：也必须算空响应
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      res.write("data: [DONE]\n\n");
     } else {
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "你好" } }] })}\n\n`);
       res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 2 } })}\n\n`);
@@ -1465,11 +1473,13 @@ async function testLlmStreamFailures() {
   const args = { system: "s", history: [{ role: "user", content: "hi" }], tools: [] };
   await assert.rejects(() => openaiChat(cfgFor("err"), args), /LLM 接口错误 429[\s\S]*rate limited/, "流内 error 载荷该抛错");
   await assert.rejects(() => openaiChat(cfgFor("empty"), args), /空响应/, "空流该抛错而不是当成功");
+  await assert.rejects(() => openaiChat(cfgFor("cherr"), args), /LLM 接口错误 502[\s\S]*provider crashed/, "choice 级错误该抛错");
+  await assert.rejects(() => openaiChat(cfgFor("finonly"), args), /空响应/, "只给 finish_reason 的空流该抛错");
   const ok = await openaiChat(cfgFor("ok"), args);
   assert.strictEqual(ok.text, "你好", "正常流被误伤");
   assert.strictEqual(ok.usage.completion, 2, "正常流 usage 没带回来");
   srv.close();
-  console.log("✅ LLM 流式健壮性：流内错误载荷抛错 / 空流当失败（可重试） / 正常流不误伤");
+  console.log("✅ LLM 流式健壮性：流内/choice 级错误抛错 / 空流与只给 finish_reason 都算失败（可重试） / 正常流不误伤");
 }
 
 function testLeakedToolCallRescue() {
