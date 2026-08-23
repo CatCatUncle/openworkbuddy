@@ -691,10 +691,17 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       const stallMs = Math.max(10000, Math.min(deadline - Date.now(), config.agent.llm_timeout_ms || 300000));
       const stallCtl = new AbortController();
       let stallTimer = setTimeout(() => stallCtl.abort(), stallMs);
+      let lastData = Date.now();
       const onActivity = () => {
+        lastData = Date.now();
         clearTimeout(stallTimer);
         stallTimer = setTimeout(() => stallCtl.abort(), stallMs);
       };
+      // 模型迟迟不吐字时界面完全静止，用户分不清「在想」和「挂了」——超过一分钟就报安静了多久
+      const heartbeat = setInterval(() => {
+        const quiet = Math.round((Date.now() - lastData) / 1000);
+        if (quiet >= 60) emit({ type: "status", text: `模型已 ${quiet} 秒没有输出，仍在等待（连续 ${Math.round(stallMs / 1000)} 秒无输出将判定挂起并停止）`, depth });
+      }, 30000);
       const budgetSignal = AbortSignal.timeout(Math.max(10000, deadline - Date.now()));
       const signal = AbortSignal.any
         ? AbortSignal.any([stallCtl.signal, budgetSignal, ...(stopSignal ? [stopSignal] : [])])
@@ -707,6 +714,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           tools,
           signal,
           onActivity,
+          onStatus: (text) => emit({ type: "status", text, depth }),
           onTextDelta: (delta) => emit({ type: "text", delta, depth }),
         });
       } catch (e) {
@@ -722,6 +730,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         throw e;
       } finally {
         clearTimeout(stallTimer);
+        clearInterval(heartbeat);
       }
 
       if (result.usage) {
@@ -806,7 +815,8 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       emit({ type: "limit", note: stopNote, depth });
       // 撞上限时，finalText 往往是半句过程叙述（"我先看一下这个文件"），直接抛给用户等于没有交代。
       // 再花一次调用让它把话说完：做到哪、有什么、还差什么。手动停止的不做——用户喊停就是不想再花钱。
-      if (!(stopSignal && stopSignal.aborted)) {
+      // 手动停止不花钱；模型响应超时也跳过——模型都挂起了，再拿它写收尾只是多等一轮超时
+      if (!(stopSignal && stopSignal.aborted) && !stopNote.startsWith("模型响应超时")) {
         const wrapped = await wrapUp({ history, system, stopNote, emit, depth, stats, llmOverride: L });
         if (wrapped) finalText = wrapped;
       }

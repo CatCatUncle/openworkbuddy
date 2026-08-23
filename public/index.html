@@ -1130,6 +1130,16 @@ function createTurnUI(userText, turnMode, forSid) {
       // 首步的提示放正文（此时还没有过程区，别为它建一个）；后续步的提示进过程区
       (procBody || body).appendChild(hint);
       currentText = null;
+    } else if (ev.type === "status") {
+      // 运行状态直播（重试中/模型长时间没输出）：复用思考提示那一行，别让界面看起来像卡死
+      let hint = body.querySelector(".thinking-hint");
+      if (!hint) {
+        hint = document.createElement("div");
+        hint.className = "thinking-hint";
+        hint.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0;display:flex;align-items:center;gap:6px";
+        (procBody || body).appendChild(hint);
+      }
+      hint.innerHTML = `<span class="spinner"></span> ${esc(ev.text || "")}`;
     } else if (ev.type === "text") {
       if (ev.depth > 0) return;
       body.querySelector(".thinking-hint")?.remove();
