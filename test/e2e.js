@@ -1441,6 +1441,37 @@ function testCollectSources() {
   console.log("✅ 来源：只收录真访问到的页面（抓失败/本地文件/非联网工具一律不计）通过");
 }
 
+// 网关 HTTP 200 之后流里才给错误 / 直接断流给空——都必须抛错，不能当成「模型答了个空」
+async function testLlmStreamFailures() {
+  const { openaiChat } = require("../llm")._internals;
+  const http = require("http");
+  const srv = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    if (req.url.startsWith("/err")) {
+      res.write(`data: ${JSON.stringify({ error: { code: 429, message: "rate limited by upstream" } })}\n\n`);
+      res.write("data: [DONE]\n\n");
+    } else if (req.url.startsWith("/empty")) {
+      res.write("data: [DONE]\n\n");
+    } else {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "你好" } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 2 } })}\n\n`);
+      res.write("data: [DONE]\n\n");
+    }
+    res.end();
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  const cfgFor = (prefix) => ({ base_url: `http://127.0.0.1:${port}/${prefix}`, api_key: "k", model: "m" });
+  const args = { system: "s", history: [{ role: "user", content: "hi" }], tools: [] };
+  await assert.rejects(() => openaiChat(cfgFor("err"), args), /LLM 接口错误 429[\s\S]*rate limited/, "流内 error 载荷该抛错");
+  await assert.rejects(() => openaiChat(cfgFor("empty"), args), /空响应/, "空流该抛错而不是当成功");
+  const ok = await openaiChat(cfgFor("ok"), args);
+  assert.strictEqual(ok.text, "你好", "正常流被误伤");
+  assert.strictEqual(ok.usage.completion, 2, "正常流 usage 没带回来");
+  srv.close();
+  console.log("✅ LLM 流式健壮性：流内错误载荷抛错 / 空流当失败（可重试） / 正常流不误伤");
+}
+
 function testLeakedToolCallRescue() {
   const { rescueLeakedToolCalls, createLeakGuard } = require("../llm")._internals;
   // DeepSeek 经中转层时的真实翻车样本：工具调用的特殊 token 被当正文解码了
@@ -1639,6 +1670,7 @@ async function main() {
   await testPermissionModes();
   testMemoryLayer();
   testLeakedToolCallRescue();
+  await testLlmStreamFailures();
   testCollectSources();
   testJsonStore();
   testImSessionStore();

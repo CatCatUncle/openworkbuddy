@@ -250,6 +250,9 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
 
   if (!useStream) {
     const data = await resp.json();
+    if (data.error) {
+      throw new Error(`LLM 接口错误 ${data.error.code || ""}: ${data.error.message || JSON.stringify(data.error).slice(0, 300)}`);
+    }
     return parseOpenAIChoice(
       data.choices && data.choices[0],
       onTextDelta,
@@ -286,6 +289,13 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
       // 任何解析成功的数据块都算「模型还活着」：正文、思考(reasoning)、工具参数流全在内。
       // 排队中的 keep-alive 注释行（如 OpenRouter 的 ": PROCESSING"）不带 data: 前缀，天然不算
       if (onActivity) onActivity();
+      // 网关（OpenRouter 等）常常 HTTP 200 之后把错误装在流里发过来：{"error":{...}}，没有 choices。
+      // 以前这里被 continue 静默跳过，整条流走完变成「空回答」，用户什么都看不到——必须抛出去
+      if (chunk.error) {
+        const code = chunk.error.code || chunk.error.status || "";
+        const emsg = chunk.error.message || JSON.stringify(chunk.error).slice(0, 300);
+        throw new Error(`LLM 接口错误 ${code}: ${emsg}`);
+      }
       if (chunk.usage) usage = { prompt: chunk.usage.prompt_tokens || 0, completion: chunk.usage.completion_tokens || 0 };
       const choice = chunk.choices && chunk.choices[0];
       if (!choice) continue;
@@ -326,6 +336,11 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
     }
   }
 
+  // 整条流走完却什么都没有（没正文/没工具调用/没记账/没结束原因）：典型是连上之后立刻被掐断，
+  // 或上游异常但没走错误载荷。当失败抛出去让重试接手——以前这里返回空结果，agent 会当成「模型答完了」正常收尾
+  if (!text && !toolCalls.length && !usage && !finishReason) {
+    throw new Error("LLM 返回了空响应（连接建立后没有收到任何内容，上游服务或网络异常）");
+  }
   return { text, toolCalls, stopReason: finishReason, usage };
 }
 
@@ -354,7 +369,7 @@ function parseOpenAIChoice(choice, onTextDelta, usage) {
 // ---------- 瞬时错误自动重试 ----------
 
 // 上游繁忙/限流/网关抖动（DeepSeek 高峰 503 最常见）；仅在还没吐出任何流式文字时重试，避免界面出现重复内容
-const RETRYABLE = /LLM 接口错误 (429|500|502|503|504)|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|terminated|other side closed/i;
+const RETRYABLE = /LLM 接口错误 (429|500|502|503|504)|LLM 返回了空响应|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|terminated|other side closed/i;
 const RETRY_DELAYS = [2000, 5000, 10000];
 
 async function chatWithRetry(fn, args) {
@@ -421,4 +436,4 @@ function createLLM(config) {
   throw new Error(`未知 provider: ${provider}（可选 anthropic / openai）`);
 }
 
-module.exports = { createLLM, _internals: { rescueLeakedToolCalls, createLeakGuard } };
+module.exports = { createLLM, _internals: { rescueLeakedToolCalls, createLeakGuard, openaiChat } };
