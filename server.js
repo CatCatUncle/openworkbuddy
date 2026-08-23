@@ -79,6 +79,9 @@ function llmForSession(sess) {
     chat: () => Promise.reject(new Error(`该对话指定的模型「${name}」已不在模型列表里。点输入框右下角的模型按钮重新选一个，或选「跟随全局默认」。`)),
   };
 }
+// 同一模型连续「整跑失败」计数（成功一次即清零）：连挂说明是模型/渠道本身的问题，光报错用户不知道该干嘛
+const modelFailStreak = new Map();
+
 // 专家团：数组引用被 runtime 闭包持有，增删改都就地改这个数组（热生效，无需重启）
 const EXPERTS_FILE = path.join(__dirname, "experts.json");
 const experts = [];
@@ -1647,11 +1650,18 @@ app.post("/api/chat", async (req, res) => {
       emitFn({ type: "interject", text: fb });
     }
   } catch (e) {
-    send({ type: "error", message: e.message });
-    asstEvents.push({ type: "error", message: e.message });
+    const streak = (modelFailStreak.get(sessLLM.provider) || 0) + 1;
+    modelFailStreak.set(sessLLM.provider, streak);
+    let emsg = e.message;
+    if (streak >= 2) {
+      emsg += `\n\n💡 模型「${sessLLM.provider}」已连续失败 ${streak} 次，多半是这个模型/渠道本身不可用：可以点输入框旁的模型按钮给本对话单独换一个，或到 设置 → 模型 换全局默认。`;
+    }
+    send({ type: "error", message: emsg });
+    asstEvents.push({ type: "error", message: emsg });
   } finally {
     activeRuns.delete(sessionId);
   }
+  if (total.calls > 0) modelFailStreak.delete(sessLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
 
   // 记账：按整个任务（含插队追加轮）的总 tokens 扣积分
   if (user && total.calls > 0) {

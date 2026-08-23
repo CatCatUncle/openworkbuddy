@@ -399,6 +399,10 @@ async function chatWithRetry(fn, args) {
         throw e;
       }
       console.warn(`[llm] 瞬时错误，${RETRY_DELAYS[attempt] / 1000}s 后重试（第 ${attempt + 1} 次）：${msg.slice(0, 120)}`);
+      // 重试以前在后台默默进行，用户只看到界面一动不动——报出去让前端显示
+      if (args.onStatus) {
+        try { args.onStatus(`上游出错，${RETRY_DELAYS[attempt] / 1000} 秒后自动重试（第 ${attempt + 1}/${RETRY_DELAYS.length} 次）：${msg.slice(0, 100)}`); } catch {}
+      }
       await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
     }
   }
