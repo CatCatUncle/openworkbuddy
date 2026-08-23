@@ -157,6 +157,30 @@ function goalFileInventory(sess) {
   } catch { return "（读取成果文件夹失败）"; }
 }
 
+/** 摘录最近改动的成果文件开头给验收员：光看文件名判「能不能用」纯靠猜，
+ *  看到内容开头至少能核对结构是不是真的（有没有画布/按键监听/两个角色…）。只读文本类文件，最多 5 个 */
+function goalFileSnippets(sess) {
+  try {
+    if (!sess.dir) return "";
+    const dir = path.join(getWorkspaceDir(), sess.dir);
+    const TEXT_EXT = /\.(html?|js|mjs|css|md|txt|json|py|ts|jsx|tsx|csv|svg)$/i;
+    const files = fs.readdirSync(dir)
+      .filter((n) => !n.startsWith(".") && TEXT_EXT.test(n))
+      .map((n) => {
+        try { const st = fs.statSync(path.join(dir, n)); return st.isFile() ? { n, mtime: st.mtimeMs, size: st.size } : null; }
+        catch { return null; }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, 5);
+    return files.map((f) => {
+      let head = "";
+      try { head = fs.readFileSync(path.join(dir, f.n), "utf8").slice(0, 600); } catch { head = "（读取失败）"; }
+      return `--- ${f.n}（共 ${f.size} 字节，以下是开头）---\n${head}`;
+    }).join("\n\n");
+  } catch { return ""; }
+}
+
 function parseJsonLoose(text) {
   const m = String(text || "").match(/\{[\s\S]*\}/);
   if (!m) return null;
@@ -185,11 +209,14 @@ async function verifyGoal(sess, sessLLM, finalText, total) {
   const goal = sess.goal;
   const undone = goal.criteria.map((c, i) => ({ i, c })).filter((x) => !x.c.done);
   if (!undone.length) return;
+  const snippets = goalFileSnippets(sess);
   try {
     const r = await sessLLM.chat({
       system: '你是验收员。根据成果文件清单和执行汇报，逐条判断验收标准是否已达成。证据不足一律 false，宁可漏判不可错判。只输出 JSON：{"results":[{"i":0,"done":true},{"i":1,"done":false}]}，i 是标准编号。',
       history: [{ role: "user", content:
-        `【目标】${goal.text}\n\n【待验收标准】\n${undone.map((x) => `${x.i}. ${x.c.text}`).join("\n")}\n\n【成果文件清单】\n${goalFileInventory(sess)}\n\n【执行汇报】\n${String(finalText || "（无）").slice(0, 3000)}` }],
+        `【目标】${goal.text}\n\n【待验收标准】\n${undone.map((x) => `${x.i}. ${x.c.text}`).join("\n")}\n\n【成果文件清单】\n${goalFileInventory(sess)}\n\n` +
+        (snippets ? `【成果文件内容摘录】\n${snippets}\n\n` : "") +
+        `【执行汇报】\n${String(finalText || "（无）").slice(0, 3000)}` }],
       tools: [],
       signal: AbortSignal.timeout(45000),
     });
