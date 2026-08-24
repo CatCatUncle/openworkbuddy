@@ -165,6 +165,10 @@ function historyChars(history) {
   return n;
 }
 
+// 「可重取」的工具结果：截掉不心疼——要用的时候再调一次工具就能拿回原文。
+// 跑代码的输出/报错不在此列：那是一次性的现场证据，截掉就真没了。
+const REFETCHABLE_TOOLS = new Set(["read_file", "fetch_url", "list_files", "search_files", "library_read", "library_list", "web_search", "render_page", "check_page"]);
+
 /** 就地截短老工具结果直到进预算，返回省下的字符数（0 = 本来就没超） */
 function trimHistory(history, maxChars, keepRecent = 3) {
   let total = historyChars(history);
@@ -174,15 +178,20 @@ function trimHistory(history, maxChars, keepRecent = 3) {
   // 最近 keepRecent 轮工具结果留原文，从最老的开始截
   const older = toolIdx.slice(0, Math.max(0, toolIdx.length - keepRecent));
   let saved = 0;
-  for (const i of older) {
-    for (const r of history[i].results || []) {
-      const s = String(r.content || "");
-      if (s.length <= CTX_KEEP_HEAD * 2) continue;
-      r.content = s.slice(0, CTX_KEEP_HEAD) + `\n…（原输出 ${s.length} 字符，为控制上下文长度已截断。需要完整内容请重新调用工具获取。）`;
-      const cut = s.length - r.content.length;
-      saved += cut;
-      total -= cut;
-      if (total <= maxChars) return saved;
+  // 两轮裁剪：先动可重取的，还不够再动不可重现的（老会话的结果没记工具名，归入第二轮）
+  const passes = [(r) => !r.isError && REFETCHABLE_TOOLS.has(r.name), () => true];
+  for (const wants of passes) {
+    for (const i of older) {
+      for (const r of history[i].results || []) {
+        if (!wants(r)) continue;
+        const s = String(r.content || "");
+        if (s.length <= CTX_KEEP_HEAD * 2) continue;
+        r.content = s.slice(0, CTX_KEEP_HEAD) + `\n…（原输出 ${s.length} 字符，为控制上下文长度已截断。需要完整内容请重新调用工具获取。）`;
+        const cut = s.length - r.content.length;
+        saved += cut;
+        total -= cut;
+        if (total <= maxChars) return saved;
+      }
     }
   }
   return saved;
@@ -813,7 +822,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           const srcs = collectSources(tc.name, tc.input, r.content);
           if (srcs.length) emit({ type: "sources", items: srcs, depth });
         }
-        return { id: tc.id, content: String(r.content), isError: r.isError };
+        return { id: tc.id, name: tc.name, content: String(r.content), isError: r.isError };
       };
 
       // 一批全是只读工具（搜索/抓网页/读文件）就并发跑。深度研究经常一口气要抓五个链接，
@@ -840,9 +849,18 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     roundsUsed++;
     deadline = Date.now() + (config.agent.max_runtime_ms || 1800000); // 新一轮把时间预算重新拉满
     emit({ type: "auto_continue", round: roundsUsed, total: autoRounds, note: stopNote, depth });
+    // 进度档由框架亲手喂进去，不指望模型自己想起来去读——续跑第一步就该看到现场
+    let progressDoc = "";
+    try {
+      const ws = getWorkspaceDir();
+      const raw = fs.readFileSync(path.join(baseDir ? path.resolve(ws, baseDir) : ws, "PROGRESS.md"), "utf8").trim();
+      if (raw) progressDoc = raw.length > 4000 ? raw.slice(0, 4000) + "\n…（进度档过长已截断，完整内容 read_file 自取）" : raw;
+    } catch {}
     history.push({
       role: "user",
-      content: `【系统·自动续跑 第 ${roundsUsed}/${autoRounds} 轮】上一轮${stopNote}，任务还没做完，继续。先 read_file 读工作目录的 PROGRESS.md（没有就 list_files 看现场）确认已经做到哪一步，只做剩下的部分，绝不重做已完成的事。每完成一个里程碑就更新 PROGRESS.md。全部完成后正常总结收尾。`,
+      content: progressDoc
+        ? `【系统·自动续跑 第 ${roundsUsed}/${autoRounds} 轮】上一轮${stopNote}，任务还没做完，继续。以下是工作目录 PROGRESS.md 的当前内容：\n\n${progressDoc}\n\n只做其中还没完成的部分，绝不重做已完成的事。每完成一个里程碑就 edit_file 更新 PROGRESS.md。全部完成后正常总结收尾。`
+        : `【系统·自动续跑 第 ${roundsUsed}/${autoRounds} 轮】上一轮${stopNote}，任务还没做完，继续。工作目录还没有 PROGRESS.md——先 list_files 看现场确认已经做到哪一步，立即补建 PROGRESS.md 清单，然后只做剩下的部分，绝不重做已完成的事。全部完成后正常总结收尾。`,
     });
     stopNote = "";
     }
