@@ -218,7 +218,25 @@ function testContextBudget() {
   const small = [{ role: "user", content: "hi" }, { role: "tool", results: [{ id: "a", content: "y".repeat(5000) }] }];
   assert.strictEqual(trimHistory(small, 70000), 0, "没超预算却动了历史");
   assert.strictEqual(small[1].results[0].content.length, 5000, "没超预算却截断了内容");
-  console.log("✅ 上下文预算：老结果截短 / 最近 3 轮保原文 / 不删任何工具消息");
+  // 分级裁剪：可重取的（read_file）先挨刀，不可重现的（run_node 输出）能留就留
+  const tiered = [{ role: "user", content: "干活" }];
+  const mk = (id, name) => {
+    tiered.push({ role: "assistant", text: "", toolCalls: [{ id, name, input: {} }] });
+    tiered.push({ role: "tool", results: [{ id, name, content: name + "y".repeat(30000), isError: false }] });
+  };
+  mk("t1", "run_node");
+  mk("t2", "read_file");
+  mk("t3", "read_file");
+  mk("t4", "run_node");
+  for (let i = 0; i < 3; i++) mk(`pad${i}`, "list_files"); // 垫满 keepRecent，让前 4 条都进裁剪区
+  // 预算设到「裁掉两条可重取的刚好够」：run_node 的两条必须毫发无伤
+  const budget = historyChars(tiered) - 50000;
+  trimHistory(tiered, budget);
+  const byId = {};
+  for (const e of tiered) if (e.role === "tool") byId[e.results[0].id] = e.results[0].content;
+  assert(byId.t2.includes("已截断") || byId.t3.includes("已截断"), "可重取的 read_file 没有先被裁");
+  assert(!byId.t1.includes("已截断") && !byId.t4.includes("已截断"), "预算够时不该动 run_node 的一次性输出");
+  console.log("✅ 上下文预算：老结果截短 / 最近 3 轮保原文 / 不删任何工具消息 / 可重取结果先挨刀");
 }
 
 // ---------- Agent Plugins 1.0.0 ----------
