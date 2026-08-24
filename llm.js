@@ -445,4 +445,63 @@ function createLLM(config) {
   throw new Error(`未知 provider: ${provider}（可选 anthropic / openai）`);
 }
 
-module.exports = { createLLM, _internals: { rescueLeakedToolCalls, createLeakGuard, openaiChat } };
+// ---------- Embeddings（记忆向量召回用） ----------
+// 找一条能算文本向量的路：优先 config.embedding 显式指定；否则在 models 列表里找认识的
+// 厂商（DashScope/智谱/OpenAI/Ollama 本地）复用它的 key 和域名。DeepSeek/OpenRouter 压根
+// 没有 embeddings 接口，配了也是白配，所以不瞎猜。一条都找不到就返回 null——
+// 记忆召回自动退回关键词匹配，功能不缺，只是召回没那么聪明。
+const EMBED_KNOWN = [
+  { match: /dashscope\.aliyuncs\.com/i, model: "text-embedding-v4" },
+  { match: /open\.bigmodel\.cn/i, model: "embedding-3" },
+  { match: /api\.openai\.com/i, model: "text-embedding-3-small" },
+  { match: /localhost:11434|127\.0\.0\.1:11434/, model: "nomic-embed-text" },
+];
+
+function createEmbedder(config) {
+  let cfg = null;
+  const ec = config.embedding;
+  if (ec && ec.base_url && ec.model) {
+    cfg = { base_url: ec.base_url, api_key: ec.api_key || "", model: ec.model };
+  } else if (Array.isArray(config.models)) {
+    for (const m of config.models) {
+      if (!m || !m.base_url) continue;
+      // 没填 key 的条目跳过（本地 Ollama 除外，它不要 key）：拿空 key 去打只会制造一堆 401 噪音
+      const isLocal = /localhost:11434|127\.0\.0\.1:11434/.test(m.base_url);
+      if (!m.api_key && !isLocal) continue;
+      const known = EMBED_KNOWN.find((k) => k.match.test(m.base_url));
+      if (known) { cfg = { base_url: m.base_url, api_key: m.api_key || "", model: known.model }; break; }
+    }
+  }
+  if (!cfg) return null;
+
+  let fails = 0;
+  /** @param {string[]} texts @returns {Promise<number[][]|null>} 失败返回 null，绝不抛出 */
+  const embed = async (texts) => {
+    if (fails >= 3) return null; // 连挂三次自行停用：别让每次记任务开头都白等一轮超时
+    try {
+      const resp = await fetch(`${cfg.base_url.replace(/\/$/, "")}/embeddings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.api_key || "ollama"}` },
+        body: JSON.stringify({ model: cfg.model, input: texts }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+      const data = await resp.json();
+      const out = (Array.isArray(data.data) ? data.data : [])
+        .slice()
+        .sort((a, b) => (a.index || 0) - (b.index || 0))
+        .map((d) => d.embedding);
+      if (out.length !== texts.length || out.some((v) => !Array.isArray(v))) throw new Error("返回的向量条数或形状不对");
+      fails = 0;
+      return out;
+    } catch (e) {
+      fails++;
+      console.warn(`[记忆向量] embeddings 调用失败（${fails}/3${fails >= 3 ? "，已停用，召回退回关键词匹配" : ""}）：${String((e && e.message) || e).slice(0, 160)}`);
+      return null;
+    }
+  };
+  embed.model = cfg.model;
+  return embed;
+}
+
+module.exports = { createLLM, createEmbedder, _internals: { rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN } };

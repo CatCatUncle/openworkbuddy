@@ -7,7 +7,7 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const { createLLM } = require("./llm");
+const { createLLM, createEmbedder } = require("./llm");
 const { outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
@@ -59,6 +59,9 @@ if (config.workspace_dir) {
   }
 }
 let llmInner = createLLM(config);
+// 记忆向量召回：有能算 embeddings 的渠道就接上，没有就退回关键词匹配（memory 自己兜底）
+memory.setEmbedder(createEmbedder(config));
+memory.ensureVectors().then((r) => { if (r.computed) console.log(`[记忆向量] 启动补算了 ${r.computed} 条`); }).catch((e) => console.warn("[记忆向量] 启动补算失败:", e.message));
 // 可热替换的 LLM 包装：设置修改后 runtime 无需重建
 const llm = {
   get provider() { return llmInner.provider; },
@@ -494,6 +497,8 @@ app.post("/api/settings", (req, res) => {
       if (global.__wbRegisterShortcuts) global.__wbRegisterShortcuts(config.shortcuts); // 桌面版重注册全局快捷键
     }
     llmInner = createLLM(config); // 模型热切换
+    memory.setEmbedder(createEmbedder(config));
+    memory.ensureVectors().catch(() => {});
     saveConfig();
     if (b.im && b.im.feishu && imBridge) {
       imBridge.startFeishuWs(true).catch((e) => console.warn("[飞书] 长连接重启失败:", e.message)); // 飞书配置变更后重建长连接
@@ -587,6 +592,8 @@ app.post("/api/onboarding", async (req, res) => {
       if (ap) ap.dir = config.workspace_dir;
     }
     llmInner = createLLM(config);
+    memory.setEmbedder(createEmbedder(config));
+    memory.ensureVectors().catch(() => {});
     saveConfig();
     res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
   } catch (e) {
