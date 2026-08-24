@@ -490,6 +490,17 @@
   .interject-note { align-self: flex-end; max-width: 70%; margin: 6px 0; padding: 8px 12px; border-radius: 10px; background: var(--wb-brand-weak); color: var(--wb-brand); font-size: 14px; }
   .interject-note .lb { font-size: 12px; opacity: .75; margin-bottom: 2px; }
   .interject-note.pending { opacity: .6; }
+  .ask-card { align-self: stretch; margin: 8px 0; padding: 12px 14px; border: 1px solid var(--wb-brand); border-radius: 10px; background: var(--wb-brand-weak); }
+  .ask-card .lb { font-size: 12px; opacity: .75; margin-bottom: 4px; }
+  .ask-card .q { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+  .ask-card .opts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ask-card .opts button { border: 1px solid var(--wb-brand); color: var(--wb-brand); background: var(--wb-bg); border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  .ask-card .opts button:hover { background: var(--wb-brand); color: #fff; }
+  .ask-card .free { display: flex; gap: 8px; margin-top: 8px; }
+  .ask-card .free input { flex: 1; border: 1px solid var(--wb-border); border-radius: 8px; padding: 6px 10px; font-size: 13px; background: var(--wb-bg); color: var(--wb-text); }
+  .ask-card .free button { border: 1px solid var(--wb-brand); color: var(--wb-brand); background: var(--wb-bg); border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  .ask-card.done .opts, .ask-card.done .free { display: none; }
+  .ask-card .ans { margin-top: 6px; font-size: 13px; color: var(--wb-brand); }
   /* ---------- 用量面板 ---------- */
   .usage-grid { display: flex; gap: 10px; margin-bottom: 12px; }
   .usage-cell { flex: 1; border: 1px solid var(--wb-border); border-radius: 10px; padding: 10px 12px; }
@@ -1274,6 +1285,53 @@ function createTurnUI(userText, turnMode, forSid) {
         note.innerHTML = `<div class="lb">⚡ 插队补充</div>${esc(ev.text || "")}`;
         body.appendChild(note);
       }
+    } else if (ev.type === "ask_user") {
+      currentText = null;
+      const card = document.createElement("div");
+      card.className = "ask-card";
+      card.dataset.askId = ev.ask_id;
+      card.innerHTML = `<div class="lb">🙋 AI 拿不准，来问你${ev.expert ? `（专家「${esc(ev.expert)}」在问）` : ""}</div>
+        <div class="q">${esc(ev.question || "")}</div><div class="opts"></div>
+        <div class="free"><input type="text" placeholder="或者自己输入…" maxlength="500"><button type="button">回答</button></div>
+        <div class="ans" style="display:none"></div>`;
+      const markAnswered = (text, timeout) => {
+        card.classList.add("done");
+        const ans = card.querySelector(".ans");
+        ans.style.display = "";
+        ans.textContent = timeout ? "⏰ 没等到回答，AI 按最合理的默认继续了" : "✅ 你的回答：" + (text || "");
+      };
+      card._mark = markAnswered;
+      const answerIt = async (text) => {
+        text = String(text || "").trim();
+        if (!text || card.classList.contains("done")) return;
+        const resp = await fetch("/api/chat/answer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: turnSid, askId: ev.ask_id, answer: text }),
+        }).catch(() => null);
+        if (resp && resp.ok) markAnswered(text);
+        else {
+          const j = resp ? await resp.json().catch(() => null) : null;
+          toast((j && j.error) || "没送出去：任务可能已经结束");
+        }
+      };
+      const optsBox = card.querySelector(".opts");
+      for (const o of ev.options || []) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = o;
+        b.onclick = () => answerIt(o);
+        optsBox.appendChild(b);
+      }
+      const inp = card.querySelector(".free input");
+      card.querySelector(".free button").onclick = () => answerIt(inp.value);
+      inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answerIt(inp.value); } };
+      if (isReplaying) card.classList.add("done"); // 历史回放里问题早就过期了，别让人白点
+      body.appendChild(card);
+    } else if (ev.type === "ask_answer") {
+      const card = body.querySelector(`.ask-card[data-ask-id="${cssEsc(ev.ask_id || "")}"]`);
+      if (card && card._mark) card._mark(ev.answer, ev.timeout);
+      else if (card) card.classList.add("done");
     } else if (ev.type === "credits") {
       turn._credits = ev; // 结束时由操作条展示「扣 X 积分 · 余额 Y」
       if (currentUser) { currentUser.credits = ev.balance; renderUserChip(); }
@@ -1675,9 +1733,10 @@ async function previewFile(name) {
   document.getElementById("pv-dl").href = "/api/files/download/" + encodeURIComponent(name);
   const body = document.getElementById("pv-body");
   const url = "/api/files/view/" + encodeURIComponent(name) + "?t=" + Date.now();
-  if (/\.(html?|pdf)$/i.test(name)) {
+  if (/\.(html?|pdf|svg)$/i.test(name)) {
+    // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字
     body.innerHTML = `<iframe src="${url}"></iframe>`;
-  } else if (/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name)) {
+  } else if (/\.(png|jpe?g|gif|webp|bmp|ico)$/i.test(name)) {
     body.innerHTML = `<img src="${url}">`;
   } else if (/\.(md|markdown)$/i.test(name)) {
     const text = await fetch(url).then(r => r.text()).catch(() => "加载失败");
@@ -1822,7 +1881,7 @@ function renderTurnOutputs(body, changed) {
     // 真正的展示品（网页/图）才配得上缩略图卡片；其余文件进变更清单，别把对话挡成一屏方框
     if ((isHtml || isImg) && grid.querySelectorAll(".out-card").length < OUT_CARD_MAX && !grid.querySelector(`[data-name="${cssEsc(f.name)}"]`)) {
       const url = "/api/files/view/" + encodeURIComponent(f.name) + "?t=" + Date.now();
-      const thumb = isHtml ? `<iframe src="${url}" scrolling="no" tabindex="-1" aria-hidden="true"></iframe>` : `<img src="${url}" alt="">`;
+      const thumb = isHtml || /\.svg$/i.test(f.name) ? `<iframe src="${url}" scrolling="no" tabindex="-1" aria-hidden="true"></iframe>` : `<img src="${url}" alt="">`;
       const card = document.createElement("div");
       card.className = "out-card";
       card.dataset.name = f.name;
@@ -2308,7 +2367,7 @@ async function doSend(text, mode, regen) {
 /** 镜像 server.js recordingEmit 的记录口径：数出服务端 transcript 已记录到第几个事件。
  *  断流重连时靠它算出准确的 from/textOffset 从断点续流——哪些事件入账、text 怎么合并必须和服务端完全一致 */
 function makeRecCounter() {
-  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "trim", "usage", "interject", "credits", "sources"];
+  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "trim", "usage", "interject", "credits", "sources", "ask_user", "ask_answer"];
   const st = { n: 0, lastIsText: false, textLen: 0 };
   st.feed = (ev) => {
     if (ev.type === "text") {
