@@ -60,7 +60,7 @@ async function renderMermaid(source, theme) {
     await loadHtml(win, `<!doctype html><meta charset="utf-8"><body><script>${mermaidSrc}</script>`);
     return win.webContents.executeJavaScript(
       `(async () => {
-        mermaid.initialize({ startOnLoad: false, theme: ${JSON.stringify(theme || "default")}, securityLevel: "strict" });
+        mermaid.initialize({ startOnLoad: false, theme: ${JSON.stringify(theme || "default")}, securityLevel: "strict", htmlLabels: false, flowchart: { htmlLabels: false }, class: { htmlLabels: false }, state: { htmlLabels: false } }); // htmlLabels 会把文字放 <foreignObject>，<img>/Word/飞书 里直接丢字，一律用原生 <text>
         const { svg } = await mermaid.render("mmd" + Math.floor(Math.random() * 1e9), ${JSON.stringify(String(source))});
         return svg;
       })()`,

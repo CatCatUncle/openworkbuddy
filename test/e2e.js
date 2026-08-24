@@ -1691,6 +1691,62 @@ function testPathSafety() {
   console.log("✅ 安全：workspace 路径越界拦截通过");
 }
 
+async function testAskUser() {
+  // 有人值守：ask_user 弹题 → askUser 回调给答案 → 答案回到工具结果；事件成对出现
+  let step = 0;
+  const fake = {
+    provider: "mock",
+    model: "scripted",
+    async chat({ history, tools }) {
+      step++;
+      if (step === 1) {
+        assert(tools.some((t) => t.name === "ask_user"), "craft 模式工具列表里没有 ask_user");
+        return { text: "问一下预算。", toolCalls: [{ id: "a1", name: "ask_user", input: { question: "预算多少？", options: ["500", "1000"] } }], stopReason: "tool_use" };
+      }
+      const lastTool = history[history.length - 1];
+      assert(lastTool.role === "tool" && lastTool.results[0].content.includes("用户的回答：1000"), "ask_user 未把用户回答带回: " + lastTool.results[0].content);
+      return { text: "按 1000 做。", toolCalls: [], stopReason: "end" };
+    },
+  };
+  const runtime = createAgentRuntime({ config, llm: fake, mcpManager: new McpManager(), experts: [] });
+  const events = [];
+  const { finalText } = await runtime.runTask({
+    history: [{ role: "user", content: "帮我订酒店" }],
+    emit: (ev) => events.push(ev),
+    askUser: async ({ askId, question, options }) => {
+      assert(askId && question === "预算多少？" && options.length === 2, "askUser 收到的问题不对");
+      await new Promise((r) => setTimeout(r, 30));
+      return "1000";
+    },
+  });
+  const askEv = events.find((e) => e.type === "ask_user");
+  const ansEv = events.find((e) => e.type === "ask_answer");
+  assert(askEv && askEv.question === "预算多少？" && askEv.options.length === 2, "缺 ask_user 事件");
+  assert(ansEv && ansEv.answer === "1000" && ansEv.ask_id === askEv.ask_id, "缺 ask_answer 事件或 ask_id 不配对");
+  assert(finalText.includes("按 1000 做"), "任务未按用户回答收尾");
+
+  // 无人值守：没有回答通道 → 立即降级答复，不发事件、不傻等
+  let step2 = 0;
+  const fake2 = {
+    provider: "mock",
+    model: "scripted",
+    async chat({ history }) {
+      step2++;
+      if (step2 === 1) return { text: "", toolCalls: [{ id: "a2", name: "ask_user", input: { question: "颜色？", options: ["红", "蓝"] } }], stopReason: "tool_use" };
+      const lastTool = history[history.length - 1];
+      assert(lastTool.results[0].content.includes("无人值守"), "无人值守降级答复缺失: " + lastTool.results[0].content);
+      return { text: "自己定了。", toolCalls: [], stopReason: "end" };
+    },
+  };
+  const ev2 = [];
+  await createAgentRuntime({ config, llm: fake2, mcpManager: new McpManager(), experts: [] }).runTask({
+    history: [{ role: "user", content: "随便" }],
+    emit: (ev) => ev2.push(ev),
+  });
+  assert(!ev2.some((e) => e.type === "ask_user"), "无人值守不该发 ask_user 事件");
+  console.log("✅ ask_user：提问/回答/无人值守降级");
+}
+
 async function main() {
   console.log("=== OpenWorkBuddy e2e 测试 ===");
   testCron();
@@ -1726,6 +1782,7 @@ async function main() {
   await testDeliverableQuality();
   await testAgentPipeline();
   await testForcedWrapUp();
+  await testAskUser();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });

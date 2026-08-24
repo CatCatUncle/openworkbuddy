@@ -297,7 +297,7 @@ function recordingEmit(send, events, sessionId) {
       const last = events[events.length - 1];
       if (last && last.type === "text") last.delta += ev.delta;
       else events.push({ type: "text", delta: ev.delta });
-    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "trim", "usage", "interject", "credits", "sources"].includes(ev.type)) {
+    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "trim", "usage", "interject", "credits", "sources", "ask_user", "ask_answer"].includes(ev.type)) {
       events.push(ev);
       // 一步走完就是个存盘点：跑了半小时的任务不该因为一次崩溃从头再来
       if (sessionId && ev.type === "tool_result") autosaveSession(sessionId);
@@ -1612,7 +1612,7 @@ app.post("/api/chat", async (req, res) => {
   res.on("error", () => {});
   // 客户端可能中途断开（刷新页面/断网/电脑睡眠），任务照跑：
   // 主连接断了就不再写它，事件继续发给 /api/chat/stream 续流进来的订阅者
-  const runState = { ctrl: new AbortController(), interject: [], subscribers: new Set(), events: null };
+  const runState = { ctrl: new AbortController(), interject: [], asks: new Map(), subscribers: new Set(), events: null };
   const send = (event) => {
     const line = `data: ${JSON.stringify(event)}\n\n`;
     if (!res.destroyed && !res.writableEnded) { try { res.write(line); } catch {} }
@@ -1708,6 +1708,19 @@ app.post("/api/chat", async (req, res) => {
           projectContext: (projectContextOf(activeProject()) || "") + goalCtx,
           stopSignal: runState.ctrl.signal,
           getInterject: () => runState.interject.splice(0),
+          // ask_user 工具的等待端：回答从 /api/chat/answer 进来；超时或用户点停止都放行 null
+          askUser: ({ askId, timeoutMs }) => new Promise((resolve) => {
+            const done = (v) => {
+              clearTimeout(timer);
+              runState.asks.delete(askId);
+              runState.ctrl.signal.removeEventListener("abort", onAbort);
+              resolve(v);
+            };
+            const timer = setTimeout(() => done(null), timeoutMs);
+            const onAbort = () => done(null);
+            runState.ctrl.signal.addEventListener("abort", onAbort);
+            runState.asks.set(askId, done);
+          }),
         });
         if (r && r.usage) {
           total.prompt += r.usage.prompt;
@@ -1792,6 +1805,19 @@ app.post("/api/chat/interject", (req, res) => {
   if (!text) return res.status(400).json({ ok: false, error: "消息为空" });
   run.interject.push(text);
   res.json({ ok: true, queued: run.interject.length });
+});
+
+// ask_user 的回答通道：agent 弹的问题，用户点选/输入后从这里回填给正在等待的那次工具调用
+app.post("/api/chat/answer", (req, res) => {
+  const { sessionId, askId, answer } = req.body || {};
+  const run = activeRuns.get(sessionId);
+  if (!run) return res.status(409).json({ ok: false, error: "该会话没有正在运行的任务" });
+  const resolve = run.asks && run.asks.get(String(askId || ""));
+  if (!resolve) return res.status(404).json({ ok: false, error: "这个问题已过期或已回答过" });
+  const text = String(answer || "").trim().slice(0, 2000);
+  if (!text) return res.status(400).json({ ok: false, error: "回答为空" });
+  resolve(text);
+  res.json({ ok: true });
 });
 
 // 正在运行任务的会话列表：前端刷新后靠它找回后台任务，断流后靠它判断任务是否还活着

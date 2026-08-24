@@ -41,6 +41,20 @@ const DELEGATE_TEAM_TOOL = {
   },
 };
 
+const ASK_USER_TOOL = {
+  name: "ask_user",
+  description:
+    "向用户提一个关键问题并等待回答（前端会弹出选项卡片，用户点选或输入后你才继续，等待时间不算任务时长）。只在「选错代价高、且你真的拿不准」的分岔点用：预算/口味/时间安排这类只有用户本人知道的偏好，或不可逆动作前的确认。纯技术细节自己定，别拿它当聊天；一次只问一个问题，给 2~4 个具体可点的选项。用户可能不在电脑前：超时没人答就按你认为最合理的默认继续，并在汇报里注明。",
+  input_schema: {
+    type: "object",
+    properties: {
+      question: { type: "string", description: "要问的问题，一句话说清，别夹多个问题" },
+      options: { type: "array", items: { type: "string" }, description: "2~4 个具体选项，短语即可（用户也可以不点选项、自己输入）" },
+    },
+    required: ["question", "options"],
+  },
+};
+
 const FEISHU_DOC_TOOL = {
   name: "feishu_doc_create",
   description:
@@ -201,7 +215,9 @@ function trimHistory(history, maxChars, keepRecent = 3) {
 function envToday() {
   const d = new Date();
   const week = "日一二三四五六"[d.getDay()];
-  return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日（星期${week}）`;
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const slot = d.getHours() < 5 ? "凌晨" : d.getHours() < 12 ? "上午" : d.getHours() < 18 ? "下午" : "晚上";
+  return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日（星期${week}）${slot} ${hm}`;
 }
 
 function safeWorkspaceDir() {
@@ -225,7 +241,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     let p = `你是 ${myName}，一个 AI 办公智能体。用户用自然语言下达办公任务，你自主思考、拆解任务、规划步骤、调用工具执行，最终交付可验证的成果。用户叫你「${myName}」，被问到你是谁就用这个名字。
 
 ## 当前环境
-- 今天是 ${envToday()}。凡是涉及"最新/今年/近期/本周"的判断一律以这个日期为准，不要用你训练数据里的时间。需要最新事实（价格、政策、版本号、人事、榜单）必须 web_search 现查，不许凭记忆答。
+- 现在是 ${envToday()}。凡是涉及"最新/今年/近期/本周"的判断一律以这个日期为准，不要用你训练数据里的时间。用户说"现在/马上/今晚"这类词时，按上面的钟点安排，别默认从早上开始。需要最新事实（价格、政策、版本号、人事、榜单）必须 web_search 现查，不许凭记忆答。
 - 工作目录（成果文件都放这里）：${safeWorkspaceDir()}
 - 运行环境：${process.platform === "darwin" ? "macOS" : process.platform}，本机执行，run_shell 拿到的是用户的真实电脑。
 
@@ -379,7 +395,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     if (mode === "ask" || mode === "plan") {
       return [...TOOL_DEFS.filter((t) => READ_ONLY_TOOLS.includes(t.name)), USE_SKILL_TOOL];
     }
-    const tools = [...TOOL_DEFS, USE_SKILL_TOOL, ...mcpManager.toolDefs()];
+    const tools = [...TOOL_DEFS, USE_SKILL_TOOL, ASK_USER_TOOL, ...mcpManager.toolDefs()];
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) tools.push(FEISHU_DOC_TOOL);
     if (depth === 0 && experts.length) tools.push(DELEGATE_TOOL);
     // 团委派只给主协调者：专家在团里接力时 depth 已经 >0，再让它组团会套娃
@@ -397,10 +413,33 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     return `\n\n## 当前模式：Craft（执行）\n用户已经在这个模式里点了「做」，就是要你动手，不是要你确认。
 - 直接改文件、直接跑命令、直接交付。**严禁**用「要不要我帮你改？」「确认后我就开始」「你希望用哪种方案？」这类话结束回合——一个回合结束时，要么活干完了，要么真的卡在只有用户本人能解决的事情上（登录、授权、付钱）。
 - 方案有好几种就自己挑最稳的那个，在开场白里说一句"我按 X 来做"，然后做。做错了再改，比停在原地问强。
+- 唯一例外：遇到「只有用户本人知道答案、选错代价高」的分岔（预算、口味偏好、时间安排、不可逆操作），用 ask_user 工具弹选项问一下，拿到答案接着干。这是工具调用不是文字反问，问完任务继续，不许用它连环追问。
 - 需要审批的危险动作（删除、sudo、碰黑名单文件）系统会自己弹窗拦，不用你在文字里预先请示。`;
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride }) {
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser }) {
+    if (tc.name === "ask_user") {
+      const question = String(tc.input.question || "").trim().slice(0, 500);
+      const options = (Array.isArray(tc.input.options) ? tc.input.options : [])
+        .map((o) => String(o).trim().slice(0, 120)).filter(Boolean).slice(0, 6);
+      if (!question) return { content: "question 不能为空。", isError: true };
+      if (!askUser) {
+        // IM/定时任务/评测这类无人值守场景没有回答通道，别傻等
+        return { content: "当前是无人值守运行，没人在线回答。按你判断的最合理默认继续做，并在最终汇报里注明你替用户做了什么假设。", isError: false };
+      }
+      const askId = "ask_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const timeoutMs = Math.max(30000, Number(config.agent.ask_user_timeout_ms) || 300000);
+      emit({ type: "ask_user", ask_id: askId, question, options, timeout_ms: timeoutMs, depth });
+      const t0 = Date.now();
+      const answer = await askUser({ askId, question, options, timeoutMs });
+      const waited = Date.now() - t0;
+      if (answer == null) {
+        emit({ type: "ask_answer", ask_id: askId, timeout: true, depth });
+        return { content: `等了 ${Math.round(waited / 1000)} 秒，用户没有回应。按你判断的最合理默认继续做，并在最终汇报里注明你替用户做了什么假设，别再重复问。`, isError: false, extendMs: waited };
+      }
+      emit({ type: "ask_answer", ask_id: askId, answer, depth });
+      return { content: `用户的回答：${answer}`, isError: false, extendMs: waited };
+    }
     if (tc.name === "use_skill") {
       const skills = getSkills();
       const skill = skills.find((s) => s.name === (tc.input.name || "").trim());
@@ -460,6 +499,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         stopSignal, // 「停止」信号穿透到专家子代理
         sec, // 权限档位覆盖也一并继承
         llmOverride, // 对话选的模型，专家也用同一个
+        askUser, // 专家拿不准也能直接问用户（事件带专家标记）
       });
       emit({ type: "expert_done", expert: expert.name });
       return { content: `【专家 ${expert.name} 的汇报】\n${sub.finalText || "(无文字汇报)"}`, isError: false };
@@ -506,6 +546,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           stopSignal,
           sec,
           llmOverride,
+          askUser,
         });
         emit({ type: "expert_done", expert: m.name, team: team.name });
         reports.push({ name: m.name, text: sub.finalText || "(无文字汇报)" });
@@ -641,7 +682,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   const fileClaims = new Map(); // name -> { owner, mtime }
   let runSeq = 0;
 
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser }) {
     const L = llmOverride || llm; // 按对话选的模型：整棵任务树（含专家）都用它
     if (!runToken) runToken = ++runSeq; // 专家子任务从父任务继承，同一任务树内不互相抢认领
     // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设
@@ -809,7 +850,8 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           purpose: tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
           input_preview: previewInput(tc),
         });
-        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L });
+        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser });
+        if (r.extendMs) deadline += r.extendMs; // 等用户回答的时间不算任务运行时间
         emit({
           type: "tool_result",
           id: tc.id,
