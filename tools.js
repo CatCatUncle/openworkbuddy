@@ -235,6 +235,25 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "gen_diagram",
+    description:
+      "文本→图：流程图/架构图/时序图/数据图表一律用它画，不要手写 SVG。kind: mermaid(流程/时序/类图/甘特/状态) | dot(Graphviz，架构/依赖/拓扑) | echarts(数据图表，source 传 option 对象) | plantuml(UML) | svg(已有 SVG 转 PNG)。生成 <filename>.svg，环境允许时同时出 <filename>.png（插入飞书/Word/PPT 用 PNG）。",
+    input_schema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["mermaid", "dot", "echarts", "plantuml", "svg"], description: "图的类型" },
+        source: {
+          type: "string",
+          description: "图源码：mermaid/dot/plantuml 语法原文；echarts 传 option 的 JSON 或 JS 对象字面量（不要带 echarts.init 代码）；svg 传完整 <svg> 内容",
+        },
+        filename: { type: "string", description: "输出文件名，不带扩展名，如 architecture" },
+        width: { type: "number", description: "宽 px，仅 echarts 用（默认 800）" },
+        height: { type: "number", description: "高 px，仅 echarts 用（默认 500）" },
+      },
+      required: ["kind", "source", "filename"],
+    },
+  },
+  {
     name: "generate_image",
     description:
       "用用户配置的图像模型生成一张图片，保存到工作空间。适合配图、海报、封面、商品图。需要先在 设置 → 模型 → 图像模型 配置渠道，未配置时会明确报错。",
@@ -671,6 +690,27 @@ function selfCheck(file, rel) {
       const msg = String(r.stderr || "").split("\n").filter((l) => l && !/^\s*at /.test(l)).slice(0, 6).join("\n");
       return `\n⚠️ JS 语法没过：\n${msg}\n先修好再往下走（用 edit_file 改那一行，别整篇重写）。`;
     }
+    return "";
+  }
+  if (ext === ".py") {
+    // 用 ast.parse 而不是 py_compile：后者会往 __pycache__ 写 .pyc 污染工作目录。
+    // 本机没 python3 / spawn 失败一律跳过，环境问题不能报成语法错误
+    try {
+      const r = spawnSync("python3", ["-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())", file], { encoding: "utf8", timeout: 15000 });
+      if (r.status === 1 && /SyntaxError|IndentationError|TabError/.test(String(r.stderr))) {
+        const msg = String(r.stderr).split("\n").filter((l) => l && !/^Traceback|^\s*File "<string>"/.test(l)).slice(-4).join("\n");
+        return `\n⚠️ Python 语法没过：\n${msg}\n先修好再往下走。`;
+      }
+    } catch {}
+    return "";
+  }
+  if ([".sh", ".bash", ".zsh"].includes(ext)) {
+    try {
+      const r = spawnSync(ext === ".zsh" ? "zsh" : "bash", ["-n", file], { encoding: "utf8", timeout: 10000 });
+      if (r.status !== 0 && r.stderr) {
+        return `\n⚠️ Shell 脚本语法没过：\n${String(r.stderr).split("\n").filter(Boolean).slice(0, 4).join("\n")}\n先修好再往下走。`;
+      }
+    } catch {}
     return "";
   }
   if (ext === ".md") {
@@ -1287,6 +1327,25 @@ async function executeTool(name, input, opts = {}) {
         if (blocked) return blocked;
         security.audit("命令执行", cmd, "放行");
         return await runShell(cmd, timeoutMs, fileBase);
+      }
+      case "gen_diagram": {
+        const rel = String(input.filename || "diagram").replace(/\.(svg|png)$/i, "");
+        const blocked = await passGate(security.checkWrite(sec, rel + ".svg"), "写文件", rel + ".svg", { force: true });
+        if (blocked) return blocked;
+        const { renderDiagram } = require("./diagram");
+        const r = await renderDiagram({
+          kind: input.kind, source: String(input.source || ""), width: input.width, height: input.height, theme: input.theme,
+        });
+        const svgPath = resolveFile(rel + ".svg");
+        fs.mkdirSync(path.dirname(svgPath), { recursive: true });
+        fs.writeFileSync(svgPath, r.svg);
+        let msg = `已生成 ${rel}.svg（${(Buffer.byteLength(r.svg) / 1024).toFixed(1)}KB）`;
+        if (r.png) {
+          fs.writeFileSync(resolveFile(rel + ".png"), r.png);
+          msg += `、${rel}.png（${(r.png.length / 1024).toFixed(1)}KB，插飞书/Word 用这个）`;
+        }
+        if (r.note) msg += `。${r.note}`;
+        return { content: msg, isError: false };
       }
       case "write_file": {
         const rel = String(input.path || "");
