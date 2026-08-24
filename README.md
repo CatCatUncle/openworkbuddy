@@ -28,7 +28,9 @@
 | 🎯 **Goal 目标模式** | 说一个目标，自动拆成可验收的标准清单；每轮跑完由「验收员」逐条核对——不光看汇报，还对成果文件做机器实测（JS 语法 / JSON 解析 / HTML 截断检查），没达成的自动补跑（最多 3 轮），目标卡实时打勾 |
 | 🎛️ **按对话选模型** | 每个对话可以指定自己的模型（输入框旁模型按钮），互不影响；不选就跟随全局默认；可开启「新对话沿用上次选的模型」 |
 | 📊 **模型健康账本** | 每次任务按模型记成败（滚动近 20 次），选模型菜单里直接看「近 N 次任务 X 成」，连挂 ≥2 标红——坏渠道一眼看出来 |
-| 🧪 **内置评测基准** | 侧边栏「更多 → 评测」选模型一键跑分：11 道固定任务（代码/数据/写作/网页/调试/检索/格式遵从），机器判分出分数卡，历史成绩可横向对比不同模型；命令行同款 `npm run eval -- --model X`，改完核心代码跑一遍就知道有没有退步 |
+| 🧪 **智能体评测** | 侧边栏「更多 → 评测」把整个 agent 当黑盒考：12 道固定任务（代码/数据/写作/网页/调试/检索/画图/格式遵从），三条评分线互相独立——**机器判分**（跑代码、对数字、验结构的硬证据）、**AI 评委**（另选一个模型按每题 rubric 打 1-5 质量分）、**人工打分**（点历史成绩行逐题打星写点评）；每轮成绩盖上代码 commit，改完提示词/工具再跑一轮就知道是回归还是进步。命令行同款 `npm run eval -- --model X --judge Y` |
+| 🎨 **文本→专业图** | `gen_diagram` 一个工具画四类图：mermaid（流程/时序/甘特）、Graphviz dot（架构图）、ECharts（数据图表）、PlantUML（UML），本机离线渲染出 SVG + 2x 高清 PNG；写文档、做 PPT、发飞书文档的配图全走它，不再让模型手搓 SVG |
+| 🔁 **长任务自动续跑** | 任务撞到步数/时长上限但还没做完，可按设置的轮数自动重置预算接着跑：靠工作目录的 PROGRESS.md 进度档从断点继续，绝不重做已完成的部分（默认关闭，设置 → 智能体设置开启；手动停止不续跑） |
 | 🧩 **专家 · 技能 · 连接器** | 三合一广场：召唤专家、装技能、接 MCP 连接器 |
 | 👥 **专家与专家团** | 12 位内置专家 + 4 个专家团；也可以自己建：头像、职称、说明、绑技能、默认提示词 |
 | 📦 **技能系统** | 一个 Markdown 文件就是一个技能，**改完下一条任务就生效**，不用重启 |
@@ -46,9 +48,9 @@
 | 📚 **参考模板库** | 提示词范例，不知道怎么开口的时候抄一份改 |
 | 🌐 **本地部署预览** | 做完网页一键起本机服务，相对路径 / fetch / localStorage 才是真的能用；可放开给手机看 |
 
-**内置技能**：`deep-research` 深度调研 · `html-page` 网页生成 · `ppt-design` PPT · `docx` Word · `excel-report` Excel 报表 · `data-viz` 数据可视化 · `weekly-report` 周报 · `wechat-article` 公众号推文（排版 + 推草稿箱）· `feishu-doc` 飞书文档 · `lark-cli` 飞书全家桶命令行 · `skill-creator` 让它自己写技能
+**内置技能**：`deep-research` 深度调研 · `html-page` 网页生成 · `ppt-design` PPT · `docx` Word · `excel-report` Excel 报表 · `data-viz` 数据可视化 · `weekly-report` 周报 · `wechat-article` 公众号推文（排版 + 推草稿箱）· `feishu-doc` 飞书文档（官方 convert API：原生表格 / 加粗 / 行内代码 / 插图上传）· `lark-cli` 飞书全家桶命令行 · `skill-creator` 让它自己写技能
 
-**内置工具**：`run_node` `run_shell` `write_file` `read_file` `list_files` `fetch_url` `web_search` `save_skill` `library_list` `library_read` `generate_image` `generate_video`
+**内置工具**：`run_node` `run_shell` `write_file` `edit_file` `read_file` `list_files` `search_files` `fetch_url` `render_page` `check_page` `web_search` `gen_diagram` `feishu_doc_create` `remember` / `forget` `use_skill` `save_skill` `library_list` `library_read` `generate_image` `generate_video`
 
 ---
 
@@ -602,6 +604,7 @@ Agent 全管线（技能加载 → 代码执行 → 专家委派 → 事件流�
 长任务撞上「最大步数」或「最长运行时间」是常态。这时候最后一句话往往是半句过程叙述（"我先看一下这个文件"），直接甩给用户等于没交代。所以强制收尾时会**额外发一次不带工具的请求**，只让它回答三件事：做完了什么、产出了哪些**真实存在**的文件、下次从哪一步接着做。
 
 - 用户自己按「停止」的不做这次收尾——喊停就是不想再花钱了。
+- 不想让它停？设置 → 智能体设置里把「自动续跑轮数」调大：撞上限后它会自动重置时间预算、读工作目录的 PROGRESS.md 从断点接着跑，最多续设定的轮数（大任务的第一步就是建 PROGRESS.md 进度档，这条纪律写在系统提示词里）。手动停止和模型挂死不续。
 - 声称生成了文件却不在磁盘上、或者只有 0 字节，会被成果核验闸门打回去重做（最多 2 次）。
 - 上下文超预算时会截短较早的工具原文，界面上明写截了多少字，不假装模型一直看得见全文。
 
@@ -640,6 +643,20 @@ Agent 全管线（技能加载 → 代码执行 → 专家委派 → 事件流�
 <summary><b>只读的活并发跑</b></summary>
 
 一轮里模型同时要了 5 个 `web_search` / `fetch_url` / `read_file`，就**并发执行**（上限 3 路），只花最慢那一次的时间，而不是把 5 次网络等待叠起来——深度研究最费的就是这段。只要这一批里混进了写文件、跑命令、委派专家的调用，**整批退回串行**：那些工具的先后顺序本身就是语义。界面上的过程卡按**调用 id** 配对，谁先回来都不会把 A 的结果贴到 B 的卡上。
+
+</details>
+
+<details>
+<summary><b>四类专业图一个工具：gen_diagram 的渲染管线</b></summary>
+
+让模型手搓 SVG 画流程图，画出来的东西歪歪扭扭还费 tokens。`gen_diagram` 把「文本描述 → 专业图」做成一个工具，四条渲染管线全部本机跑：
+
+- **ECharts**：官方 SSR 模式纯 Node 出 SVG。有个坑：SSR 会留着动画定时器让进程永远不退出，必须 `chart.dispose()` 并强制 `animation:false`。
+- **Graphviz dot**：`@viz-js/viz`（WASM 版）纯 Node 渲染，画架构图/依赖图最稳。中文节点要设 `fontname="PingFang SC"`，不然全是豆腐块。
+- **mermaid**：mermaid 必须要真浏览器量文字宽度——而应用本体就跑在 Electron 里，等于随身带了个 Chrome：开一个隐藏窗口渲染完就销毁。命令行环境没有 Electron 时自动降级走 kroki.io 在线渲染。
+- **PlantUML**：本机装了 `plantuml` 命令就用本机的；没有就把源码 deflate + PlantUML 自家的 base64 变种编码后发给配置的服务器或 kroki。
+
+SVG 之外每张图还导出 **2x 高清 PNG**（Electron 离屏截图，等字体加载完再拍；没有 Electron 就调本机 Chrome headless）——因为飞书云文档只收 PNG/JPG 不收 SVG，PPT 里贴图也要位图。
 
 </details>
 
