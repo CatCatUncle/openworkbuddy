@@ -13,9 +13,12 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.72.0",
+    "@viz-js/viz": "^3.29.0",
     "docx": "^9.0.0",
+    "echarts": "^6.1.0",
     "exceljs": "^4.4.0",
     "express": "^4.21.0",
+    "mermaid": "^11.17.0",
     "pptxgenjs": "^3.12.0",
     "qrcode": "^1.5.4"
   },
