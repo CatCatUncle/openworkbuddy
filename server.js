@@ -82,6 +82,30 @@ function llmForSession(sess) {
 // 同一模型连续「整跑失败」计数（成功一次即清零）：连挂说明是模型/渠道本身的问题，光报错用户不知道该干嘛
 const modelFailStreak = new Map();
 
+// 模型健康账本：每次整跑记一笔成败（按模型条目名，滚动只留最近 20 次），选模型时能看到
+// 「这个渠道最近靠不靠谱」，不用踩了才知道。落盘 data/model_health.json，重启不清零
+const HEALTH_FILE = path.join(__dirname, "data", "model_health.json");
+const modelHealth = store.readJson(HEALTH_FILE, {}) || {};
+function recordModelHealth(name, ok, failMsg) {
+  if (!name) return;
+  const h = (modelHealth[name] = modelHealth[name] || { recent: [] });
+  h.recent.push(ok ? 1 : 0);
+  if (h.recent.length > 20) h.recent = h.recent.slice(-20);
+  if (ok) h.last_ok_t = Date.now();
+  else { h.last_fail_t = Date.now(); h.last_fail = String(failMsg || "").slice(0, 200); }
+  try { store.writeJsonAtomic(HEALTH_FILE, modelHealth); } catch {}
+}
+function healthSummary() {
+  const out = {};
+  for (const [name, h] of Object.entries(modelHealth)) {
+    const recent = Array.isArray(h.recent) ? h.recent : [];
+    let streak = 0;
+    for (let i = recent.length - 1; i >= 0 && !recent[i]; i--) streak++;
+    out[name] = { n: recent.length, ok: recent.filter(Boolean).length, fail_streak: streak, last_fail: h.last_fail || "", last_fail_t: h.last_fail_t || 0 };
+  }
+  return out;
+}
+
 // 专家团：数组引用被 runtime 闭包持有，增删改都就地改这个数组（热生效，无需重启）
 const EXPERTS_FILE = path.join(__dirname, "experts.json");
 const experts = [];
@@ -161,24 +185,57 @@ function goalFileInventory(sess) {
  *  看到内容开头至少能核对结构是不是真的（有没有画布/按键监听/两个角色…）。只读文本类文件，最多 5 个 */
 function goalFileSnippets(sess) {
   try {
-    if (!sess.dir) return "";
+    return recentGoalFiles(sess).map((f) => {
+      let head = "";
+      try { head = fs.readFileSync(f.p, "utf8").slice(0, 600); } catch { head = "（读取失败）"; }
+      return `--- ${f.n}（共 ${f.size} 字节，以下是开头）---\n${head}`;
+    }).join("\n\n");
+  } catch { return ""; }
+}
+
+/** 最近改动的成果文本文件（新→旧，最多 5 个），内容摘录和自动体检共用一份清单 */
+function recentGoalFiles(sess) {
+  try {
+    if (!sess.dir) return [];
     const dir = path.join(getWorkspaceDir(), sess.dir);
     const TEXT_EXT = /\.(html?|js|mjs|css|md|txt|json|py|ts|jsx|tsx|csv|svg)$/i;
-    const files = fs.readdirSync(dir)
+    return fs.readdirSync(dir)
       .filter((n) => !n.startsWith(".") && TEXT_EXT.test(n))
       .map((n) => {
-        try { const st = fs.statSync(path.join(dir, n)); return st.isFile() ? { n, mtime: st.mtimeMs, size: st.size } : null; }
+        try { const st = fs.statSync(path.join(dir, n)); return st.isFile() ? { n, p: path.join(dir, n), mtime: st.mtimeMs, size: st.size } : null; }
         catch { return null; }
       })
       .filter(Boolean)
       .sort((a, b) => b.mtime - a.mtime)
       .slice(0, 5);
-    return files.map((f) => {
-      let head = "";
-      try { head = fs.readFileSync(path.join(dir, f.n), "utf8").slice(0, 600); } catch { head = "（读取失败）"; }
-      return `--- ${f.n}（共 ${f.size} 字节，以下是开头）---\n${head}`;
-    }).join("\n\n");
-  } catch { return ""; }
+  } catch { return []; }
+}
+
+/** 验收员的「动手」环节：对成果文件做机器实测——JS 语法（node --check）、JSON 能否解析、
+ *  HTML 是否写完整（截断/标签不配对）。只做只读检查，绝不执行成果代码。
+ *  桌面版里 process.execPath 是 Electron 二进制，必须 ELECTRON_RUN_AS_NODE 才是纯 node */
+function goalFileChecks(sess) {
+  const { execFile } = require("child_process");
+  const checkOne = (f) => new Promise((resolve) => {
+    if (/\.(js|mjs|cjs)$/i.test(f.n)) {
+      execFile(process.execPath, ["--check", f.p], { timeout: 8000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } }, (err, _o, stderr) => {
+        resolve(err ? `✗ ${f.n} JS 语法检查未通过：${String(stderr || err.message).slice(0, 200)}` : `✓ ${f.n} JS 语法检查通过`);
+      });
+    } else if (/\.json$/i.test(f.n)) {
+      try { JSON.parse(fs.readFileSync(f.p, "utf8")); resolve(`✓ ${f.n} JSON 格式合法`); }
+      catch (e) { resolve(`✗ ${f.n} JSON 解析失败：${String(e.message).slice(0, 120)}`); }
+    } else if (/\.html?$/i.test(f.n)) {
+      try {
+        const t = fs.readFileSync(f.p, "utf8");
+        const probs = [];
+        if (/<html[\s>]/i.test(t) && !/<\/html>/i.test(t)) probs.push("有 <html> 没有 </html>，疑似写到一半被截断");
+        const so = (t.match(/<script[\s>]/gi) || []).length, sc = (t.match(/<\/script>/gi) || []).length;
+        if (so !== sc) probs.push(`<script> 开闭不配对（${so} 开 ${sc} 闭）`);
+        resolve(probs.length ? `✗ ${f.n} 结构异常：${probs.join("；")}` : `✓ ${f.n} HTML 结构完整（html/script 标签配对）`);
+      } catch { resolve(null); }
+    } else resolve(null);
+  });
+  return Promise.all(recentGoalFiles(sess).map(checkOne)).then((rs) => rs.filter(Boolean).join("\n")).catch(() => "");
 }
 
 function parseJsonLoose(text) {
@@ -210,12 +267,14 @@ async function verifyGoal(sess, sessLLM, finalText, total) {
   const undone = goal.criteria.map((c, i) => ({ i, c })).filter((x) => !x.c.done);
   if (!undone.length) return;
   const snippets = goalFileSnippets(sess);
+  const checks = await goalFileChecks(sess);
   try {
     const r = await sessLLM.chat({
-      system: '你是验收员。根据成果文件清单和执行汇报，逐条判断验收标准是否已达成。证据不足一律 false，宁可漏判不可错判。只输出 JSON：{"results":[{"i":0,"done":true},{"i":1,"done":false}]}，i 是标准编号。',
+      system: '你是验收员。根据成果文件清单和执行汇报，逐条判断验收标准是否已达成。证据不足一律 false，宁可漏判不可错判。【自动体检】是机器实测结果（不是模型自述）：标 ✗ 的文件说明有语法错误或没写完整，涉及它的标准一律 false。只输出 JSON：{"results":[{"i":0,"done":true},{"i":1,"done":false}]}，i 是标准编号。',
       history: [{ role: "user", content:
         `【目标】${goal.text}\n\n【待验收标准】\n${undone.map((x) => `${x.i}. ${x.c.text}`).join("\n")}\n\n【成果文件清单】\n${goalFileInventory(sess)}\n\n` +
         (snippets ? `【成果文件内容摘录】\n${snippets}\n\n` : "") +
+        (checks ? `【自动体检（机器实测）】\n${checks}\n\n` : "") +
         `【执行汇报】\n${String(finalText || "（无）").slice(0, 3000)}` }],
       tools: [],
       signal: AbortSignal.timeout(45000),
@@ -298,6 +357,9 @@ app.get("/api/settings", (_req, res) => {
     workspace_dir: getWorkspaceDir(),
     models: config.models,
     active_model: config.active_model,
+    model_health: healthSummary(),
+    model_follow_last: !!config.model_follow_last,
+    last_picked_model: config.last_picked_model || "",
     agent: {
       max_steps: config.agent.max_steps,
       tool_timeout_ms: config.agent.tool_timeout_ms,
@@ -349,6 +411,7 @@ app.post("/api/settings", (req, res) => {
       if (!config.models.some((m) => m.name === b.active_model)) throw new Error("active_model 不在模型列表中");
       config.active_model = b.active_model;
     }
+    if (typeof b.model_follow_last === "boolean") config.model_follow_last = b.model_follow_last;
     if (b.agent) {
       if (b.agent.max_steps) config.agent.max_steps = Math.max(1, Math.min(100, +b.agent.max_steps));
       if (b.agent.tool_timeout_ms) config.agent.tool_timeout_ms = Math.max(5000, +b.agent.tool_timeout_ms);
@@ -1616,6 +1679,7 @@ app.post("/api/chat", async (req, res) => {
     autosaveSession(sessionId, 0);
   }
   if (sess.goal) send({ type: "goal", goal: sess.goal }); // 目标卡状态直播；不进回放记录（回放时从会话里取）
+  let runFailed = null; // 整跑是否以异常收场（记进模型健康账本）
   try {
     // 外层：目标轮（普通消息只走一轮；goal 模式没达标自动再跑，最多 GOAL_MAX_ROUNDS 轮）
     let lastFinal = "";
@@ -1677,6 +1741,7 @@ app.post("/api/chat", async (req, res) => {
       emitFn({ type: "interject", text: fb });
     }
   } catch (e) {
+    runFailed = e.message;
     const streak = (modelFailStreak.get(sessLLM.provider) || 0) + 1;
     modelFailStreak.set(sessLLM.provider, streak);
     let emsg = e.message;
@@ -1689,6 +1754,9 @@ app.post("/api/chat", async (req, res) => {
     activeRuns.delete(sessionId);
   }
   if (total.calls > 0) modelFailStreak.delete(sessLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
+  // 健康账本：异常收场记一败；正常收场且真调过模型记一胜（秒停等一次没调的不记，记了是噪声）
+  if (runFailed) recordModelHealth(sessLLM.provider, false, runFailed);
+  else if (total.calls > 0) recordModelHealth(sessLLM.provider, true);
 
   // 记账：按整个任务（含插队追加轮）的总 tokens 扣积分
   if (user && total.calls > 0) {
@@ -1782,6 +1850,8 @@ app.post("/api/session/:id/model", (req, res) => {
       return res.status(400).json({ error: `模型「${name}」不在模型列表里` });
     }
     s.model = String(name);
+    // 记住这次手动选择：开了「新对话沿用上次选的模型」时，下个新对话默认就用它
+    if (config.last_picked_model !== s.model) { config.last_picked_model = s.model; saveConfig(); }
   }
   saveSession(req.params.id);
   res.json({ ok: true, model: s.model || null });
