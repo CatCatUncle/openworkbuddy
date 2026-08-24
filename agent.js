@@ -44,14 +44,15 @@ const DELEGATE_TEAM_TOOL = {
 const FEISHU_DOC_TOOL = {
   name: "feishu_doc_create",
   description:
-    "把 Markdown 内容创建成一篇飞书云文档，直接交付到用户的飞书（复用已配置的飞书机器人凭证）。适合报告、纪要、方案等文字成果。成功返回文档链接。若因权限不足失败：先把返回的开通指引和链接告诉用户，然后立刻带 wait_for_permission:true 重调本工具——它会自动轮询等用户开通，权限一生效就建好文档继续任务，用户不用回来喊你。",
+    "把 Markdown 内容创建成一篇飞书云文档，直接交付到用户的飞书（复用已配置的飞书机器人凭证）。支持表格（markdown 表格语法）和图片：独占一行的 ![说明](工作目录里的文件或URL) 会真插成文档里的图（SVG 自动转 PNG）——先用 gen_diagram 画图再引用，报告即图文并茂。成功返回文档链接。若因权限不足失败：先把返回的开通指引和链接告诉用户，然后立刻带 wait_for_permission:true 重调本工具——它会自动轮询等用户开通，权限一生效就建好文档继续任务，用户不用回来喊你。",
   input_schema: {
     type: "object",
     properties: {
       title: { type: "string", description: "文档标题" },
       markdown: {
         type: "string",
-        description: "文档正文 Markdown。支持 #/##/### 标题、- 无序列表、1. 有序列表、> 引用、``` 代码块、普通段落。",
+        description:
+          "文档正文 Markdown。支持标题、列表、引用、代码块、**加粗**、`行内代码`、表格（|a|b|），以及独占一行的图片 ![说明](路径或URL)。",
       },
       wait_for_permission: {
         type: "boolean",
@@ -232,6 +233,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - fetch_url：抓取网页全文或直接调 JSON 接口（带真实浏览器请求头；配合 web_search 的结果 URL 用）
 - render_page：用内置浏览器真打开页面、等 JS 渲染完再取正文，专治动态站点（B 站、微博、单页应用）
 - check_page：验收做好的网页（静态体检 + 真浏览器打开一遍看有没有报错、是不是白屏）。交付 HTML 之前必须跑
+- gen_diagram：文本描述 → 专业图（mermaid 流程/时序/甘特、dot 架构图、echarts 数据图表、plantuml UML），一次生成 SVG+PNG 文件。文档/PPT/飞书文档要配图一律用它，不要手写 SVG 文件
 - use_skill：加载技能包（做对应任务前先加载）
 - library_list / library_read：查看用户的资料库与灵感笔记（跨项目共享的长期参考资料，任务涉及用户偏好/素材时先查）`;
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) {
@@ -251,6 +253,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 2. 涉及已有文件/项目的任务，动手前先 list_files、search_files、read_file 把现场看清楚，不要凭文件名猜内容。**看明白之后直接改**——用户让你改，你就改，不要回头问"要不要我改""确认后我再动手"；只有删文件、清空目录、推远端这类不可逆的事才值得停下来问一句。改的方式是 edit_file 精准替换，不是 write_file 整篇盖掉。
 3. 成果文件写到工作目录根目录，文件名有意义。**HTML / Markdown / CSS / JSON / 纯文本一律用 write_file 直接写内容，绝不要在 run_node 里用模板字符串拼**——网页正文里几乎必然出现 \`\${...}\`、反引号或 </script\>，会把外层模板字面量截断，直接 SyntaxError。run_node 只留给真的需要跑逻辑的活（pptxgenjs 出 PPT、docx 出 Word、exceljs 出 Excel、批量处理、算数据）。
 4. 交付前自检：凡是生成的文件，写完必须再 read_file / list_files 读回来确认真的存在、内容完整（长文档至少核对开头结尾和篇幅），发现残缺就当场修好再交付。
+4.1 **大任务先立进度档**：预计十步以上、或要产出多个文件的任务，第一步先在工作目录 write_file 建 PROGRESS.md：目标一句话 + 分步清单（- [ ] 待做 / - [x] 已完成）。此后每完成一步就 edit_file 打勾。任务被打断或续跑时，先读 PROGRESS.md 从断点接着做，绝不从头重来。
 5. 代码报错要读懂原因、修正重试，不要放弃；同一处连续失败 3 次就换思路，别在死路上空转。
 5.1 抓不到网页不等于做不到（高频翻车点）。一条路走不通就换下一条，**同一个目标至少真试满三种路子**才允许说抓不到：
    - fetch_url 拿回来是空壳 → 用 render_page 真渲染一遍；
@@ -296,6 +299,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 
 ## 长期记忆
 - 用户说「以后都这样」「记住…」「别再…」「我习惯…」，或者纠正了你一个会反复出现的做法 → 立刻调 remember 记一句话结论。不记，下次任务你还会犯同样的错。
+- 不止等用户开口：任务里摸清的、下次还会用到的稳定事实（用户的业务/产品叫什么、常用账号或主页链接、固定的交付格式、反复用到的文件路径），收尾前主动 remember 一条。判断标准：下个月做类似任务这条还成立、还省事，就值得记。
 - 只记跨任务成立的东西（偏好、习惯、常用路径、身份、明确的纠正）。这次任务的过程、临时数据不要记。
 - 绝不把密钥、密码、令牌记进去（记忆是明文存的，还会进每一次的系统提示词）。
 - 用户说「不用记这个了」→ forget。
@@ -405,9 +409,20 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     if (tc.name === "feishu_doc_create") {
       try {
         const { createFeishuDoc } = require("./feishu-doc");
-        const r = await createFeishuDoc((config.im || {}).feishu, tc.input, { deadline, stopSignal });
+        // 本地图片按当前任务的成果子目录 → 工作空间根的顺序解析，越界一律拒绝
+        const resolveImage = (rel) => {
+          const ws = require("./tools").getWorkspaceDir();
+          const cand = path.isAbsolute(rel)
+            ? [path.resolve(rel)]
+            : [...(baseDir ? [path.resolve(ws, baseDir, rel)] : []), path.resolve(ws, rel)];
+          for (const p of cand) {
+            if ((p === ws || p.startsWith(ws + path.sep)) && fs.existsSync(p)) return p;
+          }
+          return null;
+        };
+        const r = await createFeishuDoc((config.im || {}).feishu, tc.input, { deadline, stopSignal, resolveImage });
         return {
-          content: `飞书文档已创建：${r.url}（${r.blocks} 个内容块）${r.warn ? `\n⚠️ ${r.warn}` : ""}\n请把这个链接告诉用户。`,
+          content: `飞书文档已创建：${r.url}（${r.blocks} 个内容块${r.images ? `，含 ${r.images} 张图` : ""}）${r.warn ? `\n⚠️ ${r.warn}` : ""}\n请把这个链接告诉用户。`,
           isError: false,
         };
       } catch (e) {
@@ -661,6 +676,11 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       catch (e) { console.warn("[agent] 上下文压缩失败，本次跳过:", e.message); }
     }
 
+    // 自动续跑：撞「最大步数/最大运行时间」后自动开下一轮接着干（仅顶层任务；手动停止、模型挂死不续跑）。
+    // 外层 for(;;) 只负责续跑判定，内层步循环保持原缩进不动。
+    const autoRounds = depth === 0 ? Math.min(20, Math.max(0, Number(config.agent.auto_continue_rounds) || 0)) : 0;
+    let roundsUsed = 0;
+    for (;;) {
     for (let step = 0; step < maxSteps; step++) {
       if (stopSignal && stopSignal.aborted) {
         stopNote = "已手动停止";
@@ -812,6 +832,19 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       emitFiles();
 
       if (step === maxSteps - 1) stopNote = `已达最大步数（${maxSteps} 步）`;
+    }
+
+    // 只有「跑满上限」才值得续：手动停止是用户不想再花钱，模型响应超时是模型挂了，续也白续
+    const continuable = stopNote.startsWith("已达最大步数") || stopNote.startsWith("已达最大运行时间");
+    if (!(continuable && roundsUsed < autoRounds && !(stopSignal && stopSignal.aborted))) break;
+    roundsUsed++;
+    deadline = Date.now() + (config.agent.max_runtime_ms || 1800000); // 新一轮把时间预算重新拉满
+    emit({ type: "auto_continue", round: roundsUsed, total: autoRounds, note: stopNote, depth });
+    history.push({
+      role: "user",
+      content: `【系统·自动续跑 第 ${roundsUsed}/${autoRounds} 轮】上一轮${stopNote}，任务还没做完，继续。先 read_file 读工作目录的 PROGRESS.md（没有就 list_files 看现场）确认已经做到哪一步，只做剩下的部分，绝不重做已完成的事。每完成一个里程碑就更新 PROGRESS.md。全部完成后正常总结收尾。`,
+    });
+    stopNote = "";
     }
 
     if (stopNote) {
