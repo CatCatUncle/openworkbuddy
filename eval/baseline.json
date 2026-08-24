@@ -1,0 +1,56 @@
+{
+  "at": "2026-08-24T05:58:49.304Z",
+  "commit": "831ce01",
+  "model": "DeepSeek",
+  "repeat": 3,
+  "pass1_avg": 98,
+  "score_pct": 99,
+  "source_dir": "2026-08-24-135639",
+  "tasks": {
+    "js-func": {
+      "pass_rate": 1
+    },
+    "csv-sum": {
+      "pass_rate": 1
+    },
+    "fact-find": {
+      "pass_rate": 0.667
+    },
+    "md-report": {
+      "pass_rate": 1
+    },
+    "html-app": {
+      "pass_rate": 1
+    },
+    "fix-bug": {
+      "pass_rate": 1
+    },
+    "py-run": {
+      "pass_rate": 1
+    },
+    "multi-step": {
+      "pass_rate": 1
+    },
+    "csv-tricky": {
+      "pass_rate": 1
+    },
+    "strict-format": {
+      "pass_rate": 1
+    },
+    "log-needle": {
+      "pass_rate": 1
+    },
+    "gen-diagram": {
+      "pass_rate": 1
+    },
+    "refactor-multi": {
+      "pass_rate": 1
+    },
+    "data-join": {
+      "pass_rate": 1
+    },
+    "pipeline-audit": {
+      "pass_rate": 1
+    }
+  }
+}
