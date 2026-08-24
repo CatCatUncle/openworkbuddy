@@ -1887,6 +1887,8 @@ async function refreshSettingsCache() {
   settingsCache = await fetch("/api/settings").then(r => r.json()).catch(() => null);
   if (settingsCache && settingsCache.error) settingsCache = null; // 未登录时 401 JSON，不当配置用
   if (settingsCache) {
+    // 首次拿到配置时给还没动过的新对话套上「沿用上次模型」；之后的刷新不再动，免得盖掉用户手动清掉的选择
+    if (!refreshSettingsCache._inited) { refreshSettingsCache._inited = true; if (sessionId === null && !pendingModel) pendingModel = defaultPendingModel(); }
     updateModelLabel();
     document.getElementById("ws-label").textContent = settingsCache.workspace_dir.split(/[\\/]/).pop() || "工作空间";
     renderModelMenu();
@@ -1897,6 +1899,14 @@ async function refreshSettingsCache() {
 // 每个对话可以各选各的：切换对话时标签跟着换，别的对话完全不受影响
 function currentSessModel() {
   return sessionId === null ? pendingModel : sessionModels.get(sessionId);
+}
+// 「新对话沿用上次手动选的模型」（设置 → 模型 里的开关）：算出新对话该预选谁。
+// 直接写进 pendingModel 让标签立刻显示出来——用户发消息前就看得见用的是哪个，绝不静默换模型
+function defaultPendingModel() {
+  const s = settingsCache;
+  if (s && s.model_follow_last && s.last_picked_model && s.last_picked_model !== s.active_model
+      && (s.models || []).some(m => m.name === s.last_picked_model)) return s.last_picked_model;
+  return undefined;
 }
 function updateModelLabel() {
   if (!settingsCache) return;
@@ -1910,18 +1920,27 @@ async function setSessionModel(name) { // name: 模型名；null = 跟随全局�
     const r = await fetch("/api/session/" + encodeURIComponent(sessionId) + "/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());
     if (r && r.error) return toast("⚠️ " + r.error);
     if (name) sessionModels.set(sessionId, name); else sessionModels.delete(sessionId);
+    if (name && settingsCache) settingsCache.last_picked_model = name; // 服务端也记了，这里同步本地缓存
   } catch {}
   updateModelLabel();
+}
+// 模型健康小标：近 N 次任务的成败（服务端账本）。连挂 ≥2 标红——坏渠道一眼看出来，不用踩了才知道
+function healthBadge(name) {
+  const h = settingsCache && settingsCache.model_health && settingsCache.model_health[name];
+  if (!h || !h.n) return "";
+  let s = ` · 近${h.n}次任务${h.ok}成`;
+  if (h.fail_streak >= 2) s += ` <span style="color:var(--wb-err)" title="${esc(h.last_fail || "")}">⚠连挂${h.fail_streak}</span>`;
+  return s;
 }
 function renderModelMenu() {
   if (!settingsCache) return;
   const ov = currentSessModel();
   modelMenu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
-      <span>↺ 跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}</span></span>${ov ? "" : '<span style="color:var(--wb-ok)">✓</span>'}</div>`
+      <span>↺ 跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${healthBadge(settingsCache.active_model)}</span></span>${ov ? "" : '<span style="color:var(--wb-ok)">✓</span>'}</div>`
     + settingsCache.models.map(m => {
       const on = m.name === ov;
       return `<div class="mi ${on ? "on" : ""}" data-name="${esc(m.name)}" style="justify-content:space-between">
-      <span>✦ ${esc(m.name)} <span class="sub">${esc(m.model)}${m.api_key ? "" : " · ⚠ 未填Key"}</span></span>
+      <span>✦ ${esc(m.name)} <span class="sub">${esc(m.model)}${m.api_key ? "" : " · ⚠ 未填Key"}${healthBadge(m.name)}</span></span>
       ${on ? '<span style="color:var(--wb-ok)">✓</span>' : ""}</div>`;
     }).join("")
     + `<div class="mi" data-act="manage" style="border-top:1px solid var(--wb-border);margin-top:4px">⚙️ 管理模型…</div>`;
@@ -2093,7 +2112,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
 document.getElementById("new-task").onclick = () => {
   closeAssistView();
   sessionId = null;
-  pendingModel = undefined;
+  pendingModel = defaultPendingModel();
   updateModelLabel();
   renderGoalCard();
   pvPanel.classList.remove("show"); pvCurrent = null;
@@ -3278,7 +3297,7 @@ function openPageView(kind) {
   assistViewOn = true;
   pageKind = kind;
   sessionId = null;
-  pendingModel = undefined;
+  pendingModel = defaultPendingModel();
   updateModelLabel();
   renderGoalCard();
   document.getElementById("session-title").textContent = v.title;
@@ -4757,7 +4776,7 @@ function renderModelsPane(pane, s) {
       <div class="card-item" style="display:flex;align-items:center;gap:10px">
         <input type="radio" name="active" style="width:auto;margin:0" ${m.name === s.active_model ? "checked" : ""} data-i="${i}">
         <div style="flex:1;min-width:0">
-          <div class="t">${esc(m.name)} <span style="font-weight:400;color:var(--wb-text-3);font-size: 12px">${esc(m.model)}${m.api_key ? "" : " · ⚠ 未填 Key"}</span></div>
+          <div class="t">${esc(m.name)} <span style="font-weight:400;color:var(--wb-text-3);font-size: 12px">${esc(m.model)}${m.api_key ? "" : " · ⚠ 未填 Key"}${healthBadge(m.name)}</span></div>
           <div class="d" style="font-size: 12px">${esc(m.base_url || "Anthropic 官方")}</div>
         </div>
         <a href="#" class="link" data-edit="${i}">编辑</a>
@@ -4778,6 +4797,10 @@ function renderModelsPane(pane, s) {
       <button class="btn-plain" id="mf-cancel">取消</button>
     </div>
     <button class="btn-plain" id="mf-new" style="margin-top:6px">＋ 添加自定义模型</button>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size: 13px;color:var(--wb-text-2);cursor:pointer">
+      <input type="checkbox" id="mf-follow-last" style="width:auto;margin:0" ${s.model_follow_last ? "checked" : ""}>
+      新对话自动沿用上次手动选过的模型（不勾则新对话总是用全局默认）
+    </label>
     <div style="border-top:1px solid var(--wb-border);margin-top:14px;padding-top:12px">
       <div class="card-item">
         <div class="t">🎨 图像模型</div>
@@ -4821,6 +4844,7 @@ function renderModelsPane(pane, s) {
     if (!pane.querySelector("#mf-name").value) pane.querySelector("#mf-name").value = c.label.replace(/（.*/, "");
   };
   pane.querySelector("#mf-new").onclick = () => { editIndex = -1; showForm(null); };
+  pane.querySelector("#mf-follow-last").onchange = (e) => saveSettings({ model_follow_last: e.target.checked }, msg);
   pane.querySelector("#mf-cancel").onclick = () => (form.style.display = "none");
   pane.querySelectorAll("a[data-edit]").forEach(a => a.onclick = (e) => { e.preventDefault(); editIndex = +a.dataset.edit; showForm(s.models[editIndex]); });
   // 复制：复用同一接口地址和 Key 快速配另一个模型（OpenRouter 换模型场景），只需填名称和模型名
