@@ -239,7 +239,10 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     }
 
     if (skills.length) {
-      p += `\n\n## 可用技能\n` + skills.map((s) => `- ${s.name}：${s.description}`).join("\n");
+      // 描述截到 80 字：这里只是让模型会「选」技能，全文在 use_skill 加载时才给。
+      // 第三方技能爱写整段英文简介，不截的话光这份清单就吃掉小一千 tokens、每一步都重复计费
+      const brief = (d) => { const t = String(d || "").replace(/\s+/g, " ").trim(); return t.length > 80 ? t.slice(0, 80) + "…" : t; };
+      p += `\n\n## 可用技能\n` + skills.map((s) => `- ${s.name}：${brief(s.description)}`).join("\n");
     }
     p += `
 
