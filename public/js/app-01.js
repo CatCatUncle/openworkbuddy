@@ -232,6 +232,9 @@ function createTurnUI(userText, turnMode, forSid) {
   // 执行过程折叠区（仿官方「已完成 12s ›」）：过程卡片都收进去，正文文本在外面
   let procWrap = null, procBody = null, procTimer = null;
   const t0 = Date.now();
+  // 长跑徽章：步数/续跑轮次/产出件数实时挂在「运行中」计时旁，长任务不再只有一个转圈
+  let liveStep = 0, liveRound = 0, liveRoundTotal = 0, liveOuts = 0;
+  const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
   const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
   const ensureProc = () => {
     if (!procBody) {
@@ -244,7 +247,7 @@ function createTurnUI(userText, turnMode, forSid) {
       body.appendChild(procWrap);
       procTimer = setInterval(() => {
         const pt = procWrap.querySelector(".pt");
-        if (pt) pt.textContent = `运行中 ${fmtDur(Date.now() - t0)}`;
+        if (pt) pt.textContent = `运行中 ${fmtDur(Date.now() - t0)}` + liveBadge();
       }, 1000);
     }
     return procBody;
@@ -277,6 +280,7 @@ function createTurnUI(userText, turnMode, forSid) {
   function handleEvent(ev) {
     if (ev.type === "step_start") {
       if (ev.depth > 0) return;
+      liveStep = ev.step || liveStep;
       body.querySelector(".thinking-hint")?.remove();
       const hint = document.createElement("div");
       hint.className = "thinking-hint";
@@ -360,6 +364,7 @@ function createTurnUI(userText, turnMode, forSid) {
       turn._limited = true;
     } else if (ev.type === "auto_continue") {
       currentText = null;
+      liveRound = ev.round || 0; liveRoundTotal = ev.total || 0;
       const note = document.createElement("div");
       note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
       note.textContent = `🔁 ${ev.note || "已达执行上限"}，任务未完，自动续跑第 ${ev.round}/${ev.total} 轮（按进度接着做，不重跑）`;
@@ -479,6 +484,7 @@ function createTurnUI(userText, turnMode, forSid) {
       const turnOut = ev.changed
         ? (ev.files || []).filter(f => ev.changed.includes(f.name))
         : changedFiles(ev.files);
+      liveOuts += turnOut.length;
       renderTurnOutputs(body, turnOut); // 先算差异，autoPreviewNewHtml 里才会推进快照
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的，
       // 自动预览更会莫名其妙弹出一个几天前的文件。产出卡片照摆，其余一律不动。
@@ -502,6 +508,19 @@ function createTurnUI(userText, turnMode, forSid) {
       }
     } else if (ev.type === "sources") {
       renderSources(body, ev.items || []);
+    } else if (ev.type === "milestones") {
+      // 里程碑时间线：agent 每更新一次 PROGRESS.md，这张卡就在过程区原地刷新打勾状态
+      const proc = ensureProc();
+      let card = proc.querySelector(".ms-card");
+      if (!card) {
+        card = document.createElement("div");
+        card.className = "ms-card";
+        proc.appendChild(card);
+      }
+      const items = ev.items || [];
+      const doneN = items.filter((i) => i.done).length;
+      card.innerHTML = `<div class="ms-head">📍 里程碑 ${doneN}/${items.length}${ev.file ? ` <span class="ms-file">${esc(ev.file)}</span>` : ""}</div>` +
+        items.map((i) => `<div class="ms-item${i.done ? " done" : ""}">${i.done ? "✅" : "⬜"} ${esc(String(i.text || ""))}</div>`).join("");
     } else if (ev.type === "error") {
       currentText = null;
       const t = document.createElement("div");
@@ -535,7 +554,7 @@ function createTurnUI(userText, turnMode, forSid) {
       } else {
         const ms = (turn._usage && turn._usage.elapsed_ms) || Date.now() - t0;
         const n = procBody.querySelectorAll(".step-card").length;
-        procWrap.querySelector(".pt").textContent = `已完成 ${fmtDur(ms)}` + (n ? ` · ${n} 步` : "");
+        procWrap.querySelector(".pt").textContent = `已完成 ${fmtDur(ms)}` + (n ? ` · ${n} 步` : "") + (liveRound ? ` · 续跑 ${liveRound} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
         const hasErr = !!procBody.querySelector(".tag.err") || turn._limited;
         if (!hasErr) procWrap.classList.remove("open");
       }
@@ -648,7 +667,13 @@ function createTurnUI(userText, turnMode, forSid) {
     body.appendChild(note);
     if (turnSid === sessionId) scrollBottom();
   }
-  return { handleEvent, finish, turn, sid: turnSid, markPendingInterject };
+  const stats = () => ({
+    dur: fmtDur((turn._usage && turn._usage.elapsed_ms) || Date.now() - t0),
+    steps: turn.querySelectorAll(".step-card").length,
+    rounds: liveRound,
+    outs: liveOuts,
+  });
+  return { handleEvent, finish, turn, sid: turnSid, markPendingInterject, stats };
 }
 
 // ================= 空状态（场景 tab + 分类胶囊，仿官方首页） =================

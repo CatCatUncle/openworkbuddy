@@ -361,7 +361,7 @@ async function doSend(text, mode, regen) {
 /** 镜像 server.js recordingEmit 的记录口径：数出服务端 transcript 已记录到第几个事件。
  *  断流重连时靠它算出准确的 from/textOffset 从断点续流——哪些事件入账、text 怎么合并必须和服务端完全一致 */
 function makeRecCounter() {
-  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "trim", "usage", "interject", "credits", "sources", "ask_user", "ask_answer"];
+  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "trim", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"];
   const st = { n: 0, lastIsText: false, textLen: 0 };
   st.feed = (ev) => {
     if (ev.type === "text") {
@@ -423,20 +423,25 @@ function endRun(sid, ui) {
   ui.finish();
   runningSessions.delete(sid);
   updateSendUI();
-  if (!(sessionQueues.get(sid) || []).length) notifyRunDone(sid); // 还有排队消息就不算完
+  if (!(sessionQueues.get(sid) || []).length) notifyRunDone(sid, ui); // 还有排队消息就不算完
   if (sid === sessionId) inputEl.focus();
   drainQueue(sid); // 本会话运行期间排队的消息按序自动执行
 }
 
 /** 并行任务多了得知道哪个跑完了：后台会话完成弹 toast；窗口失焦时发系统通知 */
-function notifyRunDone(sid) {
+function notifyRunDone(sid, ui) {
   const s = sessions.find((x) => x.id === sid);
   const name = (s && s.title) || "任务";
-  if (sid !== sessionId) toast(`✅ 「${name}」已完成，点侧栏查看`);
+  // 长跑完成通知带上战报：用时/步数/产出件数，长任务离开视线也知道干了多少活
+  const st = ui && ui.stats ? ui.stats() : null;
+  const detail = st ? `用时 ${st.dur}${st.steps ? ` · ${st.steps} 步` : ""}${st.rounds ? ` · 续跑 ${st.rounds} 轮` : ""}${st.outs ? ` · 产出 ${st.outs} 件` : ""}` : "";
+  if (sid !== sessionId) toast(`✅ 「${name}」已完成${detail ? `（${detail}）` : ""}，点侧栏查看`);
   if (document.hidden && "Notification" in window) {
     try {
-      if (Notification.permission === "granted") new Notification("OpenWorkBuddy", { body: `「${name}」已完成` });
-      else if (Notification.permission === "default") Notification.requestPermission();
+      if (Notification.permission === "granted") {
+        const n = new Notification(`✅ ${name}`, { body: detail || "任务已完成" });
+        n.onclick = () => { try { window.focus(); } catch {} document.querySelector(`.hist-item[data-id="${sid}"]`)?.click(); };
+      } else if (Notification.permission === "default") Notification.requestPermission();
     } catch {}
   }
 }

@@ -722,6 +722,20 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       }
       if (fileClaims.size > 1000) fileClaims.clear();
       emit({ type: "files", files, changed });
+      // 长跑可见性：进度档一有更新就把里程碑清单推给前端，时间线卡片实时打勾
+      const progName = changed.find((n) => n.split("/").pop() === "PROGRESS.md");
+      if (progName) {
+        try {
+          const raw = fs.readFileSync(path.join(getWorkspaceDir(), progName), "utf8").slice(0, 20000);
+          const items = [];
+          for (const line of raw.split("\n")) {
+            const m = /^\s*[-*]\s*\[([ xX])\]\s*(.+)/.exec(line);
+            if (m) items.push({ text: m[2].trim().slice(0, 120), done: m[1] !== " " });
+            if (items.length >= 60) break;
+          }
+          if (items.length) emit({ type: "milestones", file: progName, items, depth });
+        } catch {}
+      }
     };
 
     // 长会话先压缩再开跑：只在顶层任务做（专家子任务的 history 是临时的，压不着）
