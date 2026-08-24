@@ -3854,6 +3854,7 @@ function csvToTable(text) {
 // ================= 评测页：给模型跑基准，机器判分 =================
 let evalArm = false; // 两段式确认：真实计费的操作不许一键就跑
 let evalDetailDir = null;
+const EV_FAIL_LABELS = { crash: "崩溃", timeout: "超时", max_steps: "步数用尽", loop_suspect: "疑似死循环", tool_error_storm: "工具连环报错", missing_artifact: "没交产物", wrong_output: "内容不对" };
 async function renderEvalPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
@@ -3868,18 +3869,22 @@ async function renderEvalPage() {
       <div style="font-weight:700;font-size:15px">🧪 智能体评测</div>
       <label style="font-size:12px;color:var(--wb-text-3)">被测模型</label>
       <select id="ev-model" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px">${opts(cur)}</select>
+      <label style="font-size:12px;color:var(--wb-text-3)">每题次数</label>
+      <select id="ev-repeat" title="重复跑才能看出稳定性：pass@1 均值看「能不能」，k 次全过看「稳不稳」。费用按次数翻倍" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px">
+        <option value="1">1 次 · 最快</option><option value="3">3 次 · 测稳定</option><option value="5">5 次 · 严格</option>
+      </select>
       <label style="font-size:12px;color:var(--wb-text-3)">AI 评委</label>
       <select id="ev-judge" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px"><option value="">不用（只机器判分）</option>${opts("")}</select>
       <button class="btn-brand" id="ev-start">开始评测</button>
       <span id="ev-state" style="font-size:13px;color:var(--wb-text-3)"></span>
     </div>
     <div style="font-size:13px;color:var(--wb-text-3);line-height:1.7;margin:0 0 10px">
-      12 道固定任务把整个智能体当黑盒考（写代码 / 算表格 / 修 bug / 画图 / 多步交付…）。三条评分线互相独立：<b>机器判分</b>（跑代码、对数字、验结构，只认硬证据）、<b>AI 评委</b>（另一个模型按每题 rubric 打 1-5 质量分）、<b>人工打分</b>（点下面历史成绩的行，逐题打星写点评）。每轮成绩都盖上代码版本（commit）——改完提示词/工具再跑一轮就能看出回归还是进步。
-      <b>会真实调用所选模型计费</b>，一轮约几十万 tokens（DeepSeek 约几毛钱）。命令行同款：<code>npm run eval -- --model 模型名 --judge 评委名</code>
+      15 道分层任务（L1 基础 / L2 进阶 / L3 高难）把整个智能体当黑盒考（写代码 / 算表格 / 修 bug / 跨文件重构 / 日志管线…）。三条评分线互相独立：<b>机器判分</b>（跑代码、对数字、验结构，只认硬证据，失败自动归因成败因码）、<b>稳定性</b>（每题重复 k 次：pass@1 均值看能不能，k 次全过看稳不稳）、<b>AI 评委</b>（逐条质量维度只判 是/否，不打印象分）。跑完可「📌 设为基线」——之后每轮自动逐题对比，退步点名。
+      <b>会真实调用所选模型计费</b>，费用随次数翻倍（DeepSeek 单次约几毛钱）。命令行同款：<code>npm run eval -- --repeat 3 --judge 评委名</code>
     </div>
     <pre id="ev-log" style="display:none;background:var(--wb-card);border:1px solid var(--wb-line);border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.8;max-height:320px;overflow:auto;white-space:pre-wrap;margin:0 0 14px"></pre>
     <div id="ev-detail"></div>
-    <div class="side-label" style="margin:6px 0">历史成绩 · 点一行看每题明细 / 打人工分</div>
+    <div class="side-label" style="margin:6px 0">历史成绩 · 点一行看每题明细 / 打人工分 / 设为基线</div>
     <div id="ev-hist" style="font-size:13px;color:var(--wb-text-3)">加载中…</div>`;
   document.getElementById("ev-start").onclick = async () => {
     const btn = document.getElementById("ev-start");
@@ -3893,9 +3898,12 @@ async function renderEvalPage() {
     evalArm = false; btn.textContent = "开始评测"; btn.style.background = "";
     const model = document.getElementById("ev-model").value;
     const judge = document.getElementById("ev-judge").value;
-    const r = await fetch("/api/eval/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(judge ? { model, judge } : { model }) }).then((x) => x.json()).catch(() => null);
+    const repeat = +document.getElementById("ev-repeat").value || 1;
+    const body = { model, repeat };
+    if (judge) body.judge = judge;
+    const r = await fetch("/api/eval/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json()).catch(() => null);
     if (!r || r.error) return toast("❌ " + ((r && r.error) || "启动失败"));
-    toast("🧪 评测已开跑：" + model + (judge ? "（评委 " + judge + "）" : ""));
+    toast("🧪 评测已开跑：" + model + (repeat > 1 ? `（每题 ${repeat} 次）` : "") + (judge ? "（评委 " + judge + "）" : ""));
     updateEvalView();
   };
   updateEvalView();
@@ -3913,31 +3921,43 @@ async function updateEvalView() {
   } else {
     if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
     if (btn) btn.disabled = false;
-    state.textContent = st.startedAt ? (st.exit === 0 ? "✅ 上一轮全过" : st.exit == null ? "" : "🟡 上一轮有失分，看日志或点历史行看明细") : "";
+    state.textContent = st.startedAt ? (st.exit === 0 ? "✅ 上一轮题题稳过" : st.exit == null ? "" : "🟡 上一轮有失分，看日志或点历史行看明细") : "";
   }
   if (st.lines && st.lines.length) {
     log.style.display = "";
     log.textContent = st.lines.join("\n");
     if (st.running) log.scrollTop = log.scrollHeight;
   }
-  const hist = await fetch("/api/eval/history").then((r) => r.json()).catch(() => []);
+  const hj = await fetch("/api/eval/history").then((r) => r.json()).catch(() => null);
   if (pageKind !== "eval") return;
+  const hist = Array.isArray(hj) ? hj : (hj && hj.runs) || [];
+  const baseline = (hj && !Array.isArray(hj) && hj.baseline) || null;
   if (!hist.length) { histBox.textContent = "还没跑过。选个模型点「开始评测」，或命令行 npm run eval"; return; }
+  const blBanner = baseline
+    ? `<div style="font-size:12px;color:var(--wb-text-3);margin:0 0 6px">📌 当前基线：${esc(baseline.model || "")} · ${esc(String(baseline.at || "").slice(0, 16).replace("T", " "))} · <code>${esc(baseline.commit || "—")}</code>（每次跑批自动逐题对比）</div>`
+    : `<div style="font-size:12px;color:var(--wb-text-3);margin:0 0 6px">还没钉基线——点开一次成绩，点「📌 设为基线」，之后每轮自动对比退步/进步</div>`;
   const th = (t, tip) => `<th style="padding:6px 8px" ${tip ? `title="${esc(tip)}"` : ""}>${t}</th>`;
-  histBox.innerHTML = `
+  histBox.innerHTML = blBanner + `
     <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tr style="color:var(--wb-text-3);text-align:left">${th("时间")}${th("模型")}${th("机器分", "硬校验通过率（跑代码/对数字/验结构）")}${th("AI 评委", "评委模型按每题 rubric 打的 1-5 均分")}${th("人工", "人工打星的均分")}${th("整题全过")}${th("tokens")}${th("每步背负", "平均每次 LLM 调用背的 prompt tokens，越小越省")}${th("版本", "跑分时的代码 commit，用来对比不同版本的回归")}</tr>
+      <tr style="color:var(--wb-text-3);text-align:left">${th("时间")}${th("模型")}${th("次数", "每题重复几次")}${th("pass@1", "各题通过率的平均：能不能做对")}${th("稳定全过", "k 次全过的题数：稳不稳。⚡=有题时过时不过")}${th("Δ基线", "与钉住的基线逐题对比")}${th("AI 评委", "逐条质量维度二元判定的达标率（旧格式为 1-5 均分）")}${th("人工", "人工打星的均分")}${th("tokens")}${th("版本", "跑分时的代码 commit")}</tr>
       ${hist.map((h) => {
-        const scoreColor = h.score_pct >= 100 ? "var(--wb-ok)" : h.score_pct >= 80 ? "var(--wb-text)" : "var(--wb-err)";
+        const p1 = h.pass1_avg != null ? h.pass1_avg : h.score_pct;
+        const scoreColor = p1 >= 100 ? "var(--wb-ok)" : p1 >= 80 ? "var(--wb-text)" : "var(--wb-err)";
+        const bl = h.baseline;
+        const dCell = !bl ? "—" : (bl.regressions && bl.regressions.length
+          ? `<span style="color:var(--wb-err)" title="退步：${esc(bl.regressions.join(", "))}">🔻${bl.regressions.length}题</span>`
+          : (bl.improvements && bl.improvements.length ? `<span style="color:var(--wb-ok)" title="进步：${esc(bl.improvements.join(", "))}">↑${bl.improvements.length}题</span>` : `<span title="与基线持平">±0</span>`));
+        const jd = h.judge ? (h.judge.avg_pct != null ? "⚖️ " + h.judge.avg_pct + "%" : (h.judge.avg != null ? "⚖️ " + h.judge.avg + "/5" : "—")) : "—";
         return `<tr data-dir="${esc(h.dir || "")}" style="border-top:1px solid var(--wb-line);cursor:pointer">
           <td style="padding:6px 8px;white-space:nowrap">${esc(String(h.at || "").slice(0, 16).replace("T", " "))}</td>
           <td style="padding:6px 8px">${esc(h.model || "")}</td>
-          <td style="padding:6px 8px;font-weight:700;color:${scoreColor}">${h.score_pct}%</td>
-          <td style="padding:6px 8px">${h.judge && h.judge.avg != null ? "⚖️ " + h.judge.avg : "—"}</td>
+          <td style="padding:6px 8px">${h.repeat || 1}×</td>
+          <td style="padding:6px 8px;font-weight:700;color:${scoreColor}">${p1}%</td>
+          <td style="padding:6px 8px">${h.full_pass}/${h.tasks}${(h.flaky_tasks || []).length ? ` <span title="不稳定：${esc((h.flaky_tasks || []).join(", "))}">⚡${h.flaky_tasks.length}</span>` : ""}</td>
+          <td style="padding:6px 8px">${dCell}</td>
+          <td style="padding:6px 8px">${jd}</td>
           <td style="padding:6px 8px">${h.human && h.human.avg ? "★ " + h.human.avg : "—"}</td>
-          <td style="padding:6px 8px">${h.full_pass}/${h.tasks}</td>
           <td style="padding:6px 8px">${((h.tokens_total || 0) / 1000).toFixed(0)}k</td>
-          <td style="padding:6px 8px">${((h.avg_prompt_per_call || 0) / 1000).toFixed(1)}k</td>
           <td style="padding:6px 8px"><code style="font-size:12px">${esc(h.commit || "—")}</code></td>
         </tr>`;
       }).join("")}
@@ -3953,22 +3973,34 @@ async function openEvalDetail(dir) {
   const j = await fetch("/api/eval/run/" + encodeURIComponent(dir)).then((r) => r.json()).catch(() => null);
   if (evalDetailDir !== dir) return;
   if (!j || j.error) { box.innerHTML = ""; evalDetailDir = null; return toast("❌ " + ((j && j.error) || "明细加载失败")); }
+  const p1 = j.pass1_avg != null ? j.pass1_avg : j.score_pct;
+  const jdHead = j.judge ? (j.judge.avg_pct != null ? ` · 评委质量 ${j.judge.avg_pct}%（${esc(j.judge.model || "")}）` : (j.judge.avg != null ? ` · AI 评委 ${j.judge.avg}/5（${esc(j.judge.model || "")}）` : "")) : "";
+  const blHead = j.baseline ? (j.baseline.regressions && j.baseline.regressions.length ? ` · <span style="color:var(--wb-err)">🔻对比基线退步 ${esc(j.baseline.regressions.join(", "))}</span>` : " · 对比基线无退步") : "";
   const head = `<div style="display:flex;align-items:center;gap:10px;margin:0 0 8px;flex-wrap:wrap">
-      <b style="font-size:14px">${esc(String(j.at || "").slice(0, 16).replace("T", " "))} · ${esc(j.model || "")}</b>
-      <span style="font-size:12px;color:var(--wb-text-3)">机器分 ${j.score_pct}%${j.judge && j.judge.avg != null ? ` · AI 评委 ${j.judge.avg}/5（${esc(j.judge.model || "")}）` : ""}${j.human && j.human.avg ? ` · 人工 ★${j.human.avg}（已评 ${j.human.scored} 题）` : ""}${j.commit ? ` · 版本 ${esc(j.commit)}` : ""}</span>
-      <a href="#" id="ev-close" class="link" style="margin-left:auto;font-size:12px">收起 ✕</a>
+      <b style="font-size:14px">${esc(String(j.at || "").slice(0, 16).replace("T", " "))} · ${esc(j.model || "")}${(j.repeat || 1) > 1 ? ` · 每题 ${j.repeat} 次` : ""}</b>
+      <span style="font-size:12px;color:var(--wb-text-3)">pass@1 均值 ${p1}% · 稳定全过 ${j.full_pass}/${j.tasks}${jdHead}${j.human && j.human.avg ? ` · 人工 ★${j.human.avg}（已评 ${j.human.scored} 题）` : ""}${j.commit ? ` · 版本 ${esc(j.commit)}` : ""}${blHead}</span>
+      <a href="#" id="ev-pin" class="link" style="margin-left:auto;font-size:12px;white-space:nowrap">📌 设为基线</a>
+      <a href="#" id="ev-close" class="link" style="font-size:12px">收起 ✕</a>
     </div>`;
   const rows = (j.results || []).map((r) => {
+    const k = r.k || 1;
+    const passes = r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0);
+    const icon = passes === k ? "✅" : passes ? "⚡" : (r.passed ? "🟡" : "❌");
+    const lv = r.level ? `<span style="font-size:11px;padding:1px 6px;border-radius:5px;background:var(--wb-bg);border:1px solid var(--wb-line);color:var(--wb-text-3)">L${r.level}${r.kind ? "·" + esc(r.kind) : ""}</span>` : "";
+    const cells = (r.attempts && r.attempts.length > 1) ? `<span style="display:inline-flex;gap:3px" title="每格一次尝试">${r.attempts.map((a) => `<span title="第${a.n}次：${a.passed}/${a.total}${a.fail_code ? " · " + (EV_FAIL_LABELS[a.fail_code] || a.fail_code) : ""}" style="width:17px;height:17px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;background:${a.passed === a.total ? "rgba(34,197,94,.15)" : "rgba(239,68,68,.15)"};color:${a.passed === a.total ? "var(--wb-ok)" : "var(--wb-err)"}">${a.passed === a.total ? "✓" : "✗"}</span>`).join("")}</span>` : "";
+    const chips = (r.fail_codes || []).map((c) => `<span style="font-size:11px;padding:1px 7px;border-radius:999px;background:rgba(239,68,68,.12);color:var(--wb-err)">${EV_FAIL_LABELS[c] || esc(c)}</span>`).join("");
     const checks = (r.checks || []).map((c) => `<div style="font-size:12px;color:${c.ok ? "var(--wb-ok)" : "var(--wb-err)"}">${c.ok ? "✓" : "✗"} ${esc(c.name)}${c.note ? `<span style="color:var(--wb-text-3)"> — ${esc(c.note)}</span>` : ""}</div>`).join("");
-    const judge = r.judge && r.judge.score
-      ? `<div style="margin-top:6px;font-size:12px">⚖️ AI 评委 <b>${r.judge.score}/5</b> — ${esc(r.judge.verdict || "")}${(r.judge.reasons || []).length ? `<div style="color:var(--wb-text-3)">${r.judge.reasons.map((x) => "· " + esc(x)).join("<br>")}</div>` : ""}${(r.judge.deductions || []).length ? `<div style="color:var(--wb-err)">${r.judge.deductions.map((x) => "扣分：" + esc(x)).join("<br>")}</div>` : ""}</div>`
-      : (r.judge && r.judge.error ? `<div style="margin-top:6px;font-size:12px;color:var(--wb-text-3)">⚖️ 评委失败：${esc(r.judge.error)}</div>` : "");
+    const judge = r.judge && r.judge.dims
+      ? `<div style="margin-top:6px;font-size:12px">⚖️ 质量维度 <b>${r.judge.passed}/${r.judge.total}</b>${r.judge.dims.map((d) => `<div style="color:${d.pass ? "var(--wb-ok)" : "var(--wb-err)"}">${d.pass ? "✓" : "✗"} ${esc(d.q)}${d.note ? `<span style="color:var(--wb-text-3)"> — ${esc(d.note)}</span>` : ""}</div>`).join("")}</div>`
+      : r.judge && r.judge.score
+        ? `<div style="margin-top:6px;font-size:12px">⚖️ AI 评委 <b>${r.judge.score}/5</b> — ${esc(r.judge.verdict || "")}${(r.judge.reasons || []).length ? `<div style="color:var(--wb-text-3)">${r.judge.reasons.map((x) => "· " + esc(x)).join("<br>")}</div>` : ""}${(r.judge.deductions || []).length ? `<div style="color:var(--wb-err)">${r.judge.deductions.map((x) => "扣分：" + esc(x)).join("<br>")}</div>` : ""}</div>`
+        : (r.judge && r.judge.error ? `<div style="margin-top:6px;font-size:12px;color:var(--wb-text-3)">⚖️ 评委失败：${esc(r.judge.error)}</div>` : "");
     const hs = (r.human && r.human.score) || 0;
     const stars = [1, 2, 3, 4, 5].map((n) => `<button class="ev-star" data-task="${esc(r.id)}" data-star="${n}" title="人工打 ${n} 分" style="border:none;background:none;cursor:pointer;font-size:16px;padding:0 1px;line-height:1;color:${n <= hs ? "#f59e0b" : "var(--wb-text-3)"}">${n <= hs ? "★" : "☆"}</button>`).join("");
     return `<div style="border:1px solid var(--wb-line);border-radius:10px;padding:10px 12px;margin:0 0 8px;background:var(--wb-card)">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <b style="font-size:13px">${r.passed === r.total ? "✅" : r.passed ? "🟡" : "❌"} ${esc(r.name)}</b>
-        <span style="font-size:12px;color:var(--wb-text-3)">${r.passed}/${r.total} · ${r.elapsed_s}s · ${r.tool_calls || 0} 步${r.tool_errors ? `（${r.tool_errors} 次工具报错）` : ""}${r.stopped ? " · " + esc(r.stopped) : ""}${r.crashed ? " · 崩溃" : ""}</span>
+        <b style="font-size:13px">${icon} ${esc(r.name)}</b>${lv}${cells}${chips}
+        <span style="font-size:12px;color:var(--wb-text-3)">${k > 1 ? `${passes}/${k} 次全过 · 首轮 ` : ""}${r.passed}/${r.total} · ${r.elapsed_s}s · ${r.tool_calls || 0} 步${r.tool_errors ? `（${r.tool_errors} 次工具报错）` : ""}${r.stopped ? " · " + esc(r.stopped) : ""}${r.crashed ? " · 崩溃" : ""}</span>
         <span style="margin-left:auto;white-space:nowrap;display:flex;align-items:center">${stars}<input class="ev-cmt" data-task="${esc(r.id)}" placeholder="点评（可选）" value="${esc((r.human && r.human.comment) || "")}" style="width:150px;margin-left:6px;padding:3px 8px;border:1px solid var(--wb-line);border-radius:6px;background:var(--wb-bg);color:var(--wb-text);font-size:12px"></span>
       </div>
       <div style="margin-top:6px">${checks}</div>
@@ -3978,6 +4010,13 @@ async function openEvalDetail(dir) {
   }).join("");
   box.innerHTML = `<div style="margin:0 0 14px">${head}${rows}</div>`;
   box.querySelector("#ev-close").onclick = (e) => { e.preventDefault(); evalDetailDir = null; box.innerHTML = ""; };
+  box.querySelector("#ev-pin").onclick = async (e) => {
+    e.preventDefault();
+    const r = await fetch("/api/eval/baseline", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir }) }).then((x) => x.json()).catch(() => null);
+    if (!r || r.error) return toast("❌ " + ((r && r.error) || "钉基线失败"));
+    toast("📌 已设为基线，之后每轮自动对比");
+    updateEvalView();
+  };
   const saveHuman = async (taskId, score) => {
     const cmt = box.querySelector(`.ev-cmt[data-task="${taskId}"]`);
     const r = await fetch("/api/eval/human", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir, task_id: taskId, score, comment: cmt ? cmt.value : "" }) }).then((x) => x.json()).catch(() => null);

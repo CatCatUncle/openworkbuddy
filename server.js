@@ -1846,18 +1846,31 @@ app.post("/api/session/:id/goal", (req, res) => {
 const evalState = { running: false, lines: [], startedAt: 0, model: "", exit: null };
 function evalSummaryBrief(j) {
   if (!j) return null;
+  // 兼容两代格式：v3 有 repeat/pass1_avg/attempts，旧格式按 k=1 折算，前端只走一条代码路径
   return {
     at: j.at, model: j.model, model_id: j.model_id, score_pct: j.score_pct,
+    repeat: j.repeat || 1,
+    pass1_avg: j.pass1_avg != null ? j.pass1_avg : (j.tasks ? Math.round((j.full_pass / j.tasks) * 100) : 0),
+    flaky_tasks: j.flaky_tasks || [], fail_code_counts: j.fail_code_counts || {},
+    baseline: j.baseline || null,
     tasks: j.tasks, full_pass: j.full_pass, checks_passed: j.checks_passed, checks_total: j.checks_total,
     tokens_total: j.tokens_total, avg_prompt_per_call: j.avg_prompt_per_call || 0,
     commit: j.commit || "", judge: j.judge || null, human: j.human || null,
-    results: (j.results || []).map((r) => ({
-      id: r.id, name: r.name, passed: r.passed, total: r.total, elapsed_s: r.elapsed_s,
-      tool_calls: r.tool_calls || 0, tool_errors: r.tool_errors || 0,
-      judge: r.judge && r.judge.score ? { score: r.judge.score, verdict: r.judge.verdict || "" } : null,
-      human: r.human || null,
-      failed: (r.checks || []).filter((c) => !c.ok).map((c) => c.name),
-    })),
+    results: (j.results || []).map((r) => {
+      const k = r.k || 1;
+      const passes = r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0);
+      return {
+        id: r.id, name: r.name, level: r.level || 1, kind: r.kind || "",
+        passed: r.passed, total: r.total, elapsed_s: r.elapsed_s,
+        k, passes, pass_rate: r.pass_rate != null ? r.pass_rate : +(passes / k).toFixed(3),
+        flaky: !!r.flaky, fail_codes: r.fail_codes || [],
+        attempts: (r.attempts || []).map((a) => ({ n: a.n, passed: a.passed, total: a.total, elapsed_s: a.elapsed_s, fail_code: a.fail_code || null })),
+        tool_calls: r.tool_calls || 0, tool_errors: r.tool_errors || 0,
+        judge: r.judge ? (r.judge.dims ? { passed: r.judge.passed, total: r.judge.total } : (r.judge.score ? { score: r.judge.score, verdict: r.judge.verdict || "" } : null)) : null,
+        human: r.human || null,
+        failed: (r.checks || []).filter((c) => !c.ok).map((c) => c.name),
+      };
+    }),
   };
 }
 function evalHistory(limit = 20) {
@@ -1882,6 +1895,8 @@ app.post("/api/eval/start", (req, res) => {
   const judge = String((req.body || {}).judge || "").trim();
   if (judge && !(config.models || []).some((m) => m.name === judge)) return res.status(400).json({ error: `评委模型「${judge}」不在列表里` });
   if (judge) args.push("--judge", judge);
+  const repeat = Math.max(1, Math.min(5, Math.round(+(req.body || {}).repeat) || 1));
+  if (repeat > 1) args.push("--repeat", String(repeat));
   evalState.running = true; evalState.lines = []; evalState.startedAt = Date.now(); evalState.model = model; evalState.exit = null;
   const child = require("child_process").spawn(process.execPath, args, {
     cwd: __dirname,
@@ -1905,7 +1920,29 @@ app.post("/api/eval/start", (req, res) => {
 app.get("/api/eval/status", (_req, res) => {
   res.json({ running: evalState.running, model: evalState.model, startedAt: evalState.startedAt, exit: evalState.exit, lines: evalState.lines });
 });
-app.get("/api/eval/history", (_req, res) => res.json(evalHistory()));
+app.get("/api/eval/history", (_req, res) => {
+  const bl = store.readJson(path.join(__dirname, "eval", "baseline.json"), null);
+  res.json({ runs: evalHistory(), baseline: bl ? { at: bl.at, commit: bl.commit || "", model: bl.model || "", source_dir: bl.source_dir || "" } : null });
+});
+// 钉基线：把某次跑批的各题通过率写进 eval/baseline.json，之后每次跑批自动逐题对比、退步点名
+app.post("/api/eval/baseline", (req, res) => {
+  const dir = String((req.body || {}).dir || "");
+  if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
+  const j = store.readJson(path.join(__dirname, "eval", "runs", dir, "results.json"), null);
+  if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
+  const bl = {
+    at: j.at, commit: j.commit || "", model: j.model, repeat: j.repeat || 1,
+    pass1_avg: j.pass1_avg != null ? j.pass1_avg : (j.tasks ? Math.round((j.full_pass / j.tasks) * 100) : 0),
+    score_pct: j.score_pct, source_dir: dir,
+    tasks: Object.fromEntries((j.results || []).map((r) => {
+      const k = r.k || 1;
+      const passes = r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0);
+      return [r.id, { pass_rate: r.pass_rate != null ? r.pass_rate : +(passes / k).toFixed(3) }];
+    })),
+  };
+  fs.writeFileSync(path.join(__dirname, "eval", "baseline.json"), JSON.stringify(bl, null, 2));
+  res.json({ ok: true, baseline: { at: bl.at, commit: bl.commit, model: bl.model, source_dir: dir } });
+});
 // 单次评测完整明细：每题 checks、AI 评委理由、人工分、最终回复摘录、产物清单
 app.get("/api/eval/run/:dir", (req, res) => {
   const dir = String(req.params.dir || "");
