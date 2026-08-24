@@ -1839,6 +1839,62 @@ app.post("/api/session/:id/goal", (req, res) => {
   res.json({ ok: true, goal: s.goal });
 });
 
+// ---------- 内置评测（界面版）：spawn 子进程跑 eval/run.js ----------
+// 子进程隔离是刚需：评测会 setWorkspaceDir 到自己的沙盒目录，进程内跑会把主应用的工作空间劫走
+const evalState = { running: false, lines: [], startedAt: 0, model: "", exit: null };
+function evalSummaryBrief(j) {
+  if (!j) return null;
+  return {
+    at: j.at, model: j.model, model_id: j.model_id, score_pct: j.score_pct,
+    tasks: j.tasks, full_pass: j.full_pass, checks_passed: j.checks_passed, checks_total: j.checks_total,
+    tokens_total: j.tokens_total, avg_prompt_per_call: j.avg_prompt_per_call || 0,
+    results: (j.results || []).map((r) => ({ id: r.id, name: r.name, passed: r.passed, total: r.total, elapsed_s: r.elapsed_s, failed: (r.checks || []).filter((c) => !c.ok).map((c) => c.name) })),
+  };
+}
+function evalHistory(limit = 20) {
+  const out = [];
+  try {
+    const root = path.join(__dirname, "eval", "runs");
+    for (const d of fs.readdirSync(root).sort().reverse()) {
+      const j = store.readJson(path.join(root, d, "results.json"), null);
+      if (j) out.push(evalSummaryBrief(j));
+      if (out.length >= limit) break;
+    }
+  } catch {}
+  return out;
+}
+app.post("/api/eval/start", (req, res) => {
+  if (evalState.running) return res.status(409).json({ error: "已有一轮评测在跑，等它结束" });
+  const model = String((req.body || {}).model || config.active_model);
+  if (!(config.models || []).some((m) => m.name === model)) return res.status(400).json({ error: `模型「${model}」不在列表里` });
+  const args = [path.join(__dirname, "eval", "run.js"), "--model", model];
+  const only = String((req.body || {}).task || "").trim();
+  if (only) args.push("--task", only);
+  evalState.running = true; evalState.lines = []; evalState.startedAt = Date.now(); evalState.model = model; evalState.exit = null;
+  const child = require("child_process").spawn(process.execPath, args, {
+    cwd: __dirname,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, // execPath 是 Electron，不加就弹新应用实例
+  });
+  let buf = "";
+  const onData = (d) => {
+    buf += String(d);
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trimEnd(); buf = buf.slice(i + 1);
+      if (line) { evalState.lines.push(line); if (evalState.lines.length > 400) evalState.lines.shift(); }
+    }
+  };
+  child.stdout.on("data", onData);
+  child.stderr.on("data", onData);
+  child.on("close", (code) => { evalState.running = false; evalState.exit = code; });
+  child.on("error", (e) => { evalState.running = false; evalState.exit = -1; evalState.lines.push("评测进程启动失败: " + e.message); });
+  res.json({ ok: true, model });
+});
+app.get("/api/eval/status", (_req, res) => {
+  res.json({ running: evalState.running, model: evalState.model, startedAt: evalState.startedAt, exit: evalState.exit, lines: evalState.lines });
+});
+app.get("/api/eval/history", (_req, res) => res.json(evalHistory()));
+
 // 给单个对话指定模型（null = 跟随全局默认）。只影响这一个对话，不动全局 active_model
 app.post("/api/session/:id/model", (req, res) => {
   const name = (req.body || {}).model;
