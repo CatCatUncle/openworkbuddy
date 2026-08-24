@@ -998,6 +998,7 @@ function testMemoryLayer() {
   const script = `
     const assert = require("assert");
     const mem = require(${JSON.stringify(path.join(__dirname, "..", "memory.js"))});
+    (async () => {
 
     // 记一条 + 去重（大小写/空白/句末标点不同不算两条）
     const a = mem.add({ text: "周报只要三段：进展 / 问题 / 下周计划", user: "甲" });
@@ -1012,8 +1013,8 @@ function testMemoryLayer() {
     assert.strictEqual(mem.list("甲").length, 2, "甲应当看到自己的 + 共享的");
     assert.strictEqual(mem.list("乙").length, 2);
     assert.strictEqual(mem.list("甲").some((x) => /飞书/.test(x.text)), false, "别人的记忆串过来了");
-    assert.ok(mem.promptBlock("甲").includes("周报只要三段"), "记忆没进提示词");
-    assert.strictEqual(/飞书/.test(mem.promptBlock("甲")), false, "提示词里带上了别人的记忆");
+    assert.ok((await mem.promptBlock("甲")).includes("周报只要三段"), "记忆没进提示词");
+    assert.strictEqual(/飞书/.test(await mem.promptBlock("甲")), false, "提示词里带上了别人的记忆");
 
     // 忘记：只能忘共享的和自己的
     const f = mem.forget({ text: "飞书", user: "甲" });
@@ -1052,7 +1053,34 @@ function testMemoryLayer() {
     assert.strictEqual(mem.renameScope("乙", "乙二"), 1);
     assert.ok(mem.list("乙二").some((x) => /飞书/.test(x.text)), "改名后记忆没跟过去");
     assert.strictEqual(mem.list("乙").some((x) => /飞书/.test(x.text)), false);
+
+    // —— 召回（关键词路）：装得下全量注入；装不下按相关性挑，不从尾巴上盲切 ——
+    for (let i = 0; i < 40; i++) mem.add({ text: "占位偏好" + i + "：" + "字".repeat(180), user: "丁" });
+    mem.add({ text: "去香港要走深圳湾口岸，最晚 24:00 前通关", user: "丁" });
+    const pb = await mem.promptBlock("丁", "帮我规划去香港的行程，从深圳湾口岸出发");
+    assert.ok(pb.includes("深圳湾口岸"), "与任务相关的那条没被召回");
+    assert.ok(pb.includes("挑了"), "超预算做了筛选却没明说");
+    assert.ok(pb.length < 41 * 200, "超预算了却没筛，全塞进了提示词");
+    // 没有线索时按新旧挑：最新的必须活下来（老实现的盲切吃掉的恰好是最新的）
+    assert.ok((await mem.promptBlock("丁")).includes("深圳湾口岸"), "无线索时最新一条应当保留");
+
+    // —— 召回（向量路）：假 embedder，语义相关但字面不重叠的条目要能排上去 ——
+    mem.add({ text: "家里养了一只猫，做攻略要考虑宠物寄养", user: "戊" });
+    for (let i = 0; i < 40; i++) mem.add({ text: "戊的占位" + i + "：" + "字".repeat(180), user: "戊" });
+    mem.setEmbedder(Object.assign(
+      async (texts) => texts.map((t) => [t.includes("猫") ? 1 : 0, t.includes("狗") ? 1 : 0, 0.1]),
+      { model: "fake-v1" }
+    ));
+    await mem.ensureVectors();
+    const vs = mem._internals.vecLoad();
+    assert.strictEqual(vs.model, "fake-v1", "向量库没记嵌入模型名");
+    assert.ok(Object.keys(vs.vecs).length >= 80, "向量没补算全");
+    const pb3 = await mem.promptBlock("戊", "猫");
+    assert.ok(pb3.includes("宠物寄养"), "向量召回没把语义相关（字面不重叠）的条目排上去");
+    mem.setEmbedder(null);
+
     console.log("OK");
+    })().catch((e) => { console.error((e && e.stack) || e); process.exit(1); });
   `;
   const r = spawnSync(process.execPath, ["-e", script], {
     env: { ...process.env, WB_DATA_DIR: dir },
@@ -1096,11 +1124,38 @@ function testCommandGate() {
   // 网关关掉就只记账不拦
   assert.strictEqual(security.checkCommand({ ...sec, gateway: false }, "cat ~/.ssh/id_rsa").action, "allow", "网关关了还在拦黑名单路径");
 
+  // —— P5 高危命令确认表：不可逆毁数据的形态，任何档位都要点头 ——
+  const dangerAsk = [
+    "echo x > /dev/disk2",
+    "dd if=img.iso of=/dev/disk2",
+    "docker compose down -v",
+    "docker-compose down --volumes",
+    "git push --force origin main",
+    "git push -f",
+    'psql -c "DROP TABLE users"',
+    "mkfs.ext4 /dev/sdb1",
+  ];
+  for (const cmd of dangerAsk) {
+    const v = security.checkCommand(sec, cmd);
+    assert.strictEqual(v.action, "ask", `高危命令该要确认：${JSON.stringify(cmd)}`);
+    assert.ok(/高危|询问名单|删除保护/.test(v.rule), v.rule);
+  }
+  // 全自动档也拦（这是它和 cmd_ask 名单的本质区别）
+  assert.strictEqual(security.checkCommand({ ...sec, permission_mode: "full" }, "docker compose down -v").action, "ask", "全自动档放过了 down -v");
+  // 永久放行名单盖不住高危表
+  assert.strictEqual(security.checkCommand({ ...sec, cmd_allow: ["docker "] }, "docker compose down -v").action, "ask", "放行名单越过了高危表");
+  // 但正常形态别误伤
+  for (const cmd of ["docker compose down", "echo ok > /dev/null", "git push origin main", "git push", "dd if=a of=b.img"]) {
+    assert.strictEqual(security.checkCommand(sec, cmd).action, "allow", `这条不该被高危表拦：${JSON.stringify(cmd)}`);
+  }
+  // 「只看不动」档下高危命令仍是 deny（不该被降级成 ask 弹审批）
+  assert.strictEqual(security.checkCommand({ ...sec, permission_mode: "plan" }, "docker compose down -v").action, "deny");
+
   // 代码闸：命令闸守得再严，一句 require("child_process") 就从旁边过去了
   assert.strictEqual(security.checkCode(sec, 'require("child_process").execSync("rm -rf ~/x")').action, "ask", "代码开子进程没拦");
   assert.strictEqual(security.checkCode(sec, 'fs.readFileSync(process.env.HOME + "/.ssh/id_rsa")').action, "ask", "代码碰黑名单没拦");
   assert.strictEqual(security.checkCode(sec, 'const fs=require("fs");fs.writeFileSync("a.txt","hi")').action, "allow", "正常代码被拦了");
-  console.log("✅ 命令闸：换行/$()/反引号/子shell/包装词全拆得开，黑名单压得住放行名单，代码闸补上子进程这条路");
+  console.log("✅ 命令闸：换行/$()/反引号/子shell/包装词全拆得开，黑名单压得住放行名单，高危表（/dev 直写·down -v·强推·删库·格盘）全档位生效，代码闸补上子进程这条路");
 }
 
 function testAccountStore() {

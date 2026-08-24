@@ -234,7 +234,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     return loadSkills();
   }
 
-  function baseSystemPrompt(user) {
+  async function baseSystemPrompt(user, hint) {
     const skills = getSkills();
     // 用户可以给助理改名（设置 → 个性化）。名字得进提示词，不然用户喊"小秘"它一脸茫然
     const myName = String((config.assistant || {}).name || "").trim() || "OpenWorkBuddy";
@@ -349,13 +349,14 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     if (config.persona) {
       p += `\n\n## 用户的个性化偏好\n${config.persona}`;
     }
-    // 记忆按账号取：共享的 + 这个人自己的。别人的偏好不该串到他头上
-    p += memory.promptBlock(user);
+    // 记忆按账号取：共享的 + 这个人自己的。别人的偏好不该串到他头上；
+    // hint 是本次任务线索，记忆装不下提示词预算时按它挑最相关的
+    p += await memory.promptBlock(user, hint);
     return p;
   }
 
-  function coordinatorSystemPrompt(user) {
-    let p = baseSystemPrompt(user);
+  async function coordinatorSystemPrompt(user, hint) {
+    let p = await baseSystemPrompt(user, hint);
     if (experts.length) {
       p += `\n\n## 可委派的专家（delegate_to_expert）\n`;
       p += experts
@@ -378,9 +379,9 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     return p;
   }
 
-  function expertSystemPrompt(expert, user) {
+  async function expertSystemPrompt(expert, user, hint) {
     let p =
-      baseSystemPrompt(user) +
+      (await baseSystemPrompt(user, hint)) +
       `\n\n## 你的专家角色：${expert.name}${expert.alias ? `（花名「${expert.alias}」）` : ""}\n${expert.system}`;
     if ((expert.skills || []).length) {
       p += `\n\n## 你的专属技能（动手前先 use_skill 加载，再按技能里的规范做）\n${expert.skills.map((s) => `- ${s}`).join("\n")}`;
@@ -488,7 +489,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         projectContext,
         history: [{ role: "user", content: tc.input.task }],
         emit: (ev) => emit({ ...ev, expert: expert.name }), // 子代理事件带上专家标记
-        systemPrompt: expertSystemPrompt(expert, user),
+        systemPrompt: await expertSystemPrompt(expert, user, String(tc.input.task || "").slice(0, 500)),
         depth: depth + 1,
         user,
         taskLabel,
@@ -535,7 +536,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         projectContext,
           history: [{ role: "user", content: brief }],
           emit: (ev) => emit({ ...ev, expert: m.name, team: team.name }),
-          systemPrompt: expertSystemPrompt(m, user),
+          systemPrompt: await expertSystemPrompt(m, user, String(tc.input.task || "").slice(0, 500)),
           depth: depth + 1,
           user,
           taskLabel,
@@ -687,7 +688,10 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     if (!runToken) runToken = ++runSeq; // 专家子任务从父任务继承，同一任务树内不互相抢认领
     // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设
     const projBlock = projectContext ? `\n\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${projectContext}` : "";
-    const system = (systemPrompt || coordinatorSystemPrompt(user)) + projBlock + modePrompt(mode);
+    // 记忆召回的线索：用户最后一条消息的前 500 字。记忆超预算时按它挑相关条目
+    const lastUserMsg = [...history].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
+    const memHint = lastUserMsg ? lastUserMsg.content.slice(0, 500) : "";
+    const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint))) + projBlock + modePrompt(mode);
     const tools = toolList(depth, mode);
     const maxSteps = config.agent.max_steps || 25;
     // 整个任务（含所有专家子代理）共享一个墙上时间预算，防止无限执行

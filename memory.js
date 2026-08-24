@@ -22,6 +22,7 @@ const store = require("./store");
 const DATA_DIR = process.env.WB_DATA_DIR || path.join(__dirname, "data");
 const ITEMS_FILE = path.join(DATA_DIR, "memories.json");
 const MANUAL_FILE = path.join(DATA_DIR, "memory.md");
+const VEC_FILE = path.join(DATA_DIR, "memory_vectors.json"); // 向量单独存：memories.json 保持人能读
 
 const SHARED = "*"; // 共享作用域：所有账号都看得到
 const MAX_TEXT = 400; // 单条上限：记忆是一句话结论，不是任务日志
@@ -65,6 +66,73 @@ function save(items) {
   store.writeJsonAtomic(ITEMS_FILE, { items }, { pretty: true });
 }
 
+// ---------- 向量召回层 ----------
+// embedder 由 server 启动时注入（llm.createEmbedder），可能是 null（没有可用的
+// embeddings 渠道）。null 时打分退回中文二元组关键词匹配，promptBlock 照常工作。
+let embedder = null;
+function setEmbedder(fn) { embedder = typeof fn === "function" ? fn : null; }
+
+function vecLoad() {
+  const raw = store.readJson(VEC_FILE, { model: "", vecs: {} });
+  return raw && typeof raw === "object" && raw.vecs ? raw : { model: "", vecs: {} };
+}
+function vecSave(v) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  store.writeJsonAtomic(VEC_FILE, v); // 不 pretty：一条向量上千个数，pretty 会把文件撑大三倍
+}
+
+let vecJobRunning = false;
+/**
+ * 给还没有向量的条目补算向量（启动时、换嵌入模型后、新记一条后都会被调）。
+ * 尽力而为：embeddings 挂了就下次再说，绝不阻塞记忆写入，也绝不抛出。
+ */
+async function ensureVectors() {
+  if (!embedder || vecJobRunning) return { computed: 0 };
+  vecJobRunning = true;
+  try {
+    const items = load();
+    let vs = vecLoad();
+    if (vs.model !== embedder.model) vs = { model: embedder.model, vecs: {} }; // 换了嵌入模型：旧向量全部作废重算
+    const alive = new Set(items.map((x) => x.id));
+    for (const id of Object.keys(vs.vecs)) if (!alive.has(id)) delete vs.vecs[id]; // 条目删了向量也别留
+    const todo = items.filter((x) => !vs.vecs[x.id]);
+    let computed = 0;
+    for (let i = 0; i < todo.length; i += 16) {
+      const batch = todo.slice(i, i + 16);
+      const out = await embedder(batch.map((x) => x.text));
+      if (!out) break; // embedder 自己会记失败次数并停用，这里不重试
+      batch.forEach((x, j) => { vs.vecs[x.id] = out[j].map((n) => Math.round(n * 1e5) / 1e5); });
+      computed += batch.length;
+    }
+    if (computed || Object.keys(vs.vecs).length !== items.length) vecSave(vs);
+    return { computed };
+  } finally {
+    vecJobRunning = false;
+  }
+}
+
+/** 中文没有空格分词，二元组（bigram）是零依赖下最稳的召回单位 */
+function bigrams(text) {
+  const s = normalize(text);
+  const g = new Set();
+  for (let i = 0; i < s.length - 1; i++) g.add(s.slice(i, i + 2));
+  return g;
+}
+function keywordScore(hintGrams, text) {
+  if (!hintGrams.size) return 0;
+  const g = bigrams(text);
+  if (!g.size) return 0;
+  let hit = 0;
+  for (const x of g) if (hintGrams.has(x)) hit++;
+  return hit / Math.sqrt(g.size) / Math.sqrt(hintGrams.size); // 余弦式归一，长句不吃亏
+}
+function cosine(u, v) {
+  if (!Array.isArray(u) || !Array.isArray(v) || u.length !== v.length) return 0;
+  let dot = 0, nu = 0, nv = 0;
+  for (let i = 0; i < u.length; i++) { dot += u[i] * v[i]; nu += u[i] * u[i]; nv += v[i] * v[i]; }
+  return nu && nv ? dot / Math.sqrt(nu) / Math.sqrt(nv) : 0;
+}
+
 function scopeOf(user, shared) {
   if (shared) return SHARED;
   const u = String(user || "").trim();
@@ -101,6 +169,7 @@ function add({ text, user, shared = false, source = "agent" }) {
     for (let i = items.length - 1; i >= 0; i--) if (kill.has(items[i].id)) items.splice(i, 1);
   }
   save(items);
+  if (embedder) setImmediate(() => ensureVectors().catch(() => {})); // 后台补向量，不拖慢写入
   return {
     ok: true,
     id,
@@ -165,24 +234,69 @@ function saveManual(content) {
 }
 
 /**
- * 拼成系统提示词里的那一段。超预算时**截断并明说截了多少**——
- * 假装全都看得见，模型会照着一条其实没进上下文的偏好去做事。
+ * 拼成系统提示词里的那一段。
+ * 装得下就全量注入，一条不筛；装不下才启动召回：按「与本次任务的相关度」挑条目，
+ * 而不是从尾巴上盲切——盲切吃掉的恰好是最新记的那些。挑没挑、挑了多少，都明说。
+ * @param hint 本次任务的线索（通常是用户最后一条消息的前几百字），用来算相关度
  */
-function promptBlock(user) {
-  const md = manual();
+async function promptBlock(user, hint) {
+  let md = manual();
   const items = list(user);
   if (!md && !items.length) return "";
+  const line = (x) => `- ${x.text}${x.scope === SHARED && user ? "（共享）" : ""}`;
+
   let body = "";
   if (md) body += `${md}\n`;
-  if (items.length) {
-    const lines = items.map((x) => `- ${x.text}${x.scope === SHARED && user ? "（共享）" : ""}`);
-    body += (md ? "\n" : "") + lines.join("\n");
-  }
+  if (items.length) body += (md ? "\n" : "") + items.map(line).join("\n");
   let note = "";
+
   if (body.length > MAX_PROMPT_CHARS) {
-    const cut = body.length - MAX_PROMPT_CHARS;
-    body = body.slice(0, MAX_PROMPT_CHARS);
-    note = `\n（记忆太长，这里截掉了最后 ${cut} 字。要用全部记忆请去设置 → 记忆里精简一下）`;
+    // 手写区是用户亲手敲的，优先级最高；但它自己超预算也得截，并明说
+    if (md.length > MAX_PROMPT_CHARS) {
+      const cut = md.length - MAX_PROMPT_CHARS;
+      md = md.slice(0, MAX_PROMPT_CHARS);
+      note = `\n（手写记忆太长，截掉了最后 ${cut} 字；条目区一条都没放进来。请去设置 → 记忆里精简一下）`;
+      body = md;
+    } else {
+      // 条目按相关度排：有向量用「余弦为主 + 关键词兜底」，没向量纯关键词，连线索都没有就按新旧
+      let ranked;
+      if (hint) {
+        const hg = bigrams(hint);
+        let hintVec = null;
+        if (embedder) {
+          const vs = vecLoad();
+          if (Object.keys(vs.vecs).length) {
+            const r = await embedder([String(hint).slice(0, 500)]);
+            hintVec = (r && r[0]) || null;
+            if (hintVec) {
+              ranked = items
+                .map((x) => {
+                  const kw = keywordScore(hg, x.text);
+                  const v = vs.vecs[x.id];
+                  return { x, s: v ? 0.7 * cosine(hintVec, v) + 0.3 * kw : kw };
+                })
+                .sort((a, b) => b.s - a.s);
+            }
+          }
+        }
+        if (!ranked) ranked = items.map((x) => ({ x, s: keywordScore(hg, x.text) })).sort((a, b) => b.s - a.s);
+      } else {
+        ranked = items.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).map((x) => ({ x }));
+      }
+      const budget = MAX_PROMPT_CHARS - md.length;
+      const picked = [];
+      let used = 0;
+      for (const { x } of ranked) {
+        const l = line(x);
+        if (used + l.length + 1 > budget) continue; // 这条装不下，试试后面更短的
+        picked.push(x);
+        used += l.length + 1;
+      }
+      // 展示按记入时间排，读起来稳定；挑选才按相关度
+      picked.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      body = (md ? md + "\n\n" : "") + picked.map(line).join("\n");
+      note = `\n（记忆条目共 ${items.length} 条装不下，这里按${hint ? "与本次任务的相关度" : "新旧"}挑了 ${picked.length} 条；要看全部请去设置 → 记忆）`;
+    }
   }
   return `\n\n## 长期记忆（跨任务保留，优先级高于你的默认习惯）\n${body}${note}`;
 }
@@ -199,5 +313,7 @@ module.exports = {
   manual,
   saveManual,
   promptBlock,
-  _internals: { normalize, looksSecret, load, save, ITEMS_FILE, MANUAL_FILE },
+  setEmbedder,
+  ensureVectors,
+  _internals: { normalize, looksSecret, load, save, ITEMS_FILE, MANUAL_FILE, VEC_FILE, bigrams, keywordScore, cosine, vecLoad },
 };

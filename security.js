@@ -34,7 +34,7 @@ const PERMISSION_MODES = {
   plan: { label: "只看不动", desc: "只读：不写文件、不跑命令，适合先让它把现场看明白", write: "deny", cmd: "deny" },
   ask: { label: "每步都问", desc: "写文件和跑命令都要你点头，最谨慎也最费手", write: "ask", cmd: "ask" },
   auto: { label: "自动改文件", desc: "工作目录里的文件随便改；命令按名单来（删除、sudo 这些照样问）", write: "allow", cmd: "rules" },
-  full: { label: "全自动", desc: "命令也不问了，只剩文件黑名单和审计。确定它在干什么再开", write: "allow", cmd: "allow" },
+  full: { label: "全自动", desc: "命令也不问了，只剩文件黑名单、高危命令确认（rm -rf 到 /dev、down -v、强推这类）和审计。确定它在干什么再开", write: "allow", cmd: "allow" },
 };
 const DEFAULT_MODE = "auto";
 
@@ -130,6 +130,18 @@ function resolvePathWithPolicy(sec, rel, workspaceDir, base) {
 const WRAPPERS = new Set(["nohup", "command", "builtin", "exec", "env", "time", "nice", "ionice", "xargs", "then", "else", "do", "{", "("]);
 /** 会真的把文件弄没的命令 */
 const DELETE_CMDS = new Set(["rm", "rmdir", "srm", "unlink", "shred"]);
+
+// P5 软护栏：不可逆、毁数据的命令形态。任何权限档位（含全自动）都要用户点头，
+// 永久放行名单也盖不住——这不是沙箱，只是把「一条命令毁掉一晚上工作」换成一次审批。
+// 批过一次的（「以后别再问这类」）按 danger:key 记在本会话里，不会反复骚扰。
+const DANGER_PATTERNS = [
+  { key: "dev-write", re: /(?:^|\s)>{1,2}\s*\/dev\/(?!null\b|stdout\b|stderr\b|tty\b|zero\b|fd\/)/i, rule: "重定向直写设备文件（> /dev/…）" },
+  { key: "dd-dev", re: /\bdd\b[^\n]*\bof=\/dev\//i, rule: "dd 直写设备（of=/dev/…）" },
+  { key: "compose-down-v", re: /\bdocker(?:-|\s+)compose\b[^\n]*\bdown\b[^\n]*(?:\s-\w*v|\s--volumes\b)/i, rule: "compose down 带 -v 会把数据卷一起删掉" },
+  { key: "git-force-push", re: /\bgit\b[^\n]*\bpush\b[^\n]*(?:\s--force\b|\s-f\b)/i, rule: "git 强推会改写远端历史" },
+  { key: "sql-drop", re: /\b(?:drop\s+(?:table|database|schema)|truncate\s+table)\b/i, rule: "SQL 删库/删表/清表" },
+  { key: "mkfs-disk", re: /\b(?:mkfs|diskutil\s+(?:erase\w*|partitiondisk)|fdisk)\b/i, rule: "磁盘格式化/分区" },
+];
 const SUB_DEPTH_MAX = 4;
 
 /**
@@ -296,6 +308,11 @@ function checkCommand(sec, command) {
     const bare = bareCommand(seg);
     const tok = bare.split(/\s+/)[0] || "";
     if (mode === "plan") return { action: "deny", rule: `当前权限档位是「${PERMISSION_MODES.plan.label}」，不跑命令`, seg };
+    if (sec.gateway) {
+      // 高危表在放行名单之前查：cmd_allow 是给日常命令省事的，不该顺手把毁数据的形态一起放过去
+      const danger = DANGER_PATTERNS.find((d) => d.re.test(seg) && !sessionAllow.has("danger:" + d.key));
+      if (danger) return { action: "ask", rule: `高危命令：${danger.rule}`, seg, ruleKey: "danger:" + danger.key };
+    }
     if (matchesPrefix(sec.cmd_allow, seg, env, bare)) continue; // 永久放行名单
     if (matchesPrefix([...sessionAllow], seg, env, bare)) continue; // 本会话已经批过同类
     // 运行时开关是用户明确关掉的东西，不受权限档位影响：全自动也不代表把关掉的运行时打开
