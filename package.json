@@ -8,7 +8,8 @@
     "start": "node server.js",
     "app": "electron .",
     "test": "node test/e2e.js",
-    "cli": "node cli.js"
+    "cli": "node cli.js",
+    "eval": "node eval/run.js"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.72.0",

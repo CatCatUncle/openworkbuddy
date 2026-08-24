@@ -24,3 +24,6 @@ skills/mcp-builder/
 # 用户自己装的 Agent Plugins 插件（plugins.js 是代码，plugins/ 是数据）
 plugins/
 .tmp/
+
+# 评测跑批产物（每次跑的工作目录和分数明细）
+eval/runs/
