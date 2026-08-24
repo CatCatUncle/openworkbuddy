@@ -720,6 +720,7 @@
     <div class="more-box" id="more-box">
       <div class="item" data-view="prompts"><span class="ic">📚</span><span class="tx">参考模板库<span class="sub">提示词范例</span></span></div>
       <div class="item" data-view="lib"><span class="ic">💡</span><span class="tx">资料库<span class="sub">知识 · 灵感</span></span></div>
+      <div class="item" data-view="eval"><span class="ic">🧪</span><span class="tx">评测<span class="sub">模型基准跑分</span></span></div>
     </div>
   </div>
   <div class="side-label">任务历史</div>
@@ -3288,6 +3289,7 @@ const PAGE_VIEWS = {
   proj: { title: "📂 项目", wide: true, render: () => renderProjPage() },
   autom: { title: "⏰ 自动化", wide: true, render: () => renderAutomPage() },
   lib: { title: "📚 资料库", wide: true, render: () => renderLibPage() },
+  eval: { title: "🧪 评测", wide: true, render: () => renderEvalPage() },
 };
 function openPageView(kind) {
   const v = PAGE_VIEWS[kind];
@@ -3836,6 +3838,89 @@ function csvToTable(text) {
   return `<table class="csv"><tr>${head.map(h => `<th>${esc(h)}</th>`).join("")}</tr>` +
     body.map(r => `<tr>${head.map((_, i) => `<td>${esc(r[i] || "")}</td>`).join("")}</tr>`).join("") +
     `</table>${rows.length >= 500 ? '<div style="font-size: 13px;color:var(--wb-text-3);margin-top:6px">表太长，只显示前 500 行</div>' : ""}`;
+}
+// ================= 评测页：给模型跑基准，机器判分 =================
+let evalArm = false; // 两段式确认：真实计费的操作不许一键就跑
+async function renderEvalPage() {
+  const page = document.getElementById("assist-page");
+  if (!page) return;
+  evalArm = false;
+  if (!settingsCache) await refreshSettingsCache().catch(() => {});
+  const models = (settingsCache && settingsCache.models) || [];
+  const cur = (settingsCache && settingsCache.active_model) || "";
+  page.innerHTML = `
+    <div class="hub-head">
+      <div style="font-weight:700;font-size:15px">🧪 模型评测基准</div>
+      <select id="ev-model" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px">
+        ${models.map((m) => `<option value="${esc(m.name)}" ${m.name === cur ? "selected" : ""}>${esc(m.name)}</option>`).join("")}
+      </select>
+      <button class="btn-brand" id="ev-start">开始评测</button>
+      <span id="ev-state" style="font-size:13px;color:var(--wb-text-3)"></span>
+    </div>
+    <div style="font-size:13px;color:var(--wb-text-3);line-height:1.7;margin:0 0 10px">
+      11 道固定任务（写代码 / 算表格 / 找事实 / 修 bug / 多步骤交付…），产物全部由机器实测判分（跑代码、对数字、验结构），不靠 AI 自评。
+      <b>会真实调用所选模型计费</b>：一轮约几十万 tokens（DeepSeek 约几毛钱）。命令行同款：<code>npm run eval -- --model 模型名</code>
+    </div>
+    <pre id="ev-log" style="display:none;background:var(--wb-card);border:1px solid var(--wb-line);border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.8;max-height:320px;overflow:auto;white-space:pre-wrap;margin:0 0 14px"></pre>
+    <div class="side-label" style="margin:6px 0">历史成绩</div>
+    <div id="ev-hist" style="font-size:13px;color:var(--wb-text-3)">加载中…</div>`;
+  document.getElementById("ev-start").onclick = async () => {
+    const btn = document.getElementById("ev-start");
+    if (!evalArm) {
+      evalArm = true;
+      btn.textContent = "确认开跑？真实计费 · 再点一次";
+      btn.style.background = "var(--wb-err)";
+      setTimeout(() => { if (evalArm && pageKind === "eval") { evalArm = false; btn.textContent = "开始评测"; btn.style.background = ""; } }, 6000);
+      return;
+    }
+    evalArm = false; btn.textContent = "开始评测"; btn.style.background = "";
+    const model = document.getElementById("ev-model").value;
+    const r = await fetch("/api/eval/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) }).then((x) => x.json()).catch(() => null);
+    if (!r || r.error) return toast("❌ " + ((r && r.error) || "启动失败"));
+    toast("🧪 评测已开跑：" + model);
+    updateEvalView();
+  };
+  updateEvalView();
+}
+async function updateEvalView() {
+  if (pageKind !== "eval") return;
+  const st = await fetch("/api/eval/status").then((r) => r.json()).catch(() => null);
+  if (pageKind !== "eval" || !st) return;
+  const state = document.getElementById("ev-state"), log = document.getElementById("ev-log"), histBox = document.getElementById("ev-hist"), btn = document.getElementById("ev-start");
+  if (!state || !log || !histBox) return;
+  if (st.running) {
+    state.textContent = `⏳ ${st.model} 评测中… ${Math.round((Date.now() - st.startedAt) / 1000)}s`;
+    if (btn) btn.disabled = true;
+    if (!assistTimer) assistTimer = setInterval(updateEvalView, 2000);
+  } else {
+    if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
+    if (btn) btn.disabled = false;
+    state.textContent = st.startedAt ? (st.exit === 0 ? "✅ 上一轮全过" : st.exit == null ? "" : "🟡 上一轮有失分，看下面日志") : "";
+  }
+  if (st.lines && st.lines.length) {
+    log.style.display = "";
+    log.textContent = st.lines.join("\n");
+    if (st.running) log.scrollTop = log.scrollHeight;
+  }
+  const hist = await fetch("/api/eval/history").then((r) => r.json()).catch(() => []);
+  if (pageKind !== "eval") return;
+  if (!hist.length) { histBox.textContent = "还没跑过。选个模型点「开始评测」，或命令行 npm run eval"; return; }
+  histBox.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <tr style="color:var(--wb-text-3);text-align:left"><th style="padding:6px 8px">时间</th><th style="padding:6px 8px">模型</th><th style="padding:6px 8px">总分</th><th style="padding:6px 8px">整题全过</th><th style="padding:6px 8px">tokens</th><th style="padding:6px 8px">每步背负</th></tr>
+      ${hist.map((h) => {
+        const fails = (h.results || []).filter((r) => r.failed && r.failed.length).map((r) => `${r.id}: ${r.failed.join("、")}`).join("\n");
+        const scoreColor = h.score_pct >= 100 ? "var(--wb-ok)" : h.score_pct >= 80 ? "var(--wb-text)" : "var(--wb-err)";
+        return `<tr style="border-top:1px solid var(--wb-line)" title="${esc(fails)}">
+          <td style="padding:6px 8px;white-space:nowrap">${esc(String(h.at || "").slice(0, 16).replace("T", " "))}</td>
+          <td style="padding:6px 8px">${esc(h.model || "")}</td>
+          <td style="padding:6px 8px;font-weight:700;color:${scoreColor}">${h.score_pct}%</td>
+          <td style="padding:6px 8px">${h.full_pass}/${h.tasks}</td>
+          <td style="padding:6px 8px">${((h.tokens_total || 0) / 1000).toFixed(0)}k</td>
+          <td style="padding:6px 8px" title="平均每次 LLM 调用背的 prompt tokens，越小越省">${((h.avg_prompt_per_call || 0) / 1000).toFixed(1)}k</td>
+        </tr>`;
+      }).join("")}
+    </table>`;
 }
 async function renderLibPage() {
   const page = document.getElementById("assist-page");
