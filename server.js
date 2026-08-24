@@ -364,6 +364,7 @@ app.get("/api/settings", (_req, res) => {
       max_steps: config.agent.max_steps,
       tool_timeout_ms: config.agent.tool_timeout_ms,
       max_runtime_ms: config.agent.max_runtime_ms || 1800000,
+      auto_continue_rounds: config.agent.auto_continue_rounds || 0,
       llm_timeout_ms: config.agent.llm_timeout_ms || 300000,
       max_context_chars: config.agent.max_context_chars || 120000,
     },
@@ -416,6 +417,7 @@ app.post("/api/settings", (req, res) => {
       if (b.agent.max_steps) config.agent.max_steps = Math.max(1, Math.min(100, +b.agent.max_steps));
       if (b.agent.tool_timeout_ms) config.agent.tool_timeout_ms = Math.max(5000, +b.agent.tool_timeout_ms);
       if (b.agent.max_runtime_ms) config.agent.max_runtime_ms = Math.max(60000, +b.agent.max_runtime_ms);
+      if (b.agent.auto_continue_rounds !== undefined) config.agent.auto_continue_rounds = Math.max(0, Math.min(20, Math.round(+b.agent.auto_continue_rounds) || 0));
       if (b.agent.llm_timeout_ms) config.agent.llm_timeout_ms = Math.max(30000, +b.agent.llm_timeout_ms);
       // 下限 2 万字符：再小连最近几步的工具原文都留不住，agent 会失忆式反复重做
       if (b.agent.max_context_chars) config.agent.max_context_chars = Math.max(20000, Math.min(2000000, +b.agent.max_context_chars));
@@ -1848,7 +1850,14 @@ function evalSummaryBrief(j) {
     at: j.at, model: j.model, model_id: j.model_id, score_pct: j.score_pct,
     tasks: j.tasks, full_pass: j.full_pass, checks_passed: j.checks_passed, checks_total: j.checks_total,
     tokens_total: j.tokens_total, avg_prompt_per_call: j.avg_prompt_per_call || 0,
-    results: (j.results || []).map((r) => ({ id: r.id, name: r.name, passed: r.passed, total: r.total, elapsed_s: r.elapsed_s, failed: (r.checks || []).filter((c) => !c.ok).map((c) => c.name) })),
+    commit: j.commit || "", judge: j.judge || null, human: j.human || null,
+    results: (j.results || []).map((r) => ({
+      id: r.id, name: r.name, passed: r.passed, total: r.total, elapsed_s: r.elapsed_s,
+      tool_calls: r.tool_calls || 0, tool_errors: r.tool_errors || 0,
+      judge: r.judge && r.judge.score ? { score: r.judge.score, verdict: r.judge.verdict || "" } : null,
+      human: r.human || null,
+      failed: (r.checks || []).filter((c) => !c.ok).map((c) => c.name),
+    })),
   };
 }
 function evalHistory(limit = 20) {
@@ -1857,7 +1866,7 @@ function evalHistory(limit = 20) {
     const root = path.join(__dirname, "eval", "runs");
     for (const d of fs.readdirSync(root).sort().reverse()) {
       const j = store.readJson(path.join(root, d, "results.json"), null);
-      if (j) out.push(evalSummaryBrief(j));
+      if (j) out.push({ dir: d, ...evalSummaryBrief(j) });
       if (out.length >= limit) break;
     }
   } catch {}
@@ -1870,6 +1879,9 @@ app.post("/api/eval/start", (req, res) => {
   const args = [path.join(__dirname, "eval", "run.js"), "--model", model];
   const only = String((req.body || {}).task || "").trim();
   if (only) args.push("--task", only);
+  const judge = String((req.body || {}).judge || "").trim();
+  if (judge && !(config.models || []).some((m) => m.name === judge)) return res.status(400).json({ error: `评委模型「${judge}」不在列表里` });
+  if (judge) args.push("--judge", judge);
   evalState.running = true; evalState.lines = []; evalState.startedAt = Date.now(); evalState.model = model; evalState.exit = null;
   const child = require("child_process").spawn(process.execPath, args, {
     cwd: __dirname,
@@ -1894,6 +1906,32 @@ app.get("/api/eval/status", (_req, res) => {
   res.json({ running: evalState.running, model: evalState.model, startedAt: evalState.startedAt, exit: evalState.exit, lines: evalState.lines });
 });
 app.get("/api/eval/history", (_req, res) => res.json(evalHistory()));
+// 单次评测完整明细：每题 checks、AI 评委理由、人工分、最终回复摘录、产物清单
+app.get("/api/eval/run/:dir", (req, res) => {
+  const dir = String(req.params.dir || "");
+  if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
+  const j = store.readJson(path.join(__dirname, "eval", "runs", dir, "results.json"), null);
+  if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
+  res.json({ dir, ...j });
+});
+// 人工打分：写回该次评测的 results.json，与机器分 / AI 评委分并列保存，互不覆盖
+app.post("/api/eval/human", (req, res) => {
+  const b = req.body || {};
+  const dir = String(b.dir || "");
+  if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
+  const file = path.join(__dirname, "eval", "runs", dir, "results.json");
+  const j = store.readJson(file, null);
+  if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
+  const r = (j.results || []).find((x) => x.id === String(b.task_id || ""));
+  if (!r) return res.status(404).json({ error: "没有这道题" });
+  const score = Math.round(+b.score);
+  if (!(score >= 1 && score <= 5)) return res.status(400).json({ error: "分数须是 1-5 的整数" });
+  r.human = { score, comment: String(b.comment || "").slice(0, 500), by: req.user ? req.user.username : "", at: new Date().toISOString() };
+  const scored = (j.results || []).filter((x) => x.human && x.human.score);
+  j.human = { scored: scored.length, avg: +(scored.reduce((s, x) => s + x.human.score, 0) / scored.length).toFixed(2) };
+  fs.writeFileSync(file, JSON.stringify(j, null, 2));
+  res.json({ ok: true, task_id: r.id, human: j.human });
+});
 
 // 给单个对话指定模型（null = 跟随全局默认）。只影响这一个对话，不动全局 active_model
 app.post("/api/session/:id/model", (req, res) => {

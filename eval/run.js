@@ -6,12 +6,14 @@
  *   npm run eval -- --model DeepSeek # 指定模型条目（可对比不同渠道）
  *   npm run eval -- --task js-func   # 只跑单个任务（逗号分隔跑多个）
  *   npm run eval -- --concurrency 3  # 并发数（默认 2）
+ *   npm run eval -- --judge Kimi      # 机器判分之后，再让指定模型当 AI 评委逐题打 1-5 质量分
  * 产物：eval/runs/<时间戳>/ 下有每个任务的工作目录 + results.json；仓库不追踪。
  * 判分是确定性的（见 tasks.js），同一套题跑不同模型/不同版本可直接对比总分。
  */
 
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const { createLLM } = require("../llm");
 const { createAgentRuntime, mapPool } = require("../agent");
 const { McpManager } = require("../mcp");
@@ -23,6 +25,69 @@ const argv = process.argv.slice(2);
 const argOf = (k, d) => { const i = argv.indexOf("--" + k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const TASK_TIMEOUT = (+argOf("timeout", 0) || 360) * 1000; // 每题上限，默认 6 分钟
 const CONCURRENCY = Math.max(1, +argOf("concurrency", 2) || 2);
+
+
+// ---------- AI 评委（LLM-as-judge）----------
+// 机器判分只认硬证据（对/错），评委补「质量」维度：写得好不好、过程干不干净。两条线分开记，谁也不污染谁。
+const JUDGE_SYSTEM = `你是严格的 AI 智能体评测评委。根据题目、评分标准、机器判分结果、过程指标和产物摘录，给这道题的完成质量打 1-5 的整数分：
+5=完美达成且交付质量高；4=达成但有小瑕疵；3=基本达成但有明显缺陷；2=只完成一部分；1=几乎没完成或答非所问。
+机器判分是硬证据，必须尊重：机器全过通常落在 3-5（再看质量分档），机器挂了核心项通常落在 1-3。
+过程也计入：步数异常多、工具大量报错、被强制收尾，都要酌情扣分。
+只输出一个 JSON 对象，不要输出任何其它文字。`;
+
+function gitCommit() {
+  try {
+    const r = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: path.join(__dirname, ".."), encoding: "utf8", timeout: 5000 });
+    return r.status === 0 ? String(r.stdout).trim() : "";
+  } catch { return ""; }
+}
+
+function artifactExcerpts(dir, res) {
+  const parts = [];
+  for (const a of (res.artifacts || []).slice(0, 4)) {
+    if (!/\.(md|txt|html|js|mjs|cjs|py|json|csv|svg|log)$/i.test(a.name)) { parts.push(`【${a.name}】二进制/未摘录（${a.size} 字节）`); continue; }
+    let t = "";
+    try { t = fs.readFileSync(path.join(dir, a.name), "utf8").slice(0, 1500); } catch {}
+    parts.push(`【产物 ${a.name}（${a.size} 字节，摘录开头）】\n${t}`);
+  }
+  return parts.join("\n\n");
+}
+
+async function judgeOne(judgeLLM, task, res, dir) {
+  const checksText = res.checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.name}${c.note ? "（" + c.note + "）" : ""}`).join("\n");
+  const user = `# 题目
+${task.prompt}
+
+# 评分标准（rubric）
+${task.rubric || "按题目要求的完成度、正确性、交付质量综合判断。"}
+
+# 机器判分（硬校验，已确认）
+${checksText}
+
+# 过程指标
+用时 ${res.elapsed_s}s · ${res.tool_calls} 次工具调用（失败 ${res.tool_errors || 0} 次）· ${res.tokens.prompt + res.tokens.completion} tokens${res.stopped ? " · 强制收尾：" + res.stopped : ""}${res.crashed ? " · 崩溃：" + res.crashed : ""}
+
+# 智能体最终回复
+${(res.final_text || "（无）").slice(0, 3000)}
+
+# 产物文件摘录
+${artifactExcerpts(dir, res) || "（无产物文件）"}
+
+只输出一个 JSON 对象：{"score": 1到5的整数, "verdict": "一句话结论", "reasons": ["理由"], "deductions": ["扣分点，可为空数组"]}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await judgeLLM.chat({ system: JUDGE_SYSTEM, history: [{ role: "user", content: user }], tools: [], signal: AbortSignal.timeout(120000) });
+      const m = String(r.text || "").match(/\{[\s\S]*\}/);
+      if (!m) continue;
+      const j = JSON.parse(m[0]);
+      const score = Math.max(1, Math.min(5, Math.round(+j.score)));
+      if (!Number.isFinite(score)) continue;
+      const arr = (x) => (Array.isArray(x) ? x : []).map((v) => String(v).slice(0, 300)).slice(0, 5);
+      return { score, verdict: String(j.verdict || "").slice(0, 200), reasons: arr(j.reasons), deductions: arr(j.deductions) };
+    } catch (e) { if (attempt) return { error: String(e.message).slice(0, 200) }; }
+  }
+  return { error: "评委输出无法解析（两次都没拿到合法 JSON）" };
+}
 
 async function main() {
   const config = store.readJson(path.join(__dirname, "..", "config.json"), null);
@@ -67,6 +132,7 @@ async function main() {
 
     const log = []; // 只留诊断有用的事件（错误/重试/强制收尾），不存全量流水
     let toolCalls = 0;
+    let toolErrors = 0;
     const t0 = Date.now();
     let r = null, crashed = null;
     try {
@@ -78,6 +144,7 @@ async function main() {
         deadline: t0 + TASK_TIMEOUT,
         emit: (ev) => {
           if (ev.type === "tool_use") toolCalls++;
+          if (ev.type === "tool_result" && ev.isError) toolErrors++;
           if (["error", "status", "limit"].includes(ev.type)) log.push({ type: ev.type, text: (ev.message || ev.text || ev.note || "").slice(0, 200) });
         },
       });
@@ -92,13 +159,47 @@ async function main() {
     const line = `${passed === checks.length ? "✅" : passed ? "🟡" : "❌"} ${task.id} ${passed}/${checks.length} · ${elapsed}s · ${toolCalls} 步 · ${usage.prompt + usage.completion} tokens${crashed ? " · 崩溃:" + crashed.slice(0, 60) : r && r.stopped ? " · 收尾:" + r.stopped.slice(0, 40) : ""}`;
     console.log(line);
     for (const c of checks.filter((x) => !x.ok)) console.log(`   ✗ ${c.name}${c.note ? " — " + c.note : ""}`);
+    // 产物清单（排除题目预置的输入文件）：给 AI 评委和人工打分看的证据
+    const inputNames = new Set(Object.keys(task.inputs || {}));
+    const artifacts = [];
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (inputNames.has(f)) continue;
+        const st = fs.statSync(path.join(dir, f));
+        if (st.isFile()) artifacts.push({ name: f, size: st.size });
+      }
+    } catch {}
     return {
       id: task.id, name: task.name, passed, total: checks.length, checks,
-      elapsed_s: elapsed, tool_calls: toolCalls,
+      elapsed_s: elapsed, tool_calls: toolCalls, tool_errors: toolErrors,
       tokens: { prompt: usage.prompt, completion: usage.completion, calls: usage.calls },
       stopped: (r && r.stopped) || null, crashed, log,
+      final_text: ((r && r.finalText) || "").slice(0, 6000), artifacts,
     };
   });
+
+  // AI 评委环节（可选）：--judge 指定另一个模型逐题打质量分
+  const judgeName = argOf("judge", "");
+  let judgeMeta = null;
+  if (judgeName) {
+    const judgeEntry = (config.models || []).find((m) => m.name === judgeName);
+    if (!judgeEntry) {
+      console.error(`AI 评委模型「${judgeName}」不在 config.models 里，跳过评委环节`);
+    } else {
+      console.log(`\n⚖️ AI 评委开始：${judgeName}（${judgeEntry.model}）逐题打分…`);
+      const judgeLLM = createLLM({ ...config, active_model: judgeName });
+      await mapPool(results, CONCURRENCY, async (res) => {
+        const task = tasks.find((t) => t.id === res.id);
+        res.judge = await judgeOne(judgeLLM, task, res, path.join(wsDir, res.id));
+        console.log(res.judge && res.judge.score ? `   ⚖️ ${res.id} → ${res.judge.score}/5 ${res.judge.verdict || ""}` : `   ⚖️ ${res.id} → 失败：${(res.judge && res.judge.error) || "?"}`);
+      });
+      const scored = results.filter((r) => r.judge && r.judge.score);
+      judgeMeta = {
+        model: judgeName, model_id: judgeEntry.model, scored: scored.length,
+        avg: scored.length ? +(scored.reduce((s, r) => s + r.judge.score, 0) / scored.length).toFixed(2) : null,
+      };
+    }
+  }
 
   const score = results.reduce((s, r) => s + r.passed, 0);
   const totalChecks = results.reduce((s, r) => s + r.total, 0);
@@ -110,11 +211,12 @@ async function main() {
   const summary = {
     at: new Date().toISOString(), model: modelName, model_id: entry.model,
     tasks: results.length, full_pass: fullPass, checks_passed: score, checks_total: totalChecks,
-    score_pct: Math.round((score / totalChecks) * 100), tokens_total: tokens, avg_prompt_per_call: avgPrompt, results,
+    score_pct: Math.round((score / totalChecks) * 100), tokens_total: tokens, avg_prompt_per_call: avgPrompt,
+    commit: gitCommit(), judge: judgeMeta, human: null, results,
   };
   fs.writeFileSync(path.join(runDir, "results.json"), JSON.stringify(summary, null, 2));
 
-  console.log(`\n====== 总分 ${summary.score_pct}%（检查项 ${score}/${totalChecks}，整题全过 ${fullPass}/${results.length}）· 共 ${tokens} tokens · 平均每步背 ${avgPrompt} prompt tokens ======`);
+  console.log(`\n====== 总分 ${summary.score_pct}%（检查项 ${score}/${totalChecks}，整题全过 ${fullPass}/${results.length}）· 共 ${tokens} tokens · 平均每步背 ${avgPrompt} prompt tokens${judgeMeta && judgeMeta.avg != null ? ` · AI 评委均分 ${judgeMeta.avg}/5` : ""} ======`);
   console.log(`明细：${path.join(runDir, "results.json")}`);
   process.exit(fullPass === results.length ? 0 : 1);
 }

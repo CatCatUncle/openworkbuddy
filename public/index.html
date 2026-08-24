@@ -572,8 +572,13 @@
   .tpl-card .ic { font-size: 16px; }
   .tpl-card .tt { font-size: 14px; font-weight: 600; }
   .tpl-card .ct { margin-left: auto; font-size: 12px; color: var(--wb-text-3); background: var(--wb-bg-side); border-radius: 5px; padding: 1px 7px; }
-  .tpl-card .dd { font-size: 13px; color: var(--wb-text-2); line-height: 1.5; }
-  .tpl-card pre { background: var(--wb-bg-side); border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 190px; overflow: auto; color: var(--wb-text); }
+  .tpl-card { cursor: pointer; }
+  .tpl-card .dd { font-size: 13px; color: var(--wb-text-2); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  /* 提示词全文默认收起：一屏几十段全文密集恐。点卡片单张展开 */
+  .tpl-card pre { display: none; background: var(--wb-bg-side); border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; color: var(--wb-text); }
+  .tpl-card.open pre { display: block; animation: wbFade .18s var(--wb-ease); }
+  .tpl-card .chev { font-size: 11px; color: var(--wb-text-3); transition: transform .18s var(--wb-ease); }
+  .tpl-card.open .chev { transform: rotate(90deg); }
   .tpl-card .ops { display: flex; gap: 6px; margin-top: auto; }
   .tpl-card .ops button { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--wb-text-2); }
   .tpl-card .ops button.primary { background: var(--wb-brand); border-color: var(--wb-brand); color: #fff; }
@@ -720,7 +725,7 @@
     <div class="more-box" id="more-box">
       <div class="item" data-view="prompts"><span class="ic">📚</span><span class="tx">参考模板库<span class="sub">提示词范例</span></span></div>
       <div class="item" data-view="lib"><span class="ic">💡</span><span class="tx">资料库<span class="sub">知识 · 灵感</span></span></div>
-      <div class="item" data-view="eval"><span class="ic">🧪</span><span class="tx">评测<span class="sub">模型基准跑分</span></span></div>
+      <div class="item" data-view="eval"><span class="ic">🧪</span><span class="tx">评测<span class="sub">跑分 · AI 评委 · 人工打分</span></span></div>
     </div>
   </div>
   <div class="side-label">任务历史</div>
@@ -1204,6 +1209,13 @@ function createTurnUI(userText, turnMode, forSid) {
       ensureProc().appendChild(note);
       procWrap?.classList.add("open");
       turn._limited = true;
+    } else if (ev.type === "auto_continue") {
+      currentText = null;
+      const note = document.createElement("div");
+      note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
+      note.textContent = `🔁 ${ev.note || "已达执行上限"}，任务未完，自动续跑第 ${ev.round}/${ev.total} 轮（按进度接着做，不重跑）`;
+      ensureProc().appendChild(note);
+      procWrap?.classList.add("open");
     } else if (ev.type === "trim") {
       // 历史太长，较早的工具原文被截短了。一条任务只留一行提示，累计数字滚动更新
       const proc = ensureProc();
@@ -2296,7 +2308,7 @@ async function doSend(text, mode, regen) {
 /** 镜像 server.js recordingEmit 的记录口径：数出服务端 transcript 已记录到第几个事件。
  *  断流重连时靠它算出准确的 from/textOffset 从断点续流——哪些事件入账、text 怎么合并必须和服务端完全一致 */
 function makeRecCounter() {
-  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "trim", "usage", "interject", "credits", "sources"];
+  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "trim", "usage", "interject", "credits", "sources"];
   const st = { n: 0, lastIsText: false, textLen: 0 };
   st.feed = (ev) => {
     if (ev.type === "text") {
@@ -3841,28 +3853,33 @@ function csvToTable(text) {
 }
 // ================= 评测页：给模型跑基准，机器判分 =================
 let evalArm = false; // 两段式确认：真实计费的操作不许一键就跑
+let evalDetailDir = null;
 async function renderEvalPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
   evalArm = false;
+  evalDetailDir = null;
   if (!settingsCache) await refreshSettingsCache().catch(() => {});
   const models = (settingsCache && settingsCache.models) || [];
   const cur = (settingsCache && settingsCache.active_model) || "";
+  const opts = (sel) => models.map((m) => `<option value="${esc(m.name)}" ${m.name === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("");
   page.innerHTML = `
-    <div class="hub-head">
-      <div style="font-weight:700;font-size:15px">🧪 模型评测基准</div>
-      <select id="ev-model" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px">
-        ${models.map((m) => `<option value="${esc(m.name)}" ${m.name === cur ? "selected" : ""}>${esc(m.name)}</option>`).join("")}
-      </select>
+    <div class="hub-head" style="flex-wrap:wrap;gap:8px">
+      <div style="font-weight:700;font-size:15px">🧪 智能体评测</div>
+      <label style="font-size:12px;color:var(--wb-text-3)">被测模型</label>
+      <select id="ev-model" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px">${opts(cur)}</select>
+      <label style="font-size:12px;color:var(--wb-text-3)">AI 评委</label>
+      <select id="ev-judge" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px"><option value="">不用（只机器判分）</option>${opts("")}</select>
       <button class="btn-brand" id="ev-start">开始评测</button>
       <span id="ev-state" style="font-size:13px;color:var(--wb-text-3)"></span>
     </div>
     <div style="font-size:13px;color:var(--wb-text-3);line-height:1.7;margin:0 0 10px">
-      11 道固定任务（写代码 / 算表格 / 找事实 / 修 bug / 多步骤交付…），产物全部由机器实测判分（跑代码、对数字、验结构），不靠 AI 自评。
-      <b>会真实调用所选模型计费</b>：一轮约几十万 tokens（DeepSeek 约几毛钱）。命令行同款：<code>npm run eval -- --model 模型名</code>
+      12 道固定任务把整个智能体当黑盒考（写代码 / 算表格 / 修 bug / 画图 / 多步交付…）。三条评分线互相独立：<b>机器判分</b>（跑代码、对数字、验结构，只认硬证据）、<b>AI 评委</b>（另一个模型按每题 rubric 打 1-5 质量分）、<b>人工打分</b>（点下面历史成绩的行，逐题打星写点评）。每轮成绩都盖上代码版本（commit）——改完提示词/工具再跑一轮就能看出回归还是进步。
+      <b>会真实调用所选模型计费</b>，一轮约几十万 tokens（DeepSeek 约几毛钱）。命令行同款：<code>npm run eval -- --model 模型名 --judge 评委名</code>
     </div>
     <pre id="ev-log" style="display:none;background:var(--wb-card);border:1px solid var(--wb-line);border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.8;max-height:320px;overflow:auto;white-space:pre-wrap;margin:0 0 14px"></pre>
-    <div class="side-label" style="margin:6px 0">历史成绩</div>
+    <div id="ev-detail"></div>
+    <div class="side-label" style="margin:6px 0">历史成绩 · 点一行看每题明细 / 打人工分</div>
     <div id="ev-hist" style="font-size:13px;color:var(--wb-text-3)">加载中…</div>`;
   document.getElementById("ev-start").onclick = async () => {
     const btn = document.getElementById("ev-start");
@@ -3875,9 +3892,10 @@ async function renderEvalPage() {
     }
     evalArm = false; btn.textContent = "开始评测"; btn.style.background = "";
     const model = document.getElementById("ev-model").value;
-    const r = await fetch("/api/eval/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) }).then((x) => x.json()).catch(() => null);
+    const judge = document.getElementById("ev-judge").value;
+    const r = await fetch("/api/eval/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(judge ? { model, judge } : { model }) }).then((x) => x.json()).catch(() => null);
     if (!r || r.error) return toast("❌ " + ((r && r.error) || "启动失败"));
-    toast("🧪 评测已开跑：" + model);
+    toast("🧪 评测已开跑：" + model + (judge ? "（评委 " + judge + "）" : ""));
     updateEvalView();
   };
   updateEvalView();
@@ -3895,7 +3913,7 @@ async function updateEvalView() {
   } else {
     if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
     if (btn) btn.disabled = false;
-    state.textContent = st.startedAt ? (st.exit === 0 ? "✅ 上一轮全过" : st.exit == null ? "" : "🟡 上一轮有失分，看下面日志") : "";
+    state.textContent = st.startedAt ? (st.exit === 0 ? "✅ 上一轮全过" : st.exit == null ? "" : "🟡 上一轮有失分，看日志或点历史行看明细") : "";
   }
   if (st.lines && st.lines.length) {
     log.style.display = "";
@@ -3905,22 +3923,75 @@ async function updateEvalView() {
   const hist = await fetch("/api/eval/history").then((r) => r.json()).catch(() => []);
   if (pageKind !== "eval") return;
   if (!hist.length) { histBox.textContent = "还没跑过。选个模型点「开始评测」，或命令行 npm run eval"; return; }
+  const th = (t, tip) => `<th style="padding:6px 8px" ${tip ? `title="${esc(tip)}"` : ""}>${t}</th>`;
   histBox.innerHTML = `
     <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tr style="color:var(--wb-text-3);text-align:left"><th style="padding:6px 8px">时间</th><th style="padding:6px 8px">模型</th><th style="padding:6px 8px">总分</th><th style="padding:6px 8px">整题全过</th><th style="padding:6px 8px">tokens</th><th style="padding:6px 8px">每步背负</th></tr>
+      <tr style="color:var(--wb-text-3);text-align:left">${th("时间")}${th("模型")}${th("机器分", "硬校验通过率（跑代码/对数字/验结构）")}${th("AI 评委", "评委模型按每题 rubric 打的 1-5 均分")}${th("人工", "人工打星的均分")}${th("整题全过")}${th("tokens")}${th("每步背负", "平均每次 LLM 调用背的 prompt tokens，越小越省")}${th("版本", "跑分时的代码 commit，用来对比不同版本的回归")}</tr>
       ${hist.map((h) => {
-        const fails = (h.results || []).filter((r) => r.failed && r.failed.length).map((r) => `${r.id}: ${r.failed.join("、")}`).join("\n");
         const scoreColor = h.score_pct >= 100 ? "var(--wb-ok)" : h.score_pct >= 80 ? "var(--wb-text)" : "var(--wb-err)";
-        return `<tr style="border-top:1px solid var(--wb-line)" title="${esc(fails)}">
+        return `<tr data-dir="${esc(h.dir || "")}" style="border-top:1px solid var(--wb-line);cursor:pointer">
           <td style="padding:6px 8px;white-space:nowrap">${esc(String(h.at || "").slice(0, 16).replace("T", " "))}</td>
           <td style="padding:6px 8px">${esc(h.model || "")}</td>
           <td style="padding:6px 8px;font-weight:700;color:${scoreColor}">${h.score_pct}%</td>
+          <td style="padding:6px 8px">${h.judge && h.judge.avg != null ? "⚖️ " + h.judge.avg : "—"}</td>
+          <td style="padding:6px 8px">${h.human && h.human.avg ? "★ " + h.human.avg : "—"}</td>
           <td style="padding:6px 8px">${h.full_pass}/${h.tasks}</td>
           <td style="padding:6px 8px">${((h.tokens_total || 0) / 1000).toFixed(0)}k</td>
-          <td style="padding:6px 8px" title="平均每次 LLM 调用背的 prompt tokens，越小越省">${((h.avg_prompt_per_call || 0) / 1000).toFixed(1)}k</td>
+          <td style="padding:6px 8px">${((h.avg_prompt_per_call || 0) / 1000).toFixed(1)}k</td>
+          <td style="padding:6px 8px"><code style="font-size:12px">${esc(h.commit || "—")}</code></td>
         </tr>`;
       }).join("")}
     </table>`;
+  histBox.querySelectorAll("tr[data-dir]").forEach((tr) => { if (tr.dataset.dir) tr.onclick = () => openEvalDetail(tr.dataset.dir); });
+}
+async function openEvalDetail(dir) {
+  const box = document.getElementById("ev-detail");
+  if (!box) return;
+  if (evalDetailDir === dir) { evalDetailDir = null; box.innerHTML = ""; return; }
+  evalDetailDir = dir;
+  box.innerHTML = `<div style="font-size:13px;color:var(--wb-text-3);margin:0 0 10px">加载明细…</div>`;
+  const j = await fetch("/api/eval/run/" + encodeURIComponent(dir)).then((r) => r.json()).catch(() => null);
+  if (evalDetailDir !== dir) return;
+  if (!j || j.error) { box.innerHTML = ""; evalDetailDir = null; return toast("❌ " + ((j && j.error) || "明细加载失败")); }
+  const head = `<div style="display:flex;align-items:center;gap:10px;margin:0 0 8px;flex-wrap:wrap">
+      <b style="font-size:14px">${esc(String(j.at || "").slice(0, 16).replace("T", " "))} · ${esc(j.model || "")}</b>
+      <span style="font-size:12px;color:var(--wb-text-3)">机器分 ${j.score_pct}%${j.judge && j.judge.avg != null ? ` · AI 评委 ${j.judge.avg}/5（${esc(j.judge.model || "")}）` : ""}${j.human && j.human.avg ? ` · 人工 ★${j.human.avg}（已评 ${j.human.scored} 题）` : ""}${j.commit ? ` · 版本 ${esc(j.commit)}` : ""}</span>
+      <a href="#" id="ev-close" class="link" style="margin-left:auto;font-size:12px">收起 ✕</a>
+    </div>`;
+  const rows = (j.results || []).map((r) => {
+    const checks = (r.checks || []).map((c) => `<div style="font-size:12px;color:${c.ok ? "var(--wb-ok)" : "var(--wb-err)"}">${c.ok ? "✓" : "✗"} ${esc(c.name)}${c.note ? `<span style="color:var(--wb-text-3)"> — ${esc(c.note)}</span>` : ""}</div>`).join("");
+    const judge = r.judge && r.judge.score
+      ? `<div style="margin-top:6px;font-size:12px">⚖️ AI 评委 <b>${r.judge.score}/5</b> — ${esc(r.judge.verdict || "")}${(r.judge.reasons || []).length ? `<div style="color:var(--wb-text-3)">${r.judge.reasons.map((x) => "· " + esc(x)).join("<br>")}</div>` : ""}${(r.judge.deductions || []).length ? `<div style="color:var(--wb-err)">${r.judge.deductions.map((x) => "扣分：" + esc(x)).join("<br>")}</div>` : ""}</div>`
+      : (r.judge && r.judge.error ? `<div style="margin-top:6px;font-size:12px;color:var(--wb-text-3)">⚖️ 评委失败：${esc(r.judge.error)}</div>` : "");
+    const hs = (r.human && r.human.score) || 0;
+    const stars = [1, 2, 3, 4, 5].map((n) => `<button class="ev-star" data-task="${esc(r.id)}" data-star="${n}" title="人工打 ${n} 分" style="border:none;background:none;cursor:pointer;font-size:16px;padding:0 1px;line-height:1;color:${n <= hs ? "#f59e0b" : "var(--wb-text-3)"}">${n <= hs ? "★" : "☆"}</button>`).join("");
+    return `<div style="border:1px solid var(--wb-line);border-radius:10px;padding:10px 12px;margin:0 0 8px;background:var(--wb-card)">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <b style="font-size:13px">${r.passed === r.total ? "✅" : r.passed ? "🟡" : "❌"} ${esc(r.name)}</b>
+        <span style="font-size:12px;color:var(--wb-text-3)">${r.passed}/${r.total} · ${r.elapsed_s}s · ${r.tool_calls || 0} 步${r.tool_errors ? `（${r.tool_errors} 次工具报错）` : ""}${r.stopped ? " · " + esc(r.stopped) : ""}${r.crashed ? " · 崩溃" : ""}</span>
+        <span style="margin-left:auto;white-space:nowrap;display:flex;align-items:center">${stars}<input class="ev-cmt" data-task="${esc(r.id)}" placeholder="点评（可选）" value="${esc((r.human && r.human.comment) || "")}" style="width:150px;margin-left:6px;padding:3px 8px;border:1px solid var(--wb-line);border-radius:6px;background:var(--wb-bg);color:var(--wb-text);font-size:12px"></span>
+      </div>
+      <div style="margin-top:6px">${checks}</div>
+      ${judge}
+      ${r.final_text ? `<details style="margin-top:6px"><summary style="font-size:12px;color:var(--wb-text-3);cursor:pointer">最终回复摘录</summary><pre style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow:auto;margin:4px 0 0;background:var(--wb-bg);border-radius:8px;padding:8px 10px">${esc(String(r.final_text).slice(0, 1500))}</pre></details>` : ""}
+    </div>`;
+  }).join("");
+  box.innerHTML = `<div style="margin:0 0 14px">${head}${rows}</div>`;
+  box.querySelector("#ev-close").onclick = (e) => { e.preventDefault(); evalDetailDir = null; box.innerHTML = ""; };
+  const saveHuman = async (taskId, score) => {
+    const cmt = box.querySelector(`.ev-cmt[data-task="${taskId}"]`);
+    const r = await fetch("/api/eval/human", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir, task_id: taskId, score, comment: cmt ? cmt.value : "" }) }).then((x) => x.json()).catch(() => null);
+    if (!r || r.error) return toast("❌ " + ((r && r.error) || "保存失败"));
+    toast("★ 人工分已保存");
+    evalDetailDir = null;
+    openEvalDetail(dir);
+    updateEvalView();
+  };
+  box.querySelectorAll(".ev-star").forEach((b) => b.onclick = () => saveHuman(b.dataset.task, +b.dataset.star));
+  box.querySelectorAll(".ev-cmt").forEach((inp) => inp.onchange = () => {
+    const row = (j.results || []).find((x) => x.id === inp.dataset.task);
+    if (row && row.human && row.human.score) saveHuman(inp.dataset.task, row.human.score);
+  });
 }
 async function renderLibPage() {
   const page = document.getElementById("assist-page");
@@ -4734,14 +4805,15 @@ function renderPromptPage() {
       (cat === "全部" || t.c === cat) &&
       (!q || (t.t + t.d + t.p).toLowerCase().includes(q)));
     page.querySelector("#tpl-grid").innerHTML = list.map((t, i) => `
-      <div class="tpl-card" data-i="${PROMPT_TPLS.indexOf(t)}">
-        <div class="hd"><span class="ic">${t.ic}</span><span class="tt">${esc(t.t)}</span><span class="ct">${esc(t.c)}</span></div>
+      <div class="tpl-card${q && !(t.t + t.d).toLowerCase().includes(q) ? " open" : ""}" data-i="${PROMPT_TPLS.indexOf(t)}">
+        <div class="hd"><span class="ic">${t.ic}</span><span class="tt">${esc(t.t)}</span><span class="ct">${esc(t.c)}</span><span class="chev">▶</span></div>
         <div class="dd">${esc(t.d)}</div>
         <pre>${esc(t.p)}</pre>
         <div class="ops"><button class="primary tpl-use">填进输入框</button><button class="tpl-copy">复制</button></div>
       </div>`).join("") || '<div class="hub-empty">没有匹配的模板</div>';
     page.querySelectorAll(".tpl-card").forEach(card => {
       const t = PROMPT_TPLS[+card.dataset.i];
+      card.onclick = (e) => { if (e.target.closest("button")) return; card.classList.toggle("open"); };
       card.querySelector(".tpl-use").onclick = () => startTaskWith(t.p);
       card.querySelector(".tpl-copy").onclick = async (e) => {
         try { await navigator.clipboard.writeText(t.p); e.target.textContent = "已复制"; setTimeout(() => e.target.textContent = "复制", 1200); }
@@ -4751,7 +4823,7 @@ function renderPromptPage() {
   };
   page.innerHTML = `
     <div class="hub-head">
-      <div class="hub-sec-title" style="margin:0">照着抄就行 <span class="sub">带 __下划线__ 的地方换成你自己的内容；点「填进输入框」会开一条新任务</span></div>
+      <div class="hub-sec-title" style="margin:0">照着抄就行 <span class="sub">点卡片看全文；带 __下划线__ 的地方换成你的内容；「填进输入框」直接开一条新任务</span></div>
       <div class="hub-search" style="margin-left:auto"><input id="tpl-q" placeholder="搜模板…"></div>
     </div>
     <div class="hub-chips" style="margin:4px 0 14px">${cats.map(c =>
@@ -5030,6 +5102,9 @@ function renderAgentPane(pane, s) {
       <div class="t" style="margin-top:8px">任务最大运行时间（分钟）</div>
       <div class="d" style="margin-bottom:6px">整个任务（含专家子代理）的墙上时间预算，超时强制收尾（默认 10）</div>
       <input id="ag-runtime" type="number" min="1" value="${Math.round((s.agent.max_runtime_ms || 600000) / 60000)}">
+      <div class="t" style="margin-top:8px">自动续跑轮数</div>
+      <div class="d" style="margin-bottom:6px">任务撞到步数/时间上限但还没做完时，自动重置预算接着跑的最大轮数。0 = 关闭（默认）。开启后长任务会按 PROGRESS.md 的进度接着做，直到完成或轮数用完；手动停止不会续跑。注意：每一轮都是真实计费</div>
+      <input id="ag-rounds" type="number" min="0" max="20" value="${s.agent.auto_continue_rounds || 0}">
       <div class="t" style="margin-top:8px">模型卡壳超时（秒）</div>
       <div class="d" style="margin-bottom:6px">连续这么久收不到模型的任何输出（正文/思考/写文件的参数流都算）才判定连接挂死、强制收尾；只要还在逐字输出就不会掐断（默认 300）</div>
       <input id="ag-llm-timeout" type="number" min="30" value="${Math.round((s.agent.llm_timeout_ms || 300000) / 1000)}">
@@ -5043,6 +5118,7 @@ function renderAgentPane(pane, s) {
       max_steps: +pane.querySelector("#ag-steps").value,
       tool_timeout_ms: +pane.querySelector("#ag-timeout").value * 1000,
       max_runtime_ms: +pane.querySelector("#ag-runtime").value * 60000,
+      auto_continue_rounds: +pane.querySelector("#ag-rounds").value,
       llm_timeout_ms: +pane.querySelector("#ag-llm-timeout").value * 1000,
       max_context_chars: +pane.querySelector("#ag-ctx").value * 1000,
     } }, pane.querySelector("#ag-msg"));
