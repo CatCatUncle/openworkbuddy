@@ -4,6 +4,7 @@
  * 功能：Web 工作台（SSE 流式）、技能系统、MCP 连接器、专家团多智能体、IM 远程指挥（飞书/企业微信/通用 Webhook）。
  */
 
+const BOOT_T0 = Date.now(); // server.js 从加载到 listen 的耗时，启动慢时先看这行日志
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -2208,7 +2209,7 @@ async function main() {
     if (host !== "127.0.0.1" && host !== "localhost") {
       console.warn(`⚠️  正在监听 ${host}:${port}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
     }
-    console.log(`OpenWorkBuddy 已启动: http://localhost:${port}`);
+    console.log(`OpenWorkBuddy 已启动: http://localhost:${port}（服务端初始化 ${Date.now() - BOOT_T0}ms）`);
     console.log(`模型: ${llm.provider} / ${llm.model}`);
     console.log(`技能: ${runtime.getSkills().map((s) => s.name).join(", ") || "无"}`);
     console.log(`专家团: ${experts.map((e) => e.name).join(", ") || "无"}`);

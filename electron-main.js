@@ -1,6 +1,7 @@
 "use strict";
 /** Electron 桌面壳 — 启动内嵌服务并打开桌面窗口。运行：npm run app */
 
+const BOOT_T0 = Date.now(); // 启动分段计时：哪段慢一眼看清，别靠体感猜
 const { app, BrowserWindow, shell, globalShortcut } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -40,8 +41,10 @@ let win;
 async function waitForServer(url, tries = 200) {
   for (let i = 0; i < tries; i++) {
     try {
-      const r = await fetch(url);
-      if (r.ok) return true;
+      // 只看服务端有没有应答，不看状态码：/api/* 挂在登录守卫后面，没登录时回 401，
+      // 那也是「服务端活着」。以前只认 r.ok，导致每次启动都空等满 30 秒超时才加载页面
+      await fetch(url);
+      return true;
     } catch {}
     await new Promise((r) => setTimeout(r, 150)); // 服务端 1 秒内就绪，粗轮询白等半秒
   }
@@ -49,6 +52,7 @@ async function waitForServer(url, tries = 200) {
 }
 
 app.whenReady().then(async () => {
+  console.log(`[启动] Electron 就绪 +${Date.now() - BOOT_T0}ms`);
   // 窗口先开（秒响应），服务端在同进程内随后启动，就绪即加载页面。
   // 顺序反过来的话，用户要盯着 Dock 图标空等服务端把路由全注册完。
   win = new BrowserWindow({
@@ -68,6 +72,8 @@ app.whenReady().then(async () => {
   require(path.join(__dirname, "server.js"));
 
   await waitForServer(`http://localhost:${PORT}/api/info`);
+  console.log(`[启动] 服务端就绪 +${Date.now() - BOOT_T0}ms`);
+  win.webContents.once("did-finish-load", () => console.log(`[启动] 页面加载完成 +${Date.now() - BOOT_T0}ms`));
   win.loadURL(`http://localhost:${PORT}`);
 
   // 外链用系统浏览器打开
