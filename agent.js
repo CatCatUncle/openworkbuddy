@@ -227,7 +227,9 @@ function safeWorkspaceDir() {
   try { return getWorkspaceDir(); } catch { return "（未设置）"; }
 }
 
-function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [] }) {
+function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
+  // 备用渠道换道要现造一个 LLM 客户端；懒 require 避免环形依赖，测试时可注入假工厂做零 token 验证
+  const makeLLM = llmFactory || ((cfg) => require("./llm").createLLM(cfg));
   /** 团里挂着的成员可能已被删掉，取用时按当前专家表过一遍 */
   function teamMembers(team) {
     return (team.members || []).map((n) => experts.find((e) => e.name === n)).filter(Boolean);
@@ -756,7 +758,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   let runSeq = 0;
 
   async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser }) {
-    const L = llmOverride || llm; // 按对话选的模型：整棵任务树（含专家）都用它
+    let L = llmOverride || llm; // 按对话选的模型：整棵任务树（含专家）都用它；中途换道后，之后委派的专家也跟着走新渠道
     if (!runToken) runToken = ++runSeq; // 专家子任务从父任务继承，同一任务树内不互相抢认领
     // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设
     const projBlock = projectContext ? `\n\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${projectContext}` : "";
@@ -774,6 +776,21 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     let stopNote = "";
     let honestyRetries = 0;
     let trimmedChars = 0; // 本次任务累计被上下文预算截掉的工具输出字符数
+    // 备用渠道换道：主模型挂起或服务端持续报错时，切到用户在设置里显式选好的备用渠道接着跑本任务。
+    // 默认关（agent.failover_model 为空）。红线：绝不静默降级——只有用户亲手选了备用渠道才换，换道必须大声播报。
+    // 每个任务（含每位专家的子任务）最多换一次道：备用渠道也挂了就如实收尾，不搞换道链
+    let failedOver = false;
+    const switchToBackup = (reason) => {
+      const name = String((config.agent || {}).failover_model || "").trim();
+      if (!name || failedOver) return false;
+      if ((L.provider || "") === name) return false; // 当前就跑在这条渠道上（主选=备用），没有道可换
+      if (!(config.models || []).some((m) => m.name === name)) return false; // 渠道已被删掉，配置过期
+      try { L = makeLLM({ ...config, active_model: name }); }
+      catch (e) { console.warn("[agent] 备用渠道创建失败:", e.message); return false; }
+      failedOver = true;
+      emit({ type: "failover", note: `${reason}，已切换到备用渠道「${name}」继续本任务`, channel: name, depth });
+      return true;
+    };
     // 卡循环检测：同一工具+同一入参反复拿到同一结果 = 在死路上空转。3 连提醒换思路，5 连直接拦截不执行。
     // 键里必须带结果指纹，才不会误伤「改一遍读一遍」的正常校验循环——文件改了，读回来的内容就变了，计数自动清零
     const loopHist = new Map(); // 工具名+入参 → { sig: 上次结果指纹, streak: 连续拿到相同结果的次数 }
@@ -905,13 +922,27 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         });
       } catch (e) {
         if (e.name === "TimeoutError" || e.name === "AbortError") {
-          stopNote =
-            stopSignal && stopSignal.aborted
-              ? "已手动停止"
-              : stallCtl.signal.aborted
-                ? `模型响应超时（连续 ${Math.round(stallMs / 1000)} 秒没有任何输出，连接已挂起）`
-                : "已达最大运行时间";
+          const manual = stopSignal && stopSignal.aborted;
+          const stalled = stallCtl.signal.aborted;
+          // 挂起换道：只有「真挂起」才换——手动停止、任务总时长到点都不算；剩余时间太少也不值得换道重试
+          if (!manual && stalled && Date.now() < deadline - 30000 &&
+              switchToBackup(`主模型连续 ${Math.round(stallMs / 1000)} 秒无输出（疑似挂起）`)) {
+            step--; // 重试当前步（finally 会先清掉本步的计时器）
+            continue;
+          }
+          stopNote = manual
+            ? "已手动停止"
+            : stalled
+              ? `模型响应超时（连续 ${Math.round(stallMs / 1000)} 秒没有任何输出，连接已挂起）`
+              : "已达最大运行时间";
           break;
+        }
+        // 服务端硬错误（Service is too busy / 欠费 / 5xx 等）：llm 层同渠道重试用尽才会走到这。
+        // 配了备用渠道就换道重试本步；没配就照旧抛出，任务如实失败——这是用户钦定的默认行为
+        if (Date.now() < deadline - 30000 &&
+            switchToBackup(`主模型持续报错（${String(e.message || e).slice(0, 120)}）`)) {
+          step--;
+          continue;
         }
         throw e;
       } finally {
