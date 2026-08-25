@@ -127,6 +127,32 @@ let imBridge = null; // IM 桥（含飞书长连接控制），init() 里创建
 const SESS_DIR = path.join(__dirname, "data", "sessions");
 const sessions = new Map();
 const activeRuns = new Map(); // sessionId -> { ctrl: AbortController, interject: [] }（「停止」与「插队」用）
+// 正在跑的任务落一份名单到磁盘：应用中途被关/被重启时，内存里的 activeRuns 直接蒸发，
+// 下次启动就靠这份名单知道哪些会话是被打断的，在回放里明说，而不是让那一轮无声地断在半空
+const RUNNING_FILE = path.join(__dirname, "data", "running.json");
+function persistRunning() {
+  try { store.writeJsonAtomic(RUNNING_FILE, [...activeRuns.keys()]); } catch {}
+}
+function sweepInterruptedRuns() {
+  const ids = store.readJson(RUNNING_FILE, []);
+  if (!Array.isArray(ids) || !ids.length) return;
+  let marked = 0;
+  for (const id of ids) {
+    try {
+      const sess = getSession(id);
+      const last = sess.transcript[sess.transcript.length - 1];
+      if (!last || last.type !== "assistant") continue;
+      const evs = last.events || (last.events = []);
+      const tail = evs[evs.length - 1];
+      if (tail && tail.type === "error") continue; // 已有明确收场就别重复盖章
+      evs.push({ type: "error", message: "应用在任务执行中被关闭或重启，这一轮已中断（已完成的进度和文件都还在）。可以对我说「接着上次进度继续」。" });
+      saveSession(id);
+      marked++;
+    } catch {}
+  }
+  try { store.writeJsonAtomic(RUNNING_FILE, []); } catch {}
+  if (marked) console.log(`[恢复] 检测到 ${marked} 个被重启打断的任务，已在会话回放里标注中断`);
+}
 const assignedDirs = new Set(); // 刚分配、还没写出文件的对话文件夹名：两个新对话同时起步不许撞同名
 
 function sessFile(id) {
@@ -370,6 +396,7 @@ app.get("/api/settings", (_req, res) => {
       auto_continue_rounds: config.agent.auto_continue_rounds || 0,
       llm_timeout_ms: config.agent.llm_timeout_ms || 300000,
       max_context_chars: config.agent.max_context_chars || 120000,
+      max_tokens_budget: config.agent.max_tokens_budget || 0,
     },
     persona: config.persona || "",
     assistant: config.assistant,
@@ -424,6 +451,7 @@ app.post("/api/settings", (req, res) => {
       if (b.agent.llm_timeout_ms) config.agent.llm_timeout_ms = Math.max(30000, +b.agent.llm_timeout_ms);
       // 下限 2 万字符：再小连最近几步的工具原文都留不住，agent 会失忆式反复重做
       if (b.agent.max_context_chars) config.agent.max_context_chars = Math.max(20000, Math.min(2000000, +b.agent.max_context_chars));
+      if (b.agent.max_tokens_budget !== undefined) config.agent.max_tokens_budget = Math.max(0, Math.round(+b.agent.max_tokens_budget) || 0);
     }
     if (b.persona !== undefined) config.persona = String(b.persona).slice(0, 4000);
     if (b.assistant) {
@@ -1645,6 +1673,7 @@ app.post("/api/chat", async (req, res) => {
 
   runState.events = asstEvents; // 续流端点靠它补发已记录的事件
   activeRuns.set(sessionId, runState);
+  persistRunning();
   const emitFn = recordingEmit(send, asstEvents, sessionId);
   const total = { prompt: 0, completion: 0, calls: 0, elapsed_ms: 0 };
   // 首轮对话：并行起一个真正的短标题（拿消息前 24 个字截断当标题太丑）。
@@ -1774,6 +1803,7 @@ app.post("/api/chat", async (req, res) => {
     asstEvents.push({ type: "error", message: emsg });
   } finally {
     activeRuns.delete(sessionId);
+    persistRunning();
   }
   if (total.calls > 0) modelFailStreak.delete(sessLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
   // 健康账本：异常收场记一败；正常收场且真调过模型记一胜（秒停等一次没调的不记，记了是噪声）
@@ -2167,6 +2197,8 @@ async function main() {
     if (res.headersSent) return next(err);
     res.status(err.status || 500).json({ error: err.message || "服务器内部错误" });
   });
+
+  sweepInterruptedRuns(); // 上次没善终的任务先标注中断，再开门迎客
 
   const port = +process.env.PORT || config.server.port || 3800;
   // 默认只听本机：这个进程手里有 run_shell 和整个文件系统，绑 0.0.0.0 等于把 shell 挂到公网。

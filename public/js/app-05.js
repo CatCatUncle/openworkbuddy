@@ -442,6 +442,9 @@ function renderAgentPane(pane, s) {
       <div class="t" style="margin-top:8px">模型卡壳超时（秒）</div>
       <div class="d" style="margin-bottom:6px">连续这么久收不到模型的任何输出（正文/思考/写文件的参数流都算）才判定连接挂死、强制收尾；只要还在逐字输出就不会掐断（默认 300）</div>
       <input id="ag-llm-timeout" type="number" min="30" value="${Math.round((s.agent.llm_timeout_ms || 300000) / 1000)}">
+      <div class="t" style="margin-top:8px">token 预算（万 tokens）</div>
+      <div class="d" style="margin-bottom:6px">单个任务（含专家子代理和自动续跑）的 token 总量上限，超过后强制收尾且不再自动续跑，防止长任务烧钱失控。0 = 不限（默认）。用到 80% 会先提醒</div>
+      <input id="ag-tokbudget" type="number" min="0" step="1" value="${Math.round((s.agent.max_tokens_budget || 0) / 10000)}">
       <div class="t" style="margin-top:8px">上下文预算（千字符）</div>
       <div class="d" style="margin-bottom:6px">超出后自动截短较早的工具输出（最近 3 步始终保留原文），避免长任务撞模型上下文上限整个失败。上下文大的模型可以调高（默认 120）</div>
       <input id="ag-ctx" type="number" min="20" max="2000" value="${Math.round((s.agent.max_context_chars || 120000) / 1000)}">
@@ -455,6 +458,7 @@ function renderAgentPane(pane, s) {
       auto_continue_rounds: +pane.querySelector("#ag-rounds").value,
       llm_timeout_ms: +pane.querySelector("#ag-llm-timeout").value * 1000,
       max_context_chars: +pane.querySelector("#ag-ctx").value * 1000,
+      max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
     } }, pane.querySelector("#ag-msg"));
 }
 function renderPersonaPane(pane, s) {

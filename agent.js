@@ -702,6 +702,11 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     let stopNote = "";
     let honestyRetries = 0;
     let trimmedChars = 0; // 本次任务累计被上下文预算截掉的工具输出字符数
+    // 卡循环检测：同一工具+同一入参反复拿到同一结果 = 在死路上空转。3 连提醒换思路，5 连直接拦截不执行。
+    // 键里必须带结果指纹，才不会误伤「改一遍读一遍」的正常校验循环——文件改了，读回来的内容就变了，计数自动清零
+    const loopHist = new Map(); // 工具名+入参 → { sig: 上次结果指纹, streak: 连续拿到相同结果的次数 }
+    const errStreaks = new Map(); // 工具名 → 连续报错次数（换着参数撞同一堵墙也算）
+    const loopNudged = new Set(); // 每个键只提醒一次，别变成新的噪音循环
     // 任务开始时先记一份工作目录快照，files 事件带上「这一轮真正新增/改动的文件」。
     // 这件事必须在服务端算：前端那份 mtime 快照是活的，历史回放时早就对不上了，算出来永远是空。
     const baseline = new Map();
@@ -764,6 +769,20 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       if (Date.now() >= deadline) {
         stopNote = `已达最大运行时间（${Math.round((config.agent.max_runtime_ms || 1800000) / 60000)} 分钟）`;
         break;
+      }
+      // token 预算护栏：步数和时间都挡不住「小步快跑」式烧钱，按用量再设一道闸（0 = 不限）。
+      // stats 整棵任务树共享，专家子代理花的也算；到 80% 先提醒一次，超了强制收尾且不自动续跑
+      const tokBudget = Math.max(0, Math.round(+config.agent.max_tokens_budget || 0));
+      if (tokBudget) {
+        const used = stats.prompt + stats.completion;
+        if (used >= tokBudget) {
+          stopNote = `已达 token 预算（已用 ${used.toLocaleString()}，预算 ${tokBudget.toLocaleString()}）`;
+          break;
+        }
+        if (!stats.budgetWarned && used >= tokBudget * 0.8) {
+          stats.budgetWarned = true;
+          emit({ type: "status", text: `token 用量已到预算的 ${Math.round((used / tokBudget) * 100)}%（${used.toLocaleString()} / ${tokBudget.toLocaleString()}），超出后任务会强制收尾`, depth });
+        }
       }
       emit({ type: "step_start", step: step + 1, depth });
 
@@ -868,8 +887,19 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
           purpose: tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
           input_preview: previewInput(tc),
         });
-        const r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser });
-        if (r.extendMs) deadline += r.extendMs; // 等用户回答的时间不算任务运行时间
+        const loopKey = tc.name + "\u0000" + JSON.stringify(tc.input || {});
+        const seen = loopHist.get(loopKey);
+        let r;
+        if (seen && seen.streak >= 4 && tc.name !== "ask_user") {
+          // 同一调用已连续 4 次拿到一模一样的结果，第 5 次不再执行——结果不会变，只会烧钱
+          r = { content: `【系统拦截】你已用完全相同的参数连续 ${seen.streak} 次调用 ${tc.name}，每次结果都一模一样，本次未执行。别再重复同样的动作：换参数、换工具或换一条实现路径；确实无路可走就停止并如实说明卡在哪里。`, isError: true };
+        } else {
+          r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser });
+          if (r.extendMs) deadline += r.extendMs; // 等用户回答的时间不算任务运行时间
+          const sig = String(r.content).slice(0, 2000);
+          loopHist.set(loopKey, { sig, streak: seen && seen.sig === sig ? seen.streak + 1 : 1 });
+        }
+        errStreaks.set(tc.name, r.isError ? (errStreaks.get(tc.name) || 0) + 1 : 0);
         emit({
           type: "tool_result",
           id: tc.id,
@@ -899,6 +929,15 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       }
       history.push({ role: "tool", results: toolResults });
       emitFiles();
+
+      // 循环检测的提醒紧跟在工具结果后面注入，模型下一步就能看到；同时在界面明说，别让用户干瞪着它转圈
+      const nudges = [];
+      for (const [k, v] of loopHist) if (v.streak >= 3 && !loopNudged.has("c:" + k)) { loopNudged.add("c:" + k); nudges.push(`用完全相同的参数调用 ${k.split("\u0000")[0]} 已连续 ${v.streak} 次拿到完全相同的结果`); }
+      for (const [name, n] of errStreaks) if (n >= 4 && !loopNudged.has("e:" + name)) { loopNudged.add("e:" + name); nudges.push(`${name} 已连续失败 ${n} 次`); }
+      if (nudges.length) {
+        history.push({ role: "user", content: `【系统·循环检测】${nudges.join("；")}。这是在死路上空转，时间和费用都在烧：立即换思路——换参数、换工具或换一条实现路径；实在无路可走就停下收尾，如实说明卡在哪里，严禁再重复同样的动作。` });
+        emit({ type: "text", delta: `\n\n> ⚠️ **循环检测**：${nudges.join("；")}，已提醒换思路。\n\n`, depth });
+      }
 
       if (step === maxSteps - 1) stopNote = `已达最大步数（${maxSteps} 步）`;
     }
