@@ -168,14 +168,17 @@ function missingDeliverables(text) {
 // 只截 tool 结果、不删任何消息——OpenAI 侧 tool_calls 必须有对应的 tool 消息应答，删了就是 400。
 const CTX_KEEP_HEAD = 300; // 老结果保留的开头字符数（够模型认出这步干了什么）
 
+function entryChars(e) {
+  if (e.role === "user") return String(e.content || "").length;
+  // Claude 路径回传的是 raw（含 thinking 块，往往比 text 大好几倍），要按真正发出去的那份算
+  if (e.role === "assistant") return e.raw ? JSON.stringify(e.raw).length : String(e.text || "").length + JSON.stringify(e.toolCalls || []).length;
+  let n = 0;
+  if (e.role === "tool") for (const r of e.results || []) n += String(r.content || "").length;
+  return n;
+}
 function historyChars(history) {
   let n = 0;
-  for (const e of history) {
-    if (e.role === "user") n += String(e.content || "").length;
-    // Claude 路径回传的是 raw（含 thinking 块，往往比 text 大好几倍），要按真正发出去的那份算
-    else if (e.role === "assistant") n += e.raw ? JSON.stringify(e.raw).length : String(e.text || "").length + JSON.stringify(e.toolCalls || []).length;
-    else if (e.role === "tool") for (const r of e.results || []) n += String(r.content || "").length;
-  }
+  for (const e of history) n += entryChars(e);
   return n;
 }
 
@@ -616,6 +619,32 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   // 自己几十轮前的旧话当依据（「发不了文件」的幻觉就是这么反复复发的）。
   // 超阈值时把早期轮次交给模型浓缩成一条接手摘要，只留最近几轮原文。
   const COMPACT_MARK = "【系统·上下文压缩】";
+  /** 从被压缩的轮次里机械提取读/改过的文件，并把上一份摘要里的清单接续下来。
+   *  清单不靠摘要模型转述（模型会丢文件名），跨多次压缩累计（借鉴 pi 的 cumulative file tracking）。 */
+  function collectFileOps(old) {
+    const read = new Set(), wrote = new Set();
+    for (const e of old) {
+      if (e.role === "assistant") {
+        for (const c of e.toolCalls || []) {
+          const p = String((c.args || c.input || {}).path || "").trim();
+          if (!p) continue;
+          if (c.name === "read_file") read.add(p);
+          else if (c.name === "write_file" || c.name === "edit_file") wrote.add(p);
+        }
+      } else if (e.role === "user" && String(e.content || "").startsWith(COMPACT_MARK)) {
+        const s = String(e.content);
+        const grab = (label, set) => {
+          const m = new RegExp(`【${label}】([^\\n]*)`).exec(s);
+          if (m) for (const f of m[1].split("、")) { const t = f.trim(); if (t && t !== "无") set.add(t); }
+        };
+        grab("读过的文件", read);
+        grab("改过的文件", wrote);
+      }
+    }
+    for (const p of wrote) read.delete(p); // 改过的不用再占「读过」的位置
+    const cap = (set) => Array.from(set).slice(-40).join("、") || "无";
+    return { read: cap(read), wrote: cap(wrote) };
+  }
   async function compactHistory(history, { emit = () => {}, stats } = {}) {
     if ((config.agent || {}).compact === false) return;
     const budget = config.agent.max_context_chars || 120000;
@@ -624,9 +653,26 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     const keepTurns = config.agent.compact_keep_turns || 4;
     const userIdx = [];
     history.forEach((e, i) => { if (e.role === "user") userIdx.push(i); });
-    if (userIdx.length <= keepTurns) return; // 轮次太少压不动（单轮超长交给 trimHistory 截）
-    const cut = userIdx[userIdx.length - keepTurns]; // 切在用户轮开头，工具调用/结果永远成对保留
-    if (cut < 1) return;
+    // 首选切在用户轮开头（工具调用/结果永远成对保留）。轮次不够切 = 单轮长跑任务把上下文
+    // 顶爆了，退到「分轮压缩」（借鉴 pi 的 split turn）：在助手消息边界下刀，把任务早期的
+    // 几十步浓缩掉。不做这一步的话，长任务中途只能靠 trimHistory 盲截，早期结论全丢。
+    let cut = userIdx.length > keepTurns ? userIdx[userIdx.length - keepTurns] : -1;
+    let splitMode = false;
+    if (cut < 1) {
+      const keepChars = config.agent.compact_keep_chars || 30000;
+      let acc = 0;
+      for (let i = history.length - 1; i >= 1; i--) {
+        acc += entryChars(history[i]);
+        if (acc >= keepChars) {
+          // 边界只能落在 user/assistant 开头：切在 tool 前面会把工具结果和它的调用拆散。
+          // 往前（更早）找最近的非 tool 条目——越界点常落在工具结果上，它所属的调用必须一起保留
+          for (let j = i; j >= 1; j--) if (history[j].role !== "tool") { cut = j; break; }
+          break;
+        }
+      }
+      if (cut < 1) return;
+      splitMode = true;
+    }
     const old = history.slice(0, cut);
     // 大头字符都在保留的最近几轮里时，压旧轮次省不下几个字符，总量照样超阈值，
     // 下一步又会再触发——变成每步烧一次总结调用的死循环。旧轮次不够肉就不压。
@@ -644,12 +690,34 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     }
     let transcript = lines.join("\n");
     if (transcript.length > 60000) transcript = "…（更早部分略）\n" + transcript.slice(-60000); // 压缩请求本身也别把上下文顶爆
+    const fileOps = collectFileOps(old);
+    // 分轮压缩会把本任务的原始指令一起压掉，摘要没写好任务就跑偏——指令原文机械保留，不过模型的手
+    let lastInstr = "";
+    if (splitMode) {
+      for (let i = old.length - 1; i >= 0; i--) {
+        const e = old[i];
+        if (e.role !== "user") continue;
+        const c = String(e.content || "");
+        if (c.startsWith(COMPACT_MARK) || c.startsWith("【系统")) continue;
+        lastInstr = c.replace(/\s+/g, " ").slice(0, 2000);
+        break;
+      }
+      // 连续多次分轮压缩后，原始指令只活在上一份摘要里——像文件清单一样机械接续，不能靠摘要模型转述
+      if (!lastInstr) {
+        for (let i = old.length - 1; i >= 0 && !lastInstr; i--) {
+          const e = old[i];
+          if (e.role !== "user" || !String(e.content || "").startsWith(COMPACT_MARK)) continue;
+          const m = /【最近的用户指令原文】([^\n]*)/.exec(String(e.content));
+          if (m) lastInstr = m[1].trim();
+        }
+      }
+    }
     const result = await llm.chat({
       system:
-        "你是会话压缩器。把用户给你的对话转写压成一份接手备忘录：\n" +
-        "1. 已完成的任务和结论；2. 产出/改动过的文件（写完整文件名）；\n" +
-        "3. 用户表达过的偏好、约束、纠正；4. 未完成事项。\n" +
-        "只写事实不评论，文件名和关键数字一个都别丢。500 字以内，中文。",
+        "你是会话压缩器。把用户给你的对话转写压成一份接手备忘录，严格按以下结构写（没内容的小节写「无」）：\n" +
+        "## 目标\n## 已完成\n## 进行中 / 卡住\n## 关键决定（附原因）\n## 下一步\n## 关键上下文\n" +
+        "「关键上下文」放继续干活必需的硬事实：路径、命令、报错原文、用户表达过的偏好与纠正。\n" +
+        "只写事实不评论，文件名和关键数字一个都别丢。800 字以内，中文。",
       history: [{ role: "user", content: "以下是需要压缩的对话转写：\n\n" + transcript }],
       tools: [],
       signal: AbortSignal.timeout(60000),
@@ -665,10 +733,14 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     } catch (e) { console.warn("[agent] 压缩归档失败（不拦压缩）:", e.message); }
     history.splice(0, cut, {
       role: "user",
-      content: `${COMPACT_MARK}以下是本会话更早内容的自动摘要（原文已归档）：\n${summary}\n（摘要结束。把以上当作既定事实继续，不必向用户复述；若与用户最新要求冲突，以最新要求为准。）`,
+      content:
+        `${COMPACT_MARK}以下是本会话更早内容的自动摘要（原文已归档）：\n${summary}\n` +
+        (lastInstr ? `【最近的用户指令原文】${lastInstr}\n` : "") +
+        `【读过的文件】${fileOps.read}\n【改过的文件】${fileOps.wrote}\n` +
+        `（摘要结束。把以上当作既定事实继续，不必向用户复述；若与用户最新要求冲突，以最新要求为准。）`,
     });
     emit({ type: "compact", removed: old.length });
-    console.log(`[agent] 上下文已压缩：${old.length} 条 → 1 条摘要（现约 ${historyChars(history)} 字符）`);
+    console.log(`[agent] 上下文已压缩（${splitMode ? "任务分轮" : "会话轮次"}）：${old.length} 条 → 1 条摘要（现约 ${historyChars(history)} 字符）`);
   }
 
   /**
@@ -787,6 +859,10 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       emit({ type: "step_start", step: step + 1, depth });
 
       // 发请求前先把老工具结果压进上下文预算，宁可丢细节也不能让整个任务撞 400 全丢
+      // 超阈值时先智能压缩（老步骤浓缩成接手摘要），压不动再盲截。没有这一步，
+      // 跑到几十步的长任务只能靠 trimHistory 把早期工具输出截成空壳，模型越跑越失忆
+      try { await compactHistory(history, { emit, stats }); }
+      catch (e) { console.warn("[agent] 任务中压缩失败，本步跳过:", e.message); }
       const trimmed = trimHistory(history, config.agent.max_context_chars || 120000);
       if (trimmed) {
         trimmedChars += trimmed;

@@ -327,7 +327,7 @@ function recordingEmit(send, events, sessionId) {
       const last = events[events.length - 1];
       if (last && last.type === "text") last.delta += ev.delta;
       else events.push({ type: "text", delta: ev.delta });
-    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "trim", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"].includes(ev.type)) {
+    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"].includes(ev.type)) {
       events.push(ev);
       // 一步走完就是个存盘点：跑了半小时的任务不该因为一次崩溃从头再来
       if (sessionId && ev.type === "tool_result") autosaveSession(sessionId);
@@ -869,6 +869,18 @@ function projectContextOf(p) {
   if (sks.length) parts.push(`本项目挂载的技能：${sks.join("、")}。做对应任务前先 use_skill 加载，按技能里的规范执行。`);
   const conns = alive(p.connectors, (config.mcp_servers || []).map((s) => s.name));
   if (conns.length) parts.push(`本项目挂载的连接器：${conns.join("、")}。涉及外部系统时优先用这些连接器提供的工具。`);
+  // 项目目录里的 AGENTS.md / CLAUDE.md 是写给 agent 看的项目规范（pi / Claude Code 的通行惯例），
+  // 用户既然放了就自动带上，不用再往项目指令里手抄一遍
+  try {
+    for (const fname of ["AGENTS.md", "CLAUDE.md"]) {
+      if (!p.dir) break;
+      const fp = path.join(p.dir, fname);
+      if (!fs.existsSync(fp)) continue;
+      const txt = fs.readFileSync(fp, "utf8").trim().slice(0, 6000);
+      if (txt) parts.push(`项目目录里的 ${fname}（项目既定规范，必须遵守）：\n${txt}`);
+      break;
+    }
+  } catch {}
   return parts.join("\n\n");
 }
 
