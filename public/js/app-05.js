@@ -445,6 +445,12 @@ function renderAgentPane(pane, s) {
       <div class="t" style="margin-top:8px">token 预算（万 tokens）</div>
       <div class="d" style="margin-bottom:6px">单个任务（含专家子代理和自动续跑）的 token 总量上限，超过后强制收尾且不再自动续跑，防止长任务烧钱失控。0 = 不限（默认）。用到 80% 会先提醒</div>
       <input id="ag-tokbudget" type="number" min="0" step="1" value="${Math.round((s.agent.max_tokens_budget || 0) / 10000)}">
+      <div class="t" style="margin-top:8px">备用渠道（主模型挂起自动换道）</div>
+      <div class="d" style="margin-bottom:6px">主模型连续卡壳超时或服务端持续报错时，自动切到这里选的渠道接着跑当前任务，并在任务流里醒目播报。默认关闭：不选就绝不悄悄换模型，宁可如实报错。每个任务最多换一次道</div>
+      <select id="ag-failover">
+        <option value="">关闭（默认，不自动换道）</option>
+        ${(s.models || []).map((m) => `<option value="${esc(m.name)}"${(s.agent.failover_model || "") === m.name ? " selected" : ""}>${esc(m.name)}（${esc(m.model)}）${String(m.api_key || "").trim() || /ollama|本地/i.test(m.name || "") ? "" : "（未配 Key）"}</option>`).join("")}
+      </select>
       <div class="t" style="margin-top:8px">上下文预算（千字符）</div>
       <div class="d" style="margin-bottom:6px">超出后自动截短较早的工具输出（最近 3 步始终保留原文），避免长任务撞模型上下文上限整个失败。上下文大的模型可以调高（默认 120）</div>
       <input id="ag-ctx" type="number" min="20" max="2000" value="${Math.round((s.agent.max_context_chars || 120000) / 1000)}">
@@ -459,6 +465,7 @@ function renderAgentPane(pane, s) {
       llm_timeout_ms: +pane.querySelector("#ag-llm-timeout").value * 1000,
       max_context_chars: +pane.querySelector("#ag-ctx").value * 1000,
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
+      failover_model: pane.querySelector("#ag-failover").value,
     } }, pane.querySelector("#ag-msg"));
 }
 function renderPersonaPane(pane, s) {

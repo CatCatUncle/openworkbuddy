@@ -327,7 +327,7 @@ function recordingEmit(send, events, sessionId) {
       const last = events[events.length - 1];
       if (last && last.type === "text") last.delta += ev.delta;
       else events.push({ type: "text", delta: ev.delta });
-    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"].includes(ev.type)) {
+    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"].includes(ev.type)) {
       events.push(ev);
       // 一步走完就是个存盘点：跑了半小时的任务不该因为一次崩溃从头再来
       if (sessionId && ev.type === "tool_result") autosaveSession(sessionId);
@@ -398,6 +398,7 @@ app.get("/api/settings", (_req, res) => {
       llm_timeout_ms: config.agent.llm_timeout_ms || 300000,
       max_context_chars: config.agent.max_context_chars || 120000,
       max_tokens_budget: config.agent.max_tokens_budget || 0,
+      failover_model: config.agent.failover_model || "",
     },
     persona: config.persona || "",
     assistant: config.assistant,
@@ -453,6 +454,11 @@ app.post("/api/settings", (req, res) => {
       // 下限 2 万字符：再小连最近几步的工具原文都留不住，agent 会失忆式反复重做
       if (b.agent.max_context_chars) config.agent.max_context_chars = Math.max(20000, Math.min(2000000, +b.agent.max_context_chars));
       if (b.agent.max_tokens_budget !== undefined) config.agent.max_tokens_budget = Math.max(0, Math.round(+b.agent.max_tokens_budget) || 0);
+      if (b.agent.failover_model !== undefined) {
+        const fm = String(b.agent.failover_model || "").trim();
+        if (fm && !config.models.some((m) => m.name === fm)) throw new Error("备用渠道不在模型列表中");
+        config.agent.failover_model = fm; // 空串 = 关闭自动换道（默认）
+      }
     }
     if (b.persona !== undefined) config.persona = String(b.persona).slice(0, 4000);
     if (b.assistant) {

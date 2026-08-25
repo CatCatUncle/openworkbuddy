@@ -370,6 +370,14 @@ function createTurnUI(userText, turnMode, forSid) {
       note.textContent = `🔁 ${ev.note || "已达执行上限"}，任务未完，自动续跑第 ${ev.round}/${ev.total} 轮（按进度接着做，不重跑）`;
       ensureProc().appendChild(note);
       procWrap?.classList.add("open");
+    } else if (ev.type === "failover") {
+      // 主模型挂起/持续报错、自动切到备用渠道——必须大声播报，绝不静默换模型
+      currentText = null;
+      const note = document.createElement("div");
+      note.style.cssText = "font-size: 13px;color:var(--wb-err);margin:6px 0";
+      note.textContent = `🔀 ${ev.note || "已切换到备用渠道"}`;
+      ensureProc().appendChild(note);
+      procWrap?.classList.add("open");
     } else if (ev.type === "trim") {
       // 历史太长，较早的工具原文被截短了。一条任务只留一行提示，累计数字滚动更新
       const proc = ensureProc();
