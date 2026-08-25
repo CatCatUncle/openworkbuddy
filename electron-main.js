@@ -38,6 +38,19 @@ const PORT = (() => {
 
 let win;
 
+// 单实例：双击启动器/重复 npm run app 时，把已开的窗口拉到前台，而不是再叠一个实例
+// （第二个实例的服务端会撞端口走"连接已运行实例"分支，结果就是两个窗口两份 Dock 图标）
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0); // 立即退出：app.quit() 是异步的，慢一步的话 whenReady 还会抢跑建出第二个窗口
+} else {
+  app.on("second-instance", () => {
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
+}
+
 async function waitForServer(url, tries = 200) {
   for (let i = 0; i < tries; i++) {
     try {
@@ -63,6 +76,7 @@ app.whenReady().then(async () => {
     title: "OpenWorkBuddy",
     autoHideMenuBar: true,
     backgroundColor: "#ffffff",
+    show: false, // 页面渲染好了再亮相（ready-to-show），不给用户看白屏；下面有兜底定时防止永不出现
     webPreferences: {
       backgroundThrottling: false, // 窗口隐藏（快捷键收起）时任务还在流式回报，计时器不许被降频
     },
@@ -70,6 +84,12 @@ app.whenReady().then(async () => {
 
   // 在 Electron 主进程内直接启动服务端
   require(path.join(__dirname, "server.js"));
+
+  // 首绘打磨：正常流程 ready-to-show 在 ~0.7s 内到，一次干净的整页亮相；
+  // 服务端起不来时它可能永远不触发，3 秒兜底强制亮窗，让用户看到报错而不是什么都没有
+  const showOnce = () => { if (win && !win.isVisible()) { win.show(); } };
+  win.once("ready-to-show", () => { console.log(`[启动] 窗口亮相 +${Date.now() - BOOT_T0}ms`); showOnce(); });
+  setTimeout(showOnce, 3000);
 
   await waitForServer(`http://localhost:${PORT}/api/info`);
   console.log(`[启动] 服务端就绪 +${Date.now() - BOOT_T0}ms`);
