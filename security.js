@@ -51,7 +51,7 @@ const DEFAULTS = {
   file_whitelist: ["<app>/skills"], // workspace 外允许访问的路径前缀（绝对路径或 ~ 开头）；技能自带资源默认放行
   file_blacklist: ["~/.ssh", "~/Library/Keychains", "<app>/config.json", "<app>/data/users.json"],
   cmd_allow: [], // 命令前缀放行名单：匹配即直接执行
-  cmd_ask: ["sudo ", "shutdown", "reboot", "mkfs", "diskutil erase", "killall "],
+  cmd_ask: ["sudo ", "shutdown", "reboot", "mkfs", "diskutil erase", "killall ", "format "],
   url_whitelist: [], // 非空 = 只允许这些域名（后缀匹配）
   url_blacklist: [],
   runtime_node: true,
@@ -129,7 +129,7 @@ function resolvePathWithPolicy(sec, rel, workspaceDir, base) {
 /** 只是包在真命令外面的东西，判断「这段到底在跑什么」时要先剥掉 */
 const WRAPPERS = new Set(["nohup", "command", "builtin", "exec", "env", "time", "nice", "ionice", "xargs", "then", "else", "do", "{", "("]);
 /** 会真的把文件弄没的命令 */
-const DELETE_CMDS = new Set(["rm", "rmdir", "srm", "unlink", "shred"]);
+const DELETE_CMDS = new Set(["rm", "rmdir", "srm", "unlink", "shred", "del", "erase", "rd"]);
 
 // P5 软护栏：不可逆、毁数据的命令形态。任何权限档位（含全自动）都要用户点头，
 // 永久放行名单也盖不住——这不是沙箱，只是把「一条命令毁掉一晚上工作」换成一次审批。

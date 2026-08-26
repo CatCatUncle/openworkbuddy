@@ -728,6 +728,35 @@
   #goal-card .gc-list { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
   #goal-card .gc-item { color: var(--wb-text-2); }
   #goal-card .gc-item.ok { color: var(--wb-text); }
+
+  /* ---------- 第45轮 UI 精修（增量，只加不改名） ---------- */
+  /* 全局细滚动条：默认的粗滚动条在窄面板里很抢戏 */
+  * { scrollbar-width: thin; scrollbar-color: var(--wb-border) transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: var(--wb-border); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+  *::-webkit-scrollbar-thumb:hover { background: var(--wb-text-3); border: 2px solid transparent; background-clip: content-box; }
+
+  /* 表单控件统一：焦点环、勾选框主题色、下拉框和输入框一个观感 */
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--wb-brand); box-shadow: 0 0 0 3px rgba(91,95,247,.12); }
+  input, textarea, select { transition: border-color .15s var(--wb-ease), box-shadow .15s var(--wb-ease); }
+  input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-brand); }
+  ::selection { background: rgba(91,95,247,.22); }
+
+  /* 设置导航：选中项加一根短侧条，扫一眼就知道在哪一页 */
+  .settings-nav .cat { position: relative; }
+  .settings-nav .cat.active::before { content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 3px; height: 16px; border-radius: 3px; background: var(--wb-brand); }
+
+  /* 设置卡片：标题和正文拉开一点层次；静态信息卡不需要跟着悬浮乱跳 */
+  .settings-pane .card-item:hover { transform: none; box-shadow: none; border-color: var(--wb-text-3); }
+  .settings-pane .card-item .t { font-size: 15px; }
+  .settings-pane .card-item .d { font-size: 13px; }
+
+  /* 链接 hover 给个反馈 */
+  .link:hover { text-decoration: underline; }
+
+  /* 用户气泡加一点纵深，别糊在背景上 */
+  .u-msg .bubble { box-shadow: 0 2px 8px rgba(91,95,247,.18); }
 </style>
 </head>
 <body>
