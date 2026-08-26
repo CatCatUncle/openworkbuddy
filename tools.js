@@ -312,6 +312,27 @@ const TOOL_DEFS = [
       required: ["text"],
     },
   },
+  {
+    name: "desktop_pet",
+    description:
+      "把用户给的一张图片做成【桌面宠物】——一个常驻桌面角落的透明小挂件，实时显示你正在干什么（干活转圈 / 有问题要问时跳起来并弹系统通知 / 完成撒花 / 出错掉汗）。用户点它开关主窗口，拖动换位置。\n" +
+      "什么时候用：用户说「把这张图做成桌面宠物」「用我朋友的照片弄个桌宠」「搞个挂件放桌面」这类话时。**默认是没有宠物的**，只有用户开口要才做，不要主动创建。\n" +
+      "怎么用：先让用户在输入框上传一张图（人像/宠物照/表情包都行），图会落到工作空间；再带着文件名调 action=\"create\"。图片只存用户本机，不上传任何服务器。\n" +
+      "只在桌面版（npm run app）里有效；纯服务端模式下会如实报错，那时要老实告诉用户做不了。",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["create", "show", "hide", "remove", "status"],
+          description: "create=用图片做一只（要带 image）；show/hide=显示或收起；remove=撤掉并删掉本机存的照片；status=看看现在什么情况",
+        },
+        image: { type: "string", description: "图片文件名或相对路径（相对工作空间）。仅 action=create 时必填" },
+        scale: { type: "number", description: "大小倍率 0.6~2，默认 1。用户嫌大嫌小时调这个" },
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 // ---------- 图像 / 视频 生成（渠道协议：OpenAI 兼容 images API、DashScope 原生、火山方舟异步任务） ----------
@@ -1567,6 +1588,11 @@ async function executeTool(name, input, opts = {}) {
         return await htmlToImage(input, resolveFile, fileBase);
       case "text_to_speech":
         return await textToSpeech(opts.media, input, timeoutMs, fileBase);
+      case "desktop_pet": {
+        // 真正的活儿在 server.js（那儿才同时握着 config、data/ 和活着的 Electron 窗口），这里只转发
+        if (!global.__wbPetTool) return { content: "桌面宠物功能没装起来（服务端未注册 desktop_pet 的实现）。", isError: true };
+        return await global.__wbPetTool.run(input, fileBase);
+      }
       case "fetch_url": {
         const gate = security.checkUrl(sec, input.url);
         if (!gate.allowed) {

@@ -421,6 +421,9 @@
   html[data-theme="dark"] .ap-row { background: #3a2d16; border-color: #8a6a33; }
   html[data-theme="dark"] #input-hl .tk { box-shadow: 0 0 0 2px var(--wb-brand-weak), 0 0 0 3px rgba(139,143,255,.35); }
   .file-item .dl { margin-left: auto; color: var(--wb-text-3); text-decoration: none; padding: 2px 6px; border-radius: 6px; }
+  .file-item .rv { margin-left: auto; cursor: pointer; font-size: 12px; }
+  .file-item .rv + .dl { margin-left: 0; }        /* 两个按钮并排时只让第一个吃掉空白 */
+  .out-row .rv { cursor: pointer; font-size: 12px; }
   .file-item .dl:hover { background: var(--wb-border); color: var(--wb-brand); }
   .files-panel h2 { font-size: 14px; font-weight: 600; color: var(--wb-text-2); padding: 16px 12px 8px 16px; white-space: nowrap; display: flex; align-items: center; gap: 8px; }
   #fp-close { border: none; background: transparent; font-size: 14px; cursor: pointer; color: var(--wb-text-2); padding: 2px 6px; border-radius: 6px; }
@@ -848,6 +851,7 @@
   <div class="pv-head">
     <span class="pv-name" id="pv-name"></span>
     <button id="pv-sys" title="用系统默认程序打开">🗔</button>
+    <button id="pv-rv" title="打开所在位置">📂</button>
     <a id="pv-dl" href="#" download title="下载" style="text-decoration:none;padding:4px 8px">⬇</a>
     <button id="pv-close" title="关闭">✕</button>
   </div>

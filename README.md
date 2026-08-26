@@ -47,10 +47,11 @@
 | 📚 **资料库** | 把参考资料丢进 `data/library/`，界面里可管理；agent 干活时用 `library_list` / `library_read` 自己查，不用每次贴进对话 |
 | 📚 **参考模板库** | 提示词范例，不知道怎么开口的时候抄一份改 |
 | 🌐 **本地部署预览** | 做完网页一键起本机服务，相对路径 / fetch / localStorage 才是真的能用；可放开给手机看 |
+| 🐾 **桌面宠物** | 桌面角落一只透明小挂件，实时显示 agent 在干什么：敲键盘 = 在干活，跳起来 + 系统通知 = **有问题要问你**（主窗口被盖住时最容易漏掉的就是这个），撒花 = 完成，掉汗 = 出错。点它开关主窗口，拖动换位置，右键可「先别烦我」。**默认不存在**——说一句「把这张图做成桌面宠物」并传张照片，它就现场用你的图做一只（照片只存本机）。仅桌面版 `npm run app` |
 
 **内置技能**：`deep-research` 深度调研 · `html-page` 网页生成 · `ppt-design` PPT · `docx` Word · `excel-report` Excel 报表 · `data-viz` 数据可视化 · `weekly-report` 周报 · `wechat-article` 公众号推文（排版 + 推草稿箱） · `xhs-cards` 小红书图文卡片 · `video-compose` 图文成片（配音+字幕+ffmpeg 拼装）· `feishu-doc` 飞书文档（官方 convert API：原生表格 / 加粗 / 行内代码 / 插图上传）· `lark-cli` 飞书全家桶命令行 · `skill-creator` 让它自己写技能
 
-**内置工具**：`run_node` `run_shell` `write_file` `edit_file` `read_file` `list_files` `search_files` `fetch_url` `render_page` `check_page` `web_search` `gen_diagram` `feishu_doc_create` `remember` / `forget` `use_skill` `save_skill` `library_list` `library_read` `generate_image` `generate_video` `html_to_image` `text_to_speech`
+**内置工具**：`run_node` `run_shell` `write_file` `edit_file` `read_file` `list_files` `search_files` `fetch_url` `render_page` `check_page` `web_search` `gen_diagram` `feishu_doc_create` `remember` / `forget` `use_skill` `save_skill` `library_list` `library_read` `generate_image` `generate_video` `html_to_image` `text_to_speech` `desktop_pet`
 
 ---
 
@@ -559,6 +560,7 @@ experts.json     专家与专家团定义
 im.js            IM 总线            im-qq.js / im-wechat.js / im-ilink.js
 scheduler.js     定时任务
 electron-main.js 桌面壳             cli.js        命令行
+pet.js           桌面宠物窗口（透明置顶挂件）  pet-preload.js / public/pet.html
 public/          前端（单文件，没有构建步骤）
 workspace/       成果文件输出        data/         账号与会话
 ```

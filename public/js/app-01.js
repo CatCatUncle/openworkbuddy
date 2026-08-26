@@ -839,6 +839,15 @@ function fileIcon(name) {
 }
 function fmtSize(n) { return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B"; }
 const openDirs = new Set(); // 记住展开状态，刷新列表不回弹
+/** 在访达/资源管理器里打开文件所在的文件夹并选中它。按钮挂在文件行/卡片上，别冒泡触发预览 */
+function revealFile(name, e) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  fetch("/api/files/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) })
+    .then(r => r.json()).then(j => { if (j && j.error) toast(j.error); })
+    .catch(() => toast("打不开所在位置"));
+}
+const revealBtn = (name) => `<span class="dl rv" data-rv="${esc(name)}" title="打开所在位置">📂</span>`;
+
 function renderFiles(files) {
   filesCache = files || [];
   const el = document.getElementById("file-list");
@@ -847,6 +856,7 @@ function renderFiles(files) {
     `<div class="file-item${nested ? " nested" : ""}" style="cursor:pointer" data-name="${esc(f.name)}" title="${esc(f.name)}">
       <span>${fileIcon(f.name)}</span>
       <span style="min-width:0"><div class="name">${esc(f.name.split("/").pop())}</div><div class="meta">${fmtSize(f.size)}</div></span>
+      ${revealBtn(f.name)}
       <a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>
     </div>`;
   // 根目录文件（智能体产出）置顶按时间排；子目录归成可折叠分组
@@ -873,8 +883,9 @@ function renderFiles(files) {
     e.stopPropagation();
     fetch("/api/files/open/" + encodeURIComponent(b.dataset.opendir), { method: "POST" }).catch(() => {});
   }; });
+  el.querySelectorAll("[data-rv]").forEach(b => { b.onclick = (e) => revealFile(b.dataset.rv, e); });
   el.querySelectorAll(".file-item").forEach(item => item.onclick = (e) => {
-    if (e.target.closest(".dl")) return; // 下载按钮不拦截
+    if (e.target.closest(".dl")) return; // 下载/定位按钮不拦截
     e.preventDefault();
     previewFile(item.dataset.name);
   });
@@ -942,6 +953,7 @@ async function previewFile(name) {
 }
 document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; };
 document.getElementById("pv-sys").onclick = () => { if (pvCurrent) fetch("/api/files/open/" + encodeURIComponent(pvCurrent), { method: "POST" }); };
+document.getElementById("pv-rv").onclick = () => { if (pvCurrent) revealFile(pvCurrent); };
 
 // ---- 本地部署预览：iframe 里看长相够了，但真网页要有自己的 origin（相对路径/fetch/localStorage/手机上开）----
 let previewSrv = { running: false };
@@ -1080,9 +1092,11 @@ function renderTurnOutputs(body, changed) {
         <div class="out-info"><div class="out-name">${esc(f.name.split("/").pop())}</div>
           <div class="out-meta">${fmtSize(f.size)} · 点击预览</div></div>
         <div class="out-acts">${isHtml ? `<button data-a="br">在浏览器打开</button>` : ""}
+          <button data-a="rv">所在位置</button>
           <a href="/api/files/download/${encodeURIComponent(f.name)}" download>下载</a></div>`;
       card.onclick = (e) => {
         if (e.target.closest("a")) return;
+        if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e);
         if (e.target.closest('[data-a="br"]')) {
           e.stopPropagation();
           startPreview(previewSrv.lan_open, f.name).then(st => {
@@ -1101,8 +1115,9 @@ function renderTurnOutputs(body, changed) {
       const nmHtml = f.name.includes("/")
         ? `<span class="dim">${esc(f.name.slice(0, f.name.lastIndexOf("/") + 1))}</span>${esc(f.name.split("/").pop())}`
         : esc(f.name);
-      row.innerHTML = `<span class="ic">${fileIcon(f.name)}</span><span class="nm">${nmHtml}</span><span class="sz">${fmtSize(f.size)}</span><a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>`;
-      row.onclick = (e) => { if (e.target.closest("a")) return; previewFile(f.name); };
+      row.innerHTML = `<span class="ic">${fileIcon(f.name)}</span><span class="nm">${nmHtml}</span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>`;
+      row.querySelector("[data-rv]").onclick = (e) => revealFile(f.name, e);
+      row.onclick = (e) => { if (e.target.closest("a") || e.target.closest(".rv")) return; previewFile(f.name); };
       list.appendChild(row);
     }
   }

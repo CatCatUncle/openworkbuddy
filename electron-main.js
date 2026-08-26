@@ -105,6 +105,17 @@ app.whenReady().then(async () => {
   // 供 server.js（同进程内运行）访问窗口：全屏切换 / 快捷键热更新
   global.__wbWin = win;
   global.__wbRegisterShortcuts = registerShortcuts;
+
+  // 桌面宠物：常驻角落显示 agent 在干什么，agent 要提问时跳给你看。
+  // 放在窗口之后创建，这样它一出生 global.__wbWin 就是齐的（点它要唤起主窗口）。
+  const pet = require(path.join(__dirname, "pet.js"));
+  global.__wbPet = pet;
+  try {
+    const petCfg = require(path.join(__dirname, "config.json")).pet || {};
+    pet.applyConfig({ enabled: petCfg.enabled === true, scale: petCfg.scale || 1, opacity: petCfg.opacity || 1, notify: petCfg.notify !== false, character: petCfg.character || "cat" });
+  } catch {
+    pet.applyConfig({ enabled: false }); // 读不到配置就当没配过：默认不该有宠物
+  }
   try {
     const shortcuts = require(path.join(__dirname, "config.json")).shortcuts || {};
     registerShortcuts(shortcuts);
@@ -137,6 +148,11 @@ app.on("will-quit", () => {
   try {
     globalShortcut.unregisterAll();
   } catch {}
+  try {
+    if (global.__wbPet) global.__wbPet.destroy();
+  } catch {}
 });
 
+// 主窗口关掉就退出。宠物是个挂件不是窗口，不能让它把进程吊在那儿——
+// 所以这里盯的是主窗口的 closed，而不是 window-all-closed（宠物还开着时它永远不触发）。
 app.on("window-all-closed", () => app.quit());

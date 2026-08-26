@@ -319,9 +319,32 @@ async function verifyGoal(sess, sessLLM, finalText, total) {
   if (goal.criteria.every((c) => c.done)) goal.status = "done";
 }
 
+/**
+ * 把任务事件翻译成桌面宠物的表情。只认深度 0 的事件——专家子代理的动静太密，
+ * 宠物跟着抽风反而看不出主线在干什么。纯 node 模式下 global.__wbPet 不存在，整个是空操作。
+ */
+function petSay(ev) {
+  const P = global.__wbPet;
+  if (!P) return;
+  try {
+    switch (ev.type) {
+      case "ask_user": P.alertAsk(ev.question); break;             // 跳 + 通知 + Dock 弹，最高一档
+      case "ask_answer": P.clearAsk(true); break;
+      case "tool_use": P.setState("working", "正在用 " + (ev.name || "工具")); break;
+      case "expert_start": P.setState("working", `${ev.expert || "专家"} 接手了：${String(ev.task || "").slice(0, 40)}`); break;
+      case "sleep": P.setState("sleep", ev.note); break;
+      case "failover": P.setState("working", ev.note); break;
+      case "limit": P.setState("error", ev.note); break;
+      case "error": P.setState("error", String(ev.message || "任务出错了").slice(0, 80)); break;
+      default: break;
+    }
+  } catch {}
+}
+
 function recordingEmit(send, events, sessionId) {
   return (ev) => {
     send(ev);
+    if (!(ev.depth > 0)) petSay(ev);
     if (ev.type === "text") {
       if (ev.depth > 0) return;
       const last = events[events.length - 1];
@@ -400,6 +423,15 @@ app.get("/api/settings", (_req, res) => {
       max_tokens_budget: config.agent.max_tokens_budget || 0,
       failover_model: config.agent.failover_model || "",
     },
+    pet: {
+      enabled: (config.pet || {}).enabled === true, // 默认没有宠物：得用户在对话里开口要，或来这儿手动打开
+      character: (config.pet || {}).character || "cat",
+      scale: (config.pet || {}).scale || 1,
+      opacity: (config.pet || {}).opacity || 1,
+      notify: (config.pet || {}).notify !== false,
+      has_photo: !!petPhotoPath(),
+      available: !!global.__wbPet, // 纯 node 模式没有桌面窗口，前端要如实说明
+    },
     persona: config.persona || "",
     assistant: config.assistant,
     search: {
@@ -460,6 +492,15 @@ app.post("/api/settings", (req, res) => {
         if (fm && !config.models.some((m) => m.name === fm)) throw new Error("备用渠道不在模型列表中");
         config.agent.failover_model = fm; // 空串 = 关闭自动换道（默认）
       }
+    }
+    if (b.pet) {
+      config.pet = config.pet || {};
+      if (typeof b.pet.enabled === "boolean") config.pet.enabled = b.pet.enabled;
+      if (typeof b.pet.notify === "boolean") config.pet.notify = b.pet.notify;
+      if (b.pet.character !== undefined) config.pet.character = b.pet.character === "photo" ? "photo" : "cat";
+      if (b.pet.scale !== undefined) config.pet.scale = Math.max(0.6, Math.min(2, Number(b.pet.scale) || 1));
+      if (b.pet.opacity !== undefined) config.pet.opacity = Math.max(0.25, Math.min(1, Number(b.pet.opacity) || 1));
+      if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
     }
     if (b.persona !== undefined) config.persona = String(b.persona).slice(0, 4000);
     if (b.assistant) {
@@ -1735,6 +1776,167 @@ app.delete("/api/expert-teams/:name", (req, res) => {
   res.json({ ok: true });
 });
 
+// ===== 桌面宠物：自定义形象（自己或朋友的照片）=====
+// 存进 data/ 而不是 public/：一来不污染仓库（data/ 已 gitignore），二来跟着备份一起走。
+const PET_PHOTO_EXT = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };
+function petPhotoPath() {
+  for (const ext of [".png", ".jpg", ".webp", ".gif"]) {
+    const p = path.join(__dirname, "data", "pet-avatar" + ext);
+    if (fs.existsSync(p)) return p;
+  }
+  return "";
+}
+function clearPetPhoto() {
+  for (const ext of [".png", ".jpg", ".webp", ".gif"]) {
+    try { fs.unlinkSync(path.join(__dirname, "data", "pet-avatar" + ext)); } catch {}
+  }
+}
+app.post("/api/pet/avatar", (req, res) => {
+  try {
+    const m = /^data:(image\/(?:png|jpeg|webp|gif));base64,([\s\S]+)$/.exec(String((req.body || {}).data_url || ""));
+    if (!m) return res.status(400).json({ error: "只收 png / jpg / webp / gif 图片" });
+    const buf = Buffer.from(m[2], "base64");
+    // 前端已经压到 320px 见方再传，这里只兜底：3MB 以上不像压过，多半是直接甩了张原图
+    if (!buf.length || buf.length > 3 * 1024 * 1024) return res.status(400).json({ error: "图片太大（压缩后应小于 3MB）" });
+    fs.mkdirSync(path.join(__dirname, "data"), { recursive: true });
+    clearPetPhoto(); // 换形象先清旧的，免得两个扩展名同时躺着分不清用哪个
+    fs.writeFileSync(path.join(__dirname, "data", "pet-avatar" + PET_PHOTO_EXT[m[1]]), buf);
+    config.pet = { ...(config.pet || {}), character: "photo", enabled: true }; // 特地传了张照片 = 想要它出现
+    saveConfig();
+    if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
+    res.json({ ok: true, size: buf.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete("/api/pet/avatar", (_req, res) => {
+  clearPetPhoto();
+  config.pet = { ...(config.pet || {}), character: "cat" };
+  saveConfig();
+  if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
+  res.json({ ok: true });
+});
+
+/**
+ * 桌面宠物工具的落地实现（tools.js 的 desktop_pet 通过 global.__wbPetTool 调进来）。
+ *
+ * 为什么放在 server.js：改宠物要同时动三样东西——config.json（持久化）、data/pet-avatar.png（形象）、
+ * 还有 Electron 主进程里那个活着的窗口。这三样的把手都在这个文件里，tools.js 只管把参数递过来。
+ * 纯 node 模式没有桌面窗口，整个工具会如实报错而不是假装成功。
+ */
+global.__wbPetTool = {
+  async run(input, baseDir) {
+    const P = global.__wbPet;
+    const action = String((input || {}).action || "create").toLowerCase();
+    if (!P) {
+      return {
+        content: "桌面宠物只在桌面版里有（用 `npm run app` 启动的那种）。当前跑的是纯服务端模式（npm start），没有桌面窗口可以挂宠物。请如实告诉用户这一点，别假装做好了。",
+        isError: true,
+      };
+    }
+    const cur = config.pet || {};
+    const nowInfo = () => {
+      const has = !!petPhotoPath();
+      return `当前状态：宠物${cur.enabled === true ? "已显示" : "未显示"}，形象=${has && cur.character === "photo" ? "用户上传的照片" : "内置小猫"}，大小=${Math.round((cur.scale || 1) * 100)}%。`;
+    };
+
+    if (action === "status") return { content: nowInfo(), isError: false };
+
+    if (action === "hide") {
+      config.pet = { ...cur, enabled: false };
+      saveConfig();
+      try { P.applyConfig({ ...config.pet, enabled: false }); } catch {}
+      return { content: "桌面宠物已收起。用户想让它回来的话，再叫一声就行（或者去 设置 → 人设 里打开）。", isError: false };
+    }
+
+    if (action === "show") {
+      config.pet = { ...cur, enabled: true };
+      saveConfig();
+      try { P.applyConfig({ ...config.pet, enabled: true }); } catch {}
+      return { content: "桌面宠物已经站到桌面右下角了。" + nowInfo(), isError: false };
+    }
+
+    if (action === "remove") {
+      clearPetPhoto();
+      config.pet = { ...cur, enabled: false, character: "cat" };
+      saveConfig();
+      try { P.applyConfig({ ...config.pet, enabled: false }); } catch {}
+      return { content: "宠物已经撤掉，上传的照片也从本机删干净了。", isError: false };
+    }
+
+    if (action !== "create") return { content: `不认识的 action「${action}」，只支持 create / show / hide / remove / status。`, isError: true };
+
+    // ---- create：把一张图做成宠物形象 ----
+    const raw = String((input || {}).image || "").trim();
+    if (!raw) {
+      return {
+        content: "做宠物得先有张图。请让用户在输入框里上传一张照片（人像、宠物照、表情包都行），拿到文件名后把它作为 image 参数再调一次。",
+        isError: true,
+      };
+    }
+    // 用户上传的图落在工作空间根目录，agent 自己产出的图在本次对话的成果子目录里，两处都找
+    const wsRoot = getWorkspaceDir();
+    let abs = "";
+    for (const cand of [baseDir ? path.resolve(baseDir, raw) : "", path.resolve(wsRoot, raw), path.resolve(wsRoot, path.basename(raw))]) {
+      if (!cand) continue;
+      const rel = path.relative(wsRoot, cand);
+      if (rel.startsWith("..") || path.isAbsolute(rel)) continue; // 越出工作空间的一律不认
+      if (fs.existsSync(cand) && fs.statSync(cand).isFile()) { abs = cand; break; }
+    }
+    if (!abs) return { content: `工作空间里找不到「${raw}」。先用 list_files 看看用户上传的图到底叫什么名字。`, isError: true };
+    if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(abs)) return { content: `「${path.basename(abs)}」看着不是图片。支持 png / jpg / webp / gif / bmp。`, isError: true };
+
+    let buf, note = "";
+    try {
+      // 用 Electron 自带的 nativeImage 裁切缩放，不引任何图像库。GIF 只取第一帧（宠物本来就自带动效，
+      // 再叠一层 GIF 动画会打架），这点必须跟用户说清楚，不能让他以为动图没生效是 bug。
+      const { nativeImage } = require("electron");
+      let img = nativeImage.createFromPath(abs);
+      if (img.isEmpty()) return { content: `「${path.basename(abs)}」解码失败，可能是文件损坏或者根本不是图片。`, isError: true };
+      const sz = img.getSize();
+      const side = Math.min(sz.width, sz.height);
+      if (sz.width !== sz.height) {
+        img = img.crop({ x: Math.round((sz.width - side) / 2), y: Math.round((sz.height - side) / 2), width: side, height: side });
+        note += `原图 ${sz.width}×${sz.height} 不是正方形，已按中心裁成方图；`;
+      }
+      img = img.resize({ width: 320, height: 320, quality: "best" });
+      if (/\.gif$/i.test(abs)) note += "GIF 只取了第一帧（宠物自己带呼吸/跳跃动效）；";
+      buf = img.toPNG();
+      if (!buf || !buf.length) throw new Error("编码 PNG 失败");
+    } catch (e) {
+      return { content: "处理图片失败：" + e.message, isError: true };
+    }
+
+    fs.mkdirSync(path.join(__dirname, "data"), { recursive: true });
+    clearPetPhoto();
+    fs.writeFileSync(path.join(__dirname, "data", "pet-avatar.png"), buf);
+    const scale = Math.max(0.6, Math.min(2, Number((input || {}).scale) || Number(cur.scale) || 1));
+    config.pet = { ...cur, enabled: true, character: "photo", scale };
+    saveConfig();
+    try { P.applyConfig({ ...config.pet, enabled: true }); } catch {}
+    try { P.setState("done", "新形象上岗"); } catch {}
+    return {
+      content: `已经用「${path.basename(abs)}」做好桌面宠物，它现在站在桌面右下角。${note}\n` +
+        "它会实时显示你在干什么：干活时头顶转圈、有问题要问时跳起来并弹系统通知、任务完成撒花。\n" +
+        "点它一下开关主窗口，拖动换位置，右键有菜单（回到右下角 / 免打扰 / 收起）。\n" +
+        "照片只存在用户本机的 data/ 目录，没有上传到任何服务器。",
+      isError: false,
+    };
+  },
+};
+// 在访达/资源管理器里定位到这个文件（不是打开文件本身，是打开它所在的文件夹并选中它）
+app.post("/api/files/reveal", (req, res) => {
+  try {
+    const p = safePath(String((req.body || {}).name || "")); // 越界一律抛错，跟下载走同一道门
+    if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
+    let revealed = false;
+    try {
+      const { shell } = require("electron");
+      if (shell && shell.showItemInFolder) { shell.showItemInFolder(p); revealed = true; }
+    } catch {}
+    if (!revealed) openWithSystem(path.dirname(p)); // 纯 node 模式：退而求其次，打开所在文件夹
+    res.json({ ok: true, revealed });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 app.get("/api/files/download/:name", (req, res) => {
   try {
     const p = safePath(req.params.name);
@@ -1933,6 +2135,7 @@ app.post("/api/chat", async (req, res) => {
   }
   if (sess.goal) send({ type: "goal", goal: sess.goal }); // 目标卡状态直播；不进回放记录（回放时从会话里取）
   let runFailed = null; // 整跑是否以异常收场（记进模型健康账本）
+  if (global.__wbPet) try { global.__wbPet.setState("working", sess.title || String(message).slice(0, 40)); } catch {}
   try {
     // 外层：目标轮（普通消息只走一轮；goal 模式没达标自动再跑，最多 GOAL_MAX_ROUNDS 轮）
     let lastFinal = "";
@@ -2019,6 +2222,7 @@ app.post("/api/chat", async (req, res) => {
   } finally {
     activeRuns.delete(sessionId);
     persistRunning();
+    if (global.__wbPet) try { global.__wbPet.setState(runFailed ? "error" : "done", runFailed ? String(runFailed).slice(0, 80) : "任务完成"); } catch {}
   }
   if (total.calls > 0) modelFailStreak.delete(sessLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
   // 健康账本：异常收场记一败；正常收场且真调过模型记一胜（秒停等一次没调的不记，记了是噪声）

@@ -494,7 +494,9 @@ function renderPersonaPane(pane, s) {
       <div class="d" style="margin-bottom:8px">希望它遵循的风格与偏好，会注入每次任务。例如：回复简洁；PPT 用深色科技风；周报署名"张三"。</div>
       <textarea id="ps-text" rows="8" placeholder="例如：所有文档默认用简体中文；数据分析结论放最前面…">${esc(s.persona)}</textarea>
     </div>
+    ${petCardHtml(s.pet || {})}
     <button class="btn-brand" id="ps-save">保存</button><span class="ok-msg" id="ps-msg"></span>`;
+  bindPetCard(pane, s.pet || {});
   const ed = bindAvatarEditor(pane, "as", a.avatar, () => pane.querySelector("#as-name").value.trim() || "OpenWorkBuddy");
   pane.querySelector("#as-save").onclick = async () => {
     const msg = pane.querySelector("#as-msg");
@@ -505,6 +507,96 @@ function renderPersonaPane(pane, s) {
   };
   pane.querySelector("#ps-save").onclick = () => saveSettings({ persona: pane.querySelector("#ps-text").value }, pane.querySelector("#ps-msg"));
 }
+// ================= 桌面宠物 =================
+function petCardHtml(p) {
+  const on = p.enabled !== false;
+  return `
+    <div class="card-item">
+      <div class="t">🐱 桌面宠物</div>
+      <div class="d" style="margin-bottom:10px"><b>默认没有宠物</b>——直接在对话里说「把这张图做成桌面宠物」并传一张照片，它就现场给你做一只；这里是手动开关和微调。<br>做出来之后，它会在桌面角落实时显示 agent 在干什么：干活时敲键盘、<b>要问你问题时跳起来并弹系统通知</b>（这条最有用——主窗口被盖住时，它提的问题很容易被漏掉，超时就按默认继续了）。点它开关主窗口，拖动换位置，右键有菜单（含免打扰）。空白处不吃鼠标，不会挡住底下的应用。${p.available === false ? '<br><span style="color:var(--wb-warn,#c60)">当前是纯服务端模式（npm start），宠物只在桌面版 <code>npm run app</code> 下出现。</span>' : ""}</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-on" style="width:auto;margin:0"${on ? " checked" : ""}> 显示桌面宠物</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify" style="width:auto;margin:0"${p.notify !== false ? " checked" : ""}> 要提问时弹系统通知 + 图标跳动</label>
+      <div class="t" style="margin-top:10px">形象</div>
+      <div class="d" style="margin-bottom:6px">可以换成你自己或朋友的照片——上传后自动裁成圆形，配上呼吸、摇摆、跳跃的动效"活"起来。图片只存在本机 <code>data/</code> 目录，不上传任何服务器。</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="pet-char" style="max-width:200px">
+          <option value="cat"${p.character !== "photo" ? " selected" : ""}>内置小猫</option>
+          <option value="photo"${p.character === "photo" ? " selected" : ""}>我的照片${p.has_photo ? "" : "（还没上传）"}</option>
+        </select>
+        <button class="btn-plain" id="pet-pick">上传照片</button>
+        ${p.has_photo ? '<button class="btn-plain" id="pet-drop">删除照片</button>' : ""}
+        <input type="file" id="pet-file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">
+      </div>
+      <div class="t" style="margin-top:10px">大小 <span id="pet-scale-v" style="color:var(--wb-text-3)">${Math.round((p.scale || 1) * 100)}%</span></div>
+      <input type="range" id="pet-scale" min="0.6" max="2" step="0.1" value="${p.scale || 1}">
+      <div class="t" style="margin-top:6px">透明度 <span id="pet-op-v" style="color:var(--wb-text-3)">${Math.round((p.opacity || 1) * 100)}%</span></div>
+      <input type="range" id="pet-op" min="0.25" max="1" step="0.05" value="${p.opacity || 1}">
+      <div style="margin-top:8px"><span class="ok-msg" id="pet-msg"></span></div>
+    </div>`;
+}
+function bindPetCard(pane, p) {
+  const msg = pane.querySelector("#pet-msg");
+  const q = (id) => pane.querySelector(id);
+  const save = (patch) => saveSettings({ pet: patch }, msg);
+  q("#pet-on").onchange = (e) => save({ enabled: e.target.checked });
+  q("#pet-notify").onchange = (e) => save({ notify: e.target.checked });
+  q("#pet-char").onchange = (e) => {
+    if (e.target.value === "photo" && !p.has_photo) { msg.textContent = "先上传一张照片"; e.target.value = "cat"; return; }
+    save({ character: e.target.value });
+  };
+  const scale = q("#pet-scale"), op = q("#pet-op");
+  scale.oninput = () => { q("#pet-scale-v").textContent = Math.round(scale.value * 100) + "%"; };
+  scale.onchange = () => save({ scale: Number(scale.value) });
+  op.oninput = () => { q("#pet-op-v").textContent = Math.round(op.value * 100) + "%"; };
+  op.onchange = () => save({ opacity: Number(op.value) });
+
+  q("#pet-pick").onclick = () => q("#pet-file").click();
+  q("#pet-file").onchange = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    msg.textContent = "处理中…";
+    try {
+      // 前端先裁成 320×320 正方形再传：原图动辄好几 MB，宠物窗口只有 88px，
+      // 传原图既浪费又会把 data URL 撑大（形象是通过 IPC 直接推给宠物窗口的）
+      const dataUrl = await squareThumb(f, 320);
+      const r = await fetch("/api/pet/avatar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data_url: dataUrl }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { msg.textContent = j.error || "上传失败"; return; }
+      msg.textContent = "✓ 形象已换上";
+      renderSettings("persona");
+    } catch (err) { msg.textContent = "读取图片失败：" + err.message; }
+  };
+  const drop = q("#pet-drop");
+  if (drop) drop.onclick = async () => {
+    if (!confirm("删除已上传的照片，换回内置小猫？")) return;
+    await fetch("/api/pet/avatar", { method: "DELETE" });
+    renderSettings("persona");
+  };
+}
+/** 把任意图片裁成居中正方形缩略图（保持比例，取中间）。GIF 会被拍成静态第一帧 */
+function squareThumb(file, size) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error("读不出这个文件"));
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("这不是一张能解码的图片"));
+      img.onload = () => {
+        const side = Math.min(img.width, img.height);
+        const cv = document.createElement("canvas");
+        cv.width = cv.height = size;
+        const cx = cv.getContext("2d");
+        cx.imageSmoothingQuality = "high";
+        cx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+        resolve(cv.toDataURL("image/png"));
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
 async function renderMemoryPane(pane) {
   const m = await fetch("/api/memory").then(r => r.json());
   const items = m.items || [];
@@ -820,7 +912,7 @@ function renderImPane(pane, s) {
       <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
         <div>
           <button class="btn-brand" id="ilk-qr">获取二维码</button>
-          <button class="btn-ghost" id="ilk-off" style="margin-left:6px">断开登录</button>
+          <button class="btn-plain" id="ilk-off" style="margin-left:6px">断开登录</button>
         </div>
         <div id="ilk-box" style="display:none"><img id="ilk-img" alt="微信登录二维码" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:6px"></div>
       </div>
