@@ -2081,7 +2081,8 @@ app.post("/api/chat", async (req, res) => {
     if (sess.transcript.length && sess.transcript[sess.transcript.length - 1].type === "assistant") sess.transcript.pop();
     if (sess.transcript.length && sess.transcript[sess.transcript.length - 1].type === "user") sess.transcript.pop();
   }
-  if (!sess.title) sess.title = message.slice(0, 24);
+  // 截断兜底标题要先去掉「【任务类型：X】」这个给模型看的前缀，不然起标题失败时历史列表全是它
+  if (!sess.title) sess.title = message.replace(/^\s*【任务类型：[^】]*】\s*/, "").slice(0, 24);
   sess.history.push({ role: "user", content: message });
   sess.transcript.push({ type: "user", text: message, mode });
   const asstEvents = [];

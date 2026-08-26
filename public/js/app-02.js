@@ -155,7 +155,7 @@ document.addEventListener("drop", async (e) => {
 function renderHistory() {
   const list = sessions.filter(s => (s.project || "默认项目") === activeProject);
   document.getElementById("history").innerHTML = list.map(s =>
-    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(s.title)}"><span class="ht">${esc(s.title)}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">✕</span></div>`).join("")
+    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">✕</span></div>`).join("")
     || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 10px">该项目还没有任务</div>';
 }
 document.getElementById("history").addEventListener("click", async (e) => {
@@ -181,7 +181,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
   pvPanel.classList.remove("show"); pvCurrent = null;
   document.getElementById("files-panel").classList.remove("show");
   const s = sessions.find(x => x.id === sessionId);
-  document.getElementById("session-title").textContent = s ? s.title : "任务";
+  document.getElementById("session-title").textContent = s ? stripSceneTag(s.title) : "任务";
   renderHistory();
   // 回放服务端保存的完整对话（含工具执行过程）
   chatCol.innerHTML = "";
@@ -390,9 +390,10 @@ async function doSend(text, mode, regen) {
   closeAssistView();
   if (!sessionId) {
     sessionId = "s_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
-    sessions.unshift({ id: sessionId, title: text.slice(0, 24), at: Date.now(), project: activeProject });
+    const shortTitle = stripSceneTag(text).slice(0, 24); // 标题里不留场景标签，否则历史列表整排都是「【任务类型：…」
+    sessions.unshift({ id: sessionId, title: shortTitle, at: Date.now(), project: activeProject });
     saveSessions();
-    document.getElementById("session-title").textContent = text.slice(0, 24);
+    document.getElementById("session-title").textContent = shortTitle;
     if (pendingModel) { const pm = pendingModel; pendingModel = undefined; await setSessionModel(pm); }
   }
   await runTurn(sessionId, text, mode, regen);
@@ -472,7 +473,7 @@ function endRun(sid, ui) {
 /** 并行任务多了得知道哪个跑完了：后台会话完成弹 toast；窗口失焦时发系统通知 */
 function notifyRunDone(sid, ui) {
   const s = sessions.find((x) => x.id === sid);
-  const name = (s && s.title) || "任务";
+  const name = stripSceneTag(s && s.title) || "任务";
   // 长跑完成通知带上战报：用时/步数/产出件数，长任务离开视线也知道干了多少活
   const st = ui && ui.stats ? ui.stats() : null;
   const detail = st ? `用时 ${st.dur}${st.steps ? ` · ${st.steps} 步` : ""}${st.rounds ? ` · 续跑 ${st.rounds} 轮` : ""}${st.outs ? ` · 产出 ${st.outs} 件` : ""}` : "";
