@@ -211,7 +211,15 @@ function createTurnUI(userText, turnMode, forSid) {
   const av = avatarBits(assistant.avatar, assistant.name);
   turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="bubble"></div></div>
     <div class="a-msg"><div class="avatar${av.cls ? " " + av.cls : ""}">${av.html}</div><div class="body"></div></div>`;
-  turn.querySelector(".bubble").innerHTML = hlTokens(userText, "tk-b");
+  // 「（已上传文件：×××）」是给模型看的附件标记，气泡里渲染成附件行，别按原文糊用户脸上（老会话的旧格式一并美化）
+  const attNames = [];
+  const bodyText = userText.replace(/（已上传文件：([^）]+)）/g, (_, names) => {
+    for (const n of String(names).split("、")) if (n.trim()) attNames.push(n.trim());
+    return "";
+  }).trim();
+  let bubbleHtml = hlTokens(bodyText, "tk-b");
+  if (attNames.length) bubbleHtml += `<div class="bubble-attach">${attNames.map(n => `<span>📎 ${esc(n)}</span>`).join("")}</div>`;
+  turn.querySelector(".bubble").innerHTML = bubbleHtml;
   turn.querySelector(".u-copy").onclick = (e) => {
     navigator.clipboard?.writeText(userText).then(() => {
       e.target.textContent = "✓"; setTimeout(() => { e.target.textContent = "⧉"; }, 1200);
@@ -900,6 +908,10 @@ async function previewFile(name) {
   }
   pvCurrent = name;
   document.getElementById("files-panel").classList.remove("show"); // 预览时收起文件列表，给聊天区留空间
+  // 立刻亮预览面板再去异步拉内容：晚亮的话，自动预览的调用方同步检查时以为预览没开，
+  // 会把成果文件面板弹回来，右侧双开互相盖字（用户反馈过）
+  pvPanel.classList.add("show");
+  document.getElementById("pv-body").innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">加载中…</div>`;
   document.getElementById("pv-name").textContent = name;
   document.getElementById("pv-dl").href = "/api/files/download/" + encodeURIComponent(name);
   const body = document.getElementById("pv-body");
@@ -1094,8 +1106,8 @@ function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s)
 document.getElementById("toggle-files").onclick = () => {
   const fp = document.getElementById("files-panel");
   fp.classList.toggle("show");
-  // 窄窗口下预览+文件双开会把聊天区挤没：开文件面板就收预览
-  if (fp.classList.contains("show") && window.innerWidth < 1400 && pvPanel.classList.contains("show")) {
+  // 预览和成果文件面板互斥：右侧只留一个。双开把聊天区挤没，窄窗下两个浮层还互相盖字
+  if (fp.classList.contains("show") && pvPanel.classList.contains("show")) {
     pvPanel.classList.remove("show"); pvCurrent = null;
   }
 };

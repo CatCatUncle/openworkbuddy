@@ -117,6 +117,8 @@
   .turn { margin-bottom: 22px; }
   .u-msg { display: flex; justify-content: flex-end; }
   .u-msg .bubble { max-width: 78%; background: var(--wb-brand); color: #fff; border-radius: 14px 14px 3px 14px; padding: 10px 15px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+  .u-msg .bubble .bubble-attach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .u-msg .bubble .bubble-attach span { font-size: 12px; background: rgba(255,255,255,.18); border-radius: 7px; padding: 2px 8px; white-space: nowrap; }
   .a-msg { display: flex; gap: 10px; margin-top: 16px; }
   .a-msg .avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: 9px; background: var(--wb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
   .a-msg .body { min-width: 0; flex: 1; }
@@ -299,6 +301,9 @@
   .plan-list .pl-run { margin-top: 8px; border: none; background: var(--wb-brand); color: #fff; border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
   .attach-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .attach-chips span { font-size: 13px; background: var(--wb-bg-hover); border-radius: 8px; padding: 3px 10px; color: var(--wb-text-2); }
+  .attach-chips span b { cursor: pointer; font-weight: 400; margin-left: 6px; opacity: .55; }
+  .attach-chips span b:hover { opacity: 1; }
+  .input-card.dragging { outline: 2px dashed var(--wb-brand); outline-offset: -2px; }
   /* ---------- 右侧预览面板（HTML/图片/文档实时预览） ---------- */
   .main { min-width: 460px; }
   .preview-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg); overflow: hidden; transition: width .2s; display: flex; flex-direction: column; }

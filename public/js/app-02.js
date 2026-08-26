@@ -82,28 +82,73 @@ modeMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => {
   modeMenu.classList.remove("show");
 });
 
-// ================= ＋ 上传文件到工作空间 =================
+// ================= ＋ 上传文件到工作空间（选择/拖拽共用） =================
 const attachChips = document.getElementById("attach-chips");
+const pendingAttach = []; // 已上传、待随下一条消息发出的附件名。发送时才拼进消息文本，绝不往输入框里塞标记
+function addAttachChip(name) {
+  if (pendingAttach.includes(name)) return; // 同名重复上传只留一个 chip（文件本身已覆盖更新）
+  pendingAttach.push(name);
+  const chip = document.createElement("span");
+  chip.textContent = "📎 " + name;
+  const x = document.createElement("b");
+  x.textContent = "✕";
+  x.title = "从这条消息移除（文件仍在工作目录里）";
+  x.onclick = () => { const i = pendingAttach.indexOf(name); if (i >= 0) pendingAttach.splice(i, 1); chip.remove(); };
+  chip.appendChild(x);
+  attachChips.appendChild(chip);
+}
+async function uploadFiles(fileList) {
+  for (const file of fileList) {
+    if (file.size > 30 * 1048576) { toast(`${file.name} 超过 30MB，跳过`); continue; }
+    try {
+      const buf = await file.arrayBuffer();
+      const b64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ""));
+      const resp = await fetch("/api/upload", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: file.name, data_b64: b64 }),
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      addAttachChip(file.name);
+      fetch("/api/files").then(r => r.json()).then(renderFiles);
+    } catch (err) {
+      toast(`❌ 上传失败: ${file.name}`); // 拖进来的是文件夹时读不出内容，也走这里
+    }
+  }
+}
+/** 把输入框文字和待发附件合成一条要发出的消息，并清空两者。附件标记只在这里拼，界面上永远只见 chip */
+function composeOutgoing() {
+  const typed = inputEl.value.trim();
+  const note = pendingAttach.length ? `（已上传文件：${pendingAttach.join("、")}）` : "";
+  if (!typed && !note) return "";
+  inputEl.value = "";
+  syncInputHl();
+  attachChips.innerHTML = "";
+  pendingAttach.length = 0;
+  return typed && note ? typed + "\n" + note : typed || note;
+}
 document.getElementById("attach-btn").onclick = () => document.getElementById("file-input").click();
 document.getElementById("file-input").addEventListener("change", async (e) => {
-  for (const file of e.target.files) {
-    if (file.size > 30 * 1048576) { toast(`${file.name} 超过 30MB，跳过`); continue; }
-    const buf = await file.arrayBuffer();
-    const b64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ""));
-    const resp = await fetch("/api/upload", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: file.name, data_b64: b64 }),
-    });
-    if (resp.ok) {
-      const chip = document.createElement("span");
-      chip.textContent = "📎 " + file.name;
-      attachChips.appendChild(chip);
-      inputEl.value = (inputEl.value ? inputEl.value + " " : "") + `（已上传文件：${file.name}）`;
-      syncInputHl();
-      fetch("/api/files").then(r => r.json()).then(renderFiles);
-    } else toast("❌ 上传失败: " + file.name);
-  }
+  await uploadFiles(e.target.files);
   e.target.value = "";
+});
+// 拖文件进窗口即上传。document 级必须拦掉默认行为，否则 Electron 会把整个页面导航到 file:// 吞掉应用
+let dragDepth = 0;
+const inputCard = attachChips.closest(".input-card");
+document.addEventListener("dragover", (e) => e.preventDefault());
+document.addEventListener("dragenter", (e) => {
+  if (![...((e.dataTransfer || {}).types || [])].includes("Files")) return;
+  dragDepth++;
+  inputCard?.classList.add("dragging");
+});
+document.addEventListener("dragleave", () => {
+  if (--dragDepth <= 0) { dragDepth = 0; inputCard?.classList.remove("dragging"); }
+});
+document.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  inputCard?.classList.remove("dragging");
+  const files = [...((e.dataTransfer || {}).files || [])];
+  if (files.length) await uploadFiles(files);
 });
 
 // ================= 会话历史（服务端持久化 + 回放，按项目过滤） =================
@@ -307,10 +352,9 @@ async function interjectText(text) {
   }
 }
 async function interject() {
-  const text = inputEl.value.trim();
-  if (!text || !sessionId) return;
-  inputEl.value = "";
-  syncInputHl();
+  if (!sessionId) return;
+  const text = composeOutgoing();
+  if (!text) return;
   await interjectText(text);
 }
 document.getElementById("interject-btn").onclick = interject;
@@ -324,15 +368,12 @@ async function stopTask() {
   }).catch(() => {});
 }
 async function send() {
-  let text = inputEl.value.trim();
+  let text = composeOutgoing();
   if (!text) return;
   if (sceneTag) {
     text = `【任务类型：${sceneTag.replace(/^[^一-龥A-Za-z]+\s*/, "")}】` + text;
     setSceneTag(null);
   }
-  inputEl.value = "";
-  syncInputHl();
-  attachChips.innerHTML = "";
   mentionMenu.classList.remove("show");
   if (pageKind === "assist") { await sendAssistLocal(text); return; }
   if (curBusy()) {
