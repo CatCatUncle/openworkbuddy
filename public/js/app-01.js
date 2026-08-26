@@ -1081,32 +1081,18 @@ function renderTurnOutputs(body, changed) {
     const isHtml = /\.html?$/i.test(f.name);
     const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name);
     // 真正的展示品（网页/图）才配得上缩略图卡片；其余文件进变更清单，别把对话挡成一屏方框
-    if ((isHtml || isImg) && grid.querySelectorAll(".out-card").length < OUT_CARD_MAX && !grid.querySelector(`[data-name="${cssEsc(f.name)}"]`)) {
-      const url = "/api/files/view/" + encodeURIComponent(f.name) + "?t=" + Date.now();
-      const thumb = isHtml || /\.svg$/i.test(f.name) ? `<iframe src="${url}" scrolling="no" tabindex="-1" aria-hidden="true"></iframe>` : `<img src="${url}" alt="">`;
-      const card = document.createElement("div");
-      card.className = "out-card";
-      card.dataset.name = f.name;
-      card.title = f.name;
-      card.innerHTML = `<div class="out-thumb">${thumb}</div>
-        <div class="out-info"><div class="out-name">${esc(f.name.split("/").pop())}</div>
-          <div class="out-meta">${fmtSize(f.size)} · 点击预览</div></div>
-        <div class="out-acts">${isHtml ? `<button data-a="br">在浏览器打开</button>` : ""}
-          <button data-a="rv">所在位置</button>
-          <a href="/api/files/download/${encodeURIComponent(f.name)}" download>下载</a></div>`;
-      card.onclick = (e) => {
-        if (e.target.closest("a")) return;
-        if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e);
-        if (e.target.closest('[data-a="br"]')) {
-          e.stopPropagation();
-          startPreview(previewSrv.lan_open, f.name).then(st => {
-            if (st.running) previewSrv = st; else toast(st.error || "本地预览服务没起来，打不开");
-          });
-          return;
-        }
-        previewFile(f.name);
-      };
-      grid.appendChild(card);
+    if (isHtml || isImg) {
+      const base = f.name.split("/").pop();
+      const same = grid.querySelector(`.out-card[data-name="${cssEsc(f.name)}"]`);
+      // 同名同大小 = 同一件产出被拷成了两份（agent 常把任务子目录里的产出再往工作空间根目录复制一份）。
+      // 卡片区只摆一张，否则用户看到的就是「同一张图显示了两遍」；两个路径在下面的变更清单里都还留着，信息不丢
+      const twin = same || (f.size ? grid.querySelector(`.out-card[data-base="${cssEsc(base)}"][data-size="${f.size}"]`) : null);
+      if (!twin) {
+        if (grid.querySelectorAll(".out-card").length < OUT_CARD_MAX) grid.appendChild(makeOutCard(f, isHtml));
+      } else if (!same && pathDepth(f.name) < pathDepth(twin.dataset.name)) {
+        // 副本留路径最浅的那份：点「所在位置」多半是想去工作目录根，而不是任务子目录
+        twin.replaceWith(makeOutCard(f, isHtml));
+      }
     }
     if (!list.querySelector(`[data-name="${cssEsc(f.name)}"]`)) { // 同一文件改多次只记一行
       const row = document.createElement("div");
@@ -1121,7 +1107,59 @@ function renderTurnOutputs(body, changed) {
       list.appendChild(row);
     }
   }
+  markDupBasenames(grid);
   block.querySelector(".out-hd .n").textContent = `(${list.querySelectorAll(".out-row").length})`;
+}
+
+function pathDepth(n) { return String(n || "").split("/").length; }
+
+function makeOutCard(f, isHtml) {
+  const url = "/api/files/view/" + encodeURIComponent(f.name) + "?t=" + Date.now();
+  const thumb = isHtml || /\.svg$/i.test(f.name) ? `<iframe src="${url}" scrolling="no" tabindex="-1" aria-hidden="true"></iframe>` : `<img src="${url}" alt="">`;
+  const card = document.createElement("div");
+  card.className = "out-card";
+  card.dataset.name = f.name;
+  card.dataset.base = f.name.split("/").pop();      // 判重按「文件名 + 大小」，光看全路径认不出复制出来的副本
+  if (f.size) card.dataset.size = String(f.size);
+  card.title = f.name;
+  card.innerHTML = `<div class="out-thumb">${thumb}</div>
+    <div class="out-info"><div class="out-name">${esc(f.name.split("/").pop())}</div>
+      <div class="out-meta">${fmtSize(f.size)} · 点击预览</div></div>
+    <div class="out-acts">${isHtml ? `<button data-a="br">在浏览器打开</button>` : ""}
+      <button data-a="rv">所在位置</button>
+      <a href="/api/files/download/${encodeURIComponent(f.name)}" download>下载</a></div>`;
+  card.onclick = (e) => {
+    if (e.target.closest("a")) return;
+    if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e);
+    if (e.target.closest('[data-a="br"]')) {
+      e.stopPropagation();
+      startPreview(previewSrv.lan_open, f.name).then(st => {
+        if (st.running) previewSrv = st; else toast(st.error || "本地预览服务没起来，打不开");
+      });
+      return;
+    }
+    previewFile(f.name);
+  };
+  return card;
+}
+
+// 同名但内容不同的两件产出（a/report.html 和 b/report.html）：卡片上只写文件名，用户根本分不出谁是谁，
+// 给这类卡片补上所在目录。内容相同的副本上面已经并成一张卡了，走不到这里
+function markDupBasenames(grid) {
+  const byBase = {};
+  grid.querySelectorAll(".out-card").forEach(c => {
+    (byBase[c.dataset.base] = byBase[c.dataset.base] || []).push(c);
+  });
+  Object.keys(byBase).forEach(b => {
+    if (byBase[b].length < 2) return;
+    byBase[b].forEach(c => {
+      const nm = c.querySelector(".out-name");
+      if (!nm || nm.querySelector(".dim")) return;
+      const path = c.dataset.name;
+      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "./";
+      nm.innerHTML = `<span class="dim">${esc(dir)}</span>` + nm.innerHTML;
+    });
+  });
 }
 // 文件名进 CSS 属性选择器要转义（含空格、中文括号、引号的名字很常见）
 function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
