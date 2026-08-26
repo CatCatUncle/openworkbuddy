@@ -794,6 +794,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   router.post("/im/local", async (req, res) => {
     const message = String((req.body || {}).message || "").trim();
     if (!message) return res.status(400).json({ error: "缺少 message" });
+    const modelName = String((req.body || {}).model || "").trim() || undefined; // 助理页模型选择器选的那个
     logIm("local", "in", message);
     const sessionKey = "local_assist";
     maybeResetIdleSession(sessionKey, "local");
@@ -805,6 +806,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       const progState = { step: 0 };
       const { finalText } = await runtime.runTask({
         history,
+        modelName,
         emit: (ev) => { const line = progressLine(ev, progState); if (line) liveProgress.set(sessionKey, { text: line, channel: "local", at: Date.now() }); },
       });
       saveSession(sessionKey);

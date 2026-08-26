@@ -750,6 +750,10 @@
      加到一眼可辨的浓度并显式定文字色，深色代码块里选中也不会糊成一团 */
   ::selection { background: rgba(91,95,247,.72); color: #fff; }
   html[data-theme="dark"] ::selection { background: rgba(139,143,255,.62); color: #fff; }
+  /* 自己发出去的消息气泡本身就是品牌紫（.u-msg .bubble / .im-b.usr），在紫底上再涂一层紫
+     等于没涂——用户反馈「已经发出去的消息里选中看不出变化」。这两处反过来用白底紫字 */
+  .u-msg .bubble::selection, .u-msg .bubble ::selection,
+  .im-b.usr::selection, .im-b.usr ::selection { background: #fff; color: var(--wb-brand); }
 
   /* 设置导航：选中项加一根短侧条，扫一眼就知道在哪一页 */
   .settings-nav .cat { position: relative; }
