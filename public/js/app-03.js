@@ -370,7 +370,9 @@ async function doAssistLocal(text) {
     if (p && p.local_assist && p.local_assist.text) el.textContent = "⏳ " + p.local_assist.text;
   }, 1500);
   try {
-    await fetch("/im/local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
+    // 模型标签上显示的是哪个就真用哪个：以前这里不带 model，助理页选了模型也是白选，
+    // 跑的还是全局默认——标签说一套、实际跑一套，属于静默换模型
+    await fetch("/im/local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text, model: currentSessModel() || null }) });
   } catch {}
   clearInterval(liveT);
   document.getElementById("im-pending")?.remove();

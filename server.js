@@ -2549,6 +2549,10 @@ function accountedRuntime(baseRuntime, source) {
       if (owner && account.creditsEnabled() && owner.credits <= 0) {
         throw new Error("积分不足：管理员可以在 Web 端「账号 · 用量」里充值，或者把「积分限额」关掉");
       }
+      // 调用方（助理页）指定了模型就解析成真正的 LLM 顶上去。模型名不在列表里时 llmForSession
+      // 返回的是会报错的桩，宁可当场报错也不许悄悄退回全局默认
+      const { modelName, ...rest } = args || {};
+      const runLLM = modelName ? llmForSession({ model: modelName }) : llm;
       // IM / 定时任务没有登录态，记忆按管理员算（和积分记账口径保持一致）
       const r = await baseRuntime.runTask({
         user: owner ? owner.username : undefined,
@@ -2559,10 +2563,11 @@ function accountedRuntime(baseRuntime, source) {
             ? source === "im" ? "IM_对话" : source === "schedule" ? "定时任务" : null
             : null,
         projectContext: projectContextOf(activeProject()),
-        ...args,
+        ...rest,
+        ...(modelName ? { llmOverride: runLLM } : {}),
       });
       if (owner && r && r.usage && r.usage.calls > 0) {
-        account.chargeRun(owner, { ...r.usage, model: llm.model, provider: llm.provider, source });
+        account.chargeRun(owner, { ...r.usage, model: runLLM.model, provider: runLLM.provider, source });
       }
       return r;
     },
