@@ -203,6 +203,10 @@ function renderMd(src) {
     .replace(/\x00SVG(\d+)\x00/g, (_, i) => figs[+i]);
 }
 
+// 【任务类型：X】跟「（已上传文件：×××）」一样，是发给模型的协议前缀，不是用户自己写的话。
+// 气泡和任务历史标题里一律洗掉；原文照旧发给模型，「复制我的输入」复制的也还是原文
+function stripSceneTag(t) { return String(t == null ? "" : t).replace(/^\s*【任务类型：[^】]*】\s*/, ""); }
+
 // ================= 回合渲染（实时流式与历史回放共用） =================
 function createTurnUI(userText, turnMode, forSid) {
   const turnSid = forSid !== undefined ? forSid : sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
@@ -213,7 +217,7 @@ function createTurnUI(userText, turnMode, forSid) {
     <div class="a-msg"><div class="avatar${av.cls ? " " + av.cls : ""}">${av.html}</div><div class="body"></div></div>`;
   // 「（已上传文件：×××）」是给模型看的附件标记，气泡里渲染成附件行，别按原文糊用户脸上（老会话的旧格式一并美化）
   const attNames = [];
-  const bodyText = userText.replace(/（已上传文件：([^）]+)）/g, (_, names) => {
+  const bodyText = stripSceneTag(userText).replace(/（已上传文件：([^）]+)）/g, (_, names) => {
     for (const n of String(names).split("、")) if (n.trim()) attNames.push(n.trim());
     return "";
   }).trim();
