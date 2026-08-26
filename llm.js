@@ -465,35 +465,75 @@ const EMBED_KNOWN = [
   { match: /localhost:11434|127\.0\.0\.1:11434/, model: "nomic-embed-text" },
 ];
 
-function createEmbedder(config) {
-  let cfg = null;
-  const ec = config.embedding;
-  if (ec && ec.base_url && ec.model) {
-    cfg = { base_url: ec.base_url, api_key: ec.api_key || "", model: ec.model };
-  } else if (Array.isArray(config.models)) {
-    for (const m of config.models) {
-      if (!m || !m.base_url) continue;
-      // 没填 key 的条目跳过（本地 Ollama 除外，它不要 key）：拿空 key 去打只会制造一堆 401 噪音
-      const isLocal = /localhost:11434|127\.0\.0\.1:11434/.test(m.base_url);
-      if (!m.api_key && !isLocal) continue;
-      const known = EMBED_KNOWN.find((k) => k.match.test(m.base_url));
-      if (known) { cfg = { base_url: m.base_url, api_key: m.api_key || "", model: known.model }; break; }
-    }
-  }
-  if (!cfg) return null;
+/**
+ * 攒一份候选清单而不是只挑一条：配了 Ollama 但没开机、或某条渠道欠费，都不该让记忆召回
+ * 直接哑掉。媒体渠道（图像/视频）的 key 也算数——用户常把通义的 key 只填在视频那一栏，
+ * 但同一把 key 就能算向量，只是 DashScope 的原生地址要换成 OpenAI 兼容地址。
+ */
+function embedCandidates(config) {
+  const out = [];
+  const push = (base_url, api_key, model, label) => {
+    if (!base_url || !model) return;
+    let b = String(base_url).trim().replace(/\/+$/, "");
+    // DashScope 原生 /api/v1 不认 /embeddings，OpenAI 兼容层在 /compatible-mode/v1
+    if (/dashscope\.aliyuncs\.com/i.test(b)) b = b.replace(/\/api\/v\d+$/i, "/compatible-mode/v1");
+    if (out.some((c) => c.base_url === b && c.model === model)) return;
+    out.push({ base_url: b, api_key: api_key || "", model, label });
+  };
 
-  let fails = 0;
+  const ec = config.embedding;
+  if (ec && ec.base_url && ec.model) push(ec.base_url, ec.api_key, ec.model, "设置里显式指定的嵌入渠道");
+
+  const knownFor = (url) => (EMBED_KNOWN.find((k) => k.match.test(String(url || ""))) || {}).model;
+  const isLocal = (url) => /localhost:11434|127\.0\.0\.1:11434/.test(String(url || ""));
+
+  const fromModels = [];
+  for (const m of Array.isArray(config.models) ? config.models : []) {
+    if (!m || !m.base_url) continue;
+    // 没填 key 的条目跳过（本地 Ollama 除外，它不要 key）：拿空 key 去打只会制造一堆 401 噪音
+    if (!m.api_key && !isLocal(m.base_url)) continue;
+    const model = knownFor(m.base_url);
+    if (model) fromModels.push({ m, model });
+  }
+  for (const { m, model } of fromModels.filter((x) => !isLocal(x.m.base_url)))
+    push(m.base_url, m.api_key, model, `模型渠道「${m.name || m.model}」`);
+
+  // 媒体渠道（图像/视频/语音）的 key 也算数：用户常把通义的 key 只填在视频那一栏
+  const media = config.media || {};
+  for (const [key, mc] of [["图像", media.image], ["视频", media.video], ["语音", media.tts]]) {
+    if (!mc || !mc.base_url || !mc.api_key) continue;
+    const model = knownFor(String(mc.base_url).replace(/\/api\/v\d+$/i, "/compatible-mode/v1"));
+    if (model) push(mc.base_url, mc.api_key, model, `${key}渠道的 key`);
+  }
+
+  // 本地 Ollama 垫底：没开机时它必然 fetch failed，别让它占着第一顺位把功能拖死
+  for (const { m, model } of fromModels.filter((x) => isLocal(x.m.base_url)))
+    push(m.base_url, m.api_key, model, `本地 Ollama`);
+  return out;
+}
+
+function createEmbedder(config) {
+  const cands = embedCandidates(config);
+  if (!cands.length) return null;
+
+  let idx = 0, fails = 0, dead = false;
   /** @param {string[]} texts @returns {Promise<number[][]|null>} 失败返回 null，绝不抛出 */
   const embed = async (texts) => {
-    if (fails >= 3) return null; // 连挂三次自行停用：别让每次记任务开头都白等一轮超时
+    if (dead) return null;
+    const cfg = cands[idx];
     try {
-      const resp = await fetch(`${cfg.base_url.replace(/\/$/, "")}/embeddings`, {
+      const resp = await fetch(`${cfg.base_url}/embeddings`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.api_key || "ollama"}` },
         body: JSON.stringify({ model: cfg.model, input: texts }),
         signal: AbortSignal.timeout(15000),
       });
-      if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+      if (!resp.ok) {
+        const err = new Error(`${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+        // 4xx = 这条渠道压根不给用（没开通/欠费/key 不对/模型不存在），重试三次也是白试
+        if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) err.fatalForChannel = true;
+        throw err;
+      }
       const data = await resp.json();
       const out = (Array.isArray(data.data) ? data.data : [])
         .slice()
@@ -503,13 +543,26 @@ function createEmbedder(config) {
       fails = 0;
       return out;
     } catch (e) {
-      fails++;
-      console.warn(`[记忆向量] embeddings 调用失败（${fails}/3${fails >= 3 ? "，已停用，召回退回关键词匹配" : ""}）：${String((e && e.message) || e).slice(0, 160)}`);
+      fails = e && e.fatalForChannel ? 3 : fails + 1; // 4xx 一次就够，不用陪它试满三次
+      const why = String((e && e.message) || e).slice(0, 160);
+      // 一条候选挂到头就换下一条；全部挂完才停用。换道要出声，不搞静默降级
+      if (fails >= 3 && idx < cands.length - 1) {
+        idx++; fails = 0;
+        embed.model = cands[idx].model; // 换了嵌入模型，memory 那边会自动把旧向量作废重算
+        console.warn(`[记忆向量] ${cfg.label} ${e && e.fatalForChannel ? "不可用" : "连挂 3 次"}（${why}），改用 ${cands[idx].label}（${cands[idx].model}）`);
+      } else if (fails >= 3) {
+        dead = true;
+        console.warn(`[记忆向量] ${cfg.label} 也不行（${why}）。可用的嵌入渠道已用尽，记忆召回退回关键词匹配——` +
+          `想恢复语义召回，去 设置 → 模型 配一条支持 embeddings 的渠道（通义/智谱/OpenAI，或本机跑起 Ollama）`);
+      } else {
+        console.warn(`[记忆向量] ${cfg.label} 调用失败（${fails}/3）：${why}`);
+      }
       return null;
     }
   };
-  embed.model = cfg.model;
+  embed.model = cands[0].model;
+  embed.candidates = cands.map((c) => `${c.label} → ${c.model}`); // 供 /api/info 之类如实展示
   return embed;
 }
 
-module.exports = { createLLM, createEmbedder, _internals: { rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN } };
+module.exports = { createLLM, createEmbedder, _internals: { rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates } };
