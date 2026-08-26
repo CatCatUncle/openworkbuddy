@@ -13,6 +13,11 @@ const sessionDirs = new Map(); // sessionId -> 该对话在默认工作空间下
 const sessionModels = new Map(); // sessionId -> 该对话指定的模型名（没有 = 跟随全局默认）
 const sessionGoals = new Map(); // sessionId -> 该对话的目标状态（Goal 模式的目标卡）
 let pendingModel; // 新对话还没发首条消息就选了模型：先记着，会话建好后再落到服务端
+// 助理模式（🤖 助理页）没有会话 id，模型另存一份，服务端落在 config.assist_model 里。
+// inAssistMode 由 app-03.js 的 openPageView/closeAssistView 维护——那边的 pageKind 是 let，
+// 在这个文件里读它会撞暂时性死区，所以状态放这边声明、那边赋值
+let assistModel;
+let inAssistMode = false;
 const sessionQueues = new Map();   // sessionId -> [{text, mode}] 同一会话内追加的消息才排队
 const curBusy = () => !!(sessionId && runningSessions.has(sessionId));
 const qOf = (sid) => { let q = sessionQueues.get(sid); if (!q) { q = []; sessionQueues.set(sid, q); } return q; };
@@ -1217,6 +1222,7 @@ async function refreshSettingsCache() {
 // 这个选择器只管「当前对话」用哪个模型，不动全局默认（全局默认在 设置 → 模型 里改）。
 // 每个对话可以各选各的：切换对话时标签跟着换，别的对话完全不受影响
 function currentSessModel() {
+  if (inAssistMode) return assistModel;
   return sessionId === null ? pendingModel : sessionModels.get(sessionId);
 }
 // 「新对话沿用上次手动选的模型」（设置 → 模型 里的开关）：算出新对话该预选谁。
@@ -1232,8 +1238,21 @@ function updateModelLabel() {
   const ov = currentSessModel();
   document.getElementById("model-label").textContent = ov || settingsCache.active_model;
   renderModelMenu();
+  // 助理页顶栏那个选择器（页面开着才有）跟输入框这个显示同一个值，别让两处对不上
+  const al = document.getElementById("im-model-label");
+  if (al) { al.textContent = ov || settingsCache.active_model; renderModelMenu(document.getElementById("im-model-menu")); }
 }
 async function setSessionModel(name) { // name: 模型名；null = 跟随全局默认
+  if (inAssistMode) { // 助理模式：存进配置，下次进来还是它
+    try {
+      const r = await fetch("/api/assist/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());
+      if (r && r.error) return toast("⚠️ " + r.error);
+      assistModel = name || undefined;
+      if (settingsCache) settingsCache.assist_model = assistModel || "";
+    } catch {}
+    updateModelLabel();
+    return;
+  }
   if (sessionId === null) { pendingModel = name || undefined; updateModelLabel(); return; }
   try {
     const r = await fetch("/api/session/" + encodeURIComponent(sessionId) + "/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());

@@ -1,7 +1,8 @@
-function renderModelMenu() {
-  if (!settingsCache) return;
+// menu 不传就是输入框右下角那个；助理页顶栏那个把自己的容器传进来，两处共用同一份菜单
+function renderModelMenu(menu = modelMenu) {
+  if (!settingsCache || !menu) return;
   const ov = currentSessModel();
-  modelMenu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
+  menu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
       <span>↺ 跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${healthBadge(settingsCache.active_model)}</span></span>${ov ? "" : '<span style="color:var(--wb-ok)">✓</span>'}</div>`
     + settingsCache.models.map(m => {
       const on = m.name === ov;
@@ -10,8 +11,8 @@ function renderModelMenu() {
       ${on ? '<span style="color:var(--wb-ok)">✓</span>' : ""}</div>`;
     }).join("")
     + `<div class="mi" data-act="manage" style="border-top:1px solid var(--wb-border);margin-top:4px">⚙️ 管理模型…</div>`;
-  modelMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
-    modelMenu.classList.remove("show");
+  menu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
+    menu.classList.remove("show");
     if (mi.dataset.act === "manage") return openModal("settings", "models");
     await setSessionModel(mi.dataset.act === "default" ? null : mi.dataset.name);
   });
