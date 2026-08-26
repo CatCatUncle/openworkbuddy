@@ -344,6 +344,22 @@ const DEFAULT_SKILLS = [
     bytes: 119 * 1024,
     why: "让它自己写 MCP 服务器，接进本项目的连接器体系",
   },
+  {
+    name: "ppt-master",
+    title: "PPT 大师",
+    repo: "hugohe3/ppt-master", branch: "main", subpath: "",
+    license: "MIT", author: "Hugo He",
+    bytes: 171 * 1024 * 1024,
+    why: "做正经 PPT 的一整套模板与工作流。⚠️ 自带大量模板素材，装完约 171MB、克隆要几分钟，磁盘紧张就别装",
+  },
+  {
+    name: "follow-builders",
+    title: "独立开发者信息源",
+    repo: "zarazhangrui/follow-builders", branch: "main", subpath: "",
+    license: "MIT（作者在 README 里声明，仓库没放 LICENSE 文件）", author: "zarazhangrui",
+    bytes: 4 * 1024 * 1024,
+    why: "一份独立开发者/AI 圈的博客、播客、X 账号订阅源，配合 web_search 追前沿",
+  },
 ];
 
 function defaultSkillUrl(s) {
