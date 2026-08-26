@@ -1746,6 +1746,52 @@ function testPathSafety() {
   console.log("✅ 安全：workspace 路径越界拦截通过");
 }
 
+/**
+ * 桌面宠物：这里跑的是纯 node（没有 Electron 主进程），正好用来钉死两条最容易出事的边界——
+ * ① pet.js 在没有桌面窗口时必须整体降级成空壳，一个方法都不许抛（server.js 的事件流每步都会调它，
+ *    它一抛，整条任务就跟着炸）；② desktop_pet 工具在服务端模式下必须如实报错，绝不能假装做好了。
+ */
+async function testDesktopPet() {
+  const pet = require("../pet");
+  // ① 空壳降级：全套方法在纯 node 下都得安静地什么都不做
+  assert.strictEqual(pet.create(), null, "纯 node 模式不该真造出宠物窗口");
+  assert.strictEqual(pet.isVisible(), false, "没有窗口时 isVisible 必须是 false");
+  pet.applyConfig({ enabled: true, scale: 1.4, opacity: 0.8, character: "photo" });
+  assert.strictEqual(pet.enabled, true, "applyConfig 后 enabled 应跟着变");
+  pet.setState("working", "正在用 run_node");
+  pet.setState("不存在的状态", "x"); // 非法状态名要被收敛成 idle 而不是原样透传
+  pet.alertAsk("预算多少？");
+  pet.clearAsk(true);
+  pet.hide();
+  assert.strictEqual(pet.enabled, false, "hide 之后 enabled 应为 false");
+  pet.destroy();
+
+  // ② 工具层：没有落地实现时如实报错
+  const { executeTool } = require("../tools");
+  const saved = global.__wbPetTool;
+  delete global.__wbPetTool;
+  const noImpl = await executeTool("desktop_pet", { action: "status" }, {});
+  assert(noImpl.isError, "没有实现时 desktop_pet 应该报错而不是假装成功");
+
+  // ③ 参数原样转发给服务端实现（action / image / scale 一个都不能丢）
+  let got = null;
+  global.__wbPetTool = { async run(input, baseDir) { got = { input, baseDir }; return { content: "ok", isError: false }; } };
+  const ok = await executeTool("desktop_pet", { action: "create", image: "头像.png", scale: 1.2 }, { baseDir: "e2e-pet-dir" });
+  assert(!ok.isError && got && got.input.action === "create" && got.input.image === "头像.png" && got.input.scale === 1.2, "desktop_pet 参数没原样转发: " + JSON.stringify(got));
+  // 用户在某个对话里传的图落在该对话的成果子目录，实现要靠这个 baseDir 才找得到
+  assert.strictEqual(got.baseDir, path.join(WORKSPACE, "e2e-pet-dir"), "desktop_pet 没把本次对话的成果目录传给实现");
+  fs.rmSync(path.join(WORKSPACE, "e2e-pet-dir"), { recursive: true, force: true });
+  if (saved) global.__wbPetTool = saved; else delete global.__wbPetTool;
+
+  // ④ 工具声明本身：模型只能看到这五个动作，且 action 必填
+  const { TOOL_DEFS } = require("../tools");
+  const def = TOOL_DEFS.find((t) => t.name === "desktop_pet");
+  assert(def, "工具表里没有 desktop_pet");
+  assert.deepStrictEqual(def.input_schema.properties.action.enum, ["create", "show", "hide", "remove", "status"], "desktop_pet 动作枚举变了");
+  assert.deepStrictEqual(def.input_schema.required, ["action"], "desktop_pet 应只把 action 设为必填");
+  console.log("✅ 桌面宠物：无窗口时全套降级不抛 / 服务端模式如实报错 / 参数与动作枚举稳定");
+}
+
 async function testAskUser() {
   // 有人值守：ask_user 弹题 → askUser 回调给答案 → 答案回到工具结果；事件成对出现
   let step = 0;
@@ -1838,6 +1884,7 @@ async function main() {
   await testAgentPipeline();
   await testForcedWrapUp();
   await testAskUser();
+  await testDesktopPet();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
