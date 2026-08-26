@@ -413,6 +413,7 @@ app.get("/api/settings", (_req, res) => {
     model_health: healthSummary(),
     model_follow_last: !!config.model_follow_last,
     last_picked_model: config.last_picked_model || "",
+    assist_model: config.assist_model || "",
     agent: {
       max_steps: config.agent.max_steps,
       tool_timeout_ms: config.agent.tool_timeout_ms,
@@ -2469,6 +2470,23 @@ app.post("/api/session/:id/model", (req, res) => {
   }
   saveSession(req.params.id);
   res.json({ ok: true, model: s.model || null });
+});
+
+// 助理模式没有会话 id（消息走 IM 的 local 通道），模型选择只能挂在配置上：选完就存，
+// 刷新页面、离开助理页再回来都还是它。不存的话标签会自己弹回全局默认，
+// 而下面真正跑任务用的又是标签上那个——那就成了另一种「标签说一套、实际跑一套」
+app.post("/api/assist/model", (req, res) => {
+  const name = (req.body || {}).model;
+  if (name === null || name === undefined || name === "") {
+    delete config.assist_model;
+  } else {
+    if (!Array.isArray(config.models) || !config.models.some((m) => m.name === name)) {
+      return res.status(400).json({ error: `模型「${name}」不在模型列表里` });
+    }
+    config.assist_model = String(name);
+  }
+  saveConfig();
+  res.json({ ok: true, model: config.assist_model || null });
 });
 
 // 删除会话（内存 + 磁盘一起删）

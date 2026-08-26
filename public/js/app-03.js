@@ -270,8 +270,15 @@ function openPageView(kind) {
   if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
   assistViewOn = true;
   pageKind = kind;
+  inAssistMode = kind === "assist";
   sessionId = null;
   pendingModel = defaultPendingModel();
+  // 助理模式的模型选择存在配置里，进页面时读回来。模型已经从列表里删掉了就退回全局默认——
+  // 标签跟着一起退，不能标签还写着它、真跑起来却是别的
+  if (inAssistMode) {
+    const am = settingsCache && settingsCache.assist_model;
+    assistModel = am && (settingsCache.models || []).some(m => m.name === am) ? am : undefined;
+  }
   updateModelLabel();
   renderGoalCard();
   document.getElementById("session-title").textContent = v.title;
@@ -296,6 +303,8 @@ function closeAssistView() {
   if (!assistViewOn) return;
   assistViewOn = false;
   pageKind = null;
+  inAssistMode = false;
+  updateModelLabel(); // 离开助理页，标签立刻换回这个对话自己的模型
   if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
   document.querySelectorAll(".side-nav .item.active").forEach(el => el.classList.remove("active"));
   chatCol.classList.remove("wide-page");
@@ -338,11 +347,17 @@ async function renderAssistPage() {
           ? conn.map(([ic, nm, _c, ok, st]) => chip(ic, nm, ok ? "ok" : "err", ok ? "" : st)).join("")
           : '<span style="color:var(--wb-text-3)">还没有连接任何 IM 通道</span>'}
       </div>
+      <div class="picker" id="im-model-picker">
+        <button class="btn-plain" id="im-model-btn" title="助理页发消息用哪个模型（飞书 / QQ 等远程消息仍按全局默认跑）">✦ <span id="im-model-label">模型</span> ▾</button>
+        <div class="picker-menu down" id="im-model-menu"></div>
+      </div>
       <button class="btn-plain" id="im-open-ws">📂 打开所在文件夹</button>
       <button class="btn-plain" id="im-cfg">⚙️ 设置</button>
     </div>
     <div class="im-feed" id="im-feed"></div>
     <div style="text-align:center;color:var(--wb-text-3);font-size: 13px;margin-top:8px">下方输入框直接对话，和在飞书/QQ/微信里 @机器人 一样，任务在这台电脑上执行。微信走扫码登录；企微应用与公众号得有公网 HTTPS 回调地址才能收消息。</div>`;
+  setupPicker("im-model-btn", "im-model-menu");
+  updateModelLabel(); // 顶栏每次重画都是新元素，标签和菜单当场填上
   page.querySelector("#im-cfg").onclick = () => openModal("settings", "im");
   page.querySelector("#im-open-ws").onclick = () => fetch("/api/open-workspace", { method: "POST" });
   renderAssistFeed(log);
@@ -351,10 +366,13 @@ async function renderAssistPage() {
 // 连发多条时排队串行：两条并发 runTask 会交叉写同一份会话历史
 let assistChain = Promise.resolve();
 function sendAssistLocal(text) {
-  assistChain = assistChain.then(() => doAssistLocal(text)).catch(() => {});
+  // 模型在按下发送这一刻就定死：排队等前一条跑完期间用户可能已经离开助理页或又改了选择，
+  // 到时候再读就跟他发的时候看到的标签对不上了
+  const model = currentSessModel() || null;
+  assistChain = assistChain.then(() => doAssistLocal(text, model)).catch(() => {});
   return assistChain;
 }
-async function doAssistLocal(text) {
+async function doAssistLocal(text, model) {
   const feed = document.getElementById("im-feed");
   if (feed) {
     feed.insertAdjacentHTML("beforeend",
@@ -372,7 +390,7 @@ async function doAssistLocal(text) {
   try {
     // 模型标签上显示的是哪个就真用哪个：以前这里不带 model，助理页选了模型也是白选，
     // 跑的还是全局默认——标签说一套、实际跑一套，属于静默换模型
-    await fetch("/im/local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text, model: currentSessModel() || null }) });
+    await fetch("/im/local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text, model: model || null }) });
   } catch {}
   clearInterval(liveT);
   document.getElementById("im-pending")?.remove();

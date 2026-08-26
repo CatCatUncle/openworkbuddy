@@ -242,6 +242,7 @@
   .assist-page .im-feed { max-height: none; overflow: visible; }
   .im-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
   .im-head .btn-plain { flex: none; font-size: 13px; padding: 6px 12px; }
+  .im-head .picker { flex: none; }
   #ab-ic .ab-ava { width: 18px; height: 18px; font-size: 15px; vertical-align: -4px; }
   #ab-ic .ab-ava img { width: 100%; height: 100%; object-fit: cover; border-radius: 5px; }
   /* 侧栏项目列表 */
@@ -286,6 +287,8 @@
   .picker-btn:hover { background: var(--wb-bg-hover); }
   .picker-menu { display: none; position: absolute; bottom: 40px; right: 0; min-width: 200px; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: 0 10px 32px rgba(23,24,28,.14); padding: 6px; z-index: 30; }
   .picker-menu.up-left { right: auto; left: 0; }
+  /* 默认那套是给输入框用的（菜单往上弹）；顶栏里的按钮得往下弹，不然掀到窗口外面去了 */
+  .picker-menu.down { top: 36px; bottom: auto; max-height: 60vh; overflow-y: auto; }
   .picker-menu.show { display: block; }
   .picker-menu .mi { padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
   .picker-menu .mi:hover { background: var(--wb-bg-hover); }
