@@ -21,6 +21,11 @@ skills/theme-factory/
 skills/brand-guidelines/
 skills/webapp-testing/
 skills/mcp-builder/
+skills/follow-builders/
+
+# 没有许可证、也查不到上游仓库的技能：来源不明的代码不往公开仓库里塞，留在本机自用
+# （hongshuskill 还会用真 Chrome 操作小红书账号，替别人分发更不合适）
+skills/hongshuskill/
 
 # 用户自己装的 Agent Plugins 插件（plugins.js 是代码，plugins/ 是数据）
 plugins/
