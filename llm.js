@@ -245,6 +245,14 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
           `也可以换一个上下文更大的模型；这条任务的历史已经很长，新开一个任务接着做更稳。\n原始报错：${body.slice(0, 300)}`
       );
     }
+    // 欠费/余额不足：这不是抖动也不是 bug，重试一百次也没用。翻成人话并指名是哪条渠道，
+    // 免得用户以为是软件坏了（原始报错还是留在后面，方便贴给渠道客服）
+    if (resp.status === 402 || /insufficient balance|insufficient_quota|欠费|余额不足|arrearage/i.test(body)) {
+      throw new Error(
+        `渠道「${cfg.name || cfg.model}」余额不足，模型不给跑了——这不是软件出错，去这条渠道的官网充值即可；` +
+          `急着继续可以在 设置 → 模型 换一条有余额的渠道，或者在 设置 → 智能体设置 里指定「备用渠道」，以后这条挂了会自动接上。\n原始报错：${body.slice(0, 200)}`
+      );
+    }
     throw new Error(`LLM 接口错误 ${resp.status}: ${body.slice(0, 500)}`);
   }
 
