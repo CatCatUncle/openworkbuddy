@@ -57,7 +57,7 @@ const TOOL_DEFS = [
   {
     name: "run_shell",
     description:
-      "在工作目录(workspace)中执行一条 shell 命令（macOS，/bin/zsh -c），返回 stdout/stderr。可以使用系统已安装的命令行工具（git、curl、ffmpeg、lark-cli 等）。适合调用现成 CLI、管道/批量文件操作；需要写程序逻辑时优先用 run_node。命令不要做交互式输入（没有 stdin）。",
+      "在工作目录(workspace)中执行一条 shell 命令（macOS/Linux 走 zsh/bash，Windows 走 cmd），返回 stdout/stderr。可以使用系统已安装的命令行工具（git、curl、ffmpeg、lark-cli 等）。适合调用现成 CLI、管道/批量文件操作；需要写程序逻辑时优先用 run_node。命令不要做交互式输入（没有 stdin）。",
     input_schema: {
       type: "object",
       properties: {
@@ -280,6 +280,38 @@ const TOOL_DEFS = [
       required: ["prompt"],
     },
   },
+  {
+    name: "html_to_image",
+    description:
+      "把工作空间里的一个本地 HTML 文件用真浏览器渲染成 PNG 图片（桌面版专属）。做小红书图文卡片、公众号头图、视频分镜卡的首选做法：先 write_file 写一个排版好的 HTML（<style> 里内联全部样式，画布尺寸用 body{width:...px;height:...px;margin:0} 定死），再用本工具截图——文字清晰可控，比让图像模型画带字的图靠谱得多。",
+    input_schema: {
+      type: "object",
+      properties: {
+        html_file: { type: "string", description: "HTML 文件路径（工作空间内的相对路径）" },
+        filename: { type: "string", description: "输出 PNG 文件名（可选，默认 card_时间戳.png）" },
+        width: { type: "number", description: "视口宽 px（默认 1242）" },
+        height: { type: "number", description: "视口高 px（默认 1656。常用：小红书 3:4=1242x1656，公众号头图 2.35:1=1200x511，视频封面 16:9=1920x1080）" },
+        full_page: { type: "boolean", description: "true 时按页面实际内容高度整页截（适合长图/万字长文截图）" },
+        wait_ms: { type: "number", description: "加载后等待毫秒再截（默认 500；页面有网络字体/大图时加大到 2000+）" },
+      },
+      required: ["html_file"],
+    },
+  },
+  {
+    name: "text_to_speech",
+    description:
+      "用用户配置的语音合成模型把文字念成音频文件，保存到工作空间。视频配音、播客旁白就用它。需要先在 设置 → 模型 → 语音合成 配置渠道，未配置时会明确报错。",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "要念的文字（上限 5000 字，超长请分段多次合成）" },
+        filename: { type: "string", description: "保存文件名（可选，默认 speech_时间戳.mp3）" },
+        voice: { type: "string", description: "音色名（可选，默认用设置里配的；如 OpenAI 系的 alloy/nova、通义的 Cherry/Serena）" },
+        speed: { type: "number", description: "语速 0.5~2.0（可选，仅 OpenAI 兼容渠道生效）" },
+      },
+      required: ["text"],
+    },
+  },
 ];
 
 // ---------- 图像 / 视频 生成（渠道协议：OpenAI 兼容 images API、DashScope 原生、火山方舟异步任务） ----------
@@ -407,6 +439,82 @@ async function generateVideo(media, input, opts = {}) {
   return { content: `视频已生成并存入工作空间：${fname}（模型 ${cfg.model}）`, isError: false };
 }
 
+/** HTML → PNG：真浏览器离屏渲染（htmlshot.js，只有桌面版才有渲染器） */
+async function htmlToImage(input, resolveFile, saveDir) {
+  const rel = String(input.html_file || "").trim();
+  if (!rel) return { content: "缺少 html_file（工作空间里的 HTML 文件路径）", isError: true };
+  let p;
+  try { p = resolveFile(rel); } catch (e) { return { content: e.message, isError: true }; }
+  if (!fs.existsSync(p)) return { content: `文件不存在：${rel}（先用 write_file 把排版 HTML 写进工作空间）`, isError: true };
+  const fname = safeOutName(input.filename, ".png", "card");
+  let buf;
+  try {
+    const { renderHtmlToPng } = require("./htmlshot");
+    buf = await renderHtmlToPng(p, {
+      width: input.width || 1242,
+      height: input.height || 1656,
+      fullPage: !!input.full_page,
+      waitMs: input.wait_ms || 500,
+    });
+  } catch (e) {
+    return { content: `HTML 截图失败：${e.message}`, isError: true };
+  }
+  ensureDirs();
+  fs.writeFileSync(path.join(saveDir || workspaceDir, fname), buf);
+  security.audit("HTML截图", `${rel} → ${fname}`, "放行");
+  return { content: `已把 ${rel} 渲染成图片：${fname}（${input.width || 1242}x${input.full_page ? "整页" : input.height || 1656}）`, isError: false };
+}
+
+/** 文字 → 语音（渠道协议：OpenAI 兼容 /audio/speech、DashScope 原生 qwen-tts） */
+async function textToSpeech(media, input, timeoutMs, saveDir) {
+  const cfg = (media || {}).tts || {};
+  if (!cfg.base_url || !cfg.model) {
+    return { content: "语音合成未配置：请在 设置 → 模型 → 语音合成 填写接口地址 / API Key / 模型名后再用。", isError: true };
+  }
+  const text = String(input.text || "").trim();
+  if (!text) return { content: "缺少 text（要念的文字）", isError: true };
+  if (text.length > 5000) return { content: `文字太长（${text.length} 字，上限 5000），请分段多次合成再拼接`, isError: true };
+  const base = String(cfg.base_url).trim().replace(/\/+$/, "");
+  const voice = String(input.voice || cfg.voice || "").trim();
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${String(cfg.api_key || "").trim()}` };
+  const signal = AbortSignal.timeout(Math.max(timeoutMs || 0, 300000));
+  let fname;
+  if (/dashscope/i.test(base)) {
+    // DashScope 原生（qwen-tts / qwen3-tts-flash 系）：multimodal-generation，返回音频 URL（wav）
+    fname = safeOutName(input.filename, ".wav", "speech");
+    const r = await fetch(`${base}/services/aigc/multimodal-generation/generation`, {
+      method: "POST", headers, signal,
+      body: JSON.stringify({ model: cfg.model, input: { text, ...(voice ? { voice } : {}) } }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return { content: `语音接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
+    const url = (((j.output || {}).audio || {}).url) || "";
+    if (!url) return { content: "语音接口没有返回音频：" + JSON.stringify(j).slice(0, 300), isError: true };
+    await downloadToWorkspace(url, fname, saveDir);
+  } else {
+    // OpenAI 兼容 /audio/speech（OpenAI、new-api 等聚合网关通用）：直接返回音频二进制
+    fname = safeOutName(input.filename, ".mp3", "speech");
+    const r = await fetch(`${base}/audio/speech`, {
+      method: "POST", headers, signal,
+      body: JSON.stringify({
+        model: cfg.model, input: text,
+        ...(voice ? { voice } : {}),
+        ...(input.speed ? { speed: Math.min(Math.max(Number(input.speed) || 1, 0.5), 2) } : {}),
+      }),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      return { content: `语音接口错误 ${r.status}: ${t.slice(0, 300)}`, isError: true };
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length < 200) return { content: "语音接口返回的音频为空", isError: true };
+    ensureDirs();
+    fs.writeFileSync(path.join(saveDir || workspaceDir, fname), buf);
+  }
+  security.audit("语音合成", `${cfg.model}: ${text.slice(0, 80)} → ${fname}`, "放行");
+  return { content: `语音已合成并存入工作空间：${fname}（模型 ${cfg.model}${voice ? "，音色 " + voice : ""}，约 ${text.length} 字）`, isError: false };
+}
+
 /**
  * 上机前先编译一遍。模型最常翻车的写法是在 run_node 里用模板字符串拼 HTML——
  * 网页正文里的反引号、${...}、</script> 会把外层模板字面量提前截断，剩下的正文变成裸代码，
@@ -483,20 +591,34 @@ function runNode(code, timeoutMs, cwd) {
   });
 }
 
-// GUI 启动的 Electron 拿到的 PATH 不含 homebrew，补齐否则 lark-cli/git 等命令找不到
+// GUI 启动的 Electron 拿到的 PATH 不含 homebrew，补齐否则 lark-cli/git 等命令找不到。
+// Windows 上 GUI 进程的 PATH 本来就全，原样返回即可（分隔符也不同，别硬拼 unix 目录）。
 function shellPath() {
-  const extra = ["/opt/homebrew/bin", "/usr/local/bin", path.join(process.env.HOME || "", ".local", "bin")];
-  const cur = (process.env.PATH || "").split(":");
-  return cur.concat(extra.filter((p) => p && !cur.includes(p))).join(":");
+  if (process.platform === "win32") return process.env.PATH || "";
+  const extra = ["/opt/homebrew/bin", "/usr/local/bin", path.join(require("os").homedir(), ".local", "bin")];
+  const cur = (process.env.PATH || "").split(path.delimiter);
+  return cur.concat(extra.filter((p) => p && !cur.includes(p))).join(path.delimiter);
+}
+
+/** 按平台挑 shell：macOS zsh；Linux bash（没有就 sh）；Windows cmd（ComSpec） */
+function pickShell(command) {
+  if (process.platform === "win32") {
+    return { bin: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", command], opts: { windowsVerbatimArguments: true } };
+  }
+  if (process.platform === "darwin") return { bin: "/bin/zsh", args: ["-c", command], opts: {} };
+  const bash = fs.existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
+  return { bin: bash, args: ["-c", command], opts: {} };
 }
 
 function runShell(command, timeoutMs, cwd) {
   ensureDirs();
   return new Promise((resolve) => {
-    const child = spawn("/bin/zsh", ["-c", command], {
+    const sh = pickShell(command);
+    const child = spawn(sh.bin, sh.args, {
       cwd: cwd || workspaceDir,
       timeout: timeoutMs,
       env: { ...process.env, PATH: shellPath() },
+      ...sh.opts,
     });
     let out = "",
       err = "";
@@ -696,7 +818,7 @@ function selfCheck(file, rel) {
     // 用 ast.parse 而不是 py_compile：后者会往 __pycache__ 写 .pyc 污染工作目录。
     // 本机没 python3 / spawn 失败一律跳过，环境问题不能报成语法错误
     try {
-      const r = spawnSync("python3", ["-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())", file], { encoding: "utf8", timeout: 15000 });
+      const r = spawnSync(process.platform === "win32" ? "python" : "python3", ["-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())", file], { encoding: "utf8", timeout: 15000 });
       if (r.status === 1 && /SyntaxError|IndentationError|TabError/.test(String(r.stderr))) {
         const msg = String(r.stderr).split("\n").filter((l) => l && !/^Traceback|^\s*File "<string>"/.test(l)).slice(-4).join("\n");
         return `\n⚠️ Python 语法没过：\n${msg}\n先修好再往下走。`;
@@ -983,7 +1105,7 @@ async function fetchUrl(url, { render, saveDir } = {}) {
     return (
       `这不是网页，是二进制文件（${ct || "类型未知"}，${buf.byteLength} 字节），已下载到工作目录：${name}\n` +
       (kind === "pdf"
-        ? `读它的文字：先 run_shell 跑 \`which pdftotext\`，装了就 \`pdftotext -layout "${name}" -\`；没装就在 run_node 里解析。`
+        ? `读它的文字：先 run_shell 跑 \`${process.platform === "win32" ? "where" : "which"} pdftotext\`，装了就 \`pdftotext -layout "${name}" -\`；没装就在 run_node 里解析。`
         : `按类型处理：Office 文档用 docx/exceljs 读，压缩包先 unzip，图片音视频直接当素材用。`) +
       `\n别再把这个地址当网页正文抓一遍了。`
     );
@@ -1441,6 +1563,10 @@ async function executeTool(name, input, opts = {}) {
         return await generateImage(opts.media, input, timeoutMs, fileBase);
       case "generate_video":
         return await generateVideo(opts.media, input, { ...opts, saveDir: fileBase });
+      case "html_to_image":
+        return await htmlToImage(input, resolveFile, fileBase);
+      case "text_to_speech":
+        return await textToSpeech(opts.media, input, timeoutMs, fileBase);
       case "fetch_url": {
         const gate = security.checkUrl(sec, input.url);
         if (!gate.allowed) {

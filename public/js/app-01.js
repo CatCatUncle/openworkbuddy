@@ -378,6 +378,13 @@ function createTurnUI(userText, turnMode, forSid) {
       note.textContent = `🔁 ${ev.note || "已达执行上限"}，任务未完，自动续跑第 ${ev.round}/${ev.total} 轮（按进度接着做，不重跑）`;
       ensureProc().appendChild(note);
       procWrap?.classList.add("open");
+    } else if (ev.type === "sleep") {
+      // 本机睡了一觉又醒了：任务时限已顺延，跟用户说一声免得对不上「怎么跑了这么久」
+      currentText = null;
+      const note = document.createElement("div");
+      note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
+      note.textContent = `\u{1F4A4} ${ev.note || "检测到本机睡眠，任务时限已顺延"}`;
+      ensureProc().appendChild(note);
     } else if (ev.type === "failover") {
       // 主模型挂起/持续报错、自动切到备用渠道——必须大声播报，绝不静默换模型
       currentText = null;

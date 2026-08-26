@@ -6,6 +6,7 @@
 
 const { TOOL_DEFS, executeTool, outputFiles, getWorkspaceDir } = require("./tools");
 const { loadSkills } = require("./skills");
+const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -248,11 +249,11 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 ## 当前环境
 - 现在是 ${envToday()}。凡是涉及"最新/今年/近期/本周"的判断一律以这个日期为准，不要用你训练数据里的时间。用户说"现在/马上/今晚"这类词时，按上面的钟点安排，别默认从早上开始。需要最新事实（价格、政策、版本号、人事、榜单）必须 web_search 现查，不许凭记忆答。
 - 工作目录（成果文件都放这里）：${safeWorkspaceDir()}
-- 运行环境：${process.platform === "darwin" ? "macOS" : process.platform}，本机执行，run_shell 拿到的是用户的真实电脑。
+- 运行环境：${{ darwin: "macOS", win32: "Windows", linux: "Linux" }[process.platform] || process.platform}，本机执行，run_shell 拿到的是用户的真实电脑。
 
 ## 工具能力
 - run_node：执行 Node.js 代码。已安装库：pptxgenjs(PPT)、docx(Word)、exceljs(Excel)，以及 Node 内置模块。
-- run_shell：执行 shell 命令（macOS zsh），可用系统已装的 CLI 工具（git、curl、ffmpeg、lark-cli 等）。调现成命令行工具用它，写程序逻辑用 run_node。
+- run_shell：执行 shell 命令（${process.platform === "win32" ? "Windows cmd，注意用 cmd 语法：del/copy/where、路径反斜杠" : "zsh/bash"}），可用系统已装的 CLI 工具（git、curl、ffmpeg、lark-cli 等）。调现成命令行工具用它，写程序逻辑用 run_node。
 - read_file：读文件（大文件用 start_line/end_line 只读要看的那段）
 - write_file：**新建**文件。写长文档用 append:true 一节一节续写，别把前文重新吐一遍（既慢又容易越写越短）。写完会自动做语法/结构自检，报了问题就当场修
 - edit_file：改已有文件里的某一段（精确替换）。改代码、改文档只用它，不要 write_file 整篇重写
@@ -791,6 +792,16 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       emit({ type: "failover", note: `${reason}，已切换到备用渠道「${name}」继续本任务`, channel: name, depth });
       return true;
     };
+    // 睡眠治理：任务运行期间按住「别睡」断言（并行任务引用计数）；真睡过去了就把
+    // 时限顺延、把本步的卡壳计时清零——睡眠既不算任务时间，也不算模型安静时间
+    const releaseAwake = awake.hold();
+    let curStallReset = null; // 当前这一步的卡壳计时器复位函数，睡醒后先复位再谈超时
+    const unwatchSleep = awake.watch((sleptMs) => {
+      deadline += sleptMs;
+      if (curStallReset) { try { curStallReset(); } catch {} }
+      if (depth === 0) emit({ type: "sleep", ms: sleptMs, note: `检测到本机睡眠 ${Math.round(sleptMs / 1000)} 秒，任务时限已顺延（睡眠不算任务时间）`, depth });
+    });
+    try {
     // 卡循环检测：同一工具+同一入参反复拿到同一结果 = 在死路上空转。3 连提醒换思路，5 连直接拦截不执行。
     // 键里必须带结果指纹，才不会误伤「改一遍读一遍」的正常校验循环——文件改了，读回来的内容就变了，计数自动清零
     const loopHist = new Map(); // 工具名+入参 → { sig: 上次结果指纹, streak: 连续拿到相同结果的次数 }
@@ -891,6 +902,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       // 模型调用超时按「卡壳」判定，不是总时长硬顶：写大文件时全部输出走工具参数流，
       // 界面上一个字都看不到，按总时长掐会误杀正常的长生成。只要还有数据块在流（正文/思考/工具参数），
       // 计时器就一直重置；连续 llm_timeout_ms 收不到任何数据才算挂死。总时长由任务 deadline 兜底
+      const stepSusMark = awake.totalSuspendedMs(); // 本步开跑时的累计睡眠数，用来识别「睡出来的假超时」
       const stallMs = Math.max(10000, Math.min(deadline - Date.now(), config.agent.llm_timeout_ms || 300000));
       const stallCtl = new AbortController();
       let stallTimer = setTimeout(() => stallCtl.abort(), stallMs);
@@ -900,6 +912,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         clearTimeout(stallTimer);
         stallTimer = setTimeout(() => stallCtl.abort(), stallMs);
       };
+      curStallReset = onActivity; // 睡醒后先把卡壳计时清零：睡眠不算模型安静时间
       // 模型迟迟不吐字时界面完全静止，用户分不清「在想」和「挂了」——超过一分钟就报安静了多久
       const heartbeat = setInterval(() => {
         const quiet = Math.round((Date.now() - lastData) / 1000);
@@ -924,6 +937,12 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         if (e.name === "TimeoutError" || e.name === "AbortError") {
           const manual = stopSignal && stopSignal.aborted;
           const stalled = stallCtl.signal.aborted;
+          // 睡眠假超时：本步期间真睡过、时限也已顺延到未来——不管开枪的是卡壳闹钟还是
+          // 总时长闹钟，都是睡醒后过期计时器误开枪，直接重试本步（模型没得到过那些时间的 CPU）
+          if (!manual && awake.totalSuspendedMs() > stepSusMark && Date.now() < deadline - 1000) {
+            step--;
+            continue;
+          }
           // 挂起换道：只有「真挂起」才换——手动停止、任务总时长到点都不算；剩余时间太少也不值得换道重试
           if (!manual && stalled && Date.now() < deadline - 30000 &&
               switchToBackup(`主模型连续 ${Math.round(stallMs / 1000)} 秒无输出（疑似挂起）`)) {
@@ -1094,6 +1113,10 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       emit({ type: "usage", model: L.model, provider: L.provider, ...usage });
     }
     return { finalText, usage, stopped: stopNote || null };
+    } finally {
+      unwatchSleep();
+      releaseAwake();
+    }
   }
 
   return { runTask, getSkills };

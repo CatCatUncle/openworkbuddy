@@ -118,6 +118,11 @@ const CHROME_PATHS = [
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
   "/usr/bin/google-chrome",
   "/usr/bin/chromium-browser",
+  // Windows：Chrome 两个惯常位置 + Edge（自带且同为 Chromium，无头截图参数一致）
+  (process.env["ProgramFiles"] || "C:\\Program Files") + "\\Google\\Chrome\\Application\\chrome.exe",
+  (process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)") + "\\Google\\Chrome\\Application\\chrome.exe",
+  (process.env.LOCALAPPDATA || "") + "\\Google\\Chrome\\Application\\chrome.exe",
+  (process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)") + "\\Microsoft\\Edge\\Application\\msedge.exe",
 ];
 async function svgToPngAnyhow(svg) {
   if (browserRender.available()) {

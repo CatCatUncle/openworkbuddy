@@ -402,7 +402,7 @@ async function doSend(text, mode, regen) {
 /** 镜像 server.js recordingEmit 的记录口径：数出服务端 transcript 已记录到第几个事件。
  *  断流重连时靠它算出准确的 from/textOffset 从断点续流——哪些事件入账、text 怎么合并必须和服务端完全一致 */
 function makeRecCounter() {
-  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"];
+  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"];
   const st = { n: 0, lastIsText: false, textLen: 0 };
   st.feed = (ev) => {
     if (ev.type === "text") {

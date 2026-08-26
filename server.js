@@ -327,7 +327,7 @@ function recordingEmit(send, events, sessionId) {
       const last = events[events.length - 1];
       if (last && last.type === "text") last.delta += ev.delta;
       else events.push({ type: "text", delta: ev.delta });
-    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"].includes(ev.type)) {
+    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"].includes(ev.type)) {
       events.push(ev);
       // 一步走完就是个存盘点：跑了半小时的任务不该因为一次崩溃从头再来
       if (sessionId && ev.type === "tool_result") autosaveSession(sessionId);
@@ -424,6 +424,7 @@ app.get("/api/settings", (_req, res) => {
     media: {
       image: { base_url: "", api_key: "", model: "", ...((config.media || {}).image || {}) },
       video: { base_url: "", api_key: "", model: "", ...((config.media || {}).video || {}) },
+      tts: { base_url: "", api_key: "", model: "", voice: "", ...((config.media || {}).tts || {}) },
     },
     security: config.security,
     shortcuts: config.shortcuts,
@@ -503,10 +504,10 @@ app.post("/api/settings", (req, res) => {
     }
     if (b.media) {
       config.media = config.media || {};
-      for (const kind of ["image", "video"]) {
+      for (const kind of ["image", "video", "tts"]) {
         if (b.media[kind]) {
           const c = (config.media[kind] = config.media[kind] || {});
-          for (const k of ["base_url", "api_key", "model"]) {
+          for (const k of ["base_url", "api_key", "model", "voice"]) {
             if (b.media[kind][k] !== undefined) c[k] = String(b.media[kind][k]).trim();
           }
         }
@@ -1268,6 +1269,201 @@ function cacheStats() {
   const tmp = cacheTmpDirs().reduce((n, d) => n + dirSize(d), 0);
   return { ui, tmp, total: ui + tmp };
 }
+// ---------- 数据备份与恢复 ----------
+// 打包 data/（会话/记忆/账号/用量/审计）+ config.json + schedules.json + experts.json。
+// 工作空间成果文件不进备份（可能巨大，且用户自己看得见摸得着）。备份放项目根 backups/，
+// 用系统 tar（mac/linux 自带，win10+ 也有），不为这事拖第三方压缩依赖。
+const BACKUP_DIR = path.join(__dirname, "backups");
+const BACKUP_ENTRIES = ["data", "config.json", "schedules.json", "experts.json"];
+
+// 备份里有 config.json（含 API Key）和全部账号数据——只有管理员能碰。
+// 本地单人用没登录态时视同管理员（和任务归属的口径一致）
+function backupAllowed(req, res) {
+  if (!req.user || req.user.role === "admin") return true;
+  res.status(403).json({ error: "只有管理员能操作备份" });
+  return false;
+}
+
+function listBackups() {
+  try {
+    return fs.readdirSync(BACKUP_DIR)
+      .filter((f) => /^wb-backup-[\w.-]+\.tar\.gz$/.test(f))
+      .map((f) => {
+        const st = fs.statSync(path.join(BACKUP_DIR, f));
+        return { name: f, size: st.size, at: st.mtime.toISOString() };
+      })
+      .sort((a, b) => b.at.localeCompare(a.at));
+  } catch { return []; }
+}
+
+function makeBackup(tag) {
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+    const name = `wb-backup-${stamp}${tag ? "-" + tag : ""}.tar.gz`;
+    const entries = BACKUP_ENTRIES.filter((e) => fs.existsSync(path.join(__dirname, e)));
+    if (!entries.length) return reject(new Error("没有可备份的数据"));
+    require("child_process").execFile(
+      "tar", ["-czf", path.join(BACKUP_DIR, name), "-C", __dirname, ...entries],
+      { timeout: 300000 },
+      (err) => (err ? reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带；更老的 Windows 请先升级系统）" : "tar 打包失败：" + err.message)) : resolve(name))
+    );
+  });
+}
+
+/** 校验名字必须来自现有备份列表，杜绝路径注入 */
+function backupFile(name) {
+  const hit = listBackups().find((b) => b.name === name);
+  return hit ? path.join(BACKUP_DIR, hit.name) : null;
+}
+
+app.get("/api/backup", (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  res.json({ list: listBackups(), covers: BACKUP_ENTRIES });
+});
+app.post("/api/backup", async (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  try {
+    const name = await makeBackup("");
+    security.audit("数据备份", `已创建备份 ${name}`, "放行");
+    res.json({ ok: true, name });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/backup/download/:name", (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  const p = backupFile(req.params.name);
+  if (!p) return res.status(404).json({ error: "备份不存在" });
+  res.download(p);
+});
+app.delete("/api/backup/:name", (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  const p = backupFile(req.params.name);
+  if (!p) return res.status(404).json({ error: "备份不存在" });
+  fs.unlinkSync(p);
+  res.json({ ok: true });
+});
+app.post("/api/backup/restore", async (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  const p = backupFile(String((req.body || {}).name || ""));
+  if (!p) return res.status(404).json({ error: "备份不存在" });
+  try {
+    // 恢复前先把现状自动备一份——恢复错了还能回来，这一步绝不省
+    const safety = await makeBackup("before-restore");
+    await new Promise((resolve, reject) =>
+      require("child_process").execFile("tar", ["-xzf", p, "-C", __dirname], { timeout: 300000 },
+        (err) => (err ? reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带）" : "tar 解包失败：" + err.message)) : resolve()))
+    );
+    security.audit("数据恢复", `已从 ${path.basename(p)} 恢复（恢复前现状已存为 ${safety}）`, "放行");
+    res.json({ ok: true, safety, restart_required: true, note: "已恢复到磁盘。内存里还是旧数据，重启应用后完全生效。" });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/backup/restart", (req, res) => {
+  if (!backupAllowed(req, res)) return;
+  if (!process.versions.electron) return res.status(400).json({ error: "非桌面版：请手动重启服务进程" });
+  res.json({ ok: true });
+  // 先把响应发出去再重启，不然前端只看到断线
+  setTimeout(() => {
+    try {
+      const { app: eApp } = require("electron");
+      eApp.relaunch();
+      eApp.exit(0);
+    } catch (e) { console.warn("[备份] 重启失败:", e.message); }
+  }, 600);
+});
+
+// ---------- 记忆搬家：导出 / 从其它 agent 导入 ----------
+// 导出成一份人能读的 Markdown（手写区 + 条目区），到哪都能用。
+// 导入支持两路：① 扫描本机已知的其它 agent 记忆文件（Claude Code / Codex / Claude Cowork），
+// 只读扫描白名单里的路径，绝不接受任意路径；② 粘贴任意文本（腾讯 WorkBuddy 等没有固定
+// 路径的，从它界面里复制出来贴进来就行）。解析是确定性的，不烧 token。
+app.get("/api/memory/export", (req, res) => {
+  const u = req.user ? req.user.username : undefined;
+  const items = memory.list(u);
+  const lines = [
+    "# OpenWorkBuddy 记忆导出",
+    "",
+    `导出时间：${new Date().toLocaleString("zh-CN")}${req.user ? ` · 账号：${req.user.username}` : ""}`,
+    "",
+    "## 背景说明（手写区，全局共享）",
+    "",
+    memory.manual() || "（空）",
+    "",
+    "## 记忆条目",
+    "",
+    ...(items.length
+      ? items.map((it) => `- [${it.scope === memory.SHARED ? "共享" : it.scope}] ${it.text}`)
+      : ["（还没有条目）"]),
+    "",
+  ];
+  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="openworkbuddy-memory-${new Date().toISOString().slice(0, 10)}.md"`);
+  res.send(lines.join("\n"));
+});
+
+/** 本机其它 agent 的记忆文件白名单扫描（找得到才列出来，路径不存在就静默跳过） */
+function memoryImportSources() {
+  const home = require("os").homedir();
+  const out = [];
+  const push = (label, p, mode) => {
+    try {
+      const st = fs.statSync(p);
+      if (st.isFile() && st.size > 0 && st.size < 2 * 1024 * 1024) out.push({ label, path: p, size: st.size, mode });
+    } catch {}
+  };
+  push("Claude Code 全局记忆（~/.claude/CLAUDE.md）", path.join(home, ".claude", "CLAUDE.md"), "manual");
+  try {
+    for (const d of fs.readdirSync(path.join(home, ".claude", "projects"))) {
+      push(`Claude Code 项目记忆（${d.replace(/^-/, "").slice(0, 48)}）`, path.join(home, ".claude", "projects", d, "memory", "MEMORY.md"), "items");
+    }
+  } catch {}
+  push("Codex 全局记忆（~/.codex/AGENTS.md）", path.join(home, ".codex", "AGENTS.md"), "manual");
+  push("Claude Cowork 记忆（~/.cowork/CLAUDE.md）", path.join(home, ".cowork", "CLAUDE.md"), "manual");
+  push("Claude Cowork 记忆（应用目录）", path.join(home, "Library", "Application Support", "Claude Cowork", "CLAUDE.md"), "manual");
+  if (process.env.APPDATA) push("Claude Cowork 记忆（应用目录）", path.join(process.env.APPDATA, "Claude Cowork", "CLAUDE.md"), "manual");
+  return out;
+}
+
+app.get("/api/memory/import/scan", (_req, res) => res.json({ sources: memoryImportSources() }));
+
+app.post("/api/memory/import", (req, res) => {
+  const b = req.body || {};
+  let content = "", label = "粘贴的内容";
+  if (b.path) {
+    const hit = memoryImportSources().find((s) => s.path === String(b.path));
+    if (!hit) return res.status(400).json({ error: "只能导入扫描列表里的文件（防任意路径读取）" });
+    try { content = fs.readFileSync(hit.path, "utf8"); } catch (e) { return res.status(500).json({ error: "读取失败：" + e.message }); }
+    label = hit.label;
+  } else {
+    content = String(b.text || "");
+  }
+  content = content.trim();
+  if (!content) return res.status(400).json({ error: "没有可导入的内容" });
+  const mode = b.mode === "manual" ? "manual" : "items";
+  if (mode === "manual") {
+    // 成段的背景/规范：整段并入手写区，加来源标头，去重靠人眼（手写区本来就是人编辑的）
+    const cur = memory.manual();
+    if (cur.includes(content.slice(0, 200))) return res.json({ ok: true, added: 0, skipped: 1, note: "内容已在背景说明里，跳过" });
+    memory.saveManual((cur ? cur + "\n\n" : "") + `## 导入自 ${label}（${new Date().toISOString().slice(0, 10)}）\n\n` + content);
+    return res.json({ ok: true, added: 1, mode });
+  }
+  // 条目模式：逐行解析 markdown 列表（- / * / 数字.），[标题](链接) 压成 标题，跳过标题行和短行
+  const user = req.user ? req.user.username : undefined;
+  let added = 0, skipped = 0;
+  const lines = content.split(/\r?\n/).slice(0, 500);
+  for (const raw of lines) {
+    let t = raw.trim();
+    if (!t || /^#{1,6}\s/.test(t) || /^[-*_]{3,}$/.test(t)) continue; // 标题、分隔线
+    t = t.replace(/^[-*+]\s+/, "").replace(/^\d+[.)]\s+/, "");
+    t = t.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1"); // markdown 链接压成文字
+    t = t.replace(/\*\*/g, "").trim();
+    if (t.length < 4) continue;
+    const r = memory.add({ text: t, user, shared: !!b.shared, source: "user" });
+    if (r.ok) added++; else skipped++;
+  }
+  security.audit("记忆导入", `${label}：导入 ${added} 条，跳过 ${skipped} 条`, "放行");
+  res.json({ ok: true, added, skipped, mode });
+});
+
 app.get("/api/cache", (_req, res) => res.json(cacheStats()));
 app.post("/api/cache/clear", async (_req, res) => {
   const before = cacheStats();

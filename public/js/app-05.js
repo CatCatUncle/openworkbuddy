@@ -260,7 +260,7 @@ const CHANNEL_PRESETS = [
   { label: "Ollama 本地", provider: "openai", base: "http://localhost:11434/v1", model: "qwen3:14b" },
 ];
 function renderModelsPane(pane, s) {
-  const md = { image: {}, video: {}, ...(s.media || {}) };
+  const md = { image: {}, video: {}, tts: {}, ...(s.media || {}) };
   pane.innerHTML = `
     <div style="color:var(--wb-text-2);margin-bottom:10px">选择当前使用的模型，或添加模型。内置 OpenAI / Anthropic / OpenRouter / 火山方舟 / 阿里百炼 / DeepSeek / 智谱 / Kimi / Ollama 渠道预设，任何 OpenAI 兼容接口也都支持。输入框右下角可快速切换。</div>
     <div id="model-list">${s.models.map((m, i) => `
@@ -311,7 +311,17 @@ function renderModelsPane(pane, s) {
           <input id="mv-model" placeholder="模型名（如 wan2.2-t2v-plus / doubao-seedance-1-0-pro-250528）" value="${esc(md.video.model || "")}">
         </div>
       </div>
-      <button class="btn-brand" id="media-save">保存图像 / 视频模型</button>
+      <div class="card-item">
+        <div class="t">🎙️ 语音合成（TTS）</div>
+        <div class="d" style="margin-bottom:6px">给 text_to_speech 工具用（视频配音、播客旁白）。支持 OpenAI 兼容 /audio/speech（含 new-api 等聚合网关，模型如 tts-1 / gpt-4o-mini-tts）；接口地址含 dashscope 时自动走通义 qwen-tts 原生协议（模型如 qwen-tts，音色如 Cherry / Serena）。</div>
+        <input id="mt-base" placeholder="接口地址（如 https://api.openai.com/v1 或 https://dashscope.aliyuncs.com/api/v1）" value="${esc((md.tts || {}).base_url || "")}">
+        <div class="form-row">
+          <input id="mt-key" type="password" placeholder="API Key" value="${esc((md.tts || {}).api_key || "")}">
+          <input id="mt-model" placeholder="模型名（如 tts-1 / qwen-tts）" value="${esc((md.tts || {}).model || "")}">
+          <input id="mt-voice" placeholder="默认音色（如 alloy / Cherry，可空）" value="${esc((md.tts || {}).voice || "")}">
+        </div>
+      </div>
+      <button class="btn-brand" id="media-save">保存图像 / 视频 / 语音模型</button>
     </div>
     <span class="ok-msg" id="models-msg"></span>`;
   const msg = pane.querySelector("#models-msg");
@@ -362,6 +372,7 @@ function renderModelsPane(pane, s) {
       media: {
         image: { base_url: v("mi-base"), api_key: v("mi-key"), model: v("mi-model") },
         video: { base_url: v("mv-base"), api_key: v("mv-key"), model: v("mv-model") },
+        tts: { base_url: v("mt-base"), api_key: v("mt-key"), model: v("mt-model"), voice: v("mt-voice") },
       },
     }, msg);
   };
@@ -524,6 +535,18 @@ async function renderMemoryPane(pane) {
       <div class="d" style="margin-bottom:8px">适合放团队/业务背景、常用数据口径、固定模板要求这种成段的东西。所有账号共用一份。</div>
       <textarea id="mem-text" rows="8" placeholder="例如：我们公司是做跨境电商的，主营美妆品类；周报收件人是运营部…">${esc(m.content)}</textarea>
     </div>
+    <div class="card-item">
+      <div class="t">🚚 记忆搬家（导出 / 从其它 agent 导入）</div>
+      <div class="d" style="margin-bottom:8px">导出成一份 Markdown 到哪都能用。导入自动扫描本机 Claude Code / Codex / Claude Cowork 的记忆文件；腾讯 WorkBuddy 等没有固定文件的，从它界面里把记忆复制出来粘到下面即可。「导入为条目」逐行进上面的条目区（自动去重），「并入背景说明」整段接到背景说明后面。</div>
+      <div style="margin-bottom:8px"><button class="btn-plain" id="mem-export">📤 导出全部记忆（.md）</button></div>
+      <div id="mem-scan" style="font-size: 13px;color:var(--wb-text-2)">扫描中…</div>
+      <textarea id="mem-paste" rows="4" placeholder="或把其它 agent 的记忆文本粘到这里…" style="margin-top:8px"></textarea>
+      <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn-plain" id="mem-paste-items">导入为条目</button>
+        <button class="btn-plain" id="mem-paste-manual">并入背景说明</button>
+        <span class="ok-msg" id="mem-imp-msg"></span>
+      </div>
+    </div>
     <button class="btn-brand" id="mem-save">保存背景说明</button><span class="ok-msg" id="mem-msg"></span>`;
   pane.querySelector("#mem-save").onclick = async () => {
     const resp = await fetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: pane.querySelector("#mem-text").value }) });
@@ -539,6 +562,45 @@ async function renderMemoryPane(pane) {
     toast(r.note || (r.ok ? "已记住" : "没记成"));
     if (r.ok) renderMemoryPane(pane);
   };
+  // ---- 记忆搬家 ----
+  pane.querySelector("#mem-export").onclick = () => { location.href = "/api/memory/export"; };
+  const impMsg = pane.querySelector("#mem-imp-msg");
+  const showImp = (r) => {
+    if (r.error) { impMsg.textContent = "❌ " + r.error; return; }
+    impMsg.textContent = r.note || `✓ 导入 ${r.added} 条${r.skipped ? `，跳过 ${r.skipped} 条（重复/太长/含敏感信息）` : ""}`;
+  };
+  const doImport = async (body) => {
+    impMsg.textContent = "导入中…";
+    const r = await fetch("/api/memory/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
+    showImp(r);
+    if (r.ok && r.added) setTimeout(() => renderMemoryPane(pane), 900);
+  };
+  pane.querySelector("#mem-paste-items").onclick = () => {
+    const t = pane.querySelector("#mem-paste").value.trim();
+    if (!t) return toast("先把要导入的内容粘进来");
+    doImport({ text: t, mode: "items" });
+  };
+  pane.querySelector("#mem-paste-manual").onclick = () => {
+    const t = pane.querySelector("#mem-paste").value.trim();
+    if (!t) return toast("先把要导入的内容粘进来");
+    doImport({ text: t, mode: "manual" });
+  };
+  const scanBox = pane.querySelector("#mem-scan");
+  fetch("/api/memory/import/scan").then(r => r.json()).then(d => {
+    const list = d.sources || [];
+    scanBox.innerHTML = list.length ? list.map((s, i) => `
+      <div style="display:flex;align-items:center;gap:10px;padding:4px 0;border-bottom:1px solid var(--wb-border)">
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis" title="${esc(s.path)}">${esc(s.label)}</span>
+        <span style="color:var(--wb-text-3)">${fmtSize(s.size)}</span>
+        <a href="#" class="link" data-imp-i="${i}" data-imp-mode="items">导入为条目</a>
+        <a href="#" class="link" data-imp-i="${i}" data-imp-mode="manual">并入背景说明</a>
+      </div>`).join("") : "本机没扫到其它 agent 的记忆文件（Claude Code / Codex / Claude Cowork）。可以用下面的粘贴导入。";
+    scanBox.querySelectorAll("[data-imp-i]").forEach(a => a.onclick = (e) => {
+      e.preventDefault();
+      const s = list[+a.dataset.impI];
+      doImport({ path: s.path, mode: a.dataset.impMode });
+    });
+  }).catch(() => { scanBox.textContent = "扫描失败"; });
   pane.querySelectorAll("[data-del]").forEach(a => a.onclick = async (e) => {
     e.preventDefault();
     await fetch("/api/memory/item/" + encodeURIComponent(a.dataset.del), { method: "DELETE" });
@@ -566,6 +628,15 @@ function renderDataPane(pane, s) {
       <div style="margin-top:8px"><button class="btn-brand" id="cache-clear">🧹 清理缓存</button><span class="ok-msg" id="cache-msg"></span></div>
     </div>
     <div class="card-item">
+      <div class="t">💾 数据备份与恢复</div>
+      <div class="d" style="margin-bottom:8px">一键把会话记录、记忆、账号、用量、定时任务和全部配置（含 API Key）打包成 tar.gz 存到本机 backups/ 文件夹；换电脑就下载备份文件带走。<b>不含工作空间成果文件</b>（那些你自己看得见）。恢复会先自动备份当前现状，恢复后需重启应用生效。</div>
+      <div style="margin-bottom:8px">
+        <button class="btn-brand" id="bk-create">立即备份</button>
+        <span class="ok-msg" id="bk-msg"></span>
+      </div>
+      <div id="bk-list" style="font-size: 13px;color:var(--wb-text-2)">加载中…</div>
+    </div>
+    <div class="card-item">
       <div class="t">数据说明</div>
       <div class="d">会话记录持久化在 data/sessions/ · 定时任务在 schedules.json · 配置在 config.json（含 API Key，默认不入 git）· 记忆在 data/memory.md 与 data/memories.json</div>
     </div>`;
@@ -591,6 +662,51 @@ function renderDataPane(pane, s) {
     } catch { pane.querySelector("#cache-msg").textContent = "清理失败"; }
     btn.disabled = false; btn.textContent = "🧹 清理缓存";
     loadCache();
+  };
+  // ---- 备份 ----
+  const bkMsg = pane.querySelector("#bk-msg");
+  const bkList = pane.querySelector("#bk-list");
+  const loadBackups = () => fetch("/api/backup").then(r => r.json()).then(d => {
+    if (d.error) { bkList.textContent = d.error; return; }
+    const list = d.list || [];
+    bkList.innerHTML = list.length ? list.map(b => `
+      <div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--wb-border)">
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(b.name)}</span>
+        <span style="color:var(--wb-text-3)">${fmtSize(b.size)}</span>
+        <a href="#" class="link" data-bk-restore="${esc(b.name)}">恢复</a>
+        <a href="/api/backup/download/${encodeURIComponent(b.name)}" class="link">下载</a>
+        <a href="#" class="link danger" data-bk-del="${esc(b.name)}">删</a>
+      </div>`).join("") : "还没有备份。";
+    bkList.querySelectorAll("[data-bk-del]").forEach(a => a.onclick = async (e) => {
+      e.preventDefault();
+      if (!confirm(`确认删除备份 ${a.dataset.bkDel}？`)) return;
+      await fetch("/api/backup/" + encodeURIComponent(a.dataset.bkDel), { method: "DELETE" });
+      loadBackups();
+    });
+    bkList.querySelectorAll("[data-bk-restore]").forEach(a => a.onclick = async (e) => {
+      e.preventDefault();
+      if (!confirm(`确认恢复到备份 ${a.dataset.bkRestore} 的状态？\n\n当前数据会先自动备份一份，恢复后需重启应用生效。`)) return;
+      bkMsg.textContent = "恢复中…";
+      const r = await fetch("/api/backup/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: a.dataset.bkRestore }) }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
+      if (r.error) { bkMsg.textContent = "❌ " + r.error; return; }
+      bkMsg.textContent = "";
+      if (confirm("已恢复到磁盘（恢复前现状已自动备份）。\n\n现在重启应用让它完全生效？")) {
+        const rr = await fetch("/api/backup/restart", { method: "POST" }).then(r => r.json()).catch(() => ({}));
+        if (rr.error) toast("❌ " + rr.error);
+      } else {
+        toast("记得手动重启应用，恢复才完全生效");
+      }
+      loadBackups();
+    });
+  }).catch(() => { bkList.textContent = "加载失败"; });
+  loadBackups();
+  pane.querySelector("#bk-create").onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = "备份中…";
+    const r = await fetch("/api/backup", { method: "POST" }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
+    bkMsg.textContent = r.ok ? `✓ 已备份：${r.name}` : ("❌ " + (r.error || "备份失败"));
+    btn.disabled = false; btn.textContent = "立即备份";
+    loadBackups();
   };
 }
 // 飞书扫码授权面板：靠本机 lark-cli 跑飞书官方设备码流程

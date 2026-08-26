@@ -11,6 +11,7 @@ config.json.corrupt*
 __pycache__/
 *.pyc
 data/
+backups/
 
 # 第三方技能包：仓库不打包别人的代码，在应用内一键从上游装（技能页 → 推荐技能）
 skills/ppt-master/

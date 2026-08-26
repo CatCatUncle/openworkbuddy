@@ -48,9 +48,9 @@
 | 📚 **参考模板库** | 提示词范例，不知道怎么开口的时候抄一份改 |
 | 🌐 **本地部署预览** | 做完网页一键起本机服务，相对路径 / fetch / localStorage 才是真的能用；可放开给手机看 |
 
-**内置技能**：`deep-research` 深度调研 · `html-page` 网页生成 · `ppt-design` PPT · `docx` Word · `excel-report` Excel 报表 · `data-viz` 数据可视化 · `weekly-report` 周报 · `wechat-article` 公众号推文（排版 + 推草稿箱）· `feishu-doc` 飞书文档（官方 convert API：原生表格 / 加粗 / 行内代码 / 插图上传）· `lark-cli` 飞书全家桶命令行 · `skill-creator` 让它自己写技能
+**内置技能**：`deep-research` 深度调研 · `html-page` 网页生成 · `ppt-design` PPT · `docx` Word · `excel-report` Excel 报表 · `data-viz` 数据可视化 · `weekly-report` 周报 · `wechat-article` 公众号推文（排版 + 推草稿箱） · `xhs-cards` 小红书图文卡片 · `video-compose` 图文成片（配音+字幕+ffmpeg 拼装）· `feishu-doc` 飞书文档（官方 convert API：原生表格 / 加粗 / 行内代码 / 插图上传）· `lark-cli` 飞书全家桶命令行 · `skill-creator` 让它自己写技能
 
-**内置工具**：`run_node` `run_shell` `write_file` `edit_file` `read_file` `list_files` `search_files` `fetch_url` `render_page` `check_page` `web_search` `gen_diagram` `feishu_doc_create` `remember` / `forget` `use_skill` `save_skill` `library_list` `library_read` `generate_image` `generate_video`
+**内置工具**：`run_node` `run_shell` `write_file` `edit_file` `read_file` `list_files` `search_files` `fetch_url` `render_page` `check_page` `web_search` `gen_diagram` `feishu_doc_create` `remember` / `forget` `use_skill` `save_skill` `library_list` `library_read` `generate_image` `generate_video` `html_to_image` `text_to_speech`
 
 ---
 
@@ -117,7 +117,9 @@ npm run cli -- "帮我写一份本周周报"     # 命令行，适合脚本里�
 
 macOS 想双击图标打开（不碰终端）的话，跑一次 `bash scripts/make-mac-app.sh`，会在 `~/Applications` 生成 OpenWorkBuddy.app——它启动的永远是本仓库的最新代码，改完代码重开 App 就生效；重复打开会聚焦已有窗口，不会叠第二个实例。
 
-端口被占了就换一个：`PORT=3801 npm start`。
+Windows 也能直接跑：装好 Node.js 后同样 `npm install` + `npm run app` 即可。`run_shell` 会自动走 cmd（macOS/Linux 走 zsh/bash），数据备份用的是系统自带 tar（Windows 10 1803+ 就有），图表/图文卡片渲染走 Electron 内置浏览器，都不用额外装东西。
+
+端口被占了就换一个：`PORT=3801 npm start`（Windows cmd 写法：`set PORT=3801 && npm start`）。
 
 ### 3. 第一次打开，两步就能用
 
