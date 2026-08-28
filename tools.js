@@ -7,6 +7,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
+const { StringDecoder } = require("string_decoder");
 const security = require("./security");
 const memory = require("./memory");
 
@@ -44,7 +45,7 @@ const TOOL_DEFS = [
   {
     name: "run_node",
     description:
-      "在工作目录(workspace)中执行一段 Node.js (CommonJS) 代码并返回 stdout/stderr。可以 require 以下已安装的库：pptxgenjs(生成PPT)、docx(生成Word)、exceljs(生成Excel)，以及 Node 内置模块(fs/path等)。生成的成果文件必须写到当前工作目录(直接用相对路径/文件名即可，不要写绝对路径)。用于数据处理、文件生成、计算等一切需要编程的任务。",
+      "在工作目录(workspace)中执行一段 Node.js (CommonJS) 代码并返回 stdout/stderr。可以 require 以下已安装的库：pptxgenjs(生成PPT)、docx(生成Word)、exceljs(生成Excel)，以及 Node 内置模块(fs/path等)。生成的成果文件必须写到当前工作目录(直接用相对路径/文件名即可，不要写绝对路径)。用于数据处理、文件生成、计算等一切需要编程的任务。输出太长时只回「开头 + 结尾 + 省略了多少 + 全文日志路径」，中间那段不是没有、是在那个文件里，需要就 read_file 或 grep 它，别拿结尾当全部内容。",
     input_schema: {
       type: "object",
       properties: {
@@ -57,7 +58,7 @@ const TOOL_DEFS = [
   {
     name: "run_shell",
     description:
-      "在工作目录(workspace)中执行一条 shell 命令（macOS/Linux 走 zsh/bash，Windows 走 cmd），返回 stdout/stderr。可以使用系统已安装的命令行工具（git、curl、ffmpeg、lark-cli 等）。适合调用现成 CLI、管道/批量文件操作；需要写程序逻辑时优先用 run_node。命令不要做交互式输入（没有 stdin）。",
+      "在工作目录(workspace)中执行一条 shell 命令（macOS/Linux 走 zsh/bash，Windows 走 cmd），返回 stdout/stderr。可以使用系统已安装的命令行工具（git、curl、ffmpeg、lark-cli 等）。适合调用现成 CLI、管道/批量文件操作；需要写程序逻辑时优先用 run_node。命令不要做交互式输入（没有 stdin）。输出太长时只回「开头 + 结尾 + 省略了多少 + 全文日志路径」，中间那段不是没有、是在那个文件里，需要就 read_file 或 grep 它，别拿结尾当全部内容。",
     input_schema: {
       type: "object",
       properties: {
@@ -580,6 +581,84 @@ function precheckSyntax(code) {
   }
 }
 
+// ---------- 子进程输出：头 + 尾 + 全文落盘 ----------
+// 原来是 `out += d` 攒全文、末了 out.slice(0, 20000)，三个毛病：
+//  ① 切了一个字的提示都没有——模型看到的就是「输出只有这些」，然后拿半截日志下结论。
+//     静默截断比截断本身更坏，跟「标签说一套、实际跑一套」是同一类错；
+//  ② 长输出的要害几乎都在尾巴上（报错栈、失败汇总、退出原因），只留头等于把答案扔了；
+//  ③ 攒全文没有上限。server 跑在 Electron 主进程里，一条 `cat 大文件` 就能把整个应用撑爆。
+// 现在内存只留「头 + 滚动的尾」，超预算就把全文写进 .tmp 下的日志（.tmp 不进产出列表，
+// 不会污染文件面板），回给模型的是 头 + 省略了多少 + 尾 + 全文路径，要看中间自己去读那个文件。
+const OUT_SPILL_AT = 256 * 1024; // 攒到这么多就别再往内存里堆，转成边收边写文件
+
+/** .tmp 里的输出日志攒着不清会一直长；只删我们自己写的、三天前的 */
+function pruneOldOutLogs() {
+  try {
+    const dead = Date.now() - 3 * 24 * 3600 * 1000;
+    for (const n of fs.readdirSync(tmpDir())) {
+      if (!/^(node|shell)(-err)?-out-.+\.log$/.test(n)) continue;
+      const p = path.join(tmpDir(), n);
+      if (fs.statSync(p).mtimeMs < dead) fs.rmSync(p, { force: true });
+    }
+  } catch {}
+}
+
+function makeOutSink(kind, headMax, tailMax) {
+  const dec = new StringDecoder("utf8"); // 一个中文字被切在两个 chunk 中间会变乱码，必须按流解码
+  let head = "", tail = "", total = 0, fd = null, rel = "", buf = [], bufLen = 0;
+  function openSpill() {
+    try {
+      ensureDirs();
+      pruneOldOutLogs();
+      const name = `${kind}-out-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}.log`;
+      fd = fs.openSync(path.join(tmpDir(), name), "a");
+      rel = ".tmp/" + name;
+      if (buf.length) fs.writeSync(fd, buf.join(""));
+    } catch {
+      fd = null; // 落盘失败不能把命令结果一起赔进去：退回只给头尾，下面的提示语也会照实说
+      rel = "";
+    }
+    buf = [];
+    bufLen = 0;
+  }
+  function take(str) {
+    if (!str) return;
+    total += str.length;
+    if (head.length < headMax) head += str.slice(0, headMax - head.length);
+    tail = tail.length + str.length > tailMax ? (tail + str).slice(-tailMax) : tail + str;
+    if (fd !== null) {
+      try { fs.writeSync(fd, str); } catch {}
+      return;
+    }
+    buf.push(str);
+    bufLen += str.length;
+    if (bufLen > OUT_SPILL_AT) openSpill();
+  }
+  return {
+    write: (chunk) => take(dec.write(chunk)),
+    /** 收尾并给出要回填进工具结果的文本：没超预算就是原文，超了就是 头 + 省略说明 + 尾 */
+    render() {
+      take(dec.end());
+      if (fd === null && total <= headMax + tailMax) return buf.join("");
+      if (fd === null) openSpill(); // 没到落盘阈值但超了回显预算：也存一份，省略掉的部分得有地方可看
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch {}
+        fd = null;
+      }
+      const omitted = total - head.length - tail.length;
+      return (
+        head +
+        `\n\n…〔中间省略 ${omitted} 字符；本次输出共 ${total} 字符。` +
+        (rel
+          ? `全文已存到 ${rel}，要看省略掉的部分就 read_file 读它，或用 run_shell grep 它`
+          : "全文落盘失败，现在只剩这里的头和尾") +
+        `。下面这段是结尾，不是全部内容〕\n\n` +
+        tail
+      );
+    },
+  };
+}
+
 function runNode(code, timeoutMs, cwd) {
   ensureDirs();
   const syntaxErr = precheckSyntax(code);
@@ -602,15 +681,16 @@ function runNode(code, timeoutMs, cwd) {
       // 就弹一个新的 Electron 应用实例（Dock 图标狂蹦）；加了就纯当 node 用
       env: { ...process.env, NODE_PATH: path.join(__dirname, "node_modules"), ELECTRON_RUN_AS_NODE: "1" },
     });
-    let out = "",
-      err = "";
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
+    const out = makeOutSink("node", 8000, 8000);
+    const err = makeOutSink("node-err", 4000, 6000);
+    child.stdout.on("data", (d) => out.write(d));
+    child.stderr.on("data", (d) => err.write(d));
     child.on("close", (code2, signal) => {
       fs.rmSync(file, { force: true });
+      const o = out.render(), e = err.render();
       let result = "";
-      if (out) result += `stdout:\n${out.slice(0, 20000)}\n`;
-      if (err) result += `stderr:\n${err.slice(0, 10000)}\n`;
+      if (o) result += `stdout:\n${o}\n`;
+      if (e) result += `stderr:\n${e}\n`;
       if (signal === "SIGTERM") result += "(执行超时被终止)\n";
       result += `exit code: ${code2}`;
       resolve({ content: result, isError: code2 !== 0 });
@@ -650,14 +730,15 @@ function runShell(command, timeoutMs, cwd) {
       env: { ...process.env, PATH: shellPath() },
       ...sh.opts,
     });
-    let out = "",
-      err = "";
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
+    const out = makeOutSink("shell", 8000, 8000);
+    const err = makeOutSink("shell-err", 4000, 6000);
+    child.stdout.on("data", (d) => out.write(d));
+    child.stderr.on("data", (d) => err.write(d));
     child.on("close", (code2, signal) => {
+      const o = out.render(), e = err.render();
       let result = "";
-      if (out) result += `stdout:\n${out.slice(0, 20000)}\n`;
-      if (err) result += `stderr:\n${err.slice(0, 10000)}\n`;
+      if (o) result += `stdout:\n${o}\n`;
+      if (e) result += `stderr:\n${e}\n`;
       if (signal === "SIGTERM") result += "(执行超时被终止)\n";
       result += `exit code: ${code2}`;
       resolve({ content: result, isError: code2 !== 0 });
