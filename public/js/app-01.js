@@ -1096,7 +1096,15 @@ function renderTurnOutputs(body, changed) {
       // 同名同大小 = 同一件产出被拷成了两份（agent 常把任务子目录里的产出再往工作空间根目录复制一份）。
       // 卡片区只摆一张，否则用户看到的就是「同一张图显示了两遍」；两个路径在下面的变更清单里都还留着，信息不丢
       const twin = same || (f.size ? grid.querySelector(`.out-card[data-base="${cssEsc(base)}"][data-size="${f.size}"]`) : null);
-      if (!twin) {
+      // gen_diagram 一次落两个文件：<名字>.svg 和 <名字>.png，同一张图的两种格式，不是两张图。
+      // 文件名和大小都不一样，上面那条「同名同大小」的判重认不出来，用户看到的就是两张一模一样的图。
+      // 这里按「同目录同主名 + 一个 svg 一个 png」并成一张卡，另一种格式挂到卡上留个下载入口
+      const mate = twin ? null : pairedCard(grid, f.name);
+      if (mate) {
+        // PNG 当门面：缩略图直接渲染，插飞书/Word 用的也是它；SVG 退居「另一种格式」
+        if (extOf(f.name) === "png") { const c = makeOutCard(f, false); attachAltFmt(c, mate.dataset.name); mate.replaceWith(c); }
+        else attachAltFmt(mate, f.name);
+      } else if (!twin) {
         if (grid.querySelectorAll(".out-card").length < OUT_CARD_MAX) grid.appendChild(makeOutCard(f, isHtml));
       } else if (!same && pathDepth(f.name) < pathDepth(twin.dataset.name)) {
         // 副本留路径最浅的那份：点「所在位置」多半是想去工作目录根，而不是任务子目录
@@ -1121,6 +1129,33 @@ function renderTurnOutputs(body, changed) {
 }
 
 function pathDepth(n) { return String(n || "").split("/").length; }
+function extOf(n) { const m = String(n || "").match(/\.([^./]+)$/); return m ? m[1].toLowerCase() : ""; }
+
+// 卡片区里找「同一张图的另一种格式」那张卡：同目录、同主名，一个 svg 一个 png
+function pairedCard(grid, name) {
+  const ext = extOf(name);
+  if (ext !== "svg" && ext !== "png") return null;
+  const stem = name.replace(/\.[^./]+$/, "");
+  const want = ext === "svg" ? "png" : "svg";
+  return [...grid.querySelectorAll(".out-card")].find(c => c.dataset.stem === stem && extOf(c.dataset.name) === want) || null;
+}
+
+// 把另一种格式挂到这张卡上：下载拆成两个按钮，各自写清是哪种格式。
+// 不能光把 SVG 藏掉——藏了用户想要矢量图就只能回右侧文件面板里翻，那是把一个 bug 换成另一个
+function attachAltFmt(card, alt) {
+  if (!card || !alt || card.dataset.alt) return;
+  card.dataset.alt = alt;
+  const acts = card.querySelector(".out-acts");
+  if (!acts) return;
+  const self = acts.querySelector("a[download]");
+  if (self) self.textContent = "下载 " + extOf(card.dataset.name).toUpperCase();
+  const a = document.createElement("a");
+  a.href = "/api/files/download/" + encodeURIComponent(alt);
+  a.setAttribute("download", "");
+  a.textContent = "下载 " + extOf(alt).toUpperCase();
+  a.title = alt;
+  acts.appendChild(a);
+}
 
 function makeOutCard(f, isHtml) {
   const url = "/api/files/view/" + encodeURIComponent(f.name) + "?t=" + Date.now();
@@ -1129,6 +1164,7 @@ function makeOutCard(f, isHtml) {
   card.className = "out-card";
   card.dataset.name = f.name;
   card.dataset.base = f.name.split("/").pop();      // 判重按「文件名 + 大小」，光看全路径认不出复制出来的副本
+  card.dataset.stem = f.name.replace(/\.[^./]+$/, ""); // 去掉扩展名的全路径：认 svg / png 是同一张图用
   if (f.size) card.dataset.size = String(f.size);
   card.title = f.name;
   card.innerHTML = `<div class="out-thumb">${thumb}</div>
