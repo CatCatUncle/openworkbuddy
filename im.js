@@ -37,6 +37,14 @@ const { createQQConnection } = require("./im-qq");
 const { createWecomApp, createWechatMp } = require("./im-wechat");
 const ilinkApi = require("./im-ilink");
 
+// gen_diagram 一次落 <名字>.svg + <名字>.png，是同一张图的两种格式。两个都发过去，
+// 用户在聊天里收到两张一模一样的图，还白占掉 5 个附件名额里的 2 个。
+// 同主名的只发 PNG——聊天窗口能直接渲染它，SVG 发过去多半只是个点不开的附件
+function dropVectorTwins(list) {
+  const pngs = new Set(list.filter((f) => /\.png$/i.test(f.name)).map((f) => f.name.replace(/\.png$/i, "")));
+  return list.filter((f) => !(/\.svg$/i.test(f.name) && pngs.has(f.name.replace(/\.svg$/i, ""))));
+}
+
 function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = () => {} }) {
   const router = express.Router();
   const imCfg = () => config.im || {};
@@ -263,7 +271,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         if (sendFile && !noAttach) {
           const seen = new Set();
           const mentioned = outputFiles().filter((f) => out.includes(f.name.split("/").pop()));
-          toSend = [...fresh, ...mentioned].filter((f) => !seen.has(f.name) && seen.add(f.name)).slice(0, 5);
+          const all = [...fresh, ...mentioned].filter((f) => !seen.has(f.name) && seen.add(f.name));
+          toSend = dropVectorTwins(all).slice(0, 5);
         }
         if (fresh.length && !toSend.length && !noAttach) {
           out += `\n\n📁 成果文件（在 OpenWorkBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
