@@ -17,6 +17,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { dataPath, preferData } = require("../paths");
 const { spawnSync } = require("child_process");
 const { createLLM } = require("../llm");
 const { createAgentRuntime, mapPool } = require("../agent");
@@ -31,7 +32,7 @@ const hasFlag = (k) => argv.includes("--" + k);
 const TASK_TIMEOUT = (+argOf("timeout", 0) || 360) * 1000; // 每题上限，默认 6 分钟
 const CONCURRENCY = Math.max(1, +argOf("concurrency", 2) || 2);
 const REPEAT = Math.max(1, Math.min(5, Math.round(+argOf("repeat", 1)) || 1));
-const BASELINE_PATH = path.join(__dirname, "baseline.json");
+const BASELINE_PATH = dataPath("eval", "baseline.json");
 
 // ---------- 失败码：每个失败的尝试归成唯一一类，按「越硬的死因越优先」裁定 ----------
 const FAIL_CODE_LABELS = {
@@ -128,7 +129,7 @@ ${artifactExcerpts(dir, res) || "（无产物文件）"}
 }
 
 async function main() {
-  const config = store.readJson(path.join(__dirname, "..", "config.json"), null);
+  const config = store.readJson(dataPath("config.json"), null);
   if (!config) { console.error("没有 config.json，先在应用里配好模型"); process.exit(1); }
   const modelName = argOf("model", config.active_model);
   const entry = (config.models || []).find((m) => m.name === modelName);
@@ -145,12 +146,12 @@ async function main() {
   const d = new Date();
   const p2 = (n) => String(n).padStart(2, "0");
   const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-  const runDir = path.join(__dirname, "runs", stamp);
+  const runDir = dataPath("eval", "runs", stamp);
   const wsDir = path.join(runDir, "workspace");
   fs.mkdirSync(wsDir, { recursive: true });
   setWorkspaceDir(wsDir);
 
-  const expertsMeta = store.readJson(path.join(__dirname, "..", "experts.json"), {}) || {};
+  const expertsMeta = store.readJson(preferData("experts.json"), {}) || {};
   const runtime = createAgentRuntime({
     config: evalConfig, llm, mcpManager: new McpManager(),
     experts: expertsMeta.experts || [], expertTeams: expertsMeta.teams || [],

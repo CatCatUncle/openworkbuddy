@@ -13,6 +13,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { dataPath } = require("./paths");
 const zlib = require("zlib");
 const vm = require("vm");
 const { spawnSync } = require("child_process");
@@ -20,7 +21,7 @@ const browserRender = require("./browser-render");
 
 function diagramCfg() {
   try {
-    return (JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf8")).diagram) || {};
+    return (JSON.parse(fs.readFileSync(dataPath("config.json"), "utf8")).diagram) || {};
   } catch {
     return {};
   }

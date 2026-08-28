@@ -30,6 +30,7 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const { dataPath } = require("./paths");
 const notify = require("./notify");
 const security = require("./security");
 const { getWorkspaceDir } = require("./tools");
@@ -74,7 +75,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   // ---------- IM 消息日志（助理模式面板展示，环形缓冲最多 200 条，落盘防重启丢历史） ----------
 
-  const IM_LOG_FILE = path.join(__dirname, "data", "im-log.json");
+  const IM_LOG_FILE = dataPath("data", "im-log.json");
   const imLog = (() => {
     try { return JSON.parse(fs.readFileSync(IM_LOG_FILE, "utf-8")).slice(-200); } catch { return []; }
   })();

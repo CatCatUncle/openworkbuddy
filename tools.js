@@ -6,13 +6,14 @@
 
 const fs = require("fs");
 const path = require("path");
+const { DATA_DIR, dataPath, appPath } = require("./paths");
 const { spawn, spawnSync } = require("child_process");
 const { StringDecoder } = require("string_decoder");
 const security = require("./security");
 const memory = require("./memory");
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
-let workspaceDir = path.join(__dirname, "workspace");
+let workspaceDir = dataPath("workspace");
 
 function getWorkspaceDir() {
   return workspaceDir;
@@ -668,7 +669,7 @@ function runNode(code, timeoutMs, cwd) {
   const link = path.join(tmpDir(), "node_modules");
   if (!fs.existsSync(link)) {
     try {
-      fs.symlinkSync(path.join(__dirname, "node_modules"), link, "junction");
+      fs.symlinkSync(appPath("node_modules"), link, "junction");
     } catch {}
   }
   const file = path.join(tmpDir(), `script_${Date.now()}_${Math.floor(Math.random() * 1e6)}.cjs`);
@@ -679,7 +680,9 @@ function runNode(code, timeoutMs, cwd) {
       timeout: timeoutMs,
       // ELECTRON_RUN_AS_NODE：桌面版里 execPath 是 Electron 二进制，不加这个每跑一次脚本
       // 就弹一个新的 Electron 应用实例（Dock 图标狂蹦）；加了就纯当 node 用
-      env: { ...process.env, NODE_PATH: path.join(__dirname, "node_modules"), ELECTRON_RUN_AS_NODE: "1" },
+      // OPENWORKBUDDY_HOME：装机态下代码在只读的应用包里、数据在 ~/OpenWorkBuddy，
+      // 子进程要用同一个数据根才不会各写各的
+      env: { ...process.env, NODE_PATH: appPath("node_modules"), OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1" },
     });
     const out = makeOutSink("node", 8000, 8000);
     const err = makeOutSink("node-err", 4000, 6000);
@@ -727,7 +730,7 @@ function runShell(command, timeoutMs, cwd) {
     const child = spawn(sh.bin, sh.args, {
       cwd: cwd || workspaceDir,
       timeout: timeoutMs,
-      env: { ...process.env, PATH: shellPath() },
+      env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR },
       ...sh.opts,
     });
     const out = makeOutSink("shell", 8000, 8000);
@@ -750,8 +753,8 @@ function runShell(command, timeoutMs, cwd) {
 }
 
 // 资料库（与 server.js 的 /api/library 同一目录）：跨项目共享的参考文件 + 灵感笔记
-const LIB_DIR = path.join(__dirname, "data", "library");
-const NOTES_FILE = path.join(__dirname, "data", "inspirations.json");
+const LIB_DIR = dataPath("data", "library");
+const NOTES_FILE = dataPath("data", "inspirations.json");
 
 function libraryList() {
   let files = [];
@@ -1661,7 +1664,7 @@ async function executeTool(name, input, opts = {}) {
         if (!/^[a-z0-9][a-z0-9-_]{1,40}$/.test(name)) {
           return { content: "技能名不合法：请用小写字母/数字/连字符，如 market-research", isError: true };
         }
-        const dir = path.join(__dirname, "skills", name);
+        const dir = dataPath("skills", name);
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(path.join(dir, "skill.md"), input.content, "utf8");
         return { content: `技能「${name}」已保存并生效（skills/${name}/skill.md）`, isError: false };

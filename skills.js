@@ -11,8 +11,9 @@
 
 const fs = require("fs");
 const path = require("path");
+const { dataPath } = require("./paths");
 
-const SKILLS_DIR = path.join(__dirname, "skills");
+const SKILLS_DIR = dataPath("skills");
 
 function loadSkills() {
   const skills = [];

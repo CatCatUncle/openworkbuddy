@@ -17,9 +17,10 @@
 
 const fs = require("fs");
 const path = require("path");
+const { dataPath } = require("./paths");
 const store = require("./store");
 
-const DATA_DIR = process.env.WB_DATA_DIR || path.join(__dirname, "data");
+const DATA_DIR = process.env.WB_DATA_DIR || dataPath("data");
 const ITEMS_FILE = path.join(DATA_DIR, "memories.json");
 const MANUAL_FILE = path.join(DATA_DIR, "memory.md");
 const VEC_FILE = path.join(DATA_DIR, "memory_vectors.json"); // 向量单独存：memories.json 保持人能读

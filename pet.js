@@ -15,6 +15,7 @@
  */
 
 const path = require("path");
+const { dataPath } = require("./paths");
 const fs = require("fs");
 
 let electron = null;
@@ -42,7 +43,7 @@ let photoCache = { key: "", url: "" }; // 照片按 路径+修改时间 缓存�
 function photoDataUrl() {
   const MIME = { ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
   for (const ext of [".png", ".jpg", ".webp", ".gif"]) {
-    const p = path.join(__dirname, "data", "pet-avatar" + ext);
+    const p = dataPath("data", "pet-avatar" + ext);
     try {
       const st = fs.statSync(p);
       const key = p + ":" + st.mtimeMs;

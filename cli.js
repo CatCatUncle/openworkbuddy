@@ -15,6 +15,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { dataPath, preferData } = require("./paths");
 const readline = require("readline");
 const { createLLM } = require("./llm");
 const { setWorkspaceDir, getWorkspaceDir } = require("./tools");
@@ -57,7 +58,7 @@ const green = (s) => (tty ? `\x1b[32m${s}\x1b[0m` : s);
 const bold = (s) => (tty ? `\x1b[1m${s}\x1b[0m` : s);
 
 // ---------- 配置与运行时（与 server.js 同源） ----------
-const CONFIG_PATH = path.join(__dirname, "config.json");
+const CONFIG_PATH = dataPath("config.json");
 if (!fs.existsSync(CONFIG_PATH)) {
   console.error(red("找不到 config.json，请先运行一次 npm start 生成，或从 config.example.json 复制。"));
   process.exit(1);
@@ -67,13 +68,13 @@ if (config.workspace_dir) {
   try { setWorkspaceDir(config.workspace_dir); } catch {}
 }
 const llm = createLLM(config);
-const expertsDoc = store.readJson(path.join(__dirname, "experts.json"), {}) || {};
+const expertsDoc = store.readJson(preferData("experts.json"), {}) || {};
 let experts = expertsDoc.experts || [];
 let expertTeams = expertsDoc.teams || [];
 const mcpManager = new McpManager();
 
 // ---------- 会话持久化（与 server.js 同一目录同一结构） ----------
-const SESS_DIR = path.join(__dirname, "data", "sessions");
+const SESS_DIR = dataPath("data", "sessions");
 const sessionId = opts.session || "cli_" + new Date().toISOString().slice(0, 10).replace(/-/g, "");
 const sessFile = path.join(SESS_DIR, sessionId.replace(/[^\w-]/g, "_") + ".json");
 // 跟网页端是同一批文件，写法也得一样：原子改名 + .bak，坏了先回退别直接覆盖

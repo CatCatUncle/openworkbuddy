@@ -5,9 +5,10 @@
  */
 
 const path = require("path");
+const { dataPath } = require("./paths");
 const jsonStore = require("./store");
 
-const STORE = path.join(__dirname, "schedules.json");
+const STORE = dataPath("schedules.json");
 
 /** 错过的任务最多往回补一天；关机一个月不该开机就把一个月的晨报全补一遍 */
 const MAX_CATCHUP_MS = 24 * 3600 * 1000;

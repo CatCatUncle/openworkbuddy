@@ -19,16 +19,17 @@
 
 const fs = require("fs");
 const path = require("path");
+const { dataPath } = require("./paths");
 
 const SPEC_VERSION = "1.0.0";
 const PLUGIN_SCHEMA = `https://agent-plugins.org/schemas/${SPEC_VERSION}/plugin.schema.json`;
 const MCP_SCHEMA = `https://agent-plugins.org/schemas/${SPEC_VERSION}/mcp.schema.json`;
 
-const PLUGINS_DIR = path.join(__dirname, "plugins");
+const PLUGINS_DIR = dataPath("plugins");
 // PLUGIN_DATA 要跨插件升级保留，所以放 data/ 下而不是插件目录里（插件目录重装会被整个删掉）
-const PLUGIN_DATA_ROOT = path.join(__dirname, "data", "plugin-data");
+const PLUGIN_DATA_ROOT = dataPath("data", "plugin-data");
 // 装到哪来的记在插件目录外面：记在里面会被当成插件自己的文件，重装时又正好被删掉
-const SOURCES_PATH = path.join(__dirname, "data", "plugin-sources.json");
+const SOURCES_PATH = dataPath("data", "plugin-sources.json");
 
 const NAME_RE = /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 const MANIFEST_FIELDS = ["$schema", "name", "version", "description", "author", "homepage", "repository", "license", "keywords", "extensions"];
