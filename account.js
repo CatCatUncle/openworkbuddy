@@ -13,12 +13,13 @@
  */
 
 const path = require("path");
+const { dataPath } = require("./paths");
 const crypto = require("crypto");
 const express = require("express");
 const store = require("./store");
 
 // WB_DATA_DIR 只为测试留的口子：跑测试时指到临时目录，免得动到真账本
-const DATA_DIR = process.env.WB_DATA_DIR || path.join(__dirname, "data");
+const DATA_DIR = process.env.WB_DATA_DIR || dataPath("data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const USAGE_FILE = path.join(DATA_DIR, "usage.json");
 const TOKEN_COOKIE = "wb_token";

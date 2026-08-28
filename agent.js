@@ -90,6 +90,7 @@ const USE_SKILL_TOOL = {
 
 const fs = require("fs");
 const path = require("path");
+const { dataPath } = require("./paths");
 const os = require("os");
 const memory = require("./memory");
 
@@ -735,7 +736,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     if (!summary) return;
     // 先归档再动刀：压缩只做搬家不做销毁，真要翻旧账去 data/compact-archive 找
     try {
-      const dir = path.join(__dirname, "data", "compact-archive");
+      const dir = dataPath("data", "compact-archive");
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, `${Date.now()}.json`), JSON.stringify(old, null, 2));
     } catch (e) { console.warn("[agent] 压缩归档失败（不拦压缩）:", e.message); }

@@ -8,6 +8,7 @@ const BOOT_T0 = Date.now(); // server.js 从加载到 listen 的耗时，启动�
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const { DATA_DIR, dataPath, appPath } = require("./paths");
 const { createLLM, createEmbedder } = require("./llm");
 const { outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const { McpManager } = require("./mcp");
@@ -22,15 +23,16 @@ const store = require("./store");
 const { createImSessionStore } = require("./im-store");
 
 // config.json 不入 git（可能含 API Key）；首次运行自动从模板复制
-const CONFIG_PATH = path.join(__dirname, "config.json");
+const CONFIG_PATH = dataPath("config.json");
 if (!fs.existsSync(CONFIG_PATH)) {
-  fs.copyFileSync(path.join(__dirname, "config.example.json"), CONFIG_PATH);
+  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+  fs.copyFileSync(appPath("config.example.json"), CONFIG_PATH);
   console.log("已从 config.example.json 生成 config.json，请填入你的模型 API Key");
 }
 // 配置读坏了不能就这么空着起来：那样界面上所有 Key 都变成空的，用户随手一保存就把
 // 真 Key 覆盖没了。store 会先拿 .bak 顶（Key 原样还在），实在顶不住才把坏文件改名隔离、
 // 退回模板——原文还在 .corrupt-时间戳 里，Key 捞得回来。
-const config = store.readJson(CONFIG_PATH, JSON.parse(fs.readFileSync(path.join(__dirname, "config.example.json"), "utf8")));
+const config = store.readJson(CONFIG_PATH, JSON.parse(fs.readFileSync(appPath("config.example.json"), "utf8")));
 
 // 旧配置迁移：生成 models 列表（内置国产模型预设 + 自定义），active_model 指定当前使用
 if (!Array.isArray(config.models) || !config.models.length) {
@@ -88,7 +90,7 @@ const modelFailStreak = new Map();
 
 // 模型健康账本：每次整跑记一笔成败（按模型条目名，滚动只留最近 20 次），选模型时能看到
 // 「这个渠道最近靠不靠谱」，不用踩了才知道。落盘 data/model_health.json，重启不清零
-const HEALTH_FILE = path.join(__dirname, "data", "model_health.json");
+const HEALTH_FILE = dataPath("data", "model_health.json");
 const modelHealth = store.readJson(HEALTH_FILE, {}) || {};
 function recordModelHealth(name, ok, failMsg) {
   if (!name) return;
@@ -111,7 +113,7 @@ function healthSummary() {
 }
 
 // 专家团：数组引用被 runtime 闭包持有，增删改都就地改这个数组（热生效，无需重启）
-const EXPERTS_FILE = path.join(__dirname, "experts.json");
+const EXPERTS_FILE = dataPath("experts.json");
 const experts = [];
 const expertTeams = []; // 专家团 = 智能体团队，同样是被 runtime 闭包持有的活引用
 let expertsMeta = store.readJson(EXPERTS_FILE, {}) || {};
@@ -125,12 +127,12 @@ let imBridge = null; // IM 桥（含飞书长连接控制），init() 里创建
 
 // ---------- 会话持久化：内存 + 磁盘（data/sessions/<id>.json） ----------
 // 结构：{ history: 统一格式历史(供LLM), transcript: 界面回放记录, title, updated_at }
-const SESS_DIR = path.join(__dirname, "data", "sessions");
+const SESS_DIR = dataPath("data", "sessions");
 const sessions = new Map();
 const activeRuns = new Map(); // sessionId -> { ctrl: AbortController, interject: [] }（「停止」与「插队」用）
 // 正在跑的任务落一份名单到磁盘：应用中途被关/被重启时，内存里的 activeRuns 直接蒸发，
 // 下次启动就靠这份名单知道哪些会话是被打断的，在回放里明说，而不是让那一轮无声地断在半空
-const RUNNING_FILE = path.join(__dirname, "data", "running.json");
+const RUNNING_FILE = dataPath("data", "running.json");
 function persistRunning() {
   try { store.writeJsonAtomic(RUNNING_FILE, [...activeRuns.keys()]); } catch {}
 }
@@ -190,7 +192,7 @@ function autosaveSession(id, minGapMs = 5000) {
 }
 
 // IM 会话跟网页会话分开存（data/im-sessions/<键>.json），重启不丢上下文
-const imSessions = createImSessionStore({ dir: path.join(__dirname, "data", "im-sessions") });
+const imSessions = createImSessionStore({ dir: dataPath("data", "im-sessions") });
 
 /** 包装 emit：把事件同时记录到 transcript（文本增量合并，跳过噪音事件），顺便中途存盘 */
 // ---------- Goal 目标模式 ----------
@@ -360,7 +362,7 @@ function recordingEmit(send, events, sessionId) {
 
 const app = express();
 app.use(express.json({ limit: "60mb" }));
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(appPath("public")));
 // /api/auth/* /api/usage /api/credits/*
 app.use(
   account.createRouter({
@@ -961,7 +963,7 @@ app.post("/api/projects", (req, res) => {
     if (name.length > 30) throw new Error("项目名太长（最多 30 字）");
     if (config.projects.some((p) => p.name === name)) throw new Error("同名项目已存在");
     let dir = String((req.body || {}).dir || "").trim();
-    if (!dir) dir = path.join(__dirname, "projects", name.replace(/[/\\:*?"<>|]/g, "_"));
+    if (!dir) dir = dataPath("projects", name.replace(/[/\\:*?"<>|]/g, "_"));
     const real = setWorkspaceDir(dir); // 建目录并切换过去
     config.projects.push({ name, dir: real, ...projectMeta(req.body || {}), created_at: new Date().toISOString() });
     config.active_project = name;
@@ -1039,8 +1041,8 @@ app.delete("/api/projects/:name", (req, res) => {
 });
 
 // ---------- 资料库·灵感（跨项目共享：参考文件 + 灵感笔记，agent 可用 library_* 工具读取） ----------
-const LIB_DIR = path.join(__dirname, "data", "library");
-const NOTES_FILE = path.join(__dirname, "data", "inspirations.json");
+const LIB_DIR = dataPath("data", "library");
+const NOTES_FILE = dataPath("data", "inspirations.json");
 function readNotes() {
   const list = store.readJson(NOTES_FILE, []);
   return Array.isArray(list) ? list : [];
@@ -1315,7 +1317,7 @@ function cacheStats() {
 // 打包 data/（会话/记忆/账号/用量/审计）+ config.json + schedules.json + experts.json。
 // 工作空间成果文件不进备份（可能巨大，且用户自己看得见摸得着）。备份放项目根 backups/，
 // 用系统 tar（mac/linux 自带，win10+ 也有），不为这事拖第三方压缩依赖。
-const BACKUP_DIR = path.join(__dirname, "backups");
+const BACKUP_DIR = dataPath("backups");
 const BACKUP_ENTRIES = ["data", "config.json", "schedules.json", "experts.json"];
 
 // 备份里有 config.json（含 API Key）和全部账号数据——只有管理员能碰。
@@ -1343,10 +1345,10 @@ function makeBackup(tag) {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
     const name = `wb-backup-${stamp}${tag ? "-" + tag : ""}.tar.gz`;
-    const entries = BACKUP_ENTRIES.filter((e) => fs.existsSync(path.join(__dirname, e)));
+    const entries = BACKUP_ENTRIES.filter((e) => fs.existsSync(dataPath(e)));
     if (!entries.length) return reject(new Error("没有可备份的数据"));
     require("child_process").execFile(
-      "tar", ["-czf", path.join(BACKUP_DIR, name), "-C", __dirname, ...entries],
+      "tar", ["-czf", path.join(BACKUP_DIR, name), "-C", DATA_DIR, ...entries],
       { timeout: 300000 },
       (err) => (err ? reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带；更老的 Windows 请先升级系统）" : "tar 打包失败：" + err.message)) : resolve(name))
     );
@@ -1392,7 +1394,7 @@ app.post("/api/backup/restore", async (req, res) => {
     // 恢复前先把现状自动备一份——恢复错了还能回来，这一步绝不省
     const safety = await makeBackup("before-restore");
     await new Promise((resolve, reject) =>
-      require("child_process").execFile("tar", ["-xzf", p, "-C", __dirname], { timeout: 300000 },
+      require("child_process").execFile("tar", ["-xzf", p, "-C", DATA_DIR], { timeout: 300000 },
         (err) => (err ? reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带）" : "tar 解包失败：" + err.message)) : resolve()))
     );
     security.audit("数据恢复", `已从 ${path.basename(p)} 恢复（恢复前现状已存为 ${safety}）`, "放行");
@@ -1782,14 +1784,14 @@ app.delete("/api/expert-teams/:name", (req, res) => {
 const PET_PHOTO_EXT = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };
 function petPhotoPath() {
   for (const ext of [".png", ".jpg", ".webp", ".gif"]) {
-    const p = path.join(__dirname, "data", "pet-avatar" + ext);
+    const p = dataPath("data", "pet-avatar" + ext);
     if (fs.existsSync(p)) return p;
   }
   return "";
 }
 function clearPetPhoto() {
   for (const ext of [".png", ".jpg", ".webp", ".gif"]) {
-    try { fs.unlinkSync(path.join(__dirname, "data", "pet-avatar" + ext)); } catch {}
+    try { fs.unlinkSync(dataPath("data", "pet-avatar" + ext)); } catch {}
   }
 }
 app.post("/api/pet/avatar", (req, res) => {
@@ -1799,9 +1801,9 @@ app.post("/api/pet/avatar", (req, res) => {
     const buf = Buffer.from(m[2], "base64");
     // 前端已经压到 320px 见方再传，这里只兜底：3MB 以上不像压过，多半是直接甩了张原图
     if (!buf.length || buf.length > 3 * 1024 * 1024) return res.status(400).json({ error: "图片太大（压缩后应小于 3MB）" });
-    fs.mkdirSync(path.join(__dirname, "data"), { recursive: true });
+    fs.mkdirSync(dataPath("data"), { recursive: true });
     clearPetPhoto(); // 换形象先清旧的，免得两个扩展名同时躺着分不清用哪个
-    fs.writeFileSync(path.join(__dirname, "data", "pet-avatar" + PET_PHOTO_EXT[m[1]]), buf);
+    fs.writeFileSync(dataPath("data", "pet-avatar" + PET_PHOTO_EXT[m[1]]), buf);
     config.pet = { ...(config.pet || {}), character: "photo", enabled: true }; // 特地传了张照片 = 想要它出现
     saveConfig();
     if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
@@ -1906,9 +1908,9 @@ global.__wbPetTool = {
       return { content: "处理图片失败：" + e.message, isError: true };
     }
 
-    fs.mkdirSync(path.join(__dirname, "data"), { recursive: true });
+    fs.mkdirSync(dataPath("data"), { recursive: true });
     clearPetPhoto();
-    fs.writeFileSync(path.join(__dirname, "data", "pet-avatar.png"), buf);
+    fs.writeFileSync(dataPath("data", "pet-avatar.png"), buf);
     const scale = Math.max(0.6, Math.min(2, Number((input || {}).scale) || Number(cur.scale) || 1));
     config.pet = { ...cur, enabled: true, character: "photo", scale };
     saveConfig();
@@ -2115,7 +2117,7 @@ app.post("/api/chat", async (req, res) => {
   // 默认工作空间：每个对话固定一个成果子文件夹（任务_月日_标题），根目录不再越堆越乱；
   // 用户自选的工作目录 / 项目目录保持原地读写不变（素材要在原文件夹里就地处理）
   let taskBaseDir = null;
-  if (path.resolve(getWorkspaceDir()) === path.join(__dirname, "workspace")) {
+  if (path.resolve(getWorkspaceDir()) === dataPath("workspace")) {
     if (!sess.dir) {
       const d = new Date();
       const stamp = String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
@@ -2360,7 +2362,7 @@ function evalSummaryBrief(j) {
 function evalHistory(limit = 20) {
   const out = [];
   try {
-    const root = path.join(__dirname, "eval", "runs");
+    const root = dataPath("eval", "runs");
     for (const d of fs.readdirSync(root).sort().reverse()) {
       const j = store.readJson(path.join(root, d, "results.json"), null);
       if (j) out.push({ dir: d, ...evalSummaryBrief(j) });
@@ -2373,7 +2375,7 @@ app.post("/api/eval/start", (req, res) => {
   if (evalState.running) return res.status(409).json({ error: "已有一轮评测在跑，等它结束" });
   const model = String((req.body || {}).model || config.active_model);
   if (!(config.models || []).some((m) => m.name === model)) return res.status(400).json({ error: `模型「${model}」不在列表里` });
-  const args = [path.join(__dirname, "eval", "run.js"), "--model", model];
+  const args = [appPath("eval", "run.js"), "--model", model];
   const only = String((req.body || {}).task || "").trim();
   if (only) args.push("--task", only);
   const judge = String((req.body || {}).judge || "").trim();
@@ -2383,8 +2385,8 @@ app.post("/api/eval/start", (req, res) => {
   if (repeat > 1) args.push("--repeat", String(repeat));
   evalState.running = true; evalState.lines = []; evalState.startedAt = Date.now(); evalState.model = model; evalState.exit = null;
   const child = require("child_process").spawn(process.execPath, args, {
-    cwd: __dirname,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, // execPath 是 Electron，不加就弹新应用实例
+    cwd: appPath(),
+    env: { ...process.env, OPENWORKBUDDY_HOME: DATA_DIR, ELECTRON_RUN_AS_NODE: "1" }, // execPath 是 Electron，不加就弹新应用实例
   });
   let buf = "";
   const onData = (d) => {
@@ -2405,14 +2407,14 @@ app.get("/api/eval/status", (_req, res) => {
   res.json({ running: evalState.running, model: evalState.model, startedAt: evalState.startedAt, exit: evalState.exit, lines: evalState.lines });
 });
 app.get("/api/eval/history", (_req, res) => {
-  const bl = store.readJson(path.join(__dirname, "eval", "baseline.json"), null);
+  const bl = store.readJson(dataPath("eval", "baseline.json"), null);
   res.json({ runs: evalHistory(), baseline: bl ? { at: bl.at, commit: bl.commit || "", model: bl.model || "", source_dir: bl.source_dir || "" } : null });
 });
 // 钉基线：把某次跑批的各题通过率写进 eval/baseline.json，之后每次跑批自动逐题对比、退步点名
 app.post("/api/eval/baseline", (req, res) => {
   const dir = String((req.body || {}).dir || "");
   if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
-  const j = store.readJson(path.join(__dirname, "eval", "runs", dir, "results.json"), null);
+  const j = store.readJson(dataPath("eval", "runs", dir, "results.json"), null);
   if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
   const bl = {
     at: j.at, commit: j.commit || "", model: j.model, repeat: j.repeat || 1,
@@ -2424,14 +2426,15 @@ app.post("/api/eval/baseline", (req, res) => {
       return [r.id, { pass_rate: r.pass_rate != null ? r.pass_rate : +(passes / k).toFixed(3) }];
     })),
   };
-  fs.writeFileSync(path.join(__dirname, "eval", "baseline.json"), JSON.stringify(bl, null, 2));
+  fs.mkdirSync(dataPath("eval"), { recursive: true });
+  fs.writeFileSync(dataPath("eval", "baseline.json"), JSON.stringify(bl, null, 2));
   res.json({ ok: true, baseline: { at: bl.at, commit: bl.commit, model: bl.model, source_dir: dir } });
 });
 // 单次评测完整明细：每题 checks、AI 评委理由、人工分、最终回复摘录、产物清单
 app.get("/api/eval/run/:dir", (req, res) => {
   const dir = String(req.params.dir || "");
   if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
-  const j = store.readJson(path.join(__dirname, "eval", "runs", dir, "results.json"), null);
+  const j = store.readJson(dataPath("eval", "runs", dir, "results.json"), null);
   if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
   res.json({ dir, ...j });
 });
@@ -2440,7 +2443,7 @@ app.post("/api/eval/human", (req, res) => {
   const b = req.body || {};
   const dir = String(b.dir || "");
   if (!/^[\w.-]+$/.test(dir)) return res.status(400).json({ error: "目录名不合法" });
-  const file = path.join(__dirname, "eval", "runs", dir, "results.json");
+  const file = dataPath("eval", "runs", dir, "results.json");
   const j = store.readJson(file, null);
   if (!j) return res.status(404).json({ error: "没有这次评测的记录" });
   const r = (j.results || []).find((x) => x.id === String(b.task_id || ""));
@@ -2577,7 +2580,7 @@ function accountedRuntime(baseRuntime, source) {
         taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? "定时任务" : source,
         // IM / 定时任务的产物也各归各的文件夹（仅默认工作空间；调用方可在 args 里覆盖）
         baseDir:
-          path.resolve(getWorkspaceDir()) === path.join(__dirname, "workspace")
+          path.resolve(getWorkspaceDir()) === dataPath("workspace")
             ? source === "im" ? "IM_对话" : source === "schedule" ? "定时任务" : null
             : null,
         projectContext: projectContextOf(activeProject()),

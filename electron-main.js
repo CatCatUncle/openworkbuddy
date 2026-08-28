@@ -5,6 +5,11 @@ const BOOT_T0 = Date.now(); // 启动分段计时：哪段慢一眼看清，别�
 const { app, BrowserWindow, shell, globalShortcut } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { dataPath, seedDataDir } = require("./paths");
+
+// 装机态：代码在只读的应用包里，配置/数据/工作区落到 ~/OpenWorkBuddy。
+// 首次启动（以及每次升级后）把包里自带的 experts.json 和内置技能补进去，只补缺、不覆盖用户改过的。
+seedDataDir();
 
 // 改过两次名（workbuddy-clone → openbuddy → openworkbuddy）。Electron 的 userData 目录跟着
 // package.json 的 name 走，不搬家的话老用户会丢 localStorage（表现为莫名其妙被登出）。
@@ -30,7 +35,7 @@ const LEGACY_USERDATA = ["openbuddy", "workbuddy-clone"];
 
 const PORT = (() => {
   try {
-    return require(path.join(__dirname, "config.json")).server.port || 3800;
+    return require(dataPath("config.json")).server.port || 3800;
   } catch {
     return 3800;
   }
@@ -111,13 +116,13 @@ app.whenReady().then(async () => {
   const pet = require(path.join(__dirname, "pet.js"));
   global.__wbPet = pet;
   try {
-    const petCfg = require(path.join(__dirname, "config.json")).pet || {};
+    const petCfg = require(dataPath("config.json")).pet || {};
     pet.applyConfig({ enabled: petCfg.enabled === true, scale: petCfg.scale || 1, opacity: petCfg.opacity || 1, notify: petCfg.notify !== false, character: petCfg.character || "cat" });
   } catch {
     pet.applyConfig({ enabled: false }); // 读不到配置就当没配过：默认不该有宠物
   }
   try {
-    const shortcuts = require(path.join(__dirname, "config.json")).shortcuts || {};
+    const shortcuts = require(dataPath("config.json")).shortcuts || {};
     registerShortcuts(shortcuts);
   } catch {
     registerShortcuts({});

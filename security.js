@@ -11,12 +11,13 @@
 
 const fs = require("fs");
 const path = require("path");
+const { DATA_DIR, dataPath } = require("./paths");
 const os = require("os");
 const { spawn } = require("child_process");
 
 const jsonStore = require("./store");
 
-const AUDIT_FILE = path.join(__dirname, "data", "audit.json");
+const AUDIT_FILE = dataPath("data", "audit.json");
 let auditLog = jsonStore.readJson(AUDIT_FILE, []);
 if (!Array.isArray(auditLog)) auditLog = [];
 
@@ -98,7 +99,7 @@ function auditExport() {
 // ---------- 文件安全 ----------
 
 function expandPath(s) {
-  return path.resolve(String(s).replace(/^~(?=$|\/)/, os.homedir()).replace(/^<app>/, __dirname));
+  return path.resolve(String(s).replace(/^~(?=$|\/)/, os.homedir()).replace(/^<app>/, DATA_DIR));
 }
 function underPrefix(p, prefix) {
   return p === prefix || p.startsWith(prefix + path.sep);
