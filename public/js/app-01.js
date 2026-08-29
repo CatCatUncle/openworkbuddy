@@ -586,9 +586,21 @@ function createTurnUI(userText, turnMode, forSid) {
       } else {
         const ms = (turn._usage && turn._usage.elapsed_ms) || Date.now() - t0;
         const n = procBody.querySelectorAll(".step-card").length;
-        procWrap.querySelector(".pt").textContent = `已完成 ${fmtDur(ms)}` + (n ? ` · ${n} 步` : "") + (liveRound ? ` · 续跑 ${liveRound} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
-        const hasErr = !!procBody.querySelector(".tag.err") || turn._limited;
-        if (!hasErr) procWrap.classList.remove("open");
+        const pt = procWrap.querySelector(".pt");
+        pt.textContent = `已完成 ${fmtDur(ms)}` + (n ? ` · ${n} 步` : "") + (liveRound ? ` · 续跑 ${liveRound} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
+        // 出过错以前靠"保持展开"提示，结果一个四十步的任务只要中间错过一次就整片摊开，
+        // 用户要往下滚半天才够得着结论。改成收起 + 标题挂红角标：信号一个字没少，点开就直达过程
+        const marks = [];
+        const nErr = procBody.querySelectorAll(".tag.err").length;
+        if (nErr) marks.push(`${nErr} 步出错`);
+        if (turn._limited) marks.push("未跑完");
+        if (marks.length) {
+          const chip = document.createElement("span");
+          chip.className = "proc-warn";
+          chip.textContent = "⚠ " + marks.join(" · ");
+          pt.after(chip);
+        }
+        procWrap.classList.remove("open"); // 回合结束一律收起
       }
     }
     // 来源、产出卡片都是回合的结论物，挪到最后——否则会卡在中途正文和最终结论之间
@@ -1089,8 +1101,10 @@ function renderTurnOutputs(body, changed) {
   for (const f of changed) {
     const isHtml = /\.html?$/i.test(f.name);
     const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name);
-    // 真正的展示品（网页/图）才配得上缩略图卡片；其余文件进变更清单，别把对话挡成一屏方框
-    if (isHtml || isImg) {
+    // 网页/图有缩略图；PPT/Word/Excel/PDF 这些要交到用户手上的成果出图标卡。
+    // 以前它们只在收起的「查看所有变更」里躺着一行，做完一个 PPT，用户在对话里压根看不见它，
+    // 只能自己去右侧面板翻。途中的脚手架（脚本、日志、PROGRESS.md）仍然只进清单，别把对话挡成一屏方框
+    if (isHtml || isImg || isDeliverable(f.name)) {
       const base = f.name.split("/").pop();
       const same = grid.querySelector(`.out-card[data-name="${cssEsc(f.name)}"]`);
       // 同名同大小 = 同一件产出被拷成了两份（agent 常把任务子目录里的产出再往工作空间根目录复制一份）。
@@ -1128,6 +1142,14 @@ function renderTurnOutputs(body, changed) {
   block.querySelector(".out-hd .n").textContent = `(${list.querySelectorAll(".out-row").length})`;
 }
 
+// 「交到用户手上的成果」：点开就能用的东西，不包括干活途中的脚手架
+const DELIVER_RE = /\.(pdf|pptx?|docx?|xlsx?|csv|md|txt|mp4|mov|webm|m4v|zip)$/i;
+const SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)\.(md|txt)$/i;
+function isDeliverable(name) {
+  const base = String(name || "").split("/").pop();
+  return DELIVER_RE.test(base) && !SCAFFOLD_RE.test(base);
+}
+
 function pathDepth(n) { return String(n || "").split("/").length; }
 function extOf(n) { const m = String(n || "").match(/\.([^./]+)$/); return m ? m[1].toLowerCase() : ""; }
 
@@ -1159,7 +1181,13 @@ function attachAltFmt(card, alt) {
 
 function makeOutCard(f, isHtml) {
   const url = "/api/files/view/" + encodeURIComponent(f.name) + "?t=" + Date.now();
-  const thumb = isHtml || /\.svg$/i.test(f.name) ? `<iframe src="${url}" scrolling="no" tabindex="-1" aria-hidden="true"></iframe>` : `<img src="${url}" alt="">`;
+  // 渲染得出来的画缩略图，画不出来的（PPT/Word/Excel/PDF/视频）摆一个大号文件图标——
+  // 别给它一个 <img> 拉不出图的空框，那看着像坏了
+  const thumb = isHtml || /\.svg$/i.test(f.name)
+    ? `<iframe src="${url}" scrolling="no" tabindex="-1" aria-hidden="true"></iframe>`
+    : /\.(png|jpe?g|gif|webp|bmp|ico)$/i.test(f.name)
+      ? `<img src="${url}" alt="">`
+      : `<div class="ph">${fileIcon(f.name)}</div>`;
   const card = document.createElement("div");
   card.className = "out-card";
   card.dataset.name = f.name;
@@ -1167,9 +1195,10 @@ function makeOutCard(f, isHtml) {
   card.dataset.stem = f.name.replace(/\.[^./]+$/, ""); // 去掉扩展名的全路径：认 svg / png 是同一张图用
   if (f.size) card.dataset.size = String(f.size);
   card.title = f.name;
+  const openHint = OFFICE_RE.test(f.name) ? "点击用系统程序打开" : "点击预览";
   card.innerHTML = `<div class="out-thumb">${thumb}</div>
     <div class="out-info"><div class="out-name">${esc(f.name.split("/").pop())}</div>
-      <div class="out-meta">${fmtSize(f.size)} · 点击预览</div></div>
+      <div class="out-meta">${fmtSize(f.size)} · ${openHint}</div></div>
     <div class="out-acts">${isHtml ? `<button data-a="br">在浏览器打开</button>` : ""}
       <button data-a="rv">所在位置</button>
       <a href="/api/files/download/${encodeURIComponent(f.name)}" download>下载</a></div>`;
