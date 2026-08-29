@@ -50,7 +50,18 @@ const ASK_USER_TOOL = {
     type: "object",
     properties: {
       question: { type: "string", description: "要问的问题，一句话说清，别夹多个问题" },
-      options: { type: "array", items: { type: "string" }, description: "2~4 个具体选项，短语即可（用户也可以不点选项、自己输入）" },
+      options: {
+        type: "array",
+        description: "2~4 个选项。用户也可以两个都不选、自己输入",
+        items: {
+          type: "object",
+          properties: {
+            label: { type: "string", description: "选项本身，一个短语，20 字以内" },
+            detail: { type: "string", description: "选了它会得到什么、代价是什么，一句话。用户就是靠这句做判断的，不许省，也不许只是把 label 换个说法重说一遍" },
+          },
+          required: ["label", "detail"],
+        },
+      },
     },
     required: ["question", "options"],
   },
@@ -431,7 +442,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     return `\n\n## 当前模式：Craft（执行）\n用户已经在这个模式里点了「做」，就是要你动手，不是要你确认。
 - 直接改文件、直接跑命令、直接交付。**严禁**用「要不要我帮你改？」「确认后我就开始」「你希望用哪种方案？」这类话结束回合——一个回合结束时，要么活干完了，要么真的卡在只有用户本人能解决的事情上（登录、授权、付钱）。
 - 方案有好几种、但**成品长得差不多**（用哪个库、代码怎么组织、跑几轮）——自己挑最稳的那个，在开场白里说一句"我按 X 来做"，然后做。做错了再改，比停在原地问强。
-- 但**成品形态会完全不同的岔路，不许自己替用户挑**：封面图是 AI 生图还是自己排版截图、报告交 Word 还是 PDF 还是飞书文档、视频出横版还是竖版、文案走口播稿还是图文——这类挑错了等于整件事白做。用 ask_user 把两条路摆出来，每条路一句话说清代价（比如"AI 生图：画面有质感有氛围，风格随机；HTML 排版：文字版式配色全可控，风格偏平面"），拿到答案再动手。
+- 但**成品形态会完全不同的岔路，不许自己替用户挑**：封面图是 AI 生图还是自己排版截图、报告交 Word 还是 PDF 还是飞书文档、视频出横版还是竖版、文案走口播稿还是图文——这类挑错了等于整件事白做。用 ask_user 把两条路摆出来：label 写选项本身，detail 写"选了它会得到什么、代价是什么"（比如 label"AI 生图" / detail"画面有质感有氛围，但风格随机、不好复现"；label"HTML 排版截图" / detail"版式配色全可控、改起来快，但偏平面没氛围"）。detail 是用户唯一的判断依据，不许省，也不许把 label 换个说法重说一遍。拿到答案再动手。
 - 用户已经点名走哪条路了（"你用生图 API 给我做"），就照他说的做——哪怕你觉得另一条更稳，也只能把风险一句话说在前面，不许拿它当理由偷偷换方案。技能文档里的推荐做法同理：那是没人表态时的默认值，不是用来推翻用户的。
 - 上面禁的是**文字反问**，不是 ask_user 工具——该问就问，用 ask_user 弹选项，拿到答案接着干：
   · 开工前：需求含糊到可能白干一场，或者风格/范围/平台/受众这类选择会让交付物完全不同——先问一题再动手，比做完返工强；
@@ -443,8 +454,15 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser }) {
     if (tc.name === "ask_user") {
       const question = String(tc.input.question || "").trim().slice(0, 500);
+      // 选项现在是 {label, detail}，但字符串也照收：老会话回放、以及模型偷懒直接给短语的情况
       const options = (Array.isArray(tc.input.options) ? tc.input.options : [])
-        .map((o) => String(o).trim().slice(0, 120)).filter(Boolean).slice(0, 6);
+        .map((o) =>
+          o && typeof o === "object"
+            ? { label: String(o.label || "").trim().slice(0, 120), detail: String(o.detail || "").trim().slice(0, 200) }
+            : { label: String(o).trim().slice(0, 120), detail: "" }
+        )
+        .filter((o) => o.label)
+        .slice(0, 6);
       if (!question) return { content: "question 不能为空。", isError: true };
       if (!askUser) {
         // IM/定时任务/评测这类无人值守场景没有回答通道，别傻等
@@ -461,7 +479,13 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
         return { content: `等了 ${Math.round(waited / 1000)} 秒，用户没有回应。按你判断的最合理默认继续做，并在最终汇报里注明你替用户做了什么假设，别再重复问。`, isError: false, extendMs: waited };
       }
       emit({ type: "ask_answer", ask_id: askId, answer, depth });
-      return { content: `用户的回答：${answer}`, isError: false, extendMs: waited };
+      // 选中的那条路把 detail 一并回填：那句话是你自己写的承诺，照着它做，别选完就忘
+      const picked = options.find((o) => o.label === answer);
+      return {
+        content: `用户的回答：${answer}` + (picked && picked.detail ? `（这条路你自己写的是：${picked.detail}——照它做）` : ""),
+        isError: false,
+        extendMs: waited,
+      };
     }
     if (tc.name === "use_skill") {
       const skills = getSkills();
