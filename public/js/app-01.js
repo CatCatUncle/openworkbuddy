@@ -578,10 +578,10 @@ function createTurnUI(userText, turnMode, forSid) {
     const bar = document.createElement("div");
     bar.className = "turn-actions";
     bar.innerHTML =
-      `<button class="ta-btn" data-a="copy" title="复制回复">⧉</button>` +
-      `<button class="ta-btn" data-a="up" title="有帮助">👍</button>` +
-      `<button class="ta-btn" data-a="down" title="没帮助">👎</button>` +
-      `<button class="ta-btn" data-a="regen" title="重新生成">↻ 重新生成</button>` +
+      `<button class="ta-btn" data-a="copy" title="复制回复">${ic("copy")}</button>` +
+      `<button class="ta-btn" data-a="up" title="有帮助">${ic("thumbs-up")}</button>` +
+      `<button class="ta-btn" data-a="down" title="没帮助">${ic("thumbs-down")}</button>` +
+      `<button class="ta-btn" data-a="regen" title="重新生成">${ic("refresh-cw")} 重新生成</button>` +
       `<span class="ta-meta"></span>`;
     const u = turn._usage;
     const meta = bar.querySelector(".ta-meta");
@@ -817,7 +817,7 @@ function makeAskCard(ev, turnSid) {
   card.className = "ask-card";
   card.dataset.askId = ev.ask_id || "";
   card.innerHTML =
-    `<div class="ask-hd"><span class="ask-ic">🙋</span><span class="ask-lb">${ev.expert ? `专家「${esc(ev.expert)}」拿不准，想问你一句` : "有个岔路，想让你定一下"}</span><span class="ask-timer"></span></div>` +
+    `<div class="ask-hd"><span class="ask-ic">${ic("circle-help")}</span><span class="ask-lb">${ev.expert ? `专家「${esc(ev.expert)}」拿不准，想问你一句` : "有个岔路，想让你定一下"}</span><span class="ask-timer"></span></div>` +
     `<div class="ask-q">${esc(ev.question || "")}</div>` +
     `<div class="ask-opts"></div>` +
     `<div class="ask-free"><input type="text" placeholder="都不是？直接说你想要的…" maxlength="500"><button type="button">发送</button></div>` +
@@ -1259,9 +1259,10 @@ function makeOutCard(f, isHtml) {
   card.innerHTML = `<div class="out-thumb">${thumb}</div>
     <div class="out-info"><div class="out-name">${esc(f.name.split("/").pop())}</div>
       <div class="out-meta">${fmtSize(f.size)} · ${openHint}</div></div>
-    <div class="out-acts">${isHtml ? `<button data-a="br">在浏览器打开</button>` : ""}
-      <button data-a="rv">所在位置</button>
-      <a href="/api/files/download/${encodeURIComponent(f.name)}" download>下载</a></div>`;
+    <div class="out-acts">
+      <button class="oa-main" data-a="${isHtml ? "br" : "pv"}">${isHtml ? ic("globe") : ic("file-text")}<span class="tx">${isHtml ? "在浏览器打开" : "预览"}</span></button>
+      <button class="oa-ico" data-a="rv" title="打开所在位置">${ic("folder-open")}</button>
+      <a class="oa-ico" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">${ic("download")}</a></div>`;
   card.onclick = (e) => {
     if (e.target.closest("a")) return;
     if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e);
