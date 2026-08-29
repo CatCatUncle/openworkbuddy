@@ -954,12 +954,54 @@ function selfCheck(file, rel) {
     if (fences % 2 === 1) return "\n⚠️ Markdown 里有 ``` 代码围栏没闭合（奇数个），界面会把后面的正文整块吞掉。补上收尾的 ```。";
     return "";
   }
+  if (ext === ".svg") {
+    // 独立的 .svg 文件同样没有外层页面给它变量，坏法和 HTML 一模一样
+    const { missing } = undefinedCssVars(src, path.dirname(file));
+    if (missing.length) {
+      return `\n⚠️ 这个 SVG 用了没定义的 CSS 变量：${missing.slice(0, 6).map((n) => "--" + n).join("、")}。` +
+        `独立文件没有外层页面给它变量，var(--没定义的) 会让颜色回落到黑色，图上很可能黑底黑字。` +
+        `在 <svg> 里自己写一段 <style>:root{--x:…}</style>，或者直接把颜色写死。`;
+    }
+    return "";
+  }
   if (ext === ".html" || ext === ".htm") {
     const issues = auditHtml(src, path.dirname(file)).filter((x) => x.level === "错");
     if (issues.length) return `\n⚠️ 页面结构有问题：${issues.map((x) => x.msg).join("；")}。建议再跑一次 check_page 确认。`;
     return "";
   }
   return "";
+}
+
+/**
+ * 查「用了但没定义」的 CSS 变量。
+ *
+ * 这是一条真出过事的坑：模型给回复正文里的内联 SVG 学会了用 var(--color-text-primary)
+ * 这套语义变量（那是应用页面定义的，暗色模式会自动跟着变），然后把同一套写法带进了
+ * 它自己写到磁盘的独立 HTML 文件里。那个文件根本没定义这些变量，于是
+ * fill: var(--没定义的) 整条声明作废、回落到默认的黑色——底块黑的、字也是黑的，
+ * 用户看到的就是一片黑。而且在应用内预览时是好的（变量从外层页面继承下来了），
+ * 只有用浏览器打开才露馅，属于最难自己发现的那类。
+ *
+ * 判定很确定：var(--x) 没写兜底值、全文又找不到 --x: 的定义，就是错。
+ * 带兜底值的 var(--x, #333) 不算问题——那正是该有的写法。
+ */
+function undefinedCssVars(src, baseDir) {
+  let defsSrc = src;
+  let remoteCss = false;
+  // 变量也可能定义在外链样式表里。本地的读进来一起看；远程的读不到，降级成「警」
+  for (const m of src.matchAll(/<link[^>]+rel=["']stylesheet["'][^>]*>/gi)) {
+    const href = (m[0].match(/href=["']([^"']+)["']/i) || [])[1];
+    if (!href) continue;
+    if (/^https?:/i.test(href)) { remoteCss = true; continue; }
+    try { defsSrc += fs.readFileSync(path.join(baseDir, href.split("?")[0]), "utf8"); } catch { remoteCss = true; }
+  }
+  const defined = new Set([...defsSrc.matchAll(/--([A-Za-z0-9_-]+)\s*:/g)].map((m) => m[1]));
+  const missing = new Set();
+  for (const m of src.matchAll(/var\(\s*--([A-Za-z0-9_-]+)\s*([,)])/g)) {
+    if (m[2] === ",") continue; // 写了兜底值，坏不了
+    if (!defined.has(m[1])) missing.add(m[1]);
+  }
+  return { missing: [...missing], remoteCss };
 }
 
 /** 网页静态体检。只报能确定的问题，不做审美评判 */
@@ -985,6 +1027,17 @@ function auditHtml(src, baseDir) {
   for (const rel of local.slice(0, 40)) {
     const f = path.join(baseDir, rel.split("?")[0].split("#")[0]);
     if (!fs.existsSync(f)) add("错", `引用了不存在的本地文件：${rel}`);
+  }
+  const cssVar = undefinedCssVars(src, baseDir);
+  if (cssVar.missing.length) {
+    const names = cssVar.missing.slice(0, 6).map((n) => "--" + n).join("、");
+    const more = cssVar.missing.length > 6 ? `（共 ${cssVar.missing.length} 个）` : "";
+    add(
+      cssVar.remoteCss ? "警" : "错",
+      `用了没定义的 CSS 变量：${names}${more}。var(--没定义的) 会让整条声明作废、回落到默认色——` +
+        `文字和底色双双变黑，页面上就是一片看不清。要么在本文件的 :root 里把它们定义出来，` +
+        `要么直接写死颜色值，或者至少写兜底 var(--x, #333)`
+    );
   }
   const text = src.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   if (text.length < 30) add("警", "去掉标签后几乎没有正文（可能是内容全靠 JS 生成，也可能就是个空壳）");
