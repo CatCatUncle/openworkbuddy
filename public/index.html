@@ -5,13 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OpenWorkBuddy</title>
 <link rel="icon" href="/icon.png">
+<link rel="stylesheet" href="/css/ui.css">
 <style>
   :root {
-    --wb-brand: #5b5ff7; --wb-brand-weak: #eef0ff; --wb-brand-grad: linear-gradient(135deg,#5b5ff7,#8b5cf6);
-    --wb-bg: #ffffff; --wb-bg-side: #f7f8fa; --wb-bg-hover: #eef0f4;
-    --wb-border: #e9ebf0; --wb-text: #17181c; --wb-text-2: #6a6f7d; --wb-text-3: #9aa0ad;
-    --wb-ok: #16a34a; --wb-err: #e5484d;
+    /* --wb-* 一律指向 ui.css 里的 shadcn 令牌。老名字留着是为了不动那八百行既有样式，
+       但值只有一处（ui.css），改主题不用两边同步，也就不会两边各说各的。 */
+    --wb-brand: var(--primary); --wb-brand-weak: var(--ring-weak); --wb-brand-grad: linear-gradient(135deg,#5b5ff7,#8b5cf6);
+    --wb-bg: var(--background); --wb-bg-side: var(--muted); --wb-bg-hover: var(--accent);
+    --wb-border: var(--border); --wb-text: var(--foreground); --wb-text-2: var(--muted-foreground); --wb-text-3: var(--subtle-foreground);
+    --wb-ok: var(--success); --wb-err: var(--destructive);
     --wb-content-w: 832px; --wb-code-bg: #16181f; --wb-code-text: #d5dcec;
+    /* 这四个一直被 JS 里的内联样式引用，却从来没人定义过——评测页、运行记录页的边框和卡片底色
+       就这么一路空着（跟之前「生成的网页黑底黑字」是同一类毛病）。补上，并同样接到令牌上 */
+    --wb-line: var(--border); --wb-card: var(--card); --wb-warn: var(--warning); --mono: var(--font-mono);
     /* 给模型画的内联 SVG 信息图用的一套语义色/字体变量。图里写 var(--color-text-primary)
        而不是写死 #333，暗色模式下才不会变成黑底黑字。名字沿用通行叫法，模型不用学新词。 */
     --color-text-primary: #2c2c2a; --color-text-secondary: #5f5e5a; --color-text-tertiary: #888780;
@@ -228,9 +234,10 @@
   /* 两件产出重名时才会出现的目录前缀：压暗，别抢文件名 */
   .out-name .dim { color: var(--wb-text-3); font-weight: 400; }
   .out-meta { font-size: 13px; color: var(--wb-text-3); margin-top: 2px; }
-  .out-acts { display: flex; gap: 4px; padding: 0 8px 8px; }
-  .out-acts button, .out-acts a { flex: 1; text-align: center; border: 1px solid var(--wb-border); background: none; color: var(--wb-text-2); font-size: 13px; padding: 4px 0; border-radius: 6px; cursor: pointer; text-decoration: none; line-height: 1.5; }
-  .out-acts button:hover, .out-acts a:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
+  .out-acts { display: flex; gap: 6px; padding: 0 10px 10px; }
+  /* 主操作吃掉整行、副操作缩成方形图标钮：以前三个等分按钮，「在浏览器打开」六个字被挤成两行 */
+  .out-acts .oa-main { flex: 1; min-width: 0; }
+  .out-acts .oa-main span.tx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* 回复底部操作条（复制/评价/重新生成 + 消耗/模型，仿官方） */
   .turn-actions { display: flex; align-items: center; gap: 2px; margin-top: 10px; }
   .ta-btn { border: none; background: none; cursor: pointer; font-size: 14px; color: var(--wb-text-3); padding: 4px 7px; border-radius: 6px; line-height: 1; }
@@ -416,9 +423,7 @@
   .um-opt .ck { float: right; color: var(--wb-brand); font-weight: 700; }
   /* ---------- 深色外观（外观菜单切换，跟随系统时随 prefers-color-scheme） ---------- */
   html[data-theme="dark"] {
-    --wb-brand-weak: #2e3054;
-    --wb-bg: #1e1f24; --wb-bg-side: #17181c; --wb-bg-hover: #2b2d34;
-    --wb-border: #34363e; --wb-text: #e8eaf0; --wb-text-2: #a4a9b6; --wb-text-3: #7a8090;
+    /* 颜色本体在 ui.css 的 html[data-theme="dark"] 里换掉了，这里只补它没覆盖的几项 */
     --wb-code-bg: #101218; --wb-code-text: #d5dcec;
     --color-text-primary: #e8eaf0; --color-text-secondary: #a4a9b6; --color-text-tertiary: #7a8090;
     --color-border-primary: #4a4d57; --color-border-secondary: #3a3d45; --color-border-tertiary: #2f323a;
@@ -793,26 +798,118 @@
 
   /* 用户气泡加一点纵深，别糊在背景上 */
   .u-msg .bubble { box-shadow: 0 2px 8px rgba(91,95,247,.18); }
+
+  /* ================= shadcn 桥接层：老类名接到 ui.css 的几何上 =================
+     这段必须排在 <style> 最后——ui.css 是外链，先于内联样式，压不住上面那些旧写法。
+     只统一「尺寸节奏」（高度/圆角/字号/图标 16px/focus 3px 光圈），颜色仍走 --wb-*，
+     所以八百行既有样式一行都不用动，视觉上却终于对齐了。 */
+  .btn-brand, .btn-plain {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    border-radius: var(--radius-md); line-height: 1; white-space: nowrap;
+  }
+  .btn-brand { height: 36px; padding: 0 16px; font-size: 14px; font-weight: 500; }
+  .btn-plain { height: 32px; padding: 0 12px; font-size: 13px; }
+  .btn-brand:focus-visible, .btn-plain:focus-visible, .chip:focus-visible, .icon-btn:focus-visible,
+  .picker-btn:focus-visible, .ui-btn:focus-visible {
+    outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px var(--ring-weak);
+  }
+  .icon-btn { border-radius: var(--radius-md); }
+  .chip { border-radius: 999px; }
+
+  /* 图标尺寸：跟 shadcn 一样，按钮里的图标一律 16，密集处 14 */
+  .i { color: inherit; }
+  button .i, .picker-btn .i, .link .i, .mi .i, a.icon-btn .i { width: 16px; height: 16px; }
+  .side-nav .item .ic .i { width: 17px; height: 17px; }
+  .side-nav .item .ic { display: inline-flex; align-items: center; justify-content: center; width: 18px; flex: none; }
+  .picker-btn .i:last-child { width: 13px; height: 13px; opacity: .6; }   /* 尾巴上的 ▾ */
+  #new-task .i, #toggle-files .i, #interject-btn .i { width: 15px; height: 15px; }
+
+  /* 换成 svg 后需要重新居中的几个：原来靠字符自身撑，现在要 flex */
+  #toggle-files, #interject-btn.show, .files-panel h2 > span:first-child {
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  #to-bottom.show { display: flex; align-items: center; justify-content: center; }
+  #send .i { width: 17px; height: 17px; }
+  #gear-btn { display: flex; align-items: center; justify-content: center; }
+  .pv-head button, .pv-head a.icon-btn { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; flex: none; }
+
+  /* 成果卡按钮条（配合上面 .out-acts 的改动）：主操作一条，副操作两个方钮 */
+  .out-acts .oa-main, .out-acts .oa-ico {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 30px; border: 1px solid var(--wb-border); border-radius: var(--radius-sm);
+    background: var(--wb-bg); color: var(--wb-text-2); font-size: 13px; cursor: pointer; text-decoration: none;
+  }
+  .out-acts .oa-main { padding: 0 10px; }
+  .out-acts .oa-ico { width: 30px; flex: none; padding: 0; }
+  .out-acts .oa-main:hover, .out-acts .oa-ico:hover { border-color: var(--wb-brand); color: var(--wb-brand); background: var(--wb-brand-weak); }
+  .out-acts .i { width: 15px; height: 15px; }
+
+  /* 回复底部操作条 + 提问卡角标：换成 svg 后要靠 flex 居中 */
+  .ta-btn { display: inline-flex; align-items: center; gap: 5px; height: 26px; }
+  .ta-btn .i { width: 15px; height: 15px; }
+  .ask-hd .ask-ic { display: inline-flex; align-items: center; }
+  .ask-hd .ask-ic .i { width: 14px; height: 14px; }
+
 </style>
 </head>
 <body>
+<!-- lucide 图标 sprite（ISC，https://lucide.dev）——内联进来是为了离线可用、且能跟着 currentColor 变色 -->
+<svg id="wb-sprite" aria-hidden="true">
+<symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8" /> <rect width="16" height="12" x="4" y="8" rx="2" /> <path d="M2 14h2" /> <path d="M20 14h2" /> <path d="M15 13v2" /> <path d="M9 13v2" /></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></symbol>
+<symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></symbol>
+<symbol id="i-blocks" viewBox="0 0 24 24"><path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2" /> <rect x="14" y="2" width="8" height="8" rx="1" /></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="M12 6v6l4 2" /></symbol>
+<symbol id="i-ellipsis" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1" /> <circle cx="19" cy="12" r="1" /> <circle cx="5" cy="12" r="1" /></symbol>
+<symbol id="i-book-open" viewBox="0 0 24 24"><path d="M12 5v16" /> <path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z" /></symbol>
+<symbol id="i-lightbulb" viewBox="0 0 24 24"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5" /> <path d="M9 18h6" /> <path d="M10 22h4" /></symbol>
+<symbol id="i-flask-conical" viewBox="0 0 24 24"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2" /> <path d="M6.453 15h11.094" /> <path d="M8.5 2h7" /></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" /></symbol>
+<symbol id="i-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /> <path d="M9 3v18" /></symbol>
+<symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14" /> <path d="m19 12-7 7-7-7" /></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14" /> <path d="M12 5v14" /></symbol>
+<symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" /> <path d="M20 2v4" /> <path d="M22 4h-4" /> <circle cx="4" cy="20" r="2" /></symbol>
+<symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol>
+<symbol id="i-zap" viewBox="0 0 24 24"><path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /></symbol>
+<symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7" /> <path d="M12 19V5" /></symbol>
+<symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2" /> <line x1="8" x2="16" y1="21" y2="21" /> <line x1="12" x2="12" y1="17" y2="21" /></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /></symbol>
+<symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="m16 9-5.5 5.5L8 12" /></symbol>
+<symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <circle cx="12" cy="12" r="6" /> <circle cx="12" cy="12" r="2" /></symbol>
+<symbol id="i-map" viewBox="0 0 24 24"><path d="M14.106 5.553a2 2 0 0 0 1.788 0l3.659-1.83A1 1 0 0 1 21 4.619v12.764a1 1 0 0 1-.553.894l-4.553 2.277a2 2 0 0 1-1.788 0l-4.212-2.106a2 2 0 0 0-1.788 0l-3.659 1.83A1 1 0 0 1 3 19.381V6.618a1 1 0 0 1 .553-.894l4.553-2.277a2 2 0 0 1 1.788 0z" /> <path d="M15 5.764v15" /> <path d="M9 3.236v15" /></symbol>
+<symbol id="i-message-circle" viewBox="0 0 24 24"><path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" /></symbol>
+<symbol id="i-app-window" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2" /> <path d="M10 4v4" /> <path d="M2 8h20" /> <path d="M6 4v4" /></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 15V3" /> <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /> <path d="m7 10 5 5 5-5" /></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34" /> <circle cx="11" cy="11" r="8" /></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
+<symbol id="i-triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /> <path d="M12 9v4" /> <path d="M12 17h.01" /></symbol>
+<symbol id="i-circle-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /> <path d="M12 17h.01" /></symbol>
+<symbol id="i-file-text" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" /> <path d="M14 2v5a1 1 0 0 0 1 1h5" /> <path d="M10 9H8" /> <path d="M16 13H8" /> <path d="M16 17H8" /></symbol>
+<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /> <path d="M2 12h20" /></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /> <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></symbol>
+<symbol id="i-thumbs-up" viewBox="0 0 24 24"><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z" /> <path d="M7 10v12" /></symbol>
+<symbol id="i-thumbs-down" viewBox="0 0 24 24"><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z" /> <path d="M17 14V2" /></symbol>
+<symbol id="i-refresh-cw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /> <path d="M21 3v5h-5" /> <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /> <path d="M8 16H3v5" /></symbol>
+<symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551" /></symbol>
+</svg>
 <aside>
   <div class="brand">
     <div class="mark">W</div>
     <div><div class="name">OpenWorkBuddy</div><div class="tag">开源版 · 一句话让 AI 替你上班</div></div>
   </div>
-  <button id="new-task">＋ 新建任务</button>
+  <button id="new-task"><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg> 新建任务</button>
   <div class="side-nav top">
-    <div class="item" id="ab-head" title="助理模式：IM 远程指挥 + 直接对话"><span class="ic" id="ab-ic">🤖</span><span class="tx"><span id="ab-name">助理模式</span><span class="sub" id="ab-sub">IM 远程指挥</span></span></div>
-    <div class="item nav-head" data-view="proj" title="项目管理"><span class="ic">📂</span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目">＋</a></div>
+    <div class="item" id="ab-head" title="助理模式：IM 远程指挥 + 直接对话"><span class="ic" id="ab-ic"><svg class="i" aria-hidden="true"><use href="#i-bot"></use></svg></span><span class="tx"><span id="ab-name">助理模式</span><span class="sub" id="ab-sub">IM 远程指挥</span></span></div>
+    <div class="item nav-head" data-view="proj" title="项目管理"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-folder"></use></svg></span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目">＋</a></div>
     <div id="proj-list"></div>
-    <div class="item" data-view="hub"><span class="ic">🧩</span><span class="tx">专家<span class="sub">技能 · 连接器</span></span></div>
-    <div class="item" data-view="autom"><span class="ic">⏰</span><span class="tx">自动化<span class="sub">定时 · 运行记录</span></span></div>
-    <div class="item more-toggle" id="more-toggle"><span class="ic">⋯</span><span class="tx">更多<span class="sub">资料库 · 灵感</span></span><span class="caret" id="more-caret">▾</span></div>
+    <div class="item" data-view="hub"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-blocks"></use></svg></span><span class="tx">专家<span class="sub">技能 · 连接器</span></span></div>
+    <div class="item" data-view="autom"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-clock"></use></svg></span><span class="tx">自动化<span class="sub">定时 · 运行记录</span></span></div>
+    <div class="item more-toggle" id="more-toggle"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-ellipsis"></use></svg></span><span class="tx">更多<span class="sub">资料库 · 灵感</span></span><span class="caret" id="more-caret">▾</span></div>
     <div class="more-box" id="more-box">
-      <div class="item" data-view="prompts"><span class="ic">📚</span><span class="tx">参考模板库<span class="sub">提示词范例</span></span></div>
-      <div class="item" data-view="lib"><span class="ic">💡</span><span class="tx">资料库<span class="sub">知识 · 灵感</span></span></div>
-      <div class="item" data-view="eval"><span class="ic">🧪</span><span class="tx">评测<span class="sub">跑分 · AI 评委 · 人工打分</span></span></div>
+      <div class="item" data-view="prompts"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-book-open"></use></svg></span><span class="tx">参考模板库<span class="sub">提示词范例</span></span></div>
+      <div class="item" data-view="lib"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-lightbulb"></use></svg></span><span class="tx">资料库<span class="sub">知识 · 灵感</span></span></div>
+      <div class="item" data-view="eval"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-flask-conical"></use></svg></span><span class="tx">评测<span class="sub">跑分 · AI 评委 · 人工打分</span></span></div>
     </div>
   </div>
   <div class="side-label">任务历史</div>
@@ -820,19 +917,19 @@
   <div class="user-row" id="user-row" style="display:none">
     <div class="user-menu" id="user-menu"></div>
     <div class="user-chip" id="user-chip" title="账号菜单"></div>
-    <button id="gear-btn" title="设置">⚙️</button>
+    <button id="gear-btn" class="icon-btn" title="设置"><svg class="i" aria-hidden="true"><use href="#i-settings"></use></svg></button>
   </div>
 </aside>
 
 <div class="main">
   <div class="topbar">
-    <button id="toggle-side" title="收起/展开侧栏">☰</button>
+    <button id="toggle-side" title="收起/展开侧栏"><svg class="i" aria-hidden="true"><use href="#i-panel-left"></use></svg></button>
     <div class="title" id="session-title">新任务</div>
-    <div class="right"><button id="toggle-files">📁 成果文件</button></div>
+    <div class="right"><button id="toggle-files"><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> 成果文件</button></div>
   </div>
   <div id="goal-card" style="display:none"></div>
   <div id="chat-scroll"><div class="chat-col" id="chat-col"></div></div>
-  <button id="to-bottom" title="回到底部">↓</button>
+  <button id="to-bottom" title="回到底部"><svg class="i" aria-hidden="true"><use href="#i-arrow-down"></use></svg></button>
 
   <div class="input-wrap">
     <div class="input-inner">
@@ -843,36 +940,36 @@
         <div class="attach-chips" id="attach-chips"></div>
         <div id="input-box"><div id="input-hl" aria-hidden="true"></div><textarea id="input" rows="2" placeholder="今天帮你做些什么？@ 引用文件，/ 调用技能与指令"></textarea></div>
         <div class="card-toolbar">
-          <button class="icon-btn" id="attach-btn" title="上传文件到工作空间，任务中可直接使用">＋</button>
+          <button class="icon-btn" id="attach-btn" title="上传文件到工作空间，任务中可直接使用"><svg class="i" aria-hidden="true"><use href="#i-paperclip"></use></svg></button>
           <input type="file" id="file-input" multiple style="display:none">
           <div class="grow"></div>
           <div class="picker" id="model-picker">
-            <button class="picker-btn" id="model-btn"><span style="font-size: 15px">✦</span> <span id="model-label">模型</span> <span style="font-size: 11px">▾</span></button>
+            <button class="picker-btn" id="model-btn"><svg class="i" aria-hidden="true"><use href="#i-sparkles"></use></svg> <span id="model-label">模型</span> <svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
             <div class="picker-menu" id="model-menu"></div>
           </div>
-          <button id="interject-btn" title="不等当前任务结束，把这条消息立即注入正在执行的任务">⚡ 插队</button>
-          <button id="send" title="发送">↑</button>
+          <button id="interject-btn" title="不等当前任务结束，把这条消息立即注入正在执行的任务"><svg class="i" aria-hidden="true"><use href="#i-zap"></use></svg> 插队</button>
+          <button id="send" title="发送"><svg class="i" aria-hidden="true"><use href="#i-arrow-up"></use></svg></button>
         </div>
       </div>
       <div class="quick-bar">
         <div class="picker">
-          <button class="picker-btn">🖥️ 本地任务</button>
+          <button class="picker-btn"><svg class="i" aria-hidden="true"><use href="#i-monitor"></use></svg> 本地任务</button>
         </div>
         <div class="picker" id="ws-picker">
-          <button class="picker-btn" id="ws-btn">📁 <span id="ws-label">选择工作空间</span> <span style="font-size: 11px">▾</span></button>
+          <button class="picker-btn" id="ws-btn"><svg class="i" aria-hidden="true"><use href="#i-folder"></use></svg> <span id="ws-label">选择工作空间</span> <svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
           <div class="picker-menu up-left" id="ws-menu"></div>
         </div>
         <div class="picker" id="perm-picker">
-          <button class="picker-btn" id="perm-btn">🛡️ <span id="perm-label">自动改文件</span> <span style="font-size: 11px">▾</span></button>
+          <button class="picker-btn" id="perm-btn"><svg class="i" aria-hidden="true"><use href="#i-shield"></use></svg> <span id="perm-label">自动改文件</span> <svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
           <div class="picker-menu up-left" id="perm-menu"></div>
         </div>
         <div class="picker" id="mode-picker">
-          <button class="picker-btn" id="mode-btn">✅ <span id="mode-label">Craft · 执行</span> <span style="font-size: 11px">▾</span></button>
+          <button class="picker-btn" id="mode-btn"><svg class="i" aria-hidden="true"><use href="#i-circle-check"></use></svg> <span id="mode-label">Craft · 执行</span> <svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
           <div class="picker-menu up-left" id="mode-menu">
-            <div class="mi" data-mode="craft">✅ Craft · 执行 <span class="sub">完整执行并交付成果</span></div>
-            <div class="mi" data-mode="goal">🎯 Goal · 目标 <span class="sub">拆解验收标准，没达成自动再跑</span></div>
-            <div class="mi" data-mode="plan">🗺️ Plan · 规划 <span class="sub">只出执行计划不动手</span></div>
-            <div class="mi" data-mode="ask">💬 Ask · 问答 <span class="sub">只读问答不改文件</span></div>
+            <div class="mi" data-mode="craft"><svg class="i" aria-hidden="true"><use href="#i-circle-check"></use></svg> Craft · 执行 <span class="sub">完整执行并交付成果</span></div>
+            <div class="mi" data-mode="goal"><svg class="i" aria-hidden="true"><use href="#i-target"></use></svg> Goal · 目标 <span class="sub">拆解验收标准，没达成自动再跑</span></div>
+            <div class="mi" data-mode="plan"><svg class="i" aria-hidden="true"><use href="#i-map"></use></svg> Plan · 规划 <span class="sub">只出执行计划不动手</span></div>
+            <div class="mi" data-mode="ask"><svg class="i" aria-hidden="true"><use href="#i-message-circle"></use></svg> Ask · 问答 <span class="sub">只读问答不改文件</span></div>
           </div>
         </div>
       </div>
@@ -883,17 +980,17 @@
 <div class="preview-panel" id="preview-panel">
   <div class="pv-head">
     <span class="pv-name" id="pv-name"></span>
-    <button id="pv-sys" title="用系统默认程序打开">🗔</button>
-    <button id="pv-rv" title="打开所在位置">📂</button>
-    <a id="pv-dl" href="#" download title="下载" style="text-decoration:none;padding:4px 8px">⬇</a>
-    <button id="pv-close" title="关闭">✕</button>
+    <button id="pv-sys" class="icon-btn" title="用系统默认程序打开"><svg class="i" aria-hidden="true"><use href="#i-app-window"></use></svg></button>
+    <button id="pv-rv" class="icon-btn" title="打开所在位置"><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg></button>
+    <a id="pv-dl" class="icon-btn" href="#" download title="下载" style="text-decoration:none"><svg class="i" aria-hidden="true"><use href="#i-download"></use></svg></a>
+    <button id="pv-close" class="icon-btn" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
   </div>
   <div class="pv-deploy" id="pv-deploy" style="display:none"></div>
   <div id="pv-body"></div>
 </div>
 
 <div class="files-panel" id="files-panel">
-  <h2><span>📁 成果文件</span> <a href="#" id="open-ws" class="link" style="font-weight:400;font-size: 12px">打开文件夹</a><span style="flex:1"></span><button id="fp-close" title="关闭">✕</button></h2>
+  <h2><span><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> 成果文件</span> <a href="#" id="open-ws" class="link" style="font-weight:400;font-size: 12px">打开文件夹</a><span style="flex:1"></span><button id="fp-close" class="icon-btn" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></h2>
   <div id="file-list"></div>
 </div>
 
@@ -938,6 +1035,7 @@
 
 <script src="svgfig.js"></script>
 <!-- 应用脚本：原单块内联 script 按顶层语句边界拆成顺序加载的经典脚本（非 ESM，共享全局作用域，语义与内联时完全一致）。改代码直接改 js/ 下的分片，刷新即生效。 -->
+<script src="js/app-00-ui.js"></script>
 <script src="js/app-01.js"></script>
 <script src="js/app-02.js"></script>
 <script src="js/app-03.js"></script>
