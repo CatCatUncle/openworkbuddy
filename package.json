@@ -9,7 +9,12 @@
     "app": "electron .",
     "test": "node test/e2e.js",
     "cli": "node cli.js",
-    "eval": "node eval/run.js"
+    "eval": "node eval/run.js",
+    "icons": "bash scripts/make-icons.sh",
+    "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.config.js --mac",
+    "dist:win": "electron-builder --config electron-builder.config.js --win",
+    "dist:linux": "electron-builder --config electron-builder.config.js --linux",
+    "pack": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.config.js --dir"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.72.0",
@@ -23,9 +28,19 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "electron": "^43.2.0"
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3"
   },
   "bin": {
     "wb": "./cli.js"
+  },
+  "author": {
+    "name": "CatCatUncle",
+    "email": "257534836+CatCatUncle@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/CatCatUncle/openworkbuddy",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CatCatUncle/openworkbuddy.git"
   }
 }

@@ -1,0 +1,75 @@
+# 打 tag 就出安装包。用法：git tag v0.1.1 && git push origin v0.1.1
+#
+# 为什么 Windows 包必须在 CI 上打：作者只有 Mac，本机没装 wine，electron-builder 造不出 NSIS 安装器。
+# 所以 Windows 那份是这条流水线第一次真正跑出来的产物——它没在开发机上被人工验证过，
+# 谁先装谁就是第一个测试者，有问题请开 issue。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # 也允许手动点一次，用来验证流水线本身通不通
+
+permissions:
+  contents: write # 创建 Release 要写权限
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false # 一个平台挂了，另一个平台的包照样要产出来
+      matrix:
+        include:
+          - os: macos-latest
+            script: dist:mac
+            artifact: mac
+          - os: windows-latest
+            script: dist:win
+            artifact: win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # 不签名、不公证：没有 Apple Developer ID 证书。用户首次打开要手动放行，README 里写了。
+      # 显式写死这个变量，免得哪天 runner 的钥匙串里有了证书就被自动捡去签
+      - run: npm run ${{ matrix.script }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.exe
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true
+          body: |
+            ## 安装
+
+            - **macOS（Apple 芯片）** → `OpenWorkBuddy-*-mac-arm64.dmg`
+            - **macOS（Intel）** → `OpenWorkBuddy-*-mac-x64.dmg`
+            - **Windows** → `OpenWorkBuddy-*-win-x64.exe`（双击即装，装完自动启动）
+
+            macOS 首次打开会提示「无法打开，因为无法验证开发者」——这个包没有 Apple 的付费开发者证书签名，
+            不是安全问题。右键点应用图标 → 打开 → 再点一次「打开」即可；或者在终端跑：
+
+            ```
+            xattr -cr /Applications/OpenWorkBuddy.app
+            ```
+
+            装完先去设置里填模型 API Key。你的配置、会话、工作区都在 `~/OpenWorkBuddy`，卸载不会删。

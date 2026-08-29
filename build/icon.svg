@@ -1,0 +1,26 @@
+<!-- OpenWorkBuddy 应用图标：桌面宠物那只猫（public/pet.html 里的形象）坐在笔记本后面。
+     底色用产品主色渐变 #5b5ff7 → #8b5cf6。只有四组颜色：主色 / 白 / 眼睛深灰 / 鼻子粉。
+     猫身上原本的浅蓝描边和胡须在小尺寸下会糊成一团，图标里去掉了。
+     改完这个文件跑 npm run icons 重新生成 icon.icns / icon.ico / icon.png。 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b5ff7"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="96" y="96" width="832" height="832" rx="186" ry="186" fill="url(#g)"/>
+  <!-- 内容整体在 x 262..762、y 225..804，下面这个变换把它按中心放到画布正中 -->
+  <g transform="translate(512 512) scale(1.10) translate(-512 -514.5)">
+    <path d="M295 393 L279 225 L429 326 Z" fill="#ffffff"/>
+    <path d="M729 393 L745 225 L595 326 Z" fill="#ffffff"/>
+    <path d="M320 359 L312 276 L387 326 Z" fill="#ff9fb8"/>
+    <path d="M704 359 L712 276 L637 326 Z" fill="#ff9fb8"/>
+    <ellipse cx="512" cy="460" rx="250" ry="218" fill="#ffffff"/>
+    <ellipse cx="429" cy="443" rx="30" ry="38.5" fill="#2b2b3c"/>
+    <ellipse cx="595" cy="443" rx="30" ry="38.5" fill="#2b2b3c"/>
+    <path d="M487 508 H537 L512 540 Z" fill="#ff9fb8"/>
+    <rect x="332" y="640" width="360" height="130" rx="20" fill="#4d51e8" stroke="#ffffff" stroke-width="22"/>
+    <rect x="296" y="770" width="432" height="34" rx="17" fill="#ffffff"/>
+  </g>
+</svg>
