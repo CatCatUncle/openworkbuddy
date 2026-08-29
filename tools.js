@@ -79,6 +79,7 @@ const TOOL_DEFS = [
         path: { type: "string", description: "相对路径，如 report.md" },
         content: { type: "string" },
         append: { type: "boolean", description: "true = 追加到文件末尾（长文档分节写、日志累积用），默认 false 覆盖" },
+        overwrite: { type: "boolean", description: "只在「明知故犯地整篇重写一个已有文件」时传 true。不传的话，一次把现成文件砍掉四成以上的写入会被直接拦下——那多半是没读全就重写，内容就此丢了" },
       },
       required: ["path", "content"],
     },
@@ -787,7 +788,7 @@ function libraryRead(name) {
   return fs.readFileSync(path.join(LIB_DIR, base), "utf8").slice(0, 50000);
 }
 
-const LIST_SKIP = new Set([".tmp", "node_modules", ".git", ".DS_Store"]);
+const LIST_SKIP = new Set([".tmp", "node_modules", ".git", ".DS_Store", ".history"]);
 
 /** 列目录。depth>1 时递归展开——看项目结构时一次看清，比一层层 list_files 省好几轮 */
 function listFiles(target, depth = 1) {
@@ -829,6 +830,46 @@ function listFiles(target, depth = 1) {
   return out.join("\n") + (truncated ? "\n（超过 400 项，后面的没列——用 dir 指到具体子目录再看）" : "");
 }
 
+/**
+ * 路径指到了一个目录。以前这里什么都不拦，fs.readFileSync 直接抛 EISDIR，
+ * 模型看到「illegal operation on a directory」根本不知道自己错在哪，
+ * 于是掉头改用 write_file 整篇重写——上一次报告丢了三节就是这么丢的。
+ * 现在当场说清楚：这是目录，里面有这些文件，你要的是哪个。
+ */
+function dirInsteadOfFile(p, label) {
+  let names = [];
+  try {
+    names = fs
+      .readdirSync(p, { withFileTypes: true })
+      .filter((e) => e.isFile() && !e.name.startsWith("."))
+      .map((e) => e.name)
+      .slice(0, 12);
+  } catch {}
+  return new Error(
+    `${label} 是一个目录，不是文件。` +
+      (names.length ? `里面有：${names.join("、")}。带上文件名再来一次（${label}/${names[0]}）。` : "这个目录是空的。") +
+      `别因为这个就改用 write_file 整篇重写——那会把你没读过的内容一起抹掉。`
+  );
+}
+
+/** 覆盖前留底：workspace/.history/<原路径>.<时间戳>，同一个文件只留最近 5 份 */
+function keepBackup(file, rel) {
+  if (String(rel).split(/[\\/]/)[0] === ".history") return "";
+  try {
+    const sub = path.dirname(rel);
+    const dir = path.join(workspaceDir, ".history", sub);
+    fs.mkdirSync(dir, { recursive: true });
+    const base = path.basename(rel);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    fs.copyFileSync(file, path.join(dir, `${base}.${stamp}`));
+    const olds = fs.readdirSync(dir).filter((f) => f.startsWith(base + ".")).sort();
+    for (const f of olds.slice(0, -5)) fs.rmSync(path.join(dir, f), { force: true });
+    return path.join(".history", sub, `${base}.${stamp}`);
+  } catch {
+    return "";
+  }
+}
+
 function countAll(hay, needle) {
   let n = 0,
     i = hay.indexOf(needle);
@@ -846,6 +887,7 @@ function countAll(hay, needle) {
  */
 function editFile(file, label, { old_text, new_text, replace_all }) {
   if (!fs.existsSync(file)) throw new Error(`文件不存在：${label}。新建文件请用 write_file。`);
+  if (fs.statSync(file).isDirectory()) throw dirInsteadOfFile(file, label);
   const src = fs.readFileSync(file, "utf8");
   const needle = String(old_text == null ? "" : old_text);
   const repl = String(new_text == null ? "" : new_text);
@@ -1560,9 +1602,12 @@ async function executeTool(name, input, opts = {}) {
       throw new Error(`文件访问被安全中心拦截：${r.reason}`);
     }
     // 成果子目录下没有、工作空间根下有 → 用根下那个（读旧对话的产物/共享素材不用写全路径）
+    // 兜底只认文件：兜到一个同名目录上，下游就是一句莫名其妙的 EISDIR
     if (fileBase !== workspaceDir && !fs.existsSync(r.path)) {
       const r2 = security.resolvePathWithPolicy(sec, rel, workspaceDir);
-      if (r2.allowed && fs.existsSync(r2.path)) return r2.path;
+      try {
+        if (r2.allowed && fs.statSync(r2.path).isFile()) return r2.path;
+      } catch {}
     }
     return r.path;
   };
@@ -1642,10 +1687,24 @@ async function executeTool(name, input, opts = {}) {
         const blocked = await passGate(security.checkWrite(sec, rel), "写文件", rel, { force: true });
         if (blocked) return blocked;
         const existed = fs.existsSync(p);
+        if (existed && fs.statSync(p).isDirectory()) return { content: dirInsteadOfFile(p, rel).message, isError: true };
         const oldSize = existed ? fs.statSync(p).size : 0;
         fs.mkdirSync(path.dirname(p), { recursive: true });
         const body = String(input.content || "");
         const n = Buffer.byteLength(body);
+        // 整篇重写把一个现成文件砍掉一大截 = 几乎肯定是没读全就重写，写下去就找不回来了。
+        // 提示词里写一百遍「别整篇重写」也拦不住，只能在工具这一层真的不让它写。
+        if (existed && !input.append && !input.overwrite && oldSize >= 800 && n < oldSize * 0.6) {
+          return {
+            content:
+              `已拦截，一个字节都没写：${rel} 现在是 ${oldSize} 字节，你这次只给了 ${n} 字节，` +
+              `写下去等于删掉 ${oldSize - n} 字节现成内容。\n` +
+              `改局部用 edit_file；接着往后写用 append:true；` +
+              `确实就是要整篇换掉（已经 read_file 读完全文、清楚自己要删什么），再传 overwrite:true 重来。`,
+            isError: true,
+          };
+        }
+        const bak = existed && !input.append ? keepBackup(p, rel) : "";
         if (input.append) {
           fs.appendFileSync(p, body, "utf8");
           const warn = selfCheck(p, rel);
@@ -1657,7 +1716,9 @@ async function executeTool(name, input, opts = {}) {
         return {
           content:
             (existed
-              ? `已覆盖 ${rel}（原 ${oldSize} 字节 → 现 ${n} 字节）。提醒：改已有文件的局部内容用 edit_file，整篇重写会连你没读过的部分一起换掉。`
+              ? `已覆盖 ${rel}（原 ${oldSize} 字节 → 现 ${n} 字节）` +
+                (bak ? `，原件留了一份在 ${bak}` : "") +
+                `。提醒：改已有文件的局部内容用 edit_file，整篇重写会连你没读过的部分一起换掉。`
               : `已新建 ${rel}（${n} 字节）`) + warn,
           isError: !!warn,
         };
@@ -1673,6 +1734,7 @@ async function executeTool(name, input, opts = {}) {
       }
       case "read_file": {
         const p = resolveFile(input.path);
+        if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return { content: dirInsteadOfFile(p, String(input.path)).message, isError: true };
         const content = fs.readFileSync(p, "utf8");
         const s = Math.max(0, Number(input.start_line) || 0);
         const e = Math.max(0, Number(input.end_line) || 0);
