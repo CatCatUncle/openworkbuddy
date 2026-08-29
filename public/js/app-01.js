@@ -462,47 +462,7 @@ function createTurnUI(userText, turnMode, forSid) {
       }
     } else if (ev.type === "ask_user") {
       currentText = null;
-      const card = document.createElement("div");
-      card.className = "ask-card";
-      card.dataset.askId = ev.ask_id;
-      card.innerHTML = `<div class="lb">🙋 AI 拿不准，来问你${ev.expert ? `（专家「${esc(ev.expert)}」在问）` : ""}</div>
-        <div class="q">${esc(ev.question || "")}</div><div class="opts"></div>
-        <div class="free"><input type="text" placeholder="或者自己输入…" maxlength="500"><button type="button">回答</button></div>
-        <div class="ans" style="display:none"></div>`;
-      const markAnswered = (text, timeout) => {
-        card.classList.add("done");
-        const ans = card.querySelector(".ans");
-        ans.style.display = "";
-        ans.textContent = timeout ? "⏰ 没等到回答，AI 按最合理的默认继续了" : "✅ 你的回答：" + (text || "");
-      };
-      card._mark = markAnswered;
-      const answerIt = async (text) => {
-        text = String(text || "").trim();
-        if (!text || card.classList.contains("done")) return;
-        const resp = await fetch("/api/chat/answer", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId: turnSid, askId: ev.ask_id, answer: text }),
-        }).catch(() => null);
-        if (resp && resp.ok) markAnswered(text);
-        else {
-          const j = resp ? await resp.json().catch(() => null) : null;
-          toast((j && j.error) || "没送出去：任务可能已经结束");
-        }
-      };
-      const optsBox = card.querySelector(".opts");
-      for (const o of ev.options || []) {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.textContent = o;
-        b.onclick = () => answerIt(o);
-        optsBox.appendChild(b);
-      }
-      const inp = card.querySelector(".free input");
-      card.querySelector(".free button").onclick = () => answerIt(inp.value);
-      inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answerIt(inp.value); } };
-      if (isReplaying) card.classList.add("done"); // 历史回放里问题早就过期了，别让人白点
-      body.appendChild(card);
+      body.appendChild(makeAskCard(ev, turnSid));
     } else if (ev.type === "ask_answer") {
       const card = body.querySelector(`.ask-card[data-ask-id="${cssEsc(ev.ask_id || "")}"]`);
       if (card && card._mark) card._mark(ev.answer, ev.timeout);
@@ -846,6 +806,106 @@ inputEl.addEventListener("keydown", (e) => {
 }, true);
 
 // ================= 成果文件 =================
+// ───────── AI 拿不准时的提问卡 ─────────
+// 老版本是一行光秃秃的紫色胶囊按钮：只有选项名，没有「选它意味着什么」。
+// 于是模型只能把代价一股脑塞进问题那一句里，用户读着累，选完还常常选错。
+// 现在一条选项一行，上面是短语、下面是那句代价，键盘 1/2/3/4 直接选；
+// 右上角挂倒计时——超时服务端会替他按默认继续，这件事得让他看见，不能闷着。
+function makeAskCard(ev, turnSid) {
+  const opts = (ev.options || []).map((o) => (o && typeof o === "object" ? o : { label: String(o), detail: "" }));
+  const card = document.createElement("div");
+  card.className = "ask-card";
+  card.dataset.askId = ev.ask_id || "";
+  card.innerHTML =
+    `<div class="ask-hd"><span class="ask-ic">🙋</span><span class="ask-lb">${ev.expert ? `专家「${esc(ev.expert)}」拿不准，想问你一句` : "有个岔路，想让你定一下"}</span><span class="ask-timer"></span></div>` +
+    `<div class="ask-q">${esc(ev.question || "")}</div>` +
+    `<div class="ask-opts"></div>` +
+    `<div class="ask-free"><input type="text" placeholder="都不是？直接说你想要的…" maxlength="500"><button type="button">发送</button></div>` +
+    `<div class="ask-ans"></div>`;
+
+  const timerEl = card.querySelector(".ask-timer");
+  let tick = null;
+  const stopTick = () => { if (tick) { clearInterval(tick); tick = null; } timerEl.textContent = ""; };
+
+  const markAnswered = (text, timeout) => {
+    if (card.classList.contains("done")) return;
+    card.classList.add("done");
+    document.removeEventListener("keydown", onKey);
+    stopTick();
+    card.querySelector(".ask-lb").textContent = timeout ? "这个岔路我替你定了" : "这个岔路你定过了";
+    card.querySelector(".ask-ans").innerHTML = timeout
+      ? `<span class="ic">⏰</span>没等到回答，AI 按它认为最合理的默认继续了`
+      : `<span class="ic">✅</span>你选了 <b>${esc(text || "")}</b>`;
+  };
+  card._mark = markAnswered;
+
+  const answerIt = async (text) => {
+    text = String(text || "").trim();
+    if (!text || card.classList.contains("done") || card.classList.contains("sending")) return;
+    card.classList.add("sending"); // 送出到收到回执之间会有一小段，这期间再点/再按一次不许重复发
+    const resp = await fetch("/api/chat/answer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: turnSid, askId: ev.ask_id, answer: text }),
+    }).catch(() => null);
+    card.classList.remove("sending");
+    if (resp && resp.ok) markAnswered(text);
+    else {
+      const j = resp ? await resp.json().catch(() => null) : null;
+      toast((j && j.error) || "没送出去：任务可能已经结束");
+    }
+  };
+
+  const box = card.querySelector(".ask-opts");
+  opts.forEach((o, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ask-opt";
+    b.innerHTML =
+      `<span class="kk">${i < 9 ? i + 1 : "·"}</span>` +
+      `<span class="tx"><span class="lb">${esc(o.label)}</span>${o.detail ? `<span class="dt">${esc(o.detail)}</span>` : ""}</span>` +
+      `<span class="go">↵</span>`;
+    b.onclick = () => answerIt(o.label);
+    box.appendChild(b);
+  });
+
+  const inp = card.querySelector(".ask-free input");
+  card.querySelector(".ask-free button").onclick = () => answerIt(inp.value);
+  inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answerIt(inp.value); } };
+  // 数字键直选：手在键盘上就别再去够鼠标。焦点在输入框里时不抢——那时 1 就是要打个 1
+  card.tabIndex = -1;
+  const onKey = (e) => {
+    if (card.classList.contains("done") || !document.body.contains(card)) { document.removeEventListener("keydown", onKey); return; }
+    // 光标在任何输入框里，1 就是要打个 1（不只是本卡那个输入框——聊天框、改名框都算）
+    if (e.target.closest && e.target.closest("input, textarea, select, [contenteditable]")) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    // 只有屏幕上最后一张还没答的提问卡吃数字键。不然上一张还在等回执时，
+    // 这一张按下的 1 会被上一张抢走，答案安到了另一个问题头上
+    const live = document.querySelectorAll(".ask-card:not(.done)");
+    if (live.length && live[live.length - 1] !== card) return;
+    const n = Number(e.key);
+    if (n >= 1 && n <= opts.length) { e.preventDefault(); answerIt(opts[n - 1].label); }
+  };
+  document.addEventListener("keydown", onKey);
+
+  if (isReplaying) {
+    // 历史回放里问题早就过期了，别让人白点，也别倒计时
+    card.classList.add("done");
+    card.querySelector(".ask-ans").innerHTML = `<span class="ic">·</span>这是历史记录里的提问`;
+  } else if (ev.timeout_ms > 0) {
+    const dead = Date.now() + Number(ev.timeout_ms);
+    const paint = () => {
+      const left = Math.max(0, Math.round((dead - Date.now()) / 1000));
+      if (!left) { stopTick(); timerEl.textContent = "已超时"; timerEl.classList.add("hot"); return; }
+      timerEl.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} 后按默认继续`;
+      timerEl.classList.toggle("hot", left <= 30);
+    };
+    paint();
+    tick = setInterval(paint, 1000);
+  }
+  return card;
+}
+
 function fileIcon(name) {
   if (/\.pptx?$/i.test(name)) return "📊";
   if (/\.docx?$/i.test(name)) return "📄";

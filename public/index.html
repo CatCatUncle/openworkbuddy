@@ -222,7 +222,7 @@
   .out-thumb { height: 132px; background: var(--wb-bg-side); border-bottom: 1px solid var(--wb-border); position: relative; overflow: hidden; }
   .out-thumb iframe { width: 400%; height: 400%; border: 0; transform: scale(.25); transform-origin: 0 0; pointer-events: none; background: #fff; }
   .out-thumb img { width: 100%; height: 100%; object-fit: contain; }
-  .out-thumb .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 40px; }
+  .out-thumb .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 46px; }
   .out-info { padding: 8px 12px; }
   .out-name { font-size: 14px; font-weight: 500; color: var(--wb-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* 两件产出重名时才会出现的目录前缀：压暗，别抢文件名 */
@@ -511,17 +511,36 @@
   .interject-note { align-self: flex-end; max-width: 70%; margin: 6px 0; padding: 8px 12px; border-radius: 10px; background: var(--wb-brand-weak); color: var(--wb-brand); font-size: 14px; }
   .interject-note .lb { font-size: 12px; opacity: .75; margin-bottom: 2px; }
   .interject-note.pending { opacity: .6; }
-  .ask-card { align-self: stretch; margin: 8px 0; padding: 12px 14px; border: 1px solid var(--wb-brand); border-radius: 10px; background: var(--wb-brand-weak); }
-  .ask-card .lb { font-size: 12px; opacity: .75; margin-bottom: 4px; }
-  .ask-card .q { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
-  .ask-card .opts { display: flex; flex-wrap: wrap; gap: 8px; }
-  .ask-card .opts button { border: 1px solid var(--wb-brand); color: var(--wb-brand); background: var(--wb-bg); border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
-  .ask-card .opts button:hover { background: var(--wb-brand); color: #fff; }
-  .ask-card .free { display: flex; gap: 8px; margin-top: 8px; }
-  .ask-card .free input { flex: 1; border: 1px solid var(--wb-border); border-radius: 8px; padding: 6px 10px; font-size: 13px; background: var(--wb-bg); color: var(--wb-text); }
-  .ask-card .free button { border: 1px solid var(--wb-brand); color: var(--wb-brand); background: var(--wb-bg); border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
-  .ask-card.done .opts, .ask-card.done .free { display: none; }
-  .ask-card .ans { margin-top: 6px; font-size: 13px; color: var(--wb-brand); }
+  /* AI 拿不准时的提问卡：一条选项一行（短语 + 选它意味着什么），键盘 1/2/3/4 直选 */
+  .ask-card { align-self: stretch; margin: 12px 0; padding: 14px 16px 12px; border: 1px solid var(--wb-border); border-left: 3px solid var(--wb-brand); border-radius: 12px; background: var(--wb-bg); box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+  .ask-hd { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--wb-text-3); margin-bottom: 8px; }
+  .ask-hd .ask-lb { flex: 1; }
+  .ask-timer { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--wb-text-3); }
+  .ask-timer.hot { color: var(--wb-err); }
+  .ask-q { font-size: 15px; font-weight: 600; color: var(--wb-text); line-height: 1.5; margin-bottom: 12px; }
+  .ask-opts { display: flex; flex-direction: column; gap: 8px; }
+  .ask-opt { display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: 10px; background: var(--wb-bg); cursor: pointer; transition: border-color .12s, background .12s; }
+  .ask-opt:hover, .ask-opt:focus-visible { border-color: var(--wb-brand); background: var(--wb-brand-weak); outline: none; }
+  .ask-opt .kk { flex: none; width: 20px; height: 20px; border-radius: 6px; background: var(--wb-bg-side); border: 1px solid var(--wb-border); color: var(--wb-text-3); font-size: 12px; line-height: 18px; text-align: center; }
+  .ask-opt:hover .kk { border-color: var(--wb-brand); color: var(--wb-brand); }
+  .ask-opt .tx { flex: 1; min-width: 0; }
+  .ask-opt .lb { display: block; font-size: 14px; font-weight: 500; color: var(--wb-text); }
+  .ask-opt .dt { display: block; font-size: 13px; color: var(--wb-text-3); line-height: 1.5; margin-top: 2px; }
+  .ask-opt .go { flex: none; font-size: 12px; color: transparent; align-self: center; }
+  .ask-opt:hover .go { color: var(--wb-brand); }
+  .ask-free { display: flex; gap: 8px; margin-top: 12px; }
+  .ask-free input { flex: 1; min-width: 0; border: 1px solid var(--wb-border); border-radius: 10px; padding: 8px 12px; font-size: 13px; background: var(--wb-bg); color: var(--wb-text); }
+  .ask-free input:focus { outline: none; border-color: var(--wb-brand); }
+  .ask-free button { flex: none; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); border-radius: 10px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
+  .ask-free button:hover { border-color: var(--wb-brand); color: var(--wb-brand); }
+  .ask-card.sending { opacity: .6; pointer-events: none; }
+  /* 答完就缩成一行：问题留着（回头看得懂当时在纠结什么），选项和输入框收走 */
+  .ask-card.done { border-left-color: var(--wb-border); background: var(--wb-bg-side); }
+  .ask-card.done .ask-opts, .ask-card.done .ask-free, .ask-card.done .ask-timer { display: none; }
+  .ask-card.done .ask-q { font-weight: 500; font-size: 14px; margin-bottom: 6px; }
+  .ask-ans:empty { display: none; }
+  .ask-ans { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--wb-text-2); }
+  .ask-ans b { color: var(--wb-text); font-weight: 600; }
   /* ---------- 用量面板 ---------- */
   .usage-grid { display: flex; gap: 10px; margin-bottom: 12px; }
   .usage-cell { flex: 1; border: 1px solid var(--wb-border); border-radius: 10px; padding: 10px 12px; }
