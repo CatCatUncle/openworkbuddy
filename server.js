@@ -352,6 +352,13 @@ function recordingEmit(send, events, sessionId) {
       const last = events[events.length - 1];
       if (last && last.type === "text") last.delta += ev.delta;
       else events.push({ type: "text", delta: ev.delta });
+    } else if (ev.type === "files") {
+      // 产出卡片得能活过一次重开：历史回放全靠这条事件重建。以前它不在存盘清单里，
+      // 于是任务当场看得见成果卡，退出再进来那片卡就凭空消失了。
+      // 但整份清单最多 500 条、每批工具跑完就来一次，原样存会把会话文件撑爆——
+      // 只留这一批真正变更的那几条（回放时 renderFiles 被 isReplaying 挡住，用不到全量）
+      const chg = ev.changed || [];
+      if (chg.length) events.push({ type: "files", changed: chg, files: (ev.files || []).filter((f) => chg.includes(f.name)) });
     } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"].includes(ev.type)) {
       events.push(ev);
       // 一步走完就是个存盘点：跑了半小时的任务不该因为一次崩溃从头再来
