@@ -12,7 +12,52 @@
 
 // ---------- Anthropic (Claude) —— 可选适配器，仅在 provider=anthropic 时才需要安装 @anthropic-ai/sdk ----------
 
-function toAnthropicMessages(history) {
+/**
+ * 把「带 tool_calls 的 assistant」和它的工具结果重新配上对。
+ *
+ * 两家接口都有同一条硬规矩：一条带 tool_calls 的 assistant 后面必须逐个 id 跟上工具结果，
+ * 少一个就整条请求 400。而这个对子是分两次 push 进历史的——中间进程被 kill（重启 app、
+ * 崩溃）或工具抛异常，就会留下一条永远配不上对的 assistant。会话是落盘的，于是这条坏消息
+ * 之后每一次请求都 400，整个会话永久报废，用户只能删了重开。
+ *
+ * 所以在发请求前补一条占位结果把对子配上：坏会话下一次请求就自愈了。顺带丢掉找不到主人的
+ * 孤儿结果（有 tool_result 却没有对应的 tool_use，同样是 400）和重复 id。
+ */
+function repairToolPairs(history) {
+  const out = [];
+  for (let i = 0; i < history.length; i++) {
+    const entry = history[i];
+    if (entry.role === "tool") continue; // 一律由前面那条 assistant 统一带出，孤儿在这里自然被丢掉
+    out.push(entry);
+    const calls = entry.role === "assistant" ? entry.toolCalls || [] : [];
+    if (!calls.length) continue;
+    const want = new Map(calls.map((tc) => [tc.id, tc.name]));
+    const results = [];
+    const seen = new Set();
+    for (let j = i + 1; j < history.length && history[j].role === "tool"; j++) {
+      for (const r of history[j].results || []) {
+        if (!want.has(r.id) || seen.has(r.id)) continue;
+        seen.add(r.id);
+        results.push(r);
+      }
+    }
+    for (const [id, name] of want) {
+      if (seen.has(id)) continue;
+      console.warn(`[llm] 工具调用 ${name}(${id}) 没有结果，已补占位——否则整个会话会一直 400`);
+      results.push({
+        id,
+        name,
+        content: `（${name} 这一步没有留下结果：上一轮执行被中断了。把它当作没做过——需要的话重新调用一次，别假设它成功了。）`,
+        isError: true,
+      });
+    }
+    if (results.length) out.push({ role: "tool", results });
+  }
+  return out;
+}
+
+function toAnthropicMessages(rawHistory) {
+  const history = repairToolPairs(rawHistory);
   const messages = [];
   for (const entry of history) {
     if (entry.role === "user") {
@@ -63,12 +108,27 @@ async function anthropicChat(cfg, { system, history, tools, onTextDelta, onActiv
     apiKey: cfg.api_key || process.env.ANTHROPIC_API_KEY,
   });
 
+  // Anthropic 的缓存要自己打断点（DeepSeek/OpenAI 是自动的）。两个就够：
+  // ① 工具定义 + system —— 一个任务里全程不变，是最大的一块固定前缀；
+  // ② 上一轮结尾 —— agent 的 history 是只追加的，把断点压在倒数第二条上，
+  //    这一步新增的工具结果落在断点之后，前面几十步全部走缓存读。
+  // 断点最多 4 个，且是前缀匹配：前面任何一个字节变了，后面全部作废——
+  // 所以 system 里绝不能塞每次都变的东西（时钟、UUID、随机排序的 JSON）。
+  const amsgs = toAnthropicMessages(history);
+  const markLast = (i) => {
+    const m = amsgs[i];
+    if (!m || typeof m.content === "string" || !Array.isArray(m.content) || !m.content.length) return;
+    const b = m.content[m.content.length - 1];
+    if (b && typeof b === "object") m.content[m.content.length - 1] = { ...b, cache_control: { type: "ephemeral" } };
+  };
+  markLast(amsgs.length - 2);
+
   const stream = client.messages.stream(
     {
       model: cfg.model,
       max_tokens: 32000,
-      system,
-      messages: toAnthropicMessages(history),
+      system: system ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }] : system,
+      messages: amsgs,
       // 空数组要整个字段不发：不给工具是一种正当用法（比如强制收尾那一问），
       // 而一部分服务端会把 tools: [] 判成参数非法直接 400
       ...(tools && tools.length
@@ -97,13 +157,36 @@ async function anthropicChat(cfg, { system, history, tools, onTextDelta, onActiv
       toolCalls.push({ id: block.id, name: block.name, input: block.input });
     }
   }
-  const usage = msg.usage ? { prompt: msg.usage.input_tokens || 0, completion: msg.usage.output_tokens || 0 } : null;
+  // Anthropic 的 input_tokens 不含缓存部分，要加回来才是「这次真的喂进去多少」
+  const u = msg.usage;
+  const cacheRead = u ? u.cache_read_input_tokens || 0 : 0;
+  const usage = u
+    ? {
+        prompt: (u.input_tokens || 0) + cacheRead + (u.cache_creation_input_tokens || 0),
+        completion: u.output_tokens || 0,
+        cached: cacheRead,
+      }
+    : null;
   return { text, toolCalls, stopReason: msg.stop_reason, raw: msg.content, usage };
+}
+
+// 命中缓存的那部分 prompt token 便宜一个数量级（DeepSeek 约 1/10），可它默认是个哑指标：
+// 谁都不报，就没人知道自己在反复全价重买同一段上下文。三家的字段名各不一样，统一读成 cached。
+//   DeepSeek：prompt_cache_hit_tokens / prompt_cache_miss_tokens（磁盘缓存，自动生效，无需请求参数）
+//   OpenAI / OpenRouter：prompt_tokens_details.cached_tokens
+//   Anthropic：cache_read_input_tokens（另见 anthropicChat 里显式打的缓存断点）
+function openaiUsage(u) {
+  if (!u) return null;
+  const cached = Number(
+    u.prompt_cache_hit_tokens != null ? u.prompt_cache_hit_tokens : (u.prompt_tokens_details || {}).cached_tokens || 0
+  ) || 0;
+  return { prompt: u.prompt_tokens || 0, completion: u.completion_tokens || 0, cached };
 }
 
 // ---------- OpenAI 兼容接口 (DeepSeek / Qwen / GLM / Kimi / Ollama ...) ----------
 
-function toOpenAIMessages(system, history) {
+function toOpenAIMessages(system, rawHistory) {
+  const history = repairToolPairs(rawHistory);
   const messages = [{ role: "system", content: system }];
   for (const entry of history) {
     if (entry.role === "user") {
@@ -264,7 +347,7 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
     return parseOpenAIChoice(
       data.choices && data.choices[0],
       onTextDelta,
-      data.usage ? { prompt: data.usage.prompt_tokens || 0, completion: data.usage.completion_tokens || 0 } : null
+      openaiUsage(data.usage)
     );
   }
 
@@ -304,7 +387,7 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
         const emsg = chunk.error.message || JSON.stringify(chunk.error).slice(0, 300);
         throw new Error(`LLM 接口错误 ${code}: ${emsg}`);
       }
-      if (chunk.usage) usage = { prompt: chunk.usage.prompt_tokens || 0, completion: chunk.usage.completion_tokens || 0 };
+      if (chunk.usage) usage = openaiUsage(chunk.usage);
       const choice = chunk.choices && chunk.choices[0];
       if (!choice) continue;
       // 错误还有一种挂在 choice 上的姿势：{"choices":[{"finish_reason":"error","error":{...}}]}
@@ -565,4 +648,4 @@ function createEmbedder(config) {
   return embed;
 }
 
-module.exports = { createLLM, createEmbedder, _internals: { rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates } };
+module.exports = { createLLM, createEmbedder, _internals: { rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages } };

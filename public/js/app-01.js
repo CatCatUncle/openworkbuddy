@@ -426,6 +426,7 @@ function createTurnUI(userText, turnMode, forSid) {
       else {
         turn._usage.prompt += ev.prompt || 0;
         turn._usage.completion += ev.completion || 0;
+        turn._usage.cached = (turn._usage.cached || 0) + (ev.cached || 0);
         turn._usage.calls += ev.calls || 0;
         turn._usage.elapsed_ms += ev.elapsed_ms || 0;
       }
@@ -587,7 +588,13 @@ function createTurnUI(userText, turnMode, forSid) {
     const meta = bar.querySelector(".ta-meta");
     if (u && (u.prompt || u.completion)) {
       meta.textContent = `共消耗 ✧ ${(u.prompt + u.completion).toLocaleString()} tokens · ${u.provider || ""}（${u.model || ""}）`;
-      meta.title = `输入 ${u.prompt.toLocaleString()} + 输出 ${u.completion.toLocaleString()} tokens · ${u.calls} 次模型调用`;
+      // 命中缓存那部分便宜约一个数量级。不写出来的话，长任务里"输入 160 万 token"
+      // 看着像一笔巨款，实际可能九成是缓存读；反过来命中率掉到 0 也没人察觉
+      const hit = u.cached ? Math.round((u.cached / Math.max(1, u.prompt)) * 100) : 0;
+      meta.title =
+        `输入 ${u.prompt.toLocaleString()} + 输出 ${u.completion.toLocaleString()} tokens · ${u.calls} 次模型调用` +
+        (u.cached ? `\n其中命中缓存 ${u.cached.toLocaleString()}（${hit}%），这部分按约 1/10 计费` : "");
+      if (hit) meta.textContent += ` · 缓存命中 ${hit}%`;
     } else if (u) {
       meta.textContent = `${u.provider || ""}（${u.model || ""}）`;
     }

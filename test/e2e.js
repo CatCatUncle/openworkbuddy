@@ -239,6 +239,88 @@ function testContextBudget() {
   console.log("✅ 上下文预算：老结果截短 / 最近 3 轮保原文 / 不删任何工具消息 / 可重取结果先挨刀");
 }
 
+// 工具配对自愈：带 tool_calls 的 assistant 后面必须逐个 id 跟上工具结果，缺一个就整条请求 400。
+// 这对消息是分两次 push 进历史的，中间进程被 kill（重启 app、崩溃）就会留下半截——
+// 会话是落盘的，于是之后每一次请求都 400，整个会话永久报废。发请求前必须自己修回来。
+function testToolPairRepair() {
+  const { repairToolPairs, toOpenAIMessages, toAnthropicMessages } = require("../llm")._internals;
+  // 把接口那条硬规矩写成校验器，两侧各来一遍
+  const badOpenAI = (msgs) => {
+    const bad = [];
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (m.role === "assistant" && m.tool_calls) {
+        const want = new Set(m.tool_calls.map((t) => t.id));
+        for (let j = i + 1; j < msgs.length && msgs[j].role === "tool"; j++) want.delete(msgs[j].tool_call_id);
+        if (want.size) bad.push("缺结果 " + [...want]);
+      }
+      if (m.role === "tool") {
+        let k = i - 1;
+        while (k >= 0 && msgs[k].role === "tool") k--;
+        const ids = k >= 0 && msgs[k].role === "assistant" ? new Set((msgs[k].tool_calls || []).map((t) => t.id)) : new Set();
+        if (!ids.has(m.tool_call_id)) bad.push("孤儿结果 " + m.tool_call_id);
+      }
+    }
+    return bad;
+  };
+  const badAnthropic = (msgs) => {
+    const bad = [];
+    for (let i = 0; i < msgs.length; i++) {
+      const blocks = Array.isArray(msgs[i].content) ? msgs[i].content : [];
+      if (msgs[i].role === "assistant") {
+        const want = new Set(blocks.filter((b) => b.type === "tool_use").map((b) => b.id));
+        if (want.size) {
+          const nxt = msgs[i + 1];
+          for (const b of nxt && Array.isArray(nxt.content) ? nxt.content : []) if (b.type === "tool_result") want.delete(b.tool_use_id);
+          if (want.size) bad.push("缺结果 " + [...want]);
+        }
+      }
+      if (msgs[i].role === "user") {
+        const prev = msgs[i - 1];
+        const ids = new Set((prev && Array.isArray(prev.content) ? prev.content : []).filter((b) => b.type === "tool_use").map((b) => b.id));
+        for (const b of blocks) if (b.type === "tool_result" && !ids.has(b.tool_use_id)) bad.push("孤儿结果 " + b.tool_use_id);
+      }
+    }
+    return bad;
+  };
+  const clean = (h) => assert(!badOpenAI(toOpenAIMessages("sys", h)).length && !badAnthropic(toAnthropicMessages(h)).length, "修完仍不合规：" + JSON.stringify(badOpenAI(toOpenAIMessages("sys", h))));
+  const A = (id, name) => ({ role: "assistant", text: "", toolCalls: [{ id, name, input: {} }] });
+  const T = (id, name) => ({ role: "tool", results: [{ id, name, content: "结果", isError: false }] });
+
+  // 正常历史一个字都不许动，否则等于每轮都在改缓存前缀
+  const good = [{ role: "user", content: "干活" }, A("a1", "read_file"), T("a1", "read_file"), { role: "assistant", text: "好了", toolCalls: [] }];
+  assert.strictEqual(JSON.stringify(repairToolPairs(good)), JSON.stringify(good), "正常历史被改写了");
+
+  // 进程被 kill 的现场：assistant 落了盘，工具结果没来得及写
+  const dangling = [{ role: "user", content: "干活" }, A("a1", "read_file"), T("a1", "read_file"), A("a2", "run_shell")];
+  const dr = repairToolPairs(dangling);
+  assert(dr.length === 5 && dr[4].role === "tool" && dr[4].results[0].id === "a2", "悬空的 tool_calls 没补上占位");
+  assert(dr[4].results[0].isError && /中断/.test(dr[4].results[0].content), "占位结果没说清是中断，模型会当成执行失败");
+  clean(dangling);
+
+  // 一批多个调用只回了一半：只补缺的，已有的原样保留
+  const half = [
+    { role: "user", content: "干活" },
+    { role: "assistant", text: "", toolCalls: [{ id: "b1", name: "web_fetch", input: {} }, { id: "b2", name: "web_fetch", input: {} }, { id: "b3", name: "web_fetch", input: {} }] },
+    { role: "tool", results: [{ id: "b1", name: "web_fetch", content: "真结果", isError: false }] },
+  ];
+  const hr = repairToolPairs(half);
+  assert.strictEqual(hr[2].results.map((r) => r.id).join(), "b1,b2,b3", "半批没补齐");
+  assert.strictEqual(hr[2].results[0].content, "真结果", "已有的结果被改写了");
+  clean(half);
+
+  // 孤儿结果（有 tool_result 没有 tool_use）同样是 400，得丢掉
+  const orphan = [{ role: "user", content: "干活" }, T("zz", "read_file"), A("a1", "read_file"), T("a1", "read_file")];
+  assert(!JSON.stringify(repairToolPairs(orphan)).includes("zz"), "孤儿结果没被丢掉");
+  clean(orphan);
+
+  // 插话消息不能被当成分隔符，把后面的真结果误判成孤儿
+  const inter = [{ role: "user", content: "干活" }, A("a1", "read_file"), T("a1", "read_file"), { role: "user", content: "【用户插话】再加一段" }, A("a2", "write_file"), T("a2", "write_file")];
+  assert.strictEqual(JSON.stringify(repairToolPairs(inter)), JSON.stringify(inter), "插话历史被改写了");
+
+  console.log("✅ 工具配对自愈：进程被 kill 留下的半截对子补得回来 / 半批只补缺的 / 孤儿丢掉 / 正常历史不动");
+}
+
 // ---------- Agent Plugins 1.0.0 ----------
 // 规范的核心是「失败隔离在最小范围」：清单里的未知字段不该否掉整个插件，
 // 一个坏技能不该拖垮兄弟技能，一条坏 MCP 条目不该关掉整个 MCP 组件。
@@ -1868,6 +1950,7 @@ async function main() {
   testPathSafety();
   testDeliverableGate();
   testContextBudget();
+  testToolPairRepair();
   testPluginManifest();
   testPluginComponentIsolation();
   testPluginMcpRuntime();
