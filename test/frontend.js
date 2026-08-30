@@ -13,6 +13,140 @@ const { app, BrowserWindow } = require("electron");
 
 const SVGFIG = fs.readFileSync(path.join(__dirname, "..", "public", "svgfig.js"), "utf8");
 
+// 附件（粘贴/拖拽：文件、图片、大段文字）用的是 app-02.js 里那一段真源码——
+// 抄一份到测试里只能证明抄的那份是对的。段落靠标题定位，标题被改了就当场报错，不许静默跳过。
+const APP02 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
+const A0 = APP02.indexOf("// ================= ＋ 上传文件到工作空间");
+const A1 = APP02.indexOf("// ================= 会话历史");
+if (A0 < 0 || A1 <= A0) throw new Error("app-02.js 里的附件段找不到了（段标题被改过？），前端测试没法定位真源码");
+const ATTACH_SRC = APP02.slice(A0, A1);
+
+const ATTACH_HTML =
+  "<!doctype html><meta charset='utf-8'><body>" +
+  "<div class='input-card'><div id='attach-chips'></div><textarea id='input'></textarea></div>" +
+  "<button id='attach-btn'></button><input type='file' id='file-input'></body>";
+
+// 页面里其他文件提供的东西，在这儿给最小替身；网络请求全部截下来当证据
+const ATTACH_STUBS = [
+  "window.uploads = []; window.toasts = [];",
+  "window.fetch = async (url, init) => {",
+  "  if (url === '/api/upload') { window.uploads.push(JSON.parse(init.body)); return { ok: true, json: async () => ({}) }; }",
+  "  return { ok: true, json: async () => [] };",
+  "};",
+  "window.toast = (m) => window.toasts.push(m);",
+  "window.renderFiles = () => {};",
+  "window.syncInputHl = () => {};",
+  "window.inputEl = document.getElementById('input');",
+].join("\n");
+
+const ATTACH_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const tick = () => new Promise((r) => setTimeout(r, 40));
+  const chips = () => [...document.getElementById("attach-chips").children];
+  const B64PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const fire = (target, type, key, data) => {
+    const ev = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, key, { value: data });
+    target.dispatchEvent(ev);
+    return ev;
+  };
+
+  // ---- 1. 粘贴截图：存进工作空间、chip 带缩略图、二进制一个字节都不能变 ----
+  {
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes(B64PNG)], "image.png", { type: "image/png" }));
+    const ev = fire(document.body, "paste", "clipboardData", dt);
+    await tick();
+    const up = uploads.at(-1);
+    ok("粘贴截图会上传", !!up, "根本没发上传请求");
+    ok("剪贴板的通用名换成时间戳", /^粘贴图片_\\d{4}_\\d{6}\\.png$/.test(up.name), up.name);
+    ok("图片二进制没被改坏", up.data_b64 === B64PNG);
+    ok("chip 带缩略图", !!document.querySelector("#attach-chips img.attach-thumb"));
+    ok("粘贴被接管（没再往输入框里塞）", ev.defaultPrevented);
+  }
+
+  // ---- 2. 同一秒连贴两张：撞名要编号，不能悄悄覆盖掉第一张 ----
+  {
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes(B64PNG)], "image.png", { type: "image/png" }));
+    fire(document.body, "paste", "clipboardData", dt);
+    await tick();
+    const [a, b] = uploads.slice(-2).map((u) => u.name);
+    ok("连贴两张不互相覆盖", a !== b, a + " / " + b);
+    ok("两张各挂一个 chip", chips().length === 2, "chip 数=" + chips().length);
+  }
+
+  // ---- 3. 短文本照常粘进输入框，别多管闲事 ----
+  {
+    const before = uploads.length;
+    const dt = new DataTransfer();
+    dt.setData("text/plain", "帮我改一下标题");
+    const ev = fire(inputEl, "paste", "clipboardData", dt);
+    await tick();
+    ok("短文本不当附件", !ev.defaultPrevented && uploads.length === before);
+  }
+
+  // ---- 4. 大段文字：落成 txt 附件，输入框不被撑爆，中文不能乱码 ----
+  {
+    const big = "第一行是报错：\\n" + "巨长的日志".repeat(600);
+    inputEl.value = "帮我看看这个";
+    const dt = new DataTransfer();
+    dt.setData("text/plain", big);
+    const ev = fire(inputEl, "paste", "clipboardData", dt);
+    await tick();
+    const up = uploads.at(-1);
+    ok("大段文字落成 txt", /^粘贴文本_\\d{4}_\\d{6}\\.txt$/.test(up.name), up.name);
+    const back = new TextDecoder().decode(bytes(up.data_b64));
+    ok("中文原文一字不差", back === big, "长度 " + back.length + " vs " + big.length);
+    ok("输入框没被撑爆", inputEl.value === "帮我看看这个" && ev.defaultPrevented);
+    ok("chip 上能看见开头几个字", /第一行是报错/.test(chips().at(-1).title || ""));
+  }
+
+  // ---- 5. 拖文件进窗口 ----
+  {
+    const dt = new DataTransfer();
+    dt.items.add(new File([new TextEncoder().encode("hello")], "笔记.md", { type: "text/markdown" }));
+    fire(document.body, "drop", "dataTransfer", dt);
+    await tick();
+    ok("拖进来的文件按原名上传", uploads.at(-1).name === "笔记.md", uploads.at(-1).name);
+  }
+
+  // ---- 6. 拖一小段选中的文字：插在光标处，别把写了一半的话顶到后面 ----
+  {
+    inputEl.value = "开头结尾";
+    inputEl.selectionStart = inputEl.selectionEnd = 2;
+    const before = uploads.length;
+    const dt = new DataTransfer();
+    dt.setData("text/plain", "插进来");
+    fire(document.body, "drop", "dataTransfer", dt);
+    await tick();
+    ok("拖进来的短文字插在光标处", inputEl.value === "开头插进来结尾", inputEl.value);
+    ok("短文字不当附件", uploads.length === before);
+  }
+
+  // ---- 7. 拖一大段文字：和粘贴走同一条路 ----
+  {
+    const dt = new DataTransfer();
+    dt.setData("text/plain", "整篇文档".repeat(700));
+    fire(document.body, "drop", "dataTransfer", dt);
+    await tick();
+    ok("拖进来的大段文字也落成 txt", /^粘贴文本_\\d{4}_\\d{6}(-\\d+)?\\.txt$/.test(uploads.at(-1).name), uploads.at(-1).name);
+  }
+
+  // ---- 8. 发消息时附件名随消息一起走，输入框里永远不出现这些标记 ----
+  {
+    const n = chips().length;
+    const out = composeOutgoing();
+    ok("附件名拼进了消息", (out.match(/已上传文件：/g) || []).length === 1 && n > 0);
+    ok("发完 chip 清空", chips().length === 0);
+  }
+  return names;
+})()`;
+
+
 // 在渲染进程里跑的断言体。返回通过的用例名数组，抛错则整体失败。
 const CHECKS = `(() => {
   const names = [];
@@ -163,6 +297,18 @@ app.whenReady().then(async () => {
     const names = await win.webContents.executeJavaScript(CHECKS, true);
     for (const n of names) console.log("  ✓ " + n);
     console.log(`✅ 前端：内联 SVG 信息图（渲染/流式/清洗/作用域/导出）${names.length} 项通过`);
+
+    // 附件那一段要在干净的 DOM 里跑：真源码里有 document 级监听，和上面的用例混在一起会互相打架
+    const win2 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win2.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ATTACH_HTML));
+      // 替身 + 真源码 + 断言必须是同一段脚本：源码里的 const 是脚本级作用域，分两次注入就互相看不见了
+      const names2 = await win2.webContents.executeJavaScript(ATTACH_STUBS + "\n" + ATTACH_SRC + "\n" + ATTACH_CHECKS, true);
+      for (const n of names2) console.log("  ✓ " + n);
+      console.log(`✅ 前端：粘贴/拖拽附件（截图·文件·大段文字）${names2.length} 项通过`);
+    } finally {
+      if (!win2.isDestroyed()) win2.destroy();
+    }
   } catch (e) {
     console.error("❌ 前端测试失败:", e && e.message ? e.message : e);
     code = 1;

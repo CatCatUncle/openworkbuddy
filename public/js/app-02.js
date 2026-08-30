@@ -86,11 +86,20 @@ modeMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => {
 // ================= ＋ 上传文件到工作空间（选择/拖拽共用） =================
 const attachChips = document.getElementById("attach-chips");
 const pendingAttach = []; // 已上传、待随下一条消息发出的附件名。发送时才拼进消息文本，绝不往输入框里塞标记
-function addAttachChip(name) {
+function addAttachChip(name, thumbUrl, hint) {
   if (pendingAttach.includes(name)) return; // 同名重复上传只留一个 chip（文件本身已覆盖更新）
   pendingAttach.push(name);
   const chip = document.createElement("span");
-  chip.textContent = "📎 " + name;
+  if (thumbUrl) {
+    // 截图之间光看文件名分不出谁是谁，给张缩略图才知道自己贴对了没有
+    const img = document.createElement("img");
+    img.src = thumbUrl;
+    img.className = "attach-thumb";
+    img.alt = "";
+    chip.appendChild(img);
+  }
+  chip.appendChild(document.createTextNode(thumbUrl ? name : "📎 " + name));
+  if (hint) chip.title = hint; // 鼠标停上去能看见开头几行，确认贴的是哪一段
   const x = document.createElement("b");
   x.textContent = "✕";
   x.title = "从这条消息移除（文件仍在工作目录里）";
@@ -98,22 +107,64 @@ function addAttachChip(name) {
   chip.appendChild(x);
   attachChips.appendChild(chip);
 }
-async function uploadFiles(fileList) {
+/** 二进制转 base64。必须分块喂 fromCharCode：一个字节一个字节拼字符串，30MB 的文件能把界面卡死好几秒 */
+function bytesToB64(u8) {
+  let s = "";
+  for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+  return btoa(s);
+}
+/** 往工作空间放一份内容并挂上 chip。文件、截图、粘贴进来的大段文字，最后都走这里 */
+async function uploadBytes(name, u8, { thumbMime, hint } = {}) {
+  const b64 = bytesToB64(u8);
+  const resp = await fetch("/api/upload", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, data_b64: b64 }),
+  });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  addAttachChip(name, thumbMime ? `data:${thumbMime};base64,${b64}` : "", hint);
+  fetch("/api/files").then(r => r.json()).then(renderFiles);
+}
+async function uploadFiles(fileList, { rename } = {}) {
   for (const file of fileList) {
     if (file.size > 30 * 1048576) { toast(`${file.name} 超过 30MB，跳过`); continue; }
     try {
+      const name = rename ? rename(file) : file.name;
       const buf = await file.arrayBuffer();
-      const b64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ""));
-      const resp = await fetch("/api/upload", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: file.name, data_b64: b64 }),
-      });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      addAttachChip(file.name);
-      fetch("/api/files").then(r => r.json()).then(renderFiles);
+      await uploadBytes(name, new Uint8Array(buf), { thumbMime: /^image\//.test(file.type) ? file.type : "" });
     } catch (err) {
       toast(`❌ 上传失败: ${file.name}`); // 拖进来的是文件夹时读不出内容，也走这里
     }
+  }
+}
+/**
+ * 时间戳文件名。同一秒里连贴两张截图会撞名，撞上就往后编号——
+ * 不编号的话第二张会把第一张覆盖掉，而且 chip 按名字去重，界面上只剩一个，用户根本看不出来丢了一张。
+ */
+function stampName(prefix, ext) {
+  const d = new Date();
+  const p2 = (x) => String(x).padStart(2, "0");
+  const stem = `${prefix}_${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+  let name = `${stem}.${ext}`;
+  for (let i = 2; pendingAttach.includes(name); i++) name = `${stem}-${i}.${ext}`;
+  return name;
+}
+/**
+ * 大段文字（日志、报错、整篇文档）不塞进输入框，落成工作空间里的一个 .txt 再挂 chip。
+ * 塞进输入框有三处坏处：输入框被撑成一屏没法再打字、发出去的气泡里几万字滚不到头、
+ * 而且这段文字会原样躺在对话历史里被每一步重发一遍。落成文件之后模型按需 read_file，
+ * 要看第几行看第几行。
+ */
+const BIG_TEXT_CHARS = 2000;
+async function uploadText(text, { name } = {}) {
+  const fname = name || stampName("粘贴文本", "txt");
+  const head = text.replace(/\s+/g, " ").trim().slice(0, 80);
+  try {
+    await uploadBytes(fname, new TextEncoder().encode(text), { hint: head + (text.length > 80 ? "…" : "") });
+    toast(`大段文字已存成 ${fname}（${text.length.toLocaleString()} 字），发消息时一起带给它`);
+    return true;
+  } catch (err) {
+    toast("❌ 文字存盘失败，已按普通粘贴处理");
+    return false;
   }
 }
 /** 把输入框文字和待发附件合成一条要发出的消息，并清空两者。附件标记只在这里拼，界面上永远只见 chip */
@@ -136,8 +187,12 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
 let dragDepth = 0;
 const inputCard = attachChips.closest(".input-card");
 document.addEventListener("dragover", (e) => e.preventDefault());
+const dragHasPayload = (e) => {
+  const t = [...((e.dataTransfer || {}).types || [])];
+  return t.includes("Files") || t.includes("text/plain") || t.includes("text/uri-list");
+};
 document.addEventListener("dragenter", (e) => {
-  if (![...((e.dataTransfer || {}).types || [])].includes("Files")) return;
+  if (!dragHasPayload(e)) return;
   dragDepth++;
   inputCard?.classList.add("dragging");
 });
@@ -148,8 +203,57 @@ document.addEventListener("drop", async (e) => {
   e.preventDefault();
   dragDepth = 0;
   inputCard?.classList.remove("dragging");
-  const files = [...((e.dataTransfer || {}).files || [])];
-  if (files.length) await uploadFiles(files);
+  const dt = e.dataTransfer || {};
+  const files = [...(dt.files || [])];
+  if (files.length) { await uploadFiles(files); return; }
+  // 从浏览器/编辑器里选中一段文字直接拖进来
+  const text = (dt.getData ? dt.getData("text/plain") : "") || "";
+  if (!text.trim()) return;
+  if (text.length > BIG_TEXT_CHARS) { await uploadText(text); return; }
+  insertAtCursor(inputEl, text); // 短的就落到输入框里，让用户接着打字
+});
+/** 在光标处插入文字（拖进来的短文本）。直接 += 会把用户已经写好的半句话顶到后面去 */
+function insertAtCursor(el, text) {
+  const a = el.selectionStart ?? el.value.length;
+  const b = el.selectionEnd ?? el.value.length;
+  el.value = el.value.slice(0, a) + text + el.value.slice(b);
+  el.selectionStart = el.selectionEnd = a + text.length;
+  el.focus();
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+// ================= 粘贴即上传（截图、Finder 里复制的文件） =================
+/**
+ * 剪贴板里的截图一律叫 image.png——连贴两张，第二张会把第一张覆盖掉，而且用户完全看不出来
+ * （chip 按名字去重，只剩一个）。所以只要名字是这种通用名，就按贴的时刻另起一个。
+ */
+function pastedName(file) {
+  const generic = /^(image|图像|截屏|screenshot|未命名)?\.?(png|jpe?g|gif|webp|bmp|heic)?$/i;
+  if (file.name && !generic.test(file.name)) return file.name; // Finder 里复制的真文件，保留原名
+  return stampName("粘贴图片", (file.type.split("/")[1] || "png").replace("jpeg", "jpg"));
+}
+document.addEventListener("paste", async (e) => {
+  const t = e.target;
+  // 别抢别处输入框的粘贴：设置里的记忆文本框、搜索框都得能正常粘文字
+  const editable = t && (t.isContentEditable || /^(INPUT|TEXTAREA)$/.test(t.tagName));
+  if (editable && t !== inputEl) return;
+  const cd = e.clipboardData;
+  if (!cd) return;
+  // 有文字就按文字处理——从网页/表格复制来的内容常常同时带一张图，那时用户要的是文字。
+  // 纯截图不带 text/plain，正好落到下面走文件那条路。
+  const text = cd.getData("text/plain");
+  if (text.trim()) {
+    if (text.length <= BIG_TEXT_CHARS) return; // 短文本照常粘进输入框，别多管
+    e.preventDefault();
+    // 存盘失败就退回普通粘贴，别把用户复制的东西弄丢（焦点不在输入框时无处可退，只能作罢）
+    if (!(await uploadText(text)) && t === inputEl) insertAtCursor(inputEl, text);
+    return;
+  }
+  const files = [...(cd.files || [])];
+  if (!files.length) return;
+  e.preventDefault();
+  await uploadFiles(files, { rename: pastedName });
+  toast(files.length > 1 ? `已贴上 ${files.length} 个文件` : "图片已贴上，发消息时会一起带给它");
 });
 
 // ================= 会话历史（服务端持久化 + 回放，按项目过滤） =================

@@ -256,6 +256,15 @@ function safeWorkspaceDir(baseDir) {
   try { return baseDir ? path.join(getWorkspaceDir(), baseDir) : getWorkspaceDir(); } catch { return "（未设置）"; }
 }
 
+/** 当前生效的模型渠道（base_url / api_key / model / provider），给「没配视觉模型时拿主模型看图」兜底用。 */
+function activeChannel(config) {
+  const list = Array.isArray(config.models) ? config.models : [];
+  const e = list.find((m) => m.name === config.active_model) || list[0];
+  if (e && e.base_url && e.model) return { base_url: e.base_url, api_key: e.api_key, model: e.model, provider: e.provider };
+  const legacy = config.provider === "anthropic" ? config.anthropic : config.openai;
+  return legacy && legacy.model ? { ...legacy, provider: config.provider } : {};
+}
+
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
   // 备用渠道换道要现造一个 LLM 客户端；懒 require 避免环形依赖，测试时可注入假工厂做零 token 验证
   const makeLLM = llmFactory || ((cfg) => require("./llm").createLLM(cfg));
@@ -312,6 +321,9 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 1. 接到任务先简短说明计划（2-4 句），然后立即执行，不要等用户确认。信息不全时不要停下来反问，自己挑一个最合理的默认假设、写在开场白里继续做；只有缺了它整件事会白做的关键信息（比如要发给谁、用哪个账号）才允许问，且一次问完。
 2. 涉及已有文件/项目的任务，动手前先 list_files、search_files、read_file 把现场看清楚，不要凭文件名猜内容。**看明白之后直接改**——用户让你改，你就改，不要回头问"要不要我改""确认后我再动手"；只有删文件、清空目录、推远端这类不可逆的事才值得停下来问一句。改的方式是 edit_file 精准替换，不是 write_file 整篇盖掉。
 3. 成果文件写到工作目录根目录，文件名有意义。**一件产出只留一份**——写完不要再 cp 一份到别处（工作空间根目录也不行）：聊天里的产出卡片和右侧文件面板本来就能直接预览、直接「所在位置」，多出来的副本只会让用户看到同一个文件显示两遍。用户要把成果拿去别的地方，等他开口再动。**HTML / Markdown / CSS / JSON / 纯文本一律用 write_file 直接写内容，绝不要在 run_node 里用模板字符串拼**——网页正文里几乎必然出现 \`\${...}\`、反引号或 </script\>，会把外层模板字面量截断，直接 SyntaxError。run_node 只留给真的需要跑逻辑的活（pptxgenjs 出 PPT、docx 出 Word、exceljs 出 Excel、批量处理、算数据）。
+3.1 消息里带「已上传文件：xxx」就是用户拖进来或粘贴进来的东西，一律先看再动手：
+   - 图片（.png/.jpg/…）用 look_at_image，带上一个具体问题（"把报错原文一字不差抄下来"、"这页分几块、各放了什么"）。**别用 read_file 读图**，读出来是乱码。图不进对话历史，只有你问到的答案会进，所以一次就把要用的细节问全。
+   - 「粘贴文本_….txt」是用户粘进来的大段文字（日志、报错、整篇文档），用 read_file 读；很长就先读头尾再 search_files 定位，别整篇灌进上下文。
 4. 交付前自检：凡是生成的文件，写完必须再 read_file / list_files 读回来确认真的存在、内容完整（长文档至少核对开头结尾和篇幅），发现残缺就当场修好再交付。
 4.1 **大任务先立进度档**：预计十步以上、或要产出多个文件的任务，第一步先在工作目录 write_file 建 PROGRESS.md：目标一句话 + 分步清单（- [ ] 待做 / - [x] 已完成）。此后每完成一步就 edit_file 打勾。任务被打断或续跑时，先读 PROGRESS.md 从断点接着做，绝不从头重来。
 5. 代码报错要读懂原因、修正重试，不要放弃；同一处连续失败 3 次就换思路，别在死路上空转。
@@ -444,7 +456,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     return p;
   }
 
-  const READ_ONLY_TOOLS = ["read_file", "list_files", "search_files", "fetch_url", "render_page", "web_search", "library_list", "library_read"];
+  const READ_ONLY_TOOLS = ["read_file", "list_files", "search_files", "fetch_url", "render_page", "web_search", "library_list", "library_read", "look_at_image"];
 
   function toolList(depth, mode) {
     if (mode === "ask" || mode === "plan") {
@@ -639,6 +651,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
       media: config.media,
+      visionFallback: activeChannel(config), // 没配视觉渠道时先拿主模型试试（主模型本来就多模态的，用户什么都不用配）
       // IM/定时等无人值守场景可传 sec 覆盖权限档位（没人守着屏幕点审批）
       security: sec || config.security,
       deadline,

@@ -260,7 +260,7 @@ const CHANNEL_PRESETS = [
   { label: "Ollama 本地", provider: "openai", base: "http://localhost:11434/v1", model: "qwen3:14b" },
 ];
 function renderModelsPane(pane, s) {
-  const md = { image: {}, video: {}, tts: {}, ...(s.media || {}) };
+  const md = { image: {}, video: {}, tts: {}, vision: {}, ...(s.media || {}) };
   pane.innerHTML = `
     <div style="color:var(--wb-text-2);margin-bottom:10px">选择当前使用的模型，或添加模型。内置 OpenAI / Anthropic / OpenRouter / 火山方舟 / 阿里百炼 / DeepSeek / 智谱 / Kimi / Ollama 渠道预设，任何 OpenAI 兼容接口也都支持。输入框右下角可快速切换。</div>
     <div id="model-list">${s.models.map((m, i) => `
@@ -294,6 +294,15 @@ function renderModelsPane(pane, s) {
     </label>
     <div style="border-top:1px solid var(--wb-border);margin-top:14px;padding-top:12px">
       <div class="card-item">
+        <div class="t">👁 视觉模型（看图）</div>
+        <div class="d" style="margin-bottom:6px">给 look_at_image 工具用：你粘贴（⌘V）或拖进来的截图，它带着问题去看，拿回文字。<b>不填也能用</b>——会直接拿上面选中的主模型看；主模型是纯文本的（如 deepseek-chat）会明确报错，那时在这儿填一个能看图的模型即可（GPT / Claude / Gemini / GLM / Qwen-VL 系的多模态版本，OpenAI 兼容接口）。</div>
+        <input id="mvi-base" placeholder="接口地址（如 https://openrouter.ai/api/v1，留空=用主模型）" value="${esc((md.vision || {}).base_url || "")}">
+        <div class="form-row">
+          <input id="mvi-key" type="password" placeholder="API Key" value="${esc((md.vision || {}).api_key || "")}">
+          <input id="mvi-model" placeholder="模型名（如 gpt-5-mini / z-ai/glm-5.3-flash / qwen-vl-max）" value="${esc((md.vision || {}).model || "")}">
+        </div>
+      </div>
+      <div class="card-item">
         <div class="t">🎨 图像模型</div>
         <div class="d" style="margin-bottom:6px">给 agent 的 generate_image 工具用（对话里说「画一张…」即可，成图存进工作空间）。支持 OpenAI 兼容 /images/generations（含 new-api 等聚合网关）；接口地址含 dashscope 时自动走通义 qwen-image 原生协议。</div>
         <input id="mi-base" placeholder="接口地址（如 https://dashscope.aliyuncs.com/api/v1 或 https://api.openai.com/v1）" value="${esc(md.image.base_url || "")}">
@@ -321,7 +330,7 @@ function renderModelsPane(pane, s) {
           <input id="mt-voice" placeholder="默认音色（如 alloy / Cherry，可空）" value="${esc((md.tts || {}).voice || "")}">
         </div>
       </div>
-      <button class="btn-brand" id="media-save">保存图像 / 视频 / 语音模型</button>
+      <button class="btn-brand" id="media-save">保存视觉 / 图像 / 视频 / 语音模型</button>
     </div>
     <span class="ok-msg" id="models-msg"></span>`;
   const msg = pane.querySelector("#models-msg");
@@ -373,6 +382,7 @@ function renderModelsPane(pane, s) {
         image: { base_url: v("mi-base"), api_key: v("mi-key"), model: v("mi-model") },
         video: { base_url: v("mv-base"), api_key: v("mv-key"), model: v("mv-model") },
         tts: { base_url: v("mt-base"), api_key: v("mt-key"), model: v("mt-model"), voice: v("mt-voice") },
+        vision: { base_url: v("mvi-base"), api_key: v("mvi-key"), model: v("mvi-model") },
       },
     }, msg);
   };
