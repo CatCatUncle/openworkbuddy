@@ -321,6 +321,66 @@ function testToolPairRepair() {
   console.log("✅ 工具配对自愈：进程被 kill 留下的半截对子补得回来 / 半批只补缺的 / 孤儿丢掉 / 正常历史不动");
 }
 
+// 上游一抖就白跑：生图/下载这类慢又贵的调用必须自己扛重试，指望模型重来是指望不上的
+// （它通常会改用别的方案交差，用户就永远拿不到那张图）。
+async function testFetchRetry() {
+  const { fetchRetry, nearestTool } = require("../tools")._internals;
+  const realFetch = global.fetch;
+  const mk = (codes) => {
+    let i = 0;
+    const calls = [];
+    global.fetch = async (url) => {
+      const c = codes[Math.min(i++, codes.length - 1)];
+      calls.push(c);
+      if (c === "boom") throw new Error("socket hang up");
+      if (c === "abort") { const e = new Error("timeout"); e.name = "AbortError"; throw e; }
+      return { ok: c < 400, status: c };
+    };
+    return calls;
+  };
+  try {
+    // 500 是临时故障，重试就好
+    let calls = mk([500, 500, 200]);
+    let r = await fetchRetry("u", {}, { baseMs: 1 });
+    assert(r.ok && calls.length === 3, "5xx 没有重试到成功：" + JSON.stringify(calls));
+
+    // 4xx 是参数错/没余额/内容被拒，重试多少次都是同一个答案
+    calls = mk([400, 200]);
+    r = await fetchRetry("u", {}, { baseMs: 1 });
+    assert(!r.ok && calls.length === 1, "4xx 不该重试：" + JSON.stringify(calls));
+
+    // 429 该退避重试
+    calls = mk([429, 200]);
+    r = await fetchRetry("u", {}, { baseMs: 1 });
+    assert(r.ok && calls.length === 2, "429 没有退避重试");
+
+    // 一直不好：最后一次要把真实响应还回去，错误信息不能被重试吞掉
+    calls = mk([500]);
+    r = await fetchRetry("u", {}, { tries: 3, baseMs: 1 });
+    assert(r.status === 500 && calls.length === 3, "重试用尽后没把真实响应还回来");
+
+    // 网络层断连也重试
+    calls = mk(["boom", 200]);
+    r = await fetchRetry("u", {}, { baseMs: 1 });
+    assert(r.ok && calls.length === 2, "网络错误没重试");
+
+    // 超时是上面设的总时限到了，再发一次只会立刻再失败
+    calls = mk(["abort", 200]);
+    await assert.rejects(() => fetchRetry("u", {}, { baseMs: 1 }), /timeout/, "超时不该重试");
+    assert.strictEqual(calls.length, 1, "超时后又发了一次");
+  } finally {
+    global.fetch = realFetch;
+  }
+
+  // 工具名拼错：把最接近的真名直接给模型，别让它接着瞎猜
+  const known = ["read_file", "write_file", "mcp__filesystem__directory_tree", "generate_image"];
+  assert.strictEqual(nearestTool("directory_tree", known), "mcp__filesystem__directory_tree", "MCP 前缀被吃掉时没认出来");
+  assert.strictEqual(nearestTool("read_files", known), "read_file", "近似名没认出来");
+  assert.strictEqual(nearestTool("完全不沾边的东西xyz", known), "", "不像也硬猜，会把模型带沟里");
+  assert.strictEqual(nearestTool("read_file", []), "", "没有工具表时不该猜");
+  console.log("✅ 上游重试与工具名纠错：5xx/429/断连重试 · 4xx 与超时不重试 · 拼错的工具名给出真名");
+}
+
 // ---------- Agent Plugins 1.0.0 ----------
 // 规范的核心是「失败隔离在最小范围」：清单里的未知字段不该否掉整个插件，
 // 一个坏技能不该拖垮兄弟技能，一条坏 MCP 条目不该关掉整个 MCP 组件。
@@ -1048,7 +1108,11 @@ async function testDeliverableQuality() {
       assert.ok(/外部资源/.test(r.content), "没报外链 CDN：" + r.content);
       assert.ok(/不存在的本地文件/.test(r.content), "没报缺失的本地资源：" + r.content);
       assert.ok(/<div> 开 1 个、闭 0 个/.test(r.content), "没报标签对不上：" + r.content);
-      assert.strictEqual(r.isError, true, "有[错]级问题却判成通过");
+      // 查出毛病 ≠ 体检器坏了。isError 的含义是「这个工具没跑成」，而 check_page 恰恰是跑成了：
+      // 缺陷在更早写的那个文件里，重跑体检不会有任何变化。标成失败会让 errStreaks 把「改一次、
+      // 测一次」记成连续失败去触发循环检测，也会诱导模型重跑体检而不是去改页面。
+      assert.strictEqual(r.isError, false, "体检查出问题被当成了工具自身失败");
+      assert.ok(/需要你去改页面/.test(r.content), "没把「该改的是页面不是重跑」说给模型听：" + r.content);
       assert.ok(/命令行模式/.test(r.content), "命令行下应当说明浏览器实测跳过了：" + r.content);
 
       // 干净的页面要能过
@@ -1951,6 +2015,7 @@ async function main() {
   testDeliverableGate();
   testContextBudget();
   testToolPairRepair();
+  await testFetchRetry();
   testPluginManifest();
   testPluginComponentIsolation();
   testPluginMcpRuntime();

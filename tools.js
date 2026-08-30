@@ -356,8 +356,33 @@ function safeOutName(name, ext, stem) {
   return n;
 }
 
+/**
+ * 只重试「重来一次可能就好」的失败：5xx、429、以及网络层的连接错误。
+ * 4xx 是参数错、没余额、内容被拒——重试多少次都是同一个答案，立刻返回。
+ * 超时（AbortError）也不重试：那是上面设的总时限已经到了，再发一次只会立刻再失败。
+ */
+const retryableStatus = (s) => s === 429 || (s >= 500 && s < 600);
+async function fetchRetry(url, init, { tries = 3, baseMs = 1500, label = "接口" } = {}) {
+  let lastErr = null;
+  for (let i = 0; i < tries; i++) {
+    if (i) await new Promise((r) => setTimeout(r, baseMs * 2 ** (i - 1)));
+    try {
+      const r = await fetch(url, init);
+      if (r.ok || !retryableStatus(r.status) || i === tries - 1) return r; // 最后一次把真实响应还回去，错误信息照旧完整
+      console.warn(`[tools] ${label} 返回 ${r.status}，${baseMs * 2 ** i}ms 后重试（第 ${i + 2}/${tries} 次）`);
+      lastErr = new Error(`HTTP ${r.status}`);
+    } catch (e) {
+      if (e.name === "AbortError" || i === tries - 1) throw e;
+      console.warn(`[tools] ${label} ${e.message}，重试（第 ${i + 2}/${tries} 次）`);
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
 async function downloadToWorkspace(url, fname, dir) {
-  const r = await fetch(url, { signal: AbortSignal.timeout(180000) });
+  // 图/视频已经生成完、钱也花掉了，栽在最后一步下载上最不值——这一步尤其该重试
+  const r = await fetchRetry(url, { signal: AbortSignal.timeout(180000) }, { label: "下载生成结果" });
   if (!r.ok) throw new Error(`下载生成结果失败 HTTP ${r.status}`);
   ensureDirs();
   fs.writeFileSync(path.join(dir || workspaceDir, fname), Buffer.from(await r.arrayBuffer()));
@@ -377,10 +402,13 @@ async function generateImage(media, input, timeoutMs, saveDir) {
   let imgUrl = null, b64 = null;
   if (/dashscope/i.test(base)) {
     // DashScope 原生（qwen-image 系）：multimodal-generation，同步返回图片 URL
-    const r = await fetch(`${base}/services/aigc/multimodal-generation/generation`, {
+    // 生图慢又贵，上游一抖整轮就白跑：真实数据里 15 次调用失败 9 次，其中 8 次是
+    // 上游 500 InternalServiceError，纯属临时故障。模型拿到失败通常不会重来，而是
+    // 改用别的方案交差，用户就永远拿不到那张图。所以重试这件事得工具自己扛。
+    const r = await fetchRetry(`${base}/services/aigc/multimodal-generation/generation`, {
       method: "POST", headers, signal,
       body: JSON.stringify({ model: cfg.model, input: { messages: [{ role: "user", content: [{ text: prompt }] }] }, parameters: { watermark: false } }),
-    });
+    }, { label: "图像接口" });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
     const parts = ((((j.output || {}).choices || [])[0] || {}).message || {}).content || [];
@@ -388,10 +416,10 @@ async function generateImage(media, input, timeoutMs, saveDir) {
     if (!imgUrl) return { content: "图像接口没有返回图片：" + JSON.stringify(j).slice(0, 300), isError: true };
   } else {
     // OpenAI 兼容 /images/generations（OpenAI、new-api 等聚合网关通用）
-    const r = await fetch(`${base}/images/generations`, {
+    const r = await fetchRetry(`${base}/images/generations`, {
       method: "POST", headers, signal,
       body: JSON.stringify({ model: cfg.model, prompt, n: 1, ...(input.size ? { size: String(input.size) } : {}) }),
-    });
+    }, { label: "图像接口" });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
     const d = (j.data || [])[0] || {};
@@ -1620,6 +1648,33 @@ async function webSearch(query, count, searchCfg) {
   );
 }
 
+/** 拼错的工具名 → 最接近的真名。没有足够像的就返回空字符串，别乱猜误导模型。 */
+function nearestTool(name, known) {
+  const n = String(name || "");
+  if (!Array.isArray(known) || !known.length || !n) return "";
+  // MCP 全名是 mcp__<服务器>__<工具>，最常见的错法就是只写了最后一段
+  const tail = known.find((k) => k.endsWith("__" + n));
+  if (tail) return tail;
+  const dist = (a, b) => {
+    let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      for (let j = 1; j <= b.length; j++) {
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      }
+      prev = cur;
+    }
+    return prev[b.length];
+  };
+  let best = "";
+  let bd = Infinity;
+  for (const k of known) {
+    const d = dist(n, k);
+    if (d < bd) { bd = d; best = k; }
+  }
+  return bd <= Math.max(2, Math.floor(n.length / 4)) ? best : "";
+}
+
 async function executeTool(name, input, opts = {}) {
   const timeoutMs = opts.timeoutMs || 120000;
   // 安全中心策略（settings 里配置）；未传时用纯默认值（等价于旧行为 + 默认黑名单）
@@ -1824,7 +1879,12 @@ async function executeTool(name, input, opts = {}) {
         const p = resolveFile(rel);
         if (!fs.existsSync(p)) return { content: `文件不存在：${rel}`, isError: true };
         const report = await checkPage(p, rel);
-        return { content: report, isError: /\[错\]/.test(report) };
+        // 体检查出毛病，是这个工具干成了它该干的活，不是它自己失败了。标成 isError 会连累三处：
+        // errStreaks 把「改一次、测一次」记成连续失败去触发循环检测（真实数据里 15 次调用被记了
+        // 8 次假失败）；trimHistory 把它当成不可重现的证据舍不得裁；模型看见红色的失败会倾向于
+        // 重跑体检，而它其实该去改页面。问题写在报告正文里，模型看得懂。
+        const bad = /\[错\]/.test(report);
+        return { content: (bad ? "体检发现问题，需要你去改页面（工具本身跑通了，别重跑体检）：\n" : "") + report, isError: false };
       }
       case "save_skill": {
         const name = String(input.name || "").trim();
@@ -1880,8 +1940,12 @@ async function executeTool(name, input, opts = {}) {
       case "web_search":
         security.audit("网络访问", `联网搜索：${input.query}`, "放行");
         return { content: await webSearch(input.query, input.count, opts.search), isError: false };
-      default:
-        return { content: `未知工具: ${name}`, isError: true };
+      default: {
+        // 模型常把 MCP 工具的前缀吃掉（调 directory_tree 而不是 mcp__filesystem__directory_tree），
+        // 真实数据里这一种拼错白烧了 4 轮模型调用。光说「未知工具」它只能接着瞎猜，把最像的真名给它。
+        const guess = nearestTool(name, opts.knownTools);
+        return { content: `未知工具: ${name}` + (guess ? `。你是不是想调 ${guess}？工具名必须一字不差地写全。` : ""), isError: true };
+      }
     }
   } catch (e) {
     return { content: `工具执行出错: ${e.message}`, isError: true };
@@ -1917,4 +1981,5 @@ function outputFiles() {
   return out.sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
-module.exports = { TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+module.exports = {
+  _internals: { fetchRetry, nearestTool }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
