@@ -73,24 +73,38 @@
   }
 
   /**
+   * 一段东西到底是不是"图"：光有个 <svg> 壳、里面一个子元素都没有的，
+   * 多半是正文在讲 SVG 这个标签本身，不是真要画图
+   */
+  function hasFigureBody(code) {
+    return /<[A-Za-z]/.test(String(code || "").replace(/^\s*<svg[^>]*>/i, ""));
+  }
+
+  // 不该被当成图画出来的片段：``` 围栏（含流式还没闭合的）、以及行内代码 `…`。
+  // 行内代码这条是补的：正文里写一句"图以 `<svg>` 内联"，之前会把这个 <svg> 当成
+  // 一张正在流式输出的图，从它往后的正文整段被吞掉，界面上只剩一个"绘制中"的空框
+  const SKIP = "```[\\s\\S]*?```|```[\\s\\S]*$|``[^\\n]*?``|`[^`\\n]*`";
+
+  /**
    * 把正文里的 SVG 换成占位符 \x00SVG<n>\x00，返回 { text, figs }。
    * 三种形态都认：完整 ```svg 围栏、裸 <svg>…</svg>、以及流式还没闭合的那一段。
-   * 带 fence 分组的两条是为了跳过普通代码块——讲解 SVG 语法的代码示例不该被画出来。
+   * 带 skip 分组的两条是为了跳过代码块和行内代码——讲解 SVG 语法的例子不该被画出来。
    */
   function extractSvgFigures(src) {
     const figs = [];
     const push = (code, growing) => {
+      if (!hasFigureBody(code)) return null;
       const html = svgFigureHtml(code, growing);
       if (!html) return null;
       figs.push(html);
       return `\n\x00SVG${figs.length - 1}\x00\n`;
     };
-    const keep = (m, fence, growing) => fence ?? (push(m, growing) ?? m);
+    const keep = (m, skip, growing) => skip ?? (push(m, growing) ?? m);
     let s = String(src || "");
     s = s.replace(/```svg[^\S\n]*\n([\s\S]*?)```/gi, (m, body) => push(body.trim(), false) ?? m);
     s = s.replace(/```svg[^\S\n]*\n([\s\S]*)$/i, (m, body) => push(body.trim(), true) ?? m);
-    s = s.replace(/(```[\s\S]*?```|```[\s\S]*$)|<svg[\s\S]*?<\/svg>/gi, (m, fence) => keep(m, fence, false));
-    s = s.replace(/(```[\s\S]*?```|```[\s\S]*$)|<svg[\s\S]*$/gi, (m, fence) => keep(m, fence, true));
+    s = s.replace(new RegExp("(" + SKIP + ")|<svg[\\s>][\\s\\S]*?<\\/svg>", "gi"), (m, skip) => keep(m, skip, false));
+    s = s.replace(new RegExp("(" + SKIP + ")|<svg[\\s>][\\s\\S]*$", "gi"), (m, skip) => keep(m, skip, true));
     return { text: s, figs };
   }
 
@@ -130,5 +144,5 @@
     });
   }
 
-  root.SvgFig = { repairPartialSvg, scopeCss, sanitizeSvg, svgFigureHtml, extractSvgFigures, svgToPngDataUrl };
+  root.SvgFig = { repairPartialSvg, scopeCss, sanitizeSvg, svgFigureHtml, extractSvgFigures, hasFigureBody, svgToPngDataUrl };
 })(window);

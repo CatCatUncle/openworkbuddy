@@ -357,14 +357,15 @@ const DEFAULT_SKILLS = [
     name: "follow-builders",
     title: "独立开发者信息源",
     repo: "zarazhangrui/follow-builders", branch: "main", subpath: "",
-    license: "MIT（作者在 README 里声明，仓库没放 LICENSE 文件）", author: "zarazhangrui",
+    license: "MIT", author: "zarazhangrui",
     bytes: 4 * 1024 * 1024,
-    why: "一份独立开发者/AI 圈的博客、播客、X 账号订阅源，配合 web_search 追前沿",
+    why: "一份独立开发者/AI 圈的博客、播客、X 账号订阅源，配合 web_search 追前沿（MIT 是作者在 README 里声明的，仓库没放 LICENSE 文件）",
   },
 ];
 
 function defaultSkillUrl(s) {
-  return `https://github.com/${s.repo}/tree/${s.branch}/${s.subpath}`;
+  // 整仓就是一个技能时 subpath 是空的，别拼出个带尾斜杠的 .../tree/main/
+  return `https://github.com/${s.repo}/tree/${s.branch}` + (s.subpath ? "/" + s.subpath : "");
 }
 
 /** 默认技能清单 + 每条是否已装、装完实际占多大 */

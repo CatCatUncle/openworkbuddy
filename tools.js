@@ -997,6 +997,11 @@ function selfCheck(file, rel) {
     return "";
   }
   if (ext === ".svg") {
+    const orphan = orphanSvgStyleScopes(src);
+    if (orphan.length) {
+      return `\n⚠️ 这个 SVG 的样式作用域挂空了：<style> 里写了 ${orphan.slice(0, 4).map((n) => "#" + n).join("、")}，` +
+        `<svg> 上却没有这个 id。样式一条都不生效，图会变成黑字、没底色、框线全丢。id 和选择器改成一致的。`;
+    }
     // 独立的 .svg 文件同样没有外层页面给它变量，坏法和 HTML 一模一样
     const { missing } = undefinedCssVars(src, path.dirname(file));
     if (missing.length) {
@@ -1046,6 +1051,32 @@ function undefinedCssVars(src, baseDir) {
   return { missing: [...missing], remoteCss };
 }
 
+/**
+ * 查内联 SVG 里「作用域挂空了」的 <style>。
+ *
+ * 又一条真出过事的坑：gen_diagram 出来的 mermaid SVG，样式全部写成
+ * `#<svg 自己的 id> .node rect{...}` 这种作用域选择器。模型把图往 HTML 报告里贴的时候，
+ * 常常顺手"重命名 id 防冲突"——只改了 <svg id="…">、没改 <style> 里的选择器（或者反过来）。
+ * 于是整张图的样式一条都不生效，mermaid 回落到浏览器默认值：黑字、没底色、框线全丢，
+ * 用户打开就是"黑底黑字、排版乱成一团"。mermaid 每次渲染的 id 本来就是随机的、不会撞，
+ * 压根不需要改名——贴进去时一个字符都不该动。
+ *
+ * 判定同样是确定的：选择器里写了 #foo，同一段 <svg> 里又没有 id="foo"，这条规则就是死的。
+ * 只看 { 前面的选择器部分，值里的 #f0e9dc 这种十六进制颜色不会被误当成 id。
+ */
+function orphanSvgStyleScopes(src) {
+  const bad = new Set();
+  for (const m of String(src || "").matchAll(/<svg\b[\s\S]*?<\/svg>/gi)) {
+    const svg = m[0];
+    const styles = [...svg.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].map((x) => x[1]).join("\n");
+    if (!styles.trim()) continue;
+    const ids = new Set([...svg.matchAll(/\sid=["']([^"']+)["']/g)].map((x) => x[1]));
+    const selectors = styles.replace(/\/\*[\s\S]*?\*\//g, "").split("}").map((b) => b.split("{")[0]).join(",");
+    for (const x of selectors.matchAll(/#([A-Za-z_][\w-]*)/g)) if (!ids.has(x[1])) bad.add(x[1]);
+  }
+  return [...bad];
+}
+
 /** 网页静态体检。只报能确定的问题，不做审美评判 */
 function auditHtml(src, baseDir) {
   const out = [];
@@ -1079,6 +1110,15 @@ function auditHtml(src, baseDir) {
       `用了没定义的 CSS 变量：${names}${more}。var(--没定义的) 会让整条声明作废、回落到默认色——` +
         `文字和底色双双变黑，页面上就是一片看不清。要么在本文件的 :root 里把它们定义出来，` +
         `要么直接写死颜色值，或者至少写兜底 var(--x, #333)`
+    );
+  }
+  const orphan = orphanSvgStyleScopes(src);
+  if (orphan.length) {
+    add(
+      "错",
+      `内联 SVG 的样式作用域挂空了：<style> 里写了 ${orphan.slice(0, 4).map((n) => "#" + n).join("、")}，` +
+        `同一段 <svg> 里却没有这个 id。整张图的样式一条都不会生效，会回落成黑字、没底色、框线全丢。` +
+        `把图原样贴回来（gen_diagram 的 id 本来就是随机的，不会撞，不用改名）`
     );
   }
   const text = src.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();

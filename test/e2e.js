@@ -605,10 +605,12 @@ function testDefaultSkillsManifest() {
   const list = skillsMgr.listDefaultSkills();
   assert(list.length > 0, "默认技能清单是空的");
   for (const s of list) {
-    for (const k of ["name", "title", "repo", "subpath", "license", "author", "bytes", "why", "url"]) {
+    for (const k of ["name", "title", "repo", "license", "author", "bytes", "why", "url"]) {
       assert(s[k] !== undefined && s[k] !== "", `默认技能 ${s.name} 缺字段 ${k}`);
     }
-    assert(/^https:\/\/github\.com\/[^/]+\/[^/]+\/tree\/[^/]+\/.+$/.test(s.url), `${s.name} 的上游地址拼错了: ${s.url}`);
+    // subpath 可以是空串——整个仓库就是一个技能时它本来就没有子目录
+    assert(typeof s.subpath === "string", `默认技能 ${s.name} 的 subpath 不是字符串`);
+    assert(/^https:\/\/github\.com\/[^/]+\/[^/]+\/tree\/[^/]+(\/.+)?$/.test(s.url), `${s.name} 的上游地址拼错了: ${s.url}`);
     assert(/^(Apache-2\.0|MIT|BSD-3-Clause|CC0-1\.0)$/.test(s.license), `${s.name} 的协议「${s.license}」不在允许的开源协议白名单里`);
     assert(typeof s.installed === "boolean", `${s.name} 没标是否已安装`);
   }

@@ -1198,6 +1198,7 @@ function renderTurnOutputs(body, changed) {
       list.appendChild(row);
     }
   }
+  mergeFmtPairs(grid);
   markDupBasenames(grid);
   block.querySelector(".out-hd .n").textContent = `(${list.querySelectorAll(".out-row").length})`;
 }
@@ -1222,21 +1223,47 @@ function pairedCard(grid, name) {
   return [...grid.querySelectorAll(".out-card")].find(c => c.dataset.stem === stem && extOf(c.dataset.name) === want) || null;
 }
 
-// 把另一种格式挂到这张卡上：下载拆成两个按钮，各自写清是哪种格式。
-// 不能光把 SVG 藏掉——藏了用户想要矢量图就只能回右侧文件面板里翻，那是把一个 bug 换成另一个
+// 把另一种格式挂到这张卡上：下载键拆成两个，各自标格式。
+// 不能光把 SVG 藏掉——藏了用户想要矢量图就只能回右侧文件面板里翻，那是把一个 bug 换成另一个。
+// 两个键都是「图标 + 格式名」：之前本体那个键是纯图标、挂上来的那个是纯文字且没有 class，
+// 一个被挤进 30px 的方框里、一个是条裸链接，用户看到的就是两个长得不一样的下载键
 function attachAltFmt(card, alt) {
-  if (!card || !alt || card.dataset.alt) return;
+  if (!card || !alt || card.dataset.alt === alt) return;
   card.dataset.alt = alt;
   const acts = card.querySelector(".out-acts");
   if (!acts) return;
-  const self = acts.querySelector("a[download]");
-  if (self) self.textContent = "下载 " + extOf(card.dataset.name).toUpperCase();
+  acts.querySelectorAll(".oa-alt").forEach((el) => el.remove()); // 重新挂之前先清掉上一次挂的
+  const self = acts.querySelector("a[download]:not(.oa-alt)");
+  if (!self) return;
+  const fmt = (n) => extOf(n).toUpperCase();
+  self.className = "oa-ico oa-fmt";
+  self.title = "下载 " + fmt(card.dataset.name);
+  self.innerHTML = ic("download") + `<span class="tx">${fmt(card.dataset.name)}</span>`;
   const a = document.createElement("a");
+  a.className = "oa-ico oa-fmt oa-alt";
   a.href = "/api/files/download/" + encodeURIComponent(alt);
   a.setAttribute("download", "");
-  a.textContent = "下载 " + extOf(alt).toUpperCase();
-  a.title = alt;
+  a.title = "下载 " + fmt(alt) + "（" + alt + "）";
+  a.innerHTML = ic("download") + `<span class="tx">${fmt(alt)}</span>`;
   acts.appendChild(a);
+}
+
+// 收尾统一收敛：上面「同名副本留路径最浅那份」那条会把已经并好的卡整张换掉，
+// 挂在旧卡上的「另一种格式」就跟着没了，同一张图又变回并排两张
+function mergeFmtPairs(grid) {
+  const all = () => [...grid.querySelectorAll(".out-card")];
+  for (const c of all()) {
+    if (!c.isConnected) continue;
+    const ext = extOf(c.dataset.name);
+    if (ext !== "png" && ext !== "svg") continue;
+    const want = ext === "png" ? "svg" : "png";
+    const mate = all().find((o) => o !== c && o.dataset.stem === c.dataset.stem && extOf(o.dataset.name) === want);
+    if (!mate) continue;
+    const front = ext === "png" ? c : mate; // PNG 当门面：缩略图渲染得出来，插飞书/Word 用的也是它
+    const back = front === c ? mate : c;
+    attachAltFmt(front, back.dataset.name);
+    back.remove();
+  }
 }
 
 function makeOutCard(f, isHtml) {
