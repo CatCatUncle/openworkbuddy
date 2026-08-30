@@ -381,6 +381,77 @@ async function testFetchRetry() {
   console.log("✅ 上游重试与工具名纠错：5xx/429/断连重试 · 4xx 与超时不重试 · 拼错的工具名给出真名");
 }
 
+// 看图：用户粘贴的截图必须真能被读懂，而且图只能随这一次请求发出去，绝不能留在对话历史里
+// （历史是每一步都整份重发的，一张图能把上下文成本翻好几倍，纯文本的主模型还会直接 400 把整个会话废掉）
+async function testLookAtImage() {
+  const tools = require("../tools");
+  const { lookAtImage } = tools._internals;
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-vision-"));
+  const PNG_1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  fs.writeFileSync(path.join(dir, "截图.png"), Buffer.from(PNG_1x1, "base64"));
+  fs.writeFileSync(path.join(dir, "笔记.txt"), "不是图");
+  const resolveFile = (rel) => path.join(dir, rel);
+  const media = { vision: { base_url: "https://vision.example/v1", api_key: "k", model: "vision-model" } };
+  const realFetch = global.fetch;
+  try {
+    // 不带问题就去看图，拿回来的只会是一段泛泛的描述，白花一次调用
+    let r = await lookAtImage({ media }, { path: "截图.png" }, 30000, resolveFile);
+    assert.ok(r.isError && /具体问题/.test(r.content), "没问题也让看：" + r.content);
+    r = await lookAtImage({ media }, { path: "不存在.png", question: "?" }, 30000, resolveFile);
+    assert.ok(r.isError && /list_files/.test(r.content), "图不存在时没指路去查真实文件名：" + r.content);
+    r = await lookAtImage({ media }, { path: "笔记.txt", question: "?" }, 30000, resolveFile);
+    assert.ok(r.isError && /不是图片/.test(r.content), "文本文件被当图发出去了：" + r.content);
+    r = await lookAtImage({}, { path: "截图.png", question: "?" }, 30000, resolveFile);
+    assert.ok(r.isError && /视觉模型/.test(r.content), "一个渠道都没有时该让用户去配：" + r.content);
+
+    // 正常看图：图必须在这一次请求的 body 里，答案回来是纯文本
+    let seen = null;
+    global.fetch = async (url, init) => {
+      seen = { url, body: JSON.parse(init.body) };
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: "一张红色的图" } }] }) };
+    };
+    r = await lookAtImage({ media }, { path: "截图.png", question: "什么颜色？" }, 30000, resolveFile);
+    assert.strictEqual(r.isError, false, r.content);
+    assert.ok(/一张红色的图/.test(r.content), "答案没带回来：" + r.content);
+    assert.strictEqual(seen.url, "https://vision.example/v1/chat/completions", "接口地址拼错了：" + seen.url);
+    assert.strictEqual(seen.body.model, "vision-model", "没用视觉渠道配的模型");
+    const parts = seen.body.messages[0].content;
+    assert.ok(parts.some((c) => c.type === "text" && c.text === "什么颜色？"), "问题没发出去");
+    assert.ok(parts.some((c) => c.type === "image_url" && /^data:image\/png;base64,iVBOR/.test(c.image_url.url)), "图没随请求发出去");
+
+    // Anthropic 渠道是另一套 body，发错了整条请求就废
+    seen = null;
+    r = await lookAtImage({ media: { vision: { base_url: "https://api.anthropic.com", api_key: "k", model: "claude", provider: "anthropic" } } },
+      { path: "截图.png", question: "什么颜色？" }, 30000, resolveFile);
+    assert.strictEqual(seen.url, "https://api.anthropic.com/v1/messages", "Anthropic 走错了地址：" + seen.url);
+    assert.ok(seen.body.messages[0].content.some((c) => c.type === "image" && c.source.data.startsWith("iVBOR")), "Anthropic 的图没按 base64 source 发");
+
+    // 主模型是纯文本模型：上游 400 说得很清楚，这时候要让用户去配视觉渠道，而不是让模型自己反复重试
+    global.fetch = async () => ({ ok: false, status: 400, json: async () => ({ error: { message: "This model does not support image" } }) });
+    const fb = { visionFallback: { base_url: "https://main/v1", api_key: "k", model: "deepseek-chat" } };
+    r = await lookAtImage(fb, { path: "截图.png", question: "?" }, 30000, resolveFile);
+    assert.ok(r.isError && /视觉模型/.test(r.content) && /不要重试/.test(r.content), "主模型看不了图时没把话说清楚：" + r.content);
+    // 但用户已经配了视觉渠道，同一个 400 就是这个渠道自己的毛病，别再劝他去配一遍
+    r = await lookAtImage({ media }, { path: "截图.png", question: "?" }, 30000, resolveFile);
+    assert.ok(r.isError && /视觉模型错误 400/.test(r.content), "已配渠道报错时说岔了：" + r.content);
+  } finally {
+    global.fetch = realFetch;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  // 按文本读一张 png，拿回来的是几万字符乱码——既看不出东西又烧上下文，直接指路 look_at_image
+  const imgInWs = path.join(WORKSPACE, "e2e-看图.png");
+  fs.writeFileSync(imgInWs, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+  try {
+    const r = await tools.executeTool("read_file", { path: "e2e-看图.png" }, {});
+    assert.ok(r.isError && /look_at_image/.test(r.content), "read_file 读图没指路：" + r.content);
+  } finally {
+    fs.rmSync(imgInWs, { force: true });
+  }
+  console.log("✅ 看图：带问题才给看 · 图只随请求发不进历史 · OpenAI/Anthropic 两种协议 · 主模型看不了图时指路去配");
+}
+
 // ---------- Agent Plugins 1.0.0 ----------
 // 规范的核心是「失败隔离在最小范围」：清单里的未知字段不该否掉整个插件，
 // 一个坏技能不该拖垮兄弟技能，一条坏 MCP 条目不该关掉整个 MCP 组件。
@@ -738,8 +809,9 @@ async function testFrontendSvgFigures() {
   });
   const out = (r.stdout || "") + (r.stderr || "");
   if (r.status !== 0) throw new Error("前端 SVG 测试未通过：\n" + out.trim().split("\n").slice(-12).join("\n"));
-  const line = out.split("\n").find((l) => l.startsWith("✅ 前端"));
-  console.log(line || "✅ 前端：内联 SVG 信息图测试通过");
+  const lines = out.split("\n").filter((l) => l.startsWith("✅ 前端"));
+  if (!lines.length) throw new Error("前端测试没有报告任何一组结果：\n" + out.trim().split("\n").slice(-12).join("\n"));
+  for (const l of lines) console.log(l);
 }
 
 function testDefaultSkillsManifest() {
@@ -2016,6 +2088,7 @@ async function main() {
   testContextBudget();
   testToolPairRepair();
   await testFetchRetry();
+  await testLookAtImage();
   testPluginManifest();
   testPluginComponentIsolation();
   testPluginMcpRuntime();

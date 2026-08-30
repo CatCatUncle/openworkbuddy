@@ -257,6 +257,23 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "look_at_image",
+    description:
+      "看一张图（截图、照片、设计稿），带着一个具体的问题去看，拿回一段文字答案。用户粘贴或上传了图片就用它——" +
+      "read_file 读图只会读出一堆乱码。问题越具体越有用：「报错信息一字不差抄下来」「这个页面分几块、各是什么」" +
+      "远好过「看看这张图」；想问好几件事就分几次调，一次一张图。" +
+      "图片本身不会进对话历史（那样每一步都要重发一遍，又贵又会让纯文本的主模型直接报错），进历史的只有你拿回的这段文字——" +
+      "所以该抄下来的细节（报错原文、数字、文案）要在问题里明确要求抄全，看完这一次就得把要用的东西都拿到手。",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "图片相对路径。用户上传的图在工作空间里，名字不确定就先 list_files" },
+        question: { type: "string", description: "关于这张图的具体问题（必填）" },
+      },
+      required: ["path", "question"],
+    },
+  },
+  {
     name: "generate_image",
     description:
       "用用户配置的图像模型生成一张图片（AI 作画），保存到工作空间。适合配图、海报、封面、商品图、没有文字的纯画面。" +
@@ -386,6 +403,108 @@ async function downloadToWorkspace(url, fname, dir) {
   if (!r.ok) throw new Error(`下载生成结果失败 HTTP ${r.status}`);
   ensureDirs();
   fs.writeFileSync(path.join(dir || workspaceDir, fname), Buffer.from(await r.arrayBuffer()));
+}
+
+const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp)$/i;
+const IMAGE_MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", bmp: "image/bmp" };
+
+/**
+ * 大图先缩到长边 1568（视觉模型再大也看不出更多东西，只是更贵更慢，还容易撞上游的体积上限）。
+ * 用 Electron 自带的 nativeImage，不引任何图像库；跑在纯 node 里（测试、CLI）时缩不动就原样发。
+ */
+function shrinkForVision(abs) {
+  const raw = fs.readFileSync(abs);
+  const ext = (abs.split(".").pop() || "png").toLowerCase();
+  const mime = IMAGE_MIME[ext] || "image/png";
+  const asis = { b64: raw.toString("base64"), mime, note: "" };
+  if (raw.length <= 900 * 1024) return asis;
+  try {
+    const { nativeImage } = require("electron");
+    let img = nativeImage.createFromPath(abs);
+    if (img.isEmpty()) return asis;
+    const sz = img.getSize();
+    if (Math.max(sz.width, sz.height) > 1568) {
+      img = img.resize(sz.width >= sz.height ? { width: 1568, quality: "good" } : { height: 1568, quality: "good" });
+    }
+    const jpg = img.toJPEG(82);
+    if (!jpg || !jpg.length || jpg.length >= raw.length) return asis;
+    return { b64: jpg.toString("base64"), mime: "image/jpeg", note: `（原图 ${sz.width}×${sz.height}、${Math.round(raw.length / 1024)}KB，压缩后再看的）` };
+  } catch {
+    return asis;
+  }
+}
+
+/**
+ * 带着一个问题去看一张图，返回文字答案。
+ *
+ * 为什么是「工具」而不是把图塞进对话历史：历史是每一步都要整份重发的，图又是 token 大户，
+ * 一张截图能把刚做完的上下文成本优化整个推翻；而且多数纯文本模型收到图直接 400，
+ * 会话是落盘的，于是那个会话就永久废了。走工具这条路，进历史的只有一段纯文本答案——
+ * 便宜、能命中缓存、上下文紧张时还能被裁掉。
+ */
+async function lookAtImage(opts, input, timeoutMs, resolveFile) {
+  const rel = String(input.path || "").trim();
+  const q = String(input.question || "").trim();
+  if (!rel) return { content: "缺少 path（要看哪张图，工作空间里的相对路径）", isError: true };
+  if (!q) return { content: "缺少 question：看图必须带着具体问题去问（「报错写的什么」「这页分几块」），空看一眼拿不回有用的东西。", isError: true };
+
+  const v = (opts.media || {}).vision || {};
+  const configured = !!(String(v.base_url || "").trim() && String(v.model || "").trim());
+  // 没单独配视觉渠道就拿主模型试一把：主模型本来就多模态的（GPT/Claude/Gemini/GLM 系）什么都不用配；
+  // 纯文本模型会明确报错，下面那段会把「去设置里配一个」这句话说清楚，而不是让模型在那儿反复重试。
+  const cfg = configured ? v : opts.visionFallback || {};
+  if (!cfg.base_url || !cfg.model) {
+    return { content: "没有能看图的模型：请用户去 设置 → 模型 → 视觉模型 填接口地址 / API Key / 模型名。这一步不用重试。", isError: true };
+  }
+
+  let p;
+  try { p = resolveFile(rel); } catch (e) { return { content: e.message, isError: true }; }
+  if (!fs.existsSync(p)) return { content: `找不到图片 ${rel}。用户上传的图在工作空间里，先 list_files 看看真实文件名。`, isError: true };
+  if (fs.statSync(p).isDirectory()) return { content: `${rel} 是个目录，不是图片。`, isError: true };
+  if (!IMAGE_EXT.test(p)) return { content: `${rel} 不是图片（支持 png / jpg / webp / gif / bmp）。文本文件用 read_file。`, isError: true };
+
+  const { b64, mime, note } = shrinkForVision(p);
+  if (b64.length > 12 * 1048576) {
+    return { content: `${path.basename(p)} 太大了（编码后约 ${Math.round(b64.length / 1048576)}MB），上游收不下。先缩小再看。`, isError: true };
+  }
+  const base = String(cfg.base_url).trim().replace(/\/+$/, "");
+  const signal = AbortSignal.timeout(Math.max(timeoutMs || 0, 120000));
+  const anthropic = cfg.provider === "anthropic";
+  const url = anthropic ? `${base}/v1/messages` : `${base}/chat/completions`;
+  const key = String(cfg.api_key || "").trim();
+  const headers = anthropic
+    ? { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" }
+    : { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
+  const body = anthropic
+    ? { model: cfg.model, max_tokens: 2000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: q }] }] }
+    : { model: cfg.model, max_tokens: 2000, messages: [{ role: "user", content: [{ type: "text", text: q }, { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }] }] };
+
+  let r;
+  try {
+    r = await fetchRetry(url, { method: "POST", headers, signal, body: JSON.stringify(body) }, { label: "视觉模型" });
+  } catch (e) {
+    return { content: `视觉模型请求失败：${e.message}`, isError: true };
+  }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = JSON.stringify(j).slice(0, 300);
+    // 主模型是纯文本模型时上游会直说「不支持图片」。这句话得原样转给用户去配视觉渠道——
+    // 模型自己怎么重试都是同一个 400，只会白烧几轮。
+    if (!configured && /image|vision|multimodal|不支持/i.test(msg)) {
+      return {
+        content: `当前主模型（${cfg.model}）看不了图：${msg}\n请用户去 设置 → 模型 → 视觉模型 配一个能看图的模型，配好后再调一次。不要重试，也别改用别的工具去猜图里是什么。`,
+        isError: true,
+      };
+    }
+    return { content: `视觉模型错误 ${r.status}: ${msg}`, isError: true };
+  }
+  let text = anthropic
+    ? (j.content || []).map((c) => (c && c.type === "text" ? c.text : "")).join("")
+    : (((j.choices || [])[0] || {}).message || {}).content;
+  if (Array.isArray(text)) text = text.map((c) => (typeof c === "string" ? c : (c || {}).text || "")).join("");
+  text = String(text || "").trim();
+  if (!text) return { content: "视觉模型没返回内容（可能被内容策略拦了）。换个问法再试一次。", isError: true };
+  return { content: `【看图】${path.basename(p)}${note}\n问：${q}\n答：${text}`, isError: false };
 }
 
 async function generateImage(media, input, timeoutMs, saveDir) {
@@ -1842,6 +1961,10 @@ async function executeTool(name, input, opts = {}) {
       case "read_file": {
         const p = resolveFile(input.path);
         if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return { content: dirInsteadOfFile(p, String(input.path)).message, isError: true };
+        // 按文本读一张 png，拿回来的是几万字符乱码：既看不出任何东西，还把上下文烧掉一大块
+        if (IMAGE_EXT.test(p)) {
+          return { content: `${input.path} 是图片，按文本读只会得到乱码。改用 look_at_image，并带上你想知道的具体问题。`, isError: true };
+        }
         const content = fs.readFileSync(p, "utf8");
         const s = Math.max(0, Number(input.start_line) || 0);
         const e = Math.max(0, Number(input.end_line) || 0);
@@ -1900,6 +2023,8 @@ async function executeTool(name, input, opts = {}) {
         return { content: libraryList(), isError: false };
       case "library_read":
         return { content: libraryRead(input.name), isError: false };
+      case "look_at_image":
+        return await lookAtImage(opts, input, timeoutMs, resolveFile);
       case "generate_image":
         return await generateImage(opts.media, input, timeoutMs, fileBase);
       case "generate_video":
@@ -1982,4 +2107,4 @@ function outputFiles() {
 }
 
 module.exports = {
-  _internals: { fetchRetry, nearestTool }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { fetchRetry, nearestTool, lookAtImage, shrinkForVision }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };

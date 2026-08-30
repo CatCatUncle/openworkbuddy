@@ -467,6 +467,7 @@ app.get("/api/settings", (_req, res) => {
       image: { base_url: "", api_key: "", model: "", ...((config.media || {}).image || {}) },
       video: { base_url: "", api_key: "", model: "", ...((config.media || {}).video || {}) },
       tts: { base_url: "", api_key: "", model: "", voice: "", ...((config.media || {}).tts || {}) },
+      vision: { base_url: "", api_key: "", model: "", ...((config.media || {}).vision || {}) },
     },
     security: config.security,
     shortcuts: config.shortcuts,
@@ -555,7 +556,7 @@ app.post("/api/settings", (req, res) => {
     }
     if (b.media) {
       config.media = config.media || {};
-      for (const kind of ["image", "video", "tts"]) {
+      for (const kind of ["image", "video", "tts", "vision"]) {
         if (b.media[kind]) {
           const c = (config.media[kind] = config.media[kind] || {});
           for (const k of ["base_url", "api_key", "model", "voice"]) {
