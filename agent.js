@@ -635,6 +635,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       };
     }
     return await executeTool(tc.name, tc.input, {
+      knownTools: toolList(depth, "craft").map((t) => t.name), // 拼错工具名时用来给出最接近的真名
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
       media: config.media,
