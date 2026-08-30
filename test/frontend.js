@@ -43,6 +43,25 @@ const CHECKS = `(() => {
     ok("代码块里的 SVG 不当图", r.figs.length === 0 && r.text === src);
   }
 
+  // ---- 3b. 行内代码里提到 <svg> 也不能被画出来 ----
+  // 用户报的真实现象：正文写"图以 \`<svg>\` 内联"，界面把这个 <svg> 当成一张正在流式输出的图，
+  // 从它往后的正文整段被吞掉，只剩一个"绘制中"的空框
+  {
+    const src = '报告里无任何 \`src="*.svg"\` 外链引用，图以 \`<svg>\` 内联。\\n\\n下一段正文还在。';
+    const r = F.extractSvgFigures(src);
+    ok("行内代码里的 <svg> 不当图", r.figs.length === 0 && r.text === src);
+  }
+  {
+    const src = '写法是 \`<svg viewBox="0 0 680 400">\`，别写死宽高。';
+    const r = F.extractSvgFigures(src);
+    ok("行内代码里带属性的 <svg> 也不当图", r.figs.length === 0 && r.text === src);
+  }
+  {
+    const src = "空壳 <svg></svg> 不算图";
+    const r = F.extractSvgFigures(src);
+    ok("一个子元素都没有的 <svg> 不当图", r.figs.length === 0 && r.text === src);
+  }
+
   // ---- 4. 流式：半截 SVG 也能渲染，且带"绘制中" ----
   {
     const partial = '开头\\n<svg viewBox="0 0 100 50"><text x="5" y="20">半截</text><rect wid';
