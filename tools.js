@@ -1635,7 +1635,19 @@ async function executeTool(name, input, opts = {}) {
     }
   }
   // 文件工具统一走策略解析：workspace 内默认放行、黑名单硬拦、workspace 外仅白名单
+  const baseName = fileBase === workspaceDir ? "" : path.basename(fileBase);
   const resolveFile = (rel) => {
+    // 相对路径已经是从成果子目录起算的，模型再在前面拼一遍目录名，
+    // 落点就成了 任务_X/任务_X/…：任务目录建在任务目录里，产物就此和交付分了家。
+    // "同名目录套同名目录"没有任何一种正当写法，直接剥掉这一层。
+    if (baseName) {
+      const s0 = String(rel || "").replace(/\\/g, "/");
+      if (!path.isAbsolute(s0) && (s0 === baseName || s0.startsWith(baseName + "/"))) {
+        const fixed = s0.slice(baseName.length).replace(/^\/+/, "");
+        console.warn(`[tools] ${name}: 路径多套了一层成果目录，已纠正 ${s0} → ${fixed || "."}`);
+        rel = fixed || ".";
+      }
+    }
     const r = security.resolvePathWithPolicy(sec, rel, workspaceDir, fileBase);
     if (!r.allowed) {
       security.audit("文件拦截", `${name}: ${rel}`, "拦截");

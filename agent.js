@@ -199,6 +199,11 @@ function historyChars(history) {
 // 跑代码的输出/报错不在此列：那是一次性的现场证据，截掉就真没了。
 const REFETCHABLE_TOOLS = new Set(["read_file", "fetch_url", "list_files", "search_files", "library_read", "library_list", "web_search", "render_page", "check_page"]);
 
+// 削到多低才收手。削"刚好够"是个隐形的烧钱姿势：一超预算就每步再削一点点，
+// 而历史被改了一个字节，后面整段缓存前缀就作废——于是每一步都是全价重买。
+// 一次削到 75% 留出空档，接下来十几步历史都是逐字不变的，缓存才吃得住。
+const CTX_LOW_WATER = 0.75;
+
 /** 就地截短老工具结果直到进预算，返回省下的字符数（0 = 本来就没超） */
 function trimHistory(history, maxChars, keepRecent = 3) {
   let total = historyChars(history);
@@ -208,9 +213,14 @@ function trimHistory(history, maxChars, keepRecent = 3) {
   // 最近 keepRecent 轮工具结果留原文，从最老的开始截
   const older = toolIdx.slice(0, Math.max(0, toolIdx.length - keepRecent));
   let saved = 0;
-  // 两轮裁剪：先动可重取的，还不够再动不可重现的（老会话的结果没记工具名，归入第二轮）
-  const passes = [(r) => !r.isError && REFETCHABLE_TOOLS.has(r.name), () => true];
-  for (const wants of passes) {
+  // 两轮裁剪：先动可重取的，还不够再动不可重现的（老会话的结果没记工具名，归入第二轮）。
+  // 低水位只用在第一轮：可重取的结果多削一点无所谓（要用再调一次工具就有），
+  // 而第二轮动的是跑代码的输出那种一次性现场证据，削一个字都是净损失，够用就停。
+  const passes = [
+    { wants: (r) => !r.isError && REFETCHABLE_TOOLS.has(r.name), target: Math.floor(maxChars * CTX_LOW_WATER) },
+    { wants: () => true, target: maxChars },
+  ];
+  for (const { wants, target } of passes) {
     for (const i of older) {
       for (const r of history[i].results || []) {
         if (!wants(r)) continue;
@@ -220,24 +230,30 @@ function trimHistory(history, maxChars, keepRecent = 3) {
         const cut = s.length - r.content.length;
         saved += cut;
         total -= cut;
-        if (total <= maxChars) return saved;
+        if (total <= target) break;
       }
+      if (total <= target) break;
     }
+    if (total <= maxChars) return saved;
   }
   return saved;
 }
 
-/** 系统提示词里注入真实日期：不给的话模型会拿训练截止日当"今天"，凡是"最新/本周"的任务全歪 */
+/**
+ * 系统提示词里注入真实日期：不给的话模型会拿训练截止日当"今天"，凡是"最新/本周"的任务全歪。
+ * 只精确到小时——分钟是个昂贵的小数点：system 是所有 provider 缓存前缀的第一段，
+ * 写进分钟就等于每过一分钟整段前缀作废，多轮会话里每一轮都在全价重买同样的几十万 token。
+ * "现在/马上/今晚"这类安排本来也只需要钟点粒度。
+ */
 function envToday() {
   const d = new Date();
   const week = "日一二三四五六"[d.getDay()];
-  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   const slot = d.getHours() < 5 ? "凌晨" : d.getHours() < 12 ? "上午" : d.getHours() < 18 ? "下午" : "晚上";
-  return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日（星期${week}）${slot} ${hm}`;
+  return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日（星期${week}）${slot} ${d.getHours()} 点左右`;
 }
 
-function safeWorkspaceDir() {
-  try { return getWorkspaceDir(); } catch { return "（未设置）"; }
+function safeWorkspaceDir(baseDir) {
+  try { return baseDir ? path.join(getWorkspaceDir(), baseDir) : getWorkspaceDir(); } catch { return "（未设置）"; }
 }
 
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
@@ -252,7 +268,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
     return loadSkills();
   }
 
-  async function baseSystemPrompt(user, hint) {
+  async function baseSystemPrompt(user, hint, baseDir) {
     const skills = getSkills();
     // 用户可以给助理改名（设置 → 个性化）。名字得进提示词，不然用户喊"小秘"它一脸茫然
     const myName = String((config.assistant || {}).name || "").trim() || "OpenWorkBuddy";
@@ -260,7 +276,8 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 
 ## 当前环境
 - 现在是 ${envToday()}。凡是涉及"最新/今年/近期/本周"的判断一律以这个日期为准，不要用你训练数据里的时间。用户说"现在/马上/今晚"这类词时，按上面的钟点安排，别默认从早上开始。需要最新事实（价格、政策、版本号、人事、榜单）必须 web_search 现查，不许凭记忆答。
-- 工作目录（成果文件都放这里）：${safeWorkspaceDir()}
+- 工作目录（成果文件都放这里）：${safeWorkspaceDir(baseDir)}
+- 写文件一律用**相对文件名**（\`报告.html\`、\`demo/index.js\`），相对路径就是从上面这个目录起算的。别再在前面拼一遍目录名——那会在它下面又建一层同名目录。
 - 运行环境：${{ darwin: "macOS", win32: "Windows", linux: "Linux" }[process.platform] || process.platform}，本机执行，run_shell 拿到的是用户的真实电脑。
 
 ## 工具能力
@@ -392,8 +409,8 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     return p;
   }
 
-  async function coordinatorSystemPrompt(user, hint) {
-    let p = await baseSystemPrompt(user, hint);
+  async function coordinatorSystemPrompt(user, hint, baseDir) {
+    let p = await baseSystemPrompt(user, hint, baseDir);
     if (experts.length) {
       p += `\n\n## 可委派的专家（delegate_to_expert）\n`;
       p += experts
@@ -416,9 +433,9 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     return p;
   }
 
-  async function expertSystemPrompt(expert, user, hint) {
+  async function expertSystemPrompt(expert, user, hint, baseDir) {
     let p =
-      (await baseSystemPrompt(user, hint)) +
+      (await baseSystemPrompt(user, hint, baseDir)) +
       `\n\n## 你的专家角色：${expert.name}${expert.alias ? `（花名「${expert.alias}」）` : ""}\n${expert.system}`;
     if ((expert.skills || []).length) {
       p += `\n\n## 你的专属技能（动手前先 use_skill 加载，再按技能里的规范做）\n${expert.skills.map((s) => `- ${s}`).join("\n")}`;
@@ -457,7 +474,9 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
   · 开工前：需求含糊到可能白干一场，或者风格/范围/平台/受众这类选择会让交付物完全不同——先问一题再动手，比做完返工强；
   · 执行中：要花钱、不可逆、要覆盖/删除已有内容、要对外发布，或碰到只有用户本人知道的偏好（预算、口味、时间安排）。
   一次只问一个问题；问完继续干，不许连环追问，也不许拿它汇报进度。
-- 需要审批的危险动作（删除、sudo、碰黑名单文件）系统会自己弹窗拦，不用你在文字里预先请示。`;
+- 需要审批的危险动作（删除、sudo、碰黑名单文件）系统会自己弹窗拦，不用你在文字里预先请示。
+- **结论先行**：交给用户看的东西——回合的最终答复、报告、文档——一律先给结论和建议，再给理由和过程。用户要的是"所以呢"，不是你一步步怎么查到的。长文档第一屏必须有一段能独立读懂的摘要：结论 + 3 条关键依据 + 建议的下一步；把结论埋在第七节里，等于没写。
+- **时间盒**：调研、比价、找方案这类活儿，动手前先给自己定个量（查几个来源、看几家、试几种），够了就收手写结论。信息永远查不完，"再多查一点"是最贵的拖延；没查到的写进"待验证"一节交出去，比继续查划算得多。`;
   }
 
   async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser }) {
@@ -544,7 +563,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         projectContext,
         history: [{ role: "user", content: tc.input.task }],
         emit: (ev) => emit({ ...ev, expert: expert.name }), // 子代理事件带上专家标记
-        systemPrompt: await expertSystemPrompt(expert, user, String(tc.input.task || "").slice(0, 500)),
+        systemPrompt: await expertSystemPrompt(expert, user, String(tc.input.task || "").slice(0, 500), baseDir),
         depth: depth + 1,
         user,
         taskLabel,
@@ -591,7 +610,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         projectContext,
           history: [{ role: "user", content: brief }],
           emit: (ev) => emit({ ...ev, expert: m.name, team: team.name }),
-          systemPrompt: await expertSystemPrompt(m, user, String(tc.input.task || "").slice(0, 500)),
+          systemPrompt: await expertSystemPrompt(m, user, String(tc.input.task || "").slice(0, 500), baseDir),
           depth: depth + 1,
           user,
           taskLabel,
@@ -655,6 +674,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       if (result.usage) {
         stats.prompt += result.usage.prompt;
         stats.completion += result.usage.completion;
+        stats.cached = (stats.cached || 0) + (result.usage.cached || 0);
         stats.calls++;
       }
       history.push({ role: "assistant", text: result.text, toolCalls: [], raw: result.raw });
@@ -774,7 +794,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       tools: [],
       signal: AbortSignal.timeout(60000),
     });
-    if (result.usage && stats) { stats.prompt += result.usage.prompt; stats.completion += result.usage.completion; stats.calls++; }
+    if (result.usage && stats) { stats.prompt += result.usage.prompt; stats.completion += result.usage.completion; stats.cached = (stats.cached || 0) + (result.usage.cached || 0); stats.calls++; }
     const summary = String(result.text || "").trim();
     if (!summary) return;
     // 先归档再动刀：压缩只做搬家不做销毁，真要翻旧账去 data/compact-archive 找
@@ -815,13 +835,13 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     // 记忆召回的线索：用户最后一条消息的前 500 字。记忆超预算时按它挑相关条目
     const lastUserMsg = [...history].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
     const memHint = lastUserMsg ? lastUserMsg.content.slice(0, 500) : "";
-    const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint))) + projBlock + modePrompt(mode);
+    const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + projBlock + modePrompt(mode);
     const tools = toolList(depth, mode);
     const maxSteps = config.agent.max_steps || 25;
     // 整个任务（含所有专家子代理）共享一个墙上时间预算，防止无限执行
     if (!deadline) deadline = Date.now() + (config.agent.max_runtime_ms || 1800000);
     // 整个任务（含专家）共享一份 token 账本，任务结束时汇总上报
-    if (!stats) stats = { prompt: 0, completion: 0, calls: 0, startedAt: Date.now() };
+    if (!stats) stats = { prompt: 0, completion: 0, cached: 0, calls: 0, startedAt: Date.now() };
     let finalText = "";
     let stopNote = "";
     let honestyRetries = 0;
@@ -1021,6 +1041,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       if (result.usage) {
         stats.prompt += result.usage.prompt;
         stats.completion += result.usage.completion;
+        stats.cached = (stats.cached || 0) + (result.usage.cached || 0);
         stats.calls++;
       }
       history.push({
@@ -1069,7 +1090,14 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
           // 同一调用已连续 4 次拿到一模一样的结果，第 5 次不再执行——结果不会变，只会烧钱
           r = { content: `【系统拦截】你已用完全相同的参数连续 ${seen.streak} 次调用 ${tc.name}，每次结果都一模一样，本次未执行。别再重复同样的动作：换参数、换工具或换一条实现路径；确实无路可走就停止并如实说明卡在哪里。`, isError: true };
         } else {
-          r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser });
+          try {
+            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser });
+          } catch (e) {
+            // 工具抛出来的异常在这里就地变成一条工具结果。让它往上冒的话，下面那条
+            // history.push({role:"tool"}) 就跑不到，历史里留下一条配不上对的 assistant——
+            // 会话落盘之后每次请求都 400。报错本身也该让模型看见，它才知道要换条路。
+            r = { content: `（${tc.name} 执行时抛出异常：${(e && e.message) || e}）`, isError: true };
+          }
           if (r.extendMs) deadline += r.extendMs; // 等用户回答的时间不算任务运行时间
           const sig = String(r.content).slice(0, 2000);
           loopHist.set(loopKey, { sig, streak: seen && seen.sig === sig ? seen.streak + 1 : 1 });
@@ -1094,13 +1122,23 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       // 串行是五次网络等待叠加，并发只花最慢那一次。只要里面有一个会动文件、跑命令或委派专家，
       // 整批退回串行——那些工具的先后顺序本身就是语义，打乱了就是改了它的意思。
       const canParallel = result.toolCalls.length > 1 && result.toolCalls.every((tc) => READ_ONLY_TOOLS.includes(tc.name));
-      let toolResults;
-      if (canParallel) {
-        emit({ type: "parallel", count: result.toolCalls.length, depth });
-        toolResults = await mapPool(result.toolCalls, PARALLEL_MAX, runOne);
-      } else {
-        toolResults = [];
-        for (const tc of result.toolCalls) toolResults.push(await runOne(tc));
+      let toolResults = [];
+      try {
+        if (canParallel) {
+          emit({ type: "parallel", count: result.toolCalls.length, depth });
+          toolResults = await mapPool(result.toolCalls, PARALLEL_MAX, runOne);
+        } else {
+          for (const tc of result.toolCalls) toolResults.push(await runOne(tc));
+        }
+      } catch (e) {
+        // 兜底的第二道：无论如何都别让「已 push 的 assistant + 没 push 的工具结果」这种
+        // 半截状态留在历史里落盘。缺谁补谁，push 完再把异常抛上去。
+        const done = new Set(toolResults.map((r) => r.id));
+        for (const tc of result.toolCalls) {
+          if (!done.has(tc.id)) toolResults.push({ id: tc.id, name: tc.name, content: `（${tc.name} 未拿到结果：${(e && e.message) || e}）`, isError: true });
+        }
+        history.push({ role: "tool", results: toolResults });
+        throw e;
       }
       history.push({ role: "tool", results: toolResults });
       emitFiles();
@@ -1155,6 +1193,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     const usage = {
       prompt: stats.prompt,
       completion: stats.completion,
+      cached: stats.cached || 0, // 其中命中缓存、按约 1/10 计费的那部分
       calls: stats.calls,
       elapsed_ms: Date.now() - stats.startedAt,
     };
