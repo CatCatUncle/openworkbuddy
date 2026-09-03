@@ -16,10 +16,18 @@ const SVGFIG = fs.readFileSync(path.join(__dirname, "..", "public", "svgfig.js")
 // 附件（粘贴/拖拽：文件、图片、大段文字）用的是 app-02.js 里那一段真源码——
 // 抄一份到测试里只能证明抄的那份是对的。段落靠标题定位，标题被改了就当场报错，不许静默跳过。
 const APP02 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
+const APP02X = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
 const A0 = APP02.indexOf("// ================= ＋ 上传文件到工作空间");
 const A1 = APP02.indexOf("// ================= 会话历史");
 if (A0 < 0 || A1 <= A0) throw new Error("app-02.js 里的附件段找不到了（段标题被改过？），前端测试没法定位真源码");
 const ATTACH_SRC = APP02.slice(A0, A1);
+
+// 文件预览同理：路由（这个后缀走 iframe 还是 <audio> 还是当文本）必须验真源码那一份。
+// 段落靠标题定位，标题被改了当场报错，不许静默跳过。
+const P0 = APP02X.indexOf("// ---------------- 文件预览 ----------------");
+const P1 = APP02X.indexOf("// ---- 本地部署预览");
+if (P0 < 0 || P1 <= P0) throw new Error("app-01.js 里的文件预览段找不到了（段标题被改过？），前端测试没法定位真源码");
+const PREVIEW_SRC = APP02X.slice(P0, P1);
 
 const ATTACH_HTML =
   "<!doctype html><meta charset='utf-8'><body>" +
@@ -142,6 +150,118 @@ const ATTACH_CHECKS = `
     const out = composeOutgoing();
     ok("附件名拼进了消息", (out.match(/已上传文件：/g) || []).length === 1 && n > 0);
     ok("发完 chip 清空", chips().length === 0);
+  }
+  return names;
+})()`;
+
+
+const PREVIEW_HTML =
+  "<!doctype html><meta charset='utf-8'><body>" +
+  "<div id='preview-panel'></div><div id='files-panel'></div><div id='pv-body'></div>" +
+  "<span id='pv-name'></span><a id='pv-dl'></a>" +
+  "<button id='pv-close'></button><button id='pv-sys'></button><button id='pv-rv'></button></body>";
+
+// 网络请求全部截下来：既当替身，也当"到底发了什么请求"的证据（Range 头就是这么验的）
+const PREVIEW_STUBS = [
+  "window.reqs = []; window.opened = []; window.PV_FILES = {};",
+  "window.fetch = async (url, init) => {",
+  "  window.reqs.push({ url, init });",
+  "  if (url.startsWith('/api/files/open/')) { window.opened.push(decodeURIComponent(url.slice(16))); return { ok: true, json: async () => ({}) }; }",
+  "  const name = decodeURIComponent((url.split('/api/files/view/')[1] || '').split('?')[0]);",
+  "  const f = window.PV_FILES[name] || { body: '', total: 0 };",
+  "  return { ok: true, status: 206, headers: { get: (h) => (h.toLowerCase() === 'content-range' ? 'bytes 0-1/' + f.total : null) }, text: async () => f.body };",
+  "};",
+  "window.esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');",
+  "window.renderMd = (t) => '<p class=md>' + window.esc(t) + '</p>';",
+  "window.fmtSize = (n) => n + ' B';",
+  "window.renderDeployBar = () => {};",
+  "window.revealFile = (n) => { window.opened.push('reveal:' + n); };",
+  "window.toast = () => {};",
+].join("\n");
+
+const PREVIEW_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const body = document.getElementById("pv-body");
+  const show = async (n, file) => { if (file) window.PV_FILES[n] = file; await previewFile(n); return body.innerHTML; };
+
+  // ---- 1. 路由表：真实工作目录里数得出来的后缀，一个都不许掉进"不支持预览" ----
+  {
+    const cases = {
+      iframe: ["a.html", "a.htm", "报告.pdf", "图.svg"],
+      image: ["图.png", "a.JPG", "a.jpeg", "a.webp", "a.ico", "a.avif"],
+      audio: ["口播.mp3", "a.wav", "a.m4a", "a.flac", "a.opus"],
+      video: ["成片.mp4", "a.mov", "a.webm", "a.m4v"],
+      markdown: ["报告.md", "a.markdown"],
+      binary: ["a.pcm", "a.zip", "a.o", "a.swiftmodule", "a.dylib", "a.ttf", "a.sqlite3"],
+      text: ["a.py", "a.swift", "a.plist", "字幕.srt", "a.h", "a.toml", "a.ini", "Dockerfile", "a.log", "a.json", "a.yaml", "a.vtt", "a.sh", "a.go", "a.没见过的后缀"],
+    };
+    for (const [want, list] of Object.entries(cases))
+      for (const n of list) ok("路由 " + n + " → " + want, previewKind(n) === want, "实际是 " + previewKind(n));
+  }
+
+  // ---- 2. .ts 是 TypeScript，不是 MPEG-TS 视频（mime 库认成 video/mp2t，照它走会给源码套播放器）----
+  ok(".ts 当源码不当视频", previewKind("app.ts") === "text" && previewKind("a.tsx") === "text");
+
+  // ---- 3. 音频/视频真给出播放器，且能拖进度条（controls + preload）----
+  {
+    const h = await show("口播.mp3");
+    ok("mp3 出音频播放器", /<audio[^>]+controls/.test(h) && /files\\/view\\/%E5%8F%A3%E6%92%AD\\.mp3/.test(h), h.slice(0, 200));
+    const v = await show("成片.mp4");
+    ok("mp4 出视频播放器", /<video[^>]+controls/.test(v) && /preload="metadata"/.test(v), v.slice(0, 200));
+  }
+
+  // ---- 4. 白名单外的纯文本（这一版之前只能下载）----
+  {
+    const h = await show("main.swift", { body: 'import Foundation\\nprint(1)', total: 30 });
+    ok("swift 源码直接显示内容", /import Foundation/.test(h) && !/暂不支持/.test(h), h.slice(0, 200));
+    const p = await show("build.py", { body: "def main():\\n    pass", total: 20 });
+    ok("py 源码直接显示内容", /def main/.test(p));
+    const s = await show("字幕.srt", { body: "1\\n00:00:01,000 --> 00:00:02,000\\n你好", total: 40 });
+    ok("srt 字幕直接显示内容", /00:00:01/.test(s) && /你好/.test(s));
+  }
+
+  // ---- 5. 后缀没认出来但内容是二进制：内容说了算，别糊一屏乱码 ----
+  {
+    const h = await show("怪东西.xyz", { body: "\\u0000\\u0000ELF\\u0000", total: 8 });
+    ok("含 NUL 的内容退回兜底", /二进制|不是文本/.test(h) && !/ELF/.test(h), h.slice(0, 200));
+    const g = await show("乱码.xyz2", { body: "\\uFFFD".repeat(50) + "x", total: 51 });
+    ok("满屏替换字符退回兜底", /不是文本/.test(g));
+    const t = await show("正常.xyz3", { body: "中文正文，一个替换字符都没有", total: 42 });
+    ok("正经中文文本不误判成二进制", /中文正文/.test(t));
+  }
+
+  // ---- 6. 兜底页给的是能点的按钮，不是让用户去找早就不存在的 🗔 / ⬇ ----
+  {
+    const h = await show("a.pcm");
+    ok("兜底不再指认不存在的图标", !/🗔/.test(h) && !/⬇/.test(h), h.slice(0, 200));
+    const n = window.opened.length;
+    body.querySelector(".pv-open-sys").click();
+    await new Promise((r) => setTimeout(r, 30));
+    ok("兜底按钮真能打开系统程序", window.opened.length === n + 1 && window.opened.at(-1) === "a.pcm", JSON.stringify(window.opened.slice(-2)));
+    body.querySelector(".pv-reveal").click();
+    ok("兜底按钮真能定位文件", window.opened.at(-1) === "reveal:a.pcm");
+  }
+
+  // ---- 7. 大文件只取头一段：以前整包 fetch 完再 slice，几百 MB 的日志能把渲染进程卡死 ----
+  {
+    window.reqs.length = 0;
+    const h = await show("巨大.log", { body: "第一行\\n", total: 300 * 1024 * 1024 });
+    const req = window.reqs.filter((r) => r.url.includes("/api/files/view/")).at(-1);
+    ok("取文本带 Range 头", /^bytes=0-\\d+$/.test(((req.init || {}).headers || {}).Range || ""), JSON.stringify(req.init));
+    ok("大文件标出只显示了开头", /只显示了开头/.test(h), h.slice(-200));
+    const small = await show("小.log", { body: "就一行", total: 9 });
+    ok("小文件不乱标截断", !/只显示了开头/.test(small));
+  }
+
+  // ---- 8. Office 仍旧交给本机程序，不进预览面板 ----
+  {
+    const n = window.opened.length;
+    document.getElementById("pv-body").innerHTML = "原样";
+    await previewFile("方案.docx");
+    ok("docx 交给系统程序", window.opened.at(-1) === "方案.docx" && window.opened.length === n + 1);
+    ok("docx 不动预览面板", document.getElementById("pv-body").innerHTML === "原样");
   }
   return names;
 })()`;
@@ -308,6 +428,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：粘贴/拖拽附件（截图·文件·大段文字）${names2.length} 项通过`);
     } finally {
       if (!win2.isDestroyed()) win2.destroy();
+    }
+
+    const win3 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win3.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PREVIEW_HTML));
+      const names3 = await win3.webContents.executeJavaScript(PREVIEW_STUBS + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
+      for (const n of names3) console.log("  ✓ " + n);
+      console.log(`✅ 前端：文件预览路由（网页·图·音视频·源码·二进制兜底）${names3.length} 项通过`);
+    } finally {
+      if (!win3.isDestroyed()) win3.destroy();
     }
   } catch (e) {
     console.error("❌ 前端测试失败:", e && e.message ? e.message : e);
