@@ -632,11 +632,42 @@ function createTurnUI(userText, turnMode, forSid) {
       } catch {}
       navigator.clipboard?.writeText(plain).then(done).catch(() => toast("❌ 复制失败"));
     };
+    // 👍👎 以前点了只是换个高亮色，一个字节都没往外送——按了等于没按。
+    // 现在它是自进化那条链的第一环：反馈落盘 → 归类成信号 → 提改进 → 人审 → 复盘看数字有没有降。
+    // 👎 之后补一行「哪儿不对」是可选的：点击当场就已经记下了，写不写都不耽误，摩擦要够小
+    const sendFeedback = (verdict, note) => fetch("/api/feedback", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session: turnSid, turn: [...chatCol.querySelectorAll(".turn")].indexOf(turn),
+        verdict, note: note || "",
+        task: turn._userText || "",
+        reply: [...body.querySelectorAll(".a-text")].map(t => t.innerText).join("\n").slice(0, 800),
+      }),
+    }).catch(() => {});
+    const clearNote = () => bar.parentNode && bar.parentNode.querySelectorAll(".fb-note").forEach(n => n.remove());
     bar.querySelector("[data-a=up]").onclick = (e) => {
-      e.target.classList.toggle("on"); bar.querySelector("[data-a=down]").classList.remove("on");
+      const btn = e.currentTarget;
+      const on = !btn.classList.contains("on");
+      btn.classList.toggle("on", on); bar.querySelector("[data-a=down]").classList.remove("on");
+      clearNote();
+      if (on) sendFeedback("up");
     };
     bar.querySelector("[data-a=down]").onclick = (e) => {
-      e.target.classList.toggle("on"); bar.querySelector("[data-a=up]").classList.remove("on");
+      const btn = e.currentTarget;
+      const on = !btn.classList.contains("on");
+      btn.classList.toggle("on", on); bar.querySelector("[data-a=up]").classList.remove("on");
+      clearNote();
+      if (!on) return;
+      sendFeedback("down");
+      const box = document.createElement("div");
+      box.className = "fb-note";
+      box.innerHTML = `<input placeholder="哪儿不对？一句话就行（可以不写）" maxlength="200"><button>记下</button>`;
+      const input = box.querySelector("input");
+      const done = () => { const v = input.value.trim(); if (v) sendFeedback("down", v); box.innerHTML = '<span class="fb-thanks">记下了，会进下一轮复盘。</span>'; setTimeout(clearNote, 2000); };
+      box.querySelector("button").onclick = done;
+      input.onkeydown = (ev) => { if (ev.key === "Enter") done(); if (ev.key === "Escape") clearNote(); };
+      bar.after(box);
+      input.focus();
     };
     bar.querySelector("[data-a=regen]").onclick = () => {
       if (curBusy()) return;

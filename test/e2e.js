@@ -1127,6 +1127,147 @@ function testPermissionModes() {
  * 都不许闷头改一个地方了事，那是把用户的文件改坏了还告诉他成功了。
  * 丢子进程跑：要改工作目录、要改记忆目录，都不能碰真的。
  */
+/**
+ * 自进化闭环：信号 → 闸门 → 人审 → 打分。
+ *
+ * 这套东西最容易烂掉的方式不是报错，是**悄悄变成"每天往提示词里加一句正确的废话"**：
+ * 归类按原文散成一堆只出现一次的条目、代码问题被写成提示词规则、同一句话叠三遍、
+ * 加了规则却没人看数字有没有降。所以这里守的全是这几条：
+ * 按形状归类 · 只有 prompt 类才准变规则 · 三次证据才算模式 · 重复的进不来 · 打分只看数字。
+ */
+function testEvolveLoop() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-evolve-"));
+  const script = `
+    const assert = require("assert");
+    const fs = require("fs");
+    const path = require("path");
+    const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
+    const DATA = process.env.WB_DATA_DIR;
+    const SESS = path.join(DATA, "sessions");
+    fs.mkdirSync(SESS, { recursive: true });
+
+    const now = new Date().toISOString();
+    const old = new Date(Date.now() - 60 * 86400e3).toISOString();
+    const err = (name, preview) => ({ type: "tool_result", name, isError: true, preview });
+    const turn = (events) => [{ type: "user", text: "把这个页面改一下" }, { type: "assistant", events }];
+
+    fs.writeFileSync(path.join(SESS, "s1.json"), JSON.stringify({ updated_at: now, transcript: [
+      ...turn([err("edit_file", "没找到 old_text"), err("run_shell", "未知工具：directory_tree")]),
+      ...turn([err("edit_file", "没找到 old_text"), err("run_shell", "未知工具：directory_tree")]),
+      ...turn([err("check_page", "引了 2 个外部资源")]),
+    ] }));
+    fs.writeFileSync(path.join(SESS, "s2.json"), JSON.stringify({ updated_at: now, transcript: [
+      ...turn([err("edit_file", "没找到 old_text"), err("run_shell", "未知工具：directory_tree")]),
+      // 真报错和 Electron 自己的噪音撞在一条 preview 里：必须判成真问题，不能归成误报把真错藏了
+      ...turn([err("check_page", "引了 1 个外部资源；控制台报错 1 条：Electron Security Warning (Insecure CSP)")]),
+      ...turn([err("check_page", "控制台报错 1 条：Electron Security Warning (Insecure CSP)"), err("run_shell", "未知工具：directory_tree"),
+        // 写完自检顶回来：文件是写进去了，毛病在内容。别跟"改文件失败"混成一堆
+        err("edit_file", "已修改 a.html：在第 3 行替换了 1 处，400 → 800 字符 ⚠️ 页面结构有问题：<body> 开 1 个、闭 0 个，对不上"),
+        err("edit_file", "工具执行出错: report 是一个目录，不是文件。里面有：a.html、b.css")]),
+    ] }));
+    // 窗口外的会话不该被数进来
+    fs.writeFileSync(path.join(SESS, "s3.json"), JSON.stringify({ updated_at: old, transcript:
+      turn([err("run_shell", "zsh: no matches found: *.png")]) }));
+
+    let m = ev.mineSignals({ days: 14 });
+    assert.strictEqual(m.turns, 6, "回合数不对：" + m.turns);
+    assert.ok(!m.signals.some(s => s.key === "zsh_glob"), "窗口外的会话被数进来了");
+    const by = (k) => m.signals.find(s => s.key === k);
+    assert.strictEqual(m.signals[0].key, "unknown_tool:directory_tree", "信号没按次数排：" + m.signals[0].key);
+    assert.strictEqual(by("unknown_tool:directory_tree").count, 4);
+    assert.strictEqual(by("unknown_tool:directory_tree").actionable, "code", "调用不存在的工具被判成提示词能治");
+    assert.strictEqual(by("edit_anchor_miss").count, 3);
+    assert.strictEqual(by("edit_anchor_miss").rate, 0.5, "出现率算错：" + by("edit_anchor_miss").rate);
+    assert.strictEqual(by("external_resource").count, 2, "真报错和 Electron 噪音撞一起时归错类了");
+    assert.strictEqual(by("tool_false_alarm:check_page").count, 1);
+    assert.strictEqual(by("selfcheck_reject:edit_file").count, 1, "写完自检顶回来没单独归类");
+    assert.strictEqual(by("selfcheck_reject:edit_file").actionable, "prompt");
+    assert.strictEqual(by("path_is_dir:edit_file").count, 1, "中文的「是一个目录」没认出来");
+    // 归类的成败就看这一条：什么都没剩在"某某工具报错"那个大杂烩里，否则等于没归类
+    assert.ok(!m.signals.some(s => s.key === "tool_error:edit_file"), "还有 edit_file 的错落在大杂烩桶里");
+    assert.ok(by("edit_anchor_miss").samples.length && by("edit_anchor_miss").samples[0].session, "信号没带能点回去的证据");
+
+    // 👎 落盘：同一轮改主意是改判，不是攒一堆重复记录
+    ev.recordFeedback({ session: "s1", turn: 1, verdict: "down", note: "答非所问" });
+    ev.recordFeedback({ session: "s1", turn: 3, verdict: "down", note: "" });
+    ev.recordFeedback({ session: "s2", turn: 1, verdict: "down", note: "" });
+    assert.strictEqual(ev.mineSignals({ days: 14 }).signals.find(s => s.key === "thumbs_down").count, 3);
+    ev.recordFeedback({ session: "s1", turn: 1, verdict: "up" });
+    assert.strictEqual(ev.readFeedback().length, 3, "同一轮反复点攒成了多条记录");
+    assert.strictEqual(ev.mineSignals({ days: 14 }).signals.find(s => s.key === "thumbs_down").count, 2);
+    assert.throws(() => ev.recordFeedback({ session: "s1", turn: 9, verdict: "maybe" }), /up 或 down/);
+
+    m = ev.mineSignals({ days: 14 });
+    const S = m.signals;
+    const ok = { kind: "add_rule", signal: "edit_anchor_miss", rule: "改文件前先用 read_file 把要替换的那几行原样读出来，old_text 直接从读到的内容里复制，不许凭记忆写。", verify: "edit_anchor_miss 的每回合出现率应降到 0.2 以下" };
+    assert.strictEqual(ev.gateProposal(ok, { signals: S, rules: [] }), null, "合规提案被误毙");
+
+    const g = (p) => ev.gateProposal(p, { signals: S, rules: [] }) || "";
+    // 闸门的第一职责：代码问题不许被写成提示词规则——加多少句"请不要调用不存在的工具"都没用
+    assert.ok(g({ ...ok, signal: "unknown_tool:directory_tree" }).includes("代码"), "代码类信号被放行成规则了");
+    assert.ok(g({ ...ok, signal: "external_resource" }).includes("证据"), "只有 2 次证据的信号被放行了");
+    assert.ok(g({ ...ok, signal: "根本没有这个信号" }).includes("不在本次统计里"));
+    assert.ok(g({ ...ok, rule: "要" .repeat(401) }).includes("超过单条上限"), "小作文规则被放行了");
+    assert.ok(g({ ...ok, verify: "" }).includes("怎么验证"), "没给验收口径的提案被放行了");
+    assert.ok(g({ ...ok, rule: "" }).includes("正文"));
+    assert.ok(g({ kind: "retire_rule", target: "rule_不存在" }).includes("不存在"));
+
+    // 负对照：没有规则时，注入提示词的那段必须是空的（不能是写死在提示词里的一段话）
+    assert.strictEqual(ev.promptBlock(), "", "一条规则都没有却往提示词里塞东西");
+
+    // 人审：加进来的提案在采纳之前绝不生效
+    const base = { key: "edit_anchor_miss", rate: 0.9, count: 9, turns: 10, at: new Date().toISOString() };
+    const [p1] = ev.addProposals([{ ...ok, signalSnapshot: S.find(s => s.key === "edit_anchor_miss"), baseline: base }]);
+    assert.strictEqual(p1.status, "pending");
+    assert.strictEqual(ev.promptBlock(), "", "提案还没人审就已经进提示词了");
+
+    ev.decideProposal(p1.id, "accept", { by: "测试" });
+    let block = ev.promptBlock();
+    assert.ok(block.includes("自进化规则"), "采纳后没进提示词");
+    assert.ok(block.includes("old_text 直接从读到的内容里复制"), "采纳后规则正文没进提示词");
+    assert.strictEqual(ev.activeRules().length, 1);
+    assert.throws(() => ev.decideProposal(p1.id, "reject"), /已经是/, "同一条提案能审两次");
+
+    // 同一句话换个说法再来一遍：指纹一样就该被拦，不然提示词只会越堆越厚
+    assert.ok(ev.gateProposal({ ...ok, rule: "改文件前先用 read_file 把要替换的那几行原样读出来，old_text 直接从读到的内容里复制，不许凭记忆写！！" }, { signals: S }).includes("重复"), "重复规则被放行了");
+
+    const [p2] = ev.addProposals([{ kind: "add_rule", signal: "thumbs_down", rule: "回复末尾必须先给结论再给过程，别让人翻到最后才看见答案。", verify: "thumbs_down 出现率下降", signalSnapshot: { key: "thumbs_down", count: 3, rate: 0.5, actionable: "prompt", label: "用户点了没帮助" }, baseline: { key: "thumbs_down", rate: 0.33, count: 2, turns: 6, at: new Date().toISOString() } }]);
+    ev.decideProposal(p2.id, "accept", { by: "测试" });
+    assert.strictEqual(ev.activeRules().length, 2);
+
+    // 打分只看数字：基线 0.9 → 现在 0.5 算有效；基线 0.33 → 现在 0.33 就是没起作用，该下架
+    const sc = ev.scoreRules({ minTurns: 1 });
+    const s1 = sc.find(x => x.signal === "edit_anchor_miss");
+    const s2 = sc.find(x => x.signal === "thumbs_down");
+    assert.strictEqual(s1.verdict, "有效", "降了 44% 却没判有效：" + JSON.stringify(s1));
+    assert.strictEqual(s2.verdict, "没起作用", "数字没动却判成有效：" + JSON.stringify(s2));
+    assert.strictEqual(s2.suggestRetire, true, "没起作用的规则没被建议下架");
+
+    // 下架：文件挪走，提示词里当场就没了
+    const rid = ev.activeRules().find(r => r.text.includes("old_text")).id;
+    ev.retireRule(rid, "测试");
+    assert.strictEqual(ev.activeRules().length, 1);
+    assert.ok(!ev.promptBlock().includes("old_text"), "下架了还留在提示词里");
+    assert.ok(fs.existsSync(path.join(DATA, "learned", "retired", rid + ".md")), "下架的规则没留档");
+
+    // 后台跑砸了必须留痕，不许闷声吞
+    ev.recordRun({ ok: false, trigger: "夜间", error: "模型超时" });
+    assert.strictEqual(ev.listRuns(5)[0].ok, false);
+    assert.ok(ev.listRuns(5)[0].error.includes("超时"));
+
+    console.log("OK");
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], {
+    env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") },
+    encoding: "utf8",
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "自进化闭环测试失败：\n" + (r.stderr || r.stdout));
+  console.log("✅ 自进化：按形状归类（真报错压过工具误报·写完自检顶回来不落大杂烩）· 窗口过滤 · 👎 改判不重复 · 闸门毙掉代码类/证据不足/小作文/无验收/重复 · 提案不点头不生效 · 打分只看数字 · 下架留档 · 后台失败留痕");
+}
+
 async function testCodingTools() {
   const { spawnSync } = require("child_process");
   const os = require("os");
@@ -2324,6 +2465,7 @@ async function main() {
   await testNodeSyntaxPrecheck();
   await testOfficeLibs();
   await testPreviewExtract();
+  testEvolveLoop();
   await testCodingTools();
   await testDeliverableQuality();
   await testAgentPipeline();

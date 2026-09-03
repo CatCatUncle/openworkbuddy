@@ -155,6 +155,106 @@ const ATTACH_CHECKS = `
 })()`;
 
 
+// 👍👎 那一段也验真源码。这是自进化整条链的第一环：这两个按钮以前点了只换个高亮色，
+// 一个字节都没往外送，链子从源头就是断的。断了不会报错、界面看着还挺正常——
+// 所以必须钉在"真的发出了什么 payload"上，不能只看类名有没有变。
+const F0 = APP02X.indexOf("  // 官方式回复操作条");
+const F1 = APP02X.indexOf("  // Plan 模式：把执行计划解析成任务列表卡片");
+if (F0 < 0 || F1 <= F0) throw new Error("app-01.js 里的回复操作条段找不到了（段标题被改过？），前端测试没法定位真源码");
+const FB_SRC = APP02X.slice(F0, F1);
+
+const FB_HTML = "<!doctype html><meta charset='utf-8'><body><div id='chat-col'></div></body>";
+
+const FB_STUBS = [
+  "window.posts = [];",
+  "window.fetch = async (url, init) => {",
+  "  window.posts.push({ url, body: JSON.parse(init.body) });",
+  "  return { ok: true, json: async () => ({ ok: true }) };",
+  "};",
+  "const chatCol = document.getElementById('chat-col');",
+  "const ic = (n) => '<i>' + n + '</i>';",
+  "const toast = () => {};",
+  "const curBusy = () => false;",
+  "const doSend = () => {};",
+].join("\n");
+
+// 真源码里 turn/body/turnSid 是 createTurnUI 里每个回合各自的局部变量，测试得把这层作用域还原出来。
+// 图省事全放成脚本级变量的话，后建的回合会把先建的那个的闭包顶掉——测出来的下标永远是最后一个，
+// 而那正是这段测试要防的毛病（点第二条的 👎 却记到第一条头上）。
+const FB_WRAP = (src) => "window.makeBar = (turn, body, turnSid) => {\n" + src + "\naddActionsBar();\n};";
+
+const FB_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const tick = () => new Promise((r) => setTimeout(r, 30));
+  const mk = (sid, userText, replyText) => {
+    const t = document.createElement("div");
+    t.className = "turn";
+    t.innerHTML = '<div class="body"><div class="a-text">' + replyText + '</div></div>';
+    t._userText = userText;
+    chatCol.appendChild(t);
+    window.makeBar(t, t.querySelector(".body"), sid);
+    return t;
+  };
+  const btn = (t, a) => t.querySelector('[data-a=' + a + ']');
+  const last = () => window.posts[window.posts.length - 1];
+
+  const t1 = mk("s_aaa", "帮我写个周报", "这是回复正文");
+  const t2 = mk("s_aaa", "再改一版", "第二版回复");
+
+  ok("操作条挂上了", btn(t2, "up") && btn(t2, "down"), "没渲染出 👍👎");
+  ok("没人点的时候一个字节都不发", window.posts.length === 0);
+
+  btn(t1, "up").click(); await tick();
+  ok("👍 真的发出去了", window.posts.length === 1 && last().url === "/api/feedback");
+  ok("👍 带的是 up", last().body.verdict === "up");
+  ok("👍 带上了归属会话", last().body.session === "s_aaa");
+  ok("👍 带上了第几轮", last().body.turn === 0, "turn=" + last().body.turn);
+  ok("👍 带上了用户原话", last().body.task === "帮我写个周报");
+  ok("👍 带上了回复正文", last().body.reply.indexOf("这是回复正文") >= 0);
+  ok("👍 亮起来了", btn(t1, "up").classList.contains("on"));
+
+  btn(t1, "up").click(); await tick();
+  ok("再点一下是取消，不重复上报", window.posts.length === 1 && !btn(t1, "up").classList.contains("on"));
+
+  // 第二个回合点：turn 下标必须跟着它在列表里的真实位置走，不能永远是 0
+  btn(t2, "down").click(); await tick();
+  ok("👎 点下去当场就记，不等你写理由", window.posts.length === 2 && last().body.verdict === "down");
+  ok("👎 的 turn 下标跟着真实位置走", last().body.turn === 1, "turn=" + last().body.turn);
+  ok("👎 之后弹出选填的理由框", !!t2.querySelector(".fb-note input"));
+  ok("理由框是选填的，不写也已经记下了", last().body.note === "");
+
+  const box = t2.querySelector(".fb-note");
+  box.querySelector("input").value = "结论藏在最后一段";
+  box.querySelector("button").click(); await tick();
+  ok("补的理由发出去了", window.posts.length === 3 && last().body.note === "结论藏在最后一段");
+  ok("补完给个回执", t2.querySelector(".fb-thanks"));
+
+  const t3 = mk("s_bbb", "第三个", "第三版回复");
+  btn(t3, "down").click(); await tick();
+  const n3 = window.posts.length;
+  const inp = t3.querySelector(".fb-note input");
+  inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await tick();
+  ok("Esc 关掉理由框，不多发一条", !t3.querySelector(".fb-note") && window.posts.length === n3);
+
+  btn(t3, "down").click(); await tick();
+  btn(t3, "up").click(); await tick();
+  ok("改判成 👍 时 👎 的高亮撤掉", btn(t3, "up").classList.contains("on") && !btn(t3, "down").classList.contains("on"));
+  ok("改判后理由框跟着收起", !t3.querySelector(".fb-note"));
+  ok("改判也是一次真上报", last().body.verdict === "up" && last().body.session === "s_bbb");
+
+  // 空理由不该白发一次：点「记下」时输入框是空的，就只留下点击那一条
+  const t4 = mk("s_ccc", "第四个", "第四版回复");
+  btn(t4, "down").click(); await tick();
+  const n4 = window.posts.length;
+  t4.querySelector(".fb-note button").click(); await tick();
+  ok("理由留空不重复上报", window.posts.length === n4);
+
+  return names;
+})()`;
+
 const PREVIEW_HTML =
   "<!doctype html><meta charset='utf-8'><body>" +
   "<div id='preview-panel'></div><div id='files-panel'></div><div id='pv-body'></div>" +
@@ -533,6 +633,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：文件预览（路由·音视频·docx/xlsx/pptx/zip 结构化·CSV·兜底）${names3.length} 项通过`);
     } finally {
       if (!win3.isDestroyed()) win3.destroy();
+    }
+
+    const win4 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win4.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(FB_HTML));
+      const names4 = await win4.webContents.executeJavaScript(FB_STUBS + "\n" + FB_WRAP(FB_SRC) + "\n" + FB_CHECKS, true);
+      for (const n of names4) console.log("  ✓ " + n);
+      console.log(`✅ 前端：👍👎 反馈上报（真发 payload·下标跟位置·理由选填·改判撤高亮）${names4.length} 项通过`);
+    } finally {
+      if (!win4.isDestroyed()) win4.destroy();
     }
   } catch (e) {
     console.error("❌ 前端测试失败:", e && e.message ? e.message : e);

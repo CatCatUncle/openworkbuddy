@@ -104,6 +104,7 @@ const path = require("path");
 const { dataPath } = require("./paths");
 const os = require("os");
 const memory = require("./memory");
+const evolve = require("./evolve");
 
 // ================= 成果核验（治「幻觉执行」） =================
 // 模型有时在文本里"表演"跑命令并声称文件已生成，实际一个工具都没调。
@@ -417,6 +418,9 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     }
     // 记忆按账号取：共享的 + 这个人自己的。别人的偏好不该串到他头上；
     // hint 是本次任务线索，记忆装不下提示词预算时按它挑最相关的
+    // 自进化规则排在记忆前面：记忆是"这个用户怎么想的"，规则是"你自己在哪儿摔过"。
+    // 摔过的坑得先想起来，不然照着用户偏好又摔一次。两块都过预算上限，不会无限撑长。
+    try { p += evolve.promptBlock(); } catch {} // 规则目录读不了不该让整个任务起不来
     p += await memory.promptBlock(user, hint);
     return p;
   }
