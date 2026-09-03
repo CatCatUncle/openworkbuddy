@@ -276,6 +276,25 @@ function parseJsonLoose(text) {
   try { return JSON.parse(m[0]); } catch { return null; }
 }
 
+/**
+ * 把一次调用（或 agent 返回的一整轮）的用量并进本次任务的总账。
+ *
+ * 以前这件事在五个地方各手写一遍 `total.prompt += …; total.completion += …`，于是
+ * llm.js 好不容易统一读出来的 cached 在这一层被五处同时丢掉——账本记的 cached 恒为 0，
+ * 「有没有在反复全价重买同一段上下文」这个问题看不见，扣积分也没法给缓存打折。
+ * 收成一个函数，以后 usage 再多一个字段只改这一处，不会有第六处漏掉。
+ *
+ * calls：llm.chat() 一次就是一次；agent 返回的 usage 自带 calls（里面是好多次），照抄。
+ */
+function addUsage(total, u) {
+  if (!u) return;
+  total.prompt += u.prompt || 0;
+  total.completion += u.completion || 0;
+  total.cached = (total.cached || 0) + (u.cached || 0);
+  total.calls += u.calls != null ? u.calls : 1;
+  total.elapsed_ms = (total.elapsed_ms || 0) + (u.elapsed_ms || 0);
+}
+
 /** 把目标拆成 3~6 条可验收标准。失败就用目标原文当唯一标准，绝不让任务卡在拆解上 */
 async function deriveGoalCriteria(sessLLM, goalText, total) {
   try {
@@ -285,7 +304,7 @@ async function deriveGoalCriteria(sessLLM, goalText, total) {
       tools: [],
       signal: AbortSignal.timeout(30000),
     });
-    if (r.usage) { total.prompt += r.usage.prompt; total.completion += r.usage.completion; total.calls++; }
+    addUsage(total, r.usage);
     const j = parseJsonLoose(r.text);
     const list = (j && Array.isArray(j.criteria) ? j.criteria : []).map((c) => String(c).trim()).filter(Boolean).slice(0, 6);
     if (list.length) return list;
@@ -311,7 +330,7 @@ async function verifyGoal(sess, sessLLM, finalText, total) {
       tools: [],
       signal: AbortSignal.timeout(45000),
     });
-    if (r.usage) { total.prompt += r.usage.prompt; total.completion += r.usage.completion; total.calls++; }
+    addUsage(total, r.usage);
     const j = parseJsonLoose(r.text);
     for (const it of (j && Array.isArray(j.results) ? j.results : [])) {
       const c = goal.criteria[it.i];
@@ -2104,7 +2123,7 @@ app.post("/api/chat", async (req, res) => {
   activeRuns.set(sessionId, runState);
   persistRunning();
   const emitFn = recordingEmit(send, asstEvents, sessionId);
-  const total = { prompt: 0, completion: 0, calls: 0, elapsed_ms: 0 };
+  const total = { prompt: 0, completion: 0, cached: 0, calls: 0, elapsed_ms: 0 };
   // 首轮对话：并行起一个真正的短标题（拿消息前 24 个字截断当标题太丑）。
   // 跟任务并行跑，任务收尾时基本已就绪，不给任务加等待；花的 token 记进同一笔账
   let titleP = null;
@@ -2117,7 +2136,7 @@ app.post("/api/chat", async (req, res) => {
         signal: AbortSignal.timeout(20000),
       })
       .then((r) => {
-        if (r && r.usage) { total.prompt += r.usage.prompt || 0; total.completion += r.usage.completion || 0; total.calls += 1; }
+        addUsage(total, r && r.usage);
         return r && r.text ? String(r.text) : null;
       })
       .catch(() => null);
@@ -2188,12 +2207,7 @@ app.post("/api/chat", async (req, res) => {
             runState.asks.set(askId, done);
           }),
         });
-        if (r && r.usage) {
-          total.prompt += r.usage.prompt;
-          total.completion += r.usage.completion;
-          total.calls += r.usage.calls;
-          total.elapsed_ms += r.usage.elapsed_ms;
-        }
+        addUsage(total, r && r.usage);
         if (r && r.finalText) lastFinal = r.finalText;
         if (r && r.stopped) roundStopped = r.stopped;
         const leftover = runState.interject.splice(0);

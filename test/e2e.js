@@ -383,6 +383,42 @@ async function testFetchRetry() {
 
 // 看图：用户粘贴的截图必须真能被读懂，而且图只能随这一次请求发出去，绝不能留在对话历史里
 // （历史是每一步都整份重发的，一张图能把上下文成本翻好几倍，纯文本的主模型还会直接 400 把整个会话废掉）
+/**
+ * check_page 的控制台判读。真实数据里它 8 次报「控制台报错」有 7 次是 Electron 自己
+ * 注入的安全警告——干净页面照样报错，模型于是掉头去改一张本来没病的页面。浏览器实测那
+ * 段要 Electron 才跑得起来，这里锁住判读逻辑本身（噪声过滤 + 两套事件签名 + 错/警分级）。
+ */
+function testCheckPageConsole() {
+  const { isRuntimeNoise, readConsoleEvent, cleanConsoleText } = require("../tools")._internals;
+
+  const ELECTRON_WARN = "%cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security Policy set…";
+  assert.ok(isRuntimeNoise("node:electron/js2c/sandbox_bundle", ELECTRON_WARN), "Electron 自己的安全警告没被认成噪声");
+  assert.ok(isRuntimeNoise("", ELECTRON_WARN), "拿不到 sourceId 时也该按正文认出来");
+  assert.ok(isRuntimeNoise("devtools://devtools/bundled/x.js", "随便什么"), "devtools 自己的日志没滤掉");
+  assert.ok(!isRuntimeNoise("file:///Users/x/report.html", "Uncaught ReferenceError: renderChart is not defined"), "页面自己的报错被当噪声滤掉了");
+  assert.ok(!isRuntimeNoise("", "接口 500，图表没渲染出来"), "页面自己打的日志被当噪声滤掉了");
+
+  // 新签名（Electron 36+）：单个事件对象，level 是字符串
+  const a = readConsoleEvent([{ level: "error", message: "boom", sourceId: "file:///a.html" }]);
+  assert.strictEqual(a.level, "error", "新签名 level 读错：" + a.level);
+  assert.strictEqual(a.message, "boom", "新签名 message 读错：" + a.message);
+  assert.strictEqual(a.sourceId, "file:///a.html", "新签名 sourceId 读错：" + a.sourceId);
+
+  // 老签名（已 deprecated 但 Electron 43 仍在发）：位置参数，level 是 0-3
+  const b = readConsoleEvent([{}, 3, "boom2", 12, "file:///b.html"]);
+  assert.strictEqual(b.level, "error", "老签名 level=3 没映射成 error：" + b.level);
+  assert.strictEqual(b.message, "boom2", "老签名 message 读错：" + b.message);
+  assert.strictEqual(b.sourceId, "file:///b.html", "老签名 sourceId 读错：" + b.sourceId);
+  assert.strictEqual(readConsoleEvent([{}, 2, "w"]).level, "warning", "老签名 level=2 该是 warning");
+  assert.strictEqual(readConsoleEvent([{}, 1, "i"]).level, "info", "老签名 level=1 该是 info");
+  assert.strictEqual(readConsoleEvent([{}, 0, "v"]).level, "debug", "老签名 level=0 该是 debug");
+
+  assert.strictEqual(cleanConsoleText("%c报错了%c  再一次"), "报错了 再一次", "%c 样式指令没清干净");
+  assert.ok(cleanConsoleText("x".repeat(500)).length === 300, "超长控制台文本没截断");
+
+  console.log("✅ check_page 控制台判读：Electron 自身警告不算数 / 新老两套签名都认 / 错与警分开");
+}
+
 async function testLookAtImage() {
   const tools = require("../tools");
   const { lookAtImage } = tools._internals;
@@ -1475,6 +1511,69 @@ function testCreditsGate() {
 }
 
 /**
+ * 缓存命中要一路记到账本里，并且真的影响扣分。
+ *
+ * 这条链子以前是断的：llm.js 把三家不同的字段名统一读成 cached，agent.js 一路带到收尾，
+ * 然后在 server.js 的五处手写累加和 account.js 的账本记录里被同时丢掉——网页上那一行
+ * "缓存命中 x%" 只活到刷新页面为止，CLI / 定时任务 / IM 跑的任务压根没有这一行，
+ * 而扣积分是按 prompt+completion 全价算的，缓存读也照收全价。
+ * 这里验三件事：账本记得住、扣分打得了折、命中率不拿老流水当分母。
+ */
+function testCachedLedger() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-cached-"));
+  const script = `
+    const assert = require("assert");
+    const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
+    const { register, loadUsers, saveUsers, loadUsage, saveUsage } = acc._internals;
+    const setOn = (on) => { const st = loadUsers(); st.settings = { ...st.settings, credits_enabled: on }; saveUsers(st); };
+
+    // 扣分：命中缓存的部分按 1/10 算。10000 输入里 9000 命中 → 1000 + 900 = 1900 → 2 分（不打折是 10 分）
+    assert.strictEqual(acc.creditsFor({ prompt: 10000, cached: 9000, completion: 0 }), 2, "缓存没打折");
+    assert.strictEqual(acc.creditsFor({ prompt: 10000, cached: 0, completion: 0 }), 10, "没缓存时不该少扣");
+    assert.strictEqual(acc.creditsFor({ prompt: 10000, completion: 0 }), 10, "老记录没 cached 字段时不该白送折扣");
+    // 上游偶尔会报出比 prompt 还大的 cached，钳住，不然能把账扣成负的
+    assert.strictEqual(acc.creditsFor({ prompt: 1000, cached: 999999, completion: 0 }), 1, "cached 超过 prompt 没钳住");
+    // 至少 1 分这条老规矩不能被折扣绕过
+    assert.strictEqual(acc.creditsFor({ prompt: 100, cached: 100, completion: 0 }), 1, "每次任务至少 1 积分被绕过了");
+
+    const u = register("测试缓存", "pw123456");
+    setOn(true);
+    acc.chargeRun(u, { prompt: 10000, cached: 9000, completion: 0, calls: 2, source: "cli" });
+    const flow = loadUsage();
+    assert.strictEqual(flow[0].cached, 9000, "账本没记下 cached");
+    assert.strictEqual(flow[0].credits, 2, "账本里扣的分没打折");
+
+    // 命中率的分母只算"记过 cached 的那些条"：塞一条老流水（压根没有这个字段）进去，
+    // 它不该把命中率稀释成一个假的低值
+    const old = { ts: new Date().toISOString(), day: flow[0].day, kind: "run", user: "测试缓存", source: "web", prompt: 990000, completion: 0, calls: 1, credits: 990 };
+    saveUsage([old, ...flow]);
+    const sum = acc.usageSummary(loadUsers().users[0]);
+    assert.strictEqual(sum.today.cached, 9000, "汇总里的 cached 不对");
+    assert.strictEqual(sum.today.cachedOf, 10000, "老流水被算进命中率的分母了");
+    assert.strictEqual(sum.today.tokens, 1000000, "tokens 总量该照旧把老流水算上");
+    console.log("OK");
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], {
+    env: { ...process.env, WB_DATA_DIR: dir },
+    encoding: "utf8",
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "缓存账本测试失败：\n" + (r.stderr || r.stdout));
+
+  // 防第六处漏网：server.js 里的用量累加必须只走 addUsage()。
+  // 这个字段就是被五处各写一遍的手工累加同时丢掉的，再手写一处就又断一次。
+  const srv = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const handRolled = srv.split("\n").filter((l) => /total\.(prompt|completion)\s*\+=/.test(l) && !/^\s*\*/.test(l));
+  assert.strictEqual(
+    handRolled.length, 2,
+    "server.js 里出现了 addUsage() 之外的手工用量累加，cached 会在那里被丢掉：\n" + handRolled.join("\n")
+  );
+  console.log("✅ 缓存命中：记进账本 / 扣分按 1/10 折算 / 命中率不拿老流水当分母 / 累加只有一条路");
+}
+
+/**
  * 改登录名：挂在旧名字底下的东西必须一起搬走，搬漏一样就是历史对不上人。
  * 同样丢子进程里跑，WB_DATA_DIR 指到临时目录，不碰真账号。
  */
@@ -2081,6 +2180,7 @@ async function main() {
   testImSessionStore();
   testAccountStore();
   testCreditsGate();
+  testCachedLedger();
   testRenameLogin();
   testAvatarRules();
   testPathSafety();
@@ -2088,6 +2188,7 @@ async function main() {
   testContextBudget();
   testToolPairRepair();
   await testFetchRetry();
+  testCheckPageConsole();
   await testLookAtImage();
   testPluginManifest();
   testPluginComponentIsolation();

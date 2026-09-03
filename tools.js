@@ -1273,6 +1273,60 @@ function auditHtml(src, baseDir) {
   return out;
 }
 
+/**
+ * 隐藏窗口用完的收尾。要不要顺手退掉整个应用，只看主窗口还在不在。
+ *
+ * 老写法是「当前一个窗口都不剩就 app.quit()」。可我们刚刚亲手销毁了自己那个隐藏窗口，
+ * 这个条件在「主窗口没开着」的任何时刻都成立——于是一个验收网页的工具会顺手把整个进程
+ * 结束掉。桌面版正常开着主窗口时碰不到，但服务端跑在 Electron 里而没有主窗口的形态
+ * （评测、脚本、自动化宿主）一验页面就自杀，而且是静默的：调用方只看到任务没了。
+ * 真正要防的是「渲染期间用户把主窗口关了，window-all-closed 触发那会儿这个隐藏窗口还
+ * 活着，于是没退成」，所以判据改成**主窗口曾经存在且已经没了**；从来就没有过主窗口 =
+ * 有意的无头宿主，不许动它。
+ */
+function closeHiddenWindow(win, electron) {
+  try {
+    if (win && !win.isDestroyed()) win.destroy();
+  } catch {}
+  const main = global.__wbWin;
+  if (main && main.isDestroyed() && !electron.BrowserWindow.getAllWindows().length) electron.app.quit();
+}
+
+/**
+ * 页面自己打的日志才算数。Electron 会往每一个 file:// 页面注入它自己的
+ * 「Insecure Content-Security-Policy」安全警告（sourceId = node:electron/…），
+ * 真实数据里 check_page 的 8 次「控制台报错」有 7 次就是它——一张完全干净的
+ * 页面也照报，模型于是掉头去改一张本来没病的页面。它是开发期提示，跟交付出去
+ * 的 HTML 无关，必须在这一层滤掉。
+ */
+function isRuntimeNoise(sourceId, message) {
+  return (
+    /^(node:electron|devtools:|chrome-extension:)/.test(String(sourceId || "")) ||
+    /Electron Security Warning/.test(String(message || ""))
+  );
+}
+
+/**
+ * console-message 有两套签名：Electron 36 起是单个事件对象（level 是
+ * 'error'/'warning' 字符串），老的位置参数（level 0-3）虽然还在但已标 deprecated。
+ * 两套都认——哪天上游把老参数删了，这里静默瞎掉比报错更糟：check_page 的
+ * 主要价值就是抓控制台报错，抓不到却回「控制台没有报错」是假绿。
+ */
+function readConsoleEvent(args) {
+  const ev = args[0] || {};
+  const level = typeof ev.level === "string" ? ev.level
+    : ["debug", "info", "warning", "error"][Number(args[1])] || "info";
+  const message = typeof ev.message === "string" ? ev.message
+    : typeof args[2] === "string" ? args[2] : "";
+  const sourceId = ev.sourceId || (typeof args[4] === "string" ? args[4] : "");
+  return { level, message, sourceId };
+}
+
+/** 控制台里 %c 是给样式用的，取出来只会让报错更难读 */
+function cleanConsoleText(msg) {
+  return String(msg).replace(/%c/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
 /** 验收网页：静态体检 + 真浏览器打开一遍（拿控制台报错） */
 async function checkPage(file, rel) {
   const src = fs.readFileSync(file, "utf8");
@@ -1294,11 +1348,14 @@ async function checkPage(file, rel) {
     height: 1000,
     webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
-  const errs = [];
+  const errs = [], warns = [];
   try {
     // 控制台报错是白屏的头号原因，光看源码看不出来
-    win.webContents.on("console-message", (_e, level, message) => {
-      if (level >= 2) errs.push(String(message).slice(0, 300));
+    win.webContents.on("console-message", (...args) => {
+      const { level, message, sourceId } = readConsoleEvent(args);
+      if (level !== "error" && level !== "warning") return;
+      if (isRuntimeNoise(sourceId, message)) return;
+      (level === "error" ? errs : warns).push(cleanConsoleText(message));
     });
     win.webContents.on("did-fail-load", (_e, code, desc, url) => errs.push(`资源加载失败 ${desc}（${String(url).slice(0, 80)}）`));
     await win.loadURL("file://" + file);
@@ -1308,12 +1365,13 @@ async function checkPage(file, rel) {
     );
     lines.push(`\n【浏览器实测】标题「${info.t}」· 可见正文 ${info.n} 字 · 页面高 ${info.h}px`);
     if (info.n < 20) lines.push("- [错] 打开后几乎没有可见内容（白屏）。多半是 JS 报错或 CSS 把内容藏了。");
-    lines.push(errs.length ? `- [错] 控制台报错 ${errs.length} 条：\n  ${errs.slice(0, 5).join("\n  ")}` : "- 控制台没有报错");
+    if (errs.length) lines.push(`- [错] 控制台报错 ${errs.length} 条：\n  ${errs.slice(0, 5).join("\n  ")}`);
+    if (warns.length) lines.push(`- [警] 控制台警告 ${warns.length} 条（不一定要改，白屏无关）：\n  ${warns.slice(0, 3).join("\n  ")}`);
+    if (!errs.length && !warns.length) lines.push("- 控制台没有报错");
   } catch (e) {
     lines.push(`\n【浏览器实测】打开失败：${e.message}`);
   } finally {
-    if (!win.isDestroyed()) win.destroy();
-    if (!electron.BrowserWindow.getAllWindows().length) electron.app.quit();
+    closeHiddenWindow(win, electron);
   }
   return lines.join("\n");
 }
@@ -1631,10 +1689,7 @@ async function renderPage(url, { waitMs = 2500, maxWaitMs = 12000 } = {}) {
     const title = await win.webContents.executeJavaScript("document.title || ''").catch(() => "");
     return { text: (text || "").replace(/\n{3,}/g, "\n\n").trim(), title: String(title || "").trim().slice(0, 80) };
   } finally {
-    if (!win.isDestroyed()) win.destroy();
-    // 渲染期间用户把主窗口关了：window-all-closed 那会儿这个隐藏窗口还活着，没触发退出。
-    // 这里补一刀，免得应用变成看不见的僵尸进程。
-    if (!electron.BrowserWindow.getAllWindows().length) electron.app.quit();
+    closeHiddenWindow(win, electron);
   }
 }
 
@@ -2107,4 +2162,4 @@ function outputFiles() {
 }
 
 module.exports = {
-  _internals: { fetchRetry, nearestTool, lookAtImage, shrinkForVision }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };

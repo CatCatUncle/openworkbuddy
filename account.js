@@ -4,7 +4,7 @@
  *
  * 数据文件（均不入 git）：
  *   data/users.json  { users: [{ username, salt, hash, role, credits, created_at }], tokens: { token: { user, at } } }
- *   data/usage.json  [ { ts, day, kind: "run"|"topup", user, source, model, prompt, completion, calls, elapsed_ms, credits, ... } ]
+ *   data/usage.json  [ { ts, day, kind: "run"|"topup", user, source, model, prompt, cached, completion, calls, elapsed_ms, credits, ... } ]
  *
  * 计费规则：每消耗 1000 tokens（输入+输出）扣 1 积分，每次任务至少扣 1 积分。
  * 首个注册用户 = 管理员（10000 积分，可充值）；后续注册 = 成员（1000 积分）。
@@ -269,16 +269,25 @@ function clientIp(req) {
 }
 
 // ---------- 积分与用量 ----------
+/**
+ * 命中缓存的那部分 prompt 上游按约 1/10 计费（DeepSeek 缓存命中 ¥0.5/M vs 未命中 ¥4/M，
+ * Anthropic cache read 0.1x，OpenAI cached input 也打折），这里按同样的比例折算。
+ *
+ * 为什么非折不可：真实账本里 prompt 和 completion 是 64:1，agent 每走一步都要把整段上下文
+ * 重发一遍，能不能命中缓存决定了这一大坨到底花多少钱。全价照收等于把「省下来了」和「没省」
+ * 记成同一个数——用户看到的积分曲线跟真实账单脱节，也就没法据此去调 max_steps / 压缩阈值。
+ */
 function creditsFor(usage) {
-  const total = (usage.prompt || 0) + (usage.completion || 0);
-  return Math.max(1, Math.ceil(total / 1000));
+  const cached = Math.min(usage.cached || 0, usage.prompt || 0);
+  const billable = (usage.prompt || 0) - cached * 0.9 + (usage.completion || 0);
+  return Math.max(1, Math.ceil(billable / 1000));
 }
 
 /**
  * 一次任务结束后记账：按 tokens 扣积分 + 写用量流水。
  * 积分闸门关着（默认）时只写流水不扣数，返回 0——用量该看还得看，额度不该拦人。
  * @param user  users.json 里的用户对象（会同步更新其 credits 字段）
- * @param info  { prompt, completion, calls, elapsed_ms, model, provider, source, sessionId }
+ * @param info  { prompt, cached, completion, calls, elapsed_ms, model, provider, source, sessionId }
  * @returns 本次扣掉的积分数（不限额时为 0）
  */
 function chargeRun(user, info) {
@@ -301,6 +310,9 @@ function chargeRun(user, info) {
     model: info.model || "",
     provider: info.provider || "",
     prompt: info.prompt || 0,
+    // 其中命中缓存的部分。llm.js 已经把三家不同的字段名统一读了出来，可这一格以前没记，
+    // 于是「有没有在反复全价重买同一段上下文」这个问题一出任务就再也查不到了。
+    cached: info.cached || 0,
     completion: info.completion || 0,
     calls: info.calls || 0,
     elapsed_ms: info.elapsed_ms || 0,
@@ -331,11 +343,18 @@ function usageSummary(user) {
   const runs = mine.filter((e) => e.kind === "run");
   const today = localDay();
   const month = today.slice(0, 7);
-  const agg = (list) => ({
-    runs: list.length,
-    tokens: list.reduce((s, e) => s + (e.prompt || 0) + (e.completion || 0), 0),
-    credits: list.reduce((s, e) => s + (e.credits || 0), 0),
-  });
+  // cached 是后加的字段，老流水没有它。算命中率时只拿「记过这个字段的那些条」当分母，
+  // 否则历史记录会把分母撑大、把命中率稀释成一个假的低值，看着像缓存压根没生效。
+  const agg = (list) => {
+    const known = list.filter((e) => e.cached != null);
+    return {
+      runs: list.length,
+      tokens: list.reduce((s, e) => s + (e.prompt || 0) + (e.completion || 0), 0),
+      cached: known.reduce((s, e) => s + (e.cached || 0), 0),
+      cachedOf: known.reduce((s, e) => s + (e.prompt || 0), 0), // 命中率的分母：这些条的 prompt 总量
+      credits: list.reduce((s, e) => s + (e.credits || 0), 0),
+    };
+  };
   const last7 = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(Date.now() - i * 86400 * 1000);
@@ -559,5 +578,5 @@ module.exports = {
   authGuard,
   createRouter,
   // 下面这些只给测试用：账本读写和登录闸得能在临时目录里单独验，不然一跑测试就动到真账号
-  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps, normalizeAvatar, register, renameUser, loadUsers, saveUsers, loadUsage, verify, issueToken },
+  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps, normalizeAvatar, register, renameUser, loadUsers, saveUsers, loadUsage, saveUsage, verify, issueToken },
 };
