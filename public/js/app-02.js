@@ -118,7 +118,8 @@ async function uploadBytes(name, u8, { thumbMime, hint } = {}) {
   const b64 = bytesToB64(u8);
   const resp = await fetch("/api/upload", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, data_b64: b64 }),
+    // 带上会话 id：服务端好把文件直接放进本对话的成果文件夹，别再堆到工作空间根目录
+    body: JSON.stringify({ name, data_b64: b64, session: sessionId }),
   });
   if (!resp.ok) throw new Error("HTTP " + resp.status);
   addAttachChip(name, thumbMime ? `data:${thumbMime};base64,${b64}` : "", hint);

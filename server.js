@@ -160,6 +160,29 @@ function sweepInterruptedRuns() {
 }
 const assignedDirs = new Set(); // 刚分配、还没写出文件的对话文件夹名：两个新对话同时起步不许撞同名
 
+/** 给对话分配成果文件夹（任务_月日_标题），并把「消息发出前就传上来的」附件一起搬进去。
+ *  搬运失败一概不抛：文件夹没建成事小，因为一个附件搬不动就让整条对话起不来事大。*/
+function assignSessionDir(sess, message) {
+  const d = new Date();
+  const stamp = String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+  const slug = String(sess.title || message).replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12) || "对话";
+  let dir = `任务_${stamp}_${slug}`;
+  for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)) || assignedDirs.has(dir); i++) dir = `任务_${stamp}_${slug}_${i}`;
+  assignedDirs.add(dir);
+  sess.dir = dir; // 存进会话，后续轮次/重启都落同一个文件夹
+  const full = path.join(getWorkspaceDir(), dir);
+  try { fs.mkdirSync(full, { recursive: true }); } catch {}
+  for (const n of sess.pending_uploads || []) {
+    try {
+      const from = path.join(getWorkspaceDir(), n), to = path.join(full, n);
+      // 根目录同名的可能是别人的旧文件，只搬确实存在、且目标位置还空着的
+      if (fs.existsSync(from) && fs.statSync(from).isFile() && !fs.existsSync(to)) fs.renameSync(from, to);
+    } catch {}
+  }
+  sess.pending_uploads = [];
+  return dir;
+}
+
 function sessFile(id) {
   return path.join(SESS_DIR, id.replace(/[^\w-]/g, "_") + ".json");
 }
@@ -1768,13 +1791,24 @@ async function startPluginMcp(pluginName) {
 }
 
 // 文件上传到工作空间（输入框 ＋ 按钮）
+// 用户传进来的文件要和这轮的产出待在一起。以前一律落工作空间根目录，于是
+// 「我传的素材」和「它做出来的成果」分了家，根目录越堆越乱（真实数据里躺了 22 个）。
+// 时序坑：用户是**先传文件再发消息**，而成果文件夹要等第一条消息才建得出名字。
+// 所以没文件夹时先落根目录并记账，等文件夹一建好，assignSessionDir 再把它们搬进去。
 app.post("/api/upload", (req, res) => {
   try {
-    const { name, data_b64 } = req.body || {};
+    const { name, data_b64, session } = req.body || {};
     if (!name || !data_b64) return res.status(400).json({ error: "缺少 name 或 data_b64" });
-    const p = safePath(path.basename(name));
+    const base = path.basename(name);
+    const sess = session ? getSession(String(session)) : null;
+    const rel = sess && sess.dir ? path.join(sess.dir, base) : base;
+    const p = safePath(rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, Buffer.from(data_b64, "base64"));
-    res.json({ ok: true, name: path.basename(name) });
+    if (sess && !sess.dir) {
+      sess.pending_uploads = (sess.pending_uploads || []).filter((n) => n !== base).concat(base);
+    }
+    res.json({ ok: true, name: base });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -2022,6 +2056,34 @@ global.__wbPetTool = {
   },
 };
 // 在访达/资源管理器里定位到这个文件（不是打开文件本身，是打开它所在的文件夹并选中它）
+// 清掉根目录里那些「跟成果文件夹里某个文件逐字节相同」的副本。
+// 敢做这个动作只因为两条：一、判定标准是**哈希相同**，不是名字像，原件确确实实还在；
+// 二、**搬进 .trash 而不是删**，捞得回来。少一条都不该有这个按钮。
+// 名字像但内容不同的、根目录独有的，一个都不碰——那些是用户自己的东西。
+app.post("/api/files/tidy", (_req, res) => {
+  try {
+    const dupes = outputFiles().filter((f) => f.dup_of && !f.name.includes("/"));
+    if (!dupes.length) return res.json({ ok: true, moved: 0, files: [] });
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "");
+    const trash = safePath(path.join(".trash", stamp));
+    fs.mkdirSync(trash, { recursive: true });
+    const moved = [];
+    for (const f of dupes) {
+      try {
+        // 搬之前再验一次原件真的在：列表是几毫秒前拍的快照，这中间原件可能已经没了，
+        // 那就不是"清掉多余副本"而是"把唯一一份扔掉"了
+        const origin = safePath(f.dup_of);
+        if (!fs.existsSync(origin) || !fs.statSync(origin).isFile()) continue;
+        fs.renameSync(safePath(f.name), path.join(trash, f.name));
+        moved.push(f.name);
+      } catch {}
+    }
+    security.audit("清理重复副本", moved.join("、") || "（没有可清理的）", "放行");
+    res.json({ ok: true, moved: moved.length, files: moved, trash: path.join(".trash", stamp) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
 app.post("/api/files/reveal", (req, res) => {
   try {
     const p = safePath(String((req.body || {}).name || "")); // 越界一律抛错，跟下载走同一道门
@@ -2227,15 +2289,7 @@ app.post("/api/chat", async (req, res) => {
   // 用户自选的工作目录 / 项目目录保持原地读写不变（素材要在原文件夹里就地处理）
   let taskBaseDir = null;
   if (path.resolve(getWorkspaceDir()) === dataPath("workspace")) {
-    if (!sess.dir) {
-      const d = new Date();
-      const stamp = String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
-      const slug = String(sess.title || message).replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12) || "对话";
-      let dir = `任务_${stamp}_${slug}`;
-      for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)) || assignedDirs.has(dir); i++) dir = `任务_${stamp}_${slug}_${i}`;
-      assignedDirs.add(dir);
-      sess.dir = dir; // 存进会话，后续轮次/重启都落同一个文件夹
-    }
+    if (!sess.dir) assignSessionDir(sess, message);
     taskBaseDir = sess.dir;
   }
   if (taskBaseDir) send({ type: "dir", dir: taskBaseDir }); // 成果面板标「本对话」用；不进回放记录
