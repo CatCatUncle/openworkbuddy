@@ -12,6 +12,7 @@ const { DATA_DIR, dataPath, appPath } = require("./paths");
 const { createLLM, createEmbedder } = require("./llm");
 const { outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const { previewData } = require("./preview");
+const evolve = require("./evolve");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
 const { createImRouter } = require("./im");
@@ -532,6 +533,13 @@ app.post("/api/settings", (req, res) => {
       if (b.pet.scale !== undefined) config.pet.scale = Math.max(0.6, Math.min(2, Number(b.pet.scale) || 1));
       if (b.pet.opacity !== undefined) config.pet.opacity = Math.max(0.25, Math.min(1, Number(b.pet.opacity) || 1));
       if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
+    }
+    if (b.evolve) {
+      config.evolve = config.evolve || {};
+      // 默认关：每晚要调一次模型，是花钱的事，得你自己点开
+      if (typeof b.evolve.auto === "boolean") config.evolve.auto = b.evolve.auto;
+      if (b.evolve.hour !== undefined) config.evolve.hour = Math.max(0, Math.min(23, Math.round(+b.evolve.hour) || 0));
+      if (b.evolve.days !== undefined) config.evolve.days = Math.max(1, Math.min(365, Math.round(+b.evolve.days) || 14));
     }
     if (b.persona !== undefined) config.persona = String(b.persona).slice(0, 4000);
     if (b.assistant) {
@@ -1161,6 +1169,66 @@ app.post("/api/memory/item", (req, res) => {
 });
 app.delete("/api/memory/item/:id", (req, res) => {
   res.json({ ok: true, removed: memory.remove(req.params.id) });
+});
+
+// ---------- 自进化：反馈 → 信号 → 提案 → 人审 → 复盘 ----------
+// 👍👎 以前点了只换个高亮色，一个字节都没往外送。反馈得在干活的地方零摩擦地收，
+// 收不到就没有后面这一整条链——这是整套自进化的第一环。
+app.post("/api/feedback", (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json({ ok: true, item: evolve.recordFeedback({ ...b, user: req.user ? req.user.username : "" }) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 体检：这段时间它都败在哪儿、各多少次。不调模型，纯数数，随时能看
+app.get("/api/evolve/signals", (req, res) => {
+  try {
+    res.json(evolve.mineSignals({ days: Math.min(365, +req.query.days || evolve.CAPS.window) }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/evolve/state", (_req, res) => {
+  res.json({
+    caps: evolve.CAPS,
+    rules: evolve.activeRules(),
+    proposals: evolve.listProposals().slice(-50).reverse(),
+    scored: evolve.scoreRules(),
+    runs: evolve.listRuns(5),
+    auto: config.evolve || {},
+  });
+});
+
+// 跑一轮复盘：数信号 → 让模型提最小改动 → 过闸门 → 落盘等人审。**永远不自动生效**
+app.post("/api/evolve/review", async (req, res) => {
+  try {
+    const r = await evolve.runReview({ llm, days: +((req.body || {}).days) || undefined, promptExcerpt: (req.body || {}).prompt_excerpt || "" });
+    res.json({ ok: true, turns: r.mined.turns, signals: r.mined.signals.slice(0, 10), added: r.added, gated: r.gated, notes: r.notes, scored: r.scored });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/evolve/proposal/:id", (req, res) => {
+  try {
+    const b = req.body || {};
+    const p = evolve.decideProposal(req.params.id, b.decision, { by: req.user ? req.user.username : "", reason: b.reason });
+    res.json({ ok: true, proposal: p, rules: evolve.activeRules() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/evolve/rule/:id/retire", (req, res) => {
+  try {
+    res.json({ ok: true, ...evolve.retireRule(req.params.id, (req.body || {}).why || "人工下架"), rules: evolve.activeRules() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // ---------- 工作空间：原生文件夹选择（桌面版）与打开文件夹 ----------
@@ -2655,6 +2723,29 @@ async function main() {
     onResult: (item, text) =>
       notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${(text || "").slice(0, 800)}`),
   });
+
+  // 夜间复盘：**默认关**。开了之后每 10 分钟看一次表，到点且今天还没跑过就跑一轮。
+  // 它只生成提案，永远不会自己改提示词——第二天早上你在 设置→自进化 里决定要不要。
+  let evolveLastDay = "";
+  setInterval(async () => {
+    const ev = config.evolve || {};
+    if (!ev.auto) return;
+    const d = new Date();
+    const day = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+    if (d.getHours() !== (ev.hour === undefined ? 3 : ev.hour) || evolveLastDay === day) return;
+    evolveLastDay = day;
+    try {
+      const r = await evolve.runReview({ llm, days: ev.days || evolve.CAPS.window });
+      evolve.recordRun({ ok: true, trigger: "夜间", turns: r.mined.turns, added: (r.added || []).length, gated: (r.gated || []).length, notes: r.notes || [] });
+      if ((r.added || []).length) {
+        notify.pushBots(config, `【OpenWorkBuddy·自进化】昨夜复盘：${r.mined.turns} 个回合，${r.added.length} 条改进提案等你审（设置→自进化）`);
+      }
+    } catch (e) {
+      // 后台飞轮吞掉异常，等于这条链早就停了而你还以为它在转。成败都落一行，界面上看得见
+      try { evolve.recordRun({ ok: false, trigger: "夜间", error: e.message }); } catch {}
+      console.warn("[自进化] 夜间复盘失败:", e.message);
+    }
+  }, 10 * 60 * 1000);
 
   // IM 远程指挥路由（飞书/QQ 长连接 · 企业微信与公众号回调 · 通用 webhook）
   imBridge = createImRouter({ config, runtime: accountedRuntime(runtime, "im"), sessions: imSessions, outputFiles, saveConfig });

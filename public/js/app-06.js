@@ -232,6 +232,138 @@ function renderShortcutsPane(pane, s) {
   draw("");
 }
 
+// ================= 自进化：信号 → 提案 → 人审 → 复盘打分 =================
+// 这一屏是整条链上唯一有人的一环。提案永远不会自己生效——闸门只负责毙掉明显不该上的，
+// 剩下的必须有人点「采纳」。所以这里要把证据摆够：治什么、凭几次、原话长啥样、生效后哪个数该降。
+const EV_ACT = { prompt: ["提示词能治", "var(--wb-ok)"], config: ["得改配置/换渠道", "var(--wb-warn)"], code: ["得改代码", "var(--wb-err)"] };
+
+async function renderEvolvePane(pane) {
+  pane.innerHTML = '<div class="card-item"><div class="d">读取中…</div></div>';
+  const [st, sg] = await Promise.all([
+    fetch("/api/evolve/state").then(r => r.json()).catch(() => ({})),
+    fetch("/api/evolve/signals").then(r => r.json()).catch(() => ({})),
+  ]);
+  const caps = st.caps || { rules: 12, window: 14, minEvidence: 3 };
+  const rules = st.rules || [];
+  const scored = st.scored || [];
+  const pending = (st.proposals || []).filter(p => p.status === "pending");
+  const decided = (st.proposals || []).filter(p => p.status !== "pending").slice(0, 8);
+  const runs = st.runs || [];
+  const auto = st.auto || {};
+  const signals = sg.signals || [];
+
+  const actTag = (a) => { const [txt, color] = EV_ACT[a] || ["说不好", "var(--wb-text-3)"]; return `<span style="color:${color};font-size: 13px">${txt}</span>`; };
+  const sigRows = signals.length ? signals.slice(0, 12).map(s => `
+    <div style="display:flex;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px solid var(--wb-border);font-size: 13px">
+      <span style="flex:1;min-width:0;color:var(--wb-text)">${esc(s.label)}</span>
+      <span style="color:var(--wb-text-2)">${s.count} 次 · 每回合 ${s.rate}</span>
+      ${actTag(s.actionable)}
+    </div>`).join("")
+    : '<div style="color:var(--wb-text-3);font-size: 14px">这段时间没数出毛病来——要么真没出错，要么样本太少。</div>';
+
+  const propCards = pending.length ? pending.map(p => `
+    <div class="card-item" data-prop="${esc(p.id)}" style="border-left:3px solid var(--wb-brand)">
+      <div class="t">${p.kind === "retire_rule" ? "下架" : "新增"}：${esc(p.title || p.rule || "")}</div>
+      <div class="d">${esc(p.why || "")}</div>
+      ${p.rule ? `<div style="margin-top:8px;padding:8px 10px;background:var(--wb-code-bg);color:var(--wb-code-text);border-radius:8px;font-size: 13px;white-space:pre-wrap">${esc(p.rule)}</div>` : ""}
+      ${p.verify ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-2)">✅ 验收：${esc(p.verify)}</div>` : ""}
+      ${p.signalSnapshot ? `<div style="margin-top:4px;font-size: 13px;color:var(--wb-text-3)">证据：${esc(p.signalSnapshot.label)} · ${p.signalSnapshot.count} 次 · 每回合 ${p.signalSnapshot.rate}</div>` : ""}
+      ${(p.evidence || []).length ? `<details style="margin-top:4px"><summary style="cursor:pointer;font-size: 13px;color:var(--wb-text-3)">看现场原话（${p.evidence.length} 条）</summary>
+        ${p.evidence.map(e => `<div style="font-size: 13px;color:var(--wb-text-2);margin:5px 0 0;padding-left:8px;border-left:2px solid var(--wb-border)"><b>${esc(e.task || "")}</b><br>${esc(e.excerpt || "")}</div>`).join("")}</details>` : ""}
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn-brand" data-act="accept" style="height:30px;padding:0 14px;font-size: 13px">采纳，写进提示词</button>
+        <input data-reason placeholder="驳回理由（会喂回给模型当负样本）" style="flex:1;min-width:160px;height:30px;font-size: 13px;margin:0">
+        <button class="btn-plain" data-act="reject" style="height:30px;padding:0 12px;font-size: 13px">驳回</button>
+      </div>
+    </div>`).join("")
+    : '<div class="card-item"><div class="d">没有待审的提案。点上面「跑一轮复盘」让它看看最近摔在哪儿。</div></div>';
+
+  const scoreOf = (id) => scored.find(x => x.id === id);
+  const ruleRows = rules.length ? rules.map(r => {
+    const sc = scoreOf(r.id);
+    const color = sc && sc.verdict === "有效" ? "var(--wb-ok)" : sc && sc.verdict === "没起作用" ? "var(--wb-err)" : "var(--wb-text-3)";
+    return `<div style="padding:8px 0;border-bottom:1px solid var(--wb-border)">
+      <div style="font-size: 14px;color:var(--wb-text);white-space:pre-wrap">${esc(r.text)}</div>
+      <div style="margin-top:4px;font-size: 13px;color:var(--wb-text-3)">
+        ${esc((r.meta.at || "").slice(0, 10))} 起 · <span style="color:${color}">${esc(sc ? sc.verdict : "还没打分")}</span>${sc && sc.why ? " · " + esc(sc.why) : ""}
+        · <a href="#" class="link danger" data-retire="${esc(r.id)}">下架</a>
+      </div></div>`;
+  }).join("") : '<div style="color:var(--wb-text-3);font-size: 14px">还没有生效的规则。规则来自被你采纳的提案，不会自己长出来。</div>';
+
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">🔁 它自己怎么变好的</div>
+      <div class="d">你在每条回复下点的 👍👎 会落盘；加上任务里真实的失败（工具报错、超时、被打断返工）一起数成「信号」。
+      复盘时模型只看这些数字提**最小**改动，能不能上由你点头——<b>提案永远不会自动生效</b>。
+      规则最多 ${caps.rules} 条、每条 ≤ ${caps.ruleChars || 400} 字，满了必须换下一条才能加，避免措辞越堆越厚而数字不动。
+      一条规则至少要有 ${caps.minEvidence} 次证据才准提。</div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn-brand" id="ev-run" style="height:30px;padding:0 14px;font-size: 13px">跑一轮复盘</button>
+        <span style="font-size: 13px;color:var(--wb-text-3)">统计最近 <input id="ev-days" type="number" min="1" max="365" value="${caps.window}" style="width:56px;height:26px;margin:0;font-size: 13px"> 天 · 会调一次模型，花钱</span>
+        <span class="ok-msg" id="ev-msg"></span>
+      </div>
+      <div style="margin-top:6px;font-size: 13px;color:var(--wb-text-3)">规则预算：已用 ${rules.length}/${caps.rules} 条</div>
+      <label style="display:flex;align-items:center;gap:6px;font-size: 13px;color:var(--wb-text-2);margin-top:10px;cursor:pointer">
+        <input type="checkbox" id="ev-auto" style="width:auto;margin:0" ${auto.auto ? "checked" : ""}>
+        每天 <input id="ev-hour" type="number" min="0" max="23" value="${auto.hour === undefined ? 3 : auto.hour}" style="width:48px;height:24px;margin:0;font-size: 13px"> 点自动跑一轮
+        <span style="color:var(--wb-text-3)">（默认关，因为每次都要调一次模型花钱；跑出来的提案仍然要你点头才生效）</span>
+      </label>
+      ${runs.length ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-3)">上次：${esc((runs[0].at || "").slice(0, 16).replace("T", " "))} · ${esc(runs[0].trigger || "")} · ${runs[0].ok ? `${runs[0].turns} 个回合，新提案 ${runs[0].added} 条` : `<span style="color:var(--wb-err)">没跑成：${esc(runs[0].error || "")}</span>`}</div>` : ""}
+    </div>
+    <div class="card-item">
+      <div class="t">📊 最近 ${sg.days || caps.window} 天的信号（${sg.turns || 0} 个助手回合）</div>
+      <div class="d" style="margin-bottom:6px">按次数排。只有标「提示词能治」的才允许变成规则——改代码/换渠道的毛病，加多少句提示词都没用。</div>
+      ${sigRows}
+    </div>
+    <div class="t" style="margin:16px 0 8px;font-weight:600">📥 待你裁决（${pending.length}）</div>
+    ${propCards}
+    <div class="card-item">
+      <div class="t">📌 已生效的规则（${rules.length}/${caps.rules}）</div>
+      <div class="d" style="margin-bottom:4px">这些原样拼进每次任务的系统提示词，排在记忆前面。打分看的是「基线出现率 → 现在的出现率」，没降就该下架。</div>
+      ${ruleRows}
+    </div>
+    ${decided.length ? `<div class="card-item"><div class="t">🗂️ 审过的（近 ${decided.length} 条）</div>${decided.map(p => `<div style="padding:4px 0;font-size: 13px;color:var(--wb-text-2);border-bottom:1px solid var(--wb-border)"><b>${p.status === "applied" ? "已采纳" : p.status === "rejected" ? "已驳回" : "被闸门拦下"}</b> · ${esc(p.title || p.rule || "")}${p.reason ? " · " + esc(p.reason) : ""}${p.gate ? " · " + esc(p.gate) : ""}</div>`).join("")}</div>` : ""}`;
+
+  const msg = pane.querySelector("#ev-msg");
+  const saveAuto = () => saveSettings({ evolve: { auto: pane.querySelector("#ev-auto").checked, hour: +pane.querySelector("#ev-hour").value || 0 } }, msg);
+  pane.querySelector("#ev-auto").onchange = saveAuto;
+  pane.querySelector("#ev-hour").onchange = saveAuto;
+  pane.querySelector("#ev-run").onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true; msg.textContent = "在数信号、让模型提改动…（可能要几十秒）";
+    const r = await fetch("/api/evolve/review", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ days: +pane.querySelector("#ev-days").value || undefined }),
+    }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
+    btn.disabled = false;
+    if (r.error) { msg.textContent = "没跑成：" + r.error; return; }
+    toast(`复盘完了：${r.turns} 个回合，新提案 ${(r.added || []).length} 条${(r.gated || []).length ? `，被闸门拦下 ${(r.gated || []).length} 条` : ""}`);
+    (r.notes || []).forEach(n => console.log("[自进化]", n));
+    renderEvolvePane(pane);
+  };
+  pane.querySelectorAll("[data-prop]").forEach(card => {
+    const id = card.dataset.prop;
+    const decide = async (decision) => {
+      const r = await fetch("/api/evolve/proposal/" + encodeURIComponent(id), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, reason: (card.querySelector("[data-reason]").value || "").trim() }),
+      }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
+      toast(r.error ? "没成：" + r.error : decision === "accept" ? "已采纳，下次任务就带上了" : "已驳回，下轮不会再提");
+      renderEvolvePane(pane);
+    };
+    card.querySelector("[data-act=accept]").onclick = () => decide("accept");
+    card.querySelector("[data-act=reject]").onclick = () => decide("reject");
+  });
+  pane.querySelectorAll("[data-retire]").forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    const r = await fetch("/api/evolve/rule/" + encodeURIComponent(a.dataset.retire) + "/retire", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ why: "在设置里人工下架" }),
+    }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
+    toast(r.error ? "没成：" + r.error : "已下架，提示词里不再带它");
+    renderEvolvePane(pane);
+  });
+}
+
 function renderAboutPane(pane) {
   pane.innerHTML = `
     <div class="card-item">

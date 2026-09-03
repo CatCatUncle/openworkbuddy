@@ -212,6 +212,7 @@ const SETTING_CATS = [
   ["shortcuts", "快捷键"],
   ["persona", "个性化"],
   ["memory", "记忆"],
+  ["evolve", "自进化"],
   ["data", "数据管理"],
   ["im", "助理设置"],
   ["about", "关于"],
@@ -233,6 +234,7 @@ async function renderSettings(active) {
   else if (active === "agent") renderAgentPane(pane, s);
   else if (active === "persona") renderPersonaPane(pane, s);
   else if (active === "memory") renderMemoryPane(pane);
+  else if (active === "evolve") renderEvolvePane(pane);
   else if (active === "data") renderDataPane(pane, s);
   else if (active === "security") renderSecurityPane(pane, s);
   else if (active === "shortcuts") renderShortcutsPane(pane, s);
