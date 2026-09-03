@@ -150,6 +150,88 @@ const fs = require("fs");
   console.log("✅ 办公文件库：docx / pptxgenjs 生成通过");
 }
 
+// 应用内预览的服务端拆包：docx/xlsx/pptx/zip 都是"一包 XML 打成 zip"，浏览器直接打不开。
+// 这一层要能真的拆开真库生成的文件——所以不喂手搓的假样本，喂 docx/exceljs/pptxgenjs 的真产物，
+// 拆出来的结构再跟写进去的内容逐条对上（写"标题一"就得回"标题一"，级别、粗体、表格一个不能丢）。
+async function testPreviewExtract() {
+  const { executeTool } = require("../tools");
+  const { previewData } = require("../preview");
+  const code = `
+const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell } = require("docx");
+const ExcelJS = require("exceljs");
+const pptxgen = require("pptxgenjs");
+const fs = require("fs");
+(async () => {
+  const cell = (t) => new TableCell({ children: [new Paragraph(t)] });
+  const doc = new Document({ sections: [{ children: [
+    new Paragraph({ text: "第一章 总览", heading: HeadingLevel.HEADING_1 }),
+    new Paragraph({ children: [new TextRun({ text: "加粗的话", bold: true }), new TextRun("普通的话")] }),
+    new Paragraph({ text: "列表条目", bullet: { level: 0 } }),
+    new Table({ rows: [
+      new TableRow({ children: [cell("列甲"), cell("列乙")] }),
+      new TableRow({ children: [cell("1"), cell("2")] }),
+    ] }),
+  ] }] });
+  fs.writeFileSync("e2e-预览样本.docx", await Packer.toBuffer(doc));
+
+  const wb = new ExcelJS.Workbook();
+  const s1 = wb.addWorksheet("第一表");
+  s1.addRow(["日期", "金额"]); s1.addRow(["2026-01-01", 12.5]);
+  wb.addWorksheet("第二表").addRow(["只有一行"]);
+  await wb.xlsx.writeFile("e2e-预览样本.xlsx");
+
+  const pptx = new pptxgen();
+  const s = pptx.addSlide();
+  s.addText("演示标题", { x: 1, y: 0.5, fontSize: 32 });
+  s.addText("要点一", { x: 1, y: 2 });
+  s.addNotes("这是备注");
+  pptx.addSlide().addText("第二页正文", { x: 1, y: 1 });
+  await pptx.writeFile({ fileName: "e2e-预览样本.pptx" });
+  console.log("样本齐了");
+})();`;
+  const gen = await executeTool("run_node", { code }, { timeoutMs: 90000 });
+  assert(!gen.isError && gen.content.includes("样本齐了"), "预览样本生成失败: " + gen.content);
+  const F2 = (n) => path.join(WORKSPACE, n);
+
+  const doc = await previewData(F2("e2e-预览样本.docx"), "e2e-预览样本.docx");
+  assert(doc.kind === "doc", "docx 应识别为 doc");
+  const flat = doc.blocks.map((b) => (b.runs || []).map((r) => r.s).join(""));
+  assert(doc.blocks.some((b) => b.t === "h" && b.lvl === 1 && (b.runs[0] || {}).s === "第一章 总览"),
+    "docx 一级标题没拆出来: " + JSON.stringify(doc.blocks.slice(0, 3)));
+  assert(flat.includes("加粗的话普通的话"), "docx 正文丢了: " + JSON.stringify(flat));
+  const bold = doc.blocks.flatMap((b) => b.runs || []).find((r) => r.s === "加粗的话");
+  assert(bold && bold.b, "docx 粗体标记丢了: " + JSON.stringify(bold));
+  assert(doc.blocks.some((b) => b.t === "li" && (b.runs[0] || {}).s === "列表条目"), "docx 列表没识别成 li");
+  const tbl = doc.blocks.find((b) => b.t === "table");
+  assert(tbl && tbl.rows.length === 2 && tbl.rows[0][0].runs[0].s === "列甲" && tbl.rows[1][1].runs[0].s === "2",
+    "docx 表格没拆对: " + JSON.stringify(tbl));
+
+  const sheet = await previewData(F2("e2e-预览样本.xlsx"), "e2e-预览样本.xlsx");
+  assert(sheet.kind === "sheet" && sheet.sheets.length === 2, "xlsx 工作表数不对: " + sheet.sheets.length);
+  assert(sheet.sheets[0].name === "第一表" && sheet.sheets[0].rows[0][0] === "日期", "xlsx 表名/表头不对");
+  assert(sheet.sheets[0].rows[1][1] === "12.5", "xlsx 数值单元格该转成文本: " + JSON.stringify(sheet.sheets[0].rows[1]));
+
+  const slides = await previewData(F2("e2e-预览样本.pptx"), "e2e-预览样本.pptx");
+  assert(slides.kind === "slides" && slides.total === 2, "pptx 页数不对: " + slides.total);
+  assert(slides.slides[0].title === "演示标题", "pptx 标题不对: " + JSON.stringify(slides.slides[0]));
+  assert(slides.slides[0].lines.some((l) => l.s === "要点一"), "pptx 正文丢了");
+  assert(slides.slides[0].notes.includes("这是备注"), "pptx 备注丢了: " + slides.slides[0].notes);
+  assert(!/^\d+$/.test(slides.slides[0].notes), "页码占位符混进备注了: " + slides.slides[0].notes);
+  assert(slides.slides[1].title === "第二页正文", "没有标题占位符时该把首行提上来");
+
+  // zip 列表用真库产的包（pptx 本身就是 zip），别拿自己搓的样本自证
+  fs.copyFileSync(F2("e2e-预览样本.pptx"), F2("e2e-预览样本.zip"));
+  const arc = await previewData(F2("e2e-预览样本.zip"), "e2e-预览样本.zip");
+  assert(arc.kind === "archive" && arc.total > 5, "zip 条目数不对: " + arc.total);
+  assert(arc.entries.some((e) => e.name === "[Content_Types].xml"), "zip 条目名没读对: " + JSON.stringify(arc.entries.slice(0, 3)));
+  assert(arc.bytes > 0 && arc.entries.every((e) => e.size >= 0), "zip 大小字段不对");
+
+  // 不是 zip 的东西必须报错，不能吐半截垃圾
+  fs.writeFileSync(F2("e2e-预览假的.docx"), "我不是 zip");
+  await assert.rejects(() => previewData(F2("e2e-预览假的.docx"), "e2e-预览假的.docx"), /zip|压缩|损坏/, "假 docx 该被拒");
+  console.log("✅ 应用内预览拆包：docx 标题/粗体/列表/表格 · xlsx 多表 · pptx 标题备注 · zip 清单 · 坏文件报错");
+}
+
 // run_node 语法预检：模型最常翻车的写法是用模板字符串拼 HTML，正文里的反引号/${}/</script> 会截断字面量。
 // 预检要在开进程之前拦下来，并且明确指路 write_file；同时不能误伤正常代码。
 async function testNodeSyntaxPrecheck() {
@@ -2241,6 +2323,7 @@ async function main() {
   await testMcpManagerLifecycle();
   await testNodeSyntaxPrecheck();
   await testOfficeLibs();
+  await testPreviewExtract();
   await testCodingTools();
   await testDeliverableQuality();
   await testAgentPipeline();

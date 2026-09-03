@@ -342,6 +342,28 @@
   #pv-body .pv-text { padding: 16px 20px; font-size: 14px; line-height: 1.7; }
   #pv-body .pv-text button { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 7px; padding: 4px 12px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
   #pv-body .pv-text button:hover { border-color: var(--wb-brand); color: var(--wb-text); }
+  /* docx/xlsx/pptx/zip/csv 拆出来的结构化预览 */
+  #pv-body .ov-doc { padding: 18px 24px 40px; font-size: 14px; line-height: 1.75; color: var(--wb-text); }
+  #pv-body .ov-h { margin: 20px 0 8px; line-height: 1.4; font-weight: 600; }
+  #pv-body h1.ov-h { font-size: 22px; } #pv-body h2.ov-h { font-size: 19px; } #pv-body h3.ov-h { font-size: 16px; }
+  #pv-body h4.ov-h, #pv-body h5.ov-h, #pv-body h6.ov-h { font-size: 15px; }
+  #pv-body .ov-p { margin: 8px 0; overflow-wrap: anywhere; }
+  #pv-body .ov-li { margin: 4px 0; padding-left: 16px; position: relative; overflow-wrap: anywhere; }
+  #pv-body .ov-li::before { content: "·"; position: absolute; left: 4px; color: var(--wb-text-3); }
+  #pv-body .ov-img { max-width: 100%; display: block; margin: 12px 0; border-radius: 6px; }
+  #pv-body .ov-scroll { overflow-x: auto; margin: 12px 0; }
+  #pv-body .ov-table { border-collapse: collapse; font-size: 13px; }
+  #pv-body .ov-table th, #pv-body .ov-table td { border: 1px solid var(--wb-border); padding: 5px 10px; text-align: left; vertical-align: top; max-width: 340px; overflow-wrap: anywhere; }
+  #pv-body .ov-table th { background: var(--wb-bg-side); font-weight: 600; position: sticky; top: 0; }
+  #pv-body .ov-sheet td, #pv-body .ov-sheet th { white-space: pre-wrap; }
+  #pv-body .ov-note { color: var(--wb-text-3); font-size: 13px; margin: 10px 0; }
+  #pv-body .ov-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  #pv-body .ov-tab { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 7px; padding: 3px 12px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
+  #pv-body .ov-tab.on { border-color: var(--wb-brand); color: var(--wb-text); background: var(--wb-bg-side); }
+  #pv-body .ov-slide { border: 1px solid var(--wb-border); border-radius: 10px; padding: 14px 16px; margin: 12px 0; background: var(--wb-bg-side); }
+  #pv-body .ov-slide-n { font-size: 12px; color: var(--wb-text-3); }
+  #pv-body .ov-slide-t { font-size: 17px; font-weight: 600; margin: 4px 0 8px; }
+  #pv-body .ov-notes { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--wb-border); color: var(--wb-text-3); font-size: 13px; }
   /* ---------- 右侧成果面板 ---------- */
   .files-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg-side); overflow: hidden; transition: width .2s; display: flex; flex-direction: column; }
   .files-panel.show { width: clamp(230px, 20vw, 300px); }
