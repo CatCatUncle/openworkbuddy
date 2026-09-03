@@ -1005,7 +1005,9 @@ refreshImStatus();
 setInterval(refreshImStatus, 15000);
 
 // ---------------- 文件预览 ----------------
-const OFFICE_RE = /\.(docx?|pptx?|xlsx?)$/i;
+// 只剩 Word 97 时代那三个二进制老格式还得交给本机 Office——它们不是 zip+XML，拆不开。
+// docx/xlsx/pptx 现在在应用内直接看（见 previewKind 的 doc/sheet/slides）。
+const OFFICE_RE = /\.(doc|ppt|xls)$/i;
 const pvPanel = document.getElementById("preview-panel");
 let pvCurrent = null;
 
@@ -1023,6 +1025,12 @@ const PV_AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i;
 // .ts 故意不进这条：mime 库把 .ts 认成 video/mp2t，但工作目录里的 .ts 全是 TypeScript 源码
 const PV_VIDEO_RE = /\.(mp4|webm|mov|m4v|ogv)$/i;
 const PV_MD_RE = /\.(md|markdown)$/i;
+// 下面四种浏览器自己打不开（zip 里的一包 XML / 一堆条目），走 /api/files/preview 让服务端拆
+const PV_DOC_RE = /\.docx$/i;
+const PV_SHEET_RE = /\.xlsx$/i;
+const PV_SLIDES_RE = /\.pptx$/i;
+const PV_ARCHIVE_RE = /\.zip$/i;
+const PV_CSV_RE = /\.(csv|tsv)$/i;
 const PV_BINARY_RE = /\.(zip|gz|tgz|bz2|xz|7z|rar|tar|dmg|pkg|iso|exe|dll|so|dylib|a|o|bin|dat|pcm|wasm|class|jar|pyc|pyd|node|db|sqlite\d?|woff2?|ttf|otf|eot|psd|ai|sketch|fig|msgpack|hmap|dia|swiftmodule|swiftdoc|swiftsourceinfo|pdb|lib|obj|heic|tiff?|blend)$/i;
 
 /** 预览走哪条路。抽成纯函数是为了能直接断言，不用一个个文件点开肉眼验 */
@@ -1032,6 +1040,11 @@ function previewKind(name) {
   if (PV_AUDIO_RE.test(name)) return "audio";
   if (PV_VIDEO_RE.test(name)) return "video";
   if (PV_MD_RE.test(name)) return "markdown";
+  if (PV_DOC_RE.test(name)) return "doc";
+  if (PV_SHEET_RE.test(name)) return "sheet";
+  if (PV_SLIDES_RE.test(name)) return "slides";
+  if (PV_ARCHIVE_RE.test(name)) return "archive";
+  if (PV_CSV_RE.test(name)) return "csv";
   if (PV_BINARY_RE.test(name)) return "binary";
   return "text"; // 认不出来的一律先当文本试，试不成再退回去
 }
@@ -1070,6 +1083,90 @@ const pvFallback = (why) =>
 const pvTrunc = (total) =>
   `<div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--wb-border);color:var(--wb-text-3);font-size:13px">文件太大，只显示了开头 ${PV_TEXT_MAX / 1024} KB${total ? `（整个文件 ${fmtSize(total)}）` : ""}。要看全的话下载或用系统程序打开。</div>`;
 
+// ---- 拆出来的结构化数据 → HTML。服务端只给数据，转义全在这儿，只此一处 ----
+const runsHtml = (runs) => (runs || []).map((r) => {
+  let h = esc(r.s || "").replace(/\n/g, "<br>");
+  if (r.b) h = "<b>" + h + "</b>";
+  if (r.i) h = "<i>" + h + "</i>";
+  if (r.u) h = "<u>" + h + "</u>";
+  return h;
+}).join("");
+
+const cellsHtml = (row, tag) => row.map((c) => `<${tag}>${typeof c === "string" ? esc(c) : runsHtml(c.runs)}</${tag}>`).join("");
+const gridHtml = (rows, cls) =>
+  `<div class="ov-scroll"><table class="${cls}">${rows.map((r, i) => `<tr>${cellsHtml(r, i ? "td" : "th")}</tr>`).join("")}</table></div>`;
+
+function docHtml(d) {
+  const out = [];
+  for (const b of d.blocks || []) {
+    if (b.t === "img") {
+      // src 是服务端从 zip 里读出来现拼的 data URI；再确认一次前缀，别让别的协议混进来
+      if (/^data:image\//.test(b.src || "")) out.push(`<img class="ov-img" src="${esc(b.src)}">`);
+    } else if (b.t === "h") out.push(`<h${b.lvl} class="ov-h">${runsHtml(b.runs)}</h${b.lvl}>`);
+    else if (b.t === "li") out.push(`<div class="ov-li" style="margin-left:${(b.lvl || 0) * 22}px">${runsHtml(b.runs)}</div>`);
+    else if (b.t === "table") out.push(gridHtml(b.rows, "ov-table"));
+    else out.push(`<p class="ov-p"${b.align === "center" ? ' style="text-align:center"' : b.align === "right" ? ' style="text-align:right"' : ""}>${runsHtml(b.runs)}</p>`);
+  }
+  if (!out.length) out.push('<p class="ov-p" style="color:var(--wb-text-3)">这个文档里没有可显示的正文。</p>');
+  if (d.truncated) out.push(`<div class="ov-note">文档太长，只显示了前 ${(d.blocks || []).length} 段。</div>`);
+  return `<div class="ov-doc">${out.join("")}</div>`;
+}
+
+function sheetHtml(d) {
+  const tabs = d.sheets.map((sh, i) =>
+    `<button class="ov-tab${i ? "" : " on"}" data-sheet="${i}">${esc(sh.name)}</button>`).join("");
+  const panes = d.sheets.map((sh, i) => {
+    const note = sh.truncated ? `<div class="ov-note">共 ${sh.totalRows} 行 × ${sh.totalCols} 列，只显示了前 ${sh.rows.length} 行。</div>` : "";
+    const grid = sh.rows.length ? gridHtml(sh.rows, "ov-table ov-sheet") : '<div class="ov-note">空工作表。</div>';
+    return `<div class="ov-pane" data-pane="${i}"${i ? " hidden" : ""}>${grid}${note}</div>`;
+  }).join("");
+  return `<div class="ov-doc">${d.sheets.length > 1 ? `<div class="ov-tabs">${tabs}</div>` : ""}${panes}</div>`;
+}
+
+function slidesHtml(d) {
+  const cards = d.slides.map((s) => `<div class="ov-slide">
+      <div class="ov-slide-n">第 ${s.n} 页</div>
+      ${s.title ? `<div class="ov-slide-t">${esc(s.title)}</div>` : ""}
+      ${s.lines.map((l) => `<div class="ov-li" style="margin-left:${l.lvl * 22}px">${esc(l.s)}</div>`).join("")}
+      ${s.notes ? `<div class="ov-notes">备注：${esc(s.notes)}</div>` : ""}
+    </div>`).join("");
+  return `<div class="ov-doc"><div class="ov-note">共 ${d.total} 页${d.truncated ? `，只显示了前 ${d.slides.length} 页` : ""}</div>${cards}</div>`;
+}
+
+function archiveHtml(d) {
+  const rows = [["文件", "大小"]].concat(d.entries.map((e) => [e.name, fmtSize(e.size)]));
+  return `<div class="ov-doc"><div class="ov-note">共 ${d.total} 个文件，解压后 ${fmtSize(d.bytes)}${d.truncated ? `；只列出前 ${d.entries.length} 个` : ""}</div>${gridHtml(rows, "ov-table ov-sheet")}</div>`;
+}
+
+/** CSV/TSV 自己在前端拆：内容已经取回来了，没必要再跑一趟服务端。
+ *  必须按 RFC4180 处理引号——字段里带逗号和换行是常事，split(",") 会把表拆散架 */
+function parseCsv(text, sep) {
+  const rows = [];
+  let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c !== '"') { cur += c; continue; }
+      if (text[i + 1] === '"') { cur += '"'; i++; } else q = false;
+    } else if (c === '"') q = true;
+    else if (c === sep) { row.push(cur); cur = ""; }
+    else if (c === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+    else if (c !== "\r") cur += c;
+  }
+  if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+function csvHtml(text, name) {
+  const head = text.slice(0, text.indexOf("\n") + 1 || text.length);
+  const sep = /\.tsv$/i.test(name) || (head.split("\t").length > head.split(",").length) ? "\t"
+    : head.split(";").length > head.split(",").length ? ";" : ",";
+  const rows = parseCsv(text, sep);
+  if (!rows.length) return '<div class="pv-text" style="color:var(--wb-text-3)">空文件。</div>';
+  const shown = rows.slice(0, 2000);
+  const note = rows.length > shown.length ? `<div class="ov-note">共 ${rows.length} 行，只显示了前 ${shown.length} 行。</div>` : "";
+  return `<div class="ov-doc">${gridHtml(shown, "ov-table ov-sheet")}${note}</div>`;
+}
+
 async function previewFile(name) {
   if (OFFICE_RE.test(name)) {
     // Office 文件交给本机 Office/WPS 打开
@@ -1096,6 +1193,14 @@ async function previewFile(name) {
     // 服务端 res.sendFile 会回 Accept-Ranges，所以进度条能拖、长视频不用等整包下完
     const tag = kind === "audio" ? "audio" : "video";
     body.innerHTML = `<${tag} class="pv-media" src="${url}" controls preload="metadata"></${tag}>`;
+  } else if (kind === "doc" || kind === "sheet" || kind === "slides" || kind === "archive") {
+    const d = await fetch("/api/files/preview/" + encodeURIComponent(name) + "?t=" + Date.now()).then(r => r.json()).catch(() => null);
+    if (!d || d.error) body.innerHTML = pvFallback(d && d.error ? d.error : "读不出这个文件的内容");
+    else body.innerHTML = kind === "doc" ? docHtml(d) : kind === "sheet" ? sheetHtml(d) : kind === "slides" ? slidesHtml(d) : archiveHtml(d);
+    body.querySelectorAll(".ov-tab").forEach((t) => { t.onclick = () => {
+      body.querySelectorAll(".ov-tab").forEach((x) => x.classList.toggle("on", x === t));
+      body.querySelectorAll(".ov-pane").forEach((p) => { p.hidden = p.dataset.pane !== t.dataset.sheet; });
+    }; });
   } else if (kind === "binary") {
     body.innerHTML = pvFallback("这是二进制文件");
   } else {
@@ -1103,6 +1208,7 @@ async function previewFile(name) {
     if (!r) body.innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">加载失败</div>`;
     else if (looksBinary(r.text)) body.innerHTML = pvFallback("这个文件不是文本"); // 后缀没认出来，内容说了算
     else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text">${renderMd(r.text)}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
+    else if (kind === "csv") body.innerHTML = csvHtml(r.text, name) + (r.truncated ? pvTrunc(r.total) : "");
     else body.innerHTML = `<div class="pv-text"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
   }
   const sysBtn = body.querySelector(".pv-open-sys");

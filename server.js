@@ -11,6 +11,7 @@ const path = require("path");
 const { DATA_DIR, dataPath, appPath } = require("./paths");
 const { createLLM, createEmbedder } = require("./llm");
 const { outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const { previewData } = require("./preview");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
 const { createImRouter } = require("./im");
@@ -1985,6 +1986,19 @@ app.get("/api/files/view/:name", (req, res) => {
     res.sendFile(p);
   } catch (e) {
     res.status(400).send(e.message);
+  }
+});
+
+// Office 三件套和压缩包的应用内预览：浏览器打不开 zip 里的一包 XML，这一层把它拆成结构化数据。
+// 只吐数据不吐 HTML——文件内容是模型写的或从网上下的，转出来的 HTML 直接进渲染进程等于自开 XSS，
+// 拼 HTML 的活统一留在前端一处（每个字段都过 esc），转义漏没漏只需要审那一个地方。
+app.get("/api/files/preview/:name", async (req, res) => {
+  try {
+    const p = safePath(req.params.name);
+    if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
+    res.json(await previewData(p, req.params.name));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 

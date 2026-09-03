@@ -163,10 +163,14 @@ const PREVIEW_HTML =
 
 // 网络请求全部截下来：既当替身，也当"到底发了什么请求"的证据（Range 头就是这么验的）
 const PREVIEW_STUBS = [
-  "window.reqs = []; window.opened = []; window.PV_FILES = {};",
+  "window.reqs = []; window.opened = []; window.PV_FILES = {}; window.PV_DATA = {};",
   "window.fetch = async (url, init) => {",
   "  window.reqs.push({ url, init });",
   "  if (url.startsWith('/api/files/open/')) { window.opened.push(decodeURIComponent(url.slice(16))); return { ok: true, json: async () => ({}) }; }",
+  "  if (url.startsWith('/api/files/preview/')) {",
+  "    const n2 = decodeURIComponent(url.slice(19).split('?')[0]);",
+  "    return { ok: true, json: async () => window.PV_DATA[n2] || { error: '没这个替身' } };",
+  "  }",
   "  const name = decodeURIComponent((url.split('/api/files/view/')[1] || '').split('?')[0]);",
   "  const f = window.PV_FILES[name] || { body: '', total: 0 };",
   "  return { ok: true, status: 206, headers: { get: (h) => (h.toLowerCase() === 'content-range' ? 'bytes 0-1/' + f.total : null) }, text: async () => f.body };",
@@ -194,7 +198,12 @@ const PREVIEW_CHECKS = `
       audio: ["口播.mp3", "a.wav", "a.m4a", "a.flac", "a.opus"],
       video: ["成片.mp4", "a.mov", "a.webm", "a.m4v"],
       markdown: ["报告.md", "a.markdown"],
-      binary: ["a.pcm", "a.zip", "a.o", "a.swiftmodule", "a.dylib", "a.ttf", "a.sqlite3"],
+      binary: ["a.pcm", "a.o", "a.swiftmodule", "a.dylib", "a.ttf", "a.sqlite3"],
+      doc: ["方案.docx"],
+      sheet: ["账.xlsx"],
+      slides: ["介绍.pptx"],
+      archive: ["包.zip", "a.ZIP"],
+      csv: ["数据.csv", "a.tsv"],
       text: ["a.py", "a.swift", "a.plist", "字幕.srt", "a.h", "a.toml", "a.ini", "Dockerfile", "a.log", "a.json", "a.yaml", "a.vtt", "a.sh", "a.go", "a.没见过的后缀"],
     };
     for (const [want, list] of Object.entries(cases))
@@ -255,13 +264,99 @@ const PREVIEW_CHECKS = `
     ok("小文件不乱标截断", !/只显示了开头/.test(small));
   }
 
-  // ---- 8. Office 仍旧交给本机程序，不进预览面板 ----
+  // ---- 8. 只剩 Word97 那三个二进制老格式还交给本机程序；docx/xlsx/pptx 不许再被踢出去 ----
   {
     const n = window.opened.length;
     document.getElementById("pv-body").innerHTML = "原样";
-    await previewFile("方案.docx");
-    ok("docx 交给系统程序", window.opened.at(-1) === "方案.docx" && window.opened.length === n + 1);
-    ok("docx 不动预览面板", document.getElementById("pv-body").innerHTML === "原样");
+    await previewFile("老方案.doc");
+    ok(".doc 交给系统程序", window.opened.at(-1) === "老方案.doc" && window.opened.length === n + 1);
+    ok(".doc 不动预览面板", document.getElementById("pv-body").innerHTML === "原样");
+    for (const bad of ["方案.docx", "账.xlsx", "介绍.pptx"])
+      ok(bad + " 不再走系统程序", !OFFICE_RE.test(bad));
+  }
+
+  // ---- 9. docx：服务端拆出来的块要按标题/正文/列表/表格/图各归各位，且全过 esc ----
+  {
+    window.PV_DATA["方案.docx"] = { kind: "doc", truncated: false, blocks: [
+      { t: "h", lvl: 2, runs: [{ s: "第一章 <脚本>" }] },
+      { t: "p", runs: [{ s: "正文", b: true }, { s: "斜的", i: true }] },
+      { t: "li", lvl: 1, runs: [{ s: "条目甲" }] },
+      { t: "table", rows: [[{ runs: [{ s: "列A" }] }, { runs: [{ s: "列B" }] }], [{ runs: [{ s: "1" }] }, { runs: [{ s: "2" }] }]] },
+      { t: "img", src: "data:image/png;base64,iVBOR" },
+      { t: "img", src: "javascript:alert(1)" },
+    ] };
+    const h = await show("方案.docx");
+    ok("docx 出正文不再弹系统程序", /第一章/.test(h) && !/暂不支持/.test(h), h.slice(0, 200));
+    ok("docx 标题按级别出 h2", /<h2 class="ov-h">/.test(h));
+    ok("docx 粗体斜体保留", /<b>正文<\\/b>/.test(h) && /<i>斜的<\\/i>/.test(h));
+    ok("docx 列表按层级缩进", /margin-left:22px/.test(h) && /条目甲/.test(h));
+    ok("docx 表格首行当表头", /<th>列A<\\/th>/.test(h) && /<td>1<\\/td>/.test(h));
+    ok("docx 内嵌图渲染成 data URI", /<img class="ov-img" src="data:image\\/png/.test(h));
+    ok("docx 非 data: 的图源被挡掉", !/javascript:/.test(h), h.slice(0, 400));
+    ok("docx 内容过转义", /&lt;脚本&gt;/.test(h) && !/<脚本>/.test(h));
+  }
+
+  // ---- 10. xlsx：多表要能切，行列超限要说清楚 ----
+  {
+    window.PV_DATA["账.xlsx"] = { kind: "sheet", total: 2, truncated: false, sheets: [
+      { name: "一月", rows: [["日期", "金额"], ["01-01", "12"]], truncated: false, totalRows: 2, totalCols: 2 },
+      { name: "二月<b>", rows: [["日期"], ["02-01"]], truncated: true, totalRows: 9000, totalCols: 3 },
+    ] };
+    const h = await show("账.xlsx");
+    ok("xlsx 出表格", /<th>日期<\\/th>/.test(h) && /01-01/.test(h));
+    ok("xlsx 多表出切页按钮", body.querySelectorAll(".ov-tab").length === 2);
+    ok("xlsx 表名过转义", /二月&lt;b&gt;/.test(h));
+    ok("xlsx 默认只显第一张", body.querySelector('[data-pane="1"]').hidden === true);
+    body.querySelectorAll(".ov-tab")[1].click();
+    ok("xlsx 切页真切", body.querySelector('[data-pane="0"]').hidden === true && body.querySelector('[data-pane="1"]').hidden === false);
+    ok("xlsx 截断说明白", /共 9000 行/.test(body.innerHTML));
+  }
+
+  // ---- 11. pptx：一页一卡，标题、层级、备注都在 ----
+  {
+    window.PV_DATA["介绍.pptx"] = { kind: "slides", total: 42, truncated: true, slides: [
+      { n: 1, title: "开场 & 目标", lines: [{ lvl: 0, s: "要点一" }, { lvl: 1, s: "子要点" }], notes: "记得看时间" },
+      { n: 2, title: "", lines: [{ lvl: 0, s: "只有正文" }], notes: "" },
+    ] };
+    const h = await show("介绍.pptx");
+    ok("pptx 一页一卡", body.querySelectorAll(".ov-slide").length === 2);
+    ok("pptx 标题在", /开场 &amp; 目标/.test(h));
+    ok("pptx 子层级缩进", /margin-left:22px[^>]*>子要点/.test(h));
+    ok("pptx 备注单独一块", /备注：记得看时间/.test(h));
+    ok("pptx 没标题不硬造", !/ov-slide-t"><\\/div>/.test(h));
+    ok("pptx 报总页数和截断", /共 42 页/.test(h) && /只显示了前 2 页/.test(h));
+  }
+
+  // ---- 12. zip：以前只能下载，现在至少能看见里面装了什么 ----
+  {
+    window.PV_DATA["包.zip"] = { kind: "archive", total: 3, bytes: 4096, truncated: false,
+      entries: [{ name: "a/b.txt", size: 10 }, { name: "c.png", size: 20 }, { name: "<x>.md", size: 30 }] };
+    const h = await show("包.zip");
+    ok("zip 列出条目", /a\\/b\\.txt/.test(h) && /c\\.png/.test(h));
+    ok("zip 条目名过转义", /&lt;x&gt;\\.md/.test(h));
+    ok("zip 报总数和解压大小", /共 3 个文件/.test(h) && /4096 B/.test(h));
+  }
+
+  // ---- 13. 服务端拆不开时退回兜底按钮，不能白屏 ----
+  {
+    window.PV_DATA["坏的.docx"] = { error: "不是有效的 zip" };
+    const h = await show("坏的.docx");
+    ok("拆不开时说人话", /不是有效的 zip/.test(h) && !!body.querySelector(".pv-open-sys"), h.slice(0, 200));
+  }
+
+  // ---- 14. CSV 得按 RFC4180 拆：字段里带逗号/引号/换行是常事，split(",") 会把表拆散架 ----
+  {
+    const h = await show("数据.csv", { body: 'a,b\\n"含,逗号","他说""好"""\\n1,2', total: 40 });
+    ok("csv 出表格不出裸文本", /<th>a<\\/th>/.test(h) && /<th>b<\\/th>/.test(h), h.slice(0, 300));
+    ok("csv 引号里的逗号不拆列", /含,逗号/.test(h));
+    ok("csv 双写引号还原成一个", /他说"好"/.test(h));
+    ok("csv 行数对", body.querySelectorAll("tr").length === 3, String(body.querySelectorAll("tr").length));
+    const t = await show("数据.tsv", { body: "x\\ty\\n1\\t2", total: 10 });
+    ok("tsv 按制表符拆", /<th>x<\\/th>/.test(t) && /<th>y<\\/th>/.test(t));
+    const semi = await show("欧洲.csv", { body: "p;q;r\\n1;2;3", total: 12 });
+    ok("分号分隔也认", /<th>q<\\/th>/.test(semi));
+    const cell = await show("嵌换行.csv", { body: 'h1,h2\\n"第一行\\n第二行",x', total: 30 });
+    ok("字段内换行不当成新行", cell.match(/<tr>/g).length === 2, String((cell.match(/<tr>/g) || []).length));
   }
   return names;
 })()`;
@@ -435,7 +530,7 @@ app.whenReady().then(async () => {
       await win3.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PREVIEW_HTML));
       const names3 = await win3.webContents.executeJavaScript(PREVIEW_STUBS + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
       for (const n of names3) console.log("  ✓ " + n);
-      console.log(`✅ 前端：文件预览路由（网页·图·音视频·源码·二进制兜底）${names3.length} 项通过`);
+      console.log(`✅ 前端：文件预览（路由·音视频·docx/xlsx/pptx/zip 结构化·CSV·兜底）${names3.length} 项通过`);
     } finally {
       if (!win3.isDestroyed()) win3.destroy();
     }
