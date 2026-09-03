@@ -36,7 +36,7 @@ const ATTACH_HTML =
 
 // 页面里其他文件提供的东西，在这儿给最小替身；网络请求全部截下来当证据
 const ATTACH_STUBS = [
-  "window.uploads = []; window.toasts = [];",
+  "window.uploads = []; window.toasts = []; window.sessionId = 's_test_1';",
   "window.fetch = async (url, init) => {",
   "  if (url === '/api/upload') { window.uploads.push(JSON.parse(init.body)); return { ok: true, json: async () => ({}) }; }",
   "  return { ok: true, json: async () => [] };",
@@ -70,6 +70,8 @@ const ATTACH_CHECKS = `
     await tick();
     const up = uploads.at(-1);
     ok("粘贴截图会上传", !!up, "根本没发上传请求");
+    // 不带会话 id 的话服务端只能把它扔进工作空间根目录，用户传的素材和这轮的产出就此分家
+    ok("上传带上了会话 id", up.session === "s_test_1", JSON.stringify(up.session));
     ok("剪贴板的通用名换成时间戳", /^粘贴图片_\\d{4}_\\d{6}\\.png$/.test(up.name), up.name);
     ok("图片二进制没被改坏", up.data_b64 === B64PNG);
     ok("chip 带缩略图", !!document.querySelector("#attach-chips img.attach-thumb"));

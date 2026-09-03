@@ -296,6 +296,62 @@ async function testShellGlobCompat() {
   console.log("✅ shell 通配符兼容：没匹配上也不拒命令（循环收尾还在·带 ?[] 的 URL 跑得起来·报错来自命令自己）· 能匹配的照常展开");
 }
 
+// 对话各自一个成果文件夹之后，有两件事必须机器盯住：
+// ① 工具回执要报**真实落点**。回执只报个光秃秃的文件名等于骗模型：东西在成果子目录里，
+//    模型照回执去根目录找不着，就 `cp` 一份过去"修好"这个不一致——真实会话 s_1787740619097
+//    里就这么复制了 6 个文件，每个还白烧一轮 ls + 一轮 find。
+// ② 判重不许误报。误报的代价不是"多显示一行"，是**把用户唯一一份文件搬进 .trash**：
+//    清理按钮认的就是 dup_of 这个标记。所以"大小一样但内容不同"必须判不重，这条是数据安全线。
+async function testSessionFileLayout() {
+  const tools = require("../tools");
+  const { savedAt, markDuplicates } = tools._internals;
+  const DIR = "任务_0901_e2e判重";
+  const full = path.join(WORKSPACE, DIR);
+
+  // ① 落点：在成果子目录里就得连着目录一起报，只报文件名就是那句让模型去 cp 的假回执
+  fs.mkdirSync(full, { recursive: true });
+  assert.strictEqual(savedAt(full, "图.png"), `${DIR}/图.png`, "回执把成果子目录吞了，模型会去根目录找不着");
+  assert.strictEqual(savedAt(WORKSPACE, "图.png"), "图.png", "落在根目录时不该硬凑出一段路径");
+  assert.strictEqual(savedAt(null, "图.png"), "图.png", "没给目录时要退回裸文件名");
+  assert.strictEqual(savedAt("/tmp", "图.png"), "图.png", "工作空间外的路径不该被拼成相对路径");
+
+  try {
+    const W = (rel, buf) => fs.writeFileSync(path.join(WORKSPACE, rel), buf);
+    // 逐字节相同的一对：根目录那份才是副本
+    W(`${DIR}/原件.zzz`, "同一份内容-e2e");
+    W("e2e副本.zzz", "同一份内容-e2e");
+    // 大小一模一样、内容不同的一对 —— 判重的生死线，认错就是删用户的东西
+    W(`${DIR}/同大小.zzz`, "AAAA");
+    W("e2e同大小.zzz", "BBBB");
+    // 根目录独有的：没有任何原件，永远不许标
+    W("e2e独有.zzz", "只有这一份-e2e");
+    // 0 字节：人人都一样，那不叫重复
+    W(`${DIR}/空.zzz`, "");
+    W("e2e空.zzz", "");
+
+    const by = Object.fromEntries(tools.outputFiles().map((f) => [f.name, f]));
+    assert.strictEqual(by["e2e副本.zzz"].dup_of, `${DIR}/原件.zzz`,
+      "逐字节相同的副本没认出来: " + JSON.stringify(by["e2e副本.zzz"]));
+    assert(!by["e2e同大小.zzz"].dup_of,
+      "大小撞车就当成重复了——这会把用户唯一一份文件搬进 .trash: " + JSON.stringify(by["e2e同大小.zzz"]));
+    assert(!by["e2e独有.zzz"].dup_of, "根目录独有的文件被标成了重复");
+    // 0 字节这条是双保险（进池子和取哈希各挡一次），拆掉任意一处都还是绿的，得两处一起拆才红
+    assert(!by["e2e空.zzz"].dup_of, "0 字节文件被当成重复了");
+    // 原件自己绝不能被标：清理按钮搬的是带标记的那些，原件一旦被标就没人留在成果文件夹里了
+    assert(!by[`${DIR}/原件.zzz`].dup_of, "成果文件夹里的原件被标成了副本，清理会把两份都搬走");
+
+    // 大小对不上就不该去读文件算哈希：这里给的两个名字都不存在，真去读就会抛
+    const fake = markDuplicates([{ name: "根本没这个.zzz", size: 12 }, { name: `${DIR}/也没这个.zzz`, size: 99 }]);
+    assert(!fake[0].dup_of, "大小对不上还去算哈希了");
+  } finally {
+    fs.rmSync(full, { recursive: true, force: true });
+    for (const n of ["e2e副本.zzz", "e2e同大小.zzz", "e2e独有.zzz", "e2e空.zzz"]) {
+      fs.rmSync(path.join(WORKSPACE, n), { force: true });
+    }
+  }
+  console.log("✅ 对话成果文件夹：回执报真实落点（不是裸文件名）· 判重只认逐字节相同（大小撞车/0 字节/独有文件都不碰原件）");
+}
+
 // 成果核验闸门：声称生成的文件必须真的在、而且不能是 0 字节空壳
 function testDeliverableGate() {
   const real = path.join(WORKSPACE, "e2e-核验有内容.md");
@@ -2506,6 +2562,7 @@ async function main() {
   await testMcpManagerLifecycle();
   await testNodeSyntaxPrecheck();
   await testShellGlobCompat();
+  await testSessionFileLayout();
   await testOfficeLibs();
   await testPreviewExtract();
   testEvolveLoop();

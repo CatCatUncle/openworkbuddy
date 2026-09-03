@@ -981,7 +981,13 @@ function renderFiles(files) {
       ${revealBtn(f.name)}
       <a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>
     </div>`;
-  // 根目录文件（智能体产出）置顶按时间排；子目录归成可折叠分组
+  // 子目录归成可折叠分组，当前对话的置顶。
+  // 根目录散件以前是**无条件钉在最上面**的：于是每次打开面板，先撞见的是几个月前
+  // 别的对话留下的文件（真实数据里 22 个），「本对话」被挤到看不见的地方——
+  // 明明每个对话早就各有各的文件夹，用起来还是"一锅粥"。所以本对话有自己文件夹时，
+  // 根目录那堆降级成一个可折叠分组排到最后。反过来，用户自选工作目录/项目模式下
+  // 压根不建对话文件夹，文件本来就都在根目录，那才是正文，保持原样摊开。
+  const ROOT_KEY = "."; // 根目录分组的 key，跟真实目录名不会撞
   const rootFiles = files.filter(f => !f.name.includes("/"));
   const groups = {};
   for (const f of files) {
@@ -990,11 +996,23 @@ function renderFiles(files) {
     (groups[dir] = groups[dir] || []).push(f);
   }
   const curDir = sessionDirs.get(sessionId); // 当前对话的成果文件夹：置顶并标出来
-  let html = rootFiles.map(f => fileRow(f, false)).join("");
+  const dirHead = (key, label, n, mine, tip) =>
+    `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span>${openDirs.has(key) ? "▾" : "▸"}</span><span>📁</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${n}</span><span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">↗</span></div>`;
+  const demoteRoot = !!curDir && rootFiles.length > 0;
+  let html = demoteRoot ? "" : rootFiles.map(f => fileRow(f, false)).join("");
   for (const dir of Object.keys(groups).sort((a, b) => (a === curDir ? -1 : b === curDir ? 1 : a.localeCompare(b, "zh")))) {
-    const open = openDirs.has(dir);
-    html += `<div class="dir-head${dir === curDir ? " mine" : ""}" data-dir="${esc(dir)}"><span>${open ? "▾" : "▸"}</span><span>📁</span><div class="name">${dir === curDir ? '<span class="mine-tag">本对话</span>' : ""}${esc(dir)}</div><span class="cnt">${groups[dir].length}</span><span class="opendir" data-opendir="${esc(dir)}" title="在 Finder 中打开这个文件夹">↗</span></div>`;
-    if (open) html += groups[dir].sort((a, b) => a.name.localeCompare(b.name, "zh")).map(f => fileRow(f, true)).join("");
+    html += dirHead(dir, dir, groups[dir].length, dir === curDir, "在 Finder 中打开这个文件夹");
+    if (openDirs.has(dir)) html += groups[dir].sort((a, b) => a.name.localeCompare(b.name, "zh")).map(f => fileRow(f, true)).join("");
+  }
+  if (demoteRoot) {
+    html += dirHead(ROOT_KEY, "工作空间根目录（早期对话留下的）", rootFiles.length, false, "在 Finder 中打开工作空间根目录");
+    if (openDirs.has(ROOT_KEY)) {
+      // 逐字节相同的副本才给清理入口。这类是当年"找不到产物就 cp 一份到根目录"留下的，
+      // 原件还在成果文件夹里躺着，所以清掉零信息损失；名字像但内容不同的一个都不碰
+      const dupes = rootFiles.filter(f => f.dup_of);
+      if (dupes.length) html += `<div class="dup-tidy">这里有 <b>${dupes.length}</b> 个文件跟成果文件夹里的完全相同（同一份东西显示两遍）<button id="btn-tidy">清掉重复的</button></div>`;
+      html += rootFiles.map(f => fileRow(f, true)).join("");
+    }
   }
   el.innerHTML = html;
   el.querySelectorAll(".dir-head").forEach(h => h.onclick = () => {
@@ -1005,6 +1023,19 @@ function renderFiles(files) {
     e.stopPropagation();
     fetch("/api/files/open/" + encodeURIComponent(b.dataset.opendir), { method: "POST" }).catch(() => {});
   }; });
+  const tidyBtn = el.querySelector("#btn-tidy");
+  if (tidyBtn) tidyBtn.onclick = async () => {
+    const dupes = filesCache.filter(f => f.dup_of && !f.name.includes("/"));
+    // 确认框里把清单和去向都摆出来：用户得能在点头之前看清动的是哪几个、还捞不捞得回来
+    const list = dupes.slice(0, 10).map(f => "· " + f.name).join("\n") + (dupes.length > 10 ? `\n…共 ${dupes.length} 个` : "");
+    if (!confirm(`这 ${dupes.length} 个文件跟成果文件夹里的逐字节相同，原件不动，副本移到 .trash（可以捞回来）：\n\n${list}`)) return;
+    tidyBtn.disabled = true;
+    try {
+      const r = await fetch("/api/files/tidy", { method: "POST" }).then(x => x.json());
+      toast(r.moved ? `已清掉 ${r.moved} 个重复副本（在 ${r.trash} 里）` : "没有可清理的重复副本");
+      fetch("/api/files").then(x => x.json()).then(renderFiles);
+    } catch { toast("❌ 清理失败"); tidyBtn.disabled = false; }
+  };
   el.querySelectorAll("[data-rv]").forEach(b => { b.onclick = (e) => revealFile(b.dataset.rv, e); });
   el.querySelectorAll(".file-item").forEach(item => item.onclick = (e) => {
     if (e.target.closest(".dl")) return; // 下载/定位按钮不拦截

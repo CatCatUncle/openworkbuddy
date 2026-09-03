@@ -507,6 +507,18 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile) {
   return { content: `【看图】${path.basename(p)}${note}\n问：${q}\n答：${text}`, isError: false };
 }
 
+/**
+ * 产物落点的真实相对路径。回执只报个光秃秃的文件名等于骗模型：成果其实在本对话的
+ * 成果子目录里，模型照回执去工作空间根目录找，找不到就 `cp` 一份过去"修好"这个不一致——
+ * 于是同一张图在文件面板里出现两遍。真实会话 s_1787740619097 里就这么复制了 6 个文件，
+ * 每个还白烧一轮 ls + 一轮 find。提示词里写"别 cp 到根目录"拦不住，因为模型不是想复制，
+ * 是真找不到；把落点说准，它就没有复制的理由了。
+ */
+function savedAt(saveDir, fname) {
+  const rel = path.relative(workspaceDir, saveDir || workspaceDir);
+  return rel && !rel.startsWith("..") ? `${rel}/${fname}` : fname;
+}
+
 async function generateImage(media, input, timeoutMs, saveDir) {
   const cfg = (media || {}).image || {};
   if (!cfg.base_url || !cfg.model) {
@@ -551,7 +563,7 @@ async function generateImage(media, input, timeoutMs, saveDir) {
     fs.writeFileSync(path.join(saveDir || workspaceDir, fname), Buffer.from(b64, "base64"));
   } else await downloadToWorkspace(imgUrl, fname, saveDir);
   security.audit("图像生成", `${cfg.model}: ${prompt.slice(0, 120)} → ${fname}`, "放行");
-  return { content: `图片已生成并存入工作空间：${fname}（模型 ${cfg.model}）`, isError: false };
+  return { content: `图片已生成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）`, isError: false };
 }
 
 async function generateVideo(media, input, opts = {}) {
@@ -616,7 +628,7 @@ async function generateVideo(media, input, opts = {}) {
   if (!videoUrl) return { content: "视频任务完成但没有返回视频地址", isError: true };
   await downloadToWorkspace(videoUrl, fname, opts.saveDir);
   security.audit("视频生成", `${cfg.model}: ${prompt.slice(0, 120)} → ${fname}`, "放行");
-  return { content: `视频已生成并存入工作空间：${fname}（模型 ${cfg.model}）`, isError: false };
+  return { content: `视频已生成：${savedAt(opts.saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）`, isError: false };
 }
 
 /** HTML → PNG：真浏览器离屏渲染（htmlshot.js，只有桌面版才有渲染器） */
@@ -692,7 +704,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir) {
     fs.writeFileSync(path.join(saveDir || workspaceDir, fname), buf);
   }
   security.audit("语音合成", `${cfg.model}: ${text.slice(0, 80)} → ${fname}`, "放行");
-  return { content: `语音已合成并存入工作空间：${fname}（模型 ${cfg.model}${voice ? "，音色 " + voice : ""}，约 ${text.length} 字）`, isError: false };
+  return { content: `语音已合成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}${voice ? "，音色 " + voice : ""}，约 ${text.length} 字）`, isError: false };
 }
 
 /**
@@ -2165,8 +2177,34 @@ function outputFiles() {
       }
     }
   })(workspaceDir, "", 1);
-  return out.sort((a, b) => b.mtime.localeCompare(a.mtime));
+  return markDuplicates(out.sort((a, b) => b.mtime.localeCompare(a.mtime)));
+}
+
+/**
+ * 标出根目录里那些「跟子目录某个文件逐字节相同」的副本。
+ * 来历见 savedAt 那段：工具回执只报文件名，模型照着去根目录找不着，就 cp 一份过去，
+ * 于是一份成果在面板里显示两遍。这类副本是可证明冗余的——原件还在成果文件夹里躺着。
+ * 先按大小撞车再算哈希：500 个文件全量哈希太贵，而大小不同的一定不是同一份。
+ */
+function markDuplicates(out) {
+  const crypto = require("crypto");
+  const bySize = new Map();
+  for (const f of out) {
+    if (!f.name.includes("/") || !f.size) continue; // 0 字节文件人人相同，那不叫重复
+    if (!bySize.has(f.size)) bySize.set(f.size, []);
+    bySize.get(f.size).push(f.name);
+  }
+  const digest = (rel) => crypto.createHash("sha1").update(fs.readFileSync(path.join(workspaceDir, rel))).digest("hex");
+  for (const f of out) {
+    if (f.name.includes("/") || !f.size || !bySize.has(f.size)) continue;
+    let mine;
+    try { mine = digest(f.name); } catch { continue; }
+    for (const c of bySize.get(f.size)) {
+      try { if (digest(c) === mine) { f.dup_of = c; break; } } catch {}
+    }
+  }
+  return out;
 }
 
 module.exports = {
-  _internals: { pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
