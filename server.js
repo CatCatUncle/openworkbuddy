@@ -2258,9 +2258,14 @@ app.post("/api/chat", async (req, res) => {
   // 截断兜底标题要先去掉「【任务类型：X】」这个给模型看的前缀，不然起标题失败时历史列表全是它
   if (!sess.title) sess.title = message.replace(/^\s*【任务类型：[^】]*】\s*/, "").slice(0, 24);
   sess.history.push({ role: "user", content: message });
-  sess.transcript.push({ type: "user", text: message, mode });
+  // 每一轮自己盖时间戳。以前只有会话级的 updated_at，于是自进化的挖掘器只能拿它当近似——
+  // 结果是**一个会话里几个月前的失败和今天的失败共用同一个时间**。这不是精度问题：
+  // scoreRules 按"规则生效以来"开窗打分，只要这个会话今天被打开过，它里面规则生效**之前**的
+  // 失败就全算进"生效之后"，规则越有效越会被判「没起作用」并建议下架。
+  const turnAt = new Date().toISOString();
+  sess.transcript.push({ type: "user", text: message, mode, at: turnAt });
   const asstEvents = [];
-  sess.transcript.push({ type: "assistant", events: asstEvents });
+  sess.transcript.push({ type: "assistant", events: asstEvents, at: turnAt });
   autosaveSession(sessionId, 0); // 先把用户这句话落盘，后面再崩至少问题还在
 
   runState.events = asstEvents; // 续流端点靠它补发已记录的事件

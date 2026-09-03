@@ -1249,7 +1249,9 @@ function testEvolveLoop() {
     const now = new Date().toISOString();
     const old = new Date(Date.now() - 60 * 86400e3).toISOString();
     const err = (name, preview) => ({ type: "tool_result", name, isError: true, preview });
-    const turn = (events) => [{ type: "user", text: "把这个页面改一下" }, { type: "assistant", events }];
+    // 每一轮自己带时间戳 —— server.js 现在就是这么写盘的。没有它，"生效之后"这个窗口
+    // 就只能拿会话的 updated_at 当近似，同一个会话里几个月前的失败会被算成今天的。
+    const turn = (events, at = now) => [{ type: "user", text: "把这个页面改一下", at }, { type: "assistant", events, at }];
 
     fs.writeFileSync(path.join(SESS, "s1.json"), JSON.stringify({ updated_at: now, transcript: [
       ...turn([err("edit_file", "没找到 old_text"), err("run_shell", "未知工具：directory_tree")]),
@@ -1267,7 +1269,7 @@ function testEvolveLoop() {
     ] }));
     // 窗口外的会话不该被数进来
     fs.writeFileSync(path.join(SESS, "s3.json"), JSON.stringify({ updated_at: old, transcript:
-      turn([err("run_shell", "zsh: no matches found: *.png")]) }));
+      turn([err("run_shell", "zsh: no matches found: *.png")], old) }));
 
     let m = ev.mineSignals({ days: 14 });
     assert.strictEqual(m.turns, 6, "回合数不对：" + m.turns);
@@ -1364,6 +1366,103 @@ function testEvolveLoop() {
   fs.rmSync(dir, { recursive: true, force: true });
   assert.strictEqual(r.status, 0, "自进化闭环测试失败：\n" + (r.stderr || r.stdout));
   console.log("✅ 自进化：按形状归类（真报错压过工具误报·写完自检顶回来不落大杂烩）· 窗口过滤 · 👎 改判不重复 · 闸门毙掉代码类/证据不足/小作文/无验收/重复 · 提案不点头不生效 · 打分只看数字 · 下架留档 · 后台失败留痕");
+}
+
+/**
+ * 自进化的时间口径：一个会话里几个月前的失败，和今天的失败，必须分得开。
+ *
+ * 原来 transcript 每一轮没有时间戳，挖掘器只能拿会话的 updated_at 当近似，
+ * 于是**同一个会话里的每一条事件都盖同一个时间**。这不是"精度差一点"：
+ * scoreRules 按"规则生效以来"开窗打分，只要这个会话今天被打开过，它里面
+ * 规则生效**之前**的失败就全算进"生效之后"——规则越有效越会被判「没起作用」
+ * 并建议下架，判反了。所以这里守三条：按轮过滤、没时间就不许编日期、打分只认带时间的回合。
+ */
+function testEvolveRecency() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-recency-"));
+  const script = `
+    const assert = require("assert");
+    const fs = require("fs");
+    const path = require("path");
+    const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
+    const SESS = path.join(process.env.WB_DATA_DIR, "sessions");
+    fs.mkdirSync(SESS, { recursive: true });
+
+    const NOW = Date.now();
+    const iso = (ms) => new Date(ms).toISOString();
+    const OLD = NOW - 40 * 86400e3, FRESH = NOW - 3600e3;
+    const err = (name, preview) => ({ type: "tool_result", name, isError: true, preview });
+    const t = (at, events) => [{ type: "user", text: "改一下", at: iso(at) }, { type: "assistant", at: iso(at), events }];
+
+    // 一个今天还在用的会话，里面既有 40 天前的失败，也有一小时前的失败
+    fs.writeFileSync(path.join(SESS, "mix.json"), JSON.stringify({ updated_at: iso(NOW), transcript: [
+      ...t(OLD, [err("run_shell", "zsh: no matches found: *.png")]),
+      ...t(FRESH, [err("run_shell", "zsh: no matches found: *.png")]),
+    ] }));
+
+    let m = ev.mineSignals({ days: 7 });
+    assert.strictEqual(m.turns, 1, "窗口是按会话切的：40 天前那轮被算进了 7 天窗口，回合数 " + m.turns);
+    assert.strictEqual(m.signals.find(s => s.key === "zsh_glob").count, 1, "40 天前的失败被算成最近发生的");
+    assert.strictEqual(m.signals.find(s => s.key === "zsh_glob").lastAt, FRESH,
+      "lastAt 没取那一轮自己的时间，而是会话的 updated_at");
+    // 这条是上面那个 1 的负对照：证明它不是"整个会话被跳过"跳出来的假绿
+    assert.strictEqual(ev.mineSignals({ days: 60 }).turns, 2, "放宽窗口后两轮都该看得见");
+
+    // 老数据一轮时间都没有：次数照数（确实发生过），但不许编出一个"最近还在犯"的日期
+    fs.writeFileSync(path.join(SESS, "legacy.json"), JSON.stringify({ updated_at: iso(NOW), transcript: [
+      { type: "user", text: "老会话" }, { type: "assistant", events: [err("edit_file", "没找到 old_text")] },
+    ] }));
+    m = ev.mineSignals({ days: 7 });
+    const lg = m.signals.find(s => s.key === "edit_anchor_miss");
+    assert.strictEqual(lg.count, 1, "老数据里的失败被丢掉了——它确实发生过");
+    assert.strictEqual(lg.lastAt, null, "没有逐轮时间还报出 lastAt，等于凭 updated_at 编了个精确日期");
+    assert.strictEqual(lg.undated, 1, "没标出这条的时间是不可信的");
+    assert.strictEqual(m.undatedTurns, 1, "没统计有多少回合是时间不明的：" + m.undatedTurns);
+
+    // datedOnly：打分问的是"规则生效**之后**表现如何"，时间不明的回合答不了这个问题
+    const d = ev.mineSignals({ days: 7, datedOnly: true });
+    assert.strictEqual(d.turns, 1, "datedOnly 没把时间不明的回合排除，turns=" + d.turns);
+    assert.ok(!d.signals.some(s => s.key === "edit_anchor_miss"), "datedOnly 还是把时间不明的失败算了进来");
+
+    // 兑现处：规则生效之后一次都没再犯，就不许判它「没起作用」
+    const born = NOW - 2 * 86400e3;
+    fs.mkdirSync(path.join(process.env.WB_DATA_DIR, "learned"), { recursive: true });
+    const [p] = ev.addProposals([{
+      kind: "add_rule", signal: "zsh_glob", rule: "通配符路径一律加引号，别指望 shell 帮你展开。",
+      verify: "zsh_glob 出现率降到 0.1 以下",
+      baseline: { key: "zsh_glob", rate: 0.5, count: 5, turns: 10, at: iso(born) },
+    }]);
+    ev.decideProposal(p.id, "accept", { by: "测试" });
+    const r0 = ev.activeRules()[0];
+    // 规则的出生时间要盖回 2 天前，才谈得上"生效之后这 2 天"
+    const rf = path.join(process.env.WB_DATA_DIR, "learned", r0.id + ".md");
+    fs.writeFileSync(rf, fs.readFileSync(rf, "utf8").replace(r0.meta.at, iso(born)));
+
+    const sc = ev.scoreRules({ minTurns: 1, now: NOW }).find(x => x.signal === "zsh_glob");
+    assert.ok(sc, "没给这条规则打出分来：" + JSON.stringify(ev.scoreRules({ minTurns: 1, now: NOW })));
+    // 生效后这 2 天里只有 FRESH 那一轮带时间，而它正是 zsh_glob —— 所以判"没起作用"是对的。
+    // 真正要守的是分母：40 天前那轮（在规则出生**之前**）绝不能被算进这 2 天里。
+    assert.strictEqual(sc.turns, 1, "打分的分母把规则生效前的回合算了进来：" + sc.turns);
+    console.log("OK");
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], {
+    env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") },
+    encoding: "utf8",
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "自进化时间口径测试失败：\n" + (r.stderr || r.stdout));
+  // 上面测的全是挖掘器怎么**读**时间戳，可时间戳是 server.js 写进去的。
+  // 谁把 server.js 那两行的 at 删掉，上面照样全绿，然后新数据又退回"整个会话一个时间"。
+  // 起不了进程内 HTTP 测试（server.js 是 require 即 listen），所以这一头钉在源码上。
+  const srv = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  for (const kind of ["user", "assistant"]) {
+    const m = new RegExp("sess\\.transcript\\.push\\(\\{[^}]*type: \"" + kind + "\"[^}]*\\}\\)").exec(srv);
+    assert.ok(m, "server.js 里找不到写 " + kind + " 轮的那行 transcript.push");
+    assert.ok(/\bat\b\s*:|\bat,|\bat\s*\}/.test(m[0]),
+      "server.js 写 " + kind + " 轮时没盖时间戳，新数据会退回「整个会话共用一个时间」：" + m[0]);
+  }
+  console.log("✅ 自进化时间口径：窗口按轮切（老会话里的旧失败不算最近）· 没逐轮时间就不编日期 · 打分只认生效之后的回合 · 写盘那头也盖了戳");
 }
 
 async function testCodingTools() {
@@ -2566,6 +2665,7 @@ async function main() {
   await testOfficeLibs();
   await testPreviewExtract();
   testEvolveLoop();
+  testEvolveRecency();
   await testCodingTools();
   await testDeliverableQuality();
   await testAgentPipeline();
