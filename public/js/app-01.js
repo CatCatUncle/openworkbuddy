@@ -922,7 +922,10 @@ function fileIcon(name) {
   if (/\.html?$/i.test(name)) return "🌐";
   if (/\.pdf$/i.test(name)) return "📕";
   if (/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name)) return "🖼️";
-  if (/\.(mp4|mov|webm|m4v)$/i.test(name)) return "🎬";
+  if (/\.(mp4|mov|webm|m4v|ogv)$/i.test(name)) return "🎬";
+  if (/\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(name)) return "🎵";
+  if (/\.(zip|gz|tgz|bz2|xz|7z|rar|tar)$/i.test(name)) return "🗜️";
+  if (/\.(js|mjs|cjs|ts|tsx|jsx|py|swift|java|kt|go|rs|rb|php|c|h|cc|cpp|hpp|cs|sh|bash|zsh|sql|vue|scss|less)$/i.test(name)) return "💻";
   return "📎";
 }
 function fmtSize(n) { return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B"; }
@@ -1006,6 +1009,67 @@ const OFFICE_RE = /\.(docx?|pptx?|xlsx?)$/i;
 const pvPanel = document.getElementById("preview-panel");
 let pvCurrent = null;
 
+// 有专门看法的四类：网页/图/音/视频。其余一律先当纯文本试着打开。
+//
+// 以前这里是一张"文本扩展名白名单"（txt|csv|json|js|cjs|css|xml|log|yml|yaml），
+// 白名单外的整个掉进「该格式暂不支持应用内预览」——可真实工作目录里 .py/.swift/.plist/.srt/.h
+// 全在白名单外，明明是纯文本却只能下载；.mp3/.mp4 更离谱，文件列表里都给了 🎵🎬 图标，
+// 点开却说不支持。白名单这个形状本身就是 bug：模型每产出一种新后缀就要回来改一次代码。
+// 所以反过来写：只列"当文本打开必然满屏乱码"的二进制后缀，其余都试，
+// 试出来真是二进制（含 NUL 或大量替换字符）再退回提示。
+const PV_IFRAME_RE = /\.(html?|pdf|svg)$/i;
+const PV_IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i;
+const PV_AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i;
+// .ts 故意不进这条：mime 库把 .ts 认成 video/mp2t，但工作目录里的 .ts 全是 TypeScript 源码
+const PV_VIDEO_RE = /\.(mp4|webm|mov|m4v|ogv)$/i;
+const PV_MD_RE = /\.(md|markdown)$/i;
+const PV_BINARY_RE = /\.(zip|gz|tgz|bz2|xz|7z|rar|tar|dmg|pkg|iso|exe|dll|so|dylib|a|o|bin|dat|pcm|wasm|class|jar|pyc|pyd|node|db|sqlite\d?|woff2?|ttf|otf|eot|psd|ai|sketch|fig|msgpack|hmap|dia|swiftmodule|swiftdoc|swiftsourceinfo|pdb|lib|obj|heic|tiff?|blend)$/i;
+
+/** 预览走哪条路。抽成纯函数是为了能直接断言，不用一个个文件点开肉眼验 */
+function previewKind(name) {
+  if (PV_IFRAME_RE.test(name)) return "iframe";
+  if (PV_IMAGE_RE.test(name)) return "image";
+  if (PV_AUDIO_RE.test(name)) return "audio";
+  if (PV_VIDEO_RE.test(name)) return "video";
+  if (PV_MD_RE.test(name)) return "markdown";
+  if (PV_BINARY_RE.test(name)) return "binary";
+  return "text"; // 认不出来的一律先当文本试，试不成再退回去
+}
+
+/** 这段内容到底是不是文本：有 NUL 就是二进制；UTF-8 解码非法字节会吐 U+FFFD，
+ *  正经文本一个都不该有（按字节截断只会在末尾留一个，所以阈值放到 8 个以上且占比超 1%） */
+function looksBinary(text) {
+  if (!text) return false;
+  if (text.includes("\u0000")) return true;
+  const bad = (text.match(/\uFFFD/g) || []).length;
+  return bad > 8 && bad / text.length > 0.01;
+}
+
+const PV_TEXT_MAX = 512 * 1024; // 只取前 512KB。以前是整包 fetch 完再 slice(0,100000)，
+                                // 碰上几百 MB 的日志，渲染进程在 slice 之前就已经卡死了
+
+/** 取文件开头一段当文本。服务端是 res.sendFile，自带 Range 支持（实测 206 + Content-Range） */
+async function fetchTextHead(url) {
+  try {
+    const r = await fetch(url, { headers: { Range: `bytes=0-${PV_TEXT_MAX - 1}` } });
+    if (!r.ok && r.status !== 206) return null;
+    let text = await r.text();
+    const m = /\/(\d+)\s*$/.exec(r.headers.get("Content-Range") || "");
+    const total = m ? Number(m[1]) : null;
+    // 按字节切可能把最后一个多字节字符切成两半，末尾那个替换字符是我们自己造的，去掉
+    if (total != null && total > PV_TEXT_MAX) text = text.replace(/\uFFFD$/, "");
+    if (text.length > PV_TEXT_MAX) text = text.slice(0, PV_TEXT_MAX);
+    return { text, total, truncated: total != null ? total > PV_TEXT_MAX : text.length >= PV_TEXT_MAX };
+  } catch { return null; }
+}
+
+/** 真看不了时的兜底。以前这句写的是"可点右上 🗔 …或 ⬇"，可标题栏早就换成 SVG 图标了，
+ *  用户照着找一辈子也找不到那两个 emoji——所以直接给一个能点的按钮 */
+const pvFallback = (why) =>
+  `<div class="pv-text" style="color:var(--wb-text-3)">${esc(why)}，应用内看不了。<div style="margin-top:12px;display:flex;gap:8px"><button class="pv-open-sys">用系统默认程序打开</button><button class="pv-reveal">打开所在位置</button></div></div>`;
+const pvTrunc = (total) =>
+  `<div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--wb-border);color:var(--wb-text-3);font-size:13px">文件太大，只显示了开头 ${PV_TEXT_MAX / 1024} KB${total ? `（整个文件 ${fmtSize(total)}）` : ""}。要看全的话下载或用系统程序打开。</div>`;
+
 async function previewFile(name) {
   if (OFFICE_RE.test(name)) {
     // Office 文件交给本机 Office/WPS 打开
@@ -1022,20 +1086,29 @@ async function previewFile(name) {
   document.getElementById("pv-dl").href = "/api/files/download/" + encodeURIComponent(name);
   const body = document.getElementById("pv-body");
   const url = "/api/files/view/" + encodeURIComponent(name) + "?t=" + Date.now();
-  if (/\.(html?|pdf|svg)$/i.test(name)) {
+  const kind = previewKind(name);
+  if (kind === "iframe") {
     // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字
     body.innerHTML = `<iframe src="${url}"></iframe>`;
-  } else if (/\.(png|jpe?g|gif|webp|bmp|ico)$/i.test(name)) {
+  } else if (kind === "image") {
     body.innerHTML = `<img src="${url}">`;
-  } else if (/\.(md|markdown)$/i.test(name)) {
-    const text = await fetch(url).then(r => r.text()).catch(() => "加载失败");
-    body.innerHTML = `<div class="pv-text a-text">${renderMd(text)}</div>`;
-  } else if (/\.(txt|csv|json|js|cjs|css|xml|log|yml|yaml)$/i.test(name)) {
-    const text = await fetch(url).then(r => r.text()).catch(() => "加载失败");
-    body.innerHTML = `<div class="pv-text"><pre style="white-space:pre-wrap;word-break:break-all">${esc(text.slice(0, 100000))}</pre></div>`;
+  } else if (kind === "audio" || kind === "video") {
+    // 服务端 res.sendFile 会回 Accept-Ranges，所以进度条能拖、长视频不用等整包下完
+    const tag = kind === "audio" ? "audio" : "video";
+    body.innerHTML = `<${tag} class="pv-media" src="${url}" controls preload="metadata"></${tag}>`;
+  } else if (kind === "binary") {
+    body.innerHTML = pvFallback("这是二进制文件");
   } else {
-    body.innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">该格式暂不支持应用内预览，可点右上 🗔 用系统程序打开，或 ⬇ 下载。</div>`;
+    const r = await fetchTextHead(url);
+    if (!r) body.innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">加载失败</div>`;
+    else if (looksBinary(r.text)) body.innerHTML = pvFallback("这个文件不是文本"); // 后缀没认出来，内容说了算
+    else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text">${renderMd(r.text)}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
+    else body.innerHTML = `<div class="pv-text"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
   }
+  const sysBtn = body.querySelector(".pv-open-sys");
+  if (sysBtn) sysBtn.onclick = () => fetch("/api/files/open/" + encodeURIComponent(name), { method: "POST" });
+  const rvBtn = body.querySelector(".pv-reveal");
+  if (rvBtn) rvBtn.onclick = () => revealFile(name);
   pvPanel.classList.add("show");
   renderDeployBar();
 }
