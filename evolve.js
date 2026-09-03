@@ -144,30 +144,42 @@ function readSessions(dir = SESS_DIR) {
  * 每个信号都带**能点回去的证据**（会话 id + 第几轮 + 原文摘录）——
  * 没有证据的信号只是观点，改了也没法验。
  */
-function mineSignals({ days = CAPS.window, dir = SESS_DIR, feedbackFile = FEEDBACK_FILE, now = Date.now() } = {}) {
+function mineSignals({ days = CAPS.window, dir = SESS_DIR, feedbackFile = FEEDBACK_FILE, now = Date.now(), datedOnly = false } = {}) {
   const since = now - days * 86400e3;
   const map = new Map();
   const bump = (c, ev) => {
     if (!c) return;
     let s = map.get(c.key);
-    if (!s) map.set(c.key, (s = { key: c.key, kind: c.kind, actionable: c.actionable, label: c.label, count: 0, sessions: new Set(), samples: [], firstAt: null, lastAt: null }));
+    if (!s) map.set(c.key, (s = { key: c.key, kind: c.kind, actionable: c.actionable, label: c.label, count: 0, dated: 0, undated: 0, sessions: new Set(), samples: [], firstAt: null, lastAt: null }));
     s.count++;
     if (ev.session) s.sessions.add(ev.session);
     if (s.samples.length < 4) s.samples.push(ev);
+    // 只有真带时间的回合才有资格决定 firstAt/lastAt。老数据没有逐轮时间，
+    // 拿会话的 updated_at 顶上去会**编出一个精确到毫秒的假日期**——正是它让
+    // "这个毛病还在犯吗"这个最该问的问题变得没法回答。宁可留 null。
+    if (!ev.dated) { s.undated++; return; }
+    s.dated++;
     if (!s.firstAt || ev.at < s.firstAt) s.firstAt = ev.at;
     if (!s.lastAt || ev.at > s.lastAt) s.lastAt = ev.at;
   };
 
   let turns = 0;
+  let undatedTurns = 0;
   for (const sess of readSessions(dir)) {
-    const at = Date.parse(sess.updated_at || "") || 0;
-    if (at && at < since) continue; // 会话级过滤：单条事件没有时间戳，用会话的更新时间当近似
+    const sessAt = Date.parse(sess.updated_at || "") || 0;
+    // updated_at 不会早于任何一轮，所以它在窗口外就代表整个会话都在窗口外，可以整个跳过。
+    // 反过来不成立——它在窗口内**不代表**里面每一轮都在窗口内，那得逐轮看。
+    if (sessAt && sessAt < since) continue;
     (sess.transcript || []).forEach((t, i) => {
       if (t.type !== "assistant") return;
+      const turnAt = Date.parse(t.at || "") || 0;
+      if (turnAt && turnAt < since) return; // 这一轮自己带时间，且落在窗口外
+      if (!turnAt && datedOnly) return;     // 打分要问"生效之后"，没时间的回合答不了这个问题
       turns++;
+      if (!turnAt) undatedTurns++;
       const ask = (sess.transcript[i - 1] || {}).text || "";
       for (const e of t.events || []) {
-        const ev = { session: sess._id, turn: i, at, task: String(ask).slice(0, 120), excerpt: "" };
+        const ev = { session: sess._id, turn: i, at: turnAt || sessAt, dated: !!turnAt, task: String(ask).slice(0, 120), excerpt: "" };
         if (e.type === "tool_result" && e.isError) {
           ev.excerpt = String(e.preview || "").slice(0, 200);
           bump(classifyToolError(e.name, e.preview), ev);
@@ -186,14 +198,14 @@ function mineSignals({ days = CAPS.window, dir = SESS_DIR, feedbackFile = FEEDBA
     if (fb.verdict !== "down") continue;
     bump(
       { kind: "thumbs_down", key: "thumbs_down", actionable: "prompt", label: "用户点了「没帮助」" },
-      { session: fb.session || "", turn: fb.turn, at, task: String(fb.task || "").slice(0, 120), excerpt: String(fb.note || "（没写理由）").slice(0, 200) }
+      { session: fb.session || "", turn: fb.turn, at, dated: !!at, task: String(fb.task || "").slice(0, 120), excerpt: String(fb.note || "（没写理由）").slice(0, 200) }
     );
   }
 
   const signals = [...map.values()]
     .map((s) => ({ ...s, sessions: [...s.sessions], rate: turns ? +(s.count / turns).toFixed(4) : 0 }))
     .sort((a, b) => b.count - a.count);
-  return { since: new Date(since).toISOString(), days, turns, signals };
+  return { since: new Date(since).toISOString(), days, turns, undatedTurns, signals };
 }
 
 // ============================ 反馈落盘 ============================
@@ -358,8 +370,11 @@ function scoreRules({ dir = SESS_DIR, now = Date.now(), minTurns = 20 } = {}) {
     const bornAt = Date.parse(r.meta.at || "") || 0;
     const base = r.meta.baseline || null;
     if (!bornAt || !base || !base.key) { out.push({ id: r.id, verdict: "无从判断", why: "这条规则没记生效前的基线" }); continue; }
-    const after = mineSignals({ days: Math.max(1, Math.ceil((now - bornAt) / 86400e3)), dir, now });
-    if (after.turns < minTurns) { out.push({ id: r.id, verdict: "样本不够", why: `生效后才跑了 ${after.turns} 个回合，不到 ${minTurns} 个，先别下结论` }); continue; }
+    // datedOnly：这里问的是"这条规则生效**之后**表现如何"，只有自己带时间戳的回合答得了。
+    // 不加这个开关的话，一个今天被打开过的老会话会把它里面**规则生效之前**的失败
+    // 全算成"生效之后"——规则越有效越会被判「没起作用」并建议下架，正好判反。
+    const after = mineSignals({ days: Math.max(1, Math.ceil((now - bornAt) / 86400e3)), dir, now, datedOnly: true });
+    if (after.turns < minTurns) { out.push({ id: r.id, verdict: "样本不够", why: `生效后才跑了 ${after.turns} 个带时间的回合，不到 ${minTurns} 个，先别下结论` }); continue; }
     const s = after.signals.find((x) => x.key === base.key);
     const afterRate = s ? s.rate : 0;
     const drop = base.rate ? +(((base.rate - afterRate) / base.rate) * 100).toFixed(1) : 0;
@@ -397,6 +412,9 @@ function signalsForPrompt(mined, { top = 8 } = {}) {
   return mined.signals.slice(0, top).map((s) => ({
     key: s.key, 毛病: s.label, 次数: s.count, 每回合出现率: s.rate,
     该谁治: s.actionable, 涉及会话数: s.sessions.length,
+    // 提案模型最需要知道的是"这毛病还在犯吗"——已经修好的东西不该再给它提方案。
+    // 但也只在真有逐轮时间戳时才说得出口，说不出就明说说不出，别拿会话的 updated_at 硬凑。
+    最近一次: s.lastAt ? new Date(s.lastAt).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "时间不明（这些是没有逐轮时间戳的老数据）",
     样本: s.samples.slice(0, 2).map((x) => `【任务】${x.task}｜【现场】${x.excerpt}`),
   }));
 }
@@ -408,7 +426,8 @@ function signalsForPrompt(mined, { top = 8 } = {}) {
 async function proposeEdits({ llm, mined, rules = activeRules(), rejected = [], promptExcerpt = "", top = 8 } = {}) {
   if (!llm || !llm.chat) throw new Error("proposeEdits 需要一个 llm");
   const payload = {
-    统计窗口: `${mined.days} 天，共 ${mined.turns} 个助手回合`,
+    统计窗口: `${mined.days} 天，共 ${mined.turns} 个助手回合` +
+      (mined.undatedTurns ? `（其中 ${mined.undatedTurns} 个是老数据，只知道发生过、不知道发生在哪天）` : ""),
     信号: signalsForPrompt(mined, { top }),
     已经生效的规则: rules.map((r) => ({ id: r.id, 正文: r.text })),
     规则预算: `已用 ${rules.length}/${CAPS.rules} 条`,
