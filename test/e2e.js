@@ -254,6 +254,48 @@ async function testNodeSyntaxPrecheck() {
   console.log("✅ run_node 语法预检：模板字符串截断拦截 + 正常代码放行");
 }
 
+// zsh 的通配符没匹配上会**整条命令拒绝执行**，而模型写的是 bash 味的命令。
+// 这不是"多一句报错"那么轻：真实会话里 10 次是同一个形状——探测 `ls /usr/local/bin/python*`
+// 时 ls 压根没跑，只有 zsh 一句抱怨，模型分不清"没装"还是"命令挂了"；`for f in *.md`
+// 没匹配上就连同后面的收尾一起不执行；`curl http://a/x?id=1` 不加引号（? 和 [] 在 zsh 里
+// 也是通配符）直接不跑。所以这里守的是行为不是措辞：**命令必须真的执行到**。
+async function testShellGlobCompat() {
+  const tools = require("../tools");
+  const run = (command) => tools.executeTool("run_shell", { command }, { timeoutMs: 30000 });
+
+  // ① 循环里的通配符没匹配上，后面的收尾必须照跑（旧行为：整个复合命令 exit 1，收尾丢失）
+  const loop = await run('for f in /nope-e2e-glob/*.zzz; do echo "$f"; done\necho 收尾跑到了');
+  assert(loop.content.includes("收尾跑到了"), "通配符没匹配上把后面的收尾一起吞了: " + loop.content);
+  assert(!/no matches found/.test(loop.content), "还是 zsh 在拒命令，不是命令自己报错: " + loop.content);
+
+  // ② 没加引号的 URL —— ? 和 [] 在 zsh 里是通配符，旧行为是整条命令不执行
+  // 断言必须钉在 stdout 上：zsh 拒命令时那句抱怨里也带着这个 URL，
+  // 光用 includes 查全文会**假绿**——错误信息把答案抄了一遍
+  const outOf = (r) => (/stdout:\n([\s\S]*?)(?:\nstderr:|\nexit code:)/.exec(r.content) || [, ""])[1];
+  const url = await run("echo http://a.example/x?id=1");
+  assert(outOf(url).includes("http://a.example/x?id=1"), "带 ? 的 URL 让整条命令没跑起来: " + url.content);
+  const brk = await run("echo http://a.example/x?id=[1]");
+  assert(outOf(brk).includes("[1]"), "带方括号的 URL 让整条命令没跑起来: " + brk.content);
+
+  // ③ 探测可选路径：报错必须来自命令本身，模型才能分清"没这个文件"和"命令挂了"
+  const probe = await run("ls /nope-e2e-glob/*.zzz 2>&1 || true\necho 探测完了");
+  assert(probe.content.includes("探测完了"), "探测把后面的步骤带崩了: " + probe.content);
+  assert(/No such file|does not exist|不存在/i.test(probe.content), "ls 根本没执行，报错还是 shell 发的: " + probe.content);
+
+  // ④ 正常的通配符不能被顺带改坏：匹配得上的照样展开
+  const good = await run('touch e2e-glob-a.zzz e2e-glob-b.zzz && ls e2e-glob-*.zzz | wc -l');
+  assert(/\b2\b/.test(good.content), "能匹配上的通配符被改坏了: " + good.content);
+  for (const n of ["e2e-glob-a.zzz", "e2e-glob-b.zzz"]) fs.rmSync(path.join(WORKSPACE, n), { force: true });
+
+  // ⑤ 参数钉死在挑 shell 那一层，免得哪天有人把它"整理"掉（Linux 上 bash 本来就是这个行为）
+  if (process.platform === "darwin") {
+    const sh = tools._internals.pickShell("echo hi");
+    assert(sh.bin === "/bin/zsh" && sh.args.join(" ") === "-o nonomatch -c echo hi",
+      "macOS 上没带 -o nonomatch: " + JSON.stringify(sh));
+  }
+  console.log("✅ shell 通配符兼容：没匹配上也不拒命令（循环收尾还在·带 ?[] 的 URL 跑得起来·报错来自命令自己）· 能匹配的照常展开");
+}
+
 // 成果核验闸门：声称生成的文件必须真的在、而且不能是 0 字节空壳
 function testDeliverableGate() {
   const real = path.join(WORKSPACE, "e2e-核验有内容.md");
@@ -2463,6 +2505,7 @@ async function main() {
   await testSchedulerRuntime();
   await testMcpManagerLifecycle();
   await testNodeSyntaxPrecheck();
+  await testShellGlobCompat();
   await testOfficeLibs();
   await testPreviewExtract();
   testEvolveLoop();

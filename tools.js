@@ -866,7 +866,14 @@ function pickShell(command) {
   if (process.platform === "win32") {
     return { bin: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", command], opts: { windowsVerbatimArguments: true } };
   }
-  if (process.platform === "darwin") return { bin: "/bin/zsh", args: ["-c", command], opts: {} };
+  // macOS 上 -o nonomatch 是必须的：zsh 默认通配符没匹配上就**整条命令拒绝执行**，
+  // 而模型写的是 bash 味的命令。真实会话里这一条烧掉 10 次——
+  //   `ls /usr/local/bin/python*` 探测装没装 → ls 根本没跑，只有 zsh 一句抱怨，
+  //   模型分不清是"没这个文件"还是"命令挂了"；
+  //   `for f in *.md; do ...; done` 没匹配上 → 整个循环连同后面的收尾全不执行，exit 1；
+  //   `curl http://a.com/x?id=1` 不加引号 → ? 和 [] 在 zsh 里也是通配符，命令直接不跑。
+  // 关掉之后行为跟 bash 一致：通配符原样传给命令，由命令自己报错，脚本接着往下走。
+  if (process.platform === "darwin") return { bin: "/bin/zsh", args: ["-o", "nonomatch", "-c", command], opts: {} };
   const bash = fs.existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
   return { bin: bash, args: ["-c", command], opts: {} };
 }
@@ -2162,4 +2169,4 @@ function outputFiles() {
 }
 
 module.exports = {
-  _internals: { fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
