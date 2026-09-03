@@ -1,3 +1,16 @@
+/**
+ * 缓存命中率。agent 每走一步都要把整段上下文重发一遍，真实账本里 prompt 和 completion
+ * 是 64:1 —— 这一大坨到底是全价重买还是走了缓存，光看 tokens 总数完全看不出来，
+ * 而它才是账单的大头。命中率低说明系统提示词或历史在被反复改动（换模型、改设置、
+ * 时间戳精度太细都会打断前缀），值得去看一眼。
+ * cachedOf 是「记过这个字段的那些条的 prompt 总量」：老流水没这个字段，不参与计算，
+ * 所以这里返回空串而不是「0%」—— 没统计过不等于没命中。
+ */
+function cacheTxt(x) {
+  if (!x || !x.cachedOf) return "";
+  return ` · 缓存命中 ${Math.round((x.cached || 0) / x.cachedOf * 100)}%`;
+}
+
 async function renderAccount() {
   mBody.innerHTML = '<div class="ab-empty">加载中…</div>';
   const [d, authState] = await Promise.all([
@@ -18,7 +31,7 @@ async function renderAccount() {
         <button id="acc-profile" style="float:right;padding:2px 10px;font-size: 13px;margin-right:6px">改名字 / 头像</button>
       </div>
       <div class="d">${creditsOn
-        ? `积分余额 <b style="color:var(--wb-brand);font-size:16px">✦ ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）`
+        ? `积分余额 <b style="color:var(--wb-brand);font-size:16px">✦ ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，命中缓存的部分按 1/10 折算（上游就是这么收的），每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）`
         : `<b style="color:var(--wb-brand)">不限额</b> · 任务想跑多少跑多少，下面的用量只是给你看花了多少 tokens，不会拦人`}</div>
       ${isAdmin ? `${creditsOn ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
         <input id="topup-user" placeholder="给谁充（留空=自己）" style="max-width:150px">
@@ -38,12 +51,12 @@ async function renderAccount() {
       </div>` : ""}
     </div>
     <div class="usage-grid">
-      <div class="usage-cell"><div class="n">${d.today.runs}</div><div class="l">今日任务 · ${d.today.tokens.toLocaleString()} tokens${creditsOn ? ` · ${d.today.credits} 积分` : ""}</div></div>
-      <div class="usage-cell"><div class="n">${d.month.runs}</div><div class="l">本月任务 · ${d.month.tokens.toLocaleString()} tokens${creditsOn ? ` · ${d.month.credits} 积分` : ""}</div></div>
+      <div class="usage-cell"><div class="n">${d.today.runs}</div><div class="l">今日任务 · ${d.today.tokens.toLocaleString()} tokens${cacheTxt(d.today)}${creditsOn ? ` · ${d.today.credits} 积分` : ""}</div></div>
+      <div class="usage-cell"><div class="n">${d.month.runs}</div><div class="l">本月任务 · ${d.month.tokens.toLocaleString()} tokens${cacheTxt(d.month)}${creditsOn ? ` · ${d.month.credits} 积分` : ""}</div></div>
     </div>
     <div class="card-item">
       <div class="t">近 7 天消耗（tokens）</div>
-      <div class="usage-bars">${d.last7.map(x => `<div class="b" style="height:${Math.round(x.tokens / maxT * 100)}%" title="${x.day}：${x.tokens.toLocaleString()} tokens · ${x.runs} 次${creditsOn ? ` · ${x.credits} 积分` : ""}"><i>${x.day.slice(5)}</i></div>`).join("")}</div>
+      <div class="usage-bars">${d.last7.map(x => `<div class="b" style="height:${Math.round(x.tokens / maxT * 100)}%" title="${x.day}：${x.tokens.toLocaleString()} tokens · ${x.runs} 次${cacheTxt(x)}${creditsOn ? ` · ${x.credits} 积分` : ""}"><i>${x.day.slice(5)}</i></div>`).join("")}</div>
       <div style="height:16px"></div>
     </div>
     <div class="card-item">
@@ -55,7 +68,7 @@ async function renderAccount() {
           <td>${e.kind === "topup" ? "💰 充值" : "任务"}</td>
           ${isAdmin ? `<td>${esc(e.user)}</td>` : ""}
           <td>${e.kind === "topup" ? `by ${esc(e.by || "")}` : esc(SRC_TXT[e.source] || e.source || "")}</td>
-          <td>${e.kind === "topup" ? "—" : ((e.prompt || 0) + (e.completion || 0)).toLocaleString()}</td>
+          <td${e.kind === "topup" ? "" : ` title="输入 ${(e.prompt || 0).toLocaleString()}（其中缓存命中 ${e.cached != null ? e.cached.toLocaleString() : "未统计"}）· 输出 ${(e.completion || 0).toLocaleString()}"`}>${e.kind === "topup" ? "—" : ((e.prompt || 0) + (e.completion || 0)).toLocaleString()}</td>
           ${creditsOn ? `<td>${e.kind === "topup" ? "+" : "-"}${e.credits}</td>` : ""}
           <td>${esc(e.model || "—")}</td>
         </tr>`).join("") || `<tr><td colspan="7" style="color:var(--wb-text-3)">还没有用量记录</td></tr>`}
