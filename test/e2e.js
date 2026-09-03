@@ -2111,6 +2111,44 @@ async function testDesktopPet() {
   console.log("✅ 桌面宠物：无窗口时全套降级不抛 / 服务端模式如实报错 / 参数与动作枚举稳定");
 }
 
+/**
+ * 提示词不许自相矛盾：一边禁"把选择题丢给用户"，一边要求"岔路必须用 ask_user"。
+ *
+ * 真实数据里 62 个会话只有 2 个用过 ask_user，而 11 个会话里用户中途插话把方向掰回来，
+ * 其中一条是「你用生图 API 给我做呀」—— 提示词里点名举的就是这个例子（封面图走生图
+ * 还是排版截图），模型照样自己替用户挑了。原因不是例子举得不够，是同一份提示词里
+ * 工作规范 5.2 用加粗写着"不许把选择题丢给用户 / 方案的优劣你自己判断得了"，
+ * 而要求提问的那段在一百多行之后、语气更弱、条件更多。模型按前面那条办，很合理。
+ *
+ * 所以这里不是再加一段措辞，而是钉住"不许留下无条件的禁止提问"这个约束：任何一条
+ * 禁止把选择题/反问抛给用户的规则，必须在同一行里说明 ask_user 工具不在禁止之列，
+ * 否则以后随手加一条又会把它压回去。断言跑在真正拼装出来的系统提示词上（含模式段），
+ * 不是对着源码字符串猜。
+ */
+async function testPromptNoAskContradiction() {
+  let captured = null;
+  const fake = {
+    provider: "mock",
+    model: "scripted",
+    async chat({ system }) { captured = system; return { text: "好", toolCalls: [], stopReason: "end" }; },
+  };
+  await createAgentRuntime({ config, llm: fake, mcpManager: new McpManager(), experts: [] })
+    .runTask({ history: [{ role: "user", content: "随便做点什么" }], emit: () => {} });
+  assert(captured, "没抓到系统提示词");
+
+  const bans = captured.split("\n").filter((l) => /严禁|不许/.test(l) && /选择题|反问/.test(l));
+  assert(bans.length, "提示词里一条'禁止把选择题丢给用户'都没有了——这一条是有用的，别整段删掉");
+  for (const l of bans) {
+    assert(
+      /ask_user/.test(l),
+      "有一条禁止提问的规则没说明 ask_user 不在禁止之列，模型会按它把岔路自己挑了：\n  " + l.slice(0, 160)
+    );
+  }
+  // 岔路该问这件事本身也得还在，且给的是"选了会得到什么"而不是同义词复读
+  assert(/成品形态/.test(captured) && /ask_user/.test(captured), "岔路必须问的规则丢了");
+  console.log("✅ 提示词自洽：禁止文字反问的规则都写明了 ask_user 例外（岔路仍必须问）");
+}
+
 async function testAskUser() {
   // 有人值守：ask_user 弹题 → askUser 回调给答案 → 答案回到工具结果；事件成对出现
   let step = 0;
@@ -2208,6 +2246,7 @@ async function main() {
   await testAgentPipeline();
   await testForcedWrapUp();
   await testAskUser();
+  await testPromptNoAskContradiction();
   await testDesktopPet();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
