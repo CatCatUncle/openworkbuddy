@@ -29,6 +29,95 @@ const P1 = APP02X.indexOf("// ---- 本地部署预览");
 if (P0 < 0 || P1 <= P0) throw new Error("app-01.js 里的文件预览段找不到了（段标题被改过？），前端测试没法定位真源码");
 const PREVIEW_SRC = APP02X.slice(P0, P1);
 
+// 成果面板：文件夹按时间分段（今天／昨天／过去 7 天／更早按月）。分段是纯视图，
+// 磁盘上仍是扁平的 任务_MMDD_xxx —— 所以这段逻辑没有任何服务端断言能替它把关，
+// 只能在真 Chromium 里喂真数据、读真 DOM。同样切 app-01.js 的真源码。
+const FL0 = APP02X.indexOf("function fileIcon(");
+const FL1 = APP02X.indexOf("// ================= 助理模式");
+if (FL0 < 0 || FL1 <= FL0) throw new Error("app-01.js 里的成果文件列表段找不到了（段标题被改过？），前端测试没法定位真源码");
+const FILELIST_SRC = APP02X.slice(FL0, FL1);
+
+const FILELIST_HTML = "<!doctype html><meta charset='utf-8'><body><div id='file-list'></div></body>";
+
+const FILELIST_STUBS = [
+  "window.filesCache = [];",
+  "window.esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');",
+  "window.toast = () => {};",
+  "window.snapshotFiles = () => {};",
+  "window.sessionId = 's_now';",
+  "window.sessionDirs = new Map([['s_now', '任务_0903_本对话']]);",
+  "window.fetch = async () => ({ ok: true, json: async () => [] });",
+].join("\n");
+
+const FILELIST_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const D = 86400e3;
+  const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+  const iso = (ms) => new Date(ms).toISOString();
+  const f = (name, ms, size) => ({ name, size: size || 100, mtime: iso(ms) });
+  // 「今天」那个文件夹里故意混一个 30 天前的老文件：分段要看**最近动过的那个**，
+  // 取最老的会把今天刚干完的活扔进「更早」，那正是用户抱怨"找不着"的原样
+  const data = [
+    f("任务_0903_本对话/新产出.md", t0.getTime() + 3600e3),
+    f("任务_0903_本对话/很久以前的.md", t0.getTime() - 30 * D),
+    f("任务_0902_昨天干的/图.png", t0.getTime() - 5 * 3600e3),
+    f("任务_0830_上周的/表.xlsx", t0.getTime() - 4 * D),
+    f("任务_0805_老的/稿.docx", new Date(t0.getFullYear(), t0.getMonth() - 1, 5).getTime()),
+    f("散在根目录的.txt", t0.getTime() - 60 * D),
+  ];
+  renderFiles(data);
+  const el = document.getElementById("file-list");
+  const heads = () => [...el.querySelectorAll(".time-head .name")].map((n) => n.textContent);
+  const dirs = () => [...el.querySelectorAll(".dir-head .name")].map((n) => n.textContent);
+
+  const h = heads();
+  ok("时间段按新到旧排", h.length === 4 && h[0] === "今天" && h[1] === "昨天" && h[2] === "过去 7 天" && /^更早（/.test(h[3]), JSON.stringify(h));
+  ok("更早的按月，同年不写年份", /^更早（\\d+月）$/.test(h[3]), h[3]);
+
+  // 分段归属：每个文件夹恰好在它该在的那一段里
+  const between = (label) => {
+    const all = [...el.children];
+    const i = all.findIndex((n) => n.classList.contains("time-head") && n.querySelector(".name").textContent === label);
+    const out = [];
+    for (let j = i + 1; j < all.length && !all[j].classList.contains("time-head"); j++) {
+      // 根目录分组排在所有时间段之后、自己没有段标题，得排掉——它不属于任何时间段
+      if (all[j].classList.contains("dir-head") && all[j].dataset.dir !== ".") out.push(all[j].dataset.dir);
+    }
+    return out;
+  };
+  ok("混着老文件的文件夹按最近动过的那个分段", between("今天").includes("任务_0903_本对话"), JSON.stringify(between("今天")));
+  ok("30 天前的文件没把它拽进「更早」", !between(h[3]).includes("任务_0903_本对话"), JSON.stringify(between(h[3])));
+  ok("昨天的进「昨天」", between("昨天").join() === "任务_0902_昨天干的", JSON.stringify(between("昨天")));
+  ok("四天前的进「过去 7 天」", between("过去 7 天").join() === "任务_0830_上周的", JSON.stringify(between("过去 7 天")));
+  ok("上个月的进「更早」", between(h[3]).join() === "任务_0805_老的", JSON.stringify(between(h[3])));
+
+  const cnt = [...el.querySelectorAll(".time-head")].find((n) => n.querySelector(".name").textContent === "今天").querySelector(".cnt").textContent;
+  ok("段头报文件夹数和文件数", cnt === "1 个文件夹 · 2 个文件", cnt);
+
+  ok("本对话的文件夹带标记", /本对话/.test(dirs()[0]), dirs()[0]);
+  // 根目录散件降级到最后：本对话有自己文件夹时，先撞见几个月前别的对话留下的东西才是真问题
+  ok("根目录散件排在所有时间段后面", dirs()[dirs().length - 1].includes("工作空间根目录"), JSON.stringify(dirs()));
+  ok("根目录散件没直接摊在最上面", !el.querySelector(".file-item"), "根目录文件没折起来");
+
+  // 折叠：点段头只收自己那一段，别的段不许受影响
+  const before = dirs().length;
+  [...el.querySelectorAll(".time-head")].find((n) => n.querySelector(".name").textContent === "今天").click();
+  ok("点段头收起这一段", !between("今天").length, JSON.stringify(between("今天")));
+  ok("收起一段不影响别的段", between("昨天").join() === "任务_0902_昨天干的" && dirs().length === before - 1, JSON.stringify(dirs()));
+  ok("收起一段不碰根目录那组", dirs()[dirs().length - 1].includes("工作空间根目录"), JSON.stringify(dirs()));
+  ok("收起后段头箭头翻向", [...el.querySelectorAll(".time-head")].find((n) => n.querySelector(".name").textContent === "今天").firstChild.textContent === "▸");
+  [...el.querySelectorAll(".time-head")].find((n) => n.querySelector(".name").textContent === "今天").click();
+  ok("再点一下展开回来", between("今天").join() === "任务_0903_本对话", JSON.stringify(between("今天")));
+
+  // 用户自选工作目录：压根不建对话文件夹，文件全在根目录，那才是正文，得原样摊开
+  window.sessionDirs = new Map();
+  renderFiles([f("甲.txt", t0.getTime()), f("乙.txt", t0.getTime())]);
+  ok("没有对话文件夹时根目录文件原样摊开", el.querySelectorAll(".file-item").length === 2 && !el.querySelector(".time-head"), el.innerHTML.slice(0, 120));
+  return names;
+})()`;
+
 const ATTACH_HTML =
   "<!doctype html><meta charset='utf-8'><body>" +
   "<div class='input-card'><div id='attach-chips'></div><textarea id='input'></textarea></div>" +
@@ -645,6 +734,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：👍👎 反馈上报（真发 payload·下标跟位置·理由选填·改判撤高亮）${names4.length} 项通过`);
     } finally {
       if (!win4.isDestroyed()) win4.destroy();
+    }
+    const win5 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win5.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(FILELIST_HTML));
+      const names5 = await win5.webContents.executeJavaScript(FILELIST_STUBS + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
+      for (const n of names5) console.log("  ✓ " + n);
+      console.log(`✅ 前端：成果面板按时间分段（今天/昨天/7天/按月·取最近动过·折叠独立·根目录降级）${names5.length} 项通过`);
+    } finally {
+      if (!win5.isDestroyed()) win5.destroy();
     }
   } catch (e) {
     console.error("❌ 前端测试失败:", e && e.message ? e.message : e);

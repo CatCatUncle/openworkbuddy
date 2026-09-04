@@ -491,6 +491,12 @@
   .dir-head .mine-tag { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 999px; background: var(--wb-brand); color: #fff; font-size: 11px; line-height: 18px; font-weight: normal; vertical-align: 1px; }
   .dir-head .opendir { color: var(--wb-text-3); padding: 0 2px; }
   .dir-head .opendir:hover { color: var(--wb-brand); }
+  /* 时间段标题：比文件夹更靠外一层，所以字更小、更淡，且不缩进 */
+  .time-head { display: flex; align-items: center; gap: 6px; padding: 10px 10px 4px; font-size: 12px; color: var(--wb-text-3); cursor: pointer; user-select: none; letter-spacing: .02em; }
+  .time-head:hover .name { color: var(--wb-text-2); }
+  .time-head .name { flex: 1; font-weight: 600; }
+  .time-head .cnt { font-size: 11px; color: var(--wb-text-3); }
+  .time-head + .dir-head { margin-top: 0; }
   .out-row .nm .dim { color: var(--wb-text-3); }
   /* ---------- 弹窗 ---------- */
   .modal-mask { display: none; position: fixed; inset: 0; background: rgba(23,24,28,.35); z-index: 50; align-items: center; justify-content: center; }
