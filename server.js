@@ -165,7 +165,11 @@ const assignedDirs = new Set(); // 刚分配、还没写出文件的对话文件
 function assignSessionDir(sess, message) {
   const d = new Date();
   const stamp = String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
-  const slug = String(sess.title || message).replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12) || "对话";
+  // 【任务类型：X】是给模型看的前缀，起标题时早就洗掉了，文件夹名这儿漏了——
+  // 于是真实数据里躺着一个「任务_0826_任务类型数据分析及可视化_3」，
+  // 用户看到的是分类词，真正做的那件事（篮球减肥训练计划）一个字都没进名字。
+  const src = String(sess.title || message).replace(/^\s*【任务类型：[^】]*】\s*/, "");
+  const slug = src.replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12) || "对话";
   let dir = `任务_${stamp}_${slug}`;
   for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)) || assignedDirs.has(dir); i++) dir = `任务_${stamp}_${slug}_${i}`;
   assignedDirs.add(dir);
@@ -2060,10 +2064,31 @@ global.__wbPetTool = {
 // 敢做这个动作只因为两条：一、判定标准是**哈希相同**，不是名字像，原件确确实实还在；
 // 二、**搬进 .trash 而不是删**，捞得回来。少一条都不该有这个按钮。
 // 名字像但内容不同的、根目录独有的，一个都不碰——那些是用户自己的东西。
+// 空的成果文件夹 = 名字是 任务_ 开头、除了 .DS_Store 一个条目都没有、且不是刚刚才建的。
+// 最后那条是唯一的危险点：一个正在跑的回合可能刚建好目录、文件还没落盘，
+// 这时候把它搬走就等于把这一轮的产出打断。10 分钟的静默期换掉这个风险，很值。
+function listEmptyTaskDirs({ quietMs = 600000, now = Date.now() } = {}) {
+  const ws = getWorkspaceDir();
+  if (path.resolve(ws) !== dataPath("workspace")) return []; // 用户自选目录不分配成果文件夹，也就没这回事
+  let names = [];
+  try { names = fs.readdirSync(ws); } catch { return []; }
+  return names.filter((n) => {
+    if (!n.startsWith("任务_")) return false;
+    try {
+      const st = fs.statSync(path.join(ws, n));
+      if (!st.isDirectory() || now - st.mtimeMs < quietMs) return false;
+      return !fs.readdirSync(path.join(ws, n)).some((e) => e !== ".DS_Store");
+    } catch { return false; }
+  });
+}
+
 app.post("/api/files/tidy", (_req, res) => {
   try {
     const dupes = outputFiles().filter((f) => f.dup_of && !f.name.includes("/"));
-    if (!dupes.length) return res.json({ ok: true, moved: 0, files: [] });
+    // 空的成果文件夹：纯聊天也会建目录，真实数据里 24 个文件夹有 6 个一个文件都没有。
+    // 现在回合收尾会自己撤掉，但历史遗留的那些得有人收——顺手挂在这个按钮上，不再单独做一次性脚本。
+    const emptyDirs = listEmptyTaskDirs();
+    if (!dupes.length && !emptyDirs.length) return res.json({ ok: true, moved: 0, files: [] });
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "");
     const trash = safePath(path.join(".trash", stamp));
     fs.mkdirSync(trash, { recursive: true });
@@ -2078,8 +2103,18 @@ app.post("/api/files/tidy", (_req, res) => {
         moved.push(f.name);
       } catch {}
     }
-    security.audit("清理重复副本", moved.join("、") || "（没有可清理的）", "放行");
-    res.json({ ok: true, moved: moved.length, files: moved, trash: path.join(".trash", stamp) });
+    const movedDirs = [];
+    for (const d of emptyDirs) {
+      // 搬之前再确认一次还是空的：列表是几毫秒前拍的快照，这中间可能刚好有一轮往里写了东西
+      try {
+        const p = safePath(d);
+        if (fs.readdirSync(p).some((n) => n !== ".DS_Store")) continue;
+        fs.renameSync(p, path.join(trash, d));
+        movedDirs.push(d);
+      } catch {}
+    }
+    security.audit("清理重复副本", [...moved, ...movedDirs.map((d) => d + "/")].join("、") || "（没有可清理的）", "放行");
+    res.json({ ok: true, moved: moved.length, files: moved, dirs: movedDirs, trash: path.join(".trash", stamp) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -2408,6 +2443,25 @@ app.post("/api/chat", async (req, res) => {
     const t = await Promise.race([titleP, new Promise((r) => setTimeout(r, 3000, null))]);
     const clean = t && t.replace(/[\r\n"“”「」『』]/g, "").trim().slice(0, 20);
     if (clean) { sess.title = clean; send({ type: "title", title: clean }); }
+  }
+  // 这一轮什么都没产出的话，别留一个空文件夹在工作空间里。
+  //
+  // 空文件夹的来路不止一条：executeTool 拿到 baseDir 就 mkdir（连只读工具也会）、
+  // 脚本的 cwd 也要目录先在。逐个堵必漏，所以在回合收尾处一处收口。
+  // 用 rmdirSync 而不是 rm -r：**它删不掉非空目录**，这是天生的保险——
+  // 万一判断有误，最坏结果是删不动报个错，绝不会连着成果一起没了。
+  //
+  // 顺带把名字修好：清掉之后 sess.dir 置空，下一轮重新分配时 sess.title 已经是
+  // 模型生成的真短标题了，于是「任务_0822_你好」这种名字自己就没了。
+  if (taskBaseDir && sess.dir && !(sess.pending_uploads || []).length) {
+    const full = path.join(getWorkspaceDir(), sess.dir);
+    try {
+      if (fs.existsSync(full) ? !fs.readdirSync(full).length : true) {
+        if (fs.existsSync(full)) fs.rmdirSync(full); // 非空会抛，抛了就什么都不动
+        assignedDirs.delete(sess.dir);
+        sess.dir = null;
+      }
+    } catch {} // 删不动就留着，一个空文件夹远好过一次误删
   }
   saveSession(sessionId);
   // 收尾只是刷一遍完整文件列表，不是"本回合有产出"的通报：changed 明确给空，

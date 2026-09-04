@@ -961,6 +961,8 @@ function fileIcon(name) {
 }
 function fmtSize(n) { return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B"; }
 const openDirs = new Set(); // 记住展开状态，刷新列表不回弹
+// 时间段记的是**收起过的**那些，不是展开的：默认全展开，所以空集合就是正确的初始状态
+const closedBuckets = new Set();
 /** 在访达/资源管理器里打开文件所在的文件夹并选中它。按钮挂在文件行/卡片上，别冒泡触发预览 */
 function revealFile(name, e) {
   if (e) { e.stopPropagation(); e.preventDefault(); }
@@ -981,7 +983,15 @@ function renderFiles(files) {
       ${revealBtn(f.name)}
       <a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>
     </div>`;
-  // 子目录归成可折叠分组，当前对话的置顶。
+  // 子目录归成可折叠分组，再按时间装进「今天／昨天／过去 7 天／更早（按月）」。
+  //
+  // 为什么时间只做在**视图**里、磁盘保持扁平：Google ADK 那套产物命名空间是
+  // app/user/session/文件名，**会话是默认主键，压根没有日期这一层**；而 Finder /
+  // 资源管理器 / Drive 全是磁盘扁平、视图里按时间分组。真在磁盘上套一层 2026-08/
+  // 的代价是老文件多一层点击、已有的绝对路径全部失效，而收益（"最近做的东西在哪"）
+  // 视图分组就能给。分组用的是 mtime（跟 Finder 一致——问的是"最近动过什么"），
+  // 文件夹名里那个 MMDD 仍然记着它是哪天开的。
+  //
   // 根目录散件以前是**无条件钉在最上面**的：于是每次打开面板，先撞见的是几个月前
   // 别的对话留下的文件（真实数据里 22 个），「本对话」被挤到看不见的地方——
   // 明明每个对话早就各有各的文件夹，用起来还是"一锅粥"。所以本对话有自己文件夹时，
@@ -995,15 +1005,43 @@ function renderFiles(files) {
     const dir = f.name.slice(0, f.name.lastIndexOf("/"));
     (groups[dir] = groups[dir] || []).push(f);
   }
-  const curDir = sessionDirs.get(sessionId); // 当前对话的成果文件夹：置顶并标出来
+  const curDir = sessionDirs.get(sessionId); // 当前对话的成果文件夹：标「本对话」
   const dirHead = (key, label, n, mine, tip) =>
     `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span>${openDirs.has(key) ? "▾" : "▸"}</span><span>📁</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${n}</span><span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">↗</span></div>`;
+
+  // 一个文件夹归到哪个时间段，看它**最近动过的那个文件**（不是最老的那个）
+  const dirTime = (dir) => groups[dir].reduce((m, f) => Math.max(m, Date.parse(f.mtime) || 0), 0);
+  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+  const D = 86400e3, T0 = dayStart.getTime();
+  const bucketOf = (ms) => {
+    if (ms >= T0) return { key: "#t今天", order: 0, label: "今天" };
+    if (ms >= T0 - D) return { key: "#t昨天", order: 1, label: "昨天" };
+    if (ms >= T0 - 7 * D) return { key: "#t7天", order: 2, label: "过去 7 天" };
+    const d = new Date(ms), y = d.getFullYear(), m = d.getMonth() + 1;
+    // 更早的按月分。同年就不重复写年份——列表里全是今年的东西时，"2026年"这三个字纯占地方
+    return { key: `#t${y}-${m}`, order: 3 + (9999 - y) * 12 + (12 - m), label: `更早（${y === dayStart.getFullYear() ? "" : y + "年"}${m}月）` };
+  };
+  const buckets = new Map();
+  for (const dir of Object.keys(groups)) {
+    const b = bucketOf(dirTime(dir));
+    if (!buckets.has(b.key)) buckets.set(b.key, { ...b, dirs: [] });
+    buckets.get(b.key).dirs.push(dir);
+  }
+
   const demoteRoot = !!curDir && rootFiles.length > 0;
   let html = demoteRoot ? "" : rootFiles.map(f => fileRow(f, false)).join("");
-  for (const dir of Object.keys(groups).sort((a, b) => (a === curDir ? -1 : b === curDir ? 1 : a.localeCompare(b, "zh")))) {
-    html += dirHead(dir, dir, groups[dir].length, dir === curDir, "在 Finder 中打开这个文件夹");
-    if (openDirs.has(dir)) html += groups[dir].sort((a, b) => a.name.localeCompare(b.name, "zh")).map(f => fileRow(f, true)).join("");
+  for (const b of [...buckets.values()].sort((a, b2) => a.order - b2.order)) {
+    const n = b.dirs.reduce((s, d) => s + groups[d].length, 0);
+    const open = !closedBuckets.has(b.key); // 时间段默认展开，文件夹默认收着——展开的是"有哪些成果"这一层
+    html += `<div class="time-head" data-bucket="${esc(b.key)}"><span>${open ? "▾" : "▸"}</span><div class="name">${esc(b.label)}</div><span class="cnt">${b.dirs.length} 个文件夹 · ${n} 个文件</span></div>`;
+    if (!open) continue;
+    // 同一时间段内按"最近动过"排前，本对话的置顶——它一定在「今天」里，但列表长了也得一眼找到
+    for (const dir of b.dirs.sort((x, y) => (x === curDir ? -1 : y === curDir ? 1 : dirTime(y) - dirTime(x)))) {
+      html += dirHead(dir, dir, groups[dir].length, dir === curDir, "在 Finder 中打开这个文件夹");
+      if (openDirs.has(dir)) html += groups[dir].sort((a, b2) => a.name.localeCompare(b2.name, "zh")).map(f => fileRow(f, true)).join("");
+    }
   }
+
   if (demoteRoot) {
     html += dirHead(ROOT_KEY, "工作空间根目录（早期对话留下的）", rootFiles.length, false, "在 Finder 中打开工作空间根目录");
     if (openDirs.has(ROOT_KEY)) {
@@ -1015,6 +1053,10 @@ function renderFiles(files) {
     }
   }
   el.innerHTML = html;
+  el.querySelectorAll(".time-head").forEach(h => h.onclick = () => {
+    closedBuckets.has(h.dataset.bucket) ? closedBuckets.delete(h.dataset.bucket) : closedBuckets.add(h.dataset.bucket);
+    renderFiles(filesCache);
+  });
   el.querySelectorAll(".dir-head").forEach(h => h.onclick = () => {
     openDirs.has(h.dataset.dir) ? openDirs.delete(h.dataset.dir) : openDirs.add(h.dataset.dir);
     renderFiles(filesCache);
@@ -1028,11 +1070,16 @@ function renderFiles(files) {
     const dupes = filesCache.filter(f => f.dup_of && !f.name.includes("/"));
     // 确认框里把清单和去向都摆出来：用户得能在点头之前看清动的是哪几个、还捞不捞得回来
     const list = dupes.slice(0, 10).map(f => "· " + f.name).join("\n") + (dupes.length > 10 ? `\n…共 ${dupes.length} 个` : "");
-    if (!confirm(`这 ${dupes.length} 个文件跟成果文件夹里的逐字节相同，原件不动，副本移到 .trash（可以捞回来）：\n\n${list}`)) return;
+    // 顺带会收掉空的成果文件夹（10 分钟内没动过的才算），所以确认框里得说出来——
+    // 按钮做了什么就写什么，别让用户点完发现还动了别的东西
+    if (!confirm(`这 ${dupes.length} 个文件跟成果文件夹里的逐字节相同，原件不动，副本移到 .trash（可以捞回来）：\n\n${list}\n\n（同时会把一个文件都没有的空成果文件夹也移过去）`)) return;
     tidyBtn.disabled = true;
     try {
       const r = await fetch("/api/files/tidy", { method: "POST" }).then(x => x.json());
-      toast(r.moved ? `已清掉 ${r.moved} 个重复副本（在 ${r.trash} 里）` : "没有可清理的重复副本");
+      const parts = [];
+      if (r.moved) parts.push(`${r.moved} 个重复副本`);
+      if (r.dirs && r.dirs.length) parts.push(`${r.dirs.length} 个空文件夹`);
+      toast(parts.length ? `已清掉 ${parts.join(" + ")}（在 ${r.trash} 里）` : "没有可清理的东西");
       fetch("/api/files").then(x => x.json()).then(renderFiles);
     } catch { toast("❌ 清理失败"); tidyBtn.disabled = false; }
   };

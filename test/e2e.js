@@ -1465,6 +1465,92 @@ function testEvolveRecency() {
   console.log("✅ 自进化时间口径：窗口按轮切（老会话里的旧失败不算最近）· 没逐轮时间就不编日期 · 打分只认生效之后的回合 · 写盘那头也盖了戳");
 }
 
+/**
+ * 对话成果文件夹的名字和生命周期。
+ *
+ * 真实数据里 24 个成果文件夹有 7 个**一个文件都没有**——纯聊天（"你是什么模型啊"）
+ * 也照建一个目录。而目录不止一处会被建出来：executeTool 拿到 baseDir 就 mkdir（连
+ * 只读工具也会）、脚本的 cwd 也要目录先在。逐个堵必漏，所以收口放在回合收尾：
+ * 空了就撤掉，并把 sess.dir 置空——下一轮重新分配时标题已经生成好了，
+ * 于是「任务_0822_你好」这种拿第一句话截出来的名字自己就没了。
+ *
+ * server.js 是 require 即 listen，起不了进程内 HTTP 测试，所以这里把它那两段真源码
+ * 抠出来直接跑：测的是发布出去的那份代码，不是抄一份到测试里的复制品。
+ */
+function testTaskDirLifecycle() {
+  const os = require("os");
+  const srv = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+
+  // ── 一、文件夹名从哪儿来 ──────────────────────────────────────
+  const sm = /const src = String\(sess\.title \|\| message\)[\s\S]*?const slug = [^\n]*\n/.exec(srv);
+  assert.ok(sm, "server.js 里找不到取文件夹名的那两行（assignSessionDir 被改过？）");
+  const slugOf = new Function("sess", "message", sm[0] + "; return slug;");
+
+  // 【任务类型：X】是喂给模型的前缀，起标题时早就洗掉了，文件夹名这儿漏过一次——
+  // 于是真实数据里躺着「任务_0826_任务类型数据分析及可视化_3」，用户看到的是分类词，
+  // 真正做的那件事（篮球减肥训练计划）一个字都没进名字
+  const withTag = slugOf({}, "【任务类型：数据分析及可视化】给我做一个篮球减肥训练计划");
+  assert.ok(!withTag.startsWith("任务类型"), "【任务类型：X】前缀又被当成文件夹名了：" + withTag);
+  assert.ok(withTag.startsWith("给我做一个"), "洗掉前缀后没接着用真正那句话：" + withTag);
+  // 有标题就用标题——这才是"按产出内容命名"的正路，第一句话只是没标题时的兜底
+  assert.strictEqual(slugOf({ title: "篮球减肥训练计划" }, "【任务类型：X】随便什么"), "篮球减肥训练计划", "有标题时没优先用标题");
+  assert.strictEqual(slugOf({ title: "【任务类型：数据分析】篮球减肥计划" }, ""), "篮球减肥计划", "标题里的前缀没洗");
+  assert.strictEqual(slugOf({}, "！！！？？？"), "对话", "全是标点时没退回兜底名");
+  assert.ok(slugOf({}, "看看 https://example.com/a/b 这个页面").indexOf("https") < 0, "网址被塞进文件夹名了");
+
+  // ── 二、什么算"空文件夹" ──────────────────────────────────────
+  const em = /function listEmptyTaskDirs\([\s\S]*?\n}/.exec(srv);
+  assert.ok(em, "server.js 里找不到 listEmptyTaskDirs（被改名了？）");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-taskdir-"));
+  const ws = path.join(dir, "workspace");
+  fs.mkdirSync(ws);
+  const mk = (n, files) => {
+    fs.mkdirSync(path.join(ws, n));
+    for (const f of files || []) fs.writeFileSync(path.join(ws, n, f), "x");
+    fs.utimesSync(path.join(ws, n), new Date(0), new Date(Date.now() - 3600e3)); // 挪到静默期之外
+  };
+  try {
+    mk("任务_0821_空的", []);
+    mk("任务_0822_有货", ["产出.md"]);
+    mk("任务_0823_只有访达垃圾", [".DS_Store"]);
+    mk("我自己建的空文件夹", []);
+    fs.mkdirSync(path.join(ws, "任务_0824_刚建的")); // 不改 mtime：模拟正在跑的那一轮
+    fs.writeFileSync(path.join(ws, "任务_0825_其实是个文件"), "x");
+
+    const build = (dp) => new Function("fs", "path", "getWorkspaceDir", "dataPath", em[0] + "; return listEmptyTaskDirs;")(fs, path, () => ws, dp);
+    const list = build(() => ws);
+    const got = list().sort();
+
+    assert.deepStrictEqual(got, ["任务_0821_空的", "任务_0823_只有访达垃圾"], "空文件夹认错了：" + JSON.stringify(got));
+    // 上面那个 deepStrictEqual 已经把下面几条包含了，但拆开写是为了失败时能一眼看出**哪一条**破了
+    assert.ok(!got.includes("任务_0822_有货"), "有产出的文件夹被当成空的了——这个按钮会把用户的成果搬走");
+    assert.ok(!got.includes("我自己建的空文件夹"), "碰了不是 任务_ 开头的目录，那是用户自己建的");
+    assert.ok(!got.includes("任务_0825_其实是个文件"), "把同名文件当成目录了");
+    // 静默期是唯一真正危险的那条：一个正在跑的回合可能刚建好目录、文件还没落盘
+    assert.ok(!got.includes("任务_0824_刚建的"), "刚建出来的目录就被搬走了——正在跑的那一轮产出会被打断");
+    // now 得显式给：Date.now() 截到毫秒，而 APFS 的 mtime 是纳秒，
+    // 刚 mkdir 出来的目录可能"比现在还新"，静默期设 0 时会亚毫秒级地翻车
+    assert.strictEqual(list({ quietMs: 0, now: Date.now() + 1000 }).length, 3, "把静默期设成 0 之后刚建的那个也该进来（证明上一条不是靠别的原因绿的）");
+
+    // 用户自选工作目录：压根不分配成果文件夹，一个都不许碰
+    assert.deepStrictEqual(build(() => path.join(dir, "别处"))(), [], "用户自选工作目录下还去扫成果文件夹");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  // ── 三、回合收尾那处收口 ──────────────────────────────────────
+  // 上面测的是"判定"，可真正动手的是收尾那几行。谁把 rmdirSync 换成 rm -r，上面照样全绿。
+  const sweep = /if \(taskBaseDir && sess\.dir[\s\S]*?\n  }\n/.exec(srv);
+  assert.ok(sweep, "server.js 回合收尾处找不到清空文件夹那段");
+  assert.ok(/rmdirSync/.test(sweep[0]), "收尾清空文件夹没用 rmdirSync");
+  assert.ok(!/recursive:\s*true/.test(sweep[0]) && !/rmSync/.test(sweep[0]),
+    "收尾用了递归删除——rmdirSync 删不掉非空目录，这是误判时唯一的保险，不能换：\n" + sweep[0]);
+  assert.ok(/pending_uploads/.test(sweep[0]), "没排掉还有待迁移上传件的会话，用户刚拖进来的素材会被连目录一起收走");
+  assert.ok(/sess\.dir = null/.test(sweep[0]), "撤掉目录后没把 sess.dir 置空，下一轮就不会用生成好的标题重起名字");
+
+  console.log("✅ 成果文件夹：名字洗掉【任务类型】前缀·优先用生成标题 · 空文件夹回合收尾自动撤（认目录不认文件、避开刚建的、只用 rmdirSync）");
+}
+
 async function testCodingTools() {
   const { spawnSync } = require("child_process");
   const os = require("os");
@@ -2666,6 +2752,7 @@ async function main() {
   await testPreviewExtract();
   testEvolveLoop();
   testEvolveRecency();
+  testTaskDirLifecycle();
   await testCodingTools();
   await testDeliverableQuality();
   await testAgentPipeline();
