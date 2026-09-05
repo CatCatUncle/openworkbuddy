@@ -76,3 +76,53 @@ function ic(name, cls) {
   window.addEventListener("scroll", hide, true);
   window.addEventListener("blur", hide);
 })();
+
+/** div 当按钮用时补齐键盘语义：Tab 能停、Enter/空格等价于点击、读屏念得出是个按钮 */
+function markActivatable(el) {
+  if (!el) return el;
+  if (el.tabIndex < 0) el.tabIndex = 0;
+  el.dataset.activate = "1"; // 键盘处理认这个标记，不认 role——见下面为什么 role 不能一律加
+  // 成果卡这类元素自己带着「预览 / 打开位置 / 下载」几个真按钮，外层再声明 role="button"
+  // 就成了按钮套按钮，读屏会把里面那几个吞掉。有交互子元素时只给焦点，不动语义。
+  if (!el.getAttribute("role") && !el.querySelector("a[href],button,input,select,textarea")) {
+    el.setAttribute("role", "button");
+  }
+  return el;
+}
+
+/** 绑点击事件的同时把上面那套补上。凡是 `x.onclick = fn` 的 div，都该换成这个 */
+function onActivate(el, fn) {
+  if (!el) return el;
+  el.onclick = fn;
+  return markActivatable(el);
+}
+
+/* 键盘可达：侧栏的会话、项目、导航项全是 <div>，鼠标能点、Tab 走不到。
+   实测这一屏 198 个"看着能点"（cursor:pointer）的元素里有 30 个键盘够不着，
+   其中就包括切会话和切项目这两件最常做的事——纯键盘用户根本换不了会话。
+   这里不动任何渲染代码，只给侧栏那几类行补 tabindex/role，并把 Enter/空格映射成 click。
+   只观察侧栏容器：正文那片在流式输出时每个 token 都在动，往那儿挂 MutationObserver 是纯浪费。 */
+(function () {
+  const SEL = ".hist-item, .proj-item, .side-nav .item";
+  function arm() {
+    document.querySelectorAll(SEL).forEach(markActivatable);
+  }
+  // 正文那片不挂观察器（流式输出时每个 token 都在动），改由 onActivate 在生成处就地补上
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const el = document.activeElement;
+    if (!el || !el.matches || !el.matches('[data-activate="1"]')) return;
+    e.preventDefault(); // 空格默认是翻页，落在行上会把侧栏滚走
+    el.click();
+  });
+  function boot() {
+    arm();
+    const mo = new MutationObserver(arm);
+    ["proj-list", "history"].forEach((id) => {
+      const n = document.getElementById(id);
+      if (n) mo.observe(n, { childList: true, subtree: true });
+    });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+})();

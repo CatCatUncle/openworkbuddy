@@ -73,13 +73,24 @@
   #history { flex: 1; overflow-y: auto; min-height: 0; }
   .hist-item { padding: 8px 10px; border-radius: 8px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .hist-item:hover { background: var(--wb-bg-hover); }
-  .hist-item.active { background: var(--wb-brand-weak); color: var(--wb-brand-text); }
+  /* 这几类行是 div，补了 tabindex 才能 Tab 到；浏览器不给 div 画默认焦点圈，得自己画。
+     用 outline 不用 box-shadow：选中态的左侧指示条正占着 box-shadow。 */
+  .hist-item:focus-visible, .proj-item:focus-visible, .side-nav .item:focus-visible,
+  .out-card:focus-visible, .proc-head:focus-visible, .out-toggle:focus-visible,
+  .src-hd:focus-visible, .user-chip:focus-visible {
+    outline: 2px solid var(--wb-brand); outline-offset: -2px;
+  }
+  /* 选中态不拿品牌色当文字：品牌紫压在自己的浅紫底上只有 4.86:1，比同一列表里
+     未选中项的 5.75:1 还低——当前项成了整列最不清楚的一行，层级是反的。
+     改成 shadcn sidebar 的做法：文字用 accent-foreground（最重），品牌色退回去
+     当左侧指示条（填充色的正确用法），选中与 hover 靠指示条区分，不靠色相。 */
+  .hist-item.active { background: var(--wb-brand-weak); color: var(--wb-text); font-weight: 600; box-shadow: inset 3px 0 0 var(--wb-brand); }
   .side-nav { border-top: 1px solid var(--wb-border); padding-top: 8px; margin-top: 8px; }
   /* 主导航挪到「项目」下面，跟任务历史之间用一条线隔开（历史是列表，导航是入口，别混在一起） */
   .side-nav.top { border-top: none; border-bottom: 1px solid var(--wb-border); padding: 0 0 8px; margin: 6px 0 8px; }
   .side-nav .item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; }
   .side-nav .item:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
-  .side-nav .item.active { background: var(--wb-brand-weak); color: var(--wb-brand-text); font-weight: 500; }
+  .side-nav .item.active { background: var(--wb-brand-weak); color: var(--wb-text); font-weight: 600; box-shadow: inset 3px 0 0 var(--wb-brand); }
   /* 官方 WorkBuddy 的侧栏项是两行：主标题 + 灰色副标题（专家/技能·连接器、自动化/定时任务、更多/资料库·灵感） */
   .side-nav .item .tx { display: flex; flex-direction: column; line-height: 1.35; min-width: 0; }
   .side-nav .item .tx .sub { font-size: 12px; color: var(--wb-text-3); font-weight: 400; }
@@ -105,9 +116,12 @@
   #to-bottom { position: absolute; right: 24px; bottom: 150px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); font-size: 15px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.12); display: none; z-index: 5; }
   #to-bottom.show { display: block; }
   #to-bottom:hover { color: var(--wb-brand-text); border-color: var(--wb-brand-text); }
-  .chat-col { max-width: var(--wb-content-w); margin: 0 auto; padding: 24px 20px 12px; }
+  /* 列宽要把自己的左右内边距算进去，才能和输入卡片落在同一条竖线上：
+     卡片是 832px 整块（428–1260），消息列如果也只有 832px，减掉 20px 内边距后
+     内容只剩 448–1240，两端各内缩 20px——头像和用户气泡的边就都对不上卡片的边。 */
+  .chat-col { max-width: calc(var(--wb-content-w) + 40px); margin: 0 auto; padding: 24px 20px 12px; }
   /* 广场类页面（专家/技能/连接器、模板库）是卡片网格，832px 的阅读宽度会挤成一列 */
-  .chat-col.wide-page { max-width: 1120px; }
+  .chat-col.wide-page { max-width: 1160px; }
   .empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding-top: 10vh; }
   .empty h1 { font-size: 34px; font-weight: 700; margin-bottom: 24px; letter-spacing: 1px; }
   .scene-tabs { display: flex; background: var(--wb-bg-side); border-radius: 26px; padding: 4px; gap: 2px; margin-bottom: 34px; }
@@ -268,7 +282,7 @@
   /* 侧栏项目列表 */
   .proj-item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; }
   .proj-item:hover { background: var(--wb-bg-hover); }
-  .proj-item.active { background: var(--wb-brand-weak); color: var(--wb-brand-text); font-weight: 600; }
+  .proj-item.active { background: var(--wb-brand-weak); color: var(--wb-text); font-weight: 600; box-shadow: inset 3px 0 0 var(--wb-brand); }
   .proj-item .pn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .proj-item .del { visibility: hidden; color: var(--wb-text-3); padding: 0 2px; }
   .proj-item:hover .del { visibility: visible; }
@@ -526,7 +540,7 @@
   .settings-nav { width: 160px; flex-shrink: 0; border-right: 1px solid var(--wb-border); padding: 12px 8px; overflow-y: auto; }
   .settings-nav .cat { padding: 8px 12px; border-radius: 8px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; margin-bottom: 2px; }
   .settings-nav .cat:hover { background: var(--wb-bg-hover); }
-  .settings-nav .cat.active { background: var(--wb-brand-weak); color: var(--wb-brand-text); font-weight: 600; }
+  .settings-nav .cat.active { background: var(--wb-brand-weak); color: var(--wb-text); font-weight: 600; box-shadow: inset 3px 0 0 var(--wb-brand); }
   .settings-pane { flex: 1; padding: 16px 20px; overflow-y: auto; font-size: 14px; }
   .form-row { display: flex; gap: 8px; }
   .form-row > * { flex: 1; }
@@ -726,7 +740,7 @@
   .lib-side .sec { font-size: 13px; color: var(--wb-text-3); margin: 14px 0 4px; display: flex; align-items: center; justify-content: space-between; }
   .lib-it { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 8px; font-size: 14px; cursor: pointer; color: var(--wb-text-2); }
   .lib-it:hover { background: var(--wb-bg-hover); }
-  .lib-it.active { background: var(--wb-brand-weak); color: var(--wb-brand-text); }
+  .lib-it.active { background: var(--wb-brand-weak); color: var(--wb-text); font-weight: 600; box-shadow: inset 3px 0 0 var(--wb-brand); }
   .lib-it .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .lib-it .sz { font-size: 12px; color: var(--wb-text-3); }
   .lib-prev { border: 1px solid var(--wb-border); border-radius: 12px; min-height: 420px; padding: 18px 20px; overflow: auto; }

@@ -39,6 +39,63 @@ const FILELIST_SRC = APP02X.slice(FL0, FL1);
 
 const FILELIST_HTML = "<!doctype html><meta charset='utf-8'><body><div id='file-list'></div></body>";
 
+// 键盘可达：侧栏那几行、成果卡、折叠头本来都是 <div>，鼠标能点、Tab 走不到。
+// 补齐这件事的真源码是 app-00-ui.js 里的 markActivatable/onActivate + 全局 keydown，
+// 整份直接拉进来跑，不抄。测的是"Enter/空格真的等价于点击"，不是"属性写上了没有"。
+const UI00_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-00-ui.js"), "utf8");
+const KBD_HTML = "<!doctype html><meta charset='utf-8'><body>"
+  + "<div id='proj-list'><div class='proj-item'>默认项目</div></div>"
+  + "<div class='side-nav'><div class='item'>专家</div></div>"
+  + "<div id='history'><div class='hist-item'>某个会话</div></div>"
+  + "<div id='chat'><div class='out-card'>报告.pptx<button class='oa-main'>预览</button>"
+  + "<a href='/d' download>下载</a></div><div class='proc-head'>运行中…</div></div>"
+  + "</body>";
+
+const KBD_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const q = (s) => document.querySelector(s);
+  const press = (el, key) => { el.focus(); const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }); el.dispatchEvent(e); return e; };
+
+  // 侧栏三类行：不改渲染代码，靠 arm() 补
+  for (const sel of [".proj-item", ".side-nav .item", ".hist-item"]) {
+    const el = q(sel);
+    ok(sel + " 能 Tab 到", el.tabIndex === 0, "tabIndex=" + el.tabIndex);
+    ok(sel + " 读屏念得出是按钮", el.getAttribute("role") === "button");
+  }
+  let hit = 0;
+  const row = q(".hist-item");
+  row.onclick = () => hit++;
+  press(row, "Enter");
+  ok("回车等价于点击", hit === 1, "hit=" + hit);
+  const ev = press(row, " ");
+  ok("空格也触发", hit === 2, "hit=" + hit);
+  ok("空格不再翻页", ev.defaultPrevented);
+  // 反向：没打标记的元素不许被这套逻辑劫持
+  const plain = document.createElement("div");
+  plain.tabIndex = 0; let stray = 0; plain.onclick = () => stray++;
+  document.body.appendChild(plain); press(plain, "Enter");
+  ok("没打标记的不受影响", stray === 0);
+
+  // onActivate：成果卡自带真按钮和下载链接，外层不能再声明 role="button"（按钮套按钮）
+  const card = q(".out-card");
+  let opened = 0;
+  onActivate(card, () => opened++);
+  ok("成果卡能 Tab 到", card.tabIndex === 0);
+  ok("成果卡不套 role=button", card.getAttribute("role") === null, "role=" + card.getAttribute("role"));
+  ok("成果卡带 data-activate", card.dataset.activate === "1");
+  press(card, "Enter");
+  ok("成果卡回车能打开", opened === 1, "opened=" + opened);
+  // 没有交互子元素的，该给 role
+  const head = q(".proc-head");
+  onActivate(head, () => {});
+  ok("折叠头有 role=button", head.getAttribute("role") === "button");
+  ok("onActivate 传 null 不炸", onActivate(null, () => {}) === null);
+  return names;
+})()
+`;
+
 const FILELIST_STUBS = [
   "window.filesCache = [];",
   "window.esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');",
@@ -743,6 +800,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：成果面板按时间分段（今天/昨天/7天/按月·取最近动过·折叠独立·根目录降级）${names5.length} 项通过`);
     } finally {
       if (!win5.isDestroyed()) win5.destroy();
+    }
+    const win6 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win6.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(KBD_HTML));
+      const names6 = await win6.webContents.executeJavaScript(UI00_SRC + "\n" + KBD_CHECKS, true);
+      for (const n of names6) console.log("  ✓ " + n);
+      console.log(`✅ 前端：键盘可达（侧栏行/成果卡 Tab 得到·回车空格等价点击·按钮不套按钮）${names6.length} 项通过`);
+    } finally {
+      if (!win6.isDestroyed()) win6.destroy();
     }
   } catch (e) {
     console.error("❌ 前端测试失败:", e && e.message ? e.message : e);
