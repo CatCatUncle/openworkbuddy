@@ -391,6 +391,62 @@ function testCssTokenGate() {
   console.log(`✅ CSS 令牌闸门：${defined.size} 个变量全部有定义 · 填充色没被当文字色用`);
 }
 
+function testDocLinkGate() {
+  const root = path.join(__dirname, "..");
+  // 只管项目自己的文档。skills/ 下是内容和第三方技能，里面的 ](URL) 是模板占位，不是死链
+  const docs = path.join(root, "docs");
+  const files = ["README.md", "CONTRIBUTING.md", "COMMERCIAL-LICENSE.md"]
+    .map((f) => path.join(root, f))
+    .filter((f) => fs.existsSync(f))
+    .concat(fs.existsSync(docs) ? fs.readdirSync(docs).filter((f) => f.endsWith(".md")).map((f) => path.join(docs, f)) : []);
+
+  // Markdown 的 [x](y)，加上 README 里那些 HTML 标签的 href/src
+  const grab = (t) => [
+    ...[...t.matchAll(/\[[^\]]*\]\(([^)\s]+)/g)].map((m) => m[1]),
+    ...[...t.matchAll(/(?:href|src)="([^"]+)"/g)].map((m) => m[1]),
+  ];
+  const dead = [];
+  let checked = 0;
+  for (const f of files) {
+    const t = fs.readFileSync(f, "utf8");
+    for (const href of grab(t)) {
+      if (/^(https?:|mailto:|#)/.test(href)) continue;
+      const rel = decodeURIComponent(href.split("#")[0]);
+      if (!rel) continue;
+      checked++;
+      if (!fs.existsSync(path.resolve(path.dirname(f), rel))) dead.push(path.basename(f) + " → " + href);
+    }
+  }
+  assert(dead.length === 0, "文档里有指向不存在文件的链接：" + dead.join("、"));
+
+  // 徽章和 clone 地址得指向真的这个仓库。写错了照样渲染，只是数字是别人的
+  const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+  const slugs = new Set([...readme.matchAll(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?[/"?)\s]/g)].map((m) => m[1]));
+  // 徽章走的是 img.shields.io/github/<指标>/<owner>/<repo>，主机不是 github.com，
+  // 只扫 github.com 会漏掉「徽章指向别人仓库」这种——数字照显，只是不是你的
+  for (const m of readme.matchAll(/img\.shields\.io\/github\/([^"?\s]+)/g)) {
+    const seg = m[1].split("/").filter(Boolean);
+    if (seg.length >= 3) slugs.add(seg.slice(-2).join("/"));
+  }
+  slugs.forEach((sl) => assert(sl === "CatCatUncle/openworkbuddy", "README 里出现了别的仓库地址：" + sl));
+  assert(slugs.size === 1, "README 里没找到仓库地址");
+  // shields 的 release 徽章在没发过 release 时会渲染成 "no releases or repo not found"。
+  // 用本地 git tag 当代理：发布都是从 tag 切的，打了 tag 这条自然放行，不用另外维护标记
+  if (/img\.shields\.io\/github\/v\/release/.test(readme)) {
+    let tags = null;
+    try { tags = require("child_process").execSync("git tag -l", { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch {}
+    assert(tags === null || tags !== "", "挂了 release 徽章但一个 tag 都没有，徽章会渲染成报错文本");
+  }
+
+  // 反向断言：闸门得真能抓到死链和错仓库，否则改坏了也全绿
+  assert(grab("[x](docs/根本没有这个.md)").length === 1, "链接提取失效");
+  assert(!fs.existsSync(path.resolve(root, "docs/根本没有这个.md")), "存在性检查失效");
+  assert([...("github.com/someoneelse/repo\"".matchAll(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?[/"?)\s]/g))][0][1] === "someoneelse/repo", "仓库地址正则失效");
+  const probeSlug = [...("img.shields.io/github/v/release/someoneelse/repo?x=1".matchAll(/img\.shields\.io\/github\/([^"?\s]+)/g))][0][1].split("/").slice(-2).join("/");
+  assert(probeSlug === "someoneelse/repo", "徽章仓库地址提取失效");
+  console.log(`✅ 文档链接闸门：${files.length} 个文档 ${checked} 条本地链接全部存在 · 徽章指向本仓库`);
+}
+
 function testDeliverableGate() {
   const real = path.join(WORKSPACE, "e2e-核验有内容.md");
   const empty = path.join(WORKSPACE, "e2e-核验空壳.md");
@@ -2767,6 +2823,7 @@ async function main() {
   testAvatarRules();
   testPathSafety();
   testCssTokenGate();
+  testDocLinkGate();
   testDeliverableGate();
   testContextBudget();
   testToolPairRepair();
