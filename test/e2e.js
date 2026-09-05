@@ -458,6 +458,75 @@ function testDocLinkGate() {
   console.log(`✅ 文档链接闸门：${files.length} 个文档 ${checked} 条本地链接全部存在 · 徽章指向本仓库`);
 }
 
+/**
+ * 生图必须主动关水印。
+ *
+ * 这条闸门是拿真事故换来的：generate_image 有两条分支，DashScope 那条写了
+ * parameters.watermark = false，OpenAI 兼容那条（火山方舟 doubao-seedream、new-api 网关都走这条）
+ * 一个字都没写——而 doubao 的 watermark 默认就是 true。用户拿到的每一张图右下角都烙着「AI 生成」，
+ * agent 只能事后去局部重绘擦掉，造了 8 个中间文件，还把对话里的成品卡位全占了。
+ * 漏的是一个默认值，赔进去的是整条产出链路。
+ *
+ * 三件事都得钉住，少一件这个洞就会以另一种形式回来：
+ *   1. 正常渠道：请求里必须真的带 watermark: false（不是「代码里写了」，是「发出去了」）；
+ *   2. 严格渠道（OpenAI 官方对不认识的字段直接 400）：退一步不带它重发，但必须在回执里说出来——
+ *      静默退回去，用户下次又拿到带水印的图，还是查不出原因；
+ *   3. 非参数错误（余额不足、鉴权失败）：不许被当成参数问题吞掉去重发，那会把真错因藏起来。
+ */
+async function testImageWatermarkGate() {
+  const http = require("http");
+  const os = require("os");
+  const { generateImage } = require("../tools")._internals;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-wm-"));
+  const seen = [];
+  let mode = "accept";
+  const srv = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      let body = {};
+      try { body = JSON.parse(raw || "{}"); } catch {}
+      seen.push(body);
+      const j = (code, o) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+      if (mode === "strict" && "watermark" in body) return j(400, { error: { message: "Unrecognized request argument supplied: watermark" } });
+      if (mode === "broke") return j(400, { error: { message: "余额不足，请充值后重试" } });
+      j(200, { data: [{ b64_json: Buffer.from("fake-png").toString("base64") }] });
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const media = { image: { base_url: `http://127.0.0.1:${srv.address().port}/v1`, model: "seedream", api_key: "k" } };
+  try {
+    const r1 = await generateImage(media, { prompt: "一只猫", filename: "e2e-wm-1.png" }, 5000, dir);
+    assert(!r1.isError, "正常渠道生图失败：" + r1.content);
+    assert(seen.length === 1, "正常渠道多发了请求：" + seen.length);
+    assert(seen[0].watermark === false, "生图请求没带 watermark:false，图会带平台水印");
+    assert(!/水印/.test(r1.content), "正常渠道不该在回执里提水印：" + r1.content);
+
+    mode = "strict"; seen.length = 0;
+    const r2 = await generateImage(media, { prompt: "一只猫", filename: "e2e-wm-2.png" }, 5000, dir);
+    assert(!r2.isError, "严格渠道该退一步重发并成功，实际：" + r2.content);
+    assert(seen.length === 2, "严格渠道应当只重发一次，实际发了 " + seen.length + " 次");
+    assert(seen[0].watermark === false && !("watermark" in seen[1]), "重发时没把 watermark 去掉");
+    assert(/水印/.test(r2.content), "退让了却没在回执里留痕，用户查不出图为什么带水印：" + r2.content);
+
+    mode = "broke"; seen.length = 0;
+    const r3 = await generateImage(media, { prompt: "一只猫", filename: "e2e-wm-3.png" }, 5000, dir);
+    assert(r3.isError, "余额不足竟然没报错");
+    assert(seen.length === 1, "非参数错误不该重发，实际发了 " + seen.length + " 次");
+    assert(/余额不足/.test(r3.content), "真正的错因被吞掉了：" + r3.content);
+
+    // 反向断言：把「漏写 watermark 的那种请求体」喂给同一条判据，它必须判失败。
+    // 判据要是判不出来，代码哪天改回漏写的样子，这条测试照样全绿
+    let caught = false;
+    try { assert(({ model: "m", prompt: "p", n: 1 }).watermark === false, "x"); } catch { caught = true; }
+    assert(caught, "闸门判据失效：漏写 watermark 的请求体居然也能过");
+    console.log("✅ 生图水印闸门：默认关水印 · 渠道不认时退让并留痕 · 非参数错误不吞");
+  } finally {
+    srv.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function testDeliverableGate() {
   const real = path.join(WORKSPACE, "e2e-核验有内容.md");
   const empty = path.join(WORKSPACE, "e2e-核验空壳.md");
@@ -1903,6 +1972,33 @@ function testMemoryLayer() {
     const raw = require("fs").readFileSync(mem._internals.ITEMS_FILE, "utf8");
     assert.strictEqual(/sk-abcdef|ghp_aaaa|hunter2000/.test(raw), false, "被拒记的敏感内容还是写进文件了");
 
+    // 「某个功能现在已经好了」这类对本机能力的断言一律拒记。
+    // 真事故：生图那条分支忘了关平台水印，agent 每次自己造中间文件擦掉，然后记下
+    // 「generate_image 工具现已支持无水印出图，问题已解决」——代码里那个参数从没发过。
+    // 记忆不会复核，它只会一路错下去，而且越用越确信。
+    for (const bad of [
+      "内置 generate_image 工具现已支持无水印出图，此前服务端强制加水印的问题已解决",
+      "run_node 的依赖问题已修复，现在可以直接 require 第三方包",
+      "这个接口的超时 bug 已解决",
+    ]) {
+      const r = mem.add({ text: bad, user: "甲" });
+      assert.strictEqual(r.ok, false, "这条状态断言应当被拒记：" + bad);
+      assert.ok(/试一次|偏好/.test(r.note), r.note);
+    }
+    // 但真·用户偏好和真·世界事实不许误伤——闸门要求主语和断言同时命中就是为了这个
+    for (const good of [
+      "交付物一律不要任何 AI 生成水印或标识",
+      "公司的报销系统已经换成飞书了",
+      "周报里不再有开场白，直接进正文",
+      "用户习惯用 pnpm，不用 npm",
+    ]) {
+      const r = mem.add({ text: good, user: "丁" });  // 用独立作用域，别污染下面按条数算的断言
+      assert.strictEqual(r.ok, true, "这条不该被拦：" + good + " / " + r.note);
+    }
+    // 反向断言：闸门判据本身得真的会命中，否则上面四条全绿也只说明它谁都不拦
+    assert.strictEqual(mem._internals.looksStaleClaim("这个工具的问题已解决"), true, "闸门判据失效");
+    assert.strictEqual(mem._internals.looksStaleClaim("交付物一律不要水印"), false, "闸门判据把普通偏好也拦了");
+
     // 单条太长 → 直接拒，并说清楚该记结论不是记过程
     const long = mem.add({ text: "啊".repeat(mem.MAX_TEXT + 1), user: "甲" });
     assert.strictEqual(long.ok, false);
@@ -1955,7 +2051,7 @@ function testMemoryLayer() {
   });
   fs.rmSync(dir, { recursive: true, force: true });
   assert.strictEqual(r.status, 0, "记忆层测试失败：\n" + (r.stderr || r.stdout));
-  console.log("✅ 记忆层：按账号隔离（提示词也不串）· 去重 · 密钥拒记且不落盘 · 超量丢最旧留痕 · 改名跟着搬");
+  console.log("✅ 记忆层：按账号隔离（提示词也不串）· 去重 · 密钥拒记且不落盘 · 「功能已修好」这类状态断言拒记 · 超量丢最旧留痕 · 改名跟着搬");
 }
 
 function testCommandGate() {
@@ -2835,6 +2931,7 @@ async function main() {
   testPathSafety();
   testCssTokenGate();
   testDocLinkGate();
+  await testImageWatermarkGate();
   testDeliverableGate();
   testContextBudget();
   testToolPairRepair();

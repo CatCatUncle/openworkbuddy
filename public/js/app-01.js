@@ -478,7 +478,7 @@ function createTurnUI(userText, turnMode, forSid) {
         ? (ev.files || []).filter(f => ev.changed.includes(f.name))
         : changedFiles(ev.files);
       liveOuts += turnOut.length;
-      renderTurnOutputs(body, turnOut); // 先算差异，autoPreviewNewHtml 里才会推进快照
+      renderTurnOutputs(body, turnOut, ev.files); // 先算差异，autoPreviewNewHtml 里才会推进快照
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的，
       // 自动预览更会莫名其妙弹出一个几天前的文件。产出卡片照摆，其余一律不动。
       if (!isReplaying) {
@@ -1438,7 +1438,46 @@ function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } c
 // 把本回合的产出做成卡片挂在对话里。右侧文件面板是"所有文件"，这里是"这次产出的"——
 // 用户要的是聊完直接点开，而不是回头去面板里认哪个是刚才那个。
 const OUT_CARD_MAX = 8;                                   // 一屏摆得下的量；超了只提示条数，别把对话冲垮
-function renderTurnOutputs(body, changed) {
+const FILES_LIST_CAP = 500;                               // 服务端 outputFiles() 的截断上限，见 tools.js
+
+/**
+ * 把「这一回合中途造出来、后来又被删掉」的文件从产出区撤掉。
+ *
+ * 之前这个函数只加不减：卡片是每次 files 事件累加的，文件删了卡片留着。
+ * 后果不止是「看得见不该看的」——真实会话里 agent 为了擦掉生图带的水印，造了 8 个中间文件
+ * （_tab1/_tab2/_corner/_bottom/_wm2…），干完活它确实把中间文件删了，但 8 张卡片正好把
+ * OUT_CARD_MAX 占满，最后那张唯一的成品反而一张卡都没轮上。用户在对话里看到 8 个中间过程，
+ * 一个成品都看不到，而 agent 还在说「目录里只留这一张正式成果」——界面在替它撒谎。
+ *
+ * 判定依据是服务端刚给的完整列表：卡片能挂上来，说明它当时在列表里；现在不在了，就是没了。
+ * 两个前提得守住，否则会误杀还活着的文件：
+ *   - outputFiles() 到 500 条就截断，截断了的列表说明不了「不存在」，那一轮不回收；
+ *   - 变更清单里的行不删，只打上「已删除」——中途造了什么是真实发生过的事，
+ *     抹掉等于帮 agent 圆谎；但下载/定位入口要摘掉，留着点了就是 404。
+ */
+function reapDeletedOutputs(block, live) {
+  if (!Array.isArray(live) || live.length >= FILES_LIST_CAP) return 0;
+  const alive = new Set(live.map((f) => f.name));
+  let n = 0;
+  block.querySelectorAll(".out-card").forEach((c) => {
+    if (!alive.has(c.dataset.name)) { c.remove(); n++; return; }
+    // 卡还在，但挂在它身上的「另一种格式」没了：只摘那条链接，卡留着
+    const altLink = c.querySelector(".oa-alt");
+    if (altLink && !alive.has(altLink.dataset.name)) { altLink.remove(); delete c.dataset.alt; }
+  });
+  block.querySelectorAll(".out-row").forEach((r) => {
+    if (alive.has(r.dataset.name) || r.classList.contains("gone")) return;
+    r.classList.add("gone");
+    r.querySelectorAll(".dl, .rv").forEach((el) => el.remove());
+    r.onclick = null;
+    const sz = r.querySelector(".sz");
+    if (sz) sz.textContent = "已删除";
+    n++;
+  });
+  return n;
+}
+
+function renderTurnOutputs(body, changed, live) {
   if (!body || !changed || !changed.length) return;
   let block = body.querySelector(":scope > .out-block");
   if (!block) {
@@ -1453,6 +1492,8 @@ function renderTurnOutputs(body, changed) {
   }
   const grid = block.querySelector(".out-grid");
   const list = block.querySelector(".out-list");
+  // 顺序要紧：先撤掉已删的，再派卡。反过来的话上限还是被死掉的中间文件占着，成品照样进不来
+  reapDeletedOutputs(block, live);
   for (const f of changed) {
     const isHtml = /\.html?$/i.test(f.name);
     const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name);
@@ -1536,6 +1577,7 @@ function attachAltFmt(card, alt) {
   self.innerHTML = ic("download") + `<span class="tx">${fmt(card.dataset.name)}</span>`;
   const a = document.createElement("a");
   a.className = "oa-ico oa-fmt oa-alt";
+  a.dataset.name = alt;
   a.href = "/api/files/download/" + encodeURIComponent(alt);
   a.setAttribute("download", "");
   a.title = "下载 " + fmt(alt) + "（" + alt + "）";

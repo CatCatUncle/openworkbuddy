@@ -242,6 +242,10 @@
   .out-row .sz { color: var(--wb-text-3); flex: none; }
   .out-row .dl { color: var(--wb-text-3); text-decoration: none; padding: 0 2px; flex: none; }
   .out-row .dl:hover { color: var(--wb-brand-text); }
+  /* 中途造出来又被删掉的文件：行留着（发生过就是发生过），但删掉线 + 摘掉入口，点了不会 404 */
+  .out-row.gone { cursor: default; opacity: .55; }
+  .out-row.gone:hover { background: transparent; }
+  .out-row.gone .nm { text-decoration: line-through; }
   .out-card { width: 240px; border: 1px solid var(--wb-border); border-radius: 12px; overflow: hidden; background: var(--wb-bg); cursor: pointer; transition: border-color .15s, box-shadow .15s; }
   .out-card:hover { border-color: var(--wb-brand-text); box-shadow: 0 4px 12px rgba(91,95,247,.12); }
   /* 缩略图：真的把网页/图片缩着渲染出来，比一个通用图标有用得多 */
