@@ -1115,7 +1115,7 @@ function renderUserChip() {
     + `<span class="un">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</span>`
     // 不限额时不显示余额：一个永远不会动、也拦不住任何事的数字挂在那里只会让人担心
     + (creditsOn ? `<span class="uc">✦ ${(+currentUser.credits).toLocaleString()}</span>` : "");
-  chip.onclick = (e) => { e.stopPropagation(); toggleUserMenu(); };
+  onActivate(chip, (e) => { e.stopPropagation(); toggleUserMenu(); });
 }
 document.getElementById("gear-btn").onclick = () => { closeUserMenu(); openModal("settings"); };
 

@@ -259,7 +259,7 @@ function createTurnUI(userText, turnMode, forSid) {
       procWrap.className = "proc-wrap open";
       procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="arrow">›</span></div><div class="proc-body"></div>`;
       procBody = procWrap.querySelector(".proc-body");
-      procWrap.querySelector(".proc-head").onclick = () => procWrap.classList.toggle("open");
+      onActivate(procWrap.querySelector(".proc-head"), () => procWrap.classList.toggle("open"));
       // 追加（不是 prepend）：开场白留在折叠区上方可见，仿官方「先说在做什么 → 过程收起 → 结论在外」
       body.appendChild(procWrap);
       procTimer = setInterval(() => {
@@ -1413,7 +1413,7 @@ function renderSources(body, items) {
     block = document.createElement("div");
     block.className = "src-block";
     block.innerHTML = `<div class="src-hd"></div><div class="src-list"></div>`;
-    block.querySelector(".src-hd").onclick = () => block.classList.toggle("open");
+    onActivate(block.querySelector(".src-hd"), () => block.classList.toggle("open"));
     body.appendChild(block);
   }
   const list = block.querySelector(".src-list");
@@ -1446,10 +1446,10 @@ function renderTurnOutputs(body, changed) {
     block.className = "out-block fold"; // 变更清单默认收起，想看再点开
     block.innerHTML = `<div class="out-grid"></div><div class="out-hd out-toggle"><span class="ar">▸</span> 查看所有变更 <span class="n"></span></div><div class="out-list"></div>`;
     body.appendChild(block);
-    block.querySelector(".out-toggle").onclick = () => {
+    onActivate(block.querySelector(".out-toggle"), () => {
       const fold = block.classList.toggle("fold");
       block.querySelector(".ar").textContent = fold ? "▸" : "▾";
-    };
+    });
   }
   const grid = block.querySelector(".out-grid");
   const list = block.querySelector(".out-list");
@@ -1585,7 +1585,7 @@ function makeOutCard(f, isHtml) {
       <button class="oa-main" data-a="${isHtml ? "br" : "pv"}">${isHtml ? ic("globe") : ic("file-text")}<span class="tx">${isHtml ? "在浏览器打开" : "预览"}</span></button>
       <button class="oa-ico" data-a="rv" title="打开所在位置">${ic("folder-open")}</button>
       <a class="oa-ico" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">${ic("download")}</a></div>`;
-  card.onclick = (e) => {
+  onActivate(card, (e) => {
     if (e.target.closest("a")) return;
     if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e);
     if (e.target.closest('[data-a="br"]')) {
@@ -1596,7 +1596,7 @@ function makeOutCard(f, isHtml) {
       return;
     }
     previewFile(f.name);
-  };
+  });
   return card;
 }
 
