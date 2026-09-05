@@ -144,8 +144,8 @@ function renderSecurityPane(pane, s) {
     const d = await fetch("/api/security/system").then(r => r.json()).catch(() => null);
     if (!d) { el.textContent = "读取失败"; return; }
     const txt = {
-      granted: '<span style="color:var(--wb-ok)">✅ 已授权</span>',
-      denied: '<span style="color:var(--wb-err)">未授权</span>',
+      granted: '<span style="color:var(--wb-ok-text)">✅ 已授权</span>',
+      denied: '<span style="color:var(--wb-err-text)">未授权</span>',
       unknown: '<span style="color:var(--wb-text-3)">无法检测</span>',
       unchecked: '<span style="color:var(--wb-text-3)">未检测</span>',
     };
@@ -308,7 +308,7 @@ async function renderEvolvePane(pane) {
         每天 <input id="ev-hour" type="number" min="0" max="23" value="${auto.hour === undefined ? 3 : auto.hour}" style="width:48px;height:24px;margin:0;font-size: 13px"> 点自动跑一轮
         <span style="color:var(--wb-text-3)">（默认关，因为每次都要调一次模型花钱；跑出来的提案仍然要你点头才生效）</span>
       </label>
-      ${runs.length ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-3)">上次：${esc((runs[0].at || "").slice(0, 16).replace("T", " "))} · ${esc(runs[0].trigger || "")} · ${runs[0].ok ? `${runs[0].turns} 个回合，新提案 ${runs[0].added} 条` : `<span style="color:var(--wb-err)">没跑成：${esc(runs[0].error || "")}</span>`}</div>` : ""}
+      ${runs.length ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-3)">上次：${esc((runs[0].at || "").slice(0, 16).replace("T", " "))} · ${esc(runs[0].trigger || "")} · ${runs[0].ok ? `${runs[0].turns} 个回合，新提案 ${runs[0].added} 条` : `<span style="color:var(--wb-err-text)">没跑成：${esc(runs[0].error || "")}</span>`}</div>` : ""}
     </div>
     <div class="card-item">
       <div class="t">📊 最近 ${sg.days || caps.window} 天的信号（${sg.turns || 0} 个助手回合）</div>

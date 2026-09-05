@@ -3,12 +3,12 @@ function renderModelMenu(menu = modelMenu) {
   if (!settingsCache || !menu) return;
   const ov = currentSessModel();
   menu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
-      <span>↺ 跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${healthBadge(settingsCache.active_model)}</span></span>${ov ? "" : '<span style="color:var(--wb-ok)">✓</span>'}</div>`
+      <span>↺ 跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${healthBadge(settingsCache.active_model)}</span></span>${ov ? "" : '<span style="color:var(--wb-ok-text)">✓</span>'}</div>`
     + settingsCache.models.map(m => {
       const on = m.name === ov;
       return `<div class="mi ${on ? "on" : ""}" data-name="${esc(m.name)}" style="justify-content:space-between">
       <span>✦ ${esc(m.name)} <span class="sub">${esc(m.model)}${m.api_key ? "" : " · ⚠ 未填Key"}${healthBadge(m.name)}</span></span>
-      ${on ? '<span style="color:var(--wb-ok)">✓</span>' : ""}</div>`;
+      ${on ? '<span style="color:var(--wb-ok-text)">✓</span>' : ""}</div>`;
     }).join("")
     + `<div class="mi" data-act="manage" style="border-top:1px solid var(--wb-border);margin-top:4px">⚙️ 管理模型…</div>`;
   menu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
@@ -1151,7 +1151,7 @@ function openUserMenu() {
       `<div class="um-opt" data-theme="${k}">${l}${getTheme() === k ? '<span class="ck">✓</span>' : ""}</div>`).join("")}</div>
     <div class="um-i" data-act="help">💬 帮助与反馈</div>
     <div class="um-i" data-act="update">🔄 检查更新</div>
-    <div class="um-i" data-act="logout" style="color:var(--wb-err)">↪ 退出登录</div>`;
+    <div class="um-i" data-act="logout" style="color:var(--wb-err-text)">↪ 退出登录</div>`;
   userMenu.querySelectorAll("[data-act]").forEach(el => el.onclick = async (e) => {
     e.stopPropagation();
     const act = el.dataset.act;

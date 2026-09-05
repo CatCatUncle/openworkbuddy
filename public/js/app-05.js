@@ -34,7 +34,7 @@ async function renderHubMcp(box) {
             : `<b style="font-family:inherit;opacity:.6">本地 ·</b> ` + esc(sv.command) + " " + esc((sv.args || []).join(" "))}</div>
           <div class="tg">${sv.connected
             ? (sv.tools || []).slice(0, 8).map(t => `<i title="${esc(t.description || "")}">${esc(t.name)}</i>`).join("") + ((sv.tools || []).length > 8 ? `<i>…共 ${sv.tools.length} 个</i>` : "")
-            : `<i style="color:var(--wb-err)">${esc(sv.error || "命令启动失败或握手超时，详见应用日志")}</i>`}</div>
+            : `<i style="color:var(--wb-err-text)">${esc(sv.error || "命令启动失败或握手超时，详见应用日志")}</i>`}</div>
           <div class="ops">${sv.plugin
             ? '<button disabled title="这条是插件声明的，要去「插件」页卸载整个插件">插件提供</button>'
             : '<button class="mcp-del">删除</button>'}</div>
@@ -880,7 +880,7 @@ async function renderLarkQr(pane) {
       if (!s2 || !line) { clearInterval(larkQrPoll); larkQrPoll = null; return; }
       if (s2.state === "ok") {
         clearInterval(larkQrPoll); larkQrPoll = null;
-        qr.innerHTML = `<div style="color:var(--wb-ok)">✅ 授权成功${s2.user ? "：" + esc(s2.user) : ""}。现在 AI 可以用 lark-cli 以你的身份操作飞书了。</div>`;
+        qr.innerHTML = `<div style="color:var(--wb-ok-text)">✅ 授权成功${s2.user ? "：" + esc(s2.user) : ""}。现在 AI 可以用 lark-cli 以你的身份操作飞书了。</div>`;
         renderLarkQr(pane);
       } else if (s2.state === "error") {
         clearInterval(larkQrPoll); larkQrPoll = null;

@@ -33,8 +33,8 @@
   --secondary: #f7f8fa;
   --secondary-foreground: #17181c;
   --muted: #f7f8fa;
-  --muted-foreground: #6a6f7d;
-  --subtle-foreground: #9aa0ad;      /* 比 muted 更淡的第三级文字，shadcn 没这一档，本项目要 */
+  --muted-foreground: #5c6270;   /* 白底 6.11:1 */
+  --subtle-foreground: #6a6f7d;      /* 比 muted 更淡的第三级文字，shadcn 没这一档，本项目要。白底 5.02:1 */
   --accent: #eef0f4;
   --accent-foreground: #17181c;
   --destructive: #e5484d;
@@ -44,6 +44,9 @@
   --input: #e9ebf0;
   --ring: #5b5ff7;
   --ring-weak: #eef0ff;              /* focus 光圈用的低饱和底色 */
+  --brand-text: #5155e8;             /* 品牌色当文字用的那一档：白底 5.51 / 选中底 4.86 */
+  --danger-text: #bf3035;            /* 同理，红色当文字用：浅红底 4.73 */
+  --success-text: #127538;           /* 绿色当文字用：#16a34a 白底只有 3.30，浅绿底 2.82 */
   --warning: #b26a00;                /* shadcn 没这一档，本项目「跳过了一些零件」这类提示要用 */
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -60,7 +63,7 @@ html[data-theme="dark"] {
   --secondary-foreground: #e8eaf0;
   --muted: #17181c;
   --muted-foreground: #a4a9b6;
-  --subtle-foreground: #7a8090;
+  --subtle-foreground: #8f96a6;   /* 暗底 5.55:1，原 #7a8090 只有 4.17 */
   --accent: #2b2d34;
   --accent-foreground: #e8eaf0;
   --destructive: #e5484d;
@@ -68,6 +71,9 @@ html[data-theme="dark"] {
   --input: #34363e;
   --ring: #8b8fff;
   --ring-weak: #2e3054;
+  --brand-text: #9ea1fb;          /* 暗色下 #5b5ff7 当文字只有 3.47，提亮到 7.01 */
+  --danger-text: #f2757a;         /* 同上：暗红底上 #e5484d 3.63 → 5.14 */
+  --success-text: #3fc978;        /* 暗绿底上 #16a34a 4.18 → 6.46 */
   --warning: #d9a441;
 }
 
@@ -106,7 +112,7 @@ html[data-theme="dark"] {
 .ui-btn--ghost:hover { background: var(--accent); color: var(--accent-foreground); }
 .ui-btn--destructive { background: var(--destructive); color: var(--destructive-foreground); }
 .ui-btn--destructive:hover { filter: brightness(1.06); }
-.ui-btn--link { color: var(--primary); height: auto; padding: 0; }
+.ui-btn--link { color: var(--brand-text); height: auto; padding: 0; }
 .ui-btn--link:hover { text-decoration: underline; }
 
 .ui-btn--sm { height: 32px; padding: 0 12px; font-size: 13px; gap: 6px; border-radius: var(--radius-sm); }
@@ -144,8 +150,8 @@ html[data-theme="dark"] {
 .ui-badge .i { width: 12px; height: 12px; }
 .ui-badge--secondary { background: var(--secondary); color: var(--secondary-foreground); }
 .ui-badge--outline { border-color: var(--border); color: var(--muted-foreground); }
-.ui-badge--destructive { background: color-mix(in srgb, var(--destructive) 14%, transparent); color: var(--destructive); }
-.ui-badge--success { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
+.ui-badge--destructive { background: color-mix(in srgb, var(--destructive) 14%, transparent); color: var(--danger-text); }
+.ui-badge--success { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success-text); }
 
 /* ---------- Separator ---------- */
 .ui-separator { height: 1px; background: var(--border); border: 0; margin: 8px 0; }
