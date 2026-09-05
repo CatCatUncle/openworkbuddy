@@ -24,6 +24,11 @@
 </p>
 
 <p align="center">
+  <b>⭐ 觉得有用，<a href="https://github.com/CatCatUncle/openworkbuddy">点个 Star</a></b> —— 这个项目没有任何推广渠道，<br>
+  别人搜不搜得到它，基本就取决于这个数字。<a href="#一起把它做下去">也很欢迎你动手改它 ↓</a>
+</p>
+
+<p align="center">
   <sub>个人与非商业用途免费 · 商业使用需单独授权 · 作者 开发者猫叔</sub>
 </p>
 
@@ -82,6 +87,18 @@ npm run app     # 桌面版；或 npm start 走浏览器 http://localhost:3800
 
 它能执行命令、读写文件、访问网络——所以闸门是真拦的：命令审批、文件黑名单、URL 白名单、审计日志、四档权限。**放到公网前务必先读 [安全](docs/安全.md)**，默认配置只为本机使用而调。
 
+## 一起把它做下去
+
+**用崩了、卡住了，开个 [issue](https://github.com/CatCatUncle/openworkbuddy/issues/new) —— 哪怕只贴一句报错。** 你觉得「应该只有我一个人遇到」的那个坑，多半所有人都在踩，说出来才会被修掉。贴之前扫一眼，别把 API Key 带上。
+
+**想动手，按投入从小到大三条路：**
+
+- **10 分钟** —— 写个技能。一个 Markdown 文件丢进 `skills/`，存盘即生效，一行代码都不用改，见 [扩展](docs/扩展.md)
+- **1 小时** —— 补一个模型渠道预设、修一处文档、给某个文件格式加上预览
+- **一晚上** —— 挑个 issue 改。零构建零框架，`npm install && npm start` 就跑起来，前端改完刷新页面即可
+
+项目结构、怎么跑测试、PR 规范都在 [参与贡献](CONTRIBUTING.md) 里。不用先开 issue 问，直接发 PR。
+
 ## 文档
 
 | | |
@@ -96,20 +113,6 @@ npm run app     # 桌面版；或 npm start 走浏览器 http://localhost:3800
 | [部署](docs/部署.md) | 服务器 / Docker / 反代 |
 | [实现细节](docs/实现细节.md) | agent 主循环怎么转的 |
 | [参与贡献](CONTRIBUTING.md) | 项目结构、测试、提 PR |
-
-## 一起把它做下去
-
-**觉得有用就点个 ⭐ [Star](https://github.com/CatCatUncle/openworkbuddy)。** 这个项目没有任何推广渠道，别人搜不搜得到它，基本就取决于这个数字。
-
-**用崩了、卡住了，开个 [issue](https://github.com/CatCatUncle/openworkbuddy/issues/new) —— 哪怕只贴一句报错。** 你觉得「应该只有我一个人遇到」的那个坑，多半所有人都在踩，说出来才会被修掉。贴之前扫一眼，别把 API Key 带上。
-
-**想动手，按投入从小到大三条路：**
-
-- **10 分钟** —— 写个技能。一个 Markdown 文件丢进 `skills/`，存盘即生效，一行代码都不用改，见 [扩展](docs/扩展.md)
-- **1 小时** —— 补一个模型渠道预设、修一处文档、给某个文件格式加上预览
-- **一晚上** —— 挑个 issue 改。零构建零框架，`npm install && npm start` 就跑起来，前端改完刷新页面即可
-
-项目结构、怎么跑测试、PR 规范都在 [参与贡献](CONTRIBUTING.md) 里。不用先开 issue 问，直接发 PR。
 
 ## 协议
 

@@ -405,12 +405,22 @@ function testDocLinkGate() {
     ...[...t.matchAll(/\[[^\]]*\]\(([^)\s]+)/g)].map((m) => m[1]),
     ...[...t.matchAll(/(?:href|src)="([^"]+)"/g)].map((m) => m[1]),
   ];
+  // GitHub 给标题生成锚点的规则：小写、去掉标点、空格转连字符，中文原样保留
+  const slugify = (h) => h.trim().replace(/[*`~]/g, "").toLowerCase()
+    .replace(/[^\w\u4e00-\u9fff\s-]/g, "").trim().replace(/\s+/g, "-");
   const dead = [];
   let checked = 0;
   for (const f of files) {
     const t = fs.readFileSync(f, "utf8");
+    const anchors = new Set([...t.matchAll(/^#{1,6}\s+(.+?)\s*$/gm)].map((m) => slugify(m[1])));
     for (const href of grab(t)) {
-      if (/^(https?:|mailto:|#)/.test(href)) continue;
+      if (/^(https?:|mailto:)/.test(href)) continue;
+      // 页内锚点：跳过等于没查，标题改个字锚点就哑了，点了原地不动
+      if (href.startsWith("#")) {
+        checked++;
+        if (!anchors.has(decodeURIComponent(href.slice(1)).toLowerCase())) dead.push(path.basename(f) + " → " + href + "（没有这个标题）");
+        continue;
+      }
       const rel = decodeURIComponent(href.split("#")[0]);
       if (!rel) continue;
       checked++;
@@ -440,6 +450,7 @@ function testDocLinkGate() {
 
   // 反向断言：闸门得真能抓到死链和错仓库，否则改坏了也全绿
   assert(grab("[x](docs/根本没有这个.md)").length === 1, "链接提取失效");
+  assert(slugify("## 一起把它做下去") === "-一起把它做下去".slice(1), "标题锚点算法失效");
   assert(!fs.existsSync(path.resolve(root, "docs/根本没有这个.md")), "存在性检查失效");
   assert([...("github.com/someoneelse/repo\"".matchAll(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?[/"?)\s]/g))][0][1] === "someoneelse/repo", "仓库地址正则失效");
   const probeSlug = [...("img.shields.io/github/v/release/someoneelse/repo?x=1".matchAll(/img\.shields\.io\/github\/([^"?\s]+)/g))][0][1].split("/").slice(-2).join("/");
