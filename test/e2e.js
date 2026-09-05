@@ -603,6 +603,169 @@ async function testVideoWatermarkGate() {
   }
 }
 
+/**
+ * CLI 模式：真起 `node cli.js` 子进程，模型指向本地假接口（config.openai.stream=false，
+ * 走非流式那条，用不着造 SSE，也一分钱不花）。
+ *
+ * 钉的四件事，每一件都是这轮改之前会错的：
+ *
+ *  1. 单发任务之间不许串上下文。以前会话 id 是 `cli_YYYYMMDD`，同一天所有命令共用一个
+ *     会话文件，而 runTask 会把助手回复和工具结果就地追加进 history——于是「单发任务」
+ *     其实拖着当天前面每一条任务的完整对话去问模型，既烧 token 又让它在别的任务的
+ *     阴影里答新问题。同时要有正向对照：明确 --session 续接时，上下文必须还在，
+ *     否则「不串台」可能只是因为历史根本没存住。
+ *  2. 答案走 stdout、进度走 stderr。`wb "..." > 答案.md` 拿到的得是干净答案。
+ *  3. 退出码说实话。以前无论成败恒 0，`wb ... && 下一步` 在任务失败时照样往下走。
+ *  4. -C 指了个用不了的目录必须当场停，不许默默退回默认目录——那会把文件写到别处。
+ */
+async function testCliMode() {
+  const http = require("http");
+  const os = require("os");
+  const { spawn } = require("child_process");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wb-cli-"));
+  const seen = [];
+  let mode = "ok";
+  const srv = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const j = (code, o) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+      if (!req.url.includes("/chat/completions")) return j(404, {});
+      let body = {}; try { body = JSON.parse(raw || "{}"); } catch {}
+      seen.push(body);
+      if (mode === "boom") return j(401, { error: { message: "鉴权失败" } });
+      j(200, {
+        choices: [{ message: { role: "assistant", content: "答案是四十二。" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 4 },
+      });
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  fs.mkdirSync(path.join(home, "workspace"), { recursive: true });
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+    provider: "openai",
+    // stream:false 让 llm.js 走非流式分支，假接口回一个普通 JSON 就够了
+    openai: { base_url: `http://127.0.0.1:${port}/v1`, api_key: "k", model: "mock", stream: false },
+    agent: { max_steps: 3, tool_timeout_ms: 5000, llm_timeout_ms: 20000 },
+    mcp_servers: [],
+    workspace_dir: path.join(home, "workspace"),
+  }));
+  const CLI = path.join(__dirname, "..", "cli.js");
+  // 这里不能用 spawnSync：它把本进程的事件循环整个堵住，上面那个假接口就永远轮不到
+  // accept 连接，子进程一头等到超时——测试会以「模型没响应」的样子失败，跟被测代码无关。
+  const run = (args, input = "") => new Promise((resolve) => {
+    const env = { ...process.env, OPENWORKBUDDY_HOME: home, NO_COLOR: "1" };
+    delete env.FORCE_COLOR; // 外面开着 FORCE_COLOR 的话子进程会往管道里塞转义序列
+    const ps = spawn(process.execPath, [CLI, ...args], { env });
+    let stdout = "", stderr = "";
+    ps.stdout.on("data", (d) => (stdout += d));
+    ps.stderr.on("data", (d) => (stderr += d));
+    ps.stdin.end(input);
+    const killer = setTimeout(() => ps.kill("SIGKILL"), 60000);
+    ps.on("close", (status) => { clearTimeout(killer); resolve({ status, stdout, stderr }); });
+  });
+  const lastBody = () => JSON.stringify(seen[seen.length - 1] || {});
+  try {
+    const r1 = await run(["--no-mcp", "第一条任务ALPHA标记"]);
+    const sid1 = (r1.stderr.match(/会话 (cli_[\w]+)/) || [])[1];
+    assert.strictEqual(r1.status, 0, "单发任务没成功（退出码 " + r1.status + "）：" + r1.stderr.slice(-500));
+    assert(lastBody().includes("ALPHA标记"), "请求里没有本次的任务描述");
+
+    // 2）答案走 stdout，进度走 stderr
+    assert(r1.stdout.includes("答案是四十二"), "模型的回答没走 stdout：" + JSON.stringify(r1.stdout));
+    assert(!/第 \d+ 步|工作目录|会话 cli_/.test(r1.stdout), "进度混进了 stdout，重定向出来的答案会被污染：" + JSON.stringify(r1.stdout));
+    assert(/会话 cli_/.test(r1.stderr), "stderr 上没有会话/模型那行开场信息");
+
+    // 1）不串台
+    const r2 = await run(["--no-mcp", "第二条任务BRAVO标记"]);
+    assert.strictEqual(r2.status, 0, "第二条单发任务失败：" + r2.stderr.slice(-500));
+    const b2 = lastBody();
+    assert(b2.includes("BRAVO标记"), "第二条请求里没有它自己的任务");
+    assert(!b2.includes("ALPHA标记"), "单发任务串上下文了：第二条请求带着第一条的内容（旧版按天共用会话文件）");
+
+    // 1b）正向对照：明确续接时上下文必须在，否则上面那条只是「历史根本没存住」
+    const sid = (r2.stderr.match(/会话 (cli_[\w]+)/) || [])[1];
+    assert(sid, "开场信息里读不到会话 id：" + r2.stderr.slice(-300));
+    const r3 = await run(["--no-mcp", "--session", sid, "接着刚才那条CHARLIE标记"]);
+    assert.strictEqual(r3.status, 0, "--session 续接失败：" + r3.stderr.slice(-500));
+    const b3 = lastBody();
+    assert(b3.includes("CHARLIE标记"), "续接请求里没有新任务");
+    assert(b3.includes("BRAVO标记"), "--session 续接却没带上原会话的上下文（说明历史压根没存住，上一条断言不作数）");
+
+    // 4）管道内容要真进请求
+    const r4 = await run(["--no-mcp", "看看这个报错"], "ERR_XYZ_9527 打不开");
+    assert.strictEqual(r4.status, 0, "管道模式失败：" + r4.stderr.slice(-500));
+    const b4 = lastBody();
+    assert(b4.includes("ERR_XYZ_9527"), "管道进来的内容没进请求");
+    assert(b4.includes("看看这个报错"), "管道模式下把命令行给的任务描述丢了");
+
+    // 5）--json 是可解析的 NDJSON，最后一行必须是 done
+    const r5 = await run(["--no-mcp", "--json", "给我个答案"]);
+    assert.strictEqual(r5.status, 0, "--json 模式失败：" + r5.stderr.slice(-500));
+    const lines = r5.stdout.trim().split("\n").filter(Boolean);
+    for (const l of lines) JSON.parse(l); // 不是合法 JSON 就当场抛，管道那头 jq 会一样抛
+    const done = JSON.parse(lines[lines.length - 1]);
+    assert(done.type === "done" && done.ok === true, "--json 最后一行不是成功的 done：" + lines[lines.length - 1]);
+    assert(String(done.session).startsWith("cli_"), "done 里没带会话 id");
+
+    // 5b）-q 拿到的必须是干净正文：不许有前导空行，也不许多一个尾巴
+    //     这条是重定向出来直接当文件用的（wb -q "写周报" > 周报.md），多一行就是脏数据
+    const rq = await run(["--no-mcp", "-q", "给我个答案"]);
+    assert.strictEqual(rq.status, 0, "-q 模式失败：" + rq.stderr.slice(-500));
+    assert.strictEqual(rq.stdout, "答案是四十二。\n",
+      "-q 的 stdout 不是干净正文（前导空行/多余换行都算脏）：" + JSON.stringify(rq.stdout));
+
+    // 6）--list 看得见刚才这几个会话，且时间是本地时间、轮数按「问了几次」算
+    const r6 = await run(["--list"]);
+    const listed = r6.stdout.split("\n").filter((l) => l.startsWith("cli_"));
+    assert(listed.length >= 4, "--list 只列出了 " + listed.length + " 个会话，刚跑的那几条没落盘");
+    // 会话 id 里那串时间戳是本地时区的；列表这一列必须跟它对得上，否则用户照时间挑会挑错
+    for (const l of listed) {
+      const m = l.match(/^cli_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})\d{2}\S*\s+(\S+)\s+(\S+)\s+(\d+) 轮/);
+      assert(m, "--list 这一行读不出「id + 日期 时间 + 轮数」：" + JSON.stringify(l));
+      assert.strictEqual(m[6], `${m[1]}-${m[2]}-${m[3]}`, "--list 的日期跟会话 id 对不上（时区错了）：" + l);
+      assert.strictEqual(m[7].slice(0, 2), m[4], "--list 的小时跟会话 id 对不上（八成是拿 UTC 在显示）：" + l);
+      // 轮数只对没被续接过的单发会话下断言：r2 那个会话被 --session 接过一次，本来就是 2 轮
+      if (sid1 && l.startsWith(sid1 + " ")) {
+        assert.strictEqual(m[8], "1", "单发只问了一次却报 " + m[8] + " 轮（把 transcript 条数当轮数了）：" + l);
+      }
+    }
+
+    // 3）退出码说实话
+    mode = "boom";
+    const r7 = await run(["--no-mcp", "这条会炸"]);
+    assert.notStrictEqual(r7.status, 0, "模型报错了退出码还是 0，脚本里 `wb ... && 下一步` 会照样往下走");
+    assert(r7.stderr.includes("出错"), "出错了 stderr 上没说：" + r7.stderr.slice(-300));
+    mode = "ok";
+
+    // 4）-C 指了个建不出来的目录必须停，不许默默退回默认目录
+    fs.writeFileSync(path.join(home, "这是个文件"), "x");
+    const r8 = await run(["--no-mcp", "-C", path.join(home, "这是个文件", "子目录"), "随便干点啥"]);
+    assert.notStrictEqual(r8.status, 0, "-C 指了个用不了的目录却照跑，文件会被写到别处");
+    assert(/工作目录用不了/.test(r8.stderr), "-C 失败时没说清是目录的问题：" + r8.stderr.slice(-300));
+
+    // 反向断言：把旧那种「按天共用会话」的行为喂给同一条判据，它必须判红
+    let caught = false;
+    try { assert(!'{"messages":[{"content":"第一条任务ALPHA标记"}]}'.includes("ALPHA标记"), "x"); } catch { caught = true; }
+    assert(caught, "闸门判据失效：带着上一条任务上下文的请求体居然也能过");
+    let caught3 = false;
+    try { assert.strictEqual("\n答案是四十二。\n", "答案是四十二。\n", "x"); } catch { caught3 = true; }
+    assert(caught3, "-q 判据失效：带前导空行的输出居然也能过");
+    let caught4 = false;
+    try { // 拿 UTC 显示的老样子（id 写 17:36、列表显示 09:36）必须判红
+      const l = "cli_20260905_173604_9mx  2026-09-05 09:36    1 轮  x";
+      const m = l.match(/^cli_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})\d{2}\S*\s+(\S+)\s+(\S+)\s+(\d+) 轮/);
+      assert.strictEqual(m[7].slice(0, 2), m[4], "x");
+    } catch { caught4 = true; }
+    assert(caught4, "--list 时区判据失效：UTC 那版居然也能过");
+    console.log(`✅ CLI 模式：单发不串台（续接才带上下文）· 答案走 stdout 进度走 stderr · 退出码 0/1 说实话 · 管道进料 · --json 可解析 · -q 是干净正文 · --list 本地时间与轮数对得上 · -C 用不了就停`);
+  } finally {
+    srv.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
 function testDeliverableGate() {
   const real = path.join(WORKSPACE, "e2e-核验有内容.md");
   const empty = path.join(WORKSPACE, "e2e-核验空壳.md");
@@ -3009,6 +3172,7 @@ async function main() {
   testDocLinkGate();
   await testImageWatermarkGate();
   await testVideoWatermarkGate();
+  await testCliMode();
   testDeliverableGate();
   testContextBudget();
   testToolPairRepair();

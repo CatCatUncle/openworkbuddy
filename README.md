@@ -106,6 +106,7 @@ npm run app     # 桌面版；或 npm start 走浏览器 http://localhost:3800
 | [功能清单](docs/功能清单.md) | 27 项能力、内置技能与工具的全表 |
 | [安装与启动](docs/安装与启动.md) | 安装包、源码、Windows、常见卡壳 |
 | [配置模型](docs/配置模型.md) | 各服务商 base_url / 模型名对照 |
+| [命令行用法](docs/命令行用法.md) | CLI 参数、管道、`--json`、写进脚本和 cron |
 | [扩展](docs/扩展.md) | 写技能、接 MCP、装插件、建专家 |
 | [IM 与定时任务](docs/IM与定时任务.md) | 飞书 / QQ / 企微 / 微信 / 钉钉，cron |
 | [多人协作](docs/多人协作.md) | 多租户、账号、权限、积分额度 |
