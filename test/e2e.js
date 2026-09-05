@@ -391,6 +391,73 @@ function testCssTokenGate() {
   console.log(`✅ CSS 令牌闸门：${defined.size} 个变量全部有定义 · 填充色没被当文字色用`);
 }
 
+// 动效闸门：transition 不写曲线，浏览器就按默认的 ease 走——两头慢中间快，那是「网页味」，
+// 跟界面里其他用 --wb-ease 的地方不是一套动法。这类不一致肉眼要盯很久才看得出来，
+// 而且每加一条新样式就可能悄悄漏一个，靠人复查是守不住的，所以钉成闸门。
+// 同理钉住字体栈：拉丁必须先落 -apple-system（SF），中文再落苹方；
+// 反过来写（苹方在前）整句英文会用苹方自带的西文，字重字距都不对。
+function testMotionGate() {
+  const pub = path.join(__dirname, "..", "public");
+  const files = [path.join(pub, "index.html"), path.join(pub, "css", "ui.css")];
+  // 一条 transition 的每个「分段」都要自带曲线：靠 transition-timing-function 另写一行的
+  // 本项目里一处都没有，真要出现，这里报出来再放行不迟。
+  const bare = [];
+  for (const f of files) {
+    const t = fs.readFileSync(f, "utf8");
+    for (const m of t.matchAll(/transition:\s*([^;}]+)/g)) {
+      // 按逗号切段，但要绕开括号里的逗号——var(--wb-ease, ease) 的那个回退逗号
+      // 直接 split(",") 会把它劈成两半，于是「ease)」被当成一条没写曲线的过渡（假阳性）
+      const segs = [];
+      let depth = 0, cur = "";
+      for (const ch of m[1]) {
+        if (ch === "(") depth++;
+        else if (ch === ")") depth--;
+        if (ch === "," && depth === 0) { segs.push(cur); cur = ""; continue; }
+        cur += ch;
+      }
+      segs.push(cur);
+      for (const seg of segs) {
+        if (!seg.trim()) continue;
+        if (!/var\(\s*--wb-ease/.test(seg)) bare.push(path.basename(f) + ": " + seg.trim());
+      }
+    }
+  }
+  assert(bare.length === 0,
+    "这些过渡没写曲线，会吃浏览器默认的 ease：\n  " + bare.join("\n  "));
+
+  const html = fs.readFileSync(files[0], "utf8");
+  const fams = [...html.matchAll(/font-family:\s*([^;]+);/g)].map((m) => m[1].trim());
+  const uiFams = fams.filter((v) => /PingFang|apple-system/.test(v));
+  assert(uiFams.length > 0, "index.html 里一个界面字体栈都没找到，闸门失效了");
+  for (const v of uiFams) {
+    const first = v.split(",")[0].trim().replace(/^["']|["']$/g, "");
+    assert(first === "-apple-system",
+      "界面字体栈第一位应该是 -apple-system（拉丁走 SF），现在是 " + first + "：" + v);
+    assert(/PingFang SC/.test(v), "字体栈里没有 PingFang SC，中文会掉到系统兜底：" + v);
+  }
+
+  // 浮层得是毛玻璃，且降级要留得住（不支持 backdrop-filter 的环境靠底下那层半透明色兜着）。
+  // 同一个类可能有好几条规则（比如暗色主题单独覆写一次 background），所以要把它们全收起来看：
+  // 只按 indexOf 找第一条，会撞上 html[data-theme="dark"] 那条覆写，误判成「没加毛玻璃」。
+  for (const cls of [".modal-mask", ".auth-mask"]) {
+    const rules = [];
+    const re = new RegExp("[^{}]*\\" + cls + "(?![-\\w])[^{}]*\\{([^}]*)\\}", "g");
+    for (const m of html.matchAll(re)) rules.push(m[1]);
+    assert(rules.length > 0, "找不到 " + cls + " 的规则");
+    assert(rules.some((r) => /backdrop-filter/.test(r)), cls + " 没加毛玻璃");
+    const opaque = rules.filter((r) => /background:\s*[^;]+/.test(r) && !/background:\s*rgba\(/.test(r));
+    assert(opaque.length === 0,
+      cls + " 有一条规则把底色写成了不透明，不支持毛玻璃的环境会变成实心板：" + opaque.join(" | "));
+  }
+
+  // 反向断言：闸门本身得能抓到东西
+  const probeBare = "transition: opacity .2s";
+  assert(!/var\(\s*--wb-ease/.test(probeBare), "裸过渡的判别失效");
+  assert('"PingFang SC", -apple-system'.split(",")[0].trim().replace(/^["']|["']$/g, "") !== "-apple-system",
+    "字体栈顺序的判别失效");
+  console.log("✅ 动效闸门：过渡曲线全部走令牌（没有一条吃默认 ease）· 拉丁先落 SF 中文再落苹方 · 浮层毛玻璃且有降级兜底");
+}
+
 function testDocLinkGate() {
   const root = path.join(__dirname, "..");
   // 只管项目自己的文档。skills/ 下是内容和第三方技能，里面的 ](URL) 是模板占位，不是死链
@@ -3169,6 +3236,7 @@ async function main() {
   testAvatarRules();
   testPathSafety();
   testCssTokenGate();
+  testMotionGate();
   testDocLinkGate();
   await testImageWatermarkGate();
   await testVideoWatermarkGate();

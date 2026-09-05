@@ -27,12 +27,15 @@
     --color-text-primary: #2c2c2a; --color-text-secondary: #5f5e5a; --color-text-tertiary: #888780;
     --color-border-primary: #b4b2a9; --color-border-secondary: #d3d1c7; --color-border-tertiary: #e4e2da;
     --color-bg-subtle: #f7f8fa;
-    --font-sans: "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
   body {
-    font-family: "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    /* -apple-system 排在 PingFang 前面：这样拉丁字母走 SF（苹果自己的界面字），
+       中文再落回 PingFang——同一句中英混排，各拿各最合适的那套。
+       反过来写（PingFang 在前）拉丁字母会用 PingFang 自带的西文，字重和字距都偏「网页」。 */
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
     background: var(--wb-bg); color: var(--wb-text); display: flex; overflow: hidden; font-size: 15px;
   }
   input, select, textarea, button { font-family: inherit; }
@@ -102,7 +105,7 @@
   .side-nav .nav-head #proj-add { margin-left: auto; text-decoration: none; color: var(--wb-text-3); font-size: 15px; padding: 0 4px; border-radius: 6px; }
   .side-nav .nav-head #proj-add:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   .side-nav #proj-list { margin: 0 0 4px; }
-  .side-nav .more-toggle .caret { font-size: 11px; transition: transform .15s; }
+  .side-nav .more-toggle .caret { font-size: 11px; transition: transform var(--wb-t-fast) var(--wb-ease); }
   .side-nav .more-toggle.open .caret { transform: rotate(180deg); }
   .more-box { display: none; padding-left: 8px; }
   .more-box.open { display: block; }
@@ -229,7 +232,7 @@
   .proc-wrap { margin: 2px 0 8px; }
   .proc-head { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--wb-text-3); cursor: pointer; user-select: none; padding: 2px 0; }
   .proc-head:hover { color: var(--wb-text-2); }
-  .proc-head .arrow { font-size: 13px; display: inline-block; transition: transform .15s; }
+  .proc-head .arrow { font-size: 13px; display: inline-block; transition: transform var(--wb-t-fast) var(--wb-ease); }
   .proc-wrap.open .proc-head .arrow { transform: rotate(90deg); }
   .proc-warn { color: var(--wb-err-text); background: rgba(229,72,77,.12); border-radius: 6px; padding: 0 6px; font-size: 12px; }
   .proc-body { display: none; padding-left: 10px; border-left: 2px solid var(--wb-border); margin: 4px 0 4px 4px; }
@@ -255,7 +258,7 @@
   .out-row.gone { cursor: default; opacity: .55; }
   .out-row.gone:hover { background: transparent; }
   .out-row.gone .nm { text-decoration: line-through; }
-  .out-card { width: 240px; border: 1px solid var(--wb-border); border-radius: 12px; overflow: hidden; background: var(--wb-bg); cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+  .out-card { width: 240px; border: 1px solid var(--wb-border); border-radius: 12px; overflow: hidden; background: var(--wb-bg); cursor: pointer; transition: border-color var(--wb-t-fast) var(--wb-ease), box-shadow var(--wb-t-fast) var(--wb-ease); }
   .out-card:hover { border-color: var(--wb-brand-text); box-shadow: 0 4px 12px rgba(91,95,247,.12); }
   /* 缩略图：真的把网页/图片缩着渲染出来，比一个通用图标有用得多 */
   .out-thumb { height: 132px; background: var(--wb-bg-side); border-bottom: 1px solid var(--wb-border); position: relative; overflow: hidden; }
@@ -321,7 +324,7 @@
   /* ---------- 输入区（仿官方：大卡片 + 底部工具行 + 卡片下快捷栏） ---------- */
   .input-wrap { padding: 8px 20px 14px; }
   .input-inner { max-width: var(--wb-content-w); margin: 0 auto; }
-  .input-card { border: 1.5px solid var(--wb-border); border-radius: 18px; background: var(--wb-bg); padding: 14px 16px 10px; box-shadow: 0 6px 24px rgba(23,24,28,.05); transition: border-color .15s; }
+  .input-card { border: 1.5px solid var(--wb-border); border-radius: 18px; background: var(--wb-bg); padding: 14px 16px 10px; box-shadow: 0 6px 24px rgba(23,24,28,.05); transition: border-color var(--wb-t-fast) var(--wb-ease); }
   .input-card:focus-within { border-color: var(--wb-brand-text); }
   textarea#input { width: 100%; border: none; outline: none; resize: none; font-size: 15px; line-height: 1.6; max-height: 160px; background: transparent; color: var(--wb-text); }
   textarea#input::placeholder { color: var(--wb-text-3); }
@@ -360,7 +363,7 @@
   .input-card.dragging { outline: 2px dashed var(--wb-brand); outline-offset: -2px; }
   /* ---------- 右侧预览面板（HTML/图片/文档实时预览） ---------- */
   .main { min-width: 460px; }
-  .preview-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg); overflow: hidden; transition: width .2s; display: flex; flex-direction: column; }
+  .preview-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg); overflow: hidden; transition: width var(--wb-t-slow) var(--wb-ease-out); display: flex; flex-direction: column; }
   .preview-panel.show { width: 44%; min-width: 360px; max-width: calc(100vw - 250px - 470px); }
   .pv-head { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--wb-border); font-size: 14px; }
   .pv-head .pv-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -392,7 +395,7 @@
   #pv-body .ov-scroll { overflow-x: auto; margin: 12px 0; }
   #pv-body .ov-table { border-collapse: collapse; font-size: 13px; }
   #pv-body .ov-table th, #pv-body .ov-table td { border: 1px solid var(--wb-border); padding: 5px 10px; text-align: left; vertical-align: top; max-width: 340px; overflow-wrap: anywhere; }
-  #pv-body .ov-table th { background: var(--wb-bg-side); font-weight: 600; position: sticky; top: 0; }
+  #pv-body .ov-table th { background: var(--wb-bg-side); font-weight: 600; position: sticky; top: 0; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
   #pv-body .ov-sheet td, #pv-body .ov-sheet th { white-space: pre-wrap; }
   #pv-body .ov-note { color: var(--wb-text-3); font-size: 13px; margin: 10px 0; }
   #pv-body .ov-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -403,7 +406,7 @@
   #pv-body .ov-slide-t { font-size: 17px; font-weight: 600; margin: 4px 0 8px; }
   #pv-body .ov-notes { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--wb-border); color: var(--wb-text-3); font-size: 13px; }
   /* ---------- 右侧成果面板 ---------- */
-  .files-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg-side); overflow: hidden; transition: width .2s; display: flex; flex-direction: column; }
+  .files-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg-side); overflow: hidden; transition: width var(--wb-t-slow) var(--wb-ease-out); display: flex; flex-direction: column; }
   .files-panel.show { width: clamp(230px, 20vw, 300px); }
   /* ---- 快捷键 / 对话内搜索 / 命令审批 / 侧栏折叠 ---- */
   body.side-collapsed aside { display: none; }
@@ -438,7 +441,7 @@
   .sc-kbd { background: var(--wb-bg-hover); border: 1px solid var(--wb-border); border-radius: 6px; padding: 3px 10px; font-size: 13px; font-family: inherit; min-width: 52px; text-align: center; display: inline-block; }
   .sc-edit { cursor: pointer; }
   .sc-edit:hover, .sc-edit.armed { border-color: var(--wb-brand-text); color: var(--wb-brand-text); }
-  #wb-toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(30,30,30,.92); color: #fff; padding: 8px 18px; border-radius: 10px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 999; }
+  #wb-toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(30,30,30,.82); backdrop-filter: saturate(180%) blur(14px); -webkit-backdrop-filter: saturate(180%) blur(14px); color: #fff; padding: 8px 18px; border-radius: 10px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity var(--wb-t) var(--wb-ease); z-index: 999; }
   #wb-toast.show { opacity: 1; }
   #chat-search { display: none; position: absolute; top: 50px; right: 20px; z-index: 50; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,.1); padding: 6px 8px; gap: 6px; align-items: center; }
   #chat-search input { margin: 0; width: 200px; border: none; outline: none; background: none; font-size: 14px; }
@@ -466,7 +469,7 @@
   #input-hl .tk { background: var(--wb-brand-weak); box-shadow: 0 0 0 2px var(--wb-brand-weak), 0 0 0 3px rgba(91,95,247,.28); border-radius: 5px; }
   textarea#input { position: relative; z-index: 1; display: block; }
   .u-msg .bubble .tk-b { background: rgba(255,255,255,.24); border: 1px solid rgba(255,255,255,.3); border-radius: 5px; padding: 0 4px; font-weight: 500; }
-  .u-msg .u-copy { opacity: 0; align-self: flex-end; border: none; background: transparent; cursor: pointer; color: var(--wb-text-3); font-size: 14px; padding: 4px 6px; border-radius: 6px; transition: opacity .15s; }
+  .u-msg .u-copy { opacity: 0; align-self: flex-end; border: none; background: transparent; cursor: pointer; color: var(--wb-text-3); font-size: 14px; padding: 4px 6px; border-radius: 6px; transition: opacity var(--wb-t-fast) var(--wb-ease); }
   .u-msg:hover .u-copy { opacity: 1; }
   .u-msg .u-copy:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   /* ---------- 侧栏底部：头像行 + 设置齿轮 + 账号菜单 ---------- */
@@ -495,7 +498,7 @@
     --color-border-primary: #4a4d57; --color-border-secondary: #3a3d45; --color-border-tertiary: #2f323a;
     --color-bg-subtle: #24262c;
   }
-  html[data-theme="dark"] .auth-mask { background: rgba(18,19,23,.96); }
+  html[data-theme="dark"] .auth-mask { background: rgba(18,19,23,.72); }
   html[data-theme="dark"] .ap-row { background: #3a2d16; border-color: #8a6a33; }
   html[data-theme="dark"] #input-hl .tk { box-shadow: 0 0 0 2px var(--wb-brand-weak), 0 0 0 3px rgba(139,143,255,.35); }
   .file-item .dl { margin-left: auto; color: var(--wb-text-3); text-decoration: none; padding: 2px 6px; border-radius: 6px; }
@@ -532,7 +535,10 @@
   .time-head + .dir-head { margin-top: 0; }
   .out-row .nm .dim { color: var(--wb-text-3); }
   /* ---------- 弹窗 ---------- */
-  .modal-mask { display: none; position: fixed; inset: 0; background: rgba(23,24,28,.35); z-index: 50; align-items: center; justify-content: center; }
+  /* 浮层一律毛玻璃：底下的内容糊掉但还在，视线知道自己没离开原来那一页。
+     只给这几层加——顶栏、侧栏都在文档流里，底下没有东西可糊，加了只是白付一份合成开销。
+     backdrop-filter 不支持时退化成原来的半透明色，不会变成一块实心板。 */
+  .modal-mask { display: none; position: fixed; inset: 0; background: rgba(23,24,28,.35); backdrop-filter: saturate(150%) blur(6px); -webkit-backdrop-filter: saturate(150%) blur(6px); z-index: 50; align-items: center; justify-content: center; }
   .modal-mask.show { display: flex; }
   .modal { width: 640px; max-width: 94vw; max-height: 82vh; background: var(--wb-bg); border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(23,24,28,.2); }
   .modal.wide { width: 820px; }
@@ -564,7 +570,7 @@
   .user-chip .ava { width: 26px; height: 26px; border-radius: 50%; background: var(--wb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; flex: none; }
   .user-chip .un { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .user-chip .uc { margin-left: auto; color: var(--wb-brand-text); font-weight: 600; flex: none; }
-  .auth-mask { position: fixed; inset: 0; z-index: 200; background: rgba(247,248,250,.96); display: none; align-items: center; justify-content: center; }
+  .auth-mask { position: fixed; inset: 0; z-index: 200; background: rgba(247,248,250,.78); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); display: none; align-items: center; justify-content: center; }
   .auth-mask.show { display: flex; }
   .auth-card { width: 340px; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 16px; padding: 28px 26px; box-shadow: 0 12px 40px rgba(0,0,0,.08); }
   .auth-card h2 { font-size: 18px; margin-bottom: 4px; }
@@ -600,7 +606,7 @@
   .ask-timer.hot { color: var(--wb-err-text); }
   .ask-q { font-size: 15px; font-weight: 600; color: var(--wb-text); line-height: 1.5; margin-bottom: 12px; }
   .ask-opts { display: flex; flex-direction: column; gap: 8px; }
-  .ask-opt { display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: 10px; background: var(--wb-bg); cursor: pointer; transition: border-color .12s, background .12s; }
+  .ask-opt { display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: 10px; background: var(--wb-bg); cursor: pointer; transition: border-color var(--wb-t-fast) var(--wb-ease), background var(--wb-t-fast) var(--wb-ease); }
   .ask-opt:hover, .ask-opt:focus-visible { border-color: var(--wb-brand-text); background: var(--wb-brand-weak); outline: none; }
   .ask-opt .kk { flex: none; width: 20px; height: 20px; border-radius: 6px; background: var(--wb-bg-side); border: 1px solid var(--wb-border); color: var(--wb-text-3); font-size: 12px; line-height: 18px; text-align: center; }
   .ask-opt:hover .kk { border-color: var(--wb-brand-text); color: var(--wb-brand-text); }
@@ -645,7 +651,7 @@
   .hub-sec-title .sub { font-size: 12px; font-weight: 400; color: var(--wb-text-3); }
   /* 精选场景：横滑不换行，窄屏也不撑破主区 */
   .feat-scroll { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 10px; margin-bottom: 6px; scrollbar-width: thin; }
-  .feat-card { flex: 0 0 232px; border: 1px solid var(--wb-border); border-radius: 12px; padding: 12px 14px; cursor: pointer; background: var(--wb-bg); transition: border-color .15s, transform .15s; }
+  .feat-card { flex: 0 0 232px; border: 1px solid var(--wb-border); border-radius: 12px; padding: 12px 14px; cursor: pointer; background: var(--wb-bg); transition: border-color var(--wb-t-fast) var(--wb-ease), transform var(--wb-t-fast) var(--wb-ease); }
   .feat-card:hover { border-color: var(--wb-brand-text); transform: translateY(-1px); }
   .feat-card .ic { font-size: 20px; margin-bottom: 6px; }
   .feat-card .tt { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
@@ -719,7 +725,7 @@
   .pg-hero { margin: 4px 0 18px; }
   .pg-hero h1 { font-size: 26px; margin: 0 0 4px; }
   .pg-hero .sub { color: var(--wb-text-2); font-size: 14px; }
-  .proj-card { border: 1px solid var(--wb-border); border-radius: 12px; padding: 14px 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; background: var(--wb-bg); transition: box-shadow .12s; }
+  .proj-card { border: 1px solid var(--wb-border); border-radius: 12px; padding: 14px 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; background: var(--wb-bg); transition: box-shadow var(--wb-t-fast) var(--wb-ease); }
   .proj-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.07); }
   .proj-card.active { border-color: var(--wb-brand-text); }
   .proj-card .tt { font-weight: 600; display: flex; align-items: center; gap: 8px; }
@@ -765,7 +771,17 @@
   .lib-prev .ph { color: var(--wb-text-3); text-align: center; padding: 80px 20px; font-size: 14px; }
 
   /* ================= 全局顺滑层：圆角 / 过渡 / 入场动效（治「生硬」） ================= */
-  :root { --wb-ease: cubic-bezier(.22,.61,.36,1); --wb-shadow-sm: 0 1px 3px rgba(23,24,28,.06); --wb-shadow-md: 0 10px 28px rgba(23,24,28,.10); }
+  /* 动效令牌。之前十来条 transition 没写曲线，吃的是浏览器默认的 ease——
+     两头都慢、中间快，动起来是「网页味」。苹果那套是减速曲线：起步就到速度、尾巴长，
+     手感上像松手后自己滑停的。时长也统一到三档，免得同一次交互里 .12/.15/.18 各走各的。 */
+  :root {
+    --wb-ease: cubic-bezier(.22,.61,.36,1);            /* 通用减速 */
+    --wb-ease-out: cubic-bezier(.32,.72,0,1);          /* 面板滑入这类大位移，尾巴更长 */
+    --wb-t-fast: .14s;                                 /* 悬停、按下这种要「跟手」 */
+    --wb-t: .2s;                                       /* 常规状态切换 */
+    --wb-t-slow: .28s;                                 /* 面板、弹层的进出 */
+    --wb-shadow-sm: 0 1px 3px rgba(23,24,28,.06); --wb-shadow-md: 0 10px 28px rgba(23,24,28,.10);
+  }
   html[data-theme="dark"] { --wb-shadow-sm: 0 1px 3px rgba(0,0,0,.35); --wb-shadow-md: 0 10px 28px rgba(0,0,0,.5); }
 
   /* 表单控件全局圆角化：自动化等页面级表单不再是浏览器原生方框 */
@@ -795,8 +811,20 @@
   .btn-plain:hover { border-color: var(--wb-brand-text); color: var(--wb-brand-text); background: var(--wb-brand-weak); }
   .btn-plain:active, .chip:active, .side-nav .item:active { transform: scale(.96); }
 
-  /* 卡片悬浮轻抬 + 柔影 */
+  /* 卡片悬浮轻抬 + 柔影。
+     以前只写了 :hover 的终点，没写怎么过去——鼠标一进一出是「啪」地跳两下，
+     正是「不够顺」最直接的来源。补上过渡，并且把按下也做出来：
+     抬起来的同时按下去要压回原位，不然按住不放时卡片是浮着的，手感上没有「被按到」。 */
+  .ex-card, .tpl-card, .proj-card, .feat-card, .card-item, .out-card {
+    transition: transform var(--wb-t) var(--wb-ease), box-shadow var(--wb-t) var(--wb-ease), border-color var(--wb-t-fast) var(--wb-ease);
+  }
   .ex-card:hover, .tpl-card:hover, .proj-card:hover, .feat-card:hover, .card-item:hover { transform: translateY(-2px); box-shadow: var(--wb-shadow-md); }
+  .ex-card:active, .tpl-card:active, .proj-card:active, .feat-card:active, .out-card:active { transform: translateY(0) scale(.985); }
+  /* 剩下这几类可点的也补上按下反馈，免得界面里一半按钮有手感一半没有 */
+  .scene-tabs button, .chips button, .ask-opt, .pv-head button, .pv-deploy button {
+    transition: background-color var(--wb-t-fast) var(--wb-ease), border-color var(--wb-t-fast) var(--wb-ease), color var(--wb-t-fast) var(--wb-ease), transform var(--wb-t-fast) var(--wb-ease);
+  }
+  .scene-tabs button:active, .chips button:active, .ask-opt:active, .pv-head button:active, .pv-deploy button:active { transform: scale(.96); }
   .input-card:focus-within { border-color: var(--wb-brand-text); box-shadow: 0 8px 30px rgba(91,95,247,.13); }
 
   /* 入场动效：弹窗淡入上浮、页面淡入、消息上浮、toast 上滑 */
@@ -804,7 +832,7 @@
   .modal-mask.show .modal { animation: wbPop .2s var(--wb-ease); }
   .assist-page { animation: wbFade .22s var(--wb-ease); }
   .turn { animation: wbRise .24s var(--wb-ease); }
-  #wb-toast { transform: translateX(-50%) translateY(8px); transition: opacity .2s, transform .24s var(--wb-ease); }
+  #wb-toast { transform: translateX(-50%) translateY(8px); transition: opacity var(--wb-t) var(--wb-ease), transform var(--wb-t-slow) var(--wb-ease-out); }
   #wb-toast.show { transform: translateX(-50%) translateY(0); }
   @keyframes wbFade { from { opacity: 0; } }
   @keyframes wbPop { from { opacity: 0; transform: translateY(12px) scale(.97); } }
@@ -819,6 +847,11 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
   }
+
+  /* 滚到底之后别把滚动传给外层：文件面板、设置弹窗、聊天流都是独立的一块，
+     在里面划到头还继续带动整页（或者在 macOS 上触发返回上一页的橡皮筋），是最出戏的一下。 */
+  #chat-scroll, #history, #file-list, #pv-body, .m-body, .settings-nav, .settings-pane,
+  .im-feed, .picker-menu.down, .lib-prev, .ex-card .sk-preview { overscroll-behavior: contain; }
 
   /* 助理模式聊天流：用户在右（品牌色），助理在左（浅底 + Markdown 排版） */
   .im-row .im-col { max-width: 76%; min-width: 0; }

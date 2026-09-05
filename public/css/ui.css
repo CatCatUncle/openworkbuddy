@@ -129,7 +129,7 @@ html[data-theme="dark"] {
   height: 36px; width: 100%; min-width: 0; padding: 0 12px;
   border: 1px solid var(--input); border-radius: var(--radius-md);
   background: var(--background); color: var(--foreground); font-size: 14px;
-  transition: border-color .18s ease, box-shadow .18s ease;
+  transition: border-color .18s var(--wb-ease, ease), box-shadow .18s var(--wb-ease, ease);
 }
 .ui-input::placeholder { color: var(--subtle-foreground); }
 .ui-input:focus { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px var(--ring-weak); }
@@ -163,7 +163,7 @@ html[data-theme="dark"] {
   border-radius: var(--radius-sm); background: var(--foreground); color: var(--background);
   font-size: 12px; line-height: 1.5; word-break: break-all; pointer-events: none;
   box-shadow: 0 4px 14px rgba(0,0,0,.18);
-  opacity: 0; transform: translateY(2px); transition: opacity .12s ease, transform .12s ease;
+  opacity: 0; transform: translateY(2px); transition: opacity .12s var(--wb-ease, ease), transform .12s var(--wb-ease, ease);
 }
 .ui-tooltip.show { opacity: 1; transform: translateY(0); }
 
