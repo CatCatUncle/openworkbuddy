@@ -151,6 +151,15 @@
      emoji 则换成中性底，不然彩色 emoji 压在紫色渐变上很脏。 */
   img.ava-img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
   .emo { background: var(--wb-bg-hover) !important; }
+  /* 内置猫标（avatar="@cat"）。跟 emoji 不同，它本来就是白+粉+深灰的三色标，
+     压在品牌渐变上正好，所以不换中性底——那样反而糊成一坨。
+     82% 是留给圆形容器的：标的外接框是正方形，铺满 100% 耳朵尖会被圆切掉——
+     实测（把 symbol 画进 canvas 数落在内切圆外的不透明像素）：100% 时 22/32/52px 三档
+     分别有 12.4%/8.4%/5.3% 的像素出界，最远超出 3.8px；82% 时三档都是 0。 */
+  .ava-mk { width: 82%; height: 82%; display: block; }
+  .im-row .im-ava.mk, .ab-ava.mk { background: var(--wb-brand-grad) !important; }
+  .ava-pick.mk { display: inline-flex; align-items: center; justify-content: center; width: 25px; height: 25px;
+                 padding: 0; margin: 4px 5px; border-radius: 7px; background: var(--wb-brand-grad); vertical-align: middle; }
   .brand .mark.emo, .a-msg .avatar.emo, .user-chip .ava.emo, .um-head .ava.emo { font-size: 15px; }
   .ab-ava { width: 17px; height: 17px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; vertical-align: -4px; font-size: 14px; }
   .ab-ava.emo { background: none !important; }
@@ -924,6 +933,25 @@
 <body>
 <!-- lucide 图标 sprite（ISC，https://lucide.dev）——内联进来是为了离线可用、且能跟着 currentColor 变色 -->
 <svg id="wb-sprite" aria-hidden="true">
+<!-- wb-cat:begin 由 scripts/genlogo.py 生成，别手改 -->
+<symbol id="wb-cat" viewBox="198 190 628 628">
+<g>
+  <path d="M334.2 228.9 Q292.0 206.0 281.6 252.9 L250.4 393.1 Q240.0 440.0 280.1 413.5 L417.9 322.5 Q458.0 296.0 415.8 273.1 Z" fill="#fff"/>
+  <path d="M689.8 228.9 Q732.0 206.0 742.4 252.9 L773.6 393.1 Q784.0 440.0 743.9 413.5 L606.1 322.5 Q566.0 296.0 608.2 273.1 Z" fill="#fff"/>
+  <path d="M333.6 275.8 Q312.5 264.3 307.3 287.7 L293.8 348.5 Q288.6 372.0 308.6 358.7 L368.9 318.9 Q388.9 305.7 367.8 294.3 Z" fill="#ff9ec4"/>
+  <path d="M690.4 275.8 Q711.5 264.3 716.7 287.7 L730.2 348.5 Q735.4 372.0 715.4 358.7 L655.1 318.9 Q635.1 305.7 656.2 294.3 Z" fill="#ff9ec4"/>
+  <path d="M800.0 544.0 L799.7 568.3 L798.9 585.7 L797.6 601.3 L795.7 615.6 L793.2 629.1 L790.2 641.8 L786.7 653.9 L782.7 665.5 L778.1 676.5 L773.0 687.0 L767.3 697.1 L761.2 706.7 L754.5 715.9 L747.3 724.6 L739.6 732.8 L731.5 740.6 L722.8 747.9 L713.5 754.8 L703.8 761.3 L693.6 767.2 L682.9 772.7 L671.7 777.8 L659.9 782.4 L647.6 786.5 L634.7 790.1 L621.2 793.2 L606.9 795.9 L591.9 798.1 L575.9 799.8 L558.6 801.0 L539.1 801.8 L512.0 802.0 L484.9 801.8 L465.4 801.0 L448.1 799.8 L432.1 798.1 L417.1 795.9 L402.8 793.2 L389.3 790.1 L376.4 786.5 L364.1 782.4 L352.3 777.8 L341.1 772.7 L330.4 767.2 L320.2 761.3 L310.5 754.8 L301.2 747.9 L292.5 740.6 L284.4 732.8 L276.7 724.6 L269.5 715.9 L262.8 706.7 L256.7 697.1 L251.0 687.0 L245.9 676.5 L241.3 665.5 L237.3 653.9 L233.8 641.8 L230.8 629.1 L228.3 615.6 L226.4 601.3 L225.1 585.7 L224.3 568.3 L224.0 544.0 L224.3 519.7 L225.1 502.3 L226.4 486.7 L228.3 472.4 L230.8 458.9 L233.8 446.2 L237.3 434.1 L241.3 422.5 L245.9 411.5 L251.0 401.0 L256.7 390.9 L262.8 381.3 L269.5 372.1 L276.7 363.4 L284.4 355.2 L292.5 347.4 L301.2 340.1 L310.5 333.2 L320.2 326.7 L330.4 320.8 L341.1 315.3 L352.3 310.2 L364.1 305.6 L376.4 301.5 L389.3 297.9 L402.8 294.8 L417.1 292.1 L432.1 289.9 L448.1 288.2 L465.4 287.0 L484.9 286.2 L512.0 286.0 L539.1 286.2 L558.6 287.0 L575.9 288.2 L591.9 289.9 L606.9 292.1 L621.2 294.8 L634.7 297.9 L647.6 301.5 L659.9 305.6 L671.7 310.2 L682.9 315.3 L693.6 320.8 L703.8 326.7 L713.5 333.2 L722.8 340.1 L731.5 347.4 L739.6 355.2 L747.3 363.4 L754.5 372.1 L761.2 381.3 L767.3 390.9 L773.0 401.0 L778.1 411.5 L782.7 422.5 L786.7 434.1 L790.2 446.2 L793.2 458.9 L795.7 472.4 L797.6 486.7 L798.9 502.3 L799.7 519.7 L800.0 544.0 Z" fill="#fff"/>
+  <circle cx="400" cy="512" r="60" fill="#2c2c3d"/>
+  <circle cx="380" cy="489" r="22" fill="#fff"/>
+  <circle cx="419" cy="533" r="9" fill="#fff" opacity=".7"/>
+  <circle cx="624" cy="512" r="60" fill="#2c2c3d"/>
+  <circle cx="604" cy="489" r="22" fill="#fff"/>
+  <circle cx="643" cy="533" r="9" fill="#fff" opacity=".7"/>
+  <path d="M522.2 617.7 Q512.0 630.0 501.8 617.7 L484.2 596.3 Q474.0 584.0 490.0 584.0 L534.0 584.0 Q550.0 584.0 539.8 596.3 Z" fill="#ff8fb8"/>
+  <path d="M444 648 C458 686 492 686 508 652 L516 652 C532 686 566 686 580 648" fill="none" stroke="#2c2c3d" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</symbol>
+<!-- wb-cat:end -->
 <symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8" /> <rect width="16" height="12" x="4" y="8" rx="2" /> <path d="M2 14h2" /> <path d="M20 14h2" /> <path d="M15 13v2" /> <path d="M9 13v2" /></symbol>
 <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></symbol>
 <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></symbol>
@@ -964,7 +992,9 @@
 </svg>
 <aside>
   <div class="brand">
-    <div class="mark">W</div>
+    <!-- 第一屏就得是猫。applyAssistantIdentity() 要等设置拉回来才刷这里，
+         写死一个 W 的话未登录/加载中那几秒品牌位是个字母，跟窗口图标对不上 -->
+    <div class="mark mk"><svg class="ava-mk" aria-hidden="true"><use href="#wb-cat"></use></svg></div>
     <div><div class="name">OpenWorkBuddy</div><div class="tag">开源版 · 一句话让 AI 替你上班</div></div>
   </div>
   <button id="new-task"><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg> 新建任务</button>

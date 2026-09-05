@@ -53,7 +53,8 @@ if (!Array.isArray(config.models) || !config.models.length) {
 security.getSecurity(config); // 补齐安全中心默认策略
 config.shortcuts = config.shortcuts || {}; // 快捷键自定义绑定（只存改过的项，默认值在前端定义）
 // 助理的名字和头像：想叫它「小秘」就叫「小秘」。界面（气泡头像/侧栏/品牌位）和系统提示词都跟着这里走
-const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "🤖" };
+// "@cat" 是内置猫标的哨兵值，跟应用图标同一只猫；前端 avatarBits 认它，account.normalizeAvatar 放行
+const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "@cat" };
 config.assistant = { ...ASSISTANT_DEFAULT, ...(config.assistant || {}) };
 
 if (config.workspace_dir) {

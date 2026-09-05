@@ -385,12 +385,17 @@ function sendAssistLocal(text) {
   assistChain = assistChain.then(() => doAssistLocal(text, model)).catch(() => {});
   return assistChain;
 }
+/** IM 面板里助理那一侧的头像。以前写死 🤖：用户在设置里改了头像，聊天页变了这里还是机器人。 */
+function imBotAva() {
+  const b = avatarBits(assistant.avatar, assistant.name);
+  return `<div class="im-ava${b.cls ? " " + b.cls : ""}">${b.html}</div>`;
+}
 async function doAssistLocal(text, model) {
   const feed = document.getElementById("im-feed");
   if (feed) {
     feed.insertAdjacentHTML("beforeend",
       `<div class="im-row usr"><div class="im-col" style="text-align:right"><div class="m">本地 · 用户</div><div class="im-b usr">${esc(text)}</div></div><div class="im-ava">🧑</div></div>` +
-      `<div class="im-row bot" id="im-pending"><div class="im-ava">🤖</div><div class="im-col"><div class="im-b bot">执行中…</div></div></div>`);
+      `<div class="im-row bot" id="im-pending">${imBotAva()}<div class="im-col"><div class="im-b bot">执行中…</div></div></div>`);
     feed.scrollTop = feed.scrollHeight;
   }
   // 等结果期间把「执行中…」气泡变成实时进度（第几步、在用哪个工具），跟飞书状态消息同一份文案
@@ -444,7 +449,7 @@ function renderAssistFeed(log) {
         if (m.dir === "in") {
           return `<div class="im-row usr"><div class="im-col" style="text-align:right"><div class="m">${meta}</div><div class="im-b usr">${esc(m.text)}</div></div><div class="im-ava">${CH_ICON[m.channel] || "🔗"}</div></div>`;
         }
-        return `<div class="im-row bot"><div class="im-ava">🤖</div><div class="im-col"><div class="m">${meta}</div><div class="im-b bot a-text">${renderMd(m.text)}</div></div></div>`;
+        return `<div class="im-row bot">${imBotAva()}<div class="im-col"><div class="m">${meta}</div><div class="im-b bot a-text">${renderMd(m.text)}</div></div></div>`;
       }).join("")
     : '<div class="ab-empty">还没有对话。直接在下方输入框发条消息，或在飞书/微信里 @机器人。</div>';
   if (atBottom || feed._first === undefined) { feed.scrollTop = feed.scrollHeight; feed._first = 1; }

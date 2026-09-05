@@ -492,7 +492,7 @@ function renderAgentPane(pane, s) {
     } }, pane.querySelector("#ag-msg"));
 }
 function renderPersonaPane(pane, s) {
-  const a = { name: "OpenWorkBuddy", avatar: "🤖", ...(s.assistant || {}) };
+  const a = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK, ...(s.assistant || {}) };
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">助理的名字和头像</div>
@@ -509,7 +509,7 @@ function renderPersonaPane(pane, s) {
     ${petCardHtml(s.pet || {})}
     <button class="btn-brand" id="ps-save">保存</button><span class="ok-msg" id="ps-msg"></span>`;
   bindPetCard(pane, s.pet || {});
-  const ed = bindAvatarEditor(pane, "as", a.avatar, () => pane.querySelector("#as-name").value.trim() || "OpenWorkBuddy");
+  const ed = bindAvatarEditor(pane, "as", a.avatar, () => pane.querySelector("#as-name").value.trim() || "OpenWorkBuddy", ASSISTANT_MARK);
   pane.querySelector("#as-save").onclick = async () => {
     const msg = pane.querySelector("#as-msg");
     const ok = await saveSettings({ assistant: { name: pane.querySelector("#as-name").value, avatar: ed.value() } }, msg);

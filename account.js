@@ -94,6 +94,8 @@ const AVATAR_MAX = 256 * 1024;
 function normalizeAvatar(v) {
   const s = String(v == null ? "" : v).trim();
   if (!s) return "";
+  // 内置猫标的哨兵值。它不是 emoji，会被下面「最多两个字符」那关挡掉，所以得先放行
+  if (s === "@cat") return s;
   if (/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(s)) {
     if (s.length > AVATAR_MAX) throw new Error("头像图片太大了（超过 256KB），换张小的或者用 emoji");
     return s;

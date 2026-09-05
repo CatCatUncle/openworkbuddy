@@ -6,7 +6,9 @@ let settingsCache = null;
 let projects = [];
 let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前声明（初始化就会用到）
 let currentUser = null; // 登录后由 initAuth() 填充
-let assistant = { name: "OpenWorkBuddy", avatar: "🤖" }; // 助理的名字/头像，可在设置里改；登录后拉真值
+/** 内置猫标的哨兵值。不是 emoji 也不是 data URI，avatarBits 单独认它 */
+const ASSISTANT_MARK = "@cat";
+let assistant = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK }; // 助理的名字/头像，可在设置里改；登录后拉真值
 let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
 const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
 const sessionDirs = new Map(); // sessionId -> 该对话在默认工作空间下的成果子文件夹（成果面板标「本对话」）
@@ -39,6 +41,10 @@ function esc(s) { const d = document.createElement("div"); d.textContent = s == 
 function avatarBits(av, fallbackName) {
   const s = String(av || "").trim();
   if (s.startsWith("data:image/")) return { html: `<img class="ava-img" src="${esc(s)}" alt="">`, cls: "" };
+  // "@cat" 是内置的猫标——跟应用图标同一套几何（scripts/genlogo.py 生成同一份 symbol），
+  // 所以窗口图标、Dock 里那只、聊天里的头像是同一只猫，不是三张不相干的图。
+  // 走 <use> 而不是塞一张 png：矢量的，任何尺寸都清楚，也不用多一次网络请求。
+  if (s === ASSISTANT_MARK) return { html: `<svg class="ava-mk" aria-hidden="true"><use href="#wb-cat"></use></svg>`, cls: "mk" };
   if (s) return { html: esc(s), cls: "emo" };
   return { html: esc(String(fallbackName || "?").trim().slice(0, 1).toUpperCase()), cls: "" };
 }
@@ -47,6 +53,7 @@ function paintAvatar(el, av, fallbackName) {
   const { html, cls } = avatarBits(av, fallbackName);
   el.innerHTML = html;
   el.classList.toggle("emo", cls === "emo");
+  el.classList.toggle("mk", cls === "mk");
 }
 /** 界面上该怎么称呼当前用户：昵称优先，没设就用登录名 */
 function displayName(u) { return (u && (u.nickname || u.username)) || ""; }
