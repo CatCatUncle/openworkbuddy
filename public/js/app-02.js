@@ -961,7 +961,8 @@ loadPermModes();
 
 
 // ================= 头像编辑器（用户资料和助理设置共用一份） =================
-const AVATAR_PRESETS = ["🤖", "🐱", "🐶", "🦊", "🐼", "🦉", "🧑‍💼", "👩‍💻", "🧠", "✨", "🚀", "🌈", "🍀", "☕️", "🎯"];
+// 第一格是内置猫标（跟应用图标同一只），后面才是 emoji
+const AVATAR_PRESETS = [ASSISTANT_MARK, "🐱", "🐶", "🦊", "🐼", "🦉", "🧑‍💼", "👩‍💻", "🧠", "✨", "🚀", "🌈", "🍀", "☕️", "🎯"];
 /** 把用户选的图压成方形小图再转 data URI：账号库/配置都是 JSON 文件，原图几 MB 塞进去会把读写拖垮 */
 function shrinkImage(fileObj, size) {
   return new Promise((resolve, reject) => {
@@ -1000,31 +1001,39 @@ function avatarEditorHtml(p, av, fallback) {
         <button id="${p}-up" style="flex:none;padding:6px 12px;white-space:nowrap">上传图片</button>
         <button id="${p}-clr" style="flex:none;padding:6px 12px;white-space:nowrap">恢复默认</button>
       </div>
-      <div id="${p}-presets" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:2px">${AVATAR_PRESETS.map(e => `<span class="ava-pick" data-e="${e}">${e}</span>`).join("")}</div>
+      <div id="${p}-presets" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:2px">${AVATAR_PRESETS.map(e => {
+        const b = avatarBits(e, "");
+        return `<span class="ava-pick${b.cls === "mk" ? " mk" : ""}" data-e="${esc(e)}" title="${e === ASSISTANT_MARK ? "内置猫标" : e}">${b.html}</span>`;
+      }).join("")}</div>
       <input type="file" id="${p}-file" accept="image/*" style="display:none">
     </div>
   </div>`;
 }
-/** 绑上事件，返回 { value() } 取当前选中的头像值（emoji 字符串 / data URI / 空=用默认） */
-function bindAvatarEditor(root, p, initial, fallback) {
+/** 绑上事件，返回 { value() } 取当前选中的头像值（emoji 字符串 / data URI / 空=用默认）。
+ *  defaultAv：点「恢复默认」该回到哪。助理传内置猫标，用户资料不传（空=首字母）。 */
+function bindAvatarEditor(root, p, initial, fallback, defaultAv = "") {
   const q = (suffix) => root.querySelector("#" + p + "-" + suffix);
   const state = { av: String(initial || "") };
   const nameNow = () => (typeof fallback === "function" ? fallback() : fallback);
   const paint = () => paintAvatar(q("prev"), state.av, nameNow());
   q("emoji").oninput = () => {
     const v = q("emoji").value.trim();
-    // 输入框空着又已经传过图：那是"图还在，只是没打字"，别把图清掉
-    if (v || !state.av.startsWith("data:")) { state.av = v; paint(); }
+    // 输入框空着又已经选了图/猫标：那是"选的东西还在，只是没打字"，别给清掉
+    if (v || !(state.av.startsWith("data:") || state.av === ASSISTANT_MARK)) { state.av = v; paint(); }
   };
   q("presets").onclick = (e) => {
     const pick = e.target.closest(".ava-pick");
     if (!pick) return;
-    q("emoji").value = pick.dataset.e;
+    // 猫标不是 emoji，别往输入框里塞 "@cat"——那行字用户看了会以为要自己打
+    q("emoji").value = pick.dataset.e === ASSISTANT_MARK ? "" : pick.dataset.e;
     state.av = pick.dataset.e;
     paint();
   };
   q("up").onclick = () => q("file").click();
-  q("clr").onclick = () => { q("emoji").value = ""; state.av = ""; paint(); };
+  // 「恢复默认」得预览真正的默认值。助理的默认是猫标，之前一律清成空、预览画个首字母，
+  // 保存后服务端又把空补回猫标（server.js: normalizeAvatar(...) || ASSISTANT_DEFAULT.avatar）——
+  // 于是预览跟保存结果两个样。
+  q("clr").onclick = () => { q("emoji").value = ""; state.av = defaultAv; paint(); };
   q("file").onchange = async () => {
     const f = q("file").files && q("file").files[0];
     q("file").value = ""; // 允许连续选同一个文件

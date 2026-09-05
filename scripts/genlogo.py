@@ -167,3 +167,35 @@ svg = '''<!-- OpenWorkBuddy 应用图标：猫猫。
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "icon.svg")
 io.open(os.path.normpath(OUT), "w", encoding="utf-8").write(svg)
 print("写入 build/icon.svg  %d 字节" % len(svg))
+
+# ---- 界面里的小猫标（聊天头像那颗） ----
+# 跟图标同一套几何，只是把外面那块超椭圆底去掉——头像容器自己就是个带渐变的圆，
+# 再套一层底会出现「圆里套方」。手改 index.html 会跟图标走散，所以这里直接把
+# <symbol id="wb-cat"> 那段重写回 public/index.html 的两行标记之间。
+#
+# viewBox 收到猫的实际外接框：1024 画布上猫只占中间那点地方，照原样放进 22px 的
+# 头像里，脸就剩十来个像素了。四边留 16px 余量再取正方形，保证不同容器里不变形。
+mark_x0, mark_x1 = min(p[0] for p in ear_l), max(p[0] for p in ear_r)
+mark_y0 = min(p[1] for p in ear_l + ear_r)
+mark_y1 = HEAD[1] + HEAD[3]                       # 头的下缘
+pad = 16
+mcx, mcy = (mark_x0 + mark_x1) / 2.0, (mark_y0 + mark_y1) / 2.0
+half = max(mark_x1 - mark_x0, mark_y1 - mark_y0) / 2.0 + pad
+mark_vb = "%.0f %.0f %.0f %.0f" % (mcx - half, mcy - half, half * 2, half * 2)
+print("小猫标 viewBox = %s" % mark_vb)
+
+# parts 里前两条是超椭圆底和高光，第三条起才是猫；去掉底，缩进也顺手拉平
+mark_body = "\n".join(l[2:] for l in parts[2:])
+symbol = ('<symbol id="wb-cat" viewBox="%s">\n%s\n</symbol>' % (mark_vb, mark_body))
+
+IDX = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "public", "index.html"))
+BEG = "<!-- wb-cat:begin 由 scripts/genlogo.py 生成，别手改 -->"
+END = "<!-- wb-cat:end -->"
+html = io.open(IDX, encoding="utf-8").read()
+if BEG in html and END in html:
+    i, j = html.index(BEG), html.index(END)
+    html = html[:i] + BEG + "\n" + symbol + "\n" + html[j:]
+    io.open(IDX, "w", encoding="utf-8").write(html)
+    print("已把 <symbol id=\"wb-cat\"> 写回 public/index.html（%d 字节）" % len(symbol))
+else:
+    raise SystemExit("public/index.html 里找不到 wb-cat 的标记行，先把这两行加到 #wb-sprite 里：\n  %s\n  %s" % (BEG, END))
