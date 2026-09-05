@@ -519,6 +519,36 @@ function savedAt(saveDir, fname) {
   return rel && !rel.startsWith("..") ? `${rel}/${fname}` : fname;
 }
 
+/**
+ * 发一个「要干净图」的请求：默认带上 watermark: false。
+ *
+ * 国内几家默认往右下角烙一枚「AI 生成」——火山方舟 doubao-seedream 系的 watermark
+ * 默认就是 true。用户拿到的是要直接拿去用的成品，不是 demo，带水印等于白生成一次。
+ *
+ * 麻烦在这个字段不通用：OpenAI 官方 /images/generations 见到不认识的字段直接 400
+ * （Unrecognized request argument supplied），而聚合网关（new-api 之类）主机名千奇百怪，
+ * 靠 base_url 猜是哪一家一定会猜漏，漏掉的恰好就是用户真在用的那个。
+ * 所以策略是反过来的：先按「要干净图」发，只有对面明确说「我不认识这个字段」才去掉重发一次。
+ *
+ * 关键是退让必须留痕。静默退回去，用户下次又拿到带水印的图，还是查不出原因——
+ * 这个默认值被漏掉过一次，代价就是用户手里所有生成图都白做了。
+ */
+async function postWantClean(url, headers, signal, buildBody, label) {
+  const send = (wm) => fetchRetry(url, { method: "POST", headers, signal, body: JSON.stringify(buildBody(wm)) }, { label });
+  const r = await send(true);
+  if (r.ok) return { r, j: await r.json().catch(() => ({})), stripped: false };
+  const raw = await r.text().catch(() => "");
+  // 只在「这个字段我不认识」时退让。余额不足、鉴权失败、内容被拦这些照原样报错，
+  // 别一律当成参数问题吞掉——那会把真正的错因藏起来
+  const unknownField = r.status === 400 && /watermark|unrecognized|unknown|unsupported|not\s+support|invalid[^"]{0,20}(param|argument|field)/i.test(raw);
+  if (!unknownField) {
+    let j = {}; try { j = JSON.parse(raw); } catch { j = { error: raw.slice(0, 300) }; }
+    return { r, j, stripped: false };
+  }
+  const r2 = await send(false);
+  return { r: r2, j: await r2.json().catch(() => ({})), stripped: true };
+}
+
 async function generateImage(media, input, timeoutMs, saveDir) {
   const cfg = (media || {}).image || {};
   if (!cfg.base_url || !cfg.model) {
@@ -530,28 +560,24 @@ async function generateImage(media, input, timeoutMs, saveDir) {
   const headers = { "Content-Type": "application/json", Authorization: `Bearer ${String(cfg.api_key || "").trim()}` };
   const signal = AbortSignal.timeout(Math.max(timeoutMs || 0, 300000));
   const fname = safeOutName(input.filename, ".png", "image");
-  let imgUrl = null, b64 = null;
+  let imgUrl = null, b64 = null, watermarked = false;
   if (/dashscope/i.test(base)) {
     // DashScope 原生（qwen-image 系）：multimodal-generation，同步返回图片 URL
     // 生图慢又贵，上游一抖整轮就白跑：真实数据里 15 次调用失败 9 次，其中 8 次是
     // 上游 500 InternalServiceError，纯属临时故障。模型拿到失败通常不会重来，而是
     // 改用别的方案交差，用户就永远拿不到那张图。所以重试这件事得工具自己扛。
-    const r = await fetchRetry(`${base}/services/aigc/multimodal-generation/generation`, {
-      method: "POST", headers, signal,
-      body: JSON.stringify({ model: cfg.model, input: { messages: [{ role: "user", content: [{ text: prompt }] }] }, parameters: { watermark: false } }),
-    }, { label: "图像接口" });
-    const j = await r.json().catch(() => ({}));
+    const { r, j, stripped } = await postWantClean(`${base}/services/aigc/multimodal-generation/generation`, headers, signal,
+      (wm) => ({ model: cfg.model, input: { messages: [{ role: "user", content: [{ text: prompt }] }] }, parameters: wm ? { watermark: false } : {} }), "图像接口");
+    watermarked = stripped;
     if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
     const parts = ((((j.output || {}).choices || [])[0] || {}).message || {}).content || [];
     imgUrl = (parts.find((c) => c.image) || {}).image;
     if (!imgUrl) return { content: "图像接口没有返回图片：" + JSON.stringify(j).slice(0, 300), isError: true };
   } else {
     // OpenAI 兼容 /images/generations（OpenAI、new-api 等聚合网关通用）
-    const r = await fetchRetry(`${base}/images/generations`, {
-      method: "POST", headers, signal,
-      body: JSON.stringify({ model: cfg.model, prompt, n: 1, ...(input.size ? { size: String(input.size) } : {}) }),
-    }, { label: "图像接口" });
-    const j = await r.json().catch(() => ({}));
+    const { r, j, stripped } = await postWantClean(`${base}/images/generations`, headers, signal,
+      (wm) => ({ model: cfg.model, prompt, n: 1, ...(input.size ? { size: String(input.size) } : {}), ...(wm ? { watermark: false } : {}) }), "图像接口");
+    watermarked = stripped;
     if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
     const d = (j.data || [])[0] || {};
     imgUrl = d.url;
@@ -563,7 +589,8 @@ async function generateImage(media, input, timeoutMs, saveDir) {
     fs.writeFileSync(path.join(saveDir || workspaceDir, fname), Buffer.from(b64, "base64"));
   } else await downloadToWorkspace(imgUrl, fname, saveDir);
   security.audit("图像生成", `${cfg.model}: ${prompt.slice(0, 120)} → ${fname}`, "放行");
-  return { content: `图片已生成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）`, isError: false };
+  const wmNote = watermarked ? "\n注意：这个渠道不接受 watermark 参数，图上可能带平台的「AI 生成」水印。要干净的图就换个渠道或换个模型，别用截图裁掉——分辨率会掉。" : "";
+  return { content: `图片已生成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${wmNote}`, isError: false };
 }
 
 async function generateVideo(media, input, opts = {}) {
@@ -593,7 +620,8 @@ async function generateVideo(media, input, opts = {}) {
     // DashScope 万相（wan 系）：异步提交 + /tasks 轮询
     const r = await fetch(`${base}/services/aigc/video-generation/video-synthesis`, {
       method: "POST", headers: { ...headers, "X-DashScope-Async": "enable" }, signal: AbortSignal.timeout(60000),
-      body: JSON.stringify({ model: cfg.model, input: { prompt }, parameters: {} }),
+      // watermark: false 和生图那边同一个理由——默认带印的成品等于白生成一次
+      body: JSON.stringify({ model: cfg.model, input: { prompt }, parameters: { watermark: false } }),
     });
     const j = await r.json().catch(() => ({}));
     const taskId = ((j || {}).output || {}).task_id;
@@ -609,7 +637,8 @@ async function generateVideo(media, input, opts = {}) {
     // 火山方舟（Seedance 系）：contents/generations/tasks 异步 + 轮询
     const r = await fetch(`${base}/contents/generations/tasks`, {
       method: "POST", headers, signal: AbortSignal.timeout(60000),
-      body: JSON.stringify({ model: cfg.model, content: [{ type: "text", text: prompt }] }),
+      // Seedance 的参数走提示词里的文本指令，不是 JSON 字段。用户自己写了就不覆盖他的
+      body: JSON.stringify({ model: cfg.model, content: [{ type: "text", text: /--watermark\b/.test(prompt) ? prompt : `${prompt} --watermark false` }] }),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j.id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
@@ -2207,4 +2236,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };

@@ -48,6 +48,27 @@ function looksSecret(text) {
   return SECRET_PATTERNS.some((re) => re.test(text));
 }
 
+/**
+ * 「某个功能现在已经好了」这类对本机能力的断言，不许进长期记忆。
+ *
+ * 来历是一次真事故。生图工具有一条分支忘了关平台水印，agent 每次拿到带水印的图，
+ * 就自己造一堆中间文件去局部重绘擦掉，然后往记忆里写下这么一条：
+ *   「内置 generate_image 工具现已支持无水印出图，此前服务端强制加水印的问题已解决」
+ * ——代码里那个参数从头到尾没发过。它把一次推断当成事实钉死了，而记忆没有任何复核机制：
+ * 越往后它越确信，绕的圈越大，用户越查不出为什么图还是带印。
+ *
+ * 这类断言的共同点是**过期得最快、错得最贵、而且写下它的那一刻恰好是最自信的一刻**。
+ * 能力好没好，用的时候试一次就知道，不该靠记；真正值得记的是用户的偏好本身
+ * （「交付物一律不要水印」），偏好不会因为代码改了就失效。
+ *
+ * 判据要求主语和断言同时命中，才不会误伤「公司报销系统已经换成飞书了」这种真·世界事实。
+ */
+const CAPABILITY_SUBJECT = /(工具|接口|api|服务端|后端|内置|系统|代码|程序|bug|渠道|模型|generate_image|generate_video|run_node|write_file)/i;
+const FIXED_CLAIM = /(已解决|已修复|已修好|已经修|现已支持|现在已支持|已经支持|已支持|已生效|已经生效|已经可以|现在可以|已可用|已经正常|不再有|已经没有|问题不存在)/;
+function looksStaleClaim(text) {
+  return CAPABILITY_SUBJECT.test(text) && FIXED_CLAIM.test(text);
+}
+
 /** 去重用的归一化：大小写、空白、句末标点不同不算两条 */
 function normalize(text) {
   return String(text || "")
@@ -151,6 +172,13 @@ function add({ text, user, shared = false, source = "agent" }) {
   if (t.length > MAX_TEXT) return { ok: false, note: `一条记忆最多 ${MAX_TEXT} 字，这条 ${t.length} 字。记结论，别记过程。` };
   if (looksSecret(t)) {
     return { ok: false, note: "这条像是密钥/密码/令牌，拒绝记入。记忆是明文存的、每次任务都会进系统提示词，凭据只该放在配置里。" };
+  }
+  if (source === "agent" && looksStaleClaim(t)) {
+    return {
+      ok: false,
+      note: "这条是在断言「某个功能现在已经好了」，不收。能力好没好，下次用的时候试一次就知道，"
+        + "记下来只会在它变了之后继续骗你自己。要记就记用户的偏好本身（比如「交付物一律不要水印」），偏好不会因为代码改了失效。",
+    };
   }
   const scope = scopeOf(user, shared);
   const items = load();
@@ -316,5 +344,5 @@ module.exports = {
   promptBlock,
   setEmbedder,
   ensureVectors,
-  _internals: { normalize, looksSecret, load, save, ITEMS_FILE, MANUAL_FILE, VEC_FILE, bigrams, keywordScore, cosine, vecLoad },
+  _internals: { normalize, looksSecret, looksStaleClaim, load, save, ITEMS_FILE, MANUAL_FILE, VEC_FILE, bigrams, keywordScore, cosine, vecLoad },
 };

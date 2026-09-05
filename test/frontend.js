@@ -39,6 +39,98 @@ const FILELIST_SRC = APP02X.slice(FL0, FL1);
 
 const FILELIST_HTML = "<!doctype html><meta charset='utf-8'><body><div id='file-list'></div></body>";
 
+// 对话里的「本回合产出」区：卡片只加不减 → 中途造的临时文件删了卡片还在，还把上限占满。
+// 真实事故：agent 为了擦掉生图自带的水印造了 8 个中间文件，干完删了，但 8 张卡正好顶满
+// OUT_CARD_MAX，唯一那张成品一张卡都没轮上——用户看到 8 个中间过程、0 个成果。
+// 同样切 app-01.js 的真源码，不抄。
+const TO0 = APP02X.indexOf("// 把本回合的产出做成卡片挂在对话里");
+const TO1 = APP02X.indexOf('document.getElementById("toggle-files").onclick');
+if (TO0 < 0 || TO1 <= TO0) throw new Error("app-01.js 里的本回合产出段找不到了（段标题被改过？），前端测试没法定位真源码");
+const TURNOUT_SRC = APP02X.slice(TO0, TO1);
+
+const TURNOUT_HTML = "<!doctype html><meta charset='utf-8'><body></body>";
+
+// 只替掉渲染细节（图标、字号、跳转），判重/上限/回收这些被测逻辑一律用真源码
+const TURNOUT_STUBS = `
+function esc(s){ const d=document.createElement("div"); d.textContent = s==null?"":String(s); return d.innerHTML; }
+function ic(){ return "<svg class='i'></svg>"; }
+function fileIcon(){ return "F"; }
+function fmtSize(n){ return (n||0) + " B"; }
+const revealBtn = (name) => '<span class="dl rv" data-rv="' + esc(name) + '">RV</span>';
+function revealFile(){}
+function previewFile(){}
+function startPreview(){ return Promise.resolve({ running: true }); }
+let previewSrv = {};
+function toast(){}
+const OFFICE_RE = /\.(doc|ppt|xls)$/i;
+function onActivate(el, fn){ el.addEventListener("click", fn); }
+`;
+
+const TURNOUT_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const F = (name, size) => ({ name, size: size || 100, mtime: "2026-09-05T00:00:00.000Z" });
+  const fresh = () => { const d = document.createElement("div"); document.body.appendChild(d); return d; };
+  const cards = (b) => [...b.querySelectorAll(".out-card")].map((c) => c.dataset.name);
+
+  // 事故原样重演：8 个擦水印用的中间文件 + 1 张最终成品
+  const mid = ["海报.png","_corner.png","_tab3.png","_tab2.png","_tab1.png","_bottom.png","海报v2.png","_wm2.png"].map((n) => F(n));
+  const clean = F("海报_clean.png");
+
+  // ── 负向控制：不传完整列表 = 修好之前那条代码路径，必须能把 bug 原样复现出来。
+  // 复现不出来说明测试测了个寂寞，后面全绿也不能信
+  {
+    const b = fresh();
+    renderTurnOutputs(b, mid);
+    renderTurnOutputs(b, [clean]);
+    ok("负向控制：旧行为下成品确实被挤掉了",
+      cards(b).length === 8 && !cards(b).includes("海报_clean.png"),
+      "旧行为没复现出 bug，这条测试就没有意义：" + JSON.stringify(cards(b)));
+  }
+
+  // ── 修好之后
+  {
+    const b = fresh();
+    renderTurnOutputs(b, mid, mid);
+    ok("八个中间文件先把卡片上限占满", cards(b).length === 8);
+    renderTurnOutputs(b, [clean], [clean]);   // 磁盘上现在只剩成品
+    ok("已从磁盘删掉的中间文件，卡片跟着撤掉", !cards(b).some((n) => n !== "海报_clean.png"), JSON.stringify(cards(b)));
+    ok("腾出位置后成品补进了卡片区", cards(b).includes("海报_clean.png"));
+    const gone = b.querySelector('.out-row[data-name="_wm2.png"]');
+    ok("变更清单留痕：行还在，但打上已删除、摘掉下载和定位入口",
+      gone && gone.classList.contains("gone") && !gone.querySelector(".dl") && !gone.querySelector(".rv"));
+    ok("留痕行的大小位改成了「已删除」", gone.querySelector(".sz").textContent === "已删除");
+  }
+
+  // ── 列表被服务端截断（outputFiles 到 500 条就停）时不许回收：
+  // 「不在这份列表里」这时候只说明列表满了，不说明文件没了，照删会误杀还活着的产出
+  {
+    const b = fresh();
+    renderTurnOutputs(b, mid, mid);
+    const capped = Array.from({ length: 500 }, (_, i) => F("x" + i + ".txt"));
+    renderTurnOutputs(b, [clean], capped);
+    ok("列表被截断时一律不回收", cards(b).length === 8 && !cards(b).includes("海报_clean.png"));
+  }
+
+  // ── svg/png 并卡：只有一半被删时，卡留着，摘掉失效的那条格式链接
+  {
+    const b = fresh();
+    const pair = [F("图.svg", 10), F("图.png", 20)];
+    renderTurnOutputs(b, pair, pair);
+    ok("svg + png 并成一张卡，PNG 当门面", cards(b).length === 1 && cards(b)[0] === "图.png");
+    ok("另一种格式挂在卡上", !!b.querySelector(".oa-alt"));
+    renderTurnOutputs(b, [F("图.png", 20)], [F("图.png", 20)]);
+    ok("只摘掉失效的格式链接，卡本身不动",
+      cards(b).length === 1 && cards(b)[0] === "图.png" && !b.querySelector(".oa-alt"));
+  }
+
+  return names;
+})()
+`;
+
+
+
 // 键盘可达：侧栏那几行、成果卡、折叠头本来都是 <div>，鼠标能点、Tab 走不到。
 // 补齐这件事的真源码是 app-00-ui.js 里的 markActivatable/onActivate + 全局 keydown，
 // 整份直接拉进来跑，不抄。测的是"Enter/空格真的等价于点击"，不是"属性写上了没有"。
@@ -800,6 +892,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：成果面板按时间分段（今天/昨天/7天/按月·取最近动过·折叠独立·根目录降级）${names5.length} 项通过`);
     } finally {
       if (!win5.isDestroyed()) win5.destroy();
+    }
+    const win7 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win7.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TURNOUT_HTML));
+      const names7 = await win7.webContents.executeJavaScript(TURNOUT_STUBS + "\n" + TURNOUT_SRC + "\n" + TURNOUT_CHECKS, true);
+      for (const n of names7) console.log("  ✓ " + n);
+      console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接）${names7.length} 项通过`);
+    } finally {
+      if (!win7.isDestroyed()) win7.destroy();
     }
     const win6 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
