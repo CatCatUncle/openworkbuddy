@@ -500,14 +500,18 @@ async function testImageWatermarkGate() {
     assert(!r1.isError, "正常渠道生图失败：" + r1.content);
     assert(seen.length === 1, "正常渠道多发了请求：" + seen.length);
     assert(seen[0].watermark === false, "生图请求没带 watermark:false，图会带平台水印");
-    assert(!/水印/.test(r1.content), "正常渠道不该在回执里提水印：" + r1.content);
+    // 顺利这条也必须交代水印状态。只在出问题时报警、顺利时沉默，模型无从判断，
+    // 只能自己再花一轮 look_at_image 去找水印——真实会话 s_1788598987265 里它找完还另造了
+    // 一版「干净图」，白烧两轮外加一个多余产物。
+    assert(/已按无水印出图/.test(r1.content), "顺利出图却没在回执里交代水印状态：" + r1.content);
+    assert(!/可能带平台的/.test(r1.content), "顺利出图却报了水印警告：" + r1.content);
 
     mode = "strict"; seen.length = 0;
     const r2 = await generateImage(media, { prompt: "一只猫", filename: "e2e-wm-2.png" }, 5000, dir);
     assert(!r2.isError, "严格渠道该退一步重发并成功，实际：" + r2.content);
     assert(seen.length === 2, "严格渠道应当只重发一次，实际发了 " + seen.length + " 次");
     assert(seen[0].watermark === false && !("watermark" in seen[1]), "重发时没把 watermark 去掉");
-    assert(/水印/.test(r2.content), "退让了却没在回执里留痕，用户查不出图为什么带水印：" + r2.content);
+    assert(/可能带平台的/.test(r2.content), "退让了却没在回执里留痕，用户查不出图为什么带水印：" + r2.content);
 
     mode = "broke"; seen.length = 0;
     const r3 = await generateImage(media, { prompt: "一只猫", filename: "e2e-wm-3.png" }, 5000, dir);
@@ -520,7 +524,79 @@ async function testImageWatermarkGate() {
     let caught = false;
     try { assert(({ model: "m", prompt: "p", n: 1 }).watermark === false, "x"); } catch { caught = true; }
     assert(caught, "闸门判据失效：漏写 watermark 的请求体居然也能过");
-    console.log("✅ 生图水印闸门：默认关水印 · 渠道不认时退让并留痕 · 非参数错误不吞");
+    let caught2 = false;
+    try { assert(/已按无水印出图/.test("图片已生成：a.png（模型 m）"), "x"); } catch { caught2 = true; }
+    assert(caught2, "回执判据失效：不提水印状态的老回执居然也能过");
+    console.log("✅ 生图水印闸门：默认关水印 · 顺利也交代状态 · 渠道不认时退让并留痕 · 非参数错误不吞");
+  } finally {
+    srv.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 生视频的水印，和生图是同一个洞的另一半。
+ *
+ * 生图那条早就做成了「先按要干净的发，对面说不认识这个字段才去掉重发」；视频这条一直是硬发
+ * parameters.watermark=false —— 渠道一旦不认，整条视频任务当场就废。视频要跑好几分钟、按条收钱，
+ * 为一个可降级的字段把它废掉，比带个水印更亏。
+ *
+ * 但退让不能顺手把重试也带进来：这是付费异步任务的提交口，退避重发会重复下单。
+ * 所以三件事一起钉：默认关水印 / 渠道不认时退让且留痕 / 提交口不重试。
+ */
+async function testVideoWatermarkGate() {
+  const http = require("http");
+  const os = require("os");
+  const { generateVideo } = require("../tools")._internals;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-vwm-"));
+  const submits = [];
+  let mode = "accept";
+  const srv = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const j = (code, o) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+      if (req.url.includes("/video-synthesis")) {
+        let body = {}; try { body = JSON.parse(raw || "{}"); } catch {}
+        submits.push(body);
+        const wm = "watermark" in (body.parameters || {});
+        if (mode === "strict" && wm) return j(400, { error: { message: "Unrecognized request argument supplied: watermark" } });
+        if (mode === "boom") return j(500, { message: "InternalError" });
+        return j(200, { output: { task_id: "t1" } });
+      }
+      if (req.url.includes("/tasks/")) {
+        return j(200, { output: { task_status: "SUCCEEDED", video_url: `http://127.0.0.1:${srv.address().port}/v.mp4` } });
+      }
+      res.writeHead(200, { "Content-Type": "video/mp4" }); res.end(Buffer.from("fake-mp4"));
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const media = { video: { base_url: `http://127.0.0.1:${srv.address().port}/dashscope/api/v1`, model: "wanx", api_key: "k" } };
+  try {
+    const r1 = await generateVideo(media, { prompt: "一只猫走路", filename: "e2e-vwm-1.mp4" }, { saveDir: dir });
+    assert(!r1.isError, "正常渠道生视频失败：" + r1.content);
+    assert(submits.length === 1, "正常渠道多提交了任务（等于重复下单）：" + submits.length);
+    assert(submits[0].parameters.watermark === false, "视频请求没带 watermark:false，成片会带平台水印");
+    assert(/已按无水印出片/.test(r1.content), "顺利出片却没在回执里交代水印状态：" + r1.content);
+
+    mode = "strict"; submits.length = 0;
+    const r2 = await generateVideo(media, { prompt: "一只猫走路", filename: "e2e-vwm-2.mp4" }, { saveDir: dir });
+    // 这一条就是这次要修的回归：以前渠道不认这个字段，整条视频任务直接失败
+    assert(!r2.isError, "渠道不认 watermark 就把整条视频任务废了：" + r2.content);
+    assert(submits.length === 2, "严格渠道应当只退让重发一次，实际提交了 " + submits.length + " 次");
+    assert("watermark" in submits[0].parameters && !("watermark" in submits[1].parameters), "重发时没把 watermark 去掉");
+    assert(/可能带平台的/.test(r2.content), "退让了却没在回执里留痕，用户查不出成片为什么带水印：" + r2.content);
+
+    mode = "boom"; submits.length = 0;
+    const r3 = await generateVideo(media, { prompt: "一只猫走路", filename: "e2e-vwm-3.mp4" }, { saveDir: dir });
+    assert(r3.isError, "上游 500 竟然没报错");
+    assert(submits.length === 1, "付费提交口被重试了 " + submits.length + " 次，会重复下单");
+
+    // 反向断言：老那种「硬发 watermark、渠道不认就整条废掉」的结果喂给同一条判据，必须判失败
+    let caught = false;
+    try { assert(!{ isError: true, content: "视频接口错误 400" }.isError, "x"); } catch { caught = true; }
+    assert(caught, "闸门判据失效：渠道不认就整条废掉的结果居然也能过");
+    console.log("✅ 生视频水印闸门：默认关水印 · 渠道不认时退让不废任务 · 付费提交口不重试");
   } finally {
     srv.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -2932,6 +3008,7 @@ async function main() {
   testCssTokenGate();
   testDocLinkGate();
   await testImageWatermarkGate();
+  await testVideoWatermarkGate();
   testDeliverableGate();
   testContextBudget();
   testToolPairRepair();

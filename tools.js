@@ -533,8 +533,8 @@ function savedAt(saveDir, fname) {
  * 关键是退让必须留痕。静默退回去，用户下次又拿到带水印的图，还是查不出原因——
  * 这个默认值被漏掉过一次，代价就是用户手里所有生成图都白做了。
  */
-async function postWantClean(url, headers, signal, buildBody, label) {
-  const send = (wm) => fetchRetry(url, { method: "POST", headers, signal, body: JSON.stringify(buildBody(wm)) }, { label });
+async function postWantClean(url, headers, signal, buildBody, label, tries) {
+  const send = (wm) => fetchRetry(url, { method: "POST", headers, signal, body: JSON.stringify(buildBody(wm)) }, { label, ...(tries ? { tries } : {}) });
   const r = await send(true);
   if (r.ok) return { r, j: await r.json().catch(() => ({})), stripped: false };
   const raw = await r.text().catch(() => "");
@@ -589,7 +589,12 @@ async function generateImage(media, input, timeoutMs, saveDir) {
     fs.writeFileSync(path.join(saveDir || workspaceDir, fname), Buffer.from(b64, "base64"));
   } else await downloadToWorkspace(imgUrl, fname, saveDir);
   security.audit("图像生成", `${cfg.model}: ${prompt.slice(0, 120)} → ${fname}`, "放行");
-  const wmNote = watermarked ? "\n注意：这个渠道不接受 watermark 参数，图上可能带平台的「AI 生成」水印。要干净的图就换个渠道或换个模型，别用截图裁掉——分辨率会掉。" : "";
+  // 顺利那条也必须把水印状态说出来。只在出问题时报警、顺利时沉默，模型就无从判断，
+  // 只能自己再花一轮 look_at_image 去找水印；真实会话里它找完还会另造一版「干净图」，
+  // 白烧两轮加一个多余产物。把结论直接写进回执，它就不用查了。
+  const wmNote = watermarked
+    ? "\n注意：这个渠道不接受 watermark 参数，图上可能带平台的「AI 生成」水印。要干净的图就换个渠道或换个模型，别用截图裁掉——分辨率会掉。"
+    : "\n已按无水印出图（渠道接受了 watermark=false），不用再开图找水印。";
   return { content: `图片已生成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${wmNote}`, isError: false };
 }
 
@@ -616,14 +621,18 @@ async function generateVideo(media, input, opts = {}) {
     throw new Error("视频生成超时（10 分钟未完成，可稍后到渠道控制台查看任务）");
   };
   let videoUrl;
+  let vWatermarked = false;
   if (/dashscope/i.test(base)) {
     // DashScope 万相（wan 系）：异步提交 + /tasks 轮询
-    const r = await fetch(`${base}/services/aigc/video-generation/video-synthesis`, {
-      method: "POST", headers: { ...headers, "X-DashScope-Async": "enable" }, signal: AbortSignal.timeout(60000),
-      // watermark: false 和生图那边同一个理由——默认带印的成品等于白生成一次
-      body: JSON.stringify({ model: cfg.model, input: { prompt }, parameters: { watermark: false } }),
-    });
-    const j = await r.json().catch(() => ({}));
+    // 水印走跟生图同一套策略：先按「要干净的」发，只有对面明说不认识这个字段才去掉重发。
+    // 以前这里是硬发 parameters.watermark=false，渠道一旦不认，整条视频任务当场就废——
+    // 视频要跑好几分钟还按条收钱，为一个可降级的字段把它废掉不划算。
+    // tries=1：这是付费异步任务的提交口，退避重发会重复下单，不能跟生图一个策略。
+    const { r, j, stripped } = await postWantClean(
+      `${base}/services/aigc/video-generation/video-synthesis`,
+      { ...headers, "X-DashScope-Async": "enable" }, AbortSignal.timeout(60000),
+      (wm) => ({ model: cfg.model, input: { prompt }, parameters: wm ? { watermark: false } : {} }), "视频接口", 1);
+    vWatermarked = stripped;
     const taskId = ((j || {}).output || {}).task_id;
     if (!r.ok || !taskId) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
     videoUrl = await poll(async () => {
@@ -657,7 +666,10 @@ async function generateVideo(media, input, opts = {}) {
   if (!videoUrl) return { content: "视频任务完成但没有返回视频地址", isError: true };
   await downloadToWorkspace(videoUrl, fname, opts.saveDir);
   security.audit("视频生成", `${cfg.model}: ${prompt.slice(0, 120)} → ${fname}`, "放行");
-  return { content: `视频已生成：${savedAt(opts.saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）`, isError: false };
+  const vwNote = vWatermarked
+    ? "\n注意：这个渠道不接受 watermark 参数，片尾/角标可能带平台的「AI 生成」水印。要干净的成片就换个渠道或换个模型。"
+    : "\n已按无水印出片，不用再开片找水印。";
+  return { content: `视频已生成：${savedAt(opts.saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${vwNote}`, isError: false };
 }
 
 /** HTML → PNG：真浏览器离屏渲染（htmlshot.js，只有桌面版才有渲染器） */
@@ -2236,4 +2248,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
