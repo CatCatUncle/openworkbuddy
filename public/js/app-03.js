@@ -31,8 +31,8 @@ async function renderAccount() {
         <button id="acc-profile" style="float:right;padding:2px 10px;font-size: 13px;margin-right:6px">改名字 / 头像</button>
       </div>
       <div class="d">${creditsOn
-        ? `积分余额 <b style="color:var(--wb-brand);font-size:16px">✦ ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，命中缓存的部分按 1/10 折算（上游就是这么收的），每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）`
-        : `<b style="color:var(--wb-brand)">不限额</b> · 任务想跑多少跑多少，下面的用量只是给你看花了多少 tokens，不会拦人`}</div>
+        ? `积分余额 <b style="color: var(--wb-brand-text);font-size:16px">✦ ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，命中缓存的部分按 1/10 折算（上游就是这么收的），每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）`
+        : `<b style="color: var(--wb-brand-text)">不限额</b> · 任务想跑多少跑多少，下面的用量只是给你看花了多少 tokens，不会拦人`}</div>
       ${isAdmin ? `${creditsOn ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
         <input id="topup-user" placeholder="给谁充（留空=自己）" style="max-width:150px">
         <input id="topup-amt" type="number" placeholder="积分数" style="max-width:110px">
@@ -666,7 +666,7 @@ async function renderAutomPage() {
         <button data-tab="runs">📜 运行记录</button>
       </div>
       <div class="hub-search" style="max-width:240px"><input id="at-q" placeholder="搜索自动化" value="${esc(st.q)}"></div>
-      <button class="btn-plain" id="at-bulk" style="${st.bulk ? "border-color:var(--wb-brand);color:var(--wb-brand)" : ""}">☑️ 批量管理</button>
+      <button class="btn-plain" id="at-bulk" style="${st.bulk ? "border-color: var(--wb-brand-text);color: var(--wb-brand-text)" : ""}">☑️ 批量管理</button>
       <button class="btn-plain" id="at-tpl">📋 从模版添加</button>
       <button class="btn-brand" id="at-new">＋ 添加自动化</button>
     </div>

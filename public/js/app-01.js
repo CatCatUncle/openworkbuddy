@@ -374,7 +374,7 @@ function createTurnUI(userText, turnMode, forSid) {
     } else if (ev.type === "limit") {
       currentText = null;
       const note = document.createElement("div");
-      note.style.cssText = "font-size: 13px;color:var(--wb-err);margin:6px 0";
+      note.style.cssText = "font-size: 13px;color:var(--wb-err-text);margin:6px 0";
       note.textContent = `⏱ ${ev.note || "已达执行上限"}，任务强制收尾`;
       ensureProc().appendChild(note);
       procWrap?.classList.add("open");
@@ -398,7 +398,7 @@ function createTurnUI(userText, turnMode, forSid) {
       // 主模型挂起/持续报错、自动切到备用渠道——必须大声播报，绝不静默换模型
       currentText = null;
       const note = document.createElement("div");
-      note.style.cssText = "font-size: 13px;color:var(--wb-err);margin:6px 0";
+      note.style.cssText = "font-size: 13px;color:var(--wb-err-text);margin:6px 0";
       note.textContent = `🔀 ${ev.note || "已切换到备用渠道"}`;
       ensureProc().appendChild(note);
       procWrap?.classList.add("open");
@@ -1715,6 +1715,6 @@ function healthBadge(name) {
   const h = settingsCache && settingsCache.model_health && settingsCache.model_health[name];
   if (!h || !h.n) return "";
   let s = ` · 近${h.n}次任务${h.ok}成`;
-  if (h.fail_streak >= 2) s += ` <span style="color:var(--wb-err)" title="${esc(h.last_fail || "")}">⚠连挂${h.fail_streak}</span>`;
+  if (h.fail_streak >= 2) s += ` <span style="color:var(--wb-err-text)" title="${esc(h.last_fail || "")}">⚠连挂${h.fail_streak}</span>`;
   return s;
 }

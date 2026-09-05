@@ -353,6 +353,44 @@ async function testSessionFileLayout() {
 }
 
 // 成果核验闸门：声称生成的文件必须真的在、而且不能是 0 字节空壳
+// CSS 令牌闸门：引用了却没定义的 --wb-* / --* 变量，浏览器不报错、不回退，直接当没写——
+// 之前 --wb-line/--wb-card/--wb-warn/--mono 就这么空跑了很久（评测页边框一路是空的），
+// 后来又因为手滑吃掉一个分号，让 --wb-ok-text 整个失效。这类事故没有任何运行时能替你发现。
+// 顺带把「文字色拿填充色令牌」也钉死：--wb-brand/--wb-err/--wb-ok 是给背景用的，
+// 当文字色在浅底/暗底上都过不了 WCAG AA，必须走 --wb-*-text 那三档。
+function testCssTokenGate() {
+  const pub = path.join(__dirname, "..", "public");
+  const files = [
+    path.join(pub, "index.html"),
+    path.join(pub, "css", "ui.css"),
+    ...fs.readdirSync(path.join(pub, "js")).filter((f) => f.endsWith(".js")).map((f) => path.join(pub, "js", f)),
+  ];
+  const defined = new Set();
+  for (const f of [files[0], files[1]]) {
+    const t = fs.readFileSync(f, "utf8");
+    for (const m of t.matchAll(/(--[a-zA-Z0-9_-]+)\s*:/g)) defined.add(m[1]);
+  }
+  const missing = new Map();
+  const fillAsText = [];
+  for (const f of files) {
+    const t = fs.readFileSync(f, "utf8");
+    // var(--x) 带回退值的不算漏（var(--x, 兜底) 本来就允许没定义）
+    for (const m of t.matchAll(/var\(\s*(--[a-zA-Z0-9_-]+)\s*\)/g)) {
+      if (!defined.has(m[1])) missing.set(m[1], (missing.get(m[1]) || []).concat(path.basename(f)));
+    }
+    for (const m of t.matchAll(/(?<![-a-zA-Z])color:\s*var\(\s*--wb-(brand|err|ok)\s*\)/g)) {
+      fillAsText.push(path.basename(f) + " 的 --wb-" + m[1]);
+    }
+  }
+  assert(missing.size === 0, "引用了没定义的 CSS 变量：" + [...missing].map(([k, v]) => k + "(" + [...new Set(v)].join(",") + ")").join("、"));
+  assert(fillAsText.length === 0, "填充色令牌被当文字色用了，应换成 --wb-*-text：" + fillAsText.join("、"));
+  // 反向断言：闸门本身得能抓到东西，不然改坏了也全绿
+  const probe = "color: var(--wb-err)";
+  assert(/(?<![-a-zA-Z])color:\s*var\(\s*--wb-(brand|err|ok)\s*\)/.test(probe), "闸门正则失效");
+  assert(!defined.has("--wb-根本没有这个"), "闸门定义集失效");
+  console.log(`✅ CSS 令牌闸门：${defined.size} 个变量全部有定义 · 填充色没被当文字色用`);
+}
+
 function testDeliverableGate() {
   const real = path.join(WORKSPACE, "e2e-核验有内容.md");
   const empty = path.join(WORKSPACE, "e2e-核验空壳.md");
@@ -2728,6 +2766,7 @@ async function main() {
   testRenameLogin();
   testAvatarRules();
   testPathSafety();
+  testCssTokenGate();
   testDeliverableGate();
   testContextBudget();
   testToolPairRepair();
