@@ -572,12 +572,16 @@ function petCardHtml(p) {
       <div class="d" style="margin-bottom:10px"><b>默认没有宠物</b>——直接在对话里说「把这张图做成桌面宠物」并传一张照片，它就现场给你做一只；这里是手动开关和微调。<br>做出来之后，它会在桌面角落实时显示 agent 在干什么：干活时敲键盘、<b>要问你问题时跳起来并弹系统通知</b>（这条最有用——主窗口被盖住时，它提的问题很容易被漏掉，超时就按默认继续了）。点它开关主窗口，拖动换位置，右键有菜单（含免打扰）。空白处不吃鼠标，不会挡住底下的应用。${p.available === false ? '<br><span style="color:var(--wb-warn,#c60)">当前是纯服务端模式（npm start），宠物只在桌面版 <code>npm run app</code> 下出现。</span>' : ""}</div>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-on" style="width:auto;margin:0"${on ? " checked" : ""}> 显示桌面宠物</label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify" style="width:auto;margin:0"${p.notify !== false ? " checked" : ""}> 要提问时弹系统通知 + 图标跳动</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify-done" style="width:auto;margin:0"${p.notify_done !== false ? " checked" : ""}> 任务干完 / 出错时也提醒我一声</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-wander" style="width:auto;margin:0"${p.wander ? " checked" : ""}> 闲着时让它在桌面上随便走走（默认关）</label>
       <div class="t" style="margin-top:10px">形象</div>
       <div class="d" style="margin-bottom:6px">可以换成你自己或朋友的照片——上传后自动裁成圆形，配上呼吸、摇摆、跳跃的动效"活"起来。图片只存在本机 <code>data/</code> 目录，不上传任何服务器。</div>
+      ${petSpriteHint(p)}
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <select id="pet-char" style="max-width:200px">
-          <option value="cat"${p.character !== "photo" ? " selected" : ""}>内置小猫</option>
+        <select id="pet-char" style="max-width:240px">
+          <option value="cat"${p.character !== "photo" && p.character !== "sprite" ? " selected" : ""}>内置小猫</option>
           <option value="photo"${p.character === "photo" ? " selected" : ""}>我的照片${p.has_photo ? "" : "（还没上传）"}</option>
+          ${petSpriteOptions(p)}
         </select>
         <button class="btn-plain" id="pet-pick">上传照片</button>
         ${p.has_photo ? '<button class="btn-plain" id="pet-drop">删除照片</button>' : ""}
@@ -590,15 +594,41 @@ function petCardHtml(p) {
       <div style="margin-top:8px"><span class="ok-msg" id="pet-msg"></span></div>
     </div>`;
 }
+/**
+ * 精灵图宠物的说明。分两种情况：一只都没有的时候要告诉用户怎么装（不然这个能力等于不存在）；
+ * 扫到了但图集不合规的，要把原因原样打出来——「这只装了但用不了」比装作没看见有用得多。
+ */
+function petSpriteHint(p) {
+  const list = p.sprites || [];
+  const bad = list.filter(x => !x.ok);
+  const good = list.filter(x => x.ok);
+  const install = '装法：终端里跑 <code>npx petdex install &lt;名字&gt;</code>，画廊在 <a href="https://petdex.dev" target="_blank" rel="noreferrer">petdex.dev</a>；也可以把整个宠物文件夹（含 <code>pet.json</code> + <code>spritesheet.webp</code>）丢进 <code>data/pets/</code>。';
+  const badLine = bad.length ? `<br><span style="color:var(--wb-warn,#c60)">有 ${bad.length} 只装了但用不了：${bad.map(x => esc(x.name || x.id) + "（" + esc(x.why) + "）").join("、")}</span>` : "";
+  if (!good.length) return `<div class="d" style="margin-bottom:6px">还能用 <b>Codex / Petdex 的像素宠物</b>——8 行动作（跑、跳、挥手、失败…）直接对上 agent 的状态。本机<b>一只都没扫到</b>。${install}${badLine}</div>`;
+  return `<div class="d" style="margin-bottom:6px">本机扫到 <b>${good.length}</b> 只 Codex / Petdex 像素宠物，已列在下面。${install}${badLine}</div>`;
+}
+function petSpriteOptions(p) {
+  const good = (p.sprites || []).filter(x => x.ok);
+  if (!good.length) return "";
+  const sel = p.character === "sprite" ? p.sprite : "";
+  return '<optgroup label="精灵图宠物（Codex / Petdex）">' +
+    good.map(x => `<option value="sprite:${esc(x.id)}"${sel === x.id ? " selected" : ""}>${esc(x.name || x.id)} · ${esc(x.source)}</option>`).join("") +
+    "</optgroup>";
+}
 function bindPetCard(pane, p) {
   const msg = pane.querySelector("#pet-msg");
   const q = (id) => pane.querySelector(id);
   const save = (patch) => saveSettings({ pet: patch }, msg);
   q("#pet-on").onchange = (e) => save({ enabled: e.target.checked });
   q("#pet-notify").onchange = (e) => save({ notify: e.target.checked });
+  q("#pet-notify-done").onchange = (e) => save({ notifyDone: e.target.checked });
+  q("#pet-wander").onchange = (e) => save({ wander: e.target.checked });
   q("#pet-char").onchange = (e) => {
-    if (e.target.value === "photo" && !p.has_photo) { msg.textContent = "先上传一张照片"; e.target.value = "cat"; return; }
-    save({ character: e.target.value });
+    const v = e.target.value;
+    if (v === "photo" && !p.has_photo) { msg.textContent = "先上传一张照片"; e.target.value = "cat"; return; }
+    // 精灵图那几项的 value 是 "sprite:<id>"，要拆成两个字段发给后端
+    if (v.startsWith("sprite:")) return save({ character: "sprite", sprite: v.slice(7) });
+    save({ character: v, sprite: "" });
   };
   const scale = q("#pet-scale"), op = q("#pet-op");
   scale.oninput = () => { q("#pet-scale-v").textContent = Math.round(scale.value * 100) + "%"; };

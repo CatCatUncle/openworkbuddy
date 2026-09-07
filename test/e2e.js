@@ -3176,7 +3176,7 @@ async function testDesktopPet() {
   const { TOOL_DEFS } = require("../tools");
   const def = TOOL_DEFS.find((t) => t.name === "desktop_pet");
   assert(def, "工具表里没有 desktop_pet");
-  assert.deepStrictEqual(def.input_schema.properties.action.enum, ["create", "show", "hide", "remove", "status"], "desktop_pet 动作枚举变了");
+  assert.deepStrictEqual(def.input_schema.properties.action.enum, ["create", "show", "hide", "remove", "status", "sprite"], "desktop_pet 动作枚举变了");
   assert.deepStrictEqual(def.input_schema.required, ["action"], "desktop_pet 应只把 action 设为必填");
   // ⑤ 「大小」和「透明度」这两个滑块必须真的落到画面上。
   //   实测过的两个坑：
@@ -3202,6 +3202,134 @@ async function testDesktopPet() {
 
   console.log("✅ 桌面宠物：无窗口时全套降级不抛 / 服务端模式如实报错 / 参数与动作枚举稳定");
   console.log("✅ 桌面宠物：大小真的缩放画面（transform 保命中判定），透明度不糊提问气泡");
+
+  // ⑥ 精灵图形象（吃 Codex / Petdex 的图集）：渲染层三条硬约束
+  //   a) 必须画在 canvas 上而不是 background-image —— 只有 canvas 读得到每个像素的 alpha，
+  //      而这只宠物最核心的卖点就是"空白处不吃鼠标"。用背景图的话，一张 96×104 的方框
+  //      会把底下应用的点击整块挡住，而图集里真正有东西的只是中间一小坨。
+  //   b) 命中判定要按 getBoundingClientRect 换算，这样 --s 缩放后判定自动跟着走。
+  //   c) 精灵图自带 6~8 帧动作，不能再叠一层 CSS 呼吸/摇摆，两套动画打架会抖。
+  assert(/<canvas id="sprite"/.test(petHtml), "精灵图得画在 canvas 上（background-image 读不到 alpha，会整块挡住底下的应用）");
+  assert(/getImageData\(0, 0, w, h\)/.test(petHtml), "没有把整帧的 alpha 缓存下来，逐像素穿透就无从判起");
+  assert(/frameAlpha\.data\[\(py \* frameAlpha\.width \+ px\) \* 4 \+ 3\]/.test(petHtml), "solidAt 里没有按 alpha 判定精灵图");
+  assert(/\(x - r\.left\) \/ r\.width \* frameAlpha\.width/.test(petHtml),
+    "精灵图的命中判定没按 rect 换算（rect 已含 --s 缩放），放大缩小后会判错位置");
+  assert(/\.c-sprite \.actor \{ animation: none/.test(petHtml), "精灵图上不该再叠 CSS 动画（跟图集自带的帧动画打架）");
+  assert(/s\.walk === "left" \|\| s\.walk === "right"/.test(petHtml), "pet.html 没消费 walk：溜达时不会切成跑动那两行");
+  assert(/spec\.map\[walk \? "walk-" \+ walk : state\]/.test(petHtml), "走路时应优先用方向对应的动作行（state 仍是 idle）");
+
+  // 主进程侧：完成/出错的提醒得能单独关掉，且免打扰要压得住
+  assert(/cfg\.notify \|\| !cfg\.notifyDone/.test(petJs), "「干完也提醒我」没有独立开关，用户只能连提问通知一起关掉");
+  assert(/dndUntil/.test(petJs.slice(petJs.indexOf("function notifyFinish"), petJs.indexOf("function notifyFinish") + 900)),
+    "完成通知没走免打扰：用户按了免打扰还被弹，等于这个开关是假的");
+  console.log("✅ 桌面宠物：精灵图按 alpha 逐像素穿透（不是一块方框），走路/完成提醒各有独立开关");
+}
+
+/**
+ * 精灵图宠物：读 Codex / Petdex 那套图集格式。
+ *
+ * 这里刻意不碰真实的 ~/.codex —— 用临时目录当"本机窝"，图片只造文件头（解析器本来
+ * 就只读头 64 字节，造整张图是浪费）。要钉住的是三件事：
+ *   1) 尺寸解析对 PNG 和 WebP 三种子格式都成立，认不出来要返回 null 而不是猜一个默认值；
+ *   2) 不合规的图集必须被挡下并说清楚原因 —— 悄悄回落成内置猫，用户体感是"换了没生效"；
+ *   3) 状态映射表要盖全我们自己会发出的每一个状态，且不能映到图集里不存在的行。
+ */
+function testPetSprites() {
+  const os = require("os");
+  const sprites = require("../pet-sprites");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wb-pets-"));
+  const mk = (dir, meta, sheetName, buf) => {
+    fs.mkdirSync(path.join(dir), { recursive: true });
+    if (meta) fs.writeFileSync(path.join(dir, "pet.json"), JSON.stringify(meta));
+    if (sheetName) fs.writeFileSync(path.join(dir, sheetName), buf);
+  };
+  // 只造文件头：PNG 是 签名 + IHDR(宽高各一个大端 uint32)
+  const png = (w, h) => {
+    const b = Buffer.alloc(64);
+    b.writeUInt32BE(0x89504e47, 0); b.writeUInt32BE(0x0d0a1a0a, 4);
+    b.writeUInt32BE(13, 8); b.write("IHDR", 12, "ascii");
+    b.writeUInt32BE(w, 16); b.writeUInt32BE(h, 20);
+    return b;
+  };
+  // WebP 的 VP8X 头：24 起是两个 3 字节小端，存的是「尺寸 - 1」
+  const webp = (w, h) => {
+    const b = Buffer.alloc(64);
+    b.write("RIFF", 0, "ascii"); b.writeUInt32LE(56, 4); b.write("WEBP", 8, "ascii");
+    b.write("VP8X", 12, "ascii"); b.writeUInt32LE(10, 16);
+    b.writeUIntLE(w - 1, 24, 3); b.writeUIntLE(h - 1, 27, 3);
+    return b;
+  };
+
+  // ① 文件头解析：两种格式各来一张，外加一张谁都不是的
+  assert.deepStrictEqual(sprites.pngSize(png(1536, 1872)), { width: 1536, height: 1872 }, "PNG 宽高读错了");
+  assert.deepStrictEqual(sprites.webpSize(webp(1536, 1872)), { width: 1536, height: 1872 }, "WebP(VP8X) 宽高读错了");
+  assert.strictEqual(sprites.pngSize(Buffer.alloc(64)), null, "全零的 buffer 不该被当成 PNG");
+  assert.strictEqual(sprites.webpSize(Buffer.alloc(64)), null, "全零的 buffer 不该被当成 WebP");
+
+  // ② 图集校验：标准 9 行、ChatGPT 导出的 11 行、整体压一半的，都得放行；歪的要挡下并说原因
+  assert(sprites.checkSheet({ width: 1536, height: 1872 }).ok, "标准 8×9 图集被误判为不合规");
+  assert(sprites.checkSheet({ width: 1536, height: 2288 }).ok, "ChatGPT 导出的 11 行图集应当兼容（后两行忽略）");
+  const half = sprites.checkSheet({ width: 768, height: 936 });
+  assert(half.ok && half.frameW === 96 && half.frameH === 104, "等比压一半的图集应当放行并算出 96×104 的单帧");
+  for (const [size, hint] of [
+    [{ width: 1000, height: 1872 }, "宽不是 8 列整数倍"],
+    [{ width: 1536, height: 1664 }, "只有 8 行，不够 9 行"],
+    [{ width: 1536, height: 1900 }, "高切不出整数行"],
+    [null, "读不出尺寸"],
+  ]) {
+    const r = sprites.checkSheet(size);
+    assert(!r.ok && r.why, "本该被挡下的图集放行了（" + hint + "）: " + JSON.stringify(r));
+  }
+
+  // ③ 扫目录：缺 pet.json / 缺图集的不算一只；图集歪的要列出来但标成不可用
+  mk(path.join(home, "good"), { id: "good", displayName: "好猫" }, "spritesheet.webp", webp(1536, 1872));
+  mk(path.join(home, "bent"), { id: "bent", displayName: "歪猫" }, "spritesheet.png", png(1000, 1872));
+  mk(path.join(home, "nojson"), null, "spritesheet.png", png(1536, 1872));
+  mk(path.join(home, "nosheet"), { id: "nosheet" }, null, null);
+  // 只看临时窝里的那几只：这台机器上 ~/.codex/pets 里装着什么，跟这条断言无关，
+  // 不过滤的话测试会随开发机上装没装宠物而飘。
+  const found = sprites.scanPets(home).filter((x) => x.dir.startsWith(home));
+  const ids = found.map((x) => x.id).sort();
+  assert.deepStrictEqual(ids, ["bent", "good"], "扫描结果不对（缺 pet.json 或缺图集的不该算一只）: " + JSON.stringify(ids));
+  const bent = found.find((x) => x.id === "bent");
+  assert(!bent.ok && bent.why.includes("192×208"), "歪图集应当被标成不可用并说清原因: " + JSON.stringify(bent));
+  assert(sprites.findPet("good", home) && !sprites.findPet("bent", home), "findPet 只该给出真正能用的那只");
+  assert.strictEqual(sprites.findPet("查无此猫", home), null, "找不到时必须返回 null，不许兜底成别的宠物");
+
+  // 同一只装了两份（petdex install 会往 ~/.codex 和 ~/.petdex 各放一份）：只该出现一次。
+  // 这里用同一个窝里的两个目录来复现，判定走的是 pet.json 里的 id，跟目录名无关。
+  mk(path.join(home, "twin-a"), { id: "twin", displayName: "双胞胎" }, "spritesheet.webp", webp(1536, 1872));
+  mk(path.join(home, "twin-b"), { id: "twin", displayName: "双胞胎" }, "spritesheet.webp", webp(1536, 1872));
+  const twins = sprites.scanPets(home).filter((x) => x.dir.startsWith(home) && x.id === "twin");
+  assert.strictEqual(twins.length, 1, "同 id 的宠物没去重，列表里会出现两只一模一样的: " + twins.length);
+  assert(twins[0].dir.endsWith("twin-a"), "去重该保留先扫到的那份（窝的顺序是有意义的）: " + twins[0].dir);
+
+  // ④ 状态映射：我们发得出的每个状态都得有行，且不能指到图集里没有的行
+  const spec = sprites.spriteSpec(found.find((x) => x.id === "good"));
+  for (const st of ["idle", "working", "asking", "done", "error", "sleep", "review", "walk-left", "walk-right"]) {
+    assert(spec.map[st], "状态「" + st + "」没有对应的动画行，精灵图形象下它会没反应");
+  }
+  assert(Object.values(spec.map).every((r) => r.row < spec.rows), "映射指到了图集里不存在的行，画出来是空白");
+  // 行号不是我们定的，是 Codex / Petdex 图集里画好的位置。写错一行不会报错，
+  // 只会安静地播错动画（比如「交付完成」播成「还在干活」），所以逐行钉死。
+  const wantRow = { idle: 0, "walk-right": 1, "walk-left": 2, done: 3, asking: 4, error: 5, sleep: 6, working: 7, review: 8 };
+  const gotRow = Object.fromEntries(Object.entries(spec.map).map(([k, v]) => [k, v.row]));
+  assert.deepStrictEqual(gotRow, wantRow, "状态到行号的对应变了，画面会播错动画: " + JSON.stringify(gotRow));
+  assert.strictEqual(spec.map.done.frames, 4, "挥手那行只有 4 帧，按 8 帧播会闪一截空白");
+  assert.strictEqual(spec.map["walk-left"].frames, 8, "左跑那行是满 8 帧");
+  // 负向对照：只有 8 行的图集，第 9 行那个状态必须被摘掉而不是照画
+  const short = sprites.spriteSpec({ ok: true, id: "s", cols: 8, rows: 8, frameW: 192, frameH: 208 });
+  assert(!short.map.review, "8 行的图集不该还映射 review（那是第 9 行）");
+  assert(short.map.idle && short.map.working, "8 行的图集里前面几行还是该正常映射");
+  assert.strictEqual(sprites.spriteSpec({ ok: false }), null, "不合规的宠物不该产出动画表");
+
+  // ⑤ 窝的顺序：自己的排最前，同 id 时先扫到的赢（petdex install 会往两个窝各放一份）
+  const roots = sprites.petRoots(home).map((r) => r.source);
+  assert.deepStrictEqual(roots, ["本机", "codex", "petdex"], "宠物窝的顺序变了: " + JSON.stringify(roots));
+  assert(sprites.petRoots("").every((r) => r.source !== "本机"), "传空字符串应当表示不要额外的窝（测试要能隔离掉真实家目录）");
+
+  fs.rmSync(home, { recursive: true, force: true });
+  console.log("✅ 精灵图宠物：只读文件头就能校验图集，歪的挡下并说原因，9 个状态映射齐全");
 }
 
 /**
@@ -3354,6 +3482,7 @@ async function main() {
   await testAskUser();
   await testPromptNoAskContradiction();
   await testDesktopPet();
+  testPetSprites();
   testUiNoRawMarkdown();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
