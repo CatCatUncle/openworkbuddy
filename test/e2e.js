@@ -3367,6 +3367,104 @@ function testPetSprites() {
 }
 
 /**
+ * 一句「你是？」不许被当成办公任务。
+ *
+ * 真实数据：会话 s_1788799004126_982642 —— 用户只打了两个字「你是？」，跑的是 claude-code
+ * 引擎，结果建了工作目录 `任务_0908_你是`、写了 `我是谁.md` 和 `本机能力清单.md` 两个文件，
+ * 还按「做了什么／产出的文件／还差什么」汇报了一遍。这不是模型跑偏，是提示词就是这么
+ * 要求的：给 CLI 的那段第一句写着「你正在执行一个办公任务」，最后一句硬性要求
+ * 「写清楚产出了哪些文件」——两句话之间没有任何「先看看这是不是活」的余地。
+ *
+ * 所以这一条钉的不是措辞，是**顺序和条件**：
+ *   ① 问题／活的判定必须存在，且排在「工作目录在哪」「先说计划」这些干活指令**前面**；
+ *   ② 要求汇报产出文件的那句必须写明只在「是活」的时候才适用，不能是无条件命令。
+ * 两份提示词各查一遍（内置循环 + 给 CLI 的那段），断言跑在真正拼装出来的字符串上。
+ */
+function questionVsWorkProblems(builtin, engineSide) {
+  const bad = [];
+  const idx = (text, re) => {
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) if (re.test(lines[i])) return i;
+    return -1;
+  };
+  // —— 内置循环 ——
+  const bDisc = idx(builtin, /先分清.*(是|这次).*(问题).*(活)/);
+  const bPlan = idx(builtin, /接到任务先简短说明计划/);
+  if (bDisc < 0) bad.push("内置提示词里没有「先分清是问题还是活」这条判定");
+  if (bPlan < 0) bad.push("内置提示词里「接到任务先简短说明计划」不见了（这条是有用的，别整段删）");
+  if (bDisc >= 0 && bPlan >= 0 && bDisc > bPlan) bad.push("内置提示词：问题/活的判定排在「先说计划」后面，模型会先按前面那条办");
+  if (bDisc >= 0) {
+    const l = builtin.split("\n")[bDisc];
+    if (!/不.*写文件|不要写文件/.test(l)) bad.push("内置判定这条没说清楚「问题」不要写文件");
+  }
+  // —— 给 CLI 的那段 ——
+  const eDisc = idx(engineSide, /先分清.*(问题).*(活)/);
+  const eWork = idx(engineSide, /工作目录是/);
+  const eRep = idx(engineSide, /产出了哪些文件/);
+  if (eDisc < 0) bad.push("给 CLI 的提示词里没有问题/活的判定");
+  if (eWork >= 0 && eDisc >= 0 && eDisc > eWork) bad.push("给 CLI 的提示词：判定排在「工作目录在哪」后面");
+  if (eRep >= 0 && eDisc >= 0 && eDisc > eRep) bad.push("给 CLI 的提示词：判定排在「写清楚产出了哪些文件」后面");
+  if (eRep >= 0 && !/是活的时候|确实是活|如果是活/.test(engineSide.split("\n")[eRep])) {
+    bad.push("给 CLI 的提示词：要求汇报产出文件的那句是无条件的，一句问候也会触发它");
+  }
+  if (/正在.{0,24}执行一个办公任务/.test(engineSide)) bad.push("给 CLI 的提示词开场仍然断言「你正在执行一个办公任务」");
+  return bad;
+}
+
+/** 拼装两份提示词：内置的用假 LLM 截，给 CLI 的那份用一个假引擎截 */
+async function capturePrompts(mod) {
+  let builtin = null, engineSide = null;
+  const fakeLLM = {
+    provider: "mock", model: "scripted",
+    async chat({ system }) { builtin = system; return { text: "好", toolCalls: [], stopReason: "end" }; },
+  };
+  await mod.createAgentRuntime({ config, llm: fakeLLM, mcpManager: new McpManager(), experts: [] })
+    .runTask({ history: [{ role: "user", content: "你是？" }], emit: () => {} });
+
+  // 往注册表里塞一个假引擎，让 runViaEngine 真的走一遍——不去碰用户本机的 claude/codex
+  const engines = require("../engines");
+  const probe = {
+    id: "e2e-probe", label: "探针", bin: null, note: "", install: "", launchHeader: "", supportsResume: false,
+    async detect() { return { id: "e2e-probe", installed: true, path: "", version: "0" }; },
+    async run({ systemPrompt }) { engineSide = systemPrompt; return { finalText: "好", usage: {}, stopped: null, sessionId: null }; },
+  };
+  engines.BACKENDS.push(probe);
+  try {
+    const cfg = { ...config, agent: { ...config.agent, engine: "e2e-probe" } };
+    await mod.createAgentRuntime({ config: cfg, llm: fakeLLM, mcpManager: new McpManager(), experts: [] })
+      .runTask({ history: [{ role: "user", content: "你是？" }], emit: () => {} });
+  } finally {
+    engines.BACKENDS.splice(engines.BACKENDS.indexOf(probe), 1);
+  }
+  return { builtin, engineSide };
+}
+
+async function testPromptQuestionVsWork() {
+  const cur = await capturePrompts(require("../agent"));
+  assert(cur.builtin, "没截到内置系统提示词");
+  assert(cur.engineSide, "没截到给 CLI 的系统提示词");
+  const bad = questionVsWorkProblems(cur.builtin, cur.engineSide);
+  assert.strictEqual(bad.length, 0, "提示词会把一句问候当成办公任务：\n  - " + bad.join("\n  - "));
+
+  // 负对照：同一套断言拿去照 HEAD 那版 agent.js，必须挑得出毛病。
+  // 挑不出来，说明这些断言只是在复读改完之后的代码，什么也没守住。
+  const { execFileSync } = require("child_process");
+  const tmp = path.join(__dirname, "..", ".e2e-head-agent.js");
+  let caught = [];
+  try {
+    execFileSync("git", ["show", "HEAD:agent.js"], { cwd: path.join(__dirname, ".."), maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", fs.openSync(tmp, "w"), "ignore"] });
+    const old = require(tmp);
+    const before = await capturePrompts(old);
+    caught = questionVsWorkProblems(before.builtin, before.engineSide);
+  } finally {
+    try { delete require.cache[require.resolve(tmp)]; } catch {}
+    fs.rmSync(tmp, { force: true });
+  }
+  assert(caught.length >= 4, "这道闸门照 HEAD 那版 agent.js 只挑出 " + caught.length + " 条问题，说明它基本没在守东西");
+  console.log("✅ 提示词分清问题/活：两份提示词判定都在最前、汇报只对「活」生效（负对照命中 HEAD 版 " + caught.length + " 条）");
+}
+
+/**
  * 提示词不许自相矛盾：一边禁"把选择题丢给用户"，一边要求"岔路必须用 ask_user"。
  *
  * 真实数据里 62 个会话只有 2 个用过 ask_user，而 11 个会话里用户中途插话把方向掰回来，
@@ -3515,6 +3613,7 @@ async function main() {
   await testForcedWrapUp();
   await testAskUser();
   await testPromptNoAskContradiction();
+  await testPromptQuestionVsWork();
   await testDesktopPet();
   testPetSprites();
   await testMcpFailureReason();
