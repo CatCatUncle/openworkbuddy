@@ -36,6 +36,20 @@ const mBody = document.getElementById("m-body");
 
 function saveSessions() { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 50))); }
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+/**
+ * 单行文本里的 markdown 强调。**只** 认 `code` 和 **粗体** 这两样，别的原样留着。
+ *
+ * 为什么需要它：界面上很多字是模型写的（自进化的规则/提案/判据、记忆条目），
+ * 模型习惯性带 markdown；这些位置以前一律走 esc()，于是界面上直接印出一串星号。
+ * 用 renderMd() 又不合适——那是块级渲染，会把一行字包成 <p> 顶出一截空白。
+ *
+ * 顺序不能反：先 esc 再翻标记。反过来等于把模型输出当 HTML 执行。
+ */
+function escInline(s) {
+  return esc(s)
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+}
 /** 头像内容：传了图就是 <img>，emoji 就直接放字符，都没有就退回名字首字母。
  *  返回 {html, cls}——cls 要挂到外层那个圆/方块上（emoji 得换中性底色）。 */
 function avatarBits(av, fallbackName) {

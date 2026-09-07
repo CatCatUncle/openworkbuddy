@@ -255,7 +255,7 @@ async function renderEvolvePane(pane) {
   const actTag = (a) => { const [txt, color] = EV_ACT[a] || ["说不好", "var(--wb-text-3)"]; return `<span style="color:${color};font-size: 13px">${txt}</span>`; };
   const sigRows = signals.length ? signals.slice(0, 12).map(s => `
     <div style="display:flex;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px solid var(--wb-border);font-size: 13px">
-      <span style="flex:1;min-width:0;color:var(--wb-text)">${esc(s.label)}</span>
+      <span style="flex:1;min-width:0;color:var(--wb-text)">${escInline(s.label)}</span>
       <span style="color:var(--wb-text-2)">${s.count} 次 · 每回合 ${s.rate}</span>
       ${actTag(s.actionable)}
     </div>`).join("")
@@ -263,13 +263,13 @@ async function renderEvolvePane(pane) {
 
   const propCards = pending.length ? pending.map(p => `
     <div class="card-item" data-prop="${esc(p.id)}" style="border-left:3px solid var(--wb-brand)">
-      <div class="t">${p.kind === "retire_rule" ? "下架" : "新增"}：${esc(p.title || p.rule || "")}</div>
-      <div class="d">${esc(p.why || "")}</div>
-      ${p.rule ? `<div style="margin-top:8px;padding:8px 10px;background:var(--wb-code-bg);color:var(--wb-code-text);border-radius:8px;font-size: 13px;white-space:pre-wrap">${esc(p.rule)}</div>` : ""}
-      ${p.verify ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-2)">✅ 验收：${esc(p.verify)}</div>` : ""}
+      <div class="t">${p.kind === "retire_rule" ? "下架" : "新增"}：${escInline(p.title || p.rule || "")}</div>
+      <div class="d">${escInline(p.why || "")}</div>
+      ${p.rule ? `<div style="margin-top:8px;padding:8px 10px;background:var(--wb-code-bg);color:var(--wb-code-text);border-radius:8px;font-size: 13px;white-space:pre-wrap">${escInline(p.rule)}</div>` : ""}
+      ${p.verify ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-2)">✅ 验收：${escInline(p.verify)}</div>` : ""}
       ${p.signalSnapshot ? `<div style="margin-top:4px;font-size: 13px;color:var(--wb-text-3)">证据：${esc(p.signalSnapshot.label)} · ${p.signalSnapshot.count} 次 · 每回合 ${p.signalSnapshot.rate}</div>` : ""}
       ${(p.evidence || []).length ? `<details style="margin-top:4px"><summary style="cursor:pointer;font-size: 13px;color:var(--wb-text-3)">看现场原话（${p.evidence.length} 条）</summary>
-        ${p.evidence.map(e => `<div style="font-size: 13px;color:var(--wb-text-2);margin:5px 0 0;padding-left:8px;border-left:2px solid var(--wb-border)"><b>${esc(e.task || "")}</b><br>${esc(e.excerpt || "")}</div>`).join("")}</details>` : ""}
+        ${p.evidence.map(e => `<div style="font-size: 13px;color:var(--wb-text-2);margin:5px 0 0;padding-left:8px;border-left:2px solid var(--wb-border)"><b>${esc(e.task || "")}</b><br>${escInline(e.excerpt || "")}</div>`).join("")}</details>` : ""}
       <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn-brand" data-act="accept" style="height:30px;padding:0 14px;font-size: 13px">采纳，写进提示词</button>
         <input data-reason placeholder="驳回理由（会喂回给模型当负样本）" style="flex:1;min-width:160px;height:30px;font-size: 13px;margin:0">
@@ -283,9 +283,9 @@ async function renderEvolvePane(pane) {
     const sc = scoreOf(r.id);
     const color = sc && sc.verdict === "有效" ? "var(--wb-ok)" : sc && sc.verdict === "没起作用" ? "var(--wb-err)" : "var(--wb-text-3)";
     return `<div style="padding:8px 0;border-bottom:1px solid var(--wb-border)">
-      <div style="font-size: 14px;color:var(--wb-text);white-space:pre-wrap">${esc(r.text)}</div>
+      <div style="font-size: 14px;color:var(--wb-text);white-space:pre-wrap">${escInline(r.text)}</div>
       <div style="margin-top:4px;font-size: 13px;color:var(--wb-text-3)">
-        ${esc((r.meta.at || "").slice(0, 10))} 起 · <span style="color:${color}">${esc(sc ? sc.verdict : "还没打分")}</span>${sc && sc.why ? " · " + esc(sc.why) : ""}
+        ${esc((r.meta.at || "").slice(0, 10))} 起 · <span style="color:${color}">${esc(sc ? sc.verdict : "还没打分")}</span>${sc && sc.why ? " · " + escInline(sc.why) : ""}
         · <a href="#" class="link danger" data-retire="${esc(r.id)}">下架</a>
       </div></div>`;
   }).join("") : '<div style="color:var(--wb-text-3);font-size: 14px">还没有生效的规则。规则来自被你采纳的提案，不会自己长出来。</div>';
@@ -294,7 +294,7 @@ async function renderEvolvePane(pane) {
     <div class="card-item">
       <div class="t">🔁 它自己怎么变好的</div>
       <div class="d">你在每条回复下点的 👍👎 会落盘；加上任务里真实的失败（工具报错、超时、被打断返工）一起数成「信号」。
-      复盘时模型只看这些数字提**最小**改动，能不能上由你点头——<b>提案永远不会自动生效</b>。
+      复盘时模型只看这些数字提<b>最小</b>改动，能不能上由你点头——<b>提案永远不会自动生效</b>。
       规则最多 ${caps.rules} 条、每条 ≤ ${caps.ruleChars || 400} 字，满了必须换下一条才能加，避免措辞越堆越厚而数字不动。
       一条规则至少要有 ${caps.minEvidence} 次证据才准提。</div>
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -322,7 +322,7 @@ async function renderEvolvePane(pane) {
       <div class="d" style="margin-bottom:4px">这些原样拼进每次任务的系统提示词，排在记忆前面。打分看的是「基线出现率 → 现在的出现率」，没降就该下架。</div>
       ${ruleRows}
     </div>
-    ${decided.length ? `<div class="card-item"><div class="t">🗂️ 审过的（近 ${decided.length} 条）</div>${decided.map(p => `<div style="padding:4px 0;font-size: 13px;color:var(--wb-text-2);border-bottom:1px solid var(--wb-border)"><b>${p.status === "applied" ? "已采纳" : p.status === "rejected" ? "已驳回" : "被闸门拦下"}</b> · ${esc(p.title || p.rule || "")}${p.reason ? " · " + esc(p.reason) : ""}${p.gate ? " · " + esc(p.gate) : ""}</div>`).join("")}</div>` : ""}`;
+    ${decided.length ? `<div class="card-item"><div class="t">🗂️ 审过的（近 ${decided.length} 条）</div>${decided.map(p => `<div style="padding:4px 0;font-size: 13px;color:var(--wb-text-2);border-bottom:1px solid var(--wb-border)"><b>${p.status === "applied" ? "已采纳" : p.status === "rejected" ? "已驳回" : "被闸门拦下"}</b> · ${escInline(p.title || p.rule || "")}${p.reason ? " · " + esc(p.reason) : ""}${p.gate ? " · " + esc(p.gate) : ""}</div>`).join("")}</div>` : ""}`;
 
   const msg = pane.querySelector("#ev-msg");
   const saveAuto = () => saveSettings({ evolve: { auto: pane.querySelector("#ev-auto").checked, hour: +pane.querySelector("#ev-hour").value || 0 } }, msg);

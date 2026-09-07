@@ -48,6 +48,15 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "-h" || a === "--help") { printHelp(); process.exit(0); }
   else words.push(a);
 }
+// 子命令。动词式的写法（wb resume / wb sessions / wb engines）是给人记的，
+// 老的 --session / --list / -c 一个都没动，脚本不用改。
+let sub = "";
+if (["engines", "sessions", "resume"].includes(words[0])) {
+  sub = words.shift();
+  // 会话 id 有固定前缀（cli_ 是命令行开的，s_ 是桌面开的），认得出就当 id，认不出就当任务描述
+  if (sub === "resume" && words[0] && /^(cli_|s_)/.test(words[0])) opts.session = words.shift();
+  if (sub === "sessions") opts.list = Number(words[0]) > 0 ? Number(words.shift()) : opts.list || 10;
+}
 let oneShot = words.join(" ").trim();
 
 function printHelp() {
@@ -56,6 +65,11 @@ function printHelp() {
   wb "任务描述"                 单发任务（每次都是干净上下文）
   wb                            交互式对话（/help 看内置命令）
   cat 文件 | wb "问题"          管道内容作为附加材料
+子命令：
+  wb sessions [n]               列最近 n 个会话（桌面端开的也在里面）
+  wb resume [id] ["接着做…"]    续接会话；不给 id 就接最近动过的那个
+  wb engines                    看本机能拿什么当底层（Claude Code / Codex）
+  wb engines use <id>           一键换底层；换成本机 CLI 后不再消耗 API 额度
 选项：
   --mode craft|plan|ask         执行模式（默认 craft）
   -C, --workspace <dir>         这次在哪个目录干活（只影响本次，不改配置）
@@ -112,10 +126,19 @@ const mcpManager = new McpManager();
 // ---------- 会话持久化（与 server.js 同一目录同一结构） ----------
 const SESS_DIR = dataPath("data", "sessions");
 const sessFileOf = (id) => path.join(SESS_DIR, String(id).replace(/[^\w-]/g, "_") + ".json");
-/** 列最近的 CLI 会话，新的在前 */
-function listCliSessions(n) {
+/**
+ * 列最近的会话，新的在前。
+ *
+ * 默认把桌面端的会话一起列出来 —— 桌面和命令行写的本来就是同一批文件
+ * （data/sessions/<id>.json，同一套字段），只列 cli_ 开头那半边，等于人为把
+ * 「早上在桌面开了个头，下午想在终端接着做」这条路堵死。
+ * @param {number} n
+ * @param {boolean} [cliOnly] 只看命令行自己开的（-c 续接时用，免得接到桌面那边正开着的会话）
+ */
+function listCliSessions(n, cliOnly = false) {
   let names = [];
-  try { names = fs.readdirSync(SESS_DIR).filter((f) => f.startsWith("cli_") && f.endsWith(".json")); } catch { return []; }
+  try { names = fs.readdirSync(SESS_DIR).filter((f) => f.endsWith(".json")); } catch { return []; }
+  if (cliOnly) names = names.filter((f) => f.startsWith("cli_"));
   return names
     .map((f) => {
       const p = path.join(SESS_DIR, f);
@@ -123,7 +146,8 @@ function listCliSessions(n) {
       const j = store.readJson(p, {}) || {};
       // 轮数按「问了几次」算：transcript 里一问一答是两条，直接数长度会把一次问答报成 2 轮
       const turns = (j.transcript || []).filter((t) => t && t.type === "user").length;
-      return { id: f.replace(/\.json$/, ""), mtime, title: j.title || "", turns };
+      const id = f.replace(/\.json$/, "");
+      return { id, mtime, title: j.title || "", turns, from: id.startsWith("cli_") ? "命令行" : "桌面", engine: j.engine || "" };
     })
     .sort((a, b) => b.mtime - a.mtime)
     .slice(0, n);
@@ -138,8 +162,16 @@ function newSessionId() {
   const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   return `cli_${stamp}_${Math.random().toString(36).slice(2, 5)}`;
 }
-let sessionId = opts.session || (opts.cont && (listCliSessions(1)[0] || {}).id) || newSessionId();
-if (opts.cont && !opts.session && !listCliSessions(1).length) prog(dim("（没有可续接的 CLI 会话，开一个新的）\n"));
+// wb resume 不给 id = 接最近动过的那个，不管它是在桌面开的还是命令行开的。
+// 这是"丝滑切换"的落点：桌面上做到一半，终端里 wb resume 就能接着往下走。
+if (sub === "resume" && !opts.session) {
+  const last = listCliSessions(1)[0];
+  if (!last) { process.stderr.write(red("没有可续接的会话。先跑一次 wb \"任务\" 或在桌面端聊一句。\n")); process.exit(1); }
+  opts.session = last.id;
+  prog(dim(`（续接 ${last.from}会话 ${last.id}：${last.title || "无标题"}）\n`));
+}
+let sessionId = opts.session || (opts.cont && (listCliSessions(1, true)[0] || {}).id) || newSessionId();
+if (opts.cont && !opts.session && !listCliSessions(1, true).length) prog(dim("（没有可续接的命令行会话，开一个新的）\n"));
 let sessFile = sessFileOf(sessionId);
 // 跟网页端是同一批文件，写法也得一样：原子改名 + .bak，坏了先回退别直接覆盖
 let sess = store.readJson(sessFile, { history: [], transcript: [], title: "" });
@@ -183,6 +215,8 @@ function makeEmit(state) {
       prog(ev.isError ? red(" ✗") : green(" ✓"));
       state.lastToolId = null;
       if (ev.isError && ev.preview) prog(dim("\n    " + String(ev.preview).slice(0, 200).replace(/\n/g, " ")));
+    } else if (ev.type === "status") {
+      if (ev.depth === 0 || ev.depth === undefined) { prog(dim(`\n· ${ev.text}`)); state.streamed = false; }
     } else if (ev.type === "expert_start") {
       prog(yellow(`\n  👥 委派专家「${ev.expert}」`) + dim(`：${String(ev.task || "").slice(0, 60)}`));
     } else if (ev.type === "limit") {
@@ -246,7 +280,10 @@ async function runOnce(runtime, text, mode) {
       mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",
       user: owner ? owner.username : undefined, // 记忆按人取，命令行走管理员这本账
       stopSignal: ctrl.signal,
+      // 底层 CLI 引擎的线程 id：跟会话存在一起，所以在桌面开的头能在这儿接着跑，反过来也一样
+      engineSession: sess.engine_session || null,
     });
+    if (r && r.sessionId) { sess.engine_session = r.sessionId; sess.engine = r.engine || ""; }
     finalText = r.finalText || "";
   } catch (e) {
     state.error = e.message;
@@ -286,17 +323,55 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
 
 // ---------- 主流程 ----------
 (async () => {
+  // ---------- wb engines：看本机能拿什么当底层，以及一键切过去 ----------
+  if (sub === "engines") {
+    const engines = require("./engines");
+    const want = words[0] === "use" ? String(words[1] || "").trim() : "";
+    if (words[0] === "use") {
+      if (engines.get(want) === undefined) {
+        process.stderr.write(red(`没有这个引擎：${want}。可选：${engines.list().map((b) => b.id).join(" / ")}\n`));
+        process.exit(1);
+      }
+      if (want !== "builtin") {
+        // 切过去之前先确认它真的装了。让用户以为切成功、下一次跑任务才报错，是最难查的那种坑
+        const found = (await engines.detectAll((config.agent || {}).engine_options || {})).find((e) => e.id === want);
+        if (!found || !found.installed) {
+          const b = engines.get(want);
+          process.stderr.write(red(`${b.label} 没装或跑不起来，没有切换。\n`) + dim(`装法：${b.install}\n`));
+          process.exit(1);
+        }
+      }
+      config.agent = config.agent || {};
+      config.agent.engine = want;
+      store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true });
+      process.stdout.write(green(`底层引擎已切到「${(engines.get(want) || engines.BUILTIN).label}」\n`));
+      process.exit(0);
+    }
+    const cur = (config.agent || {}).engine || "builtin";
+    const found = await engines.detectAll((config.agent || {}).engine_options || {});
+    const rows = [{ ...engines.BUILTIN, installed: true, version: "" }, ...found];
+    for (const e of rows) {
+      const mark = e.id === cur ? green(" ●") : "  ";
+      const state = e.id === "builtin" ? "" : e.installed ? green(`已装 ${e.version}`) : yellow("没装");
+      process.stdout.write(`${mark} ${e.id.padEnd(12)} ${e.label}  ${state}\n`);
+      process.stdout.write(dim(`     ${e.note}\n`));
+      if (!e.installed && e.install) process.stdout.write(dim(`     装法：${e.install}\n`));
+    }
+    process.stdout.write(dim("\n切换：wb engines use <id>。选了本机 Claude Code / Codex，任务就跑在你已经付过钱的订阅上，不再消耗 API 额度。\n"));
+    process.exit(0);
+  }
+
   if (opts.list) {
     const rows = listCliSessions(opts.list);
-    if (!rows.length) { process.stdout.write("（还没有 CLI 会话）\n"); process.exit(0); }
+    if (!rows.length) { process.stdout.write("（还没有任何会话）\n"); process.exit(0); }
     for (const r of rows) {
       // 本地时间。toISOString() 给的是 UTC，跟会话 id 里那串本地时间戳差一个时区，
       // 同一个会话在 id 上写着 17:36、在列表里显示 09:36，照时间挑会挑错。
       const d = new Date(r.mtime), q = (n) => String(n).padStart(2, "0");
       const when = `${d.getFullYear()}-${q(d.getMonth() + 1)}-${q(d.getDate())} ${q(d.getHours())}:${q(d.getMinutes())}`;
-      process.stdout.write(`${r.id}  ${when}  ${String(r.turns).padStart(3)} 轮  ${r.title}\n`);
+      process.stdout.write(`${r.id}  ${when}  ${r.from}  ${String(r.turns).padStart(3)} 轮  ${r.title}${r.engine ? dim("  [" + r.engine + "]") : ""}\n`);
     }
-    process.stdout.write(dim(`\n续接：wb --session <id> "接着做…"，或 wb -c 直接接最近这个\n`));
+    process.stdout.write(dim(`\n续接：wb resume <id> "接着做…"；不给 id 就接最近动过的那个（桌面开的也能接）\n`));
     process.exit(0);
   }
 
@@ -318,7 +393,10 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
     prog(dim(`${mcpManager.toolDefs().length} 个工具\n`));
   }
   const runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });
-  prog(dim(`模型 ${llm.provider}（${llm.model}）· 模式 ${opts.mode} · 工作目录 ${getWorkspaceDir()} · 会话 ${sessionId}\n`));
+  const engineId = (config.agent || {}).engine || "builtin";
+  const engineBackend = require("./engines").get(engineId);
+  const who = engineBackend ? `底层 ${engineBackend.label}` + green("（不花 API 额度）") : `模型 ${llm.provider}（${llm.model}）`;
+  prog(dim(`${who} · 模式 ${opts.mode} · 工作目录 ${getWorkspaceDir()} · 会话 ${sessionId}\n`));
 
   if (oneShot) {
     const r = await runOnce(runtime, oneShot, opts.mode);
