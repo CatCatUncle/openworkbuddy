@@ -140,7 +140,9 @@ function bindIpc() {
     if (!petWin || petWin.isDestroyed()) return;
     Menu.buildFromTemplate([
       { label: "打开主窗口", click: () => { const w = global.__wbWin; if (w && !w.isDestroyed()) { w.show(); w.focus(); } } },
-      { label: "回到右下角", click: () => { const p = defaultPos(PET_W, PET_H); petWin.setPosition(p.x, p.y); savePos(); } },
+      // 用窗口的真实尺寸算，不能用基准尺寸：放大到 200% 时按 168×196 摆位，
+      // 会把大半只猫塞到屏幕右下角外面去
+      { label: "回到右下角", click: () => { const [w, h] = petWin.getSize(); const p = defaultPos(w, h); petWin.setPosition(p.x, p.y); savePos(); } },
       { type: "separator" },
       dndUntil > Date.now()
         ? { label: `免打扰中（剩 ${Math.ceil((dndUntil - Date.now()) / 60000)} 分钟）· 点此结束`, click: () => { dndUntil = 0; } }
@@ -280,7 +282,15 @@ function applyConfig(next) {
   if (!petWin || petWin.isDestroyed()) { create(); return; }
   if (Number(cfg.scale) !== Number(prev.scale)) {
     const scale = Math.min(2, Math.max(0.6, Number(cfg.scale) || 1));
-    petWin.setSize(Math.round(PET_W * scale), Math.round(PET_H * scale));
+    const w = Math.round(PET_W * scale), h = Math.round(PET_H * scale);
+    // 猫是站在窗口底边中间的：直接 setSize 会让窗口从左上角往下往右长，
+    // 于是每调一次大小猫就往右下挪一截，调到 200% 时能整只钻进 Dock 后面。
+    // 这里按「底边中点不动」重算坐标，再走一次 sanePos 保证没跑出可视区。
+    const [x, y] = petWin.getPosition();
+    const [ow, oh] = petWin.getSize();
+    const p2 = sanePos({ x: Math.round(x + (ow - w) / 2), y: Math.round(y + (oh - h)) }, w, h);
+    petWin.setBounds({ x: p2.x, y: p2.y, width: w, height: h });
+    savePos();
   }
   push();
 }
