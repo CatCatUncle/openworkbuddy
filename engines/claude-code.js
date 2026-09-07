@@ -22,6 +22,7 @@
  */
 
 const { runJsonl, probeVersion } = require("./jsonl");
+const { resolveBin } = require("./which");
 
 const ID = "claude-code";
 
@@ -57,10 +58,20 @@ function explain(stderr, code) {
   return s ? s.slice(-600) : `claude 异常退出（退出码 ${code}）且没有任何输出`;
 }
 
-async function detect(bin) {
-  const exe = bin || "claude";
-  const r = await probeVersion(exe, ["--version"]);
-  return { id: ID, installed: r.installed, path: exe, version: r.version };
+/**
+ * 收的是这个引擎的整份设置（{ bin, model, ... }），不是一个字符串——
+ * 注册表那边传下来的本来就是整个 engine_options[id]，当字符串使会 spawn 一个对象，
+ * 结果是「用户填了绝对路径反而永远显示没装」。
+ */
+async function detect(opts) {
+  const explicit = typeof opts === "string" ? opts : (opts && opts.bin) || "";
+  const found = await resolveBin("claude", explicit);
+  if (!found.bin) return { id: ID, installed: false, path: explicit || "claude", version: "", how: "", error: found.why };
+  const r = await probeVersion(found.bin, ["--version"]);
+  return {
+    id: ID, installed: r.installed, path: found.bin, version: r.version, how: found.how,
+    error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通（装坏了？）",
+  };
 }
 
 /**
@@ -70,7 +81,11 @@ async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
   model, systemPrompt, resumeId, maxTurns, mcpConfigPath, bin, permissionMode, extraArgs = [],
 }) {
-  const exe = bin || "claude";
+  // 起进程也走同一套解析：detect 认出来的是绝对路径，run 却还 spawn 裸名字的话，
+  // 双击启动的桌面版会「设置页显示已装、一跑就 ENOENT」
+  const found = await resolveBin("claude", bin);
+  if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @anthropic-ai/claude-code），或在设置里填 claude 的绝对路径。");
+  const exe = found.bin;
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
   // acceptEdits：本项目的定位是"替你把活干了"，每一步都停下来问等于没法用。
   // 真正危险的动作由本项目自己的安全中心把关（工具经 MCP 回流时会走那道闸）。
@@ -95,7 +110,7 @@ async function run({
     if (m.session_id && !sessionId) sessionId = m.session_id;
 
     if (m.type === "system" && m.subtype === "init") {
-      emit({ type: "status", text: `本机 Claude Code 已启动（模型 ${m.model || "默认"}，${(m.tools || []).length} 个工具），不消耗 API 额度`, depth: 0 });
+      emit({ type: "status", text: `本机 Claude Code 已启动（模型 ${m.model || "默认"}，${(m.tools || []).length} 个工具），不消耗 API 额度`, model: m.model || "", depth: 0 });
       return;
     }
     if (m.type === "assistant" && m.message) {
@@ -156,6 +171,8 @@ module.exports = {
   launchHeader: "claude -p --output-format stream-json",
   note: "用你电脑上已登录的 Claude Code 订阅跑，不消耗本项目配置的 API 额度",
   install: "npm i -g @anthropic-ai/claude-code，然后终端里跑一次 claude 登录",
+  // 连不上时前端要给一句「接下来敲什么」。写在引擎自己身上，注册表那边就不用按 id 打补丁了
+  login: "在终端里跑一次 claude 完成登录，再回来点一次",
   supportsResume: true,
   detect, run, explain,
 };

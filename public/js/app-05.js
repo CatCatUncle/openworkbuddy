@@ -498,12 +498,19 @@ async function renderAgentPane(pane, s) {
   renderEngineCard(pane.querySelector("#ag-engines"));
 }
 /**
- * 「底层引擎」卡片：列出内置引擎 + 本机装了的 CLI，点一下就切。
- * 没装的那条只显示装法，点了不切——静默切到一个跑不起来的引擎，
- * 用户会以为在用本机订阅，其实每个任务都在原地报错。
+ * 「底层引擎」卡片。
+ *
+ * 这张卡的职责不是"列个单子"，是**让用户真的用上本机那份订阅**。三件事必须做到：
+ *   ① 找得到 —— 双击图标启动的 App 拿到的 PATH 是残废的（只有 /usr/bin:/bin:…），
+ *      claude/codex 装在 homebrew、nvm、~/.local/bin 里的一律看不见。这一层在
+ *      engines/which.js 里补齐了，卡片这边把"从哪找到的"如实标出来。
+ *   ② 说实话 —— `--version` 只证明文件在，不证明能用。装了没登录、订阅过期、
+ *      被限流，在旧版卡片上全都显示"已装 ✓"。所以这里有一个真跑一句话的连接测试。
+ *   ③ 出事有下一步 —— 失败时不只报错，要说清楚接下来敲哪条命令。
  */
 async function renderEngineCard(box) {
   if (!box) return;
+  box.innerHTML = '<div class="eng-msg">正在找本机装了哪些…</div>';
   const d = await fetch("/api/engines").then((r) => r.json()).catch(() => null);
   if (!d) { box.innerHTML = '<div class="eng-msg">检测失败：拿不到引擎列表</div>'; return; }
   const cur = d.current || "builtin";
@@ -514,27 +521,112 @@ async function renderEngineCard(box) {
       ? '<span class="eng-b">走 API Key</span>'
       : e.installed
         ? `<span class="eng-b ok">已装 ${esc(e.version || "")}</span><span class="eng-b free">不花 API 额度</span>`
-        : '<span class="eng-b no">本机没装</span>';
-    return `<div class="eng${on ? " on" : ""}${ready ? "" : " off"}" data-eng="${esc(e.id)}">
+        : '<span class="eng-b no">本机没找到</span>';
+    // 从补全的 PATH / 登录 shell 里找到的，说一声——用户要是纳闷"我明明装了它怎么现在才看见"，这就是答案
+    const howNote = !builtin && e.installed && e.how && e.how !== "PATH"
+      ? `<div class="eng-i">（${esc(e.how)}里找到的：<span class="eng-p">${esc(e.path || "")}</span>）</div>` : "";
+    return `<div class="eng${on ? " on" : ""}${ready ? "" : " off"}" data-eng="${esc(e.id)}" data-ready="${ready ? 1 : 0}">
       <div class="eng-h"><span class="eng-dot">${on ? "●" : "○"}</span><b>${esc(e.label)}</b>${badge}</div>
       <div class="eng-n">${esc(e.note || "")}</div>
       <div class="eng-c">${esc(e.launchHeader || "")}</div>
-      ${!ready && e.install ? `<div class="eng-i">装法：<code>${esc(e.install)}</code>　装完点这张卡重新检测</div>` : ""}
+      ${howNote}
+      ${!builtin && !e.installed ? `<div class="eng-i">${esc(e.error || "没找到")}<br>装法：<code>${esc(e.install || "")}</code></div>` : ""}
+      ${builtin || !on ? "" : engineExtraHtml(e)}
     </div>`;
-  }).join("") + '<div class="eng-msg" id="ag-eng-msg"></div>';
+  }).join("") + '<div class="eng-row" style="margin-top:4px"><button class="btn-plain" id="ag-eng-rescan">重新检测本机</button><span class="eng-msg" id="ag-eng-msg"></span></div>';
+
   const msg = box.querySelector("#ag-eng-msg");
+  box.querySelector("#ag-eng-rescan").onclick = (ev) => { ev.stopPropagation(); renderEngineCard(box); };
+
   box.querySelectorAll(".eng").forEach((el) => {
-    el.onclick = async () => {
-      const id = el.dataset.eng;
-      if (el.classList.contains("off")) { msg.textContent = "还没装，先按上面的装法装好；这就重新检测一遍…"; return renderEngineCard(box); }
+    const id = el.dataset.eng;
+    if (el.classList.contains("on")) bindEngineExtra(el, id, box);
+    el.onclick = async (ev) => {
+      if (ev.target.closest(".eng-x")) return; // 展开区里的输入框/按钮，不当成"切引擎"
       if (el.classList.contains("on")) return;
+      if (el.dataset.ready !== "1") {
+        // 没找到的那条：点了不切。静默切到一个跑不起来的引擎，用户会以为在用本机订阅，
+        // 其实每个任务都在原地报错。顺手重扫一遍——刚装完的人点的就是这一下
+        msg.textContent = "本机还没找到它，先按上面的装法装好；这就重新找一遍…";
+        return renderEngineCard(box);
+      }
       msg.textContent = "切换中…";
       const ok = await saveSettings({ agent: { engine: id } }, null);
-      msg.textContent = ok ? "✓ 已切到「" + el.querySelector("b").textContent + "」，下一个任务生效" : "切换失败";
-      if (ok) renderEngineCard(box);
+      if (!ok) { msg.textContent = "切换失败"; return; }
+      await renderEngineCard(box);
+      // 切完立刻真连一次：让用户当场知道"能用"，而不是等下一个任务失败才知道
+      const card = box.querySelector('.eng[data-eng="' + CSS.escape(id) + '"]');
+      if (card) testEngineConnect(card, id);
     };
   });
 }
+
+/** 选中的引擎才展开：可执行文件路径、模型、一键连接测试 */
+function engineExtraHtml(e) {
+  const o = e.options || {};
+  return `<div class="eng-x" onclick="event.stopPropagation()">
+    <label>可执行文件路径<span style="color:var(--wb-text-3)">（留空 = 自动找。装在 nvm/homebrew 里也能找到；只有自动找不到时才需要填绝对路径）</span>
+      <input type="text" data-k="bin" placeholder="${esc(e.path || e.id)}" value="${esc(o.bin || "")}"></label>
+    <label>模型<span style="color:var(--wb-text-3)">（留空 = 用 ${esc(e.label)} 自己的默认模型。这里填的是它认的名字，跟上面「模型」页的 API 渠道无关）</span>
+      <input type="text" data-k="model" placeholder="默认" value="${esc(o.model || "")}"></label>
+    <div class="eng-row">
+      <button class="btn-brand" data-act="test">测试连接</button>
+      <button class="btn-plain" data-act="save">保存路径和模型</button>
+      <span class="eng-msg" data-role="xmsg"></span>
+    </div>
+    <div data-role="result"></div>
+  </div>`;
+}
+
+function bindEngineExtra(card, id, box) {
+  const x = card.querySelector(".eng-x");
+  if (!x) return;
+  const readOpts = () => {
+    const o = {};
+    x.querySelectorAll("input[data-k]").forEach((i) => (o[i.dataset.k] = i.value.trim()));
+    return o;
+  };
+  x.querySelector('[data-act="test"]').onclick = () => testEngineConnect(card, id);
+  x.querySelector('[data-act="save"]').onclick = async () => {
+    const m = x.querySelector('[data-role="xmsg"]');
+    m.textContent = "保存中…";
+    const ok = await saveSettings({ agent: { engine_options: { [id]: readOpts() } } }, null);
+    m.textContent = ok ? "✓ 已保存" : "保存失败";
+    if (ok) setTimeout(() => renderEngineCard(box), 600);
+  };
+}
+
+/**
+ * 真连一次。花几十个 token 跑一句"回复 ok"，把「能用 / 没登录 / 限流 / 装坏了」分开。
+ * 结果要带上耗时和实际用的模型——用户下一个任务会看到同一个模型名，对得上才叫连通。
+ */
+async function testEngineConnect(card, id) {
+  const x = card.querySelector(".eng-x");
+  if (!x) return;
+  const btn = x.querySelector('[data-act="test"]');
+  const out = x.querySelector('[data-role="result"]');
+  const opts = {};
+  x.querySelectorAll("input[data-k]").forEach((i) => (opts[i.dataset.k] = i.value.trim()));
+  btn.disabled = true;
+  const t0 = Date.now();
+  const tick = setInterval(() => { out.className = "eng-r"; out.textContent = `正在真连一次…已等 ${Math.round((Date.now() - t0) / 1000)} 秒（第一次会慢一点）`; }, 500);
+  let r;
+  try { r = await fetch("/api/engines/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, options: opts }) }).then((v) => v.json()); }
+  catch (e) { r = { ok: false, why: "请求失败：" + e.message }; }
+  clearInterval(tick);
+  btn.disabled = false;
+  if (r && r.ok) {
+    out.className = "eng-r ok";
+    out.innerHTML = `✓ 连通了，用了 ${(r.ms / 1000).toFixed(1)} 秒。它回了「${esc(r.reply || "")}」`
+      + (r.model ? `，实际跑的模型是 <code>${esc(r.model)}</code>` : "")
+      + `。这一趟没花 API 额度，走的是你本机的订阅。<br><span class="eng-p">${esc(r.path || "")}${r.version ? " · " + esc(r.version) : ""}</span>`;
+  } else {
+    out.className = "eng-r bad";
+    out.innerHTML = `✗ 连不上：${esc((r && (r.why || r.error)) || "未知原因")}`
+      + (r && r.hint ? `<br>下一步：<code>${esc(r.hint)}</code>` : "");
+  }
+}
+
 function renderPersonaPane(pane, s) {
   const a = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK, ...(s.assistant || {}) };
   pane.innerHTML = `

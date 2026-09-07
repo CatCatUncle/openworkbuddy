@@ -201,7 +201,7 @@ async function renderLibPreview(prev, lib) {
     });
     return;
   }
-  const url = src === "lib" ? "/api/library/file/" + encodeURIComponent(name) : "/api/files/view/" + encodeURIComponent(name);
+  const url = src === "lib" ? "/api/library/file/" + encodeURIComponent(name) : "/api/files/view/" + fpath(name);
   const bar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
     <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</b>
     <a class="link" href="${url}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>

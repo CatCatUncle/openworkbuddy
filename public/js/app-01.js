@@ -36,6 +36,41 @@ const mBody = document.getElementById("m-body");
 
 function saveSessions() { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 50))); }
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+/** 一条工作区相对路径的目录部分（顶层文件就是空串） */
+function dirOf(name) { const i = String(name || "").lastIndexOf("/"); return i < 0 ? "" : name.slice(0, i); }
+/**
+ * 工作区相对路径 → URL 路径片段。**每一段单独编码，斜杠保持是斜杠。**
+ * 整条路径 encodeURIComponent 会把 / 变成 %2F，于是 iframe 里那张网页的地址栏只剩一段，
+ * <img src="fig.jpg"> 这种相对写法就会去工作区根目录找图 —— 用户看到的就是"预览时图片全裂"。
+ */
+function fpath(name) { return String(name == null ? "" : name).split("/").map(encodeURIComponent).join("/"); }
+/** 把文档里写的相对路径，按这份文档所在的目录拼成工作区相对路径（./ 和 ../ 都认） */
+function joinRel(base, rel) {
+  const p = String(rel || "");
+  if (p.startsWith("/")) return p.replace(/^\/+/, ""); // 开头的 / 当工作区根，不是磁盘根
+  const segs = String(base || "").split("/").filter(Boolean);
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") segs.pop(); else segs.push(seg);
+  }
+  return segs.join("/");
+}
+/**
+ * markdown 图片 ![alt](url) → <img>。以前整个 renderMd 根本不认这个语法，
+ * 模型写的报告里插的图在预览里只剩一行光秃秃的 ![封面](fig.jpg)。
+ * 相对路径必须按 base（文档自己所在的目录）算，否则又回到"去工作区根目录找图"的老问题。
+ * 安全：url 里出现引号/尖括号/空白一律丢掉（拼进属性会把标签撑破），
+ * 除 http(s) 和 data:image 之外的协议一律不认（挡 javascript:）。
+ */
+function mdImg(alt, url, base) {
+  const u = String(url || "").trim();
+  if (!u || /["'<>\s\\]/.test(u)) return "";
+  const src = /^(https?:)?\/\//.test(u) || /^data:image\//.test(u) ? u
+    : /^[a-zA-Z][\w+.-]*:/.test(u) ? ""
+    : "/api/files/view/" + fpath(joinRel(base, u));
+  if (!src) return "";
+  return `<img class="md-img" src="${src}" alt="${String(alt || "").replace(/"/g, "")}" loading="lazy">`;
+}
 /**
  * 单行文本里的 markdown 强调。**只** 认 `code` 和 **粗体** 这两样，别的原样留着。
  *
@@ -144,7 +179,7 @@ function repairBareCode(str) {
   return out.join("\n");
 }
 
-function renderMd(src) {
+function renderMd(src, base) {
   if (!src) return "";
   // 先把正文里的 <svg> 抠出来换成占位符（在 esc 之前——它们要当图渲染，不能被转义成文字）
   const { text: pre, figs } = SvgFig.extractSvgFigures(src);
@@ -163,6 +198,7 @@ function renderMd(src) {
   s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => mdImg(alt, url, base));
   s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   const lines = s.split("\n");
   const out = [];
@@ -1002,7 +1038,7 @@ function renderFiles(files) {
       <span>${fileIcon(f.name)}</span>
       <span style="min-width:0"><div class="name">${esc(f.name.split("/").pop())}</div><div class="meta">${fmtSize(f.size)}</div></span>
       ${revealBtn(f.name)}
-      <a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>
+      <a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">⬇</a>
     </div>`;
   // 子目录归成可折叠分组，再按时间装进「今天／昨天／过去 7 天／更早（按月）」。
   //
@@ -1084,7 +1120,7 @@ function renderFiles(files) {
   });
   el.querySelectorAll(".opendir").forEach(b => { b.onclick = (e) => {
     e.stopPropagation();
-    fetch("/api/files/open/" + encodeURIComponent(b.dataset.opendir), { method: "POST" }).catch(() => {});
+    fetch("/api/files/open/" + fpath(b.dataset.opendir), { method: "POST" }).catch(() => {});
   }; });
   const tidyBtn = el.querySelector("#btn-tidy");
   if (tidyBtn) tidyBtn.onclick = async () => {
@@ -1300,7 +1336,7 @@ function csvHtml(text, name) {
 async function previewFile(name) {
   if (OFFICE_RE.test(name)) {
     // Office 文件交给本机 Office/WPS 打开
-    await fetch("/api/files/open/" + encodeURIComponent(name), { method: "POST" });
+    await fetch("/api/files/open/" + fpath(name), { method: "POST" });
     return;
   }
   pvCurrent = name;
@@ -1310,9 +1346,9 @@ async function previewFile(name) {
   pvPanel.classList.add("show");
   document.getElementById("pv-body").innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">加载中…</div>`;
   document.getElementById("pv-name").textContent = name;
-  document.getElementById("pv-dl").href = "/api/files/download/" + encodeURIComponent(name);
+  document.getElementById("pv-dl").href = "/api/files/download/" + fpath(name);
   const body = document.getElementById("pv-body");
-  const url = "/api/files/view/" + encodeURIComponent(name) + "?t=" + Date.now();
+  const url = "/api/files/view/" + fpath(name) + "?t=" + Date.now();
   const kind = previewKind(name);
   if (kind === "iframe") {
     // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字
@@ -1324,7 +1360,7 @@ async function previewFile(name) {
     const tag = kind === "audio" ? "audio" : "video";
     body.innerHTML = `<${tag} class="pv-media" src="${url}" controls preload="metadata"></${tag}>`;
   } else if (kind === "doc" || kind === "sheet" || kind === "slides" || kind === "archive") {
-    const d = await fetch("/api/files/preview/" + encodeURIComponent(name) + "?t=" + Date.now()).then(r => r.json()).catch(() => null);
+    const d = await fetch("/api/files/preview/" + fpath(name) + "?t=" + Date.now()).then(r => r.json()).catch(() => null);
     if (!d || d.error) body.innerHTML = pvFallback(d && d.error ? d.error : "读不出这个文件的内容");
     else body.innerHTML = kind === "doc" ? docHtml(d) : kind === "sheet" ? sheetHtml(d) : kind === "slides" ? slidesHtml(d) : archiveHtml(d);
     body.querySelectorAll(".ov-tab").forEach((t) => { t.onclick = () => {
@@ -1337,19 +1373,19 @@ async function previewFile(name) {
     const r = await fetchTextHead(url);
     if (!r) body.innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">加载失败</div>`;
     else if (looksBinary(r.text)) body.innerHTML = pvFallback("这个文件不是文本"); // 后缀没认出来，内容说了算
-    else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text">${renderMd(r.text)}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
+    else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text">${renderMd(r.text, dirOf(name))}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
     else if (kind === "csv") body.innerHTML = csvHtml(r.text, name) + (r.truncated ? pvTrunc(r.total) : "");
     else body.innerHTML = `<div class="pv-text"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
   }
   const sysBtn = body.querySelector(".pv-open-sys");
-  if (sysBtn) sysBtn.onclick = () => fetch("/api/files/open/" + encodeURIComponent(name), { method: "POST" });
+  if (sysBtn) sysBtn.onclick = () => fetch("/api/files/open/" + fpath(name), { method: "POST" });
   const rvBtn = body.querySelector(".pv-reveal");
   if (rvBtn) rvBtn.onclick = () => revealFile(name);
   pvPanel.classList.add("show");
   renderDeployBar();
 }
 document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; };
-document.getElementById("pv-sys").onclick = () => { if (pvCurrent) fetch("/api/files/open/" + encodeURIComponent(pvCurrent), { method: "POST" }); };
+document.getElementById("pv-sys").onclick = () => { if (pvCurrent) fetch("/api/files/open/" + fpath(pvCurrent), { method: "POST" }); };
 document.getElementById("pv-rv").onclick = () => { if (pvCurrent) revealFile(pvCurrent); };
 
 // ---- 本地部署预览：iframe 里看长相够了，但真网页要有自己的 origin（相对路径/fetch/localStorage/手机上开）----
@@ -1369,8 +1405,8 @@ async function renderDeployBar() {
     };
     return;
   }
-  const url = previewSrv.url + encodeURIComponent(pvCurrent);
-  const lan = previewSrv.lan_url ? previewSrv.lan_url + encodeURIComponent(pvCurrent) : null;
+  const url = previewSrv.url + fpath(pvCurrent);
+  const lan = previewSrv.lan_url ? previewSrv.lan_url + fpath(pvCurrent) : null;
   bar.innerHTML = `<span>✅ 已本地部署</span><code>${esc(url)}</code>
     ${lan
       ? `<span style="color:var(--wb-text-3)">手机同 Wi-Fi 可开</span><code>${esc(lan)}</code>`
@@ -1549,7 +1585,7 @@ function renderTurnOutputs(body, changed, live) {
       const nmHtml = f.name.includes("/")
         ? `<span class="dim">${esc(f.name.slice(0, f.name.lastIndexOf("/") + 1))}</span>${esc(f.name.split("/").pop())}`
         : esc(f.name);
-      row.innerHTML = `<span class="ic">${fileIcon(f.name)}</span><span class="nm">${nmHtml}</span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">⬇</a>`;
+      row.innerHTML = `<span class="ic">${fileIcon(f.name)}</span><span class="nm">${nmHtml}</span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">⬇</a>`;
       row.querySelector("[data-rv]").onclick = (e) => revealFile(f.name, e);
       row.onclick = (e) => { if (e.target.closest("a") || e.target.closest(".rv")) return; previewFile(f.name); };
       list.appendChild(row);
@@ -1599,7 +1635,7 @@ function attachAltFmt(card, alt) {
   const a = document.createElement("a");
   a.className = "oa-ico oa-fmt oa-alt";
   a.dataset.name = alt;
-  a.href = "/api/files/download/" + encodeURIComponent(alt);
+  a.href = "/api/files/download/" + fpath(alt);
   a.setAttribute("download", "");
   a.title = "下载 " + fmt(alt) + "（" + alt + "）";
   a.innerHTML = ic("download") + `<span class="tx">${fmt(alt)}</span>`;
@@ -1625,7 +1661,7 @@ function mergeFmtPairs(grid) {
 }
 
 function makeOutCard(f, isHtml) {
-  const url = "/api/files/view/" + encodeURIComponent(f.name) + "?t=" + Date.now();
+  const url = "/api/files/view/" + fpath(f.name) + "?t=" + Date.now();
   // 渲染得出来的画缩略图，画不出来的（PPT/Word/Excel/PDF/视频）摆一个大号文件图标——
   // 别给它一个 <img> 拉不出图的空框，那看着像坏了
   const thumb = isHtml || /\.svg$/i.test(f.name)
@@ -1647,7 +1683,7 @@ function makeOutCard(f, isHtml) {
     <div class="out-acts">
       <button class="oa-main" data-a="${isHtml ? "br" : "pv"}">${isHtml ? ic("globe") : ic("file-text")}<span class="tx">${isHtml ? "在浏览器打开" : "预览"}</span></button>
       <button class="oa-ico" data-a="rv" title="打开所在位置">${ic("folder-open")}</button>
-      <a class="oa-ico" href="/api/files/download/${encodeURIComponent(f.name)}" download title="下载">${ic("download")}</a></div>`;
+      <a class="oa-ico" href="/api/files/download/${fpath(f.name)}" download title="下载">${ic("download")}</a></div>`;
   onActivate(card, (e) => {
     if (e.target.closest("a")) return;
     if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e);
@@ -1744,16 +1780,40 @@ function defaultPendingModel() {
       && (s.models || []).some(m => m.name === s.last_picked_model)) return s.last_picked_model;
   return undefined;
 }
+/**
+ * 现在这个对话到底由谁在跑。
+ *
+ * 用户在 设置 → 智能体 里把底层引擎切成「本机 Claude Code / Codex」之后，
+ * 这个选择器里的一整排 API 模型**一个都不会被用到**——任务是交给本机那个 CLI 跑的，
+ * 用它自己的登录态和它自己的模型。旧版这里照样显示「deepseek-chat」并且让你随便点，
+ * 点完还提示「已切换」：用户以为换了模型，其实每个任务都在用 CLI 的默认模型。
+ * 所以走本机引擎时，标签要显示 CLI 的名字和 CLI 的模型，菜单要说清楚这里改不动它。
+ *
+ * 助理模式（inAssistMode）是例外：助理走的一直是内置的 API 那条路，不受引擎设置影响。
+ */
+function activeEngine() {
+  const ag = (settingsCache && settingsCache.agent) || {};
+  const id = ag.engine || "builtin";
+  if (id === "builtin" || inAssistMode) return null;
+  const o = (ag.engine_options || {})[id] || {};
+  return { id, label: ag.engine_label || id, model: (o.model || "").trim() };
+}
 function updateModelLabel() {
   if (!settingsCache) return;
+  const eng = activeEngine();
   const ov = currentSessModel();
-  document.getElementById("model-label").textContent = ov || settingsCache.active_model;
+  const text = eng ? (eng.model || eng.label) : (ov || settingsCache.active_model);
+  document.getElementById("model-label").textContent = text;
   renderModelMenu();
   // 助理页顶栏那个选择器（页面开着才有）跟输入框这个显示同一个值，别让两处对不上
   const al = document.getElementById("im-model-label");
   if (al) { al.textContent = ov || settingsCache.active_model; renderModelMenu(document.getElementById("im-model-menu")); }
 }
 async function setSessionModel(name) { // name: 模型名；null = 跟随全局默认
+  // 本机引擎在跑的时候，这里选什么都到不了 CLI。让它落库再显示成「已切换」，
+  // 就是骗用户——直接拒了，并指路真正能改模型的地方
+  const eng = activeEngine();
+  if (eng) { toast("现在由「" + eng.label + "」在跑，模型由它自己定；要改去 设置 → 智能体 → 底层引擎"); return; }
   if (inAssistMode) { // 助理模式：存进配置，下次进来还是它
     try {
       const r = await fetch("/api/assist/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());

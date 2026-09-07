@@ -13,6 +13,11 @@
  * （同一条规矩在模型选择上已经执行了，这里保持一致。）
  */
 
+const os = require("os");
+const fs = require("fs");
+const path = require("path");
+const which = require("./which");
+
 const BACKENDS = [require("./claude-code"), require("./codex")];
 
 /** 内置引擎不是插件，是本项目自己的 agent 循环，单独列一条方便前端统一渲染 */
@@ -37,6 +42,7 @@ function get(id) {
 
 /** 探测本机装了哪些底层 CLI。只跑 --version，不花任何额度，也不碰用户的会话。 */
 async function detectAll(overrides = {}) {
+  which.forget(); // 刚装完就点检测的人，得当场看见结果
   const out = [];
   for (const b of BACKENDS) {
     let r;
@@ -46,6 +52,9 @@ async function detectAll(overrides = {}) {
       id: b.id, label: b.label, note: b.note, install: b.install,
       launchHeader: b.launchHeader, supportsResume: b.supportsResume,
       installed: !!r.installed, path: r.path, version: r.version || "",
+      how: r.how || "", error: r.error || "",
+      // 用户在设置里给这个引擎填过什么（路径 / 模型），前端要能回显出来
+      options: { bin: (overrides[b.id] || {}).bin || "", model: (overrides[b.id] || {}).model || "" },
     });
   }
   return out;
@@ -67,4 +76,56 @@ function resolve(config) {
   return { backend, opts: per };
 }
 
-module.exports = { list, get, detectAll, resolve, BUILTIN, BACKENDS };
+/**
+ * 真连一次。
+ *
+ * 为什么光有 detect 不够：`--version` 只证明**文件在**，证明不了**能用**。
+ * 装了没登录、订阅过期、被限流——这三种在设置页上长得和"已装 ✓"一模一样，
+ * 用户点了切换，然后每一个任务都在原地报错，还以为是本项目坏了。
+ * 所以「一键连接」按的这一下必须真跑一句话过去，把答案拿回来。
+ *
+ * 成本：一句 "回复 ok 两个字"，几十个 token，走的是用户自己的订阅，不碰 API Key。
+ * 跑在系统临时目录里，不往用户工作区留任何东西。
+ *
+ * @returns {Promise<{ok:boolean, ms:number, engine:string, path:string, version:string,
+ *                    reply:string, model:string, why:string, hint:string}>}
+ */
+async function testConnect(id, opts = {}, timeoutMs = 90000) {
+  const backend = get(id);
+  if (!backend) throw new Error(`「${id}」不是一个本机引擎`);
+  const t0 = Date.now();
+  const det = await backend.detect(opts);
+  if (!det.installed) {
+    return { ok: false, ms: Date.now() - t0, engine: id, path: det.path || "", version: "",
+             reply: "", model: "", why: det.error || `本机没找到 ${backend.bin}`, hint: backend.install };
+  }
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "owb-engine-test-"));
+  let model = "";
+  try {
+    const r = await backend.run({
+      prompt: "回复 ok 两个字，不要做别的任何事，不要写文件。",
+      cwd,
+      emit: (ev) => { if (ev && ev.type === "status" && ev.model) model = ev.model; },
+      deadline: Date.now() + timeoutMs,
+      maxTurns: 1,
+      systemPrompt: "这是一次连通性自检，直接回两个字就行。",
+      ...opts,
+    });
+    return {
+      ok: true, ms: Date.now() - t0, engine: id, path: det.path, version: det.version,
+      reply: String(r.finalText || "").trim().slice(0, 120), model: opts.model || model, why: "", hint: "",
+    };
+  } catch (e) {
+    const why = String((e && e.message) || e).slice(0, 400);
+    // 登录/限流这类原因，各引擎的 explain() 已经翻成人话了，这里只补一句「接下来干什么」
+    const hint = /没登录|登录/.test(why) ? (backend.login || backend.install || "")
+      : /限流|额度/.test(why) ? "等订阅窗口重置后再点一次"
+      : /找不到|没有/.test(why) ? backend.install
+      : "";
+    return { ok: false, ms: Date.now() - t0, engine: id, path: det.path, version: det.version, reply: "", model: "", why, hint };
+  } finally {
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch {}
+  }
+}
+
+module.exports = { list, get, detectAll, resolve, testConnect, which, BUILTIN, BACKENDS };
