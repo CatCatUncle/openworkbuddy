@@ -18,6 +18,7 @@ const { createAgentRuntime } = require("./agent");
 const { createImRouter } = require("./im");
 const { createScheduler } = require("./scheduler");
 const account = require("./account");
+const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const security = require("./security");
 const memory = require("./memory");
 const notify = require("./notify");
@@ -481,6 +482,8 @@ app.get("/api/settings", (_req, res) => {
       max_context_chars: config.agent.max_context_chars || 120000,
       max_tokens_budget: config.agent.max_tokens_budget || 0,
       failover_model: config.agent.failover_model || "",
+      engine: config.agent.engine || "builtin",
+      engine_options: config.agent.engine_options || {},
     },
     pet: {
       enabled: (config.pet || {}).enabled === true, // 默认没有宠物：得用户在对话里开口要，或来这儿手动打开
@@ -551,6 +554,23 @@ app.post("/api/settings", (req, res) => {
         const fm = String(b.agent.failover_model || "").trim();
         if (fm && !config.models.some((m) => m.name === fm)) throw new Error("备用渠道不在模型列表中");
         config.agent.failover_model = fm; // 空串 = 关闭自动换道（默认）
+      }
+      if (b.agent.engine !== undefined) {
+        const id = String(b.agent.engine || "builtin").trim() || "builtin";
+        // 写错名字当场拒绝。悄悄退回内置 = 用户以为在用免费的本机订阅，账单却在涨
+        if (engines.get(id) === undefined) throw new Error("没有这个底层引擎：" + id);
+        config.agent.engine = id;
+      }
+      if (b.agent.engine_options && typeof b.agent.engine_options === "object") {
+        config.agent.engine_options = config.agent.engine_options || {};
+        for (const [id, v] of Object.entries(b.agent.engine_options)) {
+          if (engines.get(id) === undefined) continue;
+          if (!v || typeof v !== "object") continue;
+          const cur = (config.agent.engine_options[id] = config.agent.engine_options[id] || {});
+          for (const k of ["model", "bin", "permissionMode", "sandbox"]) if (v[k] !== undefined) cur[k] = String(v[k] || "").trim();
+          if (v.network !== undefined) cur.network = !!v.network;
+          if (Array.isArray(v.extraArgs)) cur.extraArgs = v.extraArgs.map((x) => String(x)).slice(0, 20);
+        }
       }
     }
     if (b.pet) {
@@ -855,6 +875,16 @@ app.post("/api/app/update-check", (_req, res) => {
 });
 
 // ---------- MCP 连接器管理 ----------
+// 底层引擎：探测本机装没装 Claude Code / Codex。只跑 --version，不消耗任何额度
+app.get("/api/engines", async (_req, res) => {
+  try {
+    const found = await engines.detectAll((config.agent && config.agent.engine_options) || {});
+    res.json({ current: config.agent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/mcp", (_req, res) => {
   const view = (s, plugin) => {
     const client = mcpManager.clients.get(s.name);
@@ -2369,6 +2399,9 @@ app.post("/api/chat", async (req, res) => {
           user: user ? user.username : undefined,
           projectContext: (projectContextOf(activeProject()) || "") + goalCtx,
           stopSignal: runState.ctrl.signal,
+          // 底层 CLI 引擎自己的会话 id：存在本项目的会话文件里，桌面端和 wb 命令行
+          // 打开同一个会话时接着同一根线程跑，不用把历史再贴一遍
+          engineSession: sess.engine_session || null,
           getInterject: () => runState.interject.splice(0),
           // ask_user 工具的等待端：回答从 /api/chat/answer 进来；超时或用户点停止都放行 null
           askUser: ({ askId, timeoutMs }) => new Promise((resolve) => {
@@ -2385,6 +2418,7 @@ app.post("/api/chat", async (req, res) => {
           }),
         });
         addUsage(total, r && r.usage);
+        if (r && r.sessionId) { sess.engine_session = r.sessionId; sess.engine = r.engine || ""; }
         if (r && r.finalText) lastFinal = r.finalText;
         if (r && r.stopped) roundStopped = r.stopped;
         const leftover = runState.interject.splice(0);

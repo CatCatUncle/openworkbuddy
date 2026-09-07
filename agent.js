@@ -7,6 +7,7 @@
 const { TOOL_DEFS, executeTool, outputFiles, getWorkspaceDir } = require("./tools");
 const { loadSkills } = require("./skills");
 const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
+const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -845,7 +846,127 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
   const fileClaims = new Map(); // name -> { owner, mtime }
   let runSeq = 0;
 
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser }) {
+  /**
+   * 把整趟任务交给本机 agent CLI 跑。
+   *
+   * 对外的返回结构跟内置引擎一模一样（finalText / usage / stopped），多带一个 sessionId：
+   * 那是底层 CLI 自己的会话 id，存进本项目的会话文件后，桌面端和 wb 命令行能接着同一根线程续跑。
+   * 「已达最大步数 / 已达最大运行时间 / 已手动停止」这三种收尾原样报出去——
+   * task-verdict 那层认的就是这几个词，翻译对了，假绿判定在 CLI 引擎上照样生效。
+   */
+  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user }) {
+    const cwd = safeWorkspaceDir(baseDir);
+    try { fs.mkdirSync(cwd, { recursive: true }); } catch {}
+    if (!deadline) deadline = Date.now() + (config.agent.max_runtime_ms || 1800000);
+    const startedAt = Date.now();
+
+    // 睡眠治理跟内置引擎同一套：本机睡过去的时间不算任务时间，醒来把时限顺延
+    const releaseAwake = awake.hold();
+    const unwatchSleep = awake.watch((sleptMs) => {
+      deadline += sleptMs;
+      emit({ type: "sleep", ms: sleptMs, note: `检测到本机睡眠 ${Math.round(sleptMs / 1000)} 秒，任务时限已顺延（睡眠不算任务时间）`, depth: 0 });
+    });
+
+    // 成果卡片：CLI 写文件我们看不见，只能自己前后对一次快照
+    const baseline = new Map();
+    for (const f of outputFiles()) baseline.set(f.name, f.mtime);
+    const emitFiles = () => {
+      const files = outputFiles();
+      const changed = [];
+      for (const f of files) {
+        if (baseline.get(f.name) === f.mtime) continue;
+        baseline.set(f.name, f.mtime);
+        changed.push(f.name);
+      }
+      emit({ type: "files", files, changed });
+    };
+    // 工具一跑完就对一次账，长任务中途就能看到产物，不用等收尾
+    const wrapped = (ev) => {
+      emit(ev);
+      if (ev && ev.type === "tool_result") { try { emitFiles(); } catch {} }
+    };
+
+    try {
+      const r = await backend.run({
+        prompt: enginePrompt(history, engineSession),
+        cwd,
+        emit: wrapped,
+        deadline,
+        stopSignal,
+        systemPrompt: engineSystemPrompt(cwd, mode, user),
+        resumeId: engineSession || null,
+        maxTurns: config.agent.max_steps || 25,
+        ...opts, // 用户在设置里给这个引擎填的 model / bin / extraArgs 等，最后覆盖
+      });
+      try { emitFiles(); } catch {}
+      const finalText = (r.finalText || "").trim();
+      // 调用方（Web / IM / 定时任务）都指望 runTask 就地把回复追加进 history
+      if (finalText) history.push({ role: "assistant", content: finalText });
+      const usage = {
+        prompt: (r.usage && r.usage.prompt) || 0,
+        completion: (r.usage && r.usage.completion) || 0,
+        cached: (r.usage && r.usage.cached) || 0,
+        calls: (r.usage && r.usage.calls) || 0,
+        elapsed_ms: Date.now() - startedAt,
+        local: true, // 本机订阅跑的，token 是真的，API 账单是零。前端靠它区分
+      };
+      emit({ type: "usage", model: opts.model || backend.label, provider: backend.id, ...usage });
+      return { finalText, usage, stopped: r.stopped || null, sessionId: r.sessionId || null, engine: backend.id };
+    } finally {
+      unwatchSleep();
+      releaseAwake();
+    }
+  }
+
+  /**
+   * 给底层 CLI 的提示词。
+   * 续跑时只发新的那句——CLI 自己记着上下文，把整段历史再贴一遍是白烧 token；
+   * 头一次跑就把对话摊平成一份逐字稿，别让它以为用户只说了最后一句。
+   */
+  function enginePrompt(history, engineSession) {
+    const list = Array.isArray(history) ? history : [];
+    const lastUser = [...list].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
+    if (engineSession) return lastUser ? lastUser.content : "继续。";
+    const turns = list.filter((e) => e && typeof e.content === "string" && (e.role === "user" || e.role === "assistant"));
+    if (turns.length <= 1) return lastUser ? lastUser.content : "";
+    return turns.map((e) => (e.role === "user" ? "【用户】" : "【你之前的回复】") + "\n" + e.content).join("\n\n");
+  }
+
+  /**
+   * 追加给底层 CLI 的系统提示：只说它不可能自己知道的事（在哪干活、产出放哪、说什么语言）。
+   * 本项目那份几千字的协调者提示词不往这儿塞——里面大半在讲本项目自己的工具，
+   * CLI 手上没有那些工具，讲了只会让它去找不存在的东西。
+   */
+  function engineSystemPrompt(cwd, mode, user) {
+    const who = user ? `当前用户：${user}。` : "";
+    const modeLine =
+      mode === "ask" ? "本次只回答问题，不改文件、不执行有副作用的命令。"
+      : mode === "plan" ? "本次只做调研和规划，输出可执行的步骤清单，不要真的动手改东西。"
+      : "用户要的是干完的活，不是确认。直接动手，最后交付具体成果。";
+    return [
+      `你正在为 OpenWorkBuddy 执行一个办公任务。${who}`,
+      `工作目录是 ${cwd}，所有产出文件都写在这里（用相对路径即可），用户会在成果面板里看到它们。`,
+      modeLine,
+      "用中文回复。最后一段要写清楚：做了什么、产出了哪些文件、还差什么。别用「已完成」三个字代替交代。",
+    ].join("\n");
+  }
+
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession }) {
+    // ── 底层引擎分岔 ──────────────────────────────────────────────────────
+    // 用户在设置里选了「本机 Claude Code / 本机 Codex」时，这一整趟任务交给那个 CLI 跑，
+    // 本项目只负责翻译事件、算文件差异、记账。为什么是整层替换而不是换个模型：
+    // `claude -p` / `codex exec` 本身就是完整 agent（自带工具、自带循环），
+    // 没有"给我下一步"这种调用方式，硬拆只会两头不讨好。
+    // 只有顶层任务走这条路——专家子任务是内置循环里的概念，CLI 引擎里没有对应物。
+    if (depth === 0) {
+      const picked = engines.resolve(config); // 引擎名写错会在这里抛错，不会静默退回内置
+      if (picked.backend) {
+        return await runViaEngine({
+          backend: picked.backend, opts: picked.opts,
+          history, emit, mode, deadline, stopSignal, baseDir, engineSession, user,
+        });
+      }
+    }
     let L = llmOverride || llm; // 按对话选的模型：整棵任务树（含专家）都用它；中途换道后，之后委派的专家也跟着走新渠道
     if (!runToken) runToken = ++runSeq; // 专家子任务从父任务继承，同一任务树内不互相抢认领
     // 项目指令：用户在「项目」里写的背景/规范。不进提示词的话，那个输入框就是个摆设

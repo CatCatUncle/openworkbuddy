@@ -843,13 +843,16 @@ async function testCliMode() {
     assert(listed.length >= 4, "--list 只列出了 " + listed.length + " 个会话，刚跑的那几条没落盘");
     // 会话 id 里那串时间戳是本地时区的；列表这一列必须跟它对得上，否则用户照时间挑会挑错
     for (const l of listed) {
-      const m = l.match(/^cli_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})\d{2}\S*\s+(\S+)\s+(\S+)\s+(\d+) 轮/);
-      assert(m, "--list 这一行读不出「id + 日期 时间 + 轮数」：" + JSON.stringify(l));
+      // 第 8 列是「这条是哪个面子建的」：桌面和命令行共用同一批会话文件，
+      // 列表不标出处的话，resume 挑错了面子的会话是看不出来的
+      const m = l.match(/^cli_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})\d{2}\S*\s+(\S+)\s+(\S+)\s+(命令行|桌面)\s+(\d+) 轮/);
+      assert(m, "--list 这一行读不出「id + 日期 时间 + 来源 + 轮数」：" + JSON.stringify(l));
+      assert.strictEqual(m[8], "命令行", "命令行建的会话在 --list 里没标成「命令行」：" + l);
       assert.strictEqual(m[6], `${m[1]}-${m[2]}-${m[3]}`, "--list 的日期跟会话 id 对不上（时区错了）：" + l);
       assert.strictEqual(m[7].slice(0, 2), m[4], "--list 的小时跟会话 id 对不上（八成是拿 UTC 在显示）：" + l);
       // 轮数只对没被续接过的单发会话下断言：r2 那个会话被 --session 接过一次，本来就是 2 轮
       if (sid1 && l.startsWith(sid1 + " ")) {
-        assert.strictEqual(m[8], "1", "单发只问了一次却报 " + m[8] + " 轮（把 transcript 条数当轮数了）：" + l);
+        assert.strictEqual(m[9], "1", "单发只问了一次却报 " + m[9] + " 轮（把 transcript 条数当轮数了）：" + l);
       }
     }
 
@@ -3328,12 +3331,48 @@ async function main() {
   await testAskUser();
   await testPromptNoAskContradiction();
   await testDesktopPet();
+  testUiNoRawMarkdown();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
   }
   console.log("=== 全部测试通过 ===");
 }
+
+function testUiNoRawMarkdown() {
+  // 界面上印出一串 ** 星号，是「文案里写了 markdown，但那一格根本不过 markdown 渲染器」。
+  // 光修一处没用——下次谁再手写一句 **重点** 还会复现。这道闸把它钉死在测试里。
+  const dir = path.join(__dirname, "..", "public", "js");
+  // 去掉块注释和整行 // 注释：注释里写 **强调** 是给人看的，不会进 DOM
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").map((l) => l.replace(/(^|[^:"'`])\/\/.*$/, "$1")).join("\n");
+  const bad = [];
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith(".js")) continue;
+    strip(fs.readFileSync(path.join(dir, f), "utf8")).split("\n").forEach((l, i) => {
+      if (/\*\*[^*\n]+\*\*/.test(l)) bad.push(`public/js/${f}:${i + 1}: ${l.trim().slice(0, 100)}`);
+    });
+  }
+  assert(!bad.length, "界面文案里还留着字面 markdown 粗体（会原样印出星号），改成 <b> 或走 escInline：\n  " + bad.join("\n  "));
+
+  // escInline 自己也得对：先转义再翻标记，且只认这两样
+  const src = fs.readFileSync(path.join(dir, "app-01.js"), "utf8");
+  const m = src.match(/function escInline\(s\) \{[\s\S]*?\n\}/);
+  assert(m, "app-01.js 里没有 escInline —— 模型写的那些字段就又要印星号了");
+  const escInline = new Function("esc", "return " + m[0].replace("function escInline", "function") + ";")(
+    (x) => String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]))
+  );
+  assert(escInline("提**最小**改动") === "提<strong>最小</strong>改动", "粗体没翻出来");
+  assert(escInline("跑 `npm test`") === "跑 <code>npm test</code>", "行内代码没翻出来");
+  // 负向：转义必须发生在翻标记之前，否则模型输出能当 HTML 执行
+  assert(escInline("<img onerror=x>").indexOf("<img") < 0, "escInline 没先转义，模型输出会被当 HTML 跑");
+  assert(escInline("**<b>x</b>**") === "<strong>&lt;b&gt;x&lt;/b&gt;</strong>", "粗体里的标签没被转义");
+  // 负向：单个星号、乘法号不该被吃掉
+  assert(escInline("2 * 3 * 4") === "2 * 3 * 4", "把普通星号也当标记翻了");
+  assert(escInline("**") === "**", "空标记被误翻");
+  console.log("✅ 界面文案：没有字面 markdown 粗体；escInline 先转义后翻标记");
+}
+
 
 main().catch((e) => {
   console.error("❌ 测试失败:", e.message);

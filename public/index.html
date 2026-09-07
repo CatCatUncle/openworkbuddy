@@ -906,6 +906,24 @@
   .settings-pane .card-item .t { font-size: 15px; }
   .settings-pane .card-item .d { font-size: 13px; }
 
+  /* 底层引擎选择：一行一个引擎，选中的那条描边+底色，没装的压暗但仍然看得见装法 */
+  .eng-list { display: flex; flex-direction: column; gap: 8px; }
+  .eng { border: 1px solid var(--wb-border); border-radius: 10px; padding: 10px 12px; cursor: pointer; transition: border-color var(--wb-t-fast) var(--wb-ease), background var(--wb-t-fast) var(--wb-ease); }
+  .eng:hover { border-color: var(--wb-text-3); }
+  .eng.on { border-color: var(--wb-brand); background: color-mix(in srgb, var(--wb-brand) 7%, transparent); }
+  .eng.off { opacity: .62; }
+  .eng-h { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 14px; }
+  .eng-dot { color: var(--wb-brand-text); }
+  .eng-n { color: var(--wb-text-2); font-size: 12.5px; line-height: 1.6; margin-top: 3px; }
+  .eng-c { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--wb-text-3); margin-top: 4px; }
+  .eng-i { font-size: 12px; color: var(--wb-text-2); margin-top: 5px; }
+  .eng-i code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--wb-bg-hover); padding: 1px 5px; border-radius: 5px; }
+  .eng-b { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--wb-border); color: var(--wb-text-2); }
+  .eng-b.ok { border-color: #16a34a55; color: #16a34a; }
+  .eng-b.free { border-color: var(--wb-brand); color: var(--wb-brand-text); }
+  .eng-b.no { border-color: var(--wb-border); color: var(--wb-text-3); }
+  .eng-msg { font-size: 12.5px; color: var(--wb-text-2); min-height: 16px; }
+
   /* 链接 hover 给个反馈 */
   .link:hover { text-decoration: underline; }
 

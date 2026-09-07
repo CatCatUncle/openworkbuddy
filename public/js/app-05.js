@@ -444,8 +444,13 @@ function renderSearchPane(pane, s) {
     e.target.disabled = false;
   };
 }
-function renderAgentPane(pane, s) {
+async function renderAgentPane(pane, s) {
   pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">底层引擎</div>
+      <div class="d" style="margin-bottom:10px">谁来跑任务。电脑里已经装了 Claude Code 或 Codex 的话，点一下就能直接用你已经付过钱的那份订阅——不再消耗这里配的 API Key 额度。切完立刻生效，下一个任务就走新引擎。</div>
+      <div id="ag-engines" class="eng-list"><div class="eng-msg">正在看本机装了哪些…</div></div>
+    </div>
     <div class="card-item">
       <div class="t">执行权限模式</div>
       <div class="d">输入框下方「权限」下拉可随时切换：Ask 只问答 · Plan 只出计划 · Craft 完整执行交付</div>
@@ -490,6 +495,45 @@ function renderAgentPane(pane, s) {
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
       failover_model: pane.querySelector("#ag-failover").value,
     } }, pane.querySelector("#ag-msg"));
+  renderEngineCard(pane.querySelector("#ag-engines"));
+}
+/**
+ * 「底层引擎」卡片：列出内置引擎 + 本机装了的 CLI，点一下就切。
+ * 没装的那条只显示装法，点了不切——静默切到一个跑不起来的引擎，
+ * 用户会以为在用本机订阅，其实每个任务都在原地报错。
+ */
+async function renderEngineCard(box) {
+  if (!box) return;
+  const d = await fetch("/api/engines").then((r) => r.json()).catch(() => null);
+  if (!d) { box.innerHTML = '<div class="eng-msg">检测失败：拿不到引擎列表</div>'; return; }
+  const cur = d.current || "builtin";
+  const all = [d.builtin, ...(d.engines || [])];
+  box.innerHTML = all.map((e) => {
+    const on = cur === e.id, builtin = e.id === "builtin", ready = builtin || e.installed;
+    const badge = builtin
+      ? '<span class="eng-b">走 API Key</span>'
+      : e.installed
+        ? `<span class="eng-b ok">已装 ${esc(e.version || "")}</span><span class="eng-b free">不花 API 额度</span>`
+        : '<span class="eng-b no">本机没装</span>';
+    return `<div class="eng${on ? " on" : ""}${ready ? "" : " off"}" data-eng="${esc(e.id)}">
+      <div class="eng-h"><span class="eng-dot">${on ? "●" : "○"}</span><b>${esc(e.label)}</b>${badge}</div>
+      <div class="eng-n">${esc(e.note || "")}</div>
+      <div class="eng-c">${esc(e.launchHeader || "")}</div>
+      ${!ready && e.install ? `<div class="eng-i">装法：<code>${esc(e.install)}</code>　装完点这张卡重新检测</div>` : ""}
+    </div>`;
+  }).join("") + '<div class="eng-msg" id="ag-eng-msg"></div>';
+  const msg = box.querySelector("#ag-eng-msg");
+  box.querySelectorAll(".eng").forEach((el) => {
+    el.onclick = async () => {
+      const id = el.dataset.eng;
+      if (el.classList.contains("off")) { msg.textContent = "还没装，先按上面的装法装好；这就重新检测一遍…"; return renderEngineCard(box); }
+      if (el.classList.contains("on")) return;
+      msg.textContent = "切换中…";
+      const ok = await saveSettings({ agent: { engine: id } }, null);
+      msg.textContent = ok ? "✓ 已切到「" + el.querySelector("b").textContent + "」，下一个任务生效" : "切换失败";
+      if (ok) renderEngineCard(box);
+    };
+  });
 }
 function renderPersonaPane(pane, s) {
   const a = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK, ...(s.assistant || {}) };
@@ -616,7 +660,7 @@ async function renderMemoryPane(pane) {
     ? items.map(it => `
       <div class="mem-row">
         <span class="mem-tag">${it.scope === m.shared_tag ? "共享" : esc(it.scope)}</span>
-        <span class="mem-txt">${esc(it.text)}</span>
+        <span class="mem-txt">${escInline(it.text)}</span>
         <span class="mem-src">${it.source === "user" ? "手动" : "AI 记的"}</span>
         <a href="#" class="link danger" data-del="${esc(it.id)}">删</a>
       </div>`).join("")

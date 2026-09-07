@@ -800,8 +800,8 @@ function renderAutomForm(box, tpl) {
 async function renderAutomRuns(page) {
   const runs = await fetch("/api/schedules/runs?limit=100").then(r => r.json()).catch(() => []);
   const fmtMs = (ms) => ms >= 60000 ? Math.round(ms / 60000) + " 分" : Math.max(1, Math.round(ms / 1000)) + " 秒";
-  // 判据里的 **重点** 是写给人看的，转义完再翻成 <b>，不然界面上会印出一串星号
-  const bold = (t) => esc(t).replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  // 判据里的 **重点** 是写给人看的，交给共享的 escInline（转义完再翻标记），不然界面上会印出一串星号
+  const bold = escInline;
   // 一条红的运行记录得能当场回答两件事：为什么红、下一步干什么。
   // 只印一句被截断的正文，等于让人自己去猜——而这正是「面板一片绿/一片红都看不出所以然」的来源。
   const runCell = (r) => {
