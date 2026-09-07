@@ -3234,6 +3234,40 @@ async function testDesktopPet() {
  *   2) 不合规的图集必须被挡下并说清楚原因 —— 悄悄回落成内置猫，用户体感是"换了没生效"；
  *   3) 状态映射表要盖全我们自己会发出的每一个状态，且不能映到图集里不存在的行。
  */
+/**
+ * 连接器死了必须说清为什么死。
+ *
+ * 真事：用户机器上唯一一台 MCP 连接器（filesystem）一直是红的，日志只有一句
+ * 「MCP 服务器 filesystem 已退出」。手动去命令行跑一遍才看到真正的死因——它配的
+ * 目录 ~/Downloads/培训案例材料 早被删了，服务器自己在 stderr 上喊了
+ * 「Cannot access directory ... / None of the specified directories are accessible」
+ * 然后退出。而 mcp.js 里那行 stderr 处理是 () => {}，把这句话原地丢掉了。
+ *
+ * 「已退出」这种话等于没说：用户看不出该改配置、该装依赖、还是该重装包。
+ * 所以这里钉住的不是措辞，是「失败消息里必须带上退出码和它自己最后喊的那句」。
+ */
+async function testMcpFailureReason() {
+  const { McpManager } = require("../mcp");
+  const mgr = new McpManager();
+  // 假服务器：往 stderr 喊一句就带着非零退出码死掉，跟真实的 filesystem 一个形状
+  await mgr.startAll([
+    { name: "会喊一嗓子再死的", command: process.execPath, args: ["-e", 'console.error("配的目录不存在: /nope"); process.exit(3);'] },
+    { name: "命令根本不存在的", command: "wb-no-such-binary-" + Date.now(), args: [] },
+  ]);
+  const byName = Object.fromEntries(mgr.failures.map((x) => [x.name, x.error]));
+  const dead = byName["会喊一嗓子再死的"] || "";
+  assert(dead, "死掉的连接器必须留下一条失败记录");
+  assert(dead.includes("配的目录不存在: /nope"), "失败消息里没有 stderr 的原话，用户无从判断该改什么: " + dead);
+  assert(dead.includes("3"), "失败消息里没有退出码: " + dead);
+  // 负向对照：不能只剩一句「已退出」——那正是改之前的样子
+  assert(dead.replace(/[\s\S]*已退出/, "").trim().length > 0, "失败消息退化成了光秃秃的「已退出」: " + dead);
+  // 另一头：连命令都没有时，spawn 自己的 ENOENT 已经说清楚了，不该被我们的话盖掉
+  const gone = byName["命令根本不存在的"] || "";
+  assert(/ENOENT/.test(gone), "命令不存在时该如实报 ENOENT: " + gone);
+  mgr.stop([]);
+  console.log("✅ 连接器：死了会说清死因（退出码 + 它自己最后喊的那句），不是光一句「已退出」");
+}
+
 function testPetSprites() {
   const os = require("os");
   const sprites = require("../pet-sprites");
@@ -3483,6 +3517,7 @@ async function main() {
   await testPromptNoAskContradiction();
   await testDesktopPet();
   testPetSprites();
+  await testMcpFailureReason();
   testUiNoRawMarkdown();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
