@@ -16,6 +16,7 @@
 
 const path = require("path");
 const { dataPath } = require("./paths");
+const sprites = require("./pet-sprites");
 const fs = require("fs");
 
 let electron = null;
@@ -30,10 +31,13 @@ let idleTimer = null;
 let dragTimer = null;
 let dragMoved = false;
 let ipcBound = false;
-let cfg = { enabled: false, scale: 1, opacity: 1, notify: true, character: "cat" };
+let cfg = { enabled: false, scale: 1, opacity: 1, notify: true, notifyDone: true, wander: false, character: "cat", sprite: "" };
 let dndUntil = 0;     // 免打扰截止时间戳：只压「要你动手」的提醒，状态显示照常
 let lastHit = false;  // 光标当前是不是压在宠物实体上（渲染进程按像素判定后报上来）
 let photoCache = { key: "", url: "" }; // 照片按 路径+修改时间 缓存，换了图自动失效
+let sheetCache = { key: "", url: "", spec: null }; // 精灵图同理，按 文件+修改时间 缓存
+let walkTimer = null, wanderTimer = null, walkDir = "";
+let lastFinish = { at: 0, key: "" }; // 完成/出错通知的节流：一轮任务里 error 事件可能来好几条
 
 /**
  * 自定义形象（用户自己或朋友的照片）。走 data URL 直接推给渲染进程，
@@ -55,6 +59,24 @@ function photoDataUrl() {
   }
   photoCache = { key: "", url: "" };
   return "";
+}
+
+/**
+ * 精灵图宠物：把图集读成 data URL + 一张「我们的状态 → 图集第几行」的表。
+ * 图集不小（1536×1872 的 webp 几百 KB），按 文件+修改时间 缓存，别每次推状态都重读重编码。
+ * 选了精灵图但那只宠物没了（用户把 ~/.codex/pets 删了）→ 返回空，push() 会老实回落到内置猫。
+ */
+function spriteBundle() {
+  if (cfg.character !== "sprite") { sheetCache = { key: "", url: "", spec: null }; return null; }
+  const pet = sprites.findPet(cfg.sprite);
+  if (!pet) { sheetCache = { key: "", url: "", spec: null }; return null; }
+  let key = pet.sheet;
+  try { key += ":" + fs.statSync(pet.sheet).mtimeMs; } catch {}
+  if (sheetCache.key !== key) {
+    const url = sprites.sheetDataUrl(pet);
+    sheetCache = url ? { key, url, spec: sprites.spriteSpec(pet) } : { key: "", url: "", spec: null };
+  }
+  return sheetCache.url ? sheetCache : null;
 }
 
 function posFile() {
@@ -104,6 +126,7 @@ function bindIpc() {
   // 松手时位移小于阈值就算点击 → 唤起主窗口，大于阈值才算真拖动 → 记住新位置。
   ipcMain.on("pet:drag-start", () => {
     if (!petWin || petWin.isDestroyed() || dragTimer) return;
+    stopWalk(); // 你伸手抓它的同时它还在自己走，两边抢位置，拖起来像在打滑
     try { petWin.setIgnoreMouseEvents(false); } catch {} // 拖动全程锁住，光标甩出宠物身体也不能中途穿透
     const start = screen.getCursorScreenPoint();
     const [wx, wy] = petWin.getPosition();
@@ -195,6 +218,7 @@ function create() {
     petWin.showInactive(); // 不抢焦点地亮相
     try { petWin.setIgnoreMouseEvents(true, { forward: true }); } catch {} // 先整块放行，渲染进程压到实体上会立刻要回来
     push();
+    armWander();
   });
   petWin.on("closed", () => { petWin = null; });
   return petWin;
@@ -204,12 +228,17 @@ function push() {
   if (!petWin || petWin.isDestroyed()) return;
   try {
     const photo = cfg.character === "photo" ? photoDataUrl() : "";
+    const sp = spriteBundle();
     petWin.webContents.send("pet:state", {
       ...curState,
+      walk: walkDir, // 溜达方向单独走一路：它不该顶掉「在干活 / 要问你」这些真状态
       scale: Number(cfg.scale) || 1,
       opacity: Number(cfg.opacity) || 1,
-      character: photo ? "photo" : "cat", // 选了照片但文件没了 → 老实回落到猫，别显示个空框
+      // 选了照片/精灵图但文件没了 → 老实回落到猫，别显示个空框
+      character: photo ? "photo" : sp ? "sprite" : "cat",
       photo,
+      sheet: sp ? sp.url : "",
+      sprite: sp ? sp.spec : null,
     });
   } catch {}
 }
@@ -219,9 +248,12 @@ function push() {
  * text 是一句人话，鼠标悬停时显示（asking 会直接把问题挂在气泡里）。
  */
 function setState(name, text) {
-  const n = ["idle", "working", "asking", "done", "error", "sleep"].includes(name) ? name : "idle";
+  const n = ["idle", "working", "asking", "done", "error", "sleep", "review"].includes(name) ? name : "idle";
+  const changed = curState.name !== n;
   curState = { name: n, text: String(text || "").slice(0, 120) };
+  if (n !== "idle") stopWalk(); // 有正事了就别再溜达，不然位置一直在动、气泡也跟着飘
   push();
+  if (changed && (n === "done" || n === "error")) notifyFinish(n, curState.text);
   clearTimeout(idleTimer);
   // 完成/出错是瞬时表情，几秒后自己回到待机；asking 必须等到有人回答才解除，不设自动过期
   if (n === "done" || n === "error") idleTimer = setTimeout(() => setState("idle", ""), n === "done" ? 6000 : 10000);
@@ -256,6 +288,81 @@ function alertAsk(question) {
   } catch {}
 }
 
+/**
+ * 任务跑完了/崩了也值得响一声——但只在你没盯着主窗口的时候。
+ *
+ * 以前只有 ask_user 会通知，于是一个跑二十分钟的任务结束时是完全静默的：
+ * 你不主动切回来就不知道它早就好了，宠物那点表情变化在别的应用后面根本看不见。
+ * 节流是必须的：一轮任务里 error 事件可能连来好几条（工具失败、模型报错、收尾又报一次），
+ * 不掐会连弹三条一模一样的。
+ */
+function notifyFinish(kind, text) {
+  if (!electron || !cfg.notify || !cfg.notifyDone) return;
+  if (Date.now() < dndUntil) return;
+  const key = kind + ":" + String(text || "").slice(0, 40);
+  if (Date.now() - lastFinish.at < 20000 && lastFinish.key === key) return;
+  try {
+    const win = global.__wbWin;
+    if (win && !win.isDestroyed() && win.isFocused() && win.isVisible()) return; // 你正看着呢，不用弹
+  } catch {}
+  try {
+    const { Notification } = electron;
+    if (!Notification.isSupported()) return;
+    lastFinish = { at: Date.now(), key };
+    const n = new Notification({
+      title: kind === "done" ? "OpenWorkBuddy 干完了" : "OpenWorkBuddy 出岔子了",
+      body: String(text || "").slice(0, 160) || (kind === "done" ? "成果已经落到工作区" : "点开看看卡在哪"),
+      silent: kind === "done", // 完成不响铃，出错才响：好消息不该打断你手上的事
+    });
+    n.on("click", () => { const w = global.__wbWin; if (w && !w.isDestroyed()) { w.show(); w.focus(); } });
+    n.show();
+  } catch {}
+}
+
+/* ------------------------------------------------------------------ *
+ * 溜达：闲着的时候在屏幕上走两步
+ * ------------------------------------------------------------------ *
+ * 默认关。理由和「宠物本身默认不存在」是同一条：会自己动的挂件更容易挡住别人的东西，
+ * 得由用户明确点头才开。开了之后也只在真闲着时走——正在干活/等你回答/你正把光标压在
+ * 它身上，这三种情况一步都不挪。
+ */
+function stopWalk() {
+  if (walkTimer) { clearInterval(walkTimer); walkTimer = null; savePos(); }
+  if (walkDir) { walkDir = ""; push(); }
+}
+
+function startWalk() {
+  if (walkTimer || !petWin || petWin.isDestroyed() || !electron) return;
+  const [w, h] = petWin.getSize();
+  const [x0, y0] = petWin.getPosition();
+  const area = electron.screen.getDisplayNearestPoint({ x: x0 + Math.round(w / 2), y: y0 + Math.round(h / 2) }).workArea;
+  const minX = area.x + 8, maxX = area.x + area.width - w - 8;
+  if (maxX <= minX) return;
+  const far = 90 + Math.round(Math.random() * 170);
+  const target = Math.min(maxX, Math.max(minX, x0 + (Math.random() < 0.5 ? -far : far)));
+  if (Math.abs(target - x0) < 30) return; // 已经贴边了，这轮就不走
+  walkDir = target > x0 ? "right" : "left";
+  push();
+  const steps = Math.max(8, Math.round(Math.abs(target - x0) / 6));
+  let i = 0;
+  walkTimer = setInterval(() => {
+    // 每一步都重新确认还该不该走：中途来了任务、或者你伸手要点它，立刻站住
+    if (!petWin || petWin.isDestroyed() || curState.name !== "idle" || lastHit) return stopWalk();
+    i += 1;
+    try { petWin.setPosition(Math.round(x0 + (target - x0) * (i / steps)), y0); } catch {}
+    if (i >= steps) stopWalk();
+  }, 40);
+}
+
+function armWander() {
+  clearInterval(wanderTimer); wanderTimer = null;
+  if (!cfg.wander || !petWin || petWin.isDestroyed()) return;
+  // 15 秒一次机会、五成概率：太勤快就成了满屏乱窜的小广告
+  wanderTimer = setInterval(() => {
+    if (curState.name === "idle" && !lastHit && !walkTimer && Math.random() < 0.5) startWalk();
+  }, 15000);
+}
+
 /** 用户答了/超时了：停止闪烁，回到干活状态 */
 function clearAsk(stillWorking) {
   try {
@@ -268,6 +375,7 @@ function clearAsk(stillWorking) {
 function show() { cfg.enabled = true; create(); if (petWin && !petWin.isDestroyed() && !petWin.isVisible()) petWin.showInactive(); }
 function hide() {
   cfg.enabled = false;
+  stopWalk(); clearInterval(wanderTimer); wanderTimer = null;
   if (petWin && !petWin.isDestroyed()) { savePos(); petWin.destroy(); }
   petWin = null;
 }
@@ -280,6 +388,9 @@ function applyConfig(next) {
   photoCache = { key: "", url: "" }; // 设置动过就重读一次图，省得换了照片还显示旧的
   if (!cfg.enabled) { hide(); cfg.enabled = false; return; }
   if (!petWin || petWin.isDestroyed()) { create(); return; }
+  if (cfg.character !== prev.character || cfg.sprite !== prev.sprite) sheetCache = { key: "", url: "", spec: null };
+  if (!cfg.wander) stopWalk();
+  if (cfg.wander !== prev.wander) armWander();
   if (Number(cfg.scale) !== Number(prev.scale)) {
     const scale = Math.min(2, Math.max(0.6, Number(cfg.scale) || 1));
     const w = Math.round(PET_W * scale), h = Math.round(PET_H * scale);
@@ -297,6 +408,7 @@ function applyConfig(next) {
 
 function destroy() {
   clearTimeout(idleTimer);
+  stopWalk(); clearInterval(wanderTimer); wanderTimer = null;
   if (dragTimer) { clearInterval(dragTimer); dragTimer = null; }
   if (petWin && !petWin.isDestroyed()) { savePos(); petWin.destroy(); }
   petWin = null;

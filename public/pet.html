@@ -39,7 +39,16 @@
   /* 投影不是装饰：宠物要浮在别人的白窗口上，没有这道影它会糊成一团看不出轮廓 */
   .actor { position: absolute; left: 0; top: 0; width: 108px; height: 100px;
     filter: drop-shadow(0 2px 4px rgba(40,40,80,.22)) drop-shadow(0 0 1px rgba(70,70,120,.35)); }
-  .c-cat #photo, .c-photo #cat { display: none; }
+  .c-cat #photo, .c-cat #sprite, .c-photo #cat, .c-photo #sprite, .c-sprite #cat, .c-sprite #photo { display: none; }
+  /* 形象 C：Codex / Petdex 的精灵图。用 canvas 不用 background-image，是因为点击穿透要按
+     像素的 alpha 判定——canvas 能直接读到那个 alpha，背景图读不到，只能整块方框挡住底下的应用。
+     单帧 192×208，显示成 96×104（正好 2:1 整数倍，像素画缩下来不糊）。 */
+  #sprite { left: 6px; top: 4px; width: 96px; height: 104px; image-rendering: pixelated; }
+  /* 精灵图自带 6~8 帧的动作，别再叠一层呼吸/摇摆，两套动画打架会抖 */
+  .c-sprite .actor { animation: none; }
+  /* 同理：状态特效（转圈/问号/星星/💤/水滴）是给静态形象补语义的，精灵图自己有对应动作行 */
+  .c-sprite #fx, .c-sprite #drop { display: none; }
+  .s-sleep #sprite { filter: grayscale(.55) brightness(.94); }
 
   /* 地面投影：跳起来时缩小变淡，这一下才让它有重量感 */
   #shadow { position: absolute; left: 50%; bottom: 2px; width: 54px; height: 9px; margin-left: -27px;
@@ -158,6 +167,9 @@
     <!-- 形象 B：用户上传的照片（自己或朋友） -->
     <div id="photo" class="actor"><div id="pwrap"><img id="pimg" alt=""><div id="ring"></div></div></div>
 
+    <!-- 形象 C：Codex / Petdex 精灵图（~/.codex/pets、~/.petdex/pets 里扫到的） -->
+    <canvas id="sprite" class="actor" width="192" height="208"></canvas>
+
     <div id="fx"><span id="spin"></span><span id="qmark">?</span><span id="sparks">✨</span><span id="zzz">💤</span></div>
     <div id="drop"></div>
   </div>
@@ -169,12 +181,66 @@
   const btxt = document.getElementById("btxt");
   const pimg = document.getElementById("pimg");
   const TIP = { idle: "待命中 · 点我打开主窗口", working: "正在干活", asking: "我有个问题要问你 · 点我去回答",
-                done: "任务完成 ✨", error: "出岔子了 · 点我看看", sleep: "本机睡过一觉，任务时限已顺延" };
-  let state = "idle", text = "", character = "cat", hovering = false;
+                done: "任务完成 ✨", error: "出岔子了 · 点我看看", sleep: "本机睡过一觉，任务时限已顺延",
+                review: "产出等你过目" };
+  let state = "idle", text = "", character = "cat", hovering = false, walk = "";
+
+  /* ------------------------------------------------------------------ *
+   * 精灵图播放器
+   * ------------------------------------------------------------------ *
+   * 图集是 8 列 × 9(或 11) 行，一行一个动作。主进程把整张图当 data URL 推过来，
+   * 外加一张「我们的状态 → 第几行 / 几帧 / 一轮多久」的表（见 pet-sprites.js）。
+   *
+   * 每帧把对应格子 drawImage 到 canvas 上，同时把这一帧的像素 alpha 缓存下来——
+   * 点击穿透就是靠它逐像素判定的：一张方图集里真正有东西的只是中间一小块，
+   * 不按 alpha 判就等于用一个 96×104 的方框把底下应用的点击全挡了。
+   * alpha 只在换帧时读一次（十几分之一秒一次），鼠标移动时是纯数组下标，不做 readback。
+   */
+  const spriteEl = document.getElementById("sprite");
+  const sctx = spriteEl.getContext("2d", { willReadFrequently: true });
+  let sheetImg = null, sheetSrc = "", spec = null, frameAlpha = null, frameTimer = null, frameIdx = 0;
+
+  function spriteRow() {
+    if (!spec) return null;
+    // 溜达方向优先于状态：走路时就该播走路，但状态本身（idle）没变
+    return spec.map[walk ? "walk-" + walk : state] || spec.map[state] || spec.map.idle || null;
+  }
+
+  function drawFrame() {
+    const r = spriteRow();
+    if (!r || !sheetImg || !sheetImg.complete || !sheetImg.naturalWidth) return;
+    const w = spec.frameW, h = spec.frameH;
+    if (spriteEl.width !== w || spriteEl.height !== h) { spriteEl.width = w; spriteEl.height = h; }
+    const col = frameIdx % Math.max(1, Math.min(r.frames, spec.cols));
+    sctx.clearRect(0, 0, w, h);
+    sctx.drawImage(sheetImg, col * w, r.row * h, w, h, 0, 0, w, h);
+    try { frameAlpha = sctx.getImageData(0, 0, w, h); } catch { frameAlpha = null; }
+  }
+
+  function retime() {
+    clearInterval(frameTimer); frameTimer = null;
+    const r = spriteRow();
+    if (character !== "sprite" || !r) return;
+    frameIdx = 0;
+    drawFrame();
+    const n = Math.max(1, Math.min(r.frames, spec.cols));
+    if (n < 2) return; // 单帧的动作不用起定时器
+    frameTimer = setInterval(() => { frameIdx = (frameIdx + 1) % n; drawFrame(); }, Math.max(60, Math.round(r.durationMs / n)));
+  }
+
+  function loadSheet(src) {
+    if (src === sheetSrc) return;
+    sheetSrc = src;
+    frameAlpha = null;
+    if (!src) { sheetImg = null; return; }
+    sheetImg = new Image();
+    sheetImg.onload = retime;   // 图还没解码完就画，画出来是空的；等 onload 再起播放
+    sheetImg.src = src;
+  }
 
   function paint() {
     const blinking = pet.classList.contains("blinking"); // 别把正眨到一半的眼睛擦掉
-    pet.className = "s-" + state + " c-" + character + (blinking ? " blinking" : "");
+    pet.className = "s-" + state + " c-" + character + (walk ? " w-" + walk : "") + (blinking ? " blinking" : "");
     btxt.textContent = text || TIP[state] || "";
     bubble.classList.toggle("on", state === "asking" || hovering);
     document.body.classList.toggle("hot", hovering);
@@ -197,6 +263,17 @@
       const r = pimg.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       return Math.hypot(x - cx, y - cy) <= r.width / 2 + 3;
+    }
+    if (character === "sprite") {
+      // 逐像素 alpha。getBoundingClientRect 已经把 --s 的缩放算进去了，
+      // 所以这里除以 rect 的实际宽高就自动是缩放无关的。
+      if (!frameAlpha) return false;
+      const r = spriteEl.getBoundingClientRect();
+      if (!r.width || !r.height || x < r.left || x > r.right || y < r.top || y > r.bottom) return false;
+      const px = Math.floor((x - r.left) / r.width * frameAlpha.width);
+      const py = Math.floor((y - r.top) / r.height * frameAlpha.height);
+      if (px < 0 || py < 0 || px >= frameAlpha.width || py >= frameAlpha.height) return false;
+      return frameAlpha.data[(py * frameAlpha.width + px) * 4 + 3] > 24;
     }
     const el = document.elementFromPoint(x, y);
     return !!(el && el.closest("#cat") && el.tagName.toLowerCase() !== "svg");
@@ -241,10 +318,21 @@
   document.addEventListener("contextmenu", (e) => { e.preventDefault(); window.wbPet && window.wbPet.menu(); });
 
   window.wbPet && window.wbPet.onState((s) => {
+    const wasRow = spec ? JSON.stringify(spriteRow()) : "";
     state = s.name || "idle";
     text = s.text || "";
-    character = s.character === "photo" && s.photo ? "photo" : "cat";
+    walk = s.walk === "left" || s.walk === "right" ? s.walk : "";
+    character = s.character === "photo" && s.photo ? "photo"
+      : s.character === "sprite" && s.sheet && s.sprite ? "sprite" : "cat";
     if (character === "photo" && pimg.src !== s.photo) pimg.src = s.photo;
+    if (character === "sprite") {
+      spec = s.sprite;
+      loadSheet(s.sheet);
+      // 动作没变就别重起定时器，否则每来一条状态推送动画都从第 0 帧重新开始，看着一卡一卡的
+      if (JSON.stringify(spriteRow()) !== wasRow) retime();
+    } else {
+      clearInterval(frameTimer); frameTimer = null; frameAlpha = null;
+    }
     // 大小和透明度都落在 #pet 上（不是整页）：整页透明会把气泡里的字也一起糊掉
     document.documentElement.style.setProperty("--s", String(Math.min(2, Math.max(.6, Number(s.scale) || 1))));
     document.documentElement.style.setProperty("--op", String(Math.min(1, Math.max(.25, Number(s.opacity) || 1))));

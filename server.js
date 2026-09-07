@@ -23,6 +23,7 @@ const security = require("./security");
 const memory = require("./memory");
 const notify = require("./notify");
 const store = require("./store");
+const petSprites = require("./pet-sprites"); // 桌面宠物的精灵图（吃 Codex / Petdex 的格式）
 const { createImSessionStore } = require("./im-store");
 
 // config.json 不入 git（可能含 API Key）；首次运行自动从模板复制
@@ -35,7 +36,26 @@ if (!fs.existsSync(CONFIG_PATH)) {
 // 配置读坏了不能就这么空着起来：那样界面上所有 Key 都变成空的，用户随手一保存就把
 // 真 Key 覆盖没了。store 会先拿 .bak 顶（Key 原样还在），实在顶不住才把坏文件改名隔离、
 // 退回模板——原文还在 .corrupt-时间戳 里，Key 捞得回来。
-const config = store.readJson(CONFIG_PATH, JSON.parse(fs.readFileSync(appPath("config.example.json"), "utf8")));
+const CONFIG_DEFAULTS = JSON.parse(fs.readFileSync(appPath("config.example.json"), "utf8"));
+const config = fillDefaults(store.readJson(CONFIG_PATH, CONFIG_DEFAULTS), CONFIG_DEFAULTS);
+
+/**
+ * 只补缺的，不改已有的（顶层键 + 顶层对象里的子键，两层就够）。
+ *
+ * config.json 是明确让用户手改的文件，删掉整个 server / agent 块很常见。以前那种情况下
+ * 启动会抛 “Cannot read properties of undefined (reading 'host')” 或 “...(reading 'max_steps')”——
+ * 一条完全看不出跟配置有关的报错，用户只会以为程序坏了。缺的用模板里的默认值填上就行。
+ * 数组不合并：mcp_servers、models 这些用户清空是有意为之，不能又给他塞回来。
+ */
+function fillDefaults(cur, def) {
+  for (const [k, v] of Object.entries(def)) {
+    if (cur[k] === undefined) { cur[k] = v; continue; }
+    if (v && typeof v === "object" && !Array.isArray(v) && cur[k] && typeof cur[k] === "object" && !Array.isArray(cur[k])) {
+      for (const [k2, v2] of Object.entries(v)) if (cur[k][k2] === undefined) cur[k][k2] = v2;
+    }
+  }
+  return cur;
+}
 
 // 旧配置迁移：生成 models 列表（内置国产模型预设 + 自定义），active_model 指定当前使用
 if (!Array.isArray(config.models) || !config.models.length) {
@@ -491,7 +511,13 @@ app.get("/api/settings", (_req, res) => {
       scale: (config.pet || {}).scale || 1,
       opacity: (config.pet || {}).opacity || 1,
       notify: (config.pet || {}).notify !== false,
+      notify_done: (config.pet || {}).notifyDone !== false,
+      wander: (config.pet || {}).wander === true,
+      sprite: (config.pet || {}).sprite || "",
       has_photo: !!petPhotoPath(),
+      // 本机装了哪些精灵图宠物（~/.codex/pets、~/.petdex/pets、data/pets）。
+      // 扫的是文件头不是整张图，几毫秒的事，跟设置一起返回省一次往返。
+      sprites: petSprites.scanPets().map((x) => ({ id: x.id, name: x.displayName, source: x.source, ok: x.ok, why: x.why })),
       available: !!global.__wbPet, // 纯 node 模式没有桌面窗口，前端要如实说明
     },
     persona: config.persona || "",
@@ -574,10 +600,24 @@ app.post("/api/settings", (req, res) => {
       }
     }
     if (b.pet) {
-      config.pet = config.pet || {};
+      const cur = config.pet || {};
+      // 精灵图那两个字段先验后写：这个 handler 一路在往 config 上直接赋值，
+      // 半路 return 400 会留下「内存里改了、盘上没存」的半拉状态。所以校验全部前置。
+      const nextSprite = b.pet.sprite !== undefined ? String(b.pet.sprite || "").slice(0, 80) : cur.sprite || "";
+      const nextChar = b.pet.character === undefined ? cur.character || "cat"
+        : b.pet.character === "photo" ? "photo" : b.pet.character === "sprite" ? "sprite" : "cat";
+      // 存一个扫不到的 id 进去，结果是宠物窗口悄悄回落成内置猫，
+      // 用户体感是「换了但没生效」——不如当场拒了，把原因说清楚。
+      if (nextSprite && !petSprites.findPet(nextSprite)) return res.status(400).json({ error: "没找到这只精灵图宠物（或它的图集不合规）：" + nextSprite });
+      if (nextChar === "sprite" && !nextSprite) return res.status(400).json({ error: "先选一只精灵图宠物，再切到这个形象" });
+
+      config.pet = cur;
       if (typeof b.pet.enabled === "boolean") config.pet.enabled = b.pet.enabled;
       if (typeof b.pet.notify === "boolean") config.pet.notify = b.pet.notify;
-      if (b.pet.character !== undefined) config.pet.character = b.pet.character === "photo" ? "photo" : "cat";
+      if (typeof b.pet.notifyDone === "boolean") config.pet.notifyDone = b.pet.notifyDone;
+      if (typeof b.pet.wander === "boolean") config.pet.wander = b.pet.wander;
+      config.pet.sprite = nextSprite;
+      config.pet.character = nextChar;
       if (b.pet.scale !== undefined) config.pet.scale = Math.max(0.6, Math.min(2, Number(b.pet.scale) || 1));
       if (b.pet.opacity !== undefined) config.pet.opacity = Math.max(0.25, Math.min(1, Number(b.pet.opacity) || 1));
       if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
@@ -2003,7 +2043,9 @@ global.__wbPetTool = {
     const cur = config.pet || {};
     const nowInfo = () => {
       const has = !!petPhotoPath();
-      return `当前状态：宠物${cur.enabled === true ? "已显示" : "未显示"}，形象=${has && cur.character === "photo" ? "用户上传的照片" : "内置小猫"}，大小=${Math.round((cur.scale || 1) * 100)}%。`;
+      const look = cur.character === "sprite" && cur.sprite ? `像素宠物「${cur.sprite}」`
+        : has && cur.character === "photo" ? "用户上传的照片" : "内置小猫";
+      return `当前状态：宠物${cur.enabled === true ? "已显示" : "未显示"}，形象=${look}，大小=${Math.round((cur.scale || 1) * 100)}%。`;
     };
 
     if (action === "status") return { content: nowInfo(), isError: false };
@@ -2030,7 +2072,34 @@ global.__wbPetTool = {
       return { content: "宠物已经撤掉，上传的照片也从本机删干净了。", isError: false };
     }
 
-    if (action !== "create") return { content: `不认识的 action「${action}」，只支持 create / show / hide / remove / status。`, isError: true };
+    // ---- sprite：列出 / 换上本机的 Codex / Petdex 像素宠物 ----
+    // 只读目录、只改配置，不生成任何图——「自己孵一只」是要烧生图额度的事，不放在这条路上。
+    if (action === "sprite") {
+      const all = petSprites.scanPets();
+      const good = all.filter((x) => x.ok);
+      const want = String((input || {}).sprite_id || "").trim();
+      const listing = all.length
+        ? all.map((x) => `· ${x.id}（${x.displayName}，来自 ${x.source}）${x.ok ? "" : " —— 用不了：" + x.why}`).join("\n")
+        : "";
+      if (!want) {
+        if (!good.length) {
+          return {
+            content: "本机一只像素宠物都没扫到。" + (listing ? "扫到但都用不了：\n" + listing + "\n" : "") +
+              "告诉用户：在终端跑 `npx petdex install <名字>` 装一只（画廊 petdex.dev），或者把宠物文件夹（含 pet.json + spritesheet.webp）丢进 data/pets/，装完再叫你换。这一步得他自己去终端跑，你别替他执行。",
+            isError: false,
+          };
+        }
+        return { content: "本机的像素宠物：\n" + listing + "\n\n问用户想用哪只，拿到 id 后带 sprite_id 再调一次。", isError: false };
+      }
+      const pick = good.find((x) => x.id === want);
+      if (!pick) return { content: `没有叫「${want}」的可用像素宠物。本机现有：\n${listing || "（一只都没有）"}`, isError: true };
+      config.pet = { ...cur, enabled: true, character: "sprite", sprite: pick.id };
+      saveConfig();
+      try { P.applyConfig({ ...config.pet, enabled: true }); } catch {}
+      return { content: `已经换成「${pick.displayName}」（${pick.cols}×${pick.rows} 帧图集，来自 ${pick.source}），宠物也一并显示出来了。它会跟着状态切动作：干活跑、要问问题跳、完成挥手、出错摊手。`, isError: false };
+    }
+
+    if (action !== "create") return { content: `不认识的 action「${action}」，只支持 create / show / hide / remove / status / sprite。`, isError: true };
 
     // ---- create：把一张图做成宠物形象 ----
     const raw = String((input || {}).image || "").trim();
@@ -2921,10 +2990,14 @@ async function main() {
 
   sweepInterruptedRuns(); // 上次没善终的任务先标注中断，再开门迎客
 
-  const port = +process.env.PORT || config.server.port || 3800;
+  // config.json 是用户手改的文件，少一个顶层块很正常。以前这里直接 config.server.port，
+  // 结果是启动时抛 “Cannot read properties of undefined (reading 'host')”——
+  // 一条完全看不出跟配置有关的报错。缺就用默认值，别拿栈回溯糊用户一脸。
+  const srvCfg = config.server || {};
+  const port = +process.env.PORT || srvCfg.port || 3800;
   // 默认只听本机：这个进程手里有 run_shell 和整个文件系统，绑 0.0.0.0 等于把 shell 挂到公网。
   // 要放出去（Docker / 服务器）必须显式 HOST=0.0.0.0，并且自己在前面套 HTTPS + 反代。
-  const host = process.env.HOST || config.server.host || "127.0.0.1";
+  const host = process.env.HOST || srvCfg.host || "127.0.0.1";
   const server = app.listen(port, host, () => {
     if (host !== "127.0.0.1" && host !== "localhost") {
       console.warn(`⚠️  正在监听 ${host}:${port}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);

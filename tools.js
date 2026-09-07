@@ -347,17 +347,19 @@ const TOOL_DEFS = [
       "把用户给的一张图片做成【桌面宠物】——一个常驻桌面角落的透明小挂件，实时显示你正在干什么（干活转圈 / 有问题要问时跳起来并弹系统通知 / 完成撒花 / 出错掉汗）。用户点它开关主窗口，拖动换位置。\n" +
       "什么时候用：用户说「把这张图做成桌面宠物」「用我朋友的照片弄个桌宠」「搞个挂件放桌面」这类话时。**默认是没有宠物的**，只有用户开口要才做，不要主动创建。\n" +
       "怎么用：先让用户在输入框上传一张图（人像/宠物照/表情包都行），图会落到工作空间；再带着文件名调 action=\"create\"。图片只存用户本机，不上传任何服务器。\n" +
+      "换成像素宠物：本机装过 Codex / Petdex 的宠物（~/.codex/pets、~/.petdex/pets）的话，action=\"sprite\" 不带 id 会列出来，带 id 就换上。这类宠物自带跑/跳/挥手/失败 8 套动作，会跟着你的状态切。\n" +
       "只在桌面版（npm run app）里有效；纯服务端模式下会如实报错，那时要老实告诉用户做不了。",
     input_schema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["create", "show", "hide", "remove", "status"],
-          description: "create=用图片做一只（要带 image）；show/hide=显示或收起；remove=撤掉并删掉本机存的照片；status=看看现在什么情况",
+          enum: ["create", "show", "hide", "remove", "status", "sprite"],
+          description: "create=用图片做一只（要带 image）；show/hide=显示或收起；remove=撤掉并删掉本机存的照片；status=看看现在什么情况；sprite=列出/换上本机的 Codex / Petdex 像素宠物",
         },
         image: { type: "string", description: "图片文件名或相对路径（相对工作空间）。仅 action=create 时必填" },
         scale: { type: "number", description: "大小倍率 0.6~2，默认 1。用户嫌大嫌小时调这个" },
+        sprite_id: { type: "string", description: "要换上的像素宠物 id。仅 action=sprite 时用；不填就只列出本机有哪些" },
       },
       required: ["action"],
     },
