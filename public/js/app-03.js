@@ -800,6 +800,19 @@ function renderAutomForm(box, tpl) {
 async function renderAutomRuns(page) {
   const runs = await fetch("/api/schedules/runs?limit=100").then(r => r.json()).catch(() => []);
   const fmtMs = (ms) => ms >= 60000 ? Math.round(ms / 60000) + " 分" : Math.max(1, Math.round(ms / 1000)) + " 秒";
+  // 判据里的 **重点** 是写给人看的，转义完再翻成 <b>，不然界面上会印出一串星号
+  const bold = (t) => esc(t).replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  // 一条红的运行记录得能当场回答两件事：为什么红、下一步干什么。
+  // 只印一句被截断的正文，等于让人自己去猜——而这正是「面板一片绿/一片红都看不出所以然」的来源。
+  const runCell = (r) => {
+    const raw = String(r.result || "");
+    if (!r.label) return esc(raw.slice(0, 90)) + (raw.length > 90 ? "…" : "");
+    const i = raw.indexOf("上游原话：");
+    const quoted = i >= 0 ? raw.slice(i) : "";
+    return `<b>${esc(r.label)}</b>`
+      + (r.hint ? `<div class="at-hint">${bold(r.hint)}</div>` : "")
+      + (quoted ? `<div class="at-raw">${esc(quoted.slice(0, 200))}${quoted.length > 200 ? "…" : ""}</div>` : "");
+  };
   page.innerHTML = `
     <div class="hub-head">
       <div class="hub-tabs">
@@ -815,7 +828,7 @@ async function renderAutomRuns(page) {
         <td>${esc(r.name)}</td>
         <td>${esc(r.trigger || "")}</td>
         <td style="white-space:nowrap">${r.ended_at ? fmtMs(r.ms) : "进行中…"}</td>
-        <td>${r.ok === null ? "⏳" : r.ok ? "✅" : "❌"} ${esc((r.result || "").slice(0, 90))}${(r.result || "").length > 90 ? "…" : ""}</td>
+        <td>${r.ok === null ? "⏳" : r.ok ? "✅" : "❌"} ${runCell(r)}</td>
       </tr>`).join("")}
     </table>` : '<div class="hub-empty">还没有运行记录。任务跑过之后（定时触发或手动执行）这里会留下每一次的流水。</div>'}`;
   page.querySelector('[data-tab="tasks"]').onclick = () => { automState.tab = "tasks"; renderAutomPage(); };
