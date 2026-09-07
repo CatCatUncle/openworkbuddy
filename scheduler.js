@@ -7,6 +7,7 @@
 const path = require("path");
 const { dataPath } = require("./paths");
 const jsonStore = require("./store");
+const { judgeRun, explainRunError, verdictMessage } = require("./task-verdict");
 
 const STORE = dataPath("schedules.json");
 
@@ -220,24 +221,48 @@ function createScheduler({ runtime, onResult, storePath }) {
       run.ms = Date.now() - startedMs;
       run.result = String(text || "").slice(0, 500);
     };
+    // 裁定判失败时不能在 try 里直接抛——那会被下面的 catch 接住，再套一层「出错:」。
+    // 先记下来，等 finally 把 running 锁松开之后再抛出去。
+    let verdictErr = null;
     try {
       // 每次执行用全新会话，避免历史无限增长
       const history = [{ role: "user", content: item.task }];
-      const { finalText } = await runtime.runTask({ history });
-      item.last_result = (finalText || "完成").slice(0, 500);
-      finish(true, finalText || "完成");
+      // stopped 是 runTask 自己报的「撞上限 / 模型挂死 / 手动停止」。以前这里把它解构掉了，
+      // 于是一个跑满 25 步被强制收尾的任务，运行记录里照样是个 ✅——活没干完却显示干成了。
+      const { finalText, stopped } = await runtime.runTask({ history });
+      const v = judgeRun({ result: finalText, stopped });
+      if (v.ok) {
+        item.last_result = (finalText || "完成").slice(0, 500);
+        finish(true, finalText || "完成");
+        saveStore(store, file);
+        if (onResult) await onResult(item, finalText);
+        return finalText;
+      }
+      // 把「看起来成功」翻译成「到底成不成」：判据和下一步动作单独存字段，
+      // 好让运行记录能回答「这条为什么红」，而不只是「它红了」。
+      const msg = verdictMessage(v, finalText);
+      run.reason = v.reason;
+      run.label = v.label;
+      run.hint = v.hint;
+      run.retryable = v.retryable;
+      item.last_result = msg.slice(0, 500);
+      finish(false, msg);
       saveStore(store, file);
-      if (onResult) await onResult(item, finalText);
-      return finalText;
+      if (onResult) await onResult(item, msg);
+      verdictErr = Object.assign(new Error(msg), { verdict: v });
     } catch (e) {
-      item.last_result = "出错: " + e.message;
-      finish(false, "出错: " + e.message);
+      // 同一个根因从 error 这个口子上来时也得有药方。不然「连不上上游」这类坑
+      // 一次有诊断一次没有，全看它是被 agent 当正文汇报了出来、还是直接抛成了异常。
+      const why = explainRunError(e.message);
+      item.last_result = ("出错: " + why).slice(0, 500);
+      finish(false, "出错: " + why);
       saveStore(store, file);
-      if (onResult) await onResult(item, "执行出错: " + e.message);
+      if (onResult) await onResult(item, "执行出错: " + why);
       throw e;
     } finally {
       running.delete(item.id);
     }
+    throw verdictErr;
   }
 
   function fire(item, trigger) {

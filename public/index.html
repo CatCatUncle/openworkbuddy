@@ -753,6 +753,10 @@
   .at-runs td { padding: 8px 10px; border-bottom: 1px solid var(--wb-border); font-size: 13px; vertical-align: top; }
   .at-runs th { padding: 6px 10px; text-align: left; font-size: 13px; color: var(--wb-text-3); font-weight: 500; border-bottom: 1px solid var(--wb-border); }
   .at-runs { width: 100%; border-collapse: collapse; }
+  /* 失败那一行的「下一步怎么办」和「上游原话」。字号压一档、颜色退一档：
+     它们是给判据做注脚的，不该跟结论抢视线 */
+  .at-runs .at-hint { margin-top: 3px; color: var(--wb-text-2); line-height: 1.5; }
+  .at-runs .at-raw { margin-top: 3px; color: var(--wb-text-3); font-size: 12px; font-family: var(--font-mono, ui-monospace, monospace); word-break: break-all; }
 
   /* ===== 资料库页 ===== */
   .lib-page { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 18px; align-items: start; }

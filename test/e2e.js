@@ -458,6 +458,60 @@ function testMotionGate() {
   console.log("✅ 动效闸门：过渡曲线全部走令牌（没有一条吃默认 ease）· 拉丁先落 SF 中文再落苹方 · 浮层毛玻璃且有降级兜底");
 }
 
+/**
+ * 定时任务「假绿」闸门。
+ *
+ * 守的是 scheduler.js 原来那条 `finish(true, finalText || "完成")`——只要 runTask 没抛异常
+ * 就记成功，于是撞上限被强制收尾、整条正文就是上游报错、一个字没吐、把活丢后台就收工
+ * 这四类全都在运行记录里显示 ✅。这里正反两面都钉：该判失败的必须判失败（漏判 = 假绿回来了），
+ * 该放行的必须放行（误判 = 面板一片红，比一片绿更没人看）。
+ */
+function testVerdictGate() {
+  const { judgeRun, explainRunError } = require("../task-verdict");
+  // 正文足够长，长到能验证「长篇汇报里提一嘴限流不算失败」这条豁免
+  const long = "今天的行业晨报已经生成并推送到飞书。过程中第一次调用撞了 429 rate limit，等 20 秒重试后拿到了全部数据。".padEnd(420, "。补充说明");
+  const cases = [
+    // [名字, 入参, 期望的失败原因（null = 应该放行）]
+    ["撞步数上限", { stopped: "已达最大步数（25 步）", result: "我先看一下这个文件" }, "budget_exhausted"],
+    ["撞时间上限", { stopped: "已达最大运行时间（30 分钟）", result: "做到一半" }, "budget_exhausted"],
+    ["手动停止", { stopped: "已手动停止", result: "" }, "stopped"],
+    ["模型挂死", { stopped: "模型响应超时（连续 300 秒没有任何输出）", result: "" }, "model_stall"],
+    ["一个字没吐", { result: "" }, "no_output"],
+    ["整条就是限流", { result: "LLM 接口错误 429: rate limit exceeded" }, "upstream_error"],
+    ["整条就是欠费", { result: "渠道余额不足，请先充值后再试。" }, "upstream_error"],
+    ["整条就是 Key 挂", { result: "LLM 接口错误 401: invalid_api_key" }, "upstream_error"],
+    ["整条就是断流", { result: "LLM 返回了空响应（连接建立后没有收到任何内容，上游服务或网络异常）" }, "upstream_error"],
+    ["整条就是超时", { result: "请求超时" }, "upstream_error"],
+    ["甩后台", { result: "部署已在后台启动，完成后会通知我。" }, "deferred"],
+    ["子步骤完成但仍在等", { result: "抓取阶段进行中（深圳、北京已完成，广州进行中）。完整流程完成后我会自动收到通知。等待中。" }, "deferred"],
+    ["半截·停在冒号", { result: "定时任务触发（2026-09-05），前台阻塞取数据：" }, "truncated"],
+    ["半截·宣告收尾", { result: "New scheduled trigger. Fresh snapshot ready. Let me read the full data." }, "truncated"],
+    ["真交付", { result: "今日行业晨报已生成并推送到飞书 ✅，共 12 条要闻。" }, null],
+    ["合法的短回复", { result: "今日休市，跳过。" }, null],
+    ["长文里提过限流", { result: long }, null],
+    ["客套 let me know", { result: "报告已生成并保存为 daily.md。Let me know if you need more details." }, null],
+  ];
+  const bad = [];
+  for (const [name, input, want] of cases) {
+    const v = judgeRun(input);
+    const got = v.ok ? null : v.reason;
+    if (got !== want) bad.push(`${name}：期望 ${want} 实得 ${got}`);
+    if (!v.ok && !(v.label && v.hint)) bad.push(`${name}：判了失败却没给 label/hint，运行记录里就只剩一个红叉`);
+  }
+  assert(!bad.length, "任务裁定：" + bad.join("；"));
+  // 重试分档：重跑能好的才标 retryable。欠费/Key 失效标成可重试的话，
+  // 「自动重试」就成了每小时白烧一轮。
+  assert(judgeRun({ result: "LLM 接口错误 429: rate limit exceeded" }).retryable === true, "限流应该标可重试");
+  assert(judgeRun({ result: "渠道余额不足，请先充值后再试。" }).retryable === false, "欠费重跑一百遍也一样，不该标可重试");
+  assert(judgeRun({ stopped: "已达最大步数（25 步）" }).retryable === false, "撞上限该走自动续跑，重跑是从零重做");
+  // error 口子也得有药方：同一个断网从异常上来和从正文上来，不能一次有诊断一次没有
+  assert(/连不上上游/.test(explainRunError("fetch failed ECONNREFUSED")), "error 口子的断网没被认出来");
+  assert(explainRunError("积分不足：管理员可以充值") === "积分不足：管理员可以充值", "认不出的错该原样返回，不该套壳");
+  // 反向断言：闸门自己得会红。把「甩后台」这类正文喂进去若还判成功，说明判据被改坏了
+  assert(judgeRun({ result: "任务已提交，等结果出来再同步给你。" }).ok === false, "闸门失灵：明显的甩后台话术被判成了成功");
+  console.log(`✅ 任务裁定闸门：${cases.length} 类运行判定全对（撞上限/上游报错/空跑/甩后台/半截 判红，真交付与合法短回复放行）· 重试按死因分档 · error 与正文两个口子同诊断`);
+}
+
 function testDocLinkGate() {
   const root = path.join(__dirname, "..");
   // 只管项目自己的文档。skills/ 下是内容和第三方技能，里面的 ](URL) 是模板占位，不是死链
@@ -3237,6 +3291,7 @@ async function main() {
   testPathSafety();
   testCssTokenGate();
   testMotionGate();
+  testVerdictGate();
   testDocLinkGate();
   await testImageWatermarkGate();
   await testVideoWatermarkGate();
