@@ -29,6 +29,7 @@ class StdioTransport {
     this.pending = new Map();
     this.proc = null;
     this.buf = "";
+    this.errLines = []; // 最后几行 stderr —— 进程死了，这往往是唯一写着死因的地方
   }
 
   async open() {
@@ -39,9 +40,9 @@ class StdioTransport {
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.proc.stdout.on("data", (d) => this._onData(d));
-    this.proc.stderr.on("data", () => {}); // MCP 服务器常向 stderr 打日志，忽略
+    this.proc.stderr.on("data", (d) => this._onStderr(d));
     this.proc.on("error", (e) => this._failAll(e));
-    this.proc.on("close", () => this._failAll(new Error(`MCP 服务器 ${this.name} 已退出`)));
+    this.proc.on("close", (code, signal) => this._failAll(new Error(`MCP 服务器 ${this.name} 已退出` + this._why(code, signal))));
   }
 
   request(method, params, timeoutMs) {
@@ -84,6 +85,30 @@ class StdioTransport {
         else resolve(msg.result);
       }
     }
+  }
+
+  /**
+   * MCP 服务器正常跑着的时候也往 stderr 打日志，所以平时不用吵。
+   * 但它一旦死了，stderr 的最后几行常常是唯一写着死因的地方——比如 filesystem 那台，
+   * 配的目录被删了，它打的是「Cannot access directory ... / None of the specified
+   * directories are accessible」，然后退出。全丢掉的话用户只看到一句「已退出」，
+   * 等于没说，只能自己去命令行手动复现一遍才知道是目录没了。
+   * 只留最后 8 行、每行截断：这是死因，不是日志转发。
+   */
+  _onStderr(d) {
+    for (const line of String(d).split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t) continue;
+      this.errLines.push(t.slice(0, 300));
+      if (this.errLines.length > 8) this.errLines.shift();
+    }
+  }
+
+  /** 拼一句人能看懂的死因：怎么死的 + 它自己最后喊了什么 */
+  _why(code, signal) {
+    const how = signal ? `（被 ${signal} 结束）` : code ? `（退出码 ${code}）` : "";
+    const tail = this.errLines.slice(-3).join(" / ");
+    return how + (tail ? "：" + tail : "");
   }
 
   _failAll(err) {
