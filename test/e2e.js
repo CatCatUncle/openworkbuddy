@@ -7,13 +7,23 @@
  */
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const assert = require("assert");
 const { createAgentRuntime, missingDeliverables, trimHistory, historyChars, collectSources } = require("../agent");
 const { McpManager } = require("../mcp");
 const { parseCron, cronMatches } = require("../scheduler");
-const { getWorkspaceDir } = require("../tools");
-const WORKSPACE = getWorkspaceDir();
+const { getWorkspaceDir, setWorkspaceDir } = require("../tools");
+/**
+ * 测试跑在一个临时工作区里，不碰用户真正的那个。
+ *
+ * 以前这里直接用 getWorkspaceDir()，也就是用户天天在用的 workspace/。测试造的
+ * e2e-测试报表.xlsx、e2e-预览样本.pptx 那一堆东西是真写进去的，全套跑绿了才在最后
+ * 一行删掉——中间任何一条断言挂了，收尾那段根本执行不到，这些文件就留在用户的
+ * 成果面板里了。用户看到「e2e ppt 这些啥意思」，就是这么来的。
+ * 换成临时目录之后：跑挂了也不脏用户的东西，收尾还兜在 finally 里。
+ */
+const WORKSPACE = setWorkspaceDir(fs.mkdtempSync(path.join(os.tmpdir(), "owb-e2e-ws-")));
 
 const config = { agent: { max_steps: 10, tool_timeout_ms: 60000 } };
 const experts = [
@@ -1210,7 +1220,6 @@ async function testLookAtImage() {
 // 一个坏技能不该拖垮兄弟技能，一条坏 MCP 条目不该关掉整个 MCP 组件。
 // 这些边界全靠测试钉死，不然改着改着就退化成「有问题就整个不加载」。
 const plugins = require("../plugins");
-const os = require("os");
 
 function mkPlugin(spec) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-plugin-"));
@@ -3395,7 +3404,9 @@ function questionVsWorkProblems(builtin, engineSide) {
   if (bDisc >= 0 && bPlan >= 0 && bDisc > bPlan) bad.push("内置提示词：问题/活的判定排在「先说计划」后面，模型会先按前面那条办");
   if (bDisc >= 0) {
     const l = builtin.split("\n")[bDisc];
-    if (!/不.*写文件|不要写文件/.test(l)) bad.push("内置判定这条没说清楚「问题」不要写文件");
+    // 收紧到「不要写文件」这个短语本身：写成 /不.*写文件/ 的话，同一行末尾那句
+    // 「为一句问候建目录写文件，是白烧钱」也能把它满足掉，等于这条断言白写
+    if (!/(不要|不准|别)写文件/.test(l)) bad.push("内置判定这条没说清楚「问题」不要写文件");
   }
   // —— 给 CLI 的那段 ——
   const eDisc = idx(engineSide, /先分清.*(问题).*(活)/);
@@ -3446,22 +3457,35 @@ async function testPromptQuestionVsWork() {
   const bad = questionVsWorkProblems(cur.builtin, cur.engineSide);
   assert.strictEqual(bad.length, 0, "提示词会把一句问候当成办公任务：\n  - " + bad.join("\n  - "));
 
-  // 负对照：同一套断言拿去照 HEAD 那版 agent.js，必须挑得出毛病。
-  // 挑不出来，说明这些断言只是在复读改完之后的代码，什么也没守住。
-  const { execFileSync } = require("child_process");
-  const tmp = path.join(__dirname, "..", ".e2e-head-agent.js");
-  let caught = [];
-  try {
-    execFileSync("git", ["show", "HEAD:agent.js"], { cwd: path.join(__dirname, ".."), maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", fs.openSync(tmp, "w"), "ignore"] });
-    const old = require(tmp);
-    const before = await capturePrompts(old);
-    caught = questionVsWorkProblems(before.builtin, before.engineSide);
-  } finally {
-    try { delete require.cache[require.resolve(tmp)]; } catch {}
-    fs.rmSync(tmp, { force: true });
-  }
-  assert(caught.length >= 4, "这道闸门照 HEAD 那版 agent.js 只挑出 " + caught.length + " 条问题，说明它基本没在守东西");
-  console.log("✅ 提示词分清问题/活：两份提示词判定都在最前、汇报只对「活」生效（负对照命中 HEAD 版 " + caught.length + " 条）");
+  // 负对照：把提示词按「以前犯过的那几种错」逐个改坏，这道闸必须每一种都拦得住。
+  //
+  // 早先这里是拿 git show HEAD:agent.js 当负对照的——问题是修好一提交，HEAD 就是修好的版本，
+  // 负对照当场退化成 0 条，闸门自己把自己看没了。改成突变体之后它永远有效，
+  // 而且是一条断言配一个突变体：哪条断言被人删了，对应那个突变体立刻漏过去。
+  const lines = (t) => t.split("\n");
+  const dropLine = (t, re) => lines(t).filter((l) => !re.test(l)).join("\n");
+  const moveAfter = (t, re, afterRe) => {
+    const ls = lines(t);
+    const i = ls.findIndex((l) => re.test(l));
+    if (i < 0) return t;
+    const [one] = ls.splice(i, 1);
+    const j = ls.findIndex((l) => afterRe.test(l));
+    ls.splice(j < 0 ? ls.length : j + 1, 0, one);
+    return ls.join("\n");
+  };
+  const DISC = /先分清/;
+  const mutants = [
+    ["内置提示词删掉问题/活的判定", dropLine(cur.builtin, DISC), cur.engineSide],
+    ["内置提示词把判定挪到「先说计划」后面", moveAfter(cur.builtin, DISC, /接到任务先简短说明计划/), cur.engineSide],
+    ["内置判定里不再说「问题不要写文件」", cur.builtin.replace(/不要写文件/g, "随你"), cur.engineSide],
+    ["CLI 提示词删掉判定", cur.builtin, dropLine(cur.engineSide, DISC)],
+    ["CLI 提示词把判定挪到工作目录后面", cur.builtin, moveAfter(cur.engineSide, DISC, /工作目录是/)],
+    ["CLI 提示词的汇报要求变回无条件", cur.builtin, cur.engineSide.replace(/是活的时候：/g, "")],
+    ["CLI 提示词开场又断言「你正在执行一个办公任务」", cur.builtin, "你正在为 OpenWorkBuddy 执行一个办公任务。\n" + cur.engineSide],
+  ];
+  const missed = mutants.filter(([, bi, en]) => questionVsWorkProblems(bi, en).length === 0).map(([n]) => n);
+  assert(!missed.length, "这道闸门放过了改坏的提示词，说明对应断言已经失效：\n  - " + missed.join("\n  - "));
+  console.log("✅ 提示词分清问题/活：两份提示词判定都在最前、汇报只对「活」生效（" + mutants.length + " 个突变体全被拦下）");
 }
 
 /**
@@ -3500,6 +3524,228 @@ async function testPromptNoAskContradiction() {
   // 岔路该问这件事本身也得还在，且给的是"选了会得到什么"而不是同义词复读
   assert(/成品形态/.test(captured) && /ask_user/.test(captured), "岔路必须问的规则丢了");
   console.log("✅ 提示词自洽：禁止文字反问的规则都写明了 ask_user 例外（岔路仍必须问）");
+}
+
+/**
+ * 本机引擎（Claude Code / Codex）到底能不能被别人用上。
+ *
+ * 这一组守的是同一个真实故障：**双击图标启动的桌面版，PATH 是残废的。**
+ * macOS 上 Finder / Dock 起的进程只继承 /usr/bin:/bin:/usr/sbin:/sbin，
+ * 于是一台装好了 claude 和 codex 的机器，设置页上两条都写「本机没装」。
+ * 从终端 npm start 起的能用、双击 App 起的用不了——这就是「别人装了却用不上」的真身。
+ *
+ * 断言分两层：
+ *   ① 机制层（跑得起来的真代码）：补全的 PATH 必须覆盖到 node 自己所在的目录；
+ *      填了绝对路径就只认它、找不到要如实报错不许悄悄换一个；
+ *      detect() 收的是整份设置对象而不是字符串；probeVersion 要能跑通 shebang 脚本。
+ *   ② 源码层（拼给用户看的那一面）：真连一次的接口在、前端有一键连接、
+ *      切到本机引擎之后模型选择器不再假装能改模型。
+ * 第二层配负对照：同一批断言照 HEAD 那版必须挑得出毛病，挑不出来说明它没在守东西。
+ */
+function enginePathProblems(src) {
+  const bad = [];
+  const has = (k, re, why) => { if (!re.test(src[k] || "")) bad.push(why); };
+  // 真连一次的接口：--version 只证明文件在，证明不了能用（装了没登录长得一模一样）
+  has("server", /\/api\/engines\/test/, "server.js 里没有真连一次的接口");
+  has("index", /testConnect/, "engines/index.js 里没有 testConnect");
+  // 找得到：三级找法那层必须真的被引擎用上
+  has("index", /require\(".\/which"\)/, "engines/index.js 没接 which（GUI 启动时 PATH 是残废的）");
+  has("claude", /resolveBin/, "claude-code.js 没走 resolveBin，双击启动会说没装");
+  has("codex", /resolveBin/, "codex.js 没走 resolveBin，双击启动会说没装");
+  has("jsonl", /augmentedPath/, "jsonl.js 没给子进程补 PATH，CLI 起来了也会在第一个工具调用上死掉");
+  // 前端：一键连接 + 说清楚从哪找到的
+  has("app05", /\/api\/engines\/test/, "设置页没有一键连接（用户只能看到「已装」，不知道能不能用）");
+  has("app05", /e\.how|\.how\b/, "设置页没显示是从哪找到的");
+  // 切到本机引擎之后，那一排 API 模型一个都用不上，不许还摆在那儿让人点
+  has("app01", /activeEngine/, "app-01.js 没判断当前是不是本机引擎在跑");
+  has("app02", /activeEngine/, "模型菜单没判断本机引擎，会列一排根本用不上的 API 模型");
+  return bad;
+}
+
+/**
+ * 成果预览的相对路径。用户的原话是「怎么在预览的时候图片都不正常显示」。
+ *
+ * 根因不在图上，在地址上：成果按会话分了子文件夹（任务_0905_.../hunan.html），
+ * 前端曾把整条相对路径当**一个**参数 encodeURIComponent，斜杠变成 %2F，
+ * 于是 iframe 里那张网页的地址只有一段，网页里 <img src="fig_hero.jpg"> 相对它一算，
+ * 去要的是 /api/files/view/fig_hero.jpg —— 工作区根目录，那儿没有这张图，于是全裂。
+ *
+ * 这条测试不看源码，起一个**真的 server.js**，用 HTTP 把浏览器会发的那几个请求原样发一遍：
+ *   ① 会话子目录里的网页取得到
+ *   ② 浏览器按相对路径算出来的那张图也取得到  ← 修好的就是这一条
+ *   ③ 负对照：老写法压平之后的地址必须 404（否则这条断言等于没测）
+ *   ④ 老的 %2F 链接不能因为这次改动失效
+ *   ⑤ 越界仍然拦得住（通配路由最容易在这儿开口子）
+ */
+async function testFilePathRouting() {
+  const os = require("os");
+  const http = require("http");
+  const { spawn } = require("child_process");
+  const crypto = require("crypto");
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-path-"));
+  const DIR = "任务_0908_测 试 站";           // 中文 + 空格：编码和斜杠两件事一起验
+  const ws = path.join(home, "workspace", DIR);
+  fs.mkdirSync(ws, { recursive: true });
+  fs.writeFileSync(path.join(ws, "site.html"), '<!doctype html><img src="fig hero.jpg"><img src="pics/deep.png">');
+  fs.writeFileSync(path.join(ws, "fig hero.jpg"), Buffer.from("JPEGDATA"));
+  fs.mkdirSync(path.join(ws, "pics"), { recursive: true });
+  fs.writeFileSync(path.join(ws, "pics", "deep.png"), Buffer.from("PNGDATA"));
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ 机密: "这份不许被 ../ 取走" }));
+
+  // 登录态：只塞一个 token，不注册也不碰密码
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  const port = 3900 + Math.floor(Math.random() * 90);
+  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+    env: { ...process.env, OPENWORKBUDDY_HOME: home, PORT: String(port), HOST: "127.0.0.1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  child.stdout.on("data", (c) => (log += c));
+  child.stderr.on("data", (c) => (log += c));
+  const up = await new Promise((resolve) => {
+    const t = setTimeout(() => resolve(false), 40000);
+    const tick = setInterval(() => {
+      if (/已启动/.test(log)) { clearInterval(tick); clearTimeout(t); resolve(true); }
+      if (child.exitCode !== null) { clearInterval(tick); clearTimeout(t); resolve(false); }
+    }, 200);
+  });
+
+  const get = (p) => new Promise((resolve) => {
+    const req = http.request({ host: "127.0.0.1", port, path: p, headers: { Cookie: "wb_token=" + token } }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => resolve({ code: res.statusCode, body: b }));
+    });
+    req.on("error", (e) => resolve({ code: 0, body: e.message }));
+    req.end();
+  });
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + log.slice(-400));
+    const enc = (rel) => "/api/files/view/" + rel.split("/").map(encodeURIComponent).join("/");
+
+    // ① 网页本身
+    const page = await get(enc(DIR + "/site.html"));
+    assert(page.code === 200, "会话子目录里的网页取不到（HTTP " + page.code + "）");
+    assert(/fig hero\.jpg/.test(page.body), "取回来的不是那份网页");
+
+    // ② 浏览器按相对路径算出来的那张图 —— 这就是"图片全裂"的那一下
+    const img = await get(enc(DIR + "/fig hero.jpg"));
+    assert(img.code === 200 && img.body === "JPEGDATA", "网页里相对路径引的图取不到（HTTP " + img.code + "）——预览里图还是裂的");
+    const deep = await get(enc(DIR + "/pics/deep.png"));
+    assert(deep.code === 200 && deep.body === "PNGDATA", "再深一层的图取不到（HTTP " + deep.code + "）");
+
+    // ③ 负对照：老写法把路径压平之后，浏览器要的就是根目录那个地址，它必须是 404。
+    // 这条要是也 200，说明上面两条根本没在验什么
+    const flat = await get("/api/files/view/" + encodeURIComponent("fig hero.jpg"));
+    assert(flat.code === 404, "工作区根目录居然有这张图，负对照失效（HTTP " + flat.code + "）");
+
+    // ④ 老链接（整条路径 %2F）不能失效
+    const legacy = await get("/api/files/view/" + encodeURIComponent(DIR + "/site.html"));
+    assert(legacy.code === 200, "老的 %2F 写法被这次改动打断了（HTTP " + legacy.code + "）");
+
+    // ⑤ 通配路由最容易开的口子：越界
+    const esc1 = await get("/api/files/view/" + encodeURIComponent("../config.json"));
+    const esc2 = await get("/api/files/view/..%2F..%2Fconfig.json");
+    assert(esc1.code >= 400 && esc2.code >= 400, "通配路由能读到工作区外面去（" + esc1.code + " / " + esc2.code + "）");
+    assert(!/机密/.test(esc1.body + esc2.body), "越界请求把工作区外的内容吐出来了");
+
+    console.log("✅ 成果预览路径：会话子目录里的网页和它相对路径引的图都取得到（压平写法负对照 404，%2F 老链接不断，越界仍拦得住）");
+  } finally {
+    try { child.kill("SIGKILL"); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+}
+
+async function testLocalEngineConnect() {
+  const os = require("os");
+  const which = require("../engines/which");
+  const { probeVersion } = require("../engines/jsonl");
+  const engines = require("../engines");
+
+  // ① 把 PATH 换成双击图标启动时那一份，补全之后还得找得到东西。
+  // 拿 node 当靶子：这台机器上跑得起测试就说明 node 装了，它在哪儿都行——
+  // 找不到就说明补全那层没覆盖住这台机器的安装位置
+  const crippled = "/usr/bin:/bin:/usr/sbin:/sbin";
+  const oldPath0 = process.env.PATH;
+  let guiHit = "";
+  try { process.env.PATH = crippled; guiHit = which.findIn(which.searchDirs(), "node"); }
+  finally { process.env.PATH = oldPath0; }
+  assert(guiHit, "PATH 换成双击启动时那一份（" + crippled + "）之后，补全的搜索路径里找不到 node —— 真实故障就是这个：用户装了 claude/codex，设置页却写「本机没装」");
+  assert(which.runnable(guiHit), "找到的 " + guiHit + " 跑不起来");
+
+  // ② 填了绝对路径就只认它。找不到必须如实说——悄悄回落到 PATH 上另一个同名程序，
+  // 等于用户以为在用 A 其实在用 B，出了事没人查得出来
+  which.forget();
+  const ghost = path.join(os.tmpdir(), "e2e-engine-not-here-" + Date.now());
+  const r1 = await which.resolveBin("node", ghost);
+  assert.strictEqual(r1.bin, "", "设置里填了一个不存在的路径，它却找到了别的东西顶上（静默降级）");
+  assert(r1.why && r1.why.includes(ghost), "路径填错了却没说清楚错在哪：" + JSON.stringify(r1));
+
+  // ③ detect() 收的是整份设置对象。以前这里传的是 engine_options[id]（一个对象），
+  // 而 detect 当字符串使 —— 结果「用户填了绝对路径反而永远显示没装」
+  which.forget();
+  const claudeBackend = engines.get("claude-code");
+  const det = await claudeBackend.detect({ bin: process.execPath });
+  assert.strictEqual(det.path, process.execPath, "detect 没吃下设置对象里的 bin（拿到的是 " + det.path + "）");
+  assert(det.installed, "指到一个真跑得起来的可执行文件，detect 却说没装");
+
+  // ④ probeVersion 要能跑通 #!/usr/bin/env node 这种脚本 —— codex 就是这么装的。
+  // 不给子进程补 PATH 的话，它会死在 "env: node: No such file or directory"
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-shebang-"));
+  const script = path.join(dir, "fakecodex");
+  fs.writeFileSync(script, "#!/usr/bin/env node\nconsole.log('codex-cli 9.9.9');\n");
+  fs.chmodSync(script, 0o755);
+  const oldPath = process.env.PATH;
+  try {
+    process.env.PATH = "/usr/bin:/bin:/usr/sbin:/sbin"; // 双击图标启动时就是这一份
+    const pv = await probeVersion(script, ["--version"]);
+    assert(pv.installed && /9\.9\.9/.test(pv.version), "shebang 脚本在残废 PATH 下探不出版本（codex 就是这种）：" + JSON.stringify(pv));
+  } finally {
+    process.env.PATH = oldPath;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  // ⑤ 连不上要把原因和下一步分开说，而不是抛个异常让前端显示「测试失败」
+  const stub = {
+    id: "e2e-noauth", label: "假引擎", bin: "e2e-noauth", note: "", install: "跑一下 e2e-noauth login",
+    launchHeader: "", supportsResume: false,
+    async detect() { return { id: "e2e-noauth", installed: true, path: "/tmp/e2e-noauth", version: "1.0" }; },
+    async run() { throw new Error("还没登录：先在终端跑一次登录命令"); },
+  };
+  engines.BACKENDS.push(stub);
+  let tc;
+  try { tc = await engines.testConnect("e2e-noauth", {}); }
+  finally { engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1); }
+  assert.strictEqual(tc.ok, false, "引擎跑起来就报错，testConnect 却说连通了");
+  assert(/登录/.test(tc.why), "没把「没登录」这个原因带出来：" + tc.why);
+  assert(tc.hint && tc.hint.includes("login"), "连不上却没给下一步该敲什么：" + JSON.stringify(tc.hint));
+
+  // ⑥ 源码层的闸门 + 负对照
+  const read = (p) => { try { return fs.readFileSync(path.join(__dirname, "..", p), "utf8"); } catch { return ""; } };
+  const now = {
+    server: read("server.js"), index: read("engines/index.js"), claude: read("engines/claude-code.js"),
+    codex: read("engines/codex.js"), jsonl: read("engines/jsonl.js"),
+    app05: read("public/js/app-05.js"), app01: read("public/js/app-01.js"), app02: read("public/js/app-02.js"),
+  };
+  const nowBad = enginePathProblems(now);
+  assert.strictEqual(nowBad.length, 0, "本机引擎这条路还缺东西：\n  - " + nowBad.join("\n  - "));
+
+  // 负对照：把每个文件逐个清空，对应那条断言必须当场报警。
+  // 一次只动一个，才能证明「每一条断言都还活着」，而不是靠某一条兜住全部
+  const missedFiles = Object.keys(now).filter((k) => {
+    const n0 = enginePathProblems({ ...now, [k]: "" }).length;
+    return n0 === 0;
+  });
+  assert(!missedFiles.length, "这几个文件整个清空了这道闸门都没反应，说明它没在守它们：" + missedFiles.join(", "));
+  console.log("✅ 本机引擎可连：残废 PATH 下也能找到 CLI、绝对路径不静默降级、shebang 脚本探得出版本、连不上给得出下一步（" + Object.keys(now).length + " 个文件逐个清空全被拦下）");
 }
 
 async function testAskUser() {
@@ -3614,6 +3860,8 @@ async function main() {
   await testAskUser();
   await testPromptNoAskContradiction();
   await testPromptQuestionVsWork();
+  await testLocalEngineConnect();
+  await testFilePathRouting();
   await testDesktopPet();
   testPetSprites();
   await testMcpFailureReason();
@@ -3660,7 +3908,13 @@ function testUiNoRawMarkdown() {
 }
 
 
-main().catch((e) => {
-  console.error("❌ 测试失败:", e.message);
-  process.exit(1);
-});
+main()
+  .catch((e) => {
+    console.error("❌ 测试失败:", e.message);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    // 兜在这儿：断言挂了也得把临时工作区收走，别在 /tmp 里堆一地
+    try { fs.rmSync(WORKSPACE, { recursive: true, force: true }); } catch {}
+    if (process.exitCode) process.exit(process.exitCode);
+  });

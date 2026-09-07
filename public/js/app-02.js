@@ -1,6 +1,16 @@
 // menu 不传就是输入框右下角那个；助理页顶栏那个把自己的容器传进来，两处共用同一份菜单
 function renderModelMenu(menu = modelMenu) {
   if (!settingsCache || !menu) return;
+  // 本机 CLI 在跑：这一整排 API 模型都是摆设，别再让用户点了以为生效。
+  // 只在输入框那个选择器上换（menu === modelMenu）；助理页顶栏那个走的还是 API，不受影响
+  const eng = menu === modelMenu ? activeEngine() : null;
+  if (eng) {
+    menu.innerHTML = `<div class="mi on" style="justify-content:space-between"><span>🖥 ${esc(eng.label)} <span class="sub">${esc(eng.model || "用它自己的默认模型")}</span></span><span style="color:var(--wb-ok-text)">✓</span></div>
+      <div class="mi" style="cursor:default;opacity:.75;display:block;line-height:1.6">任务交给本机这个 CLI 跑，用的是它的登录态和它的模型，<b>不花 API 额度</b>。下面这些 API 模型这会儿一个都用不上，所以先不列了。</div>
+      <div class="mi" data-act="engine" style="border-top:1px solid var(--wb-border);margin-top:4px">⚙️ 改它的模型 / 换回内置引擎…</div>`;
+    menu.querySelectorAll(".mi[data-act]").forEach((mi) => (mi.onclick = () => { menu.classList.remove("show"); openModal("settings", "agent"); }));
+    return;
+  }
   const ov = currentSessModel();
   menu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
       <span>↺ 跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${healthBadge(settingsCache.active_model)}</span></span>${ov ? "" : '<span style="color:var(--wb-ok-text)">✓</span>'}</div>`

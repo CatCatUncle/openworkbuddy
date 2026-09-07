@@ -29,6 +29,15 @@ const P1 = APP02X.indexOf("// ---- 本地部署预览");
 if (P0 < 0 || P1 <= P0) throw new Error("app-01.js 里的文件预览段找不到了（段标题被改过？），前端测试没法定位真源码");
 const PREVIEW_SRC = APP02X.slice(P0, P1);
 
+// 路径助手（dirOf / fpath / joinRel / mdImg）。预览段现在直接依赖它们——
+// 成果按会话分了子文件夹，整条路径要是被当成一个参数编码，斜杠成 %2F，
+// 网页里 <img src="fig.jpg"> 就会去工作区根目录找图，用户看到的是"预览时图片全裂"。
+// 一样切真源码，不抄。
+const PH0 = APP02X.indexOf("/** 一条工作区相对路径的目录部分");
+const PH1 = APP02X.indexOf("/**\n * 单行文本里的 markdown 强调");
+if (PH0 < 0 || PH1 <= PH0) throw new Error("app-01.js 里的路径助手段找不到了（函数被改名/挪走？），前端测试没法定位真源码");
+const PATHHELP_SRC = APP02X.slice(PH0, PH1);
+
 // 成果面板：文件夹按时间分段（今天／昨天／过去 7 天／更早按月）。分段是纯视图，
 // 磁盘上仍是扁平的 任务_MMDD_xxx —— 所以这段逻辑没有任何服务端断言能替它把关，
 // 只能在真 Chromium 里喂真数据、读真 DOM。同样切 app-01.js 的真源码。
@@ -550,6 +559,30 @@ const PREVIEW_CHECKS = `
       for (const n of list) ok("路由 " + n + " → " + want, previewKind(n) === want, "实际是 " + previewKind(n));
   }
 
+  // ---- 1.5 会话子目录：相对路径的图必须还能找到（"预览时图片都不正常显示"的真身）----
+  {
+    ok("fpath 保留斜杠", fpath("任务 A/图 1.png") === "%E4%BB%BB%E5%8A%A1%20A/%E5%9B%BE%201.png", fpath("任务 A/图 1.png"));
+    ok("dirOf 取目录", dirOf("x/y/z.md") === "x/y" && dirOf("z.md") === "");
+    ok("joinRel 按文档所在目录算", joinRel("任务_A", "fig.jpg") === "任务_A/fig.jpg");
+    ok("joinRel 认 ./ 和 ../", joinRel("任务_A/dist", "../fig.jpg") === "任务_A/fig.jpg" && joinRel("任务_A", "./f.png") === "任务_A/f.png");
+    ok("joinRel 的 / 按工作区根算", joinRel("任务_A", "/g.png") === "g.png");
+
+    const h = await show("任务_0908_测试/site.html");
+    ok("子目录网页的地址保留真斜杠", /files\\/view\\/%E4%BB%BB%E5%8A%A1_0908_%E6%B5%8B%E8%AF%95\\/site\\.html/.test(h), h.slice(0, 300));
+    ok("整条路径不许被压成一段（%2F）", !/%2F/i.test(h), h.slice(0, 300));
+    ok("下载链接也按段编码", !/%2F/i.test(document.getElementById("pv-dl").getAttribute("href") || ""), document.getElementById("pv-dl").getAttribute("href"));
+  }
+
+  // ---- 1.6 markdown 里的图：以前根本不认这个语法，报告里插的图只剩一行 ![封面](fig.jpg) ----
+  {
+    ok("相对图按文档目录指回工作区", /src="\\/api\\/files\\/view\\/%E4%BB%BB%E5%8A%A1_A\\/fig\\.jpg"/.test(mdImg("封面", "fig.jpg", "任务_A")), mdImg("封面", "fig.jpg", "任务_A"));
+    ok("http 图原样放行", /src="https:\\/\\/e\\.com\\/a\\.png"/.test(mdImg("x", "https://e.com/a.png", "")));
+    ok("data:image 放行", /src="data:image\\/png;base64,AAA"/.test(mdImg("x", "data:image/png;base64,AAA", "")));
+    ok("javascript: 一律不认", mdImg("x", "javascript:alert(1)", "") === "");
+    ok("带引号的地址不许拼进属性", mdImg("x", 'a.png" onerror="alert(1)', "") === "", mdImg("x", 'a.png" onerror="alert(1)', ""));
+    ok("alt 里的引号洗掉", mdImg('他说"好"', "a.png", "").includes('alt="他说好"'), mdImg('他说"好"', "a.png", ""));
+  }
+
   // ---- 2. .ts 是 TypeScript，不是 MPEG-TS 视频（mime 库认成 video/mp2t，照它走会给源码套播放器）----
   ok(".ts 当源码不当视频", previewKind("app.ts") === "text" && previewKind("a.tsx") === "text");
 
@@ -868,7 +901,7 @@ app.whenReady().then(async () => {
     const win3 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win3.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PREVIEW_HTML));
-      const names3 = await win3.webContents.executeJavaScript(PREVIEW_STUBS + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
+      const names3 = await win3.webContents.executeJavaScript(PREVIEW_STUBS + "\n" + PATHHELP_SRC + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
       for (const n of names3) console.log("  ✓ " + n);
       console.log(`✅ 前端：文件预览（路由·音视频·docx/xlsx/pptx/zip 结构化·CSV·兜底）${names3.length} 项通过`);
     } finally {
@@ -887,7 +920,7 @@ app.whenReady().then(async () => {
     const win5 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win5.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(FILELIST_HTML));
-      const names5 = await win5.webContents.executeJavaScript(FILELIST_STUBS + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
+      const names5 = await win5.webContents.executeJavaScript(FILELIST_STUBS + "\n" + PATHHELP_SRC + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
       for (const n of names5) console.log("  ✓ " + n);
       console.log(`✅ 前端：成果面板按时间分段（今天/昨天/7天/按月·取最近动过·折叠独立·根目录降级）${names5.length} 项通过`);
     } finally {
@@ -896,7 +929,7 @@ app.whenReady().then(async () => {
     const win7 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win7.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TURNOUT_HTML));
-      const names7 = await win7.webContents.executeJavaScript(TURNOUT_STUBS + "\n" + TURNOUT_SRC + "\n" + TURNOUT_CHECKS, true);
+      const names7 = await win7.webContents.executeJavaScript(TURNOUT_STUBS + "\n" + PATHHELP_SRC + "\n" + TURNOUT_SRC + "\n" + TURNOUT_CHECKS, true);
       for (const n of names7) console.log("  ✓ " + n);
       console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接）${names7.length} 项通过`);
     } finally {

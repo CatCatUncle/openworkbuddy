@@ -15,6 +15,7 @@
  */
 
 const { spawn } = require("child_process");
+const { augmentedPath } = require("./which");
 
 /** stderr 只留尾巴：CLI 报错前可能刷了几万行日志，全留住等于把内存喂给一次失败 */
 const STDERR_KEEP = 8000;
@@ -38,7 +39,9 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
     try {
       child = spawn(bin, args, {
         cwd,
-        env: { ...process.env, ...(env || {}) },
+        // PATH 得补全：CLI 自己还要去调 node / git / ripgrep，双击启动的 GUI 进程
+        // 那份残废 PATH 传下去，claude 起来了照样在第一个工具调用上死掉
+        env: { ...process.env, PATH: augmentedPath(), ...(env || {}) },
         stdio: ["pipe", "pipe", "pipe"],
         detached: true, // 自成进程组，收尾时才杀得干净
       });
@@ -118,7 +121,7 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
 function probeVersion(bin, args = ["--version"], timeoutMs = 8000) {
   return new Promise((resolve) => {
     let child;
-    try { child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] }); }
+    try { child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath() } }); }
     catch { return resolve({ installed: false, version: "" }); }
     let out = "";
     const done = (ok) => { try { child.kill("SIGKILL"); } catch {} resolve({ installed: ok, version: firstVersionLine(out) }); };

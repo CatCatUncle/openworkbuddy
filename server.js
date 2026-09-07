@@ -503,6 +503,8 @@ app.get("/api/settings", (_req, res) => {
       max_tokens_budget: config.agent.max_tokens_budget || 0,
       failover_model: config.agent.failover_model || "",
       engine: config.agent.engine || "builtin",
+      // 前端那个模型选择器要靠它说实话：走本机 CLI 的时候，API 模型列表整个不生效
+      engine_label: (engines.list().find((e) => e.id === (config.agent.engine || "builtin")) || {}).label || "",
       engine_options: config.agent.engine_options || {},
     },
     pet: {
@@ -920,6 +922,29 @@ app.get("/api/engines", async (_req, res) => {
   try {
     const found = await engines.detectAll((config.agent && config.agent.engine_options) || {});
     res.json({ current: config.agent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 一键连接：真的连一次，不是看看文件在不在。
+ *
+ * 设置页上「已装 ✓」和「装了但没登录」长得一模一样——用户点了切换，然后每个任务都在
+ * 原地报错。这个接口花几十个 token 真跑一句话过去，把「能用 / 没登录 / 限流 / 装坏了」
+ * 分开告诉用户，并且给出下一步该干什么。跑在系统临时目录里，不往工作区留东西。
+ */
+app.post("/api/engines/test", async (req, res) => {
+  const id = String((req.body && req.body.id) || "").trim();
+  if (!id || id === "builtin") return res.status(400).json({ error: "内置引擎不用测，它走的是你配的 API Key" });
+  try {
+    // 用户可能刚在输入框里改了路径/模型还没保存，先用他正在填的那份测
+    const saved = ((config.agent && config.agent.engine_options) || {})[id] || {};
+    const patch = (req.body && req.body.options) || {};
+    const opts = { ...saved };
+    for (const k of ["bin", "model"]) if (patch[k] !== undefined) opts[k] = String(patch[k] || "").trim();
+    for (const k of Object.keys(opts)) if (!opts[k]) delete opts[k];
+    res.json(await engines.testConnect(id, opts));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2233,9 +2258,12 @@ app.post("/api/files/reveal", (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.get("/api/files/download/:name", (req, res) => {
+/** 通配路由里取出工作区相对路径。Express 已经解码过，%2F 老写法和真斜杠新写法都落这里 */
+function relOf(req) { return String(req.params[0] || ""); }
+
+app.get("/api/files/download/*", (req, res) => {
   try {
-    const p = safePath(req.params.name);
+    const p = safePath(relOf(req));
     if (!fs.existsSync(p)) return res.status(404).send("文件不存在");
     res.download(p);
   } catch (e) {
@@ -2243,10 +2271,22 @@ app.get("/api/files/download/:name", (req, res) => {
   }
 });
 
-// 应用内预览：按正确 Content-Type 内联返回（HTML/图片/PDF 可直接在 iframe/img 中显示）
-app.get("/api/files/view/:name", (req, res) => {
+/**
+ * 应用内预览：按正确 Content-Type 内联返回（HTML/图片/PDF 可直接在 iframe/img 中显示）。
+ *
+ * 这里必须是通配路由，不能是 :name —— 这就是「预览的时候图片都不正常显示」的真身：
+ * 成果按会话分了子文件夹（任务_0905_.../hunan_travel.html），前端要是把整条相对路径
+ * 当成一个参数 encodeURIComponent 一下，斜杠变成 %2F，浏览器眼里这一整串只是**一段**路径。
+ * 网页里 <img src="fig_hero.jpg"> 是相对当前地址算的，于是它去要
+ *   /api/files/view/fig_hero.jpg          ← 工作区根目录，没有这张图
+ * 而不是
+ *   /api/files/view/任务_0905_.../fig_hero.jpg
+ * 图当然全裂。改成通配之后每一段单独编码、斜杠还是斜杠，相对路径就算得对了。
+ * 老的 %2F 写法也照样能用（Express 会把参数解码回来），不用怕别处还有旧链接。
+ */
+app.get("/api/files/view/*", (req, res) => {
   try {
-    const p = safePath(req.params.name);
+    const p = safePath(relOf(req));
     if (!fs.existsSync(p)) return res.status(404).send("文件不存在");
     res.sendFile(p);
   } catch (e) {
@@ -2257,11 +2297,12 @@ app.get("/api/files/view/:name", (req, res) => {
 // Office 三件套和压缩包的应用内预览：浏览器打不开 zip 里的一包 XML，这一层把它拆成结构化数据。
 // 只吐数据不吐 HTML——文件内容是模型写的或从网上下的，转出来的 HTML 直接进渲染进程等于自开 XSS，
 // 拼 HTML 的活统一留在前端一处（每个字段都过 esc），转义漏没漏只需要审那一个地方。
-app.get("/api/files/preview/:name", async (req, res) => {
+app.get("/api/files/preview/*", async (req, res) => {
   try {
-    const p = safePath(req.params.name);
+    const rel = relOf(req);
+    const p = safePath(rel);
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
-    res.json(await previewData(p, req.params.name));
+    res.json(await previewData(p, rel));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -2319,7 +2360,7 @@ app.post("/api/preview/start", (req, res) => {
   // open=文件名：服务就绪后用系统默认浏览器打开它
   const openName = req.body && req.body.open ? String(req.body.open).replace(/^\/+/, "") : null;
   const done = (st) => {
-    if (openName) openWithSystem(st.url + encodeURIComponent(openName));
+    if (openName) openWithSystem(st.url + openName.split("/").map(encodeURIComponent).join("/"));
     res.json(st);
   };
   // 已经在跑且参数一致：不用重起，但该开的浏览器还是得开。
@@ -2344,9 +2385,9 @@ app.post("/api/preview/stop", (_req, res) => {
 });
 
 // 用系统默认程序打开（Word/PPT/Excel 等交给本机 Office/WPS）
-app.post("/api/files/open/:name", (req, res) => {
+app.post("/api/files/open/*", (req, res) => {
   try {
-    const p = safePath(req.params.name);
+    const p = safePath(relOf(req));
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
     openWithSystem(p);
     res.json({ ok: true });

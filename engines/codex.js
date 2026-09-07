@@ -20,6 +20,7 @@
  */
 
 const { runJsonl, probeVersion } = require("./jsonl");
+const { resolveBin } = require("./which");
 
 const ID = "codex";
 
@@ -49,17 +50,25 @@ function explain(stderr, code) {
   return s ? s.slice(-600) : `codex 异常退出（退出码 ${code}）且没有任何输出`;
 }
 
-async function detect(bin) {
-  const exe = bin || "codex";
-  const r = await probeVersion(exe, ["--version"]);
-  return { id: ID, installed: r.installed, path: exe, version: r.version };
+/** 收整份设置，理由同 claude-code.js 里那条注释 */
+async function detect(opts) {
+  const explicit = typeof opts === "string" ? opts : (opts && opts.bin) || "";
+  const found = await resolveBin("codex", explicit);
+  if (!found.bin) return { id: ID, installed: false, path: explicit || "codex", version: "", how: "", error: found.why };
+  const r = await probeVersion(found.bin, ["--version"]);
+  return {
+    id: ID, installed: r.installed, path: found.bin, version: r.version, how: found.how,
+    error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通（装坏了？）",
+  };
 }
 
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
   model, resumeId, bin, sandbox, network = true, extraArgs = [],
 }) {
-  const exe = bin || "codex";
+  const found = await resolveBin("codex", bin);
+  if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
+  const exe = found.bin;
   const args = ["exec"];
   if (resumeId) args.push("resume", resumeId);
   args.push("--json", "--skip-git-repo-check");
@@ -85,7 +94,8 @@ async function run({
     if (!m || typeof m !== "object") return;
     if (m.type === "thread.started") {
       sessionId = m.thread_id || sessionId;
-      emit({ type: "status", text: "本机 Codex 已启动，不消耗 API 额度", depth: 0 });
+      // 把实际用的模型带上：设置页那个「测试连接」要显示它，用户下一个任务看到的得是同一个名字
+      emit({ type: "status", text: `本机 Codex 已启动（模型 ${model || "默认"}），不消耗 API 额度`, model: model || "", depth: 0 });
       return;
     }
     if (m.type === "turn.started") {
@@ -158,6 +168,7 @@ module.exports = {
   launchHeader: "codex exec --json",
   note: "用你电脑上已登录的 Codex（ChatGPT 订阅）跑，不消耗本项目配置的 API 额度",
   install: "npm i -g @openai/codex，然后终端里跑一次 codex login",
+  login: "在终端里跑一次 codex login 完成登录，再回来点一次",
   supportsResume: true,
   detect, run, explain,
 };
