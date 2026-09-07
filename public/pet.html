@@ -8,8 +8,18 @@
   body.dragging { cursor: grabbing; }
   :root { --brand: #5b5ff7; --ink: #2b2b3c; }
 
+  /* 内容是按 168×196 这个基准尺寸画的；「大小」滑块改的是窗口，画面得跟着一起缩放，
+     否则调大只是把猫塞进一个更大的透明框里（看着纹丝不动），调小则直接把猫裁掉半边。
+     用 transform 而不是 zoom：命中判定和 getBoundingClientRect 都会跟着 transform 走，
+     点击穿透那套逻辑一行都不用改。原点钉在 bottom center——猫是站在窗口底边中间的。 */
   #pet { position: absolute; inset: 0; display: flex; flex-direction: column;
-    align-items: center; justify-content: flex-end; padding-bottom: 4px; box-sizing: border-box; }
+    align-items: center; justify-content: flex-end; padding-bottom: 4px; box-sizing: border-box;
+    width: 168px; height: 196px; left: 50%; margin-left: -84px; top: auto;
+    transform: scale(var(--s, 1)); transform-origin: bottom center;
+    opacity: var(--op, 1); transition: opacity .2s ease-out; }
+  /* 半透明是为了"平时不碍眼"。但要问你问题、或者你正把光标压在它身上时，
+     再半透明就成了看不清——这两种时候一律回到不透明。 */
+  #pet.s-asking, body.hot #pet { opacity: 1; }
 
   /* ---------- 气泡：平时藏着，悬停冒出；要提问时常驻（就是要你看见） ---------- */
   #bubble { position: relative; max-width: 150px; margin-bottom: 6px; padding: 6px 9px; border-radius: 10px;
@@ -167,6 +177,7 @@
     pet.className = "s-" + state + " c-" + character + (blinking ? " blinking" : "");
     btxt.textContent = text || TIP[state] || "";
     bubble.classList.toggle("on", state === "asking" || hovering);
+    document.body.classList.toggle("hot", hovering);
   }
   /**
    * 命中判定：光标底下到底压着不压着宠物的实体。
@@ -234,7 +245,9 @@
     text = s.text || "";
     character = s.character === "photo" && s.photo ? "photo" : "cat";
     if (character === "photo" && pimg.src !== s.photo) pimg.src = s.photo;
-    document.documentElement.style.opacity = String(Math.min(1, Math.max(.25, Number(s.opacity) || 1)));
+    // 大小和透明度都落在 #pet 上（不是整页）：整页透明会把气泡里的字也一起糊掉
+    document.documentElement.style.setProperty("--s", String(Math.min(2, Math.max(.6, Number(s.scale) || 1))));
+    document.documentElement.style.setProperty("--op", String(Math.min(1, Math.max(.25, Number(s.opacity) || 1))));
     paint();
   });
   paint();

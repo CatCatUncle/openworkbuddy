@@ -3178,7 +3178,30 @@ async function testDesktopPet() {
   assert(def, "工具表里没有 desktop_pet");
   assert.deepStrictEqual(def.input_schema.properties.action.enum, ["create", "show", "hide", "remove", "status"], "desktop_pet 动作枚举变了");
   assert.deepStrictEqual(def.input_schema.required, ["action"], "desktop_pet 应只把 action 设为必填");
+  // ⑤ 「大小」和「透明度」这两个滑块必须真的落到画面上。
+  //   实测过的两个坑：
+  //   a) 主进程 push() 一直在发 scale，但 pet.html 只读 opacity —— 于是滑块只改窗口大小，
+  //      窗口里的猫还是 108px 纹丝不动（改前实测 60%/100%/200% 三档都是 108px）。
+  //      内容缩放必须用 transform：zoom 不保证 elementFromPoint / getBoundingClientRect
+  //      跟着走，而点击穿透整个是靠这两个 API 判定的。
+  //   b) 透明度加在 documentElement 上会连提问气泡一起糊掉。25% 那一档下气泡实际可见度
+  //      只有 0.25，而"跳出来问你问题"正是这只猫最有用的时刻。透明度只能作用在 #pet，
+  //      且提问中 / 光标压着时必须回到不透明。
+  const petHtml = fs.readFileSync(path.join(__dirname, "..", "public", "pet.html"), "utf8");
+  assert(/setProperty\("--s"/.test(petHtml), "pet.html 没有消费 s.scale：滑「大小」只会改窗口，画面不动");
+  assert(/transform:\s*scale\(var\(--s/.test(petHtml), "#pet 没有按 --s 做 transform 缩放");
+  assert(!/transform:\s*none|\bzoom\s*:/.test(petHtml), "别用 zoom 缩放：命中判定那两个 API 不保证跟着走");
+  assert(!/documentElement\.style\.opacity/.test(petHtml), "透明度不许加在整页上：会把提问气泡的字一起糊掉");
+  assert(/#pet\.s-asking[^{]*\{[^}]*opacity:\s*1/.test(petHtml), "提问时 #pet 必须回到不透明，否则最该被看见的那一刻反而看不清");
+  assert(/body\.hot #pet/.test(petHtml) && /classList\.toggle\("hot", hovering\)/.test(petHtml), "光标压在宠物身上时也该回到不透明（body.hot 没接上）");
+  // 窗口跟着放大时，位置得按「底边中点不动」重算——否则每调一次大小猫就往右下挪一截
+  const petJs = fs.readFileSync(path.join(__dirname, "..", "pet.js"), "utf8");
+  assert(/setBounds\(\{ x: p2\.x/.test(petJs) && /sanePos\(\{ x: Math\.round\(x \+ \(ow - w\) \/ 2\)/.test(petJs),
+    "改大小时没有保持底边中点不动，猫会一路往右下角挪出屏幕");
+  assert(!/defaultPos\(PET_W, PET_H\)/.test(petJs), "「回到右下角」要按窗口真实尺寸算，放大到 200% 时用基准尺寸会摆到屏幕外");
+
   console.log("✅ 桌面宠物：无窗口时全套降级不抛 / 服务端模式如实报错 / 参数与动作枚举稳定");
+  console.log("✅ 桌面宠物：大小真的缩放画面（transform 保命中判定），透明度不糊提问气泡");
 }
 
 /**
