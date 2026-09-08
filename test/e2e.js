@@ -3861,6 +3861,7 @@ async function main() {
   await testPromptNoAskContradiction();
   await testPromptQuestionVsWork();
   await testLocalEngineConnect();
+  await testEngineToolBridge();
   await testFilePathRouting();
   await testDesktopPet();
   testPetSprites();
@@ -3871,6 +3872,166 @@ async function main() {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
   }
   console.log("=== 全部测试通过 ===");
+}
+
+/**
+ * 本机引擎借工具：MCP 一条路，命令行一条路，两条都得是真能用的。
+ *
+ * 为什么非得有第二条路：codex 0.146 接到非 OpenAI 模型上时（用户 config.toml 里
+ * model_provider 指向别家），它把我们的服务器拉起来、initialize 和 tools/list 全答了，
+ * 却一个 MCP 工具都不往模型手里挂。抓 RPC 日志验过。这不是本项目的 bug，也不是本项目
+ * 能修的地方——所以同一份实现再开一个命令行入口，两个 CLI 都有 shell，这条路谁都拦不住。
+ *
+ * 这里全部起真子进程跑，不 mock：mock 只能证明我写的 if 分支对，证明不了模型敲那条命令能出图。
+ */
+async function testEngineToolBridge() {
+  const os = require("os");
+  const { execFileSync } = require("child_process");
+  const bridge = require("../engines/bridge");
+  const tb = require("../engines/tool-bridge");
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-bridge-home-"));
+  const BASE = "任务_甲";
+  const run = (shim, args, opts = {}) => {
+    try {
+      const out = execFileSync("/bin/sh", [shim, ...args], { encoding: "utf8", timeout: 120000, stdio: ["pipe", "pipe", "pipe"], input: opts.input || "" });
+      return { code: 0, out };
+    } catch (e) {
+      return { code: e.status == null ? -1 : e.status, out: String(e.stdout || "") + String(e.stderr || "") };
+    }
+  };
+
+  // ① codex：命令行是主路（MCP 挂不上），但 mcpArgs 仍然给出去——万一哪天它修好了就自动生效
+  const cx = bridge.attach("codex", { home, baseDir: BASE, user: "e2e" });
+  try {
+    assert.strictEqual(cx.shimIsPrimary, true, "codex 那边命令行必须是主路：MCP 在它上面挂不出工具");
+    assert(cx.shim && fs.existsSync(cx.shim), "codex 没生成命令行入口脚本");
+    assert(cx.runOpts.mcpArgs && cx.runOpts.mcpArgs.length, "codex 的 -c mcp_servers.* 参数没给");
+    // 脚本得挂进子进程 PATH：模型敲带绝对路径的命令，两个 CLI 的权限层都会判「需要审批」，
+    // 非交互模式下没人能点同意 —— 挂了工具等于没挂。裸命令 + 一条放行规则才通得了。
+    assert(cx.runOpts.env && String(cx.runOpts.env.PATH || "").split(path.delimiter)[0] === cx.shimDir,
+      "shim 目录没挂到 PATH 最前面，模型敲裸 owb 找不到东西：" + JSON.stringify(cx.runOpts.env));
+    assert.strictEqual(cx.shimBin, "owb", "命令名变了，提示词和放行规则就对不上了");
+    assert.strictEqual(cx.runOpts.shimBin, "owb", "shimBin 没传给引擎，放行规则就下不去");
+    // codex 的 workspace-write 只让写 cwd，remember / save_skill 要写数据目录（在 cwd 外）
+    assert(Array.isArray(cx.runOpts.writableRoots) && cx.runOpts.writableRoots.includes(home),
+      "没给 codex 开数据目录的写权限，记忆和技能会存不下：" + JSON.stringify(cx.runOpts.writableRoots));
+    assert.strictEqual(cx.lent.length, tb.LENDABLE.length, "借出的工具数对不上：" + cx.lent.length + " vs " + tb.LENDABLE.length);
+
+    // 脚本得把环境变量烘进去。不烘的话就得让模型自己带 OPENWORKBUDDY_HOME=... 前缀，
+    // 它十次有三次会漏，漏了就落到错误的数据目录里，用户在成果面板里什么都看不到。
+    const shimSrc = fs.readFileSync(cx.shim, "utf8");
+    assert(shimSrc.includes(home), "脚本里没烘进 OPENWORKBUDDY_HOME，模型调出来的东西会落到别的目录");
+    assert(shimSrc.includes(BASE), "脚本里没烘进本次会话的子目录");
+
+    // ② list：模型得看得见有哪些工具、必填什么
+    const ls = run(cx.shim, ["list"]);
+    assert.strictEqual(ls.code, 0, "shim list 跑挂了：" + ls.out.slice(0, 300));
+    for (const n of ["generate_image", "generate_video", "gen_diagram", "check_page", "web_search", "save_skill", "remember"])
+      assert(ls.out.includes(n), "list 里没有 " + n + " —— 模型不知道自己有这个");
+    assert(/必填/.test(ls.out), "list 没告诉模型必填参数是什么，它只能瞎猜着拼");
+
+    // ③ 真调一次，出真文件，且落在本次会话的子目录里（不是 workspace 根）。
+    //    生图要花钱、要网，这里用 gen_diagram：同一条 callTool 路径，dot 离线就能出图。
+    const g = run(cx.shim, ["gen_diagram", JSON.stringify({ kind: "dot", source: "digraph{A->B}", filename: "e2e_bridge.png" })]);
+    assert.strictEqual(g.code, 0, "命令行调工具失败：" + g.out.slice(0, 300));
+    const landed = path.join(home, "workspace", BASE, "e2e_bridge.png");
+    assert(fs.existsSync(landed), "工具跑完了但文件没落在会话子目录里，用户在成果面板看不到它：" + landed);
+
+    // ④ `call x` 和直接 `x` 两种写法都得收 —— 模型两种都会写
+    const g2 = run(cx.shim, ["call", "gen_diagram", JSON.stringify({ kind: "dot", source: "digraph{C->D}", filename: "e2e_bridge2.png" })]);
+    assert.strictEqual(g2.code, 0, "`call <工具名>` 这种写法不认：" + g2.out.slice(0, 200));
+
+    // ⑤ 长参数走 @文件 和 stdin，别跟 shell 引号硬拼
+    const argf = path.join(home, "args.json");
+    fs.writeFileSync(argf, JSON.stringify({ kind: "dot", source: "digraph{E->F}", filename: "e2e_bridge3.png" }));
+    assert.strictEqual(run(cx.shim, ["gen_diagram", "@" + argf]).code, 0, "@文件 传参不认");
+    assert.strictEqual(run(cx.shim, ["gen_diagram", "-"], { input: JSON.stringify({ kind: "dot", source: "digraph{G->H}", filename: "e2e_bridge4.png" }) }).code, 0, "stdin 传参不认");
+
+    // ⑥ 负向：没借出去的工具必须拒，且退出码非 0。
+    //    命令行入口等于把 tools.js 整个摊在 shell 上，白名单漏了就是模型能随便 write_file / run_shell。
+    const bad = run(cx.shim, ["write_file", '{"path":"x.txt","content":"y"}']);
+    assert.strictEqual(bad.code, 1, "没借出去的工具竟然放行了（白名单漏了）：" + bad.out.slice(0, 200));
+    assert(/没有借给/.test(bad.out), "拒了但没说清为什么：" + bad.out.slice(0, 200));
+    assert(!fs.existsSync(path.join(home, "workspace", BASE, "x.txt")), "被拒的工具居然还是把文件写出来了");
+
+    // ⑦ 负向：坏参数要 exit 1 并把原因打出来。exit 0 的话模型会以为成了，接着往交付里写「图已生成」
+    const bj = run(cx.shim, ["gen_diagram", "{oops"]);
+    assert.strictEqual(bj.code, 1, "参数是坏 JSON 却报了成功");
+    assert(/JSON/.test(bj.out), "坏 JSON 没说清楚：" + bj.out.slice(0, 200));
+  } finally { cx.cleanup(); }
+  assert(!fs.existsSync(cx.shim), "任务跑完了 shim 没删干净，/tmp 里会越堆越多");
+
+  // ⑧ claude 那边 MCP 是主路，shim 只兜底；配置文件得是 MCP 认的形状
+  const cc = bridge.attach("claude-code", { home, baseDir: BASE, user: "e2e" });
+  try {
+    assert.strictEqual(cc.shimIsPrimary, false, "claude 那边 MCP 是能用的，别把它也降级到命令行");
+    const cfg = JSON.parse(fs.readFileSync(cc.runOpts.mcpConfigPath, "utf8"));
+    assert(cfg.mcpServers && cfg.mcpServers[bridge.SERVER_NAME], "mcp 配置文件不是 { mcpServers: {...} } 这个形状，claude 读不懂");
+    assert(cc.runOpts.mcpServerNames.includes(bridge.SERVER_NAME), "没把服务器名带出去，--allowed-tools 就白名单不上，claude -p 会自动拒掉每一次调用");
+    assert(cc.shim && fs.existsSync(cc.shim), "claude 这边也得留一条命令行兜底");
+    assert(cc.runOpts.env && String(cc.runOpts.env.PATH || "").split(path.delimiter)[0] === cc.shimDir, "claude 这边 shim 也得挂 PATH");
+    assert.strictEqual(cc.runOpts.shimBin, "owb", "claude 这边没传 shimBin，Bash 放行规则就下不去");
+  } finally { cc.cleanup(); }
+
+  // ⑨ MCP 那条路本身的形状：tools/list 必须是 inputSchema（小驼峰），本项目内部是 input_schema
+  const listed = tb.listTools();
+  assert(Array.isArray(listed) && listed.length === tb.LENDABLE.length, "tools/list 返回的工具数不对：" + listed.length);
+  assert(listed.every((t) => t.inputSchema && !t.input_schema), "tools/list 用了 input_schema（下划线），MCP 客户端认的是 inputSchema");
+  assert(listed.every((t) => t.description && t.description.length > 10), "有工具没描述，模型看不出它是干什么的");
+  assert(!listed.some((t) => /^mcp__/.test(t.name)), "工具名自己带了 mcp__ 前缀，CLI 还会再挂一层，名字就对不上了");
+
+  // ⑩ 提示词得真把这条路告诉模型。挂了工具却不点名，等于把东西锁柜子里不给钥匙——
+  //    真实会话里模型就是翻完工具表说「本会话依旧没有任何生图工具，请你自己把图放进去」。
+  const agentSrc = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const fm = agentSrc.match(/function bridgedLine\(bridged\) \{[\s\S]*?\n  \}/);
+  assert(fm, "agent.js 里找不到 bridgedLine —— 那模型就永远不知道自己有这些工具");
+  const bridgedLine = new Function("return " + fm[0].replace("function bridgedLine", "function") + ";")();
+  const shimPath = "/tmp/owb-shim-xyz/owb";
+  const cxLine = bridgedLine({ lent: tb.LENDABLE, shim: shimPath, shimBin: "owb", shimIsPrimary: true });
+  assert(/\bowb list\b/.test(cxLine), "codex 的提示词里没给出命令行入口，它就一个工具也用不上");
+  assert(cxLine.includes("generate_image"), "没点名生图工具");
+  assert(!/mcp__openworkbuddy__/.test(cxLine), "codex 上 MCP 工具根本挂不出来，还在提示词里报这些名字，模型会去找不存在的东西");
+  // 负向：提示词里绝不能出现 shim 的绝对路径 —— 带路径的命令会被判「需要审批」，
+  // 非交互下没人点同意，模型三次都被拦，最后在交付里写「没能用上 OWB 的工具」。真跑出来过。
+  assert(!cxLine.includes(shimPath), "提示词里给的是绝对路径，模型照着敲会被权限层拦下");
+  const ccLine = bridgedLine({ lent: tb.LENDABLE, shim: shimPath, shimBin: "owb", shimIsPrimary: false });
+  assert(/mcp__openworkbuddy__generate_image/.test(ccLine), "claude 的提示词里没点名 MCP 工具");
+  assert(/\bowb list\b/.test(ccLine), "claude 这边没给兜底的命令行入口");
+  assert(!ccLine.includes(shimPath), "提示词里给的是绝对路径，模型照着敲会被权限层拦下");
+  // 这两条红线不许丢：模型宁可如实说失败，也不许反过来叫用户自己把图放进去
+  for (const line of [cxLine, ccLine]) {
+    assert(/别在交付里写/.test(line), "「别反过来让用户自己生图」这条红线丢了");
+    assert(/失败原因如实写进交付/.test(line), "「失败要如实说」这条红线丢了");
+  }
+  // 负向：没借工具时不许凭空吹一段
+  assert.strictEqual(bridgedLine(null), "", "没借工具却还在提示词里说有");
+
+  // ⑪ 放行规则要真的下到命令行上。拿一个假 CLI 当靶子，把它收到的 argv 原样吐回来：
+  //    这条断言是有代价换来的 —— 真跑一次本机 claude，模型照着提示词敲了三次 owb，
+  //    三次都被「This command requires approval」拦掉，最后在交付里写「没能用上 OWB 的工具」。
+  const fake = path.join(home, "fakeclaude");
+  const argvOut = path.join(home, "argv.json");
+  fs.writeFileSync(fake, [
+    "#!/usr/bin/env node",
+    'require("fs").writeFileSync(' + JSON.stringify(argvOut) + ', JSON.stringify(process.argv.slice(2)));',
+    'process.stdout.write(JSON.stringify({ type: "result", subtype: "success", result: "ok", usage: {} }));',
+    'process.stdout.write(String.fromCharCode(10));',
+  ].join("\n"));
+  fs.chmodSync(fake, 0o755);
+  const cc2 = bridge.attach("claude-code", { home, baseDir: BASE, user: "e2e" });
+  try {
+    await require("../engines/claude-code").run({ prompt: "hi", cwd: home, bin: fake, ...cc2.runOpts });
+    const argv = JSON.parse(fs.readFileSync(argvOut, "utf8"));
+    const pairs = argv.map((a, i) => (a === "--allowed-tools" ? argv[i + 1] : null)).filter(Boolean);
+    assert(pairs.includes("Bash(owb:*)"), "没给命令行入口下放行规则，模型敲了也是「需要审批」：" + JSON.stringify(pairs));
+    assert(pairs.includes("mcp__" + bridge.SERVER_NAME), "MCP 那条路的放行规则也丢了：" + JSON.stringify(pairs));
+    // 负向：别顺手把整个 Bash 放开 —— 只该放行 owb 这一个前缀
+    assert(!pairs.includes("Bash"), "把整个 Bash 都放开了，那是另一回事，不该在这儿顺手做");
+  } finally { cc2.cleanup(); }
+
+  fs.rmSync(home, { recursive: true, force: true });
+  console.log("✅ 本机引擎借工具：命令行入口真出文件（会话子目录）· 裸命令挂 PATH 且下了放行规则（带路径会被判需审批）· 白名单拒非借出工具 · MCP 配置形状对 · 两边提示词各说各的路");
 }
 
 function testUiNoRawMarkdown() {
