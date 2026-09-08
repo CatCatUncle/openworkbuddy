@@ -101,6 +101,20 @@ public/          前端（单文件，没有构建步骤）
 workspace/       成果文件输出        data/         账号与会话
 ```
 
+## 录一段 demo GIF
+
+README 首屏那段「输入任务 → 助理干活 → 出结果」的动图不是手录的，一条命令：
+
+```bash
+npm run demo:record -- --dry      # 先跑这个：只录打字不发送，零成本，确认 ffmpeg 和管线都通
+npm run demo:record               # 真录：用默认示例任务（演示工作区里自带一份 销售明细.csv）
+npm run demo:record -- --prompt "帮我把这份周报做成 PPT" --speed 2 --out docs/images/demo.gif
+```
+
+它会在临时目录里另起一个干净实例（端口 3897，不碰你正在用的 3800），只把你 `config.json` 里的模型配置拷过去，
+IM / MCP / 工作区路径一律不带，录完连目录一起删。产物是 GIF + 同名 mp4；等模型那段长就加 `--speed 2`。
+需要本机装了 ffmpeg（`brew install ffmpeg`）。
+
 ## 测试
 
 ```bash

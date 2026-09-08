@@ -90,7 +90,7 @@ function renderSecurityPane(pane, s) {
   async function renderModes() {
     const d = await fetch("/api/security/modes").then(r => r.json()).catch(() => null);
     const box = pane.querySelector("#sec-modes");
-    if (!d || !box) return;
+    if (!d || !d.modes || !box) return;
     box.innerHTML = Object.entries(d.modes).map(([k, m]) => `
       <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size: 14px">
         <input type="radio" name="permmode" value="${esc(k)}" ${k === d.current ? "checked" : ""} style="width:auto;margin:3px 0 0">

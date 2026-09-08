@@ -4014,6 +4014,7 @@ async function main() {
   testLookPrefsStatic();
   testReadmeFrontGate();
   testKeySourcesGate();
+  testPackagingAndDemoGate();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -4903,6 +4904,65 @@ function keySourcesCheck(app03, app05, toolsSrc) {
   }
   return { KS, presets: presets.length - 1, searchIds, imSrcs: new Set(imSrcs).size, mediaN, problems };
 }
+// ================= 安装包命名 + demo 录制脚本 静态闸门 =================
+// v0.1.0 那次多架构 nsis 合成一个 `-win.exe`，portable 却叫 `-win-x64.exe`，文档里写的「双击即装」指到了免安装版。
+// 这里把「配置里的名字」和「四份文档里写的名字」钉在一起，任何一边改了都得同步。
+function packagingCheck(cfg, docs, recorderSrc, pkgJson) {
+  const problems = [];
+  const nsis = (cfg.nsis || {}).artifactName || "", portable = (cfg.portable || {}).artifactName || "";
+  if (!nsis.includes("win-setup")) problems.push("nsis 安装包名字里没有 win-setup（多架构合包 ${arch} 为空，名字必须自己定）");
+  if (!portable.includes("${arch}") || !portable.includes("-portable")) problems.push("portable 名字没带架构+portable 后缀");
+  const norm = (t) => t.replace("${arch}", "x64");
+  if (norm(nsis) === norm(portable)) problems.push("nsis 和 portable 同名，打包时会互相覆盖");
+  const wt = (cfg.win || {}).target || [];
+  const archOf = (name) => (wt.find((t) => t.target === name) || {}).arch || [];
+  for (const name of ["nsis", "portable"]) if (!archOf(name).includes("x64") || !archOf(name).includes("arm64")) problems.push(`win ${name} 没同时打 x64+arm64`);
+  const macArch = ((cfg.mac || {}).target || []).flatMap((t) => t.arch || []);
+  if (!macArch.includes("arm64") || !macArch.includes("x64")) problems.push("mac 没同时打 arm64+x64");
+  for (const [name, text] of Object.entries(docs)) {
+    if (!text.includes("win-setup.exe")) problems.push(`${name} 没写安装包 win-setup.exe`);
+    if (!/win-(x64|arm64)-portable\.exe/.test(text)) problems.push(`${name} 没写免安装版 -portable.exe`);
+    if (/win-(x64|arm64)\.exe/.test(text)) problems.push(`${name} 还在写旧名字 win-x64.exe / win-arm64.exe（那是免安装版，不是安装包）`);
+  }
+  // demo 录制脚本：隔离目录、不带 IM/MCP/工作区路径、不给真实例的 3800 端口、有 --dry 零成本模式
+  if (!/OPENWORKBUDDY_HOME = home/.test(recorderSrc)) problems.push("录制脚本没把数据目录隔离到临时目录");
+  if (!/out\.im = \{\}/.test(recorderSrc)) problems.push("录制脚本没清空 IM 配置（会连上用户的飞书机器人）");
+  if (!/out\.mcp_servers = \[\]/.test(recorderSrc)) problems.push("录制脚本没清空 MCP 配置");
+  const keep = (recorderSrc.match(/const keep = \[([^\]]*)\]/) || [, ""])[1];
+  for (const bad of ["im", "workspace_dir", "mcp_servers", "projects", "security"]) if (new RegExp(`"${bad}"`).test(keep)) problems.push(`录制脚本把 ${bad} 也拷进演示目录了`);
+  if (!/port: 3897/.test(recorderSrc) || /3800/.test(recorderSrc.replace(/不碰你正在用的 3800/, ""))) problems.push("录制脚本端口不该碰 3800");
+  if (!/a\.dry = true/.test(recorderSrc)) problems.push("录制脚本没有 --dry 零成本模式");
+  if (!/fs\.rmSync\(home, \{ recursive: true, force: true \}\)/.test(recorderSrc)) problems.push("录制脚本录完没删演示目录（里面有拷来的 Key）");
+  if (!/"demo:record": "electron scripts\/record-demo\.js"/.test(pkgJson)) problems.push("package.json 没有 demo:record 脚本");
+  return problems;
+}
+function testPackagingAndDemoGate() {
+  const { spawnSync } = require("child_process");
+  const root = path.join(__dirname, "..");
+  const cfg = require(path.join(root, "electron-builder.config.js"));
+  const docFiles = { "README.md": "README.md", "README.en.md": "README.en.md", "docs/安装与启动.md": "docs/安装与启动.md", "release.yml": ".github/workflows/release.yml" };
+  const docs = Object.fromEntries(Object.entries(docFiles).map(([k, f]) => [k, fs.readFileSync(path.join(root, f), "utf8")]));
+  const recorder = fs.readFileSync(path.join(root, "scripts", "record-demo.js"), "utf8");
+  const pkg = fs.readFileSync(path.join(root, "package.json"), "utf8");
+  const chk = spawnSync(process.execPath, ["--check", path.join(root, "scripts", "record-demo.js")], { encoding: "utf8" });
+  assert(chk.status === 0, "scripts/record-demo.js 语法不过：" + chk.stderr);
+  const problems = packagingCheck(cfg, docs, recorder, pkg);
+  assert(problems.length === 0, "安装包命名/录制脚本闸门：\n  " + problems.join("\n  "));
+  // 反向对照：把 portable 改回撞名、README 写回旧名、录制脚本把 im 拷进去——每种坏法都得被抓
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const variants = [
+    ["portable 撞名", (() => { const c = clone(cfg); c.portable.artifactName = "${productName}-${version}-win-${arch}.${ext}"; c.nsis.artifactName = "${productName}-${version}-win-${arch}.${ext}"; return [c, docs, recorder]; })()],
+    ["README 写回旧名", [cfg, { ...docs, "README.md": docs["README.md"].replace("win-setup.exe", "win-x64.exe") }, recorder]],
+    ["录制脚本带上 im", [cfg, docs, recorder.replace('const keep = ["provider"', 'const keep = ["im", "provider"')]],
+    ["录制脚本不删演示目录", [cfg, docs, recorder.replace("fs.rmSync(home, { recursive: true, force: true })", "0")]],
+  ];
+  for (const [name, [c, d, r]] of variants) {
+    assert(c !== cfg || d !== docs || r !== recorder, "变体「" + name + "」没改动到输入，对照无效");
+    if (!packagingCheck(c, d, r, pkg).length) throw new Error("闸门漏了这种坏法：" + name);
+  }
+  console.log(`✅ 安装包命名+demo 录制闸门：nsis=win-setup · portable=win-<arch>-portable · win/mac 双架构 · ${Object.keys(docs).length} 份文档同名 · 录制脚本隔离目录/清 IM+MCP/--dry/录完删 · ${variants.length} 种坏法全被抓`);
+}
+
 function testKeySourcesGate() {
   const pub = path.join(__dirname, "..", "public", "js");
   const app03 = fs.readFileSync(path.join(pub, "app-03.js"), "utf8");

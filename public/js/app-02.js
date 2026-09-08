@@ -978,7 +978,7 @@ function syncPermLabel(mode) {
 }
 async function loadPermModes() {
   const d = await fetch("/api/security/modes").then(r => r.json()).catch(() => null);
-  if (!d) return;
+  if (!d || !d.modes) return; // 没登录时守卫回 401 {error}，没有 modes：首屏别为这个抛未捕获错误
   permModes = d.modes;
   const menu = document.getElementById("perm-menu");
   menu.innerHTML = Object.entries(d.modes)
