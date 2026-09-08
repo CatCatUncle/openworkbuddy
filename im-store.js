@@ -10,6 +10,7 @@
  * 不会经过 set，所以跑完一轮得由调用方招呼一声。
  */
 
+const fs = require("fs");
 const path = require("path");
 const store = require("./store");
 
@@ -61,6 +62,36 @@ function createImSessionStore({ dir, maxEntries = 120 } = {}) {
     save(key) {
       const list = mem.get(key);
       if (Array.isArray(list)) persist(key, list);
+    },
+    /**
+     * 有几段会话在记着上下文：内存里的 + 盘上还没读进来的。
+     * 只数非空的——「set(key, [])」是闲置重置留下的空壳，用户眼里那不算一段会话。
+     */
+    keys() {
+      const out = new Set();
+      for (const [k, v] of mem) if (Array.isArray(v) && v.length) out.add(k);
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch {}
+      for (const n of names) {
+        if (!n.endsWith(".json")) continue;
+        const k = n.slice(0, -5);
+        if (out.has(k)) continue;
+        const d = store.readJson(path.join(dir, n), null);
+        if (Array.isArray(d) && d.length) out.add(k);
+      }
+      return [...out];
+    },
+    /** 清空全部 IM 会话上下文（内存 + 盘），返回清掉的段数。文件名和 key 不一定可逆，所以按目录扫 */
+    clear() {
+      const n = this.keys().length;
+      mem.clear();
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch {}
+      for (const f of names) {
+        if (!f.endsWith(".json")) continue;
+        try { fs.unlinkSync(path.join(dir, f)); } catch (e) { console.warn(`[IM会话] 删不掉 ${f}：${e.message}`); }
+      }
+      return n;
     },
   };
 }
