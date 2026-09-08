@@ -548,6 +548,189 @@ const FB_CHECKS = `
   t4.querySelector(".fb-note button").click(); await tick();
   ok("理由留空不重复上报", window.posts.length === n4);
 
+  // ---- 这一轮是谁跑的、跑了几步也要一起走：评测页按模型/模式切着看好评率全靠这几个字段 ----
+  const t5 = document.createElement("div");
+  t5.className = "turn";
+  t5.innerHTML = '<div class="body"><div class="proc-wrap"><div class="proc-body">'
+    + '<div class="step-card"><div class="head"><span class="tag">⚙ read_file</span><span class="tag ok">完成</span></div></div>'
+    + '<div class="step-card failed"><div class="head"><span class="tag">⚙ run_shell</span><span class="tag err">失败</span></div></div>'
+    + '<div class="step-card"><div class="head"><span class="tag">⚙ write_file</span><span class="tag ok">完成</span></div></div>'
+    + '</div></div><div class="a-text">带模型的回复</div></div>';
+  t5._userText = "第五个"; t5._mode = "craft";
+  t5._usage = { model: "m1", provider: "P", prompt: 100, completion: 20, cached: 30, calls: 3, elapsed_ms: 1234 };
+  chatCol.appendChild(t5);
+  window.makeBar(t5, t5.querySelector(".body"), "s_ddd");
+  btn(t5, "down").click(); await tick();
+  const p5 = last().body;
+  ok("👎 带上模型和供应商", p5.model === "m1" && p5.provider === "P", JSON.stringify(p5));
+  ok("👎 带上模式", p5.mode === "craft", JSON.stringify(p5));
+  ok("👎 带上耗时/tokens/调用数", p5.elapsed_ms === 1234 && p5.tokens === 120 && p5.calls === 3, JSON.stringify(p5));
+  ok("👎 带上步数和出错步数", p5.steps === 3 && p5.errors === 1, JSON.stringify(p5));
+  ok("操作条写了命中率", /缓存命中 30%/.test(t5.querySelector(".ta-meta").textContent), t5.querySelector(".ta-meta").textContent);
+  // 负对照：没跑工具、没用量的回合，这些字段是 0/空串，不是 undefined
+  const t6 = mk("s_ddd", "第六个", "光聊天");
+  btn(t6, "up").click(); await tick();
+  const p6 = last().body;
+  ok("没用量的回合字段也齐全", p6.model === "" && p6.provider === "" && p6.mode === "" && p6.tokens === 0 && p6.steps === 0 && p6.errors === 0 && p6.calls === 0 && p6.elapsed_ms === 0, JSON.stringify(p6));
+  // 老口径的账（cached > prompt）命中率封顶 100%，不再印 3209%
+  const t7 = document.createElement("div"); t7.className = "turn"; t7.innerHTML = '<div class="body"><div class="a-text">x</div></div>';
+  t7._userText = "第七个"; t7._usage = { model: "claude-code", provider: "claude-code", prompt: 934, completion: 10, cached: 30000, calls: 1, elapsed_ms: 1 };
+  chatCol.appendChild(t7); window.makeBar(t7, t7.querySelector(".body"), "s_ddd");
+  const m7 = t7.querySelector(".ta-meta");
+  ok("老口径的账命中率封顶 100%", /缓存命中 100%/.test(m7.textContent) && !/\d{3,}%/.test(m7.textContent.replace("100%", "")) && /（100%）/.test(m7.title), m7.textContent + " | " + m7.title);
+
+  // ---- 回放：之前点过的 👍👎 要亮回来，且不重新上报；回放完了新回合不许误亮 ----
+  const nBefore = window.posts.length;
+  const idx = chatCol.querySelectorAll(".turn").length;
+  window.replayFeedback = new Map([[idx, { verdict: "down", note: "太长" }], [idx + 1, { verdict: "up" }], [idx + 2, { verdict: "meh" }]]);
+  const r1 = mk("s_eee", "回放一", "回放正文一");
+  ok("回放时 👎 亮回来", btn(r1, "down").classList.contains("on") && !btn(r1, "up").classList.contains("on"));
+  ok("回放时理由挂在悬停提示上", /太长/.test(btn(r1, "down").title), btn(r1, "down").title);
+  const r2 = mk("s_eee", "回放二", "回放正文二");
+  ok("回放时 👍 亮回来", btn(r2, "up").classList.contains("on") && !btn(r2, "down").classList.contains("on"));
+  const r3 = mk("s_eee", "回放三", "回放正文三");
+  ok("坏 verdict 不亮", !btn(r3, "up").classList.contains("on") && !btn(r3, "down").classList.contains("on"));
+  ok("亮回来不算新上报", window.posts.length === nBefore, window.posts.length + " vs " + nBefore);
+  window.replayFeedback = null;
+  const r4 = mk("s_eee", "回放四", "回放正文四");
+  ok("回放结束后新回合不误亮", !btn(r4, "up").classList.contains("on") && !btn(r4, "down").classList.contains("on"));
+  btn(r1, "down").click(); await tick();
+  ok("亮回来的 👎 再点一下是取消", !btn(r1, "down").classList.contains("on") && window.posts.length === nBefore);
+
+  return names;
+})()`;
+
+// 轨迹条：过程区收起时也要看得见这一轮走了哪几步、哪步出了事。拿 createTurnUI 整段真源码
+// 喂事件流，连 index.html 和 ui.css 的真样式一起注进来——「标红」「收起了还看得见」「删除线」
+// 这些都得是算出来的样式，不是类名。
+const TR0 = APP02X.indexOf("function createTurnUI(");
+const TR1 = APP02X.indexOf("// ================= 空状态");
+if (TR0 < 0 || TR1 <= TR0) throw new Error("app-01.js 里的 createTurnUI 段找不到了（段标题被改过？），前端测试没法定位真源码");
+const pickLine = (re, why) => { const m = APP02X.match(re); if (!m) throw new Error(why); return m[0]; };
+const TRAIL_SRC = [
+  pickLine(/^const TOOL_SHORT = \{.*$/m, "app-01.js 里没有 TOOL_SHORT（轨迹条的短标签表）"),
+  pickLine(/^const shortTool = .*$/m, "app-01.js 里没有 shortTool"),
+  "let replayFeedback = null;",
+  APP02X.slice(TR0, TR1),
+].join("\n");
+const UI_CSS = fs.readFileSync(path.join(__dirname, "..", "public", "css", "ui.css"), "utf8");
+const TRAIL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div id='chat-col'></div></body>";
+const TRAIL_STUBS = [
+  "var sessionId = 's_t';",
+  "var chatCol = document.getElementById('chat-col');",
+  "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
+  "var renderMd = (t) => '<p>' + esc(t) + '</p>';",
+  "var scrollBottom = () => {};",
+  "var onActivate = (el, fn) => { el.onclick = fn; return el; };",
+  "var wireProcWarn = (chip) => chip;",
+  "var ic = (n) => '<i>' + n + '</i>';",
+  "var avatarBits = () => ({ html: 'A', cls: '' });",
+  "var assistant = { avatar: '', name: 'A' };",
+  "var hlTokens = (t) => esc(t);",
+  "var stripSceneTag = (t) => t;",
+  "var toast = () => {};",
+  "var cssEsc = (s) => s;",
+  "var curBusy = () => false; var doSend = () => {}; var setMode = () => {}; var syncInputHl = () => {};",
+  "var inputEl = document.createElement('textarea');",
+  "var isReplaying = false;",
+  "window.fetch = async () => ({ ok: true, json: async () => ({}) });",
+].join("\n");
+const TRAIL_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const disp = (el) => getComputedStyle(el).display;
+  const chips = (t) => [...t.querySelectorAll(".proc-head .trail .tc")];
+
+  // ---- 1. 一轮完整的执行：读×2（合并）、命令（出错）、写、飞书（MCP） ----
+  const ui = createTurnUI("做个页面", "craft", "s_t");
+  const t = ui.turn;
+  ui.handleEvent({ type: "text", delta: "先看看文件" });
+  ui.handleEvent({ type: "tool_use", id: "a", name: "read_file", purpose: "读 a", at: 1000 });
+  ok("第一步就挂上徽章且在转", chips(t).length === 1 && chips(t)[0].classList.contains("run"));
+  ok("徽章用短标签不用原名", chips(t)[0].textContent.startsWith("📄 读"), chips(t)[0].textContent);
+  ok("运行中样式是真画出来的", getComputedStyle(chips(t)[0]).color !== getComputedStyle(t.querySelector(".pt")).color);
+  ui.handleEvent({ type: "tool_result", id: "a", name: "read_file", preview: "ok", at: 3500 });
+  ok("回来后不转了", !chips(t)[0].classList.contains("run"));
+  ok("回放带的时间戳算出每步耗时", chips(t)[0].title === "read_file · 3s", chips(t)[0].title);
+  ui.handleEvent({ type: "tool_use", id: "b", name: "read_file", purpose: "读 b" });
+  ok("连续同名合并成 ×2 而不是两枚", chips(t).length === 1 && chips(t)[0].querySelector("b").textContent === "×2", chips(t).map((c) => c.textContent).join("|"));
+  ok("合并进来的新一张又在转", chips(t)[0].classList.contains("run"));
+  ui.handleEvent({ type: "tool_result", id: "b", name: "read_file", preview: "ok" });
+  ok("都回来了才落定", !chips(t)[0].classList.contains("run"));
+  ui.handleEvent({ type: "tool_use", id: "c", name: "run_shell", purpose: "跑" });
+  ui.handleEvent({ type: "tool_result", id: "c", name: "run_shell", isError: true, preview: "exit 1" });
+  ui.handleEvent({ type: "tool_use", id: "d", name: "write_file", purpose: "写" });
+  ui.handleEvent({ type: "tool_result", id: "d", name: "write_file", preview: "ok" });
+  ui.handleEvent({ type: "tool_use", id: "e", name: "mcp_feishu_send", purpose: "发" });
+  ui.handleEvent({ type: "tool_result", id: "e", name: "mcp_feishu_send", preview: "ok" });
+  ui.handleEvent({ type: "text", delta: "做完了" });
+  ok("五步四枚徽章（同名合并）", chips(t).length === 4, String(chips(t).length));
+  ok("出错那步标红", chips(t)[1].classList.contains("err") && chips(t)[1].dataset.name === "run_shell");
+  ok("没出错的不标红", !chips(t)[0].classList.contains("err") && !chips(t)[2].classList.contains("err"));
+  ok("出错样式是真画出来的", getComputedStyle(chips(t)[1]).color !== getComputedStyle(chips(t)[2]).color, getComputedStyle(chips(t)[1]).color);
+  ok("MCP 工具名去前缀、下划线变空格", chips(t)[3].textContent === "feishu send", chips(t)[3].textContent);
+  ok("徽章 title 是原名，悬停能看全", chips(t)[3].title === "mcp_feishu_send", chips(t)[3].title);
+  ui.handleEvent({ type: "usage", prompt: 1000, completion: 100, cached: 30000, calls: 2, elapsed_ms: 5000, model: "m", provider: "P" });
+  ui.finish();
+  const wrap = t.querySelector(".proc-wrap");
+  ok("收尾写清耗时和步数", wrap.querySelector(".pt").textContent === "已完成 5s · 5 步", wrap.querySelector(".pt").textContent);
+  ok("回合结束过程区收起", !wrap.classList.contains("open") && disp(wrap.querySelector(".proc-body")) === "none");
+  ok("收起了轨迹条照样看得见（真样式）", disp(wrap.querySelector(".trail")) !== "none" && chips(t).every((c) => disp(c) !== "none"));
+  ok("出错角标挂上", /1 步出错/.test(wrap.querySelector(".proc-warn").textContent));
+  const body = t.querySelector(".body");
+  const texts = [...body.querySelectorAll(":scope > .a-text")];
+  ok("开场白和结论都在过程区外面", texts.length === 2 && wrap.querySelector(".proc-body").querySelectorAll(":scope > .a-text").length === 0, texts.length + " / " + wrap.querySelector(".proc-body").querySelectorAll(":scope > .a-text").length);
+  ok("结论排在过程区后面、开场白在前面", (texts[1].compareDocumentPosition(wrap) & Node.DOCUMENT_POSITION_PRECEDING) && (texts[0].compareDocumentPosition(wrap) & Node.DOCUMENT_POSITION_FOLLOWING));
+  ok("操作条命中率封顶 100%", /缓存命中 100%/.test(t.querySelector(".ta-meta").textContent), t.querySelector(".ta-meta").textContent);
+  ok("回合结束后没有还在转的", !t.querySelector(".spinner"));
+  // 点徽章：展开过程区 + 打开最近那张卡；点击不冒泡到折叠条（否则一点开又合上）
+  chips(t)[0].click();
+  ok("点徽章展开过程区", wrap.classList.contains("open") && disp(wrap.querySelector(".proc-body")) === "block");
+  const cards = [...wrap.querySelectorAll(".step-card")];
+  ok("点徽章打开的是合并组里最近那张卡", cards[1].classList.contains("open") && !cards[0].classList.contains("open"));
+  chips(t)[1].click();
+  ok("点出错徽章直达出错那张卡", cards[2].classList.contains("open") && wrap.classList.contains("open"));
+
+  // ---- 2. 中止：回合结束时还没回来的步骤，徽章标中止、不再转 ----
+  const u2 = createTurnUI("中止", "craft", "s_t");
+  u2.handleEvent({ type: "tool_use", id: "x", name: "run_node", purpose: "跑" });
+  u2.finish();
+  const c2 = chips(u2.turn);
+  ok("没回来的步骤标中止", c2.length === 1 && c2[0].classList.contains("abort") && !c2[0].classList.contains("run"));
+  ok("中止样式是删除线（真样式）", /line-through/.test(getComputedStyle(c2[0]).textDecorationLine), getComputedStyle(c2[0]).textDecorationLine);
+  ok("卡片上也写了中止", /中止/.test(u2.turn.querySelector(".step-card .head").textContent));
+
+  // ---- 3. 上限：14 个不同工具 → 12 枚 + 「+2」，折进去的步骤结果回来也不炸 ----
+  const u3 = createTurnUI("多步", "craft", "s_t");
+  const many = ["read_file", "write_file", "edit_file", "list_files", "search_files", "run_shell", "run_node", "web_search", "fetch_url", "render_page", "check_page", "html_to_image", "look_at_image", "generate_image"];
+  many.forEach((n, i) => u3.handleEvent({ type: "tool_use", id: "m" + i, name: n }));
+  many.forEach((n, i) => u3.handleEvent({ type: "tool_result", id: "m" + i, name: n, preview: "ok", isError: i === 13 }));
+  const c3 = chips(u3.turn);
+  ok("超过 12 步折成 +N", c3.filter((c) => !c.classList.contains("more")).length === 12 && c3.at(-1).classList.contains("more") && c3.at(-1).textContent === "+2", c3.map((c) => c.textContent).join("|"));
+  ok("折进 +N 的步骤回来了不炸、+N 不变色", !c3.at(-1).classList.contains("err") && !c3.at(-1).classList.contains("run"));
+  u3.finish();
+  ok("14 步都数上", /14 步/.test(u3.turn.querySelector(".pt").textContent), u3.turn.querySelector(".pt").textContent);
+
+  // ---- 4. 正常口径的命中率是算出来的，不是写死 100 ----
+  const u4 = createTurnUI("算", "craft", "s_t");
+  u4.handleEvent({ type: "tool_use", id: "y", name: "read_file" });
+  u4.handleEvent({ type: "tool_result", id: "y", name: "read_file", preview: "ok" });
+  u4.handleEvent({ type: "usage", prompt: 31000, completion: 100, cached: 30000, calls: 1, elapsed_ms: 1000, model: "m", provider: "P" });
+  u4.finish();
+  ok("正常账命中率照实算（97%）", /缓存命中 97%/.test(u4.turn.querySelector(".ta-meta").textContent), u4.turn.querySelector(".ta-meta").textContent);
+
+  // ---- 5. 没跑工具的回合：没有过程区、没有轨迹条 ----
+  const u5 = createTurnUI("聊", "chat", "s_t");
+  u5.handleEvent({ type: "text", delta: "你好" });
+  u5.finish();
+  ok("纯聊天没有过程区", !u5.turn.querySelector(".proc-wrap"));
+
+  // ---- 6. 没 id 的结果按深度配对（老会话回放）也能落到徽章上 ----
+  const u6 = createTurnUI("老", "craft", "s_t");
+  u6.handleEvent({ type: "tool_use", name: "web_search" });
+  u6.handleEvent({ type: "tool_result", name: "web_search", isError: true, preview: "超时" });
+  ok("没 id 的结果也标到徽章上", chips(u6.turn)[0].classList.contains("err") && !chips(u6.turn)[0].classList.contains("run"));
   return names;
 })()`;
 
@@ -1070,6 +1253,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：长对话滚动引导（回到最前/回到最新挂红点·看历史不被拽）+ 出错步骤卡默认收起、角标直达 ${names8.length} 项通过`);
     } finally {
       if (!win8.isDestroyed()) win8.destroy();
+    }
+    const win9 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win9.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TRAIL_HTML));
+      const names9 = await win9.webContents.executeJavaScript(TRAIL_STUBS + "\n" + TRAIL_SRC + "\n" + TRAIL_CHECKS, true);
+      for (const n of names9) console.log("  ✓ " + n);
+      console.log(`✅ 前端：轨迹条（同名合并·出错标红·中止删除线·+N 上限·收起可见·点徽章直达）+ 结论出过程区 + 命中率封顶 ${names9.length} 项通过`);
+    } finally {
+      if (!win9.isDestroyed()) win9.destroy();
     }
     const win6 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {

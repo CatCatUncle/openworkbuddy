@@ -198,7 +198,7 @@ function mineSignals({ days = CAPS.window, dir = SESS_DIR, feedbackFile = FEEDBA
     if (fb.verdict !== "down") continue;
     bump(
       { kind: "thumbs_down", key: "thumbs_down", actionable: "prompt", label: "用户点了「没帮助」" },
-      { session: fb.session || "", turn: fb.turn, at, dated: !!at, task: String(fb.task || "").slice(0, 120), excerpt: String(fb.note || "（没写理由）").slice(0, 200) }
+      { session: fb.session || "", turn: fb.turn, at, dated: !!at, task: String(fb.task || "").slice(0, 120), excerpt: ((fb.model ? `[${fb.model}] ` : "") + String(fb.note || "（没写理由）")).slice(0, 200) }
     );
   }
 
@@ -214,19 +214,64 @@ function mineSignals({ days = CAPS.window, dir = SESS_DIR, feedbackFile = FEEDBA
 
 function readFeedback(file = FEEDBACK_FILE) { return store.readJson(file, []); }
 
-function recordFeedback({ user = "", session = "", turn = null, verdict, note = "", task = "", reply = "" } = {}) {
+function recordFeedback({ user = "", session = "", turn = null, verdict, note = "", task = "", reply = "", model = "", provider = "", mode = "", elapsed_ms = 0, tokens = 0, calls = 0, steps = 0, errors = 0 } = {}) {
   if (verdict !== "up" && verdict !== "down") throw new Error("verdict 只能是 up 或 down");
+  const num = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.round(Number(v))) : 0);
   const list = readFeedback();
   // 同一轮反复点：改判而不是攒一堆重复记录（用户改主意很正常）
   const i = list.findIndex((x) => x.session === session && x.turn === turn);
   const rec = {
     id: i >= 0 ? list[i].id : uid("fb"), at: nowIso(), user, session, turn, verdict,
     note: String(note).slice(0, 500), task: String(task).slice(0, 300), reply: String(reply).slice(0, 800),
+    // 这一轮是谁、怎么跑的：没有这些，评测页只能说「有 3 个 👎」，说不出「换了 X 模型后 👎 翻倍」
+    model: String(model).slice(0, 80), provider: String(provider).slice(0, 40), mode: String(mode).slice(0, 20),
+    elapsed_ms: num(elapsed_ms), tokens: num(tokens), calls: num(calls), steps: num(steps), errors: num(errors),
   };
   if (i >= 0) list[i] = rec; else list.push(rec);
   ensureDir(DATA_DIR);
   store.writeJsonAtomic(FEEDBACK_FILE, list.slice(-2000), { pretty: true });
   return rec;
+}
+
+/**
+ * 反馈汇总：总数、好评率、按模型/模式、最近的 👎。纯数数，不调模型。
+ * upRate 在一条反馈都没有时是 null 而不是 0——没人点过 ≠ 没人满意。
+ */
+function feedbackSummary({ days = 30, now = Date.now(), user = "" } = {}) {
+  const since = now - days * 86400e3;
+  const at = (f) => Date.parse(f.at || "") || 0;
+  const all = readFeedback().filter((f) => (!user || f.user === user) && at(f) >= since && (f.verdict === "up" || f.verdict === "down"));
+  const tally = (key) => {
+    const m = new Map();
+    for (const f of all) {
+      const k = key(f) || "（未知）";
+      const r = m.get(k) || { name: k, up: 0, down: 0 };
+      r[f.verdict]++;
+      m.set(k, r);
+    }
+    return [...m.values()].map((r) => ({ ...r, upRate: +(r.up / (r.up + r.down)).toFixed(3) })).sort((a, b) => b.up + b.down - (a.up + a.down));
+  };
+  const up = all.filter((f) => f.verdict === "up").length;
+  const down = all.length - up;
+  const l7 = all.filter((f) => at(f) >= now - 7 * 86400e3);
+  const byDay = new Map();
+  for (const f of all) {
+    const d = new Date(at(f)).toISOString().slice(0, 10);
+    const r = byDay.get(d) || { day: d, up: 0, down: 0 };
+    r[f.verdict]++;
+    byDay.set(d, r);
+  }
+  return {
+    days, total: all.length, up, down,
+    upRate: all.length ? +(up / all.length).toFixed(3) : null,
+    downWithNote: all.filter((f) => f.verdict === "down" && String(f.note || "").trim()).length,
+    last7: { up: l7.filter((f) => f.verdict === "up").length, down: l7.filter((f) => f.verdict === "down").length },
+    byModel: tally((f) => (f.model ? `${f.provider ? f.provider + " · " : ""}${f.model}` : "")),
+    byMode: tally((f) => f.mode),
+    byDay: [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)),
+    downs: all.filter((f) => f.verdict === "down").sort((a, b) => at(b) - at(a))
+      .map((f) => ({ id: f.id, at: f.at, session: f.session, turn: f.turn, task: f.task, note: f.note || "", model: f.model || "", provider: f.provider || "", mode: f.mode || "", steps: f.steps || 0, errors: f.errors || 0 })),
+  };
 }
 
 // ============================ 规则库 ============================
@@ -378,10 +423,13 @@ function scoreRules({ dir = SESS_DIR, now = Date.now(), minTurns = 20 } = {}) {
     const s = after.signals.find((x) => x.key === base.key);
     const afterRate = s ? s.rate : 0;
     const drop = base.rate ? +(((base.rate - afterRate) / base.rate) * 100).toFixed(1) : 0;
+    // 规则生效之后用户亲手点的 👍👎 也摆出来：信号率是推断，这个是人说的
+    const fbs = readFeedback().filter((f) => (Date.parse(f.at || "") || 0) >= bornAt);
+    const fb = { up: fbs.filter((f) => f.verdict === "up").length, down: fbs.filter((f) => f.verdict === "down").length };
     out.push({
-      id: r.id, signal: base.key, beforeRate: base.rate, afterRate, dropPct: drop, turns: after.turns,
+      id: r.id, signal: base.key, beforeRate: base.rate, afterRate, dropPct: drop, turns: after.turns, fb,
       verdict: drop >= 30 ? "有效" : drop > 0 ? "略有改善" : "没起作用",
-      why: `每回合出现率 ${base.rate} → ${afterRate}（${drop >= 0 ? "降" : "升"} ${Math.abs(drop)}%）`,
+      why: `每回合出现率 ${base.rate} → ${afterRate}（${drop >= 0 ? "降" : "升"} ${Math.abs(drop)}%）` + (fb.up + fb.down ? `；生效后用户反馈 👍${fb.up} 👎${fb.down}` : ""),
       suggestRetire: drop <= 0,
     });
   }
@@ -486,7 +534,7 @@ async function runReview({ llm, days = CAPS.window, promptExcerpt = "" } = {}) {
 
 module.exports = {
   CAPS,
-  recordFeedback, readFeedback,
+  recordFeedback, readFeedback, feedbackSummary,
   recordRun, listRuns,
   mineSignals,
   activeRules, promptBlock, retireRule,

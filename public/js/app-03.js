@@ -8,7 +8,7 @@
  */
 function cacheTxt(x) {
   if (!x || !x.cachedOf) return "";
-  return ` · 缓存命中 ${Math.round((x.cached || 0) / x.cachedOf * 100)}%`;
+  return ` · 缓存命中 ${Math.min(100, Math.round((x.cached || 0) / x.cachedOf * 100))}%`;
 }
 
 async function renderAccount() {
@@ -865,6 +865,32 @@ function csvToTable(text) {
 // ================= 评测页：给模型跑基准，机器判分 =================
 let evalArm = false; // 两段式确认：真实计费的操作不许一键就跑
 let evalDetailDir = null;
+/** 评测页顶部的「用户反馈」：对话里点的 👍👎 就是最准的效果信号，按模型/模式切着看，👎 能点回现场 */
+async function renderFeedbackSummary(days = 30) {
+  const box = document.getElementById("ev-fb");
+  if (!box) return;
+  const d = await fetch(`/api/feedback/summary?days=${days}`).then((r) => r.json()).catch(() => null);
+  if (!d) { box.textContent = "反馈汇总读取失败"; return; }
+  if (!d.total) {
+    box.innerHTML = `<div class="ev-fb-empty">近 ${days} 天还没有人点过 👍👎。每条回复下面都有，点一下就进这里——这是最准的效果信号，比机器判分还准。</div>`;
+    return;
+  }
+  const pct = (n, of) => (of ? Math.round((n / of) * 100) + "%" : "—");
+  const card = (k, v, s) => `<div class="ev-fb-card"><div class="k">${k}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`;
+  const rows = (list, label) => (list.length ? `<table class="ev-fb-tab"><tr><th>${label}</th><th>👍</th><th>👎</th><th>好评率</th></tr>` +
+    list.map((r) => `<tr><td>${esc(r.name)}</td><td>${r.up}</td><td>${r.down}</td><td><span class="ev-bar"><i style="width:${Math.round(r.upRate * 100)}%"></i></span>${pct(r.up, r.up + r.down)}</td></tr>`).join("") + `</table>` : "");
+  const downs = d.downs.slice(0, 20).map((f) =>
+    `<div class="ev-fb-down"><span class="t">${esc(String(f.at || "").slice(5, 16).replace("T", " "))}</span><span class="m" title="${esc(f.provider || "")}">${esc(f.model || "—")}</span>` +
+    `<span class="task" title="${esc(f.task || "")}">${esc(f.task || "")}</span><span class="note" title="${esc(f.note || "")}">${f.note ? esc(f.note) : "<i>没写理由</i>"}</span>` +
+    (f.session ? `<a href="#" data-sid="${esc(f.session)}">打开对话</a>` : "<span></span>") + `</div>`).join("");
+  box.innerHTML =
+    `<div class="ev-fb-cards">${card("反馈总数", d.total, `${d.up} 👍 · ${d.down} 👎`)}${card("好评率", pct(d.up, d.total), "👍 ÷ 全部反馈")}` +
+    `${card("👎 写了理由", pct(d.downWithNote, d.down), "写了理由的才进得了复盘")}${card("近 7 天", `${d.last7.up} / ${d.last7.down}`, "👍 / 👎")}</div>` +
+    rows(d.byModel.filter((r) => r.name !== "（未知）" || d.byModel.length === 1), "按模型") + rows(d.byMode.filter((r) => r.name !== "（未知）"), "按模式") +
+    (d.down ? `<div class="side-label" style="margin:10px 0 4px">最近的 👎（${d.down} 条）· 点「打开对话」回到现场</div>${downs}` : "");
+  box.querySelectorAll("a[data-sid]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); openSession(a.dataset.sid); }; });
+}
+
 const EV_FAIL_LABELS = { crash: "崩溃", timeout: "超时", max_steps: "步数用尽", loop_suspect: "疑似死循环", tool_error_storm: "工具连环报错", missing_artifact: "没交产物", wrong_output: "内容不对" };
 async function renderEvalPage() {
   const page = document.getElementById("assist-page");
@@ -893,10 +919,13 @@ async function renderEvalPage() {
       15 道分层任务（L1 基础 / L2 进阶 / L3 高难）把整个智能体当黑盒考（写代码 / 算表格 / 修 bug / 跨文件重构 / 日志管线…）。三条评分线互相独立：<b>机器判分</b>（跑代码、对数字、验结构，只认硬证据，失败自动归因成败因码）、<b>稳定性</b>（每题重复 k 次：pass@1 均值看能不能，k 次全过看稳不稳）、<b>AI 评委</b>（逐条质量维度只判 是/否，不打印象分）。跑完可「📌 设为基线」——之后每轮自动逐题对比，退步点名。
       <b>会真实调用所选模型计费</b>，费用随次数翻倍（DeepSeek 单次约几毛钱）。命令行同款：<code>npm run eval -- --repeat 3 --judge 评委名</code>
     </div>
+    <div class="side-label" style="margin:6px 0">用户反馈 · 对话里点的 👍👎（近 30 天）</div>
+    <div id="ev-fb" style="font-size:13px;color:var(--wb-text-3);margin:0 0 14px">加载中…</div>
     <pre id="ev-log" style="display:none;background:var(--wb-card);border:1px solid var(--wb-line);border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.8;max-height:320px;overflow:auto;white-space:pre-wrap;margin:0 0 14px"></pre>
     <div id="ev-detail"></div>
     <div class="side-label" style="margin:6px 0">历史成绩 · 点一行看每题明细 / 打人工分 / 设为基线</div>
     <div id="ev-hist" style="font-size:13px;color:var(--wb-text-3)">加载中…</div>`;
+  renderFeedbackSummary();
   document.getElementById("ev-start").onclick = async () => {
     const btn = document.getElementById("ev-start");
     if (!evalArm) {

@@ -10,6 +10,10 @@ let currentUser = null; // 登录后由 initAuth() 填充
 const ASSISTANT_MARK = "@cat";
 let assistant = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK }; // 助理的名字/头像，可在设置里改；登录后拉真值
 let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
+let replayFeedback = null; // 回放时：turn 下标 → 之前点过的 👍👎，操作条据此把高亮亮回来
+// 轨迹条上的工具短名：一枚小徽章顶一行字，扫一眼就知道这轮走了哪几步
+const TOOL_SHORT = { read_file: "📄 读", write_file: "📝 写", edit_file: "✏️ 改", list_files: "📁 列", search_files: "🔎 找", run_shell: "⌨️ 命令", run_node: "🟩 node", web_search: "🌐 搜", fetch_url: "🔗 抓", render_page: "🖥 渲染", check_page: "✅ 查页", html_to_image: "🖼 截图", look_at_image: "👁 看图", generate_image: "🎨 生图", generate_video: "🎬 视频", gen_diagram: "📊 图表", text_to_speech: "🔊 配音", remember: "🧠 记", forget: "🧠 忘", library_list: "📚 库", library_read: "📚 读库", save_skill: "🧩 存技能", desktop_pet: "🐱 宠物" };
+const shortTool = (n) => TOOL_SHORT[n] || String(n || "").replace(/^mcp[_:]/, "").replace(/_/g, " ").slice(0, 12);
 const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
 const sessionDirs = new Map(); // sessionId -> 该对话在默认工作空间下的成果子文件夹（成果面板标「本对话」）
 const sessionModels = new Map(); // sessionId -> 该对话指定的模型名（没有 = 跟随全局默认）
@@ -344,7 +348,7 @@ function createTurnUI(userText, turnMode, forSid) {
     if (!procBody) {
       procWrap = document.createElement("div");
       procWrap.className = "proc-wrap open";
-      procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="arrow">›</span></div><div class="proc-body"></div>`;
+      procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="trail"></span><span class="arrow">›</span></div><div class="proc-body"></div>`;
       procBody = procWrap.querySelector(".proc-body");
       onActivate(procWrap.querySelector(".proc-head"), () => procWrap.classList.toggle("open"));
       // 追加（不是 prepend）：开场白留在折叠区上方可见，仿官方「先说在做什么 → 过程收起 → 结论在外」
@@ -355,6 +359,59 @@ function createTurnUI(userText, turnMode, forSid) {
       }, 1000);
     }
     return procBody;
+  };
+
+  // 轨迹条：每个工具在折叠条上挂一枚小徽章，连续同名合并成 ×N，跑着的亮蓝、栽了的标红。
+  // 不用展开过程区就看得见这一轮走了哪几步、哪步出了事；点徽章直达那张卡
+  const TRAIL_MAX = 12;
+  const trailAdd = (card, name) => {
+    const tr = procWrap && procWrap.querySelector(".trail");
+    if (!tr) return;
+    const last = tr.lastElementChild;
+    if (last && last.classList.contains("more")) { last._n++; last.textContent = `+${last._n}`; return; }
+    if (last && last.dataset.name === name && !last.classList.contains("err")) {
+      last.classList.add("run"); // 上一张同名卡已经回来了，这张新的又在跑
+      last._n++;
+      last.querySelector("b").textContent = `×${last._n}`;
+      last._cards.push(card);
+      card._chip = last;
+      return;
+    }
+    if (tr.childElementCount >= TRAIL_MAX) {
+      const more = document.createElement("span");
+      more.className = "tc more";
+      more._n = 1;
+      more.textContent = "+1";
+      tr.appendChild(more);
+      return;
+    }
+    const chip = document.createElement("span");
+    chip.className = "tc run";
+    chip.dataset.name = name;
+    chip._n = 1;
+    chip._cards = [card];
+    chip.innerHTML = `${esc(shortTool(name))}<b></b>`;
+    chip.title = name;
+    chip.onclick = (e) => { // 点徽章：展开过程区并跳到最近那张卡（不触发折叠条自己的开合）
+      e.stopPropagation();
+      procWrap.classList.add("open");
+      const c = chip._cards[chip._cards.length - 1];
+      c.classList.add("open");
+      c.scrollIntoView({ block: "center", behavior: "smooth" });
+    };
+    tr.appendChild(chip);
+    card._chip = chip;
+  };
+  const trailMark = (card, state, at) => {
+    const chip = card && card._chip;
+    if (!chip) return;
+    // 合并徽章里还有没回来的卡就继续转；全回来了才落定。出过错的整枚标红，不被后来的成功盖掉
+    if (state === "err") chip.classList.add("err");
+    const stillRun = chip._cards.some((c) => c.querySelector(".spinner"));
+    if (!stillRun) chip.classList.remove("run");
+    if (state === "abort") chip.classList.add("abort");
+    const dur = at && card._at ? at - card._at : 0;
+    if (dur > 0) chip.title = `${chip.dataset.name} · ${fmtDur(dur)}`;
   };
 
   const ensureText = () => {
@@ -431,6 +488,8 @@ function createTurnUI(userText, turnMode, forSid) {
         `<pre>${esc(ev.input_preview || "")}</pre>`;
       card.querySelector(".head").onclick = () => card.classList.toggle("open");
       ensureProc().appendChild(card);
+      card._at = ev.at || Date.now();
+      trailAdd(card, ev.name);
       // 未完成卡片入栈；专家的内层工具卡与协调者的委派卡按 depth 区分，防止张冠李戴
       card._depth = ev.depth || 0;
       card._tid = ev.id || "";
@@ -458,6 +517,7 @@ function createTurnUI(userText, turnMode, forSid) {
         card.querySelector("pre").textContent += "\n\n── 执行结果 ──\n" + (ev.preview || "");
         // 出错卡默认也收起（失败一多整片摊开太乱），靠红标 + 标题角标提示，点角标直达
         if (ev.isError) { card.classList.add("failed"); liveErr++; }
+        trailMark(card, ev.isError ? "err" : "ok", ev.at || Date.now());
       }
     } else if (ev.type === "limit") {
       currentText = null;
@@ -617,11 +677,13 @@ function createTurnUI(userText, turnMode, forSid) {
     body.querySelector(".thinking-hint")?.remove();
     // 回合结束后不允许再有任何转圈（含未收到结果的工具卡，统一标记中止）
     turn.querySelectorAll(".step-card .spinner").forEach(s => {
+      const card = s.closest(".step-card"); // 先拿卡再摘转圈：摘掉之后 closest 就找不到了，徽章会一直转
       const tag = document.createElement("span");
       tag.className = "tag";
       tag.textContent = "中止";
       s.closest(".head")?.appendChild(tag);
       s.remove();
+      trailMark(card, "abort");
     });
     turn.querySelectorAll(".spinner").forEach(s => s.remove());
     // 过程折叠区收尾：停计时、写「已完成 Xs」、默认折叠（出错/被截断则保持展开）
@@ -678,7 +740,8 @@ function createTurnUI(userText, turnMode, forSid) {
       meta.textContent = `共消耗 ✧ ${(u.prompt + u.completion).toLocaleString()} tokens · ${u.provider || ""}（${u.model || ""}）`;
       // 命中缓存那部分便宜约一个数量级。不写出来的话，长任务里"输入 160 万 token"
       // 看着像一笔巨款，实际可能九成是缓存读；反过来命中率掉到 0 也没人察觉
-      const hit = u.cached ? Math.round((u.cached / Math.max(1, u.prompt)) * 100) : 0;
+      // 封顶 100%：老账本里有几笔按 Anthropic 口径记的（输入不含缓存读），不封会显示成 3209%
+      const hit = u.cached ? Math.min(100, Math.round((u.cached / Math.max(1, u.prompt)) * 100)) : 0;
       meta.title =
         `输入 ${u.prompt.toLocaleString()} + 输出 ${u.completion.toLocaleString()} tokens · ${u.calls} 次模型调用` +
         (u.cached ? `\n其中命中缓存 ${u.cached.toLocaleString()}（${hit}%），这部分按约 1/10 计费` : "");
@@ -730,9 +793,23 @@ function createTurnUI(userText, turnMode, forSid) {
         verdict, note: note || "",
         task: turn._userText || "",
         reply: [...body.querySelectorAll(".a-text")].map(t => t.innerText).join("\n").slice(0, 800),
+        // 这一轮是谁、怎么跑的，一起带走：评测页才能按模型/模式切着看好评率
+        model: (turn._usage && turn._usage.model) || "", provider: (turn._usage && turn._usage.provider) || "",
+        mode: turn._mode || "",
+        elapsed_ms: (turn._usage && turn._usage.elapsed_ms) || 0,
+        tokens: turn._usage ? (turn._usage.prompt || 0) + (turn._usage.completion || 0) : 0,
+        calls: (turn._usage && turn._usage.calls) || 0,
+        steps: turn.querySelectorAll(".step-card").length,
+        errors: turn.querySelectorAll(".step-card .tag.err").length,
       }),
     }).catch(() => {});
     const clearNote = () => bar.parentNode && bar.parentNode.querySelectorAll(".fb-note").forEach(n => n.remove());
+    // 回放时把之前点过的 👍👎 亮回来：反馈早落库了，重开对话不该看着像没点过
+    const prior = typeof replayFeedback !== "undefined" && replayFeedback && replayFeedback.get([...chatCol.querySelectorAll(".turn")].indexOf(turn));
+    if (prior && (prior.verdict === "up" || prior.verdict === "down")) {
+      bar.querySelector(`[data-a=${prior.verdict}]`).classList.add("on");
+      if (prior.note) bar.querySelector("[data-a=down]").title = `没帮助：${prior.note}`;
+    }
     bar.querySelector("[data-a=up]").onclick = (e) => {
       const btn = e.currentTarget;
       const on = !btn.classList.contains("on");

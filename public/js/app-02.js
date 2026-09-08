@@ -291,8 +291,13 @@ document.getElementById("history").addEventListener("click", async (e) => {
     else renderHistory();
     return;
   }
+  await openSession(item.dataset.id);
+});
+
+/** 打开一个会话并回放它的对话（历史列表点击 / 评测页「打开对话」都走这里） */
+async function openSession(id) {
   closeAssistView();
-  sessionId = item.dataset.id;
+  sessionId = id;
   // 上个会话开着的预览/文件面板不带进来
   pvPanel.classList.remove("show"); pvCurrent = null;
   document.getElementById("files-panel").classList.remove("show");
@@ -317,6 +322,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
   }
   let ui = null;
   isReplaying = true;
+  replayFeedback = new Map((data.feedback || []).filter(f => f && f.turn != null).map(f => [f.turn, f]));
   try {
     for (const entry of transcript) {
       if (entry.type === "user") {
@@ -326,7 +332,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
         ui.finish();
       }
     }
-  } finally { isReplaying = false; }
+  } finally { isReplaying = false; replayFeedback = null; }
   if (live) {
     document.getElementById("empty")?.remove();
     chatCol.appendChild(live.ui.turn);
@@ -335,7 +341,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
   }
   updateSendUI();
   scrollBottom(true);
-});
+}
 document.getElementById("new-task").onclick = () => {
   closeAssistView();
   sessionId = null;

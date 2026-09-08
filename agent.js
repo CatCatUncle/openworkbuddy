@@ -936,7 +936,8 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         local: true, // 本机订阅跑的，token 是真的，API 账单是零。前端靠它区分
       };
       emit({ type: "usage", model: opts.model || backend.label, provider: backend.id, ...usage });
-      return { finalText, usage, stopped: r.stopped || null, sessionId: r.sessionId || null, engine: backend.id };
+      // model/provider 一并带回：记账那边以前拿 config 里的模型名记这笔（跑的是 Claude Code，账本却写 deepseek-chat）
+      return { finalText, usage, stopped: r.stopped || null, sessionId: r.sessionId || null, engine: backend.id, model: opts.model || backend.label, provider: backend.id };
     } finally {
       if (bridged) bridged.cleanup();
       unwatchSleep();

@@ -238,12 +238,37 @@
   .step-card.open pre { display: block; }
   /* 执行过程折叠条（仿官方「已完成 12s ›」） */
   .proc-wrap { margin: 2px 0 8px; }
-  .proc-head { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--wb-text-3); cursor: pointer; user-select: none; padding: 2px 0; }
+  .proc-head { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; color: var(--wb-text-3); cursor: pointer; user-select: none; padding: 2px 0; }
   .proc-head:hover { color: var(--wb-text-2); }
   .proc-head .arrow { font-size: 13px; display: inline-block; transition: transform var(--wb-t-fast) var(--wb-ease); }
   .proc-wrap.open .proc-head .arrow { transform: rotate(90deg); }
   .proc-warn { color: var(--wb-err-text); background: rgba(229,72,77,.12); border-radius: 6px; padding: 0 6px; font-size: 12px; }
   .proc-body { display: none; padding-left: 10px; border-left: 2px solid var(--wb-border); margin: 4px 0 4px 4px; }
+  /* 轨迹条：折叠条上的工具徽章。跑着的亮蓝、栽了的标红、其余灰底不抢眼 */
+  .proc-head .trail { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+  .proc-head .tc { font-size: 11px; line-height: 18px; padding: 0 7px; border-radius: 9px; background: var(--wb-bg-hover); color: var(--wb-text-3); white-space: nowrap; cursor: pointer; }
+  .proc-head .tc b { font-weight: 600; margin-left: 2px; }
+  .proc-head .tc:hover { color: var(--wb-text); }
+  .proc-head .tc.run { color: var(--wb-brand-text); background: var(--wb-brand-weak); }
+  .proc-head .tc.err { color: var(--wb-err-text); background: color-mix(in srgb, var(--destructive) 14%, transparent); }
+  .proc-head .tc.abort { text-decoration: line-through; }
+  .proc-head .tc.more { cursor: default; }
+  /* 评测页的用户反馈汇总 */
+  .ev-fb-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 0 0 10px; }
+  .ev-fb-card { background: var(--wb-card); border: 1px solid var(--wb-line); border-radius: 10px; padding: 10px 12px; }
+  .ev-fb-card .k { font-size: 12px; color: var(--wb-text-3); }
+  .ev-fb-card .v { font-size: 20px; font-weight: 700; color: var(--wb-text); margin: 2px 0; }
+  .ev-fb-card .s { font-size: 11px; color: var(--wb-text-3); }
+  .ev-fb-empty { padding: 12px 14px; background: var(--wb-card); border: 1px dashed var(--wb-line); border-radius: 10px; line-height: 1.7; }
+  .ev-fb-tab { width: 100%; border-collapse: collapse; font-size: 12px; margin: 0 0 8px; }
+  .ev-fb-tab th, .ev-fb-tab td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--wb-line); }
+  .ev-fb-tab th { color: var(--wb-text-3); font-weight: 500; }
+  .ev-bar { display: inline-block; width: 60px; height: 6px; background: var(--wb-bg-hover); border-radius: 3px; margin-right: 6px; vertical-align: middle; overflow: hidden; }
+  .ev-bar i { display: block; height: 100%; background: var(--success); }
+  .ev-fb-down { display: grid; grid-template-columns: 76px 120px 1fr 1fr auto; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--wb-line); font-size: 12px; align-items: center; }
+  .ev-fb-down .m, .ev-fb-down .task, .ev-fb-down .note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ev-fb-down .note { color: var(--wb-text); }
+  .ev-fb-down a { color: var(--wb-brand-text); text-decoration: none; white-space: nowrap; }
   .proc-wrap.open .proc-body { display: block; }
   .proc-body .a-text { color: var(--wb-text-2); font-size: 14px; }
   /* 本次产出：把成果文件直接摆在对话里，点开就看，不用去右侧文件面板翻 */

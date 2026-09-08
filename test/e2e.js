@@ -3965,6 +3965,7 @@ async function main() {
   await testLocalEngineConnect();
   await testEngineToolBridge();
   await testEngineContextParity();
+  await testFeedbackAndUsage();
   testOutputOwnership();
   await testFilePathRouting();
   await testDesktopPet();
@@ -4793,4 +4794,212 @@ async function testEngineContextParity() {
   const TL = require("../thinking").LEVELS;
   assert.deepStrictEqual(vals, ["", ...TL], "前端档位表跟 thinking.LEVELS 对不上：" + JSON.stringify(vals) + " vs " + JSON.stringify(TL));
   console.log("  ✓ 本机引擎接管时提示词带齐偏好/规则/记忆/项目指令/技能索引；--add-dir 过滤与探测；设置页模型候选+思考档");
+}
+
+/**
+ * 「缓存命中 3209%」+ 👍👎 反馈闭环 + 轨迹条时间戳。
+ *
+ * 那个百分比是两处口径撞出来的：claude-code 引擎照 Anthropic 的 input_tokens 记「输入」（不含缓存读），
+ * 界面拿 cached ÷ prompt 算命中率，30000 ÷ 934 就成了 3209%；同时账本把引擎跑的那几笔记在设置页
+ * 选的云模型名下（deepseek-chat），健康统计和失败连击也算错了人。这里把三层都钉死：
+ *   ① 引擎层：prompt 必须把缓存读加回来（跟 llm.js 同口径），cached ≤ prompt；
+ *   ② 账本层：老流水读出来时修口径（不改文件），新流水写盘前先修；归属按真跑的引擎记；
+ *   ③ 反馈层：👍👎 带上模型/模式/步数落库，汇总接口按模型、模式、天数数得对，
+ *      👎 的理由进自进化信号，规则打分时把生效后的 👍👎 一并摆出来。
+ * 每一条都配负对照：没反馈时 upRate 是 null 不是 0；窗口外的记录不算；改判不重复计数。
+ */
+async function testFeedbackAndUsage() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+
+  // ① 引擎用量口径：假 claude 吐一条 result，usage 照 Anthropic 口径给
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-fbu-"));
+  const fake = path.join(home, "fakeclaude");
+  fs.writeFileSync(fake, [
+    "#!/usr/bin/env node",
+    'process.stdout.write(JSON.stringify({ type: "result", subtype: "success", result: "ok", usage: { input_tokens: 1000, cache_creation_input_tokens: 200, cache_read_input_tokens: 30000, output_tokens: 50 } }) + String.fromCharCode(10));',
+  ].join("\n"));
+  fs.chmodSync(fake, 0o755);
+  const r1 = await require("../engines/claude-code").run({ prompt: "hi", cwd: home, bin: fake });
+  assert.strictEqual(r1.usage.prompt, 31200, "claude-code 的 prompt 没把缓存读/缓存写加回来：" + JSON.stringify(r1.usage));
+  assert.strictEqual(r1.usage.cached, 30000, "cached 没记：" + JSON.stringify(r1.usage));
+  assert.strictEqual(r1.usage.completion, 50, "completion 不对：" + JSON.stringify(r1.usage));
+  assert(r1.usage.cached <= r1.usage.prompt, "cached 大于 prompt，界面又会算出 3209%");
+  fs.rmSync(home, { recursive: true, force: true });
+
+  // ② 账本 + ③ 反馈：各起一个子进程，WB_DATA_DIR 指到临时目录，不碰真账本
+  const run = (script, tag) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-fbu-"));
+    const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, WB_DATA_DIR: dir }, encoding: "utf8" });
+    fs.rmSync(dir, { recursive: true, force: true });
+    assert.strictEqual(r.status, 0, tag + "测试失败：\n" + (r.stderr || r.stdout));
+  };
+
+  run(`
+    const assert = require("assert");
+    const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
+    const { register, loadUsers, loadUsage, saveUsage } = acc._internals;
+    // 老口径的一笔：cached > prompt → prompt 补成 prompt+cached；正常的一笔原样返回（同一个对象）
+    assert.deepStrictEqual(acc.fixLegacyCache({ prompt: 1000, cached: 30000, completion: 5 }), { prompt: 31000, cached: 30000, completion: 5 }, "老口径没修");
+    const same = { prompt: 5000, cached: 5000 };
+    assert.strictEqual(acc.fixLegacyCache(same), same, "cached == prompt 是正常账，不该动");
+    const normal = { prompt: 31200, cached: 30000 };
+    assert.strictEqual(acc.fixLegacyCache(normal), normal, "正常账被改了");
+    const noCache = { prompt: 100 };
+    assert.strictEqual(acc.fixLegacyCache(noCache), noCache, "没 cached 字段的老流水不该动");
+    assert.strictEqual(acc.fixLegacyCache(null), null, "空值要原样返回");
+    // 写盘前先修：引擎那边漏了口径，账本也不能把 3209% 记进文件
+    const u = register("口径", "pw123456");
+    acc.chargeRun(u, { prompt: 1000, cached: 30000, completion: 50, calls: 1, source: "web", model: "claude-code", provider: "claude-code" });
+    const flow = loadUsage();
+    assert.strictEqual(flow[0].prompt, 31000, "账本写盘前没修口径：" + flow[0].prompt);
+    assert.strictEqual(flow[0].cached, 30000, "cached 丢了");
+    assert.strictEqual(flow[0].provider, "claude-code", "归属没记成真跑的引擎");
+    assert.strictEqual(flow[0].model, "claude-code", "模型名没记成引擎");
+    // 读出来时修：直接往文件里塞一笔老账（模拟修之前留下的 4 笔），汇总不许再出 100% 以上
+    saveUsage([{ ts: new Date().toISOString(), day: flow[0].day, kind: "run", user: "口径", source: "web", prompt: 934, cached: 30000, completion: 10, calls: 1, credits: 0 }, ...flow]);
+    const sum = acc.usageSummary(loadUsers().users[0]);
+    assert.strictEqual(sum.today.cached, 60000, "汇总 cached 不对：" + sum.today.cached);
+    assert.strictEqual(sum.today.cachedOf, 30934 + 31000, "老账读出来没修口径，命中率分母还是 934：" + sum.today.cachedOf);
+    assert(sum.today.cached <= sum.today.cachedOf, "汇总里 cached 超过分母，界面又是 100% 以上");
+    // 文件本身不许被回填改写（只读时修，回填是另一回事、要先 dry run）
+    const raw = loadUsage();
+    assert.strictEqual(raw[0].prompt, 934, "usageSummary 顺手改写了账本文件");
+    console.log("OK");
+  `, "账本口径");
+
+  run(`
+    const assert = require("assert");
+    const fs = require("fs");
+    const path = require("path");
+    const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
+    const DATA = process.env.WB_DATA_DIR;
+    fs.mkdirSync(path.join(DATA, "sessions"), { recursive: true });
+    fs.mkdirSync(path.join(DATA, "learned"), { recursive: true });
+    const NOW = Date.now();
+
+    // 一条都没有：总数 0、好评率 null（没人点过 ≠ 没人满意）
+    const empty = ev.feedbackSummary({ days: 30, now: NOW });
+    assert.strictEqual(empty.total, 0);
+    assert.strictEqual(empty.upRate, null, "空反馈的好评率该是 null 不是 " + empty.upRate);
+    assert.deepStrictEqual(empty.byModel, []);
+    assert.deepStrictEqual(empty.downs, []);
+
+    // 落库：带模型/模式/步数；数字字段取整、负数归零、非数字归零
+    const rec = ev.recordFeedback({ user: "a", session: "s1", turn: 0, verdict: "up", task: "写周报", reply: "好", model: "m1", provider: "P", mode: "craft", elapsed_ms: 1234.6, tokens: "88", calls: -3, steps: 5, errors: "x" });
+    assert.strictEqual(rec.model, "m1"); assert.strictEqual(rec.provider, "P"); assert.strictEqual(rec.mode, "craft");
+    assert.strictEqual(rec.elapsed_ms, 1235, "elapsed_ms 没取整：" + rec.elapsed_ms);
+    assert.strictEqual(rec.tokens, 88, "字符串数字没转");
+    assert.strictEqual(rec.calls, 0, "负数没归零");
+    assert.strictEqual(rec.errors, 0, "非数字没归零");
+    ev.recordFeedback({ user: "a", session: "s1", turn: 1, verdict: "down", note: "结论藏最后", task: "改一版", model: "m1", provider: "P", mode: "craft", steps: 7, errors: 2 });
+    ev.recordFeedback({ user: "a", session: "s2", turn: 0, verdict: "down", note: "", task: "画图", model: "m2", provider: "Q", mode: "chat" });
+    ev.recordFeedback({ user: "b", session: "s3", turn: 0, verdict: "up", task: "别人的", model: "m2", provider: "Q", mode: "chat" });
+    ev.recordFeedback({ user: "b", session: "s3", turn: 1, verdict: "up", task: "没模型的" });
+    // 五条是同一毫秒写进去的，倒序排不出先后；按写入顺序错开几秒（生产里不会同一毫秒点两次）
+    const file = path.join(DATA, "feedback.json");
+    { const l = JSON.parse(fs.readFileSync(file, "utf8")); l.forEach((x, i) => { x.at = new Date(NOW - (l.length - i) * 1000).toISOString(); }); fs.writeFileSync(file, JSON.stringify(l)); }
+
+    const s = ev.feedbackSummary({ days: 30, now: NOW });
+    assert.strictEqual(s.total, 5, "总数不对：" + s.total);
+    assert.strictEqual(s.up, 3); assert.strictEqual(s.down, 2);
+    assert.strictEqual(s.upRate, 0.6, "好评率不对：" + s.upRate);
+    assert.strictEqual(s.downWithNote, 1, "写了理由的 👎 该是 1：" + s.downWithNote);
+    assert.deepStrictEqual(s.last7, { up: 3, down: 2 });
+    const bm = Object.fromEntries(s.byModel.map((x) => [x.name, x]));
+    assert.deepStrictEqual(bm["P · m1"], { name: "P · m1", up: 1, down: 1, upRate: 0.5 }, JSON.stringify(s.byModel));
+    assert.deepStrictEqual(bm["Q · m2"], { name: "Q · m2", up: 1, down: 1, upRate: 0.5 });
+    assert.deepStrictEqual(bm["（未知）"], { name: "（未知）", up: 1, down: 0, upRate: 1 }, "没模型的该归到「（未知）」");
+    assert.strictEqual(s.byModel[0].up + s.byModel[0].down, 2, "按模型该按条数降序");
+    const bmode = Object.fromEntries(s.byMode.map((x) => [x.name, x]));
+    assert.strictEqual(bmode.craft.down, 1); assert.strictEqual(bmode.chat.up, 1);
+    assert.strictEqual(s.byDay.length, 1); assert.strictEqual(s.byDay[0].up, 3);
+    assert.strictEqual(s.downs.length, 2);
+    assert.strictEqual(s.downs[0].session, "s2", "👎 列表该按时间倒序，最新在前");
+    assert.deepStrictEqual(Object.keys(s.downs[1]).sort(), ["at", "errors", "id", "model", "mode", "note", "provider", "session", "steps", "task", "turn"].sort());
+    assert.strictEqual(s.downs[1].steps, 7); assert.strictEqual(s.downs[1].errors, 2); assert.strictEqual(s.downs[1].note, "结论藏最后");
+    assert(!("reply" in s.downs[0]), "汇总里不该把回复全文带出去");
+    // 成员只看自己的
+    const mine = ev.feedbackSummary({ days: 30, now: NOW, user: "a" });
+    assert.strictEqual(mine.total, 3, "按用户过滤不对：" + mine.total);
+    assert.strictEqual(mine.up, 1);
+    // 改判：同一轮再点是改，不是加一条
+    ev.recordFeedback({ user: "a", session: "s1", turn: 1, verdict: "up", task: "改一版", model: "m1", provider: "P", mode: "craft" });
+    const s2 = ev.feedbackSummary({ days: 30, now: NOW });
+    assert.strictEqual(s2.total, 5, "改判变成了新增：" + s2.total);
+    assert.strictEqual(s2.down, 1); assert.strictEqual(s2.downWithNote, 0, "改判成 👍 后旧理由还在算");
+    // 窗口：40 天前的那条在 30 天窗口外、60 天窗口内
+    const list = JSON.parse(fs.readFileSync(file, "utf8"));
+    list.push({ id: "fb_old", at: new Date(NOW - 40 * 86400e3).toISOString(), user: "a", session: "s9", turn: 0, verdict: "down", note: "老账", model: "m1", provider: "P", mode: "craft" });
+    fs.writeFileSync(file, JSON.stringify(list));
+    assert.strictEqual(ev.feedbackSummary({ days: 30, now: NOW }).total, 5, "窗口外的记录混进来了");
+    const s60 = ev.feedbackSummary({ days: 60, now: NOW });
+    assert.strictEqual(s60.total, 6, "60 天窗口没把 40 天前那条算上");
+    assert.strictEqual(s60.last7.down, 1, "近 7 天不该算上 40 天前的");
+    assert.strictEqual(s60.byDay.length, 2);
+    // 没有 verdict 的坏记录不算
+    list.push({ id: "fb_bad", at: new Date(NOW).toISOString(), user: "a", session: "s9", turn: 1, verdict: "meh" });
+    fs.writeFileSync(file, JSON.stringify(list));
+    assert.strictEqual(ev.feedbackSummary({ days: 30, now: NOW }).total, 5, "verdict 不是 up/down 的也被数了");
+
+    // 👎 进自进化信号：样本摘要带模型名，方便复盘时一眼看出「是不是某个模型的锅」
+    const mined = ev.mineSignals({ days: 60, now: NOW });
+    const td = mined.signals.find((x) => x.key === "thumbs_down");
+    assert(td, "👎 没进信号：" + JSON.stringify(mined.signals.map((x) => x.key)));
+    assert.strictEqual(td.count, 2, "👎 计数不对（改判过的那条不该算）：" + td.count);
+    assert(td.samples.every((x) => /^\\[m[12]\\] /.test(x.excerpt)), "👎 样本摘要没带模型名：" + JSON.stringify(td.samples.map((x) => x.excerpt)));
+    assert(td.samples.some((x) => x.excerpt === "[m2] （没写理由）"), "没写理由的要明说");
+
+    // 规则打分：生效之后的 👍👎 摆出来；生效之前的不算
+    const born = new Date(NOW - 10 * 86400e3).toISOString();
+    fs.writeFileSync(path.join(DATA, "learned", "r1.md"), '<!-- ' + JSON.stringify({ at: born, baseline: { key: "thumbs_down", rate: 0.5 } }) + ' -->\\n别把结论藏在最后');
+    const sc = ev.scoreRules({ minTurns: 0, now: NOW });
+    assert.strictEqual(sc.length, 1, JSON.stringify(sc));
+    assert.deepStrictEqual(sc[0].fb, { up: 4, down: 1 }, "规则打分里的 👍👎 计数不对（40 天前那条在生效前，不该算）：" + JSON.stringify(sc[0].fb));
+    assert(/👍4 👎1/.test(sc[0].why), "why 里没写反馈：" + sc[0].why);
+    // 负对照：生效前的 👍👎 一条都不算 → why 里不出现反馈那一截
+    fs.writeFileSync(path.join(DATA, "learned", "r1.md"), '<!-- ' + JSON.stringify({ at: new Date(NOW + 60e3).toISOString(), baseline: { key: "thumbs_down", rate: 0.5 } }) + ' -->\\n刚生效');
+    const sc2 = ev.scoreRules({ minTurns: 0, now: NOW });
+    assert.deepStrictEqual(sc2[0].fb, { up: 0, down: 0 }, JSON.stringify(sc2[0]));
+    assert(!/用户反馈/.test(sc2[0].why), "没反馈还硬写了一句：" + sc2[0].why);
+    console.log("OK");
+  `, "反馈汇总");
+
+  // ④ 源码闸门：归属改回设置页模型、百分比不封顶、回放不亮反馈——这几处哪个被改回去都会复现
+  const src = {
+    server: fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8"),
+    agent: fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8"),
+    app01: fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8"),
+    app02: fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8"),
+    app03: fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8"),
+    html: fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8"),
+  };
+  const bad = [];
+  const has = (k, re, why) => { if (!re.test(src[k] || "")) bad.push(why); };
+  const not = (k, re, why) => { if (re.test(src[k] || "")) bad.push(why); };
+  has("server", /let ranLLM = \{ model: sessLLM\.model, provider: sessLLM\.provider \}/, "server.js 没有「真跑的是谁」这个变量");
+  has("server", /chargeRun\(user, \{ \.\.\.total, model: ranLLM\.model, provider: ranLLM\.provider, source: "web"/, "网页任务的账本归属没按真跑的引擎记");
+  not("server", /model: sessLLM\.model, provider: sessLLM\.provider, source: "web"/, "网页任务的账本还按设置页的云模型记（引擎跑的会记到 deepseek 名下）");
+  has("server", /recordModelHealth\(ranLLM\.provider, false/, "失败健康统计没按真跑的引擎记");
+  has("server", /recordModelHealth\(ranLLM\.provider, true\)/, "成功健康统计没按真跑的引擎记");
+  has("server", /modelFailStreak\.get\(ranLLM\.provider\)/, "失败连击没按真跑的引擎记");
+  has("server", /const ran = r\.provider \? \{ model: r\.model \|\| r\.provider, provider: r\.provider \} : runLLM/, "IM/定时任务的账本归属没按真跑的引擎记");
+  has("server", /app\.get\("\/api\/feedback\/summary"/, "没有反馈汇总接口");
+  has("server", /if \(ev\.type === "tool_use" \|\| ev\.type === "tool_result"\) ev\.at = ev\.at \|\| Date\.now\(\);/, "落盘的工具事件没盖时间戳，回放时轨迹条算不出每步耗时");
+  has("server", /feedback = evolve\.readFeedback\(\)\.filter\(\(f\) => f\.session === req\.params\.id\)/, "/api/session/:id 没把该会话的反馈带回去，回放时 👍👎 亮不回来");
+  has("agent", /return \{ finalText, usage, stopped: r\.stopped \|\| null, sessionId: r\.sessionId \|\| null, engine: backend\.id, model: opts\.model \|\| backend\.label, provider: backend\.id \}/, "runViaEngine 没把「真跑的是哪个引擎」返回给上层");
+  has("app01", /Math\.min\(100, Math\.round\(\(u\.cached \/ Math\.max\(1, u\.prompt\)\) \* 100\)\)/, "回复操作条的命中率没封顶 100%");
+  has("app03", /Math\.min\(100, Math\.round\(\(x\.cached \|\| 0\) \/ x\.cachedOf \* 100\)\)/, "用量页的命中率没封顶 100%");
+  has("app02", /replayFeedback = new Map\(\(data\.feedback \|\| \[\]\)/, "回放没把之前点的 👍👎 装进 replayFeedback");
+  has("app02", /finally \{ isReplaying = false; replayFeedback = null; \}/, "回放结束没清 replayFeedback（下一个新回合会误亮）");
+  has("app03", /async function renderFeedbackSummary/, "评测页没有反馈汇总");
+  has("app03", /id="ev-fb"/, "评测页没有反馈汇总的挂点");
+  has("app03", /\/api\/feedback\/summary\?days=/, "评测页没调反馈汇总接口");
+  has("app01", /class="trail"/, "折叠条上没有轨迹条");
+  has("app01", /const TRAIL_MAX = 12/, "轨迹条没上限（四十步的任务会把标题挤没）");
+  has("html", /\.proc-head \.tc\.err \{/, "轨迹条没有出错样式");
+  has("html", /\.proc-head \.tc\.run \{/, "轨迹条没有运行中样式");
+  has("html", /\.ev-fb-cards \{/, "评测页反馈卡片没样式");
+  assert(!bad.length, "反馈/账本源码闸门：\n  " + bad.join("\n  "));
+  console.log("✅ 反馈闭环+账本口径：引擎 prompt 含缓存读 · 老账读时修/新账写前修 · 归属按真跑引擎 · 汇总按模型/模式/窗口/用户 · 改判不重复 · 👎 进信号带模型名 · 规则打分带生效后 👍👎 · 回放带回反馈 · 工具事件盖时间戳");
 }

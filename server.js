@@ -432,6 +432,8 @@ function recordingEmit(send, events, sessionId) {
       const chg = ev.changed || [];
       if (chg.length) events.push({ type: "files", changed: chg, files: (ev.files || []).filter((f) => chg.includes(f.name)) });
     } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"].includes(ev.type)) {
+      // 工具事件盖个时间戳（send 已经发出去了，这里只影响存盘）：回放时轨迹条才算得出每步耗时
+      if (ev.type === "tool_use" || ev.type === "tool_result") ev.at = ev.at || Date.now();
       events.push(ev);
       // 一步走完就是个存盘点：跑了半小时的任务不该因为一次崩溃从头再来
       if (sessionId && ev.type === "tool_result") autosaveSession(sessionId);
@@ -1356,6 +1358,13 @@ app.post("/api/feedback", (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+// 反馈汇总：👍👎 总数/好评率/按模型/按模式/最近的 👎 清单。管理员看全员，成员只看自己
+app.get("/api/feedback/summary", (req, res) => {
+  const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
+  const user = req.user && req.user.role !== "admin" ? req.user.username : "";
+  res.json(evolve.feedbackSummary({ days, user }));
 });
 
 // 体检：这段时间它都败在哪儿、各多少次。不调模型，纯数数，随时能看
@@ -2501,6 +2510,9 @@ app.post("/api/chat", async (req, res) => {
   persistRunning();
   const emitFn = recordingEmit(send, asstEvents, sessionId);
   const total = { prompt: 0, completion: 0, cached: 0, calls: 0, elapsed_ms: 0 };
+  // 这一轮真正干活的模型。本机引擎接管时它不是 sessLLM：以前账本和健康账本都记到 config 里那个
+  // 云模型头上——跑的是 Claude Code，账本写 deepseek-chat，DeepSeek 的健康分还替别人挨了刀
+  let ranLLM = { model: sessLLM.model, provider: sessLLM.provider };
   // 首轮对话：并行起一个真正的短标题（拿消息前 24 个字截断当标题太丑）。
   // 跟任务并行跑，任务收尾时基本已就绪，不给任务加等待；花的 token 记进同一笔账
   let titleP = null;
@@ -2583,6 +2595,7 @@ app.post("/api/chat", async (req, res) => {
           }),
         });
         addUsage(total, r && r.usage);
+        if (r && r.provider) ranLLM = { model: r.model || r.provider, provider: r.provider };
         if (r && r.sessionId) { sess.engine_session = r.sessionId; sess.engine = r.engine || ""; }
         if (r && r.finalText) lastFinal = r.finalText;
         if (r && r.stopped) roundStopped = r.stopped;
@@ -2613,11 +2626,11 @@ app.post("/api/chat", async (req, res) => {
     }
   } catch (e) {
     runFailed = e.message;
-    const streak = (modelFailStreak.get(sessLLM.provider) || 0) + 1;
-    modelFailStreak.set(sessLLM.provider, streak);
+    const streak = (modelFailStreak.get(ranLLM.provider) || 0) + 1;
+    modelFailStreak.set(ranLLM.provider, streak);
     let emsg = e.message;
     if (streak >= 2) {
-      emsg += `\n\n💡 模型「${sessLLM.provider}」已连续失败 ${streak} 次，多半是这个模型/渠道本身不可用：可以点输入框旁的模型按钮给本对话单独换一个，或到 设置 → 模型 换全局默认。`;
+      emsg += `\n\n💡 模型「${ranLLM.provider}」已连续失败 ${streak} 次，多半是这个模型/渠道本身不可用：可以点输入框旁的模型按钮给本对话单独换一个，或到 设置 → 模型 换全局默认。`;
     }
     send({ type: "error", message: emsg });
     asstEvents.push({ type: "error", message: emsg });
@@ -2626,14 +2639,14 @@ app.post("/api/chat", async (req, res) => {
     persistRunning();
     if (global.__wbPet) try { global.__wbPet.setState(runFailed ? "error" : "done", runFailed ? String(runFailed).slice(0, 80) : "任务完成"); } catch {}
   }
-  if (total.calls > 0) modelFailStreak.delete(sessLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
+  if (total.calls > 0) modelFailStreak.delete(ranLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
   // 健康账本：异常收场记一败；正常收场且真调过模型记一胜（秒停等一次没调的不记，记了是噪声）
-  if (runFailed) recordModelHealth(sessLLM.provider, false, runFailed);
-  else if (total.calls > 0) recordModelHealth(sessLLM.provider, true);
+  if (runFailed) recordModelHealth(ranLLM.provider, false, runFailed);
+  else if (total.calls > 0) recordModelHealth(ranLLM.provider, true);
 
   // 记账：按整个任务（含插队追加轮）的总 tokens 扣积分
   if (user && total.calls > 0) {
-    const spent = account.chargeRun(user, { ...total, model: sessLLM.model, provider: sessLLM.provider, source: "web", sessionId });
+    const spent = account.chargeRun(user, { ...total, model: ranLLM.model, provider: ranLLM.provider, source: "web", sessionId });
     // 不限额时 spent 是 0，就别在结果下面挂一行「扣 0 积分」了，那只是噪声
     if (spent > 0) emitFn({ type: "credits", spent, balance: user.credits });
   }
@@ -2730,7 +2743,10 @@ app.get("/api/chat/stream/:id", (req, res) => {
 // 历史会话回放
 app.get("/api/session/:id", (req, res) => {
   const s = getSession(req.params.id);
-  res.json({ transcript: s.transcript, dir: s.dir || null, model: s.model || null, goal: s.goal || null });
+  // 之前点过的 👍👎 一起带回：反馈早落库了，重开对话不该看着像没点过
+  let feedback = [];
+  try { feedback = evolve.readFeedback().filter((f) => f.session === req.params.id).map((f) => ({ turn: f.turn, verdict: f.verdict, note: f.note || "" })); } catch {}
+  res.json({ transcript: s.transcript, dir: s.dir || null, model: s.model || null, goal: s.goal || null, feedback });
 });
 
 // 归档目标：目标卡上点 ✕。已达成/不想要了都走这里，不删记录只改状态
@@ -3005,7 +3021,8 @@ function accountedRuntime(baseRuntime, source) {
         ...(modelName ? { llmOverride: runLLM } : {}),
       });
       if (owner && r && r.usage && r.usage.calls > 0) {
-        account.chargeRun(owner, { ...r.usage, model: runLLM.model, provider: runLLM.provider, source });
+        const ran = r.provider ? { model: r.model || r.provider, provider: r.provider } : runLLM;
+        account.chargeRun(owner, { ...r.usage, model: ran.model, provider: ran.provider, source });
       }
       return r;
     },
