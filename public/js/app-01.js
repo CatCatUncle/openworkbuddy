@@ -120,16 +120,30 @@ function applyAssistantIdentity() {
   const h1 = document.querySelector("#empty h1");
   if (h1) h1.textContent = `${assistant.name}, 我帮你`;
 }
-// 生成回复时用户往上翻，就不再往下拽（能安心看历史）；翻回底部附近才恢复跟随
+// ================= 长对话滚动引导 =================
+// 生成回复时用户往上翻，就不再往下拽（能安心看历史）；翻回底部附近才恢复跟随。
+// 长对话再补两样：往上翻远了给「回到最前」；人在上面看历史时下面来了新内容，「回到最新」上挂红点——
+// 不然几十轮的对话里，用户翻上去看一眼旧结论，回来根本不知道 agent 已经说完了。
 let chatStick = true;
-chatScroll.addEventListener("scroll", () => {
+function syncScrollGuides() {
   chatStick = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 80;
-  document.getElementById("to-bottom").classList.toggle("show", !chatStick);
-});
+  const toBottom = document.getElementById("to-bottom");
+  toBottom.classList.toggle("show", !chatStick);
+  if (chatStick) { toBottom.classList.remove("new"); toBottom.title = "回到最新"; }
+  // 翻过一屏半才算「远」——刚往上滚一点就冒出一个按钮，只会晃眼
+  document.getElementById("to-top").classList.toggle("show", chatScroll.scrollTop > chatScroll.clientHeight * 1.5);
+}
+chatScroll.addEventListener("scroll", syncScrollGuides);
 let scrollRaf = 0;
 function scrollBottom(force) {
   if (force) chatStick = true;
-  if (!chatStick || scrollRaf) return;
+  if (!chatStick) {
+    // 人在上面看历史，新内容到了：不拽他，但让他知道
+    const toBottom = document.getElementById("to-bottom");
+    if (!toBottom.classList.contains("new")) { toBottom.classList.add("new"); toBottom.title = "有新内容，回到最新"; }
+    return;
+  }
+  if (scrollRaf) return;
   // 事件流密集时每个事件都设 scrollTop 会逐次强制布局；合并到每帧一次
   scrollRaf = requestAnimationFrame(() => {
     scrollRaf = 0;
@@ -137,6 +151,22 @@ function scrollBottom(force) {
   });
 }
 document.getElementById("to-bottom").onclick = () => scrollBottom(true);
+document.getElementById("to-top").onclick = () => { chatScroll.scrollTo({ top: 0, behavior: "smooth" }); };
+
+// 执行过程里出错的步骤：以前每张出错卡都自动摊开，一个任务错个七八步整片全是红色长日志，
+// 用户找不到结论。现在出错卡也收起，只在标题挂「N 步出错」；点角标 → 展开过程区、只摊开出错的那几张、滚到第一张。
+function wireProcWarn(chip, procWrap) {
+  if (!chip || !procWrap) return chip;
+  chip.title = "点一下直达出错的步骤";
+  chip.onclick = (e) => {
+    e.stopPropagation();
+    procWrap.classList.add("open");
+    const failed = procWrap.querySelectorAll(".step-card.failed");
+    failed.forEach((c) => c.classList.add("open"));
+    if (failed[0] && failed[0].scrollIntoView) failed[0].scrollIntoView({ block: "center", behavior: "smooth" });
+  };
+  return chip;
+}
 
 // ================= Markdown 渲染（先转义防注入） =================
 // 模型偶尔输出「裸语言名 + 无围栏代码」（DeepSeek 常见）：识别后补成 ``` 围栏再走正常渲染
@@ -307,8 +337,8 @@ function createTurnUI(userText, turnMode, forSid) {
   let procWrap = null, procBody = null, procTimer = null;
   const t0 = Date.now();
   // 长跑徽章：步数/续跑轮次/产出件数实时挂在「运行中」计时旁，长任务不再只有一个转圈
-  let liveStep = 0, liveRound = 0, liveRoundTotal = 0, liveOuts = 0;
-  const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
+  let liveStep = 0, liveRound = 0, liveRoundTotal = 0, liveOuts = 0, liveErr = 0;
+  const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "") + (liveErr ? ` · ${liveErr} 步出错` : "");
   const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
   const ensureProc = () => {
     if (!procBody) {
@@ -426,7 +456,8 @@ function createTurnUI(userText, turnMode, forSid) {
         tag.textContent = ev.isError ? "失败" : "完成";
         card.querySelector(".head").appendChild(tag);
         card.querySelector("pre").textContent += "\n\n── 执行结果 ──\n" + (ev.preview || "");
-        if (ev.isError) card.classList.add("open");
+        // 出错卡默认也收起（失败一多整片摊开太乱），靠红标 + 标题角标提示，点角标直达
+        if (ev.isError) { card.classList.add("failed"); liveErr++; }
       }
     } else if (ev.type === "limit") {
       currentText = null;
@@ -616,7 +647,7 @@ function createTurnUI(userText, turnMode, forSid) {
           const chip = document.createElement("span");
           chip.className = "proc-warn";
           chip.textContent = "⚠ " + marks.join(" · ");
-          pt.after(chip);
+          pt.after(wireProcWarn(chip, procWrap));
         }
         procWrap.classList.remove("open"); // 回合结束一律收起
       }

@@ -119,6 +119,11 @@
   #to-bottom { position: absolute; right: 24px; bottom: 150px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); font-size: 15px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.12); display: none; z-index: 5; }
   #to-bottom.show { display: block; }
   #to-bottom:hover { color: var(--wb-brand-text); border-color: var(--wb-brand-text); }
+  /* 长对话滚动引导：往上翻远了出「回到最前」；人在上面时下面来了新内容，「回到最新」挂红点 */
+  #to-top { position: absolute; right: 24px; bottom: 190px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); font-size: 15px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.12); display: none; z-index: 5; }
+  #to-top.show { display: flex; align-items: center; justify-content: center; }
+  #to-top:hover { color: var(--wb-brand-text); border-color: var(--wb-brand-text); }
+  #to-bottom.new::after { content: ""; position: absolute; top: -3px; right: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--destructive, #e5484d); border: 2px solid var(--wb-bg); }
   /* 列宽要把自己的左右内边距算进去，才能和输入卡片落在同一条竖线上：
      卡片是 832px 整块（428–1260），消息列如果也只有 832px，减掉 20px 内边距后
      内容只剩 448–1240，两端各内缩 20px——头像和用户气泡的边就都对不上卡片的边。 */
@@ -227,6 +232,7 @@
      改成 color-mix 叠在当前表面上，两套主题各自成立 */
   .tag.ok { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--wb-ok-text); }
   .tag.err { background: color-mix(in srgb, var(--destructive) 14%, transparent); color: var(--wb-err-text); }
+  .step-card.failed { border-color: color-mix(in srgb, var(--destructive) 40%, var(--wb-border)); }
   .step-card .desc { color: var(--wb-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .step-card pre { display: none; background: var(--wb-code-bg); color: var(--wb-code-text); padding: 12px; font-size: 13px; line-height: 1.5; max-height: 320px; overflow: auto; }
   .step-card.open pre { display: block; }
@@ -1098,7 +1104,8 @@
   </div>
   <div id="goal-card" style="display:none"></div>
   <div id="chat-scroll"><div class="chat-col" id="chat-col"></div></div>
-  <button id="to-bottom" title="回到底部"><svg class="i" aria-hidden="true"><use href="#i-arrow-down"></use></svg></button>
+  <button id="to-bottom" title="回到最新"><svg class="i" aria-hidden="true"><use href="#i-arrow-down"></use></svg></button>
+  <button id="to-top" title="回到最前"><svg class="i" aria-hidden="true"><use href="#i-arrow-up"></use></svg></button>
 
   <div class="input-wrap">
     <div class="input-inner">

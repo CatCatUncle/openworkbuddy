@@ -782,6 +782,85 @@ const PREVIEW_CHECKS = `
 })()`;
 
 
+// 长对话滚动引导（回到最前 / 回到最新挂红点）+ 出错步骤卡默认收起、角标直达。
+// 显示/隐藏和「点了到底展不展开」都是真样式说了算，所以注入 index.html 的真 CSS，切 app-01.js 真源码。
+const SG0 = APP02X.indexOf("// ================= 长对话滚动引导");
+const SG1 = APP02X.indexOf("// ================= Markdown 渲染");
+if (SG0 < 0 || SG1 <= SG0) throw new Error("app-01.js 里的滚动引导段找不到了（段标题被改过？），前端测试没法定位真源码");
+const SCROLLGUIDE_SRC = APP02X.slice(SG0, SG1);
+// 出错卡不许再自动摊开——这条是 #55 的根：一旦有人改回去，下面的 DOM 测试测的就是假的。
+// 放在函数里、在 try 块内调用：Electron 主进程顶层抛错会弹系统对话框挂住，测试就永远跑不完
+function assertFailedCardsCollapsed() {
+  if (/if \(ev\.isError\) card\.classList\.add\("open"\)/.test(APP02X)) throw new Error("app-01.js 又把出错的步骤卡自动展开了（失败多时整片摊开太乱）");
+  if (!/if \(ev\.isError\) \{ card\.classList\.add\("failed"\)/.test(APP02X)) throw new Error("app-01.js 出错的步骤卡没打 .failed 标，角标直达找不到它们");
+}
+const SCROLLGUIDE_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body>"
+  + "<div id='chat-scroll' style='height:300px;position:relative'><div id='chat-col' style='height:3000px'></div></div>"
+  + "<button id='to-bottom'>v</button><button id='to-top'>^</button>"
+  + "<div class='proc-wrap'><div class='proc-head'><span class='pt'>已完成</span></div><div class='proc-body'>"
+  + "<div class='step-card'><div class='head'><span class='tag'>A</span><span class='tag ok'>完成</span></div><pre>ok-a</pre></div>"
+  + "<div class='step-card failed'><div class='head'><span class='tag'>B</span><span class='tag err'>失败</span></div><pre>err-b</pre></div>"
+  + "<div class='step-card'><div class='head'><span class='tag'>C</span><span class='tag ok'>完成</span></div><pre>ok-c</pre></div>"
+  + "<div class='step-card failed'><div class='head'><span class='tag'>D</span><span class='tag err'>失败</span></div><pre>err-d</pre></div>"
+  + "</div></div></body>";
+const SCROLLGUIDE_STUBS = `const chatScroll = document.getElementById("chat-scroll");`;
+const SCROLLGUIDE_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const shown = (id) => getComputedStyle(document.getElementById(id)).display !== "none";
+  const sc = document.getElementById("chat-scroll"), tb = document.getElementById("to-bottom"), tt = document.getElementById("to-top");
+  const fire = () => sc.dispatchEvent(new Event("scroll"));
+
+  // 短对话（不够一屏半）：贴底时两个按钮都不出现
+  const col = document.getElementById("chat-col");
+  col.style.height = "320px"; sc.scrollTop = sc.scrollHeight; fire();
+  ok("短对话贴底时两个引导都不出现", !shown("to-bottom") && !shown("to-top"));
+  // 长对话贴底：不用「回到最新」，但离顶远了要给「回到最前」（几十轮的对话想看开头不该手滚半天）
+  col.style.height = "3000px"; sc.scrollTop = sc.scrollHeight; fire();
+  ok("长对话贴底只出「回到最前」", !shown("to-bottom") && shown("to-top"));
+  // 往上翻一点（离顶不远）：只出「回到最新」，不出「回到最前」——刚滚一点就冒按钮只会晃眼
+  sc.scrollTop = 300; fire();
+  ok("离顶不远只出「回到最新」", shown("to-bottom") && !shown("to-top"), "to-bottom=" + shown("to-bottom") + " to-top=" + shown("to-top"));
+  // 翻远了：两个都出
+  sc.scrollTop = 1200; fire();
+  ok("翻过一屏半出「回到最前」", shown("to-top"));
+  // 人在上面看历史时新内容到了：不拽他（scrollTop 不动）= 负向控制，但红点亮起
+  const before = sc.scrollTop;
+  scrollBottom();
+  await sleep(50);
+  ok("看历史时不被拽到底", sc.scrollTop === before, "scrollTop " + before + " → " + sc.scrollTop);
+  ok("新内容到了红点亮起、提示语换掉", tb.classList.contains("new") && /新内容/.test(tb.title));
+  ok("红点是真画出来的（伪元素）", getComputedStyle(tb, "::after").width === "10px", getComputedStyle(tb, "::after").width);
+  // 点「回到最新」：真到底，红点灭，按钮收
+  tb.click();
+  await sleep(80); fire();
+  ok("点「回到最新」真到底", sc.scrollHeight - sc.scrollTop - sc.clientHeight < 2, "剩 " + (sc.scrollHeight - sc.scrollTop - sc.clientHeight));
+  ok("到底后红点灭、「回到最新」收", !tb.classList.contains("new") && !shown("to-bottom"));
+  // 点「回到最前」：往上走（平滑滚动在离屏窗口里可能一步到位，也可能分几帧，只认方向和终点）
+  sc.scrollTop = 2000; fire();
+  tt.click();
+  let t = 0; while (sc.scrollTop > 0 && t++ < 40) await sleep(50);
+  ok("点「回到最前」回到顶", sc.scrollTop === 0, "scrollTop=" + sc.scrollTop);
+
+  // 出错步骤卡：默认收起（真样式：pre 不显示），角标一点 → 过程区展开、只摊开出错的、好的仍收着
+  const wrap = document.querySelector(".proc-wrap");
+  const pres = [...wrap.querySelectorAll(".step-card")].map((c) => c.querySelector("pre"));
+  const disp = (el) => getComputedStyle(el).display;
+  ok("出错卡默认收起（真样式）", pres.every((p) => disp(p) === "none"), pres.map(disp).join(","));
+  const chip = document.createElement("span"); chip.className = "proc-warn"; chip.textContent = "⚠ 2 步出错";
+  wrap.querySelector(".pt").after(wireProcWarn(chip, wrap));
+  ok("角标有提示语、可点", /直达/.test(chip.title) && getComputedStyle(chip).cursor === "pointer");
+  let headClicks = 0; wrap.querySelector(".proc-head").addEventListener("click", () => headClicks++);
+  chip.click();
+  ok("点角标不触发标题的折叠切换（否则一点开又被合上）", headClicks === 0);
+  ok("点角标过程区展开", wrap.classList.contains("open") && disp(wrap.querySelector(".proc-body")) === "block");
+  ok("只摊开出错的两张", disp(pres[1]) === "block" && disp(pres[3]) === "block", pres.map(disp).join(","));
+  ok("没出错的仍收着", disp(pres[0]) === "none" && disp(pres[2]) === "none");
+  return names;
+})()`;
+
 // 在渲染进程里跑的断言体。返回通过的用例名数组，抛错则整体失败。
 const CHECKS = `(() => {
   const names = [];
@@ -981,6 +1060,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接·整块可收起）${names7.length} 项通过`);
     } finally {
       if (!win7.isDestroyed()) win7.destroy();
+    }
+    const win8 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      assertFailedCardsCollapsed();
+      await win8.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SCROLLGUIDE_HTML));
+      const names8 = await win8.webContents.executeJavaScript(SCROLLGUIDE_STUBS + "\n" + SCROLLGUIDE_SRC + "\n" + SCROLLGUIDE_CHECKS, true);
+      for (const n of names8) console.log("  ✓ " + n);
+      console.log(`✅ 前端：长对话滚动引导（回到最前/回到最新挂红点·看历史不被拽）+ 出错步骤卡默认收起、角标直达 ${names8.length} 项通过`);
+    } finally {
+      if (!win8.isDestroyed()) win8.destroy();
     }
     const win6 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
