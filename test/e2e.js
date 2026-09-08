@@ -529,10 +529,12 @@ function testDocLinkGate() {
   const root = path.join(__dirname, "..");
   // 只管项目自己的文档。skills/ 下是内容和第三方技能，里面的 ](URL) 是模板占位，不是死链
   const docs = path.join(root, "docs");
-  const files = ["README.md", "CONTRIBUTING.md", "COMMERCIAL-LICENSE.md"]
+  const mdUnder = (dir) => !fs.existsSync(dir) ? [] : fs.readdirSync(dir, { withFileTypes: true })
+    .flatMap((e) => e.isDirectory() ? mdUnder(path.join(dir, e.name)) : e.name.endsWith(".md") ? [path.join(dir, e.name)] : []);
+  const files = ["README.md", "README.en.md", "CONTRIBUTING.md", "COMMERCIAL-LICENSE.md"]
     .map((f) => path.join(root, f))
     .filter((f) => fs.existsSync(f))
-    .concat(fs.existsSync(docs) ? fs.readdirSync(docs).filter((f) => f.endsWith(".md")).map((f) => path.join(docs, f)) : []);
+    .concat(mdUnder(docs));
 
   // Markdown 的 [x](y)，加上 README 里那些 HTML 标签的 href/src
   const grab = (t) => [
@@ -544,9 +546,10 @@ function testDocLinkGate() {
     .replace(/[^\w\u4e00-\u9fff\s-]/g, "").trim().replace(/\s+/g, "-");
   const dead = [];
   let checked = 0;
+  const anchorsOf = (file) => new Set([...fs.readFileSync(file, "utf8").matchAll(/^#{1,6}\s+(.+?)\s*$/gm)].map((m) => slugify(m[1])));
   for (const f of files) {
     const t = fs.readFileSync(f, "utf8");
-    const anchors = new Set([...t.matchAll(/^#{1,6}\s+(.+?)\s*$/gm)].map((m) => slugify(m[1])));
+    const anchors = anchorsOf(f);
     for (const href of grab(t)) {
       if (/^(https?:|mailto:)/.test(href)) continue;
       // 页内锚点：跳过等于没查，标题改个字锚点就哑了，点了原地不动
@@ -558,7 +561,11 @@ function testDocLinkGate() {
       const rel = decodeURIComponent(href.split("#")[0]);
       if (!rel) continue;
       checked++;
-      if (!fs.existsSync(path.resolve(path.dirname(f), rel))) dead.push(path.basename(f) + " → " + href);
+      const target = path.resolve(path.dirname(f), rel);
+      if (!fs.existsSync(target)) { dead.push(path.basename(f) + " → " + href); continue; }
+      // 跨文件锚点（CONTRIBUTING.md#xxx）：文件在但标题改了，点过去落在页顶，跟死链一样
+      const frag = href.split("#")[1];
+      if (frag && rel.endsWith(".md") && !anchorsOf(target).has(decodeURIComponent(frag).toLowerCase())) dead.push(path.basename(f) + " → " + href + "（目标文件里没有这个标题）");
     }
   }
   assert(dead.length === 0, "文档里有指向不存在文件的链接：" + dead.join("、"));
@@ -4005,6 +4012,7 @@ async function main() {
   await testEmbedFailoverResilience();
   testUiNoRawMarkdown();
   testLookPrefsStatic();
+  testReadmeFrontGate();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -4782,6 +4790,68 @@ async function testEngineToolBridge() {
 
   fs.rmSync(home, { recursive: true, force: true });
   console.log("✅ 本机引擎借工具：命令行入口真出文件（会话子目录）· 裸命令挂 PATH 且下了放行规则（带路径会被判需审批）· 白名单拒非借出工具 · MCP 配置形状对 · 两边提示词各说各的路");
+}
+
+/**
+ * README 门面闸门：冲 star 靠的是首屏 8 秒能看懂 + 能装上 + 有地方找人。
+ *  - 中英两份 README 互相链接，且都只指向这一个仓库
+ *  - 首屏三句差异（吐文件 / 不绑模型 / 一个 Markdown 一个技能）在「为什么是它」里，不许埋回功能清单
+ *  - 「最新动态」每条都带日期，且日期必须是 git 里真有提交的日子——防止写着写着变成愿望清单
+ *  - 交流群二维码文件真在、是 PNG、别大到把 clone 拖慢
+ *  - 协议一句人话讲清「谁免费、谁要授权」并链到商业授权页
+ *  - 贡献页有技能模板（frontmatter 齐全），README 的 10 分钟路径指向它
+ */
+function testReadmeFrontGate() {
+  const root = path.join(__dirname, "..");
+  const zh = fs.readFileSync(path.join(root, "README.md"), "utf8");
+  const en = fs.readFileSync(path.join(root, "README.en.md"), "utf8");
+  assert(/\(README\.en\.md\)|href="README\.en\.md"/.test(zh) && /\(README\.md[)#]|href="README\.md/.test(en), "中英 README 没有互相链接");
+  for (const [name, t] of [["README.md", zh], ["README.en.md", en]]) {
+    const slugs = new Set([...t.matchAll(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?[/"?)\s]/g)].map((m) => m[1]));
+    assert(slugs.size === 1 && slugs.has("CatCatUncle/openworkbuddy"), name + " 指向了别的仓库：" + [...slugs].join(","));
+    assert(/img\.shields\.io\/github\/stars\/CatCatUncle\/openworkbuddy/.test(t), name + " 缺 Star 徽章");
+  }
+  // 首屏三句差异
+  const why = zh.split(/^## 为什么是它\s*$/m)[1];
+  assert(why, "README 缺「为什么是它」");
+  const whyBody = why.split(/^## /m)[0];
+  for (const kw of ["交付的是文件", "不绑任何一家模型", "加一个能力 = 丢一个 Markdown"]) assert(whyBody.includes(kw), "「为什么是它」缺：" + kw);
+  const whyEn = (en.split(/^## Why this one\s*$/m)[1] || "").split(/^## /m)[0];
+  for (const kw of ["Files, not chat logs", "Any model", "one Markdown file"]) assert(whyEn.includes(kw), "英文「Why this one」缺：" + kw);
+  // 最新动态：日期真实
+  const gitDays = new Set(require("child_process").execSync("git log --date=format:%m-%d --format=%ad", { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean));
+  const news = (zh.split(/^## 最新动态\s*$/m)[1] || "").split(/^## /m)[0];
+  const items = [...news.matchAll(/^- \*\*(\d\d-\d\d)\*\* (.+)$/gm)];
+  assert(items.length >= 6, "「最新动态」至少 6 条带日期的条目，现在 " + items.length);
+  for (const [, d, txt] of items) {
+    assert(gitDays.has(d), "「最新动态」写了 " + d + "，git 里那天没有提交");
+    assert(txt.trim().length >= 8, "「最新动态」有条目太短：" + txt);
+  }
+  const dates = items.map((m) => m[1]);
+  assert(dates.every((d, i) => i === 0 || d <= dates[i - 1]), "「最新动态」要按时间倒序");
+  const newsEn = (en.split(/^## What's new\s*$/m)[1] || "").split(/^## /m)[0];
+  assert([...newsEn.matchAll(/^- \*\*[A-Z][a-z]{2} \d{1,2}\*\* /gm)].length >= 6, "英文 What's new 至少 6 条带日期条目");
+  // 交流群二维码
+  const qrRel = "docs/images/feishu-group.png";
+  assert(zh.includes('src="' + qrRel + '"') && /^## 交流群\s*$/m.test(zh), "README 缺「交流群」一节或二维码引用");
+  const qr = fs.readFileSync(path.join(root, qrRel));
+  assert(qr.length > 5000 && qr.length < 1024 * 1024, "二维码文件大小离谱：" + qr.length);
+  assert(qr.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), "二维码不是 PNG");
+  const w = qr.readUInt32BE(16), h = qr.readUInt32BE(20);
+  assert(w >= 300 && h >= 300, "二维码太小扫不出来：" + w + "x" + h);
+  // 协议一句人话
+  const lic = (zh.split(/^## 协议\s*$/m)[1] || "").split(/^## /m)[0];
+  assert(/免费/.test(lic) && /商业授权/.test(lic) && /\(COMMERCIAL-LICENSE\.md\)/.test(lic) && /\(LICENSE\)/.test(lic), "「协议」一节要一句话讲清免费/授权并链到两份协议文件");
+  const licEn = (en.split(/^## License\s*$/m)[1] || "").split(/^## /m)[0];
+  assert(/free/i.test(licEn) && /commercial license/i.test(licEn) && /\(COMMERCIAL-LICENSE\.md\)/.test(licEn), "英文 License 一节要讲清 free / commercial license");
+  // 贡献最短路径：技能模板
+  const contrib = fs.readFileSync(path.join(root, "CONTRIBUTING.md"), "utf8");
+  const tpl = (contrib.split(/^## 提交一个技能（3 分钟）\s*$/m)[1] || "").split(/^## /m)[0];
+  assert(/```markdown[\s\S]*?---\s*\nname: [\w-]+\s*\ndescription: .+\n---/.test(tpl) && /skills\//.test(tpl), "CONTRIBUTING 缺带 frontmatter 的技能模板");
+  assert(/CONTRIBUTING\.md#提交一个技能3-分钟/.test(zh), "README 的「10 分钟」路径没指到技能模板锚点");
+  // 首屏不许把 Star 号召建立在「一个人做」上——对外自称一人做的会吓跑付费甲方
+  for (const [name, t] of [["README.md", zh], ["README.en.md", en]]) assert(!/一个人|solo dev|one[- ]person|single developer/i.test(t), name + " 里出现了「一个人做」式措辞");
+  console.log("✅ README 门面闸门：中英互链·只指本仓库·首屏三句差异·最新动态 " + items.length + " 条日期均有真实提交且倒序·二维码 PNG " + w + "x" + h + "·协议一句人话·技能模板+锚点·无「一个人做」措辞");
 }
 
 function testLookPrefsStatic() {
