@@ -3867,12 +3867,233 @@ async function main() {
   await testDesktopPet();
   testPetSprites();
   await testMcpFailureReason();
+  await testThinkingSwitch();
+  await testThinkingSettingsApi();
   testUiNoRawMarkdown();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
   }
   console.log("=== 全部测试通过 ===");
+}
+
+/**
+ * 思考模式开关：「有思考模式的模型可以支持关闭思考模式的设置啊」。
+ *
+ * 这个开关最容易做成花架子——界面上写着「已关闭」，请求体里一个参数都没变。
+ * 所以这里不验"有没有这个下拉框"，验三件能出事的事：
+ *   ① 默认档（auto）真的一个字节都不改老行为，不然所有存量用户的账单和输出一起变；
+ *   ② 选了档，参数真的进到发出去的请求体里（起个假接口把 body 原样回显来看）；
+ *   ③ 关不掉的时候如实说关不掉，不许拿一句"已关闭"糊过去（OpenAI 最低只有 minimal，
+ *      deepseek-reasoner 根本没有开关，老版本 claude 会把 --thinking 静默吞掉）。
+ */
+async function testThinkingSwitch() {
+  const thinking = require("../thinking");
+  const http = require("http");
+  const { openaiChat } = require("../llm")._internals;
+
+  const M = {
+    claude: { provider: "anthropic", model: "claude-sonnet-4-5" },
+    claudeOld: { provider: "anthropic", model: "claude-3-5-sonnet" },
+    or: { base_url: "https://openrouter.ai/api/v1", model: "anthropic/claude-sonnet-4.5" },
+    gpt5: { base_url: "https://api.openai.com/v1", model: "gpt-5.4-mini" },
+    qwen: { base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3-max" },
+    glm: { base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.6" },
+    dsR: { base_url: "https://api.deepseek.com/v1", model: "deepseek-reasoner" },
+    weird: { base_url: "https://llm.example.internal/v1", model: "某个自建模型" },
+  };
+
+  // ① 默认档：任何模型、任何厂商，一个参数都不发。老用户的行为一个字节不变
+  for (const [k, e] of Object.entries(M)) {
+    const p = thinking.planFor(e, "auto");
+    assert(Object.keys(p.params).length === 0, `auto 档给 ${k} 发了参数（${JSON.stringify(p.params)}）——存量用户的行为被这次改动改了`);
+    assert(p.supported, "auto 档不该被标成不支持");
+  }
+  // 没填档位、填了乱七八糟的东西，都按 auto 走（这条路是配置文件手改进来的）
+  for (const bad of [undefined, "", "全开", "HIGH ", null, 3]) {
+    const lv = thinking.norm(bad);
+    assert(lv === "auto" || lv === "high", "认不出的档位没退回 auto：" + JSON.stringify(bad) + " → " + lv);
+  }
+  assert(thinking.norm("HIGH ") === "high", "大小写/空格没归一化");
+
+  // ② 关：各家参数名不一样，一家一家验。这张表错一个就是 400，任务当场挂
+  assert.deepStrictEqual(thinking.planFor(M.claude, "off").params, {}, "Anthropic 关思考应该是不发 thinking 字段");
+  assert.deepStrictEqual(thinking.planFor(M.or, "off").params, { reasoning: { enabled: false } }, "OpenRouter 关思考的参数不对");
+  assert.deepStrictEqual(thinking.planFor(M.qwen, "off").params, { enable_thinking: false }, "通义关思考的参数不对");
+  assert.deepStrictEqual(thinking.planFor(M.glm, "off").params, { thinking: { type: "disabled" } }, "智谱关思考的参数不对");
+  // ③ 开：强度得真的传下去，而不是三档发同一个东西
+  const budgets = ["low", "medium", "high"].map((lv) => thinking.planFor(M.claude, lv).params.thinking.budget_tokens);
+  assert(new Set(budgets).size === 3 && budgets[0] < budgets[1] && budgets[1] < budgets[2], "Claude 三档思考预算没有递增：" + budgets.join("/"));
+  assert(budgets[2] < 32000, "思考预算必须小于 max_tokens(32000)，否则 Anthropic 直接 400");
+  assert.deepStrictEqual(thinking.planFor(M.or, "high").params, { reasoning: { effort: "high" } }, "OpenRouter 强度没传下去");
+  assert(thinking.planFor(M.qwen, "low").params.thinking_budget < thinking.planFor(M.qwen, "high").params.thinking_budget, "通义强度没分档");
+
+  // ④ 关不到零就别谎称关到零 —— 这三条是「如实告知」的红线
+  const o = thinking.planFor(M.gpt5, "off");
+  assert(o.params.reasoning_effort === "minimal", "OpenAI 推理模型关档应发 minimal（它没有真正的零）");
+  assert(/minimal|最低/.test(o.note), "OpenAI 关不到零这件事没在说明里讲出来：" + o.note);
+  const ds = thinking.planFor(M.dsR, "off");
+  assert(!ds.supported && Object.keys(ds.params).length === 0, "deepseek-reasoner 关不掉，不该假装关掉");
+  assert(/deepseek-chat/.test(ds.note), "没告诉用户 deepseek 要不思考得换模型：" + ds.note);
+  const old = thinking.planFor(M.claudeOld, "high");
+  assert(!old.supported && Object.keys(old.params).length === 0, "不带扩展思考的老 Claude 型号发了 thinking 字段（会 400）");
+
+  // ⑤ 认不出的接口：宁可不发。乱发一个参数 = 400 = 任务当场挂，比开关不生效糟得多
+  const w = thinking.planFor(M.weird, "off");
+  assert(!w.supported && Object.keys(w.params).length === 0, "认不出的接口居然瞎发了参数：" + JSON.stringify(w.params));
+  assert(/extra_body/.test(w.note), "认不出时没告诉用户可以自己在 extra_body 里填：" + w.note);
+
+  // ⑥ 本机 CLI 那条路（用户原话：跟 app 设置保持一致）
+  assert.deepStrictEqual(thinking.planForEngine("claude-code", "auto", { thinkingFlag: true }).args, [], "auto 档不该给 CLI 加参数");
+  assert.deepStrictEqual(thinking.planForEngine("claude-code", "off", { thinkingFlag: true }).args, ["--thinking", "disabled"], "claude 关思考的参数不对");
+  assert.deepStrictEqual(thinking.planForEngine("claude-code", "high", { thinkingFlag: true }).args, ["--thinking", "enabled"], "claude 开思考的参数不对");
+  assert.deepStrictEqual(thinking.planForEngine("codex", "off").args, ["-c", 'model_reasoning_effort="none"'], "codex 关思考的参数不对");
+  assert.deepStrictEqual(thinking.planForEngine("codex", "medium").args, ["-c", 'model_reasoning_effort="medium"'], "codex 强度没传下去");
+  // 老版本 claude 不认识 --thinking，而且是**静默**忽略：发了等于没发，必须明说不生效
+  const oldCli = thinking.planForEngine("claude-code", "off", { thinkingFlag: false });
+  assert(!oldCli.supported && oldCli.args.length === 0, "探到 CLI 不支持还硬发 --thinking，用户点了没反应也看不出为什么");
+  assert(/升级|没有 --thinking/.test(oldCli.note), "没告诉用户为什么不生效：" + oldCli.note);
+
+  // ⑦ 探测本身：claude 对不认识的选项静默退出 0，这是整条链路的地基，塌了上面全是空的
+  const { probeOption } = require("../engines/jsonl");
+  const claudeBin = await require("../engines/which").resolveBin("claude", "");
+  if (claudeBin.bin) {
+    assert(await probeOption(claudeBin.bin, "--thinking"), "本机 claude 探不到 --thinking（探测逻辑坏了，或者该升级 claude 了）");
+    assert(!(await probeOption(claudeBin.bin, "--owb-no-such-flag")), "探测把不存在的选项也说成支持——那它就永远只会说 yes");
+  }
+  assert(!(await probeOption("/owb/no/such/bin", "--thinking")), "探一个不存在的程序应该老实说不支持，不该抛出去");
+
+  // ⑧ 真发出去的请求体：假接口把收到的 body 原样回显，看参数到底进没进去
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    let b = "";
+    req.on("data", (c) => (b += c));
+    req.on("end", () => {
+      seen.push(JSON.parse(b));
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  const args = { system: "s", history: [{ role: "user", content: "hi" }], tools: [] };
+  const call = (extra) => openaiChat({ base_url: `http://127.0.0.1:${port}/v1`, api_key: "k", model: "qwen3-max", ...extra }, args);
+  try {
+    await call({});                          // 没配档位 = 今天的行为
+    await call({ thinking: "auto" });        // 显式 auto
+    await call({ thinking: "off" });
+    await call({ thinking: "high" });
+    // extra_body 是老资格的逃生口：这张表哪家猜错了，用户不用等我改代码，自己就能纠正
+    await call({ thinking: "off", extra_body: { enable_thinking: true } });
+  } finally { srv.close(); }
+  assert(seen.length === 5, "假接口没收满 5 次请求");
+  assert(!("enable_thinking" in seen[0]) && !("enable_thinking" in seen[1]), "默认档往请求体里塞了思考参数 —— 存量用户的行为被改了");
+  assert(seen[2].enable_thinking === false, "选了「关闭」，请求体里却没有关思考的参数（界面骗人）");
+  assert(seen[3].enable_thinking === true && seen[3].thinking_budget > 0, "选了「高」，请求体里没有开思考的参数");
+  assert(seen[4].enable_thinking === true, "用户手填的 extra_body 被下拉框覆盖了（逃生口没了）");
+  for (const b of seen) assert(b.model === "qwen3-max" && Array.isArray(b.messages), "核心字段被思考参数挤掉了");
+
+  // ⑨ 接线：本机引擎那条路要真把档位传进去，而且要排在 opts 前面 ——
+  //    排在后面的话，engine_options 里没写 thinking 的用户（绝大多数）会被 undefined 覆盖成不生效
+  const src = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const at = src.indexOf("const r = await backend.run({");
+  assert(at > 0, "agent.js 里找不到 backend.run 调用");
+  const block = src.slice(at, src.indexOf("});", at));
+  assert(/thinking:\s*config\.agent\.thinking/.test(block), "本机引擎接管时没把 app 的思考模式设置传下去（用户要的就是这两边一致）");
+  assert(block.indexOf("thinking:") < block.indexOf("...opts"), "thinking 排在 ...opts 后面了，单个引擎就没法覆盖全局档位");
+  for (const [f, label] of [["engines/claude-code.js", "claude"], ["engines/codex.js", "codex"]]) {
+    const t = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
+    assert(/planForEngine\(/.test(t), label + " 引擎没接思考模式，设置页选了也传不到命令行");
+  }
+
+  console.log("✅ 思考模式：默认档零改动（负向控制） · 关/强度真进请求体 · extra_body 压得住 · 关不掉时如实说 · 本机 CLI 两条都接上了");
+}
+
+/**
+ * 设置接口这一头：档位存得住、读得回、写错了当场拒绝。
+ *
+ * 「当场拒绝」是这条里最要紧的一句。悄悄退回 auto 的后果是：用户以为思考关掉了、
+ * 按关掉的速度和价钱做打算，账单却照着思考的量在涨——跟「不静默降级用户配的模型」
+ * 是同一条红线。
+ */
+async function testThinkingSettingsApi() {
+  const os = require("os");
+  const http = require("http");
+  const { spawn } = require("child_process");
+  const crypto = require("crypto");
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-think-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  const port = 3900 + Math.floor(Math.random() * 90);
+  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+    env: { ...process.env, OPENWORKBUDDY_HOME: home, PORT: String(port), HOST: "127.0.0.1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  child.stdout.on("data", (c) => (log += c));
+  child.stderr.on("data", (c) => (log += c));
+  const up = await new Promise((resolve) => {
+    const t = setTimeout(() => resolve(false), 40000);
+    const tick = setInterval(() => {
+      if (/已启动/.test(log)) { clearInterval(tick); clearTimeout(t); resolve(true); }
+      if (child.exitCode !== null) { clearInterval(tick); clearTimeout(t); resolve(false); }
+    }, 200);
+  });
+
+  const req = (method, p, body) => new Promise((resolve) => {
+    const data = body === undefined ? null : JSON.stringify(body);
+    const r = http.request({
+      host: "127.0.0.1", port, path: p, method,
+      headers: { Cookie: "wb_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+    }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    r.on("error", (e) => resolve({ code: 0, body: e.message, json: null }));
+    if (data) r.write(data);
+    r.end();
+  });
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + log.slice(-400));
+    const s0 = await req("GET", "/api/settings");
+    assert(s0.json && s0.json.agent, "设置读不出来");
+    assert(s0.json.agent.thinking === "auto", "新装的默认档不是 auto（存量用户的行为会被改）：" + s0.json.agent.thinking);
+
+    const w = await req("POST", "/api/settings", { agent: { thinking: "off" } });
+    assert(w.code === 200, "存不进去（HTTP " + w.code + " " + w.body.slice(0, 200) + "）");
+    const s1 = await req("GET", "/api/settings");
+    assert(s1.json.agent.thinking === "off", "存了读不回来：" + s1.json.agent.thinking);
+    // 落盘：进程重启后还得在（设置页最容易做成只活在内存里）
+    const onDisk = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    assert(onDisk.agent.thinking === "off", "档位没写进 config.json，重启就丢");
+
+    const bad = await req("POST", "/api/settings", { agent: { thinking: "关掉" } });
+    assert(bad.code >= 400, "乱写的档位居然存进去了（HTTP " + bad.code + "）");
+    const s2 = await req("GET", "/api/settings");
+    assert(s2.json.agent.thinking === "off", "写错一次就把用户原来的档位冲掉了：" + s2.json.agent.thinking);
+
+    const t = await req("GET", "/api/thinking");
+    assert(t.json && Array.isArray(t.json.levels) && t.json.levels.length === 5, "/api/thinking 没给出五个档位");
+    assert(t.json.current === "off", "/api/thinking 报的当前档位不对：" + t.json.current);
+    for (const l of t.json.levels) assert(l.label && typeof l.supported === "boolean" && "note" in l, "档位说明不全，界面没东西可显示：" + JSON.stringify(l));
+    assert(t.json.levels.every((l) => l.level !== "auto" || l.supported), "auto 档被标成不支持了");
+
+    console.log("✅ 思考模式设置：存得住/落得了盘/读得回 · 写错当场拒绝且不冲掉原设置 · 界面拿得到每一档的如实说明");
+  } finally {
+    try { child.kill("SIGKILL"); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
 }
 
 /**

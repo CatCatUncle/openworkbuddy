@@ -914,6 +914,9 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         systemPrompt: engineSystemPrompt(cwd, mode, user, bridged),
         resumeId: engineSession || null,
         maxTurns: config.agent.max_steps || 25,
+        // 思考模式跟 app 设置对齐：设置页选什么档，接管的本机 CLI 就用什么档。
+        // 放在 opts 前面 = 单个引擎还能自己覆盖（engine_options[id].thinking）
+        thinking: config.agent.thinking || "auto",
         ...(bridged ? bridged.runOpts : {}),
         ...opts, // 用户在设置里给这个引擎填的 model / bin / extraArgs 等，最后覆盖
       });

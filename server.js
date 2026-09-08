@@ -19,6 +19,7 @@ const { createImRouter } = require("./im");
 const { createScheduler } = require("./scheduler");
 const account = require("./account");
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
+const thinking = require("./thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./security");
 const memory = require("./memory");
 const notify = require("./notify");
@@ -503,6 +504,7 @@ app.get("/api/settings", (_req, res) => {
       max_context_chars: config.agent.max_context_chars || 120000,
       max_tokens_budget: config.agent.max_tokens_budget || 0,
       failover_model: config.agent.failover_model || "",
+      thinking: thinking.norm(config.agent.thinking), // 思考模式档位，默认 auto=跟随模型自己的默认
       engine: config.agent.engine || "builtin",
       // 前端那个模型选择器要靠它说实话：走本机 CLI 的时候，API 模型列表整个不生效
       engine_label: (engines.list().find((e) => e.id === (config.agent.engine || "builtin")) || {}).label || "",
@@ -579,6 +581,12 @@ app.post("/api/settings", (req, res) => {
       // 下限 2 万字符：再小连最近几步的工具原文都留不住，agent 会失忆式反复重做
       if (b.agent.max_context_chars) config.agent.max_context_chars = Math.max(20000, Math.min(2000000, +b.agent.max_context_chars));
       if (b.agent.max_tokens_budget !== undefined) config.agent.max_tokens_budget = Math.max(0, Math.round(+b.agent.max_tokens_budget) || 0);
+      if (b.agent.thinking !== undefined) {
+        const lv = String(b.agent.thinking || "").trim().toLowerCase();
+        // 写错档位当场拒绝，不悄悄退回 auto：用户以为关掉了思考、账单却照着思考的量涨
+        if (!thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
+        config.agent.thinking = lv;
+      }
       if (b.agent.failover_model !== undefined) {
         const fm = String(b.agent.failover_model || "").trim();
         if (fm && !config.models.some((m) => m.name === fm)) throw new Error("备用渠道不在模型列表中");
@@ -597,6 +605,11 @@ app.post("/api/settings", (req, res) => {
           if (!v || typeof v !== "object") continue;
           const cur = (config.agent.engine_options[id] = config.agent.engine_options[id] || {});
           for (const k of ["model", "bin", "permissionMode", "sandbox"]) if (v[k] !== undefined) cur[k] = String(v[k] || "").trim();
+          if (v.thinking !== undefined) {
+            const lv = String(v.thinking || "").trim().toLowerCase();
+            if (lv && !thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
+            cur.thinking = lv; // 空串 = 这个引擎跟随全局档位
+          }
           if (v.network !== undefined) cur.network = !!v.network;
           if (Array.isArray(v.extraArgs)) cur.extraArgs = v.extraArgs.map((x) => String(x)).slice(0, 20);
         }
@@ -923,6 +936,44 @@ app.get("/api/engines", async (_req, res) => {
   try {
     const found = await engines.detectAll((config.agent && config.agent.engine_options) || {});
     res.json({ current: config.agent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 思考模式：每一档到底会发什么，如实报给设置页。
+ *
+ * 为什么不让前端自己写死一张表：各家的参数名一年能改两回，而「这一档对你选的这个模型
+ * 到底生不生效」只有服务端知道（要看 provider、base_url、模型名，走本机 CLI 时还要看
+ * 那个 CLI 认不认这个选项）。写死在前端 = 界面上写着"已关闭"、实际一个参数都没发出去。
+ *
+ * 所以这里把 5 个档位逐个算一遍，supported=false 的连同原因一起给出去，界面照抄。
+ */
+app.get("/api/thinking", async (_req, res) => {
+  try {
+    const engineId = config.agent.engine || "builtin";
+    const entry = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0] || {};
+    // 本机 CLI 的能力探测（claude 对不认识的选项是静默忽略的，非探不可），探不动就当没有
+    let caps = {};
+    if (engineId !== "builtin") {
+      try {
+        const found = await engines.detectAll((config.agent && config.agent.engine_options) || {});
+        caps = (found.find((e) => e.id === engineId) || {}).caps || {};
+      } catch {}
+    }
+    const levels = thinking.LEVELS.map((lv) => {
+      const api = thinking.planFor(entry, lv);
+      const eng = engineId === "builtin" ? null : thinking.planForEngine(engineId, lv, caps);
+      const active = eng || api;
+      return { level: lv, label: thinking.LEVEL_LABEL[lv], supported: active.supported, note: active.note };
+    });
+    res.json({
+      current: thinking.norm(config.agent.thinking),
+      via: engineId === "builtin" ? "api" : "engine",
+      target: engineId === "builtin" ? (entry.name || "") : engineId,
+      levels,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

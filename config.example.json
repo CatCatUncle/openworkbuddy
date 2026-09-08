@@ -40,7 +40,9 @@
     "tool_timeout_ms": 120000,
     "max_runtime_ms": 600000,
     "ask_user_timeout_ms": 300000,
-    "llm_timeout_ms": 300000
+    "llm_timeout_ms": 300000,
+    "_thinking_说明": "思考模式档位：auto=跟随模型自己的默认（什么参数都不发）/ off=关闭 / low / medium / high。各家参数名不同，映射表在 thinking.js",
+    "thinking": "auto"
   },
   "search": {
     "_说明": "web_search 工具的搜索 API。provider=jina 时用 s.jina.ai（去 jina.ai 免费领 key）；api_key 留空则自动回退免费 DuckDuckGo",

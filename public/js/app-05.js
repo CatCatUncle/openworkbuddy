@@ -452,6 +452,12 @@ async function renderAgentPane(pane, s) {
       <div id="ag-engines" class="eng-list"><div class="eng-msg">正在看本机装了哪些…</div></div>
     </div>
     <div class="card-item">
+      <div class="t">思考模式</div>
+      <div class="d" style="margin-bottom:8px">带思考/推理的模型可以在这里关掉或者调强度。关掉更快更省钱，开高更适合难题。默认「跟随模型默认」= 一个参数都不发，和以前完全一样。</div>
+      <select id="ag-thinking"><option value="auto">跟随模型默认</option></select>
+      <div class="d" id="ag-thinking-note" style="margin-top:6px">正在看这一档对当前模型是怎么生效的…</div>
+    </div>
+    <div class="card-item">
       <div class="t">执行权限模式</div>
       <div class="d">输入框下方「权限」下拉可随时切换：Ask 只问答 · Plan 只出计划 · Craft 完整执行交付</div>
     </div>
@@ -494,8 +500,30 @@ async function renderAgentPane(pane, s) {
       max_context_chars: +pane.querySelector("#ag-ctx").value * 1000,
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
       failover_model: pane.querySelector("#ag-failover").value,
+      thinking: pane.querySelector("#ag-thinking").value,
     } }, pane.querySelector("#ag-msg"));
   renderEngineCard(pane.querySelector("#ag-engines"));
+  renderThinkingCard(pane.querySelector("#ag-thinking"), pane.querySelector("#ag-thinking-note"));
+}
+/**
+ * 「思考模式」下拉。
+ *
+ * 选项的说明文字一律由服务端算（/api/thinking）：各家的参数名不一样，而且换了模型、
+ * 换了引擎，同一档的含义就变了。前端写死一张表迟早写歪成「界面说已关闭、实际什么都没发」。
+ * 服务端说这一档对当前模型不生效，这里就把原因原样显示出来，不拿一句"已关闭"糊过去。
+ */
+async function renderThinkingCard(sel, note) {
+  const d = await fetch("/api/thinking").then((r) => r.json()).catch(() => null);
+  if (!d || !d.levels) { note.textContent = "读不到思考模式的支持情况，先按「跟随模型默认」用。"; return; }
+  const where = d.via === "engine" ? `本机 ${esc(d.target)}` : (d.target ? esc(d.target) : "当前模型");
+  sel.innerHTML = d.levels.map((l) => `<option value="${esc(l.level)}"${l.level === d.current ? " selected" : ""}>${esc(l.label)}${l.supported ? "" : "（对当前模型不生效）"}</option>`).join("");
+  const show = () => {
+    const l = d.levels.find((x) => x.level === sel.value) || d.levels[0];
+    note.textContent = (l.supported ? `对 ${where}：` : `⚠️ 对 ${where} 不生效 —— `) + (l.note || "");
+    note.style.color = l.supported ? "" : "var(--warn, #c2410c)";
+  };
+  sel.onchange = show;
+  show();
 }
 /**
  * 「底层引擎」卡片。
