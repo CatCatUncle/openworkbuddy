@@ -1576,6 +1576,74 @@ async function testFrontendSvgFigures() {
   for (const l of lines) console.log(l);
 }
 
+/** #61 桌面版叫 OpenWorkBuddy 不叫 Electron：启动器是克隆改名的真 .app，开发态 Dock 换图标，userData 钉死不改名 */
+function testDesktopAppIdentity() {
+  const os = require("os");
+  const { execFileSync } = require("child_process");
+  // ---- 开发态（npm run app）：electron-main.js 的三件事 ----
+  const main = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const iSetPath = main.indexOf('app.setPath("userData"');
+  const iSetName = main.indexOf('app.setName("OpenWorkBuddy")');
+  assert.ok(iSetPath > 0 && iSetName > 0, "electron-main.js 少了 setPath(userData) / setName");
+  assert.ok(iSetPath < iSetName, "userData 必须在 setName 之前钉死：setName 会把 userData 改成 appData/OpenWorkBuddy，用户又被登出一次");
+  assert.ok(/setPath\("userData",\s*path\.join\(app\.getPath\("appData"\),\s*"openworkbuddy"\)\)/.test(main), "userData 目录名必须还是 openworkbuddy（登录态/localStorage 都在里面）");
+  assert.ok(/app\.dock\.setIcon\(path\.join\(__dirname, "build", "icon\.png"\)\)/.test(main), "开发态 Dock 图标没换成 build/icon.png");
+  assert.ok(/setAboutPanelOptions\(\{ applicationName: "OpenWorkBuddy"/.test(main), "「关于」面板没署名 OpenWorkBuddy");
+  assert.ok(fs.existsSync(path.join(__dirname, "..", "build", "icon.png")) && fs.existsSync(path.join(__dirname, "..", "build", "icon.icns")), "build/icon.png|icns 缺失");
+
+  if (process.platform !== "darwin") return;
+  // ---- 装机态：make-mac-app.sh 对着一个假的 Electron.app 骨架跑一遍，验产物而不是验脚本文本 ----
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-macapp-"));
+  try {
+    const src = path.join(tmp, "Electron.app");
+    fs.mkdirSync(path.join(src, "Contents", "MacOS"), { recursive: true });
+    fs.mkdirSync(path.join(src, "Contents", "Resources", "en.lproj"), { recursive: true });
+    fs.writeFileSync(path.join(src, "Contents", "MacOS", "Electron"), "#!/bin/sh\necho fake\n", { mode: 0o755 });
+    fs.writeFileSync(path.join(src, "Contents", "Resources", "electron.icns"), "icns");
+    fs.writeFileSync(path.join(src, "Contents", "Resources", "default_app.asar"), "asar");
+    const plist = (kv) => `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>${Object.entries(kv).map(([k, v]) => `<key>${k}</key><string>${v}</string>`).join("")}</dict></plist>\n`;
+    fs.writeFileSync(path.join(src, "Contents", "Info.plist"), plist({ CFBundleName: "Electron", CFBundleDisplayName: "Electron", CFBundleExecutable: "Electron", CFBundleIdentifier: "com.github.Electron", CFBundleIconFile: "electron.icns", CFBundleShortVersionString: "43.2.0", CFBundleVersion: "43.2.0", CFBundlePackageType: "APPL" }));
+    const out = path.join(tmp, "Applications", "OpenWorkBuddy.app");
+    const env = { ...process.env, OWB_ELECTRON_APP: src, OWB_APP_OUT: out, OWB_SKIP_CODESIGN: "1" };
+    const log = execFileSync("bash", [path.join(__dirname, "..", "scripts", "make-mac-app.sh")], { env, encoding: "utf8" });
+    assert.ok(/✅ 已生成/.test(log), "脚本没报成功：\n" + log);
+    assert.ok(!/✗/.test(log), "脚本自检有叉：\n" + log);
+    const pb = (k) => execFileSync("/usr/libexec/PlistBuddy", ["-c", `Print :${k}`, path.join(out, "Contents", "Info.plist")], { encoding: "utf8" }).trim();
+    assert.strictEqual(pb("CFBundleName"), "OpenWorkBuddy", "菜单栏名字还是 Electron");
+    assert.strictEqual(pb("CFBundleDisplayName"), "OpenWorkBuddy");
+    assert.strictEqual(pb("CFBundleExecutable"), "OpenWorkBuddy");
+    assert.strictEqual(pb("CFBundleIconFile"), "icon.icns");
+    assert.strictEqual(pb("CFBundleIdentifier"), "com.openworkbuddy.app", "bundle id 还是 com.github.Electron 的话通知/权限都记在 Electron 名下");
+    assert.strictEqual(pb("CFBundleShortVersionString"), require("../package.json").version, "版本号没跟 package.json");
+    assert.ok(fs.existsSync(path.join(out, "Contents", "MacOS", "OpenWorkBuddy")), "可执行文件没改名");
+    assert.ok(!fs.existsSync(path.join(out, "Contents", "MacOS", "Electron")), "旧的 Electron 二进制还在");
+    assert.ok(!fs.existsSync(path.join(out, "Contents", "Resources", "electron.icns")), "Electron 图标没删");
+    // 两个 Buffer 不能用 strictEqual（=== 比的是对象引用，永远不等，报错还要吐几万行字节）
+    const sha = (f) => require("crypto").createHash("sha1").update(fs.readFileSync(f)).digest("hex");
+    assert.strictEqual(sha(path.join(out, "Contents", "Resources", "icon.icns")), sha(path.join(__dirname, "..", "build", "icon.icns")), "图标不是 build/icon.icns");
+    const entry = fs.readFileSync(path.join(out, "Contents", "Resources", "app", "main.js"), "utf8");
+    const repo = path.resolve(__dirname, "..");
+    assert.ok(entry.includes(JSON.stringify(repo)), "入口没把仓库路径烤进去");
+    assert.ok(/require\(path\.join\(REPO, "electron-main\.js"\)\)/.test(entry), "入口没加载仓库的 electron-main.js");
+    assert.ok(/showErrorBox/.test(entry), "仓库挪走后没有报错兜底，用户只会看到什么都不发生");
+    const pkg = JSON.parse(fs.readFileSync(path.join(out, "Contents", "Resources", "app", "package.json"), "utf8"));
+    assert.strictEqual(pkg.name, "openworkbuddy", "app/package.json 的 name 决定 userData 目录，改了就登出");
+    assert.strictEqual(pkg.main, "main.js");
+    execFileSync("node", ["--check", path.join(out, "Contents", "Resources", "app", "main.js")]);
+    // 反例：源包没动
+    assert.ok(fs.existsSync(path.join(src, "Contents", "MacOS", "Electron")) && fs.existsSync(path.join(src, "Contents", "Resources", "electron.icns")), "脚本改了 node_modules 里的源包");
+    // 反例：图标缺失时必须拒绝生成，别生成一个又叫 Electron 图标的包
+    const noIcon = path.join(tmp, "src2.app");
+    fs.cpSync(src, noIcon, { recursive: true });
+    let failed = false;
+    try { execFileSync("bash", [path.join(__dirname, "..", "scripts", "make-mac-app.sh")], { env: { ...env, OWB_ELECTRON_APP: path.join(tmp, "nope.app") }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); } catch { failed = true; }
+    assert.ok(failed, "源 Electron.app 不存在还生成成功了");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  console.log("  ✓ 桌面版身份：开发态 Dock 图标/关于面板/userData 钉死 + 装机态 .app 克隆改名 12 项验过");
+}
+
 function testDefaultSkillsManifest() {
   const skillsMgr = require("../skills");
   const list = skillsMgr.listDefaultSkills();
@@ -3872,6 +3940,7 @@ async function main() {
   testPluginMcpRuntime();
   testPluginSkillsIntegration();
   testDefaultSkillsManifest();
+  testDesktopAppIdentity();
   await testFrontendSvgFigures();
   await testFetchUrlShapes();
   await testParallelToolBatch();
