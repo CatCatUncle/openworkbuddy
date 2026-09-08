@@ -83,6 +83,23 @@ npm run app     # 桌面版；或 npm start 走浏览器 http://localhost:3800
 
 > `config.json` 是唯一存着所有 API Key 的文件，已经在 `.gitignore` 里，**别手滑提交**。
 
+## 命令行也能用
+
+不开窗口也能干活：`wb` 跟桌面版共用同一份配置、技能、记忆和连接器，答案落到 stdout，能塞进任何管道、脚本和 cron。
+
+```bash
+npm link                                   # 一次性：把 wb 装成全局命令（不想 link 就用 npm run cli -- "…"）
+wb "帮我写一份本周周报"                     # 单发：跑完就退，退出码 0/1 说实话
+wb                                         # 交互式：像聊天窗一样连着问，/help 看内置命令
+cat error.log | wb "这是什么问题"           # 管道：内容当附加材料一起送进去
+wb -q "生成周报" > 周报.md                  # -q 只要答案；进度走 stderr，文件里干干净净
+wb -c "那它依赖了哪些包"                    # 每次单发都是干净上下文，想接着聊得显式 -c
+wb --json "整理会议纪要" | jq -j 'select(.type=="text") | .delta'   # 给脚本用：NDJSON 事件流
+wb engines && wb engines use claude-code   # 本机装了 Claude Code / Codex？一键拿它当底层，不再烧 API 额度
+```
+
+`-C <目录>` 指定这次在哪干活、`--session <id>` 续接指定会话、`wb sessions` 列最近会话（桌面端开的也在）。全部参数、事件格式、写进 git 钩子和 cron 的例子 → [命令行用法](docs/命令行用法.md)。
+
 ## ⚠️ 这个 agent 手里有 shell
 
 它能执行命令、读写文件、访问网络——所以闸门是真拦的：命令审批、文件黑名单、URL 白名单、审计日志、四档权限。**放到公网前务必先读 [安全](docs/安全.md)**，默认配置只为本机使用而调。

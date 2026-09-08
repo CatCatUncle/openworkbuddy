@@ -375,9 +375,15 @@ function renderAboutPane(pane) {
       <div class="d">桌面版：npm run app（或桌面快捷方式）· Web 版：npm start 后浏览器打开 localhost:3800 · 测试：npm test</div>
     </div>
     <div class="card-item">
+      <div class="t">🧭 新手引导</div>
+      <div class="d" style="margin-bottom:8px">五步走一遍：大模型 → 联网搜索 → 图/视频/语音 → 远程指挥 → 工作目录。哪一步没配、该去哪拿 Key，向导里都写着。</div>
+      <button class="btn-plain" id="about-onb">重新打开新手引导</button>
+    </div>
+    <div class="card-item">
       <div class="t">💬 帮助与反馈</div>
       <div class="d">快速上手：输入框里 <b>@</b> 引用工作空间文件、<b>/</b> 调用技能；侧栏「技能库 / 专家团 / 定时任务」都支持增删改热生效；手机远程用 设置→助理设置 绑定飞书或企业微信。<br>
       遇到问题：先看 设置→安全中心→审计中心 是不是被安全闸拦了；LLM 报 503 是上游服务繁忙（已内置自动重试，连续失败可到 设置→模型 换渠道）。<br>
       反馈：本地部署版没有云端客服，问题与建议直接发给维护它的 AI 助理（就是让我改），改完重启即生效。</div>
     </div>`;
+  pane.querySelector("#about-onb").onclick = () => { mask.classList.remove("show"); openOnboarding(); };
 }

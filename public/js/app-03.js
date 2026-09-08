@@ -208,58 +208,375 @@ const ONB_TIPS = {
   "https://open.bigmodel.cn/api/paas/v4": '智谱 GLM，去 <a href="https://open.bigmodel.cn" target="_blank">open.bigmodel.cn</a> 控制台拿。',
   "https://api.moonshot.cn/v1": '月之暗面 Kimi，去 <a href="https://platform.moonshot.cn" target="_blank">platform.moonshot.cn</a> 拿。',
 };
+const ONB_SEARCH = {
+  jina: ["jina_...", '免费额度够日常用，去 <a href="https://jina.ai" target="_blank">jina.ai</a> 首页领。'],
+  tavily: ["tvly-...", '专给 AI 用的搜索，每月有免费额度，去 <a href="https://tavily.com" target="_blank">tavily.com</a> 拿。'],
+  brave: ["BSA...", '去 <a href="https://brave.com/search/api/" target="_blank">brave.com/search/api</a> 申请。'],
+};
+// 四类多媒体能力：填的都是「OpenAI 兼容接口地址 + Key + 模型名」，说明只写一句它能干什么
+const ONB_MEDIA = [
+  ["image", "🖼️", "生图", "配图、海报、封面", "mi"],
+  ["video", "🎬", "生视频", "短视频、动态封面", "mv"],
+  ["tts", "🎙️", "语音", "配音、播客旁白", "mt"],
+  ["vision", "👁️", "看图", "读截图、识别图片里的字", "mvi"],
+];
+/**
+ * 首次开箱向导：五步走完，大脑必配，其余按需。
+ *
+ * 为什么是向导而不是一张长表单：新用户不知道「要设置哪些 API」，一口气看到十几个输入框只会关掉。
+ * 每一步只问一件事、说清楚它是干什么的、能不能跳过；走完给一张能力清单，没配的随时在设置里补。
+ * 走完（或大脑已接上时跳过）会记到服务端，下次打开不再弹；「设置 → 关于」里能再打开。
+ */
+const ONB_STEPS = [
+  ["brain", "🧠", "大模型"],
+  ["search", "🔎", "联网搜索"],
+  ["media", "🎨", "图/视频/语音"],
+  ["im", "📱", "远程指挥"],
+  ["done", "🎉", "完成"],
+];
+let onbState = null;
+// 「本次窗口先跳过」只记在会话存储里：关窗即忘，下次打开还会提醒。存储被禁（file:// / 隐私模式）时退到内存里，别让向导崩掉
+let onbSkipMem = false;
+function onbSkipFlag(set) {
+  try {
+    if (set) sessionStorage.setItem("wb_onb_skipped", "1");
+    else return onbSkipMem || sessionStorage.getItem("wb_onb_skipped") === "1";
+  } catch { /* 存储不可用 */ }
+  if (set) onbSkipMem = true;
+  return onbSkipMem;
+}
+
 async function maybeOnboard() {
   const st = await fetch("/api/onboarding").then(r => r.json()).catch(() => null);
-  if (!st || !st.needs_setup) return;
-  if (sessionStorage.getItem("wb_onb_skipped")) return; // 本次窗口内跳过一次就别再烦人
+  if (!st || st.error || !st.models) return;
+  if (!st.needs_setup && st.seen) return; // 大脑接上了、向导也走完了：不打扰
+  if (onbSkipFlag()) return; // 本次窗口内跳过一次就别再烦人
+  openOnboarding(st);
+}
 
-  const sel = document.getElementById("onb-model");
-  sel.innerHTML = st.models.map(m =>
-    `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-local="${m.local ? 1 : 0}">${esc(m.name)} · ${esc(m.model)}${m.has_key ? "（已配）" : ""}</option>`
-  ).join("");
+// 设置 → 关于 里「重新打开新手引导」也走这里；传 st 则直接用已拉好的体检表
+async function openOnboarding(st) {
+  if (!st || !st.models) st = await fetch("/api/onboarding").then(r => r.json()).catch(() => null);
+  if (!st || st.error || !st.models) { toast("拿不到配置体检表，服务没起来？"); return; }
+  onbState = { st, step: 0, skipped: new Set(), dir: "" };
+  renderOnb();
+  document.getElementById("onb-mask").classList.add("show");
+}
+function closeOnboarding() {
+  document.getElementById("onb-mask").classList.remove("show");
+}
+async function onbReload() {
+  const st = await fetch("/api/onboarding").then(r => r.json()).catch(() => null);
+  if (st && st.models) onbState.st = st;
+  return onbState.st;
+}
+function onbGo(step) {
+  onbState.step = Math.max(0, Math.min(ONB_STEPS.length - 1, step));
+  renderOnb();
+}
+function onbHead(title, sub, tag) {
+  const cls = tag === "必需" ? "must" : tag === "推荐" ? "rec" : "opt";
+  return `<div class="onb-h"><h2>${title}</h2><span class="onb-tag ${cls}">${tag}</span></div><div class="sub">${sub}</div>`;
+}
+function onbFoot(primary, skipTxt) {
+  return `<div class="onb-foot">${skipTxt ? `<a id="onb-skip-step">${skipTxt}</a>` : "<span></span>"}<button class="go" id="onb-go">${primary}</button></div>`;
+}
+function renderOnb() {
+  const { st, step } = onbState;
+  const stepsEl = document.getElementById("onb-steps");
+  stepsEl.innerHTML = ONB_STEPS.map(([k, ic, lb], i) =>
+    `<div class="onb-step ${i === step ? "cur" : i < step ? "done" : ""}" data-i="${i}"><i>${i < step ? "✓" : ic}</i><span>${lb}</span></div>`).join("");
+  // 大脑没接上之前不许在步骤条上乱跳：跳过去也是一步都干不了
+  stepsEl.onclick = (e) => {
+    const el = e.target.closest(".onb-step");
+    if (!el || !st.brain.ok) return;
+    onbGo(+el.dataset.i);
+  };
+  const body = document.getElementById("onb-body");
+  const k = ONB_STEPS[step][0];
+  if (k === "brain") renderOnbBrain(body);
+  else if (k === "search") renderOnbSearch(body);
+  else if (k === "media") renderOnbMedia(body);
+  else if (k === "im") renderOnbIm(body);
+  else renderOnbDone(body);
+}
+
+// ---------- 第一步：大模型（必需） ----------
+function renderOnbBrain(body) {
+  const { st } = onbState;
+  const engs = st.engines || [];
+  const installed = engs.filter(e => e.installed);
+  body.innerHTML = `
+    ${onbHead("先接上一个大模型", "OpenWorkBuddy 自己不含模型。填一家服务商的 API Key，或者直接用你电脑上已登录的 Claude Code / Codex。", "必需")}
+    ${st.brain.ok ? `<div class="onb-ok" id="onb-brain-ok">✅ 已接上 <b>${esc(st.brain.name)}</b>${st.brain.model ? ` · ${esc(st.brain.model)}` : ""}<a id="onb-brain-change">换一个</a></div>` : ""}
+    <div id="onb-brain-form" ${st.brain.ok ? "hidden" : ""}>
+      <div class="onb-seg" id="onb-seg">
+        <button type="button" class="on" data-v="cloud">☁️ 云端 API</button>
+        <button type="button" data-v="local">💻 本机 Claude Code / Codex${installed.length ? "" : "（未装）"}</button>
+      </div>
+      <div id="onb-cloud">
+        <label class="onb-lb">服务商</label>
+        <select id="onb-model">${st.models.map(m =>
+          `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-local="${m.local ? 1 : 0}">${esc(m.name)} · ${esc(m.model)}${m.has_key ? "（已配）" : ""}</option>`).join("")}</select>
+        <div class="onb-tip" id="onb-tip"></div>
+        <label class="onb-lb">API Key</label>
+        <input id="onb-key" type="password" placeholder="粘贴 API Key" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="onb-local" hidden>
+        ${installed.length
+          ? installed.map((e, i) => `<label class="onb-radio"><input type="radio" name="onb-eng" value="${esc(e.id)}" ${i === 0 ? "checked" : ""}><b>${esc(e.label)}</b><span>${esc(e.version || "已安装")}</span></label>`).join("")
+          : `<div class="onb-tip">${engs.length ? engs.map(e => `${esc(e.label)}：未安装${e.install ? `，${esc(e.install)}` : ""}`).join("<br>") : "没检测到本机 CLI"}</div>`}
+        <div class="onb-tip">走本机 CLI 不需要 API Key，用的是它自己的登录；我会真发一句话过去确认它能答。</div>
+      </div>
+      <div class="err" id="onb-err"></div>
+    </div>
+    ${onbFoot(st.brain.ok ? "下一步" : "验活并继续", st.brain.ok ? "" : "先跳过，我一会儿去设置里填")}`;
+
+  const form = body.querySelector("#onb-brain-form");
+  const seg = body.querySelector("#onb-seg");
+  const sel = body.querySelector("#onb-model");
+  const keyEl = body.querySelector("#onb-key");
+  const tipEl = body.querySelector("#onb-tip");
+  const err = body.querySelector("#onb-err");
+  const go = body.querySelector("#onb-go");
+  let mode = "cloud";
+  seg.onclick = (e) => {
+    const b = e.target.closest("button[data-v]");
+    if (!b) return;
+    mode = b.dataset.v;
+    seg.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+    body.querySelector("#onb-cloud").hidden = mode !== "cloud";
+    body.querySelector("#onb-local").hidden = mode !== "local";
+    err.textContent = "";
+  };
   // 默认选中第一个还没配 key 的云端模型，用户十有八九就是要配它
   const first = st.models.find(m => !m.has_key && !m.local) || st.models[0];
   if (first) sel.value = first.name;
-  document.getElementById("onb-dir").placeholder = st.workspace_dir || "留空就用默认目录";
-
-  const keyEl = document.getElementById("onb-key");
-  const tipEl = document.getElementById("onb-tip");
   const syncTip = () => {
     const opt = sel.selectedOptions[0];
-    const local = opt.dataset.local === "1";
-    tipEl.innerHTML = local
-      ? "本地模型不需要 Key，确认 Ollama 已经在跑就行。"
-      : (ONB_TIPS[opt.dataset.url] || "去这家服务商的控制台拿 API Key。");
+    const local = !!opt && opt.dataset.local === "1";
+    tipEl.innerHTML = local ? "本地模型不需要 Key，确认 Ollama 已经在跑就行。" : (ONB_TIPS[opt ? opt.dataset.url : ""] || "去这家服务商的控制台拿 API Key。");
     keyEl.disabled = local;
     keyEl.placeholder = local ? "本地模型不用填" : "粘贴 API Key";
   };
   sel.onchange = syncTip;
   syncTip();
+  const chg = body.querySelector("#onb-brain-change");
+  if (chg) chg.onclick = () => { form.hidden = false; go.textContent = "验活并继续"; chg.closest(".onb-ok").hidden = true; setTimeout(() => keyEl.focus(), 30); };
 
-  const err = document.getElementById("onb-err");
-  const go = document.getElementById("onb-go");
   go.onclick = async () => {
+    if (form.hidden) return onbGo(1);
     err.textContent = "";
     go.disabled = true;
-    go.textContent = "正在验活…（发一条真实请求，可能要十几秒）";
-    const r = await fetch("/api/onboarding", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: sel.value, api_key: keyEl.value.trim(), workspace_dir: document.getElementById("onb-dir").value.trim() || undefined }),
-    }).then(r => r.json()).catch(() => ({ ok: false, error: "请求失败，服务没起来？" }));
-    go.disabled = false;
-    go.textContent = "验活并保存";
-    if (!r.ok) { err.textContent = r.error || "验活没通过"; return; }
-    document.getElementById("onb-mask").classList.remove("show");
-    toast(`✅ 已接上 ${r.active_model}，可以开始干活了`);
-    refreshSettingsCache(); // 输入卡片右下角的模型名/工作空间跟着刷新
+    try {
+      if (mode === "cloud") {
+        go.textContent = "正在验活…（发一条真实请求，可能要十几秒）";
+        const r = await fetch("/api/onboarding", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: sel.value, api_key: keyEl.value.trim() }),
+        }).then(r => r.json()).catch(() => ({ ok: false, error: "请求失败，服务没起来？" }));
+        if (!r.ok) { err.textContent = r.error || "验活没通过"; return; }
+        toast(`✅ 已接上 ${r.active_model}`);
+      } else {
+        const picked = body.querySelector("input[name=onb-eng]:checked");
+        if (!picked) { err.textContent = "本机没装 Claude Code / Codex，先装好并登录，或者改用云端 API"; return; }
+        go.textContent = "正在连本机 CLI…（真跑一句话，可能要几十秒）";
+        const t = await fetch("/api/engines/test", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: picked.value }),
+        }).then(r => r.json()).catch(() => ({ ok: false, why: "请求失败" }));
+        if (!t.ok) { err.textContent = (t.why || t.error || "连不上") + (t.hint ? `。${t.hint}` : ""); return; }
+        const s = await fetch("/api/settings", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent: { engine: picked.value } }),
+        }).then(r => r.json()).catch(() => ({ error: "保存失败" }));
+        if (s && s.error) { err.textContent = s.error; return; }
+        toast(`✅ 已切到本机 ${picked.value}`);
+      }
+      refreshSettingsCache(); // 输入卡片右下角的模型名跟着刷新
+      await onbReload();
+      onbGo(1);
+    } finally {
+      go.disabled = false;
+      if (!go.isConnected) return;
+      go.textContent = form.hidden ? "下一步" : "验活并继续";
+    }
   };
-  document.getElementById("onb-skip").onclick = () => {
-    sessionStorage.setItem("wb_onb_skipped", "1");
-    document.getElementById("onb-mask").classList.remove("show");
+  const skip = body.querySelector("#onb-skip-step");
+  if (skip) skip.onclick = () => {
+    onbSkipFlag(true);
+    closeOnboarding();
     toast("跳过了。随时可以在 设置 → 模型 里补上 API Key");
   };
-  document.getElementById("onb-mask").classList.add("show");
-  setTimeout(() => keyEl.focus(), 60);
+  setTimeout(() => { if (!form.hidden) keyEl.focus(); }, 60);
+}
+
+// ---------- 第二步：联网搜索（推荐） ----------
+function renderOnbSearch(body) {
+  const { st } = onbState;
+  const sc = st.search || {};
+  body.innerHTML = `
+    ${onbHead("联网搜索", "让它能查资料、看新闻、核对事实。不填也能用免费的 DuckDuckGo，但结果一般、国内经常连不上。", "推荐")}
+    ${sc.has_key ? `<div class="onb-ok">✅ 已配 <b>${esc(sc.provider)}</b></div>` : ""}
+    <label class="onb-lb">搜索服务商</label>
+    <select id="onb-sp">
+      <option value="jina">Jina（免费额度够用）</option>
+      <option value="tavily">Tavily（给 AI 用的搜索）</option>
+      <option value="brave">Brave Search</option>
+    </select>
+    <div class="onb-tip" id="onb-sp-tip"></div>
+    <label class="onb-lb">API Key</label>
+    <input id="onb-sp-key" type="password" autocomplete="off" spellcheck="false">
+    <div class="err" id="onb-err"></div>
+    ${onbFoot(sc.has_key ? "下一步" : "保存并测试", "先跳过，用免费的 DuckDuckGo")}`;
+  const sel = body.querySelector("#onb-sp");
+  const keyEl = body.querySelector("#onb-sp-key");
+  const tip = body.querySelector("#onb-sp-tip");
+  const err = body.querySelector("#onb-err");
+  const go = body.querySelector("#onb-go");
+  sel.value = sc.provider || "jina";
+  const sync = () => { const [ph, t] = ONB_SEARCH[sel.value] || ["", ""]; keyEl.placeholder = ph; tip.innerHTML = t; };
+  sel.onchange = sync;
+  sync();
+  go.onclick = async () => {
+    const key = keyEl.value.trim();
+    if (!key) { if (sc.has_key) return onbGo(2); err.textContent = "没填 Key。不想填就点「先跳过」"; return; }
+    err.textContent = "";
+    go.disabled = true;
+    go.textContent = "保存并测试中…";
+    try {
+      const ok = await saveSettings({ search: { provider: sel.value, [sel.value + "_key"]: key } });
+      if (!ok) { err.textContent = "保存失败"; return; }
+      const r = await fetch("/api/search/test").then(x => x.json()).catch(() => ({ ok: false, error: "请求失败" }));
+      if (!r.ok) { err.textContent = r.error || "测试失败"; return; }
+      toast(`✅ ${r.provider} 可用`);
+      await onbReload();
+      onbGo(2);
+    } finally {
+      go.disabled = false;
+      if (go.isConnected) go.textContent = sc.has_key ? "下一步" : "保存并测试";
+    }
+  };
+  body.querySelector("#onb-skip-step").onclick = () => { onbState.skipped.add("search"); onbGo(2); };
+}
+
+// ---------- 第三步：生图 / 视频 / 语音 / 看图（可选） ----------
+function renderOnbMedia(body) {
+  const { st } = onbState;
+  const md = st.media || {};
+  body.innerHTML = `
+    ${onbHead("生图 · 视频 · 语音 · 看图", "按需开通，都不填也不影响聊天和办公。每项只要一个 OpenAI 兼容的接口地址 + Key + 模型名。", "可选")}
+    <div class="onb-rows" id="onb-media">${ONB_MEDIA.map(([k, ic, name, use]) => `
+      <div class="onb-row" data-kind="${k}">
+        <div class="onb-row-h"><i class="ic">${ic}</i><div class="tt"><b>${name}</b><span>${use}</span></div>
+          <span class="onb-chip ${md[k] ? "ok" : ""}">${md[k] ? "已配" : "未配"}</span>
+          <button type="button" class="btn-plain onb-fill" data-kind="${k}">${md[k] ? "修改" : "填写"}</button></div>
+        <div class="onb-row-b" hidden>
+          <input data-f="base_url" placeholder="接口地址（如 https://api.openai.com/v1）">
+          <input data-f="api_key" type="password" placeholder="API Key" autocomplete="off">
+          <input data-f="model" placeholder="模型名">
+          ${k === "tts" ? '<input data-f="voice" placeholder="默认音色（可空）">' : ""}
+          <div class="onb-act"><button type="button" class="btn-brand onb-save" data-kind="${k}">保存</button><span class="err"></span></div>
+        </div>
+      </div>`).join("")}</div>
+    ${onbFoot("下一步", "都先不填")}`;
+  body.querySelector("#onb-media").onclick = async (e) => {
+    const fill = e.target.closest(".onb-fill");
+    if (fill) {
+      const b = fill.closest(".onb-row").querySelector(".onb-row-b");
+      b.hidden = !b.hidden;
+      if (!b.hidden) b.querySelector("input").focus();
+      return;
+    }
+    const save = e.target.closest(".onb-save");
+    if (!save) return;
+    const row = save.closest(".onb-row");
+    const kind = save.dataset.kind;
+    const err = row.querySelector(".err");
+    const patch = {};
+    row.querySelectorAll("input[data-f]").forEach(i => { patch[i.dataset.f] = i.value.trim(); });
+    if (!patch.base_url || !patch.api_key) { err.textContent = "接口地址和 Key 都要填"; return; }
+    err.textContent = "";
+    save.disabled = true;
+    const ok = await saveSettings({ media: { [kind]: patch } });
+    save.disabled = false;
+    if (!ok) { err.textContent = "保存失败"; return; }
+    const chip = row.querySelector(".onb-chip");
+    chip.textContent = "已配";
+    chip.classList.add("ok");
+    row.querySelector(".onb-fill").textContent = "修改";
+    row.querySelector(".onb-row-b").hidden = true;
+    (onbState.st.media = onbState.st.media || {})[kind] = true;
+  };
+  body.querySelector("#onb-go").onclick = () => onbGo(3);
+  body.querySelector("#onb-skip-step").onclick = () => { onbState.skipped.add("media"); onbGo(3); };
+}
+
+// ---------- 第四步：远程指挥（可选） ----------
+function renderOnbIm(body) {
+  const { st } = onbState;
+  const n = (st.im || {}).configured || 0;
+  body.innerHTML = `
+    ${onbHead("远程指挥", "手机上在飞书 / 微信 / QQ / 企业微信里 @它就能下任务，跑完结果推回聊天。凭证在「助理设置」里按卡片填，等用顺手了再来也不迟。", "可选")}
+    <div class="onb-rows">
+      <div class="onb-row"><div class="onb-row-h"><i class="ic">📱</i><div class="tt"><b>IM 通道</b><span>飞书 · 微信 · QQ · 企业微信 · 钉钉 · Webhook</span></div>
+        <span class="onb-chip ${n ? "ok" : ""}">${n ? `已配 ${n} 个` : "未配"}</span>
+        <button type="button" class="btn-plain" id="onb-im-open">去助理设置</button></div></div>
+    </div>
+    ${onbFoot("下一步", "先不接")}`;
+  body.querySelector("#onb-im-open").onclick = async () => {
+    // 去填凭证要关掉向导；大脑已接上就顺手记成「走完」，别等人回来再弹一遍
+    await finishOnb({ silent: true });
+    openModal("settings", "im");
+  };
+  body.querySelector("#onb-go").onclick = () => onbGo(4);
+  body.querySelector("#onb-skip-step").onclick = () => { onbState.skipped.add("im"); onbGo(4); };
+}
+
+// ---------- 第五步：完成 ----------
+function renderOnbDone(body) {
+  const { st, skipped } = onbState;
+  const md = st.media || {};
+  const mediaN = ONB_MEDIA.filter(([k]) => md[k]).length;
+  const imN = (st.im || {}).configured || 0;
+  const row = (ic, name, ok, txt, warn) => `<div class="onb-row"><div class="onb-row-h"><i class="ic">${ic}</i><div class="tt"><b>${name}</b><span>${txt}</span></div><span class="onb-chip ${ok ? "ok" : warn ? "warn" : ""}">${ok ? "✓" : warn ? "未配" : "跳过"}</span></div></div>`;
+  body.innerHTML = `
+    ${onbHead("都齐了", "这是它现在的能力清单。没配的随时到 设置 里补，这个向导在 设置 → 关于 里还能再打开。", "完成")}
+    <div class="onb-rows" id="onb-sum">
+      ${row("🧠", "大模型", st.brain.ok, st.brain.ok ? `${esc(st.brain.name)}${st.brain.model ? " · " + esc(st.brain.model) : ""}` : "还没接上", true)}
+      ${row("🔎", "联网搜索", st.search.has_key, st.search.has_key ? esc(st.search.provider) : "用免费 DuckDuckGo 顶着", !skipped.has("search"))}
+      ${row("🎨", "图 / 视频 / 语音 / 看图", mediaN > 0, mediaN ? `${mediaN} / ${ONB_MEDIA.length} 项已配` : "都没配", !skipped.has("media"))}
+      ${row("📱", "远程指挥", imN > 0, imN ? `${imN} 个通道已配` : "没接 IM", !skipped.has("im"))}
+    </div>
+    <label class="onb-lb">工作目录（成果文件都放这儿）</label>
+    <input id="onb-dir" placeholder="${esc(st.workspace_dir || "留空就用默认目录")}">
+    <div class="err" id="onb-err"></div>
+    ${onbFoot("开始使用", "")}`;
+  body.querySelector("#onb-go").onclick = () => finishOnb({ dir: body.querySelector("#onb-dir").value.trim() });
+}
+
+async function finishOnb({ dir, silent } = {}) {
+  const st = onbState.st;
+  if (!st.brain.ok) {
+    // 大脑没接上就没法「走完」，服务端也不会记；只在本次窗口内不再弹
+    onbSkipFlag(true);
+    closeOnboarding();
+    if (!silent) toast("还没接上大模型，随时在 设置 → 模型 里补");
+    return false;
+  }
+  const r = await fetch("/api/onboarding/done", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skipped: [...onbState.skipped], workspace_dir: dir || undefined }),
+  }).then(r => r.json()).catch(() => ({ ok: false, error: "请求失败" }));
+  if (!r.ok) {
+    const err = document.getElementById("onb-err");
+    if (err) err.textContent = r.error || "保存失败";
+    return false;
+  }
+  closeOnboarding();
+  if (!silent) toast("✅ 配好了，开始干活吧");
+  refreshSettingsCache(); // 工作目录名跟着刷新
+  return true;
 }
 
 // ================= 主区页面视图（助理 / 专家广场 / 模板库，都占主区而不是弹窗） =================

@@ -771,7 +771,16 @@ async function probeModel(m) {
   }
 }
 
-app.get("/api/onboarding", (_req, res) => {
+/**
+ * 首次开箱向导要的一张「体检表」：每项能力配没配、配的是什么，一次性给全。
+ *
+ * 为什么不让前端各拉各的接口再拼：向导弹在登录后第一屏，多拉五个接口就是多五次转圈；
+ * 而且「大脑到底算不算接上了」只有服务端知道——走本机 Claude Code / Codex 时根本不需要 API Key，
+ * 前端只看 has_key 会把已经能用的人拦在门口。
+ *
+ * seen = 用户走完（或明确跳过）过一次向导。没走完的每次打开都弹，走完的只在「设置 → 关于」里能再打开。
+ */
+app.get("/api/onboarding", async (_req, res) => {
   const models = (config.models || []).map((m) => ({
     name: m.name,
     model: m.model,
@@ -780,14 +789,49 @@ app.get("/api/onboarding", (_req, res) => {
     has_key: hasKey(m),
   }));
   const active = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0];
+  const engineId = (config.agent && config.agent.engine) || "builtin";
+  const brainViaEngine = engineId !== "builtin" && engines.get(engineId) !== undefined;
+  const brainOk = brainViaEngine || !!(active && hasKey(active));
+  const seen = !!((config.onboarding || {}).done_at);
+
+  // 本机 CLI 探测要跑 which + --version，只在向导真会弹出来的时候做，老用户每次开机别白等
+  let found = [];
+  if (!brainOk || !seen) {
+    try { found = await engines.detectAll((config.agent && config.agent.engine_options) || {}); } catch {}
+  }
+  const media = config.media || {};
+  const mediaOk = (kind) => { const c = media[kind] || {}; return !!(c.base_url && c.api_key); };
+  const im = config.im || {};
+  const pair = (o, ...ks) => !!(o && ks.every((k) => String(o[k] || "").trim()));
+  const imConfigured = [
+    pair(im.feishu, "app_id", "app_secret"),
+    pair(im.qq, "app_id", "app_secret"),
+    pair(im.wecom_app, "corp_id", "secret", "agent_id"),
+    pair(im.wechat_mp, "app_id", "app_secret"),
+    pair(im.wechat_ilink, "bot_token", "ilink_bot_id"),
+    !!String(im.wecom_bot_webhook || "").trim(),
+    !!String(im.dingtalk_webhook || "").trim(),
+  ].filter(Boolean).length;
+  const sp = (config.search || {}).provider || "jina";
   res.json({
-    // 当前选中的模型没 key = 一句话都发不出去，必须弹引导
-    needs_setup: !active || !hasKey(active),
+    // 大脑没接上 = 一句话都发不出去，必须弹引导；接上了但没走完向导也弹一次，让人知道还有哪些能力可以开
+    needs_setup: !brainOk,
+    seen,
+    brain: {
+      ok: brainOk,
+      via: brainViaEngine ? "engine" : "api",
+      name: brainViaEngine ? engineId : (active ? active.name : ""),
+      model: brainViaEngine ? ((config.agent.engine_options || {})[engineId] || {}).model || "" : (active ? active.model : ""),
+    },
     active_model: config.active_model,
     workspace_dir: getWorkspaceDir(),
     models,
     any_key: models.some((m) => m.has_key && !m.local),
-    search: { provider: (config.search || {}).provider || "jina", has_key: !!searchProviderKey(config.search || {}, (config.search || {}).provider || "jina") },
+    engines: found.map((e) => ({ id: e.id, label: e.label, installed: e.installed, version: e.version, install: e.install || "", note: e.note || "" })),
+    engine: engineId,
+    search: { provider: sp, has_key: !!searchProviderKey(config.search || {}, sp) },
+    media: { image: mediaOk("image"), video: mediaOk("video"), tts: mediaOk("tts"), vision: mediaOk("vision") },
+    im: { configured: imConfigured },
   });
 });
 
@@ -818,6 +862,29 @@ app.post("/api/onboarding", async (req, res) => {
     memory.ensureVectors().catch(() => {});
     saveConfig();
     res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+// 向导走完 / 明确跳过：记一笔，下次开机不再弹。大脑没接上时不许记——记了等于把一个什么都干不了的界面留给用户
+app.post("/api/onboarding/done", (req, res) => {
+  try {
+    const b = req.body || {};
+    const active = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0];
+    const engineId = (config.agent && config.agent.engine) || "builtin";
+    const brainOk = (engineId !== "builtin" && engines.get(engineId) !== undefined) || !!(active && hasKey(active));
+    if (!brainOk) return res.status(400).json({ ok: false, error: "还没接上任何大模型，先把第一步走完" });
+    if (b.workspace_dir) {
+      config.workspace_dir = setWorkspaceDir(b.workspace_dir);
+      ensureProjects();
+      const ap = config.projects.find((p) => p.name === config.active_project);
+      if (ap) ap.dir = config.workspace_dir;
+    }
+    const skipped = Array.isArray(b.skipped) ? b.skipped.map((x) => String(x).slice(0, 20)).slice(0, 10) : [];
+    config.onboarding = { done_at: Date.now(), skipped };
+    saveConfig();
+    res.json({ ok: true, workspace_dir: getWorkspaceDir(), skipped });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
   }
