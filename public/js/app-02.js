@@ -83,10 +83,7 @@ function setMode(mode) {
   currentMode = mode;
   document.getElementById("mode-label").textContent = MODE_LABEL[mode].slice(2).trim();
   modeMenu.querySelectorAll(".mi").forEach(x => x.classList.toggle("on", x.dataset.mode === mode));
-  inputEl.placeholder = mode === "ask" ? "问我任何问题（不会修改文件）…"
-    : mode === "goal" ? "描述你的目标，我拆成验收标准，没达成自动接着跑…"
-    : mode === "plan" ? "描述任务，我先给你出执行计划…"
-    : "今天帮你做些什么？可以让我处理数据、写报告、做 PPT、联网调研…";
+  syncPlaceholder();
 }
 modeMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => {
   setMode(mi.dataset.mode);
@@ -99,6 +96,7 @@ const pendingAttach = []; // 已上传、待随下一条消息发出的附件名
 function addAttachChip(name, thumbUrl, hint) {
   if (pendingAttach.includes(name)) return; // 同名重复上传只留一个 chip（文件本身已覆盖更新）
   pendingAttach.push(name);
+  syncSendBtn(); // 运行中光贴了个附件也算「有话要说」，按钮得从「停下」变回「发出」
   const chip = document.createElement("span");
   if (thumbUrl) {
     // 截图之间光看文件名分不出谁是谁，给张缩略图才知道自己贴对了没有
@@ -113,7 +111,7 @@ function addAttachChip(name, thumbUrl, hint) {
   const x = document.createElement("b");
   x.textContent = "✕";
   x.title = "从这条消息移除（文件仍在工作目录里）";
-  x.onclick = () => { const i = pendingAttach.indexOf(name); if (i >= 0) pendingAttach.splice(i, 1); chip.remove(); };
+  x.onclick = () => { const i = pendingAttach.indexOf(name); if (i >= 0) pendingAttach.splice(i, 1); chip.remove(); syncSendBtn(); };
   chip.appendChild(x);
   attachChips.appendChild(chip);
 }
@@ -187,6 +185,7 @@ function composeOutgoing() {
   syncInputHl();
   attachChips.innerHTML = "";
   pendingAttach.length = 0;
+  syncSendBtn(); // 框清空了：任务还在跑的话按钮回到「停下」
   return typed && note ? typed + "\n" + note : typed || note;
 }
 document.getElementById("attach-btn").onclick = () => document.getElementById("file-input").click();
@@ -430,11 +429,34 @@ refreshProjects();
 
 // ================= 发送（运行中按钮变「停止」） =================
 // ================= 并行任务：运行态/排队按会话隔离，不同对话互不阻塞 =================
+const MODE_PLACEHOLDER = {
+  ask: "问我任何问题（不会修改文件）…",
+  goal: "描述你的目标，我拆成验收标准，没达成自动接着跑…",
+  plan: "描述任务，我先给你出执行计划…",
+  craft: "今天帮你做些什么？可以让我处理数据、写报告、做 PPT、联网调研…",
+};
+const BUSY_PLACEHOLDER = "想补一句或改方向？直接打字，按 Enter 就插进来，我做完这一步就看";
+/** 输入框的提示语跟着状态走：任务在跑时告诉用户「打字 + Enter 就能插话」，闲着时按模式提示 */
+function syncPlaceholder() {
+  inputEl.placeholder = curBusy() ? BUSY_PLACEHOLDER : (MODE_PLACEHOLDER[currentMode] || MODE_PLACEHOLDER.craft);
+}
+/** 框里有没有还没发出去的东西（文字或待发附件） */
+function hasDraft() { return !!(inputEl.value.trim() || pendingAttach.length); }
+/**
+ * 一颗键两种意思，看框里有没有字：任务在跑 + 框空着 → 「◼ 停下」；任务在跑 + 打了字 → 「↑ 插一句」（发出去就是插队）；
+ * 闲着 → 普通发送。以前运行中不管框里有没有字点一下都是停止，用户打了半天字一点按钮任务没了。
+ */
+function syncSendBtn() {
+  const busy = curBusy(), draft = hasDraft();
+  const stopMode = busy && !draft;
+  sendBtn.classList.toggle("stop", stopMode);
+  sendBtn.classList.toggle("interject", busy && draft);
+  sendBtn.textContent = stopMode ? "◼" : "↑";
+  sendBtn.title = stopMode ? "让我停下（Esc）" : busy ? "插一句进去，我做完这一步就看（Enter）" : "发送（Enter）";
+}
 function updateSendUI() {
-  const busy = curBusy();
-  sendBtn.classList.toggle("stop", busy);
-  sendBtn.textContent = busy ? "◼" : "↑";
-  sendBtn.title = busy ? "停止任务" : "发送";
+  syncSendBtn();
+  syncPlaceholder();
   // ⚡ 插队按钮退役：发消息默认就是插队，按钮常隐（interject() 留给快捷键等旧入口）
   renderQueueBar();
   renderHistory(); // 侧栏「运行中」小圆点跟着刷新
@@ -444,10 +466,21 @@ function renderQueueBar() {
   const q = (sessionId && sessionQueues.get(sessionId)) || [];
   if (!curBusy() && !q.length) { bar.classList.remove("show"); bar.innerHTML = ""; return; }
   bar.classList.add("show");
+  // 说人话：讲清「现在怎么插话」「怎么停」「想并行怎么办」三件事，停止给一颗真按钮，别让用户去找 ◼ 在哪
   bar.innerHTML =
     q.map((m, i) => `<span class="q-chip" title="${esc(m.text)}"><span class="qt">⏳ ${esc(m.text.slice(0, 30))}</span><span class="qx" data-i="${i}" title="取消这条">✕</span></span>`).join("") +
-    (curBusy() ? `<span>任务运行中：发消息会直接插队并入当前任务 · ◼ 停止 · 要另起并行任务点「新建任务」</span>` : "");
+    (curBusy() ? `<span class="qb-hint"><span>我正忙着这件事。想补一句或改方向？在下面打字、按 Enter，我做完这一步就看。</span><button type="button" class="qb-stop" title="停下当前任务（Esc）">◼ 让我停下</button><span>想同时做别的，点左上「新建任务」。</span></span>` : "");
   bar.querySelectorAll(".qx").forEach(x => x.onclick = () => { q.splice(+x.dataset.i, 1); renderQueueBar(); });
+  const stopBtn = bar.querySelector(".qb-stop");
+  if (stopBtn) stopBtn.onclick = () => stopTask();
+}
+/** 发送键 / 回车 / 输入联动一起绑，方便前端测试整段切出来验 */
+function bindComposer() {
+  sendBtn.onclick = () => (curBusy() && !hasDraft() ? stopTask() : send());
+  inputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  inputEl.addEventListener("input", syncSendBtn);
 }
 function drainQueue(sid) {
   const q = sessionQueues.get(sid);
@@ -466,7 +499,7 @@ async function interjectText(text) {
   if (resp && resp.ok) {
     const live = runningSessions.get(sessionId);
     if (live && live.ui.markPendingInterject) live.ui.markPendingInterject(text);
-    else toast("⚡ 已插队：这条消息会并入当前任务一起处理");
+    else toast("⚡ 收到，做完这一步就看你这句");
   } else {
     qOf(sessionId).push({ text, mode: currentMode });
     renderQueueBar();
@@ -672,10 +705,7 @@ async function runTurn(sid, text, mode, regen) {
   await keepAttached(sid, ui, rc, sawDone, netErr);
   endRun(sid, ui);
 }
-sendBtn.onclick = () => (curBusy() ? stopTask() : send());
-inputEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-});
+bindComposer();
 
 // ================= 弹窗（技能/专家/定时/设置中心） =================
 document.getElementById("m-close").onclick = () => mask.classList.remove("show");
@@ -727,7 +757,7 @@ const SHORTCUT_DEFS = [
   ["send", "发送消息", "Enter", true],
   ["newline", "输入时换行", "Shift+Enter", true],
   ["new-chat", "新建对话", "Meta+N"],
-  ["stop", "停止生成 / 关闭弹层", "Escape"],
+  ["stop", "让我停下 / 关闭弹层", "Escape"],
   ["prev-task", "上一个任务", "Meta+BracketLeft"],
   ["next-task", "下一个任务", "Meta+BracketRight"],
   ["toggle-sidebar", "切换左侧栏", "Meta+B"],

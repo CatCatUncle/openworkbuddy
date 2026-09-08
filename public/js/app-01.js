@@ -602,11 +602,11 @@ function createTurnUI(userText, turnMode, forSid) {
       const pend = body.querySelector(".interject-note.pending");
       if (pend) {
         pend.classList.remove("pending");
-        pend.querySelector(".lb").textContent = "⚡ 插队补充";
+        pend.querySelector(".lb").textContent = "⚡ 已并入当前任务";
       } else {
         const note = document.createElement("div");
         note.className = "interject-note";
-        note.innerHTML = `<div class="lb">⚡ 插队补充</div>${esc(ev.text || "")}`;
+        note.innerHTML = `<div class="lb">⚡ 已并入当前任务</div>${esc(ev.text || "")}`;
         body.appendChild(note);
       }
     } else if (ev.type === "ask_user") {
@@ -870,7 +870,7 @@ function createTurnUI(userText, turnMode, forSid) {
   function markPendingInterject(text) {
     const note = document.createElement("div");
     note.className = "interject-note pending";
-    note.innerHTML = `<div class="lb">⚡ 已插队 · 等当前步骤结束后注入</div>${esc(text)}`;
+    note.innerHTML = `<div class="lb">⚡ 收到，做完这一步就看这句</div>${esc(text)}`;
     body.appendChild(note);
     if (turnSid === sessionId) scrollBottom();
   }
