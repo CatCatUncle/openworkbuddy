@@ -31,7 +31,11 @@ let idleTimer = null;
 let dragTimer = null;
 let dragMoved = false;
 let ipcBound = false;
-let cfg = { enabled: false, scale: 1, opacity: 1, notify: true, notifyDone: true, wander: false, character: "cat", sprite: "" };
+// 默认 200%：先前默认 100% 的那只在 Retina 屏上只有指甲盖大，用户第一眼看不清它在干嘛。
+// 2 同时也是滑杆的上限——想小的人自己往下拖，别让"看不见"成为默认。
+const DEFAULT_SCALE = 2;
+
+let cfg = { enabled: false, scale: DEFAULT_SCALE, opacity: 1, notify: true, notifyDone: true, wander: false, character: "cat", sprite: "" };
 let dndUntil = 0;     // 免打扰截止时间戳：只压「要你动手」的提醒，状态显示照常
 let lastHit = false;  // 光标当前是不是压在宠物实体上（渲染进程按像素判定后报上来）
 let photoCache = { key: "", url: "" }; // 照片按 路径+修改时间 缓存，换了图自动失效
@@ -183,7 +187,7 @@ function create() {
   if (!electron || !electron.app) return null;
   if (petWin && !petWin.isDestroyed()) return petWin;
   bindIpc();
-  const scale = Math.min(2, Math.max(0.6, Number(cfg.scale) || 1));
+  const scale = Math.min(2, Math.max(0.6, Number(cfg.scale) || DEFAULT_SCALE));
   const w = Math.round(PET_W * scale), h = Math.round(PET_H * scale);
   const p = sanePos(loadPos(), w, h);
   petWin = new electron.BrowserWindow({
@@ -232,7 +236,7 @@ function push() {
     petWin.webContents.send("pet:state", {
       ...curState,
       walk: walkDir, // 溜达方向单独走一路：它不该顶掉「在干活 / 要问你」这些真状态
-      scale: Number(cfg.scale) || 1,
+      scale: Number(cfg.scale) || DEFAULT_SCALE,
       opacity: Number(cfg.opacity) || 1,
       // 选了照片/精灵图但文件没了 → 老实回落到猫，别显示个空框
       character: photo ? "photo" : sp ? "sprite" : "cat",
@@ -392,7 +396,7 @@ function applyConfig(next) {
   if (!cfg.wander) stopWalk();
   if (cfg.wander !== prev.wander) armWander();
   if (Number(cfg.scale) !== Number(prev.scale)) {
-    const scale = Math.min(2, Math.max(0.6, Number(cfg.scale) || 1));
+    const scale = Math.min(2, Math.max(0.6, Number(cfg.scale) || DEFAULT_SCALE));
     const w = Math.round(PET_W * scale), h = Math.round(PET_H * scale);
     // 猫是站在窗口底边中间的：直接 setSize 会让窗口从左上角往下往右长，
     // 于是每调一次大小猫就往右下挪一截，调到 200% 时能整只钻进 Dock 后面。
@@ -414,4 +418,4 @@ function destroy() {
   petWin = null;
 }
 
-module.exports = { create, setState, alertAsk, clearAsk, show, hide, isVisible, applyConfig, destroy, get enabled() { return cfg.enabled; } };
+module.exports = { DEFAULT_SCALE, create, setState, alertAsk, clearAsk, show, hide, isVisible, applyConfig, destroy, get enabled() { return cfg.enabled; } };

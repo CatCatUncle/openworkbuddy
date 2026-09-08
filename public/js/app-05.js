@@ -679,8 +679,8 @@ function petCardHtml(p) {
         ${p.has_photo ? '<button class="btn-plain" id="pet-drop">删除照片</button>' : ""}
         <input type="file" id="pet-file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">
       </div>
-      <div class="t" style="margin-top:10px">大小 <span id="pet-scale-v" style="color:var(--wb-text-3)">${Math.round((p.scale || 1) * 100)}%</span></div>
-      <input type="range" id="pet-scale" min="0.6" max="2" step="0.1" value="${p.scale || 1}">
+      <div class="t" style="margin-top:10px">大小 <span id="pet-scale-v" style="color:var(--wb-text-3)">${Math.round((p.scale || 2) * 100)}%</span></div>
+      <input type="range" id="pet-scale" min="0.6" max="2" step="0.1" value="${p.scale || 2}">
       <div class="t" style="margin-top:6px">透明度 <span id="pet-op-v" style="color:var(--wb-text-3)">${Math.round((p.opacity || 1) * 100)}%</span></div>
       <input type="range" id="pet-op" min="0.25" max="1" step="0.05" value="${p.opacity || 1}">
       <div style="margin-top:8px"><span class="ok-msg" id="pet-msg"></span></div>
