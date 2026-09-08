@@ -1540,11 +1540,19 @@ function renderTurnOutputs(body, changed, live) {
   if (!block) {
     block = document.createElement("div");
     block.className = "out-block fold"; // 变更清单默认收起，想看再点开
-    block.innerHTML = `<div class="out-grid"></div><div class="out-hd out-toggle"><span class="ar">▸</span> 查看所有变更 <span class="n"></span></div><div class="out-list"></div>`;
+    // 整块要能一键收起。以前只有下面那行「查看所有变更」能折，上面那排缩略图卡片是钉死的，
+    // 用户的原话是「这些图标都没办法收起来啊，不是属于变更窗口的吗」——产出多的时候，
+    // 一屏卡片把对话正文顶得看不见，还没有任何办法把它按下去。
+    block.innerHTML = `<div class="out-hd out-main"><span class="ar">▾</span> 本回合产出 <span class="cn"></span></div>` +
+      `<div class="out-body"><div class="out-grid"></div><div class="out-hd out-toggle"><span class="ar">▸</span> 查看所有变更 <span class="n"></span></div><div class="out-list"></div></div>`;
     body.appendChild(block);
     onActivate(block.querySelector(".out-toggle"), () => {
       const fold = block.classList.toggle("fold");
-      block.querySelector(".ar").textContent = fold ? "▸" : "▾";
+      block.querySelector(".out-toggle .ar").textContent = fold ? "▸" : "▾";
+    });
+    onActivate(block.querySelector(".out-main"), () => {
+      const packed = block.classList.toggle("packed");
+      block.querySelector(".out-main .ar").textContent = packed ? "▸" : "▾";
     });
   }
   const grid = block.querySelector(".out-grid");
@@ -1593,7 +1601,9 @@ function renderTurnOutputs(body, changed, live) {
   }
   mergeFmtPairs(grid);
   markDupBasenames(grid);
-  block.querySelector(".out-hd .n").textContent = `(${list.querySelectorAll(".out-row").length})`;
+  const nRows = list.querySelectorAll(".out-row").length;
+  block.querySelector(".out-toggle .n").textContent = `(${nRows})`;
+  block.querySelector(".out-main .cn").textContent = `(${nRows})`;
 }
 
 // 「交到用户手上的成果」：点开就能用的东西，不包括干活途中的脚手架

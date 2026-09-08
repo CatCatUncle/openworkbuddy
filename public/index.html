@@ -79,7 +79,7 @@
   /* 这几类行是 div，补了 tabindex 才能 Tab 到；浏览器不给 div 画默认焦点圈，得自己画。
      用 outline 不用 box-shadow：选中态的左侧指示条正占着 box-shadow。 */
   .hist-item:focus-visible, .proj-item:focus-visible, .side-nav .item:focus-visible,
-  .out-card:focus-visible, .proc-head:focus-visible, .out-toggle:focus-visible,
+  .out-card:focus-visible, .proc-head:focus-visible, .out-toggle:focus-visible, .out-main:focus-visible,
   .src-hd:focus-visible, .user-chip:focus-visible {
     outline: 2px solid var(--wb-brand); outline-offset: -2px;
   }
@@ -246,6 +246,9 @@
   .out-hd.out-toggle { cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 4px; }
   .out-hd.out-toggle:hover { color: var(--wb-text-2); }
   .out-block.fold .out-list { display: none; }
+  /* 整块收起：卡片区、变更清单、连同「查看所有变更」那行一起按下去，只留标题 */
+  .out-block.packed .out-body { display: none; }
+  .out-hd.out-main { margin-bottom: 6px; color: var(--wb-text-2); }
   .out-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
   .out-grid:empty { display: none; }
   /* 变更清单：紧凑行，不是一堆方框卡片 */

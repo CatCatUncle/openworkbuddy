@@ -57,7 +57,16 @@ const TO1 = APP02X.indexOf('document.getElementById("toggle-files").onclick');
 if (TO0 < 0 || TO1 <= TO0) throw new Error("app-01.js 里的本回合产出段找不到了（段标题被改过？），前端测试没法定位真源码");
 const TURNOUT_SRC = APP02X.slice(TO0, TO1);
 
-const TURNOUT_HTML = "<!doctype html><meta charset='utf-8'><body></body>";
+// 这一屏要验的不止是 DOM 结构，还有「点了收起到底看不看得见」——所以把 index.html 里的
+// 真样式整段注进来。只验结构不验样式的话，把 .out-block.packed 那条 CSS 删掉测试照样全绿，
+// 用户点了收起却什么也没发生。
+const INDEX_CSS = (() => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const m = html.match(/<style>([\s\S]*?)<\/style>/);
+  if (!m) throw new Error("public/index.html 里找不到内联 <style>，前端测试没法验真样式");
+  return m[1];
+})();
+const TURNOUT_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body></body>";
 
 // 只替掉渲染细节（图标、字号、跳转），判重/上限/回收这些被测逻辑一律用真源码
 const TURNOUT_STUBS = `
@@ -120,6 +129,44 @@ const TURNOUT_CHECKS = `
     const capped = Array.from({ length: 500 }, (_, i) => F("x" + i + ".txt"));
     renderTurnOutputs(b, [clean], capped);
     ok("列表被截断时一律不回收", cards(b).length === 8 && !cards(b).includes("海报_clean.png"));
+  }
+
+  // ── 整块要能收起来。用户原话：「这些图标都没办法收起来啊，不是属于变更窗口的吗」——
+  //    以前只有「查看所有变更」那行能折，上面那排缩略图卡片是钉死的，产出一多就把正文顶没了。
+  //    两个开关得互不干扰：收起整块时连「查看所有变更」那行一起按下去。
+  {
+    const b = fresh();
+    const two = [F("报告.pdf"), F("图.png")];
+    renderTurnOutputs(b, two, two);
+    const block = b.querySelector(".out-block");
+    const main = block.querySelector(".out-main");
+    const inner = block.querySelector(".out-toggle");
+    ok("有一个管整块的开关", !!main && !!inner && main !== inner);
+    ok("默认展开：卡片区看得见", !block.classList.contains("packed"));
+    ok("整块开关的计数是这一回合的文件数", main.querySelector(".cn").textContent === "(2)");
+    main.click();
+    ok("点一下整块收起", block.classList.contains("packed"));
+    ok("收起时卡片区和变更清单都在被收的那层里",
+      block.querySelector(".out-body").contains(block.querySelector(".out-grid")) &&
+      block.querySelector(".out-body").contains(block.querySelector(".out-list")) &&
+      block.querySelector(".out-body").contains(inner));
+    ok("收起时卡片区真的看不见了（验的是浏览器算出来的样式，不是有没有加类名）",
+      getComputedStyle(block.querySelector(".out-body")).display === "none");
+    ok("收起时标题那行还留着，不然就找不到再点开的地方了",
+      getComputedStyle(main).display !== "none" && main.offsetHeight > 0);
+    ok("收起时箭头翻过来", main.querySelector(".ar").textContent === "▸");
+    main.click();
+    ok("再点一下展开", !block.classList.contains("packed") && main.querySelector(".ar").textContent === "▾");
+    ok("展开后卡片区又看得见了", getComputedStyle(block.querySelector(".out-body")).display !== "none");
+    // 内层那个开关是「变更清单」自己的，不许被整块开关顶替
+    ok("变更清单默认仍是收起的", block.classList.contains("fold"));
+    inner.click();
+    ok("内层开关只动变更清单，不动整块",
+      !block.classList.contains("fold") && !block.classList.contains("packed") &&
+      inner.querySelector(".ar").textContent === "▾" && main.querySelector(".ar").textContent === "▾");
+    renderTurnOutputs(b, [F("补一个.pdf")], [...two, F("补一个.pdf")]);
+    ok("再来一批产出时两个计数一起跟上",
+      main.querySelector(".cn").textContent === "(3)" && inner.querySelector(".n").textContent === "(3)");
   }
 
   // ── svg/png 并卡：只有一半被删时，卡留着，摘掉失效的那条格式链接
@@ -931,7 +978,7 @@ app.whenReady().then(async () => {
       await win7.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TURNOUT_HTML));
       const names7 = await win7.webContents.executeJavaScript(TURNOUT_STUBS + "\n" + PATHHELP_SRC + "\n" + TURNOUT_SRC + "\n" + TURNOUT_CHECKS, true);
       for (const n of names7) console.log("  ✓ " + n);
-      console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接）${names7.length} 项通过`);
+      console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接·整块可收起）${names7.length} 项通过`);
     } finally {
       if (!win7.isDestroyed()) win7.destroy();
     }

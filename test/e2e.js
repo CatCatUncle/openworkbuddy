@@ -3862,6 +3862,7 @@ async function main() {
   await testPromptQuestionVsWork();
   await testLocalEngineConnect();
   await testEngineToolBridge();
+  testOutputOwnership();
   await testFilePathRouting();
   await testDesktopPet();
   testPetSprites();
@@ -3872,6 +3873,116 @@ async function main() {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
   }
   console.log("=== 全部测试通过 ===");
+}
+
+/**
+ * 产出归属：一条对话的成果卡片里绝不能出现另一条对话的文件。
+ *
+ * 事故原样（data/sessions/s_1788803711031_608301.json 里存着现场）：
+ * 湖南网站那条对话 17:38 起跑、一直在写文件；用户 17:55 另开一条问 paywall 的新对话，
+ * 新对话第一轮的 changed 里躺着五个别人的文件——
+ *   任务_0905_给我做一个网站介绍湖南的/{_have.txt,_r2.txt,_dh.txt,dist/index.html,hunan_travel.html}
+ * 用户原话：「这些图标是另一个对话的啊！」。
+ *
+ * 根因是归属只按「谁的差异检测先跑到」算，而先后跟谁写的没有关系。这里把两条对话的
+ * 检测顺序两种都跑一遍——顺序反过来还能判对，才说明判据换成了确定性的那一个。
+ */
+function testOutputOwnership() {
+  const { makeOwnership } = require("../agent");
+  const A = "任务_0905_给我做一个网站介绍湖南的"; // 先起跑、正在写文件的那条
+  const B = "任务_0907_复制支付墙网站难易度分析"; // 用户新开的那条
+  const REAL = ["_have.txt", "_r2.txt", "_dh.txt", "dist/index.html", "hunan_travel.html"].map((n) => A + "/" + n);
+  const f = (name, mtime) => ({ name, mtime: mtime || "2026-09-07T17:55:00.000Z", size: 10 });
+
+  // ① 正常顺序：谁的文件夹就是谁的
+  {
+    const own = makeOwnership();
+    own.claimBaseDir(A, 1);
+    own.claimBaseDir(B, 2);
+    assert(REAL.every((n) => own.mine(f(n), A, 1)), "自己文件夹里的产出被判成别人的了");
+    assert(REAL.every((n) => !own.mine(f(n), B, 2)), "别的对话的文件进了这条对话的产出");
+  }
+
+  // ② 事故的真实顺序：新对话的检测先跑到。先到先得那套在这儿必错，这条是这次修复的核心
+  {
+    const own = makeOwnership();
+    own.claimBaseDir(A, 1);
+    own.claimBaseDir(B, 2);
+    const stolen = REAL.filter((n) => own.mine(f(n), B, 2));
+    assert.deepStrictEqual(stolen, [], "检测顺序反过来就又认反了，说明还在按先后判归属：" + JSON.stringify(stolen));
+    assert(REAL.every((n) => own.mine(f(n), A, 1)), "拦住新对话的同时，把真正的主人也拦了——文件就彻底没人认了");
+  }
+
+  // ③ 负向控制：把「按文件夹判」这一层关掉，事故必须原样复现。复现不出来说明这条测试测了个寂寞
+  {
+    const own = makeOwnership();
+    own.claimBaseDir(B, 2); // A 没登记 = 相当于没有目录归属这一层
+    const stolen = REAL.filter((n) => own.mine(f(n), B, 2));
+    assert.strictEqual(stolen.length, REAL.length, "缺了目录归属这层，五个文件本该整批被认走，事故没复现出来：" + JSON.stringify(stolen));
+  }
+
+  // ④ 不许过度封杀：没人认领的目录、工作区根目录下的文件，照旧算这一轮的产出
+  {
+    const own = makeOwnership();
+    own.claimBaseDir(B, 2);
+    assert(own.mine(f("未认领的目录/图.png"), B, 2), "把没人认领的目录也封了，真产出会看不见");
+    assert(own.mine(f("粘贴图片_0907.png"), B, 2), "工作区根目录下的文件被误杀了");
+  }
+
+  // ⑤ 根目录没有文件夹可依，只能靠「版本认领」去重；文件再被改一次要允许重新认领
+  {
+    const own = makeOwnership();
+    own.claimBaseDir(A, 1);
+    own.claimBaseDir(B, 2);
+    assert(own.mine(f("root.png", "t1"), B, 2), "第一个看到的应该认得下");
+    assert(!own.mine(f("root.png", "t1"), A, 1), "同一版本被认领两次，两条对话都会摆一张卡");
+    assert(own.mine(f("root.png", "t2"), A, 1), "文件又被改了一次，新版本必须允许重新认领");
+  }
+
+  // ⑥ 专家子任务跟父任务共用 runToken：自己人不许互相抢
+  {
+    const own = makeOwnership();
+    own.claimBaseDir(A, 7);
+    assert(own.mine(f(A + "/报告.md", "t1"), A, 7), "父任务认领失败");
+    assert(own.mine(f(A + "/报告.md", "t1"), A, 7), "同一个 runToken 再看一次就不算自己的了，专家的产出会丢");
+  }
+
+  // ⑦ 没有会话文件夹时（自定义项目工作区，baseDir 为空）不能崩，也不能把所有东西都判成别人的
+  {
+    const own = makeOwnership();
+    own.claimBaseDir("", 1);
+    own.claimBaseDir(A, 2);
+    assert(own.mine(f("产出.md"), "", 1), "baseDir 为空时根目录产出被误杀");
+    assert(!own.mine(f(A + "/x.md"), "", 1), "baseDir 为空也不该去动别人文件夹里的东西");
+  }
+
+  // ⑧ 同一条对话的两轮共用同一个任务文件夹（会话文件夹跨轮不变，runToken 每轮 +1）。
+  //    第二轮开跑会把这个文件夹重新登记到自己名下，此时第一轮的收尾还在往外发 files 事件——
+  //    「自己的文件夹一律豁免」这道就是挡在这儿的，没有它第一轮的产出会被自己人判成别人的。
+  {
+    const own = makeOwnership();
+    own.claimBaseDir(A, 1);            // 第一轮
+    own.claimBaseDir(A, 2);            // 第二轮开跑，文件夹改记在它名下
+    assert(!own.inForeignDir(A + "/上一轮.md", A, 1), "同一个文件夹换了轮次就不认自己了，上一轮的收尾产出会整批丢");
+    assert(own.mine(f(A + "/上一轮.md", "t1"), A, 1), "上一轮的产出被自己人抢走了");
+    assert(own.mine(f(A + "/这一轮.md", "t1"), A, 2), "这一轮在自己文件夹里的产出也被判成了别人的");
+  }
+
+  // ⑨ 接线：判据写得再对，哪条路忘了用还是白搭 —— 出事那次就是 runViaEngine（本机 CLI 那条）
+  //    一道关都没接，别人正在写的文件整批挂进了新对话。两条引擎路径都得：开跑先登记自己的
+  //    文件夹，每个差异出来的文件都过一遍 mine()。
+  {
+    const src = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+    for (const [fn, label] of [["runViaEngine", "本机 CLI 引擎"], ["runTask", "内置引擎"]]) {
+      const at = src.indexOf("async function " + fn + "(");
+      assert(at > 0, "agent.js 里找不到 " + fn);
+      const body = src.slice(at, src.indexOf("const emitFiles = () =>", at) + 1200);
+      assert(/claimBaseDir\(baseDir, runToken\)/.test(body), label + "（" + fn + "）开跑没登记自己的任务文件夹，归属就没有确定性依据了");
+      assert(/ownership\.mine\(f, baseDir, runToken\)/.test(body), label + "（" + fn + "）的产出没过归属判定，别的对话正在写的文件会挂到这条来");
+    }
+  }
+
+  console.log("✅ 产出归属：按文件夹判主（检测顺序反过来也认得对）· 根目录靠版本认领 · 同对话跨轮不自伤 · 未认领目录不误杀 · 负向控制能复现事故");
 }
 
 /**

@@ -836,16 +836,9 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     console.log(`[agent] 上下文已压缩（${splitMode ? "任务分轮" : "会话轮次"}）：${old.length} 条 → 1 条摘要（现约 ${historyChars(history)} 字符）`);
   }
 
-  /**
-   * 运行一次 Agent 任务循环。
-   * @param history 统一格式会话历史（会被就地追加）
-   * @param emit    事件回调（SSE / IM 进度）
-   * @returns { finalText }
-   */
-  // 并行任务共用一个工作目录：文件的某个版本（文件名+mtime）谁的差异检测先认领就归谁，
-  // 别的任务再看到同一版本就不算自己的成果——不然 A 对话刚生成的文件会出现在 B 对话的成果卡片里。
-  // 文件再次被改（mtime 变了）允许重新认领。账本只是去重提示，清掉最多短暂多报，不丢数据。
-  const fileClaims = new Map(); // name -> { owner, mtime }
+  // 产出归属账本：判「这个文件是不是本回合的产出」，见文件底部 makeOwnership 的说明
+  const ownership = makeOwnership();
+  const { claimBaseDir } = ownership;
   let runSeq = 0;
 
   /**
@@ -869,7 +862,13 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       emit({ type: "sleep", ms: sleptMs, note: `检测到本机睡眠 ${Math.round(sleptMs / 1000)} 秒，任务时限已顺延（睡眠不算任务时间）`, depth: 0 });
     });
 
-    // 成果卡片：CLI 写文件我们看不见，只能自己前后对一次快照
+    // 成果卡片：CLI 写文件我们看不见，只能自己前后对一次快照。
+    // 归属两道关，跟内置引擎那条路一模一样（这边以前一道都没有，别的对话正在写的文件
+    // 会整批挂到这条新对话的产出里，见 dirOwners 上面那段）：
+    //   1) 文件躺在别的任务已认领的目录里 → 不是我的；
+    //   2) 同一版本已被别的任务先认领 → 不是我的（根目录文件只有这一道能拦）。
+    const runToken = ++runSeq;
+    claimBaseDir(baseDir, runToken);
     const baseline = new Map();
     for (const f of outputFiles()) baseline.set(f.name, f.mtime);
     const emitFiles = () => {
@@ -878,7 +877,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       for (const f of files) {
         if (baseline.get(f.name) === f.mtime) continue;
         baseline.set(f.name, f.mtime);
-        changed.push(f.name);
+        if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);
       }
       emit({ type: "files", files, changed });
     };
@@ -1026,6 +1025,12 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     ].filter(Boolean).join("\n");
   }
 
+  /**
+   * 运行一次 Agent 任务循环。
+   * @param history 统一格式会话历史（会被就地追加）
+   * @param emit    事件回调（SSE / IM 进度）
+   * @returns { finalText }
+   */
   async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession }) {
     // ── 底层引擎分岔 ──────────────────────────────────────────────────────
     // 用户在设置里选了「本机 Claude Code / 本机 Codex」时，这一整趟任务交给那个 CLI 跑，
@@ -1092,6 +1097,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     const loopNudged = new Set(); // 每个键只提醒一次，别变成新的噪音循环
     // 任务开始时先记一份工作目录快照，files 事件带上「这一轮真正新增/改动的文件」。
     // 这件事必须在服务端算：前端那份 mtime 快照是活的，历史回放时早就对不上了，算出来永远是空。
+    claimBaseDir(baseDir, runToken);
     const baseline = new Map();
     for (const f of outputFiles()) baseline.set(f.name, f.mtime);
     const emitFiles = () => {
@@ -1101,14 +1107,8 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         const isNew = baseline.get(f.name) !== f.mtime;
         baseline.set(f.name, f.mtime);
         if (!isNew) continue;
-        const claim = fileClaims.get(f.name);
-        // 同一版本已被别的并行任务认领 → 是它的产出。仍有一个小窗口：对方写完文件但
-        // 它那步工具还没跑完、没来得及认领——误报也只是多摆一张卡片，不丢文件
-        if (claim && claim.owner !== runToken && claim.mtime === f.mtime) continue;
-        fileClaims.set(f.name, { owner: runToken, mtime: f.mtime });
-        changed.push(f.name);
+        if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);
       }
-      if (fileClaims.size > 1000) fileClaims.clear();
       emit({ type: "files", files, changed });
       // 长跑可见性：进度档一有更新就把里程碑清单推给前端，时间线卡片实时打勾
       const progName = changed.find((n) => n.split("/").pop() === "PROGRESS.md");
@@ -1476,4 +1476,63 @@ function collectSources(name, input, content) {
   return [];
 }
 
-module.exports = { createAgentRuntime, missingDeliverables, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX };
+/**
+ * 「这个文件是不是本回合的产出」的判据。并行任务共用一个工作目录，判错了用户就会
+ * 在一条对话里看到另一条对话的东西。
+ *
+ * 两道关，顺序不能反：
+ *
+ * 1）**目录归属**。每条对话各有各的任务文件夹，谁的文件夹就是谁的产出——这是确定性的事实。
+ *    只有这一道拦得住下面这桩真事故：湖南网站那条对话 17:38 起跑、一直在写文件，用户 17:55
+ *    另开一条问 paywall 的新对话，新对话的差异检测先跑到，_have.txt / _r2.txt / _dh.txt /
+ *    dist/index.html / hunan_travel.html 五个文件整批挂进了新对话的「本回合产出」
+ *    （data/sessions/s_1788803711031_608301.json 里原样存着）。用户的原话是
+ *    「这些图标是另一个对话的啊！」。
+ *
+ * 2）**版本认领**（文件名+mtime，先到先得）。工作区根目录下的文件没有文件夹可依，
+ *    只有这一道能去重；文件再被改一次（mtime 变了）就允许重新认领。
+ *
+ * 第一道只否掉「别人已登记的目录」，不否掉所有外层文件：根目录的文件、还没人认领的目录
+ * 照旧算数，免得把「这一轮真往工作区根目录写了个东西」也误杀。两本账都只是去重提示，
+ * 撑大了清空最多短暂多报，不丢数据。
+ */
+function makeOwnership() {
+  const dirOwners = new Map();  // 任务目录名 -> runToken
+  const fileClaims = new Map(); // 文件名 -> { owner, mtime }
+  const topSeg = (n) => { const s = String(n || ""); const i = s.indexOf("/"); return i < 0 ? s : s.slice(0, i); };
+
+  /** 任务开跑时登记自己的文件夹 */
+  function claimBaseDir(baseDir, runToken) {
+    const top = topSeg(baseDir);
+    if (!top) return;
+    if (dirOwners.size > 500) dirOwners.clear();
+    dirOwners.set(top, runToken);
+  }
+
+  /** 这个文件躺在「别的任务已登记的文件夹」里吗 */
+  function inForeignDir(name, baseDir, runToken) {
+    const top = topSeg(name);
+    if (!top || top === String(name || "")) return false; // 根目录下的文件，没有文件夹归属可言
+    if (top === topSeg(baseDir)) return false;            // 自己的文件夹
+    const owner = dirOwners.get(top);
+    return owner !== undefined && owner !== runToken;
+  }
+
+  /** 判定并（判定为「是我的」时）落账。file 是 outputFiles() 里的一项 */
+  function mine(file, baseDir, runToken) {
+    const name = file && file.name;
+    if (!name) return false;
+    if (inForeignDir(name, baseDir, runToken)) return false;
+    const claim = fileClaims.get(name);
+    // 同一版本已被别的并行任务认领 → 是它的产出。仍有一个小窗口：对方写完文件但
+    // 它那步工具还没跑完、没来得及认领——误报也只是多摆一张卡片，不丢文件
+    if (claim && claim.owner !== runToken && claim.mtime === file.mtime) return false;
+    if (fileClaims.size > 1000) fileClaims.clear();
+    fileClaims.set(name, { owner: runToken, mtime: file.mtime });
+    return true;
+  }
+
+  return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
+}
+
+module.exports = { createAgentRuntime, missingDeliverables, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, makeOwnership };
