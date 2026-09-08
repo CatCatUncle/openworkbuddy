@@ -1592,7 +1592,40 @@ function testDefaultSkillsManifest() {
   }
   const names = list.map((s) => s.name);
   assert.strictEqual(new Set(names).size, names.length, "默认技能清单里有重名");
-  console.log(`✅ 默认技能清单：${list.length} 条，协议/上游/体积字段齐全`);
+
+  // 库型条目（上游没有 skill.md）：自带说明必须是合法技能文档，且不往前端整篇塞
+  const pre = list.find((s) => s.name === "pretext");
+  assert(pre && pre.bundled_doc === true, "pretext 没进推荐清单 / 没标自带说明");
+  assert(!("skill_md" in pre), "listDefaultSkills 把整篇 skill_md 送到前端了");
+  const raw = skillsMgr.DEFAULT_SKILLS.find((s) => s.name === "pretext");
+  const fm = skillsMgr.parseFrontmatter(raw.skill_md);
+  assert.strictEqual(fm.name, "pretext", "自带说明的 frontmatter name 和条目名对不上，装完会变成另一个名字");
+  assert(fm.description.length > 20 && /@chenglou\/pretext/.test(fm.content), "自带说明缺描述或没写到包名");
+  assert(/cdn\.jsdelivr\.net\/npm\/@chenglou\/pretext/.test(fm.content), "说明里没给免构建的引入方式，生成的 HTML 用不上");
+  const opts = skillsMgr.defaultInstallOpts(raw);
+  assert(opts.skillMd === raw.skill_md && opts.files.includes("README.md") && opts.files.includes("LICENSE"), "库型条目的安装选项没接上");
+  assert.deepStrictEqual(skillsMgr.defaultInstallOpts(list[0].name === "pretext" ? list[1] : list[0]).files, null, "普通技能条目不该带文件白名单");
+
+  // adaptLibraryAsSkill：注入 skill.md + 只留白名单；上游自己有 skill.md 时不覆盖（负向控制）
+  const os = require("os");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "owb-lib-"));
+  for (const f of ["README.md", "LICENSE", "package.json"]) fs.writeFileSync(path.join(root, f), f);
+  fs.mkdirSync(path.join(root, "tests")); fs.writeFileSync(path.join(root, "tests", "big.txt"), "x".repeat(1000));
+  assert.strictEqual(skillsMgr.adaptLibraryAsSkill(root, {}), false, "没给 skillMd 也动了目录");
+  assert(fs.existsSync(path.join(root, "package.json")), "没给 skillMd 却把文件删了");
+  assert.strictEqual(skillsMgr.adaptLibraryAsSkill(root, opts), true, "库型目录没被改造成技能");
+  const left = fs.readdirSync(root).sort();
+  assert.deepStrictEqual(left, ["LICENSE", "README.md", "skill.md"], "白名单之外的文件没清干净 / 白名单文件被误删：" + left.join(","));
+  assert.strictEqual(fs.readFileSync(path.join(root, "skill.md"), "utf8").trim(), raw.skill_md.trim(), "写进去的 skill.md 和清单里的不一致");
+  // 负向控制：上游已经有自己的 SKILL.md → 一个字都不能碰
+  const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-lib-"));
+  fs.writeFileSync(path.join(root2, "SKILL.md"), "---\nname: upstream\n---\n上游自己的");
+  fs.writeFileSync(path.join(root2, "extra.js"), "keep");
+  assert.strictEqual(skillsMgr.adaptLibraryAsSkill(root2, opts), false, "上游有 SKILL.md 还去覆盖");
+  assert.deepStrictEqual(fs.readdirSync(root2).sort(), ["SKILL.md", "extra.js"], "上游有 SKILL.md 时不该删文件");
+  assert.strictEqual(fs.readFileSync(path.join(root2, "SKILL.md"), "utf8"), "---\nname: upstream\n---\n上游自己的", "上游的 SKILL.md 被改写了");
+  fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(root2, { recursive: true, force: true });
+  console.log(`✅ 默认技能清单：${list.length} 条，协议/上游/体积字段齐全 · 库型条目(pretext)自带说明合法、只留白名单、不覆盖上游`);
 }
 
 function testCron() {
