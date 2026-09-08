@@ -217,7 +217,7 @@ function installedFromDir(srcDir) {
  * 2. 子目录：github.com/owner/repo/tree/branch/path（该目录本身是技能，或其下多个技能全装）
  * 3. 整仓库：github.com/owner/repo（根目录是技能，或扫其子目录批量安装）
  */
-async function installFromGitHub(url) {
+async function installFromGitHub(url, opts = {}) {
   const u = String(url || "").trim().replace(/\/+$/, "");
   if (!u) throw new Error("请填写 GitHub 链接");
 
@@ -246,12 +246,34 @@ async function installFromGitHub(url) {
   try {
     const root = subpath ? path.join(tmp, ...subpath.split("/")) : tmp;
     if (!fs.existsSync(root)) throw new Error(`仓库里没有 ${subpath} 这个目录（分支 ${branch || "默认"}）`);
+    adaptLibraryAsSkill(root, opts);
     const dirs = discoverSkillDirs(root);
     if (!dirs.length) throw new Error("该链接下没找到 skill.md / SKILL.md（技能=含 skill.md 的目录）");
     return dirs.map(installedFromDir);
   } finally {
     cleanup();
   }
+}
+
+/**
+ * 把一个「代码库」当技能装：上游本来就不是技能仓库（没有 skill.md），
+ * 我们自己写一份 skill.md 塞进去，告诉 agent 这个库是干什么的、怎么用。
+ * 顺手只留白名单文件（README / LICENSE 之类）——库的测试语料、字体、demo 不该进技能目录。
+ * 上游要是哪天自己加了 skill.md，以上游为准，不覆盖。
+ */
+function adaptLibraryAsSkill(root, { skillMd = "", files = null } = {}) {
+  if (!skillMd) return false;
+  const hasSkill = fs.readdirSync(root).some((f) => /^skill\.md$/i.test(f));
+  if (hasSkill) return false;
+  if (Array.isArray(files)) {
+    const keep = new Set(files.map((f) => f.toLowerCase()));
+    for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+      if (e.name === ".git") continue;
+      if (!keep.has(e.name.toLowerCase())) fs.rmSync(path.join(root, e.name), { recursive: true, force: true });
+    }
+  }
+  fs.writeFileSync(path.join(root, "skill.md"), String(skillMd).trim() + "\n");
+  return true;
 }
 
 /**
@@ -354,6 +376,66 @@ const DEFAULT_SKILLS = [
     why: "做正经 PPT 的一整套模板与工作流。⚠️ 自带大量模板素材，装完约 171MB、克隆要几分钟，磁盘紧张就别装",
   },
   {
+    name: "pretext",
+    title: "文字排版测量 Pretext",
+    repo: "chenglou/pretext", branch: "main", subpath: "",
+    license: "MIT", author: "Cheng Lou",
+    bytes: 24 * 1024,
+    why: "生成网页/海报/图表时，文字会不会换行、会占几行、容器该多宽，用纯算术算准，不再靠猜。上游是个 JS 库，我们附一份用法说明装成技能，只取 README 和 LICENSE",
+    // 上游是库不是技能仓库，没有 skill.md——装的时候把这份说明写进去
+    files: ["README.md", "LICENSE"],
+    skill_md: `---
+name: pretext
+description: 文字排版测量库 @chenglou/pretext 的用法。做网页、海报、SVG/Canvas 图、信息图时，用它算一段文字在给定字体和宽度下占几行、多高、最窄能收到多宽，避免标题溢出、卡片高度对不齐、文字撞图。
+---
+
+# Pretext：不碰 DOM 的多行文字测量与排版
+
+上游：https://github.com/chenglou/pretext（MIT，作者 Cheng Lou）。纯 JS/TS，支持中英文、阿拉伯文、emoji 等混排，
+以浏览器自己的字体引擎为准做测量，但排版是纯算术，不触发 reflow。
+
+## 什么时候用
+- 生成 html-page / 海报 / 信息图时，要保证按钮、标题、卡片里的文字**不溢出、不多换一行**。
+- 卡片/气泡要「刚好包住文字」（shrink-wrap）、多列瀑布流要提前知道每块多高。
+- 在 Canvas / SVG 上自己一行行画文字（fillText / <text>），需要自己断行。
+- 长列表虚拟滚动，需要不渲染就知道每条多高。
+
+## 安装 / 引入
+- Node / 打包工程：\`npm install @chenglou/pretext\`
+- 直接写进生成的 HTML（无需构建）：
+  \`<script type="module">import { prepare, layout } from "https://cdn.jsdelivr.net/npm/@chenglou/pretext@0.0.9/dist/layout.js";</script>\`
+- 它需要浏览器环境（用 canvas 量字宽）；纯 Node 端暂不可用。
+
+## 用法一：只要高度 / 行数
+\`\`\`js
+import { prepare, layout } from "@chenglou/pretext";
+const prepared = prepare("AGI 春天到了. بدأت الرحلة 🚀", "16px Inter"); // 一次性：分词 + 量宽
+const { height, lineCount } = layout(prepared, 320, 20);              // 纯算术：最大宽 320，行高 20
+\`\`\`
+- \`font\` 写法同 \`ctx.font\`（如 \`"600 18px 'PingFang SC'"\`），必须和 CSS 里实际用的字体、字号一致，否则量出来不准。
+- 同一段文字换宽度只重跑 \`layout()\`，别重跑 \`prepare()\`。
+- 选项：\`{ whiteSpace: "pre-wrap" }\` 保留空格/换行；\`{ wordBreak: "keep-all" }\`；\`{ letterSpacing: n }\`（px）。
+
+## 用法二：自己一行行排（Canvas / SVG）
+\`\`\`js
+import { prepareWithSegments, layoutWithLines, measureLineStats, walkLineRanges } from "@chenglou/pretext";
+const p = prepareWithSegments(text, "18px 'Helvetica Neue'");
+const { lines } = layoutWithLines(p, 320, 26);            // 每行的 text / width
+lines.forEach((l, i) => ctx.fillText(l.text, 0, i * 26));
+const { lineCount, maxLineWidth } = measureLineStats(p, 320); // 只要行数和最宽行，不分配字符串
+\`\`\`
+- 「最窄能收到多宽」：\`walkLineRanges(p, w, line => ...)\` 取最宽行；或对宽度做二分找行数刚好的值（气泡/卡片 shrink-wrap）。
+- 每行宽度不同（绕图排版）：\`layoutNextLineRange(p, cursor, width)\` 一行一行推进，\`materializeLineRange\` 拿到该行文本。
+- 富文本行内（@提及、代码片、chip）：\`@chenglou/pretext/rich-inline\` 的 \`prepareRichInline / walkRichInlineLineRanges\`。
+- 连字符：在文本里预先插软连字符（U+00AD），它会当可选断点。
+
+## 交付时的检查清单
+1. 生成的页面里每个定宽容器内的标题/按钮文案，用 \`layout()\` 算一次 \`lineCount\`，超过设计预期就缩字号或加宽。
+2. 多卡片同排时，用最大 \`height\` 统一卡片高度，而不是让浏览器各排各的。
+3. 字体没加载完就测会偏差：\`await document.fonts.ready\` 之后再 \`prepare()\`。
+`,
+  },
+  {
     name: "follow-builders",
     title: "独立开发者信息源",
     repo: "zarazhangrui/follow-builders", branch: "main", subpath: "",
@@ -372,8 +454,10 @@ function defaultSkillUrl(s) {
 function listDefaultSkills() {
   return DEFAULT_SKILLS.map((s) => {
     const dir = findSkillDir(s.name);
+    const { skill_md, ...pub } = s; // 说明全文留在服务端，前端只需要「有没有」
     return {
-      ...s,
+      ...pub,
+      bundled_doc: !!skill_md,
       url: defaultSkillUrl(s),
       installed: !!dir,
       installed_bytes: dir ? dirSize(dir) : 0,
@@ -381,12 +465,17 @@ function listDefaultSkills() {
   });
 }
 
+/** 清单条目 → installFromGitHub 的选项（库型条目要注入 skill.md、只留白名单文件） */
+function defaultInstallOpts(s) {
+  return { skillMd: s.skill_md || "", files: Array.isArray(s.files) ? s.files : null };
+}
+
 /** 装一条默认技能（已装就原样返回，幂等） */
 async function installDefaultSkill(name, { force = false } = {}) {
   const s = DEFAULT_SKILLS.find((x) => x.name === name);
   if (!s) throw new Error(`默认技能清单里没有「${name}」`);
   if (!force && findSkillDir(s.name)) return { name: s.name, skipped_existing: true };
-  const installed = await installFromGitHub(defaultSkillUrl(s));
+  const installed = await installFromGitHub(defaultSkillUrl(s), defaultInstallOpts(s));
   return { name: s.name, installed };
 }
 
@@ -403,7 +492,7 @@ async function ensureDefaultSkills({ only = null, force = false } = {}) {
       continue;
     }
     try {
-      const installed = await installFromGitHub(defaultSkillUrl(s));
+      const installed = await installFromGitHub(defaultSkillUrl(s), defaultInstallOpts(s));
       const skipped = installed.flatMap((i) => i.skipped || []);
       results.push({
         name: s.name,
@@ -422,5 +511,5 @@ async function ensureDefaultSkills({ only = null, force = false } = {}) {
 module.exports = {
   loadSkills, SKILLS_DIR, getSkillFull, saveSkill, deleteSkill, installFromGitHub,
   DEFAULT_SKILLS, listDefaultSkills, installDefaultSkill, ensureDefaultSkills,
-  parseFrontmatter, dirSize, safeName,
+  parseFrontmatter, dirSize, safeName, adaptLibraryAsSkill, defaultInstallOpts,
 };
