@@ -25,6 +25,9 @@ const thinking = require("./thinking");
  * 所以在发请求前补一条占位结果把对子配上：坏会话下一次请求就自愈了。顺带丢掉找不到主人的
  * 孤儿结果（有 tool_result 却没有对应的 tool_use，同样是 400）和重复 id。
  */
+/** 已经喊过的坏配对（按 call id）。同一条每轮都会被修，但只值得说一次 */
+const warnedLeakedPairs = new Set();
+
 function repairToolPairs(history) {
   const out = [];
   for (let i = 0; i < history.length; i++) {
@@ -45,7 +48,13 @@ function repairToolPairs(history) {
     }
     for (const [id, name] of want) {
       if (seen.has(id)) continue;
-      console.warn(`[llm] 工具调用 ${name}(${id}) 没有结果，已补占位——否则整个会话会一直 400`);
+      // 同一条坏配对每一轮都会被重新补一次（历史里那半截是永久的），日志一轮刷一遍
+      // 就把真正的新问题淹了。按 call id 只喊第一次
+      if (!warnedLeakedPairs.has(id)) {
+        warnedLeakedPairs.add(id);
+        if (warnedLeakedPairs.size > 500) warnedLeakedPairs.clear(); // 长跑进程别让它无限涨
+        console.warn(`[llm] 工具调用 ${name}(${id}) 没有结果，已补占位——否则整个会话会一直 400`);
+      }
       results.push({
         id,
         name,
@@ -610,8 +619,39 @@ function embedCandidates(config) {
   return out;
 }
 
+/**
+ * 「这条嵌入渠道已经确认用不了」——进程级记忆，跨 embedder 实例。
+ *
+ * 为什么要跨实例记：createEmbedder 在启动、存设置、走完引导时都会重建一次，
+ * 而每个新实例都从第一顺位开始试。首选渠道要是欠费/没开通（4xx），
+ * 就变成每建一次实例都去撞一次死渠道 + 刷一行一模一样的告警，
+ * 用户看到的是满屏重复日志，感觉到的是每次记忆读写都先卡一下。
+ *
+ * 只记 4xx 这种「这条路本身不通」的，不记超时和 5xx（那些下次可能就好了）。
+ * 十分钟后自动忘掉：用户可能刚去把账号充上了，不该让他重启才生效。
+ * key 里带上 api_key 的指纹（不是 key 本身）——换了 key 就是另一条路，立刻重试。
+ */
+const deadEmbedChannels = new Map();
+const DEAD_TTL_MS = 10 * 60 * 1000;
+const chanKey = (c) => `${c.base_url}|${c.model}|${String(c.api_key || "").length}:${String(c.api_key || "").slice(-4)}`;
+function markEmbedChannelDead(c, why) { deadEmbedChannels.set(chanKey(c), { at: Date.now(), why }); }
+function embedChannelDead(c) {
+  const d = deadEmbedChannels.get(chanKey(c));
+  if (!d) return null;
+  if (Date.now() - d.at > DEAD_TTL_MS) { deadEmbedChannels.delete(chanKey(c)); return null; }
+  return d;
+}
+
 function createEmbedder(config) {
-  const cands = embedCandidates(config);
+  const all = embedCandidates(config);
+  // 跳过刚刚确认过不通的。不是静默降级：跳了哪条、为什么、什么时候再试，都说出来
+  const cands = all.filter((c) => !embedChannelDead(c));
+  for (const c of all) {
+    const d = embedChannelDead(c);
+    if (!d) continue;
+    const mins = Math.max(1, Math.ceil((DEAD_TTL_MS - (Date.now() - d.at)) / 60000));
+    console.warn(`[记忆向量] 跳过 ${c.label}（${d.why}），${mins} 分钟后自动重试；想立刻重试就去设置里把这条渠道的 key 改一下`);
+  }
   if (!cands.length) return null;
 
   let idx = 0, fails = 0, dead = false;
@@ -644,6 +684,7 @@ function createEmbedder(config) {
       fails = e && e.fatalForChannel ? 3 : fails + 1; // 4xx 一次就够，不用陪它试满三次
       const why = String((e && e.message) || e).slice(0, 160);
       // 一条候选挂到头就换下一条；全部挂完才停用。换道要出声，不搞静默降级
+      if (e && e.fatalForChannel) markEmbedChannelDead(cfg, why); // 4xx：下一个实例别再来撞这一下
       if (fails >= 3 && idx < cands.length - 1) {
         idx++; fails = 0;
         embed.model = cands[idx].model; // 换了嵌入模型，memory 那边会自动把旧向量作废重算
@@ -663,4 +704,4 @@ function createEmbedder(config) {
   return embed;
 }
 
-module.exports = { createLLM, createEmbedder, _internals: { rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages } };
+module.exports = { createLLM, createEmbedder, _internals: { markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages } };
