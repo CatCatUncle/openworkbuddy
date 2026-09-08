@@ -201,17 +201,65 @@ initAuth();
 // ================= 首次开箱：引导填模型 Key =================
 // 没 key 的话，用户发第一条消息才会看到一句上游报错，然后完全不知道该去哪儿修。
 // 所以登录之后先拦一道；只看服务端回的布尔值，界面上永远不显示已存的 key 原文。
-const ONB_TIPS = {
-  "https://openrouter.ai/api/v1": '一个 Key 通吃几十家模型，国内可直连，新号有免费额度。去 <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> 拿。',
-  "https://api.deepseek.com/v1": '国产、便宜、中文强，适合当日常主力。去 <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a> 拿。',
-  "https://dashscope.aliyuncs.com/compatible-mode/v1": '阿里云通义，控制台开通百炼后在「API-KEY 管理」里拿。',
-  "https://open.bigmodel.cn/api/paas/v4": '智谱 GLM，去 <a href="https://open.bigmodel.cn" target="_blank">open.bigmodel.cn</a> 控制台拿。',
-  "https://api.moonshot.cn/v1": '月之暗面 Kimi，去 <a href="https://platform.moonshot.cn" target="_blank">platform.moonshot.cn</a> 拿。',
+// 「去哪拿 Key」总表：向导和设置页共用（app-05.js 的模型/搜索/IM 面板也从这儿取）。
+// 键 = 接口地址（模型）/ 服务商 id（搜索）/ 通道 key（IM）；值 = 直达「创建 API Key」那一页的地址，别指到首页让人自己找。
+// 全走 https + 新窗口（桌面版由 setWindowOpenHandler 交给系统浏览器）。加新渠道时这里必须同步补一条，e2e 有闸门盯着。
+const KEY_SOURCES = {
+  // 大模型：按 base_url
+  "https://api.openai.com/v1": { url: "https://platform.openai.com/api-keys", name: "OpenAI" },
+  "anthropic": { url: "https://console.anthropic.com/settings/keys", name: "Anthropic" },
+  "https://openrouter.ai/api/v1": { url: "https://openrouter.ai/settings/keys", name: "OpenRouter" },
+  "https://ark.cn-beijing.volces.com/api/v3": { url: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey", name: "火山方舟" },
+  "https://dashscope.aliyuncs.com/compatible-mode/v1": { url: "https://bailian.console.aliyun.com/?apiKey=1#/api-key", name: "阿里云百炼" },
+  "https://dashscope.aliyuncs.com/api/v1": { url: "https://bailian.console.aliyun.com/?apiKey=1#/api-key", name: "阿里云百炼" },
+  "https://api.deepseek.com/v1": { url: "https://platform.deepseek.com/api_keys", name: "DeepSeek" },
+  "https://open.bigmodel.cn/api/paas/v4": { url: "https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys", name: "智谱" },
+  "https://api.moonshot.cn/v1": { url: "https://platform.moonshot.cn/console/api-keys", name: "Kimi" },
+  "http://localhost:11434/v1": { url: "https://ollama.com/download", name: "Ollama", label: "装 Ollama" },
+  // 联网搜索：按服务商 id
+  "tavily": { url: "https://app.tavily.com/home", name: "Tavily" },
+  "jina": { url: "https://jina.ai/api-dashboard/", name: "Jina" },
+  "brave": { url: "https://api-dashboard.search.brave.com/app/keys", name: "Brave" },
+  // IM：按通道 key
+  "feishu": { url: "https://open.feishu.cn/app", name: "飞书开放平台", label: "去开放平台建应用" },
+  "qq": { url: "https://q.qq.com/#/app/bot", name: "QQ 开放平台", label: "去开放平台建机器人" },
+  "wecom_app": { url: "https://work.weixin.qq.com/wework_admin/frame#apps", name: "企业微信后台", label: "去管理后台建应用" },
+  "wechat_mp": { url: "https://mp.weixin.qq.com/", name: "微信公众平台", label: "去公众平台拿凭证" },
 };
+/** 一个「去拿 Key ↗」小链接；查不到来源时返回空串，调用方原样拼进去就行 */
+function keyLink(id, label) {
+  const src = KEY_SOURCES[id];
+  if (!src) return "";
+  return `<a class="get-key" href="${esc(src.url)}" target="_blank" rel="noopener" title="${esc(src.name)}：新窗口打开">${esc(label || src.label || "去拿 Key")} ↗</a>`;
+}
+/** 模型渠道的来源 id：Anthropic 官方没有 base_url，按 provider 认 */
+function modelKeySource(m) {
+  if (!m) return "";
+  if (m.base_url && KEY_SOURCES[m.base_url]) return m.base_url;
+  return m.provider === "anthropic" || !m.base_url ? "anthropic" : "";
+}
+const ONB_TIPS = {
+  "https://openrouter.ai/api/v1": "一个 Key 通吃几十家模型，国内可直连，新号有免费额度。",
+  "https://api.deepseek.com/v1": "国产、便宜、中文强，适合当日常主力。",
+  "https://dashscope.aliyuncs.com/compatible-mode/v1": "阿里云通义千问，控制台开通百炼后即可建 Key。",
+  "https://open.bigmodel.cn/api/paas/v4": "智谱 GLM，国内直连。",
+  "https://api.moonshot.cn/v1": "月之暗面 Kimi，长文档强。",
+  "https://api.openai.com/v1": "OpenAI 官方，国内需要网络代理。",
+  "https://ark.cn-beijing.volces.com/api/v3": "火山方舟，豆包 / DeepSeek 都在里面。",
+  "anthropic": "Anthropic 官方 Claude，国内需要网络代理。",
+};
+// 搜索服务商：[Key 占位符, 一句话推荐语]。顺序 = 推荐顺序，Tavily 不用绑卡、免费额度最实在
 const ONB_SEARCH = {
-  jina: ["jina_...", '免费额度够日常用，去 <a href="https://jina.ai" target="_blank">jina.ai</a> 首页领。'],
-  tavily: ["tvly-...", '专给 AI 用的搜索，每月有免费额度，去 <a href="https://tavily.com" target="_blank">tavily.com</a> 拿。'],
-  brave: ["BSA...", '去 <a href="https://brave.com/search/api/" target="_blank">brave.com/search/api</a> 申请。'],
+  tavily: ["tvly-...", "推荐。专给 AI 用的搜索，注册就送每月免费额度，不用绑卡。"],
+  jina: ["jina_...", "国内可直连，注册送免费额度，结果带网页正文。"],
+  brave: ["BSA...", "独立索引、隐私友好；有免费档但要绑卡。"],
+};
+// 多媒体四项的一键预设：[名字, 接口地址, 模型名, 默认音色]，点一下就填好，只剩粘 Key
+const ONB_MEDIA_PRESETS = {
+  image: [["阿里云百炼 · qwen-image", "https://dashscope.aliyuncs.com/api/v1", "qwen-image"], ["OpenAI · gpt-image-1", "https://api.openai.com/v1", "gpt-image-1"]],
+  video: [["阿里云百炼 · 万相", "https://dashscope.aliyuncs.com/api/v1", "wan2.2-t2v-plus"], ["火山方舟 · Seedance", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedance-1-0-pro-250528"]],
+  tts: [["阿里云百炼 · qwen-tts", "https://dashscope.aliyuncs.com/api/v1", "qwen-tts", "Cherry"], ["OpenAI · gpt-4o-mini-tts", "https://api.openai.com/v1", "gpt-4o-mini-tts", "alloy"]],
+  vision: [["阿里云百炼 · qwen-vl-max", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-vl-max"], ["OpenAI · gpt-5-mini", "https://api.openai.com/v1", "gpt-5-mini"]],
 };
 // 四类多媒体能力：填的都是「OpenAI 兼容接口地址 + Key + 模型名」，说明只写一句它能干什么
 const ONB_MEDIA = [
@@ -355,7 +403,11 @@ function renderOnbBrain(body) {
   const syncTip = () => {
     const opt = sel.selectedOptions[0];
     const local = !!opt && opt.dataset.local === "1";
-    tipEl.innerHTML = local ? "本地模型不需要 Key，确认 Ollama 已经在跑就行。" : (ONB_TIPS[opt ? opt.dataset.url : ""] || "去这家服务商的控制台拿 API Key。");
+    const url = opt ? opt.dataset.url : "";
+    const srcId = KEY_SOURCES[url] ? url : (url ? "" : "anthropic");
+    tipEl.innerHTML = local
+      ? `本地模型不需要 Key，确认 Ollama 已经在跑就行。${keyLink(url)}`
+      : `${ONB_TIPS[srcId] || ONB_TIPS[url] || "去这家服务商的控制台拿 API Key。"} ${keyLink(srcId)}`;
     keyEl.disabled = local;
     keyEl.placeholder = local ? "本地模型不用填" : "粘贴 API Key";
   };
@@ -420,9 +472,9 @@ function renderOnbSearch(body) {
     ${sc.has_key ? `<div class="onb-ok">✅ 已配 <b>${esc(sc.provider)}</b></div>` : ""}
     <label class="onb-lb">搜索服务商</label>
     <select id="onb-sp">
-      <option value="jina">Jina（免费额度够用）</option>
-      <option value="tavily">Tavily（给 AI 用的搜索）</option>
-      <option value="brave">Brave Search</option>
+      <option value="tavily">Tavily（推荐 · 免费额度 · 不用绑卡）</option>
+      <option value="jina">Jina（国内直连 · 免费额度）</option>
+      <option value="brave">Brave Search（要绑卡）</option>
     </select>
     <div class="onb-tip" id="onb-sp-tip"></div>
     <label class="onb-lb">API Key</label>
@@ -435,7 +487,7 @@ function renderOnbSearch(body) {
   const err = body.querySelector("#onb-err");
   const go = body.querySelector("#onb-go");
   sel.value = sc.provider || "jina";
-  const sync = () => { const [ph, t] = ONB_SEARCH[sel.value] || ["", ""]; keyEl.placeholder = ph; tip.innerHTML = t; };
+  const sync = () => { const [ph, t] = ONB_SEARCH[sel.value] || ["", ""]; keyEl.placeholder = ph; tip.innerHTML = `${t} ${keyLink(sel.value)}`; };
   sel.onchange = sync;
   sync();
   go.onclick = async () => {
@@ -472,6 +524,7 @@ function renderOnbMedia(body) {
           <span class="onb-chip ${md[k] ? "ok" : ""}">${md[k] ? "已配" : "未配"}</span>
           <button type="button" class="btn-plain onb-fill" data-kind="${k}">${md[k] ? "修改" : "填写"}</button></div>
         <div class="onb-row-b" hidden>
+          <div class="onb-presets">${(ONB_MEDIA_PRESETS[k] || []).map(([nm, base, model, voice]) => `<button type="button" class="onb-preset" data-base="${esc(base)}" data-model="${esc(model)}" data-voice="${esc(voice || "")}">${esc(nm)}</button>`).join("")}<span class="onb-tip onb-preset-src"></span></div>
           <input data-f="base_url" placeholder="接口地址（如 https://api.openai.com/v1）">
           <input data-f="api_key" type="password" placeholder="API Key" autocomplete="off">
           <input data-f="model" placeholder="模型名">
@@ -486,6 +539,17 @@ function renderOnbMedia(body) {
       const b = fill.closest(".onb-row").querySelector(".onb-row-b");
       b.hidden = !b.hidden;
       if (!b.hidden) b.querySelector("input").focus();
+      return;
+    }
+    const preset = e.target.closest(".onb-preset");
+    if (preset) {
+      // 一键填地址 + 模型（音色有默认就一并填），旁边亮出这家的「去拿 Key」；Key 本身还得用户自己粘
+      const row = preset.closest(".onb-row");
+      const set = (f, v) => { const i = row.querySelector(`input[data-f=${f}]`); if (i && v) i.value = v; };
+      set("base_url", preset.dataset.base); set("model", preset.dataset.model); set("voice", preset.dataset.voice);
+      row.querySelectorAll(".onb-preset").forEach(b => b.classList.toggle("on", b === preset));
+      row.querySelector(".onb-preset-src").innerHTML = keyLink(preset.dataset.base);
+      row.querySelector("input[data-f=api_key]").focus();
       return;
     }
     const save = e.target.closest(".onb-save");
@@ -521,7 +585,8 @@ function renderOnbIm(body) {
     <div class="onb-rows">
       <div class="onb-row"><div class="onb-row-h"><i class="ic">📱</i><div class="tt"><b>IM 通道</b><span>飞书 · 微信 · QQ · 企业微信 · 钉钉 · Webhook</span></div>
         <span class="onb-chip ${n ? "ok" : ""}">${n ? `已配 ${n} 个` : "未配"}</span>
-        <button type="button" class="btn-plain" id="onb-im-open">去助理设置</button></div></div>
+        <button type="button" class="btn-plain" id="onb-im-open">去助理设置</button></div>
+        <div class="onb-row-b onb-im-src">先去各家开放平台建个应用拿凭证：${["feishu", "qq", "wecom_app", "wechat_mp"].map(k => keyLink(k, KEY_SOURCES[k].name)).join("")}</div></div>
     </div>
     ${onbFoot("下一步", "先不接")}`;
   body.querySelector("#onb-im-open").onclick = async () => {

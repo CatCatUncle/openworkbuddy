@@ -682,6 +682,16 @@
   .onb-card select { width: 100%; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: 10px; font-size: 14px; background: var(--wb-bg); color: var(--wb-text); }
   .onb-card .onb-tip { font-size: 13px; color: var(--wb-text-3); margin-top: 6px; line-height: 1.6; }
   .onb-card .onb-tip a { color: var(--wb-brand-text); }
+  /* 「去拿 Key ↗」：向导、模型/搜索/IM 面板共用的小胶囊链接，一眼能点、不跟正文糊在一起 */
+  .get-key { display: inline-flex; align-items: center; gap: 2px; margin-left: 6px; padding: 1px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; line-height: 20px; white-space: nowrap; text-decoration: none; color: var(--wb-brand-text); border: 1px solid color-mix(in srgb, var(--wb-brand) 40%, transparent); background: color-mix(in srgb, var(--wb-brand) 8%, transparent); vertical-align: middle; }
+  .get-key:hover { background: color-mix(in srgb, var(--wb-brand) 16%, transparent); text-decoration: none; }
+  .onb-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .onb-presets .onb-tip { margin-top: 0; }
+  .onb-preset { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); cursor: pointer; }
+  .onb-preset:hover { border-color: var(--wb-brand); color: var(--wb-brand-text); }
+  .onb-preset.on { border-color: var(--wb-brand); color: var(--wb-brand-text); background: color-mix(in srgb, var(--wb-brand) 10%, transparent); }
+  .onb-im-src { font-size: 12px; color: var(--wb-text-3); display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .onb-im-src .get-key { margin-left: 2px; }
   .onb-ok { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--wb-ok) 12%, transparent); color: var(--wb-ok-text); font-size: 13px; margin-bottom: 6px; }
   .onb-ok a { margin-left: auto; color: var(--wb-brand-text); cursor: pointer; font-size: 12px; }
   .onb-seg { display: flex; gap: 6px; margin-top: 4px; }
@@ -1061,6 +1071,9 @@
   .im-card-b .im-r { font-size: 12px; margin-top: 2px; line-height: 1.5; word-break: break-all; }
   .im-card-b .im-r:empty { display: none; }
   .im-card-b .im-act { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  .im-src { margin: 2px 0 6px; }
+  .im-src .get-key { margin-left: 0; }
+  .key-src-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 6px; font-size: 12px; }
   .im-help { margin-top: 6px; font-size: 12px; color: var(--wb-text-2); }
   .im-help summary { cursor: pointer; color: var(--wb-brand-text); list-style: none; }
   .im-help summary::-webkit-details-marker { display: none; }
