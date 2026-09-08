@@ -1910,20 +1910,24 @@ function testEvolveLoop() {
     // 就只能拿会话的 updated_at 当近似，同一个会话里几个月前的失败会被算成今天的。
     const turn = (events, at = now) => [{ type: "user", text: "把这个页面改一下", at }, { type: "assistant", events, at }];
 
-    fs.writeFileSync(path.join(SESS, "s1.json"), JSON.stringify({ updated_at: now, transcript: [
-      ...turn([err("edit_file", "没找到 old_text"), err("run_shell", "未知工具：directory_tree")]),
-      ...turn([err("edit_file", "没找到 old_text"), err("run_shell", "未知工具：directory_tree")]),
-      ...turn([err("check_page", "引了 2 个外部资源")]),
+    // 每一轮的时间戳由调用方给：规则生效前写一遍、生效后再写一遍（打分只认生效之后的回合）
+    const writeSessions = (at) => {
+    fs.writeFileSync(path.join(SESS, "s1.json"), JSON.stringify({ updated_at: at, transcript: [
+      ...turn([err("edit_file", "没找到 old_text"), err("run_shell", "未知工具：directory_tree")], at),
+      ...turn([err("edit_file", "没找到 old_text"), err("run_shell", "未知工具：directory_tree")], at),
+      ...turn([err("check_page", "引了 2 个外部资源")], at),
     ] }));
-    fs.writeFileSync(path.join(SESS, "s2.json"), JSON.stringify({ updated_at: now, transcript: [
-      ...turn([err("edit_file", "没找到 old_text"), err("run_shell", "未知工具：directory_tree")]),
+    fs.writeFileSync(path.join(SESS, "s2.json"), JSON.stringify({ updated_at: at, transcript: [
+      ...turn([err("edit_file", "没找到 old_text"), err("run_shell", "未知工具：directory_tree")], at),
       // 真报错和 Electron 自己的噪音撞在一条 preview 里：必须判成真问题，不能归成误报把真错藏了
-      ...turn([err("check_page", "引了 1 个外部资源；控制台报错 1 条：Electron Security Warning (Insecure CSP)")]),
+      ...turn([err("check_page", "引了 1 个外部资源；控制台报错 1 条：Electron Security Warning (Insecure CSP)")], at),
       ...turn([err("check_page", "控制台报错 1 条：Electron Security Warning (Insecure CSP)"), err("run_shell", "未知工具：directory_tree"),
         // 写完自检顶回来：文件是写进去了，毛病在内容。别跟"改文件失败"混成一堆
         err("edit_file", "已修改 a.html：在第 3 行替换了 1 处，400 → 800 字符 ⚠️ 页面结构有问题：<body> 开 1 个、闭 0 个，对不上"),
-        err("edit_file", "工具执行出错: report 是一个目录，不是文件。里面有：a.html、b.css")]),
+        err("edit_file", "工具执行出错: report 是一个目录，不是文件。里面有：a.html、b.css")], at),
     ] }));
+    };
+    writeSessions(now);
     // 窗口外的会话不该被数进来
     fs.writeFileSync(path.join(SESS, "s3.json"), JSON.stringify({ updated_at: old, transcript:
       turn([err("run_shell", "zsh: no matches found: *.png")], old) }));
@@ -1993,6 +1997,13 @@ function testEvolveLoop() {
     const [p2] = ev.addProposals([{ kind: "add_rule", signal: "thumbs_down", rule: "回复末尾必须先给结论再给过程，别让人翻到最后才看见答案。", verify: "thumbs_down 出现率下降", signalSnapshot: { key: "thumbs_down", count: 3, rate: 0.5, actionable: "prompt", label: "用户点了没帮助" }, baseline: { key: "thumbs_down", rate: 0.33, count: 2, turns: 6, at: new Date().toISOString() } }]);
     ev.decideProposal(p2.id, "accept", { by: "测试" });
     assert.strictEqual(ev.activeRules().length, 2);
+
+    // 规则刚生效、后面一个回合都没跑：打分只能说「样本不够」。以前窗口按天向上取整，会把生效前那 6 个回合算成生效后的
+    assert.ok(ev.scoreRules({ minTurns: 1 }).every(x => x.verdict === "样本不够"), "生效前的回合被算成了生效后的：" + JSON.stringify(ev.scoreRules({ minTurns: 1 })));
+    // 生效之后再跑同样的 6 个回合、再点同样的 2 个 👎（同一轮改判会刷新时间戳）
+    writeSessions(new Date(Date.now() + 1).toISOString());
+    ev.recordFeedback({ session: "s1", turn: 3, verdict: "down", note: "" });
+    ev.recordFeedback({ session: "s2", turn: 1, verdict: "down", note: "" });
 
     // 打分只看数字：基线 0.9 → 现在 0.5 算有效；基线 0.33 → 现在 0.33 就是没起作用，该下架
     const sc = ev.scoreRules({ minTurns: 1 });
@@ -2410,6 +2421,133 @@ async function testDeliverableQuality() {
  * 记忆层。老版本只有一个全局 memory.md，agent 自己记不住任何东西、还所有账号串在一起。
  * 这里守四条：**按账号隔离**、**去重**、**超量丢最旧的要留痕**（不许闷声吞）、**密钥拒记**。
  */
+/**
+ * 自进化的口径与铺开度（2026-09-09 从真实数据里挖出来的三个坑）：
+ *  1. 本机引擎写的 tool_result 不带名字 → 「tool_error:」空名顶到榜首（49 次）却说不出是哪个工具；
+ *     老数据按同一轮 tool_use 的 id 认回去，认不回的给个明确的占位名，空名绝不许进 key。
+ *  2. Claude Code 非交互模式下要审批/被沙箱拦的命令，是权限档的事（config），不是提示词能治的。
+ *  3. 打分窗口按「天」向上取整：规则昨晚 23 点生效，前一天 23 点起的失败全算成「生效后还在犯」——
+ *     规则越有效越会被判「没起作用」。改成 since 精确到出生那一毫秒。
+ *  4. 证据要跨 ≥2 个会话（同一会话里连撞五次是一次事故）；👎 例外。
+ *  5. 基线口径跟生效后的口径一致（都只算带时间的回合），带时间的回合太少才退回全量并明说。
+ */
+function testEvolveCaliberAndSpread() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-caliber-"));
+  const script = `
+    const assert = require("assert");
+    const fs = require("fs");
+    const path = require("path");
+    const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
+    const SESS = path.join(process.env.WB_DATA_DIR, "sessions");
+    fs.mkdirSync(SESS, { recursive: true });
+    const NOW = Date.now();
+    const iso = (ms) => new Date(ms).toISOString();
+    const err = (name, preview, id) => ({ type: "tool_result", id, name, isError: true, preview });
+    const use = (id, name) => ({ type: "tool_use", id, name });
+    const t = (at, events) => [{ type: "user", text: "跑一下", at: iso(at) }, { type: "assistant", at: iso(at), events }];
+    const BORN = NOW - 2 * 3600e3; // 规则两小时前生效
+
+    // 会话 A：生效前一小时失败过一次，生效后一小时干净跑了一轮
+    fs.writeFileSync(path.join(SESS, "a.json"), JSON.stringify({ updated_at: iso(NOW), transcript: [
+      ...t(BORN - 3600e3, [err("run_shell", "zsh: no matches found: *.png")]),
+      ...t(BORN + 3600e3, [{ type: "tool_result", name: "run_shell", isError: false, preview: "ok" }]),
+    ] }));
+    // 会话 B：本机引擎写的三条空名报错——两条能按 id 认回 Bash，一条没有配对
+    fs.writeFileSync(path.join(SESS, "b.json"), JSON.stringify({ updated_at: iso(NOW), transcript: [
+      ...t(NOW - 1800e3, [use("tu1", "Bash"), err("", "This command requires approval", "tu1")]),
+      ...t(NOW - 1700e3, [use("tu2", "Bash"), err("", "EISDIR: illegal operation on a directory, read '/x'", "tu2")]),
+      ...t(NOW - 1600e3, [use("tu3", "Bash"), err("", "Contains while_statement", "tu3")]),
+      ...t(NOW - 1500e3, [err("", "boom", "tu-none")]),
+    ] }));
+
+    // 1+2：空名认回去；引擎审批归 config；认不回的用占位名，key 绝不许以冒号结尾
+    let m = ev.mineSignals({ days: 7 });
+    const ea = m.signals.find((s) => s.key === "engine_approval:Bash");
+    assert.ok(ea, "requires approval / Contains while_statement 没归成 engine_approval:Bash：" + m.signals.map((s) => s.key).join(","));
+    assert.strictEqual(ea.count, 2, "两种沙箱拒绝话术该归同一类：" + ea.count);
+    assert.strictEqual(ea.actionable, "config", "引擎审批是权限档的事，不该标成提示词能治");
+    assert.ok(m.signals.some((s) => s.key === "path_is_dir:Bash"), "空名没按同一轮 tool_use 的 id 认回 Bash");
+    assert.ok(m.signals.some((s) => s.key === "tool_error:未记名工具"), "认不回名字的没给占位名");
+    assert.ok(!m.signals.some((s) => /:$/.test(s.key)), "有空名进了 key：" + m.signals.map((s) => s.key).join(","));
+
+    // 3：since 精确起点 vs 老的按天取整（负对照：老口径确实会把生效前的失败算进来）
+    const after = ev.mineSignals({ since: BORN, datedOnly: true });
+    assert.strictEqual(after.turns, 5, "since 之后该有 A 的 1 轮 + B 的 4 轮，实际 " + after.turns);
+    assert.ok(!after.signals.some((s) => s.key === "zsh_glob"), "生效前一小时的失败被算成了生效后");
+    const byDays = ev.mineSignals({ days: Math.max(1, Math.ceil((NOW - BORN) / 86400e3)), datedOnly: true });
+    assert.ok(byDays.signals.some((s) => s.key === "zsh_glob"), "负对照失效：按天取整的老口径本该把生效前的失败算进来");
+    assert.ok(after.days > 0 && after.days < 1, "since 模式下 days 该是精确的小数：" + after.days);
+
+    // 端到端：规则生效后一次没犯，打分必须判「有效」而不是建议下架
+    fs.mkdirSync(path.join(process.env.WB_DATA_DIR, "learned"), { recursive: true });
+    const [p] = ev.addProposals([{
+      kind: "add_rule", signal: "zsh_glob", rule: "通配符路径一律加引号。", verify: "zsh_glob 降到 0",
+      baseline: { key: "zsh_glob", rate: 0.5, count: 5, turns: 10, at: iso(BORN), caliber: "dated" },
+    }]);
+    ev.decideProposal(p.id, "accept", { by: "测试" });
+    const r0 = ev.activeRules()[0];
+    const rf = path.join(process.env.WB_DATA_DIR, "learned", r0.id + ".md");
+    fs.writeFileSync(rf, fs.readFileSync(rf, "utf8").replace(r0.meta.at, iso(BORN)));
+    const sc = ev.scoreRules({ minTurns: 1, now: NOW }).find((x) => x.signal === "zsh_glob");
+    assert.ok(sc, "没打出分");
+    assert.strictEqual(sc.afterRate, 0, "生效后没再犯却算出了出现率：" + JSON.stringify(sc));
+    assert.strictEqual(sc.verdict, "有效", "判反了：" + JSON.stringify(sc));
+    assert.strictEqual(sc.suggestRetire, false, "有效的规则被建议下架");
+    assert.ok(!/只能当参考/.test(sc.why), "基线口径一致时不该打「只能当参考」的补丁");
+
+    // 4：铺开度闸门
+    const base = { kind: "add_rule", signal: "zsh_glob", rule: "通配符加引号。", verify: "zsh_glob 降" };
+    const sig = { key: "zsh_glob", kind: "zsh_glob", actionable: "prompt", count: 5, sessions: ["s1"], dated: 5, undated: 0, label: "x" };
+    assert.ok(/会话/.test(ev.gateProposal(base, { signals: [sig], rules: [] }) || ""), "5 次全在 1 个会话里居然过了闸门");
+    sig.sessions = ["s1", "s2"];
+    assert.strictEqual(ev.gateProposal(base, { signals: [sig], rules: [] }), null, "跨 2 个会话的 5 次证据被拦了");
+    const td = { key: "thumbs_down", kind: "thumbs_down", actionable: "prompt", count: 3, sessions: [], dated: 3, undated: 0, label: "👎" };
+    assert.strictEqual(ev.gateProposal({ ...base, signal: "thumbs_down" }, { signals: [td], rules: [] }), null, "人点的 👎 不该受会话数约束");
+    // 证据全是老数据、最近带时间的回合又足够多且一次没犯：不用治；带时间回合不够多则不许下这个结论
+    const old = { ...sig, sessions: ["a", "b"], dated: 0, undated: 5 };
+    assert.ok(/已经不犯/.test(ev.gateProposal(base, { signals: [old], rules: [], datedTurns: 40 }) || ""), "已经不犯的毛病还在提规则");
+    assert.strictEqual(ev.gateProposal(base, { signals: [old], rules: [], datedTurns: 5 }), null, "带时间的回合才 5 个就敢说「已经不犯」");
+
+    // 5：基线口径
+    const b1 = ev._internals.baselineOf({ key: "k", rate: 0.2, count: 20, dated: 5 }, { turns: 100, undatedTurns: 50 });
+    assert.deepStrictEqual([b1.caliber, b1.turns, b1.rate], ["dated", 50, 0.1], JSON.stringify(b1));
+    const b2 = ev._internals.baselineOf({ key: "k", rate: 0.2, count: 20, dated: 5 }, { turns: 100, undatedTurns: 90 });
+    assert.deepStrictEqual([b2.caliber, b2.rate], ["all", 0.2], JSON.stringify(b2));
+    assert.strictEqual(ev.CAPS.minSessions, 2);
+
+    // 6：采纳时会拿提案快照再过一遍闸门——快照只存会话「个数」，老快照压根没这个字段。三种都得能采纳，只有明确写着 1 个会话的才卡
+    const snapOk = { key: "selfcheck_reject:edit_file", kind: "selfcheck_reject", count: 3, rate: 0.1, actionable: "prompt", label: "自检顶回", sessions: 2 };
+    const mk = (snap) => ev.addProposals([{ kind: "add_rule", signal: snap.key, rule: "改完文件必须把改动处重新读一遍再回复。" + Math.random(), verify: snap.key + " 出现率下降", signalSnapshot: snap }])[0];
+    assert.strictEqual(ev.decideProposal(mk(snapOk).id, "accept", { by: "t" }).status, "applied", "快照存会话个数=2 的提案采纳不了");
+    const { sessions: _drop, ...snapOld } = snapOk; void _drop;
+    assert.strictEqual(ev.decideProposal(mk({ ...snapOld, key: "selfcheck_reject:edit_file" }).id, "accept", { by: "t" }).status, "applied", "老快照（没 sessions 字段）的提案采纳不了——没记过不等于没铺开");
+    assert.throws(() => ev.decideProposal(mk({ ...snapOk, sessions: 1 }).id, "accept", { by: "t" }), /1 个会话/, "快照明确只有 1 个会话还能采纳");
+    assert.strictEqual(ev.decideProposal(mk({ key: "thumbs_down", count: 3, rate: 0.2, actionable: "prompt", label: "👎", sessions: 1 }).id, "accept", { by: "t" }).status, "applied", "👎 快照没带 kind 就被会话数卡住了");
+    console.log("OK");
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") }, encoding: "utf8" });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "自进化口径/铺开度测试失败：\n" + (r.stderr || r.stdout));
+
+  // 写盘那头：本机引擎必须把名字写进 tool_result（老数据靠 id 认，新数据不许再靠认）
+  const engineNameCheck = (src) => {
+    const problems = [];
+    if (!/toolNames\.get\(b\.tool_use_id\)/.test(src)) problems.push("claude-code 引擎没按 tool_use_id 查名字");
+    if (/type: "tool_result"[^}]*name: ""\s*,/.test(src)) problems.push("claude-code 引擎的 tool_result 还是写死空名");
+    if (!/toolNames\.set\(b\.id, b\.name\)/.test(src)) problems.push("claude-code 引擎没在 tool_use 时登记名字");
+    return problems;
+  };
+  const ccSrc = fs.readFileSync(path.join(__dirname, "..", "engines", "claude-code.js"), "utf8");
+  assert.deepStrictEqual(engineNameCheck(ccSrc), [], engineNameCheck(ccSrc).join("；"));
+  const mutated = ccSrc.replace('toolNames.get(b.tool_use_id) || ""', '""');
+  assert.ok(engineNameCheck(mutated).length >= 1, "把名字改回空串闸门竟然没抓到");
+  const toolsSrc = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
+  console.log("✅ 自进化口径/铺开度：空名按 id 认回（认不回给占位名）· 引擎审批归 config · 打分 since 精确到出生毫秒（负对照：按天取整会把生效前算进去）· 证据须跨 2 会话（👎 例外）· 已不犯的不治 · 基线与打分同口径");
+  void toolsSrc;
+}
+
 function testMemoryLayer() {
   const { spawnSync } = require("child_process");
   const os = require("os");
@@ -2535,6 +2673,63 @@ function testMemoryLayer() {
   fs.rmSync(dir, { recursive: true, force: true });
   assert.strictEqual(r.status, 0, "记忆层测试失败：\n" + (r.stderr || r.stdout));
   console.log("✅ 记忆层：按账号隔离（提示词也不串）· 去重 · 密钥拒记且不落盘 · 「功能已修好」这类状态断言拒记 · 超量丢最旧留痕 · 改名跟着搬");
+}
+
+/**
+ * 记忆「改口」：真实数据里第一、二条记忆是同一件事的两种说法且互相矛盾（发 .md 文件 vs 发正文别发附件），
+ * add() 只对一模一样的去重，两条一起进提示词打架。词面相似度分不清「改口」和「相关但不同的两件事」
+ * （真实数据里两种都落在 0.4~0.5），所以不自动删：把最像的那条摆到回执里让调用的模型决定。
+ * 另：向量库为空而嵌入模型「配了」，以前界面上一个字不提——用户只会觉得「记忆越来越不准」。
+ */
+function testMemoryNearDup() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-memdup-"));
+  const script = `
+    const assert = require("assert");
+    const mem = require(${JSON.stringify(path.join(__dirname, "..", "memory.js"))});
+    (async () => {
+    const a = mem.add({ text: "AI Builders 日报推送：直接把完整的 .md 日报文件发到群里，不要只发摘要", user: "甲" });
+    assert.strictEqual(a.similar, null, "第一条就说跟谁很像");
+    const b = mem.add({ text: "AI Builders 每日日报：把日报 md 文件里的完整内容作为消息正文发出去，不要发附件", user: "甲" });
+    assert.strictEqual(b.ok, true, b.note);
+    assert.ok(b.similar && b.similar.id === a.id, "改口的那条没指回旧的那条：" + JSON.stringify(b));
+    assert.ok(/很像/.test(b.note) && /forget/.test(b.note), "回执没告诉模型怎么处理旧的：" + b.note);
+    assert.strictEqual(mem.list("甲").length, 2, "机器擅自替旧的做了决定（自动删了）");
+    // 负对照：不相干的、别人作用域的、太短的，都不许提示
+    assert.strictEqual(mem.add({ text: "周报只要三段：进展 / 问题 / 下周计划", user: "甲" }).similar, null, "不相干的也说很像");
+    assert.strictEqual(mem.add({ text: "AI Builders 每日日报：把日报 md 文件里的完整内容作为消息正文发出去，不要发附件", user: "乙" }).similar, null, "跨账号比对了");
+    mem.add({ text: "用飞书", user: "丙" });
+    assert.strictEqual(mem.add({ text: "用飞书文档", user: "丙" }).similar, null, "几个字的重合也算很像");
+
+    // 向量状态：没接嵌入模型 → 明说；接了且算完 → 全量；渠道死了 → 算出来的少于总数
+    const v0 = mem.vectorStatus();
+    assert.deepStrictEqual([v0.enabled, v0.have], [false, 0], JSON.stringify(v0));
+    assert.strictEqual(v0.total, mem._internals.load().length);
+    mem.setEmbedder(Object.assign(async (texts) => texts.map(() => [1, 0, 0]), { model: "fake-embed" }));
+    await mem.ensureVectors();
+    const v1 = mem.vectorStatus();
+    assert.ok(v1.enabled && v1.have === v1.total && v1.model === "fake-embed", JSON.stringify(v1));
+    mem.setEmbedder(Object.assign(async () => null, { model: "dead-embed" }));
+    mem.add({ text: "交付物一律不要水印，导出时把水印参数关掉", user: "甲" });
+    await mem.ensureVectors();
+    const v2 = mem.vectorStatus();
+    assert.ok(v2.enabled && v2.have < v2.total, "渠道死了还报全量算好了：" + JSON.stringify(v2));
+    assert.ok(v2.have > 0, "渠道死了把已经算好的向量清空了");
+    console.log("OK");
+    })().catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") }, encoding: "utf8" });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "记忆改口/向量状态测试失败：\n" + (r.stderr || r.stdout));
+  // 三头钉住：工具说明教模型看回执、接口把向量状态吐出去、面板真把它画出来
+  const toolsSrc = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
+  const remember = /name: "remember",[\s\S]*?input_schema/.exec(toolsSrc);
+  assert.ok(remember && /很像/.test(remember[0]) && /forget/.test(remember[0]), "remember 工具说明没教模型处理「很像」的回执");
+  assert.ok(/vectors: memory\.vectorStatus\(\)/.test(fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8")), "/api/memory 没吐向量状态");
+  const pane = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
+  assert.ok(/m\.vectors/.test(pane) && /语义召回/.test(pane) && /mem-vec/.test(pane), "记忆面板没画向量状态");
+  console.log("✅ 记忆改口：很像的旧条摆进回执由模型决定（不自动删）· 不相干/跨账号/太短不提示 · 向量状态三态可见（没接/算完/渠道死）");
 }
 
 function testCommandGate() {
@@ -3946,6 +4141,7 @@ async function main() {
   testCommandGate();
   await testPermissionModes();
   testMemoryLayer();
+  testMemoryNearDup();
   testLeakedToolCallRescue();
   await testLlmStreamFailures();
   testCollectSources();
@@ -3989,6 +4185,7 @@ async function main() {
   await testPreviewExtract();
   testEvolveLoop();
   testEvolveRecency();
+  testEvolveCaliberAndSpread();
   testTaskDirLifecycle();
   await testCodingTools();
   await testDeliverableQuality();

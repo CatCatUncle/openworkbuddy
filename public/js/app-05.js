@@ -824,6 +824,13 @@ function squareThumb(file, size) {
 async function renderMemoryPane(pane) {
   const m = await fetch("/api/memory").then(r => r.json());
   const items = m.items || [];
+  // 语义召回到底开没开、算出来几条：以前这里什么都不说，向量一条没算出来用户也只会觉得「记忆越来越不准」
+  const vs = m.vectors || {};
+  const vecLine = !vs.enabled
+    ? "🔍 语义召回没开：没接嵌入模型，现在按关键词召回。设置 → 模型 里配一条支持 embeddings 的渠道就能开。"
+    : !vs.total ? `🔍 语义召回已接上（${vs.model}），记了东西就会自动算向量。`
+    : vs.have >= vs.total ? `🔍 语义召回开着：${vs.total} 条都算好了向量（${vs.model}）。`
+    : `⚠️ 语义召回：${vs.total} 条里只有 ${vs.have} 条算出了向量——嵌入渠道大概率没通，现在按关键词召回。服务器日志里搜「[记忆向量]」能看到原因。`;
   const rows = items.length
     ? items.map(it => `
       <div class="mem-row">
@@ -837,6 +844,7 @@ async function renderMemoryPane(pane) {
     <div class="card-item">
       <div class="t">📌 记住的事（AI 自己记的 + 你手动加的）</div>
       <div class="d" style="margin-bottom:8px">一条一句话，跨任务保留。标「共享」的所有账号都看得到，标账号名的只跟着那个人走。每人最多 ${esc(String((m.limits || {}).max_items || 120))} 条。</div>
+      <div class="d" id="mem-vec" style="margin-bottom:8px">${esc(vecLine)}</div>
       <div id="mem-items">${rows}</div>
       <div class="form-row" style="margin-top:8px">
         <input id="mem-new" placeholder="手动加一条，例如：周报只要三段——进展 / 问题 / 下周计划">

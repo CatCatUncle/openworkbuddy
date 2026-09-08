@@ -42,6 +42,7 @@ const CAPS = {
   ruleChars: 400,     // 单条规则字数上限——一条规则是一句能照做的话，不是一篇小作文
   blockChars: 4000,   // 注入系统提示词的总预算
   minEvidence: 3,     // 少于这么多次的毛病不许提规则：一次是偶然，三次才是模式
+  minSessions: 2,     // 次数够了还得跨这么多个会话：同一个会话里连撞三次是一次事故里的反复重试，不是模式
   window: 14,         // 默认统计窗口（天）
 };
 
@@ -57,6 +58,9 @@ const uid = (p) => p + "_" + Date.now().toString(36) + Math.random().toString(36
  */
 function classifyToolError(name, preview) {
   const p = String(preview || "");
+  // 名字可能是空的（本机引擎的 tool_result 曾经一律不带名字，老数据里还有 51 条）。空名不许进 key，
+  // 否则「tool_error:」会顶到榜首，却连是哪个工具都说不出——最大的一类信号等于没归类
+  name = String(name || "").trim() || "未记名工具";
   const m = /未知工具[:：]\s*([A-Za-z0-9_.-]+)/.exec(p);
   // 模型凭空叫一个不存在的工具：这是代码侧的事（要么补上这个工具，要么工具清单没讲清楚），
   // 加一条"请不要调用不存在的工具"的提示词纯属自我安慰
@@ -73,6 +77,11 @@ function classifyToolError(name, preview) {
     return { kind: "tool_timeout", key: "tool_timeout:" + name, actionable: "prompt", label: `${name} 跑到超时被掐断` };
   if (/命令未获批准/.test(p))
     return { kind: "approval_denied", key: "approval_denied:" + name, actionable: "prompt", label: `${name} 要的审批被拒或超时` };
+  // 本机 Claude Code 在 -p（非交互）下要审批的命令：没人能点同意，于是每叫一次都是一条报错，
+  // 实测一个会话里连撞 43 次；它的沙箱检查器还会用「Contains while_statement」「was blocked. For security…」这些话拒命令，
+  // 都是同一件事。这不是提示词能治的——是引擎权限档 / 放行清单的事，归到 config
+  if (/requires? approval|For security, Claude Code|cannot be statically analyzed|^Contains [a-z_]+(_statement|_expansion)\b|expansion obfuscation/i.test(p))
+    return { kind: "engine_approval", key: "engine_approval:" + name, actionable: "config", label: `本机引擎跑 ${name} 时被权限档拦住等审批（非交互模式没人能点同意）——去设置里把引擎权限档调高，或放行这类命令` };
   if (/安全中心拦截|路径越界|Access denied|permission denied/i.test(p))
     return { kind: "blocked", key: "blocked:" + name, actionable: "config", label: `${name} 撞上安全策略的目录白名单` };
   // check_page 的报错要拆开看，不然 27 次全挤在"check_page 报错"里，等于没归类：
@@ -144,8 +153,10 @@ function readSessions(dir = SESS_DIR) {
  * 每个信号都带**能点回去的证据**（会话 id + 第几轮 + 原文摘录）——
  * 没有证据的信号只是观点，改了也没法验。
  */
-function mineSignals({ days = CAPS.window, dir = SESS_DIR, feedbackFile = FEEDBACK_FILE, now = Date.now(), datedOnly = false } = {}) {
-  const since = now - days * 86400e3;
+function mineSignals({ days = CAPS.window, since: sinceOpt = 0, dir = SESS_DIR, feedbackFile = FEEDBACK_FILE, now = Date.now(), datedOnly = false } = {}) {
+  // since 给的是精确到毫秒的起点（打分用：规则出生那一刻）；没给才按「最近 N 天」
+  const since = sinceOpt ? Number(sinceOpt) : now - days * 86400e3;
+  if (sinceOpt) days = +((now - since) / 86400e3).toFixed(3);
   const map = new Map();
   const bump = (c, ev) => {
     if (!c) return;
@@ -178,11 +189,15 @@ function mineSignals({ days = CAPS.window, dir = SESS_DIR, feedbackFile = FEEDBA
       turns++;
       if (!turnAt) undatedTurns++;
       const ask = (sess.transcript[i - 1] || {}).text || "";
+      // 本机引擎写的 tool_result 曾经不带名字，但同一轮里的 tool_use 带着（id 相同）。老数据按 id 认回去，
+      // 不然那 51 条只能叫「未记名工具」——最大的一类信号连是哪个工具都说不出
+      const nameById = new Map();
+      for (const e of t.events || []) if (e.type === "tool_use" && e.id && e.name) nameById.set(e.id, e.name);
       for (const e of t.events || []) {
         const ev = { session: sess._id, turn: i, at: turnAt || sessAt, dated: !!turnAt, task: String(ask).slice(0, 120), excerpt: "" };
         if (e.type === "tool_result" && e.isError) {
           ev.excerpt = String(e.preview || "").slice(0, 200);
-          bump(classifyToolError(e.name, e.preview), ev);
+          bump(classifyToolError(e.name || nameById.get(e.id) || "", e.preview), ev);
         } else {
           const c = classifyEvent(e);
           if (c) { ev.excerpt = String(e.note || e.message || e.text || "").slice(0, 200); bump(c, ev); }
@@ -318,7 +333,7 @@ function promptBlock() {
  * 代码侧先枪毙一批，别把「看着像那么回事」的提案送到人跟前浪费注意力。
  * 返回 null 表示放行，返回字符串表示毙掉的理由（理由会记下来，下一轮别再提）。
  */
-function gateProposal(p, { signals = [], rules = activeRules() } = {}) {
+function gateProposal(p, { signals = [], rules = activeRules() , datedTurns = 0 } = {}) {
   if (!p || !p.kind) return "提案缺 kind";
   if (p.kind === "retire_rule") {
     return rules.some((r) => r.id === p.target) ? null : `要下架的规则 ${p.target} 不存在`;
@@ -331,6 +346,15 @@ function gateProposal(p, { signals = [], rules = activeRules() } = {}) {
   if (sig.actionable !== "prompt")
     return `${sig.label} 是「${sig.actionable === "code" ? "代码" : "配置"}」问题，加提示词治不了它（${sig.count} 次）`;
   if (sig.count < CAPS.minEvidence) return `只有 ${sig.count} 次证据，不到 ${CAPS.minEvidence} 次的门槛——一次是偶然，三次才是模式`;
+  // 次数够了还得看铺开没有：同一个会话里连撞五次多半是一次事故里的反复重试。人点的 👎 不受这条约束——那是人说的。
+  // sessions 可能是 Set（刚挖出来）、数组（挖完导出）、数字（提案快照只存个数）；老快照压根没这个字段——没记过不等于没铺开，那就不卡
+  const spread = Array.isArray(sig.sessions) ? sig.sessions.length : sig.sessions instanceof Set ? sig.sessions.size : typeof sig.sessions === "number" ? sig.sessions : null;
+  const isThumbs = sig.kind === "thumbs_down" || sig.key === "thumbs_down";
+  if (!isThumbs && spread != null && spread < CAPS.minSessions)
+    return `${sig.count} 次全出在 ${spread} 个会话里，不到 ${CAPS.minSessions} 个——同一个会话里反复撞是一次事故，不是模式`;
+  // 证据全是时间不明的老数据、而最近有足够多带时间的回合一次都没犯：这毛病已经不犯了，不用治
+  if (datedTurns >= 20 && sig.dated === 0 && sig.undated > 0)
+    return `最近 ${datedTurns} 个带时间的回合里一次没犯，${sig.count} 次证据全是时间不明的老数据——已经不犯的毛病不用治`;
   const digest = ruleDigest(text);
   const dup = rules.find((r) => ruleDigest(r.text) === digest);
   if (dup) return `和已生效的规则 ${dup.id} 重复了`;
@@ -409,6 +433,18 @@ function retireRule(ruleId, why = "") {
  * 判据：规则生效那天之前的窗口里，目标信号每回合出现 baseline.rate 次；
  * 生效之后到现在是 after.rate。降了就留着，没降（或更糟）就提议下架。
  */
+/**
+ * 规则出生时记下的基线：生效后打分只认带时间的回合，那基线也得按同一口径算，
+ * 不然分子分母各用一套（基线含时间不明的老回合，生效后不含），降幅是两个口径相减出来的假数。
+ * 带时间的回合不够多（老库刚升级）才退回全量，并把口径写进去，打分时明说「只能当参考」。
+ */
+function baselineOf(sig, mined, minTurns = 20) {
+  const datedTurns = (mined.turns || 0) - (mined.undatedTurns || 0);
+  if (datedTurns >= minTurns)
+    return { key: sig.key, rate: +((sig.dated || 0) / datedTurns).toFixed(4), count: sig.dated || 0, turns: datedTurns, at: nowIso(), caliber: "dated" };
+  return { key: sig.key, rate: sig.rate, count: sig.count, turns: mined.turns, at: nowIso(), caliber: "all" };
+}
+
 function scoreRules({ dir = SESS_DIR, now = Date.now(), minTurns = 20 } = {}) {
   const out = [];
   for (const r of activeRules()) {
@@ -418,7 +454,9 @@ function scoreRules({ dir = SESS_DIR, now = Date.now(), minTurns = 20 } = {}) {
     // datedOnly：这里问的是"这条规则生效**之后**表现如何"，只有自己带时间戳的回合答得了。
     // 不加这个开关的话，一个今天被打开过的老会话会把它里面**规则生效之前**的失败
     // 全算成"生效之后"——规则越有效越会被判「没起作用」并建议下架，正好判反。
-    const after = mineSignals({ days: Math.max(1, Math.ceil((now - bornAt) / 86400e3)), dir, now, datedOnly: true });
+    // since 直接给出生那一毫秒。以前按「天」向上取整：规则昨晚 23 点生效，窗口就从前一天 23 点算起，
+    // 生效前那一整天里的失败全被算成「生效后还在犯」——规则越是刚好治住了它，越会被判「没起作用」建议下架
+    const after = mineSignals({ since: bornAt, dir, now, datedOnly: true });
     if (after.turns < minTurns) { out.push({ id: r.id, verdict: "样本不够", why: `生效后才跑了 ${after.turns} 个带时间的回合，不到 ${minTurns} 个，先别下结论` }); continue; }
     const s = after.signals.find((x) => x.key === base.key);
     const afterRate = s ? s.rate : 0;
@@ -429,7 +467,8 @@ function scoreRules({ dir = SESS_DIR, now = Date.now(), minTurns = 20 } = {}) {
     out.push({
       id: r.id, signal: base.key, beforeRate: base.rate, afterRate, dropPct: drop, turns: after.turns, fb,
       verdict: drop >= 30 ? "有效" : drop > 0 ? "略有改善" : "没起作用",
-      why: `每回合出现率 ${base.rate} → ${afterRate}（${drop >= 0 ? "降" : "升"} ${Math.abs(drop)}%）` + (fb.up + fb.down ? `；生效后用户反馈 👍${fb.up} 👎${fb.down}` : ""),
+      why: `每回合出现率 ${base.rate} → ${afterRate}（${drop >= 0 ? "降" : "升"} ${Math.abs(drop)}%）` + (fb.up + fb.down ? `；生效后用户反馈 👍${fb.up} 👎${fb.down}` : "")
+        + (base.caliber === "all" ? "；基线里混着时间不明的老回合，口径比生效后的宽，这个降幅只能当参考" : ""),
       suggestRetire: drop <= 0,
     });
   }
@@ -496,13 +535,13 @@ async function proposeEdits({ llm, mined, rules = activeRules(), rejected = [], 
   const out = [];
   for (const p of parsed.proposals || []) {
     const sig = mined.signals.find((s) => s.key === p.signal);
-    const reject = gateProposal(p, { signals: mined.signals, rules });
+    const reject = gateProposal(p, { signals: mined.signals, rules, datedTurns: mined.turns - (mined.undatedTurns || 0) });
     out.push({
       ...p,
       gate: reject || "",                       // 没过闸门的也留着：能看出模型在往哪个方向使错劲
       status: reject ? "gated" : "pending",
-      signalSnapshot: sig ? { key: sig.key, count: sig.count, rate: sig.rate, actionable: sig.actionable, label: sig.label } : null,
-      baseline: sig ? { key: sig.key, rate: sig.rate, count: sig.count, turns: mined.turns, at: nowIso() } : null,
+      signalSnapshot: sig ? { key: sig.key, kind: sig.kind, count: sig.count, rate: sig.rate, actionable: sig.actionable, label: sig.label, sessions: Array.isArray(sig.sessions) ? sig.sessions.length : 0 } : null,
+      baseline: sig ? baselineOf(sig, mined) : null,
       evidence: sig ? sig.samples.slice(0, 3) : [],
     });
   }
@@ -540,5 +579,5 @@ module.exports = {
   activeRules, promptBlock, retireRule,
   gateProposal, listProposals, addProposals, decideProposal,
   proposeEdits, runReview, scoreRules,
-  _internals: { classifyToolError, classifyEvent, ruleDigest, readSessions, RULES_DIR, DATA_DIR },
+  _internals: { classifyToolError, classifyEvent, ruleDigest, readSessions, baselineOf, RULES_DIR, DATA_DIR },
 };

@@ -200,6 +200,10 @@ function add({ text, user, shared = false, source = "agent" }) {
   const items = load();
   const dup = items.find((x) => x.scope === scope && normalize(x.text) === normalize(t));
   if (dup) return { ok: true, id: dup.id, note: "已经记过一模一样的了，没有重复写入" };
+  // 不一样但很像的：多半是同一件事的新说法（用户改口了）。**不自动替换**——实测词面相似度分不清
+  // 「改口」和「两件相关但不同的事」（真实数据里两种都落在 0.4~0.5），机器判不了，但调用这个工具的模型判得了。
+  // 所以只把最像的那条摆到回执里让它决定要不要 forget 掉旧的。放着不管的后果是两条一起进提示词、互相打架
+  const near = mostSimilar(t, items.filter((x) => x.scope === scope));
 
   const id = "m_" + Date.now().toString(36) + "_" + Math.floor(Math.random() * 1e6).toString(36);
   items.push({ id, text: t, scope, source, created_at: new Date().toISOString() });
@@ -219,8 +223,37 @@ function add({ text, user, shared = false, source = "agent" }) {
     ok: true,
     id,
     dropped,
-    note: dropped ? `记住了（${scope === SHARED ? "共享" : scope}）。这个作用域超过 ${MAX_PER_SCOPE} 条，已丢弃最旧的 ${dropped} 条` : `记住了（${scope === SHARED ? "共享" : scope}）`,
+    similar: near ? { id: near.id, text: near.text } : null,
+    note: (dropped ? `记住了（${scope === SHARED ? "共享" : scope}）。这个作用域超过 ${MAX_PER_SCOPE} 条，已丢弃最旧的 ${dropped} 条` : `记住了（${scope === SHARED ? "共享" : scope}）`)
+      + (near ? `。注意：跟已有的一条很像——「${near.text.slice(0, 80)}」。如果这是同一件事的新说法，再调 forget 把旧的那条删掉，别让两条一起进提示词打架` : ""),
   };
+}
+
+/**
+ * 同一作用域里跟这条最像的一条（二元组包含度 ≥ 0.4）；太短的文本不比（几个字的重合说明不了什么）。
+ * 只用来提示，不用来自动删——阈值附近既有「改口」也有「相关但不同的事」，见 add() 里的说明
+ */
+function mostSimilar(text, items, threshold = 0.4) {
+  const A = bigrams(text);
+  if (A.size < 6) return null;
+  let best = null, bestScore = 0;
+  for (const x of items) {
+    const B = bigrams(x.text);
+    if (B.size < 6) continue;
+    let inter = 0;
+    for (const g of A) if (B.has(g)) inter++;
+    const score = inter / Math.min(A.size, B.size);
+    if (score >= threshold && score > bestScore) { best = x; bestScore = score; }
+  }
+  return best ? { ...best, score: +bestScore.toFixed(2) } : null;
+}
+
+/** 语义召回现在到底开没开、算出来几条：给记忆面板看的。向量一条都没有而嵌入模型「配了」，就是渠道没通 */
+function vectorStatus() {
+  const items = load();
+  const vs = vecLoad();
+  const have = items.filter((x) => Array.isArray(vs.vecs[x.id])).length;
+  return { enabled: !!embedder, model: embedder ? String(embedder.model || vs.model || "") : "", have, total: items.length };
 }
 
 /** 按 id 删。返回删掉的条数 */
@@ -359,6 +392,7 @@ module.exports = {
   saveManual,
   promptBlock,
   setEmbedder,
+  vectorStatus,
   ensureVectors,
-  _internals: { normalize, looksSecret, looksStaleClaim, load, save, ITEMS_FILE, MANUAL_FILE, VEC_FILE, bigrams, keywordScore, cosine, vecLoad },
+  _internals: { normalize, looksSecret, looksStaleClaim, load, save, ITEMS_FILE, MANUAL_FILE, VEC_FILE, bigrams, keywordScore, cosine, vecLoad, mostSimilar },
 };

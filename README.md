@@ -64,7 +64,7 @@
 | macOS · Apple 芯片 | `OpenWorkBuddy-*-mac-arm64.dmg` |
 | macOS · Intel | `OpenWorkBuddy-*-mac-x64.dmg` |
 | Windows 10/11（x64 与 ARM 同一个包，装时自动选） | `OpenWorkBuddy-*-win-setup.exe` |
-| Windows 免安装版（U 盘/公司电脑不让装软件） | `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe` |
+| Windows 免安装版（U 盘/公司电脑不让装软件） | `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe`（不知道自己是哪种 CPU 就拿 `-win-portable.exe`，两种都装在里面，体积翻倍） |
 
 > macOS 第一次打开提示「无法验证开发者」——包没买苹果证书签名，不是有毒。右键 → 打开，或 `xattr -cr /Applications/OpenWorkBuddy.app`。你的数据在 `~/OpenWorkBuddy`，卸载不会删。
 
