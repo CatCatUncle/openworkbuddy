@@ -293,6 +293,7 @@ function creditsFor(usage) {
  * @returns 本次扣掉的积分数（不限额时为 0）
  */
 function chargeRun(user, info) {
+  info = fixLegacyCache(info);
   const st = loadUsers();
   const spent = creditsEnabled(st) ? creditsFor(info) : 0;
   const u = st.users.find((x) => x.username === user.username);
@@ -338,9 +339,19 @@ function topup(byUser, targetUsername, amount) {
   return target.credits;
 }
 
+/**
+ * 缓存读比输入还大，只有一种可能：这笔是按 Anthropic 口径报的（input_tokens 不含缓存读），
+ * 得把缓存读补回输入里才是「这次真的喂进去多少」。以前没补：本机 Claude Code 跑的 4 笔账，
+ * 界面算出「缓存命中 3209% / 1749%」。源头（engines/claude-code.js）已改口径，这里管老账。
+ */
+function fixLegacyCache(e) {
+  if (!e || !((e.cached || 0) > (e.prompt || 0))) return e;
+  return { ...e, prompt: (e.prompt || 0) + (e.cached || 0) };
+}
+
 /** 用量详情：今日/本月汇总 + 近 7 天曲线 + 最近流水（管理员看全员，成员只看自己） */
 function usageSummary(user) {
-  const all = loadUsage();
+  const all = loadUsage().map(fixLegacyCache);
   const mine = user.role === "admin" ? all : all.filter((e) => e.user === user.username);
   const runs = mine.filter((e) => e.kind === "run");
   const today = localDay();
@@ -570,6 +581,7 @@ function createRouter(opts) {
 }
 
 module.exports = {
+  fixLegacyCache,
   hasUsers,
   defaultUser,
   userFromReq,

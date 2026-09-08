@@ -216,7 +216,9 @@ async function run({
     if (m.type === "result") {
       resultSeen = true;
       const u = m.usage || {};
-      usage.prompt = Number(u.input_tokens || 0) + Number(u.cache_creation_input_tokens || 0);
+      // Anthropic 的 input_tokens 不含缓存读的那部分，要加回来才是「这次真的喂进去多少」（跟 llm.js 同口径）。
+      // 以前没加：缓存读 3 万、非缓存 1 千，界面就算出「缓存命中 3209%」
+      usage.prompt = Number(u.input_tokens || 0) + Number(u.cache_creation_input_tokens || 0) + Number(u.cache_read_input_tokens || 0);
       usage.completion = Number(u.output_tokens || 0);
       usage.cached = Number(u.cache_read_input_tokens || 0);
       if (m.num_turns > 0) usage.calls = m.num_turns;
