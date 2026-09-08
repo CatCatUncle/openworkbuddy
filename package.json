@@ -10,6 +10,7 @@
     "test": "node test/e2e.js",
     "cli": "node cli.js",
     "eval": "node eval/run.js",
+    "demo:record": "electron scripts/record-demo.js",
     "icons": "bash scripts/make-icons.sh",
     "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.config.js --mac --publish never",
     "dist:win": "electron-builder --config electron-builder.config.js --win --publish never",

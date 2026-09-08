@@ -115,9 +115,15 @@ module.exports = {
       { target: "nsis", arch: ["x64", "arm64"] },
       { target: "portable", arch: ["x64", "arm64"] },
     ],
+    // 多架构 nsis 会合成一个安装包（${arch} 为空），装的时候自动选架构；
+    // 名字必须和 portable 分开，不然 v0.1.0 那次两种 .exe 撞名，文档指的「安装包」其实是免安装版
     artifactName: "${productName}-${version}-win-${arch}.${ext}",
   },
+  portable: {
+    artifactName: "${productName}-${version}-win-${arch}-portable.${ext}",
+  },
   nsis: {
+    artifactName: "${productName}-${version}-win-setup.${ext}",
     // 真·一键：不问装哪、不要管理员权限（装进用户目录），装完直接启动
     oneClick: true,
     perMachine: false,

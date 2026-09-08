@@ -63,8 +63,8 @@ jobs:
 
             - **macOS（Apple 芯片）** → `OpenWorkBuddy-*-mac-arm64.dmg`
             - **macOS（Intel）** → `OpenWorkBuddy-*-mac-x64.dmg`
-            - **Windows** → `OpenWorkBuddy-*-win-x64.exe`（双击即装，装完自动启动）
-            - **Windows ARM（骁龙 X / Surface Pro X）** → `OpenWorkBuddy-*-win-arm64.exe`；不确定就装 x64 那份
+            - **Windows（x64 / ARM 同一个包）** → `OpenWorkBuddy-*-win-setup.exe`（双击即装，装完自动启动，装时自动选架构）
+            - **Windows 免安装版** → `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe`（不装直接跑，每次启动慢几秒）
 
             macOS 首次打开会提示「无法打开，因为无法验证开发者」——这个包没有 Apple 的付费开发者证书签名，
             不是安全问题。右键点应用图标 → 打开 → 再点一次「打开」即可；或者在终端跑：

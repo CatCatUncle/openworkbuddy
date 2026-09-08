@@ -62,8 +62,8 @@
 |---|---|
 | macOS · Apple Silicon | `OpenWorkBuddy-*-mac-arm64.dmg` |
 | macOS · Intel | `OpenWorkBuddy-*-mac-x64.dmg` |
-| Windows 10/11 · x64 | `OpenWorkBuddy-*-win-x64.exe` |
-| Windows 11 · ARM64 (Snapdragon X / Surface Pro X) | `OpenWorkBuddy-*-win-arm64.exe` |
+| Windows 10/11 (one installer for x64 and ARM64, picks the right one) | `OpenWorkBuddy-*-win-setup.exe` |
+| Windows portable (no install; USB stick / locked-down PCs) | `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe` |
 
 > macOS will say "cannot verify the developer" — the build isn't signed with a paid Apple certificate, it isn't malware. Right-click → Open, or `xattr -cr /Applications/OpenWorkBuddy.app`. Your data lives in `~/OpenWorkBuddy` and survives uninstall.
 
