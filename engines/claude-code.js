@@ -79,7 +79,7 @@ async function detect(opts) {
  */
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
-  model, systemPrompt, resumeId, maxTurns, mcpConfigPath, bin, permissionMode, extraArgs = [],
+  model, systemPrompt, resumeId, maxTurns, mcpConfigPath, mcpServerNames = [], shimBin = "", bin, permissionMode, env, extraArgs = [],
 }) {
   // 起进程也走同一套解析：detect 认出来的是绝对路径，run 却还 spawn 裸名字的话，
   // 双击启动的桌面版会「设置页显示已装、一跑就 ENOENT」
@@ -94,7 +94,18 @@ async function run({
   if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
   if (resumeId) args.push("--resume", resumeId);
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-  if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
+  if (mcpConfigPath) {
+    args.push("--mcp-config", mcpConfigPath);
+    // -p 是非交互的：MCP 工具默认要人点一下"允许"，而这里没有人。
+    // 不放行的话工具挂上了也调不动，模型看见一堆用不了的名字反而更糟。
+    // 真正危险的动作由本项目自己的安全中心把关（工具是从这台桥回流的）。
+    for (const n of mcpServerNames) args.push("--allowed-tools", "mcp__" + n);
+  }
+  // 命令行那条路也得放行，否则模型敲了也白敲。实测（2026-09-08）：acceptEdits 下
+  // `echo` 这种它自己判得出安全的命令能直接跑，但调一个它没见过的可执行文件会返回
+  // 「This command requires approval」——-p 是非交互的，没人能点同意，于是工具形同虚设。
+  // 只放行 owb 这一个前缀，不是整个 Bash：本项目的工具都从这台桥回流，安全中心照样把关。
+  if (shimBin) args.push("--allowed-tools", `Bash(${shimBin}:*)`);
   for (const a of extraArgs) args.push(a);
 
   let finalText = "";
@@ -152,7 +163,7 @@ async function run({
     }
   };
 
-  const r = await runJsonl({ bin: exe, args, cwd, stdin: prompt, onLine, deadline, stopSignal });
+  const r = await runJsonl({ bin: exe, args, cwd, env, stdin: prompt, onLine, deadline, stopSignal });
   usage.elapsed_ms = Date.now() - startedAt;
 
   if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };

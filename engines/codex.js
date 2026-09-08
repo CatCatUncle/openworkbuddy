@@ -64,7 +64,7 @@ async function detect(opts) {
 
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
-  model, resumeId, bin, sandbox, network = true, extraArgs = [],
+  model, resumeId, bin, sandbox, network = true, mcpArgs = [], writableRoots = [], env, extraArgs = [],
 }) {
   const found = await resolveBin("codex", bin);
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
@@ -77,7 +77,13 @@ async function run({
   // 而 -c 两条路都收。工作目录由子进程自己的 cwd 决定，本来也不需要 -C。
   args.push("-c", `sandbox_mode="${sandbox || "workspace-write"}"`);
   if (network) args.push("-c", "sandbox_workspace_write.network_access=true");
+  // workspace-write 默认只让写 cwd。本项目借出去的工具里，remember / save_skill 要写到
+  // 数据目录（在 cwd 外面），不开这个口子就是「工具调得动、东西存不下」，报错还特别难懂。
+  if (writableRoots.length) args.push("-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(writableRoots)}`);
   if (model) args.push("-m", model);
+  // 本项目自己的工具（生图/视频/技能/记忆）当成 MCP 服务器挂上去，
+  // 否则切到本机 Codex 就等于把这些全丢了
+  for (const a of mcpArgs) args.push(a);
   for (const a of extraArgs) args.push(a);
   args.push("-"); // 提示词从 stdin 读，和 claude 那条保持一致
 
@@ -148,7 +154,7 @@ async function run({
     }
   };
 
-  const r = await runJsonl({ bin: exe, args, cwd, stdin: prompt, onLine, deadline, stopSignal });
+  const r = await runJsonl({ bin: exe, args, cwd, env, stdin: prompt, onLine, deadline, stopSignal });
   usage.elapsed_ms = Date.now() - startedAt;
 
   if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };
