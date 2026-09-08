@@ -5,7 +5,7 @@
  */
 
 const { TOOL_DEFS, executeTool, outputFiles, getWorkspaceDir } = require("./tools");
-const { loadSkills } = require("./skills");
+const { loadSkills, SKILLS_DIR } = require("./skills");
 const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
@@ -849,7 +849,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
    * 「已达最大步数 / 已达最大运行时间 / 已手动停止」这三种收尾原样报出去——
    * task-verdict 那层认的就是这几个词，翻译对了，假绿判定在 CLI 引擎上照样生效。
    */
-  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user }) {
+  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext }) {
     const cwd = safeWorkspaceDir(baseDir);
     try { fs.mkdirSync(cwd, { recursive: true }); } catch {}
     if (!deadline) deadline = Date.now() + (config.agent.max_runtime_ms || 1800000);
@@ -911,8 +911,11 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         emit: wrapped,
         deadline,
         stopSignal,
-        systemPrompt: engineSystemPrompt(cwd, mode, user, bridged),
+        systemPrompt: await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history }),
         resumeId: engineSession || null,
+        // 工作目录之外还要让它读的地方：整个工作区（别的对话的产出、资料库）和技能库正文。
+        // 只对 claude 有意义（-p 模式读 cwd 外的文件要审批）；codex 的沙箱读是不限的，它忽略这项
+        addDirs: engineAddDirs(),
         maxTurns: config.agent.max_steps || 25,
         // 思考模式跟 app 设置对齐：设置页选什么档，接管的本机 CLI 就用什么档。
         // 放在 opts 前面 = 单个引擎还能自己覆盖（engine_options[id].thinking）
@@ -960,13 +963,47 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
    * 本项目那份几千字的协调者提示词不往这儿塞——里面大半在讲本项目自己的工具，
    * CLI 手上没有那些工具，讲了只会让它去找不存在的东西。
    */
-  function engineSystemPrompt(cwd, mode, user, bridged) {
+  /** claude 的 --add-dir 名单：工作区根 + 技能库。不存在的目录由引擎那边过滤 */
+  function engineAddDirs() {
+    const out = [];
+    try { out.push(getWorkspaceDir()); } catch {}
+    out.push(SKILLS_DIR);
+    return out;
+  }
+
+  /**
+   * 技能索引：只给名字和一句话，正文让它按需去读。
+   *
+   * 内置引擎有 use_skill 工具，技能表在工具描述里；CLI 引擎没有这个工具，
+   * 也不会自己去翻 skills 目录——不点名它就永远不知道这些技能存在。
+   * 正文不进提示词：几十个技能加起来几万字，每次任务都带等于白烧 token。
+   */
+  function engineSkillsBlock(bridged) {
+    let list = [];
+    try { list = loadSkills(); } catch { return ""; }
+    if (!list.length) return "";
+    const MAX = 40;
+    const one = (s) => `- ${s.name}${s.description ? "：" + String(s.description).replace(/\s+/g, " ").slice(0, 60) : ""}`;
+    const lines = list.slice(0, MAX).map(one);
+    const more = list.length > MAX ? `\n（还有 ${list.length - MAX} 个没列，用 library_list 看全）` : "";
+    const canTool = bridged && bridged.lent.includes("library_read");
+    const how = canTool
+      ? (bridged.shimIsPrimary
+        ? `用 \`${bridged.shimBin} library_read '{"name":"技能名"}'\` 读它的正文`
+        : `用 mcp__openworkbuddy__library_read（或命令 ${bridged.shimBin} library_read）读它的正文`)
+      : `正文在 ${SKILLS_DIR}/<技能名>/skill.md，直接读`;
+    return `\n## 你会的技能（${list.length} 个，用户装在 OpenWorkBuddy 里的）\n` +
+      `任务对得上其中某个技能时，先${how}，再照着做——技能里是用户认可的做法，别凭自己的习惯重来。\n` +
+      lines.join("\n") + more;
+  }
+
+  async function engineSystemPrompt(cwd, mode, user, bridged, extra = {}) {
     const who = user ? `当前用户：${user}。` : "";
     const modeLine =
       mode === "ask" ? "本次只回答问题，不改文件、不执行有副作用的命令。"
       : mode === "plan" ? "本次只做调研和规划，输出可执行的步骤清单，不要真的动手改东西。"
       : "确实是活的时候：用户要的是干完，不是确认。直接动手，最后交付具体成果。";
-    return [
+    const parts = [
       `你在为 OpenWorkBuddy 干活。${who}`,
       // 这一条必须排在工作目录和汇报格式前面。原来第一句是「你正在执行一个办公任务」，
       // 最后一句又硬性要求「写清楚产出了哪些文件」——于是用户打一句「你是？」，模型
@@ -977,7 +1014,23 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       modeLine,
       bridgedLine(bridged),
       "全程用中文回复。",
-    ].filter(Boolean).join("\n");
+    ];
+    // ── 下面四块跟内置引擎那条路（baseSystemPrompt / runTask）一模一样 ─────────────
+    // 以前这条路一块都没带。用户换到本机 claude/codex 一跑就发现"上周告诉过你的它全忘了"、
+    // "项目里写的规范它不认"——不是 CLI 记性差，是我们压根没把记忆递过去。
+    // 顺序同内置：个性化偏好 → 自进化规则（自己摔过的坑）→ 长期记忆 → 项目指令。
+    if (config.persona) parts.push(`\n## 用户的个性化偏好\n${config.persona}`);
+    try { const ev = evolve.promptBlock(); if (ev) parts.push(ev.trim()); } catch {} // 规则目录读不了不该让任务起不来
+    // 记忆召回线索：用户最后一条消息的前 500 字，记忆超预算时按它挑最相关的
+    const lastUser = [...(extra.history || [])].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
+    const hint = lastUser ? lastUser.content.slice(0, 500) : "";
+    try { const mb = await memory.promptBlock(user, hint); if (mb) parts.push(mb.trim()); } catch {}
+    if (extra.projectContext) parts.push(`\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${extra.projectContext}`);
+    parts.push(engineSkillsBlock(bridged));
+    // 读文件范围：工作区里别的对话的产出、资料库都可以读；写只写本次工作目录
+    let root = ""; try { root = getWorkspaceDir(); } catch {}
+    if (root && root !== cwd) parts.push(`除了本次工作目录，${root} 下是用户在 OpenWorkBuddy 里所有对话的产出和资料，需要引用时可以读；但新文件只写在本次工作目录里。`);
+    return parts.filter(Boolean).join("\n");
   }
 
   /**
@@ -1046,7 +1099,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       if (picked.backend) {
         return await runViaEngine({
           backend: picked.backend, opts: picked.opts,
-          history, emit, mode, deadline, stopSignal, baseDir, engineSession, user,
+          history, emit, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext,
         });
       }
     }

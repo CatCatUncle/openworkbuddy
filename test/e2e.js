@@ -3964,6 +3964,7 @@ async function main() {
   await testPromptQuestionVsWork();
   await testLocalEngineConnect();
   await testEngineToolBridge();
+  await testEngineContextParity();
   testOutputOwnership();
   await testFilePathRouting();
   await testDesktopPet();
@@ -4664,3 +4665,132 @@ main()
     try { fs.rmSync(WORKSPACE, { recursive: true, force: true }); } catch {}
     if (process.exitCode) process.exit(process.exitCode);
   });
+
+/**
+ * 本机 claude/codex 接管时，系统提示词必须跟内置引擎带一样的上下文。
+ *
+ * 用户的原话：「底层是 claude code 和 codex 的时候好像跟之前的记忆连接不上」「不能用我这个
+ * openworkbuddy 的一些工具和技能和读取文件」。根因不是 CLI 记性差：engineSystemPrompt 以前
+ * 只有"你是谁 / 工作目录 / 模式"三句，个性化偏好、自进化规则、长期记忆、项目指令一块都没带，
+ * runTask 的引擎分支连 projectContext 都没往下传。这里用假引擎截住送出去的提示词逐块对账，
+ * 并带负对照：没配的块不许凭空出现（否则"记忆"标题下面是空的，模型会当成"没有记忆"这一事实）。
+ */
+async function testEngineContextParity() {
+  const engines = require("../engines");
+  const memory = require("../memory");
+  const evolve = require("../evolve");
+  const cc = require("../engines/claude-code");
+  const { probeHelp } = require("../engines/jsonl");
+  const { SKILLS_DIR, loadSkills } = require("../skills");
+
+  let seen = null;
+  const probe = {
+    id: "e2e-ctx", label: "上下文探针", bin: null, note: "", install: "", launchHeader: "", supportsResume: false,
+    async detect() { return { id: "e2e-ctx", installed: true, path: "", version: "0" }; },
+    async run(o) { seen = o; return { finalText: "好", usage: {}, stopped: null, sessionId: null }; },
+  };
+  engines.BACKENDS.push(probe);
+  const origMem = memory.promptBlock, origEv = evolve.promptBlock;
+  const memCalls = [];
+  const MEM = "\n\n## 长期记忆（跨任务保留，优先级高于你的默认习惯）\n- 用户叫阿测，交付一律用深色主题";
+  const EV = "\n\n## 从过往任务里学到的（自进化规则，1 条）\n- 别在交付里写「请你自己把图放进去」";
+  try {
+    memory.promptBlock = async (user, hint) => { memCalls.push({ user, hint }); return user === "e2e-u" ? MEM : ""; };
+    evolve.promptBlock = () => EV;
+    const mk = (persona) => createAgentRuntime({
+      config: { ...config, persona, agent: { ...config.agent, engine: "e2e-ctx" } },
+      llm: makeFakeLLM(), mcpManager: new McpManager(), experts: [],
+    });
+    const longMsg = "把上周的周报改成深色主题" + "。".repeat(600);
+
+    // ① 全配上：四块都得在，顺序跟内置一致（偏好 → 规则 → 记忆 → 项目）
+    await mk("回复末尾带一个🐾").runTask({
+      history: [{ role: "user", content: longMsg }], emit: () => {}, user: "e2e-u", baseDir: "e2e-ctx-会话",
+      projectContext: "本项目一律用 pnpm，不许 npm install",
+    });
+    assert(seen && typeof seen.systemPrompt === "string", "假引擎没收到 systemPrompt");
+    const sp = seen.systemPrompt;
+    const at = (s) => { const i = sp.indexOf(s); assert(i >= 0, `引擎提示词里没有：${s}\n---\n${sp.slice(0, 1200)}`); return i; };
+    const iPersona = at("## 用户的个性化偏好"); at("回复末尾带一个🐾");
+    const iEv = at("## 从过往任务里学到的"); at("别在交付里写「请你自己把图放进去」");
+    const iMem = at("## 长期记忆"); at("用户叫阿测");
+    const iProj = at("## 当前项目的背景与规范"); at("不许 npm install");
+    assert(iPersona < iEv && iEv < iMem && iMem < iProj, `四块顺序跟内置引擎不一致：persona@${iPersona} evolve@${iEv} memory@${iMem} project@${iProj}`);
+    // 记忆按账号取、按最后一条用户消息前 500 字召回——跟 runTask 内置分支同一口径
+    assert.strictEqual(memCalls.length, 1, "memory.promptBlock 调用次数不对：" + memCalls.length);
+    assert.strictEqual(memCalls[0].user, "e2e-u", "记忆没按当前用户取");
+    assert.strictEqual(memCalls[0].hint, longMsg.slice(0, 500), "记忆召回线索不是最后一条用户消息的前 500 字");
+    // 原来那三句不能丢
+    at("你在为 OpenWorkBuddy 干活"); at("全程用中文回复");
+    // 技能索引：装了技能就得点名 + 说清怎么读正文；工作区根目录要告诉它可以读
+    let n = 0; try { n = loadSkills().length; } catch {}
+    if (n > 0) { at("## 你会的技能"); assert(/library_read|skill\.md/.test(sp), "技能索引没说怎么读正文"); }
+    else assert(!sp.includes("## 你会的技能"), "没装技能却出现了技能标题");
+    // 带 baseDir 时 cwd 是子目录，根目录只会出现在"可读范围"那句里——工作目录那句不算数
+    const root = getWorkspaceDir();
+    assert(sp.includes(root + " 下是用户在 OpenWorkBuddy 里所有对话的产出和资料"), "没告诉引擎工作区根目录可读：" + root);
+    assert(sp.includes("新文件只写在本次工作目录里"), "没说清写只写本次工作目录");
+    // claude 的 --add-dir 名单：工作区根 + 技能库
+    assert(Array.isArray(seen.addDirs) && seen.addDirs.includes(root) && seen.addDirs.includes(SKILLS_DIR),
+      "addDirs 没带工作区根和技能库：" + JSON.stringify(seen.addDirs));
+
+    // ② 负对照：什么都没配 → 这几块一个都不许出现（空标题会让模型把"没有记忆"当事实）
+    seen = null; memCalls.length = 0;
+    evolve.promptBlock = () => "";
+    await mk("").runTask({ history: [{ role: "user", content: "你是？" }], emit: () => {}, user: "nobody" });
+    const sp2 = seen.systemPrompt;
+    for (const h of ["## 用户的个性化偏好", "## 从过往任务里学到的", "## 长期记忆", "## 当前项目的背景与规范"])
+      assert(!sp2.includes(h), "没配却出现了：" + h);
+    assert.strictEqual(memCalls[0].hint, "你是？", "短消息的召回线索应该就是原文");
+    at.call(null, "你在为 OpenWorkBuddy 干活"); // 基础三句仍在
+
+    // ③ 记忆/规则模块炸了不许把任务拖死（跟内置分支同样的容错）
+    seen = null;
+    memory.promptBlock = async () => { throw new Error("磁盘炸了"); };
+    evolve.promptBlock = () => { throw new Error("规则目录读不了"); };
+    await mk("").runTask({ history: [{ role: "user", content: "hi" }], emit: () => {}, user: "e2e-u" });
+    assert(seen && seen.systemPrompt.includes("你在为 OpenWorkBuddy 干活"), "记忆模块抛错把整趟任务拖死了");
+  } finally {
+    memory.promptBlock = origMem; evolve.promptBlock = origEv;
+    engines.BACKENDS.splice(engines.BACKENDS.indexOf(probe), 1);
+    // runViaEngine 会把会话子目录 mkdir 出来；main 末尾的清理只删文件不删目录，这里自己收
+    try { fs.rmSync(path.join(getWorkspaceDir(), "e2e-ctx-会话"), { recursive: true, force: true }); } catch {}
+  }
+
+  // ④ --add-dir 名单的过滤：不存在的目录不发（claude 会直接报错退出）、cwd 本身不发、去重、非目录不发
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-adddir-"));
+  const a = path.join(tmp, "a"), b = path.join(tmp, "b"), f = path.join(tmp, "f.txt");
+  fs.mkdirSync(a); fs.mkdirSync(b); fs.writeFileSync(f, "x");
+  const picked = cc.pickAddDirs([a, path.join(tmp, "missing"), a, b, f, "", null, tmp + "/a/../a"], b);
+  assert.deepStrictEqual(picked.map((p) => path.basename(p)), ["a"], "pickAddDirs 过滤不对：" + JSON.stringify(picked));
+  assert.deepStrictEqual(cc.pickAddDirs([], b), [], "空名单要返回空");
+
+  // ⑤ --help 探测：印了选项名才算认。--add-dir 给假目录也 exit 0，probeOption 那套假值法判不出来
+  const yes = path.join(tmp, "yes.sh"), no = path.join(tmp, "no.sh");
+  fs.writeFileSync(yes, "#!/bin/sh\necho 'Usage: x [options]\n  --add-dir <directories...>  Additional directories'\n"); fs.chmodSync(yes, 0o755);
+  fs.writeFileSync(no, "#!/bin/sh\necho 'Usage: x [options]\n  --model <m>'\n"); fs.chmodSync(no, 0o755);
+  assert.strictEqual(await probeHelp(yes, "--add-dir"), true, "help 里有 --add-dir 却判成不认");
+  assert.strictEqual(await probeHelp(no, "--add-dir"), false, "help 里没有 --add-dir 却判成认（发出去会被静默吞掉）");
+  assert.strictEqual(await probeHelp(path.join(tmp, "nope"), "--add-dir"), false, "可执行文件不存在也要判 false，不能抛");
+  fs.rmSync(tmp, { recursive: true, force: true });
+
+  // ⑥ 设置页：每个引擎自己的模型候选 + 思考/effort 档位要能存、能回显
+  const idx = fs.readFileSync(path.join(__dirname, "..", "engines", "index.js"), "utf8");
+  assert(/thinking:\s*\(overrides\[b\.id\]\s*\|\|\s*\{\}\)\.thinking/.test(idx), "detectAll 没把 engine_options[id].thinking 回显给前端");
+  assert(/models:\s*b\.models/.test(idx), "detectAll 没把模型候选带给前端");
+  for (const id of ["claude-code", "codex"]) {
+    const be = engines.get(id);
+    assert(Array.isArray(be.models) && be.models.length >= 3, id + " 没给模型候选");
+    assert(be.thinkingLabel, id + " 没给思考档位的标签（codex 叫 effort，claude 只有开关，界面不能一概叫「思考」）");
+  }
+  const ui = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
+  assert(ui.includes('data-k="thinking"'), "引擎卡片没有思考/effort 下拉");
+  assert(/querySelectorAll\("input\[data-k\],select\[data-k\]"\)/.test(ui), "保存时没读 select，下拉选了也存不进去");
+  assert(/list="\$\{listId\}"/.test(ui) && ui.includes("<datalist"), "模型输入框没挂候选列表");
+  const lv = ui.match(/ENGINE_THINK_LEVELS = \[([\s\S]*?)\];/);
+  assert(lv, "找不到档位表");
+  const vals = [...lv[1].matchAll(/\["([a-z]*)"/g)].map((m) => m[1]);
+  const TL = require("../thinking").LEVELS;
+  assert.deepStrictEqual(vals, ["", ...TL], "前端档位表跟 thinking.LEVELS 对不上：" + JSON.stringify(vals) + " vs " + JSON.stringify(TL));
+  console.log("  ✓ 本机引擎接管时提示词带齐偏好/规则/记忆/项目指令/技能索引；--add-dir 过滤与探测；设置页模型候选+思考档");
+}

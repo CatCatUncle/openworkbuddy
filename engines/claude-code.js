@@ -21,7 +21,8 @@
  * 而且里面带引号和换行时，拼命令行迟早出事。
  */
 
-const { runJsonl, probeVersion, probeOption } = require("./jsonl");
+const fs = require("fs");
+const { runJsonl, probeVersion, probeOption, probeHelp } = require("./jsonl");
 const thinking = require("./../thinking");
 const { resolveBin } = require("./which");
 
@@ -77,6 +78,36 @@ async function probeThinking(bin) {
 }
 
 /**
+ * 这版 claude 认不认 --add-dir？（老版没有；不认的选项它静默吞掉，发了等于没发）
+ * 用 --help 探：--add-dir 给个不存在的目录也 exit 0，probeOption 那套假值法判不出来。
+ */
+const addDirCaps = new Map();
+async function probeAddDir(bin) {
+  if (addDirCaps.has(bin)) return addDirCaps.get(bin);
+  const p = probeHelp(bin, "--add-dir");
+  addDirCaps.set(bin, p);
+  return p;
+}
+
+/**
+ * 工作目录之外还要让它读哪些地方：真实存在、不是 cwd 本身、去重。
+ * 导出是为了让测试不起进程也能验这段逻辑。
+ */
+function pickAddDirs(addDirs, cwd) {
+  const out = [];
+  for (const d of addDirs || []) {
+    if (!d || typeof d !== "string") continue;
+    let real;
+    try { real = fs.realpathSync(d); } catch { continue; } // 不存在的目录发过去 claude 会直接报错退出
+    if (!fs.statSync(real).isDirectory()) continue;
+    let c = cwd; try { c = fs.realpathSync(cwd); } catch {}
+    if (real === c || out.includes(real)) continue;
+    out.push(real);
+  }
+  return out;
+}
+
+/**
  * 收的是这个引擎的整份设置（{ bin, model, ... }），不是一个字符串——
  * 注册表那边传下来的本来就是整个 engine_options[id]，当字符串使会 spawn 一个对象，
  * 结果是「用户填了绝对路径反而永远显示没装」。
@@ -101,7 +132,7 @@ async function detect(opts) {
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
   model, systemPrompt, resumeId, maxTurns, mcpConfigPath, mcpServerNames = [], shimBin = "", bin, permissionMode, env, extraArgs = [],
-  thinking: thinkingLevel,
+  thinking: thinkingLevel, addDirs = [],
 }) {
   // 起进程也走同一套解析：detect 认出来的是绝对路径，run 却还 spawn 裸名字的话，
   // 双击启动的桌面版会「设置页显示已装、一跑就 ENOENT」
@@ -116,6 +147,12 @@ async function run({
   if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
   if (resumeId) args.push("--resume", resumeId);
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
+  // 工作目录之外的东西——别的对话的产出、资料库、技能正文——-p 模式下默认不许碰：
+  // 读一下都是「需要审批」，而这里没人能点同意。用户的原话是"不能读取文件"。
+  // --add-dir 把这几处明着放进来（一个目录一个 --add-dir：这个选项是变长参数，
+  // 一口气跟一串会把后面的东西也当目录吞掉）。老版 claude 不认这个选项时不发。
+  const dirs = pickAddDirs(addDirs, cwd);
+  if (dirs.length && await probeAddDir(exe)) for (const d of dirs) args.push("--add-dir", d);
   if (mcpConfigPath) {
     args.push("--mcp-config", mcpConfigPath);
     // -p 是非交互的：MCP 工具默认要人点一下"允许"，而这里没有人。
@@ -211,5 +248,8 @@ module.exports = {
   // 连不上时前端要给一句「接下来敲什么」。写在引擎自己身上，注册表那边就不用按 id 打补丁了
   login: "在终端里跑一次 claude 完成登录，再回来点一次",
   supportsResume: true,
-  detect, run, explain,
+  // 设置页「模型」输入框的候选（只是提示，用户填什么就发什么；以这版 claude 认的名字为准）
+  models: ["opus", "sonnet", "haiku", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+  thinkingLabel: "扩展思考（claude 只有开/关，低中高都算开）",
+  detect, run, explain, pickAddDirs,
 };

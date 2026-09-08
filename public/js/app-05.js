@@ -590,16 +590,25 @@ async function renderEngineCard(box) {
 }
 
 /** 选中的引擎才展开：可执行文件路径、模型、一键连接测试 */
+// 思考/effort 档位（跟 thinking.js 的 LEVELS 同一张表；"" = 跟随全局档位）
+const ENGINE_THINK_LEVELS = [
+  ["", "跟随全局思考模式"], ["auto", "跟随 CLI 默认"], ["off", "关闭思考"], ["low", "低"], ["medium", "中"], ["high", "高"],
+];
 function engineExtraHtml(e) {
   const o = e.options || {};
+  const listId = "eng-models-" + e.id;
+  const models = Array.isArray(e.models) ? e.models : [];
   return `<div class="eng-x" onclick="event.stopPropagation()">
     <label>可执行文件路径<span style="color:var(--wb-text-3)">（留空 = 自动找。装在 nvm/homebrew 里也能找到；只有自动找不到时才需要填绝对路径）</span>
       <input type="text" data-k="bin" placeholder="${esc(e.path || e.id)}" value="${esc(o.bin || "")}"></label>
-    <label>模型<span style="color:var(--wb-text-3)">（留空 = 用 ${esc(e.label)} 自己的默认模型。这里填的是它认的名字，跟上面「模型」页的 API 渠道无关）</span>
-      <input type="text" data-k="model" placeholder="默认" value="${esc(o.model || "")}"></label>
+    <label>模型<span style="color:var(--wb-text-3)">（留空 = 用 ${esc(e.label)} 自己的默认模型。填它认的名字，跟「模型」页的 API 渠道无关；下拉里是常用值，可以直接输别的）</span>
+      <input type="text" data-k="model" list="${listId}" placeholder="默认" value="${esc(o.model || "")}" autocomplete="off">
+      <datalist id="${listId}">${models.map((m) => `<option value="${esc(m)}">`).join("")}</datalist></label>
+    <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--wb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
+      <select data-k="thinking">${ENGINE_THINK_LEVELS.map(([v, l]) => `<option value="${v}"${(o.thinking || "") === v ? " selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="eng-row">
       <button class="btn-brand" data-act="test">测试连接</button>
-      <button class="btn-plain" data-act="save">保存路径和模型</button>
+      <button class="btn-plain" data-act="save">保存路径 / 模型 / 思考档</button>
       <span class="eng-msg" data-role="xmsg"></span>
     </div>
     <div data-role="result"></div>
@@ -611,7 +620,7 @@ function bindEngineExtra(card, id, box) {
   if (!x) return;
   const readOpts = () => {
     const o = {};
-    x.querySelectorAll("input[data-k]").forEach((i) => (o[i.dataset.k] = i.value.trim()));
+    x.querySelectorAll("input[data-k],select[data-k]").forEach((i) => (o[i.dataset.k] = i.value.trim()));
     return o;
   };
   x.querySelector('[data-act="test"]').onclick = () => testEngineConnect(card, id);
