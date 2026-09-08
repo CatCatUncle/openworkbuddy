@@ -20,6 +20,7 @@
  */
 
 const { runJsonl, probeVersion } = require("./jsonl");
+const thinking = require("./../thinking");
 const { resolveBin } = require("./which");
 
 const ID = "codex";
@@ -65,6 +66,7 @@ async function detect(opts) {
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
   model, resumeId, bin, sandbox, network = true, mcpArgs = [], writableRoots = [], env, extraArgs = [],
+  thinking: thinkingLevel,
 }) {
   const found = await resolveBin("codex", bin);
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
@@ -84,6 +86,9 @@ async function run({
   // 本项目自己的工具（生图/视频/技能/记忆）当成 MCP 服务器挂上去，
   // 否则切到本机 Codex 就等于把这些全丢了
   for (const a of mcpArgs) args.push(a);
+  // 思考模式：跟 app 设置页那个下拉框同一个档位（codex 这边是 model_reasoning_effort，
+  // 关掉就是 none）。auto 不发，配置文件里怎么写就怎么来
+  for (const a of thinking.planForEngine(ID, thinkingLevel).args) args.push(a);
   for (const a of extraArgs) args.push(a);
   args.push("-"); // 提示词从 stdin 读，和 claude 那条保持一致
 

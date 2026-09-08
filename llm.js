@@ -10,6 +10,8 @@
  * chat() 返回 { text, toolCalls, stopReason }
  */
 
+const thinking = require("./thinking");
+
 // ---------- Anthropic (Claude) —— 可选适配器，仅在 provider=anthropic 时才需要安装 @anthropic-ai/sdk ----------
 
 /**
@@ -123,10 +125,15 @@ async function anthropicChat(cfg, { system, history, tools, onTextDelta, onActiv
   };
   markLast(amsgs.length - 2);
 
+  // 思考模式：默认（auto）一个字段都不发 —— Anthropic 的语义就是「不发 = 不思考」，
+  // 所以「关闭」这一档也是不发，最安全；只有用户要它想的时候才带上 thinking 预算
+  const think = thinking.planFor(cfg, cfg.thinking);
+
   const stream = client.messages.stream(
     {
       model: cfg.model,
       max_tokens: 32000,
+      ...think.params,
       system: system ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }] : system,
       messages: amsgs,
       // 空数组要整个字段不发：不给工具是一种正当用法（比如强制收尾那一问），
@@ -302,6 +309,10 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
+      // 思考模式开关推导出来的厂商参数（各家名字都不一样，表在 thinking.js）。
+      // 放在 extra_body 前面 = 用户手填的 extra_body 压得住它：万一那张表哪家猜错了，
+      // 用户不用等我改代码，自己就能纠正
+      ...thinking.planFor(cfg, cfg.thinking).params,
       ...(cfg.extra_body || {}), // 模型条目可带厂商特有参数（如 OpenRouter 的 reasoning）；核心字段在后，不会被覆盖
       model: cfg.model,
       stream: useStream,
@@ -508,7 +519,11 @@ async function chatWithRetry(fn, args) {
  */
 function createLLM(config) {
   if (Array.isArray(config.models) && config.models.length) {
-    const entry = config.models.find((m) => m.name === config.active_model) || config.models[0];
+    const picked = config.models.find((m) => m.name === config.active_model) || config.models[0];
+    // 思考模式是一个全局档位（设置页那个下拉框），单条模型可以自己写 thinking 覆盖它。
+    // 这里就地合成，下面两条路（anthropic / openai 兼容）读的都是 entry.thinking
+    const level = picked.thinking || ((config.agent || {}).thinking || "auto");
+    const entry = { ...picked, thinking: level };
     const provider = entry.provider === "anthropic" ? "anthropic" : "openai";
     return {
       provider: entry.name || provider,

@@ -21,7 +21,8 @@
  * 而且里面带引号和换行时，拼命令行迟早出事。
  */
 
-const { runJsonl, probeVersion } = require("./jsonl");
+const { runJsonl, probeVersion, probeOption } = require("./jsonl");
+const thinking = require("./../thinking");
 const { resolveBin } = require("./which");
 
 const ID = "claude-code";
@@ -59,6 +60,23 @@ function explain(stderr, code) {
 }
 
 /**
+ * 这版 claude 认不认 --thinking？
+ *
+ * 非探不可：claude 对不认识的选项是**静默忽略**的，老版本上发了等于没发，
+ * 用户在设置里点了「关闭思考」却毫无动静，还看不出哪儿不对。探到不支持就在
+ * 界面上直说（见 thinking.planForEngine 的 note），不假装生效。
+ *
+ * 一个进程一次，按 bin 缓存：这是个 spawn，设置页每刷一次就探一次太浪费。
+ */
+const thinkingCaps = new Map();
+async function probeThinking(bin) {
+  if (thinkingCaps.has(bin)) return thinkingCaps.get(bin);
+  const p = probeOption(bin, "--thinking");
+  thinkingCaps.set(bin, p);
+  return p;
+}
+
+/**
  * 收的是这个引擎的整份设置（{ bin, model, ... }），不是一个字符串——
  * 注册表那边传下来的本来就是整个 engine_options[id]，当字符串使会 spawn 一个对象，
  * 结果是「用户填了绝对路径反而永远显示没装」。
@@ -68,8 +86,11 @@ async function detect(opts) {
   const found = await resolveBin("claude", explicit);
   if (!found.bin) return { id: ID, installed: false, path: explicit || "claude", version: "", how: "", error: found.why };
   const r = await probeVersion(found.bin, ["--version"]);
+  // 装上了才去探选项：没装的话探了也只是白花一个 spawn
+  const thinkingFlag = r.installed ? await probeThinking(found.bin) : false;
   return {
     id: ID, installed: r.installed, path: found.bin, version: r.version, how: found.how,
+    caps: { thinkingFlag },
     error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通（装坏了？）",
   };
 }
@@ -80,6 +101,7 @@ async function detect(opts) {
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
   model, systemPrompt, resumeId, maxTurns, mcpConfigPath, mcpServerNames = [], shimBin = "", bin, permissionMode, env, extraArgs = [],
+  thinking: thinkingLevel,
 }) {
   // 起进程也走同一套解析：detect 认出来的是绝对路径，run 却还 spawn 裸名字的话，
   // 双击启动的桌面版会「设置页显示已装、一跑就 ENOENT」
@@ -106,6 +128,10 @@ async function run({
   // 「This command requires approval」——-p 是非交互的，没人能点同意，于是工具形同虚设。
   // 只放行 owb 这一个前缀，不是整个 Bash：本项目的工具都从这台桥回流，安全中心照样把关。
   if (shimBin) args.push("--allowed-tools", `Bash(${shimBin}:*)`);
+  // 思考模式：跟 app 设置页那个下拉框同一个档位。auto 什么也不发（今天的行为一个字节不变），
+  // 这版 claude 不认 --thinking 时也什么都不发 —— 发了会被静默吞掉，不如明着在界面上说不支持
+  const think = thinking.planForEngine(ID, thinkingLevel, { thinkingFlag: await probeThinking(exe) });
+  for (const a of think.args) args.push(a);
   for (const a of extraArgs) args.push(a);
 
   let finalText = "";

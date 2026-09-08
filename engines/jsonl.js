@@ -133,9 +133,36 @@ function probeVersion(bin, args = ["--version"], timeoutMs = 8000) {
   });
 }
 
+/**
+ * 探一个「选项存不存在」——不花额度、不连网、不碰用户会话。
+ *
+ * 为什么需要探：claude 对**不认识的**命令行选项是静默忽略的
+ * （实测 `claude --nosuchflag x --version` 照样退出 0），所以直接把 --thinking 发过去，
+ * 老版本上什么也不会发生，用户点了「关闭思考」却毫无效果，还看不出为什么。
+ *
+ * 手法：给这个选项一个绝不可能合法的值。选项存在 → 值校验不过、非零退出并且报错里点了它的名字；
+ * 选项不存在 → 整个参数被当垃圾吞掉，照常退出 0。两种结果泾渭分明。
+ *
+ * @returns {Promise<boolean>} 支持则 true。探测本身出错一律当"不支持"——宁可少发一个参数
+ */
+function probeOption(bin, flag, bogus = "__owb_probe__", timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    let child;
+    try { child = spawn(bin, [flag, bogus, "--version"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath() } }); }
+    catch { return resolve(false); }
+    let out = "";
+    const done = (v) => { try { child.kill("SIGKILL"); } catch {} resolve(v); };
+    const t = setTimeout(() => done(false), timeoutMs);
+    child.stdout.on("data", (c) => (out += c));
+    child.stderr.on("data", (c) => (out += c));
+    child.on("error", () => { clearTimeout(t); done(false); });
+    child.on("close", (code) => { clearTimeout(t); done(code !== 0 && out.includes(flag)); });
+  });
+}
+
 function firstVersionLine(raw) {
   const line = String(raw || "").split("\n").map((s) => s.trim()).find(Boolean) || "";
   return line.slice(0, 80);
 }
 
-module.exports = { runJsonl, probeVersion };
+module.exports = { runJsonl, probeVersion, probeOption };
