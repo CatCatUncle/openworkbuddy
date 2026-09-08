@@ -338,6 +338,7 @@ const ATTACH_STUBS = [
   "window.toast = (m) => window.toasts.push(m);",
   "window.renderFiles = () => {};",
   "window.syncInputHl = () => {};",
+  "window.syncSendBtn = () => {};",
   "window.inputEl = document.getElementById('input');",
 ].join("\n");
 
@@ -1669,6 +1670,100 @@ const CHECKS = `(() => {
   }
 })()`;
 
+// ================= 运行中的输入框（真源码切片：MODE_PLACEHOLDER … bindComposer） =================
+// 用户原话「任务运行中那行要写清楚：在输入框输入文字、按 Enter 能继续插进来；有人味一点」。
+// 这里验的是交互不是措辞：排队条讲清三件事（怎么插话 / 怎么停 / 想并行怎么办）、停止是一颗真按钮、
+// 一颗发送键看框里有没有字决定是「停下」还是「插一句」、提示语跟着忙/闲切换、发完框空了按钮自己回到「停下」。
+const C0 = APP02.indexOf("// ================= 发送（运行中按钮变「停止」）");
+const C1 = APP02.indexOf("function drainQueue(sid) {");
+if (C0 < 0 || C1 <= C0) throw new Error("app-02.js 里找不到「发送（运行中按钮变「停止」）… drainQueue」那一段");
+const COMPOSER_SRC = APP02.slice(C0, C1);
+const COMPOSER_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
+  + "<div class='queue-bar' id='queue-bar'></div><textarea id='input'></textarea><button id='send'>↑</button><button id='new-task'>新建任务</button></body>";
+const COMPOSER_STUBS = [
+  "var BUSY = false; const curBusy = () => BUSY;",
+  "let currentMode = 'craft';",
+  "const inputEl = document.getElementById('input'), sendBtn = document.getElementById('send');",
+  "const pendingAttach = [];",
+  "let sessionId = 's1'; const sessionQueues = new Map();",
+  "const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
+  "let HIST = 0; function renderHistory() { HIST++; }",
+  "const CALLS = [];",
+  "async function stopTask() { CALLS.push('stop'); }",
+  "// 模拟真 send()：有草稿才发，发完框清空并让按钮重算（真源码里由 composeOutgoing 做）",
+  "async function send() { const t = inputEl.value.trim(); if (!t && !pendingAttach.length) { CALLS.push('send:empty'); return; } CALLS.push('send:' + (t || '[附件]')); inputEl.value = ''; pendingAttach.length = 0; syncSendBtn(); }",
+].join("\n");
+const COMPOSER_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + extra : "")); names.push(n); };
+  const bar = document.getElementById("queue-bar");
+  const stops = () => CALLS.filter((c) => c === "stop").length;
+  const typeIn = (t) => { inputEl.value = t; inputEl.dispatchEvent(new Event("input", { bubbles: true })); };
+  const press = (key, shift) => { const e = new KeyboardEvent("keydown", { key, shiftKey: !!shift, bubbles: true, cancelable: true }); inputEl.dispatchEvent(e); return e.defaultPrevented; };
+  bindComposer();
+
+  // ---- 闲着 ----
+  updateSendUI();
+  ok("闲着：排队条不显示、里面是空的", !bar.classList.contains("show") && bar.innerHTML === "");
+  ok("闲着：按钮是「↑」、title 说的是发送 + Enter", sendBtn.textContent === "↑" && !sendBtn.classList.contains("stop") && sendBtn.title.includes("发送") && sendBtn.title.includes("Enter"), sendBtn.title);
+  ok("闲着：提示语是本模式的（执行模式含「今天帮你做些什么」）", inputEl.placeholder.includes("今天帮你做些什么"), inputEl.placeholder);
+  currentMode = "ask"; syncPlaceholder();
+  ok("切到问答模式：提示语跟着换", inputEl.placeholder.includes("问我任何问题"), inputEl.placeholder);
+  currentMode = "craft"; syncPlaceholder();
+  ok("闲着点按钮：走发送不走停止（框空着就是 send:empty，不会误停）", (sendBtn.click(), CALLS[CALLS.length - 1] === "send:empty" && stops() === 0), CALLS.join(","));
+
+  // ---- 任务在跑、框空着 ----
+  BUSY = true; updateSendUI();
+  const hint = bar.querySelector(".qb-hint");
+  ok("任务在跑：排队条出来了，带提示", bar.classList.contains("show") && !!hint);
+  const ht = hint.textContent;
+  ok("提示讲清三件事：怎么插话（打字 + Enter）/ 怎么停 / 想并行点「新建任务」", ht.includes("打字") && ht.includes("Enter") && ht.includes("停") && ht.includes("新建任务"), ht);
+  ok("提示说的是接下来会发生什么（「做完这一步就看」），不是冷冰冰的系统口吻", ht.includes("做完这一步就看") && !ht.includes("任务运行中：发消息会直接插队"), ht);
+  ok("提示像人说话：有「我」", ht.includes("我"), ht);
+  const stopBtn = bar.querySelector(".qb-stop");
+  ok("停止是一颗真按钮（<button>），不是一段文字里的 ◼", !!stopBtn && stopBtn.tagName === "BUTTON" && stopBtn.textContent.includes("◼"), stopBtn && stopBtn.outerHTML);
+  const before = stops(); stopBtn.click();
+  ok("点排队条里的「让我停下」真的调 stopTask", stops() === before + 1);
+  ok("停止按钮 title 提到 Esc 快捷键", stopBtn.title.includes("Esc"), stopBtn.title);
+  ok("任务在跑、框空着：发送键变「◼」带 .stop，title 说停下 + Esc", sendBtn.textContent === "◼" && sendBtn.classList.contains("stop") && sendBtn.title.includes("停") && sendBtn.title.includes("Esc"), sendBtn.title);
+  ok("任务在跑：输入框提示语告诉用户「打字 + Enter 就插进来」", inputEl.placeholder.includes("Enter") && inputEl.placeholder.includes("插") && inputEl.placeholder !== MODE_PLACEHOLDER.craft, inputEl.placeholder);
+  const b0 = stops(); sendBtn.click();
+  ok("框空着点发送键 = 停下", stops() === b0 + 1);
+
+  // ---- 任务在跑、打了字 ----
+  typeIn("改成蓝色");
+  ok("一打字：发送键变回「↑」、去掉 .stop、加 .interject", sendBtn.textContent === "↑" && !sendBtn.classList.contains("stop") && sendBtn.classList.contains("interject"), sendBtn.className);
+  ok("打了字的 title 说清是「插一句」+ Enter", sendBtn.title.includes("插一句") && sendBtn.title.includes("Enter"), sendBtn.title);
+  const b1 = stops(); sendBtn.click();
+  ok("打了字点发送键：走 send（插队）不走停止 —— 以前这里一点任务就没了", CALLS[CALLS.length - 1] === "send:改成蓝色" && stops() === b1, CALLS.join(","));
+  ok("发出去框空了：按钮自己回到「◼ 停下」，不用等下一次 updateSendUI", sendBtn.textContent === "◼" && sendBtn.classList.contains("stop") && !sendBtn.classList.contains("interject"), sendBtn.className);
+  typeIn("再加个标题");
+  ok("Shift+Enter 只换行不发", !press("Enter", true) && CALLS[CALLS.length - 1] !== "send:再加个标题");
+  ok("Enter 发出去（默认行为被拦，不会真换行）", press("Enter", false) && CALLS[CALLS.length - 1] === "send:再加个标题", CALLS.join(","));
+  ok("Enter 发完按钮回到「◼」", sendBtn.textContent === "◼");
+  pendingAttach.push("截图.png"); syncSendBtn();
+  ok("只贴了附件没打字：也算有话要说 → 「↑」", sendBtn.textContent === "↑" && !sendBtn.classList.contains("stop"));
+  pendingAttach.length = 0; syncSendBtn();
+  ok("附件撤掉：回到「◼」", sendBtn.textContent === "◼" && sendBtn.classList.contains("stop"));
+
+  // ---- 排了队的消息 ----
+  sessionQueues.set("s1", [{ text: "顺便把页脚也改了", mode: "craft" }]);
+  renderQueueBar();
+  ok("排队中的消息显示成 chip，提示仍在", bar.querySelectorAll(".q-chip").length === 1 && bar.querySelector(".q-chip .qt").textContent.includes("页脚") && !!bar.querySelector(".qb-hint"));
+  bar.querySelector(".q-chip .qx").click();
+  ok("点 ✕ 取消这条排队消息", bar.querySelectorAll(".q-chip").length === 0 && sessionQueues.get("s1").length === 0);
+
+  // ---- 任务结束 ----
+  BUSY = false; updateSendUI();
+  ok("任务结束：排队条隐藏并清空", !bar.classList.contains("show") && bar.innerHTML === "");
+  ok("任务结束：提示语还原成本模式的", inputEl.placeholder === MODE_PLACEHOLDER.craft, inputEl.placeholder);
+  ok("任务结束：发送键回到「↑ 发送」", sendBtn.textContent === "↑" && !sendBtn.classList.contains("stop") && !sendBtn.classList.contains("interject") && sendBtn.title.includes("发送"));
+  ok("每次 updateSendUI 都刷了侧栏（运行中小圆点）", HIST >= 3, HIST);
+  return names;
+})()
+`;
+
 // 渲染进程的 console 抄一份到主进程：页面里抛错时 executeJavaScript 只回一句
 // 「Script failed to execute」，真正的报错文本在渲染进程 console 里，不抄出来根本没法定位。
 const RENDERER_LOG = [];
@@ -1786,6 +1881,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：助理设置页（四分区·双栏·连上收起·连接=保存再测活·取消连接两步且只清自己·微信取码/断开·清会话两步）${names10.length} 项通过`);
     } finally {
       if (!win10.isDestroyed()) win10.destroy();
+    }
+    const win13 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win13.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(COMPOSER_HTML));
+      const names13 = await win13.webContents.executeJavaScript(COMPOSER_STUBS + "\n" + COMPOSER_SRC + "\n" + COMPOSER_CHECKS, true);
+      for (const n of names13) console.log("  ✓ " + n);
+      console.log(`✅ 前端：运行中的输入框（提示讲清插话/停下/并行·停止是真按钮·一颗键按有没有字切停下/插一句·提示语跟忙闲·发完自动回停下）${names13.length} 项通过`);
+    } finally {
+      if (!win13.isDestroyed()) win13.destroy();
     }
     const win6 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
