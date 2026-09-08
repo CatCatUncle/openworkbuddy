@@ -114,9 +114,25 @@ async function ensureVectors() {
   try {
     const items = load();
     let vs = vecLoad();
-    if (vs.model !== embedder.model) vs = { model: embedder.model, vecs: {} }; // 换了嵌入模型：旧向量全部作废重算
     const alive = new Set(items.map((x) => x.id));
     for (const id of Object.keys(vs.vecs)) if (!alive.has(id)) delete vs.vecs[id]; // 条目删了向量也别留
+
+    // 换了嵌入模型要把旧向量全部作废重算 —— 但「到底换没换」必须先真算成一次才算数。
+    //
+    // embedder 一上来报的是**首选**渠道的模型名，而首选渠道很可能一调就 4xx（欠费/没开通），
+    // 当场换到下一条、model 也跟着变。老写法是照这个还没验证过的名字先把整库清空再去算，于是：
+    // 首选渠道一直坏着 → 每次启动清一次库 → 一条也算不出来 → 语义召回常年是空的，
+    // 每次记忆读写还得先去撞一次死渠道。用户那边的表现就是「记忆越来越不准，而且越来越慢」。
+    //
+    // 所以名字对不上时先发一条探针：探不通就原样留着下次再说（宁可用着旧向量，也不能清空），
+    // 探通了名字还是对不上，才是真换了模型，这时候才作废。
+    if (vs.model !== embedder.model && Object.keys(vs.vecs).length) {
+      const probe = await embedder(["嵌入模型探针"]);
+      if (!probe) return { computed: 0 };
+      if (vs.model !== embedder.model) vs = { model: embedder.model, vecs: {} };
+    }
+    if (!Object.keys(vs.vecs).length) vs.model = embedder.model; // 空库贴个标签就行
+
     const todo = items.filter((x) => !vs.vecs[x.id]);
     let computed = 0;
     for (let i = 0; i < todo.length; i += 16) {

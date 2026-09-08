@@ -3869,12 +3869,163 @@ async function main() {
   await testMcpFailureReason();
   await testThinkingSwitch();
   await testThinkingSettingsApi();
+  await testEmbedFailoverResilience();
   testUiNoRawMarkdown();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
   }
   console.log("=== 全部测试通过 ===");
+}
+
+/**
+ * 嵌入渠道挂掉时别把记忆一起拖垮 —— 用户日志（2026-09-08 00:43）里的三连翻车。
+ *
+ * 现场：
+ *   [记忆向量] 视频渠道的 key 不可用（400: Access denied…），改用 本地 Ollama   ×14 行一模一样
+ *   [记忆向量] 本地 Ollama 调用失败（1/3）：fetch failed
+ *   [llm] 工具调用 generate_image(call_00_…) 没有结果，已补占位              同 3 个 id 刷了 6 轮
+ * 用户的感受是「怎么现在有点慢啊」。
+ *
+ * 三个各自独立的毛病：
+ *   ① 向量库先清后算 —— embedder 一上来报的是首选渠道的模型名，而首选渠道一调就 4xx。
+ *      按那个还没验证过的名字把整库清空，然后一条也算不出来 → 语义召回常年是空的。
+ *   ② 死渠道没记性 —— createEmbedder 在启动/存设置/走完引导时各重建一次，每次都从头撞。
+ *   ③ 坏配对的告警每轮重刷 —— 真正的新问题被淹在重复日志里。
+ */
+async function testEmbedFailoverResilience() {
+  const os = require("os");
+  const http = require("http");
+  const { spawnSync } = require("child_process");
+
+  // ① + 负向控制：向量库该留的时候留、该作废的时候作废
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-vec-"));
+  const script = `
+    const assert = require("assert");
+    const mem = require(${JSON.stringify(path.join(__dirname, "..", "memory.js"))});
+    (async () => {
+      for (let i = 0; i < 5; i++) mem.add({ text: "条目" + i, user: "甲" });
+
+      // 先用「真正能用的那条渠道」把向量算出来，模拟已经跑过一阵子的机器
+      const good = Object.assign(async (t) => t.map(() => [1, 0, 0]), { model: "nomic-embed-text" });
+      mem.setEmbedder(good);
+      await mem.ensureVectors();
+      const built = Object.keys(mem._internals.vecLoad().vecs).length;
+      assert.ok(built >= 5, "前置条件没成立：向量根本没算出来");
+
+      // 重启后的样子：新 embedder 报的是首选渠道（阿里云）的模型名，但它一调就 400，
+      // 当场换到 Ollama。整个过程里 .model 从 v4 变成 nomic —— 跟库里存的其实是同一个。
+      let called = 0;
+      const failover = Object.assign(
+        async (t) => { if (called++ === 0) { failover.model = "nomic-embed-text"; return null; } return t.map(() => [1, 0, 0]); },
+        { model: "text-embedding-v4" }
+      );
+      mem.setEmbedder(failover);
+      await mem.ensureVectors();
+      const after = Object.keys(mem._internals.vecLoad().vecs).length;
+      assert.strictEqual(after, built, "首选渠道一挂就把整个向量库清空了（每次重启清一遍，语义召回永远是空的）");
+      assert.strictEqual(mem._internals.vecLoad().model, "nomic-embed-text", "向量库记的模型名不是真正在干活的那个");
+
+      // 更狠的一种：备用渠道（本机 Ollama）也没起来，从头到尾一次都算不成。
+      // 这时候更不能清库 —— 清了就是「越坏丢得越干净」，用户的语义召回永久归零。
+      mem.setEmbedder(Object.assign(async () => null, { model: "text-embedding-v4" }));
+      await mem.ensureVectors();
+      const vs1 = mem._internals.vecLoad();
+      assert.strictEqual(Object.keys(vs1.vecs).length, built, "所有渠道都挂的时候，反而把向量库清空了");
+      assert.deepStrictEqual(vs1.vecs[Object.keys(vs1.vecs)[0]], [1, 0, 0], "向量被清掉/被换掉了");
+      assert.strictEqual(vs1.model, "nomic-embed-text", "一条都没算成，却把库的模型名改成了没验证过的首选渠道");
+
+      // 负向控制：真的换了一个能用的新模型，旧向量就必须作废重算，不能将就着用
+      mem.setEmbedder(Object.assign(async (t) => t.map(() => [0, 1, 0]), { model: "另一个嵌入模型" }));
+      await mem.ensureVectors();
+      const vs2 = mem._internals.vecLoad();
+      assert.strictEqual(vs2.model, "另一个嵌入模型", "换了新模型，向量库的模型名没跟上");
+      assert.ok(Object.keys(vs2.vecs).length >= 5, "换模型后没把向量重算回来");
+      assert.deepStrictEqual(vs2.vecs[Object.keys(vs2.vecs)[0]], [0, 1, 0], "换了模型却还在用旧模型算的向量（维度/语义对不上，召回全是乱的）");
+      console.log("OK");
+    })().catch((e) => { console.error((e && e.stack) || e); process.exit(1); });
+  `;
+  const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, WB_DATA_DIR: dir }, encoding: "utf8" });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "向量库存活测试失败：\n" + (r.stderr || r.stdout));
+
+  // ② 死渠道要有进程级记性，否则每建一个实例就白撞一次 + 刷一行重复日志
+  const { markEmbedChannelDead, embedChannelDead, deadEmbedChannels } = require("../llm")._internals;
+  deadEmbedChannels.clear();
+  const ch = { base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v4", api_key: "sk-aaaabbbbcccc", label: "视频渠道的 key" };
+  assert(!embedChannelDead(ch), "还没标记就说它死了");
+  markEmbedChannelDead(ch, "400: Access denied");
+  assert(embedChannelDead(ch), "标记过的死渠道没记住——下一个实例又会去撞一次");
+  assert(/Access denied/.test(embedChannelDead(ch).why), "记住了但没记住为什么，日志里说不清");
+  // 换了 key = 换了一条路，必须立刻重试（用户刚去把账号充上了，不该等超时）
+  assert(!embedChannelDead({ ...ch, api_key: "sk-ddddeeeeffff" }), "用户换了 key 还被当成同一条死路");
+  assert(!embedChannelDead({ ...ch, model: "text-embedding-v3" }), "换了模型还被当成同一条死路");
+  // 超时之后自动忘掉
+  deadEmbedChannels.set([...deadEmbedChannels.keys()][0], { at: Date.now() - 11 * 60 * 1000, why: "x" });
+  assert(!embedChannelDead(ch), "过了重试窗口还记着，用户把账号充上了也得重启才生效");
+  // 只记「这条路本身不通」的 4xx；超时和 5xx 下次可能就好了，不许拉黑
+  deadEmbedChannels.clear();
+
+  // ②b 上面验的是记性本身，这里验**接线**：真收到一个 4xx，有没有真的登记下来。
+  //     （只对着 markEmbedChannelDead 断言的话，catch 里那一行删掉了也测不出来）
+  deadEmbedChannels.clear();
+  const { createEmbedder } = require("../llm");
+  let hits = 0;
+  const srv = http.createServer((req, res) => {
+    hits++;
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "Access denied, please make sure your account is in good standing" } }));
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  const cfg = { embedding: { base_url: `http://127.0.0.1:${port}/v1`, api_key: "sk-test-not-a-real-key", model: "text-embedding-v4" } };
+  const warns = [];
+  const w0 = console.warn;
+  console.warn = (...a) => warns.push(a.join(" "));
+  try {
+    const emb1 = createEmbedder(cfg);
+    assert.strictEqual(await emb1(["一段话"]), null, "4xx 了还返回向量？");
+    assert.strictEqual(hits, 1, "4xx 是「这条路不通」，不该陪它重试满三次（白等 3 次超时 = 用户感觉到的卡）");
+    // 同一个实例再来一次：一发 4xx 就该判死，第二次不许再去撞（否则每次记忆读写都白等一趟）
+    assert.strictEqual(await emb1(["再一段"]), null, "死了还返回向量？");
+    assert.strictEqual(hits, 1, "4xx 一次就够了，同一个实例第二次调用又去撞了（= 4xx 也陪它重试满 3 次）");
+    assert(embedChannelDead(cfg.embedding), "真的收到 4xx 却没登记——下一个实例照样去撞");
+    // 第二个实例：直接跳过，而且要出声说为什么、什么时候再试（不搞静默降级）
+    assert.strictEqual(createEmbedder(cfg), null, "死渠道之外没有别的候选了，还硬返回一个 embedder");
+    assert.strictEqual(hits, 1, "新实例又去撞了一次死渠道");
+    const skip = warns.filter((x) => x.includes("跳过"));
+    assert.strictEqual(skip.length, 1, "跳过了却一声不吭（用户不知道语义召回为什么没了）");
+    assert(/Access denied/.test(skip[0]) && /分钟后自动重试/.test(skip[0]), "跳过的理由和重试时机没说清：" + skip[0]);
+  } finally { console.warn = w0; srv.close(); deadEmbedChannels.clear(); }
+
+  // ③ 同一条坏配对每轮都要补，但只该喊一次 —— 否则真正的新问题被重复日志淹了
+  const { repairToolPairs, warnedLeakedPairs } = require("../llm")._internals;
+  warnedLeakedPairs.clear();
+  const orig = console.warn;
+  const said = [];
+  console.warn = (...a) => said.push(a.join(" "));
+  try {
+    const broken = () => [
+      { role: "user", content: "画三张图" },
+      { role: "assistant", content: "", toolCalls: [{ id: "call_00_ZZZ", name: "generate_image", input: {} }] },
+      { role: "user", content: "接着说" },
+    ];
+    const a = repairToolPairs(broken());
+    const b = repairToolPairs(broken()); // 下一轮：同一条坏配对又来了
+    const tool = (h) => h.find((m) => m.role === "tool");
+    assert(tool(a) && tool(a).results[0].id === "call_00_ZZZ", "坏配对没补上占位——整个会话会一直 400");
+    assert(tool(b) && tool(b).results[0].isError, "第二轮不补了？那这轮就 400 了");
+    assert.strictEqual(said.filter((s) => s.includes("call_00_ZZZ")).length, 1, "同一条坏配对每轮都刷一行日志（用户日志里同 3 个 id 刷了 6 轮，把真问题淹了）");
+    const c = repairToolPairs([
+      { role: "user", content: "再来" },
+      { role: "assistant", content: "", toolCalls: [{ id: "call_99_NEW", name: "generate_image", input: {} }] },
+      { role: "user", content: "嗯" },
+    ]);
+    assert(tool(c), "新的坏配对没补上");
+    assert.strictEqual(said.filter((s) => s.includes("call_99_NEW")).length, 1, "去重去过头了：新出现的坏配对也不喊了");
+  } finally { console.warn = orig; warnedLeakedPairs.clear(); }
+
+  console.log("✅ 嵌入渠道翻车不拖垮记忆：首选渠道挂了不清空向量库（换真模型仍作废重算=负向控制）· 死渠道进程级记性（换 key/换模型/超时都会重试）· 坏配对告警按 id 只喊一次");
 }
 
 /**
