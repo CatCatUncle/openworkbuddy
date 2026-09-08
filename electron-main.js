@@ -16,6 +16,11 @@ seedDataDir();
 // 按时间倒序找最近的一个旧目录搬过来，只在新目录不存在时搬一次。
 // ⚠️ 白名单里只有我们自己用过的精确名字：同级还躺着腾讯官方 WorkBuddy 的目录，绝不能碰。
 const LEGACY_USERDATA = ["openbuddy", "workbuddy-clone"];
+// 显示名叫 OpenWorkBuddy（「关于」面板、系统通知的署名），但 userData 目录钉死在 openworkbuddy：
+// app.setName 会连带把 userData 改成 appData/OpenWorkBuddy，那等于第三次改名、用户又被登出一次
+app.setPath("userData", path.join(app.getPath("appData"), "openworkbuddy"));
+app.setName("OpenWorkBuddy");
+app.setAboutPanelOptions({ applicationName: "OpenWorkBuddy", applicationVersion: require("./package.json").version, copyright: "MIT · github.com/CatCatUncle/openworkbuddy" });
 (function migrateUserData() {
   try {
     const base = app.getPath("appData");
@@ -71,6 +76,12 @@ async function waitForServer(url, tries = 200) {
 
 app.whenReady().then(async () => {
   console.log(`[启动] Electron 就绪 +${Date.now() - BOOT_T0}ms`);
+  // 开发态（npm run app）跑的是 node_modules 里的 Electron.app，Dock 默认挂它的图标；换成我们自己的。
+  // 菜单栏左上角的名字改不了——macOS 只认正在跑的那个 .app 的 Info.plist，
+  // 要连名字一起对，用 scripts/make-mac-app.sh 生成的 ~/Applications/OpenWorkBuddy.app 启动。
+  if (process.platform === "darwin" && app.dock && !app.isPackaged) {
+    try { app.dock.setIcon(path.join(__dirname, "build", "icon.png")); } catch (e) { console.warn("[启动] Dock 图标设置失败:", e.message); }
+  }
   // 窗口先开（秒响应），服务端在同进程内随后启动，就绪即加载页面。
   // 顺序反过来的话，用户要盯着 Dock 图标空等服务端把路由全注册完。
   win = new BrowserWindow({
