@@ -160,9 +160,30 @@ function probeOption(bin, flag, bogus = "__owb_probe__", timeoutMs = 8000) {
   });
 }
 
+/**
+ * 看 `bin --help` 里有没有某个选项名。
+ *
+ * 给 probeOption 探不出来的选项用：--add-dir 这种"给个不存在的目录也照样 exit 0"的选项，
+ * 塞假值那一招判不出支持与否。--help 是最老实的：印出来就是认，没印就是不认。
+ */
+function probeHelp(bin, needle, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    let child;
+    try { child = spawn(bin, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath() } }); }
+    catch { return resolve(false); }
+    let out = "";
+    const done = (v) => { try { child.kill("SIGKILL"); } catch {} resolve(v); };
+    const t = setTimeout(() => done(false), timeoutMs);
+    child.stdout.on("data", (c) => (out += c));
+    child.stderr.on("data", (c) => (out += c));
+    child.on("error", () => { clearTimeout(t); done(false); });
+    child.on("close", () => { clearTimeout(t); done(out.includes(needle)); });
+  });
+}
+
 function firstVersionLine(raw) {
   const line = String(raw || "").split("\n").map((s) => s.trim()).find(Boolean) || "";
   return line.slice(0, 80);
 }
 
-module.exports = { runJsonl, probeVersion, probeOption };
+module.exports = { runJsonl, probeVersion, probeOption, probeHelp };

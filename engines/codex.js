@@ -181,5 +181,7 @@ module.exports = {
   install: "npm i -g @openai/codex，然后终端里跑一次 codex login",
   login: "在终端里跑一次 codex login 完成登录，再回来点一次",
   supportsResume: true,
+  models: ["gpt-5.4-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5-codex", "gpt-5"],
+  thinkingLabel: "推理强度 effort（关闭=none，低/中/高=low/medium/high）",
   detect, run, explain,
 };

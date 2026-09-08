@@ -53,8 +53,15 @@ async function detectAll(overrides = {}) {
       launchHeader: b.launchHeader, supportsResume: b.supportsResume,
       installed: !!r.installed, path: r.path, version: r.version || "",
       how: r.how || "", error: r.error || "",
-      // 用户在设置里给这个引擎填过什么（路径 / 模型），前端要能回显出来
-      options: { bin: (overrides[b.id] || {}).bin || "", model: (overrides[b.id] || {}).model || "" },
+      // 设置页要画「模型」候选和「思考/effort」下拉：候选和标签写在引擎自己身上
+      models: b.models || [],
+      thinkingLabel: b.thinkingLabel || "",
+      // 用户在设置里给这个引擎填过什么（路径 / 模型 / 思考档），前端要能回显出来
+      options: {
+        bin: (overrides[b.id] || {}).bin || "",
+        model: (overrides[b.id] || {}).model || "",
+        thinking: (overrides[b.id] || {}).thinking || "", // 空 = 跟随全局档位
+      },
     });
   }
   return out;
