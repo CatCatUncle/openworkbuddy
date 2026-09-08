@@ -4013,6 +4013,7 @@ async function main() {
   testUiNoRawMarkdown();
   testLookPrefsStatic();
   testReadmeFrontGate();
+  testKeySourcesGate();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -4854,6 +4855,77 @@ function testReadmeFrontGate() {
   console.log("✅ README 门面闸门：中英互链·只指本仓库·首屏三句差异·最新动态 " + items.length + " 条日期均有真实提交且倒序·二维码 PNG " + w + "x" + h + "·协议一句人话·技能模板+锚点·无「一个人做」措辞");
 }
 
+// 「去哪拿 Key」闸门：向导和设置页每个要填 Key 的地方都得有一条直达链接，链接全 https + 新窗口。
+// 写成纯函数以便下面拿变体做反向对照——闸门自己得先证明它拦得住。
+function keySourcesCheck(app03, app05, toolsSrc) {
+  const vm = require("vm");
+  const grab = (src, head, close) => {
+    const i = src.indexOf(head);
+    assert(i >= 0, "源码里没有 " + head.trim());
+    const j = src.indexOf(close, i);
+    assert(j > i, head.trim() + " 没收尾");
+    return src.slice(i + head.length, j + close.length - 1);
+  };
+  const KS = vm.runInNewContext("(" + grab(app03, "const KEY_SOURCES = ", "\n};") + ")");
+  const presets = vm.runInNewContext("(" + grab(app05, "const CHANNEL_PRESETS = ", "\n];") + ")");
+  const media = vm.runInNewContext("(" + grab(app03, "const ONB_MEDIA_PRESETS = ", "\n};") + ")");
+  const problems = [];
+  for (const [id, v] of Object.entries(KS)) {
+    if (!v || !/^https:\/\/[^\s"']+$/.test(v.url || "")) problems.push(`${id} 的链接不是 https 直达地址`);
+    if (!v || !v.name) problems.push(`${id} 没写服务商名`);
+  }
+  for (const c of presets.slice(1)) {
+    const id = c.base || (c.provider === "anthropic" ? "anthropic" : "");
+    if (!KS[id]) problems.push(`渠道预设「${c.label}」没有取 Key 链接`);
+  }
+  const sp = toolsSrc.match(/const SEARCH_PROVIDERS = \{([^}]*)\}/);
+  assert(sp, "tools.js 里没有 SEARCH_PROVIDERS");
+  const searchIds = sp[1].split(",").map((x) => x.split(":")[0].trim()).filter(Boolean);
+  for (const k of searchIds) {
+    if (!KS[k]) problems.push(`搜索服务商 ${k} 没有取 Key 链接`);
+    if (!new RegExp('<option value="' + k + '"').test(app03)) problems.push(`向导搜索步没有 ${k} 这一项`);
+    if (!new RegExp('keyLink\\("' + k + '"\\)').test(app05)) problems.push(`设置 → 搜索面板的 ${k} 没挂链接`);
+  }
+  const imSrcs = [...app05.matchAll(/\bsrc: "([a-z_]+)"/g)].map((m) => m[1]);
+  for (const k of imSrcs) if (!KS[k]) problems.push(`IM 卡片 ${k} 指向了不存在的来源`);
+  let mediaN = 0;
+  for (const [kind, rows] of Object.entries(media)) for (const [nm, base, model] of rows) {
+    mediaN++;
+    if (!KS[base]) problems.push(`多媒体预设 ${kind}「${nm}」的地址没有取 Key 链接`);
+    if (!model) problems.push(`多媒体预设 ${kind}「${nm}」没写模型名`);
+  }
+  if (!/class="get-key" href="\$\{esc\(src\.url\)\}" target="_blank" rel="noopener"/.test(app03)) problems.push("keyLink 没有 target=_blank + rel=noopener（桌面版靠它交给系统浏览器）");
+  for (const [pane, re] of [["向导·大脑", /keyLink\(srcId\)/], ["向导·搜索", /keyLink\(sel\.value\)/], ["向导·多媒体", /keyLink\(preset\.dataset\.base\)/], ["向导·IM", /keyLink\(k, KEY_SOURCES\[k\]\.name\)/]]) {
+    if (!re.test(app03)) problems.push(`${pane} 步没接 keyLink`);
+  }
+  for (const [pane, re] of [["设置·模型表单", /#mf-key-src"\)\.innerHTML = keyLink\(modelKeySource/], ["设置·模型列表", /未填 Key \$\{keyLink\(modelKeySource\(m\)\)\}/], ["设置·IM 卡片", /class="im-src">\$\{keyLink\(c\.src\)\}/]]) {
+    if (!re.test(app05)) problems.push(`${pane} 没接 keyLink`);
+  }
+  return { KS, presets: presets.length - 1, searchIds, imSrcs: new Set(imSrcs).size, mediaN, problems };
+}
+function testKeySourcesGate() {
+  const pub = path.join(__dirname, "..", "public", "js");
+  const app03 = fs.readFileSync(path.join(pub, "app-03.js"), "utf8");
+  const app05 = fs.readFileSync(path.join(pub, "app-05.js"), "utf8");
+  const toolsSrc = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
+  const r = keySourcesCheck(app03, app05, toolsSrc);
+  assert(r.problems.length === 0, "取 Key 链接缺口：\n  " + r.problems.join("\n  "));
+  assert(r.searchIds.length >= 3 && r.imSrcs >= 4 && r.presets >= 9, "覆盖面不对：" + JSON.stringify({ search: r.searchIds.length, im: r.imSrcs, presets: r.presets }));
+  // 反向对照：抠掉 tavily / 把一条改成 http / 去掉 rel=noopener，三种坏法都得被抓
+  const variants = [
+    ["抠掉 tavily", app03.replace(/\n  "tavily": \{[^\n]*\n/, "\n"), app05],
+    ["http 链接", app03.replace('"https://app.tavily.com/home"', '"http://app.tavily.com/home"'), app05],
+    ["丢 rel=noopener", app03.replace(' rel="noopener"', ""), app05],
+    ["IM 卡指向不存在的来源", app03, app05.replace('src: "qq"', 'src: "qq_bot"')],
+  ];
+  let caught = 0;
+  for (const [name, a3, a5] of variants) {
+    assert(a3 !== app03 || a5 !== app05, "变体「" + name + "」没改动到源码，对照无效");
+    if (keySourcesCheck(a3, a5, toolsSrc).problems.length > 0) caught++;
+    else throw new Error("闸门漏了这种坏法：" + name);
+  }
+  console.log(`✅ 取 Key 链接闸门：${Object.keys(r.KS).length} 个来源全 https+新窗口 · 渠道预设 ${r.presets} 家全覆盖 · 搜索 ${r.searchIds.length} 家 · IM ${r.imSrcs} 类 · 多媒体预设 ${r.mediaN} 条；反向 ${caught}/${variants.length} 种坏法全被拦`);
+}
 function testLookPrefsStatic() {
   // 外观偏好（主题/皮肤/字号/字体/密度）的静态闸：前端 harness 验行为，这里钉住「接线」——
   // 目录里有这一页、头像菜单能进来、CSS 令牌一套不少、老的主题子菜单没留尸体

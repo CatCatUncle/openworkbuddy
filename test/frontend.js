@@ -644,8 +644,15 @@ const APP05 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05
 const IM0 = APP05.indexOf("// ================= 助理设置：通道卡片");
 const IM1 = APP05.indexOf("// ================= 安全中心面板");
 if (IM0 < 0 || IM1 <= IM0) throw new Error("app-05.js 里的「助理设置：通道卡片」段找不到了，前端测试没法定位真源码");
+const APP03_KS = (() => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8");
+  const a = src.indexOf("const KEY_SOURCES = {"), b = src.indexOf("const ONB_TIPS = {");
+  if (a < 0 || b <= a) throw new Error("app-03.js 里找不到 KEY_SOURCES … ONB_TIPS 那一段");
+  return src.slice(a, b);
+})();
 const IMPANE_SRC = [
   pickLine(/^const WS_STATE_TXT = .*$/m, "app-01.js 里没有 WS_STATE_TXT"),
+  APP03_KS,
   APP05.slice(IM0, IM1),
 ].join("\n");
 const IMPANE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div class='settings-pane' id='pane' style='width:720px'></div></body>";
@@ -698,6 +705,9 @@ const IMPANE_CHECKS = `
 
   // ---- 2. 状态决定收起/摊开/按钮 ----
   ok("连上的飞书卡：绿灯「已连接」", fsC.querySelector(".im-st").classList.contains("ok") && fsC.querySelector(".im-st em").textContent === "已连接");
+  const fsLink = fsC.querySelector(".im-src a.get-key");
+  ok("飞书卡有「去开放平台」直达链接：https + 新窗口", fsLink && fsLink.href.startsWith("https://open.feishu.cn/") && fsLink.target === "_blank" && fsLink.rel === "noopener" && fsLink.textContent.includes("开放平台"), fsLink && fsLink.outerHTML);
+  ok("QQ / 企微应用卡也有直达链接，推送类（企微群/钉钉/Webhook）没有（凭证在群里拿，没网页可跳）", qq.querySelector("a.get-key") && wca.querySelector("a.get-key") && !wb.querySelector("a.get-key") && !dt.querySelector("a.get-key") && !card("webhook").querySelector("a.get-key"));
   ok("绿灯不是只改类名，颜色真不一样", getComputedStyle(fsC.querySelector(".im-st .dot")).backgroundColor !== getComputedStyle(qq.querySelector(".im-st .dot")).backgroundColor);
   ok("连上的卡默认收起", fsC.classList.contains("packed") && disp(fsC.querySelector(".im-card-b")) === "none");
   ok("连上的卡按钮是「取消连接」", fsC.querySelector(".im-conn").textContent === "取消连接" && fsC.querySelector(".im-conn").dataset.act === "disconnect");
@@ -813,9 +823,9 @@ const IMPANE_CHECKS = `
 
 // ================= 首次开箱向导（真源码切片：ONB_TIPS … finishOnb） =================
 const APP03 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8");
-const ONB0 = APP03.indexOf("const ONB_TIPS = {");
+const ONB0 = APP03.indexOf("const KEY_SOURCES = {");
 const ONB1 = APP03.indexOf("// ================= 主区页面视图");
-if (ONB0 < 0 || ONB1 < 0 || ONB1 < ONB0) throw new Error("app-03.js 里找不到向导那一段（ONB_TIPS … 主区页面视图）");
+if (ONB0 < 0 || ONB1 < 0 || ONB1 < ONB0) throw new Error("app-03.js 里找不到向导那一段（KEY_SOURCES … 主区页面视图）");
 const ONB_SRC = APP03.slice(ONB0, ONB1);
 const ONB_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div class='auth-mask' id='onb-mask'><div class='auth-card onb-card'><div class='onb-steps' id='onb-steps'></div><div id='onb-body'></div></div></div></body>";
@@ -863,9 +873,12 @@ const ONB_CHECKS = `
   ok("第一步标着「必需」，一屏文字不轰炸（<420 字）", q(".onb-tag.must") && body.innerText.length < 420, body.innerText.length);
   ok("没接上大脑时步骤条点不动", (steps.querySelectorAll(".onb-step")[3].click(), steps.querySelector(".onb-step.cur").textContent.includes("大模型")));
   ok("云端/本机两个选项，本机那边列出装了的 codex、没装的 claude-code 不出现", q("#onb-seg button.on").dataset.v === "cloud" && q("input[name=onb-eng][value=codex]") && !q("input[name=onb-eng][value=claude-code]"));
-  ok("默认选中还没配 Key 的云端渠道", q("#onb-model").value === "DeepSeek" && q("#onb-tip").textContent.includes("deepseek"));
+  ok("默认选中还没配 Key 的云端渠道", q("#onb-model").value === "DeepSeek" && q("#onb-tip").textContent.includes("中文强"));
+  const dsLink = q("#onb-tip a.get-key");
+  ok("大脑步：提示旁有「去拿 Key ↗」直达 DeepSeek 建 Key 页，新窗口打开", dsLink && dsLink.href === "https://platform.deepseek.com/api_keys" && dsLink.target === "_blank" && dsLink.rel === "noopener" && dsLink.textContent.includes("去拿 Key"), dsLink && dsLink.outerHTML);
   q("#onb-model").value = "Ollama"; q("#onb-model").dispatchEvent(new Event("change"));
   ok("选本地 Ollama 时 Key 框禁用", q("#onb-key").disabled && q("#onb-tip").textContent.includes("Ollama"));
+  ok("本地模型：链接变成「装 Ollama」而不是「去拿 Key」", q("#onb-tip a.get-key") && q("#onb-tip a.get-key").textContent.includes("装 Ollama") && /ollama\.com/.test(q("#onb-tip a.get-key").href));
   q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
 
   // ---- 验活失败：留在原地、原因写出来 ----
@@ -888,7 +901,11 @@ const ONB_CHECKS = `
   // ---- 第二步：搜索 ----
   ok("搜索步标「推荐」、默认 jina、说清没填会怎样", q(".onb-tag.rec") && q("#onb-sp").value === "jina" && body.innerText.includes("DuckDuckGo"));
   q("#onb-sp").value = "tavily"; q("#onb-sp").dispatchEvent(new Event("change"));
-  ok("换服务商：占位符和提示跟着换", q("#onb-sp-key").placeholder === "tvly-..." && q("#onb-sp-tip").textContent.includes("tavily"));
+  ok("换服务商：占位符和提示跟着换", q("#onb-sp-key").placeholder === "tvly-..." && q("#onb-sp-tip").textContent.includes("不用绑卡"));
+  ok("搜索步：Tavily 排第一且标「推荐」，链接直达 app.tavily.com", q("#onb-sp option").value === "tavily" && q("#onb-sp option").textContent.includes("推荐") && q("#onb-sp-tip a.get-key") && q("#onb-sp-tip a.get-key").href.startsWith("https://app.tavily.com/") && q("#onb-sp-tip a.get-key").target === "_blank");
+  q("#onb-sp").value = "brave"; q("#onb-sp").dispatchEvent(new Event("change"));
+  ok("换到 Brave：链接跟着换、说清要绑卡", /brave\.com/.test(q("#onb-sp-tip a.get-key").href) && q("#onb-sp-tip").textContent.includes("绑卡"));
+  q("#onb-sp").value = "tavily"; q("#onb-sp").dispatchEvent(new Event("change"));
   q("#onb-go").click(); await tick();
   ok("没填 Key 直接点保存：提醒而不是空保存", q("#onb-err").textContent.includes("没填") && !POSTS.some(([k]) => k === "settings"));
   SEARCH_TEST_OK = false; POSTS.length = 0;
@@ -905,6 +922,11 @@ const ONB_CHECKS = `
   POSTS.length = 0;
   q(".onb-row[data-kind=tts] .onb-fill").click();
   ok("点「填写」才展开，语音多一个音色框", !q(".onb-row[data-kind=tts] .onb-row-b").hidden && q(".onb-row[data-kind=tts] input[data-f=voice]") && !q(".onb-row[data-kind=image] input[data-f=voice]"));
+  ok("多媒体每行都有一键预设，展开前没有取 Key 链接", body.querySelectorAll(".onb-row .onb-preset").length >= 8 && !q(".onb-row[data-kind=tts] .onb-preset-src a"));
+  q(".onb-row[data-kind=tts] .onb-preset").click(); await tick();
+  const ttsRow = q(".onb-row[data-kind=tts]");
+  ok("点预设：地址 + 模型 + 音色一键填好，只剩 Key 空着且获得焦点，旁边亮出百炼「去拿 Key」", ttsRow.querySelector("input[data-f=base_url]").value === "https://dashscope.aliyuncs.com/api/v1" && ttsRow.querySelector("input[data-f=model]").value === "qwen-tts" && ttsRow.querySelector("input[data-f=voice]").value === "Cherry" && ttsRow.querySelector("input[data-f=api_key]").value === "" && document.activeElement === ttsRow.querySelector("input[data-f=api_key]") && /bailian\.console\.aliyun\.com/.test((ttsRow.querySelector(".onb-preset-src a.get-key") || {}).href || "") && ttsRow.querySelector(".onb-preset").classList.contains("on"));
+  ttsRow.querySelectorAll("input[data-f]").forEach((i) => { i.value = ""; });
   q(".onb-row[data-kind=tts] .onb-save").click(); await tick();
   ok("地址/Key 没填就保存：当场拦下", q(".onb-row[data-kind=tts] .err").textContent.includes("都要填") && !POSTS.some(([k]) => k === "settings"));
   q(".onb-row[data-kind=tts] input[data-f=base_url]").value = "https://x/v1"; q(".onb-row[data-kind=tts] .onb-save").click(); await tick();
@@ -917,6 +939,8 @@ const ONB_CHECKS = `
 
   // ---- 第四步：IM ----
   ok("IM 步只有一行 + 去助理设置，显示已配 1 个", body.querySelectorAll(".onb-row").length === 1 && q(".onb-chip").textContent.includes("1") && q("#onb-im-open"));
+  const imLinks = [...body.querySelectorAll(".onb-im-src a.get-key")];
+  ok("IM 步列出四家开放平台直达链接（飞书/QQ/企微/公众号），全 https 新窗口", imLinks.length === 4 && imLinks.every((a) => a.href.startsWith("https://") && a.target === "_blank") && imLinks.map((a) => a.textContent).join("|").includes("飞书"), imLinks.map((a) => a.href).join(","));
   q("#onb-go").click(); await tick();
   ok("下一步到完成页", steps.querySelector(".onb-step.cur").textContent.includes("完成"));
 
@@ -1645,8 +1669,20 @@ const CHECKS = `(() => {
   }
 })()`;
 
+// 渲染进程的 console 抄一份到主进程：页面里抛错时 executeJavaScript 只回一句
+// 「Script failed to execute」，真正的报错文本在渲染进程 console 里，不抄出来根本没法定位。
+const RENDERER_LOG = [];
+function mkWin(opts) {
+  const w = new BrowserWindow(opts);
+  RENDERER_LOG.length = 0;
+  w.webContents.on("console-message", (ev, level, message, line, sourceId) => {
+    const m = ev && typeof ev === "object" && "message" in ev ? ev : { level, message, lineNumber: line, sourceId };
+    RENDERER_LOG.push({ level: String(m.level), message: String(m.message), line: m.lineNumber, src: m.sourceId });
+  });
+  return w;
+}
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+  const win = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
   let code = 0;
   try {
     await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent("<!doctype html><meta charset='utf-8'><body></body>"));
@@ -1656,7 +1692,7 @@ app.whenReady().then(async () => {
     console.log(`✅ 前端：内联 SVG 信息图（渲染/流式/清洗/作用域/导出）${names.length} 项通过`);
 
     // 附件那一段要在干净的 DOM 里跑：真源码里有 document 级监听，和上面的用例混在一起会互相打架
-    const win2 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    const win2 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win2.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ATTACH_HTML));
       // 替身 + 真源码 + 断言必须是同一段脚本：源码里的 const 是脚本级作用域，分两次注入就互相看不见了
@@ -1667,7 +1703,7 @@ app.whenReady().then(async () => {
       if (!win2.isDestroyed()) win2.destroy();
     }
 
-    const win3 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    const win3 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win3.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PREVIEW_HTML));
       const names3 = await win3.webContents.executeJavaScript(PREVIEW_STUBS + "\n" + PATHHELP_SRC + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
@@ -1677,7 +1713,7 @@ app.whenReady().then(async () => {
       if (!win3.isDestroyed()) win3.destroy();
     }
 
-    const win4 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    const win4 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win4.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(FB_HTML));
       const names4 = await win4.webContents.executeJavaScript(FB_STUBS + "\n" + FB_WRAP(FB_SRC) + "\n" + FB_CHECKS, true);
@@ -1686,7 +1722,7 @@ app.whenReady().then(async () => {
     } finally {
       if (!win4.isDestroyed()) win4.destroy();
     }
-    const win5 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    const win5 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win5.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(FILELIST_HTML));
       const names5 = await win5.webContents.executeJavaScript(FILELIST_STUBS + "\n" + PATHHELP_SRC + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
@@ -1695,7 +1731,7 @@ app.whenReady().then(async () => {
     } finally {
       if (!win5.isDestroyed()) win5.destroy();
     }
-    const win7 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    const win7 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win7.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TURNOUT_HTML));
       const names7 = await win7.webContents.executeJavaScript(TURNOUT_STUBS + "\n" + PATHHELP_SRC + "\n" + TURNOUT_SRC + "\n" + TURNOUT_CHECKS, true);
@@ -1704,7 +1740,7 @@ app.whenReady().then(async () => {
     } finally {
       if (!win7.isDestroyed()) win7.destroy();
     }
-    const win8 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    const win8 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       assertFailedCardsCollapsed();
       await win8.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SCROLLGUIDE_HTML));
@@ -1714,7 +1750,7 @@ app.whenReady().then(async () => {
     } finally {
       if (!win8.isDestroyed()) win8.destroy();
     }
-    const win9 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    const win9 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win9.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TRAIL_HTML));
       const names9 = await win9.webContents.executeJavaScript(TRAIL_STUBS + "\n" + TRAIL_SRC + "\n" + TRAIL_CHECKS, true);
@@ -1723,7 +1759,7 @@ app.whenReady().then(async () => {
     } finally {
       if (!win9.isDestroyed()) win9.destroy();
     }
-    const win12 = new BrowserWindow({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
+    const win12 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
       await win12.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LOOK_HTML));
       const names12 = await win12.webContents.executeJavaScript("(function(){\n" + LOOK_SRC + "\n" + LOOK_CHECKS + "\n})()", true)
@@ -1733,7 +1769,7 @@ app.whenReady().then(async () => {
     } finally {
       if (!win12.isDestroyed()) win12.destroy();
     }
-    const win11 = new BrowserWindow({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
+    const win11 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
       await win11.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ONB_HTML));
       const names11 = await win11.webContents.executeJavaScript(ONB_STUBS + "\n" + ONB_SRC + "\n" + ONB_CHECKS, true);
@@ -1742,7 +1778,7 @@ app.whenReady().then(async () => {
     } finally {
       if (!win11.isDestroyed()) win11.destroy();
     }
-    const win10 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    const win10 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win10.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(IMPANE_HTML));
       const names10 = await win10.webContents.executeJavaScript(IMPANE_STUBS + "\n" + IMPANE_SRC + "\n" + IMPANE_CHECKS, true);
@@ -1751,7 +1787,7 @@ app.whenReady().then(async () => {
     } finally {
       if (!win10.isDestroyed()) win10.destroy();
     }
-    const win6 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    const win6 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win6.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(KBD_HTML));
       const names6 = await win6.webContents.executeJavaScript(UI00_SRC + "\n" + KBD_CHECKS, true);
@@ -1762,6 +1798,8 @@ app.whenReady().then(async () => {
     }
   } catch (e) {
     console.error("❌ 前端测试失败:", e && e.message ? e.message : e);
+    const errs = RENDERER_LOG.filter((m) => m.level === "error" || m.level === "3");
+    for (const m of (errs.length ? errs : RENDERER_LOG.slice(-5))) console.error("   渲染进程 console：" + m.message + (m.line ? "（行 " + m.line + "）" : ""));
     code = 1;
   } finally {
     if (!win.isDestroyed()) win.destroy();

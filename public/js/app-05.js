@@ -272,7 +272,7 @@ function renderModelsPane(pane, s) {
       <div class="card-item" style="display:flex;align-items:center;gap:10px">
         <input type="radio" name="active" style="width:auto;margin:0" ${m.name === s.active_model ? "checked" : ""} data-i="${i}">
         <div style="flex:1;min-width:0">
-          <div class="t">${esc(m.name)} <span style="font-weight:400;color:var(--wb-text-3);font-size: 12px">${esc(m.model)}${m.api_key ? "" : " · ⚠ 未填 Key"}${healthBadge(m.name)}</span></div>
+          <div class="t">${esc(m.name)} <span style="font-weight:400;color:var(--wb-text-3);font-size: 12px">${esc(m.model)}${m.api_key ? "" : ` · ⚠ 未填 Key ${keyLink(modelKeySource(m))}`}${healthBadge(m.name)}</span></div>
           <div class="d" style="font-size: 12px">${esc(m.base_url || "Anthropic 官方")}</div>
         </div>
         <a href="#" class="link" data-edit="${i}">编辑</a>
@@ -288,7 +288,7 @@ function renderModelsPane(pane, s) {
         <input id="mf-model" placeholder="模型名（如 deepseek-chat）">
       </div>
       <input id="mf-base" placeholder="Base URL（如 https://api.deepseek.com/v1）">
-      <input id="mf-key" type="password" placeholder="API Key">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input id="mf-key" type="password" placeholder="API Key" style="flex:1;min-width:0;margin:0"><span id="mf-key-src"></span></div>
       <button class="btn-brand" id="mf-save">保存模型</button>
       <button class="btn-plain" id="mf-cancel">取消</button>
     </div>
@@ -301,6 +301,7 @@ function renderModelsPane(pane, s) {
       <div class="card-item">
         <div class="t">👁 视觉模型（看图）</div>
         <div class="d" style="margin-bottom:6px">给 look_at_image 工具用：你粘贴（⌘V）或拖进来的截图，它带着问题去看，拿回文字。<b>不填也能用</b>——会直接拿上面选中的主模型看；主模型是纯文本的（如 deepseek-chat）会明确报错，那时在这儿填一个能看图的模型即可（GPT / Claude / Gemini / GLM / Qwen-VL 系的多模态版本，OpenAI 兼容接口）。</div>
+        <div class="d key-src-row">去拿 Key：${keyLink("https://dashscope.aliyuncs.com/compatible-mode/v1", "阿里云百炼")}${keyLink("https://openrouter.ai/api/v1", "OpenRouter")}${keyLink("https://api.openai.com/v1", "OpenAI")}</div>
         <input id="mvi-base" placeholder="接口地址（如 https://openrouter.ai/api/v1，留空=用主模型）" value="${esc((md.vision || {}).base_url || "")}">
         <div class="form-row">
           <input id="mvi-key" type="password" placeholder="API Key" value="${esc((md.vision || {}).api_key || "")}">
@@ -310,6 +311,7 @@ function renderModelsPane(pane, s) {
       <div class="card-item">
         <div class="t">🎨 图像模型</div>
         <div class="d" style="margin-bottom:6px">给 agent 的 generate_image 工具用（对话里说「画一张…」即可，成图存进工作空间）。支持 OpenAI 兼容 /images/generations（含 new-api 等聚合网关）；接口地址含 dashscope 时自动走通义 qwen-image 原生协议。</div>
+        <div class="d key-src-row">去拿 Key：${keyLink("https://dashscope.aliyuncs.com/api/v1", "阿里云百炼")}${keyLink("https://api.openai.com/v1", "OpenAI")}</div>
         <input id="mi-base" placeholder="接口地址（如 https://dashscope.aliyuncs.com/api/v1 或 https://api.openai.com/v1）" value="${esc(md.image.base_url || "")}">
         <div class="form-row">
           <input id="mi-key" type="password" placeholder="API Key" value="${esc(md.image.api_key || "")}">
@@ -319,6 +321,7 @@ function renderModelsPane(pane, s) {
       <div class="card-item">
         <div class="t">🎬 视频模型</div>
         <div class="d" style="margin-bottom:6px">给 generate_video 工具用，生成通常 1~5 分钟。支持 DashScope 万相（地址含 dashscope，模型如 wan2.2-t2v-plus）与火山方舟 Seedance（地址含 ark/volces）两种协议。</div>
+        <div class="d key-src-row">去拿 Key：${keyLink("https://dashscope.aliyuncs.com/api/v1", "阿里云百炼")}${keyLink("https://ark.cn-beijing.volces.com/api/v3", "火山方舟")}</div>
         <input id="mv-base" placeholder="接口地址（如 https://dashscope.aliyuncs.com/api/v1）" value="${esc(md.video.base_url || "")}">
         <div class="form-row">
           <input id="mv-key" type="password" placeholder="API Key" value="${esc(md.video.api_key || "")}">
@@ -328,6 +331,7 @@ function renderModelsPane(pane, s) {
       <div class="card-item">
         <div class="t">🎙️ 语音合成（TTS）</div>
         <div class="d" style="margin-bottom:6px">给 text_to_speech 工具用（视频配音、播客旁白）。支持 OpenAI 兼容 /audio/speech（含 new-api 等聚合网关，模型如 tts-1 / gpt-4o-mini-tts）；接口地址含 dashscope 时自动走通义 qwen-tts 原生协议（模型如 qwen-tts，音色如 Cherry / Serena）。</div>
+        <div class="d key-src-row">去拿 Key：${keyLink("https://dashscope.aliyuncs.com/api/v1", "阿里云百炼")}${keyLink("https://api.openai.com/v1", "OpenAI")}</div>
         <input id="mt-base" placeholder="接口地址（如 https://api.openai.com/v1 或 https://dashscope.aliyuncs.com/api/v1）" value="${esc((md.tts || {}).base_url || "")}">
         <div class="form-row">
           <input id="mt-key" type="password" placeholder="API Key" value="${esc((md.tts || {}).api_key || "")}">
@@ -348,6 +352,7 @@ function renderModelsPane(pane, s) {
     pane.querySelector("#mf-model").value = m?.model || "";
     pane.querySelector("#mf-base").value = m?.base_url || "";
     pane.querySelector("#mf-key").value = m?.api_key || "";
+    pane.querySelector("#mf-key-src").innerHTML = keyLink(modelKeySource(m));
   };
   pane.querySelector("#mf-channel").onchange = () => {
     const idx = +pane.querySelector("#mf-channel").value;
@@ -356,6 +361,7 @@ function renderModelsPane(pane, s) {
     pane.querySelector("#mf-provider").value = c.provider;
     pane.querySelector("#mf-base").value = c.base;
     pane.querySelector("#mf-model").value = c.model;
+    pane.querySelector("#mf-key-src").innerHTML = keyLink(modelKeySource({ base_url: c.base, provider: c.provider }));
     if (!pane.querySelector("#mf-name").value) pane.querySelector("#mf-name").value = c.label.replace(/（.*/, "");
   };
   pane.querySelector("#mf-new").onclick = () => { editIndex = -1; showForm(null); };
@@ -413,15 +419,15 @@ function renderSearchPane(pane, s) {
       <div class="t">搜索服务商</div>
       <div class="d" style="margin-bottom:6px">web_search 工具用哪家搜索 API。所选服务商没填 Key 或调用失败时，自动回退到免费 DuckDuckGo。</div>
       <select id="sr-provider">
-        <option value="jina">Jina（s.jina.ai）</option>
-        <option value="tavily">Tavily</option>
-        <option value="brave">Brave Search</option>
+        <option value="tavily">Tavily（推荐 · 免费额度 · 不用绑卡）</option>
+        <option value="jina">Jina（国内直连 · 免费额度）</option>
+        <option value="brave">Brave Search（要绑卡）</option>
       </select>
-      <div class="t" style="margin-top:10px">Jina API Key</div>
-      <input id="sr-jina" type="password" placeholder="jina_..." value="${esc(sc.jina_key || "")}">
-      <div class="t" style="margin-top:8px">Tavily API Key</div>
+      <div class="t" style="margin-top:10px">Tavily API Key ${keyLink("tavily")}</div>
       <input id="sr-tavily" type="password" placeholder="tvly-..." value="${esc(sc.tavily_key || "")}">
-      <div class="t" style="margin-top:8px">Brave API Key</div>
+      <div class="t" style="margin-top:8px">Jina API Key ${keyLink("jina")}</div>
+      <input id="sr-jina" type="password" placeholder="jina_..." value="${esc(sc.jina_key || "")}">
+      <div class="t" style="margin-top:8px">Brave API Key ${keyLink("brave")}</div>
       <input id="sr-brave" type="password" placeholder="BSA..." value="${esc(sc.brave_key || "")}">
     </div>
     <button class="btn-brand" id="sr-save">保存</button>
@@ -1122,12 +1128,12 @@ function wsChip(c, offTxt) {
   return [c.state === "failed" ? "err" : "warn", WS_STATE_TXT[c.state] || c.state || "未启动"];
 }
 const IM_CHANNELS = [
-  { key: "feishu", grp: "chat", icon: "🕊️", name: "飞书", sub: "长连接 · 无需公网", path: "feishu",
+  { key: "feishu", grp: "chat", icon: "🕊️", name: "飞书", sub: "长连接 · 无需公网", path: "feishu", src: "feishu",
     fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["verification_token", "Verification Token（可选，仅旧回调模式）"]],
     test: { url: "/im/feishu/test", ok: (d) => `凭证有效${d.bot_name ? `，机器人「${d.bot_name}」` : ""}，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
     help: ["飞书开放平台创建自建应用，添加「机器人」能力", "权限开通 im:message 与 im:message:send_as_bot", "事件订阅方式选「使用长连接接收事件」，添加 im.message.receive_v1", "发布一个版本，回来填 App ID / App Secret"],
     status: (st) => { const f = st.feishu || {}; return wsChip({ configured: f.configured, state: (f.ws || {}).state }, "未连接"); } },
-  { key: "qq", grp: "chat", icon: "🐧", name: "QQ", sub: "长连接 · 无需公网", path: "qq",
+  { key: "qq", grp: "chat", icon: "🐧", name: "QQ", sub: "长连接 · 无需公网", path: "qq", src: "qq",
     fields: [["app_id", "AppID"], ["app_secret", "AppSecret", "password"]],
     test: { url: "/im/qq/test", ok: (d) => `凭证有效，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
     help: ["QQ 开放平台 q.qq.com 创建「机器人」，开发设置里拿 AppID / AppSecret", "功能配置 → 消息列表：开启私聊消息和群聊 @机器人 消息", "沙箱只对白名单群/好友生效，正式使用需提交审核发布"],
@@ -1135,12 +1141,12 @@ const IM_CHANNELS = [
   { key: "wechat_ilink", grp: "chat", icon: "💬", name: "微信", sub: "扫码登录 · 无需公网", qr: true,
     help: ["点「连接」出二维码，用要当机器人的那个微信号扫码并在手机上确认", "之后本机主动长轮询收发消息，别人给这个微信号发消息 = 下任务", "登录态由微信控制，失效后重新扫码；图片/文件本版只识别为占位标签"],
     status: (st) => wsChip(st.wechat_ilink, "未扫码") },
-  { key: "wecom_app", grp: "chat", icon: "🏢", name: "企业微信应用", sub: "双向对话 · 需公网 HTTPS", path: "wecom_app",
+  { key: "wecom_app", grp: "chat", icon: "🏢", name: "企业微信应用", sub: "双向对话 · 需公网 HTTPS", path: "wecom_app", src: "wecom_app",
     fields: [["corp_id", "CorpID"], ["agent_id", "AgentId（纯数字）"], ["secret", "应用 Secret", "password"], ["token", "Token"], ["aes_key", "EncodingAESKey（43 位）", "password"]],
     test: { url: "/im/wechat/test", body: { which: "wecom" }, ok: () => "凭证有效。回调地址还需你暴露公网 HTTPS 并在企微后台点「保存」验证" },
     help: ["管理后台 → 应用管理 → 自建应用：拿 AgentId 与 Secret；「我的企业」拿 CorpID", "「接收消息 → 设置 API 接收」随机生成 Token 与 EncodingAESKey，回填这里", "回调 URL 填 https://你的域名/im/wecom/events（内网穿透/反代都行），保存后腾讯会来验证"],
     status: (st) => wxStatus(st.wecom_app) },
-  { key: "wechat_mp", grp: "chat", icon: "🟢", name: "微信公众号", sub: "需公网 HTTPS + 认证服务号", path: "wechat_mp",
+  { key: "wechat_mp", grp: "chat", icon: "🟢", name: "微信公众号", sub: "需公网 HTTPS + 认证服务号", path: "wechat_mp", src: "wechat_mp",
     fields: [["app_id", "AppID"], ["app_secret", "AppSecret", "password"], ["token", "Token"], ["aes_key", "EncodingAESKey（43 位）", "password"]],
     test: { url: "/im/wechat/test", body: { which: "mp" }, ok: () => "凭证有效。回调地址还需你暴露公网 HTTPS 并在公众平台点「提交」验证" },
     help: ["公众平台 → 开发 → 基本配置：拿 AppID / AppSecret", "服务器配置 URL 填 https://你的域名/im/mp/events，加解密选「安全模式」，Token 与 EncodingAESKey 回填这里", "结果走「客服消息」异步推送，需要已认证的服务号（未认证会返回 48001，这里如实报错）"],
@@ -1159,7 +1165,7 @@ const IM_CHANNELS = [
     status: (st) => ((st.webhook || {}).secret_set ? ["ok", "已设密钥"] : ["off", "未设密钥"]) },
   { key: "feishu_me", grp: "lark", icon: "🪪", name: "飞书本人身份", sub: "AI 以你的身份读日历 / 云文档 / 邮件", lark: true, noConn: true,
     help: ["本机装 lark-cli：npx @larksuite/cli@latest install", "用上面飞书卡的 App ID / App Secret 绑定，再扫码授权你本人", "授权后 AI 能用 lark-cli 查你的日历、读写云文档、收发邮件"] },
-  { key: "feishu_doc", grp: "lark", icon: "📄", name: "飞书云文档", sub: "AI 直接把结果写成云文档", path: "feishu",
+  { key: "feishu_doc", grp: "lark", icon: "📄", name: "飞书云文档", sub: "AI 直接把结果写成云文档", path: "feishu", src: "feishu",
     fields: [["doc_app_id", "云文档 App ID（留空 = 沿用飞书机器人凭证）"], ["doc_app_secret", "云文档 App Secret", "password"]],
     help: ["机器人应用本身开通 docx:document 权限就够，这里可以留空", "只有云文档想走另一个应用时才单独填一组凭证"],
     status: (_st, get) => (get("feishu_doc", "doc_app_id") ? ["ok", "独立凭证"] : ["off", "沿用机器人凭证"]) },
@@ -1176,7 +1182,7 @@ function renderImPane(pane, s) {
   const bodyHtml = (c) => {
     if (c.qr) return `<div id="ilk-box" style="display:none;margin:4px 0 8px"><img id="ilk-img" alt="微信登录二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--wb-border)"></div><div class="im-r ok-msg" id="ilk-r">还没扫码。点右上角「连接」取二维码</div>${helpHtml(c)}`;
     if (c.lark) return `<div id="fs-qr-body" class="d" style="font-size:13px">检测 lark-cli…</div>${helpHtml(c)}`;
-    return `${fieldsHtml(c)}<div class="im-r ok-msg" data-r="${c.key}"></div>${helpHtml(c)}`;
+    return `${fieldsHtml(c)}${c.src ? `<div class="im-src">${keyLink(c.src)}</div>` : ""}<div class="im-r ok-msg" data-r="${c.key}"></div>${helpHtml(c)}`;
   };
   const cardHtml = (c) => `<div class="im-card" data-ch="${c.key}">
       <div class="im-card-h" role="button" tabindex="0" data-activate="1" title="点一下展开 / 收起">
