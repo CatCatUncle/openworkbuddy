@@ -635,6 +635,181 @@ const TRAIL_STUBS = [
   "var isReplaying = false;",
   "window.fetch = async () => ({ ok: true, json: async () => ({}) });",
 ].join("\n");
+
+// ================= 助理设置页：分区 + 双栏卡片 + 连接/取消连接 =================
+// 用户原话「太乱了，没办法自己调」。这里验的是行为不是措辞：连上的卡真收起（display:none）、
+// 状态灯颜色真变、「连接」先保存再测活、「取消连接」两步确认且只清自己那组凭证、
+// 微信卡走取码/断开接口、清空会话也两步。真源码切 app-05.js 的通道卡片段，只替掉网络和保存。
+const APP05 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
+const IM0 = APP05.indexOf("// ================= 助理设置：通道卡片");
+const IM1 = APP05.indexOf("// ================= 安全中心面板");
+if (IM0 < 0 || IM1 <= IM0) throw new Error("app-05.js 里的「助理设置：通道卡片」段找不到了，前端测试没法定位真源码");
+const IMPANE_SRC = [
+  pickLine(/^const WS_STATE_TXT = .*$/m, "app-01.js 里没有 WS_STATE_TXT"),
+  APP05.slice(IM0, IM1),
+].join("\n");
+const IMPANE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div class='settings-pane' id='pane' style='width:720px'></div></body>";
+const IMPANE_STUBS = `
+var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+var SAVES = [], SAVES_AT = [], POSTS = [], NAV = [], TEST_FAIL = new Set(), REFRESHED = 0;
+var STATUS = { feishu: { configured: true, ws: { state: "connected" } }, qq: { configured: false, state: "off" }, wecom_app: { configured: false }, wechat_mp: { configured: false },
+  wechat_ilink: { configured: false, state: "off" }, wecom: { configured: true }, dingtalk: { configured: false }, webhook: { configured: true, secret_set: false }, sessions: { count: 3 } };
+var QR = { status: "wait" }, SESS = { count: 3 };
+var saveSettings = async (patch) => { SAVES.push(JSON.parse(JSON.stringify(patch))); SAVES_AT.push(POSTS.length); return true; };
+var refreshImStatus = () => { REFRESHED++; };
+var renderSettings = (k) => { NAV.push(k); };
+var renderLarkQr = () => {};
+window.fetch = async (url, opt) => {
+  const u = String(url).split("?")[0];
+  if (opt && opt.method === "POST") POSTS.push(u);
+  const j = (o) => ({ ok: true, json: async () => o });
+  if (u === "/im/status") return j(JSON.parse(JSON.stringify(STATUS)));
+  if (TEST_FAIL.has(u)) return j({ ok: false, error: "凭证不对" });
+  if (u.endsWith("/test")) return j({ ok: true, ws: { state: "connected" }, bot_name: "小买" });
+  if (u === "/im/wechat/qrcode") return j({ ok: true, image: "data:image/png;base64,AA", qrcode: "q1" });
+  if (u === "/im/wechat/qrcode-status") { await new Promise((r) => setTimeout(r, 4)); return j({ ok: true, status: QR.status, ilink: { bot_id: "b1" } }); }
+  if (u === "/im/wechat/disconnect") return j({ ok: true });
+  if (u === "/im/sessions") return j({ count: SESS.count });
+  if (u === "/im/sessions/clear") { const n = SESS.count; SESS.count = 0; return j({ ok: true, cleared: n }); }
+  return j({});
+};
+`;
+const IMPANE_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const disp = (el) => getComputedStyle(el).display;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const settle = () => wait(25);
+
+  const pane = document.getElementById("pane");
+  renderImPane(pane, { im: { feishu: { app_id: "cli_x", app_secret: "sec" }, qq: {}, wecom_app: {}, wechat_mp: {}, wecom_bot_webhook: "https://qyapi/x", session_idle_hours: 12 } });
+  await settle();
+
+  // ---- 1. 结构：四个分区、双栏、卡数 ----
+  const secs = [...pane.querySelectorAll(".im-sec")];
+  const titles = secs.map((x) => x.querySelector(".im-sec-h b").textContent).join("|");
+  ok("四个分区按序", titles === "远程指挥|结果推送|飞书增强|上下文管理", titles);
+  const lefts = new Set([...secs[0].querySelectorAll(".im-card")].map((c) => Math.round(c.getBoundingClientRect().left)));
+  ok("双栏是真排出来的（卡片落在两个不同的 x 上）", lefts.size === 2, [...lefts].join(","));
+  ok("远程指挥 5 张 / 结果推送 3 张 / 飞书增强 2 张", [5, 3, 2].every((n, i) => secs[i].querySelectorAll(".im-card").length === n));
+  const card = (k) => pane.querySelector('[data-ch="' + k + '"]');
+  const fsC = card("feishu"), qq = card("qq"), wb = card("wecom_bot"), dt = card("dingtalk"), wx = card("wechat_ilink"), wca = card("wecom_app");
+
+  // ---- 2. 状态决定收起/摊开/按钮 ----
+  ok("连上的飞书卡：绿灯「已连接」", fsC.querySelector(".im-st").classList.contains("ok") && fsC.querySelector(".im-st em").textContent === "已连接");
+  ok("绿灯不是只改类名，颜色真不一样", getComputedStyle(fsC.querySelector(".im-st .dot")).backgroundColor !== getComputedStyle(qq.querySelector(".im-st .dot")).backgroundColor);
+  ok("连上的卡默认收起", fsC.classList.contains("packed") && disp(fsC.querySelector(".im-card-b")) === "none");
+  ok("连上的卡按钮是「取消连接」", fsC.querySelector(".im-conn").textContent === "取消连接" && fsC.querySelector(".im-conn").dataset.act === "disconnect");
+  ok("没连的 QQ 卡摊开等你填", !qq.classList.contains("packed") && disp(qq.querySelector(".im-card-b")) !== "none");
+  ok("没连的卡按钮是「连接」", qq.querySelector(".im-conn").textContent === "连接");
+  ok("配了 webhook 的推送卡亮绿", wb.classList.contains("on") && wb.querySelector(".im-st em").textContent === "已配置");
+  ok("没配的钉钉卡灰", dt.querySelector(".im-st").classList.contains("off") && !dt.classList.contains("packed"));
+  const secretIds = [...pane.querySelectorAll("input")].filter((i) => /secret|aes_key/.test(i.id));
+  ok("密钥框全是密码型", secretIds.length >= 7 && secretIds.every((i) => i.type === "password"), secretIds.map((i) => i.id + ":" + i.type).join(","));
+  ok("App ID 这种明文框不是密码型", pane.querySelector("#im-feishu-app_id").type === "text");
+  const helps = [...pane.querySelectorAll(".im-help")];
+  ok("申请步骤折起来了", helps.length >= 9 && helps.every((d) => !d.open));
+  const vis = pane.innerText.replace(/\\s+/g, "");
+  ok("默认可见文字不超载（<900 字）", vis.length < 900, String(vis.length));
+  ok("整段申请说明默认看不见", !vis.includes("飞书开放平台创建自建应用"));
+  const qqHelp = qq.querySelector(".im-help"); // 用摊开着的 QQ 卡验：收起的卡里点开也看不见，那是另一回事
+  qqHelp.open = true;
+  ok("点开「怎么拿凭证」才露出步骤", pane.innerText.includes("QQ 开放平台"));
+  qqHelp.open = false;
+
+  // ---- 3. 卡头点一下展开/收起 ----
+  fsC.querySelector(".im-card-h").click();
+  ok("点卡头展开", !fsC.classList.contains("packed") && disp(fsC.querySelector(".im-card-b")) !== "none");
+  fsC.querySelector(".im-card-h").click();
+  ok("再点收起", fsC.classList.contains("packed"));
+  fsC.querySelector(".im-card-h").click();
+  ok("上下文管理的静态卡点卡头不折叠", (pane.querySelector(".im-card-static .im-card-h").click(), disp(pane.querySelector(".im-card-static .im-card-b")) !== "none"));
+
+  // ---- 4. 连接 = 先保存再测活 → 刷状态 → 收起 ----
+  qq.querySelector("#im-qq-app_id").value = "102";
+  qq.querySelector("#im-qq-app_secret").value = "s";
+  STATUS.qq = { configured: true, state: "connected" };
+  qq.querySelector(".im-conn").click();
+  await settle();
+  ok("连接先保存，载荷带 QQ 凭证", SAVES.length === 1 && SAVES[0].im.qq.app_id === "102" && SAVES[0].im.qq.app_secret === "s", JSON.stringify(SAVES[0] && SAVES[0].im.qq));
+  ok("载荷带闲置小时数", SAVES[0].im.session_idle_hours === 12);
+  ok("保存之后才测活", POSTS.indexOf("/im/qq/test") >= SAVES_AT[0] && POSTS.indexOf("/im/qq/test") >= 0, POSTS.join(","));
+  ok("测活结果写在卡上", qq.querySelector('[data-r="qq"]').textContent.startsWith("✅"), qq.querySelector('[data-r="qq"]').textContent);
+  ok("连上后绿灯 + 「取消连接」 + 收起", qq.querySelector(".im-st").classList.contains("ok") && qq.querySelector(".im-conn").textContent === "取消连接" && qq.classList.contains("packed"));
+  ok("连接后刷新了顶栏的在线数", REFRESHED >= 2);
+
+  // ---- 5. 测活失败：红字、不收起、按钮还是「连接」 ----
+  TEST_FAIL.add("/im/wechat/test");
+  wca.querySelector("#im-wecom_app-corp_id").value = "ww";
+  wca.querySelector(".im-conn").click();
+  await settle();
+  ok("测活失败红字说明", wca.querySelector('[data-r="wecom_app"]').textContent.startsWith("❌"));
+  ok("测活失败不收起、按钮仍是「连接」", !wca.classList.contains("packed") && wca.querySelector(".im-conn").textContent === "连接");
+  TEST_FAIL.delete("/im/wechat/test");
+
+  // ---- 6. 取消连接：两步确认，只清自己那组 ----
+  const n0 = SAVES.length;
+  const fb = fsC.querySelector(".im-conn");
+  fb.click();
+  await settle();
+  ok("第一下只是问一句", fb.textContent === "确认断开？" && fb.classList.contains("danger"));
+  ok("第一下没动凭证也没保存", SAVES.length === n0 && fsC.querySelector("#im-feishu-app_id").value === "cli_x");
+  ok("问一句的红是真画出来的", getComputedStyle(fb).color !== getComputedStyle(qq.querySelector(".im-conn")).color);
+  STATUS.feishu = { configured: false, ws: { state: "off" } };
+  fb.click();
+  await settle();
+  ok("第二下清空这一组凭证", fsC.querySelector("#im-feishu-app_id").value === "" && fsC.querySelector("#im-feishu-app_secret").value === "");
+  ok("清空后保存的载荷里飞书凭证是空串", SAVES.length === n0 + 1 && SAVES[n0].im.feishu.app_id === "" && SAVES[n0].im.feishu.app_secret === "");
+  ok("只清飞书，别的通道没动", SAVES[n0].im.qq.app_id === "102" && SAVES[n0].im.wecom_bot_webhook === "https://qyapi/x");
+  ok("断开后灯灭、按钮回「连接」、卡摊开", fsC.querySelector(".im-st").classList.contains("off") && fb.textContent === "连接" && !fsC.classList.contains("packed"));
+
+  // ---- 7. 推送卡：连接 = 只保存不测活 ----
+  const p0 = POSTS.length;
+  dt.querySelector("#im-dingtalk-dingtalk_webhook").value = "https://oapi/x";
+  STATUS.dingtalk = { configured: true };
+  dt.querySelector(".im-conn").click();
+  await settle();
+  ok("推送卡保存了钉钉 webhook", SAVES[SAVES.length - 1].im.dingtalk_webhook === "https://oapi/x");
+  ok("推送卡没有测活请求", POSTS.slice(p0).every((u) => !/test/.test(u)), POSTS.slice(p0).join(","));
+  ok("推送卡配好后绿灯 + 收起", dt.classList.contains("on") && dt.classList.contains("packed"));
+
+  // ---- 8. 微信卡：连接 = 取码轮询；取消 = disconnect 接口 ----
+  ok("微信卡没有输入框", wx.querySelectorAll("input").length === 0);
+  wx.querySelector(".im-conn").click();
+  await settle();
+  ok("微信连接 = 去取二维码", POSTS.includes("/im/wechat/qrcode"));
+  ok("二维码真显示出来", disp(wx.querySelector("#ilk-box")) !== "none" && wx.querySelector("#ilk-img").src.startsWith("data:"));
+  STATUS.wechat_ilink = { configured: true, state: "connected", bot_id: "b1" };
+  QR.status = "confirmed";
+  await wait(80);
+  ok("扫码确认后绿灯 + 收起 + 二维码收走", wx.classList.contains("on") && wx.classList.contains("packed") && disp(wx.querySelector("#ilk-box")) === "none", wx.className);
+  wx.querySelector(".im-conn").click(); await settle();
+  STATUS.wechat_ilink = { configured: false, state: "off" };
+  wx.querySelector(".im-conn").click(); await settle();
+  ok("微信取消连接走 disconnect 接口", POSTS.includes("/im/wechat/disconnect"));
+  ok("微信断开后灯灭", wx.querySelector(".im-st").classList.contains("off"));
+
+  // ---- 9. 上下文管理：数会话、两步清空 ----
+  ok("会话数显示出来", pane.querySelector("#im-sess-n").textContent.includes("3 段"), pane.querySelector("#im-sess-n").textContent);
+  const cb = pane.querySelector("#im-sess-clear");
+  cb.click(); await settle();
+  ok("清空也要两步", cb.textContent === "确认清空？" && !POSTS.includes("/im/sessions/clear"));
+  cb.click(); await settle();
+  ok("第二下真清", POSTS.includes("/im/sessions/clear") && pane.querySelector("#im-sess-r").textContent.includes("3 段"), pane.querySelector("#im-sess-r").textContent);
+  ok("清完计数归零且按钮禁用", pane.querySelector("#im-sess-n").textContent.includes("没有") && cb.disabled);
+  pane.querySelector("#im-goto-agent").click();
+  ok("上下文预算跳去智能体设置", NAV[NAV.length - 1] === "agent");
+
+  // ---- 10. 云文档卡状态取自输入框 / 全局保存 ----
+  ok("云文档没填 = 沿用机器人凭证（灰）", card("feishu_doc").querySelector(".im-st").classList.contains("off"));
+  pane.querySelector("#im-idle").value = "36";
+  pane.querySelector("#im-save").click(); await settle();
+  ok("保存全部带上闲置小时", SAVES[SAVES.length - 1].im.session_idle_hours === 36);
+  return names;
+})();
+`;
+
 const TRAIL_CHECKS = `
 (async () => {
   const names = [];
@@ -1262,6 +1437,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：轨迹条（同名合并·出错标红·中止删除线·+N 上限·收起可见·点徽章直达）+ 结论出过程区 + 命中率封顶 ${names9.length} 项通过`);
     } finally {
       if (!win9.isDestroyed()) win9.destroy();
+    }
+    const win10 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win10.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(IMPANE_HTML));
+      const names10 = await win10.webContents.executeJavaScript(IMPANE_STUBS + "\n" + IMPANE_SRC + "\n" + IMPANE_CHECKS, true);
+      for (const n of names10) console.log("  ✓ " + n);
+      console.log(`✅ 前端：助理设置页（四分区·双栏·连上收起·连接=保存再测活·取消连接两步且只清自己·微信取码/断开·清会话两步）${names10.length} 项通过`);
+    } finally {
+      if (!win10.isDestroyed()) win10.destroy();
     }
     const win6 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {

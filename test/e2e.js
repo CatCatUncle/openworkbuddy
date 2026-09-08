@@ -2898,8 +2898,33 @@ function testImSessionStore() {
   }
   assert.strictEqual(long.length, kept.length, "砍历史必须就地改数组，不能换一个新的（调用方还攥着旧引用）");
 
+  // 数会话 / 一键清空：空壳（闲置重置留下的 []）不算一段；盘上没读进内存的也要数到；清完盘上不留文件
+  const s4 = createImSessionStore({ dir });
+  s4.set("qq_c2c_9", []); // 闲置重置留下的空壳
+  assert.deepStrictEqual(s4.keys().sort(), ["feishu_oc_1", "wecom_u"], "keys() 该只数有内容的会话：" + JSON.stringify(s4.keys()));
+  const s5 = createImSessionStore({ dir }); // 冷启动：内存空，全靠盘
+  assert.strictEqual(s5.keys().length, 2, "冷启动 keys() 没把盘上的数进来");
+  assert.strictEqual(s5.clear(), 2, "clear() 该返回清掉的段数");
+  assert.strictEqual(s5.keys().length, 0, "清完还数得出会话");
+  assert.strictEqual(s5.has("feishu_oc_1"), false, "清完内存里还有");
+  assert(!fs.readdirSync(dir).some((f) => f.endsWith(".json")), "清完盘上还有会话文件");
+  assert.strictEqual(createImSessionStore({ dir }).keys().length, 0, "清完重启又回来了");
+  assert.strictEqual(createImSessionStore({ dir: path.join(dir, "nope") }).clear(), 0, "目录不存在时 clear 该安静返回 0");
+
+  // 路由和界面闸门：清空接口在、状态里带会话数、助理设置页是卡片分区而不是九段说明平铺
+  const imSrc = fs.readFileSync(path.join(__dirname, "..", "im.js"), "utf8");
+  assert(imSrc.includes('router.get("/im/sessions"') && imSrc.includes('router.post("/im/sessions/clear"'), "im.js 缺会话数 / 清空接口");
+  assert(/sessions:\s*\{\s*count:/.test(imSrc), "/im/status 没带 sessions.count");
+  const app05 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
+  assert(app05.includes("const IM_CHANNELS = [") && app05.includes("远程指挥") && app05.includes("结果推送") && app05.includes("上下文管理"), "助理设置页没按分区渲染");
+  assert(app05.includes("取消连接") && app05.includes("确认断开？"), "取消连接没有两步确认");
+  assert(!/<div class="card-item">\s*<div class="t">飞书机器人/.test(app05), "旧版平铺的飞书说明块还在");
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  assert(/\.im-grid\s*\{[^}]*columns:\s*2/.test(html), "index.html 缺 .im-grid 双栏样式");
+  assert(/\.im-card\.packed \.im-card-b\s*\{[^}]*display:\s*none/.test(html), "index.html 缺收起样式");
+
   fs.rmSync(dir, { recursive: true, force: true });
-  console.log("✅ IM 会话：重启后上下文还在 / 砍历史只从整轮开头下刀");
+  console.log("✅ IM 会话：重启后上下文还在 / 砍历史只从整轮开头下刀 / 数会话不算空壳 / 清空落盘 / 设置页卡片分区闸门");
 }
 
 // 撞上限强制收尾：最终回复必须是"交代"，不能是半句过程叙述；用户手动停止则不该再花一次调用

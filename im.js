@@ -728,7 +728,19 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       wecom: { configured: !!imCfg().wecom_bot_webhook },
       dingtalk: { configured: !!imCfg().dingtalk_webhook },
       webhook: { configured: true, secret_set: !!imCfg().webhook_secret },
+      sessions: { count: typeof sessions.keys === "function" ? sessions.keys().length : 0 },
     });
+  });
+
+  // 上下文管理：IM 那几段会话记了多少、一键全清。只动 IM 通道的上下文，网页会话和长期记忆不碰
+  router.get("/im/sessions", (_req, res) => {
+    res.json({ count: typeof sessions.keys === "function" ? sessions.keys().length : 0 });
+  });
+  router.post("/im/sessions/clear", (_req, res) => {
+    if (typeof sessions.clear !== "function") return res.status(400).json({ ok: false, error: "这个会话仓库不支持清空" });
+    const cleared = sessions.clear();
+    logIm("system", "in", `已清空 ${cleared} 段 IM 会话上下文`);
+    res.json({ ok: true, cleared });
   });
 
   router.get("/im/log", (_req, res) => res.json(imLog.slice(-100).reverse()));

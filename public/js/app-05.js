@@ -1018,10 +1018,20 @@ function renderDataPane(pane, s) {
 }
 // 飞书扫码授权面板：靠本机 lark-cli 跑飞书官方设备码流程
 let larkQrPoll = null;
+/** 「飞书本人身份」卡的状态灯——这张卡的状态不在 /im/status 里，由 lark-cli 探测结果来点亮 */
+function larkChip(pane, [cls, txt]) {
+  const card = pane.querySelector('[data-ch="feishu_me"]');
+  if (!card) return;
+  const chip = card.querySelector(".im-st");
+  chip.className = "im-st " + cls;
+  chip.querySelector("em").textContent = txt;
+  card.classList.toggle("on", cls === "ok");
+}
 async function renderLarkQr(pane) {
   const box = pane.querySelector("#fs-qr-body");
   if (!box) return;
   const st = await fetch("/api/feishu/lark-cli").then(r => r.json()).catch(() => ({ installed: false }));
+  larkChip(pane, !st.installed ? ["off", "未装 lark-cli"] : !st.configured ? ["warn", "未绑定应用"] : st.users ? ["ok", "已授权"] : ["warn", "未授权"]);
   const btn = (id, txt, primary) => `<button class="${primary ? "btn-brand" : ""}" id="${id}" style="margin-right:6px">${txt}</button>`;
   if (!st.installed) {
     box.innerHTML = `本机没找到 lark-cli。装一下再回来：<br><code>npx @larksuite/cli@latest install</code><br>
@@ -1031,8 +1041,8 @@ async function renderLarkQr(pane) {
   }
   if (!st.configured) {
     box.innerHTML = `lark-cli v${esc(st.version)} 已装，但还没绑定飞书应用。
-      把上面填的 App ID / App Secret 写进去就能扫码了（凭证走标准输入，不会出现在进程列表里）。
-      <div style="margin-top:8px">${btn("lk-bind", "用上面的凭证绑定", true)}<span class="ok-msg" id="lk-msg"></span></div>`;
+      把飞书卡里填的 App ID / App Secret 写进去就能扫码了（凭证走标准输入，不会出现在进程列表里）。
+      <div style="margin-top:8px">${btn("lk-bind", "用飞书卡的凭证绑定", true)}<span class="ok-msg" id="lk-msg"></span></div>`;
     box.querySelector("#lk-bind").onclick = async (e) => {
       const msg = box.querySelector("#lk-msg");
       e.target.disabled = true; msg.textContent = "绑定中…"; msg.style.color = "";
@@ -1042,17 +1052,17 @@ async function renderLarkQr(pane) {
     };
     return;
   }
-  const fsAppId = (pane.querySelector("#fs-appid") || {}).value;
+  const fsAppId = (pane.querySelector("#im-feishu-app_id") || {}).value;
   box.innerHTML = `lark-cli v${esc(st.version)} · 应用 <code>${esc(st.app_id)}</code>${st.users ? ` · 已授权：${esc(st.users)}` : " · 还没有用户授权"}
     <div style="margin-top:8px">${btn("lk-login", st.users ? "重新扫码授权" : "扫码授权", true)}${
-      st.has_secret && fsAppId !== st.app_id ? btn("lk-import", "把这个应用的凭证填到上面") : ""}<span class="ok-msg" id="lk-msg"></span></div>
+      st.has_secret && fsAppId !== st.app_id ? btn("lk-import", "把这个应用的凭证填进飞书卡") : ""}<span class="ok-msg" id="lk-msg"></span></div>
     <div id="lk-qr" style="margin-top:10px"></div>`;
   const msg = box.querySelector("#lk-msg");
   const imp = box.querySelector("#lk-import");
   if (imp) imp.onclick = async (e) => {
     e.target.disabled = true; msg.textContent = "导入中…"; msg.style.color = "";
     const d = await fetch("/api/feishu/lark-cli/import", { method: "POST" }).then(r => r.json()).catch(() => ({ error: "请求失败" }));
-    if (d.ok) { msg.style.color = "var(--wb-ok)"; msg.textContent = "✅ 已填入并保存，可以点上面的「测试连接」了"; renderSettings("im"); }
+    if (d.ok) { msg.style.color = "var(--wb-ok)"; msg.textContent = "✅ 已填入并保存，可以点飞书卡上的「连接」了"; renderSettings("im"); }
     else { e.target.disabled = false; msg.style.color = "var(--wb-err)"; msg.textContent = "❌ " + d.error; }
   };
   box.querySelector("#lk-login").onclick = async (e) => {
@@ -1093,188 +1103,251 @@ async function renderLarkQr(pane) {
     }, 2500);
   };
 }
-function renderImPane(pane, s) {
-  pane.innerHTML = `
-    <div class="card-item">
-      <div class="t">飞书机器人（长连接，无需公网地址）</div>
-      <div class="d" style="margin-bottom:8px">飞书开放平台创建自建应用：① 添加「机器人」能力 ② 权限开通 im:message 与 im:message:send_as_bot ③ 事件订阅方式选「<b>使用长连接接收事件</b>」并添加 im.message.receive_v1 ④ 发布一个版本。填好凭证保存后自动建立长连接，在飞书私聊或 @机器人 即可远程下任务。</div>
-      <input id="fs-appid" placeholder="App ID" value="${esc(s.im.feishu.app_id)}">
-      <input id="fs-secret" type="password" placeholder="App Secret" value="${esc(s.im.feishu.app_secret)}">
-      <input id="fs-vtoken" placeholder="Verification Token（可选，仅旧回调模式用）" value="${esc(s.im.feishu.verification_token)}">
-      <div style="margin-top:8px"><button class="btn-brand" id="fs-test">测试连接</button><span class="ok-msg" id="fs-test-r"></span></div>
-    </div>
-    <div class="card-item" id="fs-qr-card">
-      <div class="t">扫码授权「你本人」的飞书身份（可选）</div>
-      <div class="d" style="margin-bottom:8px">上面那组凭证是<b>机器人</b>的身份，只够收发消息。要让 AI 以<b>你本人</b>的身份读日历、翻云文档、查邮件、建表格，就在这里扫码授权一次——走飞书官方设备码流程，密码不经过 OpenWorkBuddy。<br>依赖本机的 <a href="https://github.com/larksuite/cli" target="_blank" rel="noreferrer">lark-cli</a>（MIT），没装的话：<code>npx @larksuite/cli@latest install</code>。</div>
-      <div id="fs-qr-body" class="d">检测 lark-cli…</div>
-    </div>
-    <div class="card-item">
-      <div class="t">飞书云文档凭证（可选）</div>
-      <div class="d" style="margin-bottom:8px">AI 用 feishu_doc_create 工具直接生成飞书云文档。默认用上面机器人的凭证；若那个应用没开「云文档」权限，可在这里另填一组开通了 <b>docx:document</b>（建议再加 drive:drive）权限的应用凭证。</div>
-      <input id="fs-docid" placeholder="云文档 App ID（留空=用机器人凭证）" value="${esc(s.im.feishu.doc_app_id || "")}">
-      <input id="fs-docsecret" type="password" placeholder="云文档 App Secret" value="${esc(s.im.feishu.doc_app_secret || "")}">
-    </div>
-    <div class="card-item">
-      <div class="t">QQ 官方机器人（长连接，无需公网地址）</div>
-      <div class="d" style="margin-bottom:8px">QQ 开放平台 <b>q.qq.com</b> 创建「机器人」：① 开发设置里拿 AppID / AppSecret ② 功能配置 → 消息列表里开启<b>私聊消息</b>和<b>群聊 @机器人 消息</b> ③ 沙箱环境只对白名单群/好友生效，正式使用需提交审核发布。填好保存后自动建立长连接，私聊机器人或群里 @它即可下任务。</div>
-      <input id="qq-appid" placeholder="AppID" value="${esc(s.im.qq.app_id)}">
-      <input id="qq-secret" type="password" placeholder="AppSecret" value="${esc(s.im.qq.app_secret)}">
-      <div style="margin-top:8px"><button class="btn-brand" id="qq-test">测试连接</button><span class="ok-msg" id="qq-test-r"></span></div>
-    </div>
-    <div class="card-item">
-      <div class="t">微信（扫码登录，无需公网地址）</div>
-      <div class="d" style="margin-bottom:8px">微信自己的机器人通道：点下面按钮出二维码，用<b>要当机器人的那个微信号</b>扫码确认，之后本机主动长轮询收发消息，<b>不需要公网地址</b>。别人给这个微信号发消息就等于给 OpenWorkBuddy 下任务，结果直接回到微信聊天里。<br>⚠️ 登录态由微信控制，失效（服务端返回 -14）后需要重新扫码；图片/文件/视频本版只识别为占位标签，语音有微信自带转写就用转写文字。</div>
-      <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
-        <div>
-          <button class="btn-brand" id="ilk-qr">获取二维码</button>
-          <button class="btn-plain" id="ilk-off" style="margin-left:6px">断开登录</button>
-        </div>
-        <div id="ilk-box" style="display:none"><img id="ilk-img" alt="微信登录二维码" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:6px"></div>
-      </div>
-      <div class="ok-msg" id="ilk-r" style="margin-top:8px">${(s.im.wechat_ilink || {}).bot_id ? "已绑定微信号，状态见上方助理面板" : ""}</div>
-    </div>
-    <div class="card-item">
-      <div class="t">企业微信自建应用（双向对话，需公网地址）</div>
-      <div class="d" style="margin-bottom:8px">微信侧没有长连接模式，只能腾讯回调你：需要一个公网 HTTPS 地址指向本机（内网穿透/反向代理都行），回调路径填 <code>https://你的域名/im/wecom/events</code>。<br>企业微信管理后台 → 应用管理 → 自建应用：拿 AgentId 与 Secret，「我的企业」拿 CorpID；「接收消息 → 设置 API 接收」里随机生成 Token 与 EncodingAESKey 回填这里，再点保存让腾讯验证地址。结果通过应用消息主动推送，agent 跑几分钟也不怕超时。</div>
-      <input id="wca-corp" placeholder="CorpID（我的企业 → 企业信息）" value="${esc(s.im.wecom_app.corp_id)}">
-      <input id="wca-agent" placeholder="AgentId（自建应用页，纯数字）" value="${esc(s.im.wecom_app.agent_id)}">
-      <input id="wca-secret" type="password" placeholder="应用 Secret" value="${esc(s.im.wecom_app.secret)}">
-      <input id="wca-token" placeholder="Token（接收消息设置里生成）" value="${esc(s.im.wecom_app.token)}">
-      <input id="wca-aes" type="password" placeholder="EncodingAESKey（43 位）" value="${esc(s.im.wecom_app.aes_key)}">
-      <div style="margin-top:8px"><button class="btn-brand" id="wca-test">测试凭证</button><span class="ok-msg" id="wca-test-r"></span></div>
-    </div>
-    <div class="card-item">
-      <div class="t">微信公众号（消息落在微信里，需公网地址 + 认证号）</div>
-      <div class="d" style="margin-bottom:8px">公众平台 → 开发 → 基本配置：拿 AppID / AppSecret，服务器配置 URL 填 <code>https://你的域名/im/mp/events</code>，消息加解密方式选<b>安全模式</b>，Token 与 EncodingAESKey 回填这里。<br>⚠️ agent 执行常超过 5 秒，来不及走被动回复，结果走「客服消息」异步推送——该接口<b>需要已认证的服务号</b>，未认证订阅号会返回 48001，这里会如实报错不会假装成功。</div>
-      <input id="mp-appid" placeholder="AppID" value="${esc(s.im.wechat_mp.app_id)}">
-      <input id="mp-secret" type="password" placeholder="AppSecret" value="${esc(s.im.wechat_mp.app_secret)}">
-      <input id="mp-token" placeholder="Token（服务器配置里自定义）" value="${esc(s.im.wechat_mp.token)}">
-      <input id="mp-aes" type="password" placeholder="EncodingAESKey（43 位，安全模式必填）" value="${esc(s.im.wechat_mp.aes_key)}">
-      <div style="margin-top:8px"><button class="btn-brand" id="mp-test">测试凭证</button><span class="ok-msg" id="mp-test-r"></span></div>
-    </div>
-    <div class="card-item">
-      <div class="t">企业微信群推送</div>
-      <div class="d" style="margin-bottom:8px">群里添加"群机器人"，webhook 地址粘贴到这里，任务与定时任务结果自动推送到群。只出不进，要双向对话用上面的自建应用。</div>
-      <input id="wc-hook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." value="${esc(s.im.wecom_bot_webhook)}">
-    </div>
-    <div class="card-item">
-      <div class="t">钉钉机器人推送</div>
-      <div class="d" style="margin-bottom:8px">钉钉群 → 群设置 → 机器人 → 添加「自定义机器人」，安全设置选<b>加签</b>，把 webhook 与加签密钥填到这里，任务与定时任务结果自动推送到群。</div>
-      <input id="dt-hook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." value="${esc(s.im.dingtalk_webhook || "")}">
-      <input id="dt-secret" type="password" placeholder="加签密钥 SEC...（安全设置未选加签则留空）" value="${esc(s.im.dingtalk_secret || "")}">
-    </div>
-    <div class="card-item">
-      <div class="t">通用 Webhook 密钥</div>
-      <div class="d" style="margin-bottom:8px">外部工具（微信框架/钉钉 outgoing/快捷指令）调用 POST /im/task 时的校验密钥。</div>
-      <input id="wh-secret" placeholder="自定义一个密钥" value="${esc(s.im.webhook_secret)}">
-    </div>
-    <div class="card-item">
-      <div class="t">会话管理</div>
-      <div class="d" style="margin-bottom:8px">IM 里长时间没对话后，下一条消息自动开启新会话（旧上下文不再带入，节省 token、避免话题串味）。设为 0 关闭。</div>
-      <div style="display:flex;align-items:center;gap:8px;font-size: 14px">超过 <input id="im-idle" type="number" min="0" max="720" style="width:80px;margin:0" value="${esc(String(s.im.session_idle_hours ?? 0))}"> 小时未对话，自动开启新会话</div>
-    </div>
-    <div class="card-item">
-      <div class="t">其他助理通道</div>
-      <div class="d">微信客服号、微信小程序、企微「智能助理」等入口依赖腾讯的定向接入资质，复刻版<b>暂未内置</b>（不做假连接）。已有第三方微信/QQ 框架的话，用上面的「通用 Webhook」即可桥接同样效果。</div>
-    </div>
-    <button class="btn-brand" id="im-save">保存</button><span class="ok-msg" id="im-msg"></span>`;
-  const imPayload = () => ({
-      im: {
-        feishu: {
-          app_id: pane.querySelector("#fs-appid").value.trim(),
-          app_secret: pane.querySelector("#fs-secret").value.trim(),
-          verification_token: pane.querySelector("#fs-vtoken").value.trim(),
-          doc_app_id: pane.querySelector("#fs-docid").value.trim(),
-          doc_app_secret: pane.querySelector("#fs-docsecret").value.trim(),
-        },
-        qq: {
-          app_id: pane.querySelector("#qq-appid").value.trim(),
-          app_secret: pane.querySelector("#qq-secret").value.trim(),
-        },
-        wecom_app: {
-          corp_id: pane.querySelector("#wca-corp").value.trim(),
-          agent_id: pane.querySelector("#wca-agent").value.trim(),
-          secret: pane.querySelector("#wca-secret").value.trim(),
-          token: pane.querySelector("#wca-token").value.trim(),
-          aes_key: pane.querySelector("#wca-aes").value.trim(),
-        },
-        wechat_mp: {
-          app_id: pane.querySelector("#mp-appid").value.trim(),
-          app_secret: pane.querySelector("#mp-secret").value.trim(),
-          token: pane.querySelector("#mp-token").value.trim(),
-          aes_key: pane.querySelector("#mp-aes").value.trim(),
-        },
-        wecom_bot_webhook: pane.querySelector("#wc-hook").value.trim(),
-        dingtalk_webhook: pane.querySelector("#dt-hook").value.trim(),
-        dingtalk_secret: pane.querySelector("#dt-secret").value.trim(),
-        session_idle_hours: +pane.querySelector("#im-idle").value || 0,
-        webhook_secret: pane.querySelector("#wh-secret").value.trim(),
-      },
-    });
-  pane.querySelector("#im-save").onclick = () =>
-    saveSettings(imPayload(), pane.querySelector("#im-msg")).then(ok => { if (ok) setTimeout(refreshImStatus, 1500); });
-  pane.querySelector("#fs-test").onclick = async () => {
-    const r = pane.querySelector("#fs-test-r");
-    r.style.color = "";
-    r.textContent = "测试中…";
-    try {
-      const resp = await fetch("/im/feishu/test", { method: "POST" });
-      const d = await resp.json();
-      if (d.ok) {
-        r.textContent = `✅ 凭证有效${d.bot_name ? `，机器人「${d.bot_name}」` : ""}，长连接：${WS_STATE_TXT[d.ws.state] || d.ws.state}`;
-      } else {
-        r.style.color = "var(--wb-err)";
-        r.textContent = `❌ ${d.error || "测试失败"}`;
-      }
-    } catch (e) {
-      r.style.color = "var(--wb-err)";
-      r.textContent = `❌ ${e.message}`;
-    }
-    refreshImStatus();
-  };
-  renderLarkQr(pane);
-  // 测试按钮先保存再测：服务端拿的是 config 里的值，不先落盘就会测出「未配置」
-  const wireTest = (btnId, outId, url, body, onOk) => {
-    pane.querySelector(btnId).onclick = async () => {
-      const r = pane.querySelector(outId);
-      r.style.color = "";
-      r.textContent = "保存中…";
-      try {
-        if (!(await saveSettings(imPayload(), pane.querySelector("#im-msg")))) {
-          r.textContent = "";
-          return;
-        }
-        r.textContent = "测试中…";
-        const resp = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body || {}),
-        });
-        const d = await resp.json();
-        if (d.ok) r.textContent = onOk(d);
-        else {
-          r.style.color = "var(--wb-err)";
-          r.textContent = `❌ ${d.error || "测试失败"}`;
-        }
-      } catch (e) {
-        r.style.color = "var(--wb-err)";
-        r.textContent = `❌ ${e.message}`;
-      }
-      refreshImStatus();
-    };
-  };
-  wireTest("#qq-test", "#qq-test-r", "/im/qq/test", {},
-    (d) => `✅ 凭证有效，长连接：${WS_STATE_TXT[d.ws && d.ws.state] || (d.ws && d.ws.state) || "启动中"}`);
-  wireTest("#wca-test", "#wca-test-r", "/im/wechat/test", { which: "wecom" },
-    () => "✅ 凭证有效（CorpID + Secret 能换到 access_token）。回调地址还需你自己暴露公网 HTTPS 并在后台点「保存」验证。");
-  wireTest("#mp-test", "#mp-test-r", "/im/wechat/test", { which: "mp" },
-    () => "✅ 凭证有效（AppID + AppSecret 能换到 access_token）。回调地址还需你自己暴露公网 HTTPS 并在公众平台点「提交」验证。");
+// ================= 助理设置：通道卡片 =================
+// 一张卡 = 一个通道：连没连上（状态灯，取自 /im/status）、怎么连（几个输入框）、右上角一颗按钮。
+// 「连接」= 保存 + 真测活；「取消连接」= 清空这一组凭证再保存（微信是真断开登录态）。
+// 申请步骤折进「怎么拿凭证」，默认只露名字、一句副标题和状态灯——
+// 旧版是 9 大段说明文字平铺一屏，用户的原话是「太乱了，没办法自己调」。
+function wxStatus(c) {
+  c = c || {};
+  return !c.configured ? ["off", "未配置"] : c.callback_ready ? ["ok", "等腾讯回调"] : ["warn", "缺回调配置"];
+}
+function wsChip(c, offTxt) {
+  c = c || {};
+  if (!c.configured) return ["off", offTxt];
+  if (c.state === "connected") return ["ok", "已连接"];
+  return [c.state === "failed" ? "err" : "warn", WS_STATE_TXT[c.state] || c.state || "未启动"];
+}
+const IM_CHANNELS = [
+  { key: "feishu", grp: "chat", icon: "🕊️", name: "飞书", sub: "长连接 · 无需公网", path: "feishu",
+    fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["verification_token", "Verification Token（可选，仅旧回调模式）"]],
+    test: { url: "/im/feishu/test", ok: (d) => `凭证有效${d.bot_name ? `，机器人「${d.bot_name}」` : ""}，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
+    help: ["飞书开放平台创建自建应用，添加「机器人」能力", "权限开通 im:message 与 im:message:send_as_bot", "事件订阅方式选「使用长连接接收事件」，添加 im.message.receive_v1", "发布一个版本，回来填 App ID / App Secret"],
+    status: (st) => { const f = st.feishu || {}; return wsChip({ configured: f.configured, state: (f.ws || {}).state }, "未连接"); } },
+  { key: "qq", grp: "chat", icon: "🐧", name: "QQ", sub: "长连接 · 无需公网", path: "qq",
+    fields: [["app_id", "AppID"], ["app_secret", "AppSecret", "password"]],
+    test: { url: "/im/qq/test", ok: (d) => `凭证有效，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
+    help: ["QQ 开放平台 q.qq.com 创建「机器人」，开发设置里拿 AppID / AppSecret", "功能配置 → 消息列表：开启私聊消息和群聊 @机器人 消息", "沙箱只对白名单群/好友生效，正式使用需提交审核发布"],
+    status: (st) => wsChip(st.qq, "未连接") },
+  { key: "wechat_ilink", grp: "chat", icon: "💬", name: "微信", sub: "扫码登录 · 无需公网", qr: true,
+    help: ["点「连接」出二维码，用要当机器人的那个微信号扫码并在手机上确认", "之后本机主动长轮询收发消息，别人给这个微信号发消息 = 下任务", "登录态由微信控制，失效后重新扫码；图片/文件本版只识别为占位标签"],
+    status: (st) => wsChip(st.wechat_ilink, "未扫码") },
+  { key: "wecom_app", grp: "chat", icon: "🏢", name: "企业微信应用", sub: "双向对话 · 需公网 HTTPS", path: "wecom_app",
+    fields: [["corp_id", "CorpID"], ["agent_id", "AgentId（纯数字）"], ["secret", "应用 Secret", "password"], ["token", "Token"], ["aes_key", "EncodingAESKey（43 位）", "password"]],
+    test: { url: "/im/wechat/test", body: { which: "wecom" }, ok: () => "凭证有效。回调地址还需你暴露公网 HTTPS 并在企微后台点「保存」验证" },
+    help: ["管理后台 → 应用管理 → 自建应用：拿 AgentId 与 Secret；「我的企业」拿 CorpID", "「接收消息 → 设置 API 接收」随机生成 Token 与 EncodingAESKey，回填这里", "回调 URL 填 https://你的域名/im/wecom/events（内网穿透/反代都行），保存后腾讯会来验证"],
+    status: (st) => wxStatus(st.wecom_app) },
+  { key: "wechat_mp", grp: "chat", icon: "🟢", name: "微信公众号", sub: "需公网 HTTPS + 认证服务号", path: "wechat_mp",
+    fields: [["app_id", "AppID"], ["app_secret", "AppSecret", "password"], ["token", "Token"], ["aes_key", "EncodingAESKey（43 位）", "password"]],
+    test: { url: "/im/wechat/test", body: { which: "mp" }, ok: () => "凭证有效。回调地址还需你暴露公网 HTTPS 并在公众平台点「提交」验证" },
+    help: ["公众平台 → 开发 → 基本配置：拿 AppID / AppSecret", "服务器配置 URL 填 https://你的域名/im/mp/events，加解密选「安全模式」，Token 与 EncodingAESKey 回填这里", "结果走「客服消息」异步推送，需要已认证的服务号（未认证会返回 48001，这里如实报错）"],
+    status: (st) => wxStatus(st.wechat_mp) },
+  { key: "wecom_bot", grp: "push", icon: "💼", name: "企业微信群", sub: "只出不进 · 推送结果",
+    fields: [["wecom_bot_webhook", "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."]],
+    help: ["群里添加「群机器人」，把 webhook 地址粘贴到这里", "任务与定时任务的结果自动推到群里；要双向对话用上面的「企业微信应用」"],
+    status: (st) => ((st.wecom || {}).configured ? ["ok", "已配置"] : ["off", "未配置"]) },
+  { key: "dingtalk", grp: "push", icon: "📌", name: "钉钉群", sub: "只出不进 · 推送结果",
+    fields: [["dingtalk_webhook", "https://oapi.dingtalk.com/robot/send?access_token=..."], ["dingtalk_secret", "加签密钥 SEC...（未选加签则留空）", "password"]],
+    help: ["钉钉群 → 群设置 → 机器人 → 添加「自定义机器人」", "安全设置选「加签」，把 webhook 与加签密钥填到这里"],
+    status: (st) => ((st.dingtalk || {}).configured ? ["ok", "已配置"] : ["off", "未配置"]) },
+  { key: "webhook", grp: "push", icon: "🔗", name: "通用 Webhook", sub: "外部工具桥接进来",
+    fields: [["webhook_secret", "自定义一个密钥", "password"]],
+    help: ["外部工具（微信框架 / 钉钉 outgoing / 快捷指令）POST /im/task 时带这个密钥校验", "微信客服号、小程序、企微「智能助理」等依赖腾讯定向资质，本版不做假连接，用这里桥接"],
+    status: (st) => ((st.webhook || {}).secret_set ? ["ok", "已设密钥"] : ["off", "未设密钥"]) },
+  { key: "feishu_me", grp: "lark", icon: "🪪", name: "飞书本人身份", sub: "AI 以你的身份读日历 / 云文档 / 邮件", lark: true, noConn: true,
+    help: ["本机装 lark-cli：npx @larksuite/cli@latest install", "用上面飞书卡的 App ID / App Secret 绑定，再扫码授权你本人", "授权后 AI 能用 lark-cli 查你的日历、读写云文档、收发邮件"] },
+  { key: "feishu_doc", grp: "lark", icon: "📄", name: "飞书云文档", sub: "AI 直接把结果写成云文档", path: "feishu",
+    fields: [["doc_app_id", "云文档 App ID（留空 = 沿用飞书机器人凭证）"], ["doc_app_secret", "云文档 App Secret", "password"]],
+    help: ["机器人应用本身开通 docx:document 权限就够，这里可以留空", "只有云文档想走另一个应用时才单独填一组凭证"],
+    status: (_st, get) => (get("feishu_doc", "doc_app_id") ? ["ok", "独立凭证"] : ["off", "沿用机器人凭证"]) },
+];
 
-  // 微信扫码登录：取码 → 轮询状态（服务端一次挂最多 35 秒，回 wait 就接着问）
-  const ilkR = pane.querySelector("#ilk-r"), ilkBox = pane.querySelector("#ilk-box"), ilkImg = pane.querySelector("#ilk-img");
-  let ilkRun = 0; // 每次点「获取二维码」自增，旧轮询看见对不上就自己退出，防止两轮并行
-  const ilkSay = (txt, err) => { ilkR.style.color = err ? "var(--wb-err)" : ""; ilkR.textContent = txt; };
-  pane.querySelector("#ilk-qr").onclick = async () => {
+function renderImPane(pane, s) {
+  const im = s.im || {};
+  const cfgVal = (c, f) => String(((c.path ? im[c.path] : im) || {})[f] || "");
+  const inputId = (c, f) => `im-${c.key}-${f}`;
+  const getField = (key, f) => { const el = pane.querySelector("#" + inputId({ key }, f)); return el ? el.value.trim() : ""; };
+  const fieldsHtml = (c) => (c.fields || []).map(([f, ph, type]) =>
+    `<input id="${inputId(c, f)}" type="${type === "password" ? "password" : "text"}" placeholder="${esc(ph)}" value="${esc(cfgVal(c, f))}" autocomplete="off" spellcheck="false">`).join("");
+  const helpHtml = (c) => (c.help ? `<details class="im-help"><summary>怎么拿凭证</summary><ol>${c.help.map((h) => `<li>${esc(h)}</li>`).join("")}</ol></details>` : "");
+  const bodyHtml = (c) => {
+    if (c.qr) return `<div id="ilk-box" style="display:none;margin:4px 0 8px"><img id="ilk-img" alt="微信登录二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--wb-border)"></div><div class="im-r ok-msg" id="ilk-r">还没扫码。点右上角「连接」取二维码</div>${helpHtml(c)}`;
+    if (c.lark) return `<div id="fs-qr-body" class="d" style="font-size:13px">检测 lark-cli…</div>${helpHtml(c)}`;
+    return `${fieldsHtml(c)}<div class="im-r ok-msg" data-r="${c.key}"></div>${helpHtml(c)}`;
+  };
+  const cardHtml = (c) => `<div class="im-card" data-ch="${c.key}">
+      <div class="im-card-h" role="button" tabindex="0" data-activate="1" title="点一下展开 / 收起">
+        <span class="ic">${c.icon}</span>
+        <div class="tt"><b>${esc(c.name)}</b><span>${esc(c.sub)}</span></div>
+        <span class="im-st off"><i class="dot"></i><em>…</em></span>
+        ${c.noConn ? "" : `<button class="btn-plain im-conn" data-act="connect">连接</button>`}
+      </div>
+      <div class="im-card-b">${bodyHtml(c)}</div>
+    </div>`;
+  const grp = (k) => IM_CHANNELS.filter((c) => c.grp === k).map(cardHtml).join("");
+  const sec = (title, desc, inner) => `<section class="im-sec"><div class="im-sec-h"><b>${title}</b><span>${desc}</span></div><div class="im-grid">${inner}</div></section>`;
+  pane.innerHTML = `
+    ${sec("远程指挥", "在这些 IM 里私聊或 @机器人 就能下任务，结果回到聊天里", grp("chat"))}
+    ${sec("结果推送", "只出不进：任务和定时任务跑完自动推一份", grp("push"))}
+    ${sec("飞书增强", "让 AI 以你本人身份操作飞书、直接生成云文档", grp("lark"))}
+    ${sec("上下文管理", "IM 会话带多久的历史、什么时候另起一段", `
+      <div class="im-card im-card-static">
+        <div class="im-card-h"><span class="ic">⏱</span><div class="tt"><b>闲置自动开新会话</b><span>太久没聊，下一条不再带旧上下文</span></div></div>
+        <div class="im-card-b"><div class="im-act">超过 <input id="im-idle" type="number" min="0" max="720" style="width:72px;margin:0" value="${esc(String(im.session_idle_hours ?? 0))}"> 小时没对话就另起一段（0 = 关闭）</div></div>
+      </div>
+      <div class="im-card im-card-static">
+        <div class="im-card-h"><span class="ic">🧹</span><div class="tt"><b>清空 IM 会话记忆</b><span id="im-sess-n">正在数…</span></div><button class="btn-plain im-conn" id="im-sess-clear">清空全部</button></div>
+        <div class="im-card-b"><div class="d" style="font-size:12px">只清 IM 通道里的对话上下文（飞书 / QQ / 微信各自一段），网页对话和长期记忆不受影响。上下文预算（多长开始截）在 <a class="link" id="im-goto-agent" href="#">智能体设置</a> 里调。</div><div class="im-r ok-msg" id="im-sess-r"></div></div>
+      </div>`)}
+    <div style="display:flex;align-items:center;gap:10px;margin-top:4px"><button class="btn-brand" id="im-save">保存全部</button><span class="ok-msg" id="im-msg"></span><span class="d" style="font-size:12px;margin-left:auto">其他助理通道：钉钉机器人双向 / Telegram / Slack 都走「通用 Webhook」桥接</span></div>`;
+
+  // ---------- 读回 / 保存 ----------
+  const imPayload = () => {
+    const out = { feishu: {}, qq: {}, wecom_app: {}, wechat_mp: {} };
+    for (const c of IM_CHANNELS) for (const [f] of c.fields || []) {
+      const v = getField(c.key, f);
+      if (c.path) out[c.path][f] = v; else out[f] = v;
+    }
+    out.session_idle_hours = +pane.querySelector("#im-idle").value || 0;
+    return { im: out };
+  };
+  const globalMsg = pane.querySelector("#im-msg");
+  const say = (c, txt, err) => {
+    const r = c.qr ? pane.querySelector("#ilk-r") : pane.querySelector(`[data-r="${c.key}"]`);
+    if (!r) return;
+    r.style.color = err ? "var(--wb-err)" : "";
+    r.textContent = txt;
+  };
+
+  // ---------- 状态灯：每张卡自己决定亮什么色、按钮写「连接」还是「取消连接」 ----------
+  const applyStatus = (st, packInitial) => {
+    for (const c of IM_CHANNELS) {
+      const card = pane.querySelector(`[data-ch="${c.key}"]`);
+      if (!card || !c.status) continue;
+      const [cls, txt] = c.status(st || {}, getField);
+      const chip = card.querySelector(".im-st");
+      chip.className = "im-st " + cls;
+      chip.querySelector("em").textContent = txt;
+      card.classList.toggle("on", cls === "ok");
+      const btn = card.querySelector(".im-conn");
+      if (btn && !btn._arming) {
+        btn.dataset.act = cls === "ok" ? "disconnect" : "connect";
+        btn.textContent = cls === "ok" ? "取消连接" : "连接";
+        btn.classList.remove("danger");
+      }
+      if (packInitial) card.classList.toggle("packed", cls === "ok"); // 连上的收起、没连的摊开等你填
+    }
+  };
+  const refreshStatus = async (packInitial) => {
+    let st = {};
+    try { st = await fetch("/im/status").then(r => r.json()); } catch {}
+    applyStatus(st, packInitial);
+    if (typeof refreshImStatus === "function") refreshImStatus();
+    return st;
+  };
+
+  // ---------- 连接 / 取消连接 ----------
+  const connect = async (c, btn) => {
+    const card = btn.closest(".im-card");
+    card.classList.remove("packed");
+    if (c.qr) return ilkStart();
+    btn.disabled = true;
+    say(c, "保存中…");
+    try {
+      if (!(await saveSettings(imPayload(), globalMsg))) return say(c, "❌ 保存失败", true);
+      if (c.test) {
+        say(c, "测试中…");
+        const d = await fetch(c.test.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c.test.body || {}) })
+          .then(r => r.json()).catch((e) => ({ ok: false, error: e.message }));
+        if (!d.ok) return say(c, "❌ " + (d.error || "测试失败"), true);
+        say(c, "✅ " + c.test.ok(d));
+      } else say(c, "✅ 已保存");
+    } finally {
+      btn.disabled = false;
+      await refreshStatus(false);
+      if (card.classList.contains("on")) card.classList.add("packed"); // 真连上了才收起
+    }
+  };
+  const disconnect = async (c, btn) => {
+    // 两步确认：第一下只变红问一句，4 秒内再点一下才真断。清凭证不可逆，误触成本太高
+    if (!btn._arming) {
+      btn._arming = true;
+      btn.textContent = "确认断开？";
+      btn.classList.add("danger");
+      btn._armT = setTimeout(() => { btn._arming = false; btn.textContent = "取消连接"; btn.classList.remove("danger"); }, 4000);
+      return;
+    }
+    clearTimeout(btn._armT);
+    btn._arming = false;
+    btn.disabled = true;
+    const card = btn.closest(".im-card");
+    try {
+      if (c.qr) {
+        ilkRun++; // 作废在跑的轮询，否则它扫码成功后又把登录态写回来
+        const box = pane.querySelector("#ilk-box"); if (box) box.style.display = "none";
+        const d = await fetch("/im/wechat/disconnect", { method: "POST" }).then(r => r.json()).catch((e) => ({ ok: false, error: e.message }));
+        if (!d.ok) throw new Error(d.error || "断开失败");
+        say(c, "已断开，登录态已清除");
+      } else {
+        for (const [f] of c.fields || []) pane.querySelector("#" + inputId(c, f)).value = "";
+        if (!(await saveSettings(imPayload(), globalMsg))) throw new Error("保存失败");
+        say(c, "已断开，凭证已清空");
+      }
+      card.classList.remove("packed");
+    } catch (e) {
+      say(c, "❌ " + e.message, true);
+    } finally {
+      btn.disabled = false;
+      await refreshStatus(false);
+    }
+  };
+
+  pane.addEventListener("click", (e) => {
+    const btn = e.target.closest(".im-conn[data-act]");
+    if (btn) {
+      e.stopPropagation();
+      const c = IM_CHANNELS.find((x) => x.key === (btn.closest(".im-card") || {}).dataset?.ch);
+      if (!c) return;
+      return btn.dataset.act === "disconnect" ? disconnect(c, btn) : connect(c, btn);
+    }
+    const h = e.target.closest(".im-card-h");
+    if (h && h.closest(".im-card").dataset.ch && !e.target.closest("button")) h.closest(".im-card").classList.toggle("packed");
+  });
+  pane.querySelector("#im-save").onclick = async () => {
+    if (await saveSettings(imPayload(), globalMsg)) refreshStatus(false);
+  };
+  pane.querySelector("#im-goto-agent").onclick = (e) => { e.preventDefault(); renderSettings("agent"); };
+
+  // ---------- 上下文管理：数会话 / 一键清空（同样两步确认） ----------
+  const sessN = pane.querySelector("#im-sess-n"), sessR = pane.querySelector("#im-sess-r"), sessBtn = pane.querySelector("#im-sess-clear");
+  const loadSess = async () => {
+    try {
+      const d = await fetch("/im/sessions").then(r => r.json());
+      sessN.textContent = d.count ? `${d.count} 段会话正记着上下文` : "现在没有任何 IM 会话上下文";
+      sessBtn.disabled = !d.count;
+    } catch { sessN.textContent = "数不出来（服务没起？）"; }
+  };
+  sessBtn.onclick = async () => {
+    if (!sessBtn._arming) {
+      sessBtn._arming = true; sessBtn.textContent = "确认清空？"; sessBtn.classList.add("danger");
+      sessBtn._armT = setTimeout(() => { sessBtn._arming = false; sessBtn.textContent = "清空全部"; sessBtn.classList.remove("danger"); }, 4000);
+      return;
+    }
+    clearTimeout(sessBtn._armT); sessBtn._arming = false; sessBtn.textContent = "清空全部"; sessBtn.classList.remove("danger"); sessBtn.disabled = true;
+    try {
+      const d = await fetch("/im/sessions/clear", { method: "POST" }).then(r => r.json());
+      if (!d.ok) throw new Error(d.error || "清空失败");
+      sessR.style.color = ""; sessR.textContent = `✅ 已清空 ${d.cleared} 段会话，下一条 IM 消息从零开始`;
+    } catch (e) { sessR.style.color = "var(--wb-err)"; sessR.textContent = "❌ " + e.message; }
+    loadSess();
+  };
+
+  // ---------- 微信扫码：取码 → 轮询状态（服务端一次挂最多 35 秒，回 wait 就接着问） ----------
+  let ilkRun = 0; // 每次取码自增，旧轮询看见对不上就自己退出，防止两轮并行
+  const ilkC = IM_CHANNELS.find((x) => x.qr);
+  const ilkSay = (txt, err) => say(ilkC, txt, err);
+  const ilkStart = async () => {
+    const ilkBox = pane.querySelector("#ilk-box"), ilkImg = pane.querySelector("#ilk-img");
     const run = ++ilkRun;
     ilkBox.style.display = "none";
     ilkSay("正在取二维码…");
@@ -1299,26 +1372,22 @@ function renderImPane(pane, s) {
       if (d.status === "confirmed") {
         ilkBox.style.display = "none";
         ilkSay(`✅ 已连接微信${d.ilink && d.ilink.bot_id ? `（${d.ilink.bot_id}）` : ""}，现在给这个微信号发消息即可下任务`);
-        refreshImStatus();
+        await refreshStatus(false);
+        const card = pane.querySelector('[data-ch="wechat_ilink"]');
+        if (card && card.classList.contains("on")) card.classList.add("packed");
         return;
       }
       if (d.status === "expired") {
         ilkBox.style.display = "none";
-        return ilkSay("二维码已过期，请重新获取", true);
+        return ilkSay("二维码已过期，请重新点「连接」", true);
       }
       if (d.status === "scaned") ilkSay("已扫码，请在手机上点确认");
     }
   };
-  pane.querySelector("#ilk-off").onclick = async () => {
-    ilkRun++; // 断开也要作废在跑的轮询，否则它扫码成功后又把登录态写回来
-    ilkBox.style.display = "none";
-    ilkSay("断开中…");
-    try {
-      const d = await fetch("/im/wechat/disconnect", { method: "POST" }).then(r => r.json());
-      ilkSay(d.ok ? "已断开，登录态已清除" : `❌ ${d.error || "断开失败"}`, !d.ok);
-    } catch (e) { ilkSay(`❌ ${e.message}`, true); }
-    refreshImStatus();
-  };
+
+  refreshStatus(true);
+  loadSess();
+  renderLarkQr(pane);
 }
 
 // ================= 安全中心面板 =================
