@@ -364,6 +364,41 @@ async function renderEvolvePane(pane) {
   });
 }
 
+// ---------- 外观页：主题 / 皮肤 / 字号 / 字体 / 密度。全是点一下立刻生效、只存本机的选项，不设保存键 ----------
+const LOOK_ICON = {
+  theme: { light: "☀️", dark: "🌙", system: "🖥️" },
+  density: { cozy: "☰", compact: "≡" },
+};
+// 色板小圆点用的就是各皮肤在浅色下的主色；真正的 token 定义在 index.html 的 html[data-skin=…] 里，这里只是「长什么样」的预览
+const LOOK_SWATCH = { default: "#5b5ff7", ocean: "#0284c7", forest: "#059669", sunset: "#ea580c", rose: "#e11d48", graphite: "#4b5563" };
+const LOOK_FS_PX = { s: 13, m: 15, l: 17, xl: 19 };
+function renderLookPane(pane) {
+  const seg = (k, opts, cur, cell) => `<div class="look-seg look-${k}" data-k="${k}">${Object.entries(opts).map(([v, l]) =>
+    `<button type="button" class="${cur === v ? "on" : ""}" data-v="${v}" aria-pressed="${cur === v}">${cell(v, l)}</button>`).join("")}</div>`;
+  pane.innerHTML = `
+    <div class="card-item"><div class="t">🌗 主题</div>
+      ${seg("theme", THEME_LABEL, getTheme(), (v, l) => `<span class="ic">${LOOK_ICON.theme[v]}</span>${l}`)}</div>
+    <div class="card-item"><div class="t">🎨 皮肤</div>
+      <div class="look-skins" data-k="skin">${Object.entries(LOOK_OPTS.skin).map(([v, l]) =>
+        `<button type="button" class="look-skin${lookGet("skin") === v ? " on" : ""}" data-v="${v}" aria-pressed="${lookGet("skin") === v}"><i style="background:${LOOK_SWATCH[v]}"></i>${l}</button>`).join("")}</div></div>
+    <div class="card-item"><div class="t">🔠 字号</div>
+      ${seg("fs", LOOK_OPTS.fs, lookGet("fs"), (v, l) => `<b style="font-size:${LOOK_FS_PX[v]}px">A</b>${l}`)}
+      <div class="look-prev" id="look-prev">这一行就是聊天正文的大小，<code>代码</code>和左栏会跟着一起缩放。</div></div>
+    <div class="card-item"><div class="t">🅰️ 字体</div>
+      ${seg("font", LOOK_OPTS.font, lookGet("font"), (v, l) => `<b class="look-f look-f-${v}">永 Ag</b>${l}`)}</div>
+    <div class="card-item"><div class="t">📐 密度</div>
+      ${seg("density", LOOK_OPTS.density, lookGet("density"), (v, l) => `<span class="ic">${LOOK_ICON.density[v]}</span>${l}`)}
+      <div class="look-note">紧凑：消息间距和行高收一收，一屏多看三成。</div></div>
+    <div class="look-note">这些只存在这台电脑上，不跟账号走。</div>`;
+  pane.onclick = (e) => {
+    const b = e.target.closest("button[data-v]");
+    if (!b || !pane.contains(b)) return;
+    const k = b.closest("[data-k]").dataset.k, v = b.dataset.v;
+    if (k === "theme") setTheme(v); else setLook(k, v);
+    b.parentElement.querySelectorAll("button").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", x === b); });
+  };
+}
+
 function renderAboutPane(pane) {
   pane.innerHTML = `
     <div class="card-item">

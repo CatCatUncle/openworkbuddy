@@ -436,9 +436,12 @@ function testMotionGate() {
     "这些过渡没写曲线，会吃浏览器默认的 ease：\n  " + bare.join("\n  "));
 
   const html = fs.readFileSync(files[0], "utf8");
-  const fams = [...html.matchAll(/font-family:\s*([^;]+);/g)].map((m) => m[1].trim());
+  // 界面字体栈现在住在 --font-sans 令牌里（body 只写 font-family: var(--font-sans)，外观页的「衬线/等宽」靠改令牌切换），
+  // 所以 font-family: 和 --font-sans: 两种声明都扫；衬线/等宽那两条不含 PingFang/-apple-system，自然被滤掉
+  const fams = [...html.matchAll(/(?:font-family|--font-sans):\s*([^;]+);/g)].map((m) => m[1].trim());
   const uiFams = fams.filter((v) => /PingFang|apple-system/.test(v));
   assert(uiFams.length > 0, "index.html 里一个界面字体栈都没找到，闸门失效了");
+  assert(/body \{[^}]*font-family: var\(--font-sans\)/.test(html), "body 没接到 --font-sans 令牌上，外观页切字体不会生效");
   for (const v of uiFams) {
     const first = v.split(",")[0].trim().replace(/^["']|["']$/g, "");
     assert(first === "-apple-system",
@@ -4001,6 +4004,7 @@ async function main() {
   await testOnboardingWizardApi();
   await testEmbedFailoverResilience();
   testUiNoRawMarkdown();
+  testLookPrefsStatic();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -4780,6 +4784,52 @@ async function testEngineToolBridge() {
   console.log("✅ 本机引擎借工具：命令行入口真出文件（会话子目录）· 裸命令挂 PATH 且下了放行规则（带路径会被判需审批）· 白名单拒非借出工具 · MCP 配置形状对 · 两边提示词各说各的路");
 }
 
+function testLookPrefsStatic() {
+  // 外观偏好（主题/皮肤/字号/字体/密度）的静态闸：前端 harness 验行为，这里钉住「接线」——
+  // 目录里有这一页、头像菜单能进来、CSS 令牌一套不少、老的主题子菜单没留尸体
+  const pub = path.join(__dirname, "..", "public");
+  const rd = (f) => fs.readFileSync(path.join(pub, f), "utf8");
+  const a02 = rd(path.join("js", "app-02.js")), a05 = rd(path.join("js", "app-05.js")), a06 = rd(path.join("js", "app-06.js")), html = rd("index.html");
+  assert(/\["look", "外观", "🎨"\]/.test(a05), "设置目录里没有「外观」页");
+  assert(/active === "look"\) renderLookPane\(pane\)/.test(a05), "renderSettings 没把 look 派给 renderLookPane");
+  assert(/^function renderLookPane\(pane\)/m.test(a06), "app-06 没定义 renderLookPane");
+  assert(/act === "appearance"\) openModal\("settings", "look"\)/.test(a02), "头像菜单的「外观」没有直达外观页");
+  const cats = a05.slice(a05.indexOf("const SETTING_CATS = ["), a05.indexOf("];", a05.indexOf("const SETTING_CATS = [")));
+  const rows = [...cats.matchAll(/\["([a-z]+)", "([^"]+)", "([^"]+)"\]/g)];
+  assert(rows.length === 12 && rows.every((m) => m[3].length && m[2].length <= 4), "设置目录每项都要 [id, ≤4字短名, 图标] 三元组，现在：" + rows.length + " 项");
+  assert(/\$\{SETTING_CATS\.map\(\(\[k, label, icon\]\)/.test(a05) && /class="ci">\$\{icon\}/.test(a05), "左栏没把图标画出来");
+  for (const f of fs.readdirSync(path.join(pub, "js"))) {
+    if (!f.endsWith(".js")) continue;
+    assert(!/um-theme|um-opt/.test(rd(path.join("js", f))), "老的头像菜单主题子菜单还留在 " + f + " 里");
+  }
+  // 存储层：读写都要 try 包住（file:// / 隐私模式 / data: 页面会抛 SecurityError），且内存兜底
+  const look = a02.slice(a02.indexOf("// ---------- 外观：主题"), a02.indexOf("// ---------- 头像菜单"));
+  assert(/function lookRead\(k\) \{ try \{/.test(look) && /function lookWrite\(k, v\) \{ lookMem\[k\] = v; try \{/.test(look), "lookRead/lookWrite 没有 try + 内存兜底");
+  assert(!/[^.]localStorage\.(get|set)Item\("wb-theme"/.test(look), "主题还在直连 localStorage，绕过了兜底层");
+  assert(/^applyLook\(\);$/m.test(look) && /^applyTheme\(\);$/m.test(look), "外观/主题没有在脚本加载时立刻应用（会先闪一下默认样式）");
+  // CSS：字号四档 + 五套皮肤各带浅/暗两块 + 密度规则 + body 走变量
+  for (const [k, px] of [["s", 14], ["l", 16], ["xl", 18]]) assert(html.includes(`html[data-fs="${k}"] { --wb-fs: ${px}px; }`), "字号档 " + k + " 缺了");
+  assert(/:root \{ --wb-fs: 15px; \}/.test(html), "默认字号变量 --wb-fs 没定义");
+  assert(/body \{[^}]*font-size: var\(--wb-fs\)/.test(html) && /body \{[^}]*font-family: var\(--font-sans\)/.test(html), "body 字号/字体没接到变量上");
+  for (const skin of ["ocean", "forest", "sunset", "rose", "graphite"]) {
+    const light = html.match(new RegExp(`^  html\\[data-skin="${skin}"\\] \\{([^}]*)\\}`, "m"));
+    const dark = html.match(new RegExp(`^  html\\[data-theme="dark"\\]\\[data-skin="${skin}"\\] \\{([^}]*)\\}`, "m"));
+    assert(light && dark, "皮肤 " + skin + " 缺浅色或暗色块");
+    for (const t of ["--primary", "--ring", "--ring-weak", "--brand-text", "--wb-brand-on-white", "--wb-brand-grad"]) assert(light[1].includes(t + ":"), "皮肤 " + skin + " 浅色块缺 " + t);
+    for (const t of ["--ring", "--ring-weak", "--brand-text"]) assert(dark[1].includes(t + ":"), "皮肤 " + skin + " 暗色块缺 " + t + "（暗底上浅色的字色/描边会看不清）");
+  }
+  assert((html.match(/^  html\[data-density="compact"\] /gm) || []).length >= 5, "紧凑密度至少要收 5 处间距");
+  assert(/html\[data-font="serif"\] \{ --font-sans:/.test(html) && /html\[data-font="mono"\] \{ --font-sans: var\(--font-mono\); \}/.test(html), "字体三选缺规则");
+  // 字号联动：这些尺寸不能再写死 px，否则调字号只有正文在动
+  // 前缀带换行+两空格：只认顶层规则，别撞上 html[data-density="compact"] .hist-item 那条
+  for (const sel of ["\n  .a-text h1 {", "\n  .a-text h2 {", "\n  textarea#input { width", "\n  .hist-item { padding"]) {
+    const i = html.indexOf(sel); assert(i > 0, "找不到 " + sel);
+    const rule = html.slice(i, html.indexOf("}", i));
+    assert(/var\(--wb-fs\)/.test(rule), sel + " 的字号还写死 px，没跟 --wb-fs 联动");
+  }
+  assert(/## 跑起来[\s\S]*外观[\s\S]*## 配模型/.test(fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")), "README「跑起来」一节没提外观设置");
+  console.log("✅ 外观偏好静态闸（目录含外观页·头像菜单直达·存储 try+内存兜底·字号 4 档联动·5 皮肤×浅暗令牌齐全·密度≥5 处·字体三选·旧主题子菜单已清）");
+}
 function testUiNoRawMarkdown() {
   // 界面上印出一串 ** 星号，是「文案里写了 markdown，但那一格根本不过 markdown 渲染器」。
   // 光修一处没用——下次谁再手写一句 **重点** 还会复现。这道闸把它钉死在测试里。

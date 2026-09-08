@@ -972,6 +972,129 @@ const ONB_CHECKS = `
 })().catch((e) => { throw new Error("[向导] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (window.__onbNames || 0)); })
 `;
 
+// ---------- 外观页：主题 / 皮肤 / 字号 / 字体 / 密度 ----------
+// 真源切片：app-02 的偏好层（读写本机存储 + 写到 <html>）、app-06 的外观页、app-05 的设置目录
+const APP06_LOOK = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-06.js"), "utf8");
+const LOOK_SRC = (() => {
+  const a0 = APP02.indexOf("// ---------- 外观：主题"), a1 = APP02.indexOf("// ---------- 头像菜单");
+  const b0 = APP06_LOOK.indexOf("// ---------- 外观页"), b1 = APP06_LOOK.indexOf("function renderAboutPane(");
+  const c0 = APP05.indexOf("const SETTING_CATS = ["), c1 = APP05.indexOf("];", c0) + 2;
+  if (a0 < 0 || a1 < 0 || b0 < 0 || b1 < 0 || c0 < 0) throw new Error("外观切片锚点丢了");
+  return APP02.slice(a0, a1) + "\n" + APP06_LOOK.slice(b0, b1) + "\n" + APP05.slice(c0, c1);
+})();
+const LOOK_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
+  + "<div class='hist-item' id='hi'>历史</div><div class='hist-item active' id='hia'>当前</div>"
+  + "<div class='turn' id='turn'><div class='u-msg'><div class='bubble' id='bub'>你好</div></div>"
+  + "<div class='a-msg' id='amsg'><div class='a-text' id='atext'><h1 id='h1'>标题</h1><p id='p'>正文</p><code id='cd'>x</code></div></div></div>"
+  + "<textarea id='input'></textarea>"
+  + "<div class='settings-layout'><div class='settings-nav' id='nav'></div><div class='settings-pane' id='pane'></div></div></body>";
+const LOOK_CHECKS = `
+  const names = []; window.__lookNames = 0;
+  const ok = (name, cond) => { if (!cond) throw new Error("外观：" + name); names.push(name); window.__lookNames = names.length; };
+  const $ = (q) => document.querySelector(q);
+  const px = (q, prop) => parseFloat(getComputedStyle($(q))[prop || "fontSize"]);
+  const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const html = document.documentElement;
+  const pane = $("#pane");
+  // 存储被禁的页面（data: URL）：这正是要验证「退到内存也能用」的环境
+  let storageBlocked = false; try { localStorage.getItem("x"); } catch { storageBlocked = true; }
+  ok("本页 localStorage 被禁（验证内存回退的前提成立）", storageBlocked);
+
+  ok("默认：<html> 不带 data-fs/skin/font/density 脏属性", !html.dataset.fs && !html.dataset.skin && !html.dataset.font && !html.dataset.density);
+  ok("默认：正文 15 / 标题 17 / 左栏 14 / 输入框 15 / 行内代码 13", px("body") === 15 && px("#h1") === 17 && px("#hi") === 14 && px("#input") === 15 && px("#cd") === 13);
+
+  renderLookPane(pane);
+  const groups = [...pane.querySelectorAll("[data-k]")].map((g) => g.dataset.k);
+  ok("外观页五个分区：主题/皮肤/字号/字体/密度", JSON.stringify(groups) === JSON.stringify(["theme", "skin", "fs", "font", "density"]));
+  const cnt = (k) => pane.querySelectorAll('[data-k="' + k + '"] button').length;
+  ok("选项数：主题 3 · 皮肤 6 · 字号 4 · 字体 3 · 密度 2", cnt("theme") === 3 && cnt("skin") === 6 && cnt("fs") === 4 && cnt("font") === 3 && cnt("density") === 2);
+  const onePressed = (k) => { const bs = [...pane.querySelectorAll('[data-k="' + k + '"] button')]; const on = bs.filter((b) => b.classList.contains("on")), pr = bs.filter((b) => b.getAttribute("aria-pressed") === "true"); return on.length === 1 && pr.length === 1 && on[0] === pr[0]; };
+  ok("每组恰好一个选中（.on + aria-pressed）", ["theme", "skin", "fs", "font", "density"].every(onePressed));
+  ok("默认选中：跟随系统 / 默认紫 / 标准 / 系统 / 舒适", ["system", "default", "m", "system", "cozy"].every((v, i) => pane.querySelector('[data-k="' + groups[i] + '"] button.on').dataset.v === v));
+  ok("全是 <button type=button>，没有「保存」键（点即生效）", [...pane.querySelectorAll("button")].every((b) => b.type === "button") && !/保存/.test(pane.textContent));
+  const textLen = pane.textContent.replace(/\\s/g, "").length;
+  ok("信息密度克制：整页文字 ≤ 200 字（实际 " + textLen + "）", textLen <= 200);
+
+  const click = (k, v) => pane.querySelector('[data-k="' + k + '"] button[data-v="' + v + '"]').click();
+  // 字号
+  click("fs", "xl");
+  ok("点「特大」：<html data-fs=xl>，正文 18", html.dataset.fs === "xl" && px("body") === 18 && px("#p") === 18);
+  ok("特大：标题 20 / 左栏 17 / 输入框 18 / 行内代码 16 / 预览行 18 都跟着走", px("#h1") === 20 && px("#hi") === 17 && px("#input") === 18 && px("#cd") === 16 && px("#look-prev") === 18);
+  ok("特大：字号组选中态跟着切到 xl", onePressed("fs") && pane.querySelector('[data-k="fs"] button.on').dataset.v === "xl");
+  click("fs", "s");
+  ok("点「小」：正文 14 / 左栏 13", html.dataset.fs === "s" && px("body") === 14 && px("#hi") === 13);
+  ok("偏好读回：lookGet('fs') === 's'（存储被禁也记得住）", lookGet("fs") === "s");
+  click("fs", "m");
+  ok("点回「标准」：data-fs 属性摘掉，不留默认值脏属性", !("fs" in html.dataset) && px("body") === 15);
+
+  // 皮肤
+  const rgb = (hex) => { const n = parseInt(hex.slice(1), 16); return "rgb(" + (n >> 16) + ", " + ((n >> 8) & 255) + ", " + (n & 255) + ")"; };
+  click("skin", "ocean");
+  ok("点「海盐」：<html data-skin=ocean>，--primary 变海盐蓝", html.dataset.skin === "ocean" && rgb("#0284c7") === rgb("#" + cssVar("--primary").replace("#", "")));
+  ok("海盐：用户气泡底色跟着换（不是只换了个变量没人用）", getComputedStyle($("#bub")).backgroundColor === rgb("#0284c7"));
+  ok("海盐：浅色下品牌字色是深一档的 #0369a1（不拿填充色当字色）", cssVar("--brand-text").toLowerCase() === "#0369a1");
+  // 对比度矩阵：6 皮肤 × 2 主题，品牌字色压页面底色 ≥ 4.5，白字压主色 ≥ 3
+  const lum = (c) => { const m = c.match(/\\d+/g).map(Number); const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(m[0]) + 0.7152 * f(m[1]) + 0.0722 * f(m[2]); };
+  const ratio = (a, b) => { const la = lum(a), lb = lum(b); return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05); };
+  const probe = document.createElement("div"); document.body.appendChild(probe);
+  const resolve = (v) => { probe.style.color = "var(" + v + ")"; return getComputedStyle(probe).color; };
+  let combos = 0, minText = 99, minBtn = 99, worst = "";
+  for (const skin of Object.keys(LOOK_OPTS.skin)) for (const theme of ["light", "dark"]) {
+    setLook("skin", skin); setTheme(theme); combos++;
+    const bg = getComputedStyle(document.body).backgroundColor;
+    const rt = ratio(resolve("--brand-text"), bg), rb = ratio("rgb(255, 255, 255)", resolve("--primary"));
+    if (rt < minText) { minText = rt; worst = skin + "/" + theme; }
+    if (rb < minBtn) minBtn = rb;
+  }
+  probe.remove();
+  ok("对比度矩阵跑满 6 皮肤 × 2 主题 = 12 组", combos === 12);
+  ok("每组品牌字色压底色 ≥ 4.5（最低 " + minText.toFixed(2) + " @ " + worst + "）", minText >= 4.5);
+  ok("每组白字压主色 ≥ 3（最低 " + minBtn.toFixed(2) + "）", minBtn >= 3);
+  setTheme("light");
+  renderLookPane(pane);
+  ok("重开外观页：皮肤/主题选中态从偏好里读回来（石墨 · 浅色）", pane.querySelector('[data-k="skin"] button.on').dataset.v === "graphite" && pane.querySelector('[data-k="theme"] button.on').dataset.v === "light");
+  click("skin", "default");
+  ok("点回「默认紫」：data-skin 摘掉，--primary 回到 #5b5ff7", !("skin" in html.dataset) && cssVar("--primary").toLowerCase() === "#5b5ff7");
+
+  // 密度
+  const turnMb = () => px("#turn", "marginBottom"), histPt = () => px("#hi", "paddingTop"), lh = () => px("#atext", "lineHeight");
+  const mb0 = turnMb(), pt0 = histPt(), lh0 = lh();
+  click("density", "compact");
+  ok("点「紧凑」：轮次间距 " + mb0 + "→" + turnMb() + "、左栏行内距 " + pt0 + "→" + histPt() + "、行高收紧，字号不动", html.dataset.density === "compact" && turnMb() < mb0 && histPt() < pt0 && lh() < lh0 && px("body") === 15);
+  click("density", "cozy");
+  ok("点回「舒适」：属性摘掉，间距复原", !("density" in html.dataset) && turnMb() === mb0 && histPt() === pt0);
+
+  // 字体
+  const ff = () => getComputedStyle(document.body).fontFamily;
+  const ff0 = ff();
+  click("font", "serif");
+  ok("点「衬线」：body 字体族以 Georgia 打头", html.dataset.font === "serif" && /^Georgia/.test(ff()));
+  click("font", "mono");
+  ok("点「等宽」：body 字体族含 Menlo / monospace", html.dataset.font === "mono" && /Menlo|monospace/.test(ff()));
+  click("font", "system");
+  ok("点回「系统」：属性摘掉，字体族复原（-apple-system 打头）", !("font" in html.dataset) && ff() === ff0 && /apple-system/.test(ff0));
+
+  // 主题
+  click("theme", "dark");
+  ok("点「深色」：<html data-theme=dark>，getTheme()==='dark'，主题组选中态跟着走", html.dataset.theme === "dark" && getTheme() === "dark" && pane.querySelector('[data-k="theme"] button.on').dataset.v === "dark");
+  click("theme", "system");
+  const sysDark = matchMedia("(prefers-color-scheme: dark)").matches;
+  ok("点「跟随系统」：data-theme 跟系统（当前系统=" + (sysDark ? "深" : "浅") + "）", getTheme() === "system" && html.dataset.theme === (sysDark ? "dark" : "light"));
+  click("theme", "light");
+
+  // 非法值：来自旧版本或被人手改过的存储，不能把页面搞坏
+  setLook("fs", "huge"); setLook("nope", "x"); setTheme("neon");
+  ok("非法值一律忽略：fs 仍是标准、theme 仍是浅色、未知键不炸", lookGet("fs") === "m" && !("fs" in html.dataset) && getTheme() === "light");
+  lookMem["wb-look-fs"] = "huge"; lookMem["wb-theme"] = "neon"; applyLook(); applyTheme();
+  ok("存储里躺着旧版本写的非法值：读回当没写（标准字号 / 跟随系统），不带脏属性", lookGet("fs") === "m" && !("fs" in html.dataset) && getTheme() === "system");
+  setTheme("light");
+  ok("点分区空白处：不改任何状态、不报错", (() => { pane.querySelector(".card-item").click(); return lookGet("fs") === "m" && getTheme() === "light"; })());
+
+  // 左栏目录：图标 + 短名，别一列密密麻麻的字
+  ok("设置目录 12 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 12 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
+  return names;
+`;
+
 const TRAIL_CHECKS = `
 (async () => {
   const names = [];
@@ -1007,7 +1130,7 @@ const TRAIL_CHECKS = `
   ok("没出错的不标红", !chips(t)[0].classList.contains("err") && !chips(t)[2].classList.contains("err"));
   ok("出错样式是真画出来的", getComputedStyle(chips(t)[1]).color !== getComputedStyle(chips(t)[2]).color, getComputedStyle(chips(t)[1]).color);
   ok("MCP 工具名去前缀、下划线变空格", chips(t)[3].textContent === "feishu send", chips(t)[3].textContent);
-  ok("徽章 title 是原名，悬停能看全", chips(t)[3].title === "mcp_feishu_send", chips(t)[3].title);
+  ok("徽章 title 是原名，悬停能看全（耗时后缀可有可无，别测墙上时钟）", /^mcp_feishu_send( · \\d+[ms]\\S*)?$/.test(chips(t)[3].title), chips(t)[3].title);
   ui.handleEvent({ type: "usage", prompt: 1000, completion: 100, cached: 30000, calls: 2, elapsed_ms: 5000, model: "m", provider: "P" });
   ui.finish();
   const wrap = t.querySelector(".proc-wrap");
@@ -1599,6 +1722,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：轨迹条（同名合并·出错标红·中止删除线·+N 上限·收起可见·点徽章直达）+ 结论出过程区 + 命中率封顶 ${names9.length} 项通过`);
     } finally {
       if (!win9.isDestroyed()) win9.destroy();
+    }
+    const win12 = new BrowserWindow({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await win12.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LOOK_HTML));
+      const names12 = await win12.webContents.executeJavaScript("(function(){\n" + LOOK_SRC + "\n" + LOOK_CHECKS + "\n})()", true)
+        .catch((e) => { throw new Error("[外观] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of names12) console.log("  ✓ " + n);
+      console.log(`✅ 前端：外观页（字号四档按 calc 联动·六皮肤浅暗对比度矩阵·密度只收间距·字体三选·主题即点即生效·存储被禁退内存·默认不留脏属性）${names12.length} 项通过`);
+    } finally {
+      if (!win12.isDestroyed()) win12.destroy();
     }
     const win11 = new BrowserWindow({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
