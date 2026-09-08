@@ -111,8 +111,9 @@ module.exports = {
   win: {
     icon: "build/icon.ico",
     target: [
-      { target: "nsis", arch: ["x64"] },
-      { target: "portable", arch: ["x64"] },
+      // 纯 JS 依赖、没有原生模块，arm64（骁龙 X / Surface Pro X 一类）直接多打一份
+      { target: "nsis", arch: ["x64", "arm64"] },
+      { target: "portable", arch: ["x64", "arm64"] },
     ],
     artifactName: "${productName}-${version}-win-${arch}.${ext}",
   },
