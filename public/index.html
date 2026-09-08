@@ -616,12 +616,51 @@
   .auth-card .alt { font-size: 13px; color: var(--wb-text-3); text-align: center; margin-top: 12px; }
   .auth-card .alt a { color: var(--wb-brand-text); cursor: pointer; }
   .auth-card .err { font-size: 13px; color: var(--wb-err-text); min-height: 16px; margin-bottom: 6px; }
-  .onb-card { width: 420px; }
+  /* 首次开箱向导：一步一件事，步骤条在顶上；行式清单和助理设置页的卡片同一套视觉 */
+  .onb-card { width: 520px; max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); overflow: auto; }
+  .onb-steps { display: flex; gap: 4px; margin: -6px 0 18px; }
+  .onb-step { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 0; border-radius: 10px; font-size: 11px; color: var(--wb-text-3); cursor: default; }
+  .onb-step i { font-style: normal; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--wb-bg-hover); font-size: 13px; }
+  .onb-step.cur { color: var(--wb-brand-text); font-weight: 600; }
+  .onb-step.cur i { background: var(--wb-brand-weak); }
+  .onb-step.done { color: var(--wb-ok-text); cursor: pointer; }
+  .onb-step.done i { background: color-mix(in srgb, var(--wb-ok) 18%, transparent); color: var(--wb-ok-text); }
+  .onb-h { display: flex; align-items: center; gap: 8px; }
+  .onb-h h2 { margin: 0; }
+  .onb-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--wb-bg-hover); color: var(--wb-text-3); }
+  .onb-tag.must { background: color-mix(in srgb, var(--wb-err) 14%, transparent); color: var(--wb-err-text); }
+  .onb-tag.rec { background: color-mix(in srgb, var(--wb-warn) 18%, transparent); color: var(--wb-warn); }
+  .onb-card .sub { margin-top: 6px; }
   .onb-card .onb-lb { display: block; font-size: 13px; color: var(--wb-text-2); margin: 10px 0 6px; }
   .onb-card select { width: 100%; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: 10px; font-size: 14px; background: var(--wb-bg); color: var(--wb-text); }
   .onb-card .onb-tip { font-size: 13px; color: var(--wb-text-3); margin-top: 6px; line-height: 1.6; }
   .onb-card .onb-tip a { color: var(--wb-brand-text); }
-  .onb-card button.go { margin-top: 18px; }
+  .onb-ok { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--wb-ok) 12%, transparent); color: var(--wb-ok-text); font-size: 13px; margin-bottom: 6px; }
+  .onb-ok a { margin-left: auto; color: var(--wb-brand-text); cursor: pointer; font-size: 12px; }
+  .onb-seg { display: flex; gap: 6px; margin-top: 4px; }
+  .onb-seg button { flex: 1; padding: 9px 10px; border: 1px solid var(--wb-border); border-radius: 10px; background: var(--wb-bg); color: var(--wb-text-2); font-size: 13px; cursor: pointer; }
+  .onb-seg button.on { border-color: var(--wb-brand); color: var(--wb-brand-text); background: var(--wb-brand-weak); font-weight: 600; }
+  .onb-radio { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: 10px; margin-top: 8px; font-size: 13px; cursor: pointer; }
+  .onb-radio span { margin-left: auto; color: var(--wb-text-3); font-size: 12px; }
+  .onb-rows { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+  .onb-row { border: 1px solid var(--wb-border); border-radius: 10px; background: var(--wb-card); }
+  .onb-row-h { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+  .onb-row-h .ic { width: 28px; height: 28px; border-radius: 8px; background: var(--wb-bg-hover); display: grid; place-items: center; font-style: normal; font-size: 15px; flex: none; }
+  .onb-row-h .tt { flex: 1; min-width: 0; }
+  .onb-row-h .tt b { display: block; font-size: 13px; }
+  .onb-row-h .tt span { display: block; font-size: 12px; color: var(--wb-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .onb-chip { font-size: 12px; color: var(--wb-text-3); flex: none; }
+  .onb-chip.ok { color: var(--wb-ok-text); }
+  .onb-chip.warn { color: var(--wb-warn); }
+  .onb-row-h .btn-plain { height: 28px; padding: 0 10px; font-size: 12px; flex: none; }
+  .onb-row-b { border-top: 1px solid var(--wb-border); padding: 10px 12px 12px; }
+  .onb-row-b input { display: block; width: 100%; margin-bottom: 6px; font-size: 13px; padding: 7px 10px; }
+  .onb-act { display: flex; align-items: center; gap: 8px; }
+  .onb-act .err { margin: 0; min-height: 0; }
+  .onb-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; }
+  .onb-foot a { font-size: 13px; color: var(--wb-text-3); cursor: pointer; }
+  .onb-foot a:hover { color: var(--wb-brand-text); }
+  .onb-card button.go { width: auto; min-width: 140px; padding: 10px 18px; margin: 0; }
   .onb-card button.go:disabled { opacity: .6; cursor: default; }
   /* ---------- 排队 / 插队 ---------- */
   .queue-bar { display: none; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 2px 6px; font-size: 13px; color: var(--wb-text-3); }
@@ -1254,23 +1293,11 @@
   </div>
 </div>
 
-<!-- 首次开箱：没有模型 Key 时界面点什么都白点，先把这一步走完 -->
+<!-- 首次开箱向导：大脑必配，其余按需；每步内容由 app-03.js 的 renderOnb 画，走完或跳过后只在 设置 → 关于 里能再打开 -->
 <div class="auth-mask" id="onb-mask">
   <div class="auth-card onb-card">
-    <h2>先给它接上一个大模型</h2>
-    <div class="sub">OpenWorkBuddy 自己不含模型。挑一家服务商、把 API Key 填进来，我会当场发一条测试请求验活。</div>
-    <div class="err" id="onb-err"></div>
-    <label class="onb-lb">模型服务商</label>
-    <select id="onb-model"></select>
-    <div class="onb-tip" id="onb-tip"></div>
-    <label class="onb-lb">API Key</label>
-    <input id="onb-key" type="password" placeholder="粘贴 API Key" autocomplete="off" spellcheck="false">
-    <label class="onb-lb">工作目录（成果文件都放这儿）</label>
-    <input id="onb-dir" placeholder="留空就用默认目录">
-    <button class="go" id="onb-go">验活并保存</button>
-    <div class="alt">
-      <a id="onb-skip">先跳过，我一会儿去设置里填</a>
-    </div>
+    <div class="onb-steps" id="onb-steps"></div>
+    <div id="onb-body"></div>
   </div>
 </div>
 

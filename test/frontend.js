@@ -810,6 +810,168 @@ const IMPANE_CHECKS = `
 })();
 `;
 
+
+// ================= 首次开箱向导（真源码切片：ONB_TIPS … finishOnb） =================
+const APP03 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8");
+const ONB0 = APP03.indexOf("const ONB_TIPS = {");
+const ONB1 = APP03.indexOf("// ================= 主区页面视图");
+if (ONB0 < 0 || ONB1 < 0 || ONB1 < ONB0) throw new Error("app-03.js 里找不到向导那一段（ONB_TIPS … 主区页面视图）");
+const ONB_SRC = APP03.slice(ONB0, ONB1);
+const ONB_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
+  + "<div class='auth-mask' id='onb-mask'><div class='auth-card onb-card'><div class='onb-steps' id='onb-steps'></div><div id='onb-body'></div></div></div></body>";
+const ONB_STUBS = `
+  function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+  const TOASTS = [], POSTS = [], MODALS = []; let REFRESHED = 0;
+  function toast(m) { TOASTS.push(String(m)); }
+  function refreshSettingsCache() { REFRESHED++; }
+  function openModal(k, sub) { MODALS.push(k + ":" + (sub || "")); }
+  // 体检表：大脑没接上、搜索没配、图已配、IM 配了 1 个、本机只装了 codex
+  let ST = { needs_setup: true, seen: false, brain: { ok: false, via: "api", name: "", model: "" }, active_model: "DeepSeek", workspace_dir: "/tmp/ws",
+    models: [{ name: "DeepSeek", model: "deepseek-chat", base_url: "https://api.deepseek.com/v1", local: false, has_key: false },
+             { name: "Ollama", model: "qwen3", base_url: "http://localhost:11434/v1", local: true, has_key: true }],
+    engines: [{ id: "claude-code", label: "Claude Code", installed: false, version: "", install: "npm i -g @anthropic-ai/claude-code" },
+              { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "" }],
+    engine: "builtin", search: { provider: "jina", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
+  let ONB_POST_OK = true, ENGINE_TEST_OK = true, SEARCH_TEST_OK = true, DONE_OK = true, SETTINGS_OK = true;
+  async function saveSettings(patch) { POSTS.push(["settings", patch]); return SETTINGS_OK; }
+  window.fetch = async (url, opt) => {
+    const method = (opt && opt.method) || "GET";
+    const body = opt && opt.body ? JSON.parse(opt.body) : null;
+    const j = (o) => ({ json: async () => o });
+    if (url === "/api/onboarding" && method === "GET") return j(JSON.parse(JSON.stringify(ST)));
+    if (url === "/api/onboarding") { POSTS.push(["onboarding", body]); if (!ONB_POST_OK) return j({ ok: false, error: "这个 Key 上游不认（HTTP 401）" });
+      ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: body.model, model: "deepseek-chat" } }; return j({ ok: true, active_model: body.model }); }
+    if (url === "/api/engines/test") { POSTS.push(["engine-test", body]); return j(ENGINE_TEST_OK ? { ok: true, reply: "好" } : { ok: false, why: "没登录", hint: "先在终端跑 codex login" }); }
+    if (url === "/api/settings" && method === "POST") { POSTS.push(["settings-raw", body]); if (body.agent && body.agent.engine) ST = { ...ST, needs_setup: false, engine: body.agent.engine, brain: { ok: true, via: "engine", name: body.agent.engine, model: "" } }; return j({ ok: true }); }
+    if (url === "/api/search/test") { POSTS.push(["search-test"]); if (SEARCH_TEST_OK) ST = { ...ST, search: { provider: "tavily", has_key: true } }; return j(SEARCH_TEST_OK ? { ok: true, provider: "tavily", sample: "x" } : { ok: false, error: "tavily 返回 0 条结果" }); }
+    if (url === "/api/onboarding/done") { POSTS.push(["done", body]); return j(DONE_OK ? { ok: true } : { ok: false, error: "还没接上任何大模型，先把第一步走完" }); }
+    throw new Error("没替身的请求：" + method + " " + url);
+  };
+`;
+const ONB_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + extra : "")); names.push(n); window.__onbNames = names.length; };
+  const tick = () => new Promise((r) => setTimeout(r, 8));
+  const mask = document.getElementById("onb-mask"), body = document.getElementById("onb-body"), steps = document.getElementById("onb-steps");
+  const q = (s) => body.querySelector(s);
+
+  // ---- 弹不弹 ----
+  await maybeOnboard(); await tick();
+  ok("大脑没接上：一进来就弹向导", mask.classList.contains("show"));
+  ok("步骤条五步、当前在第一步", steps.querySelectorAll(".onb-step").length === 5 && steps.querySelector(".onb-step.cur").textContent.includes("大模型"));
+  ok("第一步标着「必需」，一屏文字不轰炸（<420 字）", q(".onb-tag.must") && body.innerText.length < 420, body.innerText.length);
+  ok("没接上大脑时步骤条点不动", (steps.querySelectorAll(".onb-step")[3].click(), steps.querySelector(".onb-step.cur").textContent.includes("大模型")));
+  ok("云端/本机两个选项，本机那边列出装了的 codex、没装的 claude-code 不出现", q("#onb-seg button.on").dataset.v === "cloud" && q("input[name=onb-eng][value=codex]") && !q("input[name=onb-eng][value=claude-code]"));
+  ok("默认选中还没配 Key 的云端渠道", q("#onb-model").value === "DeepSeek" && q("#onb-tip").textContent.includes("deepseek"));
+  q("#onb-model").value = "Ollama"; q("#onb-model").dispatchEvent(new Event("change"));
+  ok("选本地 Ollama 时 Key 框禁用", q("#onb-key").disabled && q("#onb-tip").textContent.includes("Ollama"));
+  q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+
+  // ---- 验活失败：留在原地、原因写出来 ----
+  ONB_POST_OK = false;
+  q("#onb-key").value = "sk-bad"; q("#onb-go").click(); await tick(); await tick();
+  ok("验活失败：错误写在向导里、不翻页、按钮恢复", q("#onb-err").textContent.includes("401") && steps.querySelector(".onb-step.cur").textContent.includes("大模型") && !q("#onb-go").disabled && q("#onb-go").textContent === "验活并继续");
+  ok("验活真 POST 了 model + api_key", POSTS.some(([k, b]) => k === "onboarding" && b.model === "DeepSeek" && b.api_key === "sk-bad"));
+
+  // ---- 走本机 CLI：先真连再切引擎 ----
+  q("#onb-seg button[data-v=local]").click();
+  ok("切到本机：云端表单藏起来、本机表单露出来", q("#onb-cloud").hidden && !q("#onb-local").hidden);
+  ENGINE_TEST_OK = false; POSTS.length = 0;
+  q("#onb-go").click(); await tick(); await tick();
+  ok("本机没登录：why+hint 都写出来，不切引擎", q("#onb-err").textContent.includes("没登录") && q("#onb-err").textContent.includes("codex login") && !POSTS.some(([k]) => k === "settings-raw"));
+  ENGINE_TEST_OK = true; POSTS.length = 0;
+  q("#onb-go").click(); await tick(); await tick(); await tick();
+  ok("本机连上：先 /api/engines/test 再存 agent.engine，然后翻到第二步", POSTS[0][0] === "engine-test" && POSTS[0][1].id === "codex" && POSTS[1][0] === "settings-raw" && POSTS[1][1].agent.engine === "codex" && steps.querySelector(".onb-step.cur").textContent.includes("联网搜索"));
+  ok("第一步在步骤条上打了 ✓", steps.querySelectorAll(".onb-step")[0].classList.contains("done") && steps.querySelectorAll(".onb-step")[0].textContent.includes("✓"));
+
+  // ---- 第二步：搜索 ----
+  ok("搜索步标「推荐」、默认 jina、说清没填会怎样", q(".onb-tag.rec") && q("#onb-sp").value === "jina" && body.innerText.includes("DuckDuckGo"));
+  q("#onb-sp").value = "tavily"; q("#onb-sp").dispatchEvent(new Event("change"));
+  ok("换服务商：占位符和提示跟着换", q("#onb-sp-key").placeholder === "tvly-..." && q("#onb-sp-tip").textContent.includes("tavily"));
+  q("#onb-go").click(); await tick();
+  ok("没填 Key 直接点保存：提醒而不是空保存", q("#onb-err").textContent.includes("没填") && !POSTS.some(([k]) => k === "settings"));
+  SEARCH_TEST_OK = false; POSTS.length = 0;
+  q("#onb-sp-key").value = "tvly-1"; q("#onb-go").click(); await tick(); await tick();
+  ok("搜索测试失败：保存过但留在本步、原因写出来", POSTS[0][0] === "settings" && POSTS[0][1].search.provider === "tavily" && POSTS[0][1].search.tavily_key === "tvly-1" && POSTS[1][0] === "search-test" && q("#onb-err").textContent.includes("0 条") && steps.querySelector(".onb-step.cur").textContent.includes("联网搜索"));
+  ok("搜索 payload 只带所选那家的 key（不把别家的 key 清空）", !("jina_key" in POSTS[0][1].search));
+  SEARCH_TEST_OK = true; POSTS.length = 0;
+  q("#onb-go").click(); await tick(); await tick(); await tick();
+  ok("搜索测活通过：翻到第三步", steps.querySelector(".onb-step.cur").textContent.includes("图/视频/语音"));
+
+  // ---- 第三步：多媒体 ----
+  ok("四行能力：生图已配、其余未配，输入框默认收起", body.querySelectorAll(".onb-row").length === 4 && q(".onb-row[data-kind=image] .onb-chip").classList.contains("ok") && !q(".onb-row[data-kind=video] .onb-chip").classList.contains("ok") && [...body.querySelectorAll(".onb-row-b")].every((b) => b.hidden));
+  ok("第三步整屏文字克制（<300 字）", body.innerText.length < 300, body.innerText.length);
+  POSTS.length = 0;
+  q(".onb-row[data-kind=tts] .onb-fill").click();
+  ok("点「填写」才展开，语音多一个音色框", !q(".onb-row[data-kind=tts] .onb-row-b").hidden && q(".onb-row[data-kind=tts] input[data-f=voice]") && !q(".onb-row[data-kind=image] input[data-f=voice]"));
+  q(".onb-row[data-kind=tts] .onb-save").click(); await tick();
+  ok("地址/Key 没填就保存：当场拦下", q(".onb-row[data-kind=tts] .err").textContent.includes("都要填") && !POSTS.some(([k]) => k === "settings"));
+  q(".onb-row[data-kind=tts] input[data-f=base_url]").value = "https://x/v1"; q(".onb-row[data-kind=tts] .onb-save").click(); await tick();
+  ok("只填了地址没填 Key：照样拦", q(".onb-row[data-kind=tts] .err").textContent.includes("都要填") && !POSTS.some(([k]) => k === "settings"));
+  q(".onb-row[data-kind=tts] input[data-f=base_url]").value = "https://x/v1"; q(".onb-row[data-kind=tts] input[data-f=api_key]").value = "k"; q(".onb-row[data-kind=tts] input[data-f=model]").value = "tts-1";
+  q(".onb-row[data-kind=tts] .onb-save").click(); await tick(); await tick();
+  ok("保存语音：只发 media.tts 一块，行变「已配」并收起", POSTS.some(([k, p]) => k === "settings" && p.media && Object.keys(p.media).join() === "tts" && p.media.tts.model === "tts-1") && q(".onb-row[data-kind=tts] .onb-chip").classList.contains("ok") && q(".onb-row[data-kind=tts] .onb-row-b").hidden);
+  q("#onb-skip-step").click(); await tick();
+  ok("「都先不填」记作跳过并翻到第四步", onbState.skipped.has("media") && steps.querySelector(".onb-step.cur").textContent.includes("远程指挥"));
+
+  // ---- 第四步：IM ----
+  ok("IM 步只有一行 + 去助理设置，显示已配 1 个", body.querySelectorAll(".onb-row").length === 1 && q(".onb-chip").textContent.includes("1") && q("#onb-im-open"));
+  q("#onb-go").click(); await tick();
+  ok("下一步到完成页", steps.querySelector(".onb-step.cur").textContent.includes("完成"));
+
+  // ---- 第五步：完成 ----
+  const sum = q("#onb-sum");
+  ok("清单四行：大模型 ✓ codex、搜索 ✓ tavily、多媒体 2/4、IM 1 个", sum.querySelectorAll(".onb-row").length === 4 && sum.innerText.includes("codex") && sum.innerText.includes("tavily") && sum.innerText.includes("2 / 4") && sum.innerText.includes("1 个通道"));
+  ok("工作目录占位符是当前目录", q("#onb-dir").placeholder === "/tmp/ws");
+  ok("大脑接上后步骤条能回跳", (steps.querySelectorAll(".onb-step")[1].click(), steps.querySelector(".onb-step.cur").textContent.includes("联网搜索")));
+  ok("已配的搜索步：显示已配、按钮变下一步", q(".onb-ok").textContent.includes("tavily") && q("#onb-go").textContent === "下一步");
+  q("#onb-go").click(); await tick(); q("#onb-go").click(); await tick(); q("#onb-go").click(); await tick();
+  DONE_OK = false; POSTS.length = 0;
+  q("#onb-dir").value = "/tmp/ws2"; q("#onb-go").click(); await tick(); await tick();
+  ok("完成失败：错误写出来、不关向导", q("#onb-err").textContent.includes("大模型") && mask.classList.contains("show"));
+  DONE_OK = true; POSTS.length = 0; REFRESHED = 0;
+  q("#onb-go").click(); await tick(); await tick();
+  ok("开始使用：POST done 带 skipped + 工作目录，关向导，刷新设置缓存", POSTS[0][0] === "done" && POSTS[0][1].skipped.includes("media") && POSTS[0][1].workspace_dir === "/tmp/ws2" && !mask.classList.contains("show") && REFRESHED >= 1);
+
+  // ---- 走完后不再弹；关于页能重开 ----
+  ST = { ...ST, seen: true };
+  await maybeOnboard(); await tick();
+  ok("走完了（seen）且大脑在：再进来不弹", !mask.classList.contains("show"));
+  ST = { ...ST, seen: true, needs_setup: true, brain: { ok: false, via: "api", name: "", model: "" } };
+  await maybeOnboard(); await tick();
+  ok("走完过但大脑掉了（Key 被删）：还是要弹", mask.classList.contains("show") && steps.querySelector(".onb-step.cur").textContent.includes("大模型"));
+  closeOnboarding();
+  ST = { ...ST, needs_setup: false, brain: { ok: true, via: "engine", name: "codex", model: "" } };
+  await openOnboarding(); await tick();
+  ok("手动重开：弹出且第一步显示「已接上」+ 下一步", mask.classList.contains("show") && q("#onb-brain-ok") && q("#onb-go").textContent === "下一步" && q("#onb-brain-form").hidden);
+  q("#onb-brain-change").click();
+  ok("「换一个」才露出表单", !q("#onb-brain-form").hidden && q("#onb-go").textContent === "验活并继续");
+  closeOnboarding();
+
+  // ---- 大脑没接上时「先跳过」只管本次窗口，不往服务端记 ----
+  onbSkipMem = false;
+  ST = { ...ST, seen: false, needs_setup: true, brain: { ok: false, via: "api", name: "", model: "" } };
+  POSTS.length = 0;
+  await maybeOnboard(); await tick();
+  q("#onb-skip-step").click(); await tick();
+  ok("先跳过：关向导、本窗口标记、不 POST done", !mask.classList.contains("show") && onbSkipFlag() === true && !POSTS.some(([k]) => k === "done"));
+  await maybeOnboard(); await tick();
+  ok("同一窗口内不再弹", !mask.classList.contains("show"));
+  // 大脑没接上却硬走到 IM 步（比如从关于页重开后直接点）：finishOnb 不许去 POST done，只关向导
+  await openOnboarding(); await tick(); onbGo(3); POSTS.length = 0;
+  q("#onb-im-open").click(); await tick(); await tick();
+  ok("大脑没接上时「去助理设置」：不 POST done、只关向导", !POSTS.some(([k]) => k === "done") && !mask.classList.contains("show"));
+  // IM 步「去助理设置」：大脑没接上时只关向导不记 done；接上时记 done 并打开助理设置
+  onbSkipMem = false;
+  ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: "DeepSeek", model: "deepseek-chat" } };
+  await openOnboarding(); await tick(); onbGo(3); POSTS.length = 0; MODALS.length = 0;
+  q("#onb-im-open").click(); await tick(); await tick();
+  ok("去助理设置：记 done、关向导、打开 设置→助理设置", POSTS.some(([k]) => k === "done") && !mask.classList.contains("show") && MODALS.includes("settings:im"));
+  return names;
+})().catch((e) => { throw new Error("[向导] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (window.__onbNames || 0)); })
+`;
+
 const TRAIL_CHECKS = `
 (async () => {
   const names = [];
@@ -1437,6 +1599,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：轨迹条（同名合并·出错标红·中止删除线·+N 上限·收起可见·点徽章直达）+ 结论出过程区 + 命中率封顶 ${names9.length} 项通过`);
     } finally {
       if (!win9.isDestroyed()) win9.destroy();
+    }
+    const win11 = new BrowserWindow({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await win11.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ONB_HTML));
+      const names11 = await win11.webContents.executeJavaScript(ONB_STUBS + "\n" + ONB_SRC + "\n" + ONB_CHECKS, true);
+      for (const n of names11) console.log("  ✓ " + n);
+      console.log(`✅ 前端：首次开箱向导（大脑必配·云端/本机二选一·验活失败不翻页·搜索保存再测活·多媒体按行填·清单收尾·走完不再弹·关于页可重开）${names11.length} 项通过`);
+    } finally {
+      if (!win11.isDestroyed()) win11.destroy();
     }
     const win10 = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {

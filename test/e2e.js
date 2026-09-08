@@ -3998,6 +3998,7 @@ async function main() {
   await testMcpFailureReason();
   await testThinkingSwitch();
   await testThinkingSettingsApi();
+  await testOnboardingWizardApi();
   await testEmbedFailoverResilience();
   testUiNoRawMarkdown();
   // 清理测试产物
@@ -4299,6 +4300,139 @@ async function testThinkingSwitch() {
  * 按关掉的速度和价钱做打算，账单却照着思考的量在涨——跟「不静默降级用户配的模型」
  * 是同一条红线。
  */
+/**
+ * 首次开箱向导（真起 server.js）：
+ *  - 干净的家目录：needs_setup=true、seen=false、大脑没接上、四种多媒体全 false、IM 0 个、引擎清单和搜索状态都在
+ *  - 大脑没接上时 POST /api/onboarding/done 必须 400，config.json 里不许出现 onboarding（不然「跳过」就把提醒永久关掉了）
+ *  - 把底层切成本机 claude-code 也算接上大脑（needs_setup=false，brain.via=engine）
+ *  - done 落盘：done_at + skipped 写进 config.json；再 GET seen=true；skipped 会被清洗（超长/超量丢掉）
+ *  - 静态闸门：前端五步向导、关于页重开入口、README 的命令行一节都在
+ */
+async function testOnboardingWizardApi() {
+  const os = require("os");
+  const http = require("http");
+  const { spawn } = require("child_process");
+  const crypto = require("crypto");
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-onb-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  const port = 3900 + Math.floor(Math.random() * 90);
+  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+    env: { ...process.env, OPENWORKBUDDY_HOME: home, PORT: String(port), HOST: "127.0.0.1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  child.stdout.on("data", (c) => (log += c));
+  child.stderr.on("data", (c) => (log += c));
+  const up = await new Promise((resolve) => {
+    const t = setTimeout(() => resolve(false), 40000);
+    const tick = setInterval(() => {
+      if (/已启动/.test(log)) { clearInterval(tick); clearTimeout(t); resolve(true); }
+      if (child.exitCode !== null) { clearInterval(tick); clearTimeout(t); resolve(false); }
+    }, 200);
+  });
+
+  const req = (method, p, body) => new Promise((resolve) => {
+    const data = body === undefined ? null : JSON.stringify(body);
+    const r = http.request({
+      host: "127.0.0.1", port, path: p, method,
+      headers: { Cookie: "wb_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+    }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    r.on("error", (e) => resolve({ code: 0, body: e.message, json: null }));
+    if (data) r.write(data);
+    r.end();
+  });
+  const cfgOnDisk = () => { try { return JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8")); } catch { return null; } };
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + log.slice(-400));
+
+    // 1. 干净家目录的体检表
+    const a = await req("GET", "/api/onboarding");
+    assert(a.code === 200 && a.json, "体检表拿不到：HTTP " + a.code + " " + a.body.slice(0, 200));
+    const st = a.json;
+    assert(st.needs_setup === true && st.seen === false, "新装应当 needs_setup=true / seen=false：" + JSON.stringify({ n: st.needs_setup, s: st.seen }));
+    assert(st.brain && st.brain.ok === false, "没填 Key 时 brain.ok 应为 false：" + JSON.stringify(st.brain));
+    assert(Array.isArray(st.models) && st.models.length > 0 && st.models.every((m) => typeof m.has_key === "boolean" && !("api_key" in m)), "models 要带 has_key 布尔，且绝不能把 api_key 本身吐给前端");
+    assert(Array.isArray(st.engines) && st.engines.some((e) => e.id === "claude-code") && st.engines.some((e) => e.id === "codex"), "引擎清单缺 claude-code / codex：" + JSON.stringify(st.engines));
+    assert(st.engines.every((e) => typeof e.installed === "boolean" && typeof e.install === "string"), "每个引擎要有 installed 布尔 + install 提示");
+    assert(st.search && typeof st.search.provider === "string" && st.search.has_key === false, "搜索状态：新装 has_key 应为 false：" + JSON.stringify(st.search));
+    assert(st.media && ["image", "video", "tts", "vision"].every((k) => st.media[k] === false), "四种多媒体新装应全 false：" + JSON.stringify(st.media));
+    assert(st.im && st.im.configured === 0, "IM 新装应 0 个：" + JSON.stringify(st.im));
+    assert(typeof st.workspace_dir === "string" && st.workspace_dir, "体检表要带当前工作目录");
+
+    // 2. 大脑没接上：done 必须拒绝，且不落 onboarding（否则跳过一次提醒就永久没了）
+    const d0 = await req("POST", "/api/onboarding/done", { skipped: ["search"] });
+    assert(d0.code === 400 && d0.json && /大模型/.test(d0.json.error || ""), "大脑没接上时 done 应 400 并说明原因：HTTP " + d0.code + " " + d0.body.slice(0, 200));
+    const c0 = cfgOnDisk();
+    assert(!c0 || !c0.onboarding, "大脑没接上时 config.json 里不该出现 onboarding");
+    const a2 = await req("GET", "/api/onboarding");
+    assert(a2.json.seen === false && a2.json.needs_setup === true, "被拒的 done 不能改变 seen / needs_setup");
+
+    // 3. 本机 CLI 当大脑：切引擎后 needs_setup 翻 false，via=engine
+    const e = await req("POST", "/api/settings", { agent: { engine: "claude-code" } });
+    assert(e.code === 200, "切引擎失败：HTTP " + e.code + " " + e.body.slice(0, 200));
+    const a3 = await req("GET", "/api/onboarding");
+    assert(a3.json.needs_setup === false && a3.json.brain.ok === true && a3.json.brain.via === "engine" && a3.json.engine === "claude-code", "本机引擎应当算作大脑已接上：" + JSON.stringify({ n: a3.json.needs_setup, b: a3.json.brain, e: a3.json.engine }));
+    assert(a3.json.seen === false, "只是切了引擎、还没走完向导，seen 不该变 true");
+
+    // 4. done 落盘 + 清洗
+    const ws = path.join(home, "我的工作区");
+    const junk = "x".repeat(40);
+    const d1 = await req("POST", "/api/onboarding/done", { skipped: ["search", "media", junk, "a", "b", "c", "d", "e", "f", "g", "h", "i"], workspace_dir: ws });
+    assert(d1.code === 200 && d1.json && d1.json.ok === true, "done 应成功：HTTP " + d1.code + " " + d1.body.slice(0, 200));
+    assert(d1.json.workspace_dir === ws && fs.existsSync(ws), "done 带 workspace_dir 应当切过去并把目录建出来：" + JSON.stringify(d1.json));
+    const c1 = cfgOnDisk();
+    assert(c1 && c1.onboarding && typeof c1.onboarding.done_at === "number" && c1.onboarding.done_at > 0, "done_at 没写进 config.json，重启又会弹");
+    assert(Array.isArray(c1.onboarding.skipped) && c1.onboarding.skipped.includes("search") && c1.onboarding.skipped.includes("media"), "skipped 没落盘：" + JSON.stringify(c1.onboarding));
+    assert(!c1.onboarding.skipped.includes(junk) && c1.onboarding.skipped.length <= 10, "skipped 要清洗：超长项丢掉、最多 10 个：" + JSON.stringify(c1.onboarding.skipped));
+    assert(c1.agent && c1.agent.engine === "claude-code", "done 不该动别的配置（引擎选择被冲掉了）");
+    const a4 = await req("GET", "/api/onboarding");
+    assert(a4.json.seen === true && a4.json.needs_setup === false && a4.json.workspace_dir === ws, "走完后 seen=true、工作目录跟着变：" + JSON.stringify({ s: a4.json.seen, n: a4.json.needs_setup, w: a4.json.workspace_dir }));
+
+    // 5. 换回内置模型且没 Key：needs_setup 又翻回 true（大脑掉了要重新提醒），但 seen 留着
+    const e2 = await req("POST", "/api/settings", { agent: { engine: "builtin" } });
+    assert(e2.code === 200, "切回内置失败：" + e2.body.slice(0, 200));
+    const a5 = await req("GET", "/api/onboarding");
+    assert(a5.json.needs_setup === true && a5.json.seen === true, "切回没 Key 的内置模型：needs_setup=true 但 seen 保留：" + JSON.stringify({ n: a5.json.needs_setup, s: a5.json.seen }));
+
+    // 6. 未登录不给看（体检表里有渠道名、目录路径）
+    const anon = await new Promise((resolve) => {
+      http.get({ host: "127.0.0.1", port, path: "/api/onboarding" }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", () => resolve(0));
+    });
+    assert(anon === 401 || anon === 403 || anon === 302, "未登录访问体检表应被拦：HTTP " + anon);
+
+    // 静态闸门：前端向导 / 关于页重开 / README 命令行一节
+    const app03 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8");
+    assert(/const ONB_STEPS = \[/.test(app03) && (app03.match(/\["(brain|search|media|im|done)"/g) || []).length === 5, "app-03.js 的向导应是五步：brain/search/media/im/done");
+    assert(/async function openOnboarding\(/.test(app03) && /\/api\/onboarding\/done/.test(app03), "app-03.js 缺 openOnboarding 或没调 /api/onboarding/done");
+    assert(/function onbSkipFlag\(/.test(app03) && /try \{[\s\S]*sessionStorage/.test(app03), "「本次跳过」标记要 try 住 sessionStorage（file:// / 隐私模式下会抛）");
+    const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+    assert(/id="onb-steps"/.test(html) && /id="onb-body"/.test(html) && /\.onb-steps\s*\{/.test(html), "index.html 缺向导壳子或步骤条样式");
+    const app06 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-06.js"), "utf8");
+    assert(/id="about-onb"/.test(app06) && /openOnboarding\(\)/.test(app06), "设置 → 关于 里缺「重新打开新手引导」");
+    const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+    assert(/## 命令行也能用/.test(readme) && /wb engines use/.test(readme) && /--json/.test(readme) && /命令行用法\.md/.test(readme), "README 缺命令行一节（wb 单发 / --json / engines use / 链到 docs）");
+    const cliHelp = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
+    for (const flag of ["--json", "-q", "-c", "-C", "engines use", "sessions"]) assert(cliHelp.includes(flag), "README 里写的 " + flag + " 在 cli.js 里找不到");
+
+    console.log("✅ 首次开箱向导 API：新装体检表(不泄 Key)·大脑没接上 done 拒且不落盘·本机 CLI 算大脑·done 落 done_at+skipped 清洗+切工作目录·seen 留存 needs_setup 随大脑翻转·匿名 401 + 前端五步/关于页重开/README 命令行一节 静态闸门");
+  } finally {
+    child.kill("SIGKILL");
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
 async function testThinkingSettingsApi() {
   const os = require("os");
   const http = require("http");
