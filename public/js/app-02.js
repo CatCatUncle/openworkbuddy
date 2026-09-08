@@ -1144,17 +1144,39 @@ function renderUserChip() {
 }
 document.getElementById("gear-btn").onclick = () => { closeUserMenu(); openModal("settings"); };
 
-// ---------- 外观（浅色/深色/跟随系统，存本机） ----------
+// ---------- 外观：主题 / 皮肤 / 字号 / 字体 / 密度（都存本机：「这台机器看着舒服」是设备的事，不跟账号走） ----------
+// 存储被禁（file:// / 隐私模式 / data: 页面）时退到内存，别让整页脚本在第一行就崩
+const lookMem = {};
+function lookRead(k) { try { const v = localStorage.getItem(k); if (v != null) return v; } catch { /* 存储不可用 */ } return lookMem[k]; }
+function lookWrite(k, v) { lookMem[k] = v; try { localStorage.setItem(k, v); } catch { /* 存储不可用 */ } }
 const THEME_LABEL = { light: "浅色", dark: "深色", system: "跟随系统" };
 const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
-function getTheme() { const t = localStorage.getItem("wb-theme"); return THEME_LABEL[t] ? t : "system"; }
+function getTheme() { const t = lookRead("wb-theme"); return THEME_LABEL[t] ? t : "system"; }
 function applyTheme() {
   const t = getTheme();
   document.documentElement.dataset.theme = t === "dark" || (t === "system" && themeMedia.matches) ? "dark" : "light";
 }
 themeMedia.addEventListener("change", applyTheme);
-function setTheme(t) { localStorage.setItem("wb-theme", t); applyTheme(); }
+function setTheme(t) { if (!THEME_LABEL[t]) return; lookWrite("wb-theme", t); applyTheme(); }
 applyTheme();
+// 皮肤 = 只换品牌色那一组 token（主色/描边/弱底/品牌文字/渐变），版式不动；字号 = 正文 15px 的四档，其余尺寸按 calc 跟着走
+const LOOK_OPTS = {
+  skin: { default: "默认紫", ocean: "海盐", forest: "森林", sunset: "暖橙", rose: "玫瑰", graphite: "石墨" },
+  fs: { s: "小", m: "标准", l: "大", xl: "特大" },
+  font: { system: "系统", serif: "衬线", mono: "等宽" },
+  density: { cozy: "舒适", compact: "紧凑" },
+};
+const LOOK_DEFAULT = { skin: "default", fs: "m", font: "system", density: "cozy" };
+function lookGet(k) { const v = lookRead("wb-look-" + k); return LOOK_OPTS[k] && LOOK_OPTS[k][v] ? v : LOOK_DEFAULT[k]; }
+function applyLook() {
+  const ds = document.documentElement.dataset;
+  for (const k of Object.keys(LOOK_OPTS)) {
+    const v = lookGet(k);
+    if (v === LOOK_DEFAULT[k]) delete ds[k]; else ds[k] = v;
+  }
+}
+function setLook(k, v) { if (!LOOK_OPTS[k] || !LOOK_OPTS[k][v]) return; lookWrite("wb-look-" + k, v); applyLook(); }
+applyLook();
 
 // ---------- 头像菜单：设置 / 外观 / 帮助与反馈 / 检查更新 / 退出登录 ----------
 const userMenu = document.getElementById("user-menu");
@@ -1171,33 +1193,21 @@ function openUserMenu() {
     </div>
     <div class="um-i" data-act="profile">🪪 个人资料 <span class="hint">改名字 · 换头像</span></div>
     <div class="um-i" data-act="settings">⚙️ 设置</div>
-    <div class="um-i" data-act="appearance">🌗 外观 <span class="hint">${THEME_LABEL[getTheme()]} ▾</span></div>
-    <div class="um-sub" id="um-theme" style="display:none">${Object.entries(THEME_LABEL).map(([k, l]) =>
-      `<div class="um-opt" data-theme="${k}">${l}${getTheme() === k ? '<span class="ck">✓</span>' : ""}</div>`).join("")}</div>
+    <div class="um-i" data-act="appearance">🎨 外观 <span class="hint">${THEME_LABEL[getTheme()]} · ${LOOK_OPTS.fs[lookGet("fs")]}字</span></div>
     <div class="um-i" data-act="help">💬 帮助与反馈</div>
     <div class="um-i" data-act="update">🔄 检查更新</div>
     <div class="um-i" data-act="logout" style="color:var(--wb-err-text)">↪ 退出登录</div>`;
   userMenu.querySelectorAll("[data-act]").forEach(el => el.onclick = async (e) => {
     e.stopPropagation();
     const act = el.dataset.act;
-    if (act === "appearance") {
-      const sub = document.getElementById("um-theme");
-      sub.style.display = sub.style.display === "none" ? "block" : "none";
-      return;
-    }
     closeUserMenu();
     if (act === "account") openModal("account");
+    else if (act === "appearance") openModal("settings", "look");
     else if (act === "profile") { await openModal("account"); renderProfile(); }
     else if (act === "settings") openModal("settings");
     else if (act === "help") openModal("settings", "about");
     else if (act === "update") checkUpdate();
     else if (act === "logout") { await fetch("/api/auth/logout", { method: "POST" }); location.reload(); }
-  });
-  userMenu.querySelectorAll(".um-opt").forEach(el => el.onclick = (e) => {
-    e.stopPropagation();
-    setTheme(el.dataset.theme);
-    openUserMenu(); // 重画勾选状态，菜单保持展开
-    document.getElementById("um-theme").style.display = "block";
   });
   userMenu.classList.add("show");
 }

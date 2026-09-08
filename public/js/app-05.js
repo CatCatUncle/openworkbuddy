@@ -204,24 +204,26 @@ function cronToHuman(cron) {
 }
 
 // ================= 设置中心 =================
+// [id, 名字, 图标]：左栏一眼扫过去靠图标认，名字收短，别一列密密麻麻的字
 const SETTING_CATS = [
-  ["models", "模型"],
-  ["search", "联网搜索"],
-  ["agent", "智能体设置"],
-  ["security", "安全中心"],
-  ["shortcuts", "快捷键"],
-  ["persona", "个性化"],
-  ["memory", "记忆"],
-  ["evolve", "自进化"],
-  ["data", "数据管理"],
-  ["im", "助理设置"],
-  ["about", "关于"],
+  ["models", "模型", "🧠"],
+  ["search", "联网搜索", "🔎"],
+  ["agent", "智能体", "🤖"],
+  ["security", "安全", "🛡️"],
+  ["shortcuts", "快捷键", "⌨️"],
+  ["persona", "个性化", "🎭"],
+  ["look", "外观", "🎨"],
+  ["memory", "记忆", "📝"],
+  ["evolve", "自进化", "🌱"],
+  ["data", "数据", "🗂️"],
+  ["im", "助理设置", "📱"],
+  ["about", "关于", "ℹ️"],
 ];
 async function renderSettings(active) {
   const s = await fetch("/api/settings").then(r => r.json());
   mBody.innerHTML = `<div class="settings-layout">
-    <div class="settings-nav">${SETTING_CATS.map(([k, label]) =>
-      `<div class="cat ${k === active ? "active" : ""}" data-cat="${k}">${label}</div>`).join("")}</div>
+    <div class="settings-nav">${SETTING_CATS.map(([k, label, icon]) =>
+      `<div class="cat ${k === active ? "active" : ""}" data-cat="${k}"><span class="ci">${icon}</span>${label}</div>`).join("")}</div>
     <div class="settings-pane" id="settings-pane"></div>
   </div>`;
   mBody.querySelector(".settings-nav").addEventListener("click", (e) => {
@@ -233,6 +235,7 @@ async function renderSettings(active) {
   else if (active === "search") renderSearchPane(pane, s);
   else if (active === "agent") renderAgentPane(pane, s);
   else if (active === "persona") renderPersonaPane(pane, s);
+  else if (active === "look") renderLookPane(pane);
   else if (active === "memory") renderMemoryPane(pane);
   else if (active === "evolve") renderEvolvePane(pane);
   else if (active === "data") renderDataPane(pane, s);

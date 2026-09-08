@@ -29,14 +29,41 @@
     --color-bg-subtle: #f7f8fa;
     --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
   }
+  /* ---------- 外观偏好：app-02.js 的 applyLook() 把选择写到 <html data-fs / data-skin / data-font / data-density> ----------
+     字号只改一个 --wb-fs：正文、输入框、标题、行内代码、左栏历史都按 calc 跟着走，四档之间比例不变 */
+  :root { --wb-fs: 15px; }
+  html[data-fs="s"] { --wb-fs: 14px; }
+  html[data-fs="l"] { --wb-fs: 16px; }
+  html[data-fs="xl"] { --wb-fs: 18px; }
+  html[data-font="serif"] { --font-sans: Georgia, "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", SimSun, serif; }
+  html[data-font="mono"] { --font-sans: var(--font-mono); }
+  /* 皮肤：只换品牌色那一组令牌，版式一点不动。字色单独给（浅底要深、暗底要亮），别拿填充色当字色——
+     每套在浅/暗两个主题下的 --brand-text 对比度都有测试盯着（≥4.5），白字压 --primary 也要 ≥3 */
+  html[data-skin="ocean"] { --primary: #0284c7; --ring: #0284c7; --ring-weak: #e0f2fe; --brand-text: #0369a1; --wb-brand-on-white: #0369a1; --wb-brand-grad: linear-gradient(135deg,#0284c7,#06b6d4); }
+  html[data-theme="dark"][data-skin="ocean"] { --ring: #38bdf8; --ring-weak: #0c2a3d; --brand-text: #7dd3fc; }
+  html[data-skin="forest"] { --primary: #059669; --ring: #059669; --ring-weak: #d1fae5; --brand-text: #047857; --wb-brand-on-white: #047857; --wb-brand-grad: linear-gradient(135deg,#059669,#14b8a6); }
+  html[data-theme="dark"][data-skin="forest"] { --ring: #34d399; --ring-weak: #0b2e24; --brand-text: #6ee7b7; }
+  html[data-skin="sunset"] { --primary: #ea580c; --ring: #ea580c; --ring-weak: #ffedd5; --brand-text: #c2410c; --wb-brand-on-white: #c2410c; --wb-brand-grad: linear-gradient(135deg,#ea580c,#f59e0b); }
+  html[data-theme="dark"][data-skin="sunset"] { --ring: #fb923c; --ring-weak: #3a2410; --brand-text: #fdba74; }
+  html[data-skin="rose"] { --primary: #e11d48; --ring: #e11d48; --ring-weak: #ffe4e6; --brand-text: #be123c; --wb-brand-on-white: #be123c; --wb-brand-grad: linear-gradient(135deg,#e11d48,#ec4899); }
+  html[data-theme="dark"][data-skin="rose"] { --ring: #fb7185; --ring-weak: #3d1520; --brand-text: #fda4af; }
+  html[data-skin="graphite"] { --primary: #4b5563; --ring: #4b5563; --ring-weak: #e5e7eb; --brand-text: #1f2937; --wb-brand-on-white: #1f2937; --wb-brand-grad: linear-gradient(135deg,#4b5563,#6b7280); }
+  html[data-theme="dark"][data-skin="graphite"] { --primary: #6b7280; --ring: #9ca3af; --ring-weak: #2b2d34; --brand-text: #d1d5db; }
+  /* 密度：紧凑只收间距和行高，不动字号 */
+  html[data-density="compact"] .turn { margin-bottom: 12px; }
+  html[data-density="compact"] .a-msg { margin-top: 8px; }
+  html[data-density="compact"] .a-text { line-height: 1.55; }
+  html[data-density="compact"] .u-msg .bubble { padding: 7px 12px; line-height: 1.5; }
+  html[data-density="compact"] .hist-item { padding: 5px 10px; }
+  html[data-density="compact"] .card-item { padding: 8px 12px; margin-bottom: 6px; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
   body {
     /* -apple-system 排在 PingFang 前面：这样拉丁字母走 SF（苹果自己的界面字），
        中文再落回 PingFang——同一句中英混排，各拿各最合适的那套。
        反过来写（PingFang 在前）拉丁字母会用 PingFang 自带的西文，字重和字距都偏「网页」。 */
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
-    background: var(--wb-bg); color: var(--wb-text); display: flex; overflow: hidden; font-size: 15px;
+    font-family: var(--font-sans);
+    background: var(--wb-bg); color: var(--wb-text); display: flex; overflow: hidden; font-size: var(--wb-fs);
   }
   input, select, textarea, button { font-family: inherit; }
   /* ---------- 左侧导航 ---------- */
@@ -74,7 +101,7 @@
   .im-b .m { font-size: 12px; color: var(--wb-text-3); margin-bottom: 2px; }
   .side-label { font-size: 12px; color: var(--wb-text-3); padding: 4px 10px 6px; }
   #history { flex: 1; overflow-y: auto; min-height: 0; }
-  .hist-item { padding: 8px 10px; border-radius: 8px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hist-item { padding: 8px 10px; border-radius: 8px; font-size: calc(var(--wb-fs) - 1px); color: var(--wb-text-2); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .hist-item:hover { background: var(--wb-bg-hover); }
   /* 这几类行是 div，补了 tabindex 才能 Tab 到；浏览器不给 div 画默认焦点圈，得自己画。
      用 outline 不用 box-shadow：选中态的左侧指示条正占着 box-shadow。 */
@@ -175,16 +202,16 @@
   .ava-pick:hover { background: var(--wb-bg-hover); border-color: var(--wb-border); }
   .a-text { line-height: 1.7; word-break: break-word; margin: 3px 0 6px; }
   .a-text p { margin: 6px 0; }
-  .a-text h1, .a-text h2, .a-text h3, .a-text h4 { margin: 12px 0 6px; font-size: 15px; }
-  .a-text h1 { font-size: 17px; }
-  .a-text h2 { font-size: 16px; }
+  .a-text h1, .a-text h2, .a-text h3, .a-text h4 { margin: 12px 0 6px; font-size: var(--wb-fs); }
+  .a-text h1 { font-size: calc(var(--wb-fs) + 2px); }
+  .a-text h2 { font-size: calc(var(--wb-fs) + 1px); }
   .a-text ul, .a-text ol { margin: 6px 0; padding-left: 22px; }
   .a-text li { margin: 3px 0; }
   /* markdown 里的图：不许撑破容器，也别顶到贴边 */
   .md-img { display: block; max-width: 100%; height: auto; margin: 10px 0; border-radius: 10px; border: 1px solid var(--wb-border); }
   .a-text blockquote { border-left: 3px solid var(--wb-brand); background: var(--wb-brand-weak); padding: 8px 12px; margin: 8px 0; border-radius: 0 8px 8px 0; color: var(--wb-text-2); }
   .a-text blockquote p { margin: 2px 0; }
-  .a-text code { background: var(--wb-bg-hover); border-radius: 4px; padding: 1px 5px; font-size: 13px; font-family: Consolas, monospace; }
+  .a-text code { background: var(--wb-bg-hover); border-radius: 4px; padding: 1px 5px; font-size: calc(var(--wb-fs) - 2px); font-family: var(--font-mono); }
   .a-text pre { background: var(--wb-code-bg); color: var(--wb-code-text); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 8px 0; }
   .a-text pre code { background: none; color: inherit; padding: 0; }
   /* ---------- 模型直接画在正文里的 SVG 信息图 ---------- */
@@ -362,7 +389,7 @@
   .input-inner { max-width: var(--wb-content-w); margin: 0 auto; }
   .input-card { border: 1.5px solid var(--wb-border); border-radius: 18px; background: var(--wb-bg); padding: 14px 16px 10px; box-shadow: 0 6px 24px rgba(23,24,28,.05); transition: border-color var(--wb-t-fast) var(--wb-ease); }
   .input-card:focus-within { border-color: var(--wb-brand-text); }
-  textarea#input { width: 100%; border: none; outline: none; resize: none; font-size: 15px; line-height: 1.6; max-height: 160px; background: transparent; color: var(--wb-text); }
+  textarea#input { width: 100%; border: none; outline: none; resize: none; font-size: var(--wb-fs); line-height: 1.6; max-height: 160px; background: transparent; color: var(--wb-text); }
   textarea#input::placeholder { color: var(--wb-text-3); }
   .card-toolbar { display: flex; align-items: center; margin-top: 8px; gap: 8px; }
   .icon-btn { width: 32px; height: 32px; border: none; background: transparent; border-radius: 8px; font-size: 18px; color: var(--wb-text-2); cursor: pointer; display: flex; align-items: center; justify-content: center; }
@@ -596,6 +623,26 @@
   .settings-nav .cat { padding: 8px 12px; border-radius: 8px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; margin-bottom: 2px; }
   .settings-nav .cat:hover { background: var(--wb-bg-hover); }
   .settings-nav .cat.active { background: var(--wb-brand-weak); color: var(--wb-text); font-weight: 600; box-shadow: inset 3px 0 0 var(--wb-brand); }
+  .settings-nav .cat .ci { display: inline-block; width: 22px; }
+  /* 外观页：分段按钮 + 色板。全是「点一下立刻生效」的选项，没有保存键 */
+  .look-seg { display: flex; gap: 8px; flex-wrap: wrap; }
+  .look-seg button { flex: 1; min-width: 88px; border: 1px solid var(--wb-border); background: var(--wb-card); color: var(--wb-text-2); border-radius: 10px; padding: 10px 8px; cursor: pointer; font: inherit; font-size: 13px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; min-height: 62px; transition: border-color var(--wb-t-fast) var(--wb-ease), background var(--wb-t-fast) var(--wb-ease); }
+  .look-seg button:hover { border-color: var(--wb-text-3); }
+  .look-seg button.on { border-color: var(--wb-brand); background: var(--wb-brand-weak); color: var(--wb-text); font-weight: 600; }
+  .look-seg button .ic { font-size: 20px; line-height: 1; }
+  .look-seg button b { line-height: 1; font-weight: 600; }
+  .look-f { font-size: 18px; }
+  .look-f-serif { font-family: Georgia, "Songti SC", "Noto Serif CJK SC", SimSun, serif; }
+  .look-f-mono { font-family: var(--font-mono); }
+  .look-skins { display: flex; gap: 8px; flex-wrap: wrap; }
+  .look-skin { width: 72px; border: 1px solid var(--wb-border); border-radius: 10px; padding: 10px 4px 8px; display: flex; flex-direction: column; align-items: center; gap: 7px; cursor: pointer; background: var(--wb-card); color: var(--wb-text-2); font: inherit; font-size: 12px; transition: border-color var(--wb-t-fast) var(--wb-ease); }
+  .look-skin i { width: 26px; height: 26px; border-radius: 50%; box-shadow: 0 0 0 2px var(--wb-card); }
+  .look-skin:hover { border-color: var(--wb-text-3); }
+  .look-skin.on { border-color: var(--wb-brand); color: var(--wb-text); font-weight: 600; }
+  .look-skin.on i { box-shadow: 0 0 0 2px var(--wb-card), 0 0 0 4px var(--wb-brand); }
+  .look-prev { margin-top: 10px; border: 1px dashed var(--wb-border); border-radius: 10px; padding: 10px 14px; font-size: var(--wb-fs); line-height: 1.7; color: var(--wb-text); }
+  .look-prev code { background: var(--wb-bg-hover); border-radius: 4px; padding: 1px 5px; font-size: calc(var(--wb-fs) - 2px); font-family: var(--font-mono); }
+  .look-note { color: var(--wb-text-3); font-size: 12px; margin-top: 8px; }
   .settings-pane { flex: 1; padding: 16px 20px; overflow-y: auto; font-size: 14px; }
   .form-row { display: flex; gap: 8px; }
   .form-row > * { flex: 1; }

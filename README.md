@@ -77,6 +77,8 @@ npm run app     # 桌面版；或 npm start 走浏览器 http://localhost:3800
 
 镜像、一键脚本、Windows、端口占用、启动卡住怎么办 → [安装与启动](docs/安装与启动.md)
 
+看着不顺眼就改：头像菜单 → **外观**，主题（浅/深/跟随系统）、六套皮肤、字号四档、字体、紧凑密度，点一下立刻生效，只存本机。
+
 ## 配模型
 
 界面 **设置 → 模型**，选渠道预设（OpenAI / Anthropic / OpenRouter / 火山方舟 / 百炼 / DeepSeek / 智谱 / Kimi / Ollama），地址和协议自动填好，只差粘 Key，保存即热生效。各家 `base_url` 和模型名对照表见 [配置模型](docs/配置模型.md)。
