@@ -11,9 +11,9 @@
     "cli": "node cli.js",
     "eval": "node eval/run.js",
     "icons": "bash scripts/make-icons.sh",
-    "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.config.js --mac",
-    "dist:win": "electron-builder --config electron-builder.config.js --win",
-    "dist:linux": "electron-builder --config electron-builder.config.js --linux",
+    "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.config.js --mac --publish never",
+    "dist:win": "electron-builder --config electron-builder.config.js --win --publish never",
+    "dist:linux": "electron-builder --config electron-builder.config.js --linux --publish never",
     "pack": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.config.js --dir"
   },
   "dependencies": {
