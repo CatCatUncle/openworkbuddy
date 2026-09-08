@@ -176,6 +176,9 @@ async function run({
   let stopped = null;
   let resultSeen = false;
   let step = 0;
+  // tool_result 块只带 tool_use_id 不带名字；名字在前面那条 tool_use 里。这里存一张 id→名字 的表——
+  // 以前一律填空串，复盘挖掘器看到的就是「（空名）报错 49 次」：最大的一类信号却说不出是哪个工具
+  const toolNames = new Map();
   const usage = { prompt: 0, completion: 0, cached: 0, calls: 0, elapsed_ms: 0 };
   const startedAt = Date.now();
 
@@ -196,8 +199,10 @@ async function run({
       for (const b of m.message.content || []) {
         if (!b || typeof b !== "object") continue;
         if (b.type === "text" && b.text) emit({ type: "text", delta: b.text, depth: 0 });
-        else if (b.type === "tool_use")
+        else if (b.type === "tool_use") {
+          toolNames.set(b.id, b.name);
           emit({ type: "tool_use", id: b.id, name: b.name, purpose: purposeOf(b.name, b.input), depth: 0 });
+        }
       }
       void u;
       return;
@@ -207,7 +212,7 @@ async function run({
         if (!b || typeof b !== "object" || b.type !== "tool_result") continue;
         const text = textOfToolResult(b.content);
         emit({
-          type: "tool_result", id: b.tool_use_id, name: "",
+          type: "tool_result", id: b.tool_use_id, name: toolNames.get(b.tool_use_id) || "",
           isError: !!b.is_error, preview: text.slice(0, 300), depth: 0,
         });
       }

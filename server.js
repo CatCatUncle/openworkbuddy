@@ -1400,7 +1400,7 @@ app.delete("/api/library/note/:id", (req, res) => {
 // 手写区（memory.md，全局共享）+ 条目区（agent 用 remember 自己记的，按账号隔离）
 app.get("/api/memory", (req, res) => {
   const u = req.user ? req.user.username : undefined;
-  res.json({ content: memory.manual(), items: memory.list(u), shared_tag: memory.SHARED, limits: { max_text: memory.MAX_TEXT, max_items: memory.MAX_PER_SCOPE } });
+  res.json({ content: memory.manual(), items: memory.list(u), shared_tag: memory.SHARED, limits: { max_text: memory.MAX_TEXT, max_items: memory.MAX_PER_SCOPE }, vectors: memory.vectorStatus() });
 });
 app.post("/api/memory", (req, res) => {
   memory.saveManual((req.body || {}).content || "");
