@@ -24,6 +24,7 @@ const memory = require("./memory");
 const notify = require("./notify");
 const store = require("./store");
 const petSprites = require("./pet-sprites"); // 桌面宠物的精灵图（吃 Codex / Petdex 的格式）
+const pet = require("./pet"); // 只为拿默认值（没有 electron 时它自己降级成空壳，纯 node 也 require 得动）
 const { createImSessionStore } = require("./im-store");
 
 // config.json 不入 git（可能含 API Key）；首次运行自动从模板复制
@@ -510,7 +511,7 @@ app.get("/api/settings", (_req, res) => {
     pet: {
       enabled: (config.pet || {}).enabled === true, // 默认没有宠物：得用户在对话里开口要，或来这儿手动打开
       character: (config.pet || {}).character || "cat",
-      scale: (config.pet || {}).scale || 1,
+      scale: (config.pet || {}).scale || pet.DEFAULT_SCALE,
       opacity: (config.pet || {}).opacity || 1,
       notify: (config.pet || {}).notify !== false,
       notify_done: (config.pet || {}).notifyDone !== false,
@@ -620,7 +621,7 @@ app.post("/api/settings", (req, res) => {
       if (typeof b.pet.wander === "boolean") config.pet.wander = b.pet.wander;
       config.pet.sprite = nextSprite;
       config.pet.character = nextChar;
-      if (b.pet.scale !== undefined) config.pet.scale = Math.max(0.6, Math.min(2, Number(b.pet.scale) || 1));
+      if (b.pet.scale !== undefined) config.pet.scale = Math.max(0.6, Math.min(2, Number(b.pet.scale) || pet.DEFAULT_SCALE));
       if (b.pet.opacity !== undefined) config.pet.opacity = Math.max(0.25, Math.min(1, Number(b.pet.opacity) || 1));
       if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
     }
@@ -2070,7 +2071,7 @@ global.__wbPetTool = {
       const has = !!petPhotoPath();
       const look = cur.character === "sprite" && cur.sprite ? `像素宠物「${cur.sprite}」`
         : has && cur.character === "photo" ? "用户上传的照片" : "内置小猫";
-      return `当前状态：宠物${cur.enabled === true ? "已显示" : "未显示"}，形象=${look}，大小=${Math.round((cur.scale || 1) * 100)}%。`;
+      return `当前状态：宠物${cur.enabled === true ? "已显示" : "未显示"}，形象=${look}，大小=${Math.round((cur.scale || pet.DEFAULT_SCALE) * 100)}%。`;
     };
 
     if (action === "status") return { content: nowInfo(), isError: false };
@@ -2170,7 +2171,7 @@ global.__wbPetTool = {
     fs.mkdirSync(dataPath("data"), { recursive: true });
     clearPetPhoto();
     fs.writeFileSync(dataPath("data", "pet-avatar.png"), buf);
-    const scale = Math.max(0.6, Math.min(2, Number((input || {}).scale) || Number(cur.scale) || 1));
+    const scale = Math.max(0.6, Math.min(2, Number((input || {}).scale) || Number(cur.scale) || pet.DEFAULT_SCALE));
     config.pet = { ...cur, enabled: true, character: "photo", scale };
     saveConfig();
     try { P.applyConfig({ ...config.pet, enabled: true }); } catch {}
