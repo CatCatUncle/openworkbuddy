@@ -4211,6 +4211,7 @@ async function main() {
   testLookPrefsStatic();
   testI18n();
   testConnectorsAndExperts();
+  testOutputArrivalStatic();
   testReadmeFrontGate();
   testKeySourcesGate();
   testPackagingAndDemoGate();
@@ -5402,6 +5403,37 @@ function testConnectorsAndExperts() {
   assert(!/const keep = \[[^\]]*"persona"/.test(recSrc), "录屏还在拷 persona（用户自述常带真名）");
   assert(recSrc.includes("seedHome.extraMask") && /\}\)\(cfg\.im\)/.test(recSrc), "IM 里的 app_id / bot id 没进遮罩清单");
   console.log(`✅ 连接器预设 ${cat.items.length} 条 / ${cat.categories.length} 类，专家 ${meta.experts.length} 位 / 专家团 ${meta.teams.length} 个（体检 0 问题，阴性对照抓到 ${badP.length} 条），升级合并 +${r1.added.length} 专家 +${r1.addedTeams.length} 团、二次合并 +0，遮罩清单 ${pairs.length} 项`);
+}
+
+function testOutputArrivalStatic() {
+  // 产出到了不抢版面：前端 harness 验行为，这里钉「接线」——
+  // files 事件真的走 outputArrivalPlan、老的 autoPreviewNewHtml 没留尸体、chip 里没有 iframe、角标样式在、文案进了词典
+  const pub = path.join(__dirname, "..", "public");
+  const rd = (f) => fs.readFileSync(path.join(pub, f), "utf8");
+  const a01 = rd(path.join("js", "app-01.js")), html = rd("index.html"), dict = rd(path.join("js", "i18n.js"));
+  assert(!/autoPreviewNewHtml/.test(a01), "autoPreviewNewHtml 还在：产出会自动弹预览抢版面");
+  const h0 = a01.indexOf('ev.type === "files"'), h1 = a01.indexOf('ev.type === "sources"');
+  assert(h0 > 0 && h1 > h0, "app-01 里找不到 files 事件处理");
+  const handler = a01.slice(h0, h1);
+  assert(!/files-panel"\)\.classList\.add\("show"\)/.test(handler), "files 事件里还在自动把成果文件面板弹出来");
+  assert(!/previewFile\(/.test(handler), "files 事件里直接调 previewFile：绕开了 outputArrivalPlan");
+  assert(/applyOutputArrival\(outputArrivalPlan\(\{/.test(handler), "files 事件没走 outputArrivalPlan");
+  for (const k of ["replaying: isReplaying", "otherSession: turnSid !== sessionId", 'pvOpen: pvPanel.classList.contains("show")', "pvCurrent,", 'filesOpen: document.getElementById("files-panel").classList.contains("show")']) {
+    assert(handler.includes(k), "outputArrivalPlan 的输入没接上真实状态：" + k);
+  }
+  const c0 = a01.indexOf("function makeOutCard("), c1 = a01.indexOf("function markDupBasenames(");
+  assert(c0 > 0 && c1 > c0, "找不到 makeOutCard");
+  const card = a01.slice(c0, c1);
+  assert(!/<iframe/.test(card), "产出 chip 里还内嵌 iframe 缩略图");
+  assert(/card\.tabIndex = 0/.test(card) && !/setAttribute\("role"/.test(card), "chip 要能落焦点、但不许套 role=button");
+  assert(/title="\$\{mainTx\}"/.test(card) && /title="打开所在位置"/.test(card) && /title="下载"/.test(card), "图标钮缺 title");
+  const tg = a01.slice(a01.indexOf('getElementById("toggle-files").onclick'), a01.indexOf('getElementById("fp-close").onclick'));
+  assert(/clearFilesBadge\(\)/.test(tg), "打开成果文件面板没清角标");
+  assert(/#toggle-files \.fb-badge \{ position: absolute/.test(html) && /#toggle-files \{[^}]*position: relative/.test(html), "角标样式没了");
+  assert(/\.out-card \{ position: relative; display: inline-flex/.test(html), "产出 chip 不是 inline-flex 紧凑行");
+  assert(!/\.out-thumb iframe/.test(html) && !/width: 240px/.test(html.slice(html.indexOf(".out-card {"), html.indexOf(".out-card {") + 400)), "index.html 还留着大卡 / iframe 缩略图样式");
+  for (const k of ['"预览"', '"点击预览"', '"点击用系统程序打开"', '"在浏览器打开"', '"打开所在位置"', '"下载"']) assert(dict.includes(k + ":"), "词典缺 " + k);
+  console.log("✅ 产出到了不抢版面（静态闸）：不自动弹预览/面板 · files 事件走 outputArrivalPlan · chip 无 iframe/无 role 套娃 · 角标样式 · 词典 6 条");
 }
 
 function testLookPrefsStatic() {

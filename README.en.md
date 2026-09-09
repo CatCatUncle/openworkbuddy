@@ -101,6 +101,7 @@ wb engines && wb engines use claude-code   # use a local Claude Code / Codex as 
 
 ## What's new
 
+- **Sep 9** Finishing a task no longer pops the preview / files panel over your chat: the conclusion stays inline, outputs are a row of compact chips (icon, name, size, preview / reveal / download), the Files button shows a badge; only a preview you already have open on that file refreshes in place
 - **Sep 9** Connectors page ships a catalog of **39 one-click presets** (search, databases, Lark, AMap, GitHub…); you only fill in the key, and a missing key blocks the save. **15 more experts and 4 teams**; upgrades add new built-ins without touching your edits
 - **Sep 9** Demo recorder masks temp dirs, username, hostname and bot ids on screen, with a self-check before recording
 - **Sep 9** English / Chinese toggle: one click in Appearance or the first-run wizard, whole UI flips instantly, AI replies follow
