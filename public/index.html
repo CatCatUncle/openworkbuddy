@@ -666,6 +666,9 @@
   /* 首次开箱向导：一步一件事，步骤条在顶上；行式清单和助理设置页的卡片同一套视觉 */
   .onb-card { width: 520px; max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); overflow: auto; }
   .onb-steps { display: flex; gap: 4px; margin: -6px 0 18px; }
+  .onb-lang { flex-basis: 100%; display: flex; justify-content: flex-end; gap: 4px; margin: -4px 0 8px; }
+  .onb-lang button { font-size: 11px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--wb-border); background: transparent; color: var(--wb-text-3); cursor: pointer; }
+  .onb-lang button.on { background: var(--wb-brand-weak); color: var(--wb-brand-text); border-color: transparent; font-weight: 600; }
   .onb-step { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 0; border-radius: 10px; font-size: 11px; color: var(--wb-text-3); cursor: default; }
   .onb-step i { font-style: normal; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--wb-bg-hover); font-size: 13px; }
   .onb-step.cur { color: var(--wb-brand-text); font-weight: 600; }
@@ -1366,6 +1369,7 @@
 </div>
 
 <script src="svgfig.js"></script>
+<script src="js/i18n.js"></script>
 <!-- 应用脚本：原单块内联 script 按顶层语句边界拆成顺序加载的经典脚本（非 ESM，共享全局作用域，语义与内联时完全一致）。改代码直接改 js/ 下的分片，刷新即生效。 -->
 <script src="js/app-00-ui.js"></script>
 <script src="js/app-01.js"></script>

@@ -16,6 +16,7 @@ const SVGFIG = fs.readFileSync(path.join(__dirname, "..", "public", "svgfig.js")
 // 附件（粘贴/拖拽：文件、图片、大段文字）用的是 app-02.js 里那一段真源码——
 // 抄一份到测试里只能证明抄的那份是对的。段落靠标题定位，标题被改了就当场报错，不许静默跳过。
 const APP02 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
+const I18N_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "js", "i18n.js"), "utf8"); // 真源：中英词典 + DOM 翻译器
 const APP02X = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
 const A0 = APP02.indexOf("// ================= ＋ 上传文件到工作空间");
 const A1 = APP02.indexOf("// ================= 会话历史");
@@ -866,6 +867,7 @@ const ONB_CHECKS = `
   const tick = () => new Promise((r) => setTimeout(r, 8));
   const mask = document.getElementById("onb-mask"), body = document.getElementById("onb-body"), steps = document.getElementById("onb-steps");
   const q = (s) => body.querySelector(s);
+  I18N.setLang("zh"); // Electron 的 navigator.language 随系统走，先钉成中文，下面按中文文案断言
 
   // ---- 弹不弹 ----
   await maybeOnboard(); await tick();
@@ -993,8 +995,87 @@ const ONB_CHECKS = `
   await openOnboarding(); await tick(); onbGo(3); POSTS.length = 0; MODALS.length = 0;
   q("#onb-im-open").click(); await tick(); await tick();
   ok("去助理设置：记 done、关向导、打开 设置→助理设置", POSTS.some(([k]) => k === "done") && !mask.classList.contains("show") && MODALS.includes("settings:im"));
+
+  // ---- 向导第一屏就能换语言（装完才发现全是中文，引导等于白走） ----
+  await openOnboarding(); await tick();
+  const langBtns = [...steps.querySelectorAll(".onb-lang button")];
+  ok("步骤条上方有 中文/English 两颗真按钮，当前 中文 选中", langBtns.length === 2 && langBtns.every((b) => b.tagName === "BUTTON" && b.type === "button") && steps.querySelector(".onb-lang button.on").dataset.lang === "zh");
+  langBtns.find((b) => b.dataset.lang === "en").click(); await tick();
+  ok("点 English：<html lang=en>、步骤名立刻变英文、English 选中", document.documentElement.lang === "en" && steps.querySelector(".onb-step.cur").textContent.includes("Model") && steps.querySelector(".onb-lang button.on").dataset.lang === "en");
+  ok("English：语言按钮自己不被翻（data-i18n-skip）", [...steps.querySelectorAll(".onb-lang button")].map((b) => b.textContent).join("|") === "中文|English");
+  steps.querySelector('.onb-lang button[data-lang="zh"]').click(); await tick();
+  ok("点回 中文：步骤名还原、<html lang=zh-CN>", document.documentElement.lang === "zh-CN" && steps.querySelector(".onb-step.cur").textContent.includes("大模型"));
+  closeOnboarding();
   return names;
 })().catch((e) => { throw new Error("[向导] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (window.__onbNames || 0)); })
+`;
+
+// ---------- 中英文切换：真 i18n.js 跑在真 Chromium 里 ----------
+// 页面只有壳：静态文案、placeholder、跳过区（<pre>、translate=no、data-i18n-skip、AI 正文、用户气泡）。
+// 验的是行为：切英文整页立刻翻；之后新渲染的节点由观察者接手；切回中文原样还原；观察者不自激。
+const I18N_HTML = "<!doctype html><meta charset='utf-8'><body>"
+  + "<button id='save'>保存</button><span id='sp'> 取消 </span><div id='mix'><b>x</b> 删除</div>"
+  + "<textarea id='input' placeholder='今天帮你做些什么？@ 引用文件，/ 调用技能与指令'></textarea>"
+  + "<button id='tip' title='打开所在位置'>⧉</button>"
+  + "<pre id='pre'>保存</pre><code id='code'>取消</code>"
+  + "<div class='a-text' id='atext' translate='no'><p id='ap'>保存</p></div>"
+  + "<div class='u-msg'><div class='bubble' id='bub' translate='no'>保存</div></div>"
+  + "<div id='skip' data-i18n-skip>保存</div>"
+  + "<div id='dyn-host'></div><div id='status'>第 3 步 · 思考规划中…</div>"
+  + "<div id='untr'>这句词典里没有</div></body>";
+const I18N_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + extra : "")); names.push(n); window.__i18nNames = names.length; };
+  const $ = (q) => document.querySelector(q);
+  const tick = () => new Promise((r) => setTimeout(r, 25));
+  let storageBlocked = false; try { localStorage.getItem("x"); } catch { storageBlocked = true; }
+  ok("本页 localStorage 被禁（验证语言偏好退到内存也能用）", storageBlocked);
+  ok("挂上了 window.I18N，两种语言", window.I18N && JSON.stringify(Object.keys(I18N.LANGS)) === '["zh","en"]');
+  I18N.setLang("zh");
+  ok("中文模式：页面原样", $("#save").textContent === "保存" && $("#input").placeholder.startsWith("今天帮你做些什么") && document.documentElement.lang === "zh-CN");
+
+  ok("setLang('xx') 拒收，语言不变", I18N.setLang("xx") === false && I18N.getLang() === "zh");
+  I18N.setLang("en");
+  ok("切英文：按钮/行内文字立刻翻（保存→Save，带首尾空格的「 取消 」→「 Cancel 」保留空格）", $("#save").textContent === "Save" && $("#sp").textContent === " Cancel ");
+  ok("切英文：混排文本节点「<b>x</b> 删除」只翻文字节点（x Delete）", $("#mix").textContent === "x Delete");
+  ok("切英文：placeholder / title 属性也翻", $("#input").placeholder.startsWith("What shall I do today") && $("#tip").title === "Reveal in folder");
+  ok("切英文：带数字的动态句按模式翻（第 3 步 · 思考规划中… → Step 3 · thinking…）", $("#status").textContent === "Step 3 · thinking…");
+  ok("切英文：<pre>/<code> 不碰", $("#pre").textContent === "保存" && $("#code").textContent === "取消");
+  ok("切英文：AI 正文(.a-text translate=no) / 用户气泡 / data-i18n-skip 整棵子树不碰", $("#ap").textContent === "保存" && $("#bub").textContent === "保存" && $("#skip").textContent === "保存");
+  ok("切英文：词典里没有的原样留着（漏翻看得见，不会变 undefined/空白）", $("#untr").textContent === "这句词典里没有");
+  ok("切英文：<html lang=en>、getLang()=en", document.documentElement.lang === "en" && I18N.getLang() === "en");
+
+  // 观察者：之后才渲染出来的节点
+  $("#dyn-host").innerHTML = "<button id='dyn'>取消</button><input id='dyn-in' placeholder='搜索项目'>";
+  await tick();
+  ok("英文模式下新渲染的节点：文字和 placeholder 都被观察者翻了", $("#dyn").textContent === "Cancel" && $("#dyn-in").placeholder === "Search projects");
+  $("#save").textContent = "删除"; await tick();
+  ok("应用改了文字（保存→删除）：观察者按新源文重翻（Delete），不是抱着旧原文", $("#save").textContent === "Delete");
+  $("#tip").title = "复制回复"; await tick();
+  ok("应用改了属性：同样重翻（Copy reply）", $("#tip").title === "Copy reply");
+  $("#atext").innerHTML = "<p id='ap2'>取消</p>"; await tick();
+  ok("AI 正文里后来长出的节点也不碰（内容区永远是内容）", $("#ap2").textContent === "取消");
+  // 不自激：我们自己写进去的译文再被观察到时不能又当新源文
+  let churn = 0;
+  const mo = new MutationObserver((rs) => { churn += rs.length; });
+  mo.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
+  await tick(); await tick();
+  mo.disconnect();
+  ok("静止 50ms 内没有任何 DOM 变更（观察者不自激振荡）", churn === 0, churn);
+  // 手动 apply 幂等
+  const before = document.body.innerHTML;
+  I18N.apply(document.body); I18N.apply(document.body);
+  ok("重复 apply() 幂等：DOM 一字不变", document.body.innerHTML === before);
+  ok("t() 在英文模式下查词：t('保存')=Save，占位 {n} 回填，没词条回中文", I18N.t("保存") === "Save" && I18N.t("已装 {n} 个", { n: 3 }) === "已装 3 个");
+
+  I18N.setLang("zh");
+  ok("切回中文：按钮还原到最新源文（删除）、动态节点还原（取消）、属性还原", $("#save").textContent === "删除" && $("#dyn").textContent === "取消" && $("#dyn-in").placeholder === "搜索项目" && $("#tip").title === "复制回复" && $("#input").placeholder.startsWith("今天帮你做些什么"));
+  ok("切回中文：<html lang=zh-CN>、混排/状态句还原", document.documentElement.lang === "zh-CN" && $("#mix").textContent === "x 删除" && $("#status").textContent === "第 3 步 · 思考规划中…");
+  $("#dyn-host").innerHTML = "<button id='dyn2'>取消</button>"; await tick();
+  ok("中文模式下新节点不动（观察者只在英文模式干活）", $("#dyn2").textContent === "取消");
+  return names;
+})().catch((e) => { throw new Error("[语言] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (window.__i18nNames || 0)); })
 `;
 
 // ---------- 外观页：主题 / 皮肤 / 字号 / 字体 / 密度 ----------
@@ -1009,8 +1090,9 @@ const LOOK_SRC = (() => {
 })();
 const LOOK_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div class='hist-item' id='hi'>历史</div><div class='hist-item active' id='hia'>当前</div>"
-  + "<div class='turn' id='turn'><div class='u-msg'><div class='bubble' id='bub'>你好</div></div>"
-  + "<div class='a-msg' id='amsg'><div class='a-text' id='atext'><h1 id='h1'>标题</h1><p id='p'>正文</p><code id='cd'>x</code></div></div></div>"
+  // 气泡 / AI 正文带 translate=no，跟 app-01.js 真渲染出来的标记一致（e2e 的静态闸门盯着那两处）
+  + "<div class='turn' id='turn'><div class='u-msg'><div class='bubble' id='bub' translate='no'>你好</div></div>"
+  + "<div class='a-msg' id='amsg'><div class='a-text' id='atext' translate='no'><h1 id='h1'>标题</h1><p id='p'>正文</p><code id='cd'>x</code></div></div></div>"
   + "<textarea id='input'></textarea>"
   + "<div class='settings-layout'><div class='settings-nav' id='nav'></div><div class='settings-pane' id='pane'></div></div></body>";
 const LOOK_CHECKS = `
@@ -1028,17 +1110,18 @@ const LOOK_CHECKS = `
   ok("默认：<html> 不带 data-fs/skin/font/density 脏属性", !html.dataset.fs && !html.dataset.skin && !html.dataset.font && !html.dataset.density);
   ok("默认：正文 15 / 标题 17 / 左栏 14 / 输入框 15 / 行内代码 13", px("body") === 15 && px("#h1") === 17 && px("#hi") === 14 && px("#input") === 15 && px("#cd") === 13);
 
+  I18N.setLang("zh"); // 系统语言可能是英文；下面按中文文案断言，先钉住
   renderLookPane(pane);
   const groups = [...pane.querySelectorAll("[data-k]")].map((g) => g.dataset.k);
-  ok("外观页五个分区：主题/皮肤/字号/字体/密度", JSON.stringify(groups) === JSON.stringify(["theme", "skin", "fs", "font", "density"]));
+  ok("外观页六个分区：语言/主题/皮肤/字号/字体/密度", JSON.stringify(groups) === JSON.stringify(["lang", "theme", "skin", "fs", "font", "density"]));
   const cnt = (k) => pane.querySelectorAll('[data-k="' + k + '"] button').length;
-  ok("选项数：主题 3 · 皮肤 6 · 字号 4 · 字体 3 · 密度 2", cnt("theme") === 3 && cnt("skin") === 6 && cnt("fs") === 4 && cnt("font") === 3 && cnt("density") === 2);
+  ok("选项数：语言 2 · 主题 3 · 皮肤 6 · 字号 4 · 字体 3 · 密度 2", cnt("lang") === 2 && cnt("theme") === 3 && cnt("skin") === 6 && cnt("fs") === 4 && cnt("font") === 3 && cnt("density") === 2);
   const onePressed = (k) => { const bs = [...pane.querySelectorAll('[data-k="' + k + '"] button')]; const on = bs.filter((b) => b.classList.contains("on")), pr = bs.filter((b) => b.getAttribute("aria-pressed") === "true"); return on.length === 1 && pr.length === 1 && on[0] === pr[0]; };
-  ok("每组恰好一个选中（.on + aria-pressed）", ["theme", "skin", "fs", "font", "density"].every(onePressed));
-  ok("默认选中：跟随系统 / 默认紫 / 标准 / 系统 / 舒适", ["system", "default", "m", "system", "cozy"].every((v, i) => pane.querySelector('[data-k="' + groups[i] + '"] button.on').dataset.v === v));
+  ok("每组恰好一个选中（.on + aria-pressed）", ["lang", "theme", "skin", "fs", "font", "density"].every(onePressed));
+  ok("默认选中：中文 / 跟随系统 / 默认紫 / 标准 / 系统 / 舒适", ["zh", "system", "default", "m", "system", "cozy"].every((v, i) => pane.querySelector('[data-k="' + groups[i] + '"] button.on').dataset.v === v));
   ok("全是 <button type=button>，没有「保存」键（点即生效）", [...pane.querySelectorAll("button")].every((b) => b.type === "button") && !/保存/.test(pane.textContent));
   const textLen = pane.textContent.replace(/\\s/g, "").length;
-  ok("信息密度克制：整页文字 ≤ 200 字（实际 " + textLen + "）", textLen <= 200);
+  ok("信息密度克制：整页文字 ≤ 230 字（实际 " + textLen + "）", textLen <= 230);
 
   const click = (k, v) => pane.querySelector('[data-k="' + k + '"] button[data-v="' + v + '"]').click();
   // 字号
@@ -1098,6 +1181,17 @@ const LOOK_CHECKS = `
   ok("点「等宽」：body 字体族含 Menlo / monospace", html.dataset.font === "mono" && /Menlo|monospace/.test(ff()));
   click("font", "system");
   ok("点回「系统」：属性摘掉，字体族复原（-apple-system 打头）", !("font" in html.dataset) && ff() === ff0 && /apple-system/.test(ff0));
+
+  // 语言：点即整页切换，内容区不动
+  click("lang", "en");
+  ok("点 English：外观页标题立刻变英文（🌗 Theme）、<html lang=en>、English 选中", /🌗 Theme/.test(pane.textContent) && !/🌗 主题/.test(pane.textContent) && html.lang === "en" && onePressed("lang") && pane.querySelector('[data-k="lang"] button.on').dataset.v === "en");
+  ok("English：左栏「当前」等界面词翻了（Current），用户气泡「你好」和 AI 正文「标题/正文」原样（内容不是界面）", $("#hia").textContent === "Current" && $("#bub").textContent === "你好" && $("#h1").textContent === "标题" && $("#p").textContent === "正文");
+  ok("English：语言偏好读回 en（存储被禁也记得住）", I18N.getLang() === "en");
+  renderLookPane(pane);
+  await new Promise((r) => setTimeout(r, 25)); // 观察者是异步的：应用写完 innerHTML，下一拍才翻
+  ok("English 下重开外观页：新渲染的中文文案也被翻成英文（🎨 Skin）", /🎨 Skin/.test(pane.textContent) && !/皮肤/.test(pane.textContent));
+  click("lang", "zh");
+  ok("点回 中文：整页还原（🌗 主题）、<html lang=zh-CN>", /🌗 主题/.test(pane.textContent) && !/Theme/.test(pane.textContent) && html.lang === "zh-CN" && I18N.getLang() === "zh");
 
   // 主题
   click("theme", "dark");
@@ -1857,17 +1951,27 @@ app.whenReady().then(async () => {
     const win12 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
       await win12.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LOOK_HTML));
-      const names12 = await win12.webContents.executeJavaScript("(function(){\n" + LOOK_SRC + "\n" + LOOK_CHECKS + "\n})()", true)
+      const names12 = await win12.webContents.executeJavaScript(I18N_SRC + "\n(async function(){\n" + LOOK_SRC + "\n" + LOOK_CHECKS + "\n})()", true)
         .catch((e) => { throw new Error("[外观] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of names12) console.log("  ✓ " + n);
       console.log(`✅ 前端：外观页（字号四档按 calc 联动·六皮肤浅暗对比度矩阵·密度只收间距·字体三选·主题即点即生效·存储被禁退内存·默认不留脏属性）${names12.length} 项通过`);
     } finally {
       if (!win12.isDestroyed()) win12.destroy();
     }
+    const win14 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win14.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(I18N_HTML));
+      const names14 = await win14.webContents.executeJavaScript(I18N_SRC + "\n" + I18N_CHECKS, true)
+        .catch((e) => { throw new Error("[语言] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of names14) console.log("  ✓ " + n);
+      console.log(`✅ 前端：中英文切换（点即整页翻·后渲染的节点观察者接手·属性也翻·内容区不碰·切回中文原样还原·不自激振荡）${names14.length} 项通过`);
+    } finally {
+      if (!win14.isDestroyed()) win14.destroy();
+    }
     const win11 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
       await win11.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ONB_HTML));
-      const names11 = await win11.webContents.executeJavaScript(ONB_STUBS + "\n" + ONB_SRC + "\n" + ONB_CHECKS, true);
+      const names11 = await win11.webContents.executeJavaScript(I18N_SRC + "\n" + ONB_STUBS + "\n" + ONB_SRC + "\n" + ONB_CHECKS, true);
       for (const n of names11) console.log("  ✓ " + n);
       console.log(`✅ 前端：首次开箱向导（大脑必配·云端/本机二选一·验活失败不翻页·搜索保存再测活·多媒体按行填·清单收尾·走完不再弹·关于页可重开）${names11.length} 项通过`);
     } finally {

@@ -2525,7 +2525,7 @@ app.post("/api/files/open/*", (req, res) => {
 });
 
 app.post("/api/chat", async (req, res) => {
-  const { sessionId, message, mode, regen } = req.body || {};
+  const { sessionId, message, mode, regen, lang } = req.body || {};
   if (!sessionId || !message) return res.status(400).json({ error: "缺少 sessionId 或 message" });
   const user = req.user; // authGuard 已挂上
   // 积分闸门默认是关的（本地个人用不该被自己的账本拦），开了才查余额
@@ -2634,6 +2634,7 @@ app.post("/api/chat", async (req, res) => {
       // 内层：任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
       for (;;) {
         const r = await runtime.runTask({
+          lang: lang === "en" ? "en" : "zh", // 界面语言：英文界面时让 AI 也用英文答，用户不用再在每句话里交代
           taskLabel: sess.title || String(message).slice(0, 24),
           baseDir: taskBaseDir,
           llmOverride: sessLLM,

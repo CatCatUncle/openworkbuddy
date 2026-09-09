@@ -4209,6 +4209,7 @@ async function main() {
   await testEmbedFailoverResilience();
   testUiNoRawMarkdown();
   testLookPrefsStatic();
+  testI18n();
   testReadmeFrontGate();
   testKeySourcesGate();
   testPackagingAndDemoGate();
@@ -5183,6 +5184,99 @@ function testKeySourcesGate() {
   }
   console.log(`✅ 取 Key 链接闸门：${Object.keys(r.KS).length} 个来源全 https+新窗口 · 渠道预设 ${r.presets} 家全覆盖 · 搜索 ${r.searchIds.length} 家 · IM ${r.imSrcs} 类 · 多媒体预设 ${r.mediaN} 条；反向 ${caught}/${variants.length} 种坏法全被拦`);
 }
+function testI18n() {
+  // 中英文切换：词典本身 + 覆盖率闸门 + 假 DOM 走一遍翻译/还原 + 接线闸。
+  // 真浏览器里的行为（观察者、属性、跳过区）在 test/frontend.js 的 win14 里验。
+  const pub = path.join(__dirname, "..", "public");
+  const rd = (f) => fs.readFileSync(path.join(pub, f), "utf8");
+  const I = require(path.join(pub, "js", "i18n.js"));
+  const CJK = /[一-鿿]/;
+  // 1. 词典体检
+  const en = I.DICT.en, keys = Object.keys(en);
+  assert(JSON.stringify(Object.keys(I.LANGS)) === '["zh","en"]', "LANGS 应只有 zh/en");
+  assert(keys.length >= 600, "英文词典条目太少：" + keys.length);
+  const badKey = keys.filter((k) => !k.trim() || k !== k.trim());
+  assert(!badKey.length, "词典键带首尾空白/为空：" + JSON.stringify(badKey.slice(0, 5)));
+  const untranslated = keys.filter((k) => !String(en[k]).trim() || en[k] === k || CJK.test(en[k]));
+  assert(!untranslated.length, "词条译文为空/等于原文/还含中文：" + JSON.stringify(untranslated.slice(0, 5)));
+  // 2. node 里没有 window：默认中文，t() 原样返回；lookup/tr 按语言查
+  assert(I.getLang() === "zh" && I.t("保存") === "保存", "无浏览器环境应默认中文");
+  assert(I.lookup("保存", "en") === "Save" && I.lookup("保存", "zh") === null, "lookup 查词");
+  assert(I.lookup("第 12 步 · 思考规划中…", "en") === "Step 12 · thinking…", "带数字的模式句");
+  assert(I.lookup("编辑技能「周报」", "en") === 'Edit skill "周报"', "模式句里的名字原样回填");
+  assert(I.tr("  取消 ", "en") === "  Cancel " && I.tr("   ", "en") === "   ", "tr 保留首尾空白、纯空白不动");
+  assert(I.lookup("这句词典里没有", "en") === null, "没词条应返回 null（由上层回退原文）");
+  // 3. 覆盖率闸：index.html 里的中文 100%；JS 模板里的短文案 ≥ 90%
+  const html = rd("index.html");
+  const decode = (t) => t.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
+  // 只看用户看得见的：去掉 <style>/<script>/注释（里面的中文是给开发者看的注释，不是界面）
+  const visible = html.replace(/<style[\s\S]*?<\/style>/g, "").replace(/<script[\s\S]*?<\/script>/g, "").replace(/<!--[\s\S]*?-->/g, "");
+  const htmlStrs = new Set();
+  for (const m of visible.matchAll(/>([^<>]*[一-鿿][^<>]*)</g)) { const t = decode(m[1]).trim(); if (t) htmlStrs.add(t); }
+  for (const m of visible.matchAll(/\b(?:placeholder|title|aria-label|alt)="([^"]*[一-鿿][^"]*)"/g)) htmlStrs.add(decode(m[1]).trim());
+  const covered = (t) => I.lookup(t, "en") != null;
+  const missHtml = [...htmlStrs].filter((t) => !covered(t));
+  assert(htmlStrs.size >= 50, "index.html 中文抓取异常：" + htmlStrs.size);
+  assert(!missHtml.length, "index.html 里有中文没进词典：" + JSON.stringify(missHtml.slice(0, 8)));
+  // 反向对照：往抓取集里塞一句词典没有的，闸门必须能抓到（证明闸门不是恒真）
+  assert([...htmlStrs, "这句词典里没有"].filter((t) => !covered(t)).length === 1, "覆盖率闸门对漏翻不敏感");
+  const jsStrs = new Set();
+  for (const f of fs.readdirSync(path.join(pub, "js"))) {
+    if (!/^app-0\d.*\.js$/.test(f)) continue;
+    const src = rd(path.join("js", f));
+    for (const m of src.matchAll(/>([^<>`${};="()\n]*[一-鿿][^<>`${};="()\n]*)</g)) { const t = m[1].trim(); if (t && t.length <= 60) jsStrs.add(t); }
+  }
+  const short = [...jsStrs].filter((t) => t.length <= 14), shortMiss = short.filter((t) => !covered(t));
+  const all = [...jsStrs], allMiss = all.filter((t) => !covered(t));
+  const pct = (a, b) => Math.round((1 - a / b) * 1000) / 10;
+  assert(short.length >= 300, "JS 模板短文案抓取异常：" + short.length);
+  assert(pct(shortMiss.length, short.length) >= 90, `JS 模板短文案（≤14字）英文覆盖 ${pct(shortMiss.length, short.length)}% < 90%：` + JSON.stringify(shortMiss.slice(0, 10)));
+  assert(pct(allMiss.length, all.length) >= 80, `JS 模板文案（≤60字）英文覆盖 ${pct(allMiss.length, all.length)}% < 80%`);
+  // 4. 假 DOM：翻译 / 跳过 / 幂等 / 还原 / 改源文后重翻
+  const mkText = (v) => ({ nodeType: 3, nodeValue: v, parentNode: null });
+  const mkEl = (name, attrs = {}, kids = []) => {
+    const el = { nodeType: 1, nodeName: name.toUpperCase(), _a: { ...attrs }, childNodes: kids, parentNode: null,
+      getAttribute(n) { return n in this._a ? this._a[n] : null; }, setAttribute(n, v) { this._a[n] = String(v); }, hasAttribute(n) { return n in this._a; } };
+    for (const k of kids) k.parentNode = el;
+    return el;
+  };
+  const save = mkText("保存"), sp = mkText(" 取消 "), preT = mkText("保存"), aT = mkText("保存"), skipT = mkText("保存"), untr = mkText("这句词典里没有");
+  const typed = mkText("保存"); // 用户在输入框里打的字
+  const input = mkEl("textarea", { placeholder: "搜索项目" }, [typed]);
+  const rootEl = mkEl("div", {}, [mkEl("button", {}, [save]), mkEl("span", {}, [sp]), input, mkEl("pre", {}, [preT]), mkEl("div", { translate: "no" }, [aT]), mkEl("div", { "data-i18n-skip": "" }, [skipT]), mkEl("p", {}, [untr])]);
+  I.apply(rootEl, "en");
+  assert(save.nodeValue === "Save" && sp.nodeValue === " Cancel " && input.getAttribute("placeholder") === "Search projects", "假 DOM：文本和属性翻译");
+  assert(preT.nodeValue === "保存" && aT.nodeValue === "保存" && skipT.nodeValue === "保存", "假 DOM：pre / translate=no / data-i18n-skip 跳过");
+  assert(typed.nodeValue === "保存", "假 DOM：textarea 只翻 placeholder，用户打的字不能碰");
+  assert(untr.nodeValue === "这句词典里没有", "假 DOM：没词条原样");
+  const snap = JSON.stringify([save.nodeValue, sp.nodeValue, input._a.placeholder]);
+  I.apply(rootEl, "en"); I.apply(rootEl, "en");
+  assert(JSON.stringify([save.nodeValue, sp.nodeValue, input._a.placeholder]) === snap, "假 DOM：重复 apply 幂等");
+  save.nodeValue = "删除"; I.apply(rootEl, "en");
+  assert(save.nodeValue === "Delete", "假 DOM：源文改了要按新源文重翻");
+  I.apply(rootEl, "zh");
+  assert(save.nodeValue === "删除" && sp.nodeValue === " 取消 " && input._a.placeholder === "搜索项目", "假 DOM：切回中文还原到最新源文");
+  I.apply(rootEl, "zh");
+  assert(save.nodeValue === "删除", "假 DOM：中文模式重复 apply 不动");
+  // 5. 接线闸：脚本顺序 / 内容区标记 / lang 从输入框一路到系统提示词 / 外观页与向导有开关
+  const a01 = rd(path.join("js", "app-01.js")), a02 = rd(path.join("js", "app-02.js")), a03 = rd(path.join("js", "app-03.js")), a06 = rd(path.join("js", "app-06.js"));
+  const srv = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8"), ag = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  assert(html.indexOf('src="js/i18n.js"') > 0 && html.indexOf('src="js/i18n.js"') < html.indexOf('src="js/app-00-ui.js"'), "i18n.js 必须在 app-00-ui.js 之前加载");
+  assert(/class="bubble" translate="no"/.test(a01) && /currentText\.setAttribute\("translate", "no"\)/.test(a01), "用户气泡 / AI 正文没标 translate=no（内容区会被当界面翻掉）");
+  assert(/lang: typeof I18N !== "undefined" \? I18N\.getLang\(\) : "zh"/.test(a02), "聊天请求体没带 lang");
+  assert(/const \{ sessionId, message, mode, regen, lang \} = req\.body/.test(srv) && /lang: lang === "en" \? "en" : "zh",/.test(srv), "服务端 /api/chat 没把 lang 传给 runTask");
+  assert(/function langBlock\(lang\)/.test(ag) && /projBlock \+ langBlock\(lang\) \+ modePrompt\(mode\)/.test(ag), "agent 系统提示词没拼 langBlock");
+  assert(/if \(extra\.lang\) parts\.push\(langBlock\(extra\.lang\)\)/.test(ag) && /\{ projectContext, history, lang \}/.test(ag), "本机引擎（claude/codex）的系统提示词没接 lang");
+  assert(/askUser, lang \}\) \{/.test(ag) && (ag.match(/^        lang,\n/gm) || []).length === 2, "专家子任务没继承 lang");
+  const fnSrc = ag.slice(ag.indexOf("function langBlock(lang) {"), ag.indexOf("\n}\n", ag.indexOf("function langBlock(lang) {")) + 3);
+  const langBlock = new Function(fnSrc + "\nreturn langBlock;")();
+  assert(langBlock("zh") === "" && langBlock(undefined) === "" && langBlock("xx") === "", "langBlock 只在 en 生效，其它值一律不加话");
+  assert(/Reply in English/.test(langBlock("en")) && /unless the user writes to you in Chinese/.test(langBlock("en")), "英文段要说清「除非用户用中文写」");
+  assert(/seg\("lang", i18n\.LANGS, i18n\.getLang\(\)/.test(a06) && /if \(k === "lang"\) \{ if \(i18n\) i18n\.setLang\(v\); \}/.test(a06), "外观页没有语言分区/点击不接 setLang");
+  assert(/class="onb-lang" data-i18n-skip/.test(a03) && /i18n\.setLang\(b\.dataset\.lang\); renderOnb\(\);/.test(a03), "向导第一屏没有语言开关");
+  console.log(`✅ 中英文切换：词典 ${keys.length} 条 + ${I.PATTERNS.en.length} 条模式句 · index.html 中文 ${htmlStrs.size}/${htmlStrs.size} 全覆盖（反向对照通过）· JS 模板短文案 ${short.length - shortMiss.length}/${short.length}=${pct(shortMiss.length, short.length)}%、全部 ${all.length - allMiss.length}/${all.length}=${pct(allMiss.length, all.length)}% · 假 DOM 翻译/跳过/幂等/还原 · lang 前端→服务端→内置循环/本机引擎/专家 三路接线`);
+}
+
 function testLookPrefsStatic() {
   // 外观偏好（主题/皮肤/字号/字体/密度）的静态闸：前端 harness 验行为，这里钉住「接线」——
   // 目录里有这一页、头像菜单能进来、CSS 令牌一套不少、老的主题子菜单没留尸体
