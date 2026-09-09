@@ -2194,13 +2194,34 @@ async function executeTool(name, input, opts = {}) {
   }
 }
 
+const FILES_CAP = 500;
+
+/**
+ * 产出列表的「坐标系指纹」。
+ *
+ * outputFiles() 给的 name 全是**相对工作目录**的路径，换一个工作目录就是换一套坐标系：
+ * 「格局图.png 不在这份列表里」在新目录下永远成立，可它说明不了旧目录里那张图有没有被删。
+ * 前端就是拿它判断「这份列表能不能用来给某个文件盖『已删除』」。
+ *
+ * 只发 8 位哈希、不发真实路径：这个字段会跟着会话一起存盘，用户的本地目录名不该写进
+ * 可以分享出去的记录里。
+ */
+function workspaceKey() {
+  return require("crypto").createHash("sha1").update(getWorkspaceDir()).digest("hex").slice(0, 8);
+}
+
+/** files 事件统一带上的作用域信息：哪套坐标系（root）、这份清单是不是完整的（full，到 500 条会截断） */
+function filesScope(files) {
+  return { root: workspaceKey(), full: (files || []).length < FILES_CAP };
+}
+
 /** 列出 workspace 下的文件（含子目录，最深 3 层、最多 500 个；name 为相对路径。前端按目录分组展示，@ 补全同源） */
 function outputFiles() {
   ensureDirs();
   const out = [];
   const SKIP = new Set([".tmp", "node_modules", ".git"]);
   (function walk(dir, rel, depth) {
-    if (depth > 3 || out.length >= 500) return;
+    if (depth > 3 || out.length >= FILES_CAP) return;
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -2208,7 +2229,7 @@ function outputFiles() {
       return;
     }
     for (const e of entries) {
-      if (out.length >= 500) return;
+      if (out.length >= FILES_CAP) return;
       if (e.name.startsWith(".") || SKIP.has(e.name)) continue;
       const full = path.join(dir, e.name);
       const r = rel ? `${rel}/${e.name}` : e.name;
@@ -2250,4 +2271,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo }, TOOL_DEFS, executeTool, outputFiles, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };

@@ -601,6 +601,17 @@
   .file-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-item .meta { font-size: 12px; color: var(--wb-text-3); }
   .file-item.nested { padding-left: 30px; }
+  /* 成果文件重点标记：一个真实文件夹里 data/ 的十几个 json、几个 .py 会把那份 pptx 冲下去，
+     用户原话「pptx 格式文件都没重点标记下啊」。加粗 + 左侧一道品牌色，不新增第五种颜色 */
+  .file-item.res .name { font-weight: 600; }
+  .file-item.res { position: relative; }
+  .file-item.res::before { content: ""; position: absolute; left: 2px; top: 8px; bottom: 8px; width: 2px; border-radius: 2px; background: var(--wb-brand); opacity: .8; }
+  .dir-head .cnt .res-n { color: var(--wb-brand-text); }
+  .fp-filter { display: flex; gap: 4px; padding: 0 10px 8px; }
+  .fp-seg { flex: 1; padding: 5px 8px; border: 1px solid var(--wb-border); background: transparent; color: var(--wb-text-3); border-radius: 8px; font-size: 12px; cursor: pointer; }
+  .fp-seg:hover { background: var(--wb-bg-hover); }
+  .fp-seg.on { background: var(--wb-bg-hover); color: var(--wb-text); border-color: var(--wb-brand); }
+  .fp-hidden { padding: 10px; font-size: 12px; color: var(--wb-text-3); }
   .dir-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px; font-size: 14px; cursor: pointer; user-select: none; }
   .dir-head:hover { background: var(--wb-bg-hover); }
   .dir-head .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1363,6 +1374,7 @@
 <div class="files-panel" id="files-panel">
   <div class="rsz l" data-rsz="fp" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整成果文件面板宽度" title="拖动调整宽度 · 双击恢复默认"></div>
   <h2><span><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> 成果文件</span> <a href="#" id="open-ws" class="link" style="font-weight:400;font-size: 12px">打开文件夹</a><span style="flex:1"></span><button id="fp-close" class="icon-btn" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></h2>
+  <div class="fp-filter" id="fp-filter" hidden></div>
   <div id="file-list"></div>
 </div>
 

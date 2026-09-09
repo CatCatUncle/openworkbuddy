@@ -45,9 +45,29 @@ const PATHHELP_SRC = APP02X.slice(PH0, PH1);
 const FL0 = APP02X.indexOf("function fileIcon(");
 const FL1 = APP02X.indexOf("// ================= 助理模式");
 if (FL0 < 0 || FL1 <= FL0) throw new Error("app-01.js 里的成果文件列表段找不到了（段标题被改过？），前端测试没法定位真源码");
+// 这一屏要验的不止是 DOM 结构，还有「点了收起到底看不看得见」——所以把 index.html 里的
+// 真样式整段注进来。只验结构不验样式的话，把 .out-block.packed 那条 CSS 删掉测试照样全绿，
+// 用户点了收起却什么也没发生。
+const INDEX_CSS = (() => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const m = html.match(/<style>([\s\S]*?)<\/style>/);
+  if (!m) throw new Error("public/index.html 里找不到内联 <style>，前端测试没法验真样式");
+  return m[1];
+})();
+
 const FILELIST_SRC = APP02X.slice(FL0, FL1);
 
-const FILELIST_HTML = "<!doctype html><meta charset='utf-8'><body><div id='file-list'></div></body>";
+// 「什么算交到用户手上的成果」这套判据长在产出卡那一段，文件面板的重点标记跟它共用一份——
+// 同一个文件在两处该是同一个身份。测试里也切真源码，不另抄一份正则
+const DV0 = APP02X.indexOf("// 「交到用户手上的成果」");
+const DV1 = APP02X.indexOf("function pathDepth(");
+if (DV0 < 0 || DV1 <= DV0) throw new Error("app-01.js 里的成果判据段找不到了，前端测试没法定位真源码");
+const DELIVER_SRC = APP02X.slice(DV0, DV1);
+
+// 面板这屏也把真样式注进来：重点标记要是只加类名不加样式，光验 DOM 照样全绿，
+// 用户看到的还是一模一样的一行字
+const FILELIST_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style>"
+  + "<body><div class='fp-filter' id='fp-filter' hidden></div><div id='file-list'></div></body>";
 
 // 对话里的「本回合产出」区：卡片只加不减 → 中途造的临时文件删了卡片还在，还把上限占满。
 // 真实事故：agent 为了擦掉生图自带的水印造了 8 个中间文件，干完删了，但 8 张卡正好顶满
@@ -58,15 +78,6 @@ const TO1 = APP02X.indexOf('document.getElementById("toggle-files").onclick');
 if (TO0 < 0 || TO1 <= TO0) throw new Error("app-01.js 里的本回合产出段找不到了（段标题被改过？），前端测试没法定位真源码");
 const TURNOUT_SRC = APP02X.slice(TO0, TO1);
 
-// 这一屏要验的不止是 DOM 结构，还有「点了收起到底看不看得见」——所以把 index.html 里的
-// 真样式整段注进来。只验结构不验样式的话，把 .out-block.packed 那条 CSS 删掉测试照样全绿，
-// 用户点了收起却什么也没发生。
-const INDEX_CSS = (() => {
-  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
-  const m = html.match(/<style>([\s\S]*?)<\/style>/);
-  if (!m) throw new Error("public/index.html 里找不到内联 <style>，前端测试没法验真样式");
-  return m[1];
-})();
 const TURNOUT_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body></body>";
 
 // 只替掉渲染细节（图标、字号、跳转），判重/上限/回收这些被测逻辑一律用真源码
@@ -214,6 +225,75 @@ const TURNOUT_CHECKS = `
     ok("大小挂在名字下边", html.querySelector(".out-meta").textContent === "2048 B");
   }
 
+  // ── 「不在这份列表里」≠「已经没了」。用户原话：「换了一个文件夹怎么有些文件就给我显示已删除了啊」——
+  //    截图里四个文件全被划掉，磁盘上一个都没少。两条真实路径都会掉进来：
+  //    回放历史对话（存盘时整份 files 被裁成「这一批变更」）、换工作目录（name 是相对路径，换了坐标系）。
+  {
+    const A = ["任务_A/格局图.png", "任务_A/格局图.svg", "任务_A/报告.md", "任务_A/PROGRESS.md"].map((n) => F(n));
+    const nm = (a) => a.map((x) => x.name);
+    const goneN = (b) => b.querySelectorAll(".out-row.gone").length;
+    const rowsOf = (b) => [...b.querySelectorAll(".out-row")].map((r) => r.dataset.name).join();
+
+    // 1. 回放：服务端明说了这份 files 是裁过的
+    {
+      const b = fresh();
+      renderTurnOutputs(b, A.slice(0, 2), A.slice(0, 2), { changed: nm(A.slice(0, 2)), partial: true, root: "r1" });
+      renderTurnOutputs(b, A.slice(2), A.slice(2), { changed: nm(A.slice(2)), partial: true, root: "r1" });
+      ok("回放历史对话：一批批放进来，前一批的产出不会被后一批的清单判死", goneN(b) === 0, rowsOf(b));
+      ok("回放完四个文件一个不少", b.querySelectorAll(".out-row").length === 4, rowsOf(b));
+    }
+    // 2. 老会话没有 partial 标记：靠形状认出来（清单跟 changed 逐条相等 = 存盘裁过的那种）
+    {
+      const b = fresh();
+      renderTurnOutputs(b, A.slice(0, 2), A.slice(0, 2), { changed: nm(A.slice(0, 2)) });
+      renderTurnOutputs(b, A.slice(2), A.slice(2), { changed: nm(A.slice(2)) });
+      ok("老会话（没有 partial 字段）也认得出裁过的清单", goneN(b) === 0, rowsOf(b));
+    }
+    // 3. 换工作目录：新目录的完整清单，说明不了旧目录里那几个文件的生死
+    {
+      const b = fresh();
+      renderTurnOutputs(b, A, A, { root: "r1", full: true });
+      const other = ["别的目录/新文件.md", "别的目录/x.py", "别的目录/y.json"].map((n) => F(n));
+      renderTurnOutputs(b, [other[0]], other, { root: "r2", full: true });
+      ok("换了工作目录，旧产出一个都不许被盖「已删除」", goneN(b) === 0, rowsOf(b));
+    }
+    // 4. 兜底：连 root 都没有（更老的记录），但这份清单跟本块一个都不沾边
+    {
+      const b = fresh();
+      renderTurnOutputs(b, A, A);
+      const other = ["别的目录/新文件.md", "别的目录/x.py"].map((n) => F(n));
+      renderTurnOutputs(b, [other[0]], other);
+      ok("清单跟本块连同一个顶层目录都不沾时，按「换了坐标系」处理，不按「一口气全删了」处理", goneN(b) === 0, rowsOf(b));
+    }
+    // 5. 反向控制：别为了不误杀就把回收整个关掉——同目录、完整清单里真没了的那个，照打「已删除」
+    {
+      const b = fresh();
+      renderTurnOutputs(b, A, A, { root: "r1", full: true });
+      const left = A.filter((x) => x.name !== "任务_A/格局图.svg");
+      renderTurnOutputs(b, [F("任务_A/新的.md")], [...left, F("任务_A/新的.md")], { root: "r1", full: true });
+      ok("反向控制：同目录完整清单里真删掉的那个，还是照打「已删除」",
+        goneN(b) === 1 && b.querySelector('.out-row[data-name="任务_A/格局图.svg"]').classList.contains("gone"), rowsOf(b));
+    }
+    // 6. 判据本身：拦下来时说得清是哪条拦的（排查时要能对上号）
+    {
+      const b = fresh();
+      renderTurnOutputs(b, A, A, { root: "r1", full: true });
+      const blk = b.querySelector(".out-block");
+      const why = (live, ev) => reapScope(blk, live, ev).why;
+      const got = [
+        why(A, { root: "r1", full: true }),
+        why(A, { partial: true }),
+        why(A, { root: "r2" }),
+        why(A, { root: "r1", full: false }),
+        why(A, { root: "r1", changed: nm(A) }),
+        why([F("别处/z.md")], { root: "r1" }),
+        why(null, {}),
+      ].join("|");
+      ok("六种「这份清单说明不了问题」各有各的判据（" + got + "）",
+        got === "|partial|other-root|truncated|legacy-partial|other-tree|no-list", got);
+    }
+  }
+
   return names;
 })()
 `;
@@ -353,6 +433,52 @@ const FILELIST_CHECKS = `
   window.sessionDirs = new Map();
   renderFiles([f("甲.txt", t0.getTime()), f("乙.txt", t0.getTime())]);
   ok("没有对话文件夹时根目录文件原样摊开", el.querySelectorAll(".file-item").length === 2 && !el.querySelector(".time-head"), el.innerHTML.slice(0, 120));
+
+  // ── 成果重点标记。真实文件夹长这样：data/ 十几个抓回来的 json、几个 .py、一份 PROGRESS.md，
+  //    外加一个 .pptx。用户原话：「pptx 格式文件都没重点标记下啊」——唯一要交的那份东西
+  //    跟中间材料同一个字重、混在按名字排的序里，得自己一行行找。
+  window.sessionDirs = new Map([["s_now", "任务_0903_本对话"]]);
+  const DIR = "任务_0903_本对话";
+  const mixed = ["raw1.json", "raw2.json", "抓取.py", "运行.log", "PROGRESS.md", "方案.pptx", "配图.png"]
+    .map((n, i) => f(DIR + "/" + n, t0.getTime() + i * 1000));
+  onlyResults = false;
+  renderFiles(mixed);
+  const dh = () => el.querySelector('.dir-head[data-dir="' + DIR + '"]');
+  ok("文件夹头上先报有几份成果（成果 2 · 共 7）", dh().querySelector(".cnt").textContent.replace(/\s+/g, " ") === "2 份成果 · 7", dh().querySelector(".cnt").textContent);
+  dh().click(); // 展开
+  const items = () => [...el.querySelectorAll(".file-item")];
+  const nameOf = (it) => it.dataset.name.split("/").pop();
+  ok("成果排在中间材料前面（现在是 " + items().map(nameOf).join("/") + "）",
+    ["方案.pptx", "配图.png"].join() === items().slice(0, 2).map(nameOf).sort().join(),
+    items().map(nameOf).join("/"));
+  const byName = (n) => items().find((it) => nameOf(it) === n);
+  ok("成果行打了标记，中间材料没有",
+    byName("方案.pptx").classList.contains("res") && byName("配图.png").classList.contains("res") &&
+    !byName("raw1.json").classList.contains("res") && !byName("抓取.py").classList.contains("res"));
+  ok("PROGRESS.md 是过程账本，不算成果", !byName("PROGRESS.md").classList.contains("res"));
+  // 真样式：只加类名不加样式的话，用户看到的还是一模一样的一行
+  const w = (it) => getComputedStyle(it.querySelector(".name")).fontWeight;
+  ok("成果的文件名真的更重（" + w(byName("方案.pptx")) + " vs " + w(byName("抓取.py")) + "）",
+    Number(w(byName("方案.pptx"))) > Number(w(byName("抓取.py"))));
+  ok("成果行左边有一道 2px 的色条（浏览器算出来的伪元素）",
+    getComputedStyle(byName("方案.pptx"), "::before").width === "2px" &&
+    getComputedStyle(byName("抓取.py"), "::before").width !== "2px");
+
+  // ── 「只看成果」是视图开关，不是删除：藏了多少条得如实写出来
+  const seg = () => [...document.querySelectorAll("#fp-filter .fp-seg")];
+  ok("面板顶上摆出「全部 / 只看成果」两档", !document.getElementById("fp-filter").hidden && seg().length === 2,
+    document.getElementById("fp-filter").innerHTML.slice(0, 120));
+  ok("两档各带自己的条数", seg()[0].textContent === "全部 7" && seg()[1].textContent === "只看成果 2", seg().map((b) => b.textContent).join("|"));
+  seg()[1].click();
+  ok("切到只看成果后中间材料不出现在列表里", items().length === 2 && items().every((it) => it.classList.contains("res")), items().map(nameOf).join("/"));
+  ok("底下如实写着折起了几个，不装作文件不存在", /已折起 5 个中间材料/.test(el.textContent), el.textContent.slice(-60));
+  seg()[0].click();
+  ok("切回全部又都在", items().length === 7 && !/已折起/.test(el.textContent));
+  // 反向控制：一个成果都没有 / 全是成果时不摆这个开关——切了看不出差别，白占一行
+  renderFiles(["a.py", "b.json"].map((n, i) => f(DIR + "/" + n, t0.getTime() + i)));
+  ok("反向控制：一份成果都没有时不摆开关", document.getElementById("fp-filter").hidden);
+  renderFiles(["a.pptx", "b.png"].map((n, i) => f(DIR + "/" + n, t0.getTime() + i)));
+  ok("反向控制：全是成果时也不摆开关", document.getElementById("fp-filter").hidden);
   return names;
 })()`;
 
@@ -2214,7 +2340,7 @@ app.whenReady().then(async () => {
     const win5 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win5.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(FILELIST_HTML));
-      const names5 = await win5.webContents.executeJavaScript(FILELIST_STUBS + "\n" + PATHHELP_SRC + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
+      const names5 = await win5.webContents.executeJavaScript(FILELIST_STUBS + "\n" + PATHHELP_SRC + "\n" + DELIVER_SRC + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
       for (const n of names5) console.log("  ✓ " + n);
       console.log(`✅ 前端：成果面板按时间分段（今天/昨天/7天/按月·取最近动过·折叠独立·根目录降级）${names5.length} 项通过`);
     } finally {
