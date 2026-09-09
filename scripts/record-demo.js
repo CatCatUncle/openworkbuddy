@@ -9,7 +9,8 @@
  *   --prompt <文字>   要录的任务（默认见 DEFAULT_PROMPT；示例数据会自动放进演示工作区）
  *   --out <路径>      GIF 输出（默认 docs/images/demo.gif；mp4 同名同目录）
  *   --dry            打完字就停，不点发送（不花模型钱）
- *   --speed <倍速>    回放倍速（默认 1；等模型的那段长就调 2~3）
+ *   --speed <倍速>    全片倍速（默认 1 = 不指定，由 --target-sec 自动整形）
+ *   --target-sec <秒>  成片目标时长（默认 40）：打字和结果段原速，只把等模型那段压进去；0 关掉
  *   --width <像素>    GIF 宽度（默认 960；窗口按 1280×800 渲染再缩）
  *   --fps <帧率>      采样帧率（默认 6）
  *   --max-sec <秒>    任务最长等待（默认 300）
@@ -26,6 +27,7 @@ const { app, BrowserWindow } = require("electron");
 const fs = require("fs");
 const { defaultPairs, maskScript } = require("./demo-mask");
 const { wireReadmes } = require("./demo-readme");
+const { fitDurations } = require("./demo-timing");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
@@ -42,7 +44,7 @@ const SAMPLE_CSV = [
 ].join("\n") + "\n";
 
 function parseArgs(argv) {
-  const a = { prompt: DEFAULT_PROMPT, out: path.join(ROOT, "docs", "images", "demo.gif"), dry: false, speed: 1, width: 960, fps: 6, maxSec: 300, port: 3897, keep: false };
+  const a = { prompt: DEFAULT_PROMPT, out: path.join(ROOT, "docs", "images", "demo.gif"), dry: false, speed: 1, width: 960, fps: 6, maxSec: 300, port: 3897, keep: false, targetSec: 40 };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i], v = argv[i + 1];
     if (k === "--dry") a.dry = true;
@@ -54,6 +56,7 @@ function parseArgs(argv) {
     else if (k === "--fps") { a.fps = Math.min(15, Math.max(2, +v || 6)); i++; }
     else if (k === "--max-sec") { a.maxSec = Math.max(10, +v || 300); i++; }
     else if (k === "--port") { a.port = +v || 3897; i++; }
+    else if (k === "--target-sec") { a.targetSec = Math.max(0, +v || 0); i++; }
   }
   return a;
 }
@@ -108,8 +111,9 @@ async function ensureLoggedIn(win) {
 class Recorder {
   constructor(win, dir, fps) {
     this.win = win; this.dir = dir; this.interval = Math.round(1000 / fps);
-    this.frames = []; this.last = null; this.running = false; this.shots = 0;
+    this.frames = []; this.last = null; this.running = false; this.shots = 0; this.marks = {};
   }
+  mark(name) { this.marks[name] = Date.now(); }
   async grab() {
     const img = await this.win.webContents.capturePage();
     const png = img.toPNG();
@@ -127,13 +131,13 @@ class Recorder {
     (async () => { while (this.running) { const t0 = Date.now(); try { await this.grab(); } catch (e) { log("截帧失败:", e.message); } await sleep(Math.max(20, this.interval - (Date.now() - t0))); } })();
   }
   async stop() { this.running = false; await sleep(this.interval + 50); if (this.last) this.last.until = Date.now(); }
-  /** ffmpeg concat 列表：每帧真实时长 / 倍速 */
-  writeList(speed) {
+  /** ffmpeg concat 列表：打字/结果段原速，等模型那段按 --target-sec 压（或 --speed 全片倍速） */
+  writeList(speed, targetSec) {
+    const fit = fitDurations(this.frames, { interval: this.interval, speed, targetSec, sent: this.marks.sent, done: this.marks.done });
+    this.fit = fit;
     const lines = [];
     for (let i = 0; i < this.frames.length; i++) {
-      const f = this.frames[i], next = this.frames[i + 1];
-      const dur = Math.max(this.interval, (next ? next.at : f.until + this.interval) - f.at) / 1000 / speed;
-      lines.push(`file '${f.file}'`, `duration ${dur.toFixed(3)}`);
+      lines.push(`file '${this.frames[i].file}'`, `duration ${fit.durations[i].toFixed(3)}`);
     }
     if (this.frames.length) lines.push(`file '${this.frames[this.frames.length - 1].file}'`); // concat 规矩：末帧要再列一次
     const list = path.join(this.dir, "list.txt");
@@ -209,6 +213,7 @@ app.whenReady().then(async () => {
       await sleep(1500);
     } else {
       await win.webContents.executeJavaScript(`send()`);
+      rec.mark("sent");
       log("已发送，等助理跑完…");
       const deadline = Date.now() + ARGS.maxSec * 1000;
       await sleep(1500);
@@ -219,6 +224,7 @@ app.whenReady().then(async () => {
       }
       if (Date.now() >= deadline) log(`超过 ${ARGS.maxSec} 秒仍在跑，按现状收尾（可加 --max-sec）`);
       else log(`助理完成 +${Date.now() - t0}ms`);
+      rec.mark("done");
       await sleep(1500); // 先停在结论和产出 chip 上
       // 产出不再自动弹预览（抢版面），演示里替观众点一下第一个能在 app 里预览的 chip，把成果亮出来。
       // 只挑网页/图/md/pdf/csv：老 Office 格式点了会拉起系统程序，录屏里不能出现别的窗口
@@ -235,17 +241,18 @@ app.whenReady().then(async () => {
     log(`采样 ${rec.shots} 次，落盘 ${rec.frames.length} 帧（相邻相同的已合并）`);
     if (!rec.frames.length) throw new Error("一帧都没录到");
 
-    const list = rec.writeList(ARGS.speed);
+    const list = rec.writeList(ARGS.speed, ARGS.targetSec);
+    if (rec.fit.factor > 1) log(`等模型那段 ${rec.fit.work.toFixed(1)}s 压到 ${(rec.fit.work / rec.fit.factor).toFixed(1)}s（×${rec.fit.factor.toFixed(1)}），打字和结果段原速`);
     fs.mkdirSync(path.dirname(ARGS.out), { recursive: true });
     const scale = `scale=${ARGS.width}:-2:flags=lanczos`;
     ffmpeg(["-f", "concat", "-safe", "0", "-i", list, "-vf", `${scale},split[a][b];[a]palettegen=max_colors=200:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle`, "-loop", "0", ARGS.out]);
     const mp4 = ARGS.out.replace(/\.gif$/i, "") + ".mp4";
     try { ffmpeg(["-f", "concat", "-safe", "0", "-i", list, "-vf", `${scale},format=yuv420p`, "-fps_mode", "cfr", "-r", "12", "-c:v", "libx264", "-crf", "23", "-movflags", "+faststart", mp4]); } catch (e) { log("mp4 跳过：", e.message); }
-    const total = rec.frames.reduce((s, f, i) => s + Math.max(rec.interval, ((rec.frames[i + 1] ? rec.frames[i + 1].at : f.until + rec.interval) - f.at)), 0) / 1000 / ARGS.speed;
+    const total = rec.fit.durations.reduce((s, d) => s + d, 0);
     const size = fs.statSync(ARGS.out).size;
     log(`GIF ${ARGS.out}  ${(size / 1024 / 1024).toFixed(2)} MB  时长 ${total.toFixed(1)}s  ${ARGS.width}px 宽`);
     if (fs.existsSync(mp4)) log(`MP4 ${mp4}  ${(fs.statSync(mp4).size / 1024 / 1024).toFixed(2)} MB`);
-    if (size > 8 * 1024 * 1024) log("GIF 超过 8MB，README 里会加载得慢：试试 --speed 2 或 --width 800");
+    if (size > 8 * 1024 * 1024) log("GIF 超过 8MB，README 里会加载得慢：试试 --target-sec 25 或 --width 800");
     // 真录才挂进 README 首屏（--dry 的片子是验管线的，不上门面）；已经挂过就不重复
     if (!ARGS.dry) {
       const wired = wireReadmes(ROOT, ARGS.out);
