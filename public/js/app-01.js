@@ -1589,6 +1589,7 @@ function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } c
 // 把本回合的产出做成卡片挂在对话里。右侧文件面板是"所有文件"，这里是"这次产出的"——
 // 用户要的是聊完直接点开，而不是回头去面板里认哪个是刚才那个。
 const OUT_CARD_MAX = 8;                                   // 一屏摆得下的量；超了只提示条数，别把对话冲垮
+const OUT_ROW_MAX = 6;                                    // 变更清单先露这么多行，再多的收在「还有 N 个文件」后面
 const FILES_LIST_CAP = 500;                               // 服务端 outputFiles() 的截断上限，见 tools.js
 
 /**
@@ -1633,21 +1634,19 @@ function renderTurnOutputs(body, changed, live) {
   let block = body.querySelector(":scope > .out-block");
   if (!block) {
     block = document.createElement("div");
-    block.className = "out-block fold"; // 变更清单默认收起，想看再点开
-    // 整块要能一键收起。以前只有下面那行「查看所有变更」能折，上面那排缩略图卡片是钉死的，
-    // 用户的原话是「这些图标都没办法收起来啊，不是属于变更窗口的吗」——产出多的时候，
-    // 一屏卡片把对话正文顶得看不见，还没有任何办法把它按下去。
+    block.className = "out-block";
+    // 只留一层开关。以前是两层：点开「本回合产出」，里面还压着一个「查看所有变更」，
+    // 用户点第一下只看到又一行标题，原话是「点击▸ 本回合产出 (2) 怎么没有反应啊」——
+    // 文件躺在第二层里，谁也不会去点第二下。现在标题这一下就把文件摊开；
+    // 产出多的时候用「还有 N 个文件」再展开，那是量的问题，不是再折一层。
     block.innerHTML = `<div class="out-hd out-main"><span class="ar">▾</span> 本回合产出 <span class="cn"></span></div>` +
-      `<div class="out-body"><div class="out-grid"></div><div class="out-hd out-toggle"><span class="ar">▸</span> 查看所有变更 <span class="n"></span></div><div class="out-list"></div></div>`;
+      `<div class="out-body"><div class="out-grid"></div><div class="out-list"></div><div class="out-hd out-more" hidden></div></div>`;
     body.appendChild(block);
-    onActivate(block.querySelector(".out-toggle"), () => {
-      const fold = block.classList.toggle("fold");
-      block.querySelector(".out-toggle .ar").textContent = fold ? "▸" : "▾";
-    });
     onActivate(block.querySelector(".out-main"), () => {
       const packed = block.classList.toggle("packed");
       block.querySelector(".out-main .ar").textContent = packed ? "▸" : "▾";
     });
+    onActivate(block.querySelector(".out-more"), () => { block.dataset.all = "1"; clipOutList(block); });
   }
   const grid = block.querySelector(".out-grid");
   const list = block.querySelector(".out-list");
@@ -1684,20 +1683,35 @@ function renderTurnOutputs(body, changed, live) {
       const row = document.createElement("div");
       row.className = "out-row";
       row.dataset.name = f.name;
-      const nmHtml = f.name.includes("/")
-        ? `<span class="dim">${esc(f.name.slice(0, f.name.lastIndexOf("/") + 1))}</span>${esc(f.name.split("/").pop())}`
-        : esc(f.name);
-      row.innerHTML = `<span class="ic">${fileIcon(f.name)}</span><span class="nm">${nmHtml}</span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">⬇</a>`;
+      const base = f.name.split("/").pop();
+      // 目录和文件名分开放：一行放不下时省略号只许吃目录。以前整串挤在一个省略号里，
+      // 「任务_0909_怎么推广我这个项目啊/PROGRESS.md」被截在中间，最该看的文件名反而没了
+      const dir = f.name.slice(0, f.name.length - base.length);
+      row.innerHTML = `<span class="ic">${fileIcon(f.name)}</span><span class="nm">${dir ? `<span class="dim">${esc(dir)}</span>` : ""}<span class="bs">${esc(base)}</span></span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">⬇</a>`;
       row.querySelector("[data-rv]").onclick = (e) => revealFile(f.name, e);
       row.onclick = (e) => { if (e.target.closest("a") || e.target.closest(".rv")) return; previewFile(f.name); };
-      list.appendChild(row);
+      // 计划/说明这类脚手架沉到底、压暗：PROGRESS.md 在长任务里每几步就重写一次，
+      // 它是过程账本不是交付物，却总占着清单第一行——过程要看去上面那张里程碑卡
+      if (SCAFFOLD_RE.test(base)) row.classList.add("sub");
+      list.insertBefore(row, row.classList.contains("sub") ? null : list.querySelector(".out-row.sub"));
     }
   }
   mergeFmtPairs(grid);
   markDupBasenames(grid);
   const nRows = list.querySelectorAll(".out-row").length;
-  block.querySelector(".out-toggle .n").textContent = `(${nRows})`;
   block.querySelector(".out-main .cn").textContent = `(${nRows})`;
+  clipOutList(block);
+}
+
+// 清单长了就先露前几行，剩下的收在「还有 N 个文件」后面。
+// 只多出一行时不折：那行字自己就占一行，折了什么也没省下
+function clipOutList(block) {
+  const rows = [...block.querySelectorAll(".out-list .out-row")];
+  const more = block.querySelector(".out-more");
+  const hide = block.dataset.all === "1" || rows.length <= OUT_ROW_MAX + 1 ? 0 : rows.length - OUT_ROW_MAX;
+  rows.forEach((r, i) => r.classList.toggle("hid", hide > 0 && i >= OUT_ROW_MAX));
+  more.hidden = !hide;
+  if (hide) more.textContent = `还有 ${hide} 个文件`;
 }
 
 // 「交到用户手上的成果」：点开就能用的东西，不包括干活途中的脚手架
@@ -1766,11 +1780,13 @@ function mergeFmtPairs(grid) {
 
 function makeOutCard(f, isHtml) {
   const url = "/api/files/view/" + fpath(f.name) + "?t=" + Date.now();
-  // 紧凑 chip：小缩略图/文件图标 + 文件名 + 大小 + 三个图标钮，一行一件。
-  // 以前是 240px 大卡内嵌 iframe 缩略图：一回合出三个网页就在对话里跑三个小浏览器，又慢又挡正文；
-  // 参考 Claude Cowork / Codex 的做法——结论在正文里，产出只是一排能点的文件
-  const isRaster = /\.(png|jpe?g|gif|webp|bmp|ico)$/i.test(f.name);
-  const thumb = isRaster ? `<img src="${url}" alt="" loading="lazy">` : `<span class="ph">${fileIcon(f.name)}</span>`;
+  // 产出卡：缩略图在上、文件名和大小在下、三个图标钮收在底边。
+  // 交付物看得见长什么样才叫产出；只有一行文件名的话，用户还得点开才知道自己拿到了什么
+  // 图（含 svg）直接出缩略图——用户原话「那种预览小图标怎么给我改成文件名的形式了啊」：
+  // 一排只有文件名的行，等于把右侧文件面板抄进了对话里。图用 <img> 渲染，网页/文档给大图标，
+  // 但都不内嵌 iframe：一回合出三个网页就是在对话里跑三个小浏览器，又慢又挡正文
+  const isPic = /\.(png|jpe?g|gif|webp|bmp|ico|svg)$/i.test(f.name);
+  const thumb = isPic ? `<img src="${url}" alt="" loading="lazy">` : `<span class="ph">${fileIcon(f.name)}</span>`;
   const card = document.createElement("div");
   card.className = "out-card";
   card.dataset.name = f.name;

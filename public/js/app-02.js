@@ -1215,14 +1215,18 @@ function toggleUserMenu() { userMenu.classList.contains("show") ? closeUserMenu(
 function openUserMenu() {
   if (!currentUser) return;
   const av = avatarBits(currentUser.avatar, currentUser.username);
+  const i18n = typeof I18N !== "undefined" ? I18N : null; // 测试夹具里可能没挂词典
+  const lang = i18n ? i18n.getLang() : "zh";
   userMenu.innerHTML = `
     <div class="um-head" data-act="account" title="点击查看用量明细">
       <span class="ava${av.cls ? " " + av.cls : ""}" style="width:30px;height:30px;border-radius:50%;background:var(--wb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size: 15px;font-weight:600;flex:none;overflow:hidden">${av.html}</span>
       <div style="min-width:0"><div class="n">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</div>
       <div class="s">${creditsOn ? `✦ ${(+currentUser.credits).toLocaleString()} 积分 · ` : ""}账号与用量</div></div>
     </div>
-    <div class="um-i" data-act="profile">🪪 个人资料 <span class="hint">改名字 · 换头像</span></div>
+    <div class="um-i" data-act="profile">🪪 个人资料</div>
     <div class="um-i" data-act="settings">⚙️ 设置</div>
+    ${i18n ? `<div class="um-i um-lang" data-act="lang" title="点一下就切换界面语言，AI 回复也跟着换"><span>🌐 语言</span><span class="um-seg" data-i18n-skip role="group" aria-label="界面语言">${Object.keys(i18n.LANGS).map((v) =>
+      `<button type="button" data-lang="${v}" class="${lang === v ? "on" : ""}" aria-pressed="${lang === v}">${v === "zh" ? "中" : "En"}</button>`).join("")}</span></div>` : ""}
     <div class="um-i" data-act="appearance">🎨 外观 <span class="hint">${THEME_LABEL[getTheme()]} · ${LOOK_OPTS.fs[lookGet("fs")]}字</span></div>
     <div class="um-i" data-act="help">💬 帮助与反馈</div>
     <div class="um-i" data-act="update">🔄 检查更新</div>
@@ -1230,6 +1234,15 @@ function openUserMenu() {
   userMenu.querySelectorAll("[data-act]").forEach(el => el.onclick = async (e) => {
     e.stopPropagation();
     const act = el.dataset.act;
+    if (act === "lang") {
+      // 语言行不关菜单：点「中 / En」按钮选定，点行的其它地方就在两者间翻；切完原地重画，菜单文字立刻跟着变
+      if (!i18n) return;
+      const b = e.target.closest("button[data-lang]");
+      const next = b ? b.dataset.lang : (i18n.getLang() === "zh" ? "en" : "zh");
+      if (next !== i18n.getLang()) i18n.setLang(next);
+      openUserMenu();
+      return;
+    }
     closeUserMenu();
     if (act === "account") openModal("account");
     else if (act === "appearance") openModal("settings", "look");

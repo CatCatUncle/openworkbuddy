@@ -132,42 +132,35 @@ const TURNOUT_CHECKS = `
     ok("列表被截断时一律不回收", cards(b).length === 8 && !cards(b).includes("海报_clean.png"));
   }
 
-  // ── 整块要能收起来。用户原话：「这些图标都没办法收起来啊，不是属于变更窗口的吗」——
-  //    以前只有「查看所有变更」那行能折，上面那排缩略图卡片是钉死的，产出一多就把正文顶没了。
-  //    两个开关得互不干扰：收起整块时连「查看所有变更」那行一起按下去。
+  // ── 只保留一层开关。用户原话（旧版两层「查看所有变更」嵌套）：「点击▸ 本回合产出 (2) 怎么没有反应啊」——
+  //    旧版点「本回合产出」第一层只展开一行新标题，文件还躺在更下面一层里。现在标题这一下就把产出摊开：
+  //    卡片区、变更清单、超长展开条都收在同一个 .out-body 里，一起出来一起收，没有第二层折叠
   {
     const b = fresh();
     const two = [F("报告.pdf"), F("图.png")];
     renderTurnOutputs(b, two, two);
     const block = b.querySelector(".out-block");
+    const body = block.querySelector(".out-body");
     const main = block.querySelector(".out-main");
-    const inner = block.querySelector(".out-toggle");
-    ok("有一个管整块的开关", !!main && !!inner && main !== inner);
-    ok("默认展开：卡片区看得见", !block.classList.contains("packed"));
+    ok("有一个管整块的开关", !!main && !block.querySelector(".out-toggle"));
+    ok("没有第二层折叠（旧版那个点开再看一层的按钮不存在了）", !block.querySelector(".out-toggle"));
+    ok("默认展开：卡片区和变更清单看得见", !block.classList.contains("packed"));
     ok("整块开关的计数是这一回合的文件数", main.querySelector(".cn").textContent === "(2)");
+    ok("卡片区、清单这层都收在同一个 out-body 里（没有别的折叠层）",
+      body.contains(block.querySelector(".out-grid")) &&
+      body.contains(block.querySelector(".out-list")));
     main.click();
     ok("点一下整块收起", block.classList.contains("packed"));
-    ok("收起时卡片区和变更清单都在被收的那层里",
-      block.querySelector(".out-body").contains(block.querySelector(".out-grid")) &&
-      block.querySelector(".out-body").contains(block.querySelector(".out-list")) &&
-      block.querySelector(".out-body").contains(inner));
-    ok("收起时卡片区真的看不见了（验的是浏览器算出来的样式，不是有没有加类名）",
-      getComputedStyle(block.querySelector(".out-body")).display === "none");
+    ok("收起时这一层内容真的看不见了（浏览器算出来的样式，不是有没有加类名）",
+      getComputedStyle(body).display === "none");
     ok("收起时标题那行还留着，不然就找不到再点开的地方了",
       getComputedStyle(main).display !== "none" && main.offsetHeight > 0);
     ok("收起时箭头翻过来", main.querySelector(".ar").textContent === "▸");
     main.click();
     ok("再点一下展开", !block.classList.contains("packed") && main.querySelector(".ar").textContent === "▾");
-    ok("展开后卡片区又看得见了", getComputedStyle(block.querySelector(".out-body")).display !== "none");
-    // 内层那个开关是「变更清单」自己的，不许被整块开关顶替
-    ok("变更清单默认仍是收起的", block.classList.contains("fold"));
-    inner.click();
-    ok("内层开关只动变更清单，不动整块",
-      !block.classList.contains("fold") && !block.classList.contains("packed") &&
-      inner.querySelector(".ar").textContent === "▾" && main.querySelector(".ar").textContent === "▾");
+    ok("展开后内容又看得见了", getComputedStyle(body).display !== "none");
     renderTurnOutputs(b, [F("补一个.pdf")], [...two, F("补一个.pdf")]);
-    ok("再来一批产出时两个计数一起跟上",
-      main.querySelector(".cn").textContent === "(3)" && inner.querySelector(".n").textContent === "(3)");
+    ok("再来一批产出时计数跟得上", main.querySelector(".cn").textContent === "(3)");
   }
 
   // ── svg/png 并卡：只有一半被删时，卡留着，摘掉失效的那条格式链接
@@ -182,39 +175,43 @@ const TURNOUT_CHECKS = `
       cards(b).length === 1 && cards(b)[0] === "图.png" && !b.querySelector(".oa-alt"));
   }
 
-  // ── 产出 chip：不再是 240px 大卡内嵌 iframe 缩略图（一回合三个网页 = 对话里跑三个小浏览器），
-  //    一行一件、小缩略图/文件图标 + 名字 + 大小 + 三个图标钮。验的是浏览器算出来的盒子
+  // ── 产出卡要有缩略图：图片直接渲染成能看画面的大缩略（一回合真产出够直观，不再是一行只有文件名的抽屉行），
+  //    网页 / Office 文档渲染不出来就给大图标。「要大缩略、要一行清单，不能只见文件名的行」是用户反复强调的。
+  //    验的是浏览器算出来的盒子
   {
     const b = fresh();
-    // index.html 的 body 是 flex 行，前面几块的容器已经把它挤满了；这块要量「三件排一行」，给它一块固定 820px 的地
+    // index.html 的 body 是 flex 行，前面几块的容器已经把它挤满了；给块一块固定宽的"对话正文"地
     b.style.cssText = "position:fixed; left:0; top:0; width:820px";
     const three = [F("报告.html", 2048), F("图.png", 512), F("方案.pptx", 4096)];
     renderTurnOutputs(b, three, three);
-    ok("chip 里没有 iframe", !b.querySelector(".out-card iframe") && cards(b).length === 3);
+    ok("卡里没有 iframe（一回合三张网页 = 对话里跑三个小浏览器，不再回来了）",
+      !b.querySelector(".out-card iframe") && cards(b).length === 3);
     const html = b.querySelector('.out-card[data-name="报告.html"]');
     const png = b.querySelector('.out-card[data-name="图.png"]');
     const ppt = b.querySelector('.out-card[data-name="方案.pptx"]');
-    ok("图片 chip 带小缩略图，网页 / PPT chip 用文件图标",
+    ok("图片卡是能看画面的缩略图，网页 / PPT 卡用大文件图标",
       !!png.querySelector(".out-thumb img") && !!html.querySelector(".out-thumb .ph") && !!ppt.querySelector(".out-thumb .ph"));
-    const r = html.getBoundingClientRect();
-    ok("chip 是一行：高 ≤ 40px、宽 < 360px（实际 " + Math.round(r.height) + "×" + Math.round(r.width) + "）", r.height > 0 && r.height <= 40 && r.width > 0 && r.width < 360);
-    ok("缩略图框 ≤ 30px", png.querySelector(".out-thumb").getBoundingClientRect().height <= 30);
+    const a = html.getBoundingClientRect();
+    ok("产出卡是竖卡板，宽 168px、高远高于图标钮时代（实际 " + Math.round(a.width) + "×" + Math.round(a.height) + "）",
+      a.height > 100 && a.width >= 160);
+    ok("图片缩略图框有 92px 高，够看到画面而不是 26px 小点",
+      Math.abs(png.querySelector(".out-thumb").getBoundingClientRect().height - 92) < 1);
     const tops = [html, png, ppt].map((c) => c.getBoundingClientRect().top), lefts = [html, png, ppt].map((c) => Math.round(c.getBoundingClientRect().left));
-    ok("三件产出排在同一行，不是一列大卡（top " + tops.map(Math.round).join("/") + "，left " + lefts.join("/") + "，容器宽 " + Math.round(b.getBoundingClientRect().width) + "）",
+    ok("三件产出并列一排（卡区是自适应换行的格，不是一列占满整行；top " + tops.map(Math.round).join("/") + "，容器宽 " + Math.round(b.getBoundingClientRect().width) + "）",
       Math.abs(tops[0] - tops[1]) < 1 && Math.abs(tops[1] - tops[2]) < 1);
-    ok("网页 chip 的主操作是「在浏览器打开」、其余是「预览」，字留给读屏、屏幕上不占位",
+    ok("网页卡的主操作是「在浏览器打开」、其余是「预览」，字留给读屏、屏幕上不占位",
       html.querySelector(".oa-main .tx").textContent === "在浏览器打开" && ppt.querySelector(".oa-main .tx").textContent === "预览" &&
       html.querySelector(".oa-main .tx").getBoundingClientRect().width <= 1);
     ok("三个图标钮都带 title（没字全靠它）", html.querySelectorAll(".out-acts [title]").length === 3 &&
       html.querySelector('[data-a="br"]').title === "在浏览器打开" && html.querySelector('[data-a="rv"]').title === "打开所在位置" && html.querySelector("a[download]").title === "下载");
     ok("图标钮是 26px 方钮，不是带边框的长条", html.querySelector('[data-a="rv"]').getBoundingClientRect().width <= 28 && getComputedStyle(html.querySelector('[data-a="rv"]')).borderStyle === "none");
-    ok("chip 能落焦点（tabindex=0），但不套 role=button（里面还有真按钮）", html.tabIndex === 0 && !html.getAttribute("role"));
+    ok("卡能落焦点（tabindex=0），但不套 role=button（里面还有真按钮）", html.tabIndex === 0 && !html.getAttribute("role"));
     // OFFICE_RE 只认 .doc/.ppt/.xls 这种老二进制格式（app 里预览不了，只能交给系统程序）；pptx/docx/xlsx 有结构化预览，走「点击预览」
-    ok("chip 的 title 写着文件名和点了会怎样", html.title.includes("报告.html") && html.title.includes("点击预览") && ppt.title.includes("点击预览"));
+    ok("卡的 title 写着文件名和点了会怎样", html.title.includes("报告.html") && html.title.includes("点击预览") && ppt.title.includes("点击预览"));
     const legacy = fresh(); renderTurnOutputs(legacy, [F("老报表.xls", 9)], [F("老报表.xls", 9)]);
     const xls = legacy.querySelector('.out-card[data-name="老报表.xls"]');
-    ok("老格式（.xls）的 chip 提示「点击用系统程序打开」", !!xls && xls.title.includes("点击用系统程序打开") && !xls.title.includes("点击预览"));
-    ok("大小挂在名字旁边", html.querySelector(".out-meta").textContent === "2048 B");
+    ok("老格式（.xls）的卡提示「点击用系统程序打开」", !!xls && xls.title.includes("点击用系统程序打开") && !xls.title.includes("点击预览"));
+    ok("大小挂在名字下边", html.querySelector(".out-meta").textContent === "2048 B");
   }
 
   return names;
@@ -1249,6 +1246,62 @@ const LOOK_CHECKS = `
   return names;
 `;
 
+// ---------- 头像菜单：语言快切（点即切、菜单不关、文案原地翻；「改名字 · 换头像」尾注已删） ----------
+const MENU_SRC = (() => {
+  const a0 = APP02.indexOf("// ---------- 头像菜单"), a1 = APP02.indexOf('document.addEventListener("click", (e) => { if (!e.target.closest("#user-row")) closeUserMenu(); });');
+  if (a0 < 0 || a1 < 0) throw new Error("头像菜单切片锚点丢了");
+  return APP02.slice(a0, a1);
+})();
+const MENU_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
+  + "<div class='hist-item active' id='hia'>当前</div>"
+  + "<div id='user-row' style='position:relative;width:260px;margin-top:320px'><div class='user-menu' id='user-menu'></div></div></body>";
+const MENU_STUBS = `
+  function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+  function avatarBits(av, name) { return { cls: "", html: esc(String(name || "?").slice(0, 1).toUpperCase()) }; }
+  function displayName(u) { return (u && (u.nickname || u.username)) || ""; }
+  const MODALS = []; function openModal(k, sub) { MODALS.push(k + ":" + (sub || "")); }
+  function renderProfile() {} function checkUpdate() { MODALS.push("update"); }
+  let currentUser = { username: "demo", role: "admin", avatar: "", credits: 0 }; const creditsOn = false;
+`;
+const MENU_CHECKS = `
+  const names = []; window.__menuNames = 0;
+  const ok = (name, cond) => { if (!cond) throw new Error("头像菜单：" + name); names.push(name); window.__menuNames = names.length; };
+  const $ = (q) => document.querySelector(q);
+  const tick = () => new Promise((r) => setTimeout(r, 25)); // 英文模式下翻译靠观察者，下一拍才落
+  const menu = $("#user-menu");
+  const acts = () => [...menu.querySelectorAll(".um-i")].map((x) => x.dataset.act).join(",");
+  const langRow = () => menu.querySelector(".um-lang");
+  const btn = (v) => menu.querySelector('.um-seg button[data-lang="' + v + '"]');
+  I18N.setLang("zh");
+  openUserMenu();
+  ok("打开：菜单显示，七行动作 = 个人资料/设置/语言/外观/帮助/更新/退出", menu.classList.contains("show") && acts() === "profile,settings,lang,appearance,help,update,logout");
+  ok("「个人资料」后面不再挂「改名字 · 换头像」尾注", !/改名字|换头像/.test(menu.textContent) && !menu.querySelector('[data-act="profile"] .hint'));
+  ok("语言行：🌐 语言 + 中 / En 两个胶囊，中文选中（.on + aria-pressed）", !!langRow() && /🌐 语言/.test(langRow().textContent) && !!btn("zh") && !!btn("en") && btn("zh").classList.contains("on") && btn("zh").getAttribute("aria-pressed") === "true" && !btn("en").classList.contains("on") && btn("en").getAttribute("aria-pressed") === "false");
+  ok("胶囊组标了 data-i18n-skip，「中 / En」不会被翻译器动", langRow().querySelector(".um-seg").hasAttribute("data-i18n-skip") && btn("zh").textContent === "中" && btn("en").textContent === "En");
+  const bgOn = getComputedStyle(btn("zh")).backgroundColor, bgOff = getComputedStyle(btn("en")).backgroundColor;
+  ok("选中胶囊有品牌底色，未选中透明（" + bgOn + " / " + bgOff + "）", bgOn !== bgOff && /rgba\\(0, 0, 0, 0\\)|transparent/.test(bgOff));
+  ok("胶囊够大能点：高 ≥ 18px、宽 ≥ 30px", btn("zh").getBoundingClientRect().height >= 18 && btn("zh").getBoundingClientRect().width >= 30);
+  ok("外观行的「主题 · 字号」提示还在（没误伤）", /跟随系统 · 标准字/.test(menu.querySelector('[data-act="appearance"] .hint').textContent));
+  btn("en").click(); await tick();
+  ok("点 En：语言=en，菜单没关", I18N.getLang() === "en" && menu.classList.contains("show"));
+  ok("点 En：菜单文案原地变英文（🪪 Profile / ⚙️ Settings / 🌐 Language / 🎨 Appearance），En 选中", /🪪 Profile/.test(menu.textContent) && /⚙️ Settings/.test(menu.textContent) && /🌐 Language/.test(menu.textContent) && /🎨 Appearance/.test(menu.textContent) && btn("en").classList.contains("on") && !btn("zh").classList.contains("on"));
+  ok("点 En：菜单外的界面词也翻了（左栏「当前」→ Current）、<html lang=en>", $("#hia").textContent === "Current" && document.documentElement.lang === "en");
+  ok("English 下「中 / En」本身原样", btn("zh").textContent === "中" && btn("en").textContent === "En");
+  btn("en").click(); await tick();
+  ok("重复点 En：还是 en，不抖", I18N.getLang() === "en" && btn("en").classList.contains("on") && menu.classList.contains("show"));
+  langRow().click(); await tick();
+  ok("点语言行空白处：中英之间翻（en → zh），整页还原（当前 / 🪪 个人资料），中 选中", I18N.getLang() === "zh" && $("#hia").textContent === "当前" && /🪪 个人资料/.test(menu.textContent) && !/Profile/.test(menu.textContent) && btn("zh").classList.contains("on") && document.documentElement.lang === "zh-CN");
+  langRow().click(); await tick();
+  ok("再点一次行：zh → en", I18N.getLang() === "en" && /🪪 Profile/.test(menu.textContent) && btn("en").classList.contains("on"));
+  ok("切语言全程没误开弹窗", MODALS.length === 0);
+  menu.querySelector('[data-act="appearance"]').click();
+  ok("点「外观」：开设置→外观页并关菜单（其它行行为不变）", MODALS.join() === "settings:look" && !menu.classList.contains("show"));
+  openUserMenu(); await tick();
+  ok("English 下重开菜单：直接是英文，En 选中", /⚙️ Settings/.test(menu.textContent) && btn("en").classList.contains("on"));
+  closeUserMenu(); I18N.setLang("zh");
+  return names;
+`;
+
 const TRAIL_CHECKS = `
 (async () => {
   const names = [];
@@ -2204,6 +2257,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：外观页（字号四档按 calc 联动·六皮肤浅暗对比度矩阵·密度只收间距·字体三选·主题即点即生效·存储被禁退内存·默认不留脏属性）${names12.length} 项通过`);
     } finally {
       if (!win12.isDestroyed()) win12.destroy();
+    }
+    const win18 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win18.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MENU_HTML));
+      const names18 = await win18.webContents.executeJavaScript(I18N_SRC + "\n(async function(){\n" + MENU_STUBS + "\n" + LOOK_SRC + "\n" + MENU_SRC + "\n" + MENU_CHECKS + "\n})()", true)
+        .catch(async (e) => { throw new Error("[头像菜单] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (await win18.webContents.executeJavaScript("window.__menuNames||0").catch(() => "?"))); });
+      for (const n of names18) console.log("  ✓ " + n);
+      console.log(`✅ 前端：头像菜单语言快切（中/En 胶囊点即切·菜单不关原地翻·点行空白也翻·尾注已删·其它行不受影响）${names18.length} 项通过`);
+    } finally {
+      if (!win18.isDestroyed()) win18.destroy();
     }
     const win14 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {

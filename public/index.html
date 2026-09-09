@@ -67,7 +67,7 @@
   }
   input, select, textarea, button { font-family: inherit; }
   /* ---------- 左侧导航 ---------- */
-  aside { width: 250px; flex-shrink: 0; background: var(--wb-bg-side); border-right: 1px solid var(--wb-border); display: flex; flex-direction: column; padding: 14px 10px; }
+  aside { position: relative; width: var(--wb-side-w, 250px); flex-shrink: 0; background: var(--wb-bg-side); border-right: 1px solid var(--wb-border); display: flex; flex-direction: column; padding: 14px 10px; }
   .brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 14px; }
   .brand .mark { width: 30px; height: 30px; border-radius: 9px; background: var(--wb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; }
   .brand .name { font-size: 15px; font-weight: 600; }
@@ -106,7 +106,7 @@
   /* 这几类行是 div，补了 tabindex 才能 Tab 到；浏览器不给 div 画默认焦点圈，得自己画。
      用 outline 不用 box-shadow：选中态的左侧指示条正占着 box-shadow。 */
   .hist-item:focus-visible, .proj-item:focus-visible, .side-nav .item:focus-visible,
-  .out-card:focus-visible, .proc-head:focus-visible, .out-toggle:focus-visible, .out-main:focus-visible,
+  .out-card:focus-visible, .proc-head:focus-visible, .out-more:focus-visible, .out-main:focus-visible,
   .src-hd:focus-visible, .user-chip:focus-visible {
     outline: 2px solid var(--wb-brand); outline-offset: -2px;
   }
@@ -303,19 +303,26 @@
   /* 本次产出：把成果文件直接摆在对话里，点开就看，不用去右侧文件面板翻 */
   .out-block { margin: 12px 0 4px; }
   .out-hd { font-size: 13px; color: var(--wb-text-3); margin-bottom: 8px; }
-  .out-hd.out-toggle { cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 4px; }
-  .out-hd.out-toggle:hover { color: var(--wb-text-2); }
-  .out-block.fold .out-list { display: none; }
-  /* 整块收起：卡片区、变更清单、连同「查看所有变更」那行一起按下去，只留标题 */
+  .out-hd.out-main, .out-hd.out-more { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 4px; }
+  .out-hd.out-main:hover, .out-hd.out-more:hover { color: var(--wb-text-2); }
+  /* 整块收起：卡片区和变更清单一起按下去，只留标题这一行 */
   .out-block.packed .out-body { display: none; }
   .out-hd.out-main { margin-bottom: 6px; color: var(--wb-text-2); }
+  .out-hd.out-more { margin: 2px 0 0; padding: 3px 8px; border-radius: 8px; }
+  .out-hd.out-more:hover { background: var(--wb-bg-hover); }
   .out-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
   .out-grid:empty { display: none; }
   /* 变更清单：紧凑行，不是一堆方框卡片 */
   .out-list { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
   .out-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
   .out-row:hover { background: var(--wb-bg-hover); }
-  .out-row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 目录省略、文件名保全：一行放不下时先吃掉前面的目录，文件名是用来认东西的那半截 */
+  .out-row .nm { flex: 1; min-width: 0; display: flex; align-items: baseline; overflow: hidden; white-space: nowrap; }
+  .out-row .nm .dim { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .out-row .nm .bs { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; }
+  .out-row.hid { display: none; }
+  /* PROGRESS.md 这类过程账本：压暗、缩一号，排在真正的产出后面 */
+  .out-row.sub { font-size: 12px; opacity: .68; }
   .out-row .sz { color: var(--wb-text-3); flex: none; }
   .out-row .dl { color: var(--wb-text-3); text-decoration: none; padding: 0 2px; flex: none; }
   .out-row .dl:hover { color: var(--wb-brand-text); }
@@ -325,17 +332,17 @@
   .out-row.gone .nm { text-decoration: line-through; }
   /* 产出 chip：一行一件，小缩略图/文件图标 + 名字 + 大小 + 三个图标钮。
      以前是 240px 大卡内嵌 iframe 缩略图：一回合出三个网页就在对话里跑三个小浏览器，又慢又挡正文 */
-  .out-card { position: relative; display: inline-flex; align-items: center; gap: 8px; max-width: 100%; height: 38px; padding: 0 4px 0 4px; border: 1px solid var(--wb-border); border-radius: 10px; background: var(--wb-bg); cursor: pointer; box-sizing: border-box; transition: border-color var(--wb-t-fast) var(--wb-ease), background var(--wb-t-fast) var(--wb-ease); }
+  .out-card { position: relative; display: flex; flex-direction: column; width: 168px; padding: 0; overflow: hidden; border: 1px solid var(--wb-border); border-radius: 12px; background: var(--wb-bg); cursor: pointer; box-sizing: border-box; transition: border-color var(--wb-t-fast) var(--wb-ease), background var(--wb-t-fast) var(--wb-ease); }
   .out-card:hover, .out-card:focus-visible { border-color: var(--wb-brand-text); background: var(--wb-brand-weak); outline: none; }
-  .out-thumb { width: 28px; height: 28px; flex: none; border-radius: 7px; background: var(--wb-bg-side); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .out-thumb { width: 100%; height: 92px; flex: none; background: var(--wb-bg-side); border-bottom: 1px solid var(--wb-border); display: flex; align-items: center; justify-content: center; overflow: hidden; }
   .out-thumb img { width: 100%; height: 100%; object-fit: cover; }
-  .out-thumb .ph { font-size: 16px; line-height: 1; }
-  .out-info { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-  .out-name { font-size: 13px; font-weight: 500; color: var(--wb-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+  .out-thumb .ph { font-size: 30px; line-height: 1; }
+  .out-info { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 0; padding: 7px 9px 0; }
+  .out-name { font-size: 13px; font-weight: 500; color: var(--wb-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   /* 两件产出重名时才会出现的目录前缀：压暗，别抢文件名 */
   .out-name .dim { color: var(--wb-text-3); font-weight: 400; }
   .out-meta { font-size: 12px; color: var(--wb-text-3); white-space: nowrap; }
-  .out-acts { display: flex; gap: 2px; flex: none; margin-left: 2px; }
+  .out-acts { display: flex; gap: 2px; flex: none; margin-top: auto; padding: 3px 5px 5px 6px; }
   /* 回复底部操作条（复制/评价/重新生成 + 消耗/模型，仿官方） */
   .turn-actions { display: flex; align-items: center; gap: 2px; margin-top: 10px; }
   .ta-btn { border: none; background: none; cursor: pointer; font-size: 14px; color: var(--wb-text-3); padding: 4px 7px; border-radius: 6px; line-height: 1; }
@@ -425,8 +432,8 @@
   .input-card.dragging { outline: 2px dashed var(--wb-brand); outline-offset: -2px; }
   /* ---------- 右侧预览面板（HTML/图片/文档实时预览） ---------- */
   .main { min-width: 460px; }
-  .preview-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg); overflow: hidden; transition: width var(--wb-t-slow) var(--wb-ease-out); display: flex; flex-direction: column; }
-  .preview-panel.show { width: 44%; min-width: 360px; max-width: calc(100vw - 250px - 470px); }
+  .preview-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg); overflow: hidden; transition: width var(--wb-t-slow) var(--wb-ease-out); display: flex; flex-direction: column; }
+  .preview-panel.show { width: var(--wb-pv-w, 44%); min-width: 360px; max-width: calc(100vw - 300px); }
   .pv-head { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--wb-border); font-size: 14px; }
   .pv-head .pv-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pv-head button { border: none; background: transparent; font-size: 15px; cursor: pointer; color: var(--wb-text-2); padding: 4px 8px; border-radius: 6px; }
@@ -468,8 +475,19 @@
   #pv-body .ov-slide-t { font-size: 17px; font-weight: 600; margin: 4px 0 8px; }
   #pv-body .ov-notes { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--wb-border); color: var(--wb-text-3); font-size: 13px; }
   /* ---------- 右侧成果面板 ---------- */
-  .files-panel { width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg-side); overflow: hidden; transition: width var(--wb-t-slow) var(--wb-ease-out); display: flex; flex-direction: column; }
-  .files-panel.show { width: clamp(230px, 20vw, 300px); }
+  .files-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg-side); overflow: hidden; transition: width var(--wb-t-slow) var(--wb-ease-out); display: flex; flex-direction: column; }
+  .files-panel.show { width: var(--wb-fp-w, clamp(230px, 20vw, 300px)); }
+  /* 左右两栏拖着改宽：抓边上那条 7px 的缝，双击回默认，←/→ 也能推。
+     宽度写在 :root 的变量里（JS 存 localStorage），CSS 里的默认值就是没拖过时的样子。
+     拖的时候把 width 过渡关掉，否则手在动、栏在追，跟手感全没了 */
+  .rsz { position: absolute; top: 0; bottom: 0; width: 7px; z-index: 6; cursor: col-resize; touch-action: none; }
+  .rsz.r { right: -4px; }
+  .rsz.l { left: 0; }
+  .rsz::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: transparent; transition: background var(--wb-t-fast) var(--wb-ease); }
+  .rsz:hover::after, .rsz:focus-visible::after, .rsz.on::after { background: var(--wb-brand); }
+  .rsz:focus-visible { outline: none; }
+  body.rsz-on { cursor: col-resize; user-select: none; }
+  body.rsz-on aside, body.rsz-on .preview-panel, body.rsz-on .files-panel { transition: none; }
   /* ---- 快捷键 / 对话内搜索 / 命令审批 / 侧栏折叠 ---- */
   body.side-collapsed aside { display: none; }
   .main { position: relative; }
@@ -479,13 +497,14 @@
   .topbar .title { flex: 1; margin: 0 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   @media (min-width: 1720px) { :root { --wb-content-w: 1020px; } }
   @media (max-width: 1180px) {
-    aside { width: 210px; }
+    aside { width: var(--wb-side-w, 210px); }
     .topbar { padding: 0 14px; }
-    .preview-panel.show { min-width: 300px; max-width: calc(100vw - 210px - 320px); }
-    .files-panel.show { width: 240px; }
+    .preview-panel.show { min-width: 300px; max-width: calc(100vw - 260px); }
+    .files-panel.show { width: var(--wb-fp-w, 240px); }
   }
   @media (max-width: 900px) {
     .main { min-width: 0; }
+    .rsz { display: none; }
     aside { display: none; }
     body.side-open aside { display: flex; position: fixed; left: 0; top: 0; bottom: 0; z-index: 45; box-shadow: 8px 0 28px rgba(23,24,28,.22); }
     .files-panel.show { position: fixed; right: 0; top: 56px; bottom: 0; width: min(280px, 86vw); z-index: 40; box-shadow: -8px 0 28px rgba(23,24,28,.15); }
@@ -548,6 +567,11 @@
   .um-i { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
   .um-i:hover { background: var(--wb-bg-hover); }
   .um-i .hint { margin-left: auto; font-size: 13px; color: var(--wb-text-3); }
+  /* 头像菜单里的语言快切：一行两个胶囊，点即生效，菜单不关 */
+  .um-seg { margin-left: auto; display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--wb-border); border-radius: 999px; background: var(--wb-card); }
+  .um-seg button { border: 0; background: transparent; color: var(--wb-text-3); font: inherit; font-size: 12px; line-height: 1; padding: 4px 9px; min-width: 34px; border-radius: 999px; cursor: pointer; transition: background var(--wb-t-fast) var(--wb-ease), color var(--wb-t-fast) var(--wb-ease); }
+  .um-seg button:hover { color: var(--wb-text); }
+  .um-seg button.on { background: var(--wb-brand); color: #fff; font-weight: 600; }
   .um-sub { padding: 2px 4px 4px 26px; }
   .um-opt { padding: 6px 10px; border-radius: 8px; cursor: pointer; color: var(--wb-text-2); font-size: 13px; }
   .um-opt:hover { background: var(--wb-bg-hover); }
@@ -1263,6 +1287,7 @@
     <div class="user-chip" id="user-chip" title="账号菜单"></div>
     <button id="gear-btn" class="icon-btn" title="设置"><svg class="i" aria-hidden="true"><use href="#i-settings"></use></svg></button>
   </div>
+<div class="rsz r" data-rsz="side" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整侧栏宽度" title="拖动调整宽度 · 双击恢复默认"></div>
 </aside>
 
 <div class="main">
@@ -1323,6 +1348,7 @@
 </div>
 
 <div class="preview-panel" id="preview-panel">
+  <div class="rsz l" data-rsz="pv" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整预览面板宽度" title="拖动调整宽度 · 双击恢复默认"></div>
   <div class="pv-head">
     <span class="pv-name" id="pv-name"></span>
     <button id="pv-sys" class="icon-btn" title="用系统默认程序打开"><svg class="i" aria-hidden="true"><use href="#i-app-window"></use></svg></button>
@@ -1335,6 +1361,7 @@
 </div>
 
 <div class="files-panel" id="files-panel">
+  <div class="rsz l" data-rsz="fp" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整成果文件面板宽度" title="拖动调整宽度 · 双击恢复默认"></div>
   <h2><span><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> 成果文件</span> <a href="#" id="open-ws" class="link" style="font-weight:400;font-size: 12px">打开文件夹</a><span style="flex:1"></span><button id="fp-close" class="icon-btn" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></h2>
   <div id="file-list"></div>
 </div>

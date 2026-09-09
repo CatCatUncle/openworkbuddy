@@ -126,3 +126,87 @@ function onActivate(el, fn) {
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 })();
+
+/* 左右两栏拖着改宽。用户原话：「右边和左边栏都支持拖拽放大或者缩小啊自适应啊」。
+   三条边：侧栏右边、预览面板左边、成果文件面板左边。宽度存 localStorage，下次打开还是这个宽。
+   夹逼的上限不是拍脑袋的数字，而是「正文至少还剩 MAIN_MIN」——正文被挤没了，宽的那栏也没意义。
+   所以上限得现算：另外两栏此刻占了多少，剩下的才是这一栏能长到的地方。
+   窗口本身变小时按同一把尺子重夹一次，不然存着的宽度会把正文顶出屏幕（body 是 overflow:hidden，
+   顶出去就是永远看不见的一截）。*/
+const RSZ_MAIN_MIN = 470;   // 和 .main { min-width: 460px } 对齐，留一点余量
+const RSZ_SMALL = 900;      // 到这个宽度以下两栏是浮层，拖不动也不该拖（和 CSS 的断点一致）
+const RSZ = {
+  side: { css: "--wb-side-w", sel: "aside", min: 180, dir: 1 },
+  pv: { css: "--wb-pv-w", sel: "#preview-panel", min: 320, dir: -1 },
+  fp: { css: "--wb-fp-w", sel: "#files-panel", min: 200, dir: -1 },
+};
+const rszW = (sel) => { const e = document.querySelector(sel); return e ? e.getBoundingClientRect().width : 0; };
+// 这一栏还能长多少：窗口宽 - 正文保底 - 另外两栏现在占的
+function rszRoom(key) {
+  const others = Object.keys(RSZ).filter((k) => k !== key).reduce((s, k) => s + rszW(RSZ[k].sel), 0);
+  return Math.max(0, window.innerWidth - RSZ_MAIN_MIN - others);
+}
+function setPanelW(key, px) {
+  const c = RSZ[key];
+  if (!c) return 0;
+  const w = Math.round(Math.max(c.min, Math.min(rszRoom(key), px)));
+  document.documentElement.style.setProperty(c.css, w + "px");
+  try { localStorage.setItem("wb-w-" + key, String(w)); } catch {}
+  return w;
+}
+function resetPanelW(key) {
+  document.documentElement.style.removeProperty(RSZ[key].css);
+  try { localStorage.removeItem("wb-w-" + key); } catch {}
+}
+// 存过的宽度重新贴一遍（开局、窗口大小变了都走这儿）。小屏直接把变量摘掉，让 CSS 的浮层宽度说了算
+function applyStoredW() {
+  Object.keys(RSZ).forEach((k) => {
+    let v = 0;
+    try { v = parseInt(localStorage.getItem("wb-w-" + k) || "", 10); } catch {}
+    if (!(v > 0)) return;
+    if (window.innerWidth <= RSZ_SMALL) { document.documentElement.style.removeProperty(RSZ[k].css); return; }
+    const c = RSZ[k];
+    // rszRoom 本来就不含这一栏自己，直接拿它当上限夹一遍
+    document.documentElement.style.setProperty(c.css, Math.round(Math.max(c.min, Math.min(rszRoom(k), v))) + "px");
+  });
+}
+function initResizers() {
+  applyStoredW();
+  let raf = 0;
+  window.addEventListener("resize", () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(applyStoredW); });
+  document.querySelectorAll(".rsz").forEach((h) => {
+    const key = h.dataset.rsz;
+    if (!RSZ[key]) return;
+    h.addEventListener("pointerdown", (e) => {
+      if (e.button) return;
+      const c = RSZ[key], el = document.querySelector(c.sel);
+      if (!el || window.innerWidth <= RSZ_SMALL) return;
+      const x0 = e.clientX, w0 = el.getBoundingClientRect().width;
+      const move = (ev) => setPanelW(key, w0 + (ev.clientX - x0) * c.dir);
+      const up = () => {
+        h.removeEventListener("pointermove", move);
+        h.removeEventListener("pointerup", up);
+        h.removeEventListener("lostpointercapture", up);
+        document.body.classList.remove("rsz-on");
+        h.classList.remove("on");
+      };
+      try { h.setPointerCapture(e.pointerId); } catch {}
+      document.body.classList.add("rsz-on");
+      h.classList.add("on");
+      h.addEventListener("pointermove", move);
+      h.addEventListener("pointerup", up);
+      h.addEventListener("lostpointercapture", up);
+      e.preventDefault();
+    });
+    h.addEventListener("dblclick", () => resetPanelW(key));   // 双击回默认宽
+    h.addEventListener("keydown", (e) => {                    // 键盘也能推，一次 16px（按住 Shift 一次 48px）
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      const c = RSZ[key], el = document.querySelector(c.sel);
+      if (!el) return;
+      setPanelW(key, el.getBoundingClientRect().width + (e.key === "ArrowRight" ? 1 : -1) * (e.shiftKey ? 48 : 16) * c.dir);
+      e.preventDefault();
+    });
+  });
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initResizers);
+else initResizers();
