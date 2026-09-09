@@ -34,6 +34,10 @@
   <sub>个人、学习、非营利用途<b>免费</b>；公司里用需要授权，<a href="#协议">一句话讲清 ↓</a></sub>
 </p>
 
+<p align="center">
+  <img src="docs/images/demo.gif" width="960" alt="OpenWorkBuddy 演示：说一句话，助理自己干活，交付能打开的文件">
+</p>
+
 ---
 
 ## 为什么是它
