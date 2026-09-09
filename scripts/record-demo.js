@@ -16,12 +16,15 @@
  *   --port <端口>     演示服务端口（默认 3897，不碰你正在用的 3800）
  *   --keep           录完保留演示数据目录（默认删）
  *
+ * 马赛克：页面里出现的临时目录 / home 目录 / 用户名 / 主机名全部替换掉再截帧（scripts/demo-mask.js），
+ *   每次录制先自检遮罩生效，没生效直接报错不出片——录出去的 GIF 是要放公开仓库的。
  * 隔离：整份数据放临时目录（OPENWORKBUDDY_HOME），只把你 config.json 里的模型配置拷过去用，
  * IM / MCP / 工作区路径一律不带——绝不让演示实例连上你的飞书机器人或往真工作区写东西。
  * 登录：演示目录没账号，脚本自己注册一个随机密码的 demo 账号，录完随目录一起删。
  */
 const { app, BrowserWindow } = require("electron");
 const fs = require("fs");
+const { defaultPairs, maskScript } = require("./demo-mask");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
@@ -64,9 +67,14 @@ function seedHome(home) {
   const src = path.join(process.env.OPENWORKBUDDY_HOME_SRC || ROOT, "config.json");
   let cfg = {};
   try { cfg = JSON.parse(fs.readFileSync(src, "utf8")); } catch { log("没找到可用的 config.json，演示实例会以模板启动（首次向导可能弹出）"); }
-  const keep = ["provider", "openai", "anthropic", "models", "active_model", "assist_model", "last_picked_model", "model_follow_last", "search", "agent", "assistant", "persona", "onboarding", "media"];
+  // persona 是用户写的自我介绍，常带真名/公司，不进演示；im 里的 app_id/bot id 不拷，但值记下来进遮罩清单，万一哪里带出来也遮住
+  const keep = ["provider", "openai", "anthropic", "models", "active_model", "assist_model", "last_picked_model", "model_follow_last", "search", "agent", "assistant", "onboarding", "media"];
   const out = {};
   for (const k of keep) if (cfg[k] !== undefined) out[k] = cfg[k];
+  const secretish = [];
+  (function walk(v) { if (!v) return; if (typeof v === "string") { if (v.length >= 6 && !/请修改|你的|example/.test(v)) secretish.push(v); } else if (typeof v === "object") Object.values(v).forEach(walk); })(cfg.im);
+  if (typeof cfg.persona === "string" && cfg.persona.trim()) secretish.push(cfg.persona.trim());
+  seedHome.extraMask = secretish;
   out.server = { host: "127.0.0.1", port: ARGS.port };
   out.im = {}; // 绝不连用户的飞书/企微/微信
   out.mcp_servers = []; // 服务端按数组遍历
@@ -139,6 +147,19 @@ function ffmpeg(args) {
   if (r.status !== 0) throw new Error("ffmpeg 失败：" + (r.stderr || "").trim().split("\n").slice(-3).join(" | "));
 }
 
+/** 装马赛克层并自检：塞一段带真实路径的文字进页面，读回来必须已经被遮掉 */
+async function installMask(win, pairs) {
+  const got = await win.webContents.executeJavaScript(maskScript(pairs));
+  const probe = pairs[0][0] + "/workspace/x.csv";
+  const seen = await win.webContents.executeJavaScript(`(async () => {
+    const d = document.createElement("div"); d.id = "__mask_probe"; d.style.display = "none";
+    d.textContent = ${JSON.stringify(probe)}; document.body.appendChild(d);
+    await new Promise((r) => setTimeout(r, 30));
+    const v = d.textContent; d.remove(); return v; })()`);
+  if (seen.includes(pairs[0][0])) throw new Error("马赛克没生效，拒绝录制：" + seen);
+  return got;
+}
+
 async function typeInto(win, text) {
   await win.webContents.executeJavaScript(`inputEl.focus(); inputEl.value = ""; inputEl.dispatchEvent(new Event("input"));`);
   for (let i = 1; i <= text.length; i++) {
@@ -173,6 +194,8 @@ app.whenReady().then(async () => {
     if (await ensureLoggedIn(win)) log("已用临时 demo 账号进入界面");
     const ready = await win.webContents.executeJavaScript(`typeof curBusy === "function" && !!document.getElementById("input")`);
     if (!ready) throw new Error("页面没加载出输入框");
+    const pairs = defaultPairs(home, seedHome.extraMask || []);
+    log(`马赛克层已装：遮 ${await installMask(win, pairs)} 项（临时目录 / home / 用户名 / 主机名）`);
     await sleep(1200); // 让首屏动画/历史加载完再开录
 
     const rec = new Recorder(win, framesDir, ARGS.fps);
