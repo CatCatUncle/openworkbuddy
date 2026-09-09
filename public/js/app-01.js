@@ -627,27 +627,20 @@ function createTurnUI(userText, turnMode, forSid) {
         ? (ev.files || []).filter(f => ev.changed.includes(f.name))
         : changedFiles(ev.files);
       liveOuts += turnOut.length;
-      renderTurnOutputs(body, turnOut, ev.files); // 先算差异，autoPreviewNewHtml 里才会推进快照
-      // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的，
-      // 自动预览更会莫名其妙弹出一个几天前的文件。产出卡片照摆，其余一律不动。
-      if (!isReplaying) {
-        renderFiles(ev.files);
-        // 这一回合真产出了东西才自动预览、才把文件面板弹出来。
-        // 工作目录里本来就躺着一堆旧文件，拿"目录非空"当理由每次聊天都弹一次，
-        // 只是白白挤掉聊天区——用户明确反馈过。
-        // 另外：用户已经切到别的会话时，这个后台回合只推进快照，不许弹面板抢镜
-        if (turnSid !== sessionId) { snapshotFiles(ev.files); return; }
-        if (turnOut.length) {
-          autoPreviewNewHtml(ev.files, turnOut);
-          if (pvPanel.classList.contains("show")) {
-            document.getElementById("files-panel").classList.remove("show"); // 预览占了位就别再挤
-          } else {
-            document.getElementById("files-panel").classList.add("show");
-          }
-        } else {
-          snapshotFiles(ev.files); // 没产出也要把基线推进，免得下一轮把旧文件误当成新的
-        }
-      }
+      renderTurnOutputs(body, turnOut, ev.files); // 先算差异，快照要等 applyOutputArrival 才推进
+      // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
+      if (!isReplaying) renderFiles(ev.files);
+      // 产出到了不抢版面：以前是「有产出就把右侧预览 / 成果文件面板弹出来」，用户原话：抢版面、丑。
+      // 现在结论在正文里、产出是一排 chip，右侧只在用户本来就开着预览看这个文件时原地刷新。
+      // 该做什么由 outputArrivalPlan 这个纯函数决定，前端 harness 直接验它的输入输出
+      applyOutputArrival(outputArrivalPlan({
+        turnOut,
+        replaying: isReplaying,
+        otherSession: turnSid !== sessionId, // 用户已经切到别的会话：这个后台回合只推进快照
+        pvOpen: pvPanel.classList.contains("show"),
+        pvCurrent,
+        filesOpen: document.getElementById("files-panel").classList.contains("show"),
+      }), ev.files);
     } else if (ev.type === "sources") {
       renderSources(body, ev.items || []);
     } else if (ev.type === "milestones") {
@@ -1549,7 +1542,7 @@ function startPreview(lan, open) {
 }
 fetch("/api/preview/status").then(r => r.json()).then(s => { previewSrv = s; }).catch(() => {});
 
-// 任务产出/更新 HTML 时，自动在右侧实时展示
+// 产出快照：记住每个文件的 mtime，下一回合才认得出哪些是这回合新写/改过的
 let fileSnapshot = null; // null = 基线还没建（首屏 /api/files 还没回来）
 function snapshotFiles(files) {
   fileSnapshot = {};
@@ -1560,15 +1553,6 @@ function snapshotFiles(files) {
 function changedFiles(files) {
   if (!fileSnapshot) { snapshotFiles(files); return []; }
   return (files || []).filter(f => fileSnapshot[f.name] !== f.mtime);
-}
-function autoPreviewNewHtml(files, changed) {
-  // 任务产出/更新 html 或 md 时自动在右侧预览（html 优先）。
-  // changed 由调用方给（服务端算的更准），没给才退回本地 mtime 差异
-  changed = changed || changedFiles(files);
-  const target = changed.find(f => /\.html?$/i.test(f.name)) || changed.find(f => /\.(md|markdown)$/i.test(f.name));
-  if (target) previewFile(target.name);
-  if (!fileSnapshot) fileSnapshot = {};
-  for (const f of files || []) fileSnapshot[f.name] = f.mtime;
 }
 
 // 来源：这一回合真正打开过的网页。不是"模型说它参考了什么"，而是工具层记下来的实际访问记录，
@@ -1782,26 +1766,24 @@ function mergeFmtPairs(grid) {
 
 function makeOutCard(f, isHtml) {
   const url = "/api/files/view/" + fpath(f.name) + "?t=" + Date.now();
-  // 渲染得出来的画缩略图，画不出来的（PPT/Word/Excel/PDF/视频）摆一个大号文件图标——
-  // 别给它一个 <img> 拉不出图的空框，那看着像坏了
-  const thumb = isHtml || /\.svg$/i.test(f.name)
-    ? `<iframe src="${url}" scrolling="no" tabindex="-1" aria-hidden="true"></iframe>`
-    : /\.(png|jpe?g|gif|webp|bmp|ico)$/i.test(f.name)
-      ? `<img src="${url}" alt="">`
-      : `<div class="ph">${fileIcon(f.name)}</div>`;
+  // 紧凑 chip：小缩略图/文件图标 + 文件名 + 大小 + 三个图标钮，一行一件。
+  // 以前是 240px 大卡内嵌 iframe 缩略图：一回合出三个网页就在对话里跑三个小浏览器，又慢又挡正文；
+  // 参考 Claude Cowork / Codex 的做法——结论在正文里，产出只是一排能点的文件
+  const isRaster = /\.(png|jpe?g|gif|webp|bmp|ico)$/i.test(f.name);
+  const thumb = isRaster ? `<img src="${url}" alt="" loading="lazy">` : `<span class="ph">${fileIcon(f.name)}</span>`;
   const card = document.createElement("div");
   card.className = "out-card";
   card.dataset.name = f.name;
   card.dataset.base = f.name.split("/").pop();      // 判重按「文件名 + 大小」，光看全路径认不出复制出来的副本
   card.dataset.stem = f.name.replace(/\.[^./]+$/, ""); // 去掉扩展名的全路径：认 svg / png 是同一张图用
   if (f.size) card.dataset.size = String(f.size);
-  card.title = f.name;
-  const openHint = OFFICE_RE.test(f.name) ? "点击用系统程序打开" : "点击预览";
+  card.title = f.name + " · " + (OFFICE_RE.test(f.name) ? "点击用系统程序打开" : "点击预览");
+  card.tabIndex = 0; // 键盘也能落到 chip 上（不加 role=button：里面还有三个真按钮，按钮套按钮读屏会吞掉它们）
+  const mainTx = isHtml ? "在浏览器打开" : "预览";
   card.innerHTML = `<div class="out-thumb">${thumb}</div>
-    <div class="out-info"><div class="out-name">${esc(f.name.split("/").pop())}</div>
-      <div class="out-meta">${fmtSize(f.size)} · ${openHint}</div></div>
+    <div class="out-info"><span class="out-name">${esc(f.name.split("/").pop())}</span><span class="out-meta">${fmtSize(f.size)}</span></div>
     <div class="out-acts">
-      <button class="oa-main" data-a="${isHtml ? "br" : "pv"}">${isHtml ? ic("globe") : ic("file-text")}<span class="tx">${isHtml ? "在浏览器打开" : "预览"}</span></button>
+      <button class="oa-main" data-a="${isHtml ? "br" : "pv"}" title="${mainTx}">${isHtml ? ic("globe") : ic("file-text")}<span class="tx">${mainTx}</span></button>
       <button class="oa-ico" data-a="rv" title="打开所在位置">${ic("folder-open")}</button>
       <a class="oa-ico" href="/api/files/download/${fpath(f.name)}" download title="下载">${ic("download")}</a></div>`;
   onActivate(card, (e) => {
@@ -1839,9 +1821,38 @@ function markDupBasenames(grid) {
 }
 // 文件名进 CSS 属性选择器要转义（含空格、中文括号、引号的名字很常见）
 function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
+// 产出到了该怎么办。以前是「有产出就把右侧预览 / 成果文件面板弹出来」——用户原话：抢版面。
+// 现在默认什么都不抢：快照照推进、「成果文件」按钮上记个角标、chip 就在对话里，想看再点。
+// 唯一会碰右侧的情况：用户本来就开着预览、看的正是这回合改过的那个文件——原地刷新，布局不动。
+// 纯函数：输入是当下的状态，输出是三个动作，前端 harness 直接验
+function outputArrivalPlan(o) {
+  const outs = o.turnOut || [];
+  if (o.replaying) return { snapshot: false, badge: 0, refresh: null };                 // 回放历史：快照和角标都不动
+  if (o.otherSession || !outs.length) return { snapshot: true, badge: 0, refresh: null }; // 后台回合 / 没产出：只推进基线
+  const refresh = o.pvOpen && o.pvCurrent && outs.some((f) => f.name === o.pvCurrent) ? o.pvCurrent : null;
+  return { snapshot: true, badge: o.filesOpen ? 0 : outs.length, refresh };
+}
+function applyOutputArrival(plan, files) {
+  if (plan.snapshot) snapshotFiles(files);
+  if (plan.badge) bumpFilesBadge(plan.badge);
+  if (plan.refresh) previewFile(plan.refresh); // 预览本来就开着：只换内容，不动布局
+}
+// 「成果文件」按钮上的角标：还没看过的新产出有几件。面板一打开就清零
+function bumpFilesBadge(n) {
+  const btn = document.getElementById("toggle-files");
+  if (!btn || !n) return;
+  let b = btn.querySelector(".fb-badge");
+  if (!b) { b = document.createElement("span"); b.className = "fb-badge"; btn.appendChild(b); }
+  b.textContent = String(Math.min(99, (parseInt(b.textContent, 10) || 0) + n));
+}
+function clearFilesBadge() {
+  const b = document.querySelector("#toggle-files .fb-badge");
+  if (b) b.remove();
+}
 document.getElementById("toggle-files").onclick = () => {
   const fp = document.getElementById("files-panel");
   fp.classList.toggle("show");
+  if (fp.classList.contains("show")) clearFilesBadge(); // 看过了，「没看过的新产出」就归零
   // 预览和成果文件面板互斥：右侧只留一个。双开把聊天区挤没，窄窗下两个浮层还互相盖字
   if (fp.classList.contains("show") && pvPanel.classList.contains("show")) {
     pvPanel.classList.remove("show"); pvCurrent = null;

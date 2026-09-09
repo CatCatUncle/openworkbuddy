@@ -81,7 +81,7 @@ function previewFile(){}
 function startPreview(){ return Promise.resolve({ running: true }); }
 let previewSrv = {};
 function toast(){}
-const OFFICE_RE = /\.(doc|ppt|xls)$/i;
+const OFFICE_RE = /\.(doc|ppt|xls)$/i; // 和 app-01 里的一致：桩子只认 .ppt 不认 .pptx 的话，Office 文件的提示文案就验不到
 function onActivate(el, fn){ el.addEventListener("click", fn); }
 `;
 
@@ -180,6 +180,41 @@ const TURNOUT_CHECKS = `
     renderTurnOutputs(b, [F("图.png", 20)], [F("图.png", 20)]);
     ok("只摘掉失效的格式链接，卡本身不动",
       cards(b).length === 1 && cards(b)[0] === "图.png" && !b.querySelector(".oa-alt"));
+  }
+
+  // ── 产出 chip：不再是 240px 大卡内嵌 iframe 缩略图（一回合三个网页 = 对话里跑三个小浏览器），
+  //    一行一件、小缩略图/文件图标 + 名字 + 大小 + 三个图标钮。验的是浏览器算出来的盒子
+  {
+    const b = fresh();
+    // index.html 的 body 是 flex 行，前面几块的容器已经把它挤满了；这块要量「三件排一行」，给它一块固定 820px 的地
+    b.style.cssText = "position:fixed; left:0; top:0; width:820px";
+    const three = [F("报告.html", 2048), F("图.png", 512), F("方案.pptx", 4096)];
+    renderTurnOutputs(b, three, three);
+    ok("chip 里没有 iframe", !b.querySelector(".out-card iframe") && cards(b).length === 3);
+    const html = b.querySelector('.out-card[data-name="报告.html"]');
+    const png = b.querySelector('.out-card[data-name="图.png"]');
+    const ppt = b.querySelector('.out-card[data-name="方案.pptx"]');
+    ok("图片 chip 带小缩略图，网页 / PPT chip 用文件图标",
+      !!png.querySelector(".out-thumb img") && !!html.querySelector(".out-thumb .ph") && !!ppt.querySelector(".out-thumb .ph"));
+    const r = html.getBoundingClientRect();
+    ok("chip 是一行：高 ≤ 40px、宽 < 360px（实际 " + Math.round(r.height) + "×" + Math.round(r.width) + "）", r.height > 0 && r.height <= 40 && r.width > 0 && r.width < 360);
+    ok("缩略图框 ≤ 30px", png.querySelector(".out-thumb").getBoundingClientRect().height <= 30);
+    const tops = [html, png, ppt].map((c) => c.getBoundingClientRect().top), lefts = [html, png, ppt].map((c) => Math.round(c.getBoundingClientRect().left));
+    ok("三件产出排在同一行，不是一列大卡（top " + tops.map(Math.round).join("/") + "，left " + lefts.join("/") + "，容器宽 " + Math.round(b.getBoundingClientRect().width) + "）",
+      Math.abs(tops[0] - tops[1]) < 1 && Math.abs(tops[1] - tops[2]) < 1);
+    ok("网页 chip 的主操作是「在浏览器打开」、其余是「预览」，字留给读屏、屏幕上不占位",
+      html.querySelector(".oa-main .tx").textContent === "在浏览器打开" && ppt.querySelector(".oa-main .tx").textContent === "预览" &&
+      html.querySelector(".oa-main .tx").getBoundingClientRect().width <= 1);
+    ok("三个图标钮都带 title（没字全靠它）", html.querySelectorAll(".out-acts [title]").length === 3 &&
+      html.querySelector('[data-a="br"]').title === "在浏览器打开" && html.querySelector('[data-a="rv"]').title === "打开所在位置" && html.querySelector("a[download]").title === "下载");
+    ok("图标钮是 26px 方钮，不是带边框的长条", html.querySelector('[data-a="rv"]').getBoundingClientRect().width <= 28 && getComputedStyle(html.querySelector('[data-a="rv"]')).borderStyle === "none");
+    ok("chip 能落焦点（tabindex=0），但不套 role=button（里面还有真按钮）", html.tabIndex === 0 && !html.getAttribute("role"));
+    // OFFICE_RE 只认 .doc/.ppt/.xls 这种老二进制格式（app 里预览不了，只能交给系统程序）；pptx/docx/xlsx 有结构化预览，走「点击预览」
+    ok("chip 的 title 写着文件名和点了会怎样", html.title.includes("报告.html") && html.title.includes("点击预览") && ppt.title.includes("点击预览"));
+    const legacy = fresh(); renderTurnOutputs(legacy, [F("老报表.xls", 9)], [F("老报表.xls", 9)]);
+    const xls = legacy.querySelector('.out-card[data-name="老报表.xls"]');
+    ok("老格式（.xls）的 chip 提示「点击用系统程序打开」", !!xls && xls.title.includes("点击用系统程序打开") && !xls.title.includes("点击预览"));
+    ok("大小挂在名字旁边", html.querySelector(".out-meta").textContent === "2048 B");
   }
 
   return names;
@@ -1971,6 +2006,79 @@ const HUB_MCP_CHECKS = `
 })()
 `;
 // 录屏遮罩层在真浏览器里跑：静态文本 / 输入框值 / title 都遮，后来插进来的节点和改过的文字也遮
+// ---------- 产出到了不抢版面：以前是「有产出就把右侧预览 / 成果文件面板弹出来」 ----------
+// 处理器把当下状态喂给 outputArrivalPlan（纯函数），拿到「推进快照 / 记角标 / 原地刷新」三个动作再套用。
+// 这里连真样式一起注进来，角标的位置和可见性验的是浏览器算出来的盒子
+const ARRIVAL_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body>"
+  + "<div class='right' style='padding:20px'><button id='toggle-files'><svg class='i'></svg> 成果文件</button></div>"
+  + "<div id='files-panel' class='files-panel'></div><div id='preview-panel' class='preview-panel'></div></body>";
+const ARRIVAL_STUBS = `
+const CALLS = { snap: [], pv: [] };
+function snapshotFiles(files){ CALLS.snap.push((files || []).length); }
+const pvPanel = document.getElementById("preview-panel");
+let pvCurrent = null;
+function previewFile(name){ CALLS.pv.push(name); pvPanel.classList.add("show"); pvCurrent = name; }
+`;
+const AR0 = APP02X.indexOf("// 产出到了该怎么办");
+const AR1 = APP02X.indexOf('document.getElementById("fp-close").onclick');
+if (AR0 < 0 || AR1 < 0 || AR1 < AR0) throw new Error("app-01.js 里找不到 outputArrivalPlan / toggle-files 那段");
+const ARRIVAL_SRC = APP02X.slice(AR0, AR1);
+const ARRIVAL_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const F = (name) => ({ name, size: 100, mtime: "2026-09-05T00:00:00.000Z" });
+  const btn = document.getElementById("toggle-files"), fp = document.getElementById("files-panel");
+  const badge = () => btn.querySelector(".fb-badge");
+  const base = { turnOut: [F("报告.html"), F("图.png"), F("方案.pptx")], replaying: false, otherSession: false, pvOpen: false, pvCurrent: null, filesOpen: false };
+
+  // 主线：网页产出到了，右侧什么都不弹（以前这里会 previewFile(报告.html) + 把成果文件面板 show 出来）
+  const p = outputArrivalPlan(base);
+  ok("有产出：推进快照、角标 3、不刷新预览", p.snapshot === true && p.badge === 3 && p.refresh === null, JSON.stringify(p));
+  applyOutputArrival(p, base.turnOut);
+  ok("套用后：预览没开、成果文件面板没开、previewFile 没被叫", !pvPanel.classList.contains("show") && !fp.classList.contains("show") && CALLS.pv.length === 0);
+  ok("快照推进了一次、拿的是完整列表", CALLS.snap.length === 1 && CALLS.snap[0] === 3);
+  ok("「成果文件」按钮上出角标 3", !!badge() && badge().textContent === "3");
+  const br = badge().getBoundingClientRect(), bb = btn.getBoundingClientRect();
+  ok("角标是算出来看得见的圆点，贴在按钮右上角（" + Math.round(br.width) + "×" + Math.round(br.height) + "）",
+    br.width >= 18 && br.height >= 18 && br.right > bb.right - 4 && br.top < bb.top + 4);
+  applyOutputArrival(outputArrivalPlan({ ...base, turnOut: [F("a.md"), F("b.md")] }), []);
+  ok("再来两件：角标累加成 5", badge().textContent === "5");
+  btn.click();
+  ok("点「成果文件」：面板开了、角标摘掉", fp.classList.contains("show") && !badge());
+  const p2 = outputArrivalPlan({ ...base, filesOpen: true });
+  ok("面板开着时来产出：不记角标（用户正看着列表）、快照照推进", p2.badge === 0 && p2.snapshot === true);
+  btn.click();
+  ok("再点一下面板收起", !fp.classList.contains("show"));
+
+  // 三种「不该动」的情形
+  const p3 = outputArrivalPlan({ ...base, replaying: true });
+  ok("回放历史：快照不动、角标不记、不刷新", p3.snapshot === false && p3.badge === 0 && p3.refresh === null);
+  const p4 = outputArrivalPlan({ ...base, otherSession: true });
+  ok("用户已切到别的会话：只推进快照", p4.snapshot === true && p4.badge === 0 && p4.refresh === null);
+  const p5 = outputArrivalPlan({ ...base, turnOut: [] });
+  ok("没产出：推进基线、其余不动", p5.snapshot === true && p5.badge === 0 && p5.refresh === null);
+
+  // 唯一会碰右侧的情形：预览本来就开着、看的正是这回合改过的文件 → 原地刷新
+  pvPanel.classList.add("show"); pvCurrent = "报告.html";
+  const p6 = outputArrivalPlan({ ...base, pvOpen: true, pvCurrent: "报告.html" });
+  ok("预览开着、看的正是改过的文件：原地刷新这一个", p6.refresh === "报告.html" && p6.badge === 3);
+  applyOutputArrival(p6, base.turnOut);
+  ok("刷新走 previewFile，只刷这一个、面板布局没变", CALLS.pv.length === 1 && CALLS.pv[0] === "报告.html" && !fp.classList.contains("show"));
+  // 反向断言：差一点都不许弹
+  ok("预览开着但看的是别的文件：不动它", outputArrivalPlan({ ...base, pvOpen: true, pvCurrent: "别的.html" }).refresh === null);
+  ok("预览关着：哪怕 pvCurrent 残留也不弹", outputArrivalPlan({ ...base, pvOpen: false, pvCurrent: "报告.html" }).refresh === null);
+  ok("预览开着但这回合没产出：不刷", outputArrivalPlan({ ...base, turnOut: [], pvOpen: true, pvCurrent: "报告.html" }).refresh === null);
+
+  clearFilesBadge();
+  applyOutputArrival({ snapshot: false, badge: 500, refresh: null }, []);
+  ok("角标封顶 99", badge().textContent === "99");
+  clearFilesBadge();
+  ok("清空后按钮上没有角标残留", !badge());
+  return names;
+})()
+`;
+
 const MASK_HTML = "<!doctype html><meta charset='utf-8'><body>"
   + "<div id='t1'>正在处理 /tmp/owb-demo-1/workspace/销售明细.csv</div>"
   + "<input id='i1' value='/tmp/owb-demo-1/out.xlsx'><button id='b1' title='cli_a1b2c3d4e5 绑定'>x</button>"
@@ -2128,6 +2236,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：录屏遮罩层（静态文本/输入框/title·后插入节点·原地改字·bot id 圆点）${names16.length} 项通过`);
     } finally {
       if (!win16.isDestroyed()) win16.destroy();
+    }
+    const win17 = mkWin({ show: false, width: 900, height: 600, webPreferences: { offscreen: true } });
+    try {
+      await win17.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ARRIVAL_HTML));
+      const names17 = await win17.webContents.executeJavaScript(ARRIVAL_STUBS + "\n" + ARRIVAL_SRC + "\n" + ARRIVAL_CHECKS, true)
+        .catch((e) => { throw new Error("[产出到了] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of names17) console.log("  ✓ " + n);
+      console.log(`✅ 前端：产出到了不抢版面（不弹预览/面板·角标累加·开面板清零·回放/后台/无产出不动·只在看着同一文件时原地刷新·封顶 99）${names17.length} 项通过`);
+    } finally {
+      if (!win17.isDestroyed()) win17.destroy();
     }
     const win11 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
