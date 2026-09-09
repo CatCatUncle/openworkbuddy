@@ -5,12 +5,19 @@ function renderModelMenu(menu = modelMenu) {
   // 只在输入框那个选择器上换（menu === modelMenu）；助理页顶栏那个走的还是 API，不受影响
   const eng = menu === modelMenu ? activeEngine() : null;
   if (eng) {
-    menu.innerHTML = `<div class="mi on" style="justify-content:space-between"><span>🖥 ${esc(eng.label)} <span class="sub">${esc(eng.model || "用它自己的默认模型")}</span></span><span style="color:var(--wb-ok-text)">✓</span></div>
-      <div class="mi" style="cursor:default;opacity:.75;display:block;line-height:1.6">任务交给本机这个 CLI 跑，用的是它的登录态和它的模型，<b>不花 API 额度</b>。下面这些 API 模型这会儿一个都用不上，所以先不列了。</div>
-      <div class="mi" data-act="engine" style="border-top:1px solid var(--wb-border);margin-top:4px">⚙️ 改它的模型 / 换回内置引擎…</div>`;
+    // 这里不是一排可选项，是一张「现在谁在跑」的说明卡：
+    // 说明文字必须能换行（以前塞在 .mi 里，而 .mi 是 nowrap 的，菜单被撑成一整行宽，
+    // 飞出屏幕左边，字都看不全），能点的只有最后那一行——所以只有它长得像按钮。
+    menu.classList.add("eng");
+    menu.innerHTML = `<div class="ep-head"><span class="ep-ic">🖥</span>
+        <span class="ep-name">${esc(eng.label)}<span class="ep-model">${esc(eng.model || "用它自己的默认模型")}</span></span>
+        <span class="ep-on">✓</span></div>
+      <div class="ep-why"><b class="ep-free">不花 API 额度</b>用你电脑上这个 CLI 的登录态和它自己的模型跑，所以下面那排 API 模型这会儿一个都用不上。</div>
+      <div class="mi ep-act" data-act="engine">⚙️ 改它的模型 / 换回内置引擎…</div>`;
     menu.querySelectorAll(".mi[data-act]").forEach((mi) => (mi.onclick = () => { menu.classList.remove("show"); openModal("settings", "agent"); }));
     return;
   }
+  menu.classList.remove("eng");
   const ov = currentSessModel();
   menu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
       <span>↺ 跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${healthBadge(settingsCache.active_model)}</span></span>${ov ? "" : '<span style="color:var(--wb-ok-text)">✓</span>'}</div>`
@@ -34,18 +41,33 @@ function renderGoalCard() {
   const g = sessionId && sessionGoals.get(sessionId);
   if (!g || g.status === "closed") { card.style.display = "none"; card.innerHTML = ""; return; }
   const doneN = g.criteria.filter(c => c.done).length;
+  const done = g.status === "done";
   card.style.display = "";
+  card.classList.toggle("ok", done);
+  // 一张卡要回答三件事：还差几项、卡在哪一项、现在是在跑还是停了。
+  // 进度条是给「扫一眼」用的——一排勾勾看不出离终点还有多远
   card.innerHTML = `
     <div class="gc-head">
       <span class="gc-title">🎯 ${esc(g.text)}</span>
-      <span class="gc-meta">${g.status === "done" ? '<span class="gc-done">已达成 ✓</span>' : `${doneN}/${g.criteria.length} · 第 ${g.round || 0} 轮`}</span>
+      <span class="gc-meta">${done ? '<span class="gc-done">已达成 ✓</span>' : `${doneN}/${g.criteria.length} 项 · 第 ${g.round || 0} 轮`}</span>
       <button class="gc-close" title="归档目标（不再显示，也不再按它验收）">✕</button>
     </div>
-    <div class="gc-list">${g.criteria.map(c => `<div class="gc-item ${c.done ? "ok" : ""}">${c.done ? "✅" : "⬜"} ${esc(c.text)}</div>`).join("")}</div>`;
+    <div class="gc-bar"><i style="width:${g.criteria.length ? Math.round((doneN / g.criteria.length) * 100) : 0}%"></i></div>
+    <div class="gc-list">${g.criteria.map(c => `<div class="gc-item ${c.done ? "ok" : ""}">${c.done ? "✅" : "⬜"} ${esc(c.text)}</div>`).join("")}</div>
+    ${g.note ? `<div class="gc-note">⚠️ ${esc(g.note)}</div>` : ""}
+    ${!done && g.paused ? `<div class="gc-paused"><span>⏸ ${esc(g.paused)}</span><button class="gc-go">接着冲</button></div>` : ""}`;
   card.querySelector(".gc-close").onclick = async () => {
     try { await fetch("/api/session/" + encodeURIComponent(sessionId) + "/goal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "close" }) }); } catch {}
     g.status = "closed";
     renderGoalCard();
+  };
+  const go = card.querySelector(".gc-go");
+  // 「接着冲」＝再开 GOAL_MAX_ROUNDS 轮，但只补没打勾的那几项：把烧不烧钱这个决定交回用户手里
+  if (go) go.onclick = () => {
+    const unmet = g.criteria.filter(c => !c.done).map(c => "· " + c.text).join("\n");
+    g.paused = "";
+    renderGoalCard();
+    doSend(`接着冲这个目标，只补下面这些还没达成的验收标准，已达成的别重做：\n${unmet}`, "goal");
   };
 }
 

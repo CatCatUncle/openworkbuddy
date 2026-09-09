@@ -619,10 +619,11 @@ async function renderThinkingCard(sel, note) {
  *      被限流，在旧版卡片上全都显示"已装 ✓"。所以这里有一个真跑一句话的连接测试。
  *   ③ 出事有下一步 —— 失败时不只报错，要说清楚接下来敲哪条命令。
  */
-async function renderEngineCard(box) {
+async function renderEngineCard(box, force) {
   if (!box) return;
   box.innerHTML = '<div class="eng-msg">正在找本机装了哪些…</div>';
-  const d = await fetch("/api/engines").then((r) => r.json()).catch(() => null);
+  // 平时读服务端缓存（探测要给每个 CLI 起子进程，开个设置页不该等）；点「重新检测本机」才真去重探
+  const d = await fetch("/api/engines" + (force ? "?force=1" : "")).then((r) => r.json()).catch(() => null);
   if (!d) { box.innerHTML = '<div class="eng-msg">检测失败：拿不到引擎列表</div>'; return; }
   const cur = d.current || "builtin";
   const all = [d.builtin, ...(d.engines || [])];
@@ -647,7 +648,7 @@ async function renderEngineCard(box) {
   }).join("") + '<div class="eng-row" style="margin-top:4px"><button class="btn-plain" id="ag-eng-rescan">重新检测本机</button><span class="eng-msg" id="ag-eng-msg"></span></div>';
 
   const msg = box.querySelector("#ag-eng-msg");
-  box.querySelector("#ag-eng-rescan").onclick = (ev) => { ev.stopPropagation(); renderEngineCard(box); };
+  box.querySelector("#ag-eng-rescan").onclick = (ev) => { ev.stopPropagation(); renderEngineCard(box, true); };
 
   box.querySelectorAll(".eng").forEach((el) => {
     const id = el.dataset.eng;
@@ -1109,6 +1110,13 @@ function renderDataPane(pane, s) {
 }
 // 飞书扫码授权面板：靠本机 lark-cli 跑飞书官方设备码流程
 let larkQrPoll = null;
+/** 直达这个应用「凭证与基础信息」页，省得用户自己在开放平台里翻 */
+function larkConsoleLink(appId, brand) {
+  if (!/^cli_[A-Za-z0-9]+$/.test(String(appId || ""))) return "";
+  const host = /lark/i.test(String(brand || "")) ? "open.larksuite.com" : "open.feishu.cn";
+  return `<a class="link" target="_blank" rel="noopener" href="https://${host}/app/${appId}/baseinfo">打开凭证页</a> `;
+}
+
 /** 「飞书本人身份」卡的状态灯——这张卡的状态不在 /im/status 里，由 lark-cli 探测结果来点亮 */
 function larkChip(pane, [cls, txt]) {
   const card = pane.querySelector('[data-ch="feishu_me"]');
@@ -1147,6 +1155,9 @@ async function renderLarkQr(pane) {
   box.innerHTML = `lark-cli v${esc(st.version)} · 应用 <code>${esc(st.app_id)}</code>${st.users ? ` · 已授权：${esc(st.users)}` : " · 还没有用户授权"}
     <div style="margin-top:8px">${btn("lk-login", st.users ? "重新扫码授权" : "扫码授权", true)}${
       st.has_secret && fsAppId !== st.app_id ? btn("lk-import", "把这个应用的凭证填进飞书卡") : ""}<span class="ok-msg" id="lk-msg"></span></div>
+    ${st.secret_locked && fsAppId !== st.app_id ? `<div class="d" style="font-size:12px;margin-top:6px">
+      这个应用的 App Secret 被 lark-cli 锁在系统钥匙串里，搬不过来（它只进不出）。想拿它当机器人的话：
+      ${larkConsoleLink(st.app_id, st.brand)}复制 App Secret，粘到飞书卡的「粘一段过来自动识别」里。</div>` : ""}
     <div id="lk-qr" style="margin-top:10px"></div>`;
   const msg = box.querySelector("#lk-msg");
   const imp = box.querySelector("#lk-import");
@@ -1227,7 +1238,7 @@ const IM_CHANNELS = [
     paste: { hint: "从飞书开放平台「凭证与基础信息」整页复制粘过来就行，不用一个字段一个字段抠", parse: parseFeishuCreds },
     fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["verification_token", "Verification Token（可选，仅旧回调模式）", "", "opt"]],
     test: { url: "/im/feishu/test", ok: (d) => `凭证有效${d.bot_name ? `，机器人「${d.bot_name}」` : ""}，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
-    help: ["飞书开放平台创建自建应用，添加「机器人」能力", "权限开通 im:message 与 im:message:send_as_bot", "事件订阅方式选「使用长连接接收事件」，添加 im.message.receive_v1", "发布一个版本，回来填 App ID / App Secret（或把那一页整段复制，用卡片里的「粘一段过来自动识别」）", "嫌麻烦就点上面的「扫码新建应用」——本机装了 lark-cli 的话，应用直接替你建好，凭证自动填"],
+    help: ["飞书开放平台创建自建应用，添加「机器人」能力", "权限开通 im:message 与 im:message:send_as_bot", "事件订阅方式选「使用长连接接收事件」，添加 im.message.receive_v1", "发布一个版本，回来填 App ID / App Secret（或把那一页整段复制，用卡片里的「粘一段过来自动识别」）", "嫌麻烦就点上面的「扫码新建应用」——本机装了 lark-cli 的话，应用直接替你建好，App ID 自动填；App Secret 被系统钥匙串锁着的话，会给你一条直达凭证页的链接，复制回来粘一下"],
     // 缺哪一半就写哪一半：以前只写「未连接」，用户看不出是没填、填错、还是没联网
     status: (st) => { const f = st.feishu || {}; const m = f.missing || [];
       if (m.length === 1) return ["warn", "还差 " + m[0]];
@@ -1288,7 +1299,7 @@ function renderImPane(pane, s) {
   // 但可以扫码把应用建出来，效果一样：一个字都不用手打。
   const newappHtml = (c) => (c.newapp ? `<div class="im-newapp" data-newapp="${c.key}">
       <button class="btn-plain" data-act="newapp">📱 扫码新建应用</button>
-      <span class="d" style="font-size:12px;margin-left:8px">没有现成应用？让本机 lark-cli 替你建一个，凭证自动填好</span>
+      <span class="d" style="font-size:12px;margin-left:8px">没有现成应用？让本机 lark-cli 替你建一个，建完 App ID 自动填上</span>
       <div data-newapp-qr="${c.key}" style="display:none;margin:8px 0">
         <img alt="新建飞书应用的授权二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--wb-border)">
         <div class="d" style="font-size:12px;margin-top:4px">用飞书扫这个码，或 <a class="link" target="_blank" rel="noopener" data-newapp-link="${c.key}">在浏览器里打开</a>，按提示建好应用即可</div>
@@ -1436,11 +1447,18 @@ function renderImPane(pane, s) {
   // 单纯「扫码连机器人」在飞书是做不到的（机器人=应用，平台只认 app_id/app_secret）。
   // 但可以扫码把应用**建出来**，凭证由后端直接接管 —— 效果一样：一个字都不用手打。
   let newappPolling = false;
-  const newappSay = (c, txt, err) => {
+  const newappSay = (c, txt, err, link) => {
     const r = pane.querySelector(`[data-newapp-r="${c.key}"]`);
     if (!r) return;
     r.style.color = err ? "var(--wb-err)" : "";
     r.textContent = txt;
+    if (link) {
+      r.append(" ");
+      const a = document.createElement("a");
+      a.className = "link"; a.target = "_blank"; a.rel = "noopener";
+      a.href = link; a.textContent = "打开凭证页 →";
+      r.append(a);
+    }
   };
   const newappCreate = async (c, btn) => {
     if (newappPolling) return;
@@ -1473,6 +1491,15 @@ function renderImPane(pane, s) {
           if (box) box.style.display = "none";
           newappSay(c, "✅ 应用建好了" + (st.app_id ? "（App ID " + st.app_id + "）" : "") + "，凭证已经填进来，长连接正在起");
           await refreshStatus(false);
+          return;
+        }
+        // 应用建出来了，但 secret 被 lark-cli 锁在系统钥匙串里读不出来 —— App ID 先替你填上，
+        // 剩最后一步：去凭证页复制 App Secret 粘进来。不算失败，所以不标红。
+        if (st.state === "need_secret") {
+          const el = pane.querySelector("#" + inputId(c, "app_id"));
+          if (el && st.app_id) el.value = st.app_id;
+          if (box) box.style.display = "none";
+          newappSay(c, "✅ 应用建好了（App ID 已经替你填上）。" + (st.error || ""), false, st.console_url || "");
           return;
         }
         if (st.state === "error") {

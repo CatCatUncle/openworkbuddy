@@ -13,6 +13,8 @@ let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，�
 let replayFeedback = null; // 回放时：turn 下标 → 之前点过的 👍👎，操作条据此把高亮亮回来
 // 轨迹条上的工具短名：一枚小徽章顶一行字，扫一眼就知道这轮走了哪几步
 const TOOL_SHORT = { read_file: "📄 读", write_file: "📝 写", edit_file: "✏️ 改", list_files: "📁 列", search_files: "🔎 找", run_shell: "⌨️ 命令", run_node: "🟩 node", web_search: "🌐 搜", fetch_url: "🔗 抓", render_page: "🖥 渲染", check_page: "✅ 查页", html_to_image: "🖼 截图", look_at_image: "👁 看图", generate_image: "🎨 生图", generate_video: "🎬 视频", gen_diagram: "📊 图表", text_to_speech: "🔊 配音", remember: "🧠 记", forget: "🧠 忘", library_list: "📚 库", library_read: "📚 读库", save_skill: "🧩 存技能", desktop_pet: "🐱 宠物" };
+// 过程区每一步只挂一个图标，动词写在正文里（`📄 读 报告.md`，不是 `⚙ read_file`）
+const toolIcon = (n) => (TOOL_SHORT[n] || "").split(" ")[0] || "⚙";
 const shortTool = (n) => TOOL_SHORT[n] || String(n || "").replace(/^mcp[_:]/, "").replace(/_/g, " ").slice(0, 12);
 const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
 const sessionDirs = new Map(); // sessionId -> 该对话在默认工作空间下的成果子文件夹（成果面板标「本对话」）
@@ -299,6 +301,68 @@ function renderMd(src, base) {
     .replace(/\x00SVG(\d+)\x00/g, (_, i) => figs[+i]);
 }
 
+/**
+ * 流式正文的「已定稿 + 正在写」分段渲染。
+ *
+ * 以前每 100ms 一句 el.innerHTML = renderMd(全文)：一条十万字的回复要把整棵 DOM
+ * （实测一万两千个节点）推倒重建八百多次，光重建就 19.7 秒，最卡的一帧 66ms——
+ * 用户那边看到的是「越写到后面越卡，滚动发涩，想选一段字复制，选中每 100ms 被清一次」。
+ *
+ * 现在只重写还在长的那一小截：前面已经定稿的那部分 DOM 一个节点都不动。
+ * 敢定稿的判据只有一条——**整份重渲的结果必须正好以这一段为前缀**。
+ * （后来的 ``` 会把前面的排版整个改掉，所以不能只看局部；这一条不成立就整块重来，宁可慢不许错。）
+ */
+const BAL_TAG = /<(\/?)(ul|ol|blockquote|table|div|pre|p)\b/g;
+/** 这段 HTML 里的块级标签是否首尾成对——不成对就不能拿去 insertAdjacentHTML（浏览器会替你瞎闭合） */
+function balancedHtml(h) {
+  const n = {};
+  BAL_TAG.lastIndex = 0;
+  let m;
+  while ((m = BAL_TAG.exec(h))) n[m[2]] = (n[m[2]] || 0) + (m[1] ? -1 : 1);
+  for (const k in n) if (n[k] !== 0) return false;
+  return true;
+}
+const STREAM_TAIL = 2000; // 尾巴超过这么长就试着把前面固化掉
+function paintStream(el) {
+  let sp = el._split;
+  if (!sp) {
+    el.innerHTML = "";
+    const done = document.createElement("div"), live = document.createElement("div");
+    done.className = "md-done"; live.className = "md-live";
+    el.append(done, live);
+    sp = el._split = { done, live, html: "", raw: "", live_html: null };
+  }
+  const html = renderMd(el._raw);
+  if (!html.startsWith(sp.html)) { // 后来的字改了前面的排版：认赔，整块重来
+    sp.done.innerHTML = ""; sp.html = ""; sp.raw = ""; sp.live_html = null;
+  }
+  // 尾巴长了就把「空行之前、围栏闭合」的那一段固化进 done，之后每帧不再碰它
+  if (el._raw.length - sp.raw.length > STREAM_TAIL) {
+    const cut = el._raw.lastIndexOf("\n\n", el._raw.length - 400);
+    if (cut > sp.raw.length && (el._raw.slice(0, cut).match(/```/g) || []).length % 2 === 0) {
+      const cand = el._raw.slice(0, cut + 1);
+      const candHtml = renderMd(cand);
+      if (html.startsWith(candHtml) && candHtml.startsWith(sp.html) && balancedHtml(candHtml)) {
+        sp.done.insertAdjacentHTML("beforeend", candHtml.slice(sp.html.length));
+        sp.html = candHtml; sp.raw = cand; sp.live_html = null;
+      }
+    }
+  }
+  const tail = html.slice(sp.html.length);
+  if (tail !== sp.live_html) { sp.live.innerHTML = tail; sp.live_html = tail; }
+}
+/**
+ * 这一段不再长了，把两截合回一整块。
+ *
+ * 复制、导出、innerText、计划清单这些下游都按「.a-text 底下直接就是内容」来读，
+ * 分段是流式期间的内部结构，不许漏给它们。合回去只花一次整份重渲（十万字实测 3.5ms）。
+ */
+function sealStream(el) {
+  if (!el || !el._split) return false;
+  el._split = null;
+  el.innerHTML = renderMd(el._raw);
+  return true;
+}
 // 【任务类型：X】跟「（已上传文件：×××）」一样，是发给模型的协议前缀，不是用户自己写的话。
 // 气泡和任务历史标题里一律洗掉；原文照旧发给模型，「复制我的输入」复制的也还是原文
 function stripSceneTag(t) { return String(t == null ? "" : t).replace(/^\s*【任务类型：[^】]*】\s*/, ""); }
@@ -344,13 +408,22 @@ function createTurnUI(userText, turnMode, forSid) {
   let liveStep = 0, liveRound = 0, liveRoundTotal = 0, liveOuts = 0, liveErr = 0;
   const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "") + (liveErr ? ` · ${liveErr} 步出错` : "");
   const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
+  // 执行过程默认收起，跑的时候只把「跑到哪了」那一行留在外面——用户原话：
+  //「不要大段大段具体的执行过程挡住了，中间那些执行过程展示的时候可以折叠下」。
+  // 想盯着看的人点一下就展开，这个选择记在本机，下次直接按你上次的来。
+  const PROC_OPEN_KEY = "wb_proc_open";
+  const procOpenPref = () => { try { return localStorage.getItem(PROC_OPEN_KEY) === "1"; } catch { return false; } };
   const ensureProc = () => {
     if (!procBody) {
       procWrap = document.createElement("div");
-      procWrap.className = "proc-wrap open";
-      procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="trail"></span><span class="arrow">›</span></div><div class="proc-body"></div>`;
+      procWrap.className = "proc-wrap running" + (procOpenPref() ? " open" : "");
+      // ms-live 独占一行跟着折叠条一起钉在顶上：过程区收着也一直看得到「几件做完了、现在在做哪件」
+      procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="trail"></span><span class="arrow">›</span><span class="ms-live" hidden></span></div><div class="proc-body"></div>`;
       procBody = procWrap.querySelector(".proc-body");
-      onActivate(procWrap.querySelector(".proc-head"), () => procWrap.classList.toggle("open"));
+      onActivate(procWrap.querySelector(".proc-head"), () => {
+        procWrap.classList.toggle("open");
+        try { localStorage.setItem(PROC_OPEN_KEY, procWrap.classList.contains("open") ? "1" : "0"); } catch {}
+      });
       // 追加（不是 prepend）：开场白留在折叠区上方可见，仿官方「先说在做什么 → 过程收起 → 结论在外」
       body.appendChild(procWrap);
       procTimer = setInterval(() => {
@@ -420,6 +493,7 @@ function createTurnUI(userText, turnMode, forSid) {
       currentText.className = "a-text";
       currentText.setAttribute("translate", "no"); // AI 正文是内容不是界面，语言开关不碰
       currentText._raw = "";
+      currentText._split = null;
       // 过程区一旦出现，后续文字都算"过程叙述"进折叠区；finish() 会把最后一段（最终结论）提出来
       (procBody || body).appendChild(currentText);
     }
@@ -428,15 +502,22 @@ function createTurnUI(userText, turnMode, forSid) {
   const appendText = (delta) => {
     const el = ensureText();
     el._raw += delta;
-    // 流式回复不逐字重排版：每 100ms 渲一次全文。长回复从 O(n²) 次 Markdown 重解析
-    // 降到每秒 10 次，打字机效果看不出差别，但滚动和输入不再卡
+    // 流式回复不逐字重排版：每 100ms 渲一次，而且只重写还在长的那一小截（见 paintStream）
     if (el._pend) return;
     el._pend = true;
-    setTimeout(() => {
-      el._pend = false;
-      el.innerHTML = renderMd(el._raw);
+    el._timer = setTimeout(() => {
+      el._pend = false; el._timer = null;
+      paintStream(el);
       if (turnSid === sessionId) scrollBottom(); // 后台并行会话的增量不许滚动当前看的对话
     }, 100);
+  };
+  /** 这一段正文写完了：撤掉待渲的帧，把分段合回一整块 */
+  const endText = () => {
+    const el = currentText;
+    currentText = null;
+    if (!el) return;
+    if (el._timer) { clearTimeout(el._timer); el._timer = null; el._pend = false; }
+    if (sealStream(el) && turnSid === sessionId) scrollBottom();
   };
 
   function handleEvent(ev) {
@@ -450,8 +531,25 @@ function createTurnUI(userText, turnMode, forSid) {
       hint.innerHTML = `<span class="spinner"></span> 第 ${ev.step} 步 · 思考规划中…`;
       // 首步的提示放正文（此时还没有过程区，别为它建一个）；后续步的提示进过程区
       (procBody || body).appendChild(hint);
-      currentText = null;
+      endText();
     } else if (ev.type === "status") {
+      // 引擎启动那一条是「这趟活谁在跑、花不花钱」，是事实不是进度：
+      // 挂成一枚常驻小牌子钉在这一轮开头，别用会转的思考提示——转了半天其实早就跑起来了，
+      // 而且下一段正文一来它就被抹掉，用户回头再也找不到「刚才那次到底走的哪条路」
+      if (ev.model || /已启动/.test(ev.text || "")) {
+        let chip = turn.querySelector(".run-eng");
+        if (!chip) {
+          chip = document.createElement("div");
+          chip.className = "run-eng";
+          body.insertBefore(chip, body.firstChild);
+        }
+        const m = /^(.+?)已启动（(.+?)）/.exec(ev.text || "");
+        chip.innerHTML = `<span class="re-ic">🖥</span><span class="re-name">${esc(m ? m[1].trim() : (ev.text || "").slice(0, 24))}</span>`
+          + (m ? `<span class="re-sub">${esc(m[2])}</span>` : "")
+          + `<span class="re-free">不花 API 额度</span>`;
+        chip.title = ev.text || "";
+        return;
+      }
       // 运行状态直播（重试中/模型长时间没输出）：复用思考提示那一行，别让界面看起来像卡死
       let hint = body.querySelector(".thinking-hint");
       if (!hint) {
@@ -466,7 +564,7 @@ function createTurnUI(userText, turnMode, forSid) {
       body.querySelector(".thinking-hint")?.remove();
       appendText(ev.delta);
     } else if (ev.type === "expert_start") {
-      currentText = null;
+      endText();
       const banner = document.createElement("div");
       banner.className = "step-card";
       banner.innerHTML = `<div class="head"><span class="tag">👥 ${esc(ev.expert)}</span><span class="desc">专家接手子任务：${esc((ev.task || "").slice(0, 60))}</span></div>`;
@@ -479,13 +577,16 @@ function createTurnUI(userText, turnMode, forSid) {
       ensureProc().appendChild(note);
     } else if (ev.type === "tool_use") {
       body.querySelector(".thinking-hint")?.remove();
-      currentText = null;
+      endText();
       const card = document.createElement("div");
       card.className = "step-card";
       const who = ev.expert ? `${esc(ev.expert)} · ` : "";
+      // 一行说清「在干什么」，不是「传了什么参数」：`📄 读 报告.md`。
+      // title 由服务端算好（老会话回放没有这个字段，退回工具名 + purpose，别开天窗）。
+      const line = ev.title || (ev.name + (ev.purpose ? " " + ev.purpose : ""));
       card.innerHTML =
-        `<div class="head"><span class="tag">⚙ ${who}${esc(ev.name)}</span>` +
-        `<span class="desc">${esc(ev.purpose || "")}</span><span class="spinner"></span></div>` +
+        `<div class="head"><span class="tag">${esc(toolIcon(ev.name))}</span>` +
+        `<span class="desc">${who}${esc(line)}</span><span class="out"></span><span class="spinner"></span></div>` +
         `<pre>${esc(ev.input_preview || "")}</pre>`;
       card.querySelector(".head").onclick = () => card.classList.toggle("open");
       ensureProc().appendChild(card);
@@ -511,6 +612,10 @@ function createTurnUI(userText, turnMode, forSid) {
       if (!card) card = stack.pop();
       if (card) {
         card.querySelector(".spinner")?.remove();
+        // 结果一行说清：成功报「拿回来多少」，失败直接把原因摆在行上——
+        // 只写个红色「失败」不说为什么，用户还得展开一张张点，那就是没用的过程
+        const out = card.querySelector(".out");
+        if (out && ev.outcome) { out.textContent = "· " + ev.outcome; out.title = ev.outcome; if (ev.isError) out.classList.add("err"); }
         const tag = document.createElement("span");
         tag.className = "tag " + (ev.isError ? "err" : "ok");
         tag.textContent = ev.isError ? "失败" : "完成";
@@ -521,7 +626,7 @@ function createTurnUI(userText, turnMode, forSid) {
         trailMark(card, ev.isError ? "err" : "ok", ev.at || Date.now());
       }
     } else if (ev.type === "limit") {
-      currentText = null;
+      endText();
       const note = document.createElement("div");
       note.style.cssText = "font-size: 13px;color:var(--wb-err-text);margin:6px 0";
       note.textContent = `⏱ ${ev.note || "已达执行上限"}，任务强制收尾`;
@@ -529,7 +634,7 @@ function createTurnUI(userText, turnMode, forSid) {
       procWrap?.classList.add("open");
       turn._limited = true;
     } else if (ev.type === "auto_continue") {
-      currentText = null;
+      endText();
       liveRound = ev.round || 0; liveRoundTotal = ev.total || 0;
       const note = document.createElement("div");
       note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
@@ -538,14 +643,14 @@ function createTurnUI(userText, turnMode, forSid) {
       procWrap?.classList.add("open");
     } else if (ev.type === "sleep") {
       // 本机睡了一觉又醒了：任务时限已顺延，跟用户说一声免得对不上「怎么跑了这么久」
-      currentText = null;
+      endText();
       const note = document.createElement("div");
       note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
       note.textContent = `\u{1F4A4} ${ev.note || "检测到本机睡眠，任务时限已顺延"}`;
       ensureProc().appendChild(note);
     } else if (ev.type === "failover") {
       // 主模型挂起/持续报错、自动切到备用渠道——必须大声播报，绝不静默换模型
-      currentText = null;
+      endText();
       const note = document.createElement("div");
       note.style.cssText = "font-size: 13px;color:var(--wb-err-text);margin:6px 0";
       note.textContent = `🔀 ${ev.note || "已切换到备用渠道"}`;
@@ -598,7 +703,7 @@ function createTurnUI(userText, turnMode, forSid) {
       if (s && ev.title) { s.title = ev.title; saveSessions(); renderHistory(); }
       if (turnSid === sessionId && ev.title) document.getElementById("session-title").textContent = ev.title;
     } else if (ev.type === "interject") {
-      currentText = null;
+      endText();
       // 插队时前端已经放了「等待注入」占位（服务端按 FIFO 注入，转正最早那个就是它）
       const pend = body.querySelector(".interject-note.pending");
       if (pend) {
@@ -611,7 +716,7 @@ function createTurnUI(userText, turnMode, forSid) {
         body.appendChild(note);
       }
     } else if (ev.type === "ask_user") {
-      currentText = null;
+      endText();
       body.appendChild(makeAskCard(ev, turnSid));
     } else if (ev.type === "ask_answer") {
       const card = body.querySelector(`.ask-card[data-ask-id="${cssEsc(ev.ask_id || "")}"]`);
@@ -656,8 +761,15 @@ function createTurnUI(userText, turnMode, forSid) {
       const doneN = items.filter((i) => i.done).length;
       card.innerHTML = `<div class="ms-head">📍 里程碑 ${doneN}/${items.length}${ev.file ? ` <span class="ms-file">${esc(ev.file)}</span>` : ""}</div>` +
         items.map((i) => `<div class="ms-item${i.done ? " done" : ""}">${i.done ? "✅" : "⬜"} ${esc(String(i.text || ""))}</div>`).join("");
+      // 常驻那一行：折叠着也看得到进度和「现在在做哪件」——用户要的就是这个
+      const live = procWrap && procWrap.querySelector(".ms-live");
+      if (live && items.length) {
+        const next = items.find((i) => !i.done);
+        live.textContent = `📍 ${doneN}/${items.length}` + (next ? ` · 正在做：${String(next.text || "").slice(0, 40)}` : " · 全部完成");
+        live.hidden = false;
+      }
     } else if (ev.type === "error") {
-      currentText = null;
+      endText();
       const t = document.createElement("div");
       t.className = "a-text";
       t.setAttribute("translate", "no");
@@ -669,6 +781,7 @@ function createTurnUI(userText, turnMode, forSid) {
   }
 
   function finish() {
+    endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读
     body.querySelector(".thinking-hint")?.remove();
     // 回合结束后不允许再有任何转圈（含未收到结果的工具卡，统一标记中止）
     turn.querySelectorAll(".step-card .spinner").forEach(s => {
@@ -708,6 +821,7 @@ function createTurnUI(userText, turnMode, forSid) {
         }
         procWrap.classList.remove("open"); // 回合结束一律收起
       }
+      procWrap.classList.remove("running"); // 不跑了就别再钉在视口顶上占地方
     }
     // 来源、产出卡片都是回合的结论物，挪到最后——否则会卡在中途正文和最终结论之间
     const srcBlock = body.querySelector(":scope > .src-block");
@@ -2054,7 +2168,17 @@ function updateModelLabel() {
   const eng = activeEngine();
   const ov = currentSessModel();
   const text = eng ? (eng.model || eng.label) : (ov || settingsCache.active_model);
+  const btn = document.getElementById("model-btn");
   document.getElementById("model-label").textContent = text;
+  // 本机 CLI 在跑的时候，光看模型名跟 API 模型长得一模一样——用户分不清这次花不花钱。
+  // 换成显示器图标 + 一句「谁在跑、花不花钱」的悬停说明，扫一眼就知道自己在哪条路上
+  if (btn) {
+    const use = btn.querySelector("use");
+    if (use) use.setAttribute("href", eng ? "#i-monitor" : "#i-sparkles");
+    btn.title = eng
+      ? `由「${eng.label}」在跑，用它自己的登录态和模型，不花 API 额度`
+      : "这个对话用哪个模型（点开可以只给本对话换一个）";
+  }
   renderModelMenu();
   // 助理页顶栏那个选择器（页面开着才有）跟输入框这个显示同一个值，别让两处对不上
   const al = document.getElementById("im-model-label");
