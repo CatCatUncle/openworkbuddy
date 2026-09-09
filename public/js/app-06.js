@@ -406,6 +406,13 @@ function renderLookPane(pane) {
 function renderAboutPane(pane) {
   pane.innerHTML = `
     <div class="card-item">
+      <div class="t">🔄 版本与更新 <span id="ab-ver" style="font-weight:400;color:var(--wb-text-3);font-size:12px">读取中…</span></div>
+      <div class="d" id="ab-up-how" style="margin-bottom:8px">正在看有没有新版…</div>
+      <button class="btn-plain" id="ab-up-btn">检查更新</button>
+      <a class="link" id="ab-up-link" href="https://github.com/CatCatUncle/openworkbuddy/releases/latest" target="_blank" rel="noreferrer" style="margin-left:10px;display:none">去下载页</a>
+      <span class="ok-msg" id="ab-up-msg" style="margin-left:8px"></span>
+    </div>
+    <div class="card-item">
       <div class="t">OpenWorkBuddy</div>
       <div class="d">开源复刻的 AI Agent 办公工作台。功能：Agent 自主执行 · Ask/Plan/Craft 模式 · 技能系统 · MCP 连接器 · 专家团多智能体 · 定时自动化 · 飞书/企业微信/Webhook 远程指挥 · 多模型可插拔 · 会话持久化与回放 · 文件上传 · 工作空间切换。</div>
     </div>
@@ -425,4 +432,21 @@ function renderAboutPane(pane) {
       反馈：本地部署版没有云端客服，问题与建议直接发给维护它的 AI 助理（就是让我改），改完重启即生效。</div>
     </div>`;
   pane.querySelector("#about-onb").onclick = () => { mask.classList.remove("show"); openOnboarding(); };
+
+  // 更新检查：默认用 6 小时缓存，点按钮才真去问 GitHub
+  const upVer = pane.querySelector("#ab-ver"), upHow = pane.querySelector("#ab-up-how");
+  const upMsg = pane.querySelector("#ab-up-msg"), upLink = pane.querySelector("#ab-up-link");
+  const drawUpdate = (d) => {
+    upVer.textContent = `当前 v${d.current}${d.install === "source" ? " · 源码运行" : " · 安装包"}`;
+    upHow.textContent = (d.error ? `⚠ ${d.error}。` : d.has_update ? `有新版 v${d.latest}。` : d.latest ? `已是最新（线上也是 v${d.latest}）。` : "") + d.how;
+    upLink.style.display = d.has_update ? "" : "none";
+    if (d.url) upLink.href = d.url;
+  };
+  const loadUpdate = async (force) => {
+    upMsg.style.color = ""; upMsg.textContent = force ? "查询中…" : "";
+    try { drawUpdate(await fetch("/api/update" + (force ? "?force=1" : "")).then(r => r.json())); upMsg.textContent = ""; }
+    catch (e) { upMsg.style.color = "var(--wb-err)"; upMsg.textContent = "❌ " + e.message; }
+  };
+  pane.querySelector("#ab-up-btn").onclick = () => loadUpdate(true);
+  loadUpdate(false);
 }

@@ -37,6 +37,7 @@ const { getWorkspaceDir } = require("./tools");
 const { createQQConnection } = require("./im-qq");
 const { createWecomApp, createWechatMp } = require("./im-wechat");
 const ilinkApi = require("./im-ilink");
+const imMedia = require("./im-media");
 
 // gen_diagram 一次落 <名字>.svg + <名字>.png，是同一张图的两种格式。两个都发过去，
 // 用户在聊天里收到两张一模一样的图，还白占掉 5 个附件名额里的 2 个。
@@ -95,7 +96,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   let feishuToken = { value: "", expireAt: 0, forApp: "" };
   async function getFeishuToken(fresh = false) {
     const { app_id, app_secret } = fsCfg();
-    if (!app_id || !app_secret) throw new Error("未配置飞书 App ID / App Secret");
+    const miss = feishuMissing();
+    if (miss.length) throw new Error(`飞书凭证还差 ${miss.join(" 和 ")}（开放平台 → 你的应用 → 凭证与基础信息里复制）`);
     if (!fresh && feishuToken.value && feishuToken.forApp === app_id && Date.now() < feishuToken.expireAt) {
       return feishuToken.value;
     }
@@ -106,7 +108,11 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       signal: AbortSignal.timeout(15000),
     });
     const data = await resp.json();
-    if (data.code !== 0) throw new Error(`获取飞书 token 失败: ${data.msg}（code ${data.code}）`);
+    if (data.code !== 0) {
+      // 10003/10014 = 两串凭证之一填错了，直接说清楚该去改哪一个，别让人对着 code 查文档
+      const hint = data.code === 10003 ? "：App ID 不对" : data.code === 10014 ? "：App Secret 不对" : "";
+      throw new Error(`飞书不认这套凭证${hint}（${data.msg}，code ${data.code}）`);
+    }
     feishuToken = { value: data.tenant_access_token, expireAt: Date.now() + (data.expire - 300) * 1000, forApp: app_id };
     return feishuToken.value;
   }
@@ -237,6 +243,17 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       progText = `⏳ 正在做 · ${line}\n（完成后这条会自动撤回）`;
       pushProgress();
     };
+    // 出错时到底是哪一步炸的。以前整段共用一个 try，用户看到的永远是「任务执行出错」——
+    // 实际上有一类是任务早跑完了、只是回消息那一下超时，说成「执行出错」等于骗人。
+    let phase = "任务执行";
+    // 发消息失败多半是网络抖一下，自动补一次；两次都不行才认输
+    const twice = async (fn) => {
+      try { return await fn(); }
+      catch {
+        await new Promise((r) => setTimeout(r, 1500));
+        return fn();
+      }
+    };
     return enqueueTask(sessionKey, async () => {
       try {
         if (!sessions.has(sessionKey)) sessions.set(sessionKey, []);
@@ -281,11 +298,13 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         }
         if (updTimer) { clearTimeout(updTimer); updTimer = null; }
         await recallStatus();
-        await reply(out);
+        phase = "回复发送";
+        await twice(() => reply(out));
         logIm(channel, "out", out, logExtra);
+        phase = "附件发送";
         for (const f of toSend) {
           try {
-            await sendFile(f.name);
+            await twice(() => sendFile(f.name));
             logIm(channel, "out", `📎 已发送文件：${f.name}`, logExtra);
           } catch (e) {
             logIm(channel, "error", `发送文件 ${f.name} 失败: ${e.message}`, logExtra);
@@ -294,12 +313,17 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         }
         await pushBots(`【OpenWorkBuddy·${CH_NAME[channel] || channel}任务完成】\n任务：${text.slice(0, 80)}\n${out.slice(0, 500)}`);
       } catch (e) {
-        console.error(`[${CH_NAME[channel] || channel}] 任务执行出错:`, e.message);
-        logIm(channel, "error", `任务执行出错: ${e.message}`, logExtra);
+        const why = String(e.message || e).slice(0, 300);
+        // 「任务跑完了但没发出去」跟「任务本身失败」是两回事，用户下一步该做什么也不一样
+        const label = phase === "任务执行" ? "任务执行出错" : `任务跑完了，${phase}失败`;
+        console.error(`[${CH_NAME[channel] || channel}] ${label}:`, e.message);
+        logIm(channel, "error", `${label}: ${why}`, logExtra);
         if (updTimer) { clearTimeout(updTimer); updTimer = null; }
         try {
           await recallStatus();
-          await reply(`❌ 任务执行出错：${String(e.message).slice(0, 300)}`);
+          await reply(phase === "任务执行"
+            ? `❌ 任务执行出错：${why}`
+            : `⚠️ 任务已经跑完了，但${phase}失败：${why}。结果和文件都在 OpenWorkBuddy 工作台里，去那儿拿。`);
         } catch {}
       } finally {
         liveProgress.delete(sessionKey); // 任务收尾，进度条目摘掉，别让网页一直显示「执行中」
@@ -361,30 +385,53 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     if (r2.code !== 0) throw new Error(`发送失败 code ${r2.code}: ${r2.msg}`);
   }
   /** 用户在飞书里发来的图片/文件：下载进工作目录，返回落盘文件名 */
+  // 飞书那边一条消息一个 message_type，附件的 key 藏在 content 里，类型名还各不相同。
+  // 表里没有的类型（名片、位置、投票…）不硬猜，交给上面写一句「这类我解析不了」，也好过整条丢掉。
+  const FEISHU_MEDIA = {
+    image: { key: "image_key", res: "image", kind: "image" },
+    sticker: { key: "file_key", res: "image", kind: "sticker" },
+    file: { key: "file_key", res: "file", kind: "file" },
+    audio: { key: "file_key", res: "file", kind: "voice" },
+    media: { key: "file_key", res: "file", kind: "video" },
+  };
+
   async function feishuSaveResource(msg) {
     const c = JSON.parse(msg.content || "{}");
-    const key = c.image_key || c.file_key;
+    const spec = FEISHU_MEDIA[msg.message_type] || FEISHU_MEDIA.file;
+    const key = c[spec.key] || c.image_key || c.file_key;
     if (!key) throw new Error("消息里没有资源 key");
-    const type = msg.message_type === "image" ? "image" : "file";
     const token = await getFeishuToken();
-    const resp = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${msg.message_id}/resources/${key}?type=${type}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(60000),
+    const { buf, fileName } = await imMedia.fetchBuffer(
+      `https://open.feishu.cn/open-apis/im/v1/messages/${msg.message_id}/resources/${key}?type=${spec.res}`,
+      { headers: { Authorization: `Bearer ${token}` }, timeoutMs: 60000 },
+    );
+    return imMedia.saveInbound(getWorkspaceDir(), c.file_name || fileName || "", buf, {
+      fallback: imMedia.defaultName("飞书", spec.kind, "", Date.now()),
     });
-    if (!resp.ok) throw new Error(`下载失败 HTTP ${resp.status}`);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, "");
-    // 文件名只留最后一段，防路径穿越
-    let name = String(c.file_name || "").split(/[\\/]/).pop() || "";
-    if (!name) name = msg.message_type === "image" ? `飞书图片_${stamp}.png` : `飞书文件_${stamp}`;
-    let dest = path.join(getWorkspaceDir(), name);
-    if (fs.existsSync(dest)) {
-      const dot = name.lastIndexOf(".");
-      name = dot > 0 ? `${name.slice(0, dot)}_${stamp}${name.slice(dot)}` : `${name}_${stamp}`;
-      dest = path.join(getWorkspaceDir(), name);
-    }
-    fs.writeFileSync(dest, buf);
-    return name;
+  }
+
+  // 富文本（post）以前整条被丢掉——用户在飞书里排个版发过来，机器人就一声不吭。
+  // 这里把纯文本、超链接文字、@ 的人名按行拼回去，图片另外走附件那条路。
+  function feishuPostText(c) {
+    const lines = [];
+    if (c.title) lines.push(String(c.title));
+    const walk = (rows) => {
+      for (const row of rows || []) {
+        const seg = [];
+        for (const el of row || []) {
+          if (!el) continue;
+          if (el.tag === "text" || el.tag === "a") seg.push(el.text || "");
+          else if (el.tag === "at") seg.push(el.user_name ? `@${el.user_name}` : "");
+          else if (el.tag === "emotion") seg.push(el.emoji_type ? `[${el.emoji_type}]` : "");
+        }
+        const line = seg.join("").trim();
+        if (line) lines.push(line);
+      }
+    };
+    // 老结构是 { zh_cn: { title, content } }，新结构直接 { title, content }
+    if (Array.isArray(c.content)) walk(c.content);
+    else for (const v of Object.values(c)) if (v && Array.isArray(v.content)) { if (v.title) lines.push(String(v.title)); walk(v.content); }
+    return lines.join("\n").trim();
   }
 
   async function feishuRecall(messageId) {
@@ -403,31 +450,38 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   const handledMsgs = new Set(); // message_id 去重（飞书会重试推送）
   async function handleFeishuMessage(msg) {
-    if (!msg || !["text", "image", "file", "media"].includes(msg.message_type)) return;
+    if (!msg || !msg.message_type) return;
     if (msg.message_id) {
       if (handledMsgs.has(msg.message_id)) return;
       handledMsgs.add(msg.message_id);
       if (handledMsgs.size > 2000) handledMsgs.clear();
     }
+    const type = msg.message_type;
+    let content = {};
+    try { content = JSON.parse(msg.content || "{}"); } catch {}
     let text = "";
-    if (msg.message_type === "text") {
+    const saved = [];
+    const failed = [];
+
+    if (type === "text") {
+      text = String(content.text || "").replace(/@_user_\d+/g, "").trim(); // 去掉 @机器人 占位
+    } else if (type === "post") {
+      text = feishuPostText(content);
+    } else if (FEISHU_MEDIA[type]) {
+      const kind = FEISHU_MEDIA[type].kind;
       try {
-        text = JSON.parse(msg.content).text || "";
-      } catch {}
-      text = text.replace(/@_user_\d+/g, "").trim(); // 去掉 @机器人 占位
-      if (!text) return;
-    } else {
-      // 图片/文件消息：先把资源下载进工作目录，再让 agent 接手
-      try {
-        const saved = await feishuSaveResource(msg);
-        const kind = msg.message_type === "image" ? "图片" : "文件";
-        text = `[我在飞书发来一个${kind}，已保存到你的工作目录：${saved}]（如果我没说要用它做什么，就确认收到并简述内容）`;
+        saved.push({ kind, name: await feishuSaveResource(msg) });
       } catch (e) {
-        logIm("feishu", "error", `接收文件失败: ${e.message}`, { chat: msg.chat_id });
-        try { await feishuReply(msg.chat_id, `❌ 这个文件没收下来：${String(e.message).slice(0, 150)}`); } catch {}
-        return;
+        logIm("feishu", "error", `接收${imMedia.KIND_CN[kind] || "附件"}失败: ${e.message}`, { chat: msg.chat_id });
+        failed.push({ kind, name: String(content.file_name || ""), why: String(e.message || e).slice(0, 120) });
       }
+    } else {
+      // 名片/位置/日程/投票…解析不了就明说一句，别整条丢掉——机器人不吭声比说不会更吓人
+      failed.push({ kind: "sticker", name: "", why: `这类消息（${type}）我这边解析不了` });
     }
+
+    if (saved.length || failed.length) text = imMedia.inboundNote({ channel: "飞书", saved, failed, text });
+    if (!text) return;
 
     const chatId = msg.chat_id;
     // 收到先发「正在做」状态，出结果时撤回状态再回结果；微信 iLink 桥没有撤回接口，不挂 status
@@ -445,10 +499,19 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   // ---------- 飞书长连接（WSClient 主动拨出，无需公网地址） ----------
 
   const ws = { client: null, startedWith: "", error: "" };
+  // 缺哪一半就明说哪一半——「未配置」三个字让人只能一个个试
+  function feishuMissing() {
+    const { app_id, app_secret } = fsCfg();
+    const miss = [];
+    if (!String(app_id || "").trim()) miss.push("App ID");
+    if (!String(app_secret || "").trim()) miss.push("App Secret");
+    return miss;
+  }
   async function startFeishuWs(force = false) {
     const { app_id, app_secret } = fsCfg();
-    if (!app_id || !app_secret) {
-      ws.error = "未配置 App ID / App Secret";
+    const miss = feishuMissing();
+    if (miss.length) {
+      ws.error = miss.length === 2 ? "还没填 App ID 和 App Secret" : `只填了${miss[0] === "App ID" ? " App Secret" : " App ID"}，还差 ${miss[0]}`;
       return wsStatus();
     }
     const ident = `${app_id}:${app_secret}`;
@@ -498,11 +561,24 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       if (level === "error") logIm("qq", "error", text);
       console[level === "error" ? "error" : "log"](`[QQ] ${text}`);
     },
-    onMessage: async ({ chatType, openid, text, senderName, chatName, reply }) => {
+    onMessage: async ({ chatType, openid, text, attachments, senderName, chatName, reply }) => {
+      const saved = [], failed = [];
+      for (const a of attachments || []) {
+        const kind = /^image\//i.test(a.contentType) ? "image" : /^audio\//i.test(a.contentType) ? "voice" : /^video\//i.test(a.contentType) ? "video" : "file";
+        try {
+          const { buf, fileName } = await imMedia.fetchBuffer(a.url);
+          saved.push({ kind, name: imMedia.saveInbound(getWorkspaceDir(), a.fileName || fileName || imMedia.defaultName("QQ", kind, ""), buf) });
+        } catch (e) {
+          failed.push({ kind, name: a.fileName || "", why: String(e.message || e).slice(0, 120) });
+          logIm("qq", "error", `接收${imMedia.KIND_CN[kind]}失败: ${e.message}`, { chat: chatName || senderName });
+        }
+      }
+      const t = imMedia.inboundNote({ channel: "QQ", saved, failed, text: String(text || "").trim() });
+      if (!t) return;
       await runInbound({
         channel: "qq",
         sessionKey: `qq_${chatType}_${openid}`,
-        text,
+        text: t,
         logExtra: { chat: chatName || senderName },
         reply,
       });
@@ -529,6 +605,30 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   const mp = createWechatMp({ getConfig: mpCfg, log: (l, t) => console.log(`[公众号] ${t}`) });
   const wxSeen = new Set(); // MsgId 去重（腾讯回调会重试 3 次）
   const rawXml = express.text({ type: "*/*", limit: "1mb" });
+
+  // 企微/公众号的非文本消息：以前一句 `msgType !== "text"` 就 return 掉，用户发图发语音
+  // 机器人一声不吭。现在按 MediaId 把文件取回来落进工作目录，语音优先用微信自己的识别结果
+  const WX_KIND = { image: "image", voice: "voice", video: "video", shortvideo: "video", file: "file" };
+  async function wxInboundText(api, msg, channel) {
+    const t = String(msg.text || "").trim();
+    if (msg.msgType === "text") return t;
+    if (msg.msgType === "voice" && String(msg.recognition || "").trim()) return String(msg.recognition).trim();
+    const kind = WX_KIND[msg.msgType];
+    if (!kind) {
+      // 表情包/位置/名片/链接：解析不了也要出声，别让用户对着没反应的机器人干等
+      return imMedia.inboundNote({ channel, text: t, failed: [{ kind: "sticker", name: msg.title || "", why: `这类消息（${msg.msgType || "未知"}）我这边解析不了` }] });
+    }
+    if (!msg.mediaId) return imMedia.inboundNote({ channel, text: t, failed: [{ kind, name: "", why: "这条消息没带 MediaId，取不到文件" }] });
+    try {
+      const { buf, fileName } = await api.fetchMedia(msg.mediaId);
+      const ext = msg.format ? `.${String(msg.format).toLowerCase()}` : "";
+      const name = imMedia.saveInbound(getWorkspaceDir(), msg.fileName || fileName || imMedia.defaultName(channel, kind, ext), buf);
+      return imMedia.inboundNote({ channel, text: t, saved: [{ kind, name }] });
+    } catch (e) {
+      logIm(channel === "企业微信" ? "wecom_app" : "wechat_mp", "error", `接收${imMedia.KIND_CN[kind]}失败: ${e.message}`, { chat: msg.fromUser });
+      return imMedia.inboundNote({ channel, text: t, failed: [{ kind, name: msg.fileName || "", why: String(e.message || e).slice(0, 120) }] });
+    }
+  }
 
   function wxDedupe(msgId) {
     if (!msgId) return false;
@@ -557,14 +657,18 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       return res.status(400).send("");
     }
     res.send(""); // 腾讯要求 5 秒内应答，先回空串再异步跑，避免被判超时重推
-    if (msg.msgType !== "text" || !msg.text.trim() || wxDedupe(msg.msgId)) return;
-    runInbound({
-      channel: "wecom_app",
-      sessionKey: `wecom_${msg.fromUser}`,
-      text: msg.text.trim(),
-      logExtra: { chat: msg.fromUser },
-      reply: (out) => wecom.push(msg.fromUser, out),
-    }).catch((e) => console.error("[企业微信] 任务出错:", e.message));
+    if (msg.msgType === "event" || wxDedupe(msg.msgId)) return; // 关注/菜单点击这类事件不是任务
+    (async () => {
+      const text = await wxInboundText(wecom, msg, "企业微信");
+      if (!text) return;
+      await runInbound({
+        channel: "wecom_app",
+        sessionKey: `wecom_${msg.fromUser}`,
+        text,
+        logExtra: { chat: msg.fromUser },
+        reply: (out) => wecom.push(msg.fromUser, out),
+      });
+    })().catch((e) => console.error("[企业微信] 任务出错:", e.message));
   });
 
   // 公众号：GET 验证服务器配置，POST 收消息
@@ -586,14 +690,18 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       return res.status(400).send("");
     }
     res.send("success"); // 必须立刻应答，否则微信重推 3 次并给用户显示「该公众号暂时无法提供服务」
-    if (msg.msgType !== "text" || !msg.text.trim() || wxDedupe(msg.msgId)) return;
-    runInbound({
-      channel: "wechat_mp",
-      sessionKey: `mp_${msg.fromUser}`,
-      text: msg.text.trim(),
-      logExtra: { chat: msg.fromUser },
-      reply: (out) => mp.push(msg.fromUser, out),
-    }).catch((e) => console.error("[公众号] 任务出错:", e.message));
+    if (msg.msgType === "event" || wxDedupe(msg.msgId)) return;
+    (async () => {
+      const text = await wxInboundText(mp, msg, "公众号");
+      if (!text) return;
+      await runInbound({
+        channel: "wechat_mp",
+        sessionKey: `mp_${msg.fromUser}`,
+        text,
+        logExtra: { chat: msg.fromUser },
+        reply: (out) => mp.push(msg.fromUser, out),
+      });
+    })().catch((e) => console.error("[公众号] 任务出错:", e.message));
   });
 
   // 凭证连通性自测：只换 access_token，不发任何消息
@@ -624,8 +732,13 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       config.im.wechat_ilink.get_updates_buf = buf;
       saveConfig();
     },
-    onMessage: ({ userId, text }) => {
-      const t = String(text || "").trim();
+    // 用户发来的图片/文件/语音：下载解密后落进工作目录，agent 就能直接读它
+    downloadMedia: async ({ kind, name, media }) => {
+      const buf = await imMedia.downloadWechatCdn(media, { cdnBaseUrl: ilinkCfg().cdn_base_url });
+      return imMedia.saveInbound(getWorkspaceDir(), name || imMedia.defaultName("微信", kind, ""), buf);
+    },
+    onMessage: ({ userId, text, saved, failed }) => {
+      const t = imMedia.inboundNote({ channel: "微信", saved, failed, text: String(text || "").trim() });
       if (!t) return;
       return runInbound({
         channel: "wechat_ilink",
@@ -633,6 +746,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         text: t,
         logExtra: { chat: userId },
         reply: (out) => ilink.send(userId, out),
+        // 微信也能收成果文件了（走 CDN 上传），不用再打发用户去工作台下载
+        sendFile: (rel) => ilink.sendFile(userId, path.join(getWorkspaceDir(), rel), rel.split("/").pop()),
       });
     },
   });
@@ -720,7 +835,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   router.get("/im/status", (_req, res) => {
     const f = fsCfg();
     res.json({
-      feishu: { configured: !!(f.app_id && f.app_secret), ws: wsStatus() },
+      feishu: { configured: !!(f.app_id && f.app_secret), missing: feishuMissing(), ws: wsStatus() },
       qq: qq.status(),
       wecom_app: wecom.status(),
       wechat_mp: mp.status(),

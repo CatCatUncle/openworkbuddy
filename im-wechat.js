@@ -18,6 +18,7 @@
  */
 
 const crypto = require("crypto");
+const imMedia = require("./im-media");
 
 // ---------- WXBizMsgCrypt：AES-256-CBC + PKCS7，签名为 sha1(排序拼接) ----------
 
@@ -106,6 +107,21 @@ function makeTokenCache(fetchToken) {
   };
 }
 
+/**
+ * 非文本消息的公共字段。企业微信和公众号的回调 XML 结构一样：
+ * 图片/语音/视频/文件都靠 MediaId 去临时素材接口换文件，语音可能带 Recognition（识别结果）。
+ */
+function mediaFields(xml) {
+  return {
+    mediaId: xmlField(xml, "MediaId"),
+    picUrl: xmlField(xml, "PicUrl"),
+    format: xmlField(xml, "Format"),
+    recognition: xmlField(xml, "Recognition"),
+    fileName: xmlField(xml, "FileName"),
+    title: xmlField(xml, "Title"),
+  };
+}
+
 // ---------- 企业微信自建应用 ----------
 
 function createWecomApp({ getConfig, log = () => {} }) {
@@ -164,12 +180,16 @@ function createWecomApp({ getConfig, log = () => {} }) {
       throw new Error("签名校验失败");
     }
     const xml = decryptMsg(aes_key, encrypt).msg;
-    return {
-      fromUser: xmlField(xml, "FromUserName"),
-      msgType: xmlField(xml, "MsgType"),
-      text: xmlField(xml, "Content"),
-      msgId: xmlField(xml, "MsgId"),
-    };
+    return { ...mediaFields(xml), fromUser: xmlField(xml, "FromUserName"), msgType: xmlField(xml, "MsgType"), text: xmlField(xml, "Content"), msgId: xmlField(xml, "MsgId") };
+  }
+
+  /** 把用户发来的图片/语音/视频/文件从企业微信临时素材接口取回来 */
+  async function fetchMedia(mediaId) {
+    const { corp_id, secret } = cfg();
+    const token = await getToken(`${corp_id}:${secret}`);
+    return imMedia.fetchBuffer(
+      `https://qyapi.weixin.qq.com/cgi-bin/media/get?access_token=${token}&media_id=${encodeURIComponent(mediaId)}`
+    );
   }
 
   function status() {
@@ -182,7 +202,7 @@ function createWecomApp({ getConfig, log = () => {} }) {
     };
   }
 
-  return { push, verifyUrl, parseCallback, status };
+  return { push, verifyUrl, parseCallback, fetchMedia, status };
 }
 
 // ---------- 微信公众号 ----------
@@ -246,12 +266,16 @@ function createWechatMp({ getConfig, log = () => {} }) {
       }
       xml = decryptMsg(aes_key, encrypt).msg;
     }
-    return {
-      fromUser: xmlField(xml, "FromUserName"),
-      msgType: xmlField(xml, "MsgType"),
-      text: xmlField(xml, "Content"),
-      msgId: xmlField(xml, "MsgId"),
-    };
+    return { ...mediaFields(xml), fromUser: xmlField(xml, "FromUserName"), msgType: xmlField(xml, "MsgType"), text: xmlField(xml, "Content"), msgId: xmlField(xml, "MsgId") };
+  }
+
+  /** 公众号临时素材下载（语音默认是 amr，后台开了「语音识别」还会直接给 Recognition 文字） */
+  async function fetchMedia(mediaId) {
+    const { app_id, app_secret } = cfg();
+    const token = await getToken(`${app_id}:${app_secret}`);
+    return imMedia.fetchBuffer(
+      `https://api.weixin.qq.com/cgi-bin/media/get?access_token=${token}&media_id=${encodeURIComponent(mediaId)}`
+    );
   }
 
   function status() {
@@ -265,7 +289,7 @@ function createWechatMp({ getConfig, log = () => {} }) {
     };
   }
 
-  return { push, verifyUrl, parseCallback, status };
+  return { push, verifyUrl, parseCallback, fetchMedia, status };
 }
 
 module.exports = {

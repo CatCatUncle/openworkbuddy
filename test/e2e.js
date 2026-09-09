@@ -4221,6 +4221,10 @@ async function main() {
   testReadmeFrontGate();
   testKeySourcesGate();
   testPackagingAndDemoGate();
+  await testImInboundMedia();
+  await testImCredentialGuard();
+  await testUpdaterVersions();
+  testLarkCliParse();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -5990,4 +5994,384 @@ async function testFeedbackAndUsage() {
   has("html", /\.ev-fb-cards \{/, "评测页反馈卡片没样式");
   assert(!bad.length, "反馈/账本源码闸门：\n  " + bad.join("\n  "));
   console.log("✅ 反馈闭环+账本口径：引擎 prompt 含缓存读 · 老账读时修/新账写前修 · 归属按真跑引擎 · 汇总按模型/模式/窗口/用户 · 改判不重复 · 👎 进信号带模型名 · 规则打分带生效后 👍👎 · 回放带回反馈 · 工具事件盖时间戳");
+}
+
+
+/**
+ * IM 收附件 —— 用户原话：「我通过微信渠道发文件怎么接收不到吗？，从各个渠道发文件，
+ * 表情包，消息还有语音的时候」。
+ *
+ * 当时聊天记录里是「（文件：xxx.pdf，本版暂不下载）」：文件根本没下，agent 只看见一行字；
+ * 表情包这类消息更狠，在渠道层直接 return，机器人一声不吭，看着像死机。
+ *
+ * 这条盯四件事：附件真落盘（不覆盖、不穿越、不撑爆、没名字也能双击打开）、
+ * 微信 CDN 的密文解得开、认不出的类型也必须留一句话、以及各渠道入站路由不再对非文本消息提前 return。
+ */
+async function testImInboundMedia() {
+  const crypto = require("crypto");
+  const M = require("../im-media");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-im-media-"));
+
+  // ---- 文件头认扩展名：CDN 下来的是裸字节，没名字也没 Content-Type ----
+  const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.alloc(16)]);
+  const PDF = Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.alloc(16)]);
+  assert.strictEqual(M.sniffExt(PNG), ".png", "PNG 文件头没认出来");
+  assert.strictEqual(M.sniffExt(PDF), ".pdf", "PDF 文件头没认出来");
+  assert.strictEqual(M.sniffExt(Buffer.from("随便一段中文文本")), "", "认不出的不该瞎猜扩展名");
+
+  // ---- 落盘 ----
+  const n1 = M.saveInbound(dir, "", PNG, { now: Date.parse("2026-09-09T10:12:59Z") });
+  assert(/\.png$/.test(n1), "没名字的图片没补扩展名，用户下下来双击打不开：" + n1);
+  const n2 = M.saveInbound(dir, "合同.pdf", PDF);
+  const n3 = M.saveInbound(dir, "合同.pdf", PDF);
+  assert.strictEqual(n2, "合同.pdf", "有原名时不该改名：" + n2);
+  assert(n3 !== n2, "同名第二个文件把第一个覆盖了");
+  assert(fs.existsSync(path.join(dir, n2)) && fs.existsSync(path.join(dir, n3)), "两个同名附件没都留下");
+  // 路径穿越：不是报错了事，而是削成最后一段——文件照收，但绝不能写到工作目录外面
+  const n4 = M.saveInbound(dir, "../../跑出去.txt", PDF);
+  assert.strictEqual(n4, "跑出去.txt", "../ 没被削掉：" + n4);
+  assert(fs.existsSync(path.join(dir, n4)), "削完之后文件没落在工作目录里");
+  assert(!fs.existsSync(path.join(dir, "..", "..", "跑出去.txt")), "文件被写到工作目录外面去了");
+  assert.strictEqual(M.saveInbound(dir, "folder/子目录/报表.xlsx", PDF), "报表.xlsx", "带目录的文件名没削成最后一段");
+  assert.throws(() => M.saveInbound(dir, "巨无霸.bin", Buffer.alloc(M.MAX_INBOUND_BYTES + 1)), /上限/, "超大文件没拒收");
+  assert.throws(() => M.saveInbound(dir, "空的.txt", Buffer.alloc(0)), /空/, "空内容没拒收");
+  // fallback：微信 CDN 那条路没有原始文件名，得有个兜底名，不能落个没名字的文件
+  assert.strictEqual(
+    M.saveInbound(dir, "", Buffer.from("纯文本没有文件头"), { fallback: "微信文件_101259.txt" }),
+    "微信文件_101259.txt", "认不出文件头又没原名时，fallback 名字没生效");
+
+  // ---- 微信 CDN 的 AES-128-ECB：两种 aes_key 编码都得认，且原样解回来 ----
+  const key = crypto.randomBytes(16);
+  const hexKey = Buffer.from(key.toString("hex"), "utf8"); // 规范编码：32 位十六进制 ASCII
+  assert.deepStrictEqual(M.parseAesKey(hexKey.toString("base64")), key, "十六进制 ASCII 的 aes_key 没解对");
+  assert.deepStrictEqual(M.parseAesKey(key.toString("base64")), key, "裸 16 字节的 aes_key 没解对");
+  assert.throws(() => M.parseAesKey(Buffer.alloc(7).toString("base64")), /不合法/, "长度不对的 aes_key 没拒绝");
+  const plain = Buffer.from("一份真实的附件内容，够长到跨好几个分组".repeat(3));
+  const cipher = M.encryptAesEcb(plain, key);
+  assert.deepStrictEqual(M.decryptAesEcb(cipher, key), plain, "AES-ECB 加解密回不去原文");
+  assert.strictEqual(M.aesEcbPaddedSize(plain.length), cipher.length, "上传要报的 filesize 跟真密文长度对不上");
+
+  // 真跑一次下载链路（假 fetch 冒充 CDN）：密文 → 解密 → Buffer
+  let askedUrl = "";
+  const cdnBuf = await M.downloadWechatCdn(
+    { encrypt_query_param: "QQ==", aes_key: hexKey.toString("base64") },
+    { fetchImpl: async (u) => {
+        askedUrl = u;
+        return { ok: true, status: 200, headers: new Map(), arrayBuffer: async () => M.encryptAesEcb(PDF, key) };
+      } });
+  assert.deepStrictEqual(cdnBuf, PDF, "CDN 下来的密文没解成原文件");
+  assert(/encrypted_query_param=/.test(askedUrl), "下载地址没带 encrypted_query_param：" + askedUrl);
+  await assert.rejects(() => M.downloadWechatCdn({ encrypt_query_param: "x" }), /没带 CDN/, "缺 aes_key 时没如实报错");
+
+  // ---- 给 agent 看的那句话：收到了说清存哪了，没收到更要说 ----
+  const okNote = M.inboundNote({ channel: "微信", saved: [{ kind: "file", name: "合同.pdf" }] });
+  assert(okNote.includes("合同.pdf") && okNote.includes("工作目录"), "收到附件的说明里没写文件名/位置：" + okNote);
+  const badNote = M.inboundNote({ channel: "微信", failed: [{ kind: "voice", name: "", why: "下载超时" }] });
+  assert(/语音/.test(badNote) && /没收下来/.test(badNote) && /别装作收到/.test(badNote),
+    "没收下来的说明不够硬，agent 会含糊过去：" + badNote);
+  assert(M.inboundNote({ channel: "微信", saved: [{ kind: "image", name: "a.png" }], text: "看看这张" }).includes("看看这张"),
+    "附带的文字被吞了");
+
+  // ---- 微信 iLink 解析：表情包这类认不出的类型，绝不能整条丢掉 ----
+  const { describeItems } = require("../im-ilink");
+  const cdn = { encrypt_query_param: "p", aes_key: "k" };
+  assert.strictEqual(describeItems([{ type: 1, text_item: { text: "你好" } }]).text, "你好", "纯文本解析错了");
+  const withFile = describeItems([{ type: 4, file_item: { file_name: "报价.xlsx", media: cdn } }]);
+  assert.strictEqual(withFile.media.length, 1, "带 CDN 参数的文件没被认成可下载附件");
+  assert.strictEqual(withFile.media[0].name, "报价.xlsx", "文件名没带出来");
+  // 语音优先用微信自己的转写文字，省一次下载也省一次听
+  assert.strictEqual(describeItems([{ type: 3, voice_item: { text: "帮我订个会议室", media: cdn } }]).text,
+    "帮我订个会议室", "语音转写文字没被优先采用");
+  assert.strictEqual(describeItems([{ type: 3, voice_item: { media: cdn } }]).media[0].kind, "voice",
+    "没转写文字时没去下原始音频");
+  // 没带 CDN 信息的图片：不是静默丢，是留一句「没下载信息」
+  const noCdn = describeItems([{ type: 2, image_item: {} }]);
+  assert(noCdn.notes.length === 1 && !noCdn.media.length, "没下载信息的图片被静默丢了");
+  // ★负向对照★ 认不出的类型（表情包/位置/名片）必须留下一条 note
+  const sticker = describeItems([{ type: 99 }]);
+  assert(sticker.notes.length === 1 && !sticker.text && !sticker.media.length,
+    "认不出的消息类型被静默丢掉了，机器人会一声不吭：" + JSON.stringify(sticker));
+  // 但认得出内容时不该再多嘴一句「解析不了」
+  assert.strictEqual(describeItems([{ type: 1, text_item: { text: "在" } }, { type: 99 }]).notes.length, 0,
+    "已经解析出文字了还硬加一句「解析不了」，属于没事找事");
+
+  // ---- 企微/公众号：加密回调里的附件字段要抠得出来 ----
+  const { createWecomApp, msgSignature, encryptMsg } = require("../im-wechat");
+  const aesKey = crypto.randomBytes(32).toString("base64").slice(0, 43); // EncodingAESKey 是 43 位
+  const wecom = createWecomApp({ getConfig: () => ({ corp_id: "c", agent_id: "1", secret: "s", token: "tk", aes_key: aesKey }) });
+  const mkCallback = (xml) => {
+    const enc = encryptMsg(aesKey, xml, "c");
+    return [{ timestamp: "1", nonce: "n", msg_signature: msgSignature("tk", "1", "n", enc) },
+      `<xml><Encrypt><![CDATA[${enc}]]></Encrypt></xml>`];
+  };
+  const voice = wecom.parseCallback(...mkCallback(
+    `<xml><FromUserName><![CDATA[u1]]></FromUserName><MsgType><![CDATA[voice]]></MsgType>` +
+    `<MediaId><![CDATA[m-123]]></MediaId><Format><![CDATA[amr]]></Format>` +
+    `<Recognition><![CDATA[帮我订个会议室]]></Recognition><MsgId>9</MsgId></xml>`));
+  assert.strictEqual(voice.mediaId, "m-123", "企微语音的 MediaId 没解出来");
+  assert.strictEqual(voice.recognition, "帮我订个会议室", "语音转写文字没解出来（这份能直接当任务用）");
+  assert.strictEqual(voice.msgType, "voice", "MsgType 没解出来");
+  const file = wecom.parseCallback(...mkCallback(
+    `<xml><FromUserName><![CDATA[u1]]></FromUserName><MsgType><![CDATA[file]]></MsgType>` +
+    `<MediaId><![CDATA[m-9]]></MediaId><FileName><![CDATA[季度报表.xlsx]]></FileName><MsgId>10</MsgId></xml>`));
+  assert.strictEqual(file.fileName, "季度报表.xlsx", "企微文件名没解出来，存下来就没名字了");
+  assert(typeof wecom.fetchMedia === "function", "企微没有下载附件的入口");
+  const [q, body] = mkCallback("<xml><MsgType><![CDATA[text]]></MsgType></xml>");
+  assert.throws(() => wecom.parseCallback({ ...q, msg_signature: "0".repeat(40) }, body), /签名/, "签名错了居然放行");
+
+  // ---- 源码闸：入站路由不许再对非文本消息提前 return ----
+  const imSrc = fs.readFileSync(path.join(__dirname, "..", "im.js"), "utf8");
+  assert(!/msgType\s*!==\s*"text"[\s\S]{0,60}return\s*;/.test(imSrc),
+    "企微/公众号路由又对非文本消息提前 return 了，文件/语音会静默丢失");
+  assert(/wxInboundText/.test(imSrc), "企微/公众号没走统一的附件处理");
+  assert(/FEISHU_MEDIA/.test(imSrc) && /feishuPostText/.test(imSrc), "飞书没覆盖语音/表情/富文本");
+  assert(/这类消息（\$\{type\}）我这边解析不了/.test(imSrc), "飞书认不出的类型没留话");
+  // 只盯代码里的字面量：注释里写「以前是本版暂不下载」是留档，留档不该算回归
+  const ilkSrc = fs.readFileSync(path.join(__dirname, "..", "im-ilink.js"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  assert(!/本版暂不下载/.test(ilkSrc),
+    "微信还留着「本版暂不下载」的占位，说明附件没真下载");
+  assert(/downloadMedia/.test(ilkSrc) && /require\("\.\/im-media"\)/.test(ilkSrc),
+    "微信侧没接下载：拆出来的附件得真交给 im-media 落盘，不能只留一行描述");
+  assert(/attachments/.test(fs.readFileSync(path.join(__dirname, "..", "im-qq.js"), "utf8")),
+    "QQ 没接 attachments，手机上发的图进不来");
+
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.log("✅ IM 收附件：四渠道真下载 · 补扩展名/不覆盖/挡穿越/限大小 · CDN 密文解得开 · 认不出的类型也留一句话");
+}
+
+/**
+ * IM 凭证不许被空输入冲掉 —— 用户原话：「现在连接飞书好像有点问题」。
+ *
+ * 事故原样：config.json 里 im.feishu.app_id 好好的，app_secret 是空字符串，
+ * 于是长连接压根没起来，界面只显示「未连接」，一个字都不说为什么。
+ *
+ * 根因不在飞书，在设置页是「整页回写」：点任何一张卡的「连接」，前端会把所有渠道
+ * 所有输入框原样 POST 一遍；密码类输入框刷新后是空的 → 一次无关的保存就把 Secret 擦了。
+ * 这条测试的核心就是那个负向对照：空值提交之后，原来的 Secret 必须还在。
+ */
+async function testImCredentialGuard() {
+  const http = require("http");
+  const { spawn } = require("child_process");
+  const crypto = require("crypto");
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-imcred-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  const port = 3900 + Math.floor(Math.random() * 90);
+  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+    env: { ...process.env, OPENWORKBUDDY_HOME: home, PORT: String(port), HOST: "127.0.0.1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  child.stdout.on("data", (c) => (log += c));
+  child.stderr.on("data", (c) => (log += c));
+  const up = await new Promise((resolve) => {
+    const t = setTimeout(() => resolve(false), 40000);
+    const tick = setInterval(() => {
+      if (/已启动/.test(log)) { clearInterval(tick); clearTimeout(t); resolve(true); }
+      if (child.exitCode !== null) { clearInterval(tick); clearTimeout(t); resolve(false); }
+    }, 200);
+  });
+
+  const req = (method, p, body) => new Promise((resolve) => {
+    const data = body === undefined ? null : JSON.stringify(body);
+    const r = http.request({
+      host: "127.0.0.1", port, path: p, method,
+      headers: { Cookie: "wb_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+    }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    r.on("error", (e) => resolve({ code: 0, body: e.message, json: null }));
+    if (data) r.write(data);
+    r.end();
+  });
+  const onDisk = () => JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8")).im || {};
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + log.slice(-400));
+
+    const SECRET = "s3cret_" + crypto.randomBytes(8).toString("hex");
+    const w = await req("POST", "/api/settings", { im: { feishu: { app_id: "cli_e2e0001", app_secret: SECRET } } });
+    assert(w.code === 200, "凭证存不进去（HTTP " + w.code + " " + w.body.slice(0, 200) + "）");
+    assert.strictEqual(onDisk().feishu.app_secret, SECRET, "凭证没落盘");
+
+    // ★事故复现 + 负向对照★ 设置页整页回写：别的卡点「连接」，飞书这两格是空的
+    const other = await req("POST", "/api/settings", {
+      im: { feishu: { app_id: "cli_e2e0001", app_secret: "" }, qq: { app_id: "1000", app_secret: "qq-secret" } },
+    });
+    assert(other.code === 200, "保存别的渠道失败（HTTP " + other.code + "）");
+    assert.strictEqual(onDisk().feishu.app_secret, SECRET,
+      "空输入把已经存好的飞书 App Secret 冲掉了 —— 这正是用户飞书断连的原因");
+    assert.strictEqual(onDisk().qq.app_secret, "qq-secret", "顺手保存的另一个渠道没存上");
+
+    // 空格也算空：密码框里残留一个空格不该当成新密码
+    await req("POST", "/api/settings", { im: { feishu: { app_secret: "   " } } });
+    assert.strictEqual(onDisk().feishu.app_secret, SECRET, "全是空格的输入把凭证冲掉了");
+
+    // 改成新值当然要改得动，不然就成了「只能填一次」
+    await req("POST", "/api/settings", { im: { feishu: { app_secret: "new-secret" } } });
+    assert.strictEqual(onDisk().feishu.app_secret, "new-secret", "改新凭证改不动");
+
+    // ★另一半负向对照★ 点「取消连接」必须真能清掉，不能因为怕误擦就永远删不掉
+    const cut = await req("POST", "/api/settings", {
+      im: { feishu: { app_id: "", app_secret: "" }, clear: ["feishu.app_id", "feishu.app_secret"] },
+    });
+    assert(cut.code === 200, "取消连接失败（HTTP " + cut.code + "）");
+    assert.strictEqual(onDisk().feishu.app_secret, "", "点了取消连接却没清掉，用户以为断了其实还连着");
+    assert.strictEqual(onDisk().feishu.app_id, "", "app_id 没清掉");
+    assert.strictEqual(onDisk().qq.app_secret, "qq-secret", "清飞书把 QQ 的也清了");
+
+    // 只填一半时，状态要点名缺哪半边 —— 以前只有干巴巴一个「未连接」
+    await req("POST", "/api/settings", { im: { feishu: { app_id: "cli_e2e0001" } } });
+    const st = await req("GET", "/im/status");
+    assert(st.json && st.json.feishu, "/im/status 读不出飞书状态：" + st.body.slice(0, 200));
+    assert.strictEqual(st.json.feishu.configured, false, "只填了 App ID 却报成已配置");
+    assert.deepStrictEqual(st.json.feishu.missing, ["App Secret"],
+      "没点名缺哪半边，用户只能看见「未连接」瞎猜：" + JSON.stringify(st.json.feishu.missing));
+    assert(!JSON.stringify(st.json).includes("cli_e2e0001"), "状态接口把 App ID 原样吐出来了，日志/截图会泄露");
+
+    console.log("✅ IM 凭证保护：空输入冲不掉已存凭证（飞书断连的真因）· 取消连接真能清 · 只填一半时点名缺哪个");
+  } finally {
+    try { child.kill("SIGKILL"); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/**
+ * 版本与更新 —— 用户原话：「思考一下如果这个代码有更新的话，这个安装包是要重新安装吗，还是能更新啊」。
+ *
+ * 结论是不能做静默自动更新：构建没签名，macOS 那条路走 Squirrel.Mac 会校验代码签名，必然失败。
+ * 所以做成「查得到就如实告诉你，并按你的安装方式给出该做什么」。
+ * 这里最要紧的一条负向对照：网络不通时绝不能悄悄报成「已是最新」。
+ */
+async function testUpdaterVersions() {
+  const U = require("../updater");
+
+  assert.strictEqual(U.cmpVer("0.1.1", "0.1.0"), 1, "补丁号大小比错了");
+  assert.strictEqual(U.cmpVer("0.2.0", "0.10.0"), -1, "版本号被当字符串比了（0.2 > 0.10 是错的）");
+  assert.strictEqual(U.cmpVer("v1.0.0", "1.0.0"), 0, "带 v 前缀的 tag 没归一化，会天天提示有新版");
+  assert.strictEqual(U.cmpVer("1.0.0", "1.0.0-beta.1"), 1, "正式版没被当成比预发布新");
+  assert.strictEqual(U.cmpVer("1.0.0-beta.1", "1.0.0"), -1, "预发布没被当成比正式版旧");
+  assert.strictEqual(U.parseVer("乱写的"), null, "解析不了的版本号没返回 null");
+  assert.strictEqual(U.cmpVer("乱写的", "1.0.0"), 0, "解析不了时没保持中立（宁可不提示，也别乱提示）");
+  assert.strictEqual(U.currentVersion(), require("../package.json").version, "报的版本号跟 package.json 不一致");
+
+  // 两种安装方式给的话必须不一样，且都得说人话
+  const src = U.howToUpdate("source");
+  assert(/git pull/.test(src) && /不用重装/.test(src), "源码安装没说清「不用重装」：" + src);
+  assert(/dmg/.test(U.howToUpdate("app", "darwin")), "macOS 装包版没说下 dmg");
+  assert(/setup\.exe/.test(U.howToUpdate("app", "win32")), "Windows 装包版没说下 setup.exe");
+  for (const p of ["darwin", "win32"]) {
+    assert(/覆盖装/.test(U.howToUpdate("app", p)) && /~\/OpenWorkBuddy/.test(U.howToUpdate("app", p)),
+      `${p} 没说清覆盖安装不会动配置/会话/工作区，用户不敢升级：` + U.howToUpdate("app", p));
+  }
+
+  const reply = (body) => async () => ({ ok: true, status: 200, json: async () => body });
+  U.resetCache();
+  const has = await U.checkUpdate({ force: true, fetchImpl: reply({ tag_name: "v99.0.0", html_url: "https://x/r/99", body: "更新说明" }) });
+  assert.strictEqual(has.latest, "99.0.0", "tag 里的版本号没解出来");
+  assert.strictEqual(has.has_update, true, "有新版却说没有");
+  assert.strictEqual(has.error, "", "正常返回时不该带 error");
+  assert(has.how && has.page, "没给出「该怎么做」和下载页地址");
+
+  U.resetCache();
+  const cur = require("../package.json").version;
+  const same = await U.checkUpdate({ force: true, fetchImpl: reply({ tag_name: "v" + cur }) });
+  assert.strictEqual(same.has_update, false, "跟本机同版本却说有新版，会天天弹提示");
+
+  // 缓存：6 小时内不该反复打 GitHub（匿名接口每小时 60 次）
+  let calls = 0;
+  U.resetCache();
+  const counting = async () => { calls++; return { ok: true, status: 200, json: async () => ({ tag_name: "v99.0.0" }) }; };
+  await U.checkUpdate({ force: true, fetchImpl: counting });
+  const cached = await U.checkUpdate({ fetchImpl: counting });
+  assert.strictEqual(calls, 1, "缓存没生效，每次开界面都打一次 GitHub：" + calls);
+  assert.strictEqual(cached.cached, true, "缓存命中时没标出来");
+  await U.checkUpdate({ force: true, fetchImpl: counting });
+  assert.strictEqual(calls, 2, "手动点「检查更新」时缓存没被绕开，用户点了等于没点");
+
+  // ★负向对照★ 网络不通 / GitHub 抽风：必须如实说查不到，不能悄悄报成「已是最新」
+  U.resetCache();
+  const down = await U.checkUpdate({ force: true, fetchImpl: async () => { throw new Error("connect ETIMEDOUT"); } });
+  assert(down.error && /查不到最新版本/.test(down.error), "网络不通时没如实报错：" + JSON.stringify(down));
+  assert.strictEqual(down.latest, "", "查不到却编了个版本号出来");
+  assert.strictEqual(down.has_update, false, "查不到时不该声称有新版");
+  assert(down.how && down.current, "查不到时也得告诉用户本机版本和更新方式");
+  U.resetCache();
+  const rate = await U.checkUpdate({ force: true, fetchImpl: async () => ({ ok: false, status: 403, json: async () => ({}) }) });
+  assert(/403/.test(rate.error || ""), "GitHub 限流没如实报出来：" + JSON.stringify(rate));
+  U.resetCache();
+  const junk = await U.checkUpdate({ force: true, fetchImpl: reply({ tag_name: "latest" }) });
+  assert(junk.error && !junk.has_update, "tag 不是版本号时没兜住：" + JSON.stringify(junk));
+  U.resetCache();
+
+  // 打包版和源码版判得出来（打包后代码在 app.asar 里）
+  assert(["app", "source"].includes(U.installKind()), "安装方式判不出来");
+  assert.strictEqual(U.installKind(), "source", "测试是从源码跑的，却判成了安装包");
+
+  // 不做静默自动更新，是因为构建没签名 —— 这条理由必须写在代码里，不然下次有人顺手加个 autoUpdater
+  const src2 = fs.readFileSync(path.join(__dirname, "..", "updater.js"), "utf8");
+  assert(/签名/.test(src2), "updater.js 里没写清「为什么不做自动更新」，后人会踩回去");
+  const pkgJson = require("../package.json");
+  assert(!/electron-updater/.test(JSON.stringify(pkgJson.dependencies || {})),
+    "引了 electron-updater —— 没签名的包用它在 macOS 上必然失败，等于给用户一个永远点不动的按钮");
+
+  console.log("✅ 版本与更新：版本号比得对（含 0.2<0.10 / 预发布）· 两种安装方式各说各的 · 缓存挡限流 · 查不到就说查不到，不假装最新");
+}
+
+/**
+ * lark-cli 输出解析 —— 「扫码新建应用」这条路全靠它。
+ *
+ * 用户问过两次「不能扫码连机器人吗？」。直答是不能：飞书的机器人就是一个「应用」，
+ * 平台只认 app_id / app_secret，扫码换不来这两串。但 @larksuite/cli 的
+ * `config init --new` 能**替你把应用建出来**——它阻塞着打印一条验证链接，
+ * 用户在浏览器/飞书里点完，凭证就落进 ~/.lark-cli/config.json。我们把那条链接
+ * 渲染成二维码，建完直接把凭证接管过来 → 一个字都不用手打。
+ *
+ * 这条只测纯解析（绝不真的去跑 config init --new，那会在用户的飞书企业里建出真应用）：
+ * 输出里带着尾巴、带着前缀噪声、链接后面粘着中文标点，这些都得吃得下；
+ * 认不出来的时候必须给一句人话，而不是把 stderr 原样甩给用户。
+ */
+function testLarkCliParse() {
+  const L = require("../lark-cli");
+
+  // ---- config show：真实输出是 JSON + 空行 + 「Config file path: …」 ----
+  const real = '{\n  "appId": "cli_a1b2c3d4",\n  "appSecret": "s3cret",\n  "brand": "feishu"\n}\n\n  Config file path: /home/u/.lark-cli/config.json\n';
+  const cfg = L.parseConfigShow(real);
+  assert(cfg && cfg.appId === "cli_a1b2c3d4" && cfg.appSecret === "s3cret", "config show 的正常输出没解出来");
+  // 前面糊了一行 npm 的噪声也得能救回来
+  const noisy = 'npm WARN 什么什么\n{"appId":"cli_x","appSecret":"y"}\n\nConfig file path: /x\n';
+  assert.strictEqual((L.parseConfigShow(noisy) || {}).appId, "cli_x", "前缀噪声没被跳过");
+  // 负向控制：没绑应用 / 报错 / 空 —— 一律 null，绝不能返回半个对象让上层当成「拿到凭证了」
+  assert.strictEqual(L.parseConfigShow(""), null, "空输出该返回 null");
+  assert.strictEqual(L.parseConfigShow("Error: no app configured"), null, "报错文本该返回 null");
+  assert.strictEqual(L.parseConfigShow("{ 这不是 json"), null, "半截 JSON 该返回 null");
+
+  // ---- 验证链接：从一大坨日志里抠出来，尾随的中文标点得削掉 ----
+  const log = "请在浏览器中打开以下链接完成验证：https://open.feishu.cn/app/verify?token=abc123。\n等待中...\n";
+  assert.strictEqual(L.verifyUrlOf(log), "https://open.feishu.cn/app/verify?token=abc123", "验证链接没抠干净：" + L.verifyUrlOf(log));
+  assert(/larksuite\.com/.test(L.verifyUrlOf("go https://open.larksuite.com/x/y now")), "国际版域名没认");
+  // 负向控制：别的域名不能冒充（不然会把用户往陌生站点上引）
+  assert.strictEqual(L.verifyUrlOf("https://example.com/app/verify"), "", "非飞书域名被当成验证链接了");
+  assert.strictEqual(L.verifyUrlOf(""), "", "空输入该返回空串");
+
+  // ---- 报错翻译：给的是「下一步怎么办」，不是 stderr ----
+  assert(/重启/.test(L.explainLarkError("Agent workspace detected: OPENCLAW_HOME is set")), "Agent 环境那条没翻成人话");
+  assert(/管理员|权限/.test(L.explainLarkError("app registration failed: permission denied")), "建应用失败没说清是权限问题");
+  assert(/装/.test(L.explainLarkError("spawn lark-cli ENOENT")), "没装 lark-cli 没给安装指引");
+  assert(/重新点/.test(L.explainLarkError("context deadline exceeded")), "超时没告诉用户重试");
+  assert(/没有返回内容/.test(L.explainLarkError("")), "空输入没兜底");
+  // 认不出来的原样给（截断），但不能是空 —— 用户至少得看见点东西
+  const weird = L.explainLarkError("some brand new failure from upstream");
+  assert(weird && weird.length > 0 && !/undefined/.test(weird), "认不出的错误被吞了：" + weird);
+
+  console.log("✅ lark-cli 解析：config show 带尾巴/带噪声都吃得下 · 只认飞书域名的验证链接 · 报错翻成下一步怎么办");
 }

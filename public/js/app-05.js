@@ -1199,6 +1199,18 @@ async function renderLarkQr(pane) {
 // 「连接」= 保存 + 真测活；「取消连接」= 清空这一组凭证再保存（微信是真断开登录态）。
 // 申请步骤折进「怎么拿凭证」，默认只露名字、一句副标题和状态灯——
 // 旧版是 9 大段说明文字平铺一屏，用户的原话是「太乱了，没办法自己调」。
+// 从整段粘贴里把飞书那两串凭证抠出来。用户的原话是「现在还要填 appId 这些啊」——
+// 机器人收消息必须有 app_id + app_secret（飞书的设计，扫码替代不了），但没必要让人手打：
+// 开放平台那页整段复制、或者一段 JSON、或者同事发来的两行，都能认出来。
+function parseFeishuCreds(txt) {
+  const t = String(txt || "");
+  const app_id = (t.match(/\bcli_[A-Za-z0-9]{8,}/) || [""])[0];
+  // App Secret 是 32 位字母数字；先把已认出的 App ID 挖掉，免得把它自己当成 secret
+  const rest = app_id ? t.split(app_id).join(" ") : t;
+  const app_secret = ((rest.match(/\b[A-Za-z0-9]{32}\b/g) || [])[0]) || "";
+  return { app_id, app_secret };
+}
+
 function wxStatus(c) {
   c = c || {};
   return !c.configured ? ["off", "未配置"] : c.callback_ready ? ["ok", "等腾讯回调"] : ["warn", "缺回调配置"];
@@ -1211,17 +1223,22 @@ function wsChip(c, offTxt) {
 }
 const IM_CHANNELS = [
   { key: "feishu", grp: "chat", icon: "🕊️", name: "飞书", sub: "长连接 · 无需公网", path: "feishu", src: "feishu",
-    fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["verification_token", "Verification Token（可选，仅旧回调模式）"]],
+    newapp: true, // 一键新建应用：连 App ID / Secret 都不用手打
+    paste: { hint: "从飞书开放平台「凭证与基础信息」整页复制粘过来就行，不用一个字段一个字段抠", parse: parseFeishuCreds },
+    fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["verification_token", "Verification Token（可选，仅旧回调模式）", "", "opt"]],
     test: { url: "/im/feishu/test", ok: (d) => `凭证有效${d.bot_name ? `，机器人「${d.bot_name}」` : ""}，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
-    help: ["飞书开放平台创建自建应用，添加「机器人」能力", "权限开通 im:message 与 im:message:send_as_bot", "事件订阅方式选「使用长连接接收事件」，添加 im.message.receive_v1", "发布一个版本，回来填 App ID / App Secret"],
-    status: (st) => { const f = st.feishu || {}; return wsChip({ configured: f.configured, state: (f.ws || {}).state }, "未连接"); } },
+    help: ["飞书开放平台创建自建应用，添加「机器人」能力", "权限开通 im:message 与 im:message:send_as_bot", "事件订阅方式选「使用长连接接收事件」，添加 im.message.receive_v1", "发布一个版本，回来填 App ID / App Secret（或把那一页整段复制，用卡片里的「粘一段过来自动识别」）", "嫌麻烦就点上面的「扫码新建应用」——本机装了 lark-cli 的话，应用直接替你建好，凭证自动填"],
+    // 缺哪一半就写哪一半：以前只写「未连接」，用户看不出是没填、填错、还是没联网
+    status: (st) => { const f = st.feishu || {}; const m = f.missing || [];
+      if (m.length === 1) return ["warn", "还差 " + m[0]];
+      return wsChip({ configured: f.configured, state: (f.ws || {}).state }, "未连接"); } },
   { key: "qq", grp: "chat", icon: "🐧", name: "QQ", sub: "长连接 · 无需公网", path: "qq", src: "qq",
     fields: [["app_id", "AppID"], ["app_secret", "AppSecret", "password"]],
     test: { url: "/im/qq/test", ok: (d) => `凭证有效，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
     help: ["QQ 开放平台 q.qq.com 创建「机器人」，开发设置里拿 AppID / AppSecret", "功能配置 → 消息列表：开启私聊消息和群聊 @机器人 消息", "沙箱只对白名单群/好友生效，正式使用需提交审核发布"],
     status: (st) => wsChip(st.qq, "未连接") },
   { key: "wechat_ilink", grp: "chat", icon: "💬", name: "微信", sub: "扫码登录 · 无需公网", qr: true,
-    help: ["点「连接」出二维码，用要当机器人的那个微信号扫码并在手机上确认", "之后本机主动长轮询收发消息，别人给这个微信号发消息 = 下任务", "登录态由微信控制，失效后重新扫码；图片/文件本版只识别为占位标签"],
+    help: ["点「连接」出二维码，用要当机器人的那个微信号扫码并在手机上确认", "之后本机主动长轮询收发消息，别人给这个微信号发消息 = 下任务", "登录态由微信控制，失效后重新扫码；发来的图片/文件/语音会自动存进工作目录，AI 直接按文件名打开"],
     status: (st) => wsChip(st.wechat_ilink, "未扫码") },
   { key: "wecom_app", grp: "chat", icon: "🏢", name: "企业微信应用", sub: "双向对话 · 需公网 HTTPS", path: "wecom_app", src: "wecom_app",
     fields: [["corp_id", "CorpID"], ["agent_id", "AgentId（纯数字）"], ["secret", "应用 Secret", "password"], ["token", "Token"], ["aes_key", "EncodingAESKey（43 位）", "password"]],
@@ -1238,7 +1255,7 @@ const IM_CHANNELS = [
     help: ["群里添加「群机器人」，把 webhook 地址粘贴到这里", "任务与定时任务的结果自动推到群里；要双向对话用上面的「企业微信应用」"],
     status: (st) => ((st.wecom || {}).configured ? ["ok", "已配置"] : ["off", "未配置"]) },
   { key: "dingtalk", grp: "push", icon: "📌", name: "钉钉群", sub: "只出不进 · 推送结果",
-    fields: [["dingtalk_webhook", "https://oapi.dingtalk.com/robot/send?access_token=..."], ["dingtalk_secret", "加签密钥 SEC...（未选加签则留空）", "password"]],
+    fields: [["dingtalk_webhook", "https://oapi.dingtalk.com/robot/send?access_token=..."], ["dingtalk_secret", "加签密钥 SEC...（未选加签则留空）", "password", "opt"]],
     help: ["钉钉群 → 群设置 → 机器人 → 添加「自定义机器人」", "安全设置选「加签」，把 webhook 与加签密钥填到这里"],
     status: (st) => ((st.dingtalk || {}).configured ? ["ok", "已配置"] : ["off", "未配置"]) },
   { key: "webhook", grp: "push", icon: "🔗", name: "通用 Webhook", sub: "外部工具桥接进来",
@@ -1248,7 +1265,7 @@ const IM_CHANNELS = [
   { key: "feishu_me", grp: "lark", icon: "🪪", name: "飞书本人身份", sub: "AI 以你的身份读日历 / 云文档 / 邮件", lark: true, noConn: true,
     help: ["本机装 lark-cli：npx @larksuite/cli@latest install", "用上面飞书卡的 App ID / App Secret 绑定，再扫码授权你本人", "授权后 AI 能用 lark-cli 查你的日历、读写云文档、收发邮件"] },
   { key: "feishu_doc", grp: "lark", icon: "📄", name: "飞书云文档", sub: "AI 直接把结果写成云文档", path: "feishu", src: "feishu",
-    fields: [["doc_app_id", "云文档 App ID（留空 = 沿用飞书机器人凭证）"], ["doc_app_secret", "云文档 App Secret", "password"]],
+    fields: [["doc_app_id", "云文档 App ID（留空 = 沿用飞书机器人凭证）", "", "opt"], ["doc_app_secret", "云文档 App Secret", "password", "opt"]],
     help: ["机器人应用本身开通 docx:document 权限就够，这里可以留空", "只有云文档想走另一个应用时才单独填一组凭证"],
     status: (_st, get) => (get("feishu_doc", "doc_app_id") ? ["ok", "独立凭证"] : ["off", "沿用机器人凭证"]) },
 ];
@@ -1261,10 +1278,27 @@ function renderImPane(pane, s) {
   const fieldsHtml = (c) => (c.fields || []).map(([f, ph, type]) =>
     `<input id="${inputId(c, f)}" type="${type === "password" ? "password" : "text"}" placeholder="${esc(ph)}" value="${esc(cfgVal(c, f))}" autocomplete="off" spellcheck="false">`).join("");
   const helpHtml = (c) => (c.help ? `<details class="im-help"><summary>怎么拿凭证</summary><ol>${c.help.map((h) => `<li>${esc(h)}</li>`).join("")}</ol></details>` : "");
+  // 「一次粘贴自动填」：省掉在两个网页之间来回抄两串东西这件最容易出错的事
+  const pasteHtml = (c) => (c.paste ? `<details class="im-help im-paste" data-paste="${c.key}"><summary>不想手打？粘一段过来自动识别</summary>
+      <div class="d" style="font-size:12px;margin:2px 0 6px">${esc(c.paste.hint)}</div>
+      <textarea id="im-${c.key}-paste" rows="3" placeholder="在这里粘贴，识别到的两串会自动填进上面的输入框" spellcheck="false" style="width:100%;box-sizing:border-box"></textarea>
+      <div class="im-r ok-msg" data-paste-r="${c.key}"></div></details>` : "");
+  // 「扫码新建应用」：本机 lark-cli 替你在飞书开放平台建一个应用，凭证自己填进来。
+  // 用户问过两次「不能扫码连机器人吗」——单纯扫码不行（机器人=应用，平台只认 app_id/secret），
+  // 但可以扫码把应用建出来，效果一样：一个字都不用手打。
+  const newappHtml = (c) => (c.newapp ? `<div class="im-newapp" data-newapp="${c.key}">
+      <button class="btn-plain" data-act="newapp">📱 扫码新建应用</button>
+      <span class="d" style="font-size:12px;margin-left:8px">没有现成应用？让本机 lark-cli 替你建一个，凭证自动填好</span>
+      <div data-newapp-qr="${c.key}" style="display:none;margin:8px 0">
+        <img alt="新建飞书应用的授权二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--wb-border)">
+        <div class="d" style="font-size:12px;margin-top:4px">用飞书扫这个码，或 <a class="link" target="_blank" rel="noopener" data-newapp-link="${c.key}">在浏览器里打开</a>，按提示建好应用即可</div>
+      </div>
+      <div class="im-r ok-msg" data-newapp-r="${c.key}"></div>
+    </div>` : "");
   const bodyHtml = (c) => {
     if (c.qr) return `<div id="ilk-box" style="display:none;margin:4px 0 8px"><img id="ilk-img" alt="微信登录二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--wb-border)"></div><div class="im-r ok-msg" id="ilk-r">还没扫码。点右上角「连接」取二维码</div>${helpHtml(c)}`;
     if (c.lark) return `<div id="fs-qr-body" class="d" style="font-size:13px">检测 lark-cli…</div>${helpHtml(c)}`;
-    return `${fieldsHtml(c)}${c.src ? `<div class="im-src">${keyLink(c.src)}</div>` : ""}<div class="im-r ok-msg" data-r="${c.key}"></div>${helpHtml(c)}`;
+    return `${newappHtml(c)}${fieldsHtml(c)}${pasteHtml(c)}${c.src ? `<div class="im-src">${keyLink(c.src)}</div>` : ""}<div class="im-r ok-msg" data-r="${c.key}"></div>${helpHtml(c)}`;
   };
   const cardHtml = (c) => `<div class="im-card" data-ch="${c.key}">
       <div class="im-card-h" role="button" tabindex="0" data-activate="1" title="点一下展开 / 收起">
@@ -1342,6 +1376,8 @@ function renderImPane(pane, s) {
     const card = btn.closest(".im-card");
     card.classList.remove("packed");
     if (c.qr) return ilkStart();
+    const miss = (c.fields || []).filter(([f, , , opt]) => opt !== "opt" && !getField(c.key, f)).map(([, label]) => label.split("（")[0]);
+    if (miss.length) return say(c, `还差 ${miss.join(" / ")} 没填。填完再点「连接」`, true);
     btn.disabled = true;
     say(c, "保存中…");
     try {
@@ -1381,7 +1417,10 @@ function renderImPane(pane, s) {
         say(c, "已断开，登录态已清除");
       } else {
         for (const [f] of c.fields || []) pane.querySelector("#" + inputId(c, f)).value = "";
-        if (!(await saveSettings(imPayload(), globalMsg))) throw new Error("保存失败");
+        // 服务端默认「空值不覆盖已存的凭证」，所以真要清必须点名——否则清了个寂寞
+        const payload = imPayload();
+        payload.im.clear = (c.fields || []).map(([f]) => (c.path ? `${c.path}.${f}` : f));
+        if (!(await saveSettings(payload, globalMsg))) throw new Error("保存失败");
         say(c, "已断开，凭证已清空");
       }
       card.classList.remove("packed");
@@ -1393,6 +1432,61 @@ function renderImPane(pane, s) {
     }
   };
 
+  // ---------- 扫码新建应用：让本机 lark-cli 替你在飞书开放平台建一个应用 ----------
+  // 单纯「扫码连机器人」在飞书是做不到的（机器人=应用，平台只认 app_id/app_secret）。
+  // 但可以扫码把应用**建出来**，凭证由后端直接接管 —— 效果一样：一个字都不用手打。
+  let newappPolling = false;
+  const newappSay = (c, txt, err) => {
+    const r = pane.querySelector(`[data-newapp-r="${c.key}"]`);
+    if (!r) return;
+    r.style.color = err ? "var(--wb-err)" : "";
+    r.textContent = txt;
+  };
+  const newappCreate = async (c, btn) => {
+    if (newappPolling) return;
+    const box = pane.querySelector(`[data-newapp-qr="${c.key}"]`);
+    btn.disabled = true;
+    newappSay(c, "正在让 lark-cli 起一个新应用…（第一次要等十几秒）");
+    try {
+      const d = await fetch("/api/feishu/app/create", { method: "POST" }).then((r) => r.json()).catch((e) => ({ error: e.message }));
+      if (!d || !d.ok) {
+        if (box) box.style.display = "none";
+        return newappSay(c, "❌ " + ((d && d.error) || "起不来，看看本机装没装 lark-cli"), true);
+      }
+      if (box) {
+        const img = box.querySelector("img");
+        const a = box.querySelector(`[data-newapp-link="${c.key}"]`);
+        if (img) { if (d.qr) img.src = d.qr; img.style.display = d.qr ? "" : "none"; }
+        if (a) a.href = d.url || "#";
+        box.style.display = "";
+      }
+      newappSay(c, "用飞书扫码（或点上面的链接）建应用，建完这里会自动填好凭证。等你操作…");
+      newappPolling = true;
+      const t0 = Date.now();
+      while (Date.now() - t0 < 15 * 60 * 1000) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const st = await fetch("/api/feishu/app/create/status").then((r) => r.json()).catch(() => null);
+        if (!st) continue;
+        if (st.state === "ok") {
+          const el = pane.querySelector("#" + inputId(c, "app_id"));
+          if (el && st.app_id) el.value = st.app_id; // secret 留空：后端已经存好，空值不会覆盖
+          if (box) box.style.display = "none";
+          newappSay(c, "✅ 应用建好了" + (st.app_id ? "（App ID " + st.app_id + "）" : "") + "，凭证已经填进来，长连接正在起");
+          await refreshStatus(false);
+          return;
+        }
+        if (st.state === "error") {
+          if (box) box.style.display = "none";
+          return newappSay(c, "❌ " + (st.error || "没建成"), true);
+        }
+      }
+      newappSay(c, "等了 15 分钟没等到，重新点一次吧", true);
+    } finally {
+      newappPolling = false;
+      btn.disabled = false;
+    }
+  };
+
   pane.addEventListener("click", (e) => {
     const btn = e.target.closest(".im-conn[data-act]");
     if (btn) {
@@ -1401,9 +1495,40 @@ function renderImPane(pane, s) {
       if (!c) return;
       return btn.dataset.act === "disconnect" ? disconnect(c, btn) : connect(c, btn);
     }
+    const nb = e.target.closest('[data-act="newapp"]');
+    if (nb) {
+      e.stopPropagation();
+      const c = IM_CHANNELS.find((x) => x.key === (nb.closest("[data-newapp]") || {}).dataset?.newapp);
+      if (c) newappCreate(c, nb);
+      return;
+    }
     const h = e.target.closest(".im-card-h");
     if (h && h.closest(".im-card").dataset.ch && !e.target.closest("button")) h.closest(".im-card").classList.toggle("packed");
   });
+  // 粘进来就认，不用再点一次按钮
+  for (const c of IM_CHANNELS.filter((x) => x.paste)) {
+    const ta = pane.querySelector(`#im-${c.key}-paste`);
+    const r = pane.querySelector(`[data-paste-r="${c.key}"]`);
+    if (!ta || !r) continue;
+    const take = () => {
+      const got = c.paste.parse(ta.value);
+      const filled = [];
+      for (const [f, label] of c.fields || []) {
+        if (!got[f]) continue;
+        const el = pane.querySelector("#" + inputId(c, f));
+        if (!el) continue;
+        el.value = got[f];
+        filled.push(label);
+      }
+      r.style.color = filled.length ? "" : "var(--wb-err)";
+      r.textContent = filled.length
+        ? `✅ 认出了 ${filled.join(" 和 ")}，已填进上面。核对一下就点右上角「连接」`
+        : "没认出凭证。飞书的 App ID 长这样 cli_xxxxxxxx，App Secret 是 32 位字母数字";
+      if (filled.length) ta.value = ""; // 认完就清掉，凭证不留在输入框里
+    };
+    ta.addEventListener("paste", () => setTimeout(take, 0));
+    ta.addEventListener("input", () => { if (ta.value.trim().length > 20) take(); });
+  }
   pane.querySelector("#im-save").onclick = async () => {
     if (await saveSettings(imPayload(), globalMsg)) refreshStatus(false);
   };

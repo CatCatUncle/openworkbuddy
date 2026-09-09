@@ -16,6 +16,10 @@
  *   3. POST /ilink/bot/getupdates   长轮询收消息（游标 get_updates_buf 要持久化）
  *      POST /ilink/bot/sendmessage  回消息（必须带该用户最近一条消息的 context_token）
  *
+ *   4. 附件走腾讯 CDN，不在这条协议里：消息体给 encrypt_query_param + aes_key，
+ *      下下来是 AES-128-ECB 密文；发附件则反过来 getuploadurl → 加密上传 → 发媒体消息。
+ *      加解密在 im-media.js。
+ *
  * 鉴权头是 `AuthorizationType: ilink_bot_token` + `Authorization: Bearer <botToken>`，
  * 两个都要，少一个就 401。
  *
@@ -23,6 +27,9 @@
  */
 
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+const imMedia = require("./im-media");
 
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 const QR_BOT_TYPE = "3";
@@ -36,6 +43,14 @@ const ITEM_VIDEO = 5;
 const MESSAGE_STATE_FINISH = 2;
 
 const ERRCODE_SESSION_EXPIRED = -14; // 登录态失效，只能重新扫码
+
+// 发附件：先问微信要一个上传地址，加密上传到 CDN，再把 CDN 凭证塞进消息体
+const MEDIA_IMAGE = 1;
+const MEDIA_FILE = 3;
+// getuploadurl 校验这两个身份头，缺了直接回 {"ret":-1}（图片不校验，一起带上无害）
+const ILINK_APP_ID = "bot";
+const ILINK_APP_CLIENT_VERSION = "131329"; // "2.1.1" → (2<<16)|(1<<8)|1
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
 
 const DEFAULT_LONGPOLL_MS = 35000;
 const LONGPOLL_EXTRA_MS = 5000;
@@ -64,17 +79,55 @@ function splitText(text, limit = SEND_LIMIT) {
   return out.length ? out : [""];
 }
 
-/** 从 item_list 里抽出文本；语音有转写就用转写，图片/文件/视频只留占位标签 */
-function extractText(items) {
-  const parts = [];
-  for (const item of items || []) {
-    if (item.type === ITEM_TEXT && item.text_item && item.text_item.text) parts.push(item.text_item.text);
-    else if (item.type === ITEM_VOICE) parts.push(item.voice_item && item.voice_item.text ? item.voice_item.text : "（语音，未转写）");
-    else if (item.type === ITEM_IMAGE) parts.push("（图片，本版暂不下载）");
-    else if (item.type === ITEM_FILE) parts.push(`（文件：${(item.file_item && item.file_item.file_name) || "未命名"}，本版暂不下载）`);
-    else if (item.type === ITEM_VIDEO) parts.push("（视频，本版暂不下载）");
+const KIND_CN = { image: "图片", file: "文件", voice: "语音", video: "视频", sticker: "表情" };
+
+/** 这一项带没带 CDN 下载信息（两样都齐才下得动） */
+function hasCdn(item) {
+  const m = item && item.media;
+  return !!(m && m.encrypt_query_param && m.aes_key);
+}
+
+/**
+ * 把一条消息的 item_list 拆成三摊：文字、要下载的附件、下不了的附件。
+ *
+ * 以前这里只吐文字，图片/文件一律换成「本版暂不下载」的占位——用户在微信里发了份 PDF，
+ * agent 只看见一行字，用户以为发到了。现在附件交给调用方真下下来，占位只留给
+ * 微信确实没给下载信息的那种。
+ */
+function describeItems(items) {
+  const text = [];
+  const media = [];
+  const notes = [];
+  let unknown = 0;
+  for (const it of items || []) {
+    if (!it) continue;
+    if (it.type === ITEM_TEXT) {
+      if (it.text_item && it.text_item.text) text.push(it.text_item.text);
+    } else if (it.type === ITEM_IMAGE) {
+      if (hasCdn(it.image_item)) media.push({ kind: "image", name: "", media: it.image_item.media });
+      else notes.push({ kind: "image", name: "", why: "微信这条消息没带下载信息" });
+    } else if (it.type === ITEM_VOICE) {
+      // 语音优先用微信自己的转写文字；没转写才去下原始音频
+      if (it.voice_item && it.voice_item.text) text.push(it.voice_item.text);
+      else if (hasCdn(it.voice_item)) media.push({ kind: "voice", name: "", media: it.voice_item.media });
+      else notes.push({ kind: "voice", name: "", why: "微信没给转写文字，也没带下载信息" });
+    } else if (it.type === ITEM_FILE) {
+      const name = (it.file_item && it.file_item.file_name) || "";
+      if (hasCdn(it.file_item)) media.push({ kind: "file", name, media: it.file_item.media });
+      else notes.push({ kind: "file", name, why: "微信这条消息没带下载信息" });
+    } else if (it.type === ITEM_VIDEO) {
+      if (hasCdn(it.video_item)) media.push({ kind: "video", name: "", media: it.video_item.media });
+      else notes.push({ kind: "video", name: "", why: "微信这条消息没带下载信息" });
+    } else {
+      unknown++;
+    }
   }
-  return parts.join("\n").trim();
+  // 表情包/位置/名片这些解析不了的类型：以前整条消息被丢掉，机器人一声不吭，用户以为它死了。
+  // 宁可回一句「这个我看不了」，也不能装作没收到
+  if (unknown && !text.length && !media.length && !notes.length) {
+    notes.push({ kind: "sticker", name: "", why: "这类消息（表情包／位置／名片等）我这边解析不了" });
+  }
+  return { text: text.join("\n").trim(), media, notes };
 }
 
 function dedupKey(msg) {
@@ -129,10 +182,13 @@ async function pollQrStatus(qrcode, baseUrl) {
 
 /**
  * @param getConfig  () => { bot_token, ilink_bot_id, base_url, get_updates_buf }
- * @param onMessage  async ({ userId, text }) => void  收到用户消息
+ * @param onMessage  async ({ userId, text, saved, failed }) => void  收到用户消息
+ *                   saved/failed 是本条消息里的附件：已落盘的 / 没收下来的
  * @param onCursor   (buf) => void  游标变化（调用方负责持久化，重启不重放）
+ * @param downloadMedia async ({ kind, name, media }) => 落盘后的文件名。由调用方实现——
+ *                   只有它知道工作目录在哪；不传就退化成「收到但下不了」，但仍然会告诉用户
  */
-function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log = console }) {
+function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log = console, downloadMedia = null }) {
   const cfg = () => getConfig() || {};
   const uin = randomUin();
 
@@ -163,11 +219,11 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     };
   }
 
-  async function apiPost(endpoint, body, timeoutMs) {
+  async function apiPost(endpoint, body, timeoutMs, extraHeaders) {
     const base = cfg().base_url || DEFAULT_BASE_URL;
     const resp = await fetch(`${base.replace(/\/$/, "")}/${endpoint}`, {
       method: "POST",
-      headers: headers(),
+      headers: extraHeaders ? { ...headers(), ...extraHeaders } : headers(),
       body: JSON.stringify(body),
       signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
     });
@@ -205,6 +261,69 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     for (const chunk of splitText(text)) await sendOnce(userId, ct, chunk);
   }
 
+  /**
+   * 把工作目录里的成果文件发进微信聊天。
+   * 三步：getuploadurl 拿预签名地址 → AES-128-ECB 加密上传到 CDN → 用 CDN 凭证发一条媒体消息。
+   * 图片按图片发（聊天里能直接看），其他一律按文件发。
+   */
+  async function sendFile(userId, absPath, fileName) {
+    const ct = contextTokens.get(userId);
+    if (!ct) throw new Error("没有该用户的 context_token（需对方先发一条消息）");
+    const name = String(fileName || path.basename(absPath));
+    const buf = fs.readFileSync(absPath);
+    if (!buf.length) throw new Error("文件是空的");
+    if (buf.length > imMedia.MAX_INBOUND_BYTES) {
+      throw new Error(`文件 ${(buf.length / 1048576).toFixed(1)}MB，超过微信 ${imMedia.MAX_INBOUND_BYTES / 1048576}MB 上限`);
+    }
+    const isImage = IMAGE_EXT_RE.test(name);
+    const aesKey = crypto.randomBytes(16);
+    const aesKeyHex = aesKey.toString("hex");
+    // filekey 必须是纯 ASCII：拿中文文件名当 key，服务端回 {"ret":-1}
+    const filekey = crypto.randomBytes(16).toString("hex");
+    const cipherSize = imMedia.aesEcbPaddedSize(buf.length);
+    const up = await apiPost("ilink/bot/getuploadurl", {
+      filekey,
+      media_type: isImage ? MEDIA_IMAGE : MEDIA_FILE,
+      to_user_id: userId,
+      rawsize: buf.length,
+      rawfilemd5: crypto.createHash("md5").update(buf).digest("hex"),
+      filesize: cipherSize,
+      no_need_thumb: true,
+      aeskey: aesKeyHex,
+      base_info: baseInfo(),
+    }, 20000, { "iLink-App-Id": ILINK_APP_ID, "iLink-App-ClientVersion": ILINK_APP_CLIENT_VERSION });
+    if (!up.upload_param) throw new Error(`微信没给上传地址（ret=${up.ret} ${up.errmsg || ""}）`);
+
+    const downloadParam = await imMedia.uploadCdnCiphertext({
+      buf,
+      uploadParam: up.upload_param,
+      filekey,
+      cdnBaseUrl: cfg().cdn_base_url,
+      aesKey,
+    });
+    // 回传的 aes_key 用跟收消息一致的编码：base64(十六进制字符串的 ASCII 字节)
+    const aesKeyField = Buffer.from(aesKeyHex, "utf8").toString("base64");
+    const media = { encrypt_query_param: downloadParam, aes_key: aesKeyField, encrypt_type: 1 };
+    const item = isImage
+      ? { type: ITEM_IMAGE, image_item: { media, mid_size: cipherSize } }
+      : { type: ITEM_FILE, file_item: { media, file_name: name, len: String(buf.length) } };
+    const r = await apiPost("ilink/bot/sendmessage", {
+      msg: {
+        to_user_id: userId,
+        context_token: ct,
+        item_list: [item],
+        message_type: MESSAGE_TYPE_BOT,
+        message_state: MESSAGE_STATE_FINISH,
+        client_id: String(crypto.randomBytes(4).readUInt32BE(0)),
+      },
+      base_info: baseInfo(),
+    }, 60000);
+    if (r.ret !== undefined && r.ret !== 0) {
+      throw new Error(`发送失败 ret=${r.ret} errcode=${r.errcode || ""} ${r.errmsg || ""}`);
+    }
+    return name;
+  }
+
   function sleep(ms) {
     return new Promise((resolve) => {
       const t = setTimeout(resolve, ms);
@@ -220,9 +339,21 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     if (isDuplicate(key)) return;
     markSeen(key);
     if (msg.context_token) contextTokens.set(userId, msg.context_token);
-    const text = extractText(msg.item_list);
-    if (!text) return;
-    await onMessage({ userId, text });
+    const { text, media, notes } = describeItems(msg.item_list);
+    const saved = [];
+    const failed = notes.slice();
+    for (const m of media) {
+      if (!downloadMedia) { failed.push({ kind: m.kind, name: m.name, why: "这个版本没接附件下载" }); continue; }
+      try {
+        saved.push({ kind: m.kind, name: await downloadMedia(m) });
+      } catch (e) {
+        failed.push({ kind: m.kind, name: m.name, why: String(e.message || e).slice(0, 120) });
+        log.error(`[微信iLink] ${KIND_CN[m.kind] || "附件"}没收下来: ${e.message}`);
+      }
+    }
+    // 一条消息里三样都空才算「没内容」——附件没下成也要报给用户，不能静默吞掉
+    if (!text && !saved.length && !failed.length) return;
+    await onMessage({ userId, text, saved, failed });
   }
 
   async function pollLoop() {
@@ -331,7 +462,7 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     };
   }
 
-  return { start, stop, send, status, hasContext: (uid) => contextTokens.has(uid) };
+  return { start, stop, send, sendFile, status, hasContext: (uid) => contextTokens.has(uid) };
 }
 
 module.exports = {
@@ -339,7 +470,7 @@ module.exports = {
   fetchQrcode,
   pollQrStatus,
   splitText,
-  extractText,
+  describeItems,
   dedupKey,
   DEFAULT_BASE_URL,
 };

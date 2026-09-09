@@ -1325,6 +1325,17 @@ document.getElementById("ab-head").onclick = () => openAssistView();
 refreshImStatus();
 setInterval(refreshImStatus, 15000);
 
+// 开机悄悄看一眼有没有新版：同一个版本只提醒一次，提醒完就记在本地，不做红点也不弹窗。
+// 走的是服务端 6 小时缓存那份，不会每次开机都去打 GitHub。
+setTimeout(async () => {
+  try {
+    const d = await fetch("/api/update").then(r => r.json());
+    if (!d.has_update || localStorage.getItem("wb-update-seen") === d.latest) return;
+    localStorage.setItem("wb-update-seen", d.latest);
+    toast(`有新版 v${d.latest}（当前 v${d.current}）· 设置 → 关于 里看怎么升`);
+  } catch {}
+}, 8000);
+
 // ---------------- 文件预览 ----------------
 // 只剩 Word 97 时代那三个二进制老格式还得交给本机 Office——它们不是 zip+XML，拆不开。
 // docx/xlsx/pptx 现在在应用内直接看（见 previewKind 的 doc/sheet/slides）。
