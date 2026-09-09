@@ -4213,6 +4213,7 @@ async function main() {
   testConnectorsAndExperts();
   testOutputArrivalStatic();
   testDemoReadmeWire();
+  testDemoTiming();
   testReadmeFrontGate();
   testKeySourcesGate();
   testPackagingAndDemoGate();
@@ -5503,6 +5504,53 @@ function testDemoReadmeWire() {
     assert(!/demo\.gif/.test(real) || fs.existsSync(path.join(__dirname, "..", "docs", "images", "demo.gif")), name + " 引用了不存在的 docs/images/demo.gif");
   }
   console.log("✅ demo 挂 README 首屏：分隔线前固定块·再挂不重复·无锚不猜·CRLF·两份都挂/第二次跳过/仓库外不动·真录才挂·真 README 有锚且不引用不存在的图");
+}
+
+/**
+ * demo 录屏时长整形（scripts/demo-timing.js）：
+ *  - 没超目标时长 → 一帧不动；超了 → 只压 [sent, done) 那段，打字段和结果段原速
+ *  - 压完总长 ≈ 目标；干活那段至少留 5 秒；每帧不低于采样间隔
+ *  - --speed 明确给了就全片倍速，不再自动整形；没有 sent/done 标记（--dry）不压
+ *  - 静态闸门：record-demo.js 发送后 mark("sent")、跑完 mark("done")，writeList 收 targetSec，--target-sec 可配
+ */
+function testDemoTiming() {
+  const { fitDurations } = require("../scripts/demo-timing");
+  const iv = 167; // 6fps
+  // 打字 4s（8 帧）→ 干活 60s（4 帧，每帧 15s）→ 结果停 5s（1 帧）
+  const frames = []; let t = 0;
+  for (let i = 0; i < 8; i++) { frames.push({ at: t, until: t + 400 }); t += 500; }
+  const sent = t;
+  for (let i = 0; i < 4; i++) { frames.push({ at: t, until: t + 14900 }); t += 15000; }
+  const done = t;
+  frames.push({ at: t, until: t + 5000 - iv });
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  const base = fitDurations(frames, { interval: iv, speed: 1, targetSec: 0, sent, done });
+  assert(Math.abs(base.total - 69) < 0.01 && Math.abs(base.work - 60) < 0.01, "原始总长/干活段算错：" + base.total + "/" + base.work);
+  assert(base.factor === 1 && Math.abs(sum(base.durations) - 69) < 0.01, "targetSec=0 不该压");
+  const under = fitDurations(frames, { interval: iv, speed: 1, targetSec: 100, sent, done });
+  assert(under.factor === 1 && under.durations.every((d, i) => d === base.durations[i]), "没超目标却动了帧");
+  const fit = fitDurations(frames, { interval: iv, speed: 1, targetSec: 40, sent, done });
+  assert(Math.abs(sum(fit.durations) - 40) < 0.05, "压完总长应≈40s，实际 " + sum(fit.durations).toFixed(2));
+  assert(fit.durations.slice(0, 8).every((d, i) => d === base.durations[i]), "打字段被动了");
+  assert(fit.durations[12] === base.durations[12], "结果停留段被动了");
+  assert(fit.durations.slice(8, 12).every((d) => d < 15) && Math.abs(fit.factor - 60 / 31) < 0.01, "干活段没按 60/(40-9) 压：factor=" + fit.factor);
+  const tight = fitDurations(frames, { interval: iv, speed: 1, targetSec: 10, sent, done });
+  assert(Math.abs(sum(tight.durations.slice(8, 12)) - 5) < 0.05, "目标太紧时干活段至少留 5 秒，实际 " + sum(tight.durations.slice(8, 12)).toFixed(2));
+  const dense = []; for (let i = 0; i < 60; i++) dense.push({ at: sent + i * 200, until: sent + i * 200 + 100 });
+  const floor = fitDurations([...frames.slice(0, 8), ...dense, frames[12]], { interval: iv, speed: 1, targetSec: 5, sent, done: sent + 60 * 200 });
+  assert(floor.durations.slice(8, 68).every((d) => d >= iv / 1000 - 1e-9), "压后每帧不能低于采样间隔");
+  const sp = fitDurations(frames, { interval: iv, speed: 2, targetSec: 40, sent, done });
+  assert(sp.factor === 2 && sp.durations.every((d, i) => Math.abs(d - base.durations[i] / 2) < 1e-9), "--speed 给了应全片倍速");
+  const dry = fitDurations(frames, { interval: iv, speed: 1, targetSec: 10 });
+  assert(dry.factor === 1 && dry.work === 0 && Math.abs(sum(dry.durations) - 69) < 0.01, "没有 sent/done（--dry）不该压");
+
+  const rec = fs.readFileSync(path.join(__dirname, "..", "scripts", "record-demo.js"), "utf8");
+  assert(/require\("\.\/demo-timing"\)/.test(rec), "record-demo.js 没接 demo-timing");
+  assert(rec.indexOf('rec.mark("sent")') > rec.indexOf("executeJavaScript(`send()`)"), "发送后没打 sent 标记");
+  assert(rec.indexOf('rec.mark("done")') > rec.indexOf("助理完成") && rec.indexOf('rec.mark("done")') < rec.indexOf("点开产出 chip"), "跑完没打 done 标记（要在点 chip 之前）");
+  assert(/writeList\(ARGS\.speed, ARGS\.targetSec\)/.test(rec) && /"--target-sec"/.test(rec) && /targetSec: 40/.test(rec), "writeList 没收 targetSec / --target-sec 没接 / 默认不是 40");
+  assert(/fitDurations\(this\.frames, \{ interval: this\.interval, speed, targetSec, sent: this\.marks\.sent, done: this\.marks\.done \}\)/.test(rec), "writeList 没把 sent/done 标记交给 fitDurations");
+  console.log("✅ demo 时长整形：没超不动·超了只压干活段≈目标·至少留 5s·不低于采样间隔·--speed 全片倍速·--dry 不压·录屏脚本 sent/done 标记+--target-sec");
 }
 
 function testLookPrefsStatic() {
