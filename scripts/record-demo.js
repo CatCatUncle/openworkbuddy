@@ -218,7 +218,17 @@ app.whenReady().then(async () => {
       }
       if (Date.now() >= deadline) log(`超过 ${ARGS.maxSec} 秒仍在跑，按现状收尾（可加 --max-sec）`);
       else log(`助理完成 +${Date.now() - t0}ms`);
-      await sleep(3500); // 停在结果上让人看清
+      await sleep(1500); // 先停在结论和产出 chip 上
+      // 产出不再自动弹预览（抢版面），演示里替观众点一下第一个能在 app 里预览的 chip，把成果亮出来。
+      // 只挑网页/图/md/pdf/csv：老 Office 格式点了会拉起系统程序，录屏里不能出现别的窗口
+      const clicked = await win.webContents.executeJavaScript(`(() => {
+        const c = [...document.querySelectorAll(".out-block .out-card")].find((x) => /\\.(html?|png|jpe?g|gif|webp|svg|md|pdf|csv)$/i.test(x.dataset.name || ""));
+        if (!c) return "";
+        c.click();
+        return c.dataset.name;
+      })()`);
+      if (clicked) log(`点开产出 chip 预览：${clicked}`);
+      await sleep(clicked ? 3500 : 2500); // 停在结果上让人看清
     }
     await rec.stop();
     log(`采样 ${rec.shots} 次，落盘 ${rec.frames.length} 帧（相邻相同的已合并）`);
