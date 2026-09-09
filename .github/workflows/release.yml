@@ -1,6 +1,6 @@
 # 打 tag 就出安装包。用法：git tag v0.1.1 && git push origin v0.1.1
 #
-# 为什么 Windows 包必须在 CI 上打：作者只有 Mac，本机没装 wine，electron-builder 造不出 NSIS 安装器。
+# 为什么 Windows 包必须在 CI 上打：开发机是 Mac，没装 wine，electron-builder 造不出 NSIS 安装器。
 # 所以 Windows 那份是这条流水线第一次真正跑出来的产物——它没在开发机上被人工验证过，
 # 谁先装谁就是第一个测试者，有问题请开 issue。
 name: release
