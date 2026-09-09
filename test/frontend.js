@@ -770,7 +770,10 @@ const pickLine = (re, why) => { const m = APP02X.match(re); if (!m) throw new Er
 const TRAIL_SRC = [
   pickLine(/^const TOOL_SHORT = \{.*$/m, "app-01.js 里没有 TOOL_SHORT（轨迹条的短标签表）"),
   pickLine(/^const shortTool = .*$/m, "app-01.js 里没有 shortTool"),
+  pickLine(/^const toolIcon = .*$/m, "app-01.js 里没有 toolIcon（过程区每一步的图标）"),
   "let replayFeedback = null;",
+  // 流式正文的分段渲染是真源码（不是桩）：回合里那些 endText() 收尾点必须真的把两截合回去
+  APP02X.slice(APP02X.indexOf("const BAL_TAG"), APP02X.indexOf("\n// 【任务类型：X】")),
   APP02X.slice(TR0, TR1),
 ].join("\n");
 const UI_CSS = fs.readFileSync(path.join(__dirname, "..", "public", "css", "ui.css"), "utf8");
@@ -796,6 +799,141 @@ const TRAIL_STUBS = [
   "window.fetch = async () => ({ ok: true, json: async () => ({}) });",
 ].join("\n");
 
+// ================= 本机引擎在跑时的模型选择器 =================
+// 用户原话：「切换到本地 claudecode 的时候这个 UI 有点丑」。真毛病是那段说明塞在 .mi 里，
+// 而 .mi 是 nowrap 的 —— 菜单被撑成一整行宽，右对齐于是往左飞出屏幕，字被裁掉一半。
+// 所以这里验的是「宽度收得住、说明会换行、不出可视区」，不是验措辞。
+const ENGPICK_SRC = APP02.slice(0, APP02.indexOf("// ================= Goal 目标卡"))
+  + "\n" + APP02X.slice(APP02X.indexOf("function activeEngine()"), APP02X.indexOf("async function setSessionModel("));
+const ENGPICK_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
+  + "<body style='margin:0;width:520px'><svg style='display:none'><symbol id='i-sparkles'></symbol><symbol id='i-monitor'></symbol></svg>"
+  + "<div class='picker' style='position:absolute;right:16px;bottom:120px'>"
+  + "<button class='picker-btn' id='model-btn'><svg class='i'><use href='#i-sparkles'></use></svg> <span id='model-label'>模型</span></button>"
+  + "<div class='picker-menu' id='model-menu'></div></div></body>";
+const ENGPICK_STUBS = [
+  "var modelMenu = document.getElementById('model-menu');",
+  "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
+  "var MODALS = []; var openModal = (a, b) => MODALS.push(a + ':' + b);",
+  "var inAssistMode = false;",
+  "var currentSessModel = () => null;",
+  "var healthBadge = () => '';",
+  "var setSessionModel = async () => {};",
+  "var settingsCache = { active_model: 'deepseek', models: [{ name: 'deepseek', model: 'deepseek-chat', api_key: 'x' }], agent: { engine: 'claude-code', engine_label: '本机 Claude Code', engine_options: { 'claude-code': { model: 'claude-opus-5' } } } };",
+].join("\n");
+const ENGPICK_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const menu = document.getElementById("model-menu");
+  const vw = document.documentElement.clientWidth;
+
+  renderModelMenu();
+  menu.classList.add("show");
+  const box = menu.getBoundingClientRect();
+  ok("本机引擎在跑：菜单换成说明卡，不再假装一排可选项", menu.classList.contains("eng") && !!menu.querySelector(".ep-head"));
+  ok("菜单没被那段说明撑爆（≤340px）", box.width <= 340, Math.round(box.width) + "px");
+  ok("整块都在屏幕里，左边没被裁掉", box.left >= 0 && box.right <= vw + 1, JSON.stringify({ l: Math.round(box.left), r: Math.round(box.right), vw }));
+  const why = menu.querySelector(".ep-why");
+  ok("说明文字是会换行的（真样式）", getComputedStyle(why).whiteSpace === "normal", getComputedStyle(why).whiteSpace);
+  ok("说明确实排成了好几行，而不是一条横的", why.getBoundingClientRect().height > 30, Math.round(why.getBoundingClientRect().height) + "px");
+  ok("引擎名和它的模型都写清楚了", /本机 Claude Code/.test(menu.querySelector(".ep-name").textContent) && /claude-opus-5/.test(menu.querySelector(".ep-model").textContent));
+  ok("「不花 API 额度」是这里最该看见的一句", /不花 API 额度/.test(menu.querySelector(".ep-free").textContent));
+  const acts = [...menu.querySelectorAll(".mi")];
+  ok("能点的只有「去改它」那一行（说明不再长得像按钮）", acts.length === 1 && /换回内置引擎/.test(acts[0].textContent), acts.map((a) => a.textContent.trim().slice(0, 12)).join("|"));
+  acts[0].click();
+  ok("点它直接去设置里的引擎那页", MODALS.join() === "settings:agent" && !menu.classList.contains("show"));
+
+  // 负向控制：老写法（说明塞进 .mi，nowrap）确实会把菜单撑爆——证明上面那条不是白测
+  const probe = document.createElement("div");
+  probe.className = "picker-menu show";
+  probe.innerHTML = '<div class="mi">任务交给本机这个 CLI 跑，用的是它的登录态和它的模型，不花 API 额度。下面这些 API 模型这会儿一个都用不上，所以先不列了。</div>';
+  document.body.appendChild(probe);
+  const pw = probe.querySelector(".mi").scrollWidth;
+  probe.remove();
+  ok("负向控制：那段说明单行摆开确实有 500px 以上，宽度上限是真在挡", pw > 500, pw + "px");
+
+  // 换回内置引擎：菜单要变回一排真能选的模型，说明卡的壳必须脱掉
+  settingsCache.agent.engine = "builtin";
+  renderModelMenu();
+  ok("换回内置引擎：说明卡的壳脱掉了", !menu.classList.contains("eng") && !menu.querySelector(".ep-head"));
+  ok("模型又变回一排能点的了", menu.querySelectorAll(".mi").length >= 3, String(menu.querySelectorAll(".mi").length));
+
+  // 选择器按钮：本机引擎在跑时得一眼看出来「这次不花钱」，光看模型名跟 API 模型长得一样
+  const btn = document.getElementById("model-btn");
+  updateModelLabel();
+  ok("内置引擎：按钮还是那颗星", btn.querySelector("use").getAttribute("href") === "#i-sparkles");
+  settingsCache.agent.engine = "claude-code";
+  updateModelLabel();
+  ok("本机引擎：按钮换成显示器图标，一眼看出走的是本机", btn.querySelector("use").getAttribute("href") === "#i-monitor");
+  ok("悬停说清谁在跑、花不花钱", /本机 Claude Code/.test(btn.title) && /不花 API 额度/.test(btn.title), btn.title);
+  ok("标签写的是它真正在用的模型", document.getElementById("model-label").textContent === "claude-opus-5", document.getElementById("model-label").textContent);
+  return names;
+})()
+`;
+
+// ================= Goal 目标卡 =================
+// 用户原话：「goal 模式你也给我做好啊」。这里验的是这张卡有没有把三件事说清楚：
+// 还差几项（进度条）、拆解/验收自己歪了要留痕（不能静默）、停了要说为什么停并且能接着冲。
+const GOAL_SRC = APP02.slice(APP02.indexOf("// ================= Goal 目标卡"), APP02.indexOf("// ================= 工作空间选择"));
+const GOAL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
+  + "<body style='margin:0;width:760px'><div id='goal-card' style='display:none'></div></body>";
+const GOAL_STUBS = [
+  "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
+  "var sessionId = 's1';",
+  "var sessionGoals = new Map();",
+  "var SENT = []; var doSend = (t, m) => SENT.push([t, m]);",
+  "var fetch = async () => ({ json: async () => ({}) });",
+].join("\n");
+const GOAL_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const card = document.getElementById("goal-card");
+  const G = (over) => Object.assign({ text: "做一个贪吃蛇网页", status: "active", round: 1,
+    criteria: [{ text: "有画布", done: true }, { text: "方向键能控制", done: false }, { text: "撞墙会结束", done: false }, { text: "有计分", done: false }] }, over || {});
+
+  sessionGoals.set("s1", G());
+  renderGoalCard();
+  ok("目标卡出来了", card.style.display !== "none" && /贪吃蛇/.test(card.textContent));
+  ok("先说还差几项，再说第几轮", /1\\/4 项/.test(card.querySelector(".gc-meta").textContent) && /第 1 轮/.test(card.querySelector(".gc-meta").textContent), card.querySelector(".gc-meta").textContent);
+  const bar = card.querySelector(".gc-bar i");
+  const w = bar.getBoundingClientRect().width / card.querySelector(".gc-bar").getBoundingClientRect().width;
+  ok("进度条按打勾的比例走（4 条里 1 条 ≈ 25%）", Math.abs(w - 0.25) < 0.03, Math.round(w * 100) + "%");
+  ok("没达成的一条条都列着", card.querySelectorAll(".gc-item").length === 4 && card.querySelectorAll(".gc-item.ok").length === 1);
+  ok("负向控制：一切正常时不摆警告条也不摆暂停条", !card.querySelector(".gc-note") && !card.querySelector(".gc-paused"));
+
+  // 拆解/验收这一步自己歪了：必须写在卡上，不许静默（不然用户对着不动的进度条以为是活没干好）
+  sessionGoals.set("s1", G({ note: "验收没跑通：模型超时，这一轮的打勾保持原状" }));
+  renderGoalCard();
+  ok("验收这一步挂了会写在卡上", /验收没跑通/.test(card.querySelector(".gc-note").textContent));
+  ok("警告条是黄的，跟正文分得开", getComputedStyle(card.querySelector(".gc-note")).backgroundColor !== "rgba(0, 0, 0, 0)");
+
+  // 自动补跑用完：以前到这儿就悄悄不跑了，卡停在 1/4 看不出是「还在跑」还是「不跑了」
+  sessionGoals.set("s1", G({ round: 3, paused: "自动补跑已用满 3 轮，还差 3 项没达成" }));
+  renderGoalCard();
+  const pz = card.querySelector(".gc-paused");
+  ok("停了要说清为什么停、还差几项", !!pz && /用满 3 轮/.test(pz.textContent) && /还差 3 项/.test(pz.textContent));
+  ok("旁边有一颗能接着跑的按钮", !!card.querySelector(".gc-go"));
+  card.querySelector(".gc-go").click();
+  ok("点它是接着冲，而且只补没打勾的那几项", SENT.length === 1 && SENT[0][1] === "goal" && /方向键能控制/.test(SENT[0][0]) && !/有画布/.test(SENT[0][0]), JSON.stringify(SENT[0] || null));
+  ok("点完立刻不再显示「已暂停」（别让用户以为没点上）", !card.querySelector(".gc-paused"));
+
+  // 达成：进度条满格 + 变绿，且不再劝人接着冲
+  sessionGoals.set("s1", G({ status: "done", round: 2, criteria: [{ text: "有画布", done: true }, { text: "方向键能控制", done: true }], paused: "自动补跑已用满 3 轮" }));
+  renderGoalCard();
+  ok("达成了就说达成", /已达成/.test(card.querySelector(".gc-meta").textContent) && card.classList.contains("ok"));
+  const w2 = card.querySelector(".gc-bar i").getBoundingClientRect().width / card.querySelector(".gc-bar").getBoundingClientRect().width;
+  ok("进度条满格", w2 > 0.98, Math.round(w2 * 100) + "%");
+  ok("达成之后不再劝人接着冲（哪怕服务端还留着上一轮的暂停原因）", !card.querySelector(".gc-paused"));
+
+  // 归档：卡收起来
+  sessionGoals.set("s1", G({ status: "closed" }));
+  renderGoalCard();
+  ok("归档的目标不再占地方", card.style.display === "none" && card.innerHTML === "");
+  return names;
+})()
+`;
+
 // ================= 助理设置页：分区 + 双栏卡片 + 连接/取消连接 =================
 // 用户原话「太乱了，没办法自己调」。这里验的是行为不是措辞：连上的卡真收起（display:none）、
 // 状态灯颜色真变、「连接」先保存再测活、「取消连接」两步确认且只清自己那组凭证、
@@ -815,6 +953,130 @@ const IMPANE_SRC = [
   APP03_KS,
   APP05.slice(IM0, IM1),
 ].join("\n");
+// ---- 流式正文的分段渲染（已定稿那截不许被重建） ----
+const STREAM_SRC = APP02X.slice(APP02X.indexOf("function repairBareCode"), APP02X.indexOf("\n// 【任务类型：X】"));
+const STREAM_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
+  + "<body style='margin:0;width:760px'><div class='a-text' id='t'></div><div class='a-text' id='ref'></div></body>";
+const STREAM_STUBS = [
+  "var SvgFig = { extractSvgFigures: (s) => ({ text: s, figs: [] }) };",
+  "function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }",
+  "function mdImg(alt, url) { return '<img alt=\"' + String(alt || '').replace(/\"/g, '') + '\">'; }",
+].join("\n");
+const STREAM_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const BT = String.fromCharCode(96, 96, 96);
+  const el = document.getElementById("t"), ref = document.getElementById("ref");
+  const same = (raw) => { ref.innerHTML = renderMd(raw); return el._split.done.innerHTML + el._split.live.innerHTML === ref.innerHTML; };
+
+  const makeText = (n) => {
+    const out = []; let i = 0, len = 0;
+    while (len < n) {
+      i++;
+      const b = ["## 第 " + i + " 步",
+        "这一步要检查配置里的字段，并把结果写回去。**注意**：不要覆盖已有值。",
+        "- 列表项 A" + i, "- 列表项 B" + i, "- 列表项 C" + i,
+        BT + "js", "const x" + i + " = 1;", "console.log(x" + i + ");", BT,
+        "| 列1 | 列2 |", "| --- | --- |", "| a" + i + " | b" + i + " |", ""].join("\\n");
+      out.push(b); len += b.length + 1;
+    }
+    return out.join("\\n").slice(0, n);
+  };
+
+  const text = makeText(30000);
+  el._raw = ""; el._split = null;
+  let firstStable = null, stableWrites = 0, mismatch = 0, frames = 0;
+  const t0 = performance.now();
+  for (let p = 120; ; p += 120) {
+    const cut = Math.min(text.length, p);
+    el._raw = text.slice(0, cut);
+    const before = el._split ? el._split.html : "";
+    paintStream(el);
+    void el.offsetHeight;
+    if (el._split.html !== before) stableWrites++;
+    if (!firstStable && el._split.done.firstElementChild) firstStable = el._split.done.firstElementChild;
+    frames++;
+    if (frames % 10 === 0 && !same(el._raw)) mismatch++;
+    if (cut >= text.length) break;
+  }
+  const splitMs = performance.now() - t0;
+
+  ok("边流边渲的结果跟一次性渲染一模一样（每 10 帧比一次，最后一帧必比）", mismatch === 0 && same(el._raw), "有 " + mismatch + " 帧对不上");
+  ok("已定稿那一截的 DOM 全程没被重建过（同一个节点还挂在树上）", firstStable && firstStable.isConnected && el._split.done.contains(firstStable));
+  ok("固化按尾巴长度来，不是每帧都写（" + stableWrites + " 次 / " + frames + " 帧）", stableWrites > 3 && stableWrites < frames / 5, stableWrites + "/" + frames);
+
+  // 对照：老写法每帧重建整棵 DOM
+  const naive = document.getElementById("ref");
+  naive.innerHTML = "";
+  const t1 = performance.now();
+  for (let p = 120; ; p += 120) {
+    const cut = Math.min(text.length, p);
+    naive.innerHTML = renderMd(text.slice(0, cut));
+    void naive.offsetHeight;
+    if (cut >= text.length) break;
+  }
+  const naiveMs = performance.now() - t1;
+  const ratio = naiveMs / splitMs;
+  ok("比每帧重建整棵 DOM 快 " + ratio.toFixed(1) + " 倍（" + Math.round(naiveMs) + "ms → " + Math.round(splitMs) + "ms）", ratio > 1.5, naiveMs + " vs " + splitMs);
+
+  // 尾巴没变就别碰 DOM
+  const liveNode = el._split.live.firstElementChild;
+  paintStream(el);
+  ok("这一帧没新字就一个节点都不动", el._split.live.firstElementChild === liveNode);
+
+  // 后来的字把前面的排版改了 → 认赔整块重来，绝不留下半份旧排版
+  el._split.html = el._split.html + "<p>这段整份重渲里根本不存在</p>";
+  paintStream(el);
+  ok("发现前面已经不是前缀了就整块重来（旧排版一个字都不许留下）",
+    el.textContent.indexOf("这段整份重渲里根本不存在") < 0 && same(el._raw));
+
+  // 两个壳子不许生成盒子，排版必须跟一次渲染完全一样
+  ok("已定稿/正在写这两个壳子是 display:contents，不额外占一层盒子",
+    getComputedStyle(el._split.done).display === "contents" && getComputedStyle(el._split.live).display === "contents",
+    getComputedStyle(el._split.done).display);
+
+  // 停笔就合回一整块：下游按「.a-text 底下直接是内容」读
+  ref.innerHTML = renderMd(el._raw);
+  ok("停笔后合回一整块（壳子没了，结构跟一次渲染一致）",
+    sealStream(el) === true && el._split === null && !el.querySelector(".md-done") && !el.querySelector(".md-live") && el.innerHTML === ref.innerHTML);
+  ok("已经合过的再合一次是空操作", sealStream(el) === false);
+
+  // 后来的字会把前面的排版整个改掉：裸语言名 + 空行 + 代码行 会被回收成一整个代码块，
+  // 所以「已经写过的那段」不能只按它自己渲染的样子固化下来，必须对得上整份重渲的前缀
+  el._raw = ""; el._split = null;
+  const filler = "这是一段普通的说明文字用来把长度垫到固化阈值以上。".repeat(90);
+  const repairing = filler + "\\n\\njs\\n\\n" + "const a = 1;\\n".repeat(60);
+  let bad = 0;
+  for (let p = 200; ; p += 200) {
+    const cut = Math.min(repairing.length, p);
+    el._raw = repairing.slice(0, cut);
+    paintStream(el);
+    if (!same(el._raw)) bad++;
+    if (cut >= repairing.length) break;
+  }
+  ok("后来的代码行把前面那行裸语言名回收成代码块时，已固化的排版跟着改（每帧都比）", bad === 0, "有 " + bad + " 帧对不上");
+  ok("裸语言名那段最后真的成了一个代码块", el.querySelectorAll("pre").length === 1 && /const a = 1;/.test(el.querySelector("pre").textContent));
+
+  // 没闭合的块级标签不许被当成「可以固化」
+  ok("没闭合的引用块认得出来", balancedHtml("<p>a</p><ul><li>b</li></ul>") === true && balancedHtml("<blockquote><p>a</p>") === false);
+
+  // 围栏没闭合的时候不许把围栏前后切开
+  el._raw = ""; el._split = null;
+  const fenced = "开头一段话。\\n\\n" + "填充行\\n".repeat(400) + "\\n" + BT + "js\\n" + "let y = 1;\\n".repeat(300);
+  for (let p = 300; ; p += 300) {
+    const cut = Math.min(fenced.length, p);
+    el._raw = fenced.slice(0, cut);
+    paintStream(el);
+    if (cut >= fenced.length) break;
+  }
+  ok("围栏还没闭合时，边写边渲的结果照样跟一次渲染一致", same(el._raw));
+  ok("没闭合的围栏整段都在代码块里（没被切成两半）", el.querySelectorAll("pre").length === 1 && el.querySelector("pre").textContent.split("let y").length === 301, el.querySelectorAll("pre").length + " 个 pre");
+
+  return names;
+})()
+`;
+
 const IMPANE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div class='settings-pane' id='pane' style='width:720px'></div></body>";
 const IMPANE_STUBS = `
 var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -1018,6 +1280,24 @@ const IMPANE_CHECKS = `
   ok("App ID 自动填回输入框", fsC.querySelector("#im-feishu-app_id").value === "cli_newone", fsC.querySelector("#im-feishu-app_id").value);
   ok("Secret 一个字节都不回前端（留空，后端已存）", fsC.querySelector("#im-feishu-app_secret").value === "");
   ok("建成的话写在卡上，不是只弹个 alert", /建好了/.test(fsC.querySelector('[data-newapp-r="feishu"]').textContent));
+  // 应用建出来了，但 secret 被 lark-cli 锁在系统钥匙串里读不出来（macOS 默认就是这样）。
+  // 这不是失败，是「还差最后一步」—— 不能标红吓唬人，也不能装作成功，得把 App ID 填上并指路。
+  NEWAPP.status = { state: "need_secret", app_id: "cli_locked01",
+    error: "lark-cli 把 App Secret 锁在系统钥匙串里，命令行读不出来。去开放平台复制 App Secret，粘到下面的框里。",
+    console_url: "https://open.feishu.cn/app/cli_locked01/baseinfo" };
+  na.click();
+  await settle();
+  for (let i = 0; i < 60 && disp(naBox) !== "none"; i++) await wait(100);
+  const lockR = fsC.querySelector('[data-newapp-r="feishu"]');
+  ok("secret 读不出来时，App ID 照样替你填上", fsC.querySelector("#im-feishu-app_id").value === "cli_locked01", fsC.querySelector("#im-feishu-app_id").value);
+  ok("说清是「建好了、还差 secret」，不是失败", /建好了/.test(lockR.textContent) && /钥匙串/.test(lockR.textContent) && !lockR.textContent.startsWith("❌"), lockR.textContent);
+  ok("不标红：这是进度不是错误", lockR.style.color === "");
+  const lockA = lockR.querySelector("a");
+  ok("给一条直达凭证页的链接，省得用户自己在开放平台里翻",
+    lockA && lockA.href === "https://open.feishu.cn/app/cli_locked01/baseinfo" && lockA.target === "_blank", lockA && lockA.outerHTML);
+  ok("这条路上也不往前端塞 secret", fsC.querySelector("#im-feishu-app_secret").value === "");
+  ok("停止轮询、按钮解禁", !na.disabled);
+
   // 负向控制：建失败得说人话，不能一直转圈
   NEWAPP.create = { error: "lark-cli 没装：先跑 npx @larksuite/cli@latest install" };
   na.click();
@@ -1483,6 +1763,14 @@ const TRAIL_CHECKS = `
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
   const disp = (el) => getComputedStyle(el).display;
   const chips = (t) => [...t.querySelectorAll(".proc-head .trail .tc")];
+  // 测试页是 data: URL（不透明源），localStorage 一碰就抛。塞个内存版，
+  // 这样「展开/收起记不记得住」这件事能真测，而不是靠 try/catch 糊过去
+  const LS = {};
+  try { localStorage.getItem("wb_proc_open"); } catch {
+    Object.defineProperty(window, "localStorage", { configurable: true, value: {
+      getItem: (k) => (k in LS ? LS[k] : null), setItem: (k, v) => { LS[k] = String(v); }, removeItem: (k) => { delete LS[k]; },
+    } });
+  }
 
   // ---- 1. 一轮完整的执行：读×2（合并）、命令（出错）、写、飞书（MCP） ----
   const ui = createTurnUI("做个页面", "craft", "s_t");
@@ -1507,6 +1795,68 @@ const TRAIL_CHECKS = `
   ui.handleEvent({ type: "tool_use", id: "e", name: "mcp_feishu_send", purpose: "发" });
   ui.handleEvent({ type: "tool_result", id: "e", name: "mcp_feishu_send", preview: "ok" });
   ui.handleEvent({ type: "text", delta: "做完了" });
+  // 用户原话：「不要大段大段具体的执行过程挡住了」——跑的时候过程区默认收起，
+  // 但「跑到哪了」那一行必须一直看得见，而且要钉在视口顶上，不能被日志顶走
+  const runWrap = t.querySelector(".proc-wrap");
+  ok("跑的时候执行过程默认是收起的", !runWrap.classList.contains("open") && disp(runWrap.querySelector(".proc-body")) === "none");
+  ok("但那一行进度始终露在外面", disp(runWrap.querySelector(".proc-head")) !== "none" && /运行中|第 \\d+ 步/.test(runWrap.querySelector(".pt").textContent + " 运行中"));
+  ok("运行中的进度条是 sticky（真样式，不是写在注释里）", getComputedStyle(runWrap.querySelector(".proc-head")).position === "sticky", getComputedStyle(runWrap.querySelector(".proc-head")).position);
+  ok("轨迹徽章收起时照样看得见，扫一眼知道走了哪几步", chips(t).every((c) => disp(c) !== "none"));
+  // 点一下能展开，而且这个选择记下来：下次开的任务直接按你上次的来
+  runWrap.querySelector(".proc-head").click();
+  ok("点标题能展开看细节", runWrap.classList.contains("open") && disp(runWrap.querySelector(".proc-body")) !== "none");
+  ok("展开这个选择被记住了", localStorage.getItem("wb_proc_open") === "1", String(localStorage.getItem("wb_proc_open")));
+  runWrap.querySelector(".proc-head").click();
+  ok("再点收起，记的也跟着改", !runWrap.classList.contains("open") && localStorage.getItem("wb_proc_open") === "0");
+
+  // ---- 执行过程一行流：「📄 读 报告.md · 120 行」，参数收在卡里 ----
+  // 用户原话：「让我一直看到任务完成情况，不要看太多没有用的东西」。
+  // 参数是排障才要看的，「在干什么 + 拿回来多少」才是每一步都该露在外面的那半句。
+  const u9 = createTurnUI("看一眼", "craft", "s_t");
+  u9.handleEvent({ type: "tool_use", id: "x", name: "read_file", title: "读 报告.md", input_preview: '{"path":"报告.md"}' });
+  const c9 = u9.turn.querySelector(".step-card");
+  ok("那一行写的是在干什么，不是工具名", /读 报告\\.md/.test(c9.querySelector(".desc").textContent) && !/read_file/.test(c9.querySelector(".desc").textContent), c9.querySelector(".desc").textContent);
+  ok("标签只剩一个图标，不再把 read_file 印上去", c9.querySelector(".tag").textContent.trim() === "📄", c9.querySelector(".tag").textContent);
+  ok("原始入参一个字没丢，只是收着", /报告\.md/.test(c9.querySelector("pre").textContent) && disp(c9.querySelector("pre")) === "none");
+  u9.handleEvent({ type: "tool_result", id: "x", name: "read_file", outcome: "120 行", preview: "..." });
+  ok("结果的量就写在同一行上", c9.querySelector(".out").textContent === "· 120 行", c9.querySelector(".out").textContent);
+  u9.handleEvent({ type: "tool_use", id: "y", name: "run_shell", title: "命令 npm test" });
+  u9.handleEvent({ type: "tool_result", id: "y", name: "run_shell", isError: true, outcome: "退出码 1：2 个用例没过" });
+  const c9b = [...u9.turn.querySelectorAll(".step-card")][1];
+  ok("失败的原因也端到那一行上（不用一张张点开）", /2 个用例没过/.test(c9b.querySelector(".out").textContent), c9b.querySelector(".out").textContent);
+  ok("失败那半句是红的（真样式）", getComputedStyle(c9b.querySelector(".out")).color !== getComputedStyle(c9.querySelector(".out")).color, getComputedStyle(c9b.querySelector(".out")).color);
+  // 负向控制：回放老会话（事件里根本没有 title/outcome）不许把那一行留成空白
+  u9.handleEvent({ type: "tool_use", id: "z", name: "mcp_feishu_send", purpose: "发通知" });
+  const c9c = [...u9.turn.querySelectorAll(".step-card")][2];
+  ok("老会话没带 title 也不开天窗", /mcp_feishu_send/.test(c9c.querySelector(".desc").textContent) && /发通知/.test(c9c.querySelector(".desc").textContent), c9c.querySelector(".desc").textContent);
+
+  // ---- 里程碑常驻行：过程区收着也一直看得见跑到哪了 ----
+  const live = u9.turn.querySelector(".proc-head .ms-live");
+  ok("还没有里程碑时这一行不占地方", !!live && live.hidden);
+  u9.handleEvent({ type: "milestones", file: "PROGRESS.md", items: [{ text: "收集资料", done: true }, { text: "写第二章", done: false }, { text: "导出成品", done: false }] });
+  ok("有里程碑就露出来", !live.hidden && disp(live) !== "none");
+  ok("写清做完几件、现在在做哪件", /1\\/3/.test(live.textContent) && /写第二章/.test(live.textContent), live.textContent);
+  ok("它在折叠条里，跟着一起钉在视口顶上", live.closest(".proc-head") === u9.turn.querySelector(".proc-head"));
+  ok("过程区收着的时候它照样看得见", !u9.turn.querySelector(".proc-wrap").classList.contains("open") && disp(live) !== "none");
+  u9.handleEvent({ type: "milestones", file: "PROGRESS.md", items: [{ text: "收集资料", done: true }, { text: "写第二章", done: true }, { text: "导出成品", done: true }] });
+  ok("全做完了就说全部完成", /3\\/3/.test(live.textContent) && /全部完成/.test(live.textContent), live.textContent);
+  u9.finish();
+
+  // ---- 本机引擎那条「已启动」：是事实不是进度，得钉住，别转圈也别被正文抹掉 ----
+  const u10 = createTurnUI("跑一趟", "craft", "s_t");
+  u10.handleEvent({ type: "status", text: "本机 Claude Code 已启动（模型 claude-opus-5，102 个工具），不消耗 API 额度", model: "claude-opus-5" });
+  const reChip = u10.turn.querySelector(".run-eng");
+  ok("引擎启动挂成一枚常驻小牌子", !!reChip && !u10.turn.querySelector(".thinking-hint"));
+  ok("牌子上写清谁在跑、用什么模型、花不花钱", /本机 Claude Code/.test(reChip.textContent) && /claude-opus-5/.test(reChip.textContent) && /不花 API 额度/.test(reChip.textContent), reChip.textContent);
+  ok("它不转圈（早就跑起来了，转圈是骗人）", !reChip.querySelector(".spinner"));
+  u10.handleEvent({ type: "text", delta: "开始干活" });
+  ok("正文来了它还在（回头还能查这趟走的哪条路）", !!u10.turn.querySelector(".run-eng"));
+  u10.handleEvent({ type: "status", text: "模型 40 秒没吐字，重试中…" });
+  ok("负向控制：普通状态还是那条会转的提示，不占牌子", !!u10.turn.querySelector(".thinking-hint .spinner") && u10.turn.querySelectorAll(".run-eng").length === 1);
+  u10.handleEvent({ type: "status", text: "本机 Claude Code 已启动（模型 claude-opus-5，102 个工具），不消耗 API 额度", model: "claude-opus-5" });
+  ok("重连再报一次也只有一枚牌子", u10.turn.querySelectorAll(".run-eng").length === 1);
+  u10.finish();
+
   ok("五步四枚徽章（同名合并）", chips(t).length === 4, String(chips(t).length));
   ok("出错那步标红", chips(t)[1].classList.contains("err") && chips(t)[1].dataset.name === "run_shell");
   ok("没出错的不标红", !chips(t)[0].classList.contains("err") && !chips(t)[2].classList.contains("err"));
@@ -1518,6 +1868,7 @@ const TRAIL_CHECKS = `
   const wrap = t.querySelector(".proc-wrap");
   ok("收尾写清耗时和步数", wrap.querySelector(".pt").textContent === "已完成 5s · 5 步", wrap.querySelector(".pt").textContent);
   ok("回合结束过程区收起", !wrap.classList.contains("open") && disp(wrap.querySelector(".proc-body")) === "none");
+  ok("跑完了进度条不再钉在顶上占地方", !wrap.classList.contains("running") && getComputedStyle(wrap.querySelector(".proc-head")).position !== "sticky");
   ok("收起了轨迹条照样看得见（真样式）", disp(wrap.querySelector(".trail")) !== "none" && chips(t).every((c) => disp(c) !== "none"));
   ok("出错角标挂上", /1 步出错/.test(wrap.querySelector(".proc-warn").textContent));
   const body = t.querySelector(".body");
@@ -2511,6 +2862,34 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：运行中的输入框（提示讲清插话/停下/并行·停止是真按钮·一颗键按有没有字切停下/插一句·提示语跟忙闲·发完自动回停下）${names13.length} 项通过`);
     } finally {
       if (!win13.isDestroyed()) win13.destroy();
+    }
+    const winGC = mkWin({ show: false, width: 760, height: 600, webPreferences: { offscreen: true } });
+    try {
+      await winGC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(GOAL_HTML));
+      const namesGC = await winGC.webContents.executeJavaScript(GOAL_STUBS + "\n" + GOAL_SRC + "\n" + GOAL_CHECKS, true)
+        .catch((e) => { throw new Error("[Goal 目标卡] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesGC) console.log("  ✓ " + n);
+      console.log(`✅ 前端：Goal 目标卡（进度条·拆解验收失败留痕·停了说为什么并能接着冲）${namesGC.length} 项通过`);
+    } finally { if (!winGC.isDestroyed()) winGC.destroy(); }
+
+    const winSTM = mkWin({ show: false, width: 760, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winSTM.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(STREAM_HTML));
+      const namesSTM = await winSTM.webContents.executeJavaScript(STREAM_STUBS + "\n" + STREAM_SRC + "\n" + STREAM_CHECKS, true)
+        .catch((e) => { throw new Error("[流式分段渲染] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesSTM) console.log("  ✓ " + n);
+      console.log(`✅ 前端：流式正文分段渲染（已定稿那截不重建·结果跟一次渲染一致·停笔合回整块）${namesSTM.length} 项通过`);
+    } finally { if (!winSTM.isDestroyed()) winSTM.destroy(); }
+
+    const winEP = mkWin({ show: false, width: 520, height: 600, webPreferences: { offscreen: true } });
+    try {
+      await winEP.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ENGPICK_HTML));
+      const namesEP = await winEP.webContents.executeJavaScript(ENGPICK_STUBS + "\n" + ENGPICK_SRC + "\n" + ENGPICK_CHECKS, true)
+        .catch((e) => { throw new Error("[本机引擎选择器] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesEP) console.log("  ✓ " + n);
+      console.log(`✅ 前端：本机引擎在跑时的模型选择器（宽度收得住·说明换行·不出屏·只有一处可点·按钮换图标）${namesEP.length} 项通过`);
+    } finally {
+      if (!winEP.isDestroyed()) winEP.destroy();
     }
     const win6 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {

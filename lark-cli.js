@@ -47,4 +47,29 @@ function explainLarkError(raw) {
   return s.slice(0, 300);
 }
 
-module.exports = { parseConfigShow, verifyUrlOf, explainLarkError };
+/**
+ * lark-cli 的 app_secret 是「只进不出」的：`config init --app-secret-stdin` 能写进去，
+ * 但 macOS 上它默认锁进系统钥匙串，`config show` 只回一串 `****`（config.json 里存的是
+ * `{source:"keychain", id:...}` 这样一个引用，不是密钥本身）。
+ * 把这串掩码当凭证存下来，等于用一个假 secret 把用户原来那个好的顶掉 —— 必须挡在门口。
+ * 只有真读到明文（老版本 / 非 macOS 会直接写在 config.json 里）才认。
+ */
+function usableSecret(v) {
+  if (typeof v !== "string") return false;         // 钥匙串引用是个对象，不是字符串
+  const s = v.trim();
+  if (!s || /^[*•·xX]+$/.test(s)) return false;    // 掩码
+  return s.length >= 16;                           // 飞书 app_secret 是 32 位，放宽一档兜底
+}
+
+/** secret 读不出来时，告诉用户下一步该干嘛（而不是甩一句「导入失败」） */
+const SECRET_LOCKED_HINT =
+  "lark-cli 把 App Secret 锁在系统钥匙串里，命令行读不出来（它只进不出）。最后一步得你自己来：去开放平台复制 App Secret，粘到下面的「粘一段过来自动识别」框里。";
+
+/** 拼一条直达这个应用「凭证与基础信息」页的链接，省得用户自己在后台里翻 */
+function appConsoleUrl(appId, brand) {
+  if (!/^cli_[A-Za-z0-9]+$/.test(String(appId || ""))) return "";
+  const host = /lark/i.test(String(brand || "")) ? "open.larksuite.com" : "open.feishu.cn";
+  return `https://${host}/app/${appId}/baseinfo`;
+}
+
+module.exports = { parseConfigShow, verifyUrlOf, explainLarkError, usableSecret, SECRET_LOCKED_HINT, appConsoleUrl };

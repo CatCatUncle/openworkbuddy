@@ -40,9 +40,34 @@ function get(id) {
   return BACKENDS.find((b) => b.id === id) || undefined; // undefined = 根本没这个引擎
 }
 
-/** 探测本机装了哪些底层 CLI。只跑 --version，不花任何额度，也不碰用户的会话。 */
-async function detectAll(overrides = {}) {
-  which.forget(); // 刚装完就点检测的人，得当场看见结果
+/**
+ * 探测本机装了哪些底层 CLI。只跑 --version，不花任何额度，也不碰用户的会话。
+ *
+ * 有缓存，因为这事不便宜也不常变：一次探测要给每个 CLI 起一个 --version 子进程
+ * （本机实测冷启 322ms、热的 ~120ms），而 /api/engines、/api/thinking、设置页、
+ * 引导页、命令行每次都在调它——「装没装 claude」这种事没必要每次都现问一遍。
+ * 用户点「重新检测本机」走 force：刚装完的人必须当场看见，那条路才清 which 的缓存。
+ * 缓存的是 Promise，所以同时来的几个请求只会真探一次。
+ */
+const DETECT_TTL = 60000;
+let detectCache = null; // { key, at, promise }
+
+async function detectAll(overrides = {}, { force = false } = {}) {
+  const key = JSON.stringify(overrides || {});
+  if (!force && detectCache && detectCache.key === key && Date.now() - detectCache.at < DETECT_TTL) {
+    return detectCache.promise;
+  }
+  if (force) which.forget(); // 刚装完就点检测的人，得当场看见结果
+  const promise = detectAllUncached(overrides).catch((e) => {
+    if (detectCache && detectCache.promise === promise) detectCache = null; // 失败不许被缓存住一分钟
+    throw e;
+  });
+  detectCache = { key, at: Date.now(), promise };
+  return promise;
+}
+
+/** 缓存失效时真正去探。改这里记得想一下 detectAll 的缓存键够不够用 */
+async function detectAllUncached(overrides = {}) {
   const out = [];
   for (const b of BACKENDS) {
     let r;
@@ -135,4 +160,35 @@ async function testConnect(id, opts = {}, timeoutMs = 90000) {
   }
 }
 
-module.exports = { list, get, detectAll, resolve, testConnect, which, BUILTIN, BACKENDS };
+/**
+ * 借正在用的那个本机 CLI 问一句话——「动脑不动手」的活（把目标拆成验收标准、对着标准判分）。
+ *
+ * 为什么非要有这条路：用户切到本机引擎，图的就是不花 API 的钱。可 Goal 模式的拆解和验收
+ * 原来一直偷偷走 API 模型——没配 Key 的人这两步永远静默失败，目标卡永远卡在 0/N，
+ * 从用户那边看就是「Goal 模式根本没做」。同一个订阅已经付过钱了，这两句就该问它。
+ *
+ * 一次性问答，不接管任务会话（不传 resumeId），也不在用户的工作目录里落脚：
+ * 开个临时目录跑，问完就删，绝不让「问一句」把成果文件夹弄脏。
+ */
+async function ask({ id, opts = {}, system, prompt, timeoutMs = 60000, signal }) {
+  const backend = get(id);
+  if (!backend) throw new Error(`「${id}」不是一个本机引擎`);
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "owb-ask-"));
+  try {
+    const r = await backend.run({
+      ...opts,
+      prompt,
+      cwd,
+      systemPrompt: system,
+      deadline: Date.now() + timeoutMs,
+      maxTurns: 1, // 只要一句回答，不许它在临时目录里开工
+      stopSignal: signal,
+      emit: () => {},
+    });
+    return String((r && r.finalText) || "");
+  } finally {
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch {}
+  }
+}
+
+module.exports = { list, get, detectAll, resolve, testConnect, ask, which, BUILTIN, BACKENDS };

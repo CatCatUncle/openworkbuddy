@@ -3452,7 +3452,8 @@ async function testParallelToolBatch() {
     const uses = events.filter((e) => e.type === "tool_use");
     assert(uses.every((e) => e.id) && events.filter((e) => e.type === "tool_result").every((e) => e.id), "工具事件缺少 id");
 
-    // 混进一个会写文件的 → 整批串行
+    // 混进一个会写文件的：写工具必须单跑，但它前面那两个只读的照样并发。
+    // 以前是「整批退回串行」，于是 [抓, 抓, 写文件] 这种最常见的组合白等一次网络往返。
     peak = 0;
     events = [];
     hist = [{ role: "user", content: "抓两个页面再写文件" }];
@@ -3462,13 +3463,20 @@ async function testParallelToolBatch() {
       mcpManager: new McpManager(),
       experts,
     }).runTask({ history: hist, emit: (ev) => events.push(ev) });
-    assert.strictEqual(peak, 1, `批里有写文件的工具，不该并发（实际最高并发 ${peak}）`);
-    assert(!events.some((e) => e.type === "parallel"), "混合批不该发 parallel 事件");
+    assert.strictEqual(peak, 2, `前面两个只读调用没并发（实际最高并发 ${peak}）`);
+    const pars = events.filter((e) => e.type === "parallel");
+    assert.strictEqual(pars.length, 1, `并发段数不对，写工具不该被并进去（实际 ${pars.length} 段）`);
+    assert.strictEqual(pars[0].count, 2, `并发只该吃前两个只读调用（实际 ${pars[0].count}）`);
+    // 顺序即语义：写文件必须等两个抓取都回来了才开跑，绝不能跟它们挤在一起
+    const order = events.filter((e) => e.type === "tool_use" || e.type === "tool_result").map((e) => e.type + ":" + e.id);
+    const wStart = order.indexOf("tool_use:t9");
+    assert(wStart > order.indexOf("tool_result:t1") && wStart > order.indexOf("tool_result:t2"), "写文件跟只读调用挤在一起跑了：" + order.join(" "));
+    assert(fs.existsSync(path.join(WORKSPACE, tmpFile)), "切段之后写文件没跑到");
   } finally {
     srv.close();
     fs.rmSync(path.join(WORKSPACE, tmpFile), { force: true });
   }
-  console.log("✅ 并发：只读批并发跑 / 结果顺序与 ID 不串 / 混入写操作整批退回串行");
+  console.log("✅ 并发：只读批并发跑 / 结果顺序与 ID 不串 / 混合批里连续只读段照样并发、写操作单跑且排在它们后面");
 }
 
 function testPathSafety() {
@@ -4225,6 +4233,13 @@ async function main() {
   await testImCredentialGuard();
   await testUpdaterVersions();
   testLarkCliParse();
+  await testLarkSecretNotClobbered();
+  await testCompletionGate();
+  testStepLines();
+  await testStepLinesWired();
+  await testGoalOnLocalEngine();
+  await testDetectCache();
+  await testStreamRender();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -4247,6 +4262,123 @@ async function main() {
  *   ② 死渠道没记性 —— createEmbedder 在启动/存设置/走完引导时各重建一次，每次都从头撞。
  *   ③ 坏配对的告警每轮重刷 —— 真正的新问题被淹在重复日志里。
  */
+/**
+ * Goal 模式在本机引擎上也得真跑起来。
+ *
+ * 老毛病：拆验收标准和验收判分这两步写死走 sessLLM（API 模型），外面还套着一个裸 catch {}。
+ * 用户切到本机 Claude Code / Codex 图的就是不花 API 的钱，多半根本没配 API Key——
+ * 于是拆解永远失败（标准退化成"目标原文"一条）、验收永远静默不打勾，目标卡卡在 0/N，
+ * 从用户那边看就是「Goal 模式根本没做」。这里验两件事：
+ *   ① 本机引擎在跑时，这两句问的是那个 CLI（engines.ask），不是 API；
+ *   ② 问挂了要留痕（warn），不许静默——「后台飞轮吞异常必须留痕」。
+ */
+async function testGoalOnLocalEngine() {
+  const engines = require("../engines");
+  const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+
+  // ① 两处「动脑」都改走 goalThink，源码里不许再直接钉死 sessLLM
+  const think = src.match(/async function goalThink\(([\s\S]*?)\n}/);
+  assert(think, "server.js 里没有 goalThink（Goal 的拆解/验收该由谁来答）");
+  assert(/engines\.ask\(/.test(think[1]), "goalThink 没走 engines.ask：本机引擎在跑时还在偷偷花 API 的钱");
+  for (const [re, fn, label] of [[/async function deriveGoalCriteria\(([\s\S]*?)\n}/, "deriveGoalCriteria", "拆验收标准"],
+                                 [/async function verifyGoal\(([\s\S]*?)\n}/, "verifyGoal", "验收判分"]]) {
+    const body = src.match(re);
+    assert(body, "找不到 " + fn);
+    assert(/await goalThink\(/.test(body[1]), fn + "（" + label + "）没走 goalThink，本机引擎用户这一步永远失败");
+    assert(!/catch\s*\{\s*\}/.test(body[1]), fn + " 里还有裸 catch {}：这一步挂了用户永远看不见，只会以为是活没干好");
+    assert(/warn\(/.test(body[1]), fn + " 挂了没留痕（warn），目标卡上不会写为什么不动");
+  }
+
+  // ② engines.ask 真能把问题递给本机引擎，且不接管任务会话（不传 resumeId、不落在用户目录里）
+  let got = null;
+  const stub = {
+    id: "e2e-ask", label: "问答桩", bin: "x", note: "", install: "", launchHeader: "", supportsResume: true,
+    models: [], detect: async () => ({ id: "e2e-ask", installed: true, path: "x", version: "1" }),
+    run: async (o) => { got = o; return { finalText: '{"criteria":["有画布","方向键能控制","撞墙会结束"]}' }; },
+  };
+  engines.BACKENDS.push(stub);
+  let text;
+  try { text = await engines.ask({ id: "e2e-ask", system: "你是拆解器", prompt: "做个贪吃蛇" }); }
+  finally { engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1); }
+  assert(/画布/.test(text), "engines.ask 没把引擎的回答带回来");
+  assert(got && got.prompt === "做个贪吃蛇" && got.systemPrompt === "你是拆解器", "engines.ask 没把系统提示/问题递下去");
+  assert(got.maxTurns === 1 && !got.resumeId, "engines.ask 是一次性问答，不许接管任务会话");
+  assert(got.cwd && !fs.existsSync(got.cwd), "engines.ask 用完没清掉临时目录（别在用户机器上留垃圾）");
+
+  // ③ 拆解歪了要退化成「目标原文一条」并且把原因写到卡上（不是静默）
+  const card = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
+  assert(/gc-note/.test(card) && /gc-paused/.test(card) && /gc-go/.test(card), "目标卡没有「为什么不动 / 停了 / 接着冲」这三样");
+  assert(/paused/.test(src) && /自动补跑已用满/.test(src), "服务端跑满轮数后没告诉前端「停了、为什么停」");
+  console.log("  ✓ Goal 模式：拆解/验收改走本机引擎（不花 API 额度）、失败留痕、跑满轮数说清并能接着冲");
+}
+
+/**
+ * 探测本机 CLI 是要起子进程的，别每个请求都来一遍。
+ * /api/engines、/api/thinking、设置页、引导页、命令行全在调 detectAll，一次约 120~320ms
+ * （每个 CLI 起一个 --version）。「装没装 claude」不是每秒都在变的事。
+ */
+async function testDetectCache() {
+  const engines = require("../engines");
+  let calls = 0;
+  const stub = {
+    id: "e2e-slow", label: "慢桩", bin: "x", note: "", install: "", launchHeader: "", supportsResume: true, models: [],
+    detect: async () => { calls++; await new Promise((r) => setTimeout(r, 60)); return { id: "e2e-slow", installed: true, path: "x", version: "1" }; },
+    run: async () => ({ finalText: "" }),
+  };
+  engines.BACKENDS.push(stub);
+  try {
+    await engines.detectAll({}, { force: true });      // 冷探一次（顺便把缓存里别的键洗掉）
+    const base = calls;
+    const t0 = Date.now();
+    await Promise.all([engines.detectAll({}), engines.detectAll({}), engines.detectAll({}), engines.detectAll({}), engines.detectAll({})]);
+    const ms = Date.now() - t0;
+    assert.strictEqual(calls, base, `缓存没生效：5 次调用又探了 ${calls - base} 遍（每遍都要起子进程）`);
+    assert(ms < 30, `命中缓存不该等 ${ms}ms`);
+    await engines.detectAll({}, { force: true });
+    assert.strictEqual(calls, base + 1, "点了「重新检测本机」却没真去重探——刚装完 CLI 的人会以为没装上");
+    // 换一组用户填的路径 = 换一个问题，不能拿旧答案糊弄
+    await engines.detectAll({ "e2e-slow": { bin: "/tmp/other" } });
+    assert.strictEqual(calls, base + 2, "用户改了 CLI 路径还在吃旧缓存");
+  } finally {
+    engines.BACKENDS.splice(engines.BACKENDS.indexOf(stub), 1);
+    await engines.detectAll({}, { force: true }); // 别把桩留在缓存里影响后面的用例
+  }
+  const srv = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  assert(/force: req\.query\.force === "1"/.test(srv), "/api/engines 没把「重新检测」透传成 force，用户点了也只会拿到缓存");
+  const ui = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
+  assert(/renderEngineCard\(box, true\)/.test(ui), "设置页「重新检测本机」按钮没要求强制重探");
+  console.log("  ✓ 本机 CLI 探测有缓存（5 次并发只探 1 遍）、「重新检测」仍真去重探、改了路径不吃旧缓存");
+}
+
+async function testStreamRender() {
+  const app1 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
+  const grab = (re, why) => { const m = app1.match(re); assert(m, why); return m[0]; };
+
+  // 流式那一帧只许重写还在长的那一小截
+  const append = grab(/const appendText = \(delta\) => \{[\s\S]*?\n  \};/, "app-01.js 里找不到 appendText 了");
+  assert(/paintStream\(el\)/.test(append), "appendText 没走分段渲染");
+  assert(!/el\.innerHTML\s*=/.test(append), "appendText 又回到每帧重建整棵 DOM（长回复会卡到选不中字）");
+
+  const paint = grab(/function paintStream\(el\) \{[\s\S]*?\n\}/, "app-01.js 里找不到 paintStream");
+  assert(/html\.startsWith\(sp\.html\)/.test(paint), "paintStream 没拿「整份重渲的前缀」当固化判据——后来的围栏会把前面的排版改掉");
+  assert(/balancedHtml\(candHtml\)/.test(paint), "固化前没检查块级标签闭没闭合，insertAdjacentHTML 会被浏览器瞎闭合");
+  assert(/lastIndexOf\("\\n\\n"/.test(paint), "固化的切点不在空行上");
+
+  // 停笔必须合回一整块：复制/导出/innerText/计划清单都按「.a-text 底下直接是内容」读
+  const seal = grab(/function sealStream\(el\) \{[\s\S]*?\n\}/, "app-01.js 里找不到 sealStream");
+  assert(/el\.innerHTML = renderMd\(el\._raw\)/.test(seal), "sealStream 没整份重渲，分段的壳子会漏给下游");
+  const turn = app1.slice(app1.indexOf("function createTurnUI("), app1.indexOf("// ================= 空状态"));
+  const decl = (turn.match(/currentText = null/g) || []).length;
+  assert.strictEqual(decl, 2, `回合里还有 ${decl - 2} 处直接把 currentText 置空（绕过了 endText，那一段永远不合回整块）`);
+  assert(/function finish\(\) \{\s*\n\s*endText\(\);/.test(turn), "finish() 没先把最后一段合回整块，复制/存历史会读到分段的壳子");
+
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  assert(/\.a-text > \.md-done, \.a-text > \.md-live \{ display: contents; \}/.test(html),
+    "两个壳子没设 display:contents，会多出一层盒子把排版顶变形");
+
+  console.log("  ✓ 流式正文分段渲染：只重写正在长的那截、固化判据是整份重渲的前缀、停笔合回整块");
+}
+
 async function testEmbedFailoverResilience() {
   const os = require("os");
   const http = require("http");
@@ -6340,6 +6472,225 @@ async function testUpdaterVersions() {
  * 输出里带着尾巴、带着前缀噪声、链接后面粘着中文标点，这些都得吃得下；
  * 认不出来的时候必须给一句人话，而不是把 stderr 原样甩给用户。
  */
+/**
+ * early stop：任务没做完就收摊。
+ *
+ * 真实表现是最坑人的一种失败——界面上任务「正常结束」了，用户点开产物才发现只做了一半。
+ * 根因在 agent 循环里：模型这一步不调工具，框架就当它做完了直接 break。可「不调工具」
+ * 只代表模型认为自己做完了，进度档里还挂着没打勾的条目它照样能停。
+ *
+ * 闸门做两件事：① 停之前先读 PROGRESS.md，还有没打勾的就把条目原样念回去、打回接着做；
+ * ② 打回额度用完还没做完，就把它当成「撞上限」交给自动续跑，而不是假装成功。
+ *
+ * 这里的负向控制比正向断言更值钱：全打勾、没有进度档、没有复选框——三种情况都必须放行。
+ * 判错一次就是把已经做完的任务反复打回去，烧的是用户的钱和时间。
+ */
+async function testCompletionGate() {
+  const { unfinishedMilestones, UNFINISHED_RE } = require("../agent");
+
+  // ---- 进度档解析 ----
+  const probe = fs.mkdtempSync(path.join(os.tmpdir(), "owb-gate-"));
+  const P = path.join(probe, "PROGRESS.md");
+  assert.deepStrictEqual(unfinishedMilestones(probe), { open: [], total: 0 }, "没有 PROGRESS.md 时必须返回空且不抛");
+  fs.writeFileSync(P, "# 目标\n做三件事\n\n- [x] 第一件\n* [X] 第二件\n- [ ] 第三件：写报告\n这是一行普通正文\n");
+  const u = unfinishedMilestones(probe);
+  assert.strictEqual(u.total, 3, "三个复选框只认出 " + u.total + " 个（`* [X]` 这种写法也得认）");
+  assert.deepStrictEqual(u.open, ["第三件：写报告"], "没打勾的条目没拎准：" + JSON.stringify(u.open));
+  // 负向控制①：全打勾 = 做完了，一项都不许剩
+  fs.writeFileSync(P, "- [x] a\n- [X] b\n- [x] c\n");
+  const done = unfinishedMilestones(probe);
+  assert.strictEqual(done.total, 3, "全打勾的条目数不对");
+  assert.strictEqual(done.open.length, 0, "全打勾还被判成没做完——已完成的任务会被反复打回去烧钱");
+  // 负向控制②：没有复选框的进度档不算里程碑清单
+  fs.writeFileSync(P, "# 只是一段说明\n没有任何复选框\n1. 第一步\n");
+  assert.strictEqual(unfinishedMilestones(probe).total, 0, "把普通编号列表当成里程碑了");
+  fs.rmSync(probe, { recursive: true, force: true });
+
+  // ---- 自认没做完的措辞 ----
+  for (const t of ["报告还没写完", "尚未完成第三步", "由于时间关系，剩下的部分未完成", "后续会继续完成剩余章节", "第二部分未能完成"]) {
+    assert(UNFINISHED_RE.test(t), "没认出这是「还没做完」：" + t);
+  }
+  // 负向控制③：做完了的话、以及正常的交接说明，一律不许判成没做完
+  for (const t of [
+    "全部完成，共产出 3 份材料。",
+    "已完成。后续你可以自己调整配色。",
+    "需要你处理：去开放平台复制 App Secret 粘进来。",
+    "任务完成，结果都在工作目录里了。",
+  ]) assert(!UNFINISHED_RE.test(t), "把做完的话判成了没做完：" + t);
+
+  // ---- 跑真循环 ----
+  const DIR = "e2e-gate-run";
+  const runDir = path.join(WORKSPACE, DIR);
+  try {
+    // 每次 chat 只回文字、不调工具 —— 模拟「模型认为自己做完了」
+    const mk = (texts) => {
+      const seen = [];
+      let i = 0;
+      return {
+        llm: {
+          provider: "mock",
+          model: "scripted",
+          async chat({ history }) {
+            const last = history[history.length - 1];
+            if (last && last.role === "user" && /【系统·收尾核验】/.test(last.content || "")) seen.push(last.content);
+            return { text: texts[Math.min(i++, texts.length - 1)], toolCalls: [], stopReason: "end" };
+          },
+        },
+        pushbacks: seen,
+        calls: () => i,
+      };
+    };
+    const run = async (h) => {
+      const deltas = [];
+      const r = await createAgentRuntime({ config, llm: h.llm, mcpManager: new McpManager(), experts: [] }).runTask({
+        history: [{ role: "user", content: "把三件事做完" }],
+        emit: (ev) => { if (ev.type === "text" && ev.delta) deltas.push(ev.delta); },
+        baseDir: DIR,
+      });
+      return { r, deltas };
+    };
+
+    // ① 有没打勾的 → 必须打回，且打回时把条目原样念出来
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, "PROGRESS.md"), "- [x] 收集资料\n- [ ] 写第二章\n- [ ] 导出成品\n");
+    let h = mk(["我先做到这里。"]);
+    let { r, deltas } = await run(h);
+    assert.strictEqual(h.pushbacks.length, 2, "打回次数不对（应当正好 2 次，多了会无限烧钱、少了等于没拦）：" + h.pushbacks.length);
+    assert(/写第二章/.test(h.pushbacks[0]) && /导出成品/.test(h.pushbacks[0]), "打回时没把没打勾的条目原样念给模型——只说「继续」它不知道继续什么");
+    assert(deltas.some((d) => /还没做完/.test(d)), "界面上没告诉用户「还没做完，已打回」");
+    assert.strictEqual(r.stopped, "任务还有 2 项没做完", "打回额度用完后没把状态如实标成没做完：" + r.stopped);
+    assert(/还没打勾的是/.test(r.finalText) && /写第二章/.test(r.finalText), "收尾没告诉用户还差哪几项：" + String(r.finalText).slice(0, 120));
+
+    // ② 负向控制：全打勾 → 一次都不许打回
+    fs.writeFileSync(path.join(runDir, "PROGRESS.md"), "- [x] 收集资料\n- [x] 写第二章\n- [x] 导出成品\n");
+    h = mk(["三件事都做完了。"]);
+    ({ r } = await run(h));
+    assert.strictEqual(h.pushbacks.length, 0, "进度档全打勾还被打回——做完的任务会被反复重跑");
+    assert.strictEqual(h.calls(), 1, "全打勾时多花了模型调用：" + h.calls());
+    assert(!r.stopped, "全打勾还报没做完：" + r.stopped);
+
+    // ③ 负向控制：压根没有进度档（小任务不立档）→ 不许拦
+    fs.rmSync(path.join(runDir, "PROGRESS.md"), { force: true });
+    h = mk(["查完了，答案是 42。"]);
+    ({ r } = await run(h));
+    assert.strictEqual(h.pushbacks.length, 0, "没有进度档也被拦下了——简单任务会被凭空多跑几轮");
+    assert(!r.stopped, "没有进度档却报没做完：" + r.stopped);
+
+    // ④ 没有进度档，但它自己在结语里承认没做完 → 也要打回；改口说做完了就放行
+    h = mk(["报告还没写完，我先停一下。", "全部完成，结果已经给你了。"]);
+    ({ r, deltas } = await run(h));
+    assert.strictEqual(h.pushbacks.length, 1, "模型自己说没做完却没被打回（或打回后没认它改口）：" + h.pushbacks.length);
+    assert(/没做完/.test(h.pushbacks[0]) && !/PROGRESS/.test(h.pushbacks[0].slice(0, 40)), "没有进度档时该走另一套话术");
+    assert(!r.stopped, "它改口说做完了，就不该再标成没做完：" + r.stopped);
+  } finally {
+    fs.rmSync(runDir, { recursive: true, force: true });
+  }
+  console.log("✅ 收尾闸门：没打勾就不许收摊（打回 2 次后转自动续跑），全打勾/无进度档/无复选框三种负向控制均放行");
+}
+
+/**
+ * 执行过程那一行：`📄 读 报告.md · 120 行`。
+ *
+ * 以前过程区每一步长这样：`⚙ read_file` + 一坨 JSON 入参，结果只有一枚红/绿的「完成/失败」。
+ * 用户原话是「让我一直看到任务完成情况，不要看太多没有用的东西」——参数是排障才要看的，
+ * 「在干什么 + 拿回来多少」才是每一步都该露在外面的。所以这一行由服务端算好随事件下发，
+ * 前端只管渲染（回放老会话没有这两个字段，前端退回工具名，不开天窗）。
+ *
+ * 负向控制在这里格外重要：read_file 的返回是文件内容本身，把它第一行当摘要糊到界面上，
+ * 等于把用户文件里的第一句话贴到过程区——既没信息量又漏内容。
+ */
+function testStepLines() {
+  const { toolHeadline, resultOutcome, splitParallelRuns } = require("../agent");
+
+  assert.strictEqual(toolHeadline("read_file", { path: "报告.md" }), "读 报告.md", "读文件那一行不对");
+  assert.strictEqual(toolHeadline("run_shell", { command: "npm test\necho done" }), "命令 npm test", "命令只取第一行");
+  assert.strictEqual(toolHeadline("web_search", { query: "小红书 标题" }), "搜「小红书 标题」", "搜索词没进那一行");
+  assert.strictEqual(toolHeadline("delegate_to_expert", { expert: "文案写手", task: "写稿" }), "委派专家 文案写手", "委派没写清委派给谁");
+  assert(/open\.feishu\.cn/.test(toolHeadline("fetch_url", { url: "https://open.feishu.cn/app/x" })), "抓网页没显示域名");
+  assert(!/^https?:/.test(toolHeadline("fetch_url", { url: "https://a.com/b" }).replace("抓 ", "")), "协议头是噪声，不该占那一行的地方");
+  // 认不出的工具（MCP 连接器）也得说人话，绝不许退回一个光秃秃的工具名
+  const mcp = toolHeadline("mcp__notion__search", { query: "季度目标" });
+  assert(/季度目标/.test(mcp), "MCP 工具没把入参露出来：" + mcp);
+  // 负向控制：一个入参都没有时也得留下动词，不能是空串（空串等于那一行开天窗）
+  assert(toolHeadline("write_file", {}).trim().length > 0, "没有入参就吐了个空行");
+  assert(toolHeadline("read_file", { path: "/a/very/long/".padEnd(200, "x") + "/末尾文件.md" }).length <= 52, "长路径没截短，会把那一行撑爆");
+
+  assert.strictEqual(resultOutcome("write_file", "已新建 报告.md（4210 字节）", false), "已新建 报告.md（4210 字节）", "写文件该用工具自己那句交代");
+  assert.strictEqual(resultOutcome("read_file", "a\nb\nc", false), "3 行", "读文件该报量");
+  assert.strictEqual(resultOutcome("list_files", "a.md\nb.md\n\nc.md\n", false), "3 项", "列目录该报条数（空行不算）");
+  assert.strictEqual(resultOutcome("web_search", "1. x https://a.com\n2. y https://b.com", false), "2 条结果", "搜索该报结果条数");
+  assert(/没有这个文件/.test(resultOutcome("read_file", "读取失败：没有这个文件", true)), "失败没把原因端到行上，用户还得一张张点开");
+  // 负向控制：文件内容不许当摘要——那一行会变成用户文件里的第一句话
+  const dataLike = resultOutcome("read_file", "这是我的私人日记第一行\n第二行", false);
+  assert(!/私人日记/.test(dataLike), "把文件正文当成结果摘要贴到界面上了：" + dataLike);
+  assert.strictEqual(resultOutcome("read_file", "   ", false), "没有内容返回", "空结果该明说，不是留白");
+
+  // ---- 只读段并发：段内并发、段间保序 ----
+  const RO = ["read_file", "list_files", "web_search"];
+  const seq = [{ name: "web_search" }, { name: "read_file" }, { name: "write_file" }, { name: "list_files" }, { name: "web_search" }];
+  const groups = splitParallelRuns(seq, RO);
+  assert.deepStrictEqual(
+    groups.map((g) => g.map((t) => t.name)),
+    [["web_search", "read_file"], ["write_file"], ["list_files", "web_search"]],
+    "连续只读段没切对：" + JSON.stringify(groups.map((g) => g.map((t) => t.name)))
+  );
+  // 负向控制①：写工具各自单跑，绝不合并——它们的先后顺序本身就是语义
+  assert.strictEqual(splitParallelRuns([{ name: "write_file" }, { name: "edit_file" }], RO).length, 2, "两个写工具被并到一段了，会并发跑，先后顺序就废了");
+  // 负向控制②：切段不许挪动任何一个调用的位置
+  assert.deepStrictEqual(groups.flat().map((t) => t.name), seq.map((t) => t.name), "切段把调用顺序打乱了");
+  assert.deepStrictEqual(splitParallelRuns([], RO), [], "空批次该原样返回空");
+  console.log("✅ 执行过程一行流：动词+对象+结果量（长路径截短·MCP 不开天窗·失败报原因），文件正文不当摘要；只读段并发且段间保序（写工具单跑=负向控制）");
+}
+
+/**
+ * 真跑一轮，验这一行确实随事件下发、并发确实只吃连续只读段。
+ * 上面那个是纯函数测试，这个测的是「接线接上了没有」——两者少一个都可能是绿着的坏。
+ */
+async function testStepLinesWired() {
+  const DIR = "e2e-line-run";
+  const runDir = path.join(WORKSPACE, DIR);
+  try {
+    fs.mkdirSync(runDir, { recursive: true });
+    let turn = 0;
+    const fake = {
+      provider: "mock",
+      model: "scripted",
+      async chat() {
+        if (turn++) return { text: "看完了。", toolCalls: [], stopReason: "end" };
+        return {
+          text: "我先看看现场。",
+          toolCalls: [
+            { id: "a1", name: "list_files", input: { path: "." } },
+            { id: "a2", name: "list_files", input: { path: "." } },
+            { id: "a3", name: "write_file", input: { path: "线.txt", content: "hi" } },
+          ],
+          stopReason: "tool_use",
+        };
+      },
+    };
+    const evs = [];
+    await createAgentRuntime({ config, llm: fake, mcpManager: new McpManager(), experts: [] }).runTask({
+      history: [{ role: "user", content: "看看现场再写个文件" }],
+      emit: (ev) => evs.push(ev),
+      baseDir: DIR,
+    });
+    const uses = evs.filter((e) => e.type === "tool_use");
+    const results = evs.filter((e) => e.type === "tool_result");
+    assert.strictEqual(uses.length, 3, "工具事件数不对：" + uses.length);
+    assert(uses.every((u) => u.title && u.title.trim()), "有工具事件没带那一行：" + JSON.stringify(uses.map((u) => u.title)));
+    assert(/^写 线\.txt$/.test(uses[2].title), "写文件那一行不对：" + uses[2].title);
+    assert(results.every((r) => typeof r.outcome === "string" && r.outcome), "有结果事件没带结果摘要：" + JSON.stringify(results.map((r) => r.outcome)));
+    // 前两个只读的并发跑了，写文件单独一段（所以并发事件只有一条、count=2）
+    const par = evs.filter((e) => e.type === "parallel");
+    assert.strictEqual(par.length, 1, "并发段数不对（写工具不该被并进去）：" + par.length);
+    assert.strictEqual(par[0].count, 2, "并发只该吃前两个只读调用：" + par[0].count);
+    assert(fs.existsSync(path.join(runDir, "线.txt")), "写文件没真跑到——切段把它漏了");
+    console.log("✅ 执行行接线：tool_use 带 title、tool_result 带 outcome，混合批次里前两个只读并发、写文件仍旧单跑并落盘");
+  } finally {
+    fs.rmSync(runDir, { recursive: true, force: true });
+  }
+}
+
 function testLarkCliParse() {
   const L = require("../lark-cli");
 
@@ -6363,6 +6714,25 @@ function testLarkCliParse() {
   assert.strictEqual(L.verifyUrlOf("https://example.com/app/verify"), "", "非飞书域名被当成验证链接了");
   assert.strictEqual(L.verifyUrlOf(""), "", "空输入该返回空串");
 
+  // ---- app_secret 到底能不能用：lark-cli 在 macOS 上把它锁进系统钥匙串，config show 只回 "****" ----
+  // 这是真踩过的坑：那串掩码要是被当成凭证存下来，用户原本能用的 secret 就被顶掉了，
+  // 界面还显示「已保存」，连接却报 10014 —— 比直接失败更难查。
+  assert.strictEqual(L.usableSecret("****"), false, "星号掩码被当成了真 secret");
+  assert.strictEqual(L.usableSecret("••••••••"), false, "圆点掩码没挡住");
+  assert.strictEqual(L.usableSecret({ source: "keychain", id: "abc" }), false, "钥匙串引用（对象）没挡住");
+  assert.strictEqual(L.usableSecret(""), false, "空串没挡住");
+  assert.strictEqual(L.usableSecret(undefined), false, "undefined 没挡住");
+  assert.strictEqual(L.usableSecret("s3cret"), false, "太短的串不该被当成飞书 app_secret");
+  assert.strictEqual(L.usableSecret("a".repeat(32)), true, "32 位的真 secret 被误杀了");
+  assert(/钥匙串/.test(L.SECRET_LOCKED_HINT) && /粘/.test(L.SECRET_LOCKED_HINT), "读不出来时的提示没说清下一步该干嘛");
+
+  // ---- 凭证页直链：让用户少在开放平台里翻两层 ----
+  assert.strictEqual(L.appConsoleUrl("cli_a1b2", "feishu"), "https://open.feishu.cn/app/cli_a1b2/baseinfo", "国内版凭证页链接拼错了");
+  assert(/open\.larksuite\.com/.test(L.appConsoleUrl("cli_a1b2", "lark")), "国际版没走 larksuite 域名");
+  // 负向控制：app_id 长得不对就别拼链接，免得把用户引到一个乱七八糟的地址
+  assert.strictEqual(L.appConsoleUrl("", "feishu"), "", "空 app_id 不该拼出链接");
+  assert.strictEqual(L.appConsoleUrl("../../evil", "feishu"), "", "路径穿越样子的 app_id 不该拼出链接");
+
   // ---- 报错翻译：给的是「下一步怎么办」，不是 stderr ----
   assert(/重启/.test(L.explainLarkError("Agent workspace detected: OPENCLAW_HOME is set")), "Agent 环境那条没翻成人话");
   assert(/管理员|权限/.test(L.explainLarkError("app registration failed: permission denied")), "建应用失败没说清是权限问题");
@@ -6373,5 +6743,127 @@ function testLarkCliParse() {
   const weird = L.explainLarkError("some brand new failure from upstream");
   assert(weird && weird.length > 0 && !/undefined/.test(weird), "认不出的错误被吞了：" + weird);
 
-  console.log("✅ lark-cli 解析：config show 带尾巴/带噪声都吃得下 · 只认飞书域名的验证链接 · 报错翻成下一步怎么办");
+  console.log("✅ lark-cli 解析：config show 带尾巴/带噪声都吃得下 · 钥匙串掩码不当凭证 · 只认飞书域名的链接 · 报错翻成下一步怎么办");
+}
+
+/**
+ * 「从 lark-cli 导凭证」不许把一串掩码当成 app_secret 存进去。
+ *
+ * 背景：飞书机器人必须有 app_id + app_secret。lark-cli 能替用户把应用建出来，
+ * 但它的 secret 是**只进不出**的 —— macOS 上默认锁在系统钥匙串里，
+ * `lark-cli config show` 只回 `"appSecret": "****"`（config.json 里存的是
+ * `{source:"keychain", id:...}` 这样一个引用，不是密钥本身）。
+ *
+ * 一开始的实现直接把 cfg.appSecret 搬进 config.im.feishu，于是：
+ * 用户原来能用的 secret 被 `****` 顶掉 → 界面显示「已保存」→ 连接报 10014。
+ * 比直接失败更难查，所以这条测试的重点是那个负向对照：
+ * **导入失败之后，原来的 secret 必须一个字节都没变。**
+ *
+ * 做法：往 PATH 前面塞一个假的 lark-cli（一个 sh 脚本），由一个 mode 文件控制它
+ * 返回掩码还是明文，这样同一个 server 进程里能把两条路都走一遍。
+ */
+async function testLarkSecretNotClobbered() {
+  if (process.platform === "win32") { console.log("⏭  lark-cli 导入守卫：Windows 上跳过（假 lark-cli 是 sh 脚本）"); return; }
+  const http = require("http");
+  const { spawn } = require("child_process");
+  const crypto = require("crypto");
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-larksec-"));
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "owb-larkbin-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  // 假 lark-cli：只认 --version 和 config show，其余一律失败（真 CLI 也不该被这条测试碰）
+  const PLAIN = "P".repeat(32);
+  fs.writeFileSync(path.join(bin, "mode"), "masked");
+  fs.writeFileSync(path.join(bin, "lark-cli"), `#!/bin/sh
+MODE=$(cat "$(dirname "$0")/mode")
+if [ "$1" = "--version" ]; then echo "1.0.68"; exit 0; fi
+if [ "$1" = "config" ] && [ "$2" = "show" ]; then
+  if [ "$MODE" = "masked" ]; then
+    printf '{\\n  "appId": "cli_fakelocked",\\n  "appSecret": "****",\\n  "brand": "feishu"\\n}\\n\\n  Config file path: /tmp/fake\\n'
+  else
+    printf '{\\n  "appId": "cli_fakeplain",\\n  "appSecret": "${PLAIN}",\\n  "brand": "feishu"\\n}\\n\\n  Config file path: /tmp/fake\\n'
+  fi
+  exit 0
+fi
+echo "fake lark-cli: unsupported $*" >&2
+exit 1
+`);
+  fs.chmodSync(path.join(bin, "lark-cli"), 0o755);
+
+  const port = 3900 + Math.floor(Math.random() * 90);
+  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+    env: { ...process.env, OPENWORKBUDDY_HOME: home, PORT: String(port), HOST: "127.0.0.1", PATH: bin + path.delimiter + process.env.PATH },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  child.stdout.on("data", (c) => (log += c));
+  child.stderr.on("data", (c) => (log += c));
+  const up = await new Promise((resolve) => {
+    const t = setTimeout(() => resolve(false), 40000);
+    const tick = setInterval(() => {
+      if (/已启动/.test(log)) { clearInterval(tick); clearTimeout(t); resolve(true); }
+      if (child.exitCode !== null) { clearInterval(tick); clearTimeout(t); resolve(false); }
+    }, 200);
+  });
+  const req = (method, p, body) => new Promise((resolve) => {
+    const data = body === undefined ? null : JSON.stringify(body);
+    const r = http.request({
+      host: "127.0.0.1", port, path: p, method,
+      headers: { Cookie: "wb_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+    }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    r.on("error", (e) => resolve({ code: 0, body: e.message, json: null }));
+    if (data) r.write(data);
+    r.end();
+  });
+  const feishuOnDisk = () => (JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8")).im || {}).feishu || {};
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + log.slice(-400));
+
+    const GOOD = "G".repeat(32);
+    const w = await req("POST", "/api/settings", { im: { feishu: { app_id: "cli_mine0001", app_secret: GOOD } } });
+    assert(w.code === 200, "凭证存不进去（HTTP " + w.code + "）");
+    assert.strictEqual(feishuOnDisk().app_secret, GOOD, "前置条件不成立：凭证没落盘");
+
+    // 探测接口得如实说「有应用、但 secret 读不出来」，而不是含糊成「没配」
+    const probe = await req("GET", "/api/feishu/lark-cli");
+    assert(probe.json && probe.json.installed === true, "假 lark-cli 没被认出来（HTTP " + probe.code + " " + probe.body.slice(0, 200) + "）");
+    assert.strictEqual(probe.json.app_id, "cli_fakelocked", "app_id 没读到");
+    assert.strictEqual(probe.json.has_secret, false, "掩码被当成「有 secret」了 —— 前端会亮出导入按钮，点了就把好凭证冲掉");
+    assert.strictEqual(probe.json.secret_locked, true, "没告诉前端 secret 是被锁住而不是没有");
+
+    // ★事故复现 + 负向对照★ 硬点导入：必须拒绝，而且原来的凭证一个字节都不能变
+    const bad = await req("POST", "/api/feishu/lark-cli/import");
+    assert.strictEqual(bad.code, 400, "掩码 secret 居然导入成功了（HTTP " + bad.code + "）");
+    assert(bad.json && bad.json.secret_locked === true, "拒绝了但没说清是「锁住」：" + bad.body.slice(0, 200));
+    assert(/钥匙串/.test((bad.json || {}).error || ""), "报错没说人话：" + bad.body.slice(0, 200));
+    assert(/open\.feishu\.cn\/app\/cli_fakelocked/.test((bad.json || {}).console_url || ""), "没给凭证页直链，用户得自己去后台翻");
+    const after = feishuOnDisk();
+    assert.strictEqual(after.app_secret, GOOD, "★凭证被掩码顶掉了★ 这正是要防的事故");
+    assert.strictEqual(after.app_id, "cli_mine0001", "app_id 被单独改了 —— 跟旧 secret 配成一对错的，连上去只会报 10014");
+
+    // 正向对照：真读得出明文（老版本 / 非 macOS 就是这样）的时候，导入照常走通
+    fs.writeFileSync(path.join(bin, "mode"), "plain");
+    const okr = await req("POST", "/api/feishu/lark-cli/import");
+    assert.strictEqual(okr.code, 200, "明文 secret 反倒导不进来（HTTP " + okr.code + " " + okr.body.slice(0, 200) + "）—— 守卫收得太紧");
+    const now = feishuOnDisk();
+    assert.strictEqual(now.app_id, "cli_fakeplain", "明文那条没把 app_id 换过来");
+    assert.strictEqual(now.app_secret, PLAIN, "明文那条没把 secret 换过来");
+
+    console.log("✅ lark-cli 导凭证：钥匙串掩码一律拒绝且不动原凭证 · 如实回报「锁住」并给凭证页直链 · 明文照常导入");
+  } finally {
+    try { child.kill(); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(bin, { recursive: true, force: true }); } catch {}
+  }
 }

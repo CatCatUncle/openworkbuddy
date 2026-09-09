@@ -363,48 +363,77 @@ function addUsage(total, u) {
   total.elapsed_ms = (total.elapsed_ms || 0) + (u.elapsed_ms || 0);
 }
 
+/**
+ * Goal 模式的「动脑」通道：拆验收标准、对着标准判分，这两句该问谁。
+ *
+ * 本机引擎（Claude Code / Codex）在跑时，就借那个 CLI 问——用户切过去图的就是不花 API 的钱，
+ * 这两步却偷偷走 API：没配 Key 的人于是永远拆不出标准也验不了收，目标卡卡在 0/N 不动，
+ * 从用户那边看就是「Goal 模式没做」。同一份订阅已经付过钱了，问它就是了。
+ */
+async function goalThink(sessLLM, { system, prompt, timeoutMs, total }) {
+  const id = (config.agent && config.agent.engine) || "builtin";
+  if (id !== "builtin" && engines.get(id)) {
+    return await engines.ask({ id, opts: (config.agent.engine_options || {})[id] || {}, system, prompt, timeoutMs });
+  }
+  const r = await sessLLM.chat({
+    system,
+    history: [{ role: "user", content: prompt }],
+    tools: [],
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  addUsage(total, r.usage);
+  return r.text;
+}
+
 /** 把目标拆成 3~6 条可验收标准。失败就用目标原文当唯一标准，绝不让任务卡在拆解上 */
-async function deriveGoalCriteria(sessLLM, goalText, total) {
+async function deriveGoalCriteria(sessLLM, goalText, total, warn = () => {}) {
   try {
-    const r = await sessLLM.chat({
+    const text = await goalThink(sessLLM, {
       system: '你是验收标准拆解器。把用户的目标拆成 3~6 条具体、可客观核验的验收标准（每条都能对着成果文件/事实判真假，不写"尽量""良好"这种没法验收的词）。只输出 JSON：{"criteria":["标准1","标准2"]}，不要其它任何文字。',
-      history: [{ role: "user", content: String(goalText).slice(0, 2000) }],
-      tools: [],
-      signal: AbortSignal.timeout(30000),
+      prompt: String(goalText).slice(0, 2000),
+      timeoutMs: 60000,
+      total,
     });
-    addUsage(total, r.usage);
-    const j = parseJsonLoose(r.text);
+    const j = parseJsonLoose(text);
     const list = (j && Array.isArray(j.criteria) ? j.criteria : []).map((c) => String(c).trim()).filter(Boolean).slice(0, 6);
     if (list.length) return list;
-  } catch {}
+    warn("拆不出验收标准（它没按格式回 JSON），这轮先拿目标原文当唯一标准");
+  } catch (e) {
+    // 吞掉异常等于让用户对着一张「1 项、永远不打勾」的目标卡发呆——留痕，让他知道是哪一步没成
+    warn("拆验收标准失败：" + String((e && e.message) || e).slice(0, 120) + "，先拿目标原文当唯一标准");
+  }
   return [String(goalText).slice(0, 200)];
 }
 
 /** 对着验收标准验一轮。只认成果文件清单和收尾汇报，拿不准算 false；验收调用挂了就全部保持原状 */
-async function verifyGoal(sess, sessLLM, finalText, total) {
+async function verifyGoal(sess, sessLLM, finalText, total, warn = () => {}) {
   const goal = sess.goal;
   const undone = goal.criteria.map((c, i) => ({ i, c })).filter((x) => !x.c.done);
   if (!undone.length) return;
   const snippets = goalFileSnippets(sess);
   const checks = await goalFileChecks(sess);
   try {
-    const r = await sessLLM.chat({
+    const text = await goalThink(sessLLM, {
       system: '你是验收员。根据成果文件清单和执行汇报，逐条判断验收标准是否已达成。证据不足一律 false，宁可漏判不可错判。【自动体检】是机器实测结果（不是模型自述）：标 ✗ 的文件说明有语法错误或没写完整，涉及它的标准一律 false。只输出 JSON：{"results":[{"i":0,"done":true},{"i":1,"done":false}]}，i 是标准编号。',
-      history: [{ role: "user", content:
+      prompt:
         `【目标】${goal.text}\n\n【待验收标准】\n${undone.map((x) => `${x.i}. ${x.c.text}`).join("\n")}\n\n【成果文件清单】\n${goalFileInventory(sess)}\n\n` +
         (snippets ? `【成果文件内容摘录】\n${snippets}\n\n` : "") +
         (checks ? `【自动体检（机器实测）】\n${checks}\n\n` : "") +
-        `【执行汇报】\n${String(finalText || "（无）").slice(0, 3000)}` }],
-      tools: [],
-      signal: AbortSignal.timeout(45000),
+        `【执行汇报】\n${String(finalText || "（无）").slice(0, 3000)}`,
+      timeoutMs: 90000,
+      total,
     });
-    addUsage(total, r.usage);
-    const j = parseJsonLoose(r.text);
-    for (const it of (j && Array.isArray(j.results) ? j.results : [])) {
+    const j = parseJsonLoose(text);
+    const results = j && Array.isArray(j.results) ? j.results : [];
+    if (!results.length) warn("验收员没按格式回话，这一轮的打勾全部保持原状（宁可漏判不可错判）");
+    for (const it of results) {
       const c = goal.criteria[it.i];
       if (c && it.done === true) c.done = true;
     }
-  } catch {}
+  } catch (e) {
+    // 静默失败最坑：目标卡一直 0/N，用户以为是活没干好，其实是验收这一步根本没跑通
+    warn("验收没跑通：" + String((e && e.message) || e).slice(0, 120) + "，这一轮的打勾保持原状");
+  }
   if (goal.criteria.every((c) => c.done)) goal.status = "done";
 }
 
@@ -1024,9 +1053,10 @@ app.post("/api/app/update-check", (_req, res) => {
 
 // ---------- MCP 连接器管理 ----------
 // 底层引擎：探测本机装没装 Claude Code / Codex。只跑 --version，不消耗任何额度
-app.get("/api/engines", async (_req, res) => {
+app.get("/api/engines", async (req, res) => {
   try {
-    const found = await engines.detectAll((config.agent && config.agent.engine_options) || {});
+    // ?force=1 = 用户点了「重新检测本机」（刚装完 CLI，必须当场看见）；平时吃缓存，别每开一次设置页就起一堆子进程
+    const found = await engines.detectAll((config.agent && config.agent.engine_options) || {}, { force: req.query.force === "1" });
     res.json({ current: config.agent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1554,12 +1584,22 @@ const larkCli = require("./lark-cli");
 async function larkConfig() {
   return larkCli.parseConfigShow((await larkRun(["config", "show"], { timeout: 15000 })).stdout);
 }
-/** 把 lark-cli 里的凭证搬进飞书通道并重启长连接（新建和导入两条路都走这里） */
+/**
+ * 把 lark-cli 里的凭证搬进飞书通道并重启长连接（新建和导入两条路都走这里）。
+ * 守卫：macOS 上 lark-cli 把 secret 锁在钥匙串里，`config show` 只回 `****`。
+ * 那串掩码要是写进去，用户原来能用的凭证就被顶掉了 —— 宁可不搬，也不搬一个假的。
+ * app_id 也一并不动：单搬 app_id 会让它跟旧 secret 配成一对错的，连上去只会报 10014。
+ */
 function adoptLarkCreds(cfg) {
+  const appId = (cfg && cfg.appId) || "";
+  if (!appId || !larkCli.usableSecret(cfg && cfg.appSecret)) {
+    return { ok: false, app_id: appId, error: larkCli.SECRET_LOCKED_HINT, console_url: larkCli.appConsoleUrl(appId, cfg && cfg.brand) };
+  }
   config.im = config.im || {};
   config.im.feishu = Object.assign(config.im.feishu || {}, { app_id: cfg.appId, app_secret: cfg.appSecret });
   saveConfig();
   if (imBridge) imBridge.startFeishuWs(true).catch((e) => console.warn("[飞书] 长连接重启失败:", e.message));
+  return { ok: true, app_id: cfg.appId };
 }
 
 app.get("/api/feishu/lark-cli", async (_req, res) => {
@@ -1574,7 +1614,9 @@ app.get("/api/feishu/lark-cli", async (_req, res) => {
     configured: !!(cfg && cfg.appId),
     app_id: (cfg && cfg.appId) || "",
     brand: (cfg && cfg.brand) || "",
-    has_secret: !!(cfg && cfg.appSecret),
+    has_secret: larkCli.usableSecret(cfg && cfg.appSecret),
+    // 读不出来跟没有是两回事：钥匙串锁着的时候得让前端说清楚，而不是装作「没配」
+    secret_locked: !!(cfg && cfg.appId && !larkCli.usableSecret(cfg.appSecret)),
     users: (cfg && cfg.users) || "",
   });
 });
@@ -1583,10 +1625,11 @@ app.get("/api/feishu/lark-cli", async (_req, res) => {
 app.post("/api/feishu/lark-cli/import", async (_req, res) => {
   fs.mkdirSync(LARK_TMP, { recursive: true });
   const cfg = await larkConfig();
-  if (!cfg || !cfg.appId || !cfg.appSecret) {
+  if (!cfg || !cfg.appId) {
     return res.status(400).json({ error: "lark-cli 还没配置应用凭证，先「扫码新建应用」，或自己跑 lark-cli config init" });
   }
-  adoptLarkCreds(cfg);
+  const r = adoptLarkCreds(cfg);
+  if (!r.ok) return res.status(400).json({ error: r.error, app_id: r.app_id, secret_locked: true, console_url: r.console_url });
   res.json({ ok: true, app_id: cfg.appId }); // secret 不回前端
 });
 
@@ -1633,14 +1676,19 @@ app.post("/api/feishu/app/create", async (_req, res) => {
   child.on("close", async () => {
     if (!larkNew || larkNew.child !== child) return; // 已被新的一轮顶掉
     const cfg = await larkConfig();
-    if (cfg && cfg.appId && cfg.appSecret && (!before || cfg.appId !== before.appId || cfg.appSecret !== before.appSecret)) {
-      adoptLarkCreds(cfg);
-      larkNew.state = "ok"; larkNew.app_id = cfg.appId;
+    const born = cfg && cfg.appId && (!before || cfg.appId !== before.appId);
+    if (born) {
+      const r = adoptLarkCreds(cfg);
+      larkNew.app_id = cfg.appId;
+      // 应用是真建出来了，只是 secret 被钥匙串锁着 —— 这不是失败，是「还差最后一步」
+      larkNew.state = r.ok ? "ok" : "need_secret";
+      larkNew.error = r.ok ? "" : r.error;
+      larkNew.console_url = r.console_url || "";
     } else if (larkNew.state === "pending") {
       larkNew.state = "error"; larkNew.error = larkCli.explainLarkError(out) || "应用没建成，凭证没变化";
     }
   });
-  larkNew = { url: "", state: "pending", error: "", app_id: "", child, startedAt: Date.now() };
+  larkNew = { url: "", state: "pending", error: "", app_id: "", console_url: "", child, startedAt: Date.now() };
 
   // 等它把验证链接打出来（一般 1~3 秒）；拿到就出二维码，拿不到就如实说
   const url = await new Promise((resolve) => {
@@ -1673,7 +1721,7 @@ app.get("/api/feishu/app/create/status", (_req, res) => {
     larkNew.state = "error"; larkNew.error = "等了 15 分钟没完成，重新点一次";
   }
   // app_id 不敏感（前端本来就要显示），app_secret 一个字节都不出后端
-  res.json({ state: larkNew.state, error: larkNew.error || null, app_id: larkNew.app_id || "", url: larkNew.url || "" });
+  res.json({ state: larkNew.state, error: larkNew.error || null, app_id: larkNew.app_id || "", url: larkNew.url || "", console_url: larkNew.console_url || "" });
 });
 
 // 设备码流程：start 拿二维码 → 用户在飞书里扫 → 后台那条 --device-code 自己会跑完 → status 变 ok
@@ -2725,10 +2773,14 @@ app.post("/api/chat", async (req, res) => {
   // Goal 模式：第一次用目标消息建目标（拆成验收标准）；已有进行中的目标就直接接着冲
   const goalMode = mode === "goal";
   if (goalMode && (!sess.goal || sess.goal.status !== "active")) {
-    const criteria = await deriveGoalCriteria(sessLLM, message, total);
+    let derailed = "";
+    const criteria = await deriveGoalCriteria(sessLLM, message, total, (w) => { derailed = w; });
     sess.goal = { text: String(message).slice(0, 500), criteria: criteria.map((t) => ({ text: t, done: false })), status: "active", round: 0 };
+    // 这一步歪了要写在卡上：否则用户只看到「1 项标准、就是我刚才那句话」，还以为 Goal 模式就长这样
+    if (derailed) sess.goal.note = derailed;
     autosaveSession(sessionId, 0);
   }
+  if (sess.goal && sess.goal.status === "active") sess.goal.paused = ""; // 又开跑了，把「已暂停」摘掉
   if (sess.goal) send({ type: "goal", goal: sess.goal }); // 目标卡状态直播；不进回放记录（回放时从会话里取）
   let runFailed = null; // 整跑是否以异常收场（记进模型健康账本）
   if (global.__wbPet) try { global.__wbPet.setState("working", sess.title || String(message).slice(0, 40)); } catch {}
@@ -2790,13 +2842,27 @@ app.post("/api/chat", async (req, res) => {
       }
       // 没有进行中的目标 / 用户已手动停止 → 不验收不加轮
       if (!sess.goal || sess.goal.status !== "active" || runState.ctrl.signal.aborted) break;
-      await verifyGoal(sess, sessLLM, lastFinal, total);
+      sess.goal.note = "";
+      sess.goal.paused = "";
+      await verifyGoal(sess, sessLLM, lastFinal, total, (w) => { sess.goal.note = w; });
       sess.goal.round = (sess.goal.round || 0) + 1;
       send({ type: "goal", goal: sess.goal });
       autosaveSession(sessionId, 0);
-      if (!goalMode || sess.goal.status === "done" || goalRound + 1 >= GOAL_MAX_ROUNDS) break;
+      if (sess.goal.status === "done") break;
+      if (!goalMode) break;
+      // 自动补跑用完了。以前到这儿就悄悄不跑了，目标卡停在「2/4 · 第 3 轮」——用户分不清是"还在跑"
+      // 还是"不跑了"。写清楚为什么停、还差几项，卡上给一颗「接着冲」，把要不要继续烧钱交回给用户
+      if (goalRound + 1 >= GOAL_MAX_ROUNDS) {
+        sess.goal.paused = `自动补跑已用满 ${GOAL_MAX_ROUNDS} 轮，还差 ${sess.goal.criteria.filter((c) => !c.done).length} 项没达成`;
+        send({ type: "goal", goal: sess.goal });
+        autosaveSession(sessionId, 0);
+        break;
+      }
       // 这轮是被超时/上限硬切断的：同样的条件再跑一轮大概率原样再撞，别把用户的时间和钱烧在死循环里
       if (roundStopped) {
+        sess.goal.paused = `这轮任务被强制收尾（${roundStopped}），暂停自动补跑`;
+        send({ type: "goal", goal: sess.goal });
+        autosaveSession(sessionId, 0);
         emitFn({ type: "interject", text: `【目标验收】这轮任务被强制收尾（${roundStopped}），暂停自动补跑。解决后可以直接说「继续」接着冲目标。` });
         break;
       }

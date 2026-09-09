@@ -176,6 +176,37 @@ function missingDeliverables(text) {
   return bad;
 }
 
+// ================= 收尾闸门（治「没做完就收摊」） =================
+/**
+ * 模型不再调工具，就等于它在说「我做完了」。但「它认为做完了」不算数：
+ * 进度档里还挂着没打勾的条目，或者它自己在结语里承认还有没做的，那就是 early stop——
+ * 用户交代的事只做了一半，界面上却显示任务正常结束，这是最坑人的一种失败。
+ *
+ * 读进度档，把没打勾的条目原样拎出来。读不到（小任务不立进度档）就返回空，
+ * 空 = 「没这回事」，不是「全做完了」——没有进度档时不拦，免得把简单任务反复打回去烧钱。
+ */
+function unfinishedMilestones(dir) {
+  try {
+    const raw = fs.readFileSync(path.join(dir, "PROGRESS.md"), "utf8").slice(0, 40000);
+    const open = [];
+    let total = 0;
+    for (const line of raw.split("\n")) {
+      const m = /^\s*[-*]\s*\[([ xX])\]\s*(.+)/.exec(line);
+      if (!m) continue;
+      total++;
+      if (m[1] === " " && open.length < 40) open.push(m[2].trim().slice(0, 120));
+    }
+    return { open, total };
+  } catch { return { open: [], total: 0 }; }
+}
+
+/**
+ * 模型在结语里自己承认没做完的说法。只认「明说还没做」的措辞：
+ * 「后续可以优化」「你还需要自己配一下密钥」这类交接和展望不算没做完。
+ * 宁可漏判，也不能把已经做完的任务反复打回去——那是在烧用户的钱和时间。
+ */
+const UNFINISHED_RE = /(还(没有|没|未)(完成|做完|写完|生成|实现)|尚未完成|未能完成|没能完成|暂未完成|(剩余|剩下)的?[^。\n]{0,12}(未|没)(完成|做|写)|后续(再|会)(继续|接着)(完成|做))/;
+
 // ================= 上下文预算（治「跑到一半突然 400」） =================
 // 工具结果是上下文的绝对大头：read_file 5 万字、fetch_url 2 万字、run_shell 3 万字，
 // 一个跑满 25 步的深度调研任务能堆到几十万字符，把模型上下文撑爆——表现是任务跑到一半
@@ -1133,6 +1164,10 @@ function modePrompt(mode) {
     let finalText = "";
     let stopNote = "";
     let honestyRetries = 0;
+    let finishRetries = 0; // 「没做完就收摊」被打回的次数（整个任务累计，不按轮重置）
+    let openLeft = [];     // 收尾时进度档里仍未打勾的条目，用来如实告诉用户还差什么
+    // 进度档所在目录：和下面自动续跑读 PROGRESS.md 的是同一处，别让两边算出不同的路径
+    const progressDir = () => { const ws = getWorkspaceDir(); return baseDir ? path.resolve(ws, baseDir) : ws; };
     let trimmedChars = 0; // 本次任务累计被上下文预算截掉的工具输出字符数
     // 备用渠道换道：主模型挂起或服务端持续报错时，切到用户在设置里显式选好的备用渠道接着跑本任务。
     // 默认关（agent.failover_model 为空）。红线：绝不静默降级——只有用户亲手选了备用渠道才换，换道必须大声播报。
@@ -1354,6 +1389,32 @@ function modePrompt(mode) {
           emit({ type: "text", delta: `\n\n> ⚠️ **成果核验未通过**：${list}，已自动打回要求真实执行。\n\n`, depth });
           continue;
         }
+
+        // 收尾闸门：不调工具了＝它认为做完了。可进度档里还有没打勾的条目、或者它自己承认还有没做的，
+        // 那就是没做完就收摊。打回去，把没打勾的条目原样念给它听——不给模糊的「继续」，给具体的清单。
+        const left = unfinishedMilestones(progressDir());
+        const admits = !left.open.length && UNFINISHED_RE.test(result.text || "");
+        openLeft = left.open;
+        if ((left.open.length || admits) && finishRetries < 2 && Date.now() < deadline - 30000 && !(stopSignal && stopSignal.aborted)) {
+          finishRetries++;
+          const listed = left.open.slice(0, 12).map((t, i) => `${i + 1}. ${t}`).join("\n");
+          history.push({
+            role: "user",
+            content: left.open.length
+              ? `【系统·收尾核验】你停下来了，但工作目录的 PROGRESS.md 里这些条目还没打勾：\n\n${listed}${left.open.length > 12 ? `\n…（共 ${left.open.length} 项未完成）` : ""}\n\n任务没做完不许收尾。现在接着做这些没打勾的（做完一项就 edit_file 把它改成 - [x]），绝不重做已完成的部分。如果其中某项确实做不了——缺权限、缺凭证、需要用户拍板——就把它在 PROGRESS.md 里标成 - [x] 并在条目后面注明「（做不了：原因）」，然后在最终回复里单独列一节「需要你处理」讲清楚。严禁把没做的事说成做完了。`
+              : `【系统·收尾核验】你在回复里说还有没做完的部分，但已经不再动手了。任务没做完不许收尾：现在立即把剩下的做完；如果确实做不了（缺权限、缺凭证、需要用户拍板），就明说是哪一项、卡在哪、需要用户做什么，别用「后续再补」把它糊过去。如果其实已经全部做完了，就直接明确说一句「全部完成」并给出最终交付清单。`,
+          });
+          emit({
+            type: "text",
+            delta: left.open.length
+              ? `\n\n> ⏳ **还没做完，已自动打回继续做**：进度档里还有 ${left.open.length} 项没打勾（${left.open.slice(0, 3).join("、")}${left.open.length > 3 ? " 等" : ""}）。\n\n`
+              : `\n\n> ⏳ **还没做完，已自动打回继续做**：它自己说还有没做完的部分，但已经不动手了。\n\n`,
+            depth,
+          });
+          continue;
+        }
+        // 打回额度用完还没做完 → 交给外层自动续跑：新一轮有新的步数和时间预算，比在这儿硬磨划算
+        if (left.open.length) stopNote = `任务还有 ${left.open.length} 项没做完`;
         break;
       }
 
@@ -1365,6 +1426,7 @@ function modePrompt(mode) {
           name: tc.name,
           depth,
           purpose: tc.input.purpose || tc.input.expert || tc.input.name || tc.input.path || tc.input.url || "",
+          title: toolHeadline(tc.name, tc.input), // 过程区那一行「动词 + 对象」
           input_preview: previewInput(tc),
         });
         const loopKey = tc.name + "\u0000" + JSON.stringify(tc.input || {});
@@ -1393,6 +1455,7 @@ function modePrompt(mode) {
           name: tc.name,
           depth,
           isError: r.isError,
+          outcome: resultOutcome(tc.name, r.content, r.isError), // 过程区那一行的后半截「· 结果」
           preview: String(r.content).slice(0, 800),
         });
         if (!r.isError) {
@@ -1402,17 +1465,22 @@ function modePrompt(mode) {
         return { id: tc.id, name: tc.name, content: String(r.content), isError: r.isError };
       };
 
-      // 一批全是只读工具（搜索/抓网页/读文件）就并发跑。深度研究经常一口气要抓五个链接，
-      // 串行是五次网络等待叠加，并发只花最慢那一次。只要里面有一个会动文件、跑命令或委派专家，
-      // 整批退回串行——那些工具的先后顺序本身就是语义，打乱了就是改了它的意思。
-      const canParallel = result.toolCalls.length > 1 && result.toolCalls.every((tc) => READ_ONLY_TOOLS.includes(tc.name));
+      // 只读工具（搜索/抓网页/读文件）并发跑：深度研究一口气抓五个链接，串行是五次网络等待
+      // 叠加，并发只花最慢那一次。但并发只吃「连续的只读段」——会动文件、跑命令、委派专家的
+      // 工具，先后顺序本身就是语义，打乱了就是改了它的意思，所以它们各自单跑、段间保持原顺序。
+      //
+      // 以前是「整批全只读才并发」，于是 [搜, 搜, 写文件] 这种最常见的组合退回全串行，
+      // 白等一次搜索的时间。切段之后前两个搜索照样并发，写文件仍旧排在它们后面。
+      const groups = splitParallelRuns(result.toolCalls, READ_ONLY_TOOLS);
       let toolResults = [];
       try {
-        if (canParallel) {
-          emit({ type: "parallel", count: result.toolCalls.length, depth });
-          toolResults = await mapPool(result.toolCalls, PARALLEL_MAX, runOne);
-        } else {
-          for (const tc of result.toolCalls) toolResults.push(await runOne(tc));
+        for (const g of groups) {
+          if (g.length > 1) {
+            emit({ type: "parallel", count: g.length, depth });
+            toolResults.push(...(await mapPool(g, PARALLEL_MAX, runOne)));
+          } else {
+            toolResults.push(await runOne(g[0]));
+          }
         }
       } catch (e) {
         // 兜底的第二道：无论如何都别让「已 push 的 assistant + 没 push 的工具结果」这种
@@ -1428,35 +1496,48 @@ function modePrompt(mode) {
       emitFiles();
 
       // 循环检测的提醒紧跟在工具结果后面注入，模型下一步就能看到；同时在界面明说，别让用户干瞪着它转圈
-      const nudges = [];
-      for (const [k, v] of loopHist) if (v.streak >= 3 && !loopNudged.has("c:" + k)) { loopNudged.add("c:" + k); nudges.push(`用完全相同的参数调用 ${k.split("\u0000")[0]} 已连续 ${v.streak} 次拿到完全相同的结果`); }
-      for (const [name, n] of errStreaks) if (n >= 4 && !loopNudged.has("e:" + name)) { loopNudged.add("e:" + name); nudges.push(`${name} 已连续失败 ${n} 次`); }
+      const nudges = [];   // 给模型看的：把事实说准
+      const humanly = [];  // 给用户看的：说清「发生了什么 + 接下来会怎样」，别扔一个术语让人猜
+      for (const [k, v] of loopHist) if (v.streak >= 3 && !loopNudged.has("c:" + k)) {
+        loopNudged.add("c:" + k);
+        const tool = k.split("\u0000")[0];
+        nudges.push(`用完全相同的参数调用 ${tool} 已连续 ${v.streak} 次拿到完全相同的结果`);
+        humanly.push(`同样的参数调了 ${v.streak} 次 \`${tool}\`，每次拿回来的东西一模一样`);
+      }
+      for (const [name, n] of errStreaks) if (n >= 4 && !loopNudged.has("e:" + name)) {
+        loopNudged.add("e:" + name);
+        nudges.push(`${name} 已连续失败 ${n} 次`);
+        humanly.push(`\`${name}\` 连着 ${n} 次都没成功`);
+      }
       if (nudges.length) {
         history.push({ role: "user", content: `【系统·循环检测】${nudges.join("；")}。这是在死路上空转，时间和费用都在烧：立即换思路——换参数、换工具或换一条实现路径；实在无路可走就停下收尾，如实说明卡在哪里，严禁再重复同样的动作。` });
-        emit({ type: "text", delta: `\n\n> ⚠️ **循环检测**：${nudges.join("；")}，已提醒换思路。\n\n`, depth });
+        // 这行是给人看的：一句话说清「卡住了 → 我做了什么 → 你可能要做什么」
+        emit({ type: "text", delta: `\n\n> ⚠️ **它在原地打转了**：${humanly.join("；")}。已经要求它换条路走（换参数、换工具或换个实现方式），走不通就会停下来告诉你卡在哪——不会一直烧时间和额度。你也可以直接点「停下」自己接手。\n\n`, depth });
       }
 
       if (step === maxSteps - 1) stopNote = `已达最大步数（${maxSteps} 步）`;
     }
 
     // 只有「跑满上限」才值得续：手动停止是用户不想再花钱，模型响应超时是模型挂了，续也白续
-    const continuable = stopNote.startsWith("已达最大步数") || stopNote.startsWith("已达最大运行时间");
+    // 「没做完就收摊」和撞上限一样值得续：都属于活儿还在、只是这一轮跑不动了
+    const continuable = stopNote.startsWith("已达最大步数") || stopNote.startsWith("已达最大运行时间") || stopNote.startsWith("任务还有");
     if (!(continuable && roundsUsed < autoRounds && !(stopSignal && stopSignal.aborted))) break;
     roundsUsed++;
     deadline = Date.now() + (config.agent.max_runtime_ms || 1800000); // 新一轮把时间预算重新拉满
     emit({ type: "auto_continue", round: roundsUsed, total: autoRounds, note: stopNote, depth });
+    // stopNote 本身就说明了「没做完」时别再重复一遍，撞上限的才需要补这半句
+    const contWhy = stopNote.startsWith("任务还有") ? `上一轮${stopNote}` : `上一轮${stopNote}，任务还没做完`;
     // 进度档由框架亲手喂进去，不指望模型自己想起来去读——续跑第一步就该看到现场
     let progressDoc = "";
     try {
-      const ws = getWorkspaceDir();
-      const raw = fs.readFileSync(path.join(baseDir ? path.resolve(ws, baseDir) : ws, "PROGRESS.md"), "utf8").trim();
+      const raw = fs.readFileSync(path.join(progressDir(), "PROGRESS.md"), "utf8").trim();
       if (raw) progressDoc = raw.length > 4000 ? raw.slice(0, 4000) + "\n…（进度档过长已截断，完整内容 read_file 自取）" : raw;
     } catch {}
     history.push({
       role: "user",
       content: progressDoc
-        ? `【系统·自动续跑 第 ${roundsUsed}/${autoRounds} 轮】上一轮${stopNote}，任务还没做完，继续。以下是工作目录 PROGRESS.md 的当前内容：\n\n${progressDoc}\n\n只做其中还没完成的部分，绝不重做已完成的事。每完成一个里程碑就 edit_file 更新 PROGRESS.md。全部完成后正常总结收尾。`
-        : `【系统·自动续跑 第 ${roundsUsed}/${autoRounds} 轮】上一轮${stopNote}，任务还没做完，继续。工作目录还没有 PROGRESS.md——先 list_files 看现场确认已经做到哪一步，立即补建 PROGRESS.md 清单，然后只做剩下的部分，绝不重做已完成的事。全部完成后正常总结收尾。`,
+        ? `【系统·自动续跑 第 ${roundsUsed}/${autoRounds} 轮】${contWhy}，继续。以下是工作目录 PROGRESS.md 的当前内容：\n\n${progressDoc}\n\n只做其中还没完成的部分，绝不重做已完成的事。每完成一个里程碑就 edit_file 更新 PROGRESS.md。全部完成后正常总结收尾。`
+        : `【系统·自动续跑 第 ${roundsUsed}/${autoRounds} 轮】${contWhy}，继续。工作目录还没有 PROGRESS.md——先 list_files 看现场确认已经做到哪一步，立即补建 PROGRESS.md 清单，然后只做剩下的部分，绝不重做已完成的事。全部完成后正常总结收尾。`,
     });
     stopNote = "";
     }
@@ -1470,7 +1551,10 @@ function modePrompt(mode) {
         const wrapped = await wrapUp({ history, system, stopNote, emit, depth, stats, llmOverride: L });
         if (wrapped) finalText = wrapped;
       }
-      const notice = `⚠️ ${stopNote}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
+      // 「没做完」和「撞上限」得给不同的话：前者要把还差哪几项摆出来，后者才是叫用户调上限
+      const notice = stopNote.startsWith("任务还有")
+        ? `⚠️ ${stopNote}，自动续跑轮次也用完了。还没打勾的是：${openLeft.slice(0, 5).join("、")}${openLeft.length > 5 ? ` 等 ${openLeft.length} 项` : ""}。直接跟我说「接着上次进度做」就能继续，进度档在工作目录的 PROGRESS.md。`
+        : `⚠️ ${stopNote}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
       finalText = finalText ? `${finalText}\n\n${notice}` : notice;
     }
 
@@ -1497,6 +1581,22 @@ function modePrompt(mode) {
 // 并发上限：抓页面是等网络，开太多既没有更快，还容易被对方站点当成扫站封 IP
 const PARALLEL_MAX = 3;
 
+/**
+ * 把一批工具调用切成若干「可并发的段」：连续的只读工具合成一段（段内并发），
+ * 其余每个自成一段（单独跑）。段的先后顺序＝模型给的原顺序，一步都不许挪——
+ * 「先写文件再读回来」这种前后依赖，顺序错了结果就是错的。
+ */
+function splitParallelRuns(calls, readOnly) {
+  const groups = [];
+  for (const tc of calls || []) {
+    const ro = readOnly.includes(tc.name);
+    const last = groups[groups.length - 1];
+    if (ro && last && last._ro) last.push(tc);
+    else { const g = [tc]; g._ro = ro; groups.push(g); }
+  }
+  return groups;
+}
+
 /** 限流并发跑一批，结果按原顺序返回（工具结果的顺序要和 tool_calls 对得上） */
 async function mapPool(items, limit, fn) {
   const out = new Array(items.length);
@@ -1510,6 +1610,104 @@ async function mapPool(items, limit, fn) {
     })
   );
   return out;
+}
+
+// ================= 执行行（治「看一屏 JSON 不知道它在干嘛」） =================
+// 参考 Codex / Claude Code 的做法：过程区每一步只占一行「动词 + 对象 · 结果」，
+// 原始入参和完整返回一个字没删，收在卡里，想看点开就是。
+// 默认展示的是「发生了什么」，不是「传了什么参数」——后者是排障才要看的东西。
+const TOOL_VERB = {
+  read_file: "读", write_file: "写", edit_file: "改", list_files: "列目录", search_files: "搜文件",
+  run_shell: "命令", run_node: "跑脚本", web_search: "搜", fetch_url: "抓", render_page: "渲染",
+  check_page: "体检", html_to_image: "截图", look_at_image: "看图", generate_image: "生图",
+  generate_video: "生成视频", gen_diagram: "画图表", text_to_speech: "配音", remember: "记住",
+  forget: "忘掉", library_list: "翻资料库", library_read: "读资料", save_skill: "存技能",
+  use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档",
+  delegate_to_expert: "委派专家", delegate_to_team: "委派专家团",
+};
+
+/** 太长的路径/命令只留尾巴：前面那截目录对人没信息量，文件名才有 */
+function tailText(v, n) {
+  const t = String(v == null ? "" : v).replace(/\s+/g, " ").trim();
+  return t.length > n ? "…" + t.slice(-(n - 1)) : t;
+}
+
+/**
+ * 一行说清这一步在干什么：`读 报告.md`、`搜「小红书 标题」`、`命令 npm test`。
+ * 认不出的工具（含 MCP 连接器）退回「工具名 + 第一个像话的入参」，绝不留空——
+ * 留空就等于回到从前那种「⚙ mcp__x__y」，用户还是不知道它在动什么。
+ */
+function toolHeadline(name, input) {
+  const i = input && typeof input === "object" ? input : {};
+  const verb = TOOL_VERB[name] || String(name || "").replace(/^mcp[_:]+/, "").replace(/_/g, " ").slice(0, 20);
+  const q = (v) => "「" + tailText(v, 40) + "」";
+  let obj = "";
+  switch (name) {
+    case "read_file": case "write_file": case "edit_file": case "html_to_image": case "look_at_image":
+      obj = tailText(i.path, 46); break;
+    case "list_files": case "search_files":
+      obj = (i.query ? q(i.query) + " " : "") + tailText(i.path || "", 30); break;
+    case "run_shell":
+      obj = tailText(String(i.command || "").split("\n")[0], 56); break;
+    case "run_node":
+      obj = `${String(i.code || "").split("\n").length} 行 Node`; break;
+    case "web_search":
+      obj = q(i.query); break;
+    case "fetch_url": case "render_page": case "check_page": {
+      const u = String(i.url || i.path || "");
+      obj = tailText(u.replace(/^https?:\/\//, "").replace(/\/$/, ""), 46); break;
+    }
+    case "generate_image": case "generate_video": case "gen_diagram": case "text_to_speech":
+      obj = tailText(i.prompt || i.text || i.spec || "", 46); break;
+    case "ask_user":
+      obj = tailText(i.question || "", 46); break;
+    case "delegate_to_expert":
+      obj = String(i.expert || ""); break;
+    case "delegate_to_team":
+      obj = String(i.team || ""); break;
+    case "use_skill": case "save_skill":
+      obj = String(i.name || ""); break;
+    case "remember": case "forget":
+      obj = tailText(i.text || i.key || "", 40); break;
+    default: {
+      const cand = i.purpose || i.path || i.url || i.query || i.name || i.text ||
+        Object.values(i).find((v) => typeof v === "string" && v.trim());
+      obj = tailText(cand || "", 46);
+    }
+  }
+  // 带书名号的对象自己就分好界了，再补空格反而散：`搜「小红书 标题」`不是`搜 「小红书 标题」`
+  return (verb + (obj ? (obj.startsWith("「") ? "" : " ") + obj : "")).trim();
+}
+
+// 返回的是「数据」的工具：结果就是文件内容/搜索结果本身，第一行是数据不是交代，
+// 拿它当摘要等于把文件第一行糊到界面上。这些一律报「拿回来多少」。
+const DATA_RESULT_TOOLS = new Set([
+  "read_file", "list_files", "search_files", "web_search", "fetch_url", "render_page",
+  "run_shell", "run_node", "library_list", "library_read", "look_at_image", "check_page",
+]);
+
+/**
+ * 一行说清这一步的结果。成功且返回的是数据 → 报量（几条 / 几行 / 几字）；
+ * 其余用工具自己那句交代（"已新建 报告.md（4210 字节）"）；失败就把失败原因原样端上来——
+ * 界面上写个红色「失败」而不说为什么，用户还得展开才知道发生了什么。
+ */
+function resultOutcome(name, content, isError) {
+  const text = String(content == null ? "" : content);
+  const first = (text.trim().split("\n").find((l) => l.trim()) || "").trim();
+  if (isError) return tailText(first, 70) || "失败";
+  if (!text.trim()) return "没有内容返回";
+  if (name === "web_search") {
+    const n = (text.match(/https?:\/\//g) || []).length;
+    if (n) return `${n} 条结果`;
+  }
+  if (name === "list_files" || name === "search_files") {
+    return `${text.split("\n").filter((l) => l.trim()).length} 项`;
+  }
+  if (DATA_RESULT_TOOLS.has(name)) {
+    const lines = text.split("\n").length;
+    return lines > 1 ? `${lines} 行` : `${text.length} 字`;
+  }
+  return first.length > 70 ? first.slice(0, 70) + "…" : first;
 }
 
 function previewInput(tc) {
@@ -1605,4 +1803,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
 }
 
-module.exports = { createAgentRuntime, missingDeliverables, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, makeOwnership };
+module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, makeOwnership };

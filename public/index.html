@@ -204,6 +204,9 @@
   .ava-pick:hover { background: var(--wb-bg-hover); border-color: var(--wb-border); }
   .a-text { line-height: 1.7; word-break: break-word; margin: 3px 0 6px; }
   .a-text p { margin: 6px 0; }
+  /* 流式期间正文被拆成「已定稿 / 正在写」两截（app-01.js paintStream）：display:contents
+     让这两个壳子不生成盒子，排版和「一次渲染完」完全一样，.a-text p 这类选择器也照样命中 */
+  .a-text > .md-done, .a-text > .md-live { display: contents; }
   .a-text h1, .a-text h2, .a-text h3, .a-text h4 { margin: 12px 0 6px; font-size: var(--wb-fs); }
   .a-text h1 { font-size: calc(var(--wb-fs) + 2px); }
   .a-text h2 { font-size: calc(var(--wb-fs) + 1px); }
@@ -263,18 +266,26 @@
   .tag.err { background: color-mix(in srgb, var(--destructive) 14%, transparent); color: var(--wb-err-text); }
   .step-card.failed { border-color: color-mix(in srgb, var(--destructive) 40%, var(--wb-border)); }
   .step-card .desc { color: var(--wb-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  /* 结果摘要跟在同一行末尾：成功报量、失败报原因，不用一张张点开看 */
+  .step-card .out { color: var(--wb-text-3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46%; }
+  .step-card .out.err { color: var(--wb-err-text); }
   .step-card pre { display: none; background: var(--wb-code-bg); color: var(--wb-code-text); padding: 12px; font-size: 13px; line-height: 1.5; max-height: 320px; overflow: auto; }
   .step-card.open pre { display: block; }
   /* 执行过程折叠条（仿官方「已完成 12s ›」） */
   .proc-wrap { margin: 2px 0 8px; }
   .proc-head { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; color: var(--wb-text-3); cursor: pointer; user-select: none; padding: 2px 0; }
   .proc-head:hover { color: var(--wb-text-2); }
+  /* 跑的时候这一行钉在视口顶：过程区展开得再长，也一眼看得到跑到第几步、几步出错、产出几件 */
+  .proc-wrap.running .proc-head { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; padding: 5px 0;
+    background: var(--wb-bg); box-shadow: 0 1px 0 var(--wb-border); }
   .proc-head .arrow { font-size: 13px; display: inline-block; transition: transform var(--wb-t-fast) var(--wb-ease); }
   .proc-wrap.open .proc-head .arrow { transform: rotate(90deg); }
   .proc-warn { color: var(--wb-err-text); background: rgba(229,72,77,.12); border-radius: 6px; padding: 0 6px; font-size: 12px; }
   .proc-body { display: none; padding-left: 10px; border-left: 2px solid var(--wb-border); margin: 4px 0 4px 4px; }
   /* 轨迹条：折叠条上的工具徽章。跑着的亮蓝、栽了的标红、其余灰底不抢眼 */
   .proc-head .trail { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+  /* 里程碑常驻行：占满一行挤到折叠条下面，跟着它一起 sticky —— 过程收着也看得见跑到哪了 */
+  .proc-head .ms-live { flex-basis: 100%; width: 100%; font-size: 12px; color: var(--wb-brand-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .proc-head .tc { font-size: 11px; line-height: 18px; padding: 0 7px; border-radius: 9px; background: var(--wb-bg-hover); color: var(--wb-text-3); white-space: nowrap; cursor: pointer; }
   .proc-head .tc b { font-weight: 600; margin-left: 2px; }
   .proc-head .tc:hover { color: var(--wb-text); }
@@ -413,6 +424,26 @@
   .picker-menu .mi:hover { background: var(--wb-bg-hover); }
   .picker-menu .mi.on { color: var(--wb-brand-text); background: var(--wb-brand-weak); }
   .picker-menu .mi .sub { font-size: 12px; color: var(--wb-text-3); }
+  /* 兜底：任何一条菜单项都不许把菜单撑出屏幕。以前没有上限，一段长说明就能把它撑到
+     一千多像素宽，右对齐的菜单于是往左飞出可视区，字被裁掉一半 */
+  .picker-menu { max-width: min(340px, calc(100vw - 24px)); }
+  .picker-menu .mi > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* 本机 CLI 在跑时：这张卡回答的是「谁在跑、花不花钱、去哪儿改」，不是一排可选项 */
+  .picker-menu.eng { width: 272px; }
+  .picker-menu.eng .ep-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--wb-brand-weak); color: var(--wb-brand-text); }
+  .picker-menu.eng .ep-ic { font-size: 16px; line-height: 1; }
+  .picker-menu.eng .ep-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; }
+  .picker-menu.eng .ep-model { display: block; font-weight: 400; font-size: 12px; color: var(--wb-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-menu.eng .ep-on { color: var(--wb-ok-text); font-size: 13px; }
+  .picker-menu.eng .ep-why { padding: 8px 10px 4px; font-size: 12px; line-height: 1.6; color: var(--wb-text-3); white-space: normal; }
+  .picker-menu.eng .ep-free { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 6px; background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--wb-ok-text); font-size: 11.5px; font-weight: 600; }
+  .picker-menu.eng .ep-act { margin-top: 4px; border-top: 1px solid var(--wb-border); border-radius: 0 0 8px 8px; color: var(--wb-text-2); }
+  /* 「这趟活谁在跑」的常驻小牌子：一行、低调、不抢正文，但一直在 */
+  .run-eng { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; margin: 0 0 8px; padding: 3px 10px 3px 6px; border: 1px solid var(--wb-border); border-radius: 999px; background: var(--wb-bg-side); font-size: 12px; color: var(--wb-text-2); }
+  .run-eng .re-ic { font-size: 13px; line-height: 1; }
+  .run-eng .re-name { font-weight: 600; color: var(--wb-text); }
+  .run-eng .re-sub { color: var(--wb-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-eng .re-free { padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--wb-ok-text); }
   #send { width: 34px; height: 34px; border: none; border-radius: 50%; background: var(--wb-brand-grad); color: #fff; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   #send:disabled { opacity: .45; cursor: not-allowed; }
   .quick-bar { display: flex; align-items: center; gap: 4px; padding: 8px 6px 0; }
@@ -1048,6 +1079,17 @@
   #goal-card .gc-list { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
   #goal-card .gc-item { color: var(--wb-text-2); }
   #goal-card .gc-item.ok { color: var(--wb-text); }
+  /* 进度条：一排勾勾看不出「离终点还有多远」，这一根横条才是扫一眼就懂的那个信息 */
+  #goal-card .gc-bar { height: 4px; margin: 8px 0 2px; border-radius: 999px; background: var(--wb-border); overflow: hidden; }
+  #goal-card .gc-bar i { display: block; height: 100%; border-radius: 999px; background: var(--wb-brand); transition: width .3s var(--wb-ease, ease); }
+  #goal-card.ok .gc-bar i { background: var(--success); }
+  /* 拆解/验收这一步自己歪了，得说出来——不然用户对着不动的进度条以为是活没干好 */
+  #goal-card .gc-note { margin-top: 8px; padding: 6px 8px; border-radius: 8px; background: color-mix(in srgb, var(--wb-warn) 12%, transparent); color: var(--wb-warn); font-size: 12px; line-height: 1.6; }
+  /* 「停了」是个状态，不是沉默：写清为什么停，旁边给一颗能接着跑的按钮 */
+  #goal-card .gc-paused { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--wb-border); color: var(--wb-text-2); font-size: 12px; }
+  #goal-card .gc-paused span { flex: 1; min-width: 0; }
+  #goal-card .gc-go { flex-shrink: 0; padding: 4px 12px; border: 1px solid var(--wb-brand); border-radius: 8px; background: var(--wb-brand); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+  #goal-card .gc-go:hover { filter: brightness(1.06); }
 
   /* ---------- 第45轮 UI 精修（增量，只加不改名） ---------- */
   /* 全局细滚动条：默认的粗滚动条在窄面板里很抢戏 */
