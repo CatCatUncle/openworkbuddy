@@ -627,7 +627,7 @@ function createTurnUI(userText, turnMode, forSid) {
         ? (ev.files || []).filter(f => ev.changed.includes(f.name))
         : changedFiles(ev.files);
       liveOuts += turnOut.length;
-      renderTurnOutputs(body, turnOut, ev.files); // 先算差异，快照要等 applyOutputArrival 才推进
+      renderTurnOutputs(body, turnOut, ev.files, ev); // 先算差异，快照要等 applyOutputArrival 才推进
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
       if (!isReplaying) renderFiles(ev.files);
       // 产出到了不抢版面：以前是「有产出就把右侧预览 / 成果文件面板弹出来」，用户原话：抢版面、丑。
@@ -1126,6 +1126,22 @@ function fileIcon(name) {
 }
 function fmtSize(n) { return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B"; }
 const openDirs = new Set(); // 记住展开状态，刷新列表不回弹
+// 「只看成果」的开关。默认关：面板是文件浏览器，先如实摆全部，用户嫌吵了再收
+let onlyResults = (() => { try { return localStorage.getItem("wb-files-only") === "1"; } catch { return false; } })();
+/**
+ * 这个文件算不算「交到用户手上的成果」。
+ *
+ * 面板里一个真实文件夹长这样：data/ 下十几个抓回来的 json、几个 .py、一份 PROGRESS.md，
+ * 外加一个 .pptx。用户原话：「pptx 格式文件都没重点标记下啊」——那份唯一要交的东西，
+ * 跟中间材料排一样的字重、混在按名字排的序里，得自己一行行找。
+ *
+ * 判据跟对话里的产出卡一致（isDeliverable + 图/网页），不另立一套：同一份东西在两处
+ * 该是同一个身份。PROGRESS.md 这类脚手架被 SCAFFOLD_RE 挡在外面，它是过程账本不是成果。
+ */
+function isResultFile(name) {
+  const base = String(name || "").split("/").pop();
+  return isDeliverable(base) || /\.(png|jpe?g|gif|webp|svg|bmp|ico|html?)$/i.test(base);
+}
 // 时间段记的是**收起过的**那些，不是展开的：默认全展开，所以空集合就是正确的初始状态
 const closedBuckets = new Set();
 /** 在访达/资源管理器里打开文件所在的文件夹并选中它。按钮挂在文件行/卡片上，别冒泡触发预览 */
@@ -1137,12 +1153,37 @@ function revealFile(name, e) {
 }
 const revealBtn = (name) => `<span class="dl rv" data-rv="${esc(name)}" title="打开所在位置">📂</span>`;
 
+/** 面板顶上的「全部 / 只看成果」。全是成果或一件成果都没有时不摆——切了看不出差别，白占一行 */
+function renderFileFilter() {
+  const box = document.getElementById("fp-filter");
+  if (!box) return;
+  const nres = filesCache.filter((f) => isResultFile(f.name)).length;
+  box.hidden = !filesCache.length || nres === 0 || nres === filesCache.length;
+  if (box.hidden) { box.innerHTML = ""; return; }
+  box.innerHTML = `<button class="fp-seg${onlyResults ? "" : " on"}" data-only="0">全部 ${filesCache.length}</button>` +
+    `<button class="fp-seg${onlyResults ? " on" : ""}" data-only="1">只看成果 ${nres}</button>`;
+  box.querySelectorAll(".fp-seg").forEach((b) => { b.onclick = () => {
+    onlyResults = b.dataset.only === "1";
+    try { localStorage.setItem("wb-files-only", onlyResults ? "1" : ""); } catch {}
+    renderFiles(filesCache);
+  }; });
+}
+
 function renderFiles(files) {
   filesCache = files || [];
   const el = document.getElementById("file-list");
-  if (!files || !files.length) { el.innerHTML = '<div style="padding:10px;color:var(--wb-text-3);font-size: 13px">暂无成果文件</div>'; return; }
+  renderFileFilter();
+  // 「只看成果」是个视图开关，不是删除：藏了多少条要如实写在底下，别让人以为文件没了
+  const hiddenN = onlyResults ? filesCache.filter((f) => !isResultFile(f.name)).length : 0;
+  files = onlyResults ? filesCache.filter((f) => isResultFile(f.name)) : filesCache;
+  if (!files.length) {
+    el.innerHTML = onlyResults && filesCache.length
+      ? `<div style="padding:10px;color:var(--wb-text-3);font-size: 13px">这个工作目录里还没有成果文件（${hiddenN} 个中间材料已折起）</div>`
+      : '<div style="padding:10px;color:var(--wb-text-3);font-size: 13px">暂无成果文件</div>';
+    return;
+  }
   const fileRow = (f, nested) =>
-    `<div class="file-item${nested ? " nested" : ""}" style="cursor:pointer" data-name="${esc(f.name)}" title="${esc(f.name)}">
+    `<div class="file-item${nested ? " nested" : ""}${isResultFile(f.name) ? " res" : ""}" style="cursor:pointer" data-name="${esc(f.name)}" title="${esc(f.name)}">
       <span>${fileIcon(f.name)}</span>
       <span style="min-width:0"><div class="name">${esc(f.name.split("/").pop())}</div><div class="meta">${fmtSize(f.size)}</div></span>
       ${revealBtn(f.name)}
@@ -1171,8 +1212,12 @@ function renderFiles(files) {
     (groups[dir] = groups[dir] || []).push(f);
   }
   const curDir = sessionDirs.get(sessionId); // 当前对话的成果文件夹：标「本对话」
-  const dirHead = (key, label, n, mine, tip) =>
-    `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span>${openDirs.has(key) ? "▾" : "▸"}</span><span>📁</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${n}</span><span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">↗</span></div>`;
+  // 成果排前面，同一档里保持原来的顺序（目录内按名字、根目录按最近动过）。
+  // 一个真实文件夹里 data/ 的十几个 json 会把那份 pptx 冲到下面去，用户得自己一行行找
+  const resFirst = (tie) => (a, b2) => (isResultFile(b2.name) ? 1 : 0) - (isResultFile(a.name) ? 1 : 0) || (tie ? tie(a, b2) : 0);
+  const resCount = (list) => list.filter((f) => isResultFile(f.name)).length;
+  const dirHead = (key, label, n, mine, tip, nres) =>
+    `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span>${openDirs.has(key) ? "▾" : "▸"}</span><span>📁</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${nres ? `<b class="res-n">${nres} 份成果</b> · ` : ""}${n}</span><span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">↗</span></div>`;
 
   // 一个文件夹归到哪个时间段，看它**最近动过的那个文件**（不是最老的那个）
   const dirTime = (dir) => groups[dir].reduce((m, f) => Math.max(m, Date.parse(f.mtime) || 0), 0);
@@ -1194,7 +1239,8 @@ function renderFiles(files) {
   }
 
   const demoteRoot = !!curDir && rootFiles.length > 0;
-  let html = demoteRoot ? "" : rootFiles.map(f => fileRow(f, false)).join("");
+  // 根目录这堆本来按 mtime 倒序（服务端就是这么排的），成果提到前面、各档内保持最近优先
+  let html = demoteRoot ? "" : rootFiles.slice().sort(resFirst()).map(f => fileRow(f, false)).join("");
   for (const b of [...buckets.values()].sort((a, b2) => a.order - b2.order)) {
     const n = b.dirs.reduce((s, d) => s + groups[d].length, 0);
     const open = !closedBuckets.has(b.key); // 时间段默认展开，文件夹默认收着——展开的是"有哪些成果"这一层
@@ -1202,21 +1248,22 @@ function renderFiles(files) {
     if (!open) continue;
     // 同一时间段内按"最近动过"排前，本对话的置顶——它一定在「今天」里，但列表长了也得一眼找到
     for (const dir of b.dirs.sort((x, y) => (x === curDir ? -1 : y === curDir ? 1 : dirTime(y) - dirTime(x)))) {
-      html += dirHead(dir, dir, groups[dir].length, dir === curDir, "在 Finder 中打开这个文件夹");
-      if (openDirs.has(dir)) html += groups[dir].sort((a, b2) => a.name.localeCompare(b2.name, "zh")).map(f => fileRow(f, true)).join("");
+      html += dirHead(dir, dir, groups[dir].length, dir === curDir, "在 Finder 中打开这个文件夹", resCount(groups[dir]));
+      if (openDirs.has(dir)) html += groups[dir].sort(resFirst((a, b2) => a.name.localeCompare(b2.name, "zh"))).map(f => fileRow(f, true)).join("");
     }
   }
 
   if (demoteRoot) {
-    html += dirHead(ROOT_KEY, "工作空间根目录（早期对话留下的）", rootFiles.length, false, "在 Finder 中打开工作空间根目录");
+    html += dirHead(ROOT_KEY, "工作空间根目录（早期对话留下的）", rootFiles.length, false, "在 Finder 中打开工作空间根目录", resCount(rootFiles));
     if (openDirs.has(ROOT_KEY)) {
       // 逐字节相同的副本才给清理入口。这类是当年"找不到产物就 cp 一份到根目录"留下的，
       // 原件还在成果文件夹里躺着，所以清掉零信息损失；名字像但内容不同的一个都不碰
       const dupes = rootFiles.filter(f => f.dup_of);
       if (dupes.length) html += `<div class="dup-tidy">这里有 <b>${dupes.length}</b> 个文件跟成果文件夹里的完全相同（同一份东西显示两遍）<button id="btn-tidy">清掉重复的</button></div>`;
-      html += rootFiles.map(f => fileRow(f, true)).join("");
+      html += rootFiles.slice().sort(resFirst()).map(f => fileRow(f, true)).join("");
     }
   }
+  if (hiddenN) html += `<div class="fp-hidden">已折起 ${hiddenN} 个中间材料（脚本 / 数据 / 日志）</div>`;
   el.innerHTML = html;
   el.querySelectorAll(".time-head").forEach(h => h.onclick = () => {
     closedBuckets.has(h.dataset.bucket) ? closedBuckets.delete(h.dataset.bucket) : closedBuckets.add(h.dataset.bucket);
@@ -1598,6 +1645,45 @@ const OUT_ROW_MAX = 6;                                    // 变更清单先露�
 const FILES_LIST_CAP = 500;                               // 服务端 outputFiles() 的截断上限，见 tools.js
 
 /**
+ * 这份文件列表，够不够格给产出区的文件盖「已删除」的章。
+ *
+ * 「不在列表里」= 「已经没了」这一步，只有在列表本身是**同一个工作目录的完整快照**时才成立。
+ * 用户原话：「换了一个文件夹怎么有些文件就给我显示已删除了啊」——四个文件全被划掉，
+ * 磁盘上一个都没少。两条真实路径都会掉进来：
+ *
+ *   1. 回放历史对话。存盘时整份 files 被裁成「这一批变更的那几条」（不然 500 条 × 每批一次
+ *      能把会话文件撑爆），于是回放到第二批时，第一批的产出在第二批的列表里当然找不着；
+ *   2. 换工作目录。name 是相对路径，换了目录就是换了坐标系，新目录的清单说明不了旧目录的事。
+ *
+ * 判据按可靠度从高到低排：服务端明说的（partial/full/root）> 老会话的形状推断 > 兜底的重合度。
+ * 返回 why 是为了能测、也为了排查时说得清是哪条拦的。
+ */
+function reapScope(block, live, ev) {
+  ev = ev || {};
+  if (!Array.isArray(live)) return { ok: false, why: "no-list" };
+  // 回放：服务端明说了这份是裁过的
+  if (ev.partial) return { ok: false, why: "partial" };
+  // 换目录：两套坐标系不能互相判生死
+  const root = ev.root || "", had = block && block.dataset ? block.dataset.root || "" : "";
+  if (root && had && root !== had) return { ok: false, why: "other-root" };
+  // 截断的列表说明不了「不存在」
+  if (ev.full === false || live.length >= FILES_LIST_CAP) return { ok: false, why: "truncated" };
+  // 老会话没有上面这些字段：列表跟 changed 逐条相等，就是存盘裁过的那种形状
+  const chg = ev.changed;
+  if (Array.isArray(chg) && chg.length && chg.length === live.length && live.every((f) => chg.includes(f.name)))
+    return { ok: false, why: "legacy-partial" };
+  // 兜底，只对更老的、连 root 都没有的记录起作用：本块的产出跟这份清单连**同一个顶层目录**
+  // 都不沾边，那多半是换了坐标系，不是「一口气全删了」。
+  // 为什么按顶层目录比、不按「有没有重合的文件名」比：agent 擦水印那种情形正是 8 个中间文件
+  // 全删、只留一个新成品，文件名一个都不重合——但它们在同一个目录里，那是真删，得认。
+  const topOf = (n) => { const i = String(n).indexOf("/"); return i < 0 ? "" : String(n).slice(0, i); };
+  const tops = new Set(live.map((f) => topOf(f.name)));
+  const mine = [...new Set([...(block ? block.querySelectorAll("[data-name]") : [])].map((e) => topOf(e.dataset.name)))];
+  if (mine.length && !mine.some((t) => tops.has(t))) return { ok: false, why: "other-tree" };
+  return { ok: true, why: "" };
+}
+
+/**
  * 把「这一回合中途造出来、后来又被删掉」的文件从产出区撤掉。
  *
  * 之前这个函数只加不减：卡片是每次 files 事件累加的，文件删了卡片留着。
@@ -1608,12 +1694,13 @@ const FILES_LIST_CAP = 500;                               // 服务端 outputFil
  *
  * 判定依据是服务端刚给的完整列表：卡片能挂上来，说明它当时在列表里；现在不在了，就是没了。
  * 两个前提得守住，否则会误杀还活着的文件：
- *   - outputFiles() 到 500 条就截断，截断了的列表说明不了「不存在」，那一轮不回收；
+ *   - 这份列表得**说得了话**：换过工作目录、回放时被裁过、到 500 条截断了的列表，
+ *     一律不能拿来判生死，见 reapScope；
  *   - 变更清单里的行不删，只打上「已删除」——中途造了什么是真实发生过的事，
  *     抹掉等于帮 agent 圆谎；但下载/定位入口要摘掉，留着点了就是 404。
  */
-function reapDeletedOutputs(block, live) {
-  if (!Array.isArray(live) || live.length >= FILES_LIST_CAP) return 0;
+function reapDeletedOutputs(block, live, ev) {
+  if (!reapScope(block, live, ev).ok) return 0;
   const alive = new Set(live.map((f) => f.name));
   let n = 0;
   block.querySelectorAll(".out-card").forEach((c) => {
@@ -1634,7 +1721,7 @@ function reapDeletedOutputs(block, live) {
   return n;
 }
 
-function renderTurnOutputs(body, changed, live) {
+function renderTurnOutputs(body, changed, live, ev) {
   if (!body || !changed || !changed.length) return;
   let block = body.querySelector(":scope > .out-block");
   if (!block) {
@@ -1644,6 +1731,7 @@ function renderTurnOutputs(body, changed, live) {
     // 用户点第一下只看到又一行标题，原话是「点击▸ 本回合产出 (2) 怎么没有反应啊」——
     // 文件躺在第二层里，谁也不会去点第二下。现在标题这一下就把文件摊开；
     // 产出多的时候用「还有 N 个文件」再展开，那是量的问题，不是再折一层。
+    block.dataset.root = (ev && ev.root) || ""; // 记住这块产出属于哪个工作目录，换目录后别拿新清单判它的生死
     block.innerHTML = `<div class="out-hd out-main"><span class="ar">▾</span> 本回合产出 <span class="cn"></span></div>` +
       `<div class="out-body"><div class="out-grid"></div><div class="out-list"></div><div class="out-hd out-more" hidden></div></div>`;
     body.appendChild(block);
@@ -1656,7 +1744,7 @@ function renderTurnOutputs(body, changed, live) {
   const grid = block.querySelector(".out-grid");
   const list = block.querySelector(".out-list");
   // 顺序要紧：先撤掉已删的，再派卡。反过来的话上限还是被死掉的中间文件占着，成品照样进不来
-  reapDeletedOutputs(block, live);
+  reapDeletedOutputs(block, live, ev);
   for (const f of changed) {
     const isHtml = /\.html?$/i.test(f.name);
     const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name);

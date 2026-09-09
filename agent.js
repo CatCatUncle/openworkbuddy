@@ -4,7 +4,7 @@
  * 主 Agent 是"协调者"：可直接干活，也可通过 delegate_to_expert 把子任务委派给专家子智能体。
  */
 
-const { TOOL_DEFS, executeTool, outputFiles, getWorkspaceDir } = require("./tools");
+const { TOOL_DEFS, executeTool, outputFiles, filesScope, getWorkspaceDir } = require("./tools");
 const { loadSkills, SKILLS_DIR } = require("./skills");
 const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
@@ -889,7 +889,8 @@ function modePrompt(mode) {
         baseline.set(f.name, f.mtime);
         if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);
       }
-      emit({ type: "files", files, changed });
+      // root/full 是这份清单的作用域：前端靠它判断能不能拿这份列表给旧产出盖「已删除」
+      emit({ type: "files", files, changed, ...filesScope(files) });
     };
     // 工具一跑完就对一次账，长任务中途就能看到产物，不用等收尾
     const wrapped = (ev) => {
@@ -1177,7 +1178,8 @@ function modePrompt(mode) {
         if (!isNew) continue;
         if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);
       }
-      emit({ type: "files", files, changed });
+      // root/full 是这份清单的作用域：前端靠它判断能不能拿这份列表给旧产出盖「已删除」
+      emit({ type: "files", files, changed, ...filesScope(files) });
       // 长跑可见性：进度档一有更新就把里程碑清单推给前端，时间线卡片实时打勾
       const progName = changed.find((n) => n.split("/").pop() === "PROGRESS.md");
       if (progName) {

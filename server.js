@@ -12,7 +12,7 @@ const { DATA_DIR, dataPath, appPath } = require("./paths");
 const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder } = require("./llm");
-const { outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const { outputFiles, filesScope, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
 const { McpManager } = require("./mcp");
@@ -445,7 +445,10 @@ function recordingEmit(send, events, sessionId) {
       // 但整份清单最多 500 条、每批工具跑完就来一次，原样存会把会话文件撑爆——
       // 只留这一批真正变更的那几条（回放时 renderFiles 被 isReplaying 挡住，用不到全量）
       const chg = ev.changed || [];
-      if (chg.length) events.push({ type: "files", changed: chg, files: (ev.files || []).filter((f) => chg.includes(f.name)) });
+      // partial 是给回放用的实话：存下来的这份 files 已经被裁成「这一批变更」了，不是全量清单。
+      // 前端拿不到全量就不能判定谁没了——早先没这个标记，回放时每来一批就把上一批的产出
+      // 全盖上「已删除」，用户看到的是四个文件全被划掉，其实一个都没删
+      if (chg.length) events.push({ type: "files", changed: chg, files: (ev.files || []).filter((f) => chg.includes(f.name)), partial: true, root: ev.root });
     } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"].includes(ev.type)) {
       // 工具事件盖个时间戳（send 已经发出去了，这里只影响存盘）：回放时轨迹条才算得出每步耗时
       if (ev.type === "tool_use" || ev.type === "tool_result") ev.at = ev.at || Date.now();
@@ -2770,7 +2773,8 @@ app.post("/api/chat", async (req, res) => {
   saveSession(sessionId);
   // 收尾只是刷一遍完整文件列表，不是"本回合有产出"的通报：changed 明确给空，
   // 免得前端拿本地 mtime 猜一把，把工作目录里的旧文件当成新成果又把面板弹出来
-  send({ type: "files", files: outputFiles(), changed: [] });
+  const files0 = outputFiles();
+  send({ type: "files", files: files0, changed: [], ...filesScope(files0) });
   send({ type: "done" });
   if (!res.destroyed && !res.writableEnded) { try { res.end(); } catch {} }
   for (const sub of runState.subscribers) { try { sub.end(); } catch {} }
