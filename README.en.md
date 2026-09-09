@@ -105,6 +105,9 @@ wb engines && wb engines use claude-code   # use a local Claude Code / Codex as 
 
 ## What's new
 
+- **Sep 10** WeChat / WeCom / Official Accounts / QQ can finally receive **files, images, voice notes and stickers** (only Lark could before; every other channel just said "not downloaded in this build"). Lark itself gained voice, stickers and rich-text posts, which used to be dropped whole
+- **Sep 10** Lark **"create an app by QR"**: with lark-cli installed locally it registers a brand-new app for you and fills in the App ID / Secret — you type nothing. Also fixes the real reason Lark kept disconnecting: saving any other channel wiped the stored Lark secret
+- **Sep 10** Settings → About → **Check for updates**: tells you how to upgrade based on how you installed (source checkout vs. installer), and says plainly when it cannot reach GitHub instead of pretending you are up to date
 - **Sep 9** Finishing a task no longer pops the preview / files panel over your chat: the conclusion stays inline, outputs are a row of compact chips (icon, name, size, preview / reveal / download), the Files button shows a badge; only a preview you already have open on that file refreshes in place
 - **Sep 9** Connectors page ships a catalog of **39 one-click presets** (search, databases, Lark, AMap, GitHub…); you only fill in the key, and a missing key blocks the save. **15 more experts and 4 teams**; upgrades add new built-ins without touching your edits
 - **Sep 9** Demo recorder masks temp dirs, username, hostname and bot ids on screen, with a self-check before recording
