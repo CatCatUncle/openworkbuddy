@@ -113,6 +113,7 @@ npm run demo:record -- --prompt "帮我把这份周报做成 PPT" --speed 2 --ou
 
 它会在临时目录里另起一个干净实例（端口 3897，不碰你正在用的 3800），只把你 `config.json` 里的模型配置拷过去，
 IM / MCP / 工作区路径一律不带，录完连目录一起删。产物是 GIF + 同名 mp4；等模型那段长就加 `--speed 2`。
+真录完会自动把 GIF 挂进两份 README 的首屏（已经挂着就不动），你只需要把 `docs/images/demo.gif` 和两份 README 一起提交。
 需要本机装了 ffmpeg（`brew install ffmpeg`）。
 
 ## 测试

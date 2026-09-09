@@ -4212,6 +4212,7 @@ async function main() {
   testI18n();
   testConnectorsAndExperts();
   testOutputArrivalStatic();
+  testDemoReadmeWire();
   testReadmeFrontGate();
   testKeySourcesGate();
   testPackagingAndDemoGate();
@@ -5438,6 +5439,70 @@ function testOutputArrivalStatic() {
   assert(/\.out-block \.out-card/.test(rec) && /c\.click\(\)/.test(rec), "录屏脚本缺「点开产出 chip」那一拍");
   assert(/html\?\|png\|jpe\?g/.test(rec) && !/pptx?\|docx?/.test(rec.slice(rec.indexOf(".out-block .out-card"), rec.indexOf(".out-block .out-card") + 300)), "录屏脚本点 chip 没限定成 app 内能预览的格式（老 Office 会拉起系统程序）");
   console.log("✅ 产出到了不抢版面（静态闸）：不自动弹预览/面板 · files 事件走 outputArrivalPlan · chip 无 iframe/无 role 套娃 · 角标样式 · 词典 6 条 · 录屏替观众点 chip");
+}
+
+/**
+ * 录完 demo 自动挂 README 首屏（scripts/demo-readme.js）：
+ *  - 挂在第一条 --- 分隔线之前，块结构固定；再挂一次不重复；没有分隔线不猜位置
+ *  - CRLF 文件也按它自己的换行挂
+ *  - wireReadmes：两份 README 都挂、第二次全部跳过、GIF 不在仓库里一个都不动
+ *  - 静态闸门：record-demo.js 真录才调 wireReadmes（--dry 不挂）；两份真 README 都有分隔线锚点
+ */
+function testDemoReadmeWire() {
+  const { wireReadme, wireReadmes, ALT } = require("../scripts/demo-readme");
+  const src = "docs/images/demo.gif";
+  const head = "<h1>X</h1>\n\n<p align=\"center\">\n  <b>star</b>\n</p>\n";
+  const md = head + "\n---\n\n## 为什么是它\n";
+  const r1 = wireReadme(md, src, ALT["README.md"]);
+  assert(r1.changed === true, "首次挂没标 changed");
+  const block = `<p align="center">\n  <img src="${src}" width="960" alt="${ALT["README.md"]}">\n</p>\n`;
+  assert(r1.md === head + "\n" + block + "\n---\n\n## 为什么是它\n", "挂的位置/块结构不对：\n" + JSON.stringify(r1.md));
+  assert(r1.md.indexOf(src) < r1.md.indexOf("\n---\n"), "demo 图没挂在第一条分隔线之前");
+  const r2 = wireReadme(r1.md, src, ALT["README.md"]);
+  assert(r2.changed === false && r2.reason === "already" && r2.md === r1.md, "再挂一次应原样返回");
+  assert((r2.md.match(/demo\.gif/g) || []).length === 1, "重复挂了");
+  const r3 = wireReadme("# no separator\n\nbody\n", src, ALT["README.md"]);
+  assert(r3.changed === false && r3.reason === "no-anchor" && r3.md === "# no separator\n\nbody\n", "没有分隔线应该不动");
+  const crlf = "<h1>X</h1>\r\n\r\n---\r\n\r\nbody\r\n";
+  const r4 = wireReadme(crlf, src, "a");
+  assert(r4.changed && !/[^\r]\n/.test(r4.md) && r4.md.includes('<p align="center">\r\n  <img src="' + src), "CRLF 文件应按 CRLF 挂：" + JSON.stringify(r4.md));
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "owb-readme-"));
+  try {
+    fs.mkdirSync(path.join(root, "docs", "images"), { recursive: true });
+    fs.writeFileSync(path.join(root, "docs", "images", "demo.gif"), "GIF89a");
+    fs.writeFileSync(path.join(root, "README.md"), md);
+    fs.writeFileSync(path.join(root, "README.en.md"), head + "\n---\n\n## Why\n");
+    const w1 = wireReadmes(root, path.join(root, "docs", "images", "demo.gif"));
+    assert.deepStrictEqual(w1, ["README.md", "README.en.md"], "两份 README 都该挂上：" + JSON.stringify(w1));
+    const zh = fs.readFileSync(path.join(root, "README.md"), "utf8"), en = fs.readFileSync(path.join(root, "README.en.md"), "utf8");
+    assert(zh.includes(ALT["README.md"]) && en.includes(ALT["README.en.md"]) && !en.includes(ALT["README.md"]), "中英 alt 挂串了");
+    assert(zh.includes('src="docs/images/demo.gif"') && en.includes('src="docs/images/demo.gif"'), "写进 README 的应是仓库相对路径");
+    const w2 = wireReadmes(root, path.join(root, "docs", "images", "demo.gif"));
+    assert.deepStrictEqual(w2, [], "第二次应该全部跳过：" + JSON.stringify(w2));
+    assert(fs.readFileSync(path.join(root, "README.md"), "utf8") === zh, "第二次不该改文件");
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "owb-out-"));
+    try {
+      fs.writeFileSync(path.join(outside, "demo.gif"), "GIF89a");
+      fs.writeFileSync(path.join(root, "README.md"), md);
+      const w3 = wireReadmes(root, path.join(outside, "demo.gif"));
+      assert.deepStrictEqual(w3, [], "GIF 不在仓库里不该挂：" + JSON.stringify(w3));
+      assert(fs.readFileSync(path.join(root, "README.md"), "utf8") === md, "GIF 在仓库外却改了 README");
+    } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+
+  const rec = fs.readFileSync(path.join(__dirname, "..", "scripts", "record-demo.js"), "utf8");
+  assert(/require\("\.\/demo-readme"\)/.test(rec), "record-demo.js 没接 demo-readme");
+  const call = rec.indexOf("wireReadmes(ROOT, ARGS.out)");
+  assert(call > 0, "record-demo.js 没在录完后调 wireReadmes");
+  assert(/if \(!ARGS\.dry\) \{\s*\n\s*const wired = wireReadmes\(ROOT, ARGS\.out\)/.test(rec), "wireReadmes 必须只在真录（非 --dry）时调");
+  assert(call > rec.indexOf('log(`GIF ${ARGS.out}'), "挂 README 应在 GIF 落盘之后");
+  for (const name of ["README.md", "README.en.md"]) {
+    const real = fs.readFileSync(path.join(__dirname, "..", name), "utf8");
+    assert(/\r?\n---\r?\n/.test(real), name + " 没有 --- 分隔线，录完 demo 挂不上首屏");
+    assert(!/demo\.gif/.test(real) || fs.existsSync(path.join(__dirname, "..", "docs", "images", "demo.gif")), name + " 引用了不存在的 docs/images/demo.gif");
+  }
+  console.log("✅ demo 挂 README 首屏：分隔线前固定块·再挂不重复·无锚不猜·CRLF·两份都挂/第二次跳过/仓库外不动·真录才挂·真 README 有锚且不引用不存在的图");
 }
 
 function testLookPrefsStatic() {

@@ -25,6 +25,7 @@
 const { app, BrowserWindow } = require("electron");
 const fs = require("fs");
 const { defaultPairs, maskScript } = require("./demo-mask");
+const { wireReadmes } = require("./demo-readme");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
@@ -245,6 +246,13 @@ app.whenReady().then(async () => {
     log(`GIF ${ARGS.out}  ${(size / 1024 / 1024).toFixed(2)} MB  时长 ${total.toFixed(1)}s  ${ARGS.width}px 宽`);
     if (fs.existsSync(mp4)) log(`MP4 ${mp4}  ${(fs.statSync(mp4).size / 1024 / 1024).toFixed(2)} MB`);
     if (size > 8 * 1024 * 1024) log("GIF 超过 8MB，README 里会加载得慢：试试 --speed 2 或 --width 800");
+    // 真录才挂进 README 首屏（--dry 的片子是验管线的，不上门面）；已经挂过就不重复
+    if (!ARGS.dry) {
+      const wired = wireReadmes(ROOT, ARGS.out);
+      const rel = path.relative(ROOT, ARGS.out).split(path.sep).join("/");
+      if (wired.length) log(`已把 demo 挂进 ${wired.join(" / ")} 首屏；提交时一起加：git add -- ${rel} ${wired.join(" ")}`);
+      else log(`README 没改（已经挂着，或 GIF 不在仓库里）：git add -- ${rel}`);
+    }
     win.destroy();
   } catch (e) {
     console.error("[demo] 失败：", e.message);
