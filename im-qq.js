@@ -153,7 +153,12 @@ function createQQConnection({ getConfig, onMessage, log = () => {} }) {
     if (seen.size > 2000) seen.clear();
 
     const text = stripMention(d.content);
-    if (!text) return;
+    // 图片/文件在 attachments 里（url 常常不带协议头，交给下载方补）。以前只看 content，
+    // 用户发一张图 content 是空的 → 整条消息被丢掉，机器人不吭声
+    const attachments = (Array.isArray(d.attachments) ? d.attachments : [])
+      .filter((a) => a && a.url)
+      .map((a) => ({ url: a.url, fileName: a.filename || "", contentType: a.content_type || "", size: a.size || 0 }));
+    if (!text && !attachments.length) return;
     const isC2C = t === "C2C_MESSAGE_CREATE";
     const openid = isC2C ? d.author?.user_openid || d.author?.id : d.group_openid;
     if (!openid) return;
@@ -164,6 +169,7 @@ function createQQConnection({ getConfig, onMessage, log = () => {} }) {
       openid,
       msgId,
       text,
+      attachments,
       senderName,
       chatName: isC2C ? senderName : "QQ 群",
       reply: (out) => send(isC2C ? "c2c" : "group", openid, out, msgId),

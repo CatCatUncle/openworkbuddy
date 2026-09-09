@@ -822,6 +822,8 @@ var SAVES = [], SAVES_AT = [], POSTS = [], NAV = [], TEST_FAIL = new Set(), REFR
 var STATUS = { feishu: { configured: true, ws: { state: "connected" } }, qq: { configured: false, state: "off" }, wecom_app: { configured: false }, wechat_mp: { configured: false },
   wechat_ilink: { configured: false, state: "off" }, wecom: { configured: true }, dingtalk: { configured: false }, webhook: { configured: true, secret_set: false }, sessions: { count: 3 } };
 var QR = { status: "wait" }, SESS = { count: 3 };
+// 「扫码新建应用」：后端起 lark-cli config init --new，把验证链接渲染成码
+var NEWAPP = { create: { ok: true, url: "https://open.feishu.cn/app/verify?token=abc", qr: "data:image/png;base64,QQ" }, status: { state: "pending" } };
 var saveSettings = async (patch) => { SAVES.push(JSON.parse(JSON.stringify(patch))); SAVES_AT.push(POSTS.length); return true; };
 var refreshImStatus = () => { REFRESHED++; };
 var renderSettings = (k) => { NAV.push(k); };
@@ -836,6 +838,8 @@ window.fetch = async (url, opt) => {
   if (u === "/im/wechat/qrcode") return j({ ok: true, image: "data:image/png;base64,AA", qrcode: "q1" });
   if (u === "/im/wechat/qrcode-status") { await new Promise((r) => setTimeout(r, 4)); return j({ ok: true, status: QR.status, ilink: { bot_id: "b1" } }); }
   if (u === "/im/wechat/disconnect") return j({ ok: true });
+  if (u === "/api/feishu/app/create") return j(NEWAPP.create);
+  if (u === "/api/feishu/app/create/status") return j(NEWAPP.status);
   if (u === "/im/sessions") return j({ count: SESS.count });
   if (u === "/im/sessions/clear") { const n = SESS.count; SESS.count = 0; return j({ ok: true, cleared: n }); }
   return j({});
@@ -911,10 +915,19 @@ const IMPANE_CHECKS = `
 
   // ---- 5. 测活失败：红字、不收起、按钮还是「连接」 ----
   TEST_FAIL.add("/im/wechat/test");
+  // 先只填一半：新加的「缺哪个说哪个」拦在保存之前——用户的飞书就是被一次半截保存清空 secret 的
+  const p_half = POSTS.length;
   wca.querySelector("#im-wecom_app-corp_id").value = "ww";
   wca.querySelector(".im-conn").click();
   await settle();
-  ok("测活失败红字说明", wca.querySelector('[data-r="wecom_app"]').textContent.startsWith("❌"));
+  ok("凭证没填齐：点连接直接说缺哪几个，压根不保存", /^还差 .*AgentId/.test(wca.querySelector('[data-r="wecom_app"]').textContent)
+    && POSTS.slice(p_half).length === 0, wca.querySelector('[data-r="wecom_app"]').textContent + " | " + POSTS.slice(p_half).join(","));
+  for (const [f, v] of [["agent_id", "1000002"], ["secret", "s"], ["token", "tk"], ["aes_key", "k".repeat(43)]]) {
+    wca.querySelector("#im-wecom_app-" + f).value = v;
+  }
+  wca.querySelector(".im-conn").click();
+  await settle();
+  ok("测活失败红字说明", wca.querySelector('[data-r="wecom_app"]').textContent.startsWith("❌"), wca.querySelector('[data-r="wecom_app"]').textContent);
   ok("测活失败不收起、按钮仍是「连接」", !wca.classList.contains("packed") && wca.querySelector(".im-conn").textContent === "连接");
   TEST_FAIL.delete("/im/wechat/test");
 
@@ -925,7 +938,11 @@ const IMPANE_CHECKS = `
   await settle();
   ok("第一下只是问一句", fb.textContent === "确认断开？" && fb.classList.contains("danger"));
   ok("第一下没动凭证也没保存", SAVES.length === n0 && fsC.querySelector("#im-feishu-app_id").value === "cli_x");
-  ok("问一句的红是真画出来的", getComputedStyle(fb).color !== getComputedStyle(qq.querySelector(".im-conn")).color);
+  // 颜色是渐变过去的（按钮有 transition），25ms 抽一次会抽到过渡中间 → 等它变完再断言
+  const otherBtn = qq.querySelector(".im-conn");
+  for (let i = 0; i < 30 && getComputedStyle(fb).color === getComputedStyle(otherBtn).color; i++) await wait(25);
+  ok("问一句的红是真画出来的", getComputedStyle(fb).color !== getComputedStyle(otherBtn).color,
+    getComputedStyle(fb).color + " vs " + getComputedStyle(otherBtn).color);
   STATUS.feishu = { configured: false, ws: { state: "off" } };
   fb.click();
   await settle();
@@ -976,6 +993,38 @@ const IMPANE_CHECKS = `
   pane.querySelector("#im-idle").value = "36";
   pane.querySelector("#im-save").click(); await settle();
   ok("保存全部带上闲置小时", SAVES[SAVES.length - 1].im.session_idle_hours === 36);
+
+  // ---- 11. 扫码新建应用：用户问过两次「不能扫码连机器人吗」 ----
+  // 机器人在飞书就是一个「应用」，平台只认 app_id/app_secret，扫码换不来这两串；
+  // 但可以扫码把应用建出来 —— 建完凭证由后端接管，用户一个字都不用手打。
+  const na = fsC.querySelector('[data-newapp] [data-act="newapp"]');
+  ok("飞书卡上有「扫码新建应用」这颗按钮", !!na && na.textContent.includes("扫码新建应用"), na && na.outerHTML);
+  ok("只有飞书有：QQ/企微应用这些没有这颗按钮（它们没有 lark-cli 这条路）",
+    !qq.querySelector('[data-act="newapp"]') && !wca.querySelector('[data-act="newapp"]') && pane.querySelectorAll('[data-act="newapp"]').length === 1);
+  const naBox = fsC.querySelector('[data-newapp-qr="feishu"]');
+  ok("二维码区默认藏着", disp(naBox) === "none");
+  NEWAPP.status = { state: "pending" };
+  na.click();
+  await settle();
+  ok("点了就去后端起 lark-cli", POSTS.includes("/api/feishu/app/create"));
+  ok("二维码显出来了，图是后端给的那张", disp(naBox) !== "none" && naBox.querySelector("img").src === "data:image/png;base64,QQ");
+  ok("同时给一条可以直接点开的链接（扫不了码就用这个）",
+    naBox.querySelector('[data-newapp-link="feishu"]').href === "https://open.feishu.cn/app/verify?token=abc");
+  ok("按钮先禁用，别让人连点建出一堆应用", na.disabled);
+  // 建成：凭证由后端接管，前端只把不敏感的 App ID 填回去
+  NEWAPP.status = { state: "ok", app_id: "cli_newone" };
+  for (let i = 0; i < 60 && disp(naBox) !== "none"; i++) await wait(100);
+  ok("建成后二维码收起、按钮解禁", disp(naBox) === "none" && !na.disabled);
+  ok("App ID 自动填回输入框", fsC.querySelector("#im-feishu-app_id").value === "cli_newone", fsC.querySelector("#im-feishu-app_id").value);
+  ok("Secret 一个字节都不回前端（留空，后端已存）", fsC.querySelector("#im-feishu-app_secret").value === "");
+  ok("建成的话写在卡上，不是只弹个 alert", /建好了/.test(fsC.querySelector('[data-newapp-r="feishu"]').textContent));
+  // 负向控制：建失败得说人话，不能一直转圈
+  NEWAPP.create = { error: "lark-cli 没装：先跑 npx @larksuite/cli@latest install" };
+  na.click();
+  await settle();
+  const naR = fsC.querySelector('[data-newapp-r="feishu"]');
+  ok("建不出来就红字说原因、二维码不留在页面上", naR.textContent.startsWith("❌") && /没装/.test(naR.textContent) && disp(naBox) === "none", naR.textContent);
+  ok("失败后按钮解禁，可以再试", !na.disabled);
   return names;
 })();
 `;
@@ -2450,7 +2499,7 @@ app.whenReady().then(async () => {
       await win10.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(IMPANE_HTML));
       const names10 = await win10.webContents.executeJavaScript(IMPANE_STUBS + "\n" + IMPANE_SRC + "\n" + IMPANE_CHECKS, true);
       for (const n of names10) console.log("  ✓ " + n);
-      console.log(`✅ 前端：助理设置页（四分区·双栏·连上收起·连接=保存再测活·取消连接两步且只清自己·微信取码/断开·清会话两步）${names10.length} 项通过`);
+      console.log(`✅ 前端：助理设置页（四分区·双栏·连上收起·连接=保存再测活·凭证没填齐先拦住·取消连接两步且只清自己·微信取码/断开·扫码新建飞书应用·清会话两步）${names10.length} 项通过`);
     } finally {
       if (!win10.isDestroyed()) win10.destroy();
     }

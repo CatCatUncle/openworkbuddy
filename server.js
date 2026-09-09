@@ -500,6 +500,13 @@ app.get("/api/info", (_req, res) => {
   });
 });
 
+// 版本 / 更新检查。查的是 GitHub Releases，最快 6 小时一次（force=1 强查）。
+// 界面上「有没有新版」和「你这种装法怎么升」是一起给的——只报版本号等于没说。
+const updater = require("./updater");
+app.get("/api/update", async (req, res) => {
+  res.json(await updater.checkUpdate({ force: req.query.force === "1" }));
+});
+
 app.get("/api/files", (_req, res) => res.json(outputFiles()));
 
 // 助理身份：界面一进来就要拿它画头像，所以单开一个轻接口，不用为了个名字去拉整份设置
@@ -696,14 +703,12 @@ app.post("/api/settings", (req, res) => {
     }
     config.im = config.im || {};
     if (b.im) {
-      if (b.im.feishu) Object.assign((config.im.feishu = config.im.feishu || {}), pick(b.im.feishu, ["app_id", "app_secret", "verification_token", "doc_app_id", "doc_app_secret"]));
-      if (b.im.qq) Object.assign((config.im.qq = config.im.qq || {}), pick(b.im.qq, ["app_id", "app_secret"]));
-      if (b.im.wecom_app) Object.assign((config.im.wecom_app = config.im.wecom_app || {}), pick(b.im.wecom_app, ["corp_id", "agent_id", "secret", "token", "aes_key"]));
-      if (b.im.wechat_mp) Object.assign((config.im.wechat_mp = config.im.wechat_mp || {}), pick(b.im.wechat_mp, ["app_id", "app_secret", "token", "aes_key"]));
-      if (b.im.wecom_bot_webhook !== undefined) config.im.wecom_bot_webhook = b.im.wecom_bot_webhook;
-      if (b.im.dingtalk_webhook !== undefined) config.im.dingtalk_webhook = String(b.im.dingtalk_webhook).trim();
-      if (b.im.dingtalk_secret !== undefined) config.im.dingtalk_secret = String(b.im.dingtalk_secret).trim();
-      if (b.im.webhook_secret !== undefined) config.im.webhook_secret = b.im.webhook_secret;
+      const clear = new Set(Array.isArray(b.im.clear) ? b.im.clear.map(String) : []);
+      if (b.im.feishu) imAssign(config.im.feishu = config.im.feishu || {}, b.im.feishu, ["app_id", "app_secret", "verification_token", "doc_app_id", "doc_app_secret"], clear, "feishu.");
+      if (b.im.qq) imAssign(config.im.qq = config.im.qq || {}, b.im.qq, ["app_id", "app_secret"], clear, "qq.");
+      if (b.im.wecom_app) imAssign(config.im.wecom_app = config.im.wecom_app || {}, b.im.wecom_app, ["corp_id", "agent_id", "secret", "token", "aes_key"], clear, "wecom_app.");
+      if (b.im.wechat_mp) imAssign(config.im.wechat_mp = config.im.wechat_mp || {}, b.im.wechat_mp, ["app_id", "app_secret", "token", "aes_key"], clear, "wechat_mp.");
+      imAssign(config.im, b.im, ["wecom_bot_webhook", "dingtalk_webhook", "dingtalk_secret", "webhook_secret"], clear, "");
       if (b.im.session_idle_hours !== undefined) config.im.session_idle_hours = Math.max(0, Math.min(720, +b.im.session_idle_hours || 0));
     }
     if (b.media) {
@@ -1544,13 +1549,25 @@ function larkRun(args, { timeout = 60000, cwd } = {}) {
   });
 }
 function larkJson(s) { try { return JSON.parse(String(s).trim()); } catch { return null; } }
+const larkCli = require("./lark-cli");
+/** 读 lark-cli 当前绑定的应用凭证；读不到返回 null */
+async function larkConfig() {
+  return larkCli.parseConfigShow((await larkRun(["config", "show"], { timeout: 15000 })).stdout);
+}
+/** 把 lark-cli 里的凭证搬进飞书通道并重启长连接（新建和导入两条路都走这里） */
+function adoptLarkCreds(cfg) {
+  config.im = config.im || {};
+  config.im.feishu = Object.assign(config.im.feishu || {}, { app_id: cfg.appId, app_secret: cfg.appSecret });
+  saveConfig();
+  if (imBridge) imBridge.startFeishuWs(true).catch((e) => console.warn("[飞书] 长连接重启失败:", e.message));
+}
 
 app.get("/api/feishu/lark-cli", async (_req, res) => {
   fs.mkdirSync(LARK_TMP, { recursive: true });
   const v = await larkRun(["--version"], { timeout: 15000 });
   if (!v.ok) return res.json({ installed: false, install_cmd: "npx @larksuite/cli@latest install" });
   const version = (v.stdout.match(/[\d.]+/) || [""])[0];
-  const cfg = larkJson((await larkRun(["config", "show"], { timeout: 15000 })).stdout.split("\n\nConfig file path")[0]);
+  const cfg = await larkConfig();
   // 只回布尔和非敏感字段，app_secret 一个字节都不出后端
   res.json({
     installed: true, version,
@@ -1565,15 +1582,11 @@ app.get("/api/feishu/lark-cli", async (_req, res) => {
 // 把 lark-cli 里已经配好的应用凭证搬进 OpenWorkBuddy 的飞书通道，省掉手动复制两串东西
 app.post("/api/feishu/lark-cli/import", async (_req, res) => {
   fs.mkdirSync(LARK_TMP, { recursive: true });
-  const r = await larkRun(["config", "show"], { timeout: 15000 });
-  const cfg = larkJson(r.stdout.split("\n\nConfig file path")[0]);
+  const cfg = await larkConfig();
   if (!cfg || !cfg.appId || !cfg.appSecret) {
-    return res.status(400).json({ error: "lark-cli 还没配置应用凭证，先跑 lark-cli config init" });
+    return res.status(400).json({ error: "lark-cli 还没配置应用凭证，先「扫码新建应用」，或自己跑 lark-cli config init" });
   }
-  config.im = config.im || {};
-  config.im.feishu = Object.assign(config.im.feishu || {}, { app_id: cfg.appId, app_secret: cfg.appSecret });
-  saveConfig();
-  if (imBridge) imBridge.startFeishuWs(true).catch((e) => console.warn("[飞书] 长连接重启失败:", e.message));
+  adoptLarkCreds(cfg);
   res.json({ ok: true, app_id: cfg.appId }); // secret 不回前端
 });
 
@@ -1594,6 +1607,73 @@ app.post("/api/feishu/lark-cli/bind", (_req, res) => {
   );
   child.on("error", (e) => { if (!res.headersSent) res.status(400).json({ error: "lark-cli 没装或调不起来：" + e.message }); });
   try { child.stdin.end(f.app_secret + "\n"); } catch {}
+});
+
+// ---- 一键新建飞书应用：全程不用手打 app_id / app_secret ----
+// 用户问过两次「不能扫码连机器人吗」。直答是：机器人在飞书这边就是一个「应用」，平台只认
+// app_id/app_secret，扫码换不来这两串。但 lark-cli 的 `config init --new` 能**替你新建一个应用**——
+// 它阻塞着打印一条验证链接，用户在浏览器里点完，凭证就落进 ~/.lark-cli/config.json。
+// 我们把链接变成二维码给用户扫，建完直接导进飞书通道 → 一个字都不用手打。
+let larkNew = null; // { url, state, error, app_id, child, startedAt }
+app.post("/api/feishu/app/create", async (_req, res) => {
+  fs.mkdirSync(LARK_TMP, { recursive: true });
+  if (larkNew && larkNew.child) { try { larkNew.child.kill(); } catch {} }
+  const before = await larkConfig();
+  // lark-cli 在 Agent 环境里会拒绝新建，把那两个标记摘掉；同时避免继承本进程的杂环境
+  const env = { ...process.env, PATH: shellPath() };
+  delete env.OPENCLAW_HOME; delete env.HERMES_HOME;
+  let out = "";
+  const child = require("child_process").spawn(
+    "lark-cli", ["config", "init", "--new", "--brand", "feishu", "--lang", "zh"],
+    { cwd: LARK_TMP, env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  child.stdout.on("data", (c) => (out += c));
+  child.stderr.on("data", (c) => (out += c));
+  child.on("error", (e) => { if (larkNew) { larkNew.state = "error"; larkNew.error = larkCli.explainLarkError(e.message); } });
+  child.on("close", async () => {
+    if (!larkNew || larkNew.child !== child) return; // 已被新的一轮顶掉
+    const cfg = await larkConfig();
+    if (cfg && cfg.appId && cfg.appSecret && (!before || cfg.appId !== before.appId || cfg.appSecret !== before.appSecret)) {
+      adoptLarkCreds(cfg);
+      larkNew.state = "ok"; larkNew.app_id = cfg.appId;
+    } else if (larkNew.state === "pending") {
+      larkNew.state = "error"; larkNew.error = larkCli.explainLarkError(out) || "应用没建成，凭证没变化";
+    }
+  });
+  larkNew = { url: "", state: "pending", error: "", app_id: "", child, startedAt: Date.now() };
+
+  // 等它把验证链接打出来（一般 1~3 秒）；拿到就出二维码，拿不到就如实说
+  const url = await new Promise((resolve) => {
+    const t0 = Date.now();
+    const tick = setInterval(() => {
+      const u = larkCli.verifyUrlOf(out);
+      if (u || child.exitCode !== null || Date.now() - t0 > 30000) { clearInterval(tick); resolve(u); }
+    }, 200);
+  });
+  if (!url) {
+    try { child.kill(); } catch {}
+    if (larkNew) larkNew.state = "error";
+    return res.status(400).json({ error: larkCli.explainLarkError(out) });
+  }
+  larkNew.url = url;
+  const png = "newapp-" + Date.now() + ".png";
+  await larkRun(["auth", "qrcode", url, "-o", png, "--size", "256"], { timeout: 20000 });
+  let qr = null;
+  try {
+    qr = "data:image/png;base64," + fs.readFileSync(path.join(LARK_TMP, png)).toString("base64");
+    fs.unlinkSync(path.join(LARK_TMP, png));
+  } catch {}
+  res.json({ ok: true, url, qr });
+});
+
+app.get("/api/feishu/app/create/status", (_req, res) => {
+  if (!larkNew) return res.json({ state: "idle" });
+  if (larkNew.state === "pending" && Date.now() - larkNew.startedAt > 15 * 60 * 1000) {
+    try { larkNew.child.kill(); } catch {}
+    larkNew.state = "error"; larkNew.error = "等了 15 分钟没完成，重新点一次";
+  }
+  // app_id 不敏感（前端本来就要显示），app_secret 一个字节都不出后端
+  res.json({ state: larkNew.state, error: larkNew.error || null, app_id: larkNew.app_id || "", url: larkNew.url || "" });
 });
 
 // 设备码流程：start 拿二维码 → 用户在飞书里扫 → 后台那条 --device-code 自己会跑完 → status 变 ok
@@ -1917,10 +1997,18 @@ app.post("/api/cache/clear", async (_req, res) => {
   res.json({ ok: true, freed: Math.max(0, before.total - after.total), before: before.total, after: after.total });
 });
 
-function pick(obj, keys) {
-  const out = {};
-  for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k];
-  return out;
+// IM 凭证专用的合并：空字符串不覆盖已经存好的值，除非「取消连接」在 im.clear 里点了名。
+// 起因是一个能把人坑惨的组合——设置页里任何一次保存（点某张卡的「连接」也算）都会把所有卡的输入框
+// 原样回写；输入框只要因为任何原因是空的（只填了一半就点连接、渲染时值没进去、浏览器清了密码框），
+// 已经存好的 App Secret 就被一行空串抹掉，通道第二天就连不上，界面还只写「未连接」。
+// 现在的规矩：想清空必须显式说要清哪个字段（"feishu.app_secret" / 顶层直接写字段名）。
+function imAssign(target, incoming, keys, clear, prefix) {
+  for (const k of keys) {
+    if (incoming[k] === undefined) continue;
+    const v = typeof incoming[k] === "string" ? incoming[k].trim() : incoming[k];
+    if (v === "" && String(target[k] || "") !== "" && !clear.has(prefix + k)) continue; // 留着旧的
+    target[k] = v;
+  }
 }
 
 app.get("/api/skills", (_req, res) =>
