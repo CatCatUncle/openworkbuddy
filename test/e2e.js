@@ -5433,7 +5433,11 @@ function testOutputArrivalStatic() {
   assert(/\.out-card \{ position: relative; display: inline-flex/.test(html), "产出 chip 不是 inline-flex 紧凑行");
   assert(!/\.out-thumb iframe/.test(html) && !/width: 240px/.test(html.slice(html.indexOf(".out-card {"), html.indexOf(".out-card {") + 400)), "index.html 还留着大卡 / iframe 缩略图样式");
   for (const k of ['"预览"', '"点击预览"', '"点击用系统程序打开"', '"在浏览器打开"', '"打开所在位置"', '"下载"']) assert(dict.includes(k + ":"), "词典缺 " + k);
-  console.log("✅ 产出到了不抢版面（静态闸）：不自动弹预览/面板 · files 事件走 outputArrivalPlan · chip 无 iframe/无 role 套娃 · 角标样式 · 词典 6 条");
+  // 录屏脚本以前靠「完成后自动弹预览」把成果亮出来；现在不弹了，得替观众点一下 chip，而且只点 app 里能预览的格式
+  const rec = fs.readFileSync(path.join(__dirname, "..", "scripts", "record-demo.js"), "utf8");
+  assert(/\.out-block \.out-card/.test(rec) && /c\.click\(\)/.test(rec), "录屏脚本缺「点开产出 chip」那一拍");
+  assert(/html\?\|png\|jpe\?g/.test(rec) && !/pptx?\|docx?/.test(rec.slice(rec.indexOf(".out-block .out-card"), rec.indexOf(".out-block .out-card") + 300)), "录屏脚本点 chip 没限定成 app 内能预览的格式（老 Office 会拉起系统程序）");
+  console.log("✅ 产出到了不抢版面（静态闸）：不自动弹预览/面板 · files 事件走 outputArrivalPlan · chip 无 iframe/无 role 套娃 · 角标样式 · 词典 6 条 · 录屏替观众点 chip");
 }
 
 function testLookPrefsStatic() {
