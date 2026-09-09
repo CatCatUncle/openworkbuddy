@@ -1,14 +1,18 @@
 async function renderHubMcp(box) {
   box.innerHTML = '<div class="hub-empty">加载中…</div>';
-  const data = await fetch("/api/mcp").then(r => r.json()).catch(() => ({ servers: [], total_tools: 0 }));
+  const [data, cat] = await Promise.all([
+    fetch("/api/mcp").then(r => r.json()).catch(() => ({ servers: [], total_tools: 0 })),
+    fetch("/api/mcp/catalog").then(r => r.json()).catch(() => ({ items: [], categories: [], tools: {} })),
+  ]);
   const list = data.servers
     .map((sv, i) => ({ sv, i }))
     .filter(({ sv }) => (!hubState.mine || sv.connected) && hubMatch(hubState.q, sv.name, sv.command, sv.url, (sv.args || []).join(" ")));
-  // 原样存回去用的形状：远程的只回 name+url，请求头后端会沿用原来那份（GET 不回令牌）
+  // 原样存回去用的形状：远程只回 name+url，本地只回 name+command+args。
+  // 请求头和环境变量里都是令牌，GET 只给键名；POST 不带它们时后端沿用原来那份，别把 Key 洗没了。
   const isRemote = sv => sv.transport === "streamable-http" || (!sv.command && !!sv.url);
   const keep = sv => isRemote(sv)
     ? { name: sv.name, url: sv.url }
-    : { name: sv.name, command: sv.command, args: sv.args, env: sv.env };
+    : { name: sv.name, command: sv.command, args: sv.args };
   // 插件声明的服务器归插件管：存回 config 会把它复制成一条我们自己的配置，卸载插件也删不掉了
   const ownServers = () => data.servers.filter(sv => !sv.plugin).map(keep);
   const save = async (servers) => {
@@ -19,6 +23,33 @@ async function renderHubMcp(box) {
     if (!resp.ok) toast("❌ " + (d.error || "保存失败"));
     renderHubBody();
   };
+  // ---- 推荐连接器（预设目录）：搜索框一起过滤；「只看已连接」时不显示 ----
+  const configured = new Set(data.servers.map(sv => sv.name));
+  const items = cat.items || [];
+  const tools = cat.tools || {};
+  const presets = hubState.mine ? [] : items.filter(it => hubMatch(hubState.q, it.name, it.label, it.desc, it.category));
+  const keyCount = it => Object.keys(it.env || {}).length + Object.keys(it.headers || {}).length;
+  const missingTool = it => it.needs && !tools[it.needs] ? it.needs : "";
+  const presetCard = it => {
+    const on = configured.has(it.name), miss = missingTool(it), keys = keyCount(it);
+    return `<div class="ex-card" data-pi="${items.indexOf(it)}">
+      ${on ? '<span class="flag">已接入</span>' : miss ? `<span class="flag" style="color:var(--wb-err-text)">没找到 ${esc(miss)}</span>` : ""}
+      <div class="hd"><div class="av">${it.icon || "🔌"}</div>
+        <div class="nm"><span>${esc(it.label || it.name)}</span><span class="al">${esc(it.name)}</span></div></div>
+      <div class="ds">${esc(it.desc || "")}</div>
+      <div class="tg">${it.kind === "http" ? "<i>远程</i>" : `<i>${esc(String(it.command || "").split(/[\\/]/).pop())}</i>`}${keys ? `<i>要填 ${keys} 个 Key</i>` : "<i>免 Key</i>"}${it.docs ? `<a class="mcp-docs-link" href="${esc(it.docs)}" target="_blank" rel="noopener">去哪拿 →</a>` : ""}</div>
+      <div class="ops"><button class="mcp-use${on ? "" : " primary"}"${on ? " disabled" : ""}>${on ? "已接入" : "接入"}</button></div>
+    </div>`;
+  };
+  const presetSec = !presets.length ? "" : `
+    <div class="hub-sec-title" style="margin-top:22px">推荐连接器
+      <span class="sub">点「接入」我会把启动命令填好，要 Key 的填上就能连；都是官方或社区现成的 MCP 服务器</span></div>
+    ${!tools.uvx && presets.some(it => it.needs === "uvx") ? '<div class="hub-desc">本机没找到 uvx：标着 uvx 的连接器要先装 uv（macOS 装法：brew install uv）</div>' : ""}
+    ${!tools.npx && presets.some(it => it.needs && it.needs !== "uvx") ? '<div class="hub-desc">本机没找到 npx：先装 Node.js（自带 npx）再来接本地连接器</div>' : ""}
+    ${(cat.categories || []).map(c => {
+      const its = presets.filter(it => it.category === c);
+      return its.length ? `<div class="hub-desc" style="margin-top:12px">${esc(c)}</div><div class="card-grid">${its.map(presetCard).join("")}</div>` : "";
+    }).join("")}`;
   box.innerHTML = `
     <div class="hub-sec-title" style="margin-top:14px">已接入的外部工具
       <span class="sub">通过 MCP（本地 stdio / 远程 Streamable HTTP）给智能体接外部能力，当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入，任务里可直接调用</span></div>
@@ -31,7 +62,7 @@ async function renderHubMcp(box) {
             <div class="nm"><span>${esc(sv.name)}</span><span class="al" style="color:var(${sv.connected ? "--wb-ok" : "--wb-err"})">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
           <div class="ds" style="font-family:var(--mono,ui-monospace,monospace);font-size: 12px;word-break:break-all">${isRemote(sv)
             ? `<b style="font-family:inherit;opacity:.6">远程 ·</b> ` + esc(sv.url) + ((sv.header_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.header_keys.length} 个请求头：${esc(sv.header_keys.join("、"))}）</span>` : "")
-            : `<b style="font-family:inherit;opacity:.6">本地 ·</b> ` + esc(sv.command) + " " + esc((sv.args || []).join(" "))}</div>
+            : `<b style="font-family:inherit;opacity:.6">本地 ·</b> ` + esc(sv.command) + " " + esc((sv.args || []).join(" ")) + ((sv.env_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.env_keys.length} 个环境变量：${esc(sv.env_keys.join("、"))}）</span>` : "")}</div>
           <div class="tg">${sv.connected
             ? (sv.tools || []).slice(0, 8).map(t => `<i title="${esc(t.description || "")}">${esc(t.name)}</i>`).join("") + ((sv.tools || []).length > 8 ? `<i>…共 ${sv.tools.length} 个</i>` : "")
             : `<i style="color:var(--wb-err-text)">${esc(sv.error || "命令启动失败或握手超时，详见应用日志")}</i>`}</div>
@@ -39,9 +70,9 @@ async function renderHubMcp(box) {
             ? '<button disabled title="这条是插件声明的，要去「插件」页卸载整个插件">插件提供</button>'
             : '<button class="mcp-del">删除</button>'}</div>
         </div>`).join("")}
-      ${list.length ? "" : `<div class="hub-empty">${hubState.mine ? "没有已连接的连接器" : "还没有连接器"}</div>`}
+      ${list.length ? "" : `<div class="hub-empty">${hubState.mine ? "没有已连接的连接器" : "还没有连接器，从下面的推荐里挑一个点「接入」"}</div>`}
     </div>
-    <div class="ex-editor" id="mcp-add-form" style="display:none">
+    <div class="ex-editor" id="mcp-add-form" style="display:none;margin-top:14px">
       <div class="hub-sec-title">添加连接器
         <span class="sub">本地进程走 stdio；托管在别人服务器上的走 Streamable HTTP，填地址就行</span></div>
       <div class="row" style="gap:14px">
@@ -50,14 +81,19 @@ async function renderHubMcp(box) {
       </div>
       <div class="row"><div style="flex:1 1 150px"><label>名称</label><input id="mcp-name" placeholder="filesystem"></div>
         <div class="mcp-f-stdio" style="flex:1 1 120px"><label>命令</label><input id="mcp-cmd" placeholder="npx"></div>
-        <div class="mcp-f-stdio" style="flex:2 1 320px"><label>参数（空格分隔）</label><input id="mcp-args" placeholder="-y @modelcontextprotocol/server-filesystem /Users/你的用户名/Documents"></div>
+        <div class="mcp-f-stdio" style="flex:2 1 320px"><label>参数（空格分隔）</label><input id="mcp-args" placeholder="-y @modelcontextprotocol/server-filesystem ~/Documents"></div>
         <div class="mcp-f-http" style="flex:2 1 320px;display:none"><label>地址</label><input id="mcp-url" placeholder="https://example.com/mcp"></div>
         <div class="mcp-f-http" style="flex:2 1 320px;display:none"><label>请求头（可选，每行 Key: Value）</label><input id="mcp-headers" placeholder="Authorization: Bearer 你的令牌"></div></div>
-      <div style="display:flex;gap:8px;align-items:center"><button class="btn-brand" id="mcp-add">添加并连接</button>
-        <button id="mcp-cancel" style="padding:6px 14px">取消</button><span class="ab-empty" id="mcp-msg"></span></div>
-    </div>`;
+      <div class="row"><div class="mcp-f-stdio" style="flex:1 1 100%"><label>环境变量 <span class="lh">API Key 之类放这里，每行一个 KEY=值，不需要就空着</span></label>
+        <textarea id="mcp-env" rows="2" placeholder="BRAVE_API_KEY=你的 Key"></textarea></div></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn-brand" id="mcp-add">添加并连接</button>
+        <button id="mcp-cancel" style="padding:6px 14px">取消</button>
+        <a id="mcp-docs" href="#" target="_blank" rel="noopener" style="display:none;font-size:13px">去哪拿 Key →</a>
+        <span class="ab-empty" id="mcp-msg"></span></div>
+    </div>` + presetSec;
   const form = box.querySelector("#mcp-add-form");
-  box.querySelector("#mcp-open-add").onclick = () => { form.style.display = ""; form.scrollIntoView({ behavior: "smooth", block: "nearest" }); };
+  const openForm = () => { form.style.display = ""; form.scrollIntoView({ behavior: "smooth", block: "nearest" }); };
+  box.querySelector("#mcp-open-add").onclick = openForm;
   box.querySelector("#mcp-cancel").onclick = () => { form.style.display = "none"; };
   box.querySelectorAll(".ex-card[data-mi]").forEach(card => {
     const sv = data.servers[+card.dataset.mi];
@@ -68,10 +104,36 @@ async function renderHubMcp(box) {
     };
   });
   const kindOf = () => (box.querySelector('input[name="mcp-kind"]:checked') || {}).value || "stdio";
-  box.querySelectorAll('input[name="mcp-kind"]').forEach(r => r.onchange = () => {
+  const syncKind = () => {
     const http = kindOf() === "http";
     box.querySelectorAll(".mcp-f-stdio").forEach(el => el.style.display = http ? "none" : "");
     box.querySelectorAll(".mcp-f-http").forEach(el => el.style.display = http ? "" : "none");
+  };
+  box.querySelectorAll('input[name="mcp-kind"]').forEach(r => r.onchange = syncKind);
+  // 「接入」：把预设填进表单，缺 Key 的把光标停在 Key 上，不缺的直接可以点「添加并连接」
+  box.querySelectorAll(".ex-card[data-pi] .mcp-use").forEach(b => b.onclick = () => {
+    const it = items[+b.closest(".ex-card").dataset.pi];
+    if (!it) return;
+    const http = it.kind === "http";
+    box.querySelector(`input[name="mcp-kind"][value="${http ? "http" : "stdio"}"]`).checked = true;
+    syncKind();
+    box.querySelector("#mcp-name").value = it.name;
+    box.querySelector("#mcp-cmd").value = it.command || "";
+    box.querySelector("#mcp-args").value = (it.args || []).join(" ");
+    box.querySelector("#mcp-url").value = it.url || "";
+    box.querySelector("#mcp-headers").value = Object.entries(it.headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n");
+    box.querySelector("#mcp-env").value = Object.entries(it.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+    // 值为空的就是必填：添加时校验，别让一个注定连不上的配置进 config
+    const needEnv = Object.keys(it.env || {}).filter(k => !String(it.env[k]).trim());
+    const needHdr = Object.keys(it.headers || {}).filter(k => !String(it.headers[k]).replace(/^Bearer\s*/i, "").trim());
+    form.dataset.needEnv = needEnv.join(",");
+    form.dataset.needHdr = needHdr.join(",");
+    const docs = box.querySelector("#mcp-docs");
+    docs.href = it.docs || "#"; docs.style.display = it.docs ? "" : "none";
+    const need = needEnv.concat(needHdr);
+    box.querySelector("#mcp-msg").textContent = need.length ? `还差 ${need.join("、")} 没填，填好点「添加并连接」` : "启动命令已填好，点「添加并连接」就能用";
+    openForm();
+    (need.length ? box.querySelector(http ? "#mcp-headers" : "#mcp-env") : box.querySelector("#mcp-add")).focus();
   });
   box.querySelector("#mcp-add").onclick = () => {
     const name = box.querySelector("#mcp-name").value.trim();
@@ -85,12 +147,24 @@ async function renderHubMcp(box) {
         const at = line.indexOf(":");
         if (at > 0) headers[line.slice(0, at).trim()] = line.slice(at + 1).trim();
       });
+      const missing = (form.dataset.needHdr || "").split(",").filter(Boolean).filter(k => !String(headers[k] || "").replace(/^Bearer\s*/i, "").trim());
+      if (missing.length) return toast(`❌ 还差 ${missing.join("、")} 没填`);
       return save(ownServers().concat([{ name, url, headers }]));
     }
     const cmd = box.querySelector("#mcp-cmd").value.trim();
     const args = box.querySelector("#mcp-args").value.trim().split(/\s+/).filter(Boolean);
     if (!cmd) return toast("❌ 本地连接器要填命令");
-    save(ownServers().concat([{ name, command: cmd, args, env: {} }]));
+    // 「KEY=值」按第一个等号切，值里带等号（base64）也不会被切坏；没写值的行直接不要
+    const env = {};
+    for (const line of box.querySelector("#mcp-env").value.split(/\n+/).map(s => s.trim()).filter(Boolean)) {
+      const at = line.indexOf("=");
+      if (at <= 0) return toast("❌ 环境变量要写成 KEY=值");
+      const k = line.slice(0, at).trim(), v = line.slice(at + 1).trim();
+      if (v) env[k] = v;
+    }
+    const missing = (form.dataset.needEnv || "").split(",").filter(Boolean).filter(k => !env[k]);
+    if (missing.length) return toast(`❌ 还差 ${missing.join("、")} 没填`);
+    save(ownServers().concat([{ name, command: cmd, args, env }]));
   };
 }
 

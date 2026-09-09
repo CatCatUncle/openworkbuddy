@@ -1860,6 +1860,145 @@ const COMPOSER_CHECKS = `
 
 // 渲染进程的 console 抄一份到主进程：页面里抛错时 executeJavaScript 只回一句
 // 「Script failed to execute」，真正的报错文本在渲染进程 console 里，不抄出来根本没法定位。
+// ---- 连接器页：预设目录一键接入 + Key 只给键名不给值 + 录屏遮罩层 ----
+const HUB_MCP_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div id='hub-body'></div></body>";
+const HUB_MCP_STUBS = `
+var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+var TOASTS = [], POSTS = [], RENDERS = 0;
+var toast = (m) => { TOASTS.push(String(m)); };
+var hubState = { tab: "mcp", q: "", mine: false };
+var hubMatch = (q, ...fields) => !q || fields.filter(Boolean).join(" ").toLowerCase().includes(q.trim().toLowerCase());
+var renderHubBody = () => { RENDERS++; return renderHubMcp(document.getElementById("hub-body")); };
+window.confirm = () => true;
+var SERVERS = [
+  { name: "mysql", transport: "stdio", command: "npx", args: ["-y", "@benborla29/mcp-server-mysql"], env_keys: ["MYSQL_USER", "MYSQL_PASS"], connected: true, tools: [{ name: "query", description: "run sql" }] },
+  { name: "deepwiki2", transport: "streamable-http", url: "https://mcp.deepwiki.com/mcp", header_keys: ["Authorization"], connected: false, error: "握手超时", tools: [] },
+];
+var CATALOG = {
+  categories: ["搜索与网页", "文件与开发", "数据库"],
+  tools: { npx: "/x/npx", uvx: "" },
+  items: [
+    { name: "brave-search", label: "Brave 搜索", icon: "🦁", desc: "查资料", category: "搜索与网页", kind: "stdio", command: "/x/npx", args: ["-y", "@brave/brave-search-mcp-server"], env: { BRAVE_API_KEY: "" }, docs: "https://brave.com/search/api/", needs: "npx" },
+    { name: "deepwiki", label: "DeepWiki", icon: "📚", desc: "读仓库文档", category: "搜索与网页", kind: "http", url: "https://mcp.deepwiki.com/mcp", headers: {}, docs: "https://docs.devin.ai/work-with-devin/deepwiki-mcp", needs: "" },
+    { name: "fetch", label: "网页抓取", icon: "🌐", desc: "抓网页转 markdown", category: "搜索与网页", kind: "stdio", command: "uvx", args: ["mcp-server-fetch"], env: {}, docs: "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch", needs: "uvx" },
+    { name: "github", label: "GitHub", icon: "🐙", desc: "仓库 / Issue / PR", category: "文件与开发", kind: "http", url: "https://api.githubcopilot.com/mcp/", headers: { Authorization: "Bearer " }, docs: "https://github.com/github/github-mcp-server", needs: "" },
+    { name: "mysql", label: "MySQL", icon: "🐬", desc: "查库", category: "数据库", kind: "stdio", command: "/x/npx", args: ["-y", "@benborla29/mcp-server-mysql"], env: { MYSQL_HOST: "127.0.0.1", MYSQL_USER: "", MYSQL_PASS: "" }, docs: "https://github.com/benborla/mcp-server-mysql", needs: "npx" },
+  ],
+};
+window.fetch = async (url, opt) => {
+  const u = String(url).split("?")[0];
+  const j = (o) => ({ ok: true, json: async () => o });
+  if (u === "/api/mcp" && opt && opt.method === "POST") { POSTS.push(JSON.parse(opt.body)); return j({ ok: true }); }
+  if (u === "/api/mcp") return j({ servers: JSON.parse(JSON.stringify(SERVERS)), total_tools: 1 });
+  if (u === "/api/mcp/catalog") return j(JSON.parse(JSON.stringify({ ...CATALOG, items: CATALOG.items.map((it) => ({ ...it, configured: SERVERS.some((s) => s.name === it.name) })) })));
+  throw new Error("未知请求 " + u);
+};
+`;
+const HUB_MCP_SRC = APP05.slice(APP05.indexOf("async function renderHubMcp(box) {"), APP05.indexOf("// ================= 参考模板库"));
+const HUB_MCP_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const box = document.getElementById("hub-body");
+  const $ = (q) => box.querySelector(q);
+  const card = (n) => [...box.querySelectorAll(".ex-card[data-pi]")].find((c) => c.querySelector(".al") && c.querySelector(".al").textContent === n);
+  const disp = (el) => getComputedStyle(el).display;
+  await renderHubBody(); await wait(20);
+
+  // 已接入卡片：只显示环境变量的键名，页面上不能出现任何值的形状（GET 本来就没给值，这里是防前端自己编）
+  const html = box.innerHTML;
+  ok("已接入 mysql 卡片写明带 2 个环境变量（只有键名）", html.includes("带 2 个环境变量：MYSQL_USER、MYSQL_PASS"));
+  ok("远程 deepwiki2 卡片写明带 1 个请求头", html.includes("带 1 个请求头：Authorization"));
+  ok("页面上没有令牌值形状（Bearer xxx / KEY=值）", !/Bearer\\s+\\S+/.test(box.textContent) && !/MYSQL_PASS=\\S/.test(box.textContent));
+
+  // 推荐目录：按分类分组，五张卡，标记各归各
+  ok("推荐连接器区块出现，按目录分类分组", html.includes("推荐连接器") && box.querySelectorAll(".ex-card[data-pi]").length === 5 && html.includes("搜索与网页") && html.includes("数据库"));
+  ok("已接入的 mysql 预设：标「已接入」、按钮禁用", card("mysql").querySelector(".flag").textContent === "已接入" && card("mysql").querySelector(".mcp-use").disabled);
+  ok("本机没 uvx：fetch 卡标「没找到 uvx」+ 顶部提示装 uv", card("fetch").querySelector(".flag").textContent === "没找到 uvx" && html.includes("本机没找到 uvx") && !html.includes("本机没找到 npx"));
+  ok("deepwiki（远程免 Key）：标签「远程」「免 Key」", card("deepwiki").querySelector(".tg").textContent.includes("远程") && card("deepwiki").querySelector(".tg").textContent.includes("免 Key"));
+  ok("brave-search：标「要填 1 个 Key」+「去哪拿」链接指向官方文档", card("brave-search").querySelector(".tg").textContent.includes("要填 1 个 Key") && card("brave-search").querySelector(".mcp-docs-link").href === "https://brave.com/search/api/");
+  ok("空目录状态：表单默认收起", disp($("#mcp-add-form")) === "none");
+
+  // 点「接入」brave：表单弹开、字段预填、光标停在 Key 框、提示还差什么
+  card("brave-search").querySelector(".mcp-use").click(); await wait(10);
+  ok("点「接入」→ 表单弹开、命令/参数/名称预填", disp($("#mcp-add-form")) !== "none" && $("#mcp-name").value === "brave-search" && $("#mcp-cmd").value === "/x/npx" && $("#mcp-args").value === "-y @brave/brave-search-mcp-server");
+  ok("环境变量框预填 BRAVE_API_KEY=（值留给用户）", $("#mcp-env").value === "BRAVE_API_KEY=");
+  ok("提示「还差 BRAVE_API_KEY 没填」+ 光标停在环境变量框", $("#mcp-msg").textContent.includes("还差 BRAVE_API_KEY 没填") && document.activeElement === $("#mcp-env"));
+  ok("「去哪拿 Key」链接显示并指向文档", disp($("#mcp-docs")) !== "none" && $("#mcp-docs").href === "https://brave.com/search/api/");
+  // Key 没填就点添加：拦下来，不发请求
+  $("#mcp-add").click(); await wait(10);
+  ok("Key 没填点「添加并连接」→ 提示还差、不发请求", TOASTS.some((t) => t.includes("还差 BRAVE_API_KEY")) && POSTS.length === 0);
+  // 填了带等号的值：按第一个等号切；原有条目不带 env / headers 回传
+  $("#mcp-env").value = "BRAVE_API_KEY=abc=123";
+  $("#mcp-add").click(); await wait(30);
+  ok("填好 Key 后添加：发了一次 POST", POSTS.length === 1);
+  const body = POSTS[0].servers;
+  ok("POST 里原有 mysql 条目不带 env（后端沿用原来的 Key）", body.find((s) => s.name === "mysql") && !("env" in body.find((s) => s.name === "mysql")) && body.find((s) => s.name === "mysql").command === "npx");
+  ok("POST 里原有远程条目不带 headers", body.find((s) => s.name === "deepwiki2") && !("headers" in body.find((s) => s.name === "deepwiki2")) && !("command" in body.find((s) => s.name === "deepwiki2")));
+  ok("新条目 env 按第一个等号切（值里的等号保住）", JSON.stringify(body.find((s) => s.name === "brave-search").env) === JSON.stringify({ BRAVE_API_KEY: "abc=123" }));
+  ok("保存后重新渲染", RENDERS >= 2);
+  await wait(20);
+
+  // github（远程 + 要填 Authorization）
+  card("github").querySelector(".mcp-use").click(); await wait(10);
+  ok("接入 github：切到远程单选、地址预填、请求头预填 Authorization: Bearer", $('input[name="mcp-kind"][value="http"]').checked && $("#mcp-url").value === "https://api.githubcopilot.com/mcp/" && $("#mcp-headers").value === "Authorization: Bearer " && disp($(".mcp-f-http")) !== "none" && disp($(".mcp-f-stdio")) === "none");
+  ok("光标停在请求头框", document.activeElement === $("#mcp-headers"));
+  const n0 = POSTS.length;
+  $("#mcp-add").click(); await wait(10);
+  ok("只有「Bearer 」没令牌就点添加 → 拦下，提示还差 Authorization", TOASTS.some((t) => t.includes("还差 Authorization")) && POSTS.length === n0);
+
+  // deepwiki（远程免 Key）：直接可点添加
+  card("deepwiki").querySelector(".mcp-use").click(); await wait(10);
+  ok("接入免 Key 的 deepwiki：提示「启动命令已填好」、光标停在添加按钮", $("#mcp-msg").textContent.includes("已填好") && document.activeElement === $("#mcp-add") && disp($("#mcp-docs")) !== "none");
+  $("#mcp-add").click(); await wait(30);
+  const dw = POSTS[POSTS.length - 1].servers.find((s) => s.name === "deepwiki");
+  ok("免 Key 远程直接添加：POST 带 name+url+空 headers", POSTS.length === n0 + 1 && dw && dw.url === "https://mcp.deepwiki.com/mcp" && JSON.stringify(dw.headers) === "{}");
+  await wait(20);
+
+  // 搜索框和「只看已连接」一起管推荐目录
+  hubState.q = "deep"; await renderHubBody(); await wait(20);
+  ok("搜索「deep」：推荐目录只剩 deepwiki 一张", box.querySelectorAll(".ex-card[data-pi]").length === 1 && card("deepwiki"));
+  hubState.q = ""; hubState.mine = true; await renderHubBody(); await wait(20);
+  ok("「只看已连接」：不显示推荐目录", !box.innerHTML.includes("推荐连接器") && box.querySelectorAll(".ex-card[data-pi]").length === 0);
+  hubState.mine = false;
+
+  // 空态：一个连接器都没有时，提示从推荐里挑
+  SERVERS.length = 0; await renderHubBody(); await wait(20);
+  ok("没有连接器：空态提示从下面推荐里挑", box.innerHTML.includes("从下面的推荐里挑一个点「接入」") && box.querySelectorAll(".ex-card[data-pi]").length === 5);
+  ok("此时 mysql 预设不再标已接入、按钮可点", !card("mysql").querySelector(".flag") && !card("mysql").querySelector(".mcp-use").disabled);
+  return names;
+})()
+`;
+// 录屏遮罩层在真浏览器里跑：静态文本 / 输入框值 / title 都遮，后来插进来的节点和改过的文字也遮
+const MASK_HTML = "<!doctype html><meta charset='utf-8'><body>"
+  + "<div id='t1'>正在处理 /tmp/owb-demo-1/workspace/销售明细.csv</div>"
+  + "<input id='i1' value='/tmp/owb-demo-1/out.xlsx'><button id='b1' title='cli_a1b2c3d4e5 绑定'>x</button>"
+  + "<div id='host'></div></body>";
+const MASK_CHECKS = (script) => `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const n = (${script});
+  ok("遮罩脚本装上并报出清单条数", n >= 2 && window.__demoMask && window.__demoMask.pairs === n);
+  ok("静态文本里的临时目录换成 ~/OpenWorkBuddy-demo", document.getElementById("t1").textContent === "正在处理 ~/OpenWorkBuddy-demo/workspace/销售明细.csv");
+  ok("输入框的 value 也遮", document.getElementById("i1").value === "~/OpenWorkBuddy-demo/out.xlsx");
+  ok("title 里的 bot id 换成圆点", document.getElementById("b1").title === "●●●●●● 绑定");
+  const host = document.getElementById("host");
+  host.innerHTML = "<p id='p2'>后插入 /tmp/owb-demo-1/a/b</p>";
+  await wait(40);
+  ok("后插入的节点被观察者接手遮掉", document.getElementById("p2").textContent === "后插入 ~/OpenWorkBuddy-demo/a/b");
+  document.getElementById("t1").firstChild.data = "改成 /tmp/owb-demo-1/c";
+  await wait(40);
+  ok("原地改文字（流式那种）也遮", document.getElementById("t1").textContent === "改成 ~/OpenWorkBuddy-demo/c");
+  const b = document.createElement("b"); b.textContent = "cli_a1b2c3d4e5"; host.appendChild(b);
+  await wait(40);
+  ok("后插入的 bot id 遮成圆点", b.textContent === "●●●●●●");
+  ok("没被遮的正常文字不动", document.getElementById("t1").textContent.startsWith("改成 "));
+  return names;
+})()
+`;
 const RENDERER_LOG = [];
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
@@ -1967,6 +2106,28 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：中英文切换（点即整页翻·后渲染的节点观察者接手·属性也翻·内容区不碰·切回中文原样还原·不自激振荡）${names14.length} 项通过`);
     } finally {
       if (!win14.isDestroyed()) win14.destroy();
+    }
+    const win15 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await win15.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(HUB_MCP_HTML));
+      const names15 = await win15.webContents.executeJavaScript(HUB_MCP_STUBS + "\n" + HUB_MCP_SRC + "\n" + HUB_MCP_CHECKS, true)
+        .catch((e) => { throw new Error("[连接器] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of names15) console.log("  ✓ " + n);
+      console.log(`✅ 前端：连接器预设目录（一键接入预填·缺 Key 拦下·值里带等号保住·原条目不回传 Key·已接入置灰·缺 uvx 提示·搜索/只看已连接联动）${names15.length} 项通过`);
+    } finally {
+      if (!win15.isDestroyed()) win15.destroy();
+    }
+    const win16 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      const { defaultPairs, maskScript } = require("../scripts/demo-mask");
+      const pairs = defaultPairs("/tmp/owb-demo-1", ["cli_a1b2c3d4e5"]);
+      await win16.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MASK_HTML));
+      const names16 = await win16.webContents.executeJavaScript(MASK_CHECKS(maskScript(pairs)), true)
+        .catch((e) => { throw new Error("[遮罩] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of names16) console.log("  ✓ " + n);
+      console.log(`✅ 前端：录屏遮罩层（静态文本/输入框/title·后插入节点·原地改字·bot id 圆点）${names16.length} 项通过`);
+    } finally {
+      if (!win16.isDestroyed()) win16.destroy();
     }
     const win11 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {

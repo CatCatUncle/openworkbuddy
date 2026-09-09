@@ -4210,6 +4210,7 @@ async function main() {
   testUiNoRawMarkdown();
   testLookPrefsStatic();
   testI18n();
+  testConnectorsAndExperts();
   testReadmeFrontGate();
   testKeySourcesGate();
   testPackagingAndDemoGate();
@@ -5275,6 +5276,132 @@ function testI18n() {
   assert(/seg\("lang", i18n\.LANGS, i18n\.getLang\(\)/.test(a06) && /if \(k === "lang"\) \{ if \(i18n\) i18n\.setLang\(v\); \}/.test(a06), "外观页没有语言分区/点击不接 setLang");
   assert(/class="onb-lang" data-i18n-skip/.test(a03) && /i18n\.setLang\(b\.dataset\.lang\); renderOnb\(\);/.test(a03), "向导第一屏没有语言开关");
   console.log(`✅ 中英文切换：词典 ${keys.length} 条 + ${I.PATTERNS.en.length} 条模式句 · index.html 中文 ${htmlStrs.size}/${htmlStrs.size} 全覆盖（反向对照通过）· JS 模板短文案 ${short.length - shortMiss.length}/${short.length}=${pct(shortMiss.length, short.length)}%、全部 ${all.length - allMiss.length}/${all.length}=${pct(allMiss.length, all.length)}% · 假 DOM 翻译/跳过/幂等/还原 · lang 前端→服务端→内置循环/本机引擎/专家 三路接线`);
+}
+
+// ---- #58 连接器预设目录 + 专家批量扩充 + 升级合并 + 录屏遮罩 ----
+function testConnectorsAndExperts() {
+  const { validateExperts, mergeBuiltinExperts } = require("../experts-lib");
+  const catalogMod = require("../mcp-catalog");
+  const demoMask = require("../scripts/demo-mask");
+  const meta = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "experts.json"), "utf8"));
+  const skillNames = new Set(fs.readdirSync(path.join(__dirname, "..", "skills")).filter((d) => fs.existsSync(path.join(__dirname, "..", "skills", d, "SKILL.md"))));
+  const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const app05 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
+  const recSrc = fs.readFileSync(path.join(__dirname, "..", "scripts", "record-demo.js"), "utf8");
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+
+  // 1) experts.json 体检：技能真存在、团成员是真专家、提示词点名的技能真绑了
+  const problems = validateExperts(meta, skillNames);
+  assert(problems.length === 0, "experts.json 有问题：" + problems.join("；"));
+  assert(meta.experts.length >= 27, "专家数不足 27：" + meta.experts.length);
+  assert(meta.teams.length >= 8, "专家团不足 8：" + meta.teams.length);
+  const gz = meta.experts.find((e) => e.name === "公众号编辑");
+  assert(gz && gz.skills.includes("wechat-article"), "公众号编辑没绑 wechat-article（写稿→排版→推草稿箱的技能一直闲着）");
+  for (const n of ["视频成片师", "小红书选题策划", "封面卡片师", "飞书助理", "技能沉淀师", "程序员", "代码审查员", "翻译校对师"]) {
+    const e = meta.experts.find((x) => x.name === n);
+    assert(e && e.builtin === true, `新专家「${n}」缺失或没标 builtin`);
+  }
+  for (const n of ["短视频出片组", "小红书全案组", "飞书交付组", "代码交付组"]) assert(meta.teams.some((t) => t.name === n), `新专家团「${n}」缺失`);
+  const cats = new Set(meta.experts.map((e) => e.category));
+  assert(cats.has("开发协作") && cats.has("语言沟通"), "新分类没出现：" + [...cats].join("、"));
+  // 体检要真能抓错（阴性对照）
+  const bad = clone(meta);
+  bad.experts[0].skills = ["no-such-skill"]; bad.teams[0].members.push("不存在的人"); bad.experts.push({ ...clone(bad.experts[1]) });
+  bad.experts[2].system = "先 use_skill 加载 xhs-cards 技能"; bad.experts[2].skills = [];
+  const badP = validateExperts(bad, skillNames);
+  assert(badP.some((x) => x.includes("no-such-skill")) && badP.some((x) => x.includes("不存在的人")) && badP.some((x) => x.includes("重名")) && badP.some((x) => x.includes("xhs-cards")),
+    "体检漏抓：" + badP.join("；"));
+
+  // 2) 升级合并：只补没见过的内置项，用户改过/删过/自建的一律不动
+  const bundled = clone(meta);
+  const mine = { _说明: "x", experts: clone(meta.experts.slice(0, 12)), teams: clone(meta.teams.slice(0, 4)) };
+  mine.experts[0].system = "用户改过的提示词";
+  mine.experts.push({ name: "我的自建专家", avatar: "🙂", category: "自定义", description: "d", system: "s", skills: [] });
+  const totalBuiltin = bundled.experts.filter((e) => e.builtin).length;
+  const r1 = mergeBuiltinExperts(mine, bundled);
+  assert(r1.added.length === totalBuiltin - mine.experts.slice(0, 12).filter((e) => e.builtin).length, "补入数量不对：" + r1.added.length);
+  assert(mine.experts[0].system === "用户改过的提示词", "用户改过的内置专家被覆盖了");
+  assert(mine.experts.some((e) => e.name === "我的自建专家"), "用户自建专家丢了");
+  assert(r1.addedTeams.length >= 4 && mine.teams.length === 4 + r1.addedTeams.length, "专家团没补齐：" + r1.addedTeams.join("、"));
+  assert(Array.isArray(mine.seen_builtins) && mine.seen_builtins.length === totalBuiltin, "seen_builtins 没记全");
+  const r2 = mergeBuiltinExperts(mine, bundled);
+  assert(r2.added.length === 0 && r2.addedTeams.length === 0, "第二次合并还在加：" + r2.added.length + "/" + r2.addedTeams.length);
+  // 用户删掉的内置专家不能复活；成员缺席的团不硬塞
+  const del = mine.experts.find((e) => e.name === "程序员");
+  mine.experts = mine.experts.filter((e) => e.name !== "程序员");
+  mine.teams = mine.teams.filter((t) => t.name !== "代码交付组");
+  const r3 = mergeBuiltinExperts(mine, bundled);
+  assert(!mine.experts.some((e) => e.name === "程序员") && r3.added.length === 0, "用户删掉的内置专家被塞回来了");
+  assert(!mine.teams.some((t) => t.name === "代码交付组"), "成员缺席的专家团被硬塞进来");
+  mine.experts.push(del);
+  // 老文件没 seen 字段：当前已有的当作见过，只补真正新增的；非 builtin 的包内条目不补（阴性对照）
+  const old = { experts: clone(meta.experts.slice(0, 3)), teams: [] };
+  const b2 = { experts: [...clone(meta.experts.slice(0, 5)), { name: "不是内置", builtin: false, system: "s", description: "d", avatar: "x", category: "c" }], teams: [] };
+  const r4 = mergeBuiltinExperts(old, b2);
+  assert(r4.added.length === 2 && !old.experts.some((e) => e.name === "不是内置"), "老文件首次合并不对：" + r4.added.join("、"));
+  assert(serverSrc.includes("mergeBuiltinExperts(expertsMeta, bundled)") && serverSrc.includes('appPath("experts.json") !== EXPERTS_FILE'), "server.js 启动时没做打包版专家合并");
+  assert(/\[专家\] 升级补入内置专家/.test(serverSrc), "合并没留痕（日志）");
+
+  // 3) 预设目录：名字合法唯一、每条都能过后端 normalizeMcpServer、{HOME} 已替换、文档链接 https、Key 名合法
+  const cat = catalogMod.catalog({ home: "/Users/tester", env: { PATH: "/usr/bin:/bin" } });
+  assert(cat.items.length >= 35 && cat.categories.length >= 7, `预设太少：${cat.items.length} 条 / ${cat.categories.length} 类`);
+  const normSrc = serverSrc.match(/function normalizeMcpServer\([\s\S]*?\n}\n/);
+  assert(normSrc, "没找到 normalizeMcpServer");
+  const normalizeMcpServer = new Function(normSrc[0] + "\nreturn normalizeMcpServer;")();
+  const seen = new Set();
+  for (const it of cat.items) {
+    assert(/^[A-Za-z0-9_-]+$/.test(it.name) && !seen.has(it.name), "预设名不合法或重复：" + it.name); seen.add(it.name);
+    assert(cat.categories.includes(it.category), `预设「${it.name}」分类不在目录里：${it.category}`);
+    assert(it.label && it.desc && it.icon, `预设「${it.name}」缺 label/desc/icon`);
+    assert(!it.docs || /^https:\/\//.test(it.docs), `预设「${it.name}」文档链接不是 https`);
+    assert(!JSON.stringify(it.args || []).includes("{HOME}") && !String(it.url || "").includes("{HOME}"), `预设「${it.name}」{HOME} 没替换`);
+    for (const k of Object.keys(it.env || {})) assert(/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && !/[一-鿿]/.test(it.env[k]), `预设「${it.name}」的环境变量 ${k} 不合法`);
+    const norm = normalizeMcpServer(catalogMod.resolve(it, { home: "/Users/tester", env: { PATH: "/usr/bin:/bin" } }), 0);
+    assert(norm.name === it.name && (norm.transport === "stdio" ? !!norm.command : /^https:\/\//.test(norm.url)), `预设「${it.name}」过不了后端规整`);
+    assert(it.needs === (it.kind === "http" ? "" : it.command.split("/").pop()) || it.needs === it.command, `预设「${it.name}」needs 不对：${it.needs}`);
+    assert(typeof it.configured === "undefined", "catalog() 不该自己判断 configured（那是路由的事）");
+  }
+  const fsItem = cat.items.find((it) => it.name === "filesystem");
+  assert(fsItem.args.includes("/Users/tester/Documents"), "{HOME} 没换成传入的 home：" + fsItem.args.join(" "));
+  assert(cat.items.filter((it) => it.kind === "http").length >= 4, "远程预设不足 4 条");
+  assert(cat.items.filter((it) => Object.keys(it.env || {}).length).length >= 12, "带 Key 的预设不足 12 条");
+  assert(cat.items.filter((it) => ["中国常用", "地图与出行"].includes(it.category)).length >= 6, "国内常用预设不足 6 条");
+  // 命令不在 PATH 上：找得到就换绝对路径，找不到保持原名（别把 npx 改成空）
+  const gone = catalogMod.resolve(catalogMod.ITEMS[0], { home: "/h", env: { PATH: "/nonexistent-dir-xyz" } });
+  assert(gone.command === "npx" || path.isAbsolute(gone.command), "resolve 把命令改坏了：" + gone.command);
+  assert(catalogMod.findCmd("definitely-not-a-command-xyz", { PATH: "/usr/bin" }) === "", "findCmd 对不存在的命令没回空串");
+  assert(catalogMod.findCmd("ls", { PATH: "/bin:/usr/bin" }) !== "", "findCmd 连 ls 都找不到");
+  assert(serverSrc.includes('app.get("/api/mcp/catalog"') && serverSrc.includes("configured: configured.has(it.name)"), "缺 /api/mcp/catalog 路由或 configured 标记");
+
+  // 4) 令牌不回前端：GET 只给 env_keys；POST 没带 env 沿用原来的（和 headers 同一套规矩）
+  assert(serverSrc.includes("env_keys: Object.keys(s.env || {})") && !/\n\s*env: s\.env \|\| \{\},/.test(serverSrc), "GET /api/mcp 还在回 env 的值");
+  const prev = new Map([["brave", { name: "brave", command: "npx", args: [], env: { BRAVE_API_KEY: "secret-1" } }]]);
+  const kept = normalizeMcpServer({ name: "brave", command: "npx", args: ["-y", "x"] }, 0, prev);
+  assert(kept.env.BRAVE_API_KEY === "secret-1", "POST 不带 env 时把原来的 Key 洗没了");
+  const replaced = normalizeMcpServer({ name: "brave", command: "npx", args: [], env: { BRAVE_API_KEY: "new" } }, 0, prev);
+  assert(replaced.env.BRAVE_API_KEY === "new", "POST 带 env 时没覆盖");
+  const fresh = normalizeMcpServer({ name: "other", command: "npx", args: [] }, 0, prev);
+  assert(Object.keys(fresh.env).length === 0, "别人的 env 串到新条目上了");
+  let threw = "";
+  try { normalizeMcpServer({ name: "x", command: "npx", env: { "1BAD-KEY": "v" } }, 0); } catch (e) { threw = e.message; }
+  assert(/环境变量名/.test(threw), "非法环境变量名没被拦：" + threw);
+  // 前端原样存回时不带 env / headers（否则会把界面上根本拿不到的值写成空）
+  assert(app05.includes(": { name: sv.name, command: sv.command, args: sv.args };"), "前端 keep() 还在回传 env");
+  assert(app05.includes('fetch("/api/mcp/catalog")') && app05.includes('id="mcp-env"') && app05.includes("data-pi=") && app05.includes("form.dataset.needEnv"), "前端缺预设目录 / 环境变量框 / 必填校验");
+  assert(app05.includes("(sv.env_keys || []).length"), "已接入卡片没显示环境变量键名");
+
+  // 5) 录屏遮罩：临时目录 / home / 用户名 / 主机名 / IM 的 id 都在清单里，录前自检，不拷 persona
+  const pairs = demoMask.defaultPairs("/tmp/owb-demo-1", ["cli_a1b2c3d4e5", "短", 12]);
+  assert(pairs[0][0].length >= pairs[pairs.length - 1][0].length, "遮罩清单没按长度降序（home 先换掉临时目录就对不上了）");
+  assert(pairs.some(([a, b]) => a === "/tmp/owb-demo-1" && b === "~/OpenWorkBuddy-demo"), "临时目录不在遮罩清单里");
+  assert(pairs.some(([a]) => a === os.homedir()), "home 目录不在遮罩清单里");
+  assert(pairs.some(([a, b]) => a === "cli_a1b2c3d4e5" && b === "●●●●●●") && !pairs.some(([a]) => a === "短"), "额外遮罩项（bot id）没进清单或太短的没过滤");
+  const script = demoMask.maskScript(pairs);
+  assert(script.includes("MutationObserver") && script.includes("createTreeWalker") && script.includes("__demoMask"), "遮罩脚本缺观察者/遍历");
+  assert(recSrc.includes("installMask(win, pairs)") && recSrc.includes("马赛克没生效，拒绝录制") && recSrc.includes('require("./demo-mask")'), "录屏脚本没装遮罩或没自检");
+  assert(!/const keep = \[[^\]]*"persona"/.test(recSrc), "录屏还在拷 persona（用户自述常带真名）");
+  assert(recSrc.includes("seedHome.extraMask") && /\}\)\(cfg\.im\)/.test(recSrc), "IM 里的 app_id / bot id 没进遮罩清单");
+  console.log(`✅ 连接器预设 ${cat.items.length} 条 / ${cat.categories.length} 类，专家 ${meta.experts.length} 位 / 专家团 ${meta.teams.length} 个（体检 0 问题，阴性对照抓到 ${badP.length} 条），升级合并 +${r1.added.length} 专家 +${r1.addedTeams.length} 团、二次合并 +0，遮罩清单 ${pairs.length} 项`);
 }
 
 function testLookPrefsStatic() {

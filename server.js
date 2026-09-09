@@ -9,6 +9,8 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const { DATA_DIR, dataPath, appPath } = require("./paths");
+const { mergeBuiltinExperts } = require("./experts-lib");
+const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder } = require("./llm");
 const { outputFiles, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const { previewData } = require("./preview");
@@ -143,6 +145,19 @@ const EXPERTS_FILE = dataPath("experts.json");
 const experts = [];
 const expertTeams = []; // 专家团 = 智能体团队，同样是被 runtime 闭包持有的活引用
 let expertsMeta = store.readJson(EXPERTS_FILE, {}) || {};
+// 打包版升级后，包里新出的内置专家/专家团要补进用户那份（用户改过、删过的不动）；
+// 只靠首次安装时的 copyIfMissing，老用户永远见不到新专家。补了几个写日志留痕。
+if (appPath("experts.json") !== EXPERTS_FILE) {
+  try {
+    const bundled = store.readJson(appPath("experts.json"), null);
+    const hadSeen = Array.isArray(expertsMeta.seen_builtins);
+    const r = bundled ? mergeBuiltinExperts(expertsMeta, bundled) : { added: [], addedTeams: [] };
+    if (r.added.length || r.addedTeams.length || (bundled && !hadSeen)) {
+      store.writeJsonAtomic(EXPERTS_FILE, expertsMeta, { pretty: true });
+      if (r.added.length || r.addedTeams.length) console.log(`[专家] 升级补入内置专家 ${r.added.length} 位、专家团 ${r.addedTeams.length} 个：${[...r.added, ...r.addedTeams].join("、")}`);
+    }
+  } catch (e) { console.warn("[专家] 合并内置专家失败（不影响启动）:", e.message); }
+}
 experts.push(...(expertsMeta.experts || []));
 expertTeams.push(...(expertsMeta.teams || []));
 function saveExperts() {
@@ -1071,6 +1086,13 @@ app.post("/api/engines/test", async (req, res) => {
   }
 });
 
+// 预设目录：常用 MCP 服务器一键接入；顺带告诉前端本机找没找到 npx / uvx
+app.get("/api/mcp/catalog", (_req, res) => {
+  const configured = new Set((config.mcp_servers || []).map((s) => s.name));
+  const cat = mcpCatalog.catalog();
+  res.json({ ...cat, items: cat.items.map((it) => ({ ...it, configured: configured.has(it.name) })) });
+});
+
 app.get("/api/mcp", (_req, res) => {
   const view = (s, plugin) => {
     const client = mcpManager.clients.get(s.name);
@@ -1079,7 +1101,8 @@ app.get("/api/mcp", (_req, res) => {
       name: s.name,
       command: s.command || "",
       args: s.args || [],
-      env: s.env || {},
+      // 环境变量里基本都是 API Key，和请求头一样只回键名，不回值
+      env_keys: Object.keys(s.env || {}),
       url: s.url || "",
       // 请求头里常有 token，界面上只说有几个，不回传值
       header_keys: Object.keys(s.headers || {}),
@@ -1124,13 +1147,13 @@ function normalizeMcpServer(s, i, prevByName = new Map()) {
     }
     return { name, transport: "streamable-http", url, headers };
   }
-  return {
-    name,
-    transport: "stdio",
-    command,
-    args: Array.isArray(s.args) ? s.args.map(String) : [],
-    env: s.env && typeof s.env === "object" ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [String(k), String(v)])) : {},
-  };
+  // env 里是 API Key，GET 只回键名；前端原样存回来时不带 env，就沿用原来那份
+  const prev = prevByName.get(name);
+  const env = s.env && typeof s.env === "object"
+    ? Object.fromEntries(Object.entries(s.env).map(([k, v]) => [String(k), String(v)]))
+    : (prev && prev.env) || {};
+  for (const k of Object.keys(env)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw new Error(`${at}的环境变量名「${k}」不合法（只能字母、数字、下划线，不能以数字开头）`);
+  return { name, transport: "stdio", command, args: Array.isArray(s.args) ? s.args.map(String) : [], env };
 }
 
 app.post("/api/mcp", async (req, res) => {
