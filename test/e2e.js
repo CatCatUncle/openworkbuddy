@@ -427,8 +427,12 @@ function testMotionGate() {
       }
       segs.push(cur);
       for (const seg of segs) {
-        if (!seg.trim()) continue;
-        if (!/var\(\s*--wb-ease/.test(seg)) bare.push(path.basename(f) + ": " + seg.trim());
+        const v = seg.trim();
+        if (!v) continue;
+        // transition: none 是刻意关掉过渡（拖着改栏宽时就不该有动画），根本不产生动画，
+        // 不存在「吃默认 ease」一说，放行。
+        if (v === "none") continue;
+        if (!/var\(\s*--wb-ease/.test(seg)) bare.push(path.basename(f) + ": " + v);
       }
     }
   }
@@ -5278,6 +5282,12 @@ function testI18n() {
   assert(/Reply in English/.test(langBlock("en")) && /unless the user writes to you in Chinese/.test(langBlock("en")), "英文段要说清「除非用户用中文写」");
   assert(/seg\("lang", i18n\.LANGS, i18n\.getLang\(\)/.test(a06) && /if \(k === "lang"\) \{ if \(i18n\) i18n\.setLang\(v\); \}/.test(a06), "外观页没有语言分区/点击不接 setLang");
   assert(/class="onb-lang" data-i18n-skip/.test(a03) && /i18n\.setLang\(b\.dataset\.lang\); renderOnb\(\);/.test(a03), "向导第一屏没有语言开关");
+  // 头像菜单：语言快切（点即切、菜单不关、原地重画），「改名字 · 换头像」尾注已删
+  assert(!/改名字 · 换头像/.test(a02) && !("改名字 · 换头像" in I.DICT.en), "头像菜单的「改名字 · 换头像」尾注该删了（词典里也别留）");
+  assert(/class="um-i um-lang" data-act="lang"/.test(a02) && /class="um-seg" data-i18n-skip/.test(a02), "头像菜单没有语言快切行");
+  assert(/if \(act === "lang"\) \{/.test(a02) && /if \(next !== i18n\.getLang\(\)\) i18n\.setLang\(next\);\n      openUserMenu\(\);\n      return;/.test(a02), "语言行点了没切/没原地重画/没拦住关菜单");
+  assert(a02.indexOf('data-act="settings"') < a02.indexOf('data-act="lang"') && a02.indexOf('data-act="lang"') < a02.indexOf('data-act="appearance"'), "语言行要排在设置和外观之间");
+  assert(/\.um-seg button\.on \{/.test(html) && /\.um-seg \{ margin-left: auto;/.test(html), "index.html 没给 .um-seg 胶囊样式/选中态");
   console.log(`✅ 中英文切换：词典 ${keys.length} 条 + ${I.PATTERNS.en.length} 条模式句 · index.html 中文 ${htmlStrs.size}/${htmlStrs.size} 全覆盖（反向对照通过）· JS 模板短文案 ${short.length - shortMiss.length}/${short.length}=${pct(shortMiss.length, short.length)}%、全部 ${all.length - allMiss.length}/${all.length}=${pct(allMiss.length, all.length)}% · 假 DOM 翻译/跳过/幂等/还原 · lang 前端→服务端→内置循环/本机引擎/专家 三路接线`);
 }
 
@@ -5432,7 +5442,7 @@ function testOutputArrivalStatic() {
   const tg = a01.slice(a01.indexOf('getElementById("toggle-files").onclick'), a01.indexOf('getElementById("fp-close").onclick'));
   assert(/clearFilesBadge\(\)/.test(tg), "打开成果文件面板没清角标");
   assert(/#toggle-files \.fb-badge \{ position: absolute/.test(html) && /#toggle-files \{[^}]*position: relative/.test(html), "角标样式没了");
-  assert(/\.out-card \{ position: relative; display: inline-flex/.test(html), "产出 chip 不是 inline-flex 紧凑行");
+  assert(/\.out-grid \{ display: flex; flex-wrap: wrap/.test(html) && /\.out-card \{ [^}]*display: flex; flex-direction: column/.test(html) && /\.out-card \{ [^}]*width: 168px/.test(html), "产出卡区不是能并列的 168px 缩略栅格（卡不该占满一行、也不该退回内嵌 iframe 大预览）");
   assert(!/\.out-thumb iframe/.test(html) && !/width: 240px/.test(html.slice(html.indexOf(".out-card {"), html.indexOf(".out-card {") + 400)), "index.html 还留着大卡 / iframe 缩略图样式");
   for (const k of ['"预览"', '"点击预览"', '"点击用系统程序打开"', '"在浏览器打开"', '"打开所在位置"', '"下载"']) assert(dict.includes(k + ":"), "词典缺 " + k);
   // 录屏脚本以前靠「完成后自动弹预览」把成果亮出来；现在不弹了，得替观众点一下 chip，而且只点 app 里能预览的格式
