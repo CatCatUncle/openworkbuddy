@@ -29,7 +29,7 @@
     --color-bg-subtle: #f7f8fa;
     --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
   }
-  /* ---------- 外观偏好：app-02.js 的 applyLook() 把选择写到 <html data-fs / data-skin / data-font / data-density> ----------
+  /* ---------- 外观偏好：app-02.js 的 applyLook() 把选择写到 根元素 html 的 data-fs / data-skin / data-font / data-density 属性 ----------
      字号只改一个 --wb-fs：正文、输入框、标题、行内代码、左栏历史都按 calc 跟着走，四档之间比例不变 */
   :root { --wb-fs: 15px; }
   html[data-fs="s"] { --wb-fs: 14px; }
@@ -161,8 +161,8 @@
   .chat-col.wide-page { max-width: 1160px; }
   .empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding-top: 10vh; }
   .empty h1 { font-size: 34px; font-weight: 700; margin-bottom: 24px; letter-spacing: 1px; }
-  .scene-tabs { display: flex; background: var(--wb-bg-side); border-radius: 26px; padding: 4px; gap: 2px; margin-bottom: 34px; }
-  .scene-tabs button { border: none; background: transparent; border-radius: 22px; padding: 9px 22px; font-size: 15px; color: var(--wb-text-2); cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  .scene-tabs { display: flex; flex-wrap: wrap; justify-content: center; background: var(--wb-bg-side); border-radius: 26px; padding: 4px; gap: 2px; margin-bottom: 34px; }
+  .scene-tabs button { border: none; background: transparent; border-radius: 22px; padding: 9px 20px; font-size: 15px; color: var(--wb-text-2); cursor: pointer; display: flex; align-items: center; gap: 6px; }
   .scene-tabs button.active { background: #17181c; color: #fff; font-weight: 600; }
   .chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 720px; }
   .chips button { padding: 9px 18px; border-radius: 22px; border: 1px solid var(--wb-border); background: var(--wb-bg); font-size: 14px; color: var(--wb-text); cursor: pointer; display: flex; align-items: center; gap: 6px; }
@@ -1146,7 +1146,7 @@
   .u-msg .bubble { box-shadow: 0 2px 8px rgba(91,95,247,.18); }
 
   /* ================= shadcn 桥接层：老类名接到 ui.css 的几何上 =================
-     这段必须排在 <style> 最后——ui.css 是外链，先于内联样式，压不住上面那些旧写法。
+     这段必须排在 style 标签（最内联尾部）之后——ui.css 是外链，先于内联样式，压不住上面那些旧写法。
      只统一「尺寸节奏」（高度/圆角/字号/图标 16px/focus 3px 光圈），颜色仍走 --wb-*，
      所以八百行既有样式一行都不用动，视觉上却终于对齐了。 */
   .btn-brand, .btn-plain {

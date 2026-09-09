@@ -880,9 +880,10 @@ function createTurnUI(userText, turnMode, forSid) {
 
 // ================= 空状态（场景 tab + 分类胶囊，仿官方首页） =================
 const SCENES = {
-  "日常办公": ["📄 文档处理", "📊 数据分析及可视化", "🔍 深度研究", "📽 幻灯片制作", "🗓 周报总结", "💹 金融服务"],
-  "代码开发": ["💻 日常开发", "🌐 网站开发", "🤖 Agent 应用", "🛠 Skill 开发", "📚 技术文档"],
-  "设计创意": ["🖥 网站设计", "📽 PPT设计", "🎨 视觉海报", "📱 移动端App", "🧩 设计系统", "🌐 Web App"],
+  "日常办公": ["📄 文档处理", "📊 数据分析及可视化", "📽 幻灯片制作", "🗓 周报总结", "📝 会议纪要", "✉️ 商务邮件", "🌐 翻译校对", "⚖️ 合同审阅", "💹 金融服务"],
+  "代码开发": ["💻 日常开发", "🌐 网站开发", "🤖 Agent 应用", "🛠 Skill 开发", "📚 技术文档", "🔍 代码审查", "🐞 找 Bug"],
+  "设计创意": ["🖥 网站设计", "📽 PPT 设计", "🎨 视觉海报", "📱 移动端 App", "🧩 设计系统", "🌐 Web App", "🛬 落地页"],
+  "内容与增长": ["🧠 深度研究", "📈 竞品分析", "📕 小红书图文", "📰 公众号推文", "🎬 短视频成片", "🗂 调研报告", "🎯 营销方案"],
 };
 let sceneTag = null; // 选中的任务类型标签
 function setSceneTag(label) {
@@ -894,18 +895,22 @@ function setSceneTag(label) {
 function buildEmpty() {
   const tpl = document.createElement("div");
   tpl.className = "empty"; tpl.id = "empty";
+  // 记住用户在空态里最后浏览的场景分类，回空态时仍在原处（少一次切换）
+  let startScene = "日常办公";
+  try { const s = localStorage.getItem("owb_last_scene"); if (s && SCENES[s]) startScene = s; } catch {}
   tpl.innerHTML = `<h1>${esc(assistant.name)}, 我帮你</h1>
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
-      `<button class="${i === 0 ? "active" : ""}" data-scene="${k}">${["⏱","💻","🎨"][i]} ${k}</button>`).join("")}</div>
+      `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}">${["⏱","💻","🎨","📣"][i] ?? "✦"} ${k}</button>`).join("")}</div>
     <div class="chips" id="scene-chips"></div>`;
   const chipsEl = tpl.querySelector("#scene-chips");
   const renderChips = (scene) => {
     chipsEl.innerHTML = SCENES[scene].map(c => `<button>${c}</button>`).join("");
   };
-  renderChips("日常办公");
+  renderChips(startScene);
   tpl.querySelector(".scene-tabs").addEventListener("click", (e) => {
     if (e.target.tagName !== "BUTTON") return;
     tpl.querySelectorAll(".scene-tabs button").forEach(b => b.classList.toggle("active", b === e.target));
+    try { localStorage.setItem("owb_last_scene", e.target.dataset.scene); } catch {}
     renderChips(e.target.dataset.scene);
   });
   chipsEl.addEventListener("click", (e) => {
