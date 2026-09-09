@@ -33,6 +33,10 @@
   <sub>Free for personal, learning and non-profit use. Commercial use needs a license — <a href="#license">one sentence below ↓</a></sub>
 </p>
 
+<p align="center">
+  <img src="docs/images/demo.gif" width="960" alt="OpenWorkBuddy demo: say what you need, the agent does the work and hands you real files">
+</p>
+
 ---
 
 ## Why this one
