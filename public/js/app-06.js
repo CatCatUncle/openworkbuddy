@@ -375,7 +375,11 @@ const LOOK_FS_PX = { s: 13, m: 15, l: 17, xl: 19 };
 function renderLookPane(pane) {
   const seg = (k, opts, cur, cell) => `<div class="look-seg look-${k}" data-k="${k}">${Object.entries(opts).map(([v, l]) =>
     `<button type="button" class="${cur === v ? "on" : ""}" data-v="${v}" aria-pressed="${cur === v}">${cell(v, l)}</button>`).join("")}</div>`;
+  const i18n = typeof I18N !== "undefined" ? I18N : null; // 测试夹具里可能没挂词典
   pane.innerHTML = `
+    ${i18n ? `<div class="card-item"><div class="t">🌐 语言</div>
+      ${seg("lang", i18n.LANGS, i18n.getLang(), (v, l) => `<span class="ic">${v === "zh" ? "中" : "En"}</span>${l}`)}
+      <div class="look-note">AI 回复也会跟着用这个语言</div></div>` : ""}
     <div class="card-item"><div class="t">🌗 主题</div>
       ${seg("theme", THEME_LABEL, getTheme(), (v, l) => `<span class="ic">${LOOK_ICON.theme[v]}</span>${l}`)}</div>
     <div class="card-item"><div class="t">🎨 皮肤</div>
@@ -394,7 +398,7 @@ function renderLookPane(pane) {
     const b = e.target.closest("button[data-v]");
     if (!b || !pane.contains(b)) return;
     const k = b.closest("[data-k]").dataset.k, v = b.dataset.v;
-    if (k === "theme") setTheme(v); else setLook(k, v);
+    if (k === "lang") { if (i18n) i18n.setLang(v); } else if (k === "theme") setTheme(v); else setLook(k, v);
     b.parentElement.querySelectorAll("button").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", x === b); });
   };
 }

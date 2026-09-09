@@ -477,7 +477,15 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     return tools;
   }
 
-  function modePrompt(mode) {
+  // 界面语言 → 回复语言。中文界面不加任何话（提示词本来就是中文，模型默认中文答）；
+// 英文界面才加一段：用户读的是英文界面，回复、产出文件也该是英文——除非用户自己用中文写。
+// 只在 lang === "en" 时生效，别的值一律当中文，不会因为前端传个怪值就改变行为。
+function langBlock(lang) {
+  if (lang !== "en") return "";
+  return "\n\n## Reply language\nThe user's interface language is English. Reply in English, and write the files you produce for the user in English, unless the user writes to you in Chinese (then follow the user's language).";
+}
+
+function modePrompt(mode) {
     if (mode === "ask") {
       return `\n\n## 当前模式：Ask（问答）\n只负责回答问题、分析与建议。可以读文件、查资料，但绝不修改文件、不执行代码、不委派专家。回答完即结束。`;
     }
@@ -498,7 +506,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
 - **时间盒**：调研、比价、找方案这类活儿，动手前先给自己定个量（查几个来源、看几家、试几种），够了就收手写结论。信息永远查不完，"再多查一点"是最贵的拖延；没查到的写进"待验证"一节交出去，比继续查划算得多。`;
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser }) {
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, lang }) {
     if (tc.name === "ask_user") {
       const question = String(tc.input.question || "").trim().slice(0, 500);
       // 选项现在是 {label, detail}，但字符串也照收：老会话回放、以及模型偷懒直接给短语的情况
@@ -580,6 +588,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       emit({ type: "expert_start", expert: expert.name, task: tc.input.task });
       const sub = await runTask({
         projectContext,
+        lang,
         history: [{ role: "user", content: tc.input.task }],
         emit: (ev) => emit({ ...ev, expert: expert.name }), // 子代理事件带上专家标记
         systemPrompt: await expertSystemPrompt(expert, user, String(tc.input.task || "").slice(0, 500), baseDir),
@@ -627,6 +636,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         emit({ type: "expert_start", expert: m.name, team: team.name, task: brief });
         const sub = await runTask({
         projectContext,
+        lang,
           history: [{ role: "user", content: brief }],
           emit: (ev) => emit({ ...ev, expert: m.name, team: team.name }),
           systemPrompt: await expertSystemPrompt(m, user, String(tc.input.task || "").slice(0, 500), baseDir),
@@ -849,7 +859,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
    * 「已达最大步数 / 已达最大运行时间 / 已手动停止」这三种收尾原样报出去——
    * task-verdict 那层认的就是这几个词，翻译对了，假绿判定在 CLI 引擎上照样生效。
    */
-  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext }) {
+  async function runViaEngine({ backend, opts = {}, history, emit = () => {}, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang }) {
     const cwd = safeWorkspaceDir(baseDir);
     try { fs.mkdirSync(cwd, { recursive: true }); } catch {}
     if (!deadline) deadline = Date.now() + (config.agent.max_runtime_ms || 1800000);
@@ -911,7 +921,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         emit: wrapped,
         deadline,
         stopSignal,
-        systemPrompt: await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history }),
+        systemPrompt: await engineSystemPrompt(cwd, mode, user, bridged, { projectContext, history, lang }),
         resumeId: engineSession || null,
         // 工作目录之外还要让它读的地方：整个工作区（别的对话的产出、资料库）和技能库正文。
         // 只对 claude 有意义（-p 模式读 cwd 外的文件要审批）；codex 的沙箱读是不限的，它忽略这项
@@ -1027,6 +1037,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     const hint = lastUser ? lastUser.content.slice(0, 500) : "";
     try { const mb = await memory.promptBlock(user, hint); if (mb) parts.push(mb.trim()); } catch {}
     if (extra.projectContext) parts.push(`\n## 当前项目的背景与规范（用户在项目设置里写的，必须遵守）\n${extra.projectContext}`);
+    if (extra.lang) parts.push(langBlock(extra.lang));
     parts.push(engineSkillsBlock(bridged));
     // 读文件范围：工作区里别的对话的产出、资料库都可以读；写只写本次工作目录
     let root = ""; try { root = getWorkspaceDir(); } catch {}
@@ -1088,7 +1099,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
    * @param emit    事件回调（SSE / IM 进度）
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, lang }) {
     // ── 底层引擎分岔 ──────────────────────────────────────────────────────
     // 用户在设置里选了「本机 Claude Code / 本机 Codex」时，这一整趟任务交给那个 CLI 跑，
     // 本项目只负责翻译事件、算文件差异、记账。为什么是整层替换而不是换个模型：
@@ -1100,7 +1111,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       if (picked.backend) {
         return await runViaEngine({
           backend: picked.backend, opts: picked.opts,
-          history, emit, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext,
+          history, emit, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang,
         });
       }
     }
@@ -1111,7 +1122,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     // 记忆召回的线索：用户最后一条消息的前 500 字。记忆超预算时按它挑相关条目
     const lastUserMsg = [...history].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
     const memHint = lastUserMsg ? lastUserMsg.content.slice(0, 500) : "";
-    const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + projBlock + modePrompt(mode);
+    const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + projBlock + langBlock(lang) + modePrompt(mode);
     const tools = toolList(depth, mode);
     const maxSteps = config.agent.max_steps || 25;
     // 整个任务（含所有专家子代理）共享一个墙上时间预算，防止无限执行
@@ -1362,7 +1373,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
           r = { content: `【系统拦截】你已用完全相同的参数连续 ${seen.streak} 次调用 ${tc.name}，每次结果都一模一样，本次未执行。别再重复同样的动作：换参数、换工具或换一条实现路径；确实无路可走就停止并如实说明卡在哪里。`, isError: true };
         } else {
           try {
-            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser });
+            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser, lang });
           } catch (e) {
             // 工具抛出来的异常在这里就地变成一条工具结果。让它往上冒的话，下面那条
             // history.push({role:"tool"}) 就跑不到，历史里留下一条配不上对的 assistant——

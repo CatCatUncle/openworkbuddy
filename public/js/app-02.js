@@ -689,7 +689,7 @@ async function runTurn(sid, text, mode, regen) {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: sid, message: text, mode, regen: !!regen }),
+      body: JSON.stringify({ sessionId: sid, message: text, mode, regen: !!regen, lang: typeof I18N !== "undefined" ? I18N.getLang() : "zh" }),
     });
     if (!resp.ok) {
       const d = await resp.json().catch(() => ({}));

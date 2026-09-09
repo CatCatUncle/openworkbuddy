@@ -332,8 +332,14 @@ function onbFoot(primary, skipTxt) {
 function renderOnb() {
   const { st, step } = onbState;
   const stepsEl = document.getElementById("onb-steps");
-  stepsEl.innerHTML = ONB_STEPS.map(([k, ic, lb], i) =>
+  // 第一次打开就能换语言：装完才发现全是中文的话，引导等于白走一遍
+  const i18n = typeof I18N !== "undefined" ? I18N : null;
+  const langBar = i18n ? `<div class="onb-lang" data-i18n-skip>${Object.entries(i18n.LANGS).map(([v, l]) =>
+    `<button type="button" data-lang="${v}" class="${i18n.getLang() === v ? "on" : ""}" aria-pressed="${i18n.getLang() === v}">${l}</button>`).join("")}</div>` : "";
+  stepsEl.innerHTML = langBar + ONB_STEPS.map(([k, ic, lb], i) =>
     `<div class="onb-step ${i === step ? "cur" : i < step ? "done" : ""}" data-i="${i}"><i>${i < step ? "✓" : ic}</i><span>${lb}</span></div>`).join("");
+  stepsEl.style.flexWrap = "wrap";
+  stepsEl.querySelectorAll(".onb-lang button").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); i18n.setLang(b.dataset.lang); renderOnb(); }; });
   // 大脑没接上之前不许在步骤条上乱跳：跳过去也是一步都干不了
   stepsEl.onclick = (e) => {
     const el = e.target.closest(".onb-step");

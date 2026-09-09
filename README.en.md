@@ -75,7 +75,7 @@ cd openworkbuddy && npm install
 npm run app     # desktop app; or `npm start` and open http://localhost:3800
 ```
 
-Then type something like "make a slide deck introducing OpenWorkBuddy". Appearance is yours: avatar menu → **Appearance** for theme, six color skins, four font sizes, font family and compact density.
+Then type something like "make a slide deck introducing OpenWorkBuddy". Appearance is yours: avatar menu → **Appearance** for language (中文 / English), theme, six color skins, four font sizes, font family and compact density. Switch to English and the assistant answers in English and writes its files for you in English too; the first-run wizard has the same toggle in its top-right corner. (v1 translates the UI only: step titles pushed from the server and replies inside Feishu / WeChat are still Chinese for now.)
 
 Mirrors, one-line install script, port conflicts, startup hangs → [安装与启动](docs/安装与启动.md) (Chinese).
 
@@ -101,6 +101,7 @@ wb engines && wb engines use claude-code   # use a local Claude Code / Codex as 
 
 ## What's new
 
+- **Sep 9** English / Chinese toggle: one click in Appearance or the first-run wizard, whole UI flips instantly, AI replies follow
 - **Sep 9** Appearance page: theme, six skins, four font sizes, font family, compact density
 - **Sep 8** First-run wizard: model, engine and IM set up in five steps, no docs required
 - **Sep 8** Local **Claude Code / Codex** as the engine, with memory, skills, file access and image/voice generation wired in; per-engine model and thinking level

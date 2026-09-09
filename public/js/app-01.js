@@ -309,7 +309,7 @@ function createTurnUI(userText, turnMode, forSid) {
   const turn = document.createElement("div");
   turn.className = "turn";
   const av = avatarBits(assistant.avatar, assistant.name);
-  turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="bubble"></div></div>
+  turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="bubble" translate="no"></div></div>
     <div class="a-msg"><div class="avatar${av.cls ? " " + av.cls : ""}">${av.html}</div><div class="body"></div></div>`;
   // 「（已上传文件：×××）」是给模型看的附件标记，气泡里渲染成附件行，别按原文糊用户脸上（老会话的旧格式一并美化）
   const attNames = [];
@@ -418,6 +418,7 @@ function createTurnUI(userText, turnMode, forSid) {
     if (!currentText) {
       currentText = document.createElement("div");
       currentText.className = "a-text";
+      currentText.setAttribute("translate", "no"); // AI 正文是内容不是界面，语言开关不碰
       currentText._raw = "";
       // 过程区一旦出现，后续文字都算"过程叙述"进折叠区；finish() 会把最后一段（最终结论）提出来
       (procBody || body).appendChild(currentText);
@@ -666,6 +667,7 @@ function createTurnUI(userText, turnMode, forSid) {
       currentText = null;
       const t = document.createElement("div");
       t.className = "a-text";
+      t.setAttribute("translate", "no");
       t.style.color = "var(--wb-err)";
       t.textContent = "出错了：" + (ev.message || "");
       body.appendChild(t); // 错误必须留在正文可见，不进折叠区
@@ -1481,9 +1483,9 @@ async function previewFile(name) {
     const r = await fetchTextHead(url);
     if (!r) body.innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">加载失败</div>`;
     else if (looksBinary(r.text)) body.innerHTML = pvFallback("这个文件不是文本"); // 后缀没认出来，内容说了算
-    else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text">${renderMd(r.text, dirOf(name))}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
+    else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text" translate="no">${renderMd(r.text, dirOf(name))}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
     else if (kind === "csv") body.innerHTML = csvHtml(r.text, name) + (r.truncated ? pvTrunc(r.total) : "");
-    else body.innerHTML = `<div class="pv-text"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
+    else body.innerHTML = `<div class="pv-text" translate="no"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
   }
   const sysBtn = body.querySelector(".pv-open-sys");
   if (sysBtn) sysBtn.onclick = () => fetch("/api/files/open/" + fpath(name), { method: "POST" });
