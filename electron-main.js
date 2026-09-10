@@ -98,16 +98,30 @@ app.whenReady().then(async () => {
     },
   });
 
-  // 在 Electron 主进程内直接启动服务端
-  require(path.join(__dirname, "server.js"));
-
   // 首绘打磨：正常流程 ready-to-show 在 ~0.7s 内到，一次干净的整页亮相；
-  // 服务端起不来时它可能永远不触发，3 秒兜底强制亮窗，让用户看到报错而不是什么都没有
+  // 服务端起不来时它可能永远不触发，3 秒兜底强制亮窗，让用户看到报错而不是什么都没有。
+  // ⚠️ 这段必须排在 require("./server.js") 前面。放后面的话，服务端 require 一抛异常，
+  // 兜底定时器根本没来得及挂上，窗口就永远停在 show:false —— v0.1.1 装机包缺 engines/
+  // 时用户看到的正是这个：任务管理器里有进程，屏幕上什么都没有。
   const showOnce = () => { if (win && !win.isVisible()) { win.show(); } };
   win.once("ready-to-show", () => { console.log(`[启动] 窗口亮相 +${Date.now() - BOOT_T0}ms`); showOnce(); });
   setTimeout(showOnce, 3000);
 
-  await waitForServer(`http://localhost:${PORT}/api/info`);
+  // 在 Electron 主进程内直接启动服务端。
+  // 它是整个应用的地基，塌了就没有「降级可用」这回事——但用户至少得知道塌在哪，
+  // 而不是对着一个不出现的窗口重装三遍。
+  try {
+    require(path.join(__dirname, "server.js"));
+  } catch (e) {
+    console.error("[启动] 服务端起不来:", e);
+    return showBootFailure(e);
+  }
+
+  const up = await waitForServer(`http://localhost:${PORT}/api/info`);
+  if (!up) {
+    console.error(`[启动] 等了 30 秒，${PORT} 端口一直没人应答`);
+    return showBootFailure(new Error(`服务端启动后 30 秒内没有监听 ${PORT} 端口`));
+  }
   console.log(`[启动] 服务端就绪 +${Date.now() - BOOT_T0}ms`);
   win.webContents.once("did-finish-load", () => console.log(`[启动] 页面加载完成 +${Date.now() - BOOT_T0}ms`));
   win.loadURL(`http://localhost:${PORT}`);
@@ -139,6 +153,42 @@ app.whenReady().then(async () => {
     registerShortcuts({});
   }
 });
+
+/**
+ * 启动失败时，把窗口亮出来说清楚哪儿坏了。
+ * 不这么做的话表现是「双击没反应」——用户唯一能做的就是重装，而重装治不好装机包缺文件。
+ * 页面用 data: URL 直接塞，因为这会儿 HTTP 服务端正是那个起不来的东西。
+ */
+function showBootFailure(err) {
+  const msg = String((err && err.message) || err || "未知错误");
+  const hint = /Cannot find module/.test(msg)
+    ? "安装包里少了文件。到 GitHub Releases 重新下载最新版本覆盖安装即可；如果最新版仍然这样，请把下面这行贴到 issue 里。"
+    : /EADDRINUSE|端口/.test(msg)
+      ? `端口 ${PORT} 被别的程序占了。关掉占用它的程序，或改 ~/OpenWorkBuddy/config.json 里的 server.port 换一个端口。`
+      : "服务端启动时崩了。把下面这行贴到 GitHub issue 里，附上你的系统版本。";
+  const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+  const html = `<!doctype html><meta charset="utf-8"><title>OpenWorkBuddy 启动失败</title>
+<style>
+ body{margin:0;font:14px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#1f2328;background:#fff;
+      display:flex;align-items:center;justify-content:center;height:100vh}
+ .box{max-width:560px;padding:0 32px}
+ h1{font-size:20px;margin:0 0 12px}
+ p{margin:0 0 16px;color:#57606a}
+ pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px 14px;overflow:auto;
+     font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#cf222e;white-space:pre-wrap}
+ a{color:#0969da}
+</style>
+<div class=box>
+ <h1>OpenWorkBuddy 没能启动</h1>
+ <p>${esc(hint)}</p>
+ <pre>${esc(msg)}</pre>
+ <p>版本 ${esc(require("./package.json").version)} · <a href="https://github.com/CatCatUncle/openworkbuddy/issues" target="_blank">提 issue</a></p>
+</div>`;
+  if (!win) return;
+  win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+  win.show();
+  win.focus();
+}
 
 /** 全局快捷键（系统级，仅「唤起/隐藏主窗口」需要）；设置页改绑后由 server.js 调用热更新 */
 function registerShortcuts(shortcuts) {

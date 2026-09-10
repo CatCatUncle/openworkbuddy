@@ -51,6 +51,15 @@ function skillPatterns() {
  * 签名标识用 "-" 就是 ad-hoc：不需要任何证书，只是让包内容自洽。
  * 它替代不了 Developer ID + 公证——用户首次打开仍要手动放行，README 里写了步骤。
  */
+async function afterPack(ctx) {
+  // 先核对包完整性，再签名：缺文件就该在这里红掉，别把一个必定打不开的包签得漂漂亮亮发出去
+  const appDir = ctx.electronPlatformName === "darwin"
+    ? path.join(ctx.appOutDir, ctx.packager.appInfo.productFilename + ".app", "Contents", "Resources", "app")
+    : path.join(ctx.appOutDir, "resources", "app");
+  require("./scripts/check-package-files").assertPackComplete(appDir);
+  await adhocSign(ctx);
+}
+
 async function adhocSign(ctx) {
   if (ctx.electronPlatformName !== "darwin") return;
   const app = require("path").join(ctx.appOutDir, ctx.packager.appInfo.productFilename + ".app");
@@ -60,7 +69,7 @@ async function adhocSign(ctx) {
 }
 
 module.exports = {
-  afterPack: adhocSign,
+  afterPack,
   appId: "com.catcatuncle.openworkbuddy",
   productName: "OpenWorkBuddy",
   copyright: "Copyright © 2026 CatCatUncle",
@@ -70,11 +79,17 @@ module.exports = {
   // 白名单：只有列出来的才进包。用户数据（data/ workspace/ config.json backups/ .tmp/
   // plugins/ eval/runs/）一个都不能进——那是本机的账号和聊天记录，装机态它们在 ~/OpenWorkBuddy
   files: [
+    // ⚠️ "*.js" 只匹配顶层，不含子目录。v0.1.1 就是漏了 engines/ 那 7 个文件：装机后
+    // server.js 在 require("./engines") 抛 MODULE_NOT_FOUND，端口没人监听、窗口不亮，
+    // 用户看到的是「双击没反应 / 任务管理器有进程但没界面」。子目录必须一个个写出来，
+    // 漏了由 afterPack 的完整性闸门当场拦下（scripts/check-package-files.js）。
     "*.js",
     "!market.js",
     "!electron-builder.config.js",
+    "engines/**/*",
     "public/**/*",
     "eval/run.js",
+    "eval/tasks.js",
     "experts.json",
     "config.example.json",
     "package.json",
