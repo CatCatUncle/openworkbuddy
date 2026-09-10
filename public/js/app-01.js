@@ -412,6 +412,7 @@ function createTurnUI(userText, turnMode, forSid) {
   const t0 = Date.now();
   // 长跑徽章：步数/续跑轮次/产出件数实时挂在「运行中」计时旁，长任务不再只有一个转圈
   let liveStep = 0, liveRound = 0, liveRoundTotal = 0, liveOuts = 0, liveErr = 0;
+  const liveOutFiles = []; // 这一趟改过的文件（收尾时拿它做正文链接 + 决定预览开哪一件）
   const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "") + (liveErr ? ` · ${liveErr} 步出错` : "");
   const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
   // 执行过程默认收起，跑的时候只把「跑到哪了」那一行留在外面——用户原话：
@@ -745,6 +746,7 @@ function createTurnUI(userText, turnMode, forSid) {
         ? (ev.files || []).filter(f => ev.changed.includes(f.name))
         : changedFiles(ev.files);
       liveOuts += turnOut.length;
+      for (const f of turnOut) if (!liveOutFiles.some((x) => x.name === f.name)) liveOutFiles.push(f);
       renderTurnOutputs(body, turnOut, ev.files, ev); // 先算差异，快照要等 applyOutputArrival 才推进
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
       if (!isReplaying) renderFiles(ev.files);
@@ -842,6 +844,22 @@ function createTurnUI(userText, turnMode, forSid) {
     const outBlock = body.querySelector(":scope > .out-block");
     if (outBlock) body.appendChild(outBlock);
     addActionsBar();
+    // 正文里提到的产出文件名变成可点的链接（用户：「有些这些文件你就给我搞成超连接的形式啊」）。
+    // 放在收尾做而不是边流边做：流式那截正文每 100ms 就整段重渲一次，边渲边插链接会被自己抹掉
+    const outTargets = fileLinkTargets(liveOutFiles);
+    if (outTargets.size) body.querySelectorAll(".a-text").forEach((el) => linkifyOutputs(el, outTargets));
+    // 跑完了把成果直接摊开——中途一律不弹（见 outputArrivalPlan），收尾这一下才开
+    const fpv = finishPreviewPlan({
+      turnOut: liveOutFiles,
+      replaying: isReplaying,
+      otherSession: turnSid !== sessionId,
+      userClosedPreview: pvClosedAt > t0,
+      pvOpen: pvPanel.classList.contains("show"),
+      pvCurrent,
+      filesOpen: document.getElementById("files-panel").classList.contains("show"),
+      narrow: window.innerWidth <= 900,
+    });
+    if (fpv.preview) previewFile(fpv.preview);
     if (turnMode === "plan") renderPlanChecklist();
   }
 
@@ -1473,6 +1491,8 @@ setTimeout(async () => {
 const OFFICE_RE = /\.(doc|ppt|xls)$/i;
 const pvPanel = document.getElementById("preview-panel");
 let pvCurrent = null;
+// 用户自己把预览关掉的时刻。收尾时的自动预览要看它：这一趟里他亲手关过，就别再给他弹回来
+let pvClosedAt = 0;
 
 // 有专门看法的四类：网页/图/音/视频。其余一律先当纯文本试着打开。
 //
@@ -1681,7 +1701,7 @@ async function previewFile(name) {
   pvPanel.classList.add("show");
   renderDeployBar();
 }
-document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; };
+document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; pvClosedAt = Date.now(); };
 document.getElementById("pv-sys").onclick = () => { if (pvCurrent) fetch("/api/files/open/" + fpath(pvCurrent), { method: "POST" }); };
 document.getElementById("pv-rv").onclick = () => { if (pvCurrent) revealFile(pvCurrent); };
 
@@ -2072,6 +2092,117 @@ function markDupBasenames(grid) {
 }
 // 文件名进 CSS 属性选择器要转义（含空格、中文括号、引号的名字很常见）
 function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
+// ---- 正文里提到的产出文件名 → 可点开的链接 ----
+// 用户原话：「有些这些文件你就给我搞成超连接的形式啊」。
+// 模型收尾时爱写「简历已经写好了，在 王志远_简历.html 里」——那串文件名在对话里是死的，
+// 用户得自己去右侧面板一行行找同名的那个。现在这一趟真产出过的名字，在正文里就是能点的。
+//
+// 只认「这一趟真的产出过」的名字，不拿正则去猜「长得像文件名的东西」：
+// 猜出来的链接点开是 404，比压根没有链接更气人。
+function fileLinkTargets(files) {
+  const map = new Map();
+  const depth = (n) => n.split("/").length;
+  for (const f of files || []) {
+    const name = typeof f === "string" ? f : (f && f.name) || "";
+    if (!name || !/\.[A-Za-z0-9]{1,8}$/.test(name.split("/").pop())) continue; // 没后缀的不认，免得把普通词当文件名挑出来
+    map.set(name, name);
+    // 模型多半只写文件名不写路径，所以裸文件名也要认得。同一件产出常被拷成两份
+    // （任务子目录一份、工作目录根一份），裸名指向路径最浅的那个——点「所在位置」时也是这个规矩
+    const base = name.split("/").pop();
+    const cur = map.get(base);
+    if (!cur || depth(name) < depth(cur)) map.set(base, name);
+  }
+  return map;
+}
+function linkifyOutputs(root, targets) {
+  if (!root || !targets || !targets.size) return 0;
+  const keys = [...targets.keys()].sort((a, b) => b.length - a.length); // 长的先匹配，全路径别被切成半截
+  const re = new RegExp(keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
+  // 左边界：紧挨着 ASCII 路径字符说明这是更长的一串（别把 data.md 里的 a.md 挑出来）；
+  // 右边界同理。中文紧挨着是常态（「生成了简历.html供你查看」），必须放行
+  const okAt = (s, i, len) => !/[A-Za-z0-9_./\\-]/.test(s[i - 1] || "") && !/[A-Za-z0-9]/.test(s[i + len] || "");
+  const nodes = [];
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+    const p = t.parentElement;
+    if (!t.nodeValue || !/\S/.test(t.nodeValue) || !p) continue;
+    if (p.closest("a, code, pre, .out-block, .file-ln")) continue; // 代码块里的路径是代码，链接化会把代码改样
+    nodes.push(t);
+  }
+  let n = 0;
+  for (const t of nodes) {
+    const s = t.nodeValue;
+    const frag = document.createDocumentFragment();
+    let last = 0, hit = 0, m;
+    re.lastIndex = 0;
+    while ((m = re.exec(s))) {
+      if (!okAt(s, m.index, m[0].length)) continue;
+      if (m.index > last) frag.appendChild(document.createTextNode(s.slice(last, m.index)));
+      frag.appendChild(makeFileLink(m[0], targets.get(m[0])));
+      last = m.index + m[0].length;
+      hit++;
+    }
+    if (!hit) continue;
+    if (last < s.length) frag.appendChild(document.createTextNode(s.slice(last)));
+    t.parentNode.replaceChild(frag, t);
+    n += hit;
+  }
+  return n;
+}
+function makeFileLink(label, name) {
+  const a = document.createElement("a");
+  a.className = "file-ln";
+  a.dataset.name = name;
+  a.textContent = label;
+  a.title = "点击预览";
+  a.tabIndex = 0;
+  const open = (e) => { e.preventDefault(); previewFile(name); };
+  a.onclick = open;
+  a.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") open(e); };
+  return a;
+}
+
+/**
+ * 一趟任务跑完了，右侧要不要直接把成果摊开。
+ *
+ * 「中途不弹」是定下来的（用户原话：抢版面、丑，见下面的 outputArrivalPlan）——但那说的是**中途**。
+ * 跑完了还是一片空白是另一回事，用户原话：「有产出了应该要预览啊」「不仅结束了没有预览」。
+ * 所以只在收尾这一下开，而且只开一件：这一趟真正交到手上的那个成果。
+ *
+ * 一律不开的情形，每一条都是「开了反而添乱」：
+ *   · 回放历史 / 用户已经切到别的会话：他压根没在看这一趟
+ *   · 这趟没有交付物（只有 PROGRESS.md 这类过程账本）
+ *   · 这趟里用户自己把预览关掉过：他已经明说了不想看
+ *   · 成果文件面板开着：他正在自己翻列表，别把面板从手里抢走
+ *   · 窄窗：预览在这个宽度下是盖在聊天上的浮层，一开就把刚写完的结论挡了
+ *   · 只剩 .doc/.ppt/.xls 那三个老格式：previewFile 会去拉起本机 Office，抢的是整个系统焦点，太重
+ */
+function finishPreviewPlan(o) {
+  if (o.replaying || o.otherSession) return { preview: null, why: "not-watching" };
+  if (o.userClosedPreview) return { preview: null, why: "user-closed" };
+  if (o.filesOpen) return { preview: null, why: "files-open" };
+  if (o.narrow) return { preview: null, why: "narrow" };
+  const pick = pickFinishDeliverable(o.turnOut || []);
+  if (!pick) return { preview: null, why: "no-deliverable" };
+  if (o.pvOpen && o.pvCurrent === pick) return { preview: null, why: "already-open" };
+  return { preview: pick, why: "ok" };
+}
+// 这一趟最该给用户看的那一件。排序：网页 > 图 > PDF > Office 三件套 > 音视频 > 纯文本；
+// 同一档里路径最浅的优先（任务子目录那份和根目录那份是同一件东西），再同就取最新的
+const FINISH_RANK = [/\.html?$/i, /\.(png|jpe?g|gif|webp|svg|bmp)$/i, /\.pdf$/i, /\.(pptx|docx|xlsx)$/i, /\.(mp4|mov|webm|m4v|mp3|wav|m4a)$/i, /\.(md|txt|csv)$/i];
+function pickFinishDeliverable(outs) {
+  const rank = (n) => { const i = FINISH_RANK.findIndex((re) => re.test(n)); return i < 0 ? 99 : i; };
+  const cand = [];
+  for (const f of outs || []) {
+    const name = (f && f.name) || "";
+    const base = name.split("/").pop();
+    if (!name || OFFICE_RE.test(name) || SCAFFOLD_RE.test(base) || rank(name) === 99) continue;
+    cand.push({ name, rank: rank(name), depth: name.split("/").length, mtime: (f && f.mtime) || "" });
+  }
+  if (!cand.length) return null;
+  cand.sort((a, b) => a.rank - b.rank || a.depth - b.depth || b.mtime.localeCompare(a.mtime) || a.name.localeCompare(b.name));
+  return cand[0].name;
+}
 // 产出到了该怎么办。以前是「有产出就把右侧预览 / 成果文件面板弹出来」——用户原话：抢版面。
 // 现在默认什么都不抢：快照照推进、「成果文件」按钮上记个角标、chip 就在对话里，想看再点。
 // 唯一会碰右侧的情况：用户本来就开着预览、看的正是这回合改过的那个文件——原地刷新，布局不动。

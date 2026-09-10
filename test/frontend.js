@@ -767,6 +767,10 @@ const TR0 = APP02X.indexOf("function createTurnUI(");
 const TR1 = APP02X.indexOf("// ================= 空状态");
 if (TR0 < 0 || TR1 <= TR0) throw new Error("app-01.js 里的 createTurnUI 段找不到了（段标题被改过？），前端测试没法定位真源码");
 const pickLine = (re, why) => { const m = APP02X.match(re); if (!m) throw new Error(why); return m[0]; };
+const LK0 = APP02X.indexOf("// ---- 正文里提到的产出文件名 → 可点开的链接 ----");
+const LK1 = APP02X.indexOf("// 产出到了该怎么办");
+if (LK0 < 0 || LK1 <= LK0) throw new Error("app-01.js 里 linkifyOutputs / finishPreviewPlan 那段找不到了，前端测试没法定位真源码");
+const TR_LINKIFY = APP02X.slice(LK0, LK1);
 const TRAIL_SRC = [
   pickLine(/^const TOOL_SHORT = \{.*$/m, "app-01.js 里没有 TOOL_SHORT（轨迹条的短标签表）"),
   pickLine(/^const shortTool = .*$/m, "app-01.js 里没有 shortTool"),
@@ -775,9 +779,13 @@ const TRAIL_SRC = [
   // 流式正文的分段渲染是真源码（不是桩）：回合里那些 endText() 收尾点必须真的把两截合回去
   APP02X.slice(APP02X.indexOf("const BAL_TAG"), APP02X.indexOf("\n// 【任务类型：X】")),
   APP02X.slice(TR0, TR1),
+  // 收尾那两件事（正文文件名变可点链接、把成品摊开）的真源码也一起注进来。
+  // ARRIVAL 那块验的是这几个纯函数本身；这里验的是另一条线：事件流真跑一遍，finish() 有没有接上它们
+  TR_LINKIFY,
 ].join("\n");
 const UI_CSS = fs.readFileSync(path.join(__dirname, "..", "public", "css", "ui.css"), "utf8");
-const TRAIL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div id='chat-col'></div></body>";
+const TRAIL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
+  + "<body><div id='chat-col'></div><div id='preview-panel'></div><div id='files-panel'></div></body>";
 const TRAIL_STUBS = [
   "var sessionId = 's_t';",
   "var chatCol = document.getElementById('chat-col');",
@@ -796,6 +804,12 @@ const TRAIL_STUBS = [
   "var curBusy = () => false; var doSend = () => {}; var setMode = () => {}; var syncInputHl = () => {};",
   "var inputEl = document.createElement('textarea');",
   "var isReplaying = false;",
+  // 收尾那两件事要用的外部符号。这两条正则跟 app-01.js 里的真源一字不差（e2e 的 testOutputArrivalStatic 会比对字面量）
+  "var OFFICE_RE = /\\.(doc|ppt|xls)$/i;",
+  "var SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)\\.(md|txt)$/i;",
+  "var pvPanel = document.getElementById('preview-panel');",
+  "var pvCurrent = null; var pvClosedAt = 0;",
+  "window.PV = []; var previewFile = (n) => { window.PV.push(n); pvPanel.classList.add('show'); pvCurrent = n; };",
   "window.fetch = async () => ({ ok: true, json: async () => ({}) });",
 ].join("\n");
 
@@ -1954,6 +1968,81 @@ const TRAIL_CHECKS = `
   u6.handleEvent({ type: "tool_use", name: "web_search" });
   u6.handleEvent({ type: "tool_result", name: "web_search", isError: true, preview: "超时" });
   ok("没 id 的结果也标到徽章上", chips(u6.turn)[0].classList.contains("err") && !chips(u6.turn)[0].classList.contains("run"));
+
+  // ---- 7. 跑完这一趟：正文里的文件名能点开，成品自动摊在右边 ----
+  // 用户原话：「有些这些文件你就给我搞成超连接的形式啊，然后有产出了应该要预览啊」
+  //          「不仅结束了没有预览，还看到这个文件夹」
+  // ARRIVAL 那块验的是 fileLinkTargets / finishPreviewPlan 这几个纯函数本身；
+  // 这里验的是另一条线：事件流真跑一遍，finish() 到底有没有把它们接上。
+  {
+    window.renderTurnOutputs = () => {};
+    window.renderFiles = () => {};
+    window.outputArrivalPlan = () => ({ snapshot: true, badge: 0, refresh: null });
+    window.applyOutputArrival = () => {};
+    const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setW = (n) => Object.defineProperty(window, "innerWidth", { configurable: true, value: n });
+    const reset = (w) => { setW(w); window.PV.length = 0; pvPanel.classList.remove("show"); pvCurrent = null; pvClosedAt = 0; };
+    const F = (name) => ({ name, size: 100, mtime: "2026-09-10T08:35:00.000Z" });
+    const OUT = [F("任务_0910/王志远_简历.html"), F("任务_0910/王志远_简历.docx"), F("任务_0910/PROGRESS.md")];
+    const feed = (u, line, outs) => {
+      u.handleEvent({ type: "text", delta: line });
+      u.handleEvent({ type: "files", files: outs, changed: outs.map((f) => f.name) });
+    };
+    const LINE = "改好了，成品在 任务_0910/王志远_简历.html，Word 版另存了一份。";
+
+    reset(1200);
+    const uf = createTurnUI("帮我改简历", "craft", "s_t");
+    feed(uf, LINE, OUT);
+    await nap(160); // 等流式那一帧真渲出来，别用"还没渲"糊过这条
+    const txt = uf.turn.querySelector(".a-text");
+    ok("流着的时候正文已经渲出来了，但一个链接都还没插（边流边插会被下一帧抹掉）",
+      /王志远_简历\.html/.test(txt.textContent) && !txt.querySelector(".file-ln"), txt.textContent.slice(0, 40));
+    uf.finish();
+    const lns = [...uf.turn.querySelectorAll(".a-text .file-ln")];
+    ok("收尾后正文里那个文件名成了能点的链接", lns.length === 1 && lns[0].dataset.name === "任务_0910/王志远_简历.html",
+      lns.map((a) => a.textContent).join("|"));
+    ok("正文一个字没少（只是把文件名包了起来）", txt.textContent === LINE, txt.textContent);
+    const cs = getComputedStyle(lns[0]);
+    ok("链接一眼看得出能点：虚下划线 + 手型（真样式，不是类名）",
+      cs.textDecorationStyle === "dotted" && cs.cursor === "pointer", cs.textDecorationStyle + "/" + cs.cursor);
+    ok("跑完自动把成品摊开，开的是网页版而不是 PROGRESS.md", window.PV.length === 1 && window.PV[0] === "任务_0910/王志远_简历.html", window.PV.join("|"));
+    lns[0].click();
+    ok("点正文里的链接也在右边打开它", window.PV.length === 2 && window.PV[1] === "任务_0910/王志远_简历.html", window.PV.join("|"));
+
+    // 反向对照一：窗口窄，右边根本没地方摆 → 链接照给，预览不弹
+    reset(800);
+    const un = createTurnUI("再改一版", "craft", "s_t");
+    feed(un, LINE, OUT);
+    un.finish();
+    ok("窄窗口：链接照给，但不抢版面弹预览",
+      un.turn.querySelectorAll(".a-text .file-ln").length === 1 && window.PV.length === 0, window.PV.join("|"));
+
+    // 反向对照二：这一趟里用户自己把预览关掉过 → 别再给他弹回来
+    reset(1200);
+    const uc = createTurnUI("第三版", "craft", "s_t");
+    feed(uc, LINE, OUT);
+    await nap(2); // 得真晚于 t0：pvClosedAt 是毫秒，同一毫秒里关掉不算"这趟关过"
+    pvClosedAt = Date.now();
+    uc.finish();
+    ok("用户这趟自己关过预览：收尾不再弹回来", window.PV.length === 0, window.PV.join("|"));
+
+    // 反向对照三：这趟只动了 PROGRESS.md 这种脚手架 → 有链接可点，但没有"成品"可摊
+    reset(1200);
+    const us = createTurnUI("记一下进度", "chat", "s_t");
+    feed(us, "进度写在 任务_0910/PROGRESS.md 了。", [F("任务_0910/PROGRESS.md")]);
+    us.finish();
+    ok("只写了 PROGRESS.md：正文照样能点开看，但不当成品弹预览",
+      us.turn.querySelectorAll(".a-text .file-ln").length === 1 && window.PV.length === 0, window.PV.join("|"));
+
+    // 反向对照四：这趟啥也没产出 → 正文里就算写了个像文件名的词也不许变链接
+    reset(1200);
+    const u0 = createTurnUI("聊两句", "chat", "s_t");
+    u0.handleEvent({ type: "text", delta: "你可以看看 别的项目/说明.md 这份文档。" });
+    u0.finish();
+    ok("这趟没产出：正文里像文件名的词一律不碰，右侧也不动",
+      u0.turn.querySelectorAll(".a-text .file-ln").length === 0 && window.PV.length === 0);
+    setW(900);
+  }
   return names;
 })()`;
 
@@ -2184,6 +2273,7 @@ const PREVIEW_CHECKS = `
     const cell = await show("嵌换行.csv", { body: 'h1,h2\\n"第一行\\n第二行",x', total: 30 });
     ok("字段内换行不当成新行", cell.match(/<tr>/g).length === 2, String((cell.match(/<tr>/g) || []).length));
   }
+
   return names;
 })()`;
 
@@ -2627,10 +2717,13 @@ function snapshotFiles(files){ CALLS.snap.push((files || []).length); }
 const pvPanel = document.getElementById("preview-panel");
 let pvCurrent = null;
 function previewFile(name){ CALLS.pv.push(name); pvPanel.classList.add("show"); pvCurrent = name; }
+// 这两条跟 app-01.js 里的真源必须一字不差（e2e 的 testOutputArrivalStatic 会比对字面量）
+const OFFICE_RE = /\.(doc|ppt|xls)$/i;
+const SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)\.(md|txt)$/i;
 `;
-const AR0 = APP02X.indexOf("// 产出到了该怎么办");
+const AR0 = APP02X.indexOf("// ---- 正文里提到的产出文件名 → 可点开的链接 ----");
 const AR1 = APP02X.indexOf('document.getElementById("fp-close").onclick');
-if (AR0 < 0 || AR1 < 0 || AR1 < AR0) throw new Error("app-01.js 里找不到 outputArrivalPlan / toggle-files 那段");
+if (AR0 < 0 || AR1 < 0 || AR1 < AR0) throw new Error("app-01.js 里找不到 linkifyOutputs / outputArrivalPlan / toggle-files 那段");
 const ARRIVAL_SRC = APP02X.slice(AR0, AR1);
 const ARRIVAL_CHECKS = `
 (async () => {
@@ -2684,6 +2777,55 @@ const ARRIVAL_CHECKS = `
   ok("角标封顶 99", badge().textContent === "99");
   clearFilesBadge();
   ok("清空后按钮上没有角标残留", !badge());
+
+  // ---------- 正文里提到的文件名 → 可点开的链接 ----------
+  // 用户原话：「有些这些文件你就给我搞成超连接的形式啊」
+  const OUTS = [F("任务_0910/王志远_简历.html"), F("任务_0910/王志远_简历.docx"), F("任务_0910/PROGRESS.md"), F("王志远_简历.html")];
+  const targets = fileLinkTargets(OUTS);
+  ok("裸文件名指向路径最浅的那份（同一件产出常被拷两份）", targets.get("王志远_简历.html") === "王志远_简历.html");
+  ok("全路径本身也认", targets.get("任务_0910/王志远_简历.docx") === "任务_0910/王志远_简历.docx");
+  const host = document.createElement("div");
+  host.className = "a-text";
+  host.innerHTML = "<p>简历已经写好了，在 王志远_简历.html 里，Word 版是 任务_0910/王志远_简历.docx。</p>"
+    + "<pre><code>cp 王志远_简历.html /tmp/</code></pre>"
+    + "<p>进度记在 PROGRESS.md，另外 别的.html 和 data.md 不是这趟的产出。</p>"
+    + "<p>生成了王志远_简历.html供你查看</p>";
+  document.body.appendChild(host);
+  const hits = linkifyOutputs(host, targets);
+  const lns = [...host.querySelectorAll(".file-ln")];
+  ok("正文里的文件名都变成了链接（" + hits + " 处）", hits === 4 && lns.length === 4);
+  ok("裸文件名链到完整相对路径", lns[0].textContent === "王志远_简历.html" && lns[0].dataset.name === "王志远_简历.html");
+  ok("全路径原样链", lns[1].textContent === "任务_0910/王志远_简历.docx" && lns[1].dataset.name === "任务_0910/王志远_简历.docx");
+  ok("PROGRESS.md 也能点（它也是这趟写出来的）", lns[2].dataset.name === "任务_0910/PROGRESS.md");
+  ok("中文紧挨着照样认（「生成了简历.html供你查看」）", lns[3].dataset.name === "王志远_简历.html");
+  ok("代码块里的路径不动（那是代码不是链接）", host.querySelector("pre code").querySelector(".file-ln") === null && host.querySelector("pre code").textContent === "cp 王志远_简历.html /tmp/");
+  const para2 = host.querySelectorAll("p")[1].textContent; // 中间那段（<pre> 不算 <p>）
+  ok("没产出过的名字不链（猜出来的链接点开是 404）", para2.includes("别的.html") && !([...host.querySelectorAll(".file-ln")].some((a) => a.textContent === "别的.html")));
+  ok("不是子串就不算命中（data.md 里没有 a.md 这回事）", ![...host.querySelectorAll(".file-ln")].some((a) => a.textContent === "data.md"));
+  CALLS.pv.length = 0;
+  lns[0].click();
+  ok("点一下就在右边打开这个文件", CALLS.pv.length === 1 && CALLS.pv[0] === "王志远_简历.html");
+  ok("再跑一遍不会套娃（链接里的字不再二次链接）", linkifyOutputs(host, targets) === 0 && host.querySelectorAll(".file-ln").length === 4);
+  ok("这趟没产出过任何文件时什么都不做", linkifyOutputs(host, fileLinkTargets([])) === 0);
+  host.remove();
+
+  // ---------- 跑完了要能看见成果 ----------
+  // 用户原话：「有产出了应该要预览啊」「不仅结束了没有预览」——中途不弹是另一码事，这里说的是收尾
+  const fb = { turnOut: [F("任务_0910/PROGRESS.md"), F("任务_0910/简历.docx"), F("任务_0910/简历.html")], replaying: false, otherSession: false, userClosedPreview: false, pvOpen: false, pvCurrent: null, filesOpen: false, narrow: false };
+  ok("跑完了开这一趟的成品：网页优先于 Word 稿", finishPreviewPlan(fb).preview === "任务_0910/简历.html");
+  ok("同一件拷了两份：开路径最浅的那个", pickFinishDeliverable([F("任务_0910/简历.html"), F("简历.html")]) === "简历.html");
+  ok("只有 Word 稿也照开（应用内拆得出内容看）", pickFinishDeliverable([F("方案.docx")]) === "方案.docx");
+  ok("只有过程账本就不开（PROGRESS.md 不是交付物）", finishPreviewPlan({ ...fb, turnOut: [F("任务_0910/PROGRESS.md")] }).preview === null);
+  ok("只有 .ppt 这类老格式不开（那会去拉起本机 Office，抢整个系统焦点）", finishPreviewPlan({ ...fb, turnOut: [F("旧方案.ppt")] }).preview === null);
+  ok("这趟压根没产出：不开", finishPreviewPlan({ ...fb, turnOut: [] }).preview === null);
+  // 五种「开了反而添乱」的情形
+  ok("回放历史不开", finishPreviewPlan({ ...fb, replaying: true }).preview === null);
+  ok("用户已经切到别的会话不开", finishPreviewPlan({ ...fb, otherSession: true }).preview === null);
+  ok("这趟里用户自己关过预览：不许弹回来", finishPreviewPlan({ ...fb, userClosedPreview: true }).preview === null);
+  ok("成果文件面板开着不开（别把他正翻的列表抢走）", finishPreviewPlan({ ...fb, filesOpen: true }).preview === null);
+  ok("窄窗不开（预览是盖在聊天上的浮层，一开就挡住结论）", finishPreviewPlan({ ...fb, narrow: true }).preview === null);
+  ok("预览已经开着且看的就是它：不重复开", finishPreviewPlan({ ...fb, pvOpen: true, pvCurrent: "任务_0910/简历.html" }).preview === null);
+  ok("预览开着但看的是别的：换成这趟的成品（面板本来就在，布局不动）", finishPreviewPlan({ ...fb, pvOpen: true, pvCurrent: "别的.html" }).preview === "任务_0910/简历.html");
   return names;
 })()
 `;
@@ -2800,7 +2942,7 @@ app.whenReady().then(async () => {
       await win9.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TRAIL_HTML));
       const names9 = await win9.webContents.executeJavaScript(TRAIL_STUBS + "\n" + TRAIL_SRC + "\n" + TRAIL_CHECKS, true);
       for (const n of names9) console.log("  ✓ " + n);
-      console.log(`✅ 前端：轨迹条（同名合并·出错标红·中止删除线·+N 上限·收起可见·点徽章直达）+ 结论出过程区 + 命中率封顶 ${names9.length} 项通过`);
+      console.log(`✅ 前端：轨迹条（同名合并·出错标红·中止删除线·+N 上限·收起可见·点徽章直达）+ 结论出过程区 + 命中率封顶 + 收尾接线（正文文件名变可点链接·成品自动摊开·四种情形一律不弹）${names9.length} 项通过`);
     } finally {
       if (!win9.isDestroyed()) win9.destroy();
     }
@@ -2862,7 +3004,7 @@ app.whenReady().then(async () => {
       const names17 = await win17.webContents.executeJavaScript(ARRIVAL_STUBS + "\n" + ARRIVAL_SRC + "\n" + ARRIVAL_CHECKS, true)
         .catch((e) => { throw new Error("[产出到了] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of names17) console.log("  ✓ " + n);
-      console.log(`✅ 前端：产出到了不抢版面（不弹预览/面板·角标累加·开面板清零·回放/后台/无产出不动·只在看着同一文件时原地刷新·封顶 99）${names17.length} 项通过`);
+      console.log(`✅ 前端：产出到了不抢版面 + 跑完看得见（中途不弹/角标累加/开面板清零/只在看着同一文件时原地刷新 · 正文文件名变可点链接、代码块和没产出过的名字不碰 · 收尾开成品且六种情形一律不开）${names17.length} 项通过`);
     } finally {
       if (!win17.isDestroyed()) win17.destroy();
     }
