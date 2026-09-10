@@ -4816,6 +4816,7 @@ async function main() {
   await testSessionIndex();
   await testRunOwnership();
   testSessionCacheReload();
+  testWindowsLaunch();
   testSkillRenameKeepsAssets();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
@@ -8006,6 +8007,153 @@ function testSkillRenameKeepsAssets() {
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
+}
+
+/**
+ * Windows 上本机引擎起不起得来（engines/win.js）。
+ *
+ * 这条是「不少朋友下载之后打不开」里最硬的一块：npm 在 Windows 上装出来的不是可执行文件，
+ * 是 claude.cmd 这种垫片，而 Node 从 18.20.2（CVE-2024-27980）起直接 spawn .cmd 一律 EINVAL。
+ * 于是 Windows 用户那边是：设置页两条引擎都写「本机没装」（三个探测全 EINVAL），
+ * 硬填绝对路径也一样，点一次报一次「跑不起来」——看着就是这软件不支持 Windows。
+ *
+ * 常规解法是转给 cmd.exe，但 cmd 的命令行有 8191 字符上限，而我们要传的
+ * --append-system-prompt 是上万字还带换行的系统提示词，必然截断。所以主路是把垫片拆开、
+ * 直接 spawn 里面那个 node + cli.js，参数按 argv 原样过去。
+ *
+ * 本机是 macOS，跑不了真 Windows，所以这里测的是「决定 spawn 什么」这一步：
+ * 注入 win=true 和一份假文件系统，断言算出来的 bin/args/opts。
+ */
+function testWindowsLaunch() {
+  const winmod = require("../engines/win");
+
+  const NPM_SHIM = [
+    "@ECHO off", "GOTO start", ":find_dp0", "SET dp0=%~dp0", "EXIT /b", ":start", "SETLOCAL", "CALL :find_dp0", "",
+    'IF EXIST "%dp0%\\node.exe" (', '  SET "_prog=%dp0%\\node.exe"', ") ELSE (", '  SET "_prog=node"', ")", "",
+    'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*',
+  ].join("\r\n");
+  const PNPM_SHIM = [
+    "@SETLOCAL", "@SET PATHEXT=%PATHEXT:;.JS;=;%",
+    'node  "%~dp0\\..\\@anthropic-ai\\claude-code\\cli.js" %*',
+  ].join("\r\n");
+
+  // 假文件系统：键按 Windows 规矩（不区分大小写）
+  const fakeIo = (files) => {
+    const k = (f) => path.win32.normalize(String(f)).toLowerCase();
+    const has = (f) => Object.prototype.hasOwnProperty.call(files, k(f));
+    return {
+      readFileSync: (f) => { if (!has(f)) throw new Error("ENOENT"); return files[k(f)]; },
+      statSync: (f) => { if (!has(f)) throw new Error("ENOENT"); return { isFile: () => true }; },
+    };
+  };
+  const WHICH = { findIn: () => "C:\\Program Files\\nodejs\\node.exe", searchDirs: () => [] };
+
+  // ---- 1) 别的系统上，行为一个字节都不许变 ----
+  const nix = winmod.launchPlan("/opt/homebrew/bin/claude", ["-p", "hi"], { win: false });
+  assert.strictEqual(nix.bin, "/opt/homebrew/bin/claude", "非 Windows 上不该改动 bin");
+  assert.deepStrictEqual(nix.args, ["-p", "hi"], "非 Windows 上不该改动参数");
+  assert.strictEqual(nix.opts.detached, true, "★非 Windows 丢了 detached：停止任务时杀不掉整棵进程树，CLI 派生的 bash/python 变孤儿继续写文件★");
+  assert.ok(!("windowsHide" in nix.opts), "非 Windows 不该塞 windows 专用参数");
+
+  // ---- 2) Windows 上的 .exe：直接起，但不许 detached（会弹一个控制台黑窗口） ----
+  const exe = winmod.launchPlan("C:\\tools\\codex.exe", ["exec"], { win: true, io: fakeIo({}), which: WHICH });
+  assert.strictEqual(exe.how, "直接");
+  assert.strictEqual(exe.bin, "C:\\tools\\codex.exe");
+  assert.deepStrictEqual(exe.args, ["exec"]);
+  assert.ok(!exe.opts.detached, "★Windows 上 detached 会给子进程开一个自己的控制台窗口：每跑一个任务弹一个黑框★");
+  assert.strictEqual(exe.opts.windowsHide, true, "没关窗口，用户屏幕上会闪黑框");
+
+  // ---- 3) npm 垫片：拆开，参数原样过去 ----
+  const SHIM = "C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd";
+  const CLI = "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js";
+  const SYS = "你是助手\n第二行 带\"引号\" 和 & | ^ 这些字符\n" + "很长的系统提示词。".repeat(1200); // >8191，走 cmd 必炸
+  const npmPlan = winmod.launchPlan(SHIM, ["-p", "--append-system-prompt", SYS], {
+    win: true, io: fakeIo({ [SHIM.toLowerCase()]: NPM_SHIM, [CLI.toLowerCase()]: "" }), which: WHICH,
+  });
+  assert.strictEqual(npmPlan.how, "拆垫片", "★npm 的 claude.cmd 没拆开——直接 spawn .cmd 在 Node 18.20.2+ 上一律 EINVAL★");
+  assert.strictEqual(npmPlan.bin, "C:\\Program Files\\nodejs\\node.exe", "没去 PATH 上找 node");
+  assert.deepStrictEqual(npmPlan.args, [CLI, "-p", "--append-system-prompt", SYS],
+    "★参数没原样传：系统提示词上万字又带换行，经 cmd 转发必然截断/失败★");
+  assert.ok(SYS.length > winmod.CMD_MAX, "这个用例的前提没成立：系统提示词本该超过 cmd 的上限");
+  assert.strictEqual(npmPlan.warn, "", "拆垫片这条路不过 shell，不该有长度警告");
+
+  // 垫片旁边自带 node.exe（nvm-windows / 便携版）时优先用它，跟垫片自己的逻辑一致
+  const sib = "C:\\Users\\me\\AppData\\Roaming\\npm\\node.exe";
+  const withSib = winmod.launchPlan(SHIM, [], {
+    win: true, io: fakeIo({ [SHIM.toLowerCase()]: NPM_SHIM, [CLI.toLowerCase()]: "", [sib.toLowerCase()]: "" }), which: WHICH,
+  });
+  assert.strictEqual(withSib.bin, sib, "垫片旁边就有 node.exe 却不用，跑去 PATH 上找");
+
+  // 机器上压根没装 node：用自己这个进程当 node（桌面版里是 Electron，要 RUN_AS_NODE）
+  const noNode = winmod.launchPlan(SHIM, [], {
+    win: true, io: fakeIo({ [SHIM.toLowerCase()]: NPM_SHIM, [CLI.toLowerCase()]: "" }),
+    which: { findIn: () => "", searchDirs: () => [] },
+  });
+  assert.strictEqual(noNode.bin, process.execPath, "★没单独装 node 就彻底起不来了——自己这个进程就是 node★");
+  assert.strictEqual(noNode.env.ELECTRON_RUN_AS_NODE, "1", "★桌面版里 execPath 是 Electron 本体，不加这个会再弹一个应用实例出来★");
+
+  // ---- 4) pnpm / yarn 的 .bin 垫片（%~dp0 写法、相对上级目录）也得拆得开 ----
+  const PSHIM = "C:\\proj\\node_modules\\.bin\\claude.cmd";
+  const PCLI = "C:\\proj\\node_modules\\@anthropic-ai\\claude-code\\cli.js";
+  const pnpmPlan = winmod.launchPlan(PSHIM, ["--help"], {
+    win: true, io: fakeIo({ [PSHIM.toLowerCase()]: PNPM_SHIM, [PCLI.toLowerCase()]: "" }), which: WHICH,
+  });
+  assert.strictEqual(pnpmPlan.how, "拆垫片", "pnpm/yarn 那种 %~dp0\\.. 写法的垫片没拆开");
+  assert.deepStrictEqual(pnpmPlan.args, [PCLI, "--help"]);
+
+  // 垫片认得出、但它指的 js 已经不在了（装了一半 / 被杀毒删了）→ 不能硬编一个不存在的路径
+  const gone = winmod.launchPlan(SHIM, ["-p"], { win: true, io: fakeIo({ [SHIM.toLowerCase()]: NPM_SHIM }), which: WHICH });
+  assert.strictEqual(gone.how, "cmd 兜底", "垫片指的 js 不存在时还硬拿它去 spawn，报的错跟真实原因对不上");
+
+  // ---- 5) 认不出的垫片 → cmd.exe 兜底，按 cmd 的规矩转义 ----
+  const odd = winmod.launchPlan("C:\\tools\\my agent.cmd", ["-p", "a b", 'say "hi" & del *'], {
+    win: true, io: fakeIo({ "c:\\tools\\my agent.cmd": "@echo off\r\nrem 自己写的批处理" }), which: WHICH,
+  });
+  assert.strictEqual(odd.how, "cmd 兜底");
+  assert.strictEqual(odd.bin, process.env.ComSpec || "cmd.exe");
+  assert.deepStrictEqual(odd.args.slice(0, 3), ["/d", "/s", "/c"], "cmd 的参数形状不对");
+  assert.strictEqual(odd.opts.windowsVerbatimArguments, true, "★不加 verbatim，Node 会再包一层引号，整条命令行就废了★");
+  const line = odd.args[3];
+  assert.ok(line.startsWith('"') && line.endsWith('"'), "★整条命令没被外层引号包住：cmd /s 靠这对引号判边界★");
+  assert.ok(/\^&/.test(line), "★命令里的 & 没挡住：cmd 会把它当命令分隔符，后半截当成另一条命令执行★");
+  assert.ok(/\^ /.test(line), "★带空格的参数没挡住：会被拆成两个参数★");
+  assert.ok(!/(^|[^\^])"hi"/.test(line), "参数里的引号没转义");
+
+  // 整条命令行钉死一次：元字符要挡两道（.cmd 会被 cmd 解析两遍——一遍是命令行本身，
+  // 一遍是垫片里 %* 展开的时候），少挡一道，参数里的空格/& 到了第二遍照样把命令劈开
+  const pinned = winmod.launchPlan("C:\\tools\\my agent.cmd", ["-p", "a b"], {
+    win: true, io: fakeIo({ "c:\\tools\\my agent.cmd": "@echo off" }), which: WHICH,
+  });
+  assert.strictEqual(pinned.args[3], '"^"C:\\tools\\my^ agent.cmd^" ^^^"-p^^^" ^^^"a^^^ b^^^""',
+    "★cmd 命令行拼得不对：命令本身挡一道、参数挡两道（.cmd 要过两遍解析），差一道参数就被劈开★");
+
+  // 兜底这条路有 8191 的硬上限，超了要当场说清，别让用户对着 cmd 的乱码错猜
+  const long = winmod.launchPlan("C:\\tools\\my agent.cmd", ["-p", "x".repeat(9000)], {
+    win: true, io: fakeIo({ "c:\\tools\\my agent.cmd": "@echo off" }), which: WHICH,
+  });
+  assert.ok(/8191/.test(long.warn), "★参数超过 cmd 上限却一声不吭：失败了没人知道是长度的问题★");
+
+  // ---- 6) 收尾：Windows 没有进程组，得 taskkill /T ----
+  const calls = [];
+  const fakeSpawn = (bin, args) => { calls.push([bin, ...args].join(" ")); return { on() {} }; };
+  winmod.killTree({ pid: 4242 }, "SIGTERM", { win: true, spawn: fakeSpawn });
+  winmod.killTree({ pid: 4242 }, "SIGKILL", { win: true, spawn: fakeSpawn });
+  assert.deepStrictEqual(calls, ["taskkill /pid 4242 /T", "taskkill /pid 4242 /T /F"],
+    "★Windows 上用 process.kill(-pid) 杀不掉进程树（负 pid 根本不是合法参数）：点了停止，CLI 派生的一堆子进程还在跑、还在写文件★");
+  let nixKill = null;
+  const realKill = process.kill;
+  process.kill = (pid, sig) => { nixKill = [pid, sig]; };
+  try { winmod.killTree({ pid: 777 }, "SIGTERM", { win: false, spawn: fakeSpawn }); } finally { process.kill = realKill; }
+  assert.deepStrictEqual(nixKill, [-777, "SIGTERM"], "非 Windows 上不再按进程组杀了");
+
+  // ---- 7) 接线：算得再对，jsonl.js 不用也是白搭 ----
+  const src = fs.readFileSync(path.join(__dirname, "..", "engines", "jsonl.js"), "utf8");
+  assert.strictEqual((src.match(/win\.launchPlan\(/g) || []).length, 4,
+    "engines/jsonl.js 里有 spawn 没走 launchPlan：跑任务、探版本、探选项、探 --help 四处都得走，少一处 Windows 上就少一处能用");
+  assert.ok(!/spawn\(bin,/.test(src), "★还有地方直接 spawn 那个 .cmd：Node 会当场 EINVAL★");
+  assert.ok(!/process\.kill\(-child\.pid/.test(src), "★还在按进程组杀：Windows 上这句必抛★");
+
+  console.log("✅ Windows 起得来本机引擎：npm/pnpm 垫片拆开直接跑 node（上万字系统提示词原样过 argv）· 没装 node 用自己 · 认不出才退 cmd 并按规矩转义 + 超 8191 明说 · 收尾走 taskkill /T · 别的系统一个字节没变");
 }
 
 /**

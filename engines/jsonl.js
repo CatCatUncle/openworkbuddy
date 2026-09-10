@@ -7,7 +7,8 @@
  *   · stderr 不是 JSON，是人话（"未登录"、"额度用完了"）。它必须留着，
  *     因为进程非零退出时，能告诉用户到底怎么了的只有它。
  *   · 停止 = 杀整棵进程树。CLI 自己还会派生子进程（bash、python、浏览器），
- *     只 kill 父进程会留下一堆孤儿继续跑、继续写文件。所以 detached 起、按进程组杀。
+ *     只 kill 父进程会留下一堆孤儿继续跑、继续写文件。
+ *     Unix 上 detached 起、按进程组杀；Windows 没有进程组，走 taskkill /T（见 ./win.js）。
  *
  * 一条硬规矩：**行内容坏了不许静默丢弃。** CLI 偶尔会往 stdout 混一行非 JSON
  * （升级提示、warning）。丢是对的，但要记进 junk 里 —— 否则"什么都没发生"
@@ -16,6 +17,7 @@
 
 const { spawn } = require("child_process");
 const { augmentedPath } = require("./which");
+const win = require("./win");
 
 /** stderr 只留尾巴：CLI 报错前可能刷了几万行日志，全留住等于把内存喂给一次失败 */
 const STDERR_KEEP = 8000;
@@ -35,19 +37,25 @@ const STDERR_KEEP = 8000;
  */
 function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) {
   return new Promise((resolve, reject) => {
+    let junkWarn = ""; // 兜底路径的「参数超长」预警，等收尾时跟别的杂音一起交出去
+    // Windows 上 npm 装出来的是 claude.cmd 这种垫片，Node 18.20.2 起直接 spawn 它会 EINVAL；
+    // 而经 cmd.exe 转发又扛不住上万字的系统提示词（8191 上限）。plan 负责挑一条真能走通的路
+    const plan = win.launchPlan(bin, args);
     let child;
     try {
-      child = spawn(bin, args, {
+      child = spawn(plan.bin, plan.args, {
         cwd,
         // PATH 得补全：CLI 自己还要去调 node / git / ripgrep，双击启动的 GUI 进程
         // 那份残废 PATH 传下去，claude 起来了照样在第一个工具调用上死掉
-        env: { ...process.env, PATH: augmentedPath(), ...(env || {}) },
+        env: { ...process.env, PATH: augmentedPath(), ...plan.env, ...(env || {}) },
         stdio: ["pipe", "pipe", "pipe"],
-        detached: true, // 自成进程组，收尾时才杀得干净
+        ...plan.opts,
       });
     } catch (e) {
       return reject(new Error(`起不来 ${bin}：${e.message}`));
     }
+    // 兜底那条路参数超长时先把话说在前头：失败了报出来的会是 cmd 的乱码错，跟真实原因对不上
+    if (plan.warn) junkWarn = plan.warn;
 
     let killed = null;
     let stderr = "";
@@ -58,9 +66,9 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
     const killTree = (why) => {
       if (killed || settled) return;
       killed = why;
-      try { process.kill(-child.pid, "SIGTERM"); } catch { try { child.kill("SIGTERM"); } catch {} }
+      win.killTree(child, "SIGTERM");
       // 给它 3 秒体面退出（写完文件、关掉浏览器），之后不客气
-      setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 3000).unref();
+      setTimeout(() => win.killTree(child, "SIGKILL"), 3000).unref();
     };
 
     // 时限与手动停止都靠这一个轮询：2 秒一次，比起给每种情况各挂一套定时器更好收尾
@@ -105,6 +113,7 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
       if (tail) {
         try { onLine(JSON.parse(tail)); } catch { junk.push(tail.slice(0, 300)); }
       }
+      if (junkWarn && code !== 0) junk.push(junkWarn);
       resolve({ code: code == null ? -1 : code, killed, stderr: stderr.trim(), junk });
     });
 
@@ -121,7 +130,8 @@ function runJsonl({ bin, args, cwd, env, stdin, onLine, deadline, stopSignal }) 
 function probeVersion(bin, args = ["--version"], timeoutMs = 8000) {
   return new Promise((resolve) => {
     let child;
-    try { child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath() } }); }
+    const p = win.launchPlan(bin, args);
+    try { child = spawn(p.bin, p.args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath(), ...p.env }, ...p.opts }); }
     catch { return resolve({ installed: false, version: "" }); }
     let out = "";
     const done = (ok) => { try { child.kill("SIGKILL"); } catch {} resolve({ installed: ok, version: firstVersionLine(out) }); };
@@ -148,7 +158,8 @@ function probeVersion(bin, args = ["--version"], timeoutMs = 8000) {
 function probeOption(bin, flag, bogus = "__owb_probe__", timeoutMs = 8000) {
   return new Promise((resolve) => {
     let child;
-    try { child = spawn(bin, [flag, bogus, "--version"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath() } }); }
+    const p = win.launchPlan(bin, [flag, bogus, "--version"]);
+    try { child = spawn(p.bin, p.args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath(), ...p.env }, ...p.opts }); }
     catch { return resolve(false); }
     let out = "";
     const done = (v) => { try { child.kill("SIGKILL"); } catch {} resolve(v); };
@@ -169,7 +180,8 @@ function probeOption(bin, flag, bogus = "__owb_probe__", timeoutMs = 8000) {
 function probeHelp(bin, needle, timeoutMs = 8000) {
   return new Promise((resolve) => {
     let child;
-    try { child = spawn(bin, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath() } }); }
+    const p = win.launchPlan(bin, ["--help"]);
+    try { child = spawn(p.bin, p.args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: augmentedPath(), ...p.env }, ...p.opts }); }
     catch { return resolve(false); }
     let out = "";
     const done = (v) => { try { child.kill("SIGKILL"); } catch {} resolve(v); };
