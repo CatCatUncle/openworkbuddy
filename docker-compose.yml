@@ -22,6 +22,11 @@ services:
       PORT: 3800
       OPENWORKBUDDY_HOME: /data
       TZ: ${TZ:-Asia/Shanghai}
+      # 前面挂了几层反代。0 = 没挂（默认），登录/注册限流按 socket 地址算。
+      # 挂了却不填：全公司共用代理那一个 IP，注册 5 次、登录错 30 次就把所有人一起锁在门外。
+      # 填了却没挂：等于把限流闸拆给外网（伪造一行头就是一个新 IP）——所以只在真有反代时填。
+      # deploy.sh --domain 起 caddy 时会自动填 1。
+      WB_TRUST_PROXY: ${WB_TRUST_PROXY:-0}
     volumes:
       - ${WB_HOME:-./wb-data}:/data
     ports:

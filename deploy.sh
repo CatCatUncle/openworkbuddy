@@ -91,6 +91,11 @@ setenv() {  # setenv KEY VALUE
 [ -n "$DOMAIN" ] && setenv WB_DOMAIN "$DOMAIN"
 [ -n "$BIND" ]   && setenv WB_BIND   "$BIND"
 [ -n "$PORT" ]   && setenv WB_PORT   "$PORT"
+# 走 --domain 就是我们自己在前面起 caddy，那这一层反代是确定存在的，直接把开关打开。
+# 不打开的话：所有请求在应用看来都来自 caddy 那一个 IP，注册限流 5 次/15 分钟
+# 会变成「第 6 个同事注册不了」，登录限流会变成「有人连错几次密码全公司一起进不去」。
+# 只在 --domain 时自动填，是因为「填了却没反代」比「没填」更糟——那等于把闸拆给外网。
+[ -n "$DOMAIN" ] && setenv WB_TRUST_PROXY 1
 
 # 读回最终值（.env 是纯 KEY=VALUE，可以直接 source）
 set -a; . ./.env; set +a
@@ -98,6 +103,7 @@ WB_HOME="${WB_HOME:-./wb-data}"
 WB_BIND="${WB_BIND:-127.0.0.1}"
 WB_PORT="${WB_PORT:-3800}"
 WB_DOMAIN="${WB_DOMAIN:-}"
+WB_TRUST_PROXY="${WB_TRUST_PROXY:-0}"
 
 mkdir -p "$WB_HOME"
 

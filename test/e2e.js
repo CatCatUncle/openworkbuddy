@@ -3195,7 +3195,32 @@ function testAccountStore() {
 
   assert.strictEqual(isHttps({ headers: { "x-forwarded-proto": "https, http" } }), true, "nginx 转发的 https 没认出来");
   assert.strictEqual(isHttps({ headers: {} }), false, "普通 http 不该当成 https");
-  console.log("✅ 账本：坏文件不覆盖 / 写盘原子 / 登录限流 / https 认得出");
+
+  // 谁在敲门：一挂反代，两道 IP 闸就从「防连打」变成「全公司互相锁死」，
+  // 所以要能认出真客户端；但认的方式不能是「信 X-Forwarded-For 最左边那个」——那个正好是唯一能伪造的。
+  const { clientIp, isPrivateAddr } = require("../account")._internals;
+  const req = (peer, xff) => ({ socket: { remoteAddress: peer }, headers: xff ? { "x-forwarded-for": xff } : {} });
+  const withTrust = (n, fn) => {
+    const old = process.env.WB_TRUST_PROXY;
+    if (n === null) delete process.env.WB_TRUST_PROXY; else process.env.WB_TRUST_PROXY = String(n);
+    try { return fn(); } finally { if (old === undefined) delete process.env.WB_TRUST_PROXY; else process.env.WB_TRUST_PROXY = old; }
+  };
+  assert(isPrivateAddr("172.18.0.5") && isPrivateAddr("127.0.0.1") && isPrivateAddr("::1") && isPrivateAddr("::ffff:10.1.2.3"), "私网地址没认出来");
+  assert(!isPrivateAddr("1.2.3.4") && !isPrivateAddr("172.32.0.1") && !isPrivateAddr(""), "公网地址被当成私网了");
+  // 没开开关：头写什么都不看
+  withTrust(null, () => assert.strictEqual(clientIp(req("172.18.0.5", "9.9.9.9")), "172.18.0.5", "默认就不该信 X-Forwarded-For"));
+  // 开一层：Caddy 会把真实客户端追加在最后，取最右边那个
+  withTrust(1, () => assert.strictEqual(clientIp(req("172.18.0.5", "203.0.113.7")), "203.0.113.7", "挂反代后没取到真客户端"));
+  // 反关键：客户端自己伪造了一个，代理追加在后面 → 必须取代理写的那个，不是他伪造的
+  withTrust(1, () => assert.strictEqual(clientIp(req("172.18.0.5", "9.9.9.9, 203.0.113.7")), "203.0.113.7", "取了客户端伪造的那一跳"));
+  // 两层（Cloudflare → Caddy）：右起第 2 跳
+  withTrust(2, () => assert.strictEqual(clientIp(req("172.18.0.5", "9.9.9.9, 203.0.113.7, 198.51.100.2")), "203.0.113.7", "两层代理数错了跳数"));
+  // 说好有代理却是直连进来的：一个字都不信
+  withTrust(1, () => assert.strictEqual(clientIp(req("203.0.113.9", "9.9.9.9")), "203.0.113.9", "直连进来还信了转发头"));
+  // 链子比声明的短：退回 peer，不拿唯一能伪造的那个顶上
+  withTrust(2, () => assert.strictEqual(clientIp(req("172.18.0.5", "9.9.9.9")), "172.18.0.5", "跳数不够时应当退回 peer"));
+  withTrust(1, () => assert.strictEqual(clientIp(req("172.18.0.5", "")), "172.18.0.5", "没有转发头时应当退回 peer"));
+  console.log("✅ 账本：坏文件不覆盖 / 写盘原子 / 登录限流 / https 认得出 / 反代下认得出真客户端且伪造头骗不过");
 }
 
 /**
