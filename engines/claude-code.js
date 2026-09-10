@@ -139,6 +139,14 @@ async function run({
   const found = await resolveBin("claude", bin);
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @anthropic-ai/claude-code），或在设置里填 claude 的绝对路径。");
   const exe = found.bin;
+  // claude 自己的启动就是慢的：本机实测（2026-09-10，各跑 3 次）从 spawn 到它吐出第一条
+  // system/init 要 3.8~4.5 秒，挂上 MCP 桥之后 5.7~7.2 秒——时间花在 CLI 冷启动和逐个连
+  // MCP 服务器上，不在我们这边（我们这台桥 initialize 回包 76ms，两个探测并发起来 0.09 秒）。
+  // 这几秒缩不掉，但「界面一片空白」是可以不发生的：以前那枚小牌子只在 init 到了才挂出来，
+  // 用户按下发送之后好几秒什么都没有，看着像没点上。所以 bin 一确认存在就先挂一枚「正在启动」
+  // 的同款牌子占住位置，init 一到原地换成带模型名和工具数的正式版——前端认的是同一个
+  // .run-eng 节点，不会闪成两枚。放在探测之前，是因为探测本身还要 0.09 秒，牌子没必要跟着等。
+  emit({ type: "status", starting: true, text: `本机 Claude Code 正在启动（连接工具中，一般 3~8 秒），不消耗 API 额度`, depth: 0 });
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
   // acceptEdits：本项目的定位是"替你把活干了"，每一步都停下来问等于没法用。
   // 真正危险的动作由本项目自己的安全中心把关（工具经 MCP 回流时会走那道闸）。
@@ -151,8 +159,10 @@ async function run({
   // 读一下都是「需要审批」，而这里没人能点同意。用户的原话是"不能读取文件"。
   // --add-dir 把这几处明着放进来（一个目录一个 --add-dir：这个选项是变长参数，
   // 一口气跟一串会把后面的东西也当目录吞掉）。老版 claude 不认这个选项时不发。
+  // 两个探测互相不依赖，串行等于白等一趟往返。都带模块级缓存，同一个 bin 只有第一次真去 spawn
+  const [addDirOk, thinkingFlag] = await Promise.all([probeAddDir(exe), probeThinking(exe)]);
   const dirs = pickAddDirs(addDirs, cwd);
-  if (dirs.length && await probeAddDir(exe)) for (const d of dirs) args.push("--add-dir", d);
+  if (dirs.length && addDirOk) for (const d of dirs) args.push("--add-dir", d);
   if (mcpConfigPath) {
     args.push("--mcp-config", mcpConfigPath);
     // -p 是非交互的：MCP 工具默认要人点一下"允许"，而这里没有人。
@@ -167,7 +177,7 @@ async function run({
   if (shimBin) args.push("--allowed-tools", `Bash(${shimBin}:*)`);
   // 思考模式：跟 app 设置页那个下拉框同一个档位。auto 什么也不发（今天的行为一个字节不变），
   // 这版 claude 不认 --thinking 时也什么都不发 —— 发了会被静默吞掉，不如明着在界面上说不支持
-  const think = thinking.planForEngine(ID, thinkingLevel, { thinkingFlag: await probeThinking(exe) });
+  const think = thinking.planForEngine(ID, thinkingLevel, { thinkingFlag });
   for (const a of think.args) args.push(a);
   for (const a of extraArgs) args.push(a);
 

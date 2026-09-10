@@ -444,6 +444,8 @@
   .run-eng .re-name { font-weight: 600; color: var(--wb-text); }
   .run-eng .re-sub { color: var(--wb-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .run-eng .re-free { padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--wb-ok-text); }
+  /* 冷启动那几秒：同一枚牌子，🖥 换成转圈。init 一到原地换回来，位置和尺寸都不动 */
+  .run-eng.re-boot .re-ic { display: inline-flex; align-items: center; }
   #send { width: 34px; height: 34px; border: none; border-radius: 50%; background: var(--wb-brand-grad); color: #fff; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   #send:disabled { opacity: .45; cursor: not-allowed; }
   .quick-bar { display: flex; align-items: center; gap: 4px; padding: 8px 6px 0; }

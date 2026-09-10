@@ -5810,6 +5810,14 @@ function testI18n() {
     assert(/已启动（模型 /.test(src), f + " 里那条「已启动」的措辞改了，i18n 的模式句要跟着改");
     const got = I.lookup(sample, "en");
     assert(got && !CJK.test(got), f + " 的引擎启动状态没翻：" + JSON.stringify(got));
+    // 冷启动占位那条同理：真源也在引擎里，照着抓一条出来查（括号里那截单独显示，也得能翻）
+    const boot = /emit\(\{ type: "status", starting: true, text: `(.+?)`/.exec(src);
+    assert(boot, f + " 没在 spawn 前推「正在启动」——本机 CLI 冷启动那几秒界面会是空的");
+    const bootEn = I.lookup(boot[1], "en");
+    assert(bootEn && !CJK.test(bootEn), f + " 的冷启动占位状态没翻：" + JSON.stringify(bootEn));
+    const inner = /（(.+?)）/.exec(boot[1]);
+    const innerEn = inner && I.lookup(inner[1], "en");
+    assert(innerEn && !CJK.test(innerEn), f + " 冷启动占位括号里那截没翻：" + JSON.stringify(innerEn));
   }
   console.log(`✅ 中英文切换：词典 ${keys.length} 条 + ${I.PATTERNS.en.length} 条模式句 · index.html 中文 ${htmlStrs.size}/${htmlStrs.size} 全覆盖（反向对照通过）· JS 模板短文案 ${short.length - shortMiss.length}/${short.length}=${pct(shortMiss.length, short.length)}%、全部 ${all.length - allMiss.length}/${all.length}=${pct(allMiss.length, all.length)}% · 假 DOM 翻译/跳过/幂等/还原 · 过程区一行流动词 ${verbs.length} 个 / 轨迹条短标 ${shorts.length} 个 / 本机引擎状态 2 条全覆盖（反向对照通过）· lang 前端→服务端→内置循环/本机引擎/专家 三路接线`);
 }

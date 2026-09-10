@@ -542,15 +542,22 @@ function createTurnUI(userText, turnMode, forSid) {
       // 引擎启动那一条是「这趟活谁在跑、花不花钱」，是事实不是进度：
       // 挂成一枚常驻小牌子钉在这一轮开头，别用会转的思考提示——转了半天其实早就跑起来了，
       // 而且下一段正文一来它就被抹掉，用户回头再也找不到「刚才那次到底走的哪条路」
-      if (ev.model || /已启动/.test(ev.text || "")) {
+      if (ev.starting || ev.model || /已启动|正在启动/.test(ev.text || "")) {
         let chip = turn.querySelector(".run-eng");
         if (!chip) {
           chip = document.createElement("div");
           chip.className = "run-eng";
           body.insertBefore(chip, body.firstChild);
         }
-        const m = /^(.+?)已启动（(.+?)）/.exec(ev.text || "");
-        chip.innerHTML = `<span class="re-ic">🖥</span><span class="re-name">${esc(m ? m[1].trim() : (ev.text || "").slice(0, 24))}</span>`
+        // 本机 CLI 冷启动要好几秒（claude 实测 3.8~7.2 秒），这几秒里界面本来一片空白，
+        // 看着像"发送没点上"。引擎在 spawn 前先推一条 starting，这里挂同一枚牌子占住位置，
+        // 转个圈说清楚在等什么；等 init 到了，**原地**换成带模型名和工具数的正式版——
+        // 认的是同一个 .run-eng 节点，所以不会闪成两枚，也不会有布局跳动
+        const m = /^(.+?)(?:已启动|正在启动)（(.+?)）/.exec(ev.text || "");
+        const booting = !!ev.starting;
+        chip.classList.toggle("re-boot", booting);
+        chip.innerHTML = `<span class="re-ic">${booting ? '<span class="spinner"></span>' : "🖥"}</span>`
+          + `<span class="re-name">${esc(m ? m[1].trim() : (ev.text || "").slice(0, 24))}</span>`
           + (m ? `<span class="re-sub">${esc(m[2])}</span>` : "")
           + `<span class="re-free">不花 API 额度</span>`;
         chip.title = ev.text || "";
