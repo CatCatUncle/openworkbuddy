@@ -1206,6 +1206,14 @@ async function renderLarkQr(pane) {
   };
 }
 // ================= 助理设置：通道卡片 =================
+/** 收起 / 展开一张通道卡。aria-expanded 得跟着走，不然读屏用户听到的状态是反的 */
+function setPacked(card, on) {
+  if (!card) return;
+  card.classList.toggle("packed", on);
+  const h = card.querySelector(".im-card-h");
+  if (h && h.dataset.activate) h.setAttribute("aria-expanded", String(!on));
+}
+
 // 一张卡 = 一个通道：连没连上（状态灯，取自 /im/status）、怎么连（几个输入框）、右上角一颗按钮。
 // 「连接」= 保存 + 真测活；「取消连接」= 清空这一组凭证再保存（微信是真断开登录态）。
 // 申请步骤折进「怎么拿凭证」，默认只露名字、一句副标题和状态灯——
@@ -1311,12 +1319,13 @@ function renderImPane(pane, s) {
     if (c.lark) return `<div id="fs-qr-body" class="d" style="font-size:13px">检测 lark-cli…</div>${helpHtml(c)}`;
     return `${newappHtml(c)}${fieldsHtml(c)}${pasteHtml(c)}${c.src ? `<div class="im-src">${keyLink(c.src)}</div>` : ""}<div class="im-r ok-msg" data-r="${c.key}"></div>${helpHtml(c)}`;
   };
-  const cardHtml = (c) => `<div class="im-card" data-ch="${c.key}">
-      <div class="im-card-h" role="button" tabindex="0" data-activate="1" title="点一下展开 / 收起">
+  const cardHtml = (c) => `<div class="im-card packed" data-ch="${c.key}">
+      <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起">
         <span class="ic">${c.icon}</span>
         <div class="tt"><b>${esc(c.name)}</b><span>${esc(c.sub)}</span></div>
         <span class="im-st off"><i class="dot"></i><em>…</em></span>
         ${c.noConn ? "" : `<button class="btn-plain im-conn" data-act="connect">连接</button>`}
+        <i class="im-ar" aria-hidden="true"></i>
       </div>
       <div class="im-card-b">${bodyHtml(c)}</div>
     </div>`;
@@ -1327,12 +1336,12 @@ function renderImPane(pane, s) {
     ${sec("结果推送", "只出不进：任务和定时任务跑完自动推一份", grp("push"))}
     ${sec("飞书增强", "让 AI 以你本人身份操作飞书、直接生成云文档", grp("lark"))}
     ${sec("上下文管理", "IM 会话带多久的历史、什么时候另起一段", `
-      <div class="im-card im-card-static">
-        <div class="im-card-h"><span class="ic">⏱</span><div class="tt"><b>闲置自动开新会话</b><span>太久没聊，下一条不再带旧上下文</span></div></div>
+      <div class="im-card im-card-static packed">
+        <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起"><span class="ic">⏱</span><div class="tt"><b>闲置自动开新会话</b><span>太久没聊，下一条不再带旧上下文</span></div><i class="im-ar" aria-hidden="true"></i></div>
         <div class="im-card-b"><div class="im-act">超过 <input id="im-idle" type="number" min="0" max="720" style="width:72px;margin:0" value="${esc(String(im.session_idle_hours ?? 0))}"> 小时没对话就另起一段（0 = 关闭）</div></div>
       </div>
-      <div class="im-card im-card-static">
-        <div class="im-card-h"><span class="ic">🧹</span><div class="tt"><b>清空 IM 会话记忆</b><span id="im-sess-n">正在数…</span></div><button class="btn-plain im-conn" id="im-sess-clear">清空全部</button></div>
+      <div class="im-card im-card-static packed">
+        <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起"><span class="ic">🧹</span><div class="tt"><b>清空 IM 会话记忆</b><span id="im-sess-n">正在数…</span></div><button class="btn-plain im-conn" id="im-sess-clear">清空全部</button><i class="im-ar" aria-hidden="true"></i></div>
         <div class="im-card-b"><div class="d" style="font-size:12px">只清 IM 通道里的对话上下文（飞书 / QQ / 微信各自一段），网页对话和长期记忆不受影响。上下文预算（多长开始截）在 <a class="link" id="im-goto-agent" href="#">智能体设置</a> 里调。</div><div class="im-r ok-msg" id="im-sess-r"></div></div>
       </div>`)}
     <div style="display:flex;align-items:center;gap:10px;margin-top:4px"><button class="btn-brand" id="im-save">保存全部</button><span class="ok-msg" id="im-msg"></span><span class="d" style="font-size:12px;margin-left:auto">其他助理通道：钉钉机器人双向 / Telegram / Slack 都走「通用 Webhook」桥接</span></div>`;
@@ -1371,7 +1380,10 @@ function renderImPane(pane, s) {
         btn.textContent = cls === "ok" ? "取消连接" : "连接";
         btn.classList.remove("danger");
       }
-      if (packInitial) card.classList.toggle("packed", cls === "ok"); // 连上的收起、没连的摊开等你填
+      // 这里**不碰**展开状态。以前是「连上的收起、没连的摊开等你填」，等于一进来就有四五张卡
+      // 摊在屏幕上，全是你根本没打算连的渠道的输入框。默认全收起，点了才展开——
+      // 一屏能看全有哪些渠道、哪个已经连上了，比一屏摊满空表单有用得多。
+      void packInitial;
     }
   };
   const refreshStatus = async (packInitial) => {
@@ -1385,7 +1397,7 @@ function renderImPane(pane, s) {
   // ---------- 连接 / 取消连接 ----------
   const connect = async (c, btn) => {
     const card = btn.closest(".im-card");
-    card.classList.remove("packed");
+    setPacked(card, false);
     if (c.qr) return ilkStart();
     const miss = (c.fields || []).filter(([f, , , opt]) => opt !== "opt" && !getField(c.key, f)).map(([, label]) => label.split("（")[0]);
     if (miss.length) return say(c, `还差 ${miss.join(" / ")} 没填。填完再点「连接」`, true);
@@ -1403,7 +1415,7 @@ function renderImPane(pane, s) {
     } finally {
       btn.disabled = false;
       await refreshStatus(false);
-      if (card.classList.contains("on")) card.classList.add("packed"); // 真连上了才收起
+      if (card.classList.contains("on")) setPacked(card, true); // 真连上了就收起，屏幕还给下一张卡
     }
   };
   const disconnect = async (c, btn) => {
@@ -1434,7 +1446,7 @@ function renderImPane(pane, s) {
         if (!(await saveSettings(payload, globalMsg))) throw new Error("保存失败");
         say(c, "已断开，凭证已清空");
       }
-      card.classList.remove("packed");
+      setPacked(card, false); // 断开之后摊开，让你能马上重填
     } catch (e) {
       say(c, "❌ " + e.message, true);
     } finally {
@@ -1530,7 +1542,10 @@ function renderImPane(pane, s) {
       return;
     }
     const h = e.target.closest(".im-card-h");
-    if (h && h.closest(".im-card").dataset.ch && !e.target.closest("button")) h.closest(".im-card").classList.toggle("packed");
+    if (h && h.dataset.activate && !e.target.closest("button")) {
+      const card = h.closest(".im-card");
+      h.setAttribute("aria-expanded", String(!card.classList.toggle("packed")));
+    }
   });
   // 粘进来就认，不用再点一次按钮
   for (const c of IM_CHANNELS.filter((x) => x.paste)) {
@@ -1617,7 +1632,7 @@ function renderImPane(pane, s) {
         ilkSay(`✅ 已连接微信${d.ilink && d.ilink.bot_id ? `（${d.ilink.bot_id}）` : ""}，现在给这个微信号发消息即可下任务`);
         await refreshStatus(false);
         const card = pane.querySelector('[data-ch="wechat_ilink"]');
-        if (card && card.classList.contains("on")) card.classList.add("packed");
+        if (card && card.classList.contains("on")) setPacked(card, true);
         return;
       }
       if (d.status === "expired") {
