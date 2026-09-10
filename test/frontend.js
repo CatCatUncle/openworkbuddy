@@ -1042,6 +1042,22 @@ const STREAM_CHECKS = `
     sealStream(el) === true && el._split === null && !el.querySelector(".md-done") && !el.querySelector(".md-live") && el.innerHTML === ref.innerHTML);
   ok("已经合过的再合一次是空操作", sealStream(el) === false);
 
+  // 模型常常说半句就去调工具（"我先看看这个文件" → tool_use）。合帧是 100ms 一次，
+  // 这一段可能一帧都还没画就被 endText 打断。以前 sealStream 认「没画过就没得合」直接返回 false，
+  // 那句话就烂在 _raw 里，屏幕上留一个空 div——话说了，用户看不见。
+  {
+    const half = document.createElement("div");
+    half._raw = "我先看看这个文件是怎么写的";
+    half._split = null;
+    const sealed = sealStream(half);
+    ok("一帧都没画就被工具打断，那半句话也必须落到屏上",
+      sealed === true && half.textContent.indexOf("我先看看这个文件是怎么写的") >= 0,
+      JSON.stringify({ sealed, txt: half.textContent }));
+    const blank = document.createElement("div");
+    blank._raw = ""; blank._split = null;
+    ok("真的一个字都没写过就还是空操作（不许平白多出一个空段落）", sealStream(blank) === false);
+  }
+
   // 后来的字会把前面的排版整个改掉：裸语言名 + 空行 + 代码行 会被回收成一整个代码块，
   // 所以「已经写过的那段」不能只按它自己渲染的样子固化下来，必须对得上整份重渲的前缀
   el._raw = ""; el._split = null;

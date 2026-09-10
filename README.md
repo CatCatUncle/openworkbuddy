@@ -59,6 +59,25 @@
 
 > 还有多任务并行、Goal 目标验收、👍👎 反馈进自进化、双层记忆、权限档位、IM 远程指挥、桌面宠物……全部能力见 **[功能清单](docs/功能清单.md)**。
 
+## 长这样
+
+**「大山里开货车卖水果，后面一群大妈踩着钉鞋追，前面一位大爷举着锄头拦车 —— 出一张海报」**
+
+<p align="center">
+  <img src="docs/images/case-poster.png" width="360" alt="案例海报：山路水果大追击">
+</p>
+
+一句话进去，出来的是三个风格各不相同的 PNG（写实电影感 / 乡土漫画 / 无字纯画面）加一份「哪版发哪儿」的说明，全在成果面板里点开就能看。图上不带任何 AI 生成水印。
+
+**本机装了 Claude Code / Codex 的，一键拿它当发动机——不再另买 token。**
+
+<p align="center">
+  <img src="docs/images/local-claude-code.png" width="820" alt="本机 Claude Code 跑任务：中间过程折成一行，最后只留结论">
+</p>
+
+界面上会直说这一趟走的是谁、花不花 API 额度；中间每一步折成一行摆着，想看细节再点开，任务结束只把结论留在外面。
+
+
 ## 跑起来
 
 **装包**：去 [Releases](https://github.com/CatCatUncle/openworkbuddy/releases) 下对应的包，打开后**五步向导**带你注册账号、粘 Key（当场验活）、选引擎——三分钟内说出第一句话。

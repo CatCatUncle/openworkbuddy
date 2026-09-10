@@ -5424,7 +5424,43 @@ function testI18n() {
   assert(/if \(act === "lang"\) \{/.test(a02) && /if \(next !== i18n\.getLang\(\)\) i18n\.setLang\(next\);\n      openUserMenu\(\);\n      return;/.test(a02), "语言行点了没切/没原地重画/没拦住关菜单");
   assert(a02.indexOf('data-act="settings"') < a02.indexOf('data-act="lang"') && a02.indexOf('data-act="lang"') < a02.indexOf('data-act="appearance"'), "语言行要排在设置和外观之间");
   assert(/\.um-seg button\.on \{/.test(html) && /\.um-seg \{ margin-left: auto;/.test(html), "index.html 没给 .um-seg 胶囊样式/选中态");
-  console.log(`✅ 中英文切换：词典 ${keys.length} 条 + ${I.PATTERNS.en.length} 条模式句 · index.html 中文 ${htmlStrs.size}/${htmlStrs.size} 全覆盖（反向对照通过）· JS 模板短文案 ${short.length - shortMiss.length}/${short.length}=${pct(shortMiss.length, short.length)}%、全部 ${all.length - allMiss.length}/${all.length}=${pct(allMiss.length, all.length)}% · 假 DOM 翻译/跳过/幂等/还原 · lang 前端→服务端→内置循环/本机引擎/专家 三路接线`);
+  // 6. 过程区那一屏：一行流的动词（agent.js 的 TOOL_VERB）、轨迹条短标（app-01.js 的 TOOL_SHORT）、
+  //    本机引擎那条「已启动」。这三处的中文都是运行时拼出来的，不在 index.html 里，
+  //    上面的覆盖率闸门照不到——加个工具忘了补翻译，英文界面上就会冒出一行中文。逐个对照，漏一个就红。
+  const vmI = require("vm");
+  const grabObj = (src, head) => {
+    const i = src.indexOf(head);
+    assert(i >= 0, "源码里找不到 " + head);
+    let d = 0, j = i + head.length;
+    for (; j < src.length; j++) { if (src[j] === "{") d++; else if (src[j] === "}") { d--; if (!d) break; } }
+    assert(d === 0 && j < src.length, head + " 的花括号没配平");
+    return vmI.runInNewContext("(" + src.slice(i + head.length, j + 1) + ")");
+  };
+  const agSrc = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const verbs = Object.values(grabObj(agSrc, "const TOOL_VERB = "));
+  const shorts = Object.values(grabObj(a01, "const TOOL_SHORT = "));
+  assert(verbs.length >= 20 && shorts.length >= 20, `工具动词/短标抓取异常：${verbs.length}/${shorts.length}`);
+  const verbMiss = verbs.filter((v) => {
+    const withObj = I.lookup(v + " 演示.md", "en"), bare = I.lookup(v, "en");
+    return !withObj || !bare || CJK.test(String(withObj).replace("演示.md", "")) || CJK.test(String(bare));
+  });
+  assert(!verbMiss.length, "一行流的动词没翻：" + JSON.stringify(verbMiss));
+  // 「🟩 node」这种本来就没中文的短标不用翻，只盯带中文的
+  const shortMiss2 = shorts.filter((t) => CJK.test(t)).filter((t) => { const g = I.lookup(t, "en"); return !g || CJK.test(g); });
+  assert(!shortMiss2.length, "轨迹条短标没翻：" + JSON.stringify(shortMiss2));
+  // 反向对照：编一个词典里没有的动词，闸门必须抓得到（证明它不是恒真）
+  assert([...verbs, "瞎编个动词"].filter((v) => !I.lookup(v + " 演示.md", "en")).length === 1, "动词闸门对漏翻不敏感");
+  // 本机引擎那条状态：真源在 engines/*.js，照着它拼一条出来查
+  for (const [f, sample] of [
+    ["engines/claude-code.js", "本机 Claude Code 已启动（模型 claude-opus-5，102 个工具），不消耗 API 额度"],
+    ["engines/codex.js", "本机 Codex 已启动（模型 gpt-5-codex），不消耗 API 额度"],
+  ]) {
+    const src = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
+    assert(/已启动（模型 /.test(src), f + " 里那条「已启动」的措辞改了，i18n 的模式句要跟着改");
+    const got = I.lookup(sample, "en");
+    assert(got && !CJK.test(got), f + " 的引擎启动状态没翻：" + JSON.stringify(got));
+  }
+  console.log(`✅ 中英文切换：词典 ${keys.length} 条 + ${I.PATTERNS.en.length} 条模式句 · index.html 中文 ${htmlStrs.size}/${htmlStrs.size} 全覆盖（反向对照通过）· JS 模板短文案 ${short.length - shortMiss.length}/${short.length}=${pct(shortMiss.length, short.length)}%、全部 ${all.length - allMiss.length}/${all.length}=${pct(allMiss.length, all.length)}% · 假 DOM 翻译/跳过/幂等/还原 · 过程区一行流动词 ${verbs.length} 个 / 轨迹条短标 ${shorts.length} 个 / 本机引擎状态 2 条全覆盖（反向对照通过）· lang 前端→服务端→内置循环/本机引擎/专家 三路接线`);
 }
 
 // ---- #58 连接器预设目录 + 专家批量扩充 + 升级合并 + 录屏遮罩 ----
