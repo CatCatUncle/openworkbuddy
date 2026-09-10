@@ -1212,6 +1212,40 @@ async function testLookAtImage() {
     // 但用户已经配了视觉渠道，同一个 400 就是这个渠道自己的毛病，别再劝他去配一遍
     r = await lookAtImage({ media }, { path: "截图.png", question: "?" }, 30000, resolveFile);
     assert.ok(r.isError && /视觉模型错误 400/.test(r.content), "已配渠道报错时说岔了：" + r.content);
+
+    // 思考把 2000 的额度吃光、正文一个字没有：这不是内容策略，别让模型换问法空转。
+    // 自己关一次思考重来，拿到正文就算数（真实会话里这一种空返回出现了 40 次）
+    {
+      const glm = { media: { vision: { base_url: "https://openrouter.ai/api/v1", api_key: "k", model: "z-ai/glm-5.3-flash" } } };
+      const calls = [];
+      global.fetch = async (url, init) => {
+        const b = JSON.parse(init.body);
+        calls.push(b);
+        if (calls.length === 1) {
+          return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: "length", message: { content: "", reasoning_content: "让我仔细看看这张图……" } }] }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: "stop", message: { content: "标题写的是「山路水果」" } }] }) };
+      };
+      r = await lookAtImage(glm, { path: "截图.png", question: "标题几个字？" }, 30000, resolveFile);
+      assert.strictEqual(r.isError, false, "关思考重看那一次没救回来：" + r.content);
+      assert.ok(/山路水果/.test(r.content) && /关思考重看/.test(r.content), "救回来了但没交代发生过什么：" + r.content);
+      assert.strictEqual(calls.length, 2, "该正好重来一次，实际 " + calls.length + " 次");
+      assert.deepStrictEqual(calls[1].reasoning, { enabled: false }, "重试没把 OpenRouter 的思考关掉：" + JSON.stringify(calls[1].reasoning));
+      assert.ok(calls[1].max_tokens > calls[0].max_tokens, "重试没把额度放大");
+      // 负向对照：正常回话的那次绝不能触发第二发
+      calls.length = 0;
+      global.fetch = async () => { calls.push(1); return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: "stop", message: { content: "红色" } }] }) }; };
+      r = await lookAtImage(glm, { path: "截图.png", question: "?" }, 30000, resolveFile);
+      assert.ok(!r.isError && calls.length === 1, "正常一次就够的也去重试了：" + calls.length);
+    }
+    // 关了思考还是空：到此为止，明说别再换问法，更不许把没看到的当看过写进结论
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: "length", message: { content: "", reasoning_content: "嗯……" } }] }) });
+    r = await lookAtImage({ media }, { path: "截图.png", question: "?" }, 30000, resolveFile);
+    assert.ok(r.isError && /别再换问法/.test(r.content) && /不许把没看到的内容当作看过/.test(r.content), "空返回的收尾话没说死：" + r.content);
+    // 渠道没钱了：也别重试，直接说清是余额
+    global.fetch = async () => ({ ok: false, status: 402, json: async () => ({ error: { message: "Insufficient credits" } }) });
+    r = await lookAtImage({ media }, { path: "截图.png", question: "?" }, 30000, resolveFile);
+    assert.ok(r.isError && /没余额/.test(r.content) && /重试多少次都一样/.test(r.content), "402 没说清是余额：" + r.content);
   } finally {
     global.fetch = realFetch;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -1226,7 +1260,7 @@ async function testLookAtImage() {
   } finally {
     fs.rmSync(imgInWs, { force: true });
   }
-  console.log("✅ 看图：带问题才给看 · 图只随请求发不进历史 · OpenAI/Anthropic 两种协议 · 主模型看不了图时指路去配");
+  console.log("✅ 看图：带问题才给看 · 图只随请求发不进历史 · OpenAI/Anthropic 两种协议 · 主模型看不了图时指路去配 · 思考吃光额度自动关思考重看一次（正常回话不重试）· 真空了就叫停并禁止编造看过");
 }
 
 // ---------- Agent Plugins 1.0.0 ----------
@@ -3120,10 +3154,42 @@ function testImSessionStore() {
   assert.strictEqual(createImSessionStore({ dir }).keys().length, 0, "清完重启又回来了");
   assert.strictEqual(createImSessionStore({ dir: path.join(dir, "nope") }).clear(), 0, "目录不存在时 clear 该安静返回 0");
 
+  // keys() 别把「空不空」这件事反复整份解一遍：/im/status 15 秒问一次，一直开着就是一直解。
+  // 按 (mtime, size) 记账，文件没动就不重解；动过了必须重解——两头都要真。
+  {
+    const d2 = path.join(dir, "memo");
+    fs.mkdirSync(d2, { recursive: true });
+    const big = Array.from({ length: 400 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: "x".repeat(200) }));
+    fs.writeFileSync(path.join(d2, "feishu_oc_big.json"), JSON.stringify(big));
+    const st = createImSessionStore({ dir: d2 });
+    let parses = 0;
+    const realRead = require("../store").readJson, storeMod = require("../store");
+    storeMod.readJson = (...a) => { parses++; return realRead(...a); };
+    try {
+      assert.strictEqual(st.keys().length, 1, "冷读没数到");
+      const first = parses;
+      assert(first >= 1, "第一次该真解一遍");
+      for (let i = 0; i < 20; i++) st.keys();
+      assert.strictEqual(parses, first, `文件没动过却又解了 ${parses - first} 遍`);
+      // 文件真变了（清空成 []）：必须重解，数出来变 0
+      fs.writeFileSync(path.join(d2, "feishu_oc_big.json"), "[]");
+      fs.utimesSync(path.join(d2, "feishu_oc_big.json"), new Date(Date.now() + 2000), new Date(Date.now() + 2000));
+      assert.strictEqual(st.keys().length, 0, "文件改成空数组了还数得出来——记账没跟着 mtime 走");
+      assert(parses > first, "文件动过却没重解");
+      // 文件删了：账本别留着幽灵
+      fs.unlinkSync(path.join(d2, "feishu_oc_big.json"));
+      assert.strictEqual(st.keys().length, 0, "文件删了还数得出");
+    } finally { storeMod.readJson = realRead; }
+  }
+
   // 路由和界面闸门：清空接口在、状态里带会话数、助理设置页是卡片分区而不是九段说明平铺
   const imSrc = fs.readFileSync(path.join(__dirname, "..", "im.js"), "utf8");
   assert(imSrc.includes('router.get("/im/sessions"') && imSrc.includes('router.post("/im/sessions/clear"'), "im.js 缺会话数 / 清空接口");
   assert(/sessions:\s*\{\s*count:/.test(imSrc), "/im/status 没带 sessions.count");
+  // 这个轮询是常开的，窗口没在看就别问——服务端那头要扫一遍会话目录
+  const a01Im = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
+  assert(/setInterval\(\(\) => \{ if \(!document\.hidden\) refreshImStatus\(\); \}, 15000\);/.test(a01Im), "IM 状态轮询没按窗口可见性收着");
+  assert(/visibilitychange[\s\S]{0,120}refreshImStatus\(\)/.test(a01Im), "切回窗口没有立刻补一次 IM 状态");
   const app05 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
   assert(app05.includes("const IM_CHANNELS = [") && app05.includes("远程指挥") && app05.includes("结果推送") && app05.includes("上下文管理"), "助理设置页没按分区渲染");
   assert(app05.includes("取消连接") && app05.includes("确认断开？"), "取消连接没有两步确认");

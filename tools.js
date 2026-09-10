@@ -477,19 +477,37 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile) {
   const headers = anthropic
     ? { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" }
     : { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
-  const body = anthropic
-    ? { model: cfg.model, max_tokens: 2000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: q }] }] }
-    : { model: cfg.model, max_tokens: 2000, messages: [{ role: "user", content: [{ type: "text", text: q }, { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }] }] };
+  const mkBody = (maxTokens, extra) => (anthropic
+    ? { model: cfg.model, max_tokens: maxTokens, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: q }] }], ...extra }
+    : { model: cfg.model, max_tokens: maxTokens, messages: [{ role: "user", content: [{ type: "text", text: q }, { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }] }], ...extra });
 
-  let r;
-  try {
-    r = await fetchRetry(url, { method: "POST", headers, signal, body: JSON.stringify(body) }, { label: "视觉模型" });
-  } catch (e) {
-    return { content: `视觉模型请求失败：${e.message}`, isError: true };
-  }
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    const msg = JSON.stringify(j).slice(0, 300);
+  const ask = async (bodyObj) => {
+    let r;
+    try {
+      r = await fetchRetry(url, { method: "POST", headers, signal, body: JSON.stringify(bodyObj) }, { label: "视觉模型" });
+    } catch (e) {
+      return { fail: `视觉模型请求失败：${e.message}` };
+    }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return { r, j, http: r.status };
+    const ch = ((j.choices || [])[0] || {});
+    const msg = ch.message || {};
+    let text = anthropic
+      ? (j.content || []).map((c) => (c && c.type === "text" ? c.text : "")).join("")
+      : msg.content;
+    if (Array.isArray(text)) text = text.map((c) => (typeof c === "string" ? c : (c || {}).text || "")).join("");
+    // 「想了一堆但一个字没说」跟「被内容策略拦了」是两回事，得分得开
+    const reasoned = anthropic
+      ? (j.content || []).some((c) => c && (c.type === "thinking" || c.type === "redacted_thinking"))
+      : !!String(msg.reasoning_content || msg.reasoning || "").trim();
+    const capped = anthropic ? j.stop_reason === "max_tokens" : ch.finish_reason === "length";
+    return { r, j, text: String(text || "").trim(), reasoned, capped };
+  };
+
+  let out = await ask(mkBody(2000));
+  if (out.fail) return { content: out.fail, isError: true };
+  if (out.http) {
+    const msg = JSON.stringify(out.j).slice(0, 300);
     // 主模型是纯文本模型时上游会直说「不支持图片」。这句话得原样转给用户去配视觉渠道——
     // 模型自己怎么重试都是同一个 400，只会白烧几轮。
     if (!configured && /image|vision|multimodal|不支持/i.test(msg)) {
@@ -498,15 +516,37 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile) {
         isError: true,
       };
     }
-    return { content: `视觉模型错误 ${r.status}: ${msg}`, isError: true };
+    if (out.http === 402 || /insufficient|credit|余额|欠费/i.test(msg)) {
+      return { content: `视觉模型这条渠道没余额了（HTTP ${out.http}）：${msg}\n这不是问法的问题，重试多少次都一样。请用户去充值，或在 设置 → 模型 → 视觉模型 换一条渠道。别再调 look_at_image 了，也不许把没看到的内容当看过写进结论。`, isError: true };
+    }
+    return { content: `视觉模型错误 ${out.http}: ${msg}`, isError: true };
   }
-  let text = anthropic
-    ? (j.content || []).map((c) => (c && c.type === "text" ? c.text : "")).join("")
-    : (((j.choices || [])[0] || {}).message || {}).content;
-  if (Array.isArray(text)) text = text.map((c) => (typeof c === "string" ? c : (c || {}).text || "")).join("");
-  text = String(text || "").trim();
-  if (!text) return { content: "视觉模型没返回内容（可能被内容策略拦了）。换个问法再试一次。", isError: true };
-  return { content: `【看图】${path.basename(p)}${note}\n问：${q}\n答：${text}`, isError: false };
+
+  // 空正文最常见的真因不是内容策略，而是**思考把额度吃光了**：
+  // GLM / OpenRouter 这类默认开思考的渠道，2000 的上限先被 reasoning 花完，
+  // content 就是个空字符串，finish_reason=length。真实会话里这一种出现了 40 次，
+  // 模型看到「换个问法再试一次」就一轮轮换措辞重试，最后干脆编一句「已核对」——
+  // 明明一眼没看见。所以这里自己关掉思考重来一次，再空才算真空。
+  if (!out.text && (out.capped || out.reasoned)) {
+    const off = require("./thinking").planFor(cfg, "off");
+    const retry = await ask(mkBody(4000, { ...off.params, ...(cfg.extra_body || {}) }));
+    if (!retry.fail && !retry.http && retry.text) {
+      return { content: `【看图】${path.basename(p)}${note}\n问：${q}\n答：${retry.text}\n（第一次它把 ${2000} token 全花在思考上没留下正文，已自动关思考重看一次）`, isError: false };
+    }
+    if (!retry.fail && !retry.http) out = retry;
+  }
+
+  if (!out.text) {
+    const why = out.capped || out.reasoned
+      ? `${cfg.model} 把额度全花在思考上、一个字正文都没吐（关掉思考重试过一次，还是这样）`
+      : `${cfg.model} 返回了空正文（多半被内容策略拦了）`;
+    return {
+      content: `没看成这张图：${why}。\n别再换问法重试了——换措辞改不了这件事。如实说这张图没看成，`
+        + `或者换一条视觉渠道（设置 → 模型 → 视觉模型）。\n⚠️ 绝对不许把没看到的内容当作看过写进结论或说明文档里。`,
+      isError: true,
+    };
+  }
+  return { content: `【看图】${path.basename(p)}${note}\n问：${q}\n答：${out.text}`, isError: false };
 }
 
 /**
