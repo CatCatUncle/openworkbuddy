@@ -1664,6 +1664,27 @@ async function testFrontendSvgFigures() {
   for (const l of lines) console.log(l);
 }
 
+// 企业管理后台是 16 个面板 + 哈希路由，最常见的坏法是「某一页 render 里读了个 undefined，整块白屏」——
+// 只有真的把每一页点一遍、盯着 console 才看得见。同样开 electron 子进程跑。
+async function testAdminConsoleUI() {
+  const { spawnSync } = require("child_process");
+  let electronBin;
+  try { electronBin = require("electron"); } catch { }
+  if (typeof electronBin !== "string" || !fs.existsSync(electronBin)) {
+    console.log("⏭️  企业管理后台：未安装 electron，跳过");
+    return;
+  }
+  const r = spawnSync(electronBin, [path.join(__dirname, "admin-ui.js")], {
+    encoding: "utf8",
+    env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "1" },
+  });
+  const out = (r.stdout || "") + (r.stderr || "");
+  if (r.status !== 0) throw new Error("企业管理后台测试未通过：\n" + out.trim().split("\n").slice(-12).join("\n"));
+  const line = out.split("\n").find((l) => l.startsWith("✅ 企业管理后台"));
+  if (!line) throw new Error("企业后台测试没有报告结果：\n" + out.trim().split("\n").slice(-12).join("\n"));
+  console.log(line);
+}
+
 /** #61 桌面版叫 OpenWorkBuddy 不叫 Electron：启动器是克隆改名的真 .app，开发态 Dock 换图标，userData 钉死不改名 */
 function testDesktopAppIdentity() {
   const os = require("os");
@@ -3173,8 +3194,11 @@ function testCreditsGate() {
   const script = `
     const assert = require("assert");
     const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
+    const orgs = require(${JSON.stringify(path.join(__dirname, "..", "org.js"))});
     const { register, loadUsers, saveUsers, loadUsage } = acc._internals;
-    const setOn = (on) => { const st = loadUsers(); st.settings = { ...st.settings, credits_enabled: on }; saveUsers(st); };
+    // 开关从 users.json 搬到了组织设置里（企业版一个组织一个开关）。
+    // 老版本写在 users.json.settings 里的那份由 migrateLegacySettings 搬过来，下面单独验。
+    const setOn = (on) => orgs.updateOrg(orgs.DEFAULT_ORG, { settings: { credits_enabled: on } }, "test");
     const balance = (n) => loadUsers().users.find((u) => u.username === n).credits;
     const run = { prompt: 4000, completion: 1000, calls: 3 }; // 5000 tokens = 5 积分
 
@@ -3206,6 +3230,15 @@ function testCreditsGate() {
     setOn(false);
     assert.strictEqual(acc.chargeRun(u, { ...run, source: "web" }), 0, "关回去还在扣");
     assert.strictEqual(balance("测试甲"), 3, "关回去后余额又被动了");
+
+    // 升级路径：老版本把开关写在 users.json.settings 里。搬到组织设置之后，
+    // 那份老设置必须被搬过来——搬丢了就是用户明明开着限额，升级后一夜之间全免费跑。
+    const st2 = loadUsers(); st2.settings = { ...st2.settings, credits_enabled: true, open_register: true };
+    delete st2.settings.migrated_to_org; saveUsers(st2);
+    acc.migrateLegacySettings();
+    assert.strictEqual(acc.creditsEnabled(), true, "老版本的限额开关没被搬进组织设置");
+    assert.strictEqual(orgs.settingsOf(orgs.getOrg("default")).open_register, true, "老版本的开放注册开关没被搬过来");
+    setOn(false);
     console.log("OK");
   `;
   const r = spawnSync(process.execPath, ["-e", script], {
@@ -3233,8 +3266,9 @@ function testCachedLedger() {
   const script = `
     const assert = require("assert");
     const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
+    const orgs = require(${JSON.stringify(path.join(__dirname, "..", "org.js"))});
     const { register, loadUsers, saveUsers, loadUsage, saveUsage } = acc._internals;
-    const setOn = (on) => { const st = loadUsers(); st.settings = { ...st.settings, credits_enabled: on }; saveUsers(st); };
+    const setOn = (on) => orgs.updateOrg(orgs.DEFAULT_ORG, { settings: { credits_enabled: on } }, "test");
 
     // 扣分：命中缓存的部分按 1/10 算。10000 输入里 9000 命中 → 1000 + 900 = 1900 → 2 分（不打折是 10 分）
     assert.strictEqual(acc.creditsFor({ prompt: 10000, cached: 9000, completion: 0 }), 2, "缓存没打折");
@@ -3291,12 +3325,13 @@ function testRenameLogin() {
   const script = `
     const assert = require("assert");
     const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
+    const orgs = require(${JSON.stringify(path.join(__dirname, "..", "org.js"))});
     const { register, renameUser, loadUsers, saveUsers, loadUsage, issueToken } = acc._internals;
     const names = () => loadUsers().users.map((u) => u.username);
 
     register("老名字", "pw123456");
     register("别人", "pw123456");
-    const st0 = loadUsers(); st0.settings = { credits_enabled: true }; saveUsers(st0);
+    orgs.updateOrg(orgs.DEFAULT_ORG, { settings: { credits_enabled: true } }, "test");
     const me = loadUsers().users[0];
     acc.chargeRun(me, { prompt: 1000, completion: 0, calls: 1, source: "web" });
     const tok = issueToken("老名字");
@@ -4653,6 +4688,7 @@ async function main() {
   testDefaultSkillsManifest();
   testDesktopAppIdentity();
   await testFrontendSvgFigures();
+  await testAdminConsoleUI();
   await testFetchUrlShapes();
   await testParallelToolBatch();
   await testMcpStreamableHttp();
