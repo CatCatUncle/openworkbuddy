@@ -4681,6 +4681,7 @@ async function main() {
   await testFeedbackAndUsage();
   testOutputOwnership();
   await testFilesEmitter();
+  await testHeavyTools();
   testOutputFilesRecency();
   await testFilePathRouting();
   await testDesktopPet();
@@ -5463,6 +5464,176 @@ async function testFilesEmitter() {
 }
 
 /**
+ * 两个「读盘大户」工具：搜索和读文件。它们决定任务跑到一半界面会不会突然定住。
+ *
+ * 事故背景（用户原话：「提高一些性能，就是问问题很快能看到回复，中间不要让我看到卡顿啊」）：
+ * 这两个工具都是同步读盘的，读盘那几百毫秒里事件循环整条停着，SSE 一个字都发不出去 ——
+ * 用户看到的就是回答说到一半突然卡住。实测（改之前，本仓库根目录）：
+ *   · search_files 搜一个不存在的词：readFileSync 13552 次 / 196MB / 事件循环钉住 2170ms
+ *   · read_file 整份读一份 48.5MB 的日志：钉住 172~188ms，堆一次涨 64~88MB
+ * 改之后：搜索 12.5ms（读盘降到 64MB，二进制按扩展名直接不读了）、读文件 0.8~6ms。
+ *
+ * 这一屏钉的不是「快了多少」（机器不同数就不同），而是三件不许退回去的事：
+ *   ① 中途真的让出了事件循环（不是把活干完了才让）；
+ *   ② 省下来的读盘不能省掉正确性：行号、总行数、跨块的半个汉字，一个字都不能差；
+ *   ③ 没搜完必须说「没搜完」。报「没搜到」是在骗模型——它会据此断定东西不存在，
+ *      然后把后面的活全建在这个错判上。
+ */
+async function testHeavyTools() {
+  const os = require("os");
+  const tools = require("../tools");
+  const { SEARCH_BUDGET } = tools._internals;
+
+  const prevWs = tools.getWorkspaceDir();
+  const budget0 = { ...SEARCH_BUDGET };
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "owb-heavy-"));
+  tools.setWorkspaceDir(ws);
+
+  // 事件循环被钉住多久：每 5ms 打一次卡看漂移。
+  // stop() 必须先等一个宏任务再 clearInterval —— 不然最后那段同步阻塞刚结束定时器就被掐了，
+  // 量出来永远是 0（这个坑真踩过：故意卡 180ms，量出来 1.4ms，差点当成"已经不卡了"）
+  const lagMeter = () => {
+    let worst = 0, last = process.hrtime.bigint();
+    const t = setInterval(() => {
+      const n = process.hrtime.bigint();
+      const d = Number(n - last) / 1e6 - 5;
+      if (d > worst) worst = d;
+      last = n;
+    }, 5);
+    return { async stop() { await new Promise((r) => setTimeout(r, 15)); clearInterval(t); return worst; } };
+  };
+
+  try {
+    // ⓪ 先验尺子本身：量不出阻塞的尺子会让下面每一条都白白通过
+    {
+      const m = lagMeter();
+      const until = Date.now() + 150;
+      while (Date.now() < until) {} // 故意钉住 150ms
+      const lag = await m.stop();
+      assert(lag > 100, `阴性对照：故意卡了 150ms，尺子只量出 ${lag.toFixed(1)}ms —— 尺子坏了，下面的结论一条都不算数`);
+    }
+
+    // 造一棵够大的树：600 个文本文件 + 40 个"二进制"（扩展名是 png/mp4，内容随便）
+    const N_TEXT = 600;
+    for (let i = 0; i < N_TEXT; i++) {
+      const d = path.join(ws, "src", "mod" + (i % 20));
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, "f" + i + ".ts"), "// 第 " + i + " 个文件\n".repeat(400));
+    }
+    for (let i = 0; i < 40; i++) fs.writeFileSync(path.join(ws, "src", "素材" + i + ".png"), Buffer.alloc(200 * 1024, 7));
+    fs.mkdirSync(path.join(ws, ".turbo"), { recursive: true });
+    fs.writeFileSync(path.join(ws, ".turbo", "缓存.ts"), "只有构建缓存里才有的词 kZzMarker");
+    fs.writeFileSync(path.join(ws, "src", "命中.ts"), "这里有 kZzMarker 一处");
+
+    // ① 搜一个不存在的词 = 全树扫一遍：中途必须让出事件循环，而且不许碰二进制
+    const realRead = fs.readFileSync;
+    let readNames = [];
+    fs.readFileSync = function (...a) { readNames.push(String(a[0])); return realRead.apply(fs, a); };
+    let noHit, lag1, ticks = 0;
+    // 阻塞毫秒数只是结果，会随机器和树的大小飘。真正要钉住的是"中途让出去过"这件事本身：
+    // 一个 1ms 的定时器，在搜索跑完之前到底响了几次。不让出的话它一次都响不了
+    const ticker = setInterval(() => ticks++, 1);
+    try {
+      const m = lagMeter();
+      noHit = await tools.executeTool("search_files", { query: "绝不存在的词zzqqxx", dir: "." }, {});
+      lag1 = await m.stop();
+    } finally {
+      clearInterval(ticker);
+      fs.readFileSync = realRead;
+    }
+    assert(ticks >= 5, `整趟搜索期间那个 1ms 定时器只响了 ${ticks} 次 —— 等于全程霸着事件循环没撒手，攒着的 SSE 一个字都发不出去`);
+    assert(/没搜到/.test(noHit.content), "没搜到就该说没搜到：" + noHit.content.slice(0, 80));
+    assert(lag1 < 60, `搜一趟全树把事件循环钉住了 ${lag1.toFixed(0)}ms —— 那段时间里 SSE 一个字发不出去，界面就是定住的`);
+    const touchedBin = readNames.filter((n) => /\.(png|mp4)$/i.test(n));
+    assert.deepStrictEqual(touchedBin, [], `二进制被整份读进内存了（${touchedBin.length} 个）：改之前光这一项就是每次搜索白读 8MB`);
+    assert(readNames.filter((n) => /\.ts$/.test(n)).length >= N_TEXT, "文本文件没扫全，搜索结果不可信");
+
+    // ② 跳过的目录里不许出结果，没跳过的必须出（阴性对照成对）
+    const hit = await tools.executeTool("search_files", { query: "kZzMarker", dir: "." }, {});
+    assert(/命中\.ts/.test(hit.content), "正常目录里的命中丢了：" + hit.content.slice(0, 120));
+    assert(!/\.turbo/.test(hit.content), "构建缓存目录（.turbo）里的东西被搜出来了，预算全烧在别人的产物上");
+
+    // ③ 预算烧完 ≠ 没有。这条是这次改动最容易埋雷的地方：
+    //    报「没搜到」会让模型断定东西不存在，然后把后面的活全建在这个错判上
+    SEARCH_BUDGET.files = 5;
+    const cut = await tools.executeTool("search_files", { query: "绝不存在的词zzqqxx", dir: "." }, {});
+    SEARCH_BUDGET.files = budget0.files;
+    assert(/没搜完/.test(cut.content), "预算烧完了却没说「没搜完」：" + cut.content.slice(0, 120));
+    assert(!/^（没搜到/.test(cut.content), "没扫完却报「没搜到」——这是在教模型放弃：" + cut.content.slice(0, 120));
+    assert(/dir|ext/.test(cut.content), "只说了停下，没说下一步怎么办（缩 dir / 限 ext），模型只会原样再搜一遍");
+    // 阴性对照：预算调回来，同一棵树必须能扫完，措辞也得变回「没搜到」
+    const full = await tools.executeTool("search_files", { query: "绝不存在的词zzqqxx", dir: "." }, {});
+    assert(/^（没搜到/.test(full.content), "预算恢复后反而说没搜完，说明预算被永久改坏了：" + full.content.slice(0, 120));
+
+    // ④ 大文件：整份读会把事件循环钉住（实测 48.5MB 日志 172~188ms）。
+    //    这里用 6MB 就够跨过阈值，跑得也快
+    const LINES = 60000;
+    const big = path.join(ws, "服务日志.log");
+    // 每行都塞中文：1MB 一块地读时，块边界必然切在某个汉字中间。
+    // 用 buf.toString("utf8") 逐块拼就会掉出 U+FFFD，下面那条断言专门钉这个
+    const line = (i) => `2026-09-10 17:00:00 订单 ${i} 支付成功，金额 128.00，渠道 微信——记账已入库`;
+    fs.writeFileSync(big, Array.from({ length: LINES }, (_, i) => line(i)).join("\n") + "\n");
+    const sizeMB = fs.statSync(big).size / 1048576;
+    assert(sizeMB > 4, `测试文件只有 ${sizeMB.toFixed(1)}MB，没过大文件阈值，这一屏等于没测`);
+
+    {
+      const m = lagMeter();
+      const r = await tools.executeTool("read_file", { path: "服务日志.log" }, {});
+      const lag = await m.stop();
+      assert(lag < 60, `整份读大文件把事件循环钉住了 ${lag.toFixed(0)}ms`);
+      assert(r.content.startsWith(line(0)), "开头那截读错了：" + r.content.slice(0, 60));
+      assert(/太大了不整份读进来/.test(r.content) && /start_line/.test(r.content), "没告诉模型这是截断的、也没说下一步怎么拿后面的：" + r.content.slice(-160));
+      assert(!r.content.includes("�"), "块边界把汉字切坏了（出现了 U+FFFD 乱码）");
+    }
+
+    // ⑤ 指定行段：行号、行内容、总行数都必须跟"整份读进来再 split"的口径一模一样
+    {
+      const truth = fs.readFileSync(big, "utf8").split("\n"); // 测试里可以奢侈一次
+      const m = lagMeter();
+      const r = await tools.executeTool("read_file", { path: "服务日志.log", start_line: 59990, end_line: 60000 }, {});
+      const lag = await m.stop();
+      assert(lag < 60, `按行段读大文件把事件循环钉住了 ${lag.toFixed(0)}ms`);
+      assert(new RegExp(`全文共 ${truth.length} 行`).test(r.content), `总行数跟整份读对不上（应为 ${truth.length}）：` + r.content.slice(0, 80));
+      assert(r.content.includes(`59990\t${truth[59989]}`), "起始行的行号或内容对不上：" + r.content.slice(0, 200));
+      assert(r.content.includes(`60000\t${truth[59999]}`), "结束行的行号或内容对不上");
+      // 逐块 toString("utf8") 会把切在块尾的半个汉字变成乱码。找出正好横跨每个 1MB 边界的那几行，
+      // 挨个跟真值比——只看有没有 U+FFFD 不够，边界碰巧落在 ASCII 上就漏过去了
+      let acc = 0;
+      const crossing = [];
+      for (let i = 0; i < LINES; i++) {
+        const before = acc;
+        acc += Buffer.byteLength(line(i) + "\n");
+        for (let k = 1; k * 1048576 < acc; k++) if (before < k * 1048576 && acc > k * 1048576) crossing.push(i + 1);
+      }
+      assert(crossing.length >= 3, `没造出跨块的行（只有 ${crossing.length} 处），这条等于没测`);
+      for (const ln of crossing) {
+        const one = await tools.executeTool("read_file", { path: "服务日志.log", start_line: ln, end_line: ln }, {});
+        assert(one.content.includes(`${ln}\t${truth[ln - 1]}`), `横跨 1MB 块边界的第 ${ln} 行读回来变了样（多半是半个汉字被切在块尾）：` + one.content.slice(0, 200));
+      }
+      // 翻到头了不是失败，是"这就是结尾"这条信息本身——大小文件两条路措辞必须一致
+      const past = await tools.executeTool("read_file", { path: "服务日志.log", start_line: LINES + 500 }, {});
+      assert(/到头了/.test(past.content) && past.isError !== true, "翻过尾巴被当成了失败，会被循环检测记成连续失败：" + past.content.slice(0, 80));
+    }
+
+    // ⑥ 小文件不许被这条新路改掉行为：同一份内容，小文件走老路，结果要跟真值一致
+    {
+      fs.writeFileSync(path.join(ws, "小的.txt"), "第一行\n第二行\n第三行\n");
+      const r = await tools.executeTool("read_file", { path: "小的.txt", start_line: 2, end_line: 3 }, {});
+      assert(/全文共 4 行/.test(r.content), "小文件的总行数口径变了（末尾空行也算一行）：" + r.content.slice(0, 80));
+      assert(r.content.includes("2\t第二行") && r.content.includes("3\t第三行"), "小文件按行读的结果不对：" + r.content.slice(0, 120));
+    }
+
+    console.log("✅ 读盘大户不再钉住界面：搜索中途让出事件循环（尺子先自检）· 二进制一个都不读 · 构建缓存目录不搜 · 没扫完说「没扫完」并给下一步 · 大文件分块读，行号/总行数/跨块汉字与整份读一字不差");
+  } finally {
+    SEARCH_BUDGET.files = budget0.files;
+    SEARCH_BUDGET.bytes = budget0.bytes;
+    SEARCH_BUDGET.ms = budget0.ms;
+    tools.setWorkspaceDir(prevWs);
+    try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/**
  * 产出归属：一条对话的成果卡片里绝不能出现另一条对话的文件。
  *
  * 事故原样（data/sessions/s_1788803711031_608301.json 里存着现场）：
@@ -5799,8 +5970,14 @@ function testReadmeFrontGate() {
   const tpl = (contrib.split(/^## 提交一个技能（3 分钟）\s*$/m)[1] || "").split(/^## /m)[0];
   assert(/```markdown[\s\S]*?---\s*\nname: [\w-]+\s*\ndescription: .+\n---/.test(tpl) && /skills\//.test(tpl), "CONTRIBUTING 缺带 frontmatter 的技能模板");
   assert(/CONTRIBUTING\.md#提交一个技能3-分钟/.test(zh), "README 的「10 分钟」路径没指到技能模板锚点");
-  // 首屏不许把 Star 号召建立在「一个人做」上——对外自称一人做的会吓跑付费甲方
-  for (const [name, t] of [["README.md", zh], ["README.en.md", en]]) assert(!/一个人|solo dev|one[- ]person|single developer/i.test(t), name + " 里出现了「一个人做」式措辞");
+  // 首屏不许把 Star 号召建立在「一个人做」上——对外自称一人做的会吓跑付费甲方。
+  // 只抓"一个人 + 干活动词"这种自陈，别抓「同一个人」「一个人也能用」——
+  // 以前是光看有没有「一个人」三个字，结果写生图案例说"三张里得是同一个人"就被判红了，
+  // 这种误伤比漏网更烦：它会逼着人把好好的文案改拧巴
+  const SOLO = /(?:我|作者|全是我)?一个人(?:做|开发|写|维护|扛|搞|撑|干|完成)|一个人的项目|独自一人(?:开发|维护)|solo dev|one[- ]person (?:team|project|shop)|single developer/i;
+  assert(SOLO.test("这个项目是我一个人做的"), "「一个人做」的闸门自己失灵了：连最直白的那句都抓不住");
+  assert(!SOLO.test("三张里得是同一个人，牌子上的字不能糊"), "闸门误伤「同一个人」：它管的是自称单干，不是中文里所有含「一个人」的句子");
+  for (const [name, t] of [["README.md", zh], ["README.en.md", en]]) assert(!SOLO.test(t), name + " 里出现了「一个人做」式措辞");
   console.log("✅ README 门面闸门：中英互链·只指本仓库·首屏三句差异·最新动态 " + items.length + " 条日期均有真实提交且倒序·二维码 PNG " + w + "x" + h + "·协议一句人话·技能模板+锚点·无「一个人做」措辞");
 }
 

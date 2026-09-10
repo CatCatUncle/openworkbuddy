@@ -408,6 +408,56 @@ async function downloadToWorkspace(url, fname, dir) {
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp)$/i;
+
+// 大文件不整份读进内存。实测一份 48.5MB 的日志：readFileSync 整份读完再 split("\n")，
+// 事件循环被钉住 172~188ms、堆一次涨 64~88MB——那 0.2 秒里 SSE 一个字都发不出去，
+// 用户看到的就是回答说到一半突然定住（用户原话：「中间不要让我看到卡顿」）。
+// 200MB 的日志（数据分析类任务里很常见）就是 0.7 秒起步，还要多占几百 MB。
+// 所以超过这个大小改成分块读：不带行号只取开头那一截；带行号就流着扫，只把要的那几行留下。
+// fh.read 是真异步（走线程池），每块之间事件循环自然能喘一口气。
+const READ_BIG = 4 * 1024 * 1024;
+const READ_CHUNK = 1 << 20;
+
+async function readBigFile(p, rel, size, s, e) {
+  const { StringDecoder } = require("string_decoder");
+  const fh = await fs.promises.open(p, "r");
+  try {
+    if (!s && !e) {
+      // 只要开头：读够 50000 字符就收手（UTF-8 一个字符最多 4 字节，多读一点垫着）
+      const buf = Buffer.alloc(Math.min(READ_CHUNK * 4, 4 * 50000 + 1024));
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      const dec = new StringDecoder("utf8");
+      const head = dec.write(buf.subarray(0, bytesRead)); // 半个汉字被切在块尾时不会变成乱码
+      return `${head.slice(0, 50000)}\n\n（${rel} 有 ${(size / 1048576).toFixed(1)}MB，太大了不整份读进来——这里只给了开头 50000 字符。要看后面的用 start_line/end_line 指定行段。）`;
+    }
+    const from = Math.max(1, s || 1);
+    const to = Math.max(from, e || from);
+    const dec = new StringDecoder("utf8");
+    const buf = Buffer.alloc(READ_CHUNK);
+    const out = [];
+    let carry = "", lineNo = 0, pos = 0;
+    for (;;) {
+      const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+      if (!bytesRead) break;
+      pos += bytesRead;
+      carry += dec.write(buf.subarray(0, bytesRead));
+      const parts = carry.split("\n");
+      carry = parts.pop();
+      for (const ln of parts) {
+        lineNo++;
+        if (lineNo >= from && lineNo <= to) out.push(`${lineNo}\t${ln}`);
+      }
+    }
+    carry += dec.end();
+    lineNo++; // 最后一段（可能是空串）也算一行：跟 content.split("\n") 的行数口径对齐，
+    if (lineNo >= from && lineNo <= to) out.push(`${lineNo}\t${carry}`); // 不然大小文件报的总行数会差一
+    // 翻页翻到头了不是失败，是「这就是结尾」这条信息本身——跟小文件那条路一个措辞
+    if (from > lineNo) return `${rel} 到头了：全文共 ${lineNo} 行，start_line=${from} 已经在末尾之后，后面没有内容了。`;
+    return `（${rel} 第 ${from}-${Math.min(lineNo, to)} 行，全文共 ${lineNo} 行）\n${out.join("\n")}`.slice(0, 50000);
+  } finally {
+    await fh.close();
+  }
+}
 const IMAGE_MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", bmp: "image/bmp" };
 
 /**
@@ -1620,10 +1670,56 @@ async function checkPage(file, rel) {
   return lines.join("\n");
 }
 
-const SEARCH_SKIP = new Set([".tmp", "node_modules", ".git", "dist", "build", ".next", "__pycache__", "venv", ".venv", ".cache"]);
+const SEARCH_SKIP = new Set([
+  ".tmp", "node_modules", ".git", "dist", "build", ".next", "__pycache__", "venv", ".venv", ".cache",
+  // 都是工具自己生成的目录，搜它们只会把预算烧在别人的构建产物上。
+  // 只加点开头的（用户自己不会这么命名）和两个业界唯一叫法，"vendor"/"target"/"out" 这类
+  // 有歧义的一律不加——搜不到用户自己的文件比多扫几百个文件糟得多
+  ".turbo", ".svelte-kit", ".nuxt", ".output", ".parcel-cache", ".pytest_cache", ".mypy_cache",
+  ".ruff_cache", ".gradle", ".terraform", ".yarn", ".pnpm-store", ".ipynb_checkpoints", ".history",
+  "site-packages", "Pods",
+]);
 
-/** 全文搜索：找定义、找调用点、改名前找全部引用。跳过二进制和依赖目录 */
-function searchFiles(root, { query, regex, ext, max }) {
+// 按扩展名先挡掉二进制。以前是读进内存再看有没有 0 字节——等于把每个视频、每张图
+// 整份搬进内存只为了立刻扔掉
+const SEARCH_BIN_EXT = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "icns", "tif", "tiff", "avif", "heic",
+  "mp4", "mov", "avi", "mkv", "webm", "flv", "mp3", "wav", "m4a", "flac", "aac", "ogg", "opus",
+  "pdf", "zip", "gz", "tgz", "bz2", "xz", "7z", "rar", "tar", "dmg", "pkg", "iso",
+  "woff", "woff2", "ttf", "otf", "eot", "exe", "dll", "dylib", "so", "a", "o", "class", "jar",
+  "wasm", "psd", "ai", "sketch", "db", "sqlite", "sqlite3", "pyc", "node", "pack", "idx", "bin",
+  "doc", "docx", "xls", "xlsx", "ppt", "pptx", "key", "numbers", "pages",
+]);
+
+// 一次搜索的预算：文件数 / 读盘字节 / 墙上时间，哪条先到就停。
+// 预算取得比正常项目宽得多：本仓库根目录（1.3 万文件）全量搜完也就 2 秒出头，还在预算内。
+// 不敢收紧是因为「没搜完」对「改名前找全部引用」这类活是硬伤——先靠让出事件循环解决卡顿，
+// 预算只当兜底，防的是树大到不正常（依赖没跳干净、整盘当工作目录）
+// 写成对象是为了让测试能把它调小：真造一棵能撑爆 2 万文件的树，跑一次测试就得几十秒
+const SEARCH_BUDGET = { files: 20000, bytes: 192 * 1024 * 1024, ms: 3000 };
+// 每读这么多就让出一次事件循环，让攒着的 SSE 先发出去。
+// 走目录也要算：带 ext 过滤时绝大多数条目压根不读，光 readdir+判类型也能连着跑上万条
+// （实测 ext="js" 那趟因为不计条目，事件循环还是被钉了 36ms）
+const SEARCH_YIELD_FILES = 16;
+const SEARCH_YIELD_BYTES = 1024 * 1024;
+const SEARCH_YIELD_ENTRIES = 800;
+
+/**
+ * 全文搜索：找定义、找调用点、改名前找全部引用。跳过二进制和依赖目录。
+ *
+ * 为什么要有预算、还要中途让出事件循环：这个工具是同步读盘的，一次没命中的搜索会把整棵树
+ * 从头读一遍。实测在本仓库根目录搜一个不存在的词：readFileSync **13552 次、196MB、
+ * 事件循环整整钉住 2.53 秒**——那 2.53 秒里 SSE 一个字都发不出去，用户看到的就是回答说到
+ * 一半突然定住（用户原话：「中间不要让我看到卡顿」）。
+ *
+ * 三件事：① 按扩展名先挡掉二进制，别把视频图片整份搬进内存只为了扔掉；
+ * ② 文件数/字节/时间三道预算，哪条先到就停；③ 每读一批就 setImmediate 让一次，
+ * 攒着的 SSE 立刻能发出去——同一趟搜索总时长不见得变短，但界面不再定住。
+ *
+ * 停下来必须说实话：没扫完就写「没扫完」，绝不能报「没搜到」。报「没搜到」是在骗模型，
+ * 它会据此断定这个符号不存在，然后把后面的活全建在这个错判上。
+ */
+async function searchFiles(root, { query, regex, ext, max }) {
   const limit = Math.min(Math.max(Number(max) || 60, 1), 300);
   const q = String(query || "");
   if (!q) throw new Error("query 是空的");
@@ -1639,9 +1735,22 @@ function searchFiles(root, { query, regex, ext, max }) {
     .filter(Boolean);
   const hits = [];
   let scanned = 0,
-    truncated = false;
-  (function walk(dir) {
-    if (truncated) return;
+    bytes = 0,
+    truncated = false, // 命中够数了（这是好事）
+    overBudget = ""; // 预算烧完了，树还没走完（这个必须告诉模型）
+  const deadline = Date.now() + SEARCH_BUDGET.ms;
+  let sinceYieldFiles = 0,
+    sinceYieldBytes = 0,
+    sinceYieldEntries = 0;
+  const breathe = async () => {
+    // setImmediate 排在 I/O 回调之后跑：让出这一下，攒着的 socket 写才真的出得去
+    sinceYieldFiles = 0;
+    sinceYieldBytes = 0;
+    sinceYieldEntries = 0;
+    await new Promise((r) => setImmediate(r));
+  };
+  await (async function walk(dir) {
+    if (truncated || overBudget) return;
     let entries = [];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -1649,15 +1758,19 @@ function searchFiles(root, { query, regex, ext, max }) {
       return;
     }
     for (const e of entries) {
-      if (truncated) return;
+      if (truncated || overBudget) return;
+      if (++sinceYieldEntries >= SEARCH_YIELD_ENTRIES) await breathe();
       if (SEARCH_SKIP.has(e.name)) continue;
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
-        walk(full);
+        await walk(full);
         continue;
       }
       if (!e.isFile()) continue;
-      if (exts.length && !exts.includes(path.extname(e.name).slice(1).toLowerCase())) continue;
+      const fext = path.extname(e.name).slice(1).toLowerCase();
+      if (exts.length) {
+        if (!exts.includes(fext)) continue;
+      } else if (SEARCH_BIN_EXT.has(fext)) continue; // 用户明确点名要搜的扩展名不挡
       let st;
       try {
         st = fs.statSync(full);
@@ -1665,14 +1778,20 @@ function searchFiles(root, { query, regex, ext, max }) {
         continue;
       }
       if (st.size > 2 * 1024 * 1024) continue; // 大文件多半是产物/数据，不是要找的代码
+      if (scanned >= SEARCH_BUDGET.files) { overBudget = `扫到 ${SEARCH_BUDGET.files} 个文件的上限`; return; }
+      if (bytes >= SEARCH_BUDGET.bytes) { overBudget = `读到 ${(SEARCH_BUDGET.bytes / 1048576).toFixed(1)}MB 的上限`; return; }
+      if (Date.now() > deadline) { overBudget = `搜了 ${(SEARCH_BUDGET.ms / 1000).toFixed(1)} 秒还没走完`; return; }
       let buf;
       try {
         buf = fs.readFileSync(full);
       } catch {
         continue;
       }
-      if (buf.includes(0)) continue; // 二进制
+      bytes += buf.length;
+      sinceYieldBytes += buf.length;
+      if (buf.includes(0)) continue; // 没扩展名/扩展名骗人的二进制，还是得兜住
       scanned++;
+      sinceYieldFiles++;
       const rel = path.relative(root, full) || e.name;
       const lines = buf.toString("utf8").split("\n");
       for (let i = 0; i < lines.length; i++) {
@@ -1683,14 +1802,24 @@ function searchFiles(root, { query, regex, ext, max }) {
           return;
         }
       }
+      if (sinceYieldFiles >= SEARCH_YIELD_FILES || sinceYieldBytes >= SEARCH_YIELD_BYTES) await breathe();
     }
   })(root);
-  if (!hits.length) return `（没搜到「${q}」，扫了 ${scanned} 个文本文件）`;
+  const scale = `扫了 ${scanned} 个文本文件、${(bytes / 1048576).toFixed(1)}MB`;
+  // 没扫完的实话 + 下一步怎么办：光说「没扫完」模型只会原样再搜一遍
+  const narrow = `——用 dir 指到具体子目录，或用 ext 限类型（比如 ext="js,ts"）再搜一遍`;
+  if (!hits.length) {
+    return overBudget
+      ? `（没搜完就停了：${overBudget}，${scale}，还没搜到「${q}」。这**不代表没有**${narrow}）`
+      : `（没搜到「${q}」，${scale}）`;
+  }
   return (
     hits.join("\n") +
     (truncated
       ? `\n（到 ${limit} 条上限了，后面还有没列出来的——把关键词写细，或用 dir/ext 缩范围）`
-      : `\n（共 ${hits.length} 条，扫了 ${scanned} 个文本文件）`)
+      : overBudget
+        ? `\n（共 ${hits.length} 条，但没搜完就停了：${overBudget}，${scale}${narrow}）`
+        : `\n（共 ${hits.length} 条，${scale}）`)
   );
 }
 
@@ -2300,14 +2429,20 @@ async function executeTool(name, input, opts = {}) {
       }
       case "read_file": {
         const p = resolveFile(input.path);
-        if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return { content: dirInsteadOfFile(p, String(input.path)).message, isError: true };
+        let st = null;
+        try { st = fs.statSync(p); } catch {}
+        if (st && st.isDirectory()) return { content: dirInsteadOfFile(p, String(input.path)).message, isError: true };
         // 按文本读一张 png，拿回来的是几万字符乱码：既看不出任何东西，还把上下文烧掉一大块
         if (IMAGE_EXT.test(p)) {
           return { content: `${input.path} 是图片，按文本读只会得到乱码。改用 look_at_image，并带上你想知道的具体问题。`, isError: true };
         }
-        const content = fs.readFileSync(p, "utf8");
         const s = Math.max(0, Number(input.start_line) || 0);
         const e = Math.max(0, Number(input.end_line) || 0);
+        // 大文件走分块读：整份读会把事件循环钉住十几到几百毫秒，界面当场定住
+        if (st && st.size > READ_BIG) {
+          return { content: await readBigFile(p, String(input.path), st.size, s, e), isError: false };
+        }
+        const content = fs.readFileSync(p, "utf8");
         if (s || e) {
           const lines = content.split("\n");
           const from = Math.max(1, s || 1);
@@ -2332,7 +2467,7 @@ async function executeTool(name, input, opts = {}) {
       case "list_files":
         return { content: listFiles(resolveFile(input.dir || "."), input.depth), isError: false };
       case "search_files":
-        return { content: searchFiles(resolveFile(input.dir || "."), input), isError: false };
+        return { content: await searchFiles(resolveFile(input.dir || "."), input), isError: false };
       case "remember": {
         const r = memory.add({ text: input.text, user: opts.memory && opts.memory.user, shared: !!input.shared });
         return { content: r.note, isError: !r.ok };
@@ -2538,4 +2673,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
