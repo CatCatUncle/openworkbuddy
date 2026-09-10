@@ -1,0 +1,56 @@
+# 构建镜像时不往容器里拷什么。
+#
+# 没有这个文件的时候，`COPY . .` 会把整个仓库塞进镜像——实测 2.4 GB，其中：
+#   config.json  你的模型 API Key，明文躺在镜像层里，push 到任何 registry 就等于公开
+#   data/        账号、密码哈希、会话历史、用量账本
+#   workspace/   所有成果文件（客户资料、简历、报表……）
+#   dist/        1.2 GB 打包好的安装包，跟服务端一点关系没有
+# 镜像层是只读快照，删不掉也改不了——所以这些东西一次都不能进去。
+#
+# 这里用「排除法」而不是「白名单」：白名单漏一个新加的源码文件，容器起来才发现
+# 缺模块（v0.1.1 的装机包就是这么漏掉 engines/ 的）；排除法漏一个只是镜像大一点。
+# 真正危险的那几条，test/deploy.js 会逐条断言，漏了直接测试挂。
+
+# --- 绝对不能进镜像：凭证与用户数据 ---
+config.json
+config.json.bak
+config.json.corrupt*
+data/
+workspace/
+backups/
+plugins/
+schedules.json
+schedules.json.bak
+schedules.json.corrupt*
+.env
+*.pem
+*.key
+# 从聊天窗口粘出来的临时文本，常带真实姓名
+粘贴文本_*.txt
+
+# --- 没必要进镜像：体积和噪音 ---
+node_modules/          # 镜像里自己 npm install，宿主机的可能是别的架构（arm64 装的跑不了 amd64）
+dist/
+build/
+.git/
+.github/
+.history/
+.wrangler/
+.tmp/
+.claude/
+eval/runs/
+docs/images/
+test/
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+npm-debug.log*
+
+# 注意：桌面壳那几个文件（electron-main.js / pet-*.js）故意不排除。
+# server.js 就 require 着 pet-sprites.js，排掉它容器直接起不来——省这几 KB 不值当。
+
+# --- Docker 自己 ---
+Dockerfile
+.dockerignore
+docker-compose.yml
