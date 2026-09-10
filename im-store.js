@@ -16,6 +16,9 @@ const store = require("./store");
 
 function createImSessionStore({ dir, maxEntries = 120 } = {}) {
   const mem = new Map();
+  // 「盘上这个文件空不空」的小账本：键是文件名，值是 { mtimeMs, size, nonEmpty }。
+  // 只为 keys() 服务——省掉的是重复的整份 JSON.parse，不缓存内容本身，所以不会读到脏数据。
+  const probe = new Map();
   const fileOf = (key) => path.join(dir, String(key).replace(/[^\w-]/g, "_") + ".json");
 
   /**
@@ -66,25 +69,45 @@ function createImSessionStore({ dir, maxEntries = 120 } = {}) {
     /**
      * 有几段会话在记着上下文：内存里的 + 盘上还没读进来的。
      * 只数非空的——「set(key, [])」是闲置重置留下的空壳，用户眼里那不算一段会话。
+     *
+     * 这个数字挂在 /im/status 上，网页 15 秒问一次、开着就一直问。以前每问一次
+     * 就把盘上每个会话文件整份 JSON.parse 一遍（飞书一个群聊就 100KB+），
+     * 而且解出来只用来判个「空不空」，转手就扔——下次再来还得重解。
+     * 同步解析卡的是同一条事件循环，跟正在跑的任务抢的是同一口气。
+     * 改成按 (mtime, size) 记账：文件没动过就不重解，动过了才重来一次。
      */
     keys() {
       const out = new Set();
       for (const [k, v] of mem) if (Array.isArray(v) && v.length) out.add(k);
       let names = [];
       try { names = fs.readdirSync(dir); } catch {}
+      const alive = new Set();
       for (const n of names) {
         if (!n.endsWith(".json")) continue;
         const k = n.slice(0, -5);
+        alive.add(n);
         if (out.has(k)) continue;
-        const d = store.readJson(path.join(dir, n), null);
-        if (Array.isArray(d) && d.length) out.add(k);
+        const f = path.join(dir, n);
+        let st = null;
+        try { st = fs.statSync(f); } catch { continue; }
+        const memo = probe.get(n);
+        if (memo && memo.mtimeMs === st.mtimeMs && memo.size === st.size) {
+          if (memo.nonEmpty) out.add(k);
+          continue;
+        }
+        const d = store.readJson(f, null);
+        const nonEmpty = Array.isArray(d) && d.length > 0;
+        probe.set(n, { mtimeMs: st.mtimeMs, size: st.size, nonEmpty });
+        if (nonEmpty) out.add(k);
       }
+      for (const n of probe.keys()) if (!alive.has(n)) probe.delete(n); // 文件删了账也销掉
       return [...out];
     },
     /** 清空全部 IM 会话上下文（内存 + 盘），返回清掉的段数。文件名和 key 不一定可逆，所以按目录扫 */
     clear() {
       const n = this.keys().length;
       mem.clear();
+      probe.clear();
       let names = [];
       try { names = fs.readdirSync(dir); } catch {}
       for (const f of names) {

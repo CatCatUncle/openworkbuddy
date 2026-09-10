@@ -1443,7 +1443,11 @@ async function refreshImStatus() {
 }
 document.getElementById("ab-head").onclick = () => openAssistView();
 refreshImStatus();
-setInterval(refreshImStatus, 15000);
+// 窗口没在看的时候别问：这一问在服务端要扫一遍 IM 会话目录，跟正在跑的任务抢的是同一条事件循环。
+// 桌面版关了 backgroundThrottling，最小化了定时器照样满速跑，所以得自己收着点。
+// 切回来立刻补一次，用户看到的还是新的。
+setInterval(() => { if (!document.hidden) refreshImStatus(); }, 15000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshImStatus(); });
 
 // 开机悄悄看一眼有没有新版：同一个版本只提醒一次，提醒完就记在本地，不做红点也不弹窗。
 // 走的是服务端 6 小时缓存那份，不会每次开机都去打 GitHub。
