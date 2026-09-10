@@ -60,21 +60,13 @@
 
 ## What it looks like
 
-**"A truck selling fruit on a mountain road, a crowd of aunties in spiked boots chasing it, an old man ahead blocking the way with a hoe — make me a poster."**
+**"Same person, four different scenes, holding a hand-written sign — make it look like a snapshot, not an AI render."**
 
 <p align="center">
-  <img src="docs/images/case-poster.png" width="360" alt="Case: mountain-road fruit-chase poster">
+  <img src="docs/images/case-photoreal.jpg" width="640" alt="The same person at a cafe window, on a rainy night street, at an office desk and in a morning bedroom, each holding a wooden sign reading 关注 OpenWorkBuddy 项目">
 </p>
 
-One sentence in; three PNGs in different styles (cinematic, rural comic, text-free) plus a short note on which one to post where — all sitting in the results panel, one click to open. No AI watermark on any of them.
-
-**"Same person, three different scenes, holding a hand-written sign — make it look like a snapshot, not an AI render."**
-
-<p align="center">
-  <img src="docs/images/case-photoreal.jpg" width="900" alt="The same person at a cafe window, on a rainy night street, and at an office desk, each holding a wooden sign reading 关注 OpenWorkBuddy 项目">
-</p>
-
-The hard part isn't drawing a person — it's keeping **the same** person across all three, keeping the Chinese on the sign legible, and keeping pores and shine on the skin instead of airbrushing them away. So it generates one, then actually looks at what it just made (a real vision call on its own output, not a claim from memory), says "this one got the light and the skin right", and fans the rest of the scenes out from there. No AI watermark, same as above.
+The hard part isn't drawing a person — it's keeping **the same** person across all four, keeping the Chinese on the sign legible, and keeping pores and shine on the skin instead of airbrushing them away. So it generates one, then actually looks at what it just made (a real vision call on its own output, not a claim from memory), says "this one got the light and the skin right", and fans the rest of the scenes out from there. No AI watermark on any of them.
 
 **"Build me a Hunan travel guide site — all 14 prefectures, no skipping."**
 
