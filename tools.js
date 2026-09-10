@@ -2070,6 +2070,31 @@ function nearestTool(name, known) {
   return bd <= Math.max(2, Math.floor(n.length / 4)) ? best : "";
 }
 
+/**
+ * 工具参数不是合法 JSON 时说给模型听的话。
+ *
+ * 本机 176 段会话里出现 4 次，四种坏法各不相同：`"size": 1024x1536`（值没加引号）、
+ * 同一个对象吐了两遍（Extra data）、`{"mark">3:`（流式吐串了）、
+ * 还有一次 write_file 塞了 19482 字的正文写到一半被输出长度截断。
+ * 四次的共同点是：模型得到的反馈都不是「你发的参数坏了」，而是某个工具的必填校验。
+ */
+function badToolArgs(name, raw, parseError, rawLen) {
+  const s = String(raw || "");
+  const total = Number(rawLen) > 0 ? Number(rawLen) : s.length;
+  // 只有完整拿到原文时，结尾才说明得了问题；被截过的那份结尾本来就不是模型写的结尾
+  const truncated = total > s.length || !s.trim().endsWith("}");
+  const head = s.length > 300 || total > s.length ? s.slice(0, 300) + " …（共 " + total + " 字）" : s;
+  return (
+    `${name} 这次的参数不是合法 JSON，工具没能执行` +
+    (parseError ? `（解析器原话：${parseError}）` : "") +
+    `。收到的原文是：\n${head}\n` +
+    (truncated
+      ? `看结尾像是没写完就被输出长度截断了。别原样重发同一坨——` +
+        `写长文件就用 write_file 带 append:true 一节一节写，长参数拆成几次调用。`
+      : `按工具定义重发一次：参数必须是一个完整的 JSON 对象，字符串值都要带引号，同一个对象只发一遍。`)
+  );
+}
+
 async function executeTool(name, input, opts = {}) {
   const timeoutMs = opts.timeoutMs || 120000;
   // 安全中心策略（settings 里配置）；未传时用纯默认值（等价于旧行为 + 默认黑名单）
@@ -2146,6 +2171,12 @@ async function executeTool(name, input, opts = {}) {
   };
   try {
     ensureDirs();
+    // 参数压根不是合法 JSON（llm.js 解析失败时会塞一个 _raw 进来）。
+    // 不拦的话会一路走到各工具的必填校验，报出来的是「缺少 prompt」这种话——
+    // 模型看了以为自己漏填字段，于是把同样的东西原样再发一遍，接着再坏一次。
+    if (input && typeof input === "object" && typeof input._raw === "string") {
+      return { content: badToolArgs(name, input._raw, input._parseError, input._rawLen), isError: true };
+    }
     switch (name) {
       case "run_node": {
         if (sec.runtime_node === false) {
@@ -2430,4 +2461,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };

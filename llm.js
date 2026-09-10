@@ -437,8 +437,10 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
       let input = {};
       try {
         input = JSON.parse(s.args || "{}");
-      } catch {
-        input = { _raw: s.args };
+      } catch (e) {
+        // 参数不是合法 JSON。把解析器原话一起带上，下游才好如实告诉模型「你发的东西坏在哪」，
+        // 而不是按缺字段报一句「缺少 prompt」——那会让它以为是自己漏填了，然后原样再发一遍。
+        input = keepBadArgs(s.args, e);
       }
       return { id: s.id || `call_${i}`, name: s.name, input };
     });
@@ -460,6 +462,22 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
   return { text, toolCalls, stopReason: finishReason, usage };
 }
 
+/**
+ * 解析不了的工具参数，只留个头。
+ *
+ * 这坨东西会原封不动进 history，而 history 是每一轮整份重发的——本机真实会话里有一次
+ * write_file 写到一半被输出长度截断，19482 字的残缺 JSON 在之后的 12 轮里每轮重发一遍，
+ * 白烧掉 23 万字的上下文；那 19482 字里除了开头几百字，没有任何一个字有人会去读。
+ */
+function keepBadArgs(args, e) {
+  const raw = String(args == null ? "" : args);
+  return {
+    _raw: raw.length > 400 ? raw.slice(0, 400) : raw,
+    _rawLen: raw.length,
+    _parseError: String((e && e.message) || e),
+  };
+}
+
 function parseOpenAIChoice(choice, onTextDelta, usage) {
   if (!choice) throw new Error("LLM 返回为空");
   let text = choice.message.content || "";
@@ -474,8 +492,8 @@ function parseOpenAIChoice(choice, onTextDelta, usage) {
     let input = {};
     try {
       input = JSON.parse(tc.function.arguments || "{}");
-    } catch {
-      input = { _raw: tc.function.arguments };
+    } catch (e) {
+      input = keepBadArgs(tc.function.arguments, e);
     }
     return { id: tc.id, name: tc.function.name, input };
   });
@@ -704,4 +722,4 @@ function createEmbedder(config) {
   return embed;
 }
 
-module.exports = { createLLM, createEmbedder, _internals: { markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages } };
+module.exports = { createLLM, createEmbedder, _internals: { markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs } };
