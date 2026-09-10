@@ -4792,6 +4792,7 @@ async function main() {
   await testGoalOnLocalEngine();
   await testDetectCache();
   await testStreamRender();
+  await testSessionIndex();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -7905,5 +7906,108 @@ exit 1
     try { child.kill(); } catch {}
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(bin, { recursive: true, force: true }); } catch {}
+  }
+}
+/**
+ * 任务历史的权威清单（server.js 的 listSessionsOnDisk / sessionRow / ownSession）。
+ *
+ * 用户原话：「怎么回事啊，我 catuncle 账号登陆之前的历史记录都没看到了，之前的任务历史都没看到了啊」。
+ * 侧栏那份列表当时只活在浏览器 localStorage 里，对话本体一直好好躺在 data/sessions/——
+ * 换台机器 / 清缓存 / 改用户名 / 换个账号先登进来，任意一件事就让列表空掉。
+ *
+ * 这里切 server.js 的真源码在临时目录上跑：server.js 是 require 就监听的，
+ * 起不了进程内 HTTP；但这三个函数是纯的，注入 fs/path/store/sessions/SESS_DIR 就能真读真磁盘。
+ */
+async function testSessionIndex() {
+  const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const a = src.indexOf("const sessMetaCache = new Map();");
+  const b = src.indexOf("// 任务跑一半崩了", a);
+  if (a < 0 || b <= a) throw new Error("server.js 里的会话清单段找不到了（函数被改名/挪走？），测试没法定位真源码");
+  const SLICE = src.slice(a, b);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sessidx-"));
+  try {
+    const store = { readJson: (p2, dflt) => { try { return JSON.parse(fs.readFileSync(p2, "utf8")); } catch { return dflt; } } };
+    const live = new Map();
+    const build = () => new Function("fs", "path", "store", "sessions", "SESS_DIR",
+      SLICE + "\nreturn { listSessionsOnDisk, sessionRow, ownSession, sessMetaCache };")(fs, path, store, live, dir);
+
+    const put = (id, o) => fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify(Object.assign({
+      title: "任务 " + id, user: "boss", transcript: [{ role: "user" }], updated_at: "2026-09-01T00:00:00.000Z",
+    }, o)));
+
+    put("s_1", { title: "老板的季度汇总", updated_at: "2026-09-03T00:00:00.000Z" });
+    put("s_2", { title: "老板的落地页", updated_at: "2026-09-05T00:00:00.000Z", project: "客户 A" });
+    put("s_3", { title: "同事的周报", user: "staff", updated_at: "2026-09-04T00:00:00.000Z" });
+    put("s_4", { title: "升级前的老会话", user: undefined, updated_at: "2026-09-02T00:00:00.000Z" }); // 没记归属
+    put("s_5", { title: "还没说过话", transcript: [] });
+    fs.writeFileSync(path.join(dir, "s_6.json"), "{ 这不是 JSON");
+    fs.writeFileSync(path.join(dir, "s_7.json.bak"), JSON.stringify({ title: "备份别算", transcript: [{}] }));
+
+    let M = build();
+    let rows = M.listSessionsOnDisk();
+    assert.deepStrictEqual(rows.map((r) => r.id), ["s_2", "s_3", "s_1", "s_4"],
+      "清单不对（该按更新时间倒序，坏文件/空对话/.bak 都不该进来）：" + JSON.stringify(rows.map((r) => r.id)));
+    assert.strictEqual(rows[0].turns, 1, "轮数没带上，侧栏分不出「点开就有东西」和「空壳」");
+    assert.strictEqual(rows[0].project, "客户 A", "项目名没带上，前端按项目过滤会把它归错组");
+
+    // ★ 用户那句「历史全没了」的正主：登录了也要看得见自己的，外加升级上来那些没记归属的
+    const boss = { username: "boss" }, staff = { username: "staff" };
+    const mine = (u) => rows.filter((r) => M.ownSession(u, r)).map((r) => r.id);
+    assert.deepStrictEqual(mine(boss), ["s_2", "s_1", "s_4"], "老板的侧栏漏了：" + JSON.stringify(mine(boss)));
+    assert.deepStrictEqual(mine(staff), ["s_3", "s_4"], "同事的侧栏不对：" + JSON.stringify(mine(staff)));
+    assert.ok(mine(boss).includes("s_4") && mine(staff).includes("s_4"),
+      "★升级上来那些没记归属的老会话被藏了★ 这正是用户说「历史全没了」的那一批");
+    assert.deepStrictEqual(rows.filter((r) => M.ownSession(null, r)).map((r) => r.id), ["s_2", "s_3", "s_1", "s_4"],
+      "没开账号体系（一个人用）时反倒过滤了");
+
+    // 故意比 sessionAllowed 窄：管理员拿到同组织的链接可以打开，但同事的任务不该铺进他的侧栏
+    assert.ok(!M.ownSession(boss, { id: "s_3", user: "staff" }),
+      "同事的任务出现在管理员侧栏了——「能不能打开」和「侧栏该不该出现」是两件事");
+
+    // 增量缓存：改了要重读，删了不许赖在缓存里
+    put("s_1", { title: "老板的季度汇总（改过标题）", updated_at: "2026-09-06T00:00:00.000Z" });
+    const t = Date.now() / 1000 + 10;
+    fs.utimesSync(path.join(dir, "s_1.json"), t, t); // mtime 必须真的变，不然缓存本来就该命中
+    rows = M.listSessionsOnDisk();
+    assert.strictEqual(rows[0].id, "s_1", "改过的会话没顶到最前面（mtime 缓存没刷新）");
+    assert.ok(/改过标题/.test(rows[0].title), "读的还是缓存里那份旧标题");
+    fs.unlinkSync(path.join(dir, "s_2.json"));
+    rows = M.listSessionsOnDisk();
+    assert.ok(!rows.some((r) => r.id === "s_2"), "删掉的会话还在清单里");
+    assert.ok(![...M.sessMetaCache.keys()].includes("s_2.json"), "删掉的会话赖在缓存里，占着内存还会被下一轮读到");
+
+    // 内存里正在跑的那份优先：刚改过还没落盘，侧栏不能显示旧标题
+    live.set("s_1", { title: "正在跑，标题刚被模型润色过", user: "boss", transcript: [{}, {}], updated_at: "2026-09-07T00:00:00.000Z" });
+    rows = M.listSessionsOnDisk();
+    assert.strictEqual(rows[0].title, "正在跑，标题刚被模型润色过", "内存里那份没被优先用，侧栏显示的是盘上的旧标题");
+
+    // sessionRow 的守卫：残缺的对象一律不进清单，不许拿 undefined 去撑 UI
+    assert.strictEqual(M.sessionRow("x", null), null, "null 也生成了一行");
+    assert.strictEqual(M.sessionRow("x", { title: "有标题没正文" }), null, "没有 transcript 的也进清单了");
+    assert.strictEqual(M.sessionRow("x", { transcript: [{}] }).title, "未命名任务", "没标题时没给兜底名字");
+
+    // 目录压根不存在（全新安装第一次开）：给空清单，不许把整条启动链条炸掉
+    const gone = new Function("fs", "path", "store", "sessions", "SESS_DIR",
+      SLICE + "\nreturn listSessionsOnDisk;")(fs, path, store, new Map(), path.join(dir, "根本没有这个目录"));
+    assert.deepStrictEqual(gone(), [], "会话目录不存在时没给空清单");
+
+    // ---- 接口那一层：归属只用来过滤，不许回给前端；假项目不许再回来 ----
+    const route = src.slice(src.indexOf('app.get("/api/sessions"'), src.indexOf('app.get("/api/sessions"') + 400);
+    assert.ok(/ownSession\(req\.user/.test(route), "/api/sessions 没按归属过滤——别人的任务会出现在你的侧栏");
+    assert.ok(/\{ user, \.\.\./.test(route) || /delete .*\.user/.test(route),
+      "/api/sessions 把 user 字段原样回给前端了——侧栏不需要，回了就是白泄露组织成员名单");
+    // 注释里写着这段事故的来龙去脉，那是给人看的；要拦的是它重新变成一个会发出去的值。
+    const noComments = src.replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n").map((l) => l.replace(/(^|[^:"'`])\/\/.*$/, "$1")).join("\n");
+    assert.ok(!/本组织工作目录/.test(noComments),
+      "★那个假项目「本组织工作目录」又回来了★ 侧栏会多一个点不动的 tab，而且按项目一过滤，老用户整排任务历史当场消失");
+    const projRoute = src.slice(src.indexOf('app.get("/api/projects"'), src.indexOf('app.get("/api/projects"') + 500);
+    assert.ok(/locked: true/.test(projRoute) && /projects: \[\]/.test(projRoute),
+      "/api/projects 没对没有全局工作目录的人如实回「你这儿没有项目这回事」——前端只好按一个对不上的名字过滤，历史又会空");
+
+    console.log("✅ 任务历史权威清单：按磁盘给（倒序·坏文件/空对话/.bak 不进）· 自己的和没记归属的老会话都在 · 比 sessionAllowed 窄 · mtime 增量缓存跟着改和删 · 内存优先 · 归属不回传 · 假项目不许回来");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }

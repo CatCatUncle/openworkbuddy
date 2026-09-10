@@ -549,6 +549,42 @@ function renderHubEditor() {
   box.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+/**
+ * 从 SKILL.md 正文里挖出几个「这技能到底能替我做什么」的具体例子。
+ *
+ * 起因是用户点了「立即使用」，输入框里只多了一句「用「xiaohongshu-topic」技能帮我：」，
+ * 原话是「都没什么特殊点格式啊」——等于把空白页原样还给了用户。
+ * 技能作者基本都会写「## 适用场景」，里头那些「…」引号短句本身就是现成的任务描述，直接拿来当例子。
+ * 挖不到就退回条目文字；再挖不到就只给占位模板，至少让人知道该往哪儿写。
+ */
+function skillExamples(md) {
+  const body = String(md || "").replace(/^---[\s\S]*?\n---\n/, ""); // 前言里的 description 是给模型看的，不当例子
+  // 只从「适用场景」那一节里挖。试过退回全文前 1200 字，挖出来的是 #b0aea5、pptxgenjs、app_id
+  // 这类代码片段——技能说明书里带引号的东西大多是配置和字段名，不是任务。宁可一条不给。
+  // 不加 m 标志：加了的话 $ 表示「行尾」，配上懒惰量词，这一节只截到第一行就收工了
+  const sec = /(?:^|\n)#{1,4}[ \t]*(?:适用场景|使用场景|什么时候用|何时使用|when to use)[^\n]*\n([\s\S]*?)(?=\n#{1,4}[ \t]|$)/i.exec(body);
+  if (!sec) return [];
+  const seg = sec[1];
+  const out = [];
+  const push = (t) => {
+    t = String(t).replace(/\*\*/g, "").replace(/`/g, "").replace(/^[-*\d.、）)\s]+/, "")
+      .replace(/[（(][^）)]*[）)]/g, "")            // 括号里的补充说明拿掉，别把一句话拦腰截断
+      .replace(/[，。；、,.;:：]+$/, "").trim();
+    if (t.length < 4 || t.length > 40 || out.includes(t)) return;
+    if (/[=_`{}<>#\\|]|https?:/.test(t)) return;          // 看着像代码/配置/链接的一律不要
+    if (!/[\u4e00-\u9fa5]{3,}/.test(t) && t.split(/\s+/).length < 3) return; // 光秃秃一个英文单词也不是任务
+    out.push(t);
+  };
+  for (const m of seg.matchAll(/[「“"]([^」”"\n]{4,40})[」”"]/g)) push(m[1]);
+  if (out.length < 3) for (const line of seg.split("\n")) {
+    const m = /^\s*[-*]\s+(.+)$/.exec(line);
+    if (m) push(m[1]);
+  }
+  // 有的作者把适用场景写成一句话，用顿号串起来（「写公众号文章、把已有 Markdown 排版成…」）——按顿号拆开就是几件事
+  if (!out.length) for (const part of seg.replace(/\n/g, "").split(/[、；;]/)) push(part);
+  return out.slice(0, 4);
+}
+
 // ---- Tab 2：技能（技能包＝可热装的能力说明书） ----
 async function renderHubSkills(box) {
   const list = hubState._skills.filter(s => hubMatch(hubState.q, s.name, s.description));
@@ -595,6 +631,7 @@ async function renderHubSkills(box) {
           <div class="ds">${esc(s.description || "（无描述）")}</div>
           <div class="ops"><button class="primary sk-use">立即使用</button><button class="sk-view">正文</button>${
             s.plugin ? "" : '<button class="sk-edit">修改</button><button class="sk-del">删除</button>'}</div>
+          <div class="sk-start" style="display:none"></div>
           <pre class="sk-preview" style="display:none"></pre>
         </div>`).join("")}
       ${list.length ? "" : `<div class="hub-empty">${hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的技能` : "暂无技能"}</div>`}
@@ -648,7 +685,26 @@ async function renderHubSkills(box) {
   };
   box.querySelectorAll(".ex-card[data-si]").forEach(card => {
     const s = list[+card.dataset.si];
-    card.querySelector(".sk-use").onclick = () => startTaskWith(`用「${s.name}」技能帮我：`);
+    // 「立即使用」不再只往输入框丢半句话：先把这技能能干的几件事摆出来，挑一件就带着格式进任务框
+    card.querySelector(".sk-use").onclick = async () => {
+      const panel = card.querySelector(".sk-start");
+      if (panel.style.display !== "none") { panel.style.display = "none"; return; }
+      panel.style.display = "";
+      panel.innerHTML = '<div class="sk-start-hint">正在读这份说明书…</div>';
+      if (s._md === undefined) {
+        s._md = await fetch("/api/skills/" + encodeURIComponent(s.name))
+          .then(r => r.json()).then(d => d.content || "").catch(() => "");
+      }
+      const eg = skillExamples(s._md);
+      panel.innerHTML =
+        `<div class="sk-start-hint">${eg.length ? "挑一件最像你要做的事，下一步再补素材：" : "这份说明书没写「适用场景」，先照这个格式说清你要什么："}</div>` +
+        (eg.length ? `<div class="sk-eg">${eg.map((t, i) => `<button class="chip" data-i="${i}">${esc(t)}</button>`).join("")}</div>` : "") +
+        `<button class="sk-own">我自己写一句 →</button>`;
+      panel.querySelectorAll(".chip").forEach(b => b.onclick = () => startTaskWith(
+        `用「${s.name}」技能帮我：${eg[+b.dataset.i]}\n\n__把素材和背景贴在这一行：要做的是什么、给谁看、手上已经有的内容__`));
+      panel.querySelector(".sk-own").onclick = () => startTaskWith(
+        `用「${s.name}」技能帮我：__一句话说清你要它做出什么__\n\n素材/背景：`);
+    };
     card.querySelector(".sk-view").onclick = async () => {
       const pre = card.querySelector(".sk-preview");
       if (pre.style.display !== "none") { pre.style.display = "none"; return; }

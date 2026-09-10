@@ -289,11 +289,16 @@ document.addEventListener("paste", async (e) => {
 });
 
 // ================= 会话历史（服务端持久化 + 回放，按项目过滤） =================
+/** 当前项目下的任务。租户端没有「项目」这回事（服务端 locked），一条都不过滤——
+ *  以前那儿顶着个假项目「本组织工作目录」，跟老会话记的项目名对不上，整排历史被过滤没了。*/
+function projectSessions() {
+  return projectsLocked ? sessions : sessions.filter(s => (s.project || "默认项目") === activeProject);
+}
 function renderHistory() {
-  const list = sessions.filter(s => (s.project || "默认项目") === activeProject);
+  const list = projectSessions();
   document.getElementById("history").innerHTML = list.map(s =>
     `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">✕</span></div>`).join("")
-    || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 10px">该项目还没有任务</div>';
+    || `<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 10px">${projectsLocked ? "还没有任务" : "该项目还没有任务"}</div>`;
 }
 document.getElementById("history").addEventListener("click", async (e) => {
   const item = e.target.closest(".hist-item");
@@ -392,7 +397,8 @@ async function refreshProjects() {
   try {
     const data = await fetch("/api/projects").then(r => r.json());
     projects = data.projects || [];
-    activeProject = data.active || "默认项目";
+    projectsLocked = !!data.locked;
+    activeProject = data.active || (projectsLocked ? "" : "默认项目");
   } catch {}
   renderProjects();
   renderHistory();
@@ -400,6 +406,12 @@ async function refreshProjects() {
 function renderProjects() {
   const box = document.getElementById("proj-list");
   if (!box) return;
+  // 租户成员没有项目可管（后端对 /api/projects 的写操作一律 403），侧栏连「项目」这一栏都不该出现，
+  // 更不该出现一个点不动的 tab。用 style.display 而不是 hidden：.side-nav .item 自带 display，hidden 压不住。
+  const head = document.querySelector('.side-nav [data-view="proj"]');
+  if (head) head.style.display = projectsLocked ? "none" : "";
+  box.style.display = projectsLocked ? "none" : "";
+  if (projectsLocked) { box.innerHTML = ""; return; }
   box.innerHTML = projects.map(p =>
     `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">📂 <span class="pn">${esc(p.name)}</span>${projects.length > 1 ? '<span class="del" title="移除项目（不删文件）">✕</span>' : ""}</div>`).join("");
   box.querySelectorAll(".proj-item").forEach(el => el.onclick = async (e) => {
@@ -839,7 +851,7 @@ async function toggleAppFullscreen() {
   }
 }
 function navTask(dir) {
-  const list = sessions.filter(s => (s.project || "默认项目") === activeProject);
+  const list = projectSessions();
   if (!list.length) return;
   let i = list.findIndex(s => s.id === sessionId);
   i = i < 0 ? 0 : Math.min(list.length - 1, Math.max(0, i + dir));

@@ -194,7 +194,43 @@ async function initAuth() {
   }
   sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
   renderHistory();
+  await mergeServerSessions();
   maybeOnboard();
+}
+
+/**
+ * 把服务端那份任务历史并回侧栏。
+ *
+ * 侧栏列表一直只存在 localStorage 里，对话本体却在服务端 data/sessions/。于是「清了浏览器缓存 /
+ * 换台机器打开 / 换个账号先登进来把公共列表继承走 / 改了用户名」任意一件事，侧栏就空了，
+ * 用户看到的是「我以前的任务全没了」——其实一条都没丢。以服务端为准补齐，本地只当缓存。
+ *
+ * 只补不删：本地有、服务端没有的（刚建还没落盘的新任务）原样留着。
+ */
+async function mergeServerSessions() {
+  let rows;
+  try {
+    const d = await fetch("/api/sessions").then(r => r.json());
+    rows = Array.isArray(d && d.sessions) ? d.sessions : null;
+  } catch { return; }
+  if (!rows) return; // 老版本服务端没这个接口：维持原来的纯本地行为，不清空任何东西
+  const byId = new Map(sessions.map(s => [s.id, s]));
+  let added = 0;
+  for (const r of rows) {
+    const local = byId.get(r.id);
+    if (local) { // 标题在服务端会被模型润色过，本地那条是发第一句时截的 24 字
+      if (r.title && r.title !== "未命名任务") local.title = r.title;
+      if (!local.at && r.at) local.at = r.at;
+      if (!local.project && r.project) local.project = r.project;
+      continue;
+    }
+    sessions.push({ id: r.id, title: r.title, at: r.at, project: r.project || undefined });
+    added++;
+  }
+  sessions.sort((a, b) => (b.at || 0) - (a.at || 0));
+  saveSessions();
+  renderHistory();
+  if (added) console.log(`[历史] 从服务端补回 ${added} 条本机没有的任务`);
 }
 initAuth();
 
