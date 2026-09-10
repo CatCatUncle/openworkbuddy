@@ -954,10 +954,12 @@ function csNav(dir) {
 
 // ================= 命令审批条（安全中心「询问名单」命中时挂起等这里批准） =================
 let apSeen = new Set(); // 已经通知过的审批 id：轮询是重复的，系统通知只发一次
+let apCanAlways = true; // 「一直允许」写的是整台服务器的放行名单，只有平台管理员点得动
 async function pollApprovals() {
   const d = await fetch("/api/security/approvals").then(r => (r.ok ? r.json() : null)).catch(() => null);
   const list = d && Array.isArray(d.items) ? d.items : [];
   if (d && d.mode) syncPermLabel(d.mode);
+  if (d && "can_always" in d) apCanAlways = !!d.can_always;
   // 审批默认 120 秒超时按拒绝：窗口不在前台时必须把人喊回来，不然任务白等一场
   const fresh = list.filter(a => !apSeen.has(a.id));
   if (apSeen.size > 500) apSeen = new Set();
@@ -983,21 +985,30 @@ async function pollApprovals() {
       </div>
       <div class="ap-btns">
         <button class="ap-ok" data-id="${esc(a.id)}" data-scope="once">本次允许</button>
-        ${a.ruleKey ? `<button class="ap-ok2" data-id="${esc(a.id)}" data-scope="session" title="本次运行期间不再问「${esc(a.ruleKey)}」">本会话一直允许</button>
-        <button class="ap-ok2" data-id="${esc(a.id)}" data-scope="always" title="把「${esc(a.ruleKey)}」写进放行名单，重启也生效">一直允许</button>` : ""}
+        ${a.ruleKey ? `<button class="ap-ok2" data-id="${esc(a.id)}" data-scope="session" title="本次运行期间不再问「${esc(a.ruleKey)}」">本会话一直允许</button>` : ""}
+        ${a.ruleKey && apCanAlways ? `<button class="ap-ok2" data-id="${esc(a.id)}" data-scope="always" title="把「${esc(a.ruleKey)}」写进放行名单，重启也生效">一直允许</button>` : ""}
         <button class="ap-no" data-id="${esc(a.id)}">拒绝</button>
       </div>
     </div>`).join("");
   bar.querySelectorAll("button").forEach(b => b.onclick = async () => {
     bar.querySelectorAll("button").forEach(x => (x.disabled = true));
     const allow = !b.classList.contains("ap-no");
-    const r = await fetch("/api/security/approvals/" + encodeURIComponent(b.dataset.id), {
+    const resp = await fetch("/api/security/approvals/" + encodeURIComponent(b.dataset.id), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ allow, scope: b.dataset.scope || "once" }),
-    }).then(r => r.json()).catch(() => ({}));
-    if (allow && b.dataset.scope === "always" && r.ruleKey) toast(`已永久放行「${r.ruleKey}」（可在 设置 → 安全中心 的放行名单里删掉）`);
-    else if (allow && b.dataset.scope === "session" && r.ruleKey) toast(`本次运行期间不再问「${r.ruleKey}」`);
+    }).catch(() => null);
+    const r = resp ? await resp.json().catch(() => ({})) : {};
+    // 点了没成必须说出来。原来这儿是 .catch(() => ({})) 一口吞掉，任务那头还挂着等回答，
+    // 界面上什么都没变——用户只会再点一次，直到 120 秒超时按拒绝收场。
+    if (!r.ok) {
+      toast(r.error || "这条审批没批成，任务还等着——再点一次试试");
+      pollApprovals();
+      return;
+    }
+    if (allow && r.downgraded) toast(`已允许，本次运行期间不再问「${r.ruleKey}」。写进永久放行名单要平台管理员来做`);
+    else if (allow && r.scope === "always" && r.ruleKey) toast(`已永久放行「${r.ruleKey}」（可在 设置 → 安全中心 的放行名单里删掉）`);
+    else if (allow && r.scope === "session" && r.ruleKey) toast(`本次运行期间不再问「${r.ruleKey}」`);
     pollApprovals();
   });
 }

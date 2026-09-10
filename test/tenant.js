@@ -27,6 +27,7 @@ const account = require(path.join(ROOT, "account"));
 const org = require(path.join(ROOT, "org"));
 const admin = require(path.join(ROOT, "admin"));
 const tools = require(path.join(ROOT, "tools"));
+const security = require(path.join(ROOT, "security"));
 const agentMod = require(path.join(ROOT, "agent"));
 
 // 默认组织的根：单机版原来是什么样，这里就是什么样
@@ -58,6 +59,21 @@ app.get("/api/settings", (_req, res) =>
 app.post("/api/settings", (req, res) => res.json({ ok: true, got: req.body }));
 app.get("/api/schedules", (_req, res) => res.json([{ id: "s1", task: "平台的定时任务" }]));
 app.post("/api/engines/test", (_req, res) => res.json({ ok: true }));
+// 命令审批的两条。判定用的是 security 里的真函数（listApprovals / effectiveScope / resolveApproval），
+// 这儿只照 server.js 摆出同样的形状，用来验中间件那道闸和归属
+const approvalScope = (req) =>
+  admin.isSoloDesktop() || admin.platformAdmin(req.user) ? undefined : (req.user && req.user.username) || "";
+app.get("/api/security/approvals", (req, res) => {
+  const scopeTo = approvalScope(req);
+  res.json({ items: security.listApprovals(scopeTo), can_always: scopeTo === undefined });
+});
+app.post("/api/security/approvals/:id", (req, res) => {
+  const scopeTo = approvalScope(req);
+  const { scope, downgraded } = security.effectiveScope((req.body || {}).scope, scopeTo !== undefined);
+  const r = security.resolveApproval(req.params.id, !!(req.body || {}).allow, scope, scopeTo);
+  if (!r.ok) return res.status(r.forbidden ? 403 : 409).json({ ...r, error: r.error || "这条审批已经结束了" });
+  res.json({ ...r, scope, downgraded });
+});
 // 探针：这条请求里 tools.orgPolicy() 看到的是什么。用来验「设置真的进了执行层」，
 // 而不是只躺在 org.json 里没人读——那种开关比没有这个开关更糟
 app.get("/api/policy-probe", (_req, res) => res.json({ policy: tools.orgPolicy(), ws: tools.getWorkspaceDir() }));
@@ -374,6 +390,49 @@ async function login(username, password) {
   r = await call("POST", "/api/admin/org", { cookie: fen, body: { settings: { session_days: 90 } } });
   r = await call("GET", "/api/policy-probe", { cookie: yuan });
   ok(r.json.policy && r.json.policy.allow_shell === false, "分公司普通成员的请求同样带着策略", r.json.policy);
+
+  console.log("\n【18】命令审批：看得见自己那条、批得动自己那条，「一直允许」轮不到他");
+  // 这一段守的是一个会让任务干挂的坑：普通成员点「允许」被 /api/security 那道闸 403 掉，
+  // 而他的任务正挂在 requestApproval 上等回答，界面又把错吞了——只能等 120 秒超时按拒绝收场。
+  const apMine = security.requestApproval("命令", "rm -rf /tmp/yuan-x", { timeoutMs: 4000, ruleKey: "rm", owner: "xiaoyuan" });
+  const apBg = security.requestApproval("命令", "curl http://内部接口/密钥", { timeoutMs: 4000, ruleKey: "curl", owner: "" });
+  r = await call("GET", "/api/security/approvals", { cookie: yuan });
+  eq(r.status, 200, "普通成员读得到审批列表");
+  eq(r.json.items.length, 1, "只看得见自己那条（后台跑的那条不归任何登录用户）");
+  eq(r.json.items[0].text, "rm -rf /tmp/yuan-x", "看见的正是自己那条");
+  eq(r.json.can_always, false, "界面拿到 can_always=false：「一直允许」那颗按钮不该画出来");
+  r = await call("GET", "/api/security/approvals", { cookie: fen });
+  eq(r.json.items.length, 0, "同组织的管理员也看不见别人任务里的整条命令");
+  r = await call("GET", "/api/security/approvals", { cookie: boss });
+  eq(r.json.items.length, 2, "反向对照：平台管理员两条都看得见（含后台跑的那条）");
+  eq(r.json.can_always, true, "平台管理员才有「一直允许」");
+
+  const mineId = (await call("GET", "/api/security/approvals", { cookie: yuan })).json.items[0].id;
+  const bgId = (await call("GET", "/api/security/approvals", { cookie: boss })).json.items.find((a) => a.ruleKey === "curl").id;
+  r = await call("POST", "/api/security/approvals/" + bgId, { cookie: yuan, body: { allow: true, scope: "once" } });
+  eq(r.status, 403, "批别人的那条：403，而且是「这条不是你的」，不是「服务器级设置」");
+  ok(/别人的任务/.test((r.json || {}).error || ""), "错误里说清楚了原因", r.json);
+  r = await call("POST", "/api/security/mode", { cookie: yuan, body: { mode: "full" } });
+  eq(r.status, 403, "负控制：/api/security 底下别的写操作照样拦（放行的只有 approvals/<id> 这一条）");
+
+  r = await call("POST", "/api/security/approvals/" + mineId, { cookie: yuan, body: { allow: true, scope: "always" } });
+  eq(r.status, 200, "批自己那条：真放行了（这就是原来会 403 把任务挂死的那一下）");
+  eq(r.json.downgraded, true, "他点的是「一直允许」，降成了「本次运行期间」");
+  eq(r.json.scope, "session", "落地的档位是 session，不是 always");
+  eq(await apMine, true, "挂在那儿的任务真的拿到了「允许」，不是等超时");
+  eq(security.listSessionAllow().includes("rm"), true, "session 档确实写进了本次运行期间的记忆");
+  eq(security.listApprovals().length, 1, "批完就从待办里消失了");
+
+  // 反向对照：同一颗「一直允许」，平台管理员点就是真的 always
+  const apBoss = security.requestApproval("命令", "rm -rf /tmp/boss-x", { timeoutMs: 4000, ruleKey: "rmboss", owner: "laoban" });
+  const bossId = security.listApprovals().find((a) => a.ruleKey === "rmboss").id;
+  r = await call("POST", "/api/security/approvals/" + bossId, { cookie: boss, body: { allow: true, scope: "always" } });
+  eq(r.json.downgraded, false, "反向对照：平台管理员点「一直允许」不降档");
+  eq(r.json.scope, "always", "反向对照：落地的就是 always");
+  await apBoss;
+  await call("POST", "/api/security/approvals/" + bgId, { cookie: boss, body: { allow: false, scope: "once" } });
+  await apBg;
+  security.clearSessionAllow();
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

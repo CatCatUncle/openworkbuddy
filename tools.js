@@ -2408,6 +2408,7 @@ async function executeTool(name, input, opts = {}) {
       rule: verdict.rule || "",
       ruleKey: verdict.ruleKey || "",
       source: opts.taskLabel || "",
+      owner: opts.actor || "",
     });
     security.audit(label + "审批", text, ok ? "已批准" : "已拒绝");
     if (ok) return null;

@@ -66,6 +66,14 @@ const PLATFORM_READ = [
  */
 const PERSONAL_WRITE = new Set(["/api/engines/test", "/api/assist/model"]);
 /**
+ * 同上，但要按前缀认（路径里带 id）：
+ *   /api/security/approvals/<id>  批自己那个任务弹出来的审批。
+ *     这条不放行的话，普通成员点「允许」拿到的是 403，而他那个任务正挂在那儿等回答——
+ *     等到超时才按拒绝收场，界面上什么都不说。归属和「一直允许」的限制在路由里做：
+ *     只能批自己的，写进永久放行名单仍然只有平台管理员能干。
+ */
+const PERSONAL_WRITE_PREFIX = ["/api/security/approvals/"];
+/**
  * 部署形态：这是「一个人的桌面应用」还是「一台给多个人用的服务器」。
  *
  * 上面那两张表画的是服务器上的线。同一份代码装成 .dmg / .exe 双击打开时，那条线是纯添乱：
@@ -106,7 +114,7 @@ function platformGuard(req, res, next) {
     // 这几样改了只影响他一个人，拦下来纯属把「切换失败」四个字甩给用户。
     // 真源是 prefs.js 里那张表，闸和处理器共用同一张，不会出现「放行了却没人接」。
     if (req.method === "POST" && p === "/api/settings" && prefs.isPersonalPatch(req.body)) return next();
-    if (PERSONAL_WRITE.has(p)) return next();
+    if (PERSONAL_WRITE.has(p) || PERSONAL_WRITE_PREFIX.some((x) => p.startsWith(x))) return next();
     return res.status(403).json({ error: "这块是服务器级设置，归平台管理员管", platform_only: true });
   }
   // 剩下的照常放行，只把这一个字段摘掉：别让它捎带着把全局工作目录改了
@@ -346,4 +354,4 @@ function safeCall(fn, arg) {
   try { return fn(arg); } catch { return null; }
 }
 
-module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, redactSecrets, setDeployment, isSoloDesktop, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE };
+module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, redactSecrets, setDeployment, isSoloDesktop, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX };

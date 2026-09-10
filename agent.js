@@ -746,6 +746,7 @@ function modePrompt(mode) {
       deadline,
       stopSignal,
       taskLabel, // 审批卡片上标明发起任务，多任务并行时才分得清是谁在求批
+      actor: user, // 审批归谁：多人共用一台服务器时，别人不该看见、更不该替他点「允许」
       baseDir, // 相对路径读写、脚本 cwd、产物落点全在本对话的成果子目录
       memory: { user },
     });

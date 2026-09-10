@@ -47,7 +47,22 @@ function saveSessions() {
   try { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 300))); }
   catch { try { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 50))); } catch {} } // 配额满了退回小份，别让整个保存链条炸掉
 }
-function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+/**
+ * 往 HTML 里塞文字之前一律走这儿。
+ *
+ * 原来这个函数是拿 div.textContent 再读 innerHTML 实现的，浏览器那一步只转义 & < >，
+ * **引号原样留着**。而全站三百多处是 `attr="${esc(x)}"` 这种写法——只要 x 里有一个双引号，
+ * 属性就在那儿断掉了，后面的字被浏览器当成新属性解析。这不是理论上的：
+ * 审批条上 title="${esc(a.text)}" 装的是待批准的整条命令，`echo "hi"` 这种再普通不过的命令
+ * 就能踩中；renderMd 里 [文字](链接) 的链接直接进 href="$2"，那条路更是从模型输出一路通到属性里。
+ *
+ * 所以照 admin.js 那份的写法改成显式转义五个字符。& < > 的行为跟以前一字不差，
+ * 多出来的是 " 和 '，它们在正文里照样渲染成引号本身，在 <textarea> 里也照样解得回来。
+ */
+const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESC_MAP[c]);
+}
 /** 一条工作区相对路径的目录部分（顶层文件就是空串） */
 function dirOf(name) { const i = String(name || "").lastIndexOf("/"); return i < 0 ? "" : name.slice(0, i); }
 /**
