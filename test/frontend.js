@@ -1256,10 +1256,17 @@ const IMPANE_CHECKS = `
   ok("绿灯不是只改类名，颜色真不一样", getComputedStyle(fsC.querySelector(".im-st .dot")).backgroundColor !== getComputedStyle(qq.querySelector(".im-st .dot")).backgroundColor);
   ok("连上的卡默认收起", fsC.classList.contains("packed") && disp(fsC.querySelector(".im-card-b")) === "none");
   ok("连上的卡按钮是「取消连接」", fsC.querySelector(".im-conn").textContent === "取消连接" && fsC.querySelector(".im-conn").dataset.act === "disconnect");
-  ok("没连的 QQ 卡摊开等你填", !qq.classList.contains("packed") && disp(qq.querySelector(".im-card-b")) !== "none");
+  // 以前是「连上的收起、没连的摊开等你填」，一进来四五张卡的空表单全摊在屏幕上，
+  // 全是你根本没打算连的渠道。现在**一张都不摊**：先让人看清有哪些渠道、哪个已经连上了
+  ok("没连的 QQ 卡也是收起的（不再一进来就摊一屏空表单）", qq.classList.contains("packed") && disp(qq.querySelector(".im-card-b")) === "none");
+  const allCards = [...pane.querySelectorAll(".im-card")];
+  ok("十几张卡，一张摊开的都没有", allCards.length >= 12 && allCards.every((c) => c.classList.contains("packed")), allCards.filter((c) => !c.classList.contains("packed")).map((c) => c.dataset.ch || "静态").join(","));
+  ok("每张卡都有折叠箭头（不然看不出这玩意儿能点开）", allCards.every((c) => !!c.querySelector(".im-card-h .im-ar")));
+  ok("卡头是可聚焦的按钮语义，且 aria-expanded=false（读屏用户听到的跟眼睛看到的一致）",
+     allCards.every((c) => { const h = c.querySelector(".im-card-h"); return h.getAttribute("role") === "button" && h.tabIndex === 0 && h.getAttribute("aria-expanded") === "false"; }));
   ok("没连的卡按钮是「连接」", qq.querySelector(".im-conn").textContent === "连接");
   ok("配了 webhook 的推送卡亮绿", wb.classList.contains("on") && wb.querySelector(".im-st em").textContent === "已配置");
-  ok("没配的钉钉卡灰", dt.querySelector(".im-st").classList.contains("off") && !dt.classList.contains("packed"));
+  ok("没配的钉钉卡灰", dt.querySelector(".im-st").classList.contains("off"));
   const secretIds = [...pane.querySelectorAll("input")].filter((i) => /secret|aes_key/.test(i.id));
   ok("密钥框全是密码型", secretIds.length >= 7 && secretIds.every((i) => i.type === "password"), secretIds.map((i) => i.id + ":" + i.type).join(","));
   ok("App ID 这种明文框不是密码型", pane.querySelector("#im-feishu-app_id").type === "text");
@@ -1268,10 +1275,13 @@ const IMPANE_CHECKS = `
   const vis = pane.innerText.replace(/\\s+/g, "");
   ok("默认可见文字不超载（<900 字）", vis.length < 900, String(vis.length));
   ok("整段申请说明默认看不见", !vis.includes("飞书开放平台创建自建应用"));
-  const qqHelp = qq.querySelector(".im-help"); // 用摊开着的 QQ 卡验：收起的卡里点开也看不见，那是另一回事
+  qq.querySelector(".im-card-h").click(); // 先把卡摊开，收起的卡里点开 <details> 也看不见，那是另一回事
+  const qqHelp = qq.querySelector(".im-help");
   qqHelp.open = true;
   ok("点开「怎么拿凭证」才露出步骤", pane.innerText.includes("QQ 开放平台"));
   qqHelp.open = false;
+  qq.querySelector(".im-card-h").click();
+  ok("收回去之后步骤又看不见了（反向对照）", !pane.innerText.includes("QQ 开放平台"));
 
   // ---- 3. 卡头点一下展开/收起 ----
   fsC.querySelector(".im-card-h").click();
@@ -1279,7 +1289,16 @@ const IMPANE_CHECKS = `
   fsC.querySelector(".im-card-h").click();
   ok("再点收起", fsC.classList.contains("packed"));
   fsC.querySelector(".im-card-h").click();
-  ok("上下文管理的静态卡点卡头不折叠", (pane.querySelector(".im-card-static .im-card-h").click(), disp(pane.querySelector(".im-card-static .im-card-b")) !== "none"));
+  ok("展开时 aria-expanded 跟着翻成 true", fsC.querySelector(".im-card-h").getAttribute("aria-expanded") === "true");
+  fsC.querySelector(".im-card-h").click();
+  ok("收起时又翻回 false（读屏用户听到的状态不能是反的）", fsC.querySelector(".im-card-h").getAttribute("aria-expanded") === "false");
+  // 上下文管理那两张静态卡以前是不折叠的，现在跟别的卡一个待遇——用户说的是「其他的也是默认收起来」
+  const stat = pane.querySelector(".im-card-static");
+  ok("上下文管理的静态卡也默认收起", stat.classList.contains("packed") && disp(stat.querySelector(".im-card-b")) === "none");
+  stat.querySelector(".im-card-h").click();
+  ok("静态卡点一下也展开", !stat.classList.contains("packed") && disp(stat.querySelector(".im-card-b")) !== "none" && stat.querySelector(".im-card-h").getAttribute("aria-expanded") === "true");
+  stat.querySelector(".im-card-h").click();
+  ok("再点一下收回去", stat.classList.contains("packed"));
 
   // ---- 4. 连接 = 先保存再测活 → 刷状态 → 收起 ----
   qq.querySelector("#im-qq-app_id").value = "102";
@@ -1292,6 +1311,7 @@ const IMPANE_CHECKS = `
   ok("保存之后才测活", POSTS.indexOf("/im/qq/test") >= SAVES_AT[0] && POSTS.indexOf("/im/qq/test") >= 0, POSTS.join(","));
   ok("测活结果写在卡上", qq.querySelector('[data-r="qq"]').textContent.startsWith("✅"), qq.querySelector('[data-r="qq"]').textContent);
   ok("连上后绿灯 + 「取消连接」 + 收起", qq.querySelector(".im-st").classList.contains("ok") && qq.querySelector(".im-conn").textContent === "取消连接" && qq.classList.contains("packed"));
+  ok("程序自己收起的卡，aria-expanded 也得跟着回 false", qq.querySelector(".im-card-h").getAttribute("aria-expanded") === "false");
   ok("连接后刷新了顶栏的在线数", REFRESHED >= 2);
 
   // ---- 5. 测活失败：红字、不收起、按钮还是「连接」 ----
@@ -1331,6 +1351,7 @@ const IMPANE_CHECKS = `
   ok("清空后保存的载荷里飞书凭证是空串", SAVES.length === n0 + 1 && SAVES[n0].im.feishu.app_id === "" && SAVES[n0].im.feishu.app_secret === "");
   ok("只清飞书，别的通道没动", SAVES[n0].im.qq.app_id === "102" && SAVES[n0].im.wecom_bot_webhook === "https://qyapi/x");
   ok("断开后灯灭、按钮回「连接」、卡摊开", fsC.querySelector(".im-st").classList.contains("off") && fb.textContent === "连接" && !fsC.classList.contains("packed"));
+  ok("程序自己摊开的卡，aria-expanded 跟着翻 true（反向对照：不是只会往一个方向改）", fsC.querySelector(".im-card-h").getAttribute("aria-expanded") === "true");
 
   // ---- 7. 推送卡：连接 = 只保存不测活 ----
   const p0 = POSTS.length;
@@ -1848,7 +1869,8 @@ const MENU_CHECKS = `
   const btn = (v) => menu.querySelector('.um-seg button[data-lang="' + v + '"]');
   I18N.setLang("zh");
   openUserMenu();
-  ok("打开：菜单显示，七行动作 = 个人资料/设置/语言/外观/帮助/更新/退出", menu.classList.contains("show") && acts() === "profile,settings,lang,appearance,help,update,logout");
+  ok("打开：菜单显示，八行动作 = 个人资料/设置/企业后台/语言/外观/帮助/更新/退出", menu.classList.contains("show") && acts() === "profile,settings,admin,lang,appearance,help,update,logout");
+  ok("企业后台这行写清楚了点进去能干什么（成员 · 用量 · 安全）", /🏢 企业管理后台/.test(menu.textContent) && /成员 · 用量 · 安全/.test(menu.querySelector('[data-act="admin"]').textContent));
   ok("「个人资料」后面不再挂「改名字 · 换头像」尾注", !/改名字|换头像/.test(menu.textContent) && !menu.querySelector('[data-act="profile"] .hint'));
   ok("语言行：🌐 语言 + 中 / En 两个胶囊，中文选中（.on + aria-pressed）", !!langRow() && /🌐 语言/.test(langRow().textContent) && !!btn("zh") && !!btn("en") && btn("zh").classList.contains("on") && btn("zh").getAttribute("aria-pressed") === "true" && !btn("en").classList.contains("on") && btn("en").getAttribute("aria-pressed") === "false");
   ok("胶囊组标了 data-i18n-skip，「中 / En」不会被翻译器动", langRow().querySelector(".um-seg").hasAttribute("data-i18n-skip") && btn("zh").textContent === "中" && btn("en").textContent === "En");
@@ -1873,6 +1895,19 @@ const MENU_CHECKS = `
   openUserMenu(); await tick();
   ok("English 下重开菜单：直接是英文，En 选中", /⚙️ Settings/.test(menu.textContent) && btn("en").classList.contains("on"));
   closeUserMenu(); I18N.setLang("zh");
+
+  // 企业后台入口是按角色发的。这行要是对普通成员也冒出来，他点进去只会连吃 403——
+  // 一个点了就报错的入口，比没有这个入口更伤人
+  currentUser = { username: "xiaoyuan", role: "member", avatar: "", credits: 0 };
+  openUserMenu();
+  ok("普通成员：菜单里根本没有企业后台这一行", !menu.querySelector('[data-act="admin"]') && !/企业管理后台/.test(menu.textContent));
+  ok("反向对照：普通成员的其它七行一个不少", acts() === "profile,settings,lang,appearance,help,update,logout");
+  currentUser = { username: "kuaiji", role: "auditor", avatar: "", credits: 0 };
+  openUserMenu();
+  ok("审计员：看得见入口，但标着「只读」（他进去只能查账改不动）", !!menu.querySelector('[data-act="admin"]') && /只读/.test(menu.querySelector('[data-act="admin"]').textContent));
+  ok("审计员的头衔不冒充管理员（头部不写「· 管理员」）", !/· 管理员/.test(menu.querySelector(".um-head").textContent));
+  currentUser = { username: "demo", role: "admin", avatar: "", credits: 0 };
+  closeUserMenu();
   return names;
 `;
 
