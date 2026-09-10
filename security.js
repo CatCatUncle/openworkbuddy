@@ -388,9 +388,15 @@ function checkUrl(sec, url) {
 
 // ---------- 命令审批（挂起等待界面批准） ----------
 
-const approvals = new Map(); // id -> { id, kind, text, ts, resolve }
+const approvals = new Map(); // id -> { id, kind, text, ts, owner, resolve }
 
-function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "" } = {}) {
+/**
+ * @param owner 发起这次任务的登录名。多人共用一台服务器时这个字段是必须的：
+ *   审批卡片上写着别人任务要跑的那条命令（路径、域名、脚本片段都在里面），
+ *   没有归属就等于谁登录了都能看，还能替别人点「允许」。
+ *   IM / 定时任务这类没有登录态的后台跑法留空，只有平台管理员看得见。
+ */
+function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "", owner = "" } = {}) {
   const id = "ap_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
   return new Promise((resolve) => {
     let done = false;
@@ -413,25 +419,47 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
       // 「以后别再问这类」批的是这条规则；空字符串表示这次的原因不适合记住（比如碰了文件黑名单）
       ruleKey: String(ruleKey || ""),
       source: String(source || "").slice(0, 60), // 发起审批的任务标题：多任务并行时用户得知道是谁在求批
+      owner: String(owner || ""),
       ts: new Date().toISOString(),
       resolve: finish,
     });
   });
 }
-function listApprovals() {
-  return [...approvals.values()].map(({ id, kind, text, rule, ruleKey, source, ts }) => ({ id, kind, text, rule, ruleKey, source, ts }));
+/**
+ * @param scopeTo 只列这个人发起的审批；不传（undefined）= 全都列，给平台管理员和单人桌面版用。
+ *   注意 owner 为空的那些（IM / 定时任务）在限定视角下一条都不给：它们是这台服务器自己在跑，
+ *   不属于任何一个登录用户。
+ */
+function listApprovals(scopeTo) {
+  const all = [...approvals.values()];
+  const mine = scopeTo == null ? all : all.filter((e) => e.owner && e.owner === scopeTo);
+  return mine.map(({ id, kind, text, rule, ruleKey, source, ts }) => ({ id, kind, text, rule, ruleKey, source, ts }));
 }
 /**
  * @param scope once（默认，只放这一次）/ session（本会话同类不再问）/ always（由调用方写进永久放行名单）
+ * @param scopeTo 限定只能批自己那条；不传 = 不限定（平台管理员 / 单人桌面版）
  * @returns { ok, ruleKey, scope } —— always 的持久化在 server 那边做，配置文件归它管
  */
-function resolveApproval(id, allow, scope = "once") {
+function resolveApproval(id, allow, scope = "once", scopeTo) {
   const e = approvals.get(id);
   if (!e) return { ok: false };
+  // 越权不能跟「这条已经没了」返回同一种结果：前者要报出来，后者是正常的竞态（超时/别处点过）
+  if (scopeTo != null && e.owner !== scopeTo) return { ok: false, forbidden: true, error: "这条审批是别人的任务发起的" };
   const key = e.ruleKey;
   if (allow && key && (scope === "session" || scope === "always")) addSessionAllow(key);
   e.resolve(!!allow);
   return { ok: true, ruleKey: key, scope };
+}
+/**
+ * 三档里只有 always 是「改这台服务器」：它把规则写进配置里的永久放行名单，对所有人生效。
+ * 所以受限的人（非平台管理员）点 always 时降一档按 session 走，而不是当场拒绝——
+ * 他那个任务正挂着等这个回答，拒绝换来的是干等到超时按拒绝收场。降了要说出来，
+ * 界面照实讲「本次运行期间不再问」，不许悄悄换个档还报「已永久放行」。
+ * @param restricted true = 这人只能管自己那一摊
+ */
+function effectiveScope(scope, restricted) {
+  const s = ["once", "session", "always"].includes(scope) ? scope : "once";
+  return s === "always" && restricted ? { scope: "session", downgraded: true } : { scope: s, downgraded: false };
 }
 
 // ---------- macOS 系统授权 ----------
@@ -505,6 +533,7 @@ module.exports = {
   requestApproval,
   listApprovals,
   resolveApproval,
+  effectiveScope,
   checkFullDisk,
   checkAccessibility,
   checkAutomation,

@@ -1229,17 +1229,43 @@ app.get("/api/security/audit/export", (_req, res) => {
   res.setHeader("Content-Disposition", `attachment; filename="openworkbuddy-audit-${new Date().toISOString().slice(0, 10)}.log"`);
   res.send(security.auditExport());
 });
-app.get("/api/security/approvals", (_req, res) =>
-  res.json({ items: security.listApprovals(), mode: security.permissionMode(config.security), session_allow: security.listSessionAllow() })
-);
+/**
+ * 审批看得见谁的、批得动谁的。
+ *
+ * 返回 undefined = 不限定（平台管理员，以及双击打开的桌面版——那儿屏幕前就一个人）。
+ * 返回登录名 = 只限定他自己那条：审批卡片上写的是别人任务要跑的整条命令，路径、域名、
+ * 脚本片段都在里面，多人共用一台服务器时那是别人的东西。
+ */
+const approvalScope = (req) =>
+  admin.isSoloDesktop() || admin.platformAdmin(req.user) ? undefined : (req.user && req.user.username) || "";
+app.get("/api/security/approvals", (req, res) => {
+  const scopeTo = approvalScope(req);
+  res.json({
+    items: security.listApprovals(scopeTo),
+    mode: security.permissionMode(config.security),
+    session_allow: security.listSessionAllow(),
+    // 界面照这个决定要不要画「一直允许」那颗按钮：会 403 的按钮不该摆在那儿
+    can_always: scopeTo === undefined,
+  });
+});
 /**
  * 批准/拒绝一条审批。scope：once 只这一次 / session 本次运行期间同类不再问 / always 永久写进放行名单。
  * always 要落盘——「一直允许」点完重启又来问，等于没这个按钮；落盘的规则在安全中心看得见、删得掉。
+ *
+ * 三档里只有 always 是「改这台服务器」：它把规则写进 config 的永久放行名单，对所有人生效。
+ * 所以非平台管理员的 always 降一档按 session 处理，而不是回 403——他那个任务正挂着等这个回答，
+ * 403 换来的是任务干等到超时。降了要在返回里说清楚，界面照实说，不许悄悄换个档还报「已永久放行」。
  */
 app.post("/api/security/approvals/:id", (req, res) => {
   const body = req.body || {};
-  const scope = ["once", "session", "always"].includes(body.scope) ? body.scope : "once";
-  const r = security.resolveApproval(req.params.id, !!body.allow, scope);
+  const scopeTo = approvalScope(req);
+  const { scope, downgraded } = security.effectiveScope(body.scope, scopeTo !== undefined);
+  const r = security.resolveApproval(req.params.id, !!body.allow, scope, scopeTo);
+  if (!r.ok) {
+    return res
+      .status(r.forbidden ? 403 : 409)
+      .json({ ...r, error: r.error || "这条审批已经结束了（等超时了，或者别处已经点过）" });
+  }
   if (r.ok && body.allow && scope === "always" && r.ruleKey) {
     const sec = security.getSecurity(config);
     const list = Array.isArray(sec.cmd_allow) ? sec.cmd_allow : [...(security.DEFAULTS.cmd_allow || [])];
@@ -1249,7 +1275,7 @@ app.post("/api/security/approvals/:id", (req, res) => {
       saveConfig();
     }
   }
-  res.json(r);
+  res.json({ ...r, scope, downgraded });
 });
 app.get("/api/security/modes", (_req, res) =>
   res.json({ modes: security.PERMISSION_MODES, current: security.permissionMode(config.security) })

@@ -1064,13 +1064,69 @@ const IMPANE_SRC = [
   APP03_KS,
   APP05.slice(IM0, IM1),
 ].join("\n");
+// ---- HTML 转义：属性里塞得进引号就等于能改属性 ----
+// 全站三百多处是 attr="${esc(x)}"，esc 漏掉引号的时候，一条带引号的普通命令
+// （echo "hi"）就能把属性截断，模型输出里的一个 markdown 链接更是直通 href="..."。
+// 所以这一组必须在真 Chromium 里让解析器亲自解一遍——正则数 & 和 < 的个数是测不出这个的。
+const E0 = APP02X.indexOf("const ESC_MAP =");
+const E1 = APP02X.indexOf("/** 一条工作区相对路径的目录部分");
+if (E0 < 0 || E1 <= E0) throw new Error("app-01.js 里的 esc/ESC_MAP 找不到了（改名或挪走？），前端测试没法定位真源码");
+const ESC_SRC = APP02X.slice(E0, E1);
+const ESC_HTML = "<!doctype html><meta charset='utf-8'><body><div id='box'></div><div id='md'></div></body>";
+const ESC_STUBS = [
+  "var SvgFig = { extractSvgFigures: (s) => ({ text: s, figs: [] }) };",
+  "function fpath(n) { return String(n == null ? '' : n).split('/').map(encodeURIComponent).join('/'); }",
+  "function joinRel(base, rel) { return rel; }",
+].join("\n");
+const ESC_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const box = document.getElementById("box"), md = document.getElementById("md");
+  const attrs = (el) => [...el.attributes].map((a) => a.name).sort();
+
+  // ① 审批条上的真实形状：title 里装的是待批准的整条命令，命令里有引号是家常便饭
+  const CMD = 'bash -c "rm -rf /tmp/x" --note=\\'张三\\'';
+  box.innerHTML = '<code class="ap-cmd" title="' + esc(CMD) + '">' + esc(CMD) + '</code>';
+  const code = box.querySelector("code");
+  ok("带引号的命令进 title=，属性没被截断（只剩 class 和 title 两个）", code && attrs(code).join(",") === "class,title", code && attrs(code).join(","));
+  ok("title 读回来跟原命令一字不差", code.getAttribute("title") === CMD, code.getAttribute("title"));
+  ok("正文里显示的还是引号本身，不是 &quot;", code.textContent === CMD, code.textContent);
+
+  // ② 硬碰硬：拿一段专门用来撑破属性的字符串
+  const EVIL = '" onmouseover="window.__pwned=1" x="';
+  box.innerHTML = '<b title="' + esc(EVIL) + '">x</b>';
+  const b = box.querySelector("b");
+  ok("撑破属性的串塞进 title=，没长出 onmouseover 这种新属性", attrs(b).join(",") === "title", attrs(b).join(","));
+  ok("撑破属性的串也原样读得回来", b.getAttribute("title") === EVIL, b.getAttribute("title"));
+
+  // ③ 模型输出那条路：markdown 链接的地址直接进 href="$2"
+  md.innerHTML = renderMd('看[这里](https://a.com/p"onmouseover="window.__pwned=1)');
+  const a = md.querySelector("a");
+  ok("markdown 链接的地址里带引号，也没在 href 上长出事件属性", a && !a.hasAttribute("onmouseover"), a && attrs(a).join(","));
+  ok("没有任何一次注入真的执行了", !window.__pwned);
+
+  // ④ 反向对照：别为了防注入把正常的东西也弄坏
+  ok("& < > 的转义跟以前一字不差", esc("a & b < c > d") === "a &amp; b &lt; c &gt; d", esc("a & b < c > d"));
+  ok("null / undefined 还是空串", esc(null) === "" && esc(undefined) === "", esc(null));
+  md.innerHTML = renderMd("看[这里](https://a.com/p?a=1&b=2)");
+  const a2 = md.querySelector("a");
+  ok("正常链接照旧能用，查询串里的 & 没被吃掉", a2 && a2.getAttribute("href") === "https://a.com/p?a=1&b=2", a2 && a2.getAttribute("href"));
+  const ta = document.createElement("div");
+  ta.innerHTML = '<textarea>' + esc('白名单\\n"带引号的路径"') + '</textarea>';
+  ok("塞进 <textarea> 的值解得回来（安全中心那几个名单框走的就是这条）",
+     ta.querySelector("textarea").value === '白名单\\n"带引号的路径"', ta.querySelector("textarea").value);
+  return names;
+})()
+`;
+
 // ---- 流式正文的分段渲染（已定稿那截不许被重建） ----
 const STREAM_SRC = APP02X.slice(APP02X.indexOf("function repairBareCode"), APP02X.indexOf("\n// 【任务类型：X】"));
 const STREAM_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
   + "<body style='margin:0;width:760px'><div class='a-text' id='t'></div><div class='a-text' id='ref'></div></body>";
 const STREAM_STUBS = [
   "var SvgFig = { extractSvgFigures: (s) => ({ text: s, figs: [] }) };",
-  "function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }",
+  ESC_SRC, // 转义用真源，不抄：抄本会跟真源分头演化，测的就不是线上那份了
   "function mdImg(alt, url) { return '<img alt=\"' + String(alt || '').replace(/\"/g, '') + '\">'; }",
 ].join("\n");
 const STREAM_CHECKS = `
@@ -3470,6 +3526,15 @@ app.whenReady().then(async () => {
       for (const n of namesGC) console.log("  ✓ " + n);
       console.log(`✅ 前端：Goal 目标卡（进度条·拆解验收失败留痕·停了说为什么并能接着冲）${namesGC.length} 项通过`);
     } finally { if (!winGC.isDestroyed()) winGC.destroy(); }
+
+    const winESC = mkWin({ show: false, width: 600, height: 400, webPreferences: { offscreen: true } });
+    try {
+      await winESC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ESC_HTML));
+      const namesESC = await winESC.webContents.executeJavaScript(ESC_STUBS + "\n" + ESC_SRC + "\n" + STREAM_SRC + "\n" + ESC_CHECKS, true)
+        .catch((e) => { throw new Error("[HTML 转义] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesESC) console.log("  ✓ " + n);
+      console.log(`✅ 前端：HTML 转义（引号进属性不截断·markdown 链接注不进事件属性·正常内容一字没动）${namesESC.length} 项通过`);
+    } finally { if (!winESC.isDestroyed()) winESC.destroy(); }
 
     const winSTM = mkWin({ show: false, width: 760, height: 700, webPreferences: { offscreen: true } });
     try {
