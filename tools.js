@@ -2422,6 +2422,9 @@ async function executeTool(name, input, opts = {}) {
 }
 
 const FILES_CAP = 500;
+// 遍历的硬保险。截断必须发生在**按时间排完序之后**（见 outputFiles），所以得先把整棵树走完；
+// 这个数是防「有人把几万个文件扔进工作目录」时把一次 emitFiles 卡住，不是产出上限。
+const WALK_CAP = 20000;
 
 /**
  * 产出列表的「坐标系指纹」。
@@ -2442,13 +2445,31 @@ function filesScope(files) {
   return { root: workspaceKey(), full: (files || []).length < FILES_CAP };
 }
 
-/** 列出 workspace 下的文件（含子目录，最深 3 层、最多 500 个；name 为相对路径。前端按目录分组展示，@ 补全同源） */
+/**
+ * 列出 workspace 下的文件（含子目录，最深 3 层、最多 500 条；name 为相对路径。
+ * 前端按目录分组展示，@ 补全同源）。
+ *
+ * 截断按**时间**，不按目录遍历顺序——这条是踩过的坑，不是洁癖：
+ * 以前 500 这个上限是在 walk 里判的（out.length >= FILES_CAP 就 return），排序在截断之后，
+ * 于是「留下哪 500 个」由 readdir 的目录顺序决定，跟新旧毫无关系。用户的工作目录攒到 538 个
+ * 文件那天，新建的任务目录整个落在被砍掉的 38 个里，后果是两处同时哑火：
+ *   - 右侧成果文件面板里根本没有这个新文件夹（用户原话：「在旁边的成果文件里面都看不到
+ *     这个新文件夹啊」）；
+ *   - agent.js 的 emitFiles() 拿两份 outputFiles() 做差算「本回合改了哪些」，两份里都没有
+ *     这些新文件，于是 changed 是空的，对话里那块「本回合产出」一张卡都不挂
+ *     （用户原话：「怎么回事都看不到产出了啊」「不仅结束了没有预览」）。
+ * 文件明明都在磁盘上，界面却像什么都没发生——最该被看见的恰恰是刚写出来的那几个。
+ *
+ * 所以现在先把整棵树走完（WALK_CAP 兜底），按 mtime 倒序排完再切 500：无论工作目录攒了多少
+ * 历史文件，最新的那批一定在列表里。filesScope() 会把 full=false 带出去，前端据此知道
+ * 「这份清单不完整」，不拿它给旧产出盖「已删除」的章。
+ */
 function outputFiles() {
   ensureDirs();
-  const out = [];
+  const all = [];
   const SKIP = new Set([".tmp", "node_modules", ".git"]);
   (function walk(dir, rel, depth) {
-    if (depth > 3 || out.length >= FILES_CAP) return;
+    if (depth > 3 || all.length >= WALK_CAP) return;
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -2456,19 +2477,21 @@ function outputFiles() {
       return;
     }
     for (const e of entries) {
-      if (out.length >= FILES_CAP) return;
+      if (all.length >= WALK_CAP) return;
       if (e.name.startsWith(".") || SKIP.has(e.name)) continue;
       const full = path.join(dir, e.name);
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
         walk(full, r, depth + 1);
       } else if (e.isFile()) {
-        const st = fs.statSync(full);
-        out.push({ name: r, size: st.size, mtime: st.mtime.toISOString() });
+        let st;
+        try { st = fs.statSync(full); } catch { continue; } // 边走边被删的临时文件，跳过就是
+        all.push({ name: r, size: st.size, mtime: st.mtime.toISOString() });
       }
     }
   })(workspaceDir, "", 1);
-  return markDuplicates(out.sort((a, b) => b.mtime.localeCompare(a.mtime)));
+  all.sort((a, b) => b.mtime.localeCompare(a.mtime));
+  return markDuplicates(all.slice(0, FILES_CAP));
 }
 
 /**
