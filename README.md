@@ -64,7 +64,7 @@
 **「大山里开货车卖水果，后面一群大妈踩着钉鞋追，前面一位大爷举着锄头拦车 —— 出一张海报」**
 
 <p align="center">
-  <img src="docs/images/case-poster.png" width="360" alt="案例海报：山路水果大追击">
+  <img src="docs/images/case-poster.png" width="360" alt="案例海报：山路水果狂飙 —— 后有钉鞋大妈，前有锄头大爷">
 </p>
 
 一句话进去，出来的是三个风格各不相同的 PNG（写实电影感 / 乡土漫画 / 无字纯画面）加一份「哪版发哪儿」的说明，全在成果面板里点开就能看。图上不带任何 AI 生成水印。
@@ -72,10 +72,10 @@
 **本机装了 Claude Code / Codex 的，一键拿它当发动机——不再另买 token。**
 
 <p align="center">
-  <img src="docs/images/local-claude-code.png" width="820" alt="本机 Claude Code 跑任务：中间过程折成一行，最后只留结论">
+  <img src="docs/images/local-claude-code.png" width="820" alt="本机 Claude Code 跑任务：红框里那枚牌子写着走的是谁、多少个工具、不花 API 额度">
 </p>
 
-界面上会直说这一趟走的是谁、花不花 API 额度；中间每一步折成一行摆着，想看细节再点开，任务结束只把结论留在外面。
+红框里那枚牌子是真机截图：这一趟走的是本机的 `claude-opus-5`，挂了 102 个工具，不花 API 额度——界面上直说，不用猜。中间每一步折成一行摆着，想看细节再点开，任务结束只把结论留在外面。
 
 
 ## 跑起来
