@@ -1271,16 +1271,23 @@ function editFile(file, label, { old_text, new_text, replace_all }) {
 /**
  * 写完文件的自检。partial=true 表示这次是 append 续写，文件**按定义就还没写完**。
  *
- * 这是真实数据里最吵的一条误报：工具描述自己就在教模型「写长文档时用 append:true 一节一节续写」，
- * 结果第一节写完 <html>/<body> 还没闭合，自检立刻报「页面结构有问题」并且 isError:true。
- * isError 会喂给 agent.js 的 errStreaks，连着 4 次就弹「write_file 已连续失败 4 次」——
- * 明明每一次都写成功了。本机 176 段会话里这条 html/head/body/style「开 1 闭 0」出现了 112 次，
- * 而工作区最终落盘的 48 个 html 文件里**没有一个**真的缺 </html>：100% 是中途状态被当成了错。
+ * 返回 `{ note, bad }`：note 是贴给模型看的话，只有 bad 才会变成 isError。
+ * 拆成两路是因为「有话要说」和「这次调用失败了」根本不是一回事，而 isError 是有副作用的——
+ * 它喂给 agent.js 的 errStreaks，连着 4 次就弹「write_file 已连续失败 4 次，已提醒换思路」，
+ * 可每一次文件都写成功了，模型于是被推着去「修」一个不存在的问题。
  *
- * 所以 partial 下只留「不管写没写完都肯定错」的那些（闭合标签比开始标签还多、JSON 坏了、
- * 引用了不存在的本地文件…），把「看着像还没写完」的那一类降级成不报错的提示。
+ * 这是真实数据里最吵的一类误报，而且是工具自己教出来的——工具描述就写着「长文档一节一节写」：
+ * 本机 96 段会话里 write_file 报了 41 次失败，38 次文件其实写进去了；edit_file 报了 51 次，
+ * 31 次改也确实改成了。带「开 N 个、闭 M 个」的失衡报告一共 144 条，其中 138 条是「开着还没闭」，
+ * 而工作区最终落盘的 48 个 html 文件里**没有一个**真的缺 </html>——全是中途状态被当成了错。
+ *
+ * 所以判据改成：**闭合标签比开始标签还多**（怎么往下写都圆不回来）才算错；
+ * 「开着还没闭」在文档明显还没收尾时只提一句，不占 isError。
  */
 function selfCheck(file, rel, partial = false) {
+  // note 照说，bad 才算失败
+  const bad = (note) => ({ note, bad: true });
+  const ok = (note = "") => ({ note, bad: false });
   const ext = path.extname(rel).toLowerCase();
   // 「代码没写完」跟「代码写错了」的报错长得不一样：前者一律是解析器读到文件末尾才发现不够。
   // 只在 append 续写时用它放行，整篇写完照样一个不漏地报。
@@ -1290,16 +1297,16 @@ function selfCheck(file, rel, partial = false) {
   try {
     src = fs.readFileSync(file, "utf8");
   } catch {
-    return "";
+    return ok();
   }
   if (ext === ".json") {
     try {
       JSON.parse(src);
     } catch (e) {
-      if (partial && looksUnfinished(e.message)) return "";
-      return `\n⚠️ JSON 语法没过：${e.message}。先修好再往下走。`;
+      if (partial && looksUnfinished(e.message)) return ok();
+      return bad(`\n⚠️ JSON 语法没过：${e.message}。先修好再往下走。`);
     }
-    return "";
+    return ok();
   }
   if ([".js", ".cjs", ".mjs"].includes(ext)) {
     // ELECTRON_RUN_AS_NODE 必须带上：桌面版里 execPath 是 Electron 二进制，不带的话每检查一个 .js
@@ -1323,10 +1330,10 @@ function selfCheck(file, rel, partial = false) {
     }
     if (r.status !== 0) {
       const msg = String(r.stderr || "").split("\n").filter((l) => l && !/^\s*at /.test(l)).slice(0, 6).join("\n");
-      if (partial && looksUnfinished(msg)) return "";
-      return `\n⚠️ JS 语法没过：\n${msg}\n先修好再往下走（用 edit_file 改那一行，别整篇重写）。`;
+      if (partial && looksUnfinished(msg)) return ok();
+      return bad(`\n⚠️ JS 语法没过：\n${msg}\n先修好再往下走（用 edit_file 改那一行，别整篇重写）。`);
     }
-    return "";
+    return ok();
   }
   if (ext === ".py") {
     // 用 ast.parse 而不是 py_compile：后者会往 __pycache__ 写 .pyc 污染工作目录。
@@ -1335,49 +1342,57 @@ function selfCheck(file, rel, partial = false) {
       const r = spawnSync(process.platform === "win32" ? "python" : "python3", ["-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())", file], { encoding: "utf8", timeout: 15000 });
       if (r.status === 1 && /SyntaxError|IndentationError|TabError/.test(String(r.stderr))) {
         const msg = String(r.stderr).split("\n").filter((l) => l && !/^Traceback|^\s*File "<string>"/.test(l)).slice(-4).join("\n");
-        if (partial && looksUnfinished(msg)) return "";
-        return `\n⚠️ Python 语法没过：\n${msg}\n先修好再往下走。`;
+        if (partial && looksUnfinished(msg)) return ok();
+        return bad(`\n⚠️ Python 语法没过：\n${msg}\n先修好再往下走。`);
       }
     } catch {}
-    return "";
+    return ok();
   }
   if ([".sh", ".bash", ".zsh"].includes(ext)) {
     try {
       const r = spawnSync(ext === ".zsh" ? "zsh" : "bash", ["-n", file], { encoding: "utf8", timeout: 10000 });
       if (r.status !== 0 && r.stderr) {
-        if (partial && looksUnfinished(r.stderr)) return "";
-        return `\n⚠️ Shell 脚本语法没过：\n${String(r.stderr).split("\n").filter(Boolean).slice(0, 4).join("\n")}\n先修好再往下走。`;
+        if (partial && looksUnfinished(r.stderr)) return ok();
+        return bad(`\n⚠️ Shell 脚本语法没过：\n${String(r.stderr).split("\n").filter(Boolean).slice(0, 4).join("\n")}\n先修好再往下走。`);
       }
     } catch {}
-    return "";
+    return ok();
   }
   if (ext === ".md") {
     const fences = (src.match(/^```/gm) || []).length;
     // 续写到一半，围栏本来就可能只开了一半——下一节接着写就闭上了，别在这儿喊
-    if (fences % 2 === 1 && !partial) return "\n⚠️ Markdown 里有 ``` 代码围栏没闭合（奇数个），界面会把后面的正文整块吞掉。补上收尾的 ```。";
-    return "";
+    if (fences % 2 === 1 && !partial) return bad("\n⚠️ Markdown 里有 ``` 代码围栏没闭合（奇数个），界面会把后面的正文整块吞掉。补上收尾的 ```。");
+    return ok();
   }
   if (ext === ".svg") {
     const orphan = orphanSvgStyleScopes(src);
     if (orphan.length) {
-      return `\n⚠️ 这个 SVG 的样式作用域挂空了：<style> 里写了 ${orphan.slice(0, 4).map((n) => "#" + n).join("、")}，` +
-        `<svg> 上却没有这个 id。样式一条都不生效，图会变成黑字、没底色、框线全丢。id 和选择器改成一致的。`;
+      return bad(
+        `\n⚠️ 这个 SVG 的样式作用域挂空了：<style> 里写了 ${orphan.slice(0, 4).map((n) => "#" + n).join("、")}，` +
+          `<svg> 上却没有这个 id。样式一条都不生效，图会变成黑字、没底色、框线全丢。id 和选择器改成一致的。`
+      );
     }
     // 独立的 .svg 文件同样没有外层页面给它变量，坏法和 HTML 一模一样
     const { missing } = undefinedCssVars(src, path.dirname(file));
     if (missing.length) {
-      return `\n⚠️ 这个 SVG 用了没定义的 CSS 变量：${missing.slice(0, 6).map((n) => "--" + n).join("、")}。` +
-        `独立文件没有外层页面给它变量，var(--没定义的) 会让颜色回落到黑色，图上很可能黑底黑字。` +
-        `在 <svg> 里自己写一段 <style>:root{--x:…}</style>，或者直接把颜色写死。`;
+      return bad(
+        `\n⚠️ 这个 SVG 用了没定义的 CSS 变量：${missing.slice(0, 6).map((n) => "--" + n).join("、")}。` +
+          `独立文件没有外层页面给它变量，var(--没定义的) 会让颜色回落到黑色，图上很可能黑底黑字。` +
+          `在 <svg> 里自己写一段 <style>:root{--x:…}</style>，或者直接把颜色写死。`
+      );
     }
-    return "";
+    return ok();
   }
   if (ext === ".html" || ext === ".htm") {
-    const issues = auditHtml(src, path.dirname(file), { partial }).filter((x) => x.level === "错");
-    if (issues.length) return `\n⚠️ 页面结构有问题：${issues.map((x) => x.msg).join("；")}。建议再跑一次 check_page 确认。`;
-    return "";
+    const issues = auditHtml(src, path.dirname(file), { partial });
+    const errs = issues.filter((x) => x.level === "错");
+    if (errs.length) return bad(`\n⚠️ 页面结构有问题：${errs.map((x) => x.msg).join("；")}。建议再跑一次 check_page 确认。`);
+    // 「还没收尾」照说一句，但它不是失败：说了模型知道自己在写半截，不至于以为哪里坏了
+    const wip = issues.filter((x) => x.level === "提");
+    if (wip.length) return ok(`\n（${wip.map((x) => x.msg).join("；")}）`);
+    return ok();
   }
-  return "";
+  return ok();
 }
 
 /**
@@ -1440,7 +1455,10 @@ function orphanSvgStyleScopes(src) {
 
 /** 网页静态体检。只报能确定的问题，不做审美评判 */
 function auditHtml(src, baseDir, opts = {}) {
-  const partial = !!opts.partial;
+  // 「整篇写」也可能只是文档的前半截：开了 <html> 却还没 </html>，后面还要接着写。
+  // 这时候「开着还没闭」是必然状态，不是错——真实数据里 write_file/edit_file 一共 27 次
+  // 「写成功却报失败」都栽在这上面，而落盘的 48 个 html 没有一个真缺 </html>。
+  const stillWriting = !!opts.partial || (/<html[\s>]/i.test(src) && !/<\/html>/i.test(src));
   const out = [];
   const add = (level, msg) => out.push({ level, msg });
   if (!/<!doctype\s+html/i.test(src)) add("警", "没有 <!DOCTYPE html>（浏览器会退到怪异模式，排版会走样）");
@@ -1453,12 +1471,17 @@ function auditHtml(src, baseDir, opts = {}) {
   const structural = src
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "<script></script>")
     .replace(/<!--[\s\S]*?-->/g, "");
+  const unclosed = [];
   for (const tag of ["html", "head", "body", "div", "section", "main", "header", "footer", "table", "ul", "ol", "script", "style"]) {
     const open = (structural.match(new RegExp(`<${tag}(\\s|>)`, "gi")) || []).length;
     const close = (structural.match(new RegExp(`</${tag}>`, "gi")) || []).length;
-    // 续写到一半，开着还没闭是正常的；反过来「闭的比开的还多」不管写没写完都是错
-    if (partial ? close > open : open !== close) add("错", `<${tag}> 开 ${open} 个、闭 ${close} 个，对不上`);
+    if (open === close) continue;
+    // 「闭的比开的还多」怎么往下写都圆不回来，写没写完都是错；
+    // 「开着还没闭」只在文档已经收尾（有 </html>）时才是错，否则就是写到一半的正常样子
+    if (close > open || !stillWriting) add("错", `<${tag}> 开 ${open} 个、闭 ${close} 个，对不上`);
+    else unclosed.push(`<${tag}>（开 ${open} 闭 ${close}）`);
   }
+  if (unclosed.length) add("提", `${unclosed.join("、")} 还开着没闭——这次落盘的像是文档前半截，接着往下写就行，最后记得收尾`);
   // 外链资源：断网/发给别人就打不开了，单文件页面这是硬伤
   const ext = [...src.matchAll(/(?:src|href)=["'](https?:\/\/[^"']+)["']/gi)].map((m) => m[1]);
   const cdn = ext.filter((u) => !/^https?:\/\/(fonts\.googleapis|fonts\.gstatic)\./i.test(u));
@@ -1490,7 +1513,7 @@ function auditHtml(src, baseDir, opts = {}) {
     );
   }
   const text = src.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  if (text.length < 30 && !partial) add("警", "去掉标签后几乎没有正文（可能是内容全靠 JS 生成，也可能就是个空壳）");
+  if (text.length < 30 && !stillWriting) add("警", "去掉标签后几乎没有正文（可能是内容全靠 JS 生成，也可能就是个空壳）");
   return out;
 }
 
@@ -2073,7 +2096,7 @@ function nearestTool(name, known) {
 /**
  * 工具参数不是合法 JSON 时说给模型听的话。
  *
- * 本机 176 段会话里出现 4 次，四种坏法各不相同：`"size": 1024x1536`（值没加引号）、
+ * 本机 96 段会话里出现 4 次，四种坏法各不相同：`"size": 1024x1536`（值没加引号）、
  * 同一个对象吐了两遍（Extra data）、`{"mark">3:`（流式吐串了）、
  * 还有一次 write_file 塞了 19482 字的正文写到一半被输出长度截断。
  * 四次的共同点是：模型得到的反馈都不是「你发的参数坏了」，而是某个工具的必填校验。
@@ -2112,6 +2135,16 @@ async function executeTool(name, input, opts = {}) {
   // 文件工具统一走策略解析：workspace 内默认放行、黑名单硬拦、workspace 外仅白名单
   const baseName = fileBase === workspaceDir ? "" : path.basename(fileBase);
   const resolveFile = (rel) => {
+    // 少给 path 是模型真会犯的错（本机 96 段会话里 7 次：write_file 2 次、edit_file 5 次，
+    // 多半是参数 JSON 太长被截断，或者干脆漏了这一项）。老写法把空路径解析成工作目录本身，
+    // 下游抛一句 `EISDIR: illegal operation on a directory, open '/Users/…/workbuddy-clone-master'`——
+    // 模型完全看不出错在哪（它会照原样再试一遍），还把本机绝对路径抖进了对话里。
+    if (!String(rel == null ? "" : rel).trim()) {
+      throw new Error(
+        `这次调用没给 path。${name} 必须带上目标文件的相对路径，比如 {"path": "报告.html"}。` +
+          `（如果你刚才那次参数很长，多半是被截断了：把 content 拆短些、或者先建文件再用 append 往后写。）`
+      );
+    }
     // 相对路径已经是从成果子目录起算的，模型再在前面拼一遍目录名，
     // 落点就成了 任务_X/任务_X/…：任务目录建在任务目录里，产物就此和交付分了家。
     // "同名目录套同名目录"没有任何一种正当写法，直接剥掉这一层。
@@ -2240,11 +2273,11 @@ async function executeTool(name, input, opts = {}) {
         const bak = existed && !input.append ? keepBackup(p, rel) : "";
         if (input.append) {
           fs.appendFileSync(p, body, "utf8");
-          const warn = selfCheck(p, rel, true);
-          return { content: `已追加到 ${rel}（+${n} 字节，现共 ${fs.statSync(p).size} 字节）${warn}`, isError: !!warn };
+          const c = selfCheck(p, rel, true);
+          return { content: `已追加到 ${rel}（+${n} 字节，现共 ${fs.statSync(p).size} 字节）${c.note}`, isError: c.bad };
         }
         fs.writeFileSync(p, body, "utf8");
-        const warn = selfCheck(p, rel);
+        const c = selfCheck(p, rel);
         // 覆盖和新建要说清楚：整篇重写一个已有文件，多半是该用 edit_file 却偷懒了
         return {
           content:
@@ -2252,8 +2285,8 @@ async function executeTool(name, input, opts = {}) {
               ? `已覆盖 ${rel}（原 ${oldSize} 字节 → 现 ${n} 字节）` +
                 (bak ? `，原件留了一份在 ${bak}` : "") +
                 `。提醒：改已有文件的局部内容用 edit_file，整篇重写会连你没读过的部分一起换掉。`
-              : `已新建 ${rel}（${n} 字节）`) + warn,
-          isError: !!warn,
+              : `已新建 ${rel}（${n} 字节）`) + c.note,
+          isError: c.bad,
         };
       }
       case "edit_file": {
@@ -2262,8 +2295,8 @@ async function executeTool(name, input, opts = {}) {
         const blocked = await passGate(security.checkWrite(sec, rel), "改文件", rel, { force: true });
         if (blocked) return blocked;
         const msg = editFile(p, rel, input);
-        const warn = selfCheck(p, rel);
-        return { content: msg + warn, isError: !!warn };
+        const c = selfCheck(p, rel);
+        return { content: msg + c.note, isError: c.bad };
       }
       case "read_file": {
         const p = resolveFile(input.path);
@@ -2278,7 +2311,11 @@ async function executeTool(name, input, opts = {}) {
         if (s || e) {
           const lines = content.split("\n");
           const from = Math.max(1, s || 1);
-          if (from > lines.length) return { content: `${input.path} 只有 ${lines.length} 行，start_line=${from} 超出范围`, isError: true };
+          // 翻页翻到头了不是失败，是「这就是结尾」这条信息本身：模型正是靠它知道文件读完了。
+          // 标成 isError 会喂进 errStreaks，把一次正常的顺序翻页记成 read_file 连续失败。
+          // 本机 96 段会话里 read_file 报的 13 次失败，有 6 次是这个。
+          if (from > lines.length)
+            return { content: `${input.path} 到头了：全文共 ${lines.length} 行，start_line=${from} 已经在末尾之后，后面没有内容了。`, isError: false };
           const to = Math.min(lines.length, e || lines.length);
           const body = lines
             .slice(from - 1, to)
@@ -2461,4 +2498,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };

@@ -1136,7 +1136,7 @@ async function testFetchRetry() {
   assert.strictEqual(nearestTool("read_files", known), "read_file", "近似名没认出来");
   assert.strictEqual(nearestTool("完全不沾边的东西xyz", known), "", "不像也硬猜，会把模型带沟里");
   assert.strictEqual(nearestTool("read_file", []), "", "没有工具表时不该猜");
-  // 参数根本不是合法 JSON：本机 176 段会话里出现过 4 次，四种坏法各不相同，
+  // 参数根本不是合法 JSON：本机 96 段会话里出现过 4 次，四种坏法各不相同，
   // 但模型收到的反馈全是某个工具的必填校验（「缺少 prompt」之类）——它以为自己漏填了字段，
   // 于是把同样坏的东西原样再发一遍。必须如实说「你发的参数坏了」，还要说清是不是被截断的。
   const { badToolArgs } = require("../tools")._internals;
@@ -2401,8 +2401,15 @@ async function testCodingTools() {
       r = await call("read_file", { path: "app.js", start_line: 2, end_line: 2 });
       assert.ok(/^（app\\.js 第 2-2 行/.test(r.content), r.content);
       assert.ok(/2\\t\\s+return 2;/.test(r.content), "读回来的行没带原缩进和行号：" + r.content);
+      // 翻页翻到文件末尾之后 = 「读完了」这条信息本身，不是工具失败。标成 isError 会喂进
+      // errStreaks，把一次正常的顺序翻页记成 read_file 连续失败（本机 96 段会话里 13 次
+      // read_file 失败有 6 次是这个）。话要照说，只是不占失败额度。
       r = await call("read_file", { path: "app.js", start_line: 999 });
-      assert.strictEqual(r.isError, true, "越界行号该报错");
+      assert.strictEqual(r.isError, false, "翻页翻过文件末尾被当成了工具失败：" + r.content);
+      assert.ok(/到头了/.test(r.content) && /共 \\d+ 行/.test(r.content), "没把「文件到这儿就完了」说清楚：" + r.content);
+      // 负向对照：文件根本不存在，那才是真失败
+      r = await call("read_file", { path: "根本没有这个文件.js", start_line: 1 });
+      assert.strictEqual(r.isError, true, "读不存在的文件也放过了（说明是把报错关了，不是改判据）");
 
       // 列目录：depth 能一次看清
       r = await call("list_files", { depth: 2 });
@@ -2477,15 +2484,32 @@ async function testDeliverableQuality() {
       assert.strictEqual(r.isError, true, "围栏没闭合却判成功了");
       assert.ok(/围栏/.test(r.content), r.content);
 
-      // 续写中途「还没写完」不等于「写错了」。这是真实数据里最吵的一条误报：
-      // 工具描述自己就教模型用 append 一节一节写长文档，第一节 <html>/<body> 还开着，
-      // 自检就报「页面结构有问题」并 isError:true → 喂进 errStreaks → 弹「已连续失败 4 次」，
-      // 可每一次其实都写成功了（本机 176 段会话里这条出现 112 次，落盘的 48 个 html 无一真缺 </html>）
+      // 「还没写完」不等于「写错了」。这是真实数据里最吵的一类误报：工具描述自己就教模型
+      // 一节一节写长文档，第一节 <html>/<body> 还开着，自检就报「页面结构有问题」并 isError:true
+      // → 喂进 errStreaks → 弹「已连续失败 4 次」，可每一次文件都写成功了。
+      // 本机 96 段会话：write_file 41 次报失败里 38 次文件其实写进去了、edit_file 51 次里 31 次
+      // 改也确实改成了；带「开 N 闭 M」的失衡报告共 144 条，其中 138 条是「开着还没闭」，
+      // 而工作区落盘的 48 个 html 文件没有一个真缺 </html>——全是中途状态被当成了错。
+      // 判据因此改成「有没有收尾」：没写 </html> 就是还在写，开着不算错；写了才按对不上判。
       r = await call("write_file", { path: "长页.html", content:
         '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
         '<meta name="viewport" content="width=device-width, initial-scale=1"><title>分节写</title></head>' +
         '<body><div class="wrap"><h1>标题</h1>' });
-      assert.strictEqual(r.isError, true, "整篇写半截页面本来就该顶回去（负向对照）");
+      assert.strictEqual(r.isError, false, "写文档的前半截被当成了失败：" + r.content);
+      assert.ok(/还开着没闭/.test(r.content), "写到一半这件事一句都没跟模型说：" + r.content);
+      // 负向对照一：已经收尾了（有 </html>）还对不上，那就是真漏了一个闭合标签，照报
+      r = await call("write_file", { path: "收尾漏了.html", content:
+        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>收尾漏了</title></head>' +
+        '<body><div class="wrap"><p>这是一段足够长的正文内容，用来避免被判成空壳页面。</p></body></html>' });
+      assert.strictEqual(r.isError, true, "文档都收尾了 <div> 还开着，这时候必须报（不然就是把检查关了）");
+      assert.ok(/<div> 开 1 个、闭 0 个/.test(r.content), r.content);
+      // 负向对照二：没收尾也不代表随便写——闭的比开的还多，往下怎么写都圆不回来
+      r = await call("write_file", { path: "多闭了.html", content:
+        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>多闭了</title></head>' +
+        '<body><div class="wrap"><p>这是一段足够长的正文内容，用来避免被判成空壳页面。</p></div></div>' });
+      assert.strictEqual(r.isError, true, "写到一半也不能多闭一个 </div>");
       r = await call("write_file", { path: "长页2.html", content: '<!DOCTYPE html><html><head><title>分节写</title></head><body><div>', append: true });
       assert.strictEqual(r.isError, false, "续写第一节被当成了错：" + r.content);
       r = await call("write_file", { path: "长页2.html", content: '<p>这是一段足够长的正文内容，用来避免被判成空壳页面。</p></div></body></html>', append: true });
@@ -2530,6 +2554,33 @@ async function testDeliverableQuality() {
       r = await call("edit_file", { path: "good.js", old_text: "const b = 2;", new_text: "const b = (2;" });
       assert.strictEqual(r.isError, true, "改坏了却判成功了");
       assert.ok(/JS 语法/.test(r.content), r.content);
+
+      // edit_file 走的是同一道自检，同一条判据：真实数据里 edit_file 31 次「改成功却报失败」中
+      // 18 次就是这个——改的是还没收尾的半截页面，改完 <html> 当然还开着
+      await call("write_file", { path: "半截.html", content:
+        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>半截</title></head>' +
+        '<body><div class="wrap"><h1>旧标题</h1>' });
+      r = await call("edit_file", { path: "半截.html", old_text: "旧标题", new_text: "新标题" });
+      assert.strictEqual(r.isError, false, "改半截页面被当成了失败：" + r.content);
+      assert.ok(/已修改/.test(r.content), r.content);
+
+      // 少给 path：本机 96 段会话里 write_file 2 次、edit_file 5 次，参数里压根没有 path
+      // （多半是超长参数被截断）。老写法把空路径当成「工作目录本身」，回一句
+      // EISDIR: illegal operation on a directory, open '/Users/…'——模型看不出自己错在哪，
+      // 会照原样再试一遍；本机绝对路径还顺带漏进了对话里。
+      r = await call("write_file", { content: "<p>忘了给文件名</p>" });
+      assert.strictEqual(r.isError, true, "没给 path 也判成功了");
+      assert.ok(/没给 path/.test(r.content), "没说清楚是漏了 path：" + r.content);
+      assert.strictEqual(/EISDIR/.test(r.content), false, "还在往外抛 EISDIR：" + r.content);
+      assert.strictEqual(r.content.includes(ws), false, "报错里漏了本机绝对路径：" + r.content);
+      r = await call("edit_file", { old_text: "a", new_text: "b" });
+      assert.ok(/没给 path/.test(r.content), "edit_file 漏 path 没说清楚：" + r.content);
+      r = await call("read_file", {});
+      assert.ok(/没给 path/.test(r.content), "read_file 漏 path 没说清楚：" + r.content);
+      // 负向对照：正常给了 path 的照走不误
+      r = await call("read_file", { path: "doc.md" });
+      assert.strictEqual(r.isError, false, "加了空路径闸门后正常读文件也被拦了：" + r.content);
 
       // 网页验收：外链 CDN（换台电脑就白屏）、标签对不上、引用了不存在的本地文件，都要报
       await call("write_file", { path: "p.html", content:
@@ -2589,7 +2640,7 @@ async function testDeliverableQuality() {
 /**
  * mermaid 语法自动纠错。
  *
- * 真实数据：本机 176 段会话里 gen_diagram 调了 37 次挂了 7 次（18.9%），七次全是 mermaid
+ * 真实数据：本机 96 段会话里 gen_diagram 调了 37 次挂了 7 次（18.9%），七次全是 mermaid
  * 语法报错，且全落在四类纯机械的写法错误上（标签开 `["` 收 `")`、subgraph 标题带括号/冒号
  * 没加引号、timeline 拿全角「：」当分隔符、gitGraph 中文分支名没加引号）——跟"这张图想画成
  * 什么样"毫无关系。而模型收到的回执是 mermaid 那句 `Expecting 'SQE', 'TAGEND', 'UNICODE_TEXT'…`，
