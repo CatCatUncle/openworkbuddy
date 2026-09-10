@@ -160,8 +160,13 @@ async function login(username, password) {
   r = await call("POST", "/api/settings", { cookie: fen, body: { workspace_dir: "/tmp/hijack" } });
   eq(r.status, 403, "分公司管理员改设置被拒");
   eq(r.json.platform_only, true, "拒绝理由说明是平台级");
-  r = await call("POST", "/api/engines/test", { cookie: fen, body: {} });
-  eq(r.status, 403, "分公司管理员测引擎被拒");
+  r = await call("POST", "/api/engines", { cookie: fen, body: { engine: "codex" } });
+  eq(r.status, 403, "分公司管理员改不了这台服务器默认用哪个引擎");
+  // 「一键连接」是例外，而且是故意的：它真跑一句话过去，走的是**他本机那份 CLI 的订阅**，
+  // 一个字节都不落盘。拦下来只有一个效果——他切完引擎没法验，界面上只剩「切换失败」四个字。
+  // 路由那边会把非平台管理员传来的 bin 丢掉（起哪个可执行文件不是个人偏好），那条钉在 test/prefs.js。
+  r = await call("POST", "/api/engines/test", { cookie: fen, body: { id: "codex" } });
+  eq(r.status, 200, "但「一键连接」放行：花的是他自己的订阅，不落盘，也不影响别人");
   r = await call("GET", "/api/schedules", { cookie: fen });
   eq(r.status, 403, "分公司管理员连平台的定时任务都读不到");
   // 反向对照：同样这三个请求，平台管理员必须全过

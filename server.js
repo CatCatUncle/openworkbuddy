@@ -18,6 +18,7 @@ const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder } = require("./llm");
 const { outputFiles, filesScope, safePath, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
 const { McpManager } = require("./mcp");
@@ -440,9 +441,10 @@ function addUsage(total, u) {
  * 从用户那边看就是「Goal 模式没做」。同一份订阅已经付过钱了，问它就是了。
  */
 async function goalThink(sessLLM, { system, prompt, timeoutMs, total }) {
-  const id = (config.agent && config.agent.engine) || "builtin";
+  const my = prefs.agentCfg(config); // 引擎是按账号存的，得看这一趟任务是谁发起的
+  const id = my.engine || "builtin";
   if (id !== "builtin" && engines.get(id)) {
-    return await engines.ask({ id, opts: (config.agent.engine_options || {})[id] || {}, system, prompt, timeoutMs });
+    return await engines.ask({ id, opts: (my.engine_options || {})[id] || {}, system, prompt, timeoutMs });
   }
   const r = await sessLLM.chat({
     system,
@@ -648,15 +650,21 @@ app.get("/api/files", (_req, res) => res.json(outputFiles()));
 app.get("/api/assistant", (_req, res) => res.json(config.assistant));
 
 // ---------- 应用内设置（模型 + IM），保存到 config.json 并热生效 ----------
-app.get("/api/settings", (_req, res) => {
+app.get("/api/settings", (req, res) => {
+  // 个人偏好压在全局配置上面。没有个人偏好文件时这几个 *Cfg 原样返回 config 的那一份
+  const myAgent = prefs.agentCfg(config);
+  const myPet = prefs.petCfg(config);
+  const myModel = prefs.modelCfg(config);
   res.json({
     workspace_dir: getWorkspaceDir(),
     models: config.models,
     active_model: config.active_model,
     model_health: healthSummary(),
-    model_follow_last: !!config.model_follow_last,
-    last_picked_model: config.last_picked_model || "",
-    assist_model: config.assist_model || "",
+    // 界面靠它决定「服务器级的那些输入框画不画」：画了却一存就 403，比不画更气人
+    platform_owner: admin.isSoloDesktop() || ownsGlobalWorkspace(req.user),
+    model_follow_last: myModel.model_follow_last,
+    last_picked_model: myModel.last_picked_model,
+    assist_model: myModel.assist_model,
     agent: {
       max_steps: config.agent.max_steps,
       tool_timeout_ms: config.agent.tool_timeout_ms,
@@ -666,21 +674,21 @@ app.get("/api/settings", (_req, res) => {
       max_context_chars: config.agent.max_context_chars || 120000,
       max_tokens_budget: config.agent.max_tokens_budget || 0,
       failover_model: config.agent.failover_model || "",
-      thinking: thinking.norm(config.agent.thinking), // 思考模式档位，默认 auto=跟随模型自己的默认
-      engine: config.agent.engine || "builtin",
+      thinking: thinking.norm(myAgent.thinking), // 思考模式档位，默认 auto=跟随模型自己的默认
+      engine: myAgent.engine || "builtin",
       // 前端那个模型选择器要靠它说实话：走本机 CLI 的时候，API 模型列表整个不生效
-      engine_label: (engines.list().find((e) => e.id === (config.agent.engine || "builtin")) || {}).label || "",
-      engine_options: config.agent.engine_options || {},
+      engine_label: (engines.list().find((e) => e.id === (myAgent.engine || "builtin")) || {}).label || "",
+      engine_options: myAgent.engine_options || {},
     },
     pet: {
-      enabled: (config.pet || {}).enabled === true, // 默认没有宠物：得用户在对话里开口要，或来这儿手动打开
-      character: (config.pet || {}).character || "cat",
-      scale: (config.pet || {}).scale || pet.DEFAULT_SCALE,
-      opacity: (config.pet || {}).opacity || 1,
-      notify: (config.pet || {}).notify !== false,
-      notify_done: (config.pet || {}).notifyDone !== false,
-      wander: (config.pet || {}).wander === true,
-      sprite: (config.pet || {}).sprite || "",
+      enabled: myPet.enabled === true, // 默认没有宠物：得用户在对话里开口要，或来这儿手动打开
+      character: myPet.character || "cat",
+      scale: myPet.scale || pet.DEFAULT_SCALE,
+      opacity: myPet.opacity || 1,
+      notify: myPet.notify !== false,
+      notify_done: myPet.notifyDone !== false,
+      wander: myPet.wander === true,
+      sprite: myPet.sprite || "",
       has_photo: !!petPhotoPath(),
       // 本机装了哪些精灵图宠物（~/.codex/pets、~/.petdex/pets、data/pets）。
       // 扫的是文件头不是整张图，几毫秒的事，跟设置一起返回省一次往返。
@@ -715,13 +723,112 @@ app.get("/api/settings", (_req, res) => {
       vision: { base_url: "", api_key: "", model: "", ...((config.media || {}).vision || {}) },
     },
     security: config.security,
-    shortcuts: config.shortcuts,
+    shortcuts: prefs.shortcutsCfg(config),
   });
 });
 
+/**
+ * 个人偏好落盘：底层引擎、思考档、上次选的模型、宠物开关、全局快捷键。
+ *
+ * 校验一条都不能省。这些值不是摆设——引擎名写错会让任务在启动那一刻就炸，思考档写错
+ * 会让「我明明关了思考」和账单对不上。所以宁可当场 400，也绝不悄悄退回默认值。
+ * 抛出去的错由 /api/settings 那层的 try/catch 变成 400，跟全局设置的错误路径同一条。
+ */
+/**
+ * 这次的「个人偏好」该落哪儿。
+ *
+ * false（落 config.json）：个人桌面版——屏幕前就一个人，config 就是他的偏好；而且 Electron 壳
+ *   在任何人登录之前就要靠 config.pet / config.shortcuts 把宠物和快捷键装起来，写别处等于重启后消失。
+ *   平台管理员同理：他设的那份是这台机器的默认，定时任务和 IM 消息没有「当前登录的人」，只能读 config。
+ * true（落 data/prefs/<账号>.json）：多人服务器上的其他人，谁也不覆盖谁。
+ */
+function ownPrefs(req) {
+  return !(admin.isSoloDesktop() || ownsGlobalWorkspace(req && req.user));
+}
+
+function savePersonalPrefs(user, personal) {
+  const out = {};
+  if (personal.agent) {
+    const a = {};
+    if (personal.agent.engine !== undefined) {
+      const id = String(personal.agent.engine || "builtin").trim() || "builtin";
+      if (engines.get(id) === undefined) throw new Error("没有这个底层引擎：" + id);
+      a.engine = id;
+    }
+    if (personal.agent.thinking !== undefined) {
+      const lv = String(personal.agent.thinking || "").trim().toLowerCase();
+      if (!thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
+      a.thinking = lv;
+    }
+    if (personal.agent.engine_options && typeof personal.agent.engine_options === "object") {
+      const eo = {};
+      for (const [id, v] of Object.entries(personal.agent.engine_options)) {
+        if (engines.get(id) === undefined) continue; // 前端可能带上已经不存在的引擎，忽略即可，不值得整单失败
+        const cur = {};
+        if (v.model !== undefined) cur.model = String(v.model || "").trim();
+        if (v.thinking !== undefined) {
+          const lv = String(v.thinking || "").trim().toLowerCase();
+          if (lv && !thinking.LEVELS.includes(lv)) throw new Error("没有这个思考模式档位：" + lv);
+          cur.thinking = lv; // 空串 = 这个引擎跟随全局档位
+        }
+        if (Object.keys(cur).length) eo[id] = cur;
+      }
+      if (Object.keys(eo).length) a.engine_options = eo;
+    }
+    if (Object.keys(a).length) out.agent = a;
+  }
+  if (typeof personal.model_follow_last === "boolean") out.model_follow_last = personal.model_follow_last;
+  if (personal.last_picked_model !== undefined) {
+    const n = String(personal.last_picked_model || "").trim();
+    if (n && !(config.models || []).some((m) => m.name === n)) throw new Error(`模型「${n}」不在模型列表里`);
+    out.last_picked_model = n;
+  }
+  if (personal.pet && typeof personal.pet === "object") {
+    const q = {};
+    for (const k of ["enabled", "notify", "notifyDone", "wander"]) if (typeof personal.pet[k] === "boolean") q[k] = personal.pet[k];
+    if (personal.pet.sprite !== undefined) {
+      const sp = String(personal.pet.sprite || "").slice(0, 80);
+      if (sp && !petSprites.findPet(sp)) throw new Error("没找到这只精灵图宠物（或它的图集不合规）：" + sp);
+      q.sprite = sp;
+    }
+    if (personal.pet.character !== undefined) {
+      const c = personal.pet.character === "photo" ? "photo" : personal.pet.character === "sprite" ? "sprite" : "cat";
+      const sp = q.sprite !== undefined ? q.sprite : (prefs.read(user).pet || {}).sprite || "";
+      if (c === "sprite" && !sp) throw new Error("先选一只精灵图宠物，再切到这个形象");
+      q.character = c;
+    }
+    if (personal.pet.scale !== undefined) q.scale = Math.max(0.6, Math.min(2, Number(personal.pet.scale) || pet.DEFAULT_SCALE));
+    if (personal.pet.opacity !== undefined) q.opacity = Math.max(0.25, Math.min(1, Number(personal.pet.opacity) || 1));
+    if (Object.keys(q).length) out.pet = q;
+  }
+  if (personal.shortcuts && typeof personal.shortcuts === "object") {
+    const sc = {};
+    for (const [k, v] of Object.entries(personal.shortcuts)) if (typeof v === "string" && v.length < 60) sc[k] = v;
+    out.shortcuts = sc;
+  }
+  if (!Object.keys(out).length) return null;
+  return prefs.write(user, out);
+}
+
 app.post("/api/settings", (req, res) => {
   try {
-    const b = req.body || {};
+    let b = req.body || {};
+    /**
+     * 个人偏好分流。
+     *
+     * 谁写 config.json：个人桌面版（屏幕前就一个人，config 就是他的偏好；而且 Electron 壳在
+     * 任何人登录之前就要靠 config.pet / config.shortcuts 把宠物和快捷键装起来），
+     * 以及多人服务器上的平台管理员（他设的那份是这台机器的默认——定时任务和 IM 消息没有
+     * 「当前登录的人」，只能读 config）。
+     * 其余人写各自的 data/prefs/<账号>.json，谁也不覆盖谁。
+     */
+    if (ownPrefs(req)) {
+      const { personal, rest } = prefs.split(b);
+      const saved = Object.keys(personal).length ? savePersonalPrefs(req.user, personal) : null;
+      b = rest;
+      // 整单都是个人项：config 一个字节都不用动，也别白跑一次 saveConfig
+      if (!Object.keys(b).length) return res.json({ ok: true, personal: true, saved: !!saved });
+    }
     if (Array.isArray(b.models)) {
       for (const m of b.models) {
         if (!m.name || !m.model) throw new Error("每个模型需要 name 和 model 字段");
@@ -938,7 +1045,7 @@ async function probeModel(m) {
  *
  * seen = 用户走完（或明确跳过）过一次向导。没走完的每次打开都弹，走完的只在「设置 → 关于」里能再打开。
  */
-app.get("/api/onboarding", async (_req, res) => {
+app.get("/api/onboarding", async (req, res) => {
   const models = (config.models || []).map((m) => ({
     name: m.name,
     model: m.model,
@@ -947,7 +1054,8 @@ app.get("/api/onboarding", async (_req, res) => {
     has_key: hasKey(m),
   }));
   const active = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0];
-  const engineId = (config.agent && config.agent.engine) || "builtin";
+  const myAgent = prefs.agentCfg(config);
+  const engineId = myAgent.engine || "builtin";
   const brainViaEngine = engineId !== "builtin" && engines.get(engineId) !== undefined;
   const brainOk = brainViaEngine || !!(active && hasKey(active));
   const seen = !!((config.onboarding || {}).done_at);
@@ -955,7 +1063,7 @@ app.get("/api/onboarding", async (_req, res) => {
   // 本机 CLI 探测要跑 which + --version，只在向导真会弹出来的时候做，老用户每次开机别白等
   let found = [];
   if (!brainOk || !seen) {
-    try { found = await engines.detectAll((config.agent && config.agent.engine_options) || {}); } catch {}
+    try { found = await engines.detectAll(myAgent.engine_options || {}); } catch {}
   }
   const media = config.media || {};
   const mediaOk = (kind) => { const c = media[kind] || {}; return !!(c.base_url && c.api_key); };
@@ -1030,7 +1138,7 @@ app.post("/api/onboarding/done", (req, res) => {
   try {
     const b = req.body || {};
     const active = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0];
-    const engineId = (config.agent && config.agent.engine) || "builtin";
+    const engineId = prefs.agentCfg(config).engine || "builtin";
     const brainOk = (engineId !== "builtin" && engines.get(engineId) !== undefined) || !!(active && hasKey(active));
     if (!brainOk) return res.status(400).json({ ok: false, error: "还没接上任何大模型，先把第一步走完" });
     if (b.workspace_dir) {
@@ -1162,8 +1270,9 @@ app.post("/api/app/update-check", (_req, res) => {
 app.get("/api/engines", async (req, res) => {
   try {
     // ?force=1 = 用户点了「重新检测本机」（刚装完 CLI，必须当场看见）；平时吃缓存，别每开一次设置页就起一堆子进程
-    const found = await engines.detectAll((config.agent && config.agent.engine_options) || {}, { force: req.query.force === "1" });
-    res.json({ current: config.agent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
+    const myAgent = prefs.agentCfg(config); // 「当前用的是哪个引擎」是按账号的，别把别人选的报给他
+    const found = await engines.detectAll(myAgent.engine_options || {}, { force: req.query.force === "1" });
+    res.json({ current: myAgent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1178,15 +1287,16 @@ app.get("/api/engines", async (req, res) => {
  *
  * 所以这里把 5 个档位逐个算一遍，supported=false 的连同原因一起给出去，界面照抄。
  */
-app.get("/api/thinking", async (_req, res) => {
+app.get("/api/thinking", async (req, res) => {
   try {
-    const engineId = config.agent.engine || "builtin";
+    const myAgent = prefs.agentCfg(config);
+    const engineId = myAgent.engine || "builtin";
     const entry = (config.models || []).find((m) => m.name === config.active_model) || (config.models || [])[0] || {};
     // 本机 CLI 的能力探测（claude 对不认识的选项是静默忽略的，非探不可），探不动就当没有
     let caps = {};
     if (engineId !== "builtin") {
       try {
-        const found = await engines.detectAll((config.agent && config.agent.engine_options) || {});
+        const found = await engines.detectAll(myAgent.engine_options || {});
         caps = (found.find((e) => e.id === engineId) || {}).caps || {};
       } catch {}
     }
@@ -1197,7 +1307,7 @@ app.get("/api/thinking", async (_req, res) => {
       return { level: lv, label: thinking.LEVEL_LABEL[lv], supported: active.supported, note: active.note };
     });
     res.json({
-      current: thinking.norm(config.agent.thinking),
+      current: thinking.norm(myAgent.thinking),
       via: engineId === "builtin" ? "api" : "engine",
       target: engineId === "builtin" ? (entry.name || "") : engineId,
       levels,
@@ -1219,10 +1329,13 @@ app.post("/api/engines/test", async (req, res) => {
   if (!id || id === "builtin") return res.status(400).json({ error: "内置引擎不用测，它走的是你配的 API Key" });
   try {
     // 用户可能刚在输入框里改了路径/模型还没保存，先用他正在填的那份测
-    const saved = ((config.agent && config.agent.engine_options) || {})[id] || {};
+    const saved = (prefs.agentCfg(config).engine_options || {})[id] || {};
     const patch = (req.body && req.body.options) || {};
     const opts = { ...saved };
-    for (const k of ["bin", "model"]) if (patch[k] !== undefined) opts[k] = String(patch[k] || "").trim();
+    // bin 是「起哪个可执行文件」——在多人服务器上等于任意命令执行。只有平台管理员能指定，
+    // 其他人一律用已保存的那份（他们本来也改不了它）
+    const fields = ownPrefs(req) ? ["model"] : ["bin", "model"];
+    for (const k of fields) if (patch[k] !== undefined) opts[k] = String(patch[k] || "").trim();
     for (const k of Object.keys(opts)) if (!opts[k]) delete opts[k];
     res.json(await engines.testConnect(id, opts));
   } catch (e) {
@@ -2426,6 +2539,14 @@ function clearPetPhoto() {
     try { fs.unlinkSync(dataPath("data", "pet-avatar" + ext)); } catch {}
   }
 }
+/**
+ * 换宠物形象。
+ *
+ * 照片是这台机器上的一张图（data/pet-avatar.*）——宠物窗口跑在 Electron 主进程里，那儿没有
+ * 「当前登录的是谁」这个概念，所以照片本身不分账号。分账号的是**开关**：谁把宠物打开了、
+ * 用的哪种形象。以前这里无条件写 config.pet，多人服务器上一个成员传张图，
+ * 平台管理员桌面上那只就跟着换了形象——这才是真正会串台的那一半。
+ */
 app.post("/api/pet/avatar", (req, res) => {
   try {
     const m = /^data:(image\/(?:png|jpeg|webp|gif));base64,([\s\S]+)$/.exec(String((req.body || {}).data_url || ""));
@@ -2436,14 +2557,23 @@ app.post("/api/pet/avatar", (req, res) => {
     fs.mkdirSync(dataPath("data"), { recursive: true });
     clearPetPhoto(); // 换形象先清旧的，免得两个扩展名同时躺着分不清用哪个
     fs.writeFileSync(dataPath("data", "pet-avatar" + PET_PHOTO_EXT[m[1]]), buf);
-    config.pet = { ...(config.pet || {}), character: "photo", enabled: true }; // 特地传了张照片 = 想要它出现
+    // 特地传了张照片 = 想要它出现
+    if (ownPrefs(req)) {
+      prefs.write(req.user, { pet: { character: "photo", enabled: true } });
+      return res.json({ ok: true, size: buf.length });
+    }
+    config.pet = { ...(config.pet || {}), character: "photo", enabled: true };
     saveConfig();
     if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
     res.json({ ok: true, size: buf.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.delete("/api/pet/avatar", (_req, res) => {
+app.delete("/api/pet/avatar", (req, res) => {
   clearPetPhoto();
+  if (ownPrefs(req)) {
+    prefs.write(req.user, { pet: { character: "cat" } });
+    return res.json({ ok: true });
+  }
   config.pet = { ...(config.pet || {}), character: "cat" };
   saveConfig();
   if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
@@ -3274,8 +3404,10 @@ app.post("/api/session/:id/model", (req, res) => {
       return res.status(400).json({ error: `模型「${name}」不在模型列表里` });
     }
     s.model = String(name);
-    // 记住这次手动选择：开了「新对话沿用上次选的模型」时，下个新对话默认就用它
-    if (config.last_picked_model !== s.model) { config.last_picked_model = s.model; saveConfig(); }
+    // 记住这次手动选择：开了「新对话沿用上次选的模型」时，下个新对话默认就用它。
+    // 多人服务器上按人记——不然 A 换一次模型，B 开的下一个新对话就跟着变了
+    if (ownPrefs(req)) prefs.write(req.user, { last_picked_model: s.model });
+    else if (config.last_picked_model !== s.model) { config.last_picked_model = s.model; saveConfig(); }
   }
   saveSession(req.params.id);
   res.json({ ok: true, model: s.model || null });
@@ -3286,14 +3418,18 @@ app.post("/api/session/:id/model", (req, res) => {
 // 而下面真正跑任务用的又是标签上那个——那就成了另一种「标签说一套、实际跑一套」
 app.post("/api/assist/model", (req, res) => {
   const name = (req.body || {}).model;
-  if (name === null || name === undefined || name === "") {
-    delete config.assist_model;
-  } else {
-    if (!Array.isArray(config.models) || !config.models.some((m) => m.name === name)) {
-      return res.status(400).json({ error: `模型「${name}」不在模型列表里` });
-    }
-    config.assist_model = String(name);
+  const val = name === null || name === undefined || name === "" ? "" : String(name);
+  if (val && !(Array.isArray(config.models) && config.models.some((m) => m.name === val))) {
+    return res.status(400).json({ error: `模型「${val}」不在模型列表里` });
   }
+  // 「我在助理页用哪个模型」是个人的事。以前一律写 config，结果是多人服务器上谁都能
+  // 改掉所有人的助理模型——而且这条路径压根没被服务器级的闸盖住
+  if (ownPrefs(req)) {
+    prefs.write(req.user, { assist_model: val });
+    return res.json({ ok: true, model: val || null });
+  }
+  if (val) config.assist_model = val;
+  else delete config.assist_model;
   saveConfig();
   res.json({ ok: true, model: config.assist_model || null });
 });
@@ -3485,6 +3621,19 @@ async function main() {
   // 默认只听本机：这个进程手里有 run_shell 和整个文件系统，绑 0.0.0.0 等于把 shell 挂到公网。
   // 要放出去（Docker / 服务器）必须显式 HOST=0.0.0.0，并且自己在前面套 HTTPS + 反代。
   const host = process.env.HOST || srvCfg.host || "127.0.0.1";
+  /**
+   * 告诉权限层这是「一个人的桌面应用」还是「一台给多个人用的服务器」。
+   *
+   * 必须赶在第一个请求之前定下来（listen 之前就调，最稳）。判据和理由都写在 admin.js 的
+   * setDeployment 上面：Electron 壳 + 只听回环 = 屏幕前就一个人，服务器级的那道闸和凭证脱敏
+   * 一起关掉；只要绑到别的地址（Docker 走的 HOST=0.0.0.0 就是），两道全部照旧。
+   */
+  const solo = admin.setDeployment({
+    host,
+    // ELECTRON_RUN_AS_NODE：run_node 派生的子进程也带 electron 版本号，但它不是应用本体
+    shell: !!(process.versions.electron && !process.env.ELECTRON_RUN_AS_NODE),
+  });
+  if (solo) console.log("个人桌面版：设置归你自己管，不分平台管理员");
   const server = app.listen(port, host, () => {
     if (host !== "127.0.0.1" && host !== "localhost") {
       console.warn(`⚠️  正在监听 ${host}:${port}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
@@ -3501,10 +3650,36 @@ async function main() {
   server.on("error", (e) => {
     if (e.code === "EADDRINUSE") {
       console.error(`端口 ${port} 已被占用（可能 Web 版已在运行），本进程不再重复启动服务，窗口将连接已运行的实例。`);
-    } else {
-      throw e;
+      return;
     }
+    // 以前这里 throw。listen 的 error 是异步事件，抛出去没人接，直接变成 uncaughtException——
+    // 命令行下还能看见栈，装成桌面应用之后是主进程当场没了，用户看到的就是「双击没反应，
+    // 任务管理器里有进程，屏幕上什么都没有」。EACCES 在 Windows 上尤其常见：
+    // Hyper-V / WSL 会成片预留端口，3800 落在保留段里报的是 EACCES 而不是 EADDRINUSE。
+    bootFailed(e);
   });
+}
+
+/**
+ * 启动失败的唯一出口。
+ *
+ * 装成桌面应用时服务端是在 Electron 主进程里 require 起来的，在这儿 process.exit 等于
+ * 把整个应用连窗口一起带走，而且带走得悄无声息——electron-main.js 里那个「3 秒兜底亮窗」
+ * 的定时器都还没轮到就没进程了。所以有壳的时候把错误交回壳，让它把原因画在窗口里；
+ * 纯命令行（node server.js）没有壳，维持原来的退出码 1，行为一个字节不变。
+ */
+function bootFailed(e) {
+  console.error("启动失败:", e);
+  const toShell = global.__wbBootFail;
+  if (typeof toShell === "function") {
+    try {
+      toShell(e);
+      return; // 交出去了就别再退进程，窗口还要留着显示原因
+    } catch (e2) {
+      console.error("[启动] 壳层没接住，退回命令行行为:", e2 && e2.message);
+    }
+  }
+  process.exit(1);
 }
 
 process.on("SIGINT", () => {
@@ -3512,7 +3687,4 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
-main().catch((e) => {
-  console.error("启动失败:", e);
-  process.exit(1);
-});
+main().catch(bootFailed);

@@ -318,10 +318,19 @@ async function renderSettings(active) {
   else if (active === "im") renderImPane(pane, s);
   else renderAboutPane(pane);
 }
+/**
+ * 保存失败的原因存在这儿。
+ *
+ * saveSettings 二十来个调用点都拿它当布尔用（`if (!ok) …`），改成返回对象会让每一处
+ * `{ok:false}` 都是真值——那是比现在更糟的 bug。所以照旧返回布尔，原因另放一个格子：
+ * 调用点想说清楚就读它，不想读也不会坏。
+ */
+let lastSaveError = "";
 async function saveSettings(patch, msgEl) {
   const resp = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
   const data = await resp.json().catch(() => ({}));
-  if (msgEl) msgEl.textContent = resp.ok ? "✓ 已保存并生效" : (data.error || "保存失败");
+  lastSaveError = resp.ok ? "" : (data.error || `保存失败（HTTP ${resp.status}）`);
+  if (msgEl) msgEl.textContent = resp.ok ? "✓ 已保存并生效" : lastSaveError;
   if (resp.ok) refreshSettingsCache();
   return resp.ok;
 }
@@ -539,12 +548,13 @@ async function renderAgentPane(pane, s) {
       <div class="d" style="margin-bottom:8px">带思考/推理的模型可以在这里关掉或者调强度。关掉更快更省钱，开高更适合难题。默认「跟随模型默认」= 一个参数都不发，和以前完全一样。</div>
       <select id="ag-thinking"><option value="auto">跟随模型默认</option></select>
       <div class="d" id="ag-thinking-note" style="margin-top:6px">正在看这一档对当前模型是怎么生效的…</div>
+      <div class="ok-msg" id="ag-thinking-msg"></div>
     </div>
     <div class="card-item">
       <div class="t">执行权限模式</div>
       <div class="d">输入框下方「权限」下拉可随时切换：Ask 只问答 · Plan 只出计划 · Craft 完整执行交付</div>
     </div>
-    <div class="card-item">
+    ${s.platform_owner ? `    <div class="card-item">
       <div class="t">最大执行步数</div>
       <div class="d" style="margin-bottom:6px">单个任务 Agent 循环上限，防止失控（默认 25）</div>
       <input id="ag-steps" type="number" min="1" max="100" value="${s.agent.max_steps}">
@@ -572,8 +582,15 @@ async function renderAgentPane(pane, s) {
       <div class="d" style="margin-bottom:6px">超出后自动截短较早的工具输出（最近 3 步始终保留原文），避免长任务撞模型上下文上限整个失败。上下文大的模型可以调高（默认 120）</div>
       <input id="ag-ctx" type="number" min="20" max="2000" value="${Math.round((s.agent.max_context_chars || 120000) / 1000)}">
     </div>
-    <button class="btn-brand" id="ag-save">保存</button><span class="ok-msg" id="ag-msg"></span>`;
-  pane.querySelector("#ag-save").onclick = () =>
+    <button class="btn-brand" id="ag-save">保存</button><span class="ok-msg" id="ag-msg"></span>` : `
+    <div class="card-item">
+      <div class="t">执行上限（步数 / 超时 / token 预算）</div>
+      <div class="d">这几项配的是<b>整台服务器</b>——一个人调高步数和超时，所有人的任务和账单都跟着变，所以归平台管理员。上面的底层引擎、思考模式是你自己的，随时能改。</div>
+    </div>`}`;
+  const agSave = pane.querySelector("#ag-save");
+  // 思考档特地不跟这堆一起存：它是个人偏好，那几项是服务器级的。捆在同一个「保存」上，
+  // 多人服务器上的成员一点就整单 403——他只是想换个思考档，却被告知这归管理员管
+  if (agSave) agSave.onclick = () =>
     saveSettings({ agent: {
       max_steps: +pane.querySelector("#ag-steps").value,
       tool_timeout_ms: +pane.querySelector("#ag-timeout").value * 1000,
@@ -583,10 +600,9 @@ async function renderAgentPane(pane, s) {
       max_context_chars: +pane.querySelector("#ag-ctx").value * 1000,
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
       failover_model: pane.querySelector("#ag-failover").value,
-      thinking: pane.querySelector("#ag-thinking").value,
     } }, pane.querySelector("#ag-msg"));
   renderEngineCard(pane.querySelector("#ag-engines"));
-  renderThinkingCard(pane.querySelector("#ag-thinking"), pane.querySelector("#ag-thinking-note"));
+  renderThinkingCard(pane.querySelector("#ag-thinking"), pane.querySelector("#ag-thinking-note"), pane.querySelector("#ag-thinking-msg"));
 }
 /**
  * 「思考模式」下拉。
@@ -595,7 +611,7 @@ async function renderAgentPane(pane, s) {
  * 换了引擎，同一档的含义就变了。前端写死一张表迟早写歪成「界面说已关闭、实际什么都没发」。
  * 服务端说这一档对当前模型不生效，这里就把原因原样显示出来，不拿一句"已关闭"糊过去。
  */
-async function renderThinkingCard(sel, note) {
+async function renderThinkingCard(sel, note, msg) {
   const d = await fetch("/api/thinking").then((r) => r.json()).catch(() => null);
   if (!d || !d.levels) { note.textContent = "读不到思考模式的支持情况，先按「跟随模型默认」用。"; return; }
   const where = d.via === "engine" ? `本机 ${esc(d.target)}` : (d.target ? esc(d.target) : "当前模型");
@@ -605,7 +621,13 @@ async function renderThinkingCard(sel, note) {
     note.textContent = (l.supported ? `对 ${where}：` : `⚠️ 对 ${where} 不生效 —— `) + (l.note || "");
     note.style.color = l.supported ? "" : "var(--warn, #c2410c)";
   };
-  sel.onchange = show;
+  sel.onchange = async () => {
+    show();
+    if (!msg) return; // 别处复用这张卡时不带存档位的格子，只更新说明
+    msg.textContent = "保存中…";
+    const ok = await saveSettings({ agent: { thinking: sel.value } }, null);
+    msg.textContent = ok ? "✓ 已保存并生效" : (lastSaveError || "保存失败");
+  };
   show();
 }
 /**
@@ -664,7 +686,9 @@ async function renderEngineCard(box, force) {
       }
       msg.textContent = "切换中…";
       const ok = await saveSettings({ agent: { engine: id } }, null);
-      if (!ok) { msg.textContent = "切换失败"; return; }
+      // 「切换失败」四个字是这张卡最没用的一句话。服务端每一种失败都带了原因
+      // （多人服务器上归平台管理员 / 引擎名不存在 / 后端报错），原样端出来
+      if (!ok) { msg.textContent = lastSaveError || "切换失败"; return; }
       await renderEngineCard(box);
       // 切完立刻真连一次：让用户当场知道"能用"，而不是等下一个任务失败才知道
       const card = box.querySelector('.eng[data-eng="' + CSS.escape(id) + '"]');
@@ -712,7 +736,7 @@ function bindEngineExtra(card, id, box) {
     const m = x.querySelector('[data-role="xmsg"]');
     m.textContent = "保存中…";
     const ok = await saveSettings({ agent: { engine_options: { [id]: readOpts() } } }, null);
-    m.textContent = ok ? "✓ 已保存" : "保存失败";
+    m.textContent = ok ? "✓ 已保存" : (lastSaveError || "保存失败");
     if (ok) setTimeout(() => renderEngineCard(box), 600);
   };
 }

@@ -110,6 +110,10 @@ app.whenReady().then(async () => {
   // 在 Electron 主进程内直接启动服务端。
   // 它是整个应用的地基，塌了就没有「降级可用」这回事——但用户至少得知道塌在哪，
   // 而不是对着一个不出现的窗口重装三遍。
+  // 服务端起不来时，它得有个地方把原因交出来。没有这个出口的话它只能 process.exit(1)：
+  // 主进程当场消失，上面那个 3 秒兜底亮窗根本轮不到，用户看到的就是「有进程、没界面」。
+  // ⚠️ 必须挂在 require 之前——server.js 的 main() 是异步的，失败可能发生在 require 返回之后的任何时刻。
+  global.__wbBootFail = (e) => showBootFailure(e);
   try {
     require(path.join(__dirname, "server.js"));
   } catch (e) {
@@ -155,17 +159,34 @@ app.whenReady().then(async () => {
 });
 
 /**
+ * 把启动错误翻成一句用户能照着做的话。
+ *
+ * 这段文案是「什么都打不开」时用户手里唯一的线索，所以拎成具名函数，让 test/ 能直接切片测：
+ * 错一个分支的代价不是排版难看，是用户对着一句「服务端崩了」重装三遍。
+ */
+function bootHint(msg, port) {
+  msg = String(msg || "");
+  if (/Cannot find module/.test(msg))
+    return "安装包里少了文件。到 GitHub Releases 重新下载最新版本覆盖安装即可；如果最新版仍然这样，请把下面这行贴到 issue 里。";
+  // EACCES 要排在 EADDRINUSE 前面：两者都是「端口用不了」，但解法不同，
+  // 前者换个端口就好，后者得去关掉占用的程序。
+  if (/EACCES|EPERM/.test(msg))
+    return `没权限使用端口 ${port}。Windows 上多半是 Hyper-V / WSL 预留了这段端口（命令行跑 netsh interface ipv4 show excludedportrange protocol=tcp 能看到保留段），把用户目录下 OpenWorkBuddy/config.json 里的 server.port 换成一个没被预留的（比如 3810）再打开。`;
+  if (/EADDRINUSE|端口/.test(msg))
+    return `端口 ${port} 被别的程序占了。关掉占用它的程序，或者把用户目录下 OpenWorkBuddy/config.json 里的 server.port 换一个端口。`;
+  if (/EADDRNOTAVAIL/.test(msg))
+    return "配置里的 server.host 在这台机器上不存在了（换过网络之后常见）。把用户目录下 OpenWorkBuddy/config.json 里的 server.host 改回 127.0.0.1 再打开。";
+  return "服务端启动时崩了。把下面这行贴到 GitHub issue 里，附上你的系统版本。";
+}
+
+/**
  * 启动失败时，把窗口亮出来说清楚哪儿坏了。
  * 不这么做的话表现是「双击没反应」——用户唯一能做的就是重装，而重装治不好装机包缺文件。
  * 页面用 data: URL 直接塞，因为这会儿 HTTP 服务端正是那个起不来的东西。
  */
 function showBootFailure(err) {
   const msg = String((err && err.message) || err || "未知错误");
-  const hint = /Cannot find module/.test(msg)
-    ? "安装包里少了文件。到 GitHub Releases 重新下载最新版本覆盖安装即可；如果最新版仍然这样，请把下面这行贴到 issue 里。"
-    : /EADDRINUSE|端口/.test(msg)
-      ? `端口 ${PORT} 被别的程序占了。关掉占用它的程序，或改 ~/OpenWorkBuddy/config.json 里的 server.port 换一个端口。`
-      : "服务端启动时崩了。把下面这行贴到 GitHub issue 里，附上你的系统版本。";
+  const hint = bootHint(msg, PORT);
   const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
   const html = `<!doctype html><meta charset="utf-8"><title>OpenWorkBuddy 启动失败</title>
 <style>

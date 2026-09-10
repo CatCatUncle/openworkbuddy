@@ -1029,7 +1029,9 @@ async function setPermMode(mode) {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }),
   }).then(r => r.json()).catch(() => ({}));
   if (r.ok) { syncPermLabel(mode); toast(`权限档位：${permModes[mode].label}`); }
-  else toast("切换失败");
+  // 服务端把原因说清楚了（多人服务器上这块归平台管理员），别用四个字「切换失败」把它吃掉——
+  // 用户看到的是一个明明能点的按钮点了没反应，只能去猜
+  else toast(r.error || "切换失败：服务端没说原因");
 }
 setupPicker("perm-btn", "perm-menu");
 loadPermModes();
