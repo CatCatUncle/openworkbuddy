@@ -114,6 +114,8 @@
       "💬 帮助与反馈": "💬 Help & feedback",
       "⏱️ 定时任务": "⏱️ Scheduled tasks",
       "不花 API 额度": "No API quota used",
+      "本机 Claude Code": "Local Claude Code",
+      "本机 Codex": "Local Codex",
       "先把要导入的内容粘进来": "Paste what you want to import first",
       "Jina（国内直连 · 免费额度）": "Jina (works in China · free tier)",
       "Brave Search（要绑卡）": "Brave Search (card required)",
@@ -718,8 +720,47 @@
       [/^(\d+) 个工具已注入，任务里可直接调用$/, "$1 tools injected, callable in tasks"],
       [/^近 (\d+) 天$/, "Last $1 days"],
       [/^第 (\d+) 页$/, "Page $1"],
+      [/^跑脚本 (\d+) 行 Node$/, "Run $1 lines of Node"],
+      // 引擎小牌子：服务端推来的是「本机 Claude Code 已启动（模型 x，N 个工具），不消耗 API 额度」。
+      // 界面拆成了「名字 / 括号里那截 / 不花 API 额度」三块分别显示，所以这里连整条带那一截都得能翻，
+      // 不然英文界面上会孤零零挂一行中文。整条那两条是给鼠标悬停的 title 用的
+      [/^模型 默认$/, "default model"],
+      [/^模型 (.+?)，(\d+) 个工具$/, "model $1, $2 tools"],
+      [/^模型 (.+)$/, "model $1"],
+      [/^本机 Claude Code 已启动（模型 (.+?)，(\d+) 个工具），不消耗 API 额度$/, "Local Claude Code started (model $1, $2 tools) — no API quota used"],
+      [/^本机 Codex 已启动（模型 (.+?)），不消耗 API 额度$/, "Local Codex started (model $1) — no API quota used"],
     ],
   };
+
+  // ---------- 过程区那一行「动词 + 对象」 ----------
+  // 服务端把每一步算成「读 报告.md」「搜「小红书 标题」」这种一行流（agent.js 的 toolHeadline）。
+  // 对象是路径 / 关键词 / 命令，语言无关；动词是中文——英文界面下这一屏以前整片是中文。
+  // 这里只把打头的动词翻掉，对象一个字不动。轨迹条上的短标（TOOL_SHORT）也一并翻。
+  // ⚠️ 改了 agent.js 的 TOOL_VERB 或 app-01.js 的 TOOL_SHORT，记得同步这张表（test/e2e.js 有闸门盯着）。
+  const TOOL_VERB_EN = {
+    "读资料": "Read doc", "读": "Read", "写": "Write", "改": "Edit", "列目录": "List",
+    "搜文件": "Find", "搜": "Search", "命令": "Shell", "跑脚本": "Run", "抓": "Fetch",
+    "渲染": "Render", "体检": "Check", "截图": "Screenshot", "看图": "View",
+    "生图": "Image", "生成视频": "Video", "画图表": "Chart", "配音": "Voice",
+    "记住": "Remember", "忘掉": "Forget", "翻资料库": "Library", "存技能": "Save skill",
+    "用技能": "Use skill", "桌面宠物": "Desktop pet", "问你一句": "Ask you",
+    "飞书文档": "Feishu doc", "委派专家团": "Delegate to team", "委派专家": "Delegate to",
+  };
+  // 轨迹条（折叠条上那排小徽章）用的是另一套更短的标，见 app-01.js 的 TOOL_SHORT
+  const TOOL_SHORT_EN = {
+    "📄 读": "📄 Read", "📝 写": "📝 Write", "✏️ 改": "✏️ Edit", "📁 列": "📁 List",
+    "🔎 找": "🔎 Find", "⌨️ 命令": "⌨️ Shell", "🌐 搜": "🌐 Search",
+    "🔗 抓": "🔗 Fetch", "🖥 渲染": "🖥 Render", "✅ 查页": "✅ Check", "🖼 截图": "🖼 Shot",
+    "👁 看图": "👁 View", "🎨 生图": "🎨 Image", "🎬 视频": "🎬 Video", "📊 图表": "📊 Chart",
+    "🔊 配音": "🔊 Voice", "🧠 记": "🧠 Save", "🧠 忘": "🧠 Forget", "📚 库": "📚 Library",
+    "📚 读库": "📚 Read lib", "🧩 存技能": "🧩 Save skill", "🐱 宠物": "🐱 Pet",
+  };
+  for (const [zh, en] of Object.entries(TOOL_SHORT_EN)) if (!(zh in DICT.en)) DICT.en[zh] = en;
+  for (const [zh, en] of Object.entries(TOOL_VERB_EN)) {
+    const q = zh.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    PATTERNS.en.push([new RegExp("^" + q + "「(.+?)」(.*)$"), en + ' "$1"$2']);
+    PATTERNS.en.push([new RegExp("^" + q + "( .*)?$"), en + "$1"]);
+  }
 
   // ---------- 语言读写 ----------
   const mem = {};

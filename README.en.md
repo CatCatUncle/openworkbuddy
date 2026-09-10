@@ -58,6 +58,25 @@
 
 > Also: parallel tasks, goal-based acceptance, 👍👎 feedback that feeds self-evolution proposals, two-layer memory, permission tiers, remote control over Feishu / QQ / WeChat, a desktop pet… Full list (Chinese): **[功能清单](docs/功能清单.md)**.
 
+## What it looks like
+
+**"A truck selling fruit on a mountain road, a crowd of aunties in spiked boots chasing it, an old man ahead blocking the way with a hoe — make me a poster."**
+
+<p align="center">
+  <img src="docs/images/case-poster.png" width="360" alt="Case: mountain-road fruit-chase poster">
+</p>
+
+One sentence in; three PNGs in different styles (cinematic, rural comic, text-free) plus a short note on which one to post where — all sitting in the results panel, one click to open. No AI watermark on any of them.
+
+**Got Claude Code or Codex on this machine? One click makes it the engine — no extra tokens to buy.**
+
+<p align="center">
+  <img src="docs/images/local-claude-code.png" width="820" alt="Running on local Claude Code: each step folds to one line, only the conclusion stays out">
+</p>
+
+The UI says out loud which engine this run went through and whether it costs API quota. Every step folds into a single line you can expand; when the task ends, only the conclusion is left in view. (The screenshot is the Chinese UI — there's a 中 / En toggle in the avatar menu.)
+
+
 ## Run it in 30 seconds
 
 **Installer**: grab the package for your OS from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases). A **five-step wizard** on first launch walks you through creating the admin account, pasting an API key (validated with a real request on the spot) and picking an engine.

@@ -358,7 +358,13 @@ function paintStream(el) {
  * 分段是流式期间的内部结构，不许漏给它们。合回去只花一次整份重渲（十万字实测 3.5ms）。
  */
 function sealStream(el) {
-  if (!el || !el._split) return false;
+  if (!el || el._sealed) return false;
+  // _split 是「已经画过至少一帧」才有的。合帧是 100ms 一次，模型经常说半句话就去调工具
+  // （"我先看看这个文件" → tool_use），这一段还没轮到第一帧就被 endText 打断——
+  // 以前这里直接 return false，那句话就永远停在 _raw 里，屏幕上是个空 div：话说了，用户没看见。
+  // 所以只要写过字就得落屏，画没画过第一帧不作数。
+  if (!el._split && !el._raw) return false; // 真的一个字都没有：空壳，没什么可合的
+  el._sealed = true;
   el._split = null;
   el.innerHTML = renderMd(el._raw);
   return true;
