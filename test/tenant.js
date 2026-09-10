@@ -29,6 +29,7 @@ const admin = require(path.join(ROOT, "admin"));
 const tools = require(path.join(ROOT, "tools"));
 const security = require(path.join(ROOT, "security"));
 const agentMod = require(path.join(ROOT, "agent"));
+const memory = require(path.join(ROOT, "memory"));
 
 // 默认组织的根：单机版原来是什么样，这里就是什么样
 const BASE_WS = path.join(TMP, "workspace");
@@ -74,6 +75,31 @@ app.post("/api/security/approvals/:id", (req, res) => {
   if (!r.ok) return res.status(r.forbidden ? 403 : 409).json({ ...r, error: r.error || "这条审批已经结束了" });
   res.json({ ...r, scope, downgraded });
 });
+// 长期记忆的四条。判定用的是 memory 里的真函数（list / add / remove），这儿照 server.js 摆同样的形状。
+// 守的坑：条目是**按登录名**存的（agent 用 remember 工具替他记），可路径撞上 /api/memory 这个平台前缀，
+// 结果记的是他的事、他自己既看不见也删不掉；而按 id 删那条路以前压根不认归属，谁的都删得掉。
+const memScope = (req) =>
+  admin.isSoloDesktop() || admin.platformAdmin(req.user) ? undefined : (req.user && req.user.username) || "";
+app.get("/api/memory", (req, res) => {
+  const scopeTo = memScope(req);
+  res.json({ items: memory.list(req.user ? req.user.username : undefined), shared_tag: memory.SHARED,
+             content: memory.manual(), can_share: scopeTo === undefined, can_edit_manual: scopeTo === undefined });
+});
+app.post("/api/memory", (req, res) => { memory.saveManual((req.body || {}).content || ""); res.json({ ok: true }); });
+app.post("/api/memory/item", (req, res) => {
+  const wantShared = !!(req.body || {}).shared;
+  const downgraded = wantShared && memScope(req) !== undefined;
+  const r = memory.add({ text: (req.body || {}).text, user: req.user ? req.user.username : undefined,
+                         shared: wantShared && !downgraded, source: "user" });
+  if (r.ok && downgraded) r.note = (r.note || "记住了") + "。共享给这台机器上所有账号要平台管理员来做，这条先记成你自己的";
+  res.status(r.ok ? 200 : 400).json({ ...r, downgraded });
+});
+app.delete("/api/memory/item/:id", (req, res) => {
+  const r = memory.remove(req.params.id, memScope(req));
+  if (r.forbidden) return res.status(403).json({ ok: false, removed: 0, error: "这条不是你记的，删不了" });
+  res.json({ ok: true, removed: r.removed });
+});
+app.get("/api/memory/export", (_req, res) => res.json({ dump: "整库" }));
 // 探针：这条请求里 tools.orgPolicy() 看到的是什么。用来验「设置真的进了执行层」，
 // 而不是只躺在 org.json 里没人读——那种开关比没有这个开关更糟
 app.get("/api/policy-probe", (_req, res) => res.json({ policy: tools.orgPolicy(), ws: tools.getWorkspaceDir() }));
@@ -433,6 +459,74 @@ async function login(username, password) {
   await call("POST", "/api/security/approvals/" + bgId, { cookie: boss, body: { allow: false, scope: "once" } });
   await apBg;
   security.clearSessionAllow();
+
+  console.log("\n【19】长期记忆：记的是他的事，他就得看得见、加得了、删得掉自己那几条");
+  // 上面那四条是替身（server.js 起不了独立进程，这套测试从第一天起就是照抄形状）。
+  // 替身跟真源码走散了，这一整段就变成「测我自己写的假路由」——所以先钉住真源码里那几句。
+  const SERVER_SRC = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  for (const [frag, why] of [
+    ["memory.remove(req.params.id, memScope(req))", "删的时候真把作用域传下去了"],
+    ["shared: wantShared && !downgraded", "勾了共享但没这权限时，真的没往共享区写"],
+    ["can_share: scopeTo === undefined", "GET 真的把能力位回给了界面"],
+  ]) ok(SERVER_SRC.includes(frag), "真源码对得上替身：" + why, frag);
+  // agent 的 remember 工具替普通成员记了一条，作用域是他的登录名
+  memory.add({ text: "小袁的周报只要三段", user: "xiaoyuan", source: "auto" });
+  memory.add({ text: "老板记的私事", user: "laoban", source: "auto" });
+  memory.add({ text: "全公司统一用飞书日历", user: "laoban", shared: true, source: "user" });
+  r = await call("GET", "/api/memory", { cookie: yuan });
+  eq(r.status, 200, "普通成员打得开记忆页（以前撞 /api/memory 平台前缀，403 一片空白）");
+  let texts = (r.json.items || []).map((x) => x.text);
+  ok(texts.includes("小袁的周报只要三段"), "看得见 agent 替他记的那条", texts);
+  ok(texts.includes("全公司统一用飞书日历"), "看得见共享区那条（本来就进他的提示词）", texts);
+  ok(!texts.includes("老板记的私事"), "看不见别人那条", texts);
+  eq(r.json.can_share, false, "拿到 can_share=false：「给所有账号共用」那个勾选框不该画出来");
+  eq(r.json.can_edit_manual, false, "拿到 can_edit_manual=false：背景说明那颗保存按钮不该画出来");
+  r = await call("GET", "/api/memory", { cookie: boss });
+  eq(r.json.can_share, true, "反向对照：平台管理员两个都是 true");
+  ok((r.json.items || []).map((x) => x.text).includes("老板记的私事"), "反向对照：平台管理员看得见自己那条");
+
+  // 写：只往自己那格写；勾了「共享」照实降档，不许悄悄换作用域还报「已记住」
+  r = await call("POST", "/api/memory/item", { cookie: yuan, body: { text: "小袁手动加的一条" } });
+  eq(r.status, 200, "普通成员加得了自己的一条（以前 403）");
+  eq(memory.list("xiaoyuan").find((x) => x.text === "小袁手动加的一条").scope, "xiaoyuan", "落在他自己的作用域，不是共享区");
+  r = await call("POST", "/api/memory/item", { cookie: yuan, body: { text: "小袁想广播的一条", shared: true } });
+  eq(r.status, 200, "他勾了「所有账号共用」：不 403（403 会让他一头雾水）");
+  eq(r.json.downgraded, true, "而是照实告诉他降成了自己的");
+  ok(/平台管理员/.test(r.json.note || ""), "话说清楚了：共享要平台管理员来加", r.json.note);
+  eq(memory.list("xiaoyuan").find((x) => x.text === "小袁想广播的一条").scope, "xiaoyuan", "真的没进共享区");
+  r = await call("POST", "/api/memory/item", { cookie: boss, body: { text: "老板广播的一条", shared: true } });
+  eq(r.json.downgraded, false, "反向对照：平台管理员勾共享就是真共享");
+  eq(memory.list("laoban").find((x) => x.text === "老板广播的一条").scope, memory.SHARED, "反向对照：真进了共享区");
+
+  // 删：只删得掉自己那格的
+  const yuanItem = memory.list("xiaoyuan").find((x) => x.text === "小袁手动加的一条");
+  const bossItem = memory.list("laoban").find((x) => x.text === "老板记的私事");
+  const sharedItem = memory.list("laoban").find((x) => x.text === "全公司统一用飞书日历");
+  r = await call("DELETE", "/api/memory/item/" + bossItem.id, { cookie: yuan });
+  eq(r.status, 403, "删别人那条：403（以前一个 id 递进来就删，谁的都删）");
+  ok(memory.list("laoban").some((x) => x.id === bossItem.id), "别人那条还在");
+  r = await call("DELETE", "/api/memory/item/" + sharedItem.id, { cookie: yuan });
+  eq(r.status, 403, "删共享区那条：403（那条进的是所有人的提示词）");
+  ok(memory.list("laoban").some((x) => x.id === sharedItem.id), "共享那条还在");
+  r = await call("DELETE", "/api/memory/item/" + yuanItem.id, { cookie: yuan });
+  eq(r.status, 200, "删自己那条：删得掉");
+  eq(r.json.removed, 1, "removed 是个数字 1（不是把 {removed:1} 整个塞进 removed 字段）");
+  ok(!memory.list("xiaoyuan").some((x) => x.id === yuanItem.id), "真的没了");
+  r = await call("DELETE", "/api/memory/item/" + yuanItem.id, { cookie: yuan });
+  eq(r.status, 200, "再删一次：不是 403（本来就没有 ≠ 越权，那是别处已经删过的正常竞态）");
+  eq(r.json.removed, 0, "removed=0");
+  r = await call("DELETE", "/api/memory/item/" + sharedItem.id, { cookie: boss });
+  eq(r.status, 200, "反向对照：平台管理员删得掉共享区那条");
+
+  // 负控制：放行的只有这几条精确路径，/api/memory 底下别的照样归平台管理员
+  eq((await call("POST", "/api/memory", { cookie: yuan, body: { content: "改全局背景说明" } })).status, 403,
+     "负控制：同一个路径 POST（改全局背景说明）照样 403 —— 闸是按方法认的，开 GET 没把 POST 一起放出去");
+  eq(memory.manual(), "", "全局背景说明纹丝不动");
+  eq((await call("GET", "/api/memory/export", { cookie: yuan })).status, 403,
+     "负控制：导出整库（含别人的记忆）照样 403");
+  eq((await call("POST", "/api/memory", { cookie: boss, body: { content: "老板写的背景" } })).status, 200,
+     "反向对照：平台管理员改得动背景说明");
+  eq(memory.manual(), "老板写的背景", "反向对照：真写进去了");
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

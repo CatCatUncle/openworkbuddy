@@ -64,7 +64,15 @@ const PLATFORM_READ = [
  * 放进白名单而不是把 /api/engines 整条从写表里拿掉：切换引擎的默认值、改可执行文件路径
  * 那些仍然该归平台管理员。
  */
-const PERSONAL_WRITE = new Set(["/api/engines/test", "/api/assist/model"]);
+const PERSONAL_WRITE = new Set([
+  "/api/engines/test",
+  "/api/assist/model",
+  // 长期记忆的条目区是**按账号存的**（memory.js 里 scope=登录名，注入提示词时只给「共享 + 他自己的」）。
+  // agent 用 remember 工具替他记，他自己却因为撞上 /api/memory 这个前缀而加不了、删不了——
+  // 记的是他的事，他既看不见也改不动。这一条只往他自己那个作用域里写：
+  // 想写进所有人都读得到的共享区，路由那边会挡下来降成个人的（跟审批里 always 降 session 一个道理）。
+  "/api/memory/item",
+]);
 /**
  * 同上，但要按前缀认（路径里带 id）：
  *   /api/security/approvals/<id>  批自己那个任务弹出来的审批。
@@ -72,7 +80,21 @@ const PERSONAL_WRITE = new Set(["/api/engines/test", "/api/assist/model"]);
  *     等到超时才按拒绝收场，界面上什么都不说。归属和「一直允许」的限制在路由里做：
  *     只能批自己的，写进永久放行名单仍然只有平台管理员能干。
  */
-const PERSONAL_WRITE_PREFIX = ["/api/security/approvals/"];
+const PERSONAL_WRITE_PREFIX = [
+  "/api/security/approvals/",
+  // DELETE /api/memory/item/<id>  删自己记的那条。归属在 memory.remove 里认（只能删 scope 是自己的），
+  // 共享区那些照样删不动。
+  "/api/memory/item/",
+];
+/**
+ * 读表的例外：这几条 GET 只回调用者自己那份，拦下来纯属让他对着一个空面板发呆。
+ *   /api/memory  条目区已经按登录名过滤了（memory.list(user)），回给他的本来就只有
+ *                「共享 + 他自己的」。整条拦掉的话，普通成员打开记忆页看到的是一片空白：
+ *                他自己的记忆一条不显示，也没有任何一句话解释为什么。
+ * 只放这一条精确路径，/api/memory/export（导出全库）和 /api/memory/import/scan（扫本机
+ * 别的 agent 的记忆文件）仍然归平台管理员。
+ */
+const PERSONAL_READ = new Set(["/api/memory"]);
 /**
  * 部署形态：这是「一个人的桌面应用」还是「一台给多个人用的服务器」。
  *
@@ -114,7 +136,11 @@ function platformGuard(req, res, next) {
     // 这几样改了只影响他一个人，拦下来纯属把「切换失败」四个字甩给用户。
     // 真源是 prefs.js 里那张表，闸和处理器共用同一张，不会出现「放行了却没人接」。
     if (req.method === "POST" && p === "/api/settings" && prefs.isPersonalPatch(req.body)) return next();
-    if (PERSONAL_WRITE.has(p) || PERSONAL_WRITE_PREFIX.some((x) => p.startsWith(x))) return next();
+    // 按方法分开认：GET 走读表的例外，其余走写表的。合在一起认的话，
+    // 放行「看自己的记忆」会连「改全局背景说明」（POST 同一个路径）一起放出去。
+    if (req.method === "GET"
+      ? PERSONAL_READ.has(p)
+      : PERSONAL_WRITE.has(p) || PERSONAL_WRITE_PREFIX.some((x) => p.startsWith(x))) return next();
     return res.status(403).json({ error: "这块是服务器级设置，归平台管理员管", platform_only: true });
   }
   // 剩下的照常放行，只把这一个字段摘掉：别让它捎带着把全局工作目录改了
@@ -354,4 +380,4 @@ function safeCall(fn, arg) {
   try { return fn(arg); } catch { return null; }
 }
 
-module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, redactSecrets, setDeployment, isSoloDesktop, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX };
+module.exports = { createAdminRouter, platformAdmin, ownsGlobalWorkspace, platformGuard, redactGuard, tenantScope, redactSecrets, setDeployment, isSoloDesktop, PLATFORM_WRITE, PLATFORM_READ, PERSONAL_WRITE, PERSONAL_WRITE_PREFIX, PERSONAL_READ };

@@ -1755,9 +1755,25 @@ app.delete("/api/library/note/:id", (req, res) => {
 
 // ---------- 长期记忆 ----------
 // 手写区（memory.md，全局共享）+ 条目区（agent 用 remember 自己记的，按账号隔离）
+/**
+ * 记忆能管到哪一格，跟审批那套是同一个判法。
+ *
+ * 返回 undefined = 不限定（平台管理员，以及双击打开的桌面版——屏幕前就一个人）。
+ * 返回登录名 = 只限定他自己那个作用域：共享区（memory.SHARED）会原样进**所有人**的系统提示词，
+ * 谁都能往里塞、谁都能删，那就不是「我的记忆」而是一块公告板了。
+ */
+const memScope = (req) =>
+  admin.isSoloDesktop() || admin.platformAdmin(req.user) ? undefined : (req.user && req.user.username) || "";
 app.get("/api/memory", (req, res) => {
   const u = req.user ? req.user.username : undefined;
-  res.json({ content: memory.manual(), items: memory.list(u), shared_tag: memory.SHARED, limits: { max_text: memory.MAX_TEXT, max_items: memory.MAX_PER_SCOPE }, vectors: memory.vectorStatus() });
+  const scopeTo = memScope(req);
+  res.json({
+    content: memory.manual(), items: memory.list(u), shared_tag: memory.SHARED,
+    limits: { max_text: memory.MAX_TEXT, max_items: memory.MAX_PER_SCOPE }, vectors: memory.vectorStatus(),
+    // 界面照这两个决定要不要画那颗按钮：会 403 的按钮不该摆在那儿
+    can_share: scopeTo === undefined,   // 能不能往共享区写、能不能删共享区的
+    can_edit_manual: scopeTo === undefined, // 背景说明是全局一份，仍旧归平台管理员
+  });
 });
 app.post("/api/memory", (req, res) => {
   memory.saveManual((req.body || {}).content || "");
@@ -1765,11 +1781,21 @@ app.post("/api/memory", (req, res) => {
 });
 app.post("/api/memory/item", (req, res) => {
   const b = req.body || {};
-  const r = memory.add({ text: b.text, user: req.user ? req.user.username : undefined, shared: !!b.shared, source: "user" });
-  res.status(r.ok ? 200 : 400).json(r);
+  // 受限的人勾了「所有账号共用」：降成他自己的，并且照实说出来，不许悄悄换个作用域还报「已记住」
+  const wantShared = !!b.shared;
+  const downgraded = wantShared && memScope(req) !== undefined;
+  const r = memory.add({
+    text: b.text, user: req.user ? req.user.username : undefined,
+    shared: wantShared && !downgraded, source: "user",
+  });
+  if (r.ok && downgraded) r.note = (r.note || "记住了") + "。共享给这台机器上所有账号要平台管理员来做，这条先记成你自己的";
+  res.status(r.ok ? 200 : 400).json({ ...r, downgraded });
 });
 app.delete("/api/memory/item/:id", (req, res) => {
-  res.json({ ok: true, removed: memory.remove(req.params.id) });
+  const r = memory.remove(req.params.id, memScope(req));
+  // 越权跟「本来就没有」不能返回同一种结果：前者要报出来，后者是正常竞态（别处已经删过）
+  if (r.forbidden) return res.status(403).json({ ok: false, removed: 0, error: "这条不是你记的，删不了" });
+  res.json({ ok: true, removed: r.removed });
 });
 
 // ---------- 自进化：反馈 → 信号 → 提案 → 人审 → 复盘 ----------

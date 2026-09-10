@@ -1120,6 +1120,98 @@ const ESC_CHECKS = `
 })()
 `;
 
+// ---- 记忆页：会 403 的按钮不该摆在那儿 ----
+// 条目是按登录名存的（agent 用 remember 工具替他记），可 /api/memory 这个前缀归平台管理员，
+// 于是普通成员打开这一页：自己的记忆一条看不见、加不了、删不掉，界面上一句解释都没有。
+// 后端开完口子还不够——这一页原来还画着三样他点了必挂的东西：共享区那条的「删」、
+// 「给所有账号共用」的勾选框、「保存背景说明」。删那颗更狠：返回值整个扔了，403 也照样重画一遍，
+// 那条纹丝不动，用户只能得出「点了没反应」。这一组就是让真 Chromium 亲自把这一页画出来数按钮。
+const MEM0 = APP05.indexOf("async function renderMemoryPane(pane) {");
+const MEM1 = APP05.indexOf("function renderDataPane(pane, s) {");
+if (MEM0 < 0 || MEM1 <= MEM0) throw new Error("app-05.js 里的 renderMemoryPane 找不到了，前端测试没法定位真源码");
+const MEM_SRC = APP05.slice(MEM0, MEM1);
+const MEM_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><body><div id='pane'></div></body>";
+const MEM_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+
+  const SHARED = "*";
+  const ITEMS = [
+    { id: "i1", scope: "xiaoyuan", text: "小袁的周报只要三段", source: "auto" },
+    { id: "i2", scope: SHARED, text: "全公司统一用飞书日历", source: "user" },
+  ];
+  let calls = [], nextDel = { ok: true, removed: 1 }, view = {};
+  window.toasts = [];
+  window.toast = (m) => window.toasts.push(String(m));
+  window.escInline = (x) => esc(x);
+  window.fmtSize = (n) => n + "B";
+  window.fetch = (url, opt) => {
+    calls.push({ url, method: (opt && opt.method) || "GET", body: opt && opt.body ? JSON.parse(opt.body) : null });
+    const j = (v) => Promise.resolve({ ok: true, json: () => Promise.resolve(v) });
+    if (url === "/api/memory" && (!opt || !opt.method || opt.method === "GET"))
+      return j({ items: ITEMS.slice(), shared_tag: SHARED, content: "老板写的背景", limits: { max_items: 120 },
+                 vectors: { enabled: false }, can_share: !!view.can_share, can_edit_manual: !!view.can_edit_manual });
+    if (url.startsWith("/api/memory/item/")) return j(nextDel);
+    if (url === "/api/memory/item") return j({ ok: true, note: "记住了" });
+    if (url === "/api/memory/import/scan") return j({ sources: [] });
+    return j({ ok: true });
+  };
+  const pane = document.getElementById("pane");
+  const draw = async (v) => { view = v; calls = []; window.toasts = []; await renderMemoryPane(pane); };
+  const q = (sel) => pane.querySelector(sel);
+  const delLinks = () => [...pane.querySelectorAll("[data-del]")].map((a) => a.dataset.del).sort();
+
+  // ① 普通成员这一页：只画他点得动的
+  await draw({ can_share: false, can_edit_manual: false });
+  ok("普通成员也看得见自己那条记忆（后端开了口子，这一页真画出来了）", pane.textContent.includes("小袁的周报只要三段"));
+  ok("共享区那条上没有「删」（那条进的是所有人的提示词，他删不动）", delLinks().join(",") === "i1", delLinks().join(","));
+  ok("自己那条上有「删」", delLinks().includes("i1"));
+  ok("「给这台机器上所有账号共用」的勾选框没画出来", !q("#mem-shared"));
+  ok("换成了一句人话，说清楚为什么没有", /平台管理员/.test(pane.textContent));
+  ok("「保存背景说明」那颗按钮没画出来", !q("#mem-save"));
+  ok("背景说明还看得见，只是只读", q("#mem-text") && q("#mem-text").readOnly && q("#mem-text").value === "老板写的背景");
+  ok("「记忆搬家」整张卡没画出来（导出是整库、导入往全局写）", !q("#mem-export") && !q("#mem-scan"));
+
+  // ② 加一条：勾选框没了也不能炸，而且不许自作主张按共享发
+  q("#mem-new").value = "手动加的一条";
+  await q("#mem-add").onclick();
+  const add = calls.find((c) => c.url === "/api/memory/item" && c.method === "POST");
+  ok("没有勾选框时「加进去」照样能点（读 null.checked 会把整页炸掉）", !!add);
+  ok("加的这条不带 shared，不会去撞后端那道降档", add.body.shared === false, JSON.stringify(add.body));
+
+  // ③ 删：返回值不许再扔了
+  await draw({ can_share: false, can_edit_manual: false });
+  calls = []; // 画这一页本身要拉一次 /api/memory，先清掉，下面数的才是「删完有没有重画」
+  nextDel = { ok: false, removed: 0, error: "这条不是你记的，删不了" };
+  await pane.querySelector("[data-del]").onclick({ preventDefault() {} });
+  ok("后端拒了就说出来，不再是「点了没反应」", window.toasts.join("|").includes("删不掉"), window.toasts.join("|"));
+  ok("拒了就不重画（重画一遍那条还在，看着像没点中）", calls.filter((c) => c.url === "/api/memory" && c.method === "GET").length === 0);
+  window.toasts = [];
+  nextDel = { ok: true, removed: 0 };
+  await pane.querySelector("[data-del]").onclick({ preventDefault() {} });
+  ok("本来就没有：说「已经不在了」，不跟越权混为一谈", window.toasts.join("|").includes("已经不在了"), window.toasts.join("|"));
+  window.toasts = []; calls = [];
+  nextDel = { ok: true, removed: 1 };
+  await pane.querySelector("[data-del]").onclick({ preventDefault() {} });
+  ok("真删掉了才重画", calls.some((c) => c.url === "/api/memory" && c.method === "GET"));
+  ok("真删掉了就别再弹一句多余的话", window.toasts.length === 0, window.toasts.join("|"));
+
+  // ④ 反向对照：平台管理员那一页，三样东西一样不少
+  await draw({ can_share: true, can_edit_manual: true });
+  ok("反向对照：平台管理员两条都能删（含共享区那条）", delLinks().join(",") === "i1,i2", delLinks().join(","));
+  ok("反向对照：勾选框在", !!q("#mem-shared"));
+  ok("反向对照：「保存背景说明」在，textarea 不是只读", !!q("#mem-save") && !q("#mem-text").readOnly);
+  ok("反向对照：「记忆搬家」那张卡在", !!q("#mem-export"));
+  q("#mem-new").value = "老板广播一条";
+  q("#mem-shared").checked = true;
+  await q("#mem-add").onclick();
+  const add2 = calls.find((c) => c.url === "/api/memory/item" && c.method === "POST");
+  ok("反向对照：他勾了共享，请求里就带 shared:true", add2 && add2.body.shared === true, JSON.stringify(add2 && add2.body));
+  return names;
+})()
+`;
+
 // ---- 流式正文的分段渲染（已定稿那截不许被重建） ----
 const STREAM_SRC = APP02X.slice(APP02X.indexOf("function repairBareCode"), APP02X.indexOf("\n// 【任务类型：X】"));
 const STREAM_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
@@ -3535,6 +3627,15 @@ app.whenReady().then(async () => {
       for (const n of namesESC) console.log("  ✓ " + n);
       console.log(`✅ 前端：HTML 转义（引号进属性不截断·markdown 链接注不进事件属性·正常内容一字没动）${namesESC.length} 项通过`);
     } finally { if (!winESC.isDestroyed()) winESC.destroy(); }
+
+    const winMEM = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await winMEM.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MEM_HTML));
+      const namesMEM = await winMEM.webContents.executeJavaScript(ESC_SRC + "\n" + MEM_SRC + "\n" + MEM_CHECKS, true)
+        .catch((e) => { throw new Error("[记忆页权限] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesMEM) console.log("  ✓ " + n);
+      console.log(`✅ 前端：记忆页按权限画（共享那条不画删·勾选框和保存按钮不画·搬家卡不画·删了不吞返回值·管理员那页一样不少）${namesMEM.length} 项通过`);
+    } finally { if (!winMEM.isDestroyed()) winMEM.destroy(); }
 
     const winSTM = mkWin({ show: false, width: 760, height: 700, webPreferences: { offscreen: true } });
     try {
