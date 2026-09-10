@@ -10,6 +10,11 @@
  * 所以这里的做法是：用 Electron 打开**真的** public/index.html（真 CSS、真 app-01.js），
  * 断掉一切网络，塞一串编好的演示事件进 createTurnUI() —— 界面是真界面，内容是假内容。
  * 用法：npx electron scripts/shot-ui.js [场景名...]
+ *
+ * 注意：README 里那张「本机 Claude Code」现在放的是**真机截图**（用户自己截的，
+ * 路径、账号名、任务历史都逐处遮过了）——比示意图有说服力。所以这里的产物改名成
+ * local-claude-code-ui.png，不再覆盖 README 用的那张。下面那条措辞断言仍然留着：
+ * 引擎里的文案一改，这里就报错，提醒你顺手看一眼 README 的图还对不对得上。
  */
 
 const path = require("path");
@@ -32,7 +37,7 @@ const ENGINE_STATUS = "本机 Claude Code 已启动（模型 claude-opus-5，102
 const SCENES = {
   // 「本机 Claude Code 也能当引擎」：重点是那枚引擎小牌子 + 不花 API 额度
   "local-claude-code": {
-    file: "local-claude-code.png",
+    file: "local-claude-code-ui.png",
     ask: "把项目里的超时时间统一成 30 秒，改完跑一遍测试",
     clip: ".turn",
     open: true, // 过程区展开，好让人看见它到底走了哪几步
