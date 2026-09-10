@@ -1939,6 +1939,8 @@ function renderTurnOutputs(body, changed, live, ev) {
       row.className = "out-row";
       row.dataset.name = f.name;
       const base = f.name.split("/").pop();
+      row.dataset.base = base;                       // 跟卡片一样按「文件名 + 大小」认副本
+      if (f.size) row.dataset.size = String(f.size);
       // 目录和文件名分开放：一行放不下时省略号只许吃目录。以前整串挤在一个省略号里，
       // 「任务_0909_怎么推广我这个项目啊/PROGRESS.md」被截在中间，最该看的文件名反而没了
       const dir = f.name.slice(0, f.name.length - base.length);
@@ -1953,15 +1955,41 @@ function renderTurnOutputs(body, changed, live, ev) {
   }
   mergeFmtPairs(grid);
   markDupBasenames(grid);
+  hideCardedRows(block);
   const nRows = list.querySelectorAll(".out-row").length;
   block.querySelector(".out-main .cn").textContent = `(${nRows})`;
   clipOutList(block);
 }
 
+// 已经出了卡的文件，下面不再原样列一遍。
+// 用户原话：「为什么怎么又是有图标又是看到文件列表的啊，不需要看到文件列表啊」——
+// 四张图给了四张卡，卡下面又跟着四行同名文件，同一批产出画了两遍，
+// 第二遍还没有缩略图，纯占版面。清单从此只留没卡的那些：脚本、日志、PROGRESS.md
+// 这类过程文件，外加已删除的行（卡撤了，但"这个文件没了"这条信息得留着）。
+// 判重跟卡片一条口径：全路径对不上就按「文件名 + 大小」认，
+// 不然 agent 把产出往根目录又拷一份时，那份副本会孤零零留在清单里，看着像多出来一个文件。
+function hideCardedRows(block) {
+  const names = new Set(), twins = new Set();
+  block.querySelectorAll(".out-card").forEach((c) => {
+    names.add(c.dataset.name);
+    if (c.dataset.alt) names.add(c.dataset.alt); // 「另一种格式」挂在卡上，也算露过面了
+    if (c.dataset.base && c.dataset.size) twins.add(c.dataset.base + "|" + c.dataset.size);
+  });
+  let shown = 0;
+  block.querySelectorAll(".out-row").forEach((r) => {
+    const carded = !r.classList.contains("gone") &&
+      (names.has(r.dataset.name) || (r.dataset.size && twins.has(r.dataset.base + "|" + r.dataset.size)));
+    r.classList.toggle("carded", carded);
+    if (!carded) shown++;
+  });
+  block.querySelector(".out-list").hidden = shown === 0;
+  return shown;
+}
+
 // 清单长了就先露前几行，剩下的收在「还有 N 个文件」后面。
 // 只多出一行时不折：那行字自己就占一行，折了什么也没省下
 function clipOutList(block) {
-  const rows = [...block.querySelectorAll(".out-list .out-row")];
+  const rows = [...block.querySelectorAll(".out-list .out-row:not(.carded)")]; // 藏起来的不算，不然「还有 N 个文件」数的是看不见的东西
   const more = block.querySelector(".out-more");
   const hide = block.dataset.all === "1" || rows.length <= OUT_ROW_MAX + 1 ? 0 : rows.length - OUT_ROW_MAX;
   rows.forEach((r, i) => r.classList.toggle("hid", hide > 0 && i >= OUT_ROW_MAX));

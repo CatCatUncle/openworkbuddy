@@ -320,6 +320,9 @@
   .out-block { margin: 12px 0 4px; }
   .out-hd { font-size: 13px; color: var(--wb-text-3); margin-bottom: 8px; }
   .out-hd.out-main, .out-hd.out-more { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 4px; }
+  /* display:flex 会盖掉 hidden 属性自带的 display:none。没折起东西时那条「还有 N 个文件」
+     文字是空的，但盒子还在——一条看不见却点得着的横条，鼠标划过去还会亮底色 */
+  .out-hd[hidden] { display: none; }
   .out-hd.out-main:hover, .out-hd.out-more:hover { color: var(--wb-text-2); }
   /* 整块收起：卡片区和变更清单一起按下去，只留标题这一行 */
   .out-block.packed .out-body { display: none; }
@@ -336,7 +339,7 @@
   .out-row .nm { flex: 1; min-width: 0; display: flex; align-items: baseline; overflow: hidden; white-space: nowrap; }
   .out-row .nm .dim { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .out-row .nm .bs { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; }
-  .out-row.hid { display: none; }
+  .out-row.hid, .out-row.carded { display: none; }
   /* PROGRESS.md 这类过程账本：压暗、缩一号，排在真正的产出后面 */
   .out-row.sub { font-size: 12px; opacity: .68; }
   .out-row .sz { color: var(--wb-text-3); flex: none; }
