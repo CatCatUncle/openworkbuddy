@@ -1666,6 +1666,22 @@ async function testFrontendSvgFigures() {
 
 // 企业管理后台是 16 个面板 + 哈希路由，最常见的坏法是「某一页 render 里读了个 undefined，整块白屏」——
 // 只有真的把每一页点一遍、盯着 console 才看得见。同样开 electron 子进程跑。
+/**
+ * Docker 一键部署：静态那部分。
+ * 只跑不需要 Docker 的断言（.dockerignore 挡没挡住凭证、compose 空环境能不能插值、
+ * seedDataDir 会不会漏技能）。真 build 一个镜像跑起来是 `node test/deploy.js --build`，
+ * 那个要几分钟，不塞进 e2e。
+ */
+async function testDockerDeploy() {
+  const { spawnSync } = require("child_process");
+  const r = spawnSync(process.execPath, [path.join(__dirname, "deploy.js")], { encoding: "utf8" });
+  const out = (r.stdout || "") + (r.stderr || "");
+  if (r.status !== 0) throw new Error("Docker 部署测试未通过：\n" + out.trim().split("\n").slice(-14).join("\n"));
+  const line = out.split("\n").find((l) => l.startsWith("✅ Docker 部署"));
+  if (!line) throw new Error("Docker 部署测试没有报告结果：\n" + out.trim().split("\n").slice(-14).join("\n"));
+  console.log(line);
+}
+
 async function testAdminConsoleUI() {
   const { spawnSync } = require("child_process");
   let electronBin;
@@ -4689,6 +4705,7 @@ async function main() {
   testDesktopAppIdentity();
   await testFrontendSvgFigures();
   await testAdminConsoleUI();
+  await testDockerDeploy();
   await testFetchUrlShapes();
   await testParallelToolBatch();
   await testMcpStreamableHttp();
