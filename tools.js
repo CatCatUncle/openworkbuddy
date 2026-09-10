@@ -1177,8 +1177,24 @@ function editFile(file, label, { old_text, new_text, replace_all }) {
  * 所以把它挪到工具里：写完当场查，坏了当场把错误和行号顶回去，它想装看不见都不行。
  * 只查便宜且确定的东西（语法、结构），不做风格评判。
  */
-function selfCheck(file, rel) {
+/**
+ * 写完文件的自检。partial=true 表示这次是 append 续写，文件**按定义就还没写完**。
+ *
+ * 这是真实数据里最吵的一条误报：工具描述自己就在教模型「写长文档时用 append:true 一节一节续写」，
+ * 结果第一节写完 <html>/<body> 还没闭合，自检立刻报「页面结构有问题」并且 isError:true。
+ * isError 会喂给 agent.js 的 errStreaks，连着 4 次就弹「write_file 已连续失败 4 次」——
+ * 明明每一次都写成功了。本机 176 段会话里这条 html/head/body/style「开 1 闭 0」出现了 112 次，
+ * 而工作区最终落盘的 48 个 html 文件里**没有一个**真的缺 </html>：100% 是中途状态被当成了错。
+ *
+ * 所以 partial 下只留「不管写没写完都肯定错」的那些（闭合标签比开始标签还多、JSON 坏了、
+ * 引用了不存在的本地文件…），把「看着像还没写完」的那一类降级成不报错的提示。
+ */
+function selfCheck(file, rel, partial = false) {
   const ext = path.extname(rel).toLowerCase();
+  // 「代码没写完」跟「代码写错了」的报错长得不一样：前者一律是解析器读到文件末尾才发现不够。
+  // 只在 append 续写时用它放行，整篇写完照样一个不漏地报。
+  const looksUnfinished = (msg) =>
+    /Unexpected end of (input|JSON input)|Unterminated (template literal|string)|unexpected EOF|incomplete input|was never closed|unterminated (string|triple-quoted)|expected an indented block|unexpected end of file|syntax error: unexpected end/i.test(String(msg || ""));
   let src = "";
   try {
     src = fs.readFileSync(file, "utf8");
@@ -1189,6 +1205,7 @@ function selfCheck(file, rel) {
     try {
       JSON.parse(src);
     } catch (e) {
+      if (partial && looksUnfinished(e.message)) return "";
       return `\n⚠️ JSON 语法没过：${e.message}。先修好再往下走。`;
     }
     return "";
@@ -1215,6 +1232,7 @@ function selfCheck(file, rel) {
     }
     if (r.status !== 0) {
       const msg = String(r.stderr || "").split("\n").filter((l) => l && !/^\s*at /.test(l)).slice(0, 6).join("\n");
+      if (partial && looksUnfinished(msg)) return "";
       return `\n⚠️ JS 语法没过：\n${msg}\n先修好再往下走（用 edit_file 改那一行，别整篇重写）。`;
     }
     return "";
@@ -1226,6 +1244,7 @@ function selfCheck(file, rel) {
       const r = spawnSync(process.platform === "win32" ? "python" : "python3", ["-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())", file], { encoding: "utf8", timeout: 15000 });
       if (r.status === 1 && /SyntaxError|IndentationError|TabError/.test(String(r.stderr))) {
         const msg = String(r.stderr).split("\n").filter((l) => l && !/^Traceback|^\s*File "<string>"/.test(l)).slice(-4).join("\n");
+        if (partial && looksUnfinished(msg)) return "";
         return `\n⚠️ Python 语法没过：\n${msg}\n先修好再往下走。`;
       }
     } catch {}
@@ -1235,6 +1254,7 @@ function selfCheck(file, rel) {
     try {
       const r = spawnSync(ext === ".zsh" ? "zsh" : "bash", ["-n", file], { encoding: "utf8", timeout: 10000 });
       if (r.status !== 0 && r.stderr) {
+        if (partial && looksUnfinished(r.stderr)) return "";
         return `\n⚠️ Shell 脚本语法没过：\n${String(r.stderr).split("\n").filter(Boolean).slice(0, 4).join("\n")}\n先修好再往下走。`;
       }
     } catch {}
@@ -1242,7 +1262,8 @@ function selfCheck(file, rel) {
   }
   if (ext === ".md") {
     const fences = (src.match(/^```/gm) || []).length;
-    if (fences % 2 === 1) return "\n⚠️ Markdown 里有 ``` 代码围栏没闭合（奇数个），界面会把后面的正文整块吞掉。补上收尾的 ```。";
+    // 续写到一半，围栏本来就可能只开了一半——下一节接着写就闭上了，别在这儿喊
+    if (fences % 2 === 1 && !partial) return "\n⚠️ Markdown 里有 ``` 代码围栏没闭合（奇数个），界面会把后面的正文整块吞掉。补上收尾的 ```。";
     return "";
   }
   if (ext === ".svg") {
@@ -1261,7 +1282,7 @@ function selfCheck(file, rel) {
     return "";
   }
   if (ext === ".html" || ext === ".htm") {
-    const issues = auditHtml(src, path.dirname(file)).filter((x) => x.level === "错");
+    const issues = auditHtml(src, path.dirname(file), { partial }).filter((x) => x.level === "错");
     if (issues.length) return `\n⚠️ 页面结构有问题：${issues.map((x) => x.msg).join("；")}。建议再跑一次 check_page 确认。`;
     return "";
   }
@@ -1327,18 +1348,25 @@ function orphanSvgStyleScopes(src) {
 }
 
 /** 网页静态体检。只报能确定的问题，不做审美评判 */
-function auditHtml(src, baseDir) {
+function auditHtml(src, baseDir, opts = {}) {
+  const partial = !!opts.partial;
   const out = [];
   const add = (level, msg) => out.push({ level, msg });
   if (!/<!doctype\s+html/i.test(src)) add("警", "没有 <!DOCTYPE html>（浏览器会退到怪异模式，排版会走样）");
   if (!/<meta[^>]+name=["']viewport["']/i.test(src)) add("警", "没有 viewport meta，手机上会缩成一团");
   const title = (src.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1];
   if (!title || !title.trim()) add("警", "<title> 是空的（浏览器标签页和分享卡片都靠它）");
-  // 标签闭合：只查结构性标签，查全了误报比真问题还多
+  // 标签闭合：只查结构性标签，查全了误报比真问题还多。
+  // 数之前先把 <script> 正文和注释挖掉：JS 里拼 HTML 的字符串（'<div class=…>'、"<script"）
+  // 一样会被正则数进去，工作区里现有的两处「标签对不上」100% 都是这么来的（去掉后全平）。
+  const structural = src
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "<script></script>")
+    .replace(/<!--[\s\S]*?-->/g, "");
   for (const tag of ["html", "head", "body", "div", "section", "main", "header", "footer", "table", "ul", "ol", "script", "style"]) {
-    const open = (src.match(new RegExp(`<${tag}(\\s|>)`, "gi")) || []).length;
-    const close = (src.match(new RegExp(`</${tag}>`, "gi")) || []).length;
-    if (open !== close) add("错", `<${tag}> 开 ${open} 个、闭 ${close} 个，对不上`);
+    const open = (structural.match(new RegExp(`<${tag}(\\s|>)`, "gi")) || []).length;
+    const close = (structural.match(new RegExp(`</${tag}>`, "gi")) || []).length;
+    // 续写到一半，开着还没闭是正常的；反过来「闭的比开的还多」不管写没写完都是错
+    if (partial ? close > open : open !== close) add("错", `<${tag}> 开 ${open} 个、闭 ${close} 个，对不上`);
   }
   // 外链资源：断网/发给别人就打不开了，单文件页面这是硬伤
   const ext = [...src.matchAll(/(?:src|href)=["'](https?:\/\/[^"']+)["']/gi)].map((m) => m[1]);
@@ -1371,7 +1399,7 @@ function auditHtml(src, baseDir) {
     );
   }
   const text = src.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  if (text.length < 30) add("警", "去掉标签后几乎没有正文（可能是内容全靠 JS 生成，也可能就是个空壳）");
+  if (text.length < 30 && !partial) add("警", "去掉标签后几乎没有正文（可能是内容全靠 JS 生成，也可能就是个空壳）");
   return out;
 }
 
@@ -2090,7 +2118,7 @@ async function executeTool(name, input, opts = {}) {
         const bak = existed && !input.append ? keepBackup(p, rel) : "";
         if (input.append) {
           fs.appendFileSync(p, body, "utf8");
-          const warn = selfCheck(p, rel);
+          const warn = selfCheck(p, rel, true);
           return { content: `已追加到 ${rel}（+${n} 字节，现共 ${fs.statSync(p).size} 字节）${warn}`, isError: !!warn };
         }
         fs.writeFileSync(p, body, "utf8");
