@@ -51,12 +51,21 @@ function skillPatterns() {
  * 签名标识用 "-" 就是 ad-hoc：不需要任何证书，只是让包内容自洽。
  * 它替代不了 Developer ID + 公证——用户首次打开仍要手动放行，README 里写了步骤。
  */
+/** 包里 app/ 在哪：mac 埋在 .app 里，Windows/Linux 在 resources/ 下。找不到就报出找过哪些路径 */
+function findAppDir(ctx) {
+  const cands = [
+    path.join(ctx.appOutDir, ctx.packager.appInfo.productFilename + ".app", "Contents", "Resources", "app"),
+    path.join(ctx.appOutDir, "resources", "app"),
+    path.join(ctx.appOutDir, "Resources", "app"),
+  ];
+  const hit = cands.find((d) => fs.existsSync(path.join(d, "package.json")));
+  if (!hit) throw new Error("[打包] 找不到包里的 app/ 目录，完整性核对没法做。找过：\n" + cands.map((c) => "  - " + c).join("\n"));
+  return hit;
+}
+
 async function afterPack(ctx) {
   // 先核对包完整性，再签名：缺文件就该在这里红掉，别把一个必定打不开的包签得漂漂亮亮发出去
-  const appDir = ctx.electronPlatformName === "darwin"
-    ? path.join(ctx.appOutDir, ctx.packager.appInfo.productFilename + ".app", "Contents", "Resources", "app")
-    : path.join(ctx.appOutDir, "resources", "app");
-  require("./scripts/check-package-files").assertPackComplete(appDir);
+  require("./scripts/check-package-files").assertPackComplete(findAppDir(ctx));
   await adhocSign(ctx);
 }
 
