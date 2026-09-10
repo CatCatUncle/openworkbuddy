@@ -63,6 +63,28 @@ const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESC_MAP[c]);
 }
+/**
+ * 「本该回一个数组，却回了个 { error }」的统一收口。
+ *
+ * fetch 遇上 403 / 500 **不会** reject——它只是把状态码放在 r.status 上，r.json() 照样解得出
+ * { error: "这块是服务器级设置，归平台管理员管" }。于是 `.catch(() => [])` 这一手一个都兜不住：
+ * 拿到的是个对象，下一行 list.filter(...) 当场 TypeError，整个渲染函数从中间断掉，
+ * 页面停在 <div class="assist-page"></div> ——用户看到的是一片空白，报错只在控制台里。
+ * 多人服务器上的普通成员点一下「自动化」就是这个下场。
+ *
+ * 所以：拿不到数组就给空数组，同时把服务端那句话原样带出来，让页面有话可说。
+ */
+async function getList(url) {
+  const d = await fetch(url).then(r => r.json()).catch(() => null);
+  if (Array.isArray(d)) return { list: d, error: "" };
+  return { list: [], error: (d && d.error) || "读取失败，请稍后重试" };
+}
+/**
+ * 这台服务器上「服务器级的那些东西」他动不动得了（= GET /api/settings 的 platform_owner）。
+ * 单机桌面版恒为真；多人服务器上只有默认组织的管理员为真。
+ * 界面拿它决定控件画不画——一颗点下去只会 403 的按钮，比不画更气人。
+ */
+function amPlatformOwner() { return !!(settingsCache && settingsCache.platform_owner); }
 /** 一条工作区相对路径的目录部分（顶层文件就是空串） */
 function dirOf(name) { const i = String(name || "").lastIndexOf("/"); return i < 0 ? "" : name.slice(0, i); }
 /**
@@ -2326,6 +2348,24 @@ async function refreshSettingsCache() {
     document.getElementById("ws-label").textContent = settingsCache.workspace_dir.split(/[\\/]/).pop() || "工作空间";
     renderModelMenu();
     renderWsMenu();
+    syncNavByRole();
+  }
+}
+/**
+ * 侧栏也得按身份收一收。多人服务器上的普通成员点「自动化」「评测」，连 GET 都是 403：
+ * 定时任务跑在这台服务器上、评测要真金白银调模型，两样都归平台管理员。
+ * 一个点开只有一句「归平台管理员管」的入口，摆在那儿只是让人白点一次。
+ * （「资料库」不在这儿：那份内容他的 agent 本来就读得到，只是写不了——页面自己按身份收起上传和删除。）
+ *
+ * 用 style.display 而不是 hidden：.side-nav .item 自带 display，hidden 压不住——
+ * 跟「项目」那一栏踩的是同一个坑。
+ */
+const PLATFORM_ONLY_VIEWS = ["autom", "eval"];
+function syncNavByRole() {
+  const po = amPlatformOwner();
+  for (const v of PLATFORM_ONLY_VIEWS) {
+    const el = document.querySelector(`.side-nav [data-view="${v}"]`);
+    if (el) el.style.display = po ? "" : "none";
   }
 }
 // 这个选择器只管「当前对话」用哪个模型，不动全局默认（全局默认在 设置 → 模型 里改）。

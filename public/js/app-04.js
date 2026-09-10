@@ -125,10 +125,20 @@ async function openEvalDetail(dir) {
 async function renderLibPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
+  if (!settingsCache) await refreshSettingsCache().catch(() => {});
+  // 资料库是**整台服务器共用的一份**，谁往里放东西归平台管理员管；读是所有人的
+  // （每个人的 agent 本来就带着 library_list / library_read，同样的内容它随口就念得出来）。
+  const po = amPlatformOwner();
   const [lib, ws] = await Promise.all([
     fetch("/api/library").then(r => r.json()).catch(() => ({ files: [], notes: [] })),
     fetch("/api/files").then(r => r.json()).catch(() => []),
   ]);
+  // 接口回的是 { error } 而不是资料清单时别装作「还没有参考资料」——那是句瞎话，
+  // 用户会当成自己没传过东西，而真相是这一趟根本没读成
+  if (lib && lib.error) {
+    page.innerHTML = `<div class="hub-empty">📚 资料库<br><br>${esc(lib.error)}</div>`;
+    return;
+  }
   const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
   const q = libState.q.toLowerCase();
   const hit = (n) => !q || n.toLowerCase().includes(q);
@@ -144,7 +154,7 @@ async function renderLibPage() {
         <div class="hub-search"><input id="lb-q" placeholder="搜索资料" value="${esc(libState.q)}"></div>
         <div class="lib-it ${libState.pick && libState.pick.src === "notes" ? "active" : ""}" data-src="notes" data-name="" style="margin-top:10px"><span>💡</span><span class="nm">灵感笔记（${(lib.notes || []).length}）</span></div>
         ${recents.length ? `<div class="sec">最近</div>` + recents.filter(r => hit(r.name)).slice(0, 6).map(r => item(r.src, r.name)).join("") : ""}
-        <div class="sec">我的文档 <a href="#" id="lb-up" class="link" style="font-size: 13px">＋ 上传</a><input type="file" id="lb-file" multiple style="display:none"></div>
+        <div class="sec">${po ? "我的文档" : "共享资料"} ${po ? `<a href="#" id="lb-up" class="link" style="font-size: 13px">＋ 上传</a><input type="file" id="lb-file" multiple style="display:none">` : `<span style="font-weight:400;color:var(--wb-text-3)" title="资料库是整台服务器共用的一份，往里放东西归平台管理员">只读</span>`}</div>
         ${(lib.files || []).filter(f => hit(f.name)).map(f => item("lib", f.name, f.size)).join("") || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 8px">还没有参考资料</div>'}
         <div class="sec">本地产物（当前项目）</div>
         ${ws.filter(f => hit(f.name)).slice(0, 60).map(f => item("ws", f.name, f.size)).join("") || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 8px">工作目录还没有成果文件</div>'}
@@ -153,15 +163,22 @@ async function renderLibPage() {
     </div>`;
   const qEl = page.querySelector("#lb-q");
   qEl.oninput = () => { libState.q = qEl.value; clearTimeout(page._t); page._t = setTimeout(renderLibPage, 200); };
-  page.querySelector("#lb-up").onclick = (e) => { e.preventDefault(); page.querySelector("#lb-file").click(); };
-  page.querySelector("#lb-file").onchange = async (e) => {
-    for (const file of e.target.files) {
-      const data_b64 = await new Promise((ok) => { const rd = new FileReader(); rd.onload = () => ok(rd.result.split(",")[1]); rd.readAsDataURL(file); });
-      await fetch("/api/library/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: file.name, data_b64 }) });
-    }
-    toast("✅ 已上传");
-    renderLibPage();
-  };
+  if (po) {
+    page.querySelector("#lb-up").onclick = (e) => { e.preventDefault(); page.querySelector("#lb-file").click(); };
+    page.querySelector("#lb-file").onchange = async (e) => {
+      // 以前这儿不看返回值，一律 toast「✅ 已上传」——重名、超大、权限不够、磁盘满，
+      // 全都报「成功」，然后列表里一个文件都没多。一句假的成功比一句失败更难查。
+      let done = 0, err = "";
+      for (const file of e.target.files) {
+        const data_b64 = await new Promise((ok) => { const rd = new FileReader(); rd.onload = () => ok(rd.result.split(",")[1]); rd.readAsDataURL(file); });
+        const r = await fetch("/api/library/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: file.name, data_b64 }) })
+          .then(x => x.json()).catch(() => ({ error: "网络异常" }));
+        if (r && r.ok) done++; else err = err || `${file.name}：${(r && r.error) || "上传失败"}`;
+      }
+      toast(err ? `❌ ${err}` : `✅ 已上传 ${done} 个`);
+      renderLibPage();
+    };
+  }
   page.querySelectorAll(".lib-it").forEach(el => el.onclick = () => {
     libState.pick = { src: el.dataset.src, name: el.dataset.name };
     if (el.dataset.src !== "notes") {
@@ -176,27 +193,39 @@ async function renderLibPage() {
 async function renderLibPreview(prev, lib) {
   const { src, name } = libState.pick || {};
   if (!src) return;
+  const po = amPlatformOwner(); // 记笔记、删笔记、删资料都是往这台服务器的共享区写，归平台管理员
   if (src === "notes") {
     prev.innerHTML = `
       <div style="font-weight:600;margin-bottom:10px">💡 灵感笔记</div>
-      <div style="display:flex;gap:6px;margin-bottom:10px">
+      ${po ? `<div style="display:flex;gap:6px;margin-bottom:10px">
         <input id="lb-note" placeholder="随手记一条灵感/偏好，回车保存" style="flex:1">
         <button class="btn-brand" id="lb-note-save" style="flex:none">保存</button>
-      </div>
+      </div>` : `<div style="font-size: 13px;color:var(--wb-text-3);margin-bottom:10px">这块是整台服务器共用的，归平台管理员记。<br>只想让助理记住你自己的事？去<a href="#" class="link" id="lb-to-mem">记忆</a>页，那儿记的只有你自己看得到。</div>`}
       <div>${(lib.notes || []).map(n =>
-        `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span><a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a></div></div>`).join("")
+        `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span>${po ? `<a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a>` : ""}</div></div>`).join("")
         || '<div class="ph">还没有灵感笔记</div>'}</div>`;
+    if (!po) {
+      const go = prev.querySelector("#lb-to-mem");
+      if (go) go.onclick = (e) => { e.preventDefault(); openModal("settings", "memory"); };
+      return;
+    }
     const save = async () => {
-      const text = prev.querySelector("#lb-note").value.trim();
+      const el = prev.querySelector("#lb-note");
+      const text = el.value.trim();
       if (!text) return;
-      await fetch("/api/library/note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      // 存不下就说为什么。以前不看返回值直接重画，笔记凭空消失，用户只能反复再记一遍
+      const r = await fetch("/api/library/note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) })
+        .then(x => x.json()).catch(() => ({ error: "网络异常" }));
+      if (!r || !r.ok) return toast("❌ " + ((r && r.error) || "没记下来"));
       renderLibPage();
     };
     prev.querySelector("#lb-note-save").onclick = save;
     prev.querySelector("#lb-note").onkeydown = (e) => { if (e.key === "Enter") save(); };
     prev.querySelectorAll("a[data-nid]").forEach(a => a.onclick = async (e) => {
       e.preventDefault();
-      await fetch("/api/library/note/" + encodeURIComponent(a.dataset.nid), { method: "DELETE" });
+      const r = await fetch("/api/library/note/" + encodeURIComponent(a.dataset.nid), { method: "DELETE" })
+        .then(x => x.json()).catch(() => ({ error: "网络异常" }));
+      if (!r || !r.ok) return toast("❌ " + ((r && r.error) || "删不掉"));
       renderLibPage();
     });
     return;
@@ -205,7 +234,7 @@ async function renderLibPreview(prev, lib) {
   const bar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
     <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</b>
     <a class="link" href="${url}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>
-    ${src === "lib" ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
+    ${src === "lib" && po ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
   </div>`;
   prev.innerHTML = bar + '<div class="ph">加载中…</div>';
   const body = prev.lastElementChild;
@@ -214,7 +243,9 @@ async function renderLibPreview(prev, lib) {
     if (d) d.onclick = async (e) => {
       e.preventDefault();
       if (!confirm(`删除资料「${name}」？`)) return;
-      await fetch("/api/library/file/" + encodeURIComponent(name), { method: "DELETE" });
+      const r = await fetch("/api/library/file/" + encodeURIComponent(name), { method: "DELETE" })
+        .then(x => x.json()).catch(() => ({ error: "网络异常" }));
+      if (!r || !r.ok) return toast("❌ " + ((r && r.error) || "删不掉"));
       libState.pick = null;
       renderLibPage();
     };

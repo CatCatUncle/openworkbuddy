@@ -54,8 +54,13 @@ const PLATFORM_WRITE = [
 ];
 const PLATFORM_READ = [
   "/api/schedules", "/api/backup", "/api/security/audit", "/api/memory",
-  "/api/library", "/api/evolve", "/api/eval", "/api/feishu",
+  "/api/evolve", "/api/eval", "/api/feishu",
 ];
+// 读表里为什么没有 /api/library：拦它拦了个寂寞。资料库是**一份全局目录**（tools.js 的 LIB_DIR），
+// 每个人的 agent 都带着 library_list / library_read 这两个工具，一句「翻一下资料库」就能把文件清单、
+// 灵感笔记、乃至文件正文原样念出来——同样的字节，走 agent 拿得到，走界面反而 403。
+// 结果只有一个：资料库页面对普通成员写着「还没有参考资料」，一句瞎话。
+// 所以读放行、写照拦（上传/删除/记笔记全在 PLATFORM_WRITE 的 /api/library 前缀里）。
 /**
  * 上面那张写表按前缀拦，这几条是被顺带拦住的例外——它们只花调用者自己的钱、只改他自己那份：
  *   /api/engines/test  真跑一句话，走的是他本机那份 CLI 订阅，一个字节都不落盘
