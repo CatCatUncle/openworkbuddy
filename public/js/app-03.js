@@ -540,7 +540,7 @@ function renderOnbSearch(body) {
     go.textContent = "保存并测试中…";
     try {
       const ok = await saveSettings({ search: { provider: sel.value, [sel.value + "_key"]: key } });
-      if (!ok) { err.textContent = "保存失败"; return; }
+      if (!ok) { err.textContent = lastSaveError || "保存失败"; return; } // 服务端说了原因（如「归平台管理员管」）就别用四个字盖掉
       const r = await fetch("/api/search/test").then(x => x.json()).catch(() => ({ ok: false, error: "请求失败" }));
       if (!r.ok) { err.textContent = r.error || "测试失败"; return; }
       toast(`✅ ${r.provider} 可用`);
@@ -606,7 +606,7 @@ function renderOnbMedia(body) {
     save.disabled = true;
     const ok = await saveSettings({ media: { [kind]: patch } });
     save.disabled = false;
-    if (!ok) { err.textContent = "保存失败"; return; }
+    if (!ok) { err.textContent = lastSaveError || "保存失败"; return; }
     const chip = row.querySelector(".onb-chip");
     chip.textContent = "已配";
     chip.classList.add("ok");

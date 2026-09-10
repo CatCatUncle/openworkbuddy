@@ -1212,6 +1212,176 @@ const MEM_CHECKS = `
 })()
 `;
 
+// ---- 设置页：会 403 的按钮不该摆在那儿（模型 / 个性化 / 安全 / 导航 / 档位菜单） ----
+// 用户原话是「切换失败怎么还切换失败了啊」。根子不在那句提示，在于这一整屏都是照平台管理员画的：
+// 多人服务器上的普通成员照样看到 12 个标签页，其中「联网搜索 / 自进化 / 数据 / 助理设置」四页
+// 从头到尾没有一样是他的；模型页那排单选钮存的是全局默认、个性化页那两张卡是全服务器共用一份、
+// 安全页八张卡全是服务器策略。点哪一颗都是 403。这一组把这四页在真 Chromium 里画出来数控件，
+// 每条都配一条平台管理员的反向对照——只删控件不写反向对照，把整页删空也能全绿。
+const SET0 = APP05.indexOf("const SETTING_CATS = [");
+const SET1 = APP05.indexOf("// 渠道预设：选一个就把接口地址/协议填好"); // 连 saveSettings/lastSaveError 一起切进来，那也是真源
+const MOD0 = APP05.indexOf("function renderModelsPane(pane, s) {");
+const MOD1 = APP05.indexOf("function renderSearchPane(pane, s) {");
+const PER0 = APP05.indexOf("function renderPersonaPane(pane, s) {");
+const PER1 = APP05.indexOf("// ================= 桌面宠物 =================");
+const APP06 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-06.js"), "utf8");
+const SEC0 = APP06.indexOf("function renderSecurityPane(pane, s) {");
+const SEC1 = APP06.indexOf("// ================= 快捷键面板 =================");
+const PM0 = APP02.indexOf("let permModes = null;");
+const PM1 = APP02.indexOf('setupPicker("perm-btn", "perm-menu");');
+for (const [a, b, why] of [[SET0, SET1, "app-05.js 的 SETTING_CATS/renderSettings/saveSettings"], [MOD0, MOD1, "app-05.js 的 renderModelsPane"],
+  [PER0, PER1, "app-05.js 的 renderPersonaPane"], [SEC0, SEC1, "app-06.js 的 renderSecurityPane"], [PM0, PM1, "app-02.js 的档位菜单"]])
+  if (a < 0 || b <= a) throw new Error(why + " 找不到了（改名/挪走？），设置页权限测试没法定位真源码");
+const GATE_SRC = APP05.slice(SET0, SET1) + "\n" + APP05.slice(MOD0, MOD1) + "\n" + APP05.slice(PER0, PER1)
+  + "\n" + APP06.slice(SEC0, SEC1) + "\n" + APP02.slice(PM0, PM1);
+const GATE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><body>"
+  + "<div id='m-body'></div><div id='pane'></div><button id='perm-btn'><span id='perm-label'></span></button>"
+  + "<div class='picker-menu up-left' id='perm-menu'></div></body>";
+const GATE_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+
+  // 这一屏依赖的零碎（渠道预设、拿 Key 链接、头像编辑器、宠物卡）不是这次要测的东西，喂桩；
+  // 被测的是「哪些控件画出来了」，桩只要不炸就行。
+  window.CHANNEL_PRESETS = [{ label: "选择渠道预设…", provider: "openai", base: "", model: "" }];
+  window.ASSISTANT_MARK = "🐱";
+  window.keyLink = () => "";
+  window.modelKeySource = () => "";
+  window.healthBadge = () => "";
+  window.avatarEditorHtml = () => '<div id="as-av"></div>';
+  window.bindAvatarEditor = () => ({ value: () => "🐱" });
+  window.petCardHtml = () => '<div class="card-item" id="pet-card"><div class="t">🐱 桌面宠物</div><input type="checkbox" id="pet-on"></div>';
+  window.bindPetCard = () => {};
+  window.refreshSettingsCache = () => {};
+  window.applyAssistantIdentity = () => {};
+  window.setupPicker = () => {};
+  window.renderSearchPane = window.renderEvolvePane = window.renderDataPane = window.renderImPane =
+    window.renderLookPane = window.renderAboutPane = window.renderShortcutsPane = window.renderAgentPane =
+    window.renderMemoryPane = (el) => { el.innerHTML = "<i>别的页</i>"; };
+  window.toasts = [];
+  window.toast = (m) => window.toasts.push(String(m));
+  window.confirm = () => true;
+
+  let owner = false, canSwitch = false, posts = [];
+  window.fetch = (url, opt) => {
+    const method = (opt && opt.method) || "GET";
+    if (method !== "GET") posts.push({ url, body: opt && opt.body ? JSON.parse(opt.body) : null });
+    const j = (v, okFlag) => Promise.resolve({ ok: okFlag !== false, status: okFlag === false ? 403 : 200, json: () => Promise.resolve(v) });
+    if (url === "/api/settings" && method === "GET") return j({
+      platform_owner: owner, models: [{ name: "主力", model: "gpt-5.2", api_key: "x" }, { name: "备用", model: "claude-sonnet-5", api_key: "y" }],
+      active_model: "主力", media: {}, model_follow_last: true, persona: "回复简洁", assistant: { name: "小猫", avatar: "🐱" },
+      pet: {}, security: { cmd_allow: ["ls"], cmd_ask: ["rm"] },
+    });
+    if (url === "/api/security/modes") return j({ modes: { ask: { label: "每次问我", desc: "动手前都问" }, auto: { label: "自动执行", desc: "不问" } }, current: "ask", can_switch: canSwitch });
+    if (url === "/api/security/approvals") return j({ session_allow: [] });
+    if (url === "/api/security/system") return j({ fulldisk: "unknown", accessibility: "unknown", automation: "unknown", desktop: false });
+    if (url.startsWith("/api/security/audit")) return j([]);
+    return j({ ok: true });
+  };
+
+  const mBody = window.mBody = document.getElementById("m-body");
+  const pane = document.getElementById("pane");
+  const navCats = () => [...mBody.querySelectorAll(".cat")].map((c) => c.dataset.cat);
+  const activeCat = () => (mBody.querySelector(".cat.active") || {}).dataset;
+
+  // ① 导航：四个纯服务器级的标签页不画给成员
+  owner = false;
+  await renderSettings("models");
+  const memberCats = navCats();
+  ok("成员的设置页里没有「联网搜索 / 自进化 / 数据 / 助理设置」这四页（点进去每一颗按钮都是 403）",
+    !["search", "evolve", "data", "im"].some((k) => memberCats.includes(k)), memberCats.join(","));
+  ok("混着他自己东西的那几页留着（模型看得到有哪些、安全看得到档位、个性化里有他的宠物）",
+    ["models", "agent", "security", "persona", "memory", "shortcuts", "look", "about"].every((k) => memberCats.includes(k)), memberCats.join(","));
+  await renderSettings("data");
+  ok("从旧深链跳进一个已经不画的页，退回第一页，不留一屏空白", activeCat() && activeCat().cat === "models", JSON.stringify(activeCat()));
+  owner = true;
+  await renderSettings("models");
+  ok("反向对照：平台管理员 12 页一个不少", navCats().length === 12 && navCats().includes("data"), navCats().join(","));
+
+  // ② 模型页：他改不了服务器的账单，但得知道有哪些模型
+  owner = false;
+  await renderSettings("models");
+  const mp = mBody.querySelector("#settings-pane");
+  ok("成员照样看得见服务器上有哪些模型", mp.textContent.includes("主力") && mp.textContent.includes("备用"));
+  ok("没有那排单选钮（它存的是全局默认 active_model，一点就 403）", !mp.querySelector("input[name=active]"));
+  ok("当前默认还是标出来了，只是画成状态不是开关", mp.textContent.includes("●"));
+  ok("没有编辑 / 复制 / 删除", !mp.querySelector("[data-edit]") && !mp.querySelector("[data-dup]") && !mp.querySelector("[data-del]"));
+  ok("没有「＋ 添加自定义模型」和那张 Key 表单", !mp.querySelector("#mf-new") && !mp.querySelector("#model-form"));
+  ok("视觉 / 图像 / 视频 / TTS 四张卡没画，换成一句人话", !mp.querySelector("#media-save") && !mp.querySelector("#mi-key"));
+  ok("属于他自己的那颗开关还在（新对话沿用上次选的模型）", !!mp.querySelector("#mf-follow-last"));
+  posts = [];
+  mp.querySelector("#mf-follow-last").checked = false;
+  await mp.querySelector("#mf-follow-last").onchange({ target: mp.querySelector("#mf-follow-last") });
+  ok("那颗开关真接上了（只发 model_follow_last，是个人偏好）",
+    posts.length === 1 && posts[0].url === "/api/settings" && posts[0].body.model_follow_last === false, JSON.stringify(posts));
+  owner = true;
+  await renderSettings("models");
+  const mpo = mBody.querySelector("#settings-pane");
+  ok("反向对照：平台管理员那排单选钮、增删改、四张媒体卡一样不少",
+    !!mpo.querySelector("input[name=active]") && !!mpo.querySelector("[data-edit]") && !!mpo.querySelector("#mf-new") && !!mpo.querySelector("#media-save"));
+
+  // ③ 个性化页：名字和偏好是全服务器共用一份，宠物是他自己电脑上那只
+  owner = false;
+  await renderSettings("persona");
+  const pp = mBody.querySelector("#settings-pane");
+  ok("成员这一页没有「助理的名字和头像」那张卡", !pp.querySelector("#as-name") && !pp.querySelector("#as-save"));
+  ok("也没有「个性化偏好」那块和保存钮", !pp.querySelector("#ps-text") && !pp.querySelector("#ps-save"));
+  ok("桌面宠物留着（那只跑在他自己电脑上）", !!pp.querySelector("#pet-card"));
+  ok("给了一句人话，还指了条真能走的路（写进记忆页）", /记忆/.test(pp.textContent) && /平台管理员/.test(pp.textContent));
+  owner = true;
+  await renderSettings("persona");
+  const ppo = mBody.querySelector("#settings-pane");
+  ok("反向对照：平台管理员三张卡都在", !!ppo.querySelector("#as-name") && !!ppo.querySelector("#ps-text") && !!ppo.querySelector("#pet-card"));
+
+  // ④ 安全页：八张卡全是服务器策略，但「现在是哪档」他必须知道
+  owner = false; canSwitch = false;
+  await renderSettings("security");
+  await new Promise((r) => setTimeout(r, 30)); // 档位/审批是异步拉的
+  const sp = mBody.querySelector("#settings-pane");
+  ok("成员的安全页没有黑白名单、运行时开关、审计那些卡",
+    !sp.querySelector("#sec-fbl") && !sp.querySelector("#sec-cal") && !sp.querySelector("#sec-node") && !sp.querySelector("#audit-list"));
+  ok("也没有那颗保存钮", !sp.querySelector("#sec-save"));
+  ok("当前档位照样告诉他（决定 agent 动他的文件前问不问）", sp.textContent.includes("每次问我"));
+  ok("档位画成只读，不摆一排点了就 403 的单选钮", !sp.querySelector("input[name=permmode]"));
+  ok("说清楚归谁管", /平台管理员/.test(sp.textContent));
+  owner = true; canSwitch = true;
+  await renderSettings("security");
+  await new Promise((r) => setTimeout(r, 30));
+  const spo = mBody.querySelector("#settings-pane");
+  ok("反向对照：平台管理员八张卡和保存钮都在",
+    !!spo.querySelector("#sec-fbl") && !!spo.querySelector("#sec-cal") && !!spo.querySelector("#sec-node") && !!spo.querySelector("#audit-list") && !!spo.querySelector("#sec-save"));
+  ok("反向对照：档位是一排真能点的单选钮", spo.querySelectorAll("input[name=permmode]").length === 2);
+
+  // ④.5 存不下的时候，把后端说的原因转述出来
+  const realFetch = window.fetch;
+  window.fetch = () => Promise.resolve({ ok: false, status: 403, json: () => Promise.resolve({ error: "这块是服务器级设置，归平台管理员管" }) });
+  const box = document.createElement("span");
+  const saved = await saveSettings({ persona: "x" }, box);
+  ok("存不下时不再是干巴巴四个字，服务端说的原因原样摆出来", saved === false && box.textContent.includes("平台管理员"), box.textContent);
+  ok("原因也记在 lastSaveError 里，别处的调用点读得到", lastSaveError.includes("平台管理员"), lastSaveError);
+  window.fetch = realFetch;
+
+  // ⑤ 输入框旁边那个 🛡️ 档位菜单——用户点的就是它
+  const menu = document.getElementById("perm-menu");
+  canSwitch = false;
+  await loadPermModes();
+  ok("成员的 🛡️ 菜单里一条都点不动（点了只会得到一句「切换失败」）",
+    [...menu.querySelectorAll(".mi")].every((mi) => !mi.onclick));
+  ok("但当前是哪一档还看得见", menu.textContent.includes("每次问我") && menu.textContent.includes("✓"));
+  ok("菜单底下写明白了归谁管", /平台管理员/.test(menu.textContent));
+  ok("按钮上的档位标签照样对得上", document.getElementById("perm-label").textContent === "每次问我");
+  canSwitch = true;
+  await loadPermModes();
+  ok("反向对照：平台管理员那份菜单，每条都能点",
+    [...menu.querySelectorAll(".mi")].length === 2 && [...menu.querySelectorAll(".mi")].every((mi) => typeof mi.onclick === "function"));
+  posts = [];
+  await menu.querySelector(".mi[data-perm=auto]").onclick();
+  ok("反向对照：点了真发出去了", posts.some((p) => p.url === "/api/security/mode" && p.body.mode === "auto"), JSON.stringify(posts));
+  return names;
+})()
+`;
+
 // ---- 流式正文的分段渲染（已定稿那截不许被重建） ----
 const STREAM_SRC = APP02X.slice(APP02X.indexOf("function repairBareCode"), APP02X.indexOf("\n// 【任务类型：X】"));
 const STREAM_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
@@ -3636,6 +3806,15 @@ app.whenReady().then(async () => {
       for (const n of namesMEM) console.log("  ✓ " + n);
       console.log(`✅ 前端：记忆页按权限画（共享那条不画删·勾选框和保存按钮不画·搬家卡不画·删了不吞返回值·管理员那页一样不少）${namesMEM.length} 项通过`);
     } finally { if (!winMEM.isDestroyed()) winMEM.destroy(); }
+
+    const winGATE = mkWin({ show: false, width: 1000, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await winGATE.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(GATE_HTML));
+      const namesGATE = await winGATE.webContents.executeJavaScript(ESC_SRC + "\n" + GATE_SRC + "\n" + GATE_CHECKS, true)
+        .catch((e) => { throw new Error("[设置页权限] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesGATE) console.log("  ✓ " + n);
+      console.log(`✅ 前端：设置页按权限画（四页纯管理员的不画·模型只读·个性化只留宠物·安全只留档位·🛡️ 菜单不装成能点的）${namesGATE.length} 项通过`);
+    } finally { if (!winGATE.isDestroyed()) winGATE.destroy(); }
 
     const winSTM = mkWin({ show: false, width: 760, height: 700, webPreferences: { offscreen: true } });
     try {

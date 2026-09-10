@@ -1015,6 +1015,7 @@ async function pollApprovals() {
 
 // ================= 权限档位（参考 Claude Code：档位 + 记住的批准） =================
 let permModes = null;
+let permCanSwitch = true; // 多人服务器上的普通成员改不了档位，菜单画成只读的
 function syncPermLabel(mode) {
   const el = document.getElementById("perm-label");
   if (!el || !permModes || !permModes[mode]) return;
@@ -1025,11 +1026,19 @@ async function loadPermModes() {
   const d = await fetch("/api/security/modes").then(r => r.json()).catch(() => null);
   if (!d || !d.modes) return; // 没登录时守卫回 401 {error}，没有 modes：首屏别为这个抛未捕获错误
   permModes = d.modes;
+  permCanSwitch = d.can_switch !== false;
   const menu = document.getElementById("perm-menu");
+  // 多人服务器上的普通成员：档位是整台机器一份，他改不动。那就别把菜单画成能点的——
+  // 点了只弹一句「归平台管理员」，跟按钮坏了没区别。照样把当前档位显示出来（他得知道
+  // agent 动手前会不会问他），只是把「可选」换成「这是当前状态 + 谁能改」。
   menu.innerHTML = Object.entries(d.modes)
-    .map(([k, m]) => `<div class="mi" data-perm="${esc(k)}">${esc(m.label)} <span class="sub">${esc(m.desc)}</span></div>`)
+    .map(([k, m]) => permCanSwitch
+      ? `<div class="mi" data-perm="${esc(k)}">${esc(m.label)} <span class="sub">${esc(m.desc)}</span></div>`
+      : `<div class="mi ro"${k === d.current ? ' data-cur="1"' : ""}>${esc(m.label)}${k === d.current ? " ✓" : ""} <span class="sub">${esc(m.desc)}</span></div>`)
     .join("");
-  menu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
+  if (!permCanSwitch) menu.insertAdjacentHTML("beforeend",
+    '<div class="mi ro sub-only">这台服务器上大家共用一个档位，归平台管理员设</div>');
+  else menu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
     menu.classList.remove("show");
     await setPermMode(mi.dataset.perm);
   });

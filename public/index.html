@@ -432,6 +432,11 @@
   .picker-menu .mi:hover { background: var(--wb-bg-hover); }
   .picker-menu .mi.on { color: var(--wb-brand-text); background: var(--wb-brand-weak); }
   .picker-menu .mi .sub { font-size: 12px; color: var(--wb-text-3); }
+  /* 只读项：多人服务器上普通成员看到的档位菜单——照样告诉他现在是哪档，但别装成能点的 */
+  .picker-menu .mi.ro { cursor: default; }
+  .picker-menu .mi.ro:hover { background: transparent; }
+  .picker-menu .mi.ro[data-cur] { color: var(--wb-brand-text); }
+  .picker-menu .mi.sub-only { display: block; white-space: normal; font-size: 12px; color: var(--wb-text-3); border-top: 1px solid var(--wb-border); margin-top: 4px; padding-top: 8px; }
   /* 兜底：任何一条菜单项都不许把菜单撑出屏幕。以前没有上限，一段长说明就能把它撑到
      一千多像素宽，右对齐的菜单于是往左飞出可视区，字被裁掉一半 */
   .picker-menu { max-width: min(340px, calc(100vw - 24px)); }

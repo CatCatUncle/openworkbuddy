@@ -9,16 +9,25 @@ function renderSecurityPane(pane, s) {
   const listCol = (title, id, val, rows) => `
     <div style="flex:1;min-width:0"><div style="font-size: 13px;color:var(--wb-text-2);margin:6px 0 4px">${title}</div>
     <textarea id="${id}" rows="${rows || 4}" style="width:100%;font-size: 13px;font-family:Consolas,monospace;resize:vertical">${val}</textarea></div>`;
+  // 这一整页动的都是**整台服务器**的安全策略：档位、黑白名单、运行时开关、审计。
+  // 多人服务器上的普通成员一样都改不了，全画出来等于摆一屏点了就 403 的控件。
+  // 但「现在是哪个档位」他必须知道——那决定 agent 动他的文件之前问不问他。
+  const po = !!s.platform_owner;
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">🎚️ 权限档位</div>
-      <div class="d">决定 AI 动手前问不问你。改文件、跑命令都按这个档来；文件黑名单在任何档位下都拦得住。输入框下方的「🛡️」下拉也能随时切。</div>
+      <div class="d">决定 AI 动手前问不问你。改文件、跑命令都按这个档来；文件黑名单在任何档位下都拦得住。${po ? "输入框下方的「🛡️」下拉也能随时切。" : "<b>这台服务器上大家共用一个档位，归平台管理员设。</b>下面是当前生效的这档。"}</div>
       <div id="sec-modes" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
       <div style="margin-top:8px;font-size: 13px;color:var(--wb-text-3)">
         本次运行期间记住的批准：<span id="sec-sess-allow">（无）</span>
-        <a href="#" class="link" id="sec-sess-clear">清掉</a>
+        ${po ? `<a href="#" class="link" id="sec-sess-clear">清掉</a>` : ""}
       </div>
     </div>
+    ${!po ? `
+    <div class="card-item">
+      <div class="t">🛡️ 剩下这些归平台管理员</div>
+      <div class="d">数据安全总开关、文件 / 命令 / 网络的黑白名单、内置运行时开关、系统授权、审计日志——它们管的是整台服务器上所有人的任务，不是你一个人的，所以只有平台管理员能改。<br>轮到<b>你</b>拍板的地方在对话里：agent 要跑一条需要批准的命令时，输入框上方会弹出审批条，批不批由你说了算。</div>
+    </div>` : `
     <div class="card-item">
       <div class="t">🛡️ 数据安全</div>
       ${chk("sec-gateway", sec.gateway !== false, "安全网关", "总开关：命令审批与文件/网络黑白名单的硬拦截由它启用，关闭后只记审计不拦截")}
@@ -66,7 +75,11 @@ function renderSecurityPane(pane, s) {
       <div class="t">📋 审计中心 <span style="float:right;font-weight:400;font-size: 13px"><a href="#" class="link" id="audit-all">查看全部</a> · <a class="link" href="/api/security/audit/export" download>导出日志</a> · <a href="#" class="link danger" id="audit-clear">清空记录</a></span></div>
       <div id="audit-list" style="max-height:260px;overflow:auto;font-size: 13px;margin-top:6px"></div>
     </div>
-    <button class="btn-brand" id="sec-save">保存</button><span class="ok-msg" id="sec-msg"></span>`;
+    <button class="btn-brand" id="sec-save">保存</button><span class="ok-msg" id="sec-msg"></span>`}`;
+
+  renderModes();
+  renderSessAllow();
+  if (!po) return; // 下面全是平台管理员那套卡片的事件；没画出来就别去 querySelector
 
   const linesOf = (sel) => pane.querySelector(sel).value.split(/\n/).map(x => x.trim()).filter(Boolean);
   pane.querySelector("#sec-save").onclick = () => saveSettings({
@@ -91,6 +104,13 @@ function renderSecurityPane(pane, s) {
     const d = await fetch("/api/security/modes").then(r => r.json()).catch(() => null);
     const box = pane.querySelector("#sec-modes");
     if (!d || !d.modes || !box) return;
+    // can_switch=false（多人服务器上的普通成员）：只把当前这一档画出来。
+    // 画一排他一点就 403 的单选钮，比不画更气人——单选钮还会先跳过去再弹错，看着像切成功了又弹回来。
+    if (d.can_switch === false) {
+      const cur = d.modes[d.current] || {};
+      box.innerHTML = `<div style="font-size: 14px"><b>${esc(cur.label || d.current || "未知")}</b><span style="color:var(--wb-text-3)"> — ${esc(cur.desc || "")}</span></div>`;
+      return;
+    }
     box.innerHTML = Object.entries(d.modes).map(([k, m]) => `
       <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size: 14px">
         <input type="radio" name="permmode" value="${esc(k)}" ${k === d.current ? "checked" : ""} style="width:auto;margin:3px 0 0">
@@ -108,8 +128,6 @@ function renderSecurityPane(pane, s) {
     const list = (d && d.session_allow) || [];
     el.textContent = list.length ? list.join("、") : "（无）";
   }
-  renderModes();
-  renderSessAllow();
   pane.querySelector("#sec-sess-clear").onclick = async (e) => {
     e.preventDefault();
     await fetch("/api/security/session-allow/clear", { method: "POST" });

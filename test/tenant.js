@@ -100,6 +100,12 @@ app.delete("/api/memory/item/:id", (req, res) => {
   res.json({ ok: true, removed: r.removed });
 });
 app.get("/api/memory/export", (_req, res) => res.json({ dump: "整库" }));
+// 界面靠它决定「服务器级的那些控件画不画」。画了却一点就 403，就是用户那句
+// 「切换失败怎么还切换失败了啊」——一颗明明能点的按钮，点了只回四个字。
+const isPlatformOwner = (req) => admin.isSoloDesktop() || admin.platformAdmin(req && req.user);
+app.get("/api/settings-probe", (req, res) => res.json({ platform_owner: isPlatformOwner(req) }));
+app.get("/api/security/modes", (req, res) =>
+  res.json({ modes: { ask: { label: "每次问我" } }, current: "ask", can_switch: isPlatformOwner(req) }));
 // 探针：这条请求里 tools.orgPolicy() 看到的是什么。用来验「设置真的进了执行层」，
 // 而不是只躺在 org.json 里没人读——那种开关比没有这个开关更糟
 app.get("/api/policy-probe", (_req, res) => res.json({ policy: tools.orgPolicy(), ws: tools.getWorkspaceDir() }));
@@ -527,6 +533,39 @@ async function login(username, password) {
   eq((await call("POST", "/api/memory", { cookie: boss, body: { content: "老板写的背景" } })).status, 200,
      "反向对照：平台管理员改得动背景说明");
   eq(memory.manual(), "老板写的背景", "反向对照：真写进去了");
+
+  console.log("\n【20】设置页：会 403 的控件，后端得先说清楚「这颗别画」");
+  // 用户原话：「切换失败怎么还切换失败了啊」。前端不可能自己猜谁是平台管理员——
+  // 得后端在每个能力位上回一个布尔。这三处（/api/settings 的 platform_owner、
+  // /api/security/modes 的 can_switch）就是界面挑控件的唯一依据。
+  const SRC20 = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  for (const [frag, why] of [
+    ["const isPlatformOwner = (req) =>", "真源码里有这个能力位助手"],
+    ["platform_owner: isPlatformOwner(req)", "/api/settings 回了 platform_owner"],
+    ["can_switch: isPlatformOwner(req)", "/api/security/modes 回了 can_switch"],
+  ]) ok(SRC20.includes(frag), "真源码对得上替身：" + why, frag);
+  const FE = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
+  ok(/PLATFORM_ONLY_CATS = new Set\(\["search", "evolve", "data", "im"\]\)/.test(FE),
+    "界面真按这四页过滤（纯服务器级的标签页不画给成员）");
+  // 「保存失败」四个字把服务端说的原因（如「这块归平台管理员管」）整个盖掉，是同一个病的另一半：
+  // 控件画出来了、点了、后端也把原因说了，界面偏偏不转述。
+  for (const [file, why] of [["public/js/app-03.js", "开箱向导"], ["public/js/app-05.js", "设置页"]]) {
+    const src = fs.readFileSync(path.join(ROOT, file), "utf8");
+    ok(!/textContent = "保存失败"/.test(src), why + "：存不下时把服务端说的原因转述出来，不用四个字盖掉", file);
+  }
+  r = await call("GET", "/api/settings-probe", { cookie: yuan });
+  eq(r.json.platform_owner, false, "普通成员拿到 platform_owner=false");
+  r = await call("GET", "/api/settings-probe", { cookie: fen });
+  eq(r.json.platform_owner, false, "分公司的管理员也不是平台管理员（他管的是自己那个组织）");
+  r = await call("GET", "/api/settings-probe", { cookie: boss });
+  eq(r.json.platform_owner, true, "反向对照：平台管理员拿到 true");
+  r = await call("GET", "/api/security/modes", { cookie: yuan });
+  eq(r.status, 200, "档位列表成员读得到（他得知道 agent 动手前问不问他）");
+  eq(r.json.can_switch, false, "但拿到 can_switch=false：那个 🛡️ 菜单不该画成能点的");
+  r = await call("GET", "/api/security/modes", { cookie: boss });
+  eq(r.json.can_switch, true, "反向对照：平台管理员 can_switch=true");
+  r = await call("POST", "/api/security/mode", { cookie: yuan, body: { mode: "full" } });
+  eq(r.status, 403, "闸没松：can_switch 只是给界面看的，后端照样拦得住直接打过来的请求");
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
