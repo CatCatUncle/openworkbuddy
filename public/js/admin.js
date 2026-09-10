@@ -111,23 +111,23 @@ async function act(fn, okMsg) {
  */
 function modal(opts) {
   const mask = document.createElement("div");
-  mask.className = "ad-mask";
+  mask.className = "ui-overlay";
   const fields = (opts.fields || [])
     .map((f) => {
       const id = "mf-" + f.name;
       let ctl;
       if (f.type === "select")
-        ctl = `<select class="ui-input" id="${id}">${(f.options || [])
+        ctl = `<select class="ui-input ui-select" id="${id}">${(f.options || [])
           .map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(f.value) ? " selected" : ""}>${esc(o.label)}</option>`)
           .join("")}</select>`;
       else if (f.type === "textarea")
         ctl = `<textarea class="ui-input" id="${id}" rows="4" style="height:auto;resize:vertical" placeholder="${esc(f.placeholder || "")}">${esc(f.value || "")}</textarea>`;
       else
         ctl = `<input class="ui-input" id="${id}" type="${f.type || "text"}" value="${esc(f.value == null ? "" : f.value)}" placeholder="${esc(f.placeholder || "")}">`;
-      return `<div><label for="${id}">${esc(f.label)}</label>${ctl}${f.desc ? `<div class="fd" style="margin-top:4px">${f.desc}</div>` : ""}</div>`;
+      return `<div><label for="${id}">${esc(f.label)}</label>${ctl}${f.desc ? `<div class="fd" style="margin-top:6px">${f.desc}</div>` : ""}</div>`;
     })
     .join("");
-  mask.innerHTML = `<div class="ad-modal" role="dialog" aria-modal="true" aria-label="${esc(opts.title)}">
+  mask.innerHTML = `<div class="ui-dialog" role="dialog" aria-modal="true" aria-label="${esc(opts.title)}">
     <h2>${esc(opts.title)}</h2>
     <div class="bd">${opts.body || ""}${fields}<div class="fd" id="mf-err" style="color:var(--danger-text);display:none"></div></div>
     <div class="ft">
@@ -166,20 +166,46 @@ function confirmBox(title, text, ok, onOk, danger) {
 
 /* ---------------- 渲染碎片 ---------------- */
 const card = (inner, pad) => `<section class="ui-card" style="padding:${pad == null ? 20 : pad}px">${inner}</section>`;
+/**
+ * 卡片头 + 一块贴边的内容（表格 / 空状态）。
+ * 表格自己带内边距的话，分隔线会停在卡片内边距上——一屏十几条断头横线，看着就是散的。
+ * 所以头部单独一块，表格从卡片左边一直画到右边。
+ */
+const cardT = (head, body) => `<section class="ui-card ad-card"><div class="ad-card-h">${head}</div>${body}</section>`;
 const secT = (t, d) => `<div><div class="ad-sec-t">${esc(t)}</div>${d ? `<div class="ad-sec-d">${d}</div>` : ""}</div>`;
-const note = (text, warn) => `<div class="ad-note${warn ? " ad-note--warn" : ""}">${ic(warn ? "triangle-alert" : "circle-check")}<div>${text}</div></div>`;
+/** 卡片头一行：左边标题、右边一组按钮。窄屏自己换行，不会把按钮挤没 */
+const headRow = (left, right) => `<div class="ad-hrow">${left}${right ? `<div class="ad-row">${right}</div>` : ""}</div>`;
+const ALERT_ICON = { info: "info", warn: "triangle-alert", success: "circle-check", destructive: "triangle-alert" };
+/**
+ * note(文案) 是说明，note(文案, true) / note(文案, "warn") 是提醒。
+ * 底色压到 5%-7%，正文仍然是正文色——整条高饱和底配同色文字，在一屏三四条的密度下会盖过它旁边真正的内容。
+ */
+const note = (text, kind) => {
+  const k = kind === true ? "warn" : kind || "info";
+  return `<div class="ui-alert ui-alert--${k}">${ic(ALERT_ICON[k] || "info")}<div>${text}</div></div>`;
+};
 const kpi = (list) =>
-  `<div class="ad-kpi">${list
-    .map((k) => `<div class="k"><span>${esc(k.label)}</span><b class="ad-num">${k.value}</b>${k.hint ? `<em>${k.hint}</em>` : ""}</div>`)
+  `<div class="ui-stats">${list
+    .map((k) => `<div class="ui-stat"><div class="l">${esc(k.label)}</div><div class="v">${k.value}</div>${k.hint ? `<div class="h">${k.hint}</div>` : ""}</div>`)
     .join("")}</div>`;
 const badge = (text, kind) => `<span class="ui-badge${kind ? " ui-badge--" + kind : ""}">${esc(text)}</span>`;
-const empty = (text) => `<div class="ad-empty">${esc(text)}</div>`;
+const empty = (text) => `<div class="ad-empty">${ic("file-text")}<span>${esc(text)}</span></div>`;
+/** 进度条：快满了变黄、满了变红。席位只剩最后一个的时候，一根纯色条是看不出来的 */
+const progress = (pct) => {
+  const v = Math.max(0, Math.min(100, Math.round(pct || 0)));
+  return `<div class="ui-progress${v >= 100 ? " ui-progress--full" : v >= 80 ? " ui-progress--warn" : ""}"><i style="width:${v}%"></i></div>`;
+};
+/**
+ * 只读信息表。field() 是「左说明右控件」的设置项，这个是给「看」的事实行——
+ * 把改不了的东西也排成设置项那种跨半屏的样子，标签和值离得太远，眼睛得来回找。
+ */
+const dl = (rows) => `<dl class="ad-dl">${rows.map((r) => `<dt>${esc(r[0])}</dt><dd>${r[1]}</dd>`).join("")}</dl>`;
 function table(cols, rows) {
   if (!rows.length) return empty("这里还没有数据");
-  return `<div class="ad-scroll"><table class="ad-t"><thead><tr>${cols
-    .map((c) => `<th${c.right ? ' style="text-align:right"' : ""}>${esc(c.t)}</th>`)
+  return `<div class="ui-table-wrap ui-table-wrap--flush"><table class="ui-table"><thead><tr>${cols
+    .map((c) => `<th${c.right ? ' class="ui-num"' : ""}>${esc(c.t)}</th>`)
     .join("")}</tr></thead><tbody>${rows
-    .map((r) => `<tr>${r.map((cell, i) => `<td${cols[i] && cols[i].right ? ' class="ad-num" style="text-align:right"' : ""}>${cell}</td>`).join("")}</tr>`)
+    .map((r) => `<tr>${r.map((cell, i) => `<td${cols[i] && cols[i].right ? ' class="ui-num"' : ""}>${cell}</td>`).join("")}</tr>`)
     .join("")}</tbody></table></div>`;
 }
 /** 7 日柱状。取的是 tokens，因为运行次数看不出「一次跑了多大」 */
@@ -192,9 +218,13 @@ function bars7(last7) {
     })
     .join("")}</div>`;
 }
+/** 多行输入比一行控件高得多，跟标签垂直居中对齐会让标签浮在半空，所以自动改顶对齐 */
 const field = (label, desc, control) =>
-  `<div class="ad-field"><div><div class="fl">${esc(label)}</div>${desc ? `<div class="fd">${desc}</div>` : ""}</div><div class="fc">${control}</div></div>`;
-const sw = (name, on) => `<label class="ad-sw"><input type="checkbox" data-k="${esc(name)}"${on ? " checked" : ""}${RO ? " disabled" : ""}><i></i></label>`;
+  `<div class="ad-field${/<textarea/.test(control) ? " ad-field--top" : ""}"><div><div class="fl">${esc(label)}</div>${
+    desc ? `<div class="fd">${desc}</div>` : ""
+  }</div><div class="fc">${control}</div></div>`;
+const sw = (name, on) =>
+  `<label class="ui-switch"><input type="checkbox" data-k="${esc(name)}"${on ? " checked" : ""}${RO ? " disabled" : ""}><i></i></label>`;
 const inp = (name, value, extra) =>
   `<input class="ui-input" data-k="${esc(name)}" value="${esc(value == null ? "" : value)}"${RO ? " disabled" : ""} ${extra || ""}>`;
 
@@ -252,7 +282,7 @@ PAGES.security = {
     return `<div class="ad-wrap">
       ${note("这页上的开关是<b>真的会拦人</b>的：关掉命令行之后，连工具定义都不会发给模型，它不会再想着用命令行去解决问题；登录有效期改小之后，<b>已经发出去</b>的登录状态立刻作废。")}
       ${card(`${secT("命令行", "关掉之后 run_shell / run_node 两个工具直接从模型的工具表里摘掉。写文件、抓网页、生成图表这些不受影响。")}
-        <div style="margin-top:8px">
+        <div style="margin-top:14px">
           ${field("允许运行命令行", "开着的时候，任务可以在这台服务器上执行 shell 命令和 Node 代码。安全要求高的组织建议关掉。", sw("allow_shell", s.allow_shell !== false))}
           ${field("登录有效期", "单位是天，1 - 365。改小之后成员手上已经登录的浏览器会在下一次请求时被踢出去，不用等他自己退出。", inp("session_days", s.session_days, 'type="number" min="1" max="365" style="width:120px"'))}
         </div>`)}
@@ -274,22 +304,32 @@ PAGES.sub = {
       ? badge(`还剩 ${p.days_left} 天`, "outline")
       : badge("订阅中", "success");
     return `<div class="ad-wrap">
-      ${card(`<div class="ad-row" style="justify-content:space-between;align-items:flex-start">
-          ${secT("订阅信息", esc(d.org.name) + " · " + esc(d.org.root_hint))}
-          <div class="ad-row">${badge(p.label)}${expBadge}</div>
-        </div>
-        <div style="margin-top:16px">
-          ${field("当前版本", "决定席位上限和每月固定用量的默认值。", `<b style="font-size:15px">${esc(p.label)}</b>`)}
-          ${field("到期时间", p.expires_at ? "到期后不影响已有数据，只是不能再新建成员。" : "没有设置到期时间，等于长期有效。", `<span class="ad-mono">${p.expires_at ? esc(fmtTs(p.expires_at)) : "长期有效"}</span>`)}
-          ${field("席位", `已用 ${d.seats.used} / ${p.seats}${d.seats.pending ? `，另有 ${d.seats.pending} 人等审核` : ""}。停用的成员不占席位。`,
-            `<div style="width:180px"><div style="height:6px;border-radius:999px;background:var(--muted);overflow:hidden"><i style="display:block;height:100%;width:${seatPct}%;background:var(--primary)"></i></div><div class="fd" style="margin-top:4px;text-align:right">${seatPct}%</div></div>`)}
-          ${field("创建时间", "", `<span class="ad-mono">${esc(fmtDate(d.org.created_at))}</span>`)}
-        </div>`)}
+      ${cardT(
+        headRow(secT("订阅信息", esc(d.org.name) + " · " + esc(d.org.root_hint)), `${badge(p.label, "secondary")}${expBadge}`),
+        `<div class="ad-card-b">${dl([
+          ["当前版本", `<span class="v">${esc(p.label)}</span><div class="fd">决定席位上限和每月固定用量的默认值。</div>`],
+          [
+            "到期时间",
+            `<span class="v ad-mono">${p.expires_at ? esc(fmtTs(p.expires_at)) : "长期有效"}</span>
+             <div class="fd">${p.expires_at ? "到期后不影响已有数据，只是不能再新建成员。" : "没设到期时间，等于长期有效。"}</div>`,
+          ],
+          [
+            "席位",
+            `<div class="ad-row" style="gap:12px">
+               <span class="v ad-num">${d.seats.used} / ${p.seats}</span>
+               <div style="flex:1;min-width:120px;max-width:260px">${progress(seatPct)}</div>
+               <span class="fd ad-num">${seatPct}%</span>
+             </div>
+             <div class="fd">${d.seats.pending ? `另有 ${d.seats.pending} 人等审核。` : ""}停用的成员不占席位。</div>`,
+          ],
+          ["创建时间", `<span class="v ad-mono">${esc(fmtDate(d.org.created_at))}</span>`],
+        ])}</div>`
+      )}
 
       ${note("<b>用量抵扣顺序：</b>先扣本月固定用量，扣完了再扣加油包余额。固定用量每月 1 号重置、<b>不累积</b>；加油包不过期。所以给成员充加油包不会顶掉他这个月的固定额度。")}
 
       ${card(`${secT("月固定用量", d.settings.credits_enabled ? "闸门开着：余额扣完就跑不动任务了。" : "闸门现在是<b>关</b>的：只记账、不拦人。要真拦人去「计量设置」打开。")}
-        <div style="margin-top:16px">
+        <div style="margin-top:14px">
           ${kpi([
             { label: "每人每月", value: num(d.monthly.per_member), hint: "在「计量设置」里改" },
             { label: "全组织已发放", value: num(d.monthly.granted), hint: "按成员实际额度合计" },
@@ -301,7 +341,7 @@ PAGES.sub = {
       ${PLATFORM
         ? card(`${secT("改套餐（平台管理员）", "这三项是「卖出去的东西」，只有平台管理员能动——分公司管理员在自己组织里权力再大，也不该能给自己加席位。")}
           <div style="margin-top:8px">
-            ${field("套餐", "", `<select class="ui-input" data-o="plan" style="width:180px">${d.plans_html || ""}</select>`)}
+            ${field("套餐", "", `<select class="ui-input ui-select" data-o="plan" style="width:200px">${d.plans_html || ""}</select>`)}
             ${field("席位上限", "1 - 100000。", inpO("seats", p.seats, 'type="number" min="1" style="width:140px"'))}
             ${field("到期时间", "留空 = 长期有效。", inpO("expires_at", p.expires_at ? p.expires_at.slice(0, 10) : "", 'type="date" style="width:180px"'))}
           </div>
@@ -364,7 +404,7 @@ PAGES["usage-member"] = {
     ];
     return `<div class="ad-wrap">
       ${note("「月额度 / 本月剩余 / 加油包」是当下的余额；右边两列<b>累计</b>是这个人从有记录以来的总消耗，不是本月。想看本月请去「组织用量」。")}
-      ${card(`${secT("成员用量", "扣费顺序：先扣本月固定额度，再扣加油包。")}<div style="margin-top:12px">${table(cols, rows)}</div>`)}
+      ${cardT(secT("成员用量", "扣费顺序：先扣本月固定额度，再扣加油包。"), table(cols, rows))}
     </div>`;
   },
   bind: (root) => {
@@ -393,23 +433,23 @@ PAGES["usage-org"] = {
   render: ({ o, s }) => {
     const deptRows = s.by_dept.map((x) => [esc(x.key), num(x.runs), big(x.tokens), num(x.credits), x.runs ? Math.round(x.elapsed_ms / x.runs / 1000) + " 秒" : "—"]);
     return `<div class="ad-wrap">
-      ${card(`${secT("今天", "当天 0 点起算，按服务器本地时间。")}<div style="margin-top:12px">${kpi([
+      ${card(`${secT("今天", "当天 0 点起算，按服务器本地时间。")}<div style="margin-top:14px">${kpi([
         { label: "运行次数", value: num(o.today.runs) },
         { label: "tokens", value: big(o.today.tokens) },
         { label: "消耗积分", value: num(o.today.credits) },
         { label: "平均耗时", value: o.today.runs ? Math.round(o.today.elapsed_ms / o.today.runs / 1000) + " 秒" : "—" },
       ])}</div>`)}
-      ${card(`${secT("本月", "自然月，每月 1 号归零。")}<div style="margin-top:12px">${kpi([
+      ${card(`${secT("本月", "自然月，每月 1 号归零。")}<div style="margin-top:14px">${kpi([
         { label: "运行次数", value: num(o.month.runs) },
         { label: "tokens", value: big(o.month.tokens) },
         { label: "消耗积分", value: num(o.month.credits) },
         { label: "其中走固定额度", value: num(o.month.from_monthly) },
       ])}</div>`)}
-      ${card(`${secT("最近 7 天", "柱子高度按 tokens 画，鼠标停上去看具体数。")}<div style="margin-top:12px">${bars7(o.last7)}</div>`)}
-      ${card(`${secT("按部门（累计）", "流水记的是<b>花钱当时</b>那个人在哪个部门。人换了部门，老账不跟着搬——不然上个月的部门账会被改掉。")}<div style="margin-top:12px">${table(
-        [{ t: "部门" }, { t: "运行", right: true }, { t: "tokens", right: true }, { t: "积分", right: true }, { t: "平均耗时", right: true }],
-        deptRows
-      )}</div>`)}
+      ${card(`${secT("最近 7 天", "柱子高度按 tokens 画，鼠标停上去看具体数。")}<div style="margin-top:16px">${bars7(o.last7)}</div>`)}
+      ${cardT(
+        secT("按部门（累计）", "流水记的是<b>花钱当时</b>那个人在哪个部门。人换了部门，老账不跟着搬——不然上个月的部门账会被改掉。"),
+        table([{ t: "部门" }, { t: "运行", right: true }, { t: "tokens", right: true }, { t: "积分", right: true }, { t: "平均耗时", right: true }], deptRows)
+      )}
     </div>`;
   },
 };
@@ -422,14 +462,14 @@ PAGES["usage-app"] = {
     const srcRows = s.by_source.map((x) => [esc(SOURCE_LABEL[x.key] || x.key), num(x.runs), big(x.tokens), num(x.credits)]);
     return `<div class="ad-wrap">
       ${note("这两张表都是<b>累计</b>口径——从有记录以来的总量，不是本月。要看时间窗口去「组织用量」。")}
-      ${card(`${secT("按模型", "同一个任务里换过模型的，按每次调用分别记。")}<div style="margin-top:12px">${table(
-        [{ t: "模型" }, { t: "运行", right: true }, { t: "tokens", right: true }, { t: "积分", right: true }, { t: "平均耗时", right: true }],
-        modelRows
-      )}</div>`)}
-      ${card(`${secT("按入口", "任务是从哪儿发起的：网页工作台、飞书、定时任务…")}<div style="margin-top:12px">${table(
-        [{ t: "入口" }, { t: "运行", right: true }, { t: "tokens", right: true }, { t: "积分", right: true }],
-        srcRows
-      )}</div>`)}
+      ${cardT(
+        secT("按模型", "同一个任务里换过模型的，按每次调用分别记。"),
+        table([{ t: "模型" }, { t: "运行", right: true }, { t: "tokens", right: true }, { t: "积分", right: true }, { t: "平均耗时", right: true }], modelRows)
+      )}
+      ${cardT(
+        secT("按入口", "任务是从哪儿发起的：网页工作台、飞书、定时任务…"),
+        table([{ t: "入口" }, { t: "运行", right: true }, { t: "tokens", right: true }, { t: "积分", right: true }], srcRows)
+      )}
     </div>`;
   },
 };
@@ -454,17 +494,17 @@ PAGES["usage-detail"] = {
       .concat(d.members.map((m) => `<option value="${esc(m.username)}"${m.username === detailUser ? " selected" : ""}>${esc(m.nickname || m.username)}</option>`))
       .join("");
     return `<div class="ad-wrap">
-      ${card(`<div class="ad-row" style="justify-content:space-between">
-        ${secT("用量明细", `最近 ${d.detail.length} 条。再往前的记录还在服务器上，只是这页不往下翻——要全量请导出。`)}
-        <div class="ad-row">
-          <select class="ui-input ui-btn--sm" data-user style="width:180px">${opts}</select>
-          <button class="ui-btn ui-btn--outline ui-btn--sm" data-csv>${ic("download")} 导出 CSV</button>
-        </div>
-      </div>
-      <div style="margin-top:12px">${table(
-        [{ t: "时间" }, { t: "成员" }, { t: "类型" }, { t: "模型" }, { t: "入口" }, { t: "tokens", right: true }, { t: "命中缓存", right: true }, { t: "积分", right: true }, { t: "耗时", right: true }],
-        rows
-      )}</div>`)}
+      ${cardT(
+        headRow(
+          secT("用量明细", `最近 ${d.detail.length} 条。再往前的记录还在服务器上，只是这页不往下翻——要全量请导出。`),
+          `<select class="ui-input ui-select" data-user style="width:180px;height:32px;font-size:13px">${opts}</select>
+           <button class="ui-btn ui-btn--outline ui-btn--sm" data-csv>${ic("download")} 导出 CSV</button>`
+        ),
+        table(
+          [{ t: "时间" }, { t: "成员" }, { t: "类型" }, { t: "模型" }, { t: "入口" }, { t: "tokens", right: true }, { t: "命中缓存", right: true }, { t: "积分", right: true }, { t: "耗时", right: true }],
+          rows
+        )
+      )}
     </div>`;
   },
   bind: (root, d) => {
@@ -497,7 +537,7 @@ PAGES.stats = {
     const t = s.totals;
     const userRows = s.by_user.map((x) => [esc(x.key), num(x.runs), big(x.tokens), num(x.credits), x.runs ? Math.round(x.elapsed_ms / x.runs / 1000) + " 秒" : "—"]);
     return `<div class="ad-wrap">
-      ${card(`${secT("总览", "运行相关的口径都是<b>本月</b>；缓存命中率只算记过这个字段的那些条。")}<div style="margin-top:12px">${kpi([
+      ${card(`${secT("总览", "运行相关的口径都是<b>本月</b>；缓存命中率只算记过这个字段的那些条。")}<div style="margin-top:14px">${kpi([
         { label: "成员数", value: num(t.members) },
         { label: "今日活跃", value: num(t.active_today), hint: "今天跑过任务的人" },
         { label: "本月运行", value: num(t.runs_month) },
@@ -509,11 +549,11 @@ PAGES.stats = {
           ? { label: "成果文件", value: num(s.storage.files), hint: mb(s.storage.bytes) }
           : { label: "成果文件", value: "—", hint: "读不到这个组织的目录" },
       ])}</div>`)}
-      ${card(`${secT("最近 7 天")}<div style="margin-top:12px">${bars7(s.last7)}</div>`)}
-      ${card(`${secT("成员排行（累计）", "按 tokens 从多到少，最多 20 人。")}<div style="margin-top:12px">${table(
-        [{ t: "成员" }, { t: "运行", right: true }, { t: "tokens", right: true }, { t: "积分", right: true }, { t: "平均耗时", right: true }],
-        userRows
-      )}</div>`)}
+      ${card(`${secT("最近 7 天")}<div style="margin-top:16px">${bars7(s.last7)}</div>`)}
+      ${cardT(
+        secT("成员排行（累计）", "按 tokens 从多到少，最多 20 人。"),
+        table([{ t: "成员" }, { t: "运行", right: true }, { t: "tokens", right: true }, { t: "积分", right: true }, { t: "平均耗时", right: true }], userRows)
+      )}
     </div>`;
   },
 };
@@ -565,29 +605,27 @@ PAGES.members = {
           </div>`,
     ]);
     return `<div class="ad-wrap">
-      ${card(`<div class="ad-row" style="justify-content:space-between">
-        ${secT("成员", `共 ${m.members.length} 人。停用的成员不占席位，账号和他产出的文件都还在。`)}
-        ${RO ? "" : `<button class="ui-btn ui-btn--default ui-btn--sm" data-add>${ic("plus")} 添加成员</button>`}
-      </div>
-      <div style="margin-top:12px">${table(
-        [{ t: "成员" }, { t: "角色" }, { t: "部门" }, { t: "状态" }, { t: "可用余额", right: true }, { t: "最近活跃" }, { t: "" }],
-        rows
-      )}</div>`)}
+      ${cardT(
+        headRow(
+          secT("成员", `共 ${m.members.length} 人。停用的成员不占席位，账号和他产出的文件都还在。`),
+          RO ? "" : `<button class="ui-btn ui-btn--default ui-btn--sm" data-add>${ic("plus")} 添加成员</button>`
+        ),
+        table([{ t: "成员" }, { t: "角色" }, { t: "部门" }, { t: "状态" }, { t: "可用余额", right: true }, { t: "最近活跃" }, { t: "" }], rows)
+      )}
 
-      ${card(`<div class="ad-row" style="justify-content:space-between">
-        ${secT("部门", "只是个标签，用来把用量拆开看，不影响权限。")}
-        ${RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-adddept>${ic("plus")} 新建部门</button>`}
-      </div>
-      <div class="ad-row" style="margin-top:12px">${deptChips}</div>`)}
+      ${card(`${headRow(
+        secT("部门", "只是个标签，用来把用量拆开看，不影响权限。"),
+        RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-adddept>${ic("plus")} 新建部门</button>`
+      )}
+      <div class="ad-row" style="margin-top:14px">${deptChips}</div>`)}
 
-      ${card(`<div class="ad-row" style="justify-content:space-between">
-        ${secT("邀请码", "比开放注册安全得多：能限次数、能设过期、能预先指定角色和部门，撤销也只影响还没用的那批人。")}
-        ${RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-addinv>${ic("plus")} 生成邀请码</button>`}
-      </div>
-      <div style="margin-top:12px">${table(
-        [{ t: "邀请码" }, { t: "角色" }, { t: "部门" }, { t: "已用" }, { t: "到期" }, { t: "状态" }, { t: "" }],
-        invRows
-      )}</div>`)}
+      ${cardT(
+        headRow(
+          secT("邀请码", "比开放注册安全得多：能限次数、能设过期、能预先指定角色和部门，撤销也只影响还没用的那批人。"),
+          RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-addinv>${ic("plus")} 生成邀请码</button>`
+        ),
+        table([{ t: "邀请码" }, { t: "角色" }, { t: "部门" }, { t: "已用" }, { t: "到期" }, { t: "状态" }, { t: "" }], invRows)
+      )}
     </div>`;
   },
   bind: (root, { m }) => {
@@ -769,10 +807,10 @@ PAGES.pending = {
       ${d.members.length
         ? note(`有 <b>${d.members.length}</b> 个人在等你点头。通过之后他就能登录了；拒绝 = 直接删号——人还没进来过，留着只会占席位。`, true)
         : note("没有待审核的人。开放注册 + 需要审核这两个开关都在「基础设置」里。")}
-      ${card(`${secT("待审核")}<div style="margin-top:12px">${table(
-        [{ t: "申请人" }, { t: "部门" }, { t: "角色" }, { t: "申请时间" }, { t: "" }],
-        rows
-      )}</div>`)}
+      ${cardT(
+        secT("待审核"),
+        table([{ t: "申请人" }, { t: "部门" }, { t: "角色" }, { t: "申请时间" }, { t: "" }], rows)
+      )}
     </div>`;
   },
   bind: (root) => {
@@ -808,17 +846,19 @@ PAGES.roles = {
     const others = d.members.filter((u) => u.role === "member" && u.status !== "disabled");
     return `<div class="ad-wrap">
       ${card(`${secT("三种角色", "后端是按这三档拦的，不是界面上藏一藏而已。")}
-        <div style="margin-top:8px">
+        <div style="margin-top:14px">
           ${field("成员", "只能用工作台，进不来这个后台。", badge("默认", "outline"))}
           ${field("审计员", "后台<b>全部能看</b>，一个字都改不了。合规、外包、财务对账用得上——给他看账，不给他动手。", badge("只读", "secondary"))}
           ${field("管理员", "后台里所有东西都能改，包括加人、改额度、改安全开关。", badge("可写", "secondary"))}
           ${field("平台管理员", "默认组织的管理员。<b>只有他</b>能新建组织、改别的组织的套餐席位，以及改引擎、密钥、MCP 这些服务器级设置。这个身份不能在界面上授予。", PLATFORM ? badge("就是你", "success") : badge("不是你", "outline"))}
         </div>`)}
-      ${card(`<div class="ad-row" style="justify-content:space-between">
-        ${secT("当前的管理员和审计员", `共 ${staff.length} 人。组织所有者不能被别的管理员降级或删除——不然两个管理员能互相踢。`)}
-        ${RO || !others.length ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-promote>${ic("plus")} 提升成员</button>`}
-      </div>
-      <div style="margin-top:12px">${table([{ t: "成员" }, { t: "角色" }, { t: "部门" }, { t: "最近活跃" }, { t: "" }], rows)}</div>`)}
+      ${cardT(
+        headRow(
+          secT("当前的管理员和审计员", `共 ${staff.length} 人。组织所有者不能被别的管理员降级或删除——不然两个管理员能互相踢。`),
+          RO || !others.length ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-promote>${ic("plus")} 提升成员</button>`
+        ),
+        table([{ t: "成员" }, { t: "角色" }, { t: "部门" }, { t: "最近活跃" }, { t: "" }], rows)
+      )}
     </div>`;
   },
   bind: (root, d) => {
@@ -913,12 +953,12 @@ PAGES.basic = {
     const s = d.org.settings;
     return `<div class="ad-wrap">
       ${card(`${secT("组织")}
-        <div style="margin-top:8px">
+        <div style="margin-top:14px">
           ${field("组织名", "最多 40 个字。成员在工作台上看到的就是这个名字。", inp("name", d.org.name, 'style="width:220px"'))}
           ${field("组织 ID", "系统生成，不能改。接口和日志里认的是这个。", `<span class="ad-mono fd">${esc(d.org.id)}</span>`)}
         </div>`)}
       ${card(`${secT("成员怎么进来", "两条路：管理员直接加人，或者发邀请码。开放注册是第三条，最松。")}
-        <div style="margin-top:8px">
+        <div style="margin-top:14px">
           ${field("开放自助注册", "打开之后，<b>任何人</b>只要能访问到这个地址就能自己注册。放在公网上的部署强烈建议关掉，改用邀请码。", sw("open_register", s.open_register))}
           ${field("注册后需要审核", "只在开放注册打开时才有意义：注册进来的人先挂在「成员审核」里，你点头了才能登录。", sw("need_approval", s.need_approval))}
         </div>`)}
@@ -937,7 +977,7 @@ PAGES.net = {
     return `<div class="ad-wrap">
       ${note("这两个名单管的是任务里的<b>抓网页</b>和<b>渲染网页</b>两个工具。填域名就行，一行一个。<code>example.com</code> 会连 <code>a.example.com</code> 一起覆盖，但不会误伤 <code>evilexample.com</code>。")}
       ${card(`${secT("域名放行")}
-        <div style="margin-top:8px">
+        <div style="margin-top:14px">
           ${field("白名单", "<b>留空 = 不限制</b>。一旦填了东西，就只有名单里的域名能抓，其它全拦。", ta("net_allow", s.net_allow, "example.com\ndocs.company.cn"))}
           ${field("黑名单", "优先级高于白名单：同时命中两边，还是拦。", ta("net_deny", s.net_deny, "facebook.com\ninternal-admin.company.cn"))}
         </div>`)}
@@ -957,7 +997,7 @@ PAGES.meter = {
     return `<div class="ad-wrap">
       ${note("<b>闸门关着的时候只记账、不拦人。</b>这是故意的默认值：一上来就拦，容易在你还没搞清楚用量分布之前就把人卡死。先开着看两周账，再决定要不要拦。")}
       ${card(`${secT("用量闸门")}
-        <div style="margin-top:8px">
+        <div style="margin-top:14px">
           ${field("余额扣完就不让跑", "打开之后，可用余额（本月固定额度 + 加油包）为 0 的成员发不出任务。关着就只记账。", sw("credits_enabled", s.credits_enabled))}
           ${field("每人每月固定额度", "每月 1 号重置，<b>不累积</b>。填 0 = 不发月额度，只用加油包。", inp("member_monthly_credits", s.member_monthly_credits, 'type="number" min="0" style="width:140px"'))}
           ${field("新成员的加油包初始余额", "只在建号那一刻发一次。加油包不过期。", inp("default_member_credits", s.default_member_credits, 'type="number" min="0" style="width:140px"'))}
@@ -983,14 +1023,13 @@ PAGES.orgs = {
     ]);
     return `<div class="ad-wrap">
       ${note("<b>租户边界划在工作目录上，不划在整台机器上。</b>真隔离的是：成果文件、会话、账号、席位、用量账本、权限、审计。<b>不隔离</b>的是：引擎和密钥、MCP、技能、专家、记忆库、素材库、定时任务、备份——这些配的是<b>这台服务器</b>，归你（平台管理员）管，各组织共用。")}
-      ${card(`<div class="ad-row" style="justify-content:space-between">
-        ${secT("组织", `共 ${d.orgs.length} 个。只有一个组织的时候，整套「组织」概念对普通成员是隐身的。`)}
-        ${RO ? "" : `<button class="ui-btn ui-btn--default ui-btn--sm" data-neworg>${ic("plus")} 新建组织</button>`}
-      </div>
-      <div style="margin-top:12px">${table(
-        [{ t: "组织" }, { t: "套餐" }, { t: "在用席位" }, { t: "到期" }, { t: "工作目录" }, { t: "" }],
-        rows
-      )}</div>`)}
+      ${cardT(
+        headRow(
+          secT("组织", `共 ${d.orgs.length} 个。只有一个组织的时候，整套「组织」概念对普通成员是隐身的。`),
+          RO ? "" : `<button class="ui-btn ui-btn--default ui-btn--sm" data-neworg>${ic("plus")} 新建组织</button>`
+        ),
+        table([{ t: "组织" }, { t: "套餐" }, { t: "在用席位" }, { t: "到期" }, { t: "工作目录" }, { t: "" }], rows)
+      )}
     </div>`;
   },
   bind: (root, d) => {
@@ -1056,10 +1095,10 @@ PAGES.audit = {
     ]);
     return `<div class="ad-wrap">
       ${note("记的是<b>管理动作</b>：谁加了人、谁改了额度、谁动了安全开关。任务本身跑了什么在「用量明细」里。密码、密钥这类东西<b>不会</b>进这张表。")}
-      ${card(`${secT("操作审计", `最近 ${d.audit.length} 条。`)}<div style="margin-top:12px">${table(
-        [{ t: "时间" }, { t: "操作人" }, { t: "动作" }, { t: "对象" }, { t: "详情" }],
-        rows
-      )}</div>`)}
+      ${cardT(
+        secT("操作审计", `最近 ${d.audit.length} 条。`),
+        table([{ t: "时间" }, { t: "操作人" }, { t: "动作" }, { t: "对象" }, { t: "详情" }], rows)
+      )}
     </div>`;
   },
 };
@@ -1073,20 +1112,20 @@ PAGES.integration = {
     return `<div class="ad-wrap">
       ${note("下面这些渠道配的是<b>这台服务器</b>，不是单个组织——一个飞书机器人对应一个部署。所以入口在工作台的设置里，归平台管理员管，这页只做个索引。")}
       ${card(`${secT("机器人渠道", "接上之后，成员在聊天软件里 @ 一下就能发任务，产出直接回到会话里。")}
-        <div style="margin-top:8px">
+        <div style="margin-top:14px">
           ${row("飞书 / Lark", "支持扫码绑定，不用手填 App ID。", "工作台 → 设置 → 消息渠道")}
           ${row("企业微信", "自建应用或群机器人 Webhook 二选一。", "工作台 → 设置 → 消息渠道")}
           ${row("钉钉", "群机器人 Webhook。", "工作台 → 设置 → 消息渠道")}
           ${row("QQ / 微信公众号", "需要对应平台的开发者资质。", "工作台 → 设置 → 消息渠道")}
         </div>`)}
       ${card(`${secT("能力扩展")}
-        <div style="margin-top:8px">
+        <div style="margin-top:14px">
           ${row("MCP 服务器", "把外部系统的工具接进来给任务用。", "工作台 → 设置 → MCP")}
           ${row("技能与专家", "把重复的活儿固化成可复用的流程。", "工作台 → 技能 / 专家")}
           ${row("定时任务", "让任务按点自己跑，产出推到聊天软件里。", "工作台 → 定时任务")}
         </div>`)}
       ${card(`${secT("对外接口", "现在还没有<b>按组织发放的 API 密钥</b>——所以这里不给你一个点了没用的开关。")}
-        <div style="margin-top:8px">
+        <div style="margin-top:14px">
           ${row("HTTP 接口", "服务端接口走的是登录态（Cookie），拿浏览器里的登录状态就能调。适合内网脚本，不适合发给第三方。", "同源调用")}
           ${row("独立 API 密钥", "还没做。要给第三方系统调用，暂时的办法是单独建一个成员账号，用它的登录态。", "尚未支持")}
         </div>`)}
