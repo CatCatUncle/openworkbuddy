@@ -998,9 +998,20 @@ function modePrompt(mode) {
         ...opts, // 用户在设置里给这个引擎填的 model / bin / extraArgs 等，最后覆盖
       });
       try { filesOut.push(true); } catch {} // 收尾这一下必须立刻发：产出得赶在这一轮结束前落到界面上
-      const finalText = (r.finalText || "").trim();
+      const rawFinal = (r.finalText || "").trim();
       // 调用方（Web / IM / 定时任务）都指望 runTask 就地把回复追加进 history
-      if (finalText) history.push({ role: "assistant", content: finalText });
+      if (rawFinal) history.push({ role: "assistant", content: rawFinal });
+      // 撞上限 / 手动停止 / 跑超时：内置引擎会发 limit 事件、并把这半句写进正文（见下面 stopNote 那段），
+      // CLI 引擎这条路以前只把 stopped 塞在返回值里。于是谁忘了接这个返回值，谁那边就把半截活儿
+      // 显示成干完了——IM 就是这么把「跑满 25 步被掐掉」当成一条正常回复发到用户手机上的。
+      // 在这儿补齐，让两条引擎路径对外一模一样，调用方不用各自记得去接。
+      // 不学内置那样再花一次调用让模型写收尾：CLI 引擎重起一趟是整个进程重来，慢，而且真花钱。
+      let finalText = rawFinal;
+      if (r.stopped) {
+        emit({ type: "limit", note: r.stopped, depth: 0 });
+        const notice = `⚠️ ${r.stopped}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
+        finalText = finalText ? `${finalText}\n\n${notice}` : notice;
+      }
       const usage = {
         prompt: (r.usage && r.usage.prompt) || 0,
         completion: (r.usage && r.usage.completion) || 0,
