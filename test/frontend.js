@@ -294,6 +294,95 @@ const TURNOUT_CHECKS = `
     }
   }
 
+  // ── 出过卡的文件不许在下面再列一遍。用户原话：
+  //    「为什么怎么又是有图标又是看到文件列表的啊，不需要看到文件列表啊」
+  //    四张图 → 四张卡 + 四行同名文件，同一批产出画两遍，第二遍还没缩略图，纯占版面
+  {
+    const rowsVisible = (b) => [...b.querySelectorAll(".out-row")].filter((r) => getComputedStyle(r).display !== "none").map((r) => r.dataset.name);
+    const four = ["招牌_A.png", "招牌_B.png", "招牌_C.png", "招牌_D.png"].map((n, i) => F(n, 1000 + i));
+
+    {
+      const b = fresh();
+      renderTurnOutputs(b, four, four);
+      ok("四张图给四张卡", cards(b).length === 4, JSON.stringify(cards(b)));
+      ok("卡底下不再重复列同样四行（浏览器算出来的可见性，不是有没有类名）",
+        rowsVisible(b).length === 0, JSON.stringify(rowsVisible(b)));
+      ok("一行都不剩时整块清单收掉，不留一条空横线", b.querySelector(".out-list").hidden === true);
+      ok("计数仍按这一回合的真实文件数报，不因为藏起来就少报", b.querySelector(".out-main .cn").textContent === "(4)");
+    }
+
+    // 反向控制之一：没出卡的过程文件必须照常留在清单里，不能一刀切把清单关掉
+    {
+      const b = fresh();
+      const mix = [F("方案.pptx", 4096), F("run.js", 300), F("任务_X/PROGRESS.md", 120)];
+      renderTurnOutputs(b, mix, mix);
+      ok("成品出卡、脚本和过程账本留在清单里",
+        cards(b).length === 1 && cards(b)[0] === "方案.pptx" &&
+        rowsVisible(b).sort().join() === ["run.js", "任务_X/PROGRESS.md"].sort().join(),
+        JSON.stringify(cards(b)) + " / " + JSON.stringify(rowsVisible(b)));
+      ok("还有行要显示时清单不收", b.querySelector(".out-list").hidden === false);
+    }
+
+    // 反向控制之二：卡撤了但「这个文件没了」这条信息得留着——已删除的行不许被藏
+    {
+      const b = fresh();
+      renderTurnOutputs(b, four, four, { root: "任务", full: true });
+      const left = four.slice(0, 3);
+      renderTurnOutputs(b, [F("招牌_E.png", 2000)], [...left, F("招牌_E.png", 2000)], { root: "任务", full: true });
+      const goneRow = b.querySelector('.out-row[data-name="招牌_D.png"]');
+      ok("被删掉的那个：卡撤了，行留着而且看得见",
+        goneRow && goneRow.classList.contains("gone") && getComputedStyle(goneRow).display !== "none",
+        JSON.stringify(rowsVisible(b)));
+    }
+
+    // 上一条其实拦不住「藏掉已删除行」这个改法——卡都撤了，本来就没东西能匹配上。
+    // 真会踩的是这种：同一件产出有两份副本共用一张卡，删掉其中一份。
+    // 那张卡还在（另一份还活着），按「文件名 + 大小」一认，死掉那份的行就被判成「已经出过卡了」，
+    // 用户于是完全看不到「任务子目录里那份没了」这件事
+    {
+      const b = fresh();
+      const dup = [F("任务_Z/招牌_A.png", 1000), F("招牌_A.png", 1000)];
+      renderTurnOutputs(b, dup, dup, { root: "任务_Z", full: true });
+      ok("前提：两份副本共用一张卡", cards(b).length === 1, JSON.stringify(cards(b)));
+      renderTurnOutputs(b, [F("招牌_A.png", 1000)], [F("招牌_A.png", 1000)], { root: "任务_Z", full: true });
+      const g = b.querySelector('.out-row[data-name="任务_Z/招牌_A.png"]');
+      ok("副本里死掉的那份：卡还在（另一份活着），但「已删除」这行必须照样看得见",
+        g && g.classList.contains("gone") && getComputedStyle(g).display !== "none",
+        JSON.stringify(rowsVisible(b)) + " gone=" + (g && g.className));
+    }
+
+    // 副本：agent 常把成品往根目录再拷一份，两条路径同一个文件。
+    // 只按全路径判重的话，那份副本会孤零零留在清单里，看着像凭空多出来一个文件
+    {
+      const b = fresh();
+      const dup = [F("任务_Y/招牌_A.png", 1000), F("招牌_A.png", 1000)];
+      renderTurnOutputs(b, dup, dup);
+      ok("同名同大小的副本只出一张卡", cards(b).length === 1, JSON.stringify(cards(b)));
+      ok("另一条路径那份也跟着藏起来，不留一行看着像多出来的文件",
+        rowsVisible(b).length === 0, JSON.stringify(rowsVisible(b)));
+    }
+
+    // 「还有 N 个文件」数的必须是看得见的行。数进藏起来的，用户点开会发现啥也没多
+    {
+      const b = fresh();
+      // 用 .log 不用 .txt：.txt 算交付物、会去抢卡位（8 张卡的上限被日志占掉一半），
+      // 那样测的就不是折叠计数而是卡位分配了
+      const many = [...four, ...Array.from({ length: 9 }, (_, i) => F("log_" + i + ".log", 50 + i))];
+      renderTurnOutputs(b, many, many);
+      const more = b.querySelector(".out-more");
+      const shown = rowsVisible(b).length;
+      const moreN = more && getComputedStyle(more).display !== "none" ? Number((more.textContent.match(/[0-9]+/) || [0])[0]) : 0;
+      ok("「还有 N 个」只数没出卡的行（看得见 " + shown + " 行，折叠里 " + moreN + " 个，日志共 9 个）",
+        shown + moreN === 9, "shown=" + shown + " more=" + moreN);
+      // 顺手逮到的：.out-hd.out-more 的 display:flex 盖掉了 hidden 属性，
+      // 没东西可折时留下一条空的、看不见却点得着的横条
+      const few = fresh();
+      renderTurnOutputs(few, [F("只有一个.log", 10)], [F("只有一个.log", 10)]);
+      ok("没东西可折时那条「还有 N 个」是真的不见了，不是一条空的隐形横条",
+        getComputedStyle(few.querySelector(".out-more")).display === "none");
+    }
+  }
+
   return names;
 })()
 `;
