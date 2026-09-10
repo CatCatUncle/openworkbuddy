@@ -157,6 +157,123 @@ function looksLikeSvg(s) {
   return t.includes("<svg") && t.includes("</svg>");
 }
 
+// ---------- mermaid 语法自动纠错 ----------
+
+/**
+ * mermaid 挂了先替它把语法改对，再渲染一次。
+ *
+ * 本机 176 段会话里 gen_diagram 调了 37 次挂了 7 次（18.9%），7 次全是 mermaid 语法报错，
+ * 而且全落在四类纯机械的写法错误上，跟"这张图想画成什么样"毫无关系：
+ *   1. 标签开的是 [" 收的却是 ")           —— `F["…(将入iOS)")`        3 次
+ *   2. subgraph 标题带括号或冒号没加引号   —— `subgraph 上游: 卖什么`   2 次
+ *   3. timeline 用全角冒号「：」当分隔符   —— `2024： 进出口 42 亿`     1 次
+ *   4. gitGraph 的分支名是中文没加引号     —— `branch 冷启动P0`         1 次
+ * 而模型收到的回执是 mermaid 那句 `Expecting 'SQE', 'TAGEND', 'UNICODE_TEXT'…`——
+ * 它读不懂这是在说哪个字符，只能把整张图重写一遍碰运气，一张图能来回三四趟。
+ * 这里只碰这四类，改完什么都没改就照旧报错，绝不"猜一张别的图"出来。
+ */
+const MIRROR = { "[": "]", "(": ")", "{": "}" };
+
+/**
+ * 带引号的标签：`[" … "` 后面收尾的括号跟开头对不上就按开头改对。
+ * 只动引号外面的括号；引号里的文字一个字不碰。
+ */
+function fixLabelBrackets(line, fixes) {
+  if (line.trim().startsWith("%%")) return line; // %%{init:…}%% 指令块里全是花括号，不许碰
+  let out = "", i = 0;
+  while (i < line.length) {
+    if (!MIRROR[line[i]]) { out += line[i]; i++; continue; }
+    let j = i, opens = "";
+    while (j < line.length && MIRROR[line[j]]) { opens += line[j]; j++; }
+    if (line[j] !== '"') { out += opens; i = j; continue; } // 没加引号的标签不碰
+    let k = j + 1;
+    while (k < line.length && line[k] !== '"') k++;
+    if (k >= line.length) { out += opens; i = j; continue; } // 引号自己就没配对，不猜
+    let body = line.slice(j + 1, k);
+    let m = k + 1, got = "";
+    while (m < line.length && "])}".includes(line[m])) { got += line[m]; m++; }
+    const want = opens.split("").reverse().map((c) => MIRROR[c]).join("");
+    // got 是空的时候只有一种情况值得管：收尾括号被写进引号里了（`…)]"`）。
+    // 否则 `{"theme": "base"}` 这种 init 指令会被误当成节点标签改坏。
+    const closerInside = !got && body.endsWith(want);
+    if (got === want || (!got && !closerInside)) { out += opens + '"' + body + '"' + got; i = m; continue; }
+    if (closerInside) body = body.slice(0, -want.length);
+    fixes.push(`节点标签的收尾括号跟开头对不上（${opens}…${got || "缺"} → ${opens}…${want}）`);
+    out += opens + '"' + body + '"' + want;
+    i = m;
+  }
+  return out;
+}
+
+/** subgraph 标题里有括号/冒号/逗号就必须加引号，否则 mermaid 当语法符号解析。 */
+const SUBGRAPH_NEEDS_QUOTE = /[()[\]{}:,;&|<>]/;
+function fixSubgraph(line, fixes) {
+  const m = line.match(/^(\s*subgraph\s+)(\S.*?)\s*$/);
+  if (!m || m[2].includes('"')) return line; // 已经带引号的不碰
+  const named = m[2].match(/^([^\s[\]"]+)\[(.+)\]$/); // subgraph 别名[标题]
+  const title = named ? named[2] : m[2];
+  if (!SUBGRAPH_NEEDS_QUOTE.test(title)) return line;
+  fixes.push("subgraph 标题里的括号/冒号补了引号");
+  return named ? `${m[1]}${named[1]}["${title}"]` : `${m[1]}"${title}"`;
+}
+
+/**
+ * timeline 只认半角冒号当「时间 : 事件」的分隔符。
+ * 模型写中文时顺手打全角「：」，mermaid 于是把整行当成一个时间点，
+ * 撞上事件里本来就有的 `05:45` 才报错，报的行号还不是真正写错的那一行。
+ */
+function fixTimelineColon(line, fixes) {
+  const t = line.trim();
+  if (!t || /^(timeline|title|section|accTitle|accDescr|%%)/i.test(t)) return line;
+  const p = line.indexOf("：");
+  if (p < 0) return line;
+  // 已经拿半角冒号当分隔符了（`Day2 : 清晨：看日出`），剩下的全角冒号就是正文的一部分，别动。
+  // 判据是"冒号后面跟着空白"——`05:45` 里的冒号后面是数字，那不是分隔符。
+  if (/:\s/.test(line)) return line;
+  fixes.push("timeline 的全角冒号「：」换成了半角分隔符");
+  // 分隔符只留这一个半角冒号；其余半角冒号（`05:45` 这种）换成全角，免得又被当分隔符
+  return line.slice(0, p).replace(/:/g, "：") + " : " + line.slice(p + 1).replace(/:/g, "：");
+}
+
+/** gitGraph 的分支名不是纯 ASCII 就得加引号，否则词法器直接吐「unexpected character」。 */
+function fixGitBranch(line, fixes) {
+  const m = line.match(/^(\s*(?:branch|checkout|switch|merge)\s+)([^\s"'].*?)\s*$/i);
+  if (!m || /^[\w./-]+$/.test(m[2])) return line;
+  fixes.push("gitGraph 的中文分支名补了引号");
+  return m[1] + '"' + m[2] + '"';
+}
+
+/**
+ * @param {string} src mermaid 源码
+ * @returns {{source:string, fixes:string[]}} 改过的源码 + 改了哪些（没改动时 fixes 为空）
+ */
+function repairMermaid(src) {
+  const lines = String(src == null ? "" : src).split("\n");
+  const head = (lines.find((l) => l.trim() && !l.trim().startsWith("%%")) || "").trim().toLowerCase();
+  const type = head.split(/[\s{:-]/)[0];
+  const fixes = [];
+  const out = lines.map((line) => {
+    if (type === "timeline") return fixTimelineColon(line, fixes);
+    if (type === "gitgraph") return fixGitBranch(line, fixes);
+    return fixLabelBrackets(fixSubgraph(line, fixes), fixes);
+  });
+  return { source: out.join("\n"), fixes: Array.from(new Set(fixes)) };
+}
+
+/** mermaid 只说 "Parse error on line 7 … Expecting 'SQE'"，不说那一行长什么样。把原文贴出来。 */
+function mermaidError(e, src) {
+  const msg = String((e && e.message) || e);
+  const lines = String(src).split("\n");
+  const nums = Array.from(new Set((msg.match(/(?:on )?line (\d+)/g) || []).map((m) => parseInt(m.replace(/\D+/g, ""), 10)))).filter((n) => n >= 1 && n <= lines.length);
+  if (!nums.length) return new Error(msg);
+  const quoted = nums.slice(0, 3).map((n) => `第 ${n} 行：${lines[n - 1].trim().slice(0, 160)}`).join("\n");
+  return new Error(
+    `${msg}\n出错的是这几行（已试过自动纠错仍然不通过）：\n${quoted}\n` +
+      `mermaid 里节点标签一律写成 A["文字"]，括号、冒号、逗号、引号都必须包在双引号里；` +
+      `subgraph 标题同理写成 subgraph "标题"。只改这几行，别整张图重写。`
+  );
+}
+
 /**
  * 统一入口。
  * @param {{kind:string, source:string, width?:number, height?:number, theme?:string}} p
@@ -173,14 +290,32 @@ async function renderDiagram({ kind, source, width, height, theme }) {
   } else if (k === "dot" || k === "graphviz") {
     svg = await renderDot(src);
   } else if (k === "mermaid") {
-    if (browserRender.available()) {
-      svg = await browserRender.renderMermaid(src, theme);
-    } else {
+    const once = async (s) => {
+      if (browserRender.available()) return browserRender.renderMermaid(s, theme);
       try {
-        svg = (await krokiRender("mermaid", src, "svg")).toString("utf8");
+        const out = (await krokiRender("mermaid", s, "svg")).toString("utf8");
         note = "mermaid 走了 kroki 在线渲染（桌面应用内会用本地渲染）";
+        return out;
       } catch (e) {
-        throw new Error(`mermaid 需要在桌面应用（npm run app）内离线渲染，kroki 在线降级也失败了（${e.message}）。流程/架构图可改用 kind:"dot"（离线可用）`);
+        const err = new Error(`mermaid 需要在桌面应用（npm run app）内离线渲染，kroki 在线降级也失败了（${e.message}）。流程/架构图可改用 kind:"dot"（离线可用）`);
+        err.noRetry = true; // 这是"渲染器没得用"，不是图写错了，改语法救不回来
+        throw err;
+      }
+    };
+    try {
+      svg = await once(src);
+    } catch (e) {
+      if (e && e.noRetry) throw e;
+      // 语法挂了：先按四类常见写法错误自动改一遍再渲染一次。改完还挂就把原话报回去，
+      // 但要把出错那一行的原文贴出来——mermaid 只说 "Expecting 'SQE', 'TAGEND'…"，
+      // 不说是哪一行的哪个字符，模型读了只能整张图重写碰运气。
+      const fixed = repairMermaid(src);
+      if (!fixed.fixes.length) throw mermaidError(e, src);
+      try {
+        svg = await once(fixed.source);
+        note = (note ? note + "；" : "") + `原图语法有错，已自动修正后渲染：${fixed.fixes.join("；")}`;
+      } catch (e2) {
+        throw mermaidError(e2, fixed.source);
       }
     }
   } else if (k === "plantuml") {
@@ -202,4 +337,4 @@ async function renderDiagram({ kind, source, width, height, theme }) {
   return { svg, png, note };
 }
 
-module.exports = { renderDiagram, plantumlEncode, renderECharts, renderDot, looksLikeSvg, svgToPngAnyhow };
+module.exports = { renderDiagram, plantumlEncode, renderECharts, renderDot, looksLikeSvg, svgToPngAnyhow, repairMermaid, mermaidError };
