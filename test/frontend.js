@@ -2990,6 +2990,274 @@ const MASK_CHECKS = (script) => `
   return names;
 })()
 `;
+// ================= 技能卡「立即使用」：先摆几件具体能干的事 =================
+// 用户原话：「点击技能然后点击立即使用怎么 用「xiaohongshu-topic」技能帮我： 都没什么特殊点格式啊」。
+// 以前点完只往输入框丢半句话，等于把一张空白页原样还给用户。现在从 SKILL.md 的「适用场景」里挖具体例子。
+// 这函数是纯的，但仍然放进真 Chromium 跑：正则里有中文引号和 一-龥，
+// Node 和浏览器的 Unicode 行为要是差一点点，只在浏览器里测才发现得了。
+// 真源码切 app-04.js，不抄；连喂进去的说明书也用仓库里真发出去的那几份。
+const APP04 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-04.js"), "utf8");
+const SKEG_SRC = (() => {
+  const a = APP04.indexOf("function skillExamples(md) {");
+  const b = APP04.indexOf("\n// ---- Tab 2：技能", a);
+  if (a < 0 || b <= a) throw new Error("app-04.js 里找不到 skillExamples（被改名/挪走？），前端测试没法定位真源码");
+  return APP04.slice(a, b);
+})();
+// 仓库里随包发出去的技能说明书。用户点的就是这几张卡，拿真文件当输入，
+// 免得测试里编一份格式最规整的 md 自欺欺人。
+const SKEG_DOCS = (() => {
+  const dir = path.join(__dirname, "..", "skills");
+  const out = {};
+  for (const name of ["xiaohongshu-topic", "wechat-article", "deep-research", "brand-guidelines", "feishu-doc"]) {
+    for (const f of ["skill.md", "SKILL.md"]) {
+      const p2 = path.join(dir, name, f);
+      if (fs.existsSync(p2)) { out[name] = fs.readFileSync(p2, "utf8"); break; }
+    }
+    if (!(name in out)) throw new Error("skills/" + name + " 的说明书不见了，技能例子测试没法用真输入");
+  }
+  return out;
+})();
+const SKEG_HTML = "<!doctype html><meta charset='utf-8'><body></body>";
+const SKEG_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const DOCS = ${JSON.stringify(SKEG_DOCS)};
+
+  // ---- 用户点名的那张卡 ----
+  const xhs = skillExamples(DOCS["xiaohongshu-topic"]);
+  ok("用户点名的 xiaohongshu-topic 不再是一句空话，挖出了具体例子", xhs.length >= 3, JSON.stringify(xhs));
+  ok("挖的是「适用场景」那一节里的事", /选题/.test(xhs.join("｜")), JSON.stringify(xhs));
+  // 负向控制（这条是回归）：那个正则以前带 m 标志，$ 就成了「行尾」，配上懒惰量词
+  // 整节只截到第一行，三条只剩一条。删掉 m 之前这条必挂。
+  ok("整节都读到了，不是只截了第一行", xhs.length === 3, "只挖到 " + xhs.length + " 条：" + JSON.stringify(xhs));
+  // 「已经知道账号定位（卖出什么、给谁看），需要把定位拆成…」——括号里的补充说明要拿掉，
+  // 但不能拿括号当刀把整句砍了（砍完剩「已经知道账号定位」，前后不搭）
+  const withParen = xhs.find((t) => /账号定位/.test(t));
+  ok("括号里的补充说明拿掉，句子还是整的", !!withParen && !/[（(]/.test(withParen) && /拆成/.test(withParen), String(withParen));
+
+  // ---- 适用场景写成一句话、用顿号串起来的（wechat-article 就是这样）----
+  const wx = skillExamples(DOCS["wechat-article"]);
+  ok("适用场景写成一句话用顿号串的，也能拆成几件事", wx.length >= 2, JSON.stringify(wx));
+
+  // ---- 负向控制：没写「适用场景」的说明书宁可一条不给 ----
+  // 早先的版本挖不到就退回全文前 1200 字，结果卡上摆的是 #b0aea5、pptxgenjs、app_id
+  // 这类配置和字段名——比空着更糟。这两份说明书都没写「适用场景」，而且正文里
+  // 恰好有一堆「像人话但不是任务」的句子（字体名、写作规范、接口注意事项），
+  // 光靠「看着像代码就不要」那道筛子拦不住它们，只有把挖掘范围锁死在「适用场景」才干净。
+  ok("没写「适用场景」的说明书一条都不挖（不退回全文）",
+    skillExamples(DOCS["brand-guidelines"]).length === 0 && skillExamples(DOCS["feishu-doc"]).length === 0,
+    JSON.stringify([skillExamples(DOCS["brand-guidelines"]), skillExamples(DOCS["feishu-doc"])]));
+
+  // ---- 挑出来的东西不能是代码/配置/链接 ----
+  const junk = skillExamples([
+    "## 适用场景",
+    "- 主色 Mid Gray: #b0aea5 - Secondary elements",
+    "- \`pptxgenjs\`",
+    "- PLATFORM=openclaw",
+    "- 打开 https://example.com 看文档",
+    "- 把一堆散乱的会议记录整理成周报",
+    "",
+    "## 别的",
+  ].join("\\n"));
+  ok("颜色码/包名/环境变量/链接一律不当例子", junk.length === 1 && junk[0] === "把一堆散乱的会议记录整理成周报", JSON.stringify(junk));
+
+  // ---- 前言里的 description 是写给模型看的，不当例子 ----
+  const fm = skillExamples("---\\nname: x\\ndescription: 用来做一份很像样的年终总结报告\\n---\\n\\n## 说明\\n随便写点什么\\n");
+  ok("前言里的 description 不当例子", fm.length === 0, JSON.stringify(fm));
+
+  // ---- 引号短句优先，且最多摆 4 个（摆一屏按钮等于没帮人挑）----
+  const many = skillExamples([
+    "## 适用场景",
+    "- 「帮我写一份季度复盘」",
+    "- 「把这份纪要整理成周报」",
+    "- 「给这个活动想十个标题」",
+    "- 「把长文档压成一页摘要」",
+    "- 「再来一条凑数的任务描述」",
+    "- 「又一条凑数的任务描述在此」",
+  ].join("\\n"));
+  ok("引号里的短句直接当例子", many[0] === "帮我写一份季度复盘", JSON.stringify(many));
+  ok("最多摆 4 个，不糊用户一脸", many.length === 4, JSON.stringify(many));
+
+  // ---- 边界：太短的、重复的、光一个英文单词的都不要 ----
+  const edge = skillExamples([
+    "## 适用场景",
+    "- 排版",
+    "- docx",
+    "- 把已有 Markdown 排版成公众号推文",
+    "- 把已有 Markdown 排版成公众号推文",
+  ].join("\\n"));
+  ok("太短的、光一个英文单词的、重复的都筛掉", edge.length === 1 && edge[0] === "把已有 Markdown 排版成公众号推文", JSON.stringify(edge));
+
+  ok("说明书是空的也不炸", skillExamples("").length === 0 && skillExamples(null).length === 0 && skillExamples(undefined).length === 0);
+  return names;
+})()
+`;
+
+// ================= 侧栏：项目那一栏 + 任务历史该不该按项目过滤 =================
+// 用户两句原话是同一个根因：
+//   「本组织工作目录没有必要显示啊，没必要显示一个 tab 在那里啊，有点突兀」
+//   「我 catuncle 账号登陆之前的历史记录都没看到了，之前的任务历史都没看到了啊」
+// 以前服务端给租户成员编了个叫「本组织工作目录」的假项目顶上，两头都出事：侧栏多一个点不动的 tab，
+// 而且这名字跟老会话记的项目名对不上，renderHistory 按项目一过滤，整排任务历史全没了——
+// 一条都没丢，只是全被滤掉了。现在服务端如实回 locked，前端见到 locked 就整块不画、也不过滤。
+// 切 app-02.js 的真源码，连 fetch 那一步（refreshProjects）也一起跑，
+// 不然「locked 有没有真被读出来」这段就没人管。
+const PROJ_SRC = (() => {
+  const a = APP02.indexOf("/** 当前项目下的任务。");
+  const b = APP02.indexOf('document.getElementById("history").addEventListener', a);
+  const c = APP02.indexOf("async function refreshProjects() {");
+  const d = APP02.indexOf('document.getElementById("proj-add").onclick', c);
+  if (a < 0 || b <= a) throw new Error("app-02.js 里的会话历史过滤段找不到了，前端测试没法定位真源码");
+  if (c < 0 || d <= c) throw new Error("app-02.js 里的 refreshProjects/renderProjects 段找不到了，前端测试没法定位真源码");
+  return APP02.slice(a, b) + "\n" + APP02.slice(c, d);
+})();
+// 侧栏那一栏的真样式必须注进来：.side-nav .item 自带 display:flex，
+// 谁要是把隐藏改回 head.hidden = true，[hidden] 压不住它，栏目照样显示。
+// 只验 DOM 属性的话那种改法照样全绿，用户还是看见那个点不动的 tab。
+const PROJ_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
+  + "<body style='margin:0;width:260px'><div class='side-nav'>"
+  + "<div class='item nav-head' data-view='proj' title='项目管理'><span class='tx'>项目</span></div>"
+  + "<div id='proj-list'></div></div><div id='history'></div>"
+  + "<div id='new-task'></div></body>";
+const PROJ_STUBS = [
+  "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
+  "var stripSceneTag = (s) => String(s || '');",
+  "var sessionId = '';",
+  "var runningSessions = new Set();",
+  "var sessions = [];",
+  "var activeProject = '默认项目';",
+  "var projectsLocked = false;",
+  "var projects = [];",
+  "var refreshSettingsCache = () => {};",
+  "var renderFiles = () => {};",
+  "var __PROJ_REPLY = {};",
+  "var fetch = async () => ({ json: async () => __PROJ_REPLY });",
+].join("\n");
+const PROJ_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const head = document.querySelector('.side-nav [data-view="proj"]');
+  const box = document.getElementById("proj-list");
+  const hist = document.getElementById("history");
+  // 一个老用户的侧栏：早年的会话根本没记项目名，后来的记的是「默认项目」
+  const SESS = [
+    { id: "s1", title: "整理季度数据", at: 3 },
+    { id: "s2", title: "写公众号推文", at: 2, project: "默认项目" },
+    { id: "s3", title: "做一版落地页", at: 1, project: "客户 A" },
+  ];
+
+  // ---- 有全局工作目录的人（总部管理员）：项目那一栏照常 ----
+  sessions = SESS.slice();
+  __PROJ_REPLY = { projects: [{ name: "默认项目", dir: "/w" }, { name: "客户 A", dir: "/w/a" }], active: "默认项目", locked: false };
+  await refreshProjects();
+  ok("管理员看得见「项目」这一栏", getComputedStyle(head).display !== "none" && getComputedStyle(box).display !== "none");
+  ok("项目列表照常画出来", box.querySelectorAll(".proj-item").length === 2);
+  ok("当前项目高亮的是服务端说的那个", box.querySelector(".proj-item.active").dataset.name === "默认项目");
+  ok("任务历史按项目过滤：没记项目的算「默认项目」", [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "s1,s2", hist.textContent);
+  ok("空的时候说清楚是「这个项目」没任务", (() => { sessions = []; renderHistory(); const t = hist.textContent; sessions = SESS.slice(); return /该项目还没有任务/.test(t); })());
+
+  // ---- 租户成员：服务端说「你这儿没有项目这回事」 ----
+  __PROJ_REPLY = { projects: [], active: "", locked: true };
+  await refreshProjects();
+  ok("服务端 locked 被读进来了", projectsLocked === true && activeProject === "");
+  ok("整栏「项目」不再出现（连那个点不动的 tab 也没了）", getComputedStyle(head).display === "none", "display=" + getComputedStyle(head).display);
+  ok("项目列表也不占位置且清空", getComputedStyle(box).display === "none" && box.innerHTML === "");
+  // 这条是用户那句「历史全没了」的正主：租户端一条都不许过滤
+  ok("三条任务历史一条不少地回来了", [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "s1,s2,s3", hist.textContent);
+  ok("空的时候不提「项目」两个字", (() => { sessions = []; renderHistory(); const t = hist.textContent; sessions = SESS.slice(); return /还没有任务/.test(t) && !/该项目/.test(t); })());
+
+  // ---- 负向控制：服务端要是再编一个假项目顶上，就又会把历史滤空 ----
+  // 这条不是在测「假项目还在」，是把当年的事故钉在这儿：只要 locked 这条路被绕开、
+  // 拿一个跟老会话对不上的名字当 active，用户就又看不到历史了。
+  __PROJ_REPLY = { projects: [{ name: "本组织工作目录", dir: "/w" }], active: "本组织工作目录", locked: false };
+  await refreshProjects();
+  ok("当年的事故复现得出来：假项目一顶上，历史当场空", hist.querySelectorAll(".hist-item").length === 0 && projectsLocked === false);
+
+  // ---- 回到 locked：状态能来回切，不是只在首次加载对 ----
+  __PROJ_REPLY = { projects: [], active: "", locked: true };
+  await refreshProjects();
+  ok("切回租户端，栏目重新藏好、历史重新齐全", getComputedStyle(head).display === "none" && hist.querySelectorAll(".hist-item").length === 3);
+  return names;
+})()
+`;
+
+// ================= 登录后把服务端那份任务历史并回侧栏 =================
+// 这是「历史全没了」的第二道防线：假项目那条修好了，可清缓存 / 换台机器 / 改用户名
+// 照样会让 localStorage 里那份列表空掉，而对话本体一直在 data/sessions/ 躺着。
+// 这段要守的三件事：只补不删（本地刚建还没落盘的新任务不能被抹）、
+// 老版本服务端没这个接口时维持原样别清空、服务端润色过的标题盖过本地那截 24 字。
+const APP03_MERGE = (() => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8");
+  const a = src.indexOf("async function mergeServerSessions() {");
+  const b = src.indexOf("\ninitAuth();", a);
+  if (a < 0 || b <= a) throw new Error("app-03.js 里找不到 mergeServerSessions（被改名/挪走？），前端测试没法定位真源码");
+  return src.slice(a, b);
+})();
+const MERGE_HTML = "<!doctype html><meta charset='utf-8'><body><div id='history'></div></body>";
+const MERGE_STUBS = [
+  "var sessions = [];",
+  "var SAVED = 0; var saveSessions = () => SAVED++;",
+  "var RENDERED = 0; var renderHistory = () => RENDERED++;",
+  "var __REPLY = null; var __THROW = false;",
+  "var fetch = async () => { if (__THROW) throw new Error('offline'); return { json: async () => __REPLY }; };",
+].join("\n");
+const MERGE_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+
+  // ---- 清了缓存 / 换台机器：本地一条没有，服务端有 3 条 ----
+  sessions = [];
+  __REPLY = { sessions: [
+    { id: "s1", title: "整理季度数据", at: 100 },
+    { id: "s2", title: "写公众号推文", at: 300, project: "客户 A" },
+    { id: "s3", title: "做一版落地页", at: 200 },
+  ] };
+  await mergeServerSessions();
+  ok("本地空了也能从服务端把历史补回来", sessions.length === 3, JSON.stringify(sessions));
+  ok("补回来按时间倒序，最近干的在最上面", sessions.map(s => s.id).join(",") === "s2,s3,s1", sessions.map(s => s.id).join(","));
+  ok("项目名跟着回来（不然按项目一过滤又归错组）", sessions.find(s => s.id === "s2").project === "客户 A");
+  ok("补完存下来并重画了侧栏", SAVED > 0 && RENDERED > 0);
+
+  // ---- 只补不删：本地刚建、还没落盘的新任务必须原样留着 ----
+  sessions = [{ id: "new1", title: "刚敲下的新任务", at: 999 }];
+  __REPLY = { sessions: [{ id: "s1", title: "整理季度数据", at: 100 }] };
+  await mergeServerSessions();
+  ok("★本地刚建还没落盘的新任务没被服务端那份顶掉★", sessions.some(s => s.id === "new1"), JSON.stringify(sessions));
+  ok("同时该补的也补上了", sessions.some(s => s.id === "s1"));
+
+  // ---- 标题：服务端那份是模型润色过的，本地是发第一句时截的 24 字 ----
+  sessions = [{ id: "s1", title: "帮我把这个季度的销售数据整理一", at: 0 }];
+  __REPLY = { sessions: [{ id: "s1", title: "整理 Q3 销售数据并出图", at: 100, project: "客户 A" }] };
+  await mergeServerSessions();
+  ok("服务端润色过的标题盖过本地那截半句话", sessions[0].title === "整理 Q3 销售数据并出图", sessions[0].title);
+  ok("本地缺的时间和项目名一并补上", sessions[0].at === 100 && sessions[0].project === "客户 A");
+  ok("不重复塞一条（按 id 认人）", sessions.length === 1);
+
+  // ---- 负向控制：服务端还没起名字的，别拿「未命名任务」把本地好标题冲掉 ----
+  sessions = [{ id: "s1", title: "帮我把这个季度的销售数据整理一", at: 50 }];
+  __REPLY = { sessions: [{ id: "s1", title: "未命名任务", at: 100 }] };
+  await mergeServerSessions();
+  ok("服务端那条还没起名字时不冲掉本地的标题", sessions[0].title === "帮我把这个季度的销售数据整理一", sessions[0].title);
+
+  // ---- 老版本服务端没这个接口 / 断网：维持原样，一条都不许清 ----
+  sessions = [{ id: "keep1", title: "本地这条得留着", at: 1 }];
+  __REPLY = { error: "Cannot GET /api/sessions" };
+  await mergeServerSessions();
+  ok("老版本服务端没这个接口时不动本地那份", sessions.length === 1 && sessions[0].id === "keep1");
+  __THROW = true;
+  await mergeServerSessions();
+  __THROW = false;
+  ok("断网时也不动本地那份（更不许清空）", sessions.length === 1 && sessions[0].id === "keep1");
+  __REPLY = { sessions: [] };
+  await mergeServerSessions();
+  ok("服务端如实回「一条没有」时也不清本地", sessions.length === 1 && sessions[0].id === "keep1");
+  return names;
+})()
+`;
+
 const RENDERER_LOG = [];
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
@@ -3167,6 +3435,33 @@ app.whenReady().then(async () => {
     } finally {
       if (!win13.isDestroyed()) win13.destroy();
     }
+    const winSK = mkWin({ show: false, width: 700, height: 500, webPreferences: { offscreen: true } });
+    try {
+      await winSK.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SKEG_HTML));
+      const namesSK = await winSK.webContents.executeJavaScript(SKEG_SRC + "\n" + SKEG_CHECKS, true)
+        .catch((e) => { throw new Error("[技能例子] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesSK) console.log("  ✓ " + n);
+      console.log(`✅ 前端：技能卡「立即使用」摆的是具体能干的事（真说明书·整节都读·括号不砍句·没写适用场景就一条不给·颜色码包名不当例子·最多 4 个）${namesSK.length} 项通过`);
+    } finally { if (!winSK.isDestroyed()) winSK.destroy(); }
+
+    const winMG = mkWin({ show: false, width: 400, height: 400, webPreferences: { offscreen: true } });
+    try {
+      await winMG.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MERGE_HTML));
+      const namesMG = await winMG.webContents.executeJavaScript(MERGE_STUBS + "\n" + APP03_MERGE + "\n" + MERGE_CHECKS, true)
+        .catch((e) => { throw new Error("[历史并回] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesMG) console.log("  ✓ " + n);
+      console.log(`✅ 前端：登录后把服务端的任务历史并回侧栏（本地空了能补回·只补不删·润色过的标题盖过半句话·老服务端/断网一条不清）${namesMG.length} 项通过`);
+    } finally { if (!winMG.isDestroyed()) winMG.destroy(); }
+
+    const winPJ = mkWin({ show: false, width: 300, height: 600, webPreferences: { offscreen: true } });
+    try {
+      await winPJ.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PROJ_HTML));
+      const namesPJ = await winPJ.webContents.executeJavaScript(PROJ_STUBS + "\n" + PROJ_SRC + "\n" + PROJ_CHECKS, true)
+        .catch((e) => { throw new Error("[项目栏/任务历史] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesPJ) console.log("  ✓ " + n);
+      console.log(`✅ 前端：侧栏项目栏 + 任务历史（租户端整栏不画·历史一条不滤·假项目顶上就滤空的事故留证·状态来回切）${namesPJ.length} 项通过`);
+    } finally { if (!winPJ.isDestroyed()) winPJ.destroy(); }
+
     const winGC = mkWin({ show: false, width: 760, height: 600, webPreferences: { offscreen: true } });
     try {
       await winGC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(GOAL_HTML));

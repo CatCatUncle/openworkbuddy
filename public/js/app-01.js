@@ -5,6 +5,7 @@ let currentMode = "craft";
 let settingsCache = null;
 let projects = [];
 let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前声明（初始化就会用到）
+let projectsLocked = false;    // 服务端说「你这边没有项目这回事」（租户成员）：整块项目区不画，任务历史也不按项目过滤
 let currentUser = null; // 登录后由 initAuth() 填充
 /** 内置猫标的哨兵值。不是 emoji 也不是 data URI，avatarBits 单独认它 */
 const ASSISTANT_MARK = "@cat";
@@ -40,7 +41,12 @@ const modalBox = document.getElementById("modal-box");
 const mTitle = document.getElementById("m-title");
 const mBody = document.getElementById("m-body");
 
-function saveSessions() { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 50))); }
+// 本地只是缓存，权威列表在服务端 /api/sessions。留 300 条跟服务端一个量级，
+// 免得刚从服务端并回来的历史转头又被截成 50 条。
+function saveSessions() {
+  try { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 300))); }
+  catch { try { localStorage.setItem(SESS_KEY, JSON.stringify(sessions.slice(0, 50))); } catch {} } // 配额满了退回小份，别让整个保存链条炸掉
+}
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 /** 一条工作区相对路径的目录部分（顶层文件就是空串） */
 function dirOf(name) { const i = String(name || "").lastIndexOf("/"); return i < 0 ? "" : name.slice(0, i); }

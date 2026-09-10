@@ -252,6 +252,68 @@ function saveSession(id) {
   store.writeJsonAtomic(sessFile(id), s);
 }
 
+/**
+ * 磁盘上的会话清单（给侧栏的任务历史用）。
+ *
+ * 侧栏那份列表一直只活在浏览器 localStorage 里，而对话本体在 data/sessions/。
+ * 于是「换台机器 / 清缓存 / 改用户名 / 换个账号先登进来」任意一件事，列表就空了，
+ * 用户看到的是「我的历史任务全没了」，其实一条都没丢。这里按磁盘给一份权威清单。
+ *
+ * 按文件 mtime 做增量缓存：没变的文件不重读，跑着任务时也不会每次全量读一百个 JSON。
+ * id 取的是文件名（sessFile 会把非 \w 字符换成 _，而 id 本来就是 s_<时间戳>_<随机数>，不会被改写）。
+ */
+const sessMetaCache = new Map(); // 文件名 -> { mtime, row }
+function listSessionsOnDisk() {
+  let names = [];
+  try { names = fs.readdirSync(SESS_DIR).filter((n) => n.endsWith(".json")); } catch { return []; }
+  const rows = [];
+  const seen = new Set();
+  for (const n of names) {
+    const id = n.slice(0, -5);
+    seen.add(n);
+    const live = sessions.get(id); // 内存里有就用内存的：刚写过的盘没必要再读一遍
+    if (!live) {
+      let mtime = 0;
+      try { mtime = fs.statSync(path.join(SESS_DIR, n)).mtimeMs; } catch { continue; }
+      const hit = sessMetaCache.get(n);
+      if (hit && hit.mtime === mtime) { if (hit.row) rows.push(hit.row); continue; }
+      const data = store.readJson(path.join(SESS_DIR, n), null);
+      const row = sessionRow(id, data);
+      sessMetaCache.set(n, { mtime, row });
+      if (row) rows.push(row);
+      continue;
+    }
+    const row = sessionRow(id, live);
+    if (row) rows.push(row);
+  }
+  for (const k of sessMetaCache.keys()) if (!seen.has(k)) sessMetaCache.delete(k); // 删掉的会话别赖在缓存里
+  rows.sort((a, b) => b.at - a.at);
+  return rows;
+}
+function sessionRow(id, s) {
+  // 一句话都没说过的空壳不进侧栏：点进去还是空的，只会让人以为「历史又乱了」
+  if (!s || !Array.isArray(s.transcript) || !s.transcript.length) return null;
+  return {
+    id,
+    title: s.title || "未命名任务",
+    user: s.user || "",
+    project: s.project || "",
+    at: Date.parse(s.updated_at || "") || 0,
+    turns: s.transcript.length,
+  };
+}
+/**
+ * 侧栏只列「我自己的」，故意比 sessionAllowed 更窄：
+ * 后者管的是「能不能打开」（管理员拿到同组织的链接可以打开），
+ * 这里管的是「侧栏该不该出现」——把同事的任务铺进管理员的侧栏是另一种事故。
+ * 没开账号体系（req.user 为空）本来就是一个人用；老会话没记归属的一律留着，别让升级上来的历史消失。
+ */
+function ownSession(user, row) {
+  if (!user) return true;
+  if (!row.user) return true;
+  return row.user === user.username;
+}
+
 // 任务跑一半崩了 / 用户直接退出 App，这一轮的过程就全没了——中途也存，最多每 5 秒一次。
 // 存的是同一份对象，落盘又是原子改名，跟收尾时那次 saveSession 不会打架。
 const sessSaveAt = new Map();
@@ -1336,9 +1398,11 @@ function saveConfig() {
 }
 
 app.get("/api/projects", (req, res) => {
-  // 租户看到的是自己那一个根，不是总部的项目清单——后者连目录名都是信息
-  if (!ownsGlobalWorkspace(req.user))
-    return res.json({ projects: [{ name: "本组织工作目录", dir: getWorkspaceDir() }], active: "本组织工作目录", locked: true });
+  // 租户看到的是自己那一个根，不是总部的项目清单——后者连目录名都是信息。
+  // 以前这里编了个叫「本组织工作目录」的假项目顶上，两头都出事：侧栏多一个点不动的 tab，
+  // 而且这个名字跟老会话记的项目名对不上，前端按项目过滤后整排任务历史都没了。
+  // 现在如实说「你这儿没有项目这回事」，前端见到 locked 就整块不画、也不按项目过滤。
+  if (!ownsGlobalWorkspace(req.user)) return res.json({ projects: [], active: "", locked: true });
   ensureProjects();
   res.json({ projects: config.projects, active: config.active_project, locked: false });
 });
@@ -2761,6 +2825,9 @@ app.post("/api/chat", async (req, res) => {
 
   const sess = getSession(sessionId);
   if (user && !sess.user) sess.user = user.username;
+  // 任务属于哪个项目，以前只记在浏览器里。第一轮就在服务端定死，缓存清了也还分得清组。
+  // 只有拥有全局工作目录的人才有「项目」这个概念，租户端记了反而是假信息。
+  if (!sess.project && ownsGlobalWorkspace(user)) sess.project = config.active_project || "";
   const sessLLM = llmForSession(sess); // 本对话生效的模型（含专家子代理、标题、记账）
   if (regen) {
     // 重新生成：回滚掉最后一轮（用户消息及其后的所有内容），下面会把同一条消息重新入队
@@ -3035,6 +3102,13 @@ app.get("/api/chat/stream/:id", (req, res) => {
   });
   run.subscribers.add(res);
   req.on("close", () => run.subscribers.delete(res));
+});
+
+// 任务历史列表。前端侧栏以前只信 localStorage，清个缓存 / 换台机器就「历史全没了」，
+// 其实对话一直在 data/sessions/ 里躺着。这条接口是那份列表的权威来源，前端登录后跟本地缓存并一次。
+app.get("/api/sessions", (req, res) => {
+  const rows = listSessionsOnDisk().filter((r) => ownSession(req.user, r)).slice(0, 300);
+  res.json({ sessions: rows.map(({ user, ...r }) => r) }); // 归属只用来过滤，不回给前端
 });
 
 // 历史会话回放
