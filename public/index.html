@@ -1132,8 +1132,9 @@
   .settings-pane .card-item .d { font-size: 13px; }
 
   /* 助理设置：分区 + 双栏通道卡。卡头一行 = 图标 · 名字 · 一句副标题 · 状态灯 · 右上角「连接 / 取消连接」；
-     连上的卡默认收起（点卡头展开改凭证），没连的摊开等你填；申请步骤折进「怎么拿凭证」。
-     用户原话「太乱了，没办法自己调」——旧版 9 大段说明平铺一屏，新版默认可见文字砍掉一半以上 */
+     **所有卡默认收起**，点卡头或点「连接」才展开。之前是「连上的收起、没连的摊开等你填」，
+     结果一进来就有四五张你根本没打算连的渠道的空表单摊在屏幕上。用户原话：
+     「默认都收起来啊，当用户需要连接点击的时候才展开」。申请步骤折进「怎么拿凭证」。 */
   .im-sec { margin-bottom: 8px; }
   .im-sec-h { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; flex-wrap: wrap; }
   .im-sec-h b { font-size: 14px; font-weight: 600; }
@@ -1144,7 +1145,9 @@
   .im-card { border: 1px solid var(--wb-border); border-radius: 12px; background: var(--wb-card); min-width: 0; break-inside: avoid; margin-bottom: 12px; }
   .im-card.on { border-color: color-mix(in srgb, var(--wb-ok) 40%, var(--wb-border)); }
   .im-card-h { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; user-select: none; border-radius: 12px; }
-  .im-card-static .im-card-h { cursor: default; }
+  /* 折叠箭头：没有它，一屏全是收起的卡，看不出哪些是能点开的 */
+  .im-ar { flex: none; width: 14px; height: 14px; border-right: 1.5px solid var(--wb-text-3); border-bottom: 1.5px solid var(--wb-text-3); transform: rotate(-45deg) translate(-2px, -2px); transition: transform var(--wb-t-fast) var(--wb-ease); }
+  .im-card.packed .im-ar { transform: rotate(45deg) translate(-1px, -1px); }
   .im-card-h:focus-visible { outline: 2px solid var(--wb-brand); outline-offset: -2px; }
   .im-card-h .ic { font-size: 16px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 8px; background: var(--wb-bg-hover); flex: none; }
   .im-card-h .tt { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
