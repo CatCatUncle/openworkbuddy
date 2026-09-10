@@ -4729,6 +4729,7 @@ async function main() {
   testDefaultSkillsManifest();
   testDesktopAppIdentity();
   await testFrontendSvgFigures();
+  testPackageAssetDrift();
   await testAdminConsoleUI();
   await testDockerDeploy();
   await testFetchUrlShapes();
@@ -6139,6 +6140,75 @@ function packagingCheck(cfg, docs, recorderSrc, pkgJson) {
   if (!/"demo:record": "electron scripts\/record-demo\.js"/.test(pkgJson)) problems.push("package.json 没有 demo:record 脚本");
   return problems;
 }
+/**
+ * 打包完整性闸门自己会不会过期。
+ *
+ * scripts/check-package-files.js 顺着 require 图爬，这部分是自动的、不会过期；
+ * 但「不走 require、按路径打开」的那些资源（preload、html、被 spawn 的桥）是**手写**在
+ * ASSETS 里的——跟 v0.1.1 栽的那份 files 白名单是同一种东西，同样会跟代码脱节。
+ * 少一个的后果不是报错，是用户装完双击没反应。
+ *
+ * 所以这里反过来查：把生产代码里所有 path.join(__dirname, "...", "x.html") 这类字面量
+ * 扒出来，每一个都得有着落——要么在 ASSETS 里，要么被 files 的某个通配符收进去，
+ * 要么落在下面这张「就是不该进包」的名单里，且注明理由。新加一个资源忘了登记就红。
+ */
+function packageAssetDrift(sources, ASSETS, filesGlobs) {
+  // 明确不进包的，写清楚为什么——将来有人删掉这行注释也知道不是漏了
+  const DEV_ONLY = {
+    "build/icon.png": "只在 !app.isPackaged 时设 Dock 图标；装机版走 .app 自己的 icns",
+  };
+  // 白名单三种写法：顶层通配 "*.js"（**只匹配顶层**，v0.1.1 就是栽在这个"只"字上）、
+  // 子目录通配 "dir/**/*"、以及点名的单个文件。"!x" 是排除，得先看它。
+  const match = (g, rel) => {
+    if (g === "*.js") return !rel.includes("/") && rel.endsWith(".js");
+    const m = /^([\w.-]+)\/\*\*\/\*$/.exec(g);
+    return m ? rel.startsWith(m[1] + "/") : g === rel;
+  };
+  const globbed = (rel) =>
+    !filesGlobs.some((g) => g.startsWith("!") && match(g.slice(1), rel)) &&
+    filesGlobs.some((g) => !g.startsWith("!") && match(g, rel));
+  const problems = [];
+  let checked = 0;
+  for (const [file, code] of Object.entries(sources)) {
+    for (const m of code.matchAll(/path\.join\(\s*__dirname\s*,([^)]*)\)/g)) {
+      const parts = [...m[1].matchAll(/["']([^"']+)["']/g)].map((x) => x[1]);
+      if (!parts.length) continue;
+      const rel = path.posix.join(path.posix.dirname(file), ...parts);
+      if (!/\.(js|html|json|md|png|svg|css|py|ttf)$/.test(rel)) continue;
+      if (!fs.existsSync(path.join(__dirname, "..", rel))) continue; // 生成物/用户数据，不是仓库文件
+      checked++;
+      if (ASSETS.includes(rel) || globbed(rel) || DEV_ONLY[rel]) continue;
+      problems.push(`${file} 按路径用了 ${rel}，但它既不在闸门的 ASSETS 里，也不被 files 白名单收进去`);
+    }
+  }
+  return { problems, checked, devOnly: Object.keys(DEV_ONLY).length };
+}
+function testPackageAssetDrift() {
+  const root = path.join(__dirname, "..");
+  const gate = require(path.join(root, "scripts", "check-package-files.js"));
+  const cfg = require(path.join(root, "electron-builder.config.js"));
+  // 只查真会进包跑起来的那些文件，测试和脚本不算
+  const sources = {};
+  for (const rel of gate.walkGraph()) {
+    if (!rel.endsWith(".js")) continue;
+    const abs = path.join(root, rel);
+    if (fs.existsSync(abs)) sources[rel.split(path.sep).join("/")] = fs.readFileSync(abs, "utf8");
+  }
+  const r = packageAssetDrift(sources, gate.ASSETS, cfg.files);
+  assert(r.problems.length === 0, "打包资源登记漏了：\n  " + r.problems.join("\n  "));
+  assert(r.checked >= 4, "扫到的按路径引用太少（" + r.checked + "），说明扫描本身失效了");
+  // 反向对照：新增一个没登记的资源、把 ASSETS 抠掉一条、把 public 通配符去掉——都得被抓
+  const variants = [
+    // 用一个真存在、但确实没打进包的文件（docs/ 整个目录都不进包），配置一个字不改就该报
+    ["新加了没登记的资源", () => packageAssetDrift({ ...sources, "server.js": sources["server.js"] + '\nrequire("fs").readFileSync(path.join(__dirname, "docs", "安装与启动.md"));' }, gate.ASSETS, cfg.files)],
+    // "!electron-builder.config.js" 把它从 *.js 里排除掉了：谁在生产代码里按路径打开它，就是装完必炸
+    ["引用了被 ! 排除掉的文件", () => packageAssetDrift({ ...sources, "server.js": sources["server.js"] + '\nrequire("fs").readFileSync(path.join(__dirname, "electron-builder.config.js"));' }, gate.ASSETS, cfg.files)],
+    ["files 去掉 public 通配符", () => packageAssetDrift(sources, gate.ASSETS.filter((a) => !a.startsWith("public/")), cfg.files.filter((g) => g !== "public/**/*"))],
+  ];
+  for (const [name, run] of variants) if (!run().problems.length) throw new Error("闸门漏了这种坏法：" + name);
+  console.log(`✅ 打包资源不漂移：${Object.keys(sources).length} 个源文件里 ${r.checked} 处按路径引用全有着落（${r.devOnly} 条注明了就是不进包），${variants.length} 种坏法全被抓`);
+}
+
 function testPackagingAndDemoGate() {
   const { spawnSync } = require("child_process");
   const root = path.join(__dirname, "..");
