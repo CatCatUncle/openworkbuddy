@@ -15,9 +15,94 @@ const memory = require("./memory");
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
 let workspaceDir = dataPath("workspace");
 
+/**
+ * 多租户的工作目录隔离就在这三行上。
+ *
+ * 走的是 AsyncLocalStorage 而不是「给每个函数加一个 root 参数」：workspaceDir 在这个文件里
+ * 被读了二十来处（safePath、outputFiles、executeTool、图片视频落盘、shell 的 cwd、备份历史…），
+ * 而 agent.js / im.js / cli.js 又各自 getWorkspaceDir() 了十几次。挨个加参数要改五十多个调用点，
+ * 漏一个就是一个「A 公司的模型能读到 B 公司文件」的洞——而这种洞不会报错，只会安静地发生。
+ *
+ * ALS 的语义正好对上：一次 HTTP 请求 / 一次任务从头到尾是同一条异步链，在链头 run() 一下，
+ * 链上所有的 ws() 自动读到同一个根，包括 await 之后、setTimeout 里、子函数里。
+ * 没设过就退回默认根 —— 单机个人版一行行为都没变。
+ */
+const { AsyncLocalStorage } = require("async_hooks");
+const wsStore = new AsyncLocalStorage();
+function ws() {
+  return wsStore.getStore() || workspaceDir;
+}
+/** 在指定工作目录根下跑一段（同步或异步都行）。root 为空 = 用默认根 */
+function withWorkspace(root, fn) {
+  if (!root) return fn();
+  return wsStore.run(path.resolve(root), fn);
+}
 function getWorkspaceDir() {
+  return ws();
+}
+
+/**
+ * 组织级的工具策略（企业管理后台「客户端安全 / 网络设置」那两页配的东西）。
+ *
+ * 跟工作目录同样的理由走 ALS：拦命令、拦域名这种事只要有一条旁路就等于没拦，
+ * 而旁路往往是「某个工具没走那个参数」。绑在请求这条异步链上，executeTool
+ * 无论被谁调到都读得到同一份策略。没设过 = null = 不限制，单机个人版一行行为不变。
+ */
+const polStore = new AsyncLocalStorage();
+function orgPolicy() {
+  return polStore.getStore() || null;
+}
+function withPolicy(policy, fn) {
+  if (!policy) return fn();
+  return polStore.run(policy, fn);
+}
+/**
+ * 域名闸：黑名单命中就拦，白名单非空时不在名单里也拦。
+ * 匹配到**后缀**（example.com 覆盖 a.example.com），但要求边界是点，
+ * 否则 evilexample.com 会被 example.com 白名单放进来。
+ */
+function hostAllowed(policy, url) {
+  const p = policy || orgPolicy();
+  if (!p) return { ok: true };
+  const allow = Array.isArray(p.net_allow) ? p.net_allow.filter(Boolean) : [];
+  const deny = Array.isArray(p.net_deny) ? p.net_deny.filter(Boolean) : [];
+  if (!allow.length && !deny.length) return { ok: true };
+  let host = "";
+  try { host = new URL(String(url)).hostname.toLowerCase(); } catch { return { ok: true }; } // 不是个 URL 就不归这道闸管
+  const hit = (list) => list.some((d) => {
+    const x = String(d).trim().toLowerCase().replace(/^\*\./, "").replace(/^https?:\/\//, "").split("/")[0];
+    return x && (host === x || host.endsWith("." + x));
+  });
+  if (hit(deny)) return { ok: false, why: `本组织的网络设置把 ${host} 放进了黑名单` };
+  if (allow.length && !hit(allow)) return { ok: false, why: `本组织的网络设置只放行白名单里的域名，${host} 不在名单里（名单：${allow.join("、")}）` };
+  return { ok: true };
+}
+
+/** 组织关掉了「允许运行命令行」。两个入口共用一段说明，别让模型以为换个工具就能绕过去 */
+function orgBlocksShell() {
+  const p = orgPolicy();
+  return !!p && p.allow_shell === false;
+}
+function shellBlocked(tool) {
+  security.audit("命令拦截", `${tool}（本组织已关闭「允许运行命令行」）`, "拦截");
+  return {
+    content: "本组织在企业管理后台关闭了「允许运行命令行」，run_shell 和 run_node 都用不了。写文件、抓网页、生成图表这些工具不受影响；确实要跑命令，找组织管理员开。",
+    isError: true,
+  };
+}
+function netBlocked(url, why) {
+  security.audit("网络拦截", String(url), "拦截");
+  return { content: `这个地址没抓成：${why}。要放行找组织管理员改「企业设置 → 网络设置」。`, isError: true };
+}
+/**
+ * 全局**默认**根（= config.workspace_dir）。租户请求里 getWorkspaceDir() 返回的是租户根，
+ * 所以凡是要跟「服务器的默认目录」比对、或者要写回 config 的地方，必须用这个，别用上面那个——
+ * 用错了就是分公司管理员点一下设置，把总部所有人的成果目录搬走。
+ */
+function getDefaultWorkspaceDir() {
   return workspaceDir;
 }
+/** 改的是**默认**根（config.workspace_dir）。租户根不走这里，走 withWorkspace */
 function setWorkspaceDir(dir) {
   if (!dir || !path.isAbsolute(dir)) throw new Error("工作空间必须是绝对路径，如 D:\\我的工作区");
   fs.mkdirSync(dir, { recursive: true }); // 无权限/非法路径会在这里抛错
@@ -25,18 +110,18 @@ function setWorkspaceDir(dir) {
   return workspaceDir;
 }
 function tmpDir() {
-  return path.join(workspaceDir, ".tmp");
+  return path.join(ws(), ".tmp");
 }
 
 function ensureDirs() {
-  fs.mkdirSync(workspaceDir, { recursive: true });
+  fs.mkdirSync(ws(), { recursive: true });
   fs.mkdirSync(tmpDir(), { recursive: true });
 }
 
 /** 把用户/模型给的相对路径解析到 workspace 内，拒绝越界。反斜杠一律按分隔符处理（Windows 风格路径在 mac/linux 上同样生效）。 */
 function safePath(rel) {
-  const p = path.resolve(workspaceDir, String(rel || ".").replace(/\\/g, "/"));
-  if (p !== workspaceDir && !p.startsWith(workspaceDir + path.sep)) {
+  const p = path.resolve(ws(), String(rel || ".").replace(/\\/g, "/"));
+  if (p !== ws() && !p.startsWith(ws() + path.sep)) {
     throw new Error(`路径越界，只允许访问 workspace 内: ${rel}`);
   }
   return p;
@@ -404,7 +489,7 @@ async function downloadToWorkspace(url, fname, dir) {
   const r = await fetchRetry(url, { signal: AbortSignal.timeout(180000) }, { label: "下载生成结果" });
   if (!r.ok) throw new Error(`下载生成结果失败 HTTP ${r.status}`);
   ensureDirs();
-  fs.writeFileSync(path.join(dir || workspaceDir, fname), Buffer.from(await r.arrayBuffer()));
+  fs.writeFileSync(path.join(dir || ws(), fname), Buffer.from(await r.arrayBuffer()));
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp)$/i;
@@ -607,7 +692,7 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile) {
  * 是真找不到；把落点说准，它就没有复制的理由了。
  */
 function savedAt(saveDir, fname) {
-  const rel = path.relative(workspaceDir, saveDir || workspaceDir);
+  const rel = path.relative(ws(), saveDir || ws());
   return rel && !rel.startsWith("..") ? `${rel}/${fname}` : fname;
 }
 
@@ -678,7 +763,7 @@ async function generateImage(media, input, timeoutMs, saveDir) {
   }
   if (b64) {
     ensureDirs();
-    fs.writeFileSync(path.join(saveDir || workspaceDir, fname), Buffer.from(b64, "base64"));
+    fs.writeFileSync(path.join(saveDir || ws(), fname), Buffer.from(b64, "base64"));
   } else await downloadToWorkspace(imgUrl, fname, saveDir);
   security.audit("图像生成", `${cfg.model}: ${prompt.slice(0, 120)} → ${fname}`, "放行");
   // 顺利那条也必须把水印状态说出来。只在出问题时报警、顺利时沉默，模型就无从判断，
@@ -785,7 +870,7 @@ async function htmlToImage(input, resolveFile, saveDir) {
     return { content: `HTML 截图失败：${e.message}`, isError: true };
   }
   ensureDirs();
-  fs.writeFileSync(path.join(saveDir || workspaceDir, fname), buf);
+  fs.writeFileSync(path.join(saveDir || ws(), fname), buf);
   security.audit("HTML截图", `${rel} → ${fname}`, "放行");
   return { content: `已把 ${rel} 渲染成图片：${fname}（${input.width || 1242}x${input.full_page ? "整页" : input.height || 1656}）`, isError: false };
 }
@@ -834,7 +919,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir) {
     const buf = Buffer.from(await r.arrayBuffer());
     if (buf.length < 200) return { content: "语音接口返回的音频为空", isError: true };
     ensureDirs();
-    fs.writeFileSync(path.join(saveDir || workspaceDir, fname), buf);
+    fs.writeFileSync(path.join(saveDir || ws(), fname), buf);
   }
   security.audit("语音合成", `${cfg.model}: ${text.slice(0, 80)} → ${fname}`, "放行");
   return { content: `语音已合成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}${voice ? "，音色 " + voice : ""}，约 ${text.length} 字）`, isError: false };
@@ -969,7 +1054,7 @@ function runNode(code, timeoutMs, cwd) {
   fs.writeFileSync(file, code, "utf8");
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [file], {
-      cwd: cwd || workspaceDir,
+      cwd: cwd || ws(),
       timeout: timeoutMs,
       // ELECTRON_RUN_AS_NODE：桌面版里 execPath 是 Electron 二进制，不加这个每跑一次脚本
       // 就弹一个新的 Electron 应用实例（Dock 图标狂蹦）；加了就纯当 node 用
@@ -1028,7 +1113,7 @@ function runShell(command, timeoutMs, cwd) {
   return new Promise((resolve) => {
     const sh = pickShell(command);
     const child = spawn(sh.bin, sh.args, {
-      cwd: cwd || workspaceDir,
+      cwd: cwd || ws(),
       timeout: timeoutMs,
       env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR },
       ...sh.opts,
@@ -1156,7 +1241,7 @@ function keepBackup(file, rel) {
   if (String(rel).split(/[\\/]/)[0] === ".history") return "";
   try {
     const sub = path.dirname(rel);
-    const dir = path.join(workspaceDir, ".history", sub);
+    const dir = path.join(ws(), ".history", sub);
     fs.mkdirSync(dir, { recursive: true });
     const base = path.basename(rel);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1886,14 +1971,14 @@ function saveDownload(url, ct, buf, dir) {
   for (let i = 1; i < 50; i++) {
     const name = i === 1 ? base : `${stem}_${i}${ext}`;
     try {
-      fs.writeFileSync(path.join(dir || workspaceDir, name), data, { flag: "wx" });
+      fs.writeFileSync(path.join(dir || ws(), name), data, { flag: "wx" });
       return name;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
     }
   }
   const name = `${stem}_${Date.now()}${ext}`;
-  fs.writeFileSync(path.join(dir || workspaceDir, name), data);
+  fs.writeFileSync(path.join(dir || ws(), name), data);
   return name;
 }
 
@@ -2253,16 +2338,16 @@ async function executeTool(name, input, opts = {}) {
   const sec = opts.security || { ...security.DEFAULTS };
   // 每个对话一个成果子目录（服务器只在默认工作空间下传入）：相对路径读写、脚本 cwd、
   // 生成/下载的产物都落到这里，多个对话不再把工作空间根目录搅成一锅
-  let fileBase = workspaceDir;
+  let fileBase = ws();
   if (opts.baseDir) {
-    const b = path.resolve(workspaceDir, String(opts.baseDir));
-    if (b === workspaceDir || b.startsWith(workspaceDir + path.sep)) {
+    const b = path.resolve(ws(), String(opts.baseDir));
+    if (b === ws() || b.startsWith(ws() + path.sep)) {
       fileBase = b;
       try { fs.mkdirSync(fileBase, { recursive: true }); } catch {}
     }
   }
   // 文件工具统一走策略解析：workspace 内默认放行、黑名单硬拦、workspace 外仅白名单
-  const baseName = fileBase === workspaceDir ? "" : path.basename(fileBase);
+  const baseName = fileBase === ws() ? "" : path.basename(fileBase);
   const resolveFile = (rel) => {
     // 少给 path 是模型真会犯的错（本机 96 段会话里 7 次：write_file 2 次、edit_file 5 次，
     // 多半是参数 JSON 太长被截断，或者干脆漏了这一项）。老写法把空路径解析成工作目录本身，
@@ -2285,15 +2370,15 @@ async function executeTool(name, input, opts = {}) {
         rel = fixed || ".";
       }
     }
-    const r = security.resolvePathWithPolicy(sec, rel, workspaceDir, fileBase);
+    const r = security.resolvePathWithPolicy(sec, rel, ws(), fileBase);
     if (!r.allowed) {
       security.audit("文件拦截", `${name}: ${rel}`, "拦截");
       throw new Error(`文件访问被安全中心拦截：${r.reason}`);
     }
     // 成果子目录下没有、工作空间根下有 → 用根下那个（读旧对话的产物/共享素材不用写全路径）
     // 兜底只认文件：兜到一个同名目录上，下游就是一句莫名其妙的 EISDIR
-    if (fileBase !== workspaceDir && !fs.existsSync(r.path)) {
-      const r2 = security.resolvePathWithPolicy(sec, rel, workspaceDir);
+    if (fileBase !== ws() && !fs.existsSync(r.path)) {
+      const r2 = security.resolvePathWithPolicy(sec, rel, ws());
       try {
         if (r2.allowed && fs.statSync(r2.path).isFile()) return r2.path;
       } catch {}
@@ -2341,6 +2426,7 @@ async function executeTool(name, input, opts = {}) {
     }
     switch (name) {
       case "run_node": {
+        if (orgBlocksShell()) return shellBlocked("run_node");
         if (sec.runtime_node === false) {
           security.audit("命令拦截", "run_node（内置 Node.js 运行时已停用）", "拦截");
           return { content: "内置 Node.js 运行时已在 设置 → 安全中心 停用，无法执行代码。", isError: true };
@@ -2351,6 +2437,7 @@ async function executeTool(name, input, opts = {}) {
         return await runNode(code, timeoutMs, fileBase);
       }
       case "run_shell": {
+        if (orgBlocksShell()) return shellBlocked("run_shell");
         const cmd = String(input.command || "");
         const blocked = await passGate(security.checkCommand(sec, cmd), "命令", cmd);
         if (blocked) return blocked;
@@ -2518,6 +2605,8 @@ async function executeTool(name, input, opts = {}) {
         return await global.__wbPetTool.run(input, fileBase);
       }
       case "fetch_url": {
+        const orgNet = hostAllowed(null, input.url);
+        if (!orgNet.ok) return netBlocked(input.url, orgNet.why);
         const gate = security.checkUrl(sec, input.url);
         if (!gate.allowed) {
           security.audit("网络拦截", input.url, "拦截");
@@ -2527,6 +2616,8 @@ async function executeTool(name, input, opts = {}) {
         return { content: await fetchUrl(input.url, { render: input.render !== false, saveDir: fileBase }), isError: false };
       }
       case "render_page": {
+        const orgNet2 = hostAllowed(null, input.url);
+        if (!orgNet2.ok) return netBlocked(input.url, orgNet2.why);
         const gate = security.checkUrl(sec, input.url);
         if (!gate.allowed) {
           security.audit("网络拦截", input.url, "拦截");
@@ -2624,7 +2715,7 @@ function outputFiles() {
         all.push({ name: r, size: st.size, mtime: st.mtime.toISOString() });
       }
     }
-  })(workspaceDir, "", 1);
+  })(ws(), "", 1);
   all.sort((a, b) => b.mtime.localeCompare(a.mtime));
   return markDuplicates(all.slice(0, FILES_CAP));
 }
@@ -2644,10 +2735,10 @@ const digestCache = new Map();
 const DIGEST_CACHE_CAP = 2000;
 function fileDigest(f) {
   // 工作目录名进键：name 是相对路径，换个工作目录就是另一套坐标系，不带它会跨目录串味
-  const key = `${workspaceDir}\u0000${f.name}|${f.size}|${f.mtime}`;
+  const key = `${ws()}\u0000${f.name}|${f.size}|${f.mtime}`;
   const hit = digestCache.get(key);
   if (hit) return hit;
-  const d = require("crypto").createHash("sha1").update(fs.readFileSync(path.join(workspaceDir, f.name))).digest("hex");
+  const d = require("crypto").createHash("sha1").update(fs.readFileSync(path.join(ws(), f.name))).digest("hex");
   // 上限只是防无限涨（长跑 + 反复换工作目录）：满了整份丢掉重算，比维护 LRU 简单，代价也就是一次冷启动
   if (digestCache.size >= DIGEST_CACHE_CAP) digestCache.clear();
   digestCache.set(key, d);
@@ -2673,4 +2764,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };

@@ -12,7 +12,7 @@ const { DATA_DIR, dataPath, appPath } = require("./paths");
 const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder } = require("./llm");
-const { outputFiles, filesScope, safePath, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const { outputFiles, filesScope, safePath, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
 const { McpManager } = require("./mcp");
@@ -20,6 +20,8 @@ const { createAgentRuntime } = require("./agent");
 const { createImRouter } = require("./im");
 const { createScheduler } = require("./scheduler");
 const account = require("./account");
+const org = require("./org"); // 组织（租户）层：席位、部门、邀请码、审计
+const admin = require("./admin"); // 企业管理后台的接口层 /api/admin/*
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const thinking = require("./thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./security");
@@ -516,6 +518,43 @@ app.use(
 );
 app.use(account.authGuard); // 其余 /api/* 与 /im/*（除外部回调）需要登录
 
+// 租户工作目录 → 服务器级接口的闸 → 凭证脱敏。三段的说明都在 admin.js 里
+app.use(admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir }));
+app.use(admin.platformGuard);
+app.use(admin.redactGuard);
+const ownsGlobalWorkspace = admin.ownsGlobalWorkspace;
+
+// 企业管理后台 /api/admin/*：自带 adminGuard（管理员+审计员可看，只有管理员能改）
+app.use(
+  admin.createAdminRouter({
+    // 「这个组织的成果目录占了多大」——直接数当前请求这条链上的根，跨租户不会串
+    orgUsage: () => {
+      const fs2 = outputFiles();
+      const list = Array.isArray(fs2) ? fs2 : fs2.files || [];
+      return { files: list.length, bytes: list.reduce((n, f) => n + (f.size || 0), 0) };
+    },
+  })
+);
+
+/**
+ * 会话归属。会话文件是按 id 存的，接口只要拿到 id 就给内容——同一台服务器上的另一个账号
+ * 猜中/拿到一个 id 就能读走整段对话（含产出文件名、模型原文）。这里补上归属判定：
+ * 本人一定能看；管理员只能看**本组织**的；老会话没记 user 的按公共处理（不然升级上来全打不开）。
+ */
+function sessionAllowed(user, s) {
+  if (!user || !s || !s.user) return true;
+  if (s.user === user.username) return true;
+  if (!account.canAdmin(user)) return false;
+  const owner = account._internals.loadUsers().users.find((u) => u.username === s.user);
+  return !owner || org.orgIdOf(owner) === org.orgIdOf(user);
+}
+function guardSession(req, res) {
+  const s = getSession(req.params.id);
+  if (sessionAllowed(req.user, s)) return s;
+  res.status(403).json({ error: "这条对话不属于你" });
+  return null;
+}
+
 let runtime; // MCP 启动后创建
 
 app.get("/api/info", (_req, res) => {
@@ -721,7 +760,7 @@ app.post("/api/settings", (req, res) => {
         if (b.search[k] !== undefined) config.search[k] = String(b.search[k]).trim();
       }
     }
-    if (b.workspace_dir !== undefined && b.workspace_dir !== getWorkspaceDir()) {
+    if (b.workspace_dir !== undefined && b.workspace_dir !== getDefaultWorkspaceDir()) {
       config.workspace_dir = setWorkspaceDir(b.workspace_dir);
       // 输入框旁的快速切换是临时的（新任务会切回项目目录）；设置中心改路径才算改默认，同步进当前项目
       if (b.workspace_permanent === true) {
@@ -1278,7 +1317,7 @@ function projectContextOf(p) {
 
 function ensureProjects() {
   if (!Array.isArray(config.projects) || !config.projects.length) {
-    config.projects = [{ name: "默认项目", dir: getWorkspaceDir() }];
+    config.projects = [{ name: "默认项目", dir: getDefaultWorkspaceDir() }];
     config.active_project = "默认项目";
   }
   if (!config.projects.some((p) => p.name === config.active_project)) config.active_project = config.projects[0].name;
@@ -1291,9 +1330,12 @@ function saveConfig() {
   store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true });
 }
 
-app.get("/api/projects", (_req, res) => {
+app.get("/api/projects", (req, res) => {
+  // 租户看到的是自己那一个根，不是总部的项目清单——后者连目录名都是信息
+  if (!ownsGlobalWorkspace(req.user))
+    return res.json({ projects: [{ name: "本组织工作目录", dir: getWorkspaceDir() }], active: "本组织工作目录", locked: true });
   ensureProjects();
-  res.json({ projects: config.projects, active: config.active_project });
+  res.json({ projects: config.projects, active: config.active_project, locked: false });
 });
 
 app.post("/api/projects", (req, res) => {
@@ -1329,7 +1371,7 @@ app.post("/api/workspace/reset", (_req, res) => {
     if (activeRuns.size) return res.json({ ok: false, busy: true, workspace_dir: getWorkspaceDir() });
     ensureProjects();
     const ap = config.projects.find((p) => p.name === config.active_project) || config.projects[0];
-    if (ap && ap.dir && ap.dir !== getWorkspaceDir()) {
+    if (ap && ap.dir && ap.dir !== getDefaultWorkspaceDir()) {
       config.workspace_dir = setWorkspaceDir(ap.dir);
       saveConfig();
     }
@@ -2691,8 +2733,8 @@ app.post("/api/chat", async (req, res) => {
   if (!sessionId || !message) return res.status(400).json({ error: "缺少 sessionId 或 message" });
   const user = req.user; // authGuard 已挂上
   // 积分闸门默认是关的（本地个人用不该被自己的账本拦），开了才查余额
-  if (user && account.creditsEnabled() && user.credits <= 0) {
-    return res.status(402).json({ error: "积分不足，无法执行任务。管理员可以在左下角「账号 · 用量」里充值，或者干脆把「积分限额」关掉。" });
+  if (user && account.creditsEnabled(user) && account.balanceOf(user) <= 0) {
+    return res.status(402).json({ error: "用量不足，无法执行任务。本月固定用量已用完、加油包也见底了——找管理员在企业后台充值，或者把「用量限额」关掉。" });
   }
   if (activeRuns.has(sessionId)) {
     return res.status(409).json({ error: "该会话已有任务在运行，可用「插队」把补充说明注入当前任务。" });
@@ -2991,7 +3033,8 @@ app.get("/api/chat/stream/:id", (req, res) => {
 
 // 历史会话回放
 app.get("/api/session/:id", (req, res) => {
-  const s = getSession(req.params.id);
+  const s = guardSession(req, res);
+  if (!s) return;
   // 之前点过的 👍👎 一起带回：反馈早落库了，重开对话不该看着像没点过
   let feedback = [];
   try { feedback = evolve.readFeedback().filter((f) => f.session === req.params.id).map((f) => ({ turn: f.turn, verdict: f.verdict, note: f.note || "" })); } catch {}
@@ -3000,7 +3043,8 @@ app.get("/api/session/:id", (req, res) => {
 
 // 归档目标：目标卡上点 ✕。已达成/不想要了都走这里，不删记录只改状态
 app.post("/api/session/:id/goal", (req, res) => {
-  const s = getSession(req.params.id);
+  const s = guardSession(req, res);
+  if (!s) return;
   if (!s.goal) return res.status(400).json({ error: "该对话没有目标" });
   if ((req.body || {}).action === "close") {
     s.goal.status = "closed";
@@ -3176,6 +3220,7 @@ app.post("/api/assist/model", (req, res) => {
 
 // 删除会话（内存 + 磁盘一起删）
 app.delete("/api/session/:id", (req, res) => {
+  if (!guardSession(req, res)) return;
   sessions.delete(req.params.id);
   try { fs.unlinkSync(sessFile(req.params.id)); } catch {}
   res.json({ ok: true });
@@ -3249,7 +3294,7 @@ function accountedRuntime(baseRuntime, source) {
     ...baseRuntime,
     runTask: async (args) => {
       const owner = account.defaultUser();
-      if (owner && account.creditsEnabled() && owner.credits <= 0) {
+      if (owner && account.creditsEnabled(owner) && account.balanceOf(owner) <= 0) {
         throw new Error("积分不足：管理员可以在 Web 端「账号 · 用量」里充值，或者把「积分限额」关掉");
       }
       // 调用方（助理页）指定了模型就解析成真正的 LLM 顶上去。模型名不在列表里时 llmForSession

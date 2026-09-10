@@ -4,7 +4,7 @@
  * 主 Agent 是"协调者"：可直接干活，也可通过 delegate_to_expert 把子任务委派给专家子智能体。
  */
 
-const { TOOL_DEFS, executeTool, outputFiles, filesScope, getWorkspaceDir } = require("./tools");
+const { TOOL_DEFS, executeTool, outputFiles, filesScope, getWorkspaceDir, orgPolicy } = require("./tools");
 const { loadSkills, SKILLS_DIR } = require("./skills");
 const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
@@ -536,7 +536,11 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     if (mode === "ask" || mode === "plan") {
       return [...TOOL_DEFS.filter((t) => READ_ONLY_TOOLS.includes(t.name)), USE_SKILL_TOOL];
     }
-    const tools = [...TOOL_DEFS, USE_SKILL_TOOL, ASK_USER_TOOL, ...mcpManager.toolDefs()];
+    // 组织关掉了命令行：连工具定义一起摘掉，别只在执行时拦。留着定义等于让模型先想一个
+    // 用 shell 的方案、调一次、吃一条拒绝、再重想——白烧一轮，还容易被它当成偶发失败去重试
+    const shellOff = orgPolicy() && orgPolicy().allow_shell === false;
+    const base = shellOff ? TOOL_DEFS.filter((t) => t.name !== "run_shell" && t.name !== "run_node") : TOOL_DEFS;
+    const tools = [...base, USE_SKILL_TOOL, ASK_USER_TOOL, ...mcpManager.toolDefs()];
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) tools.push(FEISHU_DOC_TOOL);
     if (depth === 0 && experts.length) tools.push(DELEGATE_TOOL);
     // 团委派只给主协调者：专家在团里接力时 depth 已经 >0，再让它组团会套娃
@@ -1615,7 +1619,7 @@ function modePrompt(mode) {
     }
   }
 
-  return { runTask, getSkills };
+  return { runTask, getSkills, toolList };
 }
 
 // 并发上限：抓页面是等网络，开太多既没有更快，还容易被对方站点当成扫站封 IP

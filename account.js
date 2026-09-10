@@ -17,6 +17,7 @@ const { dataPath } = require("./paths");
 const crypto = require("crypto");
 const express = require("express");
 const store = require("./store");
+const org = require("./org");
 
 // WB_DATA_DIR 只为测试留的口子：跑测试时指到临时目录，免得动到真账本
 const DATA_DIR = process.env.WB_DATA_DIR || dataPath("data");
@@ -24,6 +25,19 @@ const USERS_FILE = path.join(DATA_DIR, "users.json");
 const USAGE_FILE = path.join(DATA_DIR, "usage.json");
 const TOKEN_COOKIE = "wb_token";
 const TOKEN_TTL_MS = 90 * 86400 * 1000;
+/**
+ * 登录有效期按**这个人所属组织**的设置算（企业管理后台 → 客户端安全）。
+ * 判过期这件事必须按 org 走，不能只在发令牌时算一次：管理员把有效期从 90 天调到 7 天，
+ * 是为了让**已经发出去的**那些 cookie 立刻作废（人离职了、电脑丢了），
+ * 只影响新令牌等于这个开关根本没用。取不到组织就退回 90 天。
+ */
+function ttlMsFor(user) {
+  try {
+    const d = org.settingsOf(org.getOrg(org.orgIdOf(user))).session_days;
+    const n = Math.max(1, Math.min(365, Math.floor(+d) || 0));
+    return n * 86400 * 1000;
+  } catch { return TOKEN_TTL_MS; }
+}
 
 // ---------- 存储 ----------
 /**
@@ -44,9 +58,13 @@ function loadUsers() {
   // settings 要原样带着走：这里丢一个字段，下一次 saveUsers 就把它从盘上抹掉了
   return { users: d.users || [], tokens: d.tokens || {}, settings: d.settings || {} };
 }
-/** 已经有账号之后还让不让别人自己注册。默认不让——这东西挂到公网上就是给陌生人发积分 */
-function openRegister(st) {
-  return !!(st || loadUsers()).settings.open_register;
+/**
+ * 已经有账号之后还让不让别人自己注册。默认不让——这东西挂到公网上就是给陌生人发积分。
+ * 开关搬到了组织设置里（企业版一个组织一套），这里按用户所属组织读；不传用户就看默认组织。
+ * 更推荐的做法是发邀请码：能限次数、能设过期、能预置角色，撤销也只影响还没用的那批人。
+ */
+function openRegister(user) {
+  return !!org.settingsOf(org.getOrg(org.orgIdOf(user))).open_register;
 }
 /**
  * 积分闸门开不开。**默认不开**——本地个人部署时它只会在你干到一半的时候把任务拦下来，
@@ -54,8 +72,8 @@ function openRegister(st) {
  * 这本账拦不住任何真实开销。只有多人共用一个 key、要给成员定额度时才需要打开。
  * 用量流水跟这个开关无关，永远照记——那是给你看花了多少 tokens 的账，不是闸。
  */
-function creditsEnabled(st) {
-  return !!(st || loadUsers()).settings.credits_enabled;
+function creditsEnabled(user) {
+  return !!org.settingsOf(org.getOrg(org.orgIdOf(user))).credits_enabled;
 }
 function saveUsers(state) {
   writeStoreAtomic(USERS_FILE, state, true);
@@ -83,9 +101,45 @@ function publicUser(u) {
     nickname: u.nickname || "",     // 昵称，界面上显示的名字
     avatar: u.avatar || "",         // 一两个 emoji，或者 data:image/... 的小图
     role: u.role,
-    credits: u.credits,
+    owner: !!u.owner,               // 组织所有者：不能被别的管理员降级/停用/删除
+    org: u.org || org.DEFAULT_ORG,
+    dept: u.dept || "",
+    status: u.status || "active",   // active | pending（等审核）| disabled（已停用）
+    credits: u.credits,             // 加油包余额
+    monthly_quota: monthlyQuotaOf(u),   // 每月固定用量
+    monthly_left: monthlyLeft(u),       // 本月还剩多少固定用量
+    balance: balanceOf(u),              // 固定用量剩余 + 加油包，界面和闸门都看这个数
     created_at: u.created_at,
   };
+}
+
+// ---------- 月固定用量 ----------
+/**
+ * 用量抵扣顺序：**先扣本月固定用量，扣完再动加油包余额**。
+ * 顺序不是随便定的——月固定用量到月底就作废，加油包不会；先扣不作废的那份，
+ * 等于每个月都在替用户浪费掉一笔已经发下去的额度。
+ */
+function monthKey(d) {
+  return localDay(d).slice(0, 7);
+}
+function monthlyQuotaOf(user, s) {
+  const st = s || org.settingsOf(org.getOrg(org.orgIdOf(user)));
+  // 个人额度优先于团队统一额度：后台可以单独给某个人加，加完不该被团队的默认值盖回去
+  const q = user && user.monthly_quota != null ? +user.monthly_quota : st.member_monthly_credits;
+  return Math.max(0, Math.floor(q || 0));
+}
+function monthlyLeft(user, s) {
+  const quota = monthlyQuotaOf(user, s);
+  if (!quota || !user) return 0;
+  // 跨月自动清零：不写定时任务去重置，读的时候按 month_key 判就够了，
+  // 定时任务在桌面版里根本不保证跑得到（合上盖子就没了）
+  const used = user.month_key === monthKey() ? user.month_used || 0 : 0;
+  return Math.max(0, quota - used);
+}
+function balanceOf(user) {
+  if (!user) return 0;
+  const s = org.settingsOf(org.getOrg(org.orgIdOf(user)));
+  return monthlyLeft(user, s) + Math.max(0, user.credits || 0);
 }
 
 // 头像允许两种：emoji（存字符）和用户自己上传的小图（存 data URI）。
@@ -116,7 +170,7 @@ function defaultUser() {
   return st.users.find((u) => u.role === "admin") || st.users[0] || null;
 }
 
-function register(username, password) {
+function register(username, password, opts = {}) {
   username = String(username || "").trim();
   if (!/^[\w一-龥.-]{2,24}$/.test(username)) throw new Error("用户名需 2-24 位（中英文、数字、_.-）");
   if (String(password || "").length < 6) throw new Error("密码至少 6 位");
@@ -124,14 +178,28 @@ function register(username, password) {
   if (st.users.some((u) => u.username === username)) throw new Error("用户名已存在");
   const salt = crypto.randomBytes(16).toString("hex");
   const first = st.users.length === 0;
+  const orgId = first ? org.DEFAULT_ORG : opts.org || org.DEFAULT_ORG;
+  const o = org.getOrg(orgId);
+  const s = org.settingsOf(o);
+  // 席位闸要放在建号**之前**：先建后查的话，报错弹出来的时候人已经躺在账本里了
+  if (!first) {
+    const seats = org.planInfo(o).seats;
+    const used = st.users.filter((u) => (u.org || org.DEFAULT_ORG) === orgId && u.status !== "disabled").length;
+    if (used >= seats) throw new Error(`「${o.name}」的席位已用满（${used}/${seats}），让管理员在企业设置里加席位`);
+  }
   const user = {
     username,
     salt,
     hash: hashPassword(password, salt),
-    role: first ? "admin" : "member",
-    credits: first ? 10000 : 1000,
+    // 第一个账号是组织所有者：owner 这个标记只此一份，别的管理员动不了他
+    role: first ? "admin" : opts.role === "admin" || opts.role === "auditor" ? opts.role : "member",
+    org: orgId,
+    dept: String(opts.dept || ""),
+    status: first ? "active" : opts.status === "pending" ? "pending" : "active",
+    credits: first ? 10000 : Math.max(0, Math.floor(s.default_member_credits || 0)),
     created_at: new Date().toISOString(),
   };
+  if (first) user.owner = true;
   st.users.push(user);
   saveUsers(st);
   return user;
@@ -179,8 +247,9 @@ function issueToken(username) {
   st.tokens[token] = { user: username, at: Date.now() };
   // 清过期 + 同一用户最多保留 10 个会话令牌
   const mine = [];
+  const byUser = new Map(st.users.map((u) => [u.username, u]));
   for (const [t, info] of Object.entries(st.tokens)) {
-    if (Date.now() - info.at > TOKEN_TTL_MS) delete st.tokens[t];
+    if (Date.now() - info.at > ttlMsFor(byUser.get(info.user))) delete st.tokens[t];
     else if (info.user === username) mine.push([t, info.at]);
   }
   mine.sort((a, b) => b[1] - a[1]).slice(10).forEach(([t]) => delete st.tokens[t]);
@@ -206,17 +275,23 @@ function userFromReq(req) {
   if (!token) return null;
   const st = loadUsers();
   const info = st.tokens[token];
-  if (!info || Date.now() - info.at > TOKEN_TTL_MS) return null;
-  return st.users.find((u) => u.username === info.user) || null;
+  if (!info) return null;
+  const u = st.users.find((x) => x.username === info.user) || null;
+  if (!u) return null;
+  if (Date.now() - info.at > ttlMsFor(u)) return null;
+  return u;
 }
 /** 是不是 https 进来的（部署时前面一般挂 nginx，真正的 TLS 在它那一层） */
 function isHttps(req) {
   return !!(req && (req.secure || String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() === "https"));
 }
-function setTokenCookie(res, token, req) {
+function setTokenCookie(res, token, req, user) {
   // https 下补上 Secure：否则同一个域名只要有一次 http 请求，令牌就明文躺在路上了
   const secure = isHttps(req) ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `${TOKEN_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=${Math.floor(TOKEN_TTL_MS / 1000)}`);
+  // cookie 的 Max-Age 跟服务端那把尺子对齐（组织自己配的登录有效期）。
+  // 服务端才是真闸门，这里对齐只是别让浏览器留着一个早就作废的 cookie 反复吃 401
+  const maxAge = Math.floor(ttlMsFor(user) / 1000);
+  res.setHeader("Set-Cookie", `${TOKEN_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=${maxAge}`);
 }
 function clearTokenCookie(res, req) {
   const secure = isHttps(req) ? "; Secure" : "";
@@ -295,12 +370,26 @@ function creditsFor(usage) {
 function chargeRun(user, info) {
   info = fixLegacyCache(info);
   const st = loadUsers();
-  const spent = creditsEnabled(st) ? creditsFor(info) : 0;
   const u = st.users.find((x) => x.username === user.username);
+  // 「这个组织开没开用量限额」要按**账本里**的那条记录判，不能按调用方手上那个对象判：
+  // 定时任务、IM 入站传进来的 user 可能是几小时前取的，缺 org 字段就会被当成默认组织，
+  // 于是整条任务一分不扣——账对不上还查不出来。以库里的为准，传进来的只当兜底。
+  const spent = creditsEnabled(u || user) ? creditsFor(info) : 0;
+  let fromMonthly = 0;
   if (u && spent) {
-    u.credits = Math.max(0, (u.credits || 0) - spent);
+    // 抵扣顺序：先月固定用量（月底作废，不先花掉就是白扔），再加油包余额
+    const s = org.settingsOf(org.getOrg(org.orgIdOf(u)));
+    if (u.month_key !== monthKey()) {
+      u.month_key = monthKey();
+      u.month_used = 0;
+    }
+    fromMonthly = Math.min(spent, monthlyLeft(u, s));
+    u.month_used = (u.month_used || 0) + fromMonthly;
+    u.credits = Math.max(0, (u.credits || 0) - (spent - fromMonthly));
     saveUsers(st);
     user.credits = u.credits; // 让调用方拿到最新余额
+    user.month_key = u.month_key;
+    user.month_used = u.month_used;
   }
   const usage = loadUsage();
   usage.unshift({
@@ -320,6 +409,10 @@ function chargeRun(user, info) {
     calls: info.calls || 0,
     elapsed_ms: info.elapsed_ms || 0,
     credits: spent,
+    // 这一笔里有多少是月固定用量出的。不记的话，后台的「月固定用量还剩多少」只能猜
+    from_monthly: fromMonthly,
+    org: org.orgIdOf(u || user),
+    dept: (u && u.dept) || "",
   });
   saveUsage(usage);
   return spent;
@@ -331,6 +424,8 @@ function topup(byUser, targetUsername, amount) {
   const st = loadUsers();
   const target = st.users.find((u) => u.username === (targetUsername || byUser.username));
   if (!target) throw new Error("用户不存在");
+  // 跨组织充值 = 一个组织的管理员往别人家账本里写数，直接不给
+  if (org.orgIdOf(target) !== org.orgIdOf(byUser)) throw new Error("只能给本组织的成员充值");
   target.credits = (target.credits || 0) + amount;
   saveUsers(st);
   const usage = loadUsage();
@@ -350,9 +445,15 @@ function fixLegacyCache(e) {
 }
 
 /** 用量详情：今日/本月汇总 + 近 7 天曲线 + 最近流水（管理员看全员，成员只看自己） */
-function usageSummary(user) {
+function usageSummary(user, opts = {}) {
   const all = loadUsage().map(fixLegacyCache);
-  const mine = user.role === "admin" ? all : all.filter((e) => e.user === user.username);
+  // 管理员看的是**本组织**全员，不是全库全员：多租户下后者等于把别家的账摊开给他看。
+  // org 字段是后加的，老流水没有——按「这个用户名属不属于本组织」兜底判，别把历史记录判丢了
+  const orgId = org.orgIdOf(user);
+  const inOrg = new Set(loadUsers().users.filter((u) => org.orgIdOf(u) === orgId).map((u) => u.username));
+  const admin = user.role === "admin" || user.role === "auditor";
+  const scope = opts.user ? (e) => e.user === opts.user : admin ? (e) => inOrg.has(e.user) : (e) => e.user === user.username;
+  const mine = all.filter(scope);
   const runs = mine.filter((e) => e.kind === "run");
   const today = localDay();
   const month = today.slice(0, 7);
@@ -366,6 +467,8 @@ function usageSummary(user) {
       cached: known.reduce((s, e) => s + (e.cached || 0), 0),
       cachedOf: known.reduce((s, e) => s + (e.prompt || 0), 0), // 命中率的分母：这些条的 prompt 总量
       credits: list.reduce((s, e) => s + (e.credits || 0), 0),
+      from_monthly: list.reduce((s, e) => s + (e.from_monthly || 0), 0),
+      elapsed_ms: list.reduce((s, e) => s + (e.elapsed_ms || 0), 0),
     };
   };
   const last7 = [];
@@ -379,8 +482,155 @@ function usageSummary(user) {
     today: agg(runs.filter((e) => e.day === today)),
     month: agg(runs.filter((e) => e.day && e.day.slice(0, 7) === month)),
     last7,
-    recent: mine.slice(0, 50),
+    recent: mine.slice(0, opts.limit || 50),
+    // 按人 / 按模型的分组，管理后台的「成员用量」「应用用量」两块直接用
+    by_user: groupUsage(runs, (e) => e.user || "?"),
+    by_model: groupUsage(runs, (e) => e.model || "（未记录）"),
+    by_source: groupUsage(runs, (e) => e.source || "web"),
+    // 按部门：流水里的 dept 是**记账当时**的部门。人换了部门老账不跟着搬，
+    // 因为账本记的是「当时谁在哪个部门花的钱」，跟着搬会把上个月的部门账改掉
+    by_dept: groupUsage(runs, (e) => e.dept || "未分组"),
   };
+}
+
+/** 按某个维度分组汇总，倒序（花得多的排前面） */
+function groupUsage(runs, keyOf) {
+  const m = new Map();
+  for (const e of runs) {
+    const k = keyOf(e);
+    const v = m.get(k) || { key: k, runs: 0, tokens: 0, credits: 0, elapsed_ms: 0 };
+    v.runs++;
+    v.tokens += (e.prompt || 0) + (e.completion || 0);
+    v.credits += e.credits || 0;
+    v.elapsed_ms += e.elapsed_ms || 0;
+    m.set(k, v);
+  }
+  return [...m.values()].sort((a, b) => b.tokens - a.tokens);
+}
+
+
+// ---------- 成员管理（企业管理后台用） ----------
+/** 有没有管理权限。auditor（审计员）只读，不算 */
+function isAdmin(u) {
+  return !!u && u.role === "admin";
+}
+/** 能不能进管理后台（审计员进得去，但所有写操作都会被 adminOnly 挡下） */
+function canAdmin(u) {
+  return !!u && (u.role === "admin" || u.role === "auditor");
+}
+
+/**
+ * 谁能动谁。规则只有三条，但每一条都是踩过的：
+ *   1. 只能动同组织的人 —— 跨组织改角色就是越权
+ *   2. 所有者（owner）谁都动不了，包括别的管理员 —— 否则两个管理员能互相把对方停用
+ *   3. 不能动自己 —— 管理员把自己降成成员之后，这个组织就再也没有管理员了
+ */
+function assertCanManage(actor, target, what) {
+  if (!isAdmin(actor)) throw new Error("只有管理员能" + what);
+  if (org.orgIdOf(actor) !== org.orgIdOf(target)) throw new Error("这个成员不在你的组织里");
+  if (target.owner) throw new Error("组织所有者不能被" + what);
+  if (target.username === actor.username) throw new Error("不能对自己" + what);
+}
+
+/** 本组织成员清单（不含密码字段）。管理后台的「成员与部门」直接渲染这个 */
+function listMembers(orgId) {
+  const want = orgId || org.DEFAULT_ORG;
+  const usage = loadUsage();
+  const lastAt = new Map();
+  for (const e of usage) if (e.user && !lastAt.has(e.user)) lastAt.set(e.user, e.ts);
+  return loadUsers()
+    .users.filter((u) => org.orgIdOf(u) === want)
+    .map((u) => ({ ...publicUser(u), last_active: lastAt.get(u.username) || "" }))
+    .sort((a, b) => (b.owner ? 1 : 0) - (a.owner ? 1 : 0) || String(a.created_at).localeCompare(String(b.created_at)));
+}
+
+const MEMBER_ROLES = new Set(["admin", "auditor", "member"]);
+const MEMBER_STATUS = new Set(["active", "pending", "disabled"]);
+/** 改成员的角色 / 部门 / 状态 / 月额度。只改传进来的字段，没传的一律不动 */
+function setMember(actor, username, patch) {
+  const st = loadUsers();
+  const u = st.users.find((x) => x.username === username);
+  if (!u) throw new Error("成员不存在");
+  assertCanManage(actor, u, "修改");
+  const changed = [];
+  if (patch.role !== undefined) {
+    if (!MEMBER_ROLES.has(patch.role)) throw new Error("没有这个角色");
+    if (u.role !== patch.role) { u.role = patch.role; changed.push("角色→" + patch.role); }
+  }
+  if (patch.dept !== undefined) {
+    const d = String(patch.dept || "");
+    if (u.dept !== d) { u.dept = d; changed.push("部门→" + (d || "（无）")); }
+  }
+  if (patch.status !== undefined) {
+    if (!MEMBER_STATUS.has(patch.status)) throw new Error("没有这个状态");
+    if ((u.status || "active") !== patch.status) {
+      u.status = patch.status;
+      changed.push("状态→" + patch.status);
+      // 停用要当场把他的登录令牌全踢掉，不然这个人手上的浏览器还能接着用
+      if (patch.status !== "active") for (const [t, i] of Object.entries(st.tokens)) if (i.user === username) delete st.tokens[t];
+    }
+  }
+  if (patch.monthly_quota !== undefined) {
+    const q = patch.monthly_quota === null || patch.monthly_quota === "" ? null : Math.max(0, Math.floor(+patch.monthly_quota) || 0);
+    u.monthly_quota = q;
+    changed.push("月额度→" + (q === null ? "跟随团队" : q));
+  }
+  if (!changed.length) return publicUser(u);
+  saveUsers(st);
+  org.audit({ org: org.orgIdOf(u), actor: actor.username, action: "修改成员", target: username, detail: changed.join("、") });
+  return publicUser(u);
+}
+
+/**
+ * 管理员重置成员密码。返回一次性明文，**只返回这一次**，不落盘、不进日志。
+ * 为什么不是「让管理员自己填一个」：填的那个多半就是他自己在用的密码，
+ * 而且会经手聊天记录；随机生成 + 只显示一次，泄露面小得多。
+ */
+function resetPassword(actor, username) {
+  const st = loadUsers();
+  const u = st.users.find((x) => x.username === username);
+  if (!u) throw new Error("成员不存在");
+  assertCanManage(actor, u, "重置密码");
+  const pwd = crypto.randomBytes(6).toString("base64url");
+  u.salt = crypto.randomBytes(16).toString("hex");
+  u.hash = hashPassword(pwd, u.salt);
+  for (const [t, i] of Object.entries(st.tokens)) if (i.user === username) delete st.tokens[t];
+  saveUsers(st);
+  org.audit({ org: org.orgIdOf(u), actor: actor.username, action: "重置密码", target: username });
+  return pwd;
+}
+
+/** 删成员。用量流水**不删**——账已经记下了，删人不该把历史花销也一起抹掉 */
+function removeMember(actor, username) {
+  const st = loadUsers();
+  const i = st.users.findIndex((x) => x.username === username);
+  if (i < 0) throw new Error("成员不存在");
+  assertCanManage(actor, st.users[i], "删除");
+  const [u] = st.users.splice(i, 1);
+  for (const [t, info] of Object.entries(st.tokens)) if (info.user === username) delete st.tokens[t];
+  saveUsers(st);
+  org.audit({ org: org.orgIdOf(u), actor: actor.username, action: "删除成员", target: username });
+  return publicUser(u);
+}
+
+/** 管理员直接建号（不走注册闸）。返回一次性明文密码 */
+function createMember(actor, { username, role, dept, monthly_quota }) {
+  if (!isAdmin(actor)) throw new Error("只有管理员能添加成员");
+  const pwd = crypto.randomBytes(6).toString("base64url");
+  const u = register(username, pwd, { org: org.orgIdOf(actor), role, dept, status: "active" });
+  if (monthly_quota !== undefined && monthly_quota !== null && monthly_quota !== "") {
+    const st = loadUsers();
+    const x = st.users.find((y) => y.username === u.username);
+    x.monthly_quota = Math.max(0, Math.floor(+monthly_quota) || 0);
+    saveUsers(st);
+  }
+  org.audit({ org: org.orgIdOf(u), actor: actor.username, action: "添加成员", target: u.username, detail: u.role });
+  return { user: publicUser(u), password: pwd };
+}
+
+/** 待审核的人（自助注册进来、组织开了「需要审核」的） */
+function pendingMembers(orgId) {
+  return listMembers(orgId).filter((m) => m.status === "pending");
 }
 
 // ---------- Express 路由与守卫 ----------
@@ -396,7 +646,23 @@ function authGuard(req, res, next) {
   if (!needsAuth) return next();
   const user = userFromReq(req);
   if (!user) return res.status(401).json({ error: "未登录", setup: !hasUsers() });
+  // 待审核 / 已停用的账号：cookie 还在，但一步也走不了。
+  // 这道闸必须在这里（而不是只在登录时判）——不然停用一个人之后，他手上开着的那个页面还能接着跑任务
+  const status = user.status || "active";
+  if (status === "pending") return res.status(403).json({ error: "账号还在等管理员审核通过", pending: true });
+  if (status === "disabled") return res.status(403).json({ error: "账号已被停用，找管理员" , disabled: true });
   req.user = user;
+  next();
+}
+
+/** 写操作的管理员闸：审计员能进后台看，但不能改 */
+function adminOnly(req, res, next) {
+  if (!isAdmin(req.user)) return res.status(403).json({ error: "只有管理员能做这个操作" });
+  next();
+}
+/** 进管理后台的闸（管理员 + 审计员） */
+function adminGuard(req, res, next) {
+  if (!canAdmin(req.user)) return res.status(403).json({ error: "没有管理后台权限" });
   next();
 }
 
@@ -404,19 +670,44 @@ function authGuard(req, res, next) {
  * @param opts.onRename  改登录名之后的回调 (from, to)：会话文件归 server 管，
  *   它得把那边的归属一起搬走，不然历史任务就成了没主的。
  */
+/**
+ * 两个老开关（open_register / credits_enabled）以前存在 users.json 的 settings 里，
+ * 现在归组织设置管。升级上来的装机得把它们搬过去——不搬的话，
+ * 用户之前打开的「开放注册」会在升级后悄悄变回关闭，而他完全不知道发生了什么。
+ * 搬完打个标记，只搬一次（之后组织设置才是唯一真相，再搬会把后来的修改盖回去）。
+ */
+function migrateLegacySettings() {
+  const st = loadUsers();
+  if (!st.users.length || st.settings.migrated_to_org) return false;
+  const patch = {};
+  if (st.settings.open_register !== undefined) patch.open_register = !!st.settings.open_register;
+  if (st.settings.credits_enabled !== undefined) patch.credits_enabled = !!st.settings.credits_enabled;
+  if (Object.keys(patch).length) org.updateOrg(org.DEFAULT_ORG, { settings: patch }, "升级迁移");
+  st.settings.migrated_to_org = true;
+  saveUsers(st);
+  return true;
+}
+
 function createRouter(opts) {
   const router = express.Router();
   const onRename = (opts || {}).onRename;
+  try { migrateLegacySettings(); } catch (e) { console.warn("[账号] 老开关搬家失败：" + e.message); }
 
   router.get("/api/auth/state", (req, res) => {
     const st = loadUsers();
     const user = userFromReq(req);
+    const o = org.getOrg(org.orgIdOf(user));
     res.json({
       users: st.users.length,
       authed: !!user,
       user: publicUser(user),
-      open_register: openRegister(st),
-      credits_enabled: creditsEnabled(st),
+      open_register: openRegister(user),
+      credits_enabled: creditsEnabled(user),
+      // 界面据此决定：待审核 → 显示等待页；已停用 → 显示停用页；能不能进管理后台
+      status: user ? user.status || "active" : "",
+      can_admin: canAdmin(user),
+      multi_tenant: org.multiTenant(),
+      org: user ? { id: o.id, name: o.name, ...org.planInfo(o) } : null,
     });
   });
 
@@ -425,14 +716,32 @@ function createRouter(opts) {
     const wait = loginLimiter.retryAfter("reg|" + ip, REGS_PER_IP);
     if (wait) return res.status(429).json({ error: `注册太频繁了，${wait} 秒后再试` });
     try {
-      const { username, password } = req.body || {};
+      const { username, password, invite } = req.body || {};
       const st = loadUsers();
-      // 第一个账号永远放行（就是拿它开管理员），之后要不要开放注册由管理员说了算
-      if (st.users.length && !openRegister(st)) throw new Error("管理员没有开放注册，找他给你开一个");
+      const first = !st.users.length;
+      let spec = {};
+      let inv = null;
+      if (!first) {
+        // 两条路进来：邀请码（推荐）或者管理员开了自助注册。两条都没有就不给进
+        if (invite) {
+          inv = org.peekInvite(invite);
+          if (!inv) throw new Error("邀请码不对");
+          if (inv.error) throw new Error(inv.error);
+          spec = { org: inv.org, role: inv.role, dept: inv.dept, status: "active" };
+        } else {
+          if (!openRegister()) throw new Error("要邀请码才能注册，找管理员要一个");
+          const s = org.settingsOf(org.getOrg(org.DEFAULT_ORG));
+          spec = { org: org.DEFAULT_ORG, role: "member", status: s.need_approval ? "pending" : "active" };
+        }
+      }
       loginLimiter.fail("reg|" + ip);
-      const user = register(username, password);
-      setTokenCookie(res, issueToken(user.username), req);
-      res.json({ ok: true, user: publicUser(user) });
+      const user = register(username, password, spec);
+      if (inv) org.consumeInvite(inv.code, user.username);
+      else if (!first) org.audit({ org: org.orgIdOf(user), actor: user.username, action: "自助注册", target: user.username, detail: user.status === "pending" ? "等待审核" : "已直接通过" });
+      // 待审核的人也发 cookie：不发的话他登录后只能看到「用户名或密码不对」，
+      // 完全不知道自己其实注册成功了、只是在排队
+      setTokenCookie(res, issueToken(user.username), req, user);
+      res.json({ ok: true, user: publicUser(user), pending: user.status === "pending" });
     } catch (e) {
       res.status(400).json({ error: e.message });
     }
@@ -454,8 +763,9 @@ function createRouter(opts) {
     }
     loginLimiter.pass(userKey);
     loginLimiter.pass(ipKey);
-    setTokenCookie(res, issueToken(user.username), req);
-    res.json({ ok: true, user: publicUser(user) });
+    if ((user.status || "active") === "disabled") return res.status(403).json({ error: "这个账号已被管理员停用" });
+    setTokenCookie(res, issueToken(user.username), req, user);
+    res.json({ ok: true, user: publicUser(user), pending: user.status === "pending" });
   });
 
   router.post("/api/auth/logout", (req, res) => {
@@ -540,22 +850,18 @@ function createRouter(opts) {
   router.post("/api/auth/open-register", (req, res) => {
     const user = userFromReq(req);
     if (!user) return res.status(401).json({ error: "未登录" });
-    if (user.role !== "admin") return res.status(403).json({ error: "只有管理员能改" });
-    const st = loadUsers();
-    st.settings = { ...(st.settings || {}), open_register: !!(req.body || {}).open_register };
-    saveUsers(st);
-    res.json({ ok: true, open_register: st.settings.open_register });
+    if (!isAdmin(user)) return res.status(403).json({ error: "只有管理员能改" });
+    const o = org.updateOrg(org.orgIdOf(user), { settings: { open_register: !!(req.body || {}).open_register } }, user.username);
+    res.json({ ok: true, open_register: org.settingsOf(o).open_register });
   });
 
   /** 开不开积分闸门：默认关（不限额），只有管理员能改 */
   router.post("/api/auth/credits-enabled", (req, res) => {
     const user = userFromReq(req);
     if (!user) return res.status(401).json({ error: "未登录" });
-    if (user.role !== "admin") return res.status(403).json({ error: "只有管理员能改" });
-    const st = loadUsers();
-    st.settings = { ...(st.settings || {}), credits_enabled: !!(req.body || {}).credits_enabled };
-    saveUsers(st);
-    res.json({ ok: true, credits_enabled: st.settings.credits_enabled });
+    if (!isAdmin(user)) return res.status(403).json({ error: "只有管理员能改" });
+    const o = org.updateOrg(org.orgIdOf(user), { settings: { credits_enabled: !!(req.body || {}).credits_enabled } }, user.username);
+    res.json({ ok: true, credits_enabled: org.settingsOf(o).credits_enabled });
   });
 
   router.get("/api/usage", (req, res) => {
@@ -567,7 +873,7 @@ function createRouter(opts) {
   router.post("/api/credits/topup", (req, res) => {
     const user = userFromReq(req);
     if (!user) return res.status(401).json({ error: "未登录" });
-    if (user.role !== "admin") return res.status(403).json({ error: "只有管理员可以充值" });
+    if (!isAdmin(user)) return res.status(403).json({ error: "只有管理员可以充值" });
     try {
       const { amount, username } = req.body || {};
       const balance = topup(user, username, amount);
@@ -591,6 +897,23 @@ module.exports = {
   usageSummary,
   authGuard,
   createRouter,
+  // 企业管理后台用的那一套
+  isAdmin,
+  canAdmin,
+  adminGuard,
+  adminOnly,
+  publicUser,
+  balanceOf,
+  monthlyQuotaOf,
+  monthlyLeft,
+  listMembers,
+  pendingMembers,
+  setMember,
+  createMember,
+  removeMember,
+  resetPassword,
+  topup,
+  migrateLegacySettings,
   // 下面这些只给测试用：账本读写和登录闸得能在临时目录里单独验，不然一跑测试就动到真账号
   _internals: { readStore, writeStoreAtomic, createLimiter, isHttps, normalizeAvatar, register, renameUser, loadUsers, saveUsers, loadUsage, saveUsage, verify, issueToken },
 };
