@@ -237,12 +237,42 @@ function assignSessionDir(sess, message) {
 function sessFile(id) {
   return path.join(SESS_DIR, id.replace(/[^\w-]/g, "_") + ".json");
 }
+// 每个会话文件「我们最后一次读/写它时」的样子。用来分辨盘上那份是不是被别的进程改过。
+const sessStamp = new Map(); // id -> { mtime, size }
+function sessStat(id) {
+  try { const st = fs.statSync(sessFile(id)); return { mtime: st.mtimeMs, size: st.size }; } catch { return null; }
+}
+/**
+ * 盘上那份比我们手里的新吗。
+ *
+ * 只比 mtime 会漏：原子改名两次可能落在同一毫秒里。加上体积，改了内容基本不可能两项都一样。
+ */
+function sessChangedOnDisk(id) {
+  const now = sessStat(id);
+  const mine = sessStamp.get(id);
+  if (!now || !mine) return false; // 文件没了 / 我们压根没记过，都不算「别人改的」
+  return now.mtime !== mine.mtime || now.size !== mine.size;
+}
 function getSession(id) {
+  /**
+   * 内存里有了也要回头看一眼盘：命令行的 wb 写的是同一批文件（data/sessions/<id>.json），
+   * 而 wb resume 不给 id 时接的就是「最近动过的那个」，包括桌面上刚开的那条。
+   * 以前这个 Map 一进来就再也不回头，于是「桌面开个头 → 终端 wb resume 接着做 → 回桌面再发一句」
+   * 这条路上，桌面用的是几小时前那份内存副本，一存盘就把终端那几轮整段盖掉了——
+   * 用户看到的是「我在终端做的那半截凭空消失了」。
+   *
+   * 正在跑任务的会话不重读：那份内存对象正被这一轮改着，从盘上盖回去等于把自己的进度丢了。
+   */
+  if (sessions.has(id) && !activeRuns.has(id) && sessChangedOnDisk(id)) {
+    console.log(`[会话] ${id} 在别处改过（多半是命令行 wb），重新读一遍磁盘，免得把那边的记录覆盖掉`);
+    sessions.delete(id);
+  }
   if (!sessions.has(id)) {
     // 会话文件坏了不抛错（不能因为一条对话打不开就让整个工作台起不来），
     // 但也绝不装作没有过这条对话：store 会先拿 .bak 顶上，实在不行把坏文件改名隔离
     const data = store.readJson(sessFile(id), { history: [], transcript: [], title: "", updated_at: null });
     sessions.set(id, data);
+    sessStamp.set(id, sessStat(id));
   }
   return sessions.get(id);
 }
@@ -251,6 +281,7 @@ function saveSession(id) {
   if (!s || !s.history) return;
   s.updated_at = new Date().toISOString();
   store.writeJsonAtomic(sessFile(id), s);
+  sessStamp.set(id, sessStat(id)); // 记下自己写完之后的样子，别把自己这次写当成「别人改的」
 }
 
 /**
@@ -622,6 +653,20 @@ function guardSession(req, res) {
   if (sessionAllowed(req.user, s)) return s;
   res.status(403).json({ error: "这条对话不属于你" });
   return null;
+}
+/**
+ * 正在跑的那个任务，这次请求的人碰不碰得到。
+ *
+ * 插队 / 回答 / 停止 / 续流这四条走的是 body.sessionId 或自己的 :id，绕开了 guardSession，
+ * 以前一个字都没查归属：知道一个会话 id，就能往别人正在跑的任务里塞一句话、替他回答
+ * agent 弹出来的问题、把他的任务掐掉，或者把他的实时输出整段读走。会话 id 是
+ * s_<时间戳>_<随机数>，但它会出现在链接、日志、截图里，不是秘密，更不该当权限用。
+ * 判据跟 guardSession 同一条（sessionAllowed）：本人放行，管理员限同组织，没记归属的老会话照旧。
+ */
+function guardRun(req, res, id) {
+  if (sessionAllowed(req.user, getSession(id))) return true;
+  res.status(403).json({ ok: false, error: "这条对话不属于你" });
+  return false;
 }
 
 let runtime; // MCP 启动后创建
@@ -2939,6 +2984,12 @@ app.post("/api/chat", async (req, res) => {
   if (activeRuns.has(sessionId)) {
     return res.status(409).json({ error: "该会话已有任务在运行，可用「插队」把补充说明注入当前任务。" });
   }
+  // 归属要赶在 SSE 头之前查：这条路由的 sessionId 来自请求体，以前一个字都没查——
+  // 拿到别人的会话 id 就能接着他的上下文继续跑，跑出来的内容还会写进他的历史里。
+  // 新会话（磁盘上还没有这个 id）没有归属字段，照常放行。
+  if (!sessionAllowed(user, getSession(sessionId))) {
+    return res.status(403).json({ error: "这条对话不属于你" });
+  }
 
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
@@ -3186,6 +3237,7 @@ app.post("/api/chat/interject", (req, res) => {
   const text = String(message || "").trim();
   const run = activeRuns.get(sessionId);
   if (!run) return res.status(409).json({ ok: false, error: "该会话没有正在运行的任务" });
+  if (!guardRun(req, res, sessionId)) return;
   if (!text) return res.status(400).json({ ok: false, error: "消息为空" });
   run.interject.push(text);
   res.json({ ok: true, queued: run.interject.length });
@@ -3196,6 +3248,7 @@ app.post("/api/chat/answer", (req, res) => {
   const { sessionId, askId, answer } = req.body || {};
   const run = activeRuns.get(sessionId);
   if (!run) return res.status(409).json({ ok: false, error: "该会话没有正在运行的任务" });
+  if (!guardRun(req, res, sessionId)) return;
   const resolve = run.asks && run.asks.get(String(askId || ""));
   if (!resolve) return res.status(404).json({ ok: false, error: "这个问题已过期或已回答过" });
   const text = String(answer || "").trim().slice(0, 2000);
@@ -3206,11 +3259,10 @@ app.post("/api/chat/answer", (req, res) => {
 
 // 正在运行任务的会话列表：前端刷新后靠它找回后台任务，断流后靠它判断任务是否还活着
 app.get("/api/chat/running", (req, res) => {
-  const ids = [...activeRuns.keys()].filter((id) => {
-    if (!req.user || req.user.role === "admin") return true;
-    const s = sessions.get(id);
-    return !s || !s.user || s.user === req.user.username;
-  });
+  // 口径跟侧栏一样窄（ownSession）：这份列表不是「我能打开哪些」，是「页面刷新后该替我接回哪些」。
+  // 以前管理员这里拿到的是全服务器所有人正在跑的任务 id，前端 reattachRunning 会挨个把它们
+  // 回放进他自己的窗口——同事的任务画面直接铺到管理员屏幕上，还顺手订上了人家的实时流。
+  const ids = [...activeRuns.keys()].filter((id) => ownSession(req.user, { user: (sessions.get(id) || {}).user || "" }));
   res.json(ids);
 });
 
@@ -3220,6 +3272,7 @@ app.get("/api/chat/running", (req, res) => {
 app.get("/api/chat/stream/:id", (req, res) => {
   const run = activeRuns.get(req.params.id);
   if (!run || !run.events) return res.status(404).json({ error: "该会话没有正在运行的任务" });
+  if (!guardRun(req, res, req.params.id)) return;
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -3438,14 +3491,17 @@ app.post("/api/assist/model", (req, res) => {
 app.delete("/api/session/:id", (req, res) => {
   if (!guardSession(req, res)) return;
   sessions.delete(req.params.id);
+  sessStamp.delete(req.params.id);
   try { fs.unlinkSync(sessFile(req.params.id)); } catch {}
   res.json({ ok: true });
 });
 
 // 停止正在运行的任务：中断当前模型调用，agent 循环在下一个检查点收尾
 app.post("/api/chat/stop", (req, res) => {
-  const run = activeRuns.get((req.body || {}).sessionId);
+  const sessionId = (req.body || {}).sessionId;
+  const run = activeRuns.get(sessionId);
   if (!run) return res.json({ ok: false, error: "该会话没有正在运行的任务" });
+  if (!guardRun(req, res, sessionId)) return;
   run.ctrl.abort();
   res.json({ ok: true });
 });
