@@ -4779,6 +4779,7 @@ async function main() {
   await testLocalEngineConnect();
   await testEngineToolBridge();
   await testEngineContextParity();
+  await testEngineStoppedSurfacing();
   await testFeedbackAndUsage();
   testOutputOwnership();
   await testFilesEmitter();
@@ -6868,6 +6869,85 @@ main()
  * runTask 的引擎分支连 projectContext 都没往下传。这里用假引擎截住送出去的提示词逐块对账，
  * 并带负对照：没配的块不许凭空出现（否则"记忆"标题下面是空的，模型会当成"没有记忆"这一事实）。
  */
+/**
+ * 本机 CLI 引擎（claude / codex）被强制收尾时，得跟内置引擎一样把话说出来。
+ *
+ * 内置引擎撞上限会做两件事：发一个 limit 事件、并把「⚠️ …任务强制收尾」写进正文。
+ * runViaEngine 这条路以前两件都不做，只把 stopped 塞在返回值里——于是谁忘了接这个返回值，
+ * 谁那边就把半截活儿显示成干完了。IM 就是这么把「跑满 25 步被掐掉」当成一条正常回复
+ * 发到用户手机上的（im.js 里那句 `const { finalText } = await runtime.runTask(...)`）。
+ * 现在补在源头，所有调用方（Web / IM / 定时任务 / 命令行）都不用各自记得去接。
+ *
+ * 带足反向对照：正常跑完的任务不许平白多出这半句，也不许多发 limit 事件。
+ */
+async function testEngineStoppedSurfacing() {
+  const engines = require("../engines");
+  const { judgeRun } = require("../task-verdict");
+
+  let scripted = { finalText: "", stopped: null };
+  const probe = {
+    id: "e2e-stop", label: "收尾探针", bin: null, note: "", install: "", launchHeader: "", supportsResume: false,
+    async detect() { return { id: "e2e-stop", installed: true, path: "", version: "0" }; },
+    async run() { return { finalText: scripted.finalText, usage: {}, stopped: scripted.stopped, sessionId: null }; },
+  };
+  engines.BACKENDS.push(probe);
+  const rt = createAgentRuntime({
+    config: { ...config, agent: { ...config.agent, engine: "e2e-stop" } },
+    llm: makeFakeLLM(), mcpManager: new McpManager(), experts: [],
+  });
+  const run = async (finalText, stopped) => {
+    scripted = { finalText, stopped };
+    const evs = [], history = [{ role: "user", content: "把这活干完" }];
+    const r = await rt.runTask({ history, emit: (e) => evs.push(e) });
+    return { r, evs, history, limits: evs.filter((e) => e.type === "limit") };
+  };
+
+  try {
+    // ① 撞步数上限，正文只剩半句过程叙述——这正是最坑人的形状
+    const A = await run("我先看一下这个文件", "已达最大步数（25 步）");
+    assert(A.r.finalText.includes("已达最大步数（25 步）"),
+      "CLI 引擎撞上限，正文里一个字都没提，用户看到的就是一条正常回复：" + A.r.finalText);
+    assert(A.r.finalText.includes("⚠️") && A.r.finalText.includes("任务强制收尾"),
+      "收尾提示的措辞跟内置引擎对不上：" + A.r.finalText);
+    assert(A.r.finalText.startsWith("我先看一下这个文件"), "模型原话被吃掉了：" + A.r.finalText);
+    assert.strictEqual(A.limits.length, 1, "limit 事件没发或发重了：" + A.limits.length);
+    assert.strictEqual(A.limits[0].note, "已达最大步数（25 步）", "limit 事件里的原因不对：" + A.limits[0].note);
+    assert.strictEqual(A.r.stopped, "已达最大步数（25 步）", "返回值里的 stopped 不能因为补了正文就丢掉");
+    // 存进 history 的是模型原话，不带这半句——跟内置引擎一致，续跑时不会把提示语当成模型说过的话
+    const last = A.history[A.history.length - 1];
+    assert.strictEqual(last.content, "我先看一下这个文件", "history 里混进了收尾提示：" + last.content);
+
+    // ② IM 那句 `finalText || "任务已执行完成。"`：正文为空 + 被掐掉，是最容易报成「干完了」的一种
+    const B = await run("", "已达最大运行时间");
+    assert(B.r.finalText, "正文空 + 被强制收尾，返回的还是空串——IM 会兜底成「任务已执行完成。」");
+    const imOut = B.r.finalText || "任务已执行完成。"; // im.js 里原样这么写的
+    assert(imOut !== "任务已执行完成。" && imOut.includes("已达最大运行时间"),
+      "IM 会把一个被掐掉的任务发成「任务已执行完成。」：" + imOut);
+
+    // ③ 手动停止也照说，且判定层认得出来（假绿裁定靠的就是这个字段）
+    const C = await run("停在这儿了", "已手动停止");
+    assert(C.r.finalText.includes("已手动停止"), "手动停止没写进正文：" + C.r.finalText);
+    assert.strictEqual(judgeRun({ result: C.r.finalText, stopped: C.r.stopped }).reason, "stopped",
+      "task-verdict 认不出这是手动停止");
+
+    // ④ 反向对照：正常跑完的任务，一个字都不许多，也不许多发事件
+    const D = await run("做完了，报告在 报告.md", null);
+    assert.strictEqual(D.r.finalText, "做完了，报告在 报告.md", "正常跑完却被加了料：" + D.r.finalText);
+    assert.strictEqual(D.limits.length, 0, "正常跑完还发 limit 事件：" + D.limits.length);
+    assert.strictEqual(D.r.stopped, null, "正常跑完 stopped 应该是 null：" + D.r.stopped);
+    assert(judgeRun({ result: D.r.finalText, stopped: D.r.stopped }).ok, "正常跑完被判成没干完");
+
+    // ⑤ 反向对照：正文空 + 没被掐掉，仍然走 IM 那句兜底（别为了修上面那条把这条也改了）
+    const E = await run("", null);
+    assert.strictEqual(E.r.finalText || "任务已执行完成。", "任务已执行完成。", "把正常的空正文也加了料");
+    assert.strictEqual(E.limits.length, 0, "正常的空正文还发 limit 事件");
+  } finally {
+    engines.BACKENDS.splice(engines.BACKENDS.indexOf(probe), 1);
+    try { fs.rmSync(path.join(getWorkspaceDir(), "e2e-stop-会话"), { recursive: true, force: true }); } catch {}
+  }
+  console.log("✅ CLI 引擎强制收尾：撞上限/超时/手停都写进正文并发 limit 事件（IM 不再把半截活儿报成干完了）· 正常跑完一个字不多");
+}
+
 async function testEngineContextParity() {
   const engines = require("../engines");
   const memory = require("../memory");
