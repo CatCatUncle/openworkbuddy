@@ -2394,6 +2394,37 @@ async function testDeliverableQuality() {
       assert.strictEqual(r.isError, true, "围栏没闭合却判成功了");
       assert.ok(/围栏/.test(r.content), r.content);
 
+      // 续写中途「还没写完」不等于「写错了」。这是真实数据里最吵的一条误报：
+      // 工具描述自己就教模型用 append 一节一节写长文档，第一节 <html>/<body> 还开着，
+      // 自检就报「页面结构有问题」并 isError:true → 喂进 errStreaks → 弹「已连续失败 4 次」，
+      // 可每一次其实都写成功了（本机 176 段会话里这条出现 112 次，落盘的 48 个 html 无一真缺 </html>）
+      r = await call("write_file", { path: "长页.html", content:
+        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>分节写</title></head>' +
+        '<body><div class="wrap"><h1>标题</h1>' });
+      assert.strictEqual(r.isError, true, "整篇写半截页面本来就该顶回去（负向对照）");
+      r = await call("write_file", { path: "长页2.html", content: '<!DOCTYPE html><html><head><title>分节写</title></head><body><div>', append: true });
+      assert.strictEqual(r.isError, false, "续写第一节被当成了错：" + r.content);
+      r = await call("write_file", { path: "长页2.html", content: '<p>这是一段足够长的正文内容，用来避免被判成空壳页面。</p></div></body></html>', append: true });
+      assert.strictEqual(r.isError, false, "续写收尾那一节反倒报错了：" + r.content);
+      // 但「闭的比开的还多」跟写没写完无关，续写时照样是错
+      r = await call("write_file", { path: "长页2.html", content: "</div></div>", append: true });
+      assert.strictEqual(r.isError, true, "续写时多闭了两个 div 也放过了");
+
+      // 代码同理：分节 append 的半个函数是「还没写完」，整篇写半个函数才是错
+      r = await call("write_file", { path: "分节.js", content: "function a() {\\n", append: true });
+      assert.strictEqual(r.isError, false, "续写半个函数被当成语法错：" + r.content);
+      r = await call("write_file", { path: "分节.js", content: "  return 1;\\n}\\n", append: true });
+      assert.strictEqual(r.isError, false, r.content);
+      r = await call("write_file", { path: "整篇半个.js", content: "function a() {\\n" });
+      assert.strictEqual(r.isError, true, "整篇写半个函数也放过了（负向对照：不是把检查关了）");
+      // 真语法错在续写里也必须报——放行的只有「读到文件末尾才发现不够」那一类
+      r = await call("write_file", { path: "续写坏.js", content: "const x = ;\\n", append: true });
+      assert.strictEqual(r.isError, true, "续写里的真语法错被一起放过了");
+      // 围栏：续写中途只开了一半是正常的，下一节接着写就闭上了
+      r = await call("write_file", { path: "分节.md", content: "# X\\n\\n\\u0060\\u0060\\u0060js\\nconst a = 1;\\n", append: true });
+      assert.strictEqual(r.isError, false, "续写里的半截围栏被当成错：" + r.content);
+
       // JS 语法坏了 → 顶回去，但文件照写（好让它 edit_file 去修）
       r = await call("write_file", { path: "broken.js", content: "function a( {\\n" });
       assert.strictEqual(r.isError, true, "语法坏了却判成功了");
@@ -2435,6 +2466,23 @@ async function testDeliverableQuality() {
       assert.ok(/需要你去改页面/.test(r.content), "没把「该改的是页面不是重跑」说给模型听：" + r.content);
       assert.ok(/命令行模式/.test(r.content), "命令行下应当说明浏览器实测跳过了：" + r.content);
 
+      // JS 里拼 HTML 的字符串不许被当成真标签数。工作区里现有的两处「标签对不上」100% 是这么来的
+      await call("write_file", { path: "带脚本.html", content:
+        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>带脚本</title></head>' +
+        '<body><div id="app"><p>这是一段足够长的正文内容，用来避免被判成空壳页面。</p></div>' +
+        '<scr' + 'ipt>document.getElementById("app").innerHTML = "<div class=x>" + 1;' +
+        '/* <div> <body> 注释里也别数 */</scr' + 'ipt></body></html>' });
+      r = await call("check_page", { path: "带脚本.html" });
+      assert.strictEqual(/开 \d+ 个、闭 \d+ 个/.test(r.content), false, "把 script 正文里的字符串当成标签数了：" + r.content);
+      // 负向对照：真少一个 </div> 还是要报
+      await call("write_file", { path: "真少一个.html", content:
+        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>真少</title></head>' +
+        '<body><div><div><p>这是一段足够长的正文内容，用来避免被判成空壳页面。</p></div></body></html>' });
+      r = await call("check_page", { path: "真少一个.html" });
+      assert.ok(/<div> 开 2 个、闭 1 个/.test(r.content), "真少一个 </div> 反倒不报了：" + r.content);
+
       // 干净的页面要能过
       await call("write_file", { path: "clean.html", content:
         '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -2452,7 +2500,7 @@ async function testDeliverableQuality() {
   });
   fs.rmSync(dir, { recursive: true, force: true });
   assert.strictEqual(r.status, 0, "交付质量测试失败：\n" + (r.stderr || r.stdout));
-  console.log("✅ 交付质量：长文档能续写 · JS/JSON 语法坏了当场顶回（合法 ESM 不误伤）· Markdown 围栏没闭合能查出 · 网页外链/断链/标签不闭合都拦得住");
+  console.log("✅ 交付质量：长文档能续写且中途半截不算错（整篇写半截仍顶回=负向对照）· JS/JSON 语法坏了当场顶回（合法 ESM 不误伤）· Markdown 围栏没闭合能查出 · 网页外链/断链/标签不闭合都拦得住 · script 正文和注释里的字符串不当标签数");
 }
 
 /**
