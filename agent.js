@@ -176,6 +176,42 @@ function missingDeliverables(text) {
   return bad;
 }
 
+/**
+ * 「说自己看过图」但根本没看成 —— 这是真实翻过车的一种假交付。
+ *
+ * 用户让它出海报，look_at_image 那条渠道当时一直返回空正文（思考把额度吃光了，
+ * 见 tools.js 里那段），11 次调用 11 次没拿到答案；模型换了几轮问法之后放弃，
+ * 转头在说明文档里写下「已核对，笔画正确、无错别字」。文件是真的、图也是真的，
+ * 只有那句「核对过」是编的——用户照着这句话去发图，错字就这么发出去了。
+ *
+ * 所以：结语里出现「肉眼/逐字核对了图上的字」这类说法，而这一趟**一次都没有
+ * 成功看过图**，就打回去要求它要么真去看、要么如实说没核对过。判据故意收得很窄：
+ *   1. 得同时出现「核对/确认/检查过」这类动词 和「字/笔画/错别字/文字」这类对象；
+ *   2. 文中得真提到一张图片文件；
+ *   3. 这一趟 look_at_image 一次都没成功（成功过就不管——那是它自己的判断，我们不替它复核）。
+ * 三条缺一不放行，宁可漏也别误伤正常汇报。
+ */
+const VISUAL_VERB_RE = /(核对|校对|核查|确认|检查|检视|查看|看过|确认过)/;
+const VISUAL_OBJ_RE = /(笔画|错别字|错字|字形|文字|字迹|文案|拼写|排版|画面)/;
+const VISUAL_IMG_RE = /[\w\u4e00-\u9fff().&＆_-]+\.(?:png|jpe?g|webp|gif|svg)\b/i;
+// 「没能核对」跟「已核对」长得只差一个字，判反了就是把如实交代的那一句当成撒谎打回去。
+// 只认明确的否定词，别用光秃秃的「无」——「笔画正确、无错别字」里那个「无」是肯定的意思。
+const VISUAL_NEG_RE = /(没能|没有|没法|没看|未能|未做|未核对|无法|不能|做不了|失败|拦了|空正文)/;
+
+function unseenVisualClaims(text, sawImage) {
+  if (sawImage) return null;
+  const t = String(text || "");
+  if (!t || !VISUAL_IMG_RE.test(t)) return null;
+  // 动词和对象得挨在一句里才算一句「我核对过图上的字」，隔了半篇文章的两个词不算。
+  // 分号不能当断句：真实那句翻车文案就是「**已核对**：…；A、B2 两版文字笔画正确…」，
+  // 按分号切会把动词和对象切到两半，整条闸门就此漏掉它。
+  for (const seg of t.split(/[\n。！!]/)) {
+    if (VISUAL_NEG_RE.test(seg)) continue;
+    if (VISUAL_VERB_RE.test(seg) && VISUAL_OBJ_RE.test(seg)) return seg.trim().slice(0, 80);
+  }
+  return null;
+}
+
 // ================= 收尾闸门（治「没做完就收摊」） =================
 /**
  * 模型不再调工具，就等于它在说「我做完了」。但「它认为做完了」不算数：
@@ -1198,6 +1234,8 @@ function modePrompt(mode) {
     // 键里必须带结果指纹，才不会误伤「改一遍读一遍」的正常校验循环——文件改了，读回来的内容就变了，计数自动清零
     const loopHist = new Map(); // 工具名+入参 → { sig: 上次结果指纹, streak: 连续拿到相同结果的次数 }
     const errStreaks = new Map(); // 工具名 → 连续报错次数（换着参数撞同一堵墙也算）
+    let sawImage = false;  // 这一趟有没有成功看过一次图（收尾核验「说自己看过图」用）
+    let visionRetries = 0;
     const loopNudged = new Set(); // 每个键只提醒一次，别变成新的噪音循环
     // 任务开始时先记一份工作目录快照，files 事件带上「这一轮真正新增/改动的文件」。
     // 这件事必须在服务端算：前端那份 mtime 快照是活的，历史回放时早就对不上了，算出来永远是空。
@@ -1390,6 +1428,20 @@ function modePrompt(mode) {
           continue;
         }
 
+        // 说自己核对过图上的字，可这一趟一次都没真看成过图 → 打回去（最多一次）
+        const faked = unseenVisualClaims(result.text, sawImage);
+        if (faked && visionRetries < 1 && Date.now() < deadline - 30000) {
+          visionRetries++;
+          history.push({
+            role: "user",
+            content: `【系统自动核验】你在结语里写了「${faked}」，可这一趟 look_at_image 一次都没成功看到图——没看过就不算核对过。二选一，别有第三种：` +
+              `（1）现在真调一次 look_at_image 带上具体问题去看，看成了再照实说；（2）看不成（渠道报错/没余额/返回空正文）就把这句核对的话删掉，` +
+              `明说「没能核对图上的文字，请你自己过一眼」。严禁把没看到的内容当作看过写进结论。`,
+          });
+          emit({ type: "text", delta: `\n\n> ⚠️ **成果核验未通过**：它说核对过图上的文字，但这一趟一次都没真看成过图，已打回要求真看或如实说明。\n\n`, depth });
+          continue;
+        }
+
         // 收尾闸门：不调工具了＝它认为做完了。可进度档里还有没打勾的条目、或者它自己承认还有没做的，
         // 那就是没做完就收摊。打回去，把没打勾的条目原样念给它听——不给模糊的「继续」，给具体的清单。
         const left = unfinishedMilestones(progressDir());
@@ -1449,6 +1501,7 @@ function modePrompt(mode) {
           loopHist.set(loopKey, { sig, streak: seen && seen.sig === sig ? seen.streak + 1 : 1 });
         }
         errStreaks.set(tc.name, r.isError ? (errStreaks.get(tc.name) || 0) + 1 : 0);
+        if (tc.name === "look_at_image" && !r.isError) sawImage = true; // 真看成过一次，收尾就不替它复核
         emit({
           type: "tool_result",
           id: tc.id,
@@ -1803,4 +1856,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
 }
 
-module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, makeOwnership };
+module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, makeOwnership };

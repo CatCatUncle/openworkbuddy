@@ -10,7 +10,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const assert = require("assert");
-const { createAgentRuntime, missingDeliverables, trimHistory, historyChars, collectSources } = require("../agent");
+const { createAgentRuntime, missingDeliverables, unseenVisualClaims, trimHistory, historyChars, collectSources } = require("../agent");
 const { McpManager } = require("../mcp");
 const { parseCron, cronMatches } = require("../scheduler");
 const { getWorkspaceDir, setWorkspaceDir } = require("../tools");
@@ -927,11 +927,28 @@ function testDeliverableGate() {
     assert(hollow.length === 1 && hollow[0].why === "empty", "0 字节文件应判 empty");
     // 没有"已生成/成功"这类声称时不触发核验，避免误伤正常提及文件名的回复
     assert.strictEqual(missingDeliverables("待会儿再写 e2e-根本没有这个.md").length, 0, "无声称时不该触发核验");
+
+    // 「说自己核对过图上的字」但这一趟一次都没真看成过图 —— 用户真踩过：
+    // 视觉渠道 11 次全返回空正文，模型换了几轮问法后放弃，转头在说明文档里写「已核对，笔画正确」
+    const 假核对 = "三版海报已生成。已逐字核对 poster_B.png，笔画正确、无错别字。";
+    assert.ok(unseenVisualClaims(假核对, false), "编造的看图核对没被拦下");
+    assert.strictEqual(unseenVisualClaims(假核对, true), null, "真看成过图还去替它复核（会误伤）");
+    // 如实交代没看成的，不许被当成撒谎
+    assert.strictEqual(unseenVisualClaims("海报已生成 poster_B.png。没能核对图上的文字（视觉渠道没余额），请你自己过一眼。", false), null, "如实说没看成反倒被打回");
+    // 没提到图片、或者只是普通汇报的，一律不碰
+    assert.strictEqual(unseenVisualClaims("已核对报告里的数字，全部对得上。", false), null, "把纯文本核对也当成看图了");
+    assert.strictEqual(unseenVisualClaims("三版海报已生成：poster_B.png、poster_C.png。", false), null, "没声称核对也被拦");
+    // 动词和对象要在同一句里才算，隔了半篇文章的两个词不算
+    assert.strictEqual(unseenVisualClaims("已确认文件都写到 poster_B.png 了。\n另外附了一段关于错别字的说明。", false), null, "跨句拼出来的假阳性");
+    // 真实翻车那句的句式：动词在分号前、对象在分号后。按分号断句就会整条漏掉
+    const 分号句 = "三版海报：poster_A.png、poster_B2.png。**已核对**：无错别字、无「AI 生成」水印；A、B2 两版文字笔画正确、排版整齐。";
+    assert.ok(unseenVisualClaims(分号句, false), "分号把动词和对象隔开就漏了（真实翻车文案就是这个句式）");
+    assert.strictEqual(unseenVisualClaims(分号句, true), null, "真看成过图仍被打回");
   } finally {
     fs.rmSync(real, { force: true });
     fs.rmSync(empty, { force: true });
   }
-  console.log("✅ 成果核验闸门：缺文件 / 0 字节空壳 / 无声称不误伤");
+  console.log("✅ 成果核验闸门：缺文件 / 0 字节空壳 / 无声称不误伤 · 说自己核对过图上的字但一次没看成图要打回（真看成过/如实说没看成/纯文本核对 三种负向对照都不误伤）");
 }
 
 // 上下文预算：老工具结果要被截短，但一条消息都不许删——OpenAI 侧 tool_calls 少了对应的 tool 应答就是 400
