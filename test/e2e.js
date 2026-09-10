@@ -2587,6 +2587,108 @@ async function testDeliverableQuality() {
 }
 
 /**
+ * mermaid 语法自动纠错。
+ *
+ * 真实数据：本机 176 段会话里 gen_diagram 调了 37 次挂了 7 次（18.9%），七次全是 mermaid
+ * 语法报错，且全落在四类纯机械的写法错误上（标签开 `["` 收 `")`、subgraph 标题带括号/冒号
+ * 没加引号、timeline 拿全角「：」当分隔符、gitGraph 中文分支名没加引号）——跟"这张图想画成
+ * 什么样"毫无关系。而模型收到的回执是 mermaid 那句 `Expecting 'SQE', 'TAGEND', 'UNICODE_TEXT'…`，
+ * 它读不懂这是在说哪个字符，只能把整张图重写一遍碰运气，一张图能来回三四趟。
+ *
+ * 这里守两头，缺一不可：
+ *   **改得对** —— 七类错例逐条盯死改成什么样，不是"只要 fixes 非空就算过"；
+ *   **不乱动** —— 合法写法一个字节都不许碰。这条真抓到过一次误伤：timeline 正文里的
+ *   「：」被当成分隔符换掉，一张本来渲染成功的行程图九行全被改写。
+ * 「改完真的能过 mermaid」由 test/frontend.js 在真 Chromium 里拿真 mermaid.parse 验——
+ * 纯字符串断言只能证明纠错器跟自己对上了答案，改坏了照样绿。
+ */
+function testDiagramRepair() {
+  const { repairMermaid, mermaidError } = require("../diagram");
+  const { bad, ok } = require("./fixtures/mermaid");
+  const fix = (s) => repairMermaid(s);
+
+  // 一、七类真实错例：都得改到，而且必须说得出改了什么（说不清就是在猜一张别的图）
+  for (const [name, src] of bad) {
+    const r = fix(src);
+    assert.ok(r.fixes.length > 0, `真实错例「${name}」纠错器一条都没认出来`);
+    assert.notStrictEqual(r.source, src, `真实错例「${name}」说改了却一个字节没动`);
+  }
+
+  // 二、负向对照：本来就合法的写法，纠错器碰一下都算 bug
+  for (const [name, src] of ok) {
+    const r = fix(src);
+    assert.strictEqual(r.fixes.length, 0, `合法写法「${name}」被当成错的了：${r.fixes.join("；")}`);
+    assert.strictEqual(r.source, src, `合法写法「${name}」被改动了`);
+  }
+
+  // 三、逐条盯死改成什么样
+  assert.strictEqual(
+    fix('flowchart TD\n  F["汇合点<br/>(待定)")').source,
+    'flowchart TD\n  F["汇合点<br/>(待定)"]',
+    "标签开 [\" 收 \") 没被改回 ]"
+  );
+  assert.strictEqual(
+    fix('graph LR\n  R["① 会重启<br/>(评估加固之后)]"').source,
+    'graph LR\n  R["① 会重启<br/>(评估加固之后)"]',
+    "收尾括号写进引号里了，应该挪到引号外面"
+  );
+  assert.strictEqual(
+    fix("graph TD\n  subgraph 上游: 输入侧\n  end").source,
+    'graph TD\n  subgraph "上游: 输入侧"\n  end',
+    "subgraph 裸标题里的冒号没补引号"
+  );
+  assert.strictEqual(
+    fix("flowchart LR\n    subgraph 处理[后端 (关键)]\n    end").source,
+    'flowchart LR\n    subgraph 处理["后端 (关键)"]\n    end',
+    "subgraph 别名[标题] 里的括号没补引号"
+  );
+  assert.strictEqual(
+    fix("timeline\n    2025-07-08 05:45： 触发过一次故障").source,
+    "timeline\n    2025-07-08 05：45 :  触发过一次故障",
+    "timeline 的全角冒号没换成半角分隔符（正文里原有的半角冒号也得让开）"
+  );
+  assert.strictEqual(
+    fix("gitGraph\n    branch 冷启动").source,
+    'gitGraph\n    branch "冷启动"',
+    "gitGraph 的中文分支名没补引号"
+  );
+
+  // 四、几个最容易被误伤的写法，单独钉一遍
+  for (const [why, src] of [
+    ["%%{init:…}%% 指令块里全是花括号，不许当节点标签改", '%%{init: {"theme": "base"}}%%\nflowchart TD\n  A["正文"] --> B["也是正文"]'],
+    ["标签正文里本来就有方括号/花括号", 'flowchart TD\n  A["数组 arr[0] 取值"] --> B["映射 map{k}"]'],
+    ["[[子流程]] [(数据库)] (((终点))) 这些形状本来就对", 'flowchart TD\n  C[["子流程"]] --> D[("数据库")]\n  D --> E((("终点")))'],
+    ["timeline 已经拿半角冒号当分隔符了，正文里的「：」是内容", "timeline\n        : 上午：出发"],
+    ["gitGraph 的英文分支名不用加引号", "gitGraph\n    branch feature/x"],
+    ["没加引号的裸标签不碰（加引号是另一件事，别顺手做）", "flowchart TD\n  A[入口] --> B[出口]"],
+  ]) {
+    const r = fix(src);
+    assert.strictEqual(r.source, src, `不该动却动了（${why}）：${r.fixes.join("；")}`);
+  }
+
+  // 五、救不回来的时候，报错必须点到具体哪一行、并把那行原文贴出来。
+  //     mermaid 原话只有 "Parse error on line 3 … Expecting 'SQE'"，模型据此只能整张图重写。
+  const doomed = "graph TD\n  A --> B\n  C[[[坏\n";
+  const em = mermaidError(new Error("Parse error on line 3:\n...Expecting 'SQE', 'TAGEND'"), doomed).message;
+  assert.ok(em.includes("第 3 行："), "报错没点到具体行号");
+  assert.ok(em.includes("C[[[坏"), "报错没把出错那一行的原文贴出来");
+  assert.ok(em.includes("Parse error on line 3"), "报错把 mermaid 的原话吞了");
+  assert.ok(/只改这几行/.test(em), "报错没告诉模型别整张图重写");
+  // 认不出行号时不许瞎编
+  assert.ok(!/第 \d+ 行/.test(mermaidError(new Error("something else"), doomed).message), "没有行号时不该编一个出来");
+
+  // 六、真正接线的是 renderDiagram 里的 mermaid 分支：纠错器再好，没接上等于没有
+  const dsrc = fs.readFileSync(path.join(__dirname, "..", "diagram.js"), "utf8");
+  const mb = dsrc.slice(dsrc.indexOf('} else if (k === "mermaid")'), dsrc.indexOf('} else if (k === "plantuml")'));
+  assert.ok(mb.length > 200, "diagram.js 里 mermaid 分支找不到了（结构被改过？）");
+  assert.ok(mb.includes("repairMermaid(src)"), "mermaid 渲染失败后没有走自动纠错重试");
+  assert.ok(mb.includes("mermaidError("), "mermaid 报错没走贴原文那条路");
+  assert.ok(mb.includes("noRetry"), "渲染器没得用（kroki 也挂）时不该当成语法错去重试");
+
+  console.log(`✅ 图表纠错：真实 7 类 mermaid 写法错误全部自动改对（真实失败率 18.9% = 37 调 7 挂）· ${ok.length} 张合法图一个字节没动 · 指令块/方括号正文/子流程形状/已用半角冒号的 timeline 都不误伤 · 救不回来时报错点到行并贴原文 · renderDiagram 确实接了这条线`);
+}
+
+/**
  * 记忆层。老版本只有一个全局 memory.md，agent 自己记不住任何东西、还所有账号串在一起。
  * 这里守四条：**按账号隔离**、**去重**、**超量丢最旧的要留痕**（不许闷声吞）、**密钥拒记**。
  */
@@ -4398,6 +4500,7 @@ async function main() {
   testTaskDirLifecycle();
   await testCodingTools();
   await testDeliverableQuality();
+  testDiagramRepair();
   await testAgentPipeline();
   await testForcedWrapUp();
   await testAskUser();

@@ -2907,6 +2907,49 @@ app.whenReady().then(async () => {
     } finally {
       if (!winEP.isDestroyed()) winEP.destroy();
     }
+    // mermaid 语法纠错：拿**真 mermaid 的解析器**验，不是拿字符串跟自己对答案。
+    // 真实数据：gen_diagram 37 次调用挂了 7 次（18.9%），七次全是四类机械写法错误。
+    // 守两头：错例修前必须真的挂（修前就能过的样本根本不是错例，测了个寂寞）、修后必须真的过；
+    // 合法写法本身要能过，且纠错器一个字节都不许动。样本在 test/fixtures/mermaid.js。
+    const winMMD = mkWin({ show: false, width: 800, height: 600, webPreferences: { offscreen: true, sandbox: true } });
+    const mmdTmp = fs.mkdtempSync(path.join(require("os").tmpdir(), "owb-mmd-"));
+    try {
+      const { bad: MMD_BAD, ok: MMD_OK } = require("./fixtures/mermaid");
+      const { repairMermaid } = require("../diagram");
+      // mermaid.min.js 有 2.8MB，data: URL 装不下，落临时文件走 loadFile（跟 browser-render.js 一个路子）
+      const mermaidSrc = fs
+        .readFileSync(path.join(__dirname, "..", "node_modules", "mermaid", "dist", "mermaid.min.js"), "utf8")
+        .replace(/<\/script>/gi, "<\\/script>");
+      const page = path.join(mmdTmp, "mmd.html");
+      fs.writeFileSync(page, `<!doctype html><meta charset="utf-8"><body><script>${mermaidSrc}</script>`);
+      await winMMD.loadFile(page);
+      await winMMD.webContents.executeJavaScript(
+        'mermaid.initialize({ startOnLoad: false, theme: "base", securityLevel: "strict", htmlLabels: false }); "ok"', true);
+      const mmdParse = (s) =>
+        winMMD.webContents.executeJavaScript(
+          `(async()=>{try{await mermaid.parse(${JSON.stringify(String(s))});return "OK";}catch(e){return "ERR "+String((e&&e.message)||e).split("\\n")[0].slice(0,140);}})()`, true);
+      const namesM = [];
+      for (const [name, src] of MMD_BAD) {
+        const before = await mmdParse(src);
+        if (before === "OK") throw new Error(`[mermaid纠错] 「${name}」在真 mermaid 里居然是合法的——这条样本不是真错例`);
+        const r = repairMermaid(src);
+        const after = await mmdParse(r.source);
+        if (after !== "OK") throw new Error(`[mermaid纠错] 「${name}」纠错之后真 mermaid 仍然不认：${after}`);
+        namesM.push(`${name}：修前挂、修后过（${r.fixes.join("；")}）`);
+      }
+      for (const [name, src] of MMD_OK) {
+        const p = await mmdParse(src);
+        if (p !== "OK") throw new Error(`[mermaid纠错] 负向对照「${name}」本身就不合法，当不了对照：${p}`);
+        const r = repairMermaid(src);
+        if (r.source !== src) throw new Error(`[mermaid纠错] 负向对照「${name}」被纠错器改动了：${r.fixes.join("；")}`);
+        namesM.push(`${name}：合法，且纠错器一个字节没动`);
+      }
+      for (const n of namesM) console.log("  ✓ " + n);
+      console.log(`✅ 前端：mermaid 写法纠错在真解析器里过关（四类真实错误改完都能渲染·合法图一个字节没动）${namesM.length} 项通过`);
+    } finally {
+      if (!winMMD.isDestroyed()) winMMD.destroy();
+      try { fs.rmSync(mmdTmp, { recursive: true, force: true }); } catch {}
+    }
     const win6 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win6.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(KBD_HTML));
