@@ -4730,6 +4730,7 @@ async function main() {
   testDesktopAppIdentity();
   await testFrontendSvgFigures();
   testPackageAssetDrift();
+  testNoNestedRoutes();
   await testAdminConsoleUI();
   await testDockerDeploy();
   await testFetchUrlShapes();
@@ -6207,6 +6208,70 @@ function testPackageAssetDrift() {
   ];
   for (const [name, run] of variants) if (!run().problems.length) throw new Error("闸门漏了这种坏法：" + name);
   console.log(`✅ 打包资源不漂移：${Object.keys(sources).length} 个源文件里 ${r.checked} 处按路径引用全有着落（${r.devOnly} 条注明了就是不进包），${variants.length} 种坏法全被抓`);
+}
+
+/**
+ * 路由有没有被套进另一条路由的处理函数里。
+ *
+ * app.post("/x", ...) 写在另一个 app.post 的回调体里，语法完全合法，node --check 也过，
+ * 但意思全变了：/x 在**有人调过外层那条接口之前**根本不存在（404）；调过一次之后，
+ * 每再调一次就往 express 的路由表里多塞一份同样的处理函数，只涨不落。
+ * 前端拿 404 那页 HTML 去 r.json() 会抛，一路被 .catch(() => {}) 吞掉——
+ * 界面上一声不吭，表现成「这个功能有时候好使、有时候不好使」。
+ *
+ * /api/workspace/reset 就这么躺过一阵：点「新任务」本该把上个任务里临时切过的工作
+ * 文件夹收回当前项目，结果没切过项目的人根本收不回来，产出散在别的文件夹里。
+ */
+function nestedRoutes(text) {
+  const lines = text.split("\n");
+  const START = /^(\s*)(app|router)\.(get|post|put|patch|delete|all|use)\(/;
+  // 这个文件里「顶层」缩进几格，看第一条登记就知道：server.js 是 0，写在工厂函数里的是 2
+  const base = ((lines.find((l) => START.test(l)) || "").match(/^\s*/) || [""])[0];
+  // 一条登记可能写好几行（`guarded((req) =>` 换行接着写），所以按括号配平判断它什么时候写完，
+  // 不能只看「有没有一行是 });」。字符串和行注释里的括号先抹掉再数。
+  const strip = (l) => l.replace(/\\./g, "").replace(/`[^`]*`/g, "").replace(/'[^']*'/g, "")
+    .replace(/"[^"]*"/g, "").replace(/\/\/.*$/, "");
+  const delta = (l) => { const t = strip(l); return (t.match(/\(/g) || []).length - (t.match(/\)/g) || []).length; };
+  const nameOf = (l) => (l.match(/"([^"]+)"/) || [])[1] || "(中间件)";
+  const bad = [];
+  let open = null, depth = 0, count = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i], m = START.exec(ln);
+    if (m && m[1] === base) {
+      count++;
+      if (open) { bad.push(`第 ${i + 1} 行 ${nameOf(ln)} 被塞在第 ${open.no} 行 ${open.name} 的处理函数里`); continue; }
+      depth = delta(ln);
+      if (depth > 0) open = { no: i + 1, name: nameOf(ln) };
+      continue;
+    }
+    if (open) { depth += delta(ln); if (depth <= 0) open = null; }
+  }
+  return { bad, count };
+}
+function testNoNestedRoutes() {
+  const root = path.join(__dirname, "..");
+  const files = ["server.js", "account.js", "admin.js", "im.js"];
+  let total = 0;
+  for (const f of files) {
+    const r = nestedRoutes(fs.readFileSync(path.join(root, f), "utf8"));
+    assert(r.count >= 5, `${f} 只扫到 ${r.count} 条路由，说明扫描本身失效了`);
+    assert(r.bad.length === 0, `${f} 有路由被套在别的路由里：\n  ` + r.bad.join("\n  "));
+    total += r.count;
+  }
+  // 反向对照：好代码不许误报，套起来的必须抓住
+  const ok = 'app.get("/a", (req, res) => {\n  res.json({});\n});\napp.post("/b", (req, res) => {\n  res.json({});\n});\n';
+  assert(nestedRoutes(ok).bad.length === 0, "并排写的两条路由被误报成嵌套了");
+  const nested = 'app.get("/a", (req, res) => {\n  res.json({});\napp.post("/b", (req, res) => {\n  res.json({});\n});\n});\n';
+  assert(nestedRoutes(nested).bad.length === 1, "套在别人处理函数里的路由没被抓出来");
+  const indented = '  router.get("/a", (req, res) => {\n    res.json({});\n  router.post("/b", (req, res) => {\n    res.json({});\n  });\n  });\n';
+  assert(nestedRoutes(indented).bad.length === 1, "工厂函数里（缩进两格）套起来的没被抓出来");
+  // 拿真的 server.js 复刻当初那条 bug 的形状：把一条登记塞进 /api/projects/switch 的 try 里
+  const real = fs.readFileSync(path.join(root, "server.js"), "utf8");
+  const cut = 'app.post("/api/projects/switch", (req, res) => {\n  try {\n';
+  assert(real.includes(cut), "server.js 里找不到当初出事的那段，反向对照得跟着改");
+  const relapsed = real.replace(cut, cut + 'app.post("/api/workspace/reset", (_req, res) => {\n  res.json({ ok: true });\n});\n');
+  assert(nestedRoutes(relapsed).bad.length === 1, "把真代码改回出事时的样子，闸门居然没红");
+  console.log(`✅ 路由都登记在顶层：${files.length} 个文件共 ${total} 条，没有一条被塞进别人的处理函数里`);
 }
 
 function testPackagingAndDemoGate() {

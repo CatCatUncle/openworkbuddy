@@ -1369,6 +1369,15 @@ app.post("/api/projects/switch", (req, res) => {
     const p = config.projects.find((x) => x.name === (req.body || {}).name);
     if (!p) return res.status(404).json({ error: "项目不存在" });
 
+    config.workspace_dir = setWorkspaceDir(p.dir);
+    config.active_project = p.name;
+    saveConfig();
+    res.json({ ok: true, active: p.name, dir: p.dir });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // 新任务回到当前项目自己的目录：输入框里临时切过的文件夹不带进下一个任务
 app.post("/api/workspace/reset", (_req, res) => {
   try {
@@ -1381,14 +1390,6 @@ app.post("/api/workspace/reset", (_req, res) => {
       saveConfig();
     }
     res.json({ ok: true, workspace_dir: getWorkspaceDir() });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-    config.workspace_dir = setWorkspaceDir(p.dir);
-    config.active_project = p.name;
-    saveConfig();
-    res.json({ ok: true, active: p.name, dir: p.dir });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
