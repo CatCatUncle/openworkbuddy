@@ -294,6 +294,9 @@ async function renderHubPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
   page.innerHTML = '<div class="hub-empty">加载中…</div>';
+  // 专家、技能、插件、连接器都是**装在这台服务器上**的东西，一份大家共用：谁装、谁改、谁删归平台管理员，
+  // 用（召唤 / 立即使用 / 看正文）是所有人的。所以先把身份拿到手，下面四个 Tab 照它决定画不画那排写的按钮。
+  if (!settingsCache) await refreshSettingsCache().catch(() => {});
   const [experts, teams, skills] = await Promise.all([
     fetch("/api/experts").then(r => r.json()).catch(() => []),
     fetch("/api/expert-teams").then(r => r.json()).catch(() => []),
@@ -342,6 +345,7 @@ const hubMatch = (q, ...fields) => !q || fields.filter(Boolean).join(" ").toLowe
 // ---- Tab 1：专家 / 专家团 ----
 function renderHubExperts(box) {
   const { _experts: experts, _teams: teams, _skills: skills } = hubState;
+  const po = amPlatformOwner();
   const cats = ["全部", ...new Set(experts.map(e => e.category || "未分类"))];
   const scenes = hubState.mine || hubState.q ? "" : `
     <div class="hub-sec-title">精选场景 <span class="sub">点一下带着写好的提示词开新任务</span></div>
@@ -366,23 +370,28 @@ function renderHubExperts(box) {
   if (hubState.sub === "team") {
     const list = teams.filter(t => hubMatch(hubState.q, t.name, t.description, t.members.join(" ")));
     grid.innerHTML =
-      `<div class="ex-card add" id="team-add">＋ 创建专家团</div>` +
+      (po ? `<div class="ex-card add" id="team-add">＋ 创建专家团</div>` : "") +
       list.map((t, i) => `
         <div class="ex-card" data-ti="${i}">
           <div class="hd"><div class="av">${esc(t.avatar || "👥")}</div><div class="nm"><span>${esc(t.name)}</span><span class="al">${t.members.length} 位成员</span></div></div>
           <div class="ds">${esc(t.description || "（无说明）")}</div>
           <div class="tg">${t.members.map((m, j) => `<i>${j + 1}. ${esc(m)}</i>`).join("")}</div>
-          <div class="ops"><button class="primary t-use">整团召唤</button><button class="t-edit">修改</button><button class="t-del">解散</button></div>
+          <div class="ops"><button class="primary t-use">整团召唤</button>${po ? `<button class="t-edit">修改</button><button class="t-del">解散</button>` : ""}</div>
         </div>`).join("") +
       (list.length ? "" : `<div class="hub-empty">${hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的专家团` : "暂无专家团"}</div>`);
-    grid.querySelector("#team-add").onclick = () => { hubState.editing = { type: "team", data: null }; renderHubEditor(); };
+    const teamAdd = grid.querySelector("#team-add");
+    if (teamAdd) teamAdd.onclick = () => { hubState.editing = { type: "team", data: null }; renderHubEditor(); };
     grid.querySelectorAll(".ex-card[data-ti]").forEach(card => {
       const t = list[+card.dataset.ti];
       card.querySelector(".t-use").onclick = () => { startTaskWith(`请把下面这个任务整体委派给专家团「${t.name}」（用 delegate_to_team）：\n\n`); toast(`已成功召唤专家团「${t.name}」`); };
+      if (!po) return;
       card.querySelector(".t-edit").onclick = () => { hubState.editing = { type: "team", data: t }; renderHubEditor(); };
       card.querySelector(".t-del").onclick = async () => {
         if (!confirm(`解散专家团「${t.name}」？（团里的专家本身不受影响）`)) return;
-        await fetch("/api/expert-teams/" + encodeURIComponent(t.name), { method: "DELETE" });
+        // 以前这儿把返回值整个扔了，403 / 500 也照样重画一遍——那一条纹丝不动，
+        // 用户只能得出「点了没反应」。删不掉就得说为什么。
+        const resp = await fetch("/api/expert-teams/" + encodeURIComponent(t.name), { method: "DELETE" });
+        if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast("❌ " + (d.error || "解散失败")); }
         renderHubPage();
       };
     });
@@ -392,7 +401,7 @@ function renderHubExperts(box) {
       (!hubState.mine || !e.builtin) &&
       hubMatch(hubState.q, e.name, e.alias, e.description, (e.tags || []).join(" ")));
     grid.innerHTML =
-      `<div class="ex-card add" id="ex-add">＋ 创建专家<span class="add-sub">创建属于你的专家，分享专业知识</span></div>` +
+      (po ? `<div class="ex-card add" id="ex-add">＋ 创建专家<span class="add-sub">创建属于你的专家，分享专业知识</span></div>` : "") +
       list.map((e, i) => `
         <div class="ex-card" data-ei="${i}">
           ${e.builtin ? '<span class="flag">官方</span>' : ""}
@@ -400,20 +409,23 @@ function renderHubExperts(box) {
             <div class="nm"><span>${esc(e.name)}</span>${e.alias ? `<span class="al">${esc(e.alias)}</span>` : ""}</div></div>
           <div class="ds">${esc(e.description || "（无说明）")}</div>
           <div class="tg">${(e.tags || []).map(t => `<i>${esc(t)}</i>`).join("")}${(e.skills || []).map(s => `<i>🧰 ${esc(s)}</i>`).join("")}</div>
-          <div class="ops"><button class="primary e-use">立即召唤</button><button class="e-edit">修改</button><button class="e-del">删除</button></div>
+          <div class="ops"><button class="primary e-use">立即召唤</button>${po ? `<button class="e-edit">修改</button><button class="e-del">删除</button>` : ""}</div>
         </div>`).join("") +
       (list.length ? "" : `<div class="hub-empty">${
         hubState.mine ? "还没有创建任何专家" :
         hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的专家，试试其他关键词` : "暂无该分类的专家"}</div>`) +
       (hubState.q && list.length ? `<div class="hub-count">搜索「${esc(hubState.q)}」找到 ${list.length} 位专家</div>` : "");
-    grid.querySelector("#ex-add").onclick = () => { hubState.editing = { type: "expert", data: null }; renderHubEditor(); };
+    const exAdd = grid.querySelector("#ex-add");
+    if (exAdd) exAdd.onclick = () => { hubState.editing = { type: "expert", data: null }; renderHubEditor(); };
     grid.querySelectorAll(".ex-card[data-ei]").forEach(card => {
       const e = list[+card.dataset.ei];
       card.querySelector(".e-use").onclick = () => { startTaskWith(`请把下面这个任务委派给专家「${e.name}」：\n\n`); toast(`已成功召唤专家「${e.name}」`); };
+      if (!po) return;
       card.querySelector(".e-edit").onclick = () => { hubState.editing = { type: "expert", data: e }; renderHubEditor(); };
       card.querySelector(".e-del").onclick = async () => {
         if (!confirm(`删除专家「${e.name}」？${e.builtin ? "（这是内置专家，删了可以从 experts.json 恢复）" : ""}`)) return;
-        await fetch("/api/experts/" + encodeURIComponent(e.name), { method: "DELETE" });
+        const resp = await fetch("/api/experts/" + encodeURIComponent(e.name), { method: "DELETE" });
+        if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast("❌ " + (d.error || "删除失败")); }
         renderHubPage();
       };
     });
@@ -619,12 +631,16 @@ function skillExamples(md) {
 // ---- Tab 2：技能（技能包＝可热装的能力说明书） ----
 async function renderHubSkills(box) {
   const list = hubState._skills.filter(s => hubMatch(hubState.q, s.name, s.description));
+  // 技能装在这台服务器的 skills/ 目录里，一份大家共用：装/改/删归平台管理员，用是所有人的。
+  // 「推荐技能」和「从 GitHub 安装」对普通成员整节都不画——那是一排他点了只会得到 403 的按钮，
+  // 摆在那儿只是在推销他买不到的东西。
+  const po = amPlatformOwner();
   // 推荐技能只在首次进来时拉一次，之后放缓存里 —— 搜索框每敲一下都重绘 body，不该每次都打一趟接口
-  if (!hubState._defaults) {
+  if (po && !hubState._defaults) {
     hubState._defaults = await fetch("/api/skills/defaults/list").then(r => r.json()).catch(() => []);
   }
-  const defs = hubState._defaults.filter(s => hubMatch(hubState.q, s.name, s.title, s.why, s.author));
-  const missing = hubState._defaults.filter(s => !s.installed);
+  const defs = (hubState._defaults || []).filter(s => hubMatch(hubState.q, s.name, s.title, s.why, s.author));
+  const missing = (hubState._defaults || []).filter(s => !s.installed);
   box.innerHTML = `
     ${defs.length ? `
     <div class="hub-sec-title" style="margin-top:14px">🌟 推荐技能
@@ -644,16 +660,17 @@ async function renderHubSkills(box) {
           <div class="ab-empty sk-def-msg" style="margin-top:4px"></div>
         </div>`).join("")}
     </div>` : ""}
-    <div class="ex-editor" style="margin-top:14px">
+    ${po ? `<div class="ex-editor" style="margin-top:14px">
       <div class="hub-sec-title">⬇️ 从 GitHub 安装 <span class="sub">整仓库 / tree 子目录 / blob 单文件 / raw 直链都行，装完立即生效不用重启</span></div>
       <div class="row"><input id="sk-url" placeholder="https://github.com/anthropics/skills/tree/main/skills/docx" style="flex:1">
         <button class="btn-brand" id="sk-install" style="flex:none">安装</button></div>
       <div id="sk-install-msg" class="ab-empty" style="margin-top:6px"></div>
-    </div>
+    </div>` : ""}
     <div id="hub-editor"></div>
-    <div class="hub-sec-title" style="margin-top:14px">我的技能 <span class="sub">本机 skills/ 目录里的，加上插件带进来的</span></div>
+    <div class="hub-sec-title" style="margin-top:14px">${po ? "我的技能" : "可用技能"} <span class="sub">${
+      po ? "本机 skills/ 目录里的，加上插件带进来的" : "这台服务器上装好的，点「立即使用」就能用；装新技能归平台管理员"}</span></div>
     <div class="card-grid" id="hub-grid">
-      <div class="ex-card add" id="sk-add">＋ 添加技能<span class="add-sub">手写一份操作说明书，智能体按需加载</span></div>
+      ${po ? `<div class="ex-card add" id="sk-add">＋ 添加技能<span class="add-sub">手写一份操作说明书，智能体按需加载</span></div>` : ""}
       ${list.map((s, i) => `
         <div class="ex-card" data-si="${i}">
           ${s.plugin ? `<span class="flag">插件</span>` : ""}
@@ -661,7 +678,7 @@ async function renderHubSkills(box) {
             s.plugin ? `<span class="al">来自插件 ${esc(s.plugin)}</span>` : ""}</div></div>
           <div class="ds">${esc(s.description || "（无描述）")}</div>
           <div class="ops"><button class="primary sk-use">立即使用</button><button class="sk-view">正文</button>${
-            s.plugin ? "" : '<button class="sk-edit">修改</button><button class="sk-del">删除</button>'}</div>
+            s.plugin || !po ? "" : '<button class="sk-edit">修改</button><button class="sk-del">删除</button>'}</div>
           <div class="sk-start" style="display:none"></div>
           <pre class="sk-preview" style="display:none"></pre>
         </div>`).join("")}
@@ -700,8 +717,10 @@ async function renderHubSkills(box) {
     if (btn) btn.onclick = () => installDefaults([s.name], card.querySelector(".sk-def-msg"), btn, s.installed);
   });
 
-  box.querySelector("#sk-add").onclick = () => { hubState.editing = { type: "skill", data: null }; renderHubSkillEditor(); };
-  box.querySelector("#sk-install").onclick = async () => {
+  const skAdd = box.querySelector("#sk-add");
+  if (skAdd) skAdd.onclick = () => { hubState.editing = { type: "skill", data: null }; renderHubSkillEditor(); };
+  const skInstall = box.querySelector("#sk-install");
+  if (skInstall) skInstall.onclick = async () => {
     const url = box.querySelector("#sk-url").value.trim();
     const msg = box.querySelector("#sk-install-msg");
     if (!url) return;
@@ -801,21 +820,26 @@ function renderHubSkillEditor() {
 // 不能装完显示「成功」结果里面少了一半东西。
 async function renderHubPlugins(box) {
   box.innerHTML = '<div class="hub-empty">加载中…</div>';
+  // 插件把技能和 MCP 连接器一起装进这台服务器，装/更新/卸载都是服务器级动作，归平台管理员。
+  // 成员看得到装了哪些（他的 agent 用的就是这些），但不画那三颗点了必挂的按钮。
+  const po = amPlatformOwner();
   const data = await fetch("/api/plugins").then(r => r.json()).catch(() => ({ spec: "", plugins: [], mcp: { connected: [], failures: [] } }));
   const list = (data.plugins || []).filter(p => hubMatch(hubState.q, p.name, p.description, p.author,
     (p.skills || []).map(s => s.name).join(" "), (p.mcp_servers || []).map(s => s.name).join(" ")));
   const conn = new Set(((data.mcp || {}).connected || []).map(c => c.name));
   const fails = Object.fromEntries((((data.mcp || {}).failures) || []).map(f => [f.name, f.error]));
   box.innerHTML = `
-    <div class="ex-editor" style="margin-top:14px">
+    ${po ? `<div class="ex-editor" style="margin-top:14px">
       <div class="hub-sec-title">⬇️ 安装插件
         <span class="sub">遵循 <a href="https://agent-plugins.org" target="_blank" rel="noreferrer">Agent Plugins ${esc(data.spec || "1.0.0")}</a> 的开放标准（Vercel 等厂商共同制定）：仓库根或子目录下有 <code>plugin.json</code> 即可，装一次技能和 MCP 一起进来</span></div>
       <div class="row"><input id="pl-url" placeholder="https://github.com/owner/repo 或 https://github.com/owner/repo/tree/main/plugins/xxx" style="flex:1">
         <button class="btn-brand" id="pl-install" style="flex:none">安装</button></div>
       <div id="pl-msg" class="ab-empty" style="margin-top:6px"></div>
-    </div>
+    </div>` : ""}
     <div class="hub-sec-title" style="margin-top:14px">已装插件
-      <span class="sub">共 ${list.length} 个 · 技能立即生效；它带的 MCP 服务器装完自动连上、卸载时自动停掉</span></div>
+      <span class="sub">共 ${list.length} 个 · ${po
+        ? "技能立即生效；它带的 MCP 服务器装完自动连上、卸载时自动停掉"
+        : "这些是平台管理员给这台服务器装的，你的智能体直接就能用"}</span></div>
     <div class="card-grid">
       ${list.map((p, i) => `
         <div class="ex-card" data-pi="${i}">
@@ -830,11 +854,14 @@ async function renderHubPlugins(box) {
             <i>💾 ${fmtBytes(p.bytes)}</i></div>` : ""}
           ${(p.warnings || []).length ? `<div class="ds" style="font-size: 12px;color:var(--wb-warn,#b26a00)">⚠️ 有零件被跳过：<br>${p.warnings.map(w => "· " + esc(w)).join("<br>")}</div>` : ""}
           ${p.homepage || p.repository ? `<div class="ds" style="font-size: 12px"><a href="${esc(p.homepage || p.repository)}" target="_blank" rel="noreferrer" style="word-break:break-all">${esc(p.homepage || p.repository)}</a></div>` : ""}
-          <div class="ops">${p.source ? '<button class="pl-upd" title="从当初安装的地址重新拉一遍">更新</button>' : ""}<button class="pl-del">卸载</button></div>
+          <div class="ops">${po ? `${p.source ? '<button class="pl-upd" title="从当初安装的地址重新拉一遍">更新</button>' : ""}<button class="pl-del">卸载</button>` : ""}</div>
         </div>`).join("")}
-      ${list.length ? "" : `<div class="hub-empty">${hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的插件` : "还没装插件。上面填一个带 plugin.json 的 GitHub 地址就能装"}</div>`}
+      ${list.length ? "" : `<div class="hub-empty">${hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的插件` : (po
+        ? "还没装插件。上面填一个带 plugin.json 的 GitHub 地址就能装"
+        : "这台服务器还没装插件。装插件归平台管理员，需要什么跟他说一声")}</div>`}
     </div>`;
-  box.querySelector("#pl-install").onclick = async () => {
+  const plInstall = box.querySelector("#pl-install");
+  if (plInstall) plInstall.onclick = async () => {
     const url = box.querySelector("#pl-url").value.trim();
     const msg = box.querySelector("#pl-msg");
     if (!url) return;
@@ -854,6 +881,7 @@ async function renderHubPlugins(box) {
   };
   box.querySelectorAll(".ex-card[data-pi]").forEach(card => {
     const p = list[+card.dataset.pi];
+    if (!po) return;
     const upd = card.querySelector(".pl-upd");
     if (upd) upd.onclick = async () => {
       upd.disabled = true; upd.textContent = "更新中…";

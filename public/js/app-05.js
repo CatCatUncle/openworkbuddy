@@ -1,5 +1,9 @@
 async function renderHubMcp(box) {
   box.innerHTML = '<div class="hub-empty">加载中…</div>';
+  // 连接器的配置里躺着 API Key 和令牌（env / headers），加一条就等于替整台服务器接了个外部系统——
+  // 这是最不该摆给每个人的一颗按钮。成员看得到接了哪些、注入了多少工具（他的 agent 用的就是这些），
+  // 但「＋ 添加连接器」「接入」「删除」和那张填 Key 的表单整块都不画。
+  const po = amPlatformOwner();
   const [data, cat] = await Promise.all([
     fetch("/api/mcp").then(r => r.json()).catch(() => ({ servers: [], total_tools: 0 })),
     fetch("/api/mcp/catalog").then(r => r.json()).catch(() => ({ items: [], categories: [], tools: {} })),
@@ -38,10 +42,10 @@ async function renderHubMcp(box) {
         <div class="nm"><span>${esc(it.label || it.name)}</span><span class="al">${esc(it.name)}</span></div></div>
       <div class="ds">${esc(it.desc || "")}</div>
       <div class="tg">${it.kind === "http" ? "<i>远程</i>" : `<i>${esc(String(it.command || "").split(/[\\/]/).pop())}</i>`}${keys ? `<i>要填 ${keys} 个 Key</i>` : "<i>免 Key</i>"}${it.docs ? `<a class="mcp-docs-link" href="${esc(it.docs)}" target="_blank" rel="noopener">去哪拿 →</a>` : ""}</div>
-      <div class="ops"><button class="mcp-use${on ? "" : " primary"}"${on ? " disabled" : ""}>${on ? "已接入" : "接入"}</button></div>
+      ${po ? `<div class="ops"><button class="mcp-use${on ? "" : " primary"}"${on ? " disabled" : ""}>${on ? "已接入" : "接入"}</button></div>` : ""}
     </div>`;
   };
-  const presetSec = !presets.length ? "" : `
+  const presetSec = !po || !presets.length ? "" : `
     <div class="hub-sec-title" style="margin-top:22px">推荐连接器
       <span class="sub">点「接入」我会把启动命令填好，要 Key 的填上就能连；都是官方或社区现成的 MCP 服务器</span></div>
     ${!tools.uvx && presets.some(it => it.needs === "uvx") ? '<div class="hub-desc">本机没找到 uvx：标着 uvx 的连接器要先装 uv（macOS 装法：brew install uv）</div>' : ""}
@@ -54,7 +58,7 @@ async function renderHubMcp(box) {
     <div class="hub-sec-title" style="margin-top:14px">已接入的外部工具
       <span class="sub">通过 MCP（本地 stdio / 远程 Streamable HTTP）给智能体接外部能力，当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入，任务里可直接调用</span></div>
     <div class="card-grid">
-      <div class="ex-card add" id="mcp-open-add">＋ 添加连接器</div>
+      ${po ? `<div class="ex-card add" id="mcp-open-add">＋ 添加连接器</div>` : ""}
       ${list.map(({ sv, i }) => `
         <div class="ex-card" data-mi="${i}">
           ${sv.plugin ? `<span class="flag">来自插件 ${esc(sv.plugin)}</span>` : ""}
@@ -66,13 +70,15 @@ async function renderHubMcp(box) {
           <div class="tg">${sv.connected
             ? (sv.tools || []).slice(0, 8).map(t => `<i title="${esc(t.description || "")}">${esc(t.name)}</i>`).join("") + ((sv.tools || []).length > 8 ? `<i>…共 ${sv.tools.length} 个</i>` : "")
             : `<i style="color:var(--wb-err-text)">${esc(sv.error || "命令启动失败或握手超时，详见应用日志")}</i>`}</div>
-          <div class="ops">${sv.plugin
+          <div class="ops">${!po ? "" : sv.plugin
             ? '<button disabled title="这条是插件声明的，要去「插件」页卸载整个插件">插件提供</button>'
             : '<button class="mcp-del">删除</button>'}</div>
         </div>`).join("")}
-      ${list.length ? "" : `<div class="hub-empty">${hubState.mine ? "没有已连接的连接器" : "还没有连接器，从下面的推荐里挑一个点「接入」"}</div>`}
+      ${list.length ? "" : `<div class="hub-empty">${hubState.mine ? "没有已连接的连接器" : (po
+        ? "还没有连接器，从下面的推荐里挑一个点「接入」"
+        : "这台服务器还没接外部系统。接连接器要填 API Key，归平台管理员，需要什么跟他说一声")}</div>`}
     </div>
-    <div class="ex-editor" id="mcp-add-form" style="display:none;margin-top:14px">
+    ${!po ? "" : `<div class="ex-editor" id="mcp-add-form" style="display:none;margin-top:14px">
       <div class="hub-sec-title">添加连接器
         <span class="sub">本地进程走 stdio；托管在别人服务器上的走 Streamable HTTP，填地址就行</span></div>
       <div class="row" style="gap:14px">
@@ -90,8 +96,9 @@ async function renderHubMcp(box) {
         <button id="mcp-cancel" style="padding:6px 14px">取消</button>
         <a id="mcp-docs" href="#" target="_blank" rel="noopener" style="display:none;font-size:13px">去哪拿 Key →</a>
         <span class="ab-empty" id="mcp-msg"></span></div>
-    </div>` + presetSec;
+    </div>`}` + presetSec;
   const form = box.querySelector("#mcp-add-form");
+  if (!po) return; // 下面全是写的那条路：表单、接入、删除，成员一颗都没画，也就没什么可绑
   const openForm = () => { form.style.display = ""; form.scrollIntoView({ behavior: "smooth", block: "nearest" }); };
   box.querySelector("#mcp-open-add").onclick = openForm;
   box.querySelector("#mcp-cancel").onclick = () => { form.style.display = "none"; };

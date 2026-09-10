@@ -1401,6 +1401,141 @@ const DEAD_CHECKS = `
 })()
 `;
 
+// ---- 专家 / 技能 / 连接器：读是所有人的，装和改是平台管理员的 ----
+// 这四个 Tab 上的东西全是**装在这台服务器上、一份大家共用**的：专家写进 experts.json、
+// 技能落在 skills/ 目录、插件和 MCP 连接器直接改服务器配置（连接器那份配置里还躺着 API Key）。
+// 后端早就把它们整个前缀划给了平台管理员，前端却把「创建 / 修改 / 删除 / 安装 / 卸载 / 接入」
+// 一颗不落地画给了每个人。更糟的是删专家和解散专家团那两颗：返回值整个扔了，403 也照样重画一遍，
+// 那张卡纹丝不动——用户只能得出「点了没反应」。
+// 这一组在真 Chromium 里把四个 Tab 都画一遍，数按钮，每条都配平台管理员的反向对照。
+const HUB_P0 = APP04_LIB.indexOf("// ================= 专家 · 技能 · 连接器（主区页面，三合一）");
+const APP05_MCP = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
+const MCP_P1 = APP05_MCP.indexOf("// ================= 参考模板库");
+if (HUB_P0 < 0) throw new Error("app-04.js 的专家/技能/连接器整节找不到了，权限测试没法定位真源码");
+if (MCP_P1 <= 0) throw new Error("app-05.js 的 renderHubMcp 找不到了，权限测试没法定位真源码");
+const HUB_SRC = APP04_LIB.slice(HUB_P0) + "\n" + APP05_MCP.slice(0, MCP_P1);
+const HUB_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><body>"
+  + "<div class='assist-page' id='assist-page'></div></body>";
+const HUB_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+
+  window.toasts = [];
+  window.toast = (m) => window.toasts.push(String(m));
+  window.startTaskWith = () => {};
+  window.confirm = () => true;
+  window.refreshSettingsCache = async () => {};
+  window.amPlatformOwner = () => !!(window.settingsCache && window.settingsCache.platform_owner);
+
+  const FORBID = { error: "这块是服务器级设置，归平台管理员管", platform_only: true };
+  let owner = false, delOk = true;
+  const seen = [], writes = [];
+  window.fetch = (url, opt) => {
+    const method = (opt && opt.method) || "GET";
+    seen.push(method + " " + url);
+    if (method !== "GET") writes.push(method + " " + url);
+    const j = (v, code) => Promise.resolve({ ok: !code || code < 400, status: code || 200, json: () => Promise.resolve(v), text: () => Promise.resolve("") });
+    if (url === "/api/experts") return j([{ name: "调研专员", alias: "查得深", avatar: "🔍", category: "研究分析", description: "查得深", tags: ["行业调研"], skills: [], builtin: true }]);
+    if (url === "/api/expert-teams") return j([{ name: "内容组", avatar: "👥", description: "写稿一条龙", members: ["文案主笔", "配图师"] }]);
+    if (url === "/api/skills") return j([{ name: "docx", description: "生成 Word 文档" }]);
+    if (url === "/api/skills/defaults/list") return j([{ name: "pptx", title: "PPT 生成", why: "做演示文稿", author: "anthropic", license: "MIT", bytes: 2048, url: "https://example.com", repo: "a/b", subpath: "s", installed: false }]);
+    if (url === "/api/plugins") return j({ spec: "1.0.0", plugins: [{ name: "chart-pack", version: "1.2.0", author: "someone", description: "画图插件", ok: true, skills: [{ name: "chart" }], mcp_servers: [], bytes: 4096, source: "https://example.com/r" }], mcp: { connected: [], failures: [] } });
+    if (url === "/api/mcp") {
+      if (method === "POST") return owner ? j({ ok: true }) : j(FORBID, 403);
+      return j({ servers: [{ name: "filesystem", command: "npx", args: ["-y", "x"], connected: true, tools: [{ name: "read_file" }], env_keys: [] }], total_tools: 9 });
+    }
+    if (url === "/api/mcp/catalog") return j({ items: [{ name: "brave", label: "Brave 搜索", desc: "联网搜索", category: "搜索", command: "npx", env: { BRAVE_API_KEY: "" } }], categories: ["搜索"], tools: { npx: true, uvx: true } });
+    if (url.startsWith("/api/experts/") || url.startsWith("/api/expert-teams/"))
+      return owner ? (delOk ? j({ ok: true }) : j({ error: "内置专家删不掉" }, 400)) : j(FORBID, 403);
+    return j({ ok: true });
+  };
+
+  const page = document.getElementById("assist-page");
+  const html = () => page.innerHTML;
+  const q = (sel) => page.querySelector(sel);
+  const show = async (tab, sub) => {
+    hubState.tab = tab; hubState.sub = sub || "expert"; hubState.q = ""; hubState.mine = false; hubState.editing = null;
+    await renderHubPage();
+    // renderHubBody 是同步的，但技能/插件/连接器三个渲染函数里还各有一两趟 fetch，得放它们跑完
+    for (let i = 0; i < 6; i++) await new Promise(r => setTimeout(r, 0));
+  };
+
+  // ① 专家 / 专家团：成员只能召唤
+  window.settingsCache = { platform_owner: false };
+  await show("experts");
+  ok("专家：卡片照样看得到（他要召唤专家干活）", html().includes("调研专员"), html().slice(0, 200));
+  ok("专家：「立即召唤」在", !!q(".e-use"));
+  ok("专家：不画「＋ 创建专家」", !q("#ex-add"));
+  ok("专家：不画「修改」「删除」", !q(".e-edit") && !q(".e-del"));
+  await show("experts", "team");
+  ok("专家团：「整团召唤」在", !!q(".t-use"));
+  ok("专家团：不画「＋ 创建专家团」", !q("#team-add"));
+  ok("专家团：不画「修改」「解散」", !q(".t-edit") && !q(".t-del"));
+
+  // ② 技能：用得了，装不了
+  seen.length = 0;
+  await show("skills");
+  ok("技能：已装的技能照样看得到", html().includes("docx"), html().slice(0, 200));
+  ok("技能：「立即使用」「正文」都在", !!q(".sk-use") && !!q(".sk-view"));
+  ok("技能：不画「修改」「删除」", !q(".sk-edit") && !q(".sk-del"));
+  ok("技能：不画「＋ 添加技能」", !q("#sk-add"));
+  ok("技能：「从 GitHub 安装」整块不画", !q("#sk-url") && !q("#sk-install"));
+  ok("技能：「推荐技能」整节不画（一排他点了只会 403 的安装按钮）", !q("[data-di]") && !q("#sk-def-all"));
+  ok("技能：连推荐清单那趟接口都不打了", !seen.some(x => x.includes("/api/skills/defaults/list")), seen.join(" | "));
+  ok("技能：标题说的是「可用技能」，并写清装新的归谁", html().includes("可用技能") && html().includes("装新技能归平台管理员"));
+
+  // ③ 插件：看得到装了什么，动不了
+  await show("plugins");
+  ok("插件：已装的插件照样看得到（他的 agent 用的就是这些）", html().includes("chart-pack"), html().slice(0, 200));
+  ok("插件：不画安装框", !q("#pl-url") && !q("#pl-install"));
+  ok("插件：不画「更新」「卸载」", !q(".pl-upd") && !q(".pl-del"));
+
+  // ④ 连接器：配置里躺着 API Key，最不该摆给每个人的一颗按钮
+  await show("mcp");
+  ok("连接器：已接入的看得到，工具数也看得到", html().includes("filesystem") && html().includes("9"), html().slice(0, 200));
+  ok("连接器：不画「＋ 添加连接器」", !q("#mcp-open-add"));
+  ok("连接器：那张填 API Key 的表单整块不画", !q("#mcp-add-form") && !q("#mcp-env") && !q("#mcp-headers"));
+  ok("连接器：不画「删除」", !q(".mcp-del"));
+  ok("连接器：「推荐连接器」整节不画（每一颗「接入」都是 403）", !q(".mcp-use") && !html().includes("推荐连接器"));
+
+  // ⑤ 反向对照：平台管理员那四页，一颗按钮不少
+  window.settingsCache = { platform_owner: true };
+  owner = true;
+  await show("experts");
+  ok("反向对照：平台管理员有「＋ 创建专家」和「修改」「删除」", !!q("#ex-add") && !!q(".e-edit") && !!q(".e-del"));
+  await show("experts", "team");
+  ok("反向对照：专家团的「＋ 创建」「修改」「解散」都在", !!q("#team-add") && !!q(".t-edit") && !!q(".t-del"));
+  await show("skills");
+  ok("反向对照：技能页的添加/安装/推荐三样都在", !!q("#sk-add") && !!q("#sk-install") && !!q("[data-di]"));
+  ok("反向对照：技能卡上的「修改」「删除」也在", !!q(".sk-edit") && !!q(".sk-del"));
+  await show("plugins");
+  ok("反向对照：插件页的安装框和「更新」「卸载」都在", !!q("#pl-url") && !!q(".pl-upd") && !!q(".pl-del"));
+  await show("mcp");
+  ok("反向对照：连接器的添加表单、「删除」、推荐里的「接入」都在",
+     !!q("#mcp-open-add") && !!q("#mcp-add-form") && !!q(".mcp-del") && !!q(".mcp-use"));
+
+  // ⑥ 删不掉就得说为什么——以前这两颗把返回值整个扔了，那张卡纹丝不动，用户只能得出「点了没反应」
+  delOk = false;
+  await show("experts");
+  window.toasts = [];
+  await q(".e-del").onclick();
+  ok("删专家失败：把服务端的原因说出来，不再是「点了没反应」",
+     window.toasts.join("|") === "❌ 内置专家删不掉", window.toasts.join("|"));
+  await show("experts", "team");
+  window.toasts = [];
+  await q(".t-del").onclick();
+  ok("解散专家团失败：一样说出来", window.toasts.join("|").startsWith("❌"), window.toasts.join("|"));
+  delOk = true;
+  await show("experts");
+  window.toasts = [];
+  await q(".e-del").onclick();
+  ok("反向对照：真删掉了就不报错", !window.toasts.join("|").includes("❌"), window.toasts.join("|"));
+
+  return names;
+})()
+`;
+
 // ---- 设置页：会 403 的按钮不该摆在那儿（模型 / 个性化 / 安全 / 导航 / 档位菜单） ----
 // 用户原话是「切换失败怎么还切换失败了啊」。根子不在那句提示，在于这一整屏都是照平台管理员画的：
 // 多人服务器上的普通成员照样看到 12 个标签页，其中「联网搜索 / 自进化 / 数据 / 助理设置」四页
@@ -3241,6 +3376,8 @@ var TOASTS = [], POSTS = [], RENDERS = 0;
 var toast = (m) => { TOASTS.push(String(m)); };
 var hubState = { tab: "mcp", q: "", mine: false };
 var hubMatch = (q, ...fields) => !q || fields.filter(Boolean).join(" ").toLowerCase().includes(q.trim().toLowerCase());
+// 这一组测的是平台管理员那一面（预设目录、接入、Key 只给键名），所以身份钉死成 true
+var amPlatformOwner = () => true;
 var renderHubBody = () => { RENDERS++; return renderHubMcp(document.getElementById("hub-body")); };
 window.confirm = () => true;
 var SERVERS = [
@@ -4013,6 +4150,15 @@ app.whenReady().then(async () => {
       for (const n of namesDEAD) console.log("  ✓ " + n);
       console.log(`✅ 前端：403 不该变成一片白也不该变成一句假成功（自动化整页有话说·侧栏藏掉必挂的入口·资料库只读但看得见·上传/记笔记失败照实说）${namesDEAD.length} 项通过`);
     } finally { if (!winDEAD.isDestroyed()) winDEAD.destroy(); }
+
+    const winHUB = mkWin({ show: false, width: 1100, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await winHUB.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(HUB_HTML));
+      const namesHUB = await winHUB.webContents.executeJavaScript(ESC_SRC + "\n" + HUB_SRC + "\n" + HUB_CHECKS, true)
+        .catch((e) => { throw new Error("[专家/技能/连接器 权限] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesHUB) console.log("  ✓ " + n);
+      console.log(`✅ 前端：专家/技能/插件/连接器四个 Tab——用得了但装不了（成员看得见卡片、没有一颗会 403 的按钮、删失败照实说原因）${namesHUB.length} 项通过`);
+    } finally { if (!winHUB.isDestroyed()) winHUB.destroy(); }
 
     const winSTM = mkWin({ show: false, width: 760, height: 700, webPreferences: { offscreen: true } });
     try {
