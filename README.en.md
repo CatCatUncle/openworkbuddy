@@ -71,7 +71,7 @@ One sentence in; three PNGs in different styles (cinematic, rural comic, text-fr
 **Got Claude Code or Codex on this machine? One click makes it the engine — no extra tokens to buy.**
 
 <p align="center">
-  <img src="docs/images/local-claude-code.png" width="820" alt="Running on local Claude Code: each step folds to one line, only the conclusion stays out">
+  <img src="docs/images/local-claude-code.png" width="820" alt="Running on local Claude Code: the chip in the red box names the engine, the tool count, and that it costs no API quota">
 </p>
 
 The UI says out loud which engine this run went through and whether it costs API quota. Every step folds into a single line you can expand; when the task ends, only the conclusion is left in view. (The screenshot is the Chinese UI — there's a 中 / En toggle in the avatar menu.)

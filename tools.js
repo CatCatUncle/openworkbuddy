@@ -2500,21 +2500,38 @@ function outputFiles() {
  * 于是一份成果在面板里显示两遍。这类副本是可证明冗余的——原件还在成果文件夹里躺着。
  * 先按大小撞车再算哈希：500 个文件全量哈希太贵，而大小不同的一定不是同一份。
  */
+// 内容哈希缓存。键里带了大小和 mtime——文件一动键就变，所以永远读不到过期的哈希。
+// 为什么非缓存不可：这段挂在 outputFiles() 上，而 outputFiles() 每来一个工具结果就跑一次。
+// 实测用户那个工作目录（500 条、27 个根目录散件）一次要 readFileSync 进 6.48 MB、耗 4.7ms，
+// 占了整个 outputFiles() 的一半；一趟 100 步的任务就是把同一批没变过的文件反复读 650 MB。
+// 读盘是同步的，那几毫秒里整条事件循环停着 —— 用户看到的就是「中间一顿一顿的」。
+const digestCache = new Map();
+const DIGEST_CACHE_CAP = 2000;
+function fileDigest(f) {
+  // 工作目录名进键：name 是相对路径，换个工作目录就是另一套坐标系，不带它会跨目录串味
+  const key = `${workspaceDir}\u0000${f.name}|${f.size}|${f.mtime}`;
+  const hit = digestCache.get(key);
+  if (hit) return hit;
+  const d = require("crypto").createHash("sha1").update(fs.readFileSync(path.join(workspaceDir, f.name))).digest("hex");
+  // 上限只是防无限涨（长跑 + 反复换工作目录）：满了整份丢掉重算，比维护 LRU 简单，代价也就是一次冷启动
+  if (digestCache.size >= DIGEST_CACHE_CAP) digestCache.clear();
+  digestCache.set(key, d);
+  return d;
+}
+
 function markDuplicates(out) {
-  const crypto = require("crypto");
   const bySize = new Map();
   for (const f of out) {
     if (!f.name.includes("/") || !f.size) continue; // 0 字节文件人人相同，那不叫重复
     if (!bySize.has(f.size)) bySize.set(f.size, []);
-    bySize.get(f.size).push(f.name);
+    bySize.get(f.size).push(f);
   }
-  const digest = (rel) => crypto.createHash("sha1").update(fs.readFileSync(path.join(workspaceDir, rel))).digest("hex");
   for (const f of out) {
     if (f.name.includes("/") || !f.size || !bySize.has(f.size)) continue;
     let mine;
-    try { mine = digest(f.name); } catch { continue; }
+    try { mine = fileDigest(f); } catch { continue; }
     for (const c of bySize.get(f.size)) {
-      try { if (digest(c) === mine) { f.dup_of = c; break; } } catch {}
+      try { if (fileDigest(c) === mine) { f.dup_of = c.name; break; } } catch {}
     }
   }
   return out;

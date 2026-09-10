@@ -946,23 +946,13 @@ function modePrompt(mode) {
     //   2) 同一版本已被别的任务先认领 → 不是我的（根目录文件只有这一道能拦）。
     const runToken = ++runSeq;
     claimBaseDir(baseDir, runToken);
-    const baseline = new Map();
-    for (const f of outputFiles()) baseline.set(f.name, f.mtime);
-    const emitFiles = () => {
-      const files = outputFiles();
-      const changed = [];
-      for (const f of files) {
-        if (baseline.get(f.name) === f.mtime) continue;
-        baseline.set(f.name, f.mtime);
-        if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);
-      }
-      // root/full 是这份清单的作用域：前端靠它判断能不能拿这份列表给旧产出盖「已删除」
-      emit({ type: "files", files, changed, ...filesScope(files) });
-    };
-    // 工具一跑完就对一次账，长任务中途就能看到产物，不用等收尾
+    const filesOut = makeFilesEmitter({ emit, ownership, baseDir, runToken });
+    // 工具一跑完就对一次账，长任务中途就能看到产物，不用等收尾。
+    // CLI 这条路是**每个**工具结果来一次（不像内置引擎是一批一次），所以走节流的那个口子：
+    // 一串结果连着回来时合并成一次走树，而不是一个结果扫一遍 500 个文件
     const wrapped = (ev) => {
       emit(ev);
-      if (ev && ev.type === "tool_result") { try { emitFiles(); } catch {} }
+      if (ev && ev.type === "tool_result") { try { filesOut.push(); } catch {} }
     };
 
     // 本项目自己的工具（生图 / 视频 / 配音 / 图表 / 看图 / 技能库 / 记忆）当成 MCP 服务器
@@ -1001,7 +991,7 @@ function modePrompt(mode) {
         ...(bridged ? bridged.runOpts : {}),
         ...opts, // 用户在设置里给这个引擎填的 model / bin / extraArgs 等，最后覆盖
       });
-      try { emitFiles(); } catch {}
+      try { filesOut.push(true); } catch {} // 收尾这一下必须立刻发：产出得赶在这一轮结束前落到界面上
       const finalText = (r.finalText || "").trim();
       // 调用方（Web / IM / 定时任务）都指望 runTask 就地把回复追加进 history
       if (finalText) history.push({ role: "assistant", content: finalText });
@@ -1017,6 +1007,7 @@ function modePrompt(mode) {
       // model/provider 一并带回：记账那边以前拿 config 里的模型名记这笔（跑的是 Claude Code，账本却写 deepseek-chat）
       return { finalText, usage, stopped: r.stopped || null, sessionId: r.sessionId || null, engine: backend.id, model: opts.model || backend.label, provider: backend.id };
     } finally {
+      filesOut.stop(); // 尾随的那次要是烧到 SSE 关掉之后才响，就是往已经断掉的连接里写
       if (bridged) bridged.cleanup();
       unwatchSleep();
       releaseAwake();
@@ -1229,6 +1220,9 @@ function modePrompt(mode) {
       if (curStallReset) { try { curStallReset(); } catch {} }
       if (depth === 0) emit({ type: "sleep", ms: sleptMs, note: `检测到本机睡眠 ${Math.round(sleptMs / 1000)} 秒，任务时限已顺延（睡眠不算任务时间）`, depth });
     });
+    // 产出发射器要在 try 外面声明：它得在 finally 里做最后一次 flush，
+    // 声明在 try 里的 const 在 finally 的作用域里是看不见的（真踩过：任务跑完在收尾时炸 filesOut is not defined）
+    let filesOut = null;
     try {
     // 卡循环检测：同一工具+同一入参反复拿到同一结果 = 在死路上空转。3 连提醒换思路，5 连直接拦截不执行。
     // 键里必须带结果指纹，才不会误伤「改一遍读一遍」的正常校验循环——文件改了，读回来的内容就变了，计数自动清零
@@ -1240,22 +1234,12 @@ function modePrompt(mode) {
     // 任务开始时先记一份工作目录快照，files 事件带上「这一轮真正新增/改动的文件」。
     // 这件事必须在服务端算：前端那份 mtime 快照是活的，历史回放时早就对不上了，算出来永远是空。
     claimBaseDir(baseDir, runToken);
-    const baseline = new Map();
-    for (const f of outputFiles()) baseline.set(f.name, f.mtime);
-    const emitFiles = () => {
-      const files = outputFiles();
-      const changed = [];
-      for (const f of files) {
-        const isNew = baseline.get(f.name) !== f.mtime;
-        baseline.set(f.name, f.mtime);
-        if (!isNew) continue;
-        if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);
-      }
-      // root/full 是这份清单的作用域：前端靠它判断能不能拿这份列表给旧产出盖「已删除」
-      emit({ type: "files", files, changed, ...filesScope(files) });
+    filesOut = makeFilesEmitter({
+      emit, ownership, baseDir, runToken,
       // 长跑可见性：进度档一有更新就把里程碑清单推给前端，时间线卡片实时打勾
-      const progName = changed.find((n) => n.split("/").pop() === "PROGRESS.md");
-      if (progName) {
+      after: (changed) => {
+        const progName = changed.find((n) => n.split("/").pop() === "PROGRESS.md");
+        if (!progName) return;
         try {
           const raw = fs.readFileSync(path.join(getWorkspaceDir(), progName), "utf8").slice(0, 20000);
           const items = [];
@@ -1266,8 +1250,8 @@ function modePrompt(mode) {
           }
           if (items.length) emit({ type: "milestones", file: progName, items, depth });
         } catch {}
-      }
-    };
+      },
+    });
 
     // 长会话先压缩再开跑：只在顶层任务做（专家子任务的 history 是临时的，压不着）
     if (depth === 0) {
@@ -1546,7 +1530,7 @@ function modePrompt(mode) {
         throw e;
       }
       history.push({ role: "tool", results: toolResults });
-      emitFiles();
+      filesOut.push();
 
       // 循环检测的提醒紧跟在工具结果后面注入，模型下一步就能看到；同时在界面明说，别让用户干瞪着它转圈
       const nudges = [];   // 给模型看的：把事实说准
@@ -1623,6 +1607,9 @@ function modePrompt(mode) {
     }
     return { finalText, usage, stopped: stopNote || null };
     } finally {
+      // 最后一批产出必须在这一轮结束前发出去，不能等尾随定时器。
+      // 出错路径上也要发：半截产出照样是用户的东西，不能因为任务栽了就藏起来
+      if (filesOut) { try { filesOut.push(true); } catch {} filesOut.stop(); }
       unwatchSleep();
       releaseAwake();
     }
@@ -1817,6 +1804,60 @@ function collectSources(name, input, content) {
  * 照旧算数，免得把「这一轮真往工作区根目录写了个东西」也误杀。两本账都只是去重提示，
  * 撑大了清空最多短暂多报，不丢数据。
  */
+/**
+ * 产出清单发射器：两条引擎路共用一份，行为必须一模一样（以前是各写一遍，改一边漏一边）。
+ *
+ * 它替掉的是「每来一个工具结果就 outputFiles() 走一遍全树、再把整份 500 条清单推给前端」。
+ * 实测用户那个工作目录：一次走树 9.6ms（其中 4.7ms 是重复检测在读盘 6.48 MB，已在 tools.js
+ * 那边加缓存降到 ~5ms/0 字节），一份 files 事件的 JSON 是 **47.8 KB**。本机 CLI 那条路是
+ * **每个工具结果**都发一次，一趟 100 步的任务就是 4.8 MB 白推、500ms 同步读盘卡在事件循环上。
+ * 用户原话：「提高一些性能，就是问问题很快能看到回复，中间不要让我看到卡顿啊」。
+ *
+ * 两道闸：
+ *   1) 节流：gapMs 内最多走一次树，挤进来的合并成一条尾随的（不是丢掉——尾随那次一定会发，
+ *      所以产出卡最多晚 gapMs 出现，不会不出现）；
+ *   2) 没变就不发：把这份清单的指纹（名字+大小+mtime）跟上次发出去的比，一个字节都没动就
+ *      整条事件省掉。绝大多数工具（搜索、读文件、列目录）压根不写盘，那些事件对界面是纯噪音。
+ *      删文件不改 changed（changed 只看 mtime），所以指纹里带上条数和名字，删了照样发得出去。
+ *
+ * stop() 必须在任务收尾时调：尾随定时器要是烧到 SSE 关掉之后才响，就是往已经断掉的连接里写。
+ */
+function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, after = null }) {
+  const baseline = new Map();
+  for (const f of outputFiles()) baseline.set(f.name, f.mtime);
+  let lastAt = 0, timer = null, lastSig = "", dead = false;
+  const walk = () => {
+    lastAt = Date.now();
+    const files = outputFiles();
+    const changed = [];
+    for (const f of files) {
+      if (baseline.get(f.name) === f.mtime) continue;
+      baseline.set(f.name, f.mtime);
+      if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);
+    }
+    // 指纹带 size：同一秒内原地改写、mtime 精度不够时，长度变了照样能认出来
+    let sig = String(files.length);
+    for (const f of files) sig += "\u0000" + f.name + "|" + f.mtime + "|" + f.size;
+    if (!changed.length && sig === lastSig) return; // 盘上一个字节没动：这条事件对界面是纯噪音
+    lastSig = sig;
+    // root/full 是这份清单的作用域：前端靠它判断能不能拿这份列表给旧产出盖「已删除」
+    emit({ type: "files", files, changed, ...filesScope(files) });
+    if (after) after(changed);
+  };
+  return {
+    /** @param {boolean} [now] 立刻走一遍（收尾用）：产出必须在这一轮结束前落到界面上 */
+    push(now) {
+      if (dead) return;
+      if (timer) { clearTimeout(timer); timer = null; }
+      const wait = gapMs - (Date.now() - lastAt);
+      if (now || wait <= 0) { walk(); return; }
+      timer = setTimeout(() => { timer = null; if (!dead) walk(); }, wait);
+      if (timer.unref) timer.unref(); // 别为了一条产出事件把进程吊着不退
+    },
+    stop() { dead = true; if (timer) { clearTimeout(timer); timer = null; } },
+  };
+}
+
 function makeOwnership() {
   const dirOwners = new Map();  // 任务目录名 -> runToken
   const fileClaims = new Map(); // 文件名 -> { owner, mtime }
@@ -1856,4 +1897,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
 }
 
-module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, makeOwnership };
+module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, makeOwnership, makeFilesEmitter };

@@ -4680,6 +4680,7 @@ async function main() {
   await testEngineContextParity();
   await testFeedbackAndUsage();
   testOutputOwnership();
+  await testFilesEmitter();
   testOutputFilesRecency();
   await testFilePathRouting();
   await testDesktopPet();
@@ -5337,6 +5338,131 @@ async function testThinkingSettingsApi() {
 }
 
 /**
+ * 产出清单发射器：任务跑着的时候「卡不卡」有一半是它决定的。
+ *
+ * 事故背景（用户原话：「提高一些性能，就是问问题很快能看到回复，中间不要让我看到卡顿啊」）：
+ * 以前每来一个工具结果就 outputFiles() 走一遍全树，再把整份最多 500 条的清单原样推给前端。
+ * 实测用户的工作目录：一次走树 9.6ms（其中 4.7ms 是重复检测在 readFileSync 6.48 MB —— 同步读盘，
+ * 那几毫秒整条事件循环是停着的），一条 files 事件的 JSON 是 47.8 KB。本机 CLI 那条路是**每个**
+ * 工具结果发一次，一趟 100 步的任务 = 3.69 MB 白推 + 580ms 事件循环被同步读盘堵住。
+ * 而这 100 步里真正写盘的往往只有几步 —— 搜索、读文件、列目录一个字节都不改。
+ *
+ * 改成「节流 + 没变就不推」之后：101 条 / 3.69 MB / 580ms → 5 条 / 0.18 MB / 7ms。
+ *
+ * 但省事件是有代价的：省过头就是产出不见了 —— 那正是用户前面骂过的「怎么回事都看不到产出了啊」。
+ * 所以这一屏的重点全在负向对照上：真写了的、被删了的、别人文件夹里的，各自该怎样一条条钉死。
+ */
+async function testFilesEmitter() {
+  const os = require("os");
+  const tools = require("../tools");
+  const { makeOwnership, makeFilesEmitter } = require("../agent");
+
+  const prevWs = tools.getWorkspaceDir();
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "owb-emit-"));
+  const DIR = "任务_0910_本对话";
+  fs.mkdirSync(path.join(ws, DIR), { recursive: true });
+  fs.writeFileSync(path.join(ws, DIR, "旧稿.md"), "old");
+  tools.setWorkspaceDir(ws);
+  const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  try {
+    // 每一屏都新起一个发射器 + 新账本，别让上一屏的基线漏过来
+    const mk = (gapMs) => {
+      const evs = [];
+      const own = makeOwnership();
+      own.claimBaseDir(DIR, 1);
+      const e = makeFilesEmitter({ emit: (ev) => evs.push(ev), ownership: own, baseDir: DIR, runToken: 1, gapMs: gapMs === undefined ? 300 : gapMs });
+      return { evs, e, own };
+    };
+
+    // ① 一屏 100 个不写盘的工具结果：只该有开头那一条（前端要一份清单打底），其余全是噪音
+    {
+      const { evs, e } = mk(50);
+      for (let i = 0; i < 100; i++) { e.push(); await nap(1); }
+      e.push(true);
+      await nap(120);
+      e.stop();
+      assert(evs.length === 1, `盘上一个字节没动却推了 ${evs.length} 条 files 事件（每条 ~47.8KB，这就是中途卡顿的来源）`);
+      assert((evs[0].changed || []).length === 0, "什么都没写，changed 却不是空的");
+    }
+
+    // ② 负向对照：真写了文件，节流只能让它晚一点，不许让它不出现
+    {
+      const { evs, e } = mk(80);
+      e.push(true);                     // 打底那一条
+      const n0 = evs.length;
+      fs.writeFileSync(path.join(ws, DIR, "王某某_简历.html"), "<b>hi</b>");
+      e.push();                          // 落在节流窗口里 → 这一下是尾随的
+      assert(evs.length === n0, "节流没生效：紧挨着的第二次 push 立刻又走了一遍全树");
+      await nap(200);
+      e.stop();
+      const last = evs[evs.length - 1];
+      assert(evs.length === n0 + 1, `尾随那次没发出来，写出去的文件在界面上就凭空消失了（共 ${evs.length} 条）`);
+      assert((last.changed || []).includes(DIR + "/王某某_简历.html"), "写出来的成品没进 changed：对话里那块「本回合产出」会一张卡都不挂");
+      assert(last.files.some((f) => f.name === DIR + "/王某某_简历.html"), "清单里没有这个新文件");
+    }
+
+    // ③ 负向对照：删文件不改任何人的 mtime，changed 一定是空的 ——
+    //    要是「没变就不推」只看 changed，删掉的东西就永远从右侧面板上撤不下去
+    {
+      fs.writeFileSync(path.join(ws, DIR, "中间稿.txt"), "tmp");
+      const { evs, e } = mk(0);
+      e.push(true);
+      const n0 = evs.length;
+      fs.unlinkSync(path.join(ws, DIR, "中间稿.txt"));
+      e.push(true);
+      e.stop();
+      assert(evs.length === n0 + 1, "删了文件却没推新清单，右侧面板会一直挂着一个已经不存在的文件");
+      assert((evs[evs.length - 1].changed || []).length === 0, "删除不该算成「本回合产出」");
+      assert(!evs[evs.length - 1].files.some((f) => f.name === DIR + "/中间稿.txt"), "新清单里那个文件还在");
+    }
+
+    // ④ 负向对照：别的对话文件夹里的文件照样进不了 changed（省事件不许把归属这道关一起省掉）
+    {
+      const OTHER = "任务_0909_别人的";
+      fs.mkdirSync(path.join(ws, OTHER), { recursive: true });
+      const { evs, e, own } = mk(0);
+      own.claimBaseDir(OTHER, 2); // 另一条对话先把那个文件夹认领走
+      e.push(true);
+      const n0 = evs.length;
+      fs.writeFileSync(path.join(ws, OTHER, "别人的产出.md"), "x");
+      e.push(true);
+      e.stop();
+      assert(evs.length === n0 + 1, "别的对话写了文件，清单该刷新（面板上要看得见），只是不该记成本回合产出");
+      assert(!(evs[evs.length - 1].changed || []).includes(OTHER + "/别人的产出.md"), "别的对话正在写的文件挂到本回合产出里了");
+    }
+
+    // ⑤ stop() 之后一律闭嘴：尾随定时器要是烧到 SSE 关掉之后才响，就是往已经断掉的连接里写
+    {
+      const { evs, e } = mk(120);
+      e.push(true);
+      const n0 = evs.length;
+      fs.writeFileSync(path.join(ws, DIR, "收摊后写的.md"), "late");
+      e.push();       // 排了一个尾随的
+      e.stop();       // 这一轮收摊
+      await nap(250);
+      assert(evs.length === n0, `stop() 之后还推了 ${evs.length - n0} 条事件，连接已经关了`);
+    }
+
+    // ⑥ 收尾那一下必须是同步的：push(true) 返回时事件就得在手上，不能等定时器
+    {
+      const { evs, e } = mk(5000); // 节流窗口故意开到 5 秒
+      e.push(true);
+      const n0 = evs.length;
+      fs.writeFileSync(path.join(ws, DIR, "最后一份.html"), "<i>done</i>");
+      e.push(true);
+      e.stop();
+      assert(evs.length === n0 + 1, "收尾的 push(true) 没有立刻发：任务结束了产出还没上屏");
+      assert((evs[evs.length - 1].changed || []).includes(DIR + "/最后一份.html"), "收尾那一下漏了最后写出来的成品");
+    }
+  } finally {
+    tools.setWorkspaceDir(prevWs);
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+  console.log("✅ 产出清单发射器：不写盘就不推（100 步只 1 条）· 写了的晚一点也一定到 · 删除照推 · 别人文件夹不记账 · 收摊后闭嘴 · 收尾同步发");
+}
+
+/**
  * 产出归属：一条对话的成果卡片里绝不能出现另一条对话的文件。
  *
  * 事故原样（data/sessions/s_1788803711031_608301.json 里存着现场）：
@@ -5437,10 +5563,20 @@ function testOutputOwnership() {
     for (const [fn, label] of [["runViaEngine", "本机 CLI 引擎"], ["runTask", "内置引擎"]]) {
       const at = src.indexOf("async function " + fn + "(");
       assert(at > 0, "agent.js 里找不到 " + fn);
-      const body = src.slice(at, src.indexOf("const emitFiles = () =>", at) + 1200);
+      const mk = src.indexOf("makeFilesEmitter({", at);
+      assert(mk > at, label + "（" + fn + "）里没有产出发射器了，这条路发不出 files 事件");
+      const body = src.slice(at, mk + 400);
       assert(/claimBaseDir\(baseDir, runToken\)/.test(body), label + "（" + fn + "）开跑没登记自己的任务文件夹，归属就没有确定性依据了");
-      assert(/ownership\.mine\(f, baseDir, runToken\)/.test(body), label + "（" + fn + "）的产出没过归属判定，别的对话正在写的文件会挂到这条来");
+      // 判定实现只剩一处（makeFilesEmitter），所以这两条路要验的是「有没有把账本和本轮 runToken 交给它」：
+      // 少交一个，差异出来的文件就没人判归属，别的对话正在写的东西会整批挂到这条来
+      assert(/makeFilesEmitter\(\{\s*emit, ownership, baseDir, runToken/.test(body),
+        label + "（" + fn + "）没把归属账本和本轮 runToken 交给产出发射器");
     }
+    // 判定本身：一处实现漏了就是两条路一起漏，所以单独钉一遍
+    const em = src.indexOf("function makeFilesEmitter(");
+    assert(em > 0, "agent.js 里找不到 makeFilesEmitter");
+    assert(/ownership\.mine\(f, baseDir, runToken\)/.test(src.slice(em, em + 3000)),
+      "产出发射器没过归属判定，别的对话正在写的文件会挂到本轮来");
   }
 
   console.log("✅ 产出归属：按文件夹判主（检测顺序反过来也认得对）· 根目录靠版本认领 · 同对话跨轮不自伤 · 未认领目录不误杀 · 负向控制能复现事故");
