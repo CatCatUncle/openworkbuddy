@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>企业管理后台 · OpenWorkBuddy</title>
+<link rel="icon" href="/icon.png">
+<link rel="stylesheet" href="/css/ui.css">
+<script>
+  /* 主题/皮肤/字号跟工作台走同一份本机偏好（app-02.js 写的那三个 key）。
+     放在 <head> 里同步执行是为了不闪白：等 admin.js 加载完再套，用户会先看到一帧浅色。 */
+  (function () {
+    try {
+      var d = document.documentElement.dataset;
+      var t = localStorage.getItem("wb-theme") || "system";
+      d.theme = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      var skin = localStorage.getItem("wb-look-skin"); if (skin && skin !== "default") d.skin = skin;
+      var fs = localStorage.getItem("wb-look-fs"); if (fs && fs !== "m") d.fs = fs;
+      var font = localStorage.getItem("wb-look-font"); if (font && font !== "system") d.font = font;
+    } catch (e) { /* 隐私模式下存储不可用，用默认外观即可 */ }
+  })();
+</script>
+<style>
+  :root {
+    --wb-fs: 15px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  html[data-fs="s"] { --wb-fs: 14px; }
+  html[data-fs="l"] { --wb-fs: 16px; }
+  html[data-fs="xl"] { --wb-fs: 18px; }
+  html[data-font="serif"] { --font-sans: Georgia, "Songti SC", "Noto Serif CJK SC", SimSun, serif; }
+  html[data-font="mono"] { --font-sans: var(--font-mono); }
+  /* 皮肤：跟 index.html 同一套，只换品牌色那一组令牌 */
+  html[data-skin="ocean"] { --primary:#0284c7; --ring:#0284c7; --ring-weak:#e0f2fe; --brand-text:#0369a1; }
+  html[data-theme="dark"][data-skin="ocean"] { --ring:#38bdf8; --ring-weak:#0c2a3d; --brand-text:#7dd3fc; }
+  html[data-skin="forest"] { --primary:#059669; --ring:#059669; --ring-weak:#d1fae5; --brand-text:#047857; }
+  html[data-theme="dark"][data-skin="forest"] { --ring:#34d399; --ring-weak:#0b2e24; --brand-text:#6ee7b7; }
+  html[data-skin="sunset"] { --primary:#ea580c; --ring:#ea580c; --ring-weak:#ffedd5; --brand-text:#c2410c; }
+  html[data-theme="dark"][data-skin="sunset"] { --ring:#fb923c; --ring-weak:#3a2410; --brand-text:#fdba74; }
+  html[data-skin="rose"] { --primary:#e11d48; --ring:#e11d48; --ring-weak:#ffe4e6; --brand-text:#be123c; }
+  html[data-theme="dark"][data-skin="rose"] { --ring:#fb7185; --ring-weak:#3d1520; --brand-text:#fda4af; }
+  html[data-skin="graphite"] { --primary:#4b5563; --ring:#4b5563; --ring-weak:#e5e7eb; --brand-text:#1f2937; }
+  html[data-theme="dark"][data-skin="graphite"] { --primary:#6b7280; --ring:#9ca3af; --ring-weak:#2b2d34; --brand-text:#d1d5db; }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--font-sans); font-size: var(--wb-fs); line-height: 1.6;
+    background: var(--background); color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--brand-text); }
+  /* ---------- 骨架：左导航 + 右内容 ---------- */
+  .ad { display: grid; grid-template-columns: 240px 1fr; height: 100%; }
+  .ad-side {
+    display: flex; flex-direction: column; min-height: 0;
+    background: var(--muted); border-right: 1px solid var(--border);
+  }
+  .ad-brand {
+    display: flex; align-items: center; gap: 8px; padding: 16px 16px 12px;
+    font-weight: 600; font-size: 15px; flex: none;
+  }
+  .ad-brand svg { width: 24px; height: 24px; border-radius: 6px; }
+  .ad-nav { flex: 1; overflow-y: auto; padding: 4px 8px 16px; }
+  .ad-grp { padding: 12px 8px 4px; font-size: 12px; color: var(--subtle-foreground); font-weight: 500; }
+  .ad-nav-i {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    height: 34px; padding: 0 8px; margin-bottom: 2px; border: 0; border-radius: var(--radius-md);
+    background: transparent; color: var(--muted-foreground); font: inherit; font-size: 14px;
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ad-nav-i .i { width: 16px; height: 16px; flex: none; }
+  .ad-nav-i:hover { background: var(--accent); color: var(--accent-foreground); }
+  .ad-nav-i.on { background: var(--ring-weak); color: var(--brand-text); font-weight: 500; }
+  .ad-nav-i:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring-weak); }
+  .ad-side-foot { flex: none; padding: 8px; border-top: 1px solid var(--border); }
+
+  .ad-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .ad-top {
+    flex: none; display: flex; align-items: center; gap: 16px;
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+  }
+  .ad-top h1 { font-size: 18px; font-weight: 600; line-height: 1.4; }
+  .ad-top p { font-size: 13px; color: var(--muted-foreground); }
+  .ad-top-r { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+  .ad-body { flex: 1; overflow-y: auto; padding: 24px; }
+  .ad-wrap { max-width: 1040px; display: flex; flex-direction: column; gap: 16px; }
+
+  /* ---------- 通用块 ---------- */
+  .ad-sec-t { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .ad-sec-d { font-size: 13px; color: var(--muted-foreground); }
+  .ad-note {
+    display: flex; gap: 8px; padding: 12px 16px; border-radius: var(--radius-lg);
+    background: var(--ring-weak); color: var(--brand-text); font-size: 13px; line-height: 1.6;
+  }
+  .ad-note .i { width: 16px; height: 16px; margin-top: 3px; flex: none; }
+  .ad-note--warn { background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--warning); }
+  .ad-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
+  .ad-kpi .k { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--card); }
+  .ad-kpi .k b { display: block; font-size: 24px; font-weight: 600; line-height: 1.3; letter-spacing: -.01em; }
+  .ad-kpi .k span { font-size: 13px; color: var(--muted-foreground); }
+  .ad-kpi .k em { font-style: normal; font-size: 12px; color: var(--subtle-foreground); }
+
+  table.ad-t { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.ad-t th {
+    text-align: left; font-weight: 500; font-size: 12px; color: var(--subtle-foreground);
+    padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  table.ad-t td { padding: 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  table.ad-t tr:last-child td { border-bottom: 0; }
+  table.ad-t tbody tr:hover { background: var(--muted); }
+  .ad-num { font-variant-numeric: tabular-nums; }
+  .ad-scroll { overflow-x: auto; }
+  .ad-empty { padding: 32px 16px; text-align: center; color: var(--subtle-foreground); font-size: 14px; }
+
+  /* 7 日柱状：纯 div，不引图表库（这页要能离线打开） */
+  .ad-bars { display: flex; align-items: flex-end; gap: 8px; height: 128px; padding-top: 8px; }
+  .ad-bars .b { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 6px; height: 100%; }
+  .ad-bars .b i { width: 100%; max-width: 48px; background: var(--primary); border-radius: var(--radius-sm); min-height: 2px; opacity: .85; }
+  .ad-bars .b u { text-decoration: none; font-size: 12px; color: var(--subtle-foreground); }
+
+  .ad-field { display: flex; align-items: flex-start; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .ad-field:last-child { border-bottom: 0; }
+  .ad-field > div:first-child { flex: 1; min-width: 0; }
+  .ad-field .fl { font-size: 14px; font-weight: 500; }
+  .ad-field .fd { font-size: 13px; color: var(--muted-foreground); margin-top: 2px; }
+  .ad-field .fc { flex: none; display: flex; align-items: center; gap: 8px; }
+  .ad-field .fc .ui-input { width: 180px; }
+  select.ui-input { padding-right: 8px; }
+  textarea.ui-input { height: auto; min-height: 76px; padding: 8px 12px; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; resize: vertical; }
+
+  /* 开关：原生 checkbox 在两套主题下颜色不可控，自己画一个 */
+  .ad-sw { position: relative; width: 40px; height: 24px; flex: none; }
+  .ad-sw input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+  .ad-sw i { position: absolute; inset: 0; border-radius: 999px; background: var(--input); transition: background-color .18s ease; pointer-events: none; }
+  .ad-sw i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .18s ease; }
+  .ad-sw input:checked + i { background: var(--primary); }
+  .ad-sw input:checked + i::after { transform: translateX(16px); }
+  .ad-sw input:focus-visible + i { box-shadow: 0 0 0 3px var(--ring-weak); }
+  .ad-sw input:disabled { cursor: not-allowed; }
+  .ad-sw input:disabled + i { opacity: .5; }
+
+  .ad-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ad-mono { font-family: var(--font-mono); font-size: 13px; }
+  .ad-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+  /* 弹层：加成员、改成员、建组织都用它 */
+  .ad-mask { position: fixed; inset: 0; background: rgba(0,0,0,.42); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 60; }
+  .ad-modal { width: 100%; max-width: 460px; max-height: 100%; overflow-y: auto; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: 0 16px 48px rgba(0,0,0,.24); }
+  .ad-modal h2 { font-size: 16px; font-weight: 600; padding: 16px 20px 0; }
+  .ad-modal .bd { padding: 12px 20px; display: flex; flex-direction: column; gap: 12px; }
+  .ad-modal .ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 20px 20px; }
+  .ad-modal label { display: block; font-size: 13px; color: var(--muted-foreground); margin-bottom: 4px; }
+
+  .ad-toast {
+    position: fixed; left: 50%; bottom: 32px; transform: translate(-50%, 8px);
+    padding: 8px 16px; border-radius: var(--radius-md); font-size: 14px; z-index: 80;
+    background: var(--foreground); color: var(--background); box-shadow: 0 8px 24px rgba(0,0,0,.2);
+    opacity: 0; transition: opacity .16s ease, transform .16s ease; pointer-events: none;
+  }
+  .ad-toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .ad-toast.bad { background: var(--destructive); color: #fff; }
+
+  .ad-gate { max-width: 460px; margin: 12vh auto; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .ad-gate .i { width: 40px; height: 40px; color: var(--subtle-foreground); }
+
+  @media (max-width: 860px) {
+    .ad { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .ad-side { flex-direction: row; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
+    .ad-brand { padding: 8px 12px; }
+    .ad-nav { display: flex; gap: 4px; padding: 8px; overflow-x: auto; }
+    .ad-grp { display: none; }
+    .ad-nav-i { width: auto; margin-bottom: 0; }
+    .ad-side-foot { border-top: 0; }
+    .ad-body { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<!-- lucide 图标（ISC，https://lucide.dev），内联进来是为了离线可用、跟着 currentColor 变色 -->
+<svg id="wb-sprite" aria-hidden="true">
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /></symbol>
+<symbol id="i-zap" viewBox="0 0 24 24"><path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /></symbol>
+<symbol id="i-blocks" viewBox="0 0 24 24"><path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2" /> <rect x="14" y="2" width="8" height="8" rx="1" /></symbol>
+<symbol id="i-app-window" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2" /> <path d="M10 4v4" /> <path d="M2 8h20" /> <path d="M6 4v4" /></symbol>
+<symbol id="i-file-text" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" /> <path d="M14 2v5a1 1 0 0 0 1 1h5" /> <path d="M10 9H8" /> <path d="M16 13H8" /> <path d="M16 17H8" /></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" /></symbol>
+<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /> <path d="M2 12h20" /></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="M12 6v6l4 2" /></symbol>
+<symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="m16 9-5.5 5.5L8 12" /></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14" /> <path d="M12 5v14" /></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
+<symbol id="i-refresh-cw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /> <path d="M21 3v5h-5" /> <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /> <path d="M8 16H3v5" /></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /> <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></symbol>
+<symbol id="i-triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /> <path d="M12 9v4" /> <path d="M12 17h.01" /></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 15V3" /> <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /> <path d="m7 10 5 5 5-5" /></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /> <circle cx="9" cy="7" r="4" /> <path d="M22 21v-2a4 4 0 0 0-3-3.87" /> <path d="M16 3.13a4 4 0 0 1 0 7.75" /></symbol>
+<symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16" /> <path d="M18 17V9" /> <path d="M13 17V5" /> <path d="M8 17v-3" /></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><path d="m15.5 7.5 3 3L22 7l-3-3" /> <path d="m21 2-9.6 9.6" /> <circle cx="7.5" cy="15.5" r="5.5" /></symbol>
+<symbol id="i-wallet" viewBox="0 0 24 24"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1" /> <path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4" /></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5" /> <path d="M9 8V2" /> <path d="M15 8V2" /> <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" /></symbol>
+<symbol id="i-building" viewBox="0 0 24 24"><rect width="16" height="20" x="4" y="2" rx="2" /> <path d="M9 22v-4h6v4" /> <path d="M8 6h.01" /> <path d="M16 6h.01" /> <path d="M12 6h.01" /> <path d="M12 10h.01" /> <path d="M12 14h.01" /> <path d="M16 10h.01" /> <path d="M16 14h.01" /> <path d="M8 10h.01" /> <path d="M8 14h.01" /></symbol>
+<symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7" /> <path d="M19 12H5" /></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18" /> <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /> <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></symbol>
+<symbol id="i-pencil" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /> <path d="M18.375 2.625a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z" /></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" /> <path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol>
+</svg>
+
+<div class="ad">
+  <aside class="ad-side">
+    <div class="ad-brand">
+      <img src="/icon.png" alt="" width="24" height="24" style="border-radius:6px">
+      <span>OpenWorkBuddy</span>
+      <span class="ui-badge ui-badge--secondary" style="font-size:11px">企业版</span>
+    </div>
+    <nav class="ad-nav" id="ad-nav" aria-label="管理后台导航"></nav>
+    <div class="ad-side-foot">
+      <a class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--block" href="/">
+        <svg class="i" aria-hidden="true"><use href="#i-arrow-left"></use></svg> 返回工作台
+      </a>
+    </div>
+  </aside>
+  <main class="ad-main">
+    <header class="ad-top">
+      <div style="min-width:0">
+        <h1 id="ad-title">企业管理后台</h1>
+        <p id="ad-sub">正在加载…</p>
+      </div>
+      <div class="ad-top-r" id="ad-top-r"></div>
+    </header>
+    <div class="ad-body" id="ad-body">
+      <div class="ad-gate"><div class="ui-skeleton" style="width:100%;height:180px"></div></div>
+    </div>
+  </main>
+</div>
+
+<div class="ad-toast" id="ad-toast" role="status" aria-live="polite"></div>
+<script src="/js/admin.js"></script>
+</body>
+</html>

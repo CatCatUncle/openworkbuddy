@@ -1247,6 +1247,9 @@ function openUserMenu() {
     </div>
     <div class="um-i" data-act="profile">🪪 个人资料</div>
     <div class="um-i" data-act="settings">⚙️ 设置</div>
+    ${currentUser.role === "admin" || currentUser.role === "auditor"
+      ? `<div class="um-i" data-act="admin">🏢 企业管理后台 <span class="hint">${currentUser.role === "auditor" ? "只读" : "成员 · 用量 · 安全"}</span></div>`
+      : ""}
     ${i18n ? `<div class="um-i um-lang" data-act="lang" title="点一下就切换界面语言，AI 回复也跟着换"><span>🌐 语言</span><span class="um-seg" data-i18n-skip role="group" aria-label="界面语言">${Object.keys(i18n.LANGS).map((v) =>
       `<button type="button" data-lang="${v}" class="${lang === v ? "on" : ""}" aria-pressed="${lang === v}">${v === "zh" ? "中" : "En"}</button>`).join("")}</span></div>` : ""}
     <div class="um-i" data-act="appearance">🎨 外观 <span class="hint">${THEME_LABEL[getTheme()]} · ${LOOK_OPTS.fs[lookGet("fs")]}字</span></div>
@@ -1270,6 +1273,8 @@ function openUserMenu() {
     else if (act === "appearance") openModal("settings", "look");
     else if (act === "profile") { await openModal("account"); renderProfile(); }
     else if (act === "settings") openModal("settings");
+    // 后台是独立一页，不是弹窗：它自己有一整套侧边导航，塞进设置弹窗里两层导航会打架
+    else if (act === "admin") location.href = "/admin.html";
     else if (act === "help") openModal("settings", "about");
     else if (act === "update") checkUpdate();
     else if (act === "logout") { await fetch("/api/auth/logout", { method: "POST" }); location.reload(); }
