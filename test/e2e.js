@@ -2317,6 +2317,49 @@ async function testCodingTools() {
       assert.strictEqual(r.isError, true);
       assert.ok(/write_file/.test(r.content), r.content);
 
+      // 缩进对不上：真实数据里 edit_file 156 次调用没命中 21 次（12.8%），没命中之后 5/6 次
+      // 是回头把整篇文件再 read_file 一遍，平均多花 2.8 次工具调用才重新写回去。
+      // 只差缩进的这一类不值得付这个代价：唯一命中就直接改，并按文件原本的缩进写回。
+      fs.writeFileSync(path.join(ws, "缩进.js"), "function f() {\\n      const x = 1;\\n      return x;\\n}\\n");
+      r = await call("edit_file", { path: "缩进.js", old_text: "const x = 1;\\nreturn x;", new_text: "const x = 2;\\nreturn x * 2;" });
+      assert.strictEqual(r.isError, false, "只差缩进也没救回来：" + r.content);
+      assert.ok(/去掉首尾空白后唯一匹配/.test(r.content), "救回来了却没交代是怎么匹配上的：" + r.content);
+      assert.strictEqual(fs.readFileSync(path.join(ws, "缩进.js"), "utf8"), "function f() {\\n      const x = 2;\\n      return x * 2;\\n}\\n", "救是救回来了，缩进写坏了");
+
+      // 负向对照一：去掉空白后有两处能对上，绝不许挑一处改
+      fs.writeFileSync(path.join(ws, "俩.js"), "  log(1);\\n  log(2);\\nlog(1);\\n");
+      r = await call("edit_file", { path: "俩.js", old_text: "log(1);", new_text: "log(3);" });
+      assert.strictEqual(r.isError, true, "两处只差缩进的也敢改");
+      assert.ok(/不唯一/.test(r.content), r.content);
+      assert.strictEqual(fs.readFileSync(path.join(ws, "俩.js"), "utf8"), "  log(1);\\n  log(2);\\nlog(1);\\n", "报了不唯一却已经把文件改了");
+
+      // 负向对照二：内容本身对不上的，照样顶回去（不是把匹配放松成谁都能过）
+      r = await call("edit_file", { path: "缩进.js", old_text: "const y = 1;", new_text: "z" });
+      assert.strictEqual(r.isError, true, "内容根本不一样的也放过了");
+
+      // 负向对照三：半行片段仍走精确匹配，不会被当成整行替换
+      fs.writeFileSync(path.join(ws, "半行.js"), "  hazards:[ {x:330,y:436} ],\\n");
+      r = await call("edit_file", { path: "半行.js", old_text: "y:436", new_text: "y:432" });
+      assert.strictEqual(fs.readFileSync(path.join(ws, "半行.js"), "utf8"), "  hazards:[ {x:330,y:432} ],\\n", "半行片段改坏了");
+
+      // new_text 给空 = 把这几行删掉，别留个空行
+      fs.writeFileSync(path.join(ws, "删行.js"), "a();\\nb();\\nc();\\n");
+      r = await call("edit_file", { path: "删行.js", old_text: "  b();", new_text: "" });
+      assert.strictEqual(fs.readFileSync(path.join(ws, "删行.js"), "utf8"), "a();\\nc();\\n", "删行留下了空行");
+
+      // 第一行是模型记岔的：老逻辑只拿第一行找锚点，21 次没命中里有 10 次连提示都给不出。
+      // 现在要把文件那一段**原文**贴回去让它照抄，而不是打发它再 read_file 一遍。
+      fs.writeFileSync(path.join(ws, "进度.md"), "# 标题\\n\\n- [x] 3. A线·专业线：5 篇正文\\n- [ ] 4. B线\\n");
+      r = await call("edit_file", { path: "进度.md", old_text: "- [ ] 修复未闭合 div 并复检\\n- [ ] 4. B线", new_text: "x" });
+      assert.strictEqual(r.isError, true);
+      assert.ok(/原文开始/.test(r.content) && /A线/.test(r.content), "第一行对不上时没把文件原文贴出来：" + r.content);
+      assert.ok(/不用再 read_file/.test(r.content), "还在打发它回头重读整篇文件：" + r.content);
+
+      // 贴原文不能反过来把上下文烧了
+      fs.writeFileSync(path.join(ws, "大.txt"), Array.from({ length: 400 }, (_, i) => "行" + i + " " + "x".repeat(200)).join("\\n"));
+      r = await call("edit_file", { path: "大.txt", old_text: "行250 " + "x".repeat(200) + "\\n对不上的一行", new_text: "y" });
+      assert.ok(r.isError && r.content.length < 3000, "报错本身就吃掉一大块上下文：" + r.content.length + " 字");
+
       // 搜索：找得到、带行号、能按扩展名缩范围
       fs.mkdirSync(path.join(ws, "sub"), { recursive: true });
       fs.writeFileSync(path.join(ws, "sub", "b.md"), "调用 bar() 的说明\\n");
@@ -2374,7 +2417,7 @@ async function testCodingTools() {
   });
   fs.rmSync(dir, { recursive: true, force: true });
   assert.strictEqual(r.status, 0, "改代码工具测试失败：\n" + (r.stderr || r.stdout));
-  console.log("✅ 改代码工具：精确替换（不唯一/找不到都报清楚且不误改）· 全文搜索跳依赖目录 · 只读一段 · 覆盖有提示 · 只看不动档拦得住");
+  console.log("✅ 改代码工具：精确替换（不唯一/找不到都报清楚且不误改）· 只差缩进能唯一救回并保持原缩进（两处能对上/内容真不一样/半行片段 三种负向对照都不误改）· 没命中时直接贴文件原文让它照抄，不再打发它重读整篇 · 全文搜索跳依赖目录 · 只读一段 · 覆盖有提示 · 只看不动档拦得住");
 }
 
 /**
