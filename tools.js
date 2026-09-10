@@ -1130,6 +1130,90 @@ function countAll(hay, needle) {
 }
 
 /**
+ * 逐行去掉首尾空白之后的匹配。只在精确匹配失败时兜底用。
+ *
+ * 真实数据里 edit_file 的失败率 12.8%（156 次调用里 21 次没命中），而且没命中之后
+ * 模型 5/6 的反应是回头再 read_file 一遍整篇文件，平均要多花 2.8 次工具调用才重新写回去——
+ * 大文件重读一遍还要烧掉一大块上下文。缩进对不上是最不值得付这个代价的一种。
+ *
+ * 返回命中的行区间 [起始行, 结束行)（0 基）。只做整行匹配：old_text 是半行片段时不会误命中。
+ */
+function looseLineMatch(lines, needle) {
+  const nl = needle.replace(/\s+$/, "").split("\n").map((l) => l.trim());
+  while (nl.length && nl[nl.length - 1] === "") nl.pop();
+  if (!nl.length || nl.join("").length < 3) return [];
+  const hits = [];
+  for (let i = 0; i + nl.length <= lines.length; i++) {
+    let ok = true;
+    for (let j = 0; j < nl.length; j++) {
+      if (lines[i + j].trim() !== nl[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) hits.push([i, i + nl.length]);
+  }
+  return hits;
+}
+
+/** 按「文件里那行的缩进」和「old_text 那行的缩进」之差，把 new_text 整体挪一挪。挪不动就原样返回。 */
+function shiftIndent(fileLine, needleLine, repl) {
+  const fi = (fileLine.match(/^[ \t]*/) || [""])[0];
+  const ni = (needleLine.match(/^[ \t]*/) || [""])[0];
+  if (fi === ni) return repl;
+  if (fi.startsWith(ni)) {
+    const add = fi.slice(ni.length);
+    return repl
+      .split("\n")
+      .map((l) => (l.trim() ? add + l : l))
+      .join("\n");
+  }
+  if (ni.startsWith(fi)) {
+    const cut = ni.slice(fi.length);
+    return repl
+      .split("\n")
+      .map((l) => (l.startsWith(cut) ? l.slice(cut.length) : l))
+      .join("\n");
+  }
+  return repl;
+}
+
+/**
+ * 没命中时，把文件在最可能那一段的**原文**直接贴回去，让它照抄——
+ * 而不是只报一句「先 read_file」，逼它把整篇文件重读一遍。
+ * 锚点不只看 old_text 的第一行：21 次没命中里有 10 次连提示都给不出来，就是因为只认第一行。
+ */
+function missHint(lines, needle) {
+  const nls = needle.split("\n");
+  let best = null;
+  nls.forEach((raw, j) => {
+    const t = raw.trim();
+    if (t.length < 4) return;
+    const key = t.slice(0, 60);
+    const hits = [];
+    for (let i = 0; i < lines.length && hits.length < 6; i++) if (lines[i].includes(key)) hits.push(i);
+    if (!hits.length) return;
+    // 唯一命中的行最值钱；同样唯一时取更长的（更有辨识度）
+    const score = (hits.length === 1 ? 1e6 : 1e3 / hits.length) + t.length;
+    if (!best || score > best.score) best = { j, hits, score };
+  });
+  if (!best) return `\nold_text 里没有任何一行出现在这个文件里（全文共 ${lines.length} 行）——多半是改错文件了，或者这段内容早被覆盖过。先 read_file 确认。`;
+  const out = [];
+  for (const h of best.hits.slice(0, 2)) {
+    const start = Math.max(0, h - best.j - 1);
+    const end = Math.min(lines.length, start + nls.length + 3);
+    let block = lines.slice(start, end).join("\n");
+    let cut = "";
+    if (block.length > 2000) {
+      block = block.slice(0, 2000);
+      cut = "\n…（太长，只贴了前 2000 字）";
+    }
+    out.push(`文件第 ${start + 1}-${end} 行现在是这样：\n<<<原文开始\n${block}${cut}\n>>>原文结束`);
+  }
+  return `\n${out.join("\n")}\n把上面这段里你要改的部分**原样**抄成 old_text 再来一次，不用再 read_file 了。`;
+}
+
+/**
  * 精确替换。改已有文件只走这里，不许整篇重写——
  * 重写会把模型没读过的部分一起抹掉，而且用户 diff 一看全是红的，根本审不了。
  * 匹配不上/不唯一都必须报清楚原因（并给出下一步怎么办），不能默默改错地方。
@@ -1143,20 +1227,27 @@ function editFile(file, label, { old_text, new_text, replace_all }) {
   if (!needle) throw new Error("old_text 是空的：edit_file 必须给出要被替换掉的原文");
   const idx = src.indexOf(needle);
   if (idx < 0) {
-    const first = needle.split("\n")[0].trim();
     const lines = src.split("\n");
-    const near = first
-      ? lines
-          .map((l, i) => [i + 1, l])
-          .filter(([, l]) => l.includes(first.slice(0, 40)))
-          .slice(0, 3)
-          .map(([n, l]) => `  第 ${n} 行: ${l.slice(0, 120)}`)
-          .join("\n")
-      : "";
-    throw new Error(
-      `没找到 old_text（必须和文件里逐字一致，包括缩进和空行）。` +
-        (near ? `\n文件里和它第一行相近的位置：\n${near}\n先 read_file 把那几行原样抄下来再改。` : `\n先 read_file 看看现在的真实内容。`)
-    );
+    // 先看看是不是只差缩进/行尾空白。是的话别为难它，直接改，回执里说清是怎么匹配上的。
+    const loose = looseLineMatch(lines, needle);
+    if (loose.length > 1) {
+      throw new Error(
+        `old_text 和文件里 ${loose.length} 处内容只差缩进或行尾空白（第 ${loose.map((h) => h[0] + 1).join("、")} 行），不唯一，不敢猜改哪一处。多带几行上下文让它唯一。`
+      );
+    }
+    if (loose.length === 1) {
+      const [start, end] = loose[0];
+      // new_text 是空的 = 要把这几行删掉，别塞一个空行进去
+      const body = repl === "" ? [] : shiftIndent(lines[start], needle.split("\n")[0], repl).split("\n");
+      const out = lines.slice(0, start).concat(body, lines.slice(end)).join("\n");
+      if (out === src) return `${label} 内容没有变化（new_text 和 old_text 一样）`;
+      fs.writeFileSync(file, out, "utf8");
+      return (
+        `已修改 ${label}：在第 ${start + 1} 行替换了 1 处，${src.length} → ${out.length} 字符。` +
+        `（你给的 old_text 缩进/行尾空白和文件里对不上，按逐行去掉首尾空白后唯一匹配到这里，替换内容已按文件原缩进写回。下次照抄文件原文就不用绕这一道。）`
+      );
+    }
+    throw new Error(`没找到 old_text（必须和文件里逐字一致，包括缩进和空行）。` + missHint(lines, needle));
   }
   const hits = countAll(src, needle);
   if (hits > 1 && !replace_all) {
@@ -2339,4 +2430,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, setWorkspaceDir, SEARCH_PROVIDERS, searchProviderKey, shellPath };
