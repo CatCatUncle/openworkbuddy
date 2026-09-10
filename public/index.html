@@ -257,6 +257,11 @@
   .a-text th { background: var(--wb-bg-hover); font-weight: 600; }
   .a-text hr { border: none; border-top: 1px solid var(--wb-border); margin: 10px 0; }
   .a-text a { color: var(--wb-brand-text); }
+  /* 正文里提到的产出文件名：点一下就在右边打开。做成"带下划虚线的实体"而不是普通蓝链，
+     免得跟正文里的外部网址混淆——一个跳出去，一个在应用里打开 */
+  .a-text .file-ln { color: var(--wb-brand-text); cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; border-radius: 4px; padding: 0 2px; }
+  .a-text .file-ln:hover { background: var(--wb-brand-weak); text-decoration-style: solid; }
+  .a-text .file-ln:focus-visible { outline: 2px solid var(--wb-brand-text); outline-offset: 1px; }
   .step-card { border: 1px solid var(--wb-border); border-radius: 10px; margin: 8px 0; overflow: hidden; background: #fbfcfe; }
   .step-card .head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; user-select: none; font-size: 14px; }
   .tag { font-size: 12px; padding: 2px 9px; border-radius: 10px; background: var(--wb-brand-weak); color: var(--wb-brand-text); white-space: nowrap; }
