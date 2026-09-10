@@ -9,6 +9,7 @@ const { loadSkills, SKILLS_DIR } = require("./skills");
 const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
+const prefs = require("./prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -991,7 +992,7 @@ function modePrompt(mode) {
         maxTurns: config.agent.max_steps || 25,
         // 思考模式跟 app 设置对齐：设置页选什么档，接管的本机 CLI 就用什么档。
         // 放在 opts 前面 = 单个引擎还能自己覆盖（engine_options[id].thinking）
-        thinking: config.agent.thinking || "auto",
+        thinking: prefs.agentCfg(config).thinking || "auto",
         ...(bridged ? bridged.runOpts : {}),
         ...opts, // 用户在设置里给这个引擎填的 model / bin / extraArgs 等，最后覆盖
       });
@@ -1170,7 +1171,10 @@ function modePrompt(mode) {
     // 没有"给我下一步"这种调用方式，硬拆只会两头不讨好。
     // 只有顶层任务走这条路——专家子任务是内置循环里的概念，CLI 引擎里没有对应物。
     if (depth === 0) {
-      const picked = engines.resolve(config); // 引擎名写错会在这里抛错，不会静默退回内置
+      // agentView 而不是 config：底层引擎和它的模型/思考档是**按账号**存的（prefs.js）。
+      // 直接读 config 的话，服务器上两个人各自选的引擎会互相覆盖——界面显示 Codex，实际跑的是别人选的那个。
+      // 没有请求上下文（定时任务 / IM / 命令行）时 agentView 原样返回 config，行为一字不差。
+      const picked = engines.resolve(prefs.agentView(config)); // 引擎名写错会在这里抛错，不会静默退回内置
       if (picked.backend) {
         return await runViaEngine({
           backend: picked.backend, opts: picked.opts,

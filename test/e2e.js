@@ -1682,6 +1682,25 @@ async function testDockerDeploy() {
   console.log(line);
 }
 
+/**
+ * 跑一个独立的 node 子测试文件，把它的结论并进 e2e 的成绩单。
+ *
+ * 这几个文件（多租户、个人偏好）都得在**进程一开始**就把 WB_DATA_DIR 指到临时目录，
+ * 才能保证一个字节都不碰真账号、真偏好；e2e 这个进程早就把那几个模块 require 过了，
+ * 所以只能另起进程。以前 test/tenant.js 就因为没人调，写完就没再跑过——
+ * 一个没人跑的测试比没有测试更糟，它让人以为那块是有人看着的。
+ */
+async function testNodeSuite(file, label) {
+  const { spawnSync } = require("child_process");
+  const r = spawnSync(process.execPath, [path.join(__dirname, file)], { encoding: "utf8" });
+  const out = (r.stdout || "") + (r.stderr || "");
+  const tail = () => out.trim().split("\n").slice(-14).join("\n");
+  if (r.status !== 0) throw new Error(`${label}未通过：\n${tail()}`);
+  const line = out.split("\n").find((l) => l.startsWith("全部通过："));
+  if (!line) throw new Error(`${label}没有报告结果：\n${tail()}`);
+  console.log(`✅ ${label}：${line.replace("全部通过：", "").trim()}`);
+}
+
 async function testAdminConsoleUI() {
   const { spawnSync } = require("child_process");
   let electronBin;
@@ -4732,6 +4751,8 @@ async function main() {
   testPackageAssetDrift();
   testNoNestedRoutes();
   await testAdminConsoleUI();
+  await testNodeSuite("tenant.js", "多租户与企业后台越权");
+  await testNodeSuite("prefs.js", "个人偏好与平台设置分界");
   await testDockerDeploy();
   await testFetchUrlShapes();
   await testParallelToolBatch();
@@ -5192,7 +5213,9 @@ async function testThinkingSwitch() {
   const at = src.indexOf("const r = await backend.run({");
   assert(at > 0, "agent.js 里找不到 backend.run 调用");
   const block = src.slice(at, src.indexOf("});", at));
-  assert(/thinking:\s*config\.agent\.thinking/.test(block), "本机引擎接管时没把 app 的思考模式设置传下去（用户要的就是这两边一致）");
+  // 取的必须是 prefs.agentCfg(config)：思考档是**按账号**存的（prefs.js），
+  // 直接读 config.agent.thinking 的话，多人服务器上跑的是平台管理员选的那档，不是发起人自己选的
+  assert(/thinking:\s*prefs\.agentCfg\(config\)\.thinking/.test(block), "本机引擎接管时没把 app 的思考模式设置传下去（用户要的就是这两边一致）");
   assert(block.indexOf("thinking:") < block.indexOf("...opts"), "thinking 排在 ...opts 后面了，单个引擎就没法覆盖全局档位");
   for (const [f, label] of [["engines/claude-code.js", "claude"], ["engines/codex.js", "codex"]]) {
     const t = fs.readFileSync(path.join(__dirname, "..", f), "utf8");
