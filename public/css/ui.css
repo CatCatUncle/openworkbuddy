@@ -170,3 +170,114 @@ html[data-theme="dark"] {
 /* ---------- Skeleton ---------- */
 .ui-skeleton { background: var(--accent); border-radius: var(--radius-sm); animation: uiPulse 1.6s ease-in-out infinite; }
 @keyframes uiPulse { 0%,100% { opacity: 1 } 50% { opacity: .5 } }
+
+/* ============================================================================
+ * 下面这一批是 shadcn 里「后台管理」那几个页面在用的组件：Alert / Table / Progress /
+ * Select / Stat / Switch / Dialog。之前企业后台是每处手搓 inline style 拼出来的，
+ * 拼出来的东西对不齐：同样是「一句提示」，安全页是整块高饱和紫底、计量页是橙底，
+ * 表格的分隔线又停在卡片内边距上不到边——看着就散。搬进这里之后是同一套几何。
+ *
+ * 几何仍然照抄 shadcn v4：Alert 用卡片底 + 淡边框（不是一整块色），Table 表头 muted、
+ * 行分隔线到边，Progress 圆头，Select 自带角标。颜色一律走上面那套令牌，没有硬编码。
+ * ========================================================================== */
+
+/* ---------- Alert ---------- */
+/* 关键差别：shadcn 的 Alert 不是「一块颜色」，是「一张卡片，只有图标带颜色」。
+   整块高饱和底色在一页里出现两三次就开始抢正文，这也是这页之前最刺眼的地方。 */
+.ui-alert {
+  display: grid; grid-template-columns: auto 1fr; gap: 12px;
+  padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--card); color: var(--foreground); font-size: 14px; line-height: 1.75;
+}
+.ui-alert > .i { width: 16px; height: 16px; margin-top: 5px; color: var(--muted-foreground); }
+.ui-alert-title { font-weight: 600; margin-bottom: 2px; }
+.ui-alert b, .ui-alert strong { font-weight: 600; }
+.ui-alert code { font-family: var(--font-mono); font-size: .92em; padding: 1px 5px; border-radius: var(--radius-sm); background: var(--muted); }
+.ui-alert--info { border-color: color-mix(in srgb, var(--primary) 28%, var(--border)); background: color-mix(in srgb, var(--primary) 5%, var(--card)); }
+.ui-alert--info > .i { color: var(--brand-text); }
+.ui-alert--warn { border-color: color-mix(in srgb, var(--warning) 36%, var(--border)); background: color-mix(in srgb, var(--warning) 7%, var(--card)); }
+.ui-alert--warn > .i { color: var(--warning); }
+.ui-alert--success { border-color: color-mix(in srgb, var(--success) 30%, var(--border)); background: color-mix(in srgb, var(--success) 6%, var(--card)); }
+.ui-alert--success > .i { color: var(--success-text); }
+.ui-alert--destructive { border-color: color-mix(in srgb, var(--destructive) 32%, var(--border)); background: color-mix(in srgb, var(--destructive) 6%, var(--card)); }
+.ui-alert--destructive > .i { color: var(--danger-text); }
+
+/* ---------- Table ---------- */
+/* 外框自己带圆角和边框；放进卡片里当「贴边表格」时加 .ui-table-wrap--flush，
+   由卡片提供左右边框，分隔线就能一直画到卡片边上，不再是一截悬空的横线。 */
+.ui-table-wrap {
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--card); overflow: auto; overscroll-behavior-x: contain;
+}
+.ui-table-wrap--flush { border: 0; border-radius: 0; background: transparent; }
+.ui-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; }
+.ui-table th {
+  text-align: left; font-weight: 500; font-size: 12.5px; letter-spacing: .02em;
+  color: var(--subtle-foreground); padding: 10px 14px; white-space: nowrap;
+  background: var(--muted); border-bottom: 1px solid var(--border);
+}
+.ui-table td { padding: 12px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; line-height: 1.5; }
+.ui-table tbody tr:last-child td { border-bottom: 0; }
+.ui-table tbody tr:hover td { background: color-mix(in srgb, var(--muted) 62%, var(--card)); }
+.ui-table .ui-num { font-variant-numeric: tabular-nums; text-align: right; }
+
+/* ---------- Progress ---------- */
+.ui-progress { height: 8px; border-radius: 999px; background: var(--accent); overflow: hidden; }
+.ui-progress > i { display: block; height: 100%; border-radius: 999px; background: var(--primary); transition: width .35s var(--wb-ease, ease); }
+.ui-progress--warn > i { background: var(--warning); }
+.ui-progress--full > i { background: var(--destructive); }
+
+/* ---------- Select（原生 select 的下拉箭头两套主题下不可控，自己画一个） ---------- */
+.ui-select {
+  appearance: none; -webkit-appearance: none; padding-right: 34px; cursor: pointer;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236a6f7d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center; background-size: 16px 16px;
+}
+html[data-theme="dark"] .ui-select {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238f96a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+.ui-select:disabled { cursor: not-allowed; }
+
+/* ---------- Stat（KPI 卡：标签在上、数字在下、注脚更淡） ---------- */
+.ui-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(172px, 1fr)); gap: 12px; }
+.ui-stat { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
+.ui-stat .l { font-size: 13px; color: var(--muted-foreground); line-height: 1.5; }
+.ui-stat .v { margin-top: 6px; font-size: 26px; font-weight: 600; line-height: 1.2; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.ui-stat .h { margin-top: 4px; font-size: 12.5px; color: var(--subtle-foreground); line-height: 1.5; }
+
+/* ---------- Switch（原生 checkbox 在两套主题下颜色不可控，自己画一个） ---------- */
+.ui-switch { position: relative; display: inline-block; width: 40px; height: 24px; flex: none; }
+.ui-switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.ui-switch i {
+  position: absolute; inset: 0; border-radius: 999px; background: var(--input);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 6%, transparent);
+  transition: background-color .18s var(--wb-ease, ease); pointer-events: none;
+}
+.ui-switch i::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.18);
+  transition: transform .18s var(--wb-ease, ease);
+}
+.ui-switch input:checked + i { background: var(--primary); }
+.ui-switch input:checked + i::after { transform: translateX(16px); }
+.ui-switch input:focus-visible + i { box-shadow: 0 0 0 3px var(--ring-weak); }
+.ui-switch input:disabled { cursor: not-allowed; }
+.ui-switch input:disabled + i { opacity: .5; }
+
+/* ---------- Dialog ---------- */
+.ui-overlay {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: color-mix(in srgb, #000 46%, transparent); animation: uiFade .16s var(--wb-ease, ease);
+}
+.ui-dialog {
+  width: 100%; max-width: 480px; max-height: 100%; overflow-y: auto;
+  background: var(--popover); color: var(--popover-foreground);
+  border: 1px solid var(--border); border-radius: var(--radius-xl);
+  box-shadow: 0 24px 64px -12px rgba(0,0,0,.28); animation: uiPop .18s var(--wb-ease, cubic-bezier(.16,1,.3,1));
+}
+@keyframes uiFade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes uiPop { from { opacity: 0; transform: translateY(8px) scale(.98) } to { opacity: 1; transform: none } }
+@media (prefers-reduced-motion: reduce) {
+  .ui-overlay, .ui-dialog { animation: none; }
+  .ui-progress > i, .ui-switch i, .ui-switch i::after { transition: none; }
+}
