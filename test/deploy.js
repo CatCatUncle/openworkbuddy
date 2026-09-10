@@ -149,8 +149,17 @@ ok(!/[A-Za-z0-9_]{20,}\s*$/m.test(SH.split("\n").filter((l) => /KEY|TOKEN|SECRET
 const ENVX = bare(read("deploy/env.example"));
 ok(!/=[^\s#]{16,}/.test(ENVX), "deploy/env.example 里没有任何真值（全是空的或者显而易见的默认值）");
 ok(/WB_HOME|WB_BIND|WB_PORT|WB_DOMAIN/.test(ENVX), "env.example 覆盖了 compose 用到的变量");
-for (const v of ["WB_HOME", "WB_BIND", "WB_PORT", "WB_DOMAIN"])
+for (const v of ["WB_HOME", "WB_BIND", "WB_PORT", "WB_DOMAIN", "WB_TRUST_PROXY"])
   ok(new RegExp("^" + v + "=", "m").test(ENVX), `env.example 里有 ${v}`);
+
+// 反代下的限流：挂了 caddy 之后所有请求都来自代理那一个 IP，
+// 注册闸（5 次/15 分钟）会变成「第 6 个同事注册不了」，登录闸会变成「有人错几次全公司进不去」。
+// 但这个开关只能是显式打开的——没反代却打开，等于伪造一行头就换一个新 IP。
+ok(/WB_TRUST_PROXY:\s*\$\{WB_TRUST_PROXY:-0\}/.test(COMPOSE), "compose 透传 WB_TRUST_PROXY 且默认 0（不信转发头）");
+ok(/^WB_TRUST_PROXY=0$/m.test(ENVX), "env.example 里 WB_TRUST_PROXY 默认 0");
+ok(/\[ -n "\$DOMAIN" \] && setenv WB_TRUST_PROXY 1/.test(SH), "deploy.sh --domain（自带 caddy）时才自动把它打开");
+ok(!/setenv WB_TRUST_PROXY 1\s*$/m.test(bare(SH).split("\n").filter((l) => !/\$DOMAIN/.test(l)).join("\n")),
+   "反向对照：没有一处无条件把 WB_TRUST_PROXY 打开");
 
 // deploy.sh 会在仓库目录里直接建 .env 和 wb-data/，而 wb-data/config.json 里就是 API Key。
 // 这两条不在 .gitignore 里，用户一个 `git add -A` 就把自己的 Key 提上去了。

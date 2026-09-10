@@ -110,6 +110,12 @@ server {
         proxy_set_header   Host $host;
         proxy_set_header   X-Real-IP $remote_addr;
 
+        # 这两行不是可选的，见下面「挂了反代，记得告诉它」：
+        # 少了 X-Forwarded-For，全公司共用一个 IP，注册和登录限流会把大家一起锁在门外；
+        # 少了 X-Forwarded-Proto，服务端不知道外面是 https，登录 cookie 就发不出 Secure。
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+
         # 任务是 SSE 一行一行推的，这两行不加会一直转圈
         proxy_buffering    off;
         proxy_read_timeout 3600s;
@@ -119,7 +125,7 @@ server {
 }
 ```
 
-Caddy：
+Caddy（这两个头它自己会带，不用配）：
 
 ```
 buddy.example.com {
@@ -128,6 +134,30 @@ buddy.example.com {
     }
 }
 ```
+
+### 挂了反代，记得告诉它：`WB_TRUST_PROXY`
+
+自己配反代的话，**这一步必须做**，不然会撞上一个很难往「限流」上想的故障：
+
+> 十个人的团队开号，前五个顺利注册，第六个开始一直提示「注册太频繁了，xxx 秒后再试」。
+> 或者：有人连着输错几次密码，结果**全公司**都登不进去了。
+
+原因是服务端两道防连打的闸都按 IP 算——注册 5 次/15 分钟、登录失败 30 次/15 分钟。
+挂上反代之后，所有请求在服务端看来都来自反代那**一个** IP，于是「防一个人连打」
+变成了「全公司共用一个额度」。
+
+```bash
+# .env
+WB_TRUST_PROXY=1     # 前面就一层你的 nginx/caddy
+WB_TRUST_PROXY=2     # Cloudflare → 你的 nginx → 本应用
+```
+
+用 `bash deploy.sh --domain <域名>` 的话不用管，脚本自己会填 1（那层 caddy 是它起的）。
+
+**没有反代就别填。** 这个开关默认是 0，不是忘了打开——直连的情况下打开它，
+等于谁往请求里塞一行 `X-Forwarded-For: 随便什么` 就换一个新 IP，限流闸直接废掉。
+打开之后服务端也只信两种情况：请求是从私网/环回地址进来的（也就是真有一层反代在本机），
+并且只认从右往左数第 N 跳——最左边那一跳恰好是客户端唯一能伪造的，所以永远不取它。
 
 ---
 

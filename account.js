@@ -336,13 +336,41 @@ const FAILS_PER_USER = 8; // 盯着一个账号打
 const FAILS_PER_IP = 30; // 换着账号打
 const REGS_PER_IP = 5; // 注册也得拦，不然一个脚本能把账本刷满
 
+/** 私网/环回地址：判断「这一跳是不是我们自己那层反代」用的 */
+function isPrivateAddr(ip) {
+  const s = String(ip || "").replace(/^::ffff:/i, "");
+  return /^127\./.test(s) || s === "::1" ||
+    /^10\./.test(s) || /^192\.168\./.test(s) || /^172\.(1[6-9]|2\d|3[01])\./.test(s) ||
+    /^f[cd][0-9a-f]{2}:/i.test(s) || /^fe80:/i.test(s);
+}
+
 /**
- * 只认 socket 上的地址，不认 X-Forwarded-For：那个头谁都能伪造，
+ * 谁在敲门。默认只认 socket 上的地址，**不认** X-Forwarded-For——那个头谁都能伪造，
  * 认了就等于把 IP 闸拆了（换一行头就是一个新 IP）。
- * 代价是前面挂 nginx 时所有人共用一个 IP 桶——所以真正兜底的是按账号的那道闸。
+ *
+ * 但一挂反代（Docker 里的 Caddy、宿主机上的 nginx），所有人就共用代理那一个地址了，
+ * 于是两道闸从「防连打」变成「团队互相锁死」：
+ *   注册闸 5 次/15 分钟 —— 一个 10 人团队开号，第 6 个人开始注册不了；
+ *   登录闸 30 次/15 分钟 —— 全公司加起来输错 30 次密码，所有人一起被关在门外。
+ * 这不是理论风险：deploy.sh --domain 起来的就是「前面有 Caddy」这个形状。
+ *
+ * 所以给一个显式开关 WB_TRUST_PROXY=<信任几层代理>，默认 0（不信）。开了之后：
+ *   1) 直连进来的（peer 不是私网/环回）一律不信——说好前面有代理却直连，多半是配错了，
+ *      这时候信头等于把闸拆给外网；
+ *   2) 从**右往左**数第 N 跳才是我们自己那层代理写进去的。左边的都可能是客户端自己
+ *      伪造后带上来的（他发一个 X-Forwarded-For，代理只会往后追加，不会替他删）。
+ *      naive 实现取最左边那个，正好取到唯一能伪造的那一个。
+ *   3) 链子比声明的短 → 说明中间少了一跳，退回 peer，宁可粗一点也不放行伪造的。
  */
+function trustedHops() {
+  return Math.max(0, Math.min(5, Math.floor(+process.env.WB_TRUST_PROXY || 0)));
+}
 function clientIp(req) {
-  return (req.socket && req.socket.remoteAddress) || req.ip || "?";
+  const peer = (req.socket && req.socket.remoteAddress) || (req && req.ip) || "?";
+  const n = trustedHops();
+  if (!n || !isPrivateAddr(peer)) return peer;
+  const hops = String((req.headers || {})["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean);
+  return hops[hops.length - n] || peer;
 }
 
 // ---------- 积分与用量 ----------
@@ -915,5 +943,5 @@ module.exports = {
   topup,
   migrateLegacySettings,
   // 下面这些只给测试用：账本读写和登录闸得能在临时目录里单独验，不然一跑测试就动到真账号
-  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps, normalizeAvatar, register, renameUser, loadUsers, saveUsers, loadUsage, saveUsage, verify, issueToken },
+  _internals: { readStore, writeStoreAtomic, createLimiter, isHttps, clientIp, isPrivateAddr, normalizeAvatar, register, renameUser, loadUsers, saveUsers, loadUsage, saveUsage, verify, issueToken },
 };
