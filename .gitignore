@@ -13,6 +13,11 @@ __pycache__/
 data/
 backups/
 
+# Docker 部署产生的：deploy.sh 会在仓库目录里建这两个
+# wb-data/config.json 存着 API Key，.env 存着端口和域名——都不入 git
+.env
+wb-data/
+
 # 第三方技能包：仓库不打包别人的代码，在应用内一键从上游装（技能页 → 推荐技能）
 skills/ppt-master/
 skills/frontend-design/

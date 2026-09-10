@@ -1,19 +1,59 @@
+# 一条命令起服务：bash deploy.sh
+# 想手动来：cp deploy/env.example .env && docker compose up -d --build
+#
+# 只有一个卷。所有会被写的东西——config.json、账号、会话、成果文件、技能、备份——
+# 都在 OPENWORKBUDDY_HOME 底下，也就是宿主机的 ./wb-data。
+# 容器随便删随便重建，删了 wb-data 才是真丢数据。
+#
+# 以前这里按文件挂了五个 bind mount（config.json、experts.json……）。那样有个坑：
+# 宿主机上那个文件还不存在时，Docker 会给你建一个同名的**目录**，然后应用报一个
+# 看不懂的错。一个卷就没这回事。
+
+name: openworkbuddy
+
 services:
-  openworkbuddy:
+  app:
     build: .
-    image: openworkbuddy:latest
+    image: ${WB_IMAGE:-openworkbuddy:latest}
     container_name: openworkbuddy
     restart: unless-stopped
     environment:
       HOST: 0.0.0.0
       PORT: 3800
-    ports:
-      # 只绑本机回环，外面用 nginx/caddy 反代过来。
-      # 想直接对公网开就改成 "3800:3800"——那之前请先看 deploy/README.md 的风险那节。
-      - "127.0.0.1:3800:3800"
+      OPENWORKBUDDY_HOME: /data
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
-      - ./config.json:/app/config.json      # 模型 Key 等配置（首次跑之前先 cp config.example.json config.json）
-      - ./data:/app/data                    # 账号、积分、会话
-      - ./workspace:/app/workspace          # 成果文件
-      - ./skills:/app/skills                # 技能（改完立刻生效，不用重建镜像）
-      - ./experts.json:/app/experts.json
+      - ${WB_HOME:-./wb-data}:/data
+    ports:
+      # 默认只绑回环：外面进不来，得走下面的 caddy 或者你自己的 nginx。
+      # 真要直接对公网开，改 .env 里的 WB_BIND=0.0.0.0——改之前先读 deploy/README.md 安全那节，
+      # 这个 agent 手里有 shell。
+      - "${WB_BIND:-127.0.0.1}:${WB_PORT:-3800}:3800"
+
+  # 自动 HTTPS。只在 .env 里填了 WB_DOMAIN 时才起（deploy.sh --domain 会自动带上）。
+  # 手动 --profile https 却没填 WB_DOMAIN 的话，caddy 会因为站点名是空的起不来——
+  # 先填域名再开这个 profile。
+  # 证书 caddy 自己去 Let's Encrypt 申请、自己续，不用管。
+  caddy:
+    profiles: ["https"]
+    image: caddy:2-alpine
+    container_name: openworkbuddy-caddy
+    restart: unless-stopped
+    environment:
+      # 这里不能写 ${WB_DOMAIN:?...}——compose 会把整个文件的变量都插值一遍，
+      # 哪怕 caddy 压根不在当前 profile 里，于是 docker compose build 都会被它拦下来。
+      WB_DOMAIN: ${WB_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:

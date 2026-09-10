@@ -8,7 +8,12 @@ const BOOT_T0 = Date.now(); // server.js 从加载到 listen 的耗时，启动�
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const { DATA_DIR, dataPath, appPath } = require("./paths");
+const { DATA_DIR, dataPath, appPath, seedDataDir } = require("./paths");
+// 数据目录跟代码目录不是同一个地方时（装机版、以及 Docker 里设了 OPENWORKBUDDY_HOME），
+// 得先把随包出厂的技能和专家铺过去，否则 skills.js 只认 dataPath("skills")，
+// 容器起来是能起来，但技能列表空空如也。开发态两个目录本来就是一个，这行是空操作。
+// 放在这儿是因为下面 require 的 tools/skills 一加载就按数据目录算路径了。
+seedDataDir();
 const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder } = require("./llm");

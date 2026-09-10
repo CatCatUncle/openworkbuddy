@@ -1,0 +1,15 @@
+# 域名从环境变量来（compose 里由 .env 的 WB_DOMAIN 传进来），不用改这个文件。
+{$WB_DOMAIN} {
+	reverse_proxy app:3800 {
+		# 任务是 SSE 一行一行推的。不加这行，caddy 会攒够一个缓冲区才发，
+		# 表现就是「点了开始，界面一直转圈，过半天突然全刷出来」。
+		flush_interval -1
+	}
+
+	# 上传附件用
+	request_body {
+		max_size 64MB
+	}
+
+	encode zstd gzip
+}
