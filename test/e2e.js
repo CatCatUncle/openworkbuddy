@@ -4497,6 +4497,124 @@ async function testAskUser() {
   console.log("✅ ask_user：提问/回答/无人值守降级");
 }
 
+/**
+ * 成果清单的 500 条上限必须按「新旧」砍，不能按「目录遍历顺序」砍。
+ *
+ * 事故（2026-09-10，用户原话连着三条）：
+ *   「怎么回事都看不到产出了啊」
+ *   「在旁边的成果文件里面都看不到这个新文件夹啊」
+ *   「不仅结束了没有预览，还看到这个文件夹」
+ * 那一趟任务实实在在写出了 8 个文件（简历 docx/html、公司清单 xlsx、PROGRESS.md……），
+ * 磁盘上全在，界面上一个都没有。
+ *
+ * 根因不在写文件，在列文件：老 outputFiles() 把 `out.length >= FILES_CAP` 判在 walk **里面**，
+ * 排序放在截断**之后**——于是「留下哪 500 个」是 readdir 的目录顺序说了算，跟时间毫无关系。
+ * 用户工作目录攒到 538 个文件那天，新建的任务目录整个落在被砍掉的 38 个里，
+ * 两处功能同时哑火（它们都吃这一个函数的返回值）：
+ *   - 右侧「成果文件」面板：新文件夹压根不在清单里；
+ *   - agent.js 的 emitFiles()：拿前后两份 outputFiles() 做 mtime 差算「本回合产出」，
+ *     两份里都没有这些文件 → changed 为空 → 对话里那块产出卡一张都不挂。
+ *
+ * 所以这条测试盯的是一个不变量，不是某次修法：**返回的一定是最新的那 500 个**。
+ * 外加一个负向对照——把老写法（走到 500 就 return，排序在后）原样跑一遍同一棵树，
+ * 必须真的把那 8 个新文件全丢掉；丢不掉说明这棵树没复现事故，测试本身就是假绿。
+ */
+function testOutputFilesRecency() {
+  const { outputFiles, filesScope, getWorkspaceDir, setWorkspaceDir } = require("../tools");
+  const CAP = 500;
+  const prev = getWorkspaceDir();
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "owb-recency-"));
+  try {
+    setWorkspaceDir(ws);
+
+    // 一堆历史文件：名字排在前面、时间全是旧的（模拟用户攒了几百个文件的工作目录）
+    const OLD_DIR = "aa_历史归档";
+    const OLD_N = 600;
+    fs.mkdirSync(path.join(ws, OLD_DIR), { recursive: true });
+    const oldBase = Date.parse("2026-08-01T00:00:00Z");
+    for (let i = 0; i < OLD_N; i++) {
+      const f = path.join(ws, OLD_DIR, `旧文件_${String(i).padStart(3, "0")}.txt`);
+      fs.writeFileSync(f, "x");
+      const t = new Date(oldBase + i * 60000);
+      fs.utimesSync(f, t, t);
+    }
+
+    // 刚跑完那一趟的产出：名字排在后面、时间最新
+    const NEW_DIR = "zz_任务_0910_简历";
+    const NEW = ["简历.docx", "简历.html", "PROGRESS.md", "公司清单.xlsx", "初稿.md", "投递指南.md", "resume.txt", "原件.pdf"];
+    fs.mkdirSync(path.join(ws, NEW_DIR), { recursive: true });
+    const newBase = Date.parse("2026-09-10T08:35:00Z");
+    NEW.forEach((n, i) => {
+      const f = path.join(ws, NEW_DIR, n);
+      fs.writeFileSync(f, "x");
+      const t = new Date(newBase + i * 60000);
+      fs.utimesSync(f, t, t);
+    });
+
+    // ---- 负向对照：老写法在同一棵树上必须真的翻车 ----
+    // readdir 的顺序各文件系统不一样，这里显式按名字排序喂给老算法——那是它完全可能拿到的一种顺序。
+    const buggy = [];
+    (function walk(dir, rel, depth) {
+      if (depth > 3 || buggy.length >= CAP) return;                      // ← 老代码：截断发生在遍历里
+      const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+      for (const e of entries) {
+        if (buggy.length >= CAP) return;
+        if (e.name.startsWith(".")) continue;
+        const full = path.join(dir, e.name);
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(full, r, depth + 1);
+        else if (e.isFile()) buggy.push({ name: r, mtime: fs.statSync(full).mtime.toISOString() });
+      }
+    })(ws, "", 1);
+    buggy.sort((a, b) => b.mtime.localeCompare(a.mtime));                // ← 排序在截断之后，救不回来了
+    const lostByOldCode = NEW.filter((n) => !buggy.some((f) => f.name === `${NEW_DIR}/${n}`));
+    assert.strictEqual(lostByOldCode.length, NEW.length,
+      `负向对照没复现事故：老写法这次居然留住了 ${NEW.length - lostByOldCode.length} 个新文件，这棵树证明不了什么`);
+
+    // ---- 正向：修完之后，最新的那批必须一个不少 ----
+    const files = outputFiles();
+    assert.strictEqual(files.length, CAP, `返回条数应为上限 ${CAP}，实际 ${files.length}`);
+    const missing = NEW.filter((n) => !files.some((f) => f.name === `${NEW_DIR}/${n}`));
+    assert.strictEqual(missing.length, 0,
+      `★事故复现★ 刚写出来的文件不在清单里：${missing.join("、")} —— 右侧成果面板和「本回合产出」会同时空掉`);
+
+    // 最新的 8 条就该排在最前面（前端和 emitFiles 都指望这个顺序）
+    const top = files.slice(0, NEW.length).map((f) => f.name);
+    assert.deepStrictEqual(
+      [...top].sort(),
+      NEW.map((n) => `${NEW_DIR}/${n}`).sort(),
+      "最新的 8 个文件没排在最前面：" + top.join("、"),
+    );
+    for (let i = 1; i < files.length; i++) {
+      assert(files[i - 1].mtime >= files[i].mtime, `第 ${i} 条起顺序乱了：${files[i - 1].name} / ${files[i].name}`);
+    }
+
+    // 砍掉的必须是最旧的那 108 个，不是随机 108 个
+    const kept = new Set(files.map((f) => f.name));
+    const droppedIdx = [];
+    for (let i = 0; i < OLD_N; i++) if (!kept.has(`${OLD_DIR}/旧文件_${String(i).padStart(3, "0")}.txt`)) droppedIdx.push(i);
+    assert.strictEqual(droppedIdx.length, OLD_N + NEW.length - CAP, "被砍掉的条数对不上");
+    assert.strictEqual(Math.max(...droppedIdx), droppedIdx.length - 1, "砍掉的不是最旧的那一批（旧文件序号越小越旧）");
+
+    // 清单不完整这件事得如实带出去，前端才不会拿它给旧产出盖「已删除」的章
+    assert.strictEqual(filesScope(files).full, false, "超过上限了还报 full:true —— 前端会误判文件被删");
+
+    // 静态闸门：别再有人把截断挪回遍历里（这是同一个坑的第二次）
+    const toolsSrc = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
+    const body = toolsSrc.slice(toolsSrc.indexOf("function outputFiles()"));
+    const fnBody = body.slice(0, body.indexOf("\nfunction "));
+    assert(/\.sort\([\s\S]*?\.slice\(0,\s*FILES_CAP\)/.test(fnBody),
+      "outputFiles 里 slice(0, FILES_CAP) 必须排在 sort 之后 —— 顺序一反就是按目录顺序砍");
+    assert(!/all\.length\s*>=\s*FILES_CAP/.test(fnBody),
+      "遍历里又拿 FILES_CAP 当刹车了 —— 遍历的保险请用 WALK_CAP");
+
+    console.log(`✅ 成果清单按时间截断：老写法丢光 ${NEW.length} 个新产出，现在最新 ${NEW.length} 个排在最前、砍的是最旧的 ${droppedIdx.length} 个（full:false 如实上报）`);
+  } finally {
+    setWorkspaceDir(prev);
+    try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+  }
+}
+
 async function main() {
   console.log("=== OpenWorkBuddy e2e 测试 ===");
   testCron();
@@ -4562,6 +4680,7 @@ async function main() {
   await testEngineContextParity();
   await testFeedbackAndUsage();
   testOutputOwnership();
+  testOutputFilesRecency();
   await testFilePathRouting();
   await testDesktopPet();
   testPetSprites();
