@@ -71,6 +71,10 @@ async function run({
   const found = await resolveBin("codex", bin);
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
   const exe = found.bin;
+  // 同 claude 那边：本机 CLI 冷启动那几秒界面本来全空，看着像发送没点上。
+  // bin 一确认存在就先挂一枚「正在启动」的牌子占位，thread.started 一到原地换成带模型名的
+  // 正式版（前端认的是同一个 .run-eng 节点）。
+  emit({ type: "status", starting: true, text: `本机 Codex 正在启动（连接工具中，一般 3~8 秒），不消耗 API 额度`, depth: 0 });
   const args = ["exec"];
   if (resumeId) args.push("resume", resumeId);
   args.push("--json", "--skip-git-repo-check");

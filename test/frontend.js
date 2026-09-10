@@ -1873,6 +1873,20 @@ const TRAIL_CHECKS = `
   ok("重连再报一次也只有一枚牌子", u10.turn.querySelectorAll(".run-eng").length === 1);
   u10.finish();
 
+  // ---- 冷启动那几秒：claude 自己从 spawn 到吐 init 要 3.8~7.2 秒，这几秒界面不该是空的 ----
+  const u10b = createTurnUI("跑一趟", "craft", "s_t2");
+  u10b.handleEvent({ type: "status", starting: true, text: "本机 Claude Code 正在启动（连接工具中，一般 3~8 秒），不消耗 API 额度" });
+  const boot = u10b.turn.querySelector(".run-eng");
+  ok("按下发送就有牌子，不用干等 CLI 冷启动", !!boot && !u10b.turn.querySelector(".thinking-hint"));
+  ok("占位牌子转圈，并说清在等什么", !!boot.querySelector(".spinner") && /连接工具中/.test(boot.textContent), boot.textContent);
+  ok("占位期就写清不花 API 额度（用户问的正是这个）", /不花 API 额度/.test(boot.textContent));
+  u10b.handleEvent({ type: "status", text: "本机 Claude Code 已启动（模型 claude-opus-5，102 个工具），不消耗 API 额度", model: "claude-opus-5" });
+  ok("init 到了原地换成正式版，还是同一枚（不闪、不跳）", u10b.turn.querySelectorAll(".run-eng").length === 1 && u10b.turn.querySelector(".run-eng") === boot);
+  ok("正式版不转圈了，写上模型和工具数", !boot.querySelector(".spinner") && /claude-opus-5/.test(boot.textContent) && /102 个工具/.test(boot.textContent), boot.textContent);
+  u10b.handleEvent({ type: "status", text: "模型 40 秒没吐字，重试中…" });
+  ok("负向控制：普通状态仍走会转的提示行，不许顶掉牌子", !!u10b.turn.querySelector(".thinking-hint .spinner") && u10b.turn.querySelectorAll(".run-eng").length === 1);
+  u10b.finish();
+
   ok("五步四枚徽章（同名合并）", chips(t).length === 4, String(chips(t).length));
   ok("出错那步标红", chips(t)[1].classList.contains("err") && chips(t)[1].dataset.name === "run_shell");
   ok("没出错的不标红", !chips(t)[0].classList.contains("err") && !chips(t)[2].classList.contains("err"));

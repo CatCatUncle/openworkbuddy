@@ -729,6 +729,10 @@
       [/^模型 (.+)$/, "model $1"],
       [/^本机 Claude Code 已启动（模型 (.+?)，(\d+) 个工具），不消耗 API 额度$/, "Local Claude Code started (model $1, $2 tools) — no API quota used"],
       [/^本机 Codex 已启动（模型 (.+?)），不消耗 API 额度$/, "Local Codex started (model $1) — no API quota used"],
+      // 冷启动那几秒的占位牌子，同样拆成三块显示，所以括号里那截也得单独能翻
+      [/^连接工具中，一般 3~8 秒$/, "connecting tools, usually 3-8s"],
+      [/^本机 Claude Code 正在启动（连接工具中，一般 3~8 秒），不消耗 API 额度$/, "Local Claude Code is starting (connecting tools, usually 3-8s) — no API quota used"],
+      [/^本机 Codex 正在启动（连接工具中，一般 3~8 秒），不消耗 API 额度$/, "Local Codex is starting (connecting tools, usually 3-8s) — no API quota used"],
     ],
   };
 
