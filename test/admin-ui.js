@@ -20,6 +20,14 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "wb-adminui-"));
 process.env.WB_DATA_DIR = path.join(TMP, "data");
 fs.mkdirSync(process.env.WB_DATA_DIR, { recursive: true });
 
+// 这个文件得用 electron 跑，不是 node：`npx electron test/admin-ui.js`。
+// 用 node 跑的话下面 require("electron") 拿到的是个字符串（electron 包的 npm 入口导出的是
+// 二进制路径），一路往下走到最后才炸一个 "Cannot read properties of undefined"，
+// 看到的人根本猜不到是跑法不对。在这儿就说清楚。
+if (typeof require("electron") === "string") {
+  console.error("❌ 这个测试要用 electron 跑：npx electron test/admin-ui.js");
+  process.exit(1);
+}
 const { app: electronApp, BrowserWindow } = require("electron");
 const express = require("express");
 const ROOT = path.join(__dirname, "..");

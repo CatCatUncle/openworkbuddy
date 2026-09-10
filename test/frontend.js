@@ -9,6 +9,14 @@
 
 const path = require("path");
 const fs = require("fs");
+// 这个文件得用 electron 跑，不是 node：`npx electron test/frontend.js`。
+// 用 node 跑的话下面 require("electron") 拿到的是个字符串（electron 包的 npm 入口导出的是
+// 二进制路径），一路往下走到最后才炸一个 "Cannot read properties of undefined"，
+// 看到的人根本猜不到是跑法不对。在这儿就说清楚。
+if (typeof require("electron") === "string") {
+  console.error("❌ 这个测试要用 electron 跑：npx electron test/frontend.js");
+  process.exit(1);
+}
 const { app, BrowserWindow } = require("electron");
 
 const SVGFIG = fs.readFileSync(path.join(__dirname, "..", "public", "svgfig.js"), "utf8");
