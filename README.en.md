@@ -68,6 +68,22 @@
 
 One sentence in; three PNGs in different styles (cinematic, rural comic, text-free) plus a short note on which one to post where — all sitting in the results panel, one click to open. No AI watermark on any of them.
 
+**"Same person, three different scenes, holding a hand-written sign — make it look like a snapshot, not an AI render."**
+
+<p align="center">
+  <img src="docs/images/case-photoreal.jpg" width="900" alt="The same person at a cafe window, on a rainy night street, and at an office desk, each holding a wooden sign reading 关注 OpenWorkBuddy 项目">
+</p>
+
+The hard part isn't drawing a person — it's keeping **the same** person across all three, keeping the Chinese on the sign legible, and keeping pores and shine on the skin instead of airbrushing them away. So it generates one, then actually looks at what it just made (a real vision call on its own output, not a claim from memory), says "this one got the light and the skin right", and fans the rest of the scenes out from there. No AI watermark, same as above.
+
+**"Build me a Hunan travel guide site — all 14 prefectures, no skipping."**
+
+<p align="center">
+  <a href="https://hunan-travel.pages.dev/"><img src="docs/images/case-hunan-site.jpg" width="820" alt="Hunan travel guide — a single-page site built by OpenWorkBuddy"></a>
+</p>
+
+It's live, go click around: **<https://hunan-travel.pages.dev/>**. All 14 prefectures written up one by one (how to get there, tickets and hours, what to eat, what to do, what to avoid), plus 3/5/7-day routes. Single-page HTML, no external CDN — drop it on any static host and it's a site. This isn't a mockup screenshot; it's the file it handed over.
+
 **Got Claude Code or Codex on this machine? One click makes it the engine — no extra tokens to buy.**
 
 <p align="center">
