@@ -256,13 +256,25 @@ function vectorStatus() {
   return { enabled: !!embedder, model: embedder ? String(embedder.model || vs.model || "") : "", have, total: items.length };
 }
 
-/** 按 id 删。返回删掉的条数 */
-function remove(id) {
+/**
+ * 按 id 删。
+ *
+ * @param scopeTo 只许删这个作用域里的。不传（undefined）= 不限定，给平台管理员和单人桌面版用。
+ *   隔壁 forget（按内容删，agent 用的那条路）一开始就写着「别人的记忆不能被顺手删掉」，
+ *   这条按 id 删的路以前压根没认归属——一个 id 递进来就删，谁的都删。以前它只对平台管理员
+ *   开着所以没出事，现在普通成员也要能删自己那几条，这个洞就必须先堵上。
+ *   共享区（scope="*"）进了所有人的提示词，受限的人一样不许删。
+ *
+ * @returns { removed, forbidden? }  forbidden = 这条存在、但不是他的。
+ *   跟「本来就没有」分开报：前者要说出来，后者是正常竞态（别处已经删过）。
+ */
+function remove(id, scopeTo) {
   const items = load();
-  const left = items.filter((x) => x.id !== id);
-  if (left.length === items.length) return 0;
-  save(left);
-  return items.length - left.length;
+  const hit = items.find((x) => x.id === id);
+  if (!hit) return { removed: 0 };
+  if (scopeTo != null && hit.scope !== scopeTo) return { removed: 0, forbidden: true };
+  save(items.filter((x) => x.id !== id));
+  return { removed: 1 };
 }
 
 /**

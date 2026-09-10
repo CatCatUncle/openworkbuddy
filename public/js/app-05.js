@@ -930,13 +930,17 @@ async function renderMemoryPane(pane) {
     : !vs.total ? `🔍 语义召回已接上（${vs.model}），记了东西就会自动算向量。`
     : vs.have >= vs.total ? `🔍 语义召回开着：${vs.total} 条都算好了向量（${vs.model}）。`
     : `⚠️ 语义召回：${vs.total} 条里只有 ${vs.have} 条算出了向量——嵌入渠道大概率没通，现在按关键词召回。服务器日志里搜「[记忆向量]」能看到原因。`;
+  // 会 403 的按钮不该摆在那儿：共享区那几条进的是所有人的提示词，不是平台管理员就删不动，
+  // 以前照样画一颗「删」——点下去后端拒了、前端还把返回值扔了，看起来就是「点了没反应」。
+  const canDel = (it) => m.can_share || it.scope !== m.shared_tag;
   const rows = items.length
     ? items.map(it => `
       <div class="mem-row">
         <span class="mem-tag">${it.scope === m.shared_tag ? "共享" : esc(it.scope)}</span>
         <span class="mem-txt">${escInline(it.text)}</span>
         <span class="mem-src">${it.source === "user" ? "手动" : "AI 记的"}</span>
-        <a href="#" class="link danger" data-del="${esc(it.id)}">删</a>
+        ${canDel(it) ? `<a href="#" class="link danger" data-del="${esc(it.id)}">删</a>`
+          : `<span class="mem-src" title="共享的记忆进所有账号的提示词，要平台管理员来删">共用</span>`}
       </div>`).join("")
     : '<div style="color:var(--wb-text-3);font-size: 14px;padding:6px 0">还没有。你说「以后都这样」「记住…」时它会自己记一条；也可以在下面手动加。</div>';
   pane.innerHTML = `
@@ -949,15 +953,18 @@ async function renderMemoryPane(pane) {
         <input id="mem-new" placeholder="手动加一条，例如：周报只要三段——进展 / 问题 / 下周计划">
         <button class="btn-plain" id="mem-add" style="flex:0 0 auto">加进去</button>
       </div>
+      ${m.can_share ? `
       <label style="display:flex;align-items:center;gap:6px;font-size: 13px;color:var(--wb-text-3);margin-top:6px;cursor:pointer">
         <input type="checkbox" id="mem-shared" style="width:auto;margin:0"> 这条给这台机器上所有账号共用
-      </label>
+      </label>` : `
+      <div class="d" style="margin-top:6px">加进去的只有你自己看得到。要让这台机器上所有账号都共用某条，得平台管理员来加。</div>`}
     </div>
     <div class="card-item">
       <div class="t">📝 背景说明（全局共享，原样进提示词）</div>
-      <div class="d" style="margin-bottom:8px">适合放团队/业务背景、常用数据口径、固定模板要求这种成段的东西。所有账号共用一份。</div>
-      <textarea id="mem-text" rows="8" placeholder="例如：我们公司是做跨境电商的，主营美妆品类；周报收件人是运营部…">${esc(m.content)}</textarea>
+      <div class="d" style="margin-bottom:8px">适合放团队/业务背景、常用数据口径、固定模板要求这种成段的东西。所有账号共用一份。${m.can_edit_manual ? "" : "这份归平台管理员维护，你这边只读。"}</div>
+      <textarea id="mem-text" rows="8" ${m.can_edit_manual ? "" : "readonly"} placeholder="例如：我们公司是做跨境电商的，主营美妆品类；周报收件人是运营部…">${esc(m.content)}</textarea>
     </div>
+    ${!m.can_edit_manual ? "" : `
     <div class="card-item">
       <div class="t">🚚 记忆搬家（导出 / 从其它 agent 导入）</div>
       <div class="d" style="margin-bottom:8px">导出成一份 Markdown 到哪都能用。导入自动扫描本机 Claude Code / Codex / Claude Cowork 的记忆文件；腾讯 WorkBuddy 等没有固定文件的，从它界面里把记忆复制出来粘到下面即可。「导入为条目」逐行进上面的条目区（自动去重），「并入背景说明」整段接到背景说明后面。</div>
@@ -969,9 +976,9 @@ async function renderMemoryPane(pane) {
         <button class="btn-plain" id="mem-paste-manual">并入背景说明</button>
         <span class="ok-msg" id="mem-imp-msg"></span>
       </div>
-    </div>
-    <button class="btn-brand" id="mem-save">保存背景说明</button><span class="ok-msg" id="mem-msg"></span>`;
-  pane.querySelector("#mem-save").onclick = async () => {
+    </div>`}
+    ${m.can_edit_manual ? `<button class="btn-brand" id="mem-save">保存背景说明</button><span class="ok-msg" id="mem-msg"></span>` : ""}`;
+  if (m.can_edit_manual) pane.querySelector("#mem-save").onclick = async () => {
     const resp = await fetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: pane.querySelector("#mem-text").value }) });
     pane.querySelector("#mem-msg").textContent = resp.ok ? "✓ 已保存" : "保存失败";
   };
@@ -980,12 +987,13 @@ async function renderMemoryPane(pane) {
     if (!text) return;
     const r = await fetch("/api/memory/item", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, shared: pane.querySelector("#mem-shared").checked }),
+      body: JSON.stringify({ text, shared: !!(pane.querySelector("#mem-shared") || {}).checked }),
     }).then(r => r.json()).catch(() => ({ note: "网络错误" }));
     toast(r.note || (r.ok ? "已记住" : "没记成"));
     if (r.ok) renderMemoryPane(pane);
   };
-  // ---- 记忆搬家 ----
+  // ---- 记忆搬家（整张卡只对平台管理员画，没画就别去接事件，null.onclick 会把整个面板炸掉）----
+  if (m.can_edit_manual) {
   pane.querySelector("#mem-export").onclick = () => { location.href = "/api/memory/export"; };
   const impMsg = pane.querySelector("#mem-imp-msg");
   const showImp = (r) => {
@@ -1024,9 +1032,14 @@ async function renderMemoryPane(pane) {
       doImport({ path: s.path, mode: a.dataset.impMode });
     });
   }).catch(() => { scanBox.textContent = "扫描失败"; });
+  }
   pane.querySelectorAll("[data-del]").forEach(a => a.onclick = async (e) => {
     e.preventDefault();
-    await fetch("/api/memory/item/" + encodeURIComponent(a.dataset.del), { method: "DELETE" });
+    // 以前这儿把返回值整个扔了：后端答 403 也照样重画一遍，那条纹丝不动，用户只能得出「点了没反应」
+    const r = await fetch("/api/memory/item/" + encodeURIComponent(a.dataset.del), { method: "DELETE" })
+      .then(r => r.json()).catch(() => ({ error: "网络错误" }));
+    if (r.error) return toast("删不掉：" + r.error);
+    if (!r.removed) return toast("这条已经不在了");
     renderMemoryPane(pane);
   });
 }
