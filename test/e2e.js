@@ -1136,7 +1136,30 @@ async function testFetchRetry() {
   assert.strictEqual(nearestTool("read_files", known), "read_file", "近似名没认出来");
   assert.strictEqual(nearestTool("完全不沾边的东西xyz", known), "", "不像也硬猜，会把模型带沟里");
   assert.strictEqual(nearestTool("read_file", []), "", "没有工具表时不该猜");
-  console.log("✅ 上游重试与工具名纠错：5xx/429/断连重试 · 4xx 与超时不重试 · 拼错的工具名给出真名");
+  // 参数根本不是合法 JSON：本机 176 段会话里出现过 4 次，四种坏法各不相同，
+  // 但模型收到的反馈全是某个工具的必填校验（「缺少 prompt」之类）——它以为自己漏填了字段，
+  // 于是把同样坏的东西原样再发一遍。必须如实说「你发的参数坏了」，还要说清是不是被截断的。
+  const { badToolArgs } = require("../tools")._internals;
+  let bt = badToolArgs("write_file", '{"path": "a.html", "content": "<html>没写完就断了', "Unterminated string in JSON at position 19486");
+  assert.ok(/参数不是合法 JSON/.test(bt), bt);
+  assert.ok(/Unterminated string/.test(bt), "解析器原话丢了，模型没法自查：" + bt);
+  assert.ok(/截断/.test(bt) && /append/.test(bt), "没认出是被输出长度截断的，也没给下一步：" + bt);
+  bt = badToolArgs("generate_image", '{"prompt": "水墨", "size": 1024x1536}', "Expected ',' or '}' after property value");
+  assert.ok(!/截断/.test(bt) && /完整的 JSON 对象/.test(bt), "结尾有 } 的写错了却被当成截断：" + bt);
+  assert.ok(!/缺少/.test(bt), "又绕回按缺字段报错了：" + bt);
+  bt = badToolArgs("write_file", '{"content": "' + "x".repeat(5000), "Unterminated string");
+  assert.ok(bt.length < 900 && /共 5013 字/.test(bt), "把坏参数整坨贴回去，报错本身就吃掉一大块上下文：" + bt.length);
+  // 坏参数会原封不动躺进 history，而 history 每一轮都整份重发：真实会话里有一次 write_file 被
+  // 输出长度截断，19482 字的残缺 JSON 在之后 12 轮里每轮重发一遍，白烧掉 23 万字上下文。只留个头。
+  const { keepBadArgs } = require("../llm")._internals;
+  const kept = keepBadArgs('{"content": "' + "y".repeat(19000), new Error("Unterminated string"));
+  assert.strictEqual(kept._raw.length, 400, "坏参数没截，会在 history 里一轮轮重发：" + kept._raw.length);
+  assert.strictEqual(kept._rawLen, 19013, "截了却没记住原来多长，报错里就说不出「共 N 字」");
+  assert.ok(/Unterminated/.test(kept._parseError), "解析器原话没留下");
+  const short = keepBadArgs('{"size": 1024x1536}', new Error("bad"));
+  assert.strictEqual(short._raw, '{"size": 1024x1536}', "短的也给截了，模型就看不全自己写错在哪");
+  assert.ok(/共 19013 字/.test(badToolArgs("write_file", kept._raw, kept._parseError, kept._rawLen)), "截过之后报错里说的字数不对");
+  console.log("✅ 上游重试与工具名纠错：5xx/429/断连重试 · 4xx 与超时不重试 · 拼错的工具名给出真名 · 参数不是合法 JSON 时如实说坏在哪（截断/写错分开说，不再报成「缺少某字段」）· 坏参数只留 400 字进 history（真实会话里一坨 19482 字的残缺 JSON 重发了 12 轮）");
 }
 
 // 看图：用户粘贴的截图必须真能被读懂，而且图只能随这一次请求发出去，绝不能留在对话历史里
