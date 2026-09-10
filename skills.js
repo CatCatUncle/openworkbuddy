@@ -111,16 +111,40 @@ function assertNotPluginSkill(name, verb) {
   if (ps) throw new Error(`「${name}」来自插件 ${ps.plugin}，不能在这里${verb}。如需移除，去「插件」页卸载该插件`);
 }
 
+/** 同一个目录的两条路径（大小写不敏感的盘上 skills/Foo 和 skills/foo 是同一个东西） */
+function samePlace(a, b) {
+  if (!a || !b) return false;
+  if (path.resolve(a) === path.resolve(b)) return true;
+  try { return fs.realpathSync(a) === fs.realpathSync(b); } catch { return false; }
+}
+
 function saveSkill({ name, description, content, original_name }) {
   assertNotPluginSkill(original_name || name, "编辑");
   const n = safeName(name);
   const body = `---\nname: ${n}\ndescription: ${String(description || "").replace(/\r?\n/g, " ").trim()}\n---\n\n${String(content || "").trim()}\n`;
-  // 改名：先写新目录再删旧目录
   const oldDir = original_name ? findSkillDir(original_name) : findSkillDir(n);
   const dir = oldDir && path.basename(oldDir) !== n && !original_name ? oldDir : path.join(SKILLS_DIR, n);
+  /**
+   * 改名 = 把整个目录搬过去，不是「写一份新的再把旧的删了」。
+   *
+   * 以前是后者：新目录里只写了 skill.md，然后 rmSync 掉旧目录——技能自带的
+   * references/ scripts/ templates/ 和各种模板文件当场全没，而且没有任何提示。
+   * 从 GitHub 装来的技能几乎都带这些子目录（copySkillFolder 就是整棵树拷进来的），
+   * 所以「装个技能，觉得名字不好听改一下」这条最自然的路径，正好是把它废掉的路径：
+   * 界面上技能还在，跑起来 agent 报「文件不存在」，谁也想不到是改名那一下删的。
+   */
+  if (oldDir && !samePlace(oldDir, dir)) {
+    if (fs.existsSync(dir)) throw new Error(`已经有一个叫「${n}」的技能了。换个名字，或者先把那个删掉再改`);
+    try {
+      fs.renameSync(oldDir, dir); // 同一个 skills/ 下，一次原子改名，资源文件一个都不动
+    } catch {
+      // 跨设备（数据目录被挂到别的盘）改不动名，退回「整棵树拷过去再删」，仍然一个文件都不丢
+      fs.cpSync(oldDir, dir, { recursive: true });
+      fs.rmSync(oldDir, { recursive: true, force: true });
+    }
+  }
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "skill.md"), body, "utf8");
-  if (original_name && oldDir && path.resolve(oldDir) !== path.resolve(dir)) fs.rmSync(oldDir, { recursive: true, force: true });
   return getSkillFull(n);
 }
 

@@ -4814,6 +4814,9 @@ async function main() {
   await testDetectCache();
   await testStreamRender();
   await testSessionIndex();
+  await testRunOwnership();
+  testSessionCacheReload();
+  testSkillRenameKeepsAssets();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -7931,6 +7934,308 @@ exit 1
     try { fs.rmSync(bin, { recursive: true, force: true }); } catch {}
   }
 }
+/**
+ * 改个技能名字，不该把技能改废（skills.js 的 saveSkill）。
+ *
+ * 从 GitHub 装来的技能几乎都是一整棵树：skill.md 旁边还有 references/、scripts/、templates/。
+ * 以前改名走的是「在新目录里写一份 skill.md，然后 rmSync 掉旧目录」——那些资源当场全没，
+ * 而且一声不响：界面上技能还在、内容也对，直到某天 agent 跑到一半报「文件不存在」。
+ * 「装个技能，觉得名字不好听改一下」是最自然的一条路径，正好也是把它废掉的那条。
+ *
+ * 真读真写磁盘：另起一个进程把 OPENWORKBUDDY_HOME 指到临时目录（skills.js 的 SKILLS_DIR 是
+ * require 时定死的，同进程里改不动），这样一个字节都不碰仓库里真正的 skills/。
+ */
+function testSkillRenameKeepsAssets() {
+  const os = require("os");
+  const { spawnSync } = require("child_process");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-skillmv-"));
+  try {
+    const mk = (name, extra) => {
+      const d = path.join(home, "skills", name);
+      fs.mkdirSync(path.join(d, "scripts"), { recursive: true });
+      fs.mkdirSync(path.join(d, "references"), { recursive: true });
+      fs.writeFileSync(path.join(d, "skill.md"), `---\nname: ${name}\ndescription: 拿来测改名的\n---\n\n正文\n`);
+      fs.writeFileSync(path.join(d, "scripts", "run.py"), "print('hi')\n");
+      fs.writeFileSync(path.join(d, "references", "手册.md"), "# 手册\n");
+      if (extra) fs.writeFileSync(path.join(d, extra), "x");
+    };
+    mk("old-name");
+    mk("occupied"); // 用来验重名不许悄悄覆盖
+
+    const run = (code) => {
+      const r = spawnSync(process.execPath, ["-e", code], {
+        encoding: "utf8",
+        env: { ...process.env, OPENWORKBUDDY_HOME: home, ELECTRON_RUN_AS_NODE: "1" },
+        cwd: path.join(__dirname, ".."),
+      });
+      return { status: r.status, out: (r.stdout || "").trim(), err: (r.stderr || "").trim() };
+    };
+    const call = (arg) =>
+      run(`const s=require("./skills");try{const r=s.saveSkill(${JSON.stringify(arg)});console.log(JSON.stringify({ok:true,name:r&&r.name}))}catch(e){console.log(JSON.stringify({ok:false,error:e.message}))}`);
+
+    // ---- 正常改名：资源必须原地跟着走 ----
+    let r = JSON.parse(call({ name: "new-name", description: "改过名的", content: "新正文", original_name: "old-name" }).out);
+    assert.ok(r.ok, "改名本身就失败了：" + r.error);
+    const nd = path.join(home, "skills", "new-name");
+    assert.ok(!fs.existsSync(path.join(home, "skills", "old-name")), "旧目录还在，改名等于复制了一份");
+    assert.ok(fs.existsSync(path.join(nd, "scripts", "run.py")),
+      "★改个名字把技能自带的 scripts/ 删了★ 技能还在列表里，跑起来 agent 报「文件不存在」");
+    assert.ok(fs.existsSync(path.join(nd, "references", "手册.md")), "★references/ 被改名那一下删掉了★");
+    const fm = fs.readFileSync(path.join(nd, "skill.md"), "utf8");
+    assert.ok(/name: new-name/.test(fm) && /新正文/.test(fm), "skill.md 没按新名字新内容写");
+
+    // ---- 重名：不许悄悄合进别人的目录 ----
+    r = JSON.parse(call({ name: "occupied", description: "撞名", content: "正文", original_name: "new-name" }).out);
+    assert.ok(!r.ok && /已经有一个叫/.test(r.error || ""), "改成一个已存在的技能名，居然放行了（会把那个技能的 skill.md 顶掉）");
+    assert.ok(fs.existsSync(path.join(home, "skills", "occupied", "scripts", "run.py")), "撞名被拒之后，人家的资源被动了");
+    assert.ok(fs.existsSync(path.join(nd, "scripts", "run.py")), "撞名被拒之后，自己的资源也没了");
+    assert.ok(/description: 拿来测改名的/.test(fs.readFileSync(path.join(home, "skills", "occupied", "skill.md"), "utf8")),
+      "撞名被拒，但人家的 skill.md 已经被覆盖了");
+
+    // ---- 只改内容不改名：目录原样，资源原样（反向对照，别把改名的修法修成「什么都不许动」）----
+    r = JSON.parse(call({ name: "new-name", description: "只改内容", content: "第二版", original_name: "new-name" }).out);
+    assert.ok(r.ok, "只改内容也失败了：" + r.error);
+    assert.ok(fs.existsSync(path.join(nd, "scripts", "run.py")) && /第二版/.test(fs.readFileSync(path.join(nd, "skill.md"), "utf8")),
+      "只改内容时正文没落盘 / 资源被动了");
+
+    // ---- 新建技能：没有旧目录这条路也得通 ----
+    r = JSON.parse(call({ name: "brand-new", description: "新建的", content: "内容" }).out);
+    assert.ok(r.ok && fs.existsSync(path.join(home, "skills", "brand-new", "skill.md")), "新建技能这条路被改名逻辑挡住了：" + r.error);
+
+    console.log("✅ 技能改名不掉资源：整目录搬家（scripts/references 全在）· 撞名当场拒绝且两边都不动 · 只改内容/新建两条路照通");
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 内存里的会话副本会不会吃陈（server.js 的 getSession / saveSession）。
+ *
+ * 桌面版和命令行的 wb 写的是同一批文件（data/sessions/<id>.json），而 `wb resume` 不给 id 时
+ * 接的就是「最近动过的那条」，包括桌面上刚开的那个——这是它自己注释里写的「丝滑切换」的落点。
+ * 可 server.js 这边的 sessions Map 一旦读进来就再也不回头看盘：
+ * 「桌面开个头 → 终端 wb resume 接着做几轮 → 回桌面再发一句」，
+ * 桌面那一句存盘时用的还是几小时前那份内存副本，终端做的那几轮整段消失。
+ * 用户看到的是「我在终端做的那半截凭空没了」，而且没有任何报错。
+ *
+ * 跟 testSessionIndex 一样切真源码在临时目录上跑：这两个函数是纯的，
+ * 注入 fs/path/store/SESS_DIR/sessions/activeRuns 就能真读真写磁盘。
+ */
+function testSessionCacheReload() {
+  const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const a = src.indexOf("function sessFile(id) {");
+  const b = src.indexOf("const sessMetaCache = new Map();", a);
+  if (a < 0 || b <= a) throw new Error("server.js 里的会话读写找不到了（改名/挪走？），测试没法定位真源码");
+  const SLICE = src.slice(a, b);
+
+  const store = require(path.join(__dirname, "..", "store.js"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wb-sesscache-"));
+  const SESS_DIR = path.join(home, "sessions");
+  fs.mkdirSync(SESS_DIR, { recursive: true });
+
+  // loose=true：把「回头看一眼盘」那段整块摘掉，还原成改之前的行为（阴性对照）
+  const RELOAD = /\n *if \(sessions\.has\(id\) && !activeRuns\.has\(id\) && sessChangedOnDisk\(id\)\)[\s\S]*?sessions\.delete\(id\);\n *\}\n/;
+  const build = (loose) => {
+    const sessions = new Map();
+    const activeRuns = new Map();
+    let body = SLICE;
+    if (loose) {
+      assert.ok(RELOAD.test(body), "阴性对照对不上源码了：想摘掉的那段「回头看盘」没找到");
+      body = body.replace(RELOAD, "\n");
+    }
+    const M = new Function("fs", "path", "SESS_DIR", "store", "sessions", "activeRuns", "console",
+      body + "\nreturn { getSession, saveSession, sessFile };")(
+      fs, path, SESS_DIR, store, sessions, activeRuns, { log() {} });
+    return { ...M, sessions, activeRuns };
+  };
+
+  const id = "s_1730000000000_abc";
+  const file = path.join(SESS_DIR, id + ".json");
+  const H = (...xs) => xs.map((c, i) => ({ role: i % 2 ? "assistant" : "user", content: c }));
+
+  // 1) 桌面开了这条会话
+  store.writeJsonAtomic(file, { history: H("帮我整理下装修报价"), transcript: [], title: "装修报价", updated_at: null });
+  const wb = build(false);
+  const s1 = wb.getSession(id);
+  assert.strictEqual(s1.history.length, 1, "第一次读盘就没读对");
+
+  // 2) 用户切到终端，wb resume 接着做了两轮，直接写同一个文件
+  store.writeJsonAtomic(file, { history: H("帮我整理下装修报价", "拆成了三张表", "再加一列单价"), transcript: [], title: "装修报价", updated_at: null });
+  const s2 = wb.getSession(id);
+  assert.strictEqual(s2.history.length, 3, "★命令行 wb 写进去的那几轮，桌面这边看不见（内存副本一直没回头看盘）★");
+
+  // 3) 回桌面再发一句 —— 终端那两轮必须还在
+  s2.history.push({ role: "assistant", content: "单价加好了" });
+  wb.saveSession(id);
+  const onDisk = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.strictEqual(onDisk.history.length, 4, "★桌面这边一存盘，就把命令行做的那几轮整段盖掉了★");
+  assert.ok(onDisk.history.some((h) => h.content === "拆成了三张表"), "终端那轮的内容没了");
+
+  // 4) 自己刚写完的盘不算「别人改的」：不然每次存完盘都要白读一遍，
+  //    手上那份内存对象一换引用，正在拼的那一轮就跟着丢
+  assert.strictEqual(wb.getSession(id), s2, "★自己刚写进去的盘被当成别人改的，下一次取会话就把手上这份换掉——正在拼的那轮跟着丢★");
+  assert.strictEqual(wb.sessions.get(id), s2, "内部状态对不上");
+
+  // 4b) 只比 mtime 或只比体积都会漏。这两个用例分别把另一半钉死：
+  //     改了内容但字数正好一样（体积不变，只有 mtime 变）
+  const T = 1730000000.5; // 固定到微秒，两次 utimes 设出来的 mtime 完全相同
+  const stamp = () => { fs.utimesSync(file, T, T); return fs.statSync(file).mtimeMs; };
+  store.writeJsonAtomic(file, { history: H("甲甲甲"), transcript: [], title: "", updated_at: null });
+  const wb2 = build(false);
+  const sizeA = fs.statSync(file).size;
+  assert.strictEqual(wb2.getSession(id).history[0].content, "甲甲甲", "读盘没读对");
+  store.writeJsonAtomic(file, { history: H("乙乙乙"), transcript: [], title: "", updated_at: null });
+  assert.strictEqual(fs.statSync(file).size, sizeA, "这个用例的前提没成立：两次内容的字节数本该一样");
+  assert.strictEqual(wb2.getSession(id).history[0].content, "乙乙乙",
+    "★内容变了但文件大小没变（改了个同长度的字），就当没变过——只比体积会漏★");
+
+  //     体积变了但 mtime 被抹成一样（同一毫秒里连写两次、或者别的进程把时间戳改回去）
+  store.writeJsonAtomic(file, { history: H("丙"), transcript: [], title: "", updated_at: null });
+  const m0 = stamp();
+  const wb3 = build(false);
+  assert.strictEqual(wb3.getSession(id).history[0].content, "丙", "读盘没读对");
+  store.writeJsonAtomic(file, { history: H("丁", "终端补了一长串"), transcript: [], title: "", updated_at: null });
+  const m1 = stamp();
+  assert.strictEqual(m1, m0, "这个用例的前提没成立：两次的 mtime 本该被抹成一样");
+  assert.strictEqual(wb3.getSession(id).history.length, 2,
+    "★mtime 撞上了（原子改名两次落在同一刻）就当没变过——只比 mtime 会漏★");
+
+  // 5) 任务跑着的时候不重读：那份内存对象正被这一轮改着
+  store.writeJsonAtomic(file, { history: H("帮我整理下装修报价", "拆成了三张表", "再加一列单价", "单价加好了"), transcript: [], title: "装修报价", updated_at: null });
+  const wb4 = build(false);
+  const ref = wb4.getSession(id);
+  assert.strictEqual(ref.history.length, 4, "读盘没读对");
+  wb4.activeRuns.set(id, {});
+  ref.history.push({ role: "user", content: "这一轮正在跑" });
+  store.writeJsonAtomic(file, { history: [], transcript: [], title: "别处清空了", updated_at: null });
+  const during = wb4.getSession(id);
+  assert.strictEqual(during, ref, "★任务跑到一半被磁盘上的旧版盖回来了——这一轮的进度直接丢★");
+  assert.strictEqual(during.history.length, 5, "跑着那轮自己加的内容没了");
+  wb4.activeRuns.delete(id);
+
+  // 6) 盘上压根没有这个 id（新会话）：给空壳，不能炸
+  assert.deepStrictEqual(wb.getSession("s_1730000000009_new").history, [], "新会话没给空壳");
+
+  // ---- 阴性对照：摘掉「回头看盘」，第 2 步必须塌 ----
+  const id2 = "s_1730000000001_def";
+  const f2 = path.join(SESS_DIR, id2 + ".json");
+  store.writeJsonAtomic(f2, { history: H("第一句"), transcript: [], title: "", updated_at: null });
+  const old = build(true);
+  assert.strictEqual(old.getSession(id2).history.length, 1, "阴性对照连第一次读盘都不对");
+  store.writeJsonAtomic(f2, { history: H("第一句", "终端答的"), transcript: [], title: "", updated_at: null });
+  assert.strictEqual(old.getSession(id2).history.length, 1,
+    "阴性对照失灵：把「回头看盘」那段删掉之后测试居然还是过的，说明上面测到的不是这段代码");
+
+  // ---- 接线：删会话时得把这个 id 的印记一起清掉 ----
+  assert.ok(/sessions\.delete\(req\.params\.id\);\s*\n\s*sessStamp\.delete\(req\.params\.id\);/.test(src),
+    "删会话没清掉 mtime 印记：同一个 id 万一再被建出来，会拿着上一条的尺寸去比对");
+
+  fs.rmSync(home, { recursive: true, force: true });
+  console.log("✅ 会话不吃陈内存：命令行 wb 写的几轮桌面能看见、存盘不覆盖；自己写的不误判、跑着的任务不被盘上旧版盖回去");
+}
+
+/**
+ * 正在跑的那个任务，别人碰不碰得到（server.js 的 sessionAllowed / guardRun 那条线）。
+ *
+ * 这几条接口跟侧栏那份清单不是一回事：清单管「哪些该显示」，这里管「谁能往里插手」。
+ * 插队 / 回答 agent 的提问 / 停止 / 断点续流，走的都是请求体里的 sessionId 或自己的 :id，
+ * 绕开了 guardSession。以前它们一个字都没查归属，后果是同一台服务器上的另一个人，
+ * 只要拿到一个会话 id（它会出现在链接、日志、截图里，从来不是秘密）就能：
+ * 往你正在跑的任务里塞一句话、替你回答那个弹出来的问题、把任务掐掉、把实时输出整段读走。
+ *
+ * server.js 是 require 就监听的，起不了进程内 HTTP，所以判据这一半切真源码来跑，
+ * 接线那一半钉在源码上——两半都要，只测判据的话，函数写对了但路由没调它，照样全线大开。
+ */
+async function testRunOwnership() {
+  const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const a = src.indexOf("function sessionAllowed(user, s) {");
+  const b = src.indexOf("let runtime;", a);
+  if (a < 0 || b <= a) throw new Error("server.js 里的会话归属判据找不到了（改名/挪走？），测试没法定位真源码");
+  const SLICE = src.slice(a, b);
+
+  // 两个组织：boss/staff 在 A，rival/其管理员在 B。canAdmin 只对 role=admin 为真
+  const USERS = [
+    { username: "boss", role: "admin", org: "A" },
+    { username: "staff", role: "member", org: "A" },
+    { username: "rivalBoss", role: "admin", org: "B" },
+    { username: "rival", role: "member", org: "B" },
+  ];
+  const account = { canAdmin: (u) => u.role === "admin", _internals: { loadUsers: () => ({ users: USERS }) } };
+  const org = { orgIdOf: (u) => (u && u.org) || "" };
+  const SESS = new Map([
+    ["s_staff", { user: "staff" }],
+    ["s_boss", { user: "boss" }],
+    ["s_rival", { user: "rival" }],
+    ["s_legacy", {}],           // 升级上来的老会话：没记归属
+  ]);
+  const getSession = (id) => SESS.get(id) || { history: [], transcript: [] }; // 没有的 id 跟真源码一样给空壳
+  const M = new Function("account", "org", "getSession", "sessions",
+    SLICE + "\nreturn { sessionAllowed, guardSession, guardRun };")(account, org, getSession, SESS);
+
+  const U = (n) => USERS.find((u) => u.username === n);
+  const tryRun = (who, id) => {
+    let code = 0, body = null;
+    const res = { status(c) { code = c; return this; }, json(o) { body = o; return this; } };
+    const allowed = M.guardRun({ user: who }, res, id);
+    return { allowed, code, body };
+  };
+
+  // ---- 判据本身 ----
+  assert.ok(tryRun(U("staff"), "s_staff").allowed, "自己的任务被拦了");
+  assert.ok(tryRun(U("boss"), "s_staff").allowed, "同组织管理员打不开下属的任务（企业后台要看得到）");
+  assert.ok(tryRun(U("staff"), "s_legacy").allowed, "升级上来的老会话（没记归属）被拦了——用户会以为任务丢了");
+  assert.ok(tryRun(null, "s_staff").allowed, "没开账号体系（单机一个人用）也被拦了");
+
+  const cross = tryRun(U("rival"), "s_staff");
+  assert.ok(!cross.allowed, "★别的组织的人能插手你正在跑的任务★");
+  assert.strictEqual(cross.code, 403, "拒绝没给 403：前端会当成「任务不在跑了」而不是「你没权限」");
+  assert.ok(cross.body && cross.body.ok === false && /不属于你/.test(cross.body.error || ""),
+    "拒绝的回包形状不对（这几条接口的成功回包都是 { ok: true }，失败也得带 ok:false 前端才分得清）");
+  assert.ok(!tryRun(U("rivalBoss"), "s_staff").allowed, "★另一个组织的管理员也能插手★ 管理员权限不该跨组织");
+  assert.ok(!tryRun(U("staff"), "s_boss").allowed, "普通成员能插手管理员的任务");
+  assert.ok(!tryRun(U("staff"), "s_rival").allowed, "普通成员能插手别组织成员的任务");
+
+  // 反向对照：把判据换成「谁都行」，上面那批断言必须全线塌掉——不然测的不是它
+  const loose = new Function("account", "org", "getSession", "sessions",
+    SLICE.replace("function sessionAllowed(user, s) {", "function sessionAllowed(user, s) { return true;")
+      + "\nreturn { guardRun };")(account, org, getSession, SESS);
+  assert.ok(loose.guardRun({ user: U("rival") }, { status() { return this; }, json() { return this; } }, "s_staff"),
+    "阴性对照没生效：改坏了判据居然还是拒绝，说明上面测到的不是这段代码");
+
+  // ---- 接线：判据写对了，路由不调它等于没有 ----
+  const routeOf = (sig, len) => {
+    const i = src.indexOf(sig);
+    assert.ok(i > 0, `server.js 里找不到路由 ${sig}`);
+    return src.slice(i, i + len);
+  };
+  for (const [sig, what] of [
+    ['app.post("/api/chat/interject"', "插队（往别人正在跑的任务里塞一句话）"],
+    ['app.post("/api/chat/answer"', "替别人回答 agent 弹出来的问题"],
+    ['app.post("/api/chat/stop"', "把别人的任务掐掉"],
+    ['app.get("/api/chat/stream/:id"', "把别人的实时输出整段读走"],
+  ]) {
+    assert.ok(/guardRun\(req, res, /.test(routeOf(sig, 500)), `${sig} 没查归属 → 同一台服务器上的另一个人可以：${what}`);
+  }
+
+  // /api/chat 的这道检查必须赶在 SSE 头之前：头一发出去，403 的正文就顶着
+  // text/event-stream 的壳过去，前端拿到的是一个「连上了但什么都不发」的流
+  const chat = routeOf('app.post("/api/chat", async (req, res)', 2000);
+  const iGuard = chat.indexOf("sessionAllowed(user, getSession(sessionId))");
+  const iSse = chat.indexOf('res.setHeader("Content-Type", "text/event-stream');
+  assert.ok(iGuard > 0, "POST /api/chat 没查会话归属 → 拿到别人的会话 id 就能接着他的上下文继续跑，还写进他的历史");
+  assert.ok(iSse > 0 && iGuard < iSse, "POST /api/chat 的归属检查排在 SSE 响应头后面了，403 会被当成一条空的事件流");
+
+  // 「哪些任务还在跑」要按侧栏那个窄口径给：宽了的后果不是泄露，是前端 reattachRunning
+  // 会把同事的任务画面挨个回放进管理员自己的窗口
+  const running = routeOf('app.get("/api/chat/running"', 700);
+  assert.ok(/ownSession\(req\.user/.test(running),
+    "/api/chat/running 没按侧栏口径过滤——管理员刷新页面会把全服务器所有人正在跑的任务接回自己窗口");
+  assert.ok(!/role === "admin"/.test(running),
+    "/api/chat/running 还在用「是不是管理员」一刀切：那是跨组织的，同组织与否根本没看");
+
+  console.log("✅ 跑着的任务防插手：插队/代答/停止/续流四条都查归属（本人·同组织管理员·老会话放行，跨组织连管理员也拒），/api/chat 归属先于 SSE 头，running 按侧栏窄口径");
+}
+
 /**
  * 任务历史的权威清单（server.js 的 listSessionsOnDisk / sessionRow / ownSession）。
  *
