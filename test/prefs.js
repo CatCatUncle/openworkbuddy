@@ -477,8 +477,10 @@ function runSourcePins() {
      "启动时把部署形态告诉 admin：监听地址 + 是不是 Electron 壳（少了这一行，桌面版永远算「服务器」，宠物又开不了了）",
      dep && dep[0]);
   ok(/const myAgent = prefs\.agentCfg\(config\);/.test(serverSrc), "GET /api/settings 返回的是这个账号自己的那份");
-  ok(/platform_owner: admin\.isSoloDesktop\(\) \|\| ownsGlobalWorkspace\(req\.user\)/.test(serverSrc),
-     "而且告诉前端他是不是平台管理员（界面据此决定画不画那块只读的卡片）");
+  ok(/const isPlatformOwner = \(req\) => admin\.isSoloDesktop\(\) \|\| ownsGlobalWorkspace\(req && req\.user\);/.test(serverSrc),
+     "「他是不是平台管理员」只有一处判定（设置页、档位菜单都读它，别各写各的）");
+  ok(/platform_owner: isPlatformOwner\(req\)/.test(serverSrc),
+     "而且告诉前端他是不是平台管理员（界面据此决定服务器级的那些控件画不画）");
   ok(/engines\.resolve\(prefs\.agentView\(config\)\)/.test(agentSrc),
      "agent.js 跑任务时解的是**发起人**选的引擎，不是 config 里那份");
   ok(/thinking: prefs\.agentCfg\(config\)\.thinking/.test(agentSrc), "思考档同理");

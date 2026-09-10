@@ -623,6 +623,11 @@ app.use(admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir }));
 app.use(admin.platformGuard);
 app.use(admin.redactGuard);
 const ownsGlobalWorkspace = admin.ownsGlobalWorkspace;
+/**
+ * 界面靠它决定「服务器级的那些控件画不画」。画了却一点就 403，比不画更气人——
+ * 用户看到的是一颗明明能点的按钮点了没反应，只能自己去猜是不是坏了。
+ */
+const isPlatformOwner = (req) => admin.isSoloDesktop() || ownsGlobalWorkspace(req && req.user);
 
 // 企业管理后台 /api/admin/*：自带 adminGuard（管理员+审计员可看，只有管理员能改）
 app.use(
@@ -706,7 +711,7 @@ app.get("/api/settings", (req, res) => {
     active_model: config.active_model,
     model_health: healthSummary(),
     // 界面靠它决定「服务器级的那些输入框画不画」：画了却一存就 403，比不画更气人
-    platform_owner: admin.isSoloDesktop() || ownsGlobalWorkspace(req.user),
+    platform_owner: isPlatformOwner(req),
     model_follow_last: myModel.model_follow_last,
     last_picked_model: myModel.last_picked_model,
     assist_model: myModel.assist_model,
@@ -1277,8 +1282,10 @@ app.post("/api/security/approvals/:id", (req, res) => {
   }
   res.json({ ...r, scope, downgraded });
 });
-app.get("/api/security/modes", (_req, res) =>
-  res.json({ modes: security.PERMISSION_MODES, current: security.permissionMode(config.security) })
+app.get("/api/security/modes", (req, res) =>
+  // can_switch：档位是整台服务器一份（决定 agent 动手前问不问），普通成员改不了。
+  // 界面拿它决定那个 🛡️ 菜单画成可点的还是只读的——不然点下去只有一句「切换失败」。
+  res.json({ modes: security.PERMISSION_MODES, current: security.permissionMode(config.security), can_switch: isPlatformOwner(req) })
 );
 app.post("/api/security/mode", (req, res) => {
   const mode = String((req.body || {}).mode || "");

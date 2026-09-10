@@ -293,10 +293,19 @@ const SETTING_CATS = [
   ["im", "助理设置", "📱"],
   ["about", "关于", "ℹ️"],
 ];
+/**
+ * 这四页从头到尾都是服务器级的：联网搜索的 Key、自进化规则、备份/工作目录、飞书企微钉钉接入。
+ * 多人服务器上的普通成员每一颗按钮都会 403，连一行属于他自己的东西都没有——那就别画这个标签页。
+ * （models / persona / security 是混的：里面有他自己的东西，标签留着，卡片各自按 platform_owner 挑。）
+ */
+const PLATFORM_ONLY_CATS = new Set(["search", "evolve", "data", "im"]);
 async function renderSettings(active) {
   const s = await fetch("/api/settings").then(r => r.json());
+  const cats = s.platform_owner ? SETTING_CATS : SETTING_CATS.filter(([k]) => !PLATFORM_ONLY_CATS.has(k));
+  // 从别处跳进一个已经不画的标签页（旧的深链、上次停在「数据」页），别留一屏空白：退回模型页
+  if (!cats.some(([k]) => k === active)) active = cats[0][0];
   mBody.innerHTML = `<div class="settings-layout">
-    <div class="settings-nav">${SETTING_CATS.map(([k, label, icon]) =>
+    <div class="settings-nav">${cats.map(([k, label, icon]) =>
       `<div class="cat ${k === active ? "active" : ""}" data-cat="${k}"><span class="ci">${icon}</span>${label}</div>`).join("")}</div>
     <div class="settings-pane" id="settings-pane"></div>
   </div>`;
@@ -349,20 +358,29 @@ const CHANNEL_PRESETS = [
 ];
 function renderModelsPane(pane, s) {
   const md = { image: {}, video: {}, tts: {}, vision: {}, ...(s.media || {}) };
+  // 多人服务器上的普通成员：模型渠道、Key、全局默认模型改的是**整台服务器**的账单，归平台管理员。
+  // 但这一页对他不是没用——他得知道有哪些模型可选、默认是哪个。所以照画列表，只是不摆那几颗
+  // 他一点就 400/403 的按钮（包括「选中」那个单选钮：它存的是全局默认 active_model）。
+  // 他自己换模型走输入框右下角那个选择器，存的是 last_picked_model，是他一个人的。
+  const po = !!s.platform_owner;
   pane.innerHTML = `
-    <div style="color:var(--wb-text-2);margin-bottom:10px">选择当前使用的模型，或添加模型。内置 OpenAI / Anthropic / OpenRouter / 火山方舟 / 阿里百炼 / DeepSeek / 智谱 / Kimi / Ollama 渠道预设，任何 OpenAI 兼容接口也都支持。输入框右下角可快速切换。</div>
+    <div style="color:var(--wb-text-2);margin-bottom:10px">${po
+      ? "选择当前使用的模型，或添加模型。内置 OpenAI / Anthropic / OpenRouter / 火山方舟 / 阿里百炼 / DeepSeek / 智谱 / Kimi / Ollama 渠道预设，任何 OpenAI 兼容接口也都支持。输入框右下角可快速切换。"
+      : "这台服务器上能用的模型。渠道和 Key 归平台管理员配——那是整台机器的账单。你自己这一次想用哪个，在输入框右下角随时切，只影响你。"}</div>
     <div id="model-list">${s.models.map((m, i) => `
       <div class="card-item" style="display:flex;align-items:center;gap:10px">
-        <input type="radio" name="active" style="width:auto;margin:0" ${m.name === s.active_model ? "checked" : ""} data-i="${i}">
+        ${po ? `<input type="radio" name="active" style="width:auto;margin:0" ${m.name === s.active_model ? "checked" : ""} data-i="${i}">`
+             : `<span style="width:16px;text-align:center;color:var(--wb-brand-text)" title="${m.name === s.active_model ? "当前默认" : ""}">${m.name === s.active_model ? "●" : "○"}</span>`}
         <div style="flex:1;min-width:0">
           <div class="t">${esc(m.name)} <span style="font-weight:400;color:var(--wb-text-3);font-size: 12px">${esc(m.model)}${m.api_key ? "" : ` · ⚠ 未填 Key ${keyLink(modelKeySource(m))}`}${healthBadge(m.name)}</span></div>
           <div class="d" style="font-size: 12px">${esc(m.base_url || "Anthropic 官方")}</div>
         </div>
-        <a href="#" class="link" data-edit="${i}">编辑</a>
+        ${!po ? "" : `<a href="#" class="link" data-edit="${i}">编辑</a>
         <a href="#" class="link" data-dup="${i}" title="复用此条的接口地址和 Key，换个模型名即成新模型">复制</a>
-        <a href="#" class="link danger" data-del="${i}">删除</a>
+        <a href="#" class="link danger" data-del="${i}">删除</a>`}
       </div>`).join("")}
     </div>
+    ${!po ? "" : `
     <div id="model-form" style="display:none;border-top:1px solid var(--wb-border);padding-top:10px">
       <select id="mf-channel">${CHANNEL_PRESETS.map((c, i) => `<option value="${i}">${esc(c.label)}</option>`).join("")}</select>
       <input id="mf-name" placeholder="名称（如：我的vLLM）">
@@ -375,11 +393,16 @@ function renderModelsPane(pane, s) {
       <button class="btn-brand" id="mf-save">保存模型</button>
       <button class="btn-plain" id="mf-cancel">取消</button>
     </div>
-    <button class="btn-plain" id="mf-new" style="margin-top:6px">＋ 添加自定义模型</button>
+    <button class="btn-plain" id="mf-new" style="margin-top:6px">＋ 添加自定义模型</button>`}
     <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size: 13px;color:var(--wb-text-2);cursor:pointer">
       <input type="checkbox" id="mf-follow-last" style="width:auto;margin:0" ${s.model_follow_last ? "checked" : ""}>
       新对话自动沿用上次手动选过的模型（不勾则新对话总是用全局默认）
     </label>
+    ${!po ? `
+    <div class="card-item" style="margin-top:14px">
+      <div class="t">🖼 看图 / 画图 / 视频 / 配音用的模型</div>
+      <div class="d">这几路也配在服务器上，归平台管理员。你直接在对话里用就行（粘张图问它、说「画一张…」），不用在这儿配。</div>
+    </div>` : `
     <div style="border-top:1px solid var(--wb-border);margin-top:14px;padding-top:12px">
       <div class="card-item">
         <div class="t">👁 视觉模型（看图）</div>
@@ -423,9 +446,11 @@ function renderModelsPane(pane, s) {
         </div>
       </div>
       <button class="btn-brand" id="media-save">保存视觉 / 图像 / 视频 / 语音模型</button>
-    </div>
+    </div>`}
     <span class="ok-msg" id="models-msg"></span>`;
   const msg = pane.querySelector("#models-msg");
+  pane.querySelector("#mf-follow-last").onchange = (e) => saveSettings({ model_follow_last: e.target.checked }, msg);
+  if (!po) return; // 下面全是平台管理员那套按钮的事件，没画出来就别去 querySelector（null.onclick 会把整页炸掉）
   let editIndex = -1;
   const form = pane.querySelector("#model-form");
   const showForm = (m) => {
@@ -448,7 +473,6 @@ function renderModelsPane(pane, s) {
     if (!pane.querySelector("#mf-name").value) pane.querySelector("#mf-name").value = c.label.replace(/（.*/, "");
   };
   pane.querySelector("#mf-new").onclick = () => { editIndex = -1; showForm(null); };
-  pane.querySelector("#mf-follow-last").onchange = (e) => saveSettings({ model_follow_last: e.target.checked }, msg);
   pane.querySelector("#mf-cancel").onclick = () => (form.style.display = "none");
   pane.querySelectorAll("a[data-edit]").forEach(a => a.onclick = (e) => { e.preventDefault(); editIndex = +a.dataset.edit; showForm(s.models[editIndex]); });
   // 复制：复用同一接口地址和 Key 快速配另一个模型（OpenRouter 换模型场景），只需填名称和模型名
@@ -532,7 +556,7 @@ function renderSearchPane(pane, s) {
     if (ok) {
       const r = await fetch("/api/search/test").then(x => x.json()).catch(() => ({ error: "请求失败" }));
       msg.textContent = r.ok ? `✓ ${r.provider} 可用：${r.sample}` : `✗ ${r.error || "测试失败"}`;
-    } else msg.textContent = "保存失败";
+    } else msg.textContent = lastSaveError || "保存失败";
     e.target.disabled = false;
   };
 }
@@ -774,7 +798,15 @@ async function testEngineConnect(card, id) {
 
 function renderPersonaPane(pane, s) {
   const a = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK, ...(s.assistant || {}) };
+  // 助理叫什么、个性化偏好，都是**整台服务器**共用一份（改了别人也跟着变），归平台管理员。
+  // 桌面宠物是跑在他自己电脑上的那只，纯个人。所以成员进来这一页只剩宠物 + 一句说明。
+  const po = !!s.platform_owner;
   pane.innerHTML = `
+    ${!po ? `
+    <div class="card-item">
+      <div class="t">助理的名字和个性化偏好</div>
+      <div class="d">这台服务器上大家共用同一个助理身份和同一份偏好，改了所有人都跟着变，所以归平台管理员设。你想让它对<b>你</b>怎么干活，直接在对话里说，或者写进「记忆」页——那一份只有你自己的任务带着。</div>
+    </div>` : `
     <div class="card-item">
       <div class="t">助理的名字和头像</div>
       <div class="d" style="margin-bottom:10px">给它起个自己顺口的名字。名字会同时改掉界面标题、侧栏和系统提示词——你喊它这个名字它就认。</div>
@@ -786,10 +818,11 @@ function renderPersonaPane(pane, s) {
       <div class="t">个性化偏好</div>
       <div class="d" style="margin-bottom:8px">希望它遵循的风格与偏好，会注入每次任务。例如：回复简洁；PPT 用深色科技风；周报署名"张三"。</div>
       <textarea id="ps-text" rows="8" placeholder="例如：所有文档默认用简体中文；数据分析结论放最前面…">${esc(s.persona)}</textarea>
-    </div>
+    </div>`}
     ${petCardHtml(s.pet || {})}
-    <button class="btn-brand" id="ps-save">保存</button><span class="ok-msg" id="ps-msg"></span>`;
+    ${!po ? "" : `<button class="btn-brand" id="ps-save">保存</button><span class="ok-msg" id="ps-msg"></span>`}`;
   bindPetCard(pane, s.pet || {});
+  if (!po) return; // 名字/偏好那两张卡没画，下面的 querySelector 会拿到 null
   const ed = bindAvatarEditor(pane, "as", a.avatar, () => pane.querySelector("#as-name").value.trim() || "OpenWorkBuddy", ASSISTANT_MARK);
   pane.querySelector("#as-save").onclick = async () => {
     const msg = pane.querySelector("#as-msg");
@@ -980,7 +1013,7 @@ async function renderMemoryPane(pane) {
     ${m.can_edit_manual ? `<button class="btn-brand" id="mem-save">保存背景说明</button><span class="ok-msg" id="mem-msg"></span>` : ""}`;
   if (m.can_edit_manual) pane.querySelector("#mem-save").onclick = async () => {
     const resp = await fetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: pane.querySelector("#mem-text").value }) });
-    pane.querySelector("#mem-msg").textContent = resp.ok ? "✓ 已保存" : "保存失败";
+    pane.querySelector("#mem-msg").textContent = resp.ok ? "✓ 已保存" : ((await resp.json().catch(() => ({}))).error || "保存失败");
   };
   pane.querySelector("#mem-add").onclick = async () => {
     const text = pane.querySelector("#mem-new").value.trim();

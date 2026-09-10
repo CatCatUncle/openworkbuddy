@@ -6781,7 +6781,9 @@ function testLookPrefsStatic() {
   const cats = a05.slice(a05.indexOf("const SETTING_CATS = ["), a05.indexOf("];", a05.indexOf("const SETTING_CATS = [")));
   const rows = [...cats.matchAll(/\["([a-z]+)", "([^"]+)", "([^"]+)"\]/g)];
   assert(rows.length === 12 && rows.every((m) => m[3].length && m[2].length <= 4), "设置目录每项都要 [id, ≤4字短名, 图标] 三元组，现在：" + rows.length + " 项");
-  assert(/\$\{SETTING_CATS\.map\(\(\[k, label, icon\]\)/.test(a05) && /class="ci">\$\{icon\}/.test(a05), "左栏没把图标画出来");
+  assert(/\$\{cats\.map\(\(\[k, label, icon\]\)/.test(a05) && /class="ci">\$\{icon\}/.test(a05), "左栏没把图标画出来");
+  // 画的是过滤后的 cats，不是整张 SETTING_CATS：多人服务器上普通成员看不到那四个纯服务器级的标签页
+  assert(/const cats = s\.platform_owner \? SETTING_CATS : SETTING_CATS\.filter/.test(a05), "左栏没按 platform_owner 过滤");
   for (const f of fs.readdirSync(path.join(pub, "js"))) {
     if (!f.endsWith(".js")) continue;
     assert(!/um-theme|um-opt/.test(rd(path.join("js", f))), "老的头像菜单主题子菜单还留在 " + f + " 里");
