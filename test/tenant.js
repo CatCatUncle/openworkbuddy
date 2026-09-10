@@ -106,6 +106,14 @@ const isPlatformOwner = (req) => admin.isSoloDesktop() || admin.platformAdmin(re
 app.get("/api/settings-probe", (req, res) => res.json({ platform_owner: isPlatformOwner(req) }));
 app.get("/api/security/modes", (req, res) =>
   res.json({ modes: { ask: { label: "每次问我" } }, current: "ask", can_switch: isPlatformOwner(req) }));
+// 资料库：读放行、写照拦。到不了这几个 handler 就说明 platformGuard 在前面拦下了。
+app.get("/api/library", (_req, res) => res.json({ files: [{ name: "手册.md" }], notes: [{ id: "n1", text: "老板喜欢短句" }] }));
+app.post("/api/library/upload", (_req, res) => res.json({ ok: true }));
+app.post("/api/library/note", (_req, res) => res.json({ ok: true }));
+app.delete("/api/library/file/:name", (_req, res) => res.json({ ok: true }));
+app.delete("/api/library/note/:id", (_req, res) => res.json({ ok: true }));
+app.get("/api/schedules", (_req, res) => res.json([]));
+app.get("/api/eval", (_req, res) => res.json([]));
 // 探针：这条请求里 tools.orgPolicy() 看到的是什么。用来验「设置真的进了执行层」，
 // 而不是只躺在 org.json 里没人读——那种开关比没有这个开关更糟
 app.get("/api/policy-probe", (_req, res) => res.json({ policy: tools.orgPolicy(), ws: tools.getWorkspaceDir() }));
@@ -566,6 +574,47 @@ async function login(username, password) {
   eq(r.json.can_switch, true, "反向对照：平台管理员 can_switch=true");
   r = await call("POST", "/api/security/mode", { cookie: yuan, body: { mode: "full" } });
   eq(r.status, 403, "闸没松：can_switch 只是给界面看的，后端照样拦得住直接打过来的请求");
+
+  console.log("\n【21】资料库：拦读拦了个寂寞——同样的字节走 agent 拿得到，走界面反而 403");
+  // 原来 /api/library 整个前缀（含 GET）都在平台管理员的表里。可资料库是**一份全局目录**
+  // （tools.js 的 LIB_DIR / NOTES_FILE），每个人的 agent 都带着 library_list / library_read，
+  // 一句「翻一下资料库」就把文件清单、灵感笔记、乃至正文原样念出来。拦住 HTTP GET 什么都没保住，
+  // 只保住了一句瞎话：页面对普通成员写「还没有参考资料」。所以读放行、写照拦。
+  r = await call("GET", "/api/library", { cookie: yuan });
+  eq(r.status, 200, "普通成员读得到资料库（他的 agent 本来就读得到，界面没有理由更严）");
+  ok(Array.isArray(r.json.files) && r.json.files.length > 0, "而且真拿到了内容，不是一个空壳", JSON.stringify(r.json).slice(0, 80));
+  r = await call("POST", "/api/library/upload", { cookie: yuan, body: { name: "x.md", data_b64: "eA==" } });
+  eq(r.status, 403, "但往这份全局目录里放东西，还是平台管理员的事");
+  r = await call("POST", "/api/library/note", { cookie: yuan, body: { text: "灵感" } });
+  eq(r.status, 403, "灵感笔记也是全局共用的一份，成员写不了");
+  r = await call("DELETE", "/api/library/file/x.md", { cookie: yuan });
+  eq(r.status, 403, "删别人传的资料更不行");
+  r = await call("DELETE", "/api/library/note/n1", { cookie: yuan });
+  eq(r.status, 403, "删笔记同理");
+  r = await call("GET", "/api/library", { cookie: fen });
+  eq(r.status, 200, "分公司的管理员一样读得到（他不是平台管理员，但读本来就不该拦）");
+  r = await call("POST", "/api/library/upload", { cookie: fen, body: {} });
+  eq(r.status, 403, "分公司的管理员照样写不了这份全局目录");
+  r = await call("GET", "/api/library", { cookie: boss });
+  eq(r.status, 200, "反向对照：平台管理员读得到");
+  r = await call("POST", "/api/library/upload", { cookie: boss, body: {} });
+  eq(r.status, 200, "反向对照：平台管理员写得进");
+  r = await call("GET", "/api/schedules", { cookie: yuan });
+  eq(r.status, 403, "负向对照：定时任务照旧拦着（花的是这台服务器的额度，没有「读无害」这一说）");
+  r = await call("GET", "/api/eval", { cookie: yuan });
+  eq(r.status, 403, "负向对照：评测也照旧拦着（一跑就是真金白银调模型）");
+  // 别让这条判断退回去：读表里不许再出现 /api/library，写表里必须还在
+  const ADM = fs.readFileSync(path.join(ROOT, "admin.js"), "utf8");
+  const readTbl = (ADM.match(/const PLATFORM_READ = \[([\s\S]*?)\];/) || [])[1] || "";
+  const writeTbl = (ADM.match(/const PLATFORM_WRITE = \[([\s\S]*?)\];/) || [])[1] || "";
+  ok(readTbl.length > 0 && writeTbl.length > 0, "admin.js 里的两张平台表都读得出来（改名了就该在这儿挂）");
+  ok(!readTbl.includes("/api/library"), "读表里没有 /api/library（拦它拦了个寂寞）");
+  ok(writeTbl.includes("/api/library"), "写表里还有 /api/library（上传/删除/记笔记照拦）");
+  ok(readTbl.includes("/api/schedules") && readTbl.includes("/api/eval"), "读表里还留着真该拦的那两个");
+  // 为什么拦读没意义：资料库压根不是按人分的
+  const TL = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
+  ok(/LIB_DIR = dataPath\("data", "library"\)/.test(TL), "资料库确实是一份全局目录，不按用户分（这就是拦读没意义的原因）");
+  ok(/name: "library_read"/.test(TL) && /name: "library_list"/.test(TL), "而每个人的 agent 都带着 library_list / library_read 这两个工具");
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

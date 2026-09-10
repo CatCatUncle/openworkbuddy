@@ -1212,6 +1212,195 @@ const MEM_CHECKS = `
 })()
 `;
 
+// ---- 自动化 / 资料库：403 不该变成一片白，也不该变成一句假的成功 ----
+// fetch 遇上 403 不会 reject，`.catch(() => [])` 一个都兜不住：renderAutomPage 拿到的是
+// { error } 这个对象，下一行 list.filter 当场 TypeError，整个渲染函数断在半空——
+// 多人服务器上的普通成员点一下「自动化」，看到的就是一片空白，报错只在控制台里。
+// 资料库那边是另一种：接口 403 了，页面照样写「还没有参考资料」（一句瞎话），
+// 上传按钮照画，点完不看返回值就 toast「✅ 已上传」（一句假的成功）。
+// 这一组在真 Chromium 里把这几页画出来，每条成员断言都配一条平台管理员的反向对照。
+const APP01_NAV = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
+const APP03_AT = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8");
+const APP04_LIB = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-04.js"), "utf8");
+const NAV0 = APP01_NAV.indexOf('const PLATFORM_ONLY_VIEWS = ["autom", "eval"];');
+const NAV1 = APP01_NAV.indexOf("// 这个选择器只管「当前对话」用哪个模型");
+const AUT0 = APP03_AT.indexOf("async function renderAutomPage() {");
+const AUT1 = APP03_AT.indexOf("function renderAutomTplPicker(box) {");
+const RUN0 = APP03_AT.indexOf("async function renderAutomRuns(page) {");
+const RUN1 = APP03_AT.indexOf("// ================= 资料库页（左侧文件树");
+const LIB0 = APP04_LIB.indexOf("async function renderLibPage() {");
+const LIB1 = APP04_LIB.indexOf("// ================= 专家 · 技能 · 连接器");
+for (const [a, b, why] of [[NAV0, NAV1, "app-01.js 的 syncNavByRole"], [AUT0, AUT1, "app-03.js 的 renderAutomPage"],
+  [RUN0, RUN1, "app-03.js 的 renderAutomRuns"], [LIB0, LIB1, "app-04.js 的 renderLibPage/renderLibPreview"]])
+  if (a < 0 || b <= a) throw new Error(why + " 找不到了（改名/挪走？），自动化/资料库权限测试没法定位真源码");
+const DEAD_SRC = APP01_NAV.slice(NAV0, NAV1) + "\n" + APP03_AT.slice(AUT0, AUT1) + "\n" + APP03_AT.slice(RUN0, RUN1)
+  + "\n" + APP04_LIB.slice(LIB0, LIB1);
+const DEAD_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><body>"
+  + "<div class='side-nav top'>"
+  + "<div class='item' data-view='hub'>专家</div><div class='item' data-view='autom'>自动化</div>"
+  + "<div class='item' data-view='prompts'>参考模板库</div><div class='item' data-view='lib'>资料库</div>"
+  + "<div class='item' data-view='eval'>评测</div></div>"
+  + "<div class='assist-page' id='assist-page'></div></body>";
+const DEAD_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+
+  // 测试页是 data: URL（不透明源），localStorage 一碰就抛；塞个内存版
+  try { localStorage.getItem("wb_lib_recent"); } catch {
+    const mem = {};
+    Object.defineProperty(window, "localStorage", { configurable: true, value: {
+      getItem: (k) => (k in mem ? mem[k] : null), setItem: (k, v) => { mem[k] = String(v); }, removeItem: (k) => { delete mem[k]; },
+    } });
+  }
+  // 这几页周边的零碎（表单、模版选择器、CSV/Markdown 渲染）不是这次要测的，喂桩
+  window.automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), showForm: false, editing: null };
+  window.libState = { q: "", pick: null };
+  window.cronToHuman = () => "每天 9:00";
+  window.escInline = (s) => String(s == null ? "" : s);
+  window.renderAutomForm = () => {};
+  window.renderAutomTplPicker = () => {};
+  window.csvToTable = () => "<table></table>";
+  window.renderMd = (t) => String(t);
+  window.fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
+  window.pageKind = "autom";
+  window.refreshSettingsCache = async () => {};
+  window.modalCalls = [];
+  window.openModal = (k, t) => window.modalCalls.push(k + ":" + (t || ""));
+  window.toasts = [];
+  window.toast = (m) => window.toasts.push(String(m));
+  window.confirm = () => true;
+
+  const FORBID = { error: "这块是服务器级设置，归平台管理员管", platform_only: true };
+  let owner = false, denyRead = false, uploadResp = { ok: true, name: "a.md" };
+  const posts = [];
+  window.fetch = (url, opt) => {
+    const method = (opt && opt.method) || "GET";
+    if (method !== "GET") posts.push({ url, method, body: opt && opt.body ? JSON.parse(opt.body) : null });
+    const j = (v, code) => Promise.resolve({ ok: !code || code < 400, status: code || 200, json: () => Promise.resolve(v), text: () => Promise.resolve("") });
+    if (url === "/api/schedules") return denyRead ? j(FORBID, 403) : j([{ id: "s1", name: "早报", task: "发早报", cron: "0 9 * * *", enabled: true }]);
+    if (url.startsWith("/api/schedules/runs")) return denyRead ? j(FORBID, 403) : j([{ at: "2026-09-11T09:00:00Z", name: "早报", by: "定时", ms: 3000, result: "成功" }]);
+    if (url === "/api/library") return denyRead ? j(FORBID, 403) : j({ files: [{ name: "手册.md", size: 2048, mtime: "2026-09-01T00:00:00Z" }], notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
+    if (url === "/api/files") return j([]);
+    if (url === "/api/library/upload") return owner ? j(uploadResp, uploadResp.ok ? 200 : 403) : j(FORBID, 403);
+    if (url.startsWith("/api/library/note")) return owner ? j({ ok: true }) : j(FORBID, 403);
+    if (url.startsWith("/api/library/file/")) return owner ? j({ ok: true }) : j(FORBID, 403);
+    return j({ ok: true });
+  };
+
+  const page = document.getElementById("assist-page");
+  const html = () => page.innerHTML;
+
+  // ① 自动化：接口 403，页面得说人话，不能白屏
+  window.settingsCache = { platform_owner: false };
+  denyRead = true;
+  window.automState.tab = "tasks";
+  await renderAutomPage();
+  ok("自动化：403 没把整页炸空（以前 list.filter 直接 TypeError）", html().length > 0, html().slice(0, 80));
+  ok("自动化：把服务端那句话原样摆出来", html().includes("归平台管理员管"), html().slice(0, 200));
+  ok("自动化：顺带说清为什么（跑在服务器上、花服务器的额度）", html().includes("你自己要跑的活"));
+  ok("自动化：不再画那排点了就 403 的按钮", !page.querySelector("#at-new") && !page.querySelector("#at-tpl"));
+
+  window.automState.tab = "runs";
+  await renderAutomPage();
+  ok("运行记录：403 一样不白屏", html().includes("运行记录") && html().includes("归平台管理员管"), html().slice(0, 120));
+
+  // ② 反向对照：平台管理员那一页，一样不少
+  window.settingsCache = { platform_owner: true };
+  denyRead = false;
+  window.automState.tab = "tasks";
+  await renderAutomPage();
+  ok("反向对照：平台管理员看得到任务行", !!page.querySelector(".at-row"));
+  ok("反向对照：「＋ 添加自动化」在", !!page.querySelector("#at-new"));
+  window.automState.tab = "runs";
+  await renderAutomPage();
+  ok("反向对照：运行记录画得出表格", !!page.querySelector(".at-runs"));
+  window.automState.tab = "tasks";
+
+  // ③ 侧栏：会 403 的入口不摆在那儿
+  const shown = (v) => document.querySelector('.side-nav [data-view="' + v + '"]').style.display !== "none";
+  window.settingsCache = { platform_owner: false };
+  syncNavByRole();
+  ok("侧栏：成员看不到「自动化」", !shown("autom"));
+  ok("侧栏：成员看不到「评测」（真金白银调模型）", !shown("eval"));
+  ok("侧栏：「资料库」照留（他的 agent 本来就读得到，只是写不了）", shown("lib"));
+  ok("侧栏：「专家」「参考模板库」一个没动", shown("hub") && shown("prompts"));
+  window.settingsCache = { platform_owner: true };
+  syncNavByRole();
+  ok("反向对照：平台管理员五个入口一个不少", shown("autom") && shown("eval") && shown("lib") && shown("hub") && shown("prompts"));
+
+  // ④ 资料库：成员只读
+  window.settingsCache = { platform_owner: false };
+  window.libState = { q: "", pick: null };
+  await renderLibPage();
+  ok("资料库：成员照样看得到共享资料（读不该拦）", html().includes("手册.md"), html().slice(0, 200));
+  ok("资料库：不画「＋ 上传」", !page.querySelector("#lb-up"));
+  ok("资料库：写着「只读」，不装成他自己的文档", html().includes("只读") && html().includes("共享资料"));
+
+  // 真读不成的时候（老服务器、或者以后又把读拦回去），别说「还没有参考资料」——那是句瞎话，
+  // 用户会当成自己没传过东西，而真相是这一趟根本没读成
+  denyRead = true;
+  window.libState = { q: "", pick: null };
+  await renderLibPage();
+  ok("资料库：读不成就说读不成，不装成「还没有参考资料」",
+     html().includes("归平台管理员管") && !html().includes("还没有参考资料"), html().slice(0, 200));
+  denyRead = false;
+  await renderLibPage(); // 错误页把 #lb-prev 也一起收了，下面还要用，先画回来
+
+  window.libState.pick = { src: "notes", name: "" };
+  await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
+  ok("灵感笔记：成员不画输入框和「保存」", !page.querySelector("#lb-note") && !page.querySelector("#lb-note-save"));
+  ok("灵感笔记：成员不画每条后面的「删除」", !page.querySelector("a[data-nid]"));
+  ok("灵感笔记：笔记内容照样看得到", html().includes("老板喜欢短句"));
+  window.modalCalls = [];
+  page.querySelector("#lb-to-mem").onclick({ preventDefault() {} });
+  ok("灵感笔记：给了一条他真能走的路（去记忆页）", window.modalCalls.join("|") === "settings:memory", window.modalCalls.join("|"));
+
+  // ⑤ 反向对照：平台管理员这一页，上传/记笔记/删除一样不少
+  window.settingsCache = { platform_owner: true };
+  owner = true;
+  window.libState = { q: "", pick: null };
+  await renderLibPage();
+  ok("反向对照：「＋ 上传」在", !!page.querySelector("#lb-up"));
+  ok("反向对照：写的是「我的文档」不是「只读」", html().includes("我的文档") && !html().includes("共享资料"));
+  window.libState.pick = { src: "notes", name: "" };
+  await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
+  ok("反向对照：输入框、「保存」、每条的「删除」都在", !!page.querySelector("#lb-note") && !!page.querySelector("#lb-note-save") && !!page.querySelector("a[data-nid]"));
+
+  // ⑥ 上传：假的成功比失败更难查
+  window.settingsCache = { platform_owner: true };
+  window.libState = { q: "", pick: null };
+  await renderLibPage();
+  const fire = async (resp) => {
+    uploadResp = resp;
+    window.toasts = [];
+    const blob = new Blob(["hi"], { type: "text/plain" });
+    const f = new File([blob], "手册.md", { type: "text/plain" });
+    await page.querySelector("#lb-file").onchange({ target: { files: [f] } });
+  };
+  await fire({ error: "同名文件已存在", ok: false });
+  ok("上传失败就说失败（以前一律 toast「✅ 已上传」）", window.toasts.join("|").startsWith("❌"), window.toasts.join("|"));
+  ok("而且把服务端给的原因带出来", window.toasts.join("|").includes("同名文件已存在"), window.toasts.join("|"));
+  await fire({ ok: true, name: "手册.md" });
+  ok("反向对照：真传上去了才说成功，还报个数", window.toasts.join("|") === "✅ 已上传 1 个", window.toasts.join("|"));
+
+  // ⑦ 记笔记 / 删资料：拒了就说，别让东西凭空消失
+  window.settingsCache = { platform_owner: true };
+  owner = false; // 后端这一趟拒
+  window.libState.pick = { src: "notes", name: "" };
+  await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
+  page.querySelector("#lb-note").value = "新灵感";
+  window.toasts = [];
+  await page.querySelector("#lb-note-save").onclick();
+  ok("记笔记被拒：说出来，不再是「输入框一清，笔记没了」", window.toasts.join("|").includes("归平台管理员管"), window.toasts.join("|"));
+  window.toasts = [];
+  await page.querySelector("a[data-nid]").onclick({ preventDefault() {} });
+  ok("删笔记被拒：一样说出来", window.toasts.join("|").includes("归平台管理员管"), window.toasts.join("|"));
+
+  return names;
+})()
+`;
+
 // ---- 设置页：会 403 的按钮不该摆在那儿（模型 / 个性化 / 安全 / 导航 / 档位菜单） ----
 // 用户原话是「切换失败怎么还切换失败了啊」。根子不在那句提示，在于这一整屏都是照平台管理员画的：
 // 多人服务器上的普通成员照样看到 12 个标签页，其中「联网搜索 / 自进化 / 数据 / 助理设置」四页
@@ -3815,6 +4004,15 @@ app.whenReady().then(async () => {
       for (const n of namesGATE) console.log("  ✓ " + n);
       console.log(`✅ 前端：设置页按权限画（四页纯管理员的不画·模型只读·个性化只留宠物·安全只留档位·🛡️ 菜单不装成能点的）${namesGATE.length} 项通过`);
     } finally { if (!winGATE.isDestroyed()) winGATE.destroy(); }
+
+    const winDEAD = mkWin({ show: false, width: 1100, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await winDEAD.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(DEAD_HTML));
+      const namesDEAD = await winDEAD.webContents.executeJavaScript(ESC_SRC + "\n" + DEAD_SRC + "\n" + DEAD_CHECKS, true)
+        .catch((e) => { throw new Error("[自动化/资料库 403] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesDEAD) console.log("  ✓ " + n);
+      console.log(`✅ 前端：403 不该变成一片白也不该变成一句假成功（自动化整页有话说·侧栏藏掉必挂的入口·资料库只读但看得见·上传/记笔记失败照实说）${namesDEAD.length} 项通过`);
+    } finally { if (!winDEAD.isDestroyed()) winDEAD.destroy(); }
 
     const winSTM = mkWin({ show: false, width: 760, height: 700, webPreferences: { offscreen: true } });
     try {

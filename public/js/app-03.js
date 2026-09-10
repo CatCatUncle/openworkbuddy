@@ -1071,7 +1071,13 @@ async function renderAutomPage() {
   if (!page) return;
   const st = automState;
   if (st.tab === "runs") return renderAutomRuns(page);
-  const list = await fetch("/api/schedules").then(r => r.json()).catch(() => []);
+  const { list, error } = await getList("/api/schedules");
+  // 服务端说了不给（多人服务器上定时任务归平台管理员），就把这句话摆出来。
+  // 以前这儿直接 list.filter，403 的那个对象一进来整页就断在半空，白屏。
+  if (error) {
+    page.innerHTML = `<div class="hub-empty">⏰ 自动化<br><br>${esc(error)}<br><br><span style="font-size: 13px">定时任务跑在这台服务器上、花的是服务器的额度，所以归平台管理员统一排。<br>你自己要跑的活，直接在对话里说就行。</span></div>`;
+    return;
+  }
   const q = st.q.toLowerCase();
   const match = list.filter(t => !q || t.name.toLowerCase().includes(q) || t.task.toLowerCase().includes(q));
   const on = match.filter(t => t.enabled), off = match.filter(t => !t.enabled);
@@ -1222,7 +1228,11 @@ function renderAutomForm(box, tpl) {
   };
 }
 async function renderAutomRuns(page) {
-  const runs = await fetch("/api/schedules/runs?limit=100").then(r => r.json()).catch(() => []);
+  const { list: runs, error: runsErr } = await getList("/api/schedules/runs?limit=100");
+  if (runsErr) {
+    page.innerHTML = `<div class="hub-empty">📜 运行记录<br><br>${esc(runsErr)}</div>`;
+    return;
+  }
   const fmtMs = (ms) => ms >= 60000 ? Math.round(ms / 60000) + " 分" : Math.max(1, Math.round(ms / 1000)) + " 秒";
   // 判据里的 **重点** 是写给人看的，交给共享的 escInline（转义完再翻标记），不然界面上会印出一串星号
   const bold = escInline;
