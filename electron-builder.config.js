@@ -64,8 +64,13 @@ function findAppDir(ctx) {
 }
 
 async function afterPack(ctx) {
-  // 先核对包完整性，再签名：缺文件就该在这里红掉，别把一个必定打不开的包签得漂漂亮亮发出去
-  require("./scripts/check-package-files").assertPackComplete(findAppDir(ctx));
+  // 三道闸门全过了再签名：缺文件、依赖 require 不起来、瘦身没生效——
+  // 任何一条都该在这里红掉，别把一个必定打不开的包签得漂漂亮亮发出去
+  const gate = require("./scripts/check-package-files");
+  const appDir = findAppDir(ctx);
+  gate.assertPackComplete(appDir);
+  await gate.assertDepsRequirable(appDir);
+  gate.assertSlimmed(appDir);
   await adhocSign(ctx);
 }
 
@@ -106,6 +111,22 @@ module.exports = {
     "COMMERCIAL-LICENSE.md",
     "README.md",
     ...skillPatterns(),
+
+    // 依赖里那些「运行时一个字节都不读」的东西，不该进用户的下载包。
+    // 量过：生产依赖 280 MB / 16809 个文件里，source map 占 116.8 MB、类型声明占 35 MB。
+    // Windows 免安装版每次启动都要把整包解压到 %TEMP%，还要被 Defender 逐个扫，
+    // 文件越多首次启动越久——issue #1「任务管理器里有进程、屏幕上没窗口」就是等在这儿。
+    // node_modules 不在上面的白名单里（electron-builder 总是自动带上生产依赖），
+    // 所以这里只能用排除式写法。
+    "!node_modules/**/*.map", // devtools 才读的源码映射
+    "!node_modules/@types/**", // TypeScript 类型包，编译期产物
+    "!node_modules/**/*.d.ts",
+    "!node_modules/**/*.d.mts",
+    "!node_modules/**/*.d.cts",
+    // ⚠️ 按目录名删（test/doc/example 之类）试过，当场炸：@iconify/utils 的运行时代码就住在
+    // lib/emoji/test/ 下、exceljs 的核心在 lib/doc/ 下，删完 mermaid 和 exceljs 都 require 不起来。
+    // 那条规则只省 1 MB，换的是整包打不开——不做。留下的三条只按「运行时永远不读的文件类型」删。
+    // LICENSE / *.md 一律留着：MIT 之类的许可证要求随分发附上原文，省这几 MB 不值当
   ],
 
   mac: {

@@ -28,6 +28,8 @@ const ROOT = path.join(__dirname, "..");
 const BUILD = process.argv.includes("--build");
 
 let pass = 0, fail = 0;
+// 少数几条断言要 await（比如逐个 require 生产依赖），攒在这儿最后统一跑
+const awaitables = [];
 const ok = (cond, msg, extra) => {
   if (cond) { pass++; console.log("  ✓ " + msg); }
   else { fail++; console.log("  ✗ " + msg + (extra !== undefined ? "  ← " + JSON.stringify(extra) : "")); }
@@ -268,10 +270,94 @@ console.log("\n【5】用到的 npm 包，package.json 里有没有声明");
 }
 
 // ===================================================================
-// 【6】--build：真起一个容器（可选，慢）
+// 【6】装机包瘦身：既不能虚胖，也不能删过头
+// ===================================================================
+// issue #1「下载了打不开」里最难查的一种：Windows 免安装版每次启动都要把整包解压到 %TEMP%，
+// 再被 Defender 逐个文件扫一遍——文件越多，「任务管理器里有进程、屏幕上没窗口」的时间越长。
+// 所以要删掉运行时一个字节都不读的东西（source map、类型声明）。
+// 但删过头更惨：包签得漂漂亮亮，一打开就 Cannot find module。
+// 这一节钉的就是这两头——瘦身真生效，且瘦完还 require 得起来。
+console.log("\n【6】装机包瘦身：既不能虚胖，也不能删过头");
+
+{
+  const gate = require(path.join(ROOT, "scripts", "check-package-files.js"));
+  const cfg = read("electron-builder.config.js");
+
+  // —— 删的是哪些文件：只按「运行时永远不读的文件类型」删
+  ok(/"!node_modules\/\*\*\/\*\.map"/.test(cfg), "排除了 source map（116 MB，只有 devtools 会读）");
+  ok(/"!node_modules\/\*\*\/\*\.d\.ts"/.test(cfg), "排除了 .d.ts 类型声明（35 MB，编译期产物）");
+  ok(/"!node_modules\/@types\/\*\*"/.test(cfg), "排除了 @types 整个作用域");
+
+  // —— 绝不能按目录名删。这条不是洁癖，是踩过的坑：
+  // @iconify/utils 的运行时代码住在 lib/emoji/test/ 下、exceljs 的核心在 lib/doc/ 下，
+  // 按 test/doc/example 删完，mermaid 和 exceljs 当场 require 不起来，省下的只有 1 MB。
+  ok(!/!node_modules[^"]*\{?[^"]*\b(tests?|__tests__|examples?|docs?)\b/.test(cfg),
+     "没有按目录名删（test/doc/example 里住着真代码：@iconify/utils、exceljs 都栽在这儿）");
+  // 许可证要求随分发附上原文，省这几 MB 不值当
+  ok(!/!node_modules[^"]*LICENSE/i.test(cfg) && !/!node_modules[^"]*\*\.md/.test(cfg),
+     "LICENSE 和 *.md 一律留着（MIT 之类的许可证要求随分发附上原文）");
+
+  // —— 三道闸门都接在 afterPack 上，而且排在签名之前：
+  // 顺序反了的话，一个必定打不开的包会被签得漂漂亮亮发出去
+  const iComplete = cfg.indexOf("assertPackComplete");
+  const iDeps = cfg.indexOf("assertDepsRequirable");
+  const iSlim = cfg.indexOf("assertSlimmed");
+  const iSign = cfg.indexOf("await adhocSign(ctx)");
+  ok(iComplete > 0 && iDeps > 0 && iSlim > 0, "afterPack 里三道闸门都在", { iComplete, iDeps, iSlim });
+  ok(iSign > 0 && iComplete < iSign && iDeps < iSign && iSlim < iSign,
+     "  └ 而且都排在签名前面（先验货再盖章，别把打不开的包签漂亮了发出去）", { iSign });
+
+  // —— assertSlimmed 真跑：认得出残留，也不许错杀
+  ok(gate.DEAD_WEIGHT.some((re) => re.test("index.js.map")), "认得 .map");
+  ok(gate.DEAD_WEIGHT.some((re) => re.test("index.d.ts")) && gate.DEAD_WEIGHT.some((re) => re.test("index.d.mts")),
+     "认得 .d.ts / .d.mts");
+  ok(!gate.DEAD_WEIGHT.some((re) => re.test("index.js")) && !gate.DEAD_WEIGHT.some((re) => re.test("LICENSE")) &&
+     !gate.DEAD_WEIGHT.some((re) => re.test("sourcemap.js")),
+     "不误伤真代码、许可证，和名字里带 map 的正常文件");
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-slim-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "node_modules", "x"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, "node_modules", "x", "index.js"), "module.exports=1");
+    const clean = gate.assertSlimmed(tmp);
+    ok(clean.files === 1 && clean.leftovers.length === 0, "干净的包能过闸", clean.files);
+    // 反向对照：塞一个 .map 进去，闸门必须红——否则这条断言恒真，等于没测
+    fs.writeFileSync(path.join(tmp, "node_modules", "x", "index.js.map"), "{}");
+    let threw = null;
+    try { gate.assertSlimmed(tmp); } catch (e) { threw = e.message; }
+    ok(threw && /排除没生效/.test(threw), "反向对照：剩一个 .map 就红，并且指名道姓", (threw || "没抛").slice(0, 60));
+    ok(threw && /index\.js\.map/.test(threw), "  └ 报错里点得出是哪个文件（不然只能一个个翻）");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+
+  // —— assertDepsRequirable 真跑：本仓库的生产依赖必须全都 require 得起来。
+  // 这是唯一能证明「瘦身没删过头」的办法——光看文件名对不出来。
+  awaitables.push(async () => {
+    let err = null;
+    try { await gate.assertDepsRequirable(ROOT); } catch (e) { err = e.message; }
+    ok(!err, "生产依赖逐个 require 得起来（删过头的话这条会红，而不是等用户报障）", (err || "").slice(0, 300));
+
+    // 反向对照：指到一个没有 node_modules 的空目录，闸门必须红
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "owb-dep-"));
+    try {
+      fs.writeFileSync(path.join(empty, "package.json"), JSON.stringify({ dependencies: { express: "*", "not-a-real-pkg-xyz": "*" } }));
+      let threw = null;
+      try { await gate.assertDepsRequirable(empty); } catch (e) { threw = e.message; }
+      ok(threw && /not-a-real-pkg-xyz/.test(threw), "反向对照：装不上的依赖会被点名（不是恒真的断言）", (threw || "没抛").slice(0, 80));
+      ok(threw && /必定打不开/.test(threw), "  └ 报错说清后果，别让人以为只是个警告");
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+}
+
+// ===================================================================
+// 【7】--build：真起一个容器（可选，慢）
 // ===================================================================
 if (BUILD) {
-  console.log("\n【6】真 build、真跑、真注册 —— 这段慢，几分钟");
+  console.log("\n【7】真 build、真跑、真注册 —— 这段慢，几分钟");
+  awaitables.forEach((fn) => { void fn(); }); // --build 时也别把上面那几条 await 断言漏掉
   const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...opts });
   const TAG = "openworkbuddy:deploytest";
   const NAME = "owb-deploytest";
@@ -406,4 +492,9 @@ function done() {
   console.log(`\n${fail ? "✗" : "✅"} Docker 部署：${pass} 项通过${fail ? `，${fail} 项挂` : ""}${BUILD ? "" : "（静态部分；真 build 用 --build）"}`);
   process.exit(fail ? 1 : 0);
 }
-if (!BUILD) done();
+if (!BUILD) {
+  (async () => {
+    for (const fn of awaitables) await fn();
+    done();
+  })();
+}
