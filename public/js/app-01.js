@@ -6,6 +6,22 @@ let settingsCache = null;
 let projects = [];
 let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前声明（初始化就会用到）
 let projectsLocked = false;    // 服务端说「你这边没有项目这回事」（租户成员）：整块项目区不画，任务历史也不按项目过滤
+/**
+ * 两条工作线（lane）：顶上那两个标签，管的是「这活儿交给谁的手」。
+ *   office（办公模式）→ 本项目自己的循环：专家团、技能库、记忆、生图生视频
+ *   cli（命令行模式）→ 本机装的 Claude Code / Codex：写代码、跑脚本、查日志
+ * 必须在任何 renderHistory() / renderLaneTabs() 之前声明（app-02 一加载就会用）。
+ * 门面信息（名字、交给哪个引擎、装没装）一律由服务端 /api/lanes 给——
+ * 前端写死的下场是标签上写着「Claude Code」，点下去报「找不到 claude」。
+ */
+let activeLane = "office";
+let defaultLane = "office";  // 服务端按当前配置算的回落值：老会话没记过 lane 时归到这条线
+let laneInfo = [];           // /api/lanes 回来的那两行；拉回来之前用 LANE_FALLBACK 先画着
+const LANE_FALLBACK = [
+  { id: "office", name: "办公模式", short: "办公", detail: "做表、写稿、出图、发消息", ready: true },
+  { id: "cli", name: "命令行模式", short: "命令行", detail: "写代码、跑脚本、查日志", ready: true },
+];
+try { const v = localStorage.getItem("wb_lane"); if (v === "cli" || v === "office") activeLane = v; } catch {}
 let currentUser = null; // 登录后由 initAuth() 填充
 /** 内置猫标的哨兵值。不是 emoji 也不是 data URI，avatarBits 单独认它 */
 const ASSISTANT_MARK = "@cat";

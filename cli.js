@@ -28,6 +28,7 @@ const { createLLM } = require("./llm");
 const { setWorkspaceDir, getWorkspaceDir } = require("./tools");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
+const lanes = require("./lanes"); // 底层 CLI 的续跑 id 按引擎分开记：claude 的 id 喂给 codex 只会当场炸
 const account = require("./account");
 const store = require("./store");
 
@@ -280,10 +281,11 @@ async function runOnce(runtime, text, mode) {
       mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",
       user: owner ? owner.username : undefined, // 记忆按人取，命令行走管理员这本账
       stopSignal: ctrl.signal,
-      // 底层 CLI 引擎的线程 id：跟会话存在一起，所以在桌面开的头能在这儿接着跑，反过来也一样
-      engineSession: sess.engine_session || null,
+      // 底层 CLI 引擎的线程 id：跟会话存在一起，所以在桌面开的头能在这儿接着跑，反过来也一样。
+      // 不传 lane：命令行照旧用设置里选的那个引擎，行为一个字节不差
+      engineSession: lanes.engineSessionFor(sess, lanes.engineIdFor("", config.agent)),
     });
-    if (r && r.sessionId) { sess.engine_session = r.sessionId; sess.engine = r.engine || ""; }
+    if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || lanes.engineIdFor("", config.agent), r.sessionId);
     finalText = r.finalText || "";
   } catch (e) {
     state.error = e.message;
