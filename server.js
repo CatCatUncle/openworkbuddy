@@ -34,6 +34,7 @@ const cliLive = require("./cli-live"); // 终端里起的任务挂在盘上的�
 const thinking = require("./thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./security");
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠道表 + 每路多模型
+const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
 const memory = require("./memory");
 const notify = require("./notify");
 const store = require("./store");
@@ -87,7 +88,11 @@ if (!Array.isArray(config.models) || !config.models.length) {
 }
 
 // 四路媒体模型迁移：老的「一路一个模型、Key 抄四份」→ 渠道表 + 模型表。幂等，老用户什么都不用做
-if (mediaModels.normalize(config)) saveConfig();
+// 对话模型跟着做同一件事：每条自己抄一份地址和 Key → 抽到渠道那一层，一把 Key 底下挂一排模型。
+// 两者共用同一张 config.providers 表，所以媒体那边先跑（它的渠道认领只看地址+Key，不看协议）
+let migrated = mediaModels.normalize(config);
+if (chatModels.normalize(config)) migrated = true;
+if (migrated) saveConfig();
 
 security.getSecurity(config); // 补齐安全中心默认策略
 config.shortcuts = config.shortcuts || {}; // 快捷键自定义绑定（只存改过的项，默认值在前端定义）
@@ -779,6 +784,20 @@ app.post("/api/provider-models", async (req, res) => {
   }
 });
 
+/**
+ * 四路媒体的老扁平配置（tools.js 读的那份）发给界面之前，按身份把 Key 掩掉。
+ * 掩成一串星号而不是空串：空串会被界面读成「还没配」，于是有人会去重填一遍——
+ * 而他根本没有改这台服务器 Key 的权限，白填一次还要吃一个 403。
+ */
+function maskMedia(media, owner) {
+  const out = {};
+  for (const cap of mediaModels.CAPS) {
+    const c = { base_url: "", api_key: "", model: "", ...(cap === "tts" ? { voice: "" } : {}), ...((media || {})[cap] || {}) };
+    out[cap] = { ...c, api_key: owner ? c.api_key || "" : (c.api_key ? "********" : ""), has_key: !!c.api_key };
+  }
+  return out;
+}
+
 app.get("/api/settings", (req, res) => {
   // 个人偏好压在全局配置上面。没有个人偏好文件时这几个 *Cfg 原样返回 config 的那一份
   const myAgent = prefs.agentCfg(config);
@@ -786,7 +805,13 @@ app.get("/api/settings", (req, res) => {
   const myModel = prefs.modelCfg(config);
   res.json({
     workspace_dir: getWorkspaceDir(),
-    models: config.models,
+    // Key 一律按身份掩码。普通成员看得见有哪些模型（他要选着用），但看不到 Key——
+    // 那是整台服务器的账单凭证，他既改不了也不该拿到手。has_key 让界面照样能提示「这条还没配 Key」
+    models: (config.models || []).map((m) => ({
+      ...m,
+      api_key: isPlatformOwner(req) ? m.api_key || "" : (m.api_key ? "********" : ""),
+      has_key: !!m.api_key,
+    })),
     active_model: config.active_model,
     model_health: healthSummary(),
     // 界面靠它决定「服务器级的那些输入框画不画」：画了却一存就 403，比不画更气人
@@ -845,12 +870,7 @@ app.get("/api/settings", (req, res) => {
       webhook_secret: (config.im || {}).webhook_secret || "",
       session_idle_hours: +(config.im || {}).session_idle_hours || 0,
     },
-    media: {
-      image: { base_url: "", api_key: "", model: "", ...((config.media || {}).image || {}) },
-      video: { base_url: "", api_key: "", model: "", ...((config.media || {}).video || {}) },
-      tts: { base_url: "", api_key: "", model: "", voice: "", ...((config.media || {}).tts || {}) },
-      vision: { base_url: "", api_key: "", model: "", ...((config.media || {}).vision || {}) },
-    },
+    media: maskMedia(config.media, isPlatformOwner(req)),
     // 渠道表：一把 Key 一行，图/视频/语音/视觉都引用它。普通成员看得见有哪些渠道，但看不到 Key——
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手
     providers: (config.providers || []).map((p) => ({
@@ -974,9 +994,15 @@ app.post("/api/settings", (req, res) => {
       });
     }
     if (Array.isArray(b.models)) {
+      const old = new Map((config.models || []).map((m) => [m.name, m]));
       for (const m of b.models) {
         if (!m.name || !m.model) throw new Error("每个模型需要 name 和 model 字段");
         m.provider = m.provider === "anthropic" ? "anthropic" : "openai";
+        delete m.has_key; // 读接口给界面加的，不进配置文件
+        // 读接口给非管理员回的是掩码。真有人把掩码原样存回来，按「没改」处理，别把 Key 抹成八个星号
+        if (/^\*+$/.test(String(m.api_key == null ? "" : m.api_key).trim())) {
+          m.api_key = String((old.get(m.name) || {}).api_key || "");
+        }
       }
       config.models = b.models;
     }
@@ -1103,7 +1129,11 @@ app.post("/api/settings", (req, res) => {
         if (b.media[kind]) {
           const c = (config.media[kind] = config.media[kind] || {});
           for (const k of ["base_url", "api_key", "model", "voice"]) {
-            if (b.media[kind][k] !== undefined) c[k] = String(b.media[kind][k]).trim();
+            if (b.media[kind][k] === undefined) continue;
+            const v = String(b.media[kind][k]).trim();
+            // 掩码原样存回来 = 用户没动这一栏，保留库里那把真的
+            if (k === "api_key" && /^\*+$/.test(v)) continue;
+            c[k] = v;
           }
         }
       }
@@ -1138,6 +1168,8 @@ app.post("/api/settings", (req, res) => {
     // 两张表任何一张动过，就重算 id、补默认项、把「默认那条」压平回 config.media，
     // 这样 tools.js 那边永远读到一份现成的扁平配置，不用关心多模型这套
     if (b.media || b.providers || b.media_models) mediaModels.normalize(config);
+    // 渠道改了 Key，挂在它底下的对话模型要跟着换——压平这一步就是干这个的
+    if (b.models || b.providers) chatModels.normalize(config);
     if (b.security) {
       const sec = security.getSecurity(config);
       for (const k of ["gateway", "delete_protect", "runtime_node", "runtime_python"]) {

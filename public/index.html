@@ -764,6 +764,41 @@
   .btn-plain { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; color: var(--wb-text-2); }
   .link { color: var(--wb-brand-text); cursor: pointer; text-decoration: none; }
   .link.danger { color: var(--wb-err-text); }
+  /* 模型设置：渠道卡片（折叠）→ 展开看它下面的模型。
+     这一块的主要矛盾是密度：一把 OpenRouter 的 Key 挂十个模型，老界面就是十行各自带地址、
+     各自喊「未填 Key」。现在 Key 只在渠道那一层提一次，模型行只留名字·型号·战绩，
+     编辑/复制/删除收进行尾的 ⋯ 菜单——要动手时才展开，平时一屏看得完。 */
+  .ch-card { border: 1px solid var(--wb-border); border-radius: 10px; margin-bottom: 8px; background: var(--wb-card); }
+  .ch-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; user-select: none; border-radius: 10px; }
+  .ch-head:hover { background: var(--wb-bg-hover); }
+  .ch-card.open .ch-head { border-bottom: 1px solid var(--wb-border); border-radius: 10px 10px 0 0; }
+  .ch-caret { flex: none; color: var(--wb-text-3); }
+  .ch-title { min-width: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .ch-title b { font-weight: 600; }
+  .ch-sub, .ch-count { color: var(--wb-text-3); font-size: 12px; }
+  .ch-count { margin-left: auto; flex: none; white-space: nowrap; }
+  .ch-warn { flex: none; display: inline-flex; align-items: center; gap: 3px; color: var(--wb-warn); font-size: 12px; white-space: nowrap; }
+  .ch-body { padding: 2px 12px 10px 32px; }
+  .ch-note { color: var(--wb-text-3); font-size: 12px; line-height: 1.6; padding: 4px 0; }
+  .mrow { display: flex; align-items: center; gap: 8px; padding: 7px 0; }
+  .mrow + .mrow { border-top: 1px solid var(--wb-border); }
+  .mrow input[type="radio"] { width: auto; margin: 0; flex: none; }
+  .mrow-dot { width: 14px; flex: none; text-align: center; color: var(--wb-brand-text); font-size: 12px; }
+  .mrow-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mrow-id { font-family: var(--font-mono); font-size: 12px; color: var(--wb-text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mrow-meta { margin-left: auto; color: var(--wb-text-3); font-size: 12px; white-space: nowrap; }
+  /* 行尾的 ⋯ 菜单：贴着行右边弹出来，点别处就收。手机上也点得到（悬停在触屏上不存在） */
+  .row-acts { position: relative; flex: none; margin-left: 4px; }
+  .row-more { border: none; background: none; cursor: pointer; color: var(--wb-text-3); padding: 2px 4px; border-radius: 6px; line-height: 0; }
+  .row-more:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
+  .row-menu { position: absolute; right: 0; top: 100%; z-index: 30; min-width: 132px; padding: 4px; border: 1px solid var(--wb-border); border-radius: 10px; background: var(--wb-card); box-shadow: var(--wb-shadow-md); }
+  .row-menu a { display: block; padding: 7px 10px; border-radius: 7px; font-size: 13px; color: var(--wb-text); text-decoration: none; white-space: nowrap; }
+  .row-menu a:hover { background: var(--wb-bg-hover); }
+  .row-menu a.danger { color: var(--wb-err-text); }
+  /* 媒体那一节的小标题：它不套 .card-item（渠道卡外面再套一圈框太吵），所以字重自己带上。
+     图标跟字之间留个 gap——贴在一起会读成「⊠看图」，像个乱码而不是图标 */
+  .sec-t { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 15px; margin: 0 0 4px; }
+  .card-item .t > .i { margin-right: 6px; }
   .settings-layout { display: flex; height: 60vh; }
   .settings-nav { width: 160px; flex-shrink: 0; border-right: 1px solid var(--wb-border); padding: 12px 8px; overflow-y: auto; }
   .settings-nav .cat { padding: 8px 12px; border-radius: 8px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; margin-bottom: 2px; }

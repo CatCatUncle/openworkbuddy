@@ -1703,7 +1703,7 @@ const HUB_CHECKS = `
 // 安全页八张卡全是服务器策略。点哪一颗都是 403。这一组把这四页在真 Chromium 里画出来数控件，
 // 每条都配一条平台管理员的反向对照——只删控件不写反向对照，把整页删空也能全绿。
 const SET0 = APP05.indexOf("const SETTING_CATS = [");
-const SET1 = APP05.indexOf("// 渠道预设：选一个就把接口地址/协议填好"); // 连 saveSettings/lastSaveError 一起切进来，那也是真源
+const SET1 = APP05.indexOf("/* ───────────────────────── 图 / 视频 / 配音 / 看图"); // 连 saveSettings/lastSaveError 一起切进来，那也是真源
 // 四路媒体模型那一大块（渠道表 + 能力卡 + 下拉选型）就在 renderModelsPane 前面，
 // 它被 renderModelsPane 直接调用，不切进来的话这一屏一画就 renderMediaPane is not defined。
 const MED0 = APP05.indexOf("const MEDIA_CAPS = [");
@@ -1722,7 +1722,9 @@ for (const [a, b, why] of [[SET0, SET1, "app-05.js 的 SETTING_CATS/renderSettin
   if (a < 0 || b <= a) throw new Error(why + " 找不到了（改名/挪走？），设置页权限测试没法定位真源码");
 const GATE_SRC = APP05.slice(SET0, SET1) + "\n" + APP05.slice(MED0, MOD1) + "\n" + APP05.slice(PER0, PER1)
   + "\n" + APP06.slice(SEC0, SEC1) + "\n" + APP02.slice(PM0, PM1);
-const GATE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><body>"
+// 这一屏要验的不止是「控件画没画」，还有「画出来长得对不对」——小标题够不够粗、图标跟字
+// 之间有没有缝。渠道卡那套样式在 index.html 的内联 <style> 里，所以两份 CSS 都得注进来。
+const GATE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div id='m-body'></div><div id='pane'></div><button id='perm-btn'><span id='perm-label'></span></button>"
   + "<div class='picker-menu up-left' id='perm-menu'></div></body>";
 const GATE_CHECKS = `
@@ -1734,7 +1736,6 @@ const GATE_CHECKS = `
   // 被测的是「哪些控件画出来了」，桩只要不炸就行。
   ${IC_STUB}
   window.ic = ic;
-  window.CHANNEL_PRESETS = [{ label: "选择渠道预设…", provider: "openai", base: "", model: "" }];
   window.ASSISTANT_MARK = "🐱";
   window.keyLink = () => "";
   window.modelKeySource = () => "";
@@ -1759,10 +1760,19 @@ const GATE_CHECKS = `
     if (method !== "GET") posts.push({ url, body: opt && opt.body ? JSON.parse(opt.body) : null });
     const j = (v, okFlag) => Promise.resolve({ ok: okFlag !== false, status: okFlag === false ? 403 : 200, json: () => Promise.resolve(v) });
     if (url === "/api/settings" && method === "GET") return j({
-      platform_owner: owner, models: [{ name: "主力", model: "gpt-5.2", api_key: "x" }, { name: "备用", model: "claude-sonnet-5", api_key: "y" }],
+      platform_owner: owner,
+      // 两条模型挂在同一个渠道上——「一把 Key 挂一排模型」正是这一屏要画对的东西
+      providers: [{ id: "or", name: "我的 OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "", has_key: false }],
+      models: [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or" }, { name: "备用", model: "claude-sonnet-5", api_key: "y", channel: "or" }],
+      media_models: [],
       active_model: "主力", media: {}, model_follow_last: true, persona: "回复简洁", assistant: { name: "小猫", avatar: "🐱" },
       pet: {}, security: { cmd_allow: ["ls"], cmd_ask: ["rm"] },
     });
+    if (url === "/api/model-catalog") return j({
+      kinds: [{ kind: "openrouter", label: "OpenRouter（聚合）", base_url: "https://openrouter.ai/api/v1", key_url: "https://openrouter.ai/keys" }],
+      catalog: { chat: [{ kind: "openrouter", id: "openai/gpt-5.2", label: "GPT-5.2" }] },
+    });
+    if (url === "/api/provider-models") return j({ ok: false, why: "测试里不出网", models: [] });
     if (url === "/api/security/modes") return j({ modes: { ask: { label: "每次问我", desc: "动手前都问" }, auto: { label: "自动执行", desc: "不问" } }, current: "ask", can_switch: canSwitch });
     if (url === "/api/security/approvals") return j({ session_allow: [] });
     if (url === "/api/security/system") return j({ fulldisk: "unknown", accessibility: "unknown", automation: "unknown", desktop: false });
@@ -1796,12 +1806,15 @@ const GATE_CHECKS = `
   ok("成员照样看得见服务器上有哪些模型", mp.textContent.includes("主力") && mp.textContent.includes("备用"));
   ok("没有那排单选钮（它存的是全局默认 active_model，一点就 403）", !mp.querySelector("input[name=active]"));
   ok("当前默认还是标出来了，只是画成状态不是开关", mp.textContent.includes("●"));
-  ok("没有编辑 / 复制 / 删除", !mp.querySelector("[data-edit]") && !mp.querySelector("[data-dup]") && !mp.querySelector("[data-del]"));
-  ok("没有「＋ 添加自定义模型」和那张 Key 表单", !mp.querySelector("#mf-new") && !mp.querySelector("#model-form"));
-  ok("四路媒体模型：成员这儿没有渠道表、没有 Key 输入框、没有默认单选钮，只有一句人话",
-    !mp.querySelector("#pf-new") && !mp.querySelector("#pf-key") && !mp.querySelector("#prov-list")
-    && !mp.querySelector("input[name^=def-]") && !mp.querySelector(".mm-new")
-    && /归平台管理员/.test(mp.textContent));
+  ok("模型行上没有那个 ⋯（编辑 / 复制 / 删除都在里头）",
+    !mp.querySelector(".row-more") && !mp.querySelector("[data-cedit]") && !mp.querySelector("[data-cdup]") && !mp.querySelector("[data-cdel]"));
+  ok("渠道底下没有「＋ 添加模型」和那张表单", !mp.querySelector(".ca-new") && !mp.querySelector(".ca-form"));
+  ok("渠道本身也动不了：没有增删改、没有 Key 输入框",
+    !mp.querySelector("#pf-new") && !mp.querySelector("#pf-key") && !mp.querySelector("#prov-form")
+    && !mp.querySelector("[data-pedit]") && !mp.querySelector("[data-pdel]"));
+  ok("但渠道分组照画——他得看得出哪几个模型共用同一把 Key", !!mp.querySelector("#prov-list") && mp.textContent.includes("我的 OpenRouter"));
+  ok("四路媒体模型：成员这儿没有默认单选钮，只有一句人话",
+    !mp.querySelector("input[name^=def-]") && !mp.querySelector(".mm-new") && /归平台管理员/.test(mp.textContent));
   ok("而且告诉他这几路现在有几个模型可用（不是一句「没权限」了事）", /个模型可用|还没配/.test(mp.textContent));
   ok("属于他自己的那颗开关还在（新对话沿用上次选的模型）", !!mp.querySelector("#mf-follow-last"));
   posts = [];
@@ -1812,10 +1825,34 @@ const GATE_CHECKS = `
   owner = true;
   await renderSettings("models");
   const mpo = mBody.querySelector("#settings-pane");
-  ok("反向对照：平台管理员那排单选钮、增删改、渠道表和四张媒体卡一样不少",
-    !!mpo.querySelector("input[name=active]") && !!mpo.querySelector("[data-edit]") && !!mpo.querySelector("#mf-new")
-    && !!mpo.querySelector("#prov-list") && !!mpo.querySelector("#pf-new") && mpo.querySelectorAll(".mm-new").length === 4,
-    "渠道表 " + !!mpo.querySelector("#prov-list") + " · 能力卡 " + mpo.querySelectorAll(".mm-new").length);
+  ok("反向对照：平台管理员那排单选钮、行尾 ⋯、渠道增删改和四路媒体一样不少",
+    !!mpo.querySelector("input[name=active]") && !!mpo.querySelector(".row-more") && !!mpo.querySelector("[data-cedit]")
+    && !!mpo.querySelector(".ca-new") && !!mpo.querySelector("#prov-list") && !!mpo.querySelector("#pf-new")
+    && !!mpo.querySelector("[data-pedit]") && mpo.querySelectorAll(".ch-head[data-cap]").length === 4,
+    "渠道表 " + !!mpo.querySelector("#prov-list") + " · 添加模型 " + !!mpo.querySelector(".ca-new") + " · 能力卡 " + mpo.querySelectorAll(".ch-head[data-cap]").length);
+  // 一把 Key 挂两个模型：整屏的行数应该比「每条模型摊一行」少——这是 #96 要的那个「不密」
+  ok("两个模型折在一个渠道卡里，「未填 Key / 去拿 Key」这类提示全屏只出现一次，不是一条模型一遍",
+    mpo.querySelectorAll("#prov-list .ch-card").length === 1 && mpo.querySelectorAll("#prov-list .mrow").length === 2
+    && (mpo.textContent.match(/未填 Key/g) || []).length === 1 && (mpo.textContent.match(/去拿 Key/g) || []).length === 1,
+    "渠道卡 " + mpo.querySelectorAll("#prov-list .ch-card").length + " · 模型行 " + mpo.querySelectorAll("#prov-list .mrow").length);
+  // 四路媒体也收起来了：默认一路一行，说明和表单都在折叠里，点开才出来
+  ok("看图 / 画图 / 视频 / 配音 默认全折着，四段说明不再一起摊在屏上",
+    !mpo.querySelector(".mm-new") && !mpo.querySelector(".mm-form")
+    && !/你粘贴（⌘V）或拖进来的截图/.test(mpo.textContent) && /还没配/.test(mpo.textContent),
+    "添加钮 " + mpo.querySelectorAll(".mm-new").length + " · 表单 " + mpo.querySelectorAll(".mm-form").length);
+  mpo.querySelector('.ch-head[data-cap="image"]').onclick();
+  const mpo2 = mBody.querySelector("#settings-pane");
+  ok("点开「画图」那一路：说明、已配模型、添加钮都出来了，另外三路还收着",
+    mpo2.querySelectorAll(".mm-new").length === 1 && mpo2.querySelector(".mm-new").dataset.cap === "image"
+    && mpo2.textContent.includes("/images/generations") && !/你粘贴（⌘V）或拖进来的截图/.test(mpo2.textContent),
+    "展开了 " + mpo2.querySelectorAll(".mm-new").length + " 路");
+  // 媒体那一节的小标题不在 .card-item 里，字重得自己带；图标跟字之间也得留条缝，
+  // 不然渲染出来是「⊠看图」，读着像乱码而不是图标
+  const secT = mpo2.querySelector(".sec-t");
+  ok("「看图 / 画图 / 视频 / 配音」是个真小标题：字重 600，图标跟字之间有缝",
+    !!secT && !!secT.querySelector(".i") && getComputedStyle(secT).fontWeight === "600"
+    && parseFloat(getComputedStyle(secT).columnGap) >= 4,
+    "字重 " + (secT && getComputedStyle(secT).fontWeight) + " · 缝 " + (secT && getComputedStyle(secT).columnGap));
 
   // ③ 个性化页：名字和偏好是全服务器共用一份，宠物是他自己电脑上那只
   owner = false;

@@ -350,19 +350,6 @@ async function saveSettings(patch, msgEl) {
   if (resp.ok) refreshSettingsCache();
   return resp.ok;
 }
-// 渠道预设：选一个就把接口地址/协议填好，只差 Key 和模型名
-const CHANNEL_PRESETS = [
-  { label: "选择渠道预设…", provider: "openai", base: "", model: "" },
-  { label: "OpenAI 官方", provider: "openai", base: "https://api.openai.com/v1", model: "gpt-5.2" },
-  { label: "Anthropic Claude 官方", provider: "anthropic", base: "", model: "claude-sonnet-5" },
-  { label: "OpenRouter（聚合）", provider: "openai", base: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-chat" },
-  { label: "火山方舟（豆包/DeepSeek）", provider: "openai", base: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-seed-1-6-250615" },
-  { label: "阿里云百炼（通义）", provider: "openai", base: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-max" },
-  { label: "DeepSeek 官方", provider: "openai", base: "https://api.deepseek.com/v1", model: "deepseek-chat" },
-  { label: "智谱 GLM", provider: "openai", base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-plus" },
-  { label: "Kimi（月之暗面）", provider: "openai", base: "https://api.moonshot.cn/v1", model: "kimi-k2-0905-preview" },
-  { label: "Ollama 本地", provider: "openai", base: "http://localhost:11434/v1", model: "qwen3:14b" },
-];
 /* ───────────────────────── 图 / 视频 / 配音 / 看图：多模型配置 ─────────────────────────
  * 老界面是一路一张卡、一张卡一个模型，Key 还得一路填一遍：同一把 OpenRouter Key 抄四次，
  * 换 Key 时漏一处，某一路就在半年后突然 401。
@@ -381,6 +368,13 @@ const MEDIA_CAPS = [
 ];
 let mediaCatalog = null; // 精选目录，一次会话拉一次
 const liveModels = new Map(); // 渠道 id → 那边 /models 现拉回来的清单
+/** 展开着的渠道 id。重画时保留——存完一个模型整张卡自己合上，比不合上更烦人 */
+const openChans = new Set();
+/** 展开着的那几路能力。四张卡默认全收着：大多数人只配一两路，四段说明一起摊开正是上一版「字太多」的来源 */
+const openCaps = new Set();
+let chanFirstPaint = true;
+let modelsPaneEl = null; // 媒体那半边改完东西，渠道卡上的计数也得跟着变，所以记着 pane 在哪
+let rowMenuBound = false;
 
 async function loadMediaCatalog() {
   if (mediaCatalog) return mediaCatalog;
@@ -393,10 +387,20 @@ async function loadMediaCatalog() {
  * 存完把服务端规整过的结果（补了 id、重新算了默认项、压平了 config.media）拿回来盖上，
  * 免得界面上显示的还是提交前那份、跟盘里已经不一样。
  */
-async function saveMediaTables(s, msgEl) {
-  const ok = await saveSettings({ providers: s.providers, media_models: s.media_models }, msgEl);
+async function saveAllModelTables(s, msgEl, extra) {
+  const patch = { providers: s.providers, models: s.models || [], media_models: s.media_models, ...(extra || {}) };
+  const ok = await saveSettings(patch, msgEl);
   if (ok && settingsCache) Object.assign(s, settingsCache); // saveSettings 成功时已经刷过缓存
   return ok;
+}
+/** 老名字留着：媒体那半边十来处调用点没必要为了改个名字全动一遍 */
+function saveMediaTables(s, msgEl) {
+  return saveAllModelTables(s, msgEl);
+}
+/** 媒体那边改完：渠道卡上的「N 个媒体模型」也变了，所以能连带就整页重画 */
+function repaintMedia(box, s) {
+  if (modelsPaneEl && modelsPaneEl.isConnected && modelsPaneEl.contains(box)) paintModels(modelsPaneEl, s);
+  else paintMedia(box, s);
 }
 
 function renderMediaPane(box, s) {
@@ -421,129 +425,87 @@ function renderMediaPane(box, s) {
 }
 
 function paintMedia(box, s) {
-  const kinds = (mediaCatalog || {}).kinds || [];
-  const kindLabel = (k) => (kinds.find((x) => x.kind === k) || {}).label || k || "自定义";
   const provName = (id) => { const p = s.providers.find((x) => x.id === id); return p ? p.name : "（渠道已删）"; };
   box.innerHTML = `
-    <div style="border-top:1px solid var(--wb-border);padding-top:12px">
-      <div class="t" style="margin-bottom:4px">${ic("key-round")}渠道（API Key）</div>
-      <div class="d" style="margin-bottom:8px">一把 Key 建一个渠道，下面四路都从这儿选。同一把 OpenRouter / 火山方舟的 Key 只用填一次，换 Key 也只改这一处。</div>
-      <div id="prov-list">${s.providers.length ? s.providers.map((p, i) => `
-        <div class="card-item" style="display:flex;align-items:center;gap:10px">
-          <div style="flex:1;min-width:0">
-            <div class="t">${esc(p.name)} <span style="font-weight:400;color:var(--wb-text-3);font-size:12px">${esc(kindLabel(p.kind))}${p.has_key === false || !p.api_key ? ` · ${ic("triangle-alert")}未填 Key` : ""}</span></div>
-            <div class="d" style="font-size:12px">${esc(p.base_url || "（没填地址）")} · 被 ${s.media_models.filter((m) => m.provider === p.id).length} 个模型用着</div>
-          </div>
-          <a href="#" class="link" data-pedit="${i}">编辑</a>
-          <a href="#" class="link danger" data-pdel="${i}">删除</a>
-        </div>`).join("") : `<div class="d" style="padding:8px 0">还没有渠道。先加一个，下面才挑得了模型。</div>`}</div>
-      <div id="prov-form" style="display:none;border-top:1px solid var(--wb-border);padding-top:10px;margin-top:8px">
-        <select id="pf-kind">${kinds.map((k) => `<option value="${esc(k.kind)}">${esc(k.label)}</option>`).join("")}</select>
-        <input id="pf-name" placeholder="给它起个名（如：我的火山方舟）">
-        <input id="pf-base" placeholder="接口地址（选了类型会自动填）">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-          <input id="pf-key" type="password" placeholder="API Key" style="flex:1;min-width:0;margin:0">
-          <span id="pf-key-src"></span>
-        </div>
-        <button class="btn-brand" id="pf-save">保存渠道</button>
-        <button class="btn-plain" id="pf-cancel">取消</button>
-      </div>
-      <button class="btn-plain" id="pf-new" style="margin-top:6px">＋ 添加渠道</button>
-    </div>
+    <div class="sec-t">${ic("image")}看图 / 画图 / 视频 / 配音</div>
+    <div class="d" style="margin-bottom:2px">这四路各自挑模型，Key 就用上面渠道里那一把，不用再填一遍。</div>
     ${MEDIA_CAPS.map((c) => capCard(c, s, provName)).join("")}
     <span class="ok-msg" id="media-msg"></span>`;
   bindMedia(box, s);
 }
 
-/** 一路能力一张卡：上面是已配的模型（单选钮选默认），下面是一个折叠的「添加」表单 */
+/**
+ * 一路能力一张折叠卡，跟上面的渠道卡同一套写法。
+ *
+ * 老版本四张卡全摊开：每张顶着两三行说明、一排两行高的模型条、一个表单和一颗按钮，
+ * 光这四张就吃掉一屏半——可绝大多数人只配一路画图，另外三路一个字都不用看。
+ * 现在收起来只剩一行「画图 · generate_image · 2 个 · 默认 即梦」，要动它才展开。
+ */
 function capCard(c, s, provName) {
   const mine = s.media_models.filter((m) => m.cap === c.cap);
+  const open = openCaps.has(c.cap);
+  const def = mine.find((m) => m.default) || mine[0];
+  const sum = mine.length ? `${mine.length} 个 · 默认 ${esc(def.name || def.model || "")}` : "还没配";
   return `
-    <div class="card-item" style="margin-top:10px">
-      <div class="t">${ic(c.icon)}${esc(c.title)}<span style="font-weight:400;color:var(--wb-text-3);font-size:12px"> · ${esc(c.tool)}</span></div>
-      <div class="d" style="margin-bottom:8px">${esc(c.hint)}</div>
-      <div>${mine.length ? mine.map((m) => {
-        const i = s.media_models.indexOf(m);
-        return `
-        <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--wb-border)">
-          <input type="radio" name="def-${c.cap}" style="width:auto;margin:0" ${m.default ? "checked" : ""} data-def="${i}" title="设为这一路的默认">
-          <div style="flex:1;min-width:0">
-            <div style="font-size:13px">${esc(m.name)}${m.default ? ` <span style="color:var(--wb-brand-text);font-size:12px">默认</span>` : ""}</div>
-            <div class="d" style="font-size:12px">${esc(m.model)} · ${esc(provName(m.provider))}${m.voice ? ` · 音色 ${esc(m.voice)}` : ""}</div>
-          </div>
-          <a href="#" class="link danger" data-mdel="${i}">删除</a>
-        </div>`;
-      }).join("") : `<div class="d" style="font-size:12px;padding:4px 0">还没配。加一个之后 agent 才用得了 ${esc(c.tool)}。</div>`}</div>
-      <div class="mm-form" data-cap="${c.cap}" style="display:none;border-top:1px solid var(--wb-border);padding-top:8px;margin-top:6px">
-        <div class="form-row">
-          <select class="mm-prov"></select>
-          <select class="mm-model"></select>
-        </div>
-        <div class="form-row">
-          <input class="mm-custom" placeholder="模型名（上面选「自己填…」时用这个）" style="display:none">
-          <input class="mm-name" placeholder="别名（可空，默认用模型名；agent 按这个名字点名）">
-          ${c.cap === "tts" ? `<input class="mm-voice" placeholder="默认音色（如 Cherry / alloy，可空）">` : ""}
-        </div>
-        <div class="d mm-tip" style="font-size:12px;margin-bottom:6px"></div>
-        <button class="btn-brand mm-save">添加</button>
-        <button class="btn-plain mm-cancel">取消</button>
+    <div class="ch-card${open ? " open" : ""}">
+      <div class="ch-head" data-cap="${c.cap}">
+        ${ic(open ? "chevron-down" : "chevron-right", "ch-caret i-sm")}
+        <span class="ch-title"><b>${esc(c.title)}</b><span class="ch-sub">${esc(c.tool)}</span></span>
+        <span class="ch-count">${sum}</span>
       </div>
-      <button class="btn-plain mm-new" data-cap="${c.cap}" style="margin-top:6px">＋ 添加${esc(c.title)}模型</button>
+      ${!open ? "" : `<div class="ch-body">
+        <div class="ch-note">${esc(c.hint)}</div>
+        ${mine.length ? mine.map((m) => {
+          const i = s.media_models.indexOf(m);
+          const meta = [m.default ? "默认" : "", provName(m.provider), m.voice ? `音色 ${m.voice}` : ""].filter(Boolean).map(esc).join(" · ");
+          return `
+          <div class="mrow">
+            <input type="radio" name="def-${c.cap}" ${m.default ? "checked" : ""} data-def="${i}" title="设为这一路的默认">
+            <span class="mrow-name">${esc(m.name)}</span>
+            <span class="mrow-id">${esc(m.model)}</span>
+            <span class="mrow-meta">${meta}</span>
+            ${rowMenu([["mdel", i, "删除", "danger"]])}
+          </div>`;
+        }).join("") : `<div class="ch-note">还没配。加一个之后 agent 才用得了 ${esc(c.tool)}。</div>`}
+        <div class="mm-form" data-cap="${c.cap}" style="display:none;border-top:1px solid var(--wb-border);padding-top:8px;margin-top:6px">
+          <div class="form-row">
+            <select class="mm-prov"></select>
+            <select class="mm-model"></select>
+          </div>
+          <div class="form-row">
+            <input class="mm-custom" placeholder="模型名（上面选「自己填…」时用这个）" style="display:none">
+            <input class="mm-name" placeholder="别名（可空，默认用模型名；agent 按这个名字点名）">
+            ${c.cap === "tts" ? `<input class="mm-voice" placeholder="默认音色（如 Cherry / alloy，可空）">` : ""}
+          </div>
+          <div class="d mm-tip" style="font-size:12px;margin-bottom:6px"></div>
+          <button class="btn-brand mm-save">添加</button>
+          <button class="btn-plain mm-cancel">取消</button>
+        </div>
+        <button class="btn-plain mm-new" data-cap="${c.cap}" style="margin-top:6px">＋ 添加${esc(c.title)}模型</button>
+      </div>`}
     </div>`;
 }
 
 function bindMedia(box, s) {
   const msg = box.querySelector("#media-msg");
-  const kinds = (mediaCatalog || {}).kinds || [];
-  const form = box.querySelector("#prov-form");
-  let editP = -1;
-  const showProvForm = (p) => {
-    form.style.display = "";
-    box.querySelector("#pf-kind").value = (p && p.kind) || (kinds[0] || {}).kind || "custom";
-    box.querySelector("#pf-name").value = (p && p.name) || "";
-    box.querySelector("#pf-base").value = (p && p.base_url) || "";
-    box.querySelector("#pf-key").value = (p && p.api_key) || "";
-    box.querySelector("#pf-key-src").innerHTML = keyLink((p && p.base_url) || "");
-  };
-  box.querySelector("#pf-kind").onchange = (e) => {
-    const k = kinds.find((x) => x.kind === e.target.value) || {};
-    box.querySelector("#pf-base").value = k.base_url || "";
-    box.querySelector("#pf-key-src").innerHTML = k.key_url
-      ? `<a class="get-key" href="${esc(k.key_url)}" target="_blank" rel="noopener">去拿 Key ↗</a>` : "";
-    if (!box.querySelector("#pf-name").value) box.querySelector("#pf-name").value = String(k.label || "").replace(/（.*/, "");
-  };
-  box.querySelector("#pf-new").onclick = () => { editP = -1; showProvForm(null); box.querySelector("#pf-kind").onchange({ target: box.querySelector("#pf-kind") }); };
-  box.querySelector("#pf-cancel").onclick = () => (form.style.display = "none");
-  box.querySelectorAll("a[data-pedit]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); editP = +a.dataset.pedit; showProvForm(s.providers[editP]); }));
-  box.querySelectorAll("a[data-pdel]").forEach((a) => (a.onclick = async (e) => {
-    e.preventDefault();
-    const p = s.providers[+a.dataset.pdel];
-    const used = s.media_models.filter((m) => m.provider === p.id);
-    // 删渠道会连坐：挂在它下面的模型一起没。说清楚数，别删完才发现画图不能用了
-    if (!confirm(used.length ? `删掉「${p.name}」的话，挂在它下面的 ${used.length} 个模型也会一起删掉。继续？` : `确认删除渠道「${p.name}」？`)) return;
-    s.providers.splice(+a.dataset.pdel, 1);
-    s.media_models = s.media_models.filter((m) => m.provider !== p.id);
-    if (await saveMediaTables(s, msg)) paintMedia(box, s);
+
+  // 展开 / 收起：纯前端，不碰服务器
+  box.querySelectorAll(".ch-head[data-cap]").forEach((h) => (h.onclick = () => {
+    const cap = h.dataset.cap;
+    if (openCaps.has(cap)) openCaps.delete(cap); else openCaps.add(cap);
+    repaintMedia(box, s);
   }));
-  box.querySelector("#pf-save").onclick = async () => {
-    const v = (id) => box.querySelector("#" + id).value.trim();
-    if (!v("pf-name")) return toast("给渠道起个名字，下面挑模型时要按名字认");
-    if (!/^https?:\/\//i.test(v("pf-base"))) return toast("接口地址要填完整的 http(s) 地址");
-    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind: v("pf-kind"), base_url: v("pf-base"), api_key: v("pf-key") };
-    if (editP >= 0) s.providers[editP] = { ...s.providers[editP], ...entry }; else s.providers.push(entry);
-    liveModels.clear(); // 换了地址或 Key，之前拉回来的清单就不作数了
-    if (await saveMediaTables(s, msg)) paintMedia(box, s);
-  };
+  bindRowMenus(box);
 
   box.querySelectorAll("input[data-def]").forEach((r) => (r.onchange = async () => {
     const t = s.media_models[+r.dataset.def];
     for (const m of s.media_models) if (m.cap === t.cap) m.default = m === t;
-    if (await saveMediaTables(s, msg)) paintMedia(box, s);
+    if (await saveMediaTables(s, msg)) repaintMedia(box, s);
   }));
   box.querySelectorAll("a[data-mdel]").forEach((a) => (a.onclick = async (e) => {
     e.preventDefault();
     s.media_models.splice(+a.dataset.mdel, 1);
-    if (await saveMediaTables(s, msg)) paintMedia(box, s);
+    if (await saveMediaTables(s, msg)) repaintMedia(box, s);
   }));
 
   box.querySelectorAll(".mm-new").forEach((b) => (b.onclick = () => {
@@ -570,15 +532,18 @@ function bindMedia(box, s) {
       if (s.media_models.some((m) => m.cap === cap && m.name === name)) return toast(`这一路已经有叫「${name}」的了，换个别名`);
       const voice = f.querySelector(".mm-voice") ? f.querySelector(".mm-voice").value.trim() : "";
       s.media_models.push({ id: "", cap, name, provider: prov, model, voice, default: !s.media_models.some((m) => m.cap === cap) });
-      if (await saveMediaTables(s, msg)) paintMedia(box, s);
+      if (await saveMediaTables(s, msg)) repaintMedia(box, s);
     };
   });
 }
 
 function fillProvSelect(f, s) {
   const sel = f.querySelector(".mm-prov");
-  sel.innerHTML = s.providers.length
-    ? s.providers.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")
+  // Anthropic / DeepSeek / Kimi 只做对话，没有画图配音接口。列出来只会让人选完发现跑不通
+  const chatOnly = new Set(((mediaCatalog || {}).kinds || []).filter((k) => k.chat_only).map((k) => k.kind));
+  const usable = s.providers.filter((p) => !chatOnly.has(p.kind));
+  sel.innerHTML = usable.length
+    ? usable.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")
     : `<option value="">（先加一个渠道）</option>`;
   fillModelSelect(f, s);
 }
@@ -627,109 +592,369 @@ function injectLive(sel, tip, d, cap) {
   tip.textContent = `从渠道拉到 ${d.models.length} 个模型${d.cached ? "（缓存）" : ""}，挑不到就选「自己填…」。`;
 }
 
+/* ───────────────────────── 模型设置：渠道卡片 → 展开看它下面的模型 ─────────────────────────
+ * 老界面把每条模型摊成一行，一行里塞名字、模型 id、接口地址、「⚠ 未填 Key 去拿 Key ↗」，
+ * 再加编辑 / 复制 / 删除三个链接。一把 OpenRouter 的 Key 挂十个模型，就是十行重复的地址
+ * 和十遍一模一样的催填提示——信息全在，但一眼看不出哪条是哪条。
+ *
+ * 现在按渠道折叠：平时一个渠道一行，要动手才展开；Key 是渠道的属性，所以只在渠道那层提一次；
+ * 模型行只留「名字 · 模型 id · 战绩」，改删收进行尾的 ⋯ 里。加模型也从渠道里进，天然共用那把 Key。
+ */
 function renderModelsPane(pane, s) {
-  // 多人服务器上的普通成员：模型渠道、Key、全局默认模型改的是**整台服务器**的账单，归平台管理员。
-  // 但这一页对他不是没用——他得知道有哪些模型可选、默认是哪个。所以照画列表，只是不摆那几颗
-  // 他一点就 400/403 的按钮（包括「选中」那个单选钮：它存的是全局默认 active_model）。
-  // 他自己换模型走输入框右下角那个选择器，存的是 last_picked_model，是他一个人的。
+  s.models = s.models || [];
+  s.providers = s.providers || [];
+  s.media_models = s.media_models || [];
+  modelsPaneEl = pane;
+  if (chanFirstPaint) {
+    // 头一次打开只展开「当前默认模型」所在的那个渠道：人来这一页十有八九是为了换模型，
+    // 全展开等于回到老界面那堵墙，全收起又得多点一下才看得见自己在用哪个
+    chanFirstPaint = false;
+    const cur = s.models.find((m) => m.name === s.active_model);
+    if (cur && cur.channel) openChans.add(cur.channel);
+  }
+  loadMediaCatalog().then(() => { if (pane.isConnected) paintModels(pane, s); });
+  paintModels(pane, s);
+}
+
+function paintModels(pane, s) {
+  // 多人服务器上的普通成员：渠道、Key、全局默认模型改的是**整台服务器**的账单，归平台管理员。
+  // 但这一页对他不是没用——他得知道有哪些模型可选、默认是哪个。所以照画，只是不摆那几颗
+  // 他一点就 403 的按钮。他自己换模型走输入框右下角那个选择器，存的是他一个人的偏好。
   const po = !!s.platform_owner;
+  const kinds = (mediaCatalog || {}).kinds || [];
+  const kindLabel = (k) => (kinds.find((x) => x.kind === k) || {}).label || k || "自定义";
+  const loose = s.models.filter((m) => !m.channel);
   pane.innerHTML = `
     <div style="color:var(--wb-text-2);margin-bottom:10px">${po
-      ? "选择当前使用的模型，或添加模型。内置 OpenAI / Anthropic / OpenRouter / 火山方舟 / 阿里百炼 / DeepSeek / 智谱 / Kimi / Ollama 渠道预设，任何 OpenAI 兼容接口也都支持。输入框右下角可快速切换。"
+      ? "一个渠道一把 Key，底下挂多少模型都共用它——换 Key 只改这一处。点渠道名展开看它下面的模型。"
       : "这台服务器上能用的模型。渠道和 Key 归平台管理员配——那是整台机器的账单。你自己这一次想用哪个，在输入框右下角随时切，只影响你。"}</div>
-    <div id="model-list">${s.models.map((m, i) => `
-      <div class="card-item" style="display:flex;align-items:center;gap:10px">
-        ${po ? `<input type="radio" name="active" style="width:auto;margin:0" ${m.name === s.active_model ? "checked" : ""} data-i="${i}">`
-             : `<span style="width:16px;text-align:center;color:var(--wb-brand-text)" title="${m.name === s.active_model ? "当前默认" : ""}">${m.name === s.active_model ? "●" : "○"}</span>`}
-        <div style="flex:1;min-width:0">
-          <div class="t">${esc(m.name)} <span style="font-weight:400;color:var(--wb-text-3);font-size: 12px">${esc(m.model)}${m.api_key ? "" : ` · ⚠ 未填 Key ${keyLink(modelKeySource(m))}`}${healthBadge(m.name)}</span></div>
-          <div class="d" style="font-size: 12px">${esc(m.base_url || "Anthropic 官方")}</div>
-        </div>
-        ${!po ? "" : `<a href="#" class="link" data-edit="${i}">编辑</a>
-        <a href="#" class="link" data-dup="${i}" title="复用此条的接口地址和 Key，换个模型名即成新模型">复制</a>
-        <a href="#" class="link danger" data-del="${i}">删除</a>`}
-      </div>`).join("")}
-    </div>
-    ${!po ? "" : `
-    <div id="model-form" style="display:none;border-top:1px solid var(--wb-border);padding-top:10px">
-      <select id="mf-channel">${CHANNEL_PRESETS.map((c, i) => `<option value="${i}">${esc(c.label)}</option>`).join("")}</select>
-      <input id="mf-name" placeholder="名称（如：我的vLLM）">
-      <div class="form-row">
-        <select id="mf-provider"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select>
-        <input id="mf-model" placeholder="模型名（如 deepseek-chat）">
+    <div id="prov-list">${s.providers.map((p) => chanCard(p, s, po, kindLabel)).join("")
+      || `<div class="d" style="padding:8px 0">还没有渠道。先加一个，再往里加模型。</div>`}</div>
+    ${!loose.length ? "" : `
+    <div class="ch-card open">
+      <div class="ch-head" style="cursor:default">
+        <span class="ch-title"><b>没挂渠道的</b><span class="ch-sub">地址和 Key 都还空着</span></span>
+        <span class="ch-count">${loose.length} 个</span>
       </div>
-      <input id="mf-base" placeholder="Base URL（如 https://api.deepseek.com/v1）">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input id="mf-key" type="password" placeholder="API Key" style="flex:1;min-width:0;margin:0"><span id="mf-key-src"></span></div>
-      <button class="btn-brand" id="mf-save">保存模型</button>
-      <button class="btn-plain" id="mf-cancel">取消</button>
+      <div class="ch-body">${loose.map((m) => modelRow(m, s, po)).join("")}</div>
+    </div>`}
+    ${!po ? "" : `
+    <div id="prov-form" style="display:none;border-top:1px solid var(--wb-border);padding-top:10px;margin-top:8px">
+      <select id="pf-kind">${kinds.map((k) => `<option value="${esc(k.kind)}">${esc(k.label)}</option>`).join("")}</select>
+      <input id="pf-name" placeholder="给它起个名（如：我的火山方舟）">
+      <input id="pf-base" placeholder="接口地址（选了类型会自动填）">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <input id="pf-key" type="password" placeholder="API Key" style="flex:1;min-width:0;margin:0">
+        <span id="pf-key-src"></span>
+      </div>
+      <button class="btn-brand" id="pf-save">保存渠道</button>
+      <button class="btn-plain" id="pf-cancel">取消</button>
     </div>
-    <button class="btn-plain" id="mf-new" style="margin-top:6px">＋ 添加自定义模型</button>`}
+    <button class="btn-plain" id="pf-new" style="margin-top:6px">＋ 添加渠道</button>`}
     <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size: 13px;color:var(--wb-text-2);cursor:pointer">
       <input type="checkbox" id="mf-follow-last" style="width:auto;margin:0" ${s.model_follow_last ? "checked" : ""}>
       新对话自动沿用上次手动选过的模型（不勾则新对话总是用全局默认）
     </label>
-    <div id="media-pane" style="margin-top:14px"></div>
+    <div id="media-pane" style="margin-top:14px;border-top:1px solid var(--wb-border);padding-top:12px"></div>
     <span class="ok-msg" id="models-msg"></span>`;
-  const msg = pane.querySelector("#models-msg");
   renderMediaPane(pane.querySelector("#media-pane"), s);
-  pane.querySelector("#mf-follow-last").onchange = (e) => saveSettings({ model_follow_last: e.target.checked }, msg);
-  if (!po) return; // 下面全是平台管理员那套按钮的事件，没画出来就别去 querySelector（null.onclick 会把整页炸掉）
-  let editIndex = -1;
-  const form = pane.querySelector("#model-form");
-  const showForm = (m) => {
-    form.style.display = "";
-    pane.querySelector("#mf-name").value = m?.name || "";
-    pane.querySelector("#mf-provider").value = m?.provider || "openai";
-    pane.querySelector("#mf-model").value = m?.model || "";
-    pane.querySelector("#mf-base").value = m?.base_url || "";
-    pane.querySelector("#mf-key").value = m?.api_key || "";
-    pane.querySelector("#mf-key-src").innerHTML = keyLink(modelKeySource(m));
-  };
-  pane.querySelector("#mf-channel").onchange = () => {
-    const idx = +pane.querySelector("#mf-channel").value;
-    const c = CHANNEL_PRESETS[idx];
-    if (!c || idx === 0) return; // 第 0 项是占位提示
-    pane.querySelector("#mf-provider").value = c.provider;
-    pane.querySelector("#mf-base").value = c.base;
-    pane.querySelector("#mf-model").value = c.model;
-    pane.querySelector("#mf-key-src").innerHTML = keyLink(modelKeySource({ base_url: c.base, provider: c.provider }));
-    if (!pane.querySelector("#mf-name").value) pane.querySelector("#mf-name").value = c.label.replace(/（.*/, "");
-  };
-  pane.querySelector("#mf-new").onclick = () => { editIndex = -1; showForm(null); };
-  pane.querySelector("#mf-cancel").onclick = () => (form.style.display = "none");
-  pane.querySelectorAll("a[data-edit]").forEach(a => a.onclick = (e) => { e.preventDefault(); editIndex = +a.dataset.edit; showForm(s.models[editIndex]); });
-  // 复制：复用同一接口地址和 Key 快速配另一个模型（OpenRouter 换模型场景），只需填名称和模型名
-  pane.querySelectorAll("a[data-dup]").forEach(a => a.onclick = (e) => {
-    e.preventDefault();
-    editIndex = -1;
-    showForm({ ...s.models[+a.dataset.dup], name: "", model: "" });
-    pane.querySelector("#mf-name").focus();
-  });
-  pane.querySelectorAll("a[data-del]").forEach(a => a.onclick = async (e) => {
-    e.preventDefault();
-    if (!confirm("确认删除该模型？")) return;
-    s.models.splice(+a.dataset.del, 1);
-    await saveSettings({ models: s.models }, msg);
-    renderSettings("models");
-  });
-  pane.querySelectorAll("input[name=active]").forEach(r => r.onchange = async () => {
-    await saveSettings({ active_model: s.models[+r.dataset.i].name }, msg);
-    renderSettings("models");
-  });
-  pane.querySelector("#mf-save").onclick = async () => {
-    const entry = {
-      name: pane.querySelector("#mf-name").value.trim(),
-      provider: pane.querySelector("#mf-provider").value,
-      model: pane.querySelector("#mf-model").value.trim(),
-      base_url: pane.querySelector("#mf-base").value.trim(),
-      api_key: pane.querySelector("#mf-key").value.trim(),
-    };
-    if (!entry.name || !entry.model) return toast("❌ 名称和模型名必填");
-    if (editIndex >= 0) s.models[editIndex] = entry; else s.models.push(entry);
-    await saveSettings({ models: s.models }, msg);
-    renderSettings("models");
-  };
+  bindModels(pane, s, po);
 }
+
+/** 一个渠道一张卡：头是一行摘要，展开才是它底下的模型 */
+function chanCard(p, s, po, kindLabel) {
+  const i = s.providers.indexOf(p);
+  const mine = s.models.filter((m) => m.channel === p.id);
+  const mediaN = s.media_models.filter((m) => m.provider === p.id).length;
+  const open = openChans.has(p.id);
+  // has_key 是读接口给非管理员回的（真 Key 被打了掩码），管理员那边看 api_key 本身
+  const noKey = p.has_key === false || !String(p.api_key || "").trim();
+  return `
+    <div class="ch-card${open ? " open" : ""}">
+      <div class="ch-head" data-chan="${esc(p.id)}">
+        ${ic(open ? "chevron-down" : "chevron-right", "ch-caret")}
+        <span class="ch-title"><b>${esc(p.name)}</b><span class="ch-sub">${esc(kindLabel(p.kind))}</span></span>
+        ${po && noKey ? `<span class="ch-warn">${ic("triangle-alert", "i-sm")}未填 Key ${kindKeyLink(p.kind, p.base_url)}</span>` : ""}
+        <span class="ch-count">${mine.length} 个对话模型${mediaN ? ` · ${mediaN} 个媒体模型` : ""}</span>
+        ${!po ? "" : rowMenu([["pedit", i, "编辑渠道", ""], ["pdel", i, "删除渠道", "danger"]])}
+      </div>
+      ${!open ? "" : `<div class="ch-body">
+        ${mine.length ? mine.map((m) => modelRow(m, s, po)).join("")
+          : `<div class="ch-note">这个渠道下面还没有对话模型。${po ? "加一个，它就会出现在输入框右下角那个选择器里。" : ""}</div>`}
+        ${!po ? "" : `
+        <div class="ca-form" data-chan="${esc(p.id)}" style="display:none;border-top:1px solid var(--wb-border);padding-top:8px;margin-top:6px">
+          <div class="form-row">
+            <select class="ca-chan"></select>
+            <select class="ca-model"></select>
+          </div>
+          <div class="form-row">
+            <input class="ca-custom" placeholder="模型名（上面选「自己填…」时用这个）" style="display:none">
+            <input class="ca-name" placeholder="别名（可空，默认用模型名；对话里按这个名字认）">
+          </div>
+          <div class="d ca-tip" style="font-size:12px;margin-bottom:6px"></div>
+          <button class="btn-brand ca-save">保存</button>
+          <button class="btn-plain ca-cancel">取消</button>
+        </div>
+        <button class="btn-plain ca-new" data-chan="${esc(p.id)}" style="margin-top:6px">＋ 添加模型</button>`}
+      </div>`}
+    </div>`;
+}
+
+/** 模型行：名字 · 模型 id · 战绩，剩下的都收进 ⋯。地址和 Key 不在这儿——那是渠道的事 */
+function modelRow(m, s, po) {
+  const i = s.models.indexOf(m);
+  const cur = m.name === s.active_model;
+  const meta = [cur ? "默认" : "", healthBadge(m.name).replace(/^\s*·\s*/, "")].filter(Boolean).join(" · ");
+  return `
+    <div class="mrow">
+      ${po ? `<input type="radio" name="active" ${cur ? "checked" : ""} data-i="${i}" title="设为全局默认模型">`
+           : `<span class="mrow-dot" title="${cur ? "当前默认" : ""}">${cur ? "●" : "○"}</span>`}
+      <span class="mrow-name">${esc(m.name)}</span>
+      <span class="mrow-id">${esc(m.model)}</span>
+      <span class="mrow-meta">${meta}</span>
+      ${!po ? "" : rowMenu([["cedit", i, "编辑", ""], ["cdup", i, "复制一个", ""], ["cdel", i, "删除", "danger"]])}
+    </div>`;
+}
+
+/** 行尾的 ⋯：三个链接平铺太占地方，收进来点开才有。参数是 [属性名, 下标, 文案, 样式] */
+function rowMenu(items) {
+  return `<span class="row-acts">
+      <button class="row-more" type="button" title="更多">${ic("ellipsis", "i-sm")}</button>
+      <span class="row-menu" hidden>${items.map(([attr, i, label, cls]) =>
+        `<a href="#" class="${cls}" data-${attr}="${i}">${label}</a>`).join("")}</span>
+    </span>`;
+}
+
+/**
+ * 「去拿 Key」的链接：先按渠道类型给官方那一页；认不出来（自建网关指着某个已知厂商）
+ * 再按地址回退到 KEY_SOURCES 那张表。两条路都没有就不显示——给个死链比不给更糟。
+ */
+function kindKeyLink(kind, baseUrl) {
+  const k = ((mediaCatalog || {}).kinds || []).find((x) => x.kind === kind);
+  if (k && k.key_url) return `<a class="get-key" href="${esc(k.key_url)}" target="_blank" rel="noopener">去拿 Key ↗</a>`;
+  if (!String(baseUrl || "").trim()) return ""; // 自建网关连地址都没填，猜不出 Key 从哪儿领
+  return keyLink(modelKeySource({ base_url: baseUrl, provider: "openai" }));
+}
+
+/** ⋯ 菜单：点开一个就关掉别的，点页面别处全关。触屏上没有悬停，所以必须是点出来的 */
+function bindRowMenus(root) {
+  if (!rowMenuBound) {
+    rowMenuBound = true;
+    document.addEventListener("click", () => document.querySelectorAll(".row-menu").forEach((m) => (m.hidden = true)));
+  }
+  root.querySelectorAll(".row-more").forEach((b) => (b.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation(); // 按钮坐在渠道头里，冒上去会顺手把卡片折叠了
+    const menu = b.nextElementSibling;
+    const show = menu.hidden;
+    root.querySelectorAll(".row-menu").forEach((m) => (m.hidden = true));
+    menu.hidden = !show;
+  }));
+  root.querySelectorAll(".row-menu").forEach((m) => (m.onclick = (e) => {
+    e.stopPropagation();
+    root.querySelectorAll(".row-menu").forEach((x) => (x.hidden = true));
+  }));
+}
+
+function bindModels(pane, s, po) {
+  const msg = pane.querySelector("#models-msg");
+  pane.querySelector("#mf-follow-last").onchange = (e) => saveSettings({ model_follow_last: e.target.checked }, msg);
+  // 展开 / 收起不碰服务器，纯前端的事
+  pane.querySelectorAll(".ch-head[data-chan]").forEach((h) => (h.onclick = () => {
+    const id = h.dataset.chan;
+    if (openChans.has(id)) openChans.delete(id); else openChans.add(id);
+    paintModels(pane, s);
+  }));
+  bindRowMenus(pane);
+  if (!po) return; // 下面全是平台管理员那套按钮，没画出来就别去 querySelector（null.onclick 会把整页炸掉）
+
+  const kinds = (mediaCatalog || {}).kinds || [];
+  const form = pane.querySelector("#prov-form");
+  let editP = -1;
+  const showProvForm = (p) => {
+    form.style.display = "";
+    pane.querySelector("#pf-kind").value = (p && p.kind) || (kinds[0] || {}).kind || "custom";
+    pane.querySelector("#pf-name").value = (p && p.name) || "";
+    pane.querySelector("#pf-base").value = (p && p.base_url) || "";
+    pane.querySelector("#pf-key").value = (p && p.api_key) || "";
+    pane.querySelector("#pf-key-src").innerHTML = kindKeyLink((p && p.kind) || "", (p && p.base_url) || "");
+  };
+  pane.querySelector("#pf-kind").onchange = (e) => {
+    const k = kinds.find((x) => x.kind === e.target.value) || {};
+    pane.querySelector("#pf-base").value = k.base_url || "";
+    pane.querySelector("#pf-key-src").innerHTML = kindKeyLink(k.kind || "", k.base_url || "");
+    if (!pane.querySelector("#pf-name").value) pane.querySelector("#pf-name").value = String(k.label || "").replace(/（.*/, "");
+  };
+  pane.querySelector("#pf-new").onclick = () => { editP = -1; showProvForm(null); pane.querySelector("#pf-kind").onchange({ target: pane.querySelector("#pf-kind") }); };
+  pane.querySelector("#pf-cancel").onclick = () => (form.style.display = "none");
+  pane.querySelectorAll("a[data-pedit]").forEach((a) => (a.onclick = (e) => {
+    e.preventDefault();
+    editP = +a.dataset.pedit;
+    showProvForm(s.providers[editP]);
+  }));
+  pane.querySelectorAll("a[data-pdel]").forEach((a) => (a.onclick = async (e) => {
+    e.preventDefault();
+    const idx = +a.dataset.pdel;
+    const p = s.providers[idx];
+    const chat = s.models.filter((m) => m.channel === p.id);
+    const media = s.media_models.filter((m) => m.provider === p.id);
+    const hitsDefault = chat.some((m) => m.name === s.active_model);
+    // 删渠道会连坐：挂在它下面的模型一起没。把数说清楚，别删完才发现画图不能用了
+    const lines = [chat.length + media.length
+      ? `删掉「${p.name}」的话，挂在它下面的 ${chat.length} 个对话模型和 ${media.length} 个媒体模型也会一起删掉。`
+      : `确认删除渠道「${p.name}」？`];
+    if (hitsDefault) lines.push("当前默认模型就在里面，删完会自动换成列表里的第一个。");
+    if (chat.length + media.length) lines.push("继续？");
+    if (!confirm(lines.join("\n"))) return;
+    s.providers.splice(idx, 1);
+    s.models = s.models.filter((m) => m.channel !== p.id);
+    s.media_models = s.media_models.filter((m) => m.provider !== p.id);
+    openChans.delete(p.id);
+    liveModels.delete(p.id);
+    const extra = hitsDefault && s.models.length ? { active_model: s.models[0].name } : undefined;
+    if (await saveAllModelTables(s, msg, extra)) paintModels(pane, s);
+  }));
+  pane.querySelector("#pf-save").onclick = async () => {
+    const v = (id) => pane.querySelector("#" + id).value.trim();
+    const kind = v("pf-kind");
+    if (!v("pf-name")) return toast("给渠道起个名字，下面挑模型时要按名字认");
+    // Anthropic 官方不用填地址（SDK 自带），别的都得是完整的 http(s) 地址
+    if (kind !== "anthropic" && !/^https?:\/\//i.test(v("pf-base"))) return toast("接口地址要填完整的 http(s) 地址");
+    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, base_url: v("pf-base"), api_key: v("pf-key") };
+    if (editP >= 0) s.providers[editP] = { ...s.providers[editP], ...entry }; else s.providers.push(entry);
+    liveModels.clear(); // 换了地址或 Key，之前拉回来的清单就不作数了
+    if (await saveAllModelTables(s, msg)) { form.style.display = "none"; paintModels(pane, s); }
+  };
+
+  pane.querySelectorAll("input[name=active]").forEach((r) => (r.onchange = async () => {
+    await saveSettings({ active_model: s.models[+r.dataset.i].name }, msg);
+    if (settingsCache) Object.assign(s, settingsCache);
+    paintModels(pane, s);
+  }));
+
+  let editM = -1;
+  const showModelForm = (chanId, m) => {
+    const f = pane.querySelector(`.ca-form[data-chan="${chanId}"]`);
+    if (!f) return toast("这个渠道的卡片没展开，先点开它");
+    pane.querySelectorAll(".ca-form").forEach((x) => (x.style.display = "none")); // 一次只开一张表单
+    f.style.display = "";
+    fillChanSelect(f, s, chanId);
+    f.querySelector(".ca-name").value = (m && m.name) || "";
+    const sel = f.querySelector(".ca-model");
+    const cust = f.querySelector(".ca-custom");
+    cust.value = "";
+    if (m && m.model) {
+      // 目录里有就选中它，没有（多半是手填的或者活列表里的）就落到「自己填…」并把原值带上
+      if (Array.from(sel.options).some((o) => o.value === m.model)) sel.value = m.model;
+      else { sel.value = "__custom__"; cust.value = m.model; }
+    }
+    cust.style.display = sel.value === "__custom__" ? "" : "none";
+  };
+  pane.querySelectorAll(".ca-new").forEach((b) => (b.onclick = () => { editM = -1; showModelForm(b.dataset.chan, null); }));
+  pane.querySelectorAll(".ca-cancel").forEach((b) => (b.onclick = () => (b.closest(".ca-form").style.display = "none")));
+  pane.querySelectorAll("a[data-cedit]").forEach((a) => (a.onclick = (e) => {
+    e.preventDefault();
+    editM = +a.dataset.cedit;
+    const m = s.models[editM];
+    showModelForm(m.channel || "", m);
+  }));
+  // 复制一个：同渠道换个模型名即成新模型（OpenRouter 底下加第二个模型就是这个动作）
+  pane.querySelectorAll("a[data-cdup]").forEach((a) => (a.onclick = (e) => {
+    e.preventDefault();
+    editM = -1;
+    const m = s.models[+a.dataset.cdup];
+    showModelForm(m.channel || "", { ...m, name: "" });
+  }));
+  pane.querySelectorAll("a[data-cdel]").forEach((a) => (a.onclick = async (e) => {
+    e.preventDefault();
+    const idx = +a.dataset.cdel;
+    const m = s.models[idx];
+    if (!confirm(`确认删除模型「${m.name}」？渠道和 Key 留着，别的模型不受影响。`)) return;
+    s.models.splice(idx, 1);
+    const extra = m.name === s.active_model && s.models.length ? { active_model: s.models[0].name } : undefined;
+    if (await saveAllModelTables(s, msg, extra)) paintModels(pane, s);
+  }));
+  pane.querySelectorAll(".ca-form").forEach((f) => {
+    f.querySelector(".ca-chan").onchange = () => fillChatModelSelect(f, s);
+    f.querySelector(".ca-model").onchange = () => {
+      const custom = f.querySelector(".ca-model").value === "__custom__";
+      f.querySelector(".ca-custom").style.display = custom ? "" : "none";
+      if (custom) f.querySelector(".ca-custom").focus();
+    };
+    f.querySelector(".ca-save").onclick = async () => {
+      const sel = f.querySelector(".ca-model").value;
+      const model = sel === "__custom__" ? f.querySelector(".ca-custom").value.trim() : sel;
+      const chan = f.querySelector(".ca-chan").value;
+      if (!chan) return toast("先建一个渠道，模型得挂在渠道上");
+      if (!model) return toast("还没选模型");
+      const name = f.querySelector(".ca-name").value.trim() || model;
+      if (s.models.some((m, i) => m.name === name && i !== editM)) return toast(`已经有叫「${name}」的模型了，换个别名`);
+      const was = editM >= 0 ? s.models[editM] : null;
+      // 保留条目上别处写的字段（比如以后加的备注），只覆盖这三样；地址和 Key 由服务端按渠道压平
+      const entry = { ...(was || {}), name, channel: chan, model };
+      if (was) s.models[editM] = entry; else s.models.push(entry);
+      openChans.add(chan);
+      // 改的正好是当前默认那条，且改了名字：默认项要跟着改，不然 active_model 指向一个不存在的名字
+      const extra = was && was.name === s.active_model && name !== s.active_model ? { active_model: name } : undefined;
+      if (await saveAllModelTables(s, msg, extra)) paintModels(pane, s);
+    };
+  });
+}
+
+function fillChanSelect(f, s, cur) {
+  const sel = f.querySelector(".ca-chan");
+  sel.innerHTML = s.providers.length
+    ? s.providers.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")
+    : `<option value="">（先加一个渠道）</option>`;
+  if (cur) sel.value = cur;
+  fillChatModelSelect(f, s);
+}
+
+/**
+ * 对话模型下拉的三段：这个渠道的精选 → 从渠道现拉的活列表 → 自己填。
+ * 跟四路媒体那边同一套路，只是目录取 catalog.chat、活列表按「不像媒体模型的」筛。
+ * 没跟 fillModelSelect 合并：那边每条要带 cap 和音色，这边不带，硬合会多出一串 if。
+ */
+function fillChatModelSelect(f, s) {
+  const sel = f.querySelector(".ca-model");
+  const tip = f.querySelector(".ca-tip");
+  const p = s.providers.find((x) => x.id === f.querySelector(".ca-chan").value);
+  const cat = ((mediaCatalog || {}).catalog || {}).chat || [];
+  const mine = cat.filter((m) => !p || m.kind === p.kind);
+  const others = cat.filter((m) => p && m.kind !== p.kind);
+  const opt = (m) => `<option value="${esc(m.id)}">${esc(m.label)}（${esc(m.id)}）</option>`;
+  sel.innerHTML =
+    (mine.length ? `<optgroup label="这个渠道的精选">${mine.map(opt).join("")}</optgroup>` : "") +
+    `<option value="__custom__">自己填…</option>` +
+    (others.length ? `<optgroup label="其它渠道的（地址对得上也能用）">${others.map(opt).join("")}</optgroup>` : "");
+  f.querySelector(".ca-custom").style.display = sel.value === "__custom__" ? "" : "none";
+  tip.textContent = mine.length ? "" : "这个渠道没有精选条目，下面直接填模型名，或者等一下从渠道拉回来的列表。";
+  if (!p) return;
+  const live = liveModels.get(p.id);
+  if (live) return injectLiveChat(sel, tip, live);
+  tip.textContent = "正在问渠道有哪些模型…";
+  fetch("/api/provider-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: p.id }) })
+    .then((r) => r.json())
+    .then((d) => { liveModels.set(p.id, d); if (sel.isConnected) injectLiveChat(sel, tip, d); })
+    .catch(() => { tip.textContent = ""; });
+}
+
+/** 活列表里标了 cap 的（image / video / tts）显然不是对话模型，排到后面去 */
+function injectLiveChat(sel, tip, d) {
+  if (!d.ok || !d.models || !d.models.length) {
+    // 拉不到不是错：很多国产渠道压根没有 /models。目录和手填两条路都还在
+    tip.textContent = d.why ? `这个渠道没给模型列表（${d.why}），上面的精选和「自己填…」照用。` : "";
+    return;
+  }
+  const chatty = d.models.filter((m) => !m.cap || m.cap === "vision").map((m) => m.id);
+  const rest = d.models.filter((m) => m.cap && m.cap !== "vision").map((m) => m.id);
+  const group = (label, ids) => (ids.length ? `<optgroup label="${label}">${ids.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join("")}</optgroup>` : "");
+  const keep = sel.value;
+  sel.insertAdjacentHTML("beforeend", group("这个渠道现有的", chatty) + group("这个渠道的其它模型（多半是画图 / 配音的）", rest));
+  if (keep) sel.value = keep;
+  tip.textContent = `从渠道拉到 ${d.models.length} 个模型${d.cached ? "（缓存）" : ""}，挑不到就选「自己填…」。`;
+}
+
 // 联网搜索：provider 可切（Jina / Tavily / Brave），各自独立 key；没 key 自动退免费 DuckDuckGo
 function renderSearchPane(pane, s) {
   const sc = s.search || {};
