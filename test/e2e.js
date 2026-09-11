@@ -4909,6 +4909,7 @@ async function main() {
   await testNodeSuite("tenant.js", "多租户与企业后台越权");
   await testNodeSuite("prefs.js", "个人偏好与平台设置分界");
   await testNodeSuite("media-models.js", "多模型配置（渠道表 / 点名 / 不静默降级）");
+  await testNodeSuite("chat-models.js", "对话模型：渠道共用一把 Key");
   await testNodeSuite("lanes.js", "两条工作线（工程 / 办公）");
   await testNodeSuite("cli-live.js", "终端里 wb 跑的活儿，网页和手机怎么看见");
   await testDockerDeploy();
@@ -6251,7 +6252,7 @@ function testReadmeFrontGate() {
 
 // 「去哪拿 Key」闸门：向导和设置页每个要填 Key 的地方都得有一条直达链接，链接全 https + 新窗口。
 // 写成纯函数以便下面拿变体做反向对照——闸门自己得先证明它拦得住。
-function keySourcesCheck(app03, app05, toolsSrc) {
+function keySourcesCheck(app03, app05, toolsSrc, mmSrc) {
   const vm = require("vm");
   const grab = (src, head, close) => {
     const i = src.indexOf(head);
@@ -6261,16 +6262,20 @@ function keySourcesCheck(app03, app05, toolsSrc) {
     return src.slice(i + head.length, j + close.length - 1);
   };
   const KS = vm.runInNewContext("(" + grab(app03, "const KEY_SOURCES = ", "\n};") + ")");
-  const presets = vm.runInNewContext("(" + grab(app05, "const CHANNEL_PRESETS = ", "\n];") + ")");
+  const kinds = vm.runInNewContext("(" + grab(mmSrc, "const PROVIDER_KINDS = ", "\n];") + ")");
   const media = vm.runInNewContext("(" + grab(app03, "const ONB_MEDIA_PRESETS = ", "\n};") + ")");
   const problems = [];
   for (const [id, v] of Object.entries(KS)) {
     if (!v || !/^https:\/\/[^\s"']+$/.test(v.url || "")) problems.push(`${id} 的链接不是 https 直达地址`);
     if (!v || !v.name) problems.push(`${id} 没写服务商名`);
   }
-  for (const c of presets.slice(1)) {
-    const id = c.base || (c.provider === "anthropic" ? "anthropic" : "");
-    if (!KS[id]) problems.push(`渠道预设「${c.label}」没有取 Key 链接`);
+  // 渠道表就是那份「预设」——用户建渠道时从这张表里选一家，所以每一家都得能领到 Key。
+  // 自建网关和「其它 OpenAI 兼容接口」指的是用户自己的机器，没有官网可指，是这条规矩的例外。
+  for (const k of kinds) {
+    if (k.kind === "newapi" || k.kind === "custom") continue;
+    if (!/^https:\/\/[^\s"']+$/.test(k.key_url || "")) problems.push(`渠道「${k.label}」没有取 Key 链接`);
+    // Anthropic 官方没有接口地址（SDK 自带），别家都得带一个能填进去的默认地址
+    if (k.kind !== "anthropic" && !/^https?:\/\//.test(k.base_url || "")) problems.push(`渠道「${k.label}」没写默认接口地址`);
   }
   const sp = toolsSrc.match(/const SEARCH_PROVIDERS = \{([^}]*)\}/);
   assert(sp, "tools.js 里没有 SEARCH_PROVIDERS");
@@ -6292,10 +6297,16 @@ function keySourcesCheck(app03, app05, toolsSrc) {
   for (const [pane, re] of [["向导·大脑", /keyLink\(srcId\)/], ["向导·搜索", /keyLink\(sel\.value\)/], ["向导·多媒体", /keyLink\(preset\.dataset\.base\)/], ["向导·IM", /keyLink\(k, KEY_SOURCES\[k\]\.name\)/]]) {
     if (!re.test(app03)) problems.push(`${pane} 步没接 keyLink`);
   }
-  for (const [pane, re] of [["设置·模型表单", /#mf-key-src"\)\.innerHTML = keyLink\(modelKeySource/], ["设置·模型列表", /未填 Key \$\{keyLink\(modelKeySource\(m\)\)\}/], ["设置·IM 卡片", /class="im-src">\$\{keyLink\(c\.src\)\}/]]) {
+  // 「未填 Key」现在只在渠道那一层提一次（模型行不再各喊各的），所以钉的是渠道卡和渠道表单
+  for (const [pane, re] of [
+    ["设置·渠道表单", /#pf-key-src"\)\.innerHTML = kindKeyLink\(/],
+    ["设置·渠道卡片", /未填 Key \$\{kindKeyLink\(p\.kind, p\.base_url\)\}/],
+    ["设置·渠道回退到 KEY_SOURCES", /return keyLink\(modelKeySource\(\{ base_url: baseUrl/],
+    ["设置·IM 卡片", /class="im-src">\$\{keyLink\(c\.src\)\}/],
+  ]) {
     if (!re.test(app05)) problems.push(`${pane} 没接 keyLink`);
   }
-  return { KS, presets: presets.length - 1, searchIds, imSrcs: new Set(imSrcs).size, mediaN, problems };
+  return { KS, presets: kinds.filter((k) => k.kind !== "newapi" && k.kind !== "custom").length, searchIds, imSrcs: new Set(imSrcs).size, mediaN, problems };
 }
 // ================= 安装包命名 + demo 录制脚本 静态闸门 =================
 // v0.1.0 那次多架构 nsis 合成一个 `-win.exe`，portable 却叫 `-win-x64.exe`，文档里写的「双击即装」指到了免安装版。
@@ -6494,23 +6505,26 @@ function testKeySourcesGate() {
   const app03 = fs.readFileSync(path.join(pub, "app-03.js"), "utf8");
   const app05 = fs.readFileSync(path.join(pub, "app-05.js"), "utf8");
   const toolsSrc = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
-  const r = keySourcesCheck(app03, app05, toolsSrc);
+  const mmSrc = fs.readFileSync(path.join(__dirname, "..", "media-models.js"), "utf8");
+  const r = keySourcesCheck(app03, app05, toolsSrc, mmSrc);
   assert(r.problems.length === 0, "取 Key 链接缺口：\n  " + r.problems.join("\n  "));
   assert(r.searchIds.length >= 3 && r.imSrcs >= 4 && r.presets >= 9, "覆盖面不对：" + JSON.stringify({ search: r.searchIds.length, im: r.imSrcs, presets: r.presets }));
   // 反向对照：抠掉 tavily / 把一条改成 http / 去掉 rel=noopener，三种坏法都得被抓
   const variants = [
-    ["抠掉 tavily", app03.replace(/\n  "tavily": \{[^\n]*\n/, "\n"), app05],
-    ["http 链接", app03.replace('"https://app.tavily.com/home"', '"http://app.tavily.com/home"'), app05],
-    ["丢 rel=noopener", app03.replace(' rel="noopener"', ""), app05],
-    ["IM 卡指向不存在的来源", app03, app05.replace('src: "qq"', 'src: "qq_bot"')],
+    ["抠掉 tavily", app03.replace(/\n  "tavily": \{[^\n]*\n/, "\n"), app05, mmSrc],
+    ["http 链接", app03.replace('"https://app.tavily.com/home"', '"http://app.tavily.com/home"'), app05, mmSrc],
+    ["丢 rel=noopener", app03.replace(' rel="noopener"', ""), app05, mmSrc],
+    ["IM 卡指向不存在的来源", app03, app05.replace('src: "qq"', 'src: "qq_bot"'), mmSrc],
+    ["渠道卡片不再挂取 Key 链接", app03, app05.replace("未填 Key ${kindKeyLink(p.kind, p.base_url)}", "未填 Key"), mmSrc],
+    ["某家渠道的取 Key 链接被抠空", app03, app05, mmSrc.replace('key_url: "https://openrouter.ai/keys"', 'key_url: ""')],
   ];
   let caught = 0;
-  for (const [name, a3, a5] of variants) {
-    assert(a3 !== app03 || a5 !== app05, "变体「" + name + "」没改动到源码，对照无效");
-    if (keySourcesCheck(a3, a5, toolsSrc).problems.length > 0) caught++;
+  for (const [name, a3, a5, mm] of variants) {
+    assert(a3 !== app03 || a5 !== app05 || mm !== mmSrc, "变体「" + name + "」没改动到源码，对照无效");
+    if (keySourcesCheck(a3, a5, toolsSrc, mm).problems.length > 0) caught++;
     else throw new Error("闸门漏了这种坏法：" + name);
   }
-  console.log(`✅ 取 Key 链接闸门：${Object.keys(r.KS).length} 个来源全 https+新窗口 · 渠道预设 ${r.presets} 家全覆盖 · 搜索 ${r.searchIds.length} 家 · IM ${r.imSrcs} 类 · 多媒体预设 ${r.mediaN} 条；反向 ${caught}/${variants.length} 种坏法全被拦`);
+  console.log(`✅ 取 Key 链接闸门：${Object.keys(r.KS).length} 个来源全 https+新窗口 · 渠道 ${r.presets} 家全覆盖 · 搜索 ${r.searchIds.length} 家 · IM ${r.imSrcs} 类 · 多媒体预设 ${r.mediaN} 条；反向 ${caught}/${variants.length} 种坏法全被拦`);
 }
 function testI18n() {
   // 中英文切换：词典本身 + 覆盖率闸门 + 假 DOM 走一遍翻译/还原 + 接线闸。

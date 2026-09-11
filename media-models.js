@@ -28,9 +28,21 @@ const PROVIDER_KINDS = [
   { kind: "openrouter", label: "OpenRouter（聚合，一把 Key 通吃）", base_url: "https://openrouter.ai/api/v1", key_url: "https://openrouter.ai/keys" },
   { kind: "siliconflow", label: "硅基流动 SiliconFlow", base_url: "https://api.siliconflow.cn/v1", key_url: "https://cloud.siliconflow.cn/account/ak" },
   { kind: "zhipu", label: "智谱 GLM / CogView / CogVideo", base_url: "https://open.bigmodel.cn/api/paas/v4", key_url: "https://bigmodel.cn/usercenter/apikeys" },
+  { kind: "anthropic", label: "Anthropic Claude 官方", base_url: "", key_url: "https://console.anthropic.com/settings/keys", chat_only: true },
+  { kind: "deepseek", label: "DeepSeek 官方", base_url: "https://api.deepseek.com/v1", key_url: "https://platform.deepseek.com/api_keys", chat_only: true },
+  { kind: "moonshot", label: "Kimi（月之暗面）", base_url: "https://api.moonshot.cn/v1", key_url: "https://platform.moonshot.cn/console/api-keys", chat_only: true },
+  { kind: "ollama", label: "Ollama 本地（不要 Key）", base_url: "http://localhost:11434/v1", key_url: "https://ollama.com/download" },
   { kind: "newapi", label: "new-api / one-api 自建网关", base_url: "", key_url: "" },
   { kind: "custom", label: "其它 OpenAI 兼容接口", base_url: "", key_url: "" },
 ];
+
+/**
+ * 这个渠道走哪家协议。渠道这一层定协议，不是模型那一层——一个接口地址只可能说一种话。
+ * 老配置里协议记在模型条目上（config.models[i].provider），迁移时按这条规则收上来。
+ */
+function protoOfKind(kind) {
+  return kind === "anthropic" ? "anthropic" : "openai";
+}
 
 /**
  * 精选模型目录：下拉框里排在最前面那一段。
@@ -38,8 +50,32 @@ const PROVIDER_KINDS = [
  * 只放「这套协议确认跑得通」的型号，不追求穷举——穷举也追不上各家发版的速度。
  * 下拉框是三段式：精选目录 → 从渠道 /models 现拉的活列表 → 「自己填…」。
  * 目录过时了不至于挡路，活列表拉不到也不至于抓瞎。
+ *
+ * chat 那一段给对话模型用（chat-models.js / 设置里的渠道卡片），其余四段给四路媒体。
  */
 const CATALOG = {
+  chat: [
+    { kind: "anthropic", id: "claude-sonnet-5", label: "Claude Sonnet 5（写代码、干活稳）" },
+    { kind: "anthropic", id: "claude-opus-5", label: "Claude Opus 5（最强，也最贵）" },
+    { kind: "anthropic", id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5（快且便宜）" },
+    { kind: "openai", id: "gpt-5.2", label: "GPT-5.2" },
+    { kind: "openai", id: "gpt-5-mini", label: "GPT-5 mini（便宜）" },
+    { kind: "openrouter", id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5（走 OpenRouter）" },
+    { kind: "openrouter", id: "openai/gpt-5.2", label: "GPT-5.2（走 OpenRouter）" },
+    { kind: "openrouter", id: "deepseek/deepseek-chat", label: "DeepSeek Chat（走 OpenRouter · 便宜）" },
+    { kind: "openrouter", id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro（走 OpenRouter）" },
+    { kind: "ark", id: "doubao-seed-1-6-250615", label: "豆包 Seed 1.6（能看图）" },
+    { kind: "ark", id: "deepseek-v3-250324", label: "DeepSeek V3（火山托管）" },
+    { kind: "dashscope", id: "qwen-max", label: "通义千问 Max" },
+    { kind: "dashscope", id: "qwen-plus", label: "通义千问 Plus（便宜）" },
+    { kind: "deepseek", id: "deepseek-chat", label: "DeepSeek Chat" },
+    { kind: "deepseek", id: "deepseek-reasoner", label: "DeepSeek Reasoner（会想一会儿）" },
+    { kind: "moonshot", id: "kimi-k2-0905-preview", label: "Kimi K2" },
+    { kind: "zhipu", id: "glm-4-plus", label: "智谱 GLM-4 Plus" },
+    { kind: "zhipu", id: "glm-4-flash", label: "智谱 GLM-4 Flash（便宜）" },
+    { kind: "siliconflow", id: "deepseek-ai/DeepSeek-V3", label: "DeepSeek V3（硅基流动）" },
+    { kind: "ollama", id: "qwen3:14b", label: "Qwen3 14B（本地跑，不花钱）" },
+  ],
   vision: [
     { kind: "ark", id: "doubao-seed-1-6-250615", label: "豆包 Seed 1.6（看图 + 推理）" },
     { kind: "ark", id: "doubao-1-5-vision-pro-250328", label: "豆包 1.5 Vision Pro" },
@@ -102,9 +138,30 @@ function uniqueId(base, taken) {
   for (let i = 2; ; i++) if (!taken.has(`${b}-${i}`)) return `${b}-${i}`;
 }
 
-/** 按 base_url + api_key 认渠道：同一把 Key 同一个地址就是同一个渠道，不重复建 */
+/**
+ * 通义百炼一家有两个接口地址：图像 / 视频 / 配音走原生 `/api/v1`，对话走 OpenAI 兼容层
+ * `/compatible-mode/v1`。同一把 Key、同一个账号，没道理逼用户建两个渠道、把 Key 填两遍。
+ *
+ * 所以渠道只记一个地址，压平到模型条目时按用途换成对的那个。llm.js 算 embedding 时早就
+ * 这么干了（见那边的 `/compatible-mode/v1` 改写），这里只是把同一条规矩挪到渠道这一层。
+ * 别家一律原样返回——这不是通用改写，是通义一家的历史包袱。
+ */
+function baseForUse(baseUrl, use) {
+  const b = String(baseUrl || "").trim();
+  if (!/dashscope\.aliyuncs\.com/i.test(b)) return b;
+  return use === "chat"
+    ? b.replace(/\/api\/v\d+$/i, "/compatible-mode/v1")
+    : b.replace(/\/compatible-mode\/v\d+$/i, "/api/v1");
+}
+
+/**
+ * 按 base_url + api_key 认渠道：同一把 Key 同一个地址就是同一个渠道，不重复建。
+ * 地址先过一遍 baseForUse 归一，于是老配置里「对话填了兼容层、画图填了原生层」的同一个
+ * 通义账号会并成一个渠道，而不是两行同名卡片。
+ */
 function providerKeyOf(p) {
-  return `${String(p.base_url || "").trim().replace(/\/+$/, "").toLowerCase()} ${String(p.api_key || "").trim()}`;
+  const b = baseForUse(String(p.base_url || "").trim(), "media");
+  return `${b.replace(/\/+$/, "").toLowerCase()} ${String(p.api_key || "").trim()}`;
 }
 
 /** 从接口地址猜渠道类型，给迁移和「粘个地址就建渠道」用 */
@@ -116,6 +173,10 @@ function guessKind(baseUrl) {
   if (/siliconflow/.test(b)) return "siliconflow";
   if (/bigmodel\.cn/.test(b)) return "zhipu";
   if (/api\.openai\.com/.test(b)) return "openai";
+  if (/api\.anthropic\.com/.test(b)) return "anthropic";
+  if (/deepseek\.com/.test(b)) return "deepseek";
+  if (/moonshot\.cn/.test(b)) return "moonshot";
+  if (/(localhost|127\.0\.0\.1):11434/.test(b)) return "ollama";
   return "custom";
 }
 
@@ -123,6 +184,26 @@ function guessKind(baseUrl) {
 function baseOfKind(kind) {
   const k = PROVIDER_KINDS.find((p) => p.kind === kind);
   return k ? k.base_url : "";
+}
+
+/**
+ * 把渠道行就地规整齐：补名字、认类型、补默认地址、去重 id。返回这批 id 的集合。
+ *
+ * 对话模型（chat-models.js）和四路媒体模型共用同一张 config.providers 表——用户填的
+ * 就是一把 OpenRouter 的 Key，没道理在「模型」里填一遍、在「画图」里再填一遍。
+ * 共用一张表就必须共用一套规整规矩，所以这段抽出来，两边都调它。
+ */
+function normalizeProviders(providers) {
+  const ids = new Set();
+  for (const p of providers) {
+    p.name = String(p.name || "").trim() || "未命名渠道";
+    p.kind = PROVIDER_KINDS.some((k) => k.kind === p.kind) ? p.kind : guessKind(p.base_url);
+    p.base_url = String(p.base_url || "").trim() || baseOfKind(p.kind);
+    p.api_key = String(p.api_key || "").trim();
+    p.id = p.id && !ids.has(String(p.id)) ? String(p.id) : uniqueId(p.name || p.kind, ids);
+    ids.add(p.id);
+  }
+  return ids;
 }
 
 /**
@@ -136,15 +217,7 @@ function normalize(config) {
   const before = JSON.stringify([config.providers || null, config.media_models || null, config.media || null]);
   const providers = Array.isArray(config.providers) ? config.providers.filter((p) => p && typeof p === "object") : [];
   const models = Array.isArray(config.media_models) ? config.media_models.filter((m) => m && typeof m === "object") : [];
-  const ids = new Set();
-  for (const p of providers) {
-    p.name = String(p.name || "").trim() || "未命名渠道";
-    p.kind = PROVIDER_KINDS.some((k) => k.kind === p.kind) ? p.kind : guessKind(p.base_url);
-    p.base_url = String(p.base_url || "").trim() || baseOfKind(p.kind);
-    p.api_key = String(p.api_key || "").trim();
-    p.id = p.id && !ids.has(String(p.id)) ? String(p.id) : uniqueId(p.name || p.kind, ids);
-    ids.add(p.id);
-  }
+  const ids = normalizeProviders(providers);
   const byKey = new Map(providers.map((p) => [providerKeyOf(p), p]));
 
   // 老的 config.media[cap] 那份扁平配置：找/建渠道，再建一条模型条目
@@ -200,7 +273,7 @@ function flatten(providers, models, prev) {
     const m = models.find((x) => x.cap === cap && x.default) || models.find((x) => x.cap === cap);
     const p = m ? providers.find((x) => x.id === m.provider) : null;
     out[cap] = m && p
-      ? { base_url: p.base_url, api_key: p.api_key, model: m.model, ...(cap === "tts" ? { voice: m.voice || "" } : {}) }
+      ? { base_url: baseForUse(p.base_url, "media"), api_key: p.api_key, model: m.model, ...(cap === "tts" ? { voice: m.voice || "" } : {}) }
       : { base_url: "", api_key: "", model: "", ...(cap === "tts" ? { voice: "" } : {}) };
     // 老配置里手填了地址却没填模型名的，迁不成条目也别在保存时给人抹掉
     const old = (prev || {})[cap] || {};
@@ -220,7 +293,7 @@ function resolve(config) {
     const p = providers.find((x) => x.id === m.provider) || {};
     return {
       id: m.id, cap: m.cap, name: m.name, model: m.model, voice: m.voice || "",
-      base_url: p.base_url || "", api_key: p.api_key || "", provider: m.provider, default: !!m.default,
+      base_url: baseForUse(p.base_url || "", "media"), api_key: p.api_key || "", provider: m.provider, default: !!m.default,
     };
   });
   return { ...(config.media || {}), list };
@@ -256,6 +329,7 @@ function catalogFor(cap, kind) {
 
 module.exports = {
   CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
-  guessCap, guessKind, baseOfKind, catalogFor,
+  guessCap, guessKind, baseOfKind, catalogFor, protoOfKind,
+  providerKeyOf, uniqueId, normalizeProviders, baseForUse,
   normalize, flatten, resolve, pick, MediaPickError,
 };
