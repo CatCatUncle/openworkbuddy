@@ -4967,6 +4967,112 @@ const SC_CHECKS = `
   return names;
 })()`;
 
+// 存盘链路（#91，用户原话：「怎么说保存失败接口没有响应啊」）。真源是 app-02.js 的 postJson：
+// 老写法一个 catch 把四种完全不同的事故糊成同一句「接口无响应」。所以这一屏要验的不是
+// 「会不会报错」，而是「几种坏法说出几句**互不相同**的人话」——只测一种坏法，
+// 当初那个 bug 一次也不会现形。
+const SAVE0 = APP02.indexOf("async function postJson(url, body, timeoutMs)");
+const SAVE1 = APP02.indexOf("// ---- 图表看大图 ----");
+if (SAVE0 < 0 || SAVE1 <= SAVE0) throw new Error("app-02.js 里的 postJson / saveInlineFile 找不到了（改名/挪走？），存盘测试没法定位真源码");
+const SAVE_SRC = APP02.slice(SAVE0, SAVE1);
+const SAVE_HTML = "<!doctype html><meta charset='utf-8'><body><button id='b'>存盘</button></body>";
+const SAVE_STUBS = `
+  const TOASTS = [], DOWNLOADS = [], CALLS = [];
+  const toast = (t) => TOASTS.push(String(t));
+  const flashBtn = () => {};
+  const renderFiles = () => {};
+  let sessionId = "s1";
+  const sessionDirs = new Map([["s1", "任务_0911_ab12"]]);
+  // <a download> 那一下点击要拦住：真点会让 Chromium 弹下载面板，测试只需要知道「点过、点的哪个名字」
+  HTMLAnchorElement.prototype.click = function () { DOWNLOADS.push({ name: this.download }); };
+  // 每条用例自己排一个「这次 fetch 怎么坏」
+  let NEXT = null;
+  window.fetch = (url, opt) => {
+    CALLS.push({ url, body: JSON.parse(opt.body) });
+    if (NEXT.hang) return new Promise((_, rej) => opt.signal.addEventListener("abort", () => {
+      const e = new Error("aborted"); e.name = "AbortError"; rej(e);
+    }));
+    if (NEXT.dead) return Promise.reject(new TypeError("Failed to fetch"));
+    return Promise.resolve({ ok: NEXT.status < 400, status: NEXT.status, text: () => Promise.resolve(NEXT.body) });
+  };
+`;
+const SAVE_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const btn = document.getElementById("b");
+  const said = [];
+  let r;
+
+  NEXT = { dead: true };
+  r = await postJson("/api/files/save", { name: "a.svg" }, 5000);
+  said.push(r.why);
+  ok("后台退了连不上：说的是「连不上本机服务」，而不是那句什么也没说的「接口无响应」",
+    r.data === null && r.why.includes("连不上本机服务") && !r.why.includes("接口无响应"), r.why);
+
+  NEXT = { hang: true };
+  const t0 = Date.now();
+  r = await postJson("/api/files/save", { name: "a.svg" }, 600);
+  const waited = Date.now() - t0;
+  said.push(r.why);
+  ok("后台卡住一直不回：到点真把请求掐了，并且告诉人等了多久",
+    r.data === null && r.why.includes("还没回应") && waited >= 500 && waited < 3000, r.why + " · 实等 " + waited + "ms");
+
+  NEXT = { status: 502, body: "<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>" };
+  r = await postJson("/api/files/save", { name: "a.svg" }, 5000);
+  said.push(r.why);
+  ok("前面挡了个网关、回的是 HTML 错误页：报出 HTTP 码，还把那页头一截抄过来给人看",
+    r.data === null && r.why.includes("HTTP 502") && r.why.includes("不是 JSON") && r.why.includes("502 Bad Gateway"), r.why);
+
+  NEXT = { status: 413, body: JSON.stringify({ error: "这张图 28 MB，超过单文件上限 20 MB" }) };
+  r = await postJson("/api/files/save", { name: "a.svg" }, 5000);
+  said.push(r.why);
+  ok("服务端自己说了人话：原样转述，不被「HTTP 413」四个字盖掉",
+    r.why === "这张图 28 MB，超过单文件上限 20 MB" && !r.why.includes("413"), r.why);
+
+  NEXT = { status: 401, body: JSON.stringify({ need_login: true }) };
+  r = await postJson("/api/files/save", { name: "a.svg" }, 5000);
+  said.push(r.why);
+  ok("服务端只回了个码没给话：退回「HTTP 401」，至少知道该往哪儿查",
+    !!r.data && r.data.error === "HTTP 401" && r.why === "HTTP 401", r.why);
+
+  NEXT = { status: 200, body: "" };
+  r = await postJson("/api/files/save", { name: "a.svg" }, 5000);
+  said.push(r.why);
+  ok("200 但正文是空的：也得说出来，别当成功放过去",
+    r.data === null && r.why.includes("空响应"), r.why);
+
+  ok("六种坏法说出六句互不相同的话——当初的 bug 就是它们全被糊成了同一句",
+    new Set(said).size === said.length, said.join(" ｜ "));
+
+  // ---- saveInlineFile：存哪儿、失败怎么说、自己点的取消别吓人 ----
+  NEXT = { status: 200, body: JSON.stringify({ ok: true, dir: "任务_0911_ab12", files: [] }) };
+  CALLS.length = 0; TOASTS.length = 0;
+  await saveInlineFile("图.svg", "<svg/>", btn, false);
+  ok("默认存进这次对话自己的成果文件夹，不再一股脑丢进工作区根目录",
+    CALLS[0].body.dir === "任务_0911_ab12" && TOASTS[0].includes("任务_0911_ab12"), CALLS[0].body.dir + " · " + TOASTS[0]);
+
+  NEXT = { dead: true };
+  TOASTS.length = 0;
+  await saveInlineFile("图.svg", "<svg/>", btn, false);
+  ok("存不下时弹的那句里带着到底哪一环坏了",
+    TOASTS.length === 1 && TOASTS[0].includes("保存失败") && TOASTS[0].includes("连不上本机服务"), TOASTS.join("｜"));
+
+  NEXT = { status: 200, body: JSON.stringify({ canceled: true }) };
+  TOASTS.length = 0;
+  await saveInlineFile("图.svg", "<svg/>", btn, true);
+  ok("「另存为」里自己点了取消：一声不吭，不补一句「失败」吓人", TOASTS.length === 0, TOASTS.join("｜"));
+
+  NEXT = { status: 200, body: JSON.stringify({ no_dialog: true }) };
+  TOASTS.length = 0; DOWNLOADS.length = 0;
+  await saveInlineFile("图.svg", "<svg/>", btn, true);
+  ok("网页端没有系统保存框：退回浏览器下载，并说清楚想换地方去哪儿改",
+    DOWNLOADS.length === 1 && DOWNLOADS[0].name === "图.svg" && TOASTS.length === 1 && TOASTS[0].includes("浏览器"),
+    JSON.stringify(DOWNLOADS) + " · " + TOASTS.join("｜"));
+
+  return names;
+})()`;
+
 // 装一个 DOM 哨兵：只要有人把 ${...} 原样画进页面就记下来（跳过 script/style/template 里的正则源码）
 const PLACEHOLDER_WATCH = `(() => {
   if (window.__phFlush) return 1;
@@ -5358,6 +5464,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：键盘可达（侧栏行/成果卡 Tab 得到·回车空格等价点击·按钮不套按钮）${names6.length} 项通过`);
     } finally {
       if (!win6.isDestroyed()) win6.destroy();
+    }
+    const winSave = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winSave.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SAVE_HTML));
+      const namesSave = await winSave.webContents.executeJavaScript(SAVE_STUBS + "\n" + SAVE_SRC + "\n" + SAVE_CHECKS, true)
+        .catch((e) => { throw new Error("[存盘] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesSave) console.log("  ✓ " + n);
+      console.log(`✅ 前端：存盘失败说人话（连不上/卡住掐掉/网关 HTML/服务端原话/裸 HTTP 码/空响应 六句各不相同·默认落本对话文件夹·取消不吓人·网页端退下载）${namesSave.length} 项通过`);
+    } finally {
+      if (!winSave.isDestroyed()) winSave.destroy();
     }
     const winSC = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
