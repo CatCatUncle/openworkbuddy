@@ -19,10 +19,24 @@ function currentVersion() {
   try { return require("./package.json").version || "0.0.0"; } catch { return "0.0.0"; }
 }
 
-// 打包版的代码在 app.asar 里；源码跑的不在。比 electron.app.isPackaged 好用的地方是：
-// 这个模块在纯 node 模式（npm start）下也能被 require，不必先有 electron。
-function installKind() {
-  return __dirname.includes("app.asar") ? "app" : "source";
+// 判「你是怎么装的」。不用 electron.app.isPackaged，是因为这个模块在纯 node 模式
+// （npm start）下也要能被 require，那时候根本没有 electron 可取。
+//
+// ⚠️ 只看 app.asar 是错的：本项目的 asar 是关着的（原因见 electron-builder.config.js 文件头），
+// 装机包里代码住在 <Resources>/app/ 而不是 <Resources>/app.asar，于是每一个装了包的用户
+// 都会被判成「源码版」，点「检查更新」得到的建议是 git pull && npm install —— 他机器上
+// 压根没有这个仓库。所以第二条才是装机版真正命中的那条：代码在 Electron 的 resources 目录底下。
+// 两个参数只为可测：真实调用一律不传。Windows 给的是反斜杠、macOS 是斜杠，
+// 这里统一成斜杠再比，免得断言只能在打包用的那个系统上跑。
+function installKind(dir = __dirname, resourcesPath = process.resourcesPath) {
+  const norm = (s) => String(s).replace(/\\/g, "/").replace(/\/+$/, "");
+  const d = norm(dir);
+  if (/\/app\.asar(\/|$)/.test(d)) return "app";  // asar 开着的情况，留着以防哪天打开
+  if (!resourcesPath) return "source";             // 纯 node 跑（npm start）没有这个字段
+  const rp = norm(resourcesPath);
+  // 注意这里是 rp + "/" 而不是裸 startsWith(rp)：不然 /A/Resources-old 会被 /A/Resources 误伤。
+  // 从仓库跑 electron 时 resourcesPath 指向 node_modules/electron/.../Resources，不含本目录，照样判 source。
+  return d === rp || d.startsWith(rp + "/") ? "app" : "source";
 }
 
 // 只认 x.y.z 前缀，后面的 -beta.1 之类一律当成「比正式版旧」。够用，且不引第三方 semver。

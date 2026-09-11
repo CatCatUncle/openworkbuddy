@@ -7750,9 +7750,44 @@ async function testUpdaterVersions() {
   assert(junk.error && !junk.has_update, "tag 不是版本号时没兜住：" + JSON.stringify(junk));
   U.resetCache();
 
-  // 打包版和源码版判得出来（打包后代码在 app.asar 里）
+  // 打包版和源码版判得出来。
+  // 这条曾经是错的：判据只有「路径里有 app.asar」，而本项目的 asar 是关着的（见
+  // electron-builder.config.js 文件头），装机包里代码住在 <Resources>/app/。于是**每一个**
+  // 装了包的用户点「检查更新」，拿到的建议都是 git pull && npm install —— 他机器上没有这个仓库。
   assert(["app", "source"].includes(U.installKind()), "安装方式判不出来");
   assert.strictEqual(U.installKind(), "source", "测试是从源码跑的，却判成了安装包");
+  // 装机版：mac（asar 关着，代码在 Resources/app 下）
+  assert.strictEqual(
+    U.installKind("/Applications/OpenWorkBuddy.app/Contents/Resources/app",
+                  "/Applications/OpenWorkBuddy.app/Contents/Resources"),
+    "app", "装了 dmg 的用户被判成源码版，会被告知去 git pull（他机器上没有这个仓库）");
+  // 装机版：Windows（反斜杠；断言要能在 mac 上跑，所以判据必须跟路径分隔符无关）
+  assert.strictEqual(
+    U.installKind("C:\\Program Files\\OpenWorkBuddy\\resources\\app",
+                  "C:\\Program Files\\OpenWorkBuddy\\resources"),
+    "app", "Windows 装机版判成了源码版");
+  // 哪天把 asar 打开，这条路还得通
+  assert.strictEqual(
+    U.installKind("/Applications/OpenWorkBuddy.app/Contents/Resources/app.asar",
+                  "/Applications/OpenWorkBuddy.app/Contents/Resources"),
+    "app", "asar 开着的装机版判不出来");
+  // 反向对照一：从仓库跑 electron 时 resourcesPath 也有值（指向 electron 自带的 Resources），
+  // 但它不含本目录 —— 「有 resourcesPath 就算装机版」是错的
+  assert.strictEqual(
+    U.installKind("/Users/me/openworkbuddy",
+                  "/Users/me/openworkbuddy/node_modules/electron/dist/Electron.app/Contents/Resources"),
+    "source", "npm run app（从源码跑 electron）被判成了装机版");
+  // 反向对照二：前缀陷阱。裸 startsWith 会把 Resources-old 也算进去
+  assert.strictEqual(U.installKind("/A/Resources-old/app", "/A/Resources"), "source",
+    "只是名字前缀撞上就被判成装机版（判据漏了分隔符）");
+  // 反向对照三：纯 node 跑（npm start）压根没有 resourcesPath
+  assert.strictEqual(U.installKind("/Users/me/openworkbuddy", undefined), "source",
+    "纯 node 模式判成了装机版");
+  // 判错了不是措辞问题，是给出完全用不上的操作：两条建议必须真的不一样
+  assert(/git pull/.test(U.howToUpdate("source")), "源码版没给 git pull");
+  assert(!/git pull/.test(U.howToUpdate("app", "darwin")), "装机版还在让人 git pull");
+  assert(/dmg/.test(U.howToUpdate("app", "darwin")) && /setup\.exe/.test(U.howToUpdate("app", "win32")),
+    "装机版没说清该下哪个包");
 
   // 不做静默自动更新，是因为构建没签名 —— 这条理由必须写在代码里，不然下次有人顺手加个 autoUpdater
   const src2 = fs.readFileSync(path.join(__dirname, "..", "updater.js"), "utf8");
