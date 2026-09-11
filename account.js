@@ -667,7 +667,9 @@ const PUBLIC_IM = new Set(["/im/task", "/im/feishu/events", "/im/wecom/events", 
 
 /** 登录守卫：/api/*（除 /api/auth/*）与 UI 用的 /im/status 等需要已登录，其余放行 */
 function authGuard(req, res, next) {
-  const p = req.path;
+  // 小写化再判：Express 路由默认大小写不敏感，/API/settings 照样命中 /api/settings 的处理器。
+  // 用原样 req.path 做 startsWith 的话，大写前缀会判成「不需要登录」，整个 /api 就敞开了。
+  const p = req.path.toLowerCase();
   const needsAuth =
     (p.startsWith("/api/") && !p.startsWith("/api/auth/")) ||
     (p.startsWith("/im/") && !PUBLIC_IM.has(p));

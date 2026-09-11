@@ -51,6 +51,11 @@ const PLATFORM_WRITE = [
   "/api/plugins", "/api/experts", "/api/expert-teams", "/api/evolve", "/api/eval",
   "/api/feishu", "/api/pick-folder", "/api/open-workspace", "/api/cache/",
   "/api/skills", "/api/memory", "/api/library",
+  // 「用系统程序打开」「在访达里显示」= 在**服务器那台机器**上起一个进程。
+  // 按上面那条线，这是「配这台机器」，不是租户内动作：成员开在别人机器上的窗口他也看不见，
+  // 而这条路径以前连表都不在，任何登录用户都能拿它拉起服务端进程。
+  // 单机桌面版走的是 platformGuard 第一行的 soloDesktop 直通，一行行为都没变。
+  "/api/files/open", "/api/files/reveal",
 ];
 const PLATFORM_READ = [
   "/api/schedules", "/api/backup", "/api/security/audit", "/api/memory",
@@ -134,7 +139,9 @@ function ownsGlobalWorkspace(user) {
 function platformGuard(req, res, next) {
   if (soloDesktop) return next(); // 个人桌面版：没有「平台」这回事，别拿服务器的规矩管一个人的机器
   if (ownsGlobalWorkspace(req.user)) return next();
-  const p = req.path;
+  // 小写化再查表：表里全是小写前缀，而 Express 路由大小写不敏感，
+  // 普通成员发 POST /api/Settings 能命中处理器却不命中这张表——整张写表就绕过去了
+  const p = req.path.toLowerCase();
   const table = req.method === "GET" ? PLATFORM_READ : PLATFORM_WRITE;
   if (table.some((x) => p.startsWith(x))) {
     // 只动了自己那几项（底层引擎、思考档、上次选的模型、宠物、快捷键）就放行——
@@ -172,7 +179,7 @@ function redactSecrets(v) {
 }
 function redactGuard(req, res, next) {
   if (soloDesktop) return next(); // 见 setDeployment：桌面版关了闸就必须一起关脱敏，否则会把真 Key 存成空
-  if (req.method !== "GET" || req.path.startsWith("/api/admin") || ownsGlobalWorkspace(req.user)) return next();
+  if (req.method !== "GET" || req.path.toLowerCase().startsWith("/api/admin") || ownsGlobalWorkspace(req.user)) return next();
   const json = res.json.bind(res);
   res.json = (body) => json(redactSecrets(body));
   next();

@@ -85,6 +85,16 @@ async function getList(url) {
  * 界面拿它决定控件画不画——一颗点下去只会 403 的按钮，比不画更气人。
  */
 function amPlatformOwner() { return !!(settingsCache && settingsCache.platform_owner); }
+/**
+ * 「在这台机器上打开」这类动作能不能做。
+ *
+ * 「用系统程序打开」「打开所在位置」「打开文件夹」开的都是**服务端那台机器**上的程序。
+ * 单机桌面版里那就是用户自己的电脑，天经地义；多人服务器上对成员既没有意义
+ * （开在别人机器上他也看不见），后端也归平台管理员管（admin.js 的写表）。
+ * 所以成员那边这些控件干脆不画——一颗必然 403 的按钮，点下去不是没反应就是假成功。
+ * 下载按钮一直都在，那才是 Web 部署下把文件拿到手的正路。
+ */
+function canOpenOnHost() { return amPlatformOwner(); }
 /** 一条工作区相对路径的目录部分（顶层文件就是空串） */
 function dirOf(name) { const i = String(name || "").lastIndexOf("/"); return i < 0 ? "" : name.slice(0, i); }
 /**
@@ -1336,10 +1346,27 @@ const closedBuckets = new Set();
 function revealFile(name, e) {
   if (e) { e.stopPropagation(); e.preventDefault(); }
   fetch("/api/files/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) })
-    .then(r => r.json()).then(j => { if (j && j.error) toast(j.error); })
-    .catch(() => toast("打不开所在位置"));
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开所在位置")); }))
+    .catch(() => toast("❌ 打不开所在位置"));
 }
-const revealBtn = (name) => `<span class="dl rv" data-rv="${esc(name)}" title="打开所在位置">📂</span>`;
+/**
+ * 让服务端用系统程序打开一个文件/文件夹，并且**把结果说出来**。
+ * 老写法是 fetch(...) 后面挂个 .catch(() => {})，于是 403（没权限）和 400（类型不给开）
+ * 一样静悄悄——用户只看到「我点了，什么都没发生」。
+ */
+function openOnHost(name) {
+  return fetch("/api/files/open/" + fpath(name), { method: "POST" })
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开这个文件")); }))
+    .catch(() => toast("❌ 打不开这个文件"));
+}
+/** 下载到用户自己的电脑。Web 部署下这才是「把文件拿到手」的正路 */
+function downloadFile(name) {
+  const a = document.createElement("a");
+  a.href = "/api/files/download/" + fpath(name);
+  a.download = String(name).split("/").pop();
+  document.body.appendChild(a); a.click(); a.remove();
+}
+const revealBtn = (name) => (canOpenOnHost() ? `<span class="dl rv" data-rv="${esc(name)}" title="打开所在位置">📂</span>` : "");
 
 /** 面板顶上的「全部 / 只看成果」。全是成果或一件成果都没有时不摆——切了看不出差别，白占一行 */
 function renderFileFilter() {
@@ -1405,7 +1432,7 @@ function renderFiles(files) {
   const resFirst = (tie) => (a, b2) => (isResultFile(b2.name) ? 1 : 0) - (isResultFile(a.name) ? 1 : 0) || (tie ? tie(a, b2) : 0);
   const resCount = (list) => list.filter((f) => isResultFile(f.name)).length;
   const dirHead = (key, label, n, mine, tip, nres) =>
-    `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span>${openDirs.has(key) ? "▾" : "▸"}</span><span>📁</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${nres ? `<b class="res-n">${nres} 份成果</b> · ` : ""}${n}</span><span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">↗</span></div>`;
+    `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span>${openDirs.has(key) ? "▾" : "▸"}</span><span>📁</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${nres ? `<b class="res-n">${nres} 份成果</b> · ` : ""}${n}</span>${canOpenOnHost() ? `<span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">↗</span>` : ""}</div>`;
 
   // 一个文件夹归到哪个时间段，看它**最近动过的那个文件**（不是最老的那个）
   const dirTime = (dir) => groups[dir].reduce((m, f) => Math.max(m, Date.parse(f.mtime) || 0), 0);
@@ -1463,7 +1490,7 @@ function renderFiles(files) {
   });
   el.querySelectorAll(".opendir").forEach(b => { b.onclick = (e) => {
     e.stopPropagation();
-    fetch("/api/files/open/" + fpath(b.dataset.opendir), { method: "POST" }).catch(() => {});
+    openOnHost(b.dataset.opendir); // 结果要读回来：以前这里 .catch(() => {}) 把 403/404 一起吞了
   }; });
   const tidyBtn = el.querySelector("#btn-tidy");
   if (tidyBtn) tidyBtn.onclick = async () => {
@@ -1605,7 +1632,11 @@ async function fetchTextHead(url) {
 /** 真看不了时的兜底。以前这句写的是"可点右上 🗔 …或 ⬇"，可标题栏早就换成 SVG 图标了，
  *  用户照着找一辈子也找不到那两个 emoji——所以直接给一个能点的按钮 */
 const pvFallback = (why) =>
-  `<div class="pv-text" style="color:var(--wb-text-3)">${esc(why)}，应用内看不了。<div style="margin-top:12px;display:flex;gap:8px"><button class="pv-open-sys">用系统默认程序打开</button><button class="pv-reveal">打开所在位置</button></div></div>`;
+  `<div class="pv-text" style="color:var(--wb-text-3)">${esc(why)}，应用内看不了。<div style="margin-top:12px;display:flex;gap:8px">${
+    canOpenOnHost()
+      ? `<button class="pv-open-sys">用系统默认程序打开</button><button class="pv-reveal">打开所在位置</button>`
+      : `<button class="pv-download">下载到本地看</button>`
+  }</div></div>`;
 const pvTrunc = (total) =>
   `<div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--wb-border);color:var(--wb-text-3);font-size:13px">文件太大，只显示了开头 ${PV_TEXT_MAX / 1024} KB${total ? `（整个文件 ${fmtSize(total)}）` : ""}。要看全的话下载或用系统程序打开。</div>`;
 
@@ -1695,8 +1726,9 @@ function csvHtml(text, name) {
 
 async function previewFile(name) {
   if (OFFICE_RE.test(name)) {
-    // Office 文件交给本机 Office/WPS 打开
-    await fetch("/api/files/open/" + fpath(name), { method: "POST" });
+    // Office 文件交给本机 Office/WPS 打开。多人服务器上「本机」是服务端那台，
+    // 对成员没意义也没权限——那边直接给他下载，这才是他真正想要的结果
+    if (canOpenOnHost()) await openOnHost(name); else downloadFile(name);
     return;
   }
   pvCurrent = name;
@@ -1738,14 +1770,17 @@ async function previewFile(name) {
     else body.innerHTML = `<div class="pv-text" translate="no"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
   }
   const sysBtn = body.querySelector(".pv-open-sys");
-  if (sysBtn) sysBtn.onclick = () => fetch("/api/files/open/" + fpath(name), { method: "POST" });
+  if (sysBtn) sysBtn.onclick = () => openOnHost(name);
   const rvBtn = body.querySelector(".pv-reveal");
   if (rvBtn) rvBtn.onclick = () => revealFile(name);
+  const dlBtn = body.querySelector(".pv-download");
+  if (dlBtn) dlBtn.onclick = () => downloadFile(name);
+  syncNavByRole(); // 标题栏那两颗「在本机打开」也按身份收一收（下载那颗一直在）
   pvPanel.classList.add("show");
   renderDeployBar();
 }
 document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; pvClosedAt = Date.now(); };
-document.getElementById("pv-sys").onclick = () => { if (pvCurrent) fetch("/api/files/open/" + fpath(pvCurrent), { method: "POST" }); };
+document.getElementById("pv-sys").onclick = () => { if (pvCurrent) openOnHost(pvCurrent); };
 document.getElementById("pv-rv").onclick = () => { if (pvCurrent) revealFile(pvCurrent); };
 
 // ---- 本地部署预览：iframe 里看长相够了，但真网页要有自己的 origin（相对路径/fetch/localStorage/手机上开）----
@@ -1765,12 +1800,20 @@ async function renderDeployBar() {
     };
     return;
   }
-  const url = previewSrv.url + fpath(pvCurrent);
-  const lan = previewSrv.lan_url ? previewSrv.lan_url + fpath(pvCurrent) : null;
+  // 令牌必须跟着链接走：预览站是独立进程，认不了应用的登录 cookie，
+  // 没令牌的链接打开是 401 而不是页面
+  const withTok = (base) => base + fpath(pvCurrent) + (previewSrv.token ? "?t=" + previewSrv.token : "");
+  const url = withTok(previewSrv.url);
+  const lan = previewSrv.lan_url ? withTok(previewSrv.lan_url) : null;
+  // 「放开给手机看」= 把这台机器上的目录挂到局域网，属于服务器级动作。
+  // 不是平台管理员就别画这颗按钮：点了只会静默降级成本机，用户只当是自己 Wi-Fi 有问题
+  const canLan = amPlatformOwner();
   bar.innerHTML = `<span>✅ 已本地部署</span><code>${esc(url)}</code>
     ${lan
       ? `<span style="color:var(--wb-text-3)">手机同 Wi-Fi 可开</span><code>${esc(lan)}</code>`
-      : `<button id="pv-lan" title="同一个 Wi-Fi 下的人都能翻你的工作目录，看完记得停">放开给手机看</button>`}
+      : canLan
+        ? `<button id="pv-lan" title="同一个 Wi-Fi 下的人都能翻你的工作目录，看完记得停">放开给手机看</button>`
+        : ""}
     <button id="pv-open-br">在浏览器打开</button><button id="pv-serve-stop">停止</button>`;
   bar.querySelector("#pv-open-br").onclick = async (e) => {
     // 传当前的 lan 状态，别把已经放开给手机的服务悄悄收回本机
@@ -1783,7 +1826,8 @@ async function renderDeployBar() {
   if (lanBtn) lanBtn.onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = "切换中…";
     previewSrv = await startPreview(true);
-    if (!previewSrv.lan_url) toast("这台机器没找到局域网地址（没连 Wi-Fi？）");
+    if (previewSrv.lan_denied) toast("❌ " + (previewSrv.lan_hint || "对局域网开放要平台管理员来开"));
+    else if (!previewSrv.lan_url) toast("这台机器没找到局域网地址（没连 Wi-Fi？）");
     renderDeployBar();
   };
   bar.querySelector("#pv-serve-stop").onclick = async () => {
@@ -2322,7 +2366,13 @@ window.addEventListener("resize", () => { if (window.innerWidth > 900) document.
 document.querySelector(".main").addEventListener("click", () => {
   if (document.body.classList.contains("side-open")) document.body.classList.remove("side-open");
 }, true);
-document.getElementById("open-ws").onclick = (e) => { e.preventDefault(); fetch("/api/open-workspace", { method: "POST" }); };
+document.getElementById("open-ws").onclick = (e) => {
+  e.preventDefault();
+  // 以前这里 fetch 完连 Promise 都不接：403 之后按钮点了毫无反应
+  fetch("/api/open-workspace", { method: "POST" })
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开工作目录")); }))
+    .catch(() => toast("❌ 打不开工作目录"));
+};
 
 // ================= 下拉菜单通用 =================
 function setupPicker(btnId, menuId) {
@@ -2366,6 +2416,13 @@ function syncNavByRole() {
   for (const v of PLATFORM_ONLY_VIEWS) {
     const el = document.querySelector(`.side-nav [data-view="${v}"]`);
     if (el) el.style.display = po ? "" : "none";
+  }
+  // 静态写在 index.html 里的「在这台机器上打开」入口也一起收：
+  // 成果面板标题上那条「打开文件夹」、预览标题栏那两颗图标
+  const host = canOpenOnHost();
+  for (const id of ["open-ws", "pv-sys", "pv-rv"]) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = host ? "" : "none";
   }
 }
 // 这个选择器只管「当前对话」用哪个模型，不动全局默认（全局默认在 设置 → 模型 里改）。

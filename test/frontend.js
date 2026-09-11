@@ -47,6 +47,21 @@ const PH1 = APP02X.indexOf("/**\n * 单行文本里的 markdown 强调");
 if (PH0 < 0 || PH1 <= PH0) throw new Error("app-01.js 里的路径助手段找不到了（函数被改名/挪走？），前端测试没法定位真源码");
 const PATHHELP_SRC = APP02X.slice(PH0, PH1);
 
+// 「在这台机器上打开」那组控件画不画，真源是 app-01.js 里这三个小函数。抄一份就成了两套真相，
+// 所以照样切真源码：哪天 canOpenOnHost 改判据（比如改成按部署形态判），这一屏立刻跟着变。
+const srcLine = (sig) => {
+  const i = APP02X.indexOf(sig);
+  if (i < 0) throw new Error(sig + " 在 app-01.js 里找不到了，前端测试没法定位真源码");
+  return APP02X.slice(i, APP02X.indexOf("\n", i));
+};
+const srcBlock = (sig) => {
+  const i = APP02X.indexOf(sig);
+  if (i < 0) throw new Error(sig + " 在 app-01.js 里找不到了，前端测试没法定位真源码");
+  return APP02X.slice(i, APP02X.indexOf("\n}", i) + 2);
+};
+const HOSTCAP_SRC = [srcLine("function amPlatformOwner("), srcLine("function canOpenOnHost("),
+                     srcBlock("function openOnHost(")].join("\n");
+
 // 成果面板：文件夹按时间分段（今天／昨天／过去 7 天／更早按月）。分段是纯视图，
 // 磁盘上仍是扁平的 任务_MMDD_xxx —— 所以这段逻辑没有任何服务端断言能替它把关，
 // 只能在真 Chromium 里喂真数据、读真 DOM。同样切 app-01.js 的真源码。
@@ -462,6 +477,8 @@ const FILELIST_STUBS = [
   "window.sessionId = 's_now';",
   "window.sessionDirs = new Map([['s_now', '任务_0903_本对话']]);",
   "window.fetch = async () => ({ ok: true, json: async () => [] });",
+  // 身份：默认按平台管理员验（📂 该在）；最后一节翻成普通成员，验它真的收起来
+  "window.settingsCache = { platform_owner: true };",
 ].join("\n");
 
 const FILELIST_CHECKS = `
@@ -576,6 +593,25 @@ const FILELIST_CHECKS = `
   ok("反向控制：一份成果都没有时不摆开关", document.getElementById("fp-filter").hidden);
   renderFiles(["a.pptx", "b.png"].map((n, i) => f(DIR + "/" + n, t0.getTime() + i)));
   ok("反向控制：全是成果时也不摆开关", document.getElementById("fp-filter").hidden);
+
+  // ── 📂「打开所在位置」和文件夹头上的 ↗「在本机打开」：开的都是**服务器那台**机器的窗口。
+  //    多人部署里成员点了只会 403，窗口还弹在管理员的显示器上——干脆不画。⬇ 下载一直都在。
+  window.sessionDirs = new Map([["s_now", "任务_0903_本对话"]]);
+  const two = ["报告.md", "图.png"].map((n, i) => f(DIR + "/" + n, t0.getTime() + i));
+  renderFiles(two);
+  ok("基线：平台管理员看得到 📂", el.querySelectorAll(".rv").length > 0, el.innerHTML.slice(0, 200));
+  const dirHead = el.querySelector('.dir-head[data-dir="' + DIR + '"]');
+  ok("基线：文件夹头上也有「在本机打开」", !!dirHead.querySelector("[data-opendir]"), dirHead.innerHTML.slice(0, 200));
+  const dlBefore = el.querySelectorAll(".dl:not(.rv)").length;
+  ok("基线：⬇ 下载也在", dlBefore > 0);
+  window.settingsCache = { platform_owner: false };
+  renderFiles(two);
+  ok("成员那边 📂 一个都不画", el.querySelectorAll(".rv").length === 0, el.innerHTML.slice(0, 200));
+  ok("文件夹头上的「在本机打开」也不画",
+     !el.querySelector('.dir-head[data-dir="' + DIR + '"]').querySelector("[data-opendir]"));
+  ok("但 ⬇ 下载一颗都没少（那才是他真能用的那条）",
+     el.querySelectorAll(".dl:not(.rv)").length === dlBefore, el.innerHTML.slice(0, 200));
+  window.settingsCache = { platform_owner: true };
   return names;
 })()`;
 
@@ -2846,6 +2882,10 @@ const PREVIEW_STUBS = [
   "window.renderDeployBar = () => {};",
   "window.revealFile = (n) => { window.opened.push('reveal:' + n); };",
   "window.toast = () => {};",
+  // 身份：默认按平台管理员验（老断言全是这一档），成员那一档在第 6.5 节里现场翻过来
+  "window.settingsCache = { platform_owner: true };",
+  "window.downloaded = []; window.downloadFile = (n) => window.downloaded.push(n);",
+  "window.navSyncs = 0; window.syncNavByRole = () => { window.navSyncs++; };",
 ].join("\n");
 
 const PREVIEW_CHECKS = `
@@ -2940,6 +2980,29 @@ const PREVIEW_CHECKS = `
     ok("兜底按钮真能打开系统程序", window.opened.length === n + 1 && window.opened.at(-1) === "a.pcm", JSON.stringify(window.opened.slice(-2)));
     body.querySelector(".pv-reveal").click();
     ok("兜底按钮真能定位文件", window.opened.at(-1) === "reveal:a.pcm");
+  }
+
+  // ---- 6.5 换成普通成员：这几颗按钮开的是**服务器那台**机器，画出来点了只会 403 ----
+  // 用户原话是「切换失败怎么还切换失败了啊」——一颗明明能点的按钮，点下去只回四个字。
+  // 所以成员那边干脆不画，改给他真能用的那条：下载到自己电脑上看。
+  {
+    window.settingsCache = { platform_owner: false };
+    const h = await show("b.pcm");
+    ok("成员看不到「用系统默认程序打开」", !/pv-open-sys/.test(h), h.slice(0, 300));
+    ok("成员也看不到「打开所在位置」", !/pv-reveal/.test(h), h.slice(0, 300));
+    ok("换上的是能用的那条：下载到本地", /pv-download/.test(h) && /下载到本地/.test(h), h.slice(0, 300));
+    const n = window.downloaded.length;
+    body.querySelector(".pv-download").click();
+    ok("下载按钮真接上了 downloadFile（不是个摆设）",
+       window.downloaded.length === n + 1 && window.downloaded.at(-1) === "b.pcm", JSON.stringify(window.downloaded.slice(-2)));
+    const m = window.opened.length;
+    await previewFile("成员的.doc");
+    ok(".doc 对成员走下载，不再往服务器桌面上弹一个他看不见的窗",
+       window.opened.length === m && window.downloaded.at(-1) === "成员的.doc", JSON.stringify(window.opened.slice(-2)));
+    ok("预览一渲染就把标题栏那两颗「在本机打开」也按身份收一收", window.navSyncs > 0);
+    window.settingsCache = { platform_owner: true }; // 还原：后面几节还是按平台管理员验
+    const back = await show("c.pcm");
+    ok("反向对照：管理员那边这两颗按钮还在", /pv-open-sys/.test(back) && /pv-reveal/.test(back), back.slice(0, 300));
   }
 
   // ---- 7. 大文件只取头一段：以前整包 fetch 完再 slice，几百 MB 的日志能把渲染进程卡死 ----
@@ -3937,7 +4000,7 @@ app.whenReady().then(async () => {
     const win3 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win3.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PREVIEW_HTML));
-      const names3 = await win3.webContents.executeJavaScript(PREVIEW_STUBS + "\n" + PATHHELP_SRC + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
+      const names3 = await win3.webContents.executeJavaScript(PREVIEW_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
       for (const n of names3) console.log("  ✓ " + n);
       console.log(`✅ 前端：文件预览（路由·音视频·docx/xlsx/pptx/zip 结构化·CSV·兜底）${names3.length} 项通过`);
     } finally {
@@ -3956,7 +4019,7 @@ app.whenReady().then(async () => {
     const win5 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win5.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(FILELIST_HTML));
-      const names5 = await win5.webContents.executeJavaScript(FILELIST_STUBS + "\n" + PATHHELP_SRC + "\n" + DELIVER_SRC + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
+      const names5 = await win5.webContents.executeJavaScript(FILELIST_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + DELIVER_SRC + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
       for (const n of names5) console.log("  ✓ " + n);
       console.log(`✅ 前端：成果面板按时间分段（今天/昨天/7天/按月·取最近动过·折叠独立·根目录降级）${names5.length} 项通过`);
     } finally {
