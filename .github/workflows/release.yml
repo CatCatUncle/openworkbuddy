@@ -63,17 +63,44 @@ jobs:
 
             - **macOS（Apple 芯片）** → `OpenWorkBuddy-*-mac-arm64.dmg`
             - **macOS（Intel）** → `OpenWorkBuddy-*-mac-x64.dmg`
-            - **Windows（x64 / ARM 同一个包）** → `OpenWorkBuddy-*-win-setup.exe`（双击即装，装完自动启动，装时自动选架构）
-            - **Windows 免安装版** → `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe`（不装直接跑，每次启动慢几秒；不知道 CPU 型号就拿 `-win-portable.exe`，两种都在里面）
+            - **Windows（x64 / ARM 同一个包）** → `OpenWorkBuddy-*-win-setup.exe` ← **绝大多数人下这个**（双击即装，装完自动启动，装时自动选架构）
+            - **Windows 免安装版** → `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe`
+              —— **只在公司电脑不让装软件时才用**。它的原理是自解压：每次启动都要把整个应用解压到 `%TEMP%`，
+              还要被 Defender 逐个扫一遍，第一次可能要等好几分钟，期间任务管理器里有进程、屏幕上什么都没有。
 
-            macOS 首次打开会提示「无法打开，因为无法验证开发者」——这个包没有 Apple 的付费开发者证书签名，
-            不是安全问题。右键点应用图标 → 打开 → 再点一次「打开」即可；或者在终端跑：
+            ## 第一次打开会被系统拦一下
+
+            这个包没有代码签名证书（苹果一年 99 美元、Windows 一年几千块，这是个免费开源项目），不是有毒。
+
+            - **Windows**：弹出「Windows 已保护你的电脑」时，点弹窗里的灰色小字 **「更多信息」**，下面才会出现 **「仍要运行」**。
+            - **macOS**：提示「无法验证开发者」时，右键点应用图标 → 打开 → 再点一次「打开」。或者在终端跑：
 
             ```
             xattr -cr /Applications/OpenWorkBuddy.app
             ```
 
             装完先去设置里填模型 API Key。你的配置、会话、工作区都在 `~/OpenWorkBuddy`，卸载不会删。
+
+            ## 双击了没反应？
+
+            每次启动都会写一份日志，先看它停在哪儿：
+
+            ```
+            ~/OpenWorkBuddy/logs/boot.log          # Windows: C:\Users\你\OpenWorkBuddy\logs\boot.log
+            ```
+
+            常见的几种，以及对应的解法：
+
+            | 现象 | 解法 |
+            |---|---|
+            | 免安装版双击后只有进程、没有窗口 | 改用 `-win-setup.exe` 安装版（免安装版每次启动都要解压整包） |
+            | 窗口不出现，或者出来一整片黑 | 在 `~/OpenWorkBuddy/config.json` 的 `server` 里加 `"disable_gpu": true` |
+            | 弹框说「放数据的文件夹建不起来」 | 设环境变量 `OPENWORKBUDDY_HOME` 指到本机一个能写的文件夹 |
+            | 弹框说「已经在运行了，但窗口没出来」 | 任务管理器里结束 OpenWorkBuddy 进程再打开 |
+            | 弹框说端口用不了 | 把 `config.json` 里的 `server.port` 换成 3810 之类 |
+
+            **失败时应该总有一个写着原因的窗口或弹框。如果你什么都没看到，那本身就值得开一个 issue**，
+            带上那份 `boot.log`。更全的排查表在 [安装与启动](https://github.com/CatCatUncle/openworkbuddy/blob/main/docs/%E5%AE%89%E8%A3%85%E4%B8%8E%E5%90%AF%E5%8A%A8.md)。
 
             ## 升级
 
