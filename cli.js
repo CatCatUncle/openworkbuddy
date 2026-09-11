@@ -23,6 +23,7 @@
 // Node 太老 / 依赖没装：排在所有 require 最前面，不然用户拿到的是一句 Cannot find module
 require("./boot-check").enforce({ rootDir: __dirname });
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { dataPath, preferData } = require("./paths");
 const readline = require("readline");
@@ -263,6 +264,10 @@ function printSummary(state) {
 }
 
 // ---------- 执行一轮任务（Ctrl+C 停止当前任务而不是直接退出） ----------
+/** 任务跑着的时候 = 停它的那个函数，空闲时 = null。交互模式的 Ctrl+C 从这儿调进去 */
+let stopCurrent = null;
+/** 终端里打的插话，下一步交给 agent。跟网页/手机上补的那句合并成一份 */
+const termInterject = [];
 /** @returns {"ok"|"error"|"aborted"} 给退出码用 */
 async function runOnce(runtime, text, mode) {
   // 积分闸门：默认是关的（本地个人用不限额），开了才拦。CLI 消耗记在管理员（首个注册用户）名下
@@ -290,12 +295,21 @@ async function runOnce(runtime, text, mode) {
   const ctrl = new AbortController();
   let aborted = false;
   const onSigint = () => {
+    if (aborted) {
+      // 第二次：不等了。收尾还是要做——MCP 那几个子进程是 spawn 出来的，
+      // 不收就留在系统里，下次启动还会再起一批
+      process.stderr.write(yellow("\n（不等了，直接退出）\n"));
+      try { mcpManager.stopAll(); } catch {}
+      process.exit(130);
+    }
     aborted = true;
-    prog(yellow("\n（收到 Ctrl+C，正在停止任务…再按一次强制退出）\n"));
+    prog(yellow("\n（收到 Ctrl+C，正在停止任务…再按一次直接退出）\n"));
     ctrl.abort();
-    process.once("SIGINT", () => process.exit(130));
   };
-  process.once("SIGINT", onSigint);
+  // 单发模式走信号；交互模式下 readline 在终端里把 Ctrl+C 自己截住了，进程根本收不到，
+  // 所以那边改从 stopCurrent 这个把手调进来——改写前那条路在交互模式下从来没通过
+  process.on("SIGINT", onSigint);
+  stopCurrent = onSigint;
   let finalText = "";
   try {
     const r = await runtime.runTask({
@@ -310,6 +324,9 @@ async function runOnce(runtime, text, mode) {
       // 不然坐在电脑前的人只会看见 agent 突然改了主意，不知道是有人从手机上插了一句
       getInterject: () => {
         const more = live.interjections();
+        // 坐在电脑前的人也能插话：任务跑着的时候在终端里打的字排在 termInterject 里，
+        // 跟手机上补的那句走同一个口子
+        if (termInterject.length) more.push(...termInterject.splice(0));
         if (more.length) prog(yellow(`\n  ✎ 收到插话：${more.join(" / ").slice(0, 120)}\n`));
         return more;
       },
@@ -321,6 +338,7 @@ async function runOnce(runtime, text, mode) {
     process.stderr.write(red(`\n出错了：${e.message}\n`));
   }
   process.removeListener("SIGINT", onSigint);
+  stopCurrent = null;
   if (beatTimer) clearInterval(beatTimer);
   live.finish({ error: state.error, title: sess.title });
   // --json 下正文没走 stdout，最终文本从事件里攒回来，落盘的内容两种模式必须一样
@@ -438,43 +456,145 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
   }
 
   // ---- REPL ----
-  prog(bold("OpenWorkBuddy CLI 交互模式") + dim("（/mode 切模式 /new 开新会话 /files 看成果 /cd 换目录 /exit 退出）\n"));
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const ask = () => new Promise((ok) => rl.question(ttyErr ? "\x1b[36mwb>\x1b[0m " : "wb> ", ok));
-  let last = "ok";
-  for (;;) {
-    const line = (await ask()).trim();
-    if (!line) continue;
-    if (line === "/exit" || line === "/quit") break;
-    if (line === "/help") { console.log(cliArgs.helpText()); continue; }
-    if (line.startsWith("/mode")) {
-      const m = line.split(/\s+/)[1];
-      if (["ask", "plan", "craft"].includes(m)) { opts.mode = m; prog(dim(`已切到 ${m} 模式\n`)); }
-      else prog(dim(`当前 ${opts.mode}；用法 /mode craft|plan|ask\n`));
-      continue;
+  // 这一段是重写过的。改写前有四样毛病，在健康机器上一个都不报错，只是悄悄办错事：
+  //   1. 粘贴多行只进去第一行——readline 一个换行一个 line 事件，rl.question 一次只接一条，
+  //      剩下的没人接、静默丢掉（实测贴 4 行进去，循环只收到 1 行）。
+  //   2. Ctrl+C 停不掉任务——终端模式下 readline 自己把 Ctrl+C 截走了，
+  //      runOnce 里那句 process.once("SIGINT") 在交互模式下从来没被调用过。
+  //   3. 打错的斜杠命令（/exi、/moe）整行当任务发给模型，钱花了事没办。
+  //   4. Ctrl+D 之后等在 question 上的 Promise 永远不 resolve，MCP 子进程跟着挂死。
+  // 现在一行输入先过 repl-commands 那张纯表，再由这儿决定怎么说、怎么做。
+  const repl = require("./repl-commands");
+  const PROMPT = ttyErr ? "\x1b[36mwb>\x1b[0m " : "wb> ";
+  const HIST_FILE = dataPath("data", "cli-history.txt");
+  const loadHistory = () => {
+    // 文件里老的在前（跟 bash 一样，人直接 cat 也顺眼），readline 要的是新的在前
+    try { return repl.sanitizeHistory(fs.readFileSync(HIST_FILE, "utf8").split("\n").reverse()); } catch { return []; }
+  };
+  const saveHistory = () => {
+    // 里面是这个人自己的任务原话，权限收到 0600：跟 config.json 一个待遇
+    try {
+      const list = repl.sanitizeHistory(Array.isArray(rl.history) ? rl.history : []);
+      if (!list.length) return;
+      fs.mkdirSync(path.dirname(HIST_FILE), { recursive: true });
+      fs.writeFileSync(HIST_FILE, list.slice().reverse().join("\n") + "\n", { mode: 0o600 });
+    } catch {}
+  };
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: PROMPT,
+    completer: repl.complete,
+    history: loadHistory(),
+    historySize: repl.HISTORY_MAX,
+    removeHistoryDuplicates: true,
+  });
+
+  // 输入侧：line 事件原样交给 repl.makeInbox——合并粘贴、排队、插话、关掉时叫醒等着的那个人，
+  // 全在那张纯逻辑里。时钟和定时器能从外面塞进去，所以这套时序在测试里可以手动推、逐帧断言
+  let quitArmed = 0;
+  const inbox = repl.makeInbox({
+    onInterject: (text) => {
+      // 任务跑着的时候敲的字是「插话」，不是下一条任务
+      termInterject.push(text);
+      prog(yellow(`\n  ✎ 记下了，下一步带给它：${text.replace(/\n/g, " ").slice(0, 60)}\n`));
+    },
+    onMerged: (n, blocks) => {
+      // 粘进来的 N 行，readline 一行一条记进了历史。合成一条之后把多出来的退掉，
+      // 不然往上翻一次只翻回一行，还把真正有用的历史挤没了
+      if (n > 1 && blocks.length === 1 && Array.isArray(rl.history)) rl.history.splice(0, n - 1);
+      saveHistory();
+    },
+  });
+  rl.on("line", (raw) => inbox.line(raw));
+  rl.on("close", () => inbox.close());
+  rl.on("SIGINT", () => {
+    if (inbox.busy) { if (stopCurrent) stopCurrent(); return; } // 停这趟活儿，不退出
+    if (rl.line) { // 打了一半不想要了：清掉这行就行，别退出
+      rl.write(null, { ctrl: true, name: "e" });
+      rl.write(null, { ctrl: true, name: "u" });
+      quitArmed = 0;
+      return;
     }
-    if (line === "/new") {
+    const now = Date.now();
+    if (now - quitArmed < 3000) { rl.close(); return; }
+    quitArmed = now;
+    process.stdout.write("\n");
+    prog(dim("再按一次 Ctrl+C 退出，或者敲 /exit\n"));
+    rl.prompt();
+  });
+  const nextInput = () => inbox.next();
+
+  const runReplCommand = (v) => {
+    if (v.name === "help") { prog(repl.helpText()); return; }
+    if (v.name === "clear") { process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); return; }
+    if (v.name === "mode") {
+      if (!v.arg) { prog(dim(`当前是 ${opts.mode} 模式；换：/mode craft|plan|ask\n`)); return; }
+      opts.mode = v.arg;
+      prog(dim(`已经切到 ${v.arg} 模式\n`));
+      return;
+    }
+    if (v.name === "new") {
       // 换一个新会话文件，而不是把当前这个清空后覆盖回去——刚才那段对话是资料，不该被顺手抹掉
+      const oldId = sessionId;
       sessionId = newSessionId();
       sessFile = sessFileOf(sessionId);
       sess = { history: [], transcript: [], title: "" };
-      prog(dim(`开了新会话 ${sessionId}（刚才那段还在，wb --session 可以翻回去）\n`));
-      continue;
+      prog(dim(`开了新会话 ${sessionId}（刚才那段还在：wb --session ${oldId}）\n`));
+      return;
     }
-    if (line === "/session") { prog(dim(`${sessionId}\n${sessFile}\n`)); continue; }
-    if (line.startsWith("/cd")) {
-      const d = line.slice(3).trim();
-      if (!d) { prog(dim(`当前工作目录 ${getWorkspaceDir()}\n`)); continue; }
-      try { setWorkspaceDir(d); prog(dim(`工作目录换到 ${getWorkspaceDir()}\n`)); }
+    if (v.name === "session") { prog(dim(`${sessionId}\n${sessFile}\n`)); return; }
+    if (v.name === "status") {
+      const eng = require("./engines").get(cfgEngine());
+      const who = eng ? `底层 ${eng.label}` + green("（不花 API 额度）") : `模型 ${llm.provider}（${llm.model}）`;
+      const turns = (sess.transcript || []).filter((t) => t.type === "user").length;
+      prog(dim(`模式 ${opts.mode} · ${who}\n工作目录 ${getWorkspaceDir()}\n会话 ${sessionId} · 跑过 ${turns} 轮\n`));
+      return;
+    }
+    if (v.name === "cd") {
+      // 底下的 setWorkspaceDir 只收绝对路径，.. 和 ~ 在这儿先翻译好——
+      // 改写前 /cd .. 和 /cd ~/项目 一律报「工作空间必须是绝对路径」
+      const target = repl.resolveCd(v.arg, getWorkspaceDir(), os.homedir());
+      if (!target) { prog(dim(`当前工作目录 ${getWorkspaceDir()}\n`)); return; }
+      try { setWorkspaceDir(target); prog(dim(`工作目录换到 ${getWorkspaceDir()}\n`)); }
       catch (e) { prog(red(`换不过去：${e.message}\n`)); }
+      return;
+    }
+    if (v.name === "files") {
+      try {
+        const names = fs.readdirSync(getWorkspaceDir()).filter((f) => !f.startsWith("."));
+        process.stdout.write((names.join("\n") || "（空）") + "\n");
+      } catch (e) { prog(red(`看不了：${e.message}\n`)); }
+      return;
+    }
+  };
+
+  prog(bold("OpenWorkBuddy CLI 交互模式") + dim("　/help 看命令 · 多行需求直接粘 · Ctrl+C 停当前这趟\n"));
+  let last = "ok";
+  rl.prompt();
+  for (;;) {
+    const line = await nextInput();
+    if (line === null) { process.stdout.write("\n"); break; } // Ctrl+D / 关掉了：正常收尾，不挂死
+    const v = repl.parse(line);
+    if (v.kind === "blank") { rl.prompt(); continue; }
+    if (v.kind === "unknown") { prog(yellow(repl.unknownText(v))); rl.prompt(); continue; }
+    if (v.kind === "bad-arg") { prog(yellow(repl.badArgText(v))); rl.prompt(); continue; }
+    if (v.kind === "cmd") {
+      if (v.name === "exit") break;
+      runReplCommand(v);
+      rl.prompt();
       continue;
     }
-    if (line === "/files") {
-      try { process.stdout.write((fs.readdirSync(getWorkspaceDir()).filter((f) => !f.startsWith(".")).join("\n") || "（空）") + "\n"); } catch {}
-      continue;
-    }
-    last = await runOnce(runtime, line, opts.mode);
+    inbox.setBusy(true);
+    rl.setPrompt(""); // 任务跑着的时候别让提示符插进流式正文里
+    last = await runOnce(runtime, v.text, opts.mode);
+    inbox.setBusy(false);
+    quitArmed = 0;
+    rl.setPrompt(PROMPT);
+    rl.prompt();
   }
+  saveHistory();
   rl.close();
   mcpManager.stopAll();
   process.exit(last === "ok" ? 0 : last === "aborted" ? 130 : 1);
