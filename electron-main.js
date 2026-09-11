@@ -42,11 +42,19 @@ function bootLog(...parts) {
 }
 bootLog(`—— OpenWorkBuddy ${require("./package.json").version} 启动 · ${process.platform}/${process.arch} · Electron ${process.versions.electron} ——`);
 
+// 端口的优先级必须跟 server.js 里那行（`+process.env.PORT || srvCfg.port || 3800`）一模一样。
+// 以前这儿只读 config.json：谁要是设了 PORT 环境变量，服务端听 3810、壳去连 3800，
+// 窗口永远等不到人——用户只是设了个环境变量，看到的却是一个「启动失败」的弹框。
+function resolvePort(env, cfg) {
+  return +env.PORT || (cfg && cfg.server && cfg.server.port) || 3800;
+}
 // 端口要在 fatal 之前就位：报错文案里要用它，而异常可能发生在模块还没读完的时候
-let PORT = 3800;
+let PORT;
 try {
-  PORT = require(dataPath("config.json")).server.port || 3800;
-} catch {}
+  PORT = resolvePort(process.env, require(dataPath("config.json")));
+} catch {
+  PORT = resolvePort(process.env, null);
+}
 
 // 有些机器的显卡驱动会让 Electron 的窗口永远画不出来——进程活着，屏幕上什么都没有。
 // 给一个不用改代码就能绕过去的开关：环境变量，或者用记事本在 config.json 里加一行。
