@@ -2,14 +2,112 @@
 /** Electron 桌面壳 — 启动内嵌服务并打开桌面窗口。运行：npm run app */
 
 const BOOT_T0 = Date.now(); // 启动分段计时：哪段慢一眼看清，别靠体感猜
-const { app, BrowserWindow, shell, globalShortcut } = require("electron");
+const { app, BrowserWindow, dialog, shell, globalShortcut } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const { dataPath, seedDataDir } = require("./paths");
+
+// ---------- 启动日志：出事时用户手里唯一的物证 ----------
+/**
+ * 「任务管理器里有进程、屏幕上没窗口」这类报障（issue #1），没有日志就只能靠猜，
+ * 用户能做的只有重装三遍——而重装治不好这个病。所以从进程起来的第一行就往磁盘记，
+ * 最后把日志路径写进报错页面，让他直接贴给我们。
+ *
+ * 首选数据目录；数据目录本身就是起不来的原因时（没权限、家目录被重定向到离线的网络盘），
+ * 退到系统临时目录。这段代码自己绝不许抛——它是用来报错的，不能成为新的错因。
+ */
+function pickBootLog(candidates) {
+  for (const f of candidates) {
+    if (!f) continue;
+    try {
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      // 只留最近一次启动的上下文，别让它长成一个没人敢打开的大文件
+      try { if (fs.statSync(f).size > 512 * 1024) fs.truncateSync(f, 0); } catch {}
+      fs.appendFileSync(f, "");
+      return f;
+    } catch {}
+  }
+  return null; // 哪儿都写不了：那就只剩控制台，至少别把启动本身拖垮
+}
+const BOOT_LOG = pickBootLog([
+  (() => { try { return path.join(dataPath("logs"), "boot.log"); } catch { return null; } })(),
+  (() => { try { return path.join(os.tmpdir(), "OpenWorkBuddy-boot.log"); } catch { return null; } })(),
+]);
+function bootLog(...parts) {
+  const line = `+${Date.now() - BOOT_T0}ms ${parts.join(" ")}`;
+  console.log("[启动] " + line);
+  if (!BOOT_LOG) return;
+  try { fs.appendFileSync(BOOT_LOG, `[${new Date().toISOString()}] ${line}\n`); } catch {}
+}
+bootLog(`—— OpenWorkBuddy ${require("./package.json").version} 启动 · ${process.platform}/${process.arch} · Electron ${process.versions.electron} ——`);
+
+// 端口要在 fatal 之前就位：报错文案里要用它，而异常可能发生在模块还没读完的时候
+let PORT = 3800;
+try {
+  PORT = require(dataPath("config.json")).server.port || 3800;
+} catch {}
+
+// 有些机器的显卡驱动会让 Electron 的窗口永远画不出来——进程活着，屏幕上什么都没有。
+// 给一个不用改代码就能绕过去的开关：环境变量，或者用记事本在 config.json 里加一行。
+// 报错页面会把这一招写给用户看。
+const NO_GPU = process.env.OPENWORKBUDDY_DISABLE_GPU === "1" || (() => {
+  try { return require(dataPath("config.json")).server.disable_gpu === true; } catch { return false; }
+})();
+if (NO_GPU) {
+  try { app.disableHardwareAcceleration(); bootLog("已关闭硬件加速（disable_gpu）"); } catch {}
+}
+
+let win;
+let PAGE_UP = false; // 页面真加载出来了：之后再有偶发异常，不该把用户正在做的事掐掉
+let FATAL_SHOWN = false;
+
+/**
+ * 启动阶段的每一声崩溃都得有个出口。
+ * 没有这个出口的表现就是 issue #1：进程活着、窗口不出现、用户手里一条线索都没有。
+ * 窗口已经在了就把原因画进窗口；窗口还没有就弹系统级报错框——它不需要窗口也能显示。
+ */
+function fatal(stage, err) {
+  const msg = String((err && (err.stack || err.message)) || err || "未知错误");
+  bootLog(`❌ ${stage}：${msg}`);
+  if (PAGE_UP || FATAL_SHOWN) return; // 已经跑起来了，或者已经报过一次，不重复打扰
+  FATAL_SHOWN = true;
+  if (win && !win.isDestroyed()) return showBootFailure(err);
+  const show = () => {
+    try {
+      dialog.showErrorBox(
+        "OpenWorkBuddy 没能启动",
+        `${bootHint(msg, PORT)}\n\n${msg.split("\n")[0]}\n\n启动日志：${BOOT_LOG || "（日志文件写不出来）"}`
+      );
+    } catch {}
+    app.exit(1);
+  };
+  // macOS 上 showErrorBox 必须等 ready；Windows/Linux 上早晚都行
+  if (app.isReady()) show();
+  else app.whenReady().then(show).catch(() => app.exit(1));
+}
+process.on("uncaughtException", (e) => fatal("主进程未捕获异常", e));
+// 没人接的 Promise 拒绝没那么致命：后台某个 fetch 挂了也会掉到这儿，
+// 不该因此把一个本来能用的应用换成报错页。只有连窗口都还没建出来时才当启动失败办，
+// 其余情况记一笔日志——窗口到底出没出来，交给下面的看门狗判。
+process.on("unhandledRejection", (e) => {
+  if (!win) return fatal("主进程未处理的 Promise 拒绝", e);
+  bootLog("⚠️ 有个没人接的 Promise 拒绝：" + String((e && e.message) || e));
+});
 
 // 装机态：代码在只读的应用包里，配置/数据/工作区落到 ~/OpenWorkBuddy。
 // 首次启动（以及每次升级后）把包里自带的 experts.json 和内置技能补进去，只补缺、不覆盖用户改过的。
-seedDataDir();
+// ⚠️ 以前这一句在模块顶层裸跑。它要在用户家目录下建 ~/OpenWorkBuddy：没权限、家目录被重定向到
+// 离线的网络盘，都会炸在这儿——一抛异常主进程当场没了，窗口永远不出现，用户只看到一个进程。
+// 现在先接住，等窗口建好了再把原因画给他看。
+let SEED_ERR = null;
+try {
+  seedDataDir();
+  bootLog("数据目录就绪：" + dataPath());
+} catch (e) {
+  SEED_ERR = e;
+  bootLog("❌ 数据目录建不起来：" + ((e && e.message) || e));
+}
 
 // 改过两次名（workbuddy-clone → openbuddy → openworkbuddy）。Electron 的 userData 目录跟着
 // package.json 的 name 走，不搬家的话老用户会丢 localStorage（表现为莫名其妙被登出）。
@@ -38,23 +136,27 @@ app.setAboutPanelOptions({ applicationName: "OpenWorkBuddy", applicationVersion:
   }
 })();
 
-const PORT = (() => {
-  try {
-    return require(dataPath("config.json")).server.port || 3800;
-  } catch {
-    return 3800;
-  }
-})();
-
-let win;
-
 // 单实例：双击启动器/重复 npm run app 时，把已开的窗口拉到前台，而不是再叠一个实例
 // （第二个实例的服务端会撞端口走"连接已运行实例"分支，结果就是两个窗口两份 Dock 图标）
 if (!app.requestSingleInstanceLock()) {
+  // 留一行日志再走。用户这边看到的是「双击了没反应」，日志里得说清是「已经有一个在跑」，
+  // 否则这条正常行为和真的启动失败长得一模一样。
+  bootLog("已经有一个实例在跑，这次启动把它唤到前台后退出");
   app.exit(0); // 立即退出：app.quit() 是异步的，慢一步的话 whenReady 还会抢跑建出第二个窗口
 } else {
   app.on("second-instance", () => {
-    if (!win) return;
+    // 锁在、窗口不在：上一个实例卡在启动中途（或者已经崩了但进程没退）。
+    // 这时候用户会一直双击图标、一直没反应——必须告诉他发生了什么，以及去哪儿看日志。
+    if (!win || win.isDestroyed()) {
+      bootLog("重复启动：锁被一个没有窗口的实例占着");
+      try {
+        dialog.showErrorBox(
+          "OpenWorkBuddy 已经在运行了，但窗口没出来",
+          `后台还留着一个卡住的 OpenWorkBuddy 进程，它占着单实例锁，所以新的一次启动被挡住了。\n\n先到任务管理器（macOS 活动监视器）里结束 OpenWorkBuddy 进程，再重新打开。\n\n启动日志：${BOOT_LOG || "（日志文件写不出来）"}`
+        );
+      } catch {}
+      return;
+    }
     if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
@@ -75,7 +177,7 @@ async function waitForServer(url, tries = 200) {
 }
 
 app.whenReady().then(async () => {
-  console.log(`[启动] Electron 就绪 +${Date.now() - BOOT_T0}ms`);
+  bootLog("Electron 运行时就绪");
   // 开发态（npm run app）跑的是 node_modules 里的 Electron.app，Dock 默认挂它的图标；换成我们自己的。
   // 菜单栏左上角的名字改不了——macOS 只认正在跑的那个 .app 的 Info.plist，
   // 要连名字一起对，用 scripts/make-mac-app.sh 生成的 ~/Applications/OpenWorkBuddy.app 启动。
@@ -104,8 +206,22 @@ app.whenReady().then(async () => {
   // 兜底定时器根本没来得及挂上，窗口就永远停在 show:false —— v0.1.1 装机包缺 engines/
   // 时用户看到的正是这个：任务管理器里有进程，屏幕上什么都没有。
   const showOnce = () => { if (win && !win.isVisible()) { win.show(); } };
-  win.once("ready-to-show", () => { console.log(`[启动] 窗口亮相 +${Date.now() - BOOT_T0}ms`); showOnce(); });
+  win.once("ready-to-show", () => { bootLog("窗口亮相"); showOnce(); });
   setTimeout(showOnce, 3000);
+
+  // 看门狗：20 秒还没有一个亮着的窗口，就当启动已经失败了。
+  // 「窗口对象建出来了」不等于「用户看得见东西」——显卡驱动画不出来、loadURL 卡在网络栈上，
+  // 都会停在这一步，而这正是 issue #1 里「任务管理器有进程、屏幕上什么都没有」的样子。
+  const watchdog = setTimeout(() => {
+    if (PAGE_UP) return;
+    if (win && !win.isDestroyed() && win.isVisible()) return;
+    fatal("启动看门狗", new Error("启动 20 秒后仍然没有可见窗口"));
+  }, 20000);
+  if (watchdog.unref) watchdog.unref(); // 别让它拖着进程不退出
+
+  // 数据目录在模块顶层就没建起来。后面服务端一定会跟着崩，但崩出来的错更难懂
+  // （读不到 config.json 之类），所以在这儿就把真正的原因交出来。
+  if (SEED_ERR) return fatal("准备数据目录", SEED_ERR);
 
   // 在 Electron 主进程内直接启动服务端。
   // 它是整个应用的地基，塌了就没有「降级可用」这回事——但用户至少得知道塌在哪，
@@ -121,14 +237,21 @@ app.whenReady().then(async () => {
     return showBootFailure(e);
   }
 
-  const up = await waitForServer(`http://localhost:${PORT}/api/info`);
+  const up = await waitForServer(`http://127.0.0.1:${PORT}/api/info`);
   if (!up) {
     console.error(`[启动] 等了 30 秒，${PORT} 端口一直没人应答`);
     return showBootFailure(new Error(`服务端启动后 30 秒内没有监听 ${PORT} 端口`));
   }
-  console.log(`[启动] 服务端就绪 +${Date.now() - BOOT_T0}ms`);
-  win.webContents.once("did-finish-load", () => console.log(`[启动] 页面加载完成 +${Date.now() - BOOT_T0}ms`));
-  win.loadURL(`http://localhost:${PORT}`);
+  bootLog(`服务端就绪，监听 ${PORT}`);
+  win.webContents.once("did-finish-load", () => {
+    // 过了这条线就算启动成功了：再有偶发异常只记日志，不能把用户正在做的事掐掉换成报错页
+    PAGE_UP = true;
+    clearTimeout(watchdog);
+    bootLog("页面加载完成 ✅ 启动成功");
+  });
+  // 用 127.0.0.1 而不是 localhost：有些机器（改过 hosts、或者 IPv6 优先）会把 localhost 解析到 ::1，
+  // 而服务端只监听了 IPv4，表现就是窗口一直空白。
+  win.loadURL(`http://127.0.0.1:${PORT}`);
 
   // 外链用系统浏览器打开
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -156,7 +279,7 @@ app.whenReady().then(async () => {
   } catch {
     registerShortcuts({});
   }
-});
+}).catch((e) => fatal("桌面窗口初始化", e));
 
 /**
  * 把启动错误翻成一句用户能照着做的话。
@@ -168,6 +291,10 @@ function bootHint(msg, port) {
   msg = String(msg || "");
   if (/Cannot find module/.test(msg))
     return "安装包里少了文件。到 GitHub Releases 重新下载最新版本覆盖安装即可；如果最新版仍然这样，请把下面这行贴到 issue 里。";
+  // 数据目录建不起来要排在下面两条端口分支前面：它报的也是 EACCES，但换端口一点用没有。
+  // 用 mkdir/copyfile 这些系统调用名跟 listen EACCES 区分开——两者的解法完全不同。
+  if (/数据目录|EROFS|ENOSPC|\b(mkdir|copyfile|scandir|unlink|rmdir)\b/.test(msg) && !/listen/.test(msg))
+    return "放数据的文件夹建不起来（默认在用户目录下的 OpenWorkBuddy）。常见原因是公司电脑把用户目录重定向到了连不上的网络盘，或者磁盘满了。设一个环境变量 OPENWORKBUDDY_HOME 指向本机一个能写的文件夹（比如 D:\\OpenWorkBuddy）再打开。";
   // EACCES 要排在 EADDRINUSE 前面：两者都是「端口用不了」，但解法不同，
   // 前者换个端口就好，后者得去关掉占用的程序。
   if (/EACCES|EPERM/.test(msg))
@@ -198,14 +325,21 @@ function showBootFailure(err) {
  pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px 14px;overflow:auto;
      font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#cf222e;white-space:pre-wrap}
  a{color:#0969da}
+ .small{font-size:12px;color:#8b949e}
+ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:#f6f8fa;padding:1px 5px;border-radius:4px}
 </style>
 <div class=box>
  <h1>OpenWorkBuddy 没能启动</h1>
  <p>${esc(hint)}</p>
  <pre>${esc(msg)}</pre>
+ <p class=small>还可以试：窗口一直不出现、或者整片黑，多半是显卡驱动画不出来——在用户目录的
+   OpenWorkBuddy/config.json 里给 <code>server</code> 加一行 <code>"disable_gpu": true</code> 再打开。</p>
+ <p class=small>启动日志（贴 issue 时带上它）：<code>${esc(BOOT_LOG || "写不出来")}</code></p>
  <p>版本 ${esc(require("./package.json").version)} · <a href="https://github.com/CatCatUncle/openworkbuddy/issues" target="_blank">提 issue</a></p>
 </div>`;
-  if (!win) return;
+  // 连窗口都没有，就退到系统级报错框，别把原因吞掉——「双击没反应」就是这么来的
+  if (!win || win.isDestroyed()) return fatal("启动", err);
+  FATAL_SHOWN = true;
   win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
   win.show();
   win.focus();

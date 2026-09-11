@@ -527,4 +527,78 @@ function runSourcePins() {
   ok(/issue/.test(bootHint("something exploded", 3800)), "认不出来的错 → 至少让他把这行贴到 issue 里");
   ok(bootHint("listen EACCES", 3810).includes("3810"), "端口号是传进去的那个，不是写死的 3800");
   ok(bootHint(null, 3800).length > 0, "错误对象是空的也得给句人话");
+
+  // 数据目录写不了跟端口用不了都报 EACCES，但一个要换目录、一个要换端口。
+  // 混成一条的代价：用户照着改了 server.port，问题原封不动。
+  const seedErr = bootHint("EACCES: permission denied, mkdir '/Users/x/OpenWorkBuddy'", 3800);
+  ok(/OPENWORKBUDDY_HOME/.test(seedErr), "数据目录建不起来 → 告诉他换一个能写的文件夹", seedErr.slice(0, 30));
+  ok(!/excludedportrange|被别的程序占了/.test(seedErr), "  └ 不能滑进端口那两条（照着改 server.port 是白改）");
+  ok(/OPENWORKBUDDY_HOME/.test(bootHint("ENOSPC: no space left on device, mkdir '/x'", 3800)), "磁盘满了也归到这条");
+  ok(/excludedportrange/.test(bootHint("listen EACCES: permission denied 0.0.0.0:3800", 3800)),
+     "  └ 反向：listen EACCES 仍旧走端口那条，没被新分支抢走");
+  ok(mainSrc.indexOf("OPENWORKBUDDY_HOME") < mainSrc.indexOf("excludedportrange"),
+     "  └ 顺序钉子：数据目录那条写在端口 EACCES 前面（写后面就永远轮不到）");
+
+  // pickBootLog：日志是出事时用户手里唯一的物证，它自己绝不许成为新的错因
+  const pickBootLog = new Function("fs", "path", slice("electron-main.js", "pickBootLog") + "\nreturn pickBootLog;")(
+    { mkdirSync: (d) => { if (/网络盘/.test(d)) throw new Error("EACCES"); }, statSync: () => ({ size: 0 }), truncateSync: () => {}, appendFileSync: () => {} },
+    path);
+  eq(pickBootLog(["/网络盘/logs/boot.log", "/tmp/ow.log"]), "/tmp/ow.log", "数据目录写不了就退到临时目录写日志");
+  eq(pickBootLog([null, "/tmp/ow.log"]), "/tmp/ow.log", "算路径时就抛了（家目录都读不到）也不影响下一个候选");
+  const allDead = new Function("fs", "path", slice("electron-main.js", "pickBootLog") + "\nreturn pickBootLog;")(
+    { mkdirSync: () => { throw new Error("nope"); } }, path);
+  eq(allDead(["/a/b.log", "/c/d.log"]), null, "哪儿都写不了就返回 null——记不上日志是小事，为此崩掉启动是大事");
+
+  // fatal：启动阶段每一声崩溃都得有出口，这是 issue #1 的正解
+  const mkFatal = (over) => {
+    const calls = { box: [], exit: [], failure: [] };
+    const env = {
+      bootLog: () => {}, PAGE_UP: false, FATAL_SHOWN: false, win: null,
+      showBootFailure: (e) => calls.failure.push(e),
+      dialog: { showErrorBox: (t, b) => calls.box.push(t + "\n" + b) },
+      bootHint: () => "照着这句做", PORT: 3800, BOOT_LOG: "/tmp/ow.log",
+      app: { isReady: () => true, whenReady: () => Promise.resolve(), exit: (c) => calls.exit.push(c) },
+      ...over,
+    };
+    const keys = Object.keys(env);
+    const fn = new Function(...keys, slice("electron-main.js", "fatal") + "\nreturn fatal;")(...keys.map((k) => env[k]));
+    return { fatal: fn, calls };
+  };
+  let f = mkFatal({});
+  f.fatal("测试阶段", new Error("boom"));
+  eq(f.calls.box.length, 1, "没有窗口时弹系统报错框（它不需要窗口就能显示——这是最后一道出口）");
+  ok(/照着这句做/.test(f.calls.box[0]) && /\/tmp\/ow\.log/.test(f.calls.box[0]), "  └ 框里有人话建议，也有日志路径");
+  eq(f.calls.exit[0], 1, "  └ 然后退进程，别留一个僵尸进程占着单实例锁");
+
+  f = mkFatal({ win: { isDestroyed: () => false } });
+  f.fatal("测试阶段", new Error("boom"));
+  eq(f.calls.failure.length, 1, "窗口在就把原因画进窗口（比系统框能写下的多）");
+  eq(f.calls.exit.length, 0, "  └ 而且不退进程，窗口还要留着给他看");
+
+  f = mkFatal({ PAGE_UP: true, win: { isDestroyed: () => false } });
+  f.fatal("跑起来之后的偶发异常", new Error("boom"));
+  eq(f.calls.failure.length + f.calls.box.length + f.calls.exit.length, 0,
+     "页面已经加载出来之后再炸，只记日志——不能把用户正在做的事换成一张报错页");
+
+  f = mkFatal({ FATAL_SHOWN: true });
+  f.fatal("第二声", new Error("boom"));
+  eq(f.calls.box.length, 0, "同一次启动只报一次，别弹一排框");
+
+  // 看门狗 + 成功线：这两条钉住「有进程、没窗口」不可能再沉默
+  ok(/const watchdog = setTimeout\(/.test(mainSrc) && /没有可见窗口/.test(mainSrc),
+     "有启动看门狗：到点还没有一个亮着的窗口就报错");
+  ok(/PAGE_UP = true;[\s\S]{0,120}clearTimeout\(watchdog\)/.test(mainSrc),
+     "  └ 页面加载完成就撤掉看门狗（跑起来了就别再自己掐自己）");
+  ok(mainSrc.includes('process.on("uncaughtException"') && mainSrc.includes('process.on("unhandledRejection"'),
+     "主进程的未捕获异常和未处理 Promise 都接住了（漏一个就又是静默死亡）");
+  ok(/unhandledRejection[\s\S]{0,320}if \(!win\) return fatal\(/.test(mainSrc),
+     "  └ 但没人接的 Promise 拒绝只在「窗口都还没建出来」时才当启动失败办"
+     + "（后台一个 fetch 挂了就把能用的应用换成报错页，那是新的坑）");
+  ok(/try \{\s*\n\s*seedDataDir\(\);/.test(mainSrc),
+     "seedDataDir 被 try 住了（它在用户家目录建文件夹，公司电脑上真会炸）");
+  ok(/if \(SEED_ERR\) return fatal\(/.test(mainSrc), "  └ 而且等窗口建好后把原因交出来，不是吞掉");
+  ok(!/http:\/\/localhost:\$\{PORT\}/.test(mainSrc),
+     "壳里连的是 127.0.0.1 不是 localhost（localhost 可能解析到 ::1，而服务端只听 IPv4）");
+  ok(/OPENWORKBUDDY_DISABLE_GPU/.test(mainSrc) && /disable_gpu/.test(mainSrc),
+     "留了关硬件加速的逃生门：显卡画不出窗口时不用改代码也能打开");
 }
