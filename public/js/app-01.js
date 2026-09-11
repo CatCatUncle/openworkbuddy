@@ -13,10 +13,21 @@ let assistant = { name: "OpenWorkBuddy", avatar: ASSISTANT_MARK }; // 助理的�
 let isReplaying = false; // 回放历史任务中：事件照走一遍渲染，但不许它去动"当前"的文件面板和预览
 let replayFeedback = null; // 回放时：turn 下标 → 之前点过的 👍👎，操作条据此把高亮亮回来
 // 轨迹条上的工具短名：一枚小徽章顶一行字，扫一眼就知道这轮走了哪几步
-const TOOL_SHORT = { read_file: "📄 读", write_file: "📝 写", edit_file: "✏️ 改", list_files: "📁 列", search_files: "🔎 找", run_shell: "⌨️ 命令", run_node: "🟩 node", web_search: "🌐 搜", fetch_url: "🔗 抓", render_page: "🖥 渲染", check_page: "✅ 查页", html_to_image: "🖼 截图", look_at_image: "👁 看图", generate_image: "🎨 生图", generate_video: "🎬 视频", gen_diagram: "📊 图表", text_to_speech: "🔊 配音", remember: "🧠 记", forget: "🧠 忘", library_list: "📚 库", library_read: "📚 读库", save_skill: "🧩 存技能", desktop_pet: "🐱 宠物" };
-// 过程区每一步只挂一个图标，动词写在正文里（`📄 读 报告.md`，不是 `⚙ read_file`）
-const toolIcon = (n) => (TOOL_SHORT[n] || "").split(" ")[0] || "⚙";
+const TOOL_SHORT = { read_file: "读", write_file: "写", edit_file: "改", list_files: "列", search_files: "找", run_shell: "命令", run_node: "node", web_search: "搜", fetch_url: "抓", render_page: "渲染", check_page: "查页", html_to_image: "截图", look_at_image: "看图", generate_image: "生图", generate_video: "视频", gen_diagram: "图表", text_to_speech: "配音", remember: "记", forget: "忘", library_list: "库", library_read: "读库", save_skill: "存技能", desktop_pet: "宠物" };
+// 图标跟短名分家，各归各的表：短名要进翻译字典（英文界面得是 "Read"），图标是 sprite 里的 symbol id。
+// 以前两者揉成一句 "📄 读"，翻译表得连图一起抄一遍，加个工具就要改两处还容易抄漏。
+const TOOL_ICON = { read_file: "file-text", write_file: "file-pen-line", edit_file: "pencil", list_files: "folder", search_files: "file-search", run_shell: "terminal", run_node: "code", web_search: "globe", fetch_url: "link", render_page: "monitor", check_page: "circle-check", html_to_image: "image", look_at_image: "eye", generate_image: "palette", generate_video: "film", gen_diagram: "chart-column", text_to_speech: "volume-2", remember: "brain", forget: "brain", library_list: "book-open", library_read: "book-open", save_skill: "puzzle", desktop_pet: "app-window" };
+// 过程区每一步只挂一个图标，动词写在正文里（`读 报告.md`，不是 `run read_file`）
+const toolIcon = (n) => TOOL_ICON[n] || "settings";
 const shortTool = (n) => TOOL_SHORT[n] || String(n || "").replace(/^mcp[_:]/, "").replace(/_/g, " ").slice(0, 12);
+/** 过程区里那种「说一句」的提示行：一个图标 + 一句话。话是拼出来的，只走 textContent，不进 innerHTML */
+function procNote(icon, text, cls) {
+  const n = document.createElement("div");
+  n.className = "proc-note" + (cls ? " " + cls : "");
+  n.innerHTML = ic(icon) + "<span></span>";
+  n.lastChild.textContent = text;
+  return n;
+}
 const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
 const sessionDirs = new Map(); // sessionId -> 该对话在默认工作空间下的成果子文件夹（成果面板标「本对话」）
 const sessionModels = new Map(); // sessionId -> 该对话指定的模型名（没有 = 跟随全局默认）
@@ -495,11 +506,11 @@ function createTurnUI(userText, turnMode, forSid) {
     return "";
   }).trim();
   let bubbleHtml = hlTokens(bodyText, "tk-b");
-  if (attNames.length) bubbleHtml += `<div class="bubble-attach">${attNames.map(n => `<span>📎 ${esc(n)}</span>`).join("")}</div>`;
+  if (attNames.length) bubbleHtml += `<div class="bubble-attach">${attNames.map(n => `<span>${ic("paperclip")}${esc(n)}</span>`).join("")}</div>`;
   turn.querySelector(".bubble").innerHTML = bubbleHtml;
   turn.querySelector(".u-copy").onclick = (e) => {
     navigator.clipboard?.writeText(userText).then(() => {
-      e.target.textContent = "✓"; setTimeout(() => { e.target.textContent = "⧉"; }, 1200);
+      e.target.innerHTML = ic("check"); setTimeout(() => { e.target.innerHTML = ic("copy"); }, 1200);
     }).catch(() => toast("❌ 复制失败"));
   };
   // 只有"正在看的会话"的回合才上屏；后台会话的回合先游离着更新，切回来时再接上
@@ -523,14 +534,18 @@ function createTurnUI(userText, turnMode, forSid) {
   const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "") + (liveErr ? ` · ${liveErr} 步出错` : "");
   const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
   // 「此刻在干什么」那一行的状态：actNarr 是模型旁白的缓冲，actLine 是当前该显示的话
-  let actNarr = "", actLine = "", actPend = false;
+  let actNarr = "", actLine = "", actIcon = "", actPend = false;
   const paintAct = () => {
     const el = procWrap && procWrap.querySelector(".act-live");
-    if (el && el.textContent !== actLine) { el.textContent = actLine; el.title = actLine; }
+    if (!el || el._line === actLine) return;
+    el._line = actLine;
+    el.innerHTML = ic(actIcon || "circle-dot") + `<span class="al-t"></span>`;
+    el.lastChild.textContent = actLine;
+    el.title = actLine;
   };
   /** @param {boolean} stream 正文旁白是逐字来的，按帧合并（跟正文渲染同一个节奏），别逐 chunk 写 DOM */
-  const setAct = (line, stream) => {
-    actLine = line;
+  const setAct = (line, icon, stream) => {
+    actLine = line; actIcon = icon;
     if (!stream) { paintAct(); return; }
     if (actPend) return;
     actPend = true;
@@ -592,7 +607,7 @@ function createTurnUI(userText, turnMode, forSid) {
     chip.dataset.name = name;
     chip._n = 1;
     chip._cards = [card];
-    chip.innerHTML = `${esc(shortTool(name))}<b></b>`;
+    chip.innerHTML = `${ic(toolIcon(name))}${esc(shortTool(name))}<b></b>`;
     chip.title = name;
     chip.onclick = (e) => { // 点徽章：展开过程区并跳到最近那张卡（不触发折叠条自己的开合）
       e.stopPropagation();
@@ -653,7 +668,7 @@ function createTurnUI(userText, turnMode, forSid) {
     // 折叠条上那行「此刻在干什么」：每条事件都先过一遍它，再走各自的渲染分支
     const act = liveActivity(ev, actNarr);
     actNarr = act.narr;
-    if (act.line) setAct(act.line, ev.type === "text");
+    if (act.line) setAct(act.line, act.icon, ev.type === "text");
     if (ev.type === "step_start") {
       if (ev.depth > 0) return;
       liveStep = ev.step || liveStep;
@@ -683,7 +698,7 @@ function createTurnUI(userText, turnMode, forSid) {
         const m = /^(.+?)(?:已启动|正在启动)（(.+?)）/.exec(ev.text || "");
         const booting = !!ev.starting;
         chip.classList.toggle("re-boot", booting);
-        chip.innerHTML = `<span class="re-ic">${booting ? '<span class="spinner"></span>' : "🖥"}</span>`
+        chip.innerHTML = `<span class="re-ic">${booting ? '<span class="spinner"></span>' : ic("monitor")}</span>`
           + `<span class="re-name">${esc(m ? m[1].trim() : (ev.text || "").slice(0, 24))}</span>`
           + (m ? `<span class="re-sub">${esc(m[2])}</span>` : "")
           + `<span class="re-free">不花 API 额度</span>`;
@@ -707,14 +722,11 @@ function createTurnUI(userText, turnMode, forSid) {
       endText();
       const banner = document.createElement("div");
       banner.className = "step-card";
-      banner.innerHTML = `<div class="head"><span class="tag">👥 ${esc(ev.expert)}</span><span class="desc">专家接手子任务：${esc((ev.task || "").slice(0, 60))}</span></div>`;
+      banner.innerHTML = `<div class="head"><span class="tag">${ic("users")}${esc(ev.expert)}</span><span class="desc">专家接手子任务：${esc((ev.task || "").slice(0, 60))}</span></div>`;
       ensureProc().appendChild(banner);
     } else if (ev.type === "parallel") {
       // 这一批全是只读工具，同时开跑。说一句，免得用户看到好几张卡一起转以为卡住了
-      const note = document.createElement("div");
-      note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
-      note.textContent = `⚡ ${ev.count} 个只读工具并发执行（搜索/抓页面互不影响，一起跑更快）`;
-      ensureProc().appendChild(note);
+      ensureProc().appendChild(procNote("zap", `${ev.count} 个只读工具并发执行（搜索/抓页面互不影响，一起跑更快）`));
     } else if (ev.type === "tool_use") {
       body.querySelector(".thinking-hint")?.remove();
       endText();
@@ -725,7 +737,7 @@ function createTurnUI(userText, turnMode, forSid) {
       // title 由服务端算好（老会话回放没有这个字段，退回工具名 + purpose，别开天窗）。
       const line = ev.title || (ev.name + (ev.purpose ? " " + ev.purpose : ""));
       card.innerHTML =
-        `<div class="head"><span class="tag">${esc(toolIcon(ev.name))}</span>` +
+        `<div class="head"><span class="tag">${ic(toolIcon(ev.name))}</span>` +
         `<span class="desc">${who}${esc(line)}</span><span class="out"></span><span class="spinner"></span></div>` +
         `<pre>${esc(ev.input_preview || "")}</pre>`;
       card.querySelector(".head").onclick = () => card.classList.toggle("open");
@@ -767,53 +779,33 @@ function createTurnUI(userText, turnMode, forSid) {
       }
     } else if (ev.type === "limit") {
       endText();
-      const note = document.createElement("div");
-      note.style.cssText = "font-size: 13px;color:var(--wb-err-text);margin:6px 0";
-      note.textContent = `⏱ ${ev.note || "已达执行上限"}，任务强制收尾`;
-      ensureProc().appendChild(note);
+      ensureProc().appendChild(procNote("timer", `${ev.note || "已达执行上限"}，任务强制收尾`, "err"));
       procWrap?.classList.add("open");
       turn._limited = true;
     } else if (ev.type === "auto_continue") {
       endText();
       liveRound = ev.round || 0; liveRoundTotal = ev.total || 0;
-      const note = document.createElement("div");
-      note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
-      note.textContent = `🔁 ${ev.note || "已达执行上限"}，任务未完，自动续跑第 ${ev.round}/${ev.total} 轮（按进度接着做，不重跑）`;
-      ensureProc().appendChild(note);
+      ensureProc().appendChild(procNote("refresh-cw", `${ev.note || "已达执行上限"}，任务未完，自动续跑第 ${ev.round}/${ev.total} 轮（按进度接着做，不重跑）`));
       procWrap?.classList.add("open");
     } else if (ev.type === "sleep") {
       // 本机睡了一觉又醒了：任务时限已顺延，跟用户说一声免得对不上「怎么跑了这么久」
       endText();
-      const note = document.createElement("div");
-      note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
-      note.textContent = `\u{1F4A4} ${ev.note || "检测到本机睡眠，任务时限已顺延"}`;
-      ensureProc().appendChild(note);
+      ensureProc().appendChild(procNote("moon", ev.note || "检测到本机睡眠，任务时限已顺延"));
     } else if (ev.type === "failover") {
       // 主模型挂起/持续报错、自动切到备用渠道——必须大声播报，绝不静默换模型
       endText();
-      const note = document.createElement("div");
-      note.style.cssText = "font-size: 13px;color:var(--wb-err-text);margin:6px 0";
-      note.textContent = `🔀 ${ev.note || "已切换到备用渠道"}`;
-      ensureProc().appendChild(note);
+      ensureProc().appendChild(procNote("shuffle", ev.note || "已切换到备用渠道", "err"));
       procWrap?.classList.add("open");
     } else if (ev.type === "trim") {
       // 历史太长，较早的工具原文被截短了。一条任务只留一行提示，累计数字滚动更新
       const proc = ensureProc();
       let note = proc.querySelector(".trim-note");
-      if (!note) {
-        note = document.createElement("div");
-        note.className = "trim-note";
-        note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
-        proc.appendChild(note);
-      }
-      note.textContent = `✂️ 历史过长，已截短较早的工具输出（约 ${Math.round((ev.chars || 0) / 1000)} 千字符），最近几步保留原文。可在 设置→智能体设置 调大上下文预算`;
+      if (!note) { note = procNote("scissors", "", "trim-note"); proc.appendChild(note); }
+      note.lastChild.textContent = `历史过长，已截短较早的工具输出（约 ${Math.round((ev.chars || 0) / 1000)} 千字符），最近几步保留原文。可在 设置→智能体设置 调大上下文预算`;
     } else if (ev.type === "compact") {
       // 会话超长时后端自动把早期轮次压成一条摘要，这里留一行告知，免得用户觉得"它忘了前面"
       const proc = ensureProc();
-      const note = document.createElement("div");
-      note.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0";
-      note.textContent = `🗜️ 会话较长，已把早前 ${ev.removed || 0} 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）`;
-      proc.appendChild(note);
+      proc.appendChild(procNote("archive", `会话较长，已把早前 ${ev.removed || 0} 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）`));
     } else if (ev.type === "usage") {
       // 插队会触发多轮 runTask、发多个 usage 事件 → 累加而不是覆盖
       if (!turn._usage) turn._usage = { ...ev };
@@ -848,11 +840,11 @@ function createTurnUI(userText, turnMode, forSid) {
       const pend = body.querySelector(".interject-note.pending");
       if (pend) {
         pend.classList.remove("pending");
-        pend.querySelector(".lb").textContent = "⚡ 已并入当前任务";
+        pend.querySelector(".lb").innerHTML = ic("zap") + "已并入当前任务";
       } else {
         const note = document.createElement("div");
         note.className = "interject-note";
-        note.innerHTML = `<div class="lb">⚡ 已并入当前任务</div>${esc(ev.text || "")}`;
+        note.innerHTML = `<div class="lb">${ic("zap")}已并入当前任务</div>${esc(ev.text || "")}`;
         body.appendChild(note);
       }
     } else if (ev.type === "ask_user") {
@@ -900,13 +892,14 @@ function createTurnUI(userText, turnMode, forSid) {
       }
       const items = ev.items || [];
       const doneN = items.filter((i) => i.done).length;
-      card.innerHTML = `<div class="ms-head">📍 里程碑 ${doneN}/${items.length}${ev.file ? ` <span class="ms-file">${esc(ev.file)}</span>` : ""}</div>` +
-        items.map((i) => `<div class="ms-item${i.done ? " done" : ""}">${i.done ? "✅" : "⬜"} ${esc(String(i.text || ""))}</div>`).join("");
+      card.innerHTML = `<div class="ms-head">${ic("map-pin")}里程碑 ${doneN}/${items.length}${ev.file ? ` <span class="ms-file">${esc(ev.file)}</span>` : ""}</div>` +
+        items.map((i) => `<div class="ms-item${i.done ? " done" : ""}">${ic(i.done ? "circle-check" : "circle")}${esc(String(i.text || ""))}</div>`).join("");
       // 常驻那一行：折叠着也看得到进度和「现在在做哪件」——用户要的就是这个
       const live = procWrap && procWrap.querySelector(".ms-live");
       if (live && items.length) {
         const next = items.find((i) => !i.done);
-        live.textContent = `📍 ${doneN}/${items.length}` + (next ? ` · 正在做：${String(next.text || "").slice(0, 40)}` : " · 全部完成");
+        live.innerHTML = ic("map-pin") + "<span></span>";
+        live.lastChild.textContent = `${doneN}/${items.length}` + (next ? ` · 正在做：${String(next.text || "").slice(0, 40)}` : " · 全部完成");
         live.hidden = false;
       }
     } else if (ev.type === "error") {
@@ -957,7 +950,8 @@ function createTurnUI(userText, turnMode, forSid) {
         if (marks.length) {
           const chip = document.createElement("span");
           chip.className = "proc-warn";
-          chip.textContent = "⚠ " + marks.join(" · ");
+          chip.innerHTML = ic("triangle-alert") + "<span></span>";
+          chip.lastChild.textContent = marks.join(" · ");
           pt.after(wireProcWarn(chip, procWrap));
         }
         procWrap.classList.remove("open"); // 回合结束一律收起
@@ -1003,7 +997,8 @@ function createTurnUI(userText, turnMode, forSid) {
     const u = turn._usage;
     const meta = bar.querySelector(".ta-meta");
     if (u && (u.prompt || u.completion)) {
-      meta.textContent = `共消耗 ✧ ${(u.prompt + u.completion).toLocaleString()} tokens · ${u.provider || ""}（${u.model || ""}）`;
+      meta.innerHTML = "共消耗 " + ic("sparkles") + "<span></span>";
+      meta.lastChild.textContent = ` ${(u.prompt + u.completion).toLocaleString()} tokens · ${u.provider || ""}（${u.model || ""}）`;
       // 命中缓存那部分便宜约一个数量级。不写出来的话，长任务里"输入 160 万 token"
       // 看着像一笔巨款，实际可能九成是缓存读；反过来命中率掉到 0 也没人察觉
       // 封顶 100%：老账本里有几笔按 Anthropic 口径记的（输入不含缓存读），不封会显示成 3209%
@@ -1037,7 +1032,7 @@ function createTurnUI(userText, turnMode, forSid) {
       document.body.appendChild(probe);
       const plain = parts.map(c => c.innerText.trim()).filter(Boolean).join("\n\n");
       probe.remove();
-      const done = () => { e.target.textContent = "✓"; setTimeout(() => { e.target.textContent = "⧉"; }, 1200); };
+      const done = () => { e.target.innerHTML = ic("check"); setTimeout(() => { e.target.innerHTML = ic("copy"); }, 1200); };
       try {
         if (navigator.clipboard && window.ClipboardItem) {
           await navigator.clipboard.write([new ClipboardItem({
@@ -1119,9 +1114,9 @@ function createTurnUI(userText, turnMode, forSid) {
     if (steps.length < 2) return;
     const card = document.createElement("div");
     card.className = "plan-list";
-    card.innerHTML = `<div class="pl-head">📋 计划任务列表（${steps.length} 步）</div>`
+    card.innerHTML = `<div class="pl-head">${ic("list-checks")}计划任务列表（${steps.length} 步）</div>`
       + steps.map(s => `<label class="pl-item"><input type="checkbox"> <span>${esc(s)}</span></label>`).join("")
-      + `<button class="pl-run">▶ 切换 Craft 按此计划执行</button>`;
+      + `<button class="pl-run">${ic("play")}切换 Craft 按此计划执行</button>`;
     card.querySelector(".pl-run").onclick = () => {
       setMode("craft");
       inputEl.value = "请严格按照以下计划执行，每完成一步简要汇报：\n" + steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
@@ -1136,7 +1131,7 @@ function createTurnUI(userText, turnMode, forSid) {
   function markPendingInterject(text) {
     const note = document.createElement("div");
     note.className = "interject-note pending";
-    note.innerHTML = `<div class="lb">⚡ 收到，做完这一步就看这句</div>${esc(text)}`;
+    note.innerHTML = `<div class="lb">${ic("zap")}收到，做完这一步就看这句</div>${esc(text)}`;
     body.appendChild(note);
     if (turnSid === sessionId) scrollBottom();
   }
@@ -1164,8 +1159,10 @@ function liveActivity(ev, narr) {
     const t = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
     return t.length > n ? t.slice(0, n - 1) + "…" : t;
   };
-  const keep = { line: null, narr: narr || "" }; // 不值得改这行的事件（usage / files 这类记账）
-  const say = (line) => ({ line, narr: "" });    // 非正文事件：旁白缓冲清空，免得下一段接到上一段的尾巴上
+  const keep = { line: null, icon: "", narr: narr || "" }; // 不值得改这行的事件（usage / files 这类记账）
+  // 图标和话分开返：话要能翻译、能截断、能进 textContent，图标是 sprite 里的 id。两者拼成一个
+  // 字符串的话，这一行就只能走 innerHTML，模型吐的字会直接当 HTML 解析。
+  const say = (icon, line) => ({ line, icon, narr: "" }); // 非正文事件：旁白缓冲清空，免得下一段接到上一段的尾巴上
   switch (ev && ev.type) {
     case "text": {
       if ((ev.depth || 0) > 0) return keep; // 专家内层的正文不抢主线这一行
@@ -1176,51 +1173,50 @@ function liveActivity(ev, narr) {
       const parts = buf.split(/(?<=[。！？!?\n])/).filter((s) => s.trim());
       // 刚好写完一句时末段是空的，退一句显示，免得这行闪成空白
       const tail = cut(parts[parts.length - 1]) || cut(parts[parts.length - 2]);
-      return tail ? { line: "✍️ " + tail, narr: buf } : { line: null, narr: buf };
+      return tail ? { line: tail, icon: "pen-line", narr: buf } : { line: null, icon: "", narr: buf };
     }
     case "tool_use": {
       const who = ev.expert ? ev.expert + " · " : "";
-      const ic = toolIcon(ev.name);
-      const short = shortTool(ev.name);
-      // 老会话回放没有 title 字段，退回「短名 + purpose」。但短名自带同一个图标（「📄 读」），
-      // 直接拼会出现两个图标，所以先把它摘掉再拼
-      const bare = short.startsWith(ic) ? short.slice(ic.length).trim() : short;
-      const what = ev.title || (bare + (ev.purpose ? " " + ev.purpose : ""));
-      return say(ic + " " + cut(who + what));
+      // 老会话回放没有 title 字段，退回「短名 + purpose」
+      const what = ev.title || (shortTool(ev.name) + (ev.purpose ? " " + ev.purpose : ""));
+      return say(toolIcon(ev.name), cut(who + what));
     }
     case "tool_result":
       // 成功不改：那一步「在干什么」的话立着更有用。栽了必须说——
       // 过程区收着的时候，失败原本是完全隐形的，用户只会看到最后突然没了下文
       return ev.isError
-        ? say("⚠️ " + cut(shortTool(ev.name) + " 没成：" + (ev.outcome || ev.preview || "出错了")))
+        ? say("triangle-alert", cut(shortTool(ev.name) + " 没成：" + (ev.outcome || ev.preview || "出错了")))
         : keep;
-    case "parallel": return say(`⚡ ${ev.count} 个只读工具一起跑`);
-    case "step_start": return (ev.depth || 0) > 0 ? keep : say(`🤔 第 ${ev.step} 步 · 在想下一步怎么做`);
-    case "expert_start": return say(`👥 专家「${cut(ev.expert, 12)}」接手：` + cut(ev.task, 30));
-    case "compact": return say(`🗜️ 会话太长，早前 ${ev.removed || 0} 条压成了摘要（要点保留）`);
-    case "trim": return say("✂️ 历史太长，较早的工具输出已截短");
-    case "failover": return say("🔀 " + cut(ev.note || "主渠道不行，已切到备用渠道"));
-    case "auto_continue": return say(`🔁 没做完，自动续跑第 ${ev.round}/${ev.total} 轮`);
-    case "limit": return say("⏱ " + cut(ev.note || "到执行上限了", 40) + "，正在收尾");
-    case "sleep": return say("💤 本机睡过一觉，任务时限已顺延");
-    case "ask_user": return say("❓ 有事要问你，在等你回答");
-    case "status": return cut(ev.text) ? say((ev.starting ? "🖥 " : "⏳ ") + cut(ev.text)) : keep;
+    case "parallel": return say("zap", `${ev.count} 个只读工具一起跑`);
+    case "step_start": return (ev.depth || 0) > 0 ? keep : say("brain", `第 ${ev.step} 步 · 在想下一步怎么做`);
+    case "expert_start": return say("users", `专家「${cut(ev.expert, 12)}」接手：` + cut(ev.task, 30));
+    case "compact": return say("archive", `会话太长，早前 ${ev.removed || 0} 条压成了摘要（要点保留）`);
+    case "trim": return say("scissors", "历史太长，较早的工具输出已截短");
+    case "failover": return say("shuffle", cut(ev.note || "主渠道不行，已切到备用渠道"));
+    case "auto_continue": return say("refresh-cw", `没做完，自动续跑第 ${ev.round}/${ev.total} 轮`);
+    case "limit": return say("timer", cut(ev.note || "到执行上限了", 40) + "，正在收尾");
+    case "sleep": return say("moon", "本机睡过一觉，任务时限已顺延");
+    case "ask_user": return say("circle-help", "有事要问你，在等你回答");
+    case "status": return cut(ev.text) ? say(ev.starting ? "monitor" : "loader-circle", cut(ev.text)) : keep;
     default: return keep;
   }
 }
 
 // ================= 空状态（场景 tab + 分类胶囊，仿官方首页） =================
+// 每个胶囊是 [图标 id, 文案]。文案得单独一格，因为点了就直接当提示词发出去——
+// 以前文案前面粘着表情，模型收到的第一个字符就是个 emoji。
 const SCENES = {
-  "日常办公": ["📄 文档处理", "📊 数据分析及可视化", "📽 幻灯片制作", "🗓 周报总结", "📝 会议纪要", "✉️ 商务邮件", "🌐 翻译校对", "⚖️ 合同审阅", "💹 金融服务"],
-  "代码开发": ["💻 日常开发", "🌐 网站开发", "🤖 Agent 应用", "🛠 Skill 开发", "📚 技术文档", "🔍 代码审查", "🐞 找 Bug"],
-  "设计创意": ["🖥 网站设计", "📽 PPT 设计", "🎨 视觉海报", "📱 移动端 App", "🧩 设计系统", "🌐 Web App", "🛬 落地页"],
-  "内容与增长": ["🧠 深度研究", "📈 竞品分析", "📕 小红书图文", "📰 公众号推文", "🎬 短视频成片", "🗂 调研报告", "🎯 营销方案"],
+  "日常办公": [["file-text", "文档处理"], ["chart-column", "数据分析及可视化"], ["presentation", "幻灯片制作"], ["calendar-days", "周报总结"], ["notebook-pen", "会议纪要"], ["mail", "商务邮件"], ["languages", "翻译校对"], ["scale", "合同审阅"], ["trending-up", "金融服务"]],
+  "代码开发": [["code", "日常开发"], ["globe", "网站开发"], ["bot", "Agent 应用"], ["puzzle", "Skill 开发"], ["book-open", "技术文档"], ["file-search", "代码审查"], ["bug", "找 Bug"]],
+  "设计创意": [["monitor", "网站设计"], ["presentation", "PPT 设计"], ["palette", "视觉海报"], ["smartphone", "移动端 App"], ["blocks", "设计系统"], ["app-window", "Web App"], ["rocket", "落地页"]],
+  "内容与增长": [["brain", "深度研究"], ["chart-column", "竞品分析"], ["book-open", "小红书图文"], ["newspaper", "公众号推文"], ["film", "短视频成片"], ["folder-open", "调研报告"], ["target", "营销方案"]],
 };
+const SCENE_ICON = ["briefcase", "code", "palette", "megaphone"];
 let sceneTag = null; // 选中的任务类型标签
 function setSceneTag(label) {
   sceneTag = label;
   const box = document.getElementById("scene-tag-box");
-  box.innerHTML = label ? `<span class="scene-tag">${esc(label)} <b onclick="setSceneTag(null)">✕</b></span>` : "";
+  box.innerHTML = label ? `<span class="scene-tag">${esc(label)} <b onclick="setSceneTag(null)">${ic("x", "i-sm")}</b></span>` : "";
   inputEl.focus();
 }
 function buildEmpty() {
@@ -1231,11 +1227,11 @@ function buildEmpty() {
   try { const s = localStorage.getItem("owb_last_scene"); if (s && SCENES[s]) startScene = s; } catch {}
   tpl.innerHTML = `<h1>${esc(assistant.name)}, 我帮你</h1>
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
-      `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}">${["⏱","💻","🎨","📣"][i] ?? "✦"} ${k}</button>`).join("")}</div>
+      `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}">${ic(SCENE_ICON[i] || "sparkles")}${esc(k)}</button>`).join("")}</div>
     <div class="chips" id="scene-chips"></div>`;
   const chipsEl = tpl.querySelector("#scene-chips");
   const renderChips = (scene) => {
-    chipsEl.innerHTML = SCENES[scene].map(c => `<button>${c}</button>`).join("");
+    chipsEl.innerHTML = SCENES[scene].map(([i, t]) => `<button>${ic(i)}${esc(t)}</button>`).join("");
   };
   renderChips(startScene);
   tpl.querySelector(".scene-tabs").addEventListener("click", (e) => {
@@ -1281,15 +1277,15 @@ function renderMentionMenu() {
   let items = [];
   if (trigger === "@") {
     items = filesCache.filter(f => f.name.toLowerCase().includes(query.toLowerCase()))
-      .slice(0, 12).map(f => ({ label: `${fileIcon(f.name)} ${f.name}`, insert: "@" + f.name, sub: "工作空间文件" }));
+      .slice(0, 12).map(f => ({ icon: fileIcon(f.name), label: f.name, insert: "@" + f.name, sub: "工作空间文件" }));
     if (!items.length) items = [{ label: "（工作空间还没有文件，可点 ＋ 上传）", insert: null }];
   } else {
     items = skillsCache.filter(s => s.name.toLowerCase().includes(query.toLowerCase()) || s.description.includes(query))
-      .slice(0, 12).map(s => ({ label: "📦 /" + s.name, insert: "/" + s.name, sub: s.description }));
+      .slice(0, 12).map(s => ({ icon: "package", label: "/" + s.name, insert: "/" + s.name, sub: s.description }));
     if (!items.length) items = [{ label: "（没有匹配的技能）", insert: null }];
   }
   mentionMenu.innerHTML = `<div class="mh">${trigger === "@" ? "引用工作空间文件" : "调用技能"}</div>` +
-    items.map((it, i) => `<div class="mi ${i === 0 && it.insert ? "sel" : ""}" data-insert="${esc(it.insert || "")}">${it.label}${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ""}</div>`).join("");
+    items.map((it, i) => `<div class="mi ${i === 0 && it.insert ? "sel" : ""}" data-insert="${esc(it.insert || "")}">${it.icon ? ic(it.icon) : ""}${esc(it.label)}${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ""}</div>`).join("");
   mentionMenu.classList.add("show");
   mentionMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => applyMention(mi.dataset.insert));
 }
@@ -1368,8 +1364,8 @@ function makeAskCard(ev, turnSid) {
     stopTick();
     card.querySelector(".ask-lb").textContent = timeout ? "这个岔路我替你定了" : "这个岔路你定过了";
     card.querySelector(".ask-ans").innerHTML = timeout
-      ? `<span class="ic">⏰</span>没等到回答，AI 按它认为最合理的默认继续了`
-      : `<span class="ic">✅</span>你选了 <b>${esc(text || "")}</b>`;
+      ? `<span class="ic">${ic("clock")}</span>没等到回答，AI 按它认为最合理的默认继续了`
+      : `<span class="ic">${ic("circle-check")}</span>你选了 <b>${esc(text || "")}</b>`;
   };
   card._mark = markAnswered;
 
@@ -1398,7 +1394,7 @@ function makeAskCard(ev, turnSid) {
     b.innerHTML =
       `<span class="kk">${i < 9 ? i + 1 : "·"}</span>` +
       `<span class="tx"><span class="lb">${esc(o.label)}</span>${o.detail ? `<span class="dt">${esc(o.detail)}</span>` : ""}</span>` +
-      `<span class="go">↵</span>`;
+      `<span class="go">${ic("corner-down-left")}</span>`;
     b.onclick = () => answerIt(o.label);
     box.appendChild(b);
   });
@@ -1441,19 +1437,19 @@ function makeAskCard(ev, turnSid) {
 }
 
 function fileIcon(name) {
-  if (/\.pptx?$/i.test(name)) return "📊";
-  if (/\.docx?$/i.test(name)) return "📄";
-  if (/\.xlsx?$/i.test(name)) return "📈";
-  if (/\.(md|txt)$/i.test(name)) return "📝";
-  if (/\.csv$/i.test(name)) return "🗂️";
-  if (/\.html?$/i.test(name)) return "🌐";
-  if (/\.pdf$/i.test(name)) return "📕";
-  if (/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name)) return "🖼️";
-  if (/\.(mp4|mov|webm|m4v|ogv)$/i.test(name)) return "🎬";
-  if (/\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(name)) return "🎵";
-  if (/\.(zip|gz|tgz|bz2|xz|7z|rar|tar)$/i.test(name)) return "🗜️";
-  if (/\.(js|mjs|cjs|ts|tsx|jsx|py|swift|java|kt|go|rs|rb|php|c|h|cc|cpp|hpp|cs|sh|bash|zsh|sql|vue|scss|less)$/i.test(name)) return "💻";
-  return "📎";
+  if (/\.pptx?$/i.test(name)) return "presentation";
+  if (/\.docx?$/i.test(name)) return "file-type";
+  if (/\.xlsx?$/i.test(name)) return "file-spreadsheet";
+  if (/\.(md|txt)$/i.test(name)) return "file-text";
+  if (/\.csv$/i.test(name)) return "table";
+  if (/\.html?$/i.test(name)) return "globe";
+  if (/\.pdf$/i.test(name)) return "book-open-text";
+  if (/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name)) return "image";
+  if (/\.(mp4|mov|webm|m4v|ogv)$/i.test(name)) return "video";
+  if (/\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i.test(name)) return "music";
+  if (/\.(zip|gz|tgz|bz2|xz|7z|rar|tar)$/i.test(name)) return "archive";
+  if (/\.(js|mjs|cjs|ts|tsx|jsx|py|swift|java|kt|go|rs|rb|php|c|h|cc|cpp|hpp|cs|sh|bash|zsh|sql|vue|scss|less)$/i.test(name)) return "code";
+  return "file";
 }
 function fmtSize(n) { return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B"; }
 const openDirs = new Set(); // 记住展开状态，刷新列表不回弹
@@ -1506,7 +1502,7 @@ function downloadFile(name) {
   a.download = String(name).split("/").pop();
   document.body.appendChild(a); a.click(); a.remove();
 }
-const revealBtn = (name) => (canOpenOnHost() ? `<span class="dl rv" data-rv="${esc(name)}" title="打开所在位置">📂</span>` : "");
+const revealBtn = (name) => (canOpenOnHost() ? `<span class="dl rv" data-rv="${esc(name)}" title="打开所在位置">${ic("folder-open")}</span>` : "");
 
 /** 面板顶上的「全部 / 只看成果」。全是成果或一件成果都没有时不摆——切了看不出差别，白占一行 */
 function renderFileFilter() {
@@ -1539,10 +1535,10 @@ function renderFiles(files) {
   }
   const fileRow = (f, nested) =>
     `<div class="file-item${nested ? " nested" : ""}${isResultFile(f.name) ? " res" : ""}" style="cursor:pointer" data-name="${esc(f.name)}" title="${esc(f.name)}">
-      <span>${fileIcon(f.name)}</span>
+      <span>${ic(fileIcon(f.name))}</span>
       <span style="min-width:0"><div class="name">${esc(f.name.split("/").pop())}</div><div class="meta">${fmtSize(f.size)}</div></span>
       ${revealBtn(f.name)}
-      <a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">⬇</a>
+      <a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">${ic("download")}</a>
     </div>`;
   // 子目录归成可折叠分组，再按时间装进「今天／昨天／过去 7 天／更早（按月）」。
   //
@@ -1572,7 +1568,7 @@ function renderFiles(files) {
   const resFirst = (tie) => (a, b2) => (isResultFile(b2.name) ? 1 : 0) - (isResultFile(a.name) ? 1 : 0) || (tie ? tie(a, b2) : 0);
   const resCount = (list) => list.filter((f) => isResultFile(f.name)).length;
   const dirHead = (key, label, n, mine, tip, nres) =>
-    `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span>${openDirs.has(key) ? "▾" : "▸"}</span><span>📁</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${nres ? `<b class="res-n">${nres} 份成果</b> · ` : ""}${n}</span>${canOpenOnHost() ? `<span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">↗</span>` : ""}</div>`;
+    `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span class="ar">${ic(openDirs.has(key) ? "chevron-down" : "chevron-right")}</span><span>${ic("folder")}</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${nres ? `<b class="res-n">${nres} 份成果</b> · ` : ""}${n}</span>${canOpenOnHost() ? `<span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">↗</span>` : ""}</div>`;
 
   // 一个文件夹归到哪个时间段，看它**最近动过的那个文件**（不是最老的那个）
   const dirTime = (dir) => groups[dir].reduce((m, f) => Math.max(m, Date.parse(f.mtime) || 0), 0);
@@ -1599,7 +1595,7 @@ function renderFiles(files) {
   for (const b of [...buckets.values()].sort((a, b2) => a.order - b2.order)) {
     const n = b.dirs.reduce((s, d) => s + groups[d].length, 0);
     const open = !closedBuckets.has(b.key); // 时间段默认展开，文件夹默认收着——展开的是"有哪些成果"这一层
-    html += `<div class="time-head" data-bucket="${esc(b.key)}"><span>${open ? "▾" : "▸"}</span><div class="name">${esc(b.label)}</div><span class="cnt">${b.dirs.length} 个文件夹 · ${n} 个文件</span></div>`;
+    html += `<div class="time-head" data-bucket="${esc(b.key)}"><span class="ar">${ic(open ? "chevron-down" : "chevron-right")}</span><div class="name">${esc(b.label)}</div><span class="cnt">${b.dirs.length} 个文件夹 · ${n} 个文件</span></div>`;
     if (!open) continue;
     // 同一时间段内按"最近动过"排前，本对话的置顶——它一定在「今天」里，但列表长了也得一眼找到
     for (const dir of b.dirs.sort((x, y) => (x === curDir ? -1 : y === curDir ? 1 : dirTime(y) - dirTime(x)))) {
@@ -1972,7 +1968,7 @@ async function renderDeployBar() {
   // 「放开给手机看」= 把这台机器上的目录挂到局域网，属于服务器级动作。
   // 不是平台管理员就别画这颗按钮：点了只会静默降级成本机，用户只当是自己 Wi-Fi 有问题
   const canLan = amPlatformOwner();
-  bar.innerHTML = `<span>✅ 已本地部署</span><code>${esc(url)}</code>
+  bar.innerHTML = `<span>${ic("circle-check")}已本地部署</span><code>${esc(url)}</code>
     ${lan
       ? `<span style="color:var(--wb-text-3)">手机同 Wi-Fi 可开</span><code>${esc(lan)}</code>`
       : canLan
@@ -2145,12 +2141,12 @@ function renderTurnOutputs(body, changed, live, ev) {
     // 文件躺在第二层里，谁也不会去点第二下。现在标题这一下就把文件摊开；
     // 产出多的时候用「还有 N 个文件」再展开，那是量的问题，不是再折一层。
     block.dataset.root = (ev && ev.root) || ""; // 记住这块产出属于哪个工作目录，换目录后别拿新清单判它的生死
-    block.innerHTML = `<div class="out-hd out-main"><span class="ar">▾</span> 本回合产出 <span class="cn"></span></div>` +
+    block.innerHTML = `<div class="out-hd out-main"><span class="ar">${ic("chevron-down")}</span> 本回合产出 <span class="cn"></span></div>` +
       `<div class="out-body"><div class="out-grid"></div><div class="out-list"></div><div class="out-hd out-more" hidden></div></div>`;
     body.appendChild(block);
     onActivate(block.querySelector(".out-main"), () => {
       const packed = block.classList.toggle("packed");
-      block.querySelector(".out-main .ar").textContent = packed ? "▸" : "▾";
+      block.querySelector(".out-main .ar").innerHTML = ic(packed ? "chevron-right" : "chevron-down");
     });
     onActivate(block.querySelector(".out-more"), () => { block.dataset.all = "1"; clipOutList(block); });
   }
@@ -2195,7 +2191,7 @@ function renderTurnOutputs(body, changed, live, ev) {
       // 目录和文件名分开放：一行放不下时省略号只许吃目录。以前整串挤在一个省略号里，
       // 「任务_0909_怎么推广我这个项目啊/PROGRESS.md」被截在中间，最该看的文件名反而没了
       const dir = f.name.slice(0, f.name.length - base.length);
-      row.innerHTML = `<span class="ic">${fileIcon(f.name)}</span><span class="nm">${dir ? `<span class="dim">${esc(dir)}</span>` : ""}<span class="bs">${esc(base)}</span></span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">⬇</a>`;
+      row.innerHTML = `<span class="ic">${ic(fileIcon(f.name))}</span><span class="nm">${dir ? `<span class="dim">${esc(dir)}</span>` : ""}<span class="bs">${esc(base)}</span></span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">${ic("download")}</a>`;
       row.querySelector("[data-rv]").onclick = (e) => revealFile(f.name, e);
       row.onclick = (e) => { if (e.target.closest("a") || e.target.closest(".rv")) return; previewFile(f.name); };
       // 计划/说明这类脚手架沉到底、压暗：PROGRESS.md 在长任务里每几步就重写一次，
@@ -2330,7 +2326,7 @@ function makeOutCard(f, isHtml) {
   const isVid = /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name);
   const thumb = isPic ? `<img src="${url}" alt="" loading="lazy" decoding="async">`
     : isVid ? `<video src="${url}#t=0.1" muted playsinline preload="metadata"></video><span class="vd-play" aria-hidden="true"></span>`
-    : `<span class="ph">${fileIcon(f.name)}</span>`;
+    : `<span class="ph">${ic(fileIcon(f.name))}</span>`;
   const card = document.createElement("div");
   card.className = "out-card";
   card.dataset.name = f.name;
@@ -2351,7 +2347,7 @@ function makeOutCard(f, isHtml) {
   const th = card.querySelector(".out-thumb img, .out-thumb video");
   if (th) th.onerror = () => {
     const box = th.closest(".out-thumb");
-    if (box) box.innerHTML = `<span class="ph" title="${isVid ? "这条片子的编码浏览器解不了，点开看还能用系统播放器" : "这张图读不出来了：可能已被改名、移走或删掉"}">${fileIcon(f.name)}</span>`;
+    if (box) box.innerHTML = `<span class="ph" title="${isVid ? "这条片子的编码浏览器解不了，点开看还能用系统播放器" : "这张图读不出来了：可能已被改名、移走或删掉"}">${ic(fileIcon(f.name))}</span>`;
     card.classList.add("thumb-dead");
   };
   onActivate(card, (e) => {
@@ -2701,6 +2697,6 @@ function healthBadge(name) {
   const h = settingsCache && settingsCache.model_health && settingsCache.model_health[name];
   if (!h || !h.n) return "";
   let s = ` · 近${h.n}次任务${h.ok}成`;
-  if (h.fail_streak >= 2) s += ` <span style="color:var(--wb-err-text)" title="${esc(h.last_fail || "")}">⚠连挂${h.fail_streak}</span>`;
+  if (h.fail_streak >= 2) s += ` <span style="color:var(--wb-err-text)" title="${esc(h.last_fail || "")}">${ic("triangle-alert", "i-sm")}连挂${h.fail_streak}</span>`;
   return s;
 }

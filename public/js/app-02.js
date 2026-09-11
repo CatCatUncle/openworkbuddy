@@ -9,25 +9,25 @@ function renderModelMenu(menu = modelMenu) {
     // 说明文字必须能换行（以前塞在 .mi 里，而 .mi 是 nowrap 的，菜单被撑成一整行宽，
     // 飞出屏幕左边，字都看不全），能点的只有最后那一行——所以只有它长得像按钮。
     menu.classList.add("eng");
-    menu.innerHTML = `<div class="ep-head"><span class="ep-ic">🖥</span>
+    menu.innerHTML = `<div class="ep-head"><span class="ep-ic">${ic("monitor")}</span>
         <span class="ep-name">${esc(eng.label)}<span class="ep-model">${esc(eng.model || "用它自己的默认模型")}</span></span>
-        <span class="ep-on">✓</span></div>
+        <span class="ep-on">${ic("check")}</span></div>
       <div class="ep-why"><b class="ep-free">不花 API 额度</b>用你电脑上这个 CLI 的登录态和它自己的模型跑，所以下面那排 API 模型这会儿一个都用不上。</div>
-      <div class="mi ep-act" data-act="engine">⚙️ 改它的模型 / 换回内置引擎…</div>`;
+      <div class="mi ep-act" data-act="engine">${ic("settings")}改它的模型 / 换回内置引擎…</div>`;
     menu.querySelectorAll(".mi[data-act]").forEach((mi) => (mi.onclick = () => { menu.classList.remove("show"); openModal("settings", "agent"); }));
     return;
   }
   menu.classList.remove("eng");
   const ov = currentSessModel();
   menu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
-      <span>↺ 跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${healthBadge(settingsCache.active_model)}</span></span>${ov ? "" : '<span style="color:var(--wb-ok-text)">✓</span>'}</div>`
+      <span>${ic("rotate-ccw")}跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${healthBadge(settingsCache.active_model)}</span></span>${ov ? "" : `<span style="color:var(--wb-ok-text)">${ic("check")}</span>`}</div>`
     + settingsCache.models.map(m => {
       const on = m.name === ov;
       return `<div class="mi ${on ? "on" : ""}" data-name="${esc(m.name)}" style="justify-content:space-between">
-      <span>✦ ${esc(m.name)} <span class="sub">${esc(m.model)}${m.api_key ? "" : " · ⚠ 未填Key"}${healthBadge(m.name)}</span></span>
-      ${on ? '<span style="color:var(--wb-ok-text)">✓</span>' : ""}</div>`;
+      <span>${ic("sparkles")}${esc(m.name)} <span class="sub">${esc(m.model)}${m.api_key ? "" : ` · ${ic("triangle-alert")}未填Key`}${healthBadge(m.name)}</span></span>
+      ${on ? `<span style="color:var(--wb-ok-text)">${ic("check")}</span>` : ""}</div>`;
     }).join("")
-    + `<div class="mi" data-act="manage" style="border-top:1px solid var(--wb-border);margin-top:4px">⚙️ 管理模型…</div>`;
+    + `<div class="mi" data-act="manage" style="border-top:1px solid var(--wb-border);margin-top:4px">${ic("settings")}管理模型…</div>`;
   menu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
     menu.classList.remove("show");
     if (mi.dataset.act === "manage") return openModal("settings", "models");
@@ -48,14 +48,14 @@ function renderGoalCard() {
   // 进度条是给「扫一眼」用的——一排勾勾看不出离终点还有多远
   card.innerHTML = `
     <div class="gc-head">
-      <span class="gc-title">🎯 ${esc(g.text)}</span>
-      <span class="gc-meta">${done ? '<span class="gc-done">已达成 ✓</span>' : `${doneN}/${g.criteria.length} 项 · 第 ${g.round || 0} 轮`}</span>
-      <button class="gc-close" title="归档目标（不再显示，也不再按它验收）">✕</button>
+      <span class="gc-title">${ic("target")}${esc(g.text)}</span>
+      <span class="gc-meta">${done ? `<span class="gc-done">已达成${ic("check")}</span>` : `${doneN}/${g.criteria.length} 项 · 第 ${g.round || 0} 轮`}</span>
+      <button class="gc-close" title="归档目标（不再显示，也不再按它验收）">${ic("x")}</button>
     </div>
     <div class="gc-bar"><i style="width:${g.criteria.length ? Math.round((doneN / g.criteria.length) * 100) : 0}%"></i></div>
-    <div class="gc-list">${g.criteria.map(c => `<div class="gc-item ${c.done ? "ok" : ""}">${c.done ? "✅" : "⬜"} ${esc(c.text)}</div>`).join("")}</div>
-    ${g.note ? `<div class="gc-note">⚠️ ${esc(g.note)}</div>` : ""}
-    ${!done && g.paused ? `<div class="gc-paused"><span>⏸ ${esc(g.paused)}</span><button class="gc-go">接着冲</button></div>` : ""}`;
+    <div class="gc-list">${g.criteria.map(c => `<div class="gc-item ${c.done ? "ok" : ""}">${ic(c.done ? "circle-check" : "circle")}${esc(c.text)}</div>`).join("")}</div>
+    ${g.note ? `<div class="gc-note">${ic("triangle-alert")}${esc(g.note)}</div>` : ""}
+    ${!done && g.paused ? `<div class="gc-paused"><span>${ic("pause")}${esc(g.paused)}</span><button class="gc-go">接着冲</button></div>` : ""}`;
   card.querySelector(".gc-close").onclick = async () => {
     try { await fetch("/api/session/" + encodeURIComponent(sessionId) + "/goal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "close" }) }); } catch {}
     g.status = "closed";
@@ -86,9 +86,9 @@ async function setWorkspaceDir(p) {
 function renderWsMenu() {
   const owner = amPlatformOwner();
   wsMenu.innerHTML =
-    `<div class="mi ro" data-cur="1">📁 ${esc(settingsCache.workspace_dir)}</div>` +
-    (owner ? `<div class="mi" data-act="pick">📂 选择新文件夹…</div>` : "") +
-    (canOpenOnHost() ? `<div class="mi" data-act="open">🗂 打开当前文件夹</div>` : "") +
+    `<div class="mi ro" data-cur="1">${ic("folder")}${esc(settingsCache.workspace_dir)}</div>` +
+    (owner ? `<div class="mi" data-act="pick">${ic("folder-open")}选择新文件夹…</div>` : "") +
+    (canOpenOnHost() ? `<div class="mi" data-act="open">${ic("folder-tree")}打开当前文件夹</div>` : "") +
     (owner ? "" : `<div class="mi ro sub-only">这台服务器上大家共用一个工作目录，归平台管理员设</div>`);
   wsMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
     wsMenu.classList.remove("show");
@@ -114,10 +114,15 @@ refreshSettingsCache();
 
 // ================= 模式选择（快捷栏"默认权限"式下拉） =================
 const modeMenu = setupPicker("mode-btn", "mode-menu");
-const MODE_LABEL = { craft: "✅ Craft · 执行", goal: "🎯 Goal · 目标", plan: "🗺️ Plan · 规划", ask: "💬 Ask · 问答" };
+// 只留字。图标在 index.html 的下拉里已经是 sprite 了，按钮上那个跟着切——
+// 以前这儿是「✅ Craft · 执行」，显示时还得 .slice(2) 把表情切掉，加一个模式就要记着切几个字符
+const MODE_LABEL = { craft: "Craft · 执行", goal: "Goal · 目标", plan: "Plan · 规划", ask: "Ask · 问答" };
+const MODE_ICON = { craft: "circle-check", goal: "target", plan: "map", ask: "message-circle" };
 function setMode(mode) {
   currentMode = mode;
-  document.getElementById("mode-label").textContent = MODE_LABEL[mode].slice(2).trim();
+  document.getElementById("mode-label").textContent = MODE_LABEL[mode];
+  const mbi = document.querySelector("#mode-btn .i"); // 按钮上的图标跟着模式换，别一直停在 Craft 那个
+  if (mbi) mbi.outerHTML = ic(MODE_ICON[mode] || "circle-check");
   modeMenu.querySelectorAll(".mi").forEach(x => x.classList.toggle("on", x.dataset.mode === mode));
   syncPlaceholder();
 }
@@ -142,10 +147,11 @@ function addAttachChip(name, thumbUrl, hint) {
     img.alt = "";
     chip.appendChild(img);
   }
-  chip.appendChild(document.createTextNode(thumbUrl ? name : "📎 " + name));
+  if (!thumbUrl) chip.insertAdjacentHTML("beforeend", ic("paperclip"));
+  chip.appendChild(document.createTextNode(name));
   if (hint) chip.title = hint; // 鼠标停上去能看见开头几行，确认贴的是哪一段
   const x = document.createElement("b");
-  x.textContent = "✕";
+  x.innerHTML = ic("x", "i-sm");
   x.title = "从这条消息移除（文件仍在工作目录里）";
   x.onclick = () => { const i = pendingAttach.indexOf(name); if (i >= 0) pendingAttach.splice(i, 1); chip.remove(); syncSendBtn(); };
   chip.appendChild(x);
@@ -427,7 +433,7 @@ function renderProjects() {
   box.style.display = projectsLocked ? "none" : "";
   if (projectsLocked) { box.innerHTML = ""; return; }
   box.innerHTML = projects.map(p =>
-    `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">📂 <span class="pn">${esc(p.name)}</span>${projects.length > 1 ? '<span class="del" title="移除项目（不删文件）">✕</span>' : ""}</div>`).join("");
+    `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">${ic("folder-open")}<span class="pn">${esc(p.name)}</span>${projects.length > 1 ? '<span class="del" title="移除项目（不删文件）">✕</span>' : ""}</div>`).join("");
   box.querySelectorAll(".proj-item").forEach(el => el.onclick = async (e) => {
     const name = el.dataset.name;
     if (e.target.classList.contains("del")) {
@@ -499,7 +505,7 @@ function syncSendBtn() {
   const stopMode = busy && !draft;
   sendBtn.classList.toggle("stop", stopMode);
   sendBtn.classList.toggle("interject", busy && draft);
-  sendBtn.textContent = stopMode ? "◼" : "↑";
+  sendBtn.innerHTML = ic(stopMode ? "square" : "arrow-up");
   sendBtn.title = stopMode ? "让我停下（Esc）" : busy ? "插一句进去，我做完这一步就看（Enter）" : "发送（Enter）";
 }
 function updateSendUI() {
@@ -516,8 +522,8 @@ function renderQueueBar() {
   bar.classList.add("show");
   // 说人话：讲清「现在怎么插话」「怎么停」「想并行怎么办」三件事，停止给一颗真按钮，别让用户去找 ◼ 在哪
   bar.innerHTML =
-    q.map((m, i) => `<span class="q-chip" title="${esc(m.text)}"><span class="qt">⏳ ${esc(m.text.slice(0, 30))}</span><span class="qx" data-i="${i}" title="取消这条">✕</span></span>`).join("") +
-    (curBusy() ? `<span class="qb-hint"><span>我正忙着这件事。想补一句或改方向？在下面打字、按 Enter，我做完这一步就看。</span><button type="button" class="qb-stop" title="停下当前任务（Esc）">◼ 让我停下</button><span>想同时做别的，点左上「新建任务」。</span></span>` : "");
+    q.map((m, i) => `<span class="q-chip" title="${esc(m.text)}"><span class="qt">${ic("hourglass")}${esc(m.text.slice(0, 30))}</span><span class="qx" data-i="${i}" title="取消这条">${ic("x", "i-sm")}</span></span>`).join("") +
+    (curBusy() ? `<span class="qb-hint"><span>我正忙着这件事。想补一句或改方向？在下面打字、按 Enter，我做完这一步就看。</span><button type="button" class="qb-stop" title="停下当前任务（Esc）">${ic("square")}让我停下</button><span>想同时做别的，点左上「新建任务」。</span></span>` : "");
   bar.querySelectorAll(".qx").forEach(x => x.onclick = () => { q.splice(+x.dataset.i, 1); renderQueueBar(); });
   const stopBtn = bar.querySelector(".qb-stop");
   if (stopBtn) stopBtn.onclick = () => stopTask();
@@ -547,7 +553,7 @@ async function interjectText(text) {
   if (resp && resp.ok) {
     const live = runningSessions.get(sessionId);
     if (live && live.ui.markPendingInterject) live.ui.markPendingInterject(text);
-    else toast("⚡ 收到，做完这一步就看你这句");
+    else toast("收到，做完这一步就看你这句");
   } else {
     qOf(sessionId).push({ text, mode: currentMode });
     renderQueueBar();
@@ -684,7 +690,7 @@ function notifyRunDone(sid, ui) {
   if (document.hidden && "Notification" in window) {
     try {
       if (Notification.permission === "granted") {
-        const n = new Notification(`✅ ${name}`, { body: detail || "任务已完成" });
+        const n = new Notification(name, { body: detail || "任务已完成" });
         n.onclick = () => { try { window.focus(); } catch {} document.querySelector(`.hist-item[data-id="${sid}"]`)?.click(); };
       } else if (Notification.permission === "default") Notification.requestPermission();
     } catch {}
@@ -791,10 +797,10 @@ async function openModal(kind, subTab) {
   mask.classList.add("show");
   modalBox.classList.toggle("wide", ["settings", "account", "proj-edit"].includes(kind));
   if (kind === "account") {
-    mTitle.textContent = "👤 账号 · 用量";
+    mTitle.textContent = "账号 · 用量";
     await renderAccount();
   } else if (kind === "settings") {
-    mTitle.textContent = "⚙️ 设置";
+    mTitle.textContent = "设置";
     renderSettings(subTab || "models");
   }
 }
@@ -851,14 +857,28 @@ function accelDisplay(a) {
   return mods.join("") + parts.filter(p => !MOD[p]).map(p => KEY[p] || p).join("");
 }
 let toastTimer = null;
-function toast(msg) {
+// 全仓有一百多处 toast("❌ …") 这么写，表情是当「这是条报错」的记号在用的。
+// 与其把那一百多处挨个改掉（漏一处就留个表情在界面上），不如在这儿认这三个记号、
+// 摘掉、换成对应的图标——调用方怎么写都行，界面上一律是 SVG。
+const TOAST_ICON = { "❌": "circle-x", "⚠️": "triangle-alert", "⚠": "triangle-alert", "✅": "circle-check", "✓": "circle-check" };
+function toast(msg, kind) {
   let t = document.getElementById("wb-toast");
   if (!t) { t = document.createElement("div"); t.id = "wb-toast"; document.body.appendChild(t); }
-  t.textContent = msg;
+  let text = String(msg == null ? "" : msg);
+  let icon = kind || "";
+  for (const [mark, name] of Object.entries(TOAST_ICON)) {
+    if (!text.startsWith(mark)) continue;
+    icon = icon || name;
+    text = text.slice(mark.length).trim();
+    break;
+  }
+  t.innerHTML = (icon ? ic(icon) : "") + "<span></span>";
+  t.lastChild.textContent = text;
+  t.classList.toggle("err", icon === "circle-x" || icon === "triangle-alert");
   t.classList.add("show");
   clearTimeout(toastTimer);
   // 长消息（多半是报错原因）多留一会儿，2.2 秒读不完一句「分字段「*/0」的步长必须 ≥ 1」
-  toastTimer = setTimeout(() => t.classList.remove("show"), Math.min(6000, Math.max(2200, String(msg).length * 120)));
+  toastTimer = setTimeout(() => t.classList.remove("show"), Math.min(6000, Math.max(2200, text.length * 120)));
 }
 async function toggleAppFullscreen() {
   const r = await fetch("/api/app/fullscreen", { method: "POST" }).then(x => x.json()).catch(() => ({ ok: false }));
@@ -878,7 +898,7 @@ function navTask(dir) {
 }
 const SHORTCUT_ACTIONS = {
   "open-settings": () => openModal("settings"),
-  "voice-record": () => toast("🎤 语音录制暂未支持（复刻版）"),
+  "voice-record": () => toast("语音录制暂未支持（复刻版）"),
   "chat-search": () => openChatSearch(),
   "new-chat": () => document.getElementById("new-task").click(),
   "stop": () => {
@@ -928,7 +948,7 @@ function openChatSearch() {
   if (!bar) {
     bar = document.createElement("div");
     bar.id = "chat-search";
-    bar.innerHTML = `<input id="cs-input" placeholder="搜索对话内容…"><span id="cs-count" style="color:var(--wb-text-3);font-size: 13px;white-space:nowrap"></span><button id="cs-prev" title="上一个">↑</button><button id="cs-next" title="下一个">↓</button><button id="cs-close" title="关闭 (Esc)">✕</button>`;
+    bar.innerHTML = `<input id="cs-input" placeholder="搜索对话内容…"><span id="cs-count" style="color:var(--wb-text-3);font-size: 13px;white-space:nowrap"></span><button id="cs-prev" title="上一个">${ic("chevron-up")}</button><button id="cs-next" title="下一个">↓</button><button id="cs-close" title="关闭 (Esc)">✕</button>`;
     document.querySelector(".main").appendChild(bar);
     bar.querySelector("#cs-input").oninput = runChatSearch;
     bar.querySelector("#cs-input").addEventListener("keydown", (e) => {
@@ -987,7 +1007,7 @@ async function pollApprovals() {
   list.forEach(a => apSeen.add(a.id));
   if (fresh.length && document.hidden && "Notification" in window && Notification.permission === "granted") {
     const a = fresh[0];
-    try { new Notification("🛡️ OpenWorkBuddy 等你审批", { body: `${a.source ? `「${a.source}」· ` : ""}${a.kind}：${(a.text || "").slice(0, 80)}` }); } catch {}
+    try { new Notification("OpenWorkBuddy 等你审批", { body: `${a.source ? `「${a.source}」· ` : ""}${a.kind}：${(a.text || "").slice(0, 80)}` }); } catch {}
   }
   let bar = document.getElementById("approval-bar");
   if (!list.length) { if (bar) bar.remove(); return; }
@@ -1001,7 +1021,7 @@ async function pollApprovals() {
   bar.innerHTML = list.map(a => `
     <div class="ap-row">
       <div class="ap-main">
-        <div class="ap-head">🛡️ ${esc(a.kind)}待审批${a.source ? ` · <span class="ap-src" title="发起审批的任务">来自「${esc(a.source)}」</span>` : ""}${a.rule ? ` · <span class="ap-why">${esc(a.rule)}</span>` : ""}</div>
+        <div class="ap-head">${ic("shield")}${esc(a.kind)}待审批${a.source ? ` · <span class="ap-src" title="发起审批的任务">来自「${esc(a.source)}」</span>` : ""}${a.rule ? ` · <span class="ap-why">${esc(a.rule)}</span>` : ""}</div>
         <code class="ap-cmd" title="${esc(a.text)}">${esc(a.text.slice(0, 160))}</code>
       </div>
       <div class="ap-btns">
@@ -1055,7 +1075,7 @@ async function loadPermModes() {
   menu.innerHTML = Object.entries(d.modes)
     .map(([k, m]) => permCanSwitch
       ? `<div class="mi" data-perm="${esc(k)}">${esc(m.label)} <span class="sub">${esc(m.desc)}</span></div>`
-      : `<div class="mi ro"${k === d.current ? ' data-cur="1"' : ""}>${esc(m.label)}${k === d.current ? " ✓" : ""} <span class="sub">${esc(m.desc)}</span></div>`)
+      : `<div class="mi ro"${k === d.current ? ' data-cur="1"' : ""}>${esc(m.label)}${k === d.current ? ic("check") : ""} <span class="sub">${esc(m.desc)}</span></div>`)
     .join("");
   if (!permCanSwitch) menu.insertAdjacentHTML("beforeend",
     '<div class="mi ro sub-only">这台服务器上大家共用一个档位，归平台管理员设</div>');
@@ -1178,7 +1198,7 @@ let creditsOn = false;
 /** 改昵称 / 换头像 / 改登录名（要密码确认，历史会话和用量流水会一起搬过去） */
 function renderProfile() {
   const u = currentUser || {};
-  mTitle.textContent = "🪪 个人资料";
+  mTitle.textContent = "个人资料";
   mBody.innerHTML = `<div class="card-item">
       <div class="t">头像</div>
       <div class="d" style="margin-bottom:8px">emoji 或者一张图都行，图会自动裁成方的压到 128px。</div>
@@ -1204,7 +1224,7 @@ function renderProfile() {
       </div>
     </div>`;
   const ed = bindAvatarEditor(mBody, "pf", u.avatar, () => mBody.querySelector("#pf-nick").value.trim() || u.username);
-  mBody.querySelector("#pf-back").onclick = () => { mTitle.textContent = "👤 账号 · 用量"; renderAccount(); };
+  mBody.querySelector("#pf-back").onclick = () => { mTitle.textContent = "账号 · 用量"; renderAccount(); };
   mBody.querySelector("#pf-save").onclick = async () => {
     const msg = mBody.querySelector("#pf-msg");
     const resp = await fetch("/api/auth/profile", {
@@ -1216,7 +1236,7 @@ function renderProfile() {
       currentUser = r.user;
       renderUserChip();
       msg.style.color = "";
-      msg.textContent = "✅ 已保存";
+      msg.textContent = "已保存";
     } else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "保存失败"; }
   };
   mBody.querySelector("#pf-uname-go").onclick = async () => {
@@ -1232,7 +1252,7 @@ function renderProfile() {
       currentUser = r.user;
       renderUserChip();
       msg.style.color = "";
-      msg.textContent = `✅ 已改成 ${r.user.username}`;
+      msg.textContent = `已改成 ${r.user.username}`;
       mBody.querySelector("#pf-upass").value = "";
       setTimeout(() => renderProfile(), 900); // 重画一遍，把"现在是 xxx"那句更新掉
     } else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "改不动"; }
@@ -1246,7 +1266,7 @@ function renderUserChip() {
   chip.innerHTML = `<span class="ava${av.cls ? " " + av.cls : ""}">${av.html}</span>`
     + `<span class="un">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</span>`
     // 不限额时不显示余额：一个永远不会动、也拦不住任何事的数字挂在那里只会让人担心
-    + (creditsOn ? `<span class="uc">✦ ${(+currentUser.credits).toLocaleString()}</span>` : "");
+    + (creditsOn ? `<span class="uc">${ic("sparkles")}${(+currentUser.credits).toLocaleString()}</span>` : "");
   onActivate(chip, (e) => { e.stopPropagation(); toggleUserMenu(); });
 }
 document.getElementById("gear-btn").onclick = () => { closeUserMenu(); openModal("settings"); };
@@ -1298,19 +1318,19 @@ function openUserMenu() {
     <div class="um-head" data-act="account" title="点击查看用量明细">
       <span class="ava${av.cls ? " " + av.cls : ""}" style="width:30px;height:30px;border-radius:50%;background:var(--wb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size: 15px;font-weight:600;flex:none;overflow:hidden">${av.html}</span>
       <div style="min-width:0"><div class="n">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</div>
-      <div class="s">${creditsOn ? `✦ ${(+currentUser.credits).toLocaleString()} 积分 · ` : ""}账号与用量</div></div>
+      <div class="s">${creditsOn ? `${ic("sparkles")}${(+currentUser.credits).toLocaleString()} 积分 · ` : ""}账号与用量</div></div>
     </div>
-    <div class="um-i" data-act="profile">🪪 个人资料</div>
-    <div class="um-i" data-act="settings">⚙️ 设置</div>
+    <div class="um-i" data-act="profile">${ic("id-card")}个人资料</div>
+    <div class="um-i" data-act="settings">${ic("settings")}设置</div>
     ${currentUser.role === "admin" || currentUser.role === "auditor"
-      ? `<div class="um-i" data-act="admin">🏢 企业管理后台 <span class="hint">${currentUser.role === "auditor" ? "只读" : "成员 · 用量 · 安全"}</span></div>`
+      ? `<div class="um-i" data-act="admin">${ic("building-2")}企业管理后台 <span class="hint">${currentUser.role === "auditor" ? "只读" : "成员 · 用量 · 安全"}</span></div>`
       : ""}
-    ${i18n ? `<div class="um-i um-lang" data-act="lang" title="点一下就切换界面语言，AI 回复也跟着换"><span>🌐 语言</span><span class="um-seg" data-i18n-skip role="group" aria-label="界面语言">${Object.keys(i18n.LANGS).map((v) =>
+    ${i18n ? `<div class="um-i um-lang" data-act="lang" title="点一下就切换界面语言，AI 回复也跟着换"><span>${ic("globe")}语言</span><span class="um-seg" data-i18n-skip role="group" aria-label="界面语言">${Object.keys(i18n.LANGS).map((v) =>
       `<button type="button" data-lang="${v}" class="${lang === v ? "on" : ""}" aria-pressed="${lang === v}">${v === "zh" ? "中" : "En"}</button>`).join("")}</span></div>` : ""}
-    <div class="um-i" data-act="appearance">🎨 外观 <span class="hint">${THEME_LABEL[getTheme()]} · ${LOOK_OPTS.fs[lookGet("fs")]}字</span></div>
-    <div class="um-i" data-act="help">💬 帮助与反馈</div>
-    <div class="um-i" data-act="update">🔄 检查更新</div>
-    <div class="um-i" data-act="logout" style="color:var(--wb-err-text)">↪ 退出登录</div>`;
+    <div class="um-i" data-act="appearance">${ic("palette")}外观 <span class="hint">${THEME_LABEL[getTheme()]} · ${LOOK_OPTS.fs[lookGet("fs")]}字</span></div>
+    <div class="um-i" data-act="help">${ic("message-circle")}帮助与反馈</div>
+    <div class="um-i" data-act="update">${ic("refresh-cw")}检查更新</div>
+    <div class="um-i" data-act="logout" style="color:var(--wb-err-text)">${ic("log-out")}退出登录</div>`;
   userMenu.querySelectorAll("[data-act]").forEach(el => el.onclick = async (e) => {
     e.stopPropagation();
     const act = el.dataset.act;
@@ -1345,7 +1365,7 @@ document.addEventListener("click", (e) => {
   const pre = btn.closest(".code-wrap")?.querySelector("pre");
   if (!pre) return;
   const text = pre.textContent || "";
-  const done = () => { btn.textContent = "已复制 ✓"; setTimeout(() => { btn.textContent = "复制"; }, 1500); };
+  const done = () => { btn.textContent = "已复制"; setTimeout(() => { btn.textContent = "复制"; }, 1500); };
   if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done)); }
   else fallbackCopy(text, done);
   function fallbackCopy(t, cb) {
@@ -1399,6 +1419,44 @@ function flashBtn(btn, word) {
   clearTimeout(btn._flash);
   btn._flash = setTimeout(() => { btn.textContent = btn.dataset.oldText || old; delete btn.dataset.oldText; }, 1600);
 }
+/**
+ * POST 一份 JSON，并且**说清楚失败在哪一环**。
+ *
+ * 以前这一串是 `fetch(...).then(x => x.json()).catch(() => null)`，一个 catch 把四种
+ * 完全不同的事故糊成同一句「接口无响应」：网线断了、后端崩了没回 JSON、HTTP 报了
+ * 401/413/500、请求挂着一直不回。用户看到的永远是那五个字，连往哪儿查都不知道
+ * （这条是用户报的：「怎么说保存失败接口没有响应啊」）。
+ *
+ * 返回 { data, why }：data 是解析出来的响应体（失败时为 null），why 是给人看的一句原因。
+ */
+async function postJson(url, body, timeoutMs) {
+  const ac = typeof AbortController === "function" ? new AbortController() : null;
+  const ms = timeoutMs || 30000;
+  const timer = ac ? setTimeout(() => ac.abort(), ms) : null;
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal: ac ? ac.signal : undefined,
+    });
+  } catch (e) {
+    // abort 和真的连不上要分开说：一个是「它没回」，一个是「压根没连上」
+    const aborted = e && (e.name === "AbortError" || ac?.signal.aborted);
+    return { data: null, why: aborted ? `等了 ${Math.round(ms / 1000)} 秒还没回应，后台可能卡住了` : "连不上本机服务（OpenWorkBuddy 后台是不是退出了？）" };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  const raw = await resp.text().catch(() => "");
+  let data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch {}
+  if (data && typeof data === "object") {
+    // 服务端自己说了原因就用它的，别拿 HTTP 码盖掉一句人话
+    if (!resp.ok && !data.error) data.error = `HTTP ${resp.status}`;
+    return { data, why: data.error || "" };
+  }
+  const head = raw.replace(/\s+/g, " ").trim().slice(0, 120);
+  return { data: null, why: `HTTP ${resp.status}${head ? "，后台回的不是 JSON：" + head : "，后台回了个空响应"}` };
+}
 /** 网页端没有系统保存框，交给浏览器下载——在网页上，浏览器的下载面板就是那个「选位置」 */
 function browserDownload(name, content) {
   const isData = /^data:/.test(String(content));
@@ -1416,19 +1474,16 @@ function browserDownload(name, content) {
  */
 async function saveInlineFile(name, content, btn, saveAs) {
   const dir = sessionDirs.get(sessionId) || "";
-  const r = await fetch(saveAs ? "/api/files/save-as" : "/api/files/save", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, content, dir }),
-  }).then(x => x.json()).catch(() => null);
+  const { data: r, why } = await postJson(saveAs ? "/api/files/save-as" : "/api/files/save", { name, content, dir }, 120000);
   if (saveAs && r && r.canceled) return; // 用户自己点的取消，别再弹一条「失败」吓人
   if (saveAs && r && r.no_dialog) {
     browserDownload(name, content);
-    flashBtn(btn, "已下载 ✓");
+    flashBtn(btn, "已下载");
     return toast("网页端没有系统保存框，已交给浏览器下载；想换地方去浏览器的下载设置里改");
   }
-  if (!r?.ok) return toast("保存失败：" + (r?.error || "接口无响应"));
+  if (!r?.ok) return toast("❌ 保存失败：" + (r?.error || why || "没说原因"));
   if (r.files) renderFiles(r.files);
-  flashBtn(btn, "已存 ✓");
+  flashBtn(btn, "已存");
   if (saveAs) return toast(`已存到：${r.path}`);
   toast(r.dir ? `已存到本对话的文件夹：${r.dir}/${name}` : `已存到工作目录：${name}`);
 }

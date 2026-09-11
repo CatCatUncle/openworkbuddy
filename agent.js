@@ -108,6 +108,7 @@ const { dataPath, DATA_DIR } = require("./paths");
 const os = require("os");
 const memory = require("./memory");
 const evolve = require("./evolve");
+const mediaModels = require("./media-models"); // 四路媒体模型：把「默认那条 + 还能选谁」一起交给工具
 
 // ================= 成果核验（治「幻觉执行」） =================
 // 模型有时在文本里"表演"跑命令并声称文件已生成，实际一个工具都没调。
@@ -739,7 +740,7 @@ function modePrompt(mode) {
       knownTools: toolList(depth, "craft").map((t) => t.name), // 拼错工具名时用来给出最接近的真名
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
-      media: config.media,
+      media: mediaModels.resolve(config), // 带上全表，generate_image 这些才能按名字点名用哪个模型
       visionFallback: activeChannel(config), // 没配视觉渠道时先拿主模型试试（主模型本来就多模态的，用户什么都不用配）
       // IM/定时等无人值守场景可传 sec 覆盖权限档位（没人守着屏幕点审批）
       security: sec || config.security,

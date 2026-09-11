@@ -11,6 +11,7 @@ const { spawn, spawnSync } = require("child_process");
 const { StringDecoder } = require("string_decoder");
 const security = require("./security");
 const memory = require("./memory");
+const mediaModels = require("./media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
 let workspaceDir = dataPath("workspace");
@@ -354,6 +355,7 @@ const TOOL_DEFS = [
       properties: {
         path: { type: "string", description: "图片相对路径。用户上传的图在工作空间里，名字不确定就先 list_files" },
         question: { type: "string", description: "关于这张图的具体问题（必填）" },
+        model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
       },
       required: ["path", "question"],
     },
@@ -373,6 +375,7 @@ const TOOL_DEFS = [
         prompt: { type: "string", description: "画面描述，越具体越好（主体/风格/构图/光线）" },
         filename: { type: "string", description: "保存文件名（可选，默认 image_时间戳.png）" },
         size: { type: "string", description: "尺寸如 1024x1024（可选，仅 OpenAI 兼容渠道生效）" },
+        model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
       },
       required: ["prompt"],
     },
@@ -386,6 +389,7 @@ const TOOL_DEFS = [
       properties: {
         prompt: { type: "string", description: "视频内容描述（画面/动作/镜头）" },
         filename: { type: "string", description: "保存文件名（可选，默认 video_时间戳.mp4）" },
+        model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
       },
       required: ["prompt"],
     },
@@ -422,6 +426,7 @@ const TOOL_DEFS = [
         filename: { type: "string", description: "保存文件名（可选，默认 speech_时间戳.mp3）" },
         voice: { type: "string", description: "音色名（可选，默认用设置里配的；如 OpenAI 系的 alloy/nova、通义的 Cherry/Serena）" },
         speed: { type: "number", description: "语速 0.5~2.0（可选，仅 OpenAI 兼容渠道生效）" },
+        model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
       },
       required: ["text"],
     },
@@ -603,7 +608,8 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile) {
   if (!rel) return { content: "缺少 path（要看哪张图，工作空间里的相对路径）", isError: true };
   if (!q) return { content: "缺少 question：看图必须带着具体问题去问（「报错写的什么」「这页分几块」），空看一眼拿不回有用的东西。", isError: true };
 
-  const v = (opts.media || {}).vision || {};
+  let v;
+  try { v = mediaModels.pick(opts.media, "vision", input.model); } catch (e) { return { content: e.message, isError: true }; }
   const configured = !!(String(v.base_url || "").trim() && String(v.model || "").trim());
   // 没单独配视觉渠道就拿主模型试一把：主模型本来就多模态的（GPT/Claude/Gemini/GLM 系）什么都不用配；
   // 纯文本模型会明确报错，下面那段会把「去设置里配一个」这句话说清楚，而不是让模型在那儿反复重试。
@@ -747,7 +753,8 @@ async function postWantClean(url, headers, signal, buildBody, label, tries) {
 }
 
 async function generateImage(media, input, timeoutMs, saveDir) {
-  const cfg = (media || {}).image || {};
+  let cfg;
+  try { cfg = mediaModels.pick(media, "image", input.model); } catch (e) { return { content: e.message, isError: true }; }
   if (!cfg.base_url || !cfg.model) {
     return { content: "图像模型未配置：请在 设置 → 模型 → 图像模型 填写接口地址 / API Key / 模型名后再用。", isError: true };
   }
@@ -796,7 +803,8 @@ async function generateImage(media, input, timeoutMs, saveDir) {
 }
 
 async function generateVideo(media, input, opts = {}) {
-  const cfg = (media || {}).video || {};
+  let cfg;
+  try { cfg = mediaModels.pick(media, "video", input.model); } catch (e) { return { content: e.message, isError: true }; }
   if (!cfg.base_url || !cfg.model) {
     return { content: "视频模型未配置：请在 设置 → 模型 → 视频模型 填写接口地址 / API Key / 模型名后再用。", isError: true };
   }
@@ -897,7 +905,8 @@ async function htmlToImage(input, resolveFile, saveDir) {
 
 /** 文字 → 语音（渠道协议：OpenAI 兼容 /audio/speech、DashScope 原生 qwen-tts） */
 async function textToSpeech(media, input, timeoutMs, saveDir) {
-  const cfg = (media || {}).tts || {};
+  let cfg;
+  try { cfg = mediaModels.pick(media, "tts", input.model); } catch (e) { return { content: e.message, isError: true }; }
   if (!cfg.base_url || !cfg.model) {
     return { content: "语音合成未配置：请在 设置 → 模型 → 语音合成 填写接口地址 / API Key / 模型名后再用。", isError: true };
   }
