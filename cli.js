@@ -20,6 +20,8 @@
  * npm link 后可直接用 `wb "任务"`。
  */
 
+// Node 太老 / 依赖没装：排在所有 require 最前面，不然用户拿到的是一句 Cannot find module
+require("./boot-check").enforce({ rootDir: __dirname });
 const fs = require("fs");
 const path = require("path");
 const { dataPath, preferData } = require("./paths");
@@ -53,7 +55,7 @@ for (let i = 0; i < argv.length; i++) {
 // 子命令。动词式的写法（wb resume / wb sessions / wb engines）是给人记的，
 // 老的 --session / --list / -c 一个都没动，脚本不用改。
 let sub = "";
-if (["engines", "sessions", "resume"].includes(words[0])) {
+if (["engines", "sessions", "resume", "doctor"].includes(words[0])) {
   sub = words.shift();
   // 会话 id 有固定前缀（cli_ 是命令行开的，s_ 是桌面开的），认得出就当 id，认不出就当任务描述
   if (sub === "resume" && words[0] && /^(cli_|s_)/.test(words[0])) opts.session = words.shift();
@@ -71,6 +73,7 @@ function printHelp() {
   wb sessions [n]               列最近 n 个会话（桌面端开的也在里面）
   wb resume [id] ["接着做…"]    续接会话；不给 id 就接最近动过的那个
   wb engines                    看本机能拿什么当底层（Claude Code / Codex）
+  wb doctor                     跑不起来时先跑它：Node / 依赖 / 端口 / 配置 / 引擎 一次查清
   wb engines use <id>           一键换底层；换成本机 CLI 后不再消耗 API 额度
 选项：
   --mode craft|plan|ask         执行模式（默认 craft）
@@ -103,11 +106,35 @@ const emitJson = (o) => { if (opts.json) process.stdout.write(JSON.stringify(o) 
 
 // ---------- 配置与运行时（与 server.js 同源） ----------
 const CONFIG_PATH = dataPath("config.json");
-if (!fs.existsSync(CONFIG_PATH)) {
+// wb doctor 是个例外：它就是用来查「为什么什么都没配好」的，在这儿把它拦下等于
+// 把唯一一根救命稻草也收走。别的命令照旧当场停——没有配置它们干不了活。
+if (!fs.existsSync(CONFIG_PATH) && sub !== "doctor") {
   process.stderr.write(red("找不到 config.json，请先运行一次 npm start 生成，或从 config.example.json 复制。\n"));
+  process.stderr.write(dim("不确定是哪儿不对的话，先跑一句 wb doctor。\n"));
   process.exit(1);
 }
 const config = store.readJson(CONFIG_PATH, {});
+
+// ---------- wb doctor：跑不起来时的一次性体检 ----------
+// 位置很讲究：必须排在下面 createLLM 前面。模型一个都没配的机器上 createLLM 当场抛
+// 「未知 provider: undefined」——而那恰恰是最需要体检的时刻，体检工具自己先死没有道理。
+if (sub === "doctor") {
+  const doctor = require("./doctor");
+  const paint = { ok: green, warn: yellow, bad: red, dim };
+  (async () => {
+    const items = await doctor.gather({
+      paths: require("./paths"),
+      config,
+      engines: require("./engines"),
+      workspaceDir: opts.workspace || config.workspace_dir || getWorkspaceDir(),
+      bootCheck: require("./boot-check"),
+    });
+    process.stdout.write(doctor.render(items, (t, lv) => (paint[lv] || ((x) => x))(t)));
+    // 退出码说实话：有要处理的就 1，好写进安装脚本和 CI（wb doctor && npm start）
+    process.exit(doctor.worst(items) >= doctor.LEVELS.bad ? 1 : 0);
+  })();
+  return; // CommonJS 的模块体本身就是个函数，这行是合法的「到此为止」，下面那一整套运行时不用再起
+}
 /** 设置里挑的那个底层引擎。命令行没有登录态，取不到个人偏好，读的就是这份全局配置 */
 const cfgEngine = () => String((config.agent || {}).engine || "builtin").trim() || "builtin";
 // -C 优先于配置：命令行是「这一次」的意思，不该把配置文件改掉

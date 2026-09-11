@@ -4912,6 +4912,7 @@ async function main() {
   await testNodeSuite("chat-models.js", "对话模型：渠道共用一把 Key");
   await testNodeSuite("lanes.js", "两条工作线（工程 / 办公）");
   await testNodeSuite("cli-live.js", "终端里 wb 跑的活儿，网页和手机怎么看见");
+  await testNodeSuite("doctor.js", "开机闸门与 wb doctor 体检（Node / 依赖 / 端口 / 配置 / 引擎）");
   await testDockerDeploy();
   await testFetchUrlShapes();
   await testParallelToolBatch();
