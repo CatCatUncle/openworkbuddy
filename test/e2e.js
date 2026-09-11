@@ -4914,6 +4914,7 @@ async function main() {
   await testNodeSuite("cli-live.js", "终端里 wb 跑的活儿，网页和手机怎么看见");
   await testNodeSuite("doctor.js", "开机闸门与 wb doctor 体检（Node / 依赖 / 端口 / 配置 / 引擎）");
   await testNodeSuite("cli-args.js", "命令行参数声明表：拼错的选项当场拦下并给建议，老写法逐条对齐不变");
+  await testNodeSuite("repl-commands.js", "wb 交互模式：多行粘贴合成一条、打错的斜杠命令当场拦下、Ctrl+C 停活儿不退出");
   await testDockerDeploy();
   await testFetchUrlShapes();
   await testParallelToolBatch();
