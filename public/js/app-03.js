@@ -788,7 +788,7 @@ async function renderAssistPage() {
         <button class="btn-plain" id="im-model-btn" title="助理页发消息用哪个模型（飞书 / QQ 等远程消息仍按全局默认跑）">✦ <span id="im-model-label">模型</span> ▾</button>
         <div class="picker-menu down" id="im-model-menu"></div>
       </div>
-      <button class="btn-plain" id="im-open-ws">📂 打开所在文件夹</button>
+      ${canOpenOnHost() ? `<button class="btn-plain" id="im-open-ws">📂 打开所在文件夹</button>` : ""}
       <button class="btn-plain" id="im-cfg">⚙️ 设置</button>
     </div>
     <div class="im-feed" id="im-feed"></div>
@@ -796,7 +796,11 @@ async function renderAssistPage() {
   setupPicker("im-model-btn", "im-model-menu");
   updateModelLabel(); // 顶栏每次重画都是新元素，标签和菜单当场填上
   page.querySelector("#im-cfg").onclick = () => openModal("settings", "im");
-  page.querySelector("#im-open-ws").onclick = () => fetch("/api/open-workspace", { method: "POST" });
+  const imWs = page.querySelector("#im-open-ws");
+  // 以前这里 fetch 完不接结果：403 之后按钮点了一声不吭
+  if (imWs) imWs.onclick = () => fetch("/api/open-workspace", { method: "POST" })
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开工作目录")); }))
+    .catch(() => toast("❌ 打不开工作目录"));
   renderAssistFeed(log);
 }
 // 助理模式下底部输入框发的消息走 local 通道（与 IM 消息同一条会话流），不新建任务。

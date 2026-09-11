@@ -591,6 +591,11 @@ function recordingEmit(send, events, sessionId) {
 }
 
 const app = express();
+// 大小写敏感路由。Express 默认是 false，于是 POST /API/settings 会命中 /api/settings 的
+// 处理器，而 account.js 的 authGuard 和 admin.js 的门禁表都是用 startsWith 按**原样**路径
+// 判的——把首字母改成大写就既不用登录、也绕开整张写表。判据那两处也一并小写化了（两头都堵，
+// 只堵一头都会留下半扇门）。全仓路由注册和前端请求本来就全小写，打开这个开关不改变任何现有行为。
+app.set("case sensitive routing", true);
 app.use(express.json({ limit: "60mb" }));
 app.use(express.static(appPath("public")));
 // /api/auth/* /api/usage /api/credits/*
@@ -1288,6 +1293,10 @@ app.get("/api/security/modes", (req, res) =>
   res.json({ modes: security.PERMISSION_MODES, current: security.permissionMode(config.security), can_switch: isPlatformOwner(req) })
 );
 app.post("/api/security/mode", (req, res) => {
+  // 自守一道，别只靠门禁表。这个开关一改，全站的 agent 动手前问不问就变了——
+  // 「只有一层前缀表把门」的东西，表上出一点差错就是整台机器的审批被人关掉。
+  // 上面那条 GET 已经回了 can_switch: isPlatformOwner(req)，判据用同一个，不会出现「界面说能改、后端不让」。
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "权限档位是整台服务器一份的，归平台管理员管", platform_only: true });
   const mode = String((req.body || {}).mode || "");
   if (!security.PERMISSION_MODES[mode]) return res.status(400).json({ error: "未知的权限档位" });
   security.getSecurity(config).permission_mode = mode; // 走 getSecurity 补默认值，别把别的字段挤掉
@@ -1883,10 +1892,18 @@ app.post("/api/pick-folder", async (_req, res) => {
     res.status(501).json({ error: "仅桌面版支持系统文件夹选择，Web 版请直接输入路径" });
   }
 });
-/** 用系统程序打开文件/文件夹（跨平台：macOS open / Windows explorer / Linux xdg-open） */
+/**
+ * 用系统程序打开文件/文件夹/URL（跨平台：macOS open / Windows explorer / Linux xdg-open）。
+ *
+ * 必须是 execFile，不能是 exec。exec 把整条命令交给 /bin/sh，而 target 里有用户能控制的文件名：
+ * 一个叫 `a";id>pwn.txt;"b.txt` 的文件（macOS/Linux 上完全合法，上传接口也没拦过这些字符）
+ * 就能把老写法 exec(`${opener} "${target}"`) 里的引号闭合掉，分号后面那段以服务端权限执行。
+ * execFile 不起 shell，参数原样递给程序，这类解析从根上就没有了。
+ * 回调吞掉错误是有意的：explorer 打开成功也常回非 0 退出码，而这个函数的调用方都不看结果。
+ */
 function openWithSystem(target) {
   const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-  require("child_process").exec(`${opener} "${target}"`);
+  require("child_process").execFile(opener, [String(target)], () => {});
 }
 app.post("/api/open-workspace", (_req, res) => {
   openWithSystem(getWorkspaceDir());
@@ -2518,8 +2535,14 @@ app.post("/api/upload", (req, res) => {
   try {
     const { name, data_b64, session } = req.body || {};
     if (!name || !data_b64) return res.status(400).json({ error: "缺少 name 或 data_b64" });
-    const base = path.basename(name);
+    // basename 之后再洗一遍：控制字符和路径分隔符在文件名里没有正当用途，
+    // 而这些名字会被拼进链接、传给系统程序、写进日志
+    const base = path.basename(String(name)).replace(/[\u0000-\u001f\u007f]/g, "").trim();
+    if (!base || base === "." || base === "..") return res.status(400).json({ error: "文件名不合法" });
     const sess = session ? getSession(String(session)) : null;
+    // 归属必须查：这个接口是拿请求体里的 sessionId 直接取会话的，不查就等于
+    // 「知道一个会话 id 就能往别人的成果文件夹里写文件」。会话 id 会出现在链接和截图里，不是秘密。
+    if (sess && !sessionAllowed(req.user, sess)) return res.status(403).json({ error: "这条对话不属于你" });
     const rel = sess && sess.dir ? path.join(sess.dir, base) : base;
     const p = safePath(rel);
     fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -2966,7 +2989,14 @@ app.post("/api/files/save", (req, res) => {
 // ---- 本地部署预览：把工作目录当静态站点跑在一个独立端口上 ----
 // 应用内 iframe 预览走 /api/files/view，够看长相；但真正的网页要有自己的 origin 才对
 // （相对路径引资源、fetch、localStorage、手机上开来看）。这里起一个只监听本机的静态服务器。
-let previewServer = null; // { srv, port, dir }
+/**
+ * 每个租户一份，不是全局一份。以前这是个模块级单例，三个后果：
+ *   ① B 组织一点「预览」就把 A 组织正在对外的服务掐了；
+ *   ② GET /api/preview/status 把**别人**工作目录的绝对路径和局域网地址回给任何登录用户；
+ *   ③ 两边抢同一个变量，谁停都停成对方那份。
+ * 键用工作目录（tenantScope 已经把 getWorkspaceDir() 绑到调用者所属组织的根上）。
+ */
+const previewServers = new Map(); // dir -> { srv, port, dir, lanOpen, token }
 function lanAddress() {
   const nets = require("os").networkInterfaces();
   for (const list of Object.values(nets)) {
@@ -2976,55 +3006,86 @@ function lanAddress() {
   }
   return null;
 }
-function previewState() {
-  if (!previewServer) return { running: false };
-  const lan = previewServer.lanOpen ? lanAddress() : null;
+function previewState(dir) {
+  const ps = previewServers.get(dir);
+  if (!ps) return { running: false };
+  const lan = ps.lanOpen ? lanAddress() : null;
+  // url / lan_url 是**不带令牌的根**，令牌单独给：调用方要在后面接文件名，
+  // 拼在根上会变成 ".../?t=xxxindex.html"。静态站是独立的 express 实例，
+  // 登录态 cookie 到不了那边，没有令牌的话「开了局域网」就等于同网段裸奔。
   return {
     running: true,
-    port: previewServer.port,
-    dir: previewServer.dir,
-    lan_open: !!previewServer.lanOpen,
-    url: `http://127.0.0.1:${previewServer.port}/`,
-    lan_url: lan ? `http://${lan}:${previewServer.port}/` : null,
+    port: ps.port,
+    dir: ps.dir,
+    lan_open: !!ps.lanOpen,
+    token: ps.token,
+    url: `http://127.0.0.1:${ps.port}/`,
+    lan_url: lan ? `http://${lan}:${ps.port}/` : null,
   };
 }
-app.get("/api/preview/status", (_req, res) => res.json(previewState()));
+app.get("/api/preview/status", (_req, res) => res.json(previewState(getWorkspaceDir())));
 app.post("/api/preview/start", (req, res) => {
   const dir = getWorkspaceDir();
-  // lan=true 才对局域网开放：开了手机能扫，但同一个 Wi-Fi 下的人也能翻整个工作目录，所以默认关
-  const lanOpen = !!(req.body && req.body.lan);
+  // lan=true 才对局域网开放：开了手机能扫，但同一个 Wi-Fi 下的人也能翻整个工作目录。
+  // 「把这台机器上的一个目录挂到局域网上」是服务器级动作，普通成员开不了；
+  // 不静默降级——降了要在返回体里说清楚，不然用户只会看到「怎么扫不出来」。
+  const wantLan = !!(req.body && req.body.lan);
+  const lanOpen = wantLan && isPlatformOwner(req);
+  const lanDenied = wantLan && !lanOpen;
   // open=文件名：服务就绪后用系统默认浏览器打开它
   const openName = req.body && req.body.open ? String(req.body.open).replace(/^\/+/, "") : null;
   const done = (st) => {
-    if (openName) openWithSystem(st.url + openName.split("/").map(encodeURIComponent).join("/"));
-    res.json(st);
+    if (openName) openWithSystem(st.url + openName.split("/").map(encodeURIComponent).join("/") + `?t=${st.token}`);
+    res.json(lanDenied ? { ...st, lan_denied: true, lan_hint: "对局域网开放要平台管理员来开" } : st);
   };
   // 已经在跑且参数一致：不用重起，但该开的浏览器还是得开。
   // （这里以前是直接 return，把 open 一起吞了——而「在浏览器打开」按钮只在服务已启动时才出现，
   //   必然走这条分支，所以那个按钮点了从来没反应过。）
-  if (previewServer && previewServer.dir === dir && previewServer.lanOpen === lanOpen) return done(previewState());
-  if (previewServer) { try { previewServer.srv.close(); } catch {} previewServer = null; }
+  const cur = previewServers.get(dir);
+  if (cur && cur.lanOpen === lanOpen) return done(previewState(dir));
+  if (cur) { try { cur.srv.close(); } catch {} previewServers.delete(dir); }
+  const token = require("crypto").randomBytes(16).toString("hex");
   const site = express();
+  // 令牌闸必须挂在 static 前面，不然静态中间件先把文件送出去了。
+  // 第一次带 ?t= 进来就种个 cookie，之后页面里的相对路径（图片、js、fetch）不用各自带令牌。
+  site.use((rq, rs, nx) => {
+    const cookie = String(rq.headers.cookie || "");
+    if (cookie.includes("wbpv=" + token)) return nx();
+    if (rq.query && rq.query.t === token) {
+      rs.setHeader("Set-Cookie", `wbpv=${token}; Path=/; HttpOnly; SameSite=Lax`);
+      return nx();
+    }
+    rs.status(401).type("text/plain; charset=utf-8").send("这个预览链接要带令牌才能看（回 OpenWorkBuddy 里重新复制一次）");
+  });
   site.use(express.static(dir, { extensions: ["html"] }));
   // 端口 0 = 让系统分配空闲端口，避免和用户本机其它服务撞车
   const srv = site.listen(0, lanOpen ? "0.0.0.0" : "127.0.0.1", () => {
-    previewServer = { srv, port: srv.address().port, dir, lanOpen };
-    done(previewState());
+    previewServers.set(dir, { srv, port: srv.address().port, dir, lanOpen, token });
+    done(previewState(dir));
   });
   srv.on("error", (e) => {
     if (!res.headersSent) res.status(500).json({ error: "本地预览服务起不来：" + e.message });
   });
 });
 app.post("/api/preview/stop", (_req, res) => {
-  if (previewServer) { try { previewServer.srv.close(); } catch {} previewServer = null; }
+  const dir = getWorkspaceDir();
+  const ps = previewServers.get(dir);
+  if (ps) { try { ps.srv.close(); } catch {} previewServers.delete(dir); } // 只停自己那份
   res.json({ running: false });
 });
 
+// 「用系统程序打开」= 在服务器上起一个进程，所以这里必须挡住可执行类型。
+// 走白名单不走黑名单：黑名单漏一个后缀就是一次任意代码执行（macOS 的 .command/.app/.scpt、
+// Windows 的 .bat/.cmd/.ps1/.lnk/.reg、Linux 上任何带 +x 的文件）。
+// 目录不在白名单里但要放行——「打开所在文件夹」是这个接口最常用的用法。
+const OPEN_EXT_OK = /\.(pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|markdown|json|ya?ml|log|rtf|html?|odt|ods|odp|pages|numbers|key|svg|png|jpe?g|gif|webp|bmp|tiff?|heic|mp4|mov|webm|m4v|mp3|wav|m4a|flac|aac|zip)$/i;
 // 用系统默认程序打开（Word/PPT/Excel 等交给本机 Office/WPS）
 app.post("/api/files/open/*", (req, res) => {
   try {
     const p = safePath(relOf(req));
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
+    if (!fs.statSync(p).isDirectory() && !OPEN_EXT_OK.test(p))
+      return res.status(400).json({ error: "这种类型不能交给系统程序打开，只放行文档、图片、音视频" });
     openWithSystem(p);
     res.json({ ok: true });
   } catch (e) {

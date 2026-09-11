@@ -118,6 +118,11 @@ app.get("/api/eval", (_req, res) => res.json([]));
 // 而不是只躺在 org.json 里没人读——那种开关比没有这个开关更糟
 app.get("/api/policy-probe", (_req, res) => res.json({ policy: tools.orgPolicy(), ws: tools.getWorkspaceDir() }));
 
+// 「用系统程序打开」「在访达里显示」：按下去是在**服务器那台机器**上起一个进程。
+// 成员在自己浏览器里点，窗口弹在管理员的显示器上——所以这是配机器，不是租户内动作。
+app.post("/api/files/open/*", (_req, res) => res.json({ ok: true }));
+app.post("/api/files/reveal", (_req, res) => res.json({ ok: true }));
+
 const server = app.listen(0, "127.0.0.1");
 const listening = new Promise((r) => server.once("listening", r));
 
@@ -615,6 +620,99 @@ async function login(username, password) {
   const TL = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
   ok(/LIB_DIR = dataPath\("data", "library"\)/.test(TL), "资料库确实是一份全局目录，不按用户分（这就是拦读没意义的原因）");
   ok(/name: "library_read"/.test(TL) && /name: "library_list"/.test(TL), "而每个人的 agent 都带着 library_list / library_read 这两个工具");
+
+  console.log("\n【13】大小写绕闸：Express 路由默认不认大小写，两道门禁却按原样 req.path 查表");
+  // 这一段是照着真复现写的：改掉一个字母，/API/settings 命中处理器、不命中门禁表。
+  // 这里故意不给这个小测试应用开 case sensitive routing，为的就是把「门禁自己认不认大小写」
+  // 单独拎出来测——服务器那边还压着一道 app.set("case sensitive routing", true)，在下面单独钉。
+  r = await call("POST", "/API/settings", { body: { search: { provider: "bing" } } });
+  ok(r.status !== 200, "没登录发 POST /API/settings，不许放行（大写前缀曾经判成「不用登录」）", r.status);
+  eq(r.status, 401, "而且回的是 401，跟小写那条一个待遇");
+  r = await call("POST", "/api/settings", { body: { search: { provider: "bing" } } });
+  eq(r.status, 401, "反向对照：小写那条本来就该 401");
+  r = await call("GET", "/API/files", {});
+  eq(r.status, 401, "换个接口也一样：大写的 /API/files 没登录进不去");
+  r = await call("GET", "/IM/log", {});
+  eq(r.status, 401, "/im/ 那条线同理：大写也得判成要登录（不然直接落到路由，压根没进这道闸）");
+
+  console.log("\n【14】大小写绕闸（第二道）：登录了，但普通成员用大写绕平台写表");
+  const platformPatch = { search: { provider: "bing" } }; // 不是个人项，改的是整台服务器
+  r = await call("POST", "/api/settings", { cookie: yuan, body: platformPatch });
+  eq(r.status, 403, "基线：小写发全局设置，成员是 403");
+  r = await call("POST", "/api/Settings", { cookie: yuan, body: platformPatch });
+  eq(r.status, 403, "改一个字母也得是 403（曾经这条是 200，整张写表绕过去了）");
+  r = await call("POST", "/API/SETTINGS", { cookie: yuan, body: platformPatch });
+  eq(r.status, 403, "全大写同理");
+  r = await call("GET", "/API/schedules", { cookie: yuan });
+  eq(r.status, 403, "读表也一样：大写的定时任务照拦");
+  r = await call("POST", "/api/Settings", { cookie: boss, body: platformPatch });
+  eq(r.status, 200, "反向对照：平台管理员发大写的照样过（拦的是权限，不是大小写本身）");
+  // 个人项的那条放行不能因为小写化而失灵
+  r = await call("POST", "/api/Settings", { cookie: yuan, body: { agent: { engine: "claude" } } });
+  eq(r.status, 200, "反向对照：成员改自己那几项（底层引擎），大写路径也得放行");
+
+  console.log("\n【15】大小写绕闸（第三道）：脱敏也得认小写");
+  r = await call("GET", "/API/settings", { cookie: yuan });
+  eq(r.status, 200, "成员读得到设置");
+  eq(r.json.search.jina_key, "", "大写路径下 Jina Key 照样抹掉（redactGuard 曾经只认小写 /api/admin 前缀）");
+  eq(r.json.im.feishu.app_secret, "", "飞书 App Secret 同理");
+  r = await call("GET", "/api/settings", { cookie: yuan });
+  eq(r.json.models[0].api_key, "", "反向对照：小写那条本来就抹");
+  r = await call("GET", "/API/settings", { cookie: boss });
+  eq(r.json.search.jina_key, "REAL-JINA-KEY", "反向对照：平台管理员读得到真值，没被误伤");
+  // 脱敏那条靠 /api/admin 前缀给后台自己的接口放行。认原样路径的话，后台一走大写路径，
+  // 返回里的 Key 字段会被当成「给普通成员看的」抹成空——页面上一片空白，配置里其实有值，
+  // 比报个错还难查。直接叫函数来验，不经过路由，改一个 toLowerCase 就得挂。
+  const fenUser = { username: "fenboss", org: org2, role: "admin" };
+  ok(!admin.ownsGlobalWorkspace(fenUser), "先确认这个身份不是平台管理员（不然下面两条都自动过）");
+  const throughRedact = (reqPath) => {
+    let out;
+    const req = { method: "GET", path: reqPath, user: fenUser };
+    const res = { json: (b) => { out = b; } };
+    admin.redactGuard(req, res, () => {});
+    res.json({ api_key: "REAL" });
+    return out;
+  };
+  eq(throughRedact("/API/admin/orgs").api_key, "REAL", "后台走大写路径，返回里的 Key 不许被抹空");
+  eq(throughRedact("/api/admin/orgs").api_key, "REAL", "反向对照：小写的后台路径本来就不抹");
+  eq(throughRedact("/API/settings").api_key, "", "反向对照：非后台的接口，大写小写都照抹");
+
+  console.log("\n【16】在服务器桌面上起进程的两条，归平台管理员");
+  r = await call("POST", "/api/files/open/report.pdf", { cookie: yuan });
+  eq(r.status, 403, "成员点「用系统默认程序打开」，拉不起服务端的进程");
+  r = await call("POST", "/api/files/reveal", { cookie: yuan, body: { name: "report.pdf" } });
+  eq(r.status, 403, "「在访达里显示」同理");
+  r = await call("POST", "/API/files/OPEN/report.pdf", { cookie: yuan });
+  eq(r.status, 403, "换大小写也绕不过去");
+  r = await call("POST", "/api/files/open/report.pdf", { cookie: fen });
+  eq(r.status, 403, "分公司的管理员也不行（进程起在总部那台机器上）");
+  r = await call("POST", "/api/files/open/report.pdf", { cookie: boss });
+  eq(r.status, 200, "反向对照：平台管理员能打开");
+  r = await call("GET", "/api/files", { cookie: yuan });
+  eq(r.status, 200, "反向对照：列自己的成果文件没被顺带拦住（拦的是 open/reveal，不是整条 /api/files）");
+  ok(writeTbl.includes("/api/files/open"), "写表里有 /api/files/open");
+  ok(writeTbl.includes("/api/files/reveal"), "写表里有 /api/files/reveal");
+  ok(!readTbl.includes("/api/files"), "读表里没有 /api/files（看自己的文件不该拦）");
+
+  console.log("\n【17】服务器那边的几处，钉住别退回去");
+  const SRV = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  ok(/app\.set\("case sensitive routing", true\)/.test(SRV),
+     "server.js 开了 case sensitive routing（门禁小写化之外的第二道，两道都得在）");
+  const owFn = (SRV.match(/function openWithSystem\([\s\S]*?\n\}/) || [""])[0];
+  ok(owFn.includes("execFile"), "openWithSystem 用 execFile");
+  ok(!/\bexec\(/.test(owFn),
+     "openWithSystem 里没有 exec(：exec 会把整串丢给 /bin/sh，文件名里一个引号就能执行任意命令", owFn.slice(0, 120));
+  const upFn = (SRV.match(/app\.post\("\/api\/upload"[\s\S]*?\n\}\);/) || [""])[0];
+  ok(upFn.includes("sessionAllowed"),
+     "/api/upload 查会话归属（不查就是「知道一个会话 id 就能往别人文件夹里写」）");
+  ok(upFn.includes("path.basename"), "/api/upload 对文件名做了 basename");
+  const modeFn = (SRV.match(/app\.post\("\/api\/security\/mode"[\s\S]*?\n\}\);/) || [""])[0];
+  ok(/if \(!isPlatformOwner\(req\)\)/.test(modeFn),
+     "/api/security/mode 自己也守一道（全站审批开关，不能只靠一张前缀表）");
+  ok(/const previewServers = new Map\(\)/.test(SRV),
+     "预览服务器按目录分开存（原来是一个全局变量，第二个租户一开就把第一个的端口顶掉）");
+  ok(/wbpv=/.test(SRV) && /st\.token/.test(SRV),
+     "预览站点带令牌（原来起在 0.0.0.0 上，同网段谁都能翻）");
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
