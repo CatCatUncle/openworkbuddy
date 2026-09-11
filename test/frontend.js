@@ -234,6 +234,57 @@ const TURNOUT_CHECKS = `
       a.height > 100 && a.width >= 160);
     ok("图片缩略图框有 92px 高，够看到画面而不是 26px 小点",
       Math.abs(png.querySelector(".out-thumb").getBoundingClientRect().height - 92) < 1);
+
+    // 缩略图地址得拿「这一版文件」当缓存键。以前是 ?t=Date.now()：每来一个文件事件整片卡重建一次，
+    // 七张图 = 每次重新下 2.7MB，屏幕上那一格先白一下再慢慢长出来。
+    // 用户原话：「这些图片怎么不渲染啊，现在看着比较丑啊」
+    const src1 = png.querySelector(".out-thumb img").getAttribute("src");
+    ok("缩略图地址带的是文件自己的版本号，不是当前时间",
+      src1.includes("?v=") && src1.includes(encodeURIComponent("2026-09-05T00:00:00.000Z")) && !/[?&]t=\\d{10,}/.test(src1), src1);
+    const bSame = fresh(); renderTurnOutputs(bSame, three, three);
+    ok("同一版文件重画一遍，地址一个字符没变（浏览器这才用得上缓存）",
+      bSame.querySelector('.out-card[data-name="图.png"] .out-thumb img').getAttribute("src") === src1,
+      bSame.querySelector('.out-card[data-name="图.png"] .out-thumb img').getAttribute("src"));
+    const bNew = fresh();
+    const newer = [{ name: "图.png", size: 512, mtime: "2026-09-06T00:00:00.000Z" }];
+    renderTurnOutputs(bNew, newer, newer);
+    ok("反向对照：文件真被改写（mtime 变了）地址就跟着变，该刷新的一次不少",
+      bNew.querySelector(".out-thumb img").getAttribute("src") !== src1,
+      bNew.querySelector(".out-thumb img").getAttribute("src"));
+
+    // 视频卡给第一帧，不给一个"这是个视频"的图标：一回合出三条片子时，图标分不出哪条是哪条
+    const bv = fresh();
+    const vids = [F("成片.mp4", 4096), F("笔记.md", 300)];
+    renderTurnOutputs(bv, vids, vids);
+    const vc = bv.querySelector('.out-card[data-name="成片.mp4"]');
+    const vt = vc.querySelector(".out-thumb video");
+    ok("视频卡出的是画面缩略图", !!vt, vc.querySelector(".out-thumb").innerHTML.slice(0, 140));
+    ok("只拉开头一点点、定格在第一帧（#t=0.1 + preload=metadata）",
+      vt.getAttribute("src").endsWith("#t=0.1") && vt.getAttribute("preload") === "metadata", vt.getAttribute("src"));
+    ok("缩略图不出声也不自动播（一排卡同时放会吵翻天）",
+      vt.muted === true && !vt.hasAttribute("autoplay") && !vt.hasAttribute("controls"));
+    ok("画面上压一枚播放标，一眼看出是片子不是图", !!vc.querySelector(".out-thumb .vd-play"));
+    ok("反向对照：不是片子的产出卡还是走文件图标（没有画面可给，别硬塞一个空播放器）",
+      !!bv.querySelector('.out-card[data-name="笔记.md"] .out-thumb .ph') &&
+      !bv.querySelector('.out-card[data-name="笔记.md"] .out-thumb video'),
+      (bv.querySelector('.out-card[data-name="笔记.md"] .out-thumb') || {}).innerHTML);
+
+    // 缩略图读不出来（改名 / 挪走 / 删了 / 这个格式浏览器解不了）要退回文件类型图标，
+    // 不能留一个一个字都不说的空灰方框
+    const bd = fresh();
+    const dead = [F("图.png", 512)];
+    renderTurnOutputs(bd, dead, dead);
+    const dc = bd.querySelector(".out-card");
+    ok("读得出来的时候先摆图", !!dc.querySelector(".out-thumb img"));
+    dc.querySelector(".out-thumb img").onerror();
+    ok("读不出来就退回文件类型图标，不留空灰方框",
+      !!dc.querySelector(".out-thumb .ph") && !dc.querySelector(".out-thumb img"), dc.querySelector(".out-thumb").innerHTML);
+    ok("卡自己也标一下，样式好跟着收一收", dc.classList.contains("thumb-dead"));
+    ok("退回的图标带一句解释（鼠标停住看得到）",
+      (dc.querySelector(".out-thumb .ph").getAttribute("title") || "").length > 0);
+    ok("坏图的图标是淡的，不假装自己还是张图（浏览器算出来的 opacity）",
+      Math.abs(parseFloat(getComputedStyle(dc.querySelector(".out-thumb .ph")).opacity) - 0.55) < 0.01,
+      getComputedStyle(dc.querySelector(".out-thumb .ph")).opacity);
     const tops = [html, png, ppt].map((c) => c.getBoundingClientRect().top), lefts = [html, png, ppt].map((c) => Math.round(c.getBoundingClientRect().left));
     ok("三件产出并列一排（卡区是自适应换行的格，不是一列占满整行；top " + tops.map(Math.round).join("/") + "，容器宽 " + Math.round(b.getBoundingClientRect().width) + "）",
       Math.abs(tops[0] - tops[1]) < 1 && Math.abs(tops[1] - tops[2]) < 1);
@@ -1156,6 +1207,57 @@ const ESC_CHECKS = `
   ta.innerHTML = '<textarea>' + esc('白名单\\n"带引号的路径"') + '</textarea>';
   ok("塞进 <textarea> 的值解得回来（安全中心那几个名单框走的就是这条）",
      ta.querySelector("textarea").value === '白名单\\n"带引号的路径"', ta.querySelector("textarea").value);
+
+  // ⑤ 正文里裸写的网址要能点：href 里装完整地址，屏幕上显示人看得懂的短版
+  //    用户原话：「怎么出现了链接太长，然后要移动才能看到全部的显示情况」
+  const BT = String.fromCharCode(96);
+  md.innerHTML = renderMd("详见 https://ex.com/a/b?x=1&y=2 就这些");
+  const u1 = md.querySelector("a");
+  ok("裸网址自己变成能点的链接", !!u1, md.innerHTML);
+  ok("href 是完整地址，查询串里的 & 没被二次转义成 &amp;amp;",
+     u1.getAttribute("href") === "https://ex.com/a/b?x=1&y=2", u1 && u1.getAttribute("href"));
+  ok("不长的网址原样显示，不多此一举地掐",
+     u1.textContent === "https://ex.com/a/b?x=1&y=2", u1 && u1.textContent);
+  ok("新标签打开且带 noopener", u1.target === "_blank" && u1.rel === "noopener", u1.target + "/" + u1.rel);
+
+  const LONG = "https://ex.com/downloads/RL%E7%8E%AF%E5%A2%83%E5%88%9B%E4%B8%9A%E6%B7%B1%E5%BA%A6%E8%B0%83%E7%A0%94_1.html";
+  md.innerHTML = renderMd("报告在 " + LONG + " 这里");
+  const u2 = md.querySelector("a");
+  ok("长网址的 href 一个字符没少", u2 && u2.getAttribute("href") === LONG, u2 && u2.getAttribute("href"));
+  ok("长网址的 title 也是完整地址（鼠标停住看得到全的）", u2.getAttribute("title") === LONG, u2.getAttribute("title"));
+  ok("百分号转义在屏幕上解回中文", u2.textContent.indexOf("环境创业深度调研") >= 0, u2.textContent);
+  ok("屏幕上那一版比原地址短（这才是不用横向拖的原因）",
+     u2.textContent.length < LONG.length, u2.textContent.length + " vs " + LONG.length);
+
+  const HUGE = "https://ex.com/" + "seg/".repeat(30) + "final-report-page.html";
+  md.innerHTML = renderMd("见 " + HUGE);
+  const u3 = md.querySelector("a");
+  ok("超长网址的 href 仍然完整", u3.getAttribute("href") === HUGE, u3.getAttribute("href").length + "");
+  ok("超长网址显示时掐掉中间，长度收在 68 以内",
+     u3.textContent.indexOf("…") >= 0 && u3.textContent.length <= 68, u3.textContent);
+
+  md.innerHTML = renderMd("见 https://a.com/x. 完");
+  const u4 = md.querySelector("a");
+  ok("句末的英文句号不算进网址，但那个点还留在正文里",
+     u4.getAttribute("href") === "https://a.com/x" && md.textContent.indexOf("x. 完") >= 0,
+     u4.getAttribute("href") + " | " + md.textContent);
+
+  // ⑥ 反向对照：这四种情况**不该**被自动加链接
+  md.innerHTML = renderMd("[这里](https://a.com/x)");
+  ok("markdown 链接还是只出一个 a、文字还是「这里」",
+     md.querySelectorAll("a").length === 1 && md.querySelector("a").textContent === "这里", md.innerHTML);
+  md.innerHTML = renderMd("跑 " + BT + "curl https://a.com/x" + BT + " 就行");
+  ok("行内代码里的网址不变链接（那是给人抄的，不是给人点的）",
+     md.querySelectorAll("a").length === 0 && md.querySelector("code").textContent === "curl https://a.com/x", md.innerHTML);
+  md.innerHTML = renderMd("file:///Users/x/a.html");
+  ok("file:// 不变蓝链（浏览器本来就不让页面跳过去，给个点不开的链接更气人）",
+     md.querySelectorAll("a").length === 0, md.innerHTML);
+  md.innerHTML = renderMd("见 https://a.com/%3Cb%3Ex%3C/b%3E");
+  ok("解码出来的尖括号只是字，没长成标签",
+     md.querySelectorAll("b").length === 0 && md.querySelector("a").textContent.indexOf("<b>x</b>") >= 0, md.innerHTML);
+  ok("解完码也没执行任何注入", !window.__pwned);
+  const already = "<a href=" + String.fromCharCode(34) + "https://a.com" + String.fromCharCode(34) + ">https://a.com</a>";
+  ok("已经成形的 a 标签不会被再套一层", autoLinkUrls(already) === already, autoLinkUrls(already));
   return names;
 })()
 `;
@@ -1882,6 +1984,21 @@ const STREAM_CHECKS = `
   ok("围栏还没闭合时，边写边渲的结果照样跟一次渲染一致", same(el._raw));
   ok("没闭合的围栏整段都在代码块里（没被切成两半）", el.querySelectorAll("pre").length === 1 && el.querySelector("pre").textContent.split("let y").length === 301, el.querySelectorAll("pre").length + " 个 pre");
 
+  // 一条超长地址不该把整块正文顶出横向滚动条。
+  // 用户原话：「怎么出现了链接太长，然后要移动才能看到全部的显示情况」。
+  // word-break: break-word 治不了这个——它不降低 min-content 宽度；只有 overflow-wrap: anywhere 会。
+  ref.style.width = "420px";
+  const CJK_URL = "file:///Users/somebody/Downloads/RL%E7%8E%AF%E5%A2%83%E5%88%9B%E4%B8%9A%E6%B7%B1%E5%BA%A6%E8%B0%83%E7%A0%94_1.html";
+  ref.innerHTML = renderMd("| 文件 | 说明 |\\n| --- | --- |\\n| " + CJK_URL + " | 调研报告 |");
+  const wrap = ref.querySelector(".md-table-wrap");
+  ok("表格里那条超长地址不用横向拖", wrap && wrap.scrollWidth <= wrap.clientWidth + 1,
+     wrap && (wrap.scrollWidth + " > " + wrap.clientWidth));
+  ok("整块正文也没被顶宽", ref.scrollWidth <= ref.clientWidth + 1, ref.scrollWidth + " > " + ref.clientWidth);
+  ref.querySelectorAll("th, td").forEach((c) => { c.style.overflowWrap = "normal"; c.style.wordBreak = "normal"; });
+  ok("反向对照：把 overflow-wrap 关掉，它立刻又顶出去（证明上面两条不是空头支票）",
+     wrap.scrollWidth > wrap.clientWidth + 1, wrap.scrollWidth + " vs " + wrap.clientWidth);
+  ref.style.width = "";
+
   return names;
 })()
 `;
@@ -2171,6 +2288,11 @@ const ONB_STUBS = `
   function stopTask() { STOPPED.push(1); }
   function closeChatSearch() { const cs = document.getElementById("chat-search"); if (cs) cs.style.display = "none"; }
   function toggleAppFullscreen() {} // 表里唯一一个不是箭头函数的值，建表那一刻就要存在
+  // 插图放大后的大图是压在最上面那层，它的真身在 app-02.js 的插图那一段。
+  // 这块切的是 SHORTCUT_ACTIONS 表，给它一个会记账的替身，好验 Esc 的先后顺序：
+  // 大图开着的时候 Esc 该先退大图，不是一路退到把向导也关了
+  let figZoom = null; const FIGCLOSED = [];
+  function closeFigZoom() { FIGCLOSED.push(1); figZoom = null; }
   // 体检表：大脑没接上、搜索没配、图已配、IM 配了 1 个、本机只装了 codex
   let ST = { needs_setup: true, seen: false, can_finish: true, brain: { ok: false, via: "api", name: "", model: "" }, active_model: "DeepSeek", workspace_dir: "/tmp/ws",
     models: [{ name: "DeepSeek", model: "deepseek-chat", base_url: "https://api.deepseek.com/v1", local: false, has_key: false },
@@ -2373,6 +2495,21 @@ const ONB_CHECKS = `
   mm.classList.add("show");
   SHORTCUT_ACTIONS["stop"]();
   ok("反向对照：向导没开着时 Esc 照旧关普通弹层，没被抢走", !mm.classList.contains("show"));
+
+  // 插图点开的大图压在所有层最上面：Esc 得先退它。一路退到底的话，用户想关的是大图，
+  // 结果连正开着的弹层一起关了
+  forget();
+  await openOnboarding(); await tick();
+  figZoom = document.createElement("div");
+  mm.classList.add("show");
+  SHORTCUT_ACTIONS["stop"]();
+  ok("Esc 先退最上面那层大图", FIGCLOSED.length === 1 && figZoom === null);
+  ok("退大图这一下不牵连下面的向导和弹层",
+     mask.classList.contains("show") && mm.classList.contains("show"),
+     mask.className + " | " + mm.className);
+  SHORTCUT_ACTIONS["stop"]();
+  ok("大图退完了，再按一下才轮到向导", !mask.classList.contains("show") && FIGCLOSED.length === 1);
+  mm.classList.remove("show");
 
   return names;
 })().catch((e) => { throw new Error("[向导] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (window.__onbNames || 0)); })
@@ -2964,12 +3101,12 @@ const TRAIL_CHECKS = `
     const setW = (n) => Object.defineProperty(window, "innerWidth", { configurable: true, value: n });
     const reset = (w) => { setW(w); window.PV.length = 0; pvPanel.classList.remove("show"); pvCurrent = null; pvClosedAt = 0; };
     const F = (name) => ({ name, size: 100, mtime: "2026-09-10T08:35:00.000Z" });
-    const OUT = [F("任务_0910/王志远_简历.html"), F("任务_0910/王志远_简历.docx"), F("任务_0910/PROGRESS.md")];
+    const OUT = [F("任务_0910/张三_简历.html"), F("任务_0910/张三_简历.docx"), F("任务_0910/PROGRESS.md")];
     const feed = (u, line, outs) => {
       u.handleEvent({ type: "text", delta: line });
       u.handleEvent({ type: "files", files: outs, changed: outs.map((f) => f.name) });
     };
-    const LINE = "改好了，成品在 任务_0910/王志远_简历.html，Word 版另存了一份。";
+    const LINE = "改好了，成品在 任务_0910/张三_简历.html，Word 版另存了一份。";
 
     reset(1200);
     const uf = createTurnUI("帮我改简历", "craft", "s_t");
@@ -2977,18 +3114,18 @@ const TRAIL_CHECKS = `
     await nap(160); // 等流式那一帧真渲出来，别用"还没渲"糊过这条
     const txt = uf.turn.querySelector(".a-text");
     ok("流着的时候正文已经渲出来了，但一个链接都还没插（边流边插会被下一帧抹掉）",
-      /王志远_简历\.html/.test(txt.textContent) && !txt.querySelector(".file-ln"), txt.textContent.slice(0, 40));
+      /张三_简历\.html/.test(txt.textContent) && !txt.querySelector(".file-ln"), txt.textContent.slice(0, 40));
     uf.finish();
     const lns = [...uf.turn.querySelectorAll(".a-text .file-ln")];
-    ok("收尾后正文里那个文件名成了能点的链接", lns.length === 1 && lns[0].dataset.name === "任务_0910/王志远_简历.html",
+    ok("收尾后正文里那个文件名成了能点的链接", lns.length === 1 && lns[0].dataset.name === "任务_0910/张三_简历.html",
       lns.map((a) => a.textContent).join("|"));
     ok("正文一个字没少（只是把文件名包了起来）", txt.textContent === LINE, txt.textContent);
     const cs = getComputedStyle(lns[0]);
     ok("链接一眼看得出能点：虚下划线 + 手型（真样式，不是类名）",
       cs.textDecorationStyle === "dotted" && cs.cursor === "pointer", cs.textDecorationStyle + "/" + cs.cursor);
-    ok("跑完自动把成品摊开，开的是网页版而不是 PROGRESS.md", window.PV.length === 1 && window.PV[0] === "任务_0910/王志远_简历.html", window.PV.join("|"));
+    ok("跑完自动把成品摊开，开的是网页版而不是 PROGRESS.md", window.PV.length === 1 && window.PV[0] === "任务_0910/张三_简历.html", window.PV.join("|"));
     lns[0].click();
-    ok("点正文里的链接也在右边打开它", window.PV.length === 2 && window.PV[1] === "任务_0910/王志远_简历.html", window.PV.join("|"));
+    ok("点正文里的链接也在右边打开它", window.PV.length === 2 && window.PV[1] === "任务_0910/张三_简历.html", window.PV.join("|"));
 
     // 反向对照一：窗口窄，右边根本没地方摆 → 链接照给，预览不弹
     reset(800);
@@ -3143,7 +3280,7 @@ const PREVIEW_CHECKS = `
       iframe: ["a.html", "a.htm", "报告.pdf", "图.svg"],
       image: ["图.png", "a.JPG", "a.jpeg", "a.webp", "a.ico", "a.avif"],
       audio: ["口播.mp3", "a.wav", "a.m4a", "a.flac", "a.opus"],
-      video: ["成片.mp4", "a.mov", "a.webm", "a.m4v"],
+      video: ["成片.mp4", "a.mov", "a.MOV", "a.webm", "a.m4v", "a.mkv", "a.avi", "a.wmv", "a.flv", "a.mpg", "a.mpeg", "a.3gp"],
       markdown: ["报告.md", "a.markdown"],
       binary: ["a.pcm", "a.o", "a.swiftmodule", "a.dylib", "a.ttf", "a.sqlite3"],
       doc: ["方案.docx"],
@@ -3190,6 +3327,39 @@ const PREVIEW_CHECKS = `
     ok("mp3 出音频播放器", /<audio[^>]+controls/.test(h) && /files\\/view\\/%E5%8F%A3%E6%92%AD\\.mp3/.test(h), h.slice(0, 200));
     const v = await show("成片.mp4");
     ok("mp4 出视频播放器", /<video[^>]+controls/.test(v) && /preload="metadata"/.test(v), v.slice(0, 200));
+
+    // 一条片子该摆在面板正中间，不是顶在天花板上
+    // 用户原话：「图片预览的时候点击的时候应该放在右边中间居中的位置啊，不要放在顶上放啊」
+    ok("视频预览是居中的", body.classList.contains("pv-mid"), body.className);
+    await show("图.png");
+    ok("单张图预览也是居中的", body.classList.contains("pv-mid"), body.className);
+    await show("说明.md", { body: "# 标题", total: 6 });
+    ok("反向对照：markdown 预览不居中（那是整页文字，居中会变成一团浮在中间）",
+       !body.classList.contains("pv-mid"), body.className);
+
+    // 编码解不了的时候必须说人话。以前 <video> 解不了不吭声，只留一个纹丝不动的黑框，
+    // 用户从黑框里只能得出「这软件不支持看视频」
+    await show("iphone录的.mov");
+    const mv = body.querySelector(".pv-media");
+    ok("解码失败前先摆播放器（先给能播的那条路）", !!mv, body.innerHTML.slice(0, 160));
+    mv.onerror();
+    ok("解不了就说一句实话，不是留个黑框", body.textContent.includes("编码浏览器解不了"), body.textContent.slice(0, 120));
+    ok("解不了之后撤掉居中（这会儿是一段文字加按钮，不是一张画面）",
+       !body.classList.contains("pv-mid"), body.className);
+    const n0 = window.opened.length;
+    body.querySelector(".pv-open-sys").click();
+    ok("兜底那颗「用系统默认程序打开」是真能点的（晚绑的按钮最容易变死按钮）",
+       window.opened.length === n0 + 1 && window.opened[window.opened.length - 1] === "iphone录的.mov",
+       JSON.stringify(window.opened.slice(-2)));
+
+    // 迟到的 error：用户点开一个解不了的片子、转头去看别的文件，那个已经被换下来的
+    // <video> 几百毫秒后才把 error 抛出来。它要是照旧重画一遍，用户正看着的那一屏
+    // 就被一句「上一个文件解不了」掀掉了
+    await show("另一个说明.md", { body: "# 另一个文件", total: 12 });
+    const before = body.innerHTML;
+    ok("切走之后屏上是新文件", before.includes("另一个文件"), before.slice(0, 120));
+    mv.onerror();
+    ok("换下来的播放器迟到报错，盖不掉新开的那一屏", body.innerHTML === before, body.innerHTML.slice(0, 140));
   }
 
   // ---- 4. 白名单外的纯文本（这一版之前只能下载）----
@@ -3221,7 +3391,7 @@ const PREVIEW_CHECKS = `
     await new Promise((r) => setTimeout(r, 30));
     ok("兜底按钮真能打开系统程序", window.opened.length === n + 1 && window.opened.at(-1) === "a.pcm", JSON.stringify(window.opened.slice(-2)));
     body.querySelector(".pv-reveal").click();
-    ok("兜底按钮真能定位文件", window.opened.at(-1) === "reveal:a.pcm");
+    ok("兜底按钮真能定位文件", window.opened.at(-1) === "reveal:a.pcm", JSON.stringify(window.opened.slice(-3)));
   }
 
   // ---- 6.5 换成普通成员：这几颗按钮开的是**服务器那台**机器，画出来点了只会 403 ----
@@ -3448,7 +3618,12 @@ const CHECKS = `(() => {
     const r = F.extractSvgFigures('前言\\n<svg viewBox="0 0 100 50"><text x="5" y="20">你好</text></svg>\\n后语');
     ok("完整 SVG 抠成占位符", r.figs.length === 1 && /\\u0000SVG0\\u0000/.test(r.text) && !/<svg/i.test(r.text));
     const d = parse(r.figs[0]);
-    ok("卡片结构齐全", d.querySelector(".svg-fig .svg-body svg") && d.querySelectorAll(".svg-acts button").length === 3);
+    ok("卡片结构齐全（放大看/看源码/存矢量图/存图片/另存为… 五颗）",
+       d.querySelector(".svg-fig .svg-body svg") && d.querySelectorAll(".svg-acts button").length === 5,
+       d.querySelectorAll(".svg-acts button").length + " 颗");
+    ok("图本身也能点开看大图", d.querySelector('.svg-body[data-a="svg-zoom"]'));
+    ok("画完的图不挂任何状态标（既没「绘制中」也没「图没画完」）",
+       !d.querySelector(".svg-acts .growing") && !d.querySelector(".svg-acts .partial"), d.querySelector(".svg-acts").textContent);
     ok("viewBox 图强制自适应宽度", d.querySelector("svg").getAttribute("width") === "100%" && !d.querySelector("svg").getAttribute("height"));
     ok("原文留在 data-src 里", (d.querySelector(".svg-fig").dataset.src || "").includes("<text"));
   }
@@ -3488,12 +3663,27 @@ const CHECKS = `(() => {
   // ---- 4. 流式：半截 SVG 也能渲染，且带"绘制中" ----
   {
     const partial = '开头\\n<svg viewBox="0 0 100 50"><text x="5" y="20">半截</text><rect wid';
-    const r = F.extractSvgFigures(partial);
+    const r = F.extractSvgFigures(partial, true);
     ok("半截 SVG 也出图", r.figs.length === 1);
     const d = parse(r.figs[0]);
-    ok("半截图标出绘制中", !!d.querySelector(".svg-acts .growing"));
+    ok("正在流式吐的时候才标「绘制中」", !!d.querySelector(".svg-acts .growing"), d.querySelector(".svg-acts").textContent);
     ok("半截图内容已渲染", d.querySelector("svg text") && d.querySelector("svg text").textContent === "半截");
     ok("吐到一半的标签被丢掉", !d.querySelector("svg rect"));
+
+    // 用户原话：「怎么一直在绘制中，对话都结束了，这是卡住了啊」。
+    // 根因是把"标签没闭合"当成了"还在写"。停笔之后这两件事必须分开说。
+    const d2 = parse(F.extractSvgFigures(partial, false).figs[0]);
+    ok("停笔之后不再说「绘制中」", !d2.querySelector(".svg-acts .growing"), d2.querySelector(".svg-acts").textContent);
+    ok("停笔之后改说一句实话：图没画完",
+       d2.querySelector(".svg-acts .partial") && d2.querySelector(".svg-acts .partial").textContent === "图没画完",
+       d2.querySelector(".svg-acts").textContent);
+    ok("这句实话有 title 解释为什么", (d2.querySelector(".svg-acts .partial").getAttribute("title") || "").length > 0);
+    ok("不传 live 等同于停笔（sealStream 那条路）", !parse(F.extractSvgFigures(partial).figs[0]).querySelector(".growing"));
+    // 闭合标签写成 </svg > 带个空格，以前正则认不出来，于是一张画完的图永远挂着"绘制中"
+    const spaced = '<svg viewBox="0 0 100 50"><text x="5" y="20">写完了</text></svg >';
+    const d3 = parse(F.extractSvgFigures(spaced, true).figs[0]);
+    ok("</svg > 带空格也算画完，两种状态标都不挂",
+       !d3.querySelector(".growing") && !d3.querySelector(".partial"), d3.querySelector(".svg-acts").textContent);
   }
 
   // ---- 5. 逐字流式：每一帧都不能崩，且帧数越多内容越全 ----
@@ -3861,34 +4051,64 @@ const ARRIVAL_CHECKS = `
 
   // ---------- 正文里提到的文件名 → 可点开的链接 ----------
   // 用户原话：「有些这些文件你就给我搞成超连接的形式啊」
-  const OUTS = [F("任务_0910/王志远_简历.html"), F("任务_0910/王志远_简历.docx"), F("任务_0910/PROGRESS.md"), F("王志远_简历.html")];
+  const OUTS = [F("任务_0910/张三_简历.html"), F("任务_0910/张三_简历.docx"), F("任务_0910/PROGRESS.md"), F("张三_简历.html")];
   const targets = fileLinkTargets(OUTS);
-  ok("裸文件名指向路径最浅的那份（同一件产出常被拷两份）", targets.get("王志远_简历.html") === "王志远_简历.html");
-  ok("全路径本身也认", targets.get("任务_0910/王志远_简历.docx") === "任务_0910/王志远_简历.docx");
+  ok("裸文件名指向路径最浅的那份（同一件产出常被拷两份）", targets.get("张三_简历.html") === "张三_简历.html");
+  ok("全路径本身也认", targets.get("任务_0910/张三_简历.docx") === "任务_0910/张三_简历.docx");
   const host = document.createElement("div");
   host.className = "a-text";
-  host.innerHTML = "<p>简历已经写好了，在 王志远_简历.html 里，Word 版是 任务_0910/王志远_简历.docx。</p>"
-    + "<pre><code>cp 王志远_简历.html /tmp/</code></pre>"
+  host.innerHTML = "<p>简历已经写好了，在 张三_简历.html 里，Word 版是 任务_0910/张三_简历.docx。</p>"
+    + "<pre><code>cp 张三_简历.html /tmp/</code></pre>"
     + "<p>进度记在 PROGRESS.md，另外 别的.html 和 data.md 不是这趟的产出。</p>"
-    + "<p>生成了王志远_简历.html供你查看</p>";
+    + "<p>生成了张三_简历.html供你查看</p>";
   document.body.appendChild(host);
   const hits = linkifyOutputs(host, targets);
   const lns = [...host.querySelectorAll(".file-ln")];
   ok("正文里的文件名都变成了链接（" + hits + " 处）", hits === 4 && lns.length === 4);
-  ok("裸文件名链到完整相对路径", lns[0].textContent === "王志远_简历.html" && lns[0].dataset.name === "王志远_简历.html");
-  ok("全路径原样链", lns[1].textContent === "任务_0910/王志远_简历.docx" && lns[1].dataset.name === "任务_0910/王志远_简历.docx");
+  ok("裸文件名链到完整相对路径", lns[0].textContent === "张三_简历.html" && lns[0].dataset.name === "张三_简历.html");
+  ok("全路径原样链", lns[1].textContent === "任务_0910/张三_简历.docx" && lns[1].dataset.name === "任务_0910/张三_简历.docx");
   ok("PROGRESS.md 也能点（它也是这趟写出来的）", lns[2].dataset.name === "任务_0910/PROGRESS.md");
-  ok("中文紧挨着照样认（「生成了简历.html供你查看」）", lns[3].dataset.name === "王志远_简历.html");
-  ok("代码块里的路径不动（那是代码不是链接）", host.querySelector("pre code").querySelector(".file-ln") === null && host.querySelector("pre code").textContent === "cp 王志远_简历.html /tmp/");
+  ok("中文紧挨着照样认（「生成了简历.html供你查看」）", lns[3].dataset.name === "张三_简历.html");
+  ok("代码块里的路径不动（那是代码不是链接）", host.querySelector("pre code").querySelector(".file-ln") === null && host.querySelector("pre code").textContent === "cp 张三_简历.html /tmp/");
   const para2 = host.querySelectorAll("p")[1].textContent; // 中间那段（<pre> 不算 <p>）
   ok("没产出过的名字不链（猜出来的链接点开是 404）", para2.includes("别的.html") && !([...host.querySelectorAll(".file-ln")].some((a) => a.textContent === "别的.html")));
   ok("不是子串就不算命中（data.md 里没有 a.md 这回事）", ![...host.querySelectorAll(".file-ln")].some((a) => a.textContent === "data.md"));
   CALLS.pv.length = 0;
   lns[0].click();
-  ok("点一下就在右边打开这个文件", CALLS.pv.length === 1 && CALLS.pv[0] === "王志远_简历.html");
+  ok("点一下就在右边打开这个文件", CALLS.pv.length === 1 && CALLS.pv[0] === "张三_简历.html");
   ok("再跑一遍不会套娃（链接里的字不再二次链接）", linkifyOutputs(host, targets) === 0 && host.querySelectorAll(".file-ln").length === 4);
   ok("这趟没产出过任何文件时什么都不做", linkifyOutputs(host, fileLinkTargets([])) === 0);
   host.remove();
+
+  // 收尾清单里的文件名十有八九被模型套了反引号，全路径和 file:// 也是常客。
+  // 这三种写法以前一条链接都没有，用户看到的是一份「不能点的清单」——
+  // 原话：「怎么有些文件没有链接啊，应该写着产出的这些文件应该要都有链接啊」
+  const host2 = document.createElement("div");
+  host2.className = "a-text";
+  host2.innerHTML = "<p>交付清单：<code>任务_0910/张三_简历.docx</code></p>"
+    + "<p>网页版是 <code>张三_简历.html</code></p>"
+    + "<p>完整路径 /Users/somebody/ws/任务_0910/张三_简历.docx 也该能点</p>"
+    + "<p>浏览器地址 file:///Users/somebody/ws/张三_简历.html 同理</p>"
+    + "<pre><code>open 任务_0910/张三_简历.docx</code></pre>";
+  document.body.appendChild(host2);
+  const hits2 = linkifyOutputs(host2, targets);
+  const lns2 = [...host2.querySelectorAll(".file-ln")];
+  ok("反引号/全路径/file:// 三种写法都给链接（" + hits2 + " 处）", hits2 === 4 && lns2.length === 4,
+     lns2.map((a) => a.textContent).join(" | "));
+  ok("行内反引号里的文件名认得出来（收尾清单十有八九长这样）",
+     lns2[0].dataset.name === "任务_0910/张三_简历.docx" && lns2[1].dataset.name === "张三_简历.html",
+     lns2[0].dataset.name + " | " + lns2[1].dataset.name);
+  ok("裸的全路径整串都是链接，不是只挑尾巴那一截",
+     lns2[2].textContent === "/Users/somebody/ws/任务_0910/张三_简历.docx" && lns2[2].dataset.name === "任务_0910/张三_简历.docx",
+     lns2[2].textContent);
+  ok("file:// 开头的也算一条（模型爱把本地地址写成这样）",
+     lns2[3].textContent === "file:///Users/somebody/ws/张三_简历.html" && lns2[3].dataset.name === "张三_简历.html",
+     lns2[3].textContent);
+  ok("反向对照：代码块（<pre>）里那条还是一个字都不动",
+     host2.querySelector("pre code").querySelector(".file-ln") === null &&
+     host2.querySelector("pre code").textContent === "open 任务_0910/张三_简历.docx",
+     host2.querySelector("pre code").innerHTML);
+  host2.remove();
 
   // ---------- 跑完了要能看见成果 ----------
   // 用户原话：「有产出了应该要预览啊」「不仅结束了没有预览」——中途不弹是另一码事，这里说的是收尾

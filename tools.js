@@ -453,10 +453,28 @@ const TOOL_DEFS = [
 
 // ---------- 图像 / 视频 生成（渠道协议：OpenAI 兼容 images API、DashScope 原生、火山方舟异步任务） ----------
 
+/**
+ * 同一类产出里「也认」的后缀。
+ *
+ * 以前只认默认那一个：模型要 fig_a.jpg，落盘成了 fig_a.jpg.png——
+ * 接着它按自己要的名字写 <img src="fig_a.jpg">，一整页图全是裂的。
+ * 用户原话：「怎么有些图都不渲染啊？」。七张图里它自己手工补救了一张，剩下六张就那么裂着。
+ *
+ * 所以同类后缀一律照模型要的来。PNG 的字节叫 .jpg 没关系——<img> 是嗅探内容解码的，
+ * 照样渲染得出来；**名字对不上**才是真的打不开。跨类的（要 .jpg 却给 .txt）还是照旧补后缀。
+ */
+const OUT_EXT_ALIAS = {
+  ".png": [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"],
+  ".mp4": [".mp4", ".mov", ".webm", ".m4v"],
+  ".mp3": [".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".wav"],
+  ".wav": [".wav", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac"],
+};
 function safeOutName(name, ext, stem) {
   let n = String(name || "").trim().replace(/[\/\\:*?"<>|]/g, "_").slice(0, 80);
   if (!n) n = `${stem}_${Date.now()}${ext}`;
-  if (!n.toLowerCase().endsWith(ext)) n += ext;
+  const ok = OUT_EXT_ALIAS[ext] || [ext];
+  const low = n.toLowerCase();
+  if (!ok.some((e) => low.endsWith(e))) n += ext;
   return n;
 }
 
@@ -2767,4 +2785,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };

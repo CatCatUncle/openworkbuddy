@@ -4974,6 +4974,7 @@ async function main() {
   testSessionCacheReload();
   testWindowsLaunch();
   testSkillRenameKeepsAssets();
+  testOutNameKeepsExt();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -8218,6 +8219,42 @@ exit 1
  * 真读真写磁盘：另起一个进程把 OPENWORKBUDDY_HOME 指到临时目录（skills.js 的 SKILLS_DIR 是
  * require 时定死的，同进程里改不动），这样一个字节都不碰仓库里真正的 skills/。
  */
+/**
+ * 生图/生视频存盘时别在好好的后缀后面再接一个。
+ *
+ * 真实事故：模型给图起名 yhfig_erhai.jpg，存盘时按 ".png" 兜底，落到磁盘上就成了
+ * yhfig_erhai.jpg.png。正文里写的还是 yhfig_erhai.jpg —— 名字对不上，那张图在对话里
+ * 就是一个裂开的图框。用户原话：「怎么有些图都不渲染啊？」
+ *
+ * 判据是「同一类东西的后缀就算数」，不是「必须是我指定的那一个」。
+ */
+function testOutNameKeepsExt() {
+  const { safeOutName } = require("../tools")._internals;
+  const eq = (got, want, why) => assert.strictEqual(got, want, why);
+
+  // 同一族：图就是图，别再接一个
+  eq(safeOutName("yhfig_erhai.jpg", ".png", "image"), "yhfig_erhai.jpg", "jpg 被硬接成 .png（对话里那张图就裂了）");
+  eq(safeOutName("封面.JPEG", ".png", "image"), "封面.JPEG", "大写后缀没认出来");
+  eq(safeOutName("图.webp", ".png", "image"), "图.webp", "webp 也是图");
+  eq(safeOutName("成片.mov", ".mp4", "video"), "成片.mov", "mov 也是片子");
+  eq(safeOutName("口播.m4a", ".mp3", "audio"), "口播.m4a", "m4a 也是音频");
+
+  // 反向对照：跨族的该补就补，别把这条修成「一律不补后缀」
+  eq(safeOutName("a.txt", ".png", "image"), "a.txt.png", "跨族没补后缀——那存出来的是个打不开的文件");
+  eq(safeOutName("报告", ".png", "image"), "报告.png", "没后缀的没补");
+  eq(safeOutName("成片.mp3", ".mp4", "video"), "成片.mp3.mp4", "音频名拿去存视频，该补");
+
+  // 文件名里的路径分隔符和非法字符照旧要洗掉（别为了保后缀把这条放了）
+  assert.ok(!safeOutName("a/b/c.png", ".png", "image").includes("/"), "路径分隔符没洗掉");
+  eq(safeOutName('问?号.png', ".png", "image"), "问_号.png", "非法字符没洗掉");
+
+  // 空名兜底：给得出一个带正确后缀的名字，不是一个光秃秃的后缀
+  const auto = safeOutName("   ", ".png", "image");
+  assert.ok(auto.startsWith("image_") && auto.endsWith(".png"), "空名兜底不对：" + auto);
+
+  console.log("✅ 存盘文件名：本来就是图/片子/音频的后缀不再被接第二个（yhfig_erhai.jpg.png 那类裂图）· 跨族照补 · 非法字符照洗");
+}
+
 function testSkillRenameKeepsAssets() {
   const os = require("os");
   const { spawnSync } = require("child_process");

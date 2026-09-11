@@ -188,7 +188,7 @@
   .mention-menu .mh { font-size: 12px; color: var(--wb-text-3); padding: 4px 12px; }
   .turn { margin-bottom: 22px; }
   .u-msg { display: flex; justify-content: flex-end; }
-  .u-msg .bubble { max-width: 78%; background: var(--wb-brand); color: #fff; border-radius: 14px 14px 3px 14px; padding: 10px 15px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+  .u-msg .bubble { max-width: 78%; background: var(--wb-brand); color: #fff; border-radius: 14px 14px 3px 14px; padding: 10px 15px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
   .u-msg .bubble .bubble-attach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .u-msg .bubble .bubble-attach span { font-size: 12px; background: rgba(255,255,255,.18); border-radius: 7px; padding: 2px 8px; white-space: nowrap; }
   .a-msg { display: flex; gap: 10px; margin-top: 16px; }
@@ -212,7 +212,7 @@
   .ab-ava.emo { background: none !important; }
   .ava-pick { cursor: pointer; font-size: 17px; line-height: 1; padding: 4px 5px; border-radius: 7px; border: 1px solid transparent; }
   .ava-pick:hover { background: var(--wb-bg-hover); border-color: var(--wb-border); }
-  .a-text { line-height: 1.7; word-break: break-word; margin: 3px 0 6px; }
+  .a-text { line-height: 1.7; word-break: break-word; overflow-wrap: anywhere; margin: 3px 0 6px; }
   .a-text p { margin: 6px 0; }
   /* 流式期间正文被拆成「已定稿 / 正在写」两截（app-01.js paintStream）：display:contents
      让这两个壳子不生成盒子，排版和「一次渲染完」完全一样，.a-text p 这类选择器也照样命中 */
@@ -242,7 +242,27 @@
   .svg-fig .svg-acts .growing { margin-right: auto; font-size: 12px; color: var(--wb-text-3); }
   .svg-fig .svg-acts .growing::after { content: "▍"; animation: svgblink 1s steps(2) infinite; }
   @keyframes svgblink { 50% { opacity: 0; } }
+  /* 停笔之后的「没画完」：一句实话，不闪、不转、不装作还在动 */
+  .svg-fig .svg-acts .partial { margin-right: auto; font-size: 12px; color: var(--wb-text-3); cursor: help; }
   .svg-fig .svg-raw { margin: 0; border-top: 1px solid var(--wb-border); border-radius: 0; max-height: 300px; font-size: 13px; }
+  /* 「放大看」：图铺满屏，滚轮缩放、按住拖动、Esc 退出。
+     对话列里图被挤成窄窄一条，坐标轴和小字根本看不清，总不能让人把窗口拉宽再拉回来。 */
+  .fig-zoom { position: fixed; inset: 0; z-index: 900; display: flex; flex-direction: column;
+    background: rgba(16,18,24,.86); backdrop-filter: blur(3px); animation: figfade .14s ease-out; }
+  @keyframes figfade { from { opacity: 0; } }
+  .fig-zoom .fz-bar { flex: none; display: flex; align-items: center; gap: 8px; justify-content: flex-end;
+    padding: 10px 14px; color: #e8eaf2; }
+  .fig-zoom .fz-tip { margin-right: auto; font-size: 13px; color: #a8adbd; }
+  .fig-zoom .fz-pct { font-size: 13px; min-width: 46px; text-align: center; color: #c9cddb;
+    font-variant-numeric: tabular-nums; }
+  .fig-zoom .fz-bar button { font-size: 13px; line-height: 1; color: #e8eaf2; background: rgba(255,255,255,.08);
+    border: 1px solid rgba(255,255,255,.16); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+  .fig-zoom .fz-bar button:hover { background: rgba(255,255,255,.18); }
+  .fig-zoom .fz-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+    overflow: hidden; padding: 0 16px 16px; cursor: grab; touch-action: none; }
+  .fig-zoom .fz-stage.dragging { cursor: grabbing; }
+  .fig-zoom .fz-inner { background: #fff; border-radius: 10px; padding: 12px; transform-origin: center center; }
+  .fig-zoom .fz-inner svg { display: block; width: 100%; height: 100%; }
   /* ---------- 来源 ---------- */
   .src-block { margin: 12px 0 4px; border-top: 1px solid var(--wb-border); padding-top: 8px; }
   .src-hd { font-size: 13px; color: var(--wb-text-2); margin-bottom: 6px; cursor: pointer; user-select: none; }
@@ -263,13 +283,13 @@
   .code-wrap pre { margin: 0; border-radius: 0; }
   .md-table-wrap { overflow-x: auto; margin: 8px 0; }
   .a-text table { border-collapse: collapse; font-size: 14px; min-width: 60%; }
-  .a-text th, .a-text td { border: 1px solid var(--wb-border); padding: 5px 10px; text-align: left; }
+  .a-text th, .a-text td { border: 1px solid var(--wb-border); padding: 5px 10px; text-align: left; overflow-wrap: anywhere; }
   .a-text th { background: var(--wb-bg-hover); font-weight: 600; }
   .a-text hr { border: none; border-top: 1px solid var(--wb-border); margin: 10px 0; }
-  .a-text a { color: var(--wb-brand-text); }
+  .a-text a { color: var(--wb-brand-text); overflow-wrap: anywhere; }
   /* 正文里提到的产出文件名：点一下就在右边打开。做成"带下划虚线的实体"而不是普通蓝链，
      免得跟正文里的外部网址混淆——一个跳出去，一个在应用里打开 */
-  .a-text .file-ln { color: var(--wb-brand-text); cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; border-radius: 4px; padding: 0 2px; }
+  .a-text .file-ln { color: var(--wb-brand-text); cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; border-radius: 4px; padding: 0 2px; overflow-wrap: anywhere; }
   .a-text .file-ln:hover { background: var(--wb-brand-weak); text-decoration-style: solid; }
   .a-text .file-ln:focus-visible { outline: 2px solid var(--wb-brand-text); outline-offset: 1px; }
   .step-card { border: 1px solid var(--wb-border); border-radius: 10px; margin: 8px 0; overflow: hidden; background: #fbfcfe; }
@@ -368,9 +388,17 @@
      以前是 240px 大卡内嵌 iframe 缩略图：一回合出三个网页就在对话里跑三个小浏览器，又慢又挡正文 */
   .out-card { position: relative; display: flex; flex-direction: column; width: 168px; padding: 0; overflow: hidden; border: 1px solid var(--wb-border); border-radius: 12px; background: var(--wb-bg); cursor: pointer; box-sizing: border-box; transition: border-color var(--wb-t-fast) var(--wb-ease), background var(--wb-t-fast) var(--wb-ease); }
   .out-card:hover, .out-card:focus-visible { border-color: var(--wb-brand-text); background: var(--wb-brand-weak); outline: none; }
-  .out-thumb { width: 100%; height: 92px; flex: none; background: var(--wb-bg-side); border-bottom: 1px solid var(--wb-border); display: flex; align-items: center; justify-content: center; overflow: hidden; }
-  .out-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .out-thumb { position: relative; width: 100%; height: 92px; flex: none; background: var(--wb-bg-side); border-bottom: 1px solid var(--wb-border); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .out-thumb img, .out-thumb video { width: 100%; height: 100%; object-fit: cover; }
+  .out-thumb video { background: #000; }
+  /* 视频缩略图上那枚播放标：纯 CSS 一个圆加一个三角，不占图标也不用 emoji */
+  .out-thumb .vd-play { position: absolute; width: 28px; height: 28px; border-radius: 50%; background: rgba(0, 0, 0, .52); box-shadow: 0 0 0 1px rgba(255, 255, 255, .35); pointer-events: none; }
+  .out-thumb .vd-play::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-40%, -50%); border-style: solid; border-width: 5px 0 5px 8px; border-color: transparent transparent transparent #fff; }
+  .out-card.thumb-dead .vd-play { display: none; }
   .out-thumb .ph { font-size: 30px; line-height: 1; }
+  /* 缩略图读不出来时退回的那张卡：图标淡一点，别假装自己是张图 */
+  .out-card.thumb-dead .out-thumb { background: var(--wb-bg-hover); }
+  .out-card.thumb-dead .ph { opacity: .55; }
   .out-info { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 0; padding: 7px 9px 0; }
   .out-name { font-size: 13px; font-weight: 500; color: var(--wb-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   /* 两件产出重名时才会出现的目录前缀：压暗，别抢文件名 */
@@ -508,8 +536,11 @@
   #pv-body { flex: 1; min-height: 0; overflow: auto; }
   #pv-body iframe { width: 100%; height: 100%; border: none; background: #fff; }
   #pv-body img { max-width: 100%; display: block; margin: 20px auto; }
+  /* 单张图 / 一条片子的预览：横竖都居中，别顶在天花板上 */
+  #pv-body.pv-mid { display: flex; align-items: center; justify-content: center; padding: 20px; }
+  #pv-body.pv-mid img, #pv-body.pv-mid video.pv-media { margin: 0; max-height: 100%; object-fit: contain; }
   #pv-body audio.pv-media { display: block; width: calc(100% - 40px); margin: 28px auto; }
-  #pv-body video.pv-media { display: block; width: 100%; max-height: 100%; background: #000; }
+  #pv-body video.pv-media { display: block; width: 100%; height: auto; max-height: 100%; object-fit: contain; background: #000; border-radius: 8px; }
   #pv-body .pv-text { padding: 16px 20px; font-size: 14px; line-height: 1.7; }
   #pv-body .pv-text button { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 7px; padding: 4px 12px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
   #pv-body .pv-text button:hover { border-color: var(--wb-brand-text); color: var(--wb-text); }
