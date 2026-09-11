@@ -236,6 +236,7 @@ wb engines && wb engines use claude-code   # 本机装了 Claude Code / Codex？
 | [安全](docs/安全.md) | 审批闸门、黑白名单、审计 |
 | [部署](docs/部署.md) | 服务器 / Docker / 反代 |
 | [实现细节](docs/实现细节.md) | agent 主循环怎么转的 |
+| [路线图](docs/路线图.md) | 接下来做什么：手机远程、短剧画布 |
 | [参与贡献](CONTRIBUTING.md) | 项目结构、测试、提 PR |
 
 ## 协议
