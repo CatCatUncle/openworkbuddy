@@ -10,6 +10,7 @@ const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了�
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
 const prefs = require("./prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
+const lanes = require("./lanes"); // 两条工作线：命令行模式交给本机 CLI，办公模式走内置循环
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -1176,7 +1177,7 @@ function modePrompt(mode) {
    * @param emit    事件回调（SSE / IM 进度）
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, lang }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, lane, lang }) {
     // ── 底层引擎分岔 ──────────────────────────────────────────────────────
     // 用户在设置里选了「本机 Claude Code / 本机 Codex」时，这一整趟任务交给那个 CLI 跑，
     // 本项目只负责翻译事件、算文件差异、记账。为什么是整层替换而不是换个模型：
@@ -1187,7 +1188,9 @@ function modePrompt(mode) {
       // agentView 而不是 config：底层引擎和它的模型/思考档是**按账号**存的（prefs.js）。
       // 直接读 config 的话，服务器上两个人各自选的引擎会互相覆盖——界面显示 Codex，实际跑的是别人选的那个。
       // 没有请求上下文（定时任务 / IM / 命令行）时 agentView 原样返回 config，行为一字不差。
-      const picked = engines.resolve(prefs.agentView(config)); // 引擎名写错会在这里抛错，不会静默退回内置
+      // lanes.viewFor：办公模式钉死内置循环，命令行模式换成用户挑的那个本机 CLI。
+      // 没传 lane（定时任务 / IM / 老前端）时它原样返回同一个对象，走的还是今天这条路。
+      const picked = engines.resolve(lanes.viewFor(lane, prefs.agentView(config))); // 引擎名写错会在这里抛错，不会静默退回内置
       if (picked.backend) {
         return await runViaEngine({
           backend: picked.backend, opts: picked.opts,

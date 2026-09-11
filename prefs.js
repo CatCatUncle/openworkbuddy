@@ -12,7 +12,7 @@
  *   影响整台服务器（留给平台管理员）：API Key 与模型清单、MCP、插件、安全档位与 shell/联网策略、
  *     全局工作目录、备份、IM 机器人凭证、自进化/评测、席位与组织、agent 的步数与超时上限、
  *     助理形象与人设、引擎的可执行文件路径。这些一个人改，所有人的账单、权限、身份跟着变。
- *   只影响他自己（落在这儿，一人一份）：底层引擎、思考档位、上次选的模型与「新对话沿用它」、
+ *   只影响他自己（落在这儿，一人一份）：底层引擎、命令行模式用哪个 CLI、思考档位、上次选的模型与「新对话沿用它」、
  *     桌面宠物的那些开关、全局快捷键。
  *
  * 存成一人一个 JSON（data/prefs/<账号>.json）而不是塞进 users.json：偏好会被高频写
@@ -124,7 +124,7 @@ function isPersonalPatch(body) {
       const a = body.agent;
       if (!a || typeof a !== "object") return false;
       for (const ak of Object.keys(a)) {
-        if (ak === "engine" || ak === "thinking") continue;
+        if (ak === "engine" || ak === "thinking" || ak === "cli_engine") continue;
         if (ak === "engine_options") {
           const eo = a.engine_options;
           if (!eo || typeof eo !== "object") return false;
@@ -156,7 +156,7 @@ function split(body) {
       const pa = {};
       const ra = {};
       for (const [ak, av] of Object.entries(v)) {
-        if (ak === "engine" || ak === "thinking") { pa[ak] = av; continue; }
+        if (ak === "engine" || ak === "thinking" || ak === "cli_engine") { pa[ak] = av; continue; }
         if (ak === "engine_options" && av && typeof av === "object") {
           const peo = {};
           const reo = {};
@@ -196,6 +196,7 @@ function agentCfg(config) {
   if (!a) return base;
   const out = { ...base };
   if (a.engine !== undefined) out.engine = a.engine;
+  if (a.cli_engine !== undefined) out.cli_engine = a.cli_engine;
   if (a.thinking !== undefined) out.thinking = a.thinking;
   if (a.engine_options) {
     out.engine_options = { ...(base.engine_options || {}) };

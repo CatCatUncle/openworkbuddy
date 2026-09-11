@@ -29,6 +29,7 @@ const account = require("./account");
 const org = require("./org"); // 组织（租户）层：席位、部门、邀请码、审计
 const admin = require("./admin"); // 企业管理后台的接口层 /api/admin/*
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
+const lanes = require("./lanes"); // 两条工作线：命令行模式（本机 CLI）/ 办公模式（内置循环）
 const thinking = require("./thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./security");
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠道表 + 每路多模型
@@ -336,6 +337,10 @@ function sessionRow(id, s) {
     project: s.project || "",
     at: Date.parse(s.updated_at || "") || 0,
     turns: s.transcript.length,
+    // 侧栏按标签分栏。这儿只如实报「这条会话当初记的是哪条线」，没记过就不报——
+    // 老会话该归到哪条线要看**读它的这个人**现在配的是什么引擎，那是前端拿 /api/lanes 算的事；
+    // 在这儿按服务器配置替他填死，多用户下就会把别人的引擎口径安到他头上。
+    lane: lanes.normalize(s.lane) || undefined,
   };
 }
 /**
@@ -1479,6 +1484,45 @@ app.get("/api/engines", async (req, res) => {
     const myAgent = prefs.agentCfg(config); // 「当前用的是哪个引擎」是按账号的，别把别人选的报给他
     const found = await engines.detectAll(myAgent.engine_options || {}, { force: req.query.force === "1" });
     res.json({ current: myAgent.engine || "builtin", builtin: engines.BUILTIN, engines: found });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 两条工作线：顶上那两个标签各自会把活儿交给谁。
+ *
+ * 前端不许自己推这件事。「命令行模式用哪个 CLI」是个人偏好、是否装过要现探、
+ * 探不到还得给出装它的那句命令——三件事都只有服务端知道。写死在前端的下场是
+ * 标签上写着「Claude Code」，点下去报一句「找不到 claude」，用户以为是本项目坏了。
+ *
+ * ready=false 不拦任何东西：照样能点，点了在引擎那层当场报错说清楚缺什么。
+ * 红线还是那条——绝不因为「没装」就偷偷退回内置引擎拿 API Key 去跑。
+ */
+app.get("/api/lanes", async (req, res) => {
+  try {
+    const myAgent = prefs.agentCfg(config);
+    let found = [];
+    try { found = await engines.detectAll(myAgent.engine_options || {}); } catch {}
+    const rows = lanes.LANES.map((l) => {
+      const engine = lanes.engineIdFor(l.id, myAgent);
+      const det = found.find((e) => e.id === engine) || null;
+      return {
+        id: l.id, name: l.name, short: l.short, hint: l.hint, detail: l.detail,
+        engine,
+        engineLabel: engine === "builtin" ? engines.BUILTIN.label : (det ? det.label : engine),
+        ready: engine === "builtin" ? true : !!(det && det.installed),
+        why: engine === "builtin" ? "" : (det ? (det.error || (det.installed ? "" : `本机没找到 ${engine}`)) : `没有「${engine}」这个引擎`),
+        install: engine === "builtin" ? "" : (det ? det.install || "" : ""),
+      };
+    });
+    res.json({
+      lanes: rows,
+      current: lanes.defaultLane(myAgent),
+      // 命令行模式可以挑哪几个 CLI，以及他现在挑的是哪个（空 = 跟着设置页那个引擎走）
+      cliChoices: found.map((e) => ({ id: e.id, label: e.label, installed: !!e.installed })),
+      cliEngine: String(myAgent.cli_engine || ""),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3291,7 +3335,7 @@ app.post("/api/files/open/*", (req, res) => {
 });
 
 app.post("/api/chat", async (req, res) => {
-  const { sessionId, message, mode, regen, lang } = req.body || {};
+  const { sessionId, message, mode, regen, lang, lane } = req.body || {};
   if (!sessionId || !message) return res.status(400).json({ error: "缺少 sessionId 或 message" });
   const user = req.user; // authGuard 已挂上
   // 积分闸门默认是关的（本地个人用不该被自己的账本拦），开了才查余额
@@ -3326,6 +3370,11 @@ app.post("/api/chat", async (req, res) => {
   // 任务属于哪个项目，以前只记在浏览器里。第一轮就在服务端定死，缓存清了也还分得清组。
   // 只有拥有全局工作目录的人才有「项目」这个概念，租户端记了反而是假信息。
   if (!sess.project && ownsGlobalWorkspace(user)) sess.project = config.active_project || "";
+  // 这一轮走哪条工作线。前端每次都把当前标签带上来，所以用户把一条对话从一个标签拖到另一个
+  // 标签底下是允许的（共用同一份文件和历史，本来就是一回事）；没带就按会话上记过的、再按配置回落。
+  sess.lane = lanes.normalize(lane) || lanes.laneOf(sess, prefs.agentCfg(config));
+  const laneId = sess.lane;
+  const laneEngine = lanes.engineIdFor(laneId, prefs.agentCfg(config)); // 只用来对齐续跑 id 的归属，装没装由引擎那层判
   const sessLLM = llmForSession(sess); // 本对话生效的模型（含专家子代理、标题、记账）
   if (regen) {
     // 重新生成：回滚掉最后一轮（用户消息及其后的所有内容），下面会把同一条消息重新入队
@@ -3425,7 +3474,8 @@ app.post("/api/chat", async (req, res) => {
           stopSignal: runState.ctrl.signal,
           // 底层 CLI 引擎自己的会话 id：存在本项目的会话文件里，桌面端和 wb 命令行
           // 打开同一个会话时接着同一根线程跑，不用把历史再贴一遍
-          engineSession: sess.engine_session || null,
+          lane: laneId,
+          engineSession: lanes.engineSessionFor(sess, laneEngine),
           getInterject: () => runState.interject.splice(0),
           // ask_user 工具的等待端：回答从 /api/chat/answer 进来；超时或用户点停止都放行 null
           askUser: ({ askId, timeoutMs }) => new Promise((resolve) => {
@@ -3443,7 +3493,7 @@ app.post("/api/chat", async (req, res) => {
         });
         addUsage(total, r && r.usage);
         if (r && r.provider) ranLLM = { model: r.model || r.provider, provider: r.provider };
-        if (r && r.sessionId) { sess.engine_session = r.sessionId; sess.engine = r.engine || ""; }
+        if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || laneEngine, r.sessionId);
         if (r && r.finalText) lastFinal = r.finalText;
         if (r && r.stopped) roundStopped = r.stopped;
         const leftover = runState.interject.splice(0);

@@ -4909,6 +4909,7 @@ async function main() {
   await testNodeSuite("tenant.js", "多租户与企业后台越权");
   await testNodeSuite("prefs.js", "个人偏好与平台设置分界");
   await testNodeSuite("media-models.js", "多模型配置（渠道表 / 点名 / 不静默降级）");
+  await testNodeSuite("lanes.js", "两条工作线（命令行模式 / 办公模式）");
   await testDockerDeploy();
   await testFetchUrlShapes();
   await testParallelToolBatch();
@@ -6590,7 +6591,7 @@ function testI18n() {
   assert(html.indexOf('src="js/i18n.js"') > 0 && html.indexOf('src="js/i18n.js"') < html.indexOf('src="js/app-00-ui.js"'), "i18n.js 必须在 app-00-ui.js 之前加载");
   assert(/class="bubble" translate="no"/.test(a01) && /currentText\.setAttribute\("translate", "no"\)/.test(a01), "用户气泡 / AI 正文没标 translate=no（内容区会被当界面翻掉）");
   assert(/lang: typeof I18N !== "undefined" \? I18N\.getLang\(\) : "zh"/.test(a02), "聊天请求体没带 lang");
-  assert(/const \{ sessionId, message, mode, regen, lang \} = req\.body/.test(srv) && /lang: lang === "en" \? "en" : "zh",/.test(srv), "服务端 /api/chat 没把 lang 传给 runTask");
+  assert(/const \{ sessionId, message, mode, regen, lang, lane \} = req\.body/.test(srv) && /lang: lang === "en" \? "en" : "zh",/.test(srv), "服务端 /api/chat 没把 lang 传给 runTask");
   assert(/function langBlock\(lang\)/.test(ag) && /projBlock \+ langBlock\(lang\) \+ modePrompt\(mode\)/.test(ag), "agent 系统提示词没拼 langBlock");
   assert(/if \(extra\.lang\) parts\.push\(langBlock\(extra\.lang\)\)/.test(ag) && /\{ projectContext, history, lang \}/.test(ag), "本机引擎（claude/codex）的系统提示词没接 lang");
   assert(/askUser, lang \}\) \{/.test(ag) && (ag.match(/^        lang,\n/gm) || []).length === 2, "专家子任务没继承 lang");
@@ -7010,7 +7011,7 @@ function testUiNoRawMarkdown() {
 
 main()
   .catch((e) => {
-    console.error("❌ 测试失败:", e.message);
+    console.error("❌ 测试失败:", (e && e.stack) || e.message);
     process.exitCode = 1;
   })
   .finally(() => {
@@ -8715,8 +8716,10 @@ async function testSessionIndex() {
   try {
     const store = { readJson: (p2, dflt) => { try { return JSON.parse(fs.readFileSync(p2, "utf8")); } catch { return dflt; } } };
     const live = new Map();
-    const build = () => new Function("fs", "path", "store", "sessions", "SESS_DIR",
-      SLICE + "\nreturn { listSessionsOnDisk, sessionRow, ownSession, sessMetaCache };")(fs, path, store, live, dir);
+    // lanes 注真模块，不给桩：「老会话该不该被替他填一条线」正是下面要验的事
+    const lanesMod = require("../lanes");
+    const build = () => new Function("fs", "path", "store", "sessions", "SESS_DIR", "lanes",
+      SLICE + "\nreturn { listSessionsOnDisk, sessionRow, ownSession, sessMetaCache };")(fs, path, store, live, dir, lanesMod);
 
     const put = (id, o) => fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify(Object.assign({
       title: "任务 " + id, user: "boss", transcript: [{ role: "user" }], updated_at: "2026-09-01T00:00:00.000Z",
@@ -8736,6 +8739,18 @@ async function testSessionIndex() {
       "清单不对（该按更新时间倒序，坏文件/空对话/.bak 都不该进来）：" + JSON.stringify(rows.map((r) => r.id)));
     assert.strictEqual(rows[0].turns, 1, "轮数没带上，侧栏分不出「点开就有东西」和「空壳」");
     assert.strictEqual(rows[0].project, "客户 A", "项目名没带上，前端按项目过滤会把它归错组");
+    // 工作线：如实报「记过的那条」，没记过的一个字不编。
+    // 老会话该归到哪条线，要看**读它的这个人**现在配的是什么引擎（前端拿 /api/lanes 算）；
+    // 在服务端按服务器配置替他填死，多用户下就会把别人的引擎口径安到他头上，历史又会「凭空少一半」。
+    assert.strictEqual(rows.find((r) => r.id === "s_2").lane, undefined, "没记过工作线的老会话被服务端替它编了一条");
+    put("s_8", { title: "在命令行线上干的活", updated_at: "2026-09-06T00:00:00.000Z", lane: "cli" });
+    put("s_9", { title: "工作线字段被写脏了", updated_at: "2026-09-06T00:00:00.000Z", lane: "Office " });
+    put("s_10", { title: "谁塞了个不存在的线", updated_at: "2026-09-06T00:00:00.000Z", lane: "hack" });
+    const laneRows = build().listSessionsOnDisk();
+    assert.strictEqual(laneRows.find((r) => r.id === "s_8").lane, "cli", "记过的工作线没带给侧栏");
+    assert.strictEqual(laneRows.find((r) => r.id === "s_9").lane, "office", "大小写/空格没归一，侧栏会当成另一条线而整条不显示");
+    assert.strictEqual(laneRows.find((r) => r.id === "s_10").lane, undefined, "认不出来的线名被原样放行了");
+    for (const id of ["s_8", "s_9", "s_10"]) fs.rmSync(path.join(dir, id + ".json"));
 
     // ★ 用户那句「历史全没了」的正主：登录了也要看得见自己的，外加升级上来那些没记归属的
     const boss = { username: "boss" }, staff = { username: "staff" };

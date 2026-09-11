@@ -194,6 +194,7 @@ async function initAuth() {
   }
   sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
   renderHistory();
+  refreshLanes(); // 登录后才拿得到这个人的引擎配置，顶上两个标签要按他的配置重画
   await mergeServerSessions();
   maybeOnboard();
 }
@@ -222,9 +223,10 @@ async function mergeServerSessions() {
       if (r.title && r.title !== "未命名任务") local.title = r.title;
       if (!local.at && r.at) local.at = r.at;
       if (!local.project && r.project) local.project = r.project;
+      if (r.lane) local.lane = r.lane; // 服务端按会话实际用的引擎归的位，比本地那份准
       continue;
     }
-    sessions.push({ id: r.id, title: r.title, at: r.at, project: r.project || undefined });
+    sessions.push({ id: r.id, title: r.title, at: r.at, project: r.project || undefined, lane: r.lane || undefined });
     added++;
   }
   sessions.sort((a, b) => (b.at || 0) - (a.at || 0));

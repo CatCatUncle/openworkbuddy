@@ -36,7 +36,7 @@ const UI00_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app
 // 断言就变成了假的。真的 ic() 出的是 <use href="#i-…">，指哪个图标一眼看得出来。
 const IC_STUB = UI00_SRC.slice(UI00_SRC.indexOf("function ic(name, cls)"), UI00_SRC.indexOf("/* 自建 tooltip"));
 const A0 = APP02.indexOf("// ================= ＋ 上传文件到工作空间");
-const A1 = APP02.indexOf("// ================= 会话历史");
+const A1 = APP02.indexOf("// ================= 两条工作线"); // 附件段的下一段（以前是会话历史，中间插进了工作线）
 if (A0 < 0 || A1 <= A0) throw new Error("app-02.js 里的附件段找不到了（段标题被改过？），前端测试没法定位真源码");
 const ATTACH_SRC = APP02.slice(A0, A1);
 
@@ -4357,6 +4357,176 @@ const SKEG_CHECKS = `
 })()
 `;
 
+// ================= 顶栏两条工作线：办公模式 / 命令行模式 =================
+// 用户原话：「1.cli 模式对应 code，2.办公模式：电脑上的桌面办公 agent 对应 cowork」。
+// 以前这两件事共用设置页里那一个引擎开关，切一次要翻两层菜单，且切过去之后办公那批工具整批消失。
+// 这一段守四件事：
+//   1. 两条线各自记各自的会话——切标签不会把另一条线的历史混进来，也不会让老会话「消失」；
+//   2. 服务端说某条线的 CLI 没装（ready=false），标签上给个警告点，但**照样能点**——
+//      拦着不让点，用户只会以为这功能坏了；点下去在引擎那层当场报错才说得清缺什么；
+//   3. 老版本服务端没有 /api/lanes 时，标签不许被清空（整条顶栏塌掉比没这功能更糟）；
+//   4. 手机上放不下两个全名，窄屏要换成短名——这是「手机远程操作」那条主线的前提。
+// 状态声明在 app-01.js、渲染和切换在 app-02.js，两处都切真源码。
+const LANE_STATE_SRC = (() => {
+  const a = APP02X.indexOf('let activeLane = "office";');
+  const b = APP02X.indexOf("let currentUser = null;", a);
+  if (a < 0 || b <= a) throw new Error("app-01.js 里的工作线状态段找不到了，前端测试没法定位真源码");
+  return APP02X.slice(a, b);
+})();
+const LANE_SRC = (() => {
+  const a = APP02.indexOf("// ================= 两条工作线：办公模式 / 命令行模式");
+  const b = APP02.indexOf("// ================= 会话历史", a);
+  if (a < 0 || b <= a) throw new Error("app-02.js 里的两条工作线段找不到了，前端测试没法定位真源码");
+  return APP02.slice(a, b);
+})();
+// 侧栏那两个函数（按项目 + 按线过滤、画列表）也切真源码：分栏这件事的正主就在 projectSessions 里
+const HIST_MIN_SRC = (() => {
+  const a = APP02.indexOf("/** 当前项目下的任务。");
+  const b = APP02.indexOf('document.getElementById("history").addEventListener', a);
+  if (a < 0 || b <= a) throw new Error("app-02.js 里的会话历史过滤段找不到了，前端测试没法定位真源码");
+  return APP02.slice(a, b);
+})();
+// 真样式要注进来：高亮态、窄屏换短名都只写在 CSS 里，只看 class 名的话改坏了照样全绿
+const LANE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
+  + "<body style='margin:0'><div class='topbar'><div class='lane-tabs' id='lane-tabs' role='tablist'></div></div>"
+  + "<div id='history'></div><button id='new-task'>新任务</button></body>";
+const LANE_STUBS = [
+  IC_STUB,
+  "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
+  "var stripSceneTag = (s) => String(s || '');",
+  "var sessionId = '';",
+  "var runningSessions = new Set();",
+  "var sessions = [];",
+  "var activeProject = '默认项目';",
+  "var projectsLocked = false;",
+  "var __LANE_REPLY = {};",
+  "var __LANE_FETCHED = 0;",
+  "var fetch = async () => { __LANE_FETCHED++; return { json: async () => __LANE_REPLY }; };",
+  // 偏好要真能读回来才算数：data: 页面的 localStorage 在 Chromium 里一读就抛，
+  // 真源码全程 try 兜着（这本身也是被守的行为），这儿换一份能读写的，好验「点过之后记住了」
+  "var __LANE_LS = {};",
+  "try { Object.defineProperty(window, 'localStorage', { configurable: true, value: {"
+  + " getItem: (k) => (k in __LANE_LS ? __LANE_LS[k] : null),"
+  + " setItem: (k, v) => { __LANE_LS[k] = String(v); },"
+  + " removeItem: (k) => { delete __LANE_LS[k]; } } }); } catch (e) { window.__LANE_LS_FAIL = String(e); }",
+  "var __NEW_TASK = 0;",
+  "document.getElementById('new-task').addEventListener('click', () => { __NEW_TASK++; });",
+].join("\n");
+const LANE_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  if (window.__LANE_LS_FAIL) throw new Error("测试自己的 localStorage 替身没装上：" + window.__LANE_LS_FAIL);
+  const box = document.getElementById("lane-tabs");
+  const hist = document.getElementById("history");
+  const btns = () => [...box.querySelectorAll("button[data-lane]")];
+  const onId = () => (box.querySelector("button.on") || {}).dataset?.lane;
+
+  // ---- 拉到服务端那两行之前，先用兜底把标签画出来（首屏不能是空顶栏）----
+  renderLaneTabs();
+  ok("没联网也先画出两个标签", btns().length === 2, box.innerHTML);
+  ok("办公在前、命令行在后", btns().map(b => b.dataset.lane).join(",") === "office,cli");
+  ok("默认站在办公线上", activeLane === "office" && onId() === "office");
+  ok("两个标签的图标不一样且认得出来",
+    /#i-briefcase/.test(btns()[0].innerHTML) && /#i-terminal/.test(btns()[1].innerHTML), box.innerHTML);
+  ok("高亮不是只有个 class：真描上了底色", (() => {
+    const bg = getComputedStyle(btns()[0]).backgroundColor;
+    return bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent";
+  })(), getComputedStyle(btns()[0]).backgroundColor);
+  ok("aria-selected 跟高亮同步", btns()[0].getAttribute("aria-selected") === "true" && btns()[1].getAttribute("aria-selected") === "false");
+
+  // ---- 服务端把真情况报上来：命令行那条线的 CLI 本机没装 ----
+  __LANE_REPLY = {
+    lanes: [
+      { id: "office", name: "办公模式", short: "办公", detail: "做表、写稿、出图、发消息", engine: "builtin", engineLabel: "内置", ready: true, why: "", install: "" },
+      { id: "cli", name: "命令行模式", short: "命令行", detail: "写代码、跑脚本、查日志", engine: "claude-code", engineLabel: "Claude Code", ready: false, why: "本机没找到 claude-code", install: "npm i -g @anthropic-ai/claude-code" },
+    ],
+    current: "office", cliChoices: [], cliEngine: "",
+  };
+  await refreshLanes();
+  ok("标签文案换成服务端报的那份", btns()[1].textContent.includes("命令行模式"), btns()[1].textContent);
+  ok("没装的那条线给了警告点", btns()[1].querySelector(".dot") !== null && btns()[0].querySelector(".dot") === null);
+  ok("警告点不等于拦着不让点", !btns()[1].disabled && btns()[1].getAttribute("aria-disabled") !== "true");
+  ok("鼠标停上去说得清缺什么、怎么装",
+    /本机没找到/.test(btns()[1].title) && /npm i -g/.test(btns()[1].title), btns()[1].title);
+
+  // ---- 侧栏按线分栏 ----
+  sessions = [
+    { id: "o1", title: "整理季度数据", at: 5, lane: "office" },
+    { id: "c1", title: "修一个构建报错", at: 4, lane: "cli" },
+    { id: "old", title: "一条很早以前的任务", at: 3 },
+  ];
+  renderHistory();
+  ok("办公线只看到办公的活儿（外加没记过线的老会话）",
+    [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "o1,old", hist.textContent);
+
+  // ---- 点到命令行线 ----
+  btns()[1].click();
+  ok("点一下就换线了", activeLane === "cli" && onId() === "cli");
+  ok("换过的线记在本地，下次打开还站在这儿", __LANE_LS["wb_lane"] === "cli");
+  ok("命令行线只看到命令行的活儿",
+    [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "c1", hist.textContent);
+  ok("再点同一个标签不折腾（不重画不开新任务）", (() => { const n = __NEW_TASK; btns()[1].click(); return __NEW_TASK === n && activeLane === "cli"; })());
+
+  // ---- 老会话没记过线：跟着服务端算的回落值走，别整批消失 ----
+  __LANE_REPLY = { ...__LANE_REPLY, current: "cli" };
+  try { delete __LANE_LS["wb_lane"]; } catch (e) {}
+  await refreshLanes();
+  ok("用本机 CLI 的人，默认落在命令行线上", defaultLane === "cli" && activeLane === "cli");
+  ok("他的老会话跟着归到命令行线，不是凭空不见",
+    [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "c1,old", hist.textContent);
+  ok("这时候点回办公线，老会话就不在这儿了（两条线确实是分开的）",
+    (() => { btns()[0].click(); return [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "o1"; })(), hist.textContent);
+
+  // ---- 手里正开着的对话在另一条线上：切过去等于换张桌子，给一张空白新任务 ----
+  sessionId = "o1";
+  const before = __NEW_TASK;
+  btns()[1].click();
+  ok("当前对话属于另一条线时，切标签会开一张新任务", __NEW_TASK === before + 1);
+  sessionId = "c1";
+  const before2 = __NEW_TASK;
+  btns()[0].click();
+  btns()[1].click(); // 切回来，当前这条本来就在这条线上
+  ok("当前对话就在这条线上时，不会白白把人踢到新任务", __NEW_TASK === before2 + 1, "多开了新任务");
+
+  // ---- 空态文案跟着线走，不再说成「该项目没任务」----
+  sessions = [];
+  renderHistory();
+  ok("空的时候说的是这条线上没任务", /这条线上还没有任务/.test(hist.textContent), hist.textContent);
+
+  // ---- 老版本服务端：没有 /api/lanes，标签不许塌掉 ----
+  // 光看「还有两个按钮」是抓不住的：清空 laneInfo 之后兜底那两行照样能凑出两个按钮，
+  // 真丢的是服务端那份实情（装没装、装它的那句命令）。所以盯着这些一起验。
+  const cliBtn = () => document.querySelector('button[data-lane="cli"]');
+  __LANE_REPLY = {};
+  await refreshLanes();
+  ok("老服务端回了个空，两个标签一个没少", btns().length === 2, box.innerHTML);
+  ok("回空也没把服务端报过的实情冲掉（警告点还在、装它那句话还在）",
+    cliBtn().querySelector(".dot") !== null && /npm i -g/.test(cliBtn().title), box.innerHTML);
+  __LANE_REPLY = { lanes: [] };
+  await refreshLanes();
+  ok("回了个空数组也一样不塌", btns().length === 2, box.innerHTML);
+  ok("空数组也不冲掉实情", cliBtn().querySelector(".dot") !== null && /npm i -g/.test(cliBtn().title), box.innerHTML);
+  return names;
+})()
+`;
+// 手机上顶栏放不下两个全名。这条单开一个窄窗口验真 CSS：只看 class 名的话，
+// 把 @media 那几行删掉照样全绿，而用户那头是顶栏被挤到换行/标题被顶没。
+const LANE_NARROW_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  renderLaneTabs();
+  const b = document.querySelector('button[data-lane="cli"]');
+  ok("窄屏换成短名", getComputedStyle(b.querySelector(".lt-short")).display !== "none");
+  ok("窄屏把全名藏起来", getComputedStyle(b.querySelector(".lt-full")).display === "none");
+  ok("图标还在（只剩短名也认得出是哪条线）", /#i-terminal/.test(b.innerHTML));
+  ok("两个标签一行放得下", document.getElementById("lane-tabs").scrollWidth <= document.documentElement.clientWidth,
+    "scrollWidth=" + document.getElementById("lane-tabs").scrollWidth);
+  return names;
+})()
+`;
+
 // ================= 侧栏：项目那一栏 + 任务历史该不该按项目过滤 =================
 // 用户两句原话是同一个根因：
 //   「本组织工作目录没有必要显示啊，没必要显示一个 tab 在那里啊，有点突兀」
@@ -4373,7 +4543,8 @@ const PROJ_SRC = (() => {
   const d = APP02.indexOf('document.getElementById("proj-add").onclick', c);
   if (a < 0 || b <= a) throw new Error("app-02.js 里的会话历史过滤段找不到了，前端测试没法定位真源码");
   if (c < 0 || d <= c) throw new Error("app-02.js 里的 refreshProjects/renderProjects 段找不到了，前端测试没法定位真源码");
-  return APP02.slice(a, b) + "\n" + APP02.slice(c, d);
+  // 会话历史那段现在还会按工作线分栏（laneOfSession），真源码里它跟渲染标签在同一段，一起切进来
+  return LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + APP02.slice(c, d);
 })();
 // 侧栏那一栏的真样式必须注进来：.side-nav .item 自带 display:flex，
 // 谁要是把隐藏改回 head.hidden = true，[hidden] 压不住它，栏目照样显示。
@@ -4382,7 +4553,7 @@ const PROJ_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n"
   + "<body style='margin:0;width:260px'><div class='side-nav'>"
   + "<div class='item nav-head' data-view='proj' title='项目管理'><span class='tx'>项目</span></div>"
   + "<div id='proj-list'></div></div><div id='history'></div>"
-  + "<div id='new-task'></div></body>";
+  + "<div class='lane-tabs' id='lane-tabs'></div><div id='new-task'></div></body>";
 const PROJ_STUBS = [
   IC_STUB,
   "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
@@ -4420,7 +4591,7 @@ const PROJ_CHECKS = `
   ok("项目列表照常画出来", box.querySelectorAll(".proj-item").length === 2);
   ok("当前项目高亮的是服务端说的那个", box.querySelector(".proj-item.active").dataset.name === "默认项目");
   ok("任务历史按项目过滤：没记项目的算「默认项目」", [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "s1,s2", hist.textContent);
-  ok("空的时候说清楚是「这个项目」没任务", (() => { sessions = []; renderHistory(); const t = hist.textContent; sessions = SESS.slice(); return /该项目还没有任务/.test(t); })());
+  ok("空的时候说清楚是「这个项目」没任务", (() => { sessions = []; renderHistory(); const t = hist.textContent; sessions = SESS.slice(); return /该项目在这条线上还没有任务/.test(t); })());
 
   // ---- 租户成员：服务端说「你这儿没有项目这回事」 ----
   __PROJ_REPLY = { projects: [], active: "", locked: true };
@@ -4874,6 +5045,26 @@ app.whenReady().then(async () => {
       for (const n of namesPJ) console.log("  ✓ " + n);
       console.log(`✅ 前端：侧栏项目栏 + 任务历史（租户端整栏不画·历史一条不滤·假项目顶上就滤空的事故留证·状态来回切）${namesPJ.length} 项通过`);
     } finally { if (!winPJ.isDestroyed()) winPJ.destroy(); }
+
+    const winLN = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
+    try {
+      await winLN.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
+      const namesLN = await winLN.webContents.executeJavaScript(
+        LANE_STUBS + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + LANE_CHECKS, true)
+        .catch((e) => { throw new Error("[两条工作线] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesLN) console.log("  ✓ " + n);
+      console.log(`✅ 前端：顶栏两条工作线（各记各的会话·老会话按配置归位不消失·没装只给警告点照样能点·老服务端不塌·当前对话在另一条线才开新任务）${namesLN.length} 项通过`);
+    } finally { if (!winLN.isDestroyed()) winLN.destroy(); }
+
+    const winLN2 = mkWin({ show: false, width: 430, height: 640, webPreferences: { offscreen: true } });
+    try {
+      await winLN2.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
+      const namesLN2 = await winLN2.webContents.executeJavaScript(
+        LANE_STUBS + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + LANE_NARROW_CHECKS, true)
+        .catch((e) => { throw new Error("[两条工作线·窄屏] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesLN2) console.log("  ✓ " + n);
+      console.log(`✅ 前端：手机宽度下的工作线标签（换短名·全名收起·一行放得下）${namesLN2.length} 项通过`);
+    } finally { if (!winLN2.isDestroyed()) winLN2.destroy(); }
 
     const winGC = mkWin({ show: false, width: 760, height: 600, webPreferences: { offscreen: true } });
     try {

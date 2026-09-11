@@ -481,8 +481,11 @@ function runSourcePins() {
      "「他是不是平台管理员」只有一处判定（设置页、档位菜单都读它，别各写各的）");
   ok(/platform_owner: isPlatformOwner\(req\)/.test(serverSrc),
      "而且告诉前端他是不是平台管理员（界面据此决定服务器级的那些控件画不画）");
-  ok(/engines\.resolve\(prefs\.agentView\(config\)\)/.test(agentSrc),
-     "agent.js 跑任务时解的是**发起人**选的引擎，不是 config 里那份");
+  // 外面套了一层 lanes.viewFor（顶栏那两条工作线）：它只按当前这条线换 agent.engine，别的一律不动。
+  // 这条断言要钉死的是「个人偏好那层不许被工作线绕过去」——写成 engines.resolve(lanes.viewFor(lane, config))
+  // 就等于所有人共用一份服务器配置，别人选的模型会跑到你头上。
+  ok(/engines\.resolve\(lanes\.viewFor\(lane, prefs\.agentView\(config\)\)\)/.test(agentSrc),
+     "agent.js 跑任务时解的是**发起人**选的引擎，不是 config 里那份（工作线只在它外面套一层）");
   ok(/thinking: prefs\.agentCfg\(config\)\.thinking/.test(agentSrc), "思考档同理");
   ok(!/["']\/api\/pet\/["']/.test(fs.readFileSync(path.join(ROOT, "admin.js"), "utf8").split("PERSONAL_WRITE")[0]),
      "/api/pet/ 已经从平台写表里拿掉了（一只宠物出不出现，跟谁掏 API 的钱没关系）");

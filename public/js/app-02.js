@@ -308,17 +308,75 @@ document.addEventListener("paste", async (e) => {
   toast(files.length > 1 ? `已贴上 ${files.length} 个文件` : "图片已贴上，发消息时会一起带给它");
 });
 
+// ================= 两条工作线：办公模式 / 命令行模式 =================
+/**
+ * 同一个人一天里在两种活儿之间来回切：做表写稿出图（鼠标流），和写代码跑脚本查日志（键盘流）。
+ * 前者该走本项目自己的循环（专家团、技能库、生图生视频都在这条路上），后者交给本机装的
+ * Claude Code / Codex 最划算——订阅早付过了。以前这两件事共用设置页里那一个引擎开关：
+ * 切到本机 Codex，办公那批工具就整批消失；想出张图得先回设置页把引擎切回去，出完再切回来。
+ * 所以把它从「一个全局开关」改成「顶上两个标签」，各记各的会话，共用同一份文件和工作目录。
+ */
+function laneOfSession(s) {
+  const v = s && s.lane;
+  return v === "cli" || v === "office" ? v : defaultLane;
+}
+function renderLaneTabs() {
+  const box = document.getElementById("lane-tabs");
+  if (!box) return;
+  const rows = laneInfo.length ? laneInfo : LANE_FALLBACK;
+  box.innerHTML = rows.map((l) => {
+    const on = l.id === activeLane;
+    // 没装也照点不误：拦着不让点，用户只会以为这功能坏了。点下去在引擎那层当场报错，话说得清楚
+    const warn = l.ready === false;
+    const tip = [l.detail || l.hint || "", warn ? (l.why || "") : "", warn && l.install ? "装它：" + l.install : ""].filter(Boolean).join("\n");
+    return `<button type="button" role="tab" aria-selected="${on}" class="${on ? "on" : ""}" data-lane="${esc(l.id)}" title="${esc(tip)}">`
+      + ic(l.id === "cli" ? "terminal" : "briefcase")
+      + `<span class="lt-full">${esc(l.name)}</span><span class="lt-short">${esc(l.short || l.name)}</span>`
+      + (warn ? '<span class="dot" aria-hidden="true"></span>' : "")
+      + `</button>`;
+  }).join("");
+}
+/** 服务端才知道命令行模式会用哪个 CLI、本机装没装、以及装它的那句命令 */
+async function refreshLanes() {
+  try {
+    const d = await fetch("/api/lanes").then((r) => r.json());
+    if (!d || !Array.isArray(d.lanes) || !d.lanes.length) return; // 老版本服务端没这接口：照旧用兜底那两行
+    laneInfo = d.lanes;
+    if (d.current === "cli" || d.current === "office") defaultLane = d.current;
+    let saved = null;
+    try { saved = localStorage.getItem("wb_lane"); } catch {}
+    if (saved !== "cli" && saved !== "office") activeLane = defaultLane; // 第一次用的人，落在他现在这套配置本来就在用的那条线上
+  } catch {}
+  renderLaneTabs();
+  renderHistory();
+}
+document.getElementById("lane-tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-lane]");
+  if (!btn || btn.dataset.lane === activeLane) return;
+  activeLane = btn.dataset.lane;
+  try { localStorage.setItem("wb_lane", activeLane); } catch {}
+  renderLaneTabs();
+  // 当前开着的这条对话属于另一条线：切过去等于换了张桌子，给一张空白的新任务。
+  // 正在后台跑的任务不受影响（它绑的是自己的 sid，切走照跑，回来还能接上直播）。
+  const cur = sessionId && sessions.find((x) => x.id === sessionId);
+  if (cur && laneOfSession(cur) !== activeLane) document.getElementById("new-task").click();
+  else renderHistory();
+});
+
 // ================= 会话历史（服务端持久化 + 回放，按项目过滤） =================
 /** 当前项目下的任务。租户端没有「项目」这回事（服务端 locked），一条都不过滤——
  *  以前那儿顶着个假项目「本组织工作目录」，跟老会话记的项目名对不上，整排历史被过滤没了。*/
 function projectSessions() {
-  return projectsLocked ? sessions : sessions.filter(s => (s.project || "默认项目") === activeProject);
+  const inProject = projectsLocked ? sessions : sessions.filter(s => (s.project || "默认项目") === activeProject);
+  // 再按工作线分栏：办公那条线的历史不该混进命令行标签里（反过来也一样）。
+  // 老会话没记过 lane，按服务端算的回落值归位——不会整批「消失」到另一个标签底下
+  return inProject.filter(s => laneOfSession(s) === activeLane);
 }
 function renderHistory() {
   const list = projectSessions();
   document.getElementById("history").innerHTML = list.map(s =>
     `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">✕</span></div>`).join("")
-    || `<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 10px">${projectsLocked ? "还没有任务" : "该项目还没有任务"}</div>`;
+    || `<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 10px">${projectsLocked ? "这条线上还没有任务" : "该项目在这条线上还没有任务"}</div>`;
 }
 document.getElementById("history").addEventListener("click", async (e) => {
   const item = e.target.closest(".hist-item");
@@ -348,6 +406,14 @@ async function openSession(id) {
   pvPanel.classList.remove("show"); pvCurrent = null;
   document.getElementById("files-panel").classList.remove("show");
   const s = sessions.find(x => x.id === sessionId);
+  // 从别处打开的对话（搜索、评测页「打开对话」）可能属于另一条工作线：标签跟着切过去，
+  // 不然侧栏里高亮的那条根本不在当前列表里，用户会以为自己点丢了
+  const sLane = laneOfSession(s);
+  if (s && sLane !== activeLane) {
+    activeLane = sLane;
+    try { localStorage.setItem("wb_lane", activeLane); } catch {}
+    renderLaneTabs();
+  }
   document.getElementById("session-title").textContent = s ? stripSceneTag(s.title) : "任务";
   renderHistory();
   // 回放服务端保存的完整对话（含工具执行过程）
@@ -410,6 +476,8 @@ document.getElementById("new-task").onclick = () => {
   }).catch(() => {});
 };
 renderHistory();
+renderLaneTabs();
+refreshLanes();
 reattachRunning(); // 刷新页面不丢正在跑的任务：找回并接上直播
 
 // ================= 项目（多工作空间，任务历史按项目分组；projects/activeProject 声明在顶部基础状态区） =================
@@ -600,7 +668,7 @@ async function doSend(text, mode, regen) {
   if (!sessionId) {
     sessionId = "s_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
     const shortTitle = stripSceneTag(text).slice(0, 24); // 标题里不留场景标签，否则历史列表整排都是「【任务类型：…」
-    sessions.unshift({ id: sessionId, title: shortTitle, at: Date.now(), project: activeProject });
+    sessions.unshift({ id: sessionId, title: shortTitle, at: Date.now(), project: activeProject, lane: activeLane });
     saveSessions();
     document.getElementById("session-title").textContent = shortTitle;
     if (pendingModel) { const pm = pendingModel; pendingModel = undefined; await setSessionModel(pm); }
@@ -743,7 +811,7 @@ async function runTurn(sid, text, mode, regen) {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: sid, message: text, mode, regen: !!regen, lang: typeof I18N !== "undefined" ? I18N.getLang() : "zh" }),
+      body: JSON.stringify({ sessionId: sid, message: text, mode, regen: !!regen, lane: laneOfSession(sessions.find(x => x.id === sid)), lang: typeof I18N !== "undefined" ? I18N.getLang() : "zh" }),
     });
     if (!resp.ok) {
       const d = await resp.json().catch(() => ({}));
