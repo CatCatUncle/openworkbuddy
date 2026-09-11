@@ -1138,6 +1138,9 @@ app.get("/api/onboarding", async (req, res) => {
     // 大脑没接上 = 一句话都发不出去，必须弹引导；接上了但没走完向导也弹一次，让人知道还有哪些能力可以开
     needs_setup: !brainOk,
     seen,
+    // 向导最后一步写的是服务器级设置（工作目录 + done_at），只有平台管理员落得了盘。
+    // 成员那边压根不该弹：弹了他一步步认真填完，最后一颗「开始使用」必然 403，退都退不出去。
+    can_finish: isPlatformOwner(req),
     brain: {
       ok: brainOk,
       via: brainViaEngine ? "engine" : "api",

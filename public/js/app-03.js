@@ -334,6 +334,7 @@ async function maybeOnboard() {
   const st = await fetch("/api/onboarding").then(r => r.json()).catch(() => null);
   if (!st || st.error || !st.models) return;
   if (!st.needs_setup && st.seen) return; // 大脑接上了、向导也走完了：不打扰
+  if (!st.can_finish) return; // 这是台服务器级的向导，成员走到最后一步也存不下来，别弹
   if (onbSkipFlag()) return; // 本次窗口内跳过一次就别再烦人
   openOnboarding(st);
 }
@@ -658,8 +659,11 @@ function renderOnbDone(body) {
     <label class="onb-lb">工作目录（成果文件都放这儿）</label>
     <input id="onb-dir" placeholder="${esc(st.workspace_dir || "留空就用默认目录")}">
     <div class="err" id="onb-err"></div>
-    ${onbFoot("开始使用", "")}`;
+    ${onbFoot("开始使用", "先跳过")}`;
   body.querySelector("#onb-go").onclick = () => finishOnb({ dir: body.querySelector("#onb-dir").value.trim() });
+  // 最后一步以前只有一颗「开始使用」。它一旦失败（没权限、服务端报错），整块全屏遮罩就没有出口了——
+  // 没有 ✕、Escape 也不管，刷新还照弹。留一条「先跳过」，这一程就总能走出去。
+  body.querySelector("#onb-skip-step").onclick = () => { onbSkipFlag(true); closeOnboarding(); };
 }
 
 async function finishOnb({ dir, silent } = {}) {
@@ -797,10 +801,7 @@ async function renderAssistPage() {
   updateModelLabel(); // 顶栏每次重画都是新元素，标签和菜单当场填上
   page.querySelector("#im-cfg").onclick = () => openModal("settings", "im");
   const imWs = page.querySelector("#im-open-ws");
-  // 以前这里 fetch 完不接结果：403 之后按钮点了一声不吭
-  if (imWs) imWs.onclick = () => fetch("/api/open-workspace", { method: "POST" })
-    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开工作目录")); }))
-    .catch(() => toast("❌ 打不开工作目录"));
+  if (imWs) imWs.onclick = () => openWorkspaceOnHost(); // 以前这里 fetch 完不接结果：403 之后按钮点了一声不吭
   renderAssistFeed(log);
 }
 // 助理模式下底部输入框发的消息走 local 通道（与 IM 消息同一条会话流），不新建任务。
