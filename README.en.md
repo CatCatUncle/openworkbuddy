@@ -132,27 +132,31 @@ wb engines && wb engines use claude-code   # use a local Claude Code / Codex as 
 
 ## What's new
 
-- **Sep 10** **Your task history was never lost — an invented project was filtering it out**: the project list handed to org members used to invent a project named "本组织工作目录" to fill the gap. That put a dead tab in the sidebar, and — worse — the history list filters by project, so a name that matched none of your older sessions emptied the whole sidebar. Nothing was ever deleted; the conversations sat on disk the entire time. The server now says plainly "there are no projects on your side", and the whole section is simply not drawn and not used as a filter. A second line of defence came with it: that sidebar list only ever lived in browser storage, so clearing the cache, switching machines or renaming a user emptied it. It is now merged from the server on login — additive only, so a task you just started and hasn't been saved yet stays put
-- **Sep 10** **"Use it now" no longer drops half a sentence into the box**: it used to leave you with `Use the "xxx" skill to help me:` and nothing else — a blank page handed back. Now it first lays out a few concrete things that skill actually does, taken from the "when to use" section of its own doc; you pick one and it arrives in the task box with a shape to fill in. Only that section is mined — falling back to the whole document turned up colour codes, package names and field names, which is worse than nothing, so a doc without that section offers none
-- **Sep 10** **No more stopping half-done**: before a task is allowed to end, a finish gate checks the progress file for unchecked items and the model's own closing words for admissions that something is still undone — if either fires, the unfinished list is read straight back to it and it keeps going; when the retry budget runs out the task rolls into auto-continue instead. Small tasks that never opened a progress file are never blocked
-- **Sep 10** **One line per step**: the process pane now shows each step as `verb + object · result`, with the raw arguments and the full return value kept intact one click away. Consecutive read-only tools (search / fetch page / read file) run concurrently; anything that writes still runs alone, in order
-- **Sep 10** **The local-engine screen**: the model menu no longer gets stretched into one long line and pushed off-screen with its text cut off — it is a card that says who is running the task, whether it costs API credits, and where to change the model, plus a small "running" badge in the conversation
-- **Sep 10** **Goal mode is real now**: deriving the acceptance criteria and grading against them both go through the local CLI you already pay for (no silent API spend, and it works with no API key at all). A progress bar tracks checked criteria, a failed derive/verify leaves a visible note on the card, and when auto-retry runs out of rounds the card says what is still missing and offers "keep going"
-- **Sep 10** **Long replies stopped stuttering**: each streaming frame only rewrites the part still being written — the settled DOM above it is left untouched. On a 100k-character reply, DOM rebuild time during streaming drops from 19.7s to 0.7s, the worst frame from 66ms to 23ms, and a text selection is no longer wiped every 100ms. Local CLI detection is cached too, so opening Settings no longer spawns a version probe every time (275ms → 0ms)
-- **Sep 10** WeChat / WeCom / Official Accounts / QQ can finally receive **files, images, voice notes and stickers** (only Lark could before; every other channel just said "not downloaded in this build"). Lark itself gained voice, stickers and rich-text posts, which used to be dropped whole
-- **Sep 10** Lark **"create an app by QR"**: with lark-cli installed locally it registers a brand-new app for you and fills the App ID back in. lark-cli keeps the secret write-only (macOS locks it in the Keychain), so you get a direct link to that app's credentials page for one copy-paste — and the masked `****` is never stored as a credential over the one you already had. Also fixes the real reason Lark kept disconnecting: saving any other channel wiped the stored Lark secret
-- **Sep 10** Settings → About → **Check for updates**: tells you how to upgrade based on how you installed (source checkout vs. installer), and says plainly when it cannot reach GitHub instead of pretending you are up to date
-- **Sep 9** Finishing a task no longer pops the preview / files panel over your chat: the conclusion stays inline, outputs are a row of compact chips (icon, name, size, preview / reveal / download), the Files button shows a badge; only a preview you already have open on that file refreshes in place
-- **Sep 9** Connectors page ships a catalog of **39 one-click presets** (search, databases, Lark, AMap, GitHub…); you only fill in the key, and a missing key blocks the save. **15 more experts and 4 teams**; upgrades add new built-ins without touching your edits
-- **Sep 9** Demo recorder masks temp dirs, username, hostname and bot ids on screen, with a self-check before recording
-- **Sep 9** English / Chinese toggle: one click in Appearance or the first-run wizard, whole UI flips instantly, AI replies follow
-- **Sep 9** Appearance page: theme, six skins, four font sizes, font family, compact density
-- **Sep 8** First-run wizard: model, engine and IM set up in five steps, no docs required
-- **Sep 8** Local **Claude Code / Codex** as the engine, with memory, skills, file access and image/voice generation wired in; per-engine model and thinking level
-- **Sep 8** Thinking can be switched off or dialed down for reasoning models; the CLI follows the app setting
-- **Sep 8** Conversation trail bar + 👍👎 feedback loop: mistakes become self-evolution proposals, applied only after a human approves
-- **Sep 7** Scheduled tasks get a "false green" verdict: no exception ≠ done
-- **Sep 5** `wb` CLI: one-shot, interactive, pipes, `--json`
+- **Sep 11** Sidebar splits work into **Office / Engineering**; a `wb` run in your terminal shows up on your phone and takes interjections
+- **Sep 11** Image / video / voice / vision each take several models, and one provider key covers all of them
+- **Sep 11** Six ways the app could fail to open on launch, each now explained in a real window, plus a boot log
+- **Sep 11** Installer is 139 MB smaller: source maps and type declarations are never read at runtime
+- **Sep 11** "Check for updates" no longer tells people who installed a package to run `git pull`
+- **Sep 11** Three high-severity fixes: a one-letter auth bypass, a filename that could run commands, a preview site open to the internet
+- **Sep 11** On a shared server, plain members no longer see a row of buttons that can only 403
+- **Sep 11** UI polish: three surface levels, one shadow scale, and scrollbars you can actually see
+- **Sep 10** Your task history was never lost — an invented project name was filtering it out. Fixed
+- **Sep 10** One command to deploy: `bash deploy.sh`, and `--domain` gets you HTTPS
+- **Sep 10** Multi-tenant + admin console: 16 panels; admins, auditors and members each see their own slice
+- **Sep 10** No more stopping half-done: the progress file is checked before a task may end
+- **Sep 10** One line per step in the process pane; raw arguments and full return values are one click away
+- **Sep 10** Long replies stopped stuttering: on a 100k-char stream, DOM rebuild drops 19.7s → 0.7s
+- **Sep 10** Goal cards derive and grade criteria through your local CLI, with no silent API spend
+- **Sep 10** WeChat / WeCom / Official Accounts / QQ can receive files, images, voice notes and stickers
+- **Sep 10** Create a Lark app by QR; the App ID fills itself back in
+- **Sep 9** Finishing a task no longer pops a panel over your chat — outputs become a row of chips
+- **Sep 9** 39 one-click connector presets; experts up to 15, plus 4 teams
+- **Sep 9** English / Chinese in one click; Appearance adds theme, six skins, font size and density
+- **Sep 8** Five-step first-run wizard sets up model, engine and IM
+- **Sep 8** Local Claude Code / Codex as the engine, with memory, skills, files and media wired in
+- **Sep 8** Reasoning models can have thinking turned off or dialed down
+- **Sep 7** Scheduled tasks get a "false green" verdict: no exception is not the same as done
+- **Sep 5** `wb` CLI: one-shot, interactive, pipes, `--json`, honest exit codes
 - **Sep 3** In-app preview for docx / xlsx / pptx / zip / csv
 - **Aug 31** Paste or drag files and images into the chat; the agent actually reads the image
 
