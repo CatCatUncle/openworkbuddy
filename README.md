@@ -95,9 +95,13 @@
 | macOS · Apple 芯片 | `OpenWorkBuddy-*-mac-arm64.dmg` |
 | macOS · Intel | `OpenWorkBuddy-*-mac-x64.dmg` |
 | Windows 10/11（x64 与 ARM 同一个包，装时自动选） | `OpenWorkBuddy-*-win-setup.exe` |
-| Windows 免安装版（U 盘/公司电脑不让装软件） | `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe`（不知道自己是哪种 CPU 就拿 `-win-portable.exe`，两种都装在里面，体积翻倍） |
+| Windows 免安装版（**只在装不了软件时才用**） | `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe`（原理是自解压：每次启动要把整包解压到 `%TEMP%`，第一次可能要等好几分钟，期间只有进程没有窗口）|
 
-> macOS 第一次打开提示「无法验证开发者」——包没买苹果证书签名，不是有毒。右键 → 打开，或 `xattr -cr /Applications/OpenWorkBuddy.app`。你的数据在 `~/OpenWorkBuddy`，卸载不会删。
+> 第一次打开会被系统拦一下，因为这个包没有代码签名证书（苹果一年 99 美元、Windows 一年几千块，这是个免费开源项目），不是有毒。
+> **Windows**：弹窗里点灰色小字「更多信息」→「仍要运行」。**macOS**：右键图标 → 打开，或 `xattr -cr /Applications/OpenWorkBuddy.app`。
+> 你的数据在 `~/OpenWorkBuddy`，卸载不会删。
+>
+> **双击了没反应？** 启动日志在 `~/OpenWorkBuddy/logs/boot.log`，对照 [安装与启动 · 双击了没反应？](docs/安装与启动.md#双击了没反应) 逐条排查。
 
 **从源码**（Node.js 18+，零构建零框架，改完刷新即生效）：
 
