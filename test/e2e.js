@@ -1323,6 +1323,19 @@ async function testLookAtImage() {
     assert.strictEqual(seen.url, "https://api.anthropic.com/v1/messages", "Anthropic 走错了地址：" + seen.url);
     assert.ok(seen.body.messages[0].content.some((c) => c.type === "image" && c.source.data.startsWith("iVBOR")), "Anthropic 的图没按 base64 source 发");
 
+    // 设置页里其它渠道的 base_url 全都以 /v1 结尾，用户照着填 Claude 很自然。
+    // 自己拼 `${base}/v1/messages` 的话这里会变成 /v1/v1/messages，上游 404，人还以为是 Key 不对
+    for (const [given, want] of [
+      ["https://api.anthropic.com/v1", "https://api.anthropic.com/v1/messages"],
+      ["https://relay.example/anthropic/v1/", "https://relay.example/anthropic/v1/messages"],
+      ["https://relay.example/anthropic", "https://relay.example/anthropic/v1/messages"],
+    ]) {
+      seen = null;
+      await lookAtImage({ media: { vision: { base_url: given, api_key: "k", model: "claude", provider: "anthropic" } } },
+        { path: "截图.png", question: "什么颜色？" }, 30000, resolveFile);
+      assert.strictEqual(seen.url, want, `视觉渠道 base_url=${given} 拼出了 ${seen.url}`);
+    }
+
     // 主模型是纯文本模型：上游 400 说得很清楚，这时候要让用户去配视觉渠道，而不是让模型自己反复重试
     global.fetch = async () => ({ ok: false, status: 400, json: async () => ({ error: { message: "This model does not support image" } }) });
     const fb = { visionFallback: { base_url: "https://main/v1", api_key: "k", model: "deepseek-chat" } };
@@ -1380,6 +1393,67 @@ async function testLookAtImage() {
     fs.rmSync(imgInWs, { force: true });
   }
   console.log("✅ 看图：带问题才给看 · 图只随请求发不进历史 · OpenAI/Anthropic 两种协议 · 主模型看不了图时指路去配 · 思考吃光额度自动关思考重看一次（正常回话不重试）· 真空了就叫停并禁止编造看过");
+}
+
+// ---------- Claude 渠道：验活打哪儿，真跑就得打哪儿 ----------
+// 这条只能真起一个服务器来验，不能看源码正则。因为「验活」走的是裸 fetch、「真跑」走的是
+// 官方 SDK（地址由它自己补一段），两边长得完全不一样，光看代码看不出它们最终是不是同一个 URL。
+// 出事的形态很难查：填了中转地址的人，设置页验活是绿的（打的是中转），一发消息 401（打的是官方），
+// 于是他去换 Key、换模型名、怀疑中转挂了——唯独不会怀疑这两步压根没走同一条路。
+async function testAnthropicEndpointAgreement() {
+  const http = require("http");
+  const { createLLM, anthropicBase } = require("../llm");
+
+  // 纯函数那一层：填法五花八门，归一之后只有一个根
+  for (const [given, want] of [
+    ["", "https://api.anthropic.com"],
+    ["https://api.anthropic.com", "https://api.anthropic.com"],
+    ["https://api.anthropic.com/", "https://api.anthropic.com"],
+    ["https://api.anthropic.com/v1", "https://api.anthropic.com"],
+    ["https://relay.example/claude/v1/", "https://relay.example/claude"],
+  ]) {
+    assert.strictEqual(anthropicBase(given).baseURL, want, `base_url=${JSON.stringify(given)} 归一错了：` + anthropicBase(given).baseURL);
+    assert.strictEqual(anthropicBase(given).messagesUrl, want + "/v1/messages", "messagesUrl 拼错：" + anthropicBase(given).messagesUrl);
+  }
+
+  const hits = [];
+  const srv = http.createServer((req, res) => {
+    hits.push(req.method + " " + req.url);
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "e2e 只看地址，不给真答案" } }));
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  try {
+    const port = srv.address().port;
+    // 尾巴上带 /v1/ 是最容易被填出来的写法——设置页里其它渠道全长这样
+    const base = `http://127.0.0.1:${port}/relay/v1/`;
+
+    // 真跑：createLLM → anthropicChat → 官方 SDK
+    const llm = createLLM({ models: [{ name: "t", provider: "anthropic", model: "claude-x", api_key: "sk-e2e", base_url: base, default: true }] });
+    try { await llm.chat({ system: "s", history: [{ role: "user", content: "hi" }], tools: [] }); } catch {}
+    assert.deepStrictEqual(hits, ["POST /relay/v1/messages"],
+      "真跑没打到用户填的中转地址（这就是 base_url 没传给 SDK 的症状）：" + JSON.stringify(hits));
+
+    // 验活：server.js 的 probeModel 用的就是这个地址
+    const probeUrl = anthropicBase(base).messagesUrl;
+    await fetch(probeUrl, { method: "POST", headers: { "Content-Type": "application/json", "x-api-key": "k", "anthropic-version": "2023-06-01" }, body: "{}" }).catch(() => {});
+    assert.strictEqual(hits.length, 2, "验活没打出去：" + JSON.stringify(hits));
+    assert.strictEqual(hits[0], hits[1], "验活和真跑打的不是同一个地址：" + JSON.stringify(hits));
+
+    // 源码侧再钉一道：server.js 不许自己再长一套算法出来
+    const srvSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+    assert.ok(/anthropicBase\(m\.base_url\)\.messagesUrl/.test(srvSrc), "probeModel 又自己拼地址了");
+    assert.ok(!/https:\/\/api\.anthropic\.com\/v1["'`]/.test(srvSrc), "server.js 里又写死了一个 Anthropic 端点");
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+
+  // SDK 是正式依赖，不是「用到再说」的可选项：装机包的用户没法自己 npm install
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+  assert.ok(pkg.dependencies && pkg.dependencies["@anthropic-ai/sdk"], "@anthropic-ai/sdk 不在 dependencies 里，选了 Claude 的人一发消息就 MODULE_NOT_FOUND");
+  assert.ok(!(pkg.optionalDependencies || {})["@anthropic-ai/sdk"], "@anthropic-ai/sdk 挂在 optionalDependencies 上照样可能装不上");
+
+  console.log("✅ Claude 渠道：base_url 归一（带不带 /v1 都行）· 验活与真跑打同一个地址 · SDK 是正式依赖");
 }
 
 // ---------- Agent Plugins 1.0.0 ----------
@@ -4821,6 +4895,7 @@ async function main() {
   await testFetchRetry();
   testCheckPageConsole();
   await testLookAtImage();
+  await testAnthropicEndpointAgreement();
   testPluginManifest();
   testPluginComponentIsolation();
   testPluginMcpRuntime();

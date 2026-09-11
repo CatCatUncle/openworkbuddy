@@ -12,7 +12,7 @@
 
 const thinking = require("./thinking");
 
-// ---------- Anthropic (Claude) —— 可选适配器，仅在 provider=anthropic 时才需要安装 @anthropic-ai/sdk ----------
+// ---------- Anthropic (Claude) —— 官方 SDK 通道，@anthropic-ai/sdk 是正式依赖，跟着装机包一起走 ----------
 
 /**
  * 把「带 tool_calls 的 assistant」和它的工具结果重新配上对。
@@ -106,17 +106,34 @@ function toAnthropicMessages(rawHistory) {
   return messages;
 }
 
+/**
+ * Anthropic 的地址只算一次。
+ *
+ * 以前是两套算法：向导验活走裸 fetch（自己拼 `${base}/messages`），真跑走 SDK（它自己补
+ * `/v1/messages`，而且压根没人把 base_url 传给它）。于是填了中转地址的人，验活验的是中转、
+ * 跑起来打的是官方——一个绿勾换一句 401。统一归一成「不带 /v1 的根」，两边各补各的那一段。
+ */
+function anthropicBase(baseUrl) {
+  const raw = String(baseUrl || "").trim().replace(/\/+$/, "");
+  const root = (raw || "https://api.anthropic.com").replace(/\/v1$/, "");
+  return { baseURL: root, messagesUrl: root + "/v1/messages" };
+}
+
 async function anthropicChat(cfg, { system, history, tools, onTextDelta, onActivity, signal }) {
   let Anthropic;
   try {
     Anthropic = require("@anthropic-ai/sdk");
   } catch {
+    // 这个包在 package.json 的 dependencies 里，装机包和 npm install 都会带上它。
+    // 还能走到这儿，说明是从源码跑但没装依赖——说清楚下一步怎么办，别让人以为是渠道不支持
     throw new Error(
-      "使用 Claude 需先安装可选依赖：npm install @anthropic-ai/sdk（默认配置走 OpenAI 兼容接口，无需此依赖）"
+      "@anthropic-ai/sdk 没装好（它是正式依赖，正常安装会自带）：在项目目录里跑一次 npm install 就有了；" +
+        "或者在设置里改用 OpenRouter 等 OpenAI 兼容通道访问 Claude"
     );
   }
   const client = new Anthropic({
     apiKey: cfg.api_key || process.env.ANTHROPIC_API_KEY,
+    baseURL: anthropicBase(cfg.base_url).baseURL, // 填了中转就真走中转，跟向导验活同一个地址
   });
 
   // Anthropic 的缓存要自己打断点（DeepSeek/OpenAI 是自动的）。两个就够：
@@ -722,4 +739,4 @@ function createEmbedder(config) {
   return embed;
 }
 
-module.exports = { createLLM, createEmbedder, _internals: { markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs } };
+module.exports = { createLLM, createEmbedder, anthropicBase, _internals: { markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs } };
