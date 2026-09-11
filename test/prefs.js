@@ -601,4 +601,16 @@ function runSourcePins() {
      "壳里连的是 127.0.0.1 不是 localhost（localhost 可能解析到 ::1，而服务端只听 IPv4）");
   ok(/OPENWORKBUDDY_DISABLE_GPU/.test(mainSrc) && /disable_gpu/.test(mainSrc),
      "留了关硬件加速的逃生门：显卡画不出窗口时不用改代码也能打开");
+
+  // 端口：壳和服务端必须按同一套优先级算，不然就是「服务端听 A、壳去连 B」——
+  // 窗口永远等不到人，用户看到的是一个「启动失败」的弹框，而他只是设了个环境变量。
+  const resolvePort = new Function(slice("electron-main.js", "resolvePort") + "\nreturn resolvePort;")();
+  eq(resolvePort({ PORT: "3810" }, { server: { port: 3900 } }), 3810,
+     "PORT 环境变量说了算（server.js 就是这个优先级；壳以前只读 config，设了 PORT 必然连错端口）");
+  eq(resolvePort({}, { server: { port: 3900 } }), 3900, "没设环境变量就听 config.json 的");
+  eq(resolvePort({}, null), 3800, "config 读不出来也得有个默认值，不能是 NaN");
+  eq(resolvePort({ PORT: "" }, { server: { port: 3900 } }), 3900, "PORT 是空串等于没设，别把 config 顶掉");
+  eq(resolvePort({ PORT: "不是数字" }, null), 3800, "PORT 填了句人话也不能算出 NaN（NaN 端口连不上任何东西）");
+  ok(/\+process\.env\.PORT \|\| srvCfg\.port \|\| 3800/.test(serverSrc),
+     "  └ 反向对照：server.js 那头确实是 env > config > 3800，两边不是各写各的");
 }
