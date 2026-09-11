@@ -19,6 +19,10 @@ if (typeof require("electron") === "string") {
 }
 const { app, BrowserWindow } = require("electron");
 
+// 这几个跑的都是离屏/隐藏窗口，人眼看不到任何界面，但 macOS 照样往程序坞里塞一个 Electron 图标
+// 一跳一跳的，跑一次测试抢一次注意力。声明成后台附属进程，图标就不出现了（窗口本来也没显示）。
+if (process.platform === "darwin" && app.dock && app.dock.hide) app.dock.hide();
+
 const SVGFIG = fs.readFileSync(path.join(__dirname, "..", "public", "svgfig.js"), "utf8");
 
 // 附件（粘贴/拖拽：文件、图片、大段文字）用的是 app-02.js 里那一段真源码——

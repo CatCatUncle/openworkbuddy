@@ -24,6 +24,10 @@
  * 登录：演示目录没账号，脚本自己注册一个随机密码的 demo 账号，录完随目录一起删。
  */
 const { app, BrowserWindow } = require("electron");
+
+// 这几个跑的都是离屏/隐藏窗口，人眼看不到任何界面，但 macOS 照样往程序坞里塞一个 Electron 图标
+// 一跳一跳的，跑一次测试抢一次注意力。声明成后台附属进程，图标就不出现了（窗口本来也没显示）。
+if (process.platform === "darwin" && app.dock && app.dock.hide) app.dock.hide();
 const fs = require("fs");
 const { defaultPairs, maskScript } = require("./demo-mask");
 const { wireReadmes } = require("./demo-readme");

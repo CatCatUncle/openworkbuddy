@@ -22,6 +22,10 @@ const fs = require("fs");
 const http = require("http");
 const { app, BrowserWindow } = require("electron");
 
+// 这几个跑的都是离屏/隐藏窗口，人眼看不到任何界面，但 macOS 照样往程序坞里塞一个 Electron 图标
+// 一跳一跳的，跑一次测试抢一次注意力。声明成后台附属进程，图标就不出现了（窗口本来也没显示）。
+if (process.platform === "darwin" && app.dock && app.dock.hide) app.dock.hide();
+
 const ROOT = path.join(__dirname, "..");
 const OUT_DIR = path.join(ROOT, "docs", "images");
 
