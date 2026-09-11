@@ -2159,6 +2159,9 @@ const ONB_STUBS = `
   // SHORTCUT_ACTIONS 里 "stop" 这一条要用到的几个：普通弹层遮罩、对话内搜索、以及「正在跑就先停任务」
   const mask = Object.assign(document.createElement("div"), { id: "modal-mask" });
   document.body.appendChild(mask);
+  // closeModal 的真身在 app-02.js 的弹层那一段（这块切的是 SHORTCUT_ACTIONS 表），照抄它做的两件事：
+  // 先撤掉快捷键改绑的武装态，再收遮罩
+  function closeModal() { if (window.__scCancelRebind) window.__scCancelRebind(); mask.classList.remove("show"); }
   let BUSY = false; const STOPPED = [];
   function curBusy() { return BUSY; }
   function stopTask() { STOPPED.push(1); }
@@ -4130,6 +4133,109 @@ const MERGE_CHECKS = `
 `;
 
 const RENDERER_LOG = [];
+// ================= 快捷键改绑：武装态必须有三个出口（真源码切片） =================
+// 这一屏点下「按键」之后，会往 document 的捕获阶段挂一个 keydown——它吞掉每一次按键。
+// 原来只有 Esc 能退出：用户鼠标一点走，监听还挂着，于是回聊天框打的第一个字符消失了，
+// 还被静默绑成快捷键（裸 s 这种没人占的键必定绑成功并存进偏好）；更糟的是
+// window.__scRebinding 一直为真，app-02.js 那句「改绑中不触发动作」让全站快捷键集体失灵，
+// 连再点一次「按键」都点不动（onclick 第一句就被这个 true 挡回去）。
+const SCK1 = APP02.indexOf("let toastTimer = null;");
+const SCE0 = APP02.indexOf("// ================= 快捷键引擎");
+const SCP0 = APP06.indexOf("// ================= 快捷键面板 =================");
+const SCP1 = APP06.indexOf("// ================= 自进化：");
+if (SCE0 < 0 || SCK1 <= SCE0) throw new Error("app-02.js 里找不到快捷键引擎那一段");
+if (SCP0 < 0 || SCP1 <= SCP0) throw new Error("app-06.js 里找不到快捷键面板那一段");
+const SC_SRC = APP02.slice(SCE0, SCK1) + "\n" + APP06.slice(SCP0, SCP1);
+const SC_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body><div id='pane'></div></body>";
+const SC_STUBS = `
+  const SAVED = [];
+  function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+  function saveSettings(patch) { SAVED.push(JSON.parse(JSON.stringify(patch))); return Promise.resolve({ ok: true }); }
+`;
+// app-02.js 里那两处「关弹窗」得真的调撤销钩子——弹窗关了监听还在，是同一个病的另一种得法
+const SC_CLOSE_SITES = APP02.split("\n").filter((l) => l.includes("__scCancelRebind") || l.includes("closeModal")).map((l) => l.trim());
+const SC_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
+  const tick = () => new Promise((r) => setTimeout(r, 8));
+  const pane = document.getElementById("pane");
+  renderShortcutsPane(pane, { shortcuts: {} });
+
+  const kbd = () => pane.querySelector('.sc-edit[data-id="new-chat"]');
+  const arm = () => { kbd().click(); };
+  /** 往 document 上真发一次按键，返回它有没有被那个捕获监听吃掉 */
+  const press = (init) => {
+    const ev = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    document.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  };
+  const clickAway = () => document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+
+  const WAS = kbd().textContent;
+
+  // ---- 先钉住「吞键」这件事真实存在：武装态下按键确实被吃掉（有它这组断言才有意义）----
+  arm();
+  ok("点一下按键就进入武装态（标志位立起来了）", window.__scRebinding === true);
+  // 用「只按了修饰键」来验吞键：它同样走到 preventDefault，但不会落绑定，武装态留得住
+  ok("武装态下按键确实被吞掉（这是下面每一条的对照基准）", press({ key: "Shift", code: "ShiftLeft", shiftKey: true }) === true);
+  ok("武装态下屏幕上有第二个出口：一颗能点的「取消」", !!pane.querySelector(".sc-cancel"));
+
+  // ---- 出口一：鼠标点到别处 ----
+  clickAway();
+  ok("鼠标点到别处 = 放弃改绑，标志位落下", window.__scRebinding === false);
+  ok("放弃之后按键不再被吞（原来这一下会打不出字，还被静默绑成快捷键）", press({ key: "s", code: "KeyS" }) === false);
+  ok("放弃之后什么都没存进偏好", SAVED.length === 0, SAVED);
+  ok("按键文案原地还原，没留下「按下新组合键…」", kbd().textContent === WAS, kbd().textContent);
+  ok("「取消」按钮跟着撤走", !pane.querySelector(".sc-cancel"));
+  ok("撤销钩子也清干净了（别让下一次关弹窗调到死的闭包）", window.__scCancelRebind === null);
+  ok("还能再点一次「按键」（原来那个没落下的 true 会把改绑功能彻底点不动）", (arm(), window.__scRebinding === true));
+  clickAway();
+
+  // ---- 出口二：点「取消」 ----
+  arm();
+  ok("武装时撤销钩子挂上了（弹窗被别的代码关掉也能撤）", typeof window.__scCancelRebind === "function");
+  pane.querySelector(".sc-cancel").click();
+  ok("点「取消」退出武装态", window.__scRebinding === false && !pane.querySelector(".sc-cancel"));
+  ok("点「取消」之后按键不被吞", press({ key: "s", code: "KeyS" }) === false);
+
+  // ---- 出口三：Esc（老路，不能改坏）----
+  arm();
+  ok("Esc 仍然能退出", (press({ key: "Escape", code: "Escape" }), window.__scRebinding === false));
+  ok("Esc 之后按键不被吞", press({ key: "s", code: "KeyS" }) === false);
+  ok("Esc 之后按键文案也还原了", kbd().textContent === WAS, kbd().textContent);
+
+  // ---- 出口四：面板被重画（搜索/切标签）后自解除，别继续吞键 ----
+  arm();
+  const search = pane.querySelector("#sc-search");
+  search.value = "新建";
+  search.dispatchEvent(new Event("input", { bubbles: true })); // 重画列表 = 原来那颗 kbd 已经不在文档里了
+  ok("重画之后第一次按键只用来自解除，不落任何绑定", press({ key: "s", code: "KeyS" }) === false);
+  ok("重画之后标志位也落下了", window.__scRebinding === false);
+  ok("重画之后没有偷偷存东西", SAVED.length === 0, SAVED);
+  search.value = "";
+  search.dispatchEvent(new Event("input", { bubbles: true }));
+
+  // ---- 正路还得通：真按一个没人占的组合键，就该存下来 ----
+  arm();
+  press({ key: "j", code: "KeyJ", metaKey: true });
+  await tick();
+  ok("按下 ⌘J：存进偏好且退出武装态", window.__scRebinding === false && SAVED.length === 1 && SAVED[0].shortcuts["new-chat"] === "Meta+J", SAVED);
+
+  // ---- 冲突还得拦住，且拦住时不许退出（用户要接着按下一个）----
+  const kbd2 = () => pane.querySelector('.sc-edit[data-id="toggle-sidebar"]');
+  kbd2().click();
+  press({ key: "f", code: "KeyF", metaKey: true }); // ⌘F 是「对话内搜索」
+  ok("撞车时当场说撞了谁，并且继续等下一个键", window.__scRebinding === true && /冲突/.test(kbd2().textContent), kbd2().textContent);
+  press({ key: "Escape", code: "Escape" });
+  ok("撞车之后 Esc 照样退得出来", window.__scRebinding === false);
+
+  // ---- 关弹窗这条路：源码里必须真的调了撤销钩子 ----
+  ok("app-02.js 的关弹窗走统一出口并撤掉改绑监听", ${JSON.stringify(SC_CLOSE_SITES)}.some((l) => l.includes("__scCancelRebind")) && ${JSON.stringify(SC_CLOSE_SITES)}.filter((l) => l.includes("closeModal")).length >= 3, ${JSON.stringify(SC_CLOSE_SITES)});
+
+  return names;
+})()`;
+
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
   RENDERER_LOG.length = 0;
@@ -4467,6 +4573,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：键盘可达（侧栏行/成果卡 Tab 得到·回车空格等价点击·按钮不套按钮）${names6.length} 项通过`);
     } finally {
       if (!win6.isDestroyed()) win6.destroy();
+    }
+    const winSC = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winSC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SC_HTML));
+      const namesSC = await winSC.webContents.executeJavaScript(SC_STUBS + "\n" + SC_SRC + "\n" + SC_CHECKS, true);
+      for (const n of namesSC) console.log("  ✓ " + n);
+      console.log(`✅ 前端：快捷键改绑不再扣着键盘不放（点别处/点取消/Esc/面板重画 四个出口·冲突照拦·正路照存）${namesSC.length} 项通过`);
+    } finally {
+      if (!winSC.isDestroyed()) winSC.destroy();
     }
   } catch (e) {
     console.error("❌ 前端测试失败:", e && e.message ? e.message : e);

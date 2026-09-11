@@ -578,6 +578,8 @@
   .sc-kbd { background: var(--wb-bg-hover); border: 1px solid var(--wb-border); border-radius: 6px; padding: 3px 10px; font-size: 13px; font-family: inherit; min-width: 52px; text-align: center; display: inline-block; }
   .sc-edit { cursor: pointer; }
   .sc-edit:hover, .sc-edit.armed { border-color: var(--wb-brand-text); color: var(--wb-brand-text); }
+  .sc-cancel { margin-left: 8px; border: none; background: none; color: var(--wb-text-2); cursor: pointer; font-size: 13px; padding: 4px 8px; border-radius: 6px; }
+  .sc-cancel:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   #wb-toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(30,30,30,.82); backdrop-filter: saturate(180%) blur(14px); -webkit-backdrop-filter: saturate(180%) blur(14px); color: #fff; padding: 8px 18px; border-radius: 10px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity var(--wb-t) var(--wb-ease); z-index: 999; }
   #wb-toast.show { opacity: 1; }
   #chat-search { display: none; position: absolute; top: 50px; right: 20px; z-index: 50; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 10px; box-shadow: var(--shadow-menu); padding: 6px 8px; gap: 6px; align-items: center; }

@@ -756,8 +756,11 @@ async function runTurn(sid, text, mode, regen) {
 bindComposer();
 
 // ================= 弹窗（技能/专家/定时/设置中心） =================
-document.getElementById("m-close").onclick = () => mask.classList.remove("show");
-mask.addEventListener("click", (e) => { if (e.target === mask) mask.classList.remove("show"); });
+// 关弹窗前先把快捷键改绑的武装态撤了。document 上那个捕获 keydown 不撤掉的话，
+// 弹窗关了它还在吞键：用户回聊天框打的第一个字符会消失，还会被静默绑成快捷键
+const closeModal = () => { if (window.__scCancelRebind) window.__scCancelRebind(); mask.classList.remove("show"); };
+document.getElementById("m-close").onclick = closeModal;
+mask.addEventListener("click", (e) => { if (e.target === mask) closeModal(); });
 document.querySelectorAll(".side-nav").forEach((nav) => nav.addEventListener("click", (e) => {
   const item = e.target.closest(".item");
   if (!item) return;
@@ -883,7 +886,7 @@ const SHORTCUT_ACTIONS = {
     const onb = document.getElementById("onb-mask");
     // 新手引导是块全屏遮罩，它自己没有 ✕；Escape 得管得着，否则卡在里面只能重启
     if (onb && onb.classList.contains("show")) onb.classList.remove("show");
-    else if (mask.classList.contains("show")) mask.classList.remove("show");
+    else if (mask.classList.contains("show")) closeModal();
     else if (cs && cs.style.display === "flex") closeChatSearch();
     else if (curBusy()) stopTask();
   },

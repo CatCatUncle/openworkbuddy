@@ -198,7 +198,7 @@ function renderShortcutsPane(pane, s) {
       <input id="sc-search" placeholder="搜索快捷键" style="flex:1;margin:0">
       <button class="btn-brand" id="sc-reset" style="white-space:nowrap">全部恢复默认</button>
     </div>
-    <div class="d" style="margin-bottom:4px">共 ${SHORTCUT_DEFS.length} 条 · 点击右侧按键，然后直接按下新组合键即可改绑（Esc 取消）。「唤起/隐藏主窗口」是系统级快捷键，仅桌面版生效。</div>
+    <div class="d" style="margin-bottom:4px">共 ${SHORTCUT_DEFS.length} 条 · 点击右侧按键，然后直接按下新组合键即可改绑；不想改了按 Esc、点「取消」、或者鼠标点到别处都行。「唤起/隐藏主窗口」是系统级快捷键，仅桌面版生效。</div>
     <div id="sc-list"></div><span class="ok-msg" id="sc-msg" style="display:block;margin-top:8px"></span>`;
   const draw = (filter) => {
     pane.querySelector("#sc-list").innerHTML = SHORTCUT_DEFS
@@ -219,16 +219,39 @@ function renderShortcutsPane(pane, s) {
     .then(() => draw(pane.querySelector("#sc-search").value.trim()));
   function bindRows() {
     pane.querySelectorAll("[data-restore]").forEach(a => a.onclick = (e) => { e.preventDefault(); delete cur[a.dataset.restore]; save(); });
+    // 武装态是这一屏最危险的一截：它在 document 捕获阶段吞掉每一次按键。
+    // 只认 Esc 退出的话，用户一鼠标点走，监听还挂在那儿——回聊天框打的第一个字符打不出来，
+    // 还会被静默绑成快捷键（裸 s 这种没人占的键必定绑成功并存进偏好），
+    // 而且 window.__scRebinding 一直为真，app-02.js 那句「改绑中不触发动作」让全站快捷键集体失灵。
+    // 所以出口必须有三个：Esc、点一下「取消」、鼠标点到别处；外加一条自解除（面板被重画就退出）。
     pane.querySelectorAll(".sc-edit").forEach(k => k.onclick = () => {
       if (window.__scRebinding) return;
       window.__scRebinding = true;
+      const was = k.textContent; // 取消时原地还原，不整片重画：重画会把用户正要点的下一个键位吃掉
       k.textContent = "按下新组合键…";
       k.classList.add("armed");
-      const cleanup = () => { document.removeEventListener("keydown", onKey, true); window.__scRebinding = false; };
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "sc-cancel";
+      cancel.textContent = "取消";
+      k.insertAdjacentElement("afterend", cancel);
+      const cleanup = () => {
+        document.removeEventListener("keydown", onKey, true);
+        document.removeEventListener("pointerdown", onOut, true);
+        window.__scRebinding = false;
+        window.__scCancelRebind = null;
+        cancel.remove();
+        if (document.body.contains(k)) { k.textContent = was; k.classList.remove("armed"); }
+      };
+      // 点到「取消」以外的任何地方都算放弃：左栏标签、弹窗 ✕、遮罩、聊天框，甚至这颗键自己
+      const onOut = (ev) => { if (ev.target !== cancel && !cancel.contains(ev.target)) cleanup(); };
+      cancel.onclick = cleanup;
       const onKey = (e) => {
+        // 面板已经被重画过（搜索、保存、切标签），这颗键早不在文档里了：自己退出，别再吞键
+        if (!document.body.contains(k)) return cleanup();
         e.preventDefault();
         e.stopPropagation();
-        if (e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) { cleanup(); draw(pane.querySelector("#sc-search").value.trim()); return; }
+        if (e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) { cleanup(); return; }
         const acc = accelFromEvent(e);
         if (!acc) return; // 只按了修饰键，继续等主键
         const canon = canonAccel(acc);
@@ -239,6 +262,8 @@ function renderShortcutsPane(pane, s) {
         save();
       };
       document.addEventListener("keydown", onKey, true);
+      document.addEventListener("pointerdown", onOut, true);
+      window.__scCancelRebind = cleanup; // 弹窗要是被别的代码直接关掉，也得保证监听没留下
     });
   }
   pane.querySelector("#sc-search").oninput = (e) => draw(e.target.value.trim());
