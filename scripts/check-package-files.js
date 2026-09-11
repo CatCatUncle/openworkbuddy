@@ -156,7 +156,97 @@ function assertPackComplete(appDir) {
   return missing;
 }
 
-module.exports = { walkGraph, missingFrom, assertPackComplete, localRequires, bareRequires, missingDeps, ENTRIES, ASSETS, RUNTIME_PROVIDED };
+/**
+ * 把装机包里的每一个生产依赖真 require 一遍。
+ *
+ * 上面那道闸门只查「我们自己的源文件在不在」，查不出 node_modules 被削瘦之后还能不能跑。
+ * 这道是被真事逼出来的：为了让 Windows 免安装版别再解压两万个文件，files 里加了几条排除，
+ * 其中一条按目录名删（test/doc/example），当场把 @iconify/utils/lib/emoji/test/parse.js 和
+ * exceljs/lib/doc/ 删没了——那是人家的运行时代码，不是测试。静态扫文件名看不出来，
+ * 只有真 require 才会红。装机包里 require 不起来的依赖，一个都不许发出去。
+ *
+ * ESM 包（mermaid 这种）在 Node 22.12+ 上 require 得动；万一撞上老 Node 的 ERR_REQUIRE_ESM，
+ * 退回 import() 再试一次，别把「这台机器的 Node 太老」误报成「包坏了」。
+ */
+async function assertDepsRequirable(appDir) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(appDir, "package.json"), "utf8"));
+  const names = Object.keys(pkg.dependencies || {});
+  const bad = [];
+  for (const n of names) {
+    let resolved;
+    try {
+      resolved = require.resolve(n, { paths: [appDir] });
+    } catch (e) {
+      bad.push(`${n}：连入口都找不到（${firstLine(e)}）`);
+      continue;
+    }
+    try {
+      require(resolved);
+    } catch (e) {
+      if (e && (e.code === "ERR_REQUIRE_ESM" || /require\(\) of ES Module/.test(String(e.message)))) {
+        try {
+          await import(require("url").pathToFileURL(resolved).href);
+          continue;
+        } catch (e2) {
+          bad.push(`${n}：${firstLine(e2)}`);
+          continue;
+        }
+      }
+      bad.push(`${n}：${firstLine(e)}`);
+    }
+  }
+  if (bad.length) {
+    throw new Error(
+      `[打包] 装机包里有 ${bad.length} 个依赖 require 不起来，装完必定打不开：\n` +
+        bad.map((b) => "  - " + b).join("\n") +
+        `\n多半是 electron-builder.config.js 的 files 里某条排除删过头了。`
+    );
+  }
+  console.log(`[打包] 依赖可用核对通过：${names.length} 个生产依赖都 require 得起来`);
+}
+
+function firstLine(e) {
+  return String((e && e.message) || e).split("\n")[0].slice(0, 160);
+}
+
+/** 装机包里不该再有的文件类型：运行时一个字节都不读，却占了原来 44% 的体积 */
+const DEAD_WEIGHT = [/\.map$/, /\.d\.[cm]?ts$/];
+
+/**
+ * 核一遍瘦身有没有真生效。
+ * 光在 config 里写排除不算数——写错一个 glob 它会静默什么都不删，
+ * 下载量还是那么大，而谁也不会发现。
+ * @returns {{files: number, bytes: number, leftovers: string[]}}
+ */
+function assertSlimmed(appDir) {
+  const leftovers = [];
+  let files = 0;
+  let bytes = 0;
+  const walk = (dir) => {
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!e.isFile()) continue;
+      files++;
+      try { bytes += fs.statSync(full).size; } catch {}
+      if (DEAD_WEIGHT.some((re) => re.test(e.name))) leftovers.push(path.relative(appDir, full));
+    }
+  };
+  walk(appDir);
+  if (leftovers.length) {
+    throw new Error(
+      `[打包] 装机包里还剩 ${leftovers.length} 个 source map / 类型声明，files 里的排除没生效：\n` +
+        leftovers.slice(0, 8).map((f) => "  - " + f).join("\n") +
+        (leftovers.length > 8 ? `\n  …还有 ${leftovers.length - 8} 个` : "")
+    );
+  }
+  console.log(`[打包] 瘦身核对通过：app/ ${files} 个文件 / ${(bytes / 1024 / 1024).toFixed(0)} MB，没有 .map 和 .d.ts`);
+  return { files, bytes, leftovers };
+}
+
+module.exports = { walkGraph, missingFrom, assertPackComplete, assertDepsRequirable, assertSlimmed, localRequires, bareRequires, missingDeps, DEAD_WEIGHT, ENTRIES, ASSETS, RUNTIME_PROVIDED };
 
 if (require.main === module) {
   const dir = process.argv[2];
