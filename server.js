@@ -16,7 +16,7 @@ const { DATA_DIR, dataPath, appPath, seedDataDir } = require("./paths");
 seedDataDir();
 const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
-const { createLLM, createEmbedder } = require("./llm");
+const { createLLM, createEmbedder, anthropicBase } = require("./llm");
 const { outputFiles, filesScope, safePath, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
@@ -1080,8 +1080,11 @@ function hasKey(m) {
  *  刻意不走 createLLM：它会把工具 schema 一起发过去，这里只想知道"这个 key 认不认"。 */
 async function probeModel(m) {
   const anthropic = m.provider === "anthropic";
-  const base = (m.base_url || (anthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1")).replace(/\/$/, "");
-  const url = anthropic ? `${base}/messages` : `${base}/chat/completions`;
+  // Claude 那条渠道的地址算法只有一份（llm.js 的 anthropicBase），验活和真跑必须打同一个地址：
+  // 否则填了中转的人验活验的是中转、跑起来打的是官方，绿勾骗人
+  const url = anthropic
+    ? anthropicBase(m.base_url).messagesUrl
+    : (m.base_url || "https://api.openai.com/v1").replace(/\/$/, "") + "/chat/completions";
   const headers = anthropic
     ? { "Content-Type": "application/json", "x-api-key": m.api_key || "", "anthropic-version": "2023-06-01" }
     : { "Content-Type": "application/json", Authorization: `Bearer ${m.api_key || "ollama"}` };

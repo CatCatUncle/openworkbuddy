@@ -200,10 +200,78 @@ ok(/^seedDataDir\(\);/m.test(serverSrc), "server.js 启动时真的调了 seedDa
 }
 
 // ===================================================================
-// 【5】--build：真起一个容器（可选，慢）
+// 【5】依赖声明：代码里 require 的 npm 包，package.json 里必须有名字
+// ===================================================================
+// 这条和【1】【4】是同一类事：装机包在用户手上打不开。
+// 区别是这类断不掉在文件上——scripts/check-package-files.js 明确跳过 node_modules，
+// 它只管本仓库的文件在不在包里。npm 包在不在，只能看 dependencies 写没写。
+// 开发机的 node_modules 是一层层装出来的，别的包顺带带进来的东西这儿也 require 得到，
+// 于是本地全绿、用户那份照着 dependencies 装的包一用就 MODULE_NOT_FOUND。
+console.log("\n【5】用到的 npm 包，package.json 里有没有声明");
+
+{
+  const gate = require(path.join(ROOT, "scripts", "check-package-files.js"));
+
+  const missing = gate.missingDeps();
+  ok(
+    missing.length === 0,
+    "装机态会跑到的源文件里，require 的 npm 包全都写进 dependencies 了",
+    missing.map((m) => `${m.pkg}（${m.file}）`)
+  );
+
+  // 反向对照：把 dependencies 当成空的，这条闸门必须立刻炸，而且得点出是哪个文件
+  const wouldCatch = gate.missingDeps({});
+  const names = wouldCatch.map((m) => m.pkg);
+  ok(wouldCatch.length > 0, "反向对照：dependencies 清空后闸门会红（不是恒真的断言）", { got: wouldCatch.length });
+  ok(
+    names.includes("@anthropic-ai/sdk") && wouldCatch.some((m) => m.pkg === "@anthropic-ai/sdk" && m.file === "llm.js"),
+    "反向对照：能定位到 @anthropic-ai/sdk 来自 llm.js（就是它漏声明，害得选了 Claude 的人发第一条消息才报错）",
+    names
+  );
+  ok(names.includes("express"), "反向对照：@scope 之外的普通包也认得出来（express）", names);
+
+  // 包名解析本身的边界：作用域包只留两段，node: 前缀和相对路径不算依赖
+  const parsed = gate.bareRequires(
+    'require("@scope/pkg/sub/deep");require("plain/sub");require("node:fs");require("./local");require("fs")'
+  );
+  ok(
+    JSON.stringify(parsed) === JSON.stringify(["@scope/pkg", "plain", "fs"]),
+    "包名解析：@scope/pkg 只留两段、node: 前缀跳过、相对路径不算",
+    parsed
+  );
+
+  // 例外名单不是随便加的：每一条都得有「为什么不用声明」的实据
+  const pkgJson = JSON.parse(read("package.json"));
+  ok(
+    !Object.keys(pkgJson.dependencies || {}).includes("electron"),
+    "electron 留在 devDependencies（进了 dependencies 的话装机包里会多塞一整份 Electron）"
+  );
+  ok(
+    /try\s*\{[^}]*require\("ws"\)/.test(read("im-qq.js")),
+    "ws 的例外成立：它只是 Node 22 以下的兜底分支，外面包着 try/catch"
+  );
+
+  // Claude 这条渠道现在是真能用的：声明在、地址算法只有一份
+  ok(
+    /"@anthropic-ai\/sdk"\s*:/.test(read("package.json")),
+    "Anthropic SDK 已声明为正式依赖（设置页把「Anthropic Claude」摆出来了，就不能让人装不上）"
+  );
+  const llmSrc = read("llm.js");
+  ok(
+    /baseURL:\s*anthropicBase\(cfg\.base_url\)\.baseURL/.test(llmSrc),
+    "真跑时把 base_url 传给了 SDK（以前没传，填了中转的人验活过、一发消息打的还是官方）"
+  );
+  ok(
+    /anthropicBase\(m\.base_url\)\.messagesUrl/.test(read("server.js")),
+    "向导验活和真跑用同一个地址算法（两套算法 = 绿勾骗人）"
+  );
+}
+
+// ===================================================================
+// 【6】--build：真起一个容器（可选，慢）
 // ===================================================================
 if (BUILD) {
-  console.log("\n【5】真 build、真跑、真注册 —— 这段慢，几分钟");
+  console.log("\n【6】真 build、真跑、真注册 —— 这段慢，几分钟");
   const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...opts });
   const TAG = "openworkbuddy:deploytest";
   const NAME = "owb-deploytest";

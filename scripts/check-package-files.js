@@ -30,6 +30,66 @@ const ASSETS = [
   "config.example.json",     // 同上
 ];
 
+/**
+ * 只在 package.json 里挂了名字才会进装机包的那些依赖。
+ *
+ * 上面那句 `if (resolved.includes("node_modules")) continue;` 是故意的：文件闸门只管本仓库的文件。
+ * 代价是另一类「装完打不开」它一个都抓不到——代码里 require 了某个 npm 包，但 package.json 的
+ * dependencies 里没写。开发机上 node_modules 里恰好有（别的包顺带装的、或者早年手装过），
+ * 测试全绿；用户那份包是照着 dependencies 装的，于是第一次用到就 MODULE_NOT_FOUND。
+ *
+ * @anthropic-ai/sdk 就是这么漏的：设置页的模型下拉里明晃晃写着「Anthropic Claude」，向导验活
+ * 走的是裸 fetch 所以能过，等真发第一条消息才抛「需先安装可选依赖」——而装机包的用户根本没法
+ * 自己 npm install。所以这条线只能靠声明来守，下面把它变成一条会红的断言。
+ */
+const NODE_BUILTIN = new Set(require("module").builtinModules);
+/** 不用写进 dependencies 的例外，每条都得说清楚为什么 */
+const RUNTIME_PROVIDED = new Set([
+  "electron", // Electron 自己提供；它在 devDependencies 里，由 electron-builder 打进壳
+  "ws",       // 只在 Node 22 以下才会走到的兜底分支，外面包了 try/catch 并给了人话提示
+]);
+
+/** 静态扒出一个文件里 require 的 npm 包名（@scope/pkg 保留作用域那一层） */
+function bareRequires(code) {
+  const out = [];
+  for (const m of code.matchAll(/require\(\s*["']([^."'][^"']*)["']\s*\)/g)) {
+    const spec = m[1];
+    if (spec.startsWith("node:")) continue;
+    const parts = spec.split("/");
+    out.push(spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]);
+  }
+  return out;
+}
+
+/**
+ * 爬一遍装机态真正会跑的源文件，挑出「代码里 require 了、package.json 里没声明」的包。
+ * @param {object} [deps] 覆盖掉 package.json 的 dependencies；只给测试做反向对照用
+ * @returns {Array<{pkg: string, file: string}>}
+ */
+function missingDeps(deps) {
+  const pkg = deps ? { dependencies: deps } : JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const declared = new Set(Object.keys(pkg.dependencies || {}));
+  const out = [];
+  const seen = new Set();
+  for (const rel of walkGraph()) {
+    if (!rel.endsWith(".js")) continue;
+    let code;
+    try {
+      code = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    } catch {
+      continue;
+    }
+    for (const name of bareRequires(code)) {
+      if (NODE_BUILTIN.has(name) || RUNTIME_PROVIDED.has(name) || declared.has(name)) continue;
+      const key = name + "@" + rel;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ pkg: name, file: rel });
+    }
+  }
+  return out;
+}
+
 /** 静态扒出一个文件里的本地 require；node_modules 和用户数据路径不算 */
 function localRequires(code) {
   const out = [];
@@ -96,7 +156,7 @@ function assertPackComplete(appDir) {
   return missing;
 }
 
-module.exports = { walkGraph, missingFrom, assertPackComplete, localRequires, ENTRIES, ASSETS };
+module.exports = { walkGraph, missingFrom, assertPackComplete, localRequires, bareRequires, missingDeps, ENTRIES, ASSETS, RUNTIME_PROVIDED };
 
 if (require.main === module) {
   const dir = process.argv[2];

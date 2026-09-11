@@ -607,7 +607,9 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile) {
   const base = String(cfg.base_url).trim().replace(/\/+$/, "");
   const signal = AbortSignal.timeout(Math.max(timeoutMs || 0, 120000));
   const anthropic = cfg.provider === "anthropic";
-  const url = anthropic ? `${base}/v1/messages` : `${base}/chat/completions`;
+  // 地址算法跟主模型共用一份（llm.js 的 anthropicBase）。自己拼 `${base}/v1/messages` 的话，
+  // 用户照着设置页里其它渠道的样子把 base_url 填成 .../v1，就会拼出 /v1/v1/messages 吃 404
+  const url = anthropic ? require("./llm").anthropicBase(base).messagesUrl : `${base}/chat/completions`;
   const key = String(cfg.api_key || "").trim();
   const headers = anthropic
     ? { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" }
