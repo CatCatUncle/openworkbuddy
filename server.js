@@ -2989,17 +2989,73 @@ app.get("/api/files/preview/*", async (req, res) => {
 // 对话里的内联图表「存为文件」：内容是前端已经渲染过的东西，落盘到工作目录就能进成果面板、
 // 能下载、能被后续回合当素材继续用。扩展名白名单挡住"顺手写个 .sh/.command 再让我打开"的路子。
 const SAVE_EXT_OK = /\.(svg|png|jpe?g|html?|md|markdown|txt|csv|json)$/i;
+/**
+ * 前端给的目标文件夹 —— 也就是「这次对话的成果文件夹」（任务_0911_xxx）。
+ * 以前这个参数根本不存在：对话里画的图一律落在工作区**根目录**，跟这次对话的其它产出分家，
+ * 用户下一次打开成果面板得从几十个任务文件夹旁边的一堆散图里认自己那张。
+ * 只认工作区内的相对路径；绝对路径、盘符、`..` 一律当没给（退回根目录），越界交给 safePath 再兜一道。
+ */
+function saveDirOf(dir) {
+  const d = String(dir || "").replace(/\\/g, "/").trim().replace(/^\/+|\/+$/g, "");
+  if (!d || /^[a-zA-Z]:/.test(d) || d.split("/").includes("..")) return "";
+  return d;
+}
+/** 前端可能直接递一串 data:image/png;base64,... 过来（PNG 就是这么来的），落盘前还原成二进制 */
+function decodeSaveBody(content) {
+  const b64 = String(content).match(/^data:[^;]+;base64,(.*)$/s);
+  return b64 ? Buffer.from(b64[1], "base64") : content;
+}
+/** 桌面端才有系统保存框。纯 node 起的网页端返回 null，由前端退回浏览器下载 */
+function electronDialog() {
+  if (!process.versions || !process.versions.electron) return null;
+  try {
+    const e = require("electron");
+    if (!e || !e.dialog || !e.dialog.showSaveDialog) return null;
+    const BW = e.BrowserWindow;
+    const win = (BW && (BW.getFocusedWindow() || BW.getAllWindows()[0])) || null;
+    return { dialog: e.dialog, win };
+  } catch { return null; }
+}
 app.post("/api/files/save", (req, res) => {
   try {
-    const name = String(req.body?.name || "").trim();
+    // 只收文件名：目录由 dir 决定，名字里夹路径一律拍平，省得绕过 dir 往别处写
+    const name = path.basename(String(req.body?.name || "").trim());
     const content = req.body?.content;
     if (!name || typeof content !== "string") return res.status(400).json({ error: "缺少 name 或 content" });
     if (!SAVE_EXT_OK.test(name)) return res.status(400).json({ error: "不支持保存这种类型的文件" });
-    const p = safePath(name);
+    const sub = saveDirOf(req.body?.dir);
+    const rel = sub ? sub + "/" + name : name;
+    const p = safePath(rel);
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    const b64 = content.match(/^data:[^;]+;base64,(.*)$/s);
-    fs.writeFileSync(p, b64 ? Buffer.from(b64[1], "base64") : content);
-    res.json({ ok: true, name, files: outputFiles() });
+    fs.writeFileSync(p, decodeSaveBody(content));
+    res.json({ ok: true, name, rel, dir: sub, files: outputFiles() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+/**
+ * 「另存为…」：桌面端弹系统保存框，用户自己挑地方（可以挑到工作区外——那是他自己的电脑、
+ * 他自己点的路径，不是模型能构造的）。网页端没有这种能力，回 no_dialog，
+ * 前端退回浏览器下载——在网页上，那就是「自己选位置」。
+ */
+app.post("/api/files/save-as", async (req, res) => {
+  try {
+    const name = path.basename(String(req.body?.name || "").trim());
+    const content = req.body?.content;
+    if (!name || typeof content !== "string") return res.status(400).json({ error: "缺少 name 或 content" });
+    if (!SAVE_EXT_OK.test(name)) return res.status(400).json({ error: "不支持保存这种类型的文件" });
+    const el = electronDialog();
+    if (!el) return res.json({ ok: false, no_dialog: true });
+    // 保存框开在这次对话的成果文件夹里：用户多半就想存它旁边，省得每次从头翻
+    let base = getWorkspaceDir();
+    try { const sub = saveDirOf(req.body?.dir); if (sub) base = safePath(sub); } catch {}
+    const r = await el.dialog.showSaveDialog(el.win || undefined, {
+      title: "另存为", defaultPath: path.join(base, name), buttonLabel: "保存",
+    });
+    if (r.canceled || !r.filePath) return res.json({ ok: false, canceled: true });
+    fs.mkdirSync(path.dirname(r.filePath), { recursive: true });
+    fs.writeFileSync(r.filePath, decodeSaveBody(content));
+    res.json({ ok: true, path: r.filePath, files: outputFiles() });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

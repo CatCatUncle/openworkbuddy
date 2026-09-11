@@ -64,6 +64,55 @@ function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESC_MAP[c]);
 }
 /**
+ * 长网址在正文里的**显示**形态 —— href 和 title 里始终是完整地址，一个字没少。
+ *
+ * 一条 https://…/RL%E7%8E%AF%E5%A2%83%E5%88%9B%E4%B8%9A… 原样铺出来有两个毛病：
+ * 百分号转义人看不懂；长度还把整张表格顶出横向滚动条（用户原话：「怎么出现了链接太长，
+ * 然后要移动才能看到全部的显示情况」）。所以显示时先解码回中文，还长就掐中间——
+ * 鼠标一停看得到全的，复制粘贴拿到的也是全的。
+ *
+ * 入参是**已经 esc 过**的文本。decodeURI 不碰 %26 这类保留字符，但会把 %3C 解成 <，
+ * 所以解码之后 < > " ' 得再兜一道；& 不能再兜——它已经是 &amp; 了，再兜一次就成了 &amp;amp;。
+ */
+const PRETTY_URL_MAX = 68;
+function prettyUrl(u) {
+  let t = String(u);
+  try { t = decodeURI(t); } catch { t = String(u); }
+  if (t.length > PRETTY_URL_MAX) {
+    const m = t.match(/^([a-z][a-z0-9+.-]*:\/\/[^/]*)(\/.*)$/i);
+    const tail = m ? (m[2].split("/").filter(Boolean).pop() || "") : "";
+    t = m && tail && m[1].length + tail.length + 4 <= PRETTY_URL_MAX
+      ? m[1] + "/…/" + tail
+      : t.slice(0, PRETTY_URL_MAX - 26) + "…" + t.slice(-24);
+  }
+  return t.replace(/[<>"']/g, (c) => ESC_MAP[c]);
+}
+const RE_AUTOLINK = /<code>[\s\S]*?<\/code>|<a\s[^>]*>[\s\S]*?<\/a>|(^|[^"'`(\[=\w/])(https?:\/\/[^\s<>"'`)\]、，。；！？]+)/g;
+/**
+ * 正文里裸写的网址变成能点的链接。
+ *
+ * 只认 http(s)。file:// 的本地路径**故意**不碰：浏览器本来就不让页面跳 file://，
+ * 给个点不开的蓝链比没有链接更气人；那一串留着交给 linkifyOutputs，
+ * 变成「在应用右侧直接打开」的那种链接才是用户要的。
+ *
+ * 跑在 esc 和行内 <code> 之后、[text](url) 之前：代码块早被抽成占位符了，
+ * 行内代码这会儿已经是 <code>…</code>，交替式第一个分支原样放行；
+ * markdown 链接的 ( 和属性里的 =" 靠左边界一个字符挡掉。
+ */
+function autoLinkUrls(s) {
+  return String(s).replace(RE_AUTOLINK, (all, lead, url) => {
+    // 前两个分支是「别碰」：行内代码里的网址是给人抄的，不是给人点的；
+    // 已经成形的 <a> 再套一层就成了嵌套链接，点下去谁也说不准跳哪
+    if (url === undefined) return all;
+    // 句末标点不算网址的一部分。分号故意不算在内：正文是 esc 过的，
+    // 查询串里的 & 这会儿长的是 &amp; 的样子，剃掉分号就把网址剃坏了
+    const punct = url.match(/[.,:!?)\]}]+$/);
+    const u = punct ? url.slice(0, -punct[0].length) : url;
+    if (!/^https?:\/\/[^/\s]/.test(u)) return all;
+    return lead + '<a href="' + u + '" target="_blank" rel="noopener" title="' + u + '">' + prettyUrl(u) + "</a>" + (punct ? punct[0] : "");
+  });
+}
+/**
  * 「本该回一个数组，却回了个 { error }」的统一收口。
  *
  * fetch 遇上 403 / 500 **不会** reject——它只是把状态码放在 r.status 上，r.json() 照样解得出
@@ -268,10 +317,14 @@ function repairBareCode(str) {
   return out.join("\n");
 }
 
-function renderMd(src, base) {
+/**
+ * live=true 表示「这一段正在往外吐字」，只有流式那条路（paintStream）会传。
+ * 它一路传到 SVG 卡片那儿决定要不要说「绘制中」——停笔之后、回放历史的时候都不该再说。
+ */
+function renderMd(src, base, live) {
   if (!src) return "";
   // 先把正文里的 <svg> 抠出来换成占位符（在 esc 之前——它们要当图渲染，不能被转义成文字）
-  const { text: pre, figs } = SvgFig.extractSvgFigures(src);
+  const { text: pre, figs } = SvgFig.extractSvgFigures(src, live);
   let s = esc(pre);
   const codeBlocks = [];
   const pushCode = (lang, code) => {
@@ -285,6 +338,7 @@ function renderMd(src, base) {
   // 未闭合围栏（流式输出中 / 模型忘了闭合）：从 ``` 到文末也按代码块渲染
   s = s.replace(/(^|\n)```(\w*)[^\S\n]*\n?([\s\S]*)$/, (_, pre, lang, code) => pre + pushCode(lang, code));
   s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  s = autoLinkUrls(s);
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => mdImg(alt, url, base));
@@ -385,7 +439,7 @@ function paintStream(el) {
     el.append(done, live);
     sp = el._split = { done, live, html: "", raw: "", live_html: null };
   }
-  const html = renderMd(el._raw);
+  const html = renderMd(el._raw, null, true);
   if (!html.startsWith(sp.html)) { // 后来的字改了前面的排版：认赔，整块重来
     sp.done.innerHTML = ""; sp.html = ""; sp.raw = ""; sp.live_html = null;
   }
@@ -394,7 +448,7 @@ function paintStream(el) {
     const cut = el._raw.lastIndexOf("\n\n", el._raw.length - 400);
     if (cut > sp.raw.length && (el._raw.slice(0, cut).match(/```/g) || []).length % 2 === 0) {
       const cand = el._raw.slice(0, cut + 1);
-      const candHtml = renderMd(cand);
+      const candHtml = renderMd(cand, null, true);
       if (html.startsWith(candHtml) && candHtml.startsWith(sp.html) && balancedHtml(candHtml)) {
         sp.done.insertAdjacentHTML("beforeend", candHtml.slice(sp.html.length));
         sp.html = candHtml; sp.raw = cand; sp.live_html = null;
@@ -1661,8 +1715,11 @@ let pvClosedAt = 0;
 const PV_IFRAME_RE = /\.(html?|pdf|svg)$/i;
 const PV_IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i;
 const PV_AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i;
-// .ts 故意不进这条：mime 库把 .ts 认成 video/mp2t，但工作目录里的 .ts 全是 TypeScript 源码
-const PV_VIDEO_RE = /\.(mp4|webm|mov|m4v|ogv)$/i;
+// .ts 故意不进这条：mime 库把 .ts 认成 video/mp2t，但工作目录里的 .ts 全是 TypeScript 源码。
+// mkv/avi/wmv/flv/mpg 浏览器多半解不了，但仍然归到 video —— 让它走 <video> 那条路，
+// 解不了的时候由下面的 onerror 说一句人话；以前它们掉进「当文本打开」，
+// 用户得到的是一句驴唇不对马嘴的「这个文件不是文本」
+const PV_VIDEO_RE = /\.(mp4|webm|mov|m4v|ogv|mkv|avi|wmv|flv|mpe?g|m2ts|mts|3gp)$/i;
 const PV_MD_RE = /\.(md|markdown)$/i;
 // 下面四种浏览器自己打不开（zip 里的一包 XML / 一堆条目），走 /api/files/preview 让服务端拆
 const PV_DOC_RE = /\.docx$/i;
@@ -1723,6 +1780,16 @@ const pvFallback = (why) =>
       ? `<button class="pv-open-sys">用系统默认程序打开</button><button class="pv-reveal">打开所在位置</button>`
       : `<button class="pv-download">下载到本地看</button>`
   }</div></div>`;
+/** 把 pvFallback 里那几颗按钮接上。单独一个函数是因为它要被调两次：
+ *  一次是渲染完，一次是 <video> 解码失败之后现换的那块内容——晚绑的那次没人接就是死按钮 */
+function bindPvFallback(body, name) {
+  const sysBtn = body.querySelector(".pv-open-sys");
+  if (sysBtn) sysBtn.onclick = () => openOnHost(name);
+  const rvBtn = body.querySelector(".pv-reveal");
+  if (rvBtn) rvBtn.onclick = () => revealFile(name);
+  const dlBtn = body.querySelector(".pv-download");
+  if (dlBtn) dlBtn.onclick = () => downloadFile(name);
+}
 const pvTrunc = (total) =>
   `<div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--wb-border);color:var(--wb-text-3);font-size:13px">文件太大，只显示了开头 ${PV_TEXT_MAX / 1024} KB${total ? `（整个文件 ${fmtSize(total)}）` : ""}。要看全的话下载或用系统程序打开。</div>`;
 
@@ -1828,15 +1895,31 @@ async function previewFile(name) {
   const body = document.getElementById("pv-body");
   const url = "/api/files/view/" + fpath(name) + "?t=" + Date.now();
   const kind = previewKind(name);
+  // 单张图就把它摆在面板正中间。以前是 margin:20px auto——横向居中、纵向顶着天花板，
+  // 一张矮图挂在顶上、底下一大片空白。用户原话：「应该放在右边中间居中的位置啊，不要放在顶上放啊」
+  body.classList.toggle("pv-mid", kind === "image" || kind === "video");
   if (kind === "iframe") {
     // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字
     body.innerHTML = `<iframe src="${url}"></iframe>`;
   } else if (kind === "image") {
     body.innerHTML = `<img src="${url}">`;
   } else if (kind === "audio" || kind === "video") {
-    // 服务端 res.sendFile 会回 Accept-Ranges，所以进度条能拖、长视频不用等整包下完
+    // 服务端 res.sendFile 会回 Accept-Ranges（实测 206 + Content-Range），所以进度条能拖、长视频不用等整包下完
     const tag = kind === "audio" ? "audio" : "video";
-    body.innerHTML = `<${tag} class="pv-media" src="${url}" controls preload="metadata"></${tag}>`;
+    body.innerHTML = `<${tag} class="pv-media" src="${url}" controls preload="metadata" playsinline></${tag}>`;
+    // 能不能解码这一关是浏览器说了算：iPhone 拍的 HEVC .mov、mkv/avi 这类容器，Chromium 多半解不了。
+    // 解不了的时候它不吭声，只留一个纹丝不动的黑框——用户从黑框里只能得出「这软件不支持看视频」。
+    // 所以这儿必须自己说一句实话，并把「用系统播放器打开 / 下载」这两条真出路摆出来。
+    const mv = body.querySelector(".pv-media");
+    if (mv) mv.onerror = () => {
+      // 迟到的 error 不许盖别人的屏：用户点开一个解不了的片子、马上又去看别的文件，
+      // 那个已经被换下来的 <video> 几百毫秒后才把 error 抛出来。它照着自己的名字重画一遍，
+      // 用户正看着的那份内容就被掀掉了——换成一句关于上一个文件的错误提示
+      if (!mv.isConnected) return;
+      body.classList.remove("pv-mid");
+      body.innerHTML = pvFallback("这个" + (kind === "audio" ? "音频" : "视频") + "的编码浏览器解不了（常见于 iPhone 的 HEVC，以及 mkv / avi / wmv 这些容器）");
+      bindPvFallback(body, name);
+    };
   } else if (kind === "doc" || kind === "sheet" || kind === "slides" || kind === "archive") {
     const d = await fetch("/api/files/preview/" + fpath(name) + "?t=" + Date.now()).then(r => r.json()).catch(() => null);
     if (!d || d.error) body.innerHTML = pvFallback(d && d.error ? d.error : "读不出这个文件的内容");
@@ -1855,12 +1938,7 @@ async function previewFile(name) {
     else if (kind === "csv") body.innerHTML = csvHtml(r.text, name) + (r.truncated ? pvTrunc(r.total) : "");
     else body.innerHTML = `<div class="pv-text" translate="no"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
   }
-  const sysBtn = body.querySelector(".pv-open-sys");
-  if (sysBtn) sysBtn.onclick = () => openOnHost(name);
-  const rvBtn = body.querySelector(".pv-reveal");
-  if (rvBtn) rvBtn.onclick = () => revealFile(name);
-  const dlBtn = body.querySelector(".pv-download");
-  if (dlBtn) dlBtn.onclick = () => downloadFile(name);
+  bindPvFallback(body, name);
   syncNavByRole(); // 标题栏那两颗「在本机打开」也按身份收一收（下载那颗一直在）
   pvPanel.classList.add("show");
   renderDeployBar();
@@ -2235,14 +2313,24 @@ function mergeFmtPairs(grid) {
 }
 
 function makeOutCard(f, isHtml) {
-  const url = "/api/files/view/" + fpath(f.name) + "?t=" + Date.now();
+  // 缓存键用「这一版文件」本身（mtime/大小），不是 Date.now()。
+  // 以前每来一个文件事件，整片卡都带着新时间戳重建一次：七张图 = 每次重新下 2.7MB，
+  // 屏幕上那一格先白一下再慢慢长出来——用户看到的就是「图怎么不渲染」。
+  // 文件真被改写时 mtime 会变，缓存照样失效，该刷新的一次不少。
+  const url = "/api/files/view/" + fpath(f.name) + "?v=" + encodeURIComponent(f.mtime || f.size || "");
   // 产出卡：缩略图在上、文件名和大小在下、三个图标钮收在底边。
   // 交付物看得见长什么样才叫产出；只有一行文件名的话，用户还得点开才知道自己拿到了什么
   // 图（含 svg）直接出缩略图——用户原话「那种预览小图标怎么给我改成文件名的形式了啊」：
   // 一排只有文件名的行，等于把右侧文件面板抄进了对话里。图用 <img> 渲染，网页/文档给大图标，
   // 但都不内嵌 iframe：一回合出三个网页就是在对话里跑三个小浏览器，又慢又挡正文
   const isPic = /\.(png|jpe?g|gif|webp|bmp|ico|svg)$/i.test(f.name);
-  const thumb = isPic ? `<img src="${url}" alt="" loading="lazy">` : `<span class="ph">${fileIcon(f.name)}</span>`;
+  // 视频也出缩略图：#t=0.1 让浏览器只拉头上一点点、定格在第一帧。
+  // 一个 🎬 图标只说明「这是个视频」，第一帧才说明「这是哪个视频」——
+  // 一回合出三条片子的时候，靠图标是分不出哪条是哪条的。
+  const isVid = /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name);
+  const thumb = isPic ? `<img src="${url}" alt="" loading="lazy" decoding="async">`
+    : isVid ? `<video src="${url}#t=0.1" muted playsinline preload="metadata"></video><span class="vd-play" aria-hidden="true"></span>`
+    : `<span class="ph">${fileIcon(f.name)}</span>`;
   const card = document.createElement("div");
   card.className = "out-card";
   card.dataset.name = f.name;
@@ -2258,6 +2346,14 @@ function makeOutCard(f, isHtml) {
       <button class="oa-main" data-a="${isHtml ? "br" : "pv"}" title="${mainTx}">${isHtml ? ic("globe") : ic("file-text")}<span class="tx">${mainTx}</span></button>
       <button class="oa-ico" data-a="rv" title="打开所在位置">${ic("folder-open")}</button>
       <a class="oa-ico" href="/api/files/download/${fpath(f.name)}" download title="下载">${ic("download")}</a></div>`;
+  // 缩略图读不出来（文件被改名、挪走、删了，或者这个格式浏览器解不了）就退回文件类型图标。
+  // 以前它只留一个空灰方框，卡片自己一个字都不说——用户原话：「这些图片怎么不渲染啊，现在看着比较丑啊」。
+  const th = card.querySelector(".out-thumb img, .out-thumb video");
+  if (th) th.onerror = () => {
+    const box = th.closest(".out-thumb");
+    if (box) box.innerHTML = `<span class="ph" title="${isVid ? "这条片子的编码浏览器解不了，点开看还能用系统播放器" : "这张图读不出来了：可能已被改名、移走或删掉"}">${fileIcon(f.name)}</span>`;
+    card.classList.add("thumb-dead");
+  };
   onActivate(card, (e) => {
     if (e.target.closest("a")) return;
     if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e);
@@ -2295,7 +2391,7 @@ function markDupBasenames(grid) {
 function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
 // ---- 正文里提到的产出文件名 → 可点开的链接 ----
 // 用户原话：「有些这些文件你就给我搞成超连接的形式啊」。
-// 模型收尾时爱写「简历已经写好了，在 王志远_简历.html 里」——那串文件名在对话里是死的，
+// 模型收尾时爱写「简历已经写好了，在 张三_简历.html 里」——那串文件名在对话里是死的，
 // 用户得自己去右侧面板一行行找同名的那个。现在这一趟真产出过的名字，在正文里就是能点的。
 //
 // 只认「这一趟真的产出过」的名字，不拿正则去猜「长得像文件名的东西」：
@@ -2321,13 +2417,26 @@ function linkifyOutputs(root, targets) {
   const re = new RegExp(keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
   // 左边界：紧挨着 ASCII 路径字符说明这是更长的一串（别把 data.md 里的 a.md 挑出来）；
   // 右边界同理。中文紧挨着是常态（「生成了简历.html供你查看」），必须放行
-  const okAt = (s, i, len) => !/[A-Za-z0-9_./\\-]/.test(s[i - 1] || "") && !/[A-Za-z0-9]/.test(s[i + len] || "");
+  const okLeft = (s, i) => !/[A-Za-z0-9_./\\-]/.test(s[i - 1] || "");
+  const okRight = (s, i, len) => !/[A-Za-z0-9]/.test(s[i + len] || "");
+  // 左边紧挨着的是一串路径时，别放弃——那是模型写了全路径
+  // （/Users/…/报告.html、file:///…/报告.html）。该整串都是链接，
+  // 而不是把尾巴那一截单拎出来，更不是干脆不给链接。
+  const leadPath = (s, i) => {
+    const m = s.slice(0, i).match(/[^\s"'<>()\[\]，。；：！？、]*\/$/);
+    if (!m || !m[0]) return -1;
+    const start = i - m[0].length;
+    return okLeft(s, start) ? start : -1;
+  };
   const nodes = [];
   const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   for (let t = walk.nextNode(); t; t = walk.nextNode()) {
     const p = t.parentElement;
     if (!t.nodeValue || !/\S/.test(t.nodeValue) || !p) continue;
-    if (p.closest("a, code, pre, .out-block, .file-ln")) continue; // 代码块里的路径是代码，链接化会把代码改样
+    // 代码块（<pre>）里的路径是代码，链接化会把代码改样。但**行内** `报告.html` 是另一回事：
+    // 模型收尾列交付物时十有八九给文件名套了反引号，以前这一套就把它们全筛掉了——
+    // 用户原话：「怎么有些文件没有链接啊，应该写着产出的这些文件应该要都有链接啊」，说的就是这批。
+    if (p.closest("a, pre, .out-block, .file-ln")) continue;
     nodes.push(t);
   }
   let n = 0;
@@ -2337,9 +2446,14 @@ function linkifyOutputs(root, targets) {
     let last = 0, hit = 0, m;
     re.lastIndex = 0;
     while ((m = re.exec(s))) {
-      if (!okAt(s, m.index, m[0].length)) continue;
-      if (m.index > last) frag.appendChild(document.createTextNode(s.slice(last, m.index)));
-      frag.appendChild(makeFileLink(m[0], targets.get(m[0])));
+      if (!okRight(s, m.index, m[0].length)) continue;
+      let start = m.index;
+      if (!okLeft(s, start)) {
+        start = leadPath(s, start);
+        if (start < 0 || start < last) continue;
+      }
+      if (start > last) frag.appendChild(document.createTextNode(s.slice(last, start)));
+      frag.appendChild(makeFileLink(s.slice(start, m.index + m[0].length), targets.get(m[0])));
       last = m.index + m[0].length;
       hit++;
     }

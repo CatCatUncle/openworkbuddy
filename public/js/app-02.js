@@ -882,6 +882,7 @@ const SHORTCUT_ACTIONS = {
   "chat-search": () => openChatSearch(),
   "new-chat": () => document.getElementById("new-task").click(),
   "stop": () => {
+    if (figZoom) return closeFigZoom(); // 大图是压在最上面那层，Esc 先退它
     const cs = document.getElementById("chat-search");
     const onb = document.getElementById("onb-mask");
     // 新手引导是块全屏遮罩，它自己没有 ✕；Escape 得管得着，否则卡在里面只能重启
@@ -1356,43 +1357,152 @@ document.addEventListener("click", (e) => {
   }
 });
 
-// 内联 SVG 图表的三个动作（事件委托，历史回放与流式渲染共用）
+// 内联 SVG 图表的动作（事件委托，历史回放与流式渲染共用）。
+// 图本身也挂着 data-a="svg-zoom"：在对话列里图被压成窄窄一条，坐标轴和小字根本看不清，
+// 总不能让人把窗口拉宽再拉回来。
 document.addEventListener("click", async (e) => {
-  const btn = e.target.closest(".svg-fig .svg-acts button");
-  if (!btn) return;
-  const fig = btn.closest(".svg-fig");
+  const hit = e.target.closest(".svg-fig [data-a]");
+  if (!hit) return;
+  const fig = hit.closest(".svg-fig");
   const raw = fig.dataset.src || "";
-  const act = btn.dataset.a;
+  const act = hit.dataset.a;
+  // 点的是图本身时没有按钮可以回显「已存 ✓」，借动作条上那颗顶一下
+  const btn = hit.tagName === "BUTTON" ? hit : fig.querySelector(".svg-acts button");
   const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+  if (act === "svg-zoom") return openFigZoom(fig);
   if (act === "svg-code") {
     const box = fig.querySelector(".svg-raw");
-    if (box) { box.remove(); btn.textContent = "源码"; return; }
+    if (box) { box.remove(); hit.textContent = "看源码"; return; }
     const pre = document.createElement("pre");
     pre.className = "svg-raw";
     pre.textContent = raw;
     fig.insertBefore(pre, fig.querySelector(".svg-acts"));
-    btn.textContent = "收起源码";
+    hit.textContent = "收起源码";
     return;
   }
   if (act === "svg-save") return saveInlineFile(`图表-${stamp}.svg`, fig.querySelector("svg").outerHTML, btn);
-  if (act === "svg-png") {
-    btn.disabled = true;
-    try { await saveInlineFile(`图表-${stamp}.png`, await SvgFig.svgToPngDataUrl(fig.querySelector("svg")), btn); }
-    catch (err) { toast("转图片失败：" + err.message); }
-    finally { btn.disabled = false; }
+  if (act === "svg-as" || act === "svg-png") {
+    hit.disabled = true;
+    try {
+      if (act === "svg-as") await saveInlineFile(`图表-${stamp}.svg`, fig.querySelector("svg").outerHTML, btn, true);
+      else await saveInlineFile(`图表-${stamp}.png`, await SvgFig.svgToPngDataUrl(fig.querySelector("svg")), btn);
+    } catch (err) { toast((act === "svg-as" ? "另存为失败：" : "转图片失败：") + err.message); }
+    finally { hit.disabled = false; }
   }
 });
-async function saveInlineFile(name, content, btn) {
-  const r = await fetch("/api/files/save", {
+/** 按钮上闪一下回执再变回去；别拿 toast 当唯一反馈，手指还停在按钮上呢 */
+function flashBtn(btn, word) {
+  if (!btn) return;
+  const old = btn.dataset.oldText || btn.textContent;
+  btn.dataset.oldText = old;
+  btn.textContent = word;
+  clearTimeout(btn._flash);
+  btn._flash = setTimeout(() => { btn.textContent = btn.dataset.oldText || old; delete btn.dataset.oldText; }, 1600);
+}
+/** 网页端没有系统保存框，交给浏览器下载——在网页上，浏览器的下载面板就是那个「选位置」 */
+function browserDownload(name, content) {
+  const isData = /^data:/.test(String(content));
+  const url = isData ? content : URL.createObjectURL(new Blob([content], { type: "image/svg+xml;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  if (!isData) setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+/**
+ * 把对话里生成的东西落盘。
+ * 默认落到**这次对话自己的成果文件夹**（sessionDirs 里那个 任务_0911_xxx），不再一股脑丢进工作区根目录——
+ * 用户原话：「默认存的位置都不是这个对话对应的文件夹下」。
+ * saveAs=true 走系统保存框，自己挑地方；网页端没这能力就退回浏览器下载。
+ */
+async function saveInlineFile(name, content, btn, saveAs) {
+  const dir = sessionDirs.get(sessionId) || "";
+  const r = await fetch(saveAs ? "/api/files/save-as" : "/api/files/save", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, content }),
+    body: JSON.stringify({ name, content, dir }),
   }).then(x => x.json()).catch(() => null);
+  if (saveAs && r && r.canceled) return; // 用户自己点的取消，别再弹一条「失败」吓人
+  if (saveAs && r && r.no_dialog) {
+    browserDownload(name, content);
+    flashBtn(btn, "已下载 ✓");
+    return toast("网页端没有系统保存框，已交给浏览器下载；想换地方去浏览器的下载设置里改");
+  }
   if (!r?.ok) return toast("保存失败：" + (r?.error || "接口无响应"));
   if (r.files) renderFiles(r.files);
-  const old = btn.textContent;
-  btn.textContent = "已存 ✓";
-  setTimeout(() => { btn.textContent = old; }, 1600);
-  toast(`已存到工作目录：${name}`);
+  flashBtn(btn, "已存 ✓");
+  if (saveAs) return toast(`已存到：${r.path}`);
+  toast(r.dir ? `已存到本对话的文件夹：${r.dir}/${name}` : `已存到工作目录：${name}`);
+}
+
+// ---- 图表看大图 ----
+// 铺满屏、滚轮缩放、按住拖动、Esc 退出。只有一层，再点一张先把上一张收掉。
+let figZoom = null;
+function closeFigZoom() {
+  if (!figZoom) return;
+  figZoom.remove();
+  figZoom = null;
+}
+function openFigZoom(fig) {
+  const raw = fig.dataset.src || "";
+  // 重新消毒一遍拿到的是**新的**图 id：直接 clone 会在页面里留一对重复 id，
+  // 而 <style> 是按 id 限定作用域的，两张图的样式会开始互相串
+  const html = (window.SvgFig && (SvgFig.sanitizeSvg(raw) || SvgFig.sanitizeSvg(SvgFig.repairPartialSvg(raw)))) || "";
+  const srcEl = fig.querySelector("svg");
+  if (!html && !srcEl) return;
+  closeFigZoom();
+  const ov = document.createElement("div");
+  ov.className = "fig-zoom";
+  ov.innerHTML =
+    '<div class="fz-bar"><span class="fz-tip">滚轮缩放 · 按住拖动 · Esc 退出</span>' +
+    '<button data-z="out" title="缩小">−</button><span class="fz-pct">100%</span>' +
+    '<button data-z="in" title="放大">+</button>' +
+    '<button data-z="fit">铺满看</button><button data-z="close">关掉</button></div>' +
+    '<div class="fz-stage"><div class="fz-inner"></div></div>';
+  const inner = ov.querySelector(".fz-inner");
+  inner.innerHTML = html || srcEl.outerHTML;
+  const svg = inner.querySelector("svg");
+  if (svg) { svg.setAttribute("width", "100%"); svg.setAttribute("height", "100%"); svg.style.display = "block"; }
+  document.body.appendChild(ov);
+  figZoom = ov;
+
+  const vb = String((svg && svg.getAttribute("viewBox")) || "").trim().split(/[\s,]+/).map(Number);
+  const ratio = vb.length === 4 && vb[2] > 0 && vb[3] > 0 ? vb[2] / vb[3] : 16 / 9;
+  let k = 1, tx = 0, ty = 0;
+  const pct = ov.querySelector(".fz-pct");
+  const apply = () => {
+    inner.style.transform = `translate(${tx}px, ${ty}px) scale(${k})`;
+    pct.textContent = Math.round(k * 100) + "%";
+  };
+  const fit = () => {
+    const st = ov.querySelector(".fz-stage").getBoundingClientRect();
+    const w = Math.max(120, Math.min(st.width * 0.96, st.height * 0.96 * ratio));
+    inner.style.width = w + "px";
+    inner.style.height = w / ratio + "px";
+    k = 1; tx = 0; ty = 0;
+    apply();
+  };
+  fit();
+  const zoomTo = (next) => { k = Math.max(0.25, Math.min(8, next)); apply(); };
+  ov.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-z]");
+    if (!b) { if (e.target === ov || e.target.classList.contains("fz-stage")) closeFigZoom(); return; }
+    const z = b.dataset.z;
+    if (z === "close") return closeFigZoom();
+    if (z === "fit") return fit();
+    zoomTo(z === "in" ? k * 1.25 : k / 1.25);
+  });
+  ov.querySelector(".fz-stage").addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoomTo(k * (e.deltaY < 0 ? 1.12 : 1 / 1.12));
+  }, { passive: false });
+  let drag = null;
+  ov.querySelector(".fz-stage").addEventListener("pointerdown", (e) => {
+    if (e.target.closest("[data-z]")) return;
+    drag = { x: e.clientX - tx, y: e.clientY - ty };
+    ov.querySelector(".fz-stage").setPointerCapture(e.pointerId);
+    ov.classList.add("dragging");
+  });
+  ov.addEventListener("pointermove", (e) => { if (drag) { tx = e.clientX - drag.x; ty = e.clientY - drag.y; apply(); } });
+  ov.addEventListener("pointerup", () => { drag = null; ov.classList.remove("dragging"); });
 }
 
 async function checkUpdate() {

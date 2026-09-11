@@ -60,15 +60,31 @@
 
   const escAttr = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-  /** 一张图的完整卡片 HTML；growing=true 时先把半截内容补全，并挂上"绘制中"提示 */
-  function svgFigureHtml(code, growing) {
+  /**
+   * 一张图的完整卡片 HTML。
+   *
+   * growing=true 表示这段 SVG 没闭合，先补全再渲染。
+   * live=true 才是「这会儿还在往外吐字」——只有这时候才配说「绘制中」。
+   *
+   * 以前 growing 一路直通那枚闪烁的「绘制中」：模型把闭合标签写漏了（或者话没说完就被截断），
+   * 这张图在回合结束之后、乃至每一次回放历史的时候，都还永远挂着「绘制中」在那儿闪。
+   * 用户原话：「怎么一直在绘制中，对话都结束了，这是卡住了啊」——他以为整个 agent 卡死了。
+   * 停笔之后它就是一张没画完的图：静静说一句实话，别再装作还在动。
+   */
+  function svgFigureHtml(code, growing, live) {
     const clean = sanitizeSvg(growing ? repairPartialSvg(code) : code);
     if (!clean) return null;
+    const note = !growing ? ""
+      : live ? '<span class="growing">绘制中</span>'
+      : '<span class="partial" title="这段 SVG 少了闭合标签，画出来的是补全后的样子">图没画完</span>';
     return (
-      `<div class="svg-fig" data-src="${escAttr(code)}"><div class="svg-body">${clean}</div>` +
-      `<div class="svg-acts">${growing ? '<span class="growing">绘制中</span>' : ""}` +
-      `<button data-a="svg-code">源码</button><button data-a="svg-save">存为文件</button>` +
-      `<button data-a="svg-png">存为图片</button></div></div>`
+      `<div class="svg-fig" data-src="${escAttr(code)}">` +
+      // 图本身可点：在对话里图被挤成一小条，细节根本看不清，点一下就铺满屏
+      `<div class="svg-body" data-a="svg-zoom" title="点开看大图">${clean}</div>` +
+      `<div class="svg-acts">${note}` +
+      `<button data-a="svg-zoom">放大看</button><button data-a="svg-code">看源码</button>` +
+      `<button data-a="svg-save">存矢量图</button><button data-a="svg-png">存图片</button>` +
+      `<button data-a="svg-as">另存为…</button></div></div>`
     );
   }
 
@@ -90,11 +106,11 @@
    * 三种形态都认：完整 ```svg 围栏、裸 <svg>…</svg>、以及流式还没闭合的那一段。
    * 带 skip 分组的两条是为了跳过代码块和行内代码——讲解 SVG 语法的例子不该被画出来。
    */
-  function extractSvgFigures(src) {
+  function extractSvgFigures(src, live) {
     const figs = [];
     const push = (code, growing) => {
       if (!hasFigureBody(code)) return null;
-      const html = svgFigureHtml(code, growing);
+      const html = svgFigureHtml(code, growing, live);
       if (!html) return null;
       figs.push(html);
       return `\n\x00SVG${figs.length - 1}\x00\n`;
@@ -103,7 +119,9 @@
     let s = String(src || "");
     s = s.replace(/```svg[^\S\n]*\n([\s\S]*?)```/gi, (m, body) => push(body.trim(), false) ?? m);
     s = s.replace(/```svg[^\S\n]*\n([\s\S]*)$/i, (m, body) => push(body.trim(), true) ?? m);
-    s = s.replace(new RegExp("(" + SKIP + ")|<svg[\\s>][\\s\\S]*?<\\/svg>", "gi"), (m, skip) => keep(m, skip, false));
+    // 闭合标签写成 </svg > 也算闭合。差这一个空格，整张图就会被下一条当成「还没写完」，
+    // 回合结束后永远挂着「绘制中」在闪——用户看到的是「卡住了」
+    s = s.replace(new RegExp("(" + SKIP + ")|<svg[\\s>][\\s\\S]*?<\\/\\s*svg\\s*>", "gi"), (m, skip) => keep(m, skip, false));
     s = s.replace(new RegExp("(" + SKIP + ")|<svg[\\s>][\\s\\S]*$", "gi"), (m, skip) => keep(m, skip, true));
     return { text: s, figs };
   }
