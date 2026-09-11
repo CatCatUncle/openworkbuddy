@@ -476,6 +476,85 @@ function testMotionGate() {
 }
 
 /**
+ * 表面层级闸门。
+ *
+ * 守的是这次 UI 精修的那一层：外壳 / 画布 / 卡片三档底色 + 三档投影。
+ * 这类东西最容易「定义了没人用」——令牌加了一堆，body 还是纯白，页面一点没变，
+ * 而肉眼很难发现（三档之间本来就只差 4–10/255）。所以两头都钉：
+ * 令牌必须在浅暗两套主题里都定义且两两不相等（不然三层是假的），
+ * 并且必须真接到 body / aside / .main 上（不然是死变量）。
+ * 顺带钉住滚动条：原来两套规则打架，赢的那套滑块是 --border 压白底，等于没画。
+ */
+function testSurfaceLayerGate() {
+  const pub = path.join(__dirname, "..", "public");
+  const css = fs.readFileSync(path.join(pub, "css", "ui.css"), "utf8");
+  const html = fs.readFileSync(path.join(pub, "index.html"), "utf8");
+
+  // 取某个选择器块里某个令牌的值。ui.css 的 :root 和 html[data-theme="dark"] 各一块。
+  const block = (sel) => {
+    const i = css.indexOf(sel + " {");
+    assert(i >= 0, "ui.css 里找不到 " + sel + " 这一块");
+    return css.slice(i, css.indexOf("\n}", i));
+  };
+  const LADDER = ["--app-shell", "--page-canvas", "--surface"];
+  const TIERS = ["--shadow-surface", "--shadow-menu", "--shadow-floating"];
+  for (const sel of [":root", 'html[data-theme="dark"]']) {
+    const b = block(sel);
+    const vals = LADDER.map((n) => {
+      const m = b.match(new RegExp("\\" + n + ":\\s*([^;]+);"));
+      assert(m, sel + " 里没定义 " + n + "，三级表面在这套主题下是缺的");
+      return m[1].trim();
+    });
+    assert(new Set(vals).size === 3,
+      sel + " 的三级表面有重复值（" + vals.join(" / ") + "）——三层等于一层，卡片仍然只能靠边框立住");
+    for (const t of TIERS) {
+      assert(new RegExp("\\" + t + ":").test(b), sel + " 里没定义 " + t + "，这套主题的投影会落空");
+    }
+    assert(/--scrollbar-thumb:/.test(b), sel + " 里没定义 --scrollbar-thumb");
+  }
+
+  // 真接上了没：外壳 / 画布各自落在哪个元素上
+  const wired = [
+    [/body \{[^}]*background: var\(--wb-shell\)/, "body 没用外壳底色，三级表面的最外层是空的"],
+    [/aside \{[^}]*background: var\(--wb-shell\)/, "左栏没用外壳底色"],
+    [/\.main \{[^}]*background: var\(--wb-canvas\)/, ".main 没用画布底色——主区还是纯白，白卡片浮不起来"],
+    [/--wb-shell: var\(--app-shell\)/, "--wb-shell 没接到 ui.css 的真源上"],
+    [/--wb-canvas: var\(--page-canvas\)/, "--wb-canvas 没接到 ui.css 的真源上"],
+  ];
+  for (const [re, msg] of wired) assert(re.test(html), msg);
+
+  // 字形抗锯齿：admin.html 一直开着，主界面漏了，两边看着不像一个产品
+  assert(/-webkit-font-smoothing: antialiased/.test(html), "index.html 的 body 没开 antialiased，整页比设计稿粗一档");
+
+  // 滚动条：只允许一套规则，且滑块不能是 --wb-border（压白底看不见）
+  const thumbs = [...html.matchAll(/::-webkit-scrollbar-thumb\s*\{([^}]*)\}/g)].map((m) => m[1]);
+  const thumbBg = thumbs.filter((r) => /background:/.test(r) && !/:hover/.test(r));
+  assert(thumbs.length <= 4, "滚动条滑块规则有 " + thumbs.length + " 条，八成是两套规则在打架");
+  assert(thumbBg.every((r) => !/var\(--wb-border\)/.test(r)),
+    "滚动条滑块还是 --wb-border，压在白底上等于没画：" + thumbBg.join(" | "));
+  assert(thumbBg.some((r) => /var\(--scrollbar-thumb\)/.test(r)), "滚动条滑块没走 --scrollbar-thumb 令牌");
+
+  // 手写投影不能再冒出来：菜单/弹层那几个类必须走三档令牌
+  const mustUseTier = [".picker-menu", ".mention-menu", ".user-menu", ".modal", ".auth-card", "#chat-search"];
+  const adhoc = [];
+  for (const cls of mustUseTier) {
+    const re = new RegExp("[^{}\\n]*\\" + cls + "(?![-\\w])[^{}\\n]*\\{([^}]*)\\}", "g");
+    for (const m of html.matchAll(re)) {
+      const body = m[1];
+      if (!/box-shadow:/.test(body)) continue;
+      if (/box-shadow:[^;]*rgba?\(/.test(body) && !/box-shadow:[^;]*var\(--shadow-/.test(body)) adhoc.push(cls);
+    }
+  }
+  assert(adhoc.length === 0, "这些浮层又开始自己手写投影了，会和别处深浅不一：" + [...new Set(adhoc)].join("、"));
+
+  // 反向断言：闸门本身得能抓到东西
+  assert(new Set(["#fff", "#fff", "#eee"]).size !== 3, "三值互异的判别失效");
+  assert(!/body \{[^}]*background: var\(--wb-根本没有\)/.test(html), "接线判别失效");
+  assert(/box-shadow:[^;]*rgba?\(/.test("box-shadow: 0 1px 2px rgba(0,0,0,.1);"), "手写投影的判别失效");
+  console.log("✅ 表面层级闸门：外壳/画布/卡片三档在浅暗两套主题下都互异且真接到了 body/aside/.main · 三档投影齐全 · 滚动条只剩一套且看得见");
+}
+
+/**
  * 定时任务「假绿」闸门。
  *
  * 守的是 scheduler.js 原来那条 `finish(true, finalText || "完成")`——只要 runTask 没抛异常
@@ -4730,6 +4809,7 @@ async function main() {
   testPathSafety();
   testCssTokenGate();
   testMotionGate();
+  testSurfaceLayerGate();
   testVerdictGate();
   testDocLinkGate();
   await testImageWatermarkGate();

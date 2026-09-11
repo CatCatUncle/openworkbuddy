@@ -22,6 +22,9 @@
     /* 这四个一直被 JS 里的内联样式引用，却从来没人定义过——评测页、运行记录页的边框和卡片底色
        就这么一路空着（跟之前「生成的网页黑底黑字」是同一类毛病）。补上，并同样接到令牌上 */
     --wb-line: var(--border); --wb-card: var(--card); --wb-warn: var(--warning); --mono: var(--font-mono);
+    /* 三级表面：外壳（body / 左栏 / 文件面板）→ 画布（.main / 预览面板）→ 卡片（--wb-bg 那一层白）。
+       以前这三层都是纯白，卡片全靠一根灰线撑着；分开之后白卡片自己就浮起来了。值在 ui.css */
+    --wb-shell: var(--app-shell); --wb-canvas: var(--page-canvas);
     /* 给模型画的内联 SVG 信息图用的一套语义色/字体变量。图里写 var(--color-text-primary)
        而不是写死 #333，暗色模式下才不会变成黑底黑字。名字沿用通行叫法，模型不用学新词。 */
     --color-text-primary: #2c2c2a; --color-text-secondary: #5f5e5a; --color-text-tertiary: #888780;
@@ -63,11 +66,18 @@
        中文再落回 PingFang——同一句中英混排，各拿各最合适的那套。
        反过来写（PingFang 在前）拉丁字母会用 PingFang 自带的西文，字重和字距都偏「网页」。 */
     font-family: var(--font-sans);
-    background: var(--wb-bg); color: var(--wb-text); display: flex; overflow: hidden; font-size: var(--wb-fs);
+    background: var(--wb-shell); color: var(--wb-text); display: flex; overflow: hidden; font-size: var(--wb-fs);
+    /* macOS 默认按 subpixel 渲染，中英文都会比设计稿粗一档，整页发糊；
+       后台页（admin.html）一直是开着的，主界面反倒漏了，两边看起来不像一个产品。 */
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   }
+  /* 标题收字距：15px 以上的粗体默认字距偏松，收紧一点才像「界面字」而不是「正文」 */
+  h1, h2, h3, .topbar .title, .brand .name { letter-spacing: -.011em; }
+  /* 数字走等宽字形：耗时、计数、金额在列表里逐行左右跳，是最廉价的一种「糙」 */
+  .out-row .sz, .hist-item .meta, .ev-fb-tab td, .cr-num, .tok, .proc-head .tc { font-variant-numeric: tabular-nums; }
   input, select, textarea, button { font-family: inherit; }
   /* ---------- 左侧导航 ---------- */
-  aside { position: relative; width: var(--wb-side-w, 250px); flex-shrink: 0; background: var(--wb-bg-side); border-right: 1px solid var(--wb-border); display: flex; flex-direction: column; padding: 14px 10px; }
+  aside { position: relative; width: var(--wb-side-w, 250px); flex-shrink: 0; background: var(--wb-shell); border-right: 1px solid var(--wb-border); display: flex; flex-direction: column; padding: 14px 10px; }
   .brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 14px; }
   .brand .mark { width: 30px; height: 30px; border-radius: 9px; background: var(--wb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; }
   .brand .name { font-size: 15px; font-weight: 600; }
@@ -137,7 +147,7 @@
   .more-box { display: none; padding-left: 8px; }
   .more-box.open { display: block; }
   /* ---------- 主区域 ---------- */
-  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--wb-canvas); }
   .topbar { height: 56px; flex: 0 0 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--wb-border); }
   .topbar .title { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .topbar .right { display: flex; align-items: center; gap: 10px; }
@@ -145,11 +155,11 @@
   /* 「成果文件」角标：这回合来了几件还没看过的新产出。面板一开就摘掉 */
   #toggle-files .fb-badge { position: absolute; top: -7px; right: -7px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--wb-brand); color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; box-sizing: border-box; }
   #chat-scroll { flex: 1; overflow-y: auto; min-height: 0; scrollbar-gutter: stable both-edges; }
-  #to-bottom { position: absolute; right: 24px; bottom: 150px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); font-size: 15px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.12); display: none; z-index: 5; }
+  #to-bottom { position: absolute; right: 24px; bottom: 150px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); font-size: 15px; cursor: pointer; box-shadow: var(--shadow-menu); display: none; z-index: 5; }
   #to-bottom.show { display: block; }
   #to-bottom:hover { color: var(--wb-brand-text); border-color: var(--wb-brand-text); }
   /* 长对话滚动引导：往上翻远了出「回到最前」；人在上面时下面来了新内容，「回到最新」挂红点 */
-  #to-top { position: absolute; right: 24px; bottom: 190px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); font-size: 15px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.12); display: none; z-index: 5; }
+  #to-top { position: absolute; right: 24px; bottom: 190px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); font-size: 15px; cursor: pointer; box-shadow: var(--shadow-menu); display: none; z-index: 5; }
   #to-top.show { display: flex; align-items: center; justify-content: center; }
   #to-top:hover { color: var(--wb-brand-text); border-color: var(--wb-brand-text); }
   #to-bottom.new::after { content: ""; position: absolute; top: -3px; right: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--destructive, #e5484d); border: 2px solid var(--wb-bg); }
@@ -170,7 +180,7 @@
   .scene-tag { display: inline-flex; align-items: center; gap: 6px; background: #d7f5e9; color: #0f8a5f; font-size: 13px; border-radius: 14px; padding: 4px 12px; margin-bottom: 6px; }
   .scene-tag b { cursor: pointer; font-weight: 400; opacity: .7; }
   /* @ / 自动补全菜单 */
-  .mention-menu { display: none; position: absolute; bottom: 100%; left: 12px; margin-bottom: 8px; min-width: 260px; max-width: 420px; max-height: 260px; overflow-y: auto; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: 0 10px 32px rgba(23,24,28,.16); padding: 6px; z-index: 40; }
+  .mention-menu { display: none; position: absolute; bottom: 100%; left: 12px; margin-bottom: 8px; min-width: 260px; max-width: 420px; max-height: 260px; overflow-y: auto; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: var(--shadow-menu); padding: 6px; z-index: 40; }
   .mention-menu.show { display: block; }
   .mention-menu .mi { padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; }
   .mention-menu .mi:hover, .mention-menu .mi.sel { background: var(--wb-bg-hover); }
@@ -412,7 +422,7 @@
   /* ---------- 输入区（仿官方：大卡片 + 底部工具行 + 卡片下快捷栏） ---------- */
   .input-wrap { padding: 8px 20px 14px; }
   .input-inner { max-width: var(--wb-content-w); margin: 0 auto; }
-  .input-card { border: 1.5px solid var(--wb-border); border-radius: 18px; background: var(--wb-bg); padding: 14px 16px 10px; box-shadow: 0 6px 24px rgba(23,24,28,.05); transition: border-color var(--wb-t-fast) var(--wb-ease); }
+  .input-card { border: 1.5px solid var(--wb-border); border-radius: 18px; background: var(--wb-bg); padding: 14px 16px 10px; box-shadow: var(--shadow-menu); transition: border-color var(--wb-t-fast) var(--wb-ease); }
   .input-card:focus-within { border-color: var(--wb-brand-text); }
   textarea#input { width: 100%; border: none; outline: none; resize: none; font-size: var(--wb-fs); line-height: 1.6; max-height: 160px; background: transparent; color: var(--wb-text); }
   textarea#input::placeholder { color: var(--wb-text-3); }
@@ -423,7 +433,7 @@
   .picker { position: relative; }
   .picker-btn { display: flex; align-items: center; gap: 5px; border: none; background: transparent; border-radius: 8px; padding: 6px 10px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; }
   .picker-btn:hover { background: var(--wb-bg-hover); }
-  .picker-menu { display: none; position: absolute; bottom: 40px; right: 0; min-width: 200px; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: 0 10px 32px rgba(23,24,28,.14); padding: 6px; z-index: 30; }
+  .picker-menu { display: none; position: absolute; bottom: 40px; right: 0; min-width: 200px; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: var(--shadow-menu); padding: 6px; z-index: 30; }
   .picker-menu.up-left { right: auto; left: 0; }
   /* 默认那套是给输入框用的（菜单往上弹）；顶栏里的按钮得往下弹，不然掀到窗口外面去了 */
   .picker-menu.down { top: 36px; bottom: auto; max-height: 60vh; overflow-y: auto; }
@@ -478,7 +488,7 @@
   .input-card.dragging { outline: 2px dashed var(--wb-brand); outline-offset: -2px; }
   /* ---------- 右侧预览面板（HTML/图片/文档实时预览） ---------- */
   .main { min-width: 460px; }
-  .preview-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg); overflow: hidden; transition: width var(--wb-t-slow) var(--wb-ease-out); display: flex; flex-direction: column; }
+  .preview-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-canvas); overflow: hidden; transition: width var(--wb-t-slow) var(--wb-ease-out); display: flex; flex-direction: column; }
   .preview-panel.show { width: var(--wb-pv-w, 44%); min-width: 360px; max-width: calc(100vw - 300px); }
   .pv-head { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--wb-border); font-size: 14px; }
   .pv-head .pv-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -521,7 +531,7 @@
   #pv-body .ov-slide-t { font-size: 17px; font-weight: 600; margin: 4px 0 8px; }
   #pv-body .ov-notes { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--wb-border); color: var(--wb-text-3); font-size: 13px; }
   /* ---------- 右侧成果面板 ---------- */
-  .files-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-bg-side); overflow: hidden; transition: width var(--wb-t-slow) var(--wb-ease-out); display: flex; flex-direction: column; }
+  .files-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--wb-border); background: var(--wb-shell); overflow: hidden; transition: width var(--wb-t-slow) var(--wb-ease-out); display: flex; flex-direction: column; }
   .files-panel.show { width: var(--wb-fp-w, clamp(230px, 20vw, 300px)); }
   /* 左右两栏拖着改宽：抓边上那条 7px 的缝，双击回默认，←/→ 也能推。
      宽度写在 :root 的变量里（JS 存 localStorage），CSS 里的默认值就是没拖过时的样子。
@@ -570,7 +580,7 @@
   .sc-edit:hover, .sc-edit.armed { border-color: var(--wb-brand-text); color: var(--wb-brand-text); }
   #wb-toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(30,30,30,.82); backdrop-filter: saturate(180%) blur(14px); -webkit-backdrop-filter: saturate(180%) blur(14px); color: #fff; padding: 8px 18px; border-radius: 10px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity var(--wb-t) var(--wb-ease); z-index: 999; }
   #wb-toast.show { opacity: 1; }
-  #chat-search { display: none; position: absolute; top: 50px; right: 20px; z-index: 50; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,.1); padding: 6px 8px; gap: 6px; align-items: center; }
+  #chat-search { display: none; position: absolute; top: 50px; right: 20px; z-index: 50; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 10px; box-shadow: var(--shadow-menu); padding: 6px 8px; gap: 6px; align-items: center; }
   #chat-search input { margin: 0; width: 200px; border: none; outline: none; background: none; font-size: 14px; }
   #chat-search button { border: none; background: none; cursor: pointer; color: var(--wb-text-2); padding: 3px 6px; border-radius: 6px; }
   #chat-search button:hover { background: var(--wb-bg-hover); }
@@ -604,7 +614,7 @@
   .user-row .user-chip { flex: 1; margin: 0; min-width: 0; }
   #gear-btn { flex: none; width: 36px; height: 36px; border: 1px solid var(--wb-border); border-radius: 10px; background: var(--wb-bg); font-size: 15px; cursor: pointer; color: var(--wb-text-2); }
   #gear-btn:hover { background: var(--wb-bg-hover); }
-  .user-menu { display: none; position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: 0 10px 32px rgba(23,24,28,.18); padding: 6px; z-index: 60; font-size: 14px; }
+  .user-menu { display: none; position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: var(--shadow-menu); padding: 6px; z-index: 60; font-size: 14px; }
   .user-menu.show { display: block; }
   .um-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 10px; border-bottom: 1px solid var(--wb-border); margin-bottom: 4px; cursor: pointer; border-radius: 8px 8px 0 0; }
   .um-head:hover { background: var(--wb-bg-hover); }
@@ -683,7 +693,7 @@
      backdrop-filter 不支持时退化成原来的半透明色，不会变成一块实心板。 */
   .modal-mask { display: none; position: fixed; inset: 0; background: rgba(23,24,28,.35); backdrop-filter: saturate(150%) blur(6px); -webkit-backdrop-filter: saturate(150%) blur(6px); z-index: 50; align-items: center; justify-content: center; }
   .modal-mask.show { display: flex; }
-  .modal { width: 640px; max-width: 94vw; max-height: 82vh; background: var(--wb-bg); border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(23,24,28,.2); }
+  .modal { width: 640px; max-width: 94vw; max-height: 82vh; background: var(--wb-bg); border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow-floating); }
   .modal.wide { width: 920px; } /* 设置页要放得下双栏通道卡（去掉 160 导航 + 40 内边距，正文还剩 720） */
   .m-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--wb-border); flex-shrink: 0; }
   .m-head h3 { font-size: 15px; }
@@ -735,7 +745,7 @@
   .user-chip .uc { margin-left: auto; color: var(--wb-brand-text); font-weight: 600; flex: none; }
   .auth-mask { position: fixed; inset: 0; z-index: 200; background: rgba(247,248,250,.78); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); display: none; align-items: center; justify-content: center; }
   .auth-mask.show { display: flex; }
-  .auth-card { width: 340px; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 16px; padding: 28px 26px; box-shadow: 0 12px 40px rgba(0,0,0,.08); }
+  .auth-card { width: 340px; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 16px; padding: 28px 26px; box-shadow: var(--shadow-floating); }
   .auth-card h2 { font-size: 18px; margin-bottom: 4px; }
   .auth-card .sub { font-size: 13px; color: var(--wb-text-3); margin-bottom: 18px; }
   .auth-card input { width: 100%; margin-bottom: 10px; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: 10px; font-size: 14px; }
@@ -818,7 +828,7 @@
   .interject-note .lb { font-size: 12px; opacity: .75; margin-bottom: 2px; }
   .interject-note.pending { opacity: .6; }
   /* AI 拿不准时的提问卡：一条选项一行（短语 + 选它意味着什么），键盘 1/2/3/4 直选 */
-  .ask-card { align-self: stretch; margin: 12px 0; padding: 14px 16px 12px; border: 1px solid var(--wb-border); border-left: 3px solid var(--wb-brand); border-radius: 12px; background: var(--wb-bg); box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+  .ask-card { align-self: stretch; margin: 12px 0; padding: 14px 16px 12px; border: 1px solid var(--wb-border); border-left: 3px solid var(--wb-brand); border-radius: 12px; background: var(--wb-bg); box-shadow: var(--shadow-surface); }
   .ask-hd { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--wb-text-3); margin-bottom: 8px; }
   .ask-hd .ask-lb { flex: 1; }
   .ask-timer { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--wb-text-3); }
@@ -862,7 +872,7 @@
   .hub-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
   .hub-tabs { display: flex; gap: 4px; background: var(--wb-bg-side); border-radius: 10px; padding: 3px; }
   .hub-tabs button { border: none; background: transparent; border-radius: 8px; padding: 7px 16px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; }
-  .hub-tabs button.active { background: var(--wb-bg); color: var(--wb-text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .hub-tabs button.active { background: var(--wb-bg); color: var(--wb-text); font-weight: 600; box-shadow: var(--shadow-surface); }
   .hub-search { flex: 1; min-width: 160px; position: relative; }
   .hub-search input { width: 100%; padding: 8px 12px 8px 30px; border: 1px solid var(--wb-border); border-radius: 10px; font-size: 14px; background: var(--wb-bg); }
   .hub-search::before { content: "🔍"; position: absolute; left: 9px; top: 50%; transform: translateY(-50%); font-size: 13px; opacity: .5; }
@@ -951,7 +961,7 @@
   .pg-hero h1 { font-size: 26px; margin: 0 0 4px; }
   .pg-hero .sub { color: var(--wb-text-2); font-size: 14px; }
   .proj-card { border: 1px solid var(--wb-border); border-radius: 12px; padding: 14px 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; background: var(--wb-bg); transition: box-shadow var(--wb-t-fast) var(--wb-ease); }
-  .proj-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.07); }
+  .proj-card:hover { box-shadow: var(--shadow-menu); }
   .proj-card.active { border-color: var(--wb-brand-text); }
   .proj-card .tt { font-weight: 600; display: flex; align-items: center; gap: 8px; }
   .proj-card .tt .badge { font-size: 11px; color: var(--wb-brand-text); background: var(--wb-brand-weak); border-radius: 5px; padding: 1px 6px; font-weight: 600; }
@@ -1009,9 +1019,10 @@
     --wb-t-fast: .14s;                                 /* 悬停、按下这种要「跟手」 */
     --wb-t: .2s;                                       /* 常规状态切换 */
     --wb-t-slow: .28s;                                 /* 面板、弹层的进出 */
-    --wb-shadow-sm: 0 1px 3px rgba(23,24,28,.06); --wb-shadow-md: 0 10px 28px rgba(23,24,28,.10);
+    /* 影子不再各写各的：全项目只有三档高度，值在 ui.css（浅/暗各一套，这里不用再覆写一遍）。
+       老名字留着，是因为卡片悬浮那几条规则还在用它。 */
+    --wb-shadow-sm: var(--shadow-surface); --wb-shadow-md: var(--shadow-menu);
   }
-  html[data-theme="dark"] { --wb-shadow-sm: 0 1px 3px rgba(0,0,0,.35); --wb-shadow-md: 0 10px 28px rgba(0,0,0,.5); }
 
   /* 表单控件全局圆角化：自动化等页面级表单不再是浏览器原生方框 */
   input:where(:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"])), select, textarea {
@@ -1067,12 +1078,6 @@
   @keyframes wbPop { from { opacity: 0; transform: translateY(12px) scale(.97); } }
   @keyframes wbRise { from { opacity: 0; transform: translateY(6px); } }
 
-  /* 细圆滚动条 */
-  ::-webkit-scrollbar { width: 8px; height: 8px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--wb-border); border-radius: 99px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--wb-text-3); }
-
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
   }
@@ -1113,12 +1118,16 @@
   #goal-card .gc-go:hover { filter: brightness(1.06); }
 
   /* ---------- 第45轮 UI 精修（增量，只加不改名） ---------- */
-  /* 全局细滚动条：默认的粗滚动条在窄面板里很抢戏 */
-  * { scrollbar-width: thin; scrollbar-color: var(--wb-border) transparent; }
-  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  /* 全局细滚动条：默认的粗滚动条在窄面板里很抢戏。
+     原来这里有两套规则（上面一套无前缀的 + 这套带 * 的）在打架，后者赢；
+     而后者的滑块是 --border（#e9ebf0）再被 2px 透明边裁到 4px 宽——压在白底上等于没画，
+     长列表里根本看不出自己滚到哪了。改成半透明黑/白：一条规则在任何底色上都读得出来。 */
+  * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+  *::-webkit-scrollbar { width: 11px; height: 11px; }
   *::-webkit-scrollbar-track { background: transparent; }
-  *::-webkit-scrollbar-thumb { background: var(--wb-border); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
-  *::-webkit-scrollbar-thumb:hover { background: var(--wb-text-3); border: 2px solid transparent; background-clip: content-box; }
+  *::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
+  *::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); border: 3px solid transparent; background-clip: content-box; }
+  *::-webkit-scrollbar-corner { background: transparent; }
 
   /* 表单控件统一：焦点环、勾选框主题色、下拉框和输入框一个观感 */
   input:focus, textarea:focus, select:focus { outline: none; border-color: var(--wb-brand-text); box-shadow: 0 0 0 3px rgba(91,95,247,.12); }
