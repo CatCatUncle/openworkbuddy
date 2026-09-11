@@ -1123,7 +1123,7 @@ function renderDataPane(pane, s) {
   };
   pane.querySelector("#ws-save").onclick = () => saveSettings({ workspace_dir: pane.querySelector("#ws-dir").value.trim(), workspace_permanent: true }, pane.querySelector("#ws-msg"))
     .then(ok => { if (ok) fetch("/api/files").then(r => r.json()).then(renderFiles); });
-  pane.querySelector("#ws-open").onclick = () => fetch("/api/open-workspace", { method: "POST" });
+  pane.querySelector("#ws-open").onclick = () => openWorkspaceOnHost();
   const cacheDesc = pane.querySelector("#cache-desc");
   const loadCache = () => fetch("/api/cache").then(r => r.json()).then(c => {
     cacheDesc.textContent = `界面缓存 ${fmtSize(c.ui)} · 临时脚本 ${fmtSize(c.tmp)}，共 ${fmtSize(c.total)}。只清可再生的缓存，不动会话记录、工作区文件和登录态。`;

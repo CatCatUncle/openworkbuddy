@@ -123,6 +123,12 @@ app.get("/api/policy-probe", (_req, res) => res.json({ policy: tools.orgPolicy()
 app.post("/api/files/open/*", (_req, res) => res.json({ ok: true }));
 app.post("/api/files/reveal", (_req, res) => res.json({ ok: true }));
 
+// 新手向导。最后一步写的是服务器级的东西（全局工作目录 + 「走完了」这个标记），
+// 闸门按 /api/onboarding 前缀拦住了写，读却是放行的——所以 GET 必须顺手把「你能不能走完」说清楚，
+// 不然成员会被一块没有 ✕ 的全屏遮罩堵在门口，一步步认真填完，最后一颗按钮回他四个字。
+app.get("/api/onboarding", (req, res) => res.json({ needs_setup: false, seen: false, can_finish: isPlatformOwner(req) }));
+app.post("/api/onboarding/done", (_req, res) => res.json({ ok: true }));
+
 const server = app.listen(0, "127.0.0.1");
 const listening = new Promise((r) => server.once("listening", r));
 
@@ -713,6 +719,23 @@ async function login(username, password) {
      "预览服务器按目录分开存（原来是一个全局变量，第二个租户一开就把第一个的端口顶掉）");
   ok(/wbpv=/.test(SRV) && /st\.token/.test(SRV),
      "预览站点带令牌（原来起在 0.0.0.0 上，同网段谁都能翻）");
+
+  console.log("\n【20】新手向导：他走不完的那一程，就别把他放进去");
+  r = await call("GET", "/api/onboarding", { cookie: yuan });
+  eq(r.status, 200, "成员读得到体检表（读没被拦）");
+  eq(r.json.can_finish, false, "但界面被明确告知：这一程他走不完");
+  r = await call("POST", "/api/onboarding/done", { cookie: yuan });
+  eq(r.status, 403, "反证：真放他走到最后一步，「开始使用」就是 403");
+  r = await call("GET", "/api/onboarding", { cookie: fen });
+  eq(r.json.can_finish, false, "分公司管理员也走不完（写的是整台服务器那一份）");
+  r = await call("GET", "/api/onboarding", { cookie: boss });
+  eq(r.json.can_finish, true, "反向对照：平台管理员 can_finish = true");
+  r = await call("POST", "/api/onboarding/done", { cookie: boss });
+  eq(r.status, 200, "反向对照：他点得动「开始使用」");
+  ok(writeTbl.includes("/api/onboarding"), "写表里有 /api/onboarding（能力位不是凭空加的，闸门确实在拦）");
+  const onbFn = (SRV.match(/app\.get\("\/api\/onboarding"[\s\S]*?\n\}\);/) || [""])[0];
+  ok(/can_finish: isPlatformOwner\(req\)/.test(onbFn),
+     "server.js 的 GET /api/onboarding 真把 can_finish 回出去了（替身对了真源没对，等于没测）");
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

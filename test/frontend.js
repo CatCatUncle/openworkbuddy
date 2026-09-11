@@ -2142,6 +2142,12 @@ const ONB0 = APP03.indexOf("const KEY_SOURCES = {");
 const ONB1 = APP03.indexOf("// ================= 主区页面视图");
 if (ONB0 < 0 || ONB1 < 0 || ONB1 < ONB0) throw new Error("app-03.js 里找不到向导那一段（KEY_SOURCES … 主区页面视图）");
 const ONB_SRC = APP03.slice(ONB0, ONB1);
+// 向导是块全屏遮罩、自己没有 ✕，Escape 管不管得着它归快捷键动作表管——把那张表的真源也切进来
+const APP02_SC = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
+const SC0 = APP02_SC.indexOf("const SHORTCUT_ACTIONS = {");
+const SC1 = APP02_SC.indexOf("\n};", SC0);
+if (SC0 < 0 || SC1 < 0) throw new Error("app-02.js 里找不到 SHORTCUT_ACTIONS 这张表");
+const SHORTCUT_SRC = APP02_SC.slice(SC0, SC1 + 3);
 const ONB_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div class='auth-mask' id='onb-mask'><div class='auth-card onb-card'><div class='onb-steps' id='onb-steps'></div><div id='onb-body'></div></div></div></body>";
 const ONB_STUBS = `
@@ -2150,8 +2156,16 @@ const ONB_STUBS = `
   function toast(m) { TOASTS.push(String(m)); }
   function refreshSettingsCache() { REFRESHED++; }
   function openModal(k, sub) { MODALS.push(k + ":" + (sub || "")); }
+  // SHORTCUT_ACTIONS 里 "stop" 这一条要用到的几个：普通弹层遮罩、对话内搜索、以及「正在跑就先停任务」
+  const mask = Object.assign(document.createElement("div"), { id: "modal-mask" });
+  document.body.appendChild(mask);
+  let BUSY = false; const STOPPED = [];
+  function curBusy() { return BUSY; }
+  function stopTask() { STOPPED.push(1); }
+  function closeChatSearch() { const cs = document.getElementById("chat-search"); if (cs) cs.style.display = "none"; }
+  function toggleAppFullscreen() {} // 表里唯一一个不是箭头函数的值，建表那一刻就要存在
   // 体检表：大脑没接上、搜索没配、图已配、IM 配了 1 个、本机只装了 codex
-  let ST = { needs_setup: true, seen: false, brain: { ok: false, via: "api", name: "", model: "" }, active_model: "DeepSeek", workspace_dir: "/tmp/ws",
+  let ST = { needs_setup: true, seen: false, can_finish: true, brain: { ok: false, via: "api", name: "", model: "" }, active_model: "DeepSeek", workspace_dir: "/tmp/ws",
     models: [{ name: "DeepSeek", model: "deepseek-chat", base_url: "https://api.deepseek.com/v1", local: false, has_key: false },
              { name: "Ollama", model: "qwen3", base_url: "http://localhost:11434/v1", local: true, has_key: true }],
     engines: [{ id: "claude-code", label: "Claude Code", installed: false, version: "", install: "npm i -g @anthropic-ai/claude-code" },
@@ -2319,8 +2333,158 @@ const ONB_CHECKS = `
   steps.querySelector('.onb-lang button[data-lang="zh"]').click(); await tick();
   ok("点回 中文：步骤名还原、<html lang=zh-CN>", document.documentElement.lang === "zh-CN" && steps.querySelector(".onb-step.cur").textContent.includes("大模型"));
   closeOnboarding();
+
+  // ---- 成员：这一程他根本走不完（最后一步写的是服务器级设置），就别把他放进这块没有 ✕ 的遮罩 ----
+  const forget = () => { onbSkipMem = false; try { sessionStorage.removeItem("wb_onb_skipped"); } catch {} };
+  forget();
+  ST = { ...ST, seen: false, needs_setup: true, can_finish: false, brain: { ok: false, via: "api", name: "", model: "" } };
+  await maybeOnboard(); await tick();
+  ok("成员（can_finish=false）：一进来不弹这块平台级向导", !mask.classList.contains("show"));
+  ST = { ...ST, can_finish: true };
+  await maybeOnboard(); await tick();
+  ok("反向对照：同一张体检表只把 can_finish 翻回 true，立刻就弹", mask.classList.contains("show"));
+  closeOnboarding();
+
+  // ---- 完成页也得留条出口：以前那儿只有一颗「开始使用」，它一失败就彻底出不去了 ----
+  forget();
+  ST = { ...ST, needs_setup: false, seen: false, can_finish: true, brain: { ok: true, via: "api", name: "DeepSeek", model: "deepseek-chat" } };
+  await openOnboarding(); await tick(); onbGo(4); await tick();
+  ok("完成页有一条「先跳过」，不再是一颗孤零零的「开始使用」",
+     q("#onb-skip-step") && q("#onb-skip-step").textContent === "先跳过" && q("#onb-go").textContent === "开始使用",
+     q("#onb-skip-step") && q("#onb-skip-step").textContent);
+  POSTS.length = 0;
+  q("#onb-skip-step").click(); await tick();
+  ok("完成页点「先跳过」：关向导、本窗口记一次、不往服务端 POST done",
+     !mask.classList.contains("show") && onbSkipFlag() === true && !POSTS.some(([k]) => k === "done"));
+
+  // ---- Escape 也得管得着这块遮罩（它自己没有 ✕） ----
+  forget();
+  await openOnboarding(); await tick();
+  SHORTCUT_ACTIONS["stop"]();
+  ok("按 Esc：向导遮罩退得出去", !mask.classList.contains("show"));
+  const mm = document.getElementById("modal-mask");
+  mm.classList.add("show");
+  SHORTCUT_ACTIONS["stop"]();
+  ok("反向对照：向导没开着时 Esc 照旧关普通弹层，没被抢走", !mm.classList.contains("show"));
+
   return names;
 })().catch((e) => { throw new Error("[向导] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (window.__onbNames || 0)); })
+`;
+
+// ================= 顶栏「工作空间」菜单（真源码切片：工作空间选择 … 模式选择） =================
+// 这张菜单里的三条，两条是服务器级动作：切工作目录改的是整台机器那一份，打开文件夹弹的是
+// 服务端那台机器上的窗口。以前不分身份一律画出来，成员点「选择新文件夹…」还会先弹个输入框
+// 让他认真把路径填完，然后 403 被整个吞掉——一声不吭。验的就是「会 403 的按钮不该摆在那儿」。
+const WS0 = APP02.indexOf("// ================= 工作空间选择");
+const WS1 = APP02.indexOf("// ================= 模式选择");
+if (WS0 < 0 || WS1 <= WS0) throw new Error("app-02.js 里找不到工作空间选择那一段，前端测试没法定位真源码");
+const WSMENU_SRC = APP02.slice(WS0, WS1);
+const WSMENU_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style>"
+  + "<body><button id='ws-btn'>ws</button><div class='picker-menu' id='ws-menu'></div></body>";
+// 「打开当前工作目录」全站有四个入口（顶栏按钮、这张菜单、助理页、设置页）。以前各写各的 fetch，
+// 结果各自被吞掉——403 之后按钮点下去一声不吭。现在只许有一个出口：app-01.js 的 openWorkspaceOnHost。
+const OPENWS_SITES = (() => {
+  const dir = path.join(__dirname, "..", "public", "js");
+  const hits = [];
+  for (const f of fs.readdirSync(dir).filter((n) => /^app-\d/.test(n)))
+    for (const line of fs.readFileSync(path.join(dir, f), "utf8").split("\n"))
+      if (line.includes("/api/open-workspace")) hits.push(f + "：" + line.trim());
+  return hits;
+})();
+const WSMENU_STUBS = `
+  const OPENWS_SITES = ${JSON.stringify(OPENWS_SITES)};
+  function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+  const TOASTS = [], CALLS = [];
+  let PROMPTED = 0, PROMPT_RET = null;
+  function toast(m) { TOASTS.push(String(m)); }
+  function renderFiles() { CALLS.push("renderFiles"); }
+  function refreshSettingsCache() { CALLS.push("refresh"); }
+  function downloadFile(n) { CALLS.push("download:" + n); }
+  function fpath(n) { return encodeURIComponent(n); }
+  function setupPicker(btnId, menuId) { return document.getElementById(menuId); } // 真弹层的开合另有一屏在验，这儿只要那个容器
+  let settingsCache = { workspace_dir: "/srv/ws", platform_owner: true };
+  let PICK = { status: 200, body: { path: "/srv/ws2" } };
+  let SET = { status: 200, body: { ok: true } };
+  let OPENWS = { status: 200, body: { ok: true } };
+  window.prompt = () => { PROMPTED++; return PROMPT_RET; };
+  window.fetch = async (url, opt) => {
+    const method = (opt && opt.method) || "GET";
+    CALLS.push(method + " " + url);
+    const mk = (r) => ({ ok: r.status >= 200 && r.status < 300, status: r.status, json: async () => r.body });
+    if (url === "/api/pick-folder") return mk(PICK);
+    if (url === "/api/settings" && method === "POST") { CALLS.push("ws:" + JSON.parse(opt.body).workspace_dir); return mk(SET); }
+    if (url === "/api/files") return mk({ status: 200, body: [] });
+    if (url === "/api/open-workspace") return mk(OPENWS);
+    throw new Error("没替身的请求：" + method + " " + url);
+  };
+`;
+const WSMENU_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + extra : "")); names.push(n); };
+  const tick = () => new Promise((r) => setTimeout(r, 8));
+  const menu = document.getElementById("ws-menu");
+  const items = () => [...menu.querySelectorAll(".mi")];
+  const acts = () => items().map((m) => m.dataset.act || (m.dataset.cur ? "cur" : "ro")).join(",");
+
+  // ---- 平台管理员：三条都该在 ----
+  settingsCache = { workspace_dir: "/srv/ws", platform_owner: true };
+  renderWsMenu();
+  ok("平台管理员：当前目录 + 选择新文件夹 + 打开当前文件夹，三条都画", acts() === "cur,pick,open" && menu.textContent.includes("/srv/ws"), acts());
+
+  // ---- 成员：会 403 的那两条不画，只留一条只读的「现在在哪」 ----
+  settingsCache = { workspace_dir: "/srv/ws", platform_owner: false };
+  renderWsMenu();
+  ok("成员：pick / open 两条都不画", !items().some((m) => m.dataset.act), acts());
+  ok("成员：照样看得见现在在哪个目录，外加一句说清归谁管", menu.textContent.includes("/srv/ws") && menu.textContent.includes("平台管理员"));
+  ok("剩下的都是只读项（.mi.ro），不装成能点的", items().every((m) => m.classList.contains("ro")));
+  ok("只读项真样式上也不像能点：cursor 不是 pointer", getComputedStyle(items()[0]).cursor !== "pointer", getComputedStyle(items()[0]).cursor);
+  CALLS.length = 0;
+  items().forEach((m) => m.click());
+  await tick(); await tick();
+  ok("成员点这几条：一个请求都不发（原来会先弹输入框，填完再 403）", CALLS.length === 0 && PROMPTED === 0, JSON.stringify(CALLS));
+
+  // ---- 管理员选新目录：系统选择框回了路径就直接切 ----
+  settingsCache = { workspace_dir: "/srv/ws", platform_owner: true };
+  renderWsMenu();
+  CALLS.length = 0; PROMPTED = 0;
+  PICK = { status: 200, body: { path: "/srv/ws2" } };
+  menu.querySelector('[data-act="pick"]').click(); await tick(); await tick(); await tick();
+  ok("选到了目录：POST /api/settings 带新路径、刷新缓存、重列文件", CALLS.includes("ws:/srv/ws2") && CALLS.includes("refresh") && CALLS.includes("renderFiles") && PROMPTED === 0, JSON.stringify(CALLS));
+
+  // ---- 501 = 这台机器弹不出系统选择框：才退回手填 ----
+  CALLS.length = 0; PROMPTED = 0; PROMPT_RET = "/srv/ws3";
+  PICK = { status: 501, body: { error: "网页端弹不出来" } };
+  menu.querySelector('[data-act="pick"]').click(); await tick(); await tick(); await tick();
+  ok("501：退回手填路径，填了就切", PROMPTED === 1 && CALLS.includes("ws:/srv/ws3"), JSON.stringify(CALLS));
+
+  // ---- 别的非 2xx 是真出事了：说出来，别再骗他填一遍路径 ----
+  CALLS.length = 0; PROMPTED = 0; TOASTS.length = 0;
+  PICK = { status: 403, body: { error: "这块是服务器级设置，归平台管理员管" } };
+  menu.querySelector('[data-act="pick"]').click(); await tick(); await tick();
+  ok("403：原话说出来，不弹输入框、不发切换请求", PROMPTED === 0 && TOASTS.some((t) => t.includes("平台管理员")) && !CALLS.some((c) => c.startsWith("ws:")), JSON.stringify([TOASTS, CALLS]));
+
+  // ---- 切换本身失败也要说：以前这条 fetch 的结果整个被丢掉 ----
+  CALLS.length = 0; TOASTS.length = 0;
+  PICK = { status: 200, body: { path: "/nope" } };
+  SET = { status: 403, body: { error: "切不动：这是整台服务器共用的目录" } };
+  menu.querySelector('[data-act="pick"]').click(); await tick(); await tick(); await tick();
+  ok("切换被拒：把服务端那句话端出来，不刷新也不重列文件", TOASTS.some((t) => t.includes("整台服务器")) && !CALLS.includes("refresh") && !CALLS.includes("renderFiles"), JSON.stringify([TOASTS, CALLS]));
+  SET = { status: 200, body: { ok: true } };
+
+  // ---- 「打开当前文件夹」：开的是服务端那台机器，失败照样要说 ----
+  CALLS.length = 0; TOASTS.length = 0;
+  OPENWS = { status: 403, body: { error: "这块是服务器级设置，归平台管理员管" } };
+  menu.querySelector('[data-act="open"]').click(); await tick(); await tick();
+  ok("打开工作目录失败：说原因，不是点了一声不吭", CALLS.includes("POST /api/open-workspace") && TOASTS.some((t) => t.includes("平台管理员")), JSON.stringify([TOASTS, CALLS]));
+  CALLS.length = 0; TOASTS.length = 0;
+  OPENWS = { status: 200, body: { ok: true } };
+  menu.querySelector('[data-act="open"]').click(); await tick(); await tick();
+  ok("反向对照：成功时什么都不弹", CALLS.includes("POST /api/open-workspace") && TOASTS.length === 0, JSON.stringify(TOASTS));
+  ok("全站只有一处真发 /api/open-workspace（另外三个入口都走同一个出口，不再各吞各的）",
+     OPENWS_SITES.length === 1 && OPENWS_SITES[0].startsWith("app-01.js"), JSON.stringify(OPENWS_SITES));
+  return names;
+})().catch((e) => { throw new Error("[工作空间菜单] " + ((e && (e.stack || e.message)) || String(e))); })
 `;
 
 // ---------- 中英文切换：真 i18n.js 跑在真 Chromium 里 ----------
@@ -4118,11 +4282,21 @@ app.whenReady().then(async () => {
     const win11 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
       await win11.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ONB_HTML));
-      const names11 = await win11.webContents.executeJavaScript(I18N_SRC + "\n" + ONB_STUBS + "\n" + ONB_SRC + "\n" + ONB_CHECKS, true);
+      const names11 = await win11.webContents.executeJavaScript(I18N_SRC + "\n" + ONB_STUBS + "\n" + ONB_SRC + "\n" + SHORTCUT_SRC + "\n" + ONB_CHECKS, true);
       for (const n of names11) console.log("  ✓ " + n);
       console.log(`✅ 前端：首次开箱向导（大脑必配·云端/本机二选一·验活失败不翻页·搜索保存再测活·多媒体按行填·清单收尾·走完不再弹·关于页可重开）${names11.length} 项通过`);
     } finally {
       if (!win11.isDestroyed()) win11.destroy();
+    }
+    const win19 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win19.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(WSMENU_HTML));
+      const names18 = await win19.webContents.executeJavaScript(
+        WSMENU_STUBS + "\n" + HOSTCAP_SRC + "\n" + srcBlock("function openWorkspaceOnHost(") + "\n" + WSMENU_SRC + "\n" + WSMENU_CHECKS, true);
+      for (const n of names18) console.log("  ✓ " + n);
+      console.log(`✅ 前端：顶栏工作空间菜单（成员不画会 403 的两条·501 才退回手填·切换/打开失败都说原因）${names18.length} 项通过`);
+    } finally {
+      if (!win19.isDestroyed()) win19.destroy();
     }
     const win10 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {

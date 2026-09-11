@@ -1359,6 +1359,13 @@ function openOnHost(name) {
     .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开这个文件")); }))
     .catch(() => toast("❌ 打不开这个文件"));
 }
+/** 「打开当前工作目录」。开的同样是服务端那台机器上的窗口，所以失败了也要说出来。
+ *  四个地方都要用它（顶栏、工作空间菜单、助理页、设置页），别再各写一遍 fetch 然后各自吞掉结果。 */
+function openWorkspaceOnHost() {
+  return fetch("/api/open-workspace", { method: "POST" })
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开工作目录")); }))
+    .catch(() => toast("❌ 打不开工作目录"));
+}
 /** 下载到用户自己的电脑。Web 部署下这才是「把文件拿到手」的正路 */
 function downloadFile(name) {
   const a = document.createElement("a");
@@ -2366,13 +2373,7 @@ window.addEventListener("resize", () => { if (window.innerWidth > 900) document.
 document.querySelector(".main").addEventListener("click", () => {
   if (document.body.classList.contains("side-open")) document.body.classList.remove("side-open");
 }, true);
-document.getElementById("open-ws").onclick = (e) => {
-  e.preventDefault();
-  // 以前这里 fetch 完连 Promise 都不接：403 之后按钮点了毫无反应
-  fetch("/api/open-workspace", { method: "POST" })
-    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开工作目录")); }))
-    .catch(() => toast("❌ 打不开工作目录"));
-};
+document.getElementById("open-ws").onclick = (e) => { e.preventDefault(); openWorkspaceOnHost(); };
 
 // ================= 下拉菜单通用 =================
 function setupPicker(btnId, menuId) {

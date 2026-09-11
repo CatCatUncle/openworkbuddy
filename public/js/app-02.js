@@ -73,27 +73,41 @@ function renderGoalCard() {
 
 // ================= 工作空间选择（快捷栏，仿官方"选择工作空间"） =================
 const wsMenu = setupPicker("ws-btn", "ws-menu");
+/** 切工作目录改的是整台服务器那一份，打开文件夹开的是服务端那台机器——两样都不是成员能做的。
+ *  所以成员那边只留一条只读的「现在在哪」，另外两条不画：一颗必然 403 的菜单项，
+ *  点下去要么没反应，要么（更糟）弹个输入框让他认真填完路径，然后一声不吭。 */
+async function setWorkspaceDir(p) {
+  const r = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspace_dir: p }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) { toast("❌ " + (j.error || "切换工作空间失败")); return false; }
+  refreshSettingsCache();
+  return true;
+}
 function renderWsMenu() {
+  const owner = amPlatformOwner();
   wsMenu.innerHTML =
-    `<div class="mi" data-act="cur">📁 ${esc(settingsCache.workspace_dir)}</div>
-     <div class="mi" data-act="pick">📂 选择新文件夹…</div>
-     <div class="mi" data-act="open">🗂 打开当前文件夹</div>`;
+    `<div class="mi ro" data-cur="1">📁 ${esc(settingsCache.workspace_dir)}</div>` +
+    (owner ? `<div class="mi" data-act="pick">📂 选择新文件夹…</div>` : "") +
+    (canOpenOnHost() ? `<div class="mi" data-act="open">🗂 打开当前文件夹</div>` : "") +
+    (owner ? "" : `<div class="mi ro sub-only">这台服务器上大家共用一个工作目录，归平台管理员设</div>`);
   wsMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
     wsMenu.classList.remove("show");
     if (mi.dataset.act === "pick") {
-      const r = await fetch("/api/pick-folder", { method: "POST" }).then(r => r.json()).catch(() => ({}));
+      // 501 才是「这台机器弹不出系统选择框」，该退回手填；别的非 2xx 是真出事了，说出来
+      const resp = await fetch("/api/pick-folder", { method: "POST" }).catch(() => null);
+      const r = resp ? await resp.json().catch(() => ({})) : {};
+      if (!resp) return toast("❌ 选择文件夹失败");
       if (r.path) {
-        await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspace_dir: r.path }) });
-        refreshSettingsCache();
-        fetch("/api/files").then(r => r.json()).then(renderFiles);
-      } else if (r.error) {
+        if (await setWorkspaceDir(r.path)) fetch("/api/files").then(x => x.json()).then(renderFiles);
+      } else if (resp.status === 501) {
         const p = prompt("输入工作空间文件夹的完整路径：", settingsCache.workspace_dir);
-        if (p) {
-          await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspace_dir: p }) });
-          refreshSettingsCache();
-        }
+        if (p) await setWorkspaceDir(p);
+      } else if (!resp.ok || r.error) {
+        toast("❌ " + (r.error || "选择文件夹失败"));
       }
-    } else if (mi.dataset.act === "open") fetch("/api/open-workspace", { method: "POST" });
+    } else if (mi.dataset.act === "open") {
+      openWorkspaceOnHost();
+    }
   });
 }
 refreshSettingsCache();
@@ -866,7 +880,10 @@ const SHORTCUT_ACTIONS = {
   "new-chat": () => document.getElementById("new-task").click(),
   "stop": () => {
     const cs = document.getElementById("chat-search");
-    if (mask.classList.contains("show")) mask.classList.remove("show");
+    const onb = document.getElementById("onb-mask");
+    // 新手引导是块全屏遮罩，它自己没有 ✕；Escape 得管得着，否则卡在里面只能重启
+    if (onb && onb.classList.contains("show")) onb.classList.remove("show");
+    else if (mask.classList.contains("show")) mask.classList.remove("show");
     else if (cs && cs.style.display === "flex") closeChatSearch();
     else if (curBusy()) stopTask();
   },
