@@ -3024,6 +3024,77 @@ const TRAIL_CHECKS = `
       u0.turn.querySelectorAll(".a-text .file-ln").length === 0 && window.PV.length === 0);
     setW(900);
   }
+
+  // ---- 折叠条上那行「此刻在干什么」 ----
+  // 用户原话：「用户都一直看着一个大标题在转，没有感知具体的 agent 在干活执行」。
+  // 病根不是没信息，是信息全锁在默认收起的 .proc-body 里，外面只剩「运行中 3m20s · 第 7 步」——
+  // 那说的是跑了多久，不是在干什么。所以两头都验：纯函数出的话对不对，以及它在**收着**的时候看不看得见。
+  {
+    const nap2 = (ms) => new Promise((r) => setTimeout(r, ms));
+    const LA = (ev, narr) => liveActivity(ev, narr || "");
+    const line = (ev, narr) => LA(ev, narr).line;
+    ok("动作行·调工具：一个图标 + 服务端算好的「动词 + 对象」",
+      line({ type: "tool_use", name: "read_file", title: "读 报告.md" }) === "📄 读 报告.md",
+      line({ type: "tool_use", name: "read_file", title: "读 报告.md" }));
+    ok("动作行·老会话回放没 title：退回短名 + purpose，图标不重复（不是「📄 📄 读」）",
+      line({ type: "tool_use", name: "read_file", purpose: "简历.md" }) === "📄 读 简历.md",
+      line({ type: "tool_use", name: "read_file", purpose: "简历.md" }));
+    ok("动作行·认不出的 MCP 工具也有话说，不留空",
+      line({ type: "tool_use", name: "mcp_feishu_send", title: "发 群消息" }) === "⚙ 发 群消息",
+      line({ type: "tool_use", name: "mcp_feishu_send", title: "发 群消息" }));
+    ok("动作行·专家干的活前面挂专家名，别看着像主线自己在跑",
+      line({ type: "tool_use", name: "web_search", title: "搜「深圳 OPC」", expert: "调研" }) === "🌐 调研 · 搜「深圳 OPC」",
+      line({ type: "tool_use", name: "web_search", title: "搜「深圳 OPC」", expert: "调研" }));
+    const longLine = line({ type: "tool_use", name: "run_shell", title: "命令 " + "x".repeat(200) });
+    ok("动作行·话太长就截断加省略号，不把折叠条撑开", longLine.length <= 64 && longLine.slice(-1) === "…", longLine.length + "/" + longLine.slice(-3));
+    const n1 = LA({ type: "text", delta: "深圳本地的入口比预想的清晰得多。" });
+    const n2 = LA({ type: "text", delta: "我抓几份原文确认细节。" }, n1.narr);
+    ok("动作行·正文旁白播的是最后一句，不是整段被截得只剩开头", n2.line === "✍️ 我抓几份原文确认细节。", n2.line);
+    ok("动作行·正好写完一句时不闪空白（退一句显示）", LA({ type: "text", delta: "先看看文件。" }).line === "✍️ 先看看文件。", LA({ type: "text", delta: "先看看文件。" }).line);
+    ok("动作行·旁白缓冲只留尾部 400 字，长任务不越滚越沉", LA({ type: "text", delta: "句。".repeat(500) }).narr.length === 400, LA({ type: "text", delta: "句。".repeat(500) }).narr.length);
+    ok("动作行·专家内层的正文不抢主线这一行", line({ type: "text", delta: "内层在写", depth: 1 }) === null);
+    ok("动作行·并发那条说清一起跑几个", line({ type: "parallel", count: 6 }) === "⚡ 6 个只读工具一起跑", line({ type: "parallel", count: 6 }));
+    ok("动作行·压缩那条说清压了几条、要点还在（别让人以为丢了）",
+      line({ type: "compact", removed: 7 }).includes("7 条") && line({ type: "compact", removed: 7 }).includes("要点保留"),
+      line({ type: "compact", removed: 7 }));
+    ok("动作行·思考中带步号", line({ type: "step_start", step: 7 }) === "🤔 第 7 步 · 在想下一步怎么做", line({ type: "step_start", step: 7 }));
+    ok("动作行·专家内层的 step_start 不覆盖主线", line({ type: "step_start", step: 2, depth: 1 }) === null);
+    ok("动作行·要问用户的时候说的是「在等你回答」", line({ type: "ask_user" }).includes("等你回答"), line({ type: "ask_user" }));
+    ok("动作行·工具成了不改词：那一步「在干什么」立着更有用", line({ type: "tool_result", name: "read_file", preview: "ok" }) === null);
+    ok("动作行·工具栽了必须说（过程区收着的时候失败原本完全隐形）",
+      line({ type: "tool_result", name: "run_shell", isError: true, outcome: "exit 1" }) === "⚠️ ⌨️ 命令 没成：exit 1",
+      line({ type: "tool_result", name: "run_shell", isError: true, outcome: "exit 1" }));
+    ok("动作行·记账类事件（usage / files）不抢这一行", line({ type: "usage" }) === null && line({ type: "files", files: [] }) === null);
+    ok("动作行·非正文事件把旁白缓冲清空，下一段不接到上一段尾巴上", LA({ type: "parallel", count: 2 }, "上一段旁白").narr === "");
+
+    // 真事件流跑一遍：验它确实接在 DOM 上，而且**收着**也看得见
+    const u = createTurnUI("研究一下这门生意", "craft", "s_t");
+    const t2 = u.turn;
+    u.handleEvent({ type: "step_start", step: 1 });
+    u.handleEvent({ type: "tool_use", id: "x1", name: "web_search", title: "搜「深圳 OPC」" });
+    const wrap = t2.querySelector(".proc-wrap");
+    const live = wrap.querySelector(".proc-head .act-live");
+    ok("动作行挂在折叠条上（跟折叠区是两回事）", !!live);
+    ok("过程区仍然默认收着（用户说过别让执行过程挡住）", !wrap.classList.contains("open"));
+    ok("收着也看得见，说的正是此刻这一步", disp(live) !== "none" && live.textContent === "🌐 搜「深圳 OPC」", disp(live) + " / " + live.textContent);
+    ok("动作行独占一行，不跟耗时挤在一起",
+      live.getBoundingClientRect().top > wrap.querySelector(".pt").getBoundingClientRect().top,
+      live.getBoundingClientRect().top + " vs " + wrap.querySelector(".pt").getBoundingClientRect().top);
+    ok("鼠标悬停能看全被截掉的部分（title 跟着走）", live.title === live.textContent, live.title);
+    u.handleEvent({ type: "parallel", count: 6 });
+    ok("下一个动作来了就地换词，不是越堆越长", live.textContent === "⚡ 6 个只读工具一起跑", live.textContent);
+    u.handleEvent({ type: "tool_result", id: "x1", name: "web_search", preview: "ok" });
+    ok("工具成了不改词：还停在刚才那句", live.textContent === "⚡ 6 个只读工具一起跑", live.textContent);
+    u.handleEvent({ type: "tool_use", id: "x2", name: "run_shell", title: "命令 npm test" });
+    u.handleEvent({ type: "tool_result", id: "x2", name: "run_shell", isError: true, outcome: "exit 1" });
+    ok("工具栽了当场说出来", live.textContent.includes("没成") && live.textContent.includes("exit 1"), live.textContent);
+    for (const ch of "我抓几份原文确认细节。") u.handleEvent({ type: "text", delta: ch });
+    ok("流式旁白按帧合并：这一帧还没到，不跟着每个字抖", live.textContent.includes("没成"), live.textContent);
+    await nap2(140);
+    ok("下一帧到了，动作行补上最后一句旁白（尾帧不会停在半句话）", live.textContent === "✍️ 我抓几份原文确认细节。", live.textContent);
+    u.finish();
+    ok("跑完就撤掉这行：那时候该看的是「已完成 · 产出几件」，不是最后一句旁白", disp(live) === "none", disp(live));
+  }
   return names;
 })()`;
 

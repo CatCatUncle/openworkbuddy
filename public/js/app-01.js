@@ -468,6 +468,20 @@ function createTurnUI(userText, turnMode, forSid) {
   const liveOutFiles = []; // 这一趟改过的文件（收尾时拿它做正文链接 + 决定预览开哪一件）
   const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "") + (liveErr ? ` · ${liveErr} 步出错` : "");
   const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
+  // 「此刻在干什么」那一行的状态：actNarr 是模型旁白的缓冲，actLine 是当前该显示的话
+  let actNarr = "", actLine = "", actPend = false;
+  const paintAct = () => {
+    const el = procWrap && procWrap.querySelector(".act-live");
+    if (el && el.textContent !== actLine) { el.textContent = actLine; el.title = actLine; }
+  };
+  /** @param {boolean} stream 正文旁白是逐字来的，按帧合并（跟正文渲染同一个节奏），别逐 chunk 写 DOM */
+  const setAct = (line, stream) => {
+    actLine = line;
+    if (!stream) { paintAct(); return; }
+    if (actPend) return;
+    actPend = true;
+    setTimeout(() => { actPend = false; paintAct(); }, 100); // 尾帧靠这次超时补上，不会停在半句话
+  };
   // 执行过程默认收起，跑的时候只把「跑到哪了」那一行留在外面——用户原话：
   //「不要大段大段具体的执行过程挡住了，中间那些执行过程展示的时候可以折叠下」。
   // 想盯着看的人点一下就展开，这个选择记在本机，下次直接按你上次的来。
@@ -478,7 +492,8 @@ function createTurnUI(userText, turnMode, forSid) {
       procWrap = document.createElement("div");
       procWrap.className = "proc-wrap running" + (procOpenPref() ? " open" : "");
       // ms-live 独占一行跟着折叠条一起钉在顶上：过程区收着也一直看得到「几件做完了、现在在做哪件」
-      procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="trail"></span><span class="arrow">›</span><span class="ms-live" hidden></span></div><div class="proc-body"></div>`;
+      procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="trail"></span><span class="arrow">›</span><span class="ms-live" hidden></span><span class="act-live"></span></div><div class="proc-body"></div>`;
+      if (actLine) paintAct(); // 过程区是第一个工具来了才建的，在它之前播过的动作要补上，别开天窗
       procBody = procWrap.querySelector(".proc-body");
       onActivate(procWrap.querySelector(".proc-head"), () => {
         procWrap.classList.toggle("open");
@@ -581,6 +596,10 @@ function createTurnUI(userText, turnMode, forSid) {
   };
 
   function handleEvent(ev) {
+    // 折叠条上那行「此刻在干什么」：每条事件都先过一遍它，再走各自的渲染分支
+    const act = liveActivity(ev, actNarr);
+    actNarr = act.narr;
+    if (act.line) setAct(act.line, ev.type === "text");
     if (ev.type === "step_start") {
       if (ev.depth > 0) return;
       liveStep = ev.step || liveStep;
@@ -1074,6 +1093,66 @@ function createTurnUI(userText, turnMode, forSid) {
     outs: liveOuts,
   });
   return { handleEvent, finish, turn, sid: turnSid, markPendingInterject, stats };
+}
+
+// ---- 折叠条上那行「此刻在干什么」 ----------------------------------------
+// 用户原话：「用户都一直看着一个大标题在转，没有感知具体的 agent 在干活执行」。
+// 真毛病不是没信息，是信息全锁在折叠区里：模型自己的旁白、⚡ 并发那条、🗜️ 压缩那条、
+// 每一步用了什么工具——全在 .proc-body，而它默认是收着的。外面只剩「运行中 3m20s · 第 7 步」，
+// 那说的是「跑了多久」，不是「在干什么」。
+// 所以另开一行常驻：过程区收着也照样播报当前动作，想看细节再点开——
+// 用户同一句话里也说了「具体的运行过程详情可以不展开」。
+//
+// 纯函数，好让前端测试直接喂事件验。narr 是上一次留下的旁白缓冲，随返回值一起往下传。
+const ACT_MAX = 60;
+function liveActivity(ev, narr) {
+  const cut = (s, n = ACT_MAX) => {
+    const t = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+    return t.length > n ? t.slice(0, n - 1) + "…" : t;
+  };
+  const keep = { line: null, narr: narr || "" }; // 不值得改这行的事件（usage / files 这类记账）
+  const say = (line) => ({ line, narr: "" });    // 非正文事件：旁白缓冲清空，免得下一段接到上一段的尾巴上
+  switch (ev && ev.type) {
+    case "text": {
+      if ((ev.depth || 0) > 0) return keep; // 专家内层的正文不抢主线这一行
+      // 只取最后一句。模型的旁白常有好几行，整段塞进一行会被截得只剩开头，
+      // 而「我抓几份原文确认细节」这种真说明在干嘛的话恰恰在末尾。
+      // 缓冲只留尾部 400 字，长任务不会越滚越沉。
+      const buf = ((narr || "") + (ev.delta || "")).slice(-400);
+      const parts = buf.split(/(?<=[。！？!?\n])/).filter((s) => s.trim());
+      // 刚好写完一句时末段是空的，退一句显示，免得这行闪成空白
+      const tail = cut(parts[parts.length - 1]) || cut(parts[parts.length - 2]);
+      return tail ? { line: "✍️ " + tail, narr: buf } : { line: null, narr: buf };
+    }
+    case "tool_use": {
+      const who = ev.expert ? ev.expert + " · " : "";
+      const ic = toolIcon(ev.name);
+      const short = shortTool(ev.name);
+      // 老会话回放没有 title 字段，退回「短名 + purpose」。但短名自带同一个图标（「📄 读」），
+      // 直接拼会出现两个图标，所以先把它摘掉再拼
+      const bare = short.startsWith(ic) ? short.slice(ic.length).trim() : short;
+      const what = ev.title || (bare + (ev.purpose ? " " + ev.purpose : ""));
+      return say(ic + " " + cut(who + what));
+    }
+    case "tool_result":
+      // 成功不改：那一步「在干什么」的话立着更有用。栽了必须说——
+      // 过程区收着的时候，失败原本是完全隐形的，用户只会看到最后突然没了下文
+      return ev.isError
+        ? say("⚠️ " + cut(shortTool(ev.name) + " 没成：" + (ev.outcome || ev.preview || "出错了")))
+        : keep;
+    case "parallel": return say(`⚡ ${ev.count} 个只读工具一起跑`);
+    case "step_start": return (ev.depth || 0) > 0 ? keep : say(`🤔 第 ${ev.step} 步 · 在想下一步怎么做`);
+    case "expert_start": return say(`👥 专家「${cut(ev.expert, 12)}」接手：` + cut(ev.task, 30));
+    case "compact": return say(`🗜️ 会话太长，早前 ${ev.removed || 0} 条压成了摘要（要点保留）`);
+    case "trim": return say("✂️ 历史太长，较早的工具输出已截短");
+    case "failover": return say("🔀 " + cut(ev.note || "主渠道不行，已切到备用渠道"));
+    case "auto_continue": return say(`🔁 没做完，自动续跑第 ${ev.round}/${ev.total} 轮`);
+    case "limit": return say("⏱ " + cut(ev.note || "到执行上限了", 40) + "，正在收尾");
+    case "sleep": return say("💤 本机睡过一觉，任务时限已顺延");
+    case "ask_user": return say("❓ 有事要问你，在等你回答");
+    case "status": return cut(ev.text) ? say((ev.starting ? "🖥 " : "⏳ ") + cut(ev.text)) : keep;
+    default: return keep;
+  }
 }
 
 // ================= 空状态（场景 tab + 分类胶囊，仿官方首页） =================
