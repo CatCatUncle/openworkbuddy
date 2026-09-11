@@ -30,6 +30,8 @@ const tools = require(path.join(ROOT, "tools"));
 const security = require(path.join(ROOT, "security"));
 const agentMod = require(path.join(ROOT, "agent"));
 const memory = require(path.join(ROOT, "memory"));
+const { createImRouter } = require(path.join(ROOT, "im"));
+const { createImSessionStore } = require(path.join(ROOT, "im-store"));
 
 // 默认组织的根：单机版原来是什么样，这里就是什么样
 const BASE_WS = path.join(TMP, "workspace");
@@ -736,6 +738,91 @@ async function login(username, password) {
   const onbFn = (SRV.match(/app\.get\("\/api\/onboarding"[\s\S]*?\n\}\);/) || [""])[0];
   ok(/can_finish: isPlatformOwner\(req\)/.test(onbFn),
      "server.js 的 GET /api/onboarding 真把 can_finish 回出去了（替身对了真源没对，等于没测）");
+
+  console.log("\n【23】助理页：一台服务器一份上下文 = 所有人共用一个脑子");
+  // 助理页是有登录的，可登录之后的每一步都当没登录过：会话键写死 "local_assist"（全服务器一段上下文，
+  // A 问完 B 接着问，接的是 A 的话头），/im/log 是 (_req, res) 把整本日志倒出去（谁都读得到别人说的话），
+  // 跑任务不带 user（成员的任务顶着管理员的身份跑，记忆串到别人那儿、审批卡弹在别人屏幕上）。
+  // 这一节挂的是**真的 im.js 路由 + 真的 im-store**，只把 runtime 换成能拦住的替身。
+  const imSessions = createImSessionStore({ dir: path.join(TMP, "im-sessions") });
+  const seen = [];
+  const hooks = { onStart: null, hold: null };
+  const fakeRuntime = {
+    runTask: async (args) => {
+      seen.push(args);
+      if (args.emit) args.emit({ type: "tool_use", name: "read_file", purpose: "翻资料" });
+      if (hooks.onStart) hooks.onStart();
+      if (hooks.hold) await hooks.hold;
+      return { finalText: "跑完了" };
+    },
+  };
+  app.use(createImRouter({ config: { im: {} }, runtime: fakeRuntime, sessions: imSessions, outputFiles: () => [], saveConfig: () => {} }).router);
+
+  r = await call("POST", "/im/local", { cookie: yuan, body: { message: "成员说的话" } });
+  eq(r.status, 200, "成员在助理页发得出消息（这页本来就该人人能用）");
+  r = await call("POST", "/im/local", { cookie: boss, body: { message: "老板的悄悄话" } });
+  eq(r.status, 200, "老板也发得出");
+  let imKeys = imSessions.keys();
+  eq(imKeys.length, 2, "两个人两段上下文（以前是一段，谁来都接在同一个话头上）", imKeys);
+  ok(!imKeys.includes("local_assist"), "全服务器共用的那个 local_assist 不在了", imKeys);
+
+  r = await call("GET", "/im/log", { cookie: yuan });
+  let feed = JSON.stringify(r.json);
+  ok(/成员说的话/.test(feed), "成员看得到自己说过的话");
+  ok(!/老板的悄悄话/.test(feed), "但看不到别人的——以前这里是整本日志原样倒出去", feed.slice(0, 120));
+  r = await call("GET", "/im/log", { cookie: boss });
+  feed = JSON.stringify(r.json);
+  ok(/老板的悄悄话/.test(feed), "老板看得到自己的");
+  ok(!/成员说的话/.test(feed), "平台管理员也不去读成员的私人对话（管得着服务器，管不着人家说什么）", feed.slice(0, 120));
+  r = await call("GET", "/im/log", { cookie: fen });
+  feed = JSON.stringify(r.json);
+  ok(!/成员说的话|老板的悄悄话/.test(feed), "分公司管理员两边都读不到", feed.slice(0, 120));
+
+  // 跑任务用谁的身份：这半边在 im.js（真路由已经把 user 递进来了），另半边在 server.js 的
+  // accountedRuntime（它得把这个 user 透传下去而不是一律改写成管理员），两边各钉一处
+  const byMsg = (m) => seen.find((a) => (a.history || []).some((h) => h.content === m)) || {};
+  eq(byMsg("成员说的话").user, "xiaoyuan", "成员发的任务顶着成员自己的身份跑（记忆是他的、审批弹给他）");
+  eq(byMsg("老板的悄悄话").user, "laoban", "反向对照：老板发的顶着老板");
+
+  let release;
+  hooks.hold = new Promise((res2) => (release = res2));
+  const startedP = new Promise((res2) => (hooks.onStart = res2));
+  const running = call("POST", "/im/local", { cookie: yuan, body: { message: "慢慢查" } });
+  await startedP;
+  r = await call("GET", "/im/progress", { cookie: yuan });
+  ok(r.json && r.json.local_assist && /翻资料/.test(r.json.local_assist.text),
+     "本人看得到自己的进度（回出去的键固定叫 local_assist，前端不用认哈希）", JSON.stringify(r.json));
+  r = await call("GET", "/im/progress", { cookie: fen });
+  ok(r.json && !r.json.local_assist, "旁人看不到他在跑什么", JSON.stringify(r.json));
+  r = await call("GET", "/im/progress", { cookie: boss });
+  ok(r.json && !r.json.local_assist, "平台管理员也看不到（他该看的是飞书/QQ 那些服务器级通道）", JSON.stringify(r.json));
+  release();
+  await running;
+  hooks.hold = null;
+  hooks.onStart = null;
+
+  r = await call("GET", "/im/sessions", { cookie: yuan });
+  eq(r.json.count, 1, "成员数得着的只有自己那一段");
+  r = await call("GET", "/im/sessions", { cookie: boss });
+  eq(r.json.count, 2, "反向对照：平台管理员数得着全部");
+  r = await call("POST", "/im/sessions/clear", { cookie: yuan });
+  eq(r.json.cleared, 1, "成员点「清空上下文」只清掉自己那一段");
+  imKeys = imSessions.keys();
+  eq(imKeys.length, 1, "老板那段还在——以前这一下把整个目录端了", imKeys);
+  r = await call("POST", "/im/sessions/clear", { cookie: boss });
+  eq(r.json.cleared, 1, "反向对照：平台管理员清的是全部");
+  eq(imSessions.keys().length, 0, "清完一段不剩");
+
+  const IMSRC = fs.readFileSync(path.join(ROOT, "im.js"), "utf8");
+  ok(/const sessionKey = localKeyOf\(req\.user\);/.test(IMSRC), "im.js 的 /im/local 真按人算会话键");
+  ok(!/const sessionKey = "local_assist"/.test(IMSRC), "那行写死的 local_assist 已经不在了");
+  ok(/router\.get\("\/im\/log", \(req, res\)/.test(IMSRC), "/im/log 真收下了 req（那个 _req 下划线就是病根）");
+  ok(/const \{ modelName, user: caller, \.\.\.rest \} = args \|\| \{\};/.test(SRV),
+     "server.js 把 user 从 rest 里摘出来单独判了（留在 rest 里的话，一个 undefined 就把兜底覆盖掉）");
+  ok(/user: caller \|\| \(owner \? owner\.username : undefined\)/.test(SRV),
+     "accountedRuntime 透传调用方身份，没登录态（飞书/定时任务）才退回管理员");
+  ok(/account\.chargeRun\(owner,/.test(SRV),
+     "钱还是记在管理员头上：「记谁的账」和「用谁的记忆」是两件事，别一起改");
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

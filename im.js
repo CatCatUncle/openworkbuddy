@@ -38,6 +38,8 @@ const { createQQConnection } = require("./im-qq");
 const { createWecomApp, createWechatMp } = require("./im-wechat");
 const ilinkApi = require("./im-ilink");
 const imMedia = require("./im-media");
+const admin = require("./admin"); // 谁是平台管理员：服务器级通道（飞书/QQ/webhook）的日志只归他
+const prefs = require("./prefs"); // 会话键复用同一套「可读前缀 + 哈希」命名，不会撞车也逃不出目录
 
 // gen_diagram 一次落 <名字>.svg + <名字>.png，是同一张图的两种格式。两个都发过去，
 // 用户在聊天里收到两张一模一样的图，还白占掉 5 个附件名额里的 2 个。
@@ -90,6 +92,25 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       fs.writeFile(IM_LOG_FILE, JSON.stringify(imLog), () => {});
     }, 500);
   }
+
+  // ---------- 谁看得见哪一条 ----------
+  // 助理页以前是「一台服务器一份」：A 打开助理页，看到的是 B 刚才跟机器人说的话；接着发一句，
+  // 还接在 B 的上下文上。规矩改成两条——有主的（某个人在助理页里的对话）只有主人看得见；
+  // 没主的（飞书/QQ/企微/webhook 这些服务器级通道）只有平台管理员看得见。
+  const localKeyOf = (user) => "local_" + (prefs.keyOf(user) || "assist");
+  const seesAll = (user) => admin.isSoloDesktop() || admin.platformAdmin(user);
+  const visibleTo = (user) => {
+    const me = (user && user.username) || "";
+    const boss = seesAll(user);
+    return (e) => (e && e.owner ? e.owner === me : boss);
+  };
+  const sessionCount = (user) => {
+    if (typeof sessions.keys !== "function") return 0;
+    const keys = sessions.keys();
+    if (seesAll(user)) return keys.length;
+    const mine = localKeyOf(user);
+    return keys.filter((k) => k === mine).length;
+  };
 
   // ---------- 飞书 token / 发消息 ----------
 
@@ -835,7 +856,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   // ---------- 状态 / 日志 / 测试 ----------
 
-  router.get("/im/status", (_req, res) => {
+  router.get("/im/status", (req, res) => {
     const f = fsCfg();
     res.json({
       feishu: { configured: !!(f.app_id && f.app_secret), missing: feishuMissing(), ws: wsStatus() },
@@ -846,26 +867,39 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       wecom: { configured: !!imCfg().wecom_bot_webhook },
       dingtalk: { configured: !!imCfg().dingtalk_webhook },
       webhook: { configured: true, secret_set: !!imCfg().webhook_secret },
-      sessions: { count: typeof sessions.keys === "function" ? sessions.keys().length : 0 },
+      sessions: { count: sessionCount(req.user) },
     });
   });
 
-  // 上下文管理：IM 那几段会话记了多少、一键全清。只动 IM 通道的上下文，网页会话和长期记忆不碰
-  router.get("/im/sessions", (_req, res) => {
-    res.json({ count: typeof sessions.keys === "function" ? sessions.keys().length : 0 });
+  // 上下文管理：IM 那几段会话记了多少、一键全清。只动 IM 通道的上下文，网页会话和长期记忆不碰。
+  // 普通成员只数得着、也只清得掉自己那一段——一个人点一下就把全公司的上下文清了，那不叫功能
+  router.get("/im/sessions", (req, res) => {
+    res.json({ count: sessionCount(req.user) });
   });
-  router.post("/im/sessions/clear", (_req, res) => {
+  router.post("/im/sessions/clear", (req, res) => {
     if (typeof sessions.clear !== "function") return res.status(400).json({ ok: false, error: "这个会话仓库不支持清空" });
-    const cleared = sessions.clear();
-    logIm("system", "in", `已清空 ${cleared} 段 IM 会话上下文`);
+    const boss = seesAll(req.user);
+    const mine = localKeyOf(req.user);
+    const cleared = boss ? sessions.clear() : sessions.clear((k) => k === mine);
+    logIm("system", "in", `已清空 ${cleared} 段 IM 会话上下文`, boss ? {} : { owner: req.user && req.user.username });
     res.json({ ok: true, cleared });
   });
 
-  router.get("/im/log", (_req, res) => res.json(imLog.slice(-100).reverse()));
-  // 正在执行的任务进度（网页助理页轮询用）。15 分钟没动的当异常残留过滤掉，别吓用户
-  router.get("/im/progress", (_req, res) => {
+  // 助理页的消息流。以前是 (_req, res) —— 那个下划线就是病根：谁登录进来都能把整本日志读走，
+  // 包括别人跟机器人说过的每句话
+  router.get("/im/log", (req, res) => res.json(imLog.filter(visibleTo(req.user)).slice(-100).reverse()));
+  // 正在执行的任务进度（网页助理页轮询用）。15 分钟没动的当异常残留过滤掉，别吓用户。
+  // 「我自己那条」一律回成 local_assist 这个固定键：前端不用知道自己的会话键长什么样，
+  // 也就不会因为换了个人而看不到自己的进度
+  router.get("/im/progress", (req, res) => {
+    const mine = localKeyOf(req.user);
+    const boss = seesAll(req.user);
     const out = {};
-    for (const [k, v] of liveProgress) if (Date.now() - v.at < 900000) out[k] = v;
+    for (const [k, v] of liveProgress) {
+      if (Date.now() - v.at >= 900000) continue;
+      if (k === mine) out.local_assist = v;
+      else if (boss && !k.startsWith("local_")) out[k] = v; // 飞书/QQ/webhook 这些服务器级通道
+    }
     res.json(out);
   });
 
@@ -935,8 +969,11 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     const message = String((req.body || {}).message || "").trim();
     if (!message) return res.status(400).json({ error: "缺少 message" });
     const modelName = String((req.body || {}).model || "").trim() || undefined; // 助理页模型选择器选的那个
-    logIm("local", "in", message);
-    const sessionKey = "local_assist";
+    const me = (req.user && req.user.username) || "";
+    logIm("local", "in", message, { owner: me });
+    // 以前这里写死 "local_assist"：一台服务器上所有人共用一段上下文，A 问完 B 接着问，
+    // 接的是 A 的话头；而且它落盘成同一个文件，重启也甩不掉。一人一段
+    const sessionKey = localKeyOf(req.user);
     maybeResetIdleSession(sessionKey, "local");
     if (!sessions.has(sessionKey)) sessions.set(sessionKey, []);
     const history = sessions.get(sessionKey);
@@ -947,13 +984,16 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       const { finalText } = await runtime.runTask({
         history,
         modelName,
+        // 谁在助理页里说话，就用谁的长期记忆、把 remember 写回谁名下、审批卡也弹在谁的屏幕上。
+        // 不带这个参数的话，成员跑出来的任务顶着管理员的身份，记忆串到别人那儿去
+        user: me || undefined,
         emit: (ev) => { const line = progressLine(ev, progState); if (line) liveProgress.set(sessionKey, { text: line, channel: "local", at: Date.now() }); },
       });
       saveSession(sessionKey);
-      logIm("local", "out", finalText || "(空回复)");
+      logIm("local", "out", finalText || "(空回复)", { owner: me });
       res.json({ reply: finalText });
     } catch (e) {
-      logIm("local", "error", e.message);
+      logIm("local", "error", e.message, { owner: me });
       res.status(500).json({ error: e.message });
     } finally {
       liveProgress.delete(sessionKey);
