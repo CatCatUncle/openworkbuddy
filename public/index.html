@@ -301,6 +301,11 @@
   .proc-head .trail { display: inline-flex; flex-wrap: wrap; gap: 4px; }
   /* 里程碑常驻行：占满一行挤到折叠条下面，跟着它一起 sticky —— 过程收着也看得见跑到哪了 */
   .proc-head .ms-live { flex-basis: 100%; width: 100%; font-size: 12px; color: var(--wb-brand-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 「此刻在干什么」常驻行：跟里程碑行一样占满一行、跟着折叠条一起钉在顶上。
+     过程区收着也一直看得见 agent 在动——不然长任务就只剩一个转圈的「运行中」。
+     跑完就撤掉：那时候该看的是「已完成 3m20s · 产出 2 件」，不是最后一句旁白 */
+  .proc-head .act-live { flex-basis: 100%; width: 100%; font-size: 12px; color: var(--wb-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proc-head .act-live:empty, .proc-wrap:not(.running) .proc-head .act-live { display: none; }
   .proc-head .tc { font-size: 11px; line-height: 18px; padding: 0 7px; border-radius: 9px; background: var(--wb-bg-hover); color: var(--wb-text-3); white-space: nowrap; cursor: pointer; }
   .proc-head .tc b { font-weight: 600; margin-left: 2px; }
   .proc-head .tc:hover { color: var(--wb-text); }
