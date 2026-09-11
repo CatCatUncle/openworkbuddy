@@ -29,7 +29,8 @@ const account = require("./account");
 const org = require("./org"); // 组织（租户）层：席位、部门、邀请码、审计
 const admin = require("./admin"); // 企业管理后台的接口层 /api/admin/*
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
-const lanes = require("./lanes"); // 两条工作线：命令行模式（本机 CLI）/ 办公模式（内置循环）
+const lanes = require("./lanes"); // 两条工作线：办公（桌面办公 agent）/ 工程（本机 wb 命令行）
+const cliLive = require("./cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
 const thinking = require("./thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./security");
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠道表 + 每路多模型
@@ -1490,42 +1491,109 @@ app.get("/api/engines", async (req, res) => {
 });
 
 /**
- * 两条工作线：顶上那两个标签各自会把活儿交给谁。
+ * 两条工作线：侧栏那两个标签各自是什么、此刻有没有活儿在跑。
  *
- * 前端不许自己推这件事。「命令行模式用哪个 CLI」是个人偏好、是否装过要现探、
- * 探不到还得给出装它的那句命令——三件事都只有服务端知道。写死在前端的下场是
- * 标签上写着「Claude Code」，点下去报一句「找不到 claude」，用户以为是本项目坏了。
+ * 工作线分的是**干哪种活儿、在哪儿干**（办公 / 工程），不是「用哪个模型」。
+ * 底层引擎（内置循环 / 本机 Claude Code / Codex）是用户在设置里挑一次、两条线共用的另一件事——
+ * 早先版本把它俩绑在一起，结果「切个标签」能把别人配好的引擎一起换掉。
  *
- * ready=false 不拦任何东西：照样能点，点了在引擎那层当场报错说清楚缺什么。
- * 红线还是那条——绝不因为「没装」就偷偷退回内置引擎拿 API Key 去跑。
+ * 工程线连的是**这台机器上的 `wb` 命令行**：终端里起的任务会自己挂到 data/cli-live/ 下，
+ * 这里如实报「现在有几趟在跑」。前端不许自己猜这件事——命令行是不是还活着要看心跳和 pid，
+ * 只有服务端摸得到。
  */
-app.get("/api/lanes", async (req, res) => {
+app.get("/api/lanes", (req, res) => {
   try {
-    const myAgent = prefs.agentCfg(config);
-    let found = [];
-    try { found = await engines.detectAll(myAgent.engine_options || {}); } catch {}
-    const rows = lanes.LANES.map((l) => {
-      const engine = lanes.engineIdFor(l.id, myAgent);
-      const det = found.find((e) => e.id === engine) || null;
-      return {
-        id: l.id, name: l.name, short: l.short, hint: l.hint, detail: l.detail,
-        engine,
-        engineLabel: engine === "builtin" ? engines.BUILTIN.label : (det ? det.label : engine),
-        ready: engine === "builtin" ? true : !!(det && det.installed),
-        why: engine === "builtin" ? "" : (det ? (det.error || (det.installed ? "" : `本机没找到 ${engine}`)) : `没有「${engine}」这个引擎`),
-        install: engine === "builtin" ? "" : (det ? det.install || "" : ""),
-      };
-    });
+    let cli = [];
+    // 终端属于这台机器的主人。租户账号看见别人电脑里正在跑什么，是越权
+    if (isPlatformOwner(req)) { try { cli = cliLive.list(); } catch {} }
+    const liveCount = cli.filter((r) => r.live).length;
     res.json({
-      lanes: rows,
-      current: lanes.defaultLane(myAgent),
-      // 命令行模式可以挑哪几个 CLI，以及他现在挑的是哪个（空 = 跟着设置页那个引擎走）
-      cliChoices: found.map((e) => ({ id: e.id, label: e.label, installed: !!e.installed })),
-      cliEngine: String(myAgent.cli_engine || ""),
+      lanes: lanes.LANES.map((l) => ({ id: l.id, name: l.name, short: l.short, hint: l.hint, detail: l.detail })),
+      current: lanes.DEFAULT_LANE,
+      // 工程线上此刻从终端起的活儿：有几趟在跑、都是什么
+      cliLive: cli,
+      cliRunning: liveCount,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+/**
+ * 终端里正在跑的那几趟活儿。
+ *
+ * 跟 /api/chat/running 是两本账：那本是这个服务进程自己跑的（内存里），这本是**别的进程**
+ * （`wb` 命令行）跑的，只能从盘上那个目录读。手机上打开「工程」标签看到的就是这一份。
+ */
+app.get("/api/cli/live", (req, res) => {
+  if (!isPlatformOwner(req)) return res.json({ rows: [], allowed: false });
+  try {
+    res.json({ rows: cliLive.list(), allowed: true, staleMs: cliLive.STALE_MS });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 跟一趟终端里的活儿：先补上已经发生的，再接着直播。
+ *
+ * 口径跟 /api/chat/stream 一样（from = 已经看过几个事件），前端一套代码两边都能用。
+ * 直播靠轮询文件尾部——fs.watch 在 macOS/Linux/容器里的行为各不相同，几百毫秒一次的
+ * 读尾部比它可靠得多，而且读的是增量，不是整个文件。
+ */
+app.get("/api/cli/stream/:id", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "终端里的任务只有这台机器的主人看得到" });
+  const sid = String(req.params.id || "");
+  const meta = cliLive.list({ prune: false }).find((r) => r.id === sid);
+  if (!meta) return res.status(404).json({ error: "终端里没有这趟活儿（可能已经跑完很久了）" });
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.on("error", () => {});
+  const from = Math.max(0, parseInt(req.query.from, 10) || 0);
+  const send = (ev) => { try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch {} };
+  let pos = 0;
+  try {
+    const first = cliLive.read(sid, { fromLine: from });
+    first.events.forEach(send);
+    pos = first.pos;
+  } catch {}
+  let closed = false;
+  req.on("close", () => { closed = true; clearInterval(timer); });
+  const timer = setInterval(() => {
+    if (closed) return;
+    try {
+      const more = cliLive.read(sid, { fromByte: pos });
+      if (more.reset) { pos = 0; return; } // 命令行开了新的一轮，下一拍从头补
+      more.events.forEach(send);
+      pos = more.pos;
+      const now = cliLive.list({ prune: false }).find((r) => r.id === sid);
+      if (!now || !now.live) {
+        // 跑完了（或者被强杀了）：如实说一声再收摊，别让手机上那个圈一直转
+        send({ type: "cli_end", ok: !!(now && now.endedAt && !now.error), error: (now && now.error) || (now && now.died ? "命令行进程没了（可能是终端被关掉了）" : null) });
+        clearInterval(timer);
+        try { res.end(); } catch {}
+      }
+    } catch {}
+  }, 400);
+});
+
+/**
+ * 往终端里那趟活儿插一句话。
+ *
+ * 写进 data/cli-live/<id>.in，命令行在两步之间读走。写不进去就如实报错——
+ * 界面上显示「已发送」而其实没送到，比直接说送不到糟得多。
+ */
+app.post("/api/cli/interject", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "终端里的任务只有这台机器的主人插得上话" });
+  const { sessionId, message } = req.body || {};
+  const text = String(message || "").trim();
+  if (!text) return res.status(400).json({ ok: false, error: "消息为空" });
+  const row = cliLive.list({ prune: false }).find((r) => r.id === String(sessionId || ""));
+  if (!row) return res.status(404).json({ ok: false, error: "终端里没有这趟活儿" });
+  if (!row.live) return res.status(409).json({ ok: false, error: "这趟已经跑完了，插话没人接" });
+  if (!cliLive.interject(row.id, text)) return res.status(500).json({ ok: false, error: "写不进去（磁盘满了或者目录没权限）" });
+  res.json({ ok: true });
 });
 
 /**
@@ -3372,9 +3440,11 @@ app.post("/api/chat", async (req, res) => {
   if (!sess.project && ownsGlobalWorkspace(user)) sess.project = config.active_project || "";
   // 这一轮走哪条工作线。前端每次都把当前标签带上来，所以用户把一条对话从一个标签拖到另一个
   // 标签底下是允许的（共用同一份文件和历史，本来就是一回事）；没带就按会话上记过的、再按配置回落。
-  sess.lane = lanes.normalize(lane) || lanes.laneOf(sess, prefs.agentCfg(config));
+  sess.lane = lanes.normalize(lane) || lanes.laneOf(sess);
   const laneId = sess.lane;
-  const laneEngine = lanes.engineIdFor(laneId, prefs.agentCfg(config)); // 只用来对齐续跑 id 的归属，装没装由引擎那层判
+  // 续跑 id 按引擎分开记（claude 的 id 喂给 codex 只会当场炸）。跟工作线无关——
+  // 引擎是用户在设置里挑一次、两条线共用的那个。
+  const laneEngine = prefs.agentCfg(config).engine || "builtin";
   const sessLLM = llmForSession(sess); // 本对话生效的模型（含专家子代理、标题、记账）
   if (regen) {
     // 重新生成：回滚掉最后一轮（用户消息及其后的所有内容），下面会把同一条消息重新入队
@@ -3474,7 +3544,6 @@ app.post("/api/chat", async (req, res) => {
           stopSignal: runState.ctrl.signal,
           // 底层 CLI 引擎自己的会话 id：存在本项目的会话文件里，桌面端和 wb 命令行
           // 打开同一个会话时接着同一根线程跑，不用把历史再贴一遍
-          lane: laneId,
           engineSession: lanes.engineSessionFor(sess, laneEngine),
           getInterject: () => runState.interject.splice(0),
           // ask_user 工具的等待端：回答从 /api/chat/answer 进来；超时或用户点停止都放行 null

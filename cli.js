@@ -28,7 +28,8 @@ const { createLLM } = require("./llm");
 const { setWorkspaceDir, getWorkspaceDir } = require("./tools");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
-const lanes = require("./lanes"); // 底层 CLI 的续跑 id 按引擎分开记：claude 的 id 喂给 codex 只会当场炸
+const lanes = require("./lanes"); // 终端里起的任务归「工程」线；续跑 id 按引擎分开记
+const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
 const account = require("./account");
 const store = require("./store");
 
@@ -107,6 +108,8 @@ if (!fs.existsSync(CONFIG_PATH)) {
   process.exit(1);
 }
 const config = store.readJson(CONFIG_PATH, {});
+/** 设置里挑的那个底层引擎。命令行没有登录态，取不到个人偏好，读的就是这份全局配置 */
+const cfgEngine = () => String((config.agent || {}).engine || "builtin").trim() || "builtin";
 // -C 优先于配置：命令行是「这一次」的意思，不该把配置文件改掉
 const wantWorkspace = opts.workspace || config.workspace_dir;
 if (wantWorkspace) {
@@ -184,6 +187,8 @@ function saveSess() {
 // ---------- 事件渲染 ----------
 function makeEmit(state) {
   return (ev) => {
+    // 先播给网页/手机，再管终端怎么显示：这两件事互不相干，哪边坏了都不该拖累另一边
+    if (state.live) state.live.event(ev);
     if (opts.json) {
       // 事件原样出去，只把 files 这类大字段留给调用方自己挑
       emitJson(ev);
@@ -263,7 +268,20 @@ async function runOnce(runtime, text, mode) {
   }
   sess.history.push({ role: "user", content: text });
   if (!sess.title) sess.title = text.slice(0, 24);
+  // 在终端里起的活儿归「工程」线。网页/手机上切到那个标签就能看见这条会话——
+  // 这是两条线里唯一一条服务端替人填的：它确实是从命令行进来的，不是猜的。
+  sess.lane = "cli";
   const state = { streamed: false, usage: null, files: null, finalParts: [], error: null };
+  // 挂到实时目录上：网页端的「工程」标签就是靠它知道这台机器的终端里此刻在干什么
+  const live = cliLive.announce({
+    id: sessionId, title: sess.title || text.slice(0, 60), cwd: getWorkspaceDir(),
+    mode, user: owner ? owner.username : "",
+  });
+  state.live = live;
+  live.event({ type: "status", text: `终端里起了一趟活儿：${text.slice(0, 60)}` });
+  // 心跳：模型想得久的时候一个事件都不出，光靠事件盖时间戳会被判成「这进程死了」
+  const beatTimer = live.live ? setInterval(() => live.beat(), cliLive.BEAT_MS) : null;
+  if (beatTimer && beatTimer.unref) beatTimer.unref();
   const ctrl = new AbortController();
   let aborted = false;
   const onSigint = () => {
@@ -281,17 +299,25 @@ async function runOnce(runtime, text, mode) {
       mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",
       user: owner ? owner.username : undefined, // 记忆按人取，命令行走管理员这本账
       stopSignal: ctrl.signal,
-      // 底层 CLI 引擎的线程 id：跟会话存在一起，所以在桌面开的头能在这儿接着跑，反过来也一样。
-      // 不传 lane：命令行照旧用设置里选的那个引擎，行为一个字节不差
-      engineSession: lanes.engineSessionFor(sess, lanes.engineIdFor("", config.agent)),
+      // 底层 CLI 引擎的线程 id：跟会话存在一起，所以在桌面开的头能在这儿接着跑，反过来也一样
+      engineSession: lanes.engineSessionFor(sess, cfgEngine()),
+      // 网页/手机上补的那句话，在两步之间读走。终端这边也回显一下——
+      // 不然坐在电脑前的人只会看见 agent 突然改了主意，不知道是有人从手机上插了一句
+      getInterject: () => {
+        const more = live.interjections();
+        if (more.length) prog(yellow(`\n  ✎ 收到插话：${more.join(" / ").slice(0, 120)}\n`));
+        return more;
+      },
     });
-    if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || lanes.engineIdFor("", config.agent), r.sessionId);
+    if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || cfgEngine(), r.sessionId);
     finalText = r.finalText || "";
   } catch (e) {
     state.error = e.message;
     process.stderr.write(red(`\n出错了：${e.message}\n`));
   }
   process.removeListener("SIGINT", onSigint);
+  if (beatTimer) clearInterval(beatTimer);
+  live.finish({ error: state.error, title: sess.title });
   // --json 下正文没走 stdout，最终文本从事件里攒回来，落盘的内容两种模式必须一样
   if (!finalText && state.finalParts.length) finalText = state.finalParts.join("");
   // 落盘：Web 端打开该会话也能回放（最终文本 + 用量）

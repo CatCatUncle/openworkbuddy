@@ -7,20 +7,22 @@ let projects = [];
 let activeProject = "默认项目"; // 必须在任何 renderHistory() 调用前声明（初始化就会用到）
 let projectsLocked = false;    // 服务端说「你这边没有项目这回事」（租户成员）：整块项目区不画，任务历史也不按项目过滤
 /**
- * 两条工作线（lane）：顶上那两个标签，管的是「这活儿交给谁的手」。
- *   office（办公模式）→ 本项目自己的循环：专家团、技能库、记忆、生图生视频
- *   cli（命令行模式）→ 本机装的 Claude Code / Codex：写代码、跑脚本、查日志
+ * 两条工作线（lane）：侧栏上面那两个标签，管的是「这次是哪一种活儿」。
+ *   办公（office）→ 做表、写稿、出图、发消息。鼠标流，跑在这台机器的桌面办公 agent 上。
+ *   工程（cli）    → 写代码、跑脚本、查日志。键盘流，连的是本机的 wb 命令行：
+ *                    终端里起的任务会出现在这条线上，看得见它在干什么，也插得上话。
+ * 分的是活儿，不是引擎——底层引擎（内置循环 / 本机 Claude Code / Codex）在设置里挑一次，两条线共用。
  * 必须在任何 renderHistory() / renderLaneTabs() 之前声明（app-02 一加载就会用）。
- * 门面信息（名字、交给哪个引擎、装没装）一律由服务端 /api/lanes 给——
- * 前端写死的下场是标签上写着「Claude Code」，点下去报「找不到 claude」。
  */
 let activeLane = "office";
-let defaultLane = "office";  // 服务端按当前配置算的回落值：老会话没记过 lane 时归到这条线
+let defaultLane = "office";  // 老会话没记过 lane 时归到这条线；服务端 /api/lanes 会确认一次
 let laneInfo = [];           // /api/lanes 回来的那两行；拉回来之前用 LANE_FALLBACK 先画着
 const LANE_FALLBACK = [
-  { id: "office", name: "办公模式", short: "办公", detail: "做表、写稿、出图、发消息", ready: true },
-  { id: "cli", name: "命令行模式", short: "命令行", detail: "写代码、跑脚本、查日志", ready: true },
+  { id: "office", name: "办公", hint: "做表、写稿、出图、发消息——鼠标流" },
+  { id: "cli", name: "工程", hint: "写代码、跑脚本、查日志——键盘流；终端里 wb 起的任务也在这儿" },
 ];
+let cliLiveRows = []; // 终端里正在跑（或刚跑完）的那几趟，服务端从 data/cli-live/ 读来的
+let cliWatch = null;  // 正在跟的那趟终端任务 { id, es, ui, live }
 try { const v = localStorage.getItem("wb_lane"); if (v === "cli" || v === "office") activeLane = v; } catch {}
 let currentUser = null; // 登录后由 initAuth() 填充
 /** 内置猫标的哨兵值。不是 emoji 也不是 data URI，avatarBits 单独认它 */
@@ -56,6 +58,8 @@ let assistModel;
 let inAssistMode = false;
 const sessionQueues = new Map();   // sessionId -> [{text, mode}] 同一会话内追加的消息才排队
 const curBusy = () => !!(sessionId && runningSessions.has(sessionId));
+/** 当前开着的是「终端里那趟还在跑的活儿」：插得上话，但停不了——停它得回终端按 Ctrl+C */
+const cliBusy = () => !!(cliWatch && cliWatch.live && cliWatch.id === sessionId);
 const qOf = (sid) => { let q = sessionQueues.get(sid); if (!q) { q = []; sessionQueues.set(sid, q); } return q; };
 let SESS_KEY = "wb_sessions"; // 登录后切换为 wb_sessions:<用户名>（每人一份任务历史）
 let sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
@@ -2575,8 +2579,14 @@ function toggleSidebar() {
 }
 document.getElementById("toggle-side").onclick = toggleSidebar;
 window.addEventListener("resize", () => { if (window.innerWidth > 900) document.body.classList.remove("side-open"); });
-document.querySelector(".main").addEventListener("click", () => {
-  if (document.body.classList.contains("side-open")) document.body.classList.remove("side-open");
+// 抽屉开着时点旁边关掉。那层灰罩是 body 的伪元素（body.side-open::before），
+// 伪元素接不了事件，点它命中的是 body 本身——所以监听挂在 document 上，只认「点的就是 body」。
+// 挂在 .main 上收不到：灰罩盖在 .main 上面，指针根本落不到里面的元素。
+document.addEventListener("click", (e) => {
+  if (!document.body.classList.contains("side-open")) return;
+  if (e.target === document.body || (e.target.closest && e.target.closest(".main"))) {
+    document.body.classList.remove("side-open");
+  }
 }, true);
 document.getElementById("open-ws").onclick = (e) => { e.preventDefault(); openWorkspaceOnHost(); };
 

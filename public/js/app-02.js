@@ -308,13 +308,16 @@ document.addEventListener("paste", async (e) => {
   toast(files.length > 1 ? `已贴上 ${files.length} 个文件` : "图片已贴上，发消息时会一起带给它");
 });
 
-// ================= 两条工作线：办公模式 / 命令行模式 =================
+// ================= 两条工作线：办公 / 工程 =================
 /**
  * 同一个人一天里在两种活儿之间来回切：做表写稿出图（鼠标流），和写代码跑脚本查日志（键盘流）。
- * 前者该走本项目自己的循环（专家团、技能库、生图生视频都在这条路上），后者交给本机装的
- * Claude Code / Codex 最划算——订阅早付过了。以前这两件事共用设置页里那一个引擎开关：
- * 切到本机 Codex，办公那批工具就整批消失；想出张图得先回设置页把引擎切回去，出完再切回来。
- * 所以把它从「一个全局开关」改成「顶上两个标签」，各记各的会话，共用同一份文件和工作目录。
+ * 两种活儿的历史混在一列里，找东西全靠翻——所以分成两条线，各记各的会话，共用同一份文件和工作目录。
+ *
+ * 工程线还多一件事：它连着**这台机器的 `wb` 命令行**。在终端里起的任务会自己挂到服务端能读到的
+ * 目录里，这条线上就看得见它此刻在干什么、也能从手机上补一句话。这就是「人在外面，接管电脑里
+ * 那个正在干活的 agent」那个场景——也是这两个标签存在的全部理由。
+ *
+ * 注意分的是活儿，不是引擎。底层引擎在设置里挑一次，两条线照着同一个跑。
  */
 function laneOfSession(s) {
   const v = s && s.lane;
@@ -324,28 +327,29 @@ function renderLaneTabs() {
   const box = document.getElementById("lane-tabs");
   if (!box) return;
   const rows = laneInfo.length ? laneInfo : LANE_FALLBACK;
+  const liveN = cliLiveRows.filter((r) => r.live).length;
   box.innerHTML = rows.map((l) => {
     const on = l.id === activeLane;
-    // 没装也照点不误：拦着不让点，用户只会以为这功能坏了。点下去在引擎那层当场报错，话说得清楚
-    const warn = l.ready === false;
-    const tip = [l.detail || l.hint || "", warn ? (l.why || "") : "", warn && l.install ? "装它：" + l.install : ""].filter(Boolean).join("\n");
+    const tip = [l.hint || "", l.detail || ""].filter(Boolean).join("\n");
+    // 终端里有活儿在跑就把数字标在「工程」上：人在别的标签下也知道那边有东西在动
+    const badge = l.id === "cli" && liveN
+      ? `<span class="lt-live" title="${esc("终端里有 " + liveN + " 趟活儿在跑")}">${liveN}</span>` : "";
     return `<button type="button" role="tab" aria-selected="${on}" class="${on ? "on" : ""}" data-lane="${esc(l.id)}" title="${esc(tip)}">`
       + ic(l.id === "cli" ? "terminal" : "briefcase")
-      + `<span class="lt-full">${esc(l.name)}</span><span class="lt-short">${esc(l.short || l.name)}</span>`
-      + (warn ? '<span class="dot" aria-hidden="true"></span>' : "")
-      + `</button>`;
+      + `<span class="lt-name">${esc(l.name)}</span>${badge}</button>`;
   }).join("");
 }
-/** 服务端才知道命令行模式会用哪个 CLI、本机装没装、以及装它的那句命令 */
+/** 两条线的门面话术由服务端给（跟命令行、跟 IM 那边用的是同一份），顺手把终端里那几趟也带回来 */
 async function refreshLanes() {
   try {
     const d = await fetch("/api/lanes").then((r) => r.json());
     if (!d || !Array.isArray(d.lanes) || !d.lanes.length) return; // 老版本服务端没这接口：照旧用兜底那两行
     laneInfo = d.lanes;
     if (d.current === "cli" || d.current === "office") defaultLane = d.current;
+    if (Array.isArray(d.cliLive)) cliLiveRows = d.cliLive;
     let saved = null;
     try { saved = localStorage.getItem("wb_lane"); } catch {}
-    if (saved !== "cli" && saved !== "office") activeLane = defaultLane; // 第一次用的人，落在他现在这套配置本来就在用的那条线上
+    if (saved !== "cli" && saved !== "office") activeLane = defaultLane;
   } catch {}
   renderLaneTabs();
   renderHistory();
@@ -359,29 +363,153 @@ document.getElementById("lane-tabs").addEventListener("click", (e) => {
   // 当前开着的这条对话属于另一条线：切过去等于换了张桌子，给一张空白的新任务。
   // 正在后台跑的任务不受影响（它绑的是自己的 sid，切走照跑，回来还能接上直播）。
   const cur = sessionId && sessions.find((x) => x.id === sessionId);
-  if (cur && laneOfSession(cur) !== activeLane) document.getElementById("new-task").click();
+  if (cliWatch || (cur && laneOfSession(cur) !== activeLane)) document.getElementById("new-task").click();
   else renderHistory();
 });
+
+// ---------- 工程线：终端（wb 命令行）里正在跑的活儿 ----------
+/**
+ * 终端是另一个进程，服务端也只是替我们读那个目录，所以只能轮询。
+ * 人就在工程线上看着时勤一点，在办公线上懒一点——标签上那个数字不许是假的，
+ * 但也没必要为了它一直占着网络。租户成员根本看不到终端，服务端说一声之后就彻底不问了。
+ */
+let cliPollStop = false;
+function cliLiveKey(rows) { return rows.map((r) => r.id + ":" + (r.live ? 1 : 0)).join(","); }
+async function pollCliLive() {
+  if (cliPollStop) return;
+  let next = activeLane === "cli" ? 3000 : 20000;
+  try {
+    const d = await fetch("/api/cli/live").then((r) => r.json());
+    if (d && d.allowed === false) { cliPollStop = true; return; }
+    if (d && Array.isArray(d.rows)) {
+      const before = cliLiveKey(cliLiveRows);
+      cliLiveRows = d.rows;
+      if (before !== cliLiveKey(cliLiveRows)) { renderLaneTabs(); renderHistory(); }
+      // 正在跟的那趟结束了：流那边也会发 cli_end，这里是它断线时的兜底
+      if (cliWatch && cliWatch.live && !cliLiveRows.some((r) => r.id === cliWatch.id && r.live)) {
+        finishCliWatch({ type: "cli_end", ok: true });
+      }
+    }
+  } catch { next = 30000; } // 网断了别一秒一次地撞
+  setTimeout(pollCliLive, next);
+}
+
+/** 跟一趟终端里的活儿：它此刻在干什么，原样放到对话区里，跟本机跑的任务长一个样 */
+async function openCliLive(row) {
+  closeAssistView();
+  stopCliWatch();
+  sessionId = row.id;
+  pvPanel.classList.remove("show"); pvCurrent = null;
+  document.getElementById("files-panel").classList.remove("show");
+  document.getElementById("session-title").textContent = stripSceneTag(row.title) || "终端里的任务";
+  chatCol.innerHTML = "";
+  document.getElementById("empty")?.remove();
+  const ui = createTurnUI(row.title || "（终端里起的任务）", "craft", row.id);
+  if (ui.turn && !ui.turn.parentNode) chatCol.appendChild(ui.turn);
+  cliWatch = { id: row.id, es: null, ui, live: !!row.live };
+  renderHistory();
+  updateSendUI();
+  let es = null;
+  try { es = new EventSource("/api/cli/stream/" + encodeURIComponent(row.id) + "?from=0"); } catch {}
+  if (!es) { cliWatch.live = false; ui.finish(); updateSendUI(); return; }
+  cliWatch.es = es;
+  es.onmessage = (e) => {
+    let ev = null;
+    try { ev = JSON.parse(e.data); } catch { return; }
+    if (ev.type === "cli_end") { finishCliWatch(ev); return; }
+    ui.handleEvent(ev);
+  };
+  // 断线了就停在原地：已经看到的内容不许抹掉，也别装作还在直播
+  es.onerror = () => { if (cliWatch && cliWatch.es === es) { try { es.close(); } catch {} } };
+}
+function stopCliWatch() {
+  if (!cliWatch) return;
+  try { if (cliWatch.es) cliWatch.es.close(); } catch {}
+  cliWatch = null;
+}
+/** 终端里那趟收尾了：把画面定格，顺手把它当成一条普通历史记下来（会话文件是命令行那边存的） */
+function finishCliWatch(ev) {
+  if (!cliWatch) return;
+  const w = cliWatch;
+  w.live = false;
+  try { if (w.es) w.es.close(); } catch {}
+  w.es = null;
+  if (ev && ev.error) w.ui.handleEvent({ type: "error", message: String(ev.error) });
+  w.ui.finish();
+  const row = cliLiveRows.find((r) => r.id === w.id);
+  if (!sessions.some((x) => x.id === w.id)) {
+    sessions.unshift({ id: w.id, title: (row && row.title) || "终端里的任务", at: (row && row.startedAt) || Date.now(), lane: "cli" });
+    saveSessions();
+  }
+  bumpDoneWhileAway((row && row.title) || "终端里的任务");
+  renderHistory();
+  updateSendUI();
+}
+/** 往终端里那趟插一句话。送不到就直说，别在界面上显示「已发送」 */
+async function interjectCli(text) {
+  const id = cliWatch && cliWatch.id;
+  if (!id) return;
+  const resp = await fetch("/api/cli/interject", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: id, message: text }),
+  }).catch(() => null);
+  if (resp && resp.ok) {
+    if (cliWatch.ui.markPendingInterject) cliWatch.ui.markPendingInterject(text);
+    else toast("收到，终端里那位做完这一步就看你这句");
+  } else {
+    let why = "送不到终端";
+    try { why = (await resp.json()).error || why; } catch {}
+    toast("没送出去：" + why);
+  }
+}
 
 // ================= 会话历史（服务端持久化 + 回放，按项目过滤） =================
 /** 当前项目下的任务。租户端没有「项目」这回事（服务端 locked），一条都不过滤——
  *  以前那儿顶着个假项目「本组织工作目录」，跟老会话记的项目名对不上，整排历史被过滤没了。*/
 function projectSessions() {
+  // 工程线不按项目过滤：终端里 `wb` 起的任务没有「项目」这个概念（命令行不问这个），
+  // 一过滤就整条线空着，看起来像功能坏了。这条线本来就是「这台机器的终端干过的活儿」。
+  if (activeLane === "cli") return sessions.filter(s => laneOfSession(s) === "cli");
   const inProject = projectsLocked ? sessions : sessions.filter(s => (s.project || "默认项目") === activeProject);
-  // 再按工作线分栏：办公那条线的历史不该混进命令行标签里（反过来也一样）。
+  // 再按工作线分栏：办公那条线的历史不该混进工程标签里（反过来也一样）。
   // 老会话没记过 lane，按服务端算的回落值归位——不会整批「消失」到另一个标签底下
   return inProject.filter(s => laneOfSession(s) === activeLane);
 }
 function renderHistory() {
   const list = projectSessions();
-  document.getElementById("history").innerHTML = list.map(s =>
-    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">✕</span></div>`).join("")
-    || `<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 10px">${projectsLocked ? "这条线上还没有任务" : "该项目在这条线上还没有任务"}</div>`;
+  const rows = list.map(s =>
+    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">${ic("x")}</span></div>`);
+  // 工程线顶上单独一撮：这台机器的终端此刻正在跑的活儿。点进去就能看见它在干什么、插话。
+  // 已经在历史里的不重复列（跑完之后它就是一条普通记录了）
+  let head = "";
+  if (activeLane === "cli") {
+    const known = new Set(list.map((s) => s.id));
+    const live = cliLiveRows.filter((r) => !known.has(r.id));
+    if (live.length) {
+      head = `<div class="hist-group">${esc("终端里（wb 命令行）")}</div>` + live.map((r) => {
+        const t = stripSceneTag(r.title) || "终端里的任务";
+        const tip = r.live ? "正在跑——点开能看见它在干什么，也能插话" : (r.died ? "终端被关掉了，没跑完" : "刚跑完");
+        return `<div class="hist-item ${r.id === sessionId ? "active" : ""}" data-cli="${esc(r.id)}" title="${esc(t + "\n" + (r.cwd || "") + "\n" + tip)}">`
+          + `<span class="ht">${esc(t)}</span>${r.live ? '<span class="hrun" title="正在跑"></span>' : ""}</div>`;
+      }).join("");
+    }
+  }
+  const empty = activeLane === "cli"
+    ? "这条线还空着。在终端里跑 <code>wb 你的活儿</code>，它就会出现在这儿——手机上也看得见。"
+    : (projectsLocked ? "这条线上还没有任务" : "该项目在这条线上还没有任务");
+  document.getElementById("history").innerHTML = head + rows.join("")
+    || `<div class="hist-empty">${empty}</div>`;
 }
 document.getElementById("history").addEventListener("click", async (e) => {
   const item = e.target.closest(".hist-item");
   if (!item) return;
-  if (e.target.classList.contains("hx")) {
+  if (item.dataset.cli) { // 终端里那趟：跟直播，不是回放存下来的记录
+    const row = cliLiveRows.find((r) => r.id === item.dataset.cli);
+    if (row) await openCliLive(row);
+    return;
+  }
+  if (e.target.closest(".hx")) {
     if (!confirm("删除该任务及其对话记录？")) return;
     const id = item.dataset.id;
     sessions = sessions.filter(s => s.id !== id);
@@ -401,6 +529,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
 /** 打开一个会话并回放它的对话（历史列表点击 / 评测页「打开对话」都走这里） */
 async function openSession(id) {
   closeAssistView();
+  stopCliWatch(); // 换了会话就别再往上一趟里塞事件了
   sessionId = id;
   // 上个会话开着的预览/文件面板不带进来
   pvPanel.classList.remove("show"); pvCurrent = null;
@@ -456,6 +585,7 @@ async function openSession(id) {
 }
 document.getElementById("new-task").onclick = () => {
   closeAssistView();
+  stopCliWatch();
   sessionId = null;
   pendingModel = defaultPendingModel();
   updateModelLabel();
@@ -478,6 +608,7 @@ document.getElementById("new-task").onclick = () => {
 renderHistory();
 renderLaneTabs();
 refreshLanes();
+pollCliLive(); // 这台机器的终端里有没有在跑活儿——工程线那个数字就是它
 reattachRunning(); // 刷新页面不丢正在跑的任务：找回并接上直播
 
 // ================= 项目（多工作空间，任务历史按项目分组；projects/activeProject 声明在顶部基础状态区） =================
@@ -558,9 +689,13 @@ const MODE_PLACEHOLDER = {
   craft: "今天帮你做些什么？可以让我处理数据、写报告、做 PPT、联网调研…",
 };
 const BUSY_PLACEHOLDER = "想补一句或改方向？直接打字，按 Enter 就插进来，我做完这一步就看";
+const CLI_PLACEHOLDER = "这趟是在终端里跑的。打字按 Enter 能插一句给它；想让它停，回终端按 Ctrl+C";
 /** 输入框的提示语跟着状态走：任务在跑时告诉用户「打字 + Enter 就能插话」，闲着时按模式提示 */
 function syncPlaceholder() {
-  inputEl.placeholder = curBusy() ? BUSY_PLACEHOLDER : (MODE_PLACEHOLDER[currentMode] || MODE_PLACEHOLDER.craft);
+  // 跟着终端里那趟活儿时只能插话，停不了——停它得回终端按 Ctrl+C。这里就照实说
+  inputEl.placeholder = cliBusy() ? CLI_PLACEHOLDER
+    : curBusy() ? BUSY_PLACEHOLDER
+    : (MODE_PLACEHOLDER[currentMode] || MODE_PLACEHOLDER.craft);
 }
 /** 框里有没有还没发出去的东西（文字或待发附件） */
 function hasDraft() { return !!(inputEl.value.trim() || pendingAttach.length); }
@@ -569,12 +704,16 @@ function hasDraft() { return !!(inputEl.value.trim() || pendingAttach.length); }
  * 闲着 → 普通发送。以前运行中不管框里有没有字点一下都是停止，用户打了半天字一点按钮任务没了。
  */
 function syncSendBtn() {
+  const cli = cliBusy();
   const busy = curBusy(), draft = hasDraft();
-  const stopMode = busy && !draft;
+  // 终端里那趟不给「停」：这个进程不归网页管，画一颗按下去没反应的停止键是骗人
+  const stopMode = !cli && busy && !draft;
   sendBtn.classList.toggle("stop", stopMode);
-  sendBtn.classList.toggle("interject", busy && draft);
+  sendBtn.classList.toggle("interject", (busy || cli) && draft);
   sendBtn.innerHTML = ic(stopMode ? "square" : "arrow-up");
-  sendBtn.title = stopMode ? "让我停下（Esc）" : busy ? "插一句进去，我做完这一步就看（Enter）" : "发送（Enter）";
+  sendBtn.title = stopMode ? "让我停下（Esc）"
+    : cli ? "插一句给终端里的它（Enter）"
+    : busy ? "插一句进去，我做完这一步就看（Enter）" : "发送（Enter）";
 }
 function updateSendUI() {
   syncSendBtn();
@@ -598,7 +737,7 @@ function renderQueueBar() {
 }
 /** 发送键 / 回车 / 输入联动一起绑，方便前端测试整段切出来验 */
 function bindComposer() {
-  sendBtn.onclick = () => (curBusy() && !hasDraft() ? stopTask() : send());
+  sendBtn.onclick = () => (!cliBusy() && curBusy() && !hasDraft() ? stopTask() : send());
   inputEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
@@ -653,6 +792,7 @@ async function send() {
   }
   mentionMenu.classList.remove("show");
   if (pageKind === "assist") { await sendAssistLocal(text); return; }
+  if (cliBusy()) { await interjectCli(text); return; } // 跟着终端那趟：话插到它的任务里，不在网页这边另起一趟
   if (curBusy()) {
     // 本对话的任务在跑 → 默认直接插队：消息立即注入当前任务一起处理（要另起并行任务用「新建任务」）
     await interjectText(text);
@@ -754,7 +894,8 @@ function notifyRunDone(sid, ui) {
   // 长跑完成通知带上战报：用时/步数/产出件数，长任务离开视线也知道干了多少活
   const st = ui && ui.stats ? ui.stats() : null;
   const detail = st ? `用时 ${st.dur}${st.steps ? ` · ${st.steps} 步` : ""}${st.rounds ? ` · 续跑 ${st.rounds} 轮` : ""}${st.outs ? ` · 产出 ${st.outs} 件` : ""}` : "";
-  if (sid !== sessionId) toast(`✅ 「${name}」已完成${detail ? `（${detail}）` : ""}，点侧栏查看`);
+  if (sid !== sessionId) toast(`「${name}」已完成${detail ? `（${detail}）` : ""}，点侧栏查看`, "circle-check");
+  if (document.hidden) bumpDoneWhileAway(name);
   if (document.hidden && "Notification" in window) {
     try {
       if (Notification.permission === "granted") {
@@ -764,6 +905,32 @@ function notifyRunDone(sid, ui) {
     } catch {}
   }
 }
+
+/**
+ * 人不在这个标签页的时候跑完的活儿。
+ *
+ * 手机上桌面通知基本指望不上：iOS Safari 没有 Notification（除非加到主屏当 PWA），
+ * 而且页面切到后台就被冻住，连 toast 都没人看。所以退一步，做一件在哪儿都成立的事——
+ * 把数字记在标题栏上。人切回来（或者从锁屏瞥一眼标签页）就知道「不在的时候跑完了几个」，
+ * 回到页面再补一句人话，然后把标题还原。零依赖、零权限、不用联网。
+ */
+let doneWhileAway = 0;
+let titleBase = "";
+function bumpDoneWhileAway(name) {
+  doneWhileAway++;
+  if (!titleBase) titleBase = document.title;
+  document.title = `(${doneWhileAway}) ${titleBase}`;
+  lastDoneName = name || lastDoneName;
+}
+let lastDoneName = "";
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || !doneWhileAway) return;
+  const n = doneWhileAway;
+  doneWhileAway = 0;
+  if (titleBase) { document.title = titleBase; titleBase = ""; }
+  toast(n === 1 ? `你不在的时候，「${lastDoneName || "任务"}」跑完了` : `你不在的时候跑完了 ${n} 个任务`);
+  lastDoneName = "";
+});
 
 /** 页面加载时找回还在后台跑的任务：回放已记录的过程 + 断点续流接上直播（刷新不再丢任务画面） */
 async function reattachRunning() {
