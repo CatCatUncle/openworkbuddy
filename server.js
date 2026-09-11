@@ -5,6 +5,10 @@
  */
 
 const BOOT_T0 = Date.now(); // server.js 从加载到 listen 的耗时，启动慢时先看这行日志
+// Node 太老 / 依赖缺文件：这句必须排在 express 这一批 require 前面。排在后面的话，
+// 缺依赖的人看到的是 `Cannot find module 'express'`——对不写 Node 的人等于没说。
+// 有壳的时候不自己 exit：抛回去让壳把原因画在窗口上（exit 会让那个窗口根本没机会出现）。
+require("./boot-check").enforce({ rootDir: __dirname, packaged: require("./paths").isPackaged(), throwInstead: !!global.__wbBootFail });
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -626,6 +630,19 @@ const app = express();
 app.set("case sensitive routing", true);
 app.use(express.json({ limit: "60mb" }));
 app.use(express.static(appPath("public")));
+/**
+ * 「这个端口上应答的是谁」——唯一一个不需要登录的接口。
+ *
+ * `wb doctor` 要靠它把两件意思完全相反的事分开：3800 被占着，占的是 OpenWorkBuddy 自己
+ * （那叫「已经开着」），还是别的程序（那才要去处理）。不分的话，每个正常使用中的用户
+ * 跑一次体检都会看到一条红色告警，看两次就再也不信这个工具了。
+ *
+ * 只回应用名和版本号——登录页上本来就写着这两样，不多泄露任何东西。
+ * 位置必须在 authGuard 前面：要认的恰恰是「还没登录的那台机器」。
+ */
+app.get("/api/ping", (_req, res) => {
+  res.json({ app: "openworkbuddy", version: require("./package.json").version });
+});
 // /api/auth/* /api/usage /api/credits/*
 app.use(
   account.createRouter({
