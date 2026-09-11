@@ -36,57 +36,13 @@ const account = require("./account");
 const store = require("./store");
 
 // ---------- 参数解析 ----------
-const argv = process.argv.slice(2);
-const opts = { mode: "craft", session: null, mcp: true, workspace: null, cont: false, json: false, quiet: false, list: 0 };
-const words = [];
-for (let i = 0; i < argv.length; i++) {
-  const a = argv[i];
-  if (a === "--mode") opts.mode = argv[++i] || "craft";
-  else if (a === "--session") opts.session = argv[++i] || null;
-  else if (a === "-c" || a === "--continue") opts.cont = true;
-  else if (a === "-C" || a === "--workspace") opts.workspace = argv[++i] || null;
-  else if (a === "--no-mcp") opts.mcp = false;
-  else if (a === "--json") opts.json = true;
-  else if (a === "-q" || a === "--quiet") opts.quiet = true;
-  else if (a === "--list") { opts.list = Number(argv[i + 1]) > 0 ? Number(argv[++i]) : 10; }
-  else if (a === "-h" || a === "--help") { printHelp(); process.exit(0); }
-  else words.push(a);
-}
-// 子命令。动词式的写法（wb resume / wb sessions / wb engines）是给人记的，
-// 老的 --session / --list / -c 一个都没动，脚本不用改。
-let sub = "";
-if (["engines", "sessions", "resume", "doctor"].includes(words[0])) {
-  sub = words.shift();
-  // 会话 id 有固定前缀（cli_ 是命令行开的，s_ 是桌面开的），认得出就当 id，认不出就当任务描述
-  if (sub === "resume" && words[0] && /^(cli_|s_)/.test(words[0])) opts.session = words.shift();
-  if (sub === "sessions") opts.list = Number(words[0]) > 0 ? Number(words.shift()) : opts.list || 10;
-}
-let oneShot = words.join(" ").trim();
-
-function printHelp() {
-  console.log(`OpenWorkBuddy CLI
-用法：
-  wb "任务描述"                 单发任务（每次都是干净上下文）
-  wb                            交互式对话（/help 看内置命令）
-  cat 文件 | wb "问题"          管道内容作为附加材料
-子命令：
-  wb sessions [n]               列最近 n 个会话（桌面端开的也在里面）
-  wb resume [id] ["接着做…"]    续接会话；不给 id 就接最近动过的那个
-  wb engines                    看本机能拿什么当底层（Claude Code / Codex）
-  wb doctor                     跑不起来时先跑它：Node / 依赖 / 端口 / 配置 / 引擎 一次查清
-  wb engines use <id>           一键换底层；换成本机 CLI 后不再消耗 API 额度
-选项：
-  --mode craft|plan|ask         执行模式（默认 craft）
-  -C, --workspace <dir>         这次在哪个目录干活（只影响本次，不改配置）
-  -c, --continue                续接最近一次 CLI 会话
-  --session <id>                续接指定会话
-  --list [n]                    列出最近 n 个 CLI 会话（默认 10）
-  --json                        事件按 NDJSON 输出到 stdout，给脚本用
-  -q, --quiet                   只输出最终答案，不打进度
-  --no-mcp                      跳过 MCP 连接器，启动更快
-说明：
-  答案走 stdout，进度走 stderr；退出码 0=成功 1=出错 130=Ctrl+C 打断。`);
-}
+// 解析规则和帮助文本都在 cli-args.js 的那张声明表里，它是纯的：认不出来的选项会
+// 原样报回来，由这儿决定怎么说、退出码给几。以前是一串 else if，认不出的词一律
+// 当任务文本塞给模型——拼错一个 --quiet，钱照花、进度照打，人还以为自己关掉了。
+const cliArgs = require("./cli-args");
+const parsed = cliArgs.parse(process.argv.slice(2));
+const opts = parsed.opts;
+const words = parsed.words;
 
 // ---------- 输出通道 ----------
 // 着色只在「那一头真的是终端」时才加：answer 判 stdout，progress 判 stderr。
@@ -103,6 +59,28 @@ const prog = (s) => { if (!opts.quiet && !opts.json) process.stderr.write(s); };
 const answer = (s) => { if (!opts.json) process.stdout.write(s); };
 /** 机器可读事件流 */
 const emitJson = (o) => { if (opts.json) process.stdout.write(JSON.stringify(o) + "\n"); };
+
+// ---------- 帮助 / 版本 / 参数写错了 ----------
+if (opts.help) { console.log(cliArgs.helpText()); process.exit(0); }
+if (opts.version) { console.log(`OpenWorkBuddy ${require("./package.json").version}`); process.exit(0); }
+if (parsed.problems.length) {
+  // 退出码 2 单独留给「参数写错了」：脚本里能跟「任务失败」分开处理，
+  // 也免得 `wb --qiet ... && 下一步` 在打错字的时候照样往下走
+  process.stderr.write(red(cliArgs.problemText(parsed.problems)));
+  process.stderr.write(dim("wb --help 看全部用法。\n"));
+  process.exit(2);
+}
+
+// 子命令。动词式的写法（wb resume / wb sessions / wb engines）是给人记的，
+// 老的 --session / --list / -c 一个都没动，脚本不用改。
+let sub = "";
+if (cliArgs.SUBS.some((x) => x.name === words[0])) {
+  sub = words.shift();
+  // 会话 id 有固定前缀（cli_ 是命令行开的，s_ 是桌面开的），认得出就当 id，认不出就当任务描述
+  if (sub === "resume" && words[0] && /^(cli_|s_)/.test(words[0])) opts.session = words.shift();
+  if (sub === "sessions") opts.list = Number(words[0]) > 0 ? Number(words.shift()) : opts.list || 10;
+}
+let oneShot = words.join(" ").trim();
 
 // ---------- 配置与运行时（与 server.js 同源） ----------
 const CONFIG_PATH = dataPath("config.json");
@@ -440,7 +418,7 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
       ? `${oneShot}\n\n---\n以下是从标准输入读到的内容：\n\n${body}`
       : body.trim();
   }
-  if (!oneShot && !process.stdin.isTTY) { printHelp(); process.exit(1); }
+  if (!oneShot && !process.stdin.isTTY) { console.log(cliArgs.helpText()); process.exit(1); }
 
   if (opts.mcp && (config.mcp_servers || []).length) {
     prog(dim(`连接 MCP（${config.mcp_servers.length} 个，--no-mcp 可跳过）… `));
@@ -468,7 +446,7 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
     const line = (await ask()).trim();
     if (!line) continue;
     if (line === "/exit" || line === "/quit") break;
-    if (line === "/help") { printHelp(); continue; }
+    if (line === "/help") { console.log(cliArgs.helpText()); continue; }
     if (line.startsWith("/mode")) {
       const m = line.split(/\s+/)[1];
       if (["ask", "plan", "craft"].includes(m)) { opts.mode = m; prog(dim(`已切到 ${m} 模式\n`)); }

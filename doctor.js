@@ -306,10 +306,7 @@ async function gather(deps) {
 }
 
 /** 把结果画成一屏。色由调用方给（CLI 那边判过 isTTY 了），这儿只管排版 */
-// 中日韩字符在终端里占两列。padEnd 数的是码位，拿它对齐中文列，结果是每一行都参差不齐。
-const CJK = /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/;
-const cols = (s) => Array.from(String(s)).reduce((n, ch) => n + (CJK.test(ch) ? 2 : 1), 0);
-const padCols = (s, n) => String(s) + " ".repeat(Math.max(0, n - cols(s)));
+const { cols, padCols } = require("./text-width"); // 中文占两列，padEnd 数的是码位——对齐一律走它
 
 function render(items, paint) {
   const c = paint || ((s) => s);
