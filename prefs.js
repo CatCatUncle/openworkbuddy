@@ -124,7 +124,7 @@ function isPersonalPatch(body) {
       const a = body.agent;
       if (!a || typeof a !== "object") return false;
       for (const ak of Object.keys(a)) {
-        if (ak === "engine" || ak === "thinking" || ak === "cli_engine") continue;
+        if (ak === "engine" || ak === "thinking") continue;
         if (ak === "engine_options") {
           const eo = a.engine_options;
           if (!eo || typeof eo !== "object") return false;
@@ -156,7 +156,7 @@ function split(body) {
       const pa = {};
       const ra = {};
       for (const [ak, av] of Object.entries(v)) {
-        if (ak === "engine" || ak === "thinking" || ak === "cli_engine") { pa[ak] = av; continue; }
+        if (ak === "engine" || ak === "thinking") { pa[ak] = av; continue; }
         if (ak === "engine_options" && av && typeof av === "object") {
           const peo = {};
           const reo = {};
@@ -196,7 +196,6 @@ function agentCfg(config) {
   if (!a) return base;
   const out = { ...base };
   if (a.engine !== undefined) out.engine = a.engine;
-  if (a.cli_engine !== undefined) out.cli_engine = a.cli_engine;
   if (a.thinking !== undefined) out.thinking = a.thinking;
   if (a.engine_options) {
     out.engine_options = { ...(base.engine_options || {}) };

@@ -151,17 +151,18 @@
   .topbar { height: 56px; flex: 0 0 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--wb-border); }
   .topbar .title { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .topbar .right { display: flex; align-items: center; gap: 10px; }
-  /* 顶上那两条工作线（办公 / 命令行）。它管的是「这活儿交给谁的手」——办公模式走本项目自己的
-     循环（专家团、技能库、生图都在这条路上），命令行模式交给本机装的 Claude Code / Codex。
-     放在标题左边而不是塞进设置页：以前切一次要进设置改引擎，出完图再切回来，一天切八回。 */
-  .lane-tabs { display: flex; gap: 2px; padding: 3px; margin-left: 4px; background: var(--wb-bg-hover); border-radius: 10px; flex-shrink: 0; }
-  .lane-tabs button { display: inline-flex; align-items: center; gap: 6px; border: none; background: transparent; color: var(--wb-text-2); font: inherit; font-size: 13px; line-height: 1; padding: 6px 12px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+  /* 侧栏上那两条工作线（办公 / 工程）。分的是「这次干哪种活儿」：办公是做表写稿出图发消息
+     （鼠标流），工程是写代码跑脚本查日志（键盘流，连着本机的 wb 命令行）。放在「新建任务」
+     底下、任务列表上头，而不是塞进设置页：两条线各记各的会话，切一下标签下面整列历史跟着换，
+     挨着放才看得出是同一件事。两个按钮等分整行——侧栏能被拖到 180px，靠内容撑宽度会挤成一高一矮。 */
+  .lane-tabs { display: flex; gap: 2px; padding: 3px; margin: 0 4px 12px; background: var(--wb-bg-hover); border-radius: 10px; }
+  .lane-tabs button { flex: 1 1 0; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: none; background: transparent; color: var(--wb-text-2); font: inherit; font-size: 13px; line-height: 1; padding: 7px 8px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
   .lane-tabs button:hover { color: var(--wb-text); }
   .lane-tabs button.on { background: var(--wb-card); color: var(--wb-text); font-weight: 500; box-shadow: 0 1px 2px rgba(23,24,28,.10); }
   .lane-tabs button .i { width: 15px; height: 15px; flex-shrink: 0; }
-  .lane-tabs button .lt-short { display: none; }
-  /* 本机还没装那个 CLI：给个小黄点，别拦着不让点——点了在引擎那层当场报错说清楚缺什么 */
-  .lane-tabs .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--wb-warn); flex-shrink: 0; }
+  .lane-tabs .lt-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  /* 终端里此刻有几趟活儿在跑。人在办公那条线上也看得见这个数字，不用来回点 */
+  .lane-tabs .lt-live { flex: 0 0 auto; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--wb-brand); color: #fff; font-size: 11px; font-weight: 600; line-height: 16px; text-align: center; }
   #toggle-files { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 5px 12px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; position: relative; }
   /* 「成果文件」角标：这回合来了几件还没看过的新产出。面板一开就摘掉 */
   #toggle-files .fb-badge { position: absolute; top: -7px; right: -7px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--wb-brand); color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; box-sizing: border-box; }
@@ -454,6 +455,12 @@
   .hist-item .hx { visibility: hidden; color: var(--wb-text-3); padding: 0 3px; border-radius: 4px; flex: none; }
   .hist-item:hover .hx { visibility: visible; }
   .hist-item .hx:hover { color: var(--wb-err-text); }
+  .hist-item .hx .i { width: 13px; height: 13px; display: block; }
+  /* 工程线顶上那一撮：这台机器的终端此刻正在跑的活儿，跟存下来的历史分开列 */
+  .hist-group { padding: 6px 10px 3px; font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--wb-text-3); }
+  /* 空态要能换行：它写的是「在终端里跑 wb 你的活儿」，一句话比一行宽 */
+  .hist-empty { font-size: 12px; line-height: 1.7; color: var(--wb-text-3); padding: 6px 10px; white-space: normal; }
+  .hist-empty code { font-family: var(--font-mono); font-size: 11px; background: var(--wb-bg-hover); border-radius: 4px; padding: 1px 5px; }
   .lib-cols { display: flex; gap: 16px; align-items: flex-start; }
   .lib-cols > div { flex: 1; min-width: 0; }
   .lib-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--wb-border); border-radius: 8px; margin-bottom: 6px; font-size: 14px; }
@@ -621,10 +628,6 @@
   @media (max-width: 700px) {
     .settings-nav { width: 110px; padding: 12px 4px; }
     .modal { max-height: 90vh; }
-    /* 手机上标题会被挤没，工作线是「交给谁干」不能省，所以省的是名字的长度：办公模式 → 办公 */
-    .lane-tabs button .lt-full { display: none; }
-    .lane-tabs button .lt-short { display: inline; }
-    .lane-tabs button { padding: 6px 9px; gap: 5px; }
   }
   .sc-kbd { background: var(--wb-bg-hover); border: 1px solid var(--wb-border); border-radius: 6px; padding: 3px 10px; font-size: 13px; font-family: inherit; min-width: 52px; text-align: center; display: inline-block; }
   .sc-edit { cursor: pointer; }
@@ -1491,6 +1494,7 @@
     <div><div class="name">OpenWorkBuddy</div><div class="tag">开源版 · 一句话让 AI 替你上班</div></div>
   </div>
   <button id="new-task"><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg> 新建任务</button>
+  <div class="lane-tabs" id="lane-tabs" role="tablist" aria-label="工作线"></div>
   <div class="side-nav top">
     <div class="item" id="ab-head" title="助理模式：IM 远程指挥 + 直接对话"><span class="ic" id="ab-ic"><svg class="i" aria-hidden="true"><use href="#i-bot"></use></svg></span><span class="tx"><span id="ab-name">助理模式</span><span class="sub" id="ab-sub">IM 远程指挥</span></span></div>
     <div class="item nav-head" data-view="proj" title="项目管理"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-folder"></use></svg></span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目">＋</a></div>
@@ -1517,7 +1521,6 @@
 <div class="main">
   <div class="topbar">
     <button id="toggle-side" title="收起/展开侧栏"><svg class="i" aria-hidden="true"><use href="#i-panel-left"></use></svg></button>
-    <div class="lane-tabs" id="lane-tabs" role="tablist" aria-label="工作线"></div>
     <div class="title" id="session-title">新任务</div>
     <div class="right"><button id="toggle-files"><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> 成果文件</button></div>
   </div>

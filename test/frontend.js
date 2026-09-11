@@ -3868,6 +3868,8 @@ const COMPOSER_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + 
 const COMPOSER_STUBS = [
   IC_STUB,
   "var BUSY = false; const curBusy = () => BUSY;",
+  // 跟着终端（wb 命令行）里那趟活儿时是另一套：插得上话，但停不了——那个进程不归网页管
+  "var CLI = false; const cliBusy = () => CLI;",
   "let currentMode = 'craft';",
   "const inputEl = document.getElementById('input'), sendBtn = document.getElementById('send');",
   "const pendingAttach = [];",
@@ -3935,6 +3937,24 @@ const COMPOSER_CHECKS = `
   ok("只贴了附件没打字：也算有话要说 → 「↑」", sendIcon() === "arrow-up" && !sendBtn.classList.contains("stop"));
   pendingAttach.length = 0; syncSendBtn();
   ok("附件撤掉：回到「◼」", sendIcon() === "square" && sendBtn.classList.contains("stop"));
+
+  // ---- 跟着终端里那趟活儿：插得上话，但停不了 ----
+  // 这个进程是 wb 命令行起的，不归网页管。画一颗按下去没反应的「停」键是骗人，
+  // 所以这一档专门不给停止态，提示语直说「回终端按 Ctrl+C」
+  BUSY = false; CLI = true; typeIn(""); updateSendUI();
+  ok("跟着终端那趟：提示语说清能插话、也说清想停得回终端",
+    inputEl.placeholder.includes("终端") && inputEl.placeholder.includes("Enter") && inputEl.placeholder.includes("Ctrl+C"), inputEl.placeholder);
+  ok("不画那颗按下去没反应的「停」键", sendIcon() === "arrow-up" && !sendBtn.classList.contains("stop"), sendBtn.className);
+  const c0 = stops(); sendBtn.click();
+  ok("框空着点一下也不会去停（停不了就别假装能停）", stops() === c0, CALLS.join(","));
+  typeIn("顺便把日志也贴出来");
+  ok("打了字：按钮说的是「插一句给终端里的它」", sendBtn.title.includes("插一句") && sendBtn.title.includes("终端") && sendBtn.classList.contains("interject"), sendBtn.title);
+  ok("Enter 照样送得出去", press("Enter", false) && CALLS[CALLS.length - 1] === "send:顺便把日志也贴出来", CALLS.join(","));
+  // 反向对照：同样是「忙着 + 框空着」，本机那趟就该给停止键——证明上面几条不是恒真
+  CLI = false; BUSY = true; typeIn(""); updateSendUI();
+  ok("反向对照：本机自己跑的那趟，框空着就是「◼ 停下」", sendIcon() === "square" && sendBtn.classList.contains("stop"), sendBtn.className);
+  const c1 = stops(); sendBtn.click();
+  ok("反向对照：这一下是真的去停了", stops() === c1 + 1);
 
   // ---- 排了队的消息 ----
   sessionQueues.set("s1", [{ text: "顺便把页脚也改了", mode: "craft" }]);
@@ -4357,15 +4377,19 @@ const SKEG_CHECKS = `
 })()
 `;
 
-// ================= 顶栏两条工作线：办公模式 / 命令行模式 =================
-// 用户原话：「1.cli 模式对应 code，2.办公模式：电脑上的桌面办公 agent 对应 cowork」。
-// 以前这两件事共用设置页里那一个引擎开关，切一次要翻两层菜单，且切过去之后办公那批工具整批消失。
-// 这一段守四件事：
+// ================= 侧栏两条工作线：办公 / 工程 =================
+// 用户原话：「命令行模式是 cli 模式啊，能连接本地的 cli 啊，是我这个 agent 的 cli 啊」
+//「参考一下 claude 怎么做的啊，放在左边 tab 啊」。
+// 两条线分的是**干哪种活儿**：办公（做表写稿出图，鼠标流）和工程（写代码跑脚本，键盘流，
+// 连着本机那个 wb 命令行）。这一段守六件事：
 //   1. 两条线各自记各自的会话——切标签不会把另一条线的历史混进来，也不会让老会话「消失」；
-//   2. 服务端说某条线的 CLI 没装（ready=false），标签上给个警告点，但**照样能点**——
-//      拦着不让点，用户只会以为这功能坏了；点下去在引擎那层当场报错才说得清缺什么；
-//   3. 老版本服务端没有 /api/lanes 时，标签不许被清空（整条顶栏塌掉比没这功能更糟）；
-//   4. 手机上放不下两个全名，窄屏要换成短名——这是「手机远程操作」那条主线的前提。
+//   2. **标签碰不到引擎**。早先版本让「切到工程线」顺手把引擎也换掉，服务器上两个人共用一份
+//      配置时，那是实打实的越权。这里留一条反向看门狗：服务端就算把引擎字段塞回来，标签上也不许长出来；
+//   3. 工程线**不按项目过滤**——终端里 wb 起的任务没有「项目」这个概念，一过滤整条线空着，
+//      看起来像功能坏了；
+//   4. 终端里此刻在跑几趟，标签上那个数字不许是假的，人站在办公线上也看得见；
+//   5. 空态要说清楚「怎么让它出现」，而不是干巴巴一句「没有任务」；
+//   6. 手机上侧栏只有 180px，两个标签得一行放得下——这是「手机远程操作」那条主线的前提。
 // 状态声明在 app-01.js、渲染和切换在 app-02.js，两处都切真源码。
 const LANE_STATE_SRC = (() => {
   const a = APP02X.indexOf('let activeLane = "office";');
@@ -4374,7 +4398,7 @@ const LANE_STATE_SRC = (() => {
   return APP02X.slice(a, b);
 })();
 const LANE_SRC = (() => {
-  const a = APP02.indexOf("// ================= 两条工作线：办公模式 / 命令行模式");
+  const a = APP02.indexOf("// ================= 两条工作线：办公 / 工程");
   const b = APP02.indexOf("// ================= 会话历史", a);
   if (a < 0 || b <= a) throw new Error("app-02.js 里的两条工作线段找不到了，前端测试没法定位真源码");
   return APP02.slice(a, b);
@@ -4386,10 +4410,14 @@ const HIST_MIN_SRC = (() => {
   if (a < 0 || b <= a) throw new Error("app-02.js 里的会话历史过滤段找不到了，前端测试没法定位真源码");
   return APP02.slice(a, b);
 })();
-// 真样式要注进来：高亮态、窄屏换短名都只写在 CSS 里，只看 class 名的话改坏了照样全绿
-const LANE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
-  + "<body style='margin:0'><div class='topbar'><div class='lane-tabs' id='lane-tabs' role='tablist'></div></div>"
-  + "<div id='history'></div><button id='new-task'>新任务</button></body>";
+// 真样式要注进来：高亮态、那个数字徽标都只写在 CSS 里，只看 class 名的话改坏了照样全绿。
+// 侧栏宽度也按真值给（默认 250px，拖到底是 180px），不然「一行放得下」这条等于没验
+const laneHtml = (sideW) => "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
+  + "<body style='margin:0'><aside style='width:" + sideW + "px'>"
+  + "<div class='lane-tabs' id='lane-tabs' role='tablist' aria-label='工作线'></div>"
+  + "<div id='history'></div></aside><button id='new-task'>新任务</button></body>";
+const LANE_HTML = laneHtml(250);
+const LANE_NARROW_HTML = laneHtml(180);
 const LANE_STUBS = [
   IC_STUB,
   "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
@@ -4399,9 +4427,20 @@ const LANE_STUBS = [
   "var sessions = [];",
   "var activeProject = '默认项目';",
   "var projectsLocked = false;",
-  "var __LANE_REPLY = {};",
-  "var __LANE_FETCHED = 0;",
-  "var fetch = async () => { __LANE_FETCHED++; return { json: async () => __LANE_REPLY }; };",
+  "var __SAVED = 0;",
+  "var saveSessions = () => { __SAVED++; };",
+  "var __DONE_AWAY = [];",
+  "var bumpDoneWhileAway = (n) => { __DONE_AWAY.push(n); };",
+  "var updateSendUI = () => {};",
+  "var __TOASTS = [];",
+  "var toast = (m) => { __TOASTS.push(String(m)); };",
+  // 按 URL 分流的 fetch 替身：/api/lanes 和 /api/cli/live 是两本账，混在一起就验不出轮询那节
+  "var __REPLY = {};",
+  "var __CALLS = [];",
+  "var fetch = async (u) => { const k = String(u).split('?')[0]; __CALLS.push(k); return { ok: true, json: async () => (k in __REPLY ? __REPLY[k] : {}) }; };",
+  // 轮询是无限自我排期的，接住定时器只记间隔不真跑——不然这个窗口永远关不掉
+  "var __TIMERS = [];",
+  "window.setTimeout = function (fn, ms) { __TIMERS.push(ms); return 0; };",
   // 偏好要真能读回来才算数：data: 页面的 localStorage 在 Chromium 里一读就抛，
   // 真源码全程 try 兜着（这本身也是被守的行为），这儿换一份能读写的，好验「点过之后记住了」
   "var __LANE_LS = {};",
@@ -4412,6 +4451,15 @@ const LANE_STUBS = [
   "var __NEW_TASK = 0;",
   "document.getElementById('new-task').addEventListener('click', () => { __NEW_TASK++; });",
 ].join("\n");
+// 服务端 /api/lanes 真回的那两行（server.js 里是从 lanes.LANES 直接映射出来的）
+const LANE_REPLY_SRC = `
+var __LANES_OK = { lanes: [
+  { id: "office", name: "办公", short: "办公", hint: "做表、写稿、出图、发消息——鼠标流",
+    detail: "本机的桌面办公 agent：专家团、技能库、记忆、生图生视频都在这条线上" },
+  { id: "cli", name: "工程", short: "工程", hint: "写代码、跑脚本、查日志——键盘流",
+    detail: "本机 OpenWorkBuddy 命令行（wb）那条线：终端里起的任务都归这儿，手机上点开就能接管、插话" },
+], current: "office", cliLive: [], cliRunning: 0 };
+`;
 const LANE_CHECKS = `
 (async () => {
   const names = [];
@@ -4420,109 +4468,192 @@ const LANE_CHECKS = `
   const box = document.getElementById("lane-tabs");
   const hist = document.getElementById("history");
   const btns = () => [...box.querySelectorAll("button[data-lane]")];
+  const byLane = (id) => box.querySelector('button[data-lane="' + id + '"]');
   const onId = () => (box.querySelector("button.on") || {}).dataset?.lane;
+  const ids = () => [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id || ("live:" + e.dataset.cli)).join(",");
 
-  // ---- 拉到服务端那两行之前，先用兜底把标签画出来（首屏不能是空顶栏）----
+  // ---- ① 拉到服务端那两行之前，先用兜底把标签画出来（首屏不能是空侧栏）----
   renderLaneTabs();
   ok("没联网也先画出两个标签", btns().length === 2, box.innerHTML);
-  ok("办公在前、命令行在后", btns().map(b => b.dataset.lane).join(",") === "office,cli");
+  ok("办公在前、工程在后", btns().map(b => b.dataset.lane).join(",") === "office,cli");
   ok("默认站在办公线上", activeLane === "office" && onId() === "office");
   ok("两个标签的图标不一样且认得出来",
     /#i-briefcase/.test(btns()[0].innerHTML) && /#i-terminal/.test(btns()[1].innerHTML), box.innerHTML);
+  ok("标签上就两个字，不带「模式」二字",
+    btns().every(b => b.querySelector(".lt-name").textContent.length === 2 && !/模式/.test(b.textContent)),
+    box.textContent);
   ok("高亮不是只有个 class：真描上了底色", (() => {
     const bg = getComputedStyle(btns()[0]).backgroundColor;
     return bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent";
   })(), getComputedStyle(btns()[0]).backgroundColor);
   ok("aria-selected 跟高亮同步", btns()[0].getAttribute("aria-selected") === "true" && btns()[1].getAttribute("aria-selected") === "false");
 
-  // ---- 服务端把真情况报上来：命令行那条线的 CLI 本机没装 ----
-  __LANE_REPLY = {
-    lanes: [
-      { id: "office", name: "办公模式", short: "办公", detail: "做表、写稿、出图、发消息", engine: "builtin", engineLabel: "内置", ready: true, why: "", install: "" },
-      { id: "cli", name: "命令行模式", short: "命令行", detail: "写代码、跑脚本、查日志", engine: "claude-code", engineLabel: "Claude Code", ready: false, why: "本机没找到 claude-code", install: "npm i -g @anthropic-ai/claude-code" },
-    ],
-    current: "office", cliChoices: [], cliEngine: "",
-  };
+  // ---- ② 服务端那份门面话术（命令行、IM 那边读的是同一份，别各写各的）----
+  __REPLY["/api/lanes"] = JSON.parse(JSON.stringify(__LANES_OK));
   await refreshLanes();
-  ok("标签文案换成服务端报的那份", btns()[1].textContent.includes("命令行模式"), btns()[1].textContent);
-  ok("没装的那条线给了警告点", btns()[1].querySelector(".dot") !== null && btns()[0].querySelector(".dot") === null);
-  ok("警告点不等于拦着不让点", !btns()[1].disabled && btns()[1].getAttribute("aria-disabled") !== "true");
-  ok("鼠标停上去说得清缺什么、怎么装",
-    /本机没找到/.test(btns()[1].title) && /npm i -g/.test(btns()[1].title), btns()[1].title);
+  ok("名字用服务端报的那份", byLane("cli").querySelector(".lt-name").textContent === "工程", box.textContent);
+  ok("鼠标停上去说得清这条线是干什么的",
+    /键盘流/.test(byLane("cli").title) && /wb/.test(byLane("cli").title), byLane("cli").title);
 
-  // ---- 侧栏按线分栏 ----
+  // ---- ③ 看门狗：标签碰不到引擎 ----
+  // 曾经这里按工作线换 agent.engine，切个标签能把别人配的模型换掉。现在就算服务端把这些字段
+  // 塞回来，标签上也不许长出引擎名、警告点、装它那句命令——引擎是设置页里的事
+  __REPLY["/api/lanes"] = { ...JSON.parse(JSON.stringify(__LANES_OK)) };
+  __REPLY["/api/lanes"].lanes[1] = { ...__REPLY["/api/lanes"].lanes[1],
+    engine: "claude-code", engineLabel: "Claude Code", ready: false, why: "本机没找到 claude-code", install: "npm i -g @anthropic-ai/claude-code" };
+  __REPLY["/api/lanes"].cliEngine = "claude-code";
+  await refreshLanes();
+  ok("服务端塞回引擎字段，标签上也不长引擎名",
+    !/Claude Code|claude-code|npm i -g/.test(byLane("cli").outerHTML), byLane("cli").outerHTML);
+  ok("也不长「没装」那个警告点（装没装是设置页的事，不是标签的事）",
+    byLane("cli").querySelector(".dot") === null, byLane("cli").innerHTML);
+  __REPLY["/api/lanes"] = JSON.parse(JSON.stringify(__LANES_OK));
+
+  // ---- ④ 终端里此刻在跑几趟：数字标在「工程」上，站在办公线也看得见 ----
+  cliLiveRows = [
+    { id: "t1", title: "把这个仓库的测试跑一遍", live: true, startedAt: 9, cwd: "/w/repo" },
+    { id: "t2", title: "查一条构建报错", live: true, startedAt: 8, cwd: "/w/repo" },
+    { id: "t3", title: "早上那趟", live: false, startedAt: 1, cwd: "/w/repo" },
+  ];
+  renderLaneTabs();
+  ok("终端里两趟在跑，工程标签上就写 2（跑完那趟不算）",
+    byLane("cli").querySelector(".lt-live")?.textContent === "2", byLane("cli").textContent);
+  ok("站在办公线上也看得见那个数字（不用来回点）", activeLane === "office");
+  ok("办公标签上没有这个数字", byLane("office").querySelector(".lt-live") === null);
+  ok("徽标真描上了底色（CSS 在，不是只有个 class）", (() => {
+    const bg = getComputedStyle(byLane("cli").querySelector(".lt-live")).backgroundColor;
+    return bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent";
+  })());
+  cliLiveRows = cliLiveRows.map(r => ({ ...r, live: false }));
+  renderLaneTabs();
+  ok("全跑完了数字就摘掉", byLane("cli").querySelector(".lt-live") === null, byLane("cli").innerHTML);
+
+  // ---- ⑤ 侧栏按线分栏 ----
+  cliLiveRows = [];
   sessions = [
     { id: "o1", title: "整理季度数据", at: 5, lane: "office" },
     { id: "c1", title: "修一个构建报错", at: 4, lane: "cli" },
     { id: "old", title: "一条很早以前的任务", at: 3 },
   ];
   renderHistory();
-  ok("办公线只看到办公的活儿（外加没记过线的老会话）",
-    [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "o1,old", hist.textContent);
-
-  // ---- 点到命令行线 ----
-  btns()[1].click();
+  ok("办公线只看到办公的活儿（外加没记过线的老会话）", ids() === "o1,old", hist.textContent);
+  byLane("cli").click();
   ok("点一下就换线了", activeLane === "cli" && onId() === "cli");
   ok("换过的线记在本地，下次打开还站在这儿", __LANE_LS["wb_lane"] === "cli");
-  ok("命令行线只看到命令行的活儿",
-    [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "c1", hist.textContent);
-  ok("再点同一个标签不折腾（不重画不开新任务）", (() => { const n = __NEW_TASK; btns()[1].click(); return __NEW_TASK === n && activeLane === "cli"; })());
+  ok("工程线只看到工程的活儿", ids() === "c1", hist.textContent);
+  ok("再点同一个标签不折腾（不重画不开新任务）",
+    (() => { const n = __NEW_TASK; byLane("cli").click(); return __NEW_TASK === n && activeLane === "cli"; })());
 
-  // ---- 老会话没记过线：跟着服务端算的回落值走，别整批消失 ----
-  __LANE_REPLY = { ...__LANE_REPLY, current: "cli" };
-  try { delete __LANE_LS["wb_lane"]; } catch (e) {}
-  await refreshLanes();
-  ok("用本机 CLI 的人，默认落在命令行线上", defaultLane === "cli" && activeLane === "cli");
-  ok("他的老会话跟着归到命令行线，不是凭空不见",
-    [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "c1,old", hist.textContent);
-  ok("这时候点回办公线，老会话就不在这儿了（两条线确实是分开的）",
-    (() => { btns()[0].click(); return [...hist.querySelectorAll(".hist-item")].map(e => e.dataset.id).join(",") === "o1"; })(), hist.textContent);
-
-  // ---- 手里正开着的对话在另一条线上：切过去等于换张桌子，给一张空白新任务 ----
-  sessionId = "o1";
-  const before = __NEW_TASK;
-  btns()[1].click();
-  ok("当前对话属于另一条线时，切标签会开一张新任务", __NEW_TASK === before + 1);
-  sessionId = "c1";
-  const before2 = __NEW_TASK;
-  btns()[0].click();
-  btns()[1].click(); // 切回来，当前这条本来就在这条线上
-  ok("当前对话就在这条线上时，不会白白把人踢到新任务", __NEW_TASK === before2 + 1, "多开了新任务");
-
-  // ---- 空态文案跟着线走，不再说成「该项目没任务」----
-  sessions = [];
+  // ---- ⑥ 工程线不按项目过滤（终端里起的任务没有「项目」这回事）----
+  sessions = [
+    { id: "o2", title: "另一个项目的表", at: 5, lane: "office", project: "别的项目" },
+    { id: "c2", title: "终端里跑的那趟", at: 4, lane: "cli", project: "别的项目" },
+  ];
   renderHistory();
-  ok("空的时候说的是这条线上没任务", /这条线上还没有任务/.test(hist.textContent), hist.textContent);
+  ok("工程线不按项目过滤：终端起的任务照样列出来", ids() === "c2", hist.textContent);
+  byLane("office").click();
+  ok("反向对照：办公线换个项目就滤掉了（证明上面那条不是恒真）", ids() === "", hist.textContent);
+  byLane("cli").click();
 
-  // ---- 老版本服务端：没有 /api/lanes，标签不许塌掉 ----
+  // ---- ⑦ 终端直播那一撮：单独一小标题，点进去是跟直播不是回放 ----
+  sessions = [{ id: "t3", title: "早上那趟（已经存成记录了）", at: 3, lane: "cli" }];
+  cliLiveRows = [
+    { id: "t1", title: "把这个仓库的测试跑一遍", live: true, startedAt: 9, cwd: "/w/repo" },
+    { id: "t3", title: "早上那趟", live: false, startedAt: 1, cwd: "/w/repo" },
+  ];
+  renderHistory();
+  ok("工程线顶上单独一撮，标题说清楚是终端里的", /终端里/.test(hist.querySelector(".hist-group")?.textContent || ""), hist.textContent);
+  ok("正在跑的那行走 data-cli（点它是跟直播，不是回放存下来的记录）",
+    hist.querySelector('[data-cli="t1"]') !== null && hist.querySelector('[data-cli="t1"] .hrun') !== null, hist.innerHTML);
+  ok("已经存成历史的那趟不重复列", hist.querySelectorAll('[data-id="t3"]').length === 1 && hist.querySelector('[data-cli="t3"]') === null, hist.innerHTML);
+  byLane("office").click();
+  ok("办公线上不列终端那一撮（它是工程线的东西）", hist.querySelector(".hist-group") === null, hist.innerHTML);
+  byLane("cli").click();
+
+  // ---- ⑧ 空态：告诉人「怎么让它出现」，不是干巴巴一句没有任务 ----
+  sessions = []; cliLiveRows = [];
+  renderHistory();
+  ok("工程线空着时说的是怎么让它出现", /wb/.test(hist.textContent) && /终端/.test(hist.textContent), hist.textContent);
+  ok("那句命令真渲染成了代码块，不是把标签当文字显示出来",
+    hist.querySelector(".hist-empty code") !== null && !/&lt;code/.test(hist.innerHTML), hist.innerHTML);
+  byLane("office").click();
+  ok("办公线空着说的是另一回事（不提终端）", !/终端/.test(hist.textContent) && /任务/.test(hist.textContent), hist.textContent);
+
+  // ---- ⑨ 轮询：人在哪条线上就问得多勤 ----
+  __REPLY["/api/cli/live"] = { rows: [{ id: "t9", title: "终端里那趟", live: true, startedAt: 7 }], allowed: true };
+  __TIMERS.length = 0;
+  await pollCliLive();
+  ok("办公线上问得懒一点（别为了那个数字一直占着网络）", __TIMERS[0] === 20000, String(__TIMERS[0]));
+  ok("问回来的数字立刻标上", byLane("cli").querySelector(".lt-live")?.textContent === "1", box.textContent);
+  byLane("cli").click();
+  __TIMERS.length = 0;
+  await pollCliLive();
+  ok("站在工程线上就问得勤", __TIMERS[0] === 3000, String(__TIMERS[0]));
+
+  // ---- ⑩ 正在跟的那趟没了：把圈收掉，别让手机上一直转 ----
+  var __FIN = 0;
+  cliWatch = { id: "t9", es: null, live: true, ui: { handleEvent: () => {}, finish: () => { __FIN++; } } };
+  __REPLY["/api/cli/live"] = { rows: [], allowed: true };
+  __TIMERS.length = 0;
+  await pollCliLive();
+  ok("终端那趟断了，正在跟的那个圈会收摊（画面留着，但不再装作在直播）",
+    __FIN === 1 && cliWatch !== null && cliWatch.live === false, String(__FIN) + "/" + JSON.stringify(cliWatch && cliWatch.live));
+  const f0 = __FIN;
+  await pollCliLive();
+  ok("下一拍不会再收一次摊（收完就不该反复触发）", __FIN === f0, String(__FIN));
+  ok("而且当成一条跑完的活儿记下来（人不在的时候也数得清）", __DONE_AWAY.length === 1, JSON.stringify(__DONE_AWAY));
+
+  // ---- ⑪ 租户成员：服务端说了不给看，就别再问了 ----
+  // 终端属于这台机器的主人，别人看见别人电脑里在跑什么是越权。一直问不但白费，还会一直报 403
+  __REPLY["/api/cli/live"] = { rows: [], allowed: false };
+  __TIMERS.length = 0;
+  await pollCliLive();
+  ok("服务端说不给看，这一拍就不再排下一次了", __TIMERS.length === 0, JSON.stringify(__TIMERS));
+  const n0 = __CALLS.length;
+  await pollCliLive();
+  ok("之后也彻底不问了（不是下一拍又去撞一次）", __CALLS.length === n0, String(__CALLS.length - n0));
+
+  // ---- ⑫ 老版本服务端：没有 /api/lanes，标签不许塌掉 ----
   // 光看「还有两个按钮」是抓不住的：清空 laneInfo 之后兜底那两行照样能凑出两个按钮，
-  // 真丢的是服务端那份实情（装没装、装它的那句命令）。所以盯着这些一起验。
-  const cliBtn = () => document.querySelector('button[data-lane="cli"]');
-  __LANE_REPLY = {};
+  // 真丢的是服务端那份门面话术。所以盯着它一起验
+  __REPLY["/api/lanes"] = {};
   await refreshLanes();
   ok("老服务端回了个空，两个标签一个没少", btns().length === 2, box.innerHTML);
-  ok("回空也没把服务端报过的实情冲掉（警告点还在、装它那句话还在）",
-    cliBtn().querySelector(".dot") !== null && /npm i -g/.test(cliBtn().title), box.innerHTML);
-  __LANE_REPLY = { lanes: [] };
+  ok("回空也没把服务端报过的那份冲掉", /键盘流/.test(byLane("cli").title), byLane("cli").title);
+  __REPLY["/api/lanes"] = { lanes: [] };
   await refreshLanes();
-  ok("回了个空数组也一样不塌", btns().length === 2, box.innerHTML);
-  ok("空数组也不冲掉实情", cliBtn().querySelector(".dot") !== null && /npm i -g/.test(cliBtn().title), box.innerHTML);
+  ok("回了个空数组也一样不塌", btns().length === 2 && /键盘流/.test(byLane("cli").title), box.innerHTML);
   return names;
 })()
 `;
-// 手机上顶栏放不下两个全名。这条单开一个窄窗口验真 CSS：只看 class 名的话，
-// 把 @media 那几行删掉照样全绿，而用户那头是顶栏被挤到换行/标题被顶没。
+// 手机上侧栏是一层抽屉（窗口 ≤900px 时 aside 整个收起来，点汉堡才滑出来），拖到底只有 180px。
+// 这条就按那个真场景验：430px 的窗口 + 抽屉打开 + 180px 宽的侧栏。只看 class 名的话，
+// 把 min-width:0 或者 flex:1 1 0 那几行删掉照样全绿，而用户那头是标签被挤到换行、名字被顶没。
 const LANE_NARROW_CHECKS = `
 (() => {
   const names = [];
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const box = document.getElementById("lane-tabs");
+  const side = document.querySelector("aside");
+  const fits = () => box.scrollWidth <= box.clientWidth;
   renderLaneTabs();
-  const b = document.querySelector('button[data-lane="cli"]');
-  ok("窄屏换成短名", getComputedStyle(b.querySelector(".lt-short")).display !== "none");
-  ok("窄屏把全名藏起来", getComputedStyle(b.querySelector(".lt-full")).display === "none");
-  ok("图标还在（只剩短名也认得出是哪条线）", /#i-terminal/.test(b.innerHTML));
-  ok("两个标签一行放得下", document.getElementById("lane-tabs").scrollWidth <= document.documentElement.clientWidth,
-    "scrollWidth=" + document.getElementById("lane-tabs").scrollWidth);
+  ok("手机宽度下侧栏默认是收起来的（正文占满整屏）", getComputedStyle(side).display === "none", getComputedStyle(side).display);
+  document.body.classList.add("side-open");
+  ok("点开抽屉，两条工作线就在里面", getComputedStyle(side).display === "flex" && box.getBoundingClientRect().width > 0,
+    getComputedStyle(side).display + "/" + box.getBoundingClientRect().width);
+  const b = box.querySelector('button[data-lane="cli"]');
+  ok("两个标签在 180px 的侧栏里一行放得下", fits(), "scrollWidth=" + box.scrollWidth + " clientWidth=" + box.clientWidth);
+  ok("名字没被挤没", b.querySelector(".lt-name").getBoundingClientRect().width > 20,
+    String(b.querySelector(".lt-name").getBoundingClientRect().width));
+  ok("图标还在（一眼认出是哪条线）", /#i-terminal/.test(b.innerHTML) && b.querySelector(".i").getBoundingClientRect().width > 8);
+  ok("两个标签一样宽（没有一个把另一个挤扁）", (() => {
+    const w = [...box.querySelectorAll("button")].map(x => Math.round(x.getBoundingClientRect().width));
+    return Math.abs(w[0] - w[1]) <= 1;
+  })(), [...box.querySelectorAll("button")].map(x => x.getBoundingClientRect().width).join("/"));
+  cliLiveRows = [{ id: "a", live: true }, { id: "b", live: true }];
+  renderLaneTabs();
+  ok("终端里有活儿在跑时，那个数字也塞得下（不把名字顶出去）",
+    fits() && box.querySelector(".lt-live") !== null, "scrollWidth=" + box.scrollWidth);
   return names;
 })()
 `;
@@ -5050,20 +5181,20 @@ app.whenReady().then(async () => {
     try {
       await winLN.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
       const namesLN = await winLN.webContents.executeJavaScript(
-        LANE_STUBS + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + LANE_CHECKS, true)
+        LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + LANE_CHECKS, true)
         .catch((e) => { throw new Error("[两条工作线] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesLN) console.log("  ✓ " + n);
-      console.log(`✅ 前端：顶栏两条工作线（各记各的会话·老会话按配置归位不消失·没装只给警告点照样能点·老服务端不塌·当前对话在另一条线才开新任务）${namesLN.length} 项通过`);
+      console.log(`✅ 前端：侧栏两条工作线（各记各的会话·标签碰不到引擎·工程线不按项目滤空·终端里那几趟标在标签上·老服务端不塌）${namesLN.length} 项通过`);
     } finally { if (!winLN.isDestroyed()) winLN.destroy(); }
 
     const winLN2 = mkWin({ show: false, width: 430, height: 640, webPreferences: { offscreen: true } });
     try {
-      await winLN2.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
+      await winLN2.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_NARROW_HTML));
       const namesLN2 = await winLN2.webContents.executeJavaScript(
-        LANE_STUBS + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + LANE_NARROW_CHECKS, true)
-        .catch((e) => { throw new Error("[两条工作线·窄屏] " + ((e && (e.stack || e.message)) || String(e))); });
+        LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + LANE_NARROW_CHECKS, true)
+        .catch((e) => { throw new Error("[两条工作线·窄侧栏] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesLN2) console.log("  ✓ " + n);
-      console.log(`✅ 前端：手机宽度下的工作线标签（换短名·全名收起·一行放得下）${namesLN2.length} 项通过`);
+      console.log(`✅ 前端：侧栏拖到底（180px）时的工作线标签（一行放得下·名字没被挤没·徽标也塞得下）${namesLN2.length} 项通过`);
     } finally { if (!winLN2.isDestroyed()) winLN2.destroy(); }
 
     const winGC = mkWin({ show: false, width: 760, height: 600, webPreferences: { offscreen: true } });

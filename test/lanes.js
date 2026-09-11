@@ -2,13 +2,15 @@
 /**
  * 两条工作线（lanes.js）的判据测试。
  *
- * 这个模块决定「这次的活儿交给谁的手」，一旦判错，用户的体感是两种事故：
- *   · 办公模式点下去，活儿其实交给了本机 CLI —— 生图、专家团、技能库整批消失，
- *     用户以为是工具坏了（这正是加两条线之前每天在发生的事）；
- *   · 命令行模式点下去，活儿悄悄回落到内置引擎 —— 用户以为在用已经付过的订阅，
- *     账单却在涨。这条是红线：宁可当场报错说「本机没装 claude」，也不许静默降级。
+ * 这个模块只回答一件事：「这次的活儿归哪一栏」——办公（做表写稿出图）还是工程
+ * （写代码跑脚本，连着本机的 wb 命令行）。它**不**决定用哪个引擎：引擎是用户在设置里
+ * 挑一次、两条线共用的另一件事。早先版本把两件事捆在一起，后果是切个标签能把别人配的
+ * 模型换掉——服务器上两个人共用一份配置的时候，这是实打实的越权。
  *
- * 所以下面每一节都配反向对照：既证明该成立的成立，也证明**换一个输入就不成立**。
+ * 所以这份测试里有一整节专门证明「工作线碰不到引擎」，而且是反向证明：
+ * 拿同一份 config，走办公和走工程，解析出来必须是同一个引擎、同一个模型。
+ *
+ * 每一节都配反向对照：既证明该成立的成立，也证明**换一个输入就不成立**。
  * 只会变绿不会变红的断言不是测试。
  */
 
@@ -29,127 +31,100 @@ const eq = (got, want, msg) => ok(got === want, msg, { got, want });
 console.log("\n① 名字归一化");
 eq(lanes.normalize("cli"), "cli", "cli 认得");
 eq(lanes.normalize("office"), "office", "office 认得");
-eq(lanes.normalize(" OFFICE "), "office", "前后空格和大小写都容忍（前端传什么样的都有）");
-eq(lanes.normalize("craft"), "", "反向对照：mode 的值（craft）不是 lane，不许被认成一条线");
-eq(lanes.normalize(undefined), "", "反向对照：没传 = 没说");
-eq(lanes.normalize(null), "", "反向对照：null = 没说");
-eq(lanes.normalize({ id: "cli" }), "", "反向对照：传个对象也只当没说，不许 [object Object] 混进来");
-ok(lanes.get("cli") && lanes.get("cli").name === "命令行模式", "get 拿得到门面信息");
-eq(lanes.get("nope"), null, "反向对照：不存在的线返回 null");
-eq(lanes.LANES.length, 2, "一共就两条线");
-eq(new Set(lanes.IDS).size, 2, "两条线的 id 不重名");
+eq(lanes.normalize(" CLI "), "cli", "两头空格 + 大写照样认");
+eq(lanes.normalize("工程"), "", "中文显示名不是 id，不认——id 是 cli，改显示名不许影响存档");
+eq(lanes.normalize("terminal"), "", "没在册的名字返回空串（不是抛错、不是瞎猜一个）");
+eq(lanes.normalize(""), "", "空串就是「没说」");
+eq(lanes.normalize(null), "", "null 就是「没说」");
+eq(lanes.normalize(undefined), "", "undefined 就是「没说」");
+eq(lanes.IDS.length, 2, "一共就两条线");
+ok(lanes.IDS.includes("cli") && lanes.IDS.includes("office"), "两条线的 id 是 cli / office");
+eq(lanes.get("cli").name, "工程", "工程线的显示名");
+eq(lanes.get("office").name, "办公", "办公线的显示名");
+eq(lanes.get("没这条"), null, "问不存在的线返回 null");
+// 门面话术不许空：侧栏 tooltip、命令行 help、IM 提示读的是同一份
+for (const l of lanes.LANES) {
+  ok(!!(l.name && l.short && l.hint && l.detail), `「${l.name}」四个字段都有值`);
+  ok(!/模式/.test(l.name), `「${l.name}」不带「模式」二字——标签上就两个字`);
+}
 
-// ── ② 老会话归位：升级上来的历史不许整批「消失」到另一个标签底下 ──────────
-console.log("\n② 老配置 / 老会话默认落在哪条线");
-eq(lanes.defaultLane({ engine: "builtin" }), "office", "用内置引擎的人 → 办公模式");
-eq(lanes.defaultLane({}), "office", "没配过 engine = 内置 → 办公模式");
-eq(lanes.defaultLane(undefined), "office", "配置整个是空的也别炸");
-eq(lanes.defaultLane({ engine: "codex" }), "cli", "反向对照：选了本机 Codex 的人，他的历史本来就是 CLI 跑的 → 命令行模式");
-eq(lanes.defaultLane({ engine: "claude-code" }), "cli", "反向对照：本机 Claude Code 同理");
-eq(lanes.laneOf({ lane: "office" }, { engine: "codex" }), "office", "会话上记过就认它，不受当前配置影响");
-eq(lanes.laneOf({}, { engine: "codex" }), "cli", "会话没记过才按配置回落");
-eq(lanes.laneOf({ lane: "垃圾" }, { engine: "builtin" }), "office", "反向对照：会话里存了脏值，回落而不是原样返回");
+// ── ② 老会话归哪条线 ───────────────────────────────────────────────────
+console.log("\n② 没记过 lane 的老会话");
+eq(lanes.DEFAULT_LANE, "office", "回落到办公线");
+eq(lanes.laneOf({}), "office", "空会话 → 办公");
+eq(lanes.laneOf(null), "office", "null → 办公（不抛）");
+eq(lanes.laneOf({ lane: "cli" }), "cli", "记了 cli 就认 cli");
+eq(lanes.laneOf({ lane: "office" }), "office", "记了 office 就认 office");
+eq(lanes.laneOf({ lane: "乱写的" }), "office", "记了个不认识的值 → 回落，不是照抄");
+// 反向对照：装了 CLI 引擎的老会话也不许被「猜」到工程线去。
+// 引擎跟工作线无关，服务端只如实记，不替人填
+eq(lanes.laneOf({ engine: "claude-code", engine_session: "cc-1" }), "office",
+  "有 claude-code 续跑 id 的老会话仍归办公——不拿引擎倒推工作线");
 
-// ── ③ 每条线交给哪个引擎 ────────────────────────────────────────────────
-console.log("\n③ 这条线把活儿交给谁");
-eq(lanes.engineIdFor("office", { engine: "codex" }), "builtin", "办公模式钉死内置循环——生图 / 专家团 / 技能库都在这条路上");
-eq(lanes.engineIdFor("office", { engine: "codex", cli_engine: "claude-code" }), "builtin", "反向对照：挑过 CLI 也改不了办公模式");
-eq(lanes.engineIdFor("cli", { engine: "builtin", cli_engine: "codex" }), "codex", "命令行模式优先用为这条线挑的那个");
-eq(lanes.engineIdFor("cli", { engine: "codex" }), "codex", "没单独挑过就沿用设置页选的那个 CLI");
-eq(lanes.engineIdFor("cli", { engine: "builtin" }), lanes.CLI_FALLBACK, "从来没碰过引擎的人，命令行模式给个兜底名字（装没装由引擎那层当场判）");
-eq(lanes.engineIdFor("cli", { engine: "codex", cli_engine: "claude-code" }), "claude-code", "反向对照：两个都填了，这条线自己挑的那个说了算");
-eq(lanes.engineIdFor("", { engine: "codex" }), "codex", "没说要哪条线 = 照旧用配置里的那个（命令行 wb / 定时任务走的就是这条）");
-eq(lanes.engineIdFor("", { engine: "builtin" }), "builtin", "同上，内置照旧是内置");
-eq(lanes.engineIdFor("cli", { engine: "builtin", cli_engine: "   " }), lanes.CLI_FALLBACK, "反向对照：填了一串空格不算挑过");
+// ── ③ 工作线碰不到引擎（这一节是那条越权 bug 的看门狗） ─────────────────
+console.log("\n③ 工作线不许换引擎");
+ok(typeof lanes.engineIdFor !== "function", "engineIdFor 已经不存在了（工作线不再决定引擎）");
+ok(typeof lanes.viewFor !== "function", "viewFor 已经不存在了");
+ok(!("CLI_FALLBACK" in lanes), "CLI_FALLBACK 已经不存在了");
+const CFG = Object.freeze({ agent: { engine: "codex", thinking: "high", max_steps: 25 } });
+/** backend 为 null 就是内置循环（没有外部命令要起） */
+const backendId = (r) => (r && r.backend && r.backend.id) || "builtin";
+// 同一份 config，两条线解析出来必须一模一样
+const rA = engines.resolve(prefs.agentView(CFG));
+const rB = engines.resolve(prefs.agentView(CFG));
+eq(backendId(rA), "codex", "用户配了 codex 就跑 codex");
+eq(backendId(rA), backendId(rB), "同一份 config 解析结果稳定");
+// 引擎自己的那份选项（模型之类）也整份原样带过来——没有哪条工作线插得进手
+const rM = engines.resolve(prefs.agentView({ agent: { engine: "codex", engine_options: { codex: { model: "o3" } } } }));
+eq(rM.opts.model, "o3", "engine_options 原样带到引擎那层");
+// 反向对照：真换 config 才换引擎
+eq(backendId(engines.resolve(prefs.agentView({ agent: { engine: "builtin" } }))), "builtin",
+  "改 config 才换引擎（证明上面那条不是恒真）");
+// lanes 模块整个导出面上不许再出现引擎相关的名字
+const EXPORTS = Object.keys(lanes).sort().join(",");
+eq(EXPORTS, "DEFAULT_LANE,IDS,LANES,engineSessionFor,get,laneOf,normalize,rememberEngineSession",
+  "导出面就这些——多一个引擎相关的都算回潮");
 
-// ── ④ 给 engines.resolve 的视图：只动 engine 一个字段 ─────────────────────
-console.log("\n④ config 视图：改该改的，一个字节都不多改");
-const CFG = Object.freeze({
-  agent: { engine: "builtin", max_steps: 25, engine_options: { codex: { model: "o3" } } },
-  models: [{ name: "主力" }],
-  active_model: "主力",
-});
-ok(lanes.viewFor(undefined, CFG) === CFG, "没传 lane 时返回的是**同一个对象**（config.agent 会被就地热更新，复制一份出去等于让改动不生效）");
-ok(lanes.viewFor("", CFG) === CFG, "空串同理");
-ok(lanes.viewFor("office", CFG) === CFG, "已经就是内置了，不必造新对象");
-const vCli = lanes.viewFor("cli", CFG);
-ok(vCli !== CFG, "反向对照：命令行模式要换引擎，这时才造新对象");
-eq(vCli.agent.engine, lanes.CLI_FALLBACK, "换过去的就是这条线该用的引擎");
-eq(CFG.agent.engine, "builtin", "原配置一个字没被改（不是就地改，是视图）");
-eq(vCli.agent.max_steps, 25, "agent 里别的字段原样带过去");
-ok(vCli.agent.engine_options === CFG.agent.engine_options, "engine_options 原样引用，不深拷（用户填的 bin / model 不能在这儿丢）");
-eq(vCli.active_model, "主力", "config 顶层的字段原样带过去");
-const vOff = lanes.viewFor("office", { agent: { engine: "codex", thinking: "high" } });
-eq(vOff.agent.engine, "builtin", "反向对照：CLI 用户点办公模式，视图里换成内置");
-eq(vOff.agent.thinking, "high", "思考档跟着过去");
-
-// ── ⑤ 接线：视图真的能让 engines 解出不同的 backend ──────────────────────
-// 只解析，不起任何子进程——这一节不碰用户本机的 claude / codex，也不花一分钱
-console.log("\n⑤ 接到 engines.resolve 上真的分岔了");
-const rOff = engines.resolve(lanes.viewFor("office", { agent: { engine: "codex" } }));
-eq(rOff.backend, null, "办公模式解出来 backend === null（null = 走内置那条老路）");
-const rCli = engines.resolve(lanes.viewFor("cli", { agent: { engine: "codex" } }));
-ok(rCli.backend && rCli.backend.id === "codex", "命令行模式解出来是本机 Codex", rCli.backend && rCli.backend.id);
-eq(rCli.opts.model, undefined, "这份配置没给 codex 填过 model，opts 里就该是空的");
-const rOpts = engines.resolve(lanes.viewFor("cli", { agent: { engine: "codex", engine_options: { codex: { model: "o3" } } } }));
-eq(rOpts.opts.model, "o3", "反向对照：填过就带过去（换了引擎不能把用户填的模型弄丢）");
-let threw = "";
-try { engines.resolve(lanes.viewFor("cli", { agent: { engine: "builtin", cli_engine: "不存在的引擎" } })); }
-catch (e) { threw = e.message; }
-ok(/不存在/.test(threw), "反向对照：这条线挑了个不存在的引擎 → 当场抛错，绝不静默退回内置拿 API Key 去跑", threw);
-
-// ── ⑥ 底层 CLI 的续跑 id 认引擎 ────────────────────────────────────────
-console.log("\n⑥ 续跑 id 按引擎分开记");
+// ── ④ 续跑 id 按引擎分开记（这条跟工作线无关，是引擎自己的账） ───────────
+console.log("\n④ 续跑 id 按引擎分开记");
 const s1 = { engine_sessions: { "claude-code": "cc-1", codex: "cx-1" } };
-eq(lanes.engineSessionFor(s1, "claude-code"), "cc-1", "各取各的");
-eq(lanes.engineSessionFor(s1, "codex"), "cx-1", "各取各的（另一个）");
-eq(lanes.engineSessionFor(s1, "builtin"), null, "内置循环没有续跑 id 这回事");
-eq(lanes.engineSessionFor(s1, ""), null, "没说引擎就别给");
-eq(lanes.engineSessionFor(null, "codex"), null, "会话是空的也别炸");
+eq(lanes.engineSessionFor(s1, "claude-code"), "cc-1", "claude-code 拿自己那条");
+eq(lanes.engineSessionFor(s1, "codex"), "cx-1", "codex 拿自己那条");
+eq(lanes.engineSessionFor(s1, "builtin"), null, "内置循环没有续跑 id");
+eq(lanes.engineSessionFor(s1, "没跑过的引擎"), null, "没记过的引擎返回 null，不乱借一个");
 const s2 = { engine_session: "cc-9", engine: "claude-code" };
-eq(lanes.engineSessionFor(s2, "claude-code"), "cc-9", "老会话（一对扁平字段）照样认");
-eq(lanes.engineSessionFor(s2, "codex"), null, "反向对照：claude 的 id 绝不喂给 codex——喂过去只会当场报「找不到会话」，用户看到的是「换个标签就报错」");
+eq(lanes.engineSessionFor(s2, "claude-code"), "cc-9", "老格式（扁平字段）认得");
+eq(lanes.engineSessionFor(s2, "codex"), null, "老格式记的是 claude-code 的 id，不许喂给 codex");
 const s3 = { engine_session: "old-1" }; // 更早以前升级上来的：那会儿机器上只可能有一个引擎在跑
-eq(lanes.engineSessionFor(s3, "codex"), "old-1", "远古会话没记引擎名，认它（当时不存在第二个引擎）");
-const s4 = { engine_sessions: "不是对象" };
-eq(lanes.engineSessionFor(s4, "codex"), null, "反向对照：字段被写坏了也只是取不到，不许抛");
-const s5 = {};
-lanes.rememberEngineSession(s5, "codex", "cx-7");
-eq(s5.engine_sessions.codex, "cx-7", "记下来了");
-eq(s5.engine_session, "cx-7", "扁平字段继续写——命令行 wb 和桌面端的旧代码读的是它");
-eq(s5.engine, "codex", "同上");
-lanes.rememberEngineSession(s5, "claude-code", "cc-7");
-eq(s5.engine_sessions.codex, "cx-7", "换个引擎跑完，上一个引擎的续跑 id 还在（切回去接着跑）");
-eq(lanes.engineSessionFor(s5, "codex"), "cx-7", "切回去真取得到");
-eq(lanes.engineSessionFor(s5, "claude-code"), "cc-7", "新的那个也在");
-const s6 = {};
-lanes.rememberEngineSession(s6, "builtin", "x");
-eq(s6.engine_session, undefined, "反向对照：内置引擎不记续跑 id（它根本没有）");
-lanes.rememberEngineSession(s6, "codex", "");
-eq(s6.engine_session, undefined, "反向对照：空 id 不记");
+eq(lanes.engineSessionFor(s3, "codex"), "old-1", "更老的记录没记引擎名，认它");
+eq(lanes.engineSessionFor({ engine_sessions: "不是对象" }, "codex"), null, "字段类型坏了也不抛");
+eq(lanes.engineSessionFor({}, "codex"), null, "空会话没有续跑 id");
+eq(lanes.engineSessionFor(null, "codex"), null, "null 会话不抛");
+eq(lanes.engineSessionFor(s1, ""), null, "没说引擎名就没有续跑 id");
 
-// ── ⑦ 「命令行模式用哪个 CLI」是个人的，不是管理员的 ──────────────────────
-// 起因是用户的原话：连桌面宠物都被判成「管理员设置」，界面上只回四个字「切换失败」。
-// 挑哪个 CLI 跟谁掏 API 的钱、谁担安全风险半点关系都没有，必须落在个人那层。
-console.log("\n⑦ cli_engine 落个人偏好");
-ok(prefs.isPersonalPatch({ agent: { cli_engine: "codex" } }), "只改 cli_engine = 纯个人改动，平台闸门放行");
-ok(prefs.isPersonalPatch({ agent: { engine: "builtin", cli_engine: "codex" } }), "跟底层引擎一起改也还是个人的");
-ok(!prefs.isPersonalPatch({ agent: { cli_engine: "codex", max_steps: 99 } }), "反向对照：顺手夹带一个服务器级字段就整条不算个人改动");
-ok(!prefs.isPersonalPatch({ agent: { engine_options: { codex: { bin: "/tmp/x" } } } }), "反向对照：bin 是「起哪个可执行文件」，多人服务器上等于任意命令执行，绝不下放");
+console.log("\n⑤ 记下续跑 id");
+const s6 = {};
+lanes.rememberEngineSession(s6, "claude-code", "cc-new");
+eq(s6.engine_sessions["claude-code"], "cc-new", "写进按引擎分的表里");
+eq(s6.engine_session, "cc-new", "扁平字段同步写——桌面端和命令行的旧代码读的是它");
+eq(s6.engine, "claude-code", "扁平字段的引擎名也写上");
+lanes.rememberEngineSession(s6, "codex", "cx-new");
+eq(s6.engine_sessions["claude-code"], "cc-new", "换引擎不覆盖上一个引擎的续跑 id");
+eq(s6.engine_sessions.codex, "cx-new", "新引擎的 id 也记上了");
+eq(lanes.engineSessionFor(s6, "claude-code"), "cc-new", "转一圈回来，claude-code 那条还在");
+const s7 = {};
+lanes.rememberEngineSession(s7, "builtin", "b-1");
+eq(s7.engine_session, undefined, "内置循环不记续跑 id（它没有这个概念）");
+lanes.rememberEngineSession(s7, "codex", "");
+eq(s7.engine_session, undefined, "空 id 不记");
+ok(lanes.rememberEngineSession(null, "codex", "x") === null, "null 会话不抛");
+
+// ── ⑥ 个人偏好里不许再有 cli_engine ────────────────────────────────────
+console.log("\n⑥ cli_engine 已经退役");
 const sp = prefs.split({ agent: { cli_engine: "codex", max_steps: 99 } });
-eq(sp.personal.agent.cli_engine, "codex", "拆包：cli_engine 落到个人那一半");
-eq(sp.rest.agent.max_steps, 99, "拆包：服务器级的那半留给 config");
-eq(sp.personal.agent.max_steps, undefined, "反向对照：个人那半里没有服务器级字段");
-eq(sp.rest.agent.cli_engine, undefined, "反向对照：服务器那半里没有个人字段");
-const BASE = { agent: { engine: "builtin", max_steps: 25 } };
-eq(prefs.agentCfg(BASE).cli_engine, undefined, "没套上个人偏好时取不到（这就是今天的行为）");
-prefs.withPrefs({ agent: { cli_engine: "codex" } }, () => {
-  eq(prefs.agentCfg(BASE).cli_engine, "codex", "套上之后执行层立刻看得见");
-  eq(prefs.agentCfg(BASE).max_steps, 25, "服务器级字段照旧从 config 来");
-  eq(lanes.engineIdFor("cli", prefs.agentCfg(BASE)), "codex", "接到一起：这个账号点命令行模式，跑的就是他自己挑的 Codex");
-  eq(lanes.engineIdFor("office", prefs.agentCfg(BASE)), "builtin", "同一个账号点办公模式，还是内置循环");
-});
-eq(prefs.agentCfg(BASE).cli_engine, undefined, "出了这段又回落（定时任务 / IM / 命令行取不到账号，行为一字不差）");
+eq(sp.personal.agent && sp.personal.agent.cli_engine, undefined,
+  "cli_engine 不再是个人偏好——它本来就不该存在");
+const view = prefs.agentView({ agent: { engine: "builtin", cli_engine: "codex" } }, { prefs: { agent: { cli_engine: "codex" } } });
+eq(backendId(engines.resolve(view)), "builtin", "config 里残留的 cli_engine 影响不到实际引擎");
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
-if (fail) process.exitCode = 1;

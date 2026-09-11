@@ -4909,7 +4909,8 @@ async function main() {
   await testNodeSuite("tenant.js", "多租户与企业后台越权");
   await testNodeSuite("prefs.js", "个人偏好与平台设置分界");
   await testNodeSuite("media-models.js", "多模型配置（渠道表 / 点名 / 不静默降级）");
-  await testNodeSuite("lanes.js", "两条工作线（命令行模式 / 办公模式）");
+  await testNodeSuite("lanes.js", "两条工作线（工程 / 办公）");
+  await testNodeSuite("cli-live.js", "终端里 wb 跑的活儿，网页和手机怎么看见");
   await testDockerDeploy();
   await testFetchUrlShapes();
   await testParallelToolBatch();
@@ -8740,10 +8741,10 @@ async function testSessionIndex() {
     assert.strictEqual(rows[0].turns, 1, "轮数没带上，侧栏分不出「点开就有东西」和「空壳」");
     assert.strictEqual(rows[0].project, "客户 A", "项目名没带上，前端按项目过滤会把它归错组");
     // 工作线：如实报「记过的那条」，没记过的一个字不编。
-    // 老会话该归到哪条线，要看**读它的这个人**现在配的是什么引擎（前端拿 /api/lanes 算）；
-    // 在服务端按服务器配置替他填死，多用户下就会把别人的引擎口径安到他头上，历史又会「凭空少一半」。
+    // 老会话没记过 lane，服务端就交白卷，回落到哪条线是前端的事（lanes.DEFAULT_LANE = 办公）。
+    // 服务端要是自作主张替它填一条，两个前端版本的口径一对不上，整批历史就会「凭空少一半」。
     assert.strictEqual(rows.find((r) => r.id === "s_2").lane, undefined, "没记过工作线的老会话被服务端替它编了一条");
-    put("s_8", { title: "在命令行线上干的活", updated_at: "2026-09-06T00:00:00.000Z", lane: "cli" });
+    put("s_8", { title: "在工程线上干的活", updated_at: "2026-09-06T00:00:00.000Z", lane: "cli" });
     put("s_9", { title: "工作线字段被写脏了", updated_at: "2026-09-06T00:00:00.000Z", lane: "Office " });
     put("s_10", { title: "谁塞了个不存在的线", updated_at: "2026-09-06T00:00:00.000Z", lane: "hack" });
     const laneRows = build().listSessionsOnDisk();
