@@ -103,17 +103,28 @@ function createImSessionStore({ dir, maxEntries = 120 } = {}) {
       for (const n of probe.keys()) if (!alive.has(n)) probe.delete(n); // 文件删了账也销掉
       return [...out];
     },
-    /** 清空全部 IM 会话上下文（内存 + 盘），返回清掉的段数。文件名和 key 不一定可逆，所以按目录扫 */
-    clear() {
-      const n = this.keys().length;
-      mem.clear();
-      probe.clear();
+    /**
+     * 清空 IM 会话上下文（内存 + 盘），返回清掉的段数。
+     *
+     * 不传 filter 就是全清（平台管理员）。传 filter(key) 只清命中的那几段——助理页那颗
+     * 「清空上下文」对普通成员只该清他自己那一段，以前它是一视同仁地把整个目录端了。
+     * 文件名和 key 不一定可逆（fileOf 会把非法字符换成 _），所以按 fileOf 正推出文件名再比对，
+     * 别拿 key 去猜文件名。
+     */
+    clear(filter) {
+      const hit = filter ? this.keys().filter(filter) : this.keys();
+      const n = hit.length;
+      for (const k of [...mem.keys()]) if (!filter || filter(k)) mem.delete(k);
+      const want = filter ? new Set(hit.map((k) => path.basename(fileOf(k)))) : null;
       let names = [];
       try { names = fs.readdirSync(dir); } catch {}
       for (const f of names) {
         if (!f.endsWith(".json")) continue;
+        if (want && !want.has(f)) continue;
         try { fs.unlinkSync(path.join(dir, f)); } catch (e) { console.warn(`[IM会话] 删不掉 ${f}：${e.message}`); }
+        probe.delete(f);
       }
+      if (!filter) probe.clear();
       return n;
     },
   };

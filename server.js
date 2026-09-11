@@ -362,6 +362,19 @@ function autosaveSession(id, minGapMs = 5000) {
 
 // IM 会话跟网页会话分开存（data/im-sessions/<键>.json），重启不丢上下文
 const imSessions = createImSessionStore({ dir: dataPath("data", "im-sessions") });
+// 助理页的上下文以前全服务器共用一个键（local_assist），现在一人一段。老库里那一段就这么晾着的话，
+// 升级完第一句话它就「突然失忆」——那段话本来就是管理员跟它说的，认到管理员名下即可
+try {
+  const boss = account.defaultUser();
+  const bossKey = boss ? "local_" + prefs.keyOf(boss) : "";
+  if (bossKey && imSessions.has("local_assist") && !imSessions.has(bossKey)) {
+    imSessions.set(bossKey, imSessions.get("local_assist"));
+    imSessions.clear((k) => k === "local_assist");
+    console.log("[IM会话] 助理页上下文已按账号拆开，原来那段归到管理员名下");
+  }
+} catch (e) {
+  console.warn("[IM会话] 助理页上下文迁移失败（不影响启动）:", e.message);
+}
 
 /** 包装 emit：把事件同时记录到 transcript（文本增量合并，跳过噪音事件），顺便中途存盘 */
 // ---------- Goal 目标模式 ----------
@@ -3694,11 +3707,14 @@ function accountedRuntime(baseRuntime, source) {
       }
       // 调用方（助理页）指定了模型就解析成真正的 LLM 顶上去。模型名不在列表里时 llmForSession
       // 返回的是会报错的桩，宁可当场报错也不许悄悄退回全局默认
-      const { modelName, ...rest } = args || {};
+      const { modelName, user: caller, ...rest } = args || {};
       const runLLM = modelName ? llmForSession({ model: modelName }) : llm;
-      // IM / 定时任务没有登录态，记忆按管理员算（和积分记账口径保持一致）
+      // 「记谁的账」和「用谁的记忆、替谁审批」是两件事：钱一律记在管理员头上（他才是掏 API 费的人），
+      // 身份则听调用方的。助理页那边是真有登录态的，成员发的消息不能顶着管理员的身份跑；
+      // 飞书 / 定时任务确实没有登录态，那才退回管理员。
+      // 注意 user 必须从 rest 里摘出来单独判：留在 rest 里的话，调用方传了个 undefined 也会把兜底覆盖掉
       const r = await baseRuntime.runTask({
-        user: owner ? owner.username : undefined,
+        user: caller || (owner ? owner.username : undefined),
         taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? "定时任务" : source,
         // IM / 定时任务的产物也各归各的文件夹（仅默认工作空间；调用方可在 args 里覆盖）
         baseDir:
