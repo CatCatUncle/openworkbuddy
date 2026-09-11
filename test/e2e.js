@@ -4908,6 +4908,7 @@ async function main() {
   await testAdminConsoleUI();
   await testNodeSuite("tenant.js", "多租户与企业后台越权");
   await testNodeSuite("prefs.js", "个人偏好与平台设置分界");
+  await testNodeSuite("media-models.js", "多模型配置（渠道表 / 点名 / 不静默降级）");
   await testDockerDeploy();
   await testFetchUrlShapes();
   await testParallelToolBatch();

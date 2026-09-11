@@ -50,6 +50,7 @@ console.debug = toErr;
 
 const { dataPath } = require("../paths");
 const tools = require("../tools");
+const mediaModels = require("../media-models");
 
 const PROTOCOL_VERSION = "2025-06-18";
 
@@ -107,7 +108,7 @@ async function callTool(name, args) {
     knownTools: [...ALLOW],
     timeoutMs: ((config.agent || {}).tool_timeout_ms) || 120000,
     search: config.search,
-    media: config.media,
+    media: mediaModels.resolve(config),
     security: config.security,
     baseDir: BASE_DIR,
     memory: { user: USER },

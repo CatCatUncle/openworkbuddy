@@ -264,6 +264,22 @@
       "本地 ·": "Local ·",
       "插件提供": "From plugin",
       "保存模型": "Save model",
+      "保存渠道": "Save channel",
+      "＋ 添加渠道": "＋ Add channel",
+      "自己填…": "Type it myself…",
+      "（先加一个渠道）": "(add a channel first)",
+      "添加": "Add",
+      "只读": "Read-only",
+      "记忆": "Memory",
+      "关掉": "Turn off",
+      "铺满看": "Fit to window",
+      "下载到本地看": "Download to view",
+      "去下载页": "Open downloads page",
+      "正在看有没有新版…": "Checking for updates…",
+      "正在读这份说明书…": "Reading this guide…",
+      "我自己写一句 →": "Write my own →",
+      "打开凭证页": "Open credentials page",
+      "在浏览器里打开": "Open in browser",
       "测试搜索": "Test search",
       "底层引擎": "Engine",
       "思考模式": "Thinking mode",
@@ -751,19 +767,37 @@
     "飞书文档": "Feishu doc", "委派专家团": "Delegate to team", "委派专家": "Delegate to",
   };
   // 轨迹条（折叠条上那排小徽章）用的是另一套更短的标，见 app-01.js 的 TOOL_SHORT
+  // 短标现在只剩字，图标是 sprite 里另一张表（app-01.js 的 TOOL_ICON）。
+  // 以前这儿的键长这样："📄 读" —— 表情跟着一起进翻译表，加个工具要在两处各抄一遍图。
   const TOOL_SHORT_EN = {
-    "📄 读": "📄 Read", "📝 写": "📝 Write", "✏️ 改": "✏️ Edit", "📁 列": "📁 List",
-    "🔎 找": "🔎 Find", "⌨️ 命令": "⌨️ Shell", "🌐 搜": "🌐 Search",
-    "🔗 抓": "🔗 Fetch", "🖥 渲染": "🖥 Render", "✅ 查页": "✅ Check", "🖼 截图": "🖼 Shot",
-    "👁 看图": "👁 View", "🎨 生图": "🎨 Image", "🎬 视频": "🎬 Video", "📊 图表": "📊 Chart",
-    "🔊 配音": "🔊 Voice", "🧠 记": "🧠 Save", "🧠 忘": "🧠 Forget", "📚 库": "📚 Library",
-    "📚 读库": "📚 Read lib", "🧩 存技能": "🧩 Save skill", "🐱 宠物": "🐱 Pet",
+    "读": "Read", "写": "Write", "改": "Edit", "列": "List",
+    "找": "Find", "命令": "Shell", "搜": "Search",
+    "抓": "Fetch", "渲染": "Render", "查页": "Check", "截图": "Shot",
+    "看图": "View", "生图": "Image", "视频": "Video", "图表": "Chart",
+    "配音": "Voice", "记": "Save", "忘": "Forget", "库": "Library",
+    "读库": "Read lib", "存技能": "Save skill", "宠物": "Pet",
   };
   for (const [zh, en] of Object.entries(TOOL_SHORT_EN)) if (!(zh in DICT.en)) DICT.en[zh] = en;
   for (const [zh, en] of Object.entries(TOOL_VERB_EN)) {
     const q = zh.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     PATTERNS.en.push([new RegExp("^" + q + "「(.+?)」(.*)$"), en + ' "$1"$2']);
     PATTERNS.en.push([new RegExp("^" + q + "( .*)?$"), en + "$1"]);
+  }
+
+  // 界面上开头那些表情（❌ ⚠️ ✅ 🪪 ⚙️ 🌐 …）正在一处处换成 SVG 图标。图标是 <svg>，
+  // 翻译器不碰 SVG，所以换完之后 DOM 里的文本节点变成了光秃秃的「个人资料」，
+  // 而词条当年是按「🪪 个人资料」收的——对不上就漏翻，页面会中英混着显示。
+  // 这里给每条带前缀表情的词自动补一条不带表情的别名：两种写法都认，
+  // 于是「这一处换没换图标」和「翻译掉不掉」彻底解耦，换到哪算哪，不用回头改词条。
+  const LEAD_MARK = /^(?:[\u2190-\u2BFF\uFE0F\u{1F000}-\u{1FAFF}]+[\uFE0F\u200D]*\s*)+/u;
+  const unmark = (s) => String(s).replace(LEAD_MARK, "");
+  for (const [zh, en] of Object.entries({ ...DICT.en })) {
+    const bare = unmark(zh);
+    if (bare && bare !== zh && !(bare in DICT.en)) DICT.en[bare] = unmark(en);
+  }
+  for (const [re, out] of [...PATTERNS.en]) {
+    const m = /^\^(?:[\u2190-\u2BFF\uFE0F\u{1F000}-\u{1FAFF}]+[\uFE0F\u200D]*\s*)+/u.exec(re.source);
+    if (m) PATTERNS.en.push([new RegExp("^" + re.source.slice(m[0].length)), unmark(out)]);
   }
 
   // ---------- 语言读写 ----------

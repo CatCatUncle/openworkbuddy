@@ -30,6 +30,11 @@ const SVGFIG = fs.readFileSync(path.join(__dirname, "..", "public", "svgfig.js")
 const APP02 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
 const I18N_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "js", "i18n.js"), "utf8"); // 真源：中英词典 + DOM 翻译器
 const APP02X = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
+const UI00_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-00-ui.js"), "utf8");
+// 界面上所有图标都走 app-00-ui.js 的 ic()。测试里一律注真源，不拿 '<i>名字</i>' 当桩——
+// 桩出来的图标会把图标名混进 textContent，也会把「箭头指向哪边」这种事糊成一个空 svg，
+// 断言就变成了假的。真的 ic() 出的是 <use href="#i-…">，指哪个图标一眼看得出来。
+const IC_STUB = UI00_SRC.slice(UI00_SRC.indexOf("function ic(name, cls)"), UI00_SRC.indexOf("/* 自建 tooltip"));
 const A0 = APP02.indexOf("// ================= ＋ 上传文件到工作空间");
 const A1 = APP02.indexOf("// ================= 会话历史");
 if (A0 < 0 || A1 <= A0) throw new Error("app-02.js 里的附件段找不到了（段标题被改过？），前端测试没法定位真源码");
@@ -110,7 +115,7 @@ const TURNOUT_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS 
 // 只替掉渲染细节（图标、字号、跳转），判重/上限/回收这些被测逻辑一律用真源码
 const TURNOUT_STUBS = `
 function esc(s){ const d=document.createElement("div"); d.textContent = s==null?"":String(s); return d.innerHTML; }
-function ic(){ return "<svg class='i'></svg>"; }
+${IC_STUB}
 function fileIcon(){ return "F"; }
 function fmtSize(n){ return (n||0) + " B"; }
 const revealBtn = (name) => '<span class="dl rv" data-rv="' + esc(name) + '">RV</span>';
@@ -193,9 +198,11 @@ const TURNOUT_CHECKS = `
       getComputedStyle(body).display === "none");
     ok("收起时标题那行还留着，不然就找不到再点开的地方了",
       getComputedStyle(main).display !== "none" && main.offsetHeight > 0);
-    ok("收起时箭头翻过来", main.querySelector(".ar").textContent === "▸");
+    // 箭头是 sprite 里的 chevron，不是 ▾▸ 这两个字符 —— 验它引的是哪个 symbol
+    const arOf = (h) => { const u = h.querySelector(".ar use"); return u ? u.getAttribute("href") : "(没画箭头)"; };
+    ok("收起时箭头翻过来", arOf(main) === "#i-chevron-right", arOf(main));
     main.click();
-    ok("再点一下展开", !block.classList.contains("packed") && main.querySelector(".ar").textContent === "▾");
+    ok("再点一下展开", !block.classList.contains("packed") && arOf(main) === "#i-chevron-down", arOf(main));
     ok("展开后内容又看得见了", getComputedStyle(body).display !== "none");
     renderTurnOutputs(b, [F("补一个.pdf")], [...two, F("补一个.pdf")]);
     ok("再来一批产出时计数跟得上", main.querySelector(".cn").textContent === "(3)");
@@ -470,7 +477,6 @@ const TURNOUT_CHECKS = `
 // 键盘可达：侧栏那几行、成果卡、折叠头本来都是 <div>，鼠标能点、Tab 走不到。
 // 补齐这件事的真源码是 app-00-ui.js 里的 markActivatable/onActivate + 全局 keydown，
 // 整份直接拉进来跑，不抄。测的是"Enter/空格真的等价于点击"，不是"属性写上了没有"。
-const UI00_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-00-ui.js"), "utf8");
 const KBD_HTML = "<!doctype html><meta charset='utf-8'><body>"
   + "<div id='proj-list'><div class='proj-item'>默认项目</div></div>"
   + "<div class='side-nav'><div class='item'>专家</div></div>"
@@ -525,6 +531,7 @@ const KBD_CHECKS = `
 `;
 
 const FILELIST_STUBS = [
+  IC_STUB,
   "window.filesCache = [];",
   "window.esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');",
   "window.toast = () => {};",
@@ -594,7 +601,11 @@ const FILELIST_CHECKS = `
   ok("点段头收起这一段", !between("今天").length, JSON.stringify(between("今天")));
   ok("收起一段不影响别的段", between("昨天").join() === "任务_0902_昨天干的" && dirs().length === before - 1, JSON.stringify(dirs()));
   ok("收起一段不碰根目录那组", dirs()[dirs().length - 1].includes("工作空间根目录"), JSON.stringify(dirs()));
-  ok("收起后段头箭头翻向", [...el.querySelectorAll(".time-head")].find((n) => n.querySelector(".name").textContent === "今天").firstChild.textContent === "▸");
+  {
+    const head = [...el.querySelectorAll(".time-head")].find((n) => n.querySelector(".name").textContent === "今天");
+    const href = head.querySelector(".ar use").getAttribute("href");
+    ok("收起后段头箭头翻向", href === "#i-chevron-right", href);
+  }
   [...el.querySelectorAll(".time-head")].find((n) => n.querySelector(".name").textContent === "今天").click();
   ok("再点一下展开回来", between("今天").join() === "任务_0903_本对话", JSON.stringify(between("今天")));
 
@@ -677,6 +688,7 @@ const ATTACH_HTML =
 
 // 页面里其他文件提供的东西，在这儿给最小替身；网络请求全部截下来当证据
 const ATTACH_STUBS = [
+  IC_STUB,
   "window.uploads = []; window.toasts = []; window.sessionId = 's_test_1';",
   "window.fetch = async (url, init) => {",
   "  if (url === '/api/upload') { window.uploads.push(JSON.parse(init.body)); return { ok: true, json: async () => ({}) }; }",
@@ -810,13 +822,13 @@ const FB_SRC = APP02X.slice(F0, F1);
 const FB_HTML = "<!doctype html><meta charset='utf-8'><body><div id='chat-col'></div></body>";
 
 const FB_STUBS = [
+  IC_STUB,
   "window.posts = [];",
   "window.fetch = async (url, init) => {",
   "  window.posts.push({ url, body: JSON.parse(init.body) });",
   "  return { ok: true, json: async () => ({ ok: true }) };",
   "};",
   "const chatCol = document.getElementById('chat-col');",
-  "const ic = (n) => '<i>' + n + '</i>';",
   "const toast = () => {};",
   "const curBusy = () => false;",
   "const doSend = () => {};",
@@ -900,9 +912,9 @@ const FB_CHECKS = `
   const t5 = document.createElement("div");
   t5.className = "turn";
   t5.innerHTML = '<div class="body"><div class="proc-wrap"><div class="proc-body">'
-    + '<div class="step-card"><div class="head"><span class="tag">⚙ read_file</span><span class="tag ok">完成</span></div></div>'
-    + '<div class="step-card failed"><div class="head"><span class="tag">⚙ run_shell</span><span class="tag err">失败</span></div></div>'
-    + '<div class="step-card"><div class="head"><span class="tag">⚙ write_file</span><span class="tag ok">完成</span></div></div>'
+    + '<div class="step-card"><div class="head"><span class="tag">read_file</span><span class="tag ok">完成</span></div></div>'
+    + '<div class="step-card failed"><div class="head"><span class="tag">run_shell</span><span class="tag err">失败</span></div></div>'
+    + '<div class="step-card"><div class="head"><span class="tag">write_file</span><span class="tag ok">完成</span></div></div>'
     + '</div></div><div class="a-text">带模型的回复</div></div>';
   t5._userText = "第五个"; t5._mode = "craft";
   t5._usage = { model: "m1", provider: "P", prompt: 100, completion: 20, cached: 30, calls: 3, elapsed_ms: 1234 };
@@ -961,8 +973,11 @@ if (LK0 < 0 || LK1 <= LK0) throw new Error("app-01.js 里 linkifyOutputs / finis
 const TR_LINKIFY = APP02X.slice(LK0, LK1);
 const TRAIL_SRC = [
   pickLine(/^const TOOL_SHORT = \{.*$/m, "app-01.js 里没有 TOOL_SHORT（轨迹条的短标签表）"),
+  pickLine(/^const TOOL_ICON = \{.*$/m, "app-01.js 里没有 TOOL_ICON（每个工具配哪个图标）"),
   pickLine(/^const shortTool = .*$/m, "app-01.js 里没有 shortTool"),
   pickLine(/^const toolIcon = .*$/m, "app-01.js 里没有 toolIcon（过程区每一步的图标）"),
+  // 过程区那些「说一句」的提示行（并发了几个、压缩了几条、自动续跑…）都由它画
+  APP02X.slice(APP02X.indexOf("function procNote(icon, text, cls)"), APP02X.indexOf("const runningSessions = new Map()")),
   "let replayFeedback = null;",
   // 流式正文的分段渲染是真源码（不是桩）：回合里那些 endText() 收尾点必须真的把两截合回去
   APP02X.slice(APP02X.indexOf("const BAL_TAG"), APP02X.indexOf("\n// 【任务类型：X】")),
@@ -982,7 +997,7 @@ const TRAIL_STUBS = [
   "var scrollBottom = () => {};",
   "var onActivate = (el, fn) => { el.onclick = fn; return el; };",
   "var wireProcWarn = (chip) => chip;",
-  "var ic = (n) => '<i>' + n + '</i>';",
+  IC_STUB,
   "var avatarBits = () => ({ html: 'A', cls: '' });",
   "var assistant = { avatar: '', name: 'A' };",
   "var hlTokens = (t) => esc(t);",
@@ -1013,6 +1028,7 @@ const ENGPICK_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "
   + "<button class='picker-btn' id='model-btn'><svg class='i'><use href='#i-sparkles'></use></svg> <span id='model-label'>模型</span></button>"
   + "<div class='picker-menu' id='model-menu'></div></div></body>";
 const ENGPICK_STUBS = [
+  IC_STUB,
   "var modelMenu = document.getElementById('model-menu');",
   "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
   "var MODALS = []; var openModal = (a, b) => MODALS.push(a + ':' + b);",
@@ -1080,6 +1096,7 @@ const GOAL_SRC = APP02.slice(APP02.indexOf("// ================= Goal 目标卡"
 const GOAL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
   + "<body style='margin:0;width:760px'><div id='goal-card' style='display:none'></div></body>";
 const GOAL_STUBS = [
+  IC_STUB,
   "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
   "var sessionId = 's1';",
   "var sessionGoals = new Map();",
@@ -1165,6 +1182,7 @@ if (E0 < 0 || E1 <= E0) throw new Error("app-01.js 里的 esc/ESC_MAP 找不到�
 const ESC_SRC = APP02X.slice(E0, E1);
 const ESC_HTML = "<!doctype html><meta charset='utf-8'><body><div id='box'></div><div id='md'></div></body>";
 const ESC_STUBS = [
+  IC_STUB,
   "var SvgFig = { extractSvgFigures: (s) => ({ text: s, figs: [] }) };",
   "function fpath(n) { return String(n == null ? '' : n).split('/').map(encodeURIComponent).join('/'); }",
   "function joinRel(base, rel) { return rel; }",
@@ -1686,6 +1704,9 @@ const HUB_CHECKS = `
 // 每条都配一条平台管理员的反向对照——只删控件不写反向对照，把整页删空也能全绿。
 const SET0 = APP05.indexOf("const SETTING_CATS = [");
 const SET1 = APP05.indexOf("// 渠道预设：选一个就把接口地址/协议填好"); // 连 saveSettings/lastSaveError 一起切进来，那也是真源
+// 四路媒体模型那一大块（渠道表 + 能力卡 + 下拉选型）就在 renderModelsPane 前面，
+// 它被 renderModelsPane 直接调用，不切进来的话这一屏一画就 renderMediaPane is not defined。
+const MED0 = APP05.indexOf("const MEDIA_CAPS = [");
 const MOD0 = APP05.indexOf("function renderModelsPane(pane, s) {");
 const MOD1 = APP05.indexOf("function renderSearchPane(pane, s) {");
 const PER0 = APP05.indexOf("function renderPersonaPane(pane, s) {");
@@ -1696,9 +1717,10 @@ const SEC1 = APP06.indexOf("// ================= 快捷键面板 ===============
 const PM0 = APP02.indexOf("let permModes = null;");
 const PM1 = APP02.indexOf('setupPicker("perm-btn", "perm-menu");');
 for (const [a, b, why] of [[SET0, SET1, "app-05.js 的 SETTING_CATS/renderSettings/saveSettings"], [MOD0, MOD1, "app-05.js 的 renderModelsPane"],
-  [PER0, PER1, "app-05.js 的 renderPersonaPane"], [SEC0, SEC1, "app-06.js 的 renderSecurityPane"], [PM0, PM1, "app-02.js 的档位菜单"]])
+  [PER0, PER1, "app-05.js 的 renderPersonaPane"], [SEC0, SEC1, "app-06.js 的 renderSecurityPane"], [PM0, PM1, "app-02.js 的档位菜单"],
+  [MED0, MOD0, "app-05.js 的 MEDIA_CAPS/renderMediaPane"]])
   if (a < 0 || b <= a) throw new Error(why + " 找不到了（改名/挪走？），设置页权限测试没法定位真源码");
-const GATE_SRC = APP05.slice(SET0, SET1) + "\n" + APP05.slice(MOD0, MOD1) + "\n" + APP05.slice(PER0, PER1)
+const GATE_SRC = APP05.slice(SET0, SET1) + "\n" + APP05.slice(MED0, MOD1) + "\n" + APP05.slice(PER0, PER1)
   + "\n" + APP06.slice(SEC0, SEC1) + "\n" + APP02.slice(PM0, PM1);
 const GATE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><body>"
   + "<div id='m-body'></div><div id='pane'></div><button id='perm-btn'><span id='perm-label'></span></button>"
@@ -1710,6 +1732,8 @@ const GATE_CHECKS = `
 
   // 这一屏依赖的零碎（渠道预设、拿 Key 链接、头像编辑器、宠物卡）不是这次要测的东西，喂桩；
   // 被测的是「哪些控件画出来了」，桩只要不炸就行。
+  ${IC_STUB}
+  window.ic = ic;
   window.CHANNEL_PRESETS = [{ label: "选择渠道预设…", provider: "openai", base: "", model: "" }];
   window.ASSISTANT_MARK = "🐱";
   window.keyLink = () => "";
@@ -1774,7 +1798,11 @@ const GATE_CHECKS = `
   ok("当前默认还是标出来了，只是画成状态不是开关", mp.textContent.includes("●"));
   ok("没有编辑 / 复制 / 删除", !mp.querySelector("[data-edit]") && !mp.querySelector("[data-dup]") && !mp.querySelector("[data-del]"));
   ok("没有「＋ 添加自定义模型」和那张 Key 表单", !mp.querySelector("#mf-new") && !mp.querySelector("#model-form"));
-  ok("视觉 / 图像 / 视频 / TTS 四张卡没画，换成一句人话", !mp.querySelector("#media-save") && !mp.querySelector("#mi-key"));
+  ok("四路媒体模型：成员这儿没有渠道表、没有 Key 输入框、没有默认单选钮，只有一句人话",
+    !mp.querySelector("#pf-new") && !mp.querySelector("#pf-key") && !mp.querySelector("#prov-list")
+    && !mp.querySelector("input[name^=def-]") && !mp.querySelector(".mm-new")
+    && /归平台管理员/.test(mp.textContent));
+  ok("而且告诉他这几路现在有几个模型可用（不是一句「没权限」了事）", /个模型可用|还没配/.test(mp.textContent));
   ok("属于他自己的那颗开关还在（新对话沿用上次选的模型）", !!mp.querySelector("#mf-follow-last"));
   posts = [];
   mp.querySelector("#mf-follow-last").checked = false;
@@ -1784,8 +1812,10 @@ const GATE_CHECKS = `
   owner = true;
   await renderSettings("models");
   const mpo = mBody.querySelector("#settings-pane");
-  ok("反向对照：平台管理员那排单选钮、增删改、四张媒体卡一样不少",
-    !!mpo.querySelector("input[name=active]") && !!mpo.querySelector("[data-edit]") && !!mpo.querySelector("#mf-new") && !!mpo.querySelector("#media-save"));
+  ok("反向对照：平台管理员那排单选钮、增删改、渠道表和四张媒体卡一样不少",
+    !!mpo.querySelector("input[name=active]") && !!mpo.querySelector("[data-edit]") && !!mpo.querySelector("#mf-new")
+    && !!mpo.querySelector("#prov-list") && !!mpo.querySelector("#pf-new") && mpo.querySelectorAll(".mm-new").length === 4,
+    "渠道表 " + !!mpo.querySelector("#prov-list") + " · 能力卡 " + mpo.querySelectorAll(".mm-new").length);
 
   // ③ 个性化页：名字和偏好是全服务器共用一份，宠物是他自己电脑上那只
   owner = false;
@@ -1834,7 +1864,7 @@ const GATE_CHECKS = `
   await loadPermModes();
   ok("成员的 🛡️ 菜单里一条都点不动（点了只会得到一句「切换失败」）",
     [...menu.querySelectorAll(".mi")].every((mi) => !mi.onclick));
-  ok("但当前是哪一档还看得见", menu.textContent.includes("每次问我") && menu.textContent.includes("✓"));
+  ok("但当前是哪一档还看得见", menu.textContent.includes("每次问我") && !!menu.querySelector('use[href="#i-check"]'), menu.innerHTML.slice(0, 160));
   ok("菜单底下写明白了归谁管", /平台管理员/.test(menu.textContent));
   ok("按钮上的档位标签照样对得上", document.getElementById("perm-label").textContent === "每次问我");
   canSwitch = true;
@@ -1853,6 +1883,7 @@ const STREAM_SRC = APP02X.slice(APP02X.indexOf("function repairBareCode"), APP02
 const STREAM_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
   + "<body style='margin:0;width:760px'><div class='a-text' id='t'></div><div class='a-text' id='ref'></div></body>";
 const STREAM_STUBS = [
+  IC_STUB,
   "var SvgFig = { extractSvgFigures: (s) => ({ text: s, figs: [] }) };",
   ESC_SRC, // 转义用真源，不抄：抄本会跟真源分头演化，测的就不是线上那份了
   "function mdImg(alt, url) { return '<img alt=\"' + String(alt || '').replace(/\"/g, '') + '\">'; }",
@@ -2005,6 +2036,7 @@ const STREAM_CHECKS = `
 
 const IMPANE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div class='settings-pane' id='pane' style='width:720px'></div></body>";
 const IMPANE_STUBS = `
+  ${IC_STUB}
 var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 var SAVES = [], SAVES_AT = [], POSTS = [], NAV = [], TEST_FAIL = new Set(), REFRESHED = 0;
 var STATUS = { feishu: { configured: true, ws: { state: "connected" } }, qq: { configured: false, state: "off" }, wecom_app: { configured: false }, wechat_mp: { configured: false },
@@ -2272,6 +2304,7 @@ const SHORTCUT_SRC = APP02_SC.slice(SC0, SC1 + 3);
 const ONB_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div class='auth-mask' id='onb-mask'><div class='auth-card onb-card'><div class='onb-steps' id='onb-steps'></div><div id='onb-body'></div></div></div></body>";
 const ONB_STUBS = `
+  ${IC_STUB}
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   const TOASTS = [], POSTS = [], MODALS = []; let REFRESHED = 0;
   function toast(m) { TOASTS.push(String(m)); }
@@ -2536,6 +2569,7 @@ const OPENWS_SITES = (() => {
   return hits;
 })();
 const WSMENU_STUBS = `
+  ${IC_STUB}
   const OPENWS_SITES = ${JSON.stringify(OPENWS_SITES)};
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   const TOASTS = [], CALLS = [];
@@ -2845,6 +2879,7 @@ const MENU_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n"
   + "<div class='hist-item active' id='hia'>当前</div>"
   + "<div id='user-row' style='position:relative;width:260px;margin-top:320px'><div class='user-menu' id='user-menu'></div></div></body>";
 const MENU_STUBS = `
+  ${IC_STUB}
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   function avatarBits(av, name) { return { cls: "", html: esc(String(name || "?").slice(0, 1).toUpperCase()) }; }
   function displayName(u) { return (u && (u.nickname || u.username)) || ""; }
@@ -2864,9 +2899,18 @@ const MENU_CHECKS = `
   I18N.setLang("zh");
   openUserMenu();
   ok("打开：菜单显示，八行动作 = 个人资料/设置/企业后台/语言/外观/帮助/更新/退出", menu.classList.contains("show") && acts() === "profile,settings,admin,lang,appearance,help,update,logout");
-  ok("企业后台这行写清楚了点进去能干什么（成员 · 用量 · 安全）", /🏢 企业管理后台/.test(menu.textContent) && /成员 · 用量 · 安全/.test(menu.querySelector('[data-act="admin"]').textContent));
+  const iconOf = (sel) => { const u = menu.querySelector(sel + " use"); return u ? u.getAttribute("href") : "(这行没画图标)"; };
+  ok("企业后台这行写清楚了点进去能干什么（成员 · 用量 · 安全）", /企业管理后台/.test(menu.textContent) && /成员 · 用量 · 安全/.test(menu.querySelector('[data-act="admin"]').textContent));
+  // 八行动作每行都得有图标，而且是各自那一个——以前这里是 🏢🪪⚙️ 一串表情，翻译一过就被当正文
+  ok("八行动作用的是图标不是表情：每行一个 svg，图标各不相同", (() => {
+    const rows = [...menu.querySelectorAll(".um-i")];
+    const hrefs = rows.map((r) => { const u = r.querySelector("use"); return u ? u.getAttribute("href") : null; });
+    return rows.length === 8 && hrefs.every(Boolean) && new Set(hrefs).size === 8;
+  })(), [...menu.querySelectorAll(".um-i")].map((r) => (r.querySelector("use") || {}).getAttribute && r.querySelector("use").getAttribute("href")).join(","));
+  ok("负对照：这把尺子认得出图标不一样（企业后台=building-2，个人资料=id-card）", iconOf('[data-act="admin"]') === "#i-building-2" && iconOf('[data-act="profile"]') === "#i-id-card");
+  ok("菜单里一个表情都不剩", !/[\u{1F300}-\u{1FAFF}\u{FE0F}\u{2699}\u{1F6E1}]/u.test(menu.textContent), menu.textContent.slice(0, 80));
   ok("「个人资料」后面不再挂「改名字 · 换头像」尾注", !/改名字|换头像/.test(menu.textContent) && !menu.querySelector('[data-act="profile"] .hint'));
-  ok("语言行：🌐 语言 + 中 / En 两个胶囊，中文选中（.on + aria-pressed）", !!langRow() && /🌐 语言/.test(langRow().textContent) && !!btn("zh") && !!btn("en") && btn("zh").classList.contains("on") && btn("zh").getAttribute("aria-pressed") === "true" && !btn("en").classList.contains("on") && btn("en").getAttribute("aria-pressed") === "false");
+  ok("语言行：语言 + 中 / En 两个胶囊，中文选中（.on + aria-pressed）", !!langRow() && /语言/.test(langRow().textContent) && (langRow().querySelector("use") || {}).getAttribute && langRow().querySelector("use").getAttribute("href") === "#i-globe" && !!btn("zh") && !!btn("en") && btn("zh").classList.contains("on") && btn("zh").getAttribute("aria-pressed") === "true" && !btn("en").classList.contains("on") && btn("en").getAttribute("aria-pressed") === "false");
   ok("胶囊组标了 data-i18n-skip，「中 / En」不会被翻译器动", langRow().querySelector(".um-seg").hasAttribute("data-i18n-skip") && btn("zh").textContent === "中" && btn("en").textContent === "En");
   const bgOn = getComputedStyle(btn("zh")).backgroundColor, bgOff = getComputedStyle(btn("en")).backgroundColor;
   ok("选中胶囊有品牌底色，未选中透明（" + bgOn + " / " + bgOff + "）", bgOn !== bgOff && /rgba\\(0, 0, 0, 0\\)|transparent/.test(bgOff));
@@ -2874,20 +2918,23 @@ const MENU_CHECKS = `
   ok("外观行的「主题 · 字号」提示还在（没误伤）", /跟随系统 · 标准字/.test(menu.querySelector('[data-act="appearance"] .hint').textContent));
   btn("en").click(); await tick();
   ok("点 En：语言=en，菜单没关", I18N.getLang() === "en" && menu.classList.contains("show"));
-  ok("点 En：菜单文案原地变英文（🪪 Profile / ⚙️ Settings / 🌐 Language / 🎨 Appearance），En 选中", /🪪 Profile/.test(menu.textContent) && /⚙️ Settings/.test(menu.textContent) && /🌐 Language/.test(menu.textContent) && /🎨 Appearance/.test(menu.textContent) && btn("en").classList.contains("on") && !btn("zh").classList.contains("on"));
+  ok("点 En：菜单文案原地变英文（Profile / Settings / Language / Appearance），En 选中", /Profile/.test(menu.textContent) && /Settings/.test(menu.textContent) && /Language/.test(menu.textContent) && /Appearance/.test(menu.textContent) && btn("en").classList.contains("on") && !btn("zh").classList.contains("on"));
+  // 词条当年是按「🪪 个人资料」收的，图标换成 svg 之后文本节点只剩「个人资料」。
+  // 这条钉的是那条自动补出来的无表情别名真的生效了——不生效就会中英混着显示。
+  ok("英文下图标一个没少、一个没混进文字里", menu.querySelectorAll(".um-i use").length === 8 && !/🪪|⚙️|🌐|🎨/.test(menu.textContent), menu.textContent.slice(0, 90));
   ok("点 En：菜单外的界面词也翻了（左栏「当前」→ Current）、<html lang=en>", $("#hia").textContent === "Current" && document.documentElement.lang === "en");
   ok("English 下「中 / En」本身原样", btn("zh").textContent === "中" && btn("en").textContent === "En");
   btn("en").click(); await tick();
   ok("重复点 En：还是 en，不抖", I18N.getLang() === "en" && btn("en").classList.contains("on") && menu.classList.contains("show"));
   langRow().click(); await tick();
-  ok("点语言行空白处：中英之间翻（en → zh），整页还原（当前 / 🪪 个人资料），中 选中", I18N.getLang() === "zh" && $("#hia").textContent === "当前" && /🪪 个人资料/.test(menu.textContent) && !/Profile/.test(menu.textContent) && btn("zh").classList.contains("on") && document.documentElement.lang === "zh-CN");
+  ok("点语言行空白处：中英之间翻（en → zh），整页还原（当前 / 个人资料），中 选中", I18N.getLang() === "zh" && $("#hia").textContent === "当前" && /个人资料/.test(menu.textContent) && !/Profile/.test(menu.textContent) && btn("zh").classList.contains("on") && document.documentElement.lang === "zh-CN");
   langRow().click(); await tick();
-  ok("再点一次行：zh → en", I18N.getLang() === "en" && /🪪 Profile/.test(menu.textContent) && btn("en").classList.contains("on"));
+  ok("再点一次行：zh → en", I18N.getLang() === "en" && /Profile/.test(menu.textContent) && btn("en").classList.contains("on"));
   ok("切语言全程没误开弹窗", MODALS.length === 0);
   menu.querySelector('[data-act="appearance"]').click();
   ok("点「外观」：开设置→外观页并关菜单（其它行行为不变）", MODALS.join() === "settings:look" && !menu.classList.contains("show"));
   openUserMenu(); await tick();
-  ok("English 下重开菜单：直接是英文，En 选中", /⚙️ Settings/.test(menu.textContent) && btn("en").classList.contains("on"));
+  ok("English 下重开菜单：直接是英文，En 选中", /Settings/.test(menu.textContent) && btn("en").classList.contains("on"));
   closeUserMenu(); I18N.setLang("zh");
 
   // 企业后台入口是按角色发的。这行要是对普通成员也冒出来，他点进去只会连吃 403——
@@ -2926,7 +2973,8 @@ const TRAIL_CHECKS = `
   ui.handleEvent({ type: "text", delta: "先看看文件" });
   ui.handleEvent({ type: "tool_use", id: "a", name: "read_file", purpose: "读 a", at: 1000 });
   ok("第一步就挂上徽章且在转", chips(t).length === 1 && chips(t)[0].classList.contains("run"));
-  ok("徽章用短标签不用原名", chips(t)[0].textContent.startsWith("📄 读"), chips(t)[0].textContent);
+  ok("徽章用短标签不用原名", chips(t)[0].textContent.trim() === "读", chips(t)[0].textContent);
+  ok("徽章前头那个是画出来的图标，不是表情", chips(t)[0].querySelector("use").getAttribute("href") === "#i-file-text", chips(t)[0].innerHTML.slice(0, 80));
   ok("运行中样式是真画出来的", getComputedStyle(chips(t)[0]).color !== getComputedStyle(t.querySelector(".pt")).color);
   ui.handleEvent({ type: "tool_result", id: "a", name: "read_file", preview: "ok", at: 3500 });
   ok("回来后不转了", !chips(t)[0].classList.contains("run"));
@@ -2957,14 +3005,16 @@ const TRAIL_CHECKS = `
   runWrap.querySelector(".proc-head").click();
   ok("再点收起，记的也跟着改", !runWrap.classList.contains("open") && localStorage.getItem("wb_proc_open") === "0");
 
-  // ---- 执行过程一行流：「📄 读 报告.md · 120 行」，参数收在卡里 ----
+  // ---- 执行过程一行流：「[图标] 读 报告.md · 120 行」，参数收在卡里 ----
   // 用户原话：「让我一直看到任务完成情况，不要看太多没有用的东西」。
   // 参数是排障才要看的，「在干什么 + 拿回来多少」才是每一步都该露在外面的那半句。
   const u9 = createTurnUI("看一眼", "craft", "s_t");
   u9.handleEvent({ type: "tool_use", id: "x", name: "read_file", title: "读 报告.md", input_preview: '{"path":"报告.md"}' });
   const c9 = u9.turn.querySelector(".step-card");
   ok("那一行写的是在干什么，不是工具名", /读 报告\\.md/.test(c9.querySelector(".desc").textContent) && !/read_file/.test(c9.querySelector(".desc").textContent), c9.querySelector(".desc").textContent);
-  ok("标签只剩一个图标，不再把 read_file 印上去", c9.querySelector(".tag").textContent.trim() === "📄", c9.querySelector(".tag").textContent);
+  ok("标签只剩一个图标，不再把 read_file 印上去",
+    c9.querySelector(".tag").textContent.trim() === "" && c9.querySelector(".tag use").getAttribute("href") === "#i-file-text",
+    c9.querySelector(".tag").innerHTML.slice(0, 80));
   ok("原始入参一个字没丢，只是收着", /报告\.md/.test(c9.querySelector("pre").textContent) && disp(c9.querySelector("pre")) === "none");
   u9.handleEvent({ type: "tool_result", id: "x", name: "read_file", outcome: "120 行", preview: "..." });
   ok("结果的量就写在同一行上", c9.querySelector(".out").textContent === "· 120 行", c9.querySelector(".out").textContent);
@@ -3170,36 +3220,64 @@ const TRAIL_CHECKS = `
     const nap2 = (ms) => new Promise((r) => setTimeout(r, ms));
     const LA = (ev, narr) => liveActivity(ev, narr || "");
     const line = (ev, narr) => LA(ev, narr).line;
-    ok("动作行·调工具：一个图标 + 服务端算好的「动词 + 对象」",
-      line({ type: "tool_use", name: "read_file", title: "读 报告.md" }) === "📄 读 报告.md",
+    const icon = (ev, narr) => LA(ev, narr).icon;
+    // 话和图标是分开返的：话要能翻译、能截断、能进 textContent；图标只是 sprite 里的一个 id。
+    // 以前两者拼成一句「📄 读 报告.md」，英文界面下那个表情翻不掉，字典里还得连图一起抄一遍。
+    ok("动作行·调工具：服务端算好的「动词 + 对象」，这一格里只剩字",
+      line({ type: "tool_use", name: "read_file", title: "读 报告.md" }) === "读 报告.md",
       line({ type: "tool_use", name: "read_file", title: "读 报告.md" }));
-    ok("动作行·老会话回放没 title：退回短名 + purpose，图标不重复（不是「📄 📄 读」）",
-      line({ type: "tool_use", name: "read_file", purpose: "简历.md" }) === "📄 读 简历.md",
+    ok("动作行·图标另算一格，按工具名查表（读文件配 file-text）",
+      icon({ type: "tool_use", name: "read_file", title: "读 报告.md" }) === "file-text",
+      icon({ type: "tool_use", name: "read_file", title: "读 报告.md" }));
+    ok("动作行·老会话回放没 title：退回短名 + purpose",
+      line({ type: "tool_use", name: "read_file", purpose: "简历.md" }) === "读 简历.md",
       line({ type: "tool_use", name: "read_file", purpose: "简历.md" }));
     ok("动作行·认不出的 MCP 工具也有话说，不留空",
-      line({ type: "tool_use", name: "mcp_feishu_send", title: "发 群消息" }) === "⚙ 发 群消息",
+      line({ type: "tool_use", name: "mcp_feishu_send", title: "发 群消息" }) === "发 群消息",
       line({ type: "tool_use", name: "mcp_feishu_send", title: "发 群消息" }));
+    ok("动作行·认不出的工具图标也有兜底（settings），不留个空洞",
+      icon({ type: "tool_use", name: "mcp_feishu_send", title: "发 群消息" }) === "settings",
+      icon({ type: "tool_use", name: "mcp_feishu_send", title: "发 群消息" }));
     ok("动作行·专家干的活前面挂专家名，别看着像主线自己在跑",
-      line({ type: "tool_use", name: "web_search", title: "搜「深圳 OPC」", expert: "调研" }) === "🌐 调研 · 搜「深圳 OPC」",
+      line({ type: "tool_use", name: "web_search", title: "搜「深圳 OPC」", expert: "调研" }) === "调研 · 搜「深圳 OPC」",
       line({ type: "tool_use", name: "web_search", title: "搜「深圳 OPC」", expert: "调研" }));
+    // 这一整组断言的前提是「话里不许再有表情」。挨个事件扫一遍，漏一条就炸
+    {
+      const EMO = /[\u{1F000}-\u{1FAFF}\u{2190}-\u{2BFF}\u{FE0F}]/u;
+      const evs = [
+        { type: "tool_use", name: "read_file", title: "读 报告.md" },
+        { type: "tool_result", name: "run_shell", isError: true, outcome: "exit 1" },
+        { type: "parallel", count: 6 }, { type: "step_start", step: 7 },
+        { type: "expert_start", expert: "调研", task: "查一下" }, { type: "compact", removed: 7 },
+        { type: "trim" }, { type: "failover" }, { type: "auto_continue", round: 2, total: 3 },
+        { type: "limit" }, { type: "sleep" }, { type: "ask_user" },
+        { type: "status", text: "本地服务起来了", starting: true },
+      ];
+      const dirty = evs.map((e) => LA(e).line).filter((l) => l && EMO.test(l));
+      ok("动作行·十三种事件的话里都不带表情了（图标归图标那一格）", dirty.length === 0, dirty.join("|"));
+      ok("负对照：这把尺子是真量得出表情的", EMO.test("📄 读") && EMO.test("⚡ 并发") && EMO.test("⚙ 设置"));
+      ok("负对照：每种事件都真出了一句话，不是全 null 混过去", evs.filter((e) => LA(e).line).length === evs.length);
+      ok("负对照：每种事件也都真配了图标", evs.filter((e) => LA(e).icon).length === evs.length);
+    }
     const longLine = line({ type: "tool_use", name: "run_shell", title: "命令 " + "x".repeat(200) });
     ok("动作行·话太长就截断加省略号，不把折叠条撑开", longLine.length <= 64 && longLine.slice(-1) === "…", longLine.length + "/" + longLine.slice(-3));
     const n1 = LA({ type: "text", delta: "深圳本地的入口比预想的清晰得多。" });
     const n2 = LA({ type: "text", delta: "我抓几份原文确认细节。" }, n1.narr);
-    ok("动作行·正文旁白播的是最后一句，不是整段被截得只剩开头", n2.line === "✍️ 我抓几份原文确认细节。", n2.line);
-    ok("动作行·正好写完一句时不闪空白（退一句显示）", LA({ type: "text", delta: "先看看文件。" }).line === "✍️ 先看看文件。", LA({ type: "text", delta: "先看看文件。" }).line);
+    ok("动作行·正文旁白播的是最后一句，不是整段被截得只剩开头", n2.line === "我抓几份原文确认细节。", n2.line);
+    ok("动作行·正文旁白配的是笔的图标", n2.icon === "pen-line", n2.icon);
+    ok("动作行·正好写完一句时不闪空白（退一句显示）", LA({ type: "text", delta: "先看看文件。" }).line === "先看看文件。", LA({ type: "text", delta: "先看看文件。" }).line);
     ok("动作行·旁白缓冲只留尾部 400 字，长任务不越滚越沉", LA({ type: "text", delta: "句。".repeat(500) }).narr.length === 400, LA({ type: "text", delta: "句。".repeat(500) }).narr.length);
     ok("动作行·专家内层的正文不抢主线这一行", line({ type: "text", delta: "内层在写", depth: 1 }) === null);
-    ok("动作行·并发那条说清一起跑几个", line({ type: "parallel", count: 6 }) === "⚡ 6 个只读工具一起跑", line({ type: "parallel", count: 6 }));
+    ok("动作行·并发那条说清一起跑几个", line({ type: "parallel", count: 6 }) === "6 个只读工具一起跑", line({ type: "parallel", count: 6 }));
     ok("动作行·压缩那条说清压了几条、要点还在（别让人以为丢了）",
       line({ type: "compact", removed: 7 }).includes("7 条") && line({ type: "compact", removed: 7 }).includes("要点保留"),
       line({ type: "compact", removed: 7 }));
-    ok("动作行·思考中带步号", line({ type: "step_start", step: 7 }) === "🤔 第 7 步 · 在想下一步怎么做", line({ type: "step_start", step: 7 }));
+    ok("动作行·思考中带步号", line({ type: "step_start", step: 7 }) === "第 7 步 · 在想下一步怎么做", line({ type: "step_start", step: 7 }));
     ok("动作行·专家内层的 step_start 不覆盖主线", line({ type: "step_start", step: 2, depth: 1 }) === null);
     ok("动作行·要问用户的时候说的是「在等你回答」", line({ type: "ask_user" }).includes("等你回答"), line({ type: "ask_user" }));
     ok("动作行·工具成了不改词：那一步「在干什么」立着更有用", line({ type: "tool_result", name: "read_file", preview: "ok" }) === null);
     ok("动作行·工具栽了必须说（过程区收着的时候失败原本完全隐形）",
-      line({ type: "tool_result", name: "run_shell", isError: true, outcome: "exit 1" }) === "⚠️ ⌨️ 命令 没成：exit 1",
+      line({ type: "tool_result", name: "run_shell", isError: true, outcome: "exit 1" }) === "命令 没成：exit 1",
       line({ type: "tool_result", name: "run_shell", isError: true, outcome: "exit 1" }));
     ok("动作行·记账类事件（usage / files）不抢这一行", line({ type: "usage" }) === null && line({ type: "files", files: [] }) === null);
     ok("动作行·非正文事件把旁白缓冲清空，下一段不接到上一段尾巴上", LA({ type: "parallel", count: 2 }, "上一段旁白").narr === "");
@@ -3213,22 +3291,31 @@ const TRAIL_CHECKS = `
     const live = wrap.querySelector(".proc-head .act-live");
     ok("动作行挂在折叠条上（跟折叠区是两回事）", !!live);
     ok("过程区仍然默认收着（用户说过别让执行过程挡住）", !wrap.classList.contains("open"));
-    ok("收着也看得见，说的正是此刻这一步", disp(live) !== "none" && live.textContent === "🌐 搜「深圳 OPC」", disp(live) + " / " + live.textContent);
+    const liveIcon = () => { const u = live.querySelector("use"); return u ? u.getAttribute("href") : "(没有图标)"; };
+    ok("收着也看得见，说的正是此刻这一步", disp(live) !== "none" && live.textContent === "搜「深圳 OPC」", disp(live) + " / " + live.textContent);
+    ok("图标是画出来的 svg，不是拿表情当图标", liveIcon() === "#i-globe" && live.querySelector("svg.i"), liveIcon());
     ok("动作行独占一行，不跟耗时挤在一起",
       live.getBoundingClientRect().top > wrap.querySelector(".pt").getBoundingClientRect().top,
       live.getBoundingClientRect().top + " vs " + wrap.querySelector(".pt").getBoundingClientRect().top);
     ok("鼠标悬停能看全被截掉的部分（title 跟着走）", live.title === live.textContent, live.title);
     u.handleEvent({ type: "parallel", count: 6 });
-    ok("下一个动作来了就地换词，不是越堆越长", live.textContent === "⚡ 6 个只读工具一起跑", live.textContent);
+    ok("下一个动作来了就地换词，不是越堆越长", live.textContent === "6 个只读工具一起跑", live.textContent);
+    ok("换词时图标跟着换，不会留着上一步那个", liveIcon() === "#i-zap", liveIcon());
+    ok("换词是替换不是追加：整行就一个图标", live.querySelectorAll("svg.i").length === 1, live.querySelectorAll("svg.i").length + " 个");
     u.handleEvent({ type: "tool_result", id: "x1", name: "web_search", preview: "ok" });
-    ok("工具成了不改词：还停在刚才那句", live.textContent === "⚡ 6 个只读工具一起跑", live.textContent);
+    ok("工具成了不改词：还停在刚才那句", live.textContent === "6 个只读工具一起跑", live.textContent);
     u.handleEvent({ type: "tool_use", id: "x2", name: "run_shell", title: "命令 npm test" });
     u.handleEvent({ type: "tool_result", id: "x2", name: "run_shell", isError: true, outcome: "exit 1" });
     ok("工具栽了当场说出来", live.textContent.includes("没成") && live.textContent.includes("exit 1"), live.textContent);
+    ok("栽了那一行换成警示图标", liveIcon() === "#i-triangle-alert", liveIcon());
     for (const ch of "我抓几份原文确认细节。") u.handleEvent({ type: "text", delta: ch });
     ok("流式旁白按帧合并：这一帧还没到，不跟着每个字抖", live.textContent.includes("没成"), live.textContent);
     await nap2(140);
-    ok("下一帧到了，动作行补上最后一句旁白（尾帧不会停在半句话）", live.textContent === "✍️ 我抓几份原文确认细节。", live.textContent);
+    ok("下一帧到了，动作行补上最后一句旁白（尾帧不会停在半句话）", live.textContent === "我抓几份原文确认细节。", live.textContent);
+    ok("写正文时图标换成笔", liveIcon() === "#i-pen-line", liveIcon());
+    // 模型吐的字要走 textContent：以前这一行是 innerHTML 拼的，命令里带个 < 就当标签解析了
+    u.handleEvent({ type: "tool_use", id: "x3", name: "run_shell", title: "命令 <img src=x onerror=alert(1)>" });
+    ok("动作行里的字一律当字看，不当 HTML", live.querySelectorAll("img").length === 0 && live.textContent.includes("<img src=x"), live.innerHTML.slice(0, 120));
     u.finish();
     ok("跑完就撤掉这行：那时候该看的是「已完成 · 产出几件」，不是最后一句旁白", disp(live) === "none", disp(live));
   }
@@ -3243,6 +3330,7 @@ const PREVIEW_HTML =
 
 // 网络请求全部截下来：既当替身，也当"到底发了什么请求"的证据（Range 头就是这么验的）
 const PREVIEW_STUBS = [
+  IC_STUB,
   "window.reqs = []; window.opened = []; window.PV_FILES = {}; window.PV_DATA = {};",
   "window.fetch = async (url, init) => {",
   "  window.reqs.push({ url, init });",
@@ -3778,6 +3866,7 @@ const COMPOSER_SRC = APP02.slice(C0, C1);
 const COMPOSER_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div class='queue-bar' id='queue-bar'></div><textarea id='input'></textarea><button id='send'>↑</button><button id='new-task'>新建任务</button></body>";
 const COMPOSER_STUBS = [
+  IC_STUB,
   "var BUSY = false; const curBusy = () => BUSY;",
   "let currentMode = 'craft';",
   "const inputEl = document.getElementById('input'), sendBtn = document.getElementById('send');",
@@ -3800,10 +3889,13 @@ const COMPOSER_CHECKS = `
   const press = (key, shift) => { const e = new KeyboardEvent("keydown", { key, shiftKey: !!shift, bubbles: true, cancelable: true }); inputEl.dispatchEvent(e); return e.defaultPrevented; };
   bindComposer();
 
+  // 发送键从「↑ / ◼ 两个字符」换成了两个 svg 图标。断言得钉在「画的是哪个图标」上——
+  // 钉 textContent 的话，图标一换成 svg 它就恒等于空串，两种状态从此长得一模一样，断言再也红不了
+  const sendIcon = () => { const u = sendBtn.querySelector("use"); return u ? u.getAttribute("href").replace("#i-", "") : "(没画图标)"; };
   // ---- 闲着 ----
   updateSendUI();
   ok("闲着：排队条不显示、里面是空的", !bar.classList.contains("show") && bar.innerHTML === "");
-  ok("闲着：按钮是「↑」、title 说的是发送 + Enter", sendBtn.textContent === "↑" && !sendBtn.classList.contains("stop") && sendBtn.title.includes("发送") && sendBtn.title.includes("Enter"), sendBtn.title);
+  ok("闲着：按钮是「↑」、title 说的是发送 + Enter", sendIcon() === "arrow-up" && !sendBtn.classList.contains("stop") && sendBtn.title.includes("发送") && sendBtn.title.includes("Enter"), sendBtn.title);
   ok("闲着：提示语是本模式的（执行模式含「今天帮你做些什么」）", inputEl.placeholder.includes("今天帮你做些什么"), inputEl.placeholder);
   currentMode = "ask"; syncPlaceholder();
   ok("切到问答模式：提示语跟着换", inputEl.placeholder.includes("问我任何问题"), inputEl.placeholder);
@@ -3819,30 +3911,30 @@ const COMPOSER_CHECKS = `
   ok("提示说的是接下来会发生什么（「做完这一步就看」），不是冷冰冰的系统口吻", ht.includes("做完这一步就看") && !ht.includes("任务运行中：发消息会直接插队"), ht);
   ok("提示像人说话：有「我」", ht.includes("我"), ht);
   const stopBtn = bar.querySelector(".qb-stop");
-  ok("停止是一颗真按钮（<button>），不是一段文字里的 ◼", !!stopBtn && stopBtn.tagName === "BUTTON" && stopBtn.textContent.includes("◼"), stopBtn && stopBtn.outerHTML);
+  ok("停止是一颗真按钮（<button>），不是一段文字里的 ◼", !!stopBtn && stopBtn.tagName === "BUTTON" && !!stopBtn.querySelector('use[href="#i-square"]') && stopBtn.textContent.includes("让我停下"), stopBtn && stopBtn.outerHTML);
   const before = stops(); stopBtn.click();
   ok("点排队条里的「让我停下」真的调 stopTask", stops() === before + 1);
   ok("停止按钮 title 提到 Esc 快捷键", stopBtn.title.includes("Esc"), stopBtn.title);
-  ok("任务在跑、框空着：发送键变「◼」带 .stop，title 说停下 + Esc", sendBtn.textContent === "◼" && sendBtn.classList.contains("stop") && sendBtn.title.includes("停") && sendBtn.title.includes("Esc"), sendBtn.title);
+  ok("任务在跑、框空着：发送键变「◼」带 .stop，title 说停下 + Esc", sendIcon() === "square" && sendBtn.classList.contains("stop") && sendBtn.title.includes("停") && sendBtn.title.includes("Esc"), sendBtn.title);
   ok("任务在跑：输入框提示语告诉用户「打字 + Enter 就插进来」", inputEl.placeholder.includes("Enter") && inputEl.placeholder.includes("插") && inputEl.placeholder !== MODE_PLACEHOLDER.craft, inputEl.placeholder);
   const b0 = stops(); sendBtn.click();
   ok("框空着点发送键 = 停下", stops() === b0 + 1);
 
   // ---- 任务在跑、打了字 ----
   typeIn("改成蓝色");
-  ok("一打字：发送键变回「↑」、去掉 .stop、加 .interject", sendBtn.textContent === "↑" && !sendBtn.classList.contains("stop") && sendBtn.classList.contains("interject"), sendBtn.className);
+  ok("一打字：发送键变回「↑」、去掉 .stop、加 .interject", sendIcon() === "arrow-up" && !sendBtn.classList.contains("stop") && sendBtn.classList.contains("interject"), sendBtn.className);
   ok("打了字的 title 说清是「插一句」+ Enter", sendBtn.title.includes("插一句") && sendBtn.title.includes("Enter"), sendBtn.title);
   const b1 = stops(); sendBtn.click();
   ok("打了字点发送键：走 send（插队）不走停止 —— 以前这里一点任务就没了", CALLS[CALLS.length - 1] === "send:改成蓝色" && stops() === b1, CALLS.join(","));
-  ok("发出去框空了：按钮自己回到「◼ 停下」，不用等下一次 updateSendUI", sendBtn.textContent === "◼" && sendBtn.classList.contains("stop") && !sendBtn.classList.contains("interject"), sendBtn.className);
+  ok("发出去框空了：按钮自己回到「◼ 停下」，不用等下一次 updateSendUI", sendIcon() === "square" && sendBtn.classList.contains("stop") && !sendBtn.classList.contains("interject"), sendBtn.className);
   typeIn("再加个标题");
   ok("Shift+Enter 只换行不发", !press("Enter", true) && CALLS[CALLS.length - 1] !== "send:再加个标题");
   ok("Enter 发出去（默认行为被拦，不会真换行）", press("Enter", false) && CALLS[CALLS.length - 1] === "send:再加个标题", CALLS.join(","));
-  ok("Enter 发完按钮回到「◼」", sendBtn.textContent === "◼");
+  ok("Enter 发完按钮回到「◼」", sendIcon() === "square");
   pendingAttach.push("截图.png"); syncSendBtn();
-  ok("只贴了附件没打字：也算有话要说 → 「↑」", sendBtn.textContent === "↑" && !sendBtn.classList.contains("stop"));
+  ok("只贴了附件没打字：也算有话要说 → 「↑」", sendIcon() === "arrow-up" && !sendBtn.classList.contains("stop"));
   pendingAttach.length = 0; syncSendBtn();
-  ok("附件撤掉：回到「◼」", sendBtn.textContent === "◼" && sendBtn.classList.contains("stop"));
+  ok("附件撤掉：回到「◼」", sendIcon() === "square" && sendBtn.classList.contains("stop"));
 
   // ---- 排了队的消息 ----
   sessionQueues.set("s1", [{ text: "顺便把页脚也改了", mode: "craft" }]);
@@ -3855,7 +3947,7 @@ const COMPOSER_CHECKS = `
   BUSY = false; updateSendUI();
   ok("任务结束：排队条隐藏并清空", !bar.classList.contains("show") && bar.innerHTML === "");
   ok("任务结束：提示语还原成本模式的", inputEl.placeholder === MODE_PLACEHOLDER.craft, inputEl.placeholder);
-  ok("任务结束：发送键回到「↑ 发送」", sendBtn.textContent === "↑" && !sendBtn.classList.contains("stop") && !sendBtn.classList.contains("interject") && sendBtn.title.includes("发送"));
+  ok("任务结束：发送键回到「↑ 发送」", sendIcon() === "arrow-up" && !sendBtn.classList.contains("stop") && !sendBtn.classList.contains("interject") && sendBtn.title.includes("发送"));
   ok("每次 updateSendUI 都刷了侧栏（运行中小圆点）", HIST >= 3, HIST);
   return names;
 })()
@@ -3866,6 +3958,7 @@ const COMPOSER_CHECKS = `
 // ---- 连接器页：预设目录一键接入 + Key 只给键名不给值 + 录屏遮罩层 ----
 const HUB_MCP_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body><div id='hub-body'></div></body>";
 const HUB_MCP_STUBS = `
+  ${IC_STUB}
 var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 var TOASTS = [], POSTS = [], RENDERS = 0;
 var toast = (m) => { TOASTS.push(String(m)); };
@@ -3983,6 +4076,7 @@ const ARRIVAL_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS 
   + "<div class='right' style='padding:20px'><button id='toggle-files'><svg class='i'></svg> 成果文件</button></div>"
   + "<div id='files-panel' class='files-panel'></div><div id='preview-panel' class='preview-panel'></div></body>";
 const ARRIVAL_STUBS = `
+  ${IC_STUB}
 const CALLS = { snap: [], pv: [] };
 function snapshotFiles(files){ CALLS.snap.push((files || []).length); }
 const pvPanel = document.getElementById("preview-panel");
@@ -4290,6 +4384,7 @@ const PROJ_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n"
   + "<div id='proj-list'></div></div><div id='history'></div>"
   + "<div id='new-task'></div></body>";
 const PROJ_STUBS = [
+  IC_STUB,
   "var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
   "var stripSceneTag = (s) => String(s || '');",
   "var sessionId = '';",
@@ -4366,6 +4461,7 @@ const APP03_MERGE = (() => {
 })();
 const MERGE_HTML = "<!doctype html><meta charset='utf-8'><body><div id='history'></div></body>";
 const MERGE_STUBS = [
+  IC_STUB,
   "var sessions = [];",
   "var SAVED = 0; var saveSessions = () => SAVED++;",
   "var RENDERED = 0; var renderHistory = () => RENDERED++;",
@@ -4443,6 +4539,7 @@ if (SCP0 < 0 || SCP1 <= SCP0) throw new Error("app-06.js 里找不到快捷键�
 const SC_SRC = APP02.slice(SCE0, SCK1) + "\n" + APP06.slice(SCP0, SCP1);
 const SC_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body><div id='pane'></div></body>";
 const SC_STUBS = `
+  ${IC_STUB}
   const SAVED = [];
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   function saveSettings(patch) { SAVED.push(JSON.parse(JSON.stringify(patch))); return Promise.resolve({ ok: true }); }
@@ -4531,6 +4628,28 @@ const SC_CHECKS = `
   return names;
 })()`;
 
+// 装一个 DOM 哨兵：只要有人把 ${...} 原样画进页面就记下来（跳过 script/style/template 里的正则源码）
+const PLACEHOLDER_WATCH = `(() => {
+  if (window.__phFlush) return 1;
+  if (!document.documentElement) return 0;
+  window.__phLeak = "";
+  const RX = /\\$\\{[^}\\n]{0,60}\\}/;
+  const SKIP = /^(SCRIPT|STYLE|TEMPLATE)$/;
+  const look = (s) => { if (!window.__phLeak && s) { const m = String(s).match(RX); if (m) window.__phLeak = m[0]; } };
+  const scan = (n) => {
+    if (!n || window.__phLeak) return;
+    if (n.nodeType === 3) { if (!(n.parentElement && SKIP.test(n.parentElement.tagName))) look(n.nodeValue); return; }
+    if (n.nodeType !== 1 || SKIP.test(n.tagName)) return;
+    for (const a of n.attributes || []) look(a.value);
+    for (const c of n.childNodes) scan(c);
+  };
+  const eat = (rs) => { for (const r of rs) { if (r.type === "childList") r.addedNodes.forEach(scan); else scan(r.target); } };
+  const mo = new MutationObserver(eat);
+  mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+  window.__phFlush = () => { eat(mo.takeRecords()); return window.__phLeak; };
+  return 1;
+})()`;
+
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
   RENDERER_LOG.length = 0;
@@ -4538,6 +4657,18 @@ function mkWin(opts) {
     const m = ev && typeof ev === "object" && "message" in ev ? ev : { level, message, lineNumber: line, sourceId };
     RENDERER_LOG.push({ level: String(m.level), message: String(m.message), line: m.lineNumber, src: m.sourceId });
   });
+  // 盯着 DOM 里有没有原样漏出来的 ${...}。这类事故的来源是把模板占位符写进了单/双引号
+  // （'已达成${ic("check")}'）：JS 一声不吭，界面上就直接印出一串 ${ic("check")}，
+  // 只有人眼盯着才看得见。用 MutationObserver 盯全程——一屏画完又被下一屏盖掉的也算数，
+  // 跑完再翻一眼 innerHTML 是抓不到的。挂在 mkWin 上，以后新增用例块不用自己记着加。
+  const rawExec = w.webContents.executeJavaScript.bind(w.webContents);
+  w.webContents.executeJavaScript = async (code, gesture) => {
+    await rawExec(PLACEHOLDER_WATCH, true).catch(() => 0);
+    const r = await rawExec(code, gesture);
+    const leak = await rawExec("(window.__phFlush ? window.__phFlush() : '')", true).catch(() => "");
+    if (leak) throw new Error("界面上漏出了没求值的模板占位符 " + leak + "：多半是把 ${} 写进了单引号/双引号字符串");
+    return r;
+  };
   return w;
 }
 app.whenReady().then(async () => {

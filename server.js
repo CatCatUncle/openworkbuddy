@@ -31,6 +31,7 @@ const admin = require("./admin"); // 企业管理后台的接口层 /api/admin/*
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const thinking = require("./thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./security");
+const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠道表 + 每路多模型
 const memory = require("./memory");
 const notify = require("./notify");
 const store = require("./store");
@@ -82,6 +83,9 @@ if (!Array.isArray(config.models) || !config.models.length) {
   config.active_model = "DeepSeek";
   saveConfig();
 }
+
+// 四路媒体模型迁移：老的「一路一个模型、Key 抄四份」→ 渠道表 + 模型表。幂等，老用户什么都不用做
+if (mediaModels.normalize(config)) saveConfig();
 
 security.getSecurity(config); // 补齐安全中心默认策略
 config.shortcuts = config.shortcuts || {}; // 快捷键自定义绑定（只存改过的项，默认值在前端定义）
@@ -718,6 +722,57 @@ app.get("/api/files", (_req, res) => res.json(outputFiles()));
 app.get("/api/assistant", (_req, res) => res.json(config.assistant));
 
 // ---------- 应用内设置（模型 + IM），保存到 config.json 并热生效 ----------
+/**
+ * 下拉框的数据源之一：精选模型目录。
+ *
+ * 为什么不把目录硬编在前端：目录会过期，而前端是缓存在浏览器里的，用户可能几个月都拿着旧的那份。
+ * 放服务端，跟着版本走，升级一次就全对上了。
+ */
+app.get("/api/model-catalog", (req, res) => {
+  res.json({ kinds: mediaModels.PROVIDER_KINDS, catalog: mediaModels.CATALOG, caps: mediaModels.CAPS, cap_cn: mediaModels.CAP_CN });
+});
+
+// 从渠道现拉一次模型清单，10 分钟内不重复拉（换渠道来回点几下不该把人家接口打一遍）
+const modelListCache = new Map();
+/**
+ * 活列表：拿渠道自己的 /models 接口问「你这儿都有啥」。
+ *
+ * 精选目录只放确认跑得通的那几款，各家发新版比我们发版快得多；活列表补的就是这一段。
+ * 拉不到不算错（很多国产渠道压根没有这个接口），前端照样有目录和手填两条路可走。
+ */
+app.post("/api/provider-models", async (req, res) => {
+  // 出网请求 + 带着 Key，只有平台管理员能发起；成员那边界面本来也不画这个按钮
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "渠道归平台管理员配", platform_only: true });
+  try {
+    const b = req.body || {};
+    const known = (config.providers || []).find((p) => p.id === b.id);
+    const base = String(b.base_url || (known || {}).base_url || "").trim().replace(/\/+$/, "");
+    // 掩码原样传回来时用库里那把真的：用户没重填 Key 就想看看列表，是很正常的操作
+    const rawKey = String(b.api_key == null ? "" : b.api_key).trim();
+    const key = !rawKey || /^\*+$/.test(rawKey) ? String((known || {}).api_key || "") : rawKey;
+    if (!/^https?:\/\//i.test(base)) return res.json({ ok: false, why: "接口地址得是 http(s) 开头的完整地址", models: [] });
+    const hit = modelListCache.get(base);
+    if (hit && Date.now() - hit.at < 600000) return res.json({ ok: true, cached: true, models: hit.models });
+    const r = await fetch(`${base}/models`, {
+      headers: key ? { Authorization: `Bearer ${key}` } : {},
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) return res.json({ ok: false, why: `渠道没给列表（HTTP ${r.status}）`, models: [] });
+    const j = await r.json().catch(() => ({}));
+    const raw = Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : [];
+    const models = raw
+      .map((m) => (typeof m === "string" ? m : String(m.id || m.name || "")))
+      .filter(Boolean)
+      .map((id) => ({ id, cap: mediaModels.guessCap(id) }))
+      .slice(0, 600);
+    modelListCache.set(base, { at: Date.now(), models });
+    res.json({ ok: true, models });
+  } catch (e) {
+    // 超时、DNS 挂了、返回的不是 JSON——都算「这家没有列表」，不是错误页
+    res.json({ ok: false, why: String(e.message || e).slice(0, 200), models: [] });
+  }
+});
+
 app.get("/api/settings", (req, res) => {
   // 个人偏好压在全局配置上面。没有个人偏好文件时这几个 *Cfg 原样返回 config 的那一份
   const myAgent = prefs.agentCfg(config);
@@ -790,6 +845,14 @@ app.get("/api/settings", (req, res) => {
       tts: { base_url: "", api_key: "", model: "", voice: "", ...((config.media || {}).tts || {}) },
       vision: { base_url: "", api_key: "", model: "", ...((config.media || {}).vision || {}) },
     },
+    // 渠道表：一把 Key 一行，图/视频/语音/视觉都引用它。普通成员看得见有哪些渠道，但看不到 Key——
+    // 那是整台服务器的账单凭证，他既改不了也不该拿到手
+    providers: (config.providers || []).map((p) => ({
+      id: p.id, name: p.name, kind: p.kind, base_url: p.base_url,
+      api_key: isPlatformOwner(req) ? p.api_key || "" : (p.api_key ? "********" : ""),
+      has_key: !!p.api_key,
+    })),
+    media_models: config.media_models || [],
     security: config.security,
     shortcuts: prefs.shortcutsCfg(config),
   });
@@ -896,6 +959,13 @@ app.post("/api/settings", (req, res) => {
       b = rest;
       // 整单都是个人项：config 一个字节都不用动，也别白跑一次 saveConfig
       if (!Object.keys(b).length) return res.json({ ok: true, personal: true, saved: !!saved });
+      // 走到这儿说明单子里还剩服务器级的项（模型渠道、API Key、安全档位、IM、工作目录……），
+      // 而能走进这个 if 的人按定义就不是平台管理员。界面本来就不给他画这些输入框，
+      // 但接口不能只靠界面守——不然一条 curl 就能把整台机器的 Key 换掉。
+      return res.status(403).json({
+        error: `这些是整台服务器一份的设置，归平台管理员改：${Object.keys(b).join("、")}`,
+        platform_only: true,
+      });
     }
     if (Array.isArray(b.models)) {
       for (const m of b.models) {
@@ -1032,6 +1102,36 @@ app.post("/api/settings", (req, res) => {
         }
       }
     }
+    if (Array.isArray(b.providers)) {
+      const old = new Map((config.providers || []).map((p) => [p.id, p]));
+      config.providers = b.providers.map((p) => {
+        const prev = old.get(p.id) || {};
+        // 读接口给非管理员回的是掩码。真有人把掩码原样存回来，按「没改」处理，别把 Key 抹成八个星号
+        const key = String(p.api_key == null ? prev.api_key || "" : p.api_key).trim();
+        return {
+          id: String(p.id || "").trim(),
+          name: String(p.name || "").trim(),
+          kind: String(p.kind || "").trim(),
+          base_url: String(p.base_url || "").trim(),
+          api_key: /^\*+$/.test(key) ? prev.api_key || "" : key,
+        };
+      });
+    }
+    if (Array.isArray(b.media_models)) {
+      for (const m of b.media_models) {
+        if (!String(m.model || "").trim()) throw new Error("每个模型都得填模型名");
+        if (!mediaModels.CAPS.includes(m.cap)) throw new Error("不认识这一路能力：" + m.cap);
+      }
+      config.media_models = b.media_models.map((m) => ({
+        id: String(m.id || "").trim(), cap: m.cap,
+        name: String(m.name || "").trim(), provider: String(m.provider || "").trim(),
+        model: String(m.model || "").trim(), voice: String(m.voice || "").trim(),
+        default: !!m.default,
+      }));
+    }
+    // 两张表任何一张动过，就重算 id、补默认项、把「默认那条」压平回 config.media，
+    // 这样 tools.js 那边永远读到一份现成的扁平配置，不用关心多模型这套
+    if (b.media || b.providers || b.media_models) mediaModels.normalize(config);
     if (b.security) {
       const sec = security.getSecurity(config);
       for (const k of ["gateway", "delete_protect", "runtime_node", "runtime_python"]) {
@@ -3005,6 +3105,21 @@ function decodeSaveBody(content) {
   const b64 = String(content).match(/^data:[^;]+;base64,(.*)$/s);
   return b64 ? Buffer.from(b64[1], "base64") : content;
 }
+/**
+ * 落盘失败时，把 errno 翻成一句用户能照着做的话。
+ * 以前是 `res.status(400).json({ error: e.message })`，前端弹出来是一句
+ * "EACCES: permission denied, open '/…/图表.png'"——用户看得见路径，看不出该干什么。
+ */
+function saveErrorText(e, p) {
+  const code = e && e.code;
+  if (code === "EACCES" || code === "EPERM") return "没有写入权限，换个目录，或者去「设置 → 工作目录」挑一个你能写的文件夹";
+  if (code === "ENOSPC") return "磁盘满了，腾点地方再存";
+  if (code === "EROFS") return "这个位置是只读的，换个目录";
+  if (code === "ENAMETOOLONG") return "文件名太长了，改短一点再存";
+  if (code === "EISDIR") return "同名的是个文件夹，不是文件——换个名字";
+  if (code === "EMFILE" || code === "ENFILE") return "系统打开的文件太多了，稍等一下再点一次";
+  return (e && e.message) || "写文件失败";
+}
 /** 桌面端才有系统保存框。纯 node 起的网页端返回 null，由前端退回浏览器下载 */
 function electronDialog() {
   if (!process.versions || !process.versions.electron) return null;
@@ -3016,7 +3131,8 @@ function electronDialog() {
     return { dialog: e.dialog, win };
   } catch { return null; }
 }
-app.post("/api/files/save", (req, res) => {
+app.post("/api/files/save", async (req, res) => {
+  let p = "";
   try {
     // 只收文件名：目录由 dir 决定，名字里夹路径一律拍平，省得绕过 dir 往别处写
     const name = path.basename(String(req.body?.name || "").trim());
@@ -3025,12 +3141,17 @@ app.post("/api/files/save", (req, res) => {
     if (!SAVE_EXT_OK.test(name)) return res.status(400).json({ error: "不支持保存这种类型的文件" });
     const sub = saveDirOf(req.body?.dir);
     const rel = sub ? sub + "/" + name : name;
-    const p = safePath(rel);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, decodeSaveBody(content));
+    p = safePath(rel);
+    await fs.promises.mkdir(path.dirname(p), { recursive: true });
+    // 异步写：桌面端这个 HTTP 服务跟 Electron 主进程同一个事件循环，
+    // 一张几十兆的 PNG 用 writeFileSync 落盘，整个界面会跟着卡住不动
+    await fs.promises.writeFile(p, decodeSaveBody(content));
     res.json({ ok: true, name, rel, dir: sub, files: outputFiles() });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    // 存盘失败以前只回前端不进日志，事后什么都查不到（用户报过一次「保存失败」，
+    // 翻遍日志一行记录都没有）。留一行，带上路径和 errno
+    console.error(`[存盘] 失败 ${p || req.body?.name || "?"}：${e.code || ""} ${e.message}`);
+    res.status(400).json({ error: saveErrorText(e, p) });
   }
 });
 /**
@@ -3053,11 +3174,12 @@ app.post("/api/files/save-as", async (req, res) => {
       title: "另存为", defaultPath: path.join(base, name), buttonLabel: "保存",
     });
     if (r.canceled || !r.filePath) return res.json({ ok: false, canceled: true });
-    fs.mkdirSync(path.dirname(r.filePath), { recursive: true });
-    fs.writeFileSync(r.filePath, decodeSaveBody(content));
+    await fs.promises.mkdir(path.dirname(r.filePath), { recursive: true });
+    await fs.promises.writeFile(r.filePath, decodeSaveBody(content));
     res.json({ ok: true, path: r.filePath, files: outputFiles() });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    console.error(`[另存为] 失败 ${req.body?.name || "?"}：${e.code || ""} ${e.message}`);
+    res.status(400).json({ error: saveErrorText(e) });
   }
 });
 
