@@ -193,11 +193,18 @@ html[data-theme="dark"] {
 .ui-card-footer { display: flex; align-items: center; gap: 8px; padding: 0 16px 14px; }
 
 /* ---------- Badge ---------- */
+/* 定高，不是靠 line-height 撑。原来没写 height：里面塞个图标就比纯文字的同类高 2.5px，
+   一行里几个徽章挨着摆就参差不齐。定高之后塞什么都一样高（box-sizing 全局是 border-box）。
+   两档：24 给有地方的（后台控制台、独占一行的状态位），20 给挤在正文/卡片标题里的小角标。 */
 .ui-badge {
-  display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
-  border: 1px solid transparent; border-radius: 999px; font-size: 12px; font-weight: 500; line-height: 1.5;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  height: 24px; padding: 0 8px; flex: none; vertical-align: middle;
+  border: 1px solid transparent; border-radius: 999px;
+  font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; font-style: normal;
 }
+.ui-badge--sm { height: 20px; padding: 0 7px; font-size: 11px; gap: 3px; }
 .ui-badge .i { width: 12px; height: 12px; }
+.ui-badge--sm .i { width: 11px; height: 11px; }
 .ui-badge--secondary { background: var(--secondary); color: var(--secondary-foreground); }
 .ui-badge--outline { border-color: var(--border); color: var(--muted-foreground); }
 .ui-badge--destructive { background: color-mix(in srgb, var(--destructive) 14%, transparent); color: var(--danger-text); }
