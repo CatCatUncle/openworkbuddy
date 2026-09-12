@@ -849,6 +849,10 @@ function createTurnUI(userText, turnMode, forSid) {
         turn._usage.calls += ev.calls || 0;
         turn._usage.elapsed_ms += ev.elapsed_ms || 0;
       }
+    } else if (ev.type === "trace") {
+      // 这趟任务在 Langfuse 上的地址，开了执行追踪才会来。来了就挂在回复下面——
+      // 不然用户还得自己去 Langfuse 的列表里翻，猜哪条 trace 是刚才那趟
+      if (/^https?:\/\//i.test(String(ev.url || ""))) turn._trace = String(ev.url);
     } else if (ev.type === "dir") {
       // 本对话的成果子文件夹（只发直播不进回放；回放/续接场景由 /api/session 的 dir 字段补上）
       if (ev.dir && sessionDirs.get(turnSid) !== ev.dir) {
@@ -1045,6 +1049,18 @@ function createTurnUI(userText, turnMode, forSid) {
     }
     if (turn._credits) {
       meta.textContent += `${meta.textContent ? " · " : ""}扣 ${turn._credits.spent} 积分（余 ${(+turn._credits.balance).toLocaleString()}）`;
+    }
+    if (turn._trace) {
+      // 用 textContent/href 赋值而不是拼 innerHTML：这条 URL 来自配置里的自建域名，不经过 esc
+      const a = document.createElement("a");
+      a.className = "link";
+      a.href = turn._trace;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.style.marginLeft = "8px";
+      a.title = "在 Langfuse 里一步步看这趟任务：每次模型调用的输入输出、每个工具的参数和结果、各花了多少 token";
+      a.textContent = "看执行过程";
+      bar.appendChild(a);
     }
     bar.querySelector("[data-a=copy]").onclick = async (e) => {
       // 复制"渲染后"的内容而不是 markdown 源码：贴到飞书/Word 里保留格式，

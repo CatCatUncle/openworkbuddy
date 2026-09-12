@@ -1814,19 +1814,19 @@ const GATE_CHECKS = `
   const navCats = () => [...mBody.querySelectorAll(".cat")].map((c) => c.dataset.cat);
   const activeCat = () => (mBody.querySelector(".cat.active") || {}).dataset;
 
-  // ① 导航：四个纯服务器级的标签页不画给成员
+  // ① 导航：五个纯服务器级的标签页不画给成员
   owner = false;
   await renderSettings("models");
   const memberCats = navCats();
-  ok("成员的设置页里没有「联网搜索 / 自进化 / 数据 / 助理设置」这四页（点进去每一颗按钮都是 403）",
-    !["search", "evolve", "data", "im"].some((k) => memberCats.includes(k)), memberCats.join(","));
+  ok("成员的设置页里没有「联网搜索 / 自进化 / 执行追踪 / 数据 / 助理设置」这五页（点进去每一颗按钮都是 403）",
+    !["search", "evolve", "trace", "data", "im"].some((k) => memberCats.includes(k)), memberCats.join(","));
   ok("混着他自己东西的那几页留着（模型看得到有哪些、安全看得到档位、个性化里有他的宠物）",
     ["models", "agent", "security", "persona", "memory", "shortcuts", "look", "about"].every((k) => memberCats.includes(k)), memberCats.join(","));
   await renderSettings("data");
   ok("从旧深链跳进一个已经不画的页，退回第一页，不留一屏空白", activeCat() && activeCat().cat === "models", JSON.stringify(activeCat()));
   owner = true;
   await renderSettings("models");
-  ok("反向对照：平台管理员 12 页一个不少", navCats().length === 12 && navCats().includes("data"), navCats().join(","));
+  ok("反向对照：平台管理员 13 页一个不少", navCats().length === 13 && navCats().includes("data") && navCats().includes("trace"), navCats().join(","));
 
   // ② 模型页：他改不了服务器的账单，但得知道有哪些模型
   owner = false;
@@ -3172,7 +3172,7 @@ const LOOK_CHECKS = `
   ok("点分区空白处：不改任何状态、不报错", (() => { pane.querySelector(".card-item").click(); return lookGet("fs") === "m" && getTheme() === "light"; })());
 
   // 左栏目录：图标 + 短名，别一列密密麻麻的字
-  ok("设置目录 12 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 12 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
+  ok("设置目录 13 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 13 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
   return names;
 `;
 

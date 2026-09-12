@@ -41,6 +41,7 @@ const cfgMerge = require("./config-merge"); // 存配置时把外面手改的那
 const cfgLint = require("./config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠道表 + 每路多模型
 const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
+const tracing = require("./trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
 const memory = require("./memory");
 const notify = require("./notify");
 const callout = require("./callout"); // 正文提示条：机器人推送里换成文字标签
@@ -624,7 +625,7 @@ function recordingEmit(send, events, sessionId) {
       // 前端拿不到全量就不能判定谁没了——早先没这个标记，回放时每来一批就把上一批的产出
       // 全盖上「已删除」，用户看到的是四个文件全被划掉，其实一个都没删
       if (chg.length) events.push({ type: "files", changed: chg, files: (ev.files || []).filter((f) => chg.includes(f.name)), partial: true, root: ev.root });
-    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones"].includes(ev.type)) {
+    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones", "trace"].includes(ev.type)) {
       // 工具事件盖个时间戳（send 已经发出去了，这里只影响存盘）：回放时轨迹条才算得出每步耗时
       if (ev.type === "tool_use" || ev.type === "tool_result") ev.at = ev.at || Date.now();
       events.push(ev);
@@ -921,6 +922,19 @@ app.get("/api/settings", (req, res) => {
     media_models: config.media_models || [],
     security: config.security,
     shortcuts: prefs.shortcutsCfg(config),
+    // 执行追踪。私钥跟别的 Key 一个待遇：只有平台管理员看得见原文，其余人拿到八个星号。
+    // stats 是**实打实的上报账本**（发出去多少、丢了多少、上一次为什么失败）——
+    // 没有它，"开了但一条都没到" 和 "开了且正常" 在界面上长得一模一样
+    langfuse: {
+      enabled: !!(config.langfuse || {}).enabled,
+      host: (config.langfuse || {}).host || "https://cloud.langfuse.com",
+      public_key: (config.langfuse || {}).public_key || "",
+      secret_key: isPlatformOwner(req)
+        ? (config.langfuse || {}).secret_key || ""
+        : ((config.langfuse || {}).secret_key ? "********" : ""),
+      has_secret: !!(config.langfuse || {}).secret_key,
+      stats: tracing.getTracer(config).stats(),
+    },
   });
 });
 
@@ -1222,6 +1236,27 @@ app.post("/api/settings", (req, res) => {
         if (Array.isArray(b.security[k])) sec[k] = b.security[k].map((s) => String(s)).filter((s) => s.trim()).slice(0, 100);
       }
     }
+    if (b.langfuse && typeof b.langfuse === "object") {
+      const cur = config.langfuse || (config.langfuse = { enabled: false, host: "https://cloud.langfuse.com", public_key: "", secret_key: "" });
+      if (b.langfuse.host !== undefined) {
+        const h = String(b.langfuse.host || "").trim().replace(/\/+$/, "");
+        // 地址写错是这一块最常见的坑（漏 https://、把浏览器地址栏里带路径的整条粘进来）。
+        // 不在这儿拦的话，上报会一直静默失败，用户只会看到"开着，但一条都没有"
+        if (h && !/^https?:\/\/[^\s]+$/.test(h)) throw new Error("Langfuse 地址得是 http:// 或 https:// 开头的网址");
+        cur.host = h || "https://cloud.langfuse.com";
+      }
+      if (b.langfuse.public_key !== undefined) cur.public_key = String(b.langfuse.public_key || "").trim();
+      if (b.langfuse.secret_key !== undefined) {
+        const k = String(b.langfuse.secret_key || "").trim();
+        cur.secret_key = /^\*+$/.test(k) ? cur.secret_key || "" : k; // 掩码原样存回来 = 没改
+      }
+      if (b.langfuse.enabled !== undefined) {
+        const on = !!b.langfuse.enabled;
+        // 开着却没钥匙，等于以为在记其实一条都没发。这种"看起来成了"的状态最坑人，当场拦掉
+        if (on && !(cur.public_key && cur.secret_key)) throw new Error("要开执行追踪，公钥和私钥都得填（在 Langfuse 项目设置里生成一对）");
+        cur.enabled = on;
+      }
+    }
     if (b.shortcuts && typeof b.shortcuts === "object") {
       config.shortcuts = {};
       for (const [k, v] of Object.entries(b.shortcuts)) {
@@ -1243,6 +1278,28 @@ app.post("/api/settings", (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+/**
+ * 执行追踪连通性自检。
+ *
+ * 为什么要有这颗按钮：这一块的失败全是静默的——地址少个字母、Key 是另一个项目的、
+ * 自建实例的端口没开，任务照跑不误，只是 trace 永远是空的。等用户想起来去点链接，
+ * 已经过去好几天了。所以在设置页当场发一条真的上去，成不成立刻说，顺带把那条探针的链接给他。
+ * 没存的草稿值也能测（body 里带什么就用什么），不然只能"先存了再看结果"。
+ */
+app.post("/api/trace/test", async (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "执行追踪是整台服务器一份的设置，归平台管理员改", platform_only: true });
+  const b = req.body || {};
+  const cur = config.langfuse || {};
+  const sk = String(b.secret_key == null ? "" : b.secret_key).trim();
+  const out = await tracing.getTracer(config).probe({
+    host: b.host !== undefined ? b.host : cur.host,
+    public_key: b.public_key !== undefined ? String(b.public_key || "").trim() : cur.public_key,
+    // 界面上私钥那格给非管理员是掩码；管理员拿到的是原文。原样传回来（或压根没动）都按"用已存的那把"
+    secret_key: !sk || /^\*+$/.test(sk) ? cur.secret_key || "" : sk,
+  });
+  res.json(out);
 });
 
 // ---------- 首次开箱引导：没有 API Key 时，什么都干不了，得先把这一步走完 ----------
@@ -3701,6 +3758,7 @@ app.post("/api/chat", async (req, res) => {
         const r = await runtime.runTask({
           lang: lang === "en" ? "en" : "zh", // 界面语言：英文界面时让 AI 也用英文答，用户不用再在每句话里交代
           taskLabel: sess.title || String(message).slice(0, 24),
+          sessionId, // 追踪上按会话归堆：同一个对话问了十轮，在 Langfuse 上是一条会话线而不是十条散 trace
           baseDir: taskBaseDir,
           llmOverride: sessLLM,
           history: sess.history,

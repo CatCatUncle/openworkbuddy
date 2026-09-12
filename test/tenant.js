@@ -566,8 +566,8 @@ async function login(username, password) {
     ["can_switch: isPlatformOwner(req)", "/api/security/modes 回了 can_switch"],
   ]) ok(SRC20.includes(frag), "真源码对得上替身：" + why, frag);
   const FE = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
-  ok(/PLATFORM_ONLY_CATS = new Set\(\["search", "evolve", "data", "im"\]\)/.test(FE),
-    "界面真按这四页过滤（纯服务器级的标签页不画给成员）");
+  ok(/PLATFORM_ONLY_CATS = new Set\(\["search", "evolve", "trace", "data", "im"\]\)/.test(FE),
+    "界面真按这五页过滤（纯服务器级的标签页不画给成员；执行追踪那页装着私钥和一个能往外发请求的探针）");
   // 「保存失败」四个字把服务端说的原因（如「这块归平台管理员管」）整个盖掉，是同一个病的另一半：
   // 控件画出来了、点了、后端也把原因说了，界面偏偏不转述。
   for (const [file, why] of [["public/js/app-03.js", "开箱向导"], ["public/js/app-05.js", "设置页"]]) {

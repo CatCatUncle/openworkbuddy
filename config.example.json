@@ -49,6 +49,13 @@
     "provider": "jina",
     "api_key": ""
   },
+  "langfuse": {
+    "_说明": "执行追踪。打开后，每趟任务的模型调用、工具调用、token 花销会发到你填的 Langfuse 上，在网页里一层层展开看。自己用 Docker 搭一个就全在自己机器里；填官方 cloud.langfuse.com 就是发给别人，所以默认关着。公钥私钥在 Langfuse 项目设置里生成。",
+    "enabled": false,
+    "host": "https://cloud.langfuse.com",
+    "public_key": "",
+    "secret_key": ""
+  },
   "mcp_servers": [],
   "_mcp_示例": [
     {
