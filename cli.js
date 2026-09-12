@@ -128,7 +128,15 @@ if (wantWorkspace) {
 }
 
 // 运行时三件套：模型、专家、MCP。与 server.js 读同一批文件，CLI 不另立一套配置
-const llm = createLLM(config);
+// 活的壳子，不是一次性造好的客户端：/model 换模型时整棵任务树（含委派出去的专家）都得跟着
+// 走新的那条，而 agent.js 在建 runtime 的时候就把这个引用拿在手里了。里层随时能换掉，
+// 外面那个引用一直有效——否则换完模型还是老的那条在跑，人在终端里看不出来
+let llmImpl = createLLM(config);
+const llm = {
+  get provider() { return llmImpl.provider; },
+  get model() { return llmImpl.model; },
+  chat: (args) => llmImpl.chat(args),
+};
 const expertsDoc = store.readJson(preferData("experts.json"), {}) || {};
 const experts = expertsDoc.experts || [];
 const expertTeams = expertsDoc.teams || [];
@@ -532,7 +540,7 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
   });
   const nextInput = () => inbox.next();
 
-  const runReplCommand = (v) => {
+  const runReplCommand = async (v) => {
     if (v.name === "help") { prog(repl.helpText()); return; }
     if (v.name === "clear") { process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); return; }
     if (v.name === "mode") {
@@ -551,6 +559,60 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
       return;
     }
     if (v.name === "session") { prog(dim(`${sessionId}\n${sessFile}\n`)); return; }
+    if (v.name === "model") {
+      const engMod = require("./engines");
+      const opt = (config.agent || {}).engine_options || {};
+      let det = [];
+      try { det = await engMod.detectAll(opt); } catch (e) { prog(yellow(`本机引擎探测不了（${e.message}），先只列模型\n`)); }
+      const byId = new Map(det.map((d) => [d.id, d]));
+      const provs = Array.isArray(config.providers) ? config.providers : [];
+      const rows = repl.modelRows({
+        engines: engMod.list().map((b) => ({
+          id: b.id, label: b.label,
+          installed: byId.has(b.id) ? byId.get(b.id).installed : false,
+          install: (byId.get(b.id) || b).install || "",
+        })),
+        models: (config.models || []).map((m) => ({
+          name: m.name, model: m.model,
+          channelName: (provs.find((p) => p.id === m.channel) || {}).name || "",
+        })),
+        engine: cfgEngine(),
+        activeModel: config.active_model,
+      });
+      const r = repl.pickModelRow(rows, v.arg);
+      if (r.kind === "list") { prog(repl.modelListText(rows)); return; }
+      if (r.kind === "none") { prog(yellow(`没认出「${r.arg}」——${r.why}。/model 不带参数看选单\n`)); return; }
+      if (r.kind === "many") {
+        prog(yellow(`「${r.arg}」对得上好几条：${r.rows.map((x) => `${x.n} ${x.label}`).join("、")}。写序号或者写全一点\n`));
+        return;
+      }
+      const row = r.row;
+      if (row.current) { prog(dim(`本来用的就是 ${row.label}\n`)); return; }
+      if (!row.ready) {
+        // 不许静默降级：选了个没装的引擎，就当场说清楚，绝不偷偷退回内置去花 API 的钱
+        prog(red(`${row.label} 这台机器上没装，没法切。${row.install ? "装它：" + row.install : ""}\n`));
+        return;
+      }
+      config.agent = config.agent || {};
+      if (row.kind === "engine") {
+        config.agent.engine = row.key;
+        prog(dim(`换成 ${row.label}；这趟活儿交给它跑，不花 API 额度\n`));
+      } else {
+        const was = cfgEngine();
+        config.agent.engine = "builtin";
+        config.active_model = row.key;
+        llmImpl = createLLM(config); // 壳子不动，里层换掉——已经建好的 runtime 下一轮就用新的
+        if (was !== "builtin") {
+          // 顺手改了另一个字段，必须说出来：不说的话，用户以为只换了模型，
+          // 实际上连「谁来跑」都换了，账单也从订阅挪回了 API
+          const old = engMod.get(was);
+          prog(dim(`底层引擎从「${(old && old.label) || was}」扳回内置——不扳的话选模型不起作用\n`));
+        }
+        prog(dim(`换成 ${row.label}（${llm.model}）；只管这一趟，配置文件没动\n`));
+      }
+      return;
+    }
+
     if (v.name === "status") {
       const eng = require("./engines").get(cfgEngine());
       const who = eng ? `底层 ${eng.label}` + green("（不花 API 额度）") : `模型 ${llm.provider}（${llm.model}）`;
@@ -588,7 +650,7 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
     if (v.kind === "bad-arg") { prog(yellow(repl.badArgText(v))); rl.prompt(); continue; }
     if (v.kind === "cmd") {
       if (v.name === "exit") break;
-      runReplCommand(v);
+      await runReplCommand(v);
       rl.prompt();
       continue;
     }

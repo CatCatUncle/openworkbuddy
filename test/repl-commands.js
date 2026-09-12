@@ -358,6 +358,81 @@ console.log("\n⑯ cli.js 接线");
   ok(!src.includes('v.name === "nosuchcmd"'), "★（反向对照）不存在的命令当然找不到★ 这一节才不是永远绿");
 }
 
+// ── ⑰ /model 的选单 ─────────────────────────────────────────────────────
+console.log("\n⑰ /model：这趟活儿谁来干");
+{
+  const ENG = [
+    { id: "builtin", label: "内置引擎" },
+    { id: "claude", label: "本机 Claude Code", installed: true, install: "" },
+    { id: "codex", label: "本机 Codex", installed: false, install: "npm i -g @openai/codex" },
+  ];
+  const MOD = [
+    { name: "甲", model: "m-1", channelName: "OpenRouter" },
+    { name: "乙", model: "m-2", channelName: "DeepSeek" },
+  ];
+
+  const r1 = R.modelRows({ engines: ENG, models: MOD, engine: "builtin", activeModel: "乙" });
+  eq(r1.length, 4, "两个本机引擎 + 两条模型");
+  ok(!r1.some((x) => x.key === "builtin"), "★内置不当一个选项★ 它就是「用下面那些模型」，列出来只会让人以为还有第三条路");
+  eq(r1.map((x) => x.n).join(","), "1,2,3,4", "序号从 1 连着编，跨组不重来——用户敲的是序号，不是「第二组第一个」");
+  eq(r1.filter((x) => x.current).map((x) => x.key).join(","), "乙", "选中的是 active_model 那条");
+  eq(r1.find((x) => x.key === "codex").ready, false, "没装的引擎标出来");
+  ok(r1.find((x) => x.key === "codex").install.includes("codex"), "并且带上怎么装");
+
+  // ★口径必须跟 llm.js 算得一样★：active_model 写了个不存在的名字时，真正在跑的是第一条。
+  // 这里如果各算各的，表上会一行箭头都没有，而用户明明正用着其中一条
+  const { createLLM } = require(path.join(ROOT, "llm"));
+  const cfg = { models: [{ name: "甲", model: "m-1" }, { name: "乙", model: "m-2" }], active_model: "根本没这条" };
+  eq(createLLM(cfg).model, "m-1", "（先证明 llm.js 的规则是「找不到就用第一条」）");
+  const r2 = R.modelRows({ engines: ENG, models: MOD, engine: "builtin", activeModel: "根本没这条" });
+  eq(r2.filter((x) => x.current).map((x) => x.key).join(","), "甲", "★找不到就跟着落到第一条★ 跟 createLLM 一个口径");
+
+  // 走本机引擎的时候，模型那组一行都不该带箭头——那趟活儿根本不经过 API
+  const r3 = R.modelRows({ engines: ENG, models: MOD, engine: "claude", activeModel: "乙" });
+  eq(r3.filter((x) => x.current).map((x) => x.key).join(","), "claude", "★选了本机引擎，模型组不许还标着「现在这个」★");
+
+  // 认名字
+  eq(R.pickModelRow(r1, "2").row.key, "codex", "序号认");
+  eq(R.pickModelRow(r1, "甲").row.key, "甲", "全名认");
+  eq(R.pickModelRow(r1, "m-2").row.key, "乙", "模型 id 的一部分也认");
+  eq(R.pickModelRow(r1, "").kind, "list", "不给值 = 看选单");
+  eq(R.pickModelRow(r1, "99").kind, "none", "越界不认");
+  ok(R.pickModelRow(r1, "99").why.includes("4"), "并且说清楚到几");
+  eq(R.pickModelRow(r1, "zzz").kind, "none", "没有的不瞎认");
+  const many = R.pickModelRow(R.modelRows({
+    engines: [], models: [{ name: "deepseek-chat", model: "a" }, { name: "或者这条", model: "deepseek/v3" }],
+  }), "deepseek");
+  eq(many.kind, "many", "★对得上两条就说是哪两条，不替他挑★ 挑错了要么在花不该花的钱，要么在等一个没装的东西");
+  eq(many.rows.length, 2, "两条都摆出来");
+  // 反向对照：只对得上一条的时候不许也说「好几条」
+  eq(R.pickModelRow(r1, "codex").kind, "ok", "★（反向对照）只对得上一条就直接选★");
+
+  const txt = R.modelListText(r1);
+  eq((txt.match(/^>/gm) || []).length, 1, "★选单上有且只有一行带标记★ 两行或零行都说明「现在用哪个」算错了");
+  ok(!/[▸»]/.test(txt), "★标记只用 ASCII★ ▸ 这类符号在东亚宽度表里算不准，中文终端会把那一行画歪");
+  ok(txt.includes("不动配置文件"), "说清楚只管这一趟——不然用户以为改完就长期生效了");
+  ok(R.modelListText(R.modelRows({ engines: [], models: [] })).includes("设置"), "一条模型都没配的时候，得告诉人去哪儿配");
+}
+
+// ── ⑰之二 cli.js 那头真的换得动 ─────────────────────────────────────────
+console.log("\n⑰之二 /model 换完真的换掉了");
+{
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  ok(/let llmImpl = createLLM\(config\)/.test(src),
+     "★模型客户端是个能换里层的活壳子★ 直接 const llm = createLLM(config) 的话，runtime 早把它拿在手里了，换完还是老的那条在跑");
+  ok(/llmImpl = createLLM\(config\)/.test(src.split("v.name === \"model\"")[1] || ""),
+     "★/model 里真的重造了一次★ 只改 config.active_model 不重造，等于什么都没换");
+  ok(/chat: \(args\) => llmImpl\.chat\(args\)/.test(src), "壳子把 chat 转给当前那层");
+  const hand = (src.split('v.name === "model"')[1] || "").split('v.name === "cd"')[0];
+  ok(/config\.agent\.engine = "builtin"/.test(hand), "选模型时把底层引擎扳回内置——不扳的话这一步不起作用");
+  ok(/was !== "builtin"/.test(hand) && /扳回内置/.test(hand),
+     "★顺手改了另一个字段就得说出来★ 不说的话用户以为只换了模型，其实连账单都从订阅挪回了 API");
+  ok(/if \(!row\.ready\)/.test(hand) && /没装/.test(hand),
+     "★选了个没装的引擎当场拒绝★ 偷偷退回内置就是拿 API 的钱办事，用户还以为免费");
+  ok(/const runReplCommand = async/.test(src), "命令处理是异步的——探测本机装没装要等一下");
+  ok(/await runReplCommand\(v\)/.test(src), "★并且主循环真的等它★ 不等的话提示符会插进输出中间");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1);
 }
