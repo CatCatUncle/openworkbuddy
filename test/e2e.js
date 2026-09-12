@@ -5274,6 +5274,7 @@ async function main() {
   testDesktopAppIdentity();
   await testFrontendSvgFigures();
   testPackageAssetDrift();
+  testNoticeCoverage();
   testNoNestedRoutes();
   await testAdminConsoleUI();
   await testNodeSuite("tenant.js", "多租户与企业后台越权");
@@ -6735,6 +6736,46 @@ function packageAssetDrift(sources, ASSETS, filesGlobs) {
   }
   return { problems, checked, devOnly: Object.keys(DEV_ONLY).length };
 }
+/**
+ * 第三方署名有没有跟着依赖走。
+ *
+ * 这是个商业化项目：桌面包里 `asar: false`，node_modules 原样躺在里面发给用户，
+ * 别人的 MIT/Apache 代码就这么被我们分发出去了。许可要求的署名如果只写在某个
+ * HTML 注释里（lucide 当初就是），或者加了新依赖忘了登记，法务上就是漏的——
+ * 而这种漏永远不会自己冒出来，它不报错、不崩溃、跑分也不掉。
+ *
+ * 所以把它钉成闸门：package.json 里每一条运行时依赖，NOTICE.md 里都得有名字。
+ */
+function noticeDrift(deps, notice) {
+  const missing = [];
+  for (const name of Object.keys(deps || {})) {
+    // 按整词找，避免 "docx" 被 "docxtemplater" 这类名字蒙混过去
+    const re = new RegExp("(^|[\\s|`])" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "($|[\\s|`])", "m");
+    if (!re.test(notice)) missing.push(name);
+  }
+  return { missing, checked: Object.keys(deps || {}).length };
+}
+
+function testNoticeCoverage() {
+  const root = path.join(__dirname, "..");
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const notice = fs.readFileSync(path.join(root, "NOTICE.md"), "utf8");
+  const r = noticeDrift(pkg.dependencies, notice);
+  assert(r.missing.length === 0, "这些依赖发出去了却没在 NOTICE.md 里署名：" + r.missing.join("、"));
+  assert(r.checked >= 8, "扫到的依赖太少（" + r.checked + "），说明读错了 package.json");
+  // 内联进页面的那套图标不是 npm 依赖，package.json 里查不到，只能单独钉
+  assert(/[Ll]ucide/.test(notice) && /\bISC\b/.test(notice), "NOTICE.md 里漏了内联图标 sprite 的 ISC 署名");
+  assert(/PolyForm/.test(notice), "NOTICE.md 得先说清楚本体是什么许可，否则读者不知道这份清单是谁的清单");
+  // 反向对照：凭空多一条依赖必须被抓；名字被别的词包住也必须被抓
+  const f1 = noticeDrift({ ...pkg.dependencies, "某个没登记的包": "1.0.0" }, notice).missing;
+  assert(f1.length === 1, "★闸门失效：加了一条没署名的依赖却没被抓出来★");
+  const f2 = noticeDrift({ docx: "1" }, "本文件提到了 docxtemplater 但没提 docx").missing;
+  assert(f2.length === 1, "★闸门失效：docx 被 docxtemplater 蒙混过关了★");
+  const f3 = noticeDrift({ docx: "1" }, "| docx | 9.7.1 | MIT |").missing;
+  assert(f3.length === 0, "表格里明明写了 docx 却判成没署名，闸门太严会逼人乱改文档");
+  console.log(`✅ 第三方署名不漂移：${r.checked} 条运行时依赖在 NOTICE.md 里全有名字（内联图标的 ISC 单独钉住）· 3 种坏法全被抓`);
+}
+
 function testPackageAssetDrift() {
   const root = path.join(__dirname, "..");
   const gate = require(path.join(root, "scripts", "check-package-files.js"));
