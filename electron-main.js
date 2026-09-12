@@ -233,6 +233,12 @@ app.whenReady().then(async () => {
   // 主进程当场消失，上面那个 3 秒兜底亮窗根本轮不到，用户看到的就是「有进程、没界面」。
   // ⚠️ 必须挂在 require 之前——server.js 的 main() 是异步的，失败可能发生在 require 返回之后的任何时刻。
   global.__wbBootFail = (e) => showBootFailure(e);
+  // 服务端最后绑上的那个口，不一定是上面算出来的这个：3800 被别的程序占着时它会自己换一个。
+  // 不等它报数、直接按算出来的口加载，窗口就连到占着口的陌生程序上去了——用户看到一个不认识
+  // 的页面或者白屏，日志里却写着「服务端就绪」。这正是 issue 里「下载之后打不开」的样子。
+  let onBound;
+  const bound = new Promise((r) => { onBound = r; });
+  global.__wbOnListen = (p, meta) => onBound({ port: p, ...(meta || {}) });
   try {
     require(path.join(__dirname, "server.js"));
   } catch (e) {
@@ -240,12 +246,21 @@ app.whenReady().then(async () => {
     return showBootFailure(e);
   }
 
+  const got = await Promise.race([bound, new Promise((r) => setTimeout(() => r(null), 30000))]);
+  if (!got) {
+    // 服务端自己报错的那条路已经把窗口画成报错页了（__wbBootFail），别再盖一层
+    if (FATAL_SHOWN) return;
+    console.error(`[启动] 等了 30 秒，服务端一直没说它绑在哪个端口`);
+    return showBootFailure(new Error(`服务端启动后 30 秒内没有监听 ${PORT} 端口`));
+  }
+  if (got.port !== PORT) bootLog(`端口换了：${PORT} → ${got.port}（原来那个被别的程序占着）`);
+  PORT = got.port;
   const up = await waitForServer(`http://127.0.0.1:${PORT}/api/info`);
   if (!up) {
     console.error(`[启动] 等了 30 秒，${PORT} 端口一直没人应答`);
     return showBootFailure(new Error(`服务端启动后 30 秒内没有监听 ${PORT} 端口`));
   }
-  bootLog(`服务端就绪，监听 ${PORT}`);
+  bootLog(got.reused ? `${PORT} 上已经有一台 OpenWorkBuddy，连过去` : `服务端就绪，监听 ${PORT}`);
   win.webContents.once("did-finish-load", () => {
     // 过了这条线就算启动成功了：再有偶发异常只记日志，不能把用户正在做的事掐掉换成报错页
     PAGE_UP = true;
@@ -302,8 +317,10 @@ function bootHint(msg, port) {
   // 前者换个端口就好，后者得去关掉占用的程序。
   if (/EACCES|EPERM/.test(msg))
     return `没权限使用端口 ${port}。Windows 上多半是 Hyper-V / WSL 预留了这段端口（命令行跑 netsh interface ipv4 show excludedportrange protocol=tcp 能看到保留段），把用户目录下 OpenWorkBuddy/config.json 里的 server.port 换成一个没被预留的（比如 3810）再打开。`;
+  // 走到这儿说明连着往后试十个口也全被占着——本机版一般不会有这一天，
+  // 绑的不是本机地址时（Docker / 服务器）端口是运维定死的，压根不自动换。
   if (/EADDRINUSE|端口/.test(msg))
-    return `端口 ${port} 被别的程序占了。关掉占用它的程序，或者把用户目录下 OpenWorkBuddy/config.json 里的 server.port 换一个端口。`;
+    return `端口 ${port} 被占了，往后连试十个也都被占着。关掉占用它们的程序，或者把用户目录下 OpenWorkBuddy/config.json 里的 server.port 换一个。`;
   if (/EADDRNOTAVAIL/.test(msg))
     return "配置里的 server.host 在这台机器上不存在了（换过网络之后常见）。把用户目录下 OpenWorkBuddy/config.json 里的 server.host 改回 127.0.0.1 再打开。";
   return "服务端启动时崩了。把下面这行贴到 GitHub issue 里，附上你的系统版本。";

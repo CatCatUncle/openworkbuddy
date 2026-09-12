@@ -668,6 +668,10 @@ function pendingMembers(orgId) {
 // ---------- Express 路由与守卫 ----------
 // 外部回调有自己的签名/密钥校验，不走登录（微信侧还有 AES 解密这道闸）
 const PUBLIC_IM = new Set(["/im/task", "/im/feishu/events", "/im/wecom/events", "/im/mp/events"]);
+// 握手接口不需要登录。它只回「我是 OpenWorkBuddy、哪一版」，不带任何配置和数据——
+// 桌面壳在端口被占时靠它区分「另一台自己人」和「别的程序」（见 server.js 的 portHeldByUs）。
+// 摆在登录闸后面的话，一台还没登录的实例会回 401，壳就把自己人当成陌生人，转头换个口又起一台。
+const PUBLIC_API = new Set(["/api/ping"]);
 
 /** 登录守卫：/api/*（除 /api/auth/*）与 UI 用的 /im/status 等需要已登录，其余放行 */
 function authGuard(req, res, next) {
@@ -675,7 +679,7 @@ function authGuard(req, res, next) {
   // 用原样 req.path 做 startsWith 的话，大写前缀会判成「不需要登录」，整个 /api 就敞开了。
   const p = req.path.toLowerCase();
   const needsAuth =
-    (p.startsWith("/api/") && !p.startsWith("/api/auth/")) ||
+    (p.startsWith("/api/") && !p.startsWith("/api/auth/") && !PUBLIC_API.has(p)) ||
     (p.startsWith("/im/") && !PUBLIC_IM.has(p));
   if (!needsAuth) return next();
   const user = userFromReq(req);
