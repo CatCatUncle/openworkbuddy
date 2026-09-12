@@ -37,6 +37,7 @@ const FLAGS = [
   { long: "list", type: "optnum", key: "list", arg: "[n]", fallback: 10, desc: "列出最近 n 个 CLI 会话（默认 10）" },
   { long: "json", type: "bool", key: "json", value: true, desc: "事件按 NDJSON 输出到 stdout，给脚本用" },
   { long: "quiet", short: "q", type: "bool", key: "quiet", value: true, desc: "只输出最终答案，不打进度" },
+  { long: "raw", type: "bool", key: "raw", value: true, desc: "答案原样输出 Markdown，不在终端里渲染" },
   { long: "no-mcp", type: "bool", key: "mcp", value: false, desc: "跳过 MCP 连接器，启动更快" },
   { long: "version", short: "V", type: "bool", key: "version", value: true, desc: "打印版本号" },
   { long: "help", short: "h", type: "bool", key: "help", value: true, desc: "看这份帮助" },
@@ -50,7 +51,7 @@ const SUBS = [
   { name: "doctor", usage: "wb doctor", desc: "跑不起来时先跑它：Node / 依赖 / 端口 / 配置 / 引擎 一次查清" },
 ];
 
-const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, cont: false, json: false, quiet: false, list: 0, help: false, version: false };
+const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false };
 
 /** 编辑距离。只用来猜「你是不是想说 X」，不求快 */
 function editDistance(a, b) {

@@ -33,6 +33,7 @@ const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
 const lanes = require("./lanes"); // 终端里起的任务归「工程」线；续跑 id 按引擎分开记
 const callout = require("./callout"); // 正文里的提示条：终端没有图标，换成文字标签
+const mdTty = require("./md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
 const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
 const account = require("./account");
 const store = require("./store");
@@ -61,6 +62,15 @@ const prog = (s) => { if (!opts.quiet && !opts.json) process.stderr.write(s); };
 const answer = (s) => { if (!opts.json) process.stdout.write(s); };
 /** 机器可读事件流 */
 const emitJson = (o) => { if (opts.json) process.stdout.write(JSON.stringify(o) + "\n"); };
+/**
+ * 正文要不要在终端里渲染成人看的样子。用户原话：「怎么cli里面还有**这种啊」。
+ *
+ * 只在 stdout 真的是终端时才渲染：`wb "…" > 答案.md`、`wb … | pbcopy` 要的是原始
+ * Markdown——那才是能接着加工的东西（跟上面那条「回答走 stdout」是同一个约定）。
+ * --json 走事件流不归这儿管，--raw 是人明说了别动。
+ */
+const renderMd = !opts.json && !opts.raw && !!process.stdout.isTTY;
+const newMdRenderer = () => (renderMd ? mdTty.createRenderer({ width: process.stdout.columns || 80 }) : null);
 
 // ---------- 帮助 / 版本 / 参数写错了 ----------
 if (opts.help) { console.log(cliArgs.helpText()); process.exit(0); }
@@ -219,8 +229,8 @@ function makeEmit(state) {
       if (!state.streamed) { if (!opts.quiet) answer("\n"); state.streamed = true; }
       // 提示条是整条一次 emit 的（agent.js 那几处 callout.line），不会被切片切成半个记号
       const text = callout.strip(ev.delta);
-      state.finalParts.push(text); // 收尾要看正文是不是已经以换行结束，所以流式这条也得记下来
-      answer(text);
+      state.finalParts.push(text); // 记的是**原文**：会话存盘、收尾判断都按原文来，渲染只是给眼睛看的一层
+      answer(state.md ? state.md.write(text) : text);
     } else if (ev.type === "step_start") {
       if (ev.depth === 0) prog(dim(`\n· 第 ${ev.step} 步 思考中…`));
       state.streamed = false;
@@ -260,7 +270,12 @@ function printSummary(state) {
     return;
   }
   // 收尾补一个换行让文本文件规规矩矩地结束；正文自己已经以换行收尾就别再补一个
-  if (!/\n$/.test(state.finalParts.join(""))) answer("\n");
+  if (state.md) {
+    // 渲染器里可能还压着半行（等一个配对的 ** 没等到就结束了），这一下把它吐干净。
+    // 它吐出来的行自带换行，所以只有「一个字都没吐过」时才需要补那一个
+    answer(state.md.end());
+    if (!state.finalParts.length) answer("\n");
+  } else if (!/\n$/.test(state.finalParts.join(""))) answer("\n");
   if (state.usage) {
     const u = state.usage;
     const secs = Math.round((u.elapsed_ms || 0) / 1000);
@@ -292,7 +307,7 @@ async function runOnce(runtime, text, mode) {
   // 在终端里起的活儿归「工程」线。网页/手机上切到那个标签就能看见这条会话——
   // 这是两条线里唯一一条服务端替人填的：它确实是从命令行进来的，不是猜的。
   sess.lane = "cli";
-  const state = { streamed: false, usage: null, files: null, finalParts: [], error: null };
+  const state = { streamed: false, usage: null, files: null, finalParts: [], error: null, md: newMdRenderer() };
   // 挂到实时目录上：网页端的「工程」标签就是靠它知道这台机器的终端里此刻在干什么
   const live = cliLive.announce({
     id: sessionId, title: sess.title || text.slice(0, 60), cwd: getWorkspaceDir(),
@@ -522,8 +537,99 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
     },
   });
   rl.on("line", (raw) => inbox.line(raw));
-  rl.on("close", () => inbox.close());
+  rl.on("close", () => { menuClose(); inbox.close(); });
+
+  // ---- 打 `/` 就把菜单弹出来 ----
+  // 用户原话：「怎么cli模型，我输入/的时候没有自动补全啊」。Tab 补全一直是有的，
+  // 但一个记不住命令的人第一反应是打个 `/` 等着看有什么，不会去按 Tab。
+  //
+  // 画在输入行**下面**，每次按键擦掉重画。两条守则：
+  //   1. **相对移动，不算绝对行号。** 先用换行把光标顶下去（顶到屏幕底会自然滚屏），
+  //      再按同样的行数往回移——滚没滚都不会错位，这是终端里唯一稳的做法。
+  //   2. **没挑过就不替人做主。** 只弹不选：直接回车按原样发走，只有按过 ↑↓ 或 Tab
+  //      才算「我挑了这条」。不然人打了一半的字会被菜单悄悄换掉。
+  // 任何一步出岔子（终端不认这些指令、Node 换了内部实现）就整场关掉菜单：
+  // 宁可回到「按 Tab 补全」，也不能把人的输入行搅成一团。
+  const tw = require("./text-width"); // 中文占两列，对齐一律走它
+  const MENU_MAX = 6;
+  const menuState = { rows: 0, items: [], sel: -1, dead: false };
+  const menuUsable = () => !menuState.dead && !!process.stdout.isTTY && !!process.stdin.isTTY;
+
+  function menuErase() {
+    if (!menuState.rows) return;
+    try {
+      const col = rl.getCursorPos().cols;
+      readline.moveCursor(process.stdout, 0, 1);
+      readline.cursorTo(process.stdout, 0);
+      readline.clearScreenDown(process.stdout);
+      readline.moveCursor(process.stdout, 0, -1);
+      readline.cursorTo(process.stdout, col);
+    } catch { menuState.dead = true; }
+    menuState.rows = 0;
+  }
+  function menuClose() { menuErase(); menuState.items = []; menuState.sel = -1; }
+
+  function menuDraw() {
+    if (!menuUsable() || inbox.busy) { menuClose(); return; }
+    let pos = null;
+    try { pos = rl.getCursorPos(); } catch { menuState.dead = true; menuClose(); return; }
+    const hit = require("./repl-commands").menu(rl.line || "");
+    const items = hit ? hit.items.slice(0, MENU_MAX) : [];
+    // 输入折行了就不画：底下那几行的位置算不准，宁可没菜单也不能画歪
+    if (!items.length || pos.rows > 0) { menuClose(); return; }
+    menuErase();
+    menuState.items = items;
+    if (menuState.sel >= items.length) menuState.sel = items.length - 1;
+    const labelW = items.reduce((w, it) => Math.max(w, tw.cols(it.text)), 0);
+    const room = Math.max(20, (process.stdout.columns || 80) - 1);
+    const lines = items.map((it, i) => {
+      const on = i === menuState.sel;
+      let body = ` ${on ? "›" : " "} ${tw.padCols(it.text, labelW)}${it.desc ? "  " + it.desc : ""}`;
+      while (tw.cols(body) > room) body = body.slice(0, -1);
+      return on ? `\x1b[36m${body}\x1b[39m` : `\x1b[2m${body}\x1b[22m`;
+    });
+    try {
+      process.stdout.write("\n" + lines.join("\n"));
+      readline.moveCursor(process.stdout, 0, -lines.length);
+      readline.cursorTo(process.stdout, pos.cols);
+      menuState.rows = lines.length;
+    } catch { menuState.dead = true; menuState.rows = 0; }
+  }
+
+  // 按键先过这儿再交给 readline：↑↓ 在菜单开着的时候是「挑哪条」，不是翻历史。
+  // _ttyWrite 是 readline 的内部，拿不到就降级成「只弹不挑」——菜单照样看得见，
+  // Tab 走 readline 自己的补全。宁可少一半功能，也不能因为 Node 换了实现就崩在这儿。
+  const ttyWriteOrig = typeof rl._ttyWrite === "function" ? rl._ttyWrite.bind(rl) : null;
+  if (ttyWriteOrig) {
+    rl._ttyWrite = (ch, key) => {
+      const k = key || {};
+      if (menuState.items.length && !k.ctrl && !k.meta) {
+        if (k.name === "up" || k.name === "down") {
+          const n = menuState.items.length;
+          menuState.sel = k.name === "down"
+            ? (menuState.sel + 1) % n
+            : (menuState.sel <= 0 ? n - 1 : menuState.sel - 1);
+          menuDraw();
+          return;
+        }
+        if (k.name === "escape") { menuClose(); return; }
+        if (k.name === "tab" || ((k.name === "return" || k.name === "enter") && menuState.sel >= 0)) {
+          const pick = menuState.items[menuState.sel < 0 ? 0 : menuState.sel];
+          menuClose();
+          rl.write(null, { ctrl: true, name: "e" });
+          rl.write(null, { ctrl: true, name: "u" }); // 清掉这行，再把整条命令写回去
+          rl.write(pick.insert);
+          return;
+        }
+      }
+      if (k.name === "return" || k.name === "enter") menuClose(); // 回车前先擦干净，不然菜单会留在正文里
+      ttyWriteOrig(ch, key);
+      menuDraw();
+    };
+  }
+
   rl.on("SIGINT", () => {
+    menuClose();
     if (inbox.busy) { if (stopCurrent) stopCurrent(); return; } // 停这趟活儿，不退出
     if (rl.line) { // 打了一半不想要了：清掉这行就行，别退出
       rl.write(null, { ctrl: true, name: "e" });
@@ -655,6 +761,7 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
       continue;
     }
     inbox.setBusy(true);
+    menuClose(); // 活儿要开跑了，菜单先收掉——正文一冲下来它就成了屏幕上的残渣
     rl.setPrompt(""); // 任务跑着的时候别让提示符插进流式正文里
     last = await runOnce(runtime, v.text, opts.mode);
     inbox.setBusy(false);

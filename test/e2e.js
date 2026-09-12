@@ -5309,6 +5309,7 @@ async function main() {
   await testNodeSuite("doctor.js", "开机闸门与 wb doctor 体检（Node / 依赖 / 端口 / 配置 / 引擎）");
   await testNodeSuite("cli-args.js", "命令行参数声明表：拼错的选项当场拦下并给建议，老写法逐条对齐不变");
   await testNodeSuite("repl-commands.js", "wb 交互模式：多行粘贴合成一条、打错的斜杠命令当场拦下、Ctrl+C 停活儿不退出");
+  await testNodeSuite("md-tty.js", "终端里的 Markdown 渲染：记号不裸奔、代码不被改坏、流式切片结果一致");
   await testNodeSuite("icons.js", "界面不许再冒 emoji：源码闸门 + 图标名核对 + 提示条记号转换");
   await testDockerDeploy();
   await testFetchUrlShapes();

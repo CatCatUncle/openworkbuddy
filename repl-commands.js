@@ -161,6 +161,47 @@ function complete(line) {
   return [[], s];
 }
 
+/**
+ * 打了 `/` 之后该弹什么菜单。纯的：只算出「给谁看」，怎么画是 cli.js 的事。
+ *
+ * 用户原话：「怎么cli模型，我输入/的时候没有自动补全啊」。Tab 补全一直是有的——
+ * 可没人会去按 Tab：一个记不住命令的人，第一反应是打个 `/` 然后等着看有什么。
+ * 所以菜单得自己冒出来，Tab 只是「挑中这条」的快捷键之一。
+ *
+ * 跟 complete() 共用同一张 COMMANDS 表：补全给什么，菜单就列什么，不会出现
+ * 「菜单里有、Tab 补不出来」这种两份清单对不上的事。
+ *
+ * 返回 null 表示「这一行没什么可弹的」，UI 据此把菜单收掉。
+ */
+function menu(line) {
+  const s = String(line == null ? "" : line);
+  const head = s.match(/^\/([a-z0-9-]*)$/);
+  if (head) {
+    const pre = head[1];
+    const items = [];
+    for (const c of COMMANDS) {
+      if (![c.name, ...(c.aliases || [])].some((n) => n.startsWith(pre))) continue;
+      items.push({
+        text: "/" + c.name,
+        // 吃参数的命令，插进去之后光标停在空格后面：接着打值就行，不用再补一个空格
+        insert: "/" + c.name + (c.arg ? " " : ""),
+        desc: c.arg ? `${c.arg}　${c.desc}` : c.desc,
+      });
+    }
+    return items.length ? { kind: "cmd", prefix: pre, items } : null;
+  }
+  const val = s.match(/^\/([a-z][a-z0-9-]*)[ \t]+(\S*)$/);
+  if (val) {
+    const c = find(val[1]);
+    if (c && c.choices) {
+      const items = c.choices.filter((x) => x.startsWith(val[2]))
+        .map((x) => ({ text: x, insert: `/${c.name} ${x}`, desc: "" }));
+      return items.length ? { kind: "choice", prefix: val[2], items } : null;
+    }
+  }
+  return null;
+}
+
 const GAP = 4;
 /**
  * `/model` 的选单：把「本机引擎」和「你配的模型」拼成同一张带序号的表。
@@ -356,7 +397,7 @@ function sanitizeHistory(lines, max) {
 
 module.exports = {
   COMMANDS, PASTE_GAP_MS, HISTORY_MAX,
-  parse, mergePaste, makeInbox, resolveCd, complete, helpText, unknownText, badArgText,
+  parse, mergePaste, makeInbox, resolveCd, complete, menu, helpText, unknownText, badArgText,
   modelRows, modelListText, pickModelRow,
   sanitizeHistory, nearest, find,
 };
