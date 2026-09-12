@@ -154,10 +154,8 @@
   /* 项目表头：点整行进项目页，点右边的加号快速新建 */
   .side-nav .nav-head { cursor: pointer; }
   /* 加号原来用第三级文字色，压在选中底上暗色只有 4.25。抬一级到 --wb-text-2：浅 5.40 / 暗 5.36 */
-  /* 实测 23×21，差一点点就够 24——补齐，顺便把图标居中 */
-  .side-nav .nav-head #proj-add { margin-left: auto; text-decoration: none; color: var(--wb-text-2);
-    font-size: 15px; padding: 0; width: 24px; height: 24px; flex: none; border-radius: var(--radius-sm);
-    display: inline-flex; align-items: center; justify-content: center; }
+  /* 几何统一到桥接层（密集档 24 见方），这里只留颜色和位置 */
+  .side-nav .nav-head #proj-add { margin-left: auto; text-decoration: none; color: var(--wb-text-2); font-size: 15px; }
   .side-nav .nav-head #proj-add:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   .side-nav #proj-list { margin: 0 0 4px; }
   .side-nav .more-toggle .caret { display: inline-flex; align-items: center; color: var(--wb-text-3); transition: transform var(--wb-t-fast) var(--wb-ease); }
@@ -576,10 +574,11 @@
   textarea#input { width: 100%; border: none; outline: none; resize: none; max-height: 160px; background: transparent; color: var(--wb-text); }
   textarea#input::placeholder { color: var(--wb-text-3); }
   .card-toolbar { display: flex; align-items: center; margin-top: 8px; gap: 8px; }
-  .icon-btn { width: 32px; height: 32px; border: none; background: transparent; border-radius: var(--radius-md); font-size: 18px; color: var(--wb-text-2); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  /* 几何统一到桥接层，这里只留颜色 */
+  .icon-btn { border: none; background: transparent; font-size: 18px; color: var(--wb-text-2); cursor: pointer; }
   .icon-btn:hover { background: var(--wb-bg-hover); }
   /* chip 里的「前移 / 移除」：外面那颗 32 见方的通用图标键会把 chip 整个撑开 */
-  .chip .icon-btn { width: 18px; height: 18px; flex: none; }
+  .chip .icon-btn { width: 18px; height: 18px; border-radius: var(--radius-sm); flex: none; }
   .opendir .i { width: 13px; height: 13px; display: block; }
   .mcp-docs-link .i { width: 12px; height: 12px; vertical-align: -.16em; margin-left: 2px; }
   .card-toolbar .grow { flex: 1; }
@@ -645,7 +644,8 @@
   .preview-panel.show { width: var(--wb-pv-w, 44%); min-width: 360px; max-width: calc(100vw - 300px); }
   .pv-head { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--wb-border); font-size: 14px; }
   .pv-head .pv-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pv-head button { border: none; background: transparent; font-size: 15px; cursor: pointer; color: var(--wb-text-2); padding: 4px 8px; border-radius: var(--radius-sm); }
+  /* 几何统一到桥接层（这一排四颗都带 .icon-btn），这里只留颜色 */
+  .pv-head button { border: none; background: transparent; font-size: 15px; cursor: pointer; color: var(--wb-text-2); }
   .pv-head button:hover { background: var(--wb-bg-hover); }
   .pv-deploy { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; font-size: 13px; color: var(--wb-text-2); background: var(--wb-brand-weak); border-bottom: 1px solid var(--wb-border); }
   .pv-deploy button { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: var(--radius-md); padding: 3px 10px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
@@ -704,7 +704,10 @@
   body.side-collapsed aside { display: none; }
   .main { position: relative; }
   /* ---------- 响应式：窗口任意拉伸自适应 ---------- */
-  #toggle-side { border: none; background: transparent; font-size: 16px; color: var(--wb-text-2); cursor: pointer; padding: 4px 10px; border-radius: var(--radius-md); margin-left: -8px; }
+  /* 几何统一到桥接层（markup 上补了 .icon-btn），这里只留颜色。
+     负外边距从 -8 收到 -5：原来左内边距 10、现在盒子 30 见方里图标居中占 7，
+     -5+7 和原来的 -8+10 一样都落在 2px，图标横坐标一点没动。 */
+  #toggle-side { border: none; background: transparent; font-size: 16px; color: var(--wb-text-2); cursor: pointer; margin-left: -5px; }
   #toggle-side:hover { background: var(--wb-bg-hover); }
   .topbar .title { flex: 1; margin: 0 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   @media (min-width: 1720px) { :root { --wb-content-w: 1020px; } }
@@ -792,6 +795,8 @@
   /* ---------- 侧栏底部：头像行 + 设置齿轮 + 账号菜单 ---------- */
   .user-row { position: relative; display: flex; align-items: center; gap: 6px; margin: 8px 4px 0; }
   .user-row .user-chip { flex: 1; margin: 0; min-width: 0; }
+  /* 这颗故意不并进桥接层那两档：它是带描边的独立键，右边紧挨着 44 高、圆角 10 的用户气泡，
+     跟着气泡走（36 / 圆角 10）比跟着别处的无边框图标键走更齐。就近对齐优先于全局统一。 */
   #gear-btn { flex: none; width: 36px; height: 36px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-bg); font-size: 15px; cursor: pointer; color: var(--wb-text-2); }
   #gear-btn:hover { background: var(--wb-bg-hover); }
   .user-menu { display: none; position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: var(--radius-xl); box-shadow: var(--shadow-menu); padding: 6px; z-index: 60; font-size: 14px; }
@@ -828,7 +833,8 @@
   .out-row .rv { cursor: pointer; font-size: 12px; }
   .file-item .dl:hover { background: var(--wb-border); color: var(--wb-brand-text); }
   .files-panel h2 { font-size: 14px; font-weight: 600; color: var(--wb-text-2); padding: 16px 12px 8px 16px; white-space: nowrap; display: flex; align-items: center; gap: 8px; }
-  #fp-close { border: none; background: transparent; font-size: 14px; cursor: pointer; color: var(--wb-text-2); padding: 2px 6px; border-radius: var(--radius-sm); }
+  /* 几何统一到桥接层，这里只留颜色 */
+  #fp-close { border: none; background: transparent; font-size: 14px; cursor: pointer; color: var(--wb-text-2); }
   #fp-close:hover { background: var(--wb-bg-hover); }
   #file-list { flex: 1; overflow-y: auto; padding: 0 10px 12px; }
   .file-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: var(--radius-md); text-decoration: none; color: var(--wb-text); font-size: 14px; }
@@ -878,9 +884,8 @@
   .m-head h3 { font-size: 15px; }
   /* 原来是个 18px 的 ✕ 字符，实测点击区只有 14×22——比指尖还窄。
      换成和别处一致的 .icon-btn 尺码（28 见方），并改用 sprite 里的 #i-x */
-  .m-close { width: 28px; height: 28px; flex: none; padding: 0; border: none; background: none;
-    border-radius: var(--radius-md); cursor: pointer; color: var(--wb-text-3);
-    display: inline-flex; align-items: center; justify-content: center; }
+  /* 几何统一到桥接层，这里只留颜色 */
+  .m-close { border: none; background: none; cursor: pointer; color: var(--wb-text-3); }
   .m-close:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   .m-close .i { width: 16px; height: 16px; }
   /* 同上：弹窗正文内容长短不定，不留位就会随内容多少左右晃 11px */
@@ -950,9 +955,8 @@
   /* 行尾的 ⋯ 菜单：贴着行右边弹出来，点别处就收。手机上也点得到（悬停在触屏上不存在） */
   .row-acts { position: relative; flex: none; margin-left: 4px; }
   /* 实测 20×16，鼠标得瞄准才点得中。撑到 24 见方，图标本身不变大 */
-  .row-more { width: 24px; height: 24px; flex: none; padding: 0; border: none; background: none;
-    cursor: pointer; color: var(--wb-text-3); border-radius: var(--radius-sm);
-    display: inline-flex; align-items: center; justify-content: center; }
+  /* 几何统一到桥接层（密集档 24 见方），这里只留颜色 */
+  .row-more { border: none; background: none; cursor: pointer; color: var(--wb-text-3); }
   .row-more:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   .row-menu { position: absolute; right: 0; top: 100%; z-index: 30; min-width: 132px; padding: 4px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-card); box-shadow: var(--wb-shadow-md); }
   .row-menu a { display: block; padding: 7px 10px; border-radius: var(--radius-md); font-size: 13px; color: var(--wb-text); text-decoration: none; white-space: nowrap; }
@@ -1523,7 +1527,6 @@
   .picker-btn:focus-visible, .ui-btn:focus-visible {
     outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px var(--ring-weak);
   }
-  .icon-btn { border-radius: var(--radius-md); }
   .chip { border-radius: var(--radius-full); }
 
   /* 小标记：贴在别的东西旁边说一句它是什么——「官方」「当前」「beta」「不花 API 额度」
@@ -1542,6 +1545,30 @@
     line-height: 1; white-space: nowrap; font-style: normal;
   }
   .step-card .tag .i, .ex-card .tg i .i, .eng-b .i { width: 11px; height: 11px; }
+
+  /* 纯图标钮：没有字，只有一个图标加一句 title。离屏跑真界面点过一遍，去重后十三颗，
+     居然是六个尺寸（24×24 / 36×27 / 28×28 / 30×30 / 28×32 / 36×36）、三种圆角（6 / 8 / 10）。
+     其中两颗根本不是正方形：#toggle-side 只写了内边距没写宽高，字号一变就跟着变形；
+     #fp-close 蹲在一行窄 flex 里被挤成 28×32。
+     现在收成两档，都挂在既有的控件高度梯子上：
+       常规档 = --wb-ctl-h-sm（30），顶栏 / 预览条 / 弹窗关闭 / 输入区附件都用它；
+       密集档 = 24，挤在列表行和分组头里的那两颗用它。
+     宽高一起写死 + flex:none，是为了让「被挤扁」这件事从此不可能发生。 */
+  .icon-btn, .m-close {
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+    width: var(--wb-ctl-h-sm); height: var(--wb-ctl-h-sm); padding: 0;
+    border-radius: var(--radius-md);
+  }
+  .side-nav .nav-head #proj-add, .row-more {
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+    width: 24px; height: 24px; padding: 0; border-radius: var(--radius-sm);
+  }
+  /* 密集档里的图标也得一样大：改之前分组头那颗跟着 font-size 走出 15px，
+     列表行那颗写着 .i-sm 只有 12px，同样 24 的盒子里差了 3px。一起钉到 14。 */
+  .side-nav .nav-head #proj-add .i, .row-more .i { width: 14px; height: 14px; }
+  /* 输入区工具条：附件键（.icon-btn，30）和它右边几颗文字选择器并排站，
+     选择器原来只写内边距不写高度，量出来 30.0 对 32.0 差 2px。这里一起钉到同一档。 */
+  .picker-btn { height: var(--wb-ctl-h-sm); padding: 0 10px; }
 
   /* 图标尺寸：跟 shadcn 一样，按钮里的图标一律 16，密集处 14 */
   /* 尺寸不在这儿定：ui.css 里 .i 是 1em，图标自动跟着它所在那行的字号走。
@@ -1576,7 +1603,6 @@
   #to-bottom.show { display: flex; align-items: center; justify-content: center; }
   #send .i { width: 17px; height: 17px; }
   #gear-btn { display: flex; align-items: center; justify-content: center; }
-  .pv-head button, .pv-head a.icon-btn { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; flex: none; }
 
   /* 产出 chip 上的三个图标钮：预览 / 打开所在位置 / 下载。没字，全靠 title；文字留给读屏 */
   .out-acts .oa-main, .out-acts .oa-ico {
@@ -1841,7 +1867,7 @@
 
 <div class="main">
   <div class="topbar">
-    <button id="toggle-side" title="收起/展开侧栏"><svg class="i" aria-hidden="true"><use href="#i-panel-left"></use></svg></button>
+    <button id="toggle-side" class="icon-btn" title="收起/展开侧栏"><svg class="i" aria-hidden="true"><use href="#i-panel-left"></use></svg></button>
     <div class="title" id="session-title">新任务</div>
     <div class="right"><button id="toggle-files"><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> 成果文件</button></div>
   </div>

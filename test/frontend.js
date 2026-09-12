@@ -5453,6 +5453,127 @@ const PILL_CHECKS = `
 `;
 
 // ---------------------------------------------------------------------------
+// 纯图标钮：没有字，只有一个图标加一句 title。全站离屏点过一遍，去重后十三颗，
+// 居然长出六个尺寸（24×24 / 36×27 / 28×28 / 30×30 / 28×32 / 36×36）、三种圆角（6 / 8 / 10）。
+// 其中两颗根本不是正方形：#toggle-side 的规则只写内边距不写宽高，高度跟着字号走；
+// #fp-close 蹲在一行窄 flex 里被邻居挤成 28 宽。
+// 现在收成两档，挂在既有的控件高度梯子上：常规档 = --wb-ctl-h-sm（30），密集档 = 24。
+// 这条尺子量的是真几何：宽高、圆角、里头图标的大小，以及「挤得下就被挤扁」这件事。
+const ICO_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><style>" + INDEX_CSS
+  + "</style><style>body{margin:0;padding:12px;width:1100px}"
+  // 夹具里把两个容器的宽度写死，好复现「被挤扁」：真界面上 .files-panel 是可变宽的
+  + ".files-panel{width:170px}.fx-row{margin:10px 0}</style><body>"
+  + `<div class="fx-row topbar"><button id="toggle-side" class="icon-btn" title="收起/展开侧栏"><svg class="i"><use href="#i-panel-left"></use></svg></button>`
+  + `<div class="title">任务标题</div></div>`
+  + `<div class="fx-row card-toolbar"><button class="icon-btn" id="attach-btn" title="上传"><svg class="i"><use href="#i-paperclip"></use></svg></button>`
+  + `<div class="grow"></div><button class="picker-btn" id="fx-pick"><svg class="i"><use href="#i-sparkles"></use></svg> 模型 <svg class="i"><use href="#i-chevron-down"></use></svg></button></div>`
+  + `<div class="fx-row pv-head"><span class="pv-name">产出.html</span>`
+  + `<button id="pv-sys" class="icon-btn"><svg class="i"><use href="#i-app-window"></use></svg></button>`
+  + `<button id="pv-rv" class="icon-btn"><svg class="i"><use href="#i-folder-open"></use></svg></button>`
+  + `<a id="pv-dl" class="icon-btn" href="#" download><svg class="i"><use href="#i-download"></use></svg></a>`
+  + `<button id="pv-close" class="icon-btn"><svg class="i"><use href="#i-x"></use></svg></button></div>`
+  + `<div class="fx-row files-panel"><h2><span><svg class="i"><use href="#i-folder-open"></use></svg> 成果文件</span>`
+  + `<a href="#" class="link">打开文件夹</a><span style="flex:1"></span>`
+  + `<button id="fp-close" class="icon-btn"><svg class="i"><use href="#i-x"></use></svg></button></h2></div>`
+  + `<div class="fx-row m-head"><h3 id="m-title">设置</h3><button id="m-close" class="m-close"><svg class="i"><use href="#i-x"></use></svg></button></div>`
+  + `<div class="fx-row side-nav"><div class="item nav-head"><span class="ic"><svg class="i"><use href="#i-folder"></use></svg></span>`
+  + `<span class="tx">项目</span><a href="#" id="proj-add"><svg class="i"><use href="#i-plus"></use></svg></a></div></div>`
+  + `<div class="fx-row mrow">模型行 <span class="row-acts"><button class="row-more" id="fx-more" type="button"><svg class="i i-sm"><use href="#i-ellipsis"></use></svg></button></span></div>`
+  + `<div class="fx-row"><span class="chip" id="fx-chip">附件.png <a href="#" class="icon-btn" id="fx-chip-x"><svg class="i"><use href="#i-x"></use></svg></a></span></div>`
+  + `<div class="fx-row user-row"><div class="user-chip" id="fx-uchip">猫叔</div><button id="gear-btn" class="icon-btn"><svg class="i"><use href="#i-settings"></use></svg></button></div>`
+  + "</body>";
+const ICO_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
+  const R = (sel) => {
+    const e = document.querySelector(sel);
+    if (!e) throw new Error("夹具里找不到 " + sel);
+    const b = e.getBoundingClientRect(), cs = getComputedStyle(e);
+    const ic = e.querySelector("svg");
+    const ib = ic ? ic.getBoundingClientRect() : null;
+    return { sel, w: Math.round(b.width * 10) / 10, h: Math.round(b.height * 10) / 10,
+      rad: cs.borderTopLeftRadius, icon: ib ? Math.round(ib.width) + "×" + Math.round(ib.height) : "-" };
+  };
+  // 常规档：顶栏 / 输入区附件 / 预览条四颗 / 成果面板关闭 / 弹窗关闭
+  const BIG = ["#toggle-side", "#attach-btn", "#pv-sys", "#pv-rv", "#pv-dl", "#pv-close", "#fp-close", "#m-close"];
+  const DENSE = ["#proj-add", "#fx-more"];
+  const all = [...BIG, ...DENSE, "#fx-chip-x", "#gear-btn"].map(R);
+
+  ok("十二颗纯图标钮个个是正方形", all.every((r) => Math.abs(r.w - r.h) < 0.5),
+     all.filter((r) => Math.abs(r.w - r.h) >= 0.5));
+
+  const big = BIG.map(R);
+  const bk = [...new Set(big.map((r) => r.w + "×" + r.h + " 圆角 " + r.rad))];
+  ok("常规档八颗同一尺寸（" + bk[0] + "）", bk.length === 1, big.map((r) => r.sel + " → " + r.w + "×" + r.h + "/" + r.rad));
+  ok("常规档就是控件梯子上的小号档 30，圆角 8", big[0].w === 30 && big[0].h === 30 && big[0].rad === "8px", big[0]);
+  const bi = [...new Set(big.map((r) => r.icon))];
+  ok("常规档里的图标一律 16×16", bi.length === 1 && bi[0] === "16×16", bi);
+
+  const dense = DENSE.map(R);
+  const dk = [...new Set(dense.map((r) => r.w + "×" + r.h + " 圆角 " + r.rad + " 图标 " + r.icon))];
+  ok("密集档两颗同一尺寸（" + dk[0] + "）", dk.length === 1, dense);
+  ok("密集档是 24 见方 / 圆角 6 / 图标 14", dense[0].w === 24 && dense[0].rad === "6px" && dense[0].icon === "14×14", dense[0]);
+
+  // chip 里那颗更小：它嵌在一颗 30 高的胶囊里，跟着胶囊走才不会把胶囊撑破
+  const chipBtn = R("#fx-chip-x"), chip = document.querySelector("#fx-chip").getBoundingClientRect();
+  ok("chip 里那颗 18 见方，没把胶囊撑破（胶囊高 " + Math.round(chip.height) + "）",
+     chipBtn.w === 18 && chipBtn.h === 18 && chipBtn.h <= chip.height, [chipBtn, Math.round(chip.height)]);
+
+  // 挤不扁：改之前 #fp-close 在窄面板里被邻居压成 28 宽
+  ok("面板挤到 170px 宽，关闭键还是 30×30（flex:none 兜住了）", R("#fp-close").w === 30 && R("#fp-close").h === 30, R("#fp-close"));
+
+  // 预览条一排四颗，其中一颗是 <a>——改之前它比三个 <button> 兄弟圆 2px
+  const pv = ["#pv-sys", "#pv-rv", "#pv-dl", "#pv-close"].map(R);
+  ok("预览条四颗（含那个 <a>）圆角只有一种：" + pv[0].rad, [...new Set(pv.map((r) => r.rad))].length === 1,
+     pv.map((r) => r.sel + " " + r.rad));
+
+  // 输入区工具条：附件键和它右边的选择器并排，改之前 32 对 30
+  const at = R("#attach-btn"), pk = R("#fx-pick");
+  ok("输入区工具条上附件键和模型选择器同高（" + at.h + " / " + pk.h + "）", at.h === pk.h, [at, pk]);
+
+  // 齿轮是故意留在外面的：带描边、挨着 44 高圆角 10 的用户气泡，跟着气泡走更齐
+  const gear = R("#gear-btn"), uc = document.querySelector("#fx-uchip");
+  ok("齿轮故意不并档：36 见方 / 圆角 10，跟旁边用户气泡的圆角对上（" + getComputedStyle(uc).borderTopLeftRadius + "）",
+     gear.w === 36 && gear.h === 36 && gear.rad === getComputedStyle(uc).borderTopLeftRadius, [gear, getComputedStyle(uc).borderTopLeftRadius]);
+
+  // ★反向对照★ 先把桥接层那两档整个撤掉，再把改之前七条真写着的声明原样压回去。
+  // 上面那几把尺子必须当场全红：六个尺寸、三种圆角、两颗不是正方形。
+  const back = document.createElement("style");
+  back.textContent = [
+    ".icon-btn, .m-close, .side-nav .nav-head #proj-add, .row-more { width: auto; height: auto; padding: 0; border-radius: 0; display: inline-block; flex: 0 1 auto; }",
+    ".side-nav .nav-head #proj-add .i, .row-more .i { width: 1em; height: 1em; }",
+    ".picker-btn { height: auto; padding: 6px 10px; }",
+    ".icon-btn { width: 32px; height: 32px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; }",
+    ".chip .icon-btn { width: 18px; height: 18px; flex: none; }",
+    ".pv-head button { padding: 4px 8px; border-radius: var(--radius-sm); }",
+    "#toggle-side { padding: 4px 10px; border-radius: var(--radius-md); margin-left: -8px; width: auto; height: auto; display: inline-block; }",
+    "#fp-close { padding: 2px 6px; border-radius: var(--radius-sm); }",
+    ".m-close { width: 28px; height: 28px; flex: none; padding: 0; border-radius: var(--radius-md); display: inline-flex; align-items: center; justify-content: center; }",
+    ".row-more { width: 24px; height: 24px; flex: none; padding: 0; border-radius: var(--radius-sm); display: inline-flex; align-items: center; justify-content: center; }",
+    ".side-nav .nav-head #proj-add { padding: 0; width: 24px; height: 24px; flex: none; border-radius: var(--radius-sm); display: inline-flex; align-items: center; justify-content: center; }",
+  ].join(" ");
+  document.head.appendChild(back);
+  const old = [...BIG, ...DENSE, "#gear-btn"].map(R);
+  const oldSizes = [...new Set(old.map((r) => r.w + "×" + r.h))];
+  const oldRads = [...new Set(old.map((r) => r.rad))];
+  const oddShape = old.filter((r) => Math.abs(r.w - r.h) >= 0.5);
+  ok("反向对照：退回七条各写各的，当场就是 " + oldSizes.length + " 种尺寸 —— " + oldSizes.join(" / "),
+     oldSizes.length >= 5, oldSizes);
+  ok("反向对照：圆角也回到 " + oldRads.length + " 种 —— " + oldRads.join(" / "), oldRads.length >= 3, oldRads);
+  ok("反向对照：有 " + oddShape.length + " 颗当场不是正方形（" + oddShape.map((r) => r.sel + " " + r.w + "×" + r.h).join("，") + "）",
+     oddShape.length >= 2, oddShape);
+  const oldAt = R("#attach-btn"), oldPk = R("#fx-pick");
+  ok("反向对照：输入区那两颗又差 " + Math.round(Math.abs(oldAt.h - oldPk.h) * 10) / 10 + "px", oldAt.h !== oldPk.h, [oldAt.h, oldPk.h]);
+  back.remove();
+
+  const again = [...new Set(BIG.map(R).map((r) => r.w + "×" + r.h + " " + r.rad))];
+  ok("撤掉对照又回到一种尺寸（这轮不是蒙的）", again.length === 1, again);
+  return names;
+})()
+`;
+
+// ---------------------------------------------------------------------------
 // 行内控件的高度只许有一个。
 // 改之前每个家族各写各的内边距，凑出一堆高度：输入框 8px 12px → 35，下拉同样的
 // 内边距 → 37（select 的内容盒天生比 input 高 2px），主按钮 → 36，次要按钮
@@ -6454,6 +6575,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：小标记只有一个尺寸（十三处·含反向对照）${namesPILL.length} 项通过`);
     } finally {
       if (!winPILL.isDestroyed()) winPILL.destroy();
+    }
+    const winICO = mkWin({ show: false, width: 1200, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await winICO.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ICO_HTML));
+      const namesICO = await winICO.webContents.executeJavaScript(ICO_CHECKS, true)
+        .catch((e) => { throw new Error("[纯图标钮] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesICO) console.log("  ✓ " + n);
+      console.log(`✅ 前端：纯图标钮只剩两档（十二颗·挤不扁·含反向对照）${namesICO.length} 项通过`);
+    } finally {
+      if (!winICO.isDestroyed()) winICO.destroy();
     }
     const winSC = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
