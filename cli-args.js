@@ -28,10 +28,12 @@
  *   str    —— 必须跟一个值
  *   enum   —— 必须跟一个值，且值要在 choices 里
  *   optnum —— 可以跟一个正整数，不跟就用 fallback
+ *   strs   —— 必须跟一个值，可以重复写几次，攒成一个数组
  */
 const FLAGS = [
   { long: "mode", type: "enum", key: "mode", arg: "craft|plan|ask", choices: ["craft", "plan", "ask"], desc: "执行模式（默认 craft）" },
   { long: "workspace", short: "C", type: "str", key: "workspace", arg: "<目录>", desc: "这次在哪个目录干活（只影响本次，不改配置）" },
+  { long: "file", short: "f", type: "strs", key: "files", arg: "<路径>", desc: "带一个文件/图片一起问，可以重复写几次" },
   { long: "continue", short: "c", type: "bool", key: "cont", value: true, desc: "续接最近一次 CLI 会话" },
   { long: "session", type: "str", key: "session", arg: "<id>", desc: "续接指定会话" },
   { long: "list", type: "optnum", key: "list", arg: "[n]", fallback: 10, desc: "列出最近 n 个 CLI 会话（默认 10）" },
@@ -51,7 +53,7 @@ const SUBS = [
   { name: "doctor", usage: "wb doctor", desc: "跑不起来时先跑它：Node / 依赖 / 端口 / 配置 / 引擎 一次查清" },
 ];
 
-const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false };
+const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, files: [], cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false };
 
 /** 编辑距离。只用来猜「你是不是想说 X」，不求快 */
 function editDistance(a, b) {
@@ -120,6 +122,9 @@ function parse(argv, spec) {
   const flags = (spec && spec.flags) || FLAGS;
   const subs = (spec && spec.subs) || SUBS;
   const opts = Object.assign({}, DEFAULTS, (spec && spec.defaults) || {});
+  // 数组类的默认值要复制一份：Object.assign 抄的是同一个引用，不复制的话这次解析
+  // 攒进去的 -f 会留在 DEFAULTS 上，下一次解析凭空多出上一次的文件
+  for (const k of Object.keys(opts)) if (Array.isArray(opts[k])) opts[k] = opts[k].slice();
   const words = [];
   const problems = [];
   const byLong = new Map(flags.map((f) => [f.long, f]));
@@ -159,6 +164,7 @@ function parse(argv, spec) {
         editDistance(v, near) <= 2 ? `是不是想说 ${near}？` : ""));
       return;
     }
+    if (f.type === "strs") { opts[f.key] = (opts[f.key] || []).concat(v); return; }
     if (f.type === "optnum") {
       const n = Number(v);
       if (!/^\d+$/.test(String(v)) || n <= 0) {

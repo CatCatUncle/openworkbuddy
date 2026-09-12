@@ -35,6 +35,8 @@ const COMMANDS = [
   { name: "model", arg: "[序号或名字]", desc: "换这趟活儿谁来干：本机引擎或你配的模型；不给值就把能选的列出来" },
   { name: "cd", arg: "<目录>", desc: "换工作目录；认 .. 和 ~，不给就说当前在哪" },
   { name: "files", aliases: ["ls"], desc: "工作目录里现在有什么" },
+  { name: "paste", aliases: ["v"], desc: "把剪贴板里的截图、文件或一大段文字带进来" },
+  { name: "drop", desc: "带上了还没发出去的文件，不要了" },
   { name: "clear", aliases: ["cls"], desc: "清屏；会话和上下文都不动" },
   { name: "exit", aliases: ["quit", "q"], desc: "退出" },
 ];

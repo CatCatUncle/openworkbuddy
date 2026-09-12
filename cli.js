@@ -7,6 +7,7 @@
  *   wb "帮我调研xxx并写成报告"                 单发任务，跑完即退出
  *   wb                                          交互式 REPL（连续对话，保留上下文）
  *   wb -C ~/项目/报表 "把这个目录的表汇总一下"   指定这次在哪个目录干活
+ *   wb -f 图.png "这张图里写了什么"              带一个文件/图片一起问（可以写几次）
  *   cat err.log | wb "这个报错什么意思"          管道进来的内容当附加材料
  *   wb -c "接着上面那个继续"                     续接最近一次 CLI 会话
  *   wb --json "..." | jq -r 'select(.type=="text").delta'   机器可读事件流
@@ -34,6 +35,7 @@ const { createAgentRuntime } = require("./agent");
 const lanes = require("./lanes"); // 终端里起的任务归「工程」线；续跑 id 按引擎分开记
 const callout = require("./callout"); // 正文里的提示条：终端没有图标，换成文字标签
 const mdTty = require("./md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
+const attach = require("./cli-attach"); // 带进来的文件/图片：拖进来的路径、@ 补全、剪贴板
 const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
 const account = require("./account");
 const store = require("./store");
@@ -398,6 +400,42 @@ function readStdin() {
 }
 const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，该让 agent 自己去读文件
 
+// ---------- 带进来的文件 ----------
+// 用户原话：「还有我的wb cli也要支持复制文件 图片这些啊」。
+//
+// 终端里把文件带进来有三条路，三条都得认：从访达把文件拖进窗口（粘出来的是反斜杠
+// 转义过的路径）、用「拷贝路径」粘进来（空格没转义，只有整行当一条路径才认得出）、
+// 或者敲 `@` 让它列工作目录里有什么。再加一个 /paste 直接吃剪贴板里的截图。
+//
+// 要紧的是**文件不进对话历史**：跟网页端走同一套约定——先把文件搬进工作目录，正文后面
+// 挂一句「（已上传文件：…）」，让模型自己决定是 look_at_image 还是 read_file。图片一旦
+// 进了历史，往后每一步都要重发一遍，纯文本模型还会当场 400；而会话是存盘的，那就等于
+// 把这个会话永久弄坏了。所以带文件的正确做法只有一种：给个名字，让它自己去看。
+let visionWarned = false;
+/** 把认出来的文件搬进工作目录，返回给模型看的名字；搬不动的当场说清楚为什么 */
+function bringIn(files) {
+  if (!files || !files.length) return [];
+  const r = attach.collect(files, { workspaceDir: getWorkspaceDir() });
+  for (const s of r.skipped) prog(yellow(`  ！${s.ref} 没带上：${s.why}\n`));
+  if (r.names.length && attach.anyImage(r.names) && !visionWarned) {
+    visionWarned = true;
+    const v = (config.media || {}).vision || {};
+    // 不吭声地把图交出去，回头模型说「我看不了图」，人只会以为是自己路径写错了
+    if (!(String(v.base_url || "").trim() && String(v.model || "").trim())) {
+      prog(dim(`  没单独配视觉模型，图交给主模型（${llm.model}）试着看；它要是纯文本的就看不了，设置 → 模型 → 视觉模型 配一个就行\n`));
+    }
+  }
+  return r.names;
+}
+/** 一行话里哪几个词是文件。相对路径先按工作目录找，再按人现在所在的目录找 */
+function splitFiles(text) {
+  return attach.parseLine(text, {
+    home: os.homedir(),
+    roots: [getWorkspaceDir(), process.cwd()],
+    exists: (p) => { try { return fs.existsSync(p); } catch { return false; } },
+  });
+}
+
 // ---------- 主流程 ----------
 (async () => {
   // ---------- wb engines：看本机能拿什么当底层，以及一键切过去 ----------
@@ -455,6 +493,22 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
     process.exit(0);
   }
 
+  // 带进来的文件。这一步必须排在读管道**前面**：`cat 报错.log | wb "这什么意思"` 里
+  // 提到的路径是材料不是附件，扫一遍会把人家日志里随口提到的文件都搬进工作目录
+  const namedFiles = [];
+  for (const ref of opts.files) {
+    const raw = attach.expandHome(attach.fromFileUrl(ref) || ref, os.homedir());
+    const tries = path.isAbsolute(raw) ? [raw] : [path.resolve(process.cwd(), raw), path.resolve(getWorkspaceDir(), raw)];
+    const hit = tries.find((x) => { try { return fs.existsSync(x); } catch { return false; } });
+    // -f 是人明说的，找不到就当场停。让模型对着一个不存在的文件名瞎猜，钱花了事没办
+    if (!hit) { process.stderr.write(red(`-f ${ref}：找不到这个文件\n`)); process.exit(2); }
+    namedFiles.push({ ref, path: hit });
+  }
+  const shot = splitFiles(oneShot);
+  for (const m of shot.missing) prog(yellow(`  ！${m} 找不到，当普通文字发过去了\n`));
+  if (shot.files.length) oneShot = shot.text; // 没摘出东西就一个字都不动，双空格之类的原样留着
+  const wanted = namedFiles.concat(shot.files);
+
   // 管道：有任务描述时当附加材料，没有时管道内容本身就是任务（wb < 任务.txt）
   const piped = await readStdin();
   if (piped.trim()) {
@@ -465,7 +519,16 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
       ? `${oneShot}\n\n---\n以下是从标准输入读到的内容：\n\n${body}`
       : body.trim();
   }
+  // 先判「有没有话要问」，再往工作目录里搬东西：搬完才发现没话可问，人补一句重跑，
+  // 工作目录里就多出一份 报告-2.md——同一个文件躺两遍，之后谁也说不清该看哪一个
+  if (!oneShot && wanted.length) {
+    process.stderr.write(red(`带上了 ${wanted.map((f) => path.basename(f.path)).join("、")}，可没说要拿它干什么。\n`));
+    process.stderr.write(dim(`把要问的话也写上：wb -f 图.png "这张图里写了什么"\n`));
+    process.exit(2);
+  }
   if (!oneShot && !process.stdin.isTTY) { console.log(cliArgs.helpText()); process.exit(1); }
+  const attachNames = bringIn(wanted);
+  if (attachNames.length) prog(dim(`  带上了 ${attachNames.join("、")}\n`));
 
   if (opts.mcp && (config.mcp_servers || []).length) {
     prog(dim(`连接 MCP（${config.mcp_servers.length} 个，--no-mcp 可跳过）… `));
@@ -479,7 +542,7 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
   prog(dim(`${who} · 模式 ${opts.mode} · 工作目录 ${getWorkspaceDir()} · 会话 ${sessionId}\n`));
 
   if (oneShot) {
-    const r = await runOnce(runtime, oneShot, opts.mode);
+    const r = await runOnce(runtime, attach.withNote(oneShot, attachNames), opts.mode);
     mcpManager.stopAll();
     process.exit(r === "ok" ? 0 : r === "aborted" ? 130 : 1);
   }
@@ -514,7 +577,7 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
     input: process.stdin,
     output: process.stdout,
     prompt: PROMPT,
-    completer: repl.complete,
+    completer: completeLine,
     history: loadHistory(),
     historySize: repl.HISTORY_MAX,
     removeHistoryDuplicates: true,
@@ -523,6 +586,9 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
   // 输入侧：line 事件原样交给 repl.makeInbox——合并粘贴、排队、插话、关掉时叫醒等着的那个人，
   // 全在那张纯逻辑里。时钟和定时器能从外面塞进去，所以这套时序在测试里可以手动推、逐帧断言
   let quitArmed = 0;
+  // 带上了、还没跟着问题发出去的文件名。拖一个文件进来先攒着，等人把要问的话打完再一块儿发——
+  // 拖进来的那一下就发出去，等于让模型自己猜要拿这个文件干嘛
+  const pending = [];
   const inbox = repl.makeInbox({
     onInterject: (text) => {
       // 任务跑着的时候敲的字是「插话」，不是下一条任务
@@ -569,11 +635,50 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
   }
   function menuClose() { menuErase(); menuState.items = []; menuState.sel = -1; }
 
+  // `@` 补路径：工作目录里有什么，边打边列。名字里有空格的按 shell 那套转义写回去——
+  // 这样它跟从访达拖进来的路径长得一模一样，parseLine 两边都认得。
+  // 目录补完留个 `/` 不留空格：这个词还没打完，菜单接着往下列
+  const AT_MAX = 40;
+  function fileMenu(line) {
+    const s = String(line || "");
+    const t = attach.atToken(s);
+    if (!t) return null;
+    const cut = t.prefix.lastIndexOf("/");
+    const sub = cut >= 0 ? t.prefix.slice(0, cut + 1) : "";
+    const base = cut >= 0 ? t.prefix.slice(cut + 1) : t.prefix;
+    const dir = sub.startsWith("~") || path.isAbsolute(sub)
+      ? attach.expandHome(sub, os.homedir())
+      : path.join(getWorkspaceDir(), sub);
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return null; }
+    const low = base.toLowerCase();
+    const items = [];
+    for (const e of ents) {
+      if (e.name.startsWith(".")) continue; // 点开头的是配置和缓存，不是人要带走的东西
+      if (low && !e.name.toLowerCase().startsWith(low)) continue;
+      const isDir = e.isDirectory();
+      items.push({
+        text: e.name + (isDir ? "/" : ""),
+        insert: s.slice(0, t.at) + "@" + attach.escPath(sub + e.name) + (isDir ? "/" : " "),
+        desc: isDir ? "目录" : "",
+      });
+    }
+    items.sort((a, b) => a.text.localeCompare(b.text, "zh"));
+    return items.length ? { kind: "file", items: items.slice(0, AT_MAX) } : null;
+  }
+  // Tab 走的是 readline 自己的补全（菜单没开、或者这台机器上菜单用不了的时候）。
+  // 两边共用 fileMenu 和 repl.menu，不会出现「菜单里有、Tab 补不出来」
+  function completeLine(line) {
+    const f = fileMenu(line);
+    if (f) return [f.items.map((i) => i.insert), String(line == null ? "" : line)];
+    return repl.complete(line);
+  }
+
   function menuDraw() {
     if (!menuUsable() || inbox.busy) { menuClose(); return; }
     let pos = null;
     try { pos = rl.getCursorPos(); } catch { menuState.dead = true; menuClose(); return; }
-    const hit = require("./repl-commands").menu(rl.line || "");
+    const hit = require("./repl-commands").menu(rl.line || "") || fileMenu(rl.line || "");
     const items = hit ? hit.items.slice(0, MENU_MAX) : [];
     // 输入折行了就不画：底下那几行的位置算不准，宁可没菜单也不能画歪
     if (!items.length || pos.rows > 0) { menuClose(); return; }
@@ -724,6 +829,7 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
       const who = eng ? `底层 ${eng.label}` + green("（不花 API 额度）") : `模型 ${llm.provider}（${llm.model}）`;
       const turns = (sess.transcript || []).filter((t) => t.type === "user").length;
       prog(dim(`模式 ${opts.mode} · ${who}\n工作目录 ${getWorkspaceDir()}\n会话 ${sessionId} · 跑过 ${turns} 轮\n`));
+      if (pending.length) prog(dim(`还带着没发出去的文件：${pending.join("、")}\n`));
       return;
     }
     if (v.name === "cd") {
@@ -742,16 +848,55 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
       } catch (e) { prog(red(`看不了：${e.message}\n`)); }
       return;
     }
+    if (v.name === "paste") {
+      // 剪贴板里可能躺着三样东西，按「复制的文件 > 截图位图 > 一大段文字」的顺序认。
+      // 顺序有讲究：在访达里 Cmd+C 一个图片文件，剪贴板里同时有文件引用和这张图的位图，
+      // 先认文件带进来的是原图，先认位图就成了一张重新编码、名字是时间戳的 PNG
+      const dir = getWorkspaceDir();
+      const dest = path.join(dir, attach.freeName(dir, attach.stampName("粘贴图", "png"), new Set(), fs));
+      let r;
+      try { r = attach.readClipboard({ dest }); }
+      catch (e) { prog(red(`读不了剪贴板：${e.message}\n`)); return; }
+      if (r.kind === "unsupported") { prog(yellow(`${r.why}；把文件直接拖进来也一样\n`)); return; }
+      if (r.kind === "empty") { prog(dim("剪贴板里没有能带进来的东西（复制的文件、截图、或者一大段文字）\n")); return; }
+      if (r.kind === "text") {
+        // 短的直接填进输入行让人接着改；几千字塞进一行，光标一动整个屏幕就乱了，所以长的存成文件
+        if (r.text.length <= attach.BIG_TEXT_CHARS) { rl.write(r.text.replace(/\r?\n/g, " ").trim()); return; }
+        const name = attach.freeName(dir, attach.stampName("粘贴文本", "txt"), new Set(), fs);
+        try { fs.writeFileSync(path.join(dir, name), r.text); }
+        catch (e) { prog(red(`存不下来：${e.message}\n`)); return; }
+        if (!pending.includes(name)) pending.push(name);
+        prog(dim(`  ${r.text.length} 字，存成 ${name} 了；接着打你要问的\n`));
+        return;
+      }
+      const got = r.kind === "files" ? r.paths.map((x) => ({ ref: x, path: x })) : [{ ref: r.file, path: r.file }];
+      // 位图那条本来就写在工作目录里，collect 认得出「已经在里面了」，不会再复制一份
+      const names = bringIn(got);
+      for (const n of names) if (!pending.includes(n)) pending.push(n);
+      if (names.length) prog(dim(`  带上了 ${names.join("、")}；接着打你要问的\n`));
+      return;
+    }
+    if (v.name === "drop") {
+      if (!pending.length) { prog(dim("本来就没带着什么\n")); return; }
+      // 只是不往这句话上挂了，文件不删：删掉的可能正是人刚拖进来、还打算用的那份
+      prog(dim(`不带了：${pending.join("、")}（文件还在工作目录里，/files 看得到）\n`));
+      pending.length = 0;
+      return;
+    }
   };
 
-  prog(bold("OpenWorkBuddy CLI 交互模式") + dim("　/help 看命令 · 多行需求直接粘 · Ctrl+C 停当前这趟\n"));
+  prog(bold("OpenWorkBuddy CLI 交互模式") + dim("　/help 看命令 · 文件拖进来就带上 · 多行需求直接粘 · Ctrl+C 停当前这趟\n"));
   let last = "ok";
   rl.prompt();
   for (;;) {
     const line = await nextInput();
     if (line === null) { process.stdout.write("\n"); break; } // Ctrl+D / 关掉了：正常收尾，不挂死
     const v = repl.parse(line);
-    if (v.kind === "blank") { rl.prompt(); continue; }
+    if (v.kind === "blank") {
+      if (pending.length) prog(dim(`  还带着 ${pending.join("、")}；打一句要问的就一块儿发出去，不要了敲 /drop\n`));
+      rl.prompt();
+      continue;
+    }
     if (v.kind === "unknown") { prog(yellow(repl.unknownText(v))); rl.prompt(); continue; }
     if (v.kind === "bad-arg") { prog(yellow(repl.badArgText(v))); rl.prompt(); continue; }
     if (v.kind === "cmd") {
@@ -760,10 +905,21 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
       rl.prompt();
       continue;
     }
+    // 这一行里带进来的文件：拖进来的、粘路径进来的、@ 补出来的，都在这儿摘出去，剩下的才是要问的话
+    const spl = splitFiles(v.text);
+    for (const m of spl.missing) prog(yellow(`  ！${m} 找不到，当普通文字发过去了\n`));
+    for (const n of bringIn(spl.files)) if (!pending.includes(n)) pending.push(n);
+    const body = spl.files.length ? spl.text : v.text;
+    if (!body) {
+      // 只把文件拖进来、还没说要干什么：先攒着，等下一句
+      prog(dim(`  带上了 ${pending.join("、")}；接着打你要问的，不要了敲 /drop\n`));
+      rl.prompt();
+      continue;
+    }
     inbox.setBusy(true);
     menuClose(); // 活儿要开跑了，菜单先收掉——正文一冲下来它就成了屏幕上的残渣
     rl.setPrompt(""); // 任务跑着的时候别让提示符插进流式正文里
-    last = await runOnce(runtime, v.text, opts.mode);
+    last = await runOnce(runtime, attach.withNote(body, pending.splice(0)), opts.mode);
     inbox.setBusy(false);
     quitArmed = 0;
     rl.setPrompt(PROMPT);
