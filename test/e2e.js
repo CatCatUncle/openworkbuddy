@@ -2093,6 +2093,29 @@ function testDesktopAppIdentity() {
   assert.ok(/setAboutPanelOptions\(\{ applicationName: "OpenWorkBuddy"/.test(main), "「关于」面板没署名 OpenWorkBuddy");
   assert.ok(fs.existsSync(path.join(__dirname, "..", "build", "icon.png")) && fs.existsSync(path.join(__dirname, "..", "build", "icon.icns")), "build/icon.png|icns 缺失");
 
+  // #101 最小化之后点 Dock 图标要能回到主界面。macOS 上关窗/最小化都不退进程，点 Dock 只发一个
+  // activate 事件；没人接这个事件，界面就再也叫不出来。用户原话：「我点 docker 里面的图标不会看到界面，
+  // 要点宠物才能看到完整界面」。这里不验正则，直接把回调抠出来喂假窗口跑一遍。
+  const iAct = main.indexOf('app.on("activate"');
+  assert.ok(iAct > 0, 'electron-main.js 没接 app.on("activate")：最小化后点 Dock 图标什么都不会发生');
+  const actBody = main.slice(main.indexOf("{", main.indexOf("=>", iAct)) + 1, main.indexOf("\n});", iAct));
+  const activate = new Function("win", actBody);
+  const calls = [];
+  const fakeWin = (over) => ({
+    isDestroyed: () => false, isMinimized: () => true,
+    restore: () => calls.push("restore"), show: () => calls.push("show"), focus: () => calls.push("focus"),
+    ...over,
+  });
+  activate(fakeWin());
+  assert.deepStrictEqual(calls, ["restore", "show", "focus"], "点 Dock 图标：最小化了先还原、再 show、再 focus —— 少一步窗口就还藏在后面");
+  calls.length = 0;
+  activate(fakeWin({ isMinimized: () => false }));
+  assert.deepStrictEqual(calls, ["show", "focus"], "没最小化时不该多叫一次 restore");
+  calls.length = 0;
+  activate(null);
+  activate(fakeWin({ isDestroyed: () => true }));
+  assert.strictEqual(calls.length, 0, "窗口还没建出来 / 已经销毁时 activate 不许动手，不然是对着销毁的窗口调方法直接抛");
+
   if (process.platform !== "darwin") return;
   // ---- 装机态：make-mac-app.sh 对着一个假的 Electron.app 骨架跑一遍，验产物而不是验脚本文本 ----
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-macapp-"));
@@ -5868,6 +5891,29 @@ async function testOnboardingWizardApi() {
     const a5 = await req("GET", "/api/onboarding");
     assert(a5.json.needs_setup === true && a5.json.seen === true, "切回没 Key 的内置模型：needs_setup=true 但 seen 保留：" + JSON.stringify({ n: a5.json.needs_setup, s: a5.json.seen }));
 
+    // 5-bis. 首页向导填 Key：这一步以前是坏的。Key 被写在**模型条目**上，下一次规整把渠道那行的空 Key
+    // 压平回来，直接抹掉；于是 hasKey 永远 false，设置页写着「未填 Key」、向导每次开机再弹一遍。
+    // 用户原话：「我都在首页填了火山 APIkey，然后后台设置还说我没有设置啊」「我不是设置好了吗，怎么每次进入都让我设置啊」
+    const brainName = (a5.json.models.find((m) => !m.local) || {}).name;
+    assert(brainName, "默认配置里一个云端模型都没有，这一步测不了：" + JSON.stringify(a5.json.models));
+    const provN = (cfgOnDisk().providers || []).length;
+    const WIZ_KEY = "sk-e2e-wizard-key";
+    const put = await req("POST", "/api/onboarding", { model: brainName, api_key: WIZ_KEY, skip_test: true });
+    assert(put.code === 200 && put.json && put.json.ok === true, "向导填 Key 应当成功：HTTP " + put.code + " " + put.body.slice(0, 200));
+    const a6 = await req("GET", "/api/onboarding");
+    assert(a6.json.needs_setup === false && a6.json.brain.ok === true && a6.json.brain.via === "api",
+      "首页填完 Key，向导就不该再弹：" + JSON.stringify({ n: a6.json.needs_setup, b: a6.json.brain }));
+    const c2 = cfgOnDisk();
+    const ent = (c2.models || []).find((m) => m.name === brainName);
+    const prv = (c2.providers || []).find((p) => p.id === (ent || {}).channel);
+    assert(prv && prv.api_key === WIZ_KEY, "Key 要落在渠道那一行（一把 Key 挂一排模型），不是只写在模型条目上：" + JSON.stringify({ ch: (ent || {}).channel, hit: !!prv }));
+    assert(ent.api_key === WIZ_KEY, "压平回模型条目上的 Key 不能是空的——设置页那句「未填 Key」读的就是它");
+    assert((c2.providers || []).length === provN,
+      "填个 Key 不该多分叉出一行渠道（「怎么就是有两个火山模型啊」）：" + provN + " → " + (c2.providers || []).length);
+    const s6 = await req("GET", "/api/settings");
+    const pv = ((s6.json || {}).providers || []).find((p) => p.id === ent.channel);
+    assert(pv && pv.has_key === true, "设置 → 模型 里这个渠道必须显示成已填 Key：" + JSON.stringify(pv && { id: pv.id, has_key: pv.has_key }));
+
     // 6. 未登录不给看（体检表里有渠道名、目录路径）
     const anon = await new Promise((resolve) => {
       http.get({ host: "127.0.0.1", port, path: "/api/onboarding" }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", () => resolve(0));
@@ -5888,7 +5934,7 @@ async function testOnboardingWizardApi() {
     const cliHelp = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
     for (const flag of ["--json", "-q", "-c", "-C", "engines use", "sessions"]) assert(cliHelp.includes(flag), "README 里写的 " + flag + " 在 cli.js 里找不到");
 
-    console.log("✅ 首次开箱向导 API：新装体检表(不泄 Key)·大脑没接上 done 拒且不落盘·本机 CLI 算大脑·done 落 done_at+skipped 清洗+切工作目录·seen 留存 needs_setup 随大脑翻转·匿名 401 + 前端五步/关于页重开/README 命令行一节 静态闸门");
+    console.log("✅ 首次开箱向导 API：新装体检表(不泄 Key)·大脑没接上 done 拒且不落盘·本机 CLI 算大脑·done 落 done_at+skipped 清洗+切工作目录·seen 留存 needs_setup 随大脑翻转·向导填 Key 落在渠道行不分叉、设置页当场认账·匿名 401 + 前端五步/关于页重开/README 命令行一节 静态闸门");
   } finally {
     child.kill("SIGKILL");
     fs.rmSync(home, { recursive: true, force: true });
@@ -6653,7 +6699,9 @@ function keySourcesCheck(app03, app05, toolsSrc, mmSrc) {
   // 「未填 Key」现在只在渠道那一层提一次（模型行不再各喊各的），所以钉的是渠道卡和渠道表单
   for (const [pane, re] of [
     ["设置·渠道表单", /#pf-key-src"\)\.innerHTML = kindKeyLink\(/],
-    ["设置·渠道卡片", /未填 Key \$\{kindKeyLink\(p\.kind, p\.base_url\)\}/],
+    // 「去拿 Key」跟着输入框走：卡里能直接填 Key 之后，链接就该贴在保存钮边上，
+    // 而不是继续挂在「未填 Key」那颗角标上——人是在这一行里犯难的，不是在角标上
+    ["设置·渠道卡片里的 Key 输入行", /class="btn-brand ck-save"[\s\S]{0,160}\$\{kindKeyLink\(p\.kind, p\.base_url\)\}/],
     ["设置·渠道回退到 KEY_SOURCES", /return keyLink\(modelKeySource\(\{ base_url: baseUrl/],
     ["设置·IM 卡片", /class="im-src">\$\{keyLink\(c\.src\)\}/],
   ]) {
@@ -6909,7 +6957,7 @@ function testKeySourcesGate() {
     ["http 链接", app03.replace('"https://app.tavily.com/home"', '"http://app.tavily.com/home"'), app05, mmSrc],
     ["丢 rel=noopener", app03.replace(' rel="noopener"', ""), app05, mmSrc],
     ["IM 卡指向不存在的来源", app03, app05.replace('src: "qq"', 'src: "qq_bot"'), mmSrc],
-    ["渠道卡片不再挂取 Key 链接", app03, app05.replace("未填 Key ${kindKeyLink(p.kind, p.base_url)}", "未填 Key"), mmSrc],
+    ["渠道卡片不再挂取 Key 链接", app03, app05.replace("${kindKeyLink(p.kind, p.base_url)}", ""), mmSrc],
     ["某家渠道的取 Key 链接被抠空", app03, app05, mmSrc.replace('key_url: "https://openrouter.ai/keys"', 'key_url: ""')],
   ];
   let caught = 0;

@@ -1367,7 +1367,17 @@ app.post("/api/onboarding", async (req, res) => {
       if (bad) return res.json({ ok: false, error: bad });
     }
 
-    if (key) entry.api_key = key;
+    if (key) {
+      // Key 归渠道那一层管（config.providers），不是模型条目。写在条目上看着像成了，
+      // 下一次规整会把渠道的空 Key 压平回来，把它抹掉——用户的原话是
+      // 「我都在首页填了火山 APIKey，然后后台设置还说我没有设置」，说的就是这里。
+      const prov = (config.providers || []).find((p) => p.id === entry.channel);
+      if (prov) prov.api_key = key;
+      else entry.api_key = key; // 还没挂渠道的条目：先写着，紧接着的规整会照它认出或建出渠道
+    }
+    // 规整一趟：认渠道、并掉重复的空壳行、再把渠道的地址和 Key 压平回模型条目。
+    // 不跑这一趟，下面 createLLM 读到的还是旧的扁平字段，这一趟对话照样 401
+    chatModels.normalize(config);
     config.active_model = entry.name;
     if (b.workspace_dir) {
       config.workspace_dir = setWorkspaceDir(b.workspace_dir);

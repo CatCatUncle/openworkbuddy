@@ -880,9 +880,28 @@
   .ch-title b { font-weight: 600; }
   .ch-sub, .ch-count { color: var(--wb-text-3); font-size: 12px; }
   .ch-count { margin-left: auto; flex: none; white-space: nowrap; }
-  .ch-warn { flex: none; display: inline-flex; align-items: center; gap: 3px; color: var(--wb-warn); font-size: 12px; white-space: nowrap; }
+  /* 「未填 Key」是可点的：点它展开这张卡、光标落进下面的输入框，别让人拿着 Key 满页找填在哪儿 */
+  /* 底色留白：警告色在白底上是 4.75:1，刚过线；垫一层 10% 的警告色底会掉到 3.9，
+     12px 的小字本来就吃亏，再压一层就真看不清了。所以悬停靠边框加深，不靠填色 */
+  .ch-warn { flex: none; display: inline-flex; align-items: center; gap: 3px; color: var(--wb-warn); font-size: 12px; white-space: nowrap;
+    padding: 2px 8px; border-radius: var(--radius-full); border: 1px solid color-mix(in srgb, var(--wb-warn) 35%, transparent);
+    background: none; cursor: pointer; font-family: inherit; }
+  .ch-warn:hover { border-color: color-mix(in srgb, var(--wb-warn) 75%, transparent); }
   .ch-body { padding: 2px 12px 10px 32px; }
   .ch-note { color: var(--wb-text-3); font-size: 12px; line-height: 1.6; padding: 4px 0; }
+  /* 卡里那把 Key：一行摆平，Key 是渠道的属性，所以位置就在渠道卡的第一行 */
+  .ch-key { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 0 10px; }
+  .ch-key label { flex: none; font-size: 12px; color: var(--wb-text-2); }
+  .ch-key .ck-input { flex: 1; min-width: 180px; margin: 0; }
+  .ch-key .btn-brand { margin: 0; }
+  /* 没填 Key 的渠道收进这一栏：不占主列表，又随时点得开 */
+  .idle-sec { margin-top: 10px; }
+  .idle-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: 1px dashed var(--wb-border);
+    border-radius: var(--radius-lg); background: none; color: var(--wb-text-2); font-size: 13px; font-family: inherit; cursor: pointer; text-align: left; }
+  .idle-head:hover { background: var(--wb-bg-hover); }
+  /* 这一栏里的卡「次一等」，但不能靠 opacity 压——一压，卡上那行 12px 的
+     「未填 Key」对比度从 4.75 掉到 3.4，正是最该看清的那句话变糊。虚线框已经把它跟主列表分开了 */
+  .idle-body { margin-top: 8px; }
   .mrow { display: flex; align-items: center; gap: 8px; padding: 7px 0; }
   .mrow + .mrow { border-top: 1px solid var(--wb-border); }
   .mrow input[type="radio"] { margin: 0; flex: none; }   /* 宽高交给文末那条统一的 16 见方 */

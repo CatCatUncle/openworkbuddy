@@ -315,4 +315,76 @@ console.log("\n【9】对话模型的精选目录（下拉框第一段）");
   eq(mm.catalogFor("chat", "newapi").length, 0, "反向对照：自建网关没有精选条目（型号由用户自己的网关决定）");
 }
 
+// ---------------------------------------------------------------- 10
+console.log("\n【10】重复渠道并行（用户原话：「怎么就是有两个火山模型啊」）");
+{
+  // 首页向导那条路造出来的形状：一行空壳（预置的「火山方舟」，还没填 Key）+ 一行带着 Key 的，
+  // 模型还挂在空壳那行上。不并的话，设置页画出来就是两张一模一样的卡，
+  // 而且模型压平到的是空壳那行的空 Key——「我都在首页填了火山 APIkey，后台设置还说我没设置」
+  const c = {
+    providers: [
+      { id: "ark-2", name: "火山方舟", kind: "ark", base_url: ARK, api_key: "" },
+      { id: "ark", name: "火山方舟", kind: "ark", base_url: ARK, api_key: K_ARK },
+    ],
+    models: [{ name: "豆包", channel: "ark-2", model: "doubao-seed-1-6-250615" }],
+  };
+  cm.normalize(c);
+  eq(c.providers.length, 1, "空壳那行并进有 Key 的那行，不再是「两个火山方舟」");
+  eq(c.providers[0].api_key, K_ARK, "活下来的是有 Key 的那行（空壳赢了等于把 Key 弄丢）");
+  eq(c.models[0].channel, c.providers[0].id, "模型跟着改指到活下来那行，不是指着一个已经没有的 id");
+  eq(c.models[0].api_key, K_ARK, "压平回模型条目上的 Key 不是空的——设置页读的就是它");
+  eq(cm.normalize(c), false, "幂等：再跑一遍不再报「改了」，不然每次启动都落一次盘");
+
+  // 反向对照：两把不同的 Key 是两个账号（自己的号和公司的号），并掉等于拿别人的额度
+  const d = {
+    providers: [
+      { id: "or", name: "OpenRouter", kind: "openrouter", base_url: OR, api_key: K_OR },
+      { id: "or-2", name: "OpenRouter", kind: "openrouter", base_url: OR, api_key: K_OR2 },
+    ],
+    models: [{ name: "主力", channel: "or", model: "openai/gpt-5.2" }],
+  };
+  cm.normalize(d);
+  eq(d.providers.length, 2, "反向对照：同一家两把不同的 Key 还是两行，不许合");
+
+  // 媒体那半边同样要并，而且 media_models 的 provider 也得跟着改指
+  const e = {
+    providers: [
+      { id: "bl-2", name: "百炼", kind: "dashscope", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", api_key: "" },
+      { id: "bl", name: "百炼", kind: "dashscope", base_url: "https://dashscope.aliyuncs.com/api/v1", api_key: "sk-bailian-test-key" },
+    ],
+    media_models: [{ cap: "image", name: "万相", provider: "bl-2", model: "wan2.2-t2i-flash" }],
+  };
+  mm.normalize(e);
+  eq(e.providers.length, 1, "媒体侧也并（通义那家两个地址算同一家，前面第 8 组已经钉过）");
+  eq(e.media_models[0].provider, e.providers[0].id, "媒体模型的 provider 跟着改指");
+  eq(!!e.media.image.api_key, true, "压平给画图的 Key 不是空的");
+}
+
+// ---------------------------------------------------------------- 11
+console.log("\n【11】条目上带着 Key、这家的渠道行还空着：认领它，别分叉");
+{
+  // 老的扁平配置（没有 channel，Key 写在模型条目上）+ 预置的空壳渠道行。
+  // 不认领的话会新开一行：填的 Key 在新行上、模型挂在旧行上，卡片照样写「未填 Key」
+  const a = {
+    providers: [{ id: "ark", name: "火山方舟", kind: "ark", base_url: ARK, api_key: "" }],
+    models: [{ name: "豆包", model: "doubao-seed-1-6-250615", provider: "openai", base_url: ARK, api_key: K_ARK }],
+  };
+  cm.normalize(a);
+  eq(a.providers.length, 1, "认领那行空壳，不分叉出第二个火山方舟");
+  eq(a.providers[0].id, "ark", "认领的是原来那行（id 没变，别处引用它的不会断）");
+  eq(a.providers[0].api_key, K_ARK, "Key 填进了那行空壳");
+  eq(a.models[0].channel, "ark", "模型挂的就是这一行");
+  eq(cm.normalize(a), false, "幂等");
+
+  // 反向对照：那行已经有别的 Key 了，就不是「还没填」而是「别人的号」，必须分两行
+  const b = {
+    providers: [{ id: "ark", name: "火山方舟", kind: "ark", base_url: ARK, api_key: "同事的火山号" }],
+    models: [{ name: "我的豆包", model: "doubao-seed-1-6-250615", provider: "openai", base_url: ARK, api_key: K_ARK }],
+  };
+  cm.normalize(b);
+  eq(b.providers.length, 2, "反向对照：已经有 Key 的行不许被覆盖，那是另一个账号");
+  eq(b.providers[0].api_key, "同事的火山号", "原来那行的 Key 原封不动");
+  eq(b.models[0].api_key, K_ARK, "新模型压平到的是它自己那把 Key");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

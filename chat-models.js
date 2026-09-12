@@ -27,7 +27,7 @@
 
 const {
   PROVIDER_KINDS, guessKind, baseOfKind, protoOfKind,
-  providerKeyOf, uniqueId, normalizeProviders, baseForUse,
+  providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
 } = require("./media-models");
 
 /**
@@ -70,7 +70,19 @@ function normalize(config) {
   const providers = Array.isArray(config.providers) ? config.providers.filter((p) => p && typeof p === "object") : [];
   const models = Array.isArray(config.models) ? config.models.filter((m) => m && typeof m === "object") : [];
   const ids = normalizeProviders(providers);
+  // 先把重复的渠道并掉，再往上挂模型。顺序不能反：反了的话模型会先被压平成「那行空壳的空 Key」，
+  // 合并之后 channel 虽然改指到有 Key 的那行，条目上压平的 api_key 还是空的——
+  // 用户看到的就是「首页明明填了火山的 Key，设置里还说没填」。
+  config.providers = providers;
+  if (dedupeProviders(config)) providers.splice(0, providers.length, ...config.providers);
+  config.providers = providers;
   const byKey = new Map(providers.map((p) => [chanKeyOf(p.kind, p), p]));
+
+  /** 同一家、同一个地址、但还空着 Key 的那行。它不是「另一个账号」，是「这家还没填」 */
+  const nb = (u) => baseForUse(String(u || "").trim(), "media").replace(/\/+$/, "").toLowerCase();
+  const shellFor = (kind, baseUrl) => providers.find(
+    (p) => p.kind === kind && !String(p.api_key || "").trim() && nb(p.base_url) === nb(baseUrl || baseOfKind(kind))
+  );
 
   for (const m of models) {
     // 老条目的协议记在自己身上，这一步之后它归渠道管；这里先归一化，好拿来认渠道
@@ -83,6 +95,18 @@ function normalize(config) {
       const kind = m.provider === "anthropic" ? "anthropic" : guessKind(m.base_url);
       const key = chanKeyOf(kind, m);
       prov = byKey.get(key);
+      // 条目上带着 Key、这家的行却还空着：那就是同一个渠道的「还没填」状态，把 Key 填给它。
+      // 不这么干就会分叉出第二行——用户看到两张一模一样的卡片，填的 Key 在新那行上、
+      // 模型还挂在旧那行上，于是卡片照样写着「未填 Key」。这是首次开箱向导写 Key 的必经之路。
+      if (!prov && String(m.api_key || "").trim()) {
+        const shell = shellFor(kind, m.base_url);
+        if (shell) {
+          byKey.delete(chanKeyOf(shell.kind, shell));
+          shell.api_key = String(m.api_key).trim();
+          byKey.set(chanKeyOf(shell.kind, shell), shell);
+          prov = shell;
+        }
+      }
       if (!prov) {
         prov = {
           id: uniqueId(kind, ids),

@@ -60,21 +60,55 @@ const CATALOG = {
     { kind: "anthropic", id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5（快且便宜）" },
     { kind: "openai", id: "gpt-5.2", label: "GPT-5.2" },
     { kind: "openai", id: "gpt-5-mini", label: "GPT-5 mini（便宜）" },
+    { kind: "openai", id: "gpt-5-nano", label: "GPT-5 nano（最便宜）" },
+    { kind: "openai", id: "gpt-4.1", label: "GPT-4.1" },
+    { kind: "openai", id: "gpt-4o", label: "GPT-4o" },
+    { kind: "openai", id: "o4-mini", label: "o4-mini（会推理）" },
     { kind: "openrouter", id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5（走 OpenRouter）" },
+    { kind: "openrouter", id: "anthropic/claude-opus-5", label: "Claude Opus 5（走 OpenRouter）" },
     { kind: "openrouter", id: "openai/gpt-5.2", label: "GPT-5.2（走 OpenRouter）" },
     { kind: "openrouter", id: "deepseek/deepseek-chat", label: "DeepSeek Chat（走 OpenRouter · 便宜）" },
     { kind: "openrouter", id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro（走 OpenRouter）" },
+    { kind: "openrouter", id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash（走 OpenRouter · 便宜）" },
+    { kind: "openrouter", id: "x-ai/grok-4", label: "Grok 4（走 OpenRouter）" },
+    { kind: "openrouter", id: "qwen/qwen3-max", label: "通义 Qwen3 Max（走 OpenRouter）" },
+    { kind: "openrouter", id: "moonshotai/kimi-k2", label: "Kimi K2（走 OpenRouter）" },
+    { kind: "openrouter", id: "z-ai/glm-4.6", label: "智谱 GLM-4.6（走 OpenRouter）" },
     { kind: "ark", id: "doubao-seed-1-6-250615", label: "豆包 Seed 1.6（能看图）" },
+    { kind: "ark", id: "doubao-seed-1-6-flash-250715", label: "豆包 Seed 1.6 Flash（快且便宜）" },
+    { kind: "ark", id: "doubao-seed-1-6-thinking-250715", label: "豆包 Seed 1.6 Thinking（会想一会儿）" },
+    { kind: "ark", id: "doubao-1-5-pro-32k-250115", label: "豆包 1.5 Pro 32K" },
+    { kind: "ark", id: "doubao-1-5-pro-256k-250115", label: "豆包 1.5 Pro 256K（长文）" },
+    { kind: "ark", id: "doubao-1-5-lite-32k-250115", label: "豆包 1.5 Lite 32K（最便宜）" },
     { kind: "ark", id: "deepseek-v3-250324", label: "DeepSeek V3（火山托管）" },
+    { kind: "ark", id: "deepseek-r1-250528", label: "DeepSeek R1（火山托管 · 会推理）" },
+    { kind: "ark", id: "kimi-k2-250711", label: "Kimi K2（火山托管）" },
     { kind: "dashscope", id: "qwen-max", label: "通义千问 Max" },
     { kind: "dashscope", id: "qwen-plus", label: "通义千问 Plus（便宜）" },
+    { kind: "dashscope", id: "qwen-turbo", label: "通义千问 Turbo（最便宜）" },
+    { kind: "dashscope", id: "qwen3-max", label: "通义千问 3 Max" },
+    { kind: "dashscope", id: "qwen-long", label: "通义千问 Long（长文）" },
+    { kind: "dashscope", id: "qwq-plus", label: "通义 QwQ Plus（会推理）" },
+    { kind: "dashscope", id: "deepseek-v3", label: "DeepSeek V3（百炼托管）" },
     { kind: "deepseek", id: "deepseek-chat", label: "DeepSeek Chat" },
     { kind: "deepseek", id: "deepseek-reasoner", label: "DeepSeek Reasoner（会想一会儿）" },
     { kind: "moonshot", id: "kimi-k2-0905-preview", label: "Kimi K2" },
+    { kind: "moonshot", id: "kimi-k2-turbo-preview", label: "Kimi K2 Turbo（快）" },
+    { kind: "moonshot", id: "moonshot-v1-128k", label: "Moonshot v1 128K（长文）" },
+    { kind: "zhipu", id: "glm-4.6", label: "智谱 GLM-4.6" },
+    { kind: "zhipu", id: "glm-4.5", label: "智谱 GLM-4.5" },
+    { kind: "zhipu", id: "glm-4.5-air", label: "智谱 GLM-4.5 Air（便宜）" },
     { kind: "zhipu", id: "glm-4-plus", label: "智谱 GLM-4 Plus" },
     { kind: "zhipu", id: "glm-4-flash", label: "智谱 GLM-4 Flash（便宜）" },
     { kind: "siliconflow", id: "deepseek-ai/DeepSeek-V3", label: "DeepSeek V3（硅基流动）" },
+    { kind: "siliconflow", id: "deepseek-ai/DeepSeek-R1", label: "DeepSeek R1（硅基流动 · 会推理）" },
+    { kind: "siliconflow", id: "Qwen/Qwen3-32B", label: "Qwen3 32B（硅基流动）" },
+    { kind: "siliconflow", id: "moonshotai/Kimi-K2-Instruct", label: "Kimi K2（硅基流动）" },
     { kind: "ollama", id: "qwen3:14b", label: "Qwen3 14B（本地跑，不花钱）" },
+    { kind: "ollama", id: "qwen3:8b", label: "Qwen3 8B（本地跑，更省内存）" },
+    { kind: "ollama", id: "deepseek-r1:14b", label: "DeepSeek R1 14B（本地跑，会推理）" },
+    { kind: "ollama", id: "llama3.1:8b", label: "Llama 3.1 8B（本地跑）" },
+    { kind: "ollama", id: "gemma3:12b", label: "Gemma 3 12B（本地跑）" },
   ],
   vision: [
     { kind: "ark", id: "doubao-seed-1-6-250615", label: "豆包 Seed 1.6（看图 + 推理）" },
@@ -207,6 +241,65 @@ function normalizeProviders(providers) {
 }
 
 /**
+ * 渠道去重：把重复的行并成一行，被并掉的那些引用一起改指过去。
+ *
+ * 为什么会冒出重复行——「怎么有两个火山方舟」就是这么来的：
+ * 认领渠道时把 Key 也算进了依据（providerKeyOf），这条本身没错，自己的号和同事的号
+ * 指着同一个地址确实该是两行，合并了就是在不知情的情况下用别人的额度。
+ * 可**空 Key 是个例外**：它不代表「另一个账号」，它代表「这家还没填」。
+ * 于是首次开箱向导写下一把火山的 Key，规整时一比对「跟那行空壳不是同一个渠道」，
+ * 又建了一行。用户在设置里看到两张火山卡片，而且他填的 Key 在新那行上、
+ * 模型还挂在旧那行上——所以卡片照样写着「未填 Key」。
+ *
+ * 合并规矩（只并，不动有 Key 的行）：
+ *   1. 同类型 + 同地址 + 同 Key → 同一个渠道，留先出现的那行。
+ *   2. 同类型 + 同地址，一行有 Key 一行空着 → 空的那行是「还没填」，并到有 Key 的那行上。
+ *   3. 同类型 + 同地址、全都空着 → 留一行，其余是重复的空壳。
+ * 按类型分组而不是只按地址：newapi 和 custom 的默认地址都是空串，只按地址会把它们并成一个。
+ *
+ * 返回 true 表示真并掉了行。
+ */
+function dedupeProviders(config) {
+  const providers = Array.isArray(config.providers) ? config.providers.filter((p) => p && typeof p === "object") : [];
+  if (providers.length < 2) return false;
+  const groupOf = (p) => `${p.kind} ${baseForUse(String(p.base_url || "").trim(), "media").replace(/\/+$/, "").toLowerCase()}`;
+  const groups = new Map();
+  for (const p of providers) {
+    const g = groupOf(p);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(p);
+  }
+  const remap = new Map(); // 被并掉的 id → 留下来的 id
+  const gone = new Set();
+  for (const rows of groups.values()) {
+    if (rows.length < 2) continue;
+    const byKey = new Map();
+    let host = null; // 这一组的落脚行：优先第一个填了 Key 的
+    for (const p of rows) {
+      const k = String(p.api_key || "").trim();
+      if (!k) continue;
+      if (byKey.has(k)) { remap.set(p.id, byKey.get(k).id); gone.add(p); continue; }
+      byKey.set(k, p);
+      if (!host) host = p;
+    }
+    const empties = rows.filter((p) => !String(p.api_key || "").trim());
+    const landing = host || empties[0];
+    for (const p of empties) {
+      if (p === landing) continue;
+      remap.set(p.id, landing.id);
+      gone.add(p);
+    }
+  }
+  if (!gone.size) return false;
+  config.providers = providers.filter((p) => !gone.has(p));
+  // 并了两三层（A→B、B→C）也要落到最后那个；给个上限，配置再怎么坏也别转成死循环
+  const to = (id) => { let v = String(id || ""); for (let i = 0; i < 8 && remap.has(v); i++) v = remap.get(v); return v; };
+  for (const m of Array.isArray(config.models) ? config.models : []) if (m && m.channel) m.channel = to(m.channel);
+  for (const m of Array.isArray(config.media_models) ? config.media_models : []) if (m && m.provider) m.provider = to(m.provider);
+  return true;
+}
+
+/**
  * 把配置规整成两张表，幂等——跑一百遍结果一样。
  *
  * 老配置（一路一个模型、Key 抄四份）进来，出去就是 providers + media_models；
@@ -218,6 +311,9 @@ function normalize(config) {
   const providers = Array.isArray(config.providers) ? config.providers.filter((p) => p && typeof p === "object") : [];
   const models = Array.isArray(config.media_models) ? config.media_models.filter((m) => m && typeof m === "object") : [];
   const ids = normalizeProviders(providers);
+  config.providers = providers;
+  if (dedupeProviders(config)) providers.splice(0, providers.length, ...config.providers);
+  config.providers = providers;
   const byKey = new Map(providers.map((p) => [providerKeyOf(p), p]));
 
   // 老的 config.media[cap] 那份扁平配置：找/建渠道，再建一条模型条目
@@ -330,6 +426,6 @@ function catalogFor(cap, kind) {
 module.exports = {
   CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
   guessCap, guessKind, baseOfKind, catalogFor, protoOfKind,
-  providerKeyOf, uniqueId, normalizeProviders, baseForUse,
+  providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError,
 };
