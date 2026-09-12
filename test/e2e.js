@@ -1138,6 +1138,48 @@ async function testCliMode() {
     assert.notStrictEqual(r8.status, 0, "-C 指了个用不了的目录却照跑，文件会被写到别处");
     assert(/工作目录用不了/.test(r8.stderr), "-C 失败时没说清是目录的问题：" + r8.stderr.slice(-300));
 
+    // 9）带文件进去：真跑一趟 wb，看挂在请求体上的是不是那句标记
+    //    单元测试证得了每个零件对，证不了这趟进程真把它挂上了——中间少接一根线，
+    //    人拖进来的文件就是「发出去了但模型没看见」，而终端上什么异常都不会有。
+    const att = path.join(home, "带进来的.md");
+    fs.writeFileSync(att, "这里面写着 ZETA9527 这个暗号");
+    const r9 = await run(["--no-mcp", "-f", att, "这文件里写了什么"]);
+    assert.strictEqual(r9.status, 0, "-f 带文件跑失败：" + r9.stderr.slice(-500));
+    // 只看用户那条消息：系统提示词里本来就写着这个标记是什么意思（agent.js 规范 3.1），
+    // 拿整个请求体当判据的话，标记根本没挂上去也是绿的
+    const lastUser = () => {
+      const msgs = (seen[seen.length - 1] || {}).messages || [];
+      const u = msgs.filter((m) => m.role === "user");
+      return String((u[u.length - 1] || {}).content || "");
+    };
+    const u9 = lastUser();
+    assert(u9.includes("（已上传文件："), "-f 带了文件，用户那条消息上却没挂标记，模型根本不知道有文件：" + JSON.stringify(u9));
+    assert(u9.includes("带进来的.md"), "标记里没有文件名：" + JSON.stringify(u9));
+    assert(u9.includes("这文件里写了什么"), "挂了标记却把人要问的话弄丢了：" + JSON.stringify(u9));
+    assert(!JSON.stringify(seen[seen.length - 1]).includes("ZETA9527"),
+      "★文件正文被塞进对话历史了★ 历史每一步都重发，图片会把上下文撑爆、纯文本模型直接 400，而会话是存盘的——这一步等于把这个会话永久弄坏");
+
+    // 反向对照：不带 -f 的那趟，用户消息上一个标记都不许有。
+    // 没这条的话，「标记是常驻的」这种错也会让上面全绿。
+    const r9b = await run(["--no-mcp", "随便问一句"]);
+    assert.strictEqual(r9b.status, 0, "普通一趟失败：" + r9b.stderr.slice(-500));
+    assert(!lastUser().includes("已上传文件"), "没带文件也挂了标记，模型会去找一个不存在的文件：" + JSON.stringify(lastUser()));
+
+    // -f 指的文件不在：当场停，别让模型对着一个不存在的名字瞎猜（钱花了事没办）
+    const r9c = await run(["--no-mcp", "-f", path.join(home, "没这个文件.png"), "看看"]);
+    assert.strictEqual(r9c.status, 2, "-f 指了个不存在的文件却照跑，退出码是 " + r9c.status);
+    assert(/找不到这个文件/.test(r9c.stderr), "-f 找不到文件时没说人话：" + r9c.stderr.slice(-300));
+
+    // 带了文件却没说要干什么：停，并且**一个字节都不许往工作目录里搬**——
+    // 搬完才报错的话，人补一句话重跑，目录里就会多出一份 带进来的-2.md
+    const wsBefore = fs.existsSync(path.join(home, "workspace"))
+      ? fs.readdirSync(path.join(home, "workspace")).length : 0;
+    const r9d = await run(["--no-mcp", "-f", att]);
+    assert.strictEqual(r9d.status, 2, "只带文件没给话，退出码是 " + r9d.status);
+    const wsAfter = fs.existsSync(path.join(home, "workspace"))
+      ? fs.readdirSync(path.join(home, "workspace")).length : 0;
+    assert.strictEqual(wsAfter, wsBefore, "★没跑成却先把文件搬进去了★ 重跑一次工作目录里就会多一份重名副本");
+
     // 反向断言：把旧那种「按天共用会话」的行为喂给同一条判据，它必须判红
     let caught = false;
     try { assert(!'{"messages":[{"content":"第一条任务ALPHA标记"}]}'.includes("ALPHA标记"), "x"); } catch { caught = true; }
@@ -1152,7 +1194,7 @@ async function testCliMode() {
       assert.strictEqual(m[7].slice(0, 2), m[4], "x");
     } catch { caught4 = true; }
     assert(caught4, "--list 时区判据失效：UTC 那版居然也能过");
-    console.log(`✅ CLI 模式：单发不串台（续接才带上下文）· 答案走 stdout 进度走 stderr · 退出码 0/1 说实话 · 管道进料 · --json 可解析 · -q 是干净正文 · --list 本地时间与轮数对得上 · -C 用不了就停`);
+    console.log(`✅ CLI 模式：单发不串台（续接才带上下文）· 答案走 stdout 进度走 stderr · 退出码 0/1 说实话 · 管道进料 · --json 可解析 · -q 是干净正文 · --list 本地时间与轮数对得上 · -C 用不了就停 · -f 带文件只挂标记不塞正文`);
   } finally {
     srv.close();
     fs.rmSync(home, { recursive: true, force: true });
@@ -5310,6 +5352,7 @@ async function main() {
   await testNodeSuite("cli-args.js", "命令行参数声明表：拼错的选项当场拦下并给建议，老写法逐条对齐不变");
   await testNodeSuite("repl-commands.js", "wb 交互模式：多行粘贴合成一条、打错的斜杠命令当场拦下、Ctrl+C 停活儿不退出");
   await testNodeSuite("md-tty.js", "终端里的 Markdown 渲染：记号不裸奔、代码不被改坏、流式切片结果一致");
+  await testNodeSuite("cli-attach.js", "wb 带文件进来：拖进来的路径 / @ 补全 / 剪贴板，文件不进对话历史");
   await testNodeSuite("icons.js", "界面不许再冒 emoji：源码闸门 + 图标名核对 + 提示条记号转换");
   await testDockerDeploy();
   await testFetchUrlShapes();
