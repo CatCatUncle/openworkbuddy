@@ -1754,6 +1754,7 @@ const GATE_CHECKS = `
   window.petCardHtml = () => '<div class="card-item" id="pet-card"><div class="t">🐱 桌面宠物</div><input type="checkbox" id="pet-on"></div>';
   window.bindPetCard = () => {};
   window.refreshSettingsCache = () => {};
+  window.settingsCache = null; // saveAllModelTables 存完会读它；夹具里没有缓存，给个空的免得裸标识符炸
   window.applyAssistantIdentity = () => {};
   window.setupPicker = () => {};
   window.renderSearchPane = window.renderEvolvePane = window.renderDataPane = window.renderImPane =
@@ -1765,21 +1766,32 @@ const GATE_CHECKS = `
   window.confirm = () => true;
 
   let owner = false, canSwitch = false, posts = [];
+  // 渠道表在几组断言中间要换一批（验副标题和「第 N 个」），所以拎出来当变量
+  let provs = [
+    { id: "or", name: "我的 OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "sk-or-fixture", has_key: true },
+    { id: "ark", name: "火山方舟（豆包）", kind: "ark", base_url: "https://ark.cn-beijing.volces.com/api/v3", api_key: "", has_key: false },
+  ];
   window.fetch = (url, opt) => {
     const method = (opt && opt.method) || "GET";
     if (method !== "GET") posts.push({ url, body: opt && opt.body ? JSON.parse(opt.body) : null });
     const j = (v, okFlag) => Promise.resolve({ ok: okFlag !== false, status: okFlag === false ? 403 : 200, json: () => Promise.resolve(v) });
     if (url === "/api/settings" && method === "GET") return j({
       platform_owner: owner,
-      // 两条模型挂在同一个渠道上——「一把 Key 挂一排模型」正是这一屏要画对的东西
-      providers: [{ id: "or", name: "我的 OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "", has_key: false }],
+      // 两条模型挂在同一个渠道上——「一把 Key 挂一排模型」正是这一屏要画对的东西；
+      // 火山那行空着 Key，用来验「没填的不摊在主列表里，但要有地方能找到」
+      providers: provs.map((x) => ({ ...x })),
       models: [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or" }, { name: "备用", model: "claude-sonnet-5", api_key: "y", channel: "or" }],
       media_models: [],
       active_model: "主力", media: {}, model_follow_last: true, persona: "回复简洁", assistant: { name: "小猫", avatar: "🐱" },
       pet: {}, security: { cmd_allow: ["ls"], cmd_ask: ["rm"] },
     });
     if (url === "/api/model-catalog") return j({
-      kinds: [{ kind: "openrouter", label: "OpenRouter（聚合）", base_url: "https://openrouter.ai/api/v1", key_url: "https://openrouter.ai/keys" }],
+      kinds: [
+        { kind: "openrouter", label: "OpenRouter（聚合）", base_url: "https://openrouter.ai/api/v1", key_url: "https://openrouter.ai/keys" },
+        { kind: "ark", label: "火山方舟（豆包）", base_url: "https://ark.cn-beijing.volces.com/api/v3", key_url: "https://console.volcengine.com/ark" },
+        { kind: "newapi", label: "自建网关（new-api / one-api）", base_url: "" },
+        { kind: "ollama", label: "Ollama（本机）", base_url: "http://localhost:11434/v1" },
+      ],
       catalog: { chat: [{ kind: "openrouter", id: "openai/gpt-5.2", label: "GPT-5.2" }] },
     });
     if (url === "/api/provider-models") return j({ ok: false, why: "测试里不出网", models: [] });
@@ -1819,9 +1831,10 @@ const GATE_CHECKS = `
   ok("模型行上没有那个 ⋯（编辑 / 复制 / 删除都在里头）",
     !mp.querySelector(".row-more") && !mp.querySelector("[data-cedit]") && !mp.querySelector("[data-cdup]") && !mp.querySelector("[data-cdel]"));
   ok("渠道底下没有「＋ 添加模型」和那张表单", !mp.querySelector(".ca-new") && !mp.querySelector(".ca-form"));
-  ok("渠道本身也动不了：没有增删改、没有 Key 输入框",
+  ok("渠道本身也动不了：没有增删改、没有 Key 输入框（卡里那一行也没有）",
     !mp.querySelector("#pf-new") && !mp.querySelector("#pf-key") && !mp.querySelector("#prov-form")
-    && !mp.querySelector("[data-pedit]") && !mp.querySelector("[data-pdel]"));
+    && !mp.querySelector("[data-pedit]") && !mp.querySelector("[data-pdel]")
+    && !mp.querySelector(".ck-input") && !mp.querySelector(".ck-save") && !mp.querySelector("[data-fillkey]"));
   ok("但渠道分组照画——他得看得出哪几个模型共用同一把 Key", !!mp.querySelector("#prov-list") && mp.textContent.includes("我的 OpenRouter"));
   ok("四路媒体模型：成员这儿没有默认单选钮，只有一句人话",
     !mp.querySelector("input[name^=def-]") && !mp.querySelector(".mm-new") && /归平台管理员/.test(mp.textContent));
@@ -1841,10 +1854,59 @@ const GATE_CHECKS = `
     && !!mpo.querySelector("[data-pedit]") && mpo.querySelectorAll(".ch-head[data-cap]").length === 4,
     "渠道表 " + !!mpo.querySelector("#prov-list") + " · 添加模型 " + !!mpo.querySelector(".ca-new") + " · 能力卡 " + mpo.querySelectorAll(".ch-head[data-cap]").length);
   // 一把 Key 挂两个模型：整屏的行数应该比「每条模型摊一行」少——这是 #96 要的那个「不密」
-  ok("两个模型折在一个渠道卡里，「未填 Key / 去拿 Key」这类提示全屏只出现一次，不是一条模型一遍",
+  ok("两个模型折在一个渠道卡里，「去拿 Key」这类提示全屏只出现一次，不是一条模型一遍",
     mpo.querySelectorAll("#prov-list .ch-card").length === 1 && mpo.querySelectorAll("#prov-list .mrow").length === 2
-    && (mpo.textContent.match(/未填 Key/g) || []).length === 1 && (mpo.textContent.match(/去拿 Key/g) || []).length === 1,
+    && (mpo.textContent.match(/去拿 Key/g) || []).length === 1,
     "渠道卡 " + mpo.querySelectorAll("#prov-list .ch-card").length + " · 模型行 " + mpo.querySelectorAll("#prov-list .mrow").length);
+
+  // ②-bis 用户那两句话得同时成立：「没有设置 apikey 的渠道不要显示」+「然后要给地方去显示啊」。
+  // 只做前半句就是把渠道藏死，人再也找不到去哪儿填；只做后半句就是原来那堵十来家服务商的墙。
+  ok("还没填 Key 的那家不摊在主列表里，主列表只剩真能用的那一张卡",
+    mpo.querySelectorAll("#prov-list .ch-card").length === 1
+    && !mpo.querySelector("#prov-list").textContent.includes("火山方舟"),
+    "主列表卡数 " + mpo.querySelectorAll("#prov-list .ch-card").length);
+  ok("但它没被吞掉：底下留着「还没填 Key 的渠道 · 1 家」这一栏，默认收着",
+    !!mpo.querySelector("#idle-toggle") && /还没填 Key 的渠道/.test(mpo.querySelector(".idle-head").textContent)
+    && /1 家/.test(mpo.querySelector(".idle-head").textContent) && !mpo.querySelector(".idle-body"),
+    (mpo.querySelector(".idle-head") || {}).textContent);
+  mpo.querySelector("#idle-toggle").onclick();
+  const mpoI = mBody.querySelector("#settings-pane");
+  ok("点开那一栏：火山方舟出来了，头上挂着一颗可点的「未填 Key」",
+    mpoI.querySelectorAll(".idle-body .ch-card").length === 1
+    && mpoI.querySelector(".idle-body").textContent.includes("火山方舟")
+    && mpoI.querySelectorAll(".idle-body [data-fillkey]").length === 1
+    && (mpoI.textContent.match(/未填 Key/g) || []).length === 1,
+    "收起栏里的卡 " + mpoI.querySelectorAll(".idle-body .ch-card").length);
+  // 点那颗「未填 Key」得把卡展开、光标落进输入框。以前它只是一行字，人拿到 Key 回来还是没地方填——
+  // 填的地方藏在 ⋯ → 编辑渠道 里，用户原话「设置里面都没有填 apikey 的地方啊」
+  mpoI.querySelector("[data-fillkey]").onclick({ stopPropagation() {} });
+  const mpoK = mBody.querySelector("#settings-pane");
+  ok("点「未填 Key」把那张卡展开：里面就是 API Key 输入框、保存钮和「去拿 Key ↗」，不用再绕进 ⋯ → 编辑渠道",
+    !!mpoK.querySelector('.ck-input[data-chan="ark"]') && !!mpoK.querySelector('.ck-save[data-chan="ark"]')
+    && mpoK.querySelector(".idle-body").textContent.includes("去拿 Key"),
+    "输入框 " + !!mpoK.querySelector('.ck-input[data-chan="ark"]') + " · 保存钮 " + !!mpoK.querySelector('.ck-save[data-chan="ark"]'));
+  posts = [];
+  window.toasts = [];
+  mpoK.querySelector('.ck-input[data-chan="ark"]').value = "  ark-key-from-console  ";
+  await mpoK.querySelector('.ck-save[data-chan="ark"]').onclick();
+  const sentKey = posts.find((x) => x.url === "/api/settings" && x.body && x.body.providers);
+  ok("卡里填完点保存：整张渠道表存出去，火山那一行带上了 Key（两头空格掐掉）",
+    !!sentKey && ((sentKey.body.providers.find((x) => x.id === "ark") || {}).api_key === "ark-key-from-console")
+    && window.toasts.join("|").includes("Key 已保存"),
+    JSON.stringify(window.toasts) + " · 存出去的行数 " + (sentKey ? sentKey.body.providers.length : -1));
+  const mpoR = mBody.querySelector("#settings-pane");
+  ok("填完 Key 它当场从「还没填」那一栏挪进主列表，那一栏也跟着消失",
+    mpoR.querySelectorAll("#prov-list .ch-card").length === 2 && !mpoR.querySelector(".idle-sec")
+    && mpoR.querySelector("#prov-list").textContent.includes("火山方舟"),
+    "主列表卡数 " + mpoR.querySelectorAll("#prov-list .ch-card").length);
+  posts = [];
+  window.toasts = [];
+  mpoR.querySelector('.ck-input[data-chan="or"]').value = "   ";
+  await mpoR.querySelector('.ck-save[data-chan="or"]').onclick();
+  ok("反向对照：把 Key 清空再点保存，不存也不假装成功，直说「Key 是空的」",
+    !posts.length && window.toasts.join("|").includes("Key 是空的"),
+    JSON.stringify(window.toasts) + " · 发出去 " + posts.length + " 次");
+
   // 四路媒体也收起来了：默认一路一行，说明和表单都在折叠里，点开才出来
   ok("看图 / 画图 / 视频 / 配音 默认全折着，四段说明不再一起摊在屏上",
     !mpo.querySelector(".mm-new") && !mpo.querySelector(".mm-form")
@@ -1863,6 +1925,38 @@ const GATE_CHECKS = `
     !!secT && !!secT.querySelector(".i") && getComputedStyle(secT).fontWeight === "600"
     && parseFloat(getComputedStyle(secT).columnGap) >= 4,
     "字重 " + (secT && getComputedStyle(secT).fontWeight) + " · 缝 " + (secT && getComputedStyle(secT).columnGap));
+
+  // ②-ter 卡头那行副标题：预置渠道的名字本来就是这家的中文名，再印一遍就是同一个词写两遍；
+  // 而同一家开两个号（用户原话「openrouter 怎么也有两个啊」）得看得出谁是谁
+  provs = [
+    { id: "a", name: "OpenRouter（聚合）", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "k1", has_key: true },
+    { id: "b", name: "OpenRouter（聚合）", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "k2", has_key: true },
+    { id: "c", name: "公司自建网关", kind: "newapi", base_url: "https://gw.example.com/v1", api_key: "k3", has_key: true },
+    { id: "ol", name: "本机 Ollama", kind: "ollama", base_url: "http://localhost:11434/v1", api_key: "", has_key: false },
+    { id: "z", name: "某家云", kind: "custom", base_url: "https://api.example.com/v1", api_key: "", has_key: false },
+  ];
+  await renderSettings("models");
+  const mpoD = mBody.querySelector("#settings-pane");
+  const subs = [...mpoD.querySelectorAll("#prov-list .ch-sub")].map((x) => x.textContent.trim());
+  ok("同一家开了两个号：卡上标「第 1 个 / 第 2 个」分得清，而不是两张一模一样的卡",
+    subs[0] === "第 1 个" && subs[1] === "第 2 个", subs.join(" | "));
+  ok("名字本来就是这家的中文名时，副标题不再把同一个词原样印第二遍",
+    !subs.some((t) => t.includes("OpenRouter（聚合）")), subs.join(" | "));
+  ok("反向对照：自己起了名字的自建网关，副标题照样告诉你它是哪一类，也不硬编「第 1 个」",
+    subs[2] === "自建网关（new-api / one-api）", subs.join(" | "));
+  ok("Ollama 本机跑不要 Key，留在主列表里；同样空着 Key 的云端渠道才进「还没填」那一栏",
+    mpoD.querySelector("#prov-list").textContent.includes("本机 Ollama")
+    && !mpoD.querySelector("#prov-list").textContent.includes("某家云")
+    && /1 家/.test(mpoD.querySelector(".idle-head").textContent),
+    (mpoD.querySelector(".idle-head") || {}).textContent);
+  provs = [
+    { id: "or", name: "我的 OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "sk-or-fixture", has_key: true },
+  ];
+  await renderSettings("models");
+  const mpoE = mBody.querySelector("#settings-pane");
+  ok("反向对照：一家都没重名时，一个「第 N 个」都不出现，收起栏也不画",
+    !/第 \d+ 个/.test(mpoE.textContent) && !mpoE.querySelector(".idle-sec"),
+    mpoE.querySelectorAll("#prov-list .ch-sub").length + " 条副标题");
 
   // ③ 个性化页：名字和偏好是全服务器共用一份，宠物是他自己电脑上那只
   owner = false;

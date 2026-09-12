@@ -394,6 +394,17 @@ app.on("will-quit", () => {
   } catch {}
 });
 
+// 点 Dock 图标（macOS）/ 点任务栏图标要能把界面叫回来。
+// 没有这一段的时候：窗口一最小化或者按快捷键藏起来，Dock 图标就成了摆设——点它什么都不发生，
+// 用户只能去戳桌面宠物才能把主界面调出来，而宠物默认还是关着的，等于彻底找不回来。
+// Electron 在 macOS 上不会自己 show 窗口，activate 事件得应用自己接。
+app.on("activate", () => {
+  if (!win || win.isDestroyed()) return; // 窗口还没建出来/已经销毁：启动流程或 closed 分支会管，这里别插手
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+});
+
 // 主窗口关掉就退出。宠物是个挂件不是窗口，不能让它把进程吊在那儿——
 // 所以这里盯的是主窗口的 closed，而不是 window-all-closed（宠物还开着时它永远不触发）。
 app.on("window-all-closed", () => app.quit());

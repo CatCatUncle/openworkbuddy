@@ -373,6 +373,8 @@ const openChans = new Set();
 /** 展开着的那几路能力。四张卡默认全收着：大多数人只配一两路，四段说明一起摊开正是上一版「字太多」的来源 */
 const openCaps = new Set();
 let chanFirstPaint = true;
+/** 「还没配 Key 的渠道」那一栏是不是展开着。默认收起——十来家服务商摊开是一堵墙 */
+let idleOpen = false;
 let modelsPaneEl = null; // 媒体那半边改完东西，渠道卡上的计数也得跟着变，所以记着 pane 在哪
 let rowMenuBound = false;
 
@@ -624,12 +626,36 @@ function paintModels(pane, s) {
   const kinds = (mediaCatalog || {}).kinds || [];
   const kindLabel = (k) => (kinds.find((x) => x.kind === k) || {}).label || k || "自定义";
   const loose = s.models.filter((m) => !m.channel);
+  // 同一家开两个号（两把 Key）确实是两个渠道，但卡片一字不差，人只会读成「怎么有两个 OpenRouter」。
+  // 重名的才编号，而且只编在显示上——配置里存的还是用户自己起的名字
+  const seen = new Map();
+  s.providers.forEach((p) => seen.set(p.name, (seen.get(p.name) || 0) + 1));
+  const rank = new Map();
+  const dupeTag = (p) => {
+    if ((seen.get(p.name) || 0) < 2) return "";
+    const n = (rank.get(p.name) || 0) + 1;
+    rank.set(p.name, n);
+    return `第 ${n} 个`;
+  };
+  // 配了 Key 的排前面、没配的收进一栏。用户的原话：「没有设置 apikey 的渠道不要显示」
+  // 紧接着又是「然后要给地方去显示啊」——所以不是删掉，是收起来，点一下还在。
+  const ready = s.providers.filter((p) => !chanIdle(p));
+  const idle = s.providers.filter((p) => chanIdle(p));
+  const idleShown = idleOpen || !ready.length; // 一个能用的都没有时直接摊开，否则新用户会以为这儿是空的
   pane.innerHTML = `
     <div style="color:var(--wb-text-2);margin-bottom:10px">${po
       ? "一个渠道一把 Key，底下挂多少模型都共用它——换 Key 只改这一处。点渠道名展开看它下面的模型。"
       : "这台服务器上能用的模型。渠道和 Key 归平台管理员配——那是整台机器的账单。你自己这一次想用哪个，在输入框右下角随时切，只影响你。"}</div>
-    <div id="prov-list">${s.providers.map((p) => chanCard(p, s, po, kindLabel)).join("")
-      || `<div class="d" style="padding:8px 0">还没有渠道。先加一个，再往里加模型。</div>`}</div>
+    <div id="prov-list">${ready.map((p) => chanCard(p, s, po, kindLabel, dupeTag(p))).join("")
+      || `<div class="d" style="padding:8px 0">还没有能用的渠道。${po ? "在下面挑一家填上 Key，或者自己加一个。" : "等平台管理员配好 Key。"}</div>`}</div>
+    ${!idle.length ? "" : `
+    <div class="idle-sec${idleShown ? " open" : ""}">
+      <button type="button" class="idle-head" id="idle-toggle">
+        ${ic(idleShown ? "chevron-down" : "chevron-right", "ch-caret")}
+        <span>还没填 Key 的渠道</span><span class="ch-count">${idle.length} 家</span>
+      </button>
+      ${!idleShown ? "" : `<div class="idle-body">${idle.map((p) => chanCard(p, s, po, kindLabel, dupeTag(p))).join("")}</div>`}
+    </div>`}
     ${!loose.length ? "" : `
     <div class="ch-card open">
       <div class="ch-head" style="cursor:default">
@@ -661,24 +687,47 @@ function paintModels(pane, s) {
   bindModels(pane, s, po);
 }
 
-/** 一个渠道一张卡：头是一行摘要，展开才是它底下的模型 */
-function chanCard(p, s, po, kindLabel) {
+/**
+ * 这个渠道现在能不能用。
+ * Ollama 这类本机服务不要 Key，填不填都能用，不该被归进「还没填 Key」里等着人去填。
+ */
+function chanIdle(p) {
+  const local = p.kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(String(p.base_url || ""));
+  if (local) return false;
+  // has_key 是读接口给非管理员回的（真 Key 被打了掩码），管理员那边看 api_key 本身
+  return p.has_key === false || !String(p.api_key || "").trim();
+}
+
+/** 一个渠道一张卡：头是一行摘要，展开才是它底下的模型 + 那把 Key */
+function chanCard(p, s, po, kindLabel, dupeTag) {
   const i = s.providers.indexOf(p);
   const mine = s.models.filter((m) => m.channel === p.id);
   const mediaN = s.media_models.filter((m) => m.provider === p.id).length;
   const open = openChans.has(p.id);
-  // has_key 是读接口给非管理员回的（真 Key 被打了掩码），管理员那边看 api_key 本身
-  const noKey = p.has_key === false || !String(p.api_key || "").trim();
+  const noKey = chanIdle(p);
+  // 预置渠道的名字本来就是这家的中文名，再把同一句话当副标题印一遍，读起来就是同一个词写了两遍。
+  // 副标题只在名字跟类型不是一回事时才出现（自建网关、自己改过名的渠道）
+  const label = kindLabel(p.kind);
+  const sub = [String(p.name || "").trim() === String(label).trim() ? "" : label, dupeTag || ""].filter(Boolean).join(" · ");
   return `
     <div class="ch-card${open ? " open" : ""}">
       <div class="ch-head" data-chan="${esc(p.id)}">
         ${ic(open ? "chevron-down" : "chevron-right", "ch-caret")}
-        <span class="ch-title"><b>${esc(p.name)}</b><span class="ch-sub">${esc(kindLabel(p.kind))}</span></span>
-        ${po && noKey ? `<span class="ch-warn">${ic("triangle-alert", "i-sm")}未填 Key ${kindKeyLink(p.kind, p.base_url)}</span>` : ""}
+        <span class="ch-title"><b>${esc(p.name)}</b>${sub ? `<span class="ch-sub">${esc(sub)}</span>` : ""}</span>
+        ${po && noKey ? `<button type="button" class="ch-warn" data-fillkey="${esc(p.id)}" title="展开这张卡，直接填 Key">${ic("triangle-alert", "i-sm")}未填 Key</button>` : ""}
         <span class="ch-count">${mine.length} 个对话模型${mediaN ? ` · ${mediaN} 个媒体模型` : ""}</span>
         ${!po ? "" : rowMenu([["pedit", i, "编辑渠道", ""], ["pdel", i, "删除渠道", "danger"]])}
       </div>
       ${!open ? "" : `<div class="ch-body">
+        ${!po ? "" : `
+        <div class="ch-key">
+          <label for="ck-${esc(p.id)}">API Key</label>
+          <input id="ck-${esc(p.id)}" class="ck-input" type="password" data-chan="${esc(p.id)}"
+                 placeholder="${p.kind === "ollama" ? "Ollama 本机跑，不用填" : "粘贴这家服务商的 API Key"}"
+                 value="${esc(p.api_key || "")}" autocomplete="off">
+          <button type="button" class="btn-brand ck-save" data-chan="${esc(p.id)}">保存</button>
+          ${kindKeyLink(p.kind, p.base_url)}
+        </div>`}
         ${mine.length ? mine.map((m) => modelRow(m, s, po)).join("")
           : `<div class="ch-note">这个渠道下面还没有对话模型。${po ? "加一个，它就会出现在输入框右下角那个选择器里。" : ""}</div>`}
         ${!po ? "" : `
@@ -766,7 +815,39 @@ function bindModels(pane, s, po) {
     paintModels(pane, s);
   }));
   bindRowMenus(pane);
+  const idleBtn = pane.querySelector("#idle-toggle");
+  if (idleBtn) idleBtn.onclick = () => { idleOpen = !idleOpen; paintModels(pane, s); };
   if (!po) return; // 下面全是平台管理员那套按钮，没画出来就别去 querySelector（null.onclick 会把整页炸掉）
+
+  // 头上那句「未填 Key」是可点的：点它就把卡展开、光标直接落在输入框里。
+  // 以前它只是一行字加一个「去拿 Key ↗」外链，人拿到 Key 回来还得自己找填在哪儿——
+  // 而填的地方藏在 ⋯ → 编辑渠道 里，用户的原话是「设置里面都没有填 apikey 的地方啊」
+  pane.querySelectorAll("[data-fillkey]").forEach((b) => (b.onclick = (e) => {
+    e.stopPropagation(); // 别让它冒泡到 .ch-head 上，那个是「开/关」，会把刚展开的又关上
+    const id = b.dataset.fillkey;
+    openChans.add(id);
+    paintModels(pane, s);
+    const inp = pane.querySelector(`.ck-input[data-chan="${id}"]`);
+    if (inp) { inp.focus(); inp.scrollIntoView({ block: "center", behavior: "smooth" }); }
+  }));
+  // 卡里那把 Key：填完回车或者点保存就存，不用再绕进「编辑渠道」那张表单
+  pane.querySelectorAll(".ck-input").forEach((inp) => (inp.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); const b = pane.querySelector(`.ck-save[data-chan="${inp.dataset.chan}"]`); if (b) b.click(); }
+  }));
+  pane.querySelectorAll(".ck-save").forEach((b) => (b.onclick = async () => {
+    const id = b.dataset.chan;
+    const inp = pane.querySelector(`.ck-input[data-chan="${id}"]`);
+    const idx = s.providers.findIndex((x) => x.id === id);
+    if (idx < 0 || !inp) return;
+    const key = inp.value.trim();
+    if (!key && s.providers[idx].kind !== "ollama") return toast("Key 是空的。没有 Key 这个渠道连不上，先去它的控制台建一把");
+    // has_key 得跟着改：这一屏判「还没填 Key」先看它（非管理员那边拿到的是掩码后的 Key，
+    // 只能靠这个布尔）。不同步的话，刚填完保存，这张卡还赖在「还没填 Key」那一栏里不动
+    s.providers[idx] = { ...s.providers[idx], api_key: key, has_key: !!key };
+    liveModels.delete(id); // 换了 Key，之前拉回来的模型清单就不作数了
+    openChans.add(id);
+    if (await saveAllModelTables(s, msg)) { toast("Key 已保存"); paintModels(pane, s); }
+  }));
 
   const kinds = (mediaCatalog || {}).kinds || [];
   const form = pane.querySelector("#prov-form");
@@ -820,7 +901,7 @@ function bindModels(pane, s, po) {
     if (!v("pf-name")) return toast("给渠道起个名字，下面挑模型时要按名字认");
     // Anthropic 官方不用填地址（SDK 自带），别的都得是完整的 http(s) 地址
     if (kind !== "anthropic" && !/^https?:\/\//i.test(v("pf-base"))) return toast("接口地址要填完整的 http(s) 地址");
-    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, base_url: v("pf-base"), api_key: v("pf-key") };
+    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, base_url: v("pf-base"), api_key: v("pf-key"), has_key: !!v("pf-key") };
     if (editP >= 0) s.providers[editP] = { ...s.providers[editP], ...entry }; else s.providers.push(entry);
     liveModels.clear(); // 换了地址或 Key，之前拉回来的清单就不作数了
     if (await saveAllModelTables(s, msg)) { form.style.display = "none"; paintModels(pane, s); }
