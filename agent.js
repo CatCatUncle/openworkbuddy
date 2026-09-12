@@ -11,6 +11,7 @@ const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Cl
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
 const prefs = require("./prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
 const callout = require("./callout"); // 正文里的提示条：网页画图标，终端/IM 换文字标签
+const tracing = require("./trace"); // 执行追踪：整趟任务的模型调用/工具调用发去 Langfuse，默认关
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -341,6 +342,10 @@ function activeChannel(config) {
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
   // 备用渠道换道要现造一个 LLM 客户端；懒 require 避免环形依赖，测试时可注入假工厂做零 token 验证
   const makeLLM = llmFactory || ((cfg) => require("./llm").createLLM(cfg));
+  // 执行追踪器。跟 server.js 共用同一个（按 config 认），设置页那份「发出去多少条」才是真账本。
+  // 关着的时候它返回的全是空壳对象，下面所有 tr.span()/tr.end() 都是空转——所以整份文件里
+  // 一处 `if (tr)` 都不用写，也就不存在「漏判一处把别人正跑着的任务搞崩」这种事
+  const tracer = tracing.getTracer(config);
   /** 团里挂着的成员可能已被删掉，取用时按当前专家表过一遍 */
   function teamMembers(team) {
     return (team.members || []).map((n) => experts.find((e) => e.name === n)).filter(Boolean);
@@ -580,7 +585,7 @@ function modePrompt(mode) {
 - **时间盒**：调研、比价、找方案这类活儿，动手前先给自己定个量（查几个来源、看几家、试几种），够了就收手写结论。信息永远查不完，"再多查一点"是最贵的拖延；没查到的写进"待验证"一节交出去，比继续查划算得多。`;
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, lang }) {
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, lang, traceNode }) {
     // 参数压根不是合法 JSON（llm.js 救不回来时塞了个 _raw 进来）。tools.executeTool 里早有这道闸，
     // 可 ask_user / use_skill / MCP / 委派专家这几个是在这儿就地接住的，根本走不到那儿——
     // 于是一路掉进各自的必填校验，报出来的是「question 不能为空」。模型看了以为是自己漏填了字段，
@@ -685,6 +690,7 @@ function modePrompt(mode) {
         sec, // 权限档位覆盖也一并继承
         llmOverride, // 对话选的模型，专家也用同一个
         askUser, // 专家拿不准也能直接问用户（事件带专家标记）
+        traceNode, // 追踪上：专家这一整趟挂在「委派」这次工具调用底下，层级跟界面上看到的一致
       });
       emit({ type: "expert_done", expert: expert.name });
       return { content: `【专家 ${expert.name} 的汇报】\n${sub.finalText || "(无文字汇报)"}`, isError: false };
@@ -733,6 +739,7 @@ function modePrompt(mode) {
           sec,
           llmOverride,
           askUser,
+          traceNode,
         });
         emit({ type: "expert_done", expert: m.name, team: team.name });
         reports.push({ name: m.name, text: sub.finalText || "(无文字汇报)" });
@@ -767,7 +774,7 @@ function modePrompt(mode) {
    * 强制收尾时的最后一句话。不给工具、单独一小段超时预算（撞的就是时间上限，不能再等 5 分钟），
    * 失败就悄悄算了——收尾说明没拿到，也不该把整个任务变成一次报错。
    */
-  async function wrapUp({ history, system, stopNote, emit, depth, stats, llmOverride }) {
+  async function wrapUp({ history, system, stopNote, emit, depth, stats, llmOverride, traceNode }) {
     history.push({
       role: "user",
       content: `【系统】任务已到上限被强制收尾（${stopNote}）。现在不要再调用任何工具，直接给用户一段收尾说明：
@@ -776,15 +783,23 @@ function modePrompt(mode) {
 3. 下次接着做的话，从哪一步继续最省事。
 用中文，简明扼要，不要客套。`,
     });
+    const L2 = llmOverride || llm;
+    const gen = (traceNode || tracing.noop).generation({
+      name: "强制收尾",
+      model: L2.model,
+      input: tracing._internals.messagesOf(system, history),
+      metadata: { depth, stop_note: stopNote },
+    });
     try {
       trimHistory(history, config.agent.max_context_chars || 120000); // 最后一次工具输出可能刚把上下文顶爆，先压一压
-      const result = await (llmOverride || llm).chat({
+      const result = await L2.chat({
         system,
         history,
         tools: [],
         signal: AbortSignal.timeout(Math.min(90000, config.agent.llm_timeout_ms || 300000)),
         onTextDelta: (delta) => emit({ type: "text", delta, depth }),
       });
+      gen.end({ output: result.text || "", usage: result.usage });
       if (result.usage) {
         stats.prompt += result.usage.prompt;
         stats.completion += result.usage.completion;
@@ -795,6 +810,7 @@ function modePrompt(mode) {
       return result.text || "";
     } catch (e) {
       console.warn("[agent] 收尾说明没拿到:", e.message);
+      gen.end({ error: (e && e.message) || String(e) });
       history.pop(); // 把那条【系统】指令撤掉，免得下一轮对话里挂着一句没人回的话
       return "";
     }
@@ -831,7 +847,7 @@ function modePrompt(mode) {
     const cap = (set) => Array.from(set).slice(-40).join("、") || "无";
     return { read: cap(read), wrote: cap(wrote) };
   }
-  async function compactHistory(history, { emit = () => {}, stats } = {}) {
+  async function compactHistory(history, { emit = () => {}, stats, traceNode } = {}) {
     if ((config.agent || {}).compact === false) return;
     const budget = config.agent.max_context_chars || 120000;
     const threshold = config.agent.compact_threshold_chars || Math.floor(budget * 0.6);
@@ -898,6 +914,12 @@ function modePrompt(mode) {
         }
       }
     }
+    const gen = (traceNode || tracing.noop).generation({
+      name: "压缩历史",
+      model: llm.model,
+      input: [{ role: "user", content: tracing._internals.capText(transcript, 4000) }],
+      metadata: { chars_before: historyChars(history), cut_at: cut },
+    });
     const result = await llm.chat({
       system:
         "你是会话压缩器。把用户给你的对话转写压成一份接手备忘录，严格按以下结构写（没内容的小节写「无」）：\n" +
@@ -908,6 +930,7 @@ function modePrompt(mode) {
       tools: [],
       signal: AbortSignal.timeout(60000),
     });
+    gen.end({ output: result.text || "", usage: result.usage });
     if (result.usage && stats) { stats.prompt += result.usage.prompt; stats.completion += result.usage.completion; stats.cached = (stats.cached || 0) + (result.usage.cached || 0); stats.calls++; }
     const summary = String(result.text || "").trim();
     if (!summary) return;
@@ -1185,7 +1208,26 @@ function modePrompt(mode) {
    * @param emit    事件回调（SSE / IM 进度）
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, lang }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, lang, sessionId, traceNode }) {
+    // ── 执行追踪 ─────────────────────────────────────────────────────────
+    // 顶层任务开一条 trace，这一趟里每次模型调用、每个工具都挂在它底下；专家子任务收到的是
+    // 「委派」那次工具调用的 span，接着往下挂，层级跟界面上看到的一模一样。
+    // 建在引擎分岔**之前**：选了本机 CLI 的用户也该有据可查，哪怕里头的步骤我们看不见。
+    // 关掉追踪（默认）时这里拿到的是空壳，底下所有 tr.xxx 都是空转，一分钱一毫秒都不花。
+    const ownsTrace = !traceNode; // 自己开的才自己收尾；专家收到的是别人的 span，轮不到它 end
+    const tr = traceNode || (depth === 0
+      ? tracer.trace({
+          name: String(taskLabel || "任务").slice(0, 120),
+          userId: user ? String(user.username || user.name || user.id || "") : "",
+          sessionId,
+          input: tracing._internals.messagesOf("", history),
+          tags: [mode, lang].filter(Boolean),
+          metadata: { mode, lang: lang || "", workspace: baseDir || "" },
+        })
+      : tracing.noop);
+    // 链接开工就给，不等跑完——长任务里最想点开看的恰恰是跑到一半的时候
+    if (ownsTrace && tr.enabled) emit({ type: "trace", url: tr.url, id: tr.id, depth: 0 });
+
     // ── 底层引擎分岔 ──────────────────────────────────────────────────────
     // 用户在设置里选了「本机 Claude Code / 本机 Codex」时，这一整趟任务交给那个 CLI 跑，
     // 本项目只负责翻译事件、算文件差异、记账。为什么是整层替换而不是换个模型：
@@ -1200,10 +1242,29 @@ function modePrompt(mode) {
       // 引擎是用户在设置里挑一次、两条线都照着跑的另一件事。绑在一起的话，切个标签能把别人配的模型换掉。
       const picked = engines.resolve(prefs.agentView(config)); // 引擎名写错会在这里抛错，不会静默退回内置
       if (picked.backend) {
-        return await runViaEngine({
-          backend: picked.backend, opts: picked.opts,
-          history, emit, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang,
+        const sp = tr.span({
+          name: `外部引擎 ${picked.backend}`,
+          input: tracing._internals.messagesOf("", history),
+          metadata: {
+            engine: picked.backend,
+            // 这句得写清楚，不然看 trace 的人会以为这个引擎统共只调了一次模型
+            说明: "这一趟整个交给本机 CLI 跑了。它内部分几步、每步调了什么模型、烧了多少 token，本项目拿不到——这条 span 只有进去的话和出来的结果，中间是黑盒。想看逐步明细就把引擎切回「内置」。",
+          },
         });
+        try {
+          const out = await runViaEngine({
+            backend: picked.backend, opts: picked.opts,
+            history, emit, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang,
+          });
+          sp.end({ output: out.finalText || "", usage: out.usage, metadata: { stopped: out.stopped || "", engine_session: out.sessionId || "" } });
+          if (ownsTrace) tr.end({ output: out.finalText || "", usage: out.usage, metadata: { engine: picked.backend } });
+          return out;
+        } catch (e) {
+          const why = (e && e.message) || String(e);
+          sp.end({ error: why });
+          if (ownsTrace) tr.end({ error: why });
+          throw e;
+        }
       }
     }
     let L = llmOverride || llm; // 按对话选的模型：整棵任务树（含专家）都用它；中途换道后，之后委派的专家也跟着走新渠道
@@ -1287,7 +1348,7 @@ function modePrompt(mode) {
 
     // 长会话先压缩再开跑：只在顶层任务做（专家子任务的 history 是临时的，压不着）
     if (depth === 0) {
-      try { await compactHistory(history, { emit, stats }); }
+      try { await compactHistory(history, { emit, stats, traceNode: tr }); }
       catch (e) { console.warn("[agent] 上下文压缩失败，本次跳过:", e.message); }
     }
 
@@ -1331,7 +1392,7 @@ function modePrompt(mode) {
       // 发请求前先把老工具结果压进上下文预算，宁可丢细节也不能让整个任务撞 400 全丢
       // 超阈值时先智能压缩（老步骤浓缩成接手摘要），压不动再盲截。没有这一步，
       // 跑到几十步的长任务只能靠 trimHistory 把早期工具输出截成空壳，模型越跑越失忆
-      try { await compactHistory(history, { emit, stats }); }
+      try { await compactHistory(history, { emit, stats, traceNode: tr }); }
       catch (e) { console.warn("[agent] 任务中压缩失败，本步跳过:", e.message); }
       const trimmed = trimHistory(history, config.agent.max_context_chars || 120000);
       if (trimmed) {
@@ -1364,6 +1425,13 @@ function modePrompt(mode) {
       const signal = AbortSignal.any
         ? AbortSignal.any([stallCtl.signal, budgetSignal, ...(stopSignal ? [stopSignal] : [])])
         : stallCtl.signal;
+      const gen = tr.generation({
+        name: `第 ${step + 1} 步`,
+        model: L.model,
+        input: tracing._internals.messagesOf(system, history),
+        modelParameters: { provider: L.provider || "", tools: tools.length, mode },
+        metadata: { depth, step: step + 1, failed_over: failedOver },
+      });
       let result;
       try {
         result = await L.chat({
@@ -1375,7 +1443,15 @@ function modePrompt(mode) {
           onStatus: (text) => emit({ type: "status", text, depth }),
           onTextDelta: (delta) => emit({ type: "text", delta, depth }),
         });
+        // 这一步到底干了什么：说了什么话 + 要调哪几个工具。只记正文的话，纯调工具的那些步
+        // 在 trace 上会是一片空白，看的人会以为模型这一步什么都没吐
+        gen.end({
+          output: [result.text || "", ...(result.toolCalls || []).map((t) => `→ 调用 ${t.name}(${JSON.stringify(t.input || {})})`)]
+            .filter(Boolean).join("\n"),
+          usage: result.usage,
+        });
       } catch (e) {
+        gen.end({ error: (e && e.message) || String(e) });
         if (e.name === "TimeoutError" || e.name === "AbortError") {
           const manual = stopSignal && stopSignal.aborted;
           const stalled = stallCtl.signal.aborted;
@@ -1504,14 +1580,22 @@ function modePrompt(mode) {
           // 同一调用已连续 4 次拿到一模一样的结果，第 5 次不再执行——结果不会变，只会烧钱
           r = { content: `【系统拦截】你已用完全相同的参数连续 ${seen.streak} 次调用 ${tc.name}，每次结果都一模一样，本次未执行。别再重复同样的动作：换参数、换工具或换一条实现路径；确实无路可走就停止并如实说明卡在哪里。`, isError: true };
         } else {
+          const sp = tr.span({
+            name: `工具 ${tc.name}`,
+            input: tc.input,
+            metadata: { depth, tool: tc.name, title: toolHeadline(tc.name, tc.input) },
+          });
           try {
-            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser, lang });
+            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser, lang, traceNode: sp });
           } catch (e) {
             // 工具抛出来的异常在这里就地变成一条工具结果。让它往上冒的话，下面那条
             // history.push({role:"tool"}) 就跑不到，历史里留下一条配不上对的 assistant——
             // 会话落盘之后每次请求都 400。报错本身也该让模型看见，它才知道要换条路。
             r = { content: `（${tc.name} 执行时抛出异常：${(e && e.message) || e}）`, isError: true };
           }
+          // 工具报错在本项目里是**正常返回**（模型要看见错才知道换条路），所以不能靠 catch 判——
+          // 得看 isError。不这么写的话 trace 上满屏绿色，真正出问题的那几步一个都标不出来
+          sp.end({ output: String(r.content || ""), error: r.isError ? String(r.content || "").slice(0, 500) : "" });
           if (r.extendMs) deadline += r.extendMs; // 等用户回答的时间不算任务运行时间
           const sig = String(r.content).slice(0, 2000);
           loopHist.set(loopKey, { sig, streak: seen && seen.sig === sig ? seen.streak + 1 : 1 });
@@ -1617,7 +1701,7 @@ function modePrompt(mode) {
       // 再花一次调用让它把话说完：做到哪、有什么、还差什么。手动停止的不做——用户喊停就是不想再花钱。
       // 手动停止不花钱；模型响应超时也跳过——模型都挂起了，再拿它写收尾只是多等一轮超时
       if (!(stopSignal && stopSignal.aborted) && !stopNote.startsWith("模型响应超时")) {
-        const wrapped = await wrapUp({ history, system, stopNote, emit, depth, stats, llmOverride: L });
+        const wrapped = await wrapUp({ history, system, stopNote, emit, depth, stats, llmOverride: L, traceNode: tr });
         if (wrapped) finalText = wrapped;
       }
       // 「没做完」和「撞上限」得给不同的话：前者要把还差哪几项摆出来，后者才是叫用户调上限
@@ -1636,6 +1720,14 @@ function modePrompt(mode) {
     };
     if (depth === 0) {
       emit({ type: "usage", model: L.model, provider: L.provider, ...usage });
+    }
+    if (ownsTrace) {
+      tr.end({
+        output: finalText || "",
+        usage,
+        metadata: { model: L.model, provider: L.provider || "", stopped: stopNote || "", steps: stats.calls },
+      });
+      tracer.flush(); // 任务刚结束正是用户点开链接的时刻，别让最后几条在队列里压两秒
     }
     return { finalText, usage, stopped: stopNote || null };
     } finally {

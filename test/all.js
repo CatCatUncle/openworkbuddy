@@ -33,6 +33,7 @@ const SUITES = [
   ["media-models", "生图 / 生视频 / TTS 多模型"],
   ["tenant", "多租户与权限"],
   ["deploy", "Docker 部署物静态检查"],
+  ["trace", "执行追踪（Langfuse）上报"],
   ["e2e", "端到端（含 frontend.js、admin-ui.js）"],
 ];
 

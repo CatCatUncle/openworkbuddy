@@ -296,16 +296,17 @@ const SETTING_CATS = [
   ["look", "外观", "palette"],
   ["memory", "记忆", "notebook-pen"],
   ["evolve", "自进化", "sprout"],
+  ["trace", "执行追踪", "activity"],
   ["data", "数据", "database"],
   ["im", "助理设置", "smartphone"],
   ["about", "关于", "info"],
 ];
 /**
- * 这四页从头到尾都是服务器级的：联网搜索的 Key、自进化规则、备份/工作目录、飞书企微钉钉接入。
+ * 这五页从头到尾都是服务器级的：联网搜索的 Key、自进化规则、执行追踪、备份/工作目录、飞书企微钉钉接入。
  * 多人服务器上的普通成员每一颗按钮都会 403，连一行属于他自己的东西都没有——那就别画这个标签页。
  * （models / persona / security 是混的：里面有他自己的东西，标签留着，卡片各自按 platform_owner 挑。）
  */
-const PLATFORM_ONLY_CATS = new Set(["search", "evolve", "data", "im"]);
+const PLATFORM_ONLY_CATS = new Set(["search", "evolve", "trace", "data", "im"]);
 async function renderSettings(active) {
   const s = await fetch("/api/settings").then(r => r.json());
   const cats = s.platform_owner ? SETTING_CATS : SETTING_CATS.filter(([k]) => !PLATFORM_ONLY_CATS.has(k));
@@ -328,6 +329,7 @@ async function renderSettings(active) {
   else if (active === "look") renderLookPane(pane);
   else if (active === "memory") renderMemoryPane(pane);
   else if (active === "evolve") renderEvolvePane(pane);
+  else if (active === "trace") renderTracePane(pane, s);
   else if (active === "data") renderDataPane(pane, s);
   else if (active === "security") renderSecurityPane(pane, s);
   else if (active === "shortcuts") renderShortcutsPane(pane, s);
@@ -1075,6 +1077,90 @@ function renderSearchPane(pane, s) {
       const r = await fetch("/api/search/test").then(x => x.json()).catch(() => ({ error: "请求失败" }));
       msg.textContent = r.ok ? `✓ ${r.provider} 可用：${r.sample}` : `✗ ${r.error || "测试失败"}`;
     } else msg.textContent = lastSaveError || "保存失败";
+    e.target.disabled = false;
+  };
+}
+/**
+ * 执行追踪（Langfuse）。
+ *
+ * 这一页要解决的是一句很朴素的诉求：「我要能看到每次执行的具体 trace」。
+ * 界面上的过程区是给人看的，一行一句；真要排查「第 7 步为什么换个参数又调一遍」
+ * 「哪次调用把 token 烧掉一半」，得看结构化的记录。
+ *
+ * 三件事必须在这页说清楚，不然用户开着开着会踩坑：
+ *   ① 打开之后**提示词原文、模型回复、工具参数**都会发到他填的那台机器上；
+ *   ② 自己用 Docker 搭的就在自己机器里，填官方 cloud 就是发给别人；
+ *   ③ 「开了但一条都没到」和「开了且正常」在界面上得长得不一样——所以下面那排计数是真账本。
+ */
+function renderTracePane(pane, s) {
+  const lf = s.langfuse || {};
+  const st = lf.stats || {};
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">执行追踪</div>
+      <div class="d" style="margin-bottom:6px">开了之后，每趟任务的每次模型调用、每个工具、每笔 token 都会发到 Langfuse，在那边一层层展开看。默认关着——<b>打开等于把提示词原文、模型回复、工具参数发到下面填的那台机器</b>。自己用 Docker 搭一个就全在自己机器里；填官方 cloud.langfuse.com 就是发给别人。</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="lf-on" style="margin:0"${lf.enabled ? " checked" : ""}> 打开执行追踪</label>
+      <div class="t" style="margin-top:10px">Langfuse 地址</div>
+      <input id="lf-host" placeholder="https://cloud.langfuse.com 或 http://你的内网地址:3000" value="${esc(lf.host || "")}">
+      <div class="t" style="margin-top:8px">公钥 Public Key</div>
+      <input id="lf-pk" placeholder="pk-lf-..." value="${esc(lf.public_key || "")}">
+      <div class="t" style="margin-top:8px">私钥 Secret Key</div>
+      <input id="lf-sk" type="password" placeholder="sk-lf-..." value="${esc(lf.secret_key || "")}">
+      <div class="d" style="margin-top:6px">两把钥匙在 Langfuse 里进「项目设置 → API Keys」生成一对，复制过来。</div>
+    </div>
+    <div class="card-item">
+      <div class="t">上报情况</div>
+      <div class="d" id="lf-stat"></div>
+    </div>
+    <button class="btn-brand" id="lf-save">保存</button>
+    <button class="btn-plain" id="lf-test">测一下能不能通</button>
+    <span class="ok-msg" id="lf-msg"></span>`;
+
+  // 上报账本。0 在这儿是「一条都没发过」，不是「一条都没失败」——两种意思写成两句话，
+  // 不然用户看到一排 0 会以为一切正常（其实可能是地址填错了，压根没发出去过）
+  const statBox = pane.querySelector("#lf-stat");
+  if (!lf.enabled) statBox.textContent = "还没打开。打开并填好钥匙后，这里会显示实际发出去多少条。";
+  // 地址填错和钥匙没填全得分开说。设置页保存时会拦住不像网址的地址，但手改 config.json
+  // 的人（自建、Docker 部署）绕得过去，那种情况下写成「钥匙没填全」会让人去翻错的地方
+  else if (st.bad_host) statBox.textContent = "开着，但 config.json 里的地址不像个网址（得是 http:// 或 https:// 开头）——现在一条都不会发，也不会替你退回官方云，免得把提示词发错地方。";
+  else if (!st.ready) statBox.textContent = "开着，但钥匙没填全——现在一条都不会发。";
+  else {
+    const bits = [`已发出 ${st.sent || 0} 条`];
+    if (st.queued) bits.push(`排队中 ${st.queued} 条`);
+    if (st.failed) bits.push(`发失败 ${st.failed} 条`);
+    if (st.rejected) bits.push(`被对方拒收 ${st.rejected} 条`);
+    if (st.dropped) bits.push(`积压丢弃 ${st.dropped} 条`);
+    statBox.textContent = (st.sent || st.failed || st.queued)
+      ? bits.join(" · ") + (st.last_error ? `。最后一次出错：${st.last_error}` : "")
+      : "开着，但这台服务器重启之后还没跑过任务，所以一条都还没发。跑一趟任务再回来看。";
+  }
+
+  const msg = pane.querySelector("#lf-msg");
+  const collect = () => ({
+    enabled: pane.querySelector("#lf-on").checked,
+    host: pane.querySelector("#lf-host").value.trim(),
+    public_key: pane.querySelector("#lf-pk").value.trim(),
+    secret_key: pane.querySelector("#lf-sk").value.trim(),
+  });
+  pane.querySelector("#lf-save").onclick = async () => {
+    if (await saveSettings({ langfuse: collect() }, msg)) renderSettings("trace"); // 存完立刻重画，账本那块跟着更新
+  };
+  // 这颗按钮是这一页的重点：这一块的失败全是静默的（地址少个字母、Key 是另一个项目的、
+  // 自建实例端口没开），任务照跑，只是 trace 永远空着。所以当场发一条真的上去，成不成立刻说。
+  // 不先存：用户就是想在存之前确认这几个值对不对
+  pane.querySelector("#lf-test").onclick = async (e) => {
+    e.target.disabled = true;
+    msg.textContent = "正在发一条测试记录…";
+    const c = collect();
+    const r = await fetch("/api/trace/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host: c.host, public_key: c.public_key, secret_key: c.secret_key }),
+    }).then((x) => x.json()).catch(() => ({ ok: false, detail: "请求没发出去" }));
+    if (r.ok) {
+      msg.innerHTML = `✓ 通了，测试记录已经在那边了 <a href="${esc(r.url || "")}" target="_blank" rel="noopener">点开看看</a>`;
+    } else {
+      msg.textContent = `✗ 没通：${r.detail || r.error || "原因不明"}`;
+    }
     e.target.disabled = false;
   };
 }
