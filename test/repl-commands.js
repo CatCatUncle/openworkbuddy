@@ -433,6 +433,86 @@ console.log("\n⑰之二 /model 换完真的换掉了");
   ok(/await runReplCommand\(v\)/.test(src), "★并且主循环真的等它★ 不等的话提示符会插进输出中间");
 }
 
+// ── ⑱ 打 `/` 时冒出来的那张菜单 ──────────────────────────────────────────
+// 用户原话：「怎么cli模型，我输入/的时候没有自动补全啊」。Tab 补全一直都在，
+// 可一个记不住命令的人不会去按 Tab——他打个 `/` 就等着看有什么。菜单得自己冒出来。
+console.log("\n⑱ / 菜单：打一半就能看见有什么命令");
+{
+  const all = R.menu("/");
+  ok(all && all.kind === "cmd", "光一个斜杠就出菜单");
+  eq(all.items.length, R.COMMANDS.length, "★所有命令一条不少★ 菜单里漏掉的那条，对用户来说就等于不存在");
+  ok(all.items.every((i) => i.text && i.insert && typeof i.desc === "string"), "每条都有名字、要插进去的串、和一句人话", all.items[0]);
+  eq(R.menu("/mo").items.map((i) => i.text).join(" "), "/mode /model", "打一半只留沾边的");
+  eq(R.menu("/q").items.map((i) => i.text).join(""), "/exit", "★别名也认★ 打 /q 得看得见 /exit");
+  // 插进去的那一串：吃参数的后面留个空格，不吃的不留。留错了的后果不一样——
+  // /new 后面多一个空格，回车进历史的就是带尾空格的另一条，翻上来还得自己删
+  eq(R.menu("/mod").items.find((i) => i.text === "/mode").insert, "/mode ", "吃参数的命令后面跟一个空格，接着打值就行");
+  eq(R.menu("/ne").items[0].insert, "/new", "★不吃参数的不许多带空格★");
+  // 第二层：命令打完了，轮到取值
+  const vals = R.menu("/mode ");
+  ok(vals && vals.kind === "choice", "命令后面一个空格：该轮到挑取值了");
+  eq(vals.items.map((i) => i.insert).join(" "), "/mode craft /mode plan /mode ask", "三个取值都在，挑中插回去的是整行");
+  eq(R.menu("/mode p").items.map((i) => i.text).join(""), "plan", "取值也能打一半");
+  // 反向对照：不该出菜单的地方一条都不许出——菜单是会把光标顶走的，乱弹比不弹更烦人
+  eq(R.menu("你好"), null, "★普通一句话不出菜单★");
+  eq(R.menu(""), null, "空行不出");
+  eq(R.menu("/zzz"), null, "★压根没有的命令不出★ 弹一张空菜单等于骗人");
+  eq(R.menu("/new "), null, "★不吃参数的命令后面没什么好挑的★");
+  eq(R.menu("/mode zzz"), null, "取值里没这个，也不出");
+  eq(R.menu("帮我 /help 一下"), null, "★斜杠不在行首就不是命令★");
+  eq(R.menu("/mode craft 再多一个词"), null, "★值后面还接着打字就不是在挑值了★");
+}
+
+// ── ⑱之二 菜单和 Tab 补全不许各说各的 ───────────────────────────────────
+// 两套逻辑各算一遍同一张表，迟早会分叉：菜单里看得见、Tab 一按补不出来，
+// 或者反过来。分叉了人只会觉得「这破玩意儿时灵时不灵」。
+console.log("\n⑱之二 菜单里有的，Tab 一定补得出来");
+{
+  const 行 = ["/", "/m", "/mo", "/c", "/e", "/q", "/mode ", "/mode p"];
+  for (const line of 行) {
+    const hit = R.menu(line);
+    const [comp] = R.complete(line);
+    const fromMenu = hit ? hit.items.map((i) => i.insert.trim()).sort().join(" ") : "";
+    const fromComp = comp.slice().sort().join(" ");
+    eq(fromMenu, fromComp, `「${line}」菜单和 Tab 补全说的是同一批`);
+  }
+  // 反向对照：上面那几行得真有内容，不然这一节是在比两个空串
+  ok(行.every((l) => (R.menu(l) || { items: [] }).items.length > 0), "★（先证明这几行确实各有内容）★ 比两个空串永远相等");
+}
+
+// ── ⑱之三 cli.js 那头真的把菜单画出来了 ─────────────────────────────────
+console.log("\n⑱之三 菜单的画法：不许把人的输入搞乱");
+{
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  ok(/require\("\.\/repl-commands"\)\.menu\(/.test(src), "★画之前先问上面那个纯函数★ 不问的话这一整节测的是没人用的代码");
+  ok(/const menuUsable = \(\) => [^\n]*process\.stdout\.isTTY[^\n]*process\.stdin\.isTTY/.test(src),
+     "★不是终端就一行都不画★ wb … | tee 里画菜单，出来的是一堆转义序列");
+  ok(/pos\.rows > 0/.test(src), "★输入自己换行了就不画★ 光标不在最后一行，画下去会盖掉人打的字");
+  ok(/inbox\.busy/.test(src.split("function menuDraw")[1] || ""), "★活儿跑着的时候不画★ 正文一冲下来菜单就成了残渣");
+  ok(/menuClose\(\); \/\/ 活儿要开跑了/.test(src), "★回车开跑前先擦干净★");
+  ok(/rl\.on\("close", \(\) => \{ menuClose\(\)/.test(src), "★Ctrl\+D 退出前擦干净★ 不擦的话残菜单会留在退出后的终端里");
+  ok(/menuClose\(\);/.test((src.split('rl.on("SIGINT"')[1] || "").slice(0, 200)), "★Ctrl\+C 也擦★");
+  // 光标是靠相对位移回去的：写真换行把屏幕顶上去，再按同样的行数退回来。
+  // 算绝对行号的写法在「屏幕刚好滚了一行」的时候会差一行——终端滚没滚，程序这边是不知道的
+  ok(/readline\.moveCursor\(process\.stdout, 0, -lines\.length\)/.test(src), "★画完按相对行数退回来★");
+  ok(!/cursorTo\(process\.stdout, \d+, \d+\)/.test(src), "★不许按绝对行号定位★ 屏幕一滚就错一行");
+  ok(/while \(tw\.cols\(body\) > room\)/.test(src), "★每行都砍到终端宽度以内★ 超一个字就会折行，折了行擦的时候就擦不干净");
+  ok(/MENU_MAX/.test(src), "★条数有上限★ 一次弹二十行把整屏顶走了");
+
+  // ↑↓ 是从 readline 手里抢过来的，抢的时机必须卡死：只在菜单开着的时候
+  const tty = src.split("const ttyWriteOrig")[1] || "";
+  ok(/typeof rl\._ttyWrite === "function" \?/.test(src), "★拿不到 readline 内部就降级，不许崩★ 换个 Node 版本就打不开 CLI，那是最糟的一种坏");
+  ok(/if \(ttyWriteOrig\) \{/.test(src), "★降级之后菜单照样弹，只是挑不动★");
+  const iGuard = tty.indexOf("menuState.items.length");
+  const iUp = tty.indexOf('k.name === "up"');
+  ok(iGuard >= 0 && iUp > iGuard, "★↑↓ 只在菜单开着时才归菜单管★ 否则翻历史这个最常用的键就没了", { iGuard, iUp });
+  ok(/&& menuState\.sel >= 0\)/.test(tty), "★没挑过就不替人做主★ 打了 /mo 直接回车，该把 /mo 原样交上去，不是替他选第一条");
+  ok(/k\.name === "escape"/.test(tty), "Esc 收菜单");
+  ok(/ttyWriteOrig\(ch, key\);/.test(tty), "★其余按键原样交回 readline★ 拦下来自己处理，等于重写一个 readline");
+  // 反向对照：这一节不是永远绿
+  ok(!/k\.name === "pageup"/.test(tty), "★（反向对照）没处理过的键在源码里当然找不到★");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1);
 }
