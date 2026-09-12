@@ -42,7 +42,9 @@
   --secondary-foreground: #17181c;
   --muted: #f7f8fa;
   --muted-foreground: #5c6270;   /* 白底 6.11:1 */
-  --subtle-foreground: #6a6f7d;      /* 比 muted 更淡的第三级文字，shadcn 没这一档，本项目要。白底 5.02:1 */
+  --subtle-foreground: #686d7b;      /* 比 muted 更淡的第三级文字，shadcn 没这一档，本项目要。白底 5.23:1。
+                                        原 #6a6f7d 白底 5.02 够用，但落到选中行那层淡紫底(#eef0ff)只剩 4.43，
+                                        账号页那行 11px 的日期就卡在 4.5 线下面——暗这一档后是 4.62 */
   --accent: #eef0f4;
   --accent-foreground: #17181c;
   --destructive: #e5484d;
@@ -55,7 +57,9 @@
   --brand-text: #5155e8;             /* 品牌色当文字用的那一档：白底 5.51 / 选中底 4.86 */
   --danger-text: #bf3035;            /* 同理，红色当文字用：浅红底 4.73 */
   --success-text: #127538;           /* 绿色当文字用：#16a34a 白底只有 3.30，浅绿底 2.82 */
-  --warning: #b26a00;                /* shadcn 没这一档，本项目「跳过了一些零件」这类提示要用 */
+  --warning: #a86400;                /* shadcn 没这一档，本项目「跳过了一些零件」这类提示要用。白底 4.75:1。
+                                        原 #b26a00 只有 4.27，12–13px 的小字（.ch-warn、「纯服务端模式」那句）不够。
+                                        它同时被 color-mix 当淡染底和边框用，暗这一档对那几处只有好处 */
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
   /* ---------- 表面层级与投影（照 Linear / Multica 那套做法补的） ----------

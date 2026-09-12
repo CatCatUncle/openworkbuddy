@@ -5514,6 +5514,15 @@ const CONTRAST_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + 
   + "  <div class='nav-head item active'><span>我的项目</span><a id='proj-add' href='#'>+</a></div>"
   + "</div>"
   + "<p id='c-bare'>装法见 <a href='https://example.invalid'>example.invalid</a></p>"
+  // 这一坨是给「点得着 + 勾选框没被撑坏」那组用的，摆位尽量照抄真界面
+  + "<div class='m-body' style='width:520px'>"
+  + "  <div class='m-head'><h3>标题</h3><button class='m-close' id='c-mclose'><svg class='i'></svg></button></div>"
+  + "  <label style='cursor:pointer'><input type='checkbox' id='c-chk'> 开启积分限额</label>"
+  + "  <input type='text' id='c-text' value='这是普通文本框，它必须还是整行宽'>"
+  + "</div>"
+  + "<div class='mrow'><input type='radio' name='active' id='c-radio'><span class='mrow-name'>某个模型</span></div>"
+  + "<div><button class='row-more' id='c-more'><svg class='i'></svg></button></div>"
+  + "<div class='ui-card' style='padding:12px'><span class='ch-warn' id='c-warn'>未填 Key</span></div>"
   + "</body>";
 const CONTRAST_CHECKS = `
 (() => {
@@ -5544,6 +5553,7 @@ const CONTRAST_CHECKS = `
     ["side-nav 选中行的副标题", "#c-sub"],
     ["项目表头那颗 ＋", "#proj-add"],
     ["正文里没带 class 的链接", "#c-bare a"],
+    ["卡片上 12px 的警告小字", "#c-warn"],
   ];
   const sweep = () => SPOTS.map(([label, sel]) => {
     const el = document.querySelector(sel);
@@ -5560,17 +5570,58 @@ const CONTRAST_CHECKS = `
   const undo = document.createElement("style");
   undo.textContent = ".side-nav .item.active .tx .sub { opacity: .82; }"
     + " .side-nav .nav-head #proj-add { color: var(--wb-text-3); }"
-    + " a:not([class]) { color: -webkit-link; }";
+    + " a:not([class]) { color: -webkit-link; }"
+    + " :root { --warning: #b26a00; }";
   document.head.appendChild(undo);
   for (const theme of ["light", "dark"]) {
     document.documentElement.dataset.theme = theme;
     const bad = sweep().filter(([, r]) => r < 4.5).map(([l]) => l);
-    if (theme === "dark") ok("反向对照·暗色：三处全跌破 4.5", bad.length === 3, sweep());
-    else ok("反向对照·浅色：副标题那条跌破 4.5（另两条本来浅底上就够）", bad.includes("side-nav 选中行的副标题"), sweep());
+    if (theme === "dark") ok("反向对照·暗色：那三处全跌破 4.5（警告色暗底上本来就够）", bad.length === 3, sweep());
+    else ok("反向对照·浅色：副标题和警告小字两条跌破 4.5（另两条本来浅底上就够）",
+      bad.includes("side-nav 选中行的副标题") && bad.includes("卡片上 12px 的警告小字"), sweep());
   }
   undo.remove();
   document.documentElement.dataset.theme = "light";
-  ok("撤掉对照样式之后三处又都回到 4.5 以上", sweep().every(([, r]) => r >= 4.5), sweep());
+  ok("撤掉对照样式之后四处又都回到 4.5 以上", sweep().every(([, r]) => r >= 4.5), sweep());
+
+  // ---- 点得着：能点的东西至少 24×24 ----
+  // 这几个当初都是「凑合能点」：弹窗的关闭键 14×22（一个 ✕ 字符的宽度），
+  // 行尾的「更多」20×16，侧栏那颗 ＋ 23×21。鼠标得瞄准才点得中。
+  const box = (sel) => { const el = document.querySelector(sel);
+    if (!el) throw new Error("夹具里找不到 " + sel + "：markup 和真界面对不上了");
+    const r = el.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; };
+  const HITS = [["弹窗关闭键", "#c-mclose"], ["行尾的更多", "#c-more"], ["项目表头那颗 ＋", "#proj-add"]];
+  for (const [label, sel] of HITS) {
+    const [w, h] = box(sel);
+    ok(label + " 点得着 " + w + "×" + h + " ≥ 24×24", w >= 24 && h >= 24, [w, h]);
+  }
+  // ★反向对照★ 把三条尺寸改回原来的写法，必须当场全部跌回 24 以下
+  const shrink = document.createElement("style");
+  shrink.textContent = ".m-close { width: auto; height: auto; padding: 0; font-size: 18px; }"
+    + " .row-more { width: auto; height: auto; padding: 2px 4px; line-height: 0; }"
+    + " .side-nav .nav-head #proj-add { width: auto; height: auto; padding: 0 4px; }";
+  document.head.appendChild(shrink);
+  const shrunk = HITS.filter(([, sel]) => { const [w, h] = box(sel); return w < 24 || h < 24; }).map(([l]) => l);
+  ok("反向对照：改回旧写法，三个热区全跌回 24 以下", shrunk.length === 3, shrunk);
+  shrink.remove();
+
+  // ---- 勾选框别被 .m-body input{width:100%} 一起扫走 ----
+  // 账号弹窗里「开启积分限额」那个勾选框实测被撑成 850×13，还套了边框和 8px 内边距。
+  // 这条同时钉住另一半：文本框必须还是整行宽，别为了修勾选框把输入框一起收窄了。
+  for (const [label, sel] of [["弹窗里的勾选框", "#c-chk"], ["模型行里的单选框", "#c-radio"]]) {
+    const [w, h] = box(sel);
+    ok(label + " 是 " + w + "×" + h + " 的方块，没被撑成整行", w === 16 && h === 16, [w, h]);
+  }
+  ok("同一个弹窗里的文本框仍然是整行宽（修勾选框没误伤它）", box("#c-text")[0] > 400, box("#c-text"));
+  // ★反向对照★ 用更高特异度把 .m-body input{width:100%} 那条重新压回勾选框上——
+  // 也就是修之前的真实状态，勾选框必须当场被撑成整行。
+  // （不能写 width:revert 来「撤掉」统一规则：revert 会连 .m-body 那条作者样式一起退掉，
+  //   量到的是浏览器默认的 13px，反倒证明不了 bug 存在过。）
+  const bleed = document.createElement("style");
+  bleed.textContent = ".m-body input#c-chk { width: 100%; padding: 8px 10px; }";
+  document.head.appendChild(bleed);
+  ok("反向对照：把 width:100% 重新压回勾选框，它当场被撑成整行", box("#c-chk")[0] > 400, box("#c-chk"));
+  bleed.remove();
 
   return names;
 })()
@@ -5982,7 +6033,7 @@ app.whenReady().then(async () => {
       const namesCt = await winCt.webContents.executeJavaScript(IC_BOOT + CONTRAST_CHECKS, true)
         .catch((e) => { throw new Error("[\u5bf9\u6bd4\u5ea6] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesCt) console.log("  \u2713 " + n);
-      console.log(`\u2705 \u524d\u7aef\uff1a\u771f\u5143\u7d20\u538b\u771f\u5e95\u8272\u7684\u5bf9\u6bd4\u5ea6\uff08\u7b97\u4e0a opacity \u548c\u7956\u5148\u5e95\u8272\u00b7\u6d45\u6697\u4e24\u5957\u00b7\u5e26\u53cd\u5411\u5bf9\u7167\uff09${namesCt.length} \u9879\u901a\u8fc7`);
+      console.log(`\u2705 \u524d\u7aef\uff1a真元素压真底色的对比度 + 热区够不够大 + 勾选框没被撑坏（浅暗两套·每组都带反向对照）${namesCt.length} \u9879\u901a\u8fc7`);
     } finally {
       if (!winCt.isDestroyed()) winCt.destroy();
     }

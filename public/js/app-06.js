@@ -3,7 +3,7 @@ function renderSecurityPane(pane, s) {
   const joinLines = (a) => esc((a || []).join("\n"));
   const chk = (id, on, label, desc) => `
     <label style="display:flex;align-items:flex-start;gap:8px;margin:7px 0;cursor:pointer;font-size: 14px">
-      <input type="checkbox" id="${id}" ${on ? "checked" : ""} style="width:auto;margin:3px 0 0">
+      <input type="checkbox" id="${id}" ${on ? "checked" : ""} style="margin:3px 0 0">
       <span><b>${label}</b><span style="color:var(--wb-text-3)"> — ${desc}</span></span>
     </label>`;
   const listCol = (title, id, val, rows) => `
@@ -113,7 +113,7 @@ function renderSecurityPane(pane, s) {
     }
     box.innerHTML = Object.entries(d.modes).map(([k, m]) => `
       <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size: 14px">
-        <input type="radio" name="permmode" value="${esc(k)}" ${k === d.current ? "checked" : ""} style="width:auto;margin:3px 0 0">
+        <input type="radio" name="permmode" value="${esc(k)}" ${k === d.current ? "checked" : ""} style="margin:3px 0 0">
         <span><b>${esc(m.label)}</b><span style="color:var(--wb-text-3)"> — ${esc(m.desc)}</span></span>
       </label>`).join("");
     box.querySelectorAll("input[name=permmode]").forEach(r => r.onchange = async () => {
@@ -347,7 +347,7 @@ async function renderEvolvePane(pane) {
       </div>
       <div style="margin-top:6px;font-size: 13px;color:var(--wb-text-3)">规则预算：已用 ${rules.length}/${caps.rules} 条</div>
       <label style="display:flex;align-items:center;gap:6px;font-size: 13px;color:var(--wb-text-2);margin-top:10px;cursor:pointer">
-        <input type="checkbox" id="ev-auto" style="width:auto;margin:0" ${auto.auto ? "checked" : ""}>
+        <input type="checkbox" id="ev-auto" style="margin:0" ${auto.auto ? "checked" : ""}>
         每天 <input id="ev-hour" type="number" min="0" max="23" value="${auto.hour === undefined ? 3 : auto.hour}" style="width:48px;height:24px;margin:0;font-size: 13px"> 点自动跑一轮
         <span style="color:var(--wb-text-3)">（默认关，因为每次都要调一次模型花钱；跑出来的提案仍然要你点头才生效）</span>
       </label>

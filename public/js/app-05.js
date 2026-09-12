@@ -82,8 +82,8 @@ async function renderHubMcp(box) {
       <div class="hub-sec-title">添加连接器
         <span class="sub">本地进程走 stdio；托管在别人服务器上的走 Streamable HTTP，填地址就行</span></div>
       <div class="row" style="gap:14px">
-        <label style="display:flex;gap:5px;align-items:center;flex:none"><input type="radio" name="mcp-kind" value="stdio" checked style="width:auto">本地命令（stdio）</label>
-        <label style="display:flex;gap:5px;align-items:center;flex:none"><input type="radio" name="mcp-kind" value="http" style="width:auto">远程地址（Streamable HTTP）</label>
+        <label style="display:flex;gap:5px;align-items:center;flex:none"><input type="radio" name="mcp-kind" value="stdio" checked>本地命令（stdio）</label>
+        <label style="display:flex;gap:5px;align-items:center;flex:none"><input type="radio" name="mcp-kind" value="http">远程地址（Streamable HTTP）</label>
       </div>
       <div class="row"><div style="flex:1 1 150px"><label>名称</label><input id="mcp-name" placeholder="filesystem"></div>
         <div class="mcp-f-stdio" style="flex:1 1 120px"><label>命令</label><input id="mcp-cmd" placeholder="npx"></div>
@@ -652,7 +652,7 @@ function paintModels(pane, s) {
     </div>
     <button class="btn-plain" id="pf-new" style="margin-top:6px">＋ 添加渠道</button>`}
     <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size: 13px;color:var(--wb-text-2);cursor:pointer">
-      <input type="checkbox" id="mf-follow-last" style="width:auto;margin:0" ${s.model_follow_last ? "checked" : ""}>
+      <input type="checkbox" id="mf-follow-last" style="margin:0" ${s.model_follow_last ? "checked" : ""}>
       新对话自动沿用上次手动选过的模型（不勾则新对话总是用全局默认）
     </label>
     <div id="media-pane" style="margin-top:14px;border-top:1px solid var(--wb-border);padding-top:12px"></div>
@@ -1277,10 +1277,10 @@ function petCardHtml(p) {
     <div class="card-item">
       <div class="t">${ic("cat")} 桌面宠物</div>
       <div class="d" style="margin-bottom:10px"><b>默认没有宠物</b>——直接在对话里说「把这张图做成桌面宠物」并传一张照片，它就现场给你做一只；这里是手动开关和微调。<br>做出来之后，它会在桌面角落实时显示 agent 在干什么：干活时敲键盘、<b>要问你问题时跳起来并弹系统通知</b>（这条最有用——主窗口被盖住时，它提的问题很容易被漏掉，超时就按默认继续了）。点它开关主窗口，拖动换位置，右键有菜单（含免打扰）。空白处不吃鼠标，不会挡住底下的应用。${p.available === false ? '<br><span style="color:var(--wb-warn,#c60)">当前是纯服务端模式（npm start），宠物只在桌面版 <code>npm run app</code> 下出现。</span>' : ""}</div>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-on" style="width:auto;margin:0"${on ? " checked" : ""}> 显示桌面宠物</label>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify" style="width:auto;margin:0"${p.notify !== false ? " checked" : ""}> 要提问时弹系统通知 + 图标跳动</label>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify-done" style="width:auto;margin:0"${p.notify_done !== false ? " checked" : ""}> 任务干完 / 出错时也提醒我一声</label>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-wander" style="width:auto;margin:0"${p.wander ? " checked" : ""}> 闲着时让它在桌面上随便走走（默认关）</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-on" style="margin:0"${on ? " checked" : ""}> 显示桌面宠物</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify" style="margin:0"${p.notify !== false ? " checked" : ""}> 要提问时弹系统通知 + 图标跳动</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify-done" style="margin:0"${p.notify_done !== false ? " checked" : ""}> 任务干完 / 出错时也提醒我一声</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-wander" style="margin:0"${p.wander ? " checked" : ""}> 闲着时让它在桌面上随便走走（默认关）</label>
       <div class="t" style="margin-top:10px">形象</div>
       <div class="d" style="margin-bottom:6px">可以换成你自己或朋友的照片——上传后自动裁成圆形，配上呼吸、摇摆、跳跃的动效"活"起来。图片只存在本机 <code>data/</code> 目录，不上传任何服务器。</div>
       ${petSpriteHint(p)}
@@ -1426,7 +1426,7 @@ async function renderMemoryPane(pane) {
       </div>
       ${m.can_share ? `
       <label style="display:flex;align-items:center;gap:6px;font-size: 13px;color:var(--wb-text-3);margin-top:6px;cursor:pointer">
-        <input type="checkbox" id="mem-shared" style="width:auto;margin:0"> 这条给这台机器上所有账号共用
+        <input type="checkbox" id="mem-shared" style="margin:0"> 这条给这台机器上所有账号共用
       </label>` : `
       <div class="d" style="margin-top:6px">加进去的只有你自己看得到。要让这台机器上所有账号都共用某条，得平台管理员来加。</div>`}
     </div>
