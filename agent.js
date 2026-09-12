@@ -4,7 +4,7 @@
  * 主 Agent 是"协调者"：可直接干活，也可通过 delegate_to_expert 把子任务委派给专家子智能体。
  */
 
-const { TOOL_DEFS, executeTool, outputFiles, filesScope, getWorkspaceDir, orgPolicy } = require("./tools");
+const { TOOL_DEFS, executeTool, outputFiles, filesScope, getWorkspaceDir, orgPolicy, badToolArgs } = require("./tools");
 const { loadSkills, SKILLS_DIR } = require("./skills");
 const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
@@ -581,6 +581,14 @@ function modePrompt(mode) {
   }
 
   async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, lang }) {
+    // 参数压根不是合法 JSON（llm.js 救不回来时塞了个 _raw 进来）。tools.executeTool 里早有这道闸，
+    // 可 ask_user / use_skill / MCP / 委派专家这几个是在这儿就地接住的，根本走不到那儿——
+    // 于是一路掉进各自的必填校验，报出来的是「question 不能为空」。模型看了以为是自己漏填了字段，
+    // 把同一坨东西原样再发一遍，再坏一次。本机会话里这条已经连着吃掉好几轮：用户看到的是
+    // 每次都先红一条空白的「问你一句」，紧接着才是真正问出来的那条。
+    if (tc.input && typeof tc.input === "object" && typeof tc.input._raw === "string") {
+      return { content: badToolArgs(tc.name, tc.input._raw, tc.input._parseError, tc.input._rawLen), isError: true };
+    }
     if (tc.name === "ask_user") {
       const question = String(tc.input.question || "").trim().slice(0, 500);
       // 选项现在是 {label, detail}，但字符串也照收：老会话回放、以及模型偷懒直接给短语的情况
@@ -1704,6 +1712,9 @@ function tailText(v, n) {
 function toolHeadline(name, input) {
   const i = input && typeof input === "object" ? input : {};
   const verb = TOOL_VERB[name] || String(name || "").replace(/^mcp[_:]+/, "").replace(/_/g, " ").slice(0, 20);
+  // 参数本身就坏了，底下一个字段都读不出来。不说破的话这行只剩一个光秃秃的动词
+  // （红色的「问你一句」后面什么都没有），用户只会以为是这个功能坏了
+  if (typeof i._raw === "string") return verb + " 参数没发完整";
   const q = (v) => "「" + tailText(v, 40) + "」";
   let obj = "";
   switch (name) {

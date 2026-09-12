@@ -451,14 +451,10 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
   const toolCalls = [...tcByIndex.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([i, s]) => {
-      let input = {};
-      try {
-        input = JSON.parse(s.args || "{}");
-      } catch (e) {
-        // 参数不是合法 JSON。把解析器原话一起带上，下游才好如实告诉模型「你发的东西坏在哪」，
-        // 而不是按缺字段报一句「缺少 prompt」——那会让它以为是自己漏填了，然后原样再发一遍。
-        input = keepBadArgs(s.args, e);
-      }
+      // 参数不是合法 JSON 时，parseToolArgs 会先试着救开头那个完整对象；实在救不回来才
+      // 塞一个带解析器原话的 _raw 进去，下游据此如实告诉模型「你发的东西坏在哪」，
+      // 而不是按缺字段报一句「缺少 prompt」——那会让它以为是自己漏填了，然后原样再发一遍。
+      const input = parseToolArgs(s.args, s.name);
       return { id: s.id || `call_${i}`, name: s.name, input };
     });
 
@@ -495,6 +491,35 @@ function keepBadArgs(args, e) {
   };
 }
 
+/**
+ * 工具参数从文本变成对象；解析不了的先试着救一把。
+ *
+ * 本机真实会话里参数坏掉的姿势有两种，代价差很远，得分开对待：
+ *   ① 尾巴上多了几个字符 —— 见过 374 字的参数，前 372 字是一个完整合法的对象，
+ *      后面孤零零跟着一个 "]}"。整条丢掉纯属可惜：那一轮几千字的推理全白烧，
+ *      模型还得把同样的东西重写一遍。按括号配平切出开头那个完整对象用就是了。
+ *   ② 字符串没收尾（Unterminated string）—— 输出长度到顶被截断了。这种救不得：
+ *      半截的参数拿去执行等于替用户瞎编，只能如实报错，让模型重发一份短的。
+ */
+function parseToolArgs(raw, name) {
+  const s = String(raw == null ? "" : raw);
+  try {
+    return JSON.parse(s || "{}");
+  } catch (e) {
+    const head = sliceFirstObject(s);
+    if (head && head.length < s.length) {
+      try {
+        const input = JSON.parse(head);
+        // 救回来了也得留一行：万一有一天是「两次调用被并到一个槽里」，丢掉的是后半个真调用，
+        // 日志里没这一行就再也查不出来了
+        console.warn(`[llm] ${name || "工具"} 的参数后面多出 ${s.length - head.length} 个字符，已取开头那个完整对象继续执行`);
+        return input;
+      } catch { /* 开头那段自己也不合法，那就真没得救 */ }
+    }
+    return keepBadArgs(s, e);
+  }
+}
+
 function parseOpenAIChoice(choice, onTextDelta, usage) {
   if (!choice) throw new Error("LLM 返回为空");
   let text = choice.message.content || "";
@@ -505,15 +530,11 @@ function parseOpenAIChoice(choice, onTextDelta, usage) {
     return { text: rescued.text, toolCalls: rescued.toolCalls, stopReason: "tool_calls", usage: usage || null };
   }
   if (text && onTextDelta) onTextDelta(text);
-  const toolCalls = (choice.message.tool_calls || []).map((tc) => {
-    let input = {};
-    try {
-      input = JSON.parse(tc.function.arguments || "{}");
-    } catch (e) {
-      input = keepBadArgs(tc.function.arguments, e);
-    }
-    return { id: tc.id, name: tc.function.name, input };
-  });
+  const toolCalls = (choice.message.tool_calls || []).map((tc) => ({
+    id: tc.id,
+    name: tc.function.name,
+    input: parseToolArgs(tc.function.arguments, tc.function.name),
+  }));
   return { text, toolCalls, stopReason: choice.finish_reason, usage: usage || null };
 }
 
@@ -739,4 +760,4 @@ function createEmbedder(config) {
   return embed;
 }
 
-module.exports = { createLLM, createEmbedder, anthropicBase, _internals: { markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs } };
+module.exports = { createLLM, createEmbedder, anthropicBase, _internals: { markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject } };
