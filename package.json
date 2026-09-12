@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node server.js",
     "app": "electron .",
-    "test": "node test/e2e.js",
+    "test": "node test/all.js",
+    "test:e2e": "node test/e2e.js",
     "cli": "node cli.js",
     "eval": "node eval/run.js",
     "demo:record": "electron scripts/record-demo.js",

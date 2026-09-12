@@ -7463,7 +7463,26 @@ function testLookPrefsStatic() {
   assert(/^applyLook\(\);$/m.test(look) && /^applyTheme\(\);$/m.test(look), "外观/主题没有在脚本加载时立刻应用（会先闪一下默认样式）");
   // CSS：字号四档 + 五套皮肤各带浅/暗两块 + 密度规则 + body 走变量
   for (const [k, px] of [["s", 14], ["l", 16], ["xl", 18]]) assert(html.includes(`html[data-fs="${k}"] { --wb-fs: ${px}px; }`), "字号档 " + k + " 缺了");
-  assert(/:root \{ --wb-fs: 15px; \}/.test(html), "默认字号变量 --wb-fs 没定义");
+  assert(/:root \{[^}]*--wb-fs: 15px;/.test(html), "默认字号变量 --wb-fs 没定义");
+  // 字号选择器里那四个 A 的大小，必须就是真档位。预览夸大差距的话，人挑了「小」
+  // 以为会小一圈、实际只小 1px，只会觉得这个开关坏了——比不给预览还糟。
+  {
+    const a06 = rd(path.join("js", "app-06.js"));
+    const m = a06.match(/const LOOK_FS_PX = \{([^}]*)\}/);
+    assert(m, "找不到字号预览的那张表 LOOK_FS_PX");
+    const preview = {};
+    for (const kv of m[1].split(",")) { const [k, v] = kv.split(":").map((x) => x.trim()); if (k) preview[k] = Number(v); }
+    const real = { m: Number((html.match(/:root \{[^}]*--wb-fs: (\d+)px;/) || [])[1]) };
+    for (const k of ["s", "l", "xl"]) real[k] = Number((html.match(new RegExp(`html\\[data-fs="${k}"\\] \\{ --wb-fs: (\\d+)px;`)) || [])[1]);
+    for (const k of ["s", "m", "l", "xl"]) {
+      assert.strictEqual(preview[k], real[k],
+        `字号档「${k}」的预览写着 ${preview[k]}px，真档位是 ${real[k]}px——预览在骗人`);
+    }
+    // ★反向对照★：把预览值挪一格，同一把尺子必须判红
+    let moved = false;
+    try { assert.strictEqual(preview.s + 1, real.s, "x"); } catch { moved = true; }
+    assert(moved, "字号预览这把尺子失灵了，差一格也判绿");
+  }
   assert(/body \{[^}]*font-size: var\(--wb-fs\)/.test(html) && /body \{[^}]*font-family: var\(--font-sans\)/.test(html), "body 字号/字体没接到变量上");
   for (const skin of ["ocean", "forest", "sunset", "rose", "graphite"]) {
     const light = html.match(new RegExp(`^  html\\[data-skin="${skin}"\\] \\{([^}]*)\\}`, "m"));
