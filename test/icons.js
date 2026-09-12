@@ -286,5 +286,43 @@ if (mMap) {
   ok(icons.length === kinds.length && icons.every((n) => isIconName(n)), "提示条用的图标都在 sprite 里", icons.filter((n) => !isIconName(n)));
 }
 
+// ================= ⑥ 圆角只走令牌阶梯 =================
+// 挨着的两个控件一个圆 7px 一个圆 9px，没人看得出这是设计，只看得出没对齐。
+// ui.css 里有一条 4/6/8/10/12/14/999 的阶梯（--radius-xs…-full），index.html 那 1400 行
+// 内联样式以前完全没用它，自己写死了 29 个不同的圆角。这条闸门盯着别再写死。
+// 放行的只有：var(--radius-*)、50%（正圆头像）、0（要方角的那几处）、inherit。
+{
+  const indexHtml = fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8");
+  const a = indexHtml.indexOf("<style>"), b = indexHtml.indexOf("</style>", a);
+  ok(a > 0 && b > a, "index.html 里定位得到那段内联样式");
+  const inlineCss = indexHtml.slice(a + 7, b);
+
+  // 阶梯本身得在 ui.css 里齐全，少一档下面的映射就没地方落
+  const uiCss = fs.readFileSync(path.join(ROOT, "public", "css", "ui.css"), "utf8");
+  const LADDER = ["xs", "sm", "md", "lg", "xl", "2xl", "full"];
+  const missing = LADDER.filter((n) => !new RegExp("--radius-" + n + "\\s*:").test(uiCss));
+  eq(missing.length, 0, "ui.css 里 7 档圆角令牌齐全", missing);
+
+  // 扫描器：挑出所有写死像素的圆角
+  const hardCoded = (css) => (css.match(/border-radius\s*:\s*[^;}]+/g) || [])
+    .map((d) => d.split(":").slice(1).join(":").trim())
+    .filter((v) => /\d+(\.\d+)?px/.test(v));
+
+  // ★反向对照★ 先证明扫描器抓得到，否则下面全绿等于没测
+  const planted = hardCoded(inlineCss + "\n.wb-fake { border-radius: 7px; }");
+  eq(planted.length, 1, "反向对照：种一条 7px 的圆角进去，扫描器当场抓出来", planted);
+
+  const left = hardCoded(inlineCss);
+  eq(left.length, 0, "index.html 的内联样式里一处写死的 px 圆角都没有了（原来 218 处里有 199 处是写死的）", left.slice(0, 6));
+
+  // 落到的档位也要都在阶梯上——写个 var(--radius-huge) 一样是没对齐
+  const used = [...new Set((inlineCss.match(/border-radius\s*:\s*[^;}]+/g) || [])
+    .flatMap((d) => d.match(/var\(--radius-([a-z0-9]+)\)/g) || [])
+    .map((v) => v.replace(/var\(--radius-|\)/g, "")))];
+  const offLadder = used.filter((n) => !LADDER.includes(n));
+  eq(offLadder.length, 0, "用到的档位全在阶梯上，没有生造的名字", offLadder);
+  ok(used.length >= 5, "阶梯是真被用起来了（不是一档包打天下）", used.sort());
+}
+
 console.log("\n" + (fail === 0 ? "全部通过" : "有失败") + "：" + pass + " 过 / " + fail + " 挂");
 process.exit(fail === 0 ? 0 : 1);

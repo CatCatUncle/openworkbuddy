@@ -16,11 +16,19 @@
 
 /* ---------- 令牌契约（命名与语义同 shadcn v4） ---------- */
 :root {
+  /* 圆角阶梯：以 10px 为基准，每档差 2px，一路到底不留空档。
+     index.html 那 1400 行内联样式原来自己写死了 29 个不同的圆角（3/5/7/9/20/22/26 都有），
+     挨着的两个控件差 1px 谁也看不出是设计，只看得出没对齐。现在全都落到这七档上。
+     xl 从 14 调到 12 是为了把阶梯补齐（ui.css 里 .ui-card 和表格容器跟着圆 2px），
+     原来的 14 挪到 2xl，弹窗、登录卡这类大面继续用它。 */
   --radius: 10px;
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-xs: calc(var(--radius) - 6px);   /* 4  行内 code、极小的角标 */
+  --radius-sm: calc(var(--radius) - 4px);   /* 6  小芯片、小缩略图 */
+  --radius-md: calc(var(--radius) - 2px);   /* 8  按钮、输入框、导航项 */
+  --radius-lg: var(--radius);               /* 10 卡片、头像方块 */
+  --radius-xl: calc(var(--radius) + 2px);   /* 12 面板 */
+  --radius-2xl: calc(var(--radius) + 4px);  /* 14 弹窗、气泡这类大面 */
+  --radius-full: 999px;                     /* 胶囊、进度条、细指示条 */
 
   --background: #ffffff;
   --foreground: #17181c;
