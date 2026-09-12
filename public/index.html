@@ -833,12 +833,16 @@
      backdrop-filter 不支持时退化成原来的半透明色，不会变成一块实心板。 */
   .modal-mask { display: none; position: fixed; inset: 0; background: rgba(23,24,28,.35); backdrop-filter: saturate(150%) blur(6px); -webkit-backdrop-filter: saturate(150%) blur(6px); z-index: 50; align-items: center; justify-content: center; }
   .modal-mask.show { display: flex; }
-  .modal { width: 640px; max-width: 94vw; max-height: 82vh; background: var(--wb-bg); border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow-floating); }
+  .modal { width: 640px; max-width: 94vw; max-height: min(900px, 90vh); background: var(--wb-bg); border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow-floating); }
   .modal.wide { width: 920px; } /* 设置页要放得下双栏通道卡（去掉 160 导航 + 40 内边距，正文还剩 720） */
   .m-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--wb-border); flex-shrink: 0; }
   .m-head h3 { font-size: 15px; }
   .m-close { border: none; background: none; font-size: 18px; cursor: pointer; color: var(--wb-text-3); }
   .m-body { padding: 14px 20px 20px; overflow-y: auto; font-size: 14px; flex: 1; }
+  /* 设置页自己带侧栏和内容区的留白，m-body 再包一层 20px 就成了双层：分隔线浮在半空、
+     导航整体比弹窗标题右挪 20px（实测标题文字左边缘 280 / 导航图标列左边缘 300）。
+     这里让它贴边，导航图标列正好落回 280，和标题文字同一列 */
+  .m-body:has(> .settings-layout) { padding: 0; }
   .card-item { border: 1px solid var(--wb-border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
   .card-item .t { font-weight: 600; margin-bottom: 4px; }
   .card-item .d { color: var(--wb-text-2); line-height: 1.6; }
@@ -883,7 +887,9 @@
      图标跟字之间留个 gap——贴在一起会读成「⊠看图」，像个乱码而不是图标 */
   .sec-t { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 15px; margin: 0 0 4px; }
   .card-item .t > .i { margin-right: 6px; }
-  .settings-layout { display: flex; height: 60vh; }
+  /* 高度别写死：60vh 在 1440×900 上只有 540px，快捷键 19 条露 11 条、关于页最后一张卡被底边切掉。
+     取 min(760px, 78vh)——大屏不会长成一条，小屏跟着视口缩，加上标题栏也还在 .modal 的 90vh 里面 */
+  .settings-layout { display: flex; height: min(760px, 78vh); }
   .settings-nav { width: 160px; flex-shrink: 0; border-right: 1px solid var(--wb-border); padding: 12px 8px; overflow-y: auto; }
   .settings-nav .cat { padding: 8px 12px; border-radius: 8px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; margin-bottom: 2px; }
   .settings-nav .cat:hover { background: var(--wb-bg-hover); }
@@ -908,7 +914,7 @@
   .look-prev { margin-top: 10px; border: 1px dashed var(--wb-border); border-radius: 10px; padding: 10px 14px; font-size: var(--wb-fs); line-height: 1.7; color: var(--wb-text); }
   .look-prev code { background: var(--wb-bg-hover); border-radius: 4px; padding: 1px 5px; font-size: calc(var(--wb-fs) - 2px); font-family: var(--font-mono); }
   .look-note { color: var(--wb-text-3); font-size: 12px; margin-top: 8px; }
-  .settings-pane { flex: 1; padding: 16px 20px; overflow-y: auto; font-size: 14px; }
+  .settings-pane { flex: 1; padding: 16px 20px 24px; overflow-y: auto; font-size: 14px; }
   .form-row { display: flex; gap: 8px; }
   .form-row > * { flex: 1; }
   .ok-msg { font-size: 13px; color: var(--wb-ok-text); margin-left: 8px; }
