@@ -189,7 +189,9 @@
   .chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 720px; }
   .chips button { padding: 9px 18px; border-radius: 22px; border: 1px solid var(--wb-border); background: var(--wb-bg); font-size: 14px; color: var(--wb-text); cursor: pointer; display: flex; align-items: center; gap: 6px; }
   .chips button:hover { border-color: var(--wb-brand-text); color: var(--wb-brand-text); background: var(--wb-brand-weak); }
-  .scene-tag { display: inline-flex; align-items: center; gap: 6px; background: #d7f5e9; color: #0f8a5f; font-size: 13px; border-radius: 14px; padding: 4px 12px; margin-bottom: 6px; }
+  /* 这块底色原来写死成薄荷绿：深色模式下它不翻色，整页暗的时候留一块刺眼亮片（对页面底 14.2:1）；
+     文字那一档也只有 3.76:1。改成跟着主题走的绿 */
+  .scene-tag { display: inline-flex; align-items: center; gap: 8px; background: color-mix(in srgb, var(--wb-ok) 12%, var(--wb-card)); color: var(--wb-ok-text); font-size: 13px; border-radius: 14px; padding: 4px 12px; margin-bottom: 8px; }
   .scene-tag b { cursor: pointer; font-weight: 400; opacity: .7; }
   /* @ / 自动补全菜单 */
   .mention-menu { display: none; position: absolute; bottom: 100%; left: 12px; margin-bottom: 8px; min-width: 260px; max-width: 420px; max-height: 260px; overflow-y: auto; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 12px; box-shadow: var(--shadow-menu); padding: 6px; z-index: 40; }
@@ -1135,8 +1137,10 @@
   .at-row .meta { color: var(--wb-text-3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .at-row .ops { display: flex; gap: 10px; font-size: 13px; white-space: nowrap; }
   .at-row .st { font-size: 13px; color: var(--wb-text-3); white-space: nowrap; }
-  .at-row .st.ok { color: #16a34a; }
-  .at-row .st.err { color: #dc2626; }
+  /* 状态字走 *-text 那一档：#16a34a 压白卡片只有 3.30:1，是这一屏里最先看不清的东西（令牌层为此专门留了 --wb-ok-text=5.79:1）；
+     红的反过来，#dc2626 在深色卡片上只有 3.41:1。硬写死的另一个后果是它根本不跟着主题翻色 */
+  .at-row .st.ok { color: var(--wb-ok-text); }
+  .at-row .st.err { color: var(--wb-err-text); }
   .at-group { font-size: 13px; color: var(--wb-text-3); margin: 16px 0 4px; }
   .at-runs td { padding: 8px 10px; border-bottom: 1px solid var(--wb-border); font-size: 13px; vertical-align: top; }
   .at-runs th { padding: 6px 10px; text-align: left; font-size: 13px; color: var(--wb-text-3); font-weight: 500; border-bottom: 1px solid var(--wb-border); }
@@ -1366,7 +1370,7 @@
   .eng-i { font-size: 12px; color: var(--wb-text-2); margin-top: 5px; }
   .eng-i code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--wb-bg-hover); padding: 1px 5px; border-radius: 5px; }
   .eng-b { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--wb-border); color: var(--wb-text-2); }
-  .eng-b.ok { border-color: #16a34a55; color: #16a34a; }
+  .eng-b.ok { border-color: color-mix(in srgb, var(--wb-ok) 34%, transparent); color: var(--wb-ok-text); }
   .eng-b.free { border-color: var(--wb-brand); color: var(--wb-brand-text); }
   .eng-b.no { border-color: var(--wb-border); color: var(--wb-text-3); }
   .eng-msg { font-size: 12.5px; color: var(--wb-text-2); min-height: 16px; }
@@ -1376,8 +1380,8 @@
   .eng-x input, .eng-x select { height: 30px; font-size: 12.5px; }
   .eng-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .eng-r { font-size: 12.5px; line-height: 1.6; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--wb-border); background: var(--wb-bg-hover); }
-  .eng-r.ok { border-color: #16a34a55; color: #16a34a; background: #16a34a0f; }
-  .eng-r.bad { border-color: #dc262655; color: #dc2626; background: #dc26260f; }
+  .eng-r.ok { border-color: color-mix(in srgb, var(--wb-ok) 34%, transparent); color: var(--wb-ok-text); background: color-mix(in srgb, var(--wb-ok) 6%, transparent); }
+  .eng-r.bad { border-color: color-mix(in srgb, var(--wb-err) 34%, transparent); color: var(--wb-err-text); background: color-mix(in srgb, var(--wb-err) 6%, transparent); }
   .eng-r code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .eng-p { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--wb-text-3); word-break: break-all; }
 
