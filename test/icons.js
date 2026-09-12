@@ -324,5 +324,242 @@ if (mMap) {
   ok(used.length >= 5, "阶梯是真被用起来了（不是一档包打天下）", used.sort());
 }
 
+// ── ⑥ 别再拿标点当图标 ────────────────────────────────────────────────
+// emoji 清干净之后，替它顶位的是一批排版符号：按钮上的「＋ 新建项目」、折叠条上的
+// ›、关闭键上的 ✕、链接尾巴上的 →。它们不在 ③ 的白名单之外，所以上面那几节全绿，
+// 界面上却仍是一半 sprite 一半字符——字重、基线、粗细归字体管，跟旁边的图标怎么调都对不齐。
+// 判据是位置不是字符本身：正文里的「设置 → 模型」「首屏＋卖点＋FAQ」照旧允许，
+// 只有紧贴着标签边界的那个（>✕< / >＋ 上传< / 收起 ✕<）才算拿它当图标使。
+{
+  const GLYPHS = "＋→↗↑↓›‹▸▾▶◀✕✓✗✦×";
+  const BOUNDARY = new RegExp(">\\s*([" + GLYPHS + "])(?=[\\s<])|(?<=[\\s>])([" + GLYPHS + "])\\s*<", "g");
+  const scanGlyph = (src) => {
+    const out = [];
+    src.split("\n").forEach((line, i) => {
+      let m;
+      BOUNDARY.lastIndex = 0;
+      while ((m = BOUNDARY.exec(line))) out.push({ line: i + 1, g: m[1] || m[2], txt: line.trim().slice(0, 90) });
+    });
+    return out;
+  };
+
+  // ★反向对照★ 三种写法都得抓到：光杆字符、字符在前、字符在后
+  const planted = scanGlyph([
+    '<span class="caret" id="more-caret">▾</span>',
+    '<button class="btn-brand" id="pj-new">＋ 新建项目</button>',
+    '<a class="link" href="#">用这个模版新建 →</a>',
+  ].join("\n"));
+  eq(planted.length, 3, "反向对照：种三种拿标点当图标的写法进去，三条全被抓出来",
+    planted.map((h) => h.g));
+  // 正文里的箭头和加号不许误伤，否则闸门一响大家就去关它
+  eq(scanGlyph('<div class="d">拆子问题→逐个查证→自我挑刺</div>\n<div>首屏＋卖点＋FAQ</div>').length, 0,
+    "反向对照：句子中间的 → 和 ＋ 是正文，不报");
+
+  const FRONT_SRC = ["public/index.html", "public/pet.html", "public/js/app-00-ui.js", "public/js/app-01.js",
+    "public/js/app-02.js", "public/js/app-03.js", "public/js/app-04.js", "public/js/app-05.js",
+    "public/js/app-06.js", "public/js/admin.js"];
+  const left = [];
+  for (const rel of FRONT_SRC) {
+    const raw = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    // 注释里写 `![alt](url) → <img>` 是讲人话，不是画界面
+    const src = rel.endsWith(".html") ? stripHtmlComments(stripComments(raw)) : stripComments(raw);
+    for (const h of scanGlyph(src)) left.push(rel + ":" + h.line + " [" + h.g + "] " + h.txt);
+  }
+  eq(left.length, 0, "前端源码里一处拿标点当图标的都没有了（改之前 32 处）", left.slice(0, 8));
+}
+
+// ── ⑦ 换图标的时候，词典的键要跟着原文一起改 ──────────────────────────
+// i18n 是拿中文原句当键的，而且比的是「整个文本节点去掉首尾空白」之后的那一串。
+// 所以把 `＋ 上传` 换成 `${ic("plus")}上传`，文本节点就只剩「上传」，词典里那条
+// "＋ 上传" 再也匹配不上——界面不会报错，只是英文那边默默变回中文。
+// 这条闸门盯的就是这种「键还停在老原文」：键里带图标字符、原句已经不在源码里了，
+// 可把字符剔掉之后的那句还活着。实测：改之前有 1 条是上一轮换图标留下的（"已达成 ✓"），
+// 这一轮把 32 处标点换成图标、词典先不动的话，会一口气变成 14 条。
+{
+  const GLYPHS = "＋→↗↑↓›‹▸▾▶◀✕✓✗✦×";
+  const SRC_FILES = ["public/index.html", "public/pet.html", "public/js/app-00-ui.js", "public/js/app-01.js",
+    "public/js/app-02.js", "public/js/app-03.js", "public/js/app-04.js", "public/js/app-05.js",
+    "public/js/app-06.js", "public/js/admin.js"];
+  const corpus = SRC_FILES.map((rel) => fs.readFileSync(path.join(ROOT, rel), "utf8")).join("\n");
+  const strip = (s) => Array.from(s).filter((c) => !GLYPHS.includes(c)).join("").replace(/\s+/g, " ").trim();
+  const stale = (dict) => {
+    const keys = [];
+    const re = /^[ \t]*"((?:[^"\\]|\\.)*)"\s*:\s*"/gm;
+    let m;
+    while ((m = re.exec(dict))) keys.push(m[1].replace(/\\"/g, '"'));
+    return keys.filter((k) => Array.from(k).some((c) => GLYPHS.includes(c)) && !corpus.includes(k))
+      .filter((k) => { const s = strip(k); return s && corpus.includes(s); });
+  };
+
+  // ★反向对照★ 拿一句真在界面上的话，给键尾巴加个 ✓，必须被判成停在老原文
+  const live = '已达成';
+  ok(corpus.includes(live), "对照用的这句确实还在界面上", live);
+  eq(stale('      "' + live + ' ✓": "Achieved ✓",\n').length, 1,
+    "反向对照：键尾巴多带一个 ✓、原句已经没了，当场判成停在老原文");
+  eq(stale('      "设置 → 模型": "Settings → Models",\n').length, 0,
+    "反向对照：正文里真带箭头的那种键不误伤");
+
+  const dict = fs.readFileSync(path.join(ROOT, "public", "js", "i18n.js"), "utf8");
+  const left = stale(dict);
+  eq(left.length, 0, "词典里没有键还停在带图标字符的老原文（这轮换图标时一度有 14 条，英文那边会默默漏翻）", left);
+}
+
+// ── ⑧ 会滚的面板要给滚动条留位 ────────────────────────────────────────
+// mac 默认是覆盖式滚动条，开发机上一辈子看不出问题；用户一旦在系统设置里选「总是显示
+// 滚动条」，没留位的面板就会随内容长短横跳。实测（强制 15px 经典滚动条，往面板里塞根
+// 高垫片逼它出条）：设置面板 12 个分页里有 4 个内容不够长、不出滚动条，来回切整页横移
+// 11px；弹窗正文和左侧任务列表同样 11px。补上 scrollbar-gutter 之后 25 个测点全是 0。
+{
+  const html = fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8");
+  const a = html.indexOf("<style>"), b = html.indexOf("</style>", a);
+  const css = html.slice(a, b);
+  // 这四块是「内容长短不定、还要跟旁边的东西对齐」的主面板，横跳一眼就看得见
+  const PANES = ["#chat-scroll", ".settings-pane", ".m-body", "#history"];
+  const ruleOf = (sel) => {
+    const i = css.indexOf("\n  " + sel + " {");
+    if (i < 0) return null;
+    return css.slice(i + 3, css.indexOf("}", i) + 1);
+  };
+  const hasGutter = (rule) => /scrollbar-gutter:\s*stable/.test(rule || "");
+
+  // ★反向对照★ 把声明抠掉，扫描器必须当场说没留位
+  const sample = ruleOf(".settings-pane");
+  ok(sample, "定位得到 .settings-pane 那条规则", sample);
+  ok(hasGutter(sample), "样本规则本身是留了位的");
+  ok(!hasGutter(sample.replace(/\s*scrollbar-gutter:\s*stable[^;}]*;?/, "")),
+    "反向对照：把 scrollbar-gutter 抠掉，当场判成没留位");
+
+  const naked = [];
+  for (const sel of PANES) {
+    const rule = ruleOf(sel);
+    if (!rule) { naked.push(sel + "（这条规则找不着了）"); continue; }
+    if (!/overflow(-y)?:\s*auto/.test(rule)) { naked.push(sel + "（不再是滚动容器？规则变了就得重新想）"); continue; }
+    if (!hasGutter(rule)) naked.push(sel);
+  }
+  eq(naked.length, 0, "四块主滚动面板都给滚动条留了位（改之前三块会横跳 11px）", naked);
+}
+
+// ── ⑨ 搜索框的宽度只许有一个出处 ──────────────────────────────────────
+// 同一个 .hub-search，项目页内联写 260、自动化页内联写 240、技能中心和模板页干脆不写
+// 由 flex:1 一路撑开——实测在 1440 宽的窗口上量出四种宽度：240 / 260 / 565 / 746。
+// 用户切个标签就觉得换了套界面。宽度归 CSS 那一条管，页面里不许再各写各的。
+{
+  const html = fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8");
+  const a = html.indexOf("<style>"), b = html.indexOf("</style>", a);
+  const rule = html.slice(a, b).match(/\n {2}\.hub-search \{[^}]*\}/);
+  ok(rule, "index.html 里定位得到 .hub-search 那条规则");
+  ok(/max-width:\s*\d+px/.test(rule[0]), "宽度上限写在 CSS 里", rule && rule[0].trim());
+
+  const JS = ["app-01.js", "app-02.js", "app-03.js", "app-04.js", "app-05.js", "app-06.js"];
+  const inlineWidth = (src) => {
+    const out = [];
+    const re = /class="hub-search"[^>]*?style="([^"]*)"/g;
+    let m;
+    while ((m = re.exec(src))) if (/(max-)?width\s*:/.test(m[1])) out.push(m[1]);
+    return out;
+  };
+  // ★反向对照★ 种一处内联宽度回去，必须被抓到；只写 margin 的不误伤
+  eq(inlineWidth('<div class="hub-search" style="max-width:240px">x</div>').length, 1,
+    "反向对照：内联写死宽度，当场抓出来");
+  eq(inlineWidth('<div class="hub-search" style="margin-left:auto">x</div>').length, 0,
+    "反向对照：只调位置不调宽度的内联样式不误伤");
+
+  const left = [];
+  for (const f of JS) {
+    const src = stripComments(fs.readFileSync(path.join(ROOT, "public", "js", f), "utf8"));
+    for (const s of inlineWidth(src)) left.push(f + " → " + s);
+  }
+  eq(left.length, 0, "没有页面再内联写搜索框宽度了（改之前两处，实测四种宽度）", left);
+}
+
+// ── ⑩ ${...} 不许写进普通引号里 ──────────────────────────────────────────
+// 这一轮换图标，把 × 改成 ${ic("x")} 的时候踩了两次同一个坑：原来那处是普通单引号字符串，
+// 改完 ${} 不求值，界面上原样印出「${ic("x")}」。一处在项目栏的移除按钮，
+// 一处在设置-安全里「已授权」那行——后者 e2e 跑不到，是靠这条扫描才翻出来的。
+// 判据是位置：模板串里的 ${} 正常，普通引号里的一律是漏网。
+// 要认出「在哪种串里」就得像 JS 引擎那样走一遍字符——注释、正则字面量、三种引号、
+// 模板串里嵌 ${} 里再嵌模板串，都得跟住。少跟一样就会误报：
+// app-01.js 有一句 .replace(/"/g, "") 写在 ${} 里，不认正则的扫描器会把那个 " 当成开引号，
+// 从此整段错位。
+{
+  // 上一个有意义的字符是这些时，/ 开的是正则不是除号；这几个关键字后面同理
+  const RE_OK = /[(,=:[!&|?{};+\-*%~^<>]/;
+  const RE_KW = /\b(return|typeof|case|in|of|new|delete|do|else|void|yield|await)\s*$/;
+  const scanDollar = (src) => {
+    const hits = [];
+    const stack = [];                       // 帧：{t:"tpl"} 模板串里 / {t:"expr",d:n} 模板串的 ${} 里
+    let i = 0, line = 1, prev = "", head = "";
+    const top = () => stack[stack.length - 1];
+    while (i < src.length) {
+      const c = src[i], f = top();
+      if (f && f.t === "tpl") {             // 模板串正文
+        if (c === "\\") { i += 2; continue; }
+        if (c === "\n") { line++; i++; continue; }
+        if (c === "`") { stack.pop(); i++; prev = "`"; continue; }
+        if (c === "$" && src[i + 1] === "{") { stack.push({ t: "expr", d: 0 }); i += 2; prev = "{"; continue; }
+        i++; continue;
+      }
+      // 以下是「正经代码」：顶层，或者模板串 ${} 里面——两者规则完全一样，所以共用这一段
+      if (c === "\n") { line++; i++; head = ""; continue; }
+      if (c === "/" && src[i + 1] === "/") { while (i < src.length && src[i] !== "\n") i++; continue; }
+      if (c === "/" && src[i + 1] === "*") { i += 2; while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) { if (src[i] === "\n") line++; i++; } i += 2; continue; }
+      if (c === "/" && (RE_OK.test(prev) || RE_KW.test(head) || prev === "")) {
+        i++; let cls = false;
+        while (i < src.length) {
+          if (src[i] === "\\") { i += 2; continue; }
+          if (src[i] === "[") cls = true;
+          else if (src[i] === "]") cls = false;
+          else if (src[i] === "/" && !cls) { i++; break; }
+          else if (src[i] === "\n") { line++; break; }
+          i++;
+        }
+        while (i < src.length && /[dgimsuvy]/.test(src[i])) i++;
+        prev = "/"; head = ""; continue;
+      }
+      if (c === "`") { stack.push({ t: "tpl" }); i++; continue; }
+      if (c === "'" || c === '"') {
+        const q = c, startLine = line; let body = ""; i++;
+        while (i < src.length && src[i] !== q) {
+          if (src[i] === "\\") { body += src[i] + (src[i + 1] || ""); i += 2; continue; }
+          if (src[i] === "\n") { line++; break; }           // 普通串不能跨行，断了就当它结束
+          body += src[i]; i++;
+        }
+        i++;
+        if (body.includes("${")) hits.push({ line: startLine, txt: (q + body + q).slice(0, 110) });
+        prev = q; head = ""; continue;
+      }
+      if (f && f.t === "expr") {                             // 跟住 ${} 的花括号，配平了就回到模板串
+        if (c === "{") f.d++;
+        else if (c === "}") { if (f.d === 0) { stack.pop(); i++; prev = "}"; continue; } f.d--; }
+      }
+      if (!/\s/.test(c)) { prev = c; head = /[A-Za-z_$]/.test(c) ? head + c : ""; }
+      i++;
+    }
+    return hits;
+  };
+
+  // ★反向对照★ 真出过的那两种写法必须抓到
+  eq(scanDollar("const a = '<span class=\"del\">${ic(\"x\")}</span>';").length, 1,
+    "反向对照：单引号里写 ${ic()}，当场抓出来");
+  eq(scanDollar('const t = { granted: "<b>${ic(\'check\')} 已授权</b>" };').length, 1,
+    "反向对照：双引号里的同样抓");
+  // 正常写法一个都不许误报
+  eq(scanDollar("const a = `<img src=\"${esc(s)}\" alt=\"${String(x || '').replace(/\"/g, '')}\">`;").length, 0,
+    "反向对照：模板串里嵌 ${}、${} 里还有个带引号的正则——不误报（就是这句让上一版扫描器整段错位的）");
+  eq(scanDollar("const a = `外层 ${cond ? `内层 ${v}` : ''} 尾`;").length, 0,
+    "反向对照：模板串套模板串不误报");
+  eq(scanDollar("// 注释里写 '${x}' 不算\nconst s = 'ok';").length, 0, "反向对照：注释里的不算");
+  eq(scanDollar("const r = str.split('${')[0];").length, 1,
+    "反向对照：真在普通串里出现 ${ 就报——宁可让人去加个注释，也不留判不准的缝");
+
+  const JS = ["app-00-ui.js", "app-01.js", "app-02.js", "app-03.js", "app-04.js", "app-05.js", "app-06.js", "admin.js", "i18n.js"];
+  const left = [];
+  for (const f of JS) {
+    const src = fs.readFileSync(path.join(ROOT, "public", "js", f), "utf8");
+    for (const h of scanDollar(src)) left.push(f + ":" + h.line + "  " + h.txt);
+  }
+  eq(left.length, 0, "没有 ${} 漏在普通引号里（这轮改图标时踩中两处，都会把占位符原样印到界面上）", left);
+}
+
 console.log("\n" + (fail === 0 ? "全部通过" : "有失败") + "：" + pass + " 过 / " + fail + " 挂");
 process.exit(fail === 0 ? 0 : 1);

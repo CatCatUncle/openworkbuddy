@@ -632,7 +632,7 @@ function renderProjects() {
   box.style.display = projectsLocked ? "none" : "";
   if (projectsLocked) { box.innerHTML = ""; return; }
   box.innerHTML = projects.map(p =>
-    `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">${ic("folder-open")}<span class="pn">${esc(p.name)}</span>${projects.length > 1 ? '<span class="del" title="移除项目（不删文件）">✕</span>' : ""}</div>`).join("");
+    `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">${ic("folder-open")}<span class="pn">${esc(p.name)}</span>${projects.length > 1 ? `<span class="del" title="移除项目（不删文件）">${ic("x")}</span>` : ""}</div>`).join("");
   box.querySelectorAll(".proj-item").forEach(el => el.onclick = async (e) => {
     const name = el.dataset.name;
     if (e.target.classList.contains("del")) {
@@ -1183,7 +1183,7 @@ function openChatSearch() {
   if (!bar) {
     bar = document.createElement("div");
     bar.id = "chat-search";
-    bar.innerHTML = `<input id="cs-input" placeholder="搜索对话内容…"><span id="cs-count" style="color:var(--wb-text-3);font-size: 13px;white-space:nowrap"></span><button id="cs-prev" title="上一个">${ic("chevron-up")}</button><button id="cs-next" title="下一个">↓</button><button id="cs-close" title="关闭 (Esc)">✕</button>`;
+    bar.innerHTML = `<input id="cs-input" placeholder="搜索对话内容…"><span id="cs-count" style="color:var(--wb-text-3);font-size: 13px;white-space:nowrap"></span><button id="cs-prev" title="上一个">${ic("chevron-up")}</button><button id="cs-next" title="下一个">${ic("chevron-down")}</button><button id="cs-close" title="关闭 (Esc)">${ic("x")}</button>`;
     document.querySelector(".main").appendChild(bar);
     bar.querySelector("#cs-input").oninput = runChatSearch;
     bar.querySelector("#cs-input").addEventListener("keydown", (e) => {

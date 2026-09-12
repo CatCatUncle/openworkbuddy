@@ -41,7 +41,7 @@ async function renderHubMcp(box) {
       <div class="hd"><div class="av">${ava(it.icon, "plug")}</div>
         <div class="nm"><span>${esc(it.label || it.name)}</span><span class="al">${esc(it.name)}</span></div></div>
       <div class="ds">${esc(it.desc || "")}</div>
-      <div class="tg">${it.kind === "http" ? "<i>远程</i>" : `<i>${esc(String(it.command || "").split(/[\\/]/).pop())}</i>`}${keys ? `<i>要填 ${keys} 个 Key</i>` : "<i>免 Key</i>"}${it.docs ? `<a class="mcp-docs-link" href="${esc(it.docs)}" target="_blank" rel="noopener">去哪拿 →</a>` : ""}</div>
+      <div class="tg">${it.kind === "http" ? "<i>远程</i>" : `<i>${esc(String(it.command || "").split(/[\\/]/).pop())}</i>`}${keys ? `<i>要填 ${keys} 个 Key</i>` : "<i>免 Key</i>"}${it.docs ? `<a class="mcp-docs-link" href="${esc(it.docs)}" target="_blank" rel="noopener">去哪拿${ic("arrow-right")}</a>` : ""}</div>
       ${po ? `<div class="ops"><button class="mcp-use${on ? "" : " primary"}"${on ? " disabled" : ""}>${on ? "已接入" : "接入"}</button></div>` : ""}
     </div>`;
   };
@@ -58,7 +58,7 @@ async function renderHubMcp(box) {
     <div class="hub-sec-title" style="margin-top:14px">已接入的外部工具
       <span class="sub">通过 MCP（本地 stdio / 远程 Streamable HTTP）给智能体接外部能力，当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入，任务里可直接调用</span></div>
     <div class="card-grid">
-      ${po ? `<div class="ex-card add" id="mcp-open-add">＋ 添加连接器</div>` : ""}
+      ${po ? `<div class="ex-card add" id="mcp-open-add">${ic("plus")}添加连接器</div>` : ""}
       ${list.map(({ sv, i }) => `
         <div class="ex-card" data-mi="${i}">
           ${sv.plugin ? `<span class="flag">来自插件 ${esc(sv.plugin)}</span>` : ""}
@@ -94,7 +94,7 @@ async function renderHubMcp(box) {
         <textarea id="mcp-env" rows="2" placeholder="BRAVE_API_KEY=你的 Key"></textarea></div></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn-brand" id="mcp-add">添加并连接</button>
         <button id="mcp-cancel" style="padding:6px 14px">取消</button>
-        <a id="mcp-docs" href="#" target="_blank" rel="noopener" style="display:none;font-size:13px">去哪拿 Key →</a>
+        <a id="mcp-docs" href="#" target="_blank" rel="noopener" style="display:none;font-size:13px">去哪拿 Key${ic("arrow-right")}</a>
         <span class="ab-empty" id="mcp-msg"></span></div>
     </div>`}` + presetSec;
   const form = box.querySelector("#mcp-add-form");
@@ -221,7 +221,7 @@ function renderPromptPage() {
       (!q || (t.t + t.d + t.p).toLowerCase().includes(q)));
     page.querySelector("#tpl-grid").innerHTML = list.map((t, i) => `
       <div class="tpl-card${q && !(t.t + t.d).toLowerCase().includes(q) ? " open" : ""}" data-i="${PROMPT_TPLS.indexOf(t)}">
-        <div class="hd"><span class="ic">${ic(t.icon)}</span><span class="tt">${esc(t.t)}</span><span class="ct">${esc(t.c)}</span><span class="chev">▶</span></div>
+        <div class="hd"><span class="ic">${ic(t.icon)}</span><span class="tt">${esc(t.t)}</span><span class="ct">${esc(t.c)}</span><span class="chev">${ic("chevron-right")}</span></div>
         <div class="dd">${esc(t.d)}</div>
         <pre>${esc(t.p)}</pre>
         <div class="ops"><button class="primary tpl-use">填进输入框</button><button class="tpl-copy">复制</button></div>
@@ -483,7 +483,7 @@ function capCard(c, s, provName) {
           <button class="btn-brand mm-save">添加</button>
           <button class="btn-plain mm-cancel">取消</button>
         </div>
-        <button class="btn-plain mm-new" data-cap="${c.cap}" style="margin-top:6px">＋ 添加${esc(c.title)}模型</button>
+        <button class="btn-plain mm-new" data-cap="${c.cap}" style="margin-top:6px">${ic("plus")}添加${esc(c.title)}模型</button>
       </div>`}
     </div>`;
 }
@@ -676,7 +676,7 @@ function paintModels(pane, s) {
       <button class="btn-brand" id="pf-save">保存渠道</button>
       <button class="btn-plain" id="pf-cancel">取消</button>
     </div>
-    <button class="btn-plain" id="pf-new" style="margin-top:6px">＋ 添加渠道</button>`}
+    <button class="btn-plain" id="pf-new" style="margin-top:6px">${ic("plus")}添加渠道</button>`}
     <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size: 13px;color:var(--wb-text-2);cursor:pointer">
       <input type="checkbox" id="mf-follow-last" style="margin:0" ${s.model_follow_last ? "checked" : ""}>
       新对话自动沿用上次手动选过的模型（不勾则新对话总是用全局默认）
@@ -744,7 +744,7 @@ function chanCard(p, s, po, kindLabel, dupeTag) {
           <button class="btn-brand ca-save">保存</button>
           <button class="btn-plain ca-cancel">取消</button>
         </div>
-        <button class="btn-plain ca-new" data-chan="${esc(p.id)}" style="margin-top:6px">＋ 添加模型</button>`}
+        <button class="btn-plain ca-new" data-chan="${esc(p.id)}" style="margin-top:6px">${ic("plus")}添加模型</button>`}
       </div>`}
     </div>`;
 }
@@ -780,7 +780,7 @@ function rowMenu(items) {
  */
 function kindKeyLink(kind, baseUrl) {
   const k = ((mediaCatalog || {}).kinds || []).find((x) => x.kind === kind);
-  if (k && k.key_url) return `<a class="get-key" href="${esc(k.key_url)}" target="_blank" rel="noopener">去拿 Key ↗</a>`;
+  if (k && k.key_url) return `<a class="get-key" href="${esc(k.key_url)}" target="_blank" rel="noopener">去拿 Key${ic("arrow-up-right")}</a>`;
   if (!String(baseUrl || "").trim()) return ""; // 自建网关连地址都没填，猜不出 Key 从哪儿领
   return keyLink(modelKeySource({ base_url: baseUrl, provider: "openai" }));
 }
@@ -2058,7 +2058,7 @@ function renderImPane(pane, s) {
       r.append(" ");
       const a = document.createElement("a");
       a.className = "link"; a.target = "_blank"; a.rel = "noopener";
-      a.href = link; a.textContent = "打开凭证页 →";
+      a.href = link; a.innerHTML = "打开凭证页" + ic("arrow-right");
       r.append(a);
     }
   };

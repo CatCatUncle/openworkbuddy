@@ -31,7 +31,7 @@ async function renderAccount() {
         <button id="acc-profile" style="float:right;padding:2px 10px;font-size: 13px;margin-right:6px">改名字 / 头像</button>
       </div>
       <div class="d">${creditsOn
-        ? `积分余额 <b style="color: var(--wb-brand-text);font-size:16px">✦ ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，命中缓存的部分按 1/10 折算（上游就是这么收的），每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）`
+        ? `积分余额 <b style="color: var(--wb-brand-text);font-size:16px">${ic("sparkles")} ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，命中缓存的部分按 1/10 折算（上游就是这么收的），每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）`
         : `<b style="color: var(--wb-brand-text)">不限额</b> · 任务想跑多少跑多少，下面的用量只是给你看花了多少 tokens，不会拦人`}</div>
       ${isAdmin ? `${creditsOn ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
         <input id="topup-user" placeholder="给谁充（留空=自己）" style="max-width:150px">
@@ -268,7 +268,7 @@ const KEY_SOURCES = {
 function keyLink(id, label) {
   const src = KEY_SOURCES[id];
   if (!src) return "";
-  return `<a class="get-key" href="${esc(src.url)}" target="_blank" rel="noopener" title="${esc(src.name)}：新窗口打开">${esc(label || src.label || "去拿 Key")} ↗</a>`;
+  return `<a class="get-key" href="${esc(src.url)}" target="_blank" rel="noopener" title="${esc(src.name)}：新窗口打开">${esc(label || src.label || "去拿 Key")}${ic("arrow-up-right")}</a>`;
 }
 /** 模型渠道的来源 id：Anthropic 官方没有 base_url，按 provider 认 */
 function modelKeySource(m) {
@@ -792,7 +792,7 @@ async function renderAssistPage() {
           : '<span style="color:var(--wb-text-3)">还没有连接任何 IM 通道</span>'}
       </div>
       <div class="picker" id="im-model-picker">
-        <button class="btn-plain" id="im-model-btn" title="助理页发消息用哪个模型（飞书 / QQ 等远程消息仍按全局默认跑）">✦ <span id="im-model-label">模型</span> ▾</button>
+        <button class="btn-plain" id="im-model-btn" title="助理页发消息用哪个模型（飞书 / QQ 等远程消息仍按全局默认跑）">${ic("sparkles")}<span id="im-model-label">模型</span>${ic("chevron-down")}</button>
         <div class="picker-menu down" id="im-model-menu"></div>
       </div>
       ${canOpenOnHost() ? `<button class="btn-plain" id="im-open-ws">${ic("folder-open")} 打开所在文件夹</button>` : ""}
@@ -907,8 +907,8 @@ async function renderProjPage() {
   page.innerHTML = `
     <div class="pg-hero"><h1>项目</h1><div class="sub">每个项目一个独立工作目录，自带指令与专属配置，任务历史按项目分组</div></div>
     <div class="hub-head">
-      <button class="btn-brand" id="pj-new" style="padding:8px 16px">＋ 新建项目</button>
-      <div class="hub-search" style="max-width:260px;margin-left:auto">${ic("search")}<input id="pj-q" placeholder="搜索项目" value="${esc(page._q || "")}"></div>
+      <button class="btn-brand" id="pj-new" style="padding:8px 16px">${ic("plus")}新建项目</button>
+      <div class="hub-search" style="margin-left:auto">${ic("search")}<input id="pj-q" placeholder="搜索项目" value="${esc(page._q || "")}"></div>
     </div>
     <div class="hub-sec-title">我的项目</div>
     <div class="tpl-grid" style="margin-bottom:22px">${mine.map(p => `
@@ -928,7 +928,7 @@ async function renderProjPage() {
       <div class="proj-card" data-tpl="${i}">
         <div class="tt">${ic(t.icon)} ${esc(t.tt)}</div>
         <div class="dd">${esc(t.dd)}</div>
-        <div class="ops"><a class="link" href="#">用这个模版新建 →</a></div>
+        <div class="ops"><a class="link" href="#">用这个模版新建${ic("arrow-right")}</a></div>
       </div>`).join("")}
     </div>`;
   page.querySelector("#pj-new").onclick = () => openProjEditor(null);
@@ -1109,10 +1109,10 @@ async function renderAutomPage() {
         <button class="active" data-tab="tasks">${ic("timer")} 定时任务</button>
         <button data-tab="runs">${ic("scroll-text")} 运行记录</button>
       </div>
-      <div class="hub-search" style="max-width:240px">${ic("search")}<input id="at-q" placeholder="搜索自动化" value="${esc(st.q)}"></div>
+      <div class="hub-search">${ic("search")}<input id="at-q" placeholder="搜索自动化" value="${esc(st.q)}"></div>
       <button class="btn-plain" id="at-bulk" style="${st.bulk ? "border-color: var(--wb-brand-text);color: var(--wb-brand-text)" : ""}">${ic("list-checks")} 批量管理</button>
       <button class="btn-plain" id="at-tpl">${ic("clipboard-list")} 从模版添加</button>
-      <button class="btn-brand" id="at-new">＋ 添加自动化</button>
+      <button class="btn-brand" id="at-new">${ic("plus")}添加自动化</button>
     </div>
     ${st.bulk ? `<div class="hub-bar" style="margin:0 0 8px">
       <a class="link" id="bk-all" href="#">全选</a>
@@ -1124,7 +1124,7 @@ async function renderAutomPage() {
     <div id="at-form-box"></div>
     ${on.length ? `<div class="at-group">启用中（${on.length}）</div>` + on.map(row).join("") : ""}
     ${off.length ? `<div class="at-group">已暂停（${off.length}）</div>` + off.map(row).join("") : ""}
-    ${!match.length ? '<div class="hub-empty">还没有自动化任务。点右上角「＋ 添加自动化」或「从模版添加」建一个。</div>' : ""}`;
+    ${!match.length ? '<div class="hub-empty">还没有自动化任务。点右上角「添加自动化」或「从模版添加」建一个。</div>' : ""}`;
   page.querySelector('[data-tab="runs"]').onclick = () => { st.tab = "runs"; renderAutomPage(); };
   const qEl = page.querySelector("#at-q");
   qEl.oninput = () => { st.q = qEl.value; clearTimeout(page._t); page._t = setTimeout(renderAutomPage, 200); };
@@ -1174,7 +1174,7 @@ function renderAutomTplPicker(box) {
     <div class="proj-card" data-i="${i}">
       <div class="tt">${ic(t.icon)} ${esc(t.tt)}</div>
       <div class="dd">${esc(cronToHuman(t.cron))} · ${esc(t.task.slice(0, 46))}…</div>
-      <div class="ops"><a class="link" href="#">用这个模版 →</a></div>
+      <div class="ops"><a class="link" href="#">用这个模版${ic("arrow-right")}</a></div>
     </div>`).join("")}</div>`;
   box.querySelectorAll(".proj-card").forEach(el => el.onclick = (e) => {
     e.preventDefault();

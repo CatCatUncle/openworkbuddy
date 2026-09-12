@@ -72,7 +72,7 @@ async function openEvalDetail(dir) {
       <b style="font-size:14px">${esc(String(j.at || "").slice(0, 16).replace("T", " "))} · ${esc(j.model || "")}${(j.repeat || 1) > 1 ? ` · 每题 ${j.repeat} 次` : ""}</b>
       <span style="font-size:12px;color:var(--wb-text-3)">pass@1 均值 ${p1}% · 稳定全过 ${j.full_pass}/${j.tasks}${jdHead}${j.human && j.human.avg ? ` · 人工 ★${j.human.avg}（已评 ${j.human.scored} 题）` : ""}${j.commit ? ` · 版本 ${esc(j.commit)}` : ""}${blHead}</span>
       <a href="#" id="ev-pin" class="link" style="margin-left:auto;font-size:12px;white-space:nowrap">${ic("pin")} 设为基线</a>
-      <a href="#" id="ev-close" class="link" style="font-size:12px">收起 ✕</a>
+      <a href="#" id="ev-close" class="link" style="font-size:12px">收起${ic("x")}</a>
     </div>`;
   const rows = (j.results || []).map((r) => {
     const k = r.k || 1;
@@ -82,11 +82,11 @@ async function openEvalDetail(dir) {
       : passes ? `<span style="color:var(--wb-warn)">${ic("zap")}</span>`
         : `<span style="color:var(--wb-err-text)">${ic(r.passed ? "triangle-alert" : "circle-x")}</span>`;
     const lv = r.level ? `<span style="font-size:11px;padding:1px 6px;border-radius:5px;background:var(--wb-bg);border:1px solid var(--wb-line);color:var(--wb-text-3)">L${r.level}${r.kind ? "·" + esc(r.kind) : ""}</span>` : "";
-    const cells = (r.attempts && r.attempts.length > 1) ? `<span style="display:inline-flex;gap:3px" title="每格一次尝试">${r.attempts.map((a) => `<span title="第${a.n}次：${a.passed}/${a.total}${a.fail_code ? " · " + (EV_FAIL_LABELS[a.fail_code] || a.fail_code) : ""}" style="width:17px;height:17px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;background:${a.passed === a.total ? "rgba(34,197,94,.15)" : "rgba(239,68,68,.15)"};color:${a.passed === a.total ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${a.passed === a.total ? "✓" : "✗"}</span>`).join("")}</span>` : "";
+    const cells = (r.attempts && r.attempts.length > 1) ? `<span style="display:inline-flex;gap:3px" title="每格一次尝试">${r.attempts.map((a) => `<span title="第${a.n}次：${a.passed}/${a.total}${a.fail_code ? " · " + (EV_FAIL_LABELS[a.fail_code] || a.fail_code) : ""}" class="ev-try" style="width:17px;height:17px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;background:${a.passed === a.total ? "rgba(34,197,94,.15)" : "rgba(239,68,68,.15)"};color:${a.passed === a.total ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${ic(a.passed === a.total ? "check" : "x")}</span>`).join("")}</span>` : "";
     const chips = (r.fail_codes || []).map((c) => `<span style="font-size:11px;padding:1px 7px;border-radius:999px;background:rgba(239,68,68,.12);color:var(--wb-err-text)">${EV_FAIL_LABELS[c] || esc(c)}</span>`).join("");
-    const checks = (r.checks || []).map((c) => `<div style="font-size:12px;color:${c.ok ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${c.ok ? "✓" : "✗"} ${esc(c.name)}${c.note ? `<span style="color:var(--wb-text-3)"> — ${esc(c.note)}</span>` : ""}</div>`).join("");
+    const checks = (r.checks || []).map((c) => `<div class="chk-line" style="font-size:12px;color:${c.ok ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${ic(c.ok ? "check" : "x")} ${esc(c.name)}${c.note ? `<span style="color:var(--wb-text-3)"> — ${esc(c.note)}</span>` : ""}</div>`).join("");
     const judge = r.judge && r.judge.dims
-      ? `<div style="margin-top:6px;font-size:12px">${ic("scale")} 质量维度 <b>${r.judge.passed}/${r.judge.total}</b>${r.judge.dims.map((d) => `<div style="color:${d.pass ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${d.pass ? "✓" : "✗"} ${esc(d.q)}${d.note ? `<span style="color:var(--wb-text-3)"> — ${esc(d.note)}</span>` : ""}</div>`).join("")}</div>`
+      ? `<div style="margin-top:6px;font-size:12px">${ic("scale")} 质量维度 <b>${r.judge.passed}/${r.judge.total}</b>${r.judge.dims.map((d) => `<div class="chk-line" style="color:${d.pass ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${ic(d.pass ? "check" : "x")} ${esc(d.q)}${d.note ? `<span style="color:var(--wb-text-3)"> — ${esc(d.note)}</span>` : ""}</div>`).join("")}</div>`
       : r.judge && r.judge.score
         ? `<div style="margin-top:6px;font-size:12px">${ic("scale")} AI 评委 <b>${r.judge.score}/5</b> — ${esc(r.judge.verdict || "")}${(r.judge.reasons || []).length ? `<div style="color:var(--wb-text-3)">${r.judge.reasons.map((x) => "· " + esc(x)).join("<br>")}</div>` : ""}${(r.judge.deductions || []).length ? `<div style="color:var(--wb-err-text)">${r.judge.deductions.map((x) => "扣分：" + esc(x)).join("<br>")}</div>` : ""}</div>`
         : (r.judge && r.judge.error ? `<div style="margin-top:6px;font-size:12px;color:var(--wb-text-3)">${ic("scale")} 评委失败：${esc(r.judge.error)}</div>` : "");
@@ -159,7 +159,7 @@ async function renderLibPage() {
         <div class="hub-search">${ic("search")}<input id="lb-q" placeholder="搜索资料" value="${esc(libState.q)}"></div>
         <div class="lib-it ${libState.pick && libState.pick.src === "notes" ? "active" : ""}" data-src="notes" data-name="" style="margin-top:10px"><span>${ic("lightbulb")} </span><span class="nm">灵感笔记（${(lib.notes || []).length}）</span></div>
         ${recents.length ? `<div class="sec">最近</div>` + recents.filter(r => hit(r.name)).slice(0, 6).map(r => item(r.src, r.name)).join("") : ""}
-        <div class="sec">${po ? "我的文档" : "共享资料"} ${po ? `<a href="#" id="lb-up" class="link" style="font-size: 13px">＋ 上传</a><input type="file" id="lb-file" multiple style="display:none">` : `<span style="font-weight:400;color:var(--wb-text-3)" title="资料库是整台服务器共用的一份，往里放东西归平台管理员">只读</span>`}</div>
+        <div class="sec">${po ? "我的文档" : "共享资料"} ${po ? `<a href="#" id="lb-up" class="link" style="font-size: 13px">${ic("plus")}上传</a><input type="file" id="lb-file" multiple style="display:none">` : `<span style="font-weight:400;color:var(--wb-text-3)" title="资料库是整台服务器共用的一份，往里放东西归平台管理员">只读</span>`}</div>
         ${(lib.files || []).filter(f => hit(f.name)).map(f => item("lib", f.name, f.size)).join("") || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 8px">还没有参考资料</div>'}
         <div class="sec">本地产物（当前项目）</div>
         ${ws.filter(f => hit(f.name)).slice(0, 60).map(f => item("ws", f.name, f.size)).join("") || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 8px">工作目录还没有成果文件</div>'}
@@ -355,7 +355,7 @@ function renderHubExperts(box) {
   const scenes = hubState.mine || hubState.q ? "" : `
     <div class="hub-sec-title">精选场景 <span class="sub">点一下带着写好的提示词开新任务</span></div>
     <div class="feat-scroll">${HUB_SCENES.map((s, i) =>
-      `<div class="feat-card" data-scene="${i}"><div class="ic">${ic(s.icon)}</div><div class="tt">${esc(s.tt)}</div><div class="dd">${esc(s.dd)}</div><div class="go">用这个开始 →</div></div>`).join("")}</div>`;
+      `<div class="feat-card" data-scene="${i}"><div class="ic">${ic(s.icon)}</div><div class="tt">${esc(s.tt)}</div><div class="dd">${esc(s.dd)}</div><div class="go">用这个开始${ic("arrow-right")}</div></div>`).join("")}</div>`;
   box.innerHTML = scenes + `
     <div class="hub-bar">
       <div class="hub-sub">
@@ -375,7 +375,7 @@ function renderHubExperts(box) {
   if (hubState.sub === "team") {
     const list = teams.filter(t => hubMatch(hubState.q, t.name, t.description, t.members.join(" ")));
     grid.innerHTML =
-      (po ? `<div class="ex-card add" id="team-add">＋ 创建专家团</div>` : "") +
+      (po ? `<div class="ex-card add" id="team-add">${ic("plus")}创建专家团</div>` : "") +
       list.map((t, i) => `
         <div class="ex-card" data-ti="${i}">
           <div class="hd"><div class="av">${ava(t.avatar, "users")}</div><div class="nm"><span>${esc(t.name)}</span><span class="al">${t.members.length} 位成员</span></div></div>
@@ -406,7 +406,7 @@ function renderHubExperts(box) {
       (!hubState.mine || !e.builtin) &&
       hubMatch(hubState.q, e.name, e.alias, e.description, (e.tags || []).join(" ")));
     grid.innerHTML =
-      (po ? `<div class="ex-card add" id="ex-add">＋ 创建专家<span class="add-sub">创建属于你的专家，分享专业知识</span></div>` : "") +
+      (po ? `<div class="ex-card add" id="ex-add">${ic("plus")}创建专家<span class="add-sub">创建属于你的专家，分享专业知识</span></div>` : "") +
       list.map((e, i) => `
         <div class="ex-card" data-ei="${i}">
           ${e.builtin ? '<span class="flag">官方</span>' : ""}
@@ -561,7 +561,7 @@ function renderHubEditor() {
       el.innerHTML = order.length
         ? `执行顺序：` + order.map((n, i) =>
             `<span class="chip active" style="margin:0 4px 4px 0;display:inline-flex;gap:6px;align-items:center">${i + 1}. ${esc(n)}` +
-            `<a href="#" data-up="${i}" title="前移" style="text-decoration:none">↑</a><a href="#" data-rm="${i}" title="移除" style="text-decoration:none">✕</a></span>`).join("")
+            `<a href="#" data-up="${i}" class="icon-btn" title="前移">${ic("arrow-up")}</a><a href="#" data-rm="${i}" class="icon-btn" title="移除">${ic("x")}</a></span>`).join("")
         : '<span class="ab-empty">还没选成员</span>';
       el.querySelectorAll("a[data-up]").forEach(a => a.onclick = (ev) => {
         ev.preventDefault();
@@ -688,7 +688,7 @@ async function renderHubSkills(box) {
     <div class="hub-sec-title" style="margin-top:14px">${po ? "我的技能" : "可用技能"} <span class="sub">${
       po ? "本机 skills/ 目录里的，加上插件带进来的" : "这台服务器上装好的，点「立即使用」就能用；装新技能归平台管理员"}</span></div>
     <div class="card-grid" id="hub-grid">
-      ${po ? `<div class="ex-card add" id="sk-add">＋ 添加技能<span class="add-sub">手写一份操作说明书，智能体按需加载</span></div>` : ""}
+      ${po ? `<div class="ex-card add" id="sk-add">${ic("plus")}添加技能<span class="add-sub">手写一份操作说明书，智能体按需加载</span></div>` : ""}
       ${list.map((s, i) => `
         <div class="ex-card" data-si="${i}">
           ${s.plugin ? `<span class="flag">插件</span>` : ""}
@@ -767,7 +767,7 @@ async function renderHubSkills(box) {
       panel.innerHTML =
         `<div class="sk-start-hint">${eg.length ? "挑一件最像你要做的事，下一步再补素材：" : "这份说明书没写「适用场景」，先照这个格式说清你要什么："}</div>` +
         (eg.length ? `<div class="sk-eg">${eg.map((t, i) => `<button class="chip" data-i="${i}">${esc(t)}</button>`).join("")}</div>` : "") +
-        `<button class="sk-own">我自己写一句 →</button>`;
+        `<button class="sk-own">我自己写一句${ic("arrow-right")}</button>`;
       panel.querySelectorAll(".chip").forEach(b => b.onclick = () => startTaskWith(
         `用「${s.name}」技能帮我：${eg[+b.dataset.i]}\n\n__把素材和背景贴在这一行：要做的是什么、给谁看、手上已经有的内容__`));
       panel.querySelector(".sk-own").onclick = () => startTaskWith(

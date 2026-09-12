@@ -594,7 +594,7 @@ function createTurnUI(userText, turnMode, forSid) {
       procWrap = document.createElement("div");
       procWrap.className = "proc-wrap running" + (procOpenPref() ? " open" : "");
       // ms-live 独占一行跟着折叠条一起钉在顶上：过程区收着也一直看得到「几件做完了、现在在做哪件」
-      procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="trail"></span><span class="arrow">›</span><span class="ms-live" hidden></span><span class="act-live"></span></div><div class="proc-body"></div>`;
+      procWrap.innerHTML = `<div class="proc-head"><span class="spinner"></span><span class="pt">运行中…</span><span class="trail"></span><span class="arrow">${ic("chevron-right")}</span><span class="ms-live" hidden></span><span class="act-live"></span></div><div class="proc-body"></div>`;
       if (actLine) paintAct(); // 过程区是第一个工具来了才建的，在它之前播过的动作要补上，别开天窗
       procBody = procWrap.querySelector(".proc-body");
       onActivate(procWrap.querySelector(".proc-head"), () => {
@@ -1311,7 +1311,7 @@ function renderMentionMenu() {
   if (trigger === "@") {
     items = filesCache.filter(f => f.name.toLowerCase().includes(query.toLowerCase()))
       .slice(0, 12).map(f => ({ icon: fileIcon(f.name), label: f.name, insert: "@" + f.name, sub: "工作空间文件" }));
-    if (!items.length) items = [{ label: "（工作空间还没有文件，可点 ＋ 上传）", insert: null }];
+    if (!items.length) items = [{ label: "（工作空间还没有文件，先在输入框左边上传一个）", insert: null }];
   } else {
     items = skillsCache.filter(s => s.name.toLowerCase().includes(query.toLowerCase()) || s.description.includes(query))
       .slice(0, 12).map(s => ({ icon: "package", label: "/" + s.name, insert: "/" + s.name, sub: s.description }));
@@ -1599,7 +1599,7 @@ function renderFiles(files) {
   const resFirst = (tie) => (a, b2) => (isResultFile(b2.name) ? 1 : 0) - (isResultFile(a.name) ? 1 : 0) || (tie ? tie(a, b2) : 0);
   const resCount = (list) => list.filter((f) => isResultFile(f.name)).length;
   const dirHead = (key, label, n, mine, tip, nres) =>
-    `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span class="ar">${ic(openDirs.has(key) ? "chevron-down" : "chevron-right")}</span><span>${ic("folder")}</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${nres ? `<b class="res-n">${nres} 份成果</b> · ` : ""}${n}</span>${canOpenOnHost() ? `<span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">↗</span>` : ""}</div>`;
+    `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span class="ar">${ic(openDirs.has(key) ? "chevron-down" : "chevron-right")}</span><span>${ic("folder")}</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${nres ? `<b class="res-n">${nres} 份成果</b> · ` : ""}${n}</span>${canOpenOnHost() ? `<span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">${ic("arrow-up-right")}</span>` : ""}</div>`;
 
   // 一个文件夹归到哪个时间段，看它**最近动过的那个文件**（不是最老的那个）
   const dirTime = (dir) => groups[dir].reduce((m, f) => Math.max(m, Date.parse(f.mtime) || 0), 0);

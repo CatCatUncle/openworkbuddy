@@ -162,7 +162,7 @@ function renderSecurityPane(pane, s) {
     const d = await fetch("/api/security/system").then(r => r.json()).catch(() => null);
     if (!d) { el.textContent = "读取失败"; return; }
     const txt = {
-      granted: '<span style="color:var(--wb-ok-text)">${ic("circle-check")} 已授权</span>',
+      granted: `<span style="color:var(--wb-ok-text)">${ic("circle-check")} 已授权</span>`,
       denied: '<span style="color:var(--wb-err-text)">未授权</span>',
       unknown: '<span style="color:var(--wb-text-3)">无法检测</span>',
       unchecked: '<span style="color:var(--wb-text-3)">未检测</span>',
@@ -414,7 +414,9 @@ const LOOK_ICON = {
 };
 // 色板小圆点用的就是各皮肤在浅色下的主色；真正的 token 定义在 index.html 的 html[data-skin=…] 里，这里只是「长什么样」的预览
 const LOOK_SWATCH = { default: "#5b5ff7", ocean: "#0284c7", forest: "#059669", sunset: "#ea580c", rose: "#e11d48", graphite: "#4b5563" };
-const LOOK_FS_PX = { s: 13, m: 15, l: 17, xl: 19 };
+// 四个 A 的大小必须就是真档位（index.html 的 --wb-fs 阶梯），别为了「看着差别大」放大——
+// 预览夸大了差距，人挑「小」时以为会小一圈，结果只小 1px，会觉得这个开关是坏的
+const LOOK_FS_PX = { s: 14, m: 15, l: 16, xl: 18 };
 function renderLookPane(pane) {
   const seg = (k, opts, cur, cell) => `<div class="look-seg look-${k}" data-k="${k}">${Object.entries(opts).map(([v, l]) =>
     `<button type="button" class="${cur === v ? "on" : ""}" data-v="${v}" aria-pressed="${cur === v}">${cell(v, l)}</button>`).join("")}</div>`;

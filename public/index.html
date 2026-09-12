@@ -35,6 +35,11 @@
   /* ---------- 外观偏好：app-02.js 的 applyLook() 把选择写到 根元素 html 的 data-fs / data-skin / data-font / data-density 属性 ----------
      字号只改一个 --wb-fs：正文、输入框、标题、行内代码、左栏历史都按 calc 跟着走，四档之间比例不变 */
   :root { --wb-fs: 15px; }
+  /* 折叠箭头。伪元素挂不了 <use>，所以这枚只能走 mask：形状写死在 data: 里，颜色由
+     currentColor 走 background 给。改形状要跟 icons.js 里的 chevron-right 对齐。 */
+  :root {
+    --wb-chev-mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>');
+  }
   html[data-fs="s"] { --wb-fs: 14px; }
   html[data-fs="l"] { --wb-fs: 16px; }
   html[data-fs="xl"] { --wb-fs: 18px; }
@@ -110,7 +115,8 @@
   .im-b.error { align-self: center; color: var(--wb-err-text); font-size: 13px; background: none; }
   .im-b .m { font-size: 12px; color: var(--wb-text-3); margin-bottom: 2px; }
   .side-label { font-size: 12px; color: var(--wb-text-3); padding: 4px 10px 6px; }
-  #history { flex: 1; overflow-y: auto; min-height: 0; }
+  /* 同上：任务多到要滚的时候，侧栏里每条标题会整体左移 11px */
+  #history { flex: 1; overflow-y: auto; min-height: 0; scrollbar-gutter: stable; }
   .hist-item { padding: 8px 10px; border-radius: var(--radius-md); font-size: calc(var(--wb-fs) - 1px); color: var(--wb-text-2); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .hist-item:hover { background: var(--wb-bg-hover); }
   /* 这几类行是 div，补了 tabindex 才能 Tab 到；浏览器不给 div 画默认焦点圈，得自己画。
@@ -139,16 +145,16 @@
   .side-nav .item.active .tx .sub { color: var(--wb-brand-text); }
   .side-nav .more-toggle { justify-content: space-between; color: var(--wb-text-3); }
   .side-nav .more-toggle .caret { margin-left: auto; }
-  /* 项目表头：点整行进项目页，点 ＋ 快速新建 */
+  /* 项目表头：点整行进项目页，点右边的加号快速新建 */
   .side-nav .nav-head { cursor: pointer; }
-  /* ＋ 号原来用第三级文字色，压在选中底上暗色只有 4.25。抬一级到 --wb-text-2：浅 5.40 / 暗 5.36 */
-  /* 实测 23×21，差一点点就够 24——补齐，顺便把 ＋ 居中 */
+  /* 加号原来用第三级文字色，压在选中底上暗色只有 4.25。抬一级到 --wb-text-2：浅 5.40 / 暗 5.36 */
+  /* 实测 23×21，差一点点就够 24——补齐，顺便把图标居中 */
   .side-nav .nav-head #proj-add { margin-left: auto; text-decoration: none; color: var(--wb-text-2);
     font-size: 15px; padding: 0; width: 24px; height: 24px; flex: none; border-radius: var(--radius-sm);
     display: inline-flex; align-items: center; justify-content: center; }
   .side-nav .nav-head #proj-add:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   .side-nav #proj-list { margin: 0 0 4px; }
-  .side-nav .more-toggle .caret { font-size: 11px; transition: transform var(--wb-t-fast) var(--wb-ease); }
+  .side-nav .more-toggle .caret { display: inline-flex; align-items: center; color: var(--wb-text-3); transition: transform var(--wb-t-fast) var(--wb-ease); }
   .side-nav .more-toggle.open .caret { transform: rotate(180deg); }
   .more-box { display: none; padding-left: 8px; }
   .more-box.open { display: block; }
@@ -345,8 +351,8 @@
   /* ---------- 来源 ---------- */
   .src-block { margin: 12px 0 4px; border-top: 1px solid var(--wb-border); padding-top: 8px; }
   .src-hd { font-size: 13px; color: var(--wb-text-2); margin-bottom: 6px; cursor: pointer; user-select: none; }
-  .src-hd::before { content: "▸ "; }
-  .src-block.open .src-hd::before { content: "▾ "; }
+  .src-hd::before { margin-right: 3px; }
+  .src-block.open .src-hd::before { transform: rotate(90deg); }
   .src-list { display: none; flex-wrap: wrap; gap: 6px; }
   .src-block.open .src-list { display: flex; }
   .src-item { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; font-size: 13px;
@@ -394,7 +400,7 @@
   /* 跑的时候这一行钉在视口顶：过程区展开得再长，也一眼看得到跑到第几步、几步出错、产出几件 */
   .proc-wrap.running .proc-head { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; padding: 5px 0;
     background: var(--wb-bg); box-shadow: 0 1px 0 var(--wb-border); }
-  .proc-head .arrow { font-size: 13px; display: inline-block; transition: transform var(--wb-t-fast) var(--wb-ease); }
+  .proc-head .arrow { display: inline-flex; align-items: center; transition: transform var(--wb-t-fast) var(--wb-ease); }
   .proc-wrap.open .proc-head .arrow { transform: rotate(90deg); }
   .proc-warn { color: var(--wb-err-text); background: rgba(229,72,77,.12); border-radius: var(--radius-sm); padding: 0 6px; font-size: 12px; }
   .proc-body { display: none; padding-left: 10px; border-left: 2px solid var(--wb-border); margin: 4px 0 4px 4px; }
@@ -549,6 +555,10 @@
   .card-toolbar { display: flex; align-items: center; margin-top: 8px; gap: 8px; }
   .icon-btn { width: 32px; height: 32px; border: none; background: transparent; border-radius: var(--radius-md); font-size: 18px; color: var(--wb-text-2); cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .icon-btn:hover { background: var(--wb-bg-hover); }
+  /* chip 里的「前移 / 移除」：外面那颗 32 见方的通用图标键会把 chip 整个撑开 */
+  .chip .icon-btn { width: 18px; height: 18px; flex: none; }
+  .opendir .i { width: 13px; height: 13px; display: block; }
+  .mcp-docs-link .i { width: 12px; height: 12px; vertical-align: -.16em; margin-left: 2px; }
   .card-toolbar .grow { flex: 1; }
   .picker { position: relative; }
   .picker-btn { display: flex; align-items: center; gap: 5px; border: none; background: transparent; border-radius: var(--radius-md); padding: 6px 10px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; }
@@ -850,7 +860,8 @@
     display: inline-flex; align-items: center; justify-content: center; }
   .m-close:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   .m-close .i { width: 16px; height: 16px; }
-  .m-body { padding: 14px 20px 20px; overflow-y: auto; font-size: 14px; flex: 1; }
+  /* 同上：弹窗正文内容长短不定，不留位就会随内容多少左右晃 11px */
+  .m-body { padding: 14px 20px 20px; overflow-y: auto; font-size: 14px; flex: 1; scrollbar-gutter: stable; }
   /* 设置页自己带侧栏和内容区的留白，m-body 再包一层 20px 就成了双层：分隔线浮在半空、
      导航整体比弹窗标题右挪 20px（实测标题文字左边缘 280 / 导航图标列左边缘 300）。
      这里让它贴边，导航图标列正好落回 280，和标题文字同一列 */
@@ -951,7 +962,10 @@
   .look-prev { margin-top: 10px; border: 1px dashed var(--wb-border); border-radius: var(--radius-lg); padding: 10px 14px; font-size: var(--wb-fs); line-height: 1.7; color: var(--wb-text); }
   .look-prev code { background: var(--wb-bg-hover); border-radius: var(--radius-xs); padding: 1px 5px; font-size: calc(var(--wb-fs) - 2px); font-family: var(--font-mono); }
   .look-note { color: var(--wb-text-3); font-size: 12px; margin-top: 8px; }
-  .settings-pane { flex: 1; padding: 16px 20px 24px; overflow-y: auto; font-size: 14px; }
+  /* 留出滚动条的位置。12 个分页里「模型 / 搜索 / 进化 / 数据」四个内容不够长不出滚动条，
+     其余八个出。开了「总是显示滚动条」的机器上来回切，实测整页内容横跳 11px。
+     对话区（#chat-scroll）早就这么留了，这里跟上。 */
+  .settings-pane { flex: 1; padding: 16px 20px 24px; overflow-y: auto; font-size: 14px; scrollbar-gutter: stable; }
   .form-row { display: flex; gap: 8px; }
   .form-row > * { flex: 1; }
   .ok-msg { font-size: 13px; color: var(--wb-ok-text); margin-left: 8px; }
@@ -1091,7 +1105,10 @@
   .hub-tabs { display: flex; gap: 4px; background: var(--wb-bg-side); border-radius: var(--radius-lg); padding: 3px; }
   .hub-tabs button { border: none; background: transparent; border-radius: var(--radius-md); padding: 7px 16px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; }
   .hub-tabs button.active { background: var(--wb-bg); color: var(--wb-text); font-weight: 600; box-shadow: var(--shadow-surface); }
-  .hub-search { flex: 1; min-width: 160px; position: relative; }
+  /* 搜索框的宽度只在这儿定。以前项目页内联 260、自动化页内联 240、技能中心和模板页
+     干脆不写，flex:1 一路撑到 746——同一个控件量出四种宽度。260 是这里最长的
+     占位文案「搜索专家职称或描述」加上放大镜留白之后的舒服值，再宽就只剩空框。 */
+  .hub-search { flex: 1; min-width: 160px; max-width: 260px; position: relative; }
   .hub-search input { width: 100%; padding: 8px 12px 8px 30px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); font-size: 14px; background: var(--wb-bg); }
   /* 放大镜原来是 ::before 的 content:"🔍"——伪元素塞不进 svg，所以改成真节点：
      .hub-search 里第一个 .i 就是它，位置靠这条绝对定位钉住，标记看 ui.css 的 .i */
@@ -1170,7 +1187,7 @@
   /* 提示词全文默认收起：一屏几十段全文密集恐。点卡片单张展开 */
   .tpl-card pre { display: none; background: var(--wb-bg-side); border-radius: var(--radius-md); padding: 10px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; color: var(--wb-text); }
   .tpl-card.open pre { display: block; animation: wbFade .18s var(--wb-ease); }
-  .tpl-card .chev { font-size: 11px; color: var(--wb-text-3); transition: transform .18s var(--wb-ease); }
+  .tpl-card .chev { display: inline-flex; align-items: center; color: var(--wb-text-3); transition: transform .18s var(--wb-ease); }
   .tpl-card.open .chev { transform: rotate(90deg); }
   .tpl-card .ops { display: flex; gap: 6px; margin-top: auto; }
   .tpl-card .ops button { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: var(--radius-md); padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--wb-text-2); }
@@ -1322,6 +1339,8 @@
   #goal-card .gc-title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #goal-card .gc-meta { color: var(--wb-text-2); flex-shrink: 0; }
   #goal-card .gc-done { color: var(--wb-ok-text); font-weight: 600; }
+  /* 评测里「每格一次尝试」的小方块：格子 17px、字号 10px，图标跟着 1em 会小到看不清 */
+  .ev-try .i { width: 12px; height: 12px; }
   #goal-card .gc-close { border: none; background: none; cursor: pointer; color: var(--wb-text-3); font-size: 13px; padding: 2px 4px; }
   #goal-card .gc-close:hover { color: var(--wb-err-text); }
   #goal-card .gc-list { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
@@ -1417,7 +1436,7 @@
   .im-help { margin-top: 6px; font-size: 12px; color: var(--wb-text-2); }
   .im-help summary { cursor: pointer; color: var(--wb-brand-text); list-style: none; }
   .im-help summary::-webkit-details-marker { display: none; }
-  .im-help summary::before { content: "›"; display: inline-block; margin-right: 4px; transition: transform var(--wb-t-fast) var(--wb-ease); }
+  .im-help summary::before { margin-right: 4px; }
   .im-help[open] summary::before { transform: rotate(90deg); }
   .im-help ol { margin: 6px 0 0; padding-left: 18px; line-height: 1.6; }
 
@@ -1473,7 +1492,25 @@
   .chip { border-radius: var(--radius-full); }
 
   /* 图标尺寸：跟 shadcn 一样，按钮里的图标一律 16，密集处 14 */
+  /* 尺寸不在这儿定：ui.css 里 .i 是 1em，图标自动跟着它所在那行的字号走。
+     真要改大小就去改那处的 font-size，或者像下面几条一样按元素单独钉死，
+     别在这儿写全局像素值——那会把所有地方一起拽平。 */
   .i { color: inherit; }
+  /* 伪元素里塞不进 sprite（<use> 只认真元素），所以这两处折叠箭头用 mask 把 lucide 的
+     chevron-right 刷上去：颜色照旧跟 currentColor 走，rotate 也还能转。
+     以前是直接写 content:"›" —— 那是个标点，字重、基线、粗细全归字体管，
+     跟旁边 sprite 画出来的图标怎么调都对不齐。 */
+  .src-hd::before, .im-help summary::before {
+    content: ""; display: inline-block; width: 1em; height: 1em; vertical-align: -.14em;
+    background: currentColor; transition: transform var(--wb-t-fast) var(--wb-ease);
+    -webkit-mask: var(--wb-chev-mask) center / contain no-repeat;
+    mask: var(--wb-chev-mask) center / contain no-repeat;
+  }
+  /* 行内链接/卡片脚注里的图标：不改行盒（.link 有嵌在正文段落里的，改 inline-flex 就没法跟着换行了），
+     只留一点左右气口，大小和基线都交给 ui.css 的 1em / -.145em */
+  .link .i:first-child, .ex-card.add .i { margin-right: 3px; }
+  .link .i:last-child, .sk-own .i, .feat-card .go .i { margin-left: 2px; }
+  .tpl-card .chev .i, .proc-head .arrow .i, .side-nav .more-toggle .caret .i { width: 14px; height: 14px; display: block; }
   button .i, .picker-btn .i, .link .i, .mi .i, a.icon-btn .i { width: 16px; height: 16px; }
   .side-nav .item .ic .i { width: 17px; height: 17px; }
   .side-nav .item .ic { display: inline-flex; align-items: center; justify-content: center; width: 18px; flex: none; }
@@ -1586,6 +1623,8 @@
 <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol>
 <symbol id="i-zap" viewBox="0 0 24 24"><path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /></symbol>
 <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7" /> <path d="M12 19V5" /></symbol>
+<symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14" /> <path d="m12 5 7 7-7 7" /></symbol>
+<symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 7h10v10" /> <path d="M7 17 17 7" /></symbol>
 <symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2" /> <line x1="8" x2="16" y1="21" y2="21" /> <line x1="12" x2="12" y1="17" y2="21" /></symbol>
 <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /></symbol>
 <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="m16 9-5.5 5.5L8 12" /></symbol>
@@ -1727,11 +1766,11 @@
   <div class="lane-tabs" id="lane-tabs" role="tablist" aria-label="工作线"></div>
   <div class="side-nav top">
     <div class="item" id="ab-head" title="助理模式：IM 远程指挥 + 直接对话"><span class="ic" id="ab-ic"><svg class="i" aria-hidden="true"><use href="#i-bot"></use></svg></span><span class="tx"><span id="ab-name">助理模式</span><span class="sub" id="ab-sub">IM 远程指挥</span></span></div>
-    <div class="item nav-head" data-view="proj" title="项目管理"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-folder"></use></svg></span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目">＋</a></div>
+    <div class="item nav-head" data-view="proj" title="项目管理"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-folder"></use></svg></span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目"><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg></a></div>
     <div id="proj-list"></div>
     <div class="item" data-view="hub"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-blocks"></use></svg></span><span class="tx">专家<span class="sub">技能 · 连接器</span></span></div>
     <div class="item" data-view="autom"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-clock"></use></svg></span><span class="tx">自动化<span class="sub">定时 · 运行记录</span></span></div>
-    <div class="item more-toggle" id="more-toggle"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-ellipsis"></use></svg></span><span class="tx">更多<span class="sub">资料库 · 灵感</span></span><span class="caret" id="more-caret">▾</span></div>
+    <div class="item more-toggle" id="more-toggle"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-ellipsis"></use></svg></span><span class="tx">更多<span class="sub">资料库 · 灵感</span></span><span class="caret" id="more-caret"><svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></span></div>
     <div class="more-box" id="more-box">
       <div class="item" data-view="prompts"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-book-open"></use></svg></span><span class="tx">参考模板库<span class="sub">提示词范例</span></span></div>
       <div class="item" data-view="lib"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-lightbulb"></use></svg></span><span class="tx">资料库<span class="sub">知识 · 灵感</span></span></div>

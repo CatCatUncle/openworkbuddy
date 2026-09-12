@@ -5706,7 +5706,15 @@ const CONTRAST_CHECKS = `
     const [w, h] = box(sel);
     ok(label + " 是 " + w + "×" + h + " 的方块，没被撑成整行", w === 16 && h === 16, [w, h]);
   }
-  ok("同一个弹窗里的文本框仍然是整行宽（修勾选框没误伤它）", box("#c-text")[0] > 400, box("#c-text"));
+  // 「整行宽」是相对它所在那一行说的，不是某个魔法像素。这里原来写死 >400，结果
+  // 给 .m-body 补上 scrollbar-gutter:stable（滚动条留位，省得内容随长短横跳）之后，
+  // 这行少了 11px，405→394，测试当场变红——可文本框其实还是满宽的，红得没道理。
+  // 所以改成量真事：填满内容区（弹窗宽度减掉左右内边距）。
+  const rowW = () => {
+    const b = document.querySelector(".m-body"), s = getComputedStyle(b);
+    return Math.round(b.clientWidth - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight));
+  };
+  ok("同一个弹窗里的文本框仍然是整行宽（修勾选框没误伤它）", box("#c-text")[0] >= rowW() - 1, [box("#c-text")[0], rowW()]);
   // ★反向对照★ 用更高特异度把 .m-body input{width:100%} 那条重新压回勾选框上——
   // 也就是修之前的真实状态，勾选框必须当场被撑成整行。
   // （不能写 width:revert 来「撤掉」统一规则：revert 会连 .m-body 那条作者样式一起退掉，
@@ -5714,7 +5722,7 @@ const CONTRAST_CHECKS = `
   const bleed = document.createElement("style");
   bleed.textContent = ".m-body input#c-chk { width: 100%; padding: 8px 10px; }";
   document.head.appendChild(bleed);
-  ok("反向对照：把 width:100% 重新压回勾选框，它当场被撑成整行", box("#c-chk")[0] > 400, box("#c-chk"));
+  ok("反向对照：把 width:100% 重新压回勾选框，它当场被撑成整行", box("#c-chk")[0] >= rowW() - 1, [box("#c-chk")[0], rowW()]);
   bleed.remove();
 
   return names;
