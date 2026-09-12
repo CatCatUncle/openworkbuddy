@@ -185,7 +185,11 @@
   .empty h1 { font-size: 34px; font-weight: 700; margin-bottom: 24px; letter-spacing: 1px; }
   .scene-tabs { display: flex; flex-wrap: wrap; justify-content: center; background: var(--wb-bg-side); border-radius: 26px; padding: 4px; gap: 2px; margin-bottom: 34px; }
   .scene-tabs button { border: none; background: transparent; border-radius: 22px; padding: 9px 20px; font-size: 15px; color: var(--wb-text-2); cursor: pointer; display: flex; align-items: center; gap: 6px; }
-  .scene-tabs button.active { background: #17181c; color: #fff; font-weight: 600; }
+  /* 选中的那颗胶囊是「反色」：浅色下黑底白字。可原来这两个颜色是写死的，深色模式下
+     轨道底 --wb-bg-side 正好也是 #17181c——胶囊底和轨道底一模一样，1.00:1，
+     整颗胶囊直接消失，只剩几个白字浮在那儿，根本看不出选中的是哪个。
+     改成跟着主题翻的一对：底用前景色、字用背景色，浅色下和以前一模一样，深色下自动变成白底黑字。 */
+  .scene-tabs button.active { background: var(--wb-text); color: var(--wb-bg); font-weight: 600; }
   .chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 720px; }
   .chips button { padding: 9px 18px; border-radius: 22px; border: 1px solid var(--wb-border); background: var(--wb-bg); font-size: 14px; color: var(--wb-text); cursor: pointer; display: flex; align-items: center; gap: 6px; }
   .chips button:hover { border-color: var(--wb-brand-text); color: var(--wb-brand-text); background: var(--wb-brand-weak); }
@@ -361,7 +365,9 @@
   .a-text .file-ln { color: var(--wb-brand-text); cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; border-radius: 4px; padding: 0 2px; overflow-wrap: anywhere; }
   .a-text .file-ln:hover { background: var(--wb-brand-weak); text-decoration-style: solid; }
   .a-text .file-ln:focus-visible { outline: 2px solid var(--wb-brand-text); outline-offset: 1px; }
-  .step-card { border: 1px solid var(--wb-border); border-radius: 10px; margin: 8px 0; overflow: hidden; background: #fbfcfe; }
+  /* 卡片底色原来写死成近白的 #fbfcfe，深色模式下它不翻——每张过程卡都是一块刺眼的白板
+     （压深色页面底 17.43:1），上面的字又是深色主题那档浅灰，白底浅灰只有 2.29:1，基本读不了。 */
+  .step-card { border: 1px solid var(--wb-border); border-radius: 10px; margin: 8px 0; overflow: hidden; background: var(--wb-card); }
   .step-card .head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; user-select: none; font-size: 14px; }
   .tag { font-size: 12px; padding: 2px 9px; border-radius: 10px; background: var(--wb-brand-weak); color: var(--wb-brand-text); white-space: nowrap; }
   /* 底色不能写死浅绿/浅红：深色主题下字色跟着令牌变亮，压在浅底上就成了白纸写黄字。
@@ -702,17 +708,34 @@
   .mem-row .mem-tag { flex: 0 0 auto; font-size: 12px; color: var(--wb-text-3); background: var(--wb-bg-hover); border-radius: 6px; padding: 1px 6px; }
   .mem-row .mem-txt { flex: 1; min-width: 0; }
   .mem-row .mem-src { flex: 0 0 auto; font-size: 12px; color: var(--wb-text-3); }
-  .ap-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #fff7ed; border: 1px solid #fdba74; border-radius: 10px; padding: 8px 12px; margin-bottom: 6px; font-size: 14px; }
+  /* 审批条：任务停在这儿等人点头，是整屏最该被一眼看到的东西，可它原来是全站最不显眼的一块——
+     底色和边框都写死成浅橙（#fff7ed / #fdba74），那根边框压在页面底上只有 1.56:1，
+     等于没画；写死的另一个后果是深浅两套皮各写一遍，改一处忘一处。
+     现在整块跟着 --wb-warn 走：底色是它 10% 的淡染，边框直接用原色，压页面底 3.92 / 7.96:1，
+     左边加粗到 3px 当一根「停下来看我」的竖条，再补一层卡片投影把它从画布上抬起来。 */
+  .ap-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: color-mix(in srgb, var(--wb-warn) 10%, var(--wb-shell));
+    border: 1px solid var(--wb-warn); border-left-width: 3px;
+    box-shadow: var(--shadow-surface);
+    border-radius: 10px; padding: 8px 12px 8px 10px; margin-bottom: 6px; font-size: 14px; }
   .ap-row .ap-main { flex: 1; min-width: 220px; overflow: hidden; }
   .ap-row .ap-head { font-size: 13px; margin-bottom: 2px; }
-  .ap-row .ap-why { color: var(--wb-text-3); }
+  /* 拦截理由原来是第三级灰，压在淡橙上只有 4.13:1——偏偏这句正是「为什么弹这个框」，
+     是用户决定点允许还是拒绝的唯一依据，不该是最淡的那一档。提到第二级 5.03:1 */
+  .ap-row .ap-why { color: var(--wb-text-2); }
   .ap-row .ap-src { color: var(--wb-brand-text); font-weight: normal; }
   .ap-row .ap-cmd { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; font-size: 13px; color: var(--wb-text-2); }
   .ap-row .ap-btns { display: flex; gap: 6px; flex-wrap: wrap; }
   .ap-row button { border: none; border-radius: 8px; padding: 5px 12px; cursor: pointer; font-size: 13px; }
-  .ap-row .ap-ok { background: var(--wb-brand); color: #fff; }
-  .ap-row .ap-ok2 { background: var(--wb-bg-hover); color: var(--wb-text); border: 1px solid var(--wb-border); }
-  .ap-row .ap-no { background: var(--wb-bg-hover); color: var(--wb-text-2); }
+  /* 三个按钮的盒子尺寸必须一模一样，不然一行里高低差 1px，谁都说不出哪里别扭。
+     主按钮不需要边框，但得占同样的 1px，所以给一圈透明的 */
+  .ap-row .ap-ok { background: var(--wb-brand); color: #fff; border: 1px solid transparent; }
+  /* 两个次要按钮原来用的是 --wb-bg-hover + --wb-border，这两档是照着页面底算出来的冷灰，
+     摆到暖橙的条上既跳色又几乎没有边（按钮底压条底 1.07:1，「拒绝」干脆连边框都没有，
+     只剩两个字浮在那儿）。改成条自己那套暖色：边框用 --wb-warn 原色，压条底 3.49 / 6.75:1，
+     主次靠填充区分——「一直允许」是实心卡片面，「拒绝」透明只留一圈。 */
+  .ap-row .ap-ok2 { background: var(--wb-card); color: var(--wb-text); border: 1px solid var(--wb-warn); }
+  .ap-row .ap-no { background: transparent; color: var(--wb-text-2); border: 1px solid var(--wb-warn); }
   /* ---------- 输入框 @文件 //技能 token 高亮（镜像层） ---------- */
   #input-box { position: relative; }
   /* 镜像层和 textarea 必须共用同一套字号 / 行高 / 折行规则，而且都得是 var，不能写死。
@@ -759,7 +782,6 @@
     --color-bg-subtle: #24262c;
   }
   html[data-theme="dark"] .auth-mask { background: rgba(18,19,23,.72); }
-  html[data-theme="dark"] .ap-row { background: #3a2d16; border-color: #8a6a33; }
   html[data-theme="dark"] #input-hl .tk { box-shadow: 0 0 0 2px var(--wb-brand-weak), 0 0 0 3px rgba(139,143,255,.35); }
   .file-item .dl { margin-left: auto; color: var(--wb-text-3); text-decoration: none; padding: 2px 6px; border-radius: 6px; }
   .file-item .rv { margin-left: auto; cursor: pointer; font-size: 12px; }
