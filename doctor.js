@@ -87,6 +87,31 @@ function verdictConfig(facts) {
 }
 
 /**
+ * 配置内容有没有写错。
+ *
+ * 跟上面那条「配置文件」分开报：那条只管 JSON 解析得开解不开，而这里最常见的坏法
+ * 恰恰是解析得开——键名少个字母、端口写成带引号的 "3800"，程序当那一行不存在，
+ * 一声不吭。体检就是专门来抓这种「看着好好的、其实没生效」的。
+ */
+function verdictConfigLint(found) {
+  if (!found.length) return item("配置内容", "ok", "没发现写错的地方");
+  const worstBad = found.some((f) => f.level === "bad");
+  return item("配置内容", worstBad ? "bad" : "warn",
+    found.map((f) => f.text).join("；"),
+    found.map((f) => f.hint).join(" "));
+}
+
+/** 拿模板当底册跑一遍体检；模板读不到就跳过，别让体检自己先死在这儿 */
+function lintConfig(config, paths) {
+  try {
+    const def = JSON.parse(fs.readFileSync(paths.appPath("config.example.json"), "utf8"));
+    return require("./config-lint").lint(config, def);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * 模型渠道：只报数和「填没填 Key」，**绝不打印 Key 本身**。
  * 体检报告是最容易被整段贴到 issue 里的东西。
  */
@@ -279,6 +304,7 @@ async function gather(deps) {
     catch (e) { error = e.message; }
   }
   items.push(verdictConfig({ file: cfgFile, exists, parsed, error }));
+  items.push(verdictConfigLint(parsed ? lintConfig(config || {}, paths) : []));
   items.push(verdictModels(countModels(config || {})));
 
   const srv = (config && config.server) || {};
@@ -332,4 +358,5 @@ module.exports = {
   verdictNode, verdictDeps, verdictDataDir, verdictConfig, verdictModels,
   verdictPort, verdictWorkspace, verdictEngine,
   worst, countModels, probeWritable, probePort, probeWho, fetchText, gather, render, cols, LEVELS,
+  verdictConfigLint,
 };

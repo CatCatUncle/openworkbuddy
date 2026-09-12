@@ -4676,6 +4676,73 @@ async function testFilePathRouting() {
  *   ② 坐着的是另一台 OWB    → 必须不重复起服务（负对照：证明「换口」是签名说了算，不是见占就换）
  *   ③ 坐着的人一声不吭      → 不许卡死在握手上，照样换口起来
  */
+async function testConfigExternalEdit() {
+  const os = require("os");
+  const http = require("http");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cfg-"));
+  const CFG = path.join(home, "config.json");
+
+  const req = (port, method, p, body, cookie) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const r = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+      ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      ...(cookie ? { cookie } : {}),
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => resolve({ status: res.statusCode, body: b, setCookie: res.headers["set-cookie"] }));
+    });
+    r.on("error", (e) => resolve({ status: 0, body: String(e.message) }));
+    if (data) r.write(data);
+    r.end();
+  });
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home, WB_DATA_DIR: path.join(home, "data") });
+  try {
+    const { up, port, why } = await booted.wait();
+    assert(up, "服务端没起来，这条测不了：" + why);
+
+    // 头一个注册的是平台管理员，才有资格改服务器级设置（也就是才能触发存盘）
+    const reg = await req(port, "POST", "/api/auth/register", { username: "admin", password: "Str0ngPass!2345" });
+    const cookie = (reg.setCookie || []).map((c) => c.split(";")[0]).join("; ");
+    assert(cookie, "注册没拿到 cookie，登录闸后面的接口都走不了：" + reg.status + " " + reg.body.slice(0, 120));
+
+    // ---- 现场还原那条抱怨：在编辑器里粘一个 API Key 进去，再手加一整块 ----
+    const before = JSON.parse(fs.readFileSync(CFG, "utf8"));
+    before.models = before.models && before.models.length ? before.models : [{ name: "m1" }];
+    before.models[0].api_key = "sk-在编辑器里粘进去的";
+    before.mcp_servers = [{ name: "手加的连接器", command: "npx" }];
+    fs.writeFileSync(CFG, JSON.stringify(before, null, 2));
+
+    // ---- 然后回到界面上点一下（任何一处服务器级设置都会触发整份存盘）----
+    const sm = await req(port, "POST", "/api/security/mode", { mode: "auto" }, cookie);
+    assert(sm.status === 200, "改权限档没成功，后面无从谈起：" + sm.status + " " + sm.body.slice(0, 120));
+
+    const after = JSON.parse(fs.readFileSync(CFG, "utf8"));
+    assert(after.models && after.models[0] && after.models[0].api_key === "sk-在编辑器里粘进去的",
+           "手粘的 API Key 被界面那次保存盖掉了——这正是用户报的那条：填了 Key，点一下保存，Key 没了");
+    assert(Array.isArray(after.mcp_servers) && after.mcp_servers[0] && after.mcp_servers[0].name === "手加的连接器",
+           "手加的整块也被盖掉了（config.json 是明确让人手改的文件）");
+    assert(after.security && after.security.permission_mode === "auto",
+           "界面上那次改动没落盘——只保命不保存等于保存按钮坏了");
+    assert(/config\.json 在外面被改过/.test(booted.log),
+           "合并这件事没在日志里留一句话，用户不知道自己手改的和界面改的怎么凑到一起的");
+
+    // ★反向对照★：外面没人动的时候，不许报「被改过」，该改的照样改，手改的照样在
+    const mark = booted.log.length;
+    const sm2 = await req(port, "POST", "/api/security/mode", { mode: "ask" }, cookie);
+    assert(sm2.status === 200, "第二次改权限档没成功：" + sm2.status);
+    const after2 = JSON.parse(fs.readFileSync(CFG, "utf8"));
+    assert(!/在外面被改过/.test(booted.log.slice(mark)),
+           "反向对照：没人在外面改的时候也喊「被改过」，说明它是见存盘就喊，那句话就不可信了");
+    assert(after2.security.permission_mode === "ask", "第二次的改动也得落盘");
+    assert(after2.models[0].api_key === "sk-在编辑器里粘进去的", "手粘的 Key 在第二次存盘之后仍旧在");
+  } finally {
+    booted.child.kill("SIGKILL");
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+  console.log("✅ 手改 config.json 不再被界面存盘盖掉：粘的 Key 和手加的整块都在 · 界面那次改动照样落盘 · 日志说清了合并（负对照：没外改时不喊合并）");
+}
+
 async function testPortCollision() {
   const os = require("os");
   const net = require("net");
@@ -5118,6 +5185,7 @@ async function main() {
   testOutputFilesRecency();
   await testFilePathRouting();
   await testPortCollision();
+  await testConfigExternalEdit();
   await testDesktopPet();
   testPetSprites();
   await testMcpFailureReason();

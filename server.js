@@ -37,6 +37,8 @@ const lanes = require("./lanes"); // 两条工作线：办公（桌面办公 age
 const cliLive = require("./cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
 const thinking = require("./thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./security");
+const cfgMerge = require("./config-merge"); // 存配置时把外面手改的那些合进来，不整份覆盖
+const cfgLint = require("./config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠道表 + 每路多模型
 const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
 const memory = require("./memory");
@@ -59,6 +61,18 @@ if (!fs.existsSync(CONFIG_PATH)) {
 // 退回模板——原文还在 .corrupt-时间戳 里，Key 捞得回来。
 const CONFIG_DEFAULTS = JSON.parse(fs.readFileSync(appPath("config.example.json"), "utf8"));
 const config = fillDefaults(store.readJson(CONFIG_PATH, CONFIG_DEFAULTS), CONFIG_DEFAULTS);
+// 助理的名字和头像：想叫它「小秘」就叫「小秘」。界面（气泡头像/侧栏/品牌位）和系统提示词都跟着这里走
+// "@cat" 是内置猫标的哨兵值，跟应用图标同一只猫；前端 avatarBits 认它，account.normalizeAvatar 放行
+const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "@cat" };
+// 盯住这个文件的改动时间，还有它上一次跟磁盘对齐时的样子。
+// config.json 是明确让人手改的文件——README 里就写着「把 API Key 填进来」。可 saveConfig() 存的是
+// 内存里那整份 config：手改完之后在界面上随便点一下保存，刚粘进去的 Key 就被整份盖掉了，一句提示也没有。
+// 有了这两样，存盘前才问得出那句「这文件在我背后动过没有」（见 saveConfig）。
+let CONFIG_MTIME = cfgMerge.mtimeOf(CONFIG_PATH);
+let CONFIG_BASE = cfgMerge.snapshot(config);
+// 手改写错了当场说出来。不说的话用户看到的是「我明明改了啊，怎么一点反应没有」，
+// 然后去怀疑是不是没保存、要不要重启、这功能是不是坏了——查半天发现是键名少了个字母。
+for (const line of cfgLint.lines(cfgLint.lint(config, CONFIG_DEFAULTS))) console.warn(`[配置] ${line}`);
 
 /**
  * 只补缺的，不改已有的（顶层键 + 顶层对象里的子键，两层就够）。
@@ -101,9 +115,6 @@ if (migrated) saveConfig();
 
 security.getSecurity(config); // 补齐安全中心默认策略
 config.shortcuts = config.shortcuts || {}; // 快捷键自定义绑定（只存改过的项，默认值在前端定义）
-// 助理的名字和头像：想叫它「小秘」就叫「小秘」。界面（气泡头像/侧栏/品牌位）和系统提示词都跟着这里走
-// "@cat" 是内置猫标的哨兵值，跟应用图标同一只猫；前端 avatarBits 认它，account.normalizeAvatar 放行
-const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "@cat" };
 config.assistant = { ...ASSISTANT_DEFAULT, ...(config.assistant || {}) };
 
 if (config.workspace_dir) {
@@ -1861,17 +1872,59 @@ function projectContextOf(p) {
   if (conns.length) parts.push(`本项目挂载的连接器：${conns.join("、")}。涉及外部系统时优先用这些连接器提供的工具。`);
   // 项目目录里的 AGENTS.md / CLAUDE.md 是写给 agent 看的项目规范（pi / Claude Code 的通行惯例），
   // 用户既然放了就自动带上，不用再往项目指令里手抄一遍
-  try {
-    for (const fname of ["AGENTS.md", "CLAUDE.md"]) {
-      if (!p.dir) break;
-      const fp = path.join(p.dir, fname);
-      if (!fs.existsSync(fp)) continue;
-      const txt = fs.readFileSync(fp, "utf8").trim().slice(0, 6000);
-      if (txt) parts.push(`项目目录里的 ${fname}（项目既定规范，必须遵守）：\n${txt}`);
-      break;
+  for (const fname of ["AGENTS.md", "CLAUDE.md"]) {
+    if (!p.dir) break;
+    const fp = path.join(p.dir, fname);
+    if (!fs.existsSync(fp)) continue;
+    let txt = "";
+    try {
+      txt = fs.readFileSync(fp, "utf8").trim();
+    } catch (e) {
+      // 以前这儿是个 catch {}：规范没带上，模型照跑，用户以为写进去的规矩生效了。
+      warnOnce(`memo-read:${fp}`, `[项目规范] ${fname} 读不出来（${e.message}），这一趟没带上它`);
+      continue;
     }
-  } catch {}
+    // 空文件不算数。老写法在这儿也 break，于是一个空的 AGENTS.md 能把旁边写满规矩的 CLAUDE.md 挡在门外
+    if (!txt) continue;
+    parts.push(`项目目录里的 ${fname}（项目既定规范，必须遵守）：\n${clampMemo(txt, fname, fp)}`);
+    break;
+  }
   return parts.join("\n\n");
+}
+
+/** 同一件事只喊一次：这些警告在每趟任务开头都会走一遍，喊三次就再没人看了 */
+const warnedOnce = new Set();
+function warnOnce(key, msg) {
+  if (warnedOnce.has(key)) return;
+  warnedOnce.add(key);
+  console.warn(msg);
+}
+
+// 项目规范塞进系统提示词的上限。再长就开始挤掉提示词里别的东西（工具说明、专家名单）
+const MEMO_MAX = 6000;
+
+/**
+ * 规范太长时截一段，**并且把截了这件事说出来**。
+ *
+ * 老写法是 .slice(0, 6000)，一声不吭。一份两万字的 CLAUDE.md 有四分之三根本没进提示词，
+ * 而模型看到的是一份「看起来很完整」的规范——它不知道后面还有，于是照着前四分之一干活，
+ * 用户看到的是「我明明在 CLAUDE.md 里写了不许这样」。这种事查不出来：日志里什么都没有。
+ *
+ * 现在两头都留话：正文里告诉模型「还有一截没给你，拿不准就自己去读整份」，
+ * 控制台告诉用户「你这份太长了，建议拆一拆」。
+ */
+function clampMemo(txt, fname, fp) {
+  if (txt.length <= MEMO_MAX) return txt;
+  const cut = txt.length - MEMO_MAX;
+  const head = txt.slice(0, MEMO_MAX);
+  // 从段落边界断开，别切在半句话中间；找不到合适的边界（整份是一大段）就直接切
+  const brk = head.lastIndexOf("\n\n");
+  const body = brk > MEMO_MAX * 0.6 ? head.slice(0, brk) : head;
+  warnOnce(`memo-long:${fp}:${txt.length}`,
+    `[项目规范] ${fname} 有 ${txt.length} 字，超过 ${MEMO_MAX} 字上限，只带了前面一部分（少了约 ${cut} 字）。` +
+    `建议精简，或者把细则拆成单独的文件让 agent 需要时自己读。`);
+  return `${body}\n\n（${fname} 太长，这里只放了前面一部分，后面还有约 ${cut} 字没带上。` +
+    `遇到拿不准的规矩，先用 read_file 把 ${fname} 整份读一遍再动手。）`;
 }
 
 function ensureProjects() {
@@ -1885,9 +1938,49 @@ function ensureProjects() {
  * config.json 是唯一一份存着所有 API Key 的文件，还不入 git——写坏了就是全丢。
  * 所以全应用只留这一个写入口，走原子改名 + .bak。
  */
+/**
+ * 存配置。
+ *
+ * 难点不在写，在于**别把别人的改动盖掉**。config.json 同时有两个人在改：
+ * 界面（走这个函数，写的是内存里那整份 config）和用户本人（文本编辑器里粘一个 API Key、
+ * 加一条 mcp_servers）。老写法不管三七二十一整份覆盖，于是手改的那些全没了——
+ * 最常见的是刚粘进去的 Key，用户的体感是「填了不生效」，回头一看文件，空的。
+ *
+ * 所以存盘前先看一眼文件的改动时间：跟我们上次对齐时不一样，说明外面有人动过。
+ * 这时候不是二选一，而是把两边合起来：磁盘上那份当底，只把**这个进程真改过的那几处**
+ * 按路径盖上去（哪几处 = 内存里的 config 跟基线快照的差集）。用户粘的 Key 在底上，一个字不动。
+ */
 function saveConfig() {
+  const now = cfgMerge.mtimeOf(CONFIG_PATH);
+  if (now && CONFIG_MTIME && now !== CONFIG_MTIME) mergeDiskEdits();
   store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true });
+  CONFIG_MTIME = cfgMerge.mtimeOf(CONFIG_PATH);
+  CONFIG_BASE = cfgMerge.snapshot(config);
 }
+
+/** 把磁盘上那份读回来当底，只把本进程改过的那几处盖上去。合不了就照旧覆盖，但要留一句。 */
+function mergeDiskEdits() {
+  let disk;
+  try {
+    disk = store.readJson(CONFIG_PATH, null);
+  } catch (e) {
+    console.warn(`[配置] config.json 在外面被改过，但读不回来（${(e && e.message) || e}），这次按内存里的存`);
+    return;
+  }
+  if (!disk || typeof disk !== "object" || Array.isArray(disk)) return; // 不成形的就别拿来当底
+  const { changed: mine } = cfgMerge.mergeOnto(disk, CONFIG_BASE, config);
+  // 用户可能整块删掉（server / agent 这种），跟启动时同一套兜底，免得合完之后某个字段没了就崩
+  fillDefaults(disk, CONFIG_DEFAULTS);
+  disk.shortcuts = disk.shortcuts || {};
+  disk.assistant = { ...ASSISTANT_DEFAULT, ...(disk.assistant || {}) };
+  // 换内容不换对象：llm、security、tools 这些模块启动时就把 config 的引用拿走了，
+  // 这里要是 config = disk，它们手上还攥着老的那份，界面显示新值、干活用老值。
+  for (const k of Object.keys(config)) delete config[k];
+  Object.assign(config, disk);
+  security.getSecurity(config); // 安全策略跟着新内容重新补齐
+  console.log(`[配置] config.json 在外面被改过，已合并：磁盘那份当底，本进程改的 ${mine.length} 处盖上去`);
+}
+
 
 app.get("/api/projects", (req, res) => {
   // 租户看到的是自己那一个根，不是总部的项目清单——后者连目录名都是信息。

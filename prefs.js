@@ -28,6 +28,8 @@ const path = require("path");
 const crypto = require("crypto");
 const { AsyncLocalStorage } = require("async_hooks");
 const { dataPath } = require("./paths");
+// 这个文件里 store 已经被 AsyncLocalStorage 占了名字，所以叫 jsonStore
+const jsonStore = require("./store");
 
 // WB_DATA_DIR 跟 account.js / org.js 同一个口子：跑测试时指到临时目录，免得动到真偏好
 const DATA_DIR = process.env.WB_DATA_DIR || dataPath("data");
@@ -77,7 +79,17 @@ function read(user) {
   const hit = cache.get(keyOf(user));
   if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.data;
   let data = {};
-  try { data = JSON.parse(fs.readFileSync(file, "utf8")) || {}; } catch { data = {}; }
+  try {
+    // 走 store：它分得清「没这个文件」和「文件坏了」。老写法是 catch { data = {} }——
+    // 偏好文件坏一个字节就当没有偏好，下一次切引擎、拖个滑块，write() 把这份空的写回去，
+    // 引擎、快捷键、宠物开关一起没了，全程一句提示都没有。
+    data = jsonStore.readJson(file, {}) || {};
+  } catch (e) {
+    // 打不开（权限、被改成目录……）。这条路不该悄悄走过去：返回空的没关系，
+    // 但要留一句，不然用户只看到「设置怎么又回去了」。
+    console.error(`[偏好] ${keyOf(user)} 的偏好读不出来（${(e && e.message) || e}），这一次按没有偏好算`);
+    data = {};
+  }
   cache.set(keyOf(user), { mtimeMs: st.mtimeMs, size: st.size, data });
   return data;
 }
@@ -87,8 +99,9 @@ function write(user, patch) {
   const file = fileOf(user);
   if (!file) return {};
   const next = merge(read(user), patch);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(next, null, 2));
+  // 原子写（临时文件 + 改名）并留一份 .bak。偏好是被高频写的——切引擎、拖透明度滑块都写一次，
+  // 直接 writeFileSync 就有半个文件的窗口：那一刻断电或者被 kill，下次读到的是半份 JSON。
+  jsonStore.writeJsonAtomic(file, next, { pretty: true });
   cache.delete(keyOf(user));
   return next;
 }
