@@ -387,11 +387,14 @@
      （压深色页面底 17.43:1），上面的字又是深色主题那档浅灰，白底浅灰只有 2.29:1，基本读不了。 */
   .step-card { border: 1px solid var(--wb-border); border-radius: var(--radius-lg); margin: 8px 0; overflow: hidden; background: var(--wb-card); }
   .step-card .head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; user-select: none; font-size: 14px; }
-  .tag { font-size: 12px; padding: 2px 9px; border-radius: var(--radius-lg); background: var(--wb-brand-weak); color: var(--wb-brand-text); white-space: nowrap; }
+  /* 收窄到 .step-card 里面：以前是裸 .tag，侧栏「开源版 · 一句话让 AI 替你上班」
+     那行副标题也叫 .tag，于是白白顶了一身淡紫药丸皮，字色又被 .brand .tag 改回灰，
+     成了灰字压淡紫底的一条通栏色块。几何统一到桥接层，这里只留颜色。 */
+  .step-card .tag { background: var(--wb-brand-weak); color: var(--wb-brand-text); }
   /* 底色不能写死浅绿/浅红：深色主题下字色跟着令牌变亮，压在浅底上就成了白纸写黄字。
      改成 color-mix 叠在当前表面上，两套主题各自成立 */
-  .tag.ok { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--wb-ok-text); }
-  .tag.err { background: color-mix(in srgb, var(--destructive) 14%, transparent); color: var(--wb-err-text); }
+  .step-card .tag.ok { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--wb-ok-text); }
+  .step-card .tag.err { background: color-mix(in srgb, var(--destructive) 14%, transparent); color: var(--wb-err-text); }
   .step-card.failed { border-color: color-mix(in srgb, var(--destructive) 40%, var(--wb-border)); }
   .step-card .desc { color: var(--wb-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   /* 结果摘要跟在同一行末尾：成功报量、失败报原因，不用一张张点开看 */
@@ -408,7 +411,7 @@
     background: var(--wb-bg); box-shadow: 0 1px 0 var(--wb-border); }
   .proc-head .arrow { display: inline-flex; align-items: center; transition: transform var(--wb-t-fast) var(--wb-ease); }
   .proc-wrap.open .proc-head .arrow { transform: rotate(90deg); }
-  .proc-warn { color: var(--wb-err-text); background: rgba(229,72,77,.12); border-radius: var(--radius-sm); padding: 0 6px; font-size: 12px; }
+  .proc-warn { color: var(--wb-err-text); background: rgba(229,72,77,.12); }
   .proc-body { display: none; padding-left: 10px; border-left: 2px solid var(--wb-border); margin: 4px 0 4px 4px; }
   /* 轨迹条：折叠条上的工具徽章。跑着的亮蓝、栽了的标红、其余灰底不抢眼 */
   .proc-head .trail { display: inline-flex; flex-wrap: wrap; gap: 4px; }
@@ -419,7 +422,7 @@
      跑完就撤掉：那时候该看的是「已完成 3m20s · 产出 2 件」，不是最后一句旁白 */
   .proc-head .act-live { flex-basis: 100%; width: 100%; font-size: 12px; color: var(--wb-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .proc-head .act-live:empty, .proc-wrap:not(.running) .proc-head .act-live { display: none; }
-  .proc-head .tc { font-size: 11px; line-height: 18px; padding: 0 7px; border-radius: var(--radius-lg); background: var(--wb-bg-hover); color: var(--wb-text-3); white-space: nowrap; cursor: pointer; }
+  .proc-head .tc { background: var(--wb-bg-hover); color: var(--wb-text-3); cursor: pointer; }
   .proc-head .tc b { font-weight: 600; margin-left: 2px; }
   .proc-head .tc:hover { color: var(--wb-text); }
   .proc-head .tc.run { color: var(--wb-brand-text); background: var(--wb-brand-weak); }
@@ -609,7 +612,7 @@
   .picker-menu.eng .ep-model { display: block; font-weight: 400; font-size: 12px; color: var(--wb-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .picker-menu.eng .ep-on { color: var(--wb-ok-text); font-size: 13px; }
   .picker-menu.eng .ep-why { padding: 8px 10px 4px; font-size: 12px; line-height: 1.6; color: var(--wb-text-3); white-space: normal; }
-  .picker-menu.eng .ep-free { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--wb-ok-text); font-size: 11.5px; font-weight: 600; }
+  .picker-menu.eng .ep-free { margin-right: 6px; background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--wb-ok-text); }
   .picker-menu.eng .ep-act { margin-top: 4px; border-top: 1px solid var(--wb-border); border-radius: 0 0 var(--radius-md) var(--radius-md); color: var(--wb-text-2); }
   /* 「这趟活谁在跑」的常驻小牌子：一行、低调、不抢正文，但一直在 */
   .run-eng { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; margin: 0 0 8px; padding: 3px 10px 3px 6px; border: 1px solid var(--wb-border); border-radius: var(--radius-full); background: var(--wb-bg-side); font-size: 12px; color: var(--wb-text-2); }
@@ -741,7 +744,7 @@
   #chat-search button:hover { background: var(--wb-bg-hover); }
   .search-hit { outline: 2px solid var(--wb-brand); outline-offset: 2px; border-radius: var(--radius-sm); }
   .mem-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--wb-border); font-size: 14px; }
-  .mem-row .mem-tag { flex: 0 0 auto; font-size: 12px; color: var(--wb-text-3); background: var(--wb-bg-hover); border-radius: var(--radius-sm); padding: 1px 6px; }
+  .mem-row .mem-tag { color: var(--wb-text-3); background: var(--wb-bg-hover); }
   .mem-row .mem-txt { flex: 1; min-width: 0; }
   .mem-row .mem-src { flex: 0 0 auto; font-size: 12px; color: var(--wb-text-3); }
   /* 审批条：任务停在这儿等人点头，是整屏最该被一眼看到的东西，可它原来是全站最不显眼的一块——
@@ -853,7 +856,7 @@
   .dup-tidy button { display: block; margin-top: 6px; padding: 4px 10px; border: 0; border-radius: var(--radius-sm); background: var(--wb-brand); color: #fff; font-size: 12px; cursor: pointer; }
   .dup-tidy button:disabled { opacity: .5; cursor: default; }
   .dir-head.mine .name { color: var(--wb-brand-text); font-weight: 600; }
-  .dir-head .mine-tag { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: var(--radius-full); background: var(--wb-brand); color: #fff; font-size: 11px; line-height: 18px; font-weight: normal; vertical-align: 1px; }
+  .dir-head .mine-tag { margin-right: 6px; background: var(--wb-brand); color: #fff; }
   .dir-head .opendir { color: var(--wb-text-3); padding: 0 2px; }
   .dir-head .opendir:hover { color: var(--wb-brand-text); }
   /* 时间段标题：比文件夹更靠外一层，所以字更小、更淡，且不缩进 */
@@ -1023,7 +1026,7 @@
   .onb-step.done i { background: color-mix(in srgb, var(--wb-ok) 18%, transparent); color: var(--wb-ok-text); }
   .onb-h { display: flex; align-items: center; gap: 8px; }
   .onb-h h2 { margin: 0; }
-  .onb-tag { font-size: 11px; padding: 2px 8px; border-radius: var(--radius-full); background: var(--wb-bg-hover); color: var(--wb-text-3); }
+  .onb-tag { background: var(--wb-bg-hover); color: var(--wb-text-3); }
   .onb-tag.must { background: color-mix(in srgb, var(--wb-err) 14%, transparent); color: var(--wb-err-text); }
   .onb-tag.rec { background: color-mix(in srgb, var(--wb-warn) 18%, transparent); color: var(--wb-warn); }
   .onb-card .sub { margin-top: 6px; }
@@ -1170,7 +1173,7 @@
   .ex-card .al { font-size: 12px; color: var(--wb-text-3); font-weight: 400; flex: none; }
   .ex-card .ds { font-size: 13px; color: var(--wb-text-2); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 40px; }
   .ex-card .tg { display: flex; gap: 5px; flex-wrap: wrap; }
-  .ex-card .tg i { font-style: normal; font-size: 12px; color: var(--wb-text-3); background: var(--wb-bg-side); border-radius: var(--radius-sm); padding: 2px 7px; }
+  .ex-card .tg i { color: var(--wb-text-3); background: var(--wb-bg-side); }
   .ex-card .ops { display: flex; gap: 6px; margin-top: auto; padding-top: 4px; }
   .ex-card .ops button { flex: 1; border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: var(--radius-md); padding: 5px 0; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
   .ex-card .ops button:hover { border-color: var(--wb-brand-text); color: var(--wb-brand-text); }
@@ -1178,10 +1181,10 @@
   .ex-card.add { align-items: center; justify-content: center; border-style: dashed; cursor: pointer; color: var(--wb-text-3); min-height: 150px; text-align: center; }
   .ex-card.add:hover { color: var(--wb-brand-text); }
   .ex-card.add .add-sub { display: block; margin-top: 6px; font-size: 12px; color: var(--wb-text-3); }
-  .hub-sub button .beta { font-style: normal; font-size: 11px; font-weight: 600; color: var(--wb-brand-text); background: var(--wb-brand-weak); border-radius: var(--radius-xs); padding: 1px 4px; vertical-align: 2px; }
+  .hub-sub button .beta { color: var(--wb-brand-text); background: var(--wb-brand-weak); }
   .hub-count { grid-column: 1 / -1; font-size: 13px; color: var(--wb-text-3); padding: 4px 2px 0; }
   .hub-desc { font-size: 13px; color: var(--wb-text-3); margin: -4px 0 10px; }
-  .ex-card .flag { position: absolute; top: 10px; right: 10px; font-size: 11px; color: var(--wb-text-3); background: var(--wb-bg-side); border-radius: var(--radius-sm); padding: 1px 6px; }
+  .ex-card .flag { position: absolute; top: 10px; right: 10px; color: var(--wb-text-3); background: var(--wb-bg-side); }
   .ex-card .sk-preview { margin: 0; max-height: 260px; overflow: auto; background: var(--wb-bg-side); padding: 10px; border-radius: var(--radius-md); font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
   /* 技能卡「立即使用」展开区：先摆几个具体能干的事，挑一个才进任务框 */
   .ex-card .sk-start { background: var(--wb-bg-side); border-radius: var(--radius-md); padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
@@ -1207,7 +1210,7 @@
   .tpl-card .hd { display: flex; align-items: center; gap: 7px; }
   .tpl-card .ic { font-size: 16px; }
   .tpl-card .tt { font-size: 14px; font-weight: 600; }
-  .tpl-card .ct { margin-left: auto; font-size: 12px; color: var(--wb-text-3); background: var(--wb-bg-side); border-radius: var(--radius-sm); padding: 1px 7px; }
+  .tpl-card .ct { margin-left: auto; color: var(--wb-text-3); background: var(--wb-bg-side); }
   .tpl-card { cursor: pointer; }
   .tpl-card .dd { font-size: 13px; color: var(--wb-text-2); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   /* 提示词全文默认收起：一屏几十段全文密集恐。点卡片单张展开 */
@@ -1227,7 +1230,7 @@
   .proj-card:hover { box-shadow: var(--shadow-menu); }
   .proj-card.active { border-color: var(--wb-brand-text); }
   .proj-card .tt { font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  .proj-card .tt .badge { font-size: 11px; color: var(--wb-brand-text); background: var(--wb-brand-weak); border-radius: var(--radius-sm); padding: 1px 6px; font-weight: 600; }
+  .proj-card .tt .badge { color: var(--wb-brand-text); background: var(--wb-brand-weak); }
   .proj-card .dd { font-size: 13px; color: var(--wb-text-3); }
   .proj-card .ops { display: flex; gap: 10px; font-size: 13px; margin-top: 2px; }
   .proj-form label { display: block; font-weight: 600; font-size: 14px; margin: 14px 0 6px; }
@@ -1484,7 +1487,7 @@
   .eng-c { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--wb-text-3); margin-top: 4px; }
   .eng-i { font-size: 12px; color: var(--wb-text-2); margin-top: 5px; }
   .eng-i code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--wb-bg-hover); padding: 1px 5px; border-radius: var(--radius-xs); }
-  .eng-b { font-size: 11px; padding: 1px 7px; border-radius: var(--radius-full); border: 1px solid var(--wb-border); color: var(--wb-text-2); }
+  .eng-b { border: 1px solid var(--wb-border); color: var(--wb-text-2); }
   .eng-b.ok { border-color: color-mix(in srgb, var(--wb-ok) 34%, transparent); color: var(--wb-ok-text); }
   .eng-b.free { border-color: var(--wb-brand); color: var(--wb-brand-text); }
   .eng-b.no { border-color: var(--wb-border); color: var(--wb-text-3); }
@@ -1522,6 +1525,23 @@
   }
   .icon-btn { border-radius: var(--radius-md); }
   .chip { border-radius: var(--radius-full); }
+
+  /* 小标记：贴在别的东西旁边说一句它是什么——「官方」「当前」「beta」「不花 API 额度」
+     「我的」、过程卡上的工具徽章、专家卡上的领域标签。全站十三处，原来十三个尺寸：
+     字号 11 / 11.5 / 12 三种，内边距八种（0·6、0·7、1·4、1·6、1·7、2·7、2·8、2·9），
+     圆角四种（4 / 6 / 10 / 999），字重三种。同一个作用长十三个样，界面就显得毛。
+     统一到 ui.css 里 .ui-badge 的小号档（后台控制台用的也是这一套，两边这才对得上）：
+     高 20px，字 11px，左右 7px，胶囊圆角。高度写死是关键——里头塞不塞图标都是 20px，
+     不会像以前那样同一个类因为内容不同差出 2.5px。颜色一概不动，各留各的。 */
+  .step-card .tag, .proc-warn, .proc-head .tc, .mem-row .mem-tag, .dir-head .mine-tag,
+  .onb-tag, .ex-card .tg i, .hub-sub button .beta, .ex-card .flag,
+  .tpl-card .ct, .proj-card .tt .badge, .eng-b, .picker-menu.eng .ep-free {
+    display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+    height: 20px; padding: 0 7px; flex: none; vertical-align: middle;
+    border-radius: var(--radius-full); font-size: 11px; font-weight: 500;
+    line-height: 1; white-space: nowrap; font-style: normal;
+  }
+  .step-card .tag .i, .ex-card .tg i .i, .eng-b .i { width: 11px; height: 11px; }
 
   /* 图标尺寸：跟 shadcn 一样，按钮里的图标一律 16，密集处 14 */
   /* 尺寸不在这儿定：ui.css 里 .i 是 1em，图标自动跟着它所在那行的字号走。

@@ -5340,6 +5340,119 @@ const TH_CHECKS = `
 `;
 
 // ---------------------------------------------------------------------------
+// 小标记（贴在别的东西旁边说它是什么）只许有一个尺寸。
+// 改之前全站十三处各写各的：字号 11 / 11.5 / 12，内边距八种，圆角 4 / 6 / 10 / 999，
+// 字重三档。离屏跑真界面量过，光是当时渲染得出来的那六处就是六个高度（17 / 18 /
+// 18.5 / 19 / 20.5 / 24），其中 .ex-card .tg i 同一个类因为里面塞不塞图标就差 2.5px。
+// 现在统一到 ui.css 的 .ui-badge 小号档：高 20、字 11、左右 7、胶囊角。
+// 顺带解开一个名字撞车：.tag 原来是裸的，侧栏品牌名下那行副标题也叫 .tag，
+// 于是白顶了一身淡紫药丸皮，字色又被 .brand .tag 改回灰——灰字压淡紫的一条通栏色块。
+const PILL_SELS = [
+  { sel: "step-card-tag", tag: "过程卡·工具徽章", html: `<div class="step-card"><div class="head"><span class="tag">徽章</span></div></div>` },
+  { sel: "proc-warn", tag: "过程条·出错提示", html: `<div class="proc-head"><span class="proc-warn">出错了</span></div>` },
+  { sel: "proc-tc", tag: "过程条·工具计数", html: `<div class="proc-head"><span class="tc">3 个工具</span></div>` },
+  { sel: "mem-tag", tag: "记忆行·来源", html: `<div class="mem-row"><span class="mem-tag">偏好</span></div>` },
+  { sel: "mine-tag", tag: "目录头·我的", html: `<div class="dir-head"><span class="mine-tag">我的</span></div>` },
+  { sel: "onb-tag", tag: "向导·必填/建议", html: `<div><span class="onb-tag">必填</span></div>` },
+  { sel: "tg-i", tag: "专家卡·领域标签", html: `<div class="ex-card"><div class="tg"><i>行业调研</i></div></div>` },
+  { sel: "beta", tag: "子导航·Beta", html: `<div class="hub-sub"><button><i class="beta">Beta</i></button></div>` },
+  { sel: "flag", tag: "专家卡·官方", html: `<div class="ex-card"><span class="flag">官方</span></div>` },
+  { sel: "ct", tag: "模板卡·分类", html: `<div class="tpl-card"><span class="ct">网页</span></div>` },
+  { sel: "badge", tag: "项目卡·当前", html: `<div class="proj-card"><div class="tt"><span class="badge">当前</span></div></div>` },
+  { sel: "eng-b", tag: "引擎卡·计费方式", html: `<div><span class="eng-b">走 API Key</span></div>` },
+  { sel: "ep-free", tag: "选型菜单·不花额度", html: `<div class="picker-menu eng show"><b class="ep-free">不花 API 额度</b></div>` },
+];
+const PILL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><style>" + INDEX_CSS
+  + "</style><style>body{margin:0;padding:12px}</style><body>"
+  // 品牌位照抄真结构：.brand > div > .tag，这是名字撞车那处
+  + `<aside><div class="brand"><div class="mark mk">W</div><div><div class="name">OpenWorkBuddy</div>`
+  + `<div class="tag">开源版 · 一句话让 AI 替你上班</div></div></div></aside>`
+  + PILL_SELS.map((c) => `<div data-case="${c.sel}">${c.html}</div>`).join("")
+  + "</body>";
+const PILL_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
+  const CASES = ${JSON.stringify(PILL_SELS.map((c) => ({ sel: c.sel, tag: c.tag })))};
+  const pick = (k) => {
+    const host = document.querySelector('[data-case="' + k + '"]');
+    // 每个壳里最里层那个有底色/描边的小块就是标记本体
+    const all = [...host.querySelectorAll("*")];
+    return all[all.length - 1];
+  };
+  const geo = () => CASES.map((c) => {
+    const e = pick(c.sel), cs = getComputedStyle(e), r = e.getBoundingClientRect();
+    return { tag: c.tag, h: Math.round(r.height * 10) / 10, fs: cs.fontSize,
+      pad: cs.paddingTop + " " + cs.paddingRight, rad: cs.borderTopLeftRadius, fw: cs.fontWeight };
+  });
+  const key = (g) => [g.h, g.fs, g.pad, g.rad, g.fw].join(" | ");
+
+  const now = geo();
+  const kinds = [...new Set(now.map(key))];
+  ok("十三处小标记是同一个尺寸（" + kinds[0] + "）", kinds.length === 1,
+     kinds.length === 1 ? undefined : now.map((g) => g.tag + " → " + key(g)));
+  ok("这个尺寸就是 ui.css 里 .ui-badge 的小号档：高 20 / 字 11 / 左右 7 / 胶囊角",
+     now[0].h === 20 && now[0].fs === "11px" && now[0].pad === "0px 7px" && now[0].rad === "999px", now[0]);
+
+  // 定高的意义：里面塞图标也好塞纯文字也好，高度不许变。这是改之前 .ex-card .tg i 真栽过的坑。
+  const host = document.querySelector('[data-case="tg-i"] .tg');
+  const plain = host.querySelector("i").getBoundingClientRect().height;
+  const withIcon = document.createElement("i");
+  withIcon.innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-wrench"></use></svg> deep-research';
+  host.appendChild(withIcon);
+  const iconed = withIcon.getBoundingClientRect().height;
+  ok("同一个标记里塞了图标也还是这么高（" + plain + " vs " + iconed + "）", Math.abs(plain - iconed) < 0.5, [plain, iconed]);
+  withIcon.remove();
+
+  // 名字撞车：侧栏品牌副标题不许带药丸皮
+  const bt = document.querySelector(".brand .tag");
+  const bs = getComputedStyle(bt);
+  const bare = (v) => !v || v === "rgba(0, 0, 0, 0)" || v === "transparent";
+  ok("侧栏品牌副标题是一行纯文字，没有底色/内边距/圆角",
+     bare(bs.backgroundColor) && parseFloat(bs.paddingLeft) === 0 && parseFloat(bs.borderTopLeftRadius) === 0,
+     [bs.backgroundColor, bs.paddingLeft, bs.borderTopLeftRadius]);
+
+  // ★反向对照★ 先把桥接层那条整个撤掉，再把改之前十三条真写着的声明原样压回去，
+  // 上面那几把尺子必须当场全红。只压新规则不撤旧的不算数——那是在自己给自己放水。
+  const SELS = ".step-card .tag, .proc-warn, .proc-head .tc, .mem-row .mem-tag, .dir-head .mine-tag,"
+    + " .onb-tag, .ex-card .tg i, .hub-sub button .beta, .ex-card .flag,"
+    + " .tpl-card .ct, .proj-card .tt .badge, .eng-b, .picker-menu.eng .ep-free";
+  const back = document.createElement("style");
+  back.textContent = SELS + " { display: inline; height: auto; padding: 0; border-radius: 0;"
+    + " font-size: inherit; font-weight: inherit; line-height: normal; vertical-align: baseline; }\\n"
+    + [
+    ".tag { background: var(--wb-brand-weak); padding: 2px 9px; border-radius: var(--radius-lg); font-size: 12px; }",
+    ".step-card .tag { font-size: 12px; padding: 2px 9px; border-radius: var(--radius-lg); }",
+    ".proc-warn { border-radius: var(--radius-sm); padding: 0 6px; font-size: 12px; }",
+    ".proc-head .tc { font-size: 11px; line-height: 18px; padding: 0 7px; border-radius: var(--radius-lg); }",
+    ".mem-row .mem-tag { font-size: 12px; border-radius: var(--radius-sm); padding: 1px 6px; }",
+    ".dir-head .mine-tag { display: inline-block; padding: 0 6px; border-radius: var(--radius-full); font-size: 11px; line-height: 18px; font-weight: normal; }",
+    ".onb-tag { font-size: 11px; padding: 2px 8px; border-radius: var(--radius-full); }",
+    ".ex-card .tg i { font-size: 12px; border-radius: var(--radius-sm); padding: 2px 7px; }",
+    ".hub-sub button .beta { font-size: 11px; font-weight: 600; border-radius: var(--radius-xs); padding: 1px 4px; }",
+    ".ex-card .flag { font-size: 11px; border-radius: var(--radius-sm); padding: 1px 6px; }",
+    ".tpl-card .ct { font-size: 12px; border-radius: var(--radius-sm); padding: 1px 7px; }",
+    ".proj-card .tt .badge { font-size: 11px; border-radius: var(--radius-sm); padding: 1px 6px; font-weight: 600; }",
+    ".eng-b { font-size: 11px; padding: 1px 7px; border-radius: var(--radius-full); }",
+    ".picker-menu.eng .ep-free { display: inline-block; padding: 1px 6px; border-radius: var(--radius-sm); font-size: 11.5px; font-weight: 600; }",
+  ].join("\\n");
+  document.head.appendChild(back);
+  const old = geo();
+  const oldKinds = [...new Set(old.map(key))];
+  ok("反向对照：退回十三条各写各的，当场就是 " + oldKinds.length + " 种尺寸", oldKinds.length >= 10, oldKinds);
+  const oldBt = getComputedStyle(document.querySelector(".brand .tag"));
+  ok("反向对照：退回裸 .tag，品牌副标题当场又顶了一身药丸底色",
+     !bare(oldBt.backgroundColor) && parseFloat(oldBt.paddingLeft) > 0, [oldBt.backgroundColor, oldBt.paddingLeft]);
+  const oldTg = document.querySelector('[data-case="tg-i"] .tg i').getBoundingClientRect().height;
+  back.remove();
+  const again = geo();
+  ok("撤掉对照又回到一种尺寸（这轮不是蒙的）", [...new Set(again.map(key))].length === 1);
+  names.push("反向对照下 .ex-card .tg i 的高度是 " + Math.round(oldTg * 10) / 10 + "px，不再是 20");
+  return names;
+})()
+`;
+
+// ---------------------------------------------------------------------------
 // 行内控件的高度只许有一个。
 // 改之前每个家族各写各的内边距，凑出一堆高度：输入框 8px 12px → 35，下拉同样的
 // 内边距 → 37（select 的内容盒天生比 input 高 2px），主按钮 → 36，次要按钮
@@ -6331,6 +6444,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：一行上的控件同高（搜索框/胶囊/次要键/主键/下拉 五种家族·两条反向对照）${namesCTL.length} 项通过`);
     } finally {
       if (!winCTL.isDestroyed()) winCTL.destroy();
+    }
+    const winPILL = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winPILL.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PILL_HTML));
+      const namesPILL = await winPILL.webContents.executeJavaScript(PILL_CHECKS, true)
+        .catch((e) => { throw new Error("[小标记] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesPILL) console.log("  ✓ " + n);
+      console.log(`✅ 前端：小标记只有一个尺寸（十三处·含反向对照）${namesPILL.length} 项通过`);
+    } finally {
+      if (!winPILL.isDestroyed()) winPILL.destroy();
     }
     const winSC = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
