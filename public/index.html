@@ -142,7 +142,10 @@
   /* 项目表头：点整行进项目页，点 ＋ 快速新建 */
   .side-nav .nav-head { cursor: pointer; }
   /* ＋ 号原来用第三级文字色，压在选中底上暗色只有 4.25。抬一级到 --wb-text-2：浅 5.40 / 暗 5.36 */
-  .side-nav .nav-head #proj-add { margin-left: auto; text-decoration: none; color: var(--wb-text-2); font-size: 15px; padding: 0 4px; border-radius: var(--radius-sm); }
+  /* 实测 23×21，差一点点就够 24——补齐，顺便把 ＋ 居中 */
+  .side-nav .nav-head #proj-add { margin-left: auto; text-decoration: none; color: var(--wb-text-2);
+    font-size: 15px; padding: 0; width: 24px; height: 24px; flex: none; border-radius: var(--radius-sm);
+    display: inline-flex; align-items: center; justify-content: center; }
   .side-nav .nav-head #proj-add:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   .side-nav #proj-list { margin: 0 0 4px; }
   .side-nav .more-toggle .caret { font-size: 11px; transition: transform var(--wb-t-fast) var(--wb-ease); }
@@ -840,7 +843,13 @@
   .modal.wide { width: 920px; } /* 设置页要放得下双栏通道卡（去掉 160 导航 + 40 内边距，正文还剩 720） */
   .m-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--wb-border); flex-shrink: 0; }
   .m-head h3 { font-size: 15px; }
-  .m-close { border: none; background: none; font-size: 18px; cursor: pointer; color: var(--wb-text-3); }
+  /* 原来是个 18px 的 ✕ 字符，实测点击区只有 14×22——比指尖还窄。
+     换成和别处一致的 .icon-btn 尺码（28 见方），并改用 sprite 里的 #i-x */
+  .m-close { width: 28px; height: 28px; flex: none; padding: 0; border: none; background: none;
+    border-radius: var(--radius-md); cursor: pointer; color: var(--wb-text-3);
+    display: inline-flex; align-items: center; justify-content: center; }
+  .m-close:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
+  .m-close .i { width: 16px; height: 16px; }
   .m-body { padding: 14px 20px 20px; overflow-y: auto; font-size: 14px; flex: 1; }
   /* 设置页自己带侧栏和内容区的留白，m-body 再包一层 20px 就成了双层：分隔线浮在半空、
      导航整体比弹窗标题右挪 20px（实测标题文字左边缘 280 / 导航图标列左边缘 300）。
@@ -876,14 +885,17 @@
   .ch-note { color: var(--wb-text-3); font-size: 12px; line-height: 1.6; padding: 4px 0; }
   .mrow { display: flex; align-items: center; gap: 8px; padding: 7px 0; }
   .mrow + .mrow { border-top: 1px solid var(--wb-border); }
-  .mrow input[type="radio"] { width: auto; margin: 0; flex: none; }
+  .mrow input[type="radio"] { margin: 0; flex: none; }   /* 宽高交给文末那条统一的 16 见方 */
   .mrow-dot { width: 14px; flex: none; text-align: center; color: var(--wb-brand-text); font-size: 12px; }
   .mrow-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .mrow-id { font-family: var(--font-mono); font-size: 12px; color: var(--wb-text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mrow-meta { margin-left: auto; color: var(--wb-text-3); font-size: 12px; white-space: nowrap; }
   /* 行尾的 ⋯ 菜单：贴着行右边弹出来，点别处就收。手机上也点得到（悬停在触屏上不存在） */
   .row-acts { position: relative; flex: none; margin-left: 4px; }
-  .row-more { border: none; background: none; cursor: pointer; color: var(--wb-text-3); padding: 2px 4px; border-radius: var(--radius-sm); line-height: 0; }
+  /* 实测 20×16，鼠标得瞄准才点得中。撑到 24 见方，图标本身不变大 */
+  .row-more { width: 24px; height: 24px; flex: none; padding: 0; border: none; background: none;
+    cursor: pointer; color: var(--wb-text-3); border-radius: var(--radius-sm);
+    display: inline-flex; align-items: center; justify-content: center; }
   .row-more:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   .row-menu { position: absolute; right: 0; top: 100%; z-index: 30; min-width: 132px; padding: 4px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-card); box-shadow: var(--wb-shadow-md); }
   .row-menu a { display: block; padding: 7px 10px; border-radius: var(--radius-md); font-size: 13px; color: var(--wb-text); text-decoration: none; white-space: nowrap; }
@@ -1323,7 +1335,6 @@
   /* 表单控件统一：焦点环、勾选框主题色、下拉框和输入框一个观感 */
   input:focus, textarea:focus, select:focus { outline: none; border-color: var(--wb-brand-text); box-shadow: 0 0 0 3px rgba(91,95,247,.12); }
   input, textarea, select { transition: border-color .15s var(--wb-ease), box-shadow .15s var(--wb-ease); }
-  input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-brand-text); }
   /* 选中高亮：原来 22% 的淡紫在白底上几乎看不出来，拖选完根本不知道选中了没有。
      加到一眼可辨的浓度并显式定文字色，深色代码块里选中也不会糊成一团 */
   ::selection { background: rgba(91,95,247,.72); color: #fff; }
@@ -1498,6 +1509,14 @@
   .ms-item .i { width: 14px; height: 14px; flex: none; }
   .ms-item.done .i { color: var(--wb-ok-text, var(--wb-brand-text)); }
 
+  /* .m-body / .ex-editor / .onb-row-b / .im-card-b 里那几条 input{width:100%} 本来是写给文本框的，
+     勾选框被一起扫进去：账号弹窗里「开启积分限额」那个框实测 850×13，还套着边框和 8px 内边距。
+     这里把勾选框/单选框整个拽出那套盒模型——固定 16 见方，只留标签那段可点文字。
+     这条排在所有 .m-body input 之后，同特异度靠后来居上生效，所以它必须待在这段内联样式的最后。 */
+  input[type="checkbox"], input[type="radio"] {
+    display: inline-block; flex: none; width: 16px; height: 16px; padding: 0; margin-block: 0;
+    border: none; background: none; border-radius: 0; box-shadow: none;
+    accent-color: var(--wb-brand-text); cursor: pointer; }
 </style>
 </head>
 <body>
@@ -1789,7 +1808,7 @@
 
 <div class="modal-mask" id="modal-mask">
   <div class="modal" id="modal-box">
-    <div class="m-head"><h3 id="m-title"></h3><button class="m-close" id="m-close">✕</button></div>
+    <div class="m-head"><h3 id="m-title"></h3><button class="m-close" id="m-close" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></div>
     <div class="m-body" id="m-body"></div>
   </div>
 </div>
