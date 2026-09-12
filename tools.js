@@ -2351,12 +2351,13 @@ function badToolArgs(name, raw, parseError, rawLen) {
   const truncated = total > s.length || !s.trim().endsWith("}");
   const head = s.length > 300 || total > s.length ? s.slice(0, 300) + " …（共 " + total + " 字）" : s;
   return (
-    `${name} 这次的参数不是合法 JSON，工具没能执行` +
-    (parseError ? `（解析器原话：${parseError}）` : "") +
-    `。收到的原文是：\n${head}\n` +
+    // 第一行必须短、且自己能说完一件事：界面过程区只取结果的第一行当「· 结果」，
+    // 长了会被截成半截话，用户看到的就又是一条不知所云的红字
+    `${name} 的参数不是合法 JSON，这次没执行（${truncated ? "看着像是没写完就被输出长度截断了" : "格式写错了"}）。\n` +
+    (parseError ? `解析器原话：${parseError}\n` : "") +
+    `收到的原文是：\n${head}\n` +
     (truncated
-      ? `看结尾像是没写完就被输出长度截断了。别原样重发同一坨——` +
-        `写长文件就用 write_file 带 append:true 一节一节写，长参数拆成几次调用。`
+      ? `别原样重发同一坨——写长文件就用 write_file 带 append:true 一节一节写，长参数拆成几次调用。`
       : `按工具定义重发一次：参数必须是一个完整的 JSON 对象，字符串值都要带引号，同一个对象只发一遍。`)
   );
 }
@@ -2794,4 +2795,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS }, TOOL_DEFS, executeTool, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };

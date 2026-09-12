@@ -1308,7 +1308,46 @@ async function testFetchRetry() {
   const short = keepBadArgs('{"size": 1024x1536}', new Error("bad"));
   assert.strictEqual(short._raw, '{"size": 1024x1536}', "短的也给截了，模型就看不全自己写错在哪");
   assert.ok(/共 19013 字/.test(badToolArgs("write_file", kept._raw, kept._parseError, kept._rawLen)), "截过之后报错里说的字数不对");
-  console.log("✅ 上游重试与工具名纠错：5xx/429/断连重试 · 4xx 与超时不重试 · 拼错的工具名给出真名 · 参数不是合法 JSON 时如实说坏在哪（截断/写错分开说，不再报成「缺少某字段」）· 坏参数只留 400 字进 history（真实会话里一坨 19482 字的残缺 JSON 重发了 12 轮）");
+  // ── 参数尾巴上多几个字符：能救就别丢 ──
+  // 本机真实会话里 ask_user 出现过一次 374 字的参数：前 372 字是一个完整合法的对象，
+  // 后面孤零零跟着一个 "]}"。以前整条丢掉 → 界面先红一条空白的「问你一句」，
+  // 那一轮几千字推理全白烧，模型再把同样的东西重写一遍才问出来。
+  const { parseToolArgs } = require("../llm")._internals;
+  const tail = '{"question": "走哪条路？", "options": [{"label": "A", "detail": "甲"}, {"label": "B", "detail": "乙"}]}]}';
+  const saved = parseToolArgs(tail, "ask_user");
+  assert.strictEqual(saved.question, "走哪条路？", "尾巴多两个字符就整条丢掉，一轮推理白烧：" + JSON.stringify(saved).slice(0, 120));
+  assert.strictEqual((saved.options || []).length, 2, "救回来了但选项丢了");
+  assert.ok(!saved._raw, "救回来了却还塞着 _raw，下游照样当坏参数拦");
+  // 反向对照①：被截断的（字符串没收尾）绝不许硬救——半截参数拿去执行等于替用户瞎编
+  const cut = parseToolArgs('{"question": "走哪条路？", "options": [{"label": "A", "detail": "甲乙丙', "ask_user");
+  assert.ok(typeof cut._raw === "string", "被截断的参数也硬凑出一个对象来执行了：" + JSON.stringify(cut).slice(0, 120));
+  assert.ok(/Unterminated/.test(cut._parseError || ""), "截断的解析器原话没留下");
+  // 反向对照②：本来就合法的一个字都不许动
+  const fine = parseToolArgs('{"path": "a.md", "content": "}]}"}', "write_file");
+  assert.strictEqual(fine.content, "}]}", "字符串里的花括号被当成结构字符切坏了");
+  // 反向对照③：正文里带花括号、尾巴上又有垃圾——切的时候得认得出「这个 } 在引号里面」。
+  // 按括号配平数括号是最容易写错的那一步：不认引号的话，一段带 } 的正文会被从中间切断，
+  // 救回来的是半篇文章，用户看到的产出就少了后半截，而且什么都不报。
+  const brace = parseToolArgs('{"path": "a.md", "content": "第一段}结束"}]}', "write_file");
+  assert.strictEqual(brace.content, "第一段}结束", "正文里的 } 被当成对象结尾，救回来的是半篇：" + JSON.stringify(brace).slice(0, 120));
+
+  // ── agent.js 里就地接住的那几个工具，也得走同一道坏参数闸 ──
+  // ask_user / use_skill / MCP / 委派专家是在 agent.js 的 runToolCall 里直接接住的，
+  // 根本走不到 tools.executeTool 里那道闸；以前一路掉进 ask_user 自己的必填校验，
+  // 报出来的是「question 不能为空」——模型以为自己漏填字段，原样重发，再坏一次。
+  const agentSrc = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const runIdx = agentSrc.indexOf("async function runToolCall(");
+  const askIdx = agentSrc.indexOf('if (tc.name === "ask_user")', runIdx);
+  const guardIdx = agentSrc.indexOf("badToolArgs(tc.name", runIdx);
+  assert.ok(runIdx > 0 && askIdx > runIdx, "runToolCall / ask_user 分支找不到了，这条断言已经失效");
+  assert.ok(guardIdx > runIdx && guardIdx < askIdx, "坏参数那道闸不在 runToolCall 最前面，ask_user 又会报成「question 不能为空」");
+  // 报错的第一行必须短到能整条进过程区：界面只取结果第一行当「· 结果」，长了就是半截话
+  const line1 = badToolArgs("ask_user", '{"options": [{"label": "A"', "Unterminated string in JSON at position 557", 557).split("\n")[0];
+  assert.ok(line1.length <= 70, "坏参数报错第一行太长，界面上会被截成半截话：" + line1.length);
+  assert.ok(/不是合法 JSON/.test(line1) && /截断/.test(line1), "第一行没说清坏在哪：" + line1);
+  assert.ok(!/不能为空/.test(badToolArgs("ask_user", "{", "x", 1)), "又绕回「某字段不能为空」了");
+
+  console.log("✅ 上游重试与工具名纠错：5xx/429/断连重试 · 4xx 与超时不重试 · 拼错的工具名给出真名 · 参数不是合法 JSON 时如实说坏在哪（截断/写错分开说，不再报成「缺少某字段」）· 尾巴多几个字符的按括号配平救回来（真实会话里 374 字只多 2 个字符，整轮白烧）· 切的时候认引号（正文里的 } 不当对象结尾）· 被截断的不硬救 · ask_user 这类在 agent.js 就地接住的工具也走同一道闸 · 坏参数只留 400 字进 history（真实会话里一坨 19482 字的残缺 JSON 重发了 12 轮）");
 }
 
 // 看图：用户粘贴的截图必须真能被读懂，而且图只能随这一次请求发出去，绝不能留在对话历史里
