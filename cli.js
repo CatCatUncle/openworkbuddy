@@ -395,9 +395,12 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
           process.exit(1);
         }
       }
-      config.agent = config.agent || {};
-      config.agent.engine = want;
-      store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true });
+      // 临存盘前再读一遍。上面那次读到这儿中间隔着一次引擎探测，能跑好几秒——
+      // 这期间桌面端那个进程很可能刚存过一次配置。拿几秒前的整份内存盖回去，人家刚改的就没了。
+      const latest = store.readJson(CONFIG_PATH, config) || config;
+      latest.agent = latest.agent || {};
+      latest.agent.engine = want;
+      store.writeJsonAtomic(CONFIG_PATH, latest, { pretty: true });
       process.stdout.write(green(`底层引擎已切到「${(engines.get(want) || engines.BUILTIN).label}」\n`));
       process.exit(0);
     }

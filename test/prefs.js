@@ -200,10 +200,33 @@ fs.writeFileSync(f, JSON.stringify({ agent: { engine: "claude-code" }, 从别的
 fs.utimesSync(f, new Date(Date.now() + 2000), new Date(Date.now() + 2000));
 eq(prefs.read(U).agent.engine, "claude-code", "别的进程改完，这边下一次读就看得见（缓存按 mtime+size 失效）");
 ok(prefs.read(U)["从别的进程写的"] === true, "整份都是新的，不是新旧混着");
+// 偏好文件坏了。老写法是 catch { data = {} }：坏一个字节就当「这人从没配过」，
+// 而下一次切个引擎、拖下滑块，write() 就把这份空的合并着写回去——引擎、快捷键、宠物开关
+// 一起没了，全程一句提示都没有。现在走 store：先拿旁边那份 .bak 把人救回来。
 fs.writeFileSync(f, "{ 这不是 JSON");
 fs.utimesSync(f, new Date(Date.now() + 4000), new Date(Date.now() + 4000));
-ok(Object.keys(prefs.read(U)).length === 0, "文件坏了就当没配过，不许把整台服务器带崩");
-fs.rmSync(f);
+const recovered = prefs.read(U);
+// .bak 是上一次**经程序**存盘时留下的那份（刚才那次是测试直接 writeFileSync 伪造的，绕过了 store，
+// 所以 .bak 里仍是 codex 那一版）。救回来的正是它——比「当这人没配过」强太多了。
+eq(recovered.agent && recovered.agent.engine, "codex",
+   "偏好文件坏了先从 .bak 救回来，不是当「这人没配过」（当没配过的话，他下一次保存就把自己的设置抹干净了）");
+ok(recovered.pet && recovered.pet.enabled === true, "  └ 另一棵子树也跟着回来了，不是只剩个空壳");
+eq(recovered.agent && recovered.agent.thinking, undefined,
+   "  └ 少的只是最后一次改动（.bak 天生落后一版）——store 的提示里就是这么说的，用户知道该去补哪一下");
+// ★反向对照★：.bak 也坏了才认栽。这条要是没有，上面两条在「读坏文件直接抛」的实现下也能过
+fs.writeFileSync(f + ".bak", "这份也坏了");
+fs.writeFileSync(f, "{ 还是不是 JSON");
+fs.utimesSync(f, new Date(Date.now() + 6000), new Date(Date.now() + 6000));
+eq(Object.keys(prefs.read(U)).length, 0, ".bak 也坏了就从空的重来——记不上偏好是小事，为此把整台服务器带崩是大事");
+ok(fs.readdirSync(path.dirname(f)).some((n) => n.startsWith(path.basename(f) + ".corrupt")),
+   "  └ 坏的那份改名留在旁边（用户还有机会自己捞回来），不是直接删掉");
+// 写也得是原子的：偏好是被高频写的（切引擎、拖透明度滑块都写一次），
+// writeFileSync 那一刻断电或者被 kill，下次读到的就是半份 JSON
+ok(/jsonStore\.writeJsonAtomic\(file, next/.test(fs.readFileSync(path.join(ROOT, "prefs.js"), "utf8")),
+   "prefs.write 走原子写 + 留 .bak（上面那条自愈路，靠的就是这份 .bak）");
+ok(!/fs\.writeFileSync\(file/.test(fs.readFileSync(path.join(ROOT, "prefs.js"), "utf8")),
+   "  └ 反向对照：prefs.js 里没有直接 writeFileSync 的后门");
+fs.rmSync(f, { force: true }); // 上一步隔离时已经把它改名搬走了，这里只是确保它确实不在
 ok(Object.keys(prefs.read(U)).length === 0, "文件被删了也读得动（缓存跟着清）");
 ok(Object.keys(prefs.read("")).length === 0, "拿不到账号时读出来是空的");
 eq(Object.keys(prefs.write("", { pet: {} })).length, 0, "拿不到账号时写是个空操作，不会在偏好目录里造出个怪文件");
@@ -426,6 +449,7 @@ function call(method, url, { body, cookie } = {}) {
 
   server.close();
   runSourcePins();
+  runConfigGates();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   fs.rmSync(TMP, { recursive: true, force: true });
   process.exit(fail === 0 ? 0 : 1);
@@ -638,4 +662,229 @@ function runSourcePins() {
   ok(/require\("\.\/paths"\)/.test(serverSrc) && /const port = resolvePort\(process\.env, config\)/.test(serverSrc)
      && !/function resolvePort/.test(serverSrc),
      "  └ 服务端也是那一份，自己没再写一个（这是两边不会漂的唯一理由）");
+}
+
+// ===================================================================
+// 【12】存盘不许盖掉外面手改的（config-merge）
+// ===================================================================
+function runConfigGates() {
+  const cfgMerge = require(path.join(ROOT, "config-merge"));
+  const cfgLint = require(path.join(ROOT, "config-lint"));
+  const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const cliSrc = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+
+  console.log("\n【12】存盘不许盖掉外面手改的——用户在编辑器里粘的 Key 一个字不能少");
+
+  // 现场还原那条抱怨：启动时读到的是 base，用户在界面上把端口改成 3810（cur），
+  // 与此同时他在编辑器里往 models[0] 粘了真 Key、又加了一条 mcp_servers（disk）。
+  const base = { server: { port: 3800 }, models: [{ name: "m1", api_key: "" }], agent: { engine: "builtin" } };
+  const cur = { server: { port: 3810 }, models: [{ name: "m1", api_key: "" }], agent: { engine: "builtin" } };
+  const disk = {
+    server: { port: 3800 },
+    models: [{ name: "m1", api_key: "sk-用户刚粘进去的" }],
+    agent: { engine: "builtin" },
+    mcp_servers: { fs: { command: "npx" } },
+  };
+  const { merged, changed } = cfgMerge.mergeOnto(disk, base, cur);
+  eq(merged.models[0].api_key, "sk-用户刚粘进去的", "手粘的 API Key 活下来了（老写法这里是空串，用户以为「填了不生效」）");
+  ok(merged.mcp_servers && merged.mcp_servers.fs, "手加的整块（mcp_servers）也还在");
+  eq(merged.server.port, 3810, "界面上那次改动确实落下去了（只保命不落盘等于保存按钮坏了）");
+  eq(changed.length, 1, "而且只盖了一处——这是「不整份覆盖」的全部意义", changed);
+
+  // ★反向对照★：没改过任何东西时，合并必须是个空操作。
+  // 少了这条，上面那些断言在「mergeOnto 什么都不做」的实现下照样全绿。
+  const untouched = { server: { port: 3800 }, models: [{ name: "m1", api_key: "sk-别人的" }] };
+  const before = JSON.stringify(untouched);
+  const r0 = cfgMerge.mergeOnto(untouched, base, cfgMerge.snapshot(base));
+  eq(r0.changed.length, 0, "反向对照：这个进程什么都没改时，算出来的改动是 0 处");
+  eq(JSON.stringify(untouched), before, "  └ 磁盘那份一个字节都没动");
+
+  // 删除也是改动。只合并「新增和修改」的话，界面上删掉的渠道存一次就自己回来了
+  const delChanged = cfgMerge.changedPaths({ im: { feishu: { app_id: "x" }, qq: { on: true } } }, { im: { feishu: { app_id: "x" } } });
+  eq(delChanged.length, 1, "删掉一整块算一处改动");
+  eq(delChanged[0] && delChanged[0].remove, true, "  └ 而且标成 remove（不然合并时它会原样留在磁盘那份上）");
+  const delDisk = { im: { feishu: { app_id: "x" }, qq: { on: true } }, keep: 1 };
+  cfgMerge.applyAt(delDisk, ["im", "qq"], undefined, true);
+  ok(!("qq" in delDisk.im), "  └ applyAt 真把它删掉了");
+  eq(delDisk.keep, 1, "  └ 旁边的没受牵连");
+
+  // 数组整条算一个叶子：用户是整条换 models 的，逐项合并只会合出一张谁也没要过的混合表
+  const arr = cfgMerge.changedPaths({ models: [{ n: 1 }, { n: 2 }] }, { models: [{ n: 1 }] });
+  eq(arr.length, 1, "数组变了算一处");
+  eq(JSON.stringify(arr[0].path), JSON.stringify(["models"]), "  └ 路径停在 models 这一层，不往数组里钻", arr[0].path);
+  eq(arr[0].value.length, 1, "  └ 盖的是整条新数组（删掉的那条不许被合回来）");
+
+  // 路上缺层要补出来：磁盘那份可能被用户整块删了 agent，这时候按 agent.engine 盖不能炸
+  const thin = {};
+  cfgMerge.applyAt(thin, ["agent", "engine_options", "claude-code", "model"], "opus");
+  eq(thin.agent.engine_options["claude-code"].model, "opus", "路上缺的层会补成对象（磁盘那份缺了整块也盖得进去）");
+  // 挡在半路的标量不能让它把整条路吞掉
+  const blocked = { agent: "字符串" };
+  cfgMerge.applyAt(blocked, ["agent", "engine"], "codex");
+  eq(blocked.agent.engine, "codex", "半路被一个标量挡住时也补成对象，不是静默失败");
+
+  eq(cfgMerge.mtimeOf(path.join(TMP, "根本没有这个文件.json")), 0, "文件不在时 mtime 返回 0（调用方据此跳过合并，不是拿 NaN 去比）");
+  eq(JSON.stringify(cfgMerge.snapshot({ a: { b: 1 } })), JSON.stringify({ a: { b: 1 } }), "snapshot 是深拷");
+  const deep = { a: { b: 1 } };
+  const snap = cfgMerge.snapshot(deep);
+  deep.a.b = 2;
+  eq(snap.a.b, 1, "  └ 深到能挡住就地改（浅拷的话基线会跟着内存一起变，差集永远是空的）");
+
+  // 接线钉在源码上：这几行改回去，上面的单元测试照样全绿
+  ok(/function saveConfig\(\)/.test(serverSrc) && /if \(now && CONFIG_MTIME && now !== CONFIG_MTIME\) mergeDiskEdits\(\);/.test(serverSrc),
+     "server.js 存盘前先比一眼文件改动时间，不一样就先合并");
+  const directWrites = (serverSrc.match(/store\.writeJsonAtomic\(CONFIG_PATH/g) || []).length;
+  eq(directWrites, 1, "全 server.js 只有 saveConfig 一处直接写 config.json（多一处就是一个绕过合并的后门）", directWrites);
+  ok(/for \(const k of Object\.keys\(config\)\) delete config\[k\];\s*\n\s*Object\.assign\(config, disk\);/.test(serverSrc),
+     "合并后换内容不换对象（llm / security / tools 启动时就攥着 config 的引用，换对象=界面显示新值、干活用老值）");
+  ok(/mergeDiskEdits\(\)[\s\S]{0,900}?fillDefaults\(disk, CONFIG_DEFAULTS\);/.test(serverSrc),
+     "  └ 合完重新补一遍默认值（用户可能把 server 整块删了，少了兜底下一行就崩）");
+  ok(/mergeDiskEdits\(\)[\s\S]{0,1100}?security\.getSecurity\(config\);/.test(serverSrc),
+     "  └ 安全策略也跟着新内容重算");
+  // 同一个病在命令行那边也有一份：wb engine 探测引擎要跑好几秒，这期间桌面端很可能刚存过
+  ok(/const latest = store\.readJson\(CONFIG_PATH, config\) \|\| config;[\s\S]{0,200}?store\.writeJsonAtomic\(CONFIG_PATH, latest/.test(cliSrc),
+     "wb engine 存盘前重新读一遍磁盘，不拿几秒前的整份内存盖回去");
+
+  // ===================================================================
+  console.log("\n【13】配置写错了当场说——但不许喊狼");
+
+  const template = JSON.parse(fs.readFileSync(path.join(ROOT, "config.example.json"), "utf8"));
+  const broken = cfgLint.lint({
+    provider: "opeani",                 // 取值不在册
+    server: { port: "3800" },           // 该数字给了文本
+    agent: { max_step: 30, engine: "claude" }, // 键名少个 s；引擎名不在册
+  }, template);
+  const paths = broken.map((f) => f.path).sort();
+  eq(JSON.stringify(paths), JSON.stringify(["agent.engine", "agent.max_step", "provider", "server.port"]),
+     "四处都查出来了：取值不在册 / 类型写错 / 键名拼错 / 引擎名不在册", paths);
+  eq(broken.find((f) => f.path === "server.port").level, "bad", "端口写成文本是硬错（服务根本起不到那个口上）");
+  eq(broken.find((f) => f.path === "agent.engine").level, "bad", "引擎名不在册也是硬错（启动当场抛一句用户看不懂的话）");
+  eq(broken.find((f) => f.path === "agent.max_step").level, "warn", "键名疑似拼错只是提醒（说不定是给以后留的）");
+  ok(/max_steps/.test(broken.find((f) => f.path === "agent.max_step").hint), "  └ 而且直接说出「你是不是想写 max_steps」");
+  ok(cfgLint.lines(broken).every((l) => /^[×▲] /.test(l)), "排出来的每行都带档位记号（启动日志和 wb doctor 共用这一份措辞）");
+
+  // ★反向对照★ 一：自带模板必须一条都查不出来。查得出来说明尺子本身是歪的。
+  eq(cfgLint.lint(template, template).length, 0, "反向对照：自带的 config.example.json 一条都不报");
+
+  // ★反向对照★ 二：一份跑着的真配置也必须安静。程序自己就会往里加 projects / security /
+  // providers 这些模板里没有的键，见一个生键喊一句的话，喊到第三次用户就再也不看这些提示了。
+  const live = {
+    server: { port: 3800, host: "127.0.0.1" },
+    provider: "openai",
+    agent: { engine: "builtin", max_steps: 30, engine_options: { "claude-code": { bin: "" } }, failover_model: "" },
+    providers: { openrouter: { base_url: "https://x", api_key: "" } },
+    models: [{ name: "m1", model: "gpt-x", api_key: "" }],
+    media_models: [], projects: [], security: { mode: "ask" }, shortcuts: { toggle: "Alt+Space" },
+    pet: { enabled: true }, assistant: { name: "小秘", avatar: "@cat" }, onboarding: { done: true },
+    workspace_dir: "", last_picked_model: "", assist_model: "", model_follow_last: false,
+    im: { feishu: { app_id: "" }, permission_mode: "ask" },
+  };
+  const liveFound = cfgLint.lint(live, template);
+  eq(liveFound.length, 0, "反向对照：一份跑着的真配置一条都不报", liveFound.map((f) => f.text));
+  // providers 是这条尺子上最险的一格：它跟模板里的 provider 只差一个字母，
+  // 光看「像不像」必然被判成错别字，可它是每份真配置里都有的正经设置项。
+  eq(cfgLint.nearest("providers", ["provider"]), "provider", "  └ 光比字形的话，providers 确实像 provider 的错别字……");
+  ok(cfgLint.KNOWN_EXTRA[""].includes("providers"), "  └ ……所以它得在「程序自己会加的键」名册里");
+  eq(cfgLint.lint({ providers: { openrouter: {} } }, template).length, 0, "  └ 结果是一声不吭（这一格判错，用户天天被喊一次狼）");
+
+  // 尺子自己的刻度：太短的键容错要更严，不然 im → ai 这种会互相误报
+  eq(cfgLint.nearest("max_step", ["max_steps", "host"]), "max_steps", "长键差一个字母，算拼错");
+  eq(cfgLint.nearest("ai", ["im", "host"]), "", "  └ 但两个字母差一个就是另一个词了，不猜");
+  eq(cfgLint.nearest("完全不像的东西", ["port", "host"]), "", "  └ 不像的一概闭嘴（生键天天有，喊三次狼就没人看了）");
+  eq(cfgLint.lint({ _说明: "这是给人看的注释" }, template).length, 0, "模板里那几条 _说明 / _mcp_示例 是注释，不当配置查");
+  eq(cfgLint.lint({ mcp_servers: {} }, template).length, 0, "模板里留空的字段（mcp_servers: []）不拿来判类型，那本来就是「等你填」的占位");
+  eq(cfgLint.lint({ mcp_servers: "npx" }, template).length, 0, "  └ 留空的字段填成什么都不报——尺子量不准的地方就别量");
+  eq(cfgLint.lint({ agent: { max_steps: "25" } }, template).length, 1, "  └ 反向对照：模板里有真值的字段（agent.max_steps: 25）写成文本照样报");
+  eq(cfgLint.lint(null, template).length, 0, "配置读不出来时体检自己不许炸");
+
+  // 接线：查出来得有人说。只写个模块不接，等于没写
+  ok(/cfgLint\.lines\(cfgLint\.lint\(config, CONFIG_DEFAULTS\)\)/.test(serverSrc), "启动时真的跑一遍体检并打出来");
+  const doctorSrc = fs.readFileSync(path.join(ROOT, "doctor.js"), "utf8");
+  ok(/verdictConfigLint\(/.test(doctorSrc) && /require\("\.\/config-lint"\)/.test(doctorSrc),
+     "wb doctor 里也有这一行（用户不看启动日志，但出事时会跑 doctor）");
+  const doctor = require(path.join(ROOT, "doctor"));
+  eq(doctor.verdictConfigLint([]).level, "ok", "doctor：没查出问题时这行是绿的");
+  eq(doctor.verdictConfigLint([{ level: "warn", text: "t", hint: "h" }]).level, "warn", "  └ 只有提醒时是黄的");
+  eq(doctor.verdictConfigLint([{ level: "warn", text: "t", hint: "h" }, { level: "bad", text: "t2", hint: "h2" }]).level, "bad",
+     "  └ 里面有一条硬错，整行就是红的（一红一黄取红，不然硬错会被旁边的黄条盖过去）");
+
+  // ===================================================================
+  console.log("\n【14】项目规范（AGENTS.md / CLAUDE.md）：带不全得说，别让模型以为自己看的是全本");
+
+  const MEMO_MAX = Number((serverSrc.match(/const MEMO_MAX = (\d+)/) || [])[1]);
+  ok(MEMO_MAX > 0, "server.js 里能取到项目规范的长度上限", MEMO_MAX);
+
+  const warns = [];
+  const mkWarnOnce = () => {
+    const seen = new Set();
+    return (key, msg) => { if (seen.has(key)) return; seen.add(key); warns.push(msg); };
+  };
+  const mkClamp = (warnOnce) =>
+    new Function("MEMO_MAX", "warnOnce", slice("server.js", "clampMemo") + "\nreturn clampMemo;")(MEMO_MAX, warnOnce);
+
+  // 超长：老写法是 .slice(0, 6000)，模型收到的是一份**看起来完整**的规范——
+  // 后半截的规矩它压根不知道存在，于是照着前半截干，用户以为规范写了就生效了。
+  const long = "规矩一。\n\n" + "凑".repeat(MEMO_MAX * 2) + "\n\n最后这条规矩在末尾。";
+  let clamped = mkClamp(mkWarnOnce())(long, "AGENTS.md", "/p/AGENTS.md");
+  ok(clamped.length < long.length, "超长的规范会被截断（再长就开始挤掉提示词里别的东西）");
+  ok(/只放了前面一部分/.test(clamped), "  └ 截断这件事写在交给模型的那段文字里（模型知道自己看的不是全本）");
+  ok(/read_file/.test(clamped), "  └ 并且告诉它拿不准就自己去把整份读一遍");
+  ok(!clamped.includes("最后这条规矩在末尾"), "  └ 后半截确实没带上（这正是必须说明的理由）");
+  eq(warns.length, 1, "  └ 控制台也喊一句，不然用户永远不知道自己的规范被砍了一半");
+  ok(/AGENTS\.md/.test(warns[0]) && /上限/.test(warns[0]), "  └ 喊的这句里有文件名和上限", warns[0]);
+
+  // ★反向对照★：没超长的一个字都不许动，也不许喊
+  warns.length = 0;
+  const short = "只有三条规矩。";
+  eq(mkClamp(mkWarnOnce())(short, "AGENTS.md", "/p/AGENTS.md"), short, "反向对照：没超长的原样交出去，一个字不改");
+  eq(warns.length, 0, "  └ 也不喊（没事找事的提醒喊三次就没人看了）");
+
+  // 断在段落边界上，别切在半句话中间
+  warns.length = 0;
+  const para = "第一段。\n\n" + "甲".repeat(MEMO_MAX - 20) + "\n\n" + "乙".repeat(500);
+  clamped = mkClamp(mkWarnOnce())(para, "CLAUDE.md", "/p/CLAUDE.md");
+  ok(clamped.startsWith("第一段。"), "从段落边界断开，不是从半句话中间切");
+  ok(!clamped.includes("乙"), "  └ 边界之后的没带上");
+
+  // 同一件事只喊一次：这段在每趟任务开头都会走一遍，喊三次就再没人看了
+  warns.length = 0;
+  const w1 = mkWarnOnce();
+  const clamp1 = mkClamp(w1);
+  clamp1(long, "AGENTS.md", "/p/AGENTS.md");
+  clamp1(long, "AGENTS.md", "/p/AGENTS.md");
+  clamp1(long, "AGENTS.md", "/p/AGENTS.md");
+  eq(warns.length, 1, "同一份文件喊过一次就不再喊（每趟任务都走一遍这条路）");
+
+  // projectContextOf：空的 AGENTS.md 不许把旁边的 CLAUDE.md 挡在门外
+  const PDIR = path.join(TMP, "memo-proj");
+  fs.mkdirSync(PDIR, { recursive: true });
+  const mkCtx = (warnOnce) => new Function(
+    "experts", "skillsMgr", "config", "path", "fs", "warnOnce", "clampMemo",
+    slice("server.js", "projectContextOf") + "\nreturn projectContextOf;"
+  )([], { loadSkills: () => [] }, {}, path, fs, warnOnce, mkClamp(warnOnce));
+
+  fs.writeFileSync(path.join(PDIR, "AGENTS.md"), "   \n\n  ");
+  fs.writeFileSync(path.join(PDIR, "CLAUDE.md"), "这里写满了项目规矩：提交前先跑测试。");
+  warns.length = 0;
+  let ctx = mkCtx(mkWarnOnce())({ dir: PDIR });
+  ok(/提交前先跑测试/.test(ctx),
+     "空的 AGENTS.md 不再把写满规矩的 CLAUDE.md 挡在门外（老写法在空文件那儿就 break 了，规矩一条都带不上）");
+
+  // ★反向对照★：AGENTS.md 有内容时仍旧只带它一份，没变成两份都塞进去
+  fs.writeFileSync(path.join(PDIR, "AGENTS.md"), "AGENTS 里的规矩。");
+  ctx = mkCtx(mkWarnOnce())({ dir: PDIR });
+  ok(/AGENTS 里的规矩/.test(ctx), "反向对照：AGENTS.md 有内容时带的是它");
+  ok(!/提交前先跑测试/.test(ctx), "  └ 而且只带一份，没顺手把 CLAUDE.md 也塞进提示词");
+
+  // 读不出来（这儿把它做成一个目录）：以前是个 catch {}，规范没带上、模型照跑、用户毫不知情
+  fs.rmSync(path.join(PDIR, "AGENTS.md"));
+  fs.mkdirSync(path.join(PDIR, "AGENTS.md"));
+  warns.length = 0;
+  ctx = mkCtx(mkWarnOnce())({ dir: PDIR });
+  eq(warns.length, 1, "规范读不出来时喊一句（以前这儿是个 catch {}，出事了一点声都没有）");
+  ok(/没带上/.test(warns[0]), "  └ 说的是「这一趟没带上它」，不是一句看不懂的报错", warns[0]);
+  ok(/提交前先跑测试/.test(ctx), "  └ 而且继续往下找 CLAUDE.md，不是整段规范都不要了");
+  ok(/txt = fs\.readFileSync\(fp, "utf8"\)\.trim\(\);\s*\n\s*\} catch \(e\) \{/.test(serverSrc),
+     "  └ 源码里这次读接的是带错误对象的 catch，不是那个吞掉一切的空 catch");
+  fs.rmSync(PDIR, { recursive: true, force: true });
 }
