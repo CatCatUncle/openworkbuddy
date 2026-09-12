@@ -32,6 +32,7 @@ const COMMANDS = [
   { name: "new", desc: "开一个新会话；刚才那段不会丢，还能翻回去" },
   { name: "session", desc: "当前会话的 id 和存盘位置" },
   { name: "status", desc: "模式、底层引擎、工作目录、这个会话跑了几轮" },
+  { name: "model", arg: "[序号或名字]", desc: "换这趟活儿谁来干：本机引擎或你配的模型；不给值就把能选的列出来" },
   { name: "cd", arg: "<目录>", desc: "换工作目录；认 .. 和 ~，不给就说当前在哪" },
   { name: "files", aliases: ["ls"], desc: "工作目录里现在有什么" },
   { name: "clear", aliases: ["cls"], desc: "清屏；会话和上下文都不动" },
@@ -161,6 +162,88 @@ function complete(line) {
 }
 
 const GAP = 4;
+/**
+ * `/model` 的选单：把「本机引擎」和「你配的模型」拼成同一张带序号的表。
+ *
+ * 为什么合成一张：坐在终端前的人只关心一件事——**这句话待会儿是谁回的**。
+ * 可这在配置里是两个字段：agent.engine 决定「整趟任务交给谁跑」，active_model 决定
+ * 「内置循环调哪个模型」。拆成两条命令，用户得先知道自己现在在哪条路上才知道该敲哪条，
+ * 而 /status 恰恰把这两种情况印成同一行「底层 X」/「模型 Y」，它自己就分不出来。
+ *
+ * 哪一行是「现在这个」要跟 llm.js 的 createLLM 算得一模一样：它是
+ * `models.find(m => m.name === active_model) || models[0]`——active_model 写了个
+ * 不存在的名字时真正在跑的是第一条。这里照抄这条规则，不然表上没有任何一行带箭头，
+ * 而用户明明正在用其中一条。
+ */
+function modelRows({ engines = [], models = [], engine = "builtin", activeModel = "" } = {}) {
+  const rows = [];
+  for (const e of engines || []) {
+    if (!e || !e.id || e.id === "builtin") continue; // 内置不是一个选项，它就是「用下面那些模型」
+    rows.push({
+      kind: "engine", key: String(e.id), label: String(e.label || e.id),
+      sub: e.installed ? "已装 · 走你自己的订阅" : "没装",
+      tail: "", ready: !!e.installed, install: String(e.install || ""),
+      current: String(engine || "builtin") === String(e.id),
+    });
+  }
+  const builtin = !engine || engine === "builtin";
+  const list = Array.isArray(models) ? models : [];
+  let cur = list.findIndex((m) => m && String(m.name || "") === String(activeModel || ""));
+  if (cur < 0 && list.length) cur = 0;
+  list.forEach((m, i) => {
+    rows.push({
+      kind: "model", key: String((m && m.name) || (m && m.model) || `模型${i + 1}`),
+      label: String((m && m.name) || (m && m.model) || `模型${i + 1}`),
+      sub: String((m && m.model) || ""), tail: String((m && m.channelName) || ""),
+      ready: true, install: "", current: builtin && i === cur,
+    });
+  });
+  rows.forEach((r, i) => { r.n = i + 1; });
+  return rows;
+}
+
+/** 选单长什么样。分两组印，因为这两组花的是完全不同的钱——上面那组走订阅，下面那组走 API 额度 */
+function modelListText(rows) {
+  const eng = rows.filter((r) => r.kind === "engine");
+  const mod = rows.filter((r) => r.kind === "model");
+  const w = rows.reduce((n, r) => Math.max(n, cols(r.label)), 0);
+  const line = (r) => {
+    const bits = [padCols(r.label, w + GAP), r.sub];
+    if (r.tail) bits.push("· " + r.tail);
+    if (!r.ready && r.install) bits.push("· 装它：" + r.install);
+    // 标记只用 ASCII：▸ / » 这类符号在东亚宽度表里是「不确定」，中文终端按两列画，
+    // 带箭头那行就会比别的行多缩进一格——一张表里唯一那行歪的，恰好是「你现在用的」
+    return `${r.current ? ">" : " "} ${String(r.n).padStart(2)}  ${bits.join(" ").trimEnd()}`;
+  };
+  const out = ["", "wb> 这趟活儿谁来干："];
+  if (eng.length) { out.push("", "  本机引擎（装了就能选，花的是你自己的订阅，不走 API 额度）", ...eng.map(line)); }
+  if (mod.length) { out.push("", "  你配的模型（内置循环 + 你的 API Key）", ...mod.map(line)); }
+  else { out.push("", "  还没配过模型：设置 → 模型 里加一条，或者直接改 config.json 的 models"); }
+  out.push("", "  换一个：/model 2　或　/model 名字的一部分",
+    "  只管这一趟，不动配置文件；要长期改去设置里的「模型」。", "");
+  return out.join("\n");
+}
+
+/**
+ * 按用户敲的那半截认出是哪一行。序号、全名、名字的一部分都认；
+ * 认出两条以上就说清楚是哪几条，不替他挑——挑错了他要么在花不该花的钱，要么在等一个没装的东西。
+ */
+function pickModelRow(rows, arg) {
+  const w = String(arg == null ? "" : arg).trim();
+  if (!w) return { kind: "list" };
+  if (/^\d+$/.test(w)) {
+    const r = rows.find((x) => x.n === Number(w));
+    return r ? { kind: "ok", row: r } : { kind: "none", arg: w, why: "序号只到 " + rows.length };
+  }
+  const lw = w.toLowerCase();
+  const eq = rows.filter((r) => r.key.toLowerCase() === lw || r.label.toLowerCase() === lw);
+  if (eq.length === 1) return { kind: "ok", row: eq[0] };
+  const hit = rows.filter((r) => `${r.key} ${r.label} ${r.sub}`.toLowerCase().includes(lw));
+  if (hit.length === 1) return { kind: "ok", row: hit[0] };
+  if (hit.length > 1) return { kind: "many", arg: w, rows: hit };
+  return { kind: "none", arg: w, why: "没有这一条" };
+}
+
 function helpText() {
   const rows = COMMANDS.map((c) => ({
     left: `/${c.name}${c.arg ? " " + c.arg : ""}`,
@@ -274,5 +357,6 @@ function sanitizeHistory(lines, max) {
 module.exports = {
   COMMANDS, PASTE_GAP_MS, HISTORY_MAX,
   parse, mergePaste, makeInbox, resolveCd, complete, helpText, unknownText, badArgText,
+  modelRows, modelListText, pickModelRow,
   sanitizeHistory, nearest, find,
 };
