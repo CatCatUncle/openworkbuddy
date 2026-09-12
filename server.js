@@ -727,8 +727,19 @@ function guardRun(req, res, id) {
 
 let runtime; // MCP 启动后创建
 
+/**
+ * 身份签名。端口被占的时候，靠这一行区分「另一台 OpenWorkBuddy」和「别的程序」——
+ * 少了它，壳只能把窗口指给任何一个会应答的服务，用户看到的是个陌生页面（详见 listenWithFallback）。
+ * 只回名字和版本，不带任何配置和数据，所以在 account.js 的 PUBLIC_API 里放行，不要求登录。
+ */
+app.get("/api/ping", (_req, res) => {
+  res.json({ app: "openworkbuddy", version: require("./package.json").version });
+});
+
 app.get("/api/info", (_req, res) => {
   res.json({
+    app: "openworkbuddy",
+    version: require("./package.json").version,
     provider: llm.provider,
     model: llm.model,
     skills: runtime ? runtime.getSkills().map((s) => s.name) : [],
@@ -4183,34 +4194,108 @@ async function main() {
     shell: !!(process.versions.electron && !process.env.ELECTRON_RUN_AS_NODE),
   });
   if (solo) console.log("个人桌面版：设置归你自己管，不分平台管理员");
-  const server = app.listen(port, host, () => {
-    // PORT=0 是「你替我挑一个空的」——配置里写 0，真正绑到哪个口只有系统知道。
-    // 这行以前直接印 port，于是 PORT=0 时用户看到的是 http://localhost:0，点进去当然打不开；
-    // 端到端测试也因此只能自己猜端口、猜撞了就卡死。改成问 server 要它实际绑上的那个。
-    const bound = (server.address() || {}).port || port;
-    if (host !== "127.0.0.1" && host !== "localhost") {
-      console.warn(`▲ 正在监听 ${host}:${bound}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
-    }
-    console.log(`OpenWorkBuddy 已启动: http://localhost:${bound}（服务端初始化 ${Date.now() - BOOT_T0}ms）`);
-    console.log(`模型: ${llm.provider} / ${llm.model}`);
-    console.log(`技能: ${runtime.getSkills().map((s) => s.name).join(", ") || "无"}`);
-    console.log(`专家团: ${experts.map((e) => e.name).join(", ") || "无"}`);
-    console.log(`MCP 工具: ${mcpManager.toolDefs().length} 个`);
-    const okPlugins = pluginsMgr.loadPlugins().filter((p) => p.ok);
-    if (okPlugins.length) console.log(`Agent Plugins: ${okPlugins.map((p) => p.name).join(", ")}`);
-    console.log(`工作目录: ${getWorkspaceDir()}`);
+  const got = await listenWithFallback(app, host, port);
+  if (!got) return; // 不由这个进程提供服务了，为什么在 listenWithFallback 里已经交代过
+  const { server, bound } = got;
+  if (host !== "127.0.0.1" && host !== "localhost") {
+    console.warn(`▲ 正在监听 ${host}:${bound}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
+  }
+  console.log(`OpenWorkBuddy 已启动: http://localhost:${bound}（服务端初始化 ${Date.now() - BOOT_T0}ms）`);
+  console.log(`模型: ${llm.provider} / ${llm.model}`);
+  console.log(`技能: ${runtime.getSkills().map((s) => s.name).join(", ") || "无"}`);
+  console.log(`专家团: ${experts.map((e) => e.name).join(", ") || "无"}`);
+  console.log(`MCP 工具: ${mcpManager.toolDefs().length} 个`);
+  const okPlugins = pluginsMgr.loadPlugins().filter((p) => p.ok);
+  if (okPlugins.length) console.log(`Agent Plugins: ${okPlugins.map((p) => p.name).join(", ")}`);
+  console.log(`工作目录: ${getWorkspaceDir()}`);
+  // 壳在等这个数。它自己也算过一个端口，但真正绑上的可能不是那个（被别人占了就换了一个），
+  // 不把真数告诉它，窗口就会去连一个没人在的口——白屏，而且日志里还写着「服务端就绪」。
+  tellShell(bound, { reused: false });
+  // 站住之后再出的错（网卡被拔、系统休眠醒来）不该把一个已经能用的应用换成报错页
+  server.on("error", (e) => console.error("[服务端] 监听出错:", (e && e.message) || e));
+}
+
+/** 把最终端口交给桌面壳。没有壳（node server.js）时这一步什么都不做。 */
+function tellShell(port, meta) {
+  const hook = global.__wbOnListen;
+  if (typeof hook !== "function") return false;
+  try { hook(port, meta); return true; } catch (e) {
+    console.error("[启动] 壳层没接住端口:", (e && e.message) || e);
+    return false;
+  }
+}
+
+/**
+ * 端口上坐着的是不是我们自己人。
+ *
+ * 这一问是「下载之后打不开」的分水岭。老写法在端口被占时只说一句「窗口将连接已运行的实例」，
+ * 就把窗口指过去了——可占着 3800 的很可能根本不是 OpenWorkBuddy：这个口太常见了，别人的
+ * 开发服务器、路由器后台、随手起的 http.server 都爱用。连过去的结果是一个陌生页面或者白屏，
+ * 而启动日志里还写着「服务端就绪」，用户手上一条能查的线索都没有。
+ * 所以先握一次手：/api/info 里那行 app: "openworkbuddy" 只有我们自己会写。
+ */
+async function portHeldByUs(host, port) {
+  const h = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 1500); // 占着口又不吭声的程序不少，别让启动卡死在这一问上
+  try {
+    // 走不需要登录的 /api/ping：对面很可能是一台还没人登录的实例，
+    // 问 /api/info 只会拿到 401，于是把自己人当陌生人，转头换个口又起一台。
+    const r = await fetch(`http://${h}:${port}/api/ping`, { signal: ctl.signal });
+    const j = await r.json();
+    return !!(j && j.app === "openworkbuddy");
+  } catch {
+    return false; // 不应答、回的不是 JSON——都当陌生人办：连过去一样是白屏
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * 绑端口；被占了就自己挪窝。
+ *
+ * 三种「端口被占」必须分开处理，混成一种就是那条「下载之后打不开」的 issue：
+ *   ① 口上是另一台 OpenWorkBuddy —— 不重复起服务。桌面壳连过去（本来就是这个意思）；
+ *      命令行下没有壳，把话说清楚再退出，别像以前那样进程活着、什么都不干、一直挂在那儿。
+ *   ② 口上是别的程序 —— 换一个口接着起。以前是直接把窗口指给人家。
+ *   ③ 绑的不是本机地址（Docker / 服务器）—— 端口是运维定死的，不许偷偷换，照常报启动失败。
+ * 返回真正绑上的 server 和端口；这个进程不打算自己提供服务时返回 null。
+ */
+async function listenWithFallback(expressApp, host, wanted) {
+  const server = require("http").createServer(expressApp);
+  const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+  const tryOnce = (p) => new Promise((resolve) => {
+    const onErr = (e) => { server.removeListener("listening", onOk); resolve(e); };
+    const onOk = () => { server.removeListener("error", onErr); resolve(null); };
+    server.once("error", onErr);
+    server.once("listening", onOk);
+    server.listen(p, host);
   });
-  server.on("error", (e) => {
-    if (e.code === "EADDRINUSE") {
-      console.error(`端口 ${port} 已被占用（可能 Web 版已在运行），本进程不再重复启动服务，窗口将连接已运行的实例。`);
-      return;
+
+  const TRIES = 10;
+  for (let i = 0; i <= TRIES; i++) {
+    // 最后一次让内核挑：连着 10 个口全被占的机器确实存在（Windows 上 Hyper-V/WSL 会成片预留）
+    const p = i === 0 ? wanted : (i < TRIES && wanted + i <= 65535 ? wanted + i : 0);
+    const err = await tryOnce(p);
+    // PORT=0 是「你替我挑一个空的」，真正绑到哪只有系统知道，所以问 server 要，别印 0
+    if (!err) return { server, bound: (server.address() || {}).port || p };
+    // EACCES 在 Windows 上比 EADDRINUSE 还常见（保留端口段），它不是「被占」，换口也没用，直接报
+    if (err.code !== "EADDRINUSE" || !loopback) { bootFailed(err); return null; }
+    if (i === 0 && (await portHeldByUs(host, p))) {
+      if (tellShell(p, { reused: true })) {
+        console.log(`端口 ${p} 上已经有一台 OpenWorkBuddy 在跑，这个窗口直接连过去，不重复起服务。`);
+        return null;
+      }
+      console.error(`端口 ${p} 上已经有一台 OpenWorkBuddy 在跑了。`);
+      console.error(`  直接用它：http://localhost:${p}`);
+      console.error(`  非要再起一台：PORT=${p + 1} node server.js`);
+      try { mcpManager.stopAll(); } catch {} // 别把 MCP 那几个子进程扔在后台
+      process.exit(1);
     }
-    // 以前这里 throw。listen 的 error 是异步事件，抛出去没人接，直接变成 uncaughtException——
-    // 命令行下还能看见栈，装成桌面应用之后是主进程当场没了，用户看到的就是「双击没反应，
-    // 任务管理器里有进程，屏幕上什么都没有」。EACCES 在 Windows 上尤其常见：
-    // Hyper-V / WSL 会成片预留端口，3800 落在保留段里报的是 EACCES 而不是 EADDRINUSE。
-    bootFailed(e);
-  });
+    console.warn(`端口 ${p} 被别的程序占着（应答的不是 OpenWorkBuddy），换一个再试。`);
+  }
+  bootFailed(new Error(`从 ${wanted} 起连试了 ${TRIES} 个端口都被占着，让系统随便挑一个也没成`));
+  return null;
 }
 
 /**

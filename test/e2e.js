@@ -36,11 +36,11 @@ const WORKSPACE = setWorkspaceDir(fs.mkdtempSync(path.join(os.tmpdir(), "owb-e2e
  * 现在统一 PORT=0 让内核挑，再从启动那行里把真端口抠回来；起不来时把退出码、
  * 存活状态和日志尾巴一起交出去，不用再猜。
  */
-function bootRealServer(env, { timeoutMs = 60000 } = {}) {
+function bootRealServer(env, { timeoutMs = 60000, port = "0" } = {}) {
   const { spawn } = require("child_process");
   const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
     // PORT 摆在最后：外面 shell 里要是设了 PORT（跑着自己那台的人很常见），不能让它把 0 顶掉
-    env: { ...process.env, ...env, HOST: "127.0.0.1", PORT: "0" },
+    env: { ...process.env, ...env, HOST: "127.0.0.1", PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
@@ -4663,6 +4663,116 @@ async function testFilePathRouting() {
   }
 }
 
+/**
+ * 端口被占的三种情况。
+ *
+ * 这条对应的是 GitHub 上那句「下载之后打不开」。老写法在 EADDRINUSE 时只说一句
+ * 「窗口将连接已运行的实例」就把窗口指过去了——可 3800 是个大众端口，占着它的很可能
+ * 是别人的开发服务器、路由器后台、随手起的 http.server。连过去的结果是一个陌生页面或者
+ * 白屏，而启动日志里还写着「服务端就绪」，用户手上一条能查的线索都没有。
+ *
+ * 所以这屏不看源码，起**真的 server.js**，先在目标端口上坐一个假冒者，看它怎么办：
+ *   ① 坐着的是别的程序      → 必须换个口把自己起起来，并且换完那个口上真的是 OpenWorkBuddy
+ *   ② 坐着的是另一台 OWB    → 必须不重复起服务（负对照：证明「换口」是签名说了算，不是见占就换）
+ *   ③ 坐着的人一声不吭      → 不许卡死在握手上，照样换口起来
+ */
+async function testPortCollision() {
+  const os = require("os");
+  const net = require("net");
+  const http = require("http");
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-port-"));
+
+  // 占座的：listen(0) 拿一个真实存在、此刻确实被占着的端口
+  const squat = (handler) => new Promise((resolve) => {
+    const srv = handler ? http.createServer(handler) : net.createServer(() => {});
+    srv.listen(0, "127.0.0.1", () => resolve({ srv, port: srv.address().port }));
+  });
+  const info = (body) => (req, res) => {
+    if (req.url.startsWith("/api/ping")) { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); return; }
+    res.statusCode = 404; res.end("nope");
+  };
+  const getJson = (port, p) => new Promise((resolve) => {
+    const req = http.request({ host: "127.0.0.1", port, path: p }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { try { resolve(JSON.parse(b)); } catch { resolve(null); } });
+    });
+    req.on("error", () => resolve(null));
+    req.end();
+  });
+
+  // ---- ① 坐着的是别的程序：必须挪窝，而且挪过去的那个口上真的是我们 ----
+  {
+    const { srv, port } = await squat(info({ app: "some-dashboard", version: "9.9" }));
+    const booted = bootRealServer({ OPENWORKBUDDY_HOME: home }, { port });
+    try {
+      const { up, port: bound, why } = await booted.wait();
+      assert(up, "端口被陌生程序占着，真 server.js 没起来（老写法就是在这儿把窗口指给人家的）：" + why);
+      assert(bound !== port, `服务端居然报自己绑在 ${bound} —— 那个口上坐着的是别人`);
+      assert(/被别的程序占着/.test(booted.log), "换口这件事没在日志里留一句话，用户只会觉得端口莫名其妙变了");
+      const j = await getJson(bound, "/api/ping");
+      assert(j && j.app === "openworkbuddy", "换过去的那个口上应答的不是 OpenWorkBuddy：" + JSON.stringify(j));
+      assert(j.version, "/api/ping 没带版本号，报 issue 的人说不清自己装的是哪一版");
+      // ★这条是握手能成立的前提★：对面很可能一个人都没登录过，签名必须在登录闸外面拿得到。
+      // 它要是回 401，壳就会把另一台 OpenWorkBuddy 当成陌生程序，转头又起一台。
+      const guarded = await getJson(bound, "/api/info");
+      assert(guarded && guarded.error, "反向对照：/api/info 本来就该要登录，它要是也敞着，说明整个 /api 的闸开了口子");
+      // 占座的还在原地：证明我们是绕开它，不是把它挤掉了
+      const still = await getJson(port, "/api/ping");
+      assert(still && still.app === "some-dashboard", "原来占着口的程序被挤掉了，这是在抢别人的端口");
+    } finally {
+      booted.child.kill();
+      srv.close();
+    }
+  }
+
+  // ---- ② 负对照：坐着的是另一台 OpenWorkBuddy，就不许再起一台 ----
+  // 这条要是也「换个口起来了」，上面那条就等于没测——那只能说明它见占就换，而不是认签名。
+  {
+    const { srv, port } = await squat(info({ app: "openworkbuddy", version: "0.0.0-fake" }));
+    const booted = bootRealServer({ OPENWORKBUDDY_HOME: home }, { port, timeoutMs: 30000 });
+    try {
+      const { up } = await booted.wait();
+      assert(!up, "口上已经有一台 OpenWorkBuddy 了，这个进程还是自己又起了一台（两台共用一份数据目录，迟早互相写坏）");
+      assert(/已经有一台 OpenWorkBuddy 在跑/.test(booted.log), "没告诉用户这口上是谁：" + JSON.stringify(booted.log.slice(-300)));
+      assert(new RegExp("http://localhost:" + port).test(booted.log), "没把「直接用它」的地址给出来，用户只知道自己失败了");
+      const code = await new Promise((r) => booted.child.exitCode !== null ? r(booted.child.exitCode) : booted.child.once("exit", (c) => r(c)));
+      assert(code === 1, `命令行下该退出码 1，实际 ${code}（老写法是进程活着、什么都不干，一直挂在那儿）`);
+    } finally {
+      booted.child.kill();
+      srv.close();
+    }
+  }
+
+  // ---- ③ 占着口又一声不吭：不许卡死在握手上 ----
+  {
+    const { srv, port } = await squat(null); // 纯 TCP，连上就晾着
+    const t0 = Date.now();
+    const booted = bootRealServer({ OPENWORKBUDDY_HOME: home }, { port });
+    try {
+      const { up, port: bound, why } = await booted.wait();
+      assert(up, "占口的程序不应答 HTTP，启动就卡死了：" + why);
+      assert(bound !== port, `不应答的口也得让开，实际报的还是 ${bound}`);
+      assert(Date.now() - t0 < 25000, `握手超时没兜住，等了 ${Date.now() - t0}ms（默认 1.5 秒就该放弃）`);
+    } finally {
+      booted.child.kill();
+      srv.close();
+    }
+  }
+
+  // ---- ④ 签名这件事必须只在一个地方写死：壳判断「是不是自己人」靠的就是它 ----
+  const srvSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  assert(/app: "openworkbuddy"/.test(srvSrc), "没有身份签名，壳就没法区分自己人和陌生人");
+  assert(/"\/api\/ping"/.test(fs.readFileSync(path.join(__dirname, "..", "account.js"), "utf8")),
+         "/api/ping 没在登录闸的放行名单里，没登录的实例会回 401，握手就废了");
+  assert(/global\.__wbOnListen/.test(srvSrc), "服务端没把真正绑上的端口交给壳");
+  const shellSrc = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  assert(/__wbOnListen/.test(shellSrc), "壳没在等服务端报端口，还在用自己算出来的那个（换了口就连不上）");
+
+  fs.rmSync(home, { recursive: true, force: true });
+  console.log("✅ 端口被占的三条岔路：陌生程序占着就换口（换过去的确实是我们，也没挤掉人家）· 另一台 OWB 占着就不重复起并退出码 1（负对照）· 占着不吭声也不卡死");
+}
+
 async function testLocalEngineConnect() {
   const os = require("os");
   const which = require("../engines/which");
@@ -5007,6 +5117,7 @@ async function main() {
   await testHeavyTools();
   testOutputFilesRecency();
   await testFilePathRouting();
+  await testPortCollision();
   await testDesktopPet();
   testPetSprites();
   await testMcpFailureReason();

@@ -527,8 +527,13 @@ function runSourcePins() {
   const eacces = bootHint("listen EACCES: permission denied 0.0.0.0:3800", 3800);
   ok(/excludedportrange/.test(eacces), "EACCES → 提示 Hyper-V/WSL 预留了端口段，并给出查询命令", eacces.slice(0, 40));
   ok(/换成一个没被预留的/.test(eacces), "  └ 并且告诉他改哪个字段");
-  ok(!/被别的程序占了/.test(eacces), "  └ EACCES 不能走成「端口被占用」那条（解法完全不同：一个换端口，一个去关程序）");
-  ok(/被别的程序占了/.test(bootHint("listen EADDRINUSE: address already in use", 3800)), "EADDRINUSE → 让他关掉占用的程序");
+  ok(!/占了|占着/.test(eacces), "  └ EACCES 不能走成「端口被占用」那条（解法完全不同：一个换端口，一个去关程序）");
+  // 钉的是这句话里有没有那两条出路，不是它的措辞——文案改一个字就变红的尺子量不出任何东西。
+  // （能走到这条提示已经很稀罕了：本机版被占会自己往后换口，见 server.js 的 listenWithFallback。）
+  const inuse = bootHint("listen EADDRINUSE: address already in use", 3800);
+  ok(/占/.test(inuse) && /关掉/.test(inuse) && /server\.port/.test(inuse),
+     "EADDRINUSE → 得说清楚口被占了，并给出「关掉占用的程序」和「改 server.port」两条出路", inuse.slice(0, 40));
+  ok(inuse !== eacces, "  └ 跟 EACCES 那条不是同一句话（合并成一句就等于把两种解法混成一种）");
   ok(/server\.host/.test(bootHint("listen EADDRNOTAVAIL 192.168.1.9", 3800)), "EADDRNOTAVAIL → 让他把 host 改回 127.0.0.1（换过网络之后常见）");
   ok(/issue/.test(bootHint("something exploded", 3800)), "认不出来的错 → 至少让他把这行贴到 issue 里");
   ok(bootHint("listen EACCES", 3810).includes("3810"), "端口号是传进去的那个，不是写死的 3800");
