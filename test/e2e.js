@@ -6769,7 +6769,8 @@ function testNoticeCoverage() {
   // 反向对照：凭空多一条依赖必须被抓；名字被别的词包住也必须被抓
   const f1 = noticeDrift({ ...pkg.dependencies, "某个没登记的包": "1.0.0" }, notice).missing;
   assert(f1.length === 1, "★闸门失效：加了一条没署名的依赖却没被抓出来★");
-  const f2 = noticeDrift({ docx: "1" }, "本文件提到了 docxtemplater 但没提 docx").missing;
+  // 这条对照文里千万别再出现独立的 docx 三个字母，否则对照自己就把自己喂饱了
+  const f2 = noticeDrift({ docx: "1" }, "本文件只提到了 docxtemplater 这一个名字").missing;
   assert(f2.length === 1, "★闸门失效：docx 被 docxtemplater 蒙混过关了★");
   const f3 = noticeDrift({ docx: "1" }, "| docx | 9.7.1 | MIT |").missing;
   assert(f3.length === 0, "表格里明明写了 docx 却判成没署名，闸门太严会逼人乱改文档");

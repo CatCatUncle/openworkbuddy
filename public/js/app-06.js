@@ -488,9 +488,21 @@ function renderAboutPane(pane) {
   // 更新检查：默认用 6 小时缓存，点按钮才真去问 GitHub
   const upVer = pane.querySelector("#ab-ver"), upHow = pane.querySelector("#ab-up-how");
   const upMsg = pane.querySelector("#ab-up-msg"), upLink = pane.querySelector("#ab-up-link");
+  // 读不到本机版本号，说明这次请求压根没走到更新检查那儿——最常见的是 cookie 过期，
+  // 被登录闸以 {error:"未登录"} 挡了回来，而那个形状里没有 current 也没有 how。
+  // 照着原样拼字符串会拼出「当前 vundefined」和「未登录。undefined」，等于把 JS 的
+  // undefined 摆到用户脸上。宁可整段降级成一句他能照着做的话。
   const drawUpdate = (d) => {
+    if (!d || !d.current) {
+      upVer.textContent = "版本号没读到";
+      upHow.textContent = d && /未登录|登录/.test(String(d.error || ""))
+        ? "登录状态过期了，刷新一下页面重新登录，这里就能看到版本和更新。"
+        : "点右边「检查更新」再试一次；一直这样就是本机服务没起来，重启一下 OpenWorkBuddy。";
+      upLink.style.display = "none";
+      return;
+    }
     upVer.textContent = `当前 v${d.current}${d.install === "source" ? " · 源码运行" : " · 安装包"}`;
-    upHow.textContent = (d.error ? `${d.error}。` : d.has_update ? `有新版 v${d.latest}。` : d.latest ? `已是最新（线上也是 v${d.latest}）。` : "") + d.how;
+    upHow.textContent = (d.error ? `${d.error}。` : d.has_update ? `有新版 v${d.latest}。` : d.latest ? `已是最新（线上也是 v${d.latest}）。` : "") + (d.how || "");
     upLink.style.display = d.has_update ? "" : "none";
     if (d.url) upLink.href = d.url;
   };

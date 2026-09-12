@@ -5385,6 +5385,121 @@ const PLACEHOLDER_WATCH = `(() => {
   return 1;
 })()`;
 
+// ================= 关于页：读不到版本号时不许把 undefined 摆到脸上（真源码切片） =================
+// 这一屏开头就 fetch("/api/update")，然后不看状态码直接 r.json()。cookie 过期时登录闸
+// 会回 401 + {error:"未登录", setup:true}——那个形状里没有 current 也没有 how，
+// 原来的写法照着拼，界面上就成了「当前 vundefined」和「未登录。undefined」。
+const AB0 = APP06.indexOf("function renderAboutPane(pane) {");
+if (AB0 < 0) throw new Error("app-06.js 里找不到 renderAboutPane");
+const AB_SRC = APP06.slice(AB0);
+const AB_HTML = "<!doctype html><meta charset='utf-8'><body><div id='pane'></div></body>";
+const AB_STUBS = `
+  let NEXT = {};
+  const mask = { classList: { remove() {} } };
+  function openOnboarding() {}
+  function fetch() { return Promise.resolve({ json: () => Promise.resolve(NEXT) }); }
+`;
+const AB_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
+  const pane = document.getElementById("pane");
+  const tick = () => new Promise((r) => setTimeout(r, 12));
+  const draw = async (payload) => { NEXT = payload; pane.innerHTML = ""; renderAboutPane(pane); await tick(); await tick(); return pane; };
+  const ver = () => pane.querySelector("#ab-ver").textContent;
+  const how = () => pane.querySelector("#ab-up-how").textContent;
+  const link = () => pane.querySelector("#ab-up-link");
+  const naked = () => /\\bundefined\\b|\\bNaN\\b/.test(pane.innerText);
+
+  // ---- 先钉住这个夹具真的能复现：拿 401 那个形状按老写法拼一遍，必须拼出 vundefined ----
+  const d401 = { error: "未登录", setup: true };
+  ok("夹具站得住：401 的形状按老写法拼确实会拼出「当前 vundefined」",
+     ("当前 v" + d401.current) === "当前 vundefined");
+
+  // ---- 正路 ----
+  await draw(d401);
+  ok("cookie 过期时版本行不再是 vundefined", !/undefined/.test(ver()), ver());
+  ok("cookie 过期时整屏一个裸 undefined/NaN 都没有", !naked(), pane.innerText.slice(0, 200));
+  ok("而且说的是「重新登录」这条能照着做的路，不是把 error 原样丢出来", /登录/.test(how()) && !/undefined/.test(how()), how());
+  ok("这种时候不画「去下载页」（点了也没用）", link().style.display === "none");
+
+  // ---- 反向对照一：接口正常时照旧把版本号画出来（别为了挡 undefined 把正路一起挡了）----
+  await draw({ current: "1.2.3", install: "source", latest: "1.2.3", how: "已经是最新的了。" });
+  ok("接口正常时版本号照画", /当前 v1\\.2\\.3/.test(ver()) && /源码运行/.test(ver()), ver());
+  ok("接口正常时也没有裸 undefined", !naked(), pane.innerText.slice(0, 200));
+
+  // ---- 反向对照二：有新版时下载链接得露出来，href 还得换成服务端给的那条 ----
+  await draw({ current: "1.2.3", latest: "1.3.0", has_update: true, url: "https://example.invalid/rel", how: "去下载页拿新版。" });
+  ok("有新版时「去下载页」露出来", link().style.display !== "none");
+  ok("而且链接换成了服务端给的那条", link().getAttribute("href") === "https://example.invalid/rel", link().getAttribute("href"));
+
+  // ---- 反向对照三：版本号读到了、只是查线上失败——这时 error 该原样说出来，不能被兜底吞掉 ----
+  await draw({ current: "1.2.3", error: "连不上 GitHub", how: "过会儿再点一次。" });
+  ok("查线上失败时仍然画得出本机版本号", /当前 v1\\.2\\.3/.test(ver()), ver());
+  ok("而且服务端那句原话没被兜底吞掉", /连不上 GitHub/.test(how()) && /过会儿再点一次/.test(how()), how());
+
+  // ---- 反向对照四：服务端只回了 current，没给 how——也不许拼出 undefined ----
+  await draw({ current: "1.2.3" });
+  ok("服务端少给 how 字段时也不拼出 undefined", !naked(), pane.innerText.slice(0, 200));
+
+  return names;
+})()
+`;
+
+// ================= 设置弹窗：装得下 + 左边缘对得齐（拿真 CSS 量） =================
+// 层高原来写死 60vh：1440×900 的屏上就是 540px，19 条快捷键只露得出 11 条，关于页最后一张卡被切掉。
+// 另一处是 .m-body 的 20px 留白和侧栏自己的留白叠了两层，导航整体比弹窗标题右 8px。
+// 这两条都只能量出来，看源码看不出来——所以这一块把真 CSS 灌进离屏窗口量像素。
+const SETL_MARKUP_CLASSES = ["settings-layout", "settings-nav", "settings-pane", "cat", "ci"];
+for (const c of SETL_MARKUP_CLASSES) {
+  if (!APP05.includes(c)) throw new Error("app-05.js 里找不到 ." + c + "：夹具和真界面已经对不上了");
+}
+const SETL_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body>"
+  + "<div class='modal-mask show' id='modal-mask'><div class='modal wide' id='modal-box'>"
+  + "<div class='m-head'><h3 id='m-title'>设置</h3><button class='m-close'>x</button></div>"
+  + "<div class='m-body' id='m-body'></div></div></div></body>";
+const SETL_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
+  const body = document.getElementById("m-body");
+  // 跟 app-05.js renderSettings 画的是同一套结构：侧栏 12 条 + 右边一长条内容
+  const cats = ["模型","联网","助理","安全","快捷键","人设","外观","记忆","自进化","数据","远程","关于"];
+  body.innerHTML = '<div class="settings-layout"><div class="settings-nav">'
+    + cats.map((t, i) => '<div class="cat' + (i ? "" : " active") + '"><span class="ci"><svg width="16" height="16"></svg></span>' + t + '</div>').join("")
+    + '</div><div class="settings-pane" id="settings-pane"></div></div>';
+  const pane = document.getElementById("settings-pane");
+  pane.innerHTML = new Array(14).fill('<div class="card-item"><div class="t">一张卡</div><div class="d">占位</div></div>').join("");
+
+  const lay = document.querySelector(".settings-layout");
+  /** 量文字真正的左边缘：量盒子再加内边距是算出来的，量文字节点才是眼睛看到的 */
+  const textLeft = (el) => {
+    const r = document.createRange();
+    r.selectNodeContents([...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim()) || el);
+    return Math.round(r.getBoundingClientRect().left);
+  };
+  const iconLeft = () => Math.round(document.querySelector(".settings-nav .cat .ci").getBoundingClientRect().left);
+  const titleLeft = () => textLeft(document.getElementById("m-title"));
+
+  const h = Math.round(lay.getBoundingClientRect().height);
+  ok("940 高的窗口里设置层撑到 700 以上（写死 60vh 时只有 564）", h >= 700, h);
+  ok("图标列和弹窗标题文字同一列", iconLeft() === titleLeft(), { icon: iconLeft(), title: titleLeft() });
+
+  // ---- 反向对照：把这两条改回修之前的写法，两个断言都得当场挂 ----
+  const undo = document.createElement("style");
+  undo.textContent = ".settings-layout { height: 60vh; } .m-body:has(> .settings-layout) { padding: 14px 20px 20px; }";
+  document.head.appendChild(undo);
+  const h2 = Math.round(lay.getBoundingClientRect().height);
+  ok("反向对照：改回 60vh 层高立刻掉回 600 以下", h2 < 600, h2);
+  ok("反向对照：m-body 的留白加回去，图标列就和标题错开", iconLeft() !== titleLeft(), { icon: iconLeft(), title: titleLeft() });
+  ok("反向对照：错开的量正好是 m-body 那 20px", iconLeft() - titleLeft() === 20, iconLeft() - titleLeft());
+  undo.remove();
+  ok("撤掉对照样式之后又对回去了", iconLeft() === titleLeft());
+
+  return names;
+})()
+`;
+
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
   RENDERER_LOG.length = 0;
@@ -5784,6 +5899,27 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：存盘失败说人话（连不上/卡住掐掉/网关 HTML/服务端原话/裸 HTTP 码/空响应 六句各不相同·默认落本对话文件夹·取消不吓人·网页端退下载）${namesSave.length} 项通过`);
     } finally {
       if (!winSave.isDestroyed()) winSave.destroy();
+    }
+    // 这一屏必须按真实桌面尺寸开窗：层高用的是 vh，窗口一小断言就没意义了
+    const winSet = mkWin({ show: false, width: 1440, height: 940, webPreferences: { offscreen: true } });
+    try {
+      await winSet.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SETL_HTML));
+      const namesSet = await winSet.webContents.executeJavaScript(IC_BOOT + SETL_CHECKS, true)
+        .catch((e) => { throw new Error("[\u8bbe\u7f6e\u5f39\u7a97] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesSet) console.log("  \u2713 " + n);
+      console.log(`\u2705 \u524d\u7aef\uff1a\u8bbe\u7f6e\u5f39\u7a97\u88c5\u5f97\u4e0b\u4e5f\u5bf9\u5f97\u9f50\uff08\u5c42\u9ad8\u8ddf\u7740\u5c4f\u5e55\u8d70\u00b7\u56fe\u6807\u5217\u548c\u6807\u9898\u540c\u4e00\u5217\u00b7\u4e24\u6761\u90fd\u6709\u53cd\u5411\u5bf9\u7167\uff09${namesSet.length} \u9879\u901a\u8fc7`);
+    } finally {
+      if (!winSet.isDestroyed()) winSet.destroy();
+    }
+    const winAB = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winAB.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(AB_HTML));
+      const namesAB = await winAB.webContents.executeJavaScript(IC_BOOT + AB_STUBS + "\n" + AB_SRC + "\n" + AB_CHECKS, true)
+        .catch((e) => { throw new Error("[关于页] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesAB) console.log("  \u2713 " + n);
+      console.log(`\u2705 \u524d\u7aef\uff1a\u5173\u4e8e\u9875\u8bfb\u4e0d\u5230\u7248\u672c\u53f7\u65f6\u4e0d\u628a undefined \u6446\u5230\u8138\u4e0a\uff08cookie \u8fc7\u671f\u00b7\u6b63\u5e38\u00b7\u6709\u65b0\u7248\u00b7\u67e5\u7ebf\u4e0a\u5931\u8d25\u00b7\u5b57\u6bb5\u6b8b\u7f3a \u4e94\u79cd\u5f62\u72b6\uff09${namesAB.length} \u9879\u901a\u8fc7`);
+    } finally {
+      if (!winAB.isDestroyed()) winAB.destroy();
     }
     const winSC = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
