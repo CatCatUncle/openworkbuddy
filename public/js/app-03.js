@@ -65,7 +65,7 @@ async function renderAccount() {
         <tr><th>时间</th><th>类型</th>${isAdmin ? "<th>用户</th>" : ""}<th>来源</th><th>tokens</th>${creditsOn ? "<th>积分</th>" : ""}<th>模型</th></tr>
         ${d.recent.map(e => `<tr>
           <td>${esc((e.ts || "").slice(5, 16).replace("T", " "))}</td>
-          <td>${e.kind === "topup" ? "💰 充值" : "任务"}</td>
+          <td>${e.kind === "topup" ? ic("wallet") + " 充值" : "任务"}</td>
           ${isAdmin ? `<td>${esc(e.user)}</td>` : ""}
           <td>${e.kind === "topup" ? `by ${esc(e.by || "")}` : esc(SRC_TXT[e.source] || e.source || "")}</td>
           <td${e.kind === "topup" ? "" : ` title="输入 ${(e.prompt || 0).toLocaleString()}（其中缓存命中 ${e.cached != null ? e.cached.toLocaleString() : "未统计"}）· 输出 ${(e.completion || 0).toLocaleString()}"`}>${e.kind === "topup" ? "—" : ((e.prompt || 0) + (e.completion || 0)).toLocaleString()}</td>
@@ -92,8 +92,8 @@ async function renderAccount() {
       });
       const r = await resp.json().catch(() => ({}));
       const msg = document.getElementById("pw-msg");
-      if (resp.ok) { msg.textContent = "✅ 已修改"; setTimeout(() => renderAccount(), 800); }
-      else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "修改失败"; }
+      if (resp.ok) { setMsg(msg, "circle-check", "已修改", "ok"); setTimeout(() => renderAccount(), 800); }
+      else { setMsg(msg, "circle-x", r.error || "修改失败", "err"); }
     };
   };
   const credOn = document.getElementById("credits-on");
@@ -106,10 +106,10 @@ async function renderAccount() {
     const r = resp ? await resp.json().catch(() => ({})) : {};
     if (resp && resp.ok) {
       creditsOn = !!r.credits_enabled;
-      msg.style.color = ""; msg.textContent = creditsOn ? "✅ 已开启限额" : "✅ 已改成不限额";
+      setMsg(msg, "circle-check", creditsOn ? "已开启限额" : "已改成不限额", "ok");
       renderUserChip();
       setTimeout(() => renderAccount(), 700); // 整块重画，把余额/充值那些跟着显示或收起来
-    } else { credOn.checked = !credOn.checked; msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "改不动"; }
+    } else { credOn.checked = !credOn.checked; setMsg(msg, "circle-x", r.error || "改不动", "err"); }
   };
   const openReg = document.getElementById("open-reg");
   if (openReg) openReg.onchange = async () => {
@@ -119,8 +119,8 @@ async function renderAccount() {
       body: JSON.stringify({ open_register: openReg.checked }),
     }).catch(() => null);
     const r = resp ? await resp.json().catch(() => ({})) : {};
-    if (resp && resp.ok) { msg.style.color = ""; msg.textContent = openReg.checked ? "✅ 已开放注册" : "✅ 已关闭注册"; }
-    else { openReg.checked = !openReg.checked; msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "改不动"; }
+    if (resp && resp.ok) { setMsg(msg, "circle-check", openReg.checked ? "已开放注册" : "已关闭注册", "ok"); }
+    else { openReg.checked = !openReg.checked; setMsg(msg, "circle-x", r.error || "改不动", "err"); }
   };
   const topupGo = document.getElementById("topup-go");
   if (topupGo) topupGo.onclick = async () => {
@@ -130,8 +130,8 @@ async function renderAccount() {
     });
     const r = await resp.json().catch(() => ({}));
     const msg = document.getElementById("topup-msg");
-    if (resp.ok) { msg.textContent = `✅ ${r.username} 余额 ${(+r.balance).toLocaleString()}`; setTimeout(() => renderAccount(), 900); }
-    else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "充值失败"; }
+    if (resp.ok) { setMsg(msg, "circle-check", `${r.username} 余额 ${(+r.balance).toLocaleString()}`, "ok"); setTimeout(() => renderAccount(), 900); }
+    else { setMsg(msg, "circle-x", r.error || "充值失败", "err"); }
   };
 }
 
@@ -301,10 +301,10 @@ const ONB_MEDIA_PRESETS = {
 };
 // 四类多媒体能力：填的都是「OpenAI 兼容接口地址 + Key + 模型名」，说明只写一句它能干什么
 const ONB_MEDIA = [
-  ["image", "🖼️", "生图", "配图、海报、封面", "mi"],
-  ["video", "🎬", "生视频", "短视频、动态封面", "mv"],
-  ["tts", "🎙️", "语音", "配音、播客旁白", "mt"],
-  ["vision", "👁️", "看图", "读截图、识别图片里的字", "mvi"],
+  ["image", "image", "生图", "配图、海报、封面", "mi"],
+  ["video", "clapperboard", "生视频", "短视频、动态封面", "mv"],
+  ["tts", "mic", "语音", "配音、播客旁白", "mt"],
+  ["vision", "eye", "看图", "读截图、识别图片里的字", "mvi"],
 ];
 /**
  * 首次开箱向导：五步走完，大脑必配，其余按需。
@@ -314,11 +314,11 @@ const ONB_MEDIA = [
  * 走完（或大脑已接上时跳过）会记到服务端，下次打开不再弹；「设置 → 关于」里能再打开。
  */
 const ONB_STEPS = [
-  ["brain", "🧠", "大模型"],
-  ["search", "🔎", "联网搜索"],
-  ["media", "🎨", "图/视频/语音"],
-  ["im", "📱", "远程指挥"],
-  ["done", "🎉", "完成"],
+  ["brain", "brain", "大模型"],
+  ["search", "search", "联网搜索"],
+  ["media", "palette", "图/视频/语音"],
+  ["im", "smartphone", "远程指挥"],
+  ["done", "sparkles", "完成"],
 ];
 let onbState = null;
 // 「本次窗口先跳过」只记在会话存储里：关窗即忘，下次打开还会提醒。存储被禁（file:// / 隐私模式）时退到内存里，别让向导崩掉
@@ -375,8 +375,8 @@ function renderOnb() {
   const i18n = typeof I18N !== "undefined" ? I18N : null;
   const langBar = i18n ? `<div class="onb-lang" data-i18n-skip>${Object.entries(i18n.LANGS).map(([v, l]) =>
     `<button type="button" data-lang="${v}" class="${i18n.getLang() === v ? "on" : ""}" aria-pressed="${i18n.getLang() === v}">${l}</button>`).join("")}</div>` : "";
-  stepsEl.innerHTML = langBar + ONB_STEPS.map(([k, ic, lb], i) =>
-    `<div class="onb-step ${i === step ? "cur" : i < step ? "done" : ""}" data-i="${i}"><i>${i < step ? "✓" : ic}</i><span>${lb}</span></div>`).join("");
+  stepsEl.innerHTML = langBar + ONB_STEPS.map(([k, icon, lb], i) =>
+    `<div class="onb-step ${i === step ? "cur" : i < step ? "done" : ""}" data-i="${i}"><i>${ic(i < step ? "check" : icon)}</i><span>${lb}</span></div>`).join("");
   stepsEl.style.flexWrap = "wrap";
   stepsEl.querySelectorAll(".onb-lang button").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); i18n.setLang(b.dataset.lang); renderOnb(); }; });
   // 大脑没接上之前不许在步骤条上乱跳：跳过去也是一步都干不了
@@ -401,11 +401,11 @@ function renderOnbBrain(body) {
   const installed = engs.filter(e => e.installed);
   body.innerHTML = `
     ${onbHead("先接上一个大模型", "OpenWorkBuddy 自己不含模型。填一家服务商的 API Key，或者直接用你电脑上已登录的 Claude Code / Codex。", "必需")}
-    ${st.brain.ok ? `<div class="onb-ok" id="onb-brain-ok">✅ 已接上 <b>${esc(st.brain.name)}</b>${st.brain.model ? ` · ${esc(st.brain.model)}` : ""}<a id="onb-brain-change">换一个</a></div>` : ""}
+    ${st.brain.ok ? `<div class="onb-ok" id="onb-brain-ok">${ic("circle-check")} 已接上 <b>${esc(st.brain.name)}</b>${st.brain.model ? ` · ${esc(st.brain.model)}` : ""}<a id="onb-brain-change">换一个</a></div>` : ""}
     <div id="onb-brain-form" ${st.brain.ok ? "hidden" : ""}>
       <div class="onb-seg" id="onb-seg">
-        <button type="button" class="on" data-v="cloud">☁️ 云端 API</button>
-        <button type="button" data-v="local">💻 本机 Claude Code / Codex${installed.length ? "" : "（未装）"}</button>
+        <button type="button" class="on" data-v="cloud">${ic("cloud")} 云端 API</button>
+        <button type="button" data-v="local">${ic("laptop")} 本机 Claude Code / Codex${installed.length ? "" : "（未装）"}</button>
       </div>
       <div id="onb-cloud">
         <label class="onb-lb">服务商</label>
@@ -473,7 +473,7 @@ function renderOnbBrain(body) {
           body: JSON.stringify({ model: sel.value, api_key: keyEl.value.trim() }),
         }).then(r => r.json()).catch(() => ({ ok: false, error: "请求失败，服务没起来？" }));
         if (!r.ok) { err.textContent = r.error || "验活没通过"; return; }
-        toast(`✅ 已接上 ${r.active_model}`);
+        toast(`已接上 ${r.active_model}`, "circle-check");
       } else {
         const picked = body.querySelector("input[name=onb-eng]:checked");
         if (!picked) { err.textContent = "本机没装 Claude Code / Codex，先装好并登录，或者改用云端 API"; return; }
@@ -488,7 +488,7 @@ function renderOnbBrain(body) {
           body: JSON.stringify({ agent: { engine: picked.value } }),
         }).then(r => r.json()).catch(() => ({ error: "保存失败" }));
         if (s && s.error) { err.textContent = s.error; return; }
-        toast(`✅ 已切到本机 ${picked.value}`);
+        toast(`已切到本机 ${picked.value}`, "circle-check");
       }
       refreshSettingsCache(); // 输入卡片右下角的模型名跟着刷新
       await onbReload();
@@ -514,7 +514,7 @@ function renderOnbSearch(body) {
   const sc = st.search || {};
   body.innerHTML = `
     ${onbHead("联网搜索", "让它能查资料、看新闻、核对事实。不填也能用免费的 DuckDuckGo，但结果一般、国内经常连不上。", "推荐")}
-    ${sc.has_key ? `<div class="onb-ok">✅ 已配 <b>${esc(sc.provider)}</b></div>` : ""}
+    ${sc.has_key ? `<div class="onb-ok">${ic("circle-check")} 已配 <b>${esc(sc.provider)}</b></div>` : ""}
     <label class="onb-lb">搜索服务商</label>
     <select id="onb-sp">
       <option value="tavily">Tavily（推荐 · 免费额度 · 不用绑卡）</option>
@@ -546,7 +546,7 @@ function renderOnbSearch(body) {
       if (!ok) { err.textContent = lastSaveError || "保存失败"; return; } // 服务端说了原因（如「归平台管理员管」）就别用四个字盖掉
       const r = await fetch("/api/search/test").then(x => x.json()).catch(() => ({ ok: false, error: "请求失败" }));
       if (!r.ok) { err.textContent = r.error || "测试失败"; return; }
-      toast(`✅ ${r.provider} 可用`);
+      toast(`${r.provider} 可用`, "circle-check");
       await onbReload();
       onbGo(2);
     } finally {
@@ -563,9 +563,9 @@ function renderOnbMedia(body) {
   const md = st.media || {};
   body.innerHTML = `
     ${onbHead("生图 · 视频 · 语音 · 看图", "按需开通，都不填也不影响聊天和办公。每项只要一个 OpenAI 兼容的接口地址 + Key + 模型名。", "可选")}
-    <div class="onb-rows" id="onb-media">${ONB_MEDIA.map(([k, ic, name, use]) => `
+    <div class="onb-rows" id="onb-media">${ONB_MEDIA.map(([k, icon, name, use]) => `
       <div class="onb-row" data-kind="${k}">
-        <div class="onb-row-h"><i class="ic">${ic}</i><div class="tt"><b>${name}</b><span>${use}</span></div>
+        <div class="onb-row-h"><i class="ic">${ic(icon)}</i><div class="tt"><b>${name}</b><span>${use}</span></div>
           <span class="onb-chip ${md[k] ? "ok" : ""}">${md[k] ? "已配" : "未配"}</span>
           <button type="button" class="btn-plain onb-fill" data-kind="${k}">${md[k] ? "修改" : "填写"}</button></div>
         <div class="onb-row-b" hidden>
@@ -628,7 +628,7 @@ function renderOnbIm(body) {
   body.innerHTML = `
     ${onbHead("远程指挥", "手机上在飞书 / 微信 / QQ / 企业微信里 @它就能下任务，跑完结果推回聊天。凭证在「助理设置」里按卡片填，等用顺手了再来也不迟。", "可选")}
     <div class="onb-rows">
-      <div class="onb-row"><div class="onb-row-h"><i class="ic">📱</i><div class="tt"><b>IM 通道</b><span>飞书 · 微信 · QQ · 企业微信 · 钉钉 · Webhook</span></div>
+      <div class="onb-row"><div class="onb-row-h"><i class="ic">${ic("smartphone")} </i><div class="tt"><b>IM 通道</b><span>飞书 · 微信 · QQ · 企业微信 · 钉钉 · Webhook</span></div>
         <span class="onb-chip ${n ? "ok" : ""}">${n ? `已配 ${n} 个` : "未配"}</span>
         <button type="button" class="btn-plain" id="onb-im-open">去助理设置</button></div>
         <div class="onb-row-b onb-im-src">先去各家开放平台建个应用拿凭证：${["feishu", "qq", "wecom_app", "wechat_mp"].map(k => keyLink(k, KEY_SOURCES[k].name)).join("")}</div></div>
@@ -649,14 +649,14 @@ function renderOnbDone(body) {
   const md = st.media || {};
   const mediaN = ONB_MEDIA.filter(([k]) => md[k]).length;
   const imN = (st.im || {}).configured || 0;
-  const row = (ic, name, ok, txt, warn) => `<div class="onb-row"><div class="onb-row-h"><i class="ic">${ic}</i><div class="tt"><b>${name}</b><span>${txt}</span></div><span class="onb-chip ${ok ? "ok" : warn ? "warn" : ""}">${ok ? "✓" : warn ? "未配" : "跳过"}</span></div></div>`;
+  const row = (icon, name, ok, txt, warn) => `<div class="onb-row"><div class="onb-row-h"><i class="ic">${ic(icon)}</i><div class="tt"><b>${name}</b><span>${txt}</span></div><span class="onb-chip ${ok ? "ok" : warn ? "warn" : ""}">${ok ? "✓" : warn ? "未配" : "跳过"}</span></div></div>`;
   body.innerHTML = `
     ${onbHead("都齐了", "这是它现在的能力清单。没配的随时到 设置 里补，这个向导在 设置 → 关于 里还能再打开。", "完成")}
     <div class="onb-rows" id="onb-sum">
-      ${row("🧠", "大模型", st.brain.ok, st.brain.ok ? `${esc(st.brain.name)}${st.brain.model ? " · " + esc(st.brain.model) : ""}` : "还没接上", true)}
-      ${row("🔎", "联网搜索", st.search.has_key, st.search.has_key ? esc(st.search.provider) : "用免费 DuckDuckGo 顶着", !skipped.has("search"))}
-      ${row("🎨", "图 / 视频 / 语音 / 看图", mediaN > 0, mediaN ? `${mediaN} / ${ONB_MEDIA.length} 项已配` : "都没配", !skipped.has("media"))}
-      ${row("📱", "远程指挥", imN > 0, imN ? `${imN} 个通道已配` : "没接 IM", !skipped.has("im"))}
+      ${row("brain", "大模型", st.brain.ok, st.brain.ok ? `${esc(st.brain.name)}${st.brain.model ? " · " + esc(st.brain.model) : ""}` : "还没接上", true)}
+      ${row("search", "联网搜索", st.search.has_key, st.search.has_key ? esc(st.search.provider) : "用免费 DuckDuckGo 顶着", !skipped.has("search"))}
+      ${row("palette", "图 / 视频 / 语音 / 看图", mediaN > 0, mediaN ? `${mediaN} / ${ONB_MEDIA.length} 项已配` : "都没配", !skipped.has("media"))}
+      ${row("smartphone", "远程指挥", imN > 0, imN ? `${imN} 个通道已配` : "没接 IM", !skipped.has("im"))}
     </div>
     <label class="onb-lb">工作目录（成果文件都放这儿）</label>
     <input id="onb-dir" placeholder="${esc(st.workspace_dir || "留空就用默认目录")}">
@@ -687,7 +687,7 @@ async function finishOnb({ dir, silent } = {}) {
     return false;
   }
   closeOnboarding();
-  if (!silent) toast("✅ 配好了，开始干活吧");
+  if (!silent) toast("配好了，开始干活吧", "circle-check");
   refreshSettingsCache(); // 工作目录名跟着刷新
   return true;
 }
@@ -698,13 +698,13 @@ let assistViewOn = false;
 let pageKind = null;
 let assistTimer = null;
 const PAGE_VIEWS = {
-  assist: { title: "🤖 助理模式", keepInput: true, render: () => renderAssistPage() },
-  hub: { title: "🧩 专家 · 技能 · 连接器", wide: true, render: () => renderHubPage() },
-  prompts: { title: "📚 参考模板库", wide: true, render: () => renderPromptPage() },
-  proj: { title: "📂 项目", wide: true, render: () => renderProjPage() },
-  autom: { title: "⏰ 自动化", wide: true, render: () => renderAutomPage() },
-  lib: { title: "📚 资料库", wide: true, render: () => renderLibPage() },
-  eval: { title: "🧪 评测", wide: true, render: () => renderEvalPage() },
+  assist: { icon: "bot", title: "助理模式", keepInput: true, render: () => renderAssistPage() },
+  hub: { icon: "puzzle", title: "专家 · 技能 · 连接器", wide: true, render: () => renderHubPage() },
+  prompts: { icon: "book-open-text", title: "参考模板库", wide: true, render: () => renderPromptPage() },
+  proj: { icon: "folder", title: "项目", wide: true, render: () => renderProjPage() },
+  autom: { icon: "clock", title: "自动化", wide: true, render: () => renderAutomPage() },
+  lib: { icon: "book", title: "资料库", wide: true, render: () => renderLibPage() },
+  eval: { icon: "flask-conical", title: "评测", wide: true, render: () => renderEvalPage() },
 };
 function openPageView(kind) {
   const v = PAGE_VIEWS[kind];
@@ -724,7 +724,8 @@ function openPageView(kind) {
   }
   updateModelLabel();
   renderGoalCard();
-  document.getElementById("session-title").textContent = v.title;
+  // 这里必须 innerHTML：图标是内联 svg，textContent 会把标签当字面量打出来
+  document.getElementById("session-title").innerHTML = ic(v.icon) + " " + esc(v.title);
   document.querySelector(".input-wrap").style.display = v.keepInput ? "" : "none";
   if (kind === "assist") inputEl.placeholder = "直接给助理发消息，和 IM 里 @它 一样，任务在本机执行…";
   renderHistory();
@@ -771,15 +772,15 @@ async function renderAssistPage() {
   const il = s.wechat_ilink || { configured: false, state: "off" };
   const ilOk = il.configured && il.state === "connected";
   const chip = (icon, name, cls, st) =>
-    `<span class="im-chip"><span class="dot ${cls}"></span>${icon} ${name}${st ? " · " + st : ""}</span>`;
+    `<span class="im-chip"><span class="dot ${cls}"></span>${ic(icon)} ${name}${st ? " · " + st : ""}</span>`;
   // 官方的顶栏只列「已连接」的通道，没配的不刷存在感（要配去齿轮里配）
   const rows = [
-    ["🕊️", "飞书", f.configured, fOk, WS_STATE_TXT[f.ws.state] || f.ws.state],
-    ["🐧", "QQ", q.configured, qOk, WS_STATE_TXT[q.state] || q.state],
-    ["💬", "微信", il.configured, ilOk, !il.configured ? "未扫码" : WS_STATE_TXT[il.state] || il.state],
-    ["🏢", "企微应用", (s.wecom_app || {}).configured, wxChip(s.wecom_app)[0] !== "err" && (s.wecom_app || {}).configured, wxChip(s.wecom_app)[1]],
-    ["🟢", "公众号", (s.wechat_mp || {}).configured, wxChip(s.wechat_mp)[0] !== "err" && (s.wechat_mp || {}).configured, wxChip(s.wechat_mp)[1]],
-    ["💼", "企微群推送", s.wecom.configured, s.wecom.configured, "推送已配"],
+    ["bird", "飞书", f.configured, fOk, WS_STATE_TXT[f.ws.state] || f.ws.state],
+    ["message-circle", "QQ", q.configured, qOk, WS_STATE_TXT[q.state] || q.state],
+    ["message-square", "微信", il.configured, ilOk, !il.configured ? "未扫码" : WS_STATE_TXT[il.state] || il.state],
+    ["building-2", "企微应用", (s.wecom_app || {}).configured, wxChip(s.wecom_app)[0] !== "err" && (s.wecom_app || {}).configured, wxChip(s.wecom_app)[1]],
+    ["megaphone", "公众号", (s.wechat_mp || {}).configured, wxChip(s.wechat_mp)[0] !== "err" && (s.wechat_mp || {}).configured, wxChip(s.wechat_mp)[1]],
+    ["briefcase", "企微群推送", s.wecom.configured, s.wecom.configured, "推送已配"],
   ];
   const conn = rows.filter((r) => r[2]);
   page.innerHTML = `
@@ -787,15 +788,15 @@ async function renderAssistPage() {
       <div class="im-strip" style="flex:1;border:0;padding:0;background:none">
         <b style="color:var(--wb-text-2);font-weight:500">已连接：</b>
         ${conn.length
-          ? conn.map(([ic, nm, _c, ok, st]) => chip(ic, nm, ok ? "ok" : "err", ok ? "" : st)).join("")
+          ? conn.map(([icon, nm, _c, ok, st]) => chip(icon, nm, ok ? "ok" : "err", ok ? "" : st)).join("")
           : '<span style="color:var(--wb-text-3)">还没有连接任何 IM 通道</span>'}
       </div>
       <div class="picker" id="im-model-picker">
         <button class="btn-plain" id="im-model-btn" title="助理页发消息用哪个模型（飞书 / QQ 等远程消息仍按全局默认跑）">✦ <span id="im-model-label">模型</span> ▾</button>
         <div class="picker-menu down" id="im-model-menu"></div>
       </div>
-      ${canOpenOnHost() ? `<button class="btn-plain" id="im-open-ws">📂 打开所在文件夹</button>` : ""}
-      <button class="btn-plain" id="im-cfg">⚙️ 设置</button>
+      ${canOpenOnHost() ? `<button class="btn-plain" id="im-open-ws">${ic("folder-open")} 打开所在文件夹</button>` : ""}
+      <button class="btn-plain" id="im-cfg">${ic("settings")} 设置</button>
     </div>
     <div class="im-feed" id="im-feed"></div>
     <div style="text-align:center;color:var(--wb-text-3);font-size: 13px;margin-top:8px">下方输入框直接对话，和在飞书/QQ/微信里 @机器人 一样，任务在这台电脑上执行。微信走扫码登录；企微应用与公众号得有公网 HTTPS 回调地址才能收消息。</div>`;
@@ -825,7 +826,7 @@ async function doAssistLocal(text, model) {
   const feed = document.getElementById("im-feed");
   if (feed) {
     feed.insertAdjacentHTML("beforeend",
-      `<div class="im-row usr"><div class="im-col" style="text-align:right"><div class="m">本地 · 用户</div><div class="im-b usr">${esc(text)}</div></div><div class="im-ava">🧑</div></div>` +
+      `<div class="im-row usr"><div class="im-col" style="text-align:right"><div class="m">本地 · 用户</div><div class="im-b usr">${esc(text)}</div></div><div class="im-ava">${ic("user")} </div></div>` +
       `<div class="im-row bot" id="im-pending">${imBotAva()}<div class="im-col"><div class="im-b bot">执行中…</div></div></div>`);
     feed.scrollTop = feed.scrollHeight;
   }
@@ -834,7 +835,7 @@ async function doAssistLocal(text, model) {
     const el = document.querySelector("#im-pending .im-b");
     if (!el) return;
     const p = await fetch("/im/progress").then(r => r.json()).catch(() => null);
-    if (p && p.local_assist && p.local_assist.text) el.textContent = "⏳ " + p.local_assist.text;
+    if (p && p.local_assist && p.local_assist.text) setMsg(el, "hourglass", p.local_assist.text);
   }, 1500);
   try {
     // 模型标签上显示的是哪个就真用哪个：以前这里不带 model，助理页选了模型也是白选，
@@ -855,10 +856,11 @@ async function updateAssistLive() {
   const remote = p ? Object.entries(p).filter(([k, v]) => k !== "local_assist" && v && v.text) : [];
   let el = document.getElementById("im-remote-live");
   if (!remote.length) { el?.remove(); return; }
-  const CH = { feishu: "🕊️ 飞书", qq: "🐧 QQ", wechat_ilink: "💬 微信", wecom_app: "🏢 企业微信", webhook: "🔗 Webhook" };
+  // 这行最后是塞进 textContent 的，只能是纯文字，别在这儿放图标
+  const CH = { feishu: "飞书", qq: "QQ", wechat_ilink: "微信", wecom_app: "企业微信", webhook: "Webhook" };
   const txt = remote.map(([k, v]) => `${CH[v.channel] || v.channel || k} · ${v.text}`).join("；");
   if (!el) {
-    feed.insertAdjacentHTML("beforeend", `<div class="im-row bot" id="im-remote-live"><div class="im-ava">⏳</div><div class="im-col"><div class="im-b bot" style="color:var(--wb-text-2)"></div></div></div>`);
+    feed.insertAdjacentHTML("beforeend", `<div class="im-row bot" id="im-remote-live"><div class="im-ava">${ic("hourglass")} </div><div class="im-col"><div class="im-b bot" style="color:var(--wb-text-2)"></div></div></div>`);
     el = document.getElementById("im-remote-live");
     if (feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120) feed.scrollTop = feed.scrollHeight;
   }
@@ -868,17 +870,17 @@ function renderAssistFeed(log) {
   const feed = document.getElementById("im-feed");
   if (!feed) return;
   const CH_TXT = { feishu: "飞书", qq: "QQ", wechat_ilink: "微信", wecom_app: "企业微信", wechat_mp: "公众号", wecom: "企业微信", webhook: "Webhook", local: "本地" };
-  const CH_ICON = { feishu: "🕊️", qq: "🐧", wechat_ilink: "💬", wecom_app: "🏢", wechat_mp: "🟢", local: "💻" };
+  const CH_ICON = { feishu: "bird", qq: "message-circle", wechat_ilink: "message-square", wecom_app: "building-2", wechat_mp: "megaphone", local: "laptop" };
   const n = (log || []).length;
   if (feed._n === n) return; // 没有新消息就不重绘，避免打断用户滚动/选中
   feed._n = n;
   const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
   feed.innerHTML = n
     ? log.slice().reverse().map(m => {
-        if (m.dir === "error") return `<div class="im-b error">⚠ ${esc(m.text)}</div>`;
+        if (m.dir === "error") return `<div class="im-b error">${ic("triangle-alert")} ${esc(m.text)}</div>`;
         const meta = `${CH_TXT[m.channel] || m.channel} · ${m.dir === "in" ? "用户" : "助理"} · ${m.ts.slice(11, 19)}`;
         if (m.dir === "in") {
-          return `<div class="im-row usr"><div class="im-col" style="text-align:right"><div class="m">${meta}</div><div class="im-b usr">${esc(m.text)}</div></div><div class="im-ava">${CH_ICON[m.channel] || "🔗"}</div></div>`;
+          return `<div class="im-row usr"><div class="im-col" style="text-align:right"><div class="m">${meta}</div><div class="im-b usr">${esc(m.text)}</div></div><div class="im-ava">${ic(CH_ICON[m.channel] || "link")}</div></div>`;
         }
         return `<div class="im-row bot">${imBotAva()}<div class="im-col"><div class="m">${meta}</div><div class="im-b bot a-text">${renderMd(m.text)}</div></div></div>`;
       }).join("")
@@ -891,10 +893,10 @@ function renderAssistFeed(log) {
 // 官方 WorkBuddy 的「项目」不只是切目录：一个项目自带指令（背景/规范）和挂载的专家/技能/连接器。
 // 指令会真的进系统提示词（服务端 projectContext），不是摆设。
 const PROJ_TEMPLATES = [
-  { ic: "📋", tt: "产品需求全流程", dd: "从需求规划、PRD 到研发测试验收", ins: "这是一个产品研发项目。输出遵守：需求先写用户故事和验收标准；PRD 用「背景/目标/方案/边界/里程碑」结构；技术方案要列出取舍理由；每个交付物开头放一段 3 句话内的摘要。" },
-  { ic: "🐛", tt: "Bug 跟踪/测试验收", dd: "持续跟踪 Bug，统一测试用例和验收", ins: "这是一个测试与质量项目。报 Bug 必须带：复现步骤、期望结果、实际结果、影响范围、严重级别（P0-P3）。测试用例用表格：编号/前置条件/步骤/期望。验收结论只有「通过/不通过+原因」两种，不许写「基本可用」。" },
-  { ic: "📦", tt: "项目交付", dd: "管理客户需求、计划、风险和周报", ins: "这是一个对客户的交付项目。所有对外文档开头都要有结论摘要；周报固定三段：本周进展/风险与阻塞/下周计划；风险必须写清楚影响和应对，不许只列现象；涉及排期变化要显式标出来。" },
-  { ic: "📣", tt: "内容营销", dd: "选题、成稿、多平台分发一条线", ins: "这是一个内容营销项目。选题先给出目标人群和钩子；正文口语化、短句、多分段；每篇产出都附一条一句话摘要和 3 个候选标题；发布渠道不同措辞不同：公众号可长文，小红书要点化+emoji。" },
+  { icon: "clipboard-list", tt: "产品需求全流程", dd: "从需求规划、PRD 到研发测试验收", ins: "这是一个产品研发项目。输出遵守：需求先写用户故事和验收标准；PRD 用「背景/目标/方案/边界/里程碑」结构；技术方案要列出取舍理由；每个交付物开头放一段 3 句话内的摘要。" },
+  { icon: "bug", tt: "Bug 跟踪/测试验收", dd: "持续跟踪 Bug，统一测试用例和验收", ins: "这是一个测试与质量项目。报 Bug 必须带：复现步骤、期望结果、实际结果、影响范围、严重级别（P0-P3）。测试用例用表格：编号/前置条件/步骤/期望。验收结论只有「通过/不通过+原因」两种，不许写「基本可用」。" },
+  { icon: "package", tt: "项目交付", dd: "管理客户需求、计划、风险和周报", ins: "这是一个对客户的交付项目。所有对外文档开头都要有结论摘要；周报固定三段：本周进展/风险与阻塞/下周计划；风险必须写清楚影响和应对，不许只列现象；涉及排期变化要显式标出来。" },
+  { icon: "megaphone", tt: "内容营销", dd: "选题、成稿、多平台分发一条线", ins: "这是一个内容营销项目。选题先给出目标人群和钩子；正文口语化、短句、多分段；每篇产出都附一条一句话摘要和 3 个候选标题；发布渠道不同措辞不同：公众号可长文，小红书要点化+emoji。" },
 ];
 async function renderProjPage() {
   const page = document.getElementById("assist-page");
@@ -906,12 +908,12 @@ async function renderProjPage() {
     <div class="pg-hero"><h1>项目</h1><div class="sub">每个项目一个独立工作目录，自带指令与专属配置，任务历史按项目分组</div></div>
     <div class="hub-head">
       <button class="btn-brand" id="pj-new" style="padding:8px 16px">＋ 新建项目</button>
-      <div class="hub-search" style="max-width:260px;margin-left:auto"><input id="pj-q" placeholder="搜索项目" value="${esc(page._q || "")}"></div>
+      <div class="hub-search" style="max-width:260px;margin-left:auto">${ic("search")}<input id="pj-q" placeholder="搜索项目" value="${esc(page._q || "")}"></div>
     </div>
     <div class="hub-sec-title">我的项目</div>
     <div class="tpl-grid" style="margin-bottom:22px">${mine.map(p => `
       <div class="proj-card ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}">
-        <div class="tt">📂 ${esc(p.name)} ${p.name === activeProject ? '<span class="badge">当前</span>' : ""}</div>
+        <div class="tt">${ic("folder-open")} ${esc(p.name)} ${p.name === activeProject ? '<span class="badge">当前</span>' : ""}</div>
         <div class="dd">${p.instructions ? esc(p.instructions.slice(0, 60)) + (p.instructions.length > 60 ? "…" : "") : "还没有写项目指令"}</div>
         <div class="dd" title="${esc(p.dir)}">${p.created_at ? "添加于 " + esc(p.created_at.slice(0, 10)) : esc(p.dir)}</div>
         <div class="ops">
@@ -924,7 +926,7 @@ async function renderProjPage() {
     <div class="hub-sec-title">从模版创建 <span class="sub">带着写好的项目指令开工</span></div>
     <div class="tpl-grid">${PROJ_TEMPLATES.map((t, i) => `
       <div class="proj-card" data-tpl="${i}">
-        <div class="tt">${t.ic} ${esc(t.tt)}</div>
+        <div class="tt">${ic(t.icon)} ${esc(t.tt)}</div>
         <div class="dd">${esc(t.dd)}</div>
         <div class="ops"><a class="link" href="#">用这个模版新建 →</a></div>
       </div>`).join("")}
@@ -1019,7 +1021,7 @@ async function openProjEditor(proj, tpl) {
   mBody.querySelector("#pj-cancel").onclick = () => mask.classList.remove("show");
   mBody.querySelector("#pj-ok").onclick = async () => {
     const name = nameEl.value.trim();
-    if (!name) return toast("❌ 项目名称不能为空");
+    if (!name) return toast("项目名称不能为空", "circle-x");
     const body = {
       name,
       instructions: mBody.querySelector("#pj-ins").value.trim(),
@@ -1029,9 +1031,9 @@ async function openProjEditor(proj, tpl) {
       ? await fetch("/api/projects/" + encodeURIComponent(proj.name), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
       : await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) return toast("❌ " + (data.error || "保存失败"));
+    if (!resp.ok) return toast((data.error || "保存失败"), "circle-x");
     mask.classList.remove("show");
-    toast(proj ? "✅ 项目已更新" : "✅ 项目已创建");
+    toast(proj ? "项目已更新" : "项目已创建", "circle-check");
     refreshProjects().then(refreshSettingsCache);
     if (pageKind === "proj") renderProjPage();
   };
@@ -1039,10 +1041,10 @@ async function openProjEditor(proj, tpl) {
 
 // ================= 自动化页（定时任务 + 运行记录 + 批量管理 + 模板） =================
 const AUTOM_TEMPLATES = [
-  { ic: "📰", tt: "每日 AI 新闻晨报", cron: "0 9 * * *", task: "搜索过去 24 小时内 AI 行业的重要新闻（新模型、产品、融资、政策），挑 5-8 条真实可查的，生成一份 Markdown 晨报，每条附来源链接。" },
-  { ic: "🗒️", tt: "每周五工作周报", cron: "0 17 * * 5", task: "读取本周工作目录里新增/修改的成果文件，按「本周进展 / 问题与风险 / 下周计划」三段生成一份周报，进展要具体到产出物。" },
-  { ic: "🛠️", tt: "每小时网站巡检", cron: "0 * * * *", task: "用 fetch_url 检查以下网址是否能正常打开、响应是否异常（先在这里填上你的网址）：https://example.com 。异常时写清楚状态码和现象。" },
-  { ic: "🧹", tt: "每周清理临时文件", cron: "0 10 * * 1", task: "列出工作目录里超过 7 天没动过的 .tmp/.log/中间产物文件，汇总成清单报告（只报告，不要直接删除）。" },
+  { icon: "newspaper", tt: "每日 AI 新闻晨报", cron: "0 9 * * *", task: "搜索过去 24 小时内 AI 行业的重要新闻（新模型、产品、融资、政策），挑 5-8 条真实可查的，生成一份 Markdown 晨报，每条附来源链接。" },
+  { icon: "notebook-pen", tt: "每周五工作周报", cron: "0 17 * * 5", task: "读取本周工作目录里新增/修改的成果文件，按「本周进展 / 问题与风险 / 下周计划」三段生成一份周报，进展要具体到产出物。" },
+  { icon: "wrench", tt: "每小时网站巡检", cron: "0 * * * *", task: "用 fetch_url 检查以下网址是否能正常打开、响应是否异常（先在这里填上你的网址）：https://example.com 。异常时写清楚状态码和现象。" },
+  { icon: "eraser", tt: "每周清理临时文件", cron: "0 10 * * 1", task: "列出工作目录里超过 7 天没动过的 .tmp/.log/中间产物文件，汇总成清单报告（只报告，不要直接删除）。" },
 ];
 const automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), editing: null, showForm: false };
 function buildCronFrom(root) {
@@ -1082,7 +1084,7 @@ async function renderAutomPage() {
   // 服务端说了不给（多人服务器上定时任务归平台管理员），就把这句话摆出来。
   // 以前这儿直接 list.filter，403 的那个对象一进来整页就断在半空，白屏。
   if (error) {
-    page.innerHTML = `<div class="hub-empty">⏰ 自动化<br><br>${esc(error)}<br><br><span style="font-size: 13px">定时任务跑在这台服务器上、花的是服务器的额度，所以归平台管理员统一排。<br>你自己要跑的活，直接在对话里说就行。</span></div>`;
+    page.innerHTML = `<div class="hub-empty">${ic("clock")} 自动化<br><br>${esc(error)}<br><br><span style="font-size: 13px">定时任务跑在这台服务器上、花的是服务器的额度，所以归平台管理员统一排。<br>你自己要跑的活，直接在对话里说就行。</span></div>`;
     return;
   }
   const q = st.q.toLowerCase();
@@ -1104,12 +1106,12 @@ async function renderAutomPage() {
   page.innerHTML = `
     <div class="hub-head">
       <div class="hub-tabs">
-        <button class="active" data-tab="tasks">⏱️ 定时任务</button>
-        <button data-tab="runs">📜 运行记录</button>
+        <button class="active" data-tab="tasks">${ic("timer")} 定时任务</button>
+        <button data-tab="runs">${ic("scroll-text")} 运行记录</button>
       </div>
-      <div class="hub-search" style="max-width:240px"><input id="at-q" placeholder="搜索自动化" value="${esc(st.q)}"></div>
-      <button class="btn-plain" id="at-bulk" style="${st.bulk ? "border-color: var(--wb-brand-text);color: var(--wb-brand-text)" : ""}">☑️ 批量管理</button>
-      <button class="btn-plain" id="at-tpl">📋 从模版添加</button>
+      <div class="hub-search" style="max-width:240px">${ic("search")}<input id="at-q" placeholder="搜索自动化" value="${esc(st.q)}"></div>
+      <button class="btn-plain" id="at-bulk" style="${st.bulk ? "border-color: var(--wb-brand-text);color: var(--wb-brand-text)" : ""}">${ic("list-checks")} 批量管理</button>
+      <button class="btn-plain" id="at-tpl">${ic("clipboard-list")} 从模版添加</button>
       <button class="btn-brand" id="at-new">＋ 添加自动化</button>
     </div>
     ${st.bulk ? `<div class="hub-bar" style="margin:0 0 8px">
@@ -1137,10 +1139,10 @@ async function renderAutomPage() {
   if (st.bulk) {
     page.querySelector("#bk-all").onclick = (e) => { e.preventDefault(); match.forEach(t => st.sel.add(t.id)); renderAutomPage(); };
     const bulk = async (action, confirmText) => {
-      if (!st.sel.size) return toast("❌ 先勾选要操作的任务");
+      if (!st.sel.size) return toast("先勾选要操作的任务", "circle-x");
       if (confirmText && !confirm(confirmText)) return;
       const r = await fetch("/api/schedules/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [...st.sel], action }) }).then(r => r.json()).catch(() => ({}));
-      toast(r.ok ? `✅ 已处理 ${r.count} 个` : "❌ " + (r.error || "操作失败"));
+      toast(r.ok ? `已处理 ${r.count} 个` : r.error || "操作失败", r.ok ? "circle-check" : "circle-x");
       st.sel.clear();
       renderAutomPage();
     };
@@ -1160,7 +1162,7 @@ async function renderAutomPage() {
       a.textContent = "执行中…";
       const r = await fetch(`/api/schedules/${id}/run`, { method: "POST" }).catch(() => null);
       const j = r ? await r.json().catch(() => ({})) : {};
-      toast(!r || !r.ok ? "❌ " + (j.error || "执行失败") : "✅ 执行完成");
+      toast(!r || !r.ok ? j.error || "执行失败" : "执行完成", !r || !r.ok ? "circle-x" : "circle-check");
       fetch("/api/files").then(r => r.json()).then(renderFiles);
     }
     renderAutomPage();
@@ -1170,7 +1172,7 @@ function renderAutomTplPicker(box) {
   automState.showForm = false;
   box.innerHTML = `<div class="tpl-grid" style="margin:4px 0 14px">${AUTOM_TEMPLATES.map((t, i) => `
     <div class="proj-card" data-i="${i}">
-      <div class="tt">${t.ic} ${esc(t.tt)}</div>
+      <div class="tt">${ic(t.icon)} ${esc(t.tt)}</div>
       <div class="dd">${esc(cronToHuman(t.cron))} · ${esc(t.task.slice(0, 46))}…</div>
       <div class="ops"><a class="link" href="#">用这个模版 →</a></div>
     </div>`).join("")}</div>`;
@@ -1223,13 +1225,13 @@ function renderAutomForm(box, tpl) {
     const name = box.querySelector("#sf-name").value.trim();
     const task = box.querySelector("#sf-task").value.trim();
     const cron = buildCronFrom(box);
-    if (!task) return toast("❌ 请填写任务描述");
-    if (!cron) return toast("❌ 请完成时间设置");
+    if (!task) return toast("请填写任务描述", "circle-x");
+    if (!cron) return toast("请完成时间设置", "circle-x");
     const resp = ed
       ? await fetch("/api/schedules/" + ed.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task }) })
       : await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task }) });
-    if (!resp.ok) return toast("❌ " + ((await resp.json()).error || "保存失败"));
-    toast(ed ? "✅ 已保存" : "✅ 已添加");
+    if (!resp.ok) return toast(((await resp.json()).error || "保存失败"), "circle-x");
+    toast(ed ? "已保存" : "已添加", "circle-check");
     automState.showForm = false; automState.editing = null;
     renderAutomPage();
   };
@@ -1237,7 +1239,7 @@ function renderAutomForm(box, tpl) {
 async function renderAutomRuns(page) {
   const { list: runs, error: runsErr } = await getList("/api/schedules/runs?limit=100");
   if (runsErr) {
-    page.innerHTML = `<div class="hub-empty">📜 运行记录<br><br>${esc(runsErr)}</div>`;
+    page.innerHTML = `<div class="hub-empty">${ic("scroll-text")} 运行记录<br><br>${esc(runsErr)}</div>`;
     return;
   }
   const fmtMs = (ms) => ms >= 60000 ? Math.round(ms / 60000) + " 分" : Math.max(1, Math.round(ms / 1000)) + " 秒";
@@ -1257,8 +1259,8 @@ async function renderAutomRuns(page) {
   page.innerHTML = `
     <div class="hub-head">
       <div class="hub-tabs">
-        <button data-tab="tasks">⏱️ 定时任务</button>
-        <button class="active" data-tab="runs">📜 运行记录</button>
+        <button data-tab="tasks">${ic("timer")} 定时任务</button>
+        <button class="active" data-tab="runs">${ic("scroll-text")} 运行记录</button>
       </div>
       <span style="font-size: 13px;color:var(--wb-text-3);margin-left:auto">最近 ${runs.length} 次执行，最新在前</span>
     </div>
@@ -1269,7 +1271,7 @@ async function renderAutomRuns(page) {
         <td>${esc(r.name)}</td>
         <td>${esc(r.trigger || "")}</td>
         <td style="white-space:nowrap">${r.ended_at ? fmtMs(r.ms) : "进行中…"}</td>
-        <td>${r.ok === null ? "⏳" : r.ok ? "✅" : "❌"} ${runCell(r)}</td>
+        <td>${ic(r.ok === null ? "hourglass" : r.ok ? "circle-check" : "circle-x")} ${runCell(r)}</td>
       </tr>`).join("")}
     </table>` : '<div class="hub-empty">还没有运行记录。任务跑过之后（定时触发或手动执行）这里会留下每一次的流水。</div>'}`;
   page.querySelector('[data-tab="tasks"]').onclick = () => { automState.tab = "tasks"; renderAutomPage(); };
@@ -1313,22 +1315,22 @@ async function renderFeedbackSummary(days = 30) {
   const d = await fetch(`/api/feedback/summary?days=${days}`).then((r) => r.json()).catch(() => null);
   if (!d) { box.textContent = "反馈汇总读取失败"; return; }
   if (!d.total) {
-    box.innerHTML = `<div class="ev-fb-empty">近 ${days} 天还没有人点过 👍👎。每条回复下面都有，点一下就进这里——这是最准的效果信号，比机器判分还准。</div>`;
+    box.innerHTML = `<div class="ev-fb-empty">近 ${days} 天还没有人点过${ic("thumbs-up")}${ic("thumbs-down")}。每条回复下面都有，点一下就进这里——这是最准的效果信号，比机器判分还准。</div>`;
     return;
   }
   const pct = (n, of) => (of ? Math.round((n / of) * 100) + "%" : "—");
   const card = (k, v, s) => `<div class="ev-fb-card"><div class="k">${k}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`;
-  const rows = (list, label) => (list.length ? `<table class="ev-fb-tab"><tr><th>${label}</th><th>👍</th><th>👎</th><th>好评率</th></tr>` +
+  const rows = (list, label) => (list.length ? `<table class="ev-fb-tab"><tr><th>${label}</th><th>${ic("thumbs-up")} </th><th>${ic("thumbs-down")} </th><th>好评率</th></tr>` +
     list.map((r) => `<tr><td>${esc(r.name)}</td><td>${r.up}</td><td>${r.down}</td><td><span class="ev-bar"><i style="width:${Math.round(r.upRate * 100)}%"></i></span>${pct(r.up, r.up + r.down)}</td></tr>`).join("") + `</table>` : "");
   const downs = d.downs.slice(0, 20).map((f) =>
     `<div class="ev-fb-down"><span class="t">${esc(String(f.at || "").slice(5, 16).replace("T", " "))}</span><span class="m" title="${esc(f.provider || "")}">${esc(f.model || "—")}</span>` +
     `<span class="task" title="${esc(f.task || "")}">${esc(f.task || "")}</span><span class="note" title="${esc(f.note || "")}">${f.note ? esc(f.note) : "<i>没写理由</i>"}</span>` +
     (f.session ? `<a href="#" data-sid="${esc(f.session)}">打开对话</a>` : "<span></span>") + `</div>`).join("");
   box.innerHTML =
-    `<div class="ev-fb-cards">${card("反馈总数", d.total, `${d.up} 👍 · ${d.down} 👎`)}${card("好评率", pct(d.up, d.total), "👍 ÷ 全部反馈")}` +
-    `${card("👎 写了理由", pct(d.downWithNote, d.down), "写了理由的才进得了复盘")}${card("近 7 天", `${d.last7.up} / ${d.last7.down}`, "👍 / 👎")}</div>` +
+    `<div class="ev-fb-cards">${card("反馈总数", d.total, `${d.up} ${ic("thumbs-up")} · ${d.down} ${ic("thumbs-down")}`)}${card("好评率", pct(d.up, d.total), ic("thumbs-up") + " ÷ 全部反馈")}` +
+    `${card(ic("thumbs-down") + " 写了理由", pct(d.downWithNote, d.down), "写了理由的才进得了复盘")}${card("近 7 天", `${d.last7.up} / ${d.last7.down}`, `${ic("thumbs-up")} / ${ic("thumbs-down")}`)}</div>` +
     rows(d.byModel.filter((r) => r.name !== "（未知）" || d.byModel.length === 1), "按模型") + rows(d.byMode.filter((r) => r.name !== "（未知）"), "按模式") +
-    (d.down ? `<div class="side-label" style="margin:10px 0 4px">最近的 👎（${d.down} 条）· 点「打开对话」回到现场</div>${downs}` : "");
+    (d.down ? `<div class="side-label" style="margin:10px 0 4px">最近的${ic("thumbs-down")}（${d.down} 条）· 点「打开对话」回到现场</div>${downs}` : "");
   box.querySelectorAll("a[data-sid]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); openSession(a.dataset.sid); }; });
 }
 
@@ -1344,7 +1346,7 @@ async function renderEvalPage() {
   const opts = (sel) => models.map((m) => `<option value="${esc(m.name)}" ${m.name === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("");
   page.innerHTML = `
     <div class="hub-head" style="flex-wrap:wrap;gap:8px">
-      <div style="font-weight:700;font-size:15px">🧪 智能体评测</div>
+      <div style="font-weight:700;font-size:15px">${ic("flask-conical")} 智能体评测</div>
       <label style="font-size:12px;color:var(--wb-text-3)">被测模型</label>
       <select id="ev-model" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px">${opts(cur)}</select>
       <label style="font-size:12px;color:var(--wb-text-3)">每题次数</label>
@@ -1357,10 +1359,10 @@ async function renderEvalPage() {
       <span id="ev-state" style="font-size:13px;color:var(--wb-text-3)"></span>
     </div>
     <div style="font-size:13px;color:var(--wb-text-3);line-height:1.7;margin:0 0 10px">
-      15 道分层任务（L1 基础 / L2 进阶 / L3 高难）把整个智能体当黑盒考（写代码 / 算表格 / 修 bug / 跨文件重构 / 日志管线…）。三条评分线互相独立：<b>机器判分</b>（跑代码、对数字、验结构，只认硬证据，失败自动归因成败因码）、<b>稳定性</b>（每题重复 k 次：pass@1 均值看能不能，k 次全过看稳不稳）、<b>AI 评委</b>（逐条质量维度只判 是/否，不打印象分）。跑完可「📌 设为基线」——之后每轮自动逐题对比，退步点名。
+      15 道分层任务（L1 基础 / L2 进阶 / L3 高难）把整个智能体当黑盒考（写代码 / 算表格 / 修 bug / 跨文件重构 / 日志管线…）。三条评分线互相独立：<b>机器判分</b>（跑代码、对数字、验结构，只认硬证据，失败自动归因成败因码）、<b>稳定性</b>（每题重复 k 次：pass@1 均值看能不能，k 次全过看稳不稳）、<b>AI 评委</b>（逐条质量维度只判 是/否，不打印象分）。跑完可「设为基线」——之后每轮自动逐题对比，退步点名。
       <b>会真实调用所选模型计费</b>，费用随次数翻倍（DeepSeek 单次约几毛钱）。命令行同款：<code>npm run eval -- --repeat 3 --judge 评委名</code>
     </div>
-    <div class="side-label" style="margin:6px 0">用户反馈 · 对话里点的 👍👎（近 30 天）</div>
+    <div class="side-label" style="margin:6px 0">用户反馈 · 近 30 天在对话里点的 ${ic("thumbs-up")}${ic("thumbs-down")}</div>
     <div id="ev-fb" style="font-size:13px;color:var(--wb-text-3);margin:0 0 14px">加载中…</div>
     <pre id="ev-log" style="display:none;background:var(--wb-card);border:1px solid var(--wb-line);border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.8;max-height:320px;overflow:auto;white-space:pre-wrap;margin:0 0 14px"></pre>
     <div id="ev-detail"></div>
@@ -1383,8 +1385,8 @@ async function renderEvalPage() {
     const body = { model, repeat };
     if (judge) body.judge = judge;
     const r = await fetch("/api/eval/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json()).catch(() => null);
-    if (!r || r.error) return toast("❌ " + ((r && r.error) || "启动失败"));
-    toast("🧪 评测已开跑：" + model + (repeat > 1 ? `（每题 ${repeat} 次）` : "") + (judge ? "（评委 " + judge + "）" : ""));
+    if (!r || r.error) return toast(((r && r.error) || "启动失败"), "circle-x");
+    toast("评测已开跑：" + model + (repeat > 1 ? `（每题 ${repeat} 次）` : "") + (judge ? "（评委 " + judge + "）" : ""));
     updateEvalView();
   };
   updateEvalView();

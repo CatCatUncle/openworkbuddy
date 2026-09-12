@@ -32,6 +32,7 @@ const { setWorkspaceDir, getWorkspaceDir } = require("./tools");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
 const lanes = require("./lanes"); // 终端里起的任务归「工程」线；续跑 id 按引擎分开记
+const callout = require("./callout"); // 正文里的提示条：终端没有图标，换成文字标签
 const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
 const account = require("./account");
 const store = require("./store");
@@ -208,31 +209,33 @@ function makeEmit(state) {
       // 这个空行是用来跟上面的进度隔开的；-q / 没进度可打的时候没东西要隔，
       // 再吐一个就是往重定向出来的文件里塞前导空行。
       if (!state.streamed) { if (!opts.quiet) answer("\n"); state.streamed = true; }
-      state.finalParts.push(ev.delta); // 收尾要看正文是不是已经以换行结束，所以流式这条也得记下来
-      answer(ev.delta);
+      // 提示条是整条一次 emit 的（agent.js 那几处 callout.line），不会被切片切成半个记号
+      const text = callout.strip(ev.delta);
+      state.finalParts.push(text); // 收尾要看正文是不是已经以换行结束，所以流式这条也得记下来
+      answer(text);
     } else if (ev.type === "step_start") {
       if (ev.depth === 0) prog(dim(`\n· 第 ${ev.step} 步 思考中…`));
       state.streamed = false;
     } else if (ev.type === "parallel") {
-      prog(dim(`\n  ⚡ ${ev.count} 个只读工具并发执行`));
+      prog(dim(`\n  ▸▸ ${ev.count} 个只读工具并发执行`));
       state.streamed = false;
     } else if (ev.type === "tool_use") {
       const who = ev.expert ? `${ev.expert} · ` : "";
-      prog(dim(`\n  ⚙ ${who}${ev.name}${ev.purpose ? `（${String(ev.purpose).slice(0, 60)}）` : ""}`));
+      prog(dim(`\n  ▸ ${who}${ev.name}${ev.purpose ? `（${String(ev.purpose).slice(0, 60)}）` : ""}`));
       state.lastToolId = ev.id;
       state.streamed = false;
     } else if (ev.type === "tool_result") {
       // 并发跑的时候回来的顺序不一定，勾不能盲目贴在最后一行——那是别人的行
-      if (ev.id && state.lastToolId !== ev.id) prog(dim(`\n  ⚙ ${ev.name}`));
+      if (ev.id && state.lastToolId !== ev.id) prog(dim(`\n  ▸ ${ev.name}`));
       prog(ev.isError ? red(" ✗") : green(" ✓"));
       state.lastToolId = null;
       if (ev.isError && ev.preview) prog(dim("\n    " + String(ev.preview).slice(0, 200).replace(/\n/g, " ")));
     } else if (ev.type === "status") {
       if (ev.depth === 0 || ev.depth === undefined) { prog(dim(`\n· ${ev.text}`)); state.streamed = false; }
     } else if (ev.type === "expert_start") {
-      prog(yellow(`\n  👥 委派专家「${ev.expert}」`) + dim(`：${String(ev.task || "").slice(0, 60)}`));
+      prog(yellow(`\n  ◆ 委派专家「${ev.expert}」`) + dim(`：${String(ev.task || "").slice(0, 60)}`));
     } else if (ev.type === "limit") {
-      prog(yellow(`\n⏱ ${ev.note}，任务强制收尾`));
+      prog(yellow(`\n▲ ${ev.note}，任务强制收尾`));
     } else if (ev.type === "usage") {
       state.usage = ev;
     } else if (ev.type === "files") {
@@ -259,7 +262,7 @@ function printSummary(state) {
     prog(dim(`✦ 本次扣 ${state.credits.spent} 积分 · 余额 ${state.credits.balance.toLocaleString()}\n`));
   }
   if (state.files && state.files.length) {
-    prog(dim(`📁 工作目录 ${getWorkspaceDir()}：`) + dim(state.files.slice(-8).map((f) => f.name).join("、")) + "\n");
+    prog(dim(`▪ 工作目录 ${getWorkspaceDir()}：`) + dim(state.files.slice(-8).map((f) => f.name).join("、")) + "\n");
   }
 }
 
@@ -327,7 +330,7 @@ async function runOnce(runtime, text, mode) {
         // 坐在电脑前的人也能插话：任务跑着的时候在终端里打的字排在 termInterject 里，
         // 跟手机上补的那句走同一个口子
         if (termInterject.length) more.push(...termInterject.splice(0));
-        if (more.length) prog(yellow(`\n  ✎ 收到插话：${more.join(" / ").slice(0, 120)}\n`));
+        if (more.length) prog(yellow(`\n  » 收到插话：${more.join(" / ").slice(0, 120)}\n`));
         return more;
       },
     });
@@ -498,7 +501,7 @@ const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，
     onInterject: (text) => {
       // 任务跑着的时候敲的字是「插话」，不是下一条任务
       termInterject.push(text);
-      prog(yellow(`\n  ✎ 记下了，下一步带给它：${text.replace(/\n/g, " ").slice(0, 60)}\n`));
+      prog(yellow(`\n  » 记下了，下一步带给它：${text.replace(/\n/g, " ").slice(0, 60)}\n`));
     },
     onMerged: (n, blocks) => {
       // 粘进来的 N 行，readline 一行一条记进了历史。合成一条之后把多出来的退掉，

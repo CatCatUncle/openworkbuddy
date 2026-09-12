@@ -15,8 +15,8 @@ function renderSecurityPane(pane, s) {
   const po = !!s.platform_owner;
   pane.innerHTML = `
     <div class="card-item">
-      <div class="t">🎚️ 权限档位</div>
-      <div class="d">决定 AI 动手前问不问你。改文件、跑命令都按这个档来；文件黑名单在任何档位下都拦得住。${po ? "输入框下方的「🛡️」下拉也能随时切。" : "<b>这台服务器上大家共用一个档位，归平台管理员设。</b>下面是当前生效的这档。"}</div>
+      <div class="t">${ic("sliders-horizontal")} 权限档位</div>
+      <div class="d">决定 AI 动手前问不问你。改文件、跑命令都按这个档来；文件黑名单在任何档位下都拦得住。${po ? "输入框下方那个盾牌下拉也能随时切。" : "<b>这台服务器上大家共用一个档位，归平台管理员设。</b>下面是当前生效的这档。"}</div>
       <div id="sec-modes" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
       <div style="margin-top:8px;font-size: 13px;color:var(--wb-text-3)">
         本次运行期间记住的批准：<span id="sec-sess-allow">（无）</span>
@@ -25,11 +25,11 @@ function renderSecurityPane(pane, s) {
     </div>
     ${!po ? `
     <div class="card-item">
-      <div class="t">🛡️ 剩下这些归平台管理员</div>
+      <div class="t">${ic("shield")} 剩下这些归平台管理员</div>
       <div class="d">数据安全总开关、文件 / 命令 / 网络的黑白名单、内置运行时开关、系统授权、审计日志——它们管的是整台服务器上所有人的任务，不是你一个人的，所以只有平台管理员能改。<br>轮到<b>你</b>拍板的地方在对话里：agent 要跑一条需要批准的命令时，输入框上方会弹出审批条，批不批由你说了算。</div>
     </div>` : `
     <div class="card-item">
-      <div class="t">🛡️ 数据安全</div>
+      <div class="t">${ic("shield")} 数据安全</div>
       ${chk("sec-gateway", sec.gateway !== false, "安全网关", "总开关：命令审批与文件/网络黑白名单的硬拦截由它启用，关闭后只记审计不拦截")}
       ${chk("sec-delprot", sec.delete_protect !== false, "删除保护", "rm 类删除命令必须在界面上批准后才执行")}
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size: 14px;margin:7px 0">
@@ -39,7 +39,7 @@ function renderSecurityPane(pane, s) {
       <div style="font-size: 13px;color:var(--wb-text-3)">传输加密：前后端走本机回环地址通信不经公网；对外仅按你配置的通道（飞书/企微/钉钉官方 HTTPS API）传输。</div>
     </div>
     <div class="card-item">
-      <div class="t">📁 沙箱安全 · 文件</div>
+      <div class="t">${ic("folder")} 沙箱安全 · 文件</div>
       <div class="d">工作目录内默认可读写；黑名单永远拦截；工作目录之外只有白名单目录可访问。每行一条，支持 ~ 与 &lt;app&gt;（应用目录）。</div>
       <div style="display:flex;gap:10px">
         ${listCol("白名单（workspace 外可访问）", "sec-fwl", joinLines(sec.file_whitelist))}
@@ -47,7 +47,7 @@ function renderSecurityPane(pane, s) {
       </div>
     </div>
     <div class="card-item">
-      <div class="t">⌨️ 沙箱安全 · 命令</div>
+      <div class="t">${ic("keyboard")} 沙箱安全 · 命令</div>
       <div class="d">run_shell 的命令按前缀逐段核对：放行名单直接执行；询问名单挂起，输入框上方弹出审批条等你批准。每行一个命令前缀。</div>
       <div style="display:flex;gap:10px">
         ${listCol("放行名单（直接执行）", "sec-cal", joinLines(sec.cmd_allow))}
@@ -55,7 +55,7 @@ function renderSecurityPane(pane, s) {
       </div>
     </div>
     <div class="card-item">
-      <div class="t">🌐 沙箱安全 · 网络</div>
+      <div class="t">${ic("globe")} 沙箱安全 · 网络</div>
       <div class="d">fetch_url 抓取的域名规则（自动含子域名）。黑名单拦截；白名单非空时只允许名单内域名。每行一个域名。</div>
       <div style="display:flex;gap:10px">
         ${listCol("白名单（非空=只允许这些）", "sec-uwl", joinLines(sec.url_whitelist), 3)}
@@ -63,16 +63,16 @@ function renderSecurityPane(pane, s) {
       </div>
     </div>
     <div class="card-item">
-      <div class="t">⚙️ 内置运行时</div>
+      <div class="t">${ic("settings")} 内置运行时</div>
       ${chk("sec-node", sec.runtime_node !== false, "Node.js（run_node）", "关闭后 AI 不能执行 Node 代码")}
       ${chk("sec-py", sec.runtime_python !== false, "Python（run_shell 里的 python/pip）", "关闭后 python/pip 命令直接拒绝")}
     </div>
     <div class="card-item">
-      <div class="t">🖥️ 系统授权（macOS）</div>
+      <div class="t">${ic("monitor")} 系统授权（macOS）</div>
       <div id="sec-sys" style="font-size: 14px;color:var(--wb-text-3)">检测中…</div>
     </div>
     <div class="card-item">
-      <div class="t">📋 审计中心 <span style="float:right;font-weight:400;font-size: 13px"><a href="#" class="link" id="audit-all">查看全部</a> · <a class="link" href="/api/security/audit/export" download>导出日志</a> · <a href="#" class="link danger" id="audit-clear">清空记录</a></span></div>
+      <div class="t">${ic("clipboard-list")} 审计中心 <span style="float:right;font-weight:400;font-size: 13px"><a href="#" class="link" id="audit-all">查看全部</a> · <a class="link" href="/api/security/audit/export" download>导出日志</a> · <a href="#" class="link danger" id="audit-clear">清空记录</a></span></div>
       <div id="audit-list" style="max-height:260px;overflow:auto;font-size: 13px;margin-top:6px"></div>
     </div>
     <button class="btn-brand" id="sec-save">保存</button><span class="ok-msg" id="sec-msg"></span>`}`;
@@ -142,7 +142,7 @@ function renderSecurityPane(pane, s) {
     const box = pane.querySelector("#audit-list");
     if (!box) return;
     box.innerHTML = (Array.isArray(list) && list.length)
-      ? list.map(e => `<div style="padding:4px 0;border-bottom:1px solid var(--wb-border)"><span style="color:var(--wb-text-3)">${esc(String(e.ts || "").replace("T", " ").slice(5, 19))}</span> <b>[${esc(e.type)}]</b> ${esc(e.text)} <span style="color:${/拦截|拒绝/.test(e.action) ? "var(--wb-err)" : "var(--wb-ok)"}">${esc(e.action)}</span></div>`).join("")
+      ? list.map(e => `<div style="padding:4px 0;border-bottom:1px solid var(--wb-border)"><span style="color:var(--wb-text-3)">${esc(String(e.ts || "").replace("T", " ").slice(5, 19))}</span> <b>[${esc(e.type)}]</b> ${esc(e.text)} <span style="color:${/拦截|拒绝/.test(e.action) ? "var(--wb-err-text)" : "var(--wb-ok-text)"}">${esc(e.action)}</span></div>`).join("")
       : '<div style="color:var(--wb-text-3);padding:6px 0">还没有记录。AI 执行命令 / 联网访问时会自动记录在这里。</div>';
   }
   renderAudit();
@@ -162,7 +162,7 @@ function renderSecurityPane(pane, s) {
     const d = await fetch("/api/security/system").then(r => r.json()).catch(() => null);
     if (!d) { el.textContent = "读取失败"; return; }
     const txt = {
-      granted: '<span style="color:var(--wb-ok-text)">✅ 已授权</span>',
+      granted: '<span style="color:var(--wb-ok-text)">${ic("circle-check")} 已授权</span>',
       denied: '<span style="color:var(--wb-err-text)">未授权</span>',
       unknown: '<span style="color:var(--wb-text-3)">无法检测</span>',
       unchecked: '<span style="color:var(--wb-text-3)">未检测</span>',
@@ -278,7 +278,7 @@ function renderShortcutsPane(pane, s) {
 // ================= 自进化：信号 → 提案 → 人审 → 复盘打分 =================
 // 这一屏是整条链上唯一有人的一环。提案永远不会自己生效——闸门只负责毙掉明显不该上的，
 // 剩下的必须有人点「采纳」。所以这里要把证据摆够：治什么、凭几次、原话长啥样、生效后哪个数该降。
-const EV_ACT = { prompt: ["提示词能治", "var(--wb-ok)"], config: ["得改配置/换渠道", "var(--wb-warn)"], code: ["得改代码", "var(--wb-err)"] };
+const EV_ACT = { prompt: ["提示词能治", "var(--wb-ok-text)"], config: ["得改配置/换渠道", "var(--wb-warn)"], code: ["得改代码", "var(--wb-err-text)"] };
 
 async function renderEvolvePane(pane) {
   pane.innerHTML = '<div class="card-item"><div class="d">读取中…</div></div>';
@@ -309,7 +309,7 @@ async function renderEvolvePane(pane) {
       <div class="t">${p.kind === "retire_rule" ? "下架" : "新增"}：${escInline(p.title || p.rule || "")}</div>
       <div class="d">${escInline(p.why || "")}</div>
       ${p.rule ? `<div style="margin-top:8px;padding:8px 10px;background:var(--wb-code-bg);color:var(--wb-code-text);border-radius:8px;font-size: 13px;white-space:pre-wrap">${escInline(p.rule)}</div>` : ""}
-      ${p.verify ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-2)">✅ 验收：${escInline(p.verify)}</div>` : ""}
+      ${p.verify ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-2)">${ic("circle-check")} 验收：${escInline(p.verify)}</div>` : ""}
       ${p.signalSnapshot ? `<div style="margin-top:4px;font-size: 13px;color:var(--wb-text-3)">证据：${esc(p.signalSnapshot.label)} · ${p.signalSnapshot.count} 次 · 每回合 ${p.signalSnapshot.rate}</div>` : ""}
       ${(p.evidence || []).length ? `<details style="margin-top:4px"><summary style="cursor:pointer;font-size: 13px;color:var(--wb-text-3)">看现场原话（${p.evidence.length} 条）</summary>
         ${p.evidence.map(e => `<div style="font-size: 13px;color:var(--wb-text-2);margin:5px 0 0;padding-left:8px;border-left:2px solid var(--wb-border)"><b>${esc(e.task || "")}</b><br>${escInline(e.excerpt || "")}</div>`).join("")}</details>` : ""}
@@ -324,7 +324,7 @@ async function renderEvolvePane(pane) {
   const scoreOf = (id) => scored.find(x => x.id === id);
   const ruleRows = rules.length ? rules.map(r => {
     const sc = scoreOf(r.id);
-    const color = sc && sc.verdict === "有效" ? "var(--wb-ok)" : sc && sc.verdict === "没起作用" ? "var(--wb-err)" : "var(--wb-text-3)";
+    const color = sc && sc.verdict === "有效" ? "var(--wb-ok-text)" : sc && sc.verdict === "没起作用" ? "var(--wb-err-text)" : "var(--wb-text-3)";
     return `<div style="padding:8px 0;border-bottom:1px solid var(--wb-border)">
       <div style="font-size: 14px;color:var(--wb-text);white-space:pre-wrap">${escInline(r.text)}</div>
       <div style="margin-top:4px;font-size: 13px;color:var(--wb-text-3)">
@@ -335,8 +335,8 @@ async function renderEvolvePane(pane) {
 
   pane.innerHTML = `
     <div class="card-item">
-      <div class="t">🔁 它自己怎么变好的</div>
-      <div class="d">你在每条回复下点的 👍👎 会落盘；加上任务里真实的失败（工具报错、超时、被打断返工）一起数成「信号」。
+      <div class="t">${ic("repeat")} 它自己怎么变好的</div>
+      <div class="d">你在每条回复下点的 ${ic("thumbs-up")}${ic("thumbs-down")} 会落盘；加上任务里真实的失败（工具报错、超时、被打断返工）一起数成「信号」。
       复盘时模型只看这些数字提<b>最小</b>改动，能不能上由你点头——<b>提案永远不会自动生效</b>。
       规则最多 ${caps.rules} 条、每条 ≤ ${caps.ruleChars || 400} 字，满了必须换下一条才能加，避免措辞越堆越厚而数字不动。
       一条规则至少要有 ${caps.minEvidence} 次证据才准提。</div>
@@ -354,18 +354,18 @@ async function renderEvolvePane(pane) {
       ${runs.length ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-3)">上次：${esc((runs[0].at || "").slice(0, 16).replace("T", " "))} · ${esc(runs[0].trigger || "")} · ${runs[0].ok ? `${runs[0].turns} 个回合，新提案 ${runs[0].added} 条` : `<span style="color:var(--wb-err-text)">没跑成：${esc(runs[0].error || "")}</span>`}</div>` : ""}
     </div>
     <div class="card-item">
-      <div class="t">📊 最近 ${sg.days || caps.window} 天的信号（${sg.turns || 0} 个助手回合）</div>
+      <div class="t">${ic("chart-column")} 最近 ${sg.days || caps.window} 天的信号（${sg.turns || 0} 个助手回合）</div>
       <div class="d" style="margin-bottom:6px">按次数排。只有标「提示词能治」的才允许变成规则——改代码/换渠道的毛病，加多少句提示词都没用。</div>
       ${sigRows}
     </div>
-    <div class="t" style="margin:16px 0 8px;font-weight:600">📥 待你裁决（${pending.length}）</div>
+    <div class="t" style="margin:16px 0 8px;font-weight:600">${ic("inbox")} 待你裁决（${pending.length}）</div>
     ${propCards}
     <div class="card-item">
-      <div class="t">📌 已生效的规则（${rules.length}/${caps.rules}）</div>
+      <div class="t">${ic("pin")} 已生效的规则（${rules.length}/${caps.rules}）</div>
       <div class="d" style="margin-bottom:4px">这些原样拼进每次任务的系统提示词，排在记忆前面。打分看的是「基线出现率 → 现在的出现率」，没降就该下架。</div>
       ${ruleRows}
     </div>
-    ${decided.length ? `<div class="card-item"><div class="t">🗂️ 审过的（近 ${decided.length} 条）</div>${decided.map(p => `<div style="padding:4px 0;font-size: 13px;color:var(--wb-text-2);border-bottom:1px solid var(--wb-border)"><b>${p.status === "applied" ? "已采纳" : p.status === "rejected" ? "已驳回" : "被闸门拦下"}</b> · ${escInline(p.title || p.rule || "")}${p.reason ? " · " + esc(p.reason) : ""}${p.gate ? " · " + esc(p.gate) : ""}</div>`).join("")}</div>` : ""}`;
+    ${decided.length ? `<div class="card-item"><div class="t">${ic("folder-tree")} 审过的（近 ${decided.length} 条）</div>${decided.map(p => `<div style="padding:4px 0;font-size: 13px;color:var(--wb-text-2);border-bottom:1px solid var(--wb-border)"><b>${p.status === "applied" ? "已采纳" : p.status === "rejected" ? "已驳回" : "被闸门拦下"}</b> · ${escInline(p.title || p.rule || "")}${p.reason ? " · " + esc(p.reason) : ""}${p.gate ? " · " + esc(p.gate) : ""}</div>`).join("")}</div>` : ""}`;
 
   const msg = pane.querySelector("#ev-msg");
   const saveAuto = () => saveSettings({ evolve: { auto: pane.querySelector("#ev-auto").checked, hour: +pane.querySelector("#ev-hour").value || 0 } }, msg);
@@ -409,7 +409,7 @@ async function renderEvolvePane(pane) {
 
 // ---------- 外观页：主题 / 皮肤 / 字号 / 字体 / 密度。全是点一下立刻生效、只存本机的选项，不设保存键 ----------
 const LOOK_ICON = {
-  theme: { light: "☀️", dark: "🌙", system: "🖥️" },
+  theme: { light: "sun", dark: "moon", system: "monitor" },
   density: { cozy: "☰", compact: "≡" },
 };
 // 色板小圆点用的就是各皮肤在浅色下的主色；真正的 token 定义在 index.html 的 html[data-skin=…] 里，这里只是「长什么样」的预览
@@ -420,20 +420,20 @@ function renderLookPane(pane) {
     `<button type="button" class="${cur === v ? "on" : ""}" data-v="${v}" aria-pressed="${cur === v}">${cell(v, l)}</button>`).join("")}</div>`;
   const i18n = typeof I18N !== "undefined" ? I18N : null; // 测试夹具里可能没挂词典
   pane.innerHTML = `
-    ${i18n ? `<div class="card-item"><div class="t">🌐 语言</div>
+    ${i18n ? `<div class="card-item"><div class="t">${ic("globe")} 语言</div>
       ${seg("lang", i18n.LANGS, i18n.getLang(), (v, l) => `<span class="ic">${v === "zh" ? "中" : "En"}</span>${l}`)}
       <div class="look-note">AI 回复也会跟着用这个语言</div></div>` : ""}
-    <div class="card-item"><div class="t">🌗 主题</div>
-      ${seg("theme", THEME_LABEL, getTheme(), (v, l) => `<span class="ic">${LOOK_ICON.theme[v]}</span>${l}`)}</div>
-    <div class="card-item"><div class="t">🎨 皮肤</div>
+    <div class="card-item"><div class="t">${ic("moon")} 主题</div>
+      ${seg("theme", THEME_LABEL, getTheme(), (v, l) => `<span class="ic">${ic(LOOK_ICON.theme[v])}</span>${l}`)}</div>
+    <div class="card-item"><div class="t">${ic("palette")} 皮肤</div>
       <div class="look-skins" data-k="skin">${Object.entries(LOOK_OPTS.skin).map(([v, l]) =>
         `<button type="button" class="look-skin${lookGet("skin") === v ? " on" : ""}" data-v="${v}" aria-pressed="${lookGet("skin") === v}"><i style="background:${LOOK_SWATCH[v]}"></i>${l}</button>`).join("")}</div></div>
-    <div class="card-item"><div class="t">🔠 字号</div>
+    <div class="card-item"><div class="t">${ic("a-large-small")} 字号</div>
       ${seg("fs", LOOK_OPTS.fs, lookGet("fs"), (v, l) => `<b style="font-size:${LOOK_FS_PX[v]}px">A</b>${l}`)}
       <div class="look-prev" id="look-prev">这一行就是聊天正文的大小，<code>代码</code>和左栏会跟着一起缩放。</div></div>
-    <div class="card-item"><div class="t">🅰️ 字体</div>
+    <div class="card-item"><div class="t">${ic("type")} 字体</div>
       ${seg("font", LOOK_OPTS.font, lookGet("font"), (v, l) => `<b class="look-f look-f-${v}">永 Ag</b>${l}`)}</div>
-    <div class="card-item"><div class="t">📐 密度</div>
+    <div class="card-item"><div class="t">${ic("ruler")} 密度</div>
       ${seg("density", LOOK_OPTS.density, lookGet("density"), (v, l) => `<span class="ic">${LOOK_ICON.density[v]}</span>${l}`)}
       <div class="look-note">紧凑：消息间距和行高收一收，一屏多看三成。</div></div>
     <div class="look-note">这些只存在这台电脑上，不跟账号走。</div>`;
@@ -449,7 +449,7 @@ function renderLookPane(pane) {
 function renderAboutPane(pane) {
   pane.innerHTML = `
     <div class="card-item">
-      <div class="t">🔄 版本与更新 <span id="ab-ver" style="font-weight:400;color:var(--wb-text-3);font-size:12px">读取中…</span></div>
+      <div class="t">${ic("refresh-cw")} 版本与更新 <span id="ab-ver" style="font-weight:400;color:var(--wb-text-3);font-size:12px">读取中…</span></div>
       <div class="d" id="ab-up-how" style="margin-bottom:8px">正在看有没有新版…</div>
       <button class="btn-plain" id="ab-up-btn">检查更新</button>
       <a class="link" id="ab-up-link" href="https://github.com/CatCatUncle/openworkbuddy/releases/latest" target="_blank" rel="noreferrer" style="margin-left:10px;display:none">去下载页</a>
@@ -464,12 +464,21 @@ function renderAboutPane(pane) {
       <div class="d">桌面版：npm run app（或桌面快捷方式）· Web 版：npm start 后浏览器打开 localhost:3800 · 测试：npm test</div>
     </div>
     <div class="card-item">
-      <div class="t">🧭 新手引导</div>
+      <div class="t">${ic("compass")} 新手引导</div>
       <div class="d" style="margin-bottom:8px">五步走一遍：大模型 → 联网搜索 → 图/视频/语音 → 远程指挥 → 工作目录。哪一步没配、该去哪拿 Key，向导里都写着。</div>
       <button class="btn-plain" id="about-onb">重新打开新手引导</button>
     </div>
     <div class="card-item">
-      <div class="t">💬 帮助与反馈</div>
+      <div class="t">${ic("scale")} 授权</div>
+      <div class="d">著作权人：开发者猫叔。本软件按 <b>PolyForm Noncommercial License 1.0.0</b> 发布：<br>
+      自己用、学习研究、学校与公益机构用 —— 免费，不用问。<br>
+      公司或任何以营利为目的的使用（内部提效、对外产品、给客户交付、打包售卖）—— 需要单独购买商业授权。<br>
+      名称「OpenWorkBuddy」和项目标志不在授权范围内，换名换标对外售卖要另谈。<br>
+      <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/COMMERCIAL-LICENSE.md" target="_blank" rel="noreferrer">商业授权怎么谈</a>
+      · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE" target="_blank" rel="noreferrer">许可证全文</a></div>
+    </div>
+    <div class="card-item">
+      <div class="t">${ic("message-circle")} 帮助与反馈</div>
       <div class="d">快速上手：输入框里 <b>@</b> 引用工作空间文件、<b>/</b> 调用技能；侧栏「技能库 / 专家团 / 定时任务」都支持增删改热生效；手机远程用 设置→助理设置 绑定飞书或企业微信。<br>
       遇到问题：先看 设置→安全中心→审计中心 是不是被安全闸拦了；LLM 报 503 是上游服务繁忙（已内置自动重试，连续失败可到 设置→模型 换渠道）。<br>
       反馈：本地部署版没有云端客服，问题与建议直接发给维护它的 AI 助理（就是让我改），改完重启即生效。</div>
@@ -481,14 +490,14 @@ function renderAboutPane(pane) {
   const upMsg = pane.querySelector("#ab-up-msg"), upLink = pane.querySelector("#ab-up-link");
   const drawUpdate = (d) => {
     upVer.textContent = `当前 v${d.current}${d.install === "source" ? " · 源码运行" : " · 安装包"}`;
-    upHow.textContent = (d.error ? `⚠ ${d.error}。` : d.has_update ? `有新版 v${d.latest}。` : d.latest ? `已是最新（线上也是 v${d.latest}）。` : "") + d.how;
+    upHow.textContent = (d.error ? `${d.error}。` : d.has_update ? `有新版 v${d.latest}。` : d.latest ? `已是最新（线上也是 v${d.latest}）。` : "") + d.how;
     upLink.style.display = d.has_update ? "" : "none";
     if (d.url) upLink.href = d.url;
   };
   const loadUpdate = async (force) => {
     upMsg.style.color = ""; upMsg.textContent = force ? "查询中…" : "";
     try { drawUpdate(await fetch("/api/update" + (force ? "?force=1" : "")).then(r => r.json())); upMsg.textContent = ""; }
-    catch (e) { upMsg.style.color = "var(--wb-err)"; upMsg.textContent = "❌ " + e.message; }
+    catch (e) { setMsg(upMsg, "circle-x", e.message, "err"); }
   };
   pane.querySelector("#ab-up-btn").onclick = () => loadUpdate(true);
   loadUpdate(false);

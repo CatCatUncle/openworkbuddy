@@ -6,7 +6,7 @@ const { app, BrowserWindow, dialog, shell, globalShortcut } = require("electron"
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { dataPath, seedDataDir } = require("./paths");
+const { dataPath, seedDataDir, resolvePort } = require("./paths");
 
 // ---------- 启动日志：出事时用户手里唯一的物证 ----------
 /**
@@ -42,12 +42,7 @@ function bootLog(...parts) {
 }
 bootLog(`—— OpenWorkBuddy ${require("./package.json").version} 启动 · ${process.platform}/${process.arch} · Electron ${process.versions.electron} ——`);
 
-// 端口的优先级必须跟 server.js 里那行（`+process.env.PORT || srvCfg.port || 3800`）一模一样。
-// 以前这儿只读 config.json：谁要是设了 PORT 环境变量，服务端听 3810、壳去连 3800，
-// 窗口永远等不到人——用户只是设了个环境变量，看到的却是一个「启动失败」的弹框。
-function resolvePort(env, cfg) {
-  return +env.PORT || (cfg && cfg.server && cfg.server.port) || 3800;
-}
+// 端口优先级跟服务端共用一份实现（paths.js），各写各的必然漂——漂了的症状是窗口永远等不到人。
 // 端口要在 fatal 之前就位：报错文案里要用它，而异常可能发生在模块还没读完的时候
 let PORT;
 try {
@@ -77,7 +72,7 @@ let FATAL_SHOWN = false;
  */
 function fatal(stage, err) {
   const msg = String((err && (err.stack || err.message)) || err || "未知错误");
-  bootLog(`❌ ${stage}：${msg}`);
+  bootLog(`✗ ${stage}：${msg}`);
   if (PAGE_UP || FATAL_SHOWN) return; // 已经跑起来了，或者已经报过一次，不重复打扰
   FATAL_SHOWN = true;
   if (win && !win.isDestroyed()) return showBootFailure(err);
@@ -100,7 +95,7 @@ process.on("uncaughtException", (e) => fatal("主进程未捕获异常", e));
 // 其余情况记一笔日志——窗口到底出没出来，交给下面的看门狗判。
 process.on("unhandledRejection", (e) => {
   if (!win) return fatal("主进程未处理的 Promise 拒绝", e);
-  bootLog("⚠️ 有个没人接的 Promise 拒绝：" + String((e && e.message) || e));
+  bootLog("▲ 有个没人接的 Promise 拒绝：" + String((e && e.message) || e));
 });
 
 // 装机态：代码在只读的应用包里，配置/数据/工作区落到 ~/OpenWorkBuddy。
@@ -114,7 +109,7 @@ try {
   bootLog("数据目录就绪：" + dataPath());
 } catch (e) {
   SEED_ERR = e;
-  bootLog("❌ 数据目录建不起来：" + ((e && e.message) || e));
+  bootLog("✗ 数据目录建不起来：" + ((e && e.message) || e));
 }
 
 // 改过两次名（workbuddy-clone → openbuddy → openworkbuddy）。Electron 的 userData 目录跟着
@@ -255,7 +250,7 @@ app.whenReady().then(async () => {
     // 过了这条线就算启动成功了：再有偶发异常只记日志，不能把用户正在做的事掐掉换成报错页
     PAGE_UP = true;
     clearTimeout(watchdog);
-    bootLog("页面加载完成 ✅ 启动成功");
+    bootLog("页面加载完成 ✓ 启动成功");
   });
   // 用 127.0.0.1 而不是 localhost：有些机器（改过 hosts、或者 IPv6 优先）会把 localhost 解析到 ::1，
   // 而服务端只监听了 IPv4，表现就是窗口一直空白。

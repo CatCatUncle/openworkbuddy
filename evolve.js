@@ -467,7 +467,7 @@ function scoreRules({ dir = SESS_DIR, now = Date.now(), minTurns = 20 } = {}) {
     out.push({
       id: r.id, signal: base.key, beforeRate: base.rate, afterRate, dropPct: drop, turns: after.turns, fb,
       verdict: drop >= 30 ? "有效" : drop > 0 ? "略有改善" : "没起作用",
-      why: `每回合出现率 ${base.rate} → ${afterRate}（${drop >= 0 ? "降" : "升"} ${Math.abs(drop)}%）` + (fb.up + fb.down ? `；生效后用户反馈 👍${fb.up} 👎${fb.down}` : "")
+      why: `每回合出现率 ${base.rate} → ${afterRate}（${drop >= 0 ? "降" : "升"} ${Math.abs(drop)}%）` + (fb.up + fb.down ? `；生效后用户反馈 好评 ${fb.up} / 差评 ${fb.down}` : "")
         + (base.caliber === "all" ? "；基线里混着时间不明的老回合，口径比生效后的宽，这个降幅只能当参考" : ""),
       suggestRetire: drop <= 0,
     });

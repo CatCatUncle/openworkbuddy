@@ -78,4 +78,22 @@ function seedDataDir() {
   } catch {}
 }
 
-module.exports = { APP_DIR, DATA_DIR, dataPath, appPath, preferData, seedDataDir, isPackaged };
+/**
+ * 听哪个端口。放这儿是因为壳（electron-main.js）和服务端（server.js）必须算出同一个数：
+ * 各写各的那阵子，谁要是设了 PORT，服务端听 3810、壳去连 3800，窗口就永远等不到人。
+ *
+ * PORT=0 是操作系统的老规矩：「你替我挑一个空的」。以前这行写的是 `+env.PORT || ...`，
+ * 而 +"0" 是 0、是假值，于是显式设的 0 被当成没设，悄悄回落到 3800——本机正跑着一台的时候
+ * 就直接撞上用户自己那台了（端到端测试里五处真起 server 全栽在这儿）。
+ * 所以这里的判据是「设没设」，不是「真不真」；设了但不是个合法端口号，也当没设。
+ */
+function resolvePort(env, cfg) {
+  const raw = env && env.PORT;
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n >= 0 && n <= 65535) return n;
+  }
+  return (cfg && cfg.server && cfg.server.port) || 3800;
+}
+
+module.exports = { APP_DIR, DATA_DIR, dataPath, appPath, preferData, seedDataDir, isPackaged, resolvePort };

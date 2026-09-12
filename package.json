@@ -39,6 +39,7 @@
   "bin": {
     "wb": "./cli.js"
   },
+  "license": "PolyForm-Noncommercial-1.0.0",
   "author": {
     "name": "CatCatUncle",
     "email": "257534836+CatCatUncle@users.noreply.github.com"

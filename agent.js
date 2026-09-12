@@ -10,6 +10,7 @@ const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了�
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
 const prefs = require("./prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
+const callout = require("./callout"); // 正文里的提示条：网页画图标，终端/IM 换文字标签
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -467,7 +468,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
   4. \`<script>\`、\`<foreignObject>\`、外链图片/字体一律会被安全层清掉，别用；要用 \`<style>\` 就用类名，界面会自动把它限死在这张图里。
 - 排版参考：竖版长图（viewBox 宽 680、高按内容给）最稳；顶部大标题+副标题，中间分区块，每块一个小节标题+若干条目，区块之间用细分隔线，末尾可以留一行数据来源。
 
-### ⚠️ 写进文件的 SVG 不能照抄上面那套变量
+### 注意：写进文件的 SVG 不能照抄上面那套变量
 上面那套 \`var(--color-text-primary)\` 之所以能用，是因为图渲染在应用页面里、变量是页面定义的。
 **一旦你把 SVG 写进一个 .html 或 .svg 文件，那个文件是独立的，这些变量根本不存在**——
 \`fill: var(--没定义的)\` 会让整条声明作废、回落到默认的黑色，底块和文字一起变黑，
@@ -477,7 +478,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 ③ 至少写兜底 \`var(--x, #333)\`。另外：**同一个文件里已经定义了一套变量（比如 --ink/--bg），
 就用它自己那套**，别混进另一套名字。写完 write_file 会自动查这一项，报出来就当场改。
 
-### ⚠️ gen_diagram 画的图往 HTML 里贴：一个字符都不许改
+### 注意：gen_diagram 画的图往 HTML 里贴：一个字符都不许改
 流程图/架构图/时序图/思维导图一律 \`gen_diagram\` 画，别手写 SVG。要把它内联进报告时，
 **把 .svg 文件的内容原样复制进去**——尤其是 \`<svg id="mmdXXXX">\` 这个 id 和 \`<style>\` 里的
 \`#mmdXXXX ...\` 选择器，两边是绑死的。你只要为了"防冲突"改了其中一边（哪怕只加个后缀），
@@ -645,7 +646,7 @@ function modePrompt(mode) {
         };
         const r = await createFeishuDoc((config.im || {}).feishu, tc.input, { deadline, stopSignal, resolveImage });
         return {
-          content: `飞书文档已创建：${r.url}（${r.blocks} 个内容块${r.images ? `，含 ${r.images} 张图` : ""}）${r.warn ? `\n⚠️ ${r.warn}` : ""}\n请把这个链接告诉用户。`,
+          content: `飞书文档已创建：${r.url}（${r.blocks} 个内容块${r.images ? `，含 ${r.images} 张图` : ""}）${r.warn ? `\n注意：${r.warn}` : ""}\n请把这个链接告诉用户。`,
           isError: false,
         };
       } catch (e) {
@@ -1010,7 +1011,7 @@ function modePrompt(mode) {
       let finalText = rawFinal;
       if (r.stopped) {
         emit({ type: "limit", note: r.stopped, depth: 0 });
-        const notice = `⚠️ ${r.stopped}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
+        const notice = `注意：${r.stopped}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
         finalText = finalText ? `${finalText}\n\n${notice}` : notice;
       }
       const usage = {
@@ -1429,9 +1430,9 @@ function modePrompt(mode) {
           const list = parts.join("；");
           history.push({
             role: "user",
-            content: `【系统自动核验】你上一条回复声称已生成/可获取这些文件，但核验不通过——${list}。在文字里写命令和"✅ 生成成功"不等于执行；写出来是空文件也不算交付。现在立即用 write_file / run_node / run_shell 真实生成一遍，写完用 read_file 或 list_files 读回来确认内容真的在里面，再如实汇报。如果执行失败，就如实报告失败原因和报错内容。严禁再声称不存在或空的文件已生成。`,
+            content: `【系统自动核验】你上一条回复声称已生成/可获取这些文件，但核验不通过——${list}。在文字里写命令和「已生成成功」不等于执行；写出来是空文件也不算交付。现在立即用 write_file / run_node / run_shell 真实生成一遍，写完用 read_file 或 list_files 读回来确认内容真的在里面，再如实汇报。如果执行失败，就如实报告失败原因和报错内容。严禁再声称不存在或空的文件已生成。`,
           });
-          emit({ type: "text", delta: `\n\n> ⚠️ **成果核验未通过**：${list}，已自动打回要求真实执行。\n\n`, depth });
+          emit({ type: "text", delta: callout.line("warn", `**成果核验未通过**：${list}，已自动打回要求真实执行。`), depth });
           continue;
         }
 
@@ -1445,7 +1446,7 @@ function modePrompt(mode) {
               `（1）现在真调一次 look_at_image 带上具体问题去看，看成了再照实说；（2）看不成（渠道报错/没余额/返回空正文）就把这句核对的话删掉，` +
               `明说「没能核对图上的文字，请你自己过一眼」。严禁把没看到的内容当作看过写进结论。`,
           });
-          emit({ type: "text", delta: `\n\n> ⚠️ **成果核验未通过**：它说核对过图上的文字，但这一趟一次都没真看成过图，已打回要求真看或如实说明。\n\n`, depth });
+          emit({ type: "text", delta: callout.line("warn", "**成果核验未通过**：它说核对过图上的文字，但这一趟一次都没真看成过图，已打回要求真看或如实说明。"), depth });
           continue;
         }
 
@@ -1466,8 +1467,8 @@ function modePrompt(mode) {
           emit({
             type: "text",
             delta: left.open.length
-              ? `\n\n> ⏳ **还没做完，已自动打回继续做**：进度档里还有 ${left.open.length} 项没打勾（${left.open.slice(0, 3).join("、")}${left.open.length > 3 ? " 等" : ""}）。\n\n`
-              : `\n\n> ⏳ **还没做完，已自动打回继续做**：它自己说还有没做完的部分，但已经不动手了。\n\n`,
+              ? callout.line("wait", `**还没做完，已自动打回继续做**：进度档里还有 ${left.open.length} 项没打勾（${left.open.slice(0, 3).join("、")}${left.open.length > 3 ? " 等" : ""}）。`)
+              : callout.line("wait", "**还没做完，已自动打回继续做**：它自己说还有没做完的部分，但已经不动手了。"),
             depth,
           });
           continue;
@@ -1572,7 +1573,7 @@ function modePrompt(mode) {
       if (nudges.length) {
         history.push({ role: "user", content: `【系统·循环检测】${nudges.join("；")}。这是在死路上空转，时间和费用都在烧：立即换思路——换参数、换工具或换一条实现路径；实在无路可走就停下收尾，如实说明卡在哪里，严禁再重复同样的动作。` });
         // 这行是给人看的：一句话说清「卡住了 → 我做了什么 → 你可能要做什么」
-        emit({ type: "text", delta: `\n\n> ⚠️ **它在原地打转了**：${humanly.join("；")}。已经要求它换条路走（换参数、换工具或换个实现方式），走不通就会停下来告诉你卡在哪——不会一直烧时间和额度。你也可以直接点「停下」自己接手。\n\n`, depth });
+        emit({ type: "text", delta: callout.line("warn", `**它在原地打转了**：${humanly.join("；")}。已经要求它换条路走（换参数、换工具或换个实现方式），走不通就会停下来告诉你卡在哪——不会一直烧时间和额度。你也可以直接点「停下」自己接手。`), depth });
       }
 
       if (step === maxSteps - 1) stopNote = `已达最大步数（${maxSteps} 步）`;
@@ -1613,8 +1614,8 @@ function modePrompt(mode) {
       }
       // 「没做完」和「撞上限」得给不同的话：前者要把还差哪几项摆出来，后者才是叫用户调上限
       const notice = stopNote.startsWith("任务还有")
-        ? `⚠️ ${stopNote}，自动续跑轮次也用完了。还没打勾的是：${openLeft.slice(0, 5).join("、")}${openLeft.length > 5 ? ` 等 ${openLeft.length} 项` : ""}。直接跟我说「接着上次进度做」就能继续，进度档在工作目录的 PROGRESS.md。`
-        : `⚠️ ${stopNote}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
+        ? `注意：${stopNote}，自动续跑轮次也用完了。还没打勾的是：${openLeft.slice(0, 5).join("、")}${openLeft.length > 5 ? ` 等 ${openLeft.length} 项` : ""}。直接跟我说「接着上次进度做」就能继续，进度档在工作目录的 PROGRESS.md。`
+        : `注意：${stopNote}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
       finalText = finalText ? `${finalText}\n\n${notice}` : notice;
     }
 

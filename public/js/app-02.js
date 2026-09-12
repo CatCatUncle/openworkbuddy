@@ -79,7 +79,7 @@ const wsMenu = setupPicker("ws-btn", "ws-menu");
 async function setWorkspaceDir(p) {
   const r = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspace_dir: p }) });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok || j.error) { toast("❌ " + (j.error || "切换工作空间失败")); return false; }
+  if (!r.ok || j.error) { toast((j.error || "切换工作空间失败"), "circle-x"); return false; }
   refreshSettingsCache();
   return true;
 }
@@ -96,14 +96,14 @@ function renderWsMenu() {
       // 501 才是「这台机器弹不出系统选择框」，该退回手填；别的非 2xx 是真出事了，说出来
       const resp = await fetch("/api/pick-folder", { method: "POST" }).catch(() => null);
       const r = resp ? await resp.json().catch(() => ({})) : {};
-      if (!resp) return toast("❌ 选择文件夹失败");
+      if (!resp) return toast("选择文件夹失败", "circle-x");
       if (r.path) {
         if (await setWorkspaceDir(r.path)) fetch("/api/files").then(x => x.json()).then(renderFiles);
       } else if (resp.status === 501) {
         const p = prompt("输入工作空间文件夹的完整路径：", settingsCache.workspace_dir);
         if (p) await setWorkspaceDir(p);
       } else if (!resp.ok || r.error) {
-        toast("❌ " + (r.error || "选择文件夹失败"));
+        toast((r.error || "选择文件夹失败"), "circle-x");
       }
     } else if (mi.dataset.act === "open") {
       openWorkspaceOnHost();
@@ -183,7 +183,7 @@ async function uploadFiles(fileList, { rename } = {}) {
       const buf = await file.arrayBuffer();
       await uploadBytes(name, new Uint8Array(buf), { thumbMime: /^image\//.test(file.type) ? file.type : "" });
     } catch (err) {
-      toast(`❌ 上传失败: ${file.name}`); // 拖进来的是文件夹时读不出内容，也走这里
+      toast(`上传失败: ${file.name}`, "circle-x"); // 拖进来的是文件夹时读不出内容，也走这里
     }
   }
 }
@@ -214,7 +214,7 @@ async function uploadText(text, { name } = {}) {
     toast(`大段文字已存成 ${fname}（${text.length.toLocaleString()} 字），发消息时一起带给它`);
     return true;
   } catch (err) {
-    toast("❌ 文字存盘失败，已按普通粘贴处理");
+    toast("文字存盘失败，已按普通粘贴处理", "circle-x");
     return false;
   }
 }
@@ -673,7 +673,7 @@ document.getElementById("proj-add").onclick = (e) => {
       body: JSON.stringify({ name }),
     });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) { toast("❌ " + (data.error || "创建失败")); return; }
+    if (!resp.ok) { toast((data.error || "创建失败"), "circle-x"); return; }
     document.getElementById("new-task").click();
     refreshProjects().then(refreshSettingsCache);
   };
@@ -1092,9 +1092,9 @@ function accelDisplay(a) {
   return mods.join("") + parts.filter(p => !MOD[p]).map(p => KEY[p] || p).join("");
 }
 let toastTimer = null;
-// 全仓有一百多处 toast("❌ …") 这么写，表情是当「这是条报错」的记号在用的。
-// 与其把那一百多处挨个改掉（漏一处就留个表情在界面上），不如在这儿认这三个记号、
-// 摘掉、换成对应的图标——调用方怎么写都行，界面上一律是 SVG。
+// 仓库里的调用一律走第二个参数 toast(文字, "circle-x") 指定图标。
+// 这张表是给外来调用兜底的：插件、技能里的老写法可能还在往消息前面塞 ❌ / ⚠️，
+// 认出来就摘掉换成图标，免得表情漏到界面上。
 const TOAST_ICON = { "❌": "circle-x", "⚠️": "triangle-alert", "⚠": "triangle-alert", "✅": "circle-check", "✓": "circle-check" };
 function toast(msg, kind) {
   let t = document.getElementById("wb-toast");
@@ -1339,8 +1339,9 @@ loadPermModes();
 
 
 // ================= 头像编辑器（用户资料和助理设置共用一份） =================
-// 第一格是内置猫标（跟应用图标同一只），后面才是 emoji
-const AVATAR_PRESETS = [ASSISTANT_MARK, "🐱", "🐶", "🦊", "🐼", "🦉", "🧑‍💼", "👩‍💻", "🧠", "✨", "🚀", "🌈", "🍀", "☕️", "🎯"];
+// 第一格是内置猫标（跟应用图标同一只），后面是图标库里挑出来的那批——
+// 跟专家卡、专家团用的是同一份 AVATAR_ICONS，换个地方选头像不用重新认一遍图
+const AVATAR_PRESETS = [ASSISTANT_MARK].concat(AVATAR_ICONS);
 /** 把用户选的图压成方形小图再转 data URI：账号库/配置都是 JSON 文件，原图几 MB 塞进去会把读写拖垮 */
 function shrinkImage(fileObj, size) {
   return new Promise((resolve, reject) => {
@@ -1369,58 +1370,116 @@ function shrinkImage(fileObj, size) {
     fr.readAsDataURL(fileObj);
   });
 }
+/** 头像编辑器。参考常见做法（Notion / Slack 那类的头像弹层）：一排分类胶囊 + 等大方格 +
+ *  预览即时跟着改。以前是把 60 个候选摊在一条 flex 里，图标、猫标、表情三种大小各不相同，
+ *  挤在一个 116px 高的框里翻——用户原话是「待选的这些图片 svg 都很大」。 */
 function avatarEditorHtml(p, av, fallback) {
   const a = avatarBits(av, fallback);
-  return `<div style="display:flex;gap:12px;align-items:flex-start">
-    <span id="${p}-prev" class="ava${a.cls ? " " + a.cls : ""}" style="width:52px;height:52px;border-radius:14px;background:var(--wb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:600;flex:none;overflow:hidden">${a.html}</span>
-    <div style="flex:1;min-width:0">
-      <div class="form-row" style="align-items:center">
-        <input id="${p}-emoji" placeholder="放一两个 emoji，或者上传一张图" value="${a.cls === "emo" ? esc(av) : ""}" style="flex:1">
-        <button id="${p}-up" style="flex:none;padding:6px 12px;white-space:nowrap">上传图片</button>
-        <button id="${p}-clr" style="flex:none;padding:6px 12px;white-space:nowrap">恢复默认</button>
+  const cur = String(av || "").trim();
+  const cells = (list) => list.map((v) => avaCell(v, cur, v === ASSISTANT_MARK ? "内置猫标" : v)).join("");
+  const t = avatarTab(cur);
+  const sel = (k) => (t === k ? " active" : "");
+  const hid = (k) => (t === k ? "" : " hidden");
+  return `<div class="ava-ed">
+    <span id="${p}-prev" class="ava-ed-prev${a.cls ? " " + a.cls : ""}">${a.html}</span>
+    <div class="ava-ed-main">
+      <div class="ava-tabs">
+        <button type="button" class="chip ava-tab${sel("icon")}" data-t="icon">图标</button>
+        <button type="button" class="chip ava-tab${sel("emo")}" data-t="emo">表情</button>
+        <button type="button" class="chip ava-tab${sel("img")}" data-t="img">图片</button>
+        <button type="button" class="ava-reset" id="${p}-clr">恢复默认</button>
       </div>
-      <div id="${p}-presets" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:2px">${AVATAR_PRESETS.map(e => {
-        const b = avatarBits(e, "");
-        return `<span class="ava-pick${b.cls === "mk" ? " mk" : ""}" data-e="${esc(e)}" title="${e === ASSISTANT_MARK ? "内置猫标" : e}">${b.html}</span>`;
-      }).join("")}</div>
+      <div class="ava-grid" data-t="icon"${hid("icon")}>${cells(AVATAR_PRESETS)}</div>
+      <div data-t="emo"${hid("emo")}>
+        <div class="ava-grid">${cells(AVATAR_EMOJI)}</div>
+        <input id="${p}-emoji" class="ava-any" placeholder="上面挑一个，或者在这儿打字、粘贴任意表情" value="${a.cls === "emo" ? esc(av) : ""}">
+      </div>
+      <button type="button" class="ava-drop" id="${p}-up" data-t="img"${hid("img")}>
+        ${ic("image", "ava-drop-ic")}
+        <span class="ava-drop-t">把图片拖进来，或者点这儿挑一张</span>
+        <span class="ava-tip">自动裁成方的，只存在本机配置里，不上传任何服务器</span>
+      </button>
       <input type="file" id="${p}-file" accept="image/*" style="display:none">
     </div>
   </div>`;
 }
-/** 绑上事件，返回 { value() } 取当前选中的头像值（emoji 字符串 / data URI / 空=用默认）。
+/** 当前这个头像值该落在哪个分类下——打开时直接停在用户上次选的那一类，不用自己找。 */
+function avatarTab(v) {
+  const s = String(v || "").trim();
+  if (s.startsWith("data:")) return "img";
+  if (s && s !== ASSISTANT_MARK && !isIconName(s)) return "emo";
+  return "icon";
+}
+/** 绑上事件，返回 { value() } 取当前选中的头像值（图标名 / emoji / data URI / 空=用默认）。
  *  defaultAv：点「恢复默认」该回到哪。助理传内置猫标，用户资料不传（空=首字母）。 */
 function bindAvatarEditor(root, p, initial, fallback, defaultAv = "") {
   const q = (suffix) => root.querySelector("#" + p + "-" + suffix);
+  const box = q("prev").closest(".ava-ed");
   const state = { av: String(initial || "") };
   const nameNow = () => (typeof fallback === "function" ? fallback() : fallback);
-  const paint = () => paintAvatar(q("prev"), state.av, nameNow());
+  // 选中态画在格子上，不只画在预览里：一屏 60 多个候选，光看预览认不出「我刚点的是哪个」
+  const mark = () => box.querySelectorAll(".ava-pick").forEach((btn) => {
+    const on = btn.dataset.e === state.av;
+    btn.classList.toggle("on", on);
+    if (on) btn.setAttribute("aria-pressed", "true");
+    else btn.removeAttribute("aria-pressed");
+  });
+  const paint = () => { paintAvatar(q("prev"), state.av, nameNow()); mark(); };
+  const showTab = (t) => {
+    box.querySelectorAll(".ava-tab").forEach((btn) => btn.classList.toggle("active", btn.dataset.t === t));
+    box.querySelectorAll(".ava-ed-main > [data-t]").forEach((d) => { d.hidden = d.dataset.t !== t; });
+  };
+  box.querySelector(".ava-tabs").onclick = (e) => {
+    const tab = e.target.closest(".ava-tab");
+    if (tab) showTab(tab.dataset.t);
+  };
+  box.addEventListener("click", (e) => {
+    const pick = e.target.closest(".ava-pick");
+    if (!pick) return;
+    // 猫标和图标名都不是能打出来的字，别往输入框里塞 "@cat" / "rocket"——
+    // 那行字用户看了会以为要自己打
+    const picked = pick.dataset.e;
+    q("emoji").value = picked === ASSISTANT_MARK || isIconName(picked) ? "" : picked;
+    state.av = picked;
+    paint();
+  });
   q("emoji").oninput = () => {
     const v = q("emoji").value.trim();
     // 输入框空着又已经选了图/猫标：那是"选的东西还在，只是没打字"，别给清掉
     if (v || !(state.av.startsWith("data:") || state.av === ASSISTANT_MARK)) { state.av = v; paint(); }
   };
-  q("presets").onclick = (e) => {
-    const pick = e.target.closest(".ava-pick");
-    if (!pick) return;
-    // 猫标不是 emoji，别往输入框里塞 "@cat"——那行字用户看了会以为要自己打
-    q("emoji").value = pick.dataset.e === ASSISTANT_MARK ? "" : pick.dataset.e;
-    state.av = pick.dataset.e;
-    paint();
-  };
-  q("up").onclick = () => q("file").click();
-  // 「恢复默认」得预览真正的默认值。助理的默认是猫标，之前一律清成空、预览画个首字母，
-  // 保存后服务端又把空补回猫标（server.js: normalizeAvatar(...) || ASSISTANT_DEFAULT.avatar）——
-  // 于是预览跟保存结果两个样。
-  q("clr").onclick = () => { q("emoji").value = ""; state.av = defaultAv; paint(); };
-  q("file").onchange = async () => {
-    const f = q("file").files && q("file").files[0];
-    q("file").value = ""; // 允许连续选同一个文件
+  // 挑图和拖图落到同一条路上：一张图从哪儿来的，后面的处理没有理由不一样
+  const useFile = async (f) => {
     if (!f) return;
+    if (!/^image\//.test(f.type || "")) { toast("这得是一张图片，" + (f.name || "这个文件") + "不是"); return; }
     try {
       state.av = await shrinkImage(f, 128);
       q("emoji").value = "";
       paint();
     } catch (e) { toast("图片用不了：" + e.message); }
+  };
+  q("up").onclick = () => q("file").click();
+  // 虚线框画出来就是「能拖进来」的意思，那就真得接住。不接的更糟：浏览器的默认行为是
+  // 拿这张图顶掉整个页面，用户一屏还没保存的设置跟着没了。
+  const drop = q("up");
+  const overState = (on) => (e) => { e.preventDefault(); drop.classList.toggle("over", on); };
+  drop.ondragenter = overState(true);
+  drop.ondragover = overState(true);
+  drop.ondragleave = overState(false);
+  drop.ondrop = async (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    const dt = e.dataTransfer;
+    await useFile(dt && dt.files && dt.files[0]);
+  };
+  // 「恢复默认」得预览真正的默认值。助理的默认是猫标，之前一律清成空、预览画个首字母，
+  // 保存后服务端又把空补回猫标（server.js: normalizeAvatar(...) || ASSISTANT_DEFAULT.avatar）——
+  // 于是预览跟保存结果两个样。
+  q("clr").onclick = () => { q("emoji").value = ""; state.av = defaultAv; paint(); showTab(avatarTab(defaultAv)); };
+  q("file").onchange = async () => {
+    const f = q("file").files && q("file").files[0];
+    q("file").value = ""; // 允许连续选同一个文件
+    await useFile(f);
   };
   return { value: () => state.av };
 }
@@ -1472,7 +1531,7 @@ function renderProfile() {
       renderUserChip();
       msg.style.color = "";
       msg.textContent = "已保存";
-    } else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "保存失败"; }
+    } else { msg.style.color = "var(--wb-err-text)"; msg.textContent = r.error || "保存失败"; }
   };
   mBody.querySelector("#pf-uname-go").onclick = async () => {
     const msg = mBody.querySelector("#pf-uname-msg");
@@ -1490,7 +1549,7 @@ function renderProfile() {
       msg.textContent = `已改成 ${r.user.username}`;
       mBody.querySelector("#pf-upass").value = "";
       setTimeout(() => renderProfile(), 900); // 重画一遍，把"现在是 xxx"那句更新掉
-    } else { msg.style.color = "var(--wb-err)"; msg.textContent = r.error || "改不动"; }
+    } else { msg.style.color = "var(--wb-err-text)"; msg.textContent = r.error || "改不动"; }
   };
 }
 function renderUserChip() {
@@ -1716,7 +1775,7 @@ async function saveInlineFile(name, content, btn, saveAs) {
     flashBtn(btn, "已下载");
     return toast("网页端没有系统保存框，已交给浏览器下载；想换地方去浏览器的下载设置里改");
   }
-  if (!r?.ok) return toast("❌ 保存失败：" + (r?.error || why || "没说原因"));
+  if (!r?.ok) return toast("保存失败：" + (r?.error || why || "没说原因"), "circle-x");
   if (r.files) renderFiles(r.files);
   flashBtn(btn, "已存");
   if (saveAs) return toast(`已存到：${r.path}`);

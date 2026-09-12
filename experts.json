@@ -1,10 +1,10 @@
 {
-  "_说明": "专家与专家团定义。专家 = 一个有头像、说明、绑定技能和默认提示词的智能体；专家团 = 一支按顺序接力干活的智能体团队。主 Agent（协调者）用 delegate_to_expert 委派单个专家、用 delegate_to_team 委派整个团，它们与主 Agent 共享同一个工作目录。界面「专家 · 技能 · 连接器」页可增删改，也可直接改本文件。\n专家字段：name 名字 / alias 花名 / avatar 头像 emoji / category 分类 / tags 能力标签 / description 一句话简介 / skills 绑定技能（干活前自动提示加载）/ system 角色设定（真正喂给子智能体的提示词）。\n专家团字段：name 团名 / avatar 头像 / description 说明 / members 成员名单（执行顺序＝数组顺序，后一位能看到前一位的汇报和产出文件）。",
+  "_说明": "专家与专家团定义。专家 = 一个有头像、说明、绑定技能和默认提示词的智能体；专家团 = 一支按顺序接力干活的智能体团队。主 Agent（协调者）用 delegate_to_expert 委派单个专家、用 delegate_to_team 委派整个团，它们与主 Agent 共享同一个工作目录。界面「专家 · 技能 · 连接器」页可增删改，也可直接改本文件。\n专家字段：name 名字 / alias 花名 / avatar 头像图标名（index.html 那张 sprite 里的 i-* 去掉前缀；填别的字就按文字显示） / category 分类 / tags 能力标签 / description 一句话简介 / skills 绑定技能（干活前自动提示加载）/ system 角色设定（真正喂给子智能体的提示词）。\n专家团字段：name 团名 / avatar 头像 / description 说明 / members 成员名单（执行顺序＝数组顺序，后一位能看到前一位的汇报和产出文件）。",
   "experts": [
     {
       "name": "调研专员",
       "alias": "查得深",
-      "avatar": "🔍",
+      "avatar": "search",
       "category": "研究分析",
       "tags": [
         "行业调研",
@@ -19,7 +19,7 @@
     {
       "name": "深度研究员",
       "alias": "钻到底",
-      "avatar": "🧠",
+      "avatar": "brain",
       "category": "研究分析",
       "tags": [
         "深度研究",
@@ -36,7 +36,7 @@
     {
       "name": "竞品分析师",
       "alias": "对着比",
-      "avatar": "⚖️",
+      "avatar": "scale",
       "category": "研究分析",
       "tags": [
         "竞品对比",
@@ -53,7 +53,7 @@
     {
       "name": "数据分析师",
       "alias": "算得准",
-      "avatar": "📊",
+      "avatar": "chart-column",
       "category": "数据报表",
       "tags": [
         "数据清洗",
@@ -70,7 +70,7 @@
     {
       "name": "数据可视化师",
       "alias": "画得清",
-      "avatar": "📈",
+      "avatar": "trending-up",
       "category": "数据报表",
       "tags": [
         "图表设计",
@@ -87,7 +87,7 @@
     {
       "name": "文案写手",
       "alias": "写得顺",
-      "avatar": "✍️",
+      "avatar": "pencil",
       "category": "内容创作",
       "tags": [
         "报告",
@@ -104,7 +104,7 @@
     {
       "name": "小红书运营",
       "alias": "会种草",
-      "avatar": "🌸",
+      "avatar": "sprout",
       "category": "内容创作",
       "tags": [
         "笔记文案",
@@ -119,7 +119,7 @@
     {
       "name": "公众号编辑",
       "alias": "排得美",
-      "avatar": "📮",
+      "avatar": "megaphone",
       "category": "内容创作",
       "tags": [
         "长文",
@@ -136,7 +136,7 @@
     {
       "name": "网页设计师",
       "alias": "做得亮",
-      "avatar": "🎨",
+      "avatar": "palette",
       "category": "网页视觉",
       "tags": [
         "落地页",
@@ -153,7 +153,7 @@
     {
       "name": "PPT设计师",
       "alias": "排得稳",
-      "avatar": "🖼️",
+      "avatar": "presentation",
       "category": "文档演示",
       "tags": [
         "演示文稿",
@@ -170,7 +170,7 @@
     {
       "name": "会议纪要师",
       "alias": "记得全",
-      "avatar": "📝",
+      "avatar": "notebook-pen",
       "category": "效率办公",
       "tags": [
         "纪要",
@@ -185,7 +185,7 @@
     {
       "name": "周报助手",
       "alias": "交得快",
-      "avatar": "🗓️",
+      "avatar": "calendar-days",
       "category": "效率办公",
       "tags": [
         "周报",
@@ -203,7 +203,7 @@
     {
       "name": "短视频脚本师",
       "alias": "抓得住",
-      "avatar": "🎥",
+      "avatar": "film",
       "category": "内容创作",
       "tags": [
         "口播脚本",
@@ -218,7 +218,7 @@
     {
       "name": "视频成片师",
       "alias": "出得快",
-      "avatar": "🎬",
+      "avatar": "clapperboard",
       "category": "内容创作",
       "tags": [
         "图文成片",
@@ -235,7 +235,7 @@
     {
       "name": "小红书选题策划",
       "alias": "选得准",
-      "avatar": "🧭",
+      "avatar": "compass",
       "category": "内容创作",
       "tags": [
         "选题",
@@ -252,7 +252,7 @@
     {
       "name": "封面卡片师",
       "alias": "画封面",
-      "avatar": "🃏",
+      "avatar": "image",
       "category": "网页视觉",
       "tags": [
         "小红书封面",
@@ -269,7 +269,7 @@
     {
       "name": "飞书助理",
       "alias": "飞得勤",
-      "avatar": "🕊️",
+      "avatar": "bird",
       "category": "效率办公",
       "tags": [
         "飞书",
@@ -288,7 +288,7 @@
     {
       "name": "技能沉淀师",
       "alias": "沉得下",
-      "avatar": "🧰",
+      "avatar": "package",
       "category": "效率办公",
       "tags": [
         "技能包",
@@ -305,7 +305,7 @@
     {
       "name": "翻译校对师",
       "alias": "译得准",
-      "avatar": "🌐",
+      "avatar": "languages",
       "category": "语言沟通",
       "tags": [
         "中英互译",
@@ -320,7 +320,7 @@
     {
       "name": "程序员",
       "alias": "写得稳",
-      "avatar": "💻",
+      "avatar": "code",
       "category": "开发协作",
       "tags": [
         "写脚本",
@@ -336,7 +336,7 @@
     {
       "name": "代码审查员",
       "alias": "挑得细",
-      "avatar": "🧐",
+      "avatar": "file-search",
       "category": "开发协作",
       "tags": [
         "Code Review",
@@ -345,13 +345,13 @@
       ],
       "skills": [],
       "description": "审一段代码或一个改动：按严重度列问题、每条附修法，不泛泛而谈。适合委派：合并前审查、安全排查、代码质量体检。",
-      "system": "你是一名代码审查员。只审不改，除非用户明确要你顺手修。\n\n1) 先说这段代码/改动在做什么（一两句），证明你读懂了；\n2) 问题按严重度分级：🔴 会出错或有安全隐患 / 🟡 边界与健壮性 / 🟢 可读性与风格，每条给「位置 + 为什么是问题 + 怎么改」；\n3) 每个 🔴 要给一个能触发它的具体输入或场景，给不出就降级；\n4) 不挑风格茬凑数：没有问题就说没有问题，写清你检查了哪些方面。\n\n输出 markdown 清单，问题总数和 🔴 数量写在最前面。",
+      "system": "你是一名代码审查员。只审不改，除非用户明确要你顺手修。\n\n1) 先说这段代码/改动在做什么（一两句），证明你读懂了；\n2) 问题按严重度分三档，每条开头写明是哪档：【严重】会出错或有安全隐患 /【注意】边界与健壮性 /【建议】可读性与风格。每条给「位置 + 为什么是问题 + 怎么改」；\n3) 每条【严重】都要给一个能触发它的具体输入或场景，给不出就降一档；\n4) 不挑风格茬凑数：没有问题就说没有问题，写清你检查了哪些方面。\n\n输出 markdown 清单，问题总数和【严重】条数写在最前面。",
       "builtin": true
     },
     {
       "name": "邮件沟通师",
       "alias": "说得体",
-      "avatar": "📧",
+      "avatar": "mail",
       "category": "语言沟通",
       "tags": [
         "商务邮件",
@@ -367,7 +367,7 @@
     {
       "name": "招聘专员",
       "alias": "招得对",
-      "avatar": "🧑‍💼",
+      "avatar": "id-card",
       "category": "效率办公",
       "tags": [
         "JD",
@@ -383,7 +383,7 @@
     {
       "name": "客服话术师",
       "alias": "答得暖",
-      "avatar": "🎧",
+      "avatar": "message-circle",
       "category": "语言沟通",
       "tags": [
         "FAQ",
@@ -398,7 +398,7 @@
     {
       "name": "合同审阅员",
       "alias": "看得紧",
-      "avatar": "📜",
+      "avatar": "scroll-text",
       "category": "效率办公",
       "tags": [
         "合同风险",
@@ -413,7 +413,7 @@
     {
       "name": "项目经理",
       "alias": "盯得紧",
-      "avatar": "📋",
+      "avatar": "clipboard-list",
       "category": "效率办公",
       "tags": [
         "拆任务",
@@ -429,7 +429,7 @@
     {
       "name": "产品经理",
       "alias": "想得全",
-      "avatar": "🗺️",
+      "avatar": "map",
       "category": "研究分析",
       "tags": [
         "PRD",
@@ -445,7 +445,7 @@
   "teams": [
     {
       "name": "调研出报告",
-      "avatar": "📑",
+      "avatar": "file-text",
       "description": "查资料 → 配图表 → 写成文档。一句话要一份带数据和图的正式报告时用它。",
       "members": [
         "调研专员",
@@ -455,7 +455,7 @@
     },
     {
       "name": "汇报三件套",
-      "avatar": "🎯",
+      "avatar": "target",
       "description": "深度研究 → 数据配图 → 做成 PPT。要拿去开会讲的材料用它。",
       "members": [
         "深度研究员",
@@ -465,7 +465,7 @@
     },
     {
       "name": "网页交付组",
-      "avatar": "🌐",
+      "avatar": "globe",
       "description": "先把内容查实写顺，再做成能直接打开的单文件网页。",
       "members": [
         "调研专员",
@@ -475,7 +475,7 @@
     },
     {
       "name": "内容发布组",
-      "avatar": "✨",
+      "avatar": "sparkles",
       "description": "选题查证 → 长文成稿 → 改写成小红书笔记。一次产出多平台内容。",
       "members": [
         "调研专员",
@@ -485,7 +485,7 @@
     },
     {
       "name": "短视频出片组",
-      "avatar": "📹",
+      "avatar": "video",
       "description": "脚本 → 成片。一句话要一条带配音字幕的口播/讲解视频时用它。",
       "members": [
         "短视频脚本师",
@@ -494,7 +494,7 @@
     },
     {
       "name": "小红书全案组",
-      "avatar": "🌸",
+      "avatar": "sprout",
       "description": "选题 → 写笔记 → 做封面图。给一个产品/账号一次出一整套可发的图文。",
       "members": [
         "小红书选题策划",
@@ -504,7 +504,7 @@
     },
     {
       "name": "飞书交付组",
-      "avatar": "🕊️",
+      "avatar": "bird",
       "description": "查资料 → 写成文档 → 直接发到飞书。结果要落在飞书文档/群里时用它。",
       "members": [
         "调研专员",
@@ -514,7 +514,7 @@
     },
     {
       "name": "代码交付组",
-      "avatar": "🛠️",
+      "avatar": "wrench",
       "description": "写代码 → 自审。改完还要有人挑一遍毛病再交付时用它。",
       "members": [
         "程序员",
