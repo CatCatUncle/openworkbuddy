@@ -2355,7 +2355,9 @@ function makeOutCard(f, isHtml) {
   // 一个 🎬 图标只说明「这是个视频」，第一帧才说明「这是哪个视频」——
   // 一回合出三条片子的时候，靠图标是分不出哪条是哪条的。
   const isVid = /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name);
-  const thumb = isPic ? `<img src="${url}" alt="" loading="lazy" decoding="async">`
+  // 整张图放进来之后，扁盒子配竖图必然剩一圈留白。底下垫一层同一张图的放大模糊版把它填掉：
+  // 用的是同一个 url，浏览器走缓存，不会多下一次。视频没有这层——它自己带黑底，本来就是电影画幅的样子。
+  const thumb = isPic ? `<span class="out-bg" style="background-image:url(&quot;${url}&quot;)" aria-hidden="true"></span><img src="${url}" alt="" loading="lazy" decoding="async">`
     : isVid ? `<video src="${url}#t=0.1" muted playsinline preload="metadata"></video><span class="vd-play" aria-hidden="true"></span>`
     : `<span class="ph">${ic(fileIcon(f.name))}</span>`;
   const card = document.createElement("div");

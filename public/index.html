@@ -35,6 +35,12 @@
   /* ---------- 外观偏好：app-02.js 的 applyLook() 把选择写到 根元素 html 的 data-fs / data-skin / data-font / data-density 属性 ----------
      字号只改一个 --wb-fs：正文、输入框、标题、行内代码、左栏历史都按 calc 跟着走，四档之间比例不变 */
   :root { --wb-fs: 15px; }
+  /* 行内控件的高度只在这儿定。以前每个家族各写各的内边距：输入框 8px 12px 出 35，
+     下拉同样的内边距出 37（select 的内容盒天生高 2px），主按钮 8px 18px 出 36，
+     次要按钮 7px 14px 出 32，胶囊 4px 12px 出 31。结果一条 hub-head 上四种底边，
+     实测 10 行里有 9 行高度不齐，最大差 5px。改成定高、只留左右内边距。
+     36 是主按钮原本的高度，也是 4 的倍数；紧凑行（引擎行、反馈条）走 sm 那档。 */
+  :root { --wb-ctl-h: 36px; --wb-ctl-h-sm: 30px; }
   /* 折叠箭头。伪元素挂不了 <use>，所以这枚只能走 mask：形状写死在 data: 里，颜色由
      currentColor 走 background 给。改形状要跟 icons.js 里的 chevron-right 对齐。 */
   :root {
@@ -264,7 +270,7 @@
                  font-size: 26px; font-weight: 600; overflow: hidden; }
   .ava-ed-main { flex: 1; min-width: 0; }
   .ava-ed-main > [data-t][hidden] { display: none; } /* .ava-grid 是 display:grid，会盖掉 hidden 的默认样式 */
-  .ava-tabs { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .ava-tabs { display: flex; gap: 8px; align-items: stretch; margin-bottom: 8px; }
   .ava-tabs .chip { padding: 3px 12px; font-size: 12px; }
   .ava-reset { margin-left: auto; padding: 4px; border: none; background: none; cursor: pointer;
                font-size: 12px; color: var(--wb-text-2); }
@@ -475,9 +481,23 @@
      以前是 240px 大卡内嵌 iframe 缩略图：一回合出三个网页就在对话里跑三个小浏览器，又慢又挡正文 */
   .out-card { position: relative; display: flex; flex-direction: column; width: 168px; padding: 0; overflow: hidden; border: 1px solid var(--wb-border); border-radius: var(--radius-xl); background: var(--wb-bg); cursor: pointer; box-sizing: border-box; transition: border-color var(--wb-t-fast) var(--wb-ease), background var(--wb-t-fast) var(--wb-ease); }
   .out-card:hover, .out-card:focus-visible { border-color: var(--wb-brand-text); background: var(--wb-brand-weak); outline: none; }
-  .out-thumb { position: relative; width: 100%; height: 92px; flex: none; background: var(--wb-bg-side); border-bottom: 1px solid var(--wb-border); display: flex; align-items: center; justify-content: center; overflow: hidden; }
-  .out-thumb img, .out-thumb video { width: 100%; height: 100%; object-fit: cover; }
+  .out-thumb { position: relative; width: 100%; height: 120px; flex: none; background: var(--wb-bg-side); border-bottom: 1px solid var(--wb-border); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  /* 缩略图是拿来认图的，不是拿来猜图的。
+     原来是 object-fit: cover——按盒子的比例把图裁一刀。拿工作区里 336 张真产出量过：
+     中位数只剩 78% 露在外面，132 张被切掉一半以上，最狠的一张只露出 8%。
+     竖版海报塞进 1.83 的扁盒子只剩中间一条，长图表被切掉两头。
+     再加上 width/height:100%——二维码、小图标这种本来就比盒子小的，会被强行拉满再裁，
+     放大糊掉。用户原话：「那些图都变形了啊，然后没有看到完整的」。
+     改法两条：contain 保证整张进来；max-* + auto 保证小图按原大小待着，不被撑。
+     盒高 92 → 120：同一批图里，进来之后小得占不到盒子四成的，从 100 张降到 34 张。 */
+  .out-thumb img, .out-thumb video { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
   .out-thumb video { background: #000; }
+  /* 留白填充层：同一张图放大糊掉当底色。整张图摆正中间之后，竖图两边、长图上下都会空出来，
+     空成一片死灰最难看。糊到认不出内容、只剩这张图自己的色调，比灰底有生气也不抢主体。 */
+  .out-thumb .out-bg { position: absolute; inset: 0; background-size: cover; background-position: center;
+    filter: blur(18px) saturate(1.3); transform: scale(1.18); opacity: .45; pointer-events: none; }
+  .out-thumb img, .out-thumb video { position: relative; z-index: 1; }
+  .out-card.thumb-dead .out-bg { display: none; }
   /* 视频缩略图上那枚播放标：纯 CSS 一个圆加一个三角，不占图标也不用 emoji */
   .out-thumb .vd-play { position: absolute; width: 28px; height: 28px; border-radius: 50%; background: rgba(0, 0, 0, .52); box-shadow: 0 0 0 1px rgba(255, 255, 255, .35); pointer-events: none; }
   .out-thumb .vd-play::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-40%, -50%); border-style: solid; border-width: 5px 0 5px 8px; border-color: transparent transparent transparent #fff; }
@@ -499,7 +519,7 @@
   .ta-btn.on { color: var(--wb-brand-text); }
   .ta-meta { margin-left: auto; font-size: 13px; color: var(--wb-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .fb-note { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
-  .fb-note input { flex: 1; min-width: 0; height: 30px; padding: 0 10px; font-size: 13px; color: var(--wb-text); background: var(--wb-bg-side); border: 1px solid var(--wb-border); border-radius: var(--radius-md); outline: none; }
+  .fb-note input { flex: 1; min-width: 0; height: var(--wb-ctl-h-sm); padding: 0 10px; font-size: 13px; color: var(--wb-text); background: var(--wb-bg-side); border: 1px solid var(--wb-border); border-radius: var(--radius-md); outline: none; }
   .fb-note input:focus { border-color: var(--wb-brand-text); }
   .fb-note button { height: 30px; padding: 0 12px; font-size: 13px; color: #fff; background: var(--wb-brand); border: none; border-radius: var(--radius-md); cursor: pointer; }
   .fb-thanks { font-size: 13px; color: var(--wb-text-3); }
@@ -509,7 +529,7 @@
   .im-row .im-ava { width: 26px; height: 26px; border-radius: var(--radius-md); background: var(--wb-bg-hover); display: flex; align-items: center; justify-content: center; font-size: 15px; flex: none; }
   .assist-page .im-feed { max-height: none; overflow: visible; }
   .im-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .im-head .btn-plain { flex: none; font-size: 13px; padding: 6px 12px; }
+  .im-head .btn-plain { flex: none; font-size: 13px; padding: 0 12px; }
   .im-head .picker { flex: none; }
   #ab-ic .ab-ava { width: 18px; height: 18px; font-size: 15px; vertical-align: -4px; }
   #ab-ic .ab-ava img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-sm); }
@@ -599,7 +619,7 @@
   .run-eng .re-free { padding: 0 6px; border-radius: var(--radius-full); background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--wb-ok-text); }
   /* 冷启动那几秒：同一枚牌子，🖥 换成转圈。init 一到原地换回来，位置和尺寸都不动 */
   .run-eng.re-boot .re-ic { display: inline-flex; align-items: center; }
-  #send { width: 34px; height: 34px; border: none; border-radius: 50%; background: var(--wb-brand-grad); color: #fff; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  #send { width: 32px; height: 32px; border: none; border-radius: 50%; background: var(--wb-brand-grad); color: #fff; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   #send:disabled { opacity: .45; cursor: not-allowed; }
   .quick-bar { display: flex; align-items: center; gap: 4px; padding: 8px 6px 0; }
   .quick-bar .picker-btn { font-size: 13px; }
@@ -869,10 +889,14 @@
   .card-item { border: 1px solid var(--wb-border); border-radius: var(--radius-lg); padding: 12px 14px; margin-bottom: 10px; }
   .card-item .t { font-weight: 600; margin-bottom: 4px; }
   .card-item .d { color: var(--wb-text-2); line-height: 1.6; }
-  .m-body input, .m-body textarea, .m-body select { width: 100%; font-size: 14px; padding: 8px 10px; border: 1px solid var(--wb-border); border-radius: var(--radius-md); margin-bottom: 8px; outline: none; background: var(--wb-bg); }
+  .m-body input, .m-body textarea, .m-body select { width: 100%; font-size: 14px; border: 1px solid var(--wb-border); border-radius: var(--radius-md); margin-bottom: 8px; outline: none; background: var(--wb-bg); }
+  .m-body input, .m-body select { padding: 0 10px; }
+  .m-body textarea { padding: 8px 10px; }
   .m-body input:focus, .m-body textarea:focus { border-color: var(--wb-brand-text); }
-  .btn-brand { border: none; background: var(--wb-brand-grad); color: #fff; border-radius: var(--radius-md); padding: 8px 18px; font-size: 14px; cursor: pointer; }
-  .btn-plain { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: var(--radius-md); padding: 7px 14px; font-size: 13px; cursor: pointer; color: var(--wb-text-2); }
+  /* 只管颜色和边框。高度 / 内边距 / 圆角 / 字号在文末的 shadcn 桥接层里，那段排在后面，
+     在这儿写几何会被它整条压掉——别在这儿调尺寸。 */
+  .btn-brand { border: none; background: var(--wb-brand-grad); color: #fff; cursor: pointer; }
+  .btn-plain { border: 1px solid var(--wb-border); background: var(--wb-bg); cursor: pointer; color: var(--wb-text-2); }
   /* 没带 class 的 <a> 会吃浏览器自带的 #0000ee，暗色底上只有 1.75——基本看不见。
      只兜没 class 的那些，带了 class 的链接照旧走自己的规则 */
   a:not([class]) { color: var(--wb-brand-text); }
@@ -980,7 +1004,7 @@
   .auth-card { width: 340px; background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: var(--radius-2xl); padding: 28px 26px; box-shadow: var(--shadow-floating); }
   .auth-card h2 { font-size: 18px; margin-bottom: 4px; }
   .auth-card .sub { font-size: 13px; color: var(--wb-text-3); margin-bottom: 18px; }
-  .auth-card input { width: 100%; margin-bottom: 10px; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); font-size: 14px; }
+  .auth-card input { width: 100%; margin-bottom: 10px; padding: 0 12px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); font-size: 14px; }
   .auth-card button.go { width: 100%; padding: 10px; border: none; border-radius: var(--radius-lg); background: var(--wb-brand-grad); color: #fff; font-size: 15px; cursor: pointer; }
   .auth-card .alt { font-size: 13px; color: var(--wb-text-3); text-align: center; margin-top: 12px; }
   .auth-card .alt a { color: var(--wb-brand-text); cursor: pointer; }
@@ -1004,7 +1028,7 @@
   .onb-tag.rec { background: color-mix(in srgb, var(--wb-warn) 18%, transparent); color: var(--wb-warn); }
   .onb-card .sub { margin-top: 6px; }
   .onb-card .onb-lb { display: block; font-size: 13px; color: var(--wb-text-2); margin: 10px 0 6px; }
-  .onb-card select { width: 100%; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); font-size: 14px; background: var(--wb-bg); color: var(--wb-text); }
+  .onb-card select { width: 100%; padding: 0 12px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); font-size: 14px; background: var(--wb-bg); color: var(--wb-text); }
   .onb-card .onb-tip { font-size: 13px; color: var(--wb-text-3); margin-top: 6px; line-height: 1.6; }
   .onb-card .onb-tip a { color: var(--wb-brand-text); }
   /* 「去拿 Key ↗」：向导、模型/搜索/IM 面板共用的小胶囊链接，一眼能点、不跟正文糊在一起 */
@@ -1034,9 +1058,9 @@
   .onb-chip { font-size: 12px; color: var(--wb-text-3); flex: none; }
   .onb-chip.ok { color: var(--wb-ok-text); }
   .onb-chip.warn { color: var(--wb-warn); }
-  .onb-row-h .btn-plain { height: 28px; padding: 0 10px; font-size: 12px; flex: none; }
+  .onb-row-h .btn-plain { height: var(--wb-ctl-h-sm); padding: 0 10px; font-size: 12px; flex: none; }
   .onb-row-b { border-top: 1px solid var(--wb-border); padding: 10px 12px 12px; }
-  .onb-row-b input { display: block; width: 100%; margin-bottom: 6px; font-size: 13px; padding: 7px 10px; }
+  .onb-row-b input { display: block; width: 100%; margin-bottom: 6px; font-size: 13px; padding: 0 10px; }
   .onb-act { display: flex; align-items: center; gap: 8px; }
   .onb-act .err { margin: 0; min-height: 0; }
   .onb-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; }
@@ -1077,7 +1101,7 @@
   .ask-opt .go { flex: none; font-size: 12px; color: transparent; align-self: center; }
   .ask-opt:hover .go { color: var(--wb-brand-text); }
   .ask-free { display: flex; gap: 8px; margin-top: 12px; }
-  .ask-free input { flex: 1; min-width: 0; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); padding: 8px 12px; font-size: 13px; background: var(--wb-bg); color: var(--wb-text); }
+  .ask-free input { flex: 1; min-width: 0; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); padding: 0 12px; font-size: 13px; background: var(--wb-bg); color: var(--wb-text); }
   .ask-free input:focus { outline: none; border-color: var(--wb-brand-text); }
   .ask-free button { flex: none; border: 1px solid var(--wb-border); background: var(--wb-bg); color: var(--wb-text-2); border-radius: var(--radius-lg); padding: 8px 16px; font-size: 13px; cursor: pointer; }
   .ask-free button:hover { border-color: var(--wb-brand-text); color: var(--wb-brand-text); }
@@ -1102,6 +1126,8 @@
   .usage-table th { color: var(--wb-text-3); font-weight: 500; }
   /* ---------- 专家 · 技能 · 连接器（主区页面） ---------- */
   .hub-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+  /* 这一行上的胶囊是按钮，不是标签，得跟旁边的搜索框和主按钮一样高 */
+  .hub-head .chip { display: inline-flex; align-items: center; height: var(--wb-ctl-h); }
   .hub-tabs { display: flex; gap: 4px; background: var(--wb-bg-side); border-radius: var(--radius-lg); padding: 3px; }
   .hub-tabs button { border: none; background: transparent; border-radius: var(--radius-md); padding: 7px 16px; font-size: 14px; color: var(--wb-text-2); cursor: pointer; }
   .hub-tabs button.active { background: var(--wb-bg); color: var(--wb-text); font-weight: 600; box-shadow: var(--shadow-surface); }
@@ -1109,7 +1135,7 @@
      干脆不写，flex:1 一路撑到 746——同一个控件量出四种宽度。260 是这里最长的
      占位文案「搜索专家职称或描述」加上放大镜留白之后的舒服值，再宽就只剩空框。 */
   .hub-search { flex: 1; min-width: 160px; max-width: 260px; position: relative; }
-  .hub-search input { width: 100%; padding: 8px 12px 8px 30px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); font-size: 14px; background: var(--wb-bg); }
+  .hub-search input { width: 100%; padding: 0 12px 0 30px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); font-size: 14px; background: var(--wb-bg); }
   /* 放大镜原来是 ::before 的 content:"🔍"——伪元素塞不进 svg，所以改成真节点：
      .hub-search 里第一个 .i 就是它，位置靠这条绝对定位钉住，标记看 ui.css 的 .i */
   .hub-search > .i { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); font-size: 13px; opacity: .5; pointer-events: none; }
@@ -1269,6 +1295,12 @@
     background: var(--wb-bg); color: var(--wb-text); outline: none; min-width: 0;
     transition: border-color .18s var(--wb-ease), box-shadow .18s var(--wb-ease), background .18s var(--wb-ease);
   }
+  /* 单行控件定高：高度交给令牌，内边距只管左右。全局 box-sizing 是 border-box，
+     所以后面任何只改内边距的规则都不会再把高度带跑偏——想改高度必须显式写 height。
+     多行文本框不在其中：它的高度得跟着行数走。 */
+  input:where(:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"])), select {
+    height: var(--wb-ctl-h); padding: 0 12px;
+  }
   input:focus, select:focus, textarea:focus { border-color: var(--wb-brand-text); box-shadow: 0 0 0 3px var(--wb-brand-weak); }
   input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-brand-text); }
   textarea { resize: vertical; }
@@ -1423,7 +1455,7 @@
   .im-conn.danger { border-color: var(--wb-err); color: var(--wb-err-text); }
   .im-card-b { padding: 10px 12px 12px; border-top: 1px solid var(--wb-border); }
   .im-card.packed .im-card-b { display: none; }
-  .im-card-b input { display: block; width: 100%; margin-bottom: 6px; font-size: 13px; padding: 7px 10px; }
+  .im-card-b input { display: block; width: 100%; margin-bottom: 6px; font-size: 13px; padding: 0 10px; }
   .im-card-b .im-r { font-size: 12px; margin-top: 2px; line-height: 1.5; word-break: break-all; }
   .im-card-b .im-r:empty { display: none; }
   .im-card-b .im-act { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; }
@@ -1460,7 +1492,7 @@
   /* 展开区：只有选中的那条才展开，装法/路径/模型/连接测试都在里面，不选的时候别糊一屏 */
   .eng-x { margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--wb-border); display: grid; gap: 7px; }
   .eng-x label { font-size: 12px; color: var(--wb-text-2); display: grid; gap: 3px; }
-  .eng-x input, .eng-x select { height: 30px; font-size: 12.5px; }
+  .eng-x input, .eng-x select { height: var(--wb-ctl-h-sm); font-size: 12.5px; }
   .eng-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .eng-r { font-size: 12.5px; line-height: 1.6; padding: 7px 9px; border-radius: var(--radius-md); border: 1px solid var(--wb-border); background: var(--wb-bg-hover); }
   .eng-r.ok { border-color: color-mix(in srgb, var(--wb-ok) 34%, transparent); color: var(--wb-ok-text); background: color-mix(in srgb, var(--wb-ok) 6%, transparent); }
@@ -1482,8 +1514,8 @@
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
     border-radius: var(--radius-md); line-height: 1; white-space: nowrap;
   }
-  .btn-brand { height: 36px; padding: 0 16px; font-size: 14px; font-weight: 500; }
-  .btn-plain { height: 32px; padding: 0 12px; font-size: 13px; }
+  .btn-brand { height: var(--wb-ctl-h); padding: 0 16px; font-size: 14px; font-weight: 500; }
+  .btn-plain { height: var(--wb-ctl-h); padding: 0 14px; font-size: 13px; }
   .btn-brand:focus-visible, .btn-plain:focus-visible, .chip:focus-visible, .icon-btn:focus-visible,
   .picker-btn:focus-visible, .ui-btn:focus-visible {
     outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px var(--ring-weak);
