@@ -484,11 +484,14 @@ function testCssTokenGate() {
   // 两头都是深色的面：浅色主题下它也还是深的，套 --wb-*-text（浅色档是深红/深绿）反而看不见。
   // 只放这一条具体选择器，不放整类——新加的写死颜色照样会被抓。
   const DARK_SURFACE = /#wb-toast/;
+  // 免死判定要看「这条声明属于哪条规则」，不能只看它自己那一行：一条规则常常折成好几行写，
+  // 选择器在第一行、background 在第二行，按行取就永远读不到选择器（pet.html 的 #drop 就是这样）。
+  // 往前找到上一个 } 为止，中间那段一定含选择器。
+  const ruleHeadAt = (t, i) => t.slice(t.lastIndexOf("}", i) + 1, i);
   const scanHexAsText = (t, name, out) => {
     for (const m of t.matchAll(/(?<![-a-zA-Z])color:\s*(#[0-9a-fA-F]{3,8})\b/g)) {
       if (hexSat(m[1]) <= 0.18) continue;
-      const line = t.slice(t.lastIndexOf("\n", m.index) + 1, (t.indexOf("\n", m.index) + 1 || t.length + 1) - 1);
-      if (DARK_SURFACE.test(line)) continue;
+      if (DARK_SURFACE.test(ruleHeadAt(t, m.index))) continue;
       out.push(name + ":" + lineOf(t, m.index) + " 的 " + m[1]);
     }
   };
@@ -508,7 +511,60 @@ function testCssTokenGate() {
   assert(h1.length === 1, "写死的十六进制文字色抓不到，这道闸是摆设");
   assert(h2.length === 0, "误伤了灰字/令牌/背景色：" + h2.join("、"));
   assert(h3.length === 0 && h4.length === 1, `免死名单跑偏了：免=${h3.length} 非免=${h4.length}`);
-  console.log(`✅ CSS 令牌闸门：${defined.size} 个变量全部有定义 · 填充色没被当文字色用（令牌写死/插值/存变量 + 直接写十六进制，四种写法都盯）`);
+  // 第 ⑤ 种：写死的十六进制当**底色 / 边框**用。上面那道只管 color:，管不到这一路，
+  // 三处真事故都是从这个口子溜过去的，而且一个比一个离谱：
+  //   · 审批条：底 #fff7ed + 边 #fdba74，深色再单开一条 .ap-row 各写一遍。
+  //     那根边压在页面底上只有 1.56:1，「任务停在这儿等你点头」这条提示等于没画边。
+  //   · 场景 tab 选中的胶囊：写死 #17181c，可深色主题的轨道底正好也是 #17181c——
+  //     1.00:1，胶囊整个消失，看不出选中的是哪一个。
+  //   · 过程卡：写死 #fbfcfe，深色下是一整块白板（压页面底 17.43:1），
+  //     上面的字是深色主题那档浅灰，白底浅灰 2.29:1，读不了。
+  // 注意这三个的饱和度分别是 18 / 5 / 3——按「够不够花」筛一个都抓不到，
+  // 所以这一路不看饱和度：底色和边框里只准出现 #fff / #000（蒙层、视频留黑那种跟主题无关的），
+  // 其余一律要走令牌。var() 里的兜底值放行（var(--wb-warn, #d97706) 是本项目既有写法，主题照样翻）。
+  const stripVar = (s) => { let o = s, n; do { n = o; o = o.replace(/var\([^()]*\)/g, " "); } while (o !== n); return o; };
+  // 故意长期是深色 / 本来就是插画固有色的几处：单列具体选择器，不放整类
+  const FIXED_SURFACE = /\.code-head|\.code-wrap|#drop/;
+  const SURFACE_PROP = /(?<![-a-zA-Z])(background|background-color|border|border-color|border-top|border-right|border-bottom|border-left|border-top-color|border-right-color|border-bottom-color|border-left-color|outline|outline-color|box-shadow)\s*:\s*([^;{}]*)/g;
+  const scanHexAsFill = (t, name, out) => {
+    for (const m of t.matchAll(SURFACE_PROP)) {
+      if (FIXED_SURFACE.test(ruleHeadAt(t, m.index))) continue;
+      for (const h of stripVar(m[2]).match(/#[0-9a-fA-F]{3,8}\b/g) || []) {
+        if (/^#(fff|ffffff|000|000000)$/i.test(h)) continue;
+        out.push(name + ":" + lineOf(t, m.index) + " 的 " + h);
+      }
+    }
+  };
+  const hexAsFill = [];
+  for (const f of [path.join(pub, "index.html"), path.join(pub, "css", "ui.css"), path.join(pub, "admin.html"), path.join(pub, "pet.html")]) {
+    const t = fs.readFileSync(f, "utf8");
+    for (const b of t.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) scanHexAsFill(b[1], path.basename(f), hexAsFill);
+    if (f.endsWith(".css")) scanHexAsFill(t, path.basename(f), hexAsFill);
+  }
+  assert(hexAsFill.length === 0,
+    "底色/边框写死成十六进制了，不跟主题翻色，深浅两套还得各写一遍（审批条丢了边框 1.56:1、选中胶囊消失 1.00:1、过程卡白板 2.29:1，都是这么来的）：" + hexAsFill.join("、"));
+  // 反向对照：三起真事故的原样写法，一条都不许放过（注意它们一个比一个不花）
+  const f1 = []; scanHexAsFill(".x { background: #fff7ed; }", "假1", f1);
+  const f2 = []; scanHexAsFill(".y { border: 1px solid #fdba74; }", "假2", f2);
+  const f8 = []; scanHexAsFill(".z.active { background: #17181c; }", "假3", f8);
+  const f9 = []; scanHexAsFill(".w { background: #fbfcfe; }", "假4", f9);
+  assert(f1.length === 1 && f2.length === 1 && f8.length === 1 && f9.length === 1,
+    `写死的底色/边框抓不到，这道闸是摆设：淡橙=${f1.length} 橙边=${f2.length} 近黑=${f8.length} 近白=${f9.length}`);
+  // 正向对照：var 兜底、纯黑白、以及归另一道闸管的 color: 一个都不许误报
+  const f3 = [];
+  scanHexAsFill(".a { background: color-mix(in srgb, var(--wb-warn, #d97706) 10%, transparent); }", "真1", f3);
+  scanHexAsFill(".b { background: #fff; } .b2 { background: #000; } .b3 { border: 1px solid #FFFFFF; }", "真2", f3);
+  scanHexAsFill(".c { color: #16a34a; }", "真3", f3);
+  assert(f3.length === 0, "误伤了 var 兜底/纯黑白/文字色：" + f3.join("、"));
+  // 免死名单只免它自己：同样的颜色换个选择器照样抓
+  const f4 = []; scanHexAsFill(".code-head { background: #23252e; }", "免", f4);
+  const f5 = []; scanHexAsFill(".panel { background: #23252e; }", "非免", f5);
+  assert(f4.length === 0 && f5.length === 1, `免死名单跑偏了：免=${f4.length} 非免=${f5.length}`);
+  // 折行写的规则：选择器在上一行，声明在下一行——按行取就读不到免死名单，会误报
+  const f6 = []; scanHexAsFill("#drop { position: absolute;\n    background: #7fc4f5; }", "免折行", f6);
+  const f7 = []; scanHexAsFill(".x { position: absolute;\n    background: #7fc4f5; }", "非免折行", f7);
+  assert(f6.length === 0 && f7.length === 1, `折行规则认不出选择器：免=${f6.length} 非免=${f7.length}`);
+  console.log(`✅ CSS 令牌闸门：${defined.size} 个变量全部有定义 · 填充色没被当文字色用（令牌写死/插值/存变量 + 写死十六进制）· 底色和边框也不许写死十六进制（五种写法都盯）`);
 }
 
 // 动效闸门：transition 不写曲线，浏览器就按默认的 ease 走——两头慢中间快，那是「网页味」，
