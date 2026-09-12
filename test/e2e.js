@@ -468,7 +468,47 @@ function testCssTokenGate() {
   scanFillAsText('`<i style="background:var(--wb-err);color:#fff">`', "真3", good);
   assert(good.length === 0, "闸门误伤了正经的填充用法：" + good.join("、"));
   assert(!defined.has("--wb-根本没有这个"), "闸门定义集失效");
-  console.log(`✅ CSS 令牌闸门：${defined.size} 个变量全部有定义 · 填充色没被当文字色用（写死/插值/存变量三种写法都盯）`);
+
+  // 同一个毛病还有第 ④ 种写法，上面三种一个都盯不到：**直接写死十六进制**。
+  // 令牌那一路堵死之后，自动化页和引擎卡片里躺着 6 条 `color: #16a34a` / `color: #dc2626`——
+  // 绿字压白卡片只有 3.30:1（令牌层为此专门留了 --wb-ok-text，5.79:1），
+  // 红字压深色卡片只有 3.41:1；而且写死的颜色压根不跟着主题翻，深色下要么糊要么刺眼。
+  // 中性灰放行（分隔线、占位字本来就该用灰），只抓有颜色的。
+  const hexSat = (h) => {
+    let x = h.replace("#", "").toLowerCase();
+    if (x.length === 3) x = [...x].map((c) => c + c).join("");
+    const r = parseInt(x.slice(0, 2), 16), g = parseInt(x.slice(2, 4), 16), b = parseInt(x.slice(4, 6), 16);
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    return mx === 0 ? 0 : (mx - mn) / mx;
+  };
+  // 两头都是深色的面：浅色主题下它也还是深的，套 --wb-*-text（浅色档是深红/深绿）反而看不见。
+  // 只放这一条具体选择器，不放整类——新加的写死颜色照样会被抓。
+  const DARK_SURFACE = /#wb-toast/;
+  const scanHexAsText = (t, name, out) => {
+    for (const m of t.matchAll(/(?<![-a-zA-Z])color:\s*(#[0-9a-fA-F]{3,8})\b/g)) {
+      if (hexSat(m[1]) <= 0.18) continue;
+      const line = t.slice(t.lastIndexOf("\n", m.index) + 1, (t.indexOf("\n", m.index) + 1 || t.length + 1) - 1);
+      if (DARK_SURFACE.test(line)) continue;
+      out.push(name + ":" + lineOf(t, m.index) + " 的 " + m[1]);
+    }
+  };
+  const hexAsText = [];
+  for (const f of [path.join(pub, "index.html"), path.join(pub, "css", "ui.css"), path.join(pub, "admin.html"), path.join(pub, "pet.html")]) {
+    const t = fs.readFileSync(f, "utf8");
+    for (const b of t.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) scanHexAsText(b[1], path.basename(f), hexAsText);
+    if (f.endsWith(".css")) scanHexAsText(t, path.basename(f), hexAsText);
+  }
+  assert(hexAsText.length === 0,
+    "文字颜色写死成十六进制了，不跟主题翻色、也绕开了 *-text 那一档（绿的在白底只有 3.30:1）：" + hexAsText.join("、"));
+  // 反向对照：写死的抓得到；灰的和令牌的一个都不许误报；免死的那条只免它自己
+  const h1 = []; scanHexAsText(".x .st.ok { color: #16a34a; }", "假", h1);
+  const h2 = []; scanHexAsText(".x .meta { color: #6a6f7d; }\n.y { color: var(--wb-ok-text); }\n.z { background: #16a34a; }", "真", h2);
+  const h3 = []; scanHexAsText("#wb-toast.err .i { color: #ff8f8f; }", "免", h3);
+  const h4 = []; scanHexAsText(".other .i { color: #ff8f8f; }", "非免", h4);
+  assert(h1.length === 1, "写死的十六进制文字色抓不到，这道闸是摆设");
+  assert(h2.length === 0, "误伤了灰字/令牌/背景色：" + h2.join("、"));
+  assert(h3.length === 0 && h4.length === 1, `免死名单跑偏了：免=${h3.length} 非免=${h4.length}`);
+  console.log(`✅ CSS 令牌闸门：${defined.size} 个变量全部有定义 · 填充色没被当文字色用（令牌写死/插值/存变量 + 直接写十六进制，四种写法都盯）`);
 }
 
 // 动效闸门：transition 不写曲线，浏览器就按默认的 ease 走——两头慢中间快，那是「网页味」，
