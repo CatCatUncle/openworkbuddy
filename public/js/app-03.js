@@ -1348,13 +1348,13 @@ async function renderEvalPage() {
     <div class="hub-head" style="flex-wrap:wrap;gap:8px">
       <div style="font-weight:700;font-size:15px">${ic("flask-conical")} 智能体评测</div>
       <label style="font-size:12px;color:var(--wb-text-3)">被测模型</label>
-      <select id="ev-model" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px">${opts(cur)}</select>
+      <select id="ev-model">${opts(cur)}</select>
       <label style="font-size:12px;color:var(--wb-text-3)">每题次数</label>
-      <select id="ev-repeat" title="重复跑才能看出稳定性：pass@1 均值看「能不能」，k 次全过看「稳不稳」。费用按次数翻倍" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px">
+      <select id="ev-repeat" title="重复跑才能看出稳定性：pass@1 均值看「能不能」，k 次全过看「稳不稳」。费用按次数翻倍">
         <option value="1">1 次 · 最快</option><option value="3">3 次 · 测稳定</option><option value="5">5 次 · 严格</option>
       </select>
       <label style="font-size:12px;color:var(--wb-text-3)">AI 评委</label>
-      <select id="ev-judge" style="padding:6px 10px;border:1px solid var(--wb-line);border-radius:8px;background:var(--wb-card);color:var(--wb-text);font-size:13px"><option value="">不用（只机器判分）</option>${opts("")}</select>
+      <select id="ev-judge"><option value="">不用（只机器判分）</option>${opts("")}</select>
       <button class="btn-brand" id="ev-start">开始评测</button>
       <span id="ev-state" style="font-size:13px;color:var(--wb-text-3)"></span>
     </div>

@@ -245,8 +245,15 @@ const TURNOUT_CHECKS = `
     const a = html.getBoundingClientRect();
     ok("产出卡是竖卡板，宽 168px、高远高于图标钮时代（实际 " + Math.round(a.width) + "×" + Math.round(a.height) + "）",
       a.height > 100 && a.width >= 160);
-    ok("图片缩略图框有 92px 高，够看到画面而不是 26px 小点",
-      Math.abs(png.querySelector(".out-thumb").getBoundingClientRect().height - 92) < 1);
+    // 这条原来钉死「等于 92px」。92 是当时的实现值，不是要求本身——
+    // 后来为了让整张图进得来把盒子抬到 120，这条就红了，而界面其实是变好了。
+    // 所以改成量它真正要保的那件事：缩略图得占掉卡片一多半，够看清一张图，
+    // 而不是退回图标钮时代那种 26px 小点。具体几 px 交给 CSS 去定。
+    const thb = png.querySelector(".out-thumb").getBoundingClientRect().height;
+    const cardH = png.getBoundingClientRect().height;
+    ok("缩略图框占掉卡片一多半、至少 80px 高（够看清一张图，不是 26px 小点）"
+      + "（实际 " + Math.round(thb) + "px / 卡高 " + Math.round(cardH) + "px）",
+      thb >= 80 && thb > cardH * 0.5);
 
     // 缩略图地址得拿「这一版文件」当缓存键。以前是 ?t=Date.now()：每来一个文件事件整片卡重建一次，
     // 七张图 = 每次重新下 2.7MB，屏幕上那一格先白一下再慢慢长出来。
@@ -5259,6 +5266,151 @@ const SCP0 = APP06.indexOf("// ================= 快捷键面板 ===============
 const SCP1 = APP06.indexOf("// ================= 自进化：");
 if (SCE0 < 0 || SCK1 <= SCE0) throw new Error("app-02.js 里找不到快捷键引擎那一段");
 if (SCP0 < 0 || SCP1 <= SCP0) throw new Error("app-06.js 里找不到快捷键面板那一段");
+// ---------------------------------------------------------------------------
+// 产出卡的缩略图：整张图要看得见，而且不许被拉伸或放大。
+// 原来那两条是 height:92px + object-fit:cover——按盒子的比例把图裁一刀。
+// 拿工作区里 336 张真产出量过：中位数只剩 78% 露在外面，132 张被切掉一半以上，
+// 最狠的只剩 8%；比盒子还小的图（二维码、图标）还会被强行拉满 168 宽再裁，放大糊掉。
+// 用户原话：「那些图都变形了啊，然后没有看到完整的」。
+// 这把尺子量的是几何事实：图自己那块矩形的形状要跟原图一致（没被拉），
+// 要整块落在缩略图盒子里（没被切），小图不许比原图大（没被撑）。
+const TH_CASES = [
+  { tag: "竖版海报 9:16", w: 720, h: 1280 },
+  { tag: "宽屏 16:9", w: 1280, h: 720 },
+  { tag: "主力簇 2.28:1", w: 1456, h: 640 },
+  { tag: "长图表 4.8:1", w: 1920, h: 400 },
+  { tag: "比盒子还小的图标 64×64", w: 64, h: 64 },
+];
+const TH_PIC = (w, h) => "data:image/svg+xml;utf8," + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`
+  + `<rect width="${w}" height="${h}" fill="#ccc"/></svg>`);
+const TH_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><style>" + INDEX_CSS
+  + "</style><style>body{margin:0}</style><body><div class='out-block'><div class='out-body'><div class='out-grid'>"
+  + TH_CASES.map((c, i) =>
+      `<div class="out-card" data-i="${i}"><div class="out-thumb">`
+      + `<span class="out-bg" style="background-image:url(&quot;${TH_PIC(c.w, c.h)}&quot;)" aria-hidden="true"></span>`
+      + `<img src="${TH_PIC(c.w, c.h)}" alt="" decoding="async"></div>`
+      + `<div class="out-info"><span class="out-name">图 ${i}</span><span class="out-meta">1 KB</span></div>`
+      + `<div class="out-acts"></div></div>`).join("")
+  + "</div></div></div></body>";
+const TH_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
+  const TAGS = ${JSON.stringify(TH_CASES.map((c) => c.tag))};
+  const cards = [...document.querySelectorAll(".out-card")];
+  await Promise.all(cards.map((c) => { const im = c.querySelector("img");
+    return im.complete && im.naturalWidth ? 0 : new Promise((r) => { im.onload = r; im.onerror = r; }); }));
+  const box = (c) => {
+    const im = c.querySelector("img"), t = c.querySelector(".out-thumb");
+    const r = im.getBoundingClientRect(), tr = t.getBoundingClientRect();
+    return { w: r.width, h: r.height, tw: tr.width, th: tr.height, nw: im.naturalWidth, nh: im.naturalHeight };
+  };
+  const judge = (label) => {
+    const bad = { 拉伸: [], 切掉: [], 放大: [] };
+    cards.forEach((c, i) => {
+      const b = box(c);
+      if (Math.abs((b.w / b.h) / (b.nw / b.nh) - 1) > 0.03) bad.拉伸.push(TAGS[i]);
+      if (b.w > b.tw + 0.5 || b.h > b.th + 0.5) bad.切掉.push(TAGS[i]);
+      if (b.w > b.nw + 0.5) bad.放大.push(TAGS[i]);
+    });
+    return bad;
+  };
+  const now = judge();
+  ok("每张图渲染出来还是它原本的形状（没被拉扁拉长）", now.拉伸.length === 0, now.拉伸);
+  ok("每张图整块都落在缩略图盒子里（没被裁掉边角）", now.切掉.length === 0, now.切掉);
+  ok("比盒子小的图保持原大小（不被强行撑满再裁）", now.放大.length === 0, now.放大);
+  // 留白那圈得有东西：同一张图放大模糊垫在底下，且必须在图的下面，不能盖住图
+  const bg = document.querySelector(".out-thumb .out-bg"), img0 = document.querySelector(".out-thumb img");
+  const cb = getComputedStyle(bg), ci = getComputedStyle(img0);
+  ok("留白有一层同图模糊底垫着（不是一片死灰）", !!bg && cb.backgroundImage !== "none" && parseFloat(cb.opacity) > 0.05, cb.backgroundImage.slice(0, 24));
+  ok("那层底在图的后面，不会糊住图本身", (Number(ci.zIndex) || 0) > (Number(cb.zIndex) || 0), [ci.zIndex, cb.zIndex]);
+  // ★反向对照★ 把改之前 index.html 里真写着的那两条压回去，这三把尺子必须当场全红
+  const back = document.createElement("style");
+  back.textContent = ".out-thumb { height: 92px; }\\n.out-thumb img { width: 100%; height: 100%; object-fit: cover; }";
+  document.head.appendChild(back);
+  const old = judge();
+  ok("反向对照：退回 cover + 100%，图当场被拉成盒子的形状（" + old.拉伸.length + " 张）", old.拉伸.length >= 4, old.拉伸);
+  ok("反向对照：退回 cover + 100%，小图当场被撑大", old.放大.length >= 1, old.放大);
+  back.remove();
+  const again = judge();
+  ok("撤掉对照又全好了（这轮不是蒙的）", again.拉伸.length === 0 && again.放大.length === 0);
+  return names;
+})()
+`;
+
+// ---------------------------------------------------------------------------
+// 行内控件的高度只许有一个。
+// 改之前每个家族各写各的内边距，凑出一堆高度：输入框 8px 12px → 35，下拉同样的
+// 内边距 → 37（select 的内容盒天生比 input 高 2px），主按钮 → 36，次要按钮
+// 7px 14px → 32，hub-head 上的胶囊 4px 12px → 31。实测 19 个落点里，有 9 行
+// 控件并排站着却四种底边，最大差 5px（评测页三个下拉 31 挨着主按钮 36）。
+// 现在高度统一由 --wb-ctl-h 出，内边距只管左右。
+// 这条尺子量的是真几何，不是 CSS 文本——写死 36px 也好、令牌也好，只要量出来齐就算过。
+const CTL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><style>" + INDEX_CSS
+  + "</style><style>*{transition:none!important;animation:none!important}</style><body>"
+  // 照抄真界面上那几种并排：hub-head（搜索框 + 胶囊 + 次要键 + 主键）、
+  // form-row（输入框 + 次要键）、评测页那排下拉。
+  + "<div class='hub-head' id='r-hub'>"
+  + "  <div class='hub-search'><input id='k-q' placeholder='搜索'></div>"
+  + "  <button class='chip' id='k-chip'>只看我的</button>"
+  + "  <button class='btn-plain' id='k-plain'>批量</button>"
+  + "  <button class='btn-brand' id='k-brand'>新建</button>"
+  + "</div>"
+  + "<div class='form-row' id='r-form'><input id='k-in'><button class='btn-plain' id='k-plain2'>选择</button></div>"
+  + "<div class='hub-head' id='r-sel'><select id='k-sel'><option>甲</option></select>"
+  + "  <button class='btn-brand' id='k-brand2'>开跑</button></div>"
+  + "</body>";
+const CTL_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
+  const H = (sel) => {
+    const e = document.querySelector(sel);
+    if (!e) throw new Error("夹具里找不到 " + sel);
+    return Math.round(e.getBoundingClientRect().height);
+  };
+  const ROWS = [
+    ["hub-head：搜索框 / 胶囊 / 次要键 / 主键", ["#k-q", "#k-chip", "#k-plain", "#k-brand"]],
+    ["form-row：输入框 / 次要键", ["#k-in", "#k-plain2"]],
+    ["评测行：下拉 / 主键", ["#k-sel", "#k-brand2"]],
+  ];
+  for (const [label, sels] of ROWS) {
+    const hs = sels.map(H);
+    const kinds = [...new Set(hs)];
+    ok(label + " 同高（" + hs.join(" / ") + "）", kinds.length === 1, hs);
+  }
+  // 全站只许一个数：三行加起来必须还是同一个高度
+  const all = [...new Set(ROWS.flatMap(([, s]) => s.map(H)))];
+  ok("三行之间也是同一个高度 " + all[0] + "px", all.length === 1, all);
+  // 下拉那 2px 是这批里最阴的一条：input 和 select 给一样的内边距，量出来差 2px
+  ok("下拉跟输入框一样高（select 的内容盒天生高 2px，定高才压得住）", H("#k-sel") === H("#k-q"), [H("#k-sel"), H("#k-q")]);
+  // 定高之后别把字挤没了
+  for (const sel of ["#k-q", "#k-in", "#k-sel", "#k-plain", "#k-brand", "#k-chip"]) {
+    const e = document.querySelector(sel), cs = getComputedStyle(e);
+    const inner = e.getBoundingClientRect().height - parseFloat(cs.borderTopWidth) - parseFloat(cs.borderBottomWidth)
+                  - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    ok(sel + " 里还放得下一整行字（内容盒 " + inner.toFixed(0) + "px / 字 " + parseFloat(cs.fontSize) + "px）",
+       inner >= parseFloat(cs.fontSize) * 1.15, [inner, parseFloat(cs.fontSize)]);
+  }
+  // ★反向对照★ 把次要按钮按旧写法压回 shadcn 的 sm 档（32），这把尺子必须当场变红。
+  // 不是造一个现编的场景：32 就是改之前 index.html 里真写着的那个数。
+  const back = document.createElement("style");
+  back.textContent = ".btn-plain { height: 32px; padding: 0 12px; }";
+  document.head.appendChild(back);
+  ok("反向对照：次要键退回 32px，hub-head 当场又不齐了", H("#k-plain") !== H("#k-brand"), [H("#k-plain"), H("#k-brand")]);
+  back.remove();
+  // ★反向对照★ 把下拉的定高撤掉，它会自己涨回 37
+  const back2 = document.createElement("style");
+  back2.textContent = "select { height: auto; padding: 8px 12px; }";
+  document.head.appendChild(back2);
+  ok("反向对照：撤掉下拉定高，它比输入框高出来", H("#k-sel") > H("#k-q"), [H("#k-sel"), H("#k-q")]);
+  back2.remove();
+  ok("反向对照撤干净了，三行又齐了", [...new Set(ROWS.flatMap(([, s]) => s.map(H)))].length === 1);
+  return names;
+})()
+`;
+
 const SC_SRC = APP02.slice(SCE0, SCK1) + "\n" + APP06.slice(SCP0, SCP1);
 const SC_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body><div id='pane'></div></body>";
 const SC_STUBS = `
@@ -6159,6 +6311,26 @@ app.whenReady().then(async () => {
       console.log(`\u2705 \u524d\u7aef\uff1a\u5173\u4e8e\u9875\u8bfb\u4e0d\u5230\u7248\u672c\u53f7\u65f6\u4e0d\u628a undefined \u6446\u5230\u8138\u4e0a\uff08cookie \u8fc7\u671f\u00b7\u6b63\u5e38\u00b7\u6709\u65b0\u7248\u00b7\u67e5\u7ebf\u4e0a\u5931\u8d25\u00b7\u5b57\u6bb5\u6b8b\u7f3a \u4e94\u79cd\u5f62\u72b6\uff09${namesAB.length} \u9879\u901a\u8fc7`);
     } finally {
       if (!winAB.isDestroyed()) winAB.destroy();
+    }
+    const winTH = mkWin({ show: false, width: 1200, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winTH.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TH_HTML));
+      const namesTH = await winTH.webContents.executeJavaScript(TH_CHECKS, true)
+        .catch((e) => { throw new Error("[产出卡缩略图] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesTH) console.log("  ✓ " + n);
+      console.log(`✅ 前端：产出卡缩略图整张看得见（5 种比例·含反向对照）${namesTH.length} 项通过`);
+    } finally {
+      if (!winTH.isDestroyed()) winTH.destroy();
+    }
+    const winCTL = mkWin({ show: false, width: 1100, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winCTL.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(CTL_HTML));
+      const namesCTL = await winCTL.webContents.executeJavaScript(CTL_CHECKS, true)
+        .catch((e) => { throw new Error("[控件高度] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesCTL) console.log("  ✓ " + n);
+      console.log(`✅ 前端：一行上的控件同高（搜索框/胶囊/次要键/主键/下拉 五种家族·两条反向对照）${namesCTL.length} 项通过`);
+    } finally {
+      if (!winCTL.isDestroyed()) winCTL.destroy();
     }
     const winSC = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
