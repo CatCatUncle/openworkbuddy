@@ -134,12 +134,15 @@
   /* 官方 WorkBuddy 的侧栏项是两行：主标题 + 灰色副标题（专家/技能·连接器、自动化/定时任务、更多/资料库·灵感） */
   .side-nav .item .tx { display: flex; flex-direction: column; line-height: 1.35; min-width: 0; }
   .side-nav .item .tx .sub { font-size: 12px; color: var(--wb-text-3); font-weight: 400; }
-  .side-nav .item.active .tx .sub { color: var(--wb-brand-text); opacity: .82; }
+  /* 这一行本来还压了 opacity:.82，选中底上实测只剩 3.55（浅）/ 4.16（暗）——
+     12px 的小字要 4.5。去掉透明度，两套主题分别回到 4.86 和 5.37 */
+  .side-nav .item.active .tx .sub { color: var(--wb-brand-text); }
   .side-nav .more-toggle { justify-content: space-between; color: var(--wb-text-3); }
   .side-nav .more-toggle .caret { margin-left: auto; }
   /* 项目表头：点整行进项目页，点 ＋ 快速新建 */
   .side-nav .nav-head { cursor: pointer; }
-  .side-nav .nav-head #proj-add { margin-left: auto; text-decoration: none; color: var(--wb-text-3); font-size: 15px; padding: 0 4px; border-radius: 6px; }
+  /* ＋ 号原来用第三级文字色，压在选中底上暗色只有 4.25。抬一级到 --wb-text-2：浅 5.40 / 暗 5.36 */
+  .side-nav .nav-head #proj-add { margin-left: auto; text-decoration: none; color: var(--wb-text-2); font-size: 15px; padding: 0 4px; border-radius: 6px; }
   .side-nav .nav-head #proj-add:hover { background: var(--wb-bg-hover); color: var(--wb-text); }
   .side-nav #proj-list { margin: 0 0 4px; }
   .side-nav .more-toggle .caret { font-size: 11px; transition: transform var(--wb-t-fast) var(--wb-ease); }
@@ -850,6 +853,9 @@
   .m-body input:focus, .m-body textarea:focus { border-color: var(--wb-brand-text); }
   .btn-brand { border: none; background: var(--wb-brand-grad); color: #fff; border-radius: 8px; padding: 8px 18px; font-size: 14px; cursor: pointer; }
   .btn-plain { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; color: var(--wb-text-2); }
+  /* 没带 class 的 <a> 会吃浏览器自带的 #0000ee，暗色底上只有 1.75——基本看不见。
+     只兜没 class 的那些，带了 class 的链接照旧走自己的规则 */
+  a:not([class]) { color: var(--wb-brand-text); }
   .link { color: var(--wb-brand-text); cursor: pointer; text-decoration: none; }
   .link.danger { color: var(--wb-err-text); }
   /* 模型设置：渠道卡片（折叠）→ 展开看它下面的模型。

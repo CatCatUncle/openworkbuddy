@@ -5500,6 +5500,82 @@ const SETL_CHECKS = `
 })()
 `;
 
+// ================= 对比度：量真元素压真底色，不是量令牌压令牌 =================
+// 上面那组矩阵量的是 --brand-text 压 body 底色，是「令牌层」的账。
+// 但界面上的字不一定坐在 body 上：侧栏选中行的副标题坐在 --wb-brand-weak 上，
+// 还额外压了一层 opacity——令牌层全绿，眼睛看到的是 3.55。这一块补的就是这笔账。
+// 关掉过渡：.side-nav .item 带 transition，切主题那一刻 getComputedStyle 读到的是
+// 「正在往新色渐变的中间值」——实测暗色下背景仍报浅色的 rgb(238,240,255)，
+// 于是对比度算出 2.07，像是有个根本不存在的 bug。我们要量的是渐变完的终态。
+const CONTRAST_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><style>" + INDEX_CSS
+  + "</style><style>*{transition:none!important;animation:none!important}</style><body>"
+  + "<div class='side-nav'>"
+  + "  <div class='item active'><span class='tx'><span>项目</span><span class='sub' id='c-sub'>专家 · 技能</span></span></div>"
+  + "  <div class='nav-head item active'><span>我的项目</span><a id='proj-add' href='#'>+</a></div>"
+  + "</div>"
+  + "<p id='c-bare'>装法见 <a href='https://example.invalid'>example.invalid</a></p>"
+  + "</body>";
+const CONTRAST_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
+  const rgb = (c) => (String(c).match(/[\\d.]+/g) || [0, 0, 0]).map(Number);
+  const lum = (c) => { const m = rgb(c); const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(m[0]) + 0.7152 * f(m[1]) + 0.0722 * f(m[2]); };
+  const mix = (fg, bg, a) => { const f = rgb(fg), b = rgb(bg); return "rgb(" + [0,1,2].map((i) => Math.round(f[i] * a + b[i] * (1 - a))).join(", ") + ")"; };
+  /** 往上找第一层真有颜色的底（transparent / alpha 0 的一律穿过去） */
+  const bgOf = (el) => {
+    for (let n = el; n; n = n.parentElement) {
+      const c = getComputedStyle(n).backgroundColor;
+      const m = rgb(c);
+      if (c && c !== "transparent" && !(m.length === 4 && m[3] === 0)) return c;
+    }
+    return getComputedStyle(document.body).backgroundColor || "rgb(255, 255, 255)";
+  };
+  /** 一路把祖先的 opacity 乘起来：opacity 不进 computed color，但眼睛看得见 */
+  const alphaOf = (el) => { let a = 1; for (let n = el; n && n !== document.documentElement; n = n.parentElement) a *= parseFloat(getComputedStyle(n).opacity || "1"); return a; };
+  const ratioOf = (el) => {
+    const bg = bgOf(el);
+    const fg = mix(getComputedStyle(el).color, bg, alphaOf(el));
+    const la = lum(fg), lb = lum(bg);
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+  };
+  const SPOTS = [
+    ["side-nav 选中行的副标题", "#c-sub"],
+    ["项目表头那颗 ＋", "#proj-add"],
+    ["正文里没带 class 的链接", "#c-bare a"],
+  ];
+  const sweep = () => SPOTS.map(([label, sel]) => {
+    const el = document.querySelector(sel);
+    if (!el) throw new Error("夹具里找不到 " + sel + "：markup 和真界面对不上了");
+    return [label, Math.round(ratioOf(el) * 100) / 100];
+  });
+
+  for (const theme of ["light", "dark"]) {
+    document.documentElement.dataset.theme = theme;
+    for (const [label, r] of sweep()) ok(theme + "：" + label + " 压住底色 " + r.toFixed(2) + " ≥ 4.5", r >= 4.5, r);
+  }
+
+  // ---- 反向对照：把这三条改回修之前的写法，三处必须当场跌破 4.5 ----
+  const undo = document.createElement("style");
+  undo.textContent = ".side-nav .item.active .tx .sub { opacity: .82; }"
+    + " .side-nav .nav-head #proj-add { color: var(--wb-text-3); }"
+    + " a:not([class]) { color: -webkit-link; }";
+  document.head.appendChild(undo);
+  for (const theme of ["light", "dark"]) {
+    document.documentElement.dataset.theme = theme;
+    const bad = sweep().filter(([, r]) => r < 4.5).map(([l]) => l);
+    if (theme === "dark") ok("反向对照·暗色：三处全跌破 4.5", bad.length === 3, sweep());
+    else ok("反向对照·浅色：副标题那条跌破 4.5（另两条本来浅底上就够）", bad.includes("side-nav 选中行的副标题"), sweep());
+  }
+  undo.remove();
+  document.documentElement.dataset.theme = "light";
+  ok("撤掉对照样式之后三处又都回到 4.5 以上", sweep().every(([, r]) => r >= 4.5), sweep());
+
+  return names;
+})()
+`;
+
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
   RENDERER_LOG.length = 0;
@@ -5899,6 +5975,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：存盘失败说人话（连不上/卡住掐掉/网关 HTML/服务端原话/裸 HTTP 码/空响应 六句各不相同·默认落本对话文件夹·取消不吓人·网页端退下载）${namesSave.length} 项通过`);
     } finally {
       if (!winSave.isDestroyed()) winSave.destroy();
+    }
+    const winCt = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winCt.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(CONTRAST_HTML));
+      const namesCt = await winCt.webContents.executeJavaScript(IC_BOOT + CONTRAST_CHECKS, true)
+        .catch((e) => { throw new Error("[\u5bf9\u6bd4\u5ea6] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesCt) console.log("  \u2713 " + n);
+      console.log(`\u2705 \u524d\u7aef\uff1a\u771f\u5143\u7d20\u538b\u771f\u5e95\u8272\u7684\u5bf9\u6bd4\u5ea6\uff08\u7b97\u4e0a opacity \u548c\u7956\u5148\u5e95\u8272\u00b7\u6d45\u6697\u4e24\u5957\u00b7\u5e26\u53cd\u5411\u5bf9\u7167\uff09${namesCt.length} \u9879\u901a\u8fc7`);
+    } finally {
+      if (!winCt.isDestroyed()) winCt.destroy();
     }
     // 这一屏必须按真实桌面尺寸开窗：层高用的是 vh，窗口一小断言就没意义了
     const winSet = mkWin({ show: false, width: 1440, height: 940, webPreferences: { offscreen: true } });
