@@ -224,7 +224,7 @@ function escInline(s) {
     .replace(/`([^`\n]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
 }
-/** 头像内容：传了图就是 <img>，emoji 就直接放字符，都没有就退回名字首字母。
+/** 头像内容：传了图就是 <img>，图标名画矢量图标，emoji 直接放字符，都没有就退回名字首字母。
  *  返回 {html, cls}——cls 要挂到外层那个圆/方块上（emoji 得换中性底色）。 */
 function avatarBits(av, fallbackName) {
   const s = String(av || "").trim();
@@ -233,6 +233,8 @@ function avatarBits(av, fallbackName) {
   // 所以窗口图标、Dock 里那只、聊天里的头像是同一只猫，不是三张不相干的图。
   // 走 <use> 而不是塞一张 png：矢量的，任何尺寸都清楚，也不用多一次网络请求。
   if (s === ASSISTANT_MARK) return { html: `<svg class="ava-mk" aria-hidden="true"><use href="#wb-cat"></use></svg>`, cls: "mk" };
+  // 图标名（"brain"、"rocket"）：描边跟着 currentColor 走，压在品牌渐变上本来就是白的，不用换中性底
+  if (isIconName(s)) return { html: ic(s, "ava-ic"), cls: "" };
   if (s) return { html: esc(s), cls: "emo" };
   return { html: esc(String(fallbackName || "?").trim().slice(0, 1).toUpperCase()), cls: "" };
 }
@@ -407,8 +409,17 @@ function renderMd(src, base, live) {
     }
     if ((m = line.match(/^(?:&gt;)\s?(.*)$/))) {
       flushPara(); closeList();
+      let body = m[1] || "";
+      // 提示条 `> [!warn] 正文`：服务端统一发这个记号（callout.js），这里画成带图标的条。
+      // 只有一段引用的第一行认记号——后面几行是同一条的正文，不该各画一个图标
+      const mk = inQuote ? null : body.match(/^\[!(warn|wait|ok|stop)\]\s*/);
+      if (mk) {
+        body = body.slice(mk[0].length);
+        out.push(`<blockquote class="cal cal-${mk[1]}">${ic(CALLOUT_ICON[mk[1]], "cal-i")}`);
+        inQuote = true;
+      }
       if (!inQuote) { out.push("<blockquote>"); inQuote = true; }
-      out.push("<p>" + (m[1] || "") + "</p>");
+      out.push("<p>" + body + "</p>");
       continue;
     }
     closeQuote();
@@ -450,6 +461,8 @@ function renderMd(src, base, live) {
  * 敢定稿的判据只有一条——**整份重渲的结果必须正好以这一段为前缀**。
  * （后来的 ``` 会把前面的排版整个改掉，所以不能只看局部；这一条不成立就整块重来，宁可慢不许错。）
  */
+// 提示条四种口径，跟 callout.js 的 LABEL 一一对应
+const CALLOUT_ICON = { warn: "triangle-alert", wait: "clock", ok: "circle-check", stop: "circle-x" };
 const BAL_TAG = /<(\/?)(ul|ol|blockquote|table|div|pre|p)\b/g;
 /** 这段 HTML 里的块级标签是否首尾成对——不成对就不能拿去 insertAdjacentHTML（浏览器会替你瞎闭合） */
 function balancedHtml(h) {
@@ -531,7 +544,7 @@ function createTurnUI(userText, turnMode, forSid) {
   turn.querySelector(".u-copy").onclick = (e) => {
     navigator.clipboard?.writeText(userText).then(() => {
       e.target.innerHTML = ic("check"); setTimeout(() => { e.target.innerHTML = ic("copy"); }, 1200);
-    }).catch(() => toast("❌ 复制失败"));
+    }).catch(() => toast("复制失败", "circle-x"));
   };
   // 只有"正在看的会话"的回合才上屏；后台会话的回合先游离着更新，切回来时再接上
   if (turnSid === sessionId) {
@@ -927,7 +940,7 @@ function createTurnUI(userText, turnMode, forSid) {
       const t = document.createElement("div");
       t.className = "a-text";
       t.setAttribute("translate", "no");
-      t.style.color = "var(--wb-err)";
+      t.style.color = "var(--wb-err-text)";
       t.textContent = "出错了：" + (ev.message || "");
       body.appendChild(t); // 错误必须留在正文可见，不进折叠区
     }
@@ -1062,7 +1075,7 @@ function createTurnUI(userText, turnMode, forSid) {
           return done();
         }
       } catch {}
-      navigator.clipboard?.writeText(plain).then(done).catch(() => toast("❌ 复制失败"));
+      navigator.clipboard?.writeText(plain).then(done).catch(() => toast("复制失败", "circle-x"));
     };
     // 👍👎 以前点了只是换个高亮色，一个字节都没往外送——按了等于没按。
     // 现在它是自进化那条链的第一环：反馈落盘 → 归类成信号 → 提改进 → 人审 → 复盘看数字有没有降。
@@ -1323,10 +1336,8 @@ function applyMention(insert) {
 
 // ---------- @文件 //技能 token 高亮：镜像层与 textarea 逐字对齐，只画底色不碰文字 ----------
 const inputHl = document.getElementById("input-hl");
-{
-  const cs = getComputedStyle(inputEl);
-  for (const p of ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "fontFamily", "fontSize", "lineHeight", "letterSpacing"]) inputHl.style[p] = cs[p];
-}
+// 这里以前是开页面时把 textarea 的字号字体抄一份到镜像层的内联样式上。抄一次就再也不更新了，
+// 用户去设置里改字号，底色就永远停在开页那一刻的尺寸上。现在两层在 CSS 里吃同一个 var，不用抄。
 function hlTokens(text, cls) {
   // /token 只在命中已装技能时高亮（避免把 /Users/... 这类路径误当指令）；@token 一律高亮
   return esc(text).replace(/(^|[\s（(：:，,])(@[^\s@，。！？；：、（）()<>"']+|\/[^\s@/，。！？；：、（）()<>"']+)/g, (m, pre, tok) => {
@@ -1495,8 +1506,8 @@ const closedBuckets = new Set();
 function revealFile(name, e) {
   if (e) { e.stopPropagation(); e.preventDefault(); }
   fetch("/api/files/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) })
-    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开所在位置")); }))
-    .catch(() => toast("❌ 打不开所在位置"));
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast((j.error || "打不开所在位置"), "circle-x"); }))
+    .catch(() => toast("打不开所在位置", "circle-x"));
 }
 /**
  * 让服务端用系统程序打开一个文件/文件夹，并且**把结果说出来**。
@@ -1505,15 +1516,15 @@ function revealFile(name, e) {
  */
 function openOnHost(name) {
   return fetch("/api/files/open/" + fpath(name), { method: "POST" })
-    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开这个文件")); }))
-    .catch(() => toast("❌ 打不开这个文件"));
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast((j.error || "打不开这个文件"), "circle-x"); }))
+    .catch(() => toast("打不开这个文件", "circle-x"));
 }
 /** 「打开当前工作目录」。开的同样是服务端那台机器上的窗口，所以失败了也要说出来。
  *  四个地方都要用它（顶栏、工作空间菜单、助理页、设置页），别再各写一遍 fetch 然后各自吞掉结果。 */
 function openWorkspaceOnHost() {
   return fetch("/api/open-workspace", { method: "POST" })
-    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast("❌ " + (j.error || "打不开工作目录")); }))
-    .catch(() => toast("❌ 打不开工作目录"));
+    .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast((j.error || "打不开工作目录"), "circle-x"); }))
+    .catch(() => toast("打不开工作目录", "circle-x"));
 }
 /** 下载到用户自己的电脑。Web 部署下这才是「把文件拿到手」的正路 */
 function downloadFile(name) {
@@ -1664,7 +1675,7 @@ function renderFiles(files) {
       if (r.dirs && r.dirs.length) parts.push(`${r.dirs.length} 个空文件夹`);
       toast(parts.length ? `已清掉 ${parts.join(" + ")}（在 ${r.trash} 里）` : "没有可清理的东西");
       fetch("/api/files").then(x => x.json()).then(renderFiles);
-    } catch { toast("❌ 清理失败"); tidyBtn.disabled = false; }
+    } catch { toast("清理失败", "circle-x"); tidyBtn.disabled = false; }
   };
   el.querySelectorAll("[data-rv]").forEach(b => { b.onclick = (e) => revealFile(b.dataset.rv, e); });
   el.querySelectorAll(".file-item").forEach(item => item.onclick = (e) => {
@@ -2006,7 +2017,7 @@ async function renderDeployBar() {
   if (lanBtn) lanBtn.onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = "切换中…";
     previewSrv = await startPreview(true);
-    if (previewSrv.lan_denied) toast("❌ " + (previewSrv.lan_hint || "对局域网开放要平台管理员来开"));
+    if (previewSrv.lan_denied) toast((previewSrv.lan_hint || "对局域网开放要平台管理员来开"), "circle-x");
     else if (!previewSrv.lan_url) toast("这台机器没找到局域网地址（没连 Wi-Fi？）");
     renderDeployBar();
   };
@@ -2702,7 +2713,7 @@ async function setSessionModel(name) { // name: 模型名；null = 跟随全局�
   if (inAssistMode) { // 助理模式：存进配置，下次进来还是它
     try {
       const r = await fetch("/api/assist/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());
-      if (r && r.error) return toast("⚠️ " + r.error);
+      if (r && r.error) return toast(r.error, "triangle-alert");
       assistModel = name || undefined;
       if (settingsCache) settingsCache.assist_model = assistModel || "";
     } catch {}
@@ -2712,7 +2723,7 @@ async function setSessionModel(name) { // name: 模型名；null = 跟随全局�
   if (sessionId === null) { pendingModel = name || undefined; updateModelLabel(); return; }
   try {
     const r = await fetch("/api/session/" + encodeURIComponent(sessionId) + "/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) }).then(x => x.json());
-    if (r && r.error) return toast("⚠️ " + r.error);
+    if (r && r.error) return toast(r.error, "triangle-alert");
     if (name) sessionModels.set(sessionId, name); else sessionModels.delete(sessionId);
     if (name && settingsCache) settingsCache.last_picked_model = name; // 服务端也记了，这里同步本地缓存
   } catch {}

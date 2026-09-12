@@ -35,6 +35,12 @@ const UI00_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app
 // 桩出来的图标会把图标名混进 textContent，也会把「箭头指向哪边」这种事糊成一个空 svg，
 // 断言就变成了假的。真的 ic() 出的是 <use href="#i-…">，指哪个图标一眼看得出来。
 const IC_STUB = UI00_SRC.slice(UI00_SRC.indexOf("function ic(name, cls)"), UI00_SRC.indexOf("/* 自建 tooltip"));
+// 每个离屏夹具都是自己拼 <script> 跑的，谁用到图标谁得自己注 ic()。
+// 但「这一屏用没用到图标」会随着界面改动悄悄变化——去 emoji 那一轮就是一屏一屏地报 ic is not defined。
+// 所以统一在最前面垫一层：夹具自己注了就什么都不做（函数声明会提升，这里看到的就已经是 function），
+// 没注过才把真源码那一份挂到 window 上。挂 window 而不是声明顶层变量，免得跟夹具自己那份撞名。
+const IC_BOOT = 'if (typeof ic === "undefined") { (function(){\n' + IC_STUB
+  + '\n;window.ic = ic; window.setMsg = setMsg; window.isIconName = isIconName; window.ava = ava; window.avaPicks = avaPicks; window.AVATAR_ICONS = AVATAR_ICONS;\n})(); }\n';
 const A0 = APP02.indexOf("// ================= ＋ 上传文件到工作空间");
 const A1 = APP02.indexOf("// ================= 两条工作线"); // 附件段的下一段（以前是会话历史，中间插进了工作线）
 if (A0 < 0 || A1 <= A0) throw new Error("app-02.js 里的附件段找不到了（段标题被改过？），前端测试没法定位真源码");
@@ -694,7 +700,7 @@ const ATTACH_STUBS = [
   "  if (url === '/api/upload') { window.uploads.push(JSON.parse(init.body)); return { ok: true, json: async () => ({}) }; }",
   "  return { ok: true, json: async () => [] };",
   "};",
-  "window.toast = (m) => window.toasts.push(m);",
+  'window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));',
   "window.renderFiles = () => {};",
   "window.syncInputHl = () => {};",
   "window.syncSendBtn = () => {};",
@@ -1303,7 +1309,8 @@ const MEM_CHECKS = `
   ];
   let calls = [], nextDel = { ok: true, removed: 1 }, view = {};
   window.toasts = [];
-  window.toast = (m) => window.toasts.push(String(m));
+  // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
+  window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
   window.escInline = (x) => esc(x);
   window.fmtSize = (n) => n + "B";
   window.fetch = (url, opt) => {
@@ -1428,7 +1435,8 @@ const DEAD_CHECKS = `
   window.modalCalls = [];
   window.openModal = (k, t) => window.modalCalls.push(k + ":" + (t || ""));
   window.toasts = [];
-  window.toast = (m) => window.toasts.push(String(m));
+  // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
+  window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
   window.confirm = () => true;
 
   const FORBID = { error: "这块是服务器级设置，归平台管理员管", platform_only: true };
@@ -1539,10 +1547,10 @@ const DEAD_CHECKS = `
     await page.querySelector("#lb-file").onchange({ target: { files: [f] } });
   };
   await fire({ error: "同名文件已存在", ok: false });
-  ok("上传失败就说失败（以前一律 toast「✅ 已上传」）", window.toasts.join("|").startsWith("❌"), window.toasts.join("|"));
+  ok("上传失败就说失败（以前一律 toast「已上传」配绿勾）", window.toasts.join("|").startsWith("[circle-x]"), window.toasts.join("|"));
   ok("而且把服务端给的原因带出来", window.toasts.join("|").includes("同名文件已存在"), window.toasts.join("|"));
   await fire({ ok: true, name: "手册.md" });
-  ok("反向对照：真传上去了才说成功，还报个数", window.toasts.join("|") === "✅ 已上传 1 个", window.toasts.join("|"));
+  ok("反向对照：真传上去了才说成功，还报个数", window.toasts.join("|") === "[circle-check] 已上传 1 个", window.toasts.join("|"));
 
   // ⑦ 记笔记 / 删资料：拒了就说，别让东西凭空消失
   window.settingsCache = { platform_owner: true };
@@ -1582,7 +1590,8 @@ const HUB_CHECKS = `
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
 
   window.toasts = [];
-  window.toast = (m) => window.toasts.push(String(m));
+  // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
+  window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
   window.startTaskWith = () => {};
   window.confirm = () => true;
   window.refreshSettingsCache = async () => {};
@@ -1681,16 +1690,16 @@ const HUB_CHECKS = `
   window.toasts = [];
   await q(".e-del").onclick();
   ok("删专家失败：把服务端的原因说出来，不再是「点了没反应」",
-     window.toasts.join("|") === "❌ 内置专家删不掉", window.toasts.join("|"));
+     window.toasts.join("|") === "[circle-x] 内置专家删不掉", window.toasts.join("|"));
   await show("experts", "team");
   window.toasts = [];
   await q(".t-del").onclick();
-  ok("解散专家团失败：一样说出来", window.toasts.join("|").startsWith("❌"), window.toasts.join("|"));
+  ok("解散专家团失败：一样说出来", window.toasts.join("|").startsWith("[circle-x]"), window.toasts.join("|"));
   delOk = true;
   await show("experts");
   window.toasts = [];
   await q(".e-del").onclick();
-  ok("反向对照：真删掉了就不报错", !window.toasts.join("|").includes("❌"), window.toasts.join("|"));
+  ok("反向对照：真删掉了就不报错", !window.toasts.join("|").includes("[circle-x]"), window.toasts.join("|"));
 
   return names;
 })()
@@ -1751,7 +1760,8 @@ const GATE_CHECKS = `
     window.renderLookPane = window.renderAboutPane = window.renderShortcutsPane = window.renderAgentPane =
     window.renderMemoryPane = (el) => { el.innerHTML = "<i>别的页</i>"; };
   window.toasts = [];
-  window.toast = (m) => window.toasts.push(String(m));
+  // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
+  window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
   window.confirm = () => true;
 
   let owner = false, canSwitch = false, posts = [];
@@ -2185,7 +2195,9 @@ const IMPANE_CHECKS = `
   ok("连接先保存，载荷带 QQ 凭证", SAVES.length === 1 && SAVES[0].im.qq.app_id === "102" && SAVES[0].im.qq.app_secret === "s", JSON.stringify(SAVES[0] && SAVES[0].im.qq));
   ok("载荷带闲置小时数", SAVES[0].im.session_idle_hours === 12);
   ok("保存之后才测活", POSTS.indexOf("/im/qq/test") >= SAVES_AT[0] && POSTS.indexOf("/im/qq/test") >= 0, POSTS.join(","));
-  ok("测活结果写在卡上", qq.querySelector('[data-r="qq"]').textContent.startsWith("✅"), qq.querySelector('[data-r="qq"]').textContent);
+  // 结果行走 setMsg（图标 + 一句话）：判成败看画的是哪个图标，不看消息头上那个字符
+  const rIcon = (el) => { const u = el && el.querySelector("use"); return u ? u.getAttribute("href") : "(这行没画图标)"; };
+  ok("测活结果写在卡上：绿勾 + 那句话", rIcon(qq.querySelector('[data-r="qq"]')) === "#i-circle-check" && /凭证有效/.test(qq.querySelector('[data-r="qq"]').textContent), qq.querySelector('[data-r="qq"]').innerHTML.slice(0, 90));
   ok("连上后绿灯 + 「取消连接」 + 收起", qq.querySelector(".im-st").classList.contains("ok") && qq.querySelector(".im-conn").textContent === "取消连接" && qq.classList.contains("packed"));
   ok("程序自己收起的卡，aria-expanded 也得跟着回 false", qq.querySelector(".im-card-h").getAttribute("aria-expanded") === "false");
   ok("连接后刷新了顶栏的在线数", REFRESHED >= 2);
@@ -2197,14 +2209,16 @@ const IMPANE_CHECKS = `
   wca.querySelector("#im-wecom_app-corp_id").value = "ww";
   wca.querySelector(".im-conn").click();
   await settle();
-  ok("凭证没填齐：点连接直接说缺哪几个，压根不保存", /^还差 .*AgentId/.test(wca.querySelector('[data-r="wecom_app"]').textContent)
+  ok("凭证没填齐：点连接直接说缺哪几个，压根不保存", /^还差 .*AgentId/.test(wca.querySelector('[data-r="wecom_app"]').textContent.trim())
     && POSTS.slice(p_half).length === 0, wca.querySelector('[data-r="wecom_app"]').textContent + " | " + POSTS.slice(p_half).join(","));
   for (const [f, v] of [["agent_id", "1000002"], ["secret", "s"], ["token", "tk"], ["aes_key", "k".repeat(43)]]) {
     wca.querySelector("#im-wecom_app-" + f).value = v;
   }
   wca.querySelector(".im-conn").click();
   await settle();
-  ok("测活失败红字说明", wca.querySelector('[data-r="wecom_app"]').textContent.startsWith("❌"), wca.querySelector('[data-r="wecom_app"]').textContent);
+  // 红字不是看 class：setMsg 直接写 style.color，所以拿一个探针把 --wb-err-text 解析出来比
+  const resolved = (v) => { const d = document.createElement("div"); d.style.color = "var(" + v + ")"; document.body.appendChild(d); const c = getComputedStyle(d).color; d.remove(); return c; };
+  ok("测活失败：红叉 + 红字说明", rIcon(wca.querySelector('[data-r="wecom_app"]')) === "#i-circle-x" && getComputedStyle(wca.querySelector('[data-r="wecom_app"]')).color === resolved("--wb-err-text"), wca.querySelector('[data-r="wecom_app"]').innerHTML.slice(0, 90) + " | 色 " + getComputedStyle(wca.querySelector('[data-r="wecom_app"]')).color + " vs " + resolved("--wb-err-text"));
   ok("测活失败不收起、按钮仍是「连接」", !wca.classList.contains("packed") && wca.querySelector(".im-conn").textContent === "连接");
   TEST_FAIL.delete("/im/wechat/test");
 
@@ -2306,8 +2320,8 @@ const IMPANE_CHECKS = `
   for (let i = 0; i < 60 && disp(naBox) !== "none"; i++) await wait(100);
   const lockR = fsC.querySelector('[data-newapp-r="feishu"]');
   ok("secret 读不出来时，App ID 照样替你填上", fsC.querySelector("#im-feishu-app_id").value === "cli_locked01", fsC.querySelector("#im-feishu-app_id").value);
-  ok("说清是「建好了、还差 secret」，不是失败", /建好了/.test(lockR.textContent) && /钥匙串/.test(lockR.textContent) && !lockR.textContent.startsWith("❌"), lockR.textContent);
-  ok("不标红：这是进度不是错误", lockR.style.color === "");
+  ok("说清是「建好了、还差 secret」，不是失败", /建好了/.test(lockR.textContent) && /钥匙串/.test(lockR.textContent) && !lockR.querySelector('use[href="#i-circle-x"]'), lockR.innerHTML.slice(0, 120));
+  ok("不标红：这是进度不是错误（走绿勾那一档，不是红叉）", getComputedStyle(lockR).color !== resolved("--wb-err-text") && !!lockR.querySelector('use[href="#i-circle-check"]'), getComputedStyle(lockR).color + " | " + lockR.innerHTML.slice(0, 80));
   const lockA = lockR.querySelector("a");
   ok("给一条直达凭证页的链接，省得用户自己在开放平台里翻",
     lockA && lockA.href === "https://open.feishu.cn/app/cli_locked01/baseinfo" && lockA.target === "_blank", lockA && lockA.outerHTML);
@@ -2319,7 +2333,7 @@ const IMPANE_CHECKS = `
   na.click();
   await settle();
   const naR = fsC.querySelector('[data-newapp-r="feishu"]');
-  ok("建不出来就红字说原因、二维码不留在页面上", naR.textContent.startsWith("❌") && /没装/.test(naR.textContent) && disp(naBox) === "none", naR.textContent);
+  ok("建不出来就红叉说原因、二维码不留在页面上", !!naR.querySelector('use[href="#i-circle-x"]') && /没装/.test(naR.textContent) && disp(naBox) === "none", naR.innerHTML.slice(0, 120));
   ok("失败后按钮解禁，可以再试", !na.disabled);
   return names;
 })();
@@ -2425,7 +2439,10 @@ const ONB_CHECKS = `
   ENGINE_TEST_OK = true; POSTS.length = 0;
   q("#onb-go").click(); await tick(); await tick(); await tick();
   ok("本机连上：先 /api/engines/test 再存 agent.engine，然后翻到第二步", POSTS[0][0] === "engine-test" && POSTS[0][1].id === "codex" && POSTS[1][0] === "settings-raw" && POSTS[1][1].agent.engine === "codex" && steps.querySelector(".onb-step.cur").textContent.includes("联网搜索"));
-  ok("第一步在步骤条上打了 ✓", steps.querySelectorAll(".onb-step")[0].classList.contains("done") && steps.querySelectorAll(".onb-step")[0].textContent.includes("✓"));
+  // 这个勾以前是直接往 innerHTML 里塞「✓」字符；现在走 ic("check")，所以钉的是画出来的那个图标
+  const stepIcon = (i) => { const u = steps.querySelectorAll(".onb-step")[i].querySelector("use"); return u ? u.getAttribute("href") : "(这步没画图标)"; };
+  ok("第一步在步骤条上打了勾（画出来的 check 图标，不是拿字符当图标）", steps.querySelectorAll(".onb-step")[0].classList.contains("done") && stepIcon(0) === "#i-check");
+  ok("负对照：还没走到的那几步不打勾，各是各的图标", stepIcon(1) !== "#i-check" && stepIcon(1).startsWith("#i-") && stepIcon(2) !== stepIcon(1));
 
   // ---- 第二步：搜索 ----
   ok("搜索步标「推荐」、默认 jina、说清没填会怎样", q(".onb-tag.rec") && q("#onb-sp").value === "jina" && body.innerText.includes("DuckDuckGo"));
@@ -2773,6 +2790,150 @@ const I18N_CHECKS = `
 // ---------- 外观页：主题 / 皮肤 / 字号 / 字体 / 密度 ----------
 // 真源切片：app-02 的偏好层（读写本机存储 + 写到 <html>）、app-06 的外观页、app-05 的设置目录
 const APP06_LOOK = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-06.js"), "utf8");
+// ---- 助理头像编辑器：候选格子必须一样大 ----
+// 用户原话：「现在待选的这些图片 svg 都很大，你看一下其他软件都怎么选头像的参考一下」。
+// 真凶是 .ava-ic 的 62% 撞上没有宽高的行内盒子：百分比算不出来，浏览器退回 SVG 的
+// 默认替换尺寸 300×150。这一屏在真 Chromium 里把格子量出来——量尺寸而不是查类名，
+// 因为「类名都写对了、渲染出来还是一巴掌大」正是当时的情形。
+const AVA_SRC = (() => {
+  const a0 = APP02.indexOf("// ================= 头像编辑器（用户资料和助理设置共用一份）");
+  const a1 = APP02.indexOf("// ================= 账号 · 积分 · 用量 =================");
+  const b0 = APP02X.indexOf("function esc(s) {"), b1 = APP02X.indexOf("function escInline(s) {");
+  const c0 = APP02X.indexOf("function avatarBits(av, fallbackName) {"), c1 = APP02X.indexOf("/** 界面上该怎么称呼当前用户");
+  if (a0 < 0 || a1 <= a0 || b0 < 0 || b1 <= b0 || c0 < 0 || c1 <= c0) throw new Error("头像编辑器切片锚点丢了（段标题被改过？）");
+  return 'const ASSISTANT_MARK = "@cat";\nfunction toast(m) { window.__toast = m; }\n'
+    + APP02X.slice(b0, b1) + "\n" + APP02X.slice(c0, c1) + "\n" + APP02.slice(a0, a1);
+})();
+// sprite 得真的注进去：isIconName 是靠 document.getElementById("i-…") 查的，
+// 没有 sprite 的话每个图标名都会被当成「用户手打的字」，这一屏就测的不是图标了。
+const SPRITE_SVG = (() => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const a = html.indexOf('<svg id="wb-sprite"'), b = html.indexOf("</svg>", a);
+  if (a < 0 || b <= a) throw new Error("public/index.html 里找不到 sprite，头像测试没法验真图标");
+  return html.slice(a, b + 6);
+})();
+const AVA_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
+  + SPRITE_SVG + "<div class='card-item' id='card' style='width:520px'></div></body>";
+const AVA_CHECKS = `
+  const names = []; window.__avaNames = 0;
+  const ok = (name, cond, extra) => { if (!cond) throw new Error(name + (extra === undefined ? "" : " ← " + JSON.stringify(extra))); names.push(name); window.__avaNames = names.length; };
+  const card = document.getElementById("card");
+  const box = () => card.querySelector(".ava-ed");
+  const picks = () => [...card.querySelectorAll(".ava-pick")];
+  const visible = (el) => !!(el && el.getClientRects().length);
+  const rect = (el) => el.getBoundingClientRect();
+  const open = (av) => {
+    card.innerHTML = avatarEditorHtml("as", av, "小猫");
+    return bindAvatarEditor(card, "as", av, () => "小猫", ASSISTANT_MARK);
+  };
+  const shown = () => [...card.querySelectorAll(".ava-ed-main > [data-t]")].filter(visible).map((d) => d.dataset.t).join(",");
+  const onNow = () => picks().filter((b) => b.classList.contains("on"));
+  const prev = () => card.querySelector("#as-prev");
+
+  // ---- ① 三类候选一样大（这条就是「svg 都很大」的直接对照）----
+  let ed = open("brain");
+  ok("分类胶囊三个：图标 / 表情 / 图片", [...card.querySelectorAll(".ava-tab")].map((b) => b.textContent).join("/") === "图标/表情/图片");
+  ok("图标头像打开时停在「图标」页", shown() === "icon" && card.querySelector('.ava-tab[data-t="icon"]').classList.contains("active"), shown());
+  const vis = picks().filter(visible);
+  ok("图标页画出了 " + vis.length + " 格候选（猫标 + 图标）", vis.length === 1 + AVATAR_ICONS.length, { vis: vis.length, want: 1 + AVATAR_ICONS.length });
+  const sizes = [...new Set(vis.map((b) => Math.round(rect(b).width) + "x" + Math.round(rect(b).height)))];
+  ok("每一格都是 36×36，不多出第二种尺寸", sizes.length === 1 && sizes[0] === "36x36", sizes);
+  const glyphs = vis.map((b) => b.firstElementChild).filter(Boolean);
+  ok("每格里都真有个图形", glyphs.length === vis.length);
+  const over = glyphs.filter((g) => rect(g).width > 30 || rect(g).height > 30);
+  ok("格子里的图形没有一个溢出格子（老写法这里是 300×150）", over.length === 0,
+     over.slice(0, 3).map((g) => Math.round(rect(g).width) + "x" + Math.round(rect(g).height)));
+  // ★反向对照★：把老写法（行内盒子、宽高都 auto）摆回来，同一个 .ava-ic 立刻涨到三位数
+  {
+    const old = document.createElement("div");
+    old.innerHTML = '<span style="display:inline-block">' + ic("rocket", "ava-ic") + "</span>";
+    card.appendChild(old);
+    const blown = rect(old.querySelector("svg"));
+    const n = Math.round(blown.width) + "x" + Math.round(blown.height);
+    old.remove();
+    ok("★反向★ 退回行内盒子，同一个图标量出来是 " + n + "（这就是用户看到的「都很大」）", blown.width > 100 || blown.height > 100, n);
+  }
+
+  // ---- ② 表情：用户明确要在这儿能挑表情，也能自己打 ----
+  card.querySelector('.ava-tab[data-t="emo"]').click();
+  ok("点「表情」翻到表情页，图标页收起来", shown() === "emo", shown());
+  ok("表情候选 " + AVATAR_EMOJI.length + " 个全画出来了", picks().filter(visible).length === AVATAR_EMOJI.length, picks().filter(visible).length);
+  const emoSizes = [...new Set(picks().filter(visible).map((b) => Math.round(rect(b).width)))];
+  ok("表情格子跟图标格子一样宽（36）", emoSizes.length === 1 && emoSizes[0] === 36, emoSizes);
+  const oct = picks().find((b) => b.dataset.e === "\\u{1F419}");
+  ok("章鱼那格在（表情表真的铺进网格了）", !!oct);
+  oct.click();
+  ok("点了表情：存的就是那个表情", ed.value() === "\\u{1F419}", ed.value());
+  ok("预览里就是那个表情，不是首字母也不是空", prev().textContent.trim() === "\\u{1F419}", prev().textContent);
+  ok("预览换成中性底（彩色表情压在品牌渐变上很脏）", prev().classList.contains("emo"));
+  ok("高亮只有一格，且正是刚点的那格", onNow().length === 1 && onNow()[0] === oct, onNow().length);
+  ok("选中态报给读屏（aria-pressed 只有一个）", oct.getAttribute("aria-pressed") === "true" && picks().filter((b) => b.getAttribute("aria-pressed") === "true").length === 1);
+
+  // 打字/粘贴：表里没有的表情、甚至一个汉字，也得能当头像
+  const inp = card.querySelector("#as-emoji");
+  inp.value = "喵"; inp.oninput();
+  ok("自己打的字也算头像", ed.value() === "喵" && prev().textContent.trim() === "喵", ed.value());
+  ok("打了字之后没有哪一格还亮着（选的不是格子里的）", onNow().length === 0);
+  inp.value = "\\u{1F47B}"; inp.oninput();
+  ok("粘贴表里没有的表情也认", ed.value() === "\\u{1F47B}", ed.value());
+
+  // ---- ③ 恢复默认：回猫标，并且翻回猫标所在那一页 ----
+  card.querySelector("#as-clr").click();
+  ok("恢复默认回到内置猫标", ed.value() === ASSISTANT_MARK, ed.value());
+  ok("恢复默认后翻回「图标」页（不然用户盯着表情页，看不见自己刚恢复成了什么）", shown() === "icon", shown());
+  ok("猫标那格亮着，而且就是渐变底那格", onNow().length === 1 && onNow()[0].classList.contains("mk"));
+  ok("输入框清空了（@cat 不是能打出来的字）", inp.value === "", inp.value);
+  ok("猫标格子选中后还是渐变底（换了底色就认不出那是同一只猫）",
+     getComputedStyle(onNow()[0]).backgroundImage.includes("gradient"), getComputedStyle(onNow()[0]).backgroundImage.slice(0, 40));
+
+  // ---- ④ 点图标那格：输入框不许被塞进 "rocket" 这种打不出来的字 ----
+  const rocket = picks().find((b) => b.dataset.e === "rocket");
+  ok("图标候选里有 rocket", !!rocket);
+  rocket.click();
+  ok("点图标存的是图标名", ed.value() === "rocket", ed.value());
+  ok("图标名不往输入框里塞（塞了用户会以为得自己打 rocket）", inp.value === "", inp.value);
+  ok("预览里是那个图标的 <use>", (prev().querySelector("use") || {}).getAttribute && prev().querySelector("use").getAttribute("href") === "#i-rocket",
+     prev().innerHTML.slice(0, 60));
+
+  // ---- ⑤ 存量头像打开时停在它自己那一页 ----
+  ed = open("\\u{1F419}");
+  ok("表情头像打开时停在「表情」页，那一格已经亮着", shown() === "emo" && onNow().length === 1 && onNow()[0].dataset.e === "\\u{1F419}", shown());
+  ed = open("data:image/png;base64,iVBORw0KGgo=");
+  ok("上传过图片的打开时停在「图片」页", shown() === "img", shown());
+  ok("图片头像的预览是那张图本身", !!prev().querySelector("img.ava-img"));
+
+  // ---- ⑥ 落图区：整块框就是那颗按钮（用户原话：「这个选一张图片看着有点突兀」）----
+  const dz = card.querySelector("#as-up");
+  ok("整块虚线框自己就是那颗按钮，不是框里再站一颗", !!dz && dz.tagName === "BUTTON" && dz.classList.contains("ava-drop"),
+     dz && dz.tagName + "." + dz.className);
+  ok("框里没有第二颗按钮跟它抢（以前那颗就是这么显得突兀的）", dz.querySelectorAll("button").length === 0);
+  ok("落图区 " + Math.round(rect(dz).height) + "px 高，点哪儿都点得着", rect(dz).height >= 100, Math.round(rect(dz).height));
+  ok("框里写明「拖进来」，也写明「不上传任何服务器」", dz.textContent.includes("拖进来") && dz.textContent.includes("不上传任何服务器"), dz.textContent.trim().slice(0, 40));
+  ok("有个图片图标垫着，不是干巴巴一行字", !!dz.querySelector('use[href="#i-image"]'));
+  {
+    const e1 = new DragEvent("dragover", { bubbles: true, cancelable: true });
+    dz.dispatchEvent(e1);
+    ok("图拖到框上，框亮起来告诉用户「松手就行」", dz.classList.contains("over"));
+    ok("★反向★ dragover 真被拦下来了（不拦的话浏览器拿这张图顶掉整页，一屏没保存的设置跟着没）", e1.defaultPrevented);
+    dz.dispatchEvent(new DragEvent("dragleave", { bubbles: true, cancelable: true }));
+    ok("拖走了就灭掉", !dz.classList.contains("over"));
+  }
+  {
+    window.__toast = "";
+    const dt = new DataTransfer();
+    dt.items.add(new File(["x"], "季度汇报.pdf", { type: "application/pdf" }));
+    const e2 = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt });
+    dz.dispatchEvent(e2);
+    await new Promise((r) => setTimeout(r, 0));
+    ok("拖进来一个不是图片的：指名道姓说哪个文件不行", (window.__toast || "").includes("季度汇报.pdf"), window.__toast);
+    ok("拖错了东西，原来的头像一动不动", ed.value() === "data:image/png;base64,iVBORw0KGgo=", ed.value().slice(0, 24));
+    ok("松手之后高亮灭掉了", !dz.classList.contains("over"));
+  }
+  ed = open("");
+  ok("空头像退回首字母，且停在「图标」页", prev().textContent.trim() === "小" && shown() === "icon", prev().textContent);
+  ok("空头像时一格都不亮", onNow().length === 0);
+  return names;
+`;
 const LOOK_SRC = (() => {
   const a0 = APP02.indexOf("// ---------- 外观：主题"), a1 = APP02.indexOf("// ---------- 头像菜单");
   const b0 = APP06_LOOK.indexOf("// ---------- 外观页"), b1 = APP06_LOOK.indexOf("function renderAboutPane(");
@@ -2809,6 +2970,14 @@ const LOOK_CHECKS = `
   const cnt = (k) => pane.querySelectorAll('[data-k="' + k + '"] button').length;
   ok("选项数：语言 2 · 主题 3 · 皮肤 6 · 字号 4 · 字体 3 · 密度 2", cnt("lang") === 2 && cnt("theme") === 3 && cnt("skin") === 6 && cnt("fs") === 4 && cnt("font") === 3 && cnt("density") === 2);
   const onePressed = (k) => { const bs = [...pane.querySelectorAll('[data-k="' + k + '"] button')]; const on = bs.filter((b) => b.classList.contains("on")), pr = bs.filter((b) => b.getAttribute("aria-pressed") === "true"); return on.length === 1 && pr.length === 1 && on[0] === pr[0]; };
+  // 去 emoji：分区标题以前是「🌐 语言 / 🌗 主题 / 🎨 皮肤」，现在一律走 ic()。
+  // 钉住「画出来的 svg」而不是「有没有那个字」——表情当图标，翻译器会把它当正文一起翻走
+  const heads = [...pane.querySelectorAll(".card-item > .t")];
+  const headIcons = heads.map((h) => { const u = h.querySelector("use"); return u ? u.getAttribute("href") : "(这行没画图标)"; });
+  ok("六个分区标题都是画出来的图标（" + headIcons.join(" ") + "）", heads.length === 6 && headIcons.every((h) => h.startsWith("#i-")) && new Set(headIcons).size === 6);
+  ok("负对照：这把尺子认得出图标各不相同（语言=globe · 皮肤=palette · 字号=a-large-small）", headIcons[0] === "#i-globe" && headIcons[2] === "#i-palette" && headIcons[3] === "#i-a-large-small");
+  ok("主题三档也是图标：太阳 / 月亮 / 显示器", [...pane.querySelectorAll('[data-k="theme"] button use')].map((u) => u.getAttribute("href")).join() === "#i-sun,#i-moon,#i-monitor");
+  ok("整页一个表情符号都不剩", !/[\u{1F000}-\u{1FAFF}\u{FE0F}\u{2705}\u{274C}\u{26A0}\u{1F3A8}\u{1F310}]/u.test(pane.textContent), pane.textContent.slice(0, 60));
   ok("每组恰好一个选中（.on + aria-pressed）", ["lang", "theme", "skin", "fs", "font", "density"].every(onePressed));
   ok("默认选中：中文 / 跟随系统 / 默认紫 / 标准 / 系统 / 舒适", ["zh", "system", "default", "m", "system", "cozy"].every((v, i) => pane.querySelector('[data-k="' + groups[i] + '"] button.on').dataset.v === v));
   ok("全是 <button type=button>，没有「保存」键（点即生效）", [...pane.querySelectorAll("button")].every((b) => b.type === "button") && !/保存/.test(pane.textContent));
@@ -2876,14 +3045,14 @@ const LOOK_CHECKS = `
 
   // 语言：点即整页切换，内容区不动
   click("lang", "en");
-  ok("点 English：外观页标题立刻变英文（🌗 Theme）、<html lang=en>、English 选中", /🌗 Theme/.test(pane.textContent) && !/🌗 主题/.test(pane.textContent) && html.lang === "en" && onePressed("lang") && pane.querySelector('[data-k="lang"] button.on').dataset.v === "en");
+  ok("点 English：外观页标题立刻变英文（Theme）、<html lang=en>、English 选中", /Theme/.test(pane.textContent) && !/主题/.test(pane.textContent) && html.lang === "en" && onePressed("lang") && pane.querySelector('[data-k="lang"] button.on').dataset.v === "en");
   ok("English：左栏「当前」等界面词翻了（Current），用户气泡「你好」和 AI 正文「标题/正文」原样（内容不是界面）", $("#hia").textContent === "Current" && $("#bub").textContent === "你好" && $("#h1").textContent === "标题" && $("#p").textContent === "正文");
   ok("English：语言偏好读回 en（存储被禁也记得住）", I18N.getLang() === "en");
   renderLookPane(pane);
   await new Promise((r) => setTimeout(r, 25)); // 观察者是异步的：应用写完 innerHTML，下一拍才翻
-  ok("English 下重开外观页：新渲染的中文文案也被翻成英文（🎨 Skin）", /🎨 Skin/.test(pane.textContent) && !/皮肤/.test(pane.textContent));
+  ok("English 下重开外观页：新渲染的中文文案也被翻成英文（Skin）", /Skin/.test(pane.textContent) && !/皮肤/.test(pane.textContent));
   click("lang", "zh");
-  ok("点回 中文：整页还原（🌗 主题）、<html lang=zh-CN>", /🌗 主题/.test(pane.textContent) && !/Theme/.test(pane.textContent) && html.lang === "zh-CN" && I18N.getLang() === "zh");
+  ok("点回 中文：整页还原（主题）、<html lang=zh-CN>", /主题/.test(pane.textContent) && !/Theme/.test(pane.textContent) && html.lang === "zh-CN" && I18N.getLang() === "zh");
 
   // 主题
   click("theme", "dark");
@@ -2903,6 +3072,127 @@ const LOOK_CHECKS = `
 
   // 左栏目录：图标 + 短名，别一列密密麻麻的字
   ok("设置目录 12 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 12 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
+  return names;
+`;
+
+// ---------- 输入框 token 高亮：镜像层得跟 textarea 逐字对齐 ----------
+// 用户报的是「用技能的时候那个阴影没遮住整个词」。根因不在那条正则，在两层的排版参数：
+// 镜像层当年是开页那一刻把 textarea 的字号抄一份写进内联样式，抄完就再也不更新——
+// 用户去设置里把字号调大，只有 textarea 跟着变，底色停在旧尺寸上，一个技能名只遮住半个词。
+// 所以这一段不验「有没有画出 span」，验的是「画出来的那个框跟真文字严丝合缝」：
+// 拿 textarea 的 computed style 复刻一个探针 div，用 Range 量出技能名真正占的那块地方，
+// 再跟镜像层里那个 .tk 的位置尺寸对一遍。对不上就是用户看见的那个症状。
+const HL_SRC = (() => {
+  const a0 = APP02X.indexOf("// ---------- @文件 //技能 token 高亮");
+  const a1 = APP02X.indexOf('inputEl.addEventListener("input", detectMention);');
+  if (a0 < 0 || a1 <= a0) throw new Error("输入框高亮切片锚点丢了");
+  return APP02X.slice(a0, a1);
+})();
+const HL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
+  + "<div style='width:360px;padding:12px'><div id='input-box'><div id='input-hl' aria-hidden='true'></div>"
+  + "<textarea id='input' rows='2'></textarea></div></div></body>";
+const HL_STUBS = `
+  function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+  const inputEl = document.getElementById("input");
+  const skillsCache = [{ name: "写周报" }, { name: "archify" }];
+`;
+const HL_CHECKS = `
+  const names = []; window.__hlNames = 0;
+  const ok = (name, cond, extra) => { if (!cond) throw new Error("输入框高亮：" + name + (extra ? " ← " + extra : "")); names.push(name); window.__hlNames = names.length; };
+  const ta = inputEl, hl = document.getElementById("input-hl");
+
+  // 决定文字排在哪儿的那些属性，一项都不能两层不一样
+  const METRICS = ["fontSize", "fontFamily", "fontWeight", "lineHeight", "letterSpacing", "wordSpacing",
+    "whiteSpace", "overflowWrap", "wordBreak", "textIndent", "tabSize", "direction",
+    "paddingTop", "paddingLeft", "paddingRight", "borderTopWidth", "borderLeftWidth"];
+  const snap = (el) => METRICS.map((k) => k + "=" + getComputedStyle(el)[k]).join(" · ");
+  ok("排版参数两层逐项一致（" + snap(ta) + "）", snap(ta) === snap(hl), snap(hl));
+
+  // 探针：完整复刻 textarea 的 computed style，用来量「这段字真正占了哪块地方」
+  const probe = document.createElement("div");
+  const mkProbe = () => {
+    const cs = getComputedStyle(ta);
+    probe.removeAttribute("style");
+    for (const k of cs) probe.style.setProperty(k, cs.getPropertyValue(k));
+    probe.style.boxSizing = "content-box";
+    probe.style.width = cs.width;
+    probe.style.position = "absolute";
+    probe.style.left = "-9999px";
+    probe.style.top = "0";
+    probe.style.height = "auto";
+    probe.style.maxHeight = "none";
+    probe.style.overflow = "visible";
+    probe.style.visibility = "hidden";
+  };
+  document.body.appendChild(probe);
+
+  // 量：文本里第 i 个字符起、长 n 个字符，那块地方相对自己容器左上角的位置和大小
+  const rectIn = (host, node, i, n) => {
+    const r = document.createRange();
+    r.setStart(node, i); r.setEnd(node, i + n);
+    const b = r.getBoundingClientRect(), h = host.getBoundingClientRect();
+    return { x: b.left - h.left, y: b.top - h.top, w: b.width, h: b.height };
+  };
+  const spanBox = () => {
+    const sp = hl.querySelector(".tk");
+    if (!sp) return null;
+    const b = sp.getBoundingClientRect(), h = hl.getBoundingClientRect();
+    return { x: b.left - h.left, y: b.top - h.top, w: b.width, h: b.height, text: sp.textContent };
+  };
+  // 镜像层里那个框，跟探针量出来的真文字位置，差多少
+  const gap = (text, tok) => {
+    ta.value = text;
+    ta.dispatchEvent(new Event("input"));
+    mkProbe();
+    probe.textContent = text;
+    const at = text.indexOf(tok);
+    const want = rectIn(probe, probe.firstChild, at, tok.length);
+    const got = spanBox();
+    if (!got) return { miss: "镜像层没画出 .tk" };
+    return {
+      text: got.text,
+      dx: Math.abs(got.x - want.x), dy: Math.abs(got.y - want.y),
+      dw: Math.abs(got.w - want.w), dh: Math.abs(got.h - want.h),
+      want, got,
+    };
+  };
+  const fit = (g) => !g.miss && g.dx <= 0.6 && g.dy <= 0.6 && g.dw <= 0.6 && g.dh <= 0.6;
+  const say = (g) => g.miss || ("偏 " + g.dx.toFixed(1) + "/" + g.dy.toFixed(1) + "，尺寸差 " + g.dw.toFixed(1) + "/" + g.dh.toFixed(1) + "，量到 " + JSON.stringify(g.want) + " 画成 " + JSON.stringify(g.got));
+
+  const g1 = gap("帮我 /写周报 这个月的", "/写周报");
+  ok("技能名整个词都被框住，不是只剩半个（" + g1.text + "）", g1.text === "/写周报");
+  ok("行首这一条：框的位置尺寸跟真文字对得上（" + say(g1) + "）", fit(g1));
+
+  // 折行那一行最容易露馅：两层断词规则只要差一点，行尾那个词就错位
+  const long = "先把上个季度所有渠道的投放数据都汇总一遍然后 /写周报 顺便把结论写清楚";
+  const g2 = gap(long, "/写周报");
+  ok("长文折行后：框还跟着真文字走（" + say(g2) + "）", fit(g2));
+  ok("折行这一条真的折了行（技能名不在第一行）", g2.got && g2.got.y > g2.got.h * 0.9, JSON.stringify(g2.got));
+
+  // 字号改大：这正是当年抄一次就不更新那个 bug 的现场
+  document.documentElement.dataset.fs = "xl";
+  const g3 = gap("帮我 /写周报 这个月的", "/写周报");
+  ok("设置里把字号调到特大：两层一起变大（正文 " + getComputedStyle(ta).fontSize + "）", parseFloat(getComputedStyle(ta).fontSize) > 15 && snap(ta) === snap(hl));
+  ok("特大字号下框还严丝合缝（" + say(g3) + "）", fit(g3));
+  delete document.documentElement.dataset.fs;
+
+  // 负对照：这把尺子得能红。把镜像层字号单独改掉，框立刻对不上
+  hl.style.fontSize = "20px";
+  const bad = gap("帮我 /写周报 这个月的", "/写周报");
+  ok("负对照：镜像层字号被单独改掉时，这把尺子当场判不合格（" + say(bad) + "）", !fit(bad));
+  hl.style.fontSize = "";
+  const back = gap("帮我 /写周报 这个月的", "/写周报");
+  ok("撤掉之后又合格了（尺子本身没坏）", fit(back));
+
+  // 该框的和不该框的
+  ta.value = "看看 /Users/demo/note.md 这个文件"; ta.dispatchEvent(new Event("input"));
+  ok("负对照：/Users/... 这种路径不是技能，不给它画框", !hl.querySelector(".tk"), hl.innerHTML.slice(0, 80));
+  ta.value = "看看 @report.md 里写了什么"; ta.dispatchEvent(new Event("input"));
+  ok("@文件 一律画框，整个文件名都在框里", (hl.querySelector(".tk") || {}).textContent === "@report.md");
+  ta.value = ""; ta.dispatchEvent(new Event("input"));
+  ok("清空输入框：镜像层跟着清干净，不留上一条的底色", hl.innerHTML === "");
+
+  probe.remove();
   return names;
 `;
 
@@ -5121,8 +5411,8 @@ app.whenReady().then(async () => {
   let code = 0;
   try {
     await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent("<!doctype html><meta charset='utf-8'><body></body>"));
-    await win.webContents.executeJavaScript(SVGFIG);
-    const names = await win.webContents.executeJavaScript(CHECKS, true);
+    await win.webContents.executeJavaScript(IC_BOOT + SVGFIG);
+    const names = await win.webContents.executeJavaScript(IC_BOOT + CHECKS, true);
     for (const n of names) console.log("  ✓ " + n);
     console.log(`✅ 前端：内联 SVG 信息图（渲染/流式/清洗/作用域/导出）${names.length} 项通过`);
 
@@ -5131,7 +5421,7 @@ app.whenReady().then(async () => {
     try {
       await win2.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ATTACH_HTML));
       // 替身 + 真源码 + 断言必须是同一段脚本：源码里的 const 是脚本级作用域，分两次注入就互相看不见了
-      const names2 = await win2.webContents.executeJavaScript(ATTACH_STUBS + "\n" + ATTACH_SRC + "\n" + ATTACH_CHECKS, true);
+      const names2 = await win2.webContents.executeJavaScript(IC_BOOT + ATTACH_STUBS + "\n" + ATTACH_SRC + "\n" + ATTACH_CHECKS, true);
       for (const n of names2) console.log("  ✓ " + n);
       console.log(`✅ 前端：粘贴/拖拽附件（截图·文件·大段文字）${names2.length} 项通过`);
     } finally {
@@ -5141,7 +5431,7 @@ app.whenReady().then(async () => {
     const win3 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win3.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PREVIEW_HTML));
-      const names3 = await win3.webContents.executeJavaScript(PREVIEW_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
+      const names3 = await win3.webContents.executeJavaScript(IC_BOOT + PREVIEW_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + PREVIEW_SRC + "\n" + PREVIEW_CHECKS, true);
       for (const n of names3) console.log("  ✓ " + n);
       console.log(`✅ 前端：文件预览（路由·音视频·docx/xlsx/pptx/zip 结构化·CSV·兜底）${names3.length} 项通过`);
     } finally {
@@ -5151,7 +5441,7 @@ app.whenReady().then(async () => {
     const win4 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win4.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(FB_HTML));
-      const names4 = await win4.webContents.executeJavaScript(FB_STUBS + "\n" + FB_WRAP(FB_SRC) + "\n" + FB_CHECKS, true);
+      const names4 = await win4.webContents.executeJavaScript(IC_BOOT + FB_STUBS + "\n" + FB_WRAP(FB_SRC) + "\n" + FB_CHECKS, true);
       for (const n of names4) console.log("  ✓ " + n);
       console.log(`✅ 前端：👍👎 反馈上报（真发 payload·下标跟位置·理由选填·改判撤高亮）${names4.length} 项通过`);
     } finally {
@@ -5160,7 +5450,7 @@ app.whenReady().then(async () => {
     const win5 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win5.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(FILELIST_HTML));
-      const names5 = await win5.webContents.executeJavaScript(FILELIST_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + DELIVER_SRC + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
+      const names5 = await win5.webContents.executeJavaScript(IC_BOOT + FILELIST_STUBS + "\n" + PATHHELP_SRC + "\n" + HOSTCAP_SRC + "\n" + DELIVER_SRC + "\n" + FILELIST_SRC + "\n" + FILELIST_CHECKS, true);
       for (const n of names5) console.log("  ✓ " + n);
       console.log(`✅ 前端：成果面板按时间分段（今天/昨天/7天/按月·取最近动过·折叠独立·根目录降级）${names5.length} 项通过`);
     } finally {
@@ -5169,7 +5459,7 @@ app.whenReady().then(async () => {
     const win7 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win7.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TURNOUT_HTML));
-      const names7 = await win7.webContents.executeJavaScript(TURNOUT_STUBS + "\n" + PATHHELP_SRC + "\n" + TURNOUT_SRC + "\n" + TURNOUT_CHECKS, true);
+      const names7 = await win7.webContents.executeJavaScript(IC_BOOT + TURNOUT_STUBS + "\n" + PATHHELP_SRC + "\n" + TURNOUT_SRC + "\n" + TURNOUT_CHECKS, true);
       for (const n of names7) console.log("  ✓ " + n);
       console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接·整块可收起）${names7.length} 项通过`);
     } finally {
@@ -5179,7 +5469,7 @@ app.whenReady().then(async () => {
     try {
       assertFailedCardsCollapsed();
       await win8.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SCROLLGUIDE_HTML));
-      const names8 = await win8.webContents.executeJavaScript(SCROLLGUIDE_STUBS + "\n" + SCROLLGUIDE_SRC + "\n" + SCROLLGUIDE_CHECKS, true);
+      const names8 = await win8.webContents.executeJavaScript(IC_BOOT + SCROLLGUIDE_STUBS + "\n" + SCROLLGUIDE_SRC + "\n" + SCROLLGUIDE_CHECKS, true);
       for (const n of names8) console.log("  ✓ " + n);
       console.log(`✅ 前端：长对话滚动引导（回到最前/回到最新挂红点·看历史不被拽）+ 出错步骤卡默认收起、角标直达 ${names8.length} 项通过`);
     } finally {
@@ -5188,7 +5478,7 @@ app.whenReady().then(async () => {
     const win9 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win9.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TRAIL_HTML));
-      const names9 = await win9.webContents.executeJavaScript(TRAIL_STUBS + "\n" + TRAIL_SRC + "\n" + TRAIL_CHECKS, true);
+      const names9 = await win9.webContents.executeJavaScript(IC_BOOT + TRAIL_STUBS + "\n" + TRAIL_SRC + "\n" + TRAIL_CHECKS, true);
       for (const n of names9) console.log("  ✓ " + n);
       console.log(`✅ 前端：轨迹条（同名合并·出错标红·中止删除线·+N 上限·收起可见·点徽章直达）+ 结论出过程区 + 命中率封顶 + 收尾接线（正文文件名变可点链接·成品自动摊开·四种情形一律不弹）${names9.length} 项通过`);
     } finally {
@@ -5197,17 +5487,37 @@ app.whenReady().then(async () => {
     const win12 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
       await win12.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LOOK_HTML));
-      const names12 = await win12.webContents.executeJavaScript(I18N_SRC + "\n(async function(){\n" + LOOK_SRC + "\n" + LOOK_CHECKS + "\n})()", true)
+      const names12 = await win12.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n(async function(){\n" + IC_STUB + "\n" + LOOK_SRC + "\n" + LOOK_CHECKS + "\n})()", true)
         .catch((e) => { throw new Error("[外观] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of names12) console.log("  ✓ " + n);
       console.log(`✅ 前端：外观页（字号四档按 calc 联动·六皮肤浅暗对比度矩阵·密度只收间距·字体三选·主题即点即生效·存储被禁退内存·默认不留脏属性）${names12.length} 项通过`);
     } finally {
       if (!win12.isDestroyed()) win12.destroy();
     }
+    const winAva = mkWin({ show: false, width: 900, height: 800, webPreferences: { offscreen: true } });
+    try {
+      await winAva.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(AVA_HTML));
+      const namesAva = await winAva.webContents.executeJavaScript(IC_BOOT + "(async function(){\n" + IC_STUB + "\n" + AVA_SRC + "\n" + AVA_CHECKS + "\n})()", true)
+        .catch(async (e) => { throw new Error("[头像编辑器] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (await winAva.webContents.executeJavaScript("window.__avaNames||0").catch(() => "?"))); });
+      for (const n of namesAva) console.log("  ✓ " + n);
+      console.log(`✅ 前端：头像编辑器（三类候选 36px 等大·反向对照量出行内盒子 300×150·表情能挑能打·恢复默认回默认那一页·落图区整块可点可拖）${namesAva.length} 项通过`);
+    } finally {
+      if (!winAva.isDestroyed()) winAva.destroy();
+    }
+    const winHl = mkWin({ show: false, width: 700, height: 500, webPreferences: { offscreen: true } });
+    try {
+      await winHl.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(HL_HTML));
+      const namesHl = await winHl.webContents.executeJavaScript(IC_BOOT + "(async function(){\n" + HL_STUBS + "\n" + HL_SRC + "\n" + HL_CHECKS + "\n})()", true)
+        .catch(async (e) => { throw new Error("[输入框高亮] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (await winHl.webContents.executeJavaScript("window.__hlNames||0").catch(() => "?"))); });
+      for (const n of namesHl) console.log("  ✓ " + n);
+      console.log(`✅ 前端：输入框 token 高亮（镜像层逐字对齐·折行不错位·改字号跟着走·路径不误框）${namesHl.length} 项通过`);
+    } finally {
+      if (!winHl.isDestroyed()) winHl.destroy();
+    }
     const win18 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win18.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MENU_HTML));
-      const names18 = await win18.webContents.executeJavaScript(I18N_SRC + "\n(async function(){\n" + MENU_STUBS + "\n" + LOOK_SRC + "\n" + MENU_SRC + "\n" + MENU_CHECKS + "\n})()", true)
+      const names18 = await win18.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n(async function(){\n" + MENU_STUBS + "\n" + LOOK_SRC + "\n" + MENU_SRC + "\n" + MENU_CHECKS + "\n})()", true)
         .catch(async (e) => { throw new Error("[头像菜单] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (await win18.webContents.executeJavaScript("window.__menuNames||0").catch(() => "?"))); });
       for (const n of names18) console.log("  ✓ " + n);
       console.log(`✅ 前端：头像菜单语言快切（中/En 胶囊点即切·菜单不关原地翻·点行空白也翻·尾注已删·其它行不受影响）${names18.length} 项通过`);
@@ -5217,7 +5527,7 @@ app.whenReady().then(async () => {
     const win14 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win14.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(I18N_HTML));
-      const names14 = await win14.webContents.executeJavaScript(I18N_SRC + "\n" + I18N_CHECKS, true)
+      const names14 = await win14.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n" + I18N_CHECKS, true)
         .catch((e) => { throw new Error("[语言] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of names14) console.log("  ✓ " + n);
       console.log(`✅ 前端：中英文切换（点即整页翻·后渲染的节点观察者接手·属性也翻·内容区不碰·切回中文原样还原·不自激振荡）${names14.length} 项通过`);
@@ -5227,7 +5537,7 @@ app.whenReady().then(async () => {
     const win15 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
       await win15.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(HUB_MCP_HTML));
-      const names15 = await win15.webContents.executeJavaScript(HUB_MCP_STUBS + "\n" + HUB_MCP_SRC + "\n" + HUB_MCP_CHECKS, true)
+      const names15 = await win15.webContents.executeJavaScript(IC_BOOT + HUB_MCP_STUBS + "\n" + HUB_MCP_SRC + "\n" + HUB_MCP_CHECKS, true)
         .catch((e) => { throw new Error("[连接器] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of names15) console.log("  ✓ " + n);
       console.log(`✅ 前端：连接器预设目录（一键接入预填·缺 Key 拦下·值里带等号保住·原条目不回传 Key·已接入置灰·缺 uvx 提示·搜索/只看已连接联动）${names15.length} 项通过`);
@@ -5239,7 +5549,7 @@ app.whenReady().then(async () => {
       const { defaultPairs, maskScript } = require("../scripts/demo-mask");
       const pairs = defaultPairs("/tmp/owb-demo-1", ["cli_a1b2c3d4e5"]);
       await win16.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MASK_HTML));
-      const names16 = await win16.webContents.executeJavaScript(MASK_CHECKS(maskScript(pairs)), true)
+      const names16 = await win16.webContents.executeJavaScript(IC_BOOT + MASK_CHECKS(maskScript(pairs)), true)
         .catch((e) => { throw new Error("[遮罩] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of names16) console.log("  ✓ " + n);
       console.log(`✅ 前端：录屏遮罩层（静态文本/输入框/title·后插入节点·原地改字·bot id 圆点）${names16.length} 项通过`);
@@ -5249,7 +5559,7 @@ app.whenReady().then(async () => {
     const win17 = mkWin({ show: false, width: 900, height: 600, webPreferences: { offscreen: true } });
     try {
       await win17.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ARRIVAL_HTML));
-      const names17 = await win17.webContents.executeJavaScript(ARRIVAL_STUBS + "\n" + ARRIVAL_SRC + "\n" + ARRIVAL_CHECKS, true)
+      const names17 = await win17.webContents.executeJavaScript(IC_BOOT + ARRIVAL_STUBS + "\n" + ARRIVAL_SRC + "\n" + ARRIVAL_CHECKS, true)
         .catch((e) => { throw new Error("[产出到了] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of names17) console.log("  ✓ " + n);
       console.log(`✅ 前端：产出到了不抢版面 + 跑完看得见（中途不弹/角标累加/开面板清零/只在看着同一文件时原地刷新 · 正文文件名变可点链接、代码块和没产出过的名字不碰 · 收尾开成品且六种情形一律不开）${names17.length} 项通过`);
@@ -5259,7 +5569,7 @@ app.whenReady().then(async () => {
     const win11 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
       await win11.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ONB_HTML));
-      const names11 = await win11.webContents.executeJavaScript(I18N_SRC + "\n" + ONB_STUBS + "\n" + ONB_SRC + "\n" + SHORTCUT_SRC + "\n" + ONB_CHECKS, true);
+      const names11 = await win11.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n" + ONB_STUBS + "\n" + ONB_SRC + "\n" + SHORTCUT_SRC + "\n" + ONB_CHECKS, true);
       for (const n of names11) console.log("  ✓ " + n);
       console.log(`✅ 前端：首次开箱向导（大脑必配·云端/本机二选一·验活失败不翻页·搜索保存再测活·多媒体按行填·清单收尾·走完不再弹·关于页可重开）${names11.length} 项通过`);
     } finally {
@@ -5268,7 +5578,7 @@ app.whenReady().then(async () => {
     const win19 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win19.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(WSMENU_HTML));
-      const names18 = await win19.webContents.executeJavaScript(
+      const names18 = await win19.webContents.executeJavaScript(IC_BOOT + 
         WSMENU_STUBS + "\n" + HOSTCAP_SRC + "\n" + srcBlock("function openWorkspaceOnHost(") + "\n" + WSMENU_SRC + "\n" + WSMENU_CHECKS, true);
       for (const n of names18) console.log("  ✓ " + n);
       console.log(`✅ 前端：顶栏工作空间菜单（成员不画会 403 的两条·501 才退回手填·切换/打开失败都说原因）${names18.length} 项通过`);
@@ -5278,7 +5588,7 @@ app.whenReady().then(async () => {
     const win10 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win10.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(IMPANE_HTML));
-      const names10 = await win10.webContents.executeJavaScript(IMPANE_STUBS + "\n" + IMPANE_SRC + "\n" + IMPANE_CHECKS, true);
+      const names10 = await win10.webContents.executeJavaScript(IC_BOOT + IMPANE_STUBS + "\n" + IMPANE_SRC + "\n" + IMPANE_CHECKS, true);
       for (const n of names10) console.log("  ✓ " + n);
       console.log(`✅ 前端：助理设置页（四分区·双栏·连上收起·连接=保存再测活·凭证没填齐先拦住·取消连接两步且只清自己·微信取码/断开·扫码新建飞书应用·清会话两步）${names10.length} 项通过`);
     } finally {
@@ -5287,7 +5597,7 @@ app.whenReady().then(async () => {
     const win13 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win13.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(COMPOSER_HTML));
-      const names13 = await win13.webContents.executeJavaScript(COMPOSER_STUBS + "\n" + COMPOSER_SRC + "\n" + COMPOSER_CHECKS, true);
+      const names13 = await win13.webContents.executeJavaScript(IC_BOOT + COMPOSER_STUBS + "\n" + COMPOSER_SRC + "\n" + COMPOSER_CHECKS, true);
       for (const n of names13) console.log("  ✓ " + n);
       console.log(`✅ 前端：运行中的输入框（提示讲清插话/停下/并行·停止是真按钮·一颗键按有没有字切停下/插一句·提示语跟忙闲·发完自动回停下）${names13.length} 项通过`);
     } finally {
@@ -5296,7 +5606,7 @@ app.whenReady().then(async () => {
     const winSK = mkWin({ show: false, width: 700, height: 500, webPreferences: { offscreen: true } });
     try {
       await winSK.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SKEG_HTML));
-      const namesSK = await winSK.webContents.executeJavaScript(SKEG_SRC + "\n" + SKEG_CHECKS, true)
+      const namesSK = await winSK.webContents.executeJavaScript(IC_BOOT + SKEG_SRC + "\n" + SKEG_CHECKS, true)
         .catch((e) => { throw new Error("[技能例子] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesSK) console.log("  ✓ " + n);
       console.log(`✅ 前端：技能卡「立即使用」摆的是具体能干的事（真说明书·整节都读·括号不砍句·没写适用场景就一条不给·颜色码包名不当例子·最多 4 个）${namesSK.length} 项通过`);
@@ -5305,7 +5615,7 @@ app.whenReady().then(async () => {
     const winMG = mkWin({ show: false, width: 400, height: 400, webPreferences: { offscreen: true } });
     try {
       await winMG.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MERGE_HTML));
-      const namesMG = await winMG.webContents.executeJavaScript(MERGE_STUBS + "\n" + APP03_MERGE + "\n" + MERGE_CHECKS, true)
+      const namesMG = await winMG.webContents.executeJavaScript(IC_BOOT + MERGE_STUBS + "\n" + APP03_MERGE + "\n" + MERGE_CHECKS, true)
         .catch((e) => { throw new Error("[历史并回] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesMG) console.log("  ✓ " + n);
       console.log(`✅ 前端：登录后把服务端的任务历史并回侧栏（本地空了能补回·只补不删·润色过的标题盖过半句话·老服务端/断网一条不清）${namesMG.length} 项通过`);
@@ -5314,7 +5624,7 @@ app.whenReady().then(async () => {
     const winPJ = mkWin({ show: false, width: 300, height: 600, webPreferences: { offscreen: true } });
     try {
       await winPJ.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PROJ_HTML));
-      const namesPJ = await winPJ.webContents.executeJavaScript(PROJ_STUBS + "\n" + PROJ_SRC + "\n" + PROJ_CHECKS, true)
+      const namesPJ = await winPJ.webContents.executeJavaScript(IC_BOOT + PROJ_STUBS + "\n" + PROJ_SRC + "\n" + PROJ_CHECKS, true)
         .catch((e) => { throw new Error("[项目栏/任务历史] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesPJ) console.log("  ✓ " + n);
       console.log(`✅ 前端：侧栏项目栏 + 任务历史（租户端整栏不画·历史一条不滤·假项目顶上就滤空的事故留证·状态来回切）${namesPJ.length} 项通过`);
@@ -5323,7 +5633,7 @@ app.whenReady().then(async () => {
     const winLN = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
     try {
       await winLN.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
-      const namesLN = await winLN.webContents.executeJavaScript(
+      const namesLN = await winLN.webContents.executeJavaScript(IC_BOOT + 
         LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + LANE_CHECKS, true)
         .catch((e) => { throw new Error("[两条工作线] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesLN) console.log("  ✓ " + n);
@@ -5333,7 +5643,7 @@ app.whenReady().then(async () => {
     const winLN2 = mkWin({ show: false, width: 430, height: 640, webPreferences: { offscreen: true } });
     try {
       await winLN2.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_NARROW_HTML));
-      const namesLN2 = await winLN2.webContents.executeJavaScript(
+      const namesLN2 = await winLN2.webContents.executeJavaScript(IC_BOOT + 
         LANE_STUBS + "\n" + LANE_REPLY_SRC + "\n" + LANE_STATE_SRC + "\n" + LANE_SRC + "\n" + HIST_MIN_SRC + "\n" + LANE_NARROW_CHECKS, true)
         .catch((e) => { throw new Error("[两条工作线·窄侧栏] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesLN2) console.log("  ✓ " + n);
@@ -5343,7 +5653,7 @@ app.whenReady().then(async () => {
     const winGC = mkWin({ show: false, width: 760, height: 600, webPreferences: { offscreen: true } });
     try {
       await winGC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(GOAL_HTML));
-      const namesGC = await winGC.webContents.executeJavaScript(GOAL_STUBS + "\n" + GOAL_SRC + "\n" + GOAL_CHECKS, true)
+      const namesGC = await winGC.webContents.executeJavaScript(IC_BOOT + GOAL_STUBS + "\n" + GOAL_SRC + "\n" + GOAL_CHECKS, true)
         .catch((e) => { throw new Error("[Goal 目标卡] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesGC) console.log("  ✓ " + n);
       console.log(`✅ 前端：Goal 目标卡（进度条·拆解验收失败留痕·停了说为什么并能接着冲）${namesGC.length} 项通过`);
@@ -5352,7 +5662,7 @@ app.whenReady().then(async () => {
     const winESC = mkWin({ show: false, width: 600, height: 400, webPreferences: { offscreen: true } });
     try {
       await winESC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ESC_HTML));
-      const namesESC = await winESC.webContents.executeJavaScript(ESC_STUBS + "\n" + ESC_SRC + "\n" + STREAM_SRC + "\n" + ESC_CHECKS, true)
+      const namesESC = await winESC.webContents.executeJavaScript(IC_BOOT + ESC_STUBS + "\n" + ESC_SRC + "\n" + STREAM_SRC + "\n" + ESC_CHECKS, true)
         .catch((e) => { throw new Error("[HTML 转义] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesESC) console.log("  ✓ " + n);
       console.log(`✅ 前端：HTML 转义（引号进属性不截断·markdown 链接注不进事件属性·正常内容一字没动）${namesESC.length} 项通过`);
@@ -5361,7 +5671,7 @@ app.whenReady().then(async () => {
     const winMEM = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
       await winMEM.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MEM_HTML));
-      const namesMEM = await winMEM.webContents.executeJavaScript(ESC_SRC + "\n" + MEM_SRC + "\n" + MEM_CHECKS, true)
+      const namesMEM = await winMEM.webContents.executeJavaScript(IC_BOOT + IC_STUB + "\n" + ESC_SRC + "\n" + MEM_SRC + "\n" + MEM_CHECKS, true)
         .catch((e) => { throw new Error("[记忆页权限] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesMEM) console.log("  ✓ " + n);
       console.log(`✅ 前端：记忆页按权限画（共享那条不画删·勾选框和保存按钮不画·搬家卡不画·删了不吞返回值·管理员那页一样不少）${namesMEM.length} 项通过`);
@@ -5370,7 +5680,7 @@ app.whenReady().then(async () => {
     const winGATE = mkWin({ show: false, width: 1000, height: 900, webPreferences: { offscreen: true } });
     try {
       await winGATE.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(GATE_HTML));
-      const namesGATE = await winGATE.webContents.executeJavaScript(ESC_SRC + "\n" + GATE_SRC + "\n" + GATE_CHECKS, true)
+      const namesGATE = await winGATE.webContents.executeJavaScript(IC_BOOT + ESC_SRC + "\n" + GATE_SRC + "\n" + GATE_CHECKS, true)
         .catch((e) => { throw new Error("[设置页权限] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesGATE) console.log("  ✓ " + n);
       console.log(`✅ 前端：设置页按权限画（四页纯管理员的不画·模型只读·个性化只留宠物·安全只留档位·🛡️ 菜单不装成能点的）${namesGATE.length} 项通过`);
@@ -5379,7 +5689,7 @@ app.whenReady().then(async () => {
     const winDEAD = mkWin({ show: false, width: 1100, height: 900, webPreferences: { offscreen: true } });
     try {
       await winDEAD.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(DEAD_HTML));
-      const namesDEAD = await winDEAD.webContents.executeJavaScript(ESC_SRC + "\n" + DEAD_SRC + "\n" + DEAD_CHECKS, true)
+      const namesDEAD = await winDEAD.webContents.executeJavaScript(IC_BOOT + ESC_SRC + "\n" + DEAD_SRC + "\n" + DEAD_CHECKS, true)
         .catch((e) => { throw new Error("[自动化/资料库 403] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesDEAD) console.log("  ✓ " + n);
       console.log(`✅ 前端：403 不该变成一片白也不该变成一句假成功（自动化整页有话说·侧栏藏掉必挂的入口·资料库只读但看得见·上传/记笔记失败照实说）${namesDEAD.length} 项通过`);
@@ -5388,7 +5698,7 @@ app.whenReady().then(async () => {
     const winHUB = mkWin({ show: false, width: 1100, height: 900, webPreferences: { offscreen: true } });
     try {
       await winHUB.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(HUB_HTML));
-      const namesHUB = await winHUB.webContents.executeJavaScript(ESC_SRC + "\n" + HUB_SRC + "\n" + HUB_CHECKS, true)
+      const namesHUB = await winHUB.webContents.executeJavaScript(IC_BOOT + ESC_SRC + "\n" + HUB_SRC + "\n" + HUB_CHECKS, true)
         .catch((e) => { throw new Error("[专家/技能/连接器 权限] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesHUB) console.log("  ✓ " + n);
       console.log(`✅ 前端：专家/技能/插件/连接器四个 Tab——用得了但装不了（成员看得见卡片、没有一颗会 403 的按钮、删失败照实说原因）${namesHUB.length} 项通过`);
@@ -5397,7 +5707,7 @@ app.whenReady().then(async () => {
     const winSTM = mkWin({ show: false, width: 760, height: 700, webPreferences: { offscreen: true } });
     try {
       await winSTM.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(STREAM_HTML));
-      const namesSTM = await winSTM.webContents.executeJavaScript(STREAM_STUBS + "\n" + STREAM_SRC + "\n" + STREAM_CHECKS, true)
+      const namesSTM = await winSTM.webContents.executeJavaScript(IC_BOOT + STREAM_STUBS + "\n" + STREAM_SRC + "\n" + STREAM_CHECKS, true)
         .catch((e) => { throw new Error("[流式分段渲染] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesSTM) console.log("  ✓ " + n);
       console.log(`✅ 前端：流式正文分段渲染（已定稿那截不重建·结果跟一次渲染一致·停笔合回整块）${namesSTM.length} 项通过`);
@@ -5406,7 +5716,7 @@ app.whenReady().then(async () => {
     const winEP = mkWin({ show: false, width: 520, height: 600, webPreferences: { offscreen: true } });
     try {
       await winEP.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ENGPICK_HTML));
-      const namesEP = await winEP.webContents.executeJavaScript(ENGPICK_STUBS + "\n" + ENGPICK_SRC + "\n" + ENGPICK_CHECKS, true)
+      const namesEP = await winEP.webContents.executeJavaScript(IC_BOOT + ENGPICK_STUBS + "\n" + ENGPICK_SRC + "\n" + ENGPICK_CHECKS, true)
         .catch((e) => { throw new Error("[本机引擎选择器] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesEP) console.log("  ✓ " + n);
       console.log(`✅ 前端：本机引擎在跑时的模型选择器（宽度收得住·说明换行·不出屏·只有一处可点·按钮换图标）${namesEP.length} 项通过`);
@@ -5429,10 +5739,10 @@ app.whenReady().then(async () => {
       const page = path.join(mmdTmp, "mmd.html");
       fs.writeFileSync(page, `<!doctype html><meta charset="utf-8"><body><script>${mermaidSrc}</script>`);
       await winMMD.loadFile(page);
-      await winMMD.webContents.executeJavaScript(
+      await winMMD.webContents.executeJavaScript(IC_BOOT + 
         'mermaid.initialize({ startOnLoad: false, theme: "base", securityLevel: "strict", htmlLabels: false }); "ok"', true);
       const mmdParse = (s) =>
-        winMMD.webContents.executeJavaScript(
+        winMMD.webContents.executeJavaScript(IC_BOOT + 
           `(async()=>{try{await mermaid.parse(${JSON.stringify(String(s))});return "OK";}catch(e){return "ERR "+String((e&&e.message)||e).split("\\n")[0].slice(0,140);}})()`, true);
       const namesM = [];
       for (const [name, src] of MMD_BAD) {
@@ -5459,7 +5769,7 @@ app.whenReady().then(async () => {
     const win6 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win6.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(KBD_HTML));
-      const names6 = await win6.webContents.executeJavaScript(UI00_SRC + "\n" + KBD_CHECKS, true);
+      const names6 = await win6.webContents.executeJavaScript(IC_BOOT + UI00_SRC + "\n" + KBD_CHECKS, true);
       for (const n of names6) console.log("  ✓ " + n);
       console.log(`✅ 前端：键盘可达（侧栏行/成果卡 Tab 得到·回车空格等价点击·按钮不套按钮）${names6.length} 项通过`);
     } finally {
@@ -5468,7 +5778,7 @@ app.whenReady().then(async () => {
     const winSave = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await winSave.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SAVE_HTML));
-      const namesSave = await winSave.webContents.executeJavaScript(SAVE_STUBS + "\n" + SAVE_SRC + "\n" + SAVE_CHECKS, true)
+      const namesSave = await winSave.webContents.executeJavaScript(IC_BOOT + SAVE_STUBS + "\n" + SAVE_SRC + "\n" + SAVE_CHECKS, true)
         .catch((e) => { throw new Error("[存盘] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesSave) console.log("  ✓ " + n);
       console.log(`✅ 前端：存盘失败说人话（连不上/卡住掐掉/网关 HTML/服务端原话/裸 HTTP 码/空响应 六句各不相同·默认落本对话文件夹·取消不吓人·网页端退下载）${namesSave.length} 项通过`);
@@ -5478,7 +5788,7 @@ app.whenReady().then(async () => {
     const winSC = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await winSC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SC_HTML));
-      const namesSC = await winSC.webContents.executeJavaScript(SC_STUBS + "\n" + SC_SRC + "\n" + SC_CHECKS, true);
+      const namesSC = await winSC.webContents.executeJavaScript(IC_BOOT + SC_STUBS + "\n" + SC_SRC + "\n" + SC_CHECKS, true);
       for (const n of namesSC) console.log("  ✓ " + n);
       console.log(`✅ 前端：快捷键改绑不再扣着键盘不放（点别处/点取消/Esc/面板重画 四个出口·冲突照拦·正路照存）${namesSC.length} 项通过`);
     } finally {

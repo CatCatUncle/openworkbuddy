@@ -610,13 +610,27 @@ function runSourcePins() {
 
   // 端口：壳和服务端必须按同一套优先级算，不然就是「服务端听 A、壳去连 B」——
   // 窗口永远等不到人，用户看到的是一个「启动失败」的弹框，而他只是设了个环境变量。
-  const resolvePort = new Function(slice("electron-main.js", "resolvePort") + "\nreturn resolvePort;")();
+  // 以前这是两份实现（壳一份、服务端一份），靠这条测试盯着别漂。盯不住：两份里
+  // 都藏着同一个 bug，而两份都错成一样，"两边一致"照样是绿的。现在合成 paths.js 一份，
+  // 这里验的就从「两份算得一样吗」变成「两边用的是不是同一份」——那才是漂不了的写法。
+  const { resolvePort } = require(path.join(ROOT, "paths.js"));
   eq(resolvePort({ PORT: "3810" }, { server: { port: 3900 } }), 3810,
-     "PORT 环境变量说了算（server.js 就是这个优先级；壳以前只读 config，设了 PORT 必然连错端口）");
+     "PORT 环境变量说了算（壳以前只读 config，设了 PORT 必然连错端口）");
   eq(resolvePort({}, { server: { port: 3900 } }), 3900, "没设环境变量就听 config.json 的");
   eq(resolvePort({}, null), 3800, "config 读不出来也得有个默认值，不能是 NaN");
   eq(resolvePort({ PORT: "" }, { server: { port: 3900 } }), 3900, "PORT 是空串等于没设，别把 config 顶掉");
   eq(resolvePort({ PORT: "不是数字" }, null), 3800, "PORT 填了句人话也不能算出 NaN（NaN 端口连不上任何东西）");
-  ok(/\+process\.env\.PORT \|\| srvCfg\.port \|\| 3800/.test(serverSrc),
-     "  └ 反向对照：server.js 那头确实是 env > config > 3800，两边不是各写各的");
+  // PORT=0 是操作系统的老规矩：「你替我挑一个空的」。老写法是 `+env.PORT || cfg…`，
+  // 而 +"0" 是 0、是假值，于是显式设的 0 被当成没设，悄悄回落到 3800 —— 本机正跑着一台的时候
+  // 就直接撞上用户自己那台了（端到端测试里五处真起 server 全栽在这儿）。判据是「设没设」，不是「真不真」。
+  eq(resolvePort({ PORT: "0" }, { server: { port: 3900 } }), 0, "PORT=0 是「让内核挑一个空的」，不是「没设」");
+  eq(resolvePort({ PORT: "65535" }, null), 65535, "端口上界 65535 收");
+  eq(resolvePort({ PORT: "65536" }, { server: { port: 3900 } }), 3900, "越界的端口号当没设，不往下传一个连不上的数");
+  eq(resolvePort({ PORT: "-1" }, null), 3800, "负数同理");
+  // ★反向对照★：真正要防的不是「算得不一样」，是「又各写各的」。
+  ok(/require\("\.\/paths"\)/.test(mainSrc) && /\bresolvePort\b/.test(mainSrc) && !/function resolvePort/.test(mainSrc),
+     "  └ 壳用的是 paths.js 那一份，自己没再写一个");
+  ok(/require\("\.\/paths"\)/.test(serverSrc) && /const port = resolvePort\(process\.env, config\)/.test(serverSrc)
+     && !/function resolvePort/.test(serverSrc),
+     "  └ 服务端也是那一份，自己没再写一个（这是两边不会漂的唯一理由）");
 }

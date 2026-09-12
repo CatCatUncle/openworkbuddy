@@ -397,7 +397,7 @@ const DEFAULT_SKILLS = [
     repo: "hugohe3/ppt-master", branch: "main", subpath: "",
     license: "MIT", author: "Hugo He",
     bytes: 171 * 1024 * 1024,
-    why: "做正经 PPT 的一整套模板与工作流。⚠️ 自带大量模板素材，装完约 171MB、克隆要几分钟，磁盘紧张就别装",
+    why: "做正经 PPT 的一整套模板与工作流。注意：自带大量模板素材，装完约 171MB、克隆要几分钟，磁盘紧张就别装",
   },
   {
     name: "pretext",

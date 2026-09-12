@@ -9,6 +9,78 @@ function ic(name, cls) {
   return `<svg class="i${cls ? " " + cls : ""}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 }
 
+/** 往一行小提示里写「图标 + 一句话」。
+ *  以前满仓库都是 el.textContent = "✅ 已保存"：图标是当文字塞进去的，
+ *  而且每处都得自己记着把上一次失败留下的红色擦掉——擦漏一处就是绿事配红字。
+ *  kind: "ok" 成功绿 / "err" 失败红 / 省略则用继承来的颜色。 */
+function setMsg(el, icon, text, kind) {
+  if (!el) return;
+  el.style.color = kind === "err" ? "var(--wb-err-text)" : kind === "ok" ? "var(--wb-ok-text)" : "";
+  el.innerHTML = (icon ? ic(icon) + " " : "") + esc(text == null ? "" : String(text));
+}
+
+/** 头像：专家 / 专家团 / 技能卡上那一格。
+ *  现在存的是图标名（"brain"、"search"），老配置里存的是表情字符。
+ *  sprite 里查得到就画矢量图标，查不到就原样当文字显示——
+ *  用户自己手填过的头像，不该因为我们换了图标系统就凭空消失。 */
+/** 这个头像值是不是 sprite 里的图标名？老配置里存的是 emoji 字符、上传的图是 data URI，
+ *  查不到就不是——交给调用方当文字或图片处理，别让用户手填的头像凭空消失。 */
+function isIconName(v) {
+  const s = String(v == null ? "" : v).trim();
+  return !!(s && !s.startsWith("data:") && document.getElementById("i-" + s));
+}
+function ava(v, fallback) {
+  const name = String(v == null ? "" : v).trim();
+  if (isIconName(name)) return ic(name);
+  if (name) return esc(name);
+  return ic(fallback || "user");
+}
+
+/** 头像可选的图标。不是把 sprite 里 135 个都摆出来——那是让人挑花眼，
+ *  这里只留「一眼能说出它代表什么角色」的那些，按用途排，找起来快。 */
+const AVATAR_ICONS = [
+  "user", "users", "id-card", "bot", "cat", "ghost", "smile", "brain",
+  "search", "file-search", "compass", "map", "target", "scale", "flask-conical",
+  "chart-column", "trending-up", "table", "file-spreadsheet", "clipboard-list",
+  "pencil", "notebook-pen", "file-pen-line", "book-open-text", "scroll-text", "languages",
+  "palette", "presentation", "image", "film", "clapperboard", "music", "mic",
+  "code", "terminal", "bug", "wrench", "puzzle", "package", "rocket",
+  "mail", "megaphone", "message-circle", "bird", "globe", "calendar-days", "clock",
+  "briefcase", "building-2", "shield", "key-round", "lightbulb", "sparkles", "sprout", "coffee",
+];
+/** 头像可以挑的表情。整个界面不许再冒 emoji（#85），这儿是写明了的例外：
+ *  它是**用户挑给自己的数据**，不是我们画的界面元素——想让助理顶着一只章鱼是他的自由。
+ *  测试那头靠下面这对记号放行（test/icons.js 的「emoji 数据区」），不是靠记行号。 */
+/* emoji-数据区 起：头像候选表，用户挑给自己的数据，不是界面图形 */
+const AVATAR_EMOJI = [
+  "😀", "😄", "😊", "😎", "🤓", "🥳", "🤔", "😴",
+  "🤖", "👻", "👽", "🦾", "🧠", "👀", "👋", "💪",
+  "🐱", "🐶", "🦊", "🐼", "🐨", "🐯", "🦁", "🐵",
+  "🐰", "🐸", "🦉", "🦄", "🐙", "🦋", "🐳", "🦖",
+  "🌸", "🌵", "🍀", "🌙", "⭐", "🔥", "⚡", "🌈",
+  "🍎", "🍜", "🍰", "☕", "🍺", "🧋", "🍉", "🥑",
+  "🎧", "🎮", "🎨", "🎸", "📚", "💡", "🔑", "🏆",
+  "🚀", "🛸", "⚓", "🧭", "💎", "🎯", "🧩", "🪄",
+];
+/* emoji-数据区 止 */
+
+/** 一格候选头像。三种来源画法各不相同（内置猫标 / 图标 / 表情），但格子一律同一个尺寸。
+ *  以前图标那格是行内 span，里面的 svg 用 62% 量自己——百分比撞上没有宽度的行内元素，
+ *  浏览器只能退回 SVG 的默认尺寸 300×150，于是助理设置里每个候选都有巴掌大
+ *  （用户原话：「待选的这些图片 svg 都很大」）。格子定死，百分比才有参照物。 */
+function avaCell(v, cur, title) {
+  const b = avatarBits(v, "");
+  const on = v === cur;
+  const t = title || v;
+  return `<button type="button" class="ava-pick${b.cls === "mk" ? " mk" : ""}${on ? " on" : ""}"`
+    + ` data-e="${esc(v)}" title="${esc(t)}" aria-label="${esc(t)}"`
+    + `${on ? ' aria-pressed="true"' : ""}>${b.html}</button>`;
+}
+/** 画一排可点的图标按钮。cur 是当前选中的那个（高亮它）。 */
+function avaPicks(cur) {
+  return AVATAR_ICONS.map((n) => avaCell(n, cur)).join("");
+}
+
 /* 自建 tooltip 顶掉原生 title：原生那个要悬停一秒才出来，出来是一坨系统灰框，
    成果卡上那种长路径会直接糊掉半张卡。这里 380ms 出、跟着目标走、贴不下就翻到下方。
    不改任何标记——鼠标扫过时把 title 就地搬进 data-tip，动态插入的节点一样吃得到。 */

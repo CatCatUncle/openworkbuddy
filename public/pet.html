@@ -103,6 +103,7 @@
   #qmark { color: var(--brand); font-size: 26px; }
   .s-asking #qmark { opacity: 1; animation: qpop .8s ease-in-out infinite; }
   @keyframes qpop { 0%,100% { transform: scale(1) rotate(-7deg) } 50% { transform: scale(1.25) rotate(7deg) } }
+  #sparks, #zzz { width: 26px; height: 26px; fill: none; stroke: var(--brand); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .s-done #sparks { opacity: 1; animation: pop 1.2s ease-out infinite; }
   @keyframes pop { 0% { transform: scale(.6); opacity: 0 } 30% { opacity: 1 } 100% { transform: scale(1.3) translateY(-9px); opacity: 0 } }
   .s-sleep #zzz { opacity: 1; animation: floaty 2.6s ease-in-out infinite; }
@@ -170,7 +171,7 @@
     <!-- 形象 C：Codex / Petdex 精灵图（~/.codex/pets、~/.petdex/pets 里扫到的） -->
     <canvas id="sprite" class="actor" width="192" height="208"></canvas>
 
-    <div id="fx"><span id="spin"></span><span id="qmark">?</span><span id="sparks">✨</span><span id="zzz">💤</span></div>
+    <div id="fx"><span id="spin"></span><span id="qmark">?</span><svg id="sparks" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg><svg id="zzz" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3h8l-8 9h8"/><path d="M4 14h7l-7 7h7"/></svg></div>
     <div id="drop"></div>
   </div>
 </div>
@@ -181,7 +182,7 @@
   const btxt = document.getElementById("btxt");
   const pimg = document.getElementById("pimg");
   const TIP = { idle: "待命中 · 点我打开主窗口", working: "正在干活", asking: "我有个问题要问你 · 点我去回答",
-                done: "任务完成 ✨", error: "出岔子了 · 点我看看", sleep: "本机睡过一觉，任务时限已顺延",
+                done: "任务完成 · 点我看看", error: "出岔子了 · 点我看看", sleep: "本机睡过一觉，任务时限已顺延",
                 review: "产出等你过目" };
   let state = "idle", text = "", character = "cat", hovering = false, walk = "";
 

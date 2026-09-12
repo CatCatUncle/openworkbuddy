@@ -5,13 +5,15 @@ async function updateEvalView() {
   const state = document.getElementById("ev-state"), log = document.getElementById("ev-log"), histBox = document.getElementById("ev-hist"), btn = document.getElementById("ev-start");
   if (!state || !log || !histBox) return;
   if (st.running) {
-    state.textContent = `⏳ ${st.model} 评测中… ${Math.round((Date.now() - st.startedAt) / 1000)}s`;
+    setMsg(state, "hourglass", `${st.model} 评测中… ${Math.round((Date.now() - st.startedAt) / 1000)}s`);
     if (btn) btn.disabled = true;
     if (!assistTimer) assistTimer = setInterval(updateEvalView, 2000);
   } else {
     if (assistTimer) { clearInterval(assistTimer); assistTimer = null; }
     if (btn) btn.disabled = false;
-    state.textContent = st.startedAt ? (st.exit === 0 ? "✅ 上一轮题题稳过" : st.exit == null ? "" : "🟡 上一轮有失分，看日志或点历史行看明细") : "";
+    if (!st.startedAt || st.exit == null) setMsg(state, "", "");
+    else if (st.exit === 0) setMsg(state, "circle-check", "上一轮题题稳过", "ok");
+    else setMsg(state, "triangle-alert", "上一轮有失分，看日志或点历史行看明细");
   }
   if (st.lines && st.lines.length) {
     log.style.display = "";
@@ -24,26 +26,26 @@ async function updateEvalView() {
   const baseline = (hj && !Array.isArray(hj) && hj.baseline) || null;
   if (!hist.length) { histBox.textContent = "还没跑过。选个模型点「开始评测」，或命令行 npm run eval"; return; }
   const blBanner = baseline
-    ? `<div style="font-size:12px;color:var(--wb-text-3);margin:0 0 6px">📌 当前基线：${esc(baseline.model || "")} · ${esc(String(baseline.at || "").slice(0, 16).replace("T", " "))} · <code>${esc(baseline.commit || "—")}</code>（每次跑批自动逐题对比）</div>`
-    : `<div style="font-size:12px;color:var(--wb-text-3);margin:0 0 6px">还没钉基线——点开一次成绩，点「📌 设为基线」，之后每轮自动对比退步/进步</div>`;
+    ? `<div style="font-size:12px;color:var(--wb-text-3);margin:0 0 6px">${ic("pin")} 当前基线：${esc(baseline.model || "")} · ${esc(String(baseline.at || "").slice(0, 16).replace("T", " "))} · <code>${esc(baseline.commit || "—")}</code>（每次跑批自动逐题对比）</div>`
+    : `<div style="font-size:12px;color:var(--wb-text-3);margin:0 0 6px">还没钉基线——点开一次成绩，点「${ic("pin")} 设为基线」，之后每轮自动对比退步/进步</div>`;
   const th = (t, tip) => `<th style="padding:6px 8px" ${tip ? `title="${esc(tip)}"` : ""}>${t}</th>`;
   histBox.innerHTML = blBanner + `
     <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tr style="color:var(--wb-text-3);text-align:left">${th("时间")}${th("模型")}${th("次数", "每题重复几次")}${th("pass@1", "各题通过率的平均：能不能做对")}${th("稳定全过", "k 次全过的题数：稳不稳。⚡=有题时过时不过")}${th("Δ基线", "与钉住的基线逐题对比")}${th("AI 评委", "逐条质量维度二元判定的达标率（旧格式为 1-5 均分）")}${th("人工", "人工打星的均分")}${th("tokens")}${th("版本", "跑分时的代码 commit")}</tr>
+      <tr style="color:var(--wb-text-3);text-align:left">${th("时间")}${th("模型")}${th("次数", "每题重复几次")}${th("pass@1", "各题通过率的平均：能不能做对")}${th("稳定全过", "k 次全过的题数：稳不稳；时过时不过的题会单独标出来")}${th("Δ基线", "与钉住的基线逐题对比")}${th("AI 评委", "逐条质量维度二元判定的达标率（旧格式为 1-5 均分）")}${th("人工", "人工打星的均分")}${th("tokens")}${th("版本", "跑分时的代码 commit")}</tr>
       ${hist.map((h) => {
         const p1 = h.pass1_avg != null ? h.pass1_avg : h.score_pct;
-        const scoreColor = p1 >= 100 ? "var(--wb-ok)" : p1 >= 80 ? "var(--wb-text)" : "var(--wb-err)";
+        const scoreColor = p1 >= 100 ? "var(--wb-ok-text)" : p1 >= 80 ? "var(--wb-text)" : "var(--wb-err-text)";
         const bl = h.baseline;
         const dCell = !bl ? "—" : (bl.regressions && bl.regressions.length
-          ? `<span style="color:var(--wb-err-text)" title="退步：${esc(bl.regressions.join(", "))}">🔻${bl.regressions.length}题</span>`
-          : (bl.improvements && bl.improvements.length ? `<span style="color:var(--wb-ok-text)" title="进步：${esc(bl.improvements.join(", "))}">↑${bl.improvements.length}题</span>` : `<span title="与基线持平">±0</span>`));
-        const jd = h.judge ? (h.judge.avg_pct != null ? "⚖️ " + h.judge.avg_pct + "%" : (h.judge.avg != null ? "⚖️ " + h.judge.avg + "/5" : "—")) : "—";
+          ? `<span style="color:var(--wb-err-text)" title="退步：${esc(bl.regressions.join(", "))}">${ic("trending-down")} ${bl.regressions.length}题</span>`
+          : (bl.improvements && bl.improvements.length ? `<span style="color:var(--wb-ok-text)" title="进步：${esc(bl.improvements.join(", "))}">${ic("trending-up")} ${bl.improvements.length}题</span>` : `<span title="与基线持平">±0</span>`));
+        const jd = h.judge ? (h.judge.avg_pct != null ? ic("scale") + " " + h.judge.avg_pct + "%" : (h.judge.avg != null ? ic("scale") + " " + h.judge.avg + "/5" : "—")) : "—";
         return `<tr data-dir="${esc(h.dir || "")}" style="border-top:1px solid var(--wb-line);cursor:pointer">
           <td style="padding:6px 8px;white-space:nowrap">${esc(String(h.at || "").slice(0, 16).replace("T", " "))}</td>
           <td style="padding:6px 8px">${esc(h.model || "")}</td>
           <td style="padding:6px 8px">${h.repeat || 1}×</td>
           <td style="padding:6px 8px;font-weight:700;color:${scoreColor}">${p1}%</td>
-          <td style="padding:6px 8px">${h.full_pass}/${h.tasks}${(h.flaky_tasks || []).length ? ` <span title="不稳定：${esc((h.flaky_tasks || []).join(", "))}">⚡${h.flaky_tasks.length}</span>` : ""}</td>
+          <td style="padding:6px 8px">${h.full_pass}/${h.tasks}${(h.flaky_tasks || []).length ? ` <span title="不稳定：${esc((h.flaky_tasks || []).join(", "))}">${ic("zap")} ${h.flaky_tasks.length}</span>` : ""}</td>
           <td style="padding:6px 8px">${dCell}</td>
           <td style="padding:6px 8px">${jd}</td>
           <td style="padding:6px 8px">${h.human && h.human.avg ? "★ " + h.human.avg : "—"}</td>
@@ -62,29 +64,32 @@ async function openEvalDetail(dir) {
   box.innerHTML = `<div style="font-size:13px;color:var(--wb-text-3);margin:0 0 10px">加载明细…</div>`;
   const j = await fetch("/api/eval/run/" + encodeURIComponent(dir)).then((r) => r.json()).catch(() => null);
   if (evalDetailDir !== dir) return;
-  if (!j || j.error) { box.innerHTML = ""; evalDetailDir = null; return toast("❌ " + ((j && j.error) || "明细加载失败")); }
+  if (!j || j.error) { box.innerHTML = ""; evalDetailDir = null; return toast(((j && j.error) || "明细加载失败"), "circle-x"); }
   const p1 = j.pass1_avg != null ? j.pass1_avg : j.score_pct;
   const jdHead = j.judge ? (j.judge.avg_pct != null ? ` · 评委质量 ${j.judge.avg_pct}%（${esc(j.judge.model || "")}）` : (j.judge.avg != null ? ` · AI 评委 ${j.judge.avg}/5（${esc(j.judge.model || "")}）` : "")) : "";
-  const blHead = j.baseline ? (j.baseline.regressions && j.baseline.regressions.length ? ` · <span style="color:var(--wb-err-text)">🔻对比基线退步 ${esc(j.baseline.regressions.join(", "))}</span>` : " · 对比基线无退步") : "";
+  const blHead = j.baseline ? (j.baseline.regressions && j.baseline.regressions.length ? ` · <span style="color:var(--wb-err-text)">${ic("trending-down")} 对比基线退步 ${esc(j.baseline.regressions.join(", "))}</span>` : " · 对比基线无退步") : "";
   const head = `<div style="display:flex;align-items:center;gap:10px;margin:0 0 8px;flex-wrap:wrap">
       <b style="font-size:14px">${esc(String(j.at || "").slice(0, 16).replace("T", " "))} · ${esc(j.model || "")}${(j.repeat || 1) > 1 ? ` · 每题 ${j.repeat} 次` : ""}</b>
       <span style="font-size:12px;color:var(--wb-text-3)">pass@1 均值 ${p1}% · 稳定全过 ${j.full_pass}/${j.tasks}${jdHead}${j.human && j.human.avg ? ` · 人工 ★${j.human.avg}（已评 ${j.human.scored} 题）` : ""}${j.commit ? ` · 版本 ${esc(j.commit)}` : ""}${blHead}</span>
-      <a href="#" id="ev-pin" class="link" style="margin-left:auto;font-size:12px;white-space:nowrap">📌 设为基线</a>
+      <a href="#" id="ev-pin" class="link" style="margin-left:auto;font-size:12px;white-space:nowrap">${ic("pin")} 设为基线</a>
       <a href="#" id="ev-close" class="link" style="font-size:12px">收起 ✕</a>
     </div>`;
   const rows = (j.results || []).map((r) => {
     const k = r.k || 1;
     const passes = r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0);
-    const icon = passes === k ? "✅" : passes ? "⚡" : (r.passed ? "🟡" : "❌");
+    // 颜色原来是 emoji 自带的，换成描边图标后得自己上色，不然四种结论一个样
+    const icon = passes === k ? `<span style="color:var(--wb-ok-text)">${ic("circle-check")}</span>`
+      : passes ? `<span style="color:var(--wb-warn)">${ic("zap")}</span>`
+        : `<span style="color:var(--wb-err-text)">${ic(r.passed ? "triangle-alert" : "circle-x")}</span>`;
     const lv = r.level ? `<span style="font-size:11px;padding:1px 6px;border-radius:5px;background:var(--wb-bg);border:1px solid var(--wb-line);color:var(--wb-text-3)">L${r.level}${r.kind ? "·" + esc(r.kind) : ""}</span>` : "";
-    const cells = (r.attempts && r.attempts.length > 1) ? `<span style="display:inline-flex;gap:3px" title="每格一次尝试">${r.attempts.map((a) => `<span title="第${a.n}次：${a.passed}/${a.total}${a.fail_code ? " · " + (EV_FAIL_LABELS[a.fail_code] || a.fail_code) : ""}" style="width:17px;height:17px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;background:${a.passed === a.total ? "rgba(34,197,94,.15)" : "rgba(239,68,68,.15)"};color:${a.passed === a.total ? "var(--wb-ok)" : "var(--wb-err)"}">${a.passed === a.total ? "✓" : "✗"}</span>`).join("")}</span>` : "";
+    const cells = (r.attempts && r.attempts.length > 1) ? `<span style="display:inline-flex;gap:3px" title="每格一次尝试">${r.attempts.map((a) => `<span title="第${a.n}次：${a.passed}/${a.total}${a.fail_code ? " · " + (EV_FAIL_LABELS[a.fail_code] || a.fail_code) : ""}" style="width:17px;height:17px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;background:${a.passed === a.total ? "rgba(34,197,94,.15)" : "rgba(239,68,68,.15)"};color:${a.passed === a.total ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${a.passed === a.total ? "✓" : "✗"}</span>`).join("")}</span>` : "";
     const chips = (r.fail_codes || []).map((c) => `<span style="font-size:11px;padding:1px 7px;border-radius:999px;background:rgba(239,68,68,.12);color:var(--wb-err-text)">${EV_FAIL_LABELS[c] || esc(c)}</span>`).join("");
-    const checks = (r.checks || []).map((c) => `<div style="font-size:12px;color:${c.ok ? "var(--wb-ok)" : "var(--wb-err)"}">${c.ok ? "✓" : "✗"} ${esc(c.name)}${c.note ? `<span style="color:var(--wb-text-3)"> — ${esc(c.note)}</span>` : ""}</div>`).join("");
+    const checks = (r.checks || []).map((c) => `<div style="font-size:12px;color:${c.ok ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${c.ok ? "✓" : "✗"} ${esc(c.name)}${c.note ? `<span style="color:var(--wb-text-3)"> — ${esc(c.note)}</span>` : ""}</div>`).join("");
     const judge = r.judge && r.judge.dims
-      ? `<div style="margin-top:6px;font-size:12px">⚖️ 质量维度 <b>${r.judge.passed}/${r.judge.total}</b>${r.judge.dims.map((d) => `<div style="color:${d.pass ? "var(--wb-ok)" : "var(--wb-err)"}">${d.pass ? "✓" : "✗"} ${esc(d.q)}${d.note ? `<span style="color:var(--wb-text-3)"> — ${esc(d.note)}</span>` : ""}</div>`).join("")}</div>`
+      ? `<div style="margin-top:6px;font-size:12px">${ic("scale")} 质量维度 <b>${r.judge.passed}/${r.judge.total}</b>${r.judge.dims.map((d) => `<div style="color:${d.pass ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${d.pass ? "✓" : "✗"} ${esc(d.q)}${d.note ? `<span style="color:var(--wb-text-3)"> — ${esc(d.note)}</span>` : ""}</div>`).join("")}</div>`
       : r.judge && r.judge.score
-        ? `<div style="margin-top:6px;font-size:12px">⚖️ AI 评委 <b>${r.judge.score}/5</b> — ${esc(r.judge.verdict || "")}${(r.judge.reasons || []).length ? `<div style="color:var(--wb-text-3)">${r.judge.reasons.map((x) => "· " + esc(x)).join("<br>")}</div>` : ""}${(r.judge.deductions || []).length ? `<div style="color:var(--wb-err-text)">${r.judge.deductions.map((x) => "扣分：" + esc(x)).join("<br>")}</div>` : ""}</div>`
-        : (r.judge && r.judge.error ? `<div style="margin-top:6px;font-size:12px;color:var(--wb-text-3)">⚖️ 评委失败：${esc(r.judge.error)}</div>` : "");
+        ? `<div style="margin-top:6px;font-size:12px">${ic("scale")} AI 评委 <b>${r.judge.score}/5</b> — ${esc(r.judge.verdict || "")}${(r.judge.reasons || []).length ? `<div style="color:var(--wb-text-3)">${r.judge.reasons.map((x) => "· " + esc(x)).join("<br>")}</div>` : ""}${(r.judge.deductions || []).length ? `<div style="color:var(--wb-err-text)">${r.judge.deductions.map((x) => "扣分：" + esc(x)).join("<br>")}</div>` : ""}</div>`
+        : (r.judge && r.judge.error ? `<div style="margin-top:6px;font-size:12px;color:var(--wb-text-3)">${ic("scale")} 评委失败：${esc(r.judge.error)}</div>` : "");
     const hs = (r.human && r.human.score) || 0;
     const stars = [1, 2, 3, 4, 5].map((n) => `<button class="ev-star" data-task="${esc(r.id)}" data-star="${n}" title="人工打 ${n} 分" style="border:none;background:none;cursor:pointer;font-size:16px;padding:0 1px;line-height:1;color:${n <= hs ? "#f59e0b" : "var(--wb-text-3)"}">${n <= hs ? "★" : "☆"}</button>`).join("");
     return `<div style="border:1px solid var(--wb-line);border-radius:10px;padding:10px 12px;margin:0 0 8px;background:var(--wb-card)">
@@ -103,14 +108,14 @@ async function openEvalDetail(dir) {
   box.querySelector("#ev-pin").onclick = async (e) => {
     e.preventDefault();
     const r = await fetch("/api/eval/baseline", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir }) }).then((x) => x.json()).catch(() => null);
-    if (!r || r.error) return toast("❌ " + ((r && r.error) || "钉基线失败"));
-    toast("📌 已设为基线，之后每轮自动对比");
+    if (!r || r.error) return toast(((r && r.error) || "钉基线失败"), "circle-x");
+    toast("已设为基线，之后每轮自动对比");
     updateEvalView();
   };
   const saveHuman = async (taskId, score) => {
     const cmt = box.querySelector(`.ev-cmt[data-task="${taskId}"]`);
     const r = await fetch("/api/eval/human", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir, task_id: taskId, score, comment: cmt ? cmt.value : "" }) }).then((x) => x.json()).catch(() => null);
-    if (!r || r.error) return toast("❌ " + ((r && r.error) || "保存失败"));
+    if (!r || r.error) return toast(((r && r.error) || "保存失败"), "circle-x");
     toast("★ 人工分已保存");
     evalDetailDir = null;
     openEvalDetail(dir);
@@ -136,13 +141,13 @@ async function renderLibPage() {
   // 接口回的是 { error } 而不是资料清单时别装作「还没有参考资料」——那是句瞎话，
   // 用户会当成自己没传过东西，而真相是这一趟根本没读成
   if (lib && lib.error) {
-    page.innerHTML = `<div class="hub-empty">📚 资料库<br><br>${esc(lib.error)}</div>`;
+    page.innerHTML = `<div class="hub-empty">${ic("book-open-text")} 资料库<br><br>${esc(lib.error)}</div>`;
     return;
   }
   const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
   const q = libState.q.toLowerCase();
   const hit = (n) => !q || n.toLowerCase().includes(q);
-  const icon = (n) => /\.html?$/i.test(n) ? "🌐" : /\.csv$/i.test(n) ? "📊" : /\.(md|markdown)$/i.test(n) ? "📝" : /\.(png|jpe?g|gif|webp|svg)$/i.test(n) ? "🖼️" : /\.pdf$/i.test(n) ? "📕" : "📄";
+  const icon = (n) => ic(/\.html?$/i.test(n) ? "globe" : /\.csv$/i.test(n) ? "file-spreadsheet" : /\.(md|markdown)$/i.test(n) ? "file-pen-line" : /\.(png|jpe?g|gif|webp|svg)$/i.test(n) ? "image" : /\.pdf$/i.test(n) ? "file-type" : "file-text");
   const item = (src, name, size) => `
     <div class="lib-it ${libState.pick && libState.pick.src === src && libState.pick.name === name ? "active" : ""}" data-src="${src}" data-name="${esc(name)}">
       <span>${icon(name)}</span><span class="nm" title="${esc(name)}">${esc(name)}</span>${size !== undefined ? `<span class="sz">${fmtSize(size)}</span>` : ""}
@@ -151,15 +156,15 @@ async function renderLibPage() {
   page.innerHTML = `
     <div class="lib-page">
       <div class="lib-side">
-        <div class="hub-search"><input id="lb-q" placeholder="搜索资料" value="${esc(libState.q)}"></div>
-        <div class="lib-it ${libState.pick && libState.pick.src === "notes" ? "active" : ""}" data-src="notes" data-name="" style="margin-top:10px"><span>💡</span><span class="nm">灵感笔记（${(lib.notes || []).length}）</span></div>
+        <div class="hub-search">${ic("search")}<input id="lb-q" placeholder="搜索资料" value="${esc(libState.q)}"></div>
+        <div class="lib-it ${libState.pick && libState.pick.src === "notes" ? "active" : ""}" data-src="notes" data-name="" style="margin-top:10px"><span>${ic("lightbulb")} </span><span class="nm">灵感笔记（${(lib.notes || []).length}）</span></div>
         ${recents.length ? `<div class="sec">最近</div>` + recents.filter(r => hit(r.name)).slice(0, 6).map(r => item(r.src, r.name)).join("") : ""}
         <div class="sec">${po ? "我的文档" : "共享资料"} ${po ? `<a href="#" id="lb-up" class="link" style="font-size: 13px">＋ 上传</a><input type="file" id="lb-file" multiple style="display:none">` : `<span style="font-weight:400;color:var(--wb-text-3)" title="资料库是整台服务器共用的一份，往里放东西归平台管理员">只读</span>`}</div>
         ${(lib.files || []).filter(f => hit(f.name)).map(f => item("lib", f.name, f.size)).join("") || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 8px">还没有参考资料</div>'}
         <div class="sec">本地产物（当前项目）</div>
         ${ws.filter(f => hit(f.name)).slice(0, 60).map(f => item("ws", f.name, f.size)).join("") || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 8px">工作目录还没有成果文件</div>'}
       </div>
-      <div class="lib-prev" id="lb-prev"><div class="ph">左边挑一个文件看内容<br><br>📝 Markdown 直接排版 · 📊 CSV 变表格 · 🌐 HTML 真渲染<br>任务里 AI 也能读这里的资料（library_list / library_read）</div></div>
+      <div class="lib-prev" id="lb-prev"><div class="ph">左边挑一个文件看内容<br><br>${ic("file-pen-line")} Markdown 直接排版 · ${ic("file-spreadsheet")} CSV 变表格 · ${ic("globe")} HTML 真渲染<br>任务里 AI 也能读这里的资料（library_list / library_read）</div></div>
     </div>`;
   const qEl = page.querySelector("#lb-q");
   qEl.oninput = () => { libState.q = qEl.value; clearTimeout(page._t); page._t = setTimeout(renderLibPage, 200); };
@@ -175,7 +180,7 @@ async function renderLibPage() {
           .then(x => x.json()).catch(() => ({ error: "网络异常" }));
         if (r && r.ok) done++; else err = err || `${file.name}：${(r && r.error) || "上传失败"}`;
       }
-      toast(err ? `❌ ${err}` : `✅ 已上传 ${done} 个`);
+      toast(err ? err : `已上传 ${done} 个`, err ? "circle-x" : "circle-check");
       renderLibPage();
     };
   }
@@ -196,7 +201,7 @@ async function renderLibPreview(prev, lib) {
   const po = amPlatformOwner(); // 记笔记、删笔记、删资料都是往这台服务器的共享区写，归平台管理员
   if (src === "notes") {
     prev.innerHTML = `
-      <div style="font-weight:600;margin-bottom:10px">💡 灵感笔记</div>
+      <div style="font-weight:600;margin-bottom:10px">${ic("lightbulb")} 灵感笔记</div>
       ${po ? `<div style="display:flex;gap:6px;margin-bottom:10px">
         <input id="lb-note" placeholder="随手记一条灵感/偏好，回车保存" style="flex:1">
         <button class="btn-brand" id="lb-note-save" style="flex:none">保存</button>
@@ -216,7 +221,7 @@ async function renderLibPreview(prev, lib) {
       // 存不下就说为什么。以前不看返回值直接重画，笔记凭空消失，用户只能反复再记一遍
       const r = await fetch("/api/library/note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) })
         .then(x => x.json()).catch(() => ({ error: "网络异常" }));
-      if (!r || !r.ok) return toast("❌ " + ((r && r.error) || "没记下来"));
+      if (!r || !r.ok) return toast(((r && r.error) || "没记下来"), "circle-x");
       renderLibPage();
     };
     prev.querySelector("#lb-note-save").onclick = save;
@@ -225,7 +230,7 @@ async function renderLibPreview(prev, lib) {
       e.preventDefault();
       const r = await fetch("/api/library/note/" + encodeURIComponent(a.dataset.nid), { method: "DELETE" })
         .then(x => x.json()).catch(() => ({ error: "网络异常" }));
-      if (!r || !r.ok) return toast("❌ " + ((r && r.error) || "删不掉"));
+      if (!r || !r.ok) return toast(((r && r.error) || "删不掉"), "circle-x");
       renderLibPage();
     });
     return;
@@ -245,7 +250,7 @@ async function renderLibPreview(prev, lib) {
       if (!confirm(`删除资料「${name}」？`)) return;
       const r = await fetch("/api/library/file/" + encodeURIComponent(name), { method: "DELETE" })
         .then(x => x.json()).catch(() => ({ error: "网络异常" }));
-      if (!r || !r.ok) return toast("❌ " + ((r && r.error) || "删不掉"));
+      if (!r || !r.ok) return toast(((r && r.error) || "删不掉"), "circle-x");
       libState.pick = null;
       renderLibPage();
     };
@@ -280,12 +285,12 @@ async function renderLibPreview(prev, lib) {
 const hubState = { tab: "experts", sub: "expert", cat: "全部", q: "", mine: false, editing: null };
 // 精选场景：点一下就带着写好的提示词开一条新任务。全是本地已具备的能力，不画饼。
 const HUB_SCENES = [
-  { ic: "📊", tt: "把 Excel 变成周报", dd: "读数据 → 算指标 → 生成带图表的周报文档", p: "把工作区里的数据文件读进来，算出核心指标的环比变化，生成一份带图表的周报（Word），结论写在最前面。" },
-  { ic: "🔍", tt: "一个课题深挖到底", dd: "多轮检索取证 + 自我挑刺，出带来源的研究报告", p: "帮我深度研究「」这个课题：先拆成子问题，逐个联网查证并读原文，写完初稿后自己找一轮反面证据，最后输出带来源清单的研究报告。" },
-  { ic: "🎨", tt: "做一个能直接开的网页", dd: "单文件 HTML，手机上不塌，做完自动自检", p: "做一个「」主题的单页网站：单文件 HTML，CSS/JS 内联不依赖外部资源，移动端优先，深浅色都要好看。做完读回文件自查一遍再交付。" },
-  { ic: "🖼️", tt: "把材料做成 PPT", dd: "整理要点 → 排版 → 输出 16:9 演示文稿", p: "把工作区里的材料整理成一份 16:9 的 PPT：每页一个主题，标题写结论不写标签，数据页配图表。" },
-  { ic: "⚖️", tt: "竞品横向对比", dd: "定维度 → 逐条查证 → 出对比表和差异化建议", p: "帮我对比「A / B / C」这几个产品：先定出对比维度，逐个联网查证填表（查不到写「未公开」不许猜），最后出对比表 + 我方该走的差异化路线。" },
-  { ic: "📝", tt: "会议记录变纪要", dd: "提炼决议、待办（谁/做什么/什么时候）、待议项", p: "把我贴的这段会议记录整理成纪要：分「结论与决议」「待办（谁·做什么·何时前）」「待议」三段，原文没说的不许推断。" },
+  { icon: "file-spreadsheet", tt: "把 Excel 变成周报", dd: "读数据 → 算指标 → 生成带图表的周报文档", p: "把工作区里的数据文件读进来，算出核心指标的环比变化，生成一份带图表的周报（Word），结论写在最前面。" },
+  { icon: "search", tt: "一个课题深挖到底", dd: "多轮检索取证 + 自我挑刺，出带来源的研究报告", p: "帮我深度研究「」这个课题：先拆成子问题，逐个联网查证并读原文，写完初稿后自己找一轮反面证据，最后输出带来源清单的研究报告。" },
+  { icon: "palette", tt: "做一个能直接开的网页", dd: "单文件 HTML，手机上不塌，做完自动自检", p: "做一个「」主题的单页网站：单文件 HTML，CSS/JS 内联不依赖外部资源，移动端优先，深浅色都要好看。做完读回文件自查一遍再交付。" },
+  { icon: "presentation", tt: "把材料做成 PPT", dd: "整理要点 → 排版 → 输出 16:9 演示文稿", p: "把工作区里的材料整理成一份 16:9 的 PPT：每页一个主题，标题写结论不写标签，数据页配图表。" },
+  { icon: "scale", tt: "竞品横向对比", dd: "定维度 → 逐条查证 → 出对比表和差异化建议", p: "帮我对比「A / B / C」这几个产品：先定出对比维度，逐个联网查证填表（查不到写「未公开」不许猜），最后出对比表 + 我方该走的差异化路线。" },
+  { icon: "notebook-pen", tt: "会议记录变纪要", dd: "提炼决议、待办（谁/做什么/什么时候）、待议项", p: "把我贴的这段会议记录整理成纪要：分「结论与决议」「待办（谁·做什么·何时前）」「待议」三段，原文没说的不许推断。" },
 ];
 const HUB_TABS = [["experts", "专家"], ["skills", "技能"], ["mcp", "连接器"], ["plugins", "插件"]];
 const fmtBytes = n => !n ? "—" : n < 1024 ? n + " B" : n < 1024 * 1024 ? (n / 1024).toFixed(0) + " KB" : (n / 1048576).toFixed(1) + " MB";
@@ -310,7 +315,7 @@ async function renderHubPage() {
   page.innerHTML = `
     <div class="hub-head">
       <div class="hub-tabs">${HUB_TABS.map(([k, n]) => `<button data-tab="${k}" class="${hubState.tab === k ? "active" : ""}">${n}</button>`).join("")}</div>
-      <div class="hub-search"><input id="hub-q" placeholder="${qHint}" value="${esc(hubState.q)}"></div>
+      <div class="hub-search">${ic("search")}<input id="hub-q" placeholder="${qHint}" value="${esc(hubState.q)}"></div>
       ${mineLabel ? `<button class="chip ${hubState.mine ? "active" : ""}" id="hub-mine">${mineLabel}</button>` : ""}
     </div>
     <div class="hub-desc">${{
@@ -350,7 +355,7 @@ function renderHubExperts(box) {
   const scenes = hubState.mine || hubState.q ? "" : `
     <div class="hub-sec-title">精选场景 <span class="sub">点一下带着写好的提示词开新任务</span></div>
     <div class="feat-scroll">${HUB_SCENES.map((s, i) =>
-      `<div class="feat-card" data-scene="${i}"><div class="ic">${s.ic}</div><div class="tt">${esc(s.tt)}</div><div class="dd">${esc(s.dd)}</div><div class="go">用这个开始 →</div></div>`).join("")}</div>`;
+      `<div class="feat-card" data-scene="${i}"><div class="ic">${ic(s.icon)}</div><div class="tt">${esc(s.tt)}</div><div class="dd">${esc(s.dd)}</div><div class="go">用这个开始 →</div></div>`).join("")}</div>`;
   box.innerHTML = scenes + `
     <div class="hub-bar">
       <div class="hub-sub">
@@ -373,7 +378,7 @@ function renderHubExperts(box) {
       (po ? `<div class="ex-card add" id="team-add">＋ 创建专家团</div>` : "") +
       list.map((t, i) => `
         <div class="ex-card" data-ti="${i}">
-          <div class="hd"><div class="av">${esc(t.avatar || "👥")}</div><div class="nm"><span>${esc(t.name)}</span><span class="al">${t.members.length} 位成员</span></div></div>
+          <div class="hd"><div class="av">${ava(t.avatar, "users")}</div><div class="nm"><span>${esc(t.name)}</span><span class="al">${t.members.length} 位成员</span></div></div>
           <div class="ds">${esc(t.description || "（无说明）")}</div>
           <div class="tg">${t.members.map((m, j) => `<i>${j + 1}. ${esc(m)}</i>`).join("")}</div>
           <div class="ops"><button class="primary t-use">整团召唤</button>${po ? `<button class="t-edit">修改</button><button class="t-del">解散</button>` : ""}</div>
@@ -391,7 +396,7 @@ function renderHubExperts(box) {
         // 以前这儿把返回值整个扔了，403 / 500 也照样重画一遍——那一条纹丝不动，
         // 用户只能得出「点了没反应」。删不掉就得说为什么。
         const resp = await fetch("/api/expert-teams/" + encodeURIComponent(t.name), { method: "DELETE" });
-        if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast("❌ " + (d.error || "解散失败")); }
+        if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast((d.error || "解散失败"), "circle-x"); }
         renderHubPage();
       };
     });
@@ -405,10 +410,10 @@ function renderHubExperts(box) {
       list.map((e, i) => `
         <div class="ex-card" data-ei="${i}">
           ${e.builtin ? '<span class="flag">官方</span>' : ""}
-          <div class="hd"><div class="av">${esc(e.avatar || "🧑‍💼")}</div>
+          <div class="hd"><div class="av">${ava(e.avatar, "user")}</div>
             <div class="nm"><span>${esc(e.name)}</span>${e.alias ? `<span class="al">${esc(e.alias)}</span>` : ""}</div></div>
           <div class="ds">${esc(e.description || "（无说明）")}</div>
-          <div class="tg">${(e.tags || []).map(t => `<i>${esc(t)}</i>`).join("")}${(e.skills || []).map(s => `<i>🧰 ${esc(s)}</i>`).join("")}</div>
+          <div class="tg">${(e.tags || []).map(t => `<i>${esc(t)}</i>`).join("")}${(e.skills || []).map(s => `<i>${ic("wrench")} ${esc(s)}</i>`).join("")}</div>
           <div class="ops"><button class="primary e-use">立即召唤</button>${po ? `<button class="e-edit">修改</button><button class="e-del">删除</button>` : ""}</div>
         </div>`).join("") +
       (list.length ? "" : `<div class="hub-empty">${
@@ -425,7 +430,7 @@ function renderHubExperts(box) {
       card.querySelector(".e-del").onclick = async () => {
         if (!confirm(`删除专家「${e.name}」？${e.builtin ? "（这是内置专家，删了可以从 experts.json 恢复）" : ""}`)) return;
         const resp = await fetch("/api/experts/" + encodeURIComponent(e.name), { method: "DELETE" });
-        if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast("❌ " + (d.error || "删除失败")); }
+        if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast((d.error || "删除失败"), "circle-x"); }
         renderHubPage();
       };
     });
@@ -436,16 +441,16 @@ function renderHubExperts(box) {
 // ---- 专家 / 专家团 编辑器 ----
 // 角色模板：从零写一份像样的角色设定是新建专家最大的门槛，选一个改改比空屏开写容易得多
 const EXPERT_TEMPLATES = [
-  { tt: "调研专员", alias: "查得深", avatar: "🔍", cat: "研究分析", desc: "行业/竞品/事实类调研，需要联网查证、多来源交叉核实时委派",
+  { tt: "调研专员", alias: "查得深", avatar: "search", cat: "研究分析", desc: "行业/竞品/事实类调研，需要联网查证、多来源交叉核实时委派",
     tags: "行业调研，信息核实，来源分级", skills: ["deep-research"],
     sys: "你是一名严谨的调研专员。\n\n工作方式：\n1) 先列出要回答的 3-5 个关键问题，再动手搜\n2) 每个结论至少两个独立来源交叉验证，标注来源与日期\n3) 查不到就写查不到，给出下一步建议\n\n红线：不编造数据、链接和来源；转述与原文观点分开写。" },
-  { tt: "数据分析师", alias: "算得清", avatar: "📊", cat: "研究分析", desc: "数据清洗、统计、出图表和 Excel 报表的活委派给它",
+  { tt: "数据分析师", alias: "算得清", avatar: "chart-column", cat: "研究分析", desc: "数据清洗、统计、出图表和 Excel 报表的活委派给它",
     tags: "数据清洗，统计分析，可视化", skills: ["data-viz", "excel-report"],
     sys: "你是一名数据分析师。\n\n工作方式：\n1) 先看清数据结构和口径，列出脏数据的处理规则\n2) 结论必须能从数据里复算出来，写明计算口径\n3) 图表配一句话结论，别让读者自己猜\n\n红线：样本太小或口径存疑时明说局限，不硬给结论。" },
-  { tt: "文案主笔", alias: "笔头快", avatar: "✍️", cat: "内容创作", desc: "推文、文案、长文档的撰写和改写委派给它",
+  { tt: "文案主笔", alias: "笔头快", avatar: "pencil", cat: "内容创作", desc: "推文、文案、长文档的撰写和改写委派给它",
     tags: "公众号推文，长文写作，改写润色", skills: ["wechat-article", "docx"],
     sys: "你是一名文案主笔。\n\n工作方式：\n1) 动笔前先确认目标读者和这篇要达成什么\n2) 口语化、短句、多分段；每篇附一句话摘要和 3 个候选标题\n3) 改写保留原意，大改前列出改动点\n\n红线：不编造案例和数字；不用「赋能」「抓手」这类空话。" },
-  { tt: "PPT 设计师", alias: "排得美", avatar: "🎨", cat: "办公文档", desc: "汇报、路演、课件类 PPT 的结构和制作委派给它",
+  { tt: "PPT 设计师", alias: "排得美", avatar: "presentation", cat: "办公文档", desc: "汇报、路演、课件类 PPT 的结构和制作委派给它",
     tags: "PPT 制作，版式设计，汇报结构", skills: ["ppt-design"],
     sys: "你是一名 PPT 设计师。\n\n工作方式：\n1) 先出页面大纲（每页一句话要点）确认结构再做\n2) 一页只讲一件事；标题写结论不写话题\n3) 对齐、就近、配色不超过 4 种、间距用 4 的倍数\n\n红线：内容页文字不超过 6 行；数据必须来自用户材料，不虚构。" },
 ];
@@ -461,15 +466,15 @@ function renderHubEditor() {
     box.innerHTML = `
       <div class="ex-editor">
         <div class="hub-sec-title" style="display:flex;align-items:center;gap:10px">${x.name ? `编辑专家「${esc(x.name)}」` : "新建专家"} <span class="sub" style="flex:1">专家 = 头像 + 说明 + 绑定技能 + 默认提示词 的智能体</span>
-          <select id="ef-tpl" style="width:auto;font-size: 13px;padding:4px 8px"><option value="">从角色模板起稿…</option>${EXPERT_TEMPLATES.map((t, i) => `<option value="${i}">${t.avatar} ${esc(t.tt)}</option>`).join("")}</select></div>
+          <select id="ef-tpl" style="width:auto;font-size: 13px;padding:4px 8px"><option value="">从角色模板起稿…</option>${EXPERT_TEMPLATES.map((t, i) => `<option value="${i}">${esc(t.tt)}</option>`).join("")}</select></div>
         <div class="row">
-          <div style="flex:0 0 90px"><label>头像</label><input id="ef-avatar" maxlength="4" value="${esc(x.avatar || "🧑‍💼")}" style="text-align:center;font-size:18px"></div>
+          <div style="flex:0 0 90px"><label>头像</label><div class="ava-prev" id="ef-ava-prev">${ava(x.avatar, "user")}</div><input type="hidden" id="ef-avatar" value="${esc(x.avatar || "user")}"></div>
           <div style="flex:1 1 160px"><label>名字 <span class="lh">委派时点名用 · <span id="ef-ncnt">${(x.name || "").length}</span>/20</span></label><input id="ef-name" maxlength="20" value="${esc(x.name || "")}" placeholder="如 调研专员"></div>
           <div style="flex:1 1 120px"><label>花名 <span class="lh">可空</span></label><input id="ef-alias" value="${esc(x.alias || "")}" placeholder="如 查得深"></div>
           <div style="flex:1 1 120px"><label>分类</label><input id="ef-cat" value="${esc(x.category || "")}" placeholder="如 研究分析" list="ef-cats">
             <datalist id="ef-cats">${[...new Set(experts.map(e => e.category))].map(c => `<option value="${esc(c)}">`).join("")}</datalist></div>
         </div>
-        <div class="row"><div style="flex:1"><div id="ef-ava-presets" style="display:flex;flex-wrap:wrap;gap:2px;margin-top:-4px">${AVATAR_PRESETS.map(e => `<span class="ava-pick" data-e="${e}">${e}</span>`).join("")}</div></div></div>
+        <div class="row"><div style="flex:1"><label>挑个图标</label><div id="ef-ava-presets" class="ava-grid">${avaPicks(x.avatar || "user")}</div></div></div>
         <div class="row">
           <div style="flex:2 1 260px"><label>一句话说明 <span class="lh">协调者据此决定什么活派给它</span></label>
             <input id="ef-desc" value="${esc(x.description || "")}" placeholder="擅长什么、什么时候该委派给它"></div>
@@ -486,9 +491,14 @@ function renderHubEditor() {
           <span class="ab-empty" style="margin-left:auto">保存即生效，不用重启</span></div>
       </div>`;
     box.querySelectorAll("#ef-skills label").forEach(l => l.onclick = () => setTimeout(() => l.classList.toggle("on", l.querySelector("input").checked), 0));
+    const efAva = (name) => {
+      box.querySelector("#ef-avatar").value = name;
+      box.querySelector("#ef-ava-prev").innerHTML = ava(name, "user");
+      box.querySelectorAll("#ef-ava-presets .ava-pick").forEach(b => b.classList.toggle("on", b.dataset.e === name));
+    };
     box.querySelector("#ef-ava-presets").onclick = (ev) => {
       const pk = ev.target.closest(".ava-pick");
-      if (pk) box.querySelector("#ef-avatar").value = pk.dataset.e;
+      if (pk) efAva(pk.dataset.e);
     };
     box.querySelector("#ef-name").oninput = (ev) => { box.querySelector("#ef-ncnt").textContent = ev.target.value.length; };
     box.querySelector("#ef-tpl").onchange = (ev) => {
@@ -498,7 +508,7 @@ function renderHubEditor() {
       // 名字空着才填（编辑已有专家时别把名字顶掉）；说明/标签/提示词按模板覆盖
       if (!box.querySelector("#ef-name").value.trim()) { set("ef-name", t.tt); box.querySelector("#ef-ncnt").textContent = t.tt.length; }
       if (!box.querySelector("#ef-alias").value.trim()) set("ef-alias", t.alias);
-      set("ef-avatar", t.avatar); set("ef-cat", t.cat); set("ef-desc", t.desc); set("ef-tags", t.tags); set("ef-sys", t.sys);
+      efAva(t.avatar); set("ef-cat", t.cat); set("ef-desc", t.desc); set("ef-tags", t.tags); set("ef-sys", t.sys);
       box.querySelectorAll("#ef-skills label").forEach(l => {
         const inp = l.querySelector("input");
         if (!inp) return;
@@ -520,7 +530,7 @@ function renderHubEditor() {
       };
       const resp = await fetch("/api/experts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const d = await resp.json().catch(() => ({}));
-      if (!resp.ok) return toast("❌ " + (d.error || "保存失败"));
+      if (!resp.ok) return toast((d.error || "保存失败"), "circle-x");
       hubState.editing = null;
       toast("专家已保存，立即生效");
       renderHubPage();
@@ -532,14 +542,15 @@ function renderHubEditor() {
       <div class="ex-editor">
         <div class="hub-sec-title">${t.name ? `编辑专家团「${esc(t.name)}」` : "组建专家团"} <span class="sub">一支按顺序接力的智能体团队：后一位能看到前一位的汇报和产出文件</span></div>
         <div class="row">
-          <div style="flex:0 0 90px"><label>头像</label><input id="tf-avatar" maxlength="4" value="${esc(t.avatar || "👥")}" style="text-align:center;font-size:18px"></div>
+          <div style="flex:0 0 90px"><label>头像</label><div class="ava-prev" id="tf-ava-prev">${ava(t.avatar, "users")}</div><input type="hidden" id="tf-avatar" value="${esc(t.avatar || "users")}"></div>
           <div style="flex:1"><label>团队名称</label><input id="tf-name" value="${esc(t.name || "")}" placeholder="如 汇报三件套"></div>
         </div>
+        <div class="row"><div style="flex:1"><label>挑个图标</label><div id="tf-ava-presets" class="ava-grid">${avaPicks(t.avatar || "users")}</div></div></div>
         <div class="row"><div style="flex:1"><label>说明（协调者据此决定什么活整团派）</label>
           <input id="tf-desc" value="${esc(t.description || "")}" placeholder="这个团适合干什么"></div></div>
         <div class="row"><div style="flex:1"><label>成员与顺序（至少 2 位；点击加入，再点移除。列表顺序＝执行顺序）</label>
           <div class="sk-pick" id="tf-pool">${experts.map(e =>
-            `<label class="${picked.includes(e.name) ? "on" : ""}" data-n="${esc(e.name)}">${esc(e.avatar || "🧑‍💼")} ${esc(e.name)}</label>`).join("")}</div>
+            `<label class="${picked.includes(e.name) ? "on" : ""}" data-n="${esc(e.name)}">${ava(e.avatar, "user")} ${esc(e.name)}</label>`).join("")}</div>
           <div id="tf-order" style="margin-top:10px;font-size: 14px"></div></div></div>
         <div style="display:flex;gap:8px"><button class="btn-brand" id="tf-save">保存</button>
           <button id="tf-cancel" style="padding:6px 14px">取消</button></div>
@@ -572,6 +583,13 @@ function renderHubEditor() {
       else { order.push(n); l.classList.add("on"); }
       drawOrder();
     });
+    box.querySelector("#tf-ava-presets").onclick = (ev) => {
+      const pk = ev.target.closest(".ava-pick");
+      if (!pk) return;
+      box.querySelector("#tf-avatar").value = pk.dataset.e;
+      box.querySelector("#tf-ava-prev").innerHTML = ava(pk.dataset.e, "users");
+      box.querySelectorAll("#tf-ava-presets .ava-pick").forEach(b => b.classList.toggle("on", b === pk));
+    };
     box.querySelector("#tf-cancel").onclick = () => { hubState.editing = null; renderHubEditor(); };
     box.querySelector("#tf-save").onclick = async () => {
       const body = {
@@ -583,7 +601,7 @@ function renderHubEditor() {
       };
       const resp = await fetch("/api/expert-teams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const d = await resp.json().catch(() => ({}));
-      if (!resp.ok) return toast("❌ " + (d.error || "保存失败"));
+      if (!resp.ok) return toast((d.error || "保存失败"), "circle-x");
       hubState.editing = null;
       toast("专家团已保存，立即生效");
       renderHubPage();
@@ -643,16 +661,16 @@ async function renderHubSkills(box) {
   const missing = (hubState._defaults || []).filter(s => !s.installed);
   box.innerHTML = `
     ${defs.length ? `
-    <div class="hub-sec-title" style="margin-top:14px">🌟 推荐技能
+    <div class="hub-sec-title" style="margin-top:14px">${ic("sparkles")} 推荐技能
       <span class="sub">不随本项目打包，点一下从上游仓库现取（只下这一个子目录，不拖整仓）。协议与作者都写在卡片上，装谁的东西自己心里有数</span>
       ${missing.length ? `<button class="btn-brand" id="sk-def-all" style="float:right;padding:4px 12px;font-size: 13px">一键装齐缺的 ${missing.length} 个</button>` : ""}</div>
     <div class="card-grid">
       ${defs.map((s, i) => `
         <div class="ex-card" data-di="${i}">
           ${s.installed ? '<span class="flag">已安装</span>' : ""}
-          <div class="hd"><div class="av">🌟</div><div class="nm"><span>${esc(s.title)}</span><span class="al">${esc(s.name)}</span></div></div>
+          <div class="hd"><div class="av">${ic("sparkles")} </div><div class="nm"><span>${esc(s.title)}</span><span class="al">${esc(s.name)}</span></div></div>
           <div class="ds">${esc(s.why)}</div>
-          <div class="tg"><i>📜 ${esc(s.license)}</i><i>👤 ${esc(s.author)}</i><i>💾 ${fmtBytes(s.installed ? s.installed_bytes : s.bytes)}</i></div>
+          <div class="tg"><i>${ic("scroll-text")} ${esc(s.license)}</i><i>${ic("user")} ${esc(s.author)}</i><i>${ic("save")} ${fmtBytes(s.installed ? s.installed_bytes : s.bytes)}</i></div>
           <div class="ds" style="font-size: 12px"><a href="${esc(s.url)}" target="_blank" rel="noreferrer" style="word-break:break-all">${esc(s.repo)}/${esc(s.subpath)}</a></div>
           <div class="ops">${s.installed
             ? '<button class="sk-def-reinstall">重新下载</button>'
@@ -661,7 +679,7 @@ async function renderHubSkills(box) {
         </div>`).join("")}
     </div>` : ""}
     ${po ? `<div class="ex-editor" style="margin-top:14px">
-      <div class="hub-sec-title">⬇️ 从 GitHub 安装 <span class="sub">整仓库 / tree 子目录 / blob 单文件 / raw 直链都行，装完立即生效不用重启</span></div>
+      <div class="hub-sec-title">${ic("download")} 从 GitHub 安装 <span class="sub">整仓库 / tree 子目录 / blob 单文件 / raw 直链都行，装完立即生效不用重启</span></div>
       <div class="row"><input id="sk-url" placeholder="https://github.com/anthropics/skills/tree/main/skills/docx" style="flex:1">
         <button class="btn-brand" id="sk-install" style="flex:none">安装</button></div>
       <div id="sk-install-msg" class="ab-empty" style="margin-top:6px"></div>
@@ -674,7 +692,7 @@ async function renderHubSkills(box) {
       ${list.map((s, i) => `
         <div class="ex-card" data-si="${i}">
           ${s.plugin ? `<span class="flag">插件</span>` : ""}
-          <div class="hd"><div class="av">${s.plugin ? "🧩" : "🧰"}</div><div class="nm"><span>${esc(s.name)}</span>${
+          <div class="hd"><div class="av">${ic(s.plugin ? "puzzle" : "wrench")}</div><div class="nm"><span>${esc(s.name)}</span>${
             s.plugin ? `<span class="al">来自插件 ${esc(s.plugin)}</span>` : ""}</div></div>
           <div class="ds">${esc(s.description || "（无描述）")}</div>
           <div class="ops"><button class="primary sk-use">立即使用</button><button class="sk-view">正文</button>${
@@ -705,7 +723,7 @@ async function renderHubSkills(box) {
       hubState._defaults = null;
       renderHubPage();
     } catch (e) {
-      if (msgEl) { msgEl.style.color = "var(--wb-err)"; msgEl.textContent = "❌ " + e.message; }
+      if (msgEl) setMsg(msgEl, "circle-x", e.message, "err");
       if (btn) { btn.disabled = false; btn.textContent = label; }
     }
   };
@@ -724,14 +742,14 @@ async function renderHubSkills(box) {
     const url = box.querySelector("#sk-url").value.trim();
     const msg = box.querySelector("#sk-install-msg");
     if (!url) return;
-    msg.style.color = ""; msg.textContent = "安装中…（整仓库首次下载可能要十几秒）";
+    setMsg(msg, "loader-circle", "安装中…（整仓库首次下载可能要十几秒）");
     try {
       const resp = await fetch("/api/skills/install", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
       const d = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(d.error || "安装失败");
-      msg.textContent = `✅ 已安装 ${d.installed.length} 个：${d.installed.map(s => s.name).join("、")}`;
+      setMsg(msg, "circle-check", `已安装 ${d.installed.length} 个：${d.installed.map(s => s.name).join("、")}`, "ok");
       setTimeout(renderHubPage, 1000);
-    } catch (e) { msg.style.color = "var(--wb-err)"; msg.textContent = "❌ " + e.message; }
+    } catch (e) { setMsg(msg, "circle-x", e.message, "err"); }
   };
   box.querySelectorAll(".ex-card[data-si]").forEach(card => {
     const s = list[+card.dataset.si];
@@ -766,7 +784,7 @@ async function renderHubSkills(box) {
     const edit = card.querySelector(".sk-edit");
     if (edit) edit.onclick = async () => {
       const d = await fetch("/api/skills/" + encodeURIComponent(s.name)).then(r => r.json()).catch(() => null);
-      if (!d) return toast("❌ 加载失败");
+      if (!d) return toast("加载失败", "circle-x");
       hubState.editing = { type: "skill", data: d };
       renderHubSkillEditor();
     };
@@ -774,7 +792,7 @@ async function renderHubSkills(box) {
     if (del) del.onclick = async () => {
       if (!confirm(`删除技能「${s.name}」？（会删掉整个技能目录）`)) return;
       const resp = await fetch("/api/skills/" + encodeURIComponent(s.name), { method: "DELETE" });
-      if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast("❌ " + (d.error || "删除失败")); }
+      if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast((d.error || "删除失败"), "circle-x"); }
       renderHubPage();
     };
   });
@@ -807,7 +825,7 @@ function renderHubSkillEditor() {
         original_name: x.name || undefined,
       }) });
     const d = await resp.json().catch(() => ({}));
-    if (!resp.ok) return toast("❌ " + (d.error || "保存失败"));
+    if (!resp.ok) return toast((d.error || "保存失败"), "circle-x");
     hubState.editing = null;
     toast("技能已保存，立即生效");
     renderHubPage();
@@ -830,7 +848,7 @@ async function renderHubPlugins(box) {
   const fails = Object.fromEntries((((data.mcp || {}).failures) || []).map(f => [f.name, f.error]));
   box.innerHTML = `
     ${po ? `<div class="ex-editor" style="margin-top:14px">
-      <div class="hub-sec-title">⬇️ 安装插件
+      <div class="hub-sec-title">${ic("download")} 安装插件
         <span class="sub">遵循 <a href="https://agent-plugins.org" target="_blank" rel="noreferrer">Agent Plugins ${esc(data.spec || "1.0.0")}</a> 的开放标准（Vercel 等厂商共同制定）：仓库根或子目录下有 <code>plugin.json</code> 即可，装一次技能和 MCP 一起进来</span></div>
       <div class="row"><input id="pl-url" placeholder="https://github.com/owner/repo 或 https://github.com/owner/repo/tree/main/plugins/xxx" style="flex:1">
         <button class="btn-brand" id="pl-install" style="flex:none">安装</button></div>
@@ -843,16 +861,16 @@ async function renderHubPlugins(box) {
     <div class="card-grid">
       ${list.map((p, i) => `
         <div class="ex-card" data-pi="${i}">
-          <span class="flag" style="${p.ok ? "" : "background:var(--wb-err);color:#fff"}">${p.ok ? "🧩 插件" : "装不上"}</span>
-          <div class="hd"><div class="av">${p.ok ? "🧩" : "⚠️"}</div>
+          <span class="flag" style="${p.ok ? "" : "background:var(--wb-err);color:#fff"}">${p.ok ? ic("puzzle") + " 插件" : "装不上"}</span>
+          <div class="hd"><div class="av">${ic(p.ok ? "puzzle" : "triangle-alert")}</div>
             <div class="nm"><span>${esc(p.name)}</span><span class="al">${esc([p.version && "v" + p.version, p.license, p.author].filter(Boolean).join(" · ") || "未标注版本")}</span></div></div>
           <div class="ds">${esc(p.description || (p.ok ? "（插件没写 description）" : p.error))}</div>
           ${p.ok ? `<div class="tg">
-            ${(p.skills || []).map(s => `<i title="${esc(s.description || "")}">🧰 ${esc(s.name)}</i>`).join("")}
-            ${(p.mcp_servers || []).map(s => `<i style="color:var(${conn.has(s.name) ? "--wb-ok" : "--wb-err"})" title="${esc(fails[s.name] || "")}">${conn.has(s.name) ? "🔌" : "⚠️"} ${esc(s.name)}（${esc(s.transport)}）</i>`).join("")}
+            ${(p.skills || []).map(s => `<i title="${esc(s.description || "")}">${ic("wrench")} ${esc(s.name)}</i>`).join("")}
+            ${(p.mcp_servers || []).map(s => `<i style="color:var(${conn.has(s.name) ? "--wb-ok" : "--wb-err"})" title="${esc(fails[s.name] || "")}">${ic(conn.has(s.name) ? "plug" : "triangle-alert")} ${esc(s.name)}（${esc(s.transport)}）</i>`).join("")}
             ${(p.skills || []).length || (p.mcp_servers || []).length ? "" : "<i>这个插件没带任何可用组件</i>"}
-            <i>💾 ${fmtBytes(p.bytes)}</i></div>` : ""}
-          ${(p.warnings || []).length ? `<div class="ds" style="font-size: 12px;color:var(--wb-warn,#b26a00)">⚠️ 有零件被跳过：<br>${p.warnings.map(w => "· " + esc(w)).join("<br>")}</div>` : ""}
+            <i>${ic("save")} ${fmtBytes(p.bytes)}</i></div>` : ""}
+          ${(p.warnings || []).length ? `<div class="ds" style="font-size: 12px;color:var(--wb-warn,#b26a00)">${ic("triangle-alert")} 有零件被跳过：<br>${p.warnings.map(w => "· " + esc(w)).join("<br>")}</div>` : ""}
           ${p.homepage || p.repository ? `<div class="ds" style="font-size: 12px"><a href="${esc(p.homepage || p.repository)}" target="_blank" rel="noreferrer" style="word-break:break-all">${esc(p.homepage || p.repository)}</a></div>` : ""}
           <div class="ops">${po ? `${p.source ? '<button class="pl-upd" title="从当初安装的地址重新拉一遍">更新</button>' : ""}<button class="pl-del">卸载</button>` : ""}</div>
         </div>`).join("")}
@@ -865,19 +883,19 @@ async function renderHubPlugins(box) {
     const url = box.querySelector("#pl-url").value.trim();
     const msg = box.querySelector("#pl-msg");
     if (!url) return;
-    msg.style.color = ""; msg.textContent = "安装中…（要先下载仓库，可能十几秒）";
+    setMsg(msg, "loader-circle", "安装中…（要先下载仓库，可能十几秒）");
     try {
       const resp = await fetch("/api/plugins/install", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
       const d = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(d.error || "安装失败");
       const it = d.installed || {};
-      const parts = [`✅ 已装 ${it.name}`];
+      const parts = [`已装 ${it.name}`];
       if ((it.skills || []).length) parts.push(`技能 ${it.skills.length} 个：${it.skills.join("、")}`);
       if ((it.mcp_servers || []).length) parts.push(`MCP ${it.mcp_servers.length} 个，已连上 ${(d.mcp_started || []).length} 个`);
-      if ((it.warnings || []).length) parts.push(`⚠️ ${it.warnings.length} 个零件被跳过（见卡片）`);
-      msg.textContent = parts.join(" · ");
+      if ((it.warnings || []).length) parts.push(`${it.warnings.length} 个零件被跳过（见卡片）`);
+      setMsg(msg, "circle-check", parts.join(" · "), "ok");
       setTimeout(renderHubBody, 800);
-    } catch (e) { msg.style.color = "var(--wb-err)"; msg.textContent = "❌ " + e.message; }
+    } catch (e) { setMsg(msg, "circle-x", e.message, "err"); }
   };
   box.querySelectorAll(".ex-card[data-pi]").forEach(card => {
     const p = list[+card.dataset.pi];
@@ -891,16 +909,16 @@ async function renderHubPlugins(box) {
         if (!resp.ok) throw new Error(d.error || "更新失败");
         const u = d.updated || {};
         toast(u.from_version && u.from_version !== u.version
-          ? `✅ ${u.name} 已从 v${u.from_version} 更到 v${u.version || "?"}`
-          : `✅ ${u.name} 已是最新（v${u.version || "?"}，重新拉了一遍）`);
+          ? `${u.name} 已从 v${u.from_version} 更到 v${u.version || "?"}`
+          : `${u.name} 已是最新（v${u.version || "?"}，重新拉了一遍）`, "circle-check");
         renderHubBody();
-      } catch (e) { upd.disabled = false; upd.textContent = "更新"; toast("❌ " + e.message); }
+      } catch (e) { upd.disabled = false; upd.textContent = "更新"; toast(e.message, "circle-x"); }
     };
     card.querySelector(".pl-del").onclick = async () => {
       if (!confirm(`卸载插件「${p.name}」？它带的技能和连接器会一起消失（插件产生的数据会保留，重装还在）`)) return;
       const resp = await fetch("/api/plugins/" + encodeURIComponent(p.name), { method: "DELETE" });
       const d = await resp.json().catch(() => ({}));
-      if (!resp.ok) return toast("❌ " + (d.error || "卸载失败"));
+      if (!resp.ok) return toast((d.error || "卸载失败"), "circle-x");
       if (d.note) toast(d.note);
       renderHubBody();
     };

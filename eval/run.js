@@ -229,7 +229,7 @@ async function main() {
     };
     att.fail_code = failCode(att);
     const tag = REPEAT > 1 ? `[r${n}] ` : "";
-    const line = `${passed === checks.length ? "✅" : passed ? "🟡" : "❌"} ${tag}${task.id} ${passed}/${checks.length} · ${elapsed}s · ${toolCalls} 步 · ${usage.prompt + usage.completion} tokens${att.fail_code ? " · 败因:" + FAIL_CODE_LABELS[att.fail_code] : ""}`;
+    const line = `${passed === checks.length ? "✓" : passed ? "○" : "✗"} ${tag}${task.id} ${passed}/${checks.length} · ${elapsed}s · ${toolCalls} 步 · ${usage.prompt + usage.completion} tokens${att.fail_code ? " · 败因:" + FAIL_CODE_LABELS[att.fail_code] : ""}`;
     console.log(line);
     for (const c of checks.filter((x) => !x.ok)) console.log(`   ✗ ${c.name}${c.note ? " — " + c.note : ""}`);
     return att;
@@ -262,12 +262,12 @@ async function main() {
     if (!judgeEntry) {
       console.error(`AI 评委模型「${judgeName}」不在 config.models 里，跳过评委环节`);
     } else {
-      console.log(`\n⚖️ AI 评委开始：${judgeName}（${judgeEntry.model}）逐题逐维度判定…`);
+      console.log(`\n◆ AI 评委开始：${judgeName}（${judgeEntry.model}）逐题逐维度判定…`);
       const judgeLLM = createLLM({ ...config, active_model: judgeName });
       await mapPool(results, CONCURRENCY, async (res) => {
         const task = tasks.find((t) => t.id === res.id);
         res.judge = await judgeOne(judgeLLM, task, res, path.join(wsDir, res.id));
-        console.log(res.judge && res.judge.dims ? `   ⚖️ ${res.id} → ${res.judge.passed}/${res.judge.total} 维达标${res.judge.dims.filter((d) => !d.pass).map((d) => ` · ✗${d.q.slice(0, 20)}`).join("")}` : `   ⚖️ ${res.id} → 失败：${(res.judge && res.judge.error) || "?"}`);
+        console.log(res.judge && res.judge.dims ? `   ◆ ${res.id} → ${res.judge.passed}/${res.judge.total} 维达标${res.judge.dims.filter((d) => !d.pass).map((d) => ` · ✗${d.q.slice(0, 20)}`).join("")}` : `   ◆ ${res.id} → 失败：${(res.judge && res.judge.error) || "?"}`);
       });
       const scored = results.filter((r) => r.judge && r.judge.dims);
       judgeMeta = {
@@ -318,19 +318,19 @@ async function main() {
   fs.writeFileSync(path.join(runDir, "results.json"), JSON.stringify(summary, null, 2));
 
   if (hasFlag("save-baseline")) {
-    if (only) console.log("⚠️ 本次只跑了部分任务，基线也只覆盖这些题");
+    if (only) console.log("▲ 本次只跑了部分任务，基线也只覆盖这些题");
     const bl = {
       at: summary.at, commit: summary.commit, model: modelName, repeat: REPEAT,
       pass1_avg: pass1Avg, score_pct: summary.score_pct,
       tasks: Object.fromEntries(results.map((r) => [r.id, { pass_rate: r.pass_rate }])),
     };
     fs.writeFileSync(BASELINE_PATH, JSON.stringify(bl, null, 2));
-    console.log(`📌 已把本次结果钉为基线：${BASELINE_PATH}`);
+    console.log(`▪ 已把本次结果钉为基线：${BASELINE_PATH}`);
   }
 
-  console.log(`\n====== pass@1 均值 ${pass1Avg}% · 稳定全过 ${passkCount}/${results.length}${REPEAT > 1 ? `（每题 ${REPEAT} 次）` : ""} · 检查项 ${score}/${totalChecks}${flakyTasks.length ? " · ⚡不稳定：" + flakyTasks.join(",") : ""}${judgeMeta && judgeMeta.avg_pct != null ? ` · 评委质量 ${judgeMeta.avg_pct}%` : ""} · 共 ${tokens} tokens · 平均每步背 ${avgPrompt} prompt tokens ======`);
+  console.log(`\n====== pass@1 均值 ${pass1Avg}% · 稳定全过 ${passkCount}/${results.length}${REPEAT > 1 ? `（每题 ${REPEAT} 次）` : ""} · 检查项 ${score}/${totalChecks}${flakyTasks.length ? " · 不稳定：" + flakyTasks.join(",") : ""}${judgeMeta && judgeMeta.avg_pct != null ? ` · 评委质量 ${judgeMeta.avg_pct}%` : ""} · 共 ${tokens} tokens · 平均每步背 ${avgPrompt} prompt tokens ======`);
   if (Object.keys(failCodeCounts).length) console.log(`败因分布：${Object.entries(failCodeCounts).map(([c, n]) => `${FAIL_CODE_LABELS[c] || c}×${n}`).join(" · ")}`);
-  if (baselineCmp && baselineCmp.regressions.length) console.log(`🔻 相比基线（${baselineCmp.commit}）退步：${baselineCmp.regressions.join(", ")}`);
+  if (baselineCmp && baselineCmp.regressions.length) console.log(`▼ 相比基线（${baselineCmp.commit}）退步：${baselineCmp.regressions.join(", ")}`);
   else if (baselineCmp) console.log(`对比基线（${baselineCmp.commit}）：无退步${baselineCmp.improvements.length ? "，进步 " + baselineCmp.improvements.join(", ") : ""}`);
   console.log(`明细：${path.join(runDir, "results.json")}`);
   process.exit(passkCount === results.length ? 0 : 1);

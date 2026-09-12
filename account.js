@@ -13,6 +13,7 @@
  */
 
 const path = require("path");
+const icons = require("./icons.js");
 const { dataPath } = require("./paths");
 const crypto = require("crypto");
 const express = require("express");
@@ -155,7 +156,10 @@ function normalizeAvatar(v) {
     return s;
   }
   // data: 开头但没过上面那关的，是伪装成图片的别的东西（data:text/html 之类），直接挡
-  if (/^data:/i.test(s) || /^(https?:)?\/\//.test(s) || s.includes("<")) throw new Error("头像只支持 emoji 或上传图片");
+  if (/^data:/i.test(s) || /^(https?:)?\/\//.test(s) || s.includes("<")) throw new Error("头像只支持图标、emoji 或上传图片");
+  // 图标名（"rocket"、"chart-column"）：前端头像格子里挑的就是这些，不是能打出来的字，
+  // 会被下面「最多两个字符」那关误伤，所以在字数关之前先放行
+  if (icons.isIconName(s)) return s;
   // emoji 按「字素簇」算长度：一个 👨‍👩‍👧 是好几个码位拼的，用 .length 会误判成超长
   const chars = [...new Intl.Segmenter().segment(s)].length;
   if (chars > 2) throw new Error("头像最多两个字符");

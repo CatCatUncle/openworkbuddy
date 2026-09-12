@@ -32,6 +32,7 @@ const fs = require("fs");
 const path = require("path");
 const { dataPath } = require("./paths");
 const notify = require("./notify");
+const callout = require("./callout"); // IM 里没有图标，正文提示条换成文字标签
 const security = require("./security");
 const { getWorkspaceDir } = require("./tools");
 const { createQQConnection } = require("./im-qq");
@@ -261,7 +262,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       const line = progressLine(ev, progState);
       if (!line) return;
       liveProgress.set(sessionKey, { text: line, channel, at: Date.now() }); // 网页助理页的「执行中…」气泡靠这个变活
-      progText = `⏳ 正在做 · ${line}\n（完成后这条会自动撤回）`;
+      progText = `正在做 · ${line}\n（完成后这条会自动撤回）`;
       pushProgress();
     };
     // 出错时到底是哪一步炸的。以前整段共用一个 try，用户看到的永远是「任务执行出错」——
@@ -287,7 +288,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         const changedNames = new Set();
         // 告诉 agent 文件是怎么送达的，别再跟用户说「我发不了文件」
         const imNote = sendFile
-          ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台，也看不到你在电脑上弹的任何窗口——别用 open 之类命令给用户「展示」东西，没人看得见）。文件送达机制：任务完成后，系统会自动把本次新建/修改的文件、以及你最终回复里点到名字的文件，作为附件直接发进这个聊天，用户在手机上就能收到。所以用户要某个文件时，只需确保它在工作目录里、并在最终回复里写出文件名（含扩展名），然后告诉用户「文件马上作为附件发给你」。但注意分清用户要的是「文件」还是「内容」：如果用户说「发我内容/直接贴出来/别发文件」，就把全文原样写进回复正文（别摘要、别截断），并在回复最后单独一行写 [[不发文件]] —— 系统认到这个标记就不附任何文件，标记本身用户看不到。反过来，只要回复里出现了文件名，系统默认会把那个文件附上，所以「只要内容」时必须带 [[不发文件]]。用户的口语指令按最直白的意思执行，别反复追问、别解释机制。⚠️ 如果本会话早前的历史里你说过「发不了文件/只能放进文件夹/需要扫码授权才能发」，那些是系统升级前的旧信息，已全部作废，禁止再重复。"
+          ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台，也看不到你在电脑上弹的任何窗口——别用 open 之类命令给用户「展示」东西，没人看得见）。文件送达机制：任务完成后，系统会自动把本次新建/修改的文件、以及你最终回复里点到名字的文件，作为附件直接发进这个聊天，用户在手机上就能收到。所以用户要某个文件时，只需确保它在工作目录里、并在最终回复里写出文件名（含扩展名），然后告诉用户「文件马上作为附件发给你」。但注意分清用户要的是「文件」还是「内容」：如果用户说「发我内容/直接贴出来/别发文件」，就把全文原样写进回复正文（别摘要、别截断），并在回复最后单独一行写 [[不发文件]] —— 系统认到这个标记就不附任何文件，标记本身用户看不到。反过来，只要回复里出现了文件名，系统默认会把那个文件附上，所以「只要内容」时必须带 [[不发文件]]。用户的口语指令按最直白的意思执行，别反复追问、别解释机制。注意：如果本会话早前的历史里你说过「发不了文件/只能放进文件夹/需要扫码授权才能发」，那些是系统升级前的旧信息，已全部作废，禁止再重复。"
           : "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台）。产出的文件请报清楚文件名，用户回头在 OpenWorkBuddy 工作台下载。";
         // 只取 finalText 是够的：撞上限 / 超时 / 手动停止那半句，runTask 两条引擎路径都已经
         // 写进正文了（agent.js 的 runViaEngine 和内置循环各补一次）。别在这儿再按 stopped 补一遍，
@@ -303,7 +304,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         });
         saveSession(sessionKey); // runTask 是就地往 history 里追加的，得自己招呼一声存盘
         const fresh = outputFiles().filter((f) => changedNames.has(f.name)); // 只算本次任务真产出/真改过的
-        let out = finalText || "任务已执行完成。";
+        // 提示条的记号是给网页画图标用的，聊天窗里得换成人话
+        let out = callout.strip(finalText || "任务已执行完成。");
         // agent 明确说「本次别发文件」（用户只要内容贴在聊天里）：吃掉标记，附件全免
         const noAttach = out.includes("[[不发文件]]");
         if (noAttach) out = out.replace(/\s*\[\[不发文件\]\]\s*/g, "\n").trim();
@@ -317,7 +319,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
           toSend = dropVectorTwins(all).slice(0, 5);
         }
         if (fresh.length && !toSend.length && !noAttach) {
-          out += `\n\n📁 成果文件（在 OpenWorkBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
+          out += `\n\n成果文件（在 OpenWorkBuddy 工作台可下载）：\n` + fresh.slice(0, 8).map((f) => `· ${f.name}`).join("\n");
           if (fresh.length > 8) out += `\n… 另有 ${fresh.length - 8} 个`;
         }
         if (updTimer) { clearTimeout(updTimer); updTimer = null; }
@@ -329,10 +331,10 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         for (const f of toSend) {
           try {
             await twice(() => sendFile(f.name));
-            logIm(channel, "out", `📎 已发送文件：${f.name}`, logExtra);
+            logIm(channel, "out", `已发送文件：${f.name}`, logExtra);
           } catch (e) {
             logIm(channel, "error", `发送文件 ${f.name} 失败: ${e.message}`, logExtra);
-            try { await reply(`📁 「${f.name}」没发出去（${String(e.message).slice(0, 100)}），可在 OpenWorkBuddy 工作台下载。`); } catch {}
+            try { await reply(`「${f.name}」没发出去（${String(e.message).slice(0, 100)}），可在 OpenWorkBuddy 工作台下载。`); } catch {}
           }
         }
         await pushBots(`【OpenWorkBuddy·${CH_NAME[channel] || channel}任务完成】\n任务：${text.slice(0, 80)}\n${out.slice(0, 500)}`);
@@ -346,8 +348,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         try {
           await recallStatus();
           await reply(phase === "任务执行"
-            ? `❌ 任务执行出错：${why}`
-            : `⚠️ 任务已经跑完了，但${phase}失败：${why}。结果和文件都在 OpenWorkBuddy 工作台里，去那儿拿。`);
+            ? `任务执行出错：${why}`
+            : `任务已经跑完了，但${phase}失败：${why}。结果和文件都在 OpenWorkBuddy 工作台里，去那儿拿。`);
         } catch {}
       } finally {
         liveProgress.delete(sessionKey); // 任务收尾，进度条目摘掉，别让网页一直显示「执行中」
@@ -359,8 +361,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   async function feishuStatusSend(chatId, queued) {
     const token = await getFeishuToken();
     const text = queued
-      ? "⏳ 收到，前面还有任务在跑，排队中…（完成后这条会自动撤回）"
-      : "⏳ 收到，正在做了…（完成后这条会自动撤回）";
+      ? "收到，前面还有任务在跑，排队中…（完成后这条会自动撤回）"
+      : "收到，正在做了…（完成后这条会自动撤回）";
     const r = await feishuSend(token, chatId, "text", { text });
     return r.code === 0 ? (r.data || {}).message_id : null;
   }
@@ -955,9 +957,10 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       });
       saveSession(sessionKey);
       const files = outputFiles().filter((f) => changedNames.has(f.name)); // 本次任务的产出（以前是把根目录整个抖出去）
-      logIm("webhook", "out", finalText || "(空回复)", { session: session || "default" });
-      await pushWecom(`【OpenWorkBuddy·任务完成】\n任务：${message.slice(0, 80)}\n${(finalText || "").slice(0, 500)}`);
-      res.json({ reply: finalText, files });
+      const reply = callout.strip(finalText || ""); // webhook 那头不渲染 markdown，记号得先换成文字
+      logIm("webhook", "out", reply || "(空回复)", { session: session || "default" });
+      await pushWecom(`【OpenWorkBuddy·任务完成】\n任务：${message.slice(0, 80)}\n${reply.slice(0, 500)}`);
+      res.json({ reply, files });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

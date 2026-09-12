@@ -24,7 +24,7 @@ async function renderHubMcp(box) {
     if (msg) msg.textContent = "连接中…（npx 首次要下载包，最长约 1 分钟）";
     const resp = await fetch("/api/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ servers }) });
     const d = await resp.json().catch(() => ({}));
-    if (!resp.ok) toast("❌ " + (d.error || "保存失败"));
+    if (!resp.ok) toast((d.error || "保存失败"), "circle-x");
     renderHubBody();
   };
   // ---- 推荐连接器（预设目录）：搜索框一起过滤；「只看已连接」时不显示 ----
@@ -38,7 +38,7 @@ async function renderHubMcp(box) {
     const on = configured.has(it.name), miss = missingTool(it), keys = keyCount(it);
     return `<div class="ex-card" data-pi="${items.indexOf(it)}">
       ${on ? '<span class="flag">已接入</span>' : miss ? `<span class="flag" style="color:var(--wb-err-text)">没找到 ${esc(miss)}</span>` : ""}
-      <div class="hd"><div class="av">${it.icon || "🔌"}</div>
+      <div class="hd"><div class="av">${ava(it.icon, "plug")}</div>
         <div class="nm"><span>${esc(it.label || it.name)}</span><span class="al">${esc(it.name)}</span></div></div>
       <div class="ds">${esc(it.desc || "")}</div>
       <div class="tg">${it.kind === "http" ? "<i>远程</i>" : `<i>${esc(String(it.command || "").split(/[\\/]/).pop())}</i>`}${keys ? `<i>要填 ${keys} 个 Key</i>` : "<i>免 Key</i>"}${it.docs ? `<a class="mcp-docs-link" href="${esc(it.docs)}" target="_blank" rel="noopener">去哪拿 →</a>` : ""}</div>
@@ -62,7 +62,7 @@ async function renderHubMcp(box) {
       ${list.map(({ sv, i }) => `
         <div class="ex-card" data-mi="${i}">
           ${sv.plugin ? `<span class="flag">来自插件 ${esc(sv.plugin)}</span>` : ""}
-          <div class="hd"><div class="av">${sv.connected ? "🔌" : "⚠️"}</div>
+          <div class="hd"><div class="av">${ic(sv.connected ? "plug" : "triangle-alert")}</div>
             <div class="nm"><span>${esc(sv.name)}</span><span class="al" style="color:var(${sv.connected ? "--wb-ok" : "--wb-err"})">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
           <div class="ds" style="font-family:var(--mono,ui-monospace,monospace);font-size: 12px;word-break:break-all">${isRemote(sv)
             ? `<b style="font-family:inherit;opacity:.6">远程 ·</b> ` + esc(sv.url) + ((sv.header_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.header_keys.length} 个请求头：${esc(sv.header_keys.join("、"))}）</span>` : "")
@@ -144,10 +144,10 @@ async function renderHubMcp(box) {
   });
   box.querySelector("#mcp-add").onclick = () => {
     const name = box.querySelector("#mcp-name").value.trim();
-    if (!name) return toast("❌ 名称必填");
+    if (!name) return toast("名称必填", "circle-x");
     if (kindOf() === "http") {
       const url = box.querySelector("#mcp-url").value.trim();
-      if (!url) return toast("❌ 远程连接器要填地址");
+      if (!url) return toast("远程连接器要填地址", "circle-x");
       // 「Key: Value」按第一个冒号切，令牌里本身带冒号也不会被切坏
       const headers = {};
       box.querySelector("#mcp-headers").value.split(/[\n;]+/).map(s => s.trim()).filter(Boolean).forEach(line => {
@@ -155,22 +155,22 @@ async function renderHubMcp(box) {
         if (at > 0) headers[line.slice(0, at).trim()] = line.slice(at + 1).trim();
       });
       const missing = (form.dataset.needHdr || "").split(",").filter(Boolean).filter(k => !String(headers[k] || "").replace(/^Bearer\s*/i, "").trim());
-      if (missing.length) return toast(`❌ 还差 ${missing.join("、")} 没填`);
+      if (missing.length) return toast(`还差 ${missing.join("、")} 没填`, "circle-x");
       return save(ownServers().concat([{ name, url, headers }]));
     }
     const cmd = box.querySelector("#mcp-cmd").value.trim();
     const args = box.querySelector("#mcp-args").value.trim().split(/\s+/).filter(Boolean);
-    if (!cmd) return toast("❌ 本地连接器要填命令");
+    if (!cmd) return toast("本地连接器要填命令", "circle-x");
     // 「KEY=值」按第一个等号切，值里带等号（base64）也不会被切坏；没写值的行直接不要
     const env = {};
     for (const line of box.querySelector("#mcp-env").value.split(/\n+/).map(s => s.trim()).filter(Boolean)) {
       const at = line.indexOf("=");
-      if (at <= 0) return toast("❌ 环境变量要写成 KEY=值");
+      if (at <= 0) return toast("环境变量要写成 KEY=值", "circle-x");
       const k = line.slice(0, at).trim(), v = line.slice(at + 1).trim();
       if (v) env[k] = v;
     }
     const missing = (form.dataset.needEnv || "").split(",").filter(Boolean).filter(k => !env[k]);
-    if (missing.length) return toast(`❌ 还差 ${missing.join("、")} 没填`);
+    if (missing.length) return toast(`还差 ${missing.join("、")} 没填`, "circle-x");
     save(ownServers().concat([{ name, command: cmd, args, env }]));
   };
 }
@@ -178,33 +178,33 @@ async function renderHubMcp(box) {
 // ================= 参考模板库（照着抄的提示词，点一下填进输入框） =================
 // 每条都对应本地真实具备的能力（技能包 / 工具 / 专家团），不写做不到的画饼模板。
 const PROMPT_TPLS = [
-  { c: "网页", ic: "🖥️", t: "做一个工作台/仪表盘", d: "多卡片布局的单页应用，能直接双击打开",
+  { c: "网页", icon: "monitor", t: "做一个工作台/仪表盘", d: "多卡片布局的单页应用，能直接双击打开",
     p: `做一个「__主题__工作台」单页网站：\n\n【内容】顶部标题栏 + 关键指标卡 4 个 + 主区域（__放什么__）+ 侧边__放什么__\n【数据】用我工作区里的 __文件名__；没有数据就先造 8 条像真的示例数据，并在页面上标注「示例数据」\n【技术】单文件 HTML，CSS/JS 全部内联，不依赖任何外部 CDN，断网也能打开\n【体验】移动端优先，深浅色都要好看；交互要有 hover/点击反馈\n\n做完把文件读回来自查一遍：有没有引用外部资源、有没有空的 onclick。` },
-  { c: "网页", ic: "🎯", t: "做一个产品落地页", d: "首屏＋卖点＋FAQ＋行动召唤",
+  { c: "网页", icon: "target", t: "做一个产品落地页", d: "首屏＋卖点＋FAQ＋行动召唤",
     p: `帮我做一个「__产品名__」的落地页（单文件 HTML）：\n\n首屏一句话说清「给谁解决什么问题」，别写形容词堆砌；\n三个核心卖点，每个配一句具体的场景说明（不要「高效」「智能」这种空词）；\n一段常见问题 FAQ（5 条）；\n底部行动召唤按钮。\n\n风格：__简洁克制 / 科技感 / 温暖__。CSS 内联，移动端优先。` },
-  { c: "研究", ic: "🔍", t: "深度研究一个课题", d: "拆子问题→逐个查证→自我挑刺→带来源报告",
+  { c: "研究", icon: "search", t: "深度研究一个课题", d: "拆子问题→逐个查证→自我挑刺→带来源报告",
     p: `帮我深度研究「__课题__」：\n\n1) 先把它拆成 5 个以内的子问题，列出来给我看；\n2) 逐个联网检索并打开原文核对，不要只看搜索摘要；\n3) 写完初稿后自己找一轮反面证据，能推翻的结论就改掉；\n4) 输出研究报告：结论先行 → 论据 → 不确定的地方 → 来源清单（带链接和日期）。\n\n查不到的就写「未找到公开信息」，绝对不许编数字和来源。` },
-  { c: "研究", ic: "⚖️", t: "竞品横向对比", d: "先定维度再逐条填表，出差异化建议",
+  { c: "研究", icon: "scale", t: "竞品横向对比", d: "先定维度再逐条填表，出差异化建议",
     p: `帮我对比「__A__ / __B__ / __C__」：\n\n先定出 6-8 个对比维度（定价、目标用户、核心能力、部署方式、生态、短板…），列出来；\n逐条联网查证填表，每格标注信息来源和获取日期；查不到写「未公开」，不许推测；\n最后给：① 对比表 ② 各自最适合谁 ③ 如果我要做同类产品，切哪个缝隙。` },
-  { c: "数据", ic: "📊", t: "数据文件变分析报告", d: "读数→算指标→画图→写结论",
+  { c: "数据", icon: "chart-column", t: "数据文件变分析报告", d: "读数→算指标→画图→写结论",
     p: `读取工作区里的 __文件名__，做一份分析：\n\n1) 先告诉我这份数据有多少行、有哪些字段、有没有缺失或异常值；\n2) 算出这几个指标：__指标1__、__指标2__ 的环比/同比变化；\n3) 画 2-3 张图（趋势 + 构成），存成图片；\n4) 输出一份 Word 报告：结论写最前面，图表跟在对应结论后面。\n\n算不出来的指标直接说算不出来，别用估计值糊弄。` },
-  { c: "数据", ic: "📈", t: "把结论做成图表", d: "指定图表类型，输出可直接用的图片",
+  { c: "数据", icon: "trending-up", t: "把结论做成图表", d: "指定图表类型，输出可直接用的图片",
     p: `把下面这组数据画成图：\n\n__粘贴数据__\n\n要求：__折线/柱状/饼图/散点__，中文标签不要乱码，坐标轴带单位，标题写结论不写「XX图」。\n生成图片存到工作区，并告诉我文件名。` },
-  { c: "办公", ic: "🖼️", t: "材料整理成 PPT", d: "16:9，每页一个主题，标题写结论",
+  { c: "办公", icon: "presentation", t: "材料整理成 PPT", d: "16:9，每页一个主题，标题写结论",
     p: `把 __工作区里的 XX 文件 / 下面这段内容__ 整理成一份 16:9 的 PPT：\n\n页数控制在 __10__ 页以内；\n每页一个主题，标题直接写结论（比如「获客成本降了 32%」而不是「获客成本分析」）；\n有数据的页配图表，没数据的页别硬凑图；\n最后一页是行动建议，具体到谁在什么时候做什么。` },
-  { c: "办公", ic: "📝", t: "会议记录变纪要", d: "决议 / 待办 / 待议 三段式",
+  { c: "办公", icon: "notebook-pen", t: "会议记录变纪要", d: "决议 / 待办 / 待议 三段式",
     p: `把下面这段会议记录整理成纪要：\n\n__粘贴记录__\n\n分三段：\n【结论与决议】已经拍板的事；\n【待办】谁 · 做什么 · 什么时候前完成（没说负责人就写「待认领」）；\n【待议】有争议或没结论的。\n\n原文里没说的一律不许补充推断。` },
-  { c: "办公", ic: "🗓️", t: "写本周周报", d: "读工作区产出，自动汇总成周报",
+  { c: "办公", icon: "calendar-days", t: "写本周周报", d: "读工作区产出，自动汇总成周报",
     p: `帮我写这周的周报：\n\n先看看工作区里这周新增/修改了哪些文件，作为素材；\n补充这些我口述的进展：__…__\n\n格式：本周完成（带可验证的结果，不写「推进了」这种虚词）→ 下周计划 → 需要支持的事。\n控制在一页内。` },
-  { c: "内容", ic: "✍️", t: "写一篇公众号文章", d: "先给选题角度再动笔",
+  { c: "内容", icon: "pencil", t: "写一篇公众号文章", d: "先给选题角度再动笔",
     p: `写一篇关于「__主题__」的公众号文章：\n\n先给我 3 个不同的切入角度，我选一个你再动笔；\n目标读者是 __谁__，他们最关心 __什么__；\n开头 3 句话内必须让读者觉得「这说的是我」；\n中间要有具体的例子或数字，不要通篇讲道理；\n字数 __1500__ 字左右。` },
-  { c: "内容", ic: "📮", t: "一条内容改成多平台版本", d: "同一个内核，不同平台的话术",
+  { c: "内容", icon: "megaphone", t: "一条内容改成多平台版本", d: "同一个内核，不同平台的话术",
     p: `把下面这条内容改写成三个版本：\n\n__粘贴原文__\n\n① 公众号（正式、有结构、能读 3 分钟）\n② 小红书（口语、有情绪、带 emoji 和话题标签）\n③ 朋友圈（100 字内，一句话钩子）\n\n内核信息保持一致，别为了适配平台把事实改了。` },
-  { c: "团队", ic: "👥", t: "整团派活（专家团接力）", d: "一句话把复杂任务交给一支团队",
+  { c: "团队", icon: "users", t: "整团派活（专家团接力）", d: "一句话把复杂任务交给一支团队",
     p: `请把下面这个任务整体委派给专家团「__团队名__」（用 delegate_to_team）：\n\n__任务描述，越具体越好：要什么、给谁看、什么格式、什么时候要__\n\n拿回结果后你自己核一遍：说生成的文件真的存在吗？数据有出处吗？没问题再交给我。` },
-  { c: "团队", ic: "🧑‍💼", t: "指名派给某个专家", d: "点名让某位专家单独干",
+  { c: "团队", icon: "id-card", t: "指名派给某个专家", d: "点名让某位专家单独干",
     p: `请把这件事委派给专家「__专家名__」：\n\n__任务描述__\n\n它汇报完你要替我核一遍再转给我。` },
-  { c: "自动化", ic: "⏰", t: "让它每天自动干一件事", d: "配合侧栏「自动化」建定时任务",
+  { c: "自动化", icon: "clock", t: "让它每天自动干一件事", d: "配合侧栏「自动化」建定时任务",
     p: `每天早上帮我做这件事（我待会去「自动化」里把它设成定时任务）：\n\n__要做什么__\n\n输出格式：__…__。如果当天没有值得说的变化，就明确回一句「今天无异常」，不要为了凑字数编内容。` },
 ];
 
@@ -221,7 +221,7 @@ function renderPromptPage() {
       (!q || (t.t + t.d + t.p).toLowerCase().includes(q)));
     page.querySelector("#tpl-grid").innerHTML = list.map((t, i) => `
       <div class="tpl-card${q && !(t.t + t.d).toLowerCase().includes(q) ? " open" : ""}" data-i="${PROMPT_TPLS.indexOf(t)}">
-        <div class="hd"><span class="ic">${t.ic}</span><span class="tt">${esc(t.t)}</span><span class="ct">${esc(t.c)}</span><span class="chev">▶</span></div>
+        <div class="hd"><span class="ic">${ic(t.icon)}</span><span class="tt">${esc(t.t)}</span><span class="ct">${esc(t.c)}</span><span class="chev">▶</span></div>
         <div class="dd">${esc(t.d)}</div>
         <pre>${esc(t.p)}</pre>
         <div class="ops"><button class="primary tpl-use">填进输入框</button><button class="tpl-copy">复制</button></div>
@@ -232,14 +232,14 @@ function renderPromptPage() {
       card.querySelector(".tpl-use").onclick = () => startTaskWith(t.p);
       card.querySelector(".tpl-copy").onclick = async (e) => {
         try { await navigator.clipboard.writeText(t.p); e.target.textContent = "已复制"; setTimeout(() => e.target.textContent = "复制", 1200); }
-        catch { toast("❌ 复制失败，手动选中上面的文字吧"); }
+        catch { toast("复制失败，手动选中上面的文字吧", "circle-x"); }
       };
     });
   };
   page.innerHTML = `
     <div class="hub-head">
       <div class="hub-sec-title" style="margin:0">照着抄就行 <span class="sub">点卡片看全文；带 __下划线__ 的地方换成你的内容；「填进输入框」直接开一条新任务</span></div>
-      <div class="hub-search" style="margin-left:auto"><input id="tpl-q" placeholder="搜模板…"></div>
+      <div class="hub-search" style="margin-left:auto">${ic("search")}<input id="tpl-q" placeholder="搜模板…"></div>
     </div>
     <div class="hub-chips" style="margin:4px 0 14px">${cats.map(c =>
       `<span class="chip ${renderPromptPage._cat === c ? "active" : ""}" data-c="${esc(c)}">${esc(c)}</span>`).join("")}</div>
@@ -287,18 +287,18 @@ function cronToHuman(cron) {
 // ================= 设置中心 =================
 // [id, 名字, 图标]：左栏一眼扫过去靠图标认，名字收短，别一列密密麻麻的字
 const SETTING_CATS = [
-  ["models", "模型", "🧠"],
-  ["search", "联网搜索", "🔎"],
-  ["agent", "智能体", "🤖"],
-  ["security", "安全", "🛡️"],
-  ["shortcuts", "快捷键", "⌨️"],
-  ["persona", "个性化", "🎭"],
-  ["look", "外观", "🎨"],
-  ["memory", "记忆", "📝"],
-  ["evolve", "自进化", "🌱"],
-  ["data", "数据", "🗂️"],
-  ["im", "助理设置", "📱"],
-  ["about", "关于", "ℹ️"],
+  ["models", "模型", "brain"],
+  ["search", "联网搜索", "search"],
+  ["agent", "智能体", "bot"],
+  ["security", "安全", "shield"],
+  ["shortcuts", "快捷键", "keyboard"],
+  ["persona", "个性化", "drama"],
+  ["look", "外观", "palette"],
+  ["memory", "记忆", "notebook-pen"],
+  ["evolve", "自进化", "sprout"],
+  ["data", "数据", "database"],
+  ["im", "助理设置", "smartphone"],
+  ["about", "关于", "info"],
 ];
 /**
  * 这四页从头到尾都是服务器级的：联网搜索的 Key、自进化规则、备份/工作目录、飞书企微钉钉接入。
@@ -313,7 +313,7 @@ async function renderSettings(active) {
   if (!cats.some(([k]) => k === active)) active = cats[0][0];
   mBody.innerHTML = `<div class="settings-layout">
     <div class="settings-nav">${cats.map(([k, label, icon]) =>
-      `<div class="cat ${k === active ? "active" : ""}" data-cat="${k}"><span class="ci">${icon}</span>${label}</div>`).join("")}</div>
+      `<div class="cat ${k === active ? "active" : ""}" data-cat="${k}"><span class="ci">${ic(icon)}</span>${label}</div>`).join("")}</div>
     <div class="settings-pane" id="settings-pane"></div>
   </div>`;
   mBody.querySelector(".settings-nav").addEventListener("click", (e) => {
@@ -1079,7 +1079,7 @@ async function renderThinkingCard(sel, note, msg) {
   sel.innerHTML = d.levels.map((l) => `<option value="${esc(l.level)}"${l.level === d.current ? " selected" : ""}>${esc(l.label)}${l.supported ? "" : "（对当前模型不生效）"}</option>`).join("");
   const show = () => {
     const l = d.levels.find((x) => x.level === sel.value) || d.levels[0];
-    note.textContent = (l.supported ? `对 ${where}：` : `⚠️ 对 ${where} 不生效 —— `) + (l.note || "");
+    setMsg(note, l.supported ? "" : "triangle-alert", (l.supported ? `对 ${where}：` : `对 ${where} 不生效 —— `) + (l.note || ""));
     note.style.color = l.supported ? "" : "var(--warn, #c2410c)";
   };
   sel.onchange = async () => {
@@ -1275,7 +1275,7 @@ function petCardHtml(p) {
   const on = p.enabled !== false;
   return `
     <div class="card-item">
-      <div class="t">🐱 桌面宠物</div>
+      <div class="t">${ic("cat")} 桌面宠物</div>
       <div class="d" style="margin-bottom:10px"><b>默认没有宠物</b>——直接在对话里说「把这张图做成桌面宠物」并传一张照片，它就现场给你做一只；这里是手动开关和微调。<br>做出来之后，它会在桌面角落实时显示 agent 在干什么：干活时敲键盘、<b>要问你问题时跳起来并弹系统通知</b>（这条最有用——主窗口被盖住时，它提的问题很容易被漏掉，超时就按默认继续了）。点它开关主窗口，拖动换位置，右键有菜单（含免打扰）。空白处不吃鼠标，不会挡住底下的应用。${p.available === false ? '<br><span style="color:var(--wb-warn,#c60)">当前是纯服务端模式（npm start），宠物只在桌面版 <code>npm run app</code> 下出现。</span>' : ""}</div>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-on" style="width:auto;margin:0"${on ? " checked" : ""}> 显示桌面宠物</label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify" style="width:auto;margin:0"${p.notify !== false ? " checked" : ""}> 要提问时弹系统通知 + 图标跳动</label>
@@ -1395,11 +1395,12 @@ async function renderMemoryPane(pane) {
   const items = m.items || [];
   // 语义召回到底开没开、算出来几条：以前这里什么都不说，向量一条没算出来用户也只会觉得「记忆越来越不准」
   const vs = m.vectors || {};
+  const vecOk = !vs.enabled || !vs.total || vs.have >= vs.total;
   const vecLine = !vs.enabled
-    ? "🔍 语义召回没开：没接嵌入模型，现在按关键词召回。设置 → 模型 里配一条支持 embeddings 的渠道就能开。"
-    : !vs.total ? `🔍 语义召回已接上（${vs.model}），记了东西就会自动算向量。`
-    : vs.have >= vs.total ? `🔍 语义召回开着：${vs.total} 条都算好了向量（${vs.model}）。`
-    : `⚠️ 语义召回：${vs.total} 条里只有 ${vs.have} 条算出了向量——嵌入渠道大概率没通，现在按关键词召回。服务器日志里搜「[记忆向量]」能看到原因。`;
+    ? "语义召回没开：没接嵌入模型，现在按关键词召回。设置 → 模型 里配一条支持 embeddings 的渠道就能开。"
+    : !vs.total ? `语义召回已接上（${vs.model}），记了东西就会自动算向量。`
+    : vs.have >= vs.total ? `语义召回开着：${vs.total} 条都算好了向量（${vs.model}）。`
+    : `语义召回：${vs.total} 条里只有 ${vs.have} 条算出了向量——嵌入渠道大概率没通，现在按关键词召回。服务器日志里搜「[记忆向量]」能看到原因。`;
   // 会 403 的按钮不该摆在那儿：共享区那几条进的是所有人的提示词，不是平台管理员就删不动，
   // 以前照样画一颗「删」——点下去后端拒了、前端还把返回值扔了，看起来就是「点了没反应」。
   const canDel = (it) => m.can_share || it.scope !== m.shared_tag;
@@ -1415,9 +1416,9 @@ async function renderMemoryPane(pane) {
     : '<div style="color:var(--wb-text-3);font-size: 14px;padding:6px 0">还没有。你说「以后都这样」「记住…」时它会自己记一条；也可以在下面手动加。</div>';
   pane.innerHTML = `
     <div class="card-item">
-      <div class="t">📌 记住的事（AI 自己记的 + 你手动加的）</div>
+      <div class="t">${ic("pin")} 记住的事（AI 自己记的 + 你手动加的）</div>
       <div class="d" style="margin-bottom:8px">一条一句话，跨任务保留。标「共享」的所有账号都看得到，标账号名的只跟着那个人走。每人最多 ${esc(String((m.limits || {}).max_items || 120))} 条。</div>
-      <div class="d" id="mem-vec" style="margin-bottom:8px">${esc(vecLine)}</div>
+      <div class="d" id="mem-vec" style="margin-bottom:8px">${ic(vecOk ? "search" : "triangle-alert")} ${esc(vecLine)}</div>
       <div id="mem-items">${rows}</div>
       <div class="form-row" style="margin-top:8px">
         <input id="mem-new" placeholder="手动加一条，例如：周报只要三段——进展 / 问题 / 下周计划">
@@ -1430,15 +1431,15 @@ async function renderMemoryPane(pane) {
       <div class="d" style="margin-top:6px">加进去的只有你自己看得到。要让这台机器上所有账号都共用某条，得平台管理员来加。</div>`}
     </div>
     <div class="card-item">
-      <div class="t">📝 背景说明（全局共享，原样进提示词）</div>
+      <div class="t">${ic("file-pen-line")} 背景说明（全局共享，原样进提示词）</div>
       <div class="d" style="margin-bottom:8px">适合放团队/业务背景、常用数据口径、固定模板要求这种成段的东西。所有账号共用一份。${m.can_edit_manual ? "" : "这份归平台管理员维护，你这边只读。"}</div>
       <textarea id="mem-text" rows="8" ${m.can_edit_manual ? "" : "readonly"} placeholder="例如：我们公司是做跨境电商的，主营美妆品类；周报收件人是运营部…">${esc(m.content)}</textarea>
     </div>
     ${!m.can_edit_manual ? "" : `
     <div class="card-item">
-      <div class="t">🚚 记忆搬家（导出 / 从其它 agent 导入）</div>
+      <div class="t">${ic("truck")} 记忆搬家（导出 / 从其它 agent 导入）</div>
       <div class="d" style="margin-bottom:8px">导出成一份 Markdown 到哪都能用。导入自动扫描本机 Claude Code / Codex / Claude Cowork 的记忆文件；腾讯 WorkBuddy 等没有固定文件的，从它界面里把记忆复制出来粘到下面即可。「导入为条目」逐行进上面的条目区（自动去重），「并入背景说明」整段接到背景说明后面。</div>
-      <div style="margin-bottom:8px"><button class="btn-plain" id="mem-export">📤 导出全部记忆（.md）</button></div>
+      <div style="margin-bottom:8px"><button class="btn-plain" id="mem-export">${ic("upload")} 导出全部记忆（.md）</button></div>
       <div id="mem-scan" style="font-size: 13px;color:var(--wb-text-2)">扫描中…</div>
       <textarea id="mem-paste" rows="4" placeholder="或把其它 agent 的记忆文本粘到这里…" style="margin-top:8px"></textarea>
       <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -1467,7 +1468,7 @@ async function renderMemoryPane(pane) {
   pane.querySelector("#mem-export").onclick = () => { location.href = "/api/memory/export"; };
   const impMsg = pane.querySelector("#mem-imp-msg");
   const showImp = (r) => {
-    if (r.error) { impMsg.textContent = "❌ " + r.error; return; }
+    if (r.error) { setMsg(impMsg, "circle-x", r.error, "err"); return; }
     impMsg.textContent = r.note || `✓ 导入 ${r.added} 条${r.skipped ? `，跳过 ${r.skipped} 条（重复/太长/含敏感信息）` : ""}`;
   };
   const doImport = async (body) => {
@@ -1520,7 +1521,7 @@ function renderDataPane(pane, s) {
       <div class="d" style="margin-bottom:8px">Agent 读写文件与成果输出的文件夹（输入框下方也可快速切换）。</div>
       <div class="form-row">
         <input id="ws-dir" value="${esc(s.workspace_dir)}" placeholder="D:\\我的工作区">
-        <button class="btn-plain" id="ws-pick" style="flex:0 0 auto">📂 选择文件夹</button>
+        <button class="btn-plain" id="ws-pick" style="flex:0 0 auto">${ic("folder-open")} 选择文件夹</button>
       </div>
       <div style="margin-top:4px">
         <button class="btn-brand" id="ws-save">保存</button>
@@ -1531,10 +1532,10 @@ function renderDataPane(pane, s) {
     <div class="card-item">
       <div class="t">清理缓存</div>
       <div class="d" id="cache-desc">统计中…</div>
-      <div style="margin-top:8px"><button class="btn-brand" id="cache-clear">🧹 清理缓存</button><span class="ok-msg" id="cache-msg"></span></div>
+      <div style="margin-top:8px"><button class="btn-brand" id="cache-clear">${ic("eraser")} 清理缓存</button><span class="ok-msg" id="cache-msg"></span></div>
     </div>
     <div class="card-item">
-      <div class="t">💾 数据备份与恢复</div>
+      <div class="t">${ic("save")} 数据备份与恢复</div>
       <div class="d" style="margin-bottom:8px">一键把会话记录、记忆、账号、用量、定时任务和全部配置（含 API Key）打包成 tar.gz 存到本机 backups/ 文件夹；换电脑就下载备份文件带走。<b>不含工作空间成果文件</b>（那些你自己看得见）。恢复会先自动备份当前现状，恢复后需重启应用生效。</div>
       <div style="margin-bottom:8px">
         <button class="btn-brand" id="bk-create">立即备份</button>
@@ -1549,7 +1550,7 @@ function renderDataPane(pane, s) {
   pane.querySelector("#ws-pick").onclick = async () => {
     const r = await fetch("/api/pick-folder", { method: "POST" }).then(r => r.json()).catch(() => ({}));
     if (r.path) pane.querySelector("#ws-dir").value = r.path;
-    else if (r.error) toast("❌ " + r.error);
+    else if (r.error) toast(r.error, "circle-x");
   };
   pane.querySelector("#ws-save").onclick = () => saveSettings({ workspace_dir: pane.querySelector("#ws-dir").value.trim(), workspace_permanent: true }, pane.querySelector("#ws-msg"))
     .then(ok => { if (ok) fetch("/api/files").then(r => r.json()).then(renderFiles); });
@@ -1566,7 +1567,7 @@ function renderDataPane(pane, s) {
       const r = await fetch("/api/cache/clear", { method: "POST" }).then(r => r.json());
       pane.querySelector("#cache-msg").textContent = r.ok ? `已释放 ${fmtSize(r.freed)}` : (r.error || "清理失败");
     } catch { pane.querySelector("#cache-msg").textContent = "清理失败"; }
-    btn.disabled = false; btn.textContent = "🧹 清理缓存";
+    btn.disabled = false; btn.innerHTML = ic("eraser") + " 清理缓存";
     loadCache();
   };
   // ---- 备份 ----
@@ -1594,11 +1595,11 @@ function renderDataPane(pane, s) {
       if (!confirm(`确认恢复到备份 ${a.dataset.bkRestore} 的状态？\n\n当前数据会先自动备份一份，恢复后需重启应用生效。`)) return;
       bkMsg.textContent = "恢复中…";
       const r = await fetch("/api/backup/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: a.dataset.bkRestore }) }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
-      if (r.error) { bkMsg.textContent = "❌ " + r.error; return; }
+      if (r.error) { setMsg(bkMsg, "circle-x", r.error, "err"); return; }
       bkMsg.textContent = "";
       if (confirm("已恢复到磁盘（恢复前现状已自动备份）。\n\n现在重启应用让它完全生效？")) {
         const rr = await fetch("/api/backup/restart", { method: "POST" }).then(r => r.json()).catch(() => ({}));
-        if (rr.error) toast("❌ " + rr.error);
+        if (rr.error) toast(rr.error, "circle-x");
       } else {
         toast("记得手动重启应用，恢复才完全生效");
       }
@@ -1610,7 +1611,7 @@ function renderDataPane(pane, s) {
     const btn = e.currentTarget;
     btn.disabled = true; btn.textContent = "备份中…";
     const r = await fetch("/api/backup", { method: "POST" }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
-    bkMsg.textContent = r.ok ? `✓ 已备份：${r.name}` : ("❌ " + (r.error || "备份失败"));
+    if (r.ok) setMsg(bkMsg, "circle-check", `已备份：${r.name}`, "ok"); else setMsg(bkMsg, "circle-x", r.error || "备份失败", "err");
     btn.disabled = false; btn.textContent = "立即备份";
     loadBackups();
   };
@@ -1654,7 +1655,7 @@ async function renderLarkQr(pane) {
       e.target.disabled = true; msg.textContent = "绑定中…"; msg.style.color = "";
       const d = await fetch("/api/feishu/lark-cli/bind", { method: "POST" }).then(r => r.json()).catch(() => ({ error: "请求失败" }));
       if (d.ok) renderLarkQr(pane);
-      else { e.target.disabled = false; msg.style.color = "var(--wb-err)"; msg.textContent = "❌ " + d.error; }
+      else { e.target.disabled = false; setMsg(msg, "circle-x", d.error, "err"); }
     };
     return;
   }
@@ -1671,8 +1672,8 @@ async function renderLarkQr(pane) {
   if (imp) imp.onclick = async (e) => {
     e.target.disabled = true; msg.textContent = "导入中…"; msg.style.color = "";
     const d = await fetch("/api/feishu/lark-cli/import", { method: "POST" }).then(r => r.json()).catch(() => ({ error: "请求失败" }));
-    if (d.ok) { msg.style.color = "var(--wb-ok)"; msg.textContent = "✅ 已填入并保存，可以点飞书卡上的「连接」了"; renderSettings("im"); }
-    else { e.target.disabled = false; msg.style.color = "var(--wb-err)"; msg.textContent = "❌ " + d.error; }
+    if (d.ok) { setMsg(msg, "circle-check", "已填入并保存，可以点飞书卡上的「连接」了", "ok"); renderSettings("im"); }
+    else { e.target.disabled = false; setMsg(msg, "circle-x", d.error, "err"); }
   };
   box.querySelector("#lk-login").onclick = async (e) => {
     const qr = box.querySelector("#lk-qr");
@@ -1680,7 +1681,7 @@ async function renderLarkQr(pane) {
     const d = await fetch("/api/feishu/qr/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
       .then(r => r.json()).catch(() => ({ error: "请求失败" }));
     e.target.disabled = false;
-    if (!d.ok) { msg.style.color = "var(--wb-err)"; msg.textContent = "❌ " + (d.error || "启动失败"); return; }
+    if (!d.ok) { setMsg(msg, "circle-x", d.error || "启动失败", "err"); return; }
     msg.textContent = "";
     qr.innerHTML = `<div style="display:flex;gap:12px;align-items:flex-start">
       ${d.qr ? `<img src="${d.qr}" width="176" height="176" style="border:1px solid var(--wb-border);border-radius:8px;image-rendering:pixelated">` : ""}
@@ -1702,12 +1703,12 @@ async function renderLarkQr(pane) {
       if (!s2 || !line) { clearInterval(larkQrPoll); larkQrPoll = null; return; }
       if (s2.state === "ok") {
         clearInterval(larkQrPoll); larkQrPoll = null;
-        qr.innerHTML = `<div style="color:var(--wb-ok-text)">✅ 授权成功${s2.user ? "：" + esc(s2.user) : ""}。现在 AI 可以用 lark-cli 以你的身份操作飞书了。</div>`;
+        qr.innerHTML = `<div style="color:var(--wb-ok-text)">${ic("circle-check")} 授权成功${s2.user ? "：" + esc(s2.user) : ""}。现在 AI 可以用 lark-cli 以你的身份操作飞书了。</div>`;
         renderLarkQr(pane);
       } else if (s2.state === "error") {
         clearInterval(larkQrPoll); larkQrPoll = null;
-        line.style.color = "var(--wb-err)";
-        line.textContent = "❌ " + (s2.error || "授权失败");
+        line.style.color = "var(--wb-err-text)";
+        setMsg(line, "circle-x", s2.error || "授权失败", "err");
       }
     }, 2500);
   };
@@ -1748,7 +1749,7 @@ function wsChip(c, offTxt) {
   return [c.state === "failed" ? "err" : "warn", WS_STATE_TXT[c.state] || c.state || "未启动"];
 }
 const IM_CHANNELS = [
-  { key: "feishu", grp: "chat", icon: "🕊️", name: "飞书", sub: "长连接 · 无需公网", path: "feishu", src: "feishu",
+  { key: "feishu", grp: "chat", icon: "bird", name: "飞书", sub: "长连接 · 无需公网", path: "feishu", src: "feishu",
     newapp: true, // 一键新建应用：连 App ID / Secret 都不用手打
     paste: { hint: "从飞书开放平台「凭证与基础信息」整页复制粘过来就行，不用一个字段一个字段抠", parse: parseFeishuCreds },
     fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["verification_token", "Verification Token（可选，仅旧回调模式）", "", "opt"]],
@@ -1758,39 +1759,39 @@ const IM_CHANNELS = [
     status: (st) => { const f = st.feishu || {}; const m = f.missing || [];
       if (m.length === 1) return ["warn", "还差 " + m[0]];
       return wsChip({ configured: f.configured, state: (f.ws || {}).state }, "未连接"); } },
-  { key: "qq", grp: "chat", icon: "🐧", name: "QQ", sub: "长连接 · 无需公网", path: "qq", src: "qq",
+  { key: "qq", grp: "chat", icon: "message-circle", name: "QQ", sub: "长连接 · 无需公网", path: "qq", src: "qq",
     fields: [["app_id", "AppID"], ["app_secret", "AppSecret", "password"]],
     test: { url: "/im/qq/test", ok: (d) => `凭证有效，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
     help: ["QQ 开放平台 q.qq.com 创建「机器人」，开发设置里拿 AppID / AppSecret", "功能配置 → 消息列表：开启私聊消息和群聊 @机器人 消息", "沙箱只对白名单群/好友生效，正式使用需提交审核发布"],
     status: (st) => wsChip(st.qq, "未连接") },
-  { key: "wechat_ilink", grp: "chat", icon: "💬", name: "微信", sub: "扫码登录 · 无需公网", qr: true,
+  { key: "wechat_ilink", grp: "chat", icon: "message-square", name: "微信", sub: "扫码登录 · 无需公网", qr: true,
     help: ["点「连接」出二维码，用要当机器人的那个微信号扫码并在手机上确认", "之后本机主动长轮询收发消息，别人给这个微信号发消息 = 下任务", "登录态由微信控制，失效后重新扫码；发来的图片/文件/语音会自动存进工作目录，AI 直接按文件名打开"],
     status: (st) => wsChip(st.wechat_ilink, "未扫码") },
-  { key: "wecom_app", grp: "chat", icon: "🏢", name: "企业微信应用", sub: "双向对话 · 需公网 HTTPS", path: "wecom_app", src: "wecom_app",
+  { key: "wecom_app", grp: "chat", icon: "building-2", name: "企业微信应用", sub: "双向对话 · 需公网 HTTPS", path: "wecom_app", src: "wecom_app",
     fields: [["corp_id", "CorpID"], ["agent_id", "AgentId（纯数字）"], ["secret", "应用 Secret", "password"], ["token", "Token"], ["aes_key", "EncodingAESKey（43 位）", "password"]],
     test: { url: "/im/wechat/test", body: { which: "wecom" }, ok: () => "凭证有效。回调地址还需你暴露公网 HTTPS 并在企微后台点「保存」验证" },
     help: ["管理后台 → 应用管理 → 自建应用：拿 AgentId 与 Secret；「我的企业」拿 CorpID", "「接收消息 → 设置 API 接收」随机生成 Token 与 EncodingAESKey，回填这里", "回调 URL 填 https://你的域名/im/wecom/events（内网穿透/反代都行），保存后腾讯会来验证"],
     status: (st) => wxStatus(st.wecom_app) },
-  { key: "wechat_mp", grp: "chat", icon: "🟢", name: "微信公众号", sub: "需公网 HTTPS + 认证服务号", path: "wechat_mp", src: "wechat_mp",
+  { key: "wechat_mp", grp: "chat", icon: "megaphone", name: "微信公众号", sub: "需公网 HTTPS + 认证服务号", path: "wechat_mp", src: "wechat_mp",
     fields: [["app_id", "AppID"], ["app_secret", "AppSecret", "password"], ["token", "Token"], ["aes_key", "EncodingAESKey（43 位）", "password"]],
     test: { url: "/im/wechat/test", body: { which: "mp" }, ok: () => "凭证有效。回调地址还需你暴露公网 HTTPS 并在公众平台点「提交」验证" },
     help: ["公众平台 → 开发 → 基本配置：拿 AppID / AppSecret", "服务器配置 URL 填 https://你的域名/im/mp/events，加解密选「安全模式」，Token 与 EncodingAESKey 回填这里", "结果走「客服消息」异步推送，需要已认证的服务号（未认证会返回 48001，这里如实报错）"],
     status: (st) => wxStatus(st.wechat_mp) },
-  { key: "wecom_bot", grp: "push", icon: "💼", name: "企业微信群", sub: "只出不进 · 推送结果",
+  { key: "wecom_bot", grp: "push", icon: "briefcase", name: "企业微信群", sub: "只出不进 · 推送结果",
     fields: [["wecom_bot_webhook", "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."]],
     help: ["群里添加「群机器人」，把 webhook 地址粘贴到这里", "任务与定时任务的结果自动推到群里；要双向对话用上面的「企业微信应用」"],
     status: (st) => ((st.wecom || {}).configured ? ["ok", "已配置"] : ["off", "未配置"]) },
-  { key: "dingtalk", grp: "push", icon: "📌", name: "钉钉群", sub: "只出不进 · 推送结果",
+  { key: "dingtalk", grp: "push", icon: "pin", name: "钉钉群", sub: "只出不进 · 推送结果",
     fields: [["dingtalk_webhook", "https://oapi.dingtalk.com/robot/send?access_token=..."], ["dingtalk_secret", "加签密钥 SEC...（未选加签则留空）", "password", "opt"]],
     help: ["钉钉群 → 群设置 → 机器人 → 添加「自定义机器人」", "安全设置选「加签」，把 webhook 与加签密钥填到这里"],
     status: (st) => ((st.dingtalk || {}).configured ? ["ok", "已配置"] : ["off", "未配置"]) },
-  { key: "webhook", grp: "push", icon: "🔗", name: "通用 Webhook", sub: "外部工具桥接进来",
+  { key: "webhook", grp: "push", icon: "link", name: "通用 Webhook", sub: "外部工具桥接进来",
     fields: [["webhook_secret", "自定义一个密钥", "password"]],
     help: ["外部工具（微信框架 / 钉钉 outgoing / 快捷指令）POST /im/task 时带这个密钥校验", "微信客服号、小程序、企微「智能助理」等依赖腾讯定向资质，本版不做假连接，用这里桥接"],
     status: (st) => ((st.webhook || {}).secret_set ? ["ok", "已设密钥"] : ["off", "未设密钥"]) },
-  { key: "feishu_me", grp: "lark", icon: "🪪", name: "飞书本人身份", sub: "AI 以你的身份读日历 / 云文档 / 邮件", lark: true, noConn: true,
+  { key: "feishu_me", grp: "lark", icon: "id-card", name: "飞书本人身份", sub: "AI 以你的身份读日历 / 云文档 / 邮件", lark: true, noConn: true,
     help: ["本机装 lark-cli：npx @larksuite/cli@latest install", "用上面飞书卡的 App ID / App Secret 绑定，再扫码授权你本人", "授权后 AI 能用 lark-cli 查你的日历、读写云文档、收发邮件"] },
-  { key: "feishu_doc", grp: "lark", icon: "📄", name: "飞书云文档", sub: "AI 直接把结果写成云文档", path: "feishu", src: "feishu",
+  { key: "feishu_doc", grp: "lark", icon: "file-text", name: "飞书云文档", sub: "AI 直接把结果写成云文档", path: "feishu", src: "feishu",
     fields: [["doc_app_id", "云文档 App ID（留空 = 沿用飞书机器人凭证）", "", "opt"], ["doc_app_secret", "云文档 App Secret", "password", "opt"]],
     help: ["机器人应用本身开通 docx:document 权限就够，这里可以留空", "只有云文档想走另一个应用时才单独填一组凭证"],
     status: (_st, get) => (get("feishu_doc", "doc_app_id") ? ["ok", "独立凭证"] : ["off", "沿用机器人凭证"]) },
@@ -1813,7 +1814,7 @@ function renderImPane(pane, s) {
   // 用户问过两次「不能扫码连机器人吗」——单纯扫码不行（机器人=应用，平台只认 app_id/secret），
   // 但可以扫码把应用建出来，效果一样：一个字都不用手打。
   const newappHtml = (c) => (c.newapp ? `<div class="im-newapp" data-newapp="${c.key}">
-      <button class="btn-plain" data-act="newapp">📱 扫码新建应用</button>
+      <button class="btn-plain" data-act="newapp">${ic("smartphone")} 扫码新建应用</button>
       <span class="d" style="font-size:12px;margin-left:8px">没有现成应用？让本机 lark-cli 替你建一个，建完 App ID 自动填上</span>
       <div data-newapp-qr="${c.key}" style="display:none;margin:8px 0">
         <img alt="新建飞书应用的授权二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--wb-border)">
@@ -1828,7 +1829,7 @@ function renderImPane(pane, s) {
   };
   const cardHtml = (c) => `<div class="im-card packed" data-ch="${c.key}">
       <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起">
-        <span class="ic">${c.icon}</span>
+        <span class="ic">${ic(c.icon)}</span>
         <div class="tt"><b>${esc(c.name)}</b><span>${esc(c.sub)}</span></div>
         <span class="im-st off"><i class="dot"></i><em>…</em></span>
         ${c.noConn ? "" : `<button class="btn-plain im-conn" data-act="connect">连接</button>`}
@@ -1844,11 +1845,11 @@ function renderImPane(pane, s) {
     ${sec("飞书增强", "让 AI 以你本人身份操作飞书、直接生成云文档", grp("lark"))}
     ${sec("上下文管理", "IM 会话带多久的历史、什么时候另起一段", `
       <div class="im-card im-card-static packed">
-        <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起"><span class="ic">⏱</span><div class="tt"><b>闲置自动开新会话</b><span>太久没聊，下一条不再带旧上下文</span></div><i class="im-ar" aria-hidden="true"></i></div>
+        <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起"><span class="ic">${ic("timer")}</span><div class="tt"><b>闲置自动开新会话</b><span>太久没聊，下一条不再带旧上下文</span></div><i class="im-ar" aria-hidden="true"></i></div>
         <div class="im-card-b"><div class="im-act">超过 <input id="im-idle" type="number" min="0" max="720" style="width:72px;margin:0" value="${esc(String(im.session_idle_hours ?? 0))}"> 小时没对话就另起一段（0 = 关闭）</div></div>
       </div>
       <div class="im-card im-card-static packed">
-        <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起"><span class="ic">🧹</span><div class="tt"><b>清空 IM 会话记忆</b><span id="im-sess-n">正在数…</span></div><button class="btn-plain im-conn" id="im-sess-clear">清空全部</button><i class="im-ar" aria-hidden="true"></i></div>
+        <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起"><span class="ic">${ic("eraser")} </span><div class="tt"><b>清空 IM 会话记忆</b><span id="im-sess-n">正在数…</span></div><button class="btn-plain im-conn" id="im-sess-clear">清空全部</button><i class="im-ar" aria-hidden="true"></i></div>
         <div class="im-card-b"><div class="d" style="font-size:12px">只清 IM 通道里的对话上下文（飞书 / QQ / 微信各自一段），网页对话和长期记忆不受影响。上下文预算（多长开始截）在 <a class="link" id="im-goto-agent" href="#">智能体设置</a> 里调。</div><div class="im-r ok-msg" id="im-sess-r"></div></div>
       </div>`)}
     <div style="display:flex;align-items:center;gap:10px;margin-top:4px"><button class="btn-brand" id="im-save">保存全部</button><span class="ok-msg" id="im-msg"></span><span class="d" style="font-size:12px;margin-left:auto">其他助理通道：钉钉机器人双向 / Telegram / Slack 都走「通用 Webhook」桥接</span></div>`;
@@ -1864,11 +1865,12 @@ function renderImPane(pane, s) {
     return { im: out };
   };
   const globalMsg = pane.querySelector("#im-msg");
-  const say = (c, txt, err) => {
+  // kind: true / "err" 红叉，"ok" 绿勾，省略则不带图标（「正在…」这类中间态）
+  const say = (c, txt, kind) => {
     const r = c.qr ? pane.querySelector("#ilk-r") : pane.querySelector(`[data-r="${c.key}"]`);
     if (!r) return;
-    r.style.color = err ? "var(--wb-err)" : "";
-    r.textContent = txt;
+    const err = kind === true || kind === "err";
+    setMsg(r, err ? "circle-x" : kind === "ok" ? "circle-check" : "", txt, err ? "err" : kind === "ok" ? "ok" : "");
   };
 
   // ---------- 状态灯：每张卡自己决定亮什么色、按钮写「连接」还是「取消连接」 ----------
@@ -1911,14 +1913,14 @@ function renderImPane(pane, s) {
     btn.disabled = true;
     say(c, "保存中…");
     try {
-      if (!(await saveSettings(imPayload(), globalMsg))) return say(c, "❌ 保存失败", true);
+      if (!(await saveSettings(imPayload(), globalMsg))) return say(c, "保存失败", true);
       if (c.test) {
         say(c, "测试中…");
         const d = await fetch(c.test.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c.test.body || {}) })
           .then(r => r.json()).catch((e) => ({ ok: false, error: e.message }));
-        if (!d.ok) return say(c, "❌ " + (d.error || "测试失败"), true);
-        say(c, "✅ " + c.test.ok(d));
-      } else say(c, "✅ 已保存");
+        if (!d.ok) return say(c, d.error || "测试失败", true);
+        say(c, c.test.ok(d), "ok");
+      } else say(c, "已保存", "ok");
     } finally {
       btn.disabled = false;
       await refreshStatus(false);
@@ -1955,7 +1957,7 @@ function renderImPane(pane, s) {
       }
       setPacked(card, false); // 断开之后摊开，让你能马上重填
     } catch (e) {
-      say(c, "❌ " + e.message, true);
+      say(c, e.message, true);
     } finally {
       btn.disabled = false;
       await refreshStatus(false);
@@ -1966,11 +1968,11 @@ function renderImPane(pane, s) {
   // 单纯「扫码连机器人」在飞书是做不到的（机器人=应用，平台只认 app_id/app_secret）。
   // 但可以扫码把应用**建出来**，凭证由后端直接接管 —— 效果一样：一个字都不用手打。
   let newappPolling = false;
-  const newappSay = (c, txt, err, link) => {
+  const newappSay = (c, txt, kind, link) => {
     const r = pane.querySelector(`[data-newapp-r="${c.key}"]`);
     if (!r) return;
-    r.style.color = err ? "var(--wb-err)" : "";
-    r.textContent = txt;
+    const err = kind === true || kind === "err";
+    setMsg(r, err ? "circle-x" : kind === "ok" ? "circle-check" : "", txt, err ? "err" : kind === "ok" ? "ok" : "");
     if (link) {
       r.append(" ");
       const a = document.createElement("a");
@@ -1988,7 +1990,7 @@ function renderImPane(pane, s) {
       const d = await fetch("/api/feishu/app/create", { method: "POST" }).then((r) => r.json()).catch((e) => ({ error: e.message }));
       if (!d || !d.ok) {
         if (box) box.style.display = "none";
-        return newappSay(c, "❌ " + ((d && d.error) || "起不来，看看本机装没装 lark-cli"), true);
+        return newappSay(c, (d && d.error) || "起不来，看看本机装没装 lark-cli", true);
       }
       if (box) {
         const img = box.querySelector("img");
@@ -2008,7 +2010,7 @@ function renderImPane(pane, s) {
           const el = pane.querySelector("#" + inputId(c, "app_id"));
           if (el && st.app_id) el.value = st.app_id; // secret 留空：后端已经存好，空值不会覆盖
           if (box) box.style.display = "none";
-          newappSay(c, "✅ 应用建好了" + (st.app_id ? "（App ID " + st.app_id + "）" : "") + "，凭证已经填进来，长连接正在起");
+          newappSay(c, "应用建好了" + (st.app_id ? "（App ID " + st.app_id + "）" : "") + "，凭证已经填进来，长连接正在起", "ok");
           await refreshStatus(false);
           return;
         }
@@ -2018,12 +2020,12 @@ function renderImPane(pane, s) {
           const el = pane.querySelector("#" + inputId(c, "app_id"));
           if (el && st.app_id) el.value = st.app_id;
           if (box) box.style.display = "none";
-          newappSay(c, "✅ 应用建好了（App ID 已经替你填上）。" + (st.error || ""), false, st.console_url || "");
+          newappSay(c, "应用建好了（App ID 已经替你填上）。" + (st.error || ""), "ok", st.console_url || "");
           return;
         }
         if (st.state === "error") {
           if (box) box.style.display = "none";
-          return newappSay(c, "❌ " + (st.error || "没建成"), true);
+          return newappSay(c, st.error || "没建成", true);
         }
       }
       newappSay(c, "等了 15 分钟没等到，重新点一次吧", true);
@@ -2069,10 +2071,8 @@ function renderImPane(pane, s) {
         el.value = got[f];
         filled.push(label);
       }
-      r.style.color = filled.length ? "" : "var(--wb-err)";
-      r.textContent = filled.length
-        ? `✅ 认出了 ${filled.join(" 和 ")}，已填进上面。核对一下就点右上角「连接」`
-        : "没认出凭证。飞书的 App ID 长这样 cli_xxxxxxxx，App Secret 是 32 位字母数字";
+      if (filled.length) setMsg(r, "circle-check", `认出了 ${filled.join(" 和 ")}，已填进上面。核对一下就点右上角「连接」`, "ok");
+      else setMsg(r, "circle-x", "没认出凭证。飞书的 App ID 长这样 cli_xxxxxxxx，App Secret 是 32 位字母数字", "err");
       if (filled.length) ta.value = ""; // 认完就清掉，凭证不留在输入框里
     };
     ta.addEventListener("paste", () => setTimeout(take, 0));
@@ -2102,15 +2102,15 @@ function renderImPane(pane, s) {
     try {
       const d = await fetch("/im/sessions/clear", { method: "POST" }).then(r => r.json());
       if (!d.ok) throw new Error(d.error || "清空失败");
-      sessR.style.color = ""; sessR.textContent = `✅ 已清空 ${d.cleared} 段会话，下一条 IM 消息从零开始`;
-    } catch (e) { sessR.style.color = "var(--wb-err)"; sessR.textContent = "❌ " + e.message; }
+      setMsg(sessR, "circle-check", `已清空 ${d.cleared} 段会话，下一条 IM 消息从零开始`, "ok");
+    } catch (e) { setMsg(sessR, "circle-x", e.message, "err"); }
     loadSess();
   };
 
   // ---------- 微信扫码：取码 → 轮询状态（服务端一次挂最多 35 秒，回 wait 就接着问） ----------
   let ilkRun = 0; // 每次取码自增，旧轮询看见对不上就自己退出，防止两轮并行
   const ilkC = IM_CHANNELS.find((x) => x.qr);
-  const ilkSay = (txt, err) => say(ilkC, txt, err);
+  const ilkSay = (txt, kind) => say(ilkC, txt, kind);
   const ilkStart = async () => {
     const ilkBox = pane.querySelector("#ilk-box"), ilkImg = pane.querySelector("#ilk-img");
     const run = ++ilkRun;
@@ -2119,13 +2119,13 @@ function renderImPane(pane, s) {
     let qrcode;
     try {
       const d = await fetch("/im/wechat/qrcode", { method: "POST" }).then(r => r.json());
-      if (!d.ok) return ilkSay(`❌ ${d.error || "取二维码失败"}`, true);
-      if (!d.image) return ilkSay("❌ 二维码渲染失败（服务端缺 qrcode 依赖）", true);
+      if (!d.ok) return ilkSay(d.error || "取二维码失败", true);
+      if (!d.image) return ilkSay("二维码渲染失败（服务端缺 qrcode 依赖）", true);
       qrcode = d.qrcode;
       ilkImg.src = d.image;
       ilkBox.style.display = "";
       ilkSay("请用要当机器人的微信扫码，并在手机上点确认");
-    } catch (e) { return ilkSay(`❌ ${e.message}`, true); }
+    } catch (e) { return ilkSay(e.message, true); }
     for (;;) {
       if (run !== ilkRun) return; // 已经重新取码了，这轮作废
       let d;
@@ -2133,10 +2133,10 @@ function renderImPane(pane, s) {
         d = await fetch(`/im/wechat/qrcode-status?qrcode=${encodeURIComponent(qrcode)}`).then(r => r.json());
       } catch (e) { await new Promise(z => setTimeout(z, 2000)); continue; } // 网络抖动不算失败，接着问
       if (run !== ilkRun) return;
-      if (!d.ok) return ilkSay(`❌ ${d.error || "轮询失败"}`, true);
+      if (!d.ok) return ilkSay(d.error || "轮询失败", true);
       if (d.status === "confirmed") {
         ilkBox.style.display = "none";
-        ilkSay(`✅ 已连接微信${d.ilink && d.ilink.bot_id ? `（${d.ilink.bot_id}）` : ""}，现在给这个微信号发消息即可下任务`);
+        ilkSay(`已连接微信${d.ilink && d.ilink.bot_id ? `（${d.ilink.bot_id}）` : ""}，现在给这个微信号发消息即可下任务`, "ok");
         await refreshStatus(false);
         const card = pane.querySelector('[data-ch="wechat_ilink"]');
         if (card && card.classList.contains("on")) setPacked(card, true);

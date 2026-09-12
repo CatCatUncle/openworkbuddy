@@ -25,6 +25,51 @@ const { getWorkspaceDir, setWorkspaceDir } = require("../tools");
  */
 const WORKSPACE = setWorkspaceDir(fs.mkdtempSync(path.join(os.tmpdir(), "owb-e2e-ws-")));
 
+/**
+ * 起一条真的 server.js 打端到端，端口交给系统分配。
+ *
+ * 以前每处各写一遍 `3900 + 随机 90` 自己挑端口。一轮 e2e 里有五处这么干，撞上就是死局：
+ * server.js 遇到 EADDRINUSE 只往 stderr 打一行就 return，进程还活着、什么都没监听，
+ * 测试那头干等 40 秒，最后吐一句「真 server.js 没起来」——日志是空的，连线索都没有。
+ * 本机还开着自己那台（3800）的时候，撞的甚至可能是用户正在用的实例。
+ *
+ * 现在统一 PORT=0 让内核挑，再从启动那行里把真端口抠回来；起不来时把退出码、
+ * 存活状态和日志尾巴一起交出去，不用再猜。
+ */
+function bootRealServer(env, { timeoutMs = 60000 } = {}) {
+  const { spawn } = require("child_process");
+  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
+    // PORT 摆在最后：外面 shell 里要是设了 PORT（跑着自己那台的人很常见），不能让它把 0 顶掉
+    env: { ...process.env, ...env, HOST: "127.0.0.1", PORT: "0" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  child.stdout.on("data", (c) => (log += c));
+  child.stderr.on("data", (c) => (log += c));
+  const ready = new Promise((resolve) => {
+    const done = (v) => { clearInterval(tick); clearTimeout(t); resolve(v); };
+    const t = setTimeout(() => done(false), timeoutMs);
+    const tick = setInterval(() => {
+      if (/已启动: http:\/\/localhost:\d+/.test(log)) done(true);
+      else if (child.exitCode !== null) done(false);
+    }, 200);
+  });
+  return {
+    child,
+    get log() { return log; },
+    async wait() {
+      const up = await ready;
+      const m = /已启动: http:\/\/localhost:(\d+)/.exec(log);
+      return {
+        up: up && !!m,
+        port: m ? Number(m[1]) : 0,
+        // 起不来时给的是「能查的东西」，不是一句「没起来」：退出码 / 还活着没 / 日志尾巴
+        why: `退出码=${child.exitCode} 存活=${child.exitCode === null} 日志尾巴=${JSON.stringify(log.slice(-400)) || "(空)"}`,
+      };
+    },
+  };
+}
+
 const config = { agent: { max_steps: 10, tool_timeout_ms: 60000 } };
 const experts = [
   { name: "文案写手", description: "写作", system: "你是文案写手。" },
@@ -382,23 +427,48 @@ function testCssTokenGate() {
   }
   const missing = new Map();
   const fillAsText = [];
+  // 填充色当文字色用，代码里有三种写法，只堵一种是堵不住的——头两版闸门就只认第 ① 种，
+  // 结果 ②③ 在评测页和自进化页躺了一路（绿勾绿字在白底上 3.30，暗底上 4.18，两头都不够 AA）：
+  //   ① 写死：color: var(--wb-err)
+  //   ② 插值：color:${ok ? "var(--wb-ok)" : "var(--wb-err)"}
+  //   ③ 先存变量再用：const color = "var(--wb-err)" … style="color:${color}"
+  // ①② 看 color: 后面那一段值；③ 看「光秃秃一个 var(--wb-x) 字符串」——这种字符串除了当颜色值传没别的用处，
+  // 同一行提到 background/border/fill/stroke/shadow/outline 才放行（那是真把它当填充色用，正是它该待的地方）。
+  const FILL = /var\(\s*--wb-(brand|err|ok)\s*[,)]/;
+  const FG_VALUE = /(?<![-a-zA-Z])color:\s*(\$\{[^}]*\}|[^;"'`\n]*)/g;
+  const LOOSE_STR = /["'`]var\(\s*--wb-(brand|err|ok)\s*\)["'`]/g;
+  const REALLY_FILL = /background|border|fill|stroke|shadow|outline/;
+  const lineOf = (t, i) => t.slice(0, i).split("\n").length;
+  const scanFillAsText = (t, name, out) => {
+    for (const m of t.matchAll(FG_VALUE)) if (FILL.test(m[1])) out.push(name + ":" + lineOf(t, m.index) + " 的 color");
+    for (const m of t.matchAll(LOOSE_STR)) {
+      const line = t.slice(t.lastIndexOf("\n", m.index) + 1, (t.indexOf("\n", m.index) + 1 || t.length + 1) - 1);
+      if (!REALLY_FILL.test(line)) out.push(name + ":" + lineOf(t, m.index) + " 的 --wb-" + m[1] + "（存进变量再当颜色用）");
+    }
+  };
   for (const f of files) {
     const t = fs.readFileSync(f, "utf8");
     // var(--x) 带回退值的不算漏（var(--x, 兜底) 本来就允许没定义）
     for (const m of t.matchAll(/var\(\s*(--[a-zA-Z0-9_-]+)\s*\)/g)) {
       if (!defined.has(m[1])) missing.set(m[1], (missing.get(m[1]) || []).concat(path.basename(f)));
     }
-    for (const m of t.matchAll(/(?<![-a-zA-Z])color:\s*var\(\s*--wb-(brand|err|ok)\s*\)/g)) {
-      fillAsText.push(path.basename(f) + " 的 --wb-" + m[1]);
-    }
+    scanFillAsText(t, path.basename(f), fillAsText);
   }
   assert(missing.size === 0, "引用了没定义的 CSS 变量：" + [...missing].map(([k, v]) => k + "(" + [...new Set(v)].join(",") + ")").join("、"));
   assert(fillAsText.length === 0, "填充色令牌被当文字色用了，应换成 --wb-*-text：" + fillAsText.join("、"));
-  // 反向断言：闸门本身得能抓到东西，不然改坏了也全绿
-  const probe = "color: var(--wb-err)";
-  assert(/(?<![-a-zA-Z])color:\s*var\(\s*--wb-(brand|err|ok)\s*\)/.test(probe), "闸门正则失效");
+  // 反向断言：三种写法各造一份坏样本喂进去，一种抓不到就说明闸门这一路是摆设
+  const bad1 = []; scanFillAsText(".x .i { color: var(--wb-err, #dc2626); }", "假1", bad1);
+  const bad2 = []; scanFillAsText("`<b style=\"color:${ok ? \"var(--wb-ok)\" : \"var(--wb-text)\"}\">`", "假2", bad2);
+  const bad3 = []; scanFillAsText('const tone = "var(--wb-brand)";', "假3", bad3);
+  assert(bad1.length && bad2.length && bad3.length, `闸门漏了：写死=${bad1.length} 插值=${bad2.length} 变量=${bad3.length}`);
+  // 正向对照：真拿它当填充色的三种写法一个都不许误报，不然逼着人把背景色也换成文字档
+  const good = [];
+  scanFillAsText('.chip { background: var(--wb-err); border-left-color: var(--wb-brand); }', "真1", good);
+  scanFillAsText('btn.style.background = "var(--wb-err)";', "真2", good);
+  scanFillAsText('`<i style="background:var(--wb-err);color:#fff">`', "真3", good);
+  assert(good.length === 0, "闸门误伤了正经的填充用法：" + good.join("、"));
   assert(!defined.has("--wb-根本没有这个"), "闸门定义集失效");
-  console.log(`✅ CSS 令牌闸门：${defined.size} 个变量全部有定义 · 填充色没被当文字色用`);
+  console.log(`✅ CSS 令牌闸门：${defined.size} 个变量全部有定义 · 填充色没被当文字色用（写死/插值/存变量三种写法都盯）`);
 }
 
 // 动效闸门：transition 不写曲线，浏览器就按默认的 ease 走——两头慢中间快，那是「网页味」，
@@ -4542,21 +4612,9 @@ async function testFilePathRouting() {
     tokens: { [token]: { user: "e2e", at: Date.now() } },
   }));
 
-  const port = 3900 + Math.floor(Math.random() * 90);
-  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, OPENWORKBUDDY_HOME: home, PORT: String(port), HOST: "127.0.0.1" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let log = "";
-  child.stdout.on("data", (c) => (log += c));
-  child.stderr.on("data", (c) => (log += c));
-  const up = await new Promise((resolve) => {
-    const t = setTimeout(() => resolve(false), 40000);
-    const tick = setInterval(() => {
-      if (/已启动/.test(log)) { clearInterval(tick); clearTimeout(t); resolve(true); }
-      if (child.exitCode !== null) { clearInterval(tick); clearTimeout(t); resolve(false); }
-    }, 200);
-  });
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const child = booted.child;
+  const { up, port, why: bootWhy } = await booted.wait();
 
   const get = (p) => new Promise((resolve) => {
     const req = http.request({ host: "127.0.0.1", port, path: p, headers: { Cookie: "wb_token=" + token } }, (res) => {
@@ -4569,7 +4627,7 @@ async function testFilePathRouting() {
   });
 
   try {
-    assert(up, "真 server.js 没起来，这条测试作废：" + log.slice(-400));
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
     const enc = (rel) => "/api/files/view/" + rel.split("/").map(encodeURIComponent).join("/");
 
     // ① 网页本身
@@ -4915,6 +4973,7 @@ async function main() {
   await testNodeSuite("doctor.js", "开机闸门与 wb doctor 体检（Node / 依赖 / 端口 / 配置 / 引擎）");
   await testNodeSuite("cli-args.js", "命令行参数声明表：拼错的选项当场拦下并给建议，老写法逐条对齐不变");
   await testNodeSuite("repl-commands.js", "wb 交互模式：多行粘贴合成一条、打错的斜杠命令当场拦下、Ctrl+C 停活儿不退出");
+  await testNodeSuite("icons.js", "界面不许再冒 emoji：源码闸门 + 图标名核对 + 提示条记号转换");
   await testDockerDeploy();
   await testFetchUrlShapes();
   await testParallelToolBatch();
@@ -5422,21 +5481,9 @@ async function testOnboardingWizardApi() {
     tokens: { [token]: { user: "e2e", at: Date.now() } },
   }));
 
-  const port = 3900 + Math.floor(Math.random() * 90);
-  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, OPENWORKBUDDY_HOME: home, PORT: String(port), HOST: "127.0.0.1" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let log = "";
-  child.stdout.on("data", (c) => (log += c));
-  child.stderr.on("data", (c) => (log += c));
-  const up = await new Promise((resolve) => {
-    const t = setTimeout(() => resolve(false), 40000);
-    const tick = setInterval(() => {
-      if (/已启动/.test(log)) { clearInterval(tick); clearTimeout(t); resolve(true); }
-      if (child.exitCode !== null) { clearInterval(tick); clearTimeout(t); resolve(false); }
-    }, 200);
-  });
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const child = booted.child;
+  const { up, port, why: bootWhy } = await booted.wait();
 
   const req = (method, p, body) => new Promise((resolve) => {
     const data = body === undefined ? null : JSON.stringify(body);
@@ -5455,7 +5502,7 @@ async function testOnboardingWizardApi() {
   const cfgOnDisk = () => { try { return JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8")); } catch { return null; } };
 
   try {
-    assert(up, "真 server.js 没起来，这条测试作废：" + log.slice(-400));
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
 
     // 1. 干净家目录的体检表
     const a = await req("GET", "/api/onboarding");
@@ -5547,21 +5594,9 @@ async function testThinkingSettingsApi() {
     tokens: { [token]: { user: "e2e", at: Date.now() } },
   }));
 
-  const port = 3900 + Math.floor(Math.random() * 90);
-  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, OPENWORKBUDDY_HOME: home, PORT: String(port), HOST: "127.0.0.1" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let log = "";
-  child.stdout.on("data", (c) => (log += c));
-  child.stderr.on("data", (c) => (log += c));
-  const up = await new Promise((resolve) => {
-    const t = setTimeout(() => resolve(false), 40000);
-    const tick = setInterval(() => {
-      if (/已启动/.test(log)) { clearInterval(tick); clearTimeout(t); resolve(true); }
-      if (child.exitCode !== null) { clearInterval(tick); clearTimeout(t); resolve(false); }
-    }, 200);
-  });
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const child = booted.child;
+  const { up, port, why: bootWhy } = await booted.wait();
 
   const req = (method, p, body) => new Promise((resolve) => {
     const data = body === undefined ? null : JSON.stringify(body);
@@ -5579,7 +5614,7 @@ async function testThinkingSettingsApi() {
   });
 
   try {
-    assert(up, "真 server.js 没起来，这条测试作废：" + log.slice(-400));
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
     const s0 = await req("GET", "/api/settings");
     assert(s0.json && s0.json.agent, "设置读不出来");
     assert(s0.json.agent.thinking === "auto", "新装的默认档不是 auto（存量用户的行为会被改）：" + s0.json.agent.thinking);
@@ -6950,14 +6985,23 @@ function testLookPrefsStatic() {
   const pub = path.join(__dirname, "..", "public");
   const rd = (f) => fs.readFileSync(path.join(pub, f), "utf8");
   const a02 = rd(path.join("js", "app-02.js")), a05 = rd(path.join("js", "app-05.js")), a06 = rd(path.join("js", "app-06.js")), html = rd("index.html");
-  assert(/\["look", "外观", "🎨"\]/.test(a05), "设置目录里没有「外观」页");
+  assert(/\["look", "外观", "palette"\]/.test(a05), "设置目录里没有「外观」页");
   assert(/active === "look"\) renderLookPane\(pane\)/.test(a05), "renderSettings 没把 look 派给 renderLookPane");
   assert(/^function renderLookPane\(pane\)/m.test(a06), "app-06 没定义 renderLookPane");
   assert(/act === "appearance"\) openModal\("settings", "look"\)/.test(a02), "头像菜单的「外观」没有直达外观页");
   const cats = a05.slice(a05.indexOf("const SETTING_CATS = ["), a05.indexOf("];", a05.indexOf("const SETTING_CATS = [")));
   const rows = [...cats.matchAll(/\["([a-z]+)", "([^"]+)", "([^"]+)"\]/g)];
   assert(rows.length === 12 && rows.every((m) => m[3].length && m[2].length <= 4), "设置目录每项都要 [id, ≤4字短名, 图标] 三元组，现在：" + rows.length + " 项");
-  assert(/\$\{cats\.map\(\(\[k, label, icon\]\)/.test(a05) && /class="ci">\$\{icon\}/.test(a05), "左栏没把图标画出来");
+  // 第三格从 emoji 换成图标名之后，多了一种新的翻车方式：忘了套 ic() 就直接把 "palette" 这几个字母印在目录上。
+  // 这事只有人打开设置页才看得见，所以两头都钉死：名字得是 sprite 里真有的 symbol，画的时候得走 ic()。
+  const { iconNames } = require("../icons");
+  const sprite = iconNames();
+  const strayIcons = rows.map((m) => m[3]).filter((n) => !sprite.has(n));
+  assert(strayIcons.length === 0, "设置目录里这几个图标名 sprite 里没有，画出来会是一个空框：" + strayIcons.join("、"));
+  assert(/\$\{cats\.map\(\(\[k, label, icon\]\)/.test(a05) && /class="ci">\$\{ic\(icon\)\}/.test(a05),
+    "左栏没把图标画出来——图标名直接插进 HTML 的话，用户在设置目录上看到的是 brain / search / bot 这几个英文单词");
+  // 反向对照：这把尺子认得出「sprite 里没有」，不然名字写错也一路绿
+  assert(!sprite.has("根本没有这个图标") && sprite.has("palette"), "图标名核对失效");
   // 画的是过滤后的 cats，不是整张 SETTING_CATS：多人服务器上普通成员看不到那四个纯服务器级的标签页
   assert(/const cats = s\.platform_owner \? SETTING_CATS : SETTING_CATS\.filter/.test(a05), "左栏没按 platform_owner 过滤");
   for (const f of fs.readdirSync(path.join(pub, "js"))) {
@@ -6984,11 +7028,14 @@ function testLookPrefsStatic() {
   assert(/html\[data-font="serif"\] \{ --font-sans:/.test(html) && /html\[data-font="mono"\] \{ --font-sans: var\(--font-mono\); \}/.test(html), "字体三选缺规则");
   // 字号联动：这些尺寸不能再写死 px，否则调字号只有正文在动
   // 前缀带换行+两空格：只认顶层规则，别撞上 html[data-density="compact"] .hist-item 那条
-  for (const sel of ["\n  .a-text h1 {", "\n  .a-text h2 {", "\n  textarea#input { width", "\n  .hist-item { padding"]) {
-    const i = html.indexOf(sel); assert(i > 0, "找不到 " + sel);
-    const rule = html.slice(i, html.indexOf("}", i));
-    assert(/var\(--wb-fs\)/.test(rule), sel + " 的字号还写死 px，没跟 --wb-fs 联动");
+  // 输入框的字号如今跟高亮镜像层写在同一条规则里（两层必须一个字号，分开写迟早漂——
+  // 逐字对齐那屏就是拿这个当尺子的），所以这儿钉的是那一条，不是只管宽度的那条。
+  const fsRule = (sel) => { const i = html.indexOf(sel); assert(i > 0, "找不到 " + sel); return html.slice(i, html.indexOf("}", i)); };
+  for (const sel of ["\n  .a-text h1 {", "\n  .a-text h2 {", "\n  #input-hl, textarea#input { font-size", "\n  .hist-item { padding"]) {
+    assert(/var\(--wb-fs\)/.test(fsRule(sel)), sel + " 的字号还写死 px，没跟 --wb-fs 联动");
   }
+  // ★反向对照★：这把尺子不是见谁都绿——只管布局不管字号的那条就该判不合格
+  assert(!/var\(--wb-fs\)/.test(fsRule("\n  textarea#input { width")), "字号联动这把尺子失灵了，连不含字号的规则都判绿");
   assert(/## 跑起来[\s\S]*外观[\s\S]*## 配模型/.test(fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")), "README「跑起来」一节没提外观设置");
   console.log("✅ 外观偏好静态闸（目录含外观页·头像菜单直达·存储 try+内存兜底·字号 4 档联动·5 皮肤×浅暗令牌齐全·密度≥5 处·字体三选·旧主题子菜单已清）");
 }
@@ -7050,7 +7097,7 @@ main()
 /**
  * 本机 CLI 引擎（claude / codex）被强制收尾时，得跟内置引擎一样把话说出来。
  *
- * 内置引擎撞上限会做两件事：发一个 limit 事件、并把「⚠️ …任务强制收尾」写进正文。
+ * 内置引擎撞上限会做两件事：发一个 limit 事件、并把「注意：…，任务强制收尾。」写进正文。
  * runViaEngine 这条路以前两件都不做，只把 stopped 塞在返回值里——于是谁忘了接这个返回值，
  * 谁那边就把半截活儿显示成干完了。IM 就是这么把「跑满 25 步被掐掉」当成一条正常回复
  * 发到用户手机上的（im.js 里那句 `const { finalText } = await runtime.runTask(...)`）。
@@ -7085,7 +7132,12 @@ async function testEngineStoppedSurfacing() {
     const A = await run("我先看一下这个文件", "已达最大步数（25 步）");
     assert(A.r.finalText.includes("已达最大步数（25 步）"),
       "CLI 引擎撞上限，正文里一个字都没提，用户看到的就是一条正常回复：" + A.r.finalText);
-    assert(A.r.finalText.includes("⚠️") && A.r.finalText.includes("任务强制收尾"),
+    // 两条路（内置循环 / 本机 CLI 引擎）各自拼这句话，措辞一旦漂开，用户在 Web 和 IM 上看到的就是两种说法。
+    // 所以这里不认某个记号，而是把 agent.js 里那份模板原样取出来对——模板改了两处一起改，只改一处就红。
+    const STOP_TPL = /注意：\$\{(?:r\.stopped|stopNote)\}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。/g;
+    const tplHits = (fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8").match(STOP_TPL) || []).length;
+    assert.strictEqual(tplHits, 2, `agent.js 里收尾提示的模板应该正好两处（内置循环 + 本机引擎），实际 ${tplHits} 处——两条路措辞漂开了`);
+    assert(A.r.finalText.includes("注意：已达最大步数（25 步），任务强制收尾。"),
       "收尾提示的措辞跟内置引擎对不上：" + A.r.finalText);
     assert(A.r.finalText.startsWith("我先看一下这个文件"), "模型原话被吃掉了：" + A.r.finalText);
     assert.strictEqual(A.limits.length, 1, "limit 事件没发或发重了：" + A.limits.length);
@@ -7406,7 +7458,7 @@ async function testFeedbackAndUsage() {
     const sc = ev.scoreRules({ minTurns: 0, now: NOW });
     assert.strictEqual(sc.length, 1, JSON.stringify(sc));
     assert.deepStrictEqual(sc[0].fb, { up: 4, down: 1 }, "规则打分里的 👍👎 计数不对（40 天前那条在生效前，不该算）：" + JSON.stringify(sc[0].fb));
-    assert(/👍4 👎1/.test(sc[0].why), "why 里没写反馈：" + sc[0].why);
+    assert(sc[0].why.includes("生效后用户反馈 好评 4 / 差评 1"), "why 里没写反馈：" + sc[0].why);
     // 负对照：生效前的 👍👎 一条都不算 → why 里不出现反馈那一截
     fs.writeFileSync(path.join(DATA, "learned", "r1.md"), '<!-- ' + JSON.stringify({ at: new Date(NOW + 60e3).toISOString(), baseline: { key: "thumbs_down", rate: 0.5 } }) + ' -->\\n刚生效');
     const sc2 = ev.scoreRules({ minTurns: 0, now: NOW });
@@ -7621,21 +7673,9 @@ async function testImCredentialGuard() {
     tokens: { [token]: { user: "e2e", at: Date.now() } },
   }));
 
-  const port = 3900 + Math.floor(Math.random() * 90);
-  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, OPENWORKBUDDY_HOME: home, PORT: String(port), HOST: "127.0.0.1" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let log = "";
-  child.stdout.on("data", (c) => (log += c));
-  child.stderr.on("data", (c) => (log += c));
-  const up = await new Promise((resolve) => {
-    const t = setTimeout(() => resolve(false), 40000);
-    const tick = setInterval(() => {
-      if (/已启动/.test(log)) { clearInterval(tick); clearTimeout(t); resolve(true); }
-      if (child.exitCode !== null) { clearInterval(tick); clearTimeout(t); resolve(false); }
-    }, 200);
-  });
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const child = booted.child;
+  const { up, port, why: bootWhy } = await booted.wait();
 
   const req = (method, p, body) => new Promise((resolve) => {
     const data = body === undefined ? null : JSON.stringify(body);
@@ -7654,7 +7694,7 @@ async function testImCredentialGuard() {
   const onDisk = () => JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8")).im || {};
 
   try {
-    assert(up, "真 server.js 没起来，这条测试作废：" + log.slice(-400));
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
 
     const SECRET = "s3cret_" + crypto.randomBytes(8).toString("hex");
     const w = await req("POST", "/api/settings", { im: { feishu: { app_id: "cli_e2e0001", app_secret: SECRET } } });
@@ -8157,21 +8197,9 @@ exit 1
 `);
   fs.chmodSync(path.join(bin, "lark-cli"), 0o755);
 
-  const port = 3900 + Math.floor(Math.random() * 90);
-  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, OPENWORKBUDDY_HOME: home, PORT: String(port), HOST: "127.0.0.1", PATH: bin + path.delimiter + process.env.PATH },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let log = "";
-  child.stdout.on("data", (c) => (log += c));
-  child.stderr.on("data", (c) => (log += c));
-  const up = await new Promise((resolve) => {
-    const t = setTimeout(() => resolve(false), 40000);
-    const tick = setInterval(() => {
-      if (/已启动/.test(log)) { clearInterval(tick); clearTimeout(t); resolve(true); }
-      if (child.exitCode !== null) { clearInterval(tick); clearTimeout(t); resolve(false); }
-    }, 200);
-  });
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home, PATH: bin + path.delimiter + process.env.PATH });
+  const child = booted.child;
+  const { up, port, why: bootWhy } = await booted.wait();
   const req = (method, p, body) => new Promise((resolve) => {
     const data = body === undefined ? null : JSON.stringify(body);
     const r = http.request({
@@ -8189,7 +8217,7 @@ exit 1
   const feishuOnDisk = () => (JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8")).im || {}).feishu || {};
 
   try {
-    assert(up, "真 server.js 没起来，这条测试作废：" + log.slice(-400));
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
 
     const GOOD = "G".repeat(32);
     const w = await req("POST", "/api/settings", { im: { feishu: { app_id: "cli_mine0001", app_secret: GOOD } } });

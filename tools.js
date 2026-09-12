@@ -703,7 +703,7 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile) {
       : `${cfg.model} 返回了空正文（多半被内容策略拦了）`;
     return {
       content: `没看成这张图：${why}。\n别再换问法重试了——换措辞改不了这件事。如实说这张图没看成，`
-        + `或者换一条视觉渠道（设置 → 模型 → 视觉模型）。\n⚠️ 绝对不许把没看到的内容当作看过写进结论或说明文档里。`,
+        + `或者换一条视觉渠道（设置 → 模型 → 视觉模型）。\n注意：绝对不许把没看到的内容当作看过写进结论或说明文档里。`,
       isError: true,
     };
   }
@@ -970,7 +970,7 @@ function precheckSyntax(code) {
     const m = /script\.cjs:(\d+)/.exec(e.stack || "");
     const line = m ? Number(m[1]) : 0;
     const src = code.split("\n");
-    let msg = `❌ 代码没有执行：语法错误${line ? `（第 ${line} 行）` : ""}\n`;
+    let msg = `代码没有执行：语法错误${line ? `（第 ${line} 行）` : ""}\n`;
     if (line) {
       for (let i = Math.max(0, line - 2); i < Math.min(src.length, line + 1); i++) {
         msg += `${i + 1 === line ? ">" : " "} ${i + 1} | ${src[i]}\n`;
@@ -1468,7 +1468,7 @@ function selfCheck(file, rel, partial = false) {
       JSON.parse(src);
     } catch (e) {
       if (partial && looksUnfinished(e.message)) return ok();
-      return bad(`\n⚠️ JSON 语法没过：${e.message}。先修好再往下走。`);
+      return bad(`\n注意：JSON 语法没过：${e.message}。先修好再往下走。`);
     }
     return ok();
   }
@@ -1495,7 +1495,7 @@ function selfCheck(file, rel, partial = false) {
     if (r.status !== 0) {
       const msg = String(r.stderr || "").split("\n").filter((l) => l && !/^\s*at /.test(l)).slice(0, 6).join("\n");
       if (partial && looksUnfinished(msg)) return ok();
-      return bad(`\n⚠️ JS 语法没过：\n${msg}\n先修好再往下走（用 edit_file 改那一行，别整篇重写）。`);
+      return bad(`\n注意：JS 语法没过：\n${msg}\n先修好再往下走（用 edit_file 改那一行，别整篇重写）。`);
     }
     return ok();
   }
@@ -1507,7 +1507,7 @@ function selfCheck(file, rel, partial = false) {
       if (r.status === 1 && /SyntaxError|IndentationError|TabError/.test(String(r.stderr))) {
         const msg = String(r.stderr).split("\n").filter((l) => l && !/^Traceback|^\s*File "<string>"/.test(l)).slice(-4).join("\n");
         if (partial && looksUnfinished(msg)) return ok();
-        return bad(`\n⚠️ Python 语法没过：\n${msg}\n先修好再往下走。`);
+        return bad(`\n注意：Python 语法没过：\n${msg}\n先修好再往下走。`);
       }
     } catch {}
     return ok();
@@ -1517,7 +1517,7 @@ function selfCheck(file, rel, partial = false) {
       const r = spawnSync(ext === ".zsh" ? "zsh" : "bash", ["-n", file], { encoding: "utf8", timeout: 10000 });
       if (r.status !== 0 && r.stderr) {
         if (partial && looksUnfinished(r.stderr)) return ok();
-        return bad(`\n⚠️ Shell 脚本语法没过：\n${String(r.stderr).split("\n").filter(Boolean).slice(0, 4).join("\n")}\n先修好再往下走。`);
+        return bad(`\n注意：Shell 脚本语法没过：\n${String(r.stderr).split("\n").filter(Boolean).slice(0, 4).join("\n")}\n先修好再往下走。`);
       }
     } catch {}
     return ok();
@@ -1525,14 +1525,14 @@ function selfCheck(file, rel, partial = false) {
   if (ext === ".md") {
     const fences = (src.match(/^```/gm) || []).length;
     // 续写到一半，围栏本来就可能只开了一半——下一节接着写就闭上了，别在这儿喊
-    if (fences % 2 === 1 && !partial) return bad("\n⚠️ Markdown 里有 ``` 代码围栏没闭合（奇数个），界面会把后面的正文整块吞掉。补上收尾的 ```。");
+    if (fences % 2 === 1 && !partial) return bad("\n注意：Markdown 里有 ``` 代码围栏没闭合（奇数个），界面会把后面的正文整块吞掉。补上收尾的 ```。");
     return ok();
   }
   if (ext === ".svg") {
     const orphan = orphanSvgStyleScopes(src);
     if (orphan.length) {
       return bad(
-        `\n⚠️ 这个 SVG 的样式作用域挂空了：<style> 里写了 ${orphan.slice(0, 4).map((n) => "#" + n).join("、")}，` +
+        `\n注意：这个 SVG 的样式作用域挂空了：<style> 里写了 ${orphan.slice(0, 4).map((n) => "#" + n).join("、")}，` +
           `<svg> 上却没有这个 id。样式一条都不生效，图会变成黑字、没底色、框线全丢。id 和选择器改成一致的。`
       );
     }
@@ -1540,7 +1540,7 @@ function selfCheck(file, rel, partial = false) {
     const { missing } = undefinedCssVars(src, path.dirname(file));
     if (missing.length) {
       return bad(
-        `\n⚠️ 这个 SVG 用了没定义的 CSS 变量：${missing.slice(0, 6).map((n) => "--" + n).join("、")}。` +
+        `\n注意：这个 SVG 用了没定义的 CSS 变量：${missing.slice(0, 6).map((n) => "--" + n).join("、")}。` +
           `独立文件没有外层页面给它变量，var(--没定义的) 会让颜色回落到黑色，图上很可能黑底黑字。` +
           `在 <svg> 里自己写一段 <style>:root{--x:…}</style>，或者直接把颜色写死。`
       );
@@ -1550,7 +1550,7 @@ function selfCheck(file, rel, partial = false) {
   if (ext === ".html" || ext === ".htm") {
     const issues = auditHtml(src, path.dirname(file), { partial });
     const errs = issues.filter((x) => x.level === "错");
-    if (errs.length) return bad(`\n⚠️ 页面结构有问题：${errs.map((x) => x.msg).join("；")}。建议再跑一次 check_page 确认。`);
+    if (errs.length) return bad(`\n注意：页面结构有问题：${errs.map((x) => x.msg).join("；")}。建议再跑一次 check_page 确认。`);
     // 「还没收尾」照说一句，但它不是失败：说了模型知道自己在写半截，不至于以为哪里坏了
     const wip = issues.filter((x) => x.level === "提");
     if (wip.length) return ok(`\n（${wip.map((x) => x.msg).join("；")}）`);
@@ -2037,7 +2037,7 @@ async function fetchUrl(url, { render, saveDir } = {}) {
   const ct = resp.headers.get("content-type") || "";
   const declared = Number(resp.headers.get("content-length") || 0);
   if (declared > 30 * 1024 * 1024) {
-    return `⚠️ 这个地址是个 ${(declared / 1048576).toFixed(1)} MB 的大文件（${ct || "类型未知"}），没有下载，它也不是网页正文。真需要的话用 run_shell 跑 \`curl -L -o 文件名 "${url}"\` 存下来再处理。`;
+    return `注意：这个地址是个 ${(declared / 1048576).toFixed(1)} MB 的大文件（${ct || "类型未知"}），没有下载，它也不是网页正文。真需要的话用 run_shell 跑 \`curl -L -o 文件名 "${url}"\` 存下来再处理。`;
   }
   const buf = await resp.arrayBuffer();
   if (looksBinary(ct, buf)) {
@@ -2077,7 +2077,7 @@ async function fetchUrl(url, { render, saveDir } = {}) {
           ? `对方站点返回 HTTP ${resp.status}`
           : "这个页面的正文是 JavaScript 动态渲染的，静态 HTML 里没有内容";
     return (
-      `⚠️ 没能拿到正文：${why}。${rendered && rendered.error ? `（渲染兜底也失败：${rendered.error}）` : ""}\n` +
+      `没能拿到正文：${why}。${rendered && rendered.error ? `（渲染兜底也失败：${rendered.error}）` : ""}\n` +
       `别就此打住，换条路：① 找这个页面背后的数据接口直接请求（浏览器 F12 网络面板里那种 api 地址）；` +
       `② 用 run_shell 调本机已装的命令行工具（curl 带完整浏览器请求头、yt-dlp 取视频站元数据等）；` +
       `③ web_search 搜这个页面的内容，从能打开的镜像/转载页拿。至少换三种路子都不行，才算真做不到。\n` +

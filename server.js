@@ -12,7 +12,7 @@ require("./boot-check").enforce({ rootDir: __dirname, packaged: require("./paths
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const { DATA_DIR, dataPath, appPath, seedDataDir } = require("./paths");
+const { DATA_DIR, dataPath, appPath, seedDataDir, resolvePort } = require("./paths");
 // 数据目录跟代码目录不是同一个地方时（装机版、以及 Docker 里设了 OPENWORKBUDDY_HOME），
 // 得先把随包出厂的技能和专家铺过去，否则 skills.js 只认 dataPath("skills")，
 // 容器起来是能起来，但技能列表空空如也。开发态两个目录本来就是一个，这行是空操作。
@@ -41,6 +41,7 @@ const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠
 const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
 const memory = require("./memory");
 const notify = require("./notify");
+const callout = require("./callout"); // 正文提示条：机器人推送里换成文字标签
 const store = require("./store");
 const petSprites = require("./pet-sprites"); // 桌面宠物的精灵图（吃 Codex / Petdex 的格式）
 const pet = require("./pet"); // 只为拿默认值（没有 electron 时它自己降级成空壳，纯 node 也 require 得动）
@@ -2838,11 +2839,14 @@ app.post("/api/upload", (req, res) => {
 // 专家管理：增删改就地改 experts 数组（runtime 闭包同一引用，热生效）+ 持久化 experts.json
 // 一个专家 = 头像 + 名字 + 花名 + 说明 + 绑定技能 + 默认提示词 的智能体，用户可自建。
 const EXPERT_FIELDS = ["name", "alias", "avatar", "category", "tags", "description", "skills", "system"];
+/** 专家/专家团的头像存的是 sprite 图标名（"chart-column" 这种，最长十几个字符），
+ *  老配置里也可能还是 emoji 字符。切太短会把图标名削成半截，前端查不到就当文字显示了。 */
+const cardAvatar = (v, fallback) => String(v == null ? "" : v).trim().slice(0, 32) || fallback;
 function publicExpert(e) {
   return {
     name: e.name,
     alias: e.alias || "",
-    avatar: e.avatar || "🧑‍💼",
+    avatar: e.avatar || "user",
     category: e.category || "未分类",
     tags: Array.isArray(e.tags) ? e.tags : [],
     description: e.description || "",
@@ -2864,7 +2868,7 @@ app.post("/api/experts", (req, res) => {
   const entry = {
     name: n,
     alias: String(b.alias || "").trim().slice(0, 12),
-    avatar: String(b.avatar || "🧑‍💼").trim().slice(0, 8) || "🧑‍💼",
+    avatar: cardAvatar(b.avatar, "user"),
     category: String(b.category || "未分类").trim().slice(0, 12) || "未分类",
     tags: arr(b.tags),
     description: String(b.description || "").trim(),
@@ -2896,7 +2900,7 @@ app.get("/api/expert-teams", (_req, res) =>
   res.json(
     expertTeams.map((t) => ({
       name: t.name,
-      avatar: t.avatar || "👥",
+      avatar: t.avatar || "users",
       description: t.description || "",
       members: (t.members || []).filter((m) => experts.some((e) => e.name === m)),
     }))
@@ -2914,7 +2918,7 @@ app.post("/api/expert-teams", (req, res) => {
   if (expertTeams.some((t, i) => t.name === n && i !== idx)) return res.status(400).json({ error: "同名专家团已存在" });
   const entry = {
     name: n,
-    avatar: String(b.avatar || "👥").trim().slice(0, 8) || "👥",
+    avatar: cardAvatar(b.avatar, "users"),
     description: String(b.description || "").trim(),
     members: [...new Set(members)].slice(0, 8), // 接力式执行，人多了会把时间预算耗光
   };
@@ -3659,7 +3663,7 @@ app.post("/api/chat", async (req, res) => {
     modelFailStreak.set(ranLLM.provider, streak);
     let emsg = e.message;
     if (streak >= 2) {
-      emsg += `\n\n💡 模型「${ranLLM.provider}」已连续失败 ${streak} 次，多半是这个模型/渠道本身不可用：可以点输入框旁的模型按钮给本对话单独换一个，或到 设置 → 模型 换全局默认。`;
+      emsg += `\n\n模型「${ranLLM.provider}」已连续失败 ${streak} 次，多半是这个模型/渠道本身不可用：可以点输入框旁的模型按钮给本对话单独换一个，或到 设置 → 模型 换全局默认。`;
     }
     send({ type: "error", message: emsg });
     asstEvents.push({ type: "error", message: emsg });
@@ -4105,7 +4109,8 @@ async function main() {
   scheduler = createScheduler({
     runtime: accountedRuntime(runtime, "schedule"),
     onResult: (item, text) =>
-      notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${(text || "").slice(0, 800)}`),
+      // 机器人那头不渲染 markdown，正文里的提示条记号先换成文字标签
+      notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`),
   });
 
   // 夜间复盘：**默认关**。开了之后每 10 分钟看一次表，到点且今天还没跑过就跑一轮。
@@ -4161,7 +4166,7 @@ async function main() {
   // 结果是启动时抛 “Cannot read properties of undefined (reading 'host')”——
   // 一条完全看不出跟配置有关的报错。缺就用默认值，别拿栈回溯糊用户一脸。
   const srvCfg = config.server || {};
-  const port = +process.env.PORT || srvCfg.port || 3800;
+  const port = resolvePort(process.env, config); // PORT=0 = 让内核挑一个空的，判据见 paths.js
   // 默认只听本机：这个进程手里有 run_shell 和整个文件系统，绑 0.0.0.0 等于把 shell 挂到公网。
   // 要放出去（Docker / 服务器）必须显式 HOST=0.0.0.0，并且自己在前面套 HTTPS + 反代。
   const host = process.env.HOST || srvCfg.host || "127.0.0.1";
@@ -4179,10 +4184,14 @@ async function main() {
   });
   if (solo) console.log("个人桌面版：设置归你自己管，不分平台管理员");
   const server = app.listen(port, host, () => {
+    // PORT=0 是「你替我挑一个空的」——配置里写 0，真正绑到哪个口只有系统知道。
+    // 这行以前直接印 port，于是 PORT=0 时用户看到的是 http://localhost:0，点进去当然打不开；
+    // 端到端测试也因此只能自己猜端口、猜撞了就卡死。改成问 server 要它实际绑上的那个。
+    const bound = (server.address() || {}).port || port;
     if (host !== "127.0.0.1" && host !== "localhost") {
-      console.warn(`⚠️  正在监听 ${host}:${port}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
+      console.warn(`▲ 正在监听 ${host}:${bound}（非本机）。请确认前面有反向代理 + HTTPS，且已经注册了管理员账号——否则任何人都能拿到这台机器的 shell。`);
     }
-    console.log(`OpenWorkBuddy 已启动: http://localhost:${port}（服务端初始化 ${Date.now() - BOOT_T0}ms）`);
+    console.log(`OpenWorkBuddy 已启动: http://localhost:${bound}（服务端初始化 ${Date.now() - BOOT_T0}ms）`);
     console.log(`模型: ${llm.provider} / ${llm.model}`);
     console.log(`技能: ${runtime.getSkills().map((s) => s.name).join(", ") || "无"}`);
     console.log(`专家团: ${experts.map((e) => e.name).join(", ") || "无"}`);
