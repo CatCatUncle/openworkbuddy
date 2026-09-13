@@ -5619,6 +5619,7 @@ async function main() {
   testPackageAssetDrift();
   testNoticeCoverage();
   testStyleDirection();
+  testShortDrama();
   testReleasePipeline();
   testNoNestedRoutes();
   await testAdminConsoleUI();
@@ -7293,6 +7294,158 @@ function testStyleDirection() {
   }
 
   console.log(`✅ 网页别千篇一律：${files.length} 处（提示词 / 技能 / 专家 / 模板）都插进了「先定视觉方向」· ${(src["skills/web-styles/skill.md"].match(/^## \d+ · /gm) || []).length} 个方向随包分发 · ${bad.length} 种退回全被抓`);
+}
+
+/**
+ * AI 短剧这条链的静态体检。纯读文件，不调模型、不花钱。
+ *
+ * 为什么值得单独一道闸门：这条技能干的事是「拿文档教模型怎么调工具」，而教错了不会报错——
+ * 模型照着写一个不存在的参数名，工具那边当没给，图照样出、片照样拼，只是角色一镜一个样，
+ * 而十几次生视频的钱已经花完了。反过来 TOOL_DEFS 改个字段名也一样：技能里的写法悄没声地过期。
+ * 所以这儿把「技能教的参数」和「工具真收的参数」钉在一起，谁动了谁红。
+ *
+ * @param {Record<string,string>} src 文件内容，键是仓库相对路径
+ * @param {Record<string,string[]>} params 工具名 → 它真实接受的参数名
+ * @param {number} genMax 生成类工具的并发上限（agent.js 的 GEN_PARALLEL_MAX）
+ * @returns {{miss: string[], checked: number}}
+ */
+function shortDramaDrift(src, params, genMax) {
+  const miss = [];
+  const need = (why, ok) => { if (!ok) miss.push(why); };
+  const SKILL = "skills/short-drama/skill.md";
+  const SCHEMA = "skills/short-drama/references/分镜表.schema.json";
+  const skill = src[SKILL] || "";
+  const road = src["docs/路线图.md"] || "";
+  const pick = src["docs/短剧画布选型.md"] || "";
+
+  need("skills/short-drama/skill.md 不见了或被掏空", skill.length > 500);
+  need("技能的 frontmatter name 不是 short-drama，装到用户机器上会变成另一个名字", /^name:\s*short-drama\s*$/m.test(skill));
+  // CLI 引擎那份技能表把 description 截到 60 字（agent.js engineSkillsBlock），超了模型看到的是半句话
+  const desc = (skill.match(/^description:\s*(.+)$/m) || ["", ""])[1].trim();
+  need(`技能 description ${desc.length} 字，超过 60 会被截成半句话`, desc.length > 0 && desc.length <= 60);
+  need("技能没写清跟 video-compose 的分工，模型会拿它去干零成本的图文成片", /video-compose/.test(skill));
+
+  // 技能教的每一个参数名，工具那边必须真收。两个方向都判：教没了红，工具改名了也红
+  const TEACHES = [
+    ["generate_image", "reference_images", "跨镜头角色一致性全靠它"],
+    ["generate_image", "filename", "并发下不给名字就是互相覆盖"],
+    ["generate_image", "no_cache", "确实要换一版时的逃生口"],
+    ["generate_video", "first_frame", "图生视频的入口"],
+    ["generate_video", "last_frame", "转场镜头要两头定帧"],
+    ["text_to_speech", "voice", "同一个角色全程一个音色"],
+  ];
+  for (const [tool, p, why] of TEACHES) {
+    need(`技能里不再教 ${tool} 的 ${p}（${why}）`, skill.includes(p));
+    need(`${tool} 已经没有 ${p} 这个参数了，技能里教的是过时写法`, (params[tool] || []).includes(p));
+  }
+
+  // 分镜表 schema 是这条技能的唯一真源，日后画布读的也是它。字段改名等于把存量分镜表全废掉
+  let schema = null;
+  try { schema = JSON.parse(src[SCHEMA] || ""); } catch { /* 下一行会报 */ }
+  need("分镜表 schema 解析不了（JSON 坏了或文件没了），技能让模型照着写的东西不存在", !!schema);
+  if (schema) {
+    need("分镜表 schema 不是 draft-07", /draft-07/.test(String(schema.$schema)));
+    for (const k of ["title", "aspect", "characters", "scenes"]) {
+      need(`分镜表根节点不再必填 ${k}`, (schema.required || []).includes(k));
+    }
+    const scene = ((schema.properties || {}).scenes || {}).items || {};
+    const shot = ((scene.properties || {}).shots || {}).items || {};
+    for (const k of ["id", "shot_size", "frame_prompt", "motion_prompt"]) {
+      need(`分镜表里一镜不再必填 ${k}`, (shot.required || []).includes(k));
+    }
+    const chr = ((schema.properties || {}).characters || {}).items || {};
+    need("角色不再必填 look——外貌不写死一段，人就会一镜一个样", (chr.required || []).includes("look"));
+  }
+  need("技能没指向 references/分镜表.schema.json，模型会自己发明一套结构，下次接着改就对不上", skill.includes("references/分镜表.schema.json"));
+
+  // 下面三条是这条技能的底线。删掉任何一条，它就退化成「拿静止图凑数」的那种假短剧
+  need("「缺生视频不能降级」没了——降级交付的是假短剧", /缺生视频不能降级/.test(skill));
+  need("「不许拿静止图加推拉摇假装」这条红线没了", /不许拿静止图加推拉摇假装/.test(skill));
+  need("「不加任何 AI 水印」没了", /不加任何 AI 水印/.test(skill));
+  need("开工前那段花钱提醒没了——分镜表得先给用户过目、点头了再开始生", /点头了再开始花钱/.test(skill));
+
+  // 并发那句是写给模型看的事实，和代码对不上就是在教它错的
+  const n = +(skill.match(/系统默认同时跑 (\d+) 条/) || [])[1];
+  need(`技能里写「默认同时跑 ${n || "?"} 条」，代码里的上限是 ${genMax}`, n === genMax);
+  need("并发那段没提「每条 filename 必须不一样」：同名就是互相覆盖，而两条都会报成功", /filename 必须不一样/.test(skill));
+
+  // 两份规划文档别打架。一份说第一期先搭画布、一份说第一期不碰画布，下次接着干的人按哪份来
+  need("docs/短剧画布选型.md 里「第一期不碰画布」的结论没了", /第一期不碰画布/.test(pick));
+  need("docs/路线图.md 没提 short-drama，两份文档的分期对不上", /short-drama/.test(road));
+
+  return { miss, checked: Object.keys(src).length };
+}
+
+function testShortDrama() {
+  const root = path.join(__dirname, "..");
+  const S = "skills/short-drama/skill.md";
+  const J = "skills/short-drama/references/分镜表.schema.json";
+  const files = [S, J, "docs/路线图.md", "docs/短剧画布选型.md"];
+  const src = {};
+  for (const f of files) src[f] = fs.readFileSync(path.join(root, f), "utf8");
+
+  const defs = require(path.join(root, "tools.js")).TOOL_DEFS;
+  const params = {};
+  for (const n of ["generate_image", "generate_video", "text_to_speech"]) {
+    const d = defs.find((x) => x.name === n);
+    assert(d, `工具 ${n} 不见了，短剧这条链整条断了`);
+    params[n] = Object.keys((d.input_schema || {}).properties || {});
+  }
+  const genMax = require(path.join(root, "agent.js")).GEN_PARALLEL_MAX;
+
+  const r = shortDramaDrift(src, params, genMax);
+  assert(r.miss.length === 0, "AI 短剧这条链断了：\n  " + r.miss.join("\n  "));
+  assert(r.checked === files.length, "该查的文件没读全（" + r.checked + "/" + files.length + "）");
+
+  // schema 的反向对照在解析后的对象上改，不在文本上做替换——
+  // 文本替换一旦因为排版变了而没命中，反向对照就成了「改了个寂寞」，还照样绿
+  const mut = (fn) => { const o = JSON.parse(src[J]); fn(o); return JSON.stringify(o); };
+  const bad = [
+    ["技能整个丢了", { [S]: "" }, null],
+    ["description 写太长，CLI 里被截成半句", { [S]: src[S].replace(/^description:.*$/m, "description: " + "长".repeat(61)) }, null],
+    ["技能不再教 reference_images（角色一致性没了）", { [S]: src[S].replace(/reference_images/g, "参考图") }, null],
+    ["技能不再教 first_frame（退回文生视频）", { [S]: src[S].replace(/first_frame/g, "起始画面") }, null],
+    ["技能不再指向分镜表 schema", { [S]: src[S].replace(/references\/分镜表\.schema\.json/g, "自己想一个结构") }, null],
+    ["技能不再提 video-compose，两条路的分工糊了", { [S]: src[S].replace(/video-compose/g, "别的技能") }, null],
+    ["分镜表 schema 坏成非法 JSON", { [J]: "{" }, null],
+    ["分镜表根节点丢了 characters", { [J]: mut((o) => { o.required = o.required.filter((k) => k !== "characters"); }) }, null],
+    ["一镜丢了 shot_size 必填", { [J]: mut((o) => { const s = o.properties.scenes.items.properties.shots.items; s.required = s.required.filter((k) => k !== "shot_size"); }) }, null],
+    ["角色不再必填 look", { [J]: mut((o) => { const c = o.properties.characters.items; c.required = c.required.filter((k) => k !== "look"); }) }, null],
+    ["schema 退回没有版本号", { [J]: mut((o) => { delete o.$schema; }) }, null],
+    ["「缺生视频不能降级」被改成可以降级", { [S]: src[S].replace(/缺生视频不能降级/g, "缺生视频可以降级") }, null],
+    ["静止图假装短剧那条红线被删", { [S]: src[S].replace(/不许拿静止图加推拉摇假装/g, "尽量别拿静止图假装") }, null],
+    ["AI 水印那条被删", { [S]: src[S].replace(/不加任何 AI 水印/g, "水印随意") }, null],
+    ["「点头了再开始花钱」被删，变成边想边生", { [S]: src[S].replace(/点头了再开始花钱/g, "想到哪生到哪") }, null],
+    ["并发数跟代码对不上", { [S]: src[S].replace("系统默认同时跑 " + genMax + " 条", "系统默认同时跑 " + (genMax + 3) + " 条") }, null],
+    ["并发那段没提 filename 要不一样", { [S]: src[S].replace(/filename 必须不一样/g, "filename 随便起") }, null],
+    ["选型文档翻供：第一期改成先搭画布", { "docs/短剧画布选型.md": src["docs/短剧画布选型.md"].replace(/第一期不碰画布/g, "第一期先搭画布") }, null],
+    ["路线图里 short-drama 没了", { "docs/路线图.md": src["docs/路线图.md"].replace(/short-drama/g, "画布") }, null],
+    ["generate_video 把 first_frame 改名了，技能里教的成了过时写法", null, { ...params, generate_video: params.generate_video.filter((p) => p !== "first_frame") }],
+    ["text_to_speech 不再收 voice", null, { ...params, text_to_speech: params.text_to_speech.filter((p) => p !== "voice") }],
+    ["generate_image 不再收 reference_images", null, { ...params, generate_image: params.generate_image.filter((p) => p !== "reference_images") }],
+  ];
+  for (const [why, patch, defPatch] of bad) {
+    const got = shortDramaDrift({ ...src, ...(patch || {}) }, defPatch || params, genMax).miss;
+    assert(got.length > 0, "★闸门失效：" + why + "，居然没红★");
+  }
+
+  // 这份技能得真跟着安装包走。白名单是问 git 要的，忘了 git add 就悄无声息地不进包——
+  // 而且它是两个文件：skill.md 进了、references/ 那份 schema 没进，模型照着技能去读照样扑空
+  const packed = require(path.join(root, "electron-builder.config.js")).files;
+  if (packed.includes("skills/**/*")) {
+    console.log("⚠️  安装包白名单这次走的是「问不到 git，skills/ 全量带上」那条退路，下面两条只在拿得到 git 清单时才判——跳过");
+  } else {
+    assert(packed.includes("skills/short-drama/**/*"), "short-drama 没进安装包白名单——多半是忘了 git add");
+    // -z 是关键：git 默认把非 ASCII 路径转义成 "\345\210..."，中文文件名这么核对不了
+    let tracked = [];
+    try {
+      tracked = require("child_process").execFileSync("git", ["ls-files", "-z", "skills/short-drama"], { cwd: root, encoding: "utf8" }).split("\0").filter(Boolean);
+    } catch { /* 上面那条分支已经说明 git 可用，这儿兜个底 */ }
+    assert(tracked.some((p) => p.endsWith("分镜表.schema.json")), "分镜表 schema 没被 git 跟踪：skill.md 进了包、它没进，模型照着技能去读会扑空");
+  }
+
+  const shotReq = JSON.parse(src[J]).properties.scenes.items.properties.shots.items.required.length;
+  console.log(`✅ AI 短剧（第一期，不碰画布）：技能教的 6 个工具参数都真收 · 分镜表 schema 钉住一镜 ${shotReq} 个必填字段 · 并发数与代码一致（${genMax}）· ${bad.length} 种改坏全被抓`);
 }
 
 /**

@@ -152,6 +152,7 @@ wb engines && wb engines use claude-code   # use a local Claude Code / Codex as 
 
 ## What's new
 
+- **Sep 13** It can shoot a story now: the shot list goes to you for a yes first, then character portraits, an opening frame per shot, video, voice, and one captioned vertical cut; change a shot and only that shot costs again
 - **Sep 13** Point it at an SMTP server and the agent emails the report it just wrote; a recipient allowlist is a hard gate, and every message shows you the full text before it leaves
 - **Sep 13** The agent schedules its own recurring work: say "every Monday 9am, turn last week's numbers into a table" once and it runs on time
 - **Sep 13** Recordings, meeting videos and voice notes turn into text, and it writes the minutes straight from there
