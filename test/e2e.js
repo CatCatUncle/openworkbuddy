@@ -2343,7 +2343,7 @@ async function testFrontendSvgFigures() {
   for (const l of lines) console.log(l);
 }
 
-// 企业管理后台是 16 个面板 + 哈希路由，最常见的坏法是「某一页 render 里读了个 undefined，整块白屏」——
+// 企业管理后台是 17 个面板 + 哈希路由，最常见的坏法是「某一页 render 里读了个 undefined，整块白屏」——
 // 只有真的把每一页点一遍、盯着 console 才看得见。同样开 electron 子进程跑。
 /**
  * Docker 一键部署：静态那部分。

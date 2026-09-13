@@ -4,7 +4,7 @@
  *
  * 跑法：npx electron test/admin-ui.js（由 test/e2e.js 拉起；没装 electron 就整体跳过）
  *
- * 为什么非得开真 Chromium：这一页是 16 个面板 + 哈希路由 + 弹窗表单，六成的坏法是
+ * 为什么非得开真 Chromium：这一页是 17 个面板 + 哈希路由 + 弹窗表单，六成的坏法是
  * 「某一页 render 里读了个 undefined，整块白屏」——这种错在 node 里一个字节都测不出来，
  * 只有真的把每一页点一遍、盯着 console 有没有报错才看得见。
  *
@@ -103,6 +103,10 @@ const FAKE = {
     { id: "ark", name: "火山方舟", kind: "ark", base_url: "https://ark.example/api/v3", api_key: "sk-ark-demo" },
     { id: "openrouter", name: "OpenRouter", kind: "openrouter", base_url: "https://openrouter.example/api/v1", api_key: "" },
     { id: "local", name: "本机 Ollama", kind: "ollama", base_url: "http://127.0.0.1:11434/v1", api_key: "" },
+    // 同一个地址两条渠道、名字还一模一样——这是用户真实配置里的样子（两个账号各一把 Key）。
+    // 合并它们等于在不知情的情况下花别人的额度，所以界面只能标出来，不能并。
+    { id: "gw1", name: "内网网关", kind: "custom", base_url: "https://gw.example/v1", api_key: "sk-gw-a" },
+    { id: "gw2", name: "内网网关", kind: "custom", base_url: "https://gw.example/v1", api_key: "sk-gw-b" },
   ],
   models: [
     { name: "方舟-主力", model: "doubao-pro", channel: "ark" },
@@ -223,7 +227,7 @@ const GOTO = (id) => `(async () => {
   r = await call("POST", "/api/auth/login", { body: { username: "kuaiji", password: auditorPw } });
   const auditor = r.cookie;
 
-  // ================= 1. 管理员：16 个面板一个一个点过去 =================
+  // ================= 1. 管理员：17 个面板一个一个点过去 =================
   console.log("\n【1】平台管理员：每一页都真渲染出东西，且 console 干净");
   const A = await openAdmin(boss, "boss");
   ok("首屏就有内容，不是白屏", (await A.js(`document.getElementById("ad-body").textContent.trim().length > 40`)));
@@ -340,8 +344,8 @@ const GOTO = (id) => `(async () => {
     return { keys, peekBefore, peekAfter, before, after, sels,
              txt: b.textContent.replace(/\\s+/g, " ").slice(0, 300) };
   })()`);
-  ok("三个渠道都给了能填 Key 的输入框（没填的那两个也在——不然又变成「没地方填」）",
-     mk.err === undefined && mk.keys.length === 3 && mk.keys.includes("openrouter") && mk.keys.includes("local"), mk);
+  ok("每个渠道都给了能填 Key 的输入框（没填的那两个也在——不然又变成「没地方填」）",
+     mk.err === undefined && mk.keys.length === FAKE.providers.length && mk.keys.includes("openrouter") && mk.keys.includes("local"), mk);
   ok("Key 默认是密文，点「显示」才看得见（后台常开着投屏讲）", mk.peekBefore === "password" && mk.peekAfter === "text", mk);
   ok("没动的时候「保存」是灰的，填了才亮", mk.before === true && mk.after === false, mk);
   ok("「默认走哪条」和「主渠道挂了换谁」两个下拉都在", (mk.sels || []).join() === "active_model,failover_model", mk.sels);
@@ -352,14 +356,121 @@ const GOTO = (id) => `(async () => {
   // 这条是这页最容易写错的地方：POST /api/settings 对 providers 是**整表覆盖**。
   // 只送改动的那一条，另外两个渠道当场消失，挂在它们底下的模型全断线。
   ok("没动过的渠道原样送回去了（整表覆盖，漏一个就等于删一个）",
-     (body.providers || []).length === 3 && body.providers.find((p) => p.id === "ark")?.api_key === "sk-ark-demo",
+     (body.providers || []).length === FAKE.providers.length && body.providers.find((p) => p.id === "ark")?.api_key === "sk-ark-demo",
      (body.providers || []).map((p) => p.id).join(","));
   ok("默认模型和备用模型也一起送了", body.active_model === "方舟-主力" && body.agent && body.agent.failover_model === "",
      JSON.stringify({ a: body.active_model, f: body.agent }));
   ok("这一页 console 也是干净的", A.errs.length === 0, A.errs);
 
+  // ================= 5. 「模型与 Key」：渠道能自己加、能改地址、能删 =================
+  // 用户原话：「这个管理后台也给我支持自定义渠道设定啊」。预置目录只有十来家，
+  // 自建网关 / 内网代理 / 换了域名的私有部署都不在里面，这页不给加就等于只做了一半。
+  console.log("\n【5】渠道自定义：加一条、改地址、删一条（删是连坐的）");
+  const n0 = savedSettings.length;
+  const bad = await A.js(`(async () => {
+    const wait = (ms) => new Promise(r=>setTimeout(r,ms));
+    const $ = (id) => document.querySelector("#mf-" + id);
+    const ok = () => document.querySelector(".ui-overlay [data-ok]");
+    location.hash = "#/models"; await wait(500);
+    const b = document.getElementById("ad-body");
+    const R = {};
+    // 同地址的两条渠道要标出来（各自一把 Key，合并了等于花别人的钱），别的行不许标
+    R.dupCells = [...b.querySelectorAll("td")].filter((td) => /同地址还有/.test(td.textContent)).length;
+    const rowOf = (pk) => { const i = b.querySelector('input.ad-key[data-pk="' + pk + '"]'); return i ? i.closest("tr").textContent : ""; };
+    R.arkDup = /同地址还有/.test(rowOf("ark"));
+    const pnew = b.querySelector("[data-pnew]");
+    if (!pnew) return { err: "「新渠道」按钮不在" };
+    pnew.click(); await wait(80);
+    R.fields = ["kind", "name", "base_url", "api_key"].map((k) => !!$(k));
+    // 选了类型就把官方地址填上；再切到「自定义」不该把已经填好的地址清掉
+    $("kind").value = "zhipu"; $("kind").dispatchEvent(new Event("change", { bubbles: true })); await wait(40);
+    R.autoBase = $("base_url").value; R.autoName = $("name").value;
+    $("kind").value = "custom"; $("kind").dispatchEvent(new Event("change", { bubbles: true })); await wait(40);
+    R.keepBase = $("base_url").value;
+    // 反向对照：名字留空、地址不是 http，都必须当场拦下，一个字节都不许往服务端发
+    $("name").value = ""; ok().click(); await wait(150);
+    R.emptyNameErr = (document.querySelector("#mf-err") || {}).textContent || "";
+    // 拦不住的话弹窗当场就关了，下面每一行都会在 null 上炸——炸出来的是
+    // 「Cannot set properties of null」，看的人根本不知道是校验没了。所以先自己说清楚。
+    if (!document.querySelector(".ui-overlay")) return { err: "名字留空居然存进去了：弹窗关了，校验没拦住" };
+    $("name").value = "公司内网网关"; $("base_url").value = "gw.example";
+    ok().click(); await wait(150);
+    R.badUrlErr = (document.querySelector("#mf-err") || {}).textContent || "";
+    R.stillOpen = !!document.querySelector(".ui-overlay");
+    return R;
+  })()`);
+  ok("表单这一趟没走岔（走岔了下面每条都在 null 上炸，看不出真因）", bad.err === undefined, bad.err);
+  ok("渠道表单四样都在：类型 / 名字 / 接口地址 / Key",
+     (bad.fields || []).join() === "true,true,true,true", bad);
+  ok("同地址的两条渠道标了出来，其余的行不标（反向对照）", bad.dupCells === 2 && bad.arkDup === false, bad);
+  ok("选了类型自动把官方地址填上（十来家地址没人背得下来）", bad.autoBase === "https://open.bigmodel.cn/api/paas/v4" && !!bad.autoName, bad);
+  ok("切到「自定义」不清掉已经填好的地址（那一栏本来就得用户自己填）", bad.keepBase === "https://open.bigmodel.cn/api/paas/v4", bad);
+  ok("名字留空当场拦下", /名字/.test(bad.emptyNameErr), bad.emptyNameErr);
+  ok("地址不是 http(s) 当场拦下", /http/.test(bad.badUrlErr), bad.badUrlErr);
+  ok("拦下的这两次一个字节都没发出去（反向对照：拦了却照发，等于白拦）",
+     savedSettings.length === n0 && bad.stillOpen === true, { n0, now: savedSettings.length, open: bad.stillOpen });
+
+  const add = await A.js(`(async () => {
+    const wait = (ms) => new Promise(r=>setTimeout(r,ms));
+    const $ = (id) => document.querySelector("#mf-" + id);
+    $("base_url").value = "https://gw3.example/v1"; $("api_key").value = "sk-inner";
+    document.querySelector(".ui-overlay [data-ok]").click(); await wait(800);
+    return { closed: !document.querySelector(".ui-overlay") };
+  })()`);
+  ok("填对了弹窗才关", add.closed === true, add);
+  let sent = savedSettings[savedSettings.length - 1] || {};
+  const fresh = (sent.providers || []).find((p) => p.base_url === "https://gw3.example/v1");
+  ok("新渠道发到了服务端，id 留空交给服务端生成（前端自己编会跟别人撞）",
+     !!fresh && fresh.id === "" && fresh.name === "公司内网网关" && fresh.api_key === "sk-inner" && fresh.kind === "custom", fresh);
+  ok("原来那几条渠道一条没少、Key 也没被抹（整表覆盖，漏一个就等于删一个）",
+     (sent.providers || []).length === FAKE.providers.length + 1 &&
+     (sent.providers || []).find((p) => p.id === "ark")?.api_key === "sk-ark-demo",
+     (sent.providers || []).map((p) => (p.id || "新") + "=" + (p.api_key ? "有" : "空")).join(" "));
+
+  const edit = await A.js(`(async () => {
+    const wait = (ms) => new Promise(r=>setTimeout(r,ms));
+    const $ = (id) => document.querySelector("#mf-" + id);
+    const b = document.getElementById("ad-body");
+    const e = b.querySelector('[data-pedit="local"]');
+    if (!e) return { err: "「改」按钮不在" };
+    e.click(); await wait(80);
+    const was = { name: $("name").value, base: $("base_url").value };
+    $("base_url").value = "http://127.0.0.1:11500/v1";
+    document.querySelector(".ui-overlay [data-ok]").click(); await wait(800);
+    return { was };
+  })()`);
+  ok("「改」带着这条渠道现有的名字和地址开表单", edit.err === undefined && edit.was.name === "本机 Ollama", edit);
+  sent = savedSettings[savedSettings.length - 1] || {};
+  ok("改地址是就地改，不是新建一条（id 保住了，挂在它底下的模型才不会断线）",
+     (sent.providers || []).find((p) => p.id === "local")?.base_url === "http://127.0.0.1:11500/v1" &&
+     (sent.providers || []).length === FAKE.providers.length,
+     (sent.providers || []).map((p) => p.id + "→" + p.base_url).join(" "));
+
+  const del = await A.js(`(async () => {
+    const wait = (ms) => new Promise(r=>setTimeout(r,ms));
+    const b = document.getElementById("ad-body");
+    const x = b.querySelector('[data-pdel="ark"]');
+    if (!x) return { err: "「删」按钮不在" };
+    x.click(); await wait(80);
+    const txt = (document.querySelector(".ui-overlay .bd") || {}).textContent || "";
+    document.querySelector(".ui-overlay [data-ok]").click(); await wait(800);
+    return { txt };
+  })()`);
+  ok("删之前把连坐的数报清楚：底下挂了几个对话模型、几个媒体模型",
+     del.err === undefined && /1 个对话模型/.test(del.txt) && /1 个媒体模型/.test(del.txt), del.txt);
+  ok("默认模型正好在里面时，也说清楚删完会换", /默认模型就在里面/.test(del.txt || ""), del.txt);
+  sent = savedSettings[savedSettings.length - 1] || {};
+  ok("删渠道是连坐的：挂在它底下的对话模型和媒体模型一起删掉",
+     !(sent.providers || []).some((p) => p.id === "ark") &&
+     !(sent.models || []).some((m) => m.channel === "ark") &&
+     !(sent.media_models || []).some((m) => m.provider === "ark"),
+     JSON.stringify({ p: (sent.providers || []).map((p) => p.id), m: (sent.models || []).map((m) => m.channel) }));
+  ok("默认模型被删掉时自动换成还活着的那条（不换的话服务端会整次拒收，一条都删不掉）",
+     sent.active_model === "OR-备用", sent.active_model);
+  ok("这一页 console 还是干净的", A.errs.length === 0, A.errs);
+
   server.close();
-  console.log(`\n✅ 企业管理后台：17 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 且不误删别的渠道 ${pass} 项通过`);
+  console.log(`\n✅ 企业管理后台：17 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 能自己加改删渠道且不误删别的 ${pass} 项通过`);
   fs.rmSync(TMP, { recursive: true, force: true });
   clearTimeout(WATCHDOG);
   electronApp.exit(0);
