@@ -28,7 +28,7 @@ const evolve = require("./evolve");
 const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
 const { createImRouter } = require("./im");
-const { createScheduler } = require("./scheduler");
+const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./scheduler");
 const account = require("./account");
 const org = require("./org"); // 组织（租户）层：席位、部门、邀请码、审计
 const admin = require("./admin"); // 企业管理后台的接口层 /api/admin/*
@@ -4242,7 +4242,7 @@ function accountedRuntime(baseRuntime, source) {
       // 注意 user 必须从 rest 里摘出来单独判：留在 rest 里的话，调用方传了个 undefined 也会把兜底覆盖掉
       const r = await baseRuntime.runTask({
         user: caller || (owner ? owner.username : undefined),
-        taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? "定时任务" : source,
+        taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
         // IM / 定时任务的产物也各归各的文件夹（仅默认工作空间；调用方可在 args 里覆盖）
         baseDir:
           path.resolve(getWorkspaceDir()) === dataPath("workspace")
@@ -4286,6 +4286,9 @@ async function main() {
       // 机器人那头不渲染 markdown，正文里的提示条记号先换成文字标签
       notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`),
   });
+  // 插上插座：agent 的 schedule_task / list_schedules 是靠这一句才看得见排期表的。
+  // 纯 CLI 里没人调它，那两个工具就不会出现——而不是出现了再报「用不了」。
+  setActiveScheduler(scheduler);
 
   // 夜间复盘：**默认关**。开了之后每 10 分钟看一次表，到点且今天还没跑过就跑一轮。
   // 它只生成提案，永远不会自己改提示词——第二天早上你在 设置→自进化 里决定要不要。

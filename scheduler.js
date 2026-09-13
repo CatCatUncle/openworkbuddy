@@ -17,6 +17,64 @@ const MAX_CATCHUP_MS = 24 * 3600 * 1000;
 const GAP_MS = 90 * 1000;
 /** 运行记录留多少条。留太多每次存盘都要重写一大坨，留太少查不了昨天 */
 const MAX_RUNS = 300;
+/**
+ * 定时任务跑起来时挂在 runTask 上的任务标签。
+ * agent 那边靠它认出「我现在就是被定时任务叫起来的」，从而不许再动排期表——
+ * 一条定时任务改出另一条定时任务，是个没人看着的时候会自己越滚越多的闭环。
+ * 两个文件各写一遍字面量迟早对不上，所以从这儿出。
+ */
+const SCHEDULE_LABEL = "定时任务";
+
+const WEEK_CN = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+/**
+ * 把 cron 说成人话；说不清就返回 ""，由调用方退回原样显示。
+ *
+ * 这不是装饰。排期是要弹给用户点头的：他看见「0 9 * * 1-5」判断不了要不要批，
+ * 看见「工作日 09:00」才判断得了。所以只认最常见的那几种写法，花活一律不猜——
+ * 猜错比不说更坏，用户会照着一句错的说明点「同意」。
+ */
+function describeCron(expr) {
+  const f = String(expr || "").trim().split(/\s+/);
+  if (f.length !== 5) return "";
+  const [mi, hr, dom, mon, dow] = f;
+  if (mon !== "*") return ""; // 按月挑月份的极少见，不猜
+  const num = (s) => (/^\d+$/.test(s) ? parseInt(s, 10) : null);
+  const m = num(mi), h = num(hr);
+  let step;
+  if (dom === "*" && dow === "*") {
+    if (hr === "*" && (step = mi.match(/^\*\/(\d+)$/))) return `每 ${step[1]} 分钟`;
+    if (hr === "*" && m !== null) return m === 0 ? "每小时整点" : `每小时第 ${m} 分`;
+    if (m !== null && (step = hr.match(/^\*\/(\d+)$/))) return `每 ${step[1]} 小时（第 ${m} 分）`;
+  }
+  if (m === null || h === null) return "";
+  const at = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  if (dom === "*" && dow === "*") return `每天 ${at}`;
+  if (dom === "*" && dow === "1-5") return `工作日 ${at}`;
+  if (dom === "*" && /^[0-7](,[0-7])*$/.test(dow)) {
+    const days = [...new Set(dow.split(",").map((d) => (d === "7" ? 0 : +d)))].sort((a, b) => a - b);
+    return `每${days.map((d) => WEEK_CN[d]).join("、")} ${at}`;
+  }
+  if (dow === "*" && /^\d+$/.test(dom)) return `每月 ${+dom} 号 ${at}`;
+  return "";
+}
+
+/**
+ * 「活的」排期表的插座。
+ *
+ * 调度器只有 server 起得起来（它要 runtime，要推送通道），可 agent 那边也得让模型自己排期，
+ * 又不能反过来 require server —— 那是一个环。所以这儿留一个槽：server 建好之后插上，
+ * agent 每次列工具时现取。CLI 和测试里没人插，取到 null，排期工具就压根不出现；
+ * 不是先摆出来再报「用不了」——那样模型会把它当成偶发失败，一遍遍重试。
+ */
+let activeInstance = null;
+function setActiveScheduler(s) {
+  activeInstance = s || null;
+  return s;
+}
+function activeScheduler() {
+  return activeInstance;
+}
 
 function loadStore(file) {
   // 坏文件先拿 .bak 顶，再不行改名隔离——原来是静默当空表，紧接着一次保存就把
@@ -334,4 +392,4 @@ function createScheduler({ runtime, onResult, storePath }) {
   return { list, add, update, remove, toggle, setCatchUp, runOne, runs, tick, catchUp, stop: () => clearInterval(timer) };
 }
 
-module.exports = { createScheduler, parseCron, cronMatches };
+module.exports = { createScheduler, parseCron, cronMatches, describeCron, setActiveScheduler, activeScheduler, SCHEDULE_LABEL };

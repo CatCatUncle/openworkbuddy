@@ -113,6 +113,50 @@ const NOTIFY_TOOL = {
   },
 };
 
+// 「以后每天早上九点把昨天的数据整理成日报」——办公里最常听见的一句话。可在这之前 agent 只能回
+// 「你去 设置 → 定时任务 里自己建一条」，而那张排期表就在同一个进程里躺着。
+//
+// 排期和别的工具不一样：它是会自己再跑起来的东西，批一次之后每天都算数。所以每一次增删改都
+// 必须当场弹给用户点头（不看闸门总开关），而且定时任务自己不许再动排期表——一条任务改出另一条
+// 任务，没人看着的时候会越滚越多。
+/** 模型一次能把排期表撑到多大。审批那道闸已经挡住了跑飞，这条是兜底：
+ *  用户连点几十次「同意」也不至于把 schedules.json 撑成一张没人看得懂的表 */
+const MAX_SCHEDULES = 50;
+
+const SCHEDULE_TOOL = {
+  name: "schedule_task",
+  description:
+    "给这台机器排一条定时任务：到点自动叫起 agent，执行你写好的那段任务描述（每天的日报、每周一的周报、每小时盯一次某个页面）。\n" +
+    "用户说「以后每天早上都…」「每周五帮我…」「定时提醒我…」时用它。它只管排期，不代表现在就跑——现在要做的事你直接做。\n" +
+    "cron 五个字段是「分 时 日 月 周」：`0 9 * * *` 每天 09:00；`0 9 * * 1-5` 工作日 09:00；`30 18 * * 5` 每周五 18:30；`*/15 * * * *` 每 15 分钟。\n" +
+    "task 必须是一句能独立执行的完整指令：到点时没有任何上下文，只有这一句话，所以「接着上面那个」「照旧」这类写法一律无效，人名、文件名、目标都要写全。\n" +
+    "每一次增删改都会弹给用户确认，用户不点头就不生效。排之前先 list_schedules 看一眼，别排重。",
+  input_schema: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: ["create", "update", "delete", "enable", "disable"],
+        description: "create=新排一条；update=改已有的（名字/时间/内容）；delete=删掉（连运行记录一起没）；enable/disable=开或关，任务本身留着",
+      },
+      id: { type: "string", description: "要改 / 删 / 开 / 关的任务 id（从 list_schedules 拿）。除 create 外都必填" },
+      name: { type: "string", description: "任务名（可选，不写就取任务描述的前 30 字）" },
+      cron: { type: "string", description: "五字段 cron：分 时 日 月 周。create 必填；update 时不写就不改时间" },
+      task: { type: "string", description: "到点要执行的完整任务描述。create 必填；update 时不写就不改内容" },
+      catch_up: { type: "boolean", description: "错过了要不要补跑（笔记本合着盖子过一夜，晨报要不要补上）。默认 true" },
+    },
+    required: ["action"],
+  },
+};
+
+const LIST_SCHEDULES_TOOL = {
+  name: "list_schedules",
+  description:
+    "列出这台机器上已经排好的定时任务：id、名字、什么时候跑、到点做什么、开着还是关着、上次跑成什么样。" +
+    "用户问「我都定了些什么」时用它；要排新任务之前也先看一眼，免得排重或者把已有的那条覆盖掉。",
+  input_schema: { type: "object", properties: {} },
+};
+
 const USE_SKILL_TOOL = {
   name: "use_skill",
   description: "加载一个技能包的完整内容（操作指南与代码模板）。执行对应类型任务前先加载相关技能。",
@@ -129,7 +173,8 @@ const { dataPath, DATA_DIR } = require("./paths");
 const os = require("os");
 const memory = require("./memory");
 const evolve = require("./evolve");
-const mediaModels = require("./media-models"); // 四路媒体模型：把「默认那条 + 还能选谁」一起交给工具
+const mediaModels = require("./media-models"); // 各路媒体模型：把「默认那条 + 还能选谁」一起交给工具
+const scheduler = require("./scheduler"); // 排期表：只取那个插座（activeScheduler），实例是 server 插上来的
 
 // ================= 成果核验（治「幻觉执行」） =================
 // 模型有时在文本里"表演"跑命令并声称文件已生成，实际一个工具都没调。
@@ -587,6 +632,8 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
       const gui = hasRenderer();
       return [
         ...TOOL_DEFS.filter((t) => READ_ONLY_TOOLS.includes(t.name) && (gui || !DESKTOP_ONLY_TOOLS.includes(t.name))),
+        // 只看不动的档位里也该答得上「我都定了些什么」——list_schedules 只读，schedule_task 不给
+        ...(scheduler.activeScheduler() ? [LIST_SCHEDULES_TOOL] : []),
         USE_SKILL_TOOL,
       ];
     }
@@ -602,6 +649,9 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     const tools = [...base, USE_SKILL_TOOL, ASK_USER_TOOL, ...mcpManager.toolDefs()];
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) tools.push(FEISHU_DOC_TOOL);
     if (botWebhookOn()) tools.push(NOTIFY_TOOL);
+    // 排期表只有 server / 桌面版起得起来。CLI 和测试里取不到，这两个工具就不摆出来——
+    // 摆出来再报「这台机器上没有排期表」的话，模型会把它当成偶发失败一遍遍重试
+    if (scheduler.activeScheduler()) tools.push(SCHEDULE_TOOL, LIST_SCHEDULES_TOOL);
     if (depth === 0 && experts.length) tools.push(DELEGATE_TOOL);
     // 团委派只给主协调者：专家在团里接力时 depth 已经 >0，再让它组团会套娃
     if (depth === 0 && expertTeams.some((t) => teamMembers(t).length >= 2)) tools.push(DELEGATE_TEAM_TOOL);
@@ -723,6 +773,134 @@ function modePrompt(mode) {
         return { content: "一个通道都没推成（webhook 可能填错了或已失效）。去 设置 → 通知 里核对企业微信/钉钉的地址。", isError: true };
       }
       return { content: `已推送到：${sent.map((s) => ({ wecom: "企业微信", dingtalk: "钉钉" }[s] || s)).join("、")}（${text.length} 字）`, isError: false };
+    }
+    if (tc.name === "list_schedules" || tc.name === "schedule_task") {
+      const sch = scheduler.activeScheduler();
+      // 理论上走不到（没排期表时这两个工具压根不列出去），但 MCP / 回放能把任意工具名递进来
+      if (!sch) return { content: "这台机器上没有排期表：定时任务只在桌面版和服务端模式下有，纯命令行模式排不了期。", isError: true };
+      const cronOf = (c) => {
+        const cn = scheduler.describeCron(c);
+        return cn ? `${cn}（${c}）` : `cron ${c}`;
+      };
+      if (tc.name === "list_schedules") {
+        const all = sch.list();
+        if (!all.length) return { content: "还没排过定时任务。", isError: false };
+        return {
+          content: all
+            .map((t) => {
+              const last = t.last_run
+                ? `上次 ${t.last_run.slice(0, 16).replace("T", " ")}${t.last_result ? "：" + String(t.last_result).replace(/\s+/g, " ").slice(0, 60) : ""}`
+                : "还没跑过";
+              return `${t.id}｜${t.name}｜${cronOf(t.cron)}｜${t.enabled ? "开着" : "关着"}${t.running ? "（正在跑）" : ""}｜${last}\n  到点要做的：${String(t.task).replace(/\s+/g, " ").slice(0, 200)}`;
+            })
+            .join("\n"),
+          isError: false,
+        };
+      }
+
+      const act = String(tc.input.action || "").trim();
+      if (!["create", "update", "delete", "enable", "disable"].includes(act)) {
+        return { content: `schedule_task 的 action 只能是 create / update / delete / enable / disable，收到的是「${act || "(空)"}」。`, isError: true };
+      }
+      // 定时任务不许再动排期表。它自己就是被排期叫起来的，改出来的那条下次又会改——
+      // 没人看着的时候这是个会自我复制的闭环，一觉醒来排期表里几十条。
+      if (taskLabel === scheduler.SCHEDULE_LABEL) {
+        return {
+          content:
+            "你现在这一趟是被定时任务叫起来的，这种时候不能动排期表（一条定时任务改出另一条，没人看着会越滚越多）。" +
+            "排期要怎么调，写在这次的汇报里告诉用户，由他去 设置 → 定时任务 里改。",
+          isError: true,
+        };
+      }
+      const all = sch.list();
+      const id = String(tc.input.id || "").trim();
+      const hit = act === "create" ? null : all.find((t) => t.id === id);
+      if (act !== "create" && !hit) {
+        return { content: `没有 id 为「${id || "(空)"}」的定时任务。先调 list_schedules 看现在都有哪些，id 要照抄。`, isError: true };
+      }
+      if (act === "create" && all.length >= MAX_SCHEDULES) {
+        return { content: `排期表里已经有 ${all.length} 条了（上限 ${MAX_SCHEDULES}）。先让用户删掉不用的，再排新的。`, isError: true };
+      }
+      // cron 和 task 先在本机校验：写坏了当场说，别让用户白点一次「同意」才发现排不进去
+      const wantCron = act === "create" || (act === "update" && tc.input.cron !== undefined);
+      if (wantCron) {
+        try {
+          scheduler.parseCron(tc.input.cron);
+        } catch (e) {
+          return { content: `cron 写得不对：${e.message}。五个字段是「分 时 日 月 周」，比如 0 9 * * 1-5 是工作日 09:00。`, isError: true };
+        }
+      }
+      const wantTask = String(tc.input.task === undefined ? "" : tc.input.task).trim();
+      if (act === "create" && !wantTask) {
+        return { content: "create 要带 task。到点时没有任何上下文，只有这一句话，所以要写成一句能独立执行的完整指令。", isError: true };
+      }
+      if (act === "update" && tc.input.task !== undefined && !wantTask) {
+        return { content: "task 不能改成空的。不想改内容就别传这一项。", isError: true };
+      }
+
+      const changes = [];
+      if (act === "update") {
+        if (tc.input.name !== undefined) changes.push(`名字 → ${String(tc.input.name).trim()}`);
+        if (tc.input.cron !== undefined) changes.push(`时间 → ${cronOf(String(tc.input.cron).trim())}`);
+        if (tc.input.task !== undefined) changes.push(`内容 → ${wantTask}`);
+        if (tc.input.catch_up !== undefined) changes.push(`错过${tc.input.catch_up ? "补跑" : "不补跑"}`);
+        if (!changes.length) return { content: "update 没给出任何要改的项（name / cron / task / catch_up 至少写一个）。", isError: true };
+      }
+      const preview = {
+        create: () =>
+          `新排一条定时任务「${String(tc.input.name || "").trim() || wantTask.slice(0, 30)}」\n什么时候跑：${cronOf(String(tc.input.cron).trim())}\n到点做什么：${wantTask}\n错过了${tc.input.catch_up === false ? "不补跑" : "会补跑"}`,
+        update: () => `改定时任务「${hit.name}」（现在是 ${cronOf(hit.cron)}）\n${changes.join("\n")}`,
+        delete: () => `删掉定时任务「${hit.name}」（${cronOf(hit.cron)}），它的运行记录也一起清掉`,
+        enable: () => `启用定时任务「${hit.name}」：${cronOf(hit.cron)} 起会自动开跑`,
+        disable: () => `停用定时任务「${hit.name}」：到点不再自动跑，任务本身留着`,
+      }[act]();
+
+      // 排期批一次之后每天都算数，所以不看安全闸门的总开关，一律当场问。
+      security.audit("定时任务", preview, "等待审批");
+      const waitMs = Math.min(
+        ((sec || config.security || {}).approval_timeout_s || 120) * 1000,
+        deadline ? Math.max(5000, deadline - Date.now() - 10000) : Infinity
+      );
+      const ok = await security.requestApproval("改定时任务", preview, {
+        timeoutMs: waitMs,
+        stopSignal,
+        source: taskLabel || "",
+        owner: user || "",
+      });
+      security.audit("定时任务", preview, ok ? "已批准" : "已拒绝");
+      if (!ok) {
+        return {
+          content: "用户没批准这次排期改动（拒绝了，或者没人在线点、等超时了），排期表一个字没动。别原样重试——先问清楚用户到底想怎么排。",
+          isError: true,
+        };
+      }
+      try {
+        if (act === "create") {
+          const item = sch.add({ name: tc.input.name, cron: tc.input.cron, task: wantTask, catch_up: tc.input.catch_up });
+          return {
+            content: `已排好：「${item.name}」（id ${item.id}）｜${cronOf(item.cron)}｜错过${item.catch_up ? "会补跑" : "不补跑"}。用户随时能在 设置 → 定时任务 里改或停。`,
+            isError: false,
+          };
+        }
+        if (act === "update") {
+          const patch = {};
+          for (const k of ["name", "cron", "task", "catch_up"]) if (tc.input[k] !== undefined) patch[k] = tc.input[k];
+          const t = sch.update(hit.id, patch);
+          if (!t) return { content: `改的时候这条任务已经不在了（id ${hit.id}）。`, isError: true };
+          return { content: `已改：「${t.name}」（id ${t.id}）｜${cronOf(t.cron)}｜错过${t.catch_up ? "会补跑" : "不补跑"}｜到点做：${t.task}`, isError: false };
+        }
+        if (act === "delete") {
+          return sch.remove(hit.id)
+            ? { content: `已删掉定时任务「${hit.name}」（id ${hit.id}），它的运行记录也清了。`, isError: false }
+            : { content: `没删成：id ${hit.id} 已经不在排期表里了。`, isError: true };
+        }
+        const on = act === "enable";
+        return sch.toggle(hit.id, on)
+          ? { content: `已${on ? "启用" : "停用"}定时任务「${hit.name}」（id ${hit.id}）。${on ? cronOf(hit.cron) + " 起自动跑。" : "任务留着，到点不再跑。"}`, isError: false }
+          : { content: `没改成：id ${hit.id} 已经不在排期表里了。`, isError: true };
+      } catch (e) {
+        return { content: `排期没改成：${e.message}`, isError: true };
+      }
     }
     if (tc.name === "feishu_doc_create") {
       try {
@@ -1871,6 +2049,7 @@ const TOOL_VERB = {
   generate_video: "生成视频", gen_diagram: "画图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记住",
   forget: "忘掉", library_list: "翻资料库", library_read: "读资料", library_import: "取素材", save_skill: "存技能",
   use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档", notify_user: "推到群",
+  schedule_task: "排期", list_schedules: "看排期",
   delegate_to_expert: "委派专家", delegate_to_team: "委派专家团",
 };
 
@@ -1918,6 +2097,10 @@ function toolHeadline(name, input) {
       obj = String(i.team || ""); break;
     case "transcribe_audio":
       obj = tailText(String(i.path || "").split("/").pop(), 40); break;
+    case "schedule_task":
+      // 「排期 每天 09:00 · 写日报」——动作和时间都得在这一行里，光写个 create 等于没说
+      obj = tailText([{ create: "新排", update: "改", delete: "删", enable: "启用", disable: "停用" }[String(i.action || "")] || String(i.action || ""),
+        i.cron ? scheduler.describeCron(i.cron) || i.cron : "", i.name || i.task || i.id || ""].filter(Boolean).join(" · "), 46); break;
     case "use_skill": case "save_skill":
       obj = String(i.name || ""); break;
     case "remember": case "forget":

@@ -360,6 +360,207 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     ok(before.length === 4, "跑完这一节，资料库里还是那 4 个文件", before);
   }
 
+  // ── ⑧ 排期表：插上插座才挂，定时任务里不许再排期 ──────────────────────
+  // 「以后每天早上都…」是办公场景里最常说的一句话，可它跟别的工具有两点不一样：
+  //   1. 排期是**标准规则**，批一次之后每天都算数。所以不看安全闸门的总开关，一律当场弹给用户；
+  //      而且弹出去的那段话必须是人话——用户看见「0 9 * * 1-5」判断不了要不要批。
+  //   2. 定时任务自己也会叫起 agent。如果那一趟还能改排期表，就是一条会自我复制的闭环：
+  //      没人看着的时候，一觉醒来表里几十条。
+  // 每条正向断言后面照例跟一条反向对照——闸门写成「永远挡」或「永远放」也要能被抓出来。
+  console.log("\n⑧ 定时任务工具（schedule_task / list_schedules）");
+  {
+    const scheduler = require(path.join(ROOT, "scheduler"));
+    const security = require(path.join(ROOT, "security"));
+    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
+    const { McpManager } = require(path.join(ROOT, "mcp"));
+
+    // 8.1 cron 说人话。说不清的一律返回空串，由调用方退回原样显示——
+    //     猜错比不说更坏：用户会照着一句错的说明点「同意」
+    for (const [expr, want] of [
+      ["0 9 * * *", "每天 09:00"],
+      ["30 18 * * *", "每天 18:30"],
+      ["0 9 * * 1-5", "工作日 09:00"],
+      ["30 18 * * 5", "每周五 18:30"],
+      ["0 9 * * 1,3,5", "每周一、周三、周五 09:00"],
+      ["0 9 * * 0", "每周日 09:00"],
+      ["0 9 * * 7", "每周日 09:00"], // cron 的老规矩：0 和 7 都是周日
+      ["0 9 1 * *", "每月 1 号 09:00"],
+      ["*/15 * * * *", "每 15 分钟"],
+      ["0 * * * *", "每小时整点"],
+      ["30 * * * *", "每小时第 30 分"],
+      ["0 */6 * * *", "每 6 小时（第 0 分）"],
+    ]) eq(scheduler.describeCron(expr), want, `「${expr}」翻成「${want}」`);
+    for (const expr of ["0 9 * 6 *", "0 9 * * 1-3", "0 9 * *", "bad", ""]) {
+      eq(scheduler.describeCron(expr), "", `★说不清就给空串★「${expr}」不许瞎猜`);
+    }
+
+    // 8.2 插座没插就不摆出来
+    const mkList = (mode) => createAgentRuntime({
+      config: { agent: {}, im: {}, security: {} },
+      llm: {}, mcpManager: new McpManager(), experts: [], expertTeams: [],
+    }).toolList(0, mode).map((t) => t.name);
+    ok(!scheduler.activeScheduler(), "起点：插座上还没插排期表");
+    const bare = mkList("craft");
+    ok(!bare.includes("schedule_task"),
+      "★没有排期表就不摆 schedule_task★ 摆出来再报「这台机器上没有排期表」，模型会当成偶发失败一遍遍重试", bare);
+    ok(!bare.includes("list_schedules"), "list_schedules 同理", bare);
+
+    const SCH_FILE = path.join(HOME, "sched-test.json");
+    const sch = scheduler.createScheduler({ runtime: null, onResult: () => {}, storePath: SCH_FILE });
+    scheduler.setActiveScheduler(sch);
+    const approvals = [];
+    const realApprove = security.requestApproval;
+    let answer = true;
+    security.requestApproval = async (kind, text, opts) => { approvals.push({ kind, text, opts }); return answer; };
+    try {
+      const craft = mkList("craft");
+      ok(craft.includes("schedule_task"), "★插上排期表就挂上★", craft);
+      ok(craft.includes("list_schedules"), "list_schedules 也挂上", craft);
+      const ask = mkList("ask");
+      ok(ask.includes("list_schedules"), "只看不动的档位也答得上「我都定了些什么」", ask);
+      ok(!ask.includes("schedule_task"), "★只看不动的档位不许排期★ 排期会自己跑起来，属于「动」", ask);
+      const lent = require(path.join(ROOT, "engines/tool-bridge"))._internals.lentDefs().map((d) => d.name);
+      ok(!lent.includes("schedule_task") && !lent.includes("list_schedules"),
+        "桥给外部 CLI 引擎的那份清单里没有排期工具（桥是另一个进程，那边插座是空的）", lent);
+
+      // 用假 LLM 把一次工具调用递进 agent 的分发口，走的是真代码路径
+      const fire = async (input, opts = {}) => {
+        let i = 0;
+        const llm = {
+          provider: "mock", model: "scripted",
+          async chat() {
+            return i++ === 0
+              ? { text: "", toolCalls: [{ id: "s1", name: opts.tool || "schedule_task", input }], stopReason: "tool_use" }
+              : { text: "好了。", toolCalls: [], stopReason: "end" };
+          },
+        };
+        const hist = [{ role: "user", content: "排一下" }];
+        await createAgentRuntime({
+          config: { agent: {}, im: {}, security: {} },
+          llm, mcpManager: new McpManager(), experts: [], expertTeams: [],
+        }).runTask({ history: hist, emit: () => {}, sec: { gateway: false }, taskLabel: opts.taskLabel });
+        return (hist.find((h) => h.role === "tool") || { results: [{}] }).results[0];
+      };
+
+      // 8.3 只看不改的那个不弹审批
+      const empty = await fire({}, { tool: "list_schedules" });
+      ok(!empty.isError, "空表上 list_schedules 不算出错", empty.content);
+      has(empty.content, /还没排过/, "空表就直说还没排过");
+      eq(approvals.length, 0, "★只看不改的不弹审批★");
+
+      // 8.4 排期一律当场问，且弹出去的是人话
+      const made = await fire({ action: "create", cron: "0 9 * * 1-5", task: "把昨天的数据整理成日报" });
+      ok(!made.isError, "批准之后真排上了", made.content);
+      eq(approvals.length, 1, "★排期一律当场问★ 这一趟安全闸门是关着的（gateway: false），照样要问");
+      eq((approvals[0] || {}).kind, "改定时任务", "审批分类是「改定时任务」");
+      has((approvals[0] || {}).text, /工作日 09:00/, "★弹给用户的是人话时间★ 只写 0 9 * * 1-5 的话，他判断不了要不要批");
+      has((approvals[0] || {}).text, /把昨天的数据整理成日报/, "到点做什么也写在审批里");
+      eq(sch.list().length, 1, "排期表里确实多了一条");
+      eq(sch.list()[0].cron, "0 9 * * 1-5", "时间落对了");
+      eq(sch.list()[0].catch_up, true, "错过默认补跑（笔记本合着盖子过一夜，晨报不该就这么没了）");
+
+      // 8.5 自繁殖闸门：定时任务那一趟不许再动排期表
+      const before = JSON.stringify(sch.list());
+      const inSchedule = await fire(
+        { action: "create", cron: "0 10 * * *", task: "再排一条" },
+        { taskLabel: scheduler.SCHEDULE_LABEL }
+      );
+      eq(inSchedule.isError, true, "★定时任务里改排期被挡下★ 一条排出另一条，没人看着会越滚越多");
+      has(inSchedule.content, /定时任务叫起来的/, "说清楚为什么挡，并指路去设置里改");
+      eq(approvals.length, 1, "★连审批都不该弹★ 弹了就是半夜把用户叫起来点头");
+      eq(JSON.stringify(sch.list()), before, "排期表一个字没动");
+      // 反向对照：换个来源，同一个调用必须排得进去——否则这道闸写成「永远挡」也全绿
+      const fromChat = await fire({ action: "create", cron: "0 10 * * *", task: "再排一条" }, { taskLabel: "网页任务" });
+      ok(!fromChat.isError, "反向对照：普通对话里排同一条，排得进去", fromChat.content);
+      eq(sch.list().length, 2, "反向对照：表里真变成两条");
+      eq(((approvals[approvals.length - 1] || {}).opts || {}).source, "网页任务", "审批带上这趟活儿的来源（审计里看得出是谁叫起来的）");
+
+      // 8.6 写坏了当场说，不许先白问一次审批
+      const askedBefore = approvals.length;
+      for (const [input, re, what] of [
+        [{ action: "create", cron: "9 点", task: "出日报" }, /cron 写得不对/, "cron 写坏了"],
+        [{ action: "create", cron: "0 9 * * *", task: "   " }, /create 要带 task/, "create 没给 task"],
+        [{ action: "update", id: sch.list()[0].id }, /没给出任何要改的项/, "update 什么都没改"],
+        [{ action: "update", id: sch.list()[0].id, task: "  " }, /不能改成空的/, "task 想改成空"],
+        [{ action: "delete", id: "sch_根本没有这条" }, /没有 id 为/, "id 不存在"],
+        [{ action: "改一下", id: sch.list()[0].id }, /action 只能是/, "action 不在枚举里"],
+      ]) {
+        const r = await fire(input);
+        eq(r.isError, true, `${what} → 当场报错`);
+        has(r.content, re, `${what} 的报错说人话`);
+      }
+      eq(approvals.length, askedBefore,
+        "★写坏了不许先弹一次再说不行★ 用户白点一次「同意」，换来一句排不进去，是最没必要的打扰");
+      eq(sch.list().length, 2, "这一路报错没碰排期表");
+
+      // 8.7 用户拒绝 = 一个字没动，且明说别原样重试
+      answer = false;
+      const snapshot = JSON.stringify(sch.list());
+      const refused = await fire({ action: "delete", id: (sch.list()[1] || {}).id });
+      eq(refused.isError, true, "用户拒绝 → 报错回去");
+      has(refused.content, /别原样重试/, "★明说别原样重试★ 不说这句，模型会当成偶发失败再弹一次");
+      eq(JSON.stringify(sch.list()), snapshot, "★拒绝了就一个字没动★");
+      answer = true;
+
+      // 8.8 改 / 停 / 开 / 删都真落到表上
+      const target = sch.list()[1] || { id: "(第二条没排上)" };
+      const upd = await fire({ action: "update", id: target.id, cron: "30 18 * * 5", name: "周五收尾" });
+      ok(!upd.isError, "改得动", upd.content);
+      eq((sch.list().find((t) => t.id === target.id) || {}).cron, "30 18 * * 5", "时间真改了");
+      eq((sch.list().find((t) => t.id === target.id) || {}).name, "周五收尾", "名字真改了");
+      has((approvals[approvals.length - 1] || {}).text, /每周五 18:30/, "改时间的审批里也是人话");
+
+      const off = await fire({ action: "disable", id: target.id });
+      ok(!off.isError, "停得掉", off.content);
+      eq((sch.list().find((t) => t.id === target.id) || {}).enabled, false, "★停用真写进表里★");
+      const on = await fire({ action: "enable", id: target.id });
+      ok(!on.isError, "开得回来", on.content);
+      eq((sch.list().find((t) => t.id === target.id) || {}).enabled, true, "启用也真写回去了");
+
+      // list_schedules 要把「我都定了些什么」想知道的都说全
+      const listed = await fire({}, { tool: "list_schedules" });
+      ok(!listed.isError, "列得出来", listed.content);
+      has(listed.content, new RegExp(target.id), "带 id——不带的话模型没法改、没法删");
+      has(listed.content, /周五收尾/, "带名字");
+      has(listed.content, /每周五 18:30/, "带人话时间");
+      has(listed.content, /到点要做的/, "带到点做什么");
+
+      const del = await fire({ action: "delete", id: target.id });
+      ok(!del.isError, "删得掉", del.content);
+      eq(sch.list().length, 1, "删完只剩一条");
+
+      // 8.9 上限兜底：审批那道闸挡的是跑飞，这条挡的是用户连点几十次「同意」
+      const MAX = Number(/MAX_SCHEDULES = (\d+)/.exec(fs.readFileSync(path.join(ROOT, "agent.js"), "utf8"))[1]);
+      ok(MAX > 0, "agent.js 里得有 MAX_SCHEDULES 这个上限", MAX);
+      while (sch.list().length < MAX) sch.add({ cron: "0 9 * * *", task: "占位 " + sch.list().length });
+      const askedAtCap = approvals.length;
+      const over = await fire({ action: "create", cron: "0 9 * * *", task: "再来一条" });
+      eq(over.isError, true, `满 ${MAX} 条之后排不进去`);
+      has(over.content, new RegExp(String(MAX)), "报错里写清楚上限是多少");
+      eq(approvals.length, askedAtCap, "撑满了也不白问一次");
+      sch.remove((sch.list()[0] || {}).id);
+      const again = await fire({ action: "create", cron: "0 9 * * *", task: "腾出位置就排得进去" });
+      ok(!again.isError, "反向对照：腾出一个位置就又排得进去", again.content);
+
+      // 8.10 「定时任务」这四个字是两边的暗号：server 给那一趟打这个标签，agent 靠它认出自己
+      //      是被定时任务叫起来的。两个文件各写一遍字面量，迟早对不上，那道闸就静悄悄失效了
+      eq(scheduler.SCHEDULE_LABEL, "定时任务", "暗号本身没改");
+      const srvSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+      ok(/taskLabel:[^\n]*SCHEDULE_LABEL/.test(srvSrc),
+        "★server 打标签用的是同一个常量★ 各写一遍字面量对不上时，自繁殖那道闸会静悄悄失效",
+        (srvSrc.split("\n").find((l) => /taskLabel:/.test(l)) || "(没找到 taskLabel 那行)").trim());
+      ok(!tools.TOOL_DEFS.some((t) => t.name === "schedule_task" || t.name === "list_schedules"),
+        "排期工具不在通用工具表里（它要的是 server 起的那个实例，写死在 TOOL_DEFS 等于处处都得挂）",
+        tools.TOOL_DEFS.map((t) => t.name).filter((n) => /sched/.test(n)));
+    } finally {
+      security.requestApproval = realApprove;
+      sch.stop();
+      scheduler.setActiveScheduler(null);
+      fs.rmSync(SCH_FILE, { force: true });
+    }
+    ok(!scheduler.activeScheduler(), "收尾：插座拔回去了，别把状态漏给后面的测试");
+  }
+
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.rmSync(WS, { recursive: true, force: true });
 
