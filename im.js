@@ -34,6 +34,7 @@ const { dataPath } = require("./paths");
 const notify = require("./notify");
 const callout = require("./callout"); // IM 里没有图标，正文提示条换成文字标签
 const security = require("./security");
+const mailer = require("./mailer"); // 发信：配没配、地址合不合法、报错里有没有夹带密码，判据只有这一份
 const { getWorkspaceDir } = require("./tools");
 const { createQQConnection } = require("./im-qq");
 const { createWecomApp, createWechatMp } = require("./im-wechat");
@@ -58,6 +59,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   const wecomCfg = () => (config.im || {}).wecom_app || {};
   const mpCfg = () => (config.im || {}).wechat_mp || {};
   const ilinkCfg = () => (config.im || {}).wechat_ilink || {};
+  const smtpCfg = () => (config.im || {}).smtp || {};
 
   // ---------- 会话管理：超过 N 小时未对话自动开新会话（节省 token，官方同款） ----------
 
@@ -869,6 +871,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       wecom: { configured: !!imCfg().wecom_bot_webhook },
       dingtalk: { configured: !!imCfg().dingtalk_webhook },
       webhook: { configured: true, secret_set: !!imCfg().webhook_secret },
+      smtp: { configured: mailer.configured(smtpCfg()) },
       sessions: { count: sessionCount(req.user) },
     });
   });
@@ -921,6 +924,18 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       res.json({ ok: true, bot_name: botName, ws: status });
     } catch (e) {
       res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // 只握手、只登录，不发任何一封信。密码错 / 端口错 / 被服务商挡了，都在这一步暴露，
+  // 而不是等到半夜 agent 发日报时才炸——那时候没人在电脑前看得到报错
+  router.post("/im/smtp/test", async (_req, res) => {
+    const cfg = smtpCfg();
+    try {
+      res.json({ ok: true, ...(await mailer.verify(cfg)) });
+    } catch (e) {
+      // 报错里可能原样回显了握手内容，抹掉密码再往外递
+      res.status(400).json({ ok: false, error: mailer.scrub(cfg, e.message) });
     }
   });
 

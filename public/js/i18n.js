@@ -810,6 +810,7 @@
     "记住": "Remember", "忘掉": "Forget", "翻资料库": "Library", "取素材": "Import", "存技能": "Save skill",
     "用技能": "Use skill", "桌面宠物": "Desktop pet", "问你一句": "Ask you",
     "飞书文档": "Feishu doc", "推到群": "Push to group", "看排期": "Schedules", "排期": "Schedule",
+    "发邮件": "Email",
     "委派专家团": "Delegate to team", "委派专家": "Delegate to",
   };
   // 轨迹条（折叠条上那排小徽章）用的是另一套更短的标，见 app-01.js 的 TOOL_SHORT
@@ -822,7 +823,7 @@
     "看图": "View", "生图": "Image", "视频": "Video", "图表": "Chart",
     "配音": "Voice", "转文字": "Transcribe", "记": "Save", "忘": "Forget", "库": "Library",
     "读库": "Read lib", "取素材": "Import", "存技能": "Save skill", "宠物": "Pet", "推群": "Push",
-    "看排期": "Schedules", "排期": "Schedule",
+    "看排期": "Schedules", "排期": "Schedule", "发邮件": "Email",
   };
   for (const [zh, en] of Object.entries(TOOL_SHORT_EN)) if (!(zh in DICT.en)) DICT.en[zh] = en;
   for (const [zh, en] of Object.entries(TOOL_VERB_EN)) {

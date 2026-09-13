@@ -12,6 +12,7 @@ const bridge = require("./engines/bridge"); // 把本项目的工具借给那两
 const prefs = require("./prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
 const callout = require("./callout"); // 正文里的提示条：网页画图标，终端/IM 换文字标签
 const security = require("./security"); // 审计中心：对外推送这种「出了门就收不回来」的动作必须留痕
+const mailer = require("./mailer"); // 发信：配没配、地址合不合法、白名单放不放行，判据只有这一份
 const tracing = require("./trace"); // 执行追踪：整趟任务的模型调用/工具调用发去 Langfuse，默认关
 
 const DELEGATE_TOOL = {
@@ -155,6 +156,34 @@ const LIST_SCHEDULES_TOOL = {
     "列出这台机器上已经排好的定时任务：id、名字、什么时候跑、到点做什么、开着还是关着、上次跑成什么样。" +
     "用户问「我都定了些什么」时用它；要排新任务之前也先看一眼，免得排重或者把已有的那条覆盖掉。",
   input_schema: { type: "object", properties: {} },
+};
+
+// 「把这份周报发给老板」——办公里另一句最常听见的话。邮件跟群推送不是一回事：群里发错了能撤回、
+// 能解释，邮件出了门就在别人的收件箱里躺着了。所以这个工具比别的多两道闸：收件人白名单（在
+// 设置里填，填了就是硬闸，模型绕不过）+ 每封信都当场弹给用户看全文点头（同样不看闸门总开关）。
+const SEND_EMAIL_TOOL = {
+  name: "send_email",
+  description:
+    "用用户配置好的邮箱发一封邮件。用户说「把这份报告发给 X」「邮件通知一下」「发到我邮箱」时用它。\n" +
+    "正文 body 必须是纯文本，写完整——收件人看不到你和用户的对话，邮件里得能独立读懂。要排版就再给一份 html。\n" +
+    "做好的文件（PPT / Word / Excel / PDF / 图）用 attachments 带上文件名，别把内容粘进正文。\n" +
+    "每封信都会把收件人、主题、正文原样弹给用户确认，用户不点头就一个字也发不出去；" +
+    "用户设了收件人白名单的话，不在名单里的地址在弹窗之前就被挡住，改不了也绕不过。",
+  input_schema: {
+    type: "object",
+    properties: {
+      to: { type: "string", description: "收件人邮箱，多个用逗号隔开（最多 " + mailer.MAX_RECIPIENTS + " 个）" },
+      subject: { type: "string", description: "邮件主题，一句话说清这封信是什么" },
+      body: { type: "string", description: "正文（纯文本）。收件人没有上下文，写成一封能独立读懂的信" },
+      html: { type: "string", description: "可选：HTML 正文。给了就同时带上，纯文本那份当降级显示用，两份内容要一致" },
+      attachments: {
+        type: "array",
+        items: { type: "string" },
+        description: "可选：要带的附件文件路径（相对本次任务的工作目录，直接写文件名即可）",
+      },
+    },
+    required: ["to", "subject", "body"],
+  },
 };
 
 const USE_SKILL_TOOL = {
@@ -652,6 +681,9 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     // 排期表只有 server / 桌面版起得起来。CLI 和测试里取不到，这两个工具就不摆出来——
     // 摆出来再报「这台机器上没有排期表」的话，模型会把它当成偶发失败一遍遍重试
     if (scheduler.activeScheduler()) tools.push(SCHEDULE_TOOL, LIST_SCHEDULES_TOOL);
+    // 没配发信通道就别摆这个工具：摆出来模型会先写一封信、调一次、吃一条「没配」、再重想，
+    // 白烧一轮不说，用户还以为自己哪里填错了
+    if (mailer.configured((config.im || {}).smtp)) tools.push(SEND_EMAIL_TOOL);
     if (depth === 0 && experts.length) tools.push(DELEGATE_TOOL);
     // 团委派只给主协调者：专家在团里接力时 depth 已经 >0，再让它组团会套娃
     if (depth === 0 && expertTeams.some((t) => teamMembers(t).length >= 2)) tools.push(DELEGATE_TEAM_TOOL);
@@ -900,6 +932,121 @@ function modePrompt(mode) {
           : { content: `没改成：id ${hit.id} 已经不在排期表里了。`, isError: true };
       } catch (e) {
         return { content: `排期没改成：${e.message}`, isError: true };
+      }
+    }
+    if (tc.name === "send_email") {
+      const smtp = (config.im || {}).smtp || {};
+      // 理论上走不到（没配就不列这个工具），但 MCP / 回放能把任意工具名递进来
+      if (!mailer.configured(smtp)) {
+        return { content: "这台机器还没配发信通道。让用户去 设置 → 助理设置 → 邮件 里填上 SMTP 服务器、账号、密码，再让我发。", isError: true };
+      }
+      const subject = String(tc.input.subject || "").trim();
+      const body = String(tc.input.body || "").trim();
+      if (!subject) return { content: "send_email 要带 subject。收件人先看到的就是这一行，不能空着。", isError: true };
+      if (!body) return { content: "send_email 要带 body（纯文本正文）。收件人看不到你和用户的对话，正文得能独立读懂。", isError: true };
+
+      const chk = mailer.checkRecipients(smtp, tc.input.to);
+      if (!chk.list.length) return { content: "send_email 要带 to（收件人邮箱）。", isError: true };
+      if (chk.bad.length) {
+        return { content: `这几个收件人不是合法邮箱地址：${chk.bad.join("、")}。照抄用户给的地址，别自己编。`, isError: true };
+      }
+      if (chk.tooMany) {
+        return { content: `一封信最多发 ${mailer.MAX_RECIPIENTS} 个收件人，这次给了 ${chk.list.length} 个。真要群发就分批，并且先跟用户确认名单。`, isError: true };
+      }
+      // 白名单是用户在设置里钉死的硬闸：挡在弹窗**之前**，连问都不问。
+      // 问了就等于给「用户手一滑点了同意」留口子，而这正是白名单要防的那件事
+      if (chk.blocked.length) {
+        security.audit("发邮件拦截", `收件人不在白名单：${chk.blocked.join("、")}`, "拦截");
+        return {
+          content:
+            `这几个收件人不在用户设的白名单里，发不出去：${chk.blocked.join("、")}。` +
+            "白名单在 设置 → 助理设置 → 邮件 里，只有用户本人能改——别换个写法重试，也别改地址绕过去。",
+          isError: true,
+        };
+      }
+
+      // 附件：路径一律过安全中心，跟 read_file 同一道闸。越界的、不存在的都在发信之前说清楚
+      const attachRels = (Array.isArray(tc.input.attachments) ? tc.input.attachments : [])
+        .map((a) => String(a || "").trim())
+        .filter(Boolean);
+      const attachPaths = [];
+      if (attachRels.length) {
+        let wsRoot = "";
+        try {
+          wsRoot = getWorkspaceDir();
+        } catch {}
+        const base = wsRoot && baseDir ? path.resolve(wsRoot, baseDir) : wsRoot;
+        const policy = sec || security.getSecurity(config);
+        for (const rel of attachRels) {
+          const r = security.resolvePathWithPolicy(policy, rel, wsRoot, base);
+          if (!r.allowed) {
+            security.audit("发邮件拦截", `附件 ${rel}`, "拦截");
+            return { content: `附件「${rel}」被安全中心拦截：${r.reason}`, isError: true };
+          }
+          attachPaths.push(r.path);
+        }
+      }
+      const att = mailer.checkAttachments(attachPaths);
+      if (att.missing.length) {
+        return {
+          content: `这几个附件在磁盘上不存在：${att.missing.map((p) => path.basename(p)).join("、")}。先确认文件真生成出来了（list_files 看一眼），再发。`,
+          isError: true,
+        };
+      }
+      if (att.tooBig) {
+        return {
+          content: `附件加起来 ${mailer.fmtBytes(att.bytes)}，超过 ${mailer.fmtBytes(mailer.MAX_ATTACH_BYTES)} 了，多数邮箱会直接退信。压缩一下，或者只带关键的那几个。`,
+          isError: true,
+        };
+      }
+
+      const html = String(tc.input.html || "").trim();
+      const bodyShown = body.length > 1500 ? body.slice(0, 1500) + `\n…（正文还有 ${body.length - 1500} 字）` : body;
+      const preview =
+        `发件人：${mailer.fromAddr(smtp)}\n` +
+        `收件人：${chk.list.join("、")}\n` +
+        `主题：${subject}\n` +
+        `正文：\n${bodyShown}` +
+        (html ? `\n（另附一份 HTML 排版正文，${html.length} 字）` : "") +
+        (att.items.length ? `\n附件：${att.items.map((a) => `${a.filename}（${mailer.fmtBytes(a.size)}）`).join("、")}` : "");
+
+      // 邮件出了门就在别人的收件箱里躺着了，撤不回来。所以不看安全闸门的总开关，一律当场问。
+      security.audit("发邮件", preview, "等待审批");
+      const waitMs = Math.min(
+        ((sec || config.security || {}).approval_timeout_s || 120) * 1000,
+        deadline ? Math.max(5000, deadline - Date.now() - 10000) : Infinity
+      );
+      const okToSend = await security.requestApproval("发邮件", preview, {
+        timeoutMs: waitMs,
+        stopSignal,
+        source: taskLabel || "",
+        owner: user || "",
+      });
+      security.audit("发邮件", preview, okToSend ? "已批准" : "已拒绝");
+      if (!okToSend) {
+        return {
+          content: "用户没批准这封邮件（拒绝了，或者没人在线点、等超时了），一个字都没发出去。别原样重试——先问清楚用户这封信该不该发、发给谁、怎么写。",
+          isError: true,
+        };
+      }
+      try {
+        const r = await mailer.send(smtp, {
+          to: chk.list,
+          subject,
+          text: body,
+          html: html || undefined,
+          attachments: att.items.map((a) => ({ filename: a.filename, path: a.path })),
+        });
+        security.audit("发邮件", preview, "已发出");
+        const okList = (r.accepted || []).length ? r.accepted.join("、") : chk.list.join("、");
+        const badList = (r.rejected || []).length ? `；对方退回：${r.rejected.join("、")}` : "";
+        return {
+          content: `已发出：${okList}｜主题「${subject}」${att.items.length ? `｜带了 ${att.items.length} 个附件` : ""}${badList}`,
+          isError: (r.rejected || []).length > 0,
+        };
+      } catch (e) {
+        security.audit("发邮件", preview, "发送失败");
+        return { content: `邮件没发出去：${mailer.scrub(smtp, e.message)}`, isError: true };
       }
     }
     if (tc.name === "feishu_doc_create") {
@@ -2049,7 +2196,7 @@ const TOOL_VERB = {
   generate_video: "生成视频", gen_diagram: "画图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记住",
   forget: "忘掉", library_list: "翻资料库", library_read: "读资料", library_import: "取素材", save_skill: "存技能",
   use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档", notify_user: "推到群",
-  schedule_task: "排期", list_schedules: "看排期",
+  schedule_task: "排期", list_schedules: "看排期", send_email: "发邮件",
   delegate_to_expert: "委派专家", delegate_to_team: "委派专家团",
 };
 
@@ -2101,6 +2248,9 @@ function toolHeadline(name, input) {
       // 「排期 每天 09:00 · 写日报」——动作和时间都得在这一行里，光写个 create 等于没说
       obj = tailText([{ create: "新排", update: "改", delete: "删", enable: "启用", disable: "停用" }[String(i.action || "")] || String(i.action || ""),
         i.cron ? scheduler.describeCron(i.cron) || i.cron : "", i.name || i.task || i.id || ""].filter(Boolean).join(" · "), 46); break;
+    case "send_email":
+      // 「发邮件 张三 · 本周周报」——收件人和主题得同时在这一行里，光写个主题看不出发给谁了
+      obj = tailText([mailer.parseAddrs(i.to).join("、"), i.subject || ""].filter(Boolean).join(" · "), 46); break;
     case "use_skill": case "save_skill":
       obj = String(i.name || ""); break;
     case "remember": case "forget":

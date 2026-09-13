@@ -16,6 +16,11 @@
  *     「需要桌面版环境」）。挂着一个必然失败的工具，比不挂更糟：模型会先照着做一遍、
  *     吃一条必然的失败、再回来重想，白烧一轮，还容易被当成偶发故障去重试。
  *
+ * 后面几节补的是另一种坑：**做得到，但不该由模型一个人说了算。** 排期批一次以后天天算数，
+ * 发邮件出了门就在别人的收件箱里躺着了——这两样都不看安全闸门的总开关，一律当场弹给用户；
+ * 发邮件还多一道收件人白名单，用户在设置里钉死，挡在弹窗**之前**（弹了再挡，等于给
+ * 「手一滑点同意」留口子，而那恰恰是白名单要防的事）。
+ *
  * 所以每条正向断言后面都跟一条反向对照：把条件翻过来，结论必须跟着翻。
  * 少了这层，「过滤器」退化成「什么都不过滤」也照样全绿。
  *
@@ -559,6 +564,236 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
       fs.rmSync(SCH_FILE, { force: true });
     }
     ok(!scheduler.activeScheduler(), "收尾：插座拔回去了，别把状态漏给后面的测试");
+  }
+
+  // ── ⑨ 发邮件：白名单是硬闸，审批不看总开关，凭证一个字都不许漏出去 ──────────
+  // 邮件跟推群不是一回事：群里发错了能撤回、能当场解释，邮件出了门就在别人的收件箱里躺着了。
+  // 而 agent 手里同时握着 shell、联网和你的邮箱密码——万一提示词被网页里的内容带偏，
+  // 第一个遭殃的就是通讯录。所以这个工具比别的多两道闸：
+  //   1. 收件人白名单。用户在设置里填，填了就是硬闸，而且挡在**弹窗之前**——
+  //      弹了再挡等于给「手一滑点同意」留口子，可那恰恰是白名单要防的事。
+  //   2. 每封信都当场把收件人 / 主题 / 正文原样弹给用户看，**不看安全闸门的总开关**。
+  // 外加一条贯穿始终的：凭证不许出现在任何一处返回值里——那些字符串下一步就进模型上下文。
+  // 每条正向断言后面照例跟一条反向对照：闸门写成「永远挡」或「永远放」也要能被抓出来。
+  console.log("\n⑨ 发邮件（send_email）");
+  {
+    const mailer = require(path.join(ROOT, "mailer"));
+    const security = require(path.join(ROOT, "security"));
+    const { createAgentRuntime } = require(path.join(ROOT, "agent"));
+    const { McpManager } = require(path.join(ROOT, "mcp"));
+
+    const PASS = "hunter2-很长的授权码";
+    const SMTP = { host: "smtp.example.com", port: "465", user: "me@example.com", pass: PASS, from: "", allow_to: "" };
+    const cfgOf = (smtp) => ({ agent: {}, im: smtp ? { smtp } : {}, security: {} });
+
+    // 9.1 地址解析：预览里给用户看的那一份，必须跟真发出去的那一份是同一份。
+    //     两边各写一套解析，迟早对不上——那比不发更糟：用户批的是 A，发出去的是 B
+    eq(mailer.parseAddrs("张三 <a@b.com>, c@d.com"), ["a@b.com", "c@d.com"], "尖括号和逗号都拆得开");
+    eq(mailer.parseAddrs("a@b.com c@d.com"), ["a@b.com", "c@d.com"], "★空格分隔的两个地址一个都不许丢★");
+    eq(mailer.parseAddrs(["a@b.com", "a@b.com"]), ["a@b.com"], "数组进来也认，重复的去掉");
+    eq(mailer.parseAddrs("John Smith a@b.com"), ["a@b.com"], "名字跟地址混在一起只留地址");
+    eq(mailer.parseAddrs("没有地址"), ["没有地址"],
+      "★写坏的地址要原样留下★ 悄悄丢掉的话，用户以为发了三个人，实际只发了两个");
+    eq(mailer.parseAddrs(""), [], "空的就是空的");
+
+    // 9.2 白名单规则：一个人 / 整个域（含子域），都要能写
+    const wl = { allow_to: "a@b.com, @corp.com, example.org" };
+    for (const [addr, want] of [
+      ["a@b.com", true], ["A@B.COM", true], ["x@b.com", false],
+      ["y@corp.com", true], ["z@mail.corp.com", true], ["q@example.org", true],
+      ["q@notexample.org", false], ["nobody", false],
+    ]) eq(mailer.addrAllowed(wl, addr), want, `白名单判 ${addr} → ${want ? "放行" : "挡住"}`);
+    eq(mailer.addrAllowed({ allow_to: "" }, "anyone@anywhere.com"), true,
+      "★没填白名单就不限收件人★ 否则一开箱谁都发不出去，用户会以为功能是坏的");
+
+    // 9.3 凭证清洗：SMTP 报错经常原样回显握手内容，而这段字符串下一步就进模型上下文
+    ok(!mailer.scrub(SMTP, `535 auth failed for ${PASS}`).includes(PASS), "★报错里的密码抹掉了★");
+    has(mailer.scrub(SMTP, `535 auth failed for ${PASS}`), /\*{6}/, "抹成星号而不是整段删掉，还看得出这儿原本有东西");
+    eq(mailer.scrub({ pass: "ab" }, "连接超时 ab"), "连接超时 ab",
+      "★两三个字符的「密码」不当密码抹★ 否则正文里每个 ab 都被打码，报错反而看不懂了");
+    for (const [n, want] of [[0, "0 B"], [900, "900 B"], [2048, "2.0 KB"], [20971520, "20.0 MB"]]) {
+      eq(mailer.fmtBytes(n), want, `${n} 字节说成「${want}」`);
+    }
+
+    // 9.4 没配就别摆出来：摆了模型会先写一封信、调一次、吃一条「没配」、再回来重想，
+    //     白烧一轮不说，用户还以为自己哪里填错了
+    const mkList = (smtp, mode) => createAgentRuntime({
+      config: cfgOf(smtp), llm: {}, mcpManager: new McpManager(), experts: [], expertTeams: [],
+    }).toolList(0, mode).map((t) => t.name);
+    ok(!mkList(null, "craft").includes("send_email"), "★没配 SMTP 就不摆 send_email★");
+    ok(!mkList({ host: "smtp.example.com", user: "", pass: "" }, "craft").includes("send_email"),
+      "只填了一半也不摆——三样齐了才算配好");
+    const craftT = mkList(SMTP, "craft");
+    ok(craftT.includes("send_email"), "★配齐了就挂上★", craftT);
+    ok(!mkList(SMTP, "ask").includes("send_email"), "★只看不动的档位不许发信★ 发邮件是往外做事");
+    ok(!mkList(SMTP, "plan").includes("send_email"), "出方案的档位同理");
+    ok(!tools.TOOL_DEFS.some((t) => t.name === "send_email"),
+      "send_email 不在通用工具表里（它要的是 server 那份 config.im.smtp）",
+      tools.TOOL_DEFS.map((t) => t.name).filter((n) => /mail/.test(n)));
+    const lentM = require(path.join(ROOT, "engines/tool-bridge"))._internals.lentDefs().map((d) => d.name);
+    ok(!lentM.includes("send_email"), "桥给外部 CLI 引擎的清单里也没有它", lentM);
+    const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    const roLine = (agentSrc.split("\n").find((l) => /const READ_ONLY_TOOLS/.test(l)) || "");
+    ok(roLine && !roLine.includes("send_email"),
+      "★send_email 不算「只读」★ 进了那张表就会跟别的调用并发跑，一趟发出去好几封", roLine.trim());
+
+    // 把一次工具调用递进 agent 的分发口，走的是真代码路径
+    const sent = [];
+    const approvals = [];
+    const realApprove = security.requestApproval;
+    const realSend = mailer.send;
+    let answer = true;
+    let sendErr = null;
+    security.requestApproval = async (kind, text, opts) => { approvals.push({ kind, text, opts }); return answer; };
+    mailer.send = async (cfg, msg) => {
+      sent.push({ cfg, msg });
+      if (sendErr) throw new Error(sendErr);
+      return { accepted: mailer.parseAddrs(msg.to), rejected: [], messageId: "<test@local>" };
+    };
+    const fire = async (input, smtp = SMTP) => {
+      let i = 0;
+      const llm = {
+        provider: "mock", model: "scripted",
+        async chat() {
+          return i++ === 0
+            ? { text: "", toolCalls: [{ id: "m1", name: "send_email", input }], stopReason: "tool_use" }
+            : { text: "好了。", toolCalls: [], stopReason: "end" };
+        },
+      };
+      const hist = [{ role: "user", content: "发封信" }];
+      await createAgentRuntime({
+        config: cfgOf(smtp), llm, mcpManager: new McpManager(), experts: [], expertTeams: [],
+      }).runTask({ history: hist, emit: () => {}, sec: { gateway: false } });
+      return (hist.find((h) => h.role === "tool") || { results: [{}] }).results[0];
+    };
+    const reset = () => { sent.length = 0; approvals.length = 0; answer = true; sendErr = null; };
+
+    try {
+      // 9.5 正常一封：审批弹一次、预览是人话、真发出去的跟批的是同一份
+      reset();
+      const good = await fire({ to: "老板 <boss@corp.com>, hr@corp.com", subject: "本周周报", body: "这周做完了三件事：……" });
+      ok(!good.isError, "发得出去", good.content);
+      eq(approvals.length, 1, "★弹了一次审批★");
+      eq((approvals[0] || {}).kind, "发邮件", "审批那一栏写的是「发邮件」，不是工具名");
+      has((approvals[0] || {}).text || "", /收件人：boss@corp\.com、hr@corp\.com/, "预览里收件人是拆好的地址，不是模型给的那串原文");
+      has((approvals[0] || {}).text || "", /主题：本周周报/, "预览里有主题");
+      has((approvals[0] || {}).text || "", /这周做完了三件事/, "★预览里有正文原文★ 只给个主题就点头，等于闭着眼睛签字");
+      eq(sent.length, 1, "真调了一次发信");
+      eq(((sent[0] || {}).msg || {}).to, ["boss@corp.com", "hr@corp.com"], "★发出去的收件人跟预览里的是同一份★");
+      eq(((sent[0] || {}).msg || {}).subject, "本周周报", "主题也是同一份");
+      has(good.content, /已发出/, "回给模型的话里说清楚发出去了");
+      has(good.content, /boss@corp\.com/, "并且说清楚发给了谁");
+
+      // 9.6 审批不看安全闸门的总开关：上面这一趟 sec.gateway 就是 false，照样弹了。
+      //     邮件撤不回来，这是全项目里唯一一个「总开关关了也照问」的工具
+      const opts0 = (approvals[0] || {}).opts;
+      ok(opts0 && opts0.timeoutMs > 0, "带了等待上限，没人点就别把整条任务吊死", opts0);
+
+      // 9.7 用户不点头 = 一个字都不发
+      reset();
+      answer = false;
+      const no = await fire({ to: "boss@corp.com", subject: "周报", body: "正文" });
+      eq(no.isError, true, "拒绝了要当失败回给模型");
+      eq(sent.length, 0, "★拒绝之后一个字都没发出去★");
+      has(no.content, /别原样重试/, "明确告诉模型别换个说法再来一次");
+
+      // 9.8 白名单：挡在弹窗之前。反向对照跟在后面——名单里的那个必须照样弹、照样发
+      const WL = { ...SMTP, allow_to: "@corp.com" };
+      reset();
+      const blocked = await fire({ to: "outsider@evil.com", subject: "周报", body: "正文" }, WL);
+      eq(blocked.isError, true, "不在名单里的发不出去");
+      eq(sent.length, 0, "确实没发");
+      eq(approvals.length, 0, "★白名单挡在弹窗之前★ 弹了再挡，等于给「手一滑点同意」留口子");
+      has(blocked.content, /白名单/, "报错里说清楚是被白名单挡的，不是网络问题");
+      has(blocked.content, /别换个写法重试/, "并且堵死「改个地址绕过去」这条路");
+      reset();
+      const allowed = await fire({ to: "boss@corp.com", subject: "周报", body: "正文" }, WL);
+      ok(!allowed.isError, "★反向对照：名单里的照样发得出去★", allowed.content);
+      eq(approvals.length, 1, "而且照样要点头");
+      reset();
+      const mixed = await fire({ to: "boss@corp.com, outsider@evil.com", subject: "周报", body: "正文" }, WL);
+      eq(mixed.isError, true, "一封信里混进一个名单外的，整封都不许发");
+      eq(sent.length, 0, "★不许「把名单内的那部分发出去」★ 那等于用户批了一个名单，实际发了另一个");
+
+      // 9.9 写坏的入参：在弹窗之前就说清楚，别浪费用户一次点头
+      for (const [input, re, why] of [
+        [{ to: "不是邮箱", subject: "标题", body: "正文" }, /不是合法邮箱/, "地址写坏了"],
+        [{ to: "", subject: "标题", body: "正文" }, /要带 to/, "没给收件人"],
+        [{ to: "a@b.com", subject: "", body: "正文" }, /要带 subject/, "没给主题"],
+        [{ to: "a@b.com", subject: "标题", body: "" }, /要带 body/, "没给正文"],
+      ]) {
+        reset();
+        const r = await fire(input);
+        eq(r.isError, true, `${why}：报错`);
+        has(r.content, re, `${why}：说清楚缺什么`);
+        eq(approvals.length, 0, `${why}：不白弹一次窗`);
+      }
+      reset();
+      const many = Array.from({ length: mailer.MAX_RECIPIENTS + 1 }, (_, i) => `u${i}@corp.com`).join(",");
+      const over = await fire({ to: many, subject: "标题", body: "正文" });
+      eq(over.isError, true, `一次超过 ${mailer.MAX_RECIPIENTS} 个收件人就不让发`);
+      has(over.content, new RegExp(String(mailer.MAX_RECIPIENTS)), "报错里写清楚上限是多少");
+      eq(approvals.length, 0, "撑爆了也不白弹一次窗");
+      reset();
+      const justEnough = Array.from({ length: mailer.MAX_RECIPIENTS }, (_, i) => `u${i}@corp.com`).join(",");
+      const okMany = await fire({ to: justEnough, subject: "标题", body: "正文" });
+      ok(!okMany.isError, "★反向对照：正好卡在上限上要发得出去★", okMany.content);
+
+      // 9.10 附件：路径过安全中心，跟 read_file 同一道闸；大小和存在与否在发信之前说清楚
+      await tools.withWorkspace(WS, async () => {
+        reset();
+        const att = await fire({ to: "boss@corp.com", subject: "周报", body: "正文", attachments: ["汇报.docx"] });
+        ok(!att.isError, "带得上工作目录里的文件", att.content);
+        has((approvals[0] || {}).text || "", /附件：汇报\.docx（/, "★预览里报了附件名和大小★ 用户得知道自己批的是什么出门");
+        eq((((sent[0] || {}).msg || {}).attachments || []).length, 1, "真带了一个附件");
+        eq(((((sent[0] || {}).msg || {}).attachments || [])[0] || {}).filename, "汇报.docx", "附件名是文件名，不是一长串路径");
+        const attPath = ((((sent[0] || {}).msg || {}).attachments || [])[0] || {}).path || "";
+        ok(path.isAbsolute(attPath), "附件走的是解析好的绝对路径", attPath);
+
+        reset();
+        const gone = await fire({ to: "boss@corp.com", subject: "周报", body: "正文", attachments: ["根本没这个文件.pdf"] });
+        eq(gone.isError, true, "文件不存在就别发");
+        has(gone.content, /不存在/, "说清楚是文件没生成出来");
+        eq(approvals.length, 0, "★附件有问题时不弹窗★ 用户点完头才发现发不出去，最没意义");
+
+        // 越界这一条必须拿一个**真实存在**的外部文件来测。随手写个 ../../etc/passwd 看着挺像，
+        // 可那条路径在这台机器上解析完根本不存在，于是「文件不存在」那道闸先答了话——
+        // 安全闸拆掉了测试照样全绿。这个坑是变异测试逮出来的
+        reset();
+        const OUTSIDE = path.join(HOME, "工作目录外的机密.txt");
+        fs.writeFileSync(OUTSIDE, "这份文件不该被带出去");
+        const escRel = path.relative(WS, OUTSIDE);
+        ok(escRel.startsWith(".."), "夹具自检：这条相对路径确实指向工作目录外面", escRel);
+        ok(fs.existsSync(OUTSIDE), "夹具自检：外面那个文件是真存在的（不存在的话测的就是另一道闸了）");
+        const esc = await fire({ to: "boss@corp.com", subject: "周报", body: "正文", attachments: [escRel] });
+        eq(esc.isError, true, "★工作目录外的文件一律带不走★ 附件是把文件原样送出这台机器，比读一眼严重得多");
+        has(esc.content, /被安全中心拦截/, "★挡它的是安全中心，不是「文件不存在」★ 两道闸得分清楚，否则拆了前一道也看不出来");
+        ok(!/不存在/.test(esc.content), "别报成「文件不存在」——那会让模型去重新生成一份，而不是换个位置放", esc.content);
+        eq(sent.length, 0, "确实没发");
+        eq(approvals.length, 0, "越界的连窗都不弹");
+        fs.rmSync(OUTSIDE, { force: true });
+      });
+
+      // 9.11 凭证：从头到尾一个字都不许漏出去。这些字符串下一步就进模型上下文和审计日志
+      reset();
+      sendErr = `535 authentication failed: bad password ${PASS}`;
+      const failed = await fire({ to: "boss@corp.com", subject: "周报", body: "正文" });
+      eq(failed.isError, true, "发不出去要如实报失败，不许假装成功");
+      ok(!failed.content.includes(PASS), "★发信报错里夹带的密码被抹掉了★", failed.content);
+      has(failed.content, /\*{6}/, "抹成星号，还看得出这儿原本有东西");
+      ok(!approvals.some((a) => a.text.includes(PASS)), "★弹给用户的预览里没有密码★");
+      ok(!approvals.some((a) => a.text.includes(SMTP.host)), "预览里也没有服务器地址——用户要确认的是这封信，不是这台机器");
+
+      // 9.12 理论上走不到（没配就不摆这个工具），但 MCP / 回放能把任意工具名递进来
+      reset();
+      const noCfg = await fire({ to: "boss@corp.com", subject: "周报", body: "正文" }, null);
+      eq(noCfg.isError, true, "没配 SMTP 时硬调也得挡住");
+      eq(sent.length, 0, "确实没发");
+      has(noCfg.content, /设置/, "告诉模型去哪儿让用户配，而不是干说一句「不行」");
+    } finally {
+      security.requestApproval = realApprove;
+      mailer.send = realSend;
+    }
   }
 
   fs.rmSync(HOME, { recursive: true, force: true });

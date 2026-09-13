@@ -24,6 +24,7 @@ OpenWorkBuddy 自身按 [PolyForm Noncommercial 1.0.0](LICENSE) 发布，商业�
 | exceljs | 4.4.0 | MIT | https://github.com/exceljs/exceljs |
 | express | 4.22.2 | MIT | https://github.com/expressjs/express |
 | mermaid | 11.17.0 | MIT | https://github.com/mermaid-js/mermaid |
+| nodemailer | 9.1.1 | MIT-0 | https://github.com/nodemailer/nodemailer |
 | pptxgenjs | 3.12.0 | MIT | https://github.com/gitbrent/PptxGenJS |
 | qrcode | 1.5.4 | MIT | https://github.com/soldair/node-qrcode |
 | Electron | 43.x | MIT | https://github.com/electron/electron |
