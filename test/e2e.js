@@ -7075,7 +7075,7 @@ function releasePipelineDrift(src) {
   const ebc = (src["electron-builder.config.js"] || "").replace(/^[ \t]*\/\/.*$/gm, "");
   const ish = src["install.sh"] || "";
 
-  // —— PR / main 的红绿灯。在这条闸门之前，15 个套件只在作者本机手敲时才跑过
+  // —— PR / main 的红绿灯。在这条闸门之前，除 e2e 外的套件只在作者本机手敲时才跑过
   if (!tst.trim()) miss.push("没有 .github/workflows/test.yml：PR 和 main 没有任何 CI");
   if (!/pull_request/.test(tst)) miss.push("test.yml 不管 pull_request：外部 PR 无人把关");
   if (!/macos-latest/.test(tst)) miss.push("test.yml 没在 macOS 上跑全套：e2e 要开真 electron 窗口，只有那台能全覆盖");
@@ -7152,8 +7152,10 @@ function testReleasePipeline() {
   const bad = [
     ["PR 的 CI 整个没了", { ".github/workflows/test.yml": "" }],
     ["CI 只在 ubuntu 跑、e2e 没人管", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/macos-latest/g, "ubuntu-latest") }],
-    ["新加的套件忘了补进 CI 名单", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(",trace", "") }],
-    ["CI 名单里写了个不存在的套件", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace("--only icons", "--only icon") }],
+    // 这两条以前写死了套件名（",trace"、"--only icons"），名单一动就变成空替换 →
+    // 补丁没打上 → 「居然没红」——闸门失效的是对照本身。改成按位置挖，挖谁都行。
+    ["新加的套件忘了补进 CI 名单", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/,[a-z0-9-]+(?=,)/, "") }],
+    ["CI 名单里写了个不存在的套件", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/--only [a-z0-9-]+/, "--only meiyouzhegetaojian") }],
     ["发版前不跑测试了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/needs: test\n/, "") }],
     ["版本号和 tag 的绑定被删了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/GITHUB_REF_NAME/g, "X") }],
     ["版本号核对忘了守 tag（手动跑必红）", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("if: startsWith(github.ref, 'refs/tags/')\n        shell: bash", "shell: bash") }],

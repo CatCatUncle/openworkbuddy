@@ -7,6 +7,19 @@
  * 单独运行：npx electron test/frontend.js
  */
 
+
+// ---- 加载期出错要当场红，不许弹框卡死 ----
+// 2026-09-13 的教训：这个文件顶层抛了一个「缺文件」的错（skills/brand-guidelines 在
+// .gitignore 里，本机有、新克隆没有），Electron 的默认处理是弹一个原生错误框
+// ——CI 机器上没人点确定，进程就一直挂着。本机复现过：不装兜底 25 秒后被 timeout 砍掉，
+// 装了兜底立刻退出并打出真正的错。
+// Electron 的 uncaughtException 处理里有一句「用户自己装了处理器就不弹框」
+// （判据是 listenerCount > 1），所以这一段必须在任何 require 之前。
+process.on("uncaughtException", (e) => {
+  console.error("\u274c 前端测试 加载期就炸了（不是断言失败，是这个文件自己起不来）：");
+  console.error((e && e.stack) || String(e));
+  process.exit(1);
+});
 const path = require("path");
 const fs = require("fs");
 // 这个文件得用 electron 跑，不是 node：`npx electron test/frontend.js`。
@@ -4905,10 +4918,13 @@ const SKEG_SRC = (() => {
 })();
 // 仓库里随包发出去的技能说明书。用户点的就是这几张卡，拿真文件当输入，
 // 免得测试里编一份格式最规整的 md 自欺欺人。
+// 只许挑 git 跟踪的技能：这份名单原先有 brand-guidelines，它在 .gitignore 里（第三方技能
+// 不随仓库分发），于是本机常绿、别人一 clone 就炸——2026-09-13 的 CI 就是这么挂死的。
+// test/repo-hygiene.js 现在会盯着这一行，写进没随包发的技能就当场红。
 const SKEG_DOCS = (() => {
   const dir = path.join(__dirname, "..", "skills");
   const out = {};
-  for (const name of ["xiaohongshu-topic", "wechat-article", "deep-research", "brand-guidelines", "feishu-doc"]) {
+  for (const name of ["xiaohongshu-topic", "wechat-article", "deep-research", "data-viz", "ppt-design", "feishu-doc"]) {
     for (const f of ["skill.md", "SKILL.md"]) {
       const p2 = path.join(dir, name, f);
       if (fs.existsSync(p2)) { out[name] = fs.readFileSync(p2, "utf8"); break; }
@@ -4941,13 +4957,16 @@ const SKEG_CHECKS = `
   ok("适用场景写成一句话用顿号串的，也能拆成几件事", wx.length >= 2, JSON.stringify(wx));
 
   // ---- 负向控制：没写「适用场景」的说明书宁可一条不给 ----
-  // 早先的版本挖不到就退回全文前 1200 字，结果卡上摆的是 #b0aea5、pptxgenjs、app_id
-  // 这类配置和字段名——比空着更糟。这两份说明书都没写「适用场景」，而且正文里
-  // 恰好有一堆「像人话但不是任务」的句子（字体名、写作规范、接口注意事项），
+  // 早先的版本挖不到就退回全文前 1200 字，结果卡上摆的是 #5b5ff7、pptxgenjs、app_id
+  // 这类配置和字段名——比空着更糟。这三份说明书都没写「适用场景」，而且正文里
+  // 恰好有一堆「像人话但不是任务」的句子（色码与 mermaid 语法、排版规范、接口注意事项），
   // 光靠「看着像代码就不要」那道筛子拦不住它们，只有把挖掘范围锁死在「适用场景」才干净。
+  // ppt-design 是里面最刁的一份：它整篇都是「一页一论点」「每页正文 ≤6 条」这种
+  // 标准中文祈使句，长得和任务例子一模一样，只差没写在「适用场景」底下。
+  const noScene = ["data-viz", "ppt-design", "feishu-doc"];
   ok("没写「适用场景」的说明书一条都不挖（不退回全文）",
-    skillExamples(DOCS["brand-guidelines"]).length === 0 && skillExamples(DOCS["feishu-doc"]).length === 0,
-    JSON.stringify([skillExamples(DOCS["brand-guidelines"]), skillExamples(DOCS["feishu-doc"])]));
+    noScene.every((n) => skillExamples(DOCS[n]).length === 0),
+    JSON.stringify(noScene.map((n) => [n, skillExamples(DOCS[n])])));
 
   // ---- 挑出来的东西不能是代码/配置/链接 ----
   const junk = skillExamples([
