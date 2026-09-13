@@ -35,6 +35,8 @@ const account = require(path.join(ROOT, "account"));
 const org = require(path.join(ROOT, "org"));
 const admin = require(path.join(ROOT, "admin"));
 const tools = require(path.join(ROOT, "tools"));
+const chatModels = require(path.join(ROOT, "chat-models"));
+const mediaModels = require(path.join(ROOT, "media-models"));
 
 const BASE_WS = path.join(TMP, "workspace");
 fs.mkdirSync(BASE_WS, { recursive: true });
@@ -57,6 +59,44 @@ srv.use(account.authGuard);
 srv.use(admin.tenantScope({ withWorkspace: tools.withWorkspace, withPolicy: tools.withPolicy, getWorkspaceDir: tools.getWorkspaceDir }));
 srv.use(admin.platformGuard);
 srv.use(admin.redactGuard);
+
+// ---------- /api/settings 的替身 ----------
+// 「模型与 Key」那一页读的是 /api/settings，而这份 express 只挂了账号和后台两个路由——
+// 真的那条在 server.js 里是内联写的，搬不过来。所以这儿照它的口径回一份。
+//
+// 替身最怕的是「悄悄跟真的走散」：这边一直绿，线上那页却读到 undefined。
+// 所以 test/e2e.js 里有一条契约断言，拿**真的** GET /api/settings 逐个字段核对
+//（providers[].has_key、models[].channel、platform_owner、agent.failover_model…），
+// 少一个字段那边就红。两边合起来才算把这一页保住了。
+const FAKE = {
+  providers: [
+    { id: "ark", name: "火山方舟", kind: "ark", base_url: "https://ark.example/api/v3", api_key: "sk-ark-demo" },
+    { id: "openrouter", name: "OpenRouter", kind: "openrouter", base_url: "https://openrouter.example/api/v1", api_key: "" },
+    { id: "local", name: "本机 Ollama", kind: "ollama", base_url: "http://127.0.0.1:11434/v1", api_key: "" },
+  ],
+  models: [
+    { name: "方舟-主力", model: "doubao-pro", channel: "ark" },
+    { name: "OR-备用", model: "anthropic/claude", channel: "openrouter" },
+  ],
+  media_models: [{ id: "m1", name: "方舟出图", provider: "ark", model: "seedream", caps: ["image"] }],
+  active_model: "方舟-主力",
+  agent: { failover_model: "" },
+};
+chatModels.normalize(FAKE); // 让 api_key 照真实路径从渠道压平到模型上，别在替身里手抄一遍
+srv.get("/api/settings", (req, res) => {
+  const owner = admin.isSoloDesktop() || admin.ownsGlobalWorkspace(req.user);
+  const mask = (k) => (owner ? k || "" : k ? "********" : "");
+  res.json({
+    ...FAKE,
+    platform_owner: owner,
+    providers: FAKE.providers.map((p) => ({ ...p, api_key: mask(p.api_key), has_key: !!p.api_key })),
+    models: FAKE.models.map((m) => ({ ...m, api_key: mask(m.api_key), has_key: !!m.api_key })),
+  });
+});
+srv.get("/api/model-catalog", (req, res) => res.json({ kinds: mediaModels.PROVIDER_KINDS }));
+const savedSettings = [];
+srv.post("/api/settings", (req, res) => { savedSettings.push(req.body || {}); res.json({ ok: true }); });
+
 srv.use(admin.createAdminRouter({ orgUsage: () => ({ files: tools.outputFiles().length, bytes: 0 }) }));
 const server = srv.listen(0, "127.0.0.1");
 const listening = new Promise((r) => server.once("listening", r));
@@ -159,7 +199,7 @@ const GOTO = (id) => `(async () => {
   ok("标题写的是这个组织的名字", /企业管理后台/.test(await A.js(`document.title`)), await A.js(`document.title`));
 
   const IDS = ["security", "sub", "usage-member", "usage-org", "usage-app", "usage-detail", "stats",
-               "members", "pending", "roles", "basic", "net", "meter", "orgs", "audit", "integration"];
+               "members", "pending", "roles", "basic", "net", "meter", "models", "orgs", "audit", "integration"];
   const seen = [];
   for (const id of IDS) {
     const res = await A.js(GOTO(id));
@@ -167,13 +207,15 @@ const GOTO = (id) => `(async () => {
     if (res.len < 30) throw new Error(`【${id}】几乎是空的（${res.len} 字）：` + res.html);
     seen.push(`${id}=${res.len}`);
   }
-  ok("16 个面板全部渲染出正文（没有一页白屏 / 没有一页掉进错误挡板）", seen.length === 16, seen.join(" "));
-  ok("点完 16 页，console 一条 error 都没有", A.errs.length === 0, A.errs);
+  ok("17 个面板全部渲染出正文（没有一页白屏 / 没有一页掉进错误挡板）", seen.length === 17, seen.join(" "));
+  ok("点完 17 页，console 一条 error 都没有", A.errs.length === 0, A.errs);
 
   // 侧边导航：平台管理员看得到「组织管理」（这是 platform: true 的那一项）
   ok("侧栏分组齐了（订阅与用量 / 数据统计 / 成员授权 / 企业设置 / 开放与集成）",
      (await A.js(`[...document.querySelectorAll(".ad-grp")].map(x=>x.textContent).join("|")`)) === "订阅与用量|数据统计|成员授权|企业设置|开放与集成");
   ok("平台管理员的侧栏里有「组织管理」", await A.js(`!!document.querySelector('.ad-nav-i[href="#/orgs"]')`));
+  ok("平台管理员的侧栏里有「模型与 Key」（用户要的「后台能设置 apikey」就在这儿）",
+     await A.js(`!!document.querySelector('.ad-nav-i[href="#/models"]')`));
 
   // 数字得是真从后端来的，不是写死的占位
   await A.js(GOTO("usage-org"));
@@ -193,6 +235,8 @@ const GOTO = (id) => `(async () => {
   ok("审计员进得来（不是 403 挡板）", !(await B.js(`!!document.querySelector(".ad-gate")`)));
   ok("右上角挂着「只读（审计员）」的牌子", /只读/.test(await B.js(`document.getElementById("ad-top-r").textContent`)));
   ok("审计员的侧栏里没有「组织管理」（那是平台管理员的）", !(await B.js(`!!document.querySelector('.ad-nav-i[href="#/orgs"]')`)));
+  ok("审计员的侧栏里也没有「模型与 Key」（Key 是整台服务器的账单凭证）",
+     !(await B.js(`!!document.querySelector('.ad-nav-i[href="#/models"]')`)));
   for (const id of ["security", "basic", "net", "meter", "members"]) {
     const res = await B.js(GOTO(id));
     if (res.gate) throw new Error(`审计员打开【${id}】被挡了：` + res.html);
@@ -240,8 +284,51 @@ const GOTO = (id) => `(async () => {
   r = await call("GET", "/api/admin/org", { cookie: boss });
   ok("后端真的存下了 allow_shell=false（不是只在前端亮了一下）", r.json.org.settings.allow_shell === false, r.json.org.settings.allow_shell);
 
+  // ================= 4. 「模型与 Key」：填一把 Key，整张渠道表原样送回去 =================
+  console.log("\n【4】模型与 Key：Key 填得进去，而且没把别的渠道顺手抹掉");
+  const mk = await A.js(`(async () => {
+    location.hash = "#/models"; await new Promise(r=>setTimeout(r,500));
+    const b = document.getElementById("ad-body");
+    const keys = [...b.querySelectorAll("input.ad-key")].map(x => x.dataset.pk);
+    const or = b.querySelector('input.ad-key[data-pk="openrouter"]');
+    const btn = b.querySelector("[data-save]");
+    if (!or || !btn) return { err: "Key 输入框或保存按钮不在：" + [!!or, !!btn].join(",") };
+    const peekBefore = or.type;
+    const peek = b.querySelector('[data-peek="openrouter"]');
+    peek.click();
+    const peekAfter = or.type;
+    peek.click();
+    const before = btn.disabled;
+    or.value = "sk-or-\u65b0\u586b\u7684";
+    or.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise(r=>setTimeout(r,80));
+    const after = btn.disabled;
+    const sels = [...b.querySelectorAll("[data-sel]")].map(x => x.dataset.sel);
+    btn.click();
+    await new Promise(r=>setTimeout(r,600));
+    return { keys, peekBefore, peekAfter, before, after, sels,
+             txt: b.textContent.replace(/\\s+/g, " ").slice(0, 300) };
+  })()`);
+  ok("三个渠道都给了能填 Key 的输入框（没填的那两个也在——不然又变成「没地方填」）",
+     mk.err === undefined && mk.keys.length === 3 && mk.keys.includes("openrouter") && mk.keys.includes("local"), mk);
+  ok("Key 默认是密文，点「显示」才看得见（后台常开着投屏讲）", mk.peekBefore === "password" && mk.peekAfter === "text", mk);
+  ok("没动的时候「保存」是灰的，填了才亮", mk.before === true && mk.after === false, mk);
+  ok("「默认走哪条」和「主渠道挂了换谁」两个下拉都在", (mk.sels || []).join() === "active_model,failover_model", mk.sels);
+  const body = savedSettings[savedSettings.length - 1] || {};
+  ok("保存真发到了 /api/settings", savedSettings.length === 1, savedSettings.length);
+  ok("刚填的那把 Key 送过去了", (body.providers || []).find((p) => p.id === "openrouter")?.api_key === "sk-or-新填的",
+     (body.providers || []).map((p) => p.id + "=" + (p.api_key ? "有" : "空")).join(" "));
+  // 这条是这页最容易写错的地方：POST /api/settings 对 providers 是**整表覆盖**。
+  // 只送改动的那一条，另外两个渠道当场消失，挂在它们底下的模型全断线。
+  ok("没动过的渠道原样送回去了（整表覆盖，漏一个就等于删一个）",
+     (body.providers || []).length === 3 && body.providers.find((p) => p.id === "ark")?.api_key === "sk-ark-demo",
+     (body.providers || []).map((p) => p.id).join(","));
+  ok("默认模型和备用模型也一起送了", body.active_model === "方舟-主力" && body.agent && body.agent.failover_model === "",
+     JSON.stringify({ a: body.active_model, f: body.agent }));
+  ok("这一页 console 也是干净的", A.errs.length === 0, A.errs);
+
   server.close();
-  console.log(`\n✅ 企业管理后台：16 面板真渲染 · 审计员只读 · 设置改了真落库 ${pass} 项通过`);
+  console.log(`\n✅ 企业管理后台：17 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 且不误删别的渠道 ${pass} 项通过`);
   fs.rmSync(TMP, { recursive: true, force: true });
   electronApp.exit(0);
 })().catch((e) => {

@@ -5405,6 +5405,7 @@ async function main() {
   testDemoTiming();
   testReadmeFrontGate();
   testKeySourcesGate();
+  await testAdminModelsPage();
   testPackagingAndDemoGate();
   await testImInboundMedia();
   await testImCredentialGuard();
@@ -7003,6 +7004,102 @@ function testPackagingAndDemoGate() {
   console.log(`✅ 安装包命名+demo 录制闸门：nsis=win-setup · portable=win-<arch>-portable · win/mac 双架构 · ${Object.keys(docs).length} 份文档同名 · 录制脚本隔离目录/清 IM+MCP/--dry/录完删 · ${variants.length} 种坏法全被抓`);
 }
 
+/**
+ * 「模型与 Key」这一页的两道闸。
+ *
+ * 第一道是图标：admin.html 自己带一份 sprite，跟工作台那份是两份互不相干的东西，
+ * 而 test/icons.js 只扫 index.html。少一个 symbol 的后果是那格画出来一片空白、
+ * console 一声不吭——真浏览器测试也照样绿。所以这儿把 admin.js 里用到的名字全捞出来对一遍。
+ *
+ * 第二道是接口契约：test/admin-ui.js 里 /api/settings 是个替身（那份 express 只挂了
+ * 账号和后台两个路由，真的那条内联在 server.js 里搬不过来）。替身最怕跟真的走散——
+ * 那边一直绿、线上这页读到 undefined。所以这儿拿**真 server.js** 起一次，
+ * 把页面真正读的每个字段逐个核对。
+ */
+async function testAdminModelsPage() {
+  const os = require("os");
+  const http = require("http");
+  const crypto = require("crypto");
+
+  // ---------- 1. 图标：admin.js 用到的每个名字，admin.html 的 sprite 里都得有 ----------
+  const adSrc = fs.readFileSync(path.join(__dirname, "..", "public", "js", "admin.js"), "utf8");
+  const ahSrc = fs.readFileSync(path.join(__dirname, "..", "public", "admin.html"), "utf8");
+  const iconsUsed = (js) => {
+    const s = new Set();
+    for (const m of js.matchAll(/\bic\(\s*"([a-z0-9-]+)"/g)) s.add(m[1]);
+    for (const m of js.matchAll(/\bicon:\s*"([a-z0-9-]+)"/g)) s.add(m[1]);
+    for (const m of js.matchAll(/ALERT_ICON\s*=\s*\{([^}]*)\}/g))
+      for (const q of m[1].matchAll(/"([a-z0-9-]+)"/g)) s.add(q[1]);
+    return [...s];
+  };
+  const spriteHas = (html) => new Set([...html.matchAll(/<symbol id="i-([a-z0-9-]+)"/g)].map((m) => m[1]));
+  const used = iconsUsed(adSrc);
+  const have = spriteHas(ahSrc);
+  const missing = used.filter((n) => !have.has(n));
+  assert(used.length >= 20, "只扫出 " + used.length + " 个图标名，正则八成没匹配上，这道闸是假的");
+  assert(missing.length === 0, "admin.html 的 sprite 里缺这些图标（那格会画成空白，console 还不报错）：" + missing.join(" "));
+  assert(used.includes("sparkles"), "「模型与 Key」那一项的图标没在 admin.js 里出现，侧栏可能没加上");
+  assert(have.has("sparkles"), "admin.html 缺 i-sparkles，「模型与 Key」侧栏那格会是空的");
+  // 反向对照：编一个不存在的名字，闸门必须抓住——不然上面那条只证明了「我没在找」
+  const faked = adSrc.replace('icon: "sparkles", title: "模型与 Key"', 'icon: "zheshigebucunzaidetubiao", title: "模型与 Key"');
+  assert(faked !== adSrc, "反向对照没改动到源码，这道闸的有效性没被验证");
+  assert(iconsUsed(faked).filter((n) => !have.has(n)).length === 1, "闸门漏了「引用了不存在的图标」这种坏法");
+
+  // ---------- 2. 接口契约：真 server.js 回的 /api/settings 得带齐这页读的每个字段 ----------
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-admmodels-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const child = booted.child;
+  const { up, port, why: bootWhy } = await booted.wait();
+  const req = (method, p) => new Promise((resolve) => {
+    const r = http.request({ host: "127.0.0.1", port, path: p, method, headers: { Cookie: "wb_token=" + token } }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    r.on("error", (e) => resolve({ code: 0, body: e.message, json: null }));
+    r.end();
+  });
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
+    const s = (await req("GET", "/api/settings")).json;
+    assert(s, "GET /api/settings 读不出来");
+    // 页面顶上就靠它决定画输入框还是画「只能看」，缺了会 undefined → 一律变只读
+    assert(typeof s.platform_owner === "boolean", "/api/settings 没回 platform_owner，后台那页分不清能改不能改");
+    assert(Array.isArray(s.providers) && s.providers.length >= 5, "渠道列表空了或太短：" + JSON.stringify((s.providers || []).length));
+    for (const p of s.providers)
+      for (const k of ["id", "name", "kind", "base_url", "has_key"])
+        assert(k in p, "渠道少字段 " + k + "：" + JSON.stringify(p));
+    assert(Array.isArray(s.models) && s.models.length >= 5, "模型列表空了或太短");
+    for (const m of s.models)
+      for (const k of ["name", "model", "channel", "has_key", "base_url"])
+        assert(k in m, "模型少字段 " + k + "（后台那页要拿 channel 反查渠道、拿 has_key 判还没填 Key）：" + JSON.stringify(m));
+    assert(typeof s.active_model === "string" && s.active_model, "/api/settings 没回 active_model，「默认走哪条」那个下拉选不中任何一项");
+    assert(s.models.some((m) => m.name === s.active_model), "active_model 指的模型不在列表里：" + s.active_model);
+    assert(s.agent && "failover_model" in s.agent, "/api/settings 没回 agent.failover_model，「主渠道挂了换谁」那个下拉存不回去");
+    assert(Array.isArray(s.media_models), "/api/settings 没回 media_models 数组，渠道那行「N 个媒体模型」会炸");
+    // 新装是一把 Key 都没有的：has_key 全 false，而且真 Key 字段不能凭空冒出内容
+    assert(s.providers.every((p) => p.has_key === false), "新装居然有渠道自称填了 Key：" + s.providers.filter((p) => p.has_key).map((p) => p.id).join(","));
+    assert(s.models.every((m) => m.has_key === false), "新装居然有模型自称填了 Key");
+
+    // 替身跟真的同构：admin-ui 那份替身回的字段，真的这边一个都不能少
+    const stub = fs.readFileSync(path.join(__dirname, "admin-ui.js"), "utf8");
+    assert(/srv\.get\("\/api\/settings"/.test(stub), "test/admin-ui.js 里的 /api/settings 替身没了，那份测试会掉进错误挡板");
+    for (const k of ["platform_owner", "has_key", "media_models", "failover_model", "active_model"])
+      assert(stub.includes(k), "替身里没提 " + k + "，它和真接口已经走散了");
+
+    console.log(`✅ 后台「模型与 Key」：${used.length} 个图标名在 admin.html sprite 里全找得到（反向对照通过）· 真 /api/settings 带齐 ${s.providers.length} 渠道 × ${s.models.length} 模型 + platform_owner/active_model/failover_model/media_models · 新装 has_key 全 false · 替身与真接口字段对齐`);
+  } finally {
+    child.kill("SIGKILL");
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
 function testKeySourcesGate() {
   const pub = path.join(__dirname, "..", "public", "js");
   const app03 = fs.readFileSync(path.join(pub, "app-03.js"), "utf8");
