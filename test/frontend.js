@@ -3178,13 +3178,25 @@ const LOOK_CHECKS = `
   const pane = $("#pane");
   // 挂了得说清楚现场。这一块的 ok 以前连第三个参数都不收，CI 上就只有一句「外观：点「特大」…」，
   // 本机又是绿的，等于什么都没说——2026-09-13 就这么白跑了一轮。现在每条失败都自动把这一屏的数字带上。
+  // 改完 <html> 上的属性，得逼这棵树真重算一次再去量。
+  // 2026-09-13 的 CI（macOS 离屏窗口，没 GPU、没合成器）上是这样的：--wb-fs 已经是 18px 了，
+  // body 的 font-size 却还报 15px，跟着 calc 走的标题 / 左栏 / 行内代码全停在旧档；
+  // 而 textarea 和预览行倒是跟上了——同一棵树，一半新一半旧。本机从来不出现。
+  // 把根节点的 display 摘一下再挂回去，整棵布局树重建，样式必然重算，不靠等下一帧撞运气。
+  // （滚动引导那块之前也是这个病，当时只用「等一帧」压住了，没查到根上。）
+  const flush = () => {
+    const de = document.documentElement, d = de.style.display;
+    de.style.display = "none"; void de.offsetHeight; de.style.display = d; void document.body.offsetHeight;
+  };
   const one = (q) => { try { return q + "=" + px(q); } catch (e) { return q + "=(没这个元素)"; } };
+  const sizes = () => ["body", "#p", "#h1", "#hi", "#input", "#cd", "#look-prev"].map(one).join(" ");
   const dump = () => {
     try {
+      const before = sizes(); flush(); const after = sizes();
       return "data-*=" + JSON.stringify(Object.assign({}, html.dataset))
         + " --wb-fs=" + cssVar("--wb-fs") + " --primary=" + cssVar("--primary")
-        + " 视口=" + innerWidth + "x" + innerHeight + " dpr=" + devicePixelRatio + " zoom=" + (visualViewport ? visualViewport.scale : "?")
-        + " " + ["body", "#p", "#h1", "#hi", "#input", "#cd", "#look-prev"].map(one).join(" ");
+        + " 视口=" + innerWidth + "x" + innerHeight + " dpr=" + devicePixelRatio
+        + " " + before + (after === before ? "" : " ｜ 强制重算后变成 " + after + "（那读到的就是陈样式）");
     } catch (e) { return "（连现场都取不到：" + ((e && e.message) || e) + "）"; }
   };
   // 而且不在第一条就停。CI 上跑一趟三分钟，一次只换回一条线索太亏——
@@ -3224,7 +3236,7 @@ const LOOK_CHECKS = `
   const textLen = pane.textContent.replace(/\\s/g, "").length;
   ok("信息密度克制：整页文字 ≤ 230 字（实际 " + textLen + "）", textLen <= 230);
 
-  const click = (k, v) => pane.querySelector('[data-k="' + k + '"] button[data-v="' + v + '"]').click();
+  const click = (k, v) => { pane.querySelector('[data-k="' + k + '"] button[data-v="' + v + '"]').click(); flush(); };
   // 字号
   click("fs", "xl");
   ok("点「特大」：<html data-fs=xl>，正文 18", html.dataset.fs === "xl" && px("body") === 18 && px("#p") === 18);
@@ -3249,7 +3261,7 @@ const LOOK_CHECKS = `
   const resolve = (v) => { probe.style.color = "var(" + v + ")"; return getComputedStyle(probe).color; };
   let combos = 0, minText = 99, minBtn = 99, worst = "";
   for (const skin of Object.keys(LOOK_OPTS.skin)) for (const theme of ["light", "dark"]) {
-    setLook("skin", skin); setTheme(theme); combos++;
+    setLook("skin", skin); setTheme(theme); flush(); combos++;
     const bg = getComputedStyle(document.body).backgroundColor;
     const rt = ratio(resolve("--brand-text"), bg), rb = ratio("rgb(255, 255, 255)", resolve("--primary"));
     if (rt < minText) { minText = rt; worst = skin + "/" + theme; }
@@ -3260,7 +3272,7 @@ const LOOK_CHECKS = `
   ok("每组品牌字色压底色 ≥ 4.5（最低 " + minText.toFixed(2) + " @ " + worst + "）", minText >= 4.5);
   ok("每组白字压主色 ≥ 3（最低 " + minBtn.toFixed(2) + "）", minBtn >= 3);
   setTheme("light");
-  renderLookPane(pane);
+  renderLookPane(pane); flush();
   ok("重开外观页：皮肤/主题选中态从偏好里读回来（石墨 · 浅色）", pane.querySelector('[data-k="skin"] button.on').dataset.v === "graphite" && pane.querySelector('[data-k="theme"] button.on').dataset.v === "light");
   click("skin", "default");
   ok("点回「默认紫」：data-skin 摘掉，--primary 回到 #5b5ff7", !("skin" in html.dataset) && cssVar("--primary").toLowerCase() === "#5b5ff7");
@@ -3303,11 +3315,11 @@ const LOOK_CHECKS = `
   click("theme", "light");
 
   // 非法值：来自旧版本或被人手改过的存储，不能把页面搞坏
-  setLook("fs", "huge"); setLook("nope", "x"); setTheme("neon");
+  setLook("fs", "huge"); setLook("nope", "x"); setTheme("neon"); flush();
   ok("非法值一律忽略：fs 仍是标准、theme 仍是浅色、未知键不炸", lookGet("fs") === "m" && !("fs" in html.dataset) && getTheme() === "light");
-  lookMem["wb-look-fs"] = "huge"; lookMem["wb-theme"] = "neon"; applyLook(); applyTheme();
+  lookMem["wb-look-fs"] = "huge"; lookMem["wb-theme"] = "neon"; applyLook(); applyTheme(); flush();
   ok("存储里躺着旧版本写的非法值：读回当没写（标准字号 / 跟随系统），不带脏属性", lookGet("fs") === "m" && !("fs" in html.dataset) && getTheme() === "system");
-  setTheme("light");
+  setTheme("light"); flush();
   ok("点分区空白处：不改任何状态、不报错", (() => { pane.querySelector(".card-item").click(); return lookGet("fs") === "m" && getTheme() === "light"; })());
 
   // 左栏目录：图标 + 短名，别一列密密麻麻的字
