@@ -14,22 +14,20 @@
 </p>
 
 <p align="center">
-  <a href="#run-it-in-30-seconds"><b>⚡ Run it in 30 seconds</b></a> ·
+  <a href="#run-it-in-three-minutes"><b>⚡ Run it in three minutes</b></a> ·
   <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a> ·
-  <a href="#whats-new">What's new</a> ·
-  <a href="docs/功能清单.md">Feature list (zh)</a>
+  <a href="CHANGELOG.en.md">Changelog</a> ·
+  <a href="docs/功能清单.md">Feature list (zh)</a> ·
+  <a href="README.md#交流群">Feishu group</a>
 </p>
 
 <p align="center">
   <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&logo=github&label=Star&color=5b5ff7" alt="Star"></a>
   <a href="https://github.com/CatCatUncle/openworkbuddy/forks"><img src="https://img.shields.io/github/forks/CatCatUncle/openworkbuddy?style=flat-square&logo=github&color=5b5ff7" alt="Fork"></a>
-  <img src="https://img.shields.io/badge/Node-18%2B-5b5ff7?style=flat-square" alt="Node 18+">
-  <img src="https://img.shields.io/badge/macOS%20%7C%20Windows-desktop-5b5ff7?style=flat-square" alt="macOS | Windows">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="License"></a>
 </p>
 
 <p align="center">
-  <b>⭐ If this is useful, star it</b> — there is no marketing budget; discoverability is that number.<br>
   <sub>Free for personal, learning and non-profit use. Commercial use needs a license — <a href="#license">one sentence below ↓</a></sub>
 </p>
 
@@ -45,7 +43,7 @@
 
 **Any model. Your machine.** Switch between DeepSeek / Qwen / GLM / Kimi / OpenRouter / local Ollama with one click. Have **Claude Code or Codex** installed? Use it as the engine and stop buying extra tokens. Self-hosted: sessions, files and API keys stay local; the server binds to `127.0.0.1` by default.
 
-**Adding a capability = dropping one Markdown file.** Put a `SKILL.md` into `skills/` and it's live on the next task — no code, no restart, no build. Beyond that: MCP connectors and the open [Agent Plugins](https://agent-plugins.org) standard — paste a GitHub URL to install someone else's plugin.
+**Adding a capability = dropping one Markdown file.** Save it as `skills/<name>/skill.md` and it's live on the next task — no code, no restart, no build. Beyond that: MCP connectors and the open [Agent Plugins](https://agent-plugins.org) standard — paste a GitHub URL to install someone else's plugin.
 
 ## What it does for you
 
@@ -66,7 +64,7 @@
   <img src="docs/images/case-photoreal.jpg" width="640" alt="The same person at a cafe window, on a rainy night street, at an office desk and in a morning bedroom, each holding a wooden sign reading 关注 OpenWorkBuddy 项目">
 </p>
 
-The hard part isn't drawing a person — it's keeping **the same** person across all four, keeping the Chinese on the sign legible, and keeping pores and shine on the skin instead of airbrushing them away. So it generates one, then actually looks at what it just made (a real vision call on its own output, not a claim from memory), says "this one got the light and the skin right", and fans the rest of the scenes out from there. No AI watermark on any of them.
+The hard part isn't drawing a person — it's keeping **the same** person across all four and the Chinese on the sign legible. So it generates one, then actually looks at what it just made (a real vision call on its own output, not a claim from memory), confirms the light and the skin came out right, and fans the rest out from there. No AI watermark on any of them.
 
 **"Build me a Hunan travel guide site — all 14 prefectures, no skipping."**
 
@@ -74,18 +72,11 @@ The hard part isn't drawing a person — it's keeping **the same** person across
   <a href="https://hunan-travel.pages.dev/"><img src="docs/images/case-hunan-site.jpg" width="820" alt="Hunan travel guide — a single-page site built by OpenWorkBuddy"></a>
 </p>
 
-It's live, go click around: **<https://hunan-travel.pages.dev/>**. All 14 prefectures written up one by one (how to get there, tickets and hours, what to eat, what to do, what to avoid), plus 3/5/7-day routes. Single-page HTML, no external CDN — drop it on any static host and it's a site. This isn't a mockup screenshot; it's the file it handed over.
+It's live, go click around: **<https://hunan-travel.pages.dev/>**. All 14 prefectures written up one by one, plus 3/5/7-day routes. Single-page HTML, no external CDN — drop it on any static host and it's a site. This isn't a mockup screenshot; it's the file it handed over.
 
-**Got Claude Code or Codex on this machine? One click makes it the engine — no extra tokens to buy.**
+How it pulled those off, and what a run on a local Claude Code engine looks like → **[三个案例，拆开讲](docs/案例.md)** (Chinese, but the screenshots speak for themselves)
 
-<p align="center">
-  <img src="docs/images/local-claude-code.png" width="820" alt="Running on local Claude Code: the chip in the red box names the engine, the tool count, and that it costs no API quota">
-</p>
-
-The UI says out loud which engine this run went through and whether it costs API quota. Every step folds into a single line you can expand; when the task ends, only the conclusion is left in view. (The screenshot is the Chinese UI — there's a 中 / En toggle in the avatar menu.)
-
-
-## Run it in 30 seconds
+## Run it in three minutes
 
 **Installer**: grab the package for your OS from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases). A **five-step wizard** on first launch walks you through creating the admin account, pasting an API key (validated with a real request on the spot) and picking an engine.
 
@@ -94,9 +85,13 @@ The UI says out loud which engine this run went through and whether it costs API
 | macOS · Apple Silicon | `OpenWorkBuddy-*-mac-arm64.dmg` |
 | macOS · Intel | `OpenWorkBuddy-*-mac-x64.dmg` |
 | Windows 10/11 (one installer for x64 and ARM64, picks the right one) | `OpenWorkBuddy-*-win-setup.exe` |
-| Windows portable (no install; USB stick / locked-down PCs) | `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe` (not sure which CPU? `-win-portable.exe` bundles both, twice the size) |
+| Windows portable (**only if you cannot install software**) | `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe` (it is a self-extractor: every launch unpacks the whole app into `%TEMP%`, so the first start can take several minutes with a process but no window) |
 
-> macOS will say "cannot verify the developer" — the build isn't signed with a paid Apple certificate, it isn't malware. Right-click → Open, or `xattr -cr /Applications/OpenWorkBuddy.app`. Your data lives in `~/OpenWorkBuddy` and survives uninstall.
+> Your OS will block the first launch: the build has no code-signing certificate (Apple charges $99/year, Windows a few thousand — this is a free open-source project). It is not malware.
+> **Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway". **macOS**: right-click the icon → Open, or `xattr -cr /Applications/OpenWorkBuddy.app`.
+> Your data lives in `~/OpenWorkBuddy` and survives uninstall.
+>
+> **Double-clicked and nothing happened?** The boot log is at `~/OpenWorkBuddy/logs/boot.log`; walk through [安装与启动 · 双击了没反应？](docs/安装与启动.md#双击了没反应) (Chinese).
 
 **From source** (Node.js 18+, no build step, no framework — edit, refresh, done):
 
@@ -112,9 +107,34 @@ Mirrors, one-line install script, port conflicts, startup hangs → [安装与�
 
 ## Models
 
-**Settings → Models**: pick a provider preset (OpenAI / Anthropic / OpenRouter / Volcano Ark / Bailian / DeepSeek / GLM / Kimi / Ollama), the base URL and protocol are filled in, paste a key, save — hot reload, no restart. Reasoning models can have **thinking turned off or dialed down** from the UI.
+**Settings → Models**: pick a provider preset (OpenAI / Anthropic / OpenRouter / Volcano Ark / Bailian / DeepSeek / GLM / Kimi / Ollama), the base URL and protocol are filled in, paste a key, save — hot reload, no restart. Reasoning models can have **thinking turned off or dialed down** from the UI. Base URLs and model names per provider: [配置模型](docs/配置模型.md) (Chinese).
 
 > `config.json` is the only file holding API keys and is already in `.gitignore`. Don't commit it.
+
+## Put it on a server for your team
+
+One command on a clean VPS that already has Docker:
+
+```bash
+git clone https://github.com/CatCatUncle/openworkbuddy.git && cd openworkbuddy
+bash deploy.sh                              # binds 127.0.0.1:3800
+bash deploy.sh --domain buddy.example.com   # or: automatic HTTPS, reachable from outside
+```
+
+It builds the image, starts the container and **waits for the health check to actually pass** before
+claiming success; if it won't start you get the logs, not a happy message. All data sits in `./wb-data`
+(config, accounts, output files, skills, backups) — delete the container freely, keep that directory.
+
+**Register the admin account first thing.** The first account to register becomes the admin, and
+self-registration is closed right after. An empty instance on a public IP means whoever gets there
+first is your admin.
+
+**Multi-tenant + admin console**: one process serves several companies. Output files, sessions,
+accounts, seats, usage ledgers and audit logs are invisible across tenants; engines and API keys
+belong to the platform admin. The four org-level switches (`allow_shell` / `net_allow` / `net_deny` /
+`session_days`) really do block — they are not decorative checkboxes.
+
+Reverse proxy, upgrades, migration, security checklist → [deploy/README.md](deploy/README.md) (Chinese)
 
 ## Command line
 
@@ -132,35 +152,18 @@ wb engines && wb engines use claude-code   # use a local Claude Code / Codex as 
 
 ## What's new
 
+- **Sep 13** Every step now shows how long it took, and a closing tally: tool time vs. model-thinking time
+- **Sep 13** Plug in Langfuse and you can read the raw input/output of every model call
+- **Sep 13** Five API-key traps fixed at once: key not recognized, wizard every launch, duplicate channels, nowhere to paste, missing models
+- **Sep 13** The admin console gets a "Models & Keys" page — admins configure there, not on the home page
 - **Sep 11** Sidebar splits work into **Office / Engineering**; a `wb` run in your terminal shows up on your phone and takes interjections
 - **Sep 11** Image / video / voice / vision each take several models, and one provider key covers all of them
 - **Sep 11** Six ways the app could fail to open on launch, each now explained in a real window, plus a boot log
-- **Sep 11** Installer is 139 MB smaller: source maps and type declarations are never read at runtime
-- **Sep 11** "Check for updates" no longer tells people who installed a package to run `git pull`
-- **Sep 11** Three high-severity fixes: a one-letter auth bypass, a filename that could run commands, a preview site open to the internet
-- **Sep 11** On a shared server, plain members no longer see a row of buttons that can only 403
-- **Sep 11** UI polish: three surface levels, one shadow scale, and scrollbars you can actually see
-- **Sep 10** Your task history was never lost — an invented project name was filtering it out. Fixed
 - **Sep 10** One command to deploy: `bash deploy.sh`, and `--domain` gets you HTTPS
 - **Sep 10** Multi-tenant + admin console: 16 panels; admins, auditors and members each see their own slice
-- **Sep 10** No more stopping half-done: the progress file is checked before a task may end
-- **Sep 10** One line per step in the process pane; raw arguments and full return values are one click away
-- **Sep 10** Long replies stopped stuttering: on a 100k-char stream, DOM rebuild drops 19.7s → 0.7s
-- **Sep 10** Goal cards derive and grade criteria through your local CLI, with no silent API spend
-- **Sep 10** WeChat / WeCom / Official Accounts / QQ can receive files, images, voice notes and stickers
-- **Sep 10** Create a Lark app by QR; the App ID fills itself back in
-- **Sep 9** Finishing a task no longer pops a panel over your chat — outputs become a row of chips
-- **Sep 9** 39 one-click connector presets; experts up to 15, plus 4 teams
-- **Sep 9** English / Chinese in one click; Appearance adds theme, six skins, font size and density
-- **Sep 8** Five-step first-run wizard sets up model, engine and IM
 - **Sep 8** Local Claude Code / Codex as the engine, with memory, skills, files and media wired in
-- **Sep 8** Reasoning models can have thinking turned off or dialed down
-- **Sep 7** Scheduled tasks get a "false green" verdict: no exception is not the same as done
-- **Sep 5** `wb` CLI: one-shot, interactive, pipes, `--json`, honest exit codes
-- **Sep 3** In-app preview for docx / xlsx / pptx / zip / csv
-- **Aug 31** Paste or drag files and images into the chat; the agent actually reads the image
 
-Full history in the [commit log](https://github.com/CatCatUncle/openworkbuddy/commits/main) — every message says *why*.
+Older entries: **[CHANGELOG.en.md](CHANGELOG.en.md)**. The matching code is in the [commit log](https://github.com/CatCatUncle/openworkbuddy/commits/main) — every message says *why*.
 
 ## ⚠️ This agent has a shell
 
@@ -168,11 +171,13 @@ It runs commands, reads and writes files, reaches the network — so the gates a
 
 ## Contributing
 
+**Made it this far and it looks useful? Star it.** There is no marketing budget; discoverability is that number.
+
 **Broke it? Stuck? Open an [issue](https://github.com/CatCatUncle/openworkbuddy/issues/new) — even one line of error text helps.** Strip your API keys first.
 
 Three ways in, smallest first:
 
-- **10 minutes** — write a skill: one Markdown file in `skills/`, live on save. Template in [CONTRIBUTING.md](CONTRIBUTING.md)
+- **10 minutes** — write a skill: one Markdown file at `skills/<name>/skill.md`, live on save. Template in [CONTRIBUTING.md](CONTRIBUTING.md)
 - **1 hour** — add a provider preset, fix a doc, add a preview for a file type
 - **One evening** — pick an issue. `npm install && npm start` runs it; `npm test` is green without any API key
 

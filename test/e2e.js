@@ -6708,7 +6708,28 @@ function testReadmeFrontGate() {
   assert(SOLO.test("这个项目是我一个人做的"), "「一个人做」的闸门自己失灵了：连最直白的那句都抓不住");
   assert(!SOLO.test("三张里得是同一个人，牌子上的字不能糊"), "闸门误伤「同一个人」：它管的是自称单干，不是中文里所有含「一个人」的句子");
   for (const [name, t] of [["README.md", zh], ["README.en.md", en]]) assert(!SOLO.test(t), name + " 里出现了「一个人做」式措辞");
-  console.log("✅ README 门面闸门：中英互链·只指本仓库·首屏三句差异·最新动态 " + items.length + " 条日期均有真实提交且倒序·二维码 PNG " + w + "x" + h + "·协议一句人话·技能模板+锚点·无「一个人做」措辞");
+  // README 只留最近几条，全量在 CHANGELOG——两份是手工对齐的，没有生成器。
+  // 漂了的后果很轻但很丢人：README 吹了一条功能，点「更早的看变更记录」进去发现那条根本不在。
+  // 所以反过来查：README 上的每一条都必须能在 CHANGELOG 里逐字找到。
+  const chZh = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
+  const chEn = fs.readFileSync(path.join(root, "CHANGELOG.en.md"), "utf8");
+  const lines = (t, re) => [...t.matchAll(re)].map((m) => m[0].trim());
+  const RE_ZH = /^- \*\*\d\d-\d\d\*\* .+$/gm, RE_EN = /^- \*\*[A-Z][a-z]{2} \d{1,2}\*\* .+$/gm;
+  const drift = (readme, full, re, name) => lines(readme, re).filter((l) => !full.includes(l)).map((l) => name + " 有这条、CHANGELOG 里没有：" + l);
+  const drifted = [...drift(news, chZh, RE_ZH, "README.md"), ...drift(newsEn, chEn, RE_EN, "README.en.md")];
+  assert(drifted.length === 0, "README 和 CHANGELOG 走散了：\n  " + drifted.join("\n  "));
+  const nZh = lines(chZh, RE_ZH).length, nEn = lines(chEn, RE_EN).length;
+  assert(nZh === nEn, `中英 CHANGELOG 条数对不上（${nZh} vs ${nEn}）：加动态时两份都要加`);
+  assert(nZh >= items.length, "CHANGELOG 比 README 还短，那它就不是「全量」了");
+  // 反向对照：改掉 README 上一条的一个字，闸门必须当场抓住——不然上面那条只证明了「我没在找」
+  const faked = news.replace(lines(news, RE_ZH)[0], lines(news, RE_ZH)[0] + "（这条是编的）");
+  assert(drift(faked, chZh, RE_ZH, "x").length === 1, "漂移闸门失灵：README 多写一条 CHANGELOG 里没有的，居然没红");
+  // README 指向的文档得真的在。移动一份文档而忘了改链接，读者点进去是 404
+  const docLinks = [...zh.matchAll(/\]\((docs\/[^)#]+|deploy\/README\.md|CHANGELOG\.md|CONTRIBUTING\.md)[)#]/g)].map((m) => m[1]);
+  assert(docLinks.length >= 12, "README 的文档链接只扫出 " + docLinks.length + " 条，正则八成没匹配上");
+  const gone = [...new Set(docLinks)].filter((f) => !fs.existsSync(path.join(root, f)));
+  assert(gone.length === 0, "README 链到了不存在的文档：" + gone.join(" "));
+  console.log("✅ README 门面闸门：中英互链·只指本仓库·首屏三句差异·最新动态 " + items.length + " 条日期均有真实提交且倒序·二维码 PNG " + w + "x" + h + "·协议一句人话·技能模板+锚点·无「一个人做」措辞·README 每条动态都能在 CHANGELOG（中英各 " + nZh + " 条）里找到（反向对照通过）·" + docLinks.length + " 条文档链接都在");
 }
 
 // 「去哪拿 Key」闸门：向导和设置页每个要填 Key 的地方都得有一条直达链接，链接全 https + 新窗口。

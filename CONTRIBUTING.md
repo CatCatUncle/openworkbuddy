@@ -41,7 +41,7 @@ npm start       # 改前端就直接刷新浏览器；改后端重启这条命�
 
 | 方向 | 难度 |
 |---|---|
-| **写一个技能** —— 一个 Markdown 文件放进 `skills/`，不用碰任何代码 | ⭐ |
+| **写一个技能** —— 一个 Markdown 存成 `skills/<名字>/skill.md`，不用碰任何代码 | ⭐ |
 | **补一个模型服务商预设** —— `config.example.json` 和 README 的表里加一行 | ⭐ |
 | **改文档 / 纠错别字** | ⭐ |
 | **加一个内置专家** —— `experts.json` 里加一份系统提示 | ⭐⭐ |
@@ -59,7 +59,7 @@ npm start       # 改前端就直接刷新浏览器；改后端重启这条命�
 
 ## 提交一个技能（3 分钟）
 
-技能就是一个带 frontmatter 的 Markdown。照这个模板建 `skills/<英文短名>/SKILL.md`，存盘后下一条任务就生效，不用重启：
+技能就是一个带 frontmatter 的 Markdown。照这个模板建 `skills/<英文短名>/skill.md`（文件名是小写，Linux 上大写读不到），存盘后下一条任务就生效，不用重启：
 
 ```markdown
 ---
@@ -107,6 +107,20 @@ pet.js           桌面宠物窗口（透明置顶挂件）  pet-preload.js / pu
 public/          前端（单文件，没有构建步骤）
 workspace/       成果文件输出        data/         账号与会话
 ```
+
+## 改了文档，两边都要改
+
+README 有中英两份，功能清单、案例、变更记录各一份，内容是手工对齐的——没有生成器，改一边另一边不会自己跟上。
+
+| 改了什么 | 还要同步哪儿 |
+|---|---|
+| 加/改一条「最新动态」 | `README.md` + `README.en.md` 各留最近十条；全量进 `CHANGELOG.md` + `CHANGELOG.en.md` |
+| 加了一项能力 | `docs/功能清单.md` 的表；首屏那三句「为什么是它」只在真的换卖点时才动 |
+| 换了安装包文件名 | 两份 README 的下载表 + `docs/安装与启动.md`（`npm test` 会逐份文档核对文件名） |
+| 改了技能怎么写 | `docs/扩展.md` + `CONTRIBUTING.md` 的模板 + 两份 README 里那句「= 一个 Markdown」 |
+
+`npm test` 里有一道 README 闸门（`testReadmeFrontGate`）：中英互链、Star 徽章、「最新动态」条数与日期、
+群二维码尺寸、协议段落、技能模板——少一样就红。改完 README 先跑一遍再提。
 
 ## 录一段 demo GIF
 

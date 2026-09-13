@@ -14,9 +14,9 @@
 </p>
 
 <p align="center">
-  <a href="#跑起来"><b>⚡ 30 秒跑起来</b></a> ·
+  <a href="#跑起来"><b>⚡ 三分钟跑起来</b></a> ·
   <a href="https://github.com/CatCatUncle/openworkbuddy/releases">下载安装包</a> ·
-  <a href="#最新动态">最新动态</a> ·
+  <a href="CHANGELOG.md">变更记录</a> ·
   <a href="#交流群">飞书交流群</a> ·
   <a href="docs/功能清单.md">功能清单</a>
 </p>
@@ -24,13 +24,10 @@
 <p align="center">
   <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&logo=github&label=Star&color=5b5ff7" alt="Star"></a>
   <a href="https://github.com/CatCatUncle/openworkbuddy/forks"><img src="https://img.shields.io/github/forks/CatCatUncle/openworkbuddy?style=flat-square&logo=github&color=5b5ff7" alt="Fork"></a>
-  <img src="https://img.shields.io/badge/Node-18%2B-5b5ff7?style=flat-square" alt="Node 18+">
-  <img src="https://img.shields.io/badge/macOS%20%7C%20Windows-desktop-5b5ff7?style=flat-square" alt="macOS | Windows">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="License"></a>
 </p>
 
 <p align="center">
-  <b>⭐ 觉得有用就点个 Star</b> —— 这个项目没有推广预算，能不能被搜到，基本取决于这个数字。<br>
   <sub>个人、学习、非营利用途<b>免费</b>；公司里用需要授权，<a href="#协议">一句话讲清 ↓</a></sub>
 </p>
 
@@ -46,7 +43,7 @@
 
 **不绑任何一家模型，东西都在你手里。** DeepSeek / 通义 / 智谱 / Kimi / OpenRouter / Ollama 本地模型界面点一下就切；本机装了 **Claude Code / Codex** 的，一键拿它当发动机，不再另买 token。自托管，会话、文件、Key 全在本机，默认只监听 `127.0.0.1`。
 
-**加一个能力 = 丢一个 Markdown 文件。** 放进 `skills/`，存盘后下一条任务就生效——不改代码、不重启、不打包。往外接 MCP 连接器和 [Agent Plugins](https://agent-plugins.org) 开放标准，别人的插件粘个 GitHub 地址就装。
+**加一个能力 = 丢一个 Markdown 文件。** 存成 `skills/<名字>/skill.md`，存盘后下一条任务就生效——不改代码、不重启、不打包。往外接 MCP 连接器和 [Agent Plugins](https://agent-plugins.org) 开放标准，别人的插件粘个 GitHub 地址就装。
 
 ## 它替你做完的事
 
@@ -67,7 +64,7 @@
   <img src="docs/images/case-photoreal.jpg" width="640" alt="同一位人物在咖啡馆窗边、雨夜街头、工位、清晨卧室四个场景，举着写有「关注 OpenWorkBuddy 项目」的木牌，写实照片风格">
 </p>
 
-难的从来不是画个人，是**四张里得是同一个人**、木牌上的中文不能糊、皮肤得有毛孔和油光而不是磨皮。它的做法是：先出一张，再用看图工具真去读自己刚生的那张（不是凭记忆吹），说出「这版光线对了、皮肤质感对了」，然后照这个方向一次铺开其余场景。图上不带任何 AI 生成水印。
+难的不是画个人，是**四张里得是同一个人**、木牌上的中文不能糊。它先出一张，再用看图工具真去读自己刚生的那张（不是凭记忆吹），确认光线和皮肤质感对了，才照这个方向铺开其余场景。图上不带任何 AI 生成水印。
 
 **「做一个湖南旅游攻略网站，14 个市州一个都不能少」**
 
@@ -75,16 +72,9 @@
   <a href="https://hunan-travel.pages.dev/"><img src="docs/images/case-hunan-site.jpg" width="820" alt="湖南怎么玩 · 14 市州完全攻略——OpenWorkBuddy 生成的单页站点"></a>
 </p>
 
-站在这儿，点开就能逛：**<https://hunan-travel.pages.dev/>**。14 个市州逐一拆开写（到达方式、门票与开放时间、吃什么、怎么玩、哪里别踩坑），外加 3/5/7 天三条线路，单页 HTML、不挂任何外部 CDN，扔到静态托管上就是一个站。这不是截图拼的示意图，是它交出来的那个文件本身。
+站在这儿，点开就能逛：**<https://hunan-travel.pages.dev/>**。14 个市州逐一拆开写，外加 3/5/7 天三条线路，单页 HTML、不挂任何外部 CDN，扔到静态托管上就是一个站。这不是截图拼的示意图，是它交出来的那个文件本身。
 
-**本机装了 Claude Code / Codex 的，一键拿它当发动机——不再另买 token。**
-
-<p align="center">
-  <img src="docs/images/local-claude-code.png" width="820" alt="本机 Claude Code 跑任务：红框里那枚牌子写着走的是谁、多少个工具、不花 API 额度">
-</p>
-
-红框里那枚牌子是真机截图：这一趟走的是本机的 `claude-opus-5`，挂了 102 个工具，不花 API 额度——界面上直说，不用猜。中间每一步折成一行摆着，想看细节再点开，任务结束只把结论留在外面。
-
+这两件事它是怎么做到的、本机 Claude Code 当发动机又长什么样 → **[三个案例，拆开讲](docs/案例.md)**
 
 ## 跑起来
 
@@ -133,14 +123,10 @@ bash deploy.sh --domain buddy.example.com   # 或者：带自动 HTTPS，直接�
 
 **多租户 + 企业管理后台**：一个进程同时给多家公司用。成果文件、会话、账号、席位、用量账本、
 审计各租户互相看不见；引擎和 API Key 归平台管理员。管理员登录后头像菜单 → **企业管理后台**，
-建组织、分席位、看用量、配组织级安全策略。
+建组织、分席位、看用量、配组织级安全策略——组织级那四个开关（`allow_shell` / `net_allow` /
+`net_deny` / `session_days`）是真的会拦人的，不是摆着看的复选框。
 
-组织级那四个开关是**真的会拦人**的：关掉 `allow_shell`，`run_shell` / `run_node` 在工具定义层
-就被摘掉了，模型压根看不见；`net_allow` / `net_deny` 管得住 agent 能访问哪些域名（域名比对带点
-边界，白名单 `example.com` 不会顺带放行 `evilexample.com`）；`session_days` 是在读 token 时判
-过期的，改小了已经发出去的 cookie 当场作废。
-
-细节、反代配置、升级迁移、安全清单 → [部署](deploy/README.md)
+反代配置、升级迁移、四个开关各自拦在哪一层、安全清单 → [部署](deploy/README.md)
 
 ## 配模型
 
@@ -164,35 +150,18 @@ wb engines && wb engines use claude-code   # 本机装了 Claude Code / Codex？
 
 ## 最新动态
 
+- **09-13** 每一步花了多久直接写在卡上，收尾再记一笔账：工具占了多久、剩下多少是模型在想
+- **09-13** 接 Langfuse 就能翻每次模型调用的原始输入输出，一层层点开看
+- **09-13** API Key 五连坑一起修：填了不认、每次弹向导、渠道重名、没地方填、模型不齐
+- **09-13** 企业管理后台补「模型与 Key」页，管理员在后台就能配，不用回首页
 - **09-11** 侧栏分「办公 / 工程」两条线；终端里 `wb` 起的活儿，手机上看得见、插得上话
 - **09-11** 生图 / 生视频 / 配音 / 视觉都能配多个模型，同一家的 Key 只填一次
 - **09-11** 「下载了打不开」修了六种，每种都有窗口说清原因，另附一份启动日志
-- **09-11** 装机包瘦了 139 MB：source map 和类型声明运行时一个字节都不读
-- **09-11** 「检查更新」不再劝装了包的人去 `git pull`
-- **09-11** 补三处高危：改一个字母绕过门禁、文件名能执行命令、预览站点对全网敞开
-- **09-11** 多人服务器上，普通成员不再看见一排点了必然 403 的按钮
-- **09-11** UI 精致化：三级表面层级、统一投影、修掉不可见的滚动条
-- **09-10** 任务历史不是丢了，是被一个凭空编出来的项目名滤没了——已修
 - **09-10** 一条命令部署到服务器：`bash deploy.sh`，加 `--domain` 直接带 HTTPS
 - **09-10** 多租户 + 企业管理后台：16 个面板，管理员、审计员、成员各看各的
-- **09-10** 不许「没做完就收摊」：收尾前对一遍进度档，还有没打勾的就打回去
-- **09-10** 执行过程一行流：每步一行，原始入参和完整返回收在卡里点开就是
-- **09-10** 长回复不卡了：十万字流式，DOM 重建 19.7 秒 → 0.7 秒
-- **09-10** Goal 目标卡：拆验收、判分都走你本机 CLI，不偷偷烧 API 额度
-- **09-10** 微信 / 企微 / 公众号 / QQ 也能收文件、图片、语音、表情了
-- **09-10** 飞书扫码新建应用，App ID 自动填回
-- **09-09** 任务完成不再弹面板抢版面，产出收成一排 chip
-- **09-09** 连接器 39 个预设一键接入；专家加到 15 位 + 4 支专家团
-- **09-09** 中英文一键切换；外观页给了主题、六套皮肤、字号和密度
-- **09-08** 首次开箱五步向导，打开就带你配好模型、引擎、IM
 - **09-08** 本机 Claude Code / Codex 当引擎，记忆、技能、读文件、生图配音全接上
-- **09-08** 带 reasoning 的模型可以关掉思考或调强度
-- **09-07** 定时任务加「假绿」裁定：没抛异常不等于干成了
-- **09-05** 命令行 `wb`：单发 / 交互 / 管道 / `--json`，退出码说实话
-- **09-03** 应用内直接预览 docx / xlsx / pptx / zip / csv
-- **08-31** 粘贴、拖拽文件和图片进对话，agent 真能看懂图
 
-完整变更看 [commit 历史](https://github.com/CatCatUncle/openworkbuddy/commits/main)，每条提交信息都写了「为什么」。
+更早的看 **[变更记录](CHANGELOG.md)**；每条对应的代码改动在 [commit 历史](https://github.com/CatCatUncle/openworkbuddy/commits/main)，提交信息写的是「为什么」。
 
 ## ⚠️ 这个 agent 手里有 shell
 
@@ -208,11 +177,13 @@ wb engines && wb engines use claude-code   # 本机装了 Claude Code / Codex？
 
 ## 一起把它做下去
 
+**看到这儿觉得有用，点个 Star。** 这个项目没有推广预算，能不能被搜到基本就取决于这个数字。
+
 **用崩了、卡住了，开个 [issue](https://github.com/CatCatUncle/openworkbuddy/issues/new) —— 哪怕只贴一句报错。** 你以为「只有我遇到」的坑，多半所有人都在踩。贴之前扫一眼，别把 API Key 带上。
 
 **想动手，按投入从小到大三条路：**
 
-- **10 分钟** —— 写个技能。一个 Markdown 文件丢进 `skills/`，存盘即生效，[三分钟模板在这](CONTRIBUTING.md#提交一个技能3-分钟)
+- **10 分钟** —— 写个技能。一个 Markdown 存成 `skills/<名字>/skill.md`，存盘即生效，[三分钟模板在这](CONTRIBUTING.md#提交一个技能3-分钟)
 - **1 小时** —— 补一个模型渠道预设、修一处文档、给某个文件格式加上预览
 - **一晚上** —— 挑个 issue 改。`npm install && npm start` 就跑起来，`npm test` 不需要 API Key 就能全绿
 
@@ -223,6 +194,7 @@ wb engines && wb engines use claude-code   # 本机装了 Claude Code / Codex？
 | | |
 |---|---|
 | [功能清单](docs/功能清单.md) | 全部能力、内置技能与工具 |
+| [案例](docs/案例.md) | README 上那几张图是怎么做出来的 |
 | [安装与启动](docs/安装与启动.md) | 安装包、源码、Windows、常见卡壳 |
 | [配置模型](docs/配置模型.md) | 各服务商 base_url / 模型名对照 |
 | [命令行用法](docs/命令行用法.md) | CLI 参数、管道、`--json`、脚本和 cron |
@@ -232,7 +204,8 @@ wb engines && wb engines use claude-code   # 本机装了 Claude Code / Codex？
 | [安全](docs/安全.md) | 审批闸门、黑白名单、审计 |
 | [部署](docs/部署.md) | 服务器 / Docker / 反代 |
 | [实现细节](docs/实现细节.md) | agent 主循环怎么转的 |
-| [路线图](docs/路线图.md) | 接下来做什么：手机远程、短剧画布 |
+| [路线图](docs/路线图.md) | 接下来做什么：短剧画布、把企业方案里的工具搬回来 |
+| [变更记录](CHANGELOG.md) | 一句话一条，最新在上面 |
 | [参与贡献](CONTRIBUTING.md) | 项目结构、测试、提 PR |
 
 ## 协议
