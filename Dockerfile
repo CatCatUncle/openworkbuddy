@@ -20,12 +20,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 先只拷 package*.json：只要依赖没变，下面这层 npm install 就走缓存，
+# 先只拷 package*.json：只要依赖没变，下面这层 npm ci 就走缓存，
 # 改一行业务代码重建只要几秒，不用重装几百个包。
 COPY package*.json ./
 # electron 是桌面壳，服务端用不上，跳过它那个上百 MB 的二进制下载
 ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
-RUN npm install --omit=dev
+# 用 ci 不用 install：install 会按 package.json 的 semver range 重新解析，同一个 commit
+# 隔一个月 build 出来的镜像依赖版本就能不一样，线上出问题时「服务器上那个镜像」和本地对不上，
+# 排查就没有基准了。ci 严格照 package-lock.json 装，跟 CI 流水线（release.yml 也是 npm ci）一致。
+RUN npm ci --omit=dev
 
 # 真正拷代码。哪些不拷见 .dockerignore——config.json、data/、workspace/
 # 这些一律挡在外面，镜像层是只读快照，进去了就删不掉了。

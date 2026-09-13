@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # OpenWorkBuddy 一键安装（macOS / Linux）
 #
-#   curl -fsSL https://raw.githubusercontent.com/<你的仓库>/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/CatCatUncle/openworkbuddy/main/install.sh | bash
 # 或者克隆下来后：
 #   bash install.sh
 #
@@ -43,7 +43,9 @@ cd "$DIR"
 # ---------- 3. 依赖 ----------
 if command -v pnpm >/dev/null 2>&1; then
   say "用 pnpm 装依赖（多项目共享，省磁盘）"
-  pnpm install --prod=false
+  # 显式关掉 frozen-lockfile：仓库里不带 pnpm-lock.yaml（只维护 package-lock.json），
+  # 而 pnpm 在 CI=true 的环境下 frozen 默认是开的，锁文件缺席会直接 ERR_PNPM_NO_LOCKFILE 装不上
+  pnpm install --prod=false --no-frozen-lockfile
 else
   say "用 npm 装依赖"
   npm install
@@ -80,7 +82,10 @@ $(ok "装完了")
 
 EOF
 
-if [ "${OPENWORKBUDDY_AUTOSTART:-1}" = "1" ] && [ -t 1 ]; then
+# 必须连 stdin 一起判：curl ... | bash 时 stdout 还是 tty、stdin 已经被脚本自己占了，
+# read 撞 EOF 返回非零，配合开头的 set -euo pipefail 会让脚本装完之后以非零码退出——
+# 装其实已经成了，用户看到的却是「失败」
+if [ "${OPENWORKBUDDY_AUTOSTART:-1}" = "1" ] && [ -t 0 ] && [ -t 1 ]; then
   read -r -p "现在就起服务吗？[Y/n] " ans
   case "${ans:-Y}" in
     [Yy]*|"") exec npm start ;;

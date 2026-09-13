@@ -52,3 +52,7 @@ dist/
 
 # 录 demo 的副产物：README 里嵌的是 GIF，mp4 只是录制时顺手产的，不入库占体积
 docs/images/demo.mp4
+
+# 只维护 package-lock.json（CI 和 Dockerfile 都走 npm ci）。
+# 两份锁文件长期手工对齐必然漂：上一份 pnpm-lock.yaml 过期五周、缺 7 个包
+pnpm-lock.yaml

@@ -119,8 +119,10 @@ ok(/"\$\{WB_BIND:-127\.0\.0\.1\}/.test(COMPOSE), "端口默认只绑 127.0.0.1�
 const DF = read("Dockerfile");
 ok(!/^VOLUME/m.test(DF), "Dockerfile 里没有 VOLUME 声明（否则每次 recreate 都掉一个匿名卷）");
 ok(/OPENWORKBUDDY_HOME=\/data/.test(DF), "Dockerfile 也设了 OPENWORKBUDDY_HOME（不用 compose、光 docker run 也对）");
-ok(/COPY package\*\.json \.\/[\s\S]*RUN npm install[\s\S]*COPY \. \./.test(DF),
+ok(/COPY package\*\.json \.\/[\s\S]*RUN npm (ci|install)[\s\S]*COPY \. \./.test(DF),
    "先拷 package.json 装依赖、再拷代码（改一行业务代码不用重装几百个包）");
+// 这条卡的是命令本身：install 会重新解析 semver，同一个 commit 不同日期 build 出的镜像不一样
+ok(/RUN npm ci --omit=dev/.test(DF), "Dockerfile 用 npm ci 照 lockfile 装（npm install 会让镜像依赖漂移）");
 ok(/HEALTHCHECK/.test(DF) && /\/api\/auth\/state/.test(DF), "有健康检查，打的是不需要登录的那个端点");
 
 // ===================================================================

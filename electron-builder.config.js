@@ -169,6 +169,12 @@ module.exports = {
   },
   portable: {
     artifactName: "${productName}-${version}-win-${arch}-portable.${ext}",
+    // NSIS 系的目标在多架构下默认还会额外产一个「双架构合体包」：v0.1.6 的 Release 里
+    // 那个 248 MB 的 OpenWorkBuddy-0.1.6-win-portable.exe 就是它（= x64 120MB + arm64 127MB 摞一起）。
+    // 免安装版本来就要每次启动解压整包，合体版等于让用户白等一倍时间解压另一个架构用不上的文件，
+    // 而且没有任何文档指向它，纯粹是下载页上一个更大更诱人的错误选项。关掉，只留两个按架构分开的。
+    // （安装版 nsis 那个合体是要的：artifactName 里没有 ${arch}，只会产一个，装的时候自动选架构。）
+    buildUniversalInstaller: false,
   },
   nsis: {
     artifactName: "${productName}-${version}-win-setup.${ext}",
@@ -184,10 +190,10 @@ module.exports = {
     deleteAppDataOnUninstall: false,
   },
 
-  linux: {
-    icon: "build/icon.png",
-    category: "Office",
-    target: ["AppImage"],
-    artifactName: "${productName}-${version}-linux-${arch}.${ext}",
-  },
+  // 这里原来有一段 linux / AppImage 配置，删了。它从来没在流水线上跑过一次
+  // （release.yml 的 matrix 只有 macOS 和 Windows，上传通道也只收 dmg/zip/exe），
+  // 开发机是 Mac 也造不出来——等于一份没人验证过的配置，却让读代码的人以为有 Linux 安装包。
+  // Linux 上的既定路线是跑源码：install.sh 开头就写着「一键安装（macOS / Linux）」，
+  // 服务端还有 Docker。真要恢复得四处一起改：matrix 补 ubuntu 腿、upload 的 path 补 *.AppImage
+  // （那步是 if-no-files-found: error，不补必红）、README 下载表补一行、Release 正文补一行。
 };
