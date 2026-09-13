@@ -42,6 +42,7 @@ const cfgLint = require("./config-lint"); // 手改配置写错了当场说，�
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠道表 + 每路多模型
 const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
 const tracing = require("./trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
+const genCache = require("./gen-cache"); // 生成结果缓存：同一格重跑别再烧第二次钱
 const memory = require("./memory");
 const notify = require("./notify");
 const callout = require("./callout"); // 正文提示条：机器人推送里换成文字标签
@@ -2823,7 +2824,9 @@ app.post("/api/memory/import", (req, res) => {
   res.json({ ok: true, added, skipped, mode });
 });
 
-app.get("/api/cache", (_req, res) => res.json(cacheStats()));
+// 两份缓存，口径完全不同，所以一起报但分开说：上面那份是可再生的磁盘垃圾（清了只是下次慢一点），
+// gen 那份是「这一格已经买过了」的账（清了下次要重新花钱）。清理按钮只动前者。
+app.get("/api/cache", (_req, res) => res.json({ ...cacheStats(), gen: genCache.stats() }));
 app.post("/api/cache/clear", async (_req, res) => {
   const before = cacheStats();
   if (process.versions.electron) {
@@ -3639,6 +3642,54 @@ app.post("/api/files/open/*", (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
+  }
+});
+
+/**
+ * 直调一个工具：不过模型。
+ *
+ * /api/chat 是唯一能触发工具执行的入口，代价是每一次都得先烧一轮主模型的 token：
+ * 用户按「把这一格重画一遍」，服务端先把那段 prompt 复述给模型听，模型再决定要不要
+ * 照原样调一次工具——它有权改写那段话、也可能顺手多干点别的。确定性的重跑不该付这笔钱。
+ *
+ * 省钱的另一半在 gen-cache.js：参数逐字一样时连模型都不调，直接复用上次的产物。
+ * 确实要换一版的，input 里带 no_cache: true。
+ *
+ * 能直调的工具在 agent.js 的 DIRECT_TOOLS 里，只有生图/生视频/配音/网页截图这四个。
+ */
+app.post("/api/tool/run", async (req, res) => {
+  const { tool, input, sessionId } = req.body || {};
+  if (!tool) return res.status(400).json({ error: "缺少 tool" });
+  if (!runtime) return res.status(503).json({ error: "服务还在启动，稍等一下再试" });
+  const user = req.user; // authGuard 已挂上
+  if (user && account.creditsEnabled(user) && account.balanceOf(user) <= 0) {
+    return res.status(402).json({ error: "用量不足，跑不了。生图生视频每跑一次都是真花钱——找管理员在企业后台充值，或者把「用量限额」关掉。" });
+  }
+  // 产物落在这条对话自己的成果目录里：跟对话里生成的那一批待在一起，交付时才是完整一包。
+  // 自选工作目录 / 项目目录下没有这个概念，照旧就地读写（跟 /api/chat 同一条口径）。
+  let baseDir = null;
+  let label = "直调工具";
+  if (sessionId) {
+    const sess = getSession(sessionId);
+    if (!sessionAllowed(user, sess)) return res.status(403).json({ error: "这条对话不属于你" });
+    if (path.resolve(getWorkspaceDir()) === dataPath("workspace")) baseDir = sess.dir || null;
+    if (sess.title) label = sess.title.slice(0, 24);
+  }
+  const t0 = Date.now();
+  try {
+    const r = await runtime.runTool(tool, input, { user: user ? user.username : undefined, baseDir, taskLabel: label });
+    // 工具自己报的失败（渠道没配、模型点错名）不是 HTTP 错误：原话比任何状态码都说得清，
+    // 前端要把它贴在那一格上给用户看，所以照原样送出去，只用 isError 标明成没成
+    res.json({
+      ok: !r.isError,
+      isError: !!r.isError,
+      content: String(r.content || ""),
+      file: r.file || "",
+      cached: !!r.cached, // true = 这一次没花钱，复用的是上次的产物
+      ms: Date.now() - t0,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
   }
 });
 

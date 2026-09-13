@@ -189,7 +189,7 @@ if (!HAS_GIT) {
     } catch (e) {
       if (e.status === 1) return new Set(); // 一个都没被忽略，git 用退出码 1 表示，不是出错
       // 其余情况（比如 node_modules 是个软链，git 会说 "beyond a symbolic link"）
-      // 只说一声就走，别让一条辅助规则把 18 个套件全带红。
+      // 只说一声就走，别让一条辅助规则把 19 个套件全带红。
       console.log("  - git check-ignore 答不上来（" + String((e.stderr || e.message)).trim().split("\n")[0] + "）");
       return null;
     }

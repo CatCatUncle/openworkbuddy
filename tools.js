@@ -12,6 +12,7 @@ const { StringDecoder } = require("string_decoder");
 const security = require("./security");
 const memory = require("./memory");
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
+const genCache = require("./gen-cache"); // 生图/生视频/配音的内容寻址缓存：同一格重跑不再烧第二次钱
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
 let workspaceDir = dataPath("workspace");
@@ -408,6 +409,7 @@ const TOOL_DEFS = [
         filename: { type: "string", description: "保存文件名（可选，默认 image_时间戳.png）" },
         size: { type: "string", description: "尺寸如 1024x1024（可选，仅 OpenAI 兼容渠道生效）" },
         model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
+        no_cache: { type: "boolean", description: "强制重新生成（可选）。给了 filename 的调用，参数完全一样时会直接复用上一次的产物、不再花钱；确实要换一版不一样的，把这个设成 true。" },
       },
       required: ["prompt"],
     },
@@ -427,6 +429,7 @@ const TOOL_DEFS = [
         last_frame: { type: "string", description: "尾帧图的相对路径（可选，必须同时给 first_frame）。首尾都定住就是「从这张变到那张」，转场类镜头用它。" },
         filename: { type: "string", description: "保存文件名（可选，默认 video_时间戳.mp4）" },
         model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
+        no_cache: { type: "boolean", description: "强制重新生成（可选）。给了 filename 的调用，参数完全一样时会直接复用上一次的产物、不再花钱；确实要换一版不一样的，把这个设成 true。" },
       },
       required: ["prompt"],
     },
@@ -464,6 +467,7 @@ const TOOL_DEFS = [
         voice: { type: "string", description: "音色名（可选，默认用设置里配的；如 OpenAI 系的 alloy/nova、通义的 Cherry/Serena）" },
         speed: { type: "number", description: "语速 0.5~2.0（可选，仅 OpenAI 兼容渠道生效）" },
         model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
+        no_cache: { type: "boolean", description: "强制重新生成（可选）。给了 filename 的调用，参数完全一样时会直接复用上一次的产物、不再花钱；确实要换一版不一样的，把这个设成 true。" },
       },
       required: ["text"],
     },
@@ -944,7 +948,7 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile) {
   // 参考图到底有没有被这条渠道吃进去，回执里必须说一声。说了模型才知道
   // 「像不像」该拿谁去比；不说的话它只能再开一轮 look_at_image 自己对照。
   const refNote = refs.length ? `\n已带 ${refs.length} 张参考图出图；出来的东西像不像，以参考图为准。` : "";
-  return { content: `图片已生成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${refNote}${wmNote}`, isError: false };
+  return { content: `图片已生成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${refNote}${wmNote}`, isError: false, file: fname };
 }
 
 async function generateVideo(media, input, opts = {}) {
@@ -1060,7 +1064,7 @@ async function generateVideo(media, input, opts = {}) {
     ? "\n注意：这个渠道不接受 watermark 参数，片尾/角标可能带平台的「AI 生成」水印。要干净的成片就换个渠道或换个模型。"
     : "\n已按无水印出片，不用再开片找水印。";
   const kfNote = firstUri ? (lastUri ? "\n已按给定的首帧和尾帧出片。" : "\n已按给定的首帧出片。") : "";
-  return { content: `视频已生成：${savedAt(opts.saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${kfNote}${vwNote}`, isError: false };
+  return { content: `视频已生成：${savedAt(opts.saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${kfNote}${vwNote}`, isError: false, file: fname };
 }
 
 /** HTML → PNG：真浏览器离屏渲染（htmlshot.js，只有桌面版才有渲染器） */
@@ -1137,7 +1141,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir) {
     fs.writeFileSync(path.join(saveDir || ws(), fname), buf);
   }
   security.audit("语音合成", `${cfg.model}: ${text.slice(0, 80)} → ${fname}`, "放行");
-  return { content: `语音已合成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}${voice ? "，音色 " + voice : ""}，约 ${text.length} 字）`, isError: false };
+  return { content: `语音已合成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}${voice ? "，音色 " + voice : ""}，约 ${text.length} 字）`, isError: false, file: fname };
 }
 
 /** 能送去转写的后缀。上游收的就是这几样，多写只会在那边被拒，不如在本机就说清楚 */
@@ -2904,6 +2908,38 @@ function badToolArgs(name, raw, parseError, rawLen) {
   );
 }
 
+/**
+ * 花钱的那三样（生图 / 生视频 / 配音）统一过一道生成结果缓存。
+ *
+ * 只包这三个，别的一个都不包：html_to_image 在本机渲染、不花钱，而且它的输入是一个
+ * HTML 文件——同名文件内容天天在变，按参数算 key 一定会拿旧图冒充新图。
+ * transcribe_audio 也不包：它的产物是文字，本来就便宜，而且模型经常改 with_timestamps
+ * 再跑一遍，缓存在这儿帮不上忙。
+ *
+ * 渠道没配好 / 型号点错时故意不算 key：让真正的那一趟去报错——它的话说得比这里清楚得多。
+ */
+async function withGenCache(kind, cap, opts, input, dir, resolveFile, run) {
+  let k = null, model = "";
+  try {
+    const cfg = mediaModels.pick(opts.media, cap, input.model);
+    model = cfg.model;
+    k = genCache.key(kind, input, cfg, dir, resolveFile, ws());
+  } catch {
+    k = null;
+  }
+  if (k) {
+    const hit = genCache.get(k, ws());
+    if (hit) {
+      security.audit(kind === "text_to_speech" ? "语音合成" : kind === "generate_video" ? "视频生成" : "图像生成",
+        `复用上次的产物（参数逐字一样，没有再调 ${model}）→ ${hit.file}`, "放行");
+      return hit;
+    }
+  }
+  const out = await run();
+  if (k) genCache.put(k, out, dir, ws(), model);
+  return out;
+}
+
 async function executeTool(name, input, opts = {}) {
   const timeoutMs = opts.timeoutMs || 120000;
   // 安全中心策略（settings 里配置）；未传时用纯默认值（等价于旧行为 + 默认黑名单）
@@ -3195,13 +3231,16 @@ async function executeTool(name, input, opts = {}) {
       case "look_at_image":
         return await lookAtImage(opts, input, timeoutMs, resolveFile);
       case "generate_image":
-        return await generateImage(opts.media, input, timeoutMs, fileBase, resolveFile);
+        return await withGenCache("generate_image", "image", opts, input, fileBase, resolveFile,
+          () => generateImage(opts.media, input, timeoutMs, fileBase, resolveFile));
       case "generate_video":
-        return await generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile });
+        return await withGenCache("generate_video", "video", opts, input, fileBase, resolveFile,
+          () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile }));
       case "html_to_image":
         return await htmlToImage(input, resolveFile, fileBase);
       case "text_to_speech":
-        return await textToSpeech(opts.media, input, timeoutMs, fileBase);
+        return await withGenCache("text_to_speech", "tts", opts, input, fileBase, resolveFile,
+          () => textToSpeech(opts.media, input, timeoutMs, fileBase));
       case "transcribe_audio":
         return await transcribeAudio(opts.media, input, timeoutMs, resolveFile, fileBase);
       case "desktop_pet": {
