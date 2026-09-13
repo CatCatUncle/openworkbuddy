@@ -28,6 +28,7 @@ const os = require("os");
 const path = require("path");
 const { dataPath, preferData } = require("./paths");
 const readline = require("readline");
+const { spawnSync } = require("child_process");
 const { createLLM } = require("./llm");
 const { setWorkspaceDir, getWorkspaceDir } = require("./tools");
 const { McpManager } = require("./mcp");
@@ -37,6 +38,7 @@ const callout = require("./callout"); // 正文里的提示条：终端没有图
 const mdTty = require("./md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
 const attach = require("./cli-attach"); // 带进来的文件/图片：拖进来的路径、@ 补全、剪贴板
 const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
+const termImage = require("./term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
 const account = require("./account");
 const store = require("./store");
 
@@ -221,7 +223,7 @@ function makeEmit(state) {
       emitJson(ev);
       if (ev.type === "text" && ev.depth === 0) state.finalParts.push(ev.delta);
       if (ev.type === "usage") state.usage = ev;
-      if (ev.type === "files") state.files = ev.files || state.files;
+      if (ev.type === "files") { state.files = ev.files || state.files; noteChanged(state, ev.changed); }
       return;
     }
     if (ev.type === "text") {
@@ -260,6 +262,7 @@ function makeEmit(state) {
       state.usage = ev;
     } else if (ev.type === "files") {
       state.files = ev.files || state.files;
+      noteChanged(state, ev.changed);
     }
   };
 }
@@ -287,8 +290,96 @@ function printSummary(state) {
     prog(dim(`✦ 本次扣 ${state.credits.spent} 积分 · 余额 ${state.credits.balance.toLocaleString()}\n`));
   }
   if (state.files && state.files.length) {
-    prog(dim(`▪ 工作目录 ${getWorkspaceDir()}：`) + dim(state.files.slice(-8).map((f) => f.name).join("、")) + "\n");
+    lastFiles = state.files.slice(-8).map((f) => f.name);
+    prog(dim(`▪ 工作目录 ${getWorkspaceDir()}：`) + dim(lastFiles.join("、")) + "\n");
   }
+}
+
+// ---------- 产出的图：终端里直接看见 ----------
+/**
+ * 记下这一轮真动过的产出。
+ *
+ * files 事件带两份名单：`files` 是「工作目录里现在有什么」——包含上个月那次任务留下的
+ * 一堆东西；`changed` 才是「这一轮写过谁」。出图和「看图：…」只能认后者，
+ * 认前者的话，一次什么图都没产出的对话，末尾也会冒出一句「看图：某张八月的封面.png」。
+ *
+ * 一轮里这个事件会响很多次，每次只报增量，所以得攒起来。
+ * @param {{changed: string[]}} state
+ * @param {string[]|undefined} changed
+ */
+function noteChanged(state, changed) {
+  for (const n of changed || []) if (!state.changed.includes(n)) state.changed.push(n);
+}
+
+/**
+ * 上一轮报给用户的那份产出清单（最多 8 个）。`/open 3` 数的就是它，
+ * 跟屏幕上刚打出来的那行严格对齐——另去读一遍目录的话，顺序和内容都可能对不上。
+ * @type {string[]}
+ */
+let lastFiles = [];
+/** 终端出图能力探一次就够，一场里不会变 */
+let imgCapCache = null;
+const imgCap = () => (imgCapCache || (imgCapCache = termImage.detect(process.env, !!process.stderr.isTTY)));
+/** 那句「你的终端要打开某个开关才能出图」只说一次，每轮都说就成了噪音 */
+let capHintShown = false;
+
+/**
+ * 把这一轮产出的图贴到终端里。
+ *
+ * SVG 得先栅格化——终端的图形协议只收位图。转不动（不在桌面版里跑、本机又没装 Chrome）
+ * 就安静跳过，下面那行「看图：…」兜底，不在这儿报错吓人：用户要的是看图，
+ * 不是听一段关于渲染器的解释。
+ *
+ * @param {Array<{name: string}|string>} files 这一轮产出的（files 事件的 changed），不是整个工作目录
+ * @returns {Promise<string[]>} 真画出来的文件名
+ */
+async function drawOutputs(files) {
+  const cap = imgCap();
+  const pick = termImage.pickDrawable(files, 3);
+  if (!pick.length || !cap.proto || opts.quiet || opts.json) return [];
+  const drawn = [];
+  for (const name of pick) {
+    let png = null;
+    try {
+      const p = path.join(getWorkspaceDir(), name);
+      if (/\.svg$/i.test(name)) {
+        const r = await require("./diagram").svgToPngAnyhow(fs.readFileSync(p, "utf8"));
+        png = r && r.png;
+      } else if (/\.png$/i.test(name) || cap.proto === "iterm") {
+        // iTerm2 那套自己认格式，jpg/gif/webp 原样丢过去就行；
+        // kitty 的 f=100 只认 PNG，别的位图这儿不画，让「看图：…」那行接手
+        png = fs.readFileSync(p);
+      }
+    } catch { png = null; }
+    if (!png || !png.length) continue;
+    // 宽度按终端宽来，留两列边距；终端宽度读不到就按 80 算
+    const cols = Math.max(20, Math.min(60, ((process.stderr.columns || 80) - 2)));
+    process.stderr.write(dim(`▪ ${name}\n`) + termImage.encode(cap.proto, png, { name, cols }));
+    drawn.push(name);
+  }
+  return drawn;
+}
+
+/**
+ * 没画出来的图，告诉人怎么才能看到。
+ * 交互模式里给 `/open`，一次性模式里给真能粘到 shell 里跑的那条命令——
+ * 「用系统默认程序打开」这种话等于没说，人还得自己想命令叫什么。
+ * @param {string[]} made 这一轮真产出的文件（不是整个目录——目录里那些是上个月的东西）
+ * @param {string[]} drawn drawOutputs 已经画出来的，不用再提
+ * @param {boolean} interactive
+ */
+function hintOutputs(made, drawn, interactive) {
+  if (opts.quiet || opts.json) return;
+  const rest = termImage.pickDrawable(made, 8).filter((n) => !drawn.includes(n));
+  if (!rest.length) return;
+  const cap = imgCap();
+  if (cap.hint && !capHintShown) { capHintShown = true; prog(dim(`  ${cap.hint}\n`)); }
+  if (interactive) {
+    prog(dim(`  看图：/open ${rest[0]}`) + dim(rest.length > 1 ? `（或 /open 序号）\n` : "\n"));
+    return;
+  }
+  const { cmd, args } = termImage.openerFor(process.platform, path.join(getWorkspaceDir(), rest[0]));
+  prog(dim(`  看图：${[cmd, ...args].filter(Boolean).map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ")}\n`));
 }
 
 // ---------- 执行一轮任务（Ctrl+C 停止当前任务而不是直接退出） ----------
@@ -297,7 +388,7 @@ let stopCurrent = null;
 /** 终端里打的插话，下一步交给 agent。跟网页/手机上补的那句合并成一份 */
 const termInterject = [];
 /** @returns {"ok"|"error"|"aborted"} 给退出码用 */
-async function runOnce(runtime, text, mode) {
+async function runOnce(runtime, text, mode, interactive) {
   // 积分闸门：默认是关的（本地个人用不限额），开了才拦。CLI 消耗记在管理员（首个注册用户）名下
   const owner = account.defaultUser();
   if (owner && account.creditsEnabled() && owner.credits <= 0) {
@@ -309,7 +400,7 @@ async function runOnce(runtime, text, mode) {
   // 在终端里起的活儿归「工程」线。网页/手机上切到那个标签就能看见这条会话——
   // 这是两条线里唯一一条服务端替人填的：它确实是从命令行进来的，不是猜的。
   sess.lane = "cli";
-  const state = { streamed: false, usage: null, files: null, finalParts: [], error: null, md: newMdRenderer() };
+  const state = { streamed: false, usage: null, files: null, changed: [], finalParts: [], error: null, md: newMdRenderer() };
   // 挂到实时目录上：网页端的「工程」标签就是靠它知道这台机器的终端里此刻在干什么
   const live = cliLive.announce({
     id: sessionId, title: sess.title || text.slice(0, 60), cwd: getWorkspaceDir(),
@@ -384,6 +475,8 @@ async function runOnce(runtime, text, mode) {
     state.credits = { spent, balance: owner.credits };
   }
   printSummary(state);
+  // 图在最后：用量、积分、产出清单都打完了再贴，顺序反过来的话图会把那几行顶到屏幕外面
+  hintOutputs(state.changed, await drawOutputs(state.changed), !!interactive);
   return aborted ? "aborted" : state.error ? "error" : "ok";
 }
 
@@ -848,6 +941,30 @@ function splitFiles(text) {
       } catch (e) { prog(red(`看不了：${e.message}\n`)); }
       return;
     }
+    if (v.name === "open") {
+      const dir = getWorkspaceDir();
+      let names = [];
+      try { names = fs.readdirSync(dir).filter((f) => !f.startsWith(".")); } catch {}
+      const hit = termImage.resolveTarget(v.arg, names, lastFiles);
+      if (hit.kind === "ambiguous") {
+        prog(yellow(`${v.arg} 对上了 ${hit.candidates.length} 个：${hit.candidates.slice(0, 5).join("、")}；说全一点\n`));
+        return;
+      }
+      if (hit.kind === "outofrange") {
+        prog(yellow(hit.count ? `刚才那行只列了 ${hit.count} 个；/files 看全部\n` : `还没产出过东西；/files 看工作目录里有什么\n`));
+        return;
+      }
+      if (hit.kind === "missing") { prog(yellow(`工作目录里没有 ${v.arg}；/files 看有什么\n`)); return; }
+      // kind === "dir"：不给名字 = 打开工作目录本身，人到访达/资源管理器里自己挑
+      const target = hit.kind === "file" ? path.join(dir, hit.name) : dir;
+      const { cmd, args } = termImage.openerFor(process.platform, target);
+      const r = spawnSync(cmd, args, { stdio: "ignore" });
+      // 打不开的原因就两种：没有这个命令（Linux 精简装没 xdg-open），或者系统没给它配默认程序。
+      // 两种都不该只说一句「失败」——把绝对路径给出去，人至少能自己复制过去打开
+      if (r.error || r.status) prog(yellow(`打不开（${r.error ? r.error.code || r.error.message : "退出码 " + r.status}）：${target}\n`));
+      else prog(dim(`已交给系统打开：${path.basename(target)}\n`));
+      return;
+    }
     if (v.name === "paste") {
       // 剪贴板里可能躺着三样东西，按「复制的文件 > 截图位图 > 一大段文字」的顺序认。
       // 顺序有讲究：在访达里 Cmd+C 一个图片文件，剪贴板里同时有文件引用和这张图的位图，
@@ -919,7 +1036,7 @@ function splitFiles(text) {
     inbox.setBusy(true);
     menuClose(); // 活儿要开跑了，菜单先收掉——正文一冲下来它就成了屏幕上的残渣
     rl.setPrompt(""); // 任务跑着的时候别让提示符插进流式正文里
-    last = await runOnce(runtime, attach.withNote(body, pending.splice(0)), opts.mode);
+    last = await runOnce(runtime, attach.withNote(body, pending.splice(0)), opts.mode, true);
     inbox.setBusy(false);
     quitArmed = 0;
     rl.setPrompt(PROMPT);

@@ -513,6 +513,22 @@ console.log("\n⑱之三 菜单的画法：不许把人的输入搞乱");
   ok(!/k\.name === "pageup"/.test(tty), "★（反向对照）没处理过的键在源码里当然找不到★");
 }
 
+// ── 文档那张表得跟着命令表走 ─────────────────────────────────────────
+// 真实发生过：命令表里已经有 /open /paste /drop，docs/命令行用法.md 还写着「十条内置命令」、
+// 表里一条都没有。文档是很多人唯一读过的东西，少三条 = 这三个功能对外等于不存在
+console.log("\n⑲ 文档里的命令表");
+{
+  const doc = fs.readFileSync(path.join(ROOT, "docs", "命令行用法.md"), "utf8");
+  const missing = R.COMMANDS.map((c) => c.name).filter((n) => !new RegExp("\\|\\s*`/" + n + "[ `]").test(doc));
+  ok(missing.length === 0, "★每条命令在文档表格里都有一行★ 文档少一条 = 这个功能对外等于不存在", missing);
+  const CN = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+    "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十"];
+  const said = (doc.match(/([零一二三四五六七八九十]+)条内置命令/) || [])[1] || "";
+  ok(said === CN[R.COMMANDS.length], `文档说的条数对得上（现在 ${R.COMMANDS.length} 条）`, { said, want: CN[R.COMMANDS.length] });
+  // 反向对照：这条不是永远绿
+  ok(!/\|\s*`\/nosuchcmd[ `]/.test(doc), "★（反向对照）文档里当然找不到一条不存在的命令★");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1);
 }

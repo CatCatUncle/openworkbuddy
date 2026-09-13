@@ -34,6 +34,7 @@ const SUITES = [
   ["tenant", "多租户与权限"],
   ["deploy", "Docker 部署物静态检查"],
   ["trace", "执行追踪（Langfuse）上报"],
+  ["term-image", "终端里把产出的图画出来 + /open"],
   ["e2e", "端到端（含 frontend.js、admin-ui.js）"],
 ];
 
