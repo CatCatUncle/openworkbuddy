@@ -152,6 +152,7 @@ wb engines && wb engines use claude-code   # use a local Claude Code / Codex as 
 
 ## What's new
 
+- **Sep 13** Read the Word / Excel / PPT / PDF a client sent you, pull material straight from the shared library, and push a finished file to your group chat in one line
 - **Sep 13** Every step now shows how long it took, and a closing tally: tool time vs. model-thinking time
 - **Sep 13** Plug in Langfuse and you can read the raw input/output of every model call
 - **Sep 13** Five API-key traps fixed at once: key not recognized, wizard every launch, duplicate channels, nowhere to paste, missing models
