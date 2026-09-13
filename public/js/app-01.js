@@ -2748,10 +2748,12 @@ async function setSessionModel(name) { // name: 模型名；null = 跟随全局�
   updateModelLabel();
 }
 // 模型健康小标：近 N 次任务的成败（服务端账本）。连挂 ≥2 标红——坏渠道一眼看出来，不用踩了才知道
+// 只产内容，不带前后分隔符——分隔符归拼接的人管。以前把「 · 」焊在这里，模型设置那边要
+// 跟「默认」一起排，只好再用正则把它抠掉一次；再多一个调用点就会冒出双圆点或者行首孤儿点。
 function healthBadge(name) {
   const h = settingsCache && settingsCache.model_health && settingsCache.model_health[name];
   if (!h || !h.n) return "";
-  let s = ` · 近${h.n}次任务${h.ok}成`;
+  let s = `近${h.n}次任务${h.ok}成`;
   if (h.fail_streak >= 2) s += ` <span style="color:var(--wb-err-text)" title="${esc(h.last_fail || "")}">${ic("triangle-alert", "i-sm")}连挂${h.fail_streak}</span>`;
   return s;
 }

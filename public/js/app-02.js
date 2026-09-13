@@ -19,12 +19,14 @@ function renderModelMenu(menu = modelMenu) {
   }
   menu.classList.remove("eng");
   const ov = currentSessModel();
+  const hbDef = healthBadge(settingsCache.active_model);
   menu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
-      <span>${ic("rotate-ccw")}跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${healthBadge(settingsCache.active_model)}</span></span>${ov ? "" : `<span style="color:var(--wb-ok-text)">${ic("check")}</span>`}</div>`
+      <span>${ic("rotate-ccw")}跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${hbDef ? " · " + hbDef : ""}</span></span>${ov ? "" : `<span style="color:var(--wb-ok-text)">${ic("check")}</span>`}</div>`
     + settingsCache.models.map(m => {
       const on = m.name === ov;
+      const hb = healthBadge(m.name);
       return `<div class="mi ${on ? "on" : ""}" data-name="${esc(m.name)}" style="justify-content:space-between">
-      <span>${ic("sparkles")}${esc(m.name)} <span class="sub">${esc(m.model)}${m.api_key ? "" : ` · ${ic("triangle-alert")}未填Key`}${healthBadge(m.name)}</span></span>
+      <span>${ic("sparkles")}${esc(m.name)} <span class="sub">${esc(m.model)}${m.api_key ? "" : ` · ${ic("triangle-alert")}未填Key`}${hb ? " · " + hb : ""}</span></span>
       ${on ? `<span style="color:var(--wb-ok-text)">${ic("check")}</span>` : ""}</div>`;
     }).join("")
     + `<div class="mi" data-act="manage" style="border-top:1px solid var(--wb-border);margin-top:4px">${ic("settings")}管理模型…</div>`;

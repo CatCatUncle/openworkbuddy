@@ -431,7 +431,7 @@ function renderMediaPane(box, s) {
 function paintMedia(box, s) {
   const provName = (id) => { const p = s.providers.find((x) => x.id === id); return p ? p.name : "（渠道已删）"; };
   box.innerHTML = `
-    <div class="sec-t">${ic("image")}看图 / 画图 / 视频 / 配音</div>
+    <div class="hub-sec-title" style="margin-bottom:4px">${ic("image")}看图 / 画图 / 视频 / 配音</div>
     <div class="d" style="margin-bottom:2px">这四路各自挑模型，Key 就用上面渠道里那一把，不用再填一遍。</div>
     ${MEDIA_CAPS.map((c) => capCard(c, s, provName)).join("")}
     <span class="ok-msg" id="media-msg"></span>`;
@@ -755,7 +755,7 @@ function chanCard(p, s, po, kindLabel, dupeTag) {
 function modelRow(m, s, po) {
   const i = s.models.indexOf(m);
   const cur = m.name === s.active_model;
-  const meta = [cur ? "默认" : "", healthBadge(m.name).replace(/^\s*·\s*/, "")].filter(Boolean).join(" · ");
+  const meta = [cur ? "默认" : "", healthBadge(m.name)].filter(Boolean).join(" · ");
   return `
     <div class="mrow">
       ${po ? `<input type="radio" name="active" ${cur ? "checked" : ""} data-i="${i}" title="设为全局默认模型">`
@@ -1050,11 +1050,11 @@ function renderSearchPane(pane, s) {
         <option value="jina">Jina（国内直连 · 免费额度）</option>
         <option value="brave">Brave Search（要绑卡）</option>
       </select>
-      <div class="t" style="margin-top:10px">Tavily API Key ${keyLink("tavily")}</div>
+      <div class="f">Tavily API Key ${keyLink("tavily")}</div>
       <input id="sr-tavily" type="password" placeholder="tvly-..." value="${esc(sc.tavily_key || "")}">
-      <div class="t" style="margin-top:8px">Jina API Key ${keyLink("jina")}</div>
+      <div class="f">Jina API Key ${keyLink("jina")}</div>
       <input id="sr-jina" type="password" placeholder="jina_..." value="${esc(sc.jina_key || "")}">
-      <div class="t" style="margin-top:8px">Brave API Key ${keyLink("brave")}</div>
+      <div class="f">Brave API Key ${keyLink("brave")}</div>
       <input id="sr-brave" type="password" placeholder="BSA..." value="${esc(sc.brave_key || "")}">
     </div>
     <button class="btn-brand" id="sr-save">保存</button>
@@ -1100,11 +1100,11 @@ function renderTracePane(pane, s) {
       <div class="t">执行追踪</div>
       <div class="d" style="margin-bottom:6px">开了之后，每趟任务的每次模型调用、每个工具、每笔 token 都会发到 Langfuse，在那边一层层展开看。默认关着——<b>打开等于把提示词原文、模型回复、工具参数发到下面填的那台机器</b>。自己用 Docker 搭一个就全在自己机器里；填官方 cloud.langfuse.com 就是发给别人。</div>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="lf-on" style="margin:0"${lf.enabled ? " checked" : ""}> 打开执行追踪</label>
-      <div class="t" style="margin-top:10px">Langfuse 地址</div>
+      <div class="f">Langfuse 地址</div>
       <input id="lf-host" placeholder="https://cloud.langfuse.com 或 http://你的内网地址:3000" value="${esc(lf.host || "")}">
-      <div class="t" style="margin-top:8px">公钥 Public Key</div>
+      <div class="f">公钥 Public Key</div>
       <input id="lf-pk" placeholder="pk-lf-..." value="${esc(lf.public_key || "")}">
-      <div class="t" style="margin-top:8px">私钥 Secret Key</div>
+      <div class="f">私钥 Secret Key</div>
       <input id="lf-sk" type="password" placeholder="sk-lf-..." value="${esc(lf.secret_key || "")}">
       <div class="d" style="margin-top:6px">两把钥匙在 Langfuse 里进「项目设置 → API Keys」生成一对，复制过来。</div>
     </div>
@@ -1183,30 +1183,31 @@ async function renderAgentPane(pane, s) {
       <div class="d">输入框下方「权限」下拉可随时切换：Ask 只问答 · Plan 只出计划 · Craft 完整执行交付</div>
     </div>
     ${s.platform_owner ? `    <div class="card-item">
-      <div class="t">最大执行步数</div>
+      <div class="t">执行上限</div>
+      <div class="f">最大执行步数</div>
       <div class="d" style="margin-bottom:6px">单个任务 Agent 循环上限，防止失控（默认 25）</div>
       <input id="ag-steps" type="number" min="1" max="100" value="${s.agent.max_steps}">
-      <div class="t" style="margin-top:8px">单工具超时（秒）</div>
+      <div class="f">单工具超时（秒）</div>
       <input id="ag-timeout" type="number" min="5" value="${Math.round(s.agent.tool_timeout_ms / 1000)}">
-      <div class="t" style="margin-top:8px">任务最大运行时间（分钟）</div>
+      <div class="f">任务最大运行时间（分钟）</div>
       <div class="d" style="margin-bottom:6px">整个任务（含专家子代理）的墙上时间预算，超时强制收尾（默认 10）</div>
       <input id="ag-runtime" type="number" min="1" value="${Math.round((s.agent.max_runtime_ms || 600000) / 60000)}">
-      <div class="t" style="margin-top:8px">自动续跑轮数</div>
+      <div class="f">自动续跑轮数</div>
       <div class="d" style="margin-bottom:6px">任务撞到步数/时间上限但还没做完时，自动重置预算接着跑的最大轮数。0 = 关闭（默认）。开启后长任务会按 PROGRESS.md 的进度接着做，直到完成或轮数用完；手动停止不会续跑。注意：每一轮都是真实计费</div>
       <input id="ag-rounds" type="number" min="0" max="20" value="${s.agent.auto_continue_rounds || 0}">
-      <div class="t" style="margin-top:8px">模型卡壳超时（秒）</div>
+      <div class="f">模型卡壳超时（秒）</div>
       <div class="d" style="margin-bottom:6px">连续这么久收不到模型的任何输出（正文/思考/写文件的参数流都算）才判定连接挂死、强制收尾；只要还在逐字输出就不会掐断（默认 300）</div>
       <input id="ag-llm-timeout" type="number" min="30" value="${Math.round((s.agent.llm_timeout_ms || 300000) / 1000)}">
-      <div class="t" style="margin-top:8px">token 预算（万 tokens）</div>
+      <div class="f">token 预算（万 tokens）</div>
       <div class="d" style="margin-bottom:6px">单个任务（含专家子代理和自动续跑）的 token 总量上限，超过后强制收尾且不再自动续跑，防止长任务烧钱失控。0 = 不限（默认）。用到 80% 会先提醒</div>
       <input id="ag-tokbudget" type="number" min="0" step="1" value="${Math.round((s.agent.max_tokens_budget || 0) / 10000)}">
-      <div class="t" style="margin-top:8px">备用渠道（主模型挂起自动换道）</div>
+      <div class="f">备用渠道（主模型挂起自动换道）</div>
       <div class="d" style="margin-bottom:6px">主模型连续卡壳超时或服务端持续报错时，自动切到这里选的渠道接着跑当前任务，并在任务流里醒目播报。默认关闭：不选就绝不悄悄换模型，宁可如实报错。每个任务最多换一次道</div>
       <select id="ag-failover">
         <option value="">关闭（默认，不自动换道）</option>
         ${(s.models || []).map((m) => `<option value="${esc(m.name)}"${(s.agent.failover_model || "") === m.name ? " selected" : ""}>${esc(m.name)}（${esc(m.model)}）${String(m.api_key || "").trim() || /ollama|本地/i.test(m.name || "") ? "" : "（未配 Key）"}</option>`).join("")}
       </select>
-      <div class="t" style="margin-top:8px">上下文预算（千字符）</div>
+      <div class="f">上下文预算（千字符）</div>
       <div class="d" style="margin-bottom:6px">超出后自动截短较早的工具输出（最近 3 步始终保留原文），避免长任务撞模型上下文上限整个失败。上下文大的模型可以调高（默认 120）</div>
       <input id="ag-ctx" type="number" min="20" max="2000" value="${Math.round((s.agent.max_context_chars || 120000) / 1000)}">
     </div>
@@ -1448,7 +1449,7 @@ function petCardHtml(p) {
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify" style="margin:0"${p.notify !== false ? " checked" : ""}> 要提问时弹系统通知 + 图标跳动</label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify-done" style="margin:0"${p.notify_done !== false ? " checked" : ""}> 任务干完 / 出错时也提醒我一声</label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-wander" style="margin:0"${p.wander ? " checked" : ""}> 闲着时让它在桌面上随便走走（默认关）</label>
-      <div class="t" style="margin-top:10px">形象</div>
+      <div class="f">形象</div>
       <div class="d" style="margin-bottom:6px">可以换成你自己或朋友的照片——上传后自动裁成圆形，配上呼吸、摇摆、跳跃的动效"活"起来。图片只存在本机 <code>data/</code> 目录，不上传任何服务器。</div>
       ${petSpriteHint(p)}
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -1461,9 +1462,9 @@ function petCardHtml(p) {
         ${p.has_photo ? '<button class="btn-plain" id="pet-drop">删除照片</button>' : ""}
         <input type="file" id="pet-file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">
       </div>
-      <div class="t" style="margin-top:10px">大小 <span id="pet-scale-v" style="color:var(--wb-text-3)">${Math.round((p.scale || 2) * 100)}%</span></div>
+      <div class="f">大小 <span id="pet-scale-v" style="color:var(--wb-text-3)">${Math.round((p.scale || 2) * 100)}%</span></div>
       <input type="range" id="pet-scale" min="0.6" max="2" step="0.1" value="${p.scale || 2}">
-      <div class="t" style="margin-top:6px">透明度 <span id="pet-op-v" style="color:var(--wb-text-3)">${Math.round((p.opacity || 1) * 100)}%</span></div>
+      <div class="f">透明度 <span id="pet-op-v" style="color:var(--wb-text-3)">${Math.round((p.opacity || 1) * 100)}%</span></div>
       <input type="range" id="pet-op" min="0.25" max="1" step="0.05" value="${p.opacity || 1}">
       <div style="margin-top:8px"><span class="ok-msg" id="pet-msg"></span></div>
     </div>`;
