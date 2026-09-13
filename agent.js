@@ -439,11 +439,12 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 7. 交付时说清楚：文件名、多少字、分几节、数据截止到哪天。
 
 ## 做网页（HTML 交付物）
-1. **单文件自包含**：CSS 写 \`<style>\`、JS 写 \`<script>\`、图标用内联 SVG 或 emoji。**绝不引外部 CDN**（cdn.jsdelivr、unpkg、bootstrap、echarts CDN 等）——用户断网、换台电脑、发给同事，页面当场白屏。需要图表就自己用内联 SVG 或 canvas 画。
+0. **动笔前先定视觉方向，一句话写进开场白**：说清三件事——**参照物**（像一份编辑部的深度报道／像终端里的监控面板／像一本纸质手册）、**主色从内容里长出来**（财报、菜谱、医疗科普不该共用一套蓝）、**版式节奏**（通栏大标题还是左侧固定目录，信息密还是大留白）。跳过这步直接写 CSS，做十个页面会长成同一张脸：白底、居中一栏、蓝色标题、圆角卡片加淡阴影。有 web-styles 技能就先 use_skill 它，从里面挑一个方向再动笔。
+1. **单文件自包含**：CSS 写 \`<style>\`、JS 写 \`<script>\`、图标用内联 SVG 或 emoji。**绝不从外部 CDN 引脚本和样式**（cdn.jsdelivr、unpkg、bootstrap、echarts CDN 等）——用户断网、换台电脑、发给同事，页面当场白屏。需要图表就自己用内联 SVG 或 canvas 画。唯一的例外是 Google Fonts（fonts.googleapis.com / fonts.gstatic.com）：西文标题想要一款有性格的字体可以引，但 \`font-family\` 后面必须把系统字体回退链写满，断网时页面只是字体变普通、不能塌。**中文正文永远不引网络字体**——一个中文字体包好几 MB，联网要白等、断网直接回退，得不偿失。
 2. 必备骨架：\`<!DOCTYPE html>\`、\`<meta charset="utf-8">\`、\`<meta name="viewport" content="width=device-width, initial-scale=1">\`、有信息量的 \`<title>\`、\`lang="zh-CN"\`。
 3. 手机上也要能看：宽度用 %/rem/clamp()，别写死 px；多栏布局用 flex/grid 并配 \`@media (max-width: 768px)\` 塌成单栏；表格外面套一层 \`overflow-x:auto\`。
-4. 深色模式要跟随系统：颜色统一定义成 \`:root\` 上的 CSS 变量，再用 \`@media (prefers-color-scheme: dark)\` 覆盖一遍变量。别把颜色散写在各处，改起来必漏。
-5. 视觉别糊弄：不超过 4 个主色（一个主色 + 一个强调色 + 中性灰阶）、间距一律用 4 的倍数、同类元素左对齐对齐死、正文行高 1.6～1.75、正文宽度别超过 40 字。
+4. 深色模式默认跟随系统：颜色统一定义成 \`:root\` 上的 CSS 变量，再用 \`@media (prefers-color-scheme: dark)\` 覆盖一遍变量。别把颜色散写在各处，改起来必漏。**除非这次的视觉方向本身就是单色调的**（暗色终端、纸质印刷这类，硬凑两套会把风格稀释成大路货）——那就只做一套，在 \`<head>\` 里写死 \`<meta name="color-scheme" content="dark">\`（或 light）免得浏览器自作主张，并在交付说明里讲一句「这页是纯暗色的，不跟随系统」。
+5. 视觉下限（这是及格线，不是配方）：不超过 4 个主色（一个主色 + 一个强调色 + 中性灰阶）、间距一律用 4 的倍数、同类元素左对齐对齐死、正文行高 1.6～1.75、正文宽度别超过 40 字。这几条管的是「别难看」，不是「长这样就对了」——具体长什么样，由第 0 条定的视觉方向说了算。
 6. **内容必须是真数据**：页面里的数字、案例、引用都来自工具真拿到的东西，不许拿 Lorem ipsum、示例数据、占位图充数交付。
 7. **写完必须跑一次 check_page**：白屏和 JS 报错光看源码看不出来。报错就改到干净为止，再告诉用户"做好了"。
 8. 交付时给出文件名，并提醒用户可以在成果区直接点开预览。
@@ -636,8 +637,18 @@ function modePrompt(mode) {
       const dirNote = skill && skill.hasAssets
         ? `【技能目录】${skill.dir}\n该技能自带 scripts/templates 等资源文件（在上述目录内，不在工作目录）。技能文档里的相对路径都相对这个目录；运行其脚本用 run_shell 先 cd 进该目录，但产出的成果文件仍要写到工作目录。\n\n`
         : "";
+      // 加载 html-page 时顺带提一句还能换风格。不是所有人都装了 frontend-design
+      // （它是推荐技能，从上游拉，不随包分发），装了就告诉模型去用，没装就退回内置的 web-styles——
+      // 不提这一句，模型会拿 html-page 里的默认骨架一路做到底，十个页面一张脸。
+      const styleHint = (tc.input.name || "").trim() === "html-page"
+        ? (skills.some((s) => s.name === "frontend-design")
+            ? `\n\n【配套】先 use_skill frontend-design 定一个视觉方向，再回来按本技能的骨架写。\n`
+            : (skills.some((s) => s.name === "web-styles")
+                ? `\n\n【配套】先 use_skill web-styles 从八个方向里挑一个，再回来按本技能的骨架写——直接用默认样式，做出来的页面会跟上一个长得一样。\n`
+                : ""))
+        : "";
       return skill
-        ? { content: dirNote + skill.content, isError: false }
+        ? { content: dirNote + skill.content + styleHint, isError: false }
         : { content: `技能不存在: ${tc.input.name}。可用: ${skills.map((s) => s.name).join(", ")}`, isError: true };
     }
     if (mcpManager.isMcpTool(tc.name)) {
