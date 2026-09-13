@@ -1959,6 +1959,21 @@ const IM_CHANNELS = [
     fields: [["webhook_secret", "自定义一个密钥", "password"]],
     help: ["外部工具（微信框架 / 钉钉 outgoing / 快捷指令）POST /im/task 时带这个密钥校验", "微信客服号、小程序、企微「智能助理」等依赖腾讯定向资质，本版不做假连接，用这里桥接"],
     status: (st) => ((st.webhook || {}).secret_set ? ["ok", "已设密钥"] : ["off", "未设密钥"]) },
+  { key: "smtp", grp: "mail", icon: "mail", name: "邮件（SMTP）", sub: "AI 把做好的东西发出去 · 每封都要你点头", path: "smtp",
+    fields: [["host", "SMTP 服务器，如 smtp.qq.com"], ["port", "端口（留空 = 465）", "", "opt"], ["user", "登录账号（完整邮箱地址）"],
+      ["pass", "密码 / 授权码", "password"], ["from", "发件人地址（留空 = 用登录账号）", "", "opt"],
+      ["allow_to", "收件人白名单：a@b.com, @公司域名（留空 = 不限）", "", "opt"]],
+    test: { url: "/im/smtp/test", ok: (d) => `连上了，以后用 ${d.from} 发信（${d.host}:${d.port}）` },
+    help: ["QQ / 163 / Gmail 这类邮箱要先在网页版开「SMTP 服务」，拿到的是一串授权码，不是你登录用的密码",
+      "端口留空就是 465（一上来就加密）；服务商只给 587 的话填 587，会自动走 STARTTLS",
+      "白名单建议填上：AI 会上网、会读网页，万一被网页里的内容带偏，白名单是最后一道硬闸——不在名单里的地址一个字都发不出去",
+      "白名单写法：a@b.com 只放行这一个人；@公司域名.com 或 公司域名.com 放行整个域（含子域）",
+      "不管填没填白名单，每封信发出去之前都会把收件人、主题、正文原样弹给你确认，你不点头就不发"],
+    status: (st, get) => {
+      if (!(st.smtp || {}).configured) return ["off", "未配置"];
+      const n = (get("smtp", "allow_to") || "").split(/[,;\s\n]+/).filter(Boolean).length;
+      return ["ok", n ? `已配置 · 白名单 ${n} 条` : "已配置 · 不限收件人"];
+    } },
   { key: "feishu_me", grp: "lark", icon: "id-card", name: "飞书本人身份", sub: "AI 以你的身份读日历 / 云文档 / 邮件", lark: true, noConn: true,
     help: ["本机装 lark-cli：npx @larksuite/cli@latest install", "用上面飞书卡的 App ID / App Secret 绑定，再扫码授权你本人", "授权后 AI 能用 lark-cli 查你的日历、读写云文档、收发邮件"] },
   { key: "feishu_doc", grp: "lark", icon: "file-text", name: "飞书云文档", sub: "AI 直接把结果写成云文档", path: "feishu", src: "feishu",
@@ -2012,6 +2027,7 @@ function renderImPane(pane, s) {
   pane.innerHTML = `
     ${sec("远程指挥", "在这些 IM 里私聊或 @机器人 就能下任务，结果回到聊天里", grp("chat"))}
     ${sec("结果推送", "只出不进：任务和定时任务跑完自动推一份", grp("push"))}
+    ${sec("发邮件", "AI 把写好的报告、做好的文件直接发到对方邮箱——出门之前一律弹给你过目", grp("mail"))}
     ${sec("飞书增强", "让 AI 以你本人身份操作飞书、直接生成云文档", grp("lark"))}
     ${sec("上下文管理", "IM 会话带多久的历史、什么时候另起一段", `
       <div class="im-card im-card-static packed">
@@ -2026,7 +2042,7 @@ function renderImPane(pane, s) {
 
   // ---------- 读回 / 保存 ----------
   const imPayload = () => {
-    const out = { feishu: {}, qq: {}, wecom_app: {}, wechat_mp: {} };
+    const out = { feishu: {}, qq: {}, wecom_app: {}, wechat_mp: {}, smtp: {} };
     for (const c of IM_CHANNELS) for (const [f] of c.fields || []) {
       const v = getField(c.key, f);
       if (c.path) out[c.path][f] = v; else out[f] = v;

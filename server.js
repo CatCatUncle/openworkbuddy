@@ -903,6 +903,7 @@ app.get("/api/settings", (req, res) => {
       qq: (config.im || {}).qq || { app_id: "", app_secret: "" },
       wecom_app: (config.im || {}).wecom_app || { corp_id: "", agent_id: "", secret: "", token: "", aes_key: "" },
       wechat_mp: (config.im || {}).wechat_mp || { app_id: "", app_secret: "", token: "", aes_key: "" },
+      smtp: (config.im || {}).smtp || { host: "", port: "", user: "", pass: "", from: "", allow_to: "" },
       // iLink 的 bot_token 是扫码换来的长期凭证，不回给前端（前端只需要知道连没连上，状态走 /im/status）
       wechat_ilink: { bot_id: ((config.im || {}).wechat_ilink || {}).ilink_bot_id || "" },
       wecom_bot_webhook: (config.im || {}).wecom_bot_webhook || "",
@@ -1174,6 +1175,16 @@ app.post("/api/settings", (req, res) => {
       if (b.im.qq) imAssign(config.im.qq = config.im.qq || {}, b.im.qq, ["app_id", "app_secret"], clear, "qq.");
       if (b.im.wecom_app) imAssign(config.im.wecom_app = config.im.wecom_app || {}, b.im.wecom_app, ["corp_id", "agent_id", "secret", "token", "aes_key"], clear, "wecom_app.");
       if (b.im.wechat_mp) imAssign(config.im.wechat_mp = config.im.wechat_mp || {}, b.im.wechat_mp, ["app_id", "app_secret", "token", "aes_key"], clear, "wechat_mp.");
+      if (b.im.smtp) {
+        const sm = (config.im.smtp = config.im.smtp || {});
+        // 凭证走「空不覆盖」那条老规矩：半张表单点一下保存，不该把已经存好的密码抹掉
+        imAssign(sm, b.im.smtp, ["host", "user", "pass"], clear, "smtp.");
+        // 端口 / 发件人 / 收件人白名单不是凭证，是用户随时会改的设置，清空就得真清空。
+        // 白名单尤其不能沿用老规矩——填了是硬闸，用户在界面上删干净了却删不掉，闸门就卡死在旧名单上了
+        for (const k of ["port", "from", "allow_to"]) {
+          if (b.im.smtp[k] !== undefined) sm[k] = String(b.im.smtp[k]).trim();
+        }
+      }
       imAssign(config.im, b.im, ["wecom_bot_webhook", "dingtalk_webhook", "dingtalk_secret", "webhook_secret"], clear, "");
       if (b.im.session_idle_hours !== undefined) config.im.session_idle_hours = Math.max(0, Math.min(720, +b.im.session_idle_hours || 0));
     }

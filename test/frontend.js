@@ -2295,13 +2295,13 @@ const IMPANE_CHECKS = `
   renderImPane(pane, { im: { feishu: { app_id: "cli_x", app_secret: "sec" }, qq: {}, wecom_app: {}, wechat_mp: {}, wecom_bot_webhook: "https://qyapi/x", session_idle_hours: 12 } });
   await settle();
 
-  // ---- 1. 结构：四个分区、双栏、卡数 ----
+  // ---- 1. 结构：五个分区、双栏、卡数 ----
   const secs = [...pane.querySelectorAll(".im-sec")];
   const titles = secs.map((x) => x.querySelector(".im-sec-h b").textContent).join("|");
-  ok("四个分区按序", titles === "远程指挥|结果推送|飞书增强|上下文管理", titles);
+  ok("五个分区按序", titles === "远程指挥|结果推送|发邮件|飞书增强|上下文管理", titles);
   const lefts = new Set([...secs[0].querySelectorAll(".im-card")].map((c) => Math.round(c.getBoundingClientRect().left)));
   ok("双栏是真排出来的（卡片落在两个不同的 x 上）", lefts.size === 2, [...lefts].join(","));
-  ok("远程指挥 5 张 / 结果推送 3 张 / 飞书增强 2 张", [5, 3, 2].every((n, i) => secs[i].querySelectorAll(".im-card").length === n));
+  ok("远程指挥 5 张 / 结果推送 3 张 / 发邮件 1 张 / 飞书增强 2 张", [5, 3, 1, 2].every((n, i) => secs[i].querySelectorAll(".im-card").length === n));
   const card = (k) => pane.querySelector('[data-ch="' + k + '"]');
   const fsC = card("feishu"), qq = card("qq"), wb = card("wecom_bot"), dt = card("dingtalk"), wx = card("wechat_ilink"), wca = card("wecom_app");
 
@@ -6628,7 +6628,7 @@ app.whenReady().then(async () => {
       await win10.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(IMPANE_HTML));
       const names10 = await win10.webContents.executeJavaScript(IC_BOOT + IMPANE_STUBS + "\n" + IMPANE_SRC + "\n" + IMPANE_CHECKS, true);
       for (const n of names10) console.log("  ✓ " + n);
-      console.log(`✅ 前端：助理设置页（四分区·双栏·连上收起·连接=保存再测活·凭证没填齐先拦住·取消连接两步且只清自己·微信取码/断开·扫码新建飞书应用·清会话两步）${names10.length} 项通过`);
+      console.log(`✅ 前端：助理设置页（五分区·双栏·发邮件·连上收起·连接=保存再测活·凭证没填齐先拦住·取消连接两步且只清自己·微信取码/断开·扫码新建飞书应用·清会话两步）${names10.length} 项通过`);
     } finally {
       if (!win10.isDestroyed()) win10.destroy();
     }
