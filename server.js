@@ -1179,7 +1179,7 @@ app.post("/api/settings", (req, res) => {
     }
     if (b.media) {
       config.media = config.media || {};
-      for (const kind of ["image", "video", "tts", "vision"]) {
+      for (const kind of mediaModels.CAPS) { // 单一真源：加一路能力只改 media-models.js 的 CAPS
         if (b.media[kind]) {
           const c = (config.media[kind] = config.media[kind] || {});
           for (const k of ["base_url", "api_key", "model", "voice"]) {
@@ -1407,7 +1407,7 @@ app.get("/api/onboarding", async (req, res) => {
     engines: found.map((e) => ({ id: e.id, label: e.label, installed: e.installed, version: e.version, install: e.install || "", note: e.note || "" })),
     engine: engineId,
     search: { provider: sp, has_key: !!searchProviderKey(config.search || {}, sp) },
-    media: { image: mediaOk("image"), video: mediaOk("video"), tts: mediaOk("tts"), vision: mediaOk("vision") },
+    media: Object.fromEntries(mediaModels.CAPS.map((c) => [c, mediaOk(c)])),
     im: { configured: imConfigured },
   });
 });

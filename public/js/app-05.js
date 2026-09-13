@@ -367,6 +367,8 @@ const MEDIA_CAPS = [
     hint: "生成一段通常要 1~5 分钟。支持通义万相（地址含 dashscope）和火山方舟 Seedance（地址含 ark / volces）两种协议。" },
   { cap: "tts", icon: "mic", title: "配音", tool: "text_to_speech",
     hint: "把文字念成音频，视频配音、播客旁白用它。支持 OpenAI 兼容 /audio/speech；地址含 dashscope 时自动走通义 qwen-tts 原生协议。" },
+  { cap: "asr", icon: "file-audio", title: "转写", tool: "transcribe_audio",
+    hint: "把会议录音、采访、口播素材里的话转成文字，需要字幕还能出一份 .srt。走 OpenAI 兼容 /audio/transcriptions，单个文件 25MB 以内（一小时的会议先用 ffmpeg 压成 16k 单声道再传）。通义百炼的转写是异步任务接口，还没接，别配在这一路。" },
 ];
 let mediaCatalog = null; // 精选目录，一次会话拉一次
 const liveModels = new Map(); // 渠道 id → 那边 /models 现拉回来的清单

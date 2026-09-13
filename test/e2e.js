@@ -14,6 +14,7 @@ const { createAgentRuntime, missingDeliverables, unseenVisualClaims, trimHistory
 const { McpManager } = require("../mcp");
 const { parseCron, cronMatches } = require("../scheduler");
 const { getWorkspaceDir, setWorkspaceDir } = require("../tools");
+const mediaModels = require("../media-models");
 /**
  * 测试跑在一个临时工作区里，不碰用户真正的那个。
  *
@@ -5958,7 +5959,7 @@ async function testOnboardingWizardApi() {
     assert(ap.json.engines.every((e) => typeof e.installed === "boolean" && typeof e.install === "string"), "每个引擎要有 installed 布尔 + install 提示");
     assert(ap.json.needs_setup === st.needs_setup && ap.json.seen === st.seen, "probe 只决定探不探 CLI，别的字段必须一模一样");
     assert(st.search && typeof st.search.provider === "string" && st.search.has_key === false, "搜索状态：新装 has_key 应为 false：" + JSON.stringify(st.search));
-    assert(st.media && ["image", "video", "tts", "vision"].every((k) => st.media[k] === false), "四种多媒体新装应全 false：" + JSON.stringify(st.media));
+    assert(st.media && mediaModels.CAPS.every((k) => st.media[k] === false) && Object.keys(st.media).length === mediaModels.CAPS.length, "五路多媒体新装应全 false（且一路不多一路不少）：" + JSON.stringify(st.media));
     assert(st.im && st.im.configured === 0, "IM 新装应 0 个：" + JSON.stringify(st.im));
     assert(typeof st.workspace_dir === "string" && st.workspace_dir, "体检表要带当前工作目录");
 

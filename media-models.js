@@ -1,5 +1,5 @@
 /**
- * 图像 / 视频 / 语音 / 视觉这四路模型的「多模型 + 共用 Key」层。
+ * 图像 / 视频 / 语音 / 视觉 / 转写这五路模型的「多模型 + 共用 Key」层。
  *
  * 老配置长这样，一路只能配一个模型，而且 Key 要一路填一遍：
  *   config.media = { image: {base_url, api_key, model}, video: {...}, tts: {...}, vision: {...} }
@@ -13,9 +13,10 @@
  * 老配置也照跑——升级不需要用户做任何事。
  */
 
-/** 四路能力的中文名，报错和界面共用一套说法 */
-const CAP_CN = { image: "图像模型", video: "视频模型", tts: "语音模型", vision: "视觉模型" };
-const CAPS = ["vision", "image", "video", "tts"];
+/** 五路能力的中文名，报错和界面共用一套说法 */
+const CAP_CN = { image: "图像模型", video: "视频模型", tts: "语音模型", vision: "视觉模型", asr: "转写模型" };
+// asr 排在 tts 后面：新加的一路挂在最后，老配置文件的字段顺序不会因为升级而整体重排。
+const CAPS = ["vision", "image", "video", "tts", "asr"];
 
 /**
  * 渠道类型。kind 决定三件事：接口地址长什么样、目录里有哪些模型、协议按哪家走。
@@ -140,6 +141,15 @@ const CATALOG = {
     { kind: "dashscope", id: "wan2.2-t2v-plus", label: "通义万相 2.2 文生视频 Plus" },
     { kind: "dashscope", id: "wanx2.1-t2v-turbo", label: "通义万相 2.1 Turbo（快）" },
   ],
+  // 转写这一路只收「说 OpenAI 兼容 /audio/transcriptions 这门话」的型号。
+  // 通义百炼的 ASR 是另一套：先上传文件、再轮询异步任务，和这里的一次 multipart 完全不同协议。
+  // 没实现就不往目录里摆——摆上去等于让人选一个必然报错的选项。
+  asr: [
+    { kind: "openai", id: "gpt-4o-transcribe", label: "GPT-4o Transcribe（最准）" },
+    { kind: "openai", id: "gpt-4o-mini-transcribe", label: "GPT-4o mini Transcribe（快且便宜）" },
+    { kind: "openai", id: "whisper-1", label: "Whisper（老牌，便宜）" },
+    { kind: "siliconflow", id: "FunAudioLLM/SenseVoiceSmall", label: "SenseVoice Small（中文快，开源）" },
+  ],
   tts: [
     { kind: "dashscope", id: "qwen3-tts-flash", label: "通义 Qwen3-TTS Flash（中文自然）", voices: ["Cherry", "Serena", "Ethan", "Chelsie"] },
     { kind: "dashscope", id: "qwen-tts", label: "通义 Qwen-TTS", voices: ["Cherry", "Serena", "Ethan", "Chelsie"] },
@@ -154,12 +164,16 @@ const CATALOG = {
 const CAP_HINT = {
   image: /(image|seedream|dall-?e|cogview|kolors|flux|sd3|stable-?diffusion|wanx?[\d.]+-t2i|midjourney)/i,
   video: /(video|seedance|t2v|i2v|sora|kling|hailuo|veo)/i,
+  // asr 必须排在 tts 前面判：SenseVoice 带 voice、speech-to-text 带 speech，
+  // 按 tts 先判的话这两个转写模型会被当成配音模型，配好了一调就报「接口 404」。
+  // 这里不写光秃秃的 asr / stt：它们太短，any 型号名里蹭上三个字母就会误伤，所以钉在分隔符上。
+  asr: /(whisper|sensevoice|paraformer|transcrib|(^|[-_/])asr([-_/.\d]|$)|speech-?to-?text|(^|[-_/])stt([-_/.\d]|$))/i,
   tts: /(tts|speech|voice|cosyvoice|audio-?gen|sambert)/i,
   vision: /(vl|vision|gpt-[45]|claude|gemini|glm-4v|omni|seed-1|multimodal)/i,
 };
 function guessCap(modelId) {
   const s = String(modelId || "");
-  for (const cap of ["video", "image", "tts"]) if (CAP_HINT[cap].test(s)) return cap;
+  for (const cap of ["video", "image", "asr", "tts"]) if (CAP_HINT[cap].test(s)) return cap;
   return CAP_HINT.vision.test(s) ? "vision" : "";
 }
 

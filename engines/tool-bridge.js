@@ -59,6 +59,7 @@ const LENDABLE = [
   "generate_image",   // 生图：CLI 没有，用户最常撞的就是这条
   "generate_video",   // 生视频
   "text_to_speech",   // 配音
+  "transcribe_audio", // 录音转文字
   "html_to_image",    // 网页转长图/封面
   "gen_diagram",      // mermaid / echarts / graphviz 出图
   "look_at_image",    // 看图（CLI 在无头管道里读不了本地图片）
