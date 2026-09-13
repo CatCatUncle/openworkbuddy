@@ -12,6 +12,19 @@
  * 中间件顺序照抄 server.js。所以「前端以为后端返回 X、后端其实返回 Y」这类错也跑得出来。
  */
 
+
+// ---- 加载期出错要当场红，不许弹框卡死 ----
+// 2026-09-13 的教训：这个文件顶层抛了一个「缺文件」的错（skills/brand-guidelines 在
+// .gitignore 里，本机有、新克隆没有），Electron 的默认处理是弹一个原生错误框
+// ——CI 机器上没人点确定，进程就一直挂着。本机复现过：不装兜底 25 秒后被 timeout 砍掉，
+// 装了兜底立刻退出并打出真正的错。
+// Electron 的 uncaughtException 处理里有一句「用户自己装了处理器就不弹框」
+// （判据是 listenerCount > 1），所以这一段必须在任何 require 之前。
+process.on("uncaughtException", (e) => {
+  console.error("\u274c 企业后台测试 加载期就炸了（不是断言失败，是这个文件自己起不来）：");
+  console.error((e && e.stack) || String(e));
+  process.exit(1);
+});
 const fs = require("fs");
 const os = require("os");
 const path = require("path");

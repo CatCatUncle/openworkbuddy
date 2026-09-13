@@ -20,6 +20,7 @@ const { spawnSync } = require("child_process");
 // e2e 放最后：它最慢（会拉起真 server 和两个 Electron 窗口），
 // 前面十三个几秒钟就能把大部分低级错误拦下来，别让人等五分钟才看到一个拼写错误。
 const SUITES = [
+  ["repo-hygiene", "仓库卫生：测试喂的真文件必须随包发出去（本机私货会让新克隆直接挂）"],
   ["icons", "图标系统：sprite 完整性、词典同步、圆角阶梯、滚动条留位"],
   ["lanes", "任务泳道调度"],
   ["md-tty", "终端里的 Markdown 渲染"],
