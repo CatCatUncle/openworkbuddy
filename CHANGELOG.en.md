@@ -9,6 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Sep 13** Read the Word / Excel / PPT / PDF a client sent you, pull material straight from the shared library, and push a finished file to your group chat in one line
 - **Sep 13** Your terminal can finally see what the agent drew: `/open` hands it to the system viewer, and capable terminals render it inline
 - **Sep 13** Release pipeline closed up: PRs get a red/green light, a version mismatch fails loudly, one platform failing no longer sinks the whole release
 - **Sep 13** Generated sites stop looking alike: pick a visual direction before writing a line
