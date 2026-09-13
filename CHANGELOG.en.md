@@ -9,7 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
-- **Sep 13** Five specialists — minutes, contract review, email, project plans, PRDs — now each carry a written spec, so what they hand back has a fixed shape and hard rules instead of a new format every time
+- **Sep 13** Seven specialists — minutes, contract review, email, project plans, PRDs, recruiting and support scripts — now each carry a written spec, so what they hand back has a fixed shape and hard rules instead of a new format every time
 - **Sep 13** Point it at an SMTP server and the agent emails the report it just wrote; a recipient allowlist is a hard gate, and every message shows you the full text before it leaves
 - **Sep 13** The agent schedules its own recurring work: say "every Monday 9am, turn last week's numbers into a table" once and it runs on time
 - **Sep 13** Recordings, meeting videos and voice notes turn into text, and it writes the minutes straight from there
