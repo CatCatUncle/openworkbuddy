@@ -109,6 +109,9 @@ module.exports = {
     "package.json",
     "LICENSE",
     "COMMERCIAL-LICENSE.md",
+    // 桌面包 asar:false，别人的 MIT/Apache 代码原样躺在 node_modules 里发出去了。
+    // NOTICE.md 是这批第三方署名的唯一一份汇总，它自己不进包 = 分发时没带署名。
+    "NOTICE.md",
     "README.md",
     ...skillPatterns(),
 
