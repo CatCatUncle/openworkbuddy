@@ -113,7 +113,13 @@ function makeFakeLLM() {
         assert(toolNames.includes("run_node"), "缺少 run_node 工具");
         return {
           text: "先加载 Excel 技能。",
-          toolCalls: [{ id: "tc_1", name: "use_skill", input: { name: "excel-report" } }],
+          // 顺手把 html-page 也加载一次：它会带出一句「先去 web-styles 挑视觉方向」的提示，
+          // 那句提示是「网页别千篇一律」那条链上唯一一处活代码（其余四处都是静态文案），
+          // 光靠读源码的闸门盯不住它有没有真拼进返回值里
+          toolCalls: [
+            { id: "tc_1", name: "use_skill", input: { name: "excel-report" } },
+            { id: "tc_1b", name: "use_skill", input: { name: "html-page" } },
+          ],
           stopReason: "tool_use",
         };
       }
@@ -121,6 +127,13 @@ function makeFakeLLM() {
         // 验证上一步 use_skill 返回了技能内容
         const lastTool = history[history.length - 1];
         assert(lastTool.role === "tool" && lastTool.results[0].content.includes("exceljs"), "use_skill 未返回技能内容");
+        const pageSkill = lastTool.results.find((r) => r.id === "tc_1b");
+        assert(pageSkill, "两个 use_skill 的结果没按调用 ID 配对回来");
+        // 认「【配套】」这个只有提示才有的标记：html-page 技能正文自己也提 web-styles，
+        // 光按技能名匹配会被正文喂饱，闸门看着绿其实什么都没查
+        assert(/【配套】/.test(pageSkill.content) && /web-styles|frontend-design/.test(pageSkill.content),
+          "加载 html-page 时没带出「先挑视觉方向」的提示，网页又会长成同一张脸");
+        assert(!/【配套】/.test(lastTool.results[0].content), "★这句提示不该跟着 excel-report 一起发★");
         const code = `
 const ExcelJS = require("exceljs");
 (async () => {
@@ -5340,6 +5353,7 @@ async function main() {
   await testFrontendSvgFigures();
   testPackageAssetDrift();
   testNoticeCoverage();
+  testStyleDirection();
   testNoNestedRoutes();
   await testAdminConsoleUI();
   await testNodeSuite("tenant.js", "多租户与企业后台越权");
@@ -6914,6 +6928,84 @@ function testNoticeCoverage() {
   assert(shipped(cfgFiles).length === 0, "这几份法务文件没进安装包白名单：" + shipped(cfgFiles).join("、"));
   assert(shipped(cfgFiles.filter((g) => g !== "NOTICE.md")).length === 1, "★闸门失效：把 NOTICE.md 从白名单里拿掉居然没红★");
   console.log(`✅ 第三方署名不漂移：${r.checked} 条运行时依赖在 NOTICE.md 里全有名字（内联图标的 ISC 单独钉住）· ${legal.length} 份法务文件都进安装包 · 4 种坏法全被抓`);
+}
+
+/**
+ * 「做出来的网页千篇一律」不是某一个文件的锅，是一条链：内置提示词、html-page 技能、
+ * 网页设计师专家、界面上那几个提示词模板——四处各自写死一套配方（白底居中一栏、圆角卡片、
+ * 三个卖点 + 五条 FAQ、正文 860px），模型照着做就一定长同一张脸。
+ * 修法是在每一处都插进「先定视觉方向」这一步，并把写死的配方降级成范围。
+ * 这四处是互相独立的文件，改一处忘三处既不报错也不崩，只会在下一次交付里悄悄长回去，
+ * 所以只能在这儿钉住。
+ */
+function styleDirectionDrift(src) {
+  const miss = [];
+  const need = (label, ok) => { if (!ok) miss.push(label); };
+  const agentJs = src["agent.js"] || "";
+  const htmlPage = src["skills/html-page/skill.md"] || "";
+  const webStyles = src["skills/web-styles/skill.md"] || "";
+  const experts = src["experts.json"] || "";
+  const tpls = src["public/js/app-05.js"] || "";
+
+  need("agent.js 的做网页规范里没有「先定视觉方向」这一步", /视觉方向/.test(agentJs));
+  need("agent.js 没指路去 web-styles 挑方向", /web-styles/.test(agentJs));
+  // 字体是唯一该放行的外链：tools.js 的 check_page 早就把 fonts.googleapis 放进白名单了，
+  // 提示词这边还一刀切禁掉，等于自己跟自己打架
+  need("agent.js 仍在一刀切禁外部 CDN，字体这个例外没留", /fonts\.googleapis/.test(agentJs));
+  need("agent.js 把「4 个主色 / 4 的倍数」当配方而不是下限", /及格线，不是配方/.test(agentJs));
+
+  need("html-page 只给了一副报告骨架，没给三选一", ["A · 分析报告式", "B · 叙事流式", "C · 面板式"].every((k) => htmlPage.includes(k)));
+  need("html-page 又把正文宽度写死成一个值", !/max-width: 860px/.test(htmlPage));
+  need("html-page 没提醒先去 web-styles 定方向", /web-styles/.test(htmlPage));
+
+  need("web-styles 技能不见了", webStyles.length > 0);
+  const fm = /^---\n([\s\S]*?)\n---/.exec(webStyles);
+  const desc = fm ? (/^description:\s*(.+)$/m.exec(fm[1]) || [, ""])[1].trim() : "";
+  // CLI 那边列技能表时截到 60 字（agent.js 网页端截 80），超了就是一句被切一半的话
+  need("web-styles 的 description 超过 60 字，CLI 里会被截断成半句话", desc.length > 0 && desc.length <= 60);
+  const dirs = (webStyles.match(/^## \d+ · /gm) || []).length;
+  need("web-styles 给的方向少于 8 个，选择面太窄照样会撞脸", dirs >= 8);
+
+  need("网页设计师专家没被告知先去挑视觉方向", /web-styles/.test(experts));
+  need("网页设计师专家还在要求「字体只用系统字体栈」跟 html-page 打架", !/字体只用系统字体栈/.test(experts));
+
+  need("落地页模板还写死「三个核心卖点 + FAQ 5 条」", !/三个核心卖点/.test(tpls));
+
+  return { miss, checked: Object.keys(src).length };
+}
+
+function testStyleDirection() {
+  const root = path.join(__dirname, "..");
+  const files = ["agent.js", "skills/html-page/skill.md", "skills/web-styles/skill.md", "experts.json", "public/js/app-05.js"];
+  const src = {};
+  for (const f of files) src[f] = fs.readFileSync(path.join(root, f), "utf8");
+  const r = styleDirectionDrift(src);
+  assert(r.miss.length === 0, "网页视觉方向这条链断了：\n  " + r.miss.join("\n  "));
+  assert(r.checked === files.length, "该查的文件没读全（" + r.checked + "/" + files.length + "）");
+
+  // 反向对照：每一处单独退回原样，都必须被抓出来——一条没红就说明这道闸门是摆设
+  const bad = [
+    ["agent.js 退回一刀切禁 CDN", { "agent.js": src["agent.js"].replace(/fonts\.googleapis/g, "example") }],
+    ["agent.js 删掉视觉方向那一步", { "agent.js": src["agent.js"].replace(/视觉方向/g, "配色") }],
+    ["html-page 退回单副骨架", { "skills/html-page/skill.md": src["skills/html-page/skill.md"].replace("B · 叙事流式", "分节正文") }],
+    ["html-page 又把正文宽度写死", { "skills/html-page/skill.md": src["skills/html-page/skill.md"] + "\nmax-width: 860px 居中\n" }],
+    ["web-styles 技能整个丢了", { "skills/web-styles/skill.md": "" }],
+    ["web-styles 的 description 写太长", { "skills/web-styles/skill.md": src["skills/web-styles/skill.md"].replace(/^description:.*$/m, "description: " + "长".repeat(61)) }],
+    ["web-styles 只剩两个方向", { "skills/web-styles/skill.md": src["skills/web-styles/skill.md"].replace(/^## [3-9] · .*$/gm, "## 别的") }],
+    ["网页设计师专家忘了挂 web-styles", { "experts.json": src["experts.json"].replace(/web-styles/g, "html-page") }],
+    ["落地页模板退回三卖点五问答", { "public/js/app-05.js": src["public/js/app-05.js"] + "\n// 三个核心卖点\n" }],
+  ];
+  for (const [why, patch] of bad) {
+    const got = styleDirectionDrift({ ...src, ...patch }).miss;
+    assert(got.length > 0, "★闸门失效：" + why + "，居然没红★");
+  }
+  // 这份技能得真跟着安装包走，不然用户下下来是没有的。skills 白名单是问 git 要的，
+  // 忘了 git add 就悄无声息地不进包——跟 NOTICE.md 当初那个漏法一模一样
+  const packed = require(path.join(root, "electron-builder.config.js")).files;
+  assert(packed.includes("skills/web-styles/**/*"), "web-styles 没进安装包白名单——多半是忘了 git add");
+  assert(!packed.includes("skills/theme-factory/**/*"), "★闸门失效：.gitignore 掉的第三方技能居然也进了包★");
+
+  console.log(`✅ 网页别千篇一律：${files.length} 处（提示词 / 技能 / 专家 / 模板）都插进了「先定视觉方向」· ${(src["skills/web-styles/skill.md"].match(/^## \d+ · /gm) || []).length} 个方向随包分发 · ${bad.length} 种退回全被抓`);
 }
 
 function testPackageAssetDrift() {
