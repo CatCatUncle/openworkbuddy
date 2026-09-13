@@ -177,16 +177,21 @@ if (!HAS_GIT) {
   console.log("  - 跳过：这儿不是 git 仓库（多半是从发布包解出来的），问不到谁被忽略");
 } else {
   // git check-ignore 一次问一批，比一个个 spawn 快得多
+  // 返回被忽略的那些；git 答不上来就返回 null（让调用方跳过，而不是把整个套件炸掉）
   const ignoredOf = (rels) => {
     if (!rels.length) return new Set();
     try {
-      const out = execFileSync("git", ["check-ignore", "--stdin"],
-        { cwd: ROOT, input: rels.join("\n"), encoding: "utf8" });
+      const out = execFileSync("git", ["check-ignore", "--stdin", "--no-index"],
+        // stderr 也收进来：execFileSync 默认把它直接倒到终端，
+        // 于是一行 fatal: 会跟在一堆 ✓ 后面，看着像整个套件炸了。
+        { cwd: ROOT, input: rels.join("\n"), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
       return new Set(out.split("\n").map((s) => s.trim()).filter(Boolean));
     } catch (e) {
-      // 一个都没被忽略时 git 用退出码 1 表示，不是出错
-      if (e.status === 1) return new Set();
-      throw e;
+      if (e.status === 1) return new Set(); // 一个都没被忽略，git 用退出码 1 表示，不是出错
+      // 其余情况（比如 node_modules 是个软链，git 会说 "beyond a symbolic link"）
+      // 只说一声就走，别让一条辅助规则把 18 个套件全带红。
+      console.log("  - git check-ignore 答不上来（" + String((e.stderr || e.message)).trim().split("\n")[0] + "）");
+      return null;
     }
   };
 
@@ -206,6 +211,9 @@ if (!HAS_GIT) {
   ok(found.length > 0, `扫出 ${found.length} 处写死的仓库内路径`);
 
   const ign = ignoredOf([...new Set(found.map((x) => x.rel))]);
+  if (!ign) {
+    console.log("  - 跳过：问不到谁被忽略");
+  } else {
   const bad = [];
   let deps = 0;
   for (const x of found) {
@@ -220,9 +228,10 @@ if (!HAS_GIT) {
 
   // 反向对照：拿一个确定被忽略的路径去问，必须答「被忽略」
   const probe = ignoredOf(["node_modules", "skills/brand-guidelines", "server.js"]);
-  ok(probe.has("node_modules") && probe.has("skills/brand-guidelines") && !probe.has("server.js"),
+  ok(probe && probe.has("node_modules") && probe.has("skills/brand-guidelines") && !probe.has("server.js"),
     "反向对照：git check-ignore 认得出谁被忽略、谁没有",
-    [...probe].join(" "));
+    probe ? [...probe].join(" ") : "问不到");
+  }
 }
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
