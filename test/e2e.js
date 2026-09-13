@@ -365,6 +365,36 @@ async function testShellGlobCompat() {
   console.log("✅ shell 通配符兼容：没匹配上也不拒命令（循环收尾还在·带 ?[] 的 URL 跑得起来·报错来自命令自己）· 能匹配的照常展开");
 }
 
+// 缺外部工具的那句话，必须真的接在 run_shell 的回执后面。
+// 翻译函数本身在 test/office-tools.js 里逐个 shell 测过了，这儿测的是**接没接上**：
+// 少一行 wiring，那边十几条断言照样全绿，而用户拿到的还是光秃秃一句
+// 「zsh:1: command not found: ffprobe」。
+//
+// PATH= 是为了让这条断言在装了 ffmpeg 的机器上也成立——把 PATH 清空，
+// 任何机器上都必然是「找不到」，而不是「这台碰巧没装」。
+async function testMissingBinHintWired() {
+  const tools = require("../tools");
+  const run = (command) => tools.executeTool("run_shell", { command }, { timeoutMs: 30000 });
+
+  const miss = await run("PATH= ffmpeg -version");
+  assert(miss.isError, "命令没跑失败，这条断言就没测到东西: " + miss.content);
+  assert(/brew install ffmpeg|winget install ffmpeg|apt install ffmpeg/.test(miss.content),
+    "run_shell 回执里没接上「怎么装」那句: " + miss.content);
+  assert(/图文成片/.test(miss.content), "没说这个工具是干嘛用的，用户不知道该不该装: " + miss.content);
+
+  // ★反向对照★ 退出码 0 的输出里就算原样出现那句话，也一个字都不许加——
+  // 不然「看一眼日志」这种命令就会被凭空追加一句「本机没装 ffmpeg」，那是纯粹的假话
+  const clean = await run('echo "zsh:1: command not found: ffmpeg"');
+  assert(!clean.isError, "这条本该成功: " + clean.content);
+  assert(!/brew install/.test(clean.content), "★成功的命令被凭空加了一句装法★ " + clean.content);
+
+  // ★反向对照★ 认不出的命令失败了，也不许瞎给装法
+  const unknown = await run("PATH= nosuchbin-e2e-112");
+  assert(unknown.isError, "这条本该失败: " + unknown.content);
+  assert(!/install/.test(unknown.content), "不认识的命令被瞎给了装法: " + unknown.content);
+  console.log("✅ 缺外部工具时回执带上装法（认得出的才给·成功的命令不加料·不认识的不瞎猜）");
+}
+
 // 对话各自一个成果文件夹之后，有两件事必须机器盯住：
 // ① 工具回执要报**真实落点**。回执只报个光秃秃的文件名等于骗模型：东西在成果子目录里，
 //    模型照回执去根目录找不着，就 `cp` 一份过去"修好"这个不一致——真实会话 s_1787740619097
@@ -5612,6 +5642,7 @@ async function main() {
   await testMcpManagerLifecycle();
   await testNodeSyntaxPrecheck();
   await testShellGlobCompat();
+  await testMissingBinHintWired();
   await testSessionFileLayout();
   await testOfficeLibs();
   await testPreviewExtract();

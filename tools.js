@@ -1426,6 +1426,51 @@ function pickShell(command) {
   return { bin: bash, args: ["-c", command], opts: {} };
 }
 
+/**
+ * 各家 shell 说「没这个命令」的说法都不一样。挨个列出来，比拿一条大正则去猜稳。
+ * 顺序有讲究：zsh 那句是 `zsh:1: command not found: ffmpeg`，名字在冒号**后面**；
+ * bash 是 `bash: line 1: ffmpeg: command not found`，名字在**前面**。
+ * 两条反着写，先跑 zsh 那条——否则 bash 那条会从 zsh 的消息里捞出个 "1" 来。
+ */
+const NOT_FOUND_RE = [
+  /command not found:\s*([\w.+-]+)/i,                        // zsh
+  /([\w.+-]+):\s*command not found/i,                        // bash
+  /([\w.+-]+):\s*not found/i,                                // dash / sh
+  /['"]?([\w.+-]+)['"]?\s*(?:is not recognized|不是内部或外部命令)/i, // Windows cmd
+];
+
+/**
+ * 把 shell 那句 command not found 翻译成人话，附上装法。
+ *
+ * 为什么值得单写一段：成片这条链路最后一步才用到 ffmpeg。模型跳过 skill 里
+ * 「先跑一下 ffmpeg -version」那步是常事，于是分镜图全生成完、配音全合成完——
+ * 也就是钱全花完之后——才在 concat 那一下撞上 `command not found: ffmpeg`。
+ * 模型看到这句话通常会去猜（改命令、换路径、重试），再烧几步才认命。
+ * 这里直接把「缺谁、干嘛用的、怎么装」摆出来，它就只能照着说。
+ *
+ * 只翻译**认识的**那几个（doctor 那张表）。不认识的命令原样交给 shell 自己的报错——
+ * 给一句「本机没有 xxx」的废话，只会把真正的报错挤出视野。
+ * @returns {string} 要追加的提示（可能是多行）；没有可说的就是空串
+ */
+function missingBinHint(text, platform) {
+  const { knownTool } = require("./doctor");
+  const seen = new Set();
+  const lines = [];
+  for (const line of String(text || "").split("\n")) {
+    for (const re of NOT_FOUND_RE) {
+      const m = line.match(re);
+      if (!m) continue;
+      const t = knownTool(m[1], platform);
+      if (t && !seen.has(t.name)) {
+        seen.add(t.name);
+        lines.push(`本机没装 ${t.name}（${t.use}）：${t.install}。装好再跑这条命令；用不到这个功能就别装，换个做法。`);
+      }
+      break; // 一行只认一个，认出来就别拿后面几条正则再刮一遍
+    }
+  }
+  return lines.join("\n");
+}
+
 function runShell(command, timeoutMs, cwd) {
   ensureDirs();
   return new Promise((resolve) => {
@@ -1447,6 +1492,9 @@ function runShell(command, timeoutMs, cwd) {
       if (e) result += `stderr:\n${e}\n`;
       if (signal === "SIGTERM") result += "(执行超时被终止)\n";
       result += `exit code: ${code2}`;
+      // 缺的是我们认识的外部工具时，把 shell 那句 command not found 翻译一遍再递出去
+      const hint = code2 !== 0 ? missingBinHint(o + "\n" + e) : "";
+      if (hint) result += "\n" + hint;
       resolve({ content: result, isError: code2 !== 0 });
     });
     child.on("error", (e) => {
@@ -3321,4 +3369,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };

@@ -11,11 +11,12 @@ description: 图文成片——脚本→分镜卡片图→TTS配音→ffmpeg 拼
 ## 前置检查（先做，缺了就早说）
 1. `run_shell` 执行 `ffmpeg -version`：没装就直接告诉用户 `brew install ffmpeg`（mac）/ `winget install ffmpeg`（win），并先把分镜图和配音做完，视频拼装留到装好后再跑。
 2. 语音合成（text_to_speech）没配渠道时：照常出片但改为「无声+大字幕」样式，并明说配音跳过的原因。
+3. **分镜超过 6 段就先让用户把额度调上去**：一段要走出图、配音、量时长、拼片四步，6 段就是二十多步，而默认上限是 25 步 / 30 分钟。撞上限断在最后一步 concat 之前是最亏的一种断法——图和配音的钱都花了，片子一秒都没有。开工前先说一句：去「设置 → 智能体 → 执行上限」，把「最大执行步数」调到 60、「任务最大运行时间」调到 60 分钟；不想守着的话把「自动续跑轮数」设成 1~2，撞上限会自己接着做完（每一轮都真计费）。
 
 ## 流程
 1. **脚本**：把内容改写成口播稿，切成 6~12 个分镜段落，每段 1~3 句话（一段 = 一个画面）。开头 3 秒必须是钩子。
 2. **分镜卡**：每段一张卡片图，方法同 xhs-cards 技能（HTML → html_to_image）。竖版 1080x1920（`body{width:1080px;height:1920px}`），横版 1920x1080。每张卡放该段的核心句（大字）+ 关键词/数据，不要整段照抄。
-3. **配音**：每段一次 `text_to_speech`（filename=voice_01.mp3…）。分段合成而不是整篇一次——这样每个分镜的时长能对上自己的音频。
+3. **配音**：每段一次 `text_to_speech`（filename=voice_01.mp3…）。分段合成而不是整篇一次——这样每个分镜的时长能对上自己的音频。多段可以放在同一轮里一口气发出去，系统会并发跑（默认同时 2 条）；**每条的 filename 必须不一样**，并发下同名就是互相覆盖，而且两条都报成功。
 4. **量时长**：`ffprobe -v error -show_entries format=duration -of csv=p=0 voice_01.mp3` 逐段取时长。
 5. **拼装**（run_shell，一段一个中间片，最后 concat）：
    - 单段：`ffmpeg -y -loop 1 -i shot_01.png -i voice_01.mp3 -c:v libx264 -tune stillimage -c:a aac -pix_fmt yuv420p -shortest seg_01.mp4`
