@@ -3169,7 +3169,20 @@ const LOOK_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n"
   + "<div class='a-msg' id='amsg'><div class='a-text' id='atext' translate='no'><h1 id='h1'>标题</h1><p id='p'>正文</p><code id='cd'>x</code></div></div></div>"
   + "<textarea id='input'></textarea>"
   + "<div class='settings-layout'><div class='settings-nav' id='nav'></div><div class='settings-pane' id='pane'></div></div></body>";
-const LOOK_CHECKS = `
+// 改完 <html> 上的属性，得逼这棵树真重算一次再去量。
+// 2026-09-13 的 CI（macOS 离屏窗口，没 GPU、没合成器）上是这样的：--wb-fs 已经是 18px 了，
+// body 的 font-size 却还报 15px，跟着 calc 走的标题 / 左栏 / 行内代码全停在旧档；
+// 而 textarea 和预览行倒是跟上了——同一棵树，一半新一半旧。本机从来不出现。
+// 把根节点的 display 摘一下再挂回去，整棵布局树重建，样式必然重算，不靠等下一帧撞运气。
+// （滚动引导那块之前也是这个病，当时只用「等一帧」压住了，没查到根上。）
+// 凡是「动 <html> 上的属性 → 马上量 computed style」的块都得先注入这一段。
+const FLUSH_SRC = `
+  const flush = () => {
+    const de = document.documentElement, d = de.style.display;
+    de.style.display = "none"; void de.offsetHeight; de.style.display = d; void document.body.offsetHeight;
+  };
+`;
+const LOOK_CHECKS = FLUSH_SRC + `
   const names = []; window.__lookNames = 0;
   const $ = (q) => document.querySelector(q);
   const px = (q, prop) => parseFloat(getComputedStyle($(q))[prop || "fontSize"]);
@@ -3178,16 +3191,6 @@ const LOOK_CHECKS = `
   const pane = $("#pane");
   // 挂了得说清楚现场。这一块的 ok 以前连第三个参数都不收，CI 上就只有一句「外观：点「特大」…」，
   // 本机又是绿的，等于什么都没说——2026-09-13 就这么白跑了一轮。现在每条失败都自动把这一屏的数字带上。
-  // 改完 <html> 上的属性，得逼这棵树真重算一次再去量。
-  // 2026-09-13 的 CI（macOS 离屏窗口，没 GPU、没合成器）上是这样的：--wb-fs 已经是 18px 了，
-  // body 的 font-size 却还报 15px，跟着 calc 走的标题 / 左栏 / 行内代码全停在旧档；
-  // 而 textarea 和预览行倒是跟上了——同一棵树，一半新一半旧。本机从来不出现。
-  // 把根节点的 display 摘一下再挂回去，整棵布局树重建，样式必然重算，不靠等下一帧撞运气。
-  // （滚动引导那块之前也是这个病，当时只用「等一帧」压住了，没查到根上。）
-  const flush = () => {
-    const de = document.documentElement, d = de.style.display;
-    de.style.display = "none"; void de.offsetHeight; de.style.display = d; void document.body.offsetHeight;
-  };
   const one = (q) => { try { return q + "=" + px(q); } catch (e) { return q + "=(没这个元素)"; } };
   const sizes = () => ["body", "#p", "#h1", "#hi", "#input", "#cd", "#look-prev"].map(one).join(" ");
   const dump = () => {
@@ -3259,18 +3262,34 @@ const LOOK_CHECKS = `
   const ratio = (a, b) => { const la = lum(a), lb = lum(b); return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05); };
   const probe = document.createElement("div"); document.body.appendChild(probe);
   const resolve = (v) => { probe.style.color = "var(" + v + ")"; return getComputedStyle(probe).color; };
+  // 读一次不算数：CI 上 body 的 computed style 会慢一拍（字号那几条就是这么挂的）。
+  // 读 → 逼重算 → 再读，两次一样才认；抖过就把抖动过程记下来，别让它悄悄过去。
+  const settle = (read) => {
+    let v = read(); const drift = [];
+    for (let i = 0; i < 4; i++) { flush(); const now = read(); if (now === v) break; drift.push(v + "→" + now); v = now; }
+    return { v, drift };
+  };
   let combos = 0, minText = 99, minBtn = 99, worst = "";
+  const rows = [], drifted = [];
   for (const skin of Object.keys(LOOK_OPTS.skin)) for (const theme of ["light", "dark"]) {
+    const combo = skin + "/" + theme;
     setLook("skin", skin); setTheme(theme); flush(); combos++;
-    const bg = getComputedStyle(document.body).backgroundColor;
-    const rt = ratio(resolve("--brand-text"), bg), rb = ratio("rgb(255, 255, 255)", resolve("--primary"));
-    if (rt < minText) { minText = rt; worst = skin + "/" + theme; }
+    const sBg = settle(() => getComputedStyle(document.body).backgroundColor);
+    const sBt = settle(() => resolve("--brand-text"));
+    const sPr = settle(() => resolve("--primary"));
+    const rt = ratio(sBt.v, sBg.v), rb = ratio("rgb(255, 255, 255)", sPr.v);
+    for (const [what, d] of [["底色", sBg.drift], ["品牌字色", sBt.drift], ["主色", sPr.drift]]) {
+      if (d.length) drifted.push(combo + " 的" + what + " " + d.join(" "));
+    }
+    rows.push(combo + " 底" + sBg.v + " 字" + sBt.v + " 主" + sPr.v + " 文" + rt.toFixed(2) + " 钮" + rb.toFixed(2));
+    if (rt < minText) { minText = rt; worst = combo; }
     if (rb < minBtn) minBtn = rb;
   }
   probe.remove();
-  ok("对比度矩阵跑满 6 皮肤 × 2 主题 = 12 组", combos === 12);
-  ok("每组品牌字色压底色 ≥ 4.5（最低 " + minText.toFixed(2) + " @ " + worst + "）", minText >= 4.5);
-  ok("每组白字压主色 ≥ 3（最低 " + minBtn.toFixed(2) + "）", minBtn >= 3);
+  const matrix = rows.join(" ｜ ") + (drifted.length ? " ｜ 读到陈样式（重算后才变）：" + drifted.join("；") : " ｜ 十二组都是一次读稳的");
+  ok("对比度矩阵跑满 6 皮肤 × 2 主题 = 12 组", combos === 12, matrix);
+  ok("每组品牌字色压底色 ≥ 4.5（最低 " + minText.toFixed(2) + " @ " + worst + "）", minText >= 4.5, matrix);
+  ok("每组白字压主色 ≥ 3（最低 " + minBtn.toFixed(2) + "）", minBtn >= 3, matrix);
   setTheme("light");
   renderLookPane(pane); flush();
   ok("重开外观页：皮肤/主题选中态从偏好里读回来（石墨 · 浅色）", pane.querySelector('[data-k="skin"] button.on').dataset.v === "graphite" && pane.querySelector('[data-k="theme"] button.on').dataset.v === "light");
@@ -3349,7 +3368,7 @@ const HL_STUBS = `
   const inputEl = document.getElementById("input");
   const skillsCache = [{ name: "写周报" }, { name: "archify" }];
 `;
-const HL_CHECKS = `
+const HL_CHECKS = FLUSH_SRC + `
   const names = []; window.__hlNames = 0;
   const ok = (name, cond, extra) => { if (!cond) throw new Error("输入框高亮：" + name + (extra ? " ← " + extra : "")); names.push(name); window.__hlNames = names.length; };
   const ta = inputEl, hl = document.getElementById("input-hl");
@@ -3423,11 +3442,11 @@ const HL_CHECKS = `
   ok("折行这一条真的折了行（技能名不在第一行）", g2.got && g2.got.y > g2.got.h * 0.9, JSON.stringify(g2.got));
 
   // 字号改大：这正是当年抄一次就不更新那个 bug 的现场
-  document.documentElement.dataset.fs = "xl";
+  document.documentElement.dataset.fs = "xl"; flush();
   const g3 = gap("帮我 /写周报 这个月的", "/写周报");
   ok("设置里把字号调到特大：两层一起变大（正文 " + getComputedStyle(ta).fontSize + "）", parseFloat(getComputedStyle(ta).fontSize) > 15 && snap(ta) === snap(hl));
   ok("特大字号下框还严丝合缝（" + say(g3) + "）", fit(g3));
-  delete document.documentElement.dataset.fs;
+  delete document.documentElement.dataset.fs; flush();
 
   // 负对照：这把尺子得能红。把镜像层字号单独改掉，框立刻对不上
   hl.style.fontSize = "20px";
@@ -6262,7 +6281,7 @@ const CONTRAST_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + 
   + "<div><button class='row-more' id='c-more'><svg class='i'></svg></button></div>"
   + "<div class='ui-card' style='padding:12px'><span class='ch-warn' id='c-warn'>未填 Key</span></div>"
   + "</body>";
-const CONTRAST_CHECKS = `
+const CONTRAST_CHECKS = FLUSH_SRC + `
 (() => {
   const names = [];
   const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
@@ -6300,7 +6319,7 @@ const CONTRAST_CHECKS = `
   });
 
   for (const theme of ["light", "dark"]) {
-    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.theme = theme; flush();
     for (const [label, r] of sweep()) ok(theme + "：" + label + " 压住底色 " + r.toFixed(2) + " ≥ 4.5", r >= 4.5, r);
   }
 
@@ -6310,16 +6329,16 @@ const CONTRAST_CHECKS = `
     + " .side-nav .nav-head #proj-add { color: var(--wb-text-3); }"
     + " a:not([class]) { color: -webkit-link; }"
     + " :root { --warning: #b26a00; }";
-  document.head.appendChild(undo);
+  document.head.appendChild(undo); flush();
   for (const theme of ["light", "dark"]) {
-    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.theme = theme; flush();
     const bad = sweep().filter(([, r]) => r < 4.5).map(([l]) => l);
     if (theme === "dark") ok("反向对照·暗色：那三处全跌破 4.5（警告色暗底上本来就够）", bad.length === 3, sweep());
     else ok("反向对照·浅色：副标题和警告小字两条跌破 4.5（另两条本来浅底上就够）",
       bad.includes("side-nav 选中行的副标题") && bad.includes("卡片上 12px 的警告小字"), sweep());
   }
-  undo.remove();
-  document.documentElement.dataset.theme = "light";
+  undo.remove(); flush();
+  document.documentElement.dataset.theme = "light"; flush();
   ok("撤掉对照样式之后四处又都回到 4.5 以上", sweep().every(([, r]) => r >= 4.5), sweep());
 
   // ---- 点得着：能点的东西至少 24×24 ----
