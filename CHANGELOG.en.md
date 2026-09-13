@@ -9,6 +9,7 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Sep 13** Image, video and voice generation can now run together in one round — 2 at a time by default, 1-4 in settings — so a twelve-shot short film no longer queues up one by one, kept deliberately below the read-only limit because each of these costs real money; this also fixes unnamed outputs landing on the same filename within a single millisecond, where the second one silently overwrote the first and both reported success
 - **Sep 13** Image generation takes reference images (up to 4) and video generation takes a first and last frame, so the same person or product stays the same across shots; a text-to-video model handed an image (or the reverse) is caught before the request goes out, and a channel that really can't take the image says so instead of quietly falling back to text-only
 - **Sep 13** Seven specialists — minutes, contract review, email, project plans, PRDs, recruiting and support scripts — now each carry a written spec, so what they hand back has a fixed shape and hard rules instead of a new format every time
 - **Sep 13** Point it at an SMTP server and the agent emails the report it just wrote; a recipient allowlist is a hard gate, and every message shows you the full text before it leaves

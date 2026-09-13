@@ -9148,6 +9148,36 @@ function testStepLines() {
   // 负向控制②：切段不许挪动任何一个调用的位置
   assert.deepStrictEqual(groups.flat().map((t) => t.name), seq.map((t) => t.name), "切段把调用顺序打乱了");
   assert.deepStrictEqual(splitParallelRuns([], RO), [], "空批次该原样返回空");
+
+  // ---- 生成类（出图/出片/出声）也合段，但跟只读分成两类 ----
+  // 为什么单独一类而不是并进只读：这两类的约束正好相反。只读便宜、快、重来一次不心疼；
+  // 生成类每条都花钱（视频按条计费）、慢的以分钟计，而且**会写文件**。上限不同是一层，
+  // 更要紧的是混进同一段就等于把「先写后读」的先后依赖交给了调度器。
+  const { GEN_TOOLS } = require("../agent");
+  const genGroups = splitParallelRuns(
+    [{ name: "generate_video" }, { name: "generate_video" }, { name: "generate_video" }], RO, GEN_TOOLS);
+  assert.strictEqual(genGroups.length, 1, "三条生成视频没合成一段：一集短剧十几个镜头一条条排，最坏要等一两个小时");
+  assert.strictEqual(genGroups[0]._kind, "gen", "合出来的段没标成 gen，界面会按只读那套话术播报（说错花没花钱）");
+  assert.strictEqual(genGroups[0]._ro, false, "gen 段被标成只读了，并发上限会按只读那档给——这类每条都花钱，不能按只读放");
+  // 出图/出片/出声三样混着也算同一类
+  assert.strictEqual(
+    splitParallelRuns([{ name: "generate_image" }, { name: "text_to_speech" }], RO, GEN_TOOLS).length, 1,
+    "生图和配音没合段：它们之间没有任何先后关系");
+  // 负向控制①：生成类跟写文件绝不合段——写文件的先后顺序本身就是语义
+  assert.strictEqual(
+    splitParallelRuns([{ name: "generate_image" }, { name: "write_file" }], RO, GEN_TOOLS).length, 2,
+    "生图和写文件被并进同一段了：写文件的先后顺序会被调度器打乱");
+  // 负向控制②：生成类跟只读也不合段——上限不同，而且生成类会写文件，混段=顺序交给调度器
+  const mixed = splitParallelRuns([{ name: "generate_image" }, { name: "read_file" }], RO, GEN_TOOLS);
+  assert.strictEqual(mixed.length, 2, "生图和读文件被并进同一段了：先写后读的依赖就废了");
+  // 负向控制③：不传第三个参数时行为必须跟以前逐字节一致——老调用点和老测试不能被这次改动带偏
+  assert.strictEqual(
+    splitParallelRuns([{ name: "generate_image" }, { name: "generate_image" }], RO).length, 2,
+    "没传 gen 名单却把生成类合段了：两参数的老调用点会在用户不知情的情况下开始并发花钱");
+  // html_to_image 故意不在名单里：htmlshot.js 自己就是一条串行队列（一个 Electron 窗口轮流截图），
+  // 放进来并发不了，只会给用户一个「在并发」的假象
+  assert.ok(!GEN_TOOLS.includes("html_to_image"), "html_to_image 进了生成类名单：底层是串行队列，界面会播报一个假的并发");
+
   console.log("✅ 执行过程一行流：动词+对象+结果量（长路径截短·MCP 不开天窗·失败报原因），文件正文不当摘要；只读段并发且段间保序（写工具单跑=负向控制）");
 }
 
@@ -9407,6 +9437,13 @@ function testOutNameKeepsExt() {
   // 空名兜底：给得出一个带正确后缀的名字，不是一个光秃秃的后缀
   const auto = safeOutName("   ", ".png", "image");
   assert.ok(auto.startsWith("image_") && auto.endsWith(".png"), "空名兜底不对：" + auto);
+
+  // 同一毫秒里连着兜底若干次，名字必须互不相同。
+  // 生图现在能一轮并发两条，两张图同一毫秒返回就会写同一个文件名——后写的把先写的盖掉，
+  // 而界面上两张卡都报成功。这种错不留任何痕迹，只能在这儿拦。
+  const burst = Array.from({ length: 8 }, () => safeOutName("", ".png", "image"));
+  assert.strictEqual(new Set(burst).size, burst.length, "同毫秒兜底文件名撞车了（并发下后一张会盖掉前一张，两张还都报成功）：" + burst.join(" "));
+  assert.ok(burst.every((n) => n.startsWith("image_") && n.endsWith(".png")), "去重后缀挂到后缀外面去了：" + burst.join(" "));
 
   console.log("✅ 存盘文件名：本来就是图/片子/音频的后缀不再被接第二个（yhfig_erhai.jpg.png 那类裂图）· 跨族照补 · 非法字符照洗");
 }

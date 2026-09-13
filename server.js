@@ -865,6 +865,7 @@ app.get("/api/settings", (req, res) => {
       tool_timeout_ms: config.agent.tool_timeout_ms,
       max_runtime_ms: config.agent.max_runtime_ms || 1800000,
       auto_continue_rounds: config.agent.auto_continue_rounds || 0,
+      gen_parallel_max: config.agent.gen_parallel_max || 2,
       llm_timeout_ms: config.agent.llm_timeout_ms || 300000,
       max_context_chars: config.agent.max_context_chars || 120000,
       max_tokens_budget: config.agent.max_tokens_budget || 0,
@@ -1071,6 +1072,8 @@ app.post("/api/settings", (req, res) => {
       if (b.agent.tool_timeout_ms) config.agent.tool_timeout_ms = Math.max(5000, +b.agent.tool_timeout_ms);
       if (b.agent.max_runtime_ms) config.agent.max_runtime_ms = Math.max(60000, +b.agent.max_runtime_ms);
       if (b.agent.auto_continue_rounds !== undefined) config.agent.auto_continue_rounds = Math.max(0, Math.min(20, Math.round(+b.agent.auto_continue_rounds) || 0));
+      // 上限 4：这一档每条都花钱，给得太大等于把「手滑并发十条视频」变成一次点击的事
+      if (b.agent.gen_parallel_max !== undefined) config.agent.gen_parallel_max = Math.max(1, Math.min(4, Math.round(+b.agent.gen_parallel_max) || 2));
       if (b.agent.llm_timeout_ms) config.agent.llm_timeout_ms = Math.max(30000, +b.agent.llm_timeout_ms);
       // 下限 2 万字符：再小连最近几步的工具原文都留不住，agent 会失忆式反复重做
       if (b.agent.max_context_chars) config.agent.max_context_chars = Math.max(20000, Math.min(2000000, +b.agent.max_context_chars));

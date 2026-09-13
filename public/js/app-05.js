@@ -1212,6 +1212,9 @@ async function renderAgentPane(pane, s) {
       <div class="f">上下文预算（千字符）</div>
       <div class="d" style="margin-bottom:6px">超出后自动截短较早的工具输出（最近 3 步始终保留原文），避免长任务撞模型上下文上限整个失败。上下文大的模型可以调高（默认 120）</div>
       <input id="ag-ctx" type="number" min="20" max="2000" value="${Math.round((s.agent.max_context_chars || 120000) / 1000)}">
+      <div class="f">生成类并发条数</div>
+      <div class="d" style="margin-bottom:6px">出图 / 出片 / 配音这三类，一轮里最多同时跑几条（1-4，默认 2）。一集短剧十几个镜头，一条条排队最坏要等一两个小时；但这类每条都真花钱（视频按条计费），所以给得比只读工具保守。填 1 就是全部排队，回到老样子</div>
+      <input id="ag-genpar" type="number" min="1" max="4" value="${s.agent.gen_parallel_max || 2}">
     </div>
     <button class="btn-brand" id="ag-save">保存</button><span class="ok-msg" id="ag-msg"></span>` : `
     <div class="card-item">
@@ -1229,6 +1232,7 @@ async function renderAgentPane(pane, s) {
       auto_continue_rounds: +pane.querySelector("#ag-rounds").value,
       llm_timeout_ms: +pane.querySelector("#ag-llm-timeout").value * 1000,
       max_context_chars: +pane.querySelector("#ag-ctx").value * 1000,
+      gen_parallel_max: +pane.querySelector("#ag-genpar").value,
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
       failover_model: pane.querySelector("#ag-failover").value,
     } }, pane.querySelector("#ag-msg"));

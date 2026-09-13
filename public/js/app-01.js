@@ -828,8 +828,12 @@ function createTurnUI(userText, turnMode, forSid) {
       banner.innerHTML = `<div class="head"><span class="tag">${ic("users")}${esc(ev.expert)}</span><span class="desc">专家接手子任务：${esc((ev.task || "").slice(0, 60))}</span></div>`;
       ensureProc().appendChild(banner);
     } else if (ev.type === "parallel") {
-      // 这一批全是只读工具，同时开跑。说一句，免得用户看到好几张卡一起转以为卡住了
-      ensureProc().appendChild(procNote("zap", `${ev.count} 个只读工具并发执行（搜索/抓页面互不影响，一起跑更快）`));
+      // 这一批同时开跑。说一句，免得用户看到好几张卡一起转以为卡住了。
+      // 两类分开讲：搜索抓页面是「等网络」，出图出片是「等上游出货还要花钱」，
+      // 用户看到三张图一起转，第一反应是「这是不是要收我三份钱」——得当场说明白各写各的。
+      ensureProc().appendChild(procNote("zap", ev.kind === "gen"
+        ? `${ev.count} 条生成任务一起跑（各写各的文件，互不影响）`
+        : `${ev.count} 个只读工具并发执行（搜索/抓页面互不影响，一起跑更快）`));
     } else if (ev.type === "tool_use") {
       body.querySelector(".thinking-hint")?.remove();
       endText();
@@ -1320,7 +1324,7 @@ function liveActivity(ev, narr) {
       return ev.isError
         ? say("triangle-alert", cut(shortTool(ev.name) + " 没成：" + (ev.outcome || ev.preview || "出错了")))
         : keep;
-    case "parallel": return say("zap", `${ev.count} 个只读工具一起跑`);
+    case "parallel": return say("zap", ev.kind === "gen" ? `${ev.count} 条生成任务一起跑` : `${ev.count} 个只读工具一起跑`);
     case "step_start": return (ev.depth || 0) > 0 ? keep : say("brain", `第 ${ev.step} 步 · 在想下一步怎么做`);
     case "expert_start": return say("users", `专家「${cut(ev.expert, 12)}」接手：` + cut(ev.task, 30));
     case "compact": return say("archive", `会话太长，早前 ${ev.removed || 0} 条压成了摘要（要点保留）`);

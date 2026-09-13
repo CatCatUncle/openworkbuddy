@@ -239,7 +239,7 @@ function makeEmit(state) {
       if (ev.depth === 0) prog(dim(`\n· 第 ${ev.step} 步 思考中…`));
       state.streamed = false;
     } else if (ev.type === "parallel") {
-      prog(dim(`\n  ▸▸ ${ev.count} 个只读工具并发执行`));
+      prog(dim(`\n  ▸▸ ${ev.count} ${ev.kind === "gen" ? "条生成任务一起跑" : "个只读工具并发执行"}`));
       state.streamed = false;
     } else if (ev.type === "tool_use") {
       const who = ev.expert ? `${ev.expert} · ` : "";
