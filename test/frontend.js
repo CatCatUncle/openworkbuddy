@@ -1020,6 +1020,7 @@ const TRAIL_STUBS = [
   "var curBusy = () => false; var doSend = () => {}; var setMode = () => {}; var syncInputHl = () => {};",
   "var inputEl = document.createElement('textarea');",
   "var isReplaying = false;",
+  "var MODALS = []; var openModal = (a, b) => MODALS.push(a + ':' + (b || ''));",
   // 收尾那两件事要用的外部符号。这两条正则跟 app-01.js 里的真源一字不差（e2e 的 testOutputArrivalStatic 会比对字面量）
   "var OFFICE_RE = /\\.(doc|ppt|xls)$/i;",
   "var SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)\\.(md|txt)$/i;",
@@ -3589,6 +3590,82 @@ const TRAIL_CHECKS = `
   u10b.handleEvent({ type: "status", text: "模型 40 秒没吐字，重试中…" });
   ok("负向控制：普通状态仍走会转的提示行，不许顶掉牌子", !!u10b.turn.querySelector(".thinking-hint .spinner") && u10b.turn.querySelectorAll(".run-eng").length === 1);
   u10b.finish();
+
+  // ---- 每步耗时 + 收尾那笔时间账 ----
+  // 用户原话：「我要看到每次执行的 trace 啊还有耗时这些各种数据啊」。
+  // Langfuse 那条路要先去搭实例、填两把钥匙；而「这趟到底慢在哪」本地就该当场答得上来。
+  const durOf = (c) => c.querySelector(".dur").textContent;
+  const B = 1757000000000; // 固定基准时刻：这些断言算的全是差值，不许沾墙上时钟
+  const u11 = createTurnUI("查一遍", "craft", "s_t");
+  u11.handleEvent({ type: "tool_use", id: "p", name: "read_file", title: "读 报告.md", at: B + 1000 });
+  const cp = u11.turn.querySelector(".step-card");
+  ok("还没回来时这一格是空的（不预先编一个数）", durOf(cp) === "", JSON.stringify(durOf(cp)));
+  ok("空的那一格不占地方（真样式）", disp(cp.querySelector(".dur")) === "none", disp(cp.querySelector(".dur")));
+  // 两个只读工具是并发跑的：p 占 [1.0s, 5.0s]，q 占 [2.0s, 6.0s]
+  u11.handleEvent({ type: "tool_use", id: "q", name: "read_file", title: "读 数据.csv", at: B + 2000 });
+  u11.handleEvent({ type: "tool_result", id: "p", name: "read_file", outcome: "120 行", at: B + 5000 });
+  ok("回来了就把这一步花了多久写死在卡上", durOf(cp) === "4.0s", durOf(cp));
+  ok("写上了就看得见（不是被 :empty 规则连坐）", disp(cp.querySelector(".dur")) !== "none");
+  u11.handleEvent({ type: "tool_result", id: "q", name: "read_file", outcome: "8 列", at: B + 6000 });
+  u11.handleEvent({ type: "tool_use", id: "r", name: "run_shell", title: "命令 npm test", at: B + 10000 });
+  u11.handleEvent({ type: "tool_result", id: "r", name: "run_shell", outcome: "全绿", at: B + 10480 });
+  const c11 = [...u11.turn.querySelectorAll(".step-card")];
+  ok("不到一秒的步子带小数，不是一律写成 1s", durOf(c11[2]) === "0.5s", durOf(c11[2]));
+  u11.handleEvent({ type: "usage", prompt: 10, completion: 10, cached: 0, calls: 3, elapsed_ms: 12000, model: "m", provider: "P" });
+  u11.finish();
+  const sum = u11.turn.querySelector(".proc-sum");
+  ok("收尾在过程区底下记一笔时间账", !!sum && sum.parentElement === u11.turn.querySelector(".proc-body"));
+  const sumTxt = sum.querySelector(".ps-row").textContent;
+  ok("总耗时用的是这一趟真实的数", /^共 12s：/.test(sumTxt), sumTxt);
+  // 并发那两步各 4s，各步相加是 8.5s——比总耗时还离谱。合并重叠后是 [1.0,6.0] + [10.0,10.48] = 5.5s
+  ok("工具时间按重叠合并，不是各步相加（负向对照：不许出现 8.5s）", /工具占了 5\\.5s/.test(sumTxt) && !/8\\.5s/.test(sumTxt), sumTxt);
+  ok("剩下那截如实写成「模型在想 + 等网络」，不冒充成模型耗时", /其余 6\\.5s 是模型在想 \\+ 等网络/.test(sumTxt), sumTxt);
+  const slowTxt = sum.querySelector(".ps-slow").textContent;
+  ok("最慢那几步按人话的名字点出来，最慢的排头一个", /^最慢：读 报告\\.md 4\\.0s · 读 数据\\.csv 4\\.0s/.test(slowTxt), slowTxt);
+  ok("0.5s 那步排在最后，不冒充最慢", slowTxt.indexOf("命令 npm test") > slowTxt.indexOf("读 数据.csv"), slowTxt);
+  const more = sum.querySelector(".ps-more");
+  ok("没开追踪时把入口指在这儿（要展开过程区才看得见，不往对话里插横幅骚扰）", /打开执行追踪/.test(more.textContent), more.textContent);
+  MODALS.length = 0;
+  more.click();
+  ok("点它直接开「设置 → 执行追踪」", MODALS.join() === "settings:trace", MODALS.join());
+
+  // 开了 Langfuse：直接给这一趟的地址，别让人自己去 trace 列表里猜哪条是刚才那趟
+  const u12 = createTurnUI("再跑一趟", "craft", "s_t");
+  u12.handleEvent({ type: "trace", url: "https://cloud.langfuse.com/project/p1/traces/abc" });
+  u12.handleEvent({ type: "tool_use", id: "s", name: "read_file", title: "读 a.md", at: B });
+  u12.handleEvent({ type: "tool_result", id: "s", name: "read_file", at: B + 2000 });
+  // 全程 2.2s 里工具占了 2.0s：剩下 0.2s 不值得单独说一句
+  u12.handleEvent({ type: "usage", prompt: 1, completion: 1, cached: 0, calls: 1, elapsed_ms: 2200, model: "m", provider: "P" });
+  u12.finish();
+  const sum2 = u12.turn.querySelector(".proc-sum");
+  const more2 = sum2.querySelector(".ps-more");
+  ok("开了追踪就直接给这一趟的地址", more2.getAttribute("href") === "https://cloud.langfuse.com/project/p1/traces/abc" && more2.target === "_blank" && /noopener/.test(more2.rel), more2.getAttribute("href"));
+  ok("给了地址就不再反过来问「要不要打开追踪」", !/打开执行追踪/.test(more2.textContent), more2.textContent);
+  ok("剩下不到一秒就不硬凑「其余 … 在想」那半句", /^共 2s：工具占了 2\\.0s（1 步，并发的已按重叠合并）$/.test(sum2.querySelector(".ps-row").textContent), sum2.querySelector(".ps-row").textContent);
+  ok("只有一步时不摆「最慢」榜（一个人的排行榜是废话）", !sum2.querySelector(".ps-slow"));
+
+  // 负向对照：老会话两头都没盖过时间戳。回放是一个同步循环跑完的，两头差几毫秒——
+  // 印成「<0.1s」不是「这步很快」，是「这步根本没记过时间」，那是编的
+  const u13 = createTurnUI("翻个老会话", "craft", "s_t");
+  u13.handleEvent({ type: "tool_use", id: "o", name: "read_file", title: "读 旧.md" });
+  { const e13 = Date.now() + 6; while (Date.now() < e13); } // 回放循环本身也要跑几毫秒，别让「差值正好是 0」替这条断言干活
+  u13.handleEvent({ type: "tool_result", id: "o", name: "read_file", preview: "ok" });
+  const c13 = u13.turn.querySelector(".step-card");
+  ok("负向对照：没记过时间的老会话宁可空着，也不编一个耗时出来", durOf(c13) === "" && !/NaN/.test(c13.textContent), JSON.stringify(durOf(c13)));
+  u13.handleEvent({ type: "usage", prompt: 1, completion: 1, cached: 0, calls: 1, elapsed_ms: 4000, model: "m", provider: "P" });
+  u13.finish();
+  ok("负向对照：一步都没记过时间就不记这笔账（不拿 0 当事实）", !u13.turn.querySelector(".proc-sum"));
+
+  // 跑着的那一格得自己走秒：一步卡了两分钟和一步刚开始，光看转圈是一模一样的
+  const u14 = createTurnUI("跑着看", "craft", "s_t");
+  u14.handleEvent({ type: "tool_use", id: "w", name: "run_shell", title: "命令 长活" });
+  const c14 = u14.turn.querySelector(".step-card");
+  c14._at = Date.now() - 42000; // 假装已经跑了 42 秒，省得真在这儿等
+  await new Promise((r) => setTimeout(r, 1150)); // 计时器一秒一拍
+  ok("还没回来的卡自己走秒，卡了多久一眼看得见", /^4[234]s$/.test(durOf(c14)), durOf(c14));
+  ok("走秒用等宽数字，读秒时整行不左右跳", getComputedStyle(c14.querySelector(".dur")).fontVariantNumeric === "tabular-nums", getComputedStyle(c14.querySelector(".dur")).fontVariantNumeric);
+  u14.finish();
+  ok("被打断/没回来的那步不算进时间账（只有 _dur 记过的才算）", !u14.turn.querySelector(".proc-sum"));
 
   ok("五步四枚徽章（同名合并）", chips(t).length === 4, String(chips(t).length));
   ok("出错那步标红", chips(t)[1].classList.contains("err") && chips(t)[1].dataset.name === "run_shell");

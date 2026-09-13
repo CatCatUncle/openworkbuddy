@@ -401,6 +401,9 @@
   /* 结果摘要跟在同一行末尾：成功报量、失败报原因，不用一张张点开看 */
   .step-card .out { color: var(--wb-text-3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46%; }
   .step-card .out.err { color: var(--wb-err-text); }
+  /* 每步耗时：跑着的时候走秒，回来了写死。等宽数字，免得读秒时整行左右跳 */
+  .step-card .dur { color: var(--wb-text-3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .step-card .dur:empty { display: none; }
   /* 行尾这一档：跑着的时候是转圈，跑完换成完成/失败药丸，两者都贴右边，位置不跳 */
   .step-card .head > .spinner, .step-card .head > .tag.ok, .step-card .head > .tag.err { margin-left: auto; }
   .step-card pre { display: none; background: var(--wb-code-bg); color: var(--wb-code-text); padding: 12px; font-size: 13px; line-height: 1.5; max-height: 320px; overflow: auto; }
@@ -1646,6 +1649,13 @@
   .proc-note { display: flex; align-items: flex-start; gap: 6px; font-size: 13px; color: var(--wb-text-3); margin: 6px 0; }
   .proc-note .i { width: 14px; height: 14px; margin-top: 2px; }
   .proc-note.err { color: var(--wb-err-text); }
+  /* 收尾那笔时间账，钉在过程区最底下：展开过程区的人正好在这儿看到「时间花在哪了」 */
+  .proc-sum { margin: 12px 0 4px; padding-top: 8px; border-top: 1px solid var(--wb-border); font-size: 12px; color: var(--wb-text-3); }
+  .proc-sum .ps-row { display: flex; align-items: flex-start; gap: 6px; font-variant-numeric: tabular-nums; }
+  .proc-sum .ps-row + .ps-row { margin-top: 4px; }
+  .proc-sum .i { width: 14px; height: 14px; margin-top: 2px; flex: none; }
+  .proc-sum .ps-slow { padding-left: 20px; }
+  .proc-sum .ps-more { display: inline-block; margin-top: 8px; margin-left: 20px; font-size: 12px; }
   /* 折叠条上那行「此刻在干什么」：一行到底，长了省略号，图标不跟着缩 */
   .act-live { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
   .act-live .al-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

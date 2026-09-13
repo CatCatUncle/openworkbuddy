@@ -566,6 +566,10 @@ function createTurnUI(userText, turnMode, forSid) {
   const liveOutFiles = []; // 这一趟改过的文件（收尾时拿它做正文链接 + 决定预览开哪一件）
   const liveBadge = () => (liveStep ? ` · 第 ${liveStep} 步` : "") + (liveRound ? ` · 续跑 ${liveRound}/${liveRoundTotal} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "") + (liveErr ? ` · ${liveErr} 步出错` : "");
   const fmtDur = (ms) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60) + "s"; };
+  // 单步耗时得带小数：fmtDur 最小档就是 1s，可工具里一大半是几百毫秒的本地读写，
+  // 全印成「1s」等于没印——用户要的是「哪一步慢」，不是「每一步都一样」。
+  // 10s 往上小数位没意义了，交回 fmtDur 统一成 12s / 1m3s
+  const fmtStep = (ms) => (ms < 100 ? "<0.1s" : ms < 10000 ? (ms / 1000).toFixed(1) + "s" : fmtDur(ms));
   // 「此刻在干什么」那一行的状态：actNarr 是模型旁白的缓冲，actLine 是当前该显示的话
   let actNarr = "", actLine = "", actIcon = "", actPend = false;
   const paintAct = () => {
@@ -606,6 +610,14 @@ function createTurnUI(userText, turnMode, forSid) {
       procTimer = setInterval(() => {
         const pt = procWrap.querySelector(".pt");
         if (pt) pt.textContent = `运行中 ${fmtDur(Date.now() - t0)}` + liveBadge();
+        // 还没回来的卡自己也走秒。一个 setInterval 管全部，不给每张卡各开一个；
+        // 用 .spinner 筛「还在跑的」，跑完的卡早就写死了最终耗时，不会被这里改回去
+        const now = Date.now();
+        procWrap.querySelectorAll(".step-card .spinner").forEach((sp) => {
+          const c = sp.closest(".step-card");
+          const d = c && c._at && c.querySelector(".dur");
+          if (d) d.textContent = fmtStep(now - c._at);
+        });
       }, 1000);
     }
     return procBody;
@@ -662,6 +674,64 @@ function createTurnUI(userText, turnMode, forSid) {
     if (state === "abort") chip.classList.add("abort");
     const dur = at && card._at ? at - card._at : 0;
     if (dur > 0) chip.title = `${chip.dataset.name} · ${fmtDur(dur)}`;
+  };
+
+  /**
+   * 收尾时在过程区底下记一笔时间账：这一趟的时间到底花在哪了。
+   *
+   * 用户原话：「我要看到每次执行的 trace 啊还有耗时这些各种数据啊」。Langfuse 那条路要先去
+   * 搭一个实例、填两把钥匙；而「这趟慢在哪」这种最常问的问题，本地就该当场答得上来。
+   *
+   * 两个数怎么算，得说实话：
+   *   工具时间不是各步相加——只读工具是并发跑的，相加会算出比总耗时还长的荒唐数。
+   *   这里把每步的 [开始, 结束] 区间**合并重叠**后再求和，得到「确实有工具在跑」的那段墙钟时间。
+   *   剩下的那段没有任何工具在跑，就是模型在想 + 等网络往返，如实写成这句，不叫「模型耗时」——
+   *   网络那一截也在里面，硬安在模型头上是编的。
+   */
+  const renderTiming = (host, totalMs) => {
+    const cards = [...host.querySelectorAll(".step-card")].filter((c) => c._dur > 0);
+    if (!cards.length) return; // 一步都没记过时间（老会话）就不记这笔账，别拿 0 当事实
+    const spans = cards.map((c) => [c._at, c._end]).sort((a, b) => a[0] - b[0]);
+    let busy = 0, s = spans[0][0], e = spans[0][1];
+    for (const [a, b] of spans.slice(1)) {
+      if (a > e) { busy += e - s; s = a; e = b; } else if (b > e) e = b;
+    }
+    busy += e - s;
+    const think = Math.max(0, totalMs - busy);
+    const slow = cards.slice().sort((a, b) => b._dur - a._dur).slice(0, 3);
+
+    const box = document.createElement("div");
+    box.className = "proc-sum";
+    const r1 = document.createElement("div");
+    r1.className = "ps-row";
+    r1.innerHTML = ic("timer") + "<span></span>";
+    // 剩下那截不到 1 秒就别硬凑一句：「其余 <0.1s 是模型在想」读着像凑字数
+    r1.lastChild.textContent =
+      `共 ${fmtDur(totalMs)}：工具占了 ${fmtStep(busy)}（${cards.length} 步，并发的已按重叠合并）` +
+      (think >= 1000 ? `，其余 ${fmtStep(think)} 是模型在想 + 等网络` : "");
+    box.appendChild(r1);
+    // 只有一步时不摆这个榜：上一行已经写了「工具占了 2.0s（1 步）」，再来一句「最慢」是废话
+    if (cards.length >= 2 && slow[0]._dur >= 1000) {
+      const r2 = document.createElement("div");
+      r2.className = "ps-row ps-slow";
+      r2.innerHTML = "<span></span>";
+      r2.lastChild.textContent = "最慢：" + slow.map((c) => `${(c._label || "").slice(0, 24)} ${fmtStep(c._dur)}`).join(" · ");
+      box.appendChild(r2);
+    }
+    // 更细的记录去哪看。开了追踪就直接给这一趟的地址；没开就把入口指出来——
+    // 只在这儿说一次（得先展开过程区才看得见），不往对话里插横幅，那是骚扰
+    const a = document.createElement("a");
+    a.className = "link ps-more";
+    if (turn._trace) {
+      a.href = turn._trace; a.target = "_blank"; a.rel = "noopener";
+      a.textContent = "每次模型调用的输入输出 →";
+    } else {
+      a.href = "#";
+      a.textContent = "想看每次模型调用的输入输出？打开执行追踪 →";
+      a.onclick = (ev) => { ev.preventDefault(); openModal("settings", "trace"); };
+    }
+    box.appendChild(a);
+    host.appendChild(box);
   };
 
   const ensureText = () => {
@@ -771,11 +841,14 @@ function createTurnUI(userText, turnMode, forSid) {
       const line = ev.title || (ev.name + (ev.purpose ? " " + ev.purpose : ""));
       card.innerHTML =
         `<div class="head"><span class="tag">${ic(toolIcon(ev.name))}</span>` +
-        `<span class="desc">${who}${esc(line)}</span><span class="out"></span><span class="spinner"></span></div>` +
+        // .dur 这一格跑着的时候就开始走秒：一步卡了两分钟和一步刚开始，光看转圈是一模一样的
+        `<span class="desc">${who}${esc(line)}</span><span class="out"></span><span class="dur"></span><span class="spinner"></span></div>` +
         `<pre>${esc(ev.input_preview || "")}</pre>`;
       card.querySelector(".head").onclick = () => card.classList.toggle("open");
       ensureProc().appendChild(card);
       card._at = ev.at || Date.now();
+      card._stamped = !!ev.at; // 服务端存盘时盖的戳；没有就说明这是直播（或没记过时间的老会话）
+      card._label = line; // 收尾算「最慢的几步」时拿它当名字，比 read_file 这种工具名好认
       trailAdd(card, ev.name);
       // 未完成卡片入栈；专家的内层工具卡与协调者的委派卡按 depth 区分，防止张冠李戴
       card._depth = ev.depth || 0;
@@ -808,6 +881,16 @@ function createTurnUI(userText, turnMode, forSid) {
         card.querySelector("pre").textContent += "\n\n── 执行结果 ──\n" + (ev.preview || "");
         // 出错卡默认也收起（失败一多整片摊开太乱），靠红标 + 标题角标提示，点角标直达
         if (ev.isError) { card.classList.add("failed"); liveErr++; }
+        // 这一步花了多久，写死在卡上。回放的新会话两头都有 at（服务端存盘时盖的戳），
+        // 所以翻历史也看得见每步耗时，不是只有直播才有。
+        // 但没盖过戳的老会话不能跟着印：回放是一个同步循环跑完的，两头差几毫秒，
+        // 印出来的「<0.1s」不是「这步很快」，是「这步根本没记过时间」——那是编的。
+        // 所以只有「两头都盖了戳」或者「真量到 100ms 以上」（活着跑的那趟）才算数
+        card._end = ev.at || Date.now();
+        const d = card._end - card._at;
+        card._dur = d > 0 && ((card._stamped && ev.at) || d >= 100) ? d : 0;
+        const durEl = card.querySelector(".dur");
+        if (durEl) durEl.textContent = card._dur ? fmtStep(card._dur) : "";
         trailMark(card, ev.isError ? "err" : "ok", ev.at || Date.now());
       }
     } else if (ev.type === "limit") {
@@ -991,6 +1074,7 @@ function createTurnUI(userText, turnMode, forSid) {
           chip.lastChild.textContent = marks.join(" · ");
           pt.after(wireProcWarn(chip, procWrap));
         }
+        renderTiming(procBody, ms);
         procWrap.classList.remove("open"); // 回合结束一律收起
       }
       procWrap.classList.remove("running"); // 不跑了就别再钉在视口顶上占地方
