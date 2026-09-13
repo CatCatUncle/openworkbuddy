@@ -3415,6 +3415,9 @@ const HL_CHECKS = FLUSH_SRC + `
   const gap = (text, tok) => {
     ta.value = text;
     ta.dispatchEvent(new Event("input"));
+    // 每次量之前都逼一次重算：探针是照抄 textarea 的 computed style 做的，
+    // CI 离屏窗口上这份 style 会慢一拍，抄到旧值就等于拿旧尺子量新框。
+    flush();
     mkProbe();
     probe.textContent = text;
     const at = text.indexOf(tok);
@@ -3448,13 +3451,18 @@ const HL_CHECKS = FLUSH_SRC + `
   ok("特大字号下框还严丝合缝（" + say(g3) + "）", fit(g3));
   delete document.documentElement.dataset.fs; flush();
 
-  // 负对照：这把尺子得能红。把镜像层字号单独改掉，框立刻对不上
-  hl.style.fontSize = "20px";
+  // 负对照：这把尺子得能红。把镜像层字号单独改掉，框立刻对不上。
+  // 先确认这一改真的生效了——不然「尺子没红」量的是尺子坏了还是改根本没落地，分不清。
+  hl.style.fontSize = "20px"; flush();
+  const hlFs = getComputedStyle(hl).fontSize;
+  ok("负对照的前置：镜像层字号确实被改成了 20px（量到 " + hlFs + "）", parseFloat(hlFs) === 20,
+    "改没落地的话，下面那条「尺子该红」就是无效对照，别当成尺子坏了");
   const bad = gap("帮我 /写周报 这个月的", "/写周报");
-  ok("负对照：镜像层字号被单独改掉时，这把尺子当场判不合格（" + say(bad) + "）", !fit(bad));
-  hl.style.fontSize = "";
+  ok("负对照：镜像层字号被单独改掉时，这把尺子当场判不合格（" + say(bad) + "）", !fit(bad),
+    "镜像层 " + hlFs + "，正文 " + getComputedStyle(ta).fontSize);
+  hl.style.fontSize = ""; flush();
   const back = gap("帮我 /写周报 这个月的", "/写周报");
-  ok("撤掉之后又合格了（尺子本身没坏）", fit(back));
+  ok("撤掉之后又合格了（尺子本身没坏）", fit(back), say(back));
 
   // 该框的和不该框的
   ta.value = "看看 /Users/demo/note.md 这个文件"; ta.dispatchEvent(new Event("input"));
@@ -5331,7 +5339,7 @@ const LANE_CHECKS = `
 // 手机上侧栏是一层抽屉（窗口 ≤900px 时 aside 整个收起来，点汉堡才滑出来），拖到底只有 180px。
 // 这条就按那个真场景验：430px 的窗口 + 抽屉打开 + 180px 宽的侧栏。只看 class 名的话，
 // 把 min-width:0 或者 flex:1 1 0 那几行删掉照样全绿，而用户那头是标签被挤到换行、名字被顶没。
-const LANE_NARROW_CHECKS = `
+const LANE_NARROW_CHECKS = FLUSH_SRC + `
 (() => {
   const names = [];
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
@@ -5340,7 +5348,7 @@ const LANE_NARROW_CHECKS = `
   const fits = () => box.scrollWidth <= box.clientWidth;
   renderLaneTabs();
   ok("手机宽度下侧栏默认是收起来的（正文占满整屏）", getComputedStyle(side).display === "none", getComputedStyle(side).display);
-  document.body.classList.add("side-open");
+  document.body.classList.add("side-open"); flush();
   ok("点开抽屉，两条工作线就在里面", getComputedStyle(side).display === "flex" && box.getBoundingClientRect().width > 0,
     getComputedStyle(side).display + "/" + box.getBoundingClientRect().width);
   const b = box.querySelector('button[data-lane="cli"]');
