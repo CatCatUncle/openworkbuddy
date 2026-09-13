@@ -1146,6 +1146,14 @@ PAGES.models = {
     // 模型这一层的 Key 是渠道压平下来的（chat-models 每次规整都会写一遍），所以判据跟渠道同一条
     const modelIdle = (m) => chanIdle({ kind: "", base_url: m.base_url, has_key: m.has_key, api_key: m.api_key });
 
+    // 同一个地址挂两条渠道是合法的——两个账号、两把 Key、各花各的额度，并成一条等于在
+    // 不知情的情况下花别人的钱。但这两条的名字常常一模一样（都是从同一份目录里建的），
+    // 列表上分不出谁是谁，填 Key 就会填到错的那一行。所以这里只做一件事：把「同地址」标出来。
+    const baseKey = (p) => String(p.base_url || "").trim().replace(/\/+$/, "").toLowerCase();
+    const baseCount = new Map();
+    for (const p of provs) { const b = baseKey(p); if (b) baseCount.set(b, (baseCount.get(b) || 0) + 1); }
+    const dupN = (p) => (baseKey(p) && baseCount.get(baseKey(p)) > 1 ? baseCount.get(baseKey(p)) - 1 : 0);
+
     const provRow = (p) => {
       const chat = models.filter((m) => m.channel === p.id).length;
       const media = medias.filter((m) => m.provider === p.id).length;
@@ -1155,8 +1163,9 @@ PAGES.models = {
       const k = kindOf(p.kind);
       const link = k && k.key_url
         ? `<a class="ui-btn ui-btn--link" href="${esc(k.key_url)}" target="_blank" rel="noopener">去拿 Key</a>` : "";
-      return [
-        `<div><div>${esc(p.name)}</div>${sub ? `<div class="fd ad-mono" style="margin-top:2px">${esc(sub)}</div>` : ""}</div>`,
+      const cells = [
+        `<div><div>${esc(p.name)}</div>${sub ? `<div class="fd ad-mono" style="margin-top:2px">${esc(sub)}</div>` : ""}${
+          dupN(p) ? `<div class="fd" style="margin-top:2px">同地址还有 ${dupN(p)} 条，各自一把 Key、各花各的账</div>` : ""}</div>`,
         rw
           ? `<div class="ad-row"><input class="ui-input ad-key" data-pk="${esc(p.id)}" type="password" autocomplete="off"
                placeholder="${p.kind === "ollama" ? "本机跑的，不用填" : "粘贴这家服务商的 API Key"}"
@@ -1166,6 +1175,10 @@ PAGES.models = {
         `${chanIdle(p) ? badge("还没填 Key", "outline") : badge("已填 Key", "success")}
          <div class="fd" style="margin-top:4px">${chat} 个对话模型${media ? ` · ${media} 个媒体模型` : ""}</div>`,
       ];
+      // 「改」连地址一起改：换了域名的私有部署、公司内网代理，都是改地址而不是重建一条。
+      // 「删」是连坐的，所以放在最右边、走确认框，不做成一点就没。
+      if (rw) cells.push(`<div class="ad-row"><button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-pedit="${esc(p.id)}">改</button><button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-pdel="${esc(p.id)}">删</button></div>`);
+      return cells;
     };
     // 填好的排前面。这页是「来填 Key 的」，所以空着的照样全列出来——
     // 把它们收起来，就又变成用户抱怨过的那句「设置里面都没有填 apikey 的地方啊」
@@ -1182,8 +1195,9 @@ PAGES.models = {
       ${!models.length ? note("这台服务器<b>一个对话模型都还没有</b>，谁来了都发不出话。先去工作台 → 设置 → 模型 里加一条，再回来填 Key。", true)
         : noKeyNow ? note(`默认模型「<b>${esc(s.active_model)}</b>」所在的渠道<b>还没填 Key</b>，现在发任务会当场失败。在下面那张表里把它填上。`, true) : ""}
 
-      ${cardT(headRow(secT("渠道与 Key", "一个渠道一把 Key，挂在它底下的对话模型和媒体模型都共用这一把——换 Key 只改这一处。")),
-        table([{ t: "渠道" }, { t: "API Key" }, { t: "状态" }], rows))}
+      ${cardT(headRow(secT("渠道与 Key", "一个渠道一把 Key，挂在它底下的对话模型和媒体模型都共用这一把——换 Key 只改这一处。目录里没有的（自建网关、内网代理、私有部署），点右上角自己加一条。"),
+          rw ? `<button class="ui-btn ui-btn--outline ui-btn--sm" type="button" data-pnew>${ic("plus")} 新渠道</button>` : ""),
+        table([{ t: "渠道" }, { t: "API Key" }, { t: "状态" }, ...(rw ? [{ t: "" }] : [])], rows))}
 
       ${!models.length ? "" : card(`${secT("默认走哪条")}
         <div style="margin-top:14px">
@@ -1240,6 +1254,96 @@ PAGES.models = {
       tip.style.display = dirty ? "" : "none";
     };
     [...keys.values(), ...sels.values()].forEach((c) => { c.addEventListener("input", check); c.addEventListener("change", check); });
+
+    /* ---- 渠道的增 / 改 / 删 ----
+     * 为什么这页也得能加渠道：预置目录只有十来家，自建网关（new-api / one-api）、公司内网代理、
+     * 换了域名的私有部署都不在里面。企业部署里管 Key 的人打开的就是这个后台，
+     * 让他为了加一条渠道再绕回工作台，等于这页只做了一半。用户原话：「这个管理后台也给我支持自定义渠道设定啊」。
+     *
+     * 三个动作都拿 readAll() 当底稿——它读的是**屏幕上**那几个 Key 输入框，不是加载时的快照。
+     * 图省事直接用 d.s.providers 的话，用户刚敲进去、还没点保存的那把 Key 会被这一趟悄悄抹掉。
+     */
+    const kindOpts = d.kinds.length
+      ? d.kinds.map((k) => ({ value: k.kind, label: k.label }))
+      : [{ value: "custom", label: "其它 OpenAI 兼容接口" }]; // 目录没拉到也得能建，别把人堵在这儿
+    const provOf = (id) => (d.s.providers || []).find((x) => x.id === id);
+    const provForm = (p) => {
+      const m = modal({
+        title: p ? `改渠道「${p.name}」` : "新渠道",
+        fields: [
+          { name: "kind", label: "类型", type: "select", options: kindOpts, value: (p && p.kind) || "custom",
+            desc: "决定这条渠道说哪家的协议、默认地址填什么。自建网关和各种 OpenAI 兼容服务选最后两项。" },
+          { name: "name", label: "名字", value: (p && p.name) || "", placeholder: "例如：公司内网网关",
+            desc: "挂模型时按名字认，起个一眼分得出来的。" },
+          { name: "base_url", label: "接口地址", value: (p && p.base_url) || "", placeholder: "https://…/v1",
+            desc: "填到 <b>/v1</b> 这一层就行，后面的 /chat/completions 由程序自己接。Anthropic 官方走 SDK，不用填。" },
+          { name: "api_key", label: "API Key", type: "password", value: (p && p.api_key) || "", placeholder: "本机服务（Ollama）留空",
+            desc: "地址跟已有渠道一模一样、Key 又留空，保存时会被并进那一条——这是为了不让开箱向导重复建行。要单独一条就把 Key 填上。" },
+        ],
+        ok: p ? "保存" : "建好",
+        onOk: async (v) => {
+          const kind = String(v.kind || "").trim();
+          const name = String(v.name || "").trim();
+          const url = String(v.base_url || "").trim();
+          if (!name) throw new Error("给渠道起个名字，挂模型时要按名字认");
+          if (kind !== "anthropic" && !/^https?:\/\//i.test(url)) throw new Error("接口地址要填完整的 http(s) 地址");
+          const body = readAll();
+          const list = body.providers.slice();
+          // id 留空是给服务端认的暗号：normalizeProviders 会照名字生成一个不重样的
+          const entry = { id: p ? p.id : "", kind, name, base_url: url, api_key: String(v.api_key || "").trim() };
+          const i = p ? list.findIndex((x) => x.id === p.id) : -1;
+          if (i >= 0) list[i] = { ...list[i], ...entry }; else list.push(entry);
+          body.providers = list;
+          await post("/api/settings", body);
+          toast(p ? "已保存，立刻生效" : "渠道建好了，去工作台 → 设置 → 模型 给它挂模型");
+          route(true);
+        },
+      });
+      // 选了类型就把官方地址填上。十来家的地址没人背得下来，让人去搜一遍纯属多余。
+      // 只覆盖「目录里有官方地址」的那几家——自建网关和自定义这两项地址本来就得用户自己填，别把他填的清掉。
+      const ks = m.querySelector("#mf-kind"), nb = m.querySelector("#mf-base_url"), nn = m.querySelector("#mf-name");
+      ks.onchange = () => {
+        const k = d.kinds.find((x) => x.kind === ks.value) || {};
+        if (k.base_url) nb.value = k.base_url;
+        if (!nn.value.trim()) nn.value = String(k.label || "").replace(/（.*/, "");
+      };
+    };
+
+    const pnew = root.querySelector("[data-pnew]");
+    if (pnew) pnew.onclick = () => provForm(null);
+    root.querySelectorAll("[data-pedit]").forEach((b) => (b.onclick = () => {
+      const p = provOf(b.dataset.pedit);
+      if (!p) return;
+      const live = keys.get(p.id); // 那一格可能刚改过还没存，表单里要显示他正在看的那把
+      provForm({ ...p, api_key: live ? live.value : p.api_key });
+    }));
+    root.querySelectorAll("[data-pdel]").forEach((b) => (b.onclick = () => {
+      const p = provOf(b.dataset.pdel);
+      if (!p) return;
+      // 删渠道是连坐的：挂在它下面的模型一起没。把数报清楚，别删完才发现画图不能用了
+      const chat = (d.s.models || []).filter((m) => m.channel === p.id);
+      const media = (d.s.media_models || []).filter((m) => m.provider === p.id);
+      const hitsDefault = chat.some((m) => m.name === d.s.active_model);
+      const lines = [chat.length + media.length
+        ? `挂在它下面的 <b>${chat.length} 个对话模型</b>和 <b>${media.length} 个媒体模型</b>会一起删掉。`
+        : "这条渠道下面没挂模型，删掉只影响它自己。"];
+      if (hitsDefault) lines.push("<b>当前默认模型就在里面</b>，删完会自动换成列表里的第一个。");
+      lines.push("这把 Key 也一并删除，之后要用得重新填一次。");
+      confirmBox("删除渠道「" + p.name + "」", lines.join("<br>"), "删除", async () => {
+        const body = readAll();
+        body.providers = body.providers.filter((x) => x.id !== p.id);
+        body.models = (d.s.models || []).filter((m) => m.channel !== p.id);
+        body.media_models = (d.s.media_models || []).filter((m) => m.provider !== p.id);
+        // 下拉框里选着的那条可能正好被删了。不改的话服务端会拒掉整次保存（active_model 不在列表里），
+        // 一条都删不掉；一个模型都不剩时就干脆不带这个字段，让服务端保持原样
+        if (!body.models.length) delete body.active_model;
+        else if (!body.models.some((m) => m.name === body.active_model)) body.active_model = body.models[0].name;
+        await post("/api/settings", body);
+        toast("渠道已删除");
+        route(true);
+      }, true);
+    }));
+
     btn.onclick = async () => {
       btn.disabled = true;
       try {
