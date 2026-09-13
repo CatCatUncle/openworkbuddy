@@ -408,6 +408,7 @@ const DEFAULT_SKILLS = [
     why: "生成网页/海报/图表时，文字会不会换行、会占几行、容器该多宽，用纯算术算准，不再靠猜。上游是个 JS 库，我们附一份用法说明装成技能，只取 README 和 LICENSE",
     // 上游是库不是技能仓库，没有 skill.md——装的时候把这份说明写进去
     files: ["README.md", "LICENSE"],
+    /* emoji-数据区 起：pretext 这份技能文档的正文本身就在演示 emoji + 阿拉伯语混排的分词量宽，例子里的表情是被测量的数据 */
     skill_md: `---
 name: pretext
 description: 文字排版测量库 @chenglou/pretext 的用法。做网页、海报、SVG/Canvas 图、信息图时，用它算一段文字在给定字体和宽度下占几行、多高、最窄能收到多宽，避免标题溢出、卡片高度对不齐、文字撞图。
@@ -458,6 +459,7 @@ const { lineCount, maxLineWidth } = measureLineStats(p, 320); // 只要行数和
 2. 多卡片同排时，用最大 \`height\` 统一卡片高度，而不是让浏览器各排各的。
 3. 字体没加载完就测会偏差：\`await document.fonts.ready\` 之后再 \`prepare()\`。
 `,
+    /* emoji-数据区 止 */
   },
   {
     name: "follow-builders",

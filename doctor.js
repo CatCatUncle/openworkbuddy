@@ -182,6 +182,26 @@ function verdictEngine(facts) {
     (install ? `装法：${install}；` : "") + "或者 wb engines use builtin 换回内置引擎。");
 }
 
+/**
+ * 外部命令行工具。技能里真会去调它们：video-compose 拼视频要 ffmpeg、docx 技能读写 Word 要
+ * pandoc 和 soffice、PDF 取文字要 pdftotext。缺一个不影响启动，但会等任务跑到一半才炸——
+ * 那时候人已经等了两分钟，还得自己反推是缺了什么。体检里提前说一句，装法一并给出。
+ *
+ * **一律 warn，绝不 bad。** 这几个都是可选的，报 bad 会让 `wb doctor` 退 1，
+ * 把安装脚本和 CI（`wb doctor && npm start`）整个拦下来——为一个「你八成用不上」的工具
+ * 挡住启动，是本末倒置。
+ */
+function verdictTools(found) {
+  const all = found || [];
+  const miss = all.filter((t) => !t.bin);
+  if (!all.length) return item("外部工具", "ok", "没有要检查的外部工具");
+  if (!miss.length) return item("外部工具", "ok", `${all.map((t) => t.name).join("、")} 都在`);
+  const have = all.filter((t) => t.bin);
+  return item("外部工具", "warn",
+    `缺 ${miss.map((t) => `${t.name}（${t.use}）`).join("、")}` + (have.length ? `；${have.map((t) => t.name).join("、")} 在` : ""),
+    miss.map((t) => `${t.name} 用 ${t.install}`).join("；") + "。用不到对应功能就不用装。");
+}
+
 /** 整体结论：有 bad 就退 1。给安装脚本和 CI 用 */
 function worst(items) {
   return items.reduce((m, it) => Math.max(m, LEVELS[it.level] || 0), 0);
@@ -286,6 +306,35 @@ function countModels(config) {
 }
 
 /**
+ * 要查哪几个外部 CLI。每条都得能回答「谁在用它」和「怎么装」——只说「缺 pandoc」
+ * 而不说它是干嘛的，用户只能去搜。
+ */
+const EXTERNAL_TOOLS = [
+  { name: "ffmpeg", use: "图文成片、录屏", install: { darwin: "brew install ffmpeg", win32: "winget install ffmpeg", other: "apt install ffmpeg" } },
+  { name: "pdftotext", use: "读 PDF 正文", install: { darwin: "brew install poppler", win32: "scoop install poppler", other: "apt install poppler-utils" } },
+  { name: "pandoc", use: "Word 互转", install: { darwin: "brew install pandoc", win32: "winget install pandoc", other: "apt install pandoc" } },
+  { name: "soffice", use: "Office 转 PDF", install: { darwin: "brew install --cask libreoffice", win32: "winget install LibreOffice", other: "apt install libreoffice" } },
+];
+
+/**
+ * 去找这几个 CLI 到底在不在。
+ *
+ * 走 engines/which 而不是直接 `which`：双击图标起的桌面版 PATH 是残废的，
+ * 用 shell 那套问出来的答案才跟用户在终端里看到的一致。这也是「我明明装了」类
+ * 误报的唯一来源——体检自己先误报，就没人信剩下几条了。
+ */
+async function probeTools(which, platform) {
+  const plat = platform || process.platform;
+  const out = [];
+  for (const t of EXTERNAL_TOOLS) {
+    let bin = "";
+    try { bin = (await which.resolveBin(t.name)).bin || ""; } catch {}
+    out.push({ name: t.name, use: t.use, bin, install: t.install[plat] || t.install.other });
+  }
+  return out;
+}
+
+/**
  * 跑一整轮体检。
  * @param {object} deps 把外部依赖显式传进来，测试好替：{ paths, config, engines, workspaceDir, bootCheck }
  */
@@ -328,6 +377,10 @@ async function gather(deps) {
       version: found && found.version, install: b.install,
     }));
   }
+
+  // 放在最后：它可能要问一次登录 shell（几百毫秒），前面那些是「能不能启动」的硬指标，
+  // 不该被一个可选项拖着等
+  items.push(verdictTools(await probeTools(deps.which || require("./engines/which"))));
   return items;
 }
 
@@ -356,7 +409,7 @@ function render(items, paint) {
 
 module.exports = {
   verdictNode, verdictDeps, verdictDataDir, verdictConfig, verdictModels,
-  verdictPort, verdictWorkspace, verdictEngine,
-  worst, countModels, probeWritable, probePort, probeWho, fetchText, gather, render, cols, LEVELS,
-  verdictConfigLint,
+  verdictPort, verdictWorkspace, verdictEngine, verdictTools,
+  worst, countModels, probeWritable, probePort, probeWho, probeTools, fetchText, gather, render, cols, LEVELS,
+  verdictConfigLint, EXTERNAL_TOOLS,
 };

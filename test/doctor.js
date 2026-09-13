@@ -120,6 +120,27 @@ eq(doctor.verdictEngine({ id: "builtin", label: "内置引擎" }).level, "ok", "
 eq(doctor.verdictWorkspace({ dir: "/x", writable: true, exists: true }).level, "ok", "工作区能写");
 eq(doctor.verdictWorkspace({ dir: "/x", writable: false, errCode: "EACCES" }).level, "bad", "反向对照：工作区写不进去");
 
+// 外部 CLI：缺了只算「留意」，绝不能让 wb doctor 退 1——安装脚本里写的是
+// `wb doctor && npm start`，为一个可选工具挡住启动是本末倒置
+const tAll = [
+  { name: "ffmpeg", use: "图文成片、录屏", bin: "/usr/bin/ffmpeg", install: "brew install ffmpeg" },
+  { name: "pandoc", use: "Word 互转", bin: "/usr/bin/pandoc", install: "brew install pandoc" },
+];
+eq(doctor.verdictTools(tAll).level, "ok", "外部工具都在");
+const tMiss = doctor.verdictTools([tAll[0], { name: "pandoc", use: "Word 互转", bin: "", install: "brew install pandoc" }]);
+eq(tMiss.level, "warn", "缺外部工具只算「留意」，不是「要处理」");
+eq(doctor.worst([tMiss]), doctor.LEVELS.warn, "反向对照：缺外部工具时 wb doctor 的退出码还是 0");
+ok(/pandoc/.test(tMiss.detail) && /Word/.test(tMiss.detail), "说清楚缺的是哪个、它是干嘛用的", tMiss.detail);
+ok(/brew install pandoc/.test(tMiss.fix), "给了照着能敲的装法", tMiss.fix);
+ok(!/ffmpeg/.test(tMiss.fix), "反向对照：已经装了的不该出现在「怎么修」里", tMiss.fix);
+eq(doctor.verdictTools([]).level, "ok", "反向对照：一个都不查时不该报警");
+// 装法要分平台给：Windows 用户看到 brew 只会更糊涂
+for (const plat of ["darwin", "win32", "linux"]) {
+  for (const t of doctor.EXTERNAL_TOOLS) {
+    ok(!!(t.install[plat] || t.install.other), `${t.name} 在 ${plat} 上有装法`);
+  }
+}
+
 // ── ⑥ 红线：体检报告里不许出现 Key ──────────────────────────────────────
 console.log("\n⑥ 体检报告不许带出 Key");
 const SECRET = "sk-这是一把不该出现在体检报告里的钥匙";
@@ -217,7 +238,7 @@ try {
   });
   const out = (r.stdout || "") + (r.stderr || "");
   ok(!/找不到 config\.json/.test(out), "★没有 config.json 也照跑★ 被自己那道闸挡住的话，这个功能对最需要它的人等于不存在", out.slice(0, 200));
-  ok(/Node 版本/.test(out) && /端口/.test(out) && /模型渠道/.test(out), "八项体检都画出来了", out.slice(0, 200));
+  ok(/Node 版本/.test(out) && /端口/.test(out) && /模型渠道/.test(out) && /外部工具/.test(out), "九项体检都画出来了", out.slice(0, 200));
   ok(/还没有/.test(out) && /config\.json/.test(out), "如实说「还没有 config.json」，并告诉他怎么生成");
   eq(r.status, 1, "有要处理的项时退出码是 1（wb doctor && npm start 才拦得住）");
   ok(!fs.existsSync(path.join(EMPTY, "config.json")), "体检不往用户磁盘上写东西");
@@ -232,7 +253,14 @@ try {
     encoding: "utf8", env: { ...process.env, OPENWORKBUDDY_HOME: EMPTY, PORT: "3899" }, timeout: 60000,
   });
   eq(r2.status, 0, "反向对照：配齐了退出码是 0", ((r2.stdout || "") + (r2.stderr || "")).slice(-400));
-  ok(/一切正常/.test(r2.stdout || ""), "并且明说一切正常", (r2.stdout || "").slice(-200));
+  // 「一切正常」不能直接写死断言：外部工具那条是可选项，装没装因机器而异（CI 的 runner 上
+  // 就没有 LibreOffice）。所以改成「除了可选的外部工具，不许还有别的告警」——
+  // 既证明了上面那个 1 不是「永远都 1」，又不会变成一条跟着机器环境飘的测试
+  const out2 = r2.stdout || "";
+  const flagged = out2.split("\n").filter((l) => /^[!✗] /.test(l)).map((l) => l.slice(2).trim().split(/\s{2,}/)[0]);
+  eq(flagged.filter((n) => n !== "外部工具").length, 0,
+    "反向对照：配齐之后除了可选的外部工具，没有任何一条要处理/要留意", flagged);
+  ok(/一切正常|体检结果：能跑/.test(out2), "并且给出了「能跑」这句结论", out2.slice(-200));
 } finally {
   fs.rmSync(EMPTY, { recursive: true, force: true });
 }

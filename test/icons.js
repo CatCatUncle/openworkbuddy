@@ -194,32 +194,24 @@ eq(frontAllowUsed.size, frontAllowTotal, "前端例外清单每条都还对得�
 
 // ③ 后端 ──────────────────────────────────────────────────────────────
 console.log("\n③ 后端源码（会往终端 / IM 吐字的那几个）");
-// 例外只有一类：emoji 在这儿是**数据**不是界面——正则要匹配模型写出来的 emoji，
-// 示例字符串要演示 emoji 的排版。每条都写清楚为什么，过期了就得删。
-const ALLOW_LINES = {
-  "agent.js": { 118: "CLAIM_RE 要匹配模型自己写的勾，删了就漏判「口头交付」" },
-  "task-verdict.js": { 60: "同上：判「它说做完了」的正则，emoji 是待匹配的数据" },
-  "skills.js": { 436: "技能文档里的示例字符串，演示的就是 emoji + 阿拉伯语的分词量宽" },
-};
+// 后端这边也一条按行号写死的例外都不留，理由跟前端一样：行号会跟着上面任意一次编辑整体漂掉，
+// 漂完要么放行了不该放的那行，要么对不上号让整份测试无故变红——这三条原来就是这么红的。
+// 要放行就在源码里圈「emoji-数据区」，理由写在记号里，读代码的人当场看得见。
 const BACK = ["agent.js", "cli.js", "electron-main.js", "evolve.js", "im.js", "server.js",
   "skills.js", "task-verdict.js", "tools.js", "eval/run.js", "callout.js", "icons.js", "account.js"];
-const allowUsed = new Set();
 for (const rel of BACK) {
-  const found = scan(rel).filter((s) => {
-    const m = s.match(/^(.+):(\d+) /);
-    if (ALLOW_LINES[m[1]] && ALLOW_LINES[m[1]][Number(m[2])]) { allowUsed.add(m[1] + ":" + m[2]); return false; }
-    return true;
-  });
+  const found = scan(rel); // 只扫一遍：scan 会往 regionsSeen 记账，扫两遍就变成每条记两次
   ok(found.length === 0, rel + " 只剩排版符号", found.slice(0, 5));
 }
-const allowTotal = Object.values(ALLOW_LINES).reduce((n, o) => n + Object.keys(o).length, 0);
-eq(allowUsed.size, allowTotal, "例外清单每条都还对得上号（对不上就是该删了）");
 
 // 数据区用在哪、为什么，逐条摆出来。多开一处、少写一句理由，这行就对不上——
 // 「哪儿还留着 emoji」这个问题，任何时候都该能一眼答完。
 const REGIONS_DECLARED = [
   "public/js/app-00-ui.js：头像候选表，用户挑给自己的数据，不是界面图形",
   "public/js/app-02.js：这五个表情在这儿是要认的数据、不是界面文案，删了兼容层就认不出老写法",
+  "agent.js：CLAIM_RE 要匹配模型自己写出来的那个勾，它是待匹配的数据不是界面图形，删了就漏判「口头交付」",
+  "skills.js：pretext 这份技能文档的正文本身就在演示 emoji + 阿拉伯语混排的分词量宽，例子里的表情是被测量的数据",
+  "task-verdict.js：判「它说自己做完了」的正则，这个勾是模型写出来的数据，不是我们要显示的图形",
 ];
 eq(regionsSeen.join(" | "), REGIONS_DECLARED.join(" | "), "emoji 数据区跟声明的一一对得上");
 

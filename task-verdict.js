@@ -56,8 +56,10 @@ const TERMINAL_DEFERRAL_MARKERS =
   /等待中|等候中|稍后[^。；\n]{0,10}(汇报|通知|反馈|推送|同步|发你|发给|给你|提供)|(完成|结束|退出|报错|跑完|出来|好了)(后|时)?[^。；\n]{0,14}(再|会|将)?[^。；\n]{0,6}(通知|汇报|反馈|继续|推送|同步)(你|我|一下)?|still running|will (report|notify|update|follow up)|i'?ll (report|update|let you know)/i;
 
 // 有这些词说明活已经落地了。注意不能用裸的「完成」——「完成后会通知你」恰恰是没完成。
+/* emoji-数据区 起：判「它说自己做完了」的正则，这个勾是模型写出来的数据，不是我们要显示的图形 */
 const COMPLETION_MARKERS =
   /已(完成|推送|生成|部署|更新|发布|提交|写入|发送|保存)|完毕|✅|done|completed|finished|pushed|deployed/i;
+/* emoji-数据区 止 */
 
 /**
  * 「话说到一半就没了」——正文以**下文提示符**收尾：冒号、逗号、顿号、破折号。

@@ -6600,7 +6600,14 @@ async function testEngineToolBridge() {
 
   // ⑨ MCP 那条路本身的形状：tools/list 必须是 inputSchema（小驼峰），本项目内部是 input_schema
   const listed = tb.listTools();
-  assert(Array.isArray(listed) && listed.length === tb.LENDABLE.length, "tools/list 返回的工具数不对：" + listed.length);
+  // 不能拿 LENDABLE 的长度直接比：桥是个纯 node 子进程，没有 Electron，要真浏览器的那两个
+  // 会被摘掉。挂一个必然抛「需要桌面版环境」的工具，比不挂更糟——CLI 那头的模型会先照着
+  // 做一遍、吃一条必然的失败、再回来重想，白烧一轮
+  const NEED_GUI = ["html_to_image", "render_page"];
+  assert(Array.isArray(listed) && listed.length === tb.LENDABLE.length - NEED_GUI.length,
+    `tools/list 返回的工具数不对：${listed.length}（白名单 ${tb.LENDABLE.length} 个，这个进程里该摘掉 ${NEED_GUI.length} 个要浏览器的）`);
+  assert(!listed.some((t) => NEED_GUI.includes(t.name)), "要真浏览器的工具挂上桥了");
+  assert(listed.some((t) => t.name === "read_document"), "read_document 没借给 CLI：它们自带的读文件工具读 Office 只会得到乱码");
   assert(listed.every((t) => t.inputSchema && !t.input_schema), "tools/list 用了 input_schema（下划线），MCP 客户端认的是 inputSchema");
   assert(listed.every((t) => t.description && t.description.length > 10), "有工具没描述，模型看不出它是干什么的");
   assert(!listed.some((t) => /^mcp__/.test(t.name)), "工具名自己带了 mcp__ 前缀，CLI 还会再挂一层，名字就对不上了");
