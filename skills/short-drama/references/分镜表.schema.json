@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "分镜表",
+  "description": "一条 AI 短剧的唯一真源。每一镜的提示词、产物文件名、时长都写在这儿——改一镜重跑、下次接着做、以后画布上的节点，读的都是这一份。字段少而死板是故意的：模型每次自己发明一套结构，就没法跨会话接着干。",
+  "type": "object",
+  "required": ["title", "aspect", "characters", "scenes"],
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string", "description": "片名" },
+    "logline": { "type": "string", "description": "一句话讲清这条片子讲什么，写给人看的" },
+    "aspect": { "type": "string", "enum": ["9:16", "16:9", "1:1"], "description": "画幅。短视频平台默认 9:16" },
+    "fps": { "type": "integer", "minimum": 12, "maximum": 60, "default": 24 },
+    "style": { "type": "string", "description": "全片统一的画风描述（光线、色调、质感）。每一镜的 prompt 都要带上它，否则镜与镜之间画风会飘" },
+    "characters": {
+      "type": "array",
+      "minItems": 1,
+      "description": "出场角色。跨镜头长得一样全靠 look + ref 这两项",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "look"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "description": "镜头里引用用的短 id，如 A / B" },
+          "name": { "type": "string" },
+          "look": { "type": "string", "description": "外貌描述，写死一段，后面所有镜头照抄不改——每镜重写一遍，人就会一镜一个样" },
+          "ref": { "type": "string", "description": "定妆照的相对路径，如 角色_林夏.png。它是每一镜 generate_image 的 reference_images" },
+          "voice": { "type": "string", "description": "音色名，全程不换" }
+        }
+      }
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "shots"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "description": "场次号，如 S1" },
+          "place": { "type": "string", "description": "地点" },
+          "time": { "type": "string", "description": "时间/光线，如 黄昏、夜、阴天正午" },
+          "shots": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "shot_size", "frame_prompt", "motion_prompt"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string", "description": "镜头号，如 S1-01。所有产物文件名都带它，一眼能对上" },
+                "cast": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "这一镜出场的角色 id。它们的定妆照就是这一镜的参考图（最多 4 张）"
+                },
+                "shot_size": { "type": "string", "description": "景别：远景 / 全景 / 中景 / 近景 / 特写" },
+                "frame_prompt": { "type": "string", "description": "首帧画面的提示词：景别 + 场景 + 姿态 + 光线。角色只写「参考图里的女生」这类指代，别再描述一遍五官——会跟参考图打架" },
+                "motion_prompt": { "type": "string", "description": "只写动作和运镜，如「她缓缓抬头，镜头轻微推进」。画面内容已经在首帧里了，重复描述只会让模型改画面" },
+                "line": { "type": "string", "description": "这一镜的台词/旁白。空着就是无人声镜头" },
+                "speaker": { "type": "string", "description": "说这句话的角色 id，决定用哪个音色" },
+                "first_frame": { "type": "string", "description": "首帧图的产物路径，如 镜头_S1-01_首帧.png" },
+                "last_frame": { "type": "string", "description": "尾帧图的产物路径。只有转场镜头（从这张变到那张）才需要" },
+                "video": { "type": "string", "description": "这一镜的视频产物路径" },
+                "audio": { "type": "string", "description": "这一镜的配音产物路径" },
+                "duration": { "type": "number", "description": "实测时长（秒），ffprobe 量完回写。以配音时长为准，别让话说一半画面没了" },
+                "note": { "type": "string", "description": "给人看的备注：为什么这么拍、重拍过几次、哪儿还不满意" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "description": "最终产物。做完回写，下次要改一镜时直接从这儿接着走",
+      "additionalProperties": false,
+      "properties": {
+        "video": { "type": "string" },
+        "cover": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "duration": { "type": "number" }
+      }
+    }
+  }
+}
