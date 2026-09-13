@@ -1266,6 +1266,7 @@ function modePrompt(mode) {
       "另外：OpenWorkBuddy 已经把它自己的工具挂给你了，名字都以 mcp__openworkbuddy__ 开头，其中——",
       has("generate_image") && "  · mcp__openworkbuddy__generate_image  生图（用户在本项目里配好的图像模型，你直接调，图会落到工作目录）",
       has("generate_video") && "  · mcp__openworkbuddy__generate_video  生视频     · mcp__openworkbuddy__text_to_speech 配音",
+      has("transcribe_audio") && "  · mcp__openworkbuddy__transcribe_audio 把录音/视频里的话转成文字（会议、采访、口播素材）",
       has("gen_diagram") && "  · mcp__openworkbuddy__gen_diagram     流程图/架构图/统计图（dot 离线可用）",
       has("html_to_image") && "  · mcp__openworkbuddy__html_to_image   网页转长图（排版好的 HTML 截成图）",
       has("look_at_image") && "  · mcp__openworkbuddy__look_at_image   看图（带上你想知道的具体问题）",
@@ -1867,7 +1868,7 @@ const TOOL_VERB = {
   read_file: "读", read_document: "读文档", write_file: "写", edit_file: "改", list_files: "列目录", search_files: "搜文件",
   run_shell: "命令", run_node: "跑脚本", web_search: "搜", fetch_url: "抓", render_page: "渲染",
   check_page: "体检", html_to_image: "截图", look_at_image: "看图", generate_image: "生图",
-  generate_video: "生成视频", gen_diagram: "画图表", text_to_speech: "配音", remember: "记住",
+  generate_video: "生成视频", gen_diagram: "画图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记住",
   forget: "忘掉", library_list: "翻资料库", library_read: "读资料", library_import: "取素材", save_skill: "存技能",
   use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档", notify_user: "推到群",
   delegate_to_expert: "委派专家", delegate_to_team: "委派专家团",
@@ -1915,6 +1916,8 @@ function toolHeadline(name, input) {
       obj = String(i.expert || ""); break;
     case "delegate_to_team":
       obj = String(i.team || ""); break;
+    case "transcribe_audio":
+      obj = tailText(String(i.path || "").split("/").pop(), 40); break;
     case "use_skill": case "save_skill":
       obj = String(i.name || ""); break;
     case "remember": case "forget":

@@ -457,6 +457,26 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "transcribe_audio",
+    description:
+      "把录音 / 视频里的话转成文字（会议录音、采访、播客、口播素材都行），结果存进工作空间的 .txt。需要先在 设置 → 模型 → 转写 配置渠道，未配置时会明确报错。\n" +
+      "用户说「把这段录音整理成文字」「这个会议录音讲了什么」「给视频配字幕」时用它。文件得先在工作空间里——用户从输入框传进来的就在那儿，先 list_files 看真实文件名。\n" +
+      "接口收 25MB 以内的文件。超了先用 run_shell 调 ffmpeg 压成 16k 单声道（ffmpeg -i 原文件 -ac 1 -ar 16000 -b:a 64k 输出.mp3），一小时的会议大概 28MB，压完约 3MB。\n" +
+      "要做字幕就把 with_timestamps 设成 true，会连带存一份 .srt；不做字幕别开，省钱也省话。",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "要转写的音频 / 视频文件，工作空间里的相对路径（mp3 / m4a / wav / webm / mp4 / flac / ogg / aac / amr）" },
+        language: { type: "string", description: "音频里说的是什么语言（可选，ISO-639-1，如 zh / en / ja）。写对能明显提准，尤其是中英夹杂的录音；拿不准就别写，让模型自己判。" },
+        hint: { type: "string", description: "提示词（可选，上限 500 字）。把录音里会出现的人名、产品名、专有名词列进来，转写时不容易写错字。" },
+        with_timestamps: { type: "boolean", description: "true 时额外要一份带时间轴的分段，并存一个同名 .srt 字幕文件（默认 false）" },
+        filename: { type: "string", description: "转写稿保存的文件名（可选，默认 用原文件名.txt）" },
+        model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
+      },
+      required: ["path"],
+    },
+  },
+  {
     name: "desktop_pet",
     description:
       "把用户给的一张图片做成【桌面宠物】——一个常驻桌面角落的透明小挂件，实时显示你正在干什么（干活转圈 / 有问题要问时跳起来并弹系统通知 / 完成撒花 / 出错掉汗）。用户点它开关主窗口，拖动换位置。\n" +
@@ -977,6 +997,109 @@ async function textToSpeech(media, input, timeoutMs, saveDir) {
   }
   security.audit("语音合成", `${cfg.model}: ${text.slice(0, 80)} → ${fname}`, "放行");
   return { content: `语音已合成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}${voice ? "，音色 " + voice : ""}，约 ${text.length} 字）`, isError: false };
+}
+
+/** 能送去转写的后缀。上游收的就是这几样，多写只会在那边被拒，不如在本机就说清楚 */
+const AUDIO_EXT = /\.(mp3|mp4|m4a|wav|webm|mpga|mpeg|ogg|oga|flac|aac|amr)$/i;
+/** /audio/transcriptions 的硬上限。先量本地字节，别让用户传了两分钟才吃一个 413 */
+const ASR_MAX_BYTES = 25 * 1048576;
+/** 超过这个字数就不整篇塞回对话里——一小时的会议稿两万字，塞回去等于把上下文吃光 */
+const ASR_INLINE_CAP = 2000;
+
+/** 秒 → SRT 的 00:01:02,500。Math.floor 不用 toFixed：58.999 秒 toFixed 会进位成 59.000 却还留在上一分钟 */
+function srtTime(sec) {
+  const ms = Math.max(0, Math.round(Number(sec) * 1000));
+  const p = (n, w = 2) => String(n).padStart(w, "0");
+  return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`;
+}
+
+/**
+ * 把录音转成文字。走 OpenAI 兼容的 /audio/transcriptions（一次 multipart 传完就返回）。
+ *
+ * 为什么只支持这一种协议：通义百炼的 ASR 是「先把文件传到公网可访问的地址、再提交异步任务、
+ * 再轮询」，和这里完全不是一门话。装作支持、让用户在设置里选得到，最后只会在调用时吃 404——
+ * 所以精选目录里一个 dashscope 型号都不摆，报错时也直接把这件事说明白。
+ */
+async function transcribeAudio(media, input, timeoutMs, resolveFile, saveDir) {
+  const rel = String(input.path || "").trim();
+  if (!rel) return { content: "缺少 path（要转写哪个文件，工作空间里的相对路径）", isError: true };
+  let cfg;
+  try { cfg = mediaModels.pick(media, "asr", input.model); } catch (e) { return { content: e.message, isError: true }; }
+  if (!cfg.base_url || !cfg.model) {
+    return { content: "语音转写未配置：请用户去 设置 → 模型 → 转写 配置渠道和模型（如 OpenAI 的 gpt-4o-transcribe、硅基流动的 SenseVoiceSmall）。这一步不用重试。", isError: true };
+  }
+  let p;
+  try { p = resolveFile(rel); } catch (e) { return { content: e.message, isError: true }; }
+  if (!fs.existsSync(p)) return { content: `找不到 ${rel}。用户传进来的文件在工作空间里，先 list_files 看看真实文件名。`, isError: true };
+  const st = fs.statSync(p);
+  if (st.isDirectory()) return { content: `${rel} 是个目录，不是音频文件。`, isError: true };
+  if (!AUDIO_EXT.test(p)) return { content: `${rel} 不是音频 / 视频（支持 mp3 / m4a / wav / webm / mp4 / flac / ogg / aac / amr）。文本文件用 read_file。`, isError: true };
+  if (st.size < 200) return { content: `${rel} 只有 ${st.size} 字节，不像是一段能转写的音频。`, isError: true };
+  if (st.size > ASR_MAX_BYTES) {
+    return {
+      content: `${path.basename(p)} 有 ${(st.size / 1048576).toFixed(1)}MB，超过接口 25MB 的上限，没有发出去。\n`
+        + `先压小再转：run_shell 跑 ffmpeg -i "${rel}" -ac 1 -ar 16000 -b:a 64k "${path.basename(p).replace(/\.[^.]+$/, "")}_16k.mp3"，`
+        + "一小时的会议压完大概 3MB；还是超就按 -ss / -t 切成几段分别转，最后把稿子拼起来。",
+      isError: true,
+    };
+  }
+
+  const base = mediaModels.baseForUse(String(cfg.base_url).trim(), "media").replace(/\/+$/, "");
+  if (/dashscope\.aliyuncs\.com/i.test(base)) {
+    return { content: "通义百炼的转写是异步任务接口，和这里用的 OpenAI 兼容 /audio/transcriptions 不是一套，现在还没接。换 OpenAI（gpt-4o-transcribe / whisper-1）或硅基流动（FunAudioLLM/SenseVoiceSmall）这类渠道。这一步不用重试。", isError: true };
+  }
+  const wantSeg = !!input.with_timestamps;
+  const form = new FormData();
+  form.append("file", new Blob([fs.readFileSync(p)]), path.basename(p));
+  form.append("model", cfg.model);
+  form.append("response_format", wantSeg ? "verbose_json" : "json");
+  const lang = String(input.language || "").trim();
+  if (lang) form.append("language", lang);
+  const hint = String(input.hint || "").trim().slice(0, 500);
+  if (hint) form.append("prompt", hint);
+
+  // 上传要时间，转写也要时间：一个 25MB 的文件在慢网上传就得几分钟，超时按文件大小放宽
+  const budget = Math.max(timeoutMs || 0, 180000 + Math.round(st.size / 1048576) * 20000);
+  let r;
+  try {
+    r = await fetch(`${base}/audio/transcriptions`, { method: "POST", headers: { Authorization: `Bearer ${String(cfg.api_key || "").trim()}` }, body: form, signal: AbortSignal.timeout(budget) });
+  } catch (e) {
+    return { content: `转写请求失败：${e.message}（文件 ${(st.size / 1048576).toFixed(1)}MB，等了 ${Math.round(budget / 1000)} 秒）`, isError: true };
+  }
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    return { content: `转写接口错误 ${r.status}: ${t.slice(0, 300)}`, isError: true };
+  }
+  const j = await r.json().catch(() => null);
+  if (!j) return { content: "转写接口返回的不是 JSON，多半是这个地址没有 /audio/transcriptions 这个接口。", isError: true };
+  const text = String(j.text || "").trim();
+  if (!text) return { content: "转写接口没有返回文字（可能整段是静音，也可能这个模型不吃这种格式）：" + JSON.stringify(j).slice(0, 300), isError: true };
+
+  ensureDirs();
+  const stem = path.basename(p).replace(/\.[^.]+$/, "");
+  const fname = safeOutName(input.filename, ".txt", stem);
+  const dir = saveDir || ws();
+  fs.writeFileSync(path.join(dir, fname), text);
+  const saved = [savedAt(saveDir, fname)];
+
+  // 分段只有 verbose_json 才有。要了却没给（模型不支持）就照实说一句，别让用户以为字幕已经出好了
+  const segs = Array.isArray(j.segments) ? j.segments.filter((x) => x && typeof x.text === "string") : [];
+  let srtNote = "";
+  if (wantSeg && segs.length) {
+    const srtName = fname.replace(/\.txt$/i, "") + ".srt"; // 跟转写稿同名，两个文件在产出列表里挨着
+    const srt = segs.map((x, i) => `${i + 1}\n${srtTime(x.start)} --> ${srtTime(x.end)}\n${String(x.text).trim()}\n`).join("\n");
+    fs.writeFileSync(path.join(dir, srtName), srt);
+    saved.push(savedAt(saveDir, srtName));
+    srtNote = `，字幕 ${segs.length} 段`;
+  } else if (wantSeg) {
+    srtNote = "；这个模型没给分段时间轴，.srt 没生成";
+  }
+
+  security.audit("语音转写", `${cfg.model}: ${rel}（${(st.size / 1048576).toFixed(1)}MB）→ ${fname}`, "放行");
+  const head = text.length > ASR_INLINE_CAP
+    ? `${text.slice(0, ASR_INLINE_CAP)}\n……（全文 ${text.length} 字，只贴了开头；要看后面的用 read_file 读 ${saved[0]}）`
+    : text;
+  return { content: `转写完成，存到 ${saved.join(" 和 ")}（模型 ${cfg.model}，共 ${text.length} 字${srtNote}）：\n\n${head}`, isError: false };
 }
 
 /**
@@ -2890,6 +3013,8 @@ async function executeTool(name, input, opts = {}) {
         return await htmlToImage(input, resolveFile, fileBase);
       case "text_to_speech":
         return await textToSpeech(opts.media, input, timeoutMs, fileBase);
+      case "transcribe_audio":
+        return await transcribeAudio(opts.media, input, timeoutMs, resolveFile, fileBase);
       case "desktop_pet": {
         // 真正的活儿在 server.js（那儿才同时握着 config、data/ 和活着的 Electron 窗口），这里只转发
         if (!global.__wbPetTool) return { content: "桌面宠物功能没装起来（服务端未注册 desktop_pet 的实现）。", isError: true };
@@ -3055,4 +3180,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };

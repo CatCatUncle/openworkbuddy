@@ -31,7 +31,7 @@ const SUITES = [
   ["repl-commands", "REPL 命令表"],
   ["prefs", "偏好与配置落盘"],
   ["chat-models", "模型渠道与选型"],
-  ["media-models", "生图 / 生视频 / TTS 多模型"],
+  ["media-models", "生图 / 生视频 / 配音 / 转写 多模型"],
   ["tenant", "多租户与权限"],
   ["deploy", "Docker 部署物静态检查"],
   ["trace", "执行追踪（Langfuse）上报"],
