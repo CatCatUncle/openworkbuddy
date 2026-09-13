@@ -3171,12 +3171,31 @@ const LOOK_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n"
   + "<div class='settings-layout'><div class='settings-nav' id='nav'></div><div class='settings-pane' id='pane'></div></div></body>";
 const LOOK_CHECKS = `
   const names = []; window.__lookNames = 0;
-  const ok = (name, cond) => { if (!cond) throw new Error("外观：" + name); names.push(name); window.__lookNames = names.length; };
   const $ = (q) => document.querySelector(q);
   const px = (q, prop) => parseFloat(getComputedStyle($(q))[prop || "fontSize"]);
   const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const html = document.documentElement;
   const pane = $("#pane");
+  // 挂了得说清楚现场。这一块的 ok 以前连第三个参数都不收，CI 上就只有一句「外观：点「特大」…」，
+  // 本机又是绿的，等于什么都没说——2026-09-13 就这么白跑了一轮。现在每条失败都自动把这一屏的数字带上。
+  const one = (q) => { try { return q + "=" + px(q); } catch (e) { return q + "=(没这个元素)"; } };
+  const dump = () => {
+    try {
+      return "data-*=" + JSON.stringify(Object.assign({}, html.dataset))
+        + " --wb-fs=" + cssVar("--wb-fs") + " --primary=" + cssVar("--primary")
+        + " 视口=" + innerWidth + "x" + innerHeight + " dpr=" + devicePixelRatio + " zoom=" + (visualViewport ? visualViewport.scale : "?")
+        + " " + ["body", "#p", "#h1", "#hi", "#input", "#cd", "#look-prev"].map(one).join(" ");
+    } catch (e) { return "（连现场都取不到：" + ((e && e.message) || e) + "）"; }
+  };
+  // 而且不在第一条就停。CI 上跑一趟三分钟，一次只换回一条线索太亏——
+  // 「只有一条不对」和「一片全歪了一样多」是两种病，只看第一条分不出来。挂的都收着，块尾一起报。
+  const fails = []; window.__lookFails = fails;
+  const ok = (name, cond, extra) => {
+    if (cond) { names.push(name); window.__lookNames = names.length; return; }
+    fails.push("✗ " + name + (extra ? " ｜ " + extra : "") + " ｜ 现场 " + dump());
+    // 挂到第六条就别往下跑了：这时候页面状态已经不可信，再往后收的都是噪音
+    if (fails.length >= 6) throw new Error("外观：挂太多，后面的状态已经不可信，先报这些：\\n" + fails.join("\\n"));
+  };
   // 存储被禁的页面（data: URL）：这正是要验证「退到内存也能用」的环境
   let storageBlocked = false; try { localStorage.getItem("x"); } catch { storageBlocked = true; }
   ok("本页 localStorage 被禁（验证内存回退的前提成立）", storageBlocked);
@@ -3293,6 +3312,7 @@ const LOOK_CHECKS = `
 
   // 左栏目录：图标 + 短名，别一列密密麻麻的字
   ok("设置目录 13 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 13 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
+  if (fails.length) throw new Error("外观：" + (names.length + fails.length) + " 条里挂了 " + fails.length + " 条：\\n" + fails.join("\\n"));
   return names;
 `;
 
@@ -3437,7 +3457,8 @@ const MENU_STUBS = `
 `;
 const MENU_CHECKS = `
   const names = []; window.__menuNames = 0;
-  const ok = (name, cond) => { if (!cond) throw new Error("头像菜单：" + name); names.push(name); window.__menuNames = names.length; };
+  // 第三个参数是现场：别的块都收，这块以前不收，挂了只剩条目名，等于没说
+  const ok = (name, cond, extra) => { if (!cond) throw new Error("头像菜单：" + name + (extra ? " ｜ " + extra : "")); names.push(name); window.__menuNames = names.length; };
   const $ = (q) => document.querySelector(q);
   const tick = () => new Promise((r) => setTimeout(r, 25)); // 英文模式下翻译靠观察者，下一拍才落
   const menu = $("#user-menu");
@@ -6444,7 +6465,15 @@ app.whenReady().then(async () => {
     try {
       await win12.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LOOK_HTML));
       const names12 = await win12.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n(async function(){\n" + IC_STUB + "\n" + LOOK_SRC + "\n" + LOOK_CHECKS + "\n})()", true)
-        .catch((e) => { throw new Error("[外观] " + ((e && (e.stack || e.message)) || String(e))); });
+        .catch(async (e) => {
+          // 块里是「挂了先收着、块尾一起报」。要是半路炸了个 TypeError，收着的那几条就跟着这个异常
+          // 一起没了——而那几条才是真想看的。所以炸了先回页面里把它们捞出来，再一起报。
+          const own = /^外观：/.test((e && e.message) || "");
+          let collected = [];
+          if (!own) { try { collected = await win12.webContents.executeJavaScript("window.__lookFails || []", true); } catch { /* 页面都没了就算了 */ } }
+          throw new Error("[外观] " + (collected.length ? "炸之前已经挂了 " + collected.length + " 条：\n" + collected.join("\n") + "\n然后才炸的：\n" : "")
+            + ((e && (e.stack || e.message)) || String(e)));
+        });
       for (const n of names12) console.log("  ✓ " + n);
       console.log(`✅ 前端：外观页（字号四档按 calc 联动·六皮肤浅暗对比度矩阵·密度只收间距·字体三选·主题即点即生效·存储被禁退内存·默认不留脏属性）${names12.length} 项通过`);
     } finally {

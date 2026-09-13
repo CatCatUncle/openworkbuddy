@@ -7050,8 +7050,14 @@ function testStyleDirection() {
   // 这份技能得真跟着安装包走，不然用户下下来是没有的。skills 白名单是问 git 要的，
   // 忘了 git add 就悄无声息地不进包——跟 NOTICE.md 当初那个漏法一模一样
   const packed = require(path.join(root, "electron-builder.config.js")).files;
-  assert(packed.includes("skills/web-styles/**/*"), "web-styles 没进安装包白名单——多半是忘了 git add");
-  assert(!packed.includes("skills/theme-factory/**/*"), "★闸门失效：.gitignore 掉的第三方技能居然也进了包★");
+  // 白名单是问 git 要的。问不到时（源码 zip、没装 git 的机器）config 有条写在注释里的退路：skills/ 全量带上。
+  // 走那条退路时下面两条都不成立，但那不叫「忘了 git add」——别拿一句错的诊断去骂人，说清楚是哪种情况。
+  if (packed.includes("skills/**/*")) {
+    console.log("⚠️  安装包白名单这次走的是「问不到 git，skills/ 全量带上」那条退路，这两条只在拿得到 git 清单时才判——跳过");
+  } else {
+    assert(packed.includes("skills/web-styles/**/*"), "web-styles 没进安装包白名单——多半是忘了 git add");
+    assert(!packed.includes("skills/theme-factory/**/*"), "★闸门失效：.gitignore 掉的第三方技能居然也进了包★");
+  }
 
   console.log(`✅ 网页别千篇一律：${files.length} 处（提示词 / 技能 / 专家 / 模板）都插进了「先定视觉方向」· ${(src["skills/web-styles/skill.md"].match(/^## \d+ · /gm) || []).length} 个方向随包分发 · ${bad.length} 种退回全被抓`);
 }
