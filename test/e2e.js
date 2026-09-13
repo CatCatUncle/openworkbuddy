@@ -1008,6 +1008,199 @@ async function testVideoWatermarkGate() {
 }
 
 /**
+ * 图当输入：生图喂参考图、生视频定首尾帧。
+ *
+ * 这条闸门盯四件事，每一件漏掉都会以「用户拿到的东西看着对、其实没照着做」收场：
+ *
+ *  1. **不传新字段时请求体一个字都不能变。** 这两个函数今天已经在给人出图出片了，
+ *     加字段最容易的翻车方式是顺手把 `image: []`、`img_url: undefined` 也发出去——
+ *     严格渠道见到不认识的字段直接 400，老用户什么都没改却突然全挂。
+ *  2. **传了就必须真发出去。** 断言看的是 stub 收到的请求体，不是「代码里写了」。
+ *  3. **渠道不收图，绝不许静默退回纯文生。** 退回去照样出一张图，模型会当成
+ *     「已经保持一致了」交上去——错得不留一点痕迹，比直接报错坏得多。
+ *  4. **型号和入参对不上，在发请求之前就拦。** 媒体模型目录按名字认能力，i2v 型号
+ *     一样被归进「视频模型」；用户选了它、不给图就调，今天必然在上游失败一次，
+ *     而视频是按条计费的异步任务，那一趟钱和几分钟都是白扔。
+ */
+async function testMediaImageInputGate() {
+  const http = require("http");
+  const os = require("os");
+  const { generateImage, generateVideo } = require("../tools")._internals;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-refimg-"));
+  // 1×1 的真 PNG。内容无所谓，但扩展名和「是个文件不是目录」这两关是真要过的
+  fs.writeFileSync(path.join(dir, "参考.png"),
+    Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+  fs.writeFileSync(path.join(dir, "参考2.png"), fs.readFileSync(path.join(dir, "参考.png")));
+  fs.writeFileSync(path.join(dir, "笔记.txt"), "不是图");
+  const resolveFile = (rel) => path.join(dir, rel);
+
+  const seen = [];
+  let mode = "accept";
+  const srv = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const j = (code, o) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+      if (/\/tasks\/t1$/.test(req.url)) return j(200, { output: { task_status: "SUCCEEDED", video_url: `http://127.0.0.1:${srv.address().port}/v.mp4` } });
+      if (/\/tasks\/ark1$/.test(req.url)) return j(200, { status: "succeeded", content: { video_url: `http://127.0.0.1:${srv.address().port}/v.mp4` } });
+      if (/v\.mp4$/.test(req.url)) { res.writeHead(200, { "Content-Type": "video/mp4" }); return res.end(Buffer.from("fake-mp4")); }
+      let body = {};
+      try { body = JSON.parse(raw || "{}"); } catch {}
+      seen.push({ url: req.url, body, raw });
+      // 「这条渠道根本不收图」：模仿 OpenAI 官方对不认识字段的反应
+      if (mode === "noimage" && ("image" in body || JSON.stringify(body).includes("image_url") || JSON.stringify(body.input || {}).includes("frame") || (body.input || {}).img_url)) {
+        return j(400, { error: { message: "Unrecognized request argument supplied: image" } });
+      }
+      if (/video-synthesis/.test(req.url)) return j(200, { output: { task_id: "t1" } });
+      if (/contents\/generations\/tasks$/.test(req.url)) return j(200, { id: "ark1" });
+      return j(200, { data: [{ b64_json: Buffer.from("fake-png").toString("base64") }] });
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  const img = { image: { base_url: `http://127.0.0.1:${port}/v1`, model: "seedream", api_key: "k" } };
+  const imgDs = { image: { base_url: `http://127.0.0.1:${port}/dashscope/api/v1`, model: "qwen-image", api_key: "k" } };
+  const vidDs = { video: { base_url: `http://127.0.0.1:${port}/dashscope/api/v1`, model: "wan2.2-i2v-plus", api_key: "k" } };
+  const vidDsT2v = { video: { base_url: `http://127.0.0.1:${port}/dashscope/api/v1`, model: "wan2.2-t2v-plus", api_key: "k" } };
+  const vidArk = { video: { base_url: `http://127.0.0.1:${port}/ark/api/v3`, model: "doubao-seedance-1-0-pro-i2v-250528", api_key: "k" } };
+  const DATA_PNG = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/;
+  const fresh = () => { seen.length = 0; };
+
+  try {
+    // ── 1. 不传新字段：请求体里连这几个键都不许出现 ──────────────────────────
+    fresh();
+    const b0 = await generateImage(img, { prompt: "一只猫", filename: "r0.png" }, 5000, dir, resolveFile);
+    assert(!b0.isError, "纯文生图反而挂了：" + b0.content);
+    assert(!("image" in seen[0].body), "没给参考图却往请求体里塞了 image 字段，严格渠道会直接 400");
+    assert(!/已带 \d+ 张参考图/.test(b0.content), "没给参考图却在回执里说带了：" + b0.content);
+
+    fresh();
+    const v0 = await generateVideo(vidDsT2v, { prompt: "猫走路", filename: "r0.mp4" }, { saveDir: dir, resolveFile });
+    assert(!v0.isError, "纯文生视频反而挂了：" + v0.content);
+    const in0 = seen[0].body.input || {};
+    assert(!("img_url" in in0) && !("first_frame_url" in in0) && !("last_frame_url" in in0),
+      "没给首尾帧却往 input 里塞了帧字段：" + JSON.stringify(in0));
+
+    // ── 2. 传了就得真发出去 ────────────────────────────────────────────────
+    fresh();
+    const r1 = await generateImage(img, { prompt: "同一只猫，换个姿势", filename: "r1.png", reference_images: ["参考.png"] }, 5000, dir, resolveFile);
+    assert(!r1.isError, "带参考图生图失败：" + r1.content);
+    assert(typeof seen[0].body.image === "string" && DATA_PNG.test(seen[0].body.image),
+      "一张参考图应该发成字符串 data: URI，实际：" + JSON.stringify(seen[0].body.image).slice(0, 80));
+    assert(/已带 1 张参考图/.test(r1.content), "带了参考图却没在回执里交代：" + r1.content);
+
+    fresh();
+    const r2 = await generateImage(img, { prompt: "合成", filename: "r2.png", reference_images: ["参考.png", "参考2.png"] }, 5000, dir, resolveFile);
+    assert(!r2.isError, "两张参考图生图失败：" + r2.content);
+    assert(Array.isArray(seen[0].body.image) && seen[0].body.image.length === 2 && seen[0].body.image.every((u) => DATA_PNG.test(u)),
+      "多张参考图应该发成数组，实际：" + JSON.stringify(seen[0].body.image).slice(0, 80));
+
+    // 模型真会把单张图写成裸字符串而不是数组，别为这个多报一条格式错
+    fresh();
+    const r3 = await generateImage(img, { prompt: "同一只猫", filename: "r3.png", reference_images: "参考.png" }, 5000, dir, resolveFile);
+    assert(!r3.isError && typeof seen[0].body.image === "string", "单张参考图写成裸字符串时没被收下：" + r3.content);
+
+    // DashScope 那条是另一套结构：图排在文字前面
+    fresh();
+    await generateImage(imgDs, { prompt: "同一只猫", filename: "r4.png", reference_images: ["参考.png"] }, 5000, dir, resolveFile);
+    const parts = ((((seen[0].body.input || {}).messages || [])[0] || {}).content) || [];
+    assert(parts.length === 2 && DATA_PNG.test(parts[0].image) && parts[1].text === "同一只猫",
+      "DashScope 那条的参考图没排在文字前面：" + JSON.stringify(parts).slice(0, 120));
+
+    // 万相：只有首帧走 img_url，首尾都有走 first/last_frame_url
+    fresh();
+    const v1 = await generateVideo(vidDs, { prompt: "猫走路", filename: "r1.mp4", first_frame: "参考.png" }, { saveDir: dir, resolveFile });
+    assert(!v1.isError, "带首帧生视频失败：" + v1.content);
+    assert(DATA_PNG.test(seen[0].body.input.img_url) && !("first_frame_url" in seen[0].body.input),
+      "只给首帧时该走 img_url：" + JSON.stringify(seen[0].body.input).slice(0, 80));
+    assert(/已按给定的首帧出片/.test(v1.content), "用了首帧却没在回执里交代：" + v1.content);
+
+    fresh();
+    const v2 = await generateVideo(vidDs, { prompt: "从这张变到那张", filename: "r2.mp4", first_frame: "参考.png", last_frame: "参考2.png" }, { saveDir: dir, resolveFile });
+    assert(!v2.isError, "带首尾帧生视频失败：" + v2.content);
+    const in2 = seen[0].body.input;
+    assert(DATA_PNG.test(in2.first_frame_url) && DATA_PNG.test(in2.last_frame_url) && !("img_url" in in2),
+      "首尾都给时该走 first/last_frame_url：" + JSON.stringify(Object.keys(in2)));
+    assert(/已按给定的首帧和尾帧出片/.test(v2.content), "用了首尾帧却没在回执里交代：" + v2.content);
+
+    // 方舟：首尾帧是 content 数组里的两个 image_url 项，靠 role 区分；
+    // 文字那一项必须原样留着——`--watermark false` 是写在提示词里的，挪走就失效
+    fresh();
+    const v3 = await generateVideo(vidArk, { prompt: "猫走路", filename: "r3.mp4", first_frame: "参考.png", last_frame: "参考2.png" }, { saveDir: dir, resolveFile });
+    assert(!v3.isError, "方舟带首尾帧生视频失败：" + v3.content);
+    const cont = seen[0].body.content;
+    assert(cont[0].type === "text" && /--watermark false/.test(cont[0].text), "方舟这条的关水印指令被挤掉了：" + JSON.stringify(cont[0]));
+    assert(cont.length === 3 && cont[1].role === "first_frame" && cont[2].role === "last_frame"
+      && DATA_PNG.test(cont[1].image_url.url) && DATA_PNG.test(cont[2].image_url.url),
+      "方舟首尾帧的结构不对：" + JSON.stringify(cont.map((c) => c.role || c.type)));
+
+    // ── 3. 渠道不收图：报错，绝不静默退回纯文生 ─────────────────────────────
+    mode = "noimage"; fresh();
+    const bad1 = await generateImage(img, { prompt: "同一只猫", filename: "r5.png", reference_images: ["参考.png"] }, 5000, dir, resolveFile);
+    assert(bad1.isError, "渠道明说不收 image，却当成出图成功了——用户会以为新图跟参考图是一致的：" + bad1.content);
+    assert(/参考图/.test(bad1.content) && /不会自动退回/.test(bad1.content), "渠道不收图时没把话说清楚：" + bad1.content);
+    assert(!seen.some((x) => !("image" in x.body)), "偷偷去掉参考图重发了一次纯文生图，发了 " + seen.length + " 次");
+
+    fresh();
+    const bad2 = await generateVideo(vidDs, { prompt: "猫走路", filename: "r6.mp4", first_frame: "参考.png" }, { saveDir: dir, resolveFile });
+    assert(bad2.isError, "渠道不收首帧却当成出片成功了：" + bad2.content);
+    assert(/首帧/.test(bad2.content) && /不会自动退回/.test(bad2.content), "渠道不收首帧时没把话说清楚：" + bad2.content);
+    assert(!seen.some((x) => !((x.body.input || {}).img_url)), "偷偷去掉首帧重提了一次纯文生视频，提交了 " + seen.length + " 次");
+    mode = "accept";
+
+    // ── 4. 花钱之前就该拦下的几种 ─────────────────────────────────────────
+    fresh();
+    const e1 = await generateVideo(vidDs, { prompt: "猫走路", filename: "x.mp4" }, { saveDir: dir, resolveFile });
+    assert(e1.isError && /图生视频/.test(e1.content), "i2v 型号不给图也照发，白花一次钱：" + e1.content);
+    assert(seen.length === 0, "i2v 型号缺图这条竟然真发出去了，发了 " + seen.length + " 次");
+
+    fresh();
+    const e2 = await generateVideo(vidDsT2v, { prompt: "猫走路", filename: "x.mp4", first_frame: "参考.png" }, { saveDir: dir, resolveFile });
+    assert(e2.isError && /文生视频/.test(e2.content), "t2v 型号硬塞首帧也照发：" + e2.content);
+    assert(seen.length === 0, "t2v 型号塞图这条竟然真发出去了");
+
+    // 这条特意用 t2v 型号：拿 i2v 型号来测「只给尾帧」会撞上上面那条 i2v 缺图的报错，
+    // 两种错的措辞里都有 first_frame，于是把这道闸门拆了也照样绿——变异测出来的正是这个
+    fresh();
+    const e3 = await generateVideo(vidDsT2v, { prompt: "猫走路", filename: "x.mp4", last_frame: "参考.png" }, { saveDir: dir, resolveFile });
+    assert(e3.isError && /尾帧得跟首帧配着用/.test(e3.content), "只给尾帧没被拦住：" + e3.content);
+    assert(seen.length === 0, "只给尾帧这条竟然真发出去了");
+
+    fresh();
+    const e4 = await generateImage(img, { prompt: "p", reference_images: ["没有这张.png"] }, 5000, dir, resolveFile);
+    assert(e4.isError && /list_files/.test(e4.content), "参考图不存在时没指路去查真实文件名：" + e4.content);
+    const e5 = await generateImage(img, { prompt: "p", reference_images: ["笔记.txt"] }, 5000, dir, resolveFile);
+    assert(e5.isError && /不是图片/.test(e5.content), "把 txt 当参考图发出去了：" + e5.content);
+    const e6 = await generateImage(img, { prompt: "p", reference_images: ["参考.png", "参考2.png", "参考.png", "参考2.png", "参考.png"] }, 5000, dir, resolveFile);
+    assert(e6.isError && /最多 4 张/.test(e6.content), "参考图超量没被拦：" + e6.content);
+    const e7 = await generateImage(img, { prompt: "p", reference_images: ["参考.png"] }, 5000, dir);
+    assert(e7.isError && /参考图/.test(e7.content), "没有文件解析器时该说清楚，实际：" + e7.content);
+    const e8 = await generateVideo(vidDs, { prompt: "p", first_frame: "参考.png" }, { saveDir: dir });
+    assert(e8.isError && /首尾帧/.test(e8.content), "生视频没有文件解析器时该说清楚，实际：" + e8.content);
+    assert(seen.length === 0, "这几条本该一个请求都不发，实际发了 " + seen.length + " 次");
+
+    // ── 反向断言：判据自己得能判死 ─────────────────────────────────────────
+    // 「漏传参考图的请求体」必须被第 2 组那条判据判失败，否则代码哪天改回不传图，测试照样绿
+    let c1 = false;
+    try { assert(typeof ({ model: "m", prompt: "p" }).image === "string", "x"); } catch { c1 = true; }
+    assert(c1, "闸门判据失效：压根没带 image 的请求体居然也能过");
+    // 「静默退回纯文生」必须被第 3 组那条判据判失败
+    let c2 = false;
+    try { assert(!([{ body: { image: "d" } }, { body: { prompt: "p" } }]).some((x) => !("image" in x.body)), "x"); } catch { c2 = true; }
+    assert(c2, "闸门判据失效：偷偷重发一次纯文生图居然也能过");
+    // 「型号不对却照发」必须被第 4 组那条判据判失败
+    let c3 = false;
+    try { assert(({ isError: false, content: "视频已生成" }).isError && /图生视频/.test("视频已生成"), "x"); } catch { c3 = true; }
+    assert(c3, "闸门判据失效：i2v 缺图却出片成功居然也能过");
+
+    console.log("✅ 图当输入闸门：不传不变体 · 传了真发出去 · 渠道不收就报错不退回 · 型号对不上先拦下");
+  } finally {
+    srv.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
  * CLI 模式：真起 `node cli.js` 子进程，模型指向本地假接口（config.openai.stream=false，
  * 走非流式那条，用不着造 SSE，也一分钱不花）。
  *
@@ -5377,6 +5570,7 @@ async function main() {
   testDocLinkGate();
   await testImageWatermarkGate();
   await testVideoWatermarkGate();
+  await testMediaImageInputGate();
   await testCliMode();
   testDeliverableGate();
   testContextBudget();

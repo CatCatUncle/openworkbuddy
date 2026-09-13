@@ -135,11 +135,18 @@ const CATALOG = {
     { kind: "zhipu", id: "cogview-4", label: "智谱 CogView-4" },
     { kind: "siliconflow", id: "Kwai-Kolors/Kolors", label: "可图 Kolors" },
   ],
+  // 文生和图生分开摆。名字里的 t2v / i2v 不是装饰：图生的型号只给文字就会在上游失败，
+  // 而视频是按条计费的异步任务，那一趟钱和几分钟全白扔。generate_video 会在发请求之前
+  // 按名字把这两种对不上的组合拦下来，所以这里必须把标签写清楚，让人选之前就知道差别。
   video: [
-    { kind: "ark", id: "doubao-seedance-1-0-pro-250528", label: "Seedance 1.0 Pro（画质好）" },
-    { kind: "ark", id: "doubao-seedance-1-0-lite-t2v-250428", label: "Seedance 1.0 Lite（快且便宜）" },
+    { kind: "ark", id: "doubao-seedance-1-0-pro-250528", label: "Seedance 1.0 Pro（文生，画质好）" },
+    { kind: "ark", id: "doubao-seedance-1-0-lite-t2v-250428", label: "Seedance 1.0 Lite（文生，快且便宜）" },
+    { kind: "ark", id: "doubao-seedance-1-0-pro-i2v-250528", label: "Seedance 1.0 Pro 图生视频（要首帧图）" },
+    { kind: "ark", id: "doubao-seedance-1-0-lite-i2v-250428", label: "Seedance 1.0 Lite 图生视频（要首帧图）" },
     { kind: "dashscope", id: "wan2.2-t2v-plus", label: "通义万相 2.2 文生视频 Plus" },
     { kind: "dashscope", id: "wanx2.1-t2v-turbo", label: "通义万相 2.1 Turbo（快）" },
+    { kind: "dashscope", id: "wan2.2-i2v-plus", label: "通义万相 2.2 图生视频 Plus（要首帧图）" },
+    { kind: "dashscope", id: "wanx2.1-kf2v-plus", label: "通义万相 2.1 首尾帧生视频（要首尾两张图）" },
   ],
   // 转写这一路只收「说 OpenAI 兼容 /audio/transcriptions 这门话」的型号。
   // 通义百炼的 ASR 是另一套：先上传文件、再轮询异步任务，和这里的一次 multipart 完全不同协议。

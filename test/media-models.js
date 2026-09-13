@@ -284,6 +284,32 @@ function rest() {
     eq(Object.keys(mixed.rest).length, 1, "反向对照：混单里的服务器级项也被分出来（处理器据此 403）");
   }
 
+  // ----------------------------------------------------------------
+  // 目录里的视频型号，名字得跟 tools.js 里那对判别式对得上。
+  // generate_video 是靠模型名判「这是图生还是文生」来决定发请求前拦不拦的：
+  // 图生型号没给首帧就拦下、文生型号硬塞首帧也拦下，省的是一次按条计费的异步任务。
+  // 这道闸门跨两个文件：目录里加了个 i2v 型号、判别式却认不出来，预检就悄悄失效了，
+  // 而失效的样子跟「一切正常」一模一样——用户只会看到上游报个错，钱照扣。
+  console.log("\n【9】视频目录的型号名 ↔ 图生/文生判别式");
+  {
+    const { I2V_RE, T2V_RE } = require(path.join(ROOT, "tools"))._internals;
+    // 标签怎么写是给人看的，判别式认的是 id。两边必须是同一个结论
+    for (const m of mm.CATALOG.video) {
+      const byLabel = /图生视频|首尾帧/.test(m.label);
+      eq(I2V_RE.test(m.id), byLabel, `${m.id}：标签说${byLabel ? "要图" : "纯文字"}，判别式也得这么认`, m.label);
+      if (byLabel) eq(T2V_RE.test(m.id), false, `${m.id} 不该同时被当成文生型号`);
+    }
+    ok(mm.CATALOG.video.some((m) => I2V_RE.test(m.id)), "目录里至少摆着一个图生视频型号");
+    ok(mm.CATALOG.video.some((m) => T2V_RE.test(m.id)), "目录里至少摆着一个文生视频型号");
+    // 反向对照：判别式得真能判死，别是个见谁都点头的正则
+    eq(I2V_RE.test("wan2.2-t2v-plus"), false, "反向对照：文生型号不许被当成图生");
+    eq(I2V_RE.test("doubao-seedance-1-0-pro-250528"), false, "反向对照：没标 i2v 的型号不许被当成图生");
+    eq(T2V_RE.test("wan2.2-i2v-plus"), false, "反向对照：图生型号不许被当成文生");
+    // 钉在分隔符上，别让哪个型号名里蹭上三个字母就误伤（跟 asr 那条同一个教训）
+    eq(I2V_RE.test("gpt-4o-transcribe"), false, "反向对照：不相干的型号名不许蹭上图生");
+    eq(I2V_RE.test("multi2video-x"), false, "反向对照：i2v 得钉在分隔符上，不许在词中间命中");
+  }
+
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);
 }

@@ -393,11 +393,18 @@ const TOOL_DEFS = [
       "没把握就先生一张看效果，别拿「肯定糊」当理由拒绝。另一条路是 html_to_image（自己排版再截图）——" +
       "两条路的产出完全不是一个东西，用户没点名走哪条时，先用 ask_user 把两条路摆出来问一句；用户点了名就照做，" +
       "要带字也照生，把「字可能糊」一句话说在前面，别拿这个当理由偷偷换成另一条路。" +
+      "要保持角色/商品/画风一致，用 reference_images 把已有的图喂进来（最多 4 张），比在 prompt 里反复描述外貌可靠得多。" +
       "需要先在 设置 → 模型 → 图像模型 配置渠道，未配置时会明确报错。",
     input_schema: {
       type: "object",
       properties: {
         prompt: { type: "string", description: "画面描述，越具体越好（主体/风格/构图/光线）" },
+        reference_images: {
+          type: "array",
+          items: { type: "string" },
+          description: "参考图的相对路径（可选，最多 4 张）。想让新图沿用同一个人/同一件商品/同一种画风，就把已有的图喂进来——" +
+            "光靠文字描述同一个角色，跨镜头一定长得不一样。渠道不支持参考图时会明确报错，不会偷偷退回纯文生。",
+        },
         filename: { type: "string", description: "保存文件名（可选，默认 image_时间戳.png）" },
         size: { type: "string", description: "尺寸如 1024x1024（可选，仅 OpenAI 兼容渠道生效）" },
         model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
@@ -408,11 +415,16 @@ const TOOL_DEFS = [
   {
     name: "generate_video",
     description:
-      "用用户配置的视频模型生成一段短视频，保存到工作空间（生成通常要 1~5 分钟，请耐心等待返回）。需要先在 设置 → 模型 → 视频模型 配置渠道，未配置时会明确报错。",
+      "用用户配置的视频模型生成一段短视频，保存到工作空间（生成通常要 1~5 分钟，请耐心等待返回）。" +
+      "给了 first_frame 就是图生视频（画面从那张图长出来），首尾都给就是「从这张变到那张」——" +
+      "两者都需要设置里配的是 i2v 型号，型号对不上会在发出请求之前就报错，不会白花一次钱。" +
+      "需要先在 设置 → 模型 → 视频模型 配置渠道，未配置时会明确报错。",
     input_schema: {
       type: "object",
       properties: {
         prompt: { type: "string", description: "视频内容描述（画面/动作/镜头）" },
+        first_frame: { type: "string", description: "首帧图的相对路径（可选）。给了就是图生视频：画面从这张图长出来，角色和场景不会跑偏。需要配的是 i2v 型号。" },
+        last_frame: { type: "string", description: "尾帧图的相对路径（可选，必须同时给 first_frame）。首尾都定住就是「从这张变到那张」，转场类镜头用它。" },
         filename: { type: "string", description: "保存文件名（可选，默认 video_时间戳.mp4）" },
         model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
       },
@@ -640,6 +652,35 @@ function shrinkForVision(abs) {
 }
 
 /**
+ * 把工作空间里的一张图读成能直接塞进请求体的 base64。
+ *
+ * 三条路要用它：看图（look_at_image）、生图喂参考图、生视频定首尾帧。为什么非得是同一份——
+ * 这三条路能失败的地方一模一样：路径打错、指到了目录、指到了 .txt、图大到上游收不下。
+ * 各写各的话，同一个错在三个地方会有三种说法，模型学不会，只能挨个试过去。
+ *
+ * 返回 { err }（一整句可以原样发给模型的话）或 { b64, mime, note, abs }。
+ */
+function readImageInput(rel, resolveFile, what) {
+  const s = String(rel == null ? "" : rel).trim();
+  if (!s) return { err: `缺少${what}的路径（工作空间里的相对路径，先 list_files 看看真实文件名）` };
+  let p;
+  try { p = resolveFile(s); } catch (e) { return { err: e.message }; }
+  if (!fs.existsSync(p)) return { err: `找不到${what} ${s}。用户上传的图在工作空间里，先 list_files 看看真实文件名。` };
+  if (fs.statSync(p).isDirectory()) return { err: `${s} 是个目录，不是图片。` };
+  if (!IMAGE_EXT.test(p)) return { err: `${s} 不是图片（支持 png / jpg / webp / gif / bmp）。文本文件用 read_file。` };
+  const { b64, mime, note } = shrinkForVision(p);
+  if (b64.length > 12 * 1048576) {
+    return { err: `${path.basename(p)} 太大了（编码后约 ${Math.round(b64.length / 1048576)}MB），上游收不下。先缩小再用。` };
+  }
+  return { b64, mime, note, abs: p };
+}
+
+/** 图当输入时统一的 data: URI 写法，三条路共用一份，省得有的带前缀有的不带 */
+function imageDataUri(got) {
+  return `data:${got.mime};base64,${got.b64}`;
+}
+
+/**
  * 带着一个问题去看一张图，返回文字答案。
  *
  * 为什么是「工具」而不是把图塞进对话历史：历史是每一步都要整份重发的，图又是 token 大户，
@@ -663,16 +704,9 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile) {
     return { content: "没有能看图的模型：请用户去 设置 → 模型 → 视觉模型 填接口地址 / API Key / 模型名。这一步不用重试。", isError: true };
   }
 
-  let p;
-  try { p = resolveFile(rel); } catch (e) { return { content: e.message, isError: true }; }
-  if (!fs.existsSync(p)) return { content: `找不到图片 ${rel}。用户上传的图在工作空间里，先 list_files 看看真实文件名。`, isError: true };
-  if (fs.statSync(p).isDirectory()) return { content: `${rel} 是个目录，不是图片。`, isError: true };
-  if (!IMAGE_EXT.test(p)) return { content: `${rel} 不是图片（支持 png / jpg / webp / gif / bmp）。文本文件用 read_file。`, isError: true };
-
-  const { b64, mime, note } = shrinkForVision(p);
-  if (b64.length > 12 * 1048576) {
-    return { content: `${path.basename(p)} 太大了（编码后约 ${Math.round(b64.length / 1048576)}MB），上游收不下。先缩小再看。`, isError: true };
-  }
+  const got = readImageInput(rel, resolveFile, "图片");
+  if (got.err) return { content: got.err, isError: true };
+  const { b64, mime, note, abs: p } = got;
   const base = String(cfg.base_url).trim().replace(/\/+$/, "");
   const signal = AbortSignal.timeout(Math.max(timeoutMs || 0, 120000));
   const anthropic = cfg.provider === "anthropic";
@@ -797,7 +831,36 @@ async function postWantClean(url, headers, signal, buildBody, label, tries) {
   return { r: r2, j: await r2.json().catch(() => ({})), stripped: true };
 }
 
-async function generateImage(media, input, timeoutMs, saveDir) {
+/** 一次最多喂几张参考图。再多上游多半也只看前几张，白掏 token 还把请求体撑爆 */
+const MAX_REF_IMAGES = 4;
+
+/**
+ * 把 reference_images 一路读成 data: URI。
+ * 允许传一个字符串（模型真会这么写），统一当成一张图处理，不为这个多报一条格式错。
+ * 返回 { err } 或 { uris }。
+ */
+function refImageUris(v, resolveFile) {
+  const list = v == null || v === "" ? [] : Array.isArray(v) ? v : [v];
+  if (!list.length) return { uris: [] };
+  if (typeof resolveFile !== "function") return { err: "这个环境下生图喂不了参考图（当前调用没有文件解析器）。去掉 reference_images 就是纯文生图。" };
+  if (list.length > MAX_REF_IMAGES) return { err: `参考图最多 ${MAX_REF_IMAGES} 张，这次给了 ${list.length} 张。挑最能说明问题的几张。` };
+  const uris = [];
+  for (const rel of list) {
+    const got = readImageInput(rel, resolveFile, "参考图");
+    if (got.err) return { err: got.err };
+    uris.push(imageDataUri(got));
+  }
+  return { uris };
+}
+
+/**
+ * 型号是「图生视频」还是「文生视频」，只能按名字认——各家 /models 返回的就只有个 id。
+ * 钉在分隔符上，别让随便哪个型号名里蹭上三个字母就被误判（跟 media-models.js 里 asr 那条同一个教训）。
+ */
+const I2V_RE = /(^|[-_/.])(i2v|kf2v|s2v|image-?to-?video|img-?2-?video)([-_/.\d]|$)/i;
+const T2V_RE = /(^|[-_/.])(t2v|text-?to-?video)([-_/.\d]|$)/i;
+
+async function generateImage(media, input, timeoutMs, saveDir, resolveFile) {
   let cfg;
   try { cfg = mediaModels.pick(media, "image", input.model); } catch (e) { return { content: e.message, isError: true }; }
   if (!cfg.base_url || !cfg.model) {
@@ -805,6 +868,15 @@ async function generateImage(media, input, timeoutMs, saveDir) {
   }
   const prompt = String(input.prompt || "").trim();
   if (!prompt) return { content: "缺少 prompt（画面描述）", isError: true };
+  const ref = refImageUris(input.reference_images, resolveFile);
+  if (ref.err) return { content: ref.err, isError: true };
+  const refs = ref.uris;
+  // 渠道不认参考图时，宁可把这一趟报废掉，也不能偷偷退回纯文生：
+  // 那样出来的图跟参考图毫无关系，模型却会当成「已经保持一致了」交上去，错得不留痕迹。
+  const refFailHint = refs.length
+    ? `\n（这次带了 ${refs.length} 张参考图。报错要是指向 image 字段或「不认识的参数」，就是这条渠道的生图接口不收参考图——`
+      + "换一个支持图生图的模型或渠道（设置 → 模型 → 图像模型）。这里不会自动退回纯文生图。）"
+    : "";
   const base = String(cfg.base_url).trim().replace(/\/+$/, "");
   const headers = { "Content-Type": "application/json", Authorization: `Bearer ${String(cfg.api_key || "").trim()}` };
   const signal = AbortSignal.timeout(Math.max(timeoutMs || 0, 300000));
@@ -816,18 +888,21 @@ async function generateImage(media, input, timeoutMs, saveDir) {
     // 上游 500 InternalServiceError，纯属临时故障。模型拿到失败通常不会重来，而是
     // 改用别的方案交差，用户就永远拿不到那张图。所以重试这件事得工具自己扛。
     const { r, j, stripped } = await postWantClean(`${base}/services/aigc/multimodal-generation/generation`, headers, signal,
-      (wm) => ({ model: cfg.model, input: { messages: [{ role: "user", content: [{ text: prompt }] }] }, parameters: wm ? { watermark: false } : {} }), "图像接口");
+      // 参考图排在文字前面：多模态这边约定俗成是「先看图，再读要求」，顺序反了有些模型会只当描述看
+      (wm) => ({ model: cfg.model, input: { messages: [{ role: "user", content: [...refs.map((u) => ({ image: u })), { text: prompt }] }] }, parameters: wm ? { watermark: false } : {} }), "图像接口");
     watermarked = stripped;
-    if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
+    if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${refFailHint}`, isError: true };
     const parts = ((((j.output || {}).choices || [])[0] || {}).message || {}).content || [];
     imgUrl = (parts.find((c) => c.image) || {}).image;
     if (!imgUrl) return { content: "图像接口没有返回图片：" + JSON.stringify(j).slice(0, 300), isError: true };
   } else {
     // OpenAI 兼容 /images/generations（OpenAI、new-api 等聚合网关通用）
     const { r, j, stripped } = await postWantClean(`${base}/images/generations`, headers, signal,
-      (wm) => ({ model: cfg.model, prompt, n: 1, ...(input.size ? { size: String(input.size) } : {}), ...(wm ? { watermark: false } : {}) }), "图像接口");
+      // 参考图走 image 字段（一张给字符串、多张给数组），仍然是这个 JSON 接口——
+      // 不改走 multipart 的 /images/edits：那条路绕开了 postWantClean，水印退让就没人留痕了
+      (wm) => ({ model: cfg.model, prompt, n: 1, ...(input.size ? { size: String(input.size) } : {}), ...(refs.length ? { image: refs.length === 1 ? refs[0] : refs } : {}), ...(wm ? { watermark: false } : {}) }), "图像接口");
     watermarked = stripped;
-    if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
+    if (!r.ok) return { content: `图像接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${refFailHint}`, isError: true };
     const d = (j.data || [])[0] || {};
     imgUrl = d.url;
     b64 = d.b64_json;
@@ -837,14 +912,17 @@ async function generateImage(media, input, timeoutMs, saveDir) {
     ensureDirs();
     fs.writeFileSync(path.join(saveDir || ws(), fname), Buffer.from(b64, "base64"));
   } else await downloadToWorkspace(imgUrl, fname, saveDir);
-  security.audit("图像生成", `${cfg.model}: ${prompt.slice(0, 120)} → ${fname}`, "放行");
+  security.audit("图像生成", `${cfg.model}: ${prompt.slice(0, 120)}${refs.length ? `（参考图 ${refs.length} 张）` : ""} → ${fname}`, "放行");
   // 顺利那条也必须把水印状态说出来。只在出问题时报警、顺利时沉默，模型就无从判断，
   // 只能自己再花一轮 look_at_image 去找水印；真实会话里它找完还会另造一版「干净图」，
   // 白烧两轮加一个多余产物。把结论直接写进回执，它就不用查了。
   const wmNote = watermarked
     ? "\n注意：这个渠道不接受 watermark 参数，图上可能带平台的「AI 生成」水印。要干净的图就换个渠道或换个模型，别用截图裁掉——分辨率会掉。"
     : "\n已按无水印出图（渠道接受了 watermark=false），不用再开图找水印。";
-  return { content: `图片已生成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${wmNote}`, isError: false };
+  // 参考图到底有没有被这条渠道吃进去，回执里必须说一声。说了模型才知道
+  // 「像不像」该拿谁去比；不说的话它只能再开一轮 look_at_image 自己对照。
+  const refNote = refs.length ? `\n已带 ${refs.length} 张参考图出图；出来的东西像不像，以参考图为准。` : "";
+  return { content: `图片已生成：${savedAt(saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${refNote}${wmNote}`, isError: false };
 }
 
 async function generateVideo(media, input, opts = {}) {
@@ -855,6 +933,36 @@ async function generateVideo(media, input, opts = {}) {
   }
   const prompt = String(input.prompt || "").trim();
   if (!prompt) return { content: "缺少 prompt（视频内容描述）", isError: true };
+
+  // 首尾帧。两道检查都放在发请求之前——视频是按条计费的异步任务，
+  // 「型号只收图却只给了文字」这种错到上游才发现，钱已经掏了、还要等几分钟才看到失败。
+  if (input.last_frame && !input.first_frame) {
+    return { content: "只给了 last_frame：尾帧得跟首帧配着用，先有起点才谈得上「变到哪」。补上 first_frame，或者两个都别给。", isError: true };
+  }
+  let firstUri = null, lastUri = null;
+  if (input.first_frame) {
+    const fr = readImageInput(input.first_frame, opts.resolveFile, "首帧图");
+    if (fr.err) return { content: typeof opts.resolveFile === "function" ? fr.err : "这个环境下生视频喂不了首尾帧（当前调用没有文件解析器）。去掉 first_frame 就是纯文生视频。", isError: true };
+    firstUri = imageDataUri(fr);
+    if (input.last_frame) {
+      const lf = readImageInput(input.last_frame, opts.resolveFile, "尾帧图");
+      if (lf.err) return { content: lf.err, isError: true };
+      lastUri = imageDataUri(lf);
+    }
+  }
+  // 型号和入参对不上，是眼下就能踩到的坑：媒体模型目录按名字认能力，i2v 型号一样被归到「视频模型」，
+  // 用户在设置里选了它，今天不给图就调，必然在上游失败一次。这两句把那一趟省下来。
+  if (!firstUri && I2V_RE.test(cfg.model)) {
+    return { content: `${cfg.model} 是图生视频型号，必须给 first_frame（工作空间里的一张图）当首帧，只给文字它到上游就会失败，而那一趟是计费的。`
+      + "要纯文字生视频，就在 设置 → 模型 → 视频模型 里换一个 t2v 型号。", isError: true };
+  }
+  if (firstUri && T2V_RE.test(cfg.model)) {
+    return { content: `${cfg.model} 是文生视频型号，收不了首帧图。要用首尾帧就在 设置 → 模型 → 视频模型 里换一个 i2v 型号；`
+      + "或者去掉 first_frame / last_frame，只用文字描述。", isError: true };
+  }
+  const kfHint = firstUri
+    ? "\n（这次带了" + (lastUri ? "首尾帧" : "首帧") + "图。报错要是指向 img_url / image_url / 「不认识的参数」，就是这条渠道的视频接口不收图，换一个 i2v 型号或渠道。这里不会自动退回纯文生视频。）"
+    : "";
   const base = String(cfg.base_url).trim().replace(/\/+$/, "");
   const auth = { Authorization: `Bearer ${String(cfg.api_key || "").trim()}` };
   const headers = { "Content-Type": "application/json", ...auth };
@@ -870,6 +978,8 @@ async function generateVideo(media, input, opts = {}) {
     }
     throw new Error("视频生成超时（10 分钟未完成，可稍后到渠道控制台查看任务）");
   };
+  // 万相的字段名按「几张图」分：只有首帧走 img_url，首尾都有走 first/last_frame_url
+  const kfBody = lastUri ? { first_frame_url: firstUri, last_frame_url: lastUri } : firstUri ? { img_url: firstUri } : {};
   let videoUrl;
   let vWatermarked = false;
   if (/dashscope/i.test(base)) {
@@ -881,10 +991,12 @@ async function generateVideo(media, input, opts = {}) {
     const { r, j, stripped } = await postWantClean(
       `${base}/services/aigc/video-generation/video-synthesis`,
       { ...headers, "X-DashScope-Async": "enable" }, AbortSignal.timeout(60000),
-      (wm) => ({ model: cfg.model, input: { prompt }, parameters: wm ? { watermark: false } : {} }), "视频接口", 1);
+      // 万相这边一张图和两张图是两套字段：只定首帧是 img_url（i2v），首尾都定是 first/last_frame_url（kf2v）。
+      // 不传就一个字段都不出现，请求体跟纯文生那条逐字节一样
+      (wm) => ({ model: cfg.model, input: { prompt, ...kfBody }, parameters: wm ? { watermark: false } : {} }), "视频接口", 1);
     vWatermarked = stripped;
     const taskId = ((j || {}).output || {}).task_id;
-    if (!r.ok || !taskId) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
+    if (!r.ok || !taskId) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
     videoUrl = await poll(async () => {
       const s = await fetch(`${base}/tasks/${taskId}`, { headers: auth, signal: AbortSignal.timeout(30000) }).then((x) => x.json());
       const st = ((s || {}).output || {}).task_status;
@@ -897,10 +1009,16 @@ async function generateVideo(media, input, opts = {}) {
     const r = await fetch(`${base}/contents/generations/tasks`, {
       method: "POST", headers, signal: AbortSignal.timeout(60000),
       // Seedance 的参数走提示词里的文本指令，不是 JSON 字段。用户自己写了就不覆盖他的
-      body: JSON.stringify({ model: cfg.model, content: [{ type: "text", text: /--watermark\b/.test(prompt) ? prompt : `${prompt} --watermark false` }] }),
+      // 方舟这边首尾帧是同一个 content 数组里的两个 image_url 项，靠 role 区分。
+      // 文字那一项原样不动：`--watermark false` 是写在提示词里的指令，挪个位置就失效了
+      body: JSON.stringify({ model: cfg.model, content: [
+        { type: "text", text: /--watermark\b/.test(prompt) ? prompt : `${prompt} --watermark false` },
+        ...(firstUri ? [{ type: "image_url", image_url: { url: firstUri }, role: "first_frame" }] : []),
+        ...(lastUri ? [{ type: "image_url", image_url: { url: lastUri }, role: "last_frame" }] : []),
+      ] }),
     });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok || !j.id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}`, isError: true };
+    if (!r.ok || !j.id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
     videoUrl = await poll(async () => {
       const s = await fetch(`${base}/contents/generations/tasks/${j.id}`, { headers: auth, signal: AbortSignal.timeout(30000) }).then((x) => x.json());
       if (s.status === "succeeded") return ((s.content || {}).video_url) || null;
@@ -915,11 +1033,12 @@ async function generateVideo(media, input, opts = {}) {
   }
   if (!videoUrl) return { content: "视频任务完成但没有返回视频地址", isError: true };
   await downloadToWorkspace(videoUrl, fname, opts.saveDir);
-  security.audit("视频生成", `${cfg.model}: ${prompt.slice(0, 120)} → ${fname}`, "放行");
+  security.audit("视频生成", `${cfg.model}: ${prompt.slice(0, 120)}${firstUri ? (lastUri ? "（首尾帧）" : "（首帧图）") : ""} → ${fname}`, "放行");
   const vwNote = vWatermarked
     ? "\n注意：这个渠道不接受 watermark 参数，片尾/角标可能带平台的「AI 生成」水印。要干净的成片就换个渠道或换个模型。"
     : "\n已按无水印出片，不用再开片找水印。";
-  return { content: `视频已生成：${savedAt(opts.saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${vwNote}`, isError: false };
+  const kfNote = firstUri ? (lastUri ? "\n已按给定的首帧和尾帧出片。" : "\n已按给定的首帧出片。") : "";
+  return { content: `视频已生成：${savedAt(opts.saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${kfNote}${vwNote}`, isError: false };
 }
 
 /** HTML → PNG：真浏览器离屏渲染（htmlshot.js，只有桌面版才有渲染器） */
@@ -3006,9 +3125,9 @@ async function executeTool(name, input, opts = {}) {
       case "look_at_image":
         return await lookAtImage(opts, input, timeoutMs, resolveFile);
       case "generate_image":
-        return await generateImage(opts.media, input, timeoutMs, fileBase);
+        return await generateImage(opts.media, input, timeoutMs, fileBase, resolveFile);
       case "generate_video":
-        return await generateVideo(opts.media, input, { ...opts, saveDir: fileBase });
+        return await generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile });
       case "html_to_image":
         return await htmlToImage(input, resolveFile, fileBase);
       case "text_to_speech":
@@ -3180,4 +3299,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };
