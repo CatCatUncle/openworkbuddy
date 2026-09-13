@@ -796,6 +796,50 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     }
   }
 
+  // ── ⑩ shell 喊 command not found 时，替它说清楚缺的是什么 ────────────────
+  //
+  // 这一节补的是「图文成片」那条路上最常见的一次翻车：分镜都生成完了，最后一步合片
+  // 撞上一句「zsh:1: command not found: ffprobe」。模型看到的只有这一句，它不知道
+  // ffprobe 跟 ffmpeg 是同一个包装出来的，多半会去重试、或者换个参数再试一遍，
+  // 把用户的步数和钱一起烧光，最后还是同一句话。
+  //
+  // 每种 shell 的喊法都不一样，而且**顺序会咬人**：bash 那条是「名字在冒号前面」，
+  // 拿它去刮 zsh 的「zsh:1: command not found: ffmpeg」，捞回来的是 "1"。所以下面每种
+  // 喊法都单测一遍，外加几条反向对照——认不出的命令、压根没出错的输出，都必须一个字
+  // 都不加。在报错后面多说一句假话，比什么都不说更糟。
+  {
+    console.log("\n⑩ 缺外部工具时，把 shell 那句话翻成人话");
+    const { missingBinHint, NOT_FOUND_RE } = tools._internals;
+    const ZSH = "zsh:1: command not found: ffmpeg";
+
+    has(missingBinHint(ZSH, "darwin"), /ffmpeg/, "zsh 的喊法认得出（名字在冒号后面）");
+    has(missingBinHint(ZSH, "darwin"), /brew install ffmpeg/, "顺手给出这台机器上该敲的那句");
+    has(missingBinHint(ZSH, "darwin"), /图文成片/, "说清楚它是干嘛用的——用不上的东西不该逼人去装");
+    ok(!/\b1\b/.test(missingBinHint(ZSH, "darwin")),
+      "★捞回来的是 ffmpeg 不是行号 1★ bash 那条正则要是先跑就会捞到 1，两条的先后顺序不能反",
+      missingBinHint(ZSH, "darwin"));
+
+    has(missingBinHint("bash: line 1: ffprobe: command not found", "darwin"), /ffmpeg/,
+      "★bash 喊的是 ffprobe，要报成 ffmpeg★ 报 ffprobe 会让人去搜一个根本不存在的包");
+    has(missingBinHint("/bin/sh: 1: pandoc: not found", "linux"), /apt install pandoc/,
+      "dash/sh 的短喊法也认，装法跟着 Linux 给");
+    has(missingBinHint("'soffice' is not recognized as an internal or external command", "win32"),
+      /winget install LibreOffice/, "Windows cmd 的喊法也认，给的是 winget 不是 brew");
+
+    const two = missingBinHint(ZSH + "\nzsh:1: command not found: pandoc", "darwin");
+    eq(two.split("\n").length, 2, "缺两个就说两条");
+    const dup = missingBinHint(ZSH + "\nzsh:1: command not found: ffprobe", "darwin");
+    ok(dup.split("\n").length === 1 && /brew install ffmpeg/.test(dup),
+      "同一个包被喊了两遍（ffmpeg + ffprobe），只说一次", dup);
+
+    eq(missingBinHint("zsh:1: command not found: kubectl", "darwin"), "",
+      "反向对照：不认识的命令一个字都不加——瞎猜一句装法比不猜更坑");
+    eq(missingBinHint("total 8\ndrwxr-xr-x  3 u  s  96 Jan  1 00:00 .", "darwin"), "",
+      "反向对照：没出错的输出不该被加料");
+    eq(missingBinHint("", "darwin"), "", "反向对照：空输出不加料");
+    ok(NOT_FOUND_RE.length >= 4, "四种 shell 喊法都还在表里", NOT_FOUND_RE.length);
+  }
+
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.rmSync(WS, { recursive: true, force: true });
 

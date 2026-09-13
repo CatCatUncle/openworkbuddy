@@ -141,6 +141,26 @@ for (const plat of ["darwin", "win32", "linux"]) {
   }
 }
 
+// 别名表：shell 报错里蹦出来的名字，常常不是清单上那个代表名。
+// ffprobe 和 ffmpeg 是同一条 brew 装出来的，可 video-compose 量每段时长用的正是 `ffprobe`——
+// 按原名去查清单一无所获，用户就会看到「没装 ffprobe」，然后去搜一个根本不存在的包。
+const kt = (n, plat, field) => { const t = doctor.knownTool(n, plat); return t ? t[field] : "（没认出来）"; };
+eq(kt("ffmpeg", "darwin", "install"), "brew install ffmpeg", "认得出本名");
+eq(kt("ffprobe", "darwin", "name"), "ffmpeg", "★ffprobe 要折回 ffmpeg 名下★ 同一个包装出来的，装法就是同一句");
+eq(kt("libreoffice", "darwin", "name"), "soffice", "libreoffice 折回 soffice");
+eq(kt("pdftoppm", "darwin", "name"), "pdftotext", "pdftoppm 折回 pdftotext（poppler 一个包装出来的）");
+eq(kt("FFMPEG", "win32", "install"), "winget install ffmpeg", "名字不分大小写，装法跟着平台走");
+eq(kt("  ffmpeg  ", "linux", "install"), "apt install ffmpeg", "前后空格不影响，Linux 落到 other 那档");
+eq(doctor.knownTool("nosuchtool", "darwin"), null, "反向对照：不认识的命令不瞎给装法");
+eq(doctor.knownTool("", "darwin"), null, "反向对照：空名字不算");
+eq(doctor.knownTool(null, "darwin"), null, "反向对照：没给名字不算");
+// 别名指过去的那个名字必须真在清单上。写错一个字，这条路就静默断了——
+// 不报错、不告警，只是从此再也翻译不出来，而那正是没人会去查的一种坏法
+for (const [alias, primary] of Object.entries(doctor.TOOL_ALIASES)) {
+  ok(doctor.EXTERNAL_TOOLS.some((t) => t.name === primary), `别名 ${alias} 指向的 ${primary} 真在外部工具清单上`, primary);
+  ok(!doctor.EXTERNAL_TOOLS.some((t) => t.name === alias), `反向对照：${alias} 自己不在清单上（在的话就该直接查它，别绕别名）`, alias);
+}
+
 // ── ⑥ 红线：体检报告里不许出现 Key ──────────────────────────────────────
 console.log("\n⑥ 体检报告不许带出 Key");
 const SECRET = "sk-这是一把不该出现在体检报告里的钥匙";

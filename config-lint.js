@@ -59,7 +59,7 @@ const KNOWN_EXTRA = {
        "media", "media_models", "model_follow_last", "onboarding", "persona", "pet", "projects", "providers",
        "security", "shortcuts", "workspace_dir"],
   server: ["host"],
-  agent: ["auto_continue_rounds", "compact_keep_chars", "compact_keep_turns", "compact_threshold_chars", "engine",
+  agent: ["compact_keep_chars", "compact_keep_turns", "compact_threshold_chars", "engine",
           "engine_options", "failover_model", "max_context_chars", "max_tokens_budget"],
   im: ["permission_mode", "qq", "session_idle_hours", "wechat_ilink", "wechat_mp", "wecom_app"],
 };

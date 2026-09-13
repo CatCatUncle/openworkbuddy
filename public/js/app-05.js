@@ -1192,8 +1192,8 @@ async function renderAgentPane(pane, s) {
       <div class="f">单工具超时（秒）</div>
       <input id="ag-timeout" type="number" min="5" value="${Math.round(s.agent.tool_timeout_ms / 1000)}">
       <div class="f">任务最大运行时间（分钟）</div>
-      <div class="d" style="margin-bottom:6px">整个任务（含专家子代理）的墙上时间预算，超时强制收尾（默认 10）</div>
-      <input id="ag-runtime" type="number" min="1" value="${Math.round((s.agent.max_runtime_ms || 600000) / 60000)}">
+      <div class="d" style="margin-bottom:6px">整个任务（含专家子代理）的墙上时间预算，超时强制收尾（默认 30）</div>
+      <input id="ag-runtime" type="number" min="1" value="${Math.round((s.agent.max_runtime_ms || 1800000) / 60000)}">
       <div class="f">自动续跑轮数</div>
       <div class="d" style="margin-bottom:6px">任务撞到步数/时间上限但还没做完时，自动重置预算接着跑的最大轮数。0 = 关闭（默认）。开启后长任务会按 PROGRESS.md 的进度接着做，直到完成或轮数用完；手动停止不会续跑。注意：每一轮都是真实计费</div>
       <input id="ag-rounds" type="number" min="0" max="20" value="${s.agent.auto_continue_rounds || 0}">

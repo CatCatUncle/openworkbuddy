@@ -317,6 +317,29 @@ const EXTERNAL_TOOLS = [
 ];
 
 /**
+ * 同一个包里装出来的其他命令名 → 该查哪一条的名字。
+ *
+ * 缺 ffprobe 和缺 ffmpeg 是同一句装法，但报错里出现的是 ffprobe——video-compose 正是
+ * 用 `ffprobe` 逐段量时长的。少了这张表，用户会看到「没装 ffprobe」然后去搜一个
+ * 根本不存在的包。上面那张表只列每个包的代表命令，别名统一在这儿折回去。
+ */
+const TOOL_ALIASES = { ffprobe: "ffmpeg", ffplay: "ffmpeg", libreoffice: "soffice", pdfinfo: "pdftotext", pdftoppm: "pdftotext" };
+
+/**
+ * 这个命令名是不是我们认识的外部工具；认识就连装法一起给回去。
+ * 给 run_shell 用：shell 自己喊完 command not found 之后，把那句话翻译成人话。
+ * @returns {{name:string, use:string, install:string}|null}
+ */
+function knownTool(name, platform) {
+  const n = String(name || "").trim().toLowerCase();
+  const primary = TOOL_ALIASES[n] || n;
+  const t = EXTERNAL_TOOLS.find((x) => x.name === primary);
+  if (!t) return null;
+  const plat = platform || process.platform;
+  return { name: primary, use: t.use, install: t.install[plat] || t.install.other };
+}
+
+/**
  * 去找这几个 CLI 到底在不在。
  *
  * 走 engines/which 而不是直接 `which`：双击图标起的桌面版 PATH 是残废的，
@@ -411,5 +434,5 @@ module.exports = {
   verdictNode, verdictDeps, verdictDataDir, verdictConfig, verdictModels,
   verdictPort, verdictWorkspace, verdictEngine, verdictTools,
   worst, countModels, probeWritable, probePort, probeWho, probeTools, fetchText, gather, render, cols, LEVELS,
-  verdictConfigLint, EXTERNAL_TOOLS,
+  verdictConfigLint, EXTERNAL_TOOLS, TOOL_ALIASES, knownTool,
 };
