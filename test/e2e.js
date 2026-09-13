@@ -6905,7 +6905,15 @@ function testNoticeCoverage() {
   assert(f2.length === 1, "★闸门失效：docx 被 docxtemplater 蒙混过关了★");
   const f3 = noticeDrift({ docx: "1" }, "| docx | 9.7.1 | MIT |").missing;
   assert(f3.length === 0, "表格里明明写了 docx 却判成没署名，闸门太严会逼人乱改文档");
-  console.log(`✅ 第三方署名不漂移：${r.checked} 条运行时依赖在 NOTICE.md 里全有名字（内联图标的 ISC 单独钉住）· 3 种坏法全被抓`);
+  // 光写对还不够，这份署名得真跟着包走。桌面版 asar:false，node_modules 原样发出去，
+  // 而 files 是白名单——NOTICE.md 不点名就一个字都不进包，等于分发了别人的代码却没带署名。
+  // 这种漏不报错、不崩溃，只有翻开装机包才看得见，所以钉在这儿。
+  const legal = ["LICENSE", "COMMERCIAL-LICENSE.md", "NOTICE.md"];
+  const shipped = (globs) => legal.filter((f) => !globs.includes(f));
+  const cfgFiles = require(path.join(root, "electron-builder.config.js")).files;
+  assert(shipped(cfgFiles).length === 0, "这几份法务文件没进安装包白名单：" + shipped(cfgFiles).join("、"));
+  assert(shipped(cfgFiles.filter((g) => g !== "NOTICE.md")).length === 1, "★闸门失效：把 NOTICE.md 从白名单里拿掉居然没红★");
+  console.log(`✅ 第三方署名不漂移：${r.checked} 条运行时依赖在 NOTICE.md 里全有名字（内联图标的 ISC 单独钉住）· ${legal.length} 份法务文件都进安装包 · 4 种坏法全被抓`);
 }
 
 function testPackageAssetDrift() {
