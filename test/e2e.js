@@ -5354,6 +5354,7 @@ async function main() {
   testPackageAssetDrift();
   testNoticeCoverage();
   testStyleDirection();
+  testReleasePipeline();
   testNoNestedRoutes();
   await testAdminConsoleUI();
   await testNodeSuite("tenant.js", "多租户与企业后台越权");
@@ -7006,6 +7007,139 @@ function testStyleDirection() {
   assert(!packed.includes("skills/theme-factory/**/*"), "★闸门失效：.gitignore 掉的第三方技能居然也进了包★");
 
   console.log(`✅ 网页别千篇一律：${files.length} 处（提示词 / 技能 / 专家 / 模板）都插进了「先定视觉方向」· ${(src["skills/web-styles/skill.md"].match(/^## \d+ · /gm) || []).length} 个方向随包分发 · ${bad.length} 种退回全被抓`);
+}
+
+/**
+ * 发版这条链的静态体检。每一条对应一次真踩过或差点踩到的坑，纯读文件，不跑流水线。
+ *
+ * @param {Record<string,string>} src 文件内容，键是仓库相对路径
+ * @returns {{miss: string[], suites: string[]}}
+ */
+function releasePipelineDrift(src) {
+  const miss = [];
+  // 同理剥掉整行 YAML 注释：release.yml 里恰好有一行注释在解释「不写 !cancelled() 会怎样」，
+  // 不剥的话把真正那句 if 删掉，闸门还会被这句解释喂饱
+  const rel = (src[".github/workflows/release.yml"] || "").replace(/^[ \t]*#.*$/gm, "");
+  const tst = src[".github/workflows/test.yml"] || "";
+  const all = src["test/all.js"] || "";
+  const pkg = src["package.json"] || "";
+  // 注释里也会提 AppImage / linux（删掉那段时留的恢复说明），先把行注释剥掉再查，
+  // 否则「解释为什么删了」这句话本身会被当成「它还在」
+  const ebc = (src["electron-builder.config.js"] || "").replace(/^[ \t]*\/\/.*$/gm, "");
+  const ish = src["install.sh"] || "";
+
+  // —— PR / main 的红绿灯。在这条闸门之前，15 个套件只在作者本机手敲时才跑过
+  if (!tst.trim()) miss.push("没有 .github/workflows/test.yml：PR 和 main 没有任何 CI");
+  if (!/pull_request/.test(tst)) miss.push("test.yml 不管 pull_request：外部 PR 无人把关");
+  if (!/macos-latest/.test(tst)) miss.push("test.yml 没在 macOS 上跑全套：e2e 要开真 electron 窗口，只有那台能全覆盖");
+
+  // —— CI 跑的套件必须是 test/all.js 里的全集。加了新套件却忘了加进 CI 命令行，
+  //    它就永远不会在 CI 上跑；而本地 npm test 照样绿，人看不出来
+  const suites = (all.match(/^\s*\["([a-z0-9-]+)"/gim) || []).map((m) => m.replace(/^\s*\["/, "").replace(/"$/, ""));
+  const onlyLine = (tst.match(/--only\s+([a-z0-9,\-]+)/) || [])[1] || "";
+  const inCI = new Set(onlyLine.split(",").filter(Boolean));
+  // e2e 单独走 macOS 那条腿的 npm test，不在 --only 名单里
+  const shouldBeInCI = suites.filter((s) => s !== "e2e");
+  const forgotten = shouldBeInCI.filter((s) => !inCI.has(s));
+  if (suites.length < 10) miss.push("test/all.js 的套件清单没读出来（认出 " + suites.length + " 个），闸门自己坏了");
+  if (forgotten.length) miss.push("这些套件在 CI 上一次都不会跑：" + forgotten.join("、") + "（补进 test.yml 的 --only）");
+  const ghost = [...inCI].filter((s) => !suites.includes(s));
+  if (ghost.length) miss.push("test.yml 的 --only 里有 test/all.js 没有的套件：" + ghost.join("、") + "（会直接 exit 2）");
+
+  // —— 发版前先跑测试
+  if (!/^\s{2}test:/m.test(rel)) miss.push("release.yml 没有 test job：一个把 require 图改坏的 commit 能一路走到 Release");
+  if (!/needs:\s*test/.test(rel)) miss.push("release.yml 的 build 没写 needs: test，测试等于白跑");
+
+  // —— 版本号和 tag 的唯一一道绑定。忘了改 package.json：Release 里挂着上一版的文件名，
+  //    而且 updater.js 读的也是它，装完的用户「检查更新」会永远说有新版
+  if (!/GITHUB_REF_NAME/.test(rel)) miss.push("release.yml 没核对 package.json 版本号和 tag 一致");
+  if (/GITHUB_REF_NAME/.test(rel) && !/if:\s*startsWith\(github\.ref, 'refs\/tags\/'\)/.test(rel)) {
+    miss.push("版本号核对没加 tag 守卫：手动 workflow_dispatch 时 GITHUB_REF_NAME 是分支名，必红");
+  }
+
+  // —— 单平台失败不该拖垮整次发版
+  if (!/!cancelled\(\)/.test(rel)) miss.push("release job 缺 !cancelled()：Windows 一红，打好的 mac 包就进不了 Release 页");
+  if (!/continue-on-error/.test(rel)) miss.push("download-artifact 没兜 continue-on-error：两条腿全挂时它自己会报错");
+  if (!/draft:\s*\$\{\{\s*needs\.build\.result\s*!=\s*'success'\s*\}\}/.test(rel)) {
+    miss.push("缺平台时没落草稿：Release 正文写死了 Windows 文件名，缺了还照发等于指向不存在的链接");
+  }
+
+  // —— 免安装版那个多余的双架构合体包（v0.1.6 的 Release 里 248 MB 那个）
+  if (!/buildUniversalInstaller:\s*false/.test(ebc)) {
+    miss.push("portable 没关 buildUniversalInstaller：多架构下会多产一个双架构合体 exe，没文档指向它");
+  }
+
+  // —— 配了却从没在流水线上跑过的目标 = 未经验证的死代码
+  if ((/dist:linux/.test(pkg) || /AppImage/.test(ebc)) && !/\*\.AppImage/.test(rel)) {
+    miss.push("配了 Linux 目标，release.yml 的上传路径却不收它的产物 —— 这个目标从来没在流水线上打过一次（upload 那步是 if-no-files-found: error，只加腿不加 path 必红）");
+  }
+
+  // —— 一键安装的用法说明里还留着占位符 = 照着复制的人拿到 404
+  if (/<你的仓库>/.test(ish)) miss.push("install.sh 的 curl 用法说明里还是占位符仓库地址");
+  if (/pnpm install/.test(ish) && !/--no-frozen-lockfile/.test(ish)) {
+    miss.push("install.sh 走 pnpm 但没关 frozen-lockfile：仓库不带 pnpm-lock.yaml，CI 环境下会直接装不上");
+  }
+  if (/\[ -t 1 \]/.test(ish) && !/\[ -t 0 \]/.test(ish)) {
+    miss.push("install.sh 的交互守卫只判 stdout：curl | bash 时 read 撞 EOF，set -e 会让脚本装完反而报失败");
+  }
+
+  return { miss, suites };
+}
+
+function testReleasePipeline() {
+  const root = path.join(__dirname, "..");
+  const files = [
+    ".github/workflows/release.yml",
+    ".github/workflows/test.yml",
+    "test/all.js",
+    "package.json",
+    "electron-builder.config.js",
+    "install.sh",
+  ];
+  const src = {};
+  for (const f of files) src[f] = fs.readFileSync(path.join(root, f), "utf8");
+  const r = releasePipelineDrift(src);
+  assert(r.miss.length === 0, "发版这条链有问题：\n  " + r.miss.join("\n  "));
+
+  // 反向对照：每一处单独退回出问题前的样子，都必须被抓出来
+  const bad = [
+    ["PR 的 CI 整个没了", { ".github/workflows/test.yml": "" }],
+    ["CI 只在 ubuntu 跑、e2e 没人管", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/macos-latest/g, "ubuntu-latest") }],
+    ["新加的套件忘了补进 CI 名单", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(",trace", "") }],
+    ["CI 名单里写了个不存在的套件", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace("--only icons", "--only icon") }],
+    ["发版前不跑测试了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/needs: test\n/, "") }],
+    ["版本号和 tag 的绑定被删了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/GITHUB_REF_NAME/g, "X") }],
+    ["版本号核对忘了守 tag（手动跑必红）", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("if: startsWith(github.ref, 'refs/tags/')\n        shell: bash", "shell: bash") }],
+    ["Windows 挂了连 Mac 包一起不发", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/!cancelled\(\) && /, "") }],
+    ["两条腿全挂时 download-artifact 自己报错", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/\n\s*continue-on-error: true/, "") }],
+    ["缺平台照发不落草稿", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/draft: .*\n/, "") }],
+    ["免安装版又多产一个合体包", { "electron-builder.config.js": src["electron-builder.config.js"].replace("buildUniversalInstaller: false", "x: 1") }],
+    ["Linux 目标配了但流水线不打", { "package.json": src["package.json"].replace('"dist:mac"', '"dist:linux": "x",\n    "dist:mac"') }],
+    ["AppImage 配了但上传路径不收它", { "electron-builder.config.js": src["electron-builder.config.js"].replace("portable: {", 'linux: { target: "AppImage" },\n  portable: {') }],
+    ["curl 用法说明退回占位符", { "install.sh": src["install.sh"].replace("CatCatUncle/openworkbuddy/main/install.sh", "<你的仓库>/main/install.sh") }],
+    ["pnpm 分支又吃 frozen-lockfile", { "install.sh": src["install.sh"].replace(" --no-frozen-lockfile", "") }],
+    ["curl | bash 装完反而报失败", { "install.sh": src["install.sh"].replace("[ -t 0 ] && ", "") }],
+  ];
+  for (const [why, patch] of bad) {
+    const got = releasePipelineDrift({ ...src, ...patch }).miss;
+    assert(got.length > 0, "★闸门失效：" + why + "，居然没红★");
+  }
+
+  // 锁文件只留一份：两份长期手工对齐必然漂，上一份 pnpm-lock.yaml 过期五周、缺 7 个包
+  assert(!fs.existsSync(path.join(root, "pnpm-lock.yaml")), "pnpm-lock.yaml 又回来了——只维护 package-lock.json");
+
+  // 放行说明：macOS 15 起右键「打开」那条通道被苹果取消了，弹窗里只剩「完成 / 移到废纸篓」。
+  // 还写 xattr -cr 也不行：它清掉全部扩展属性，过于粗暴，只该删 quarantine 那一条
+  const docs = ["README.md", "README.en.md", "docs/安装与启动.md", ".github/workflows/release.yml", "docs/推广/发布日文案.md"];
+  for (const d of docs) {
+    const t = fs.readFileSync(path.join(root, d), "utf8");
+    if (!/xattr|right-click|右键/.test(t)) continue;
+    assert(!/xattr -cr/.test(t), d + " 里还写着 xattr -cr（该只删 com.apple.quarantine）");
+    assert(/quarantine/.test(t), d + " 提了放行却没给 xattr -dr com.apple.quarantine");
+    assert(/macOS 14|Sequoia|Open Anyway|仍要打开/.test(t), d + " 没说明 macOS 15 起右键「打开」已经不管用");
+  }
+
+  console.log(`✅ 发版这条链：PR/main 有红绿灯（CI 跑满 ${r.suites.length} 个套件，一个不落）· 发版前先跑测试 · 版本号对不上 tag 当场红 · 单平台挂了另一个照发（缺平台落草稿）· ${bad.length} 种退回全被抓 · ${docs.length} 处放行说明都认 macOS 15`);
 }
 
 function testPackageAssetDrift() {

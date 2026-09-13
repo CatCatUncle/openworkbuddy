@@ -88,7 +88,7 @@ How it pulled those off, and what a run on a local Claude Code engine looks like
 | Windows portable (**only if you cannot install software**) | `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe` (it is a self-extractor: every launch unpacks the whole app into `%TEMP%`, so the first start can take several minutes with a process but no window) |
 
 > Your OS will block the first launch: the build has no code-signing certificate (Apple charges $99/year, Windows a few thousand — this is a free open-source project). It is not malware.
-> **Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway". **macOS**: right-click the icon → Open, or `xattr -cr /Applications/OpenWorkBuddy.app`.
+> **Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway". **macOS**: move the app to `/Applications`, then run `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`, or go to System Settings → Privacy & Security → "Open Anyway". (Right-click → Open only works on macOS 14 and earlier — Sequoia removed that bypass.)
 > Your data lives in `~/OpenWorkBuddy` and survives uninstall.
 >
 > **Double-clicked and nothing happened?** The boot log is at `~/OpenWorkBuddy/logs/boot.log`; walk through [安装与启动 · 双击了没反应？](docs/安装与启动.md#双击了没反应) (Chinese).

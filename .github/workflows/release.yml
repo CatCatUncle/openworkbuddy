@@ -1,4 +1,5 @@
-# 打 tag 就出安装包。用法：git tag v0.1.1 && git push origin v0.1.1
+# 打 tag 就出安装包。用法：**先把 package.json 的 version 改成同一个号**，
+# 再 git tag v0.1.1 && git push origin v0.1.1。完整清单在 docs/发版.md。
 #
 # 为什么 Windows 包必须在 CI 上打：开发机是 Mac，没装 wine，electron-builder 造不出 NSIS 安装器。
 # 所以 Windows 那份是这条流水线第一次真正跑出来的产物——它没在开发机上被人工验证过，
@@ -14,9 +15,34 @@ permissions:
   contents: write # 创建 Release 要写权限
 
 jobs:
+  # 发版前先跑全套测试。放 macOS 单独一个 job，不塞进下面 build 的两条腿里：
+  # e2e 里有 execFileSync("/bin/sh", ...) 和 .app 装机态验证，Windows runner 上过不了，
+  # 硬塞进 matrix 会把 Windows 那份包直接打没——而那份恰恰是开发机造不出来、最需要发的。
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # 产物名来自 package.json 的 ${version}，流水线认的却是 tag。两边不一致 =
+      # Release v0.1.7 里挂着 0.1.6 的包；更糟的是 updater.js 的 currentVersion() 读的也是
+      # package.json，装完的用户「设置 → 关于 → 检查更新」会永远显示有新版，点过去下的还是同一个包。
+      # 加 if 是为了不误杀第 11 行那条手动通道：workflow_dispatch 时 GITHUB_REF_NAME 是分支名 main，
+      # 'main'.replace(/^v/,'') 仍然非空，不守卫的话手动跑一次流水线必红。
+      - name: 核对 package.json 版本号和 tag 一致
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash # matrix 外也显式写死：Windows 上默认 pwsh，引号规则不一样
+        run: |
+          node -e "const v=require('./package.json').version,t=process.env.GITHUB_REF_NAME.replace(/^v/,'');if(v!==t){console.error('对不上：package.json 是 '+v+'，tag 是 '+t+'。先改 package.json 再重打 tag。');process.exit(1)}"
+      - run: npm test
+
   build:
+    needs: test
     strategy:
-      fail-fast: false # 一个平台挂了，另一个平台的包照样要产出来
+      fail-fast: false # 一个平台挂了，另一个平台照样打包上传（能不能进 Release 看 release job 的 if）
       matrix:
         include:
           - os: macos-latest
@@ -49,13 +75,24 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    # 带 needs 的 job 默认门槛是 success()，只有 if 里出现状态函数才会被顶掉。
+    # 不写 !cancelled() 的话：Windows 那条腿一红，已经打好的 mac dmg/zip 就只能躺在
+    # Actions 运行页的 artifact 里等 90 天过期，用户侧看到的是「推了 tag 却没有新版本可下」。
+    # startsWith 这一半不能省，否则手动 workflow_dispatch 也会去建 Release。
+    # != 'skipped' 是拦测试没过的情况——那时 build 整个被跳过，不该建一个空 Release。
+    if: ${{ !cancelled() && needs.build.result != 'skipped' && startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
+        # 两条腿全挂时这一步会报 "Unable to find any artifacts"。download-artifact 没有
+        # 「允许缺失」这种输入项，只能靠 continue-on-error 兜，别让它把整个 release 拖红
+        continue-on-error: true
         with: { path: dist }
       - uses: softprops/action-gh-release@v2
         with:
+          # 缺了平台就落草稿由人拍板：下面那段正文写死了 Windows 的文件名，
+          # 缺 Windows 还照发，等于给用户指了几个不存在的下载链接
+          draft: ${{ needs.build.result != 'success' }}
           files: dist/**/*
           generate_release_notes: true
           body: |
@@ -73,11 +110,17 @@ jobs:
             这个包没有代码签名证书（苹果一年 99 美元、Windows 一年几千块，这是个免费开源项目），不是有毒。
 
             - **Windows**：弹出「Windows 已保护你的电脑」时，点弹窗里的灰色小字 **「更多信息」**，下面才会出现 **「仍要运行」**。
-            - **macOS**：提示「无法验证开发者」时，右键点应用图标 → 打开 → 再点一次「打开」。或者在终端跑：
+            - **macOS**：提示「无法验证开发者」时，**先把 .app 从 dmg 拖进「应用程序」**（dmg 是只读卷，
+              在里面执行下面的命令会失败），然后在终端跑：
 
             ```
-            xattr -cr /Applications/OpenWorkBuddy.app
+            xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app
             ```
+
+              不想开终端：双击 → 弹窗点「完成」→ **系统设置 → 隐私与安全性**，往下滚到
+              「"OpenWorkBuddy"已被阻止使用」→ 点**「仍要打开」**→ 输密码。
+              **macOS 14 及更早**还可以右键图标 → 打开 → 再点一次「打开」；
+              macOS 15 (Sequoia) 起苹果取消了这条通道，右键弹窗里已经没有第二个「打开」按钮了。
 
             装完先去设置里填模型 API Key。你的配置、会话、工作区都在 `~/OpenWorkBuddy`，卸载不会删。
 
