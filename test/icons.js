@@ -177,9 +177,9 @@ const REG = '/* emoji-数据区 起：头像候选表，用户挑的数据 */\nc
 console.log("\n② 前端源码（界面上的图形全走 sprite）");
 const FRONT = ["public/index.html", "public/pet.html", "mcp-catalog.js", "experts.json"]
   .concat(fs.readdirSync(path.join(ROOT, "public", "js")).filter((f) => f.endsWith(".js")).map((f) => "public/js/" + f));
-const FRONT_ALLOW = {
-  "public/js/app-02.js": { 1100: "TOAST_ICON 兼容层：插件/技能的老写法还会往消息前面塞表情，这张表就是用来认出它们再换成图标的" },
-};
+// 前端这边一条按行号写死的例外都不留：上面随便插一行就会让它对不上号，
+// 于是每次改别的地方都要回来改行号。要放行就在源码里圈「emoji-数据区」，理由写在记号里
+const FRONT_ALLOW = {};
 const frontAllowUsed = new Set();
 for (const rel of FRONT) {
   const found = scan(rel).filter((str) => {
@@ -219,6 +219,7 @@ eq(allowUsed.size, allowTotal, "例外清单每条都还对得上号（对不上
 // 「哪儿还留着 emoji」这个问题，任何时候都该能一眼答完。
 const REGIONS_DECLARED = [
   "public/js/app-00-ui.js：头像候选表，用户挑给自己的数据，不是界面图形",
+  "public/js/app-02.js：这五个表情在这儿是要认的数据、不是界面文案，删了兼容层就认不出老写法",
 ];
 eq(regionsSeen.join(" | "), REGIONS_DECLARED.join(" | "), "emoji 数据区跟声明的一一对得上");
 

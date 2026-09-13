@@ -335,15 +335,18 @@ function onbSkipFlag(set) {
 async function maybeOnboard() {
   const st = await fetch("/api/onboarding").then(r => r.json()).catch(() => null);
   if (!st || st.error || !st.models) return;
-  if (!st.needs_setup && st.seen) return; // 大脑接上了、向导也走完了：不打扰
+  // 大脑接上了就不再自动弹。以前还要求"向导也走完过"，可最常见的一条路恰恰是：
+  // 在第一步把 Key 填好、后面几步不想配、直接跳过——done_at 永远写不上，于是每次开机再拦一遍。
+  // 用户原话：「设置过了不要一直在开头一直弹窗提示啊」。想再看一遍走 设置 → 关于 → 重新打开新手引导。
+  if (!st.needs_setup) return;
   if (!st.can_finish) return; // 这是台服务器级的向导，成员走到最后一步也存不下来，别弹
   if (onbSkipFlag()) return; // 本次窗口内跳过一次就别再烦人
-  openOnboarding(st);
+  openOnboarding(); // 不把 st 传进去：真要弹了才值得让服务端去探本机 CLI（which + --version）
 }
 
 // 设置 → 关于 里「重新打开新手引导」也走这里；传 st 则直接用已拉好的体检表
 async function openOnboarding(st) {
-  if (!st || !st.models) st = await fetch("/api/onboarding").then(r => r.json()).catch(() => null);
+  if (!st || !st.models) st = await fetch("/api/onboarding?probe=1").then(r => r.json()).catch(() => null);
   if (!st || st.error || !st.models) { toast("拿不到配置体检表，服务没起来？"); return; }
   onbState = { st, step: 0, skipped: new Set(), dir: "" };
   renderOnb();
@@ -352,8 +355,29 @@ async function openOnboarding(st) {
 function closeOnboarding() {
   document.getElementById("onb-mask").classList.remove("show");
 }
+/**
+ * 关掉向导 = 这次算走过了。
+ *
+ * 以前只有走完最后一步才往服务端写 done_at，中途跳过只在 sessionStorage 里记一个本窗口标记——
+ * 关掉应用再开就没了。于是"Key 填好、剩下几步跳过"的人每次开机都被再拦一次。
+ * 只要大脑已经接上就跟走完一样记一笔；没接上不记，那种情况下一句话都发不出去，下次还得提醒他。
+ */
+async function dismissOnboarding(msg) {
+  const ok = !!(onbState && onbState.st && onbState.st.brain && onbState.st.brain.ok);
+  const skipped = [...((onbState && onbState.skipped) || [])];
+  onbSkipFlag(true);
+  closeOnboarding();
+  if (msg) toast(msg);
+  if (!ok) return;
+  try {
+    await fetch("/api/onboarding/done", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skipped }),
+    });
+  } catch { /* 记不上就下次再问一遍，不挡人 */ }
+}
 async function onbReload() {
-  const st = await fetch("/api/onboarding").then(r => r.json()).catch(() => null);
+  const st = await fetch("/api/onboarding?probe=1").then(r => r.json()).catch(() => null);
   if (st && st.models) onbState.st = st;
   return onbState.st;
 }
@@ -442,8 +466,11 @@ function renderOnbBrain(body) {
     body.querySelector("#onb-local").hidden = mode !== "local";
     err.textContent = "";
   };
-  // 默认选中第一个还没配 key 的云端模型，用户十有八九就是要配它
-  const first = st.models.find(m => !m.has_key && !m.local) || st.models[0];
+  // 已经接上大脑的，默认停在正在用的那条——重新打开向导时第一眼看到的该是「现在跑的是它」，
+  // 而不是一条空着 Key 的模板（那读起来像「你什么都还没配」）。
+  // 还没接上的才默认第一个没配 Key 的云端模型：那种情况下用户十有八九就是要配它。
+  const cur = st.brain.ok && st.brain.name ? st.models.find(m => m.name === st.brain.name) : null;
+  const first = cur || st.models.find(m => !m.has_key && !m.local) || st.models[0];
   if (first) sel.value = first.name;
   const syncTip = () => {
     const opt = sel.selectedOptions[0];
@@ -500,11 +527,7 @@ function renderOnbBrain(body) {
     }
   };
   const skip = body.querySelector("#onb-skip-step");
-  if (skip) skip.onclick = () => {
-    onbSkipFlag(true);
-    closeOnboarding();
-    toast("跳过了。随时可以在 设置 → 模型 里补上 API Key");
-  };
+  if (skip) skip.onclick = () => dismissOnboarding("跳过了。随时可以在 设置 → 模型 里补上 API Key");
   setTimeout(() => { if (!form.hidden) keyEl.focus(); }, 60);
 }
 
@@ -665,7 +688,7 @@ function renderOnbDone(body) {
   body.querySelector("#onb-go").onclick = () => finishOnb({ dir: body.querySelector("#onb-dir").value.trim() });
   // 最后一步以前只有一颗「开始使用」。它一旦失败（没权限、服务端报错），整块全屏遮罩就没有出口了——
   // 没有 ✕、Escape 也不管，刷新还照弹。留一条「先跳过」，这一程就总能走出去。
-  body.querySelector("#onb-skip-step").onclick = () => { onbSkipFlag(true); closeOnboarding(); };
+  body.querySelector("#onb-skip-step").onclick = () => dismissOnboarding();
 }
 
 async function finishOnb({ dir, silent } = {}) {

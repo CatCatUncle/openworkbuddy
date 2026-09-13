@@ -1,3 +1,13 @@
+/**
+ * 这条模型现在点下去能不能真跑起来。
+ * 本机服务（Ollama 之类）不要 Key，填不填都算能用；其余看 has_key——
+ * 多人服务器上普通成员拿到的 api_key 是一串星号，只有这个布尔是真的。
+ */
+function modelReady(m) {
+  if (/localhost|127\.0\.0\.1|0\.0\.0\.0/.test(String(m.base_url || ""))) return true;
+  return m.has_key !== undefined ? !!m.has_key : !!String(m.api_key || "").trim();
+}
+
 // menu 不传就是输入框右下角那个；助理页顶栏那个把自己的容器传进来，两处共用同一份菜单
 function renderModelMenu(menu = modelMenu) {
   if (!settingsCache || !menu) return;
@@ -20,15 +30,23 @@ function renderModelMenu(menu = modelMenu) {
   menu.classList.remove("eng");
   const ov = currentSessModel();
   const hbDef = healthBadge(settingsCache.active_model);
+  // 用户原话：「模型只给我展示我设置了的模型啊」。
+  // 出厂 config 里预置着十来条厂商模板，一把 Key 都没有；混在这张菜单里，点下去必然 401——
+  // 那不是可选项，是待办事项。所以没 Key 的不进列表，只在末尾留一行说清还剩几条、去哪儿填
+  //（跟设置页那栏「还没填 Key 的渠道」同一个口径：不是删掉，是收起来）。
+  const usable = settingsCache.models.filter(modelReady);
+  const waiting = settingsCache.models.length - usable.length;
   menu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
       <span>${ic("rotate-ccw")}跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${hbDef ? " · " + hbDef : ""}</span></span>${ov ? "" : `<span style="color:var(--wb-ok-text)">${ic("check")}</span>`}</div>`
-    + settingsCache.models.map(m => {
+    + usable.map(m => {
       const on = m.name === ov;
       const hb = healthBadge(m.name);
       return `<div class="mi ${on ? "on" : ""}" data-name="${esc(m.name)}" style="justify-content:space-between">
-      <span>${ic("sparkles")}${esc(m.name)} <span class="sub">${esc(m.model)}${m.api_key ? "" : ` · ${ic("triangle-alert")}未填Key`}${hb ? " · " + hb : ""}</span></span>
+      <span>${ic("sparkles")}${esc(m.name)} <span class="sub">${esc(m.model)}${hb ? " · " + hb : ""}</span></span>
       ${on ? `<span style="color:var(--wb-ok-text)">${ic("check")}</span>` : ""}</div>`;
     }).join("")
+    + (!usable.length ? `<div class="mi-note">${ic("triangle-alert")}一个填了 Key 的模型都还没有，先去下面加一个</div>`
+      : waiting ? `<div class="mi-note">还有 ${waiting} 个模型没填 Key，填上才会出现在这里</div>` : "")
     + `<div class="mi" data-act="manage" style="border-top:1px solid var(--wb-border);margin-top:4px">${ic("settings")}管理模型…</div>`;
   menu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
     menu.classList.remove("show");
@@ -1097,7 +1115,9 @@ let toastTimer = null;
 // 仓库里的调用一律走第二个参数 toast(文字, "circle-x") 指定图标。
 // 这张表是给外来调用兜底的：插件、技能里的老写法可能还在往消息前面塞 ❌ / ⚠️，
 // 认出来就摘掉换成图标，免得表情漏到界面上。
+/* emoji-数据区 起：这五个表情在这儿是要认的数据、不是界面文案，删了兼容层就认不出老写法 */
 const TOAST_ICON = { "❌": "circle-x", "⚠️": "triangle-alert", "⚠": "triangle-alert", "✅": "circle-check", "✓": "circle-check" };
+/* emoji-数据区 止 */
 function toast(msg, kind) {
   let t = document.getElementById("wb-toast");
   if (!t) { t = document.createElement("div"); t.id = "wb-toast"; document.body.appendChild(t); }

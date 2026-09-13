@@ -5893,8 +5893,14 @@ async function testOnboardingWizardApi() {
     assert(st.needs_setup === true && st.seen === false, "新装应当 needs_setup=true / seen=false：" + JSON.stringify({ n: st.needs_setup, s: st.seen }));
     assert(st.brain && st.brain.ok === false, "没填 Key 时 brain.ok 应为 false：" + JSON.stringify(st.brain));
     assert(Array.isArray(st.models) && st.models.length > 0 && st.models.every((m) => typeof m.has_key === "boolean" && !("api_key" in m)), "models 要带 has_key 布尔，且绝不能把 api_key 本身吐给前端");
-    assert(Array.isArray(st.engines) && st.engines.some((e) => e.id === "claude-code") && st.engines.some((e) => e.id === "codex"), "引擎清单缺 claude-code / codex：" + JSON.stringify(st.engines));
-    assert(st.engines.every((e) => typeof e.installed === "boolean" && typeof e.install === "string"), "每个引擎要有 installed 布尔 + install 提示");
+    // 本机 CLI 探测要 which + --version，只在向导真要渲染时做（前端带 ?probe=1）。
+    // 开机那一趟只是判断「要不要弹」，不该为它跑一遍 shell
+    assert(Array.isArray(st.engines) && st.engines.length === 0, "不带 probe 的体检表不该去探本机 CLI：" + JSON.stringify(st.engines));
+    const ap = await req("GET", "/api/onboarding?probe=1");
+    assert(ap.code === 200 && ap.json, "带 probe 的体检表拿不到：HTTP " + ap.code + " " + ap.body.slice(0, 200));
+    assert(Array.isArray(ap.json.engines) && ap.json.engines.some((e) => e.id === "claude-code") && ap.json.engines.some((e) => e.id === "codex"), "引擎清单缺 claude-code / codex：" + JSON.stringify(ap.json.engines));
+    assert(ap.json.engines.every((e) => typeof e.installed === "boolean" && typeof e.install === "string"), "每个引擎要有 installed 布尔 + install 提示");
+    assert(ap.json.needs_setup === st.needs_setup && ap.json.seen === st.seen, "probe 只决定探不探 CLI，别的字段必须一模一样");
     assert(st.search && typeof st.search.provider === "string" && st.search.has_key === false, "搜索状态：新装 has_key 应为 false：" + JSON.stringify(st.search));
     assert(st.media && ["image", "video", "tts", "vision"].every((k) => st.media[k] === false), "四种多媒体新装应全 false：" + JSON.stringify(st.media));
     assert(st.im && st.im.configured === 0, "IM 新装应 0 个：" + JSON.stringify(st.im));
@@ -5969,6 +5975,17 @@ async function testOnboardingWizardApi() {
     assert(/const ONB_STEPS = \[/.test(app03) && (app03.match(/\["(brain|search|media|im|done)"/g) || []).length === 5, "app-03.js 的向导应是五步：brain/search/media/im/done");
     assert(/async function openOnboarding\(/.test(app03) && /\/api\/onboarding\/done/.test(app03), "app-03.js 缺 openOnboarding 或没调 /api/onboarding/done");
     assert(/function onbSkipFlag\(/.test(app03) && /try \{[\s\S]*sessionStorage/.test(app03), "「本次跳过」标记要 try 住 sessionStorage（file:// / 隐私模式下会抛）");
+    // 用户原话：「设置过了不要一直在开头一直弹窗提示啊」。以前 maybeOnboard 写的是
+    // 「大脑在 且 走完过（seen）才不弹」，可 done_at 只有走完最后一步才写得上——
+    // "第一步填完 Key 就跳过"的人于是每次开机再被拦一遍。这两条闸门钉住新口径
+    assert(/if \(!st\.needs_setup\) return;/.test(app03) && !/!st\.needs_setup && st\.seen/.test(app03),
+      "maybeOnboard 只能看 needs_setup：再把 seen 与进去，配好 Key 的人每次开机又要被拦一遍");
+    assert(/async function dismissOnboarding\(/.test(app03) && /dismissOnboarding\(/.test(app03.split("async function dismissOnboarding(")[1] || ""),
+      "跳过必须走 dismissOnboarding（它会在大脑已接上时把 done_at 落盘），不能只写 sessionStorage");
+    assert(!/onb-skip-step["']\)[\s\S]{0,80}onbSkipFlag\(true\);[\s\S]{0,40}closeOnboarding\(\)/.test(app03),
+      "还有「跳过」按钮在裸调 onbSkipFlag+closeOnboarding：那个标记关掉应用就没了");
+    assert(/\/api\/onboarding\?probe=1/.test(app03) && /fetch\("\/api\/onboarding"\)/.test(app03),
+      "开机判断那趟不带 probe、真弹出来那趟带 probe=1，两种调用都得在");
     const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
     assert(/id="onb-steps"/.test(html) && /id="onb-body"/.test(html) && /\.onb-steps\s*\{/.test(html), "index.html 缺向导壳子或步骤条样式");
     const app06 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-06.js"), "utf8");

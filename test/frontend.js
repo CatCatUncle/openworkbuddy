@@ -1089,6 +1089,38 @@ const ENGPICK_CHECKS = `
   ok("换回内置引擎：说明卡的壳脱掉了", !menu.classList.contains("eng") && !menu.querySelector(".ep-head"));
   ok("模型又变回一排能点的了", menu.querySelectorAll(".mi").length >= 3, String(menu.querySelectorAll(".mi").length));
 
+  // ---- 没填 Key 的不进这张菜单 ----
+  // 用户原话：「模型只给我展示我设置了的模型啊」。出厂 config 预置着十来条厂商模板一把 Key 都没有，
+  // 混在这儿点下去必然 401——那不是可选项，是待办事项
+  const MODELS0 = settingsCache.models;
+  settingsCache.models = [
+    { name: "deepseek", model: "deepseek-chat", api_key: "x", has_key: true },
+    { name: "本机 Ollama", model: "qwen3", api_key: "", has_key: false, base_url: "http://localhost:11434/v1" },
+    { name: "火山方舟", model: "doubao", api_key: "", has_key: false, base_url: "https://ark.cn-beijing.volces.com/api/v3" },
+    { name: "OpenRouter", model: "gpt-5", api_key: "", has_key: false, base_url: "https://openrouter.ai/api/v1" },
+  ];
+  renderModelMenu();
+  const rows = [...menu.querySelectorAll(".mi[data-name]")].map((r) => r.dataset.name);
+  ok("填了 Key 的和本机服务留下，没填 Key 的两条不列出来", rows.join("|") === "deepseek|本机 Ollama", rows.join("|"));
+  ok("本机服务不要 Key 也算能用（别把 Ollama 一起误伤了）", rows.includes("本机 Ollama"));
+  ok("再没有「⚠未填Key」这种行——它本来就不该是一条可选项", !/未填Key/.test(menu.innerHTML));
+  const note = menu.querySelector(".mi-note");
+  ok("末尾留一行交代那 2 条去哪了，且它不是可点的 .mi", note && /还有 2 个模型没填 Key/.test(note.textContent) && !note.classList.contains("mi"), note && note.textContent);
+  ok("说明那行会换行、不跟着 hover 变色（真样式）", getComputedStyle(note).whiteSpace === "normal", getComputedStyle(note).whiteSpace);
+  // 负向控制：把两条的 has_key 翻成 true，它们必须立刻回到列表里，说明过滤的是 Key 不是别的
+  settingsCache.models = settingsCache.models.map((m) => ({ ...m, has_key: true, api_key: "x" }));
+  renderModelMenu();
+  ok("反向对照：只把 Key 补上，四条全部回到菜单里，尾巴那行说明也消失",
+     [...menu.querySelectorAll(".mi[data-name]")].length === 4 && !menu.querySelector(".mi-note"));
+  // 一把 Key 都没有：不能给一张只剩「跟随全局默认」的空菜单，得说人话
+  settingsCache.models = [{ name: "火山方舟", model: "doubao", api_key: "", has_key: false, base_url: "https://ark.cn-beijing.volces.com/api/v3" }];
+  renderModelMenu();
+  ok("一条能用的都没有：不给空菜单，直接说去下面加一个",
+     !menu.querySelector(".mi[data-name]") && /一个填了 Key 的模型都还没有/.test(menu.querySelector(".mi-note").textContent)
+     && !!menu.querySelector('.mi[data-act="manage"]'));
+  settingsCache.models = MODELS0;
+  renderModelMenu();
+
   // 选择器按钮：本机引擎在跑时得一眼看出来「这次不花钱」，光看模型名跟 API 模型长得一样
   const btn = document.getElementById("model-btn");
   updateModelLabel();
@@ -2511,12 +2543,14 @@ const ONB_STUBS = `
               { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "" }],
     engine: "builtin", search: { provider: "jina", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
   let ONB_POST_OK = true, ENGINE_TEST_OK = true, SEARCH_TEST_OK = true, DONE_OK = true, SETTINGS_OK = true;
+  const GETS = []; window.__GETS = GETS;
   async function saveSettings(patch) { POSTS.push(["settings", patch]); return SETTINGS_OK; }
   window.fetch = async (url, opt) => {
     const method = (opt && opt.method) || "GET";
     const body = opt && opt.body ? JSON.parse(opt.body) : null;
     const j = (o) => ({ json: async () => o });
-    if (url === "/api/onboarding" && method === "GET") return j(JSON.parse(JSON.stringify(ST)));
+    // 带不带 ?probe=1 都是同一张体检表：probe 只决定服务端要不要去探本机 CLI，前端拿到的字段一样
+    if (url.split("?")[0] === "/api/onboarding" && method === "GET") { GETS.push(url); return j(JSON.parse(JSON.stringify(ST))); }
     if (url === "/api/onboarding") { POSTS.push(["onboarding", body]); if (!ONB_POST_OK) return j({ ok: false, error: "这个 Key 上游不认（HTTP 401）" });
       ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: body.model, model: "deepseek-chat" } }; return j({ ok: true, active_model: body.model }); }
     if (url === "/api/engines/test") { POSTS.push(["engine-test", body]); return j(ENGINE_TEST_OK ? { ok: true, reply: "好" } : { ok: false, why: "没登录", hint: "先在终端跑 codex login" }); }
@@ -2638,6 +2672,31 @@ const ONB_CHECKS = `
   await maybeOnboard(); await tick();
   ok("走完过但大脑掉了（Key 被删）：还是要弹", mask.classList.contains("show") && steps.querySelector(".onb-step.cur").textContent.includes("大模型"));
   closeOnboarding();
+
+  // ---- 大脑接上了就不再自动弹（不管向导走没走完）----
+  // 用户原话：「设置过了不要一直在开头一直弹窗提示啊」。以前的条件是「大脑在 且 走完过」，
+  // 可"第一步填完 Key 就跳过"的人 done_at 永远写不上，于是每次开机都被再拦一次
+  onbSkipMem = false; try { sessionStorage.removeItem("wb_onb_skipped"); } catch {}
+  ST = { ...ST, seen: false, needs_setup: false, can_finish: true, brain: { ok: true, via: "api", name: "DeepSeek", model: "deepseek-chat" } };
+  await maybeOnboard(); await tick();
+  ok("大脑在、向导没走完、连本窗口标记都清了：照样不弹", !mask.classList.contains("show"));
+  ST = { ...ST, needs_setup: true, brain: { ok: false, via: "api", name: "", model: "" } };
+  await maybeOnboard(); await tick();
+  ok("反向对照：同一张体检表只把大脑翻回没接上，立刻就弹", mask.classList.contains("show"));
+  closeOnboarding();
+
+  // 开机那一趟只是判断"要不要弹"，不该让服务端去跑 which + --version；真弹出来才带 probe
+  onbSkipMem = false; try { sessionStorage.removeItem("wb_onb_skipped"); } catch {}
+  ST = { ...ST, seen: false, needs_setup: false, brain: { ok: true, via: "api", name: "DeepSeek", model: "deepseek-chat" } };
+  window.__GETS.length = 0;
+  await maybeOnboard(); await tick();
+  ok("不弹的那一趟：只拉体检表，不带 probe（省掉一次本机 CLI 探测）",
+     window.__GETS.length === 1 && !window.__GETS[0].includes("probe"), window.__GETS.join("|"));
+  window.__GETS.length = 0;
+  await openOnboarding(); await tick();
+  ok("真要弹出来这一趟：带 probe=1，本机 CLI 列表才有得填",
+     window.__GETS.some((u) => u.includes("probe=1")), window.__GETS.join("|"));
+  closeOnboarding();
   ST = { ...ST, needs_setup: false, brain: { ok: true, via: "engine", name: "codex", model: "" } };
   await openOnboarding(); await tick();
   ok("手动重开：弹出且第一步显示「已接上」+ 下一步", mask.classList.contains("show") && q("#onb-brain-ok") && q("#onb-go").textContent === "下一步" && q("#onb-brain-form").hidden);
@@ -2695,9 +2754,12 @@ const ONB_CHECKS = `
      q("#onb-skip-step") && q("#onb-skip-step").textContent === "先跳过" && q("#onb-go").textContent === "开始使用",
      q("#onb-skip-step") && q("#onb-skip-step").textContent);
   POSTS.length = 0;
-  q("#onb-skip-step").click(); await tick();
-  ok("完成页点「先跳过」：关向导、本窗口记一次、不往服务端 POST done",
-     !mask.classList.contains("show") && onbSkipFlag() === true && !POSTS.some(([k]) => k === "done"));
+  q("#onb-skip-step").click(); await tick(); await tick();
+  // 用户原话：「设置过了不要一直在开头一直弹窗提示啊」。
+  // 「Key 填好了、后面几步不想配、直接跳过」是最常见的一条路，以前它只在 sessionStorage 里记一笔，
+  // 关掉应用就没了——于是每次开机都被再拦一遍。现在只要大脑已经接上，跳过就跟走完一样落盘
+  ok("完成页点「先跳过」：大脑已接上 → 跟走完一样往服务端记一笔 done，下次开机不再拦",
+     !mask.classList.contains("show") && onbSkipFlag() === true && POSTS.some(([k]) => k === "done"));
 
   // ---- Escape 也得管得着这块遮罩（它自己没有 ✕） ----
   forget();
