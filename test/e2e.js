@@ -6732,12 +6732,19 @@ function testReadmeFrontGate() {
   const whyEn = (en.split(/^## Why this one\s*$/m)[1] || "").split(/^## /m)[0];
   for (const kw of ["Files, not chat logs", "Any model", "one Markdown file"]) assert(whyEn.includes(kw), "英文「Why this one」缺：" + kw);
   // 最新动态：日期真实
-  const gitDays = new Set(require("child_process").execSync("git log --date=format:%m-%d --format=%ad", { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean));
+  const git = (a) => require("child_process").execSync(a, { cwd: root, encoding: "utf8" });
+  // 浅克隆里 git log 只剩 HEAD 那一天，拿它当底本核对，每条动态都会被判成假的，
+  // 报出来还是「09-11 那天没有提交」——看日志的人会去翻 README，而错在 checkout 的默认值。
+  // CI 上靠 releasePipelineDrift 钉死 fetch-depth: 0；这里只兜别人手动浅克隆的情况：
+  // 明说这条没验，条数 / 倒序 / 字数照验，不假装绿。
+  const shallow = git("git rev-parse --is-shallow-repository").trim() === "true";
+  if (shallow) console.log("  ⚠️  浅克隆仓库，「最新动态」的日期真实性这条跳过了（git log 只有 HEAD 那一天）");
+  const gitDays = new Set(git("git log --date=format:%m-%d --format=%ad").split("\n").filter(Boolean));
   const news = (zh.split(/^## 最新动态\s*$/m)[1] || "").split(/^## /m)[0];
   const items = [...news.matchAll(/^- \*\*(\d\d-\d\d)\*\* (.+)$/gm)];
   assert(items.length >= 6, "「最新动态」至少 6 条带日期的条目，现在 " + items.length);
   for (const [, d, txt] of items) {
-    assert(gitDays.has(d), "「最新动态」写了 " + d + "，git 里那天没有提交");
+    assert(shallow || gitDays.has(d), "「最新动态」写了 " + d + "，git 里那天没有提交");
     assert(txt.trim().length >= 8, "「最新动态」有条目太短：" + txt);
   }
   const dates = items.map((m) => m[1]);
@@ -7085,6 +7092,12 @@ function releasePipelineDrift(src) {
   if (!tst.trim()) miss.push("没有 .github/workflows/test.yml：PR 和 main 没有任何 CI");
   if (!/pull_request/.test(tst)) miss.push("test.yml 不管 pull_request：外部 PR 无人把关");
   if (!/macos-latest/.test(tst)) miss.push("test.yml 没在 macOS 上跑全套：e2e 要开真 electron 窗口，只有那台能全覆盖");
+  // —— checkout 默认只克一个 commit。README「最新动态」的日期核对拿 git log 当底本，
+  //    浅克隆下每条动态都会被判成「git 里那天没有提交」：报错指着 README，错却在工作流。
+  //    钉死这个值，省得哪天有人把 with: 那两行当冗余删掉。
+  const deep = /checkout@v4\s*\n\s*with:\s*\n\s*fetch-depth:\s*0/;
+  if (!deep.test(tst)) miss.push("test.yml 的 checkout 没写 fetch-depth: 0：默认浅克隆，README「最新动态」的日期核对会把每条都判成假的");
+  if (!deep.test(rel)) miss.push("release.yml 的 test job checkout 没写 fetch-depth: 0：发版前那趟 npm test 会栽在同一处");
 
   // —— CI 跑的套件必须是 test/all.js 里的全集。加了新套件却忘了加进 CI 命令行，
   //    它就永远不会在 CI 上跑；而本地 npm test 照样绿，人看不出来
@@ -7162,6 +7175,8 @@ function testReleasePipeline() {
     // 补丁没打上 → 「居然没红」——闸门失效的是对照本身。改成按位置挖，挖谁都行。
     ["新加的套件忘了补进 CI 名单", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/,[a-z0-9-]+(?=,)/, "") }],
     ["CI 名单里写了个不存在的套件", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/--only [a-z0-9-]+/, "--only meiyouzhegetaojian") }],
+    ["CI 的 checkout 退回默认浅克隆", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
+    ["发版那趟 checkout 退回默认浅克隆", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
     ["发版前不跑测试了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/needs: test\n/, "") }],
     ["版本号和 tag 的绑定被删了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/GITHUB_REF_NAME/g, "X") }],
     ["版本号核对忘了守 tag（手动跑必红）", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("if: startsWith(github.ref, 'refs/tags/')\n        shell: bash", "shell: bash") }],
