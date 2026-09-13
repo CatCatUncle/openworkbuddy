@@ -2056,24 +2056,66 @@ async function testMcpManagerLifecycle() {
 }
 
 // 默认技能清单：字段齐全、URL 拼得对、别混进非开源协议的条目
+
+/**
+ * 拉起一个子测试进程，并给它拴一根看门狗。
+ *
+ * 2026-09-13 的教训：`npm test` 第一次真正跑在 macOS 的 CI 机器上，前端那个 electron
+ * 子进程起来之后就再没回过话。spawnSync 不给 timeout 就是无限等——五次 CI 各烧了一个多
+ * 小时，直到人工取消；更难受的是日志里连「卡在哪一步」都看不到：spawnSync 把子进程的输出
+ * 全攒在内存里，它不返回就一个字节都拿不到，最后只剩收尾时那句
+ * 「Terminate orphan process: pid (30292) (Electron)」。
+ *
+ * 所以这里定三件事：
+ *   ① 给超时。卡住要在几分钟内变红，不是几小时——一个悄悄挂着的 job 比一个红 job 坏得多，
+ *      它既不给结论也不放人走。
+ *   ② 超时了也要把攒下来的半截输出打出来，最后那行「✓ …」就是卡死的位置。
+ *   ③ 用 SIGKILL 收尸：SIGTERM 对 electron 常常不灵，杀不干净就又留一个孤儿进程。
+ *
+ * 预算按本机实测的 5~10 倍给（前端 21 秒 / 后台 7 秒 / 部署 8 秒），CI 机器慢也够用，
+ * 真卡住时又比六个小时快两个数量级。
+ */
+function runChild(bin, args, opts) {
+  const { spawnSync } = require("child_process");
+  const { label, timeout, env } = opts;
+  const r = spawnSync(bin, args, {
+    encoding: "utf8",
+    timeout,
+    killSignal: "SIGKILL",
+    maxBuffer: 32 * 1024 * 1024, // 前端那份能吐一千多行，默认 1MB 顶不住
+    env: env || process.env,
+  });
+  const out = (r.stdout || "") + (r.stderr || "");
+  const tail = (n) => out.trim().split("\n").slice(-(n || 14)).join("\n");
+  if (r.error && r.error.code === "ETIMEDOUT") {
+    const done = out.split("\n").filter((l) => /^\s*[✓✅]/.test(l));
+    throw new Error(
+      `${label}卡死了：${Math.round(timeout / 1000)} 秒还没跑完（本机只要几十秒），已强杀。\n` +
+      `最后跑完的一步：${done.length ? done[done.length - 1].trim() : "一行都没输出——多半卡在进程启动或第一个窗口创建上"}\n` +
+      tail(12)
+    );
+  }
+  if (r.error) throw new Error(`${label}起不来：${r.error.message}\n${tail(12)}`);
+  return { status: r.status, out, tail };
+}
+
 // 前端的 SVG 信息图渲染要真浏览器才测得准（清洗靠的是 DOM 解析、作用域靠的是真 CSS 匹配），
 // 所以单独开一个 electron 子进程跑 test/frontend.js。纯服务端部署没装 electron 就跳过，不算失败。
 async function testFrontendSvgFigures() {
-  const { spawnSync } = require("child_process");
   let electronBin;
   try { electronBin = require("electron"); } catch { }
   if (typeof electronBin !== "string" || !fs.existsSync(electronBin)) {
     console.log("⏭️  前端：未安装 electron，跳过内联 SVG 信息图测试");
     return;
   }
-  const r = spawnSync(electronBin, [path.join(__dirname, "frontend.js")], {
-    encoding: "utf8",
+  const { status, out, tail } = runChild(electronBin, [path.join(__dirname, "frontend.js")], {
+    label: "前端 SVG 测试",
+    timeout: 300000,
     env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "1" },
   });
-  const out = (r.stdout || "") + (r.stderr || "");
-  if (r.status !== 0) throw new Error("前端 SVG 测试未通过：\n" + out.trim().split("\n").slice(-12).join("\n"));
+  if (status !== 0) throw new Error("前端 SVG 测试未通过：\n" + tail(12));
   const lines = out.split("\n").filter((l) => l.startsWith("✅ 前端"));
-  if (!lines.length) throw new Error("前端测试没有报告任何一组结果：\n" + out.trim().split("\n").slice(-12).join("\n"));
+  if (!lines.length) throw new Error("前端测试没有报告任何一组结果：\n" + tail(12));
   for (const l of lines) console.log(l);
 }
 
@@ -2086,12 +2128,12 @@ async function testFrontendSvgFigures() {
  * 那个要几分钟，不塞进 e2e。
  */
 async function testDockerDeploy() {
-  const { spawnSync } = require("child_process");
-  const r = spawnSync(process.execPath, [path.join(__dirname, "deploy.js")], { encoding: "utf8" });
-  const out = (r.stdout || "") + (r.stderr || "");
-  if (r.status !== 0) throw new Error("Docker 部署测试未通过：\n" + out.trim().split("\n").slice(-14).join("\n"));
+  const { status, out, tail } = runChild(process.execPath, [path.join(__dirname, "deploy.js")], {
+    label: "Docker 部署测试", timeout: 180000,
+  });
+  if (status !== 0) throw new Error("Docker 部署测试未通过：\n" + tail());
   const line = out.split("\n").find((l) => l.startsWith("✅ Docker 部署"));
-  if (!line) throw new Error("Docker 部署测试没有报告结果：\n" + out.trim().split("\n").slice(-14).join("\n"));
+  if (!line) throw new Error("Docker 部署测试没有报告结果：\n" + tail());
   console.log(line);
 }
 
@@ -2104,32 +2146,30 @@ async function testDockerDeploy() {
  * 一个没人跑的测试比没有测试更糟，它让人以为那块是有人看着的。
  */
 async function testNodeSuite(file, label) {
-  const { spawnSync } = require("child_process");
-  const r = spawnSync(process.execPath, [path.join(__dirname, file)], { encoding: "utf8" });
-  const out = (r.stdout || "") + (r.stderr || "");
-  const tail = () => out.trim().split("\n").slice(-14).join("\n");
-  if (r.status !== 0) throw new Error(`${label}未通过：\n${tail()}`);
+  const { status, out, tail } = runChild(process.execPath, [path.join(__dirname, file)], {
+    label, timeout: 300000,
+  });
+  if (status !== 0) throw new Error(`${label}未通过：\n${tail()}`);
   const line = out.split("\n").find((l) => l.startsWith("全部通过："));
   if (!line) throw new Error(`${label}没有报告结果：\n${tail()}`);
   console.log(`✅ ${label}：${line.replace("全部通过：", "").trim()}`);
 }
 
 async function testAdminConsoleUI() {
-  const { spawnSync } = require("child_process");
   let electronBin;
   try { electronBin = require("electron"); } catch { }
   if (typeof electronBin !== "string" || !fs.existsSync(electronBin)) {
     console.log("⏭️  企业管理后台：未安装 electron，跳过");
     return;
   }
-  const r = spawnSync(electronBin, [path.join(__dirname, "admin-ui.js")], {
-    encoding: "utf8",
+  const { status, out, tail } = runChild(electronBin, [path.join(__dirname, "admin-ui.js")], {
+    label: "企业管理后台测试",
+    timeout: 240000,
     env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "1" },
   });
-  const out = (r.stdout || "") + (r.stderr || "");
-  if (r.status !== 0) throw new Error("企业管理后台测试未通过：\n" + out.trim().split("\n").slice(-12).join("\n"));
+  if (status !== 0) throw new Error("企业管理后台测试未通过：\n" + tail(12));
   const line = out.split("\n").find((l) => l.startsWith("✅ 企业管理后台"));
-  if (!line) throw new Error("企业后台测试没有报告结果：\n" + out.trim().split("\n").slice(-12).join("\n"));
+  if (!line) throw new Error("企业后台测试没有报告结果：\n" + tail(12));
   console.log(line);
 }
 

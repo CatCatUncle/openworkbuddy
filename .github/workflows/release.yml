@@ -20,6 +20,7 @@ jobs:
   # 硬塞进 matrix 会把 Windows 那份包直接打没——而那份恰恰是开发机造不出来、最需要发的。
   test:
     runs-on: macos-latest
+    timeout-minutes: 40 # 卡住要红，别挂满 6 小时把整次发版拖死（同 test.yml）
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
