@@ -350,7 +350,9 @@ console.log("\n⑨ cli.js 接线：顺序和边界");
   has(/-f \$\{ref\}：找不到这个文件/, "-f 指的文件找不到时说的是人话");
   has(/process\.exit\(2\)/, "★-f 找不到就当场停★ 让模型对着一个不存在的文件名瞎猜，钱花了事没办");
   has(/runOnce\(runtime, attach\.withNote\(oneShot, attachNames\), opts\.mode\)/, "单发那趟真把标记挂上去了");
-  has(/runOnce\(runtime, attach\.withNote\(body, pending\.splice\(0\)\), opts\.mode\)/,
+  // 尾巴留成 [,)]：runOnce 后面还会加参数（比如「这趟是不是交互模式」），
+  // 钉死右括号的话，加一个无关参数就会把这条假红一次
+  has(/runOnce\(runtime, attach\.withNote\(body, pending\.splice\(0\)\), opts\.mode[,)]/,
     "★交互模式发出去时把攒着的文件一次性挂上并清空★ 不清空的话下一句话会再挂一遍同样的文件");
 
   has(/const pending = \[\];/, "交互模式有个「带上了还没发出去」的清单");
