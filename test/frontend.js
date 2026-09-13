@@ -4346,12 +4346,28 @@ const SCROLLGUIDE_CHECKS = `
     + " 离底=" + (sc.scrollHeight - sc.scrollTop - sc.clientHeight)
     + " to-bottom[" + tb.className + "]=" + getComputedStyle(tb).display
     + " to-top[" + tt.className + "]=" + getComputedStyle(tt).display;
-  // 改完内容高度，得等这一帧的布局真落地，再去贴底。
-  // 本机紧接着读 scrollHeight 就是新值，CI 的离屏窗口（没 GPU、软件合成）上未必：
-  // 2026-09-13 那次 macOS CI 上，按旧高度算出来的 scrollTop 把视口停在了半空，
-  // 于是「短对话」这一屏冒出了「回到最前」。等一帧再贴底，两边拿到的就是同一个布局。
-  const settle = async () => { await sleep(30); void sc.offsetHeight; };
-  const bottom = async (h) => { col.style.height = h; await settle(); sc.scrollTop = sc.scrollHeight; fire(); };
+  // 改完内容高度，得等布局真认了新高度，再去贴底。
+  // 本机改完立刻读 scrollHeight 就是新值，CI 的离屏窗口（没 GPU、软件合成）上未必。
+  // 2026-09-13 的 macOS CI 连着栽在这儿两次：按旧高度算出来的 scrollTop 把视口停在半空，
+  // 「短对话」那一屏于是冒出了「回到最前」——第二次翻车时打出来的实测是
+  // col=3000 scrollHeight=3000，也就是 style.height 已经写成 320px 了，布局还停在 3000。
+  // 第一版的药方是「等 30ms 再读」，这次证明了它只是把概率压低，没消灭：
+  // 定时等的是时间，要等的是布局。所以改成盯着实测高度等——等到了就走，
+  // 等不到就明说是布局没跟上，别再把账算到滚动引导头上。
+  // #chat-col 在这份 stub 里不带 .chat-col 类，全局又是 border-box 且 padding 归零，
+  // 所以实测高度跟 style 里写的数是严格相等的，可以直接对上。
+  const LAY_TRIES = 100, LAY_GAP = 20; // 上限 2 秒。等到就走，这个数只在真卡住时才烧到
+  const waitLayout = async (px) => {
+    for (let i = 0; i < LAY_TRIES; i++) {
+      void sc.offsetHeight; // 强制一次同步布局，别等 rAF——离屏窗口里它可能根本不来
+      if (Math.round(col.getBoundingClientRect().height) === px) return;
+      await sleep(LAY_GAP);
+    }
+    throw new Error("等了 " + (LAY_TRIES * LAY_GAP / 1000) + " 秒，#chat-col 实测高度还是 "
+      + col.getBoundingClientRect().height + "，没跟上设定的 " + px
+      + "px：是布局没落地，不是滚动引导判断错了");
+  };
+  const bottom = async (h) => { col.style.height = h; await waitLayout(parseInt(h, 10)); sc.scrollTop = sc.scrollHeight; fire(); };
 
   // 短对话（不够一屏半）：贴底时两个按钮都不出现
   await bottom("320px");
