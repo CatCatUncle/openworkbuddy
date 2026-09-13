@@ -22,7 +22,10 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 40 # 卡住要红，别挂满 6 小时把整次发版拖死（同 test.yml）
     steps:
+      # 要完整 git log 的理由同 test.yml：npm test 里有一道闸门拿 git log 核对 README 的日期
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22

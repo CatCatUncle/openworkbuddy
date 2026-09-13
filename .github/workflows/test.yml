@@ -33,7 +33,13 @@ jobs:
     # 测试本身本机 137 秒、CI 上几分钟；40 分钟还没完就是卡了，早点红早点查。
     timeout-minutes: 40
     steps:
+      # 要完整的 git log。README「最新动态」那道闸门拿 git log 当底本核对日期，
+      # actions/checkout 默认 fetch-depth: 1 只克一个 commit，CI 上就只剩 HEAD 那一天，
+      # 每条动态都会被判成「git 里那天没有提交」——2026-09-13 真这么红过一次，
+      # 报错指向 README，实际错在这一行。releasePipelineDrift 里钉死了这个值。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
