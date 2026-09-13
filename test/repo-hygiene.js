@@ -226,11 +226,17 @@ if (!HAS_GIT) {
     `被 git 忽略的只剩 ${deps} 处，且都是 package.json 里写明的依赖`,
     bad.join("\n      ") + "\n      （本机跑得通，别人 clone 下来这个文件根本不存在）");
 
-  // 反向对照：拿一个确定被忽略的路径去问，必须答「被忽略」
-  const probe = ignoredOf(["node_modules", "skills/brand-guidelines", "server.js"]);
-  ok(probe && probe.has("node_modules") && probe.has("skills/brand-guidelines") && !probe.has("server.js"),
+  // 反向对照：拿一个确定被忽略的路径去问，必须答「被忽略」。
+  // 探针一定要带上文件名，不能只写目录名——.gitignore 里是 `skills/brand-guidelines/`
+  // 这种只匹配目录的写法，git 得先确认磁盘上这个路径真是个目录才认。本机有这些目录，
+  // 所以写目录名也绿；CI 上没有（它本来就不随包发），git 就答「不忽略」，于是这条对照
+  // 在 2026-09-13 的 CI 上红了——红的是对照本身，不是被测的东西。
+  // 带文件名走的是「父目录被忽略」那条路，跟磁盘上有没有这个文件无关，两边答案一致。
+  const ghost = "skills/" + ([...ignoredSkills()][0] || "brand-guidelines") + "/SKILL.md";
+  const probe = ignoredOf(["node_modules/whatever/x.js", ghost, "server.js"]);
+  ok(probe && probe.has("node_modules/whatever/x.js") && probe.has(ghost) && !probe.has("server.js"),
     "反向对照：git check-ignore 认得出谁被忽略、谁没有",
-    probe ? [...probe].join(" ") : "问不到");
+    probe ? "它只认下了：" + ([...probe].join(" ") || "（一个都没认）") : "问不到");
   }
 }
 

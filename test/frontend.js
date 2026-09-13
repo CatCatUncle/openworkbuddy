@@ -4276,13 +4276,27 @@ const SCROLLGUIDE_CHECKS = `
   const sc = document.getElementById("chat-scroll"), tb = document.getElementById("to-bottom"), tt = document.getElementById("to-top");
   const fire = () => sc.dispatchEvent(new Event("scroll"));
 
-  // 短对话（不够一屏半）：贴底时两个按钮都不出现
   const col = document.getElementById("chat-col");
-  col.style.height = "320px"; sc.scrollTop = sc.scrollHeight; fire();
-  ok("短对话贴底时两个引导都不出现", !shown("to-bottom") && !shown("to-top"));
+  const dbg = () => "col=" + col.getBoundingClientRect().height + " scrollHeight=" + sc.scrollHeight
+    + " scrollTop=" + sc.scrollTop + " clientHeight=" + sc.clientHeight
+    + " 离底=" + (sc.scrollHeight - sc.scrollTop - sc.clientHeight)
+    + " to-bottom[" + tb.className + "]=" + getComputedStyle(tb).display
+    + " to-top[" + tt.className + "]=" + getComputedStyle(tt).display;
+  // 改完内容高度，得等这一帧的布局真落地，再去贴底。
+  // 本机紧接着读 scrollHeight 就是新值，CI 的离屏窗口（没 GPU、软件合成）上未必：
+  // 2026-09-13 那次 macOS CI 上，按旧高度算出来的 scrollTop 把视口停在了半空，
+  // 于是「短对话」这一屏冒出了「回到最前」。等一帧再贴底，两边拿到的就是同一个布局。
+  const settle = async () => { await sleep(30); void sc.offsetHeight; };
+  const bottom = async (h) => { col.style.height = h; await settle(); sc.scrollTop = sc.scrollHeight; fire(); };
+
+  // 短对话（不够一屏半）：贴底时两个按钮都不出现
+  await bottom("320px");
+  ok("短对话真贴到了底（这是下一条的前提，不先证明它，下一条绿了也不算数）",
+    sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80, dbg());
+  ok("短对话贴底时两个引导都不出现", !shown("to-bottom") && !shown("to-top"), dbg());
   // 长对话贴底：不用「回到最新」，但离顶远了要给「回到最前」（几十轮的对话想看开头不该手滚半天）
-  col.style.height = "3000px"; sc.scrollTop = sc.scrollHeight; fire();
-  ok("长对话贴底只出「回到最前」", !shown("to-bottom") && shown("to-top"));
+  await bottom("3000px");
+  ok("长对话贴底只出「回到最前」", !shown("to-bottom") && shown("to-top"), dbg());
   // 往上翻一点（离顶不远）：只出「回到最新」，不出「回到最前」——刚滚一点就冒按钮只会晃眼
   sc.scrollTop = 300; fire();
   ok("离顶不远只出「回到最新」", shown("to-bottom") && !shown("to-top"), "to-bottom=" + shown("to-bottom") + " to-top=" + shown("to-top"));
