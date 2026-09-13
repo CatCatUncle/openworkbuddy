@@ -266,6 +266,7 @@ const NAV = [
       { id: "basic", icon: "settings", title: "基础设置", sub: "组织名和成员怎么进来" },
       { id: "net", icon: "globe", title: "网络设置", sub: "抓网页时放行哪些域名" },
       { id: "meter", icon: "zap", title: "计量设置", sub: "开不开用量闸门、每人每月发多少" },
+      { id: "models", icon: "sparkles", title: "模型与 Key", sub: "这台服务器用哪些模型、哪把 Key", platform: true },
       { id: "orgs", icon: "building", title: "组织管理", sub: "新建组织、给别的组织配套餐", platform: true },
       { id: "audit", icon: "clock", title: "操作审计", sub: "谁在什么时候改了什么" },
     ],
@@ -1100,6 +1101,156 @@ PAGES.audit = {
         table([{ t: "时间" }, { t: "操作人" }, { t: "动作" }, { t: "对象" }, { t: "详情" }], rows)
       )}
     </div>`;
+  },
+};
+
+/* ============ 模型与 Key ============ */
+/**
+ * 这页配的是**这台服务器**的模型渠道和密钥，不是某一个组织的——所以标了 platform: true，
+ * 跟「组织管理」一个档，只有平台管理员看得见。
+ *
+ * 为什么后台要再放一处（工作台 → 设置 → 模型 里本来就能填）：一把 Key 都没填的时候，
+ * 这台服务器一句话都发不出去；而在企业部署里，管这件事的人打开的是这个后台，
+ * 他不一定会绕到工作台去。用户原话：「这个 apikey 在后台要能设置啊」。
+ *
+ * 两处的分工照「运维 / 选型」划：
+ *   这页管运维——哪把 Key、默认走哪条、主渠道挂了换谁。一屏看完，一次存完。
+ *   加渠道、加模型、挑型号还在工作台——那要现从渠道拉模型列表、要看每条的战绩，
+ *   搬进后台表格只会两边都做不好。所以这页末尾留一句指过去，不复制第二套 CRUD。
+ */
+/** 跟工作台那边同一条判据：Ollama 这类本机服务不要 Key，别把它归进「还没填」等着人去填 */
+function chanIdle(p) {
+  if (p.kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(String(p.base_url || ""))) return false;
+  // has_key 是读接口给非平台管理员回的（真 Key 被掩成星号），只有它是可信的
+  return p.has_key === false || !String(p.api_key || "").trim();
+}
+PAGES.models = {
+  load: async () => {
+    const [s, cat] = await Promise.all([
+      api("/api/settings"),
+      // 目录只拿来给类型中文名和「去拿 Key」的链接。拉不到就退回只显示 kind 本身，别把整页拖垮
+      api("/api/model-catalog").catch(() => ({ kinds: [] })),
+    ]);
+    return { s, kinds: (cat && cat.kinds) || [] };
+  },
+  render: (d) => {
+    const s = d.s;
+    // 能不能改，看 /api/settings 自己回的 platform_owner——跟保存时后端用的是同一个判据，
+    // 不会出现「界面画了输入框、一存就 403」
+    const rw = !!s.platform_owner && !RO;
+    const provs = s.providers || [];
+    const models = s.models || [];
+    const medias = s.media_models || [];
+    const kindOf = (k) => d.kinds.find((x) => x.kind === k) || null;
+    const kindLabel = (k) => (kindOf(k) || {}).label || k || "自定义";
+    // 模型这一层的 Key 是渠道压平下来的（chat-models 每次规整都会写一遍），所以判据跟渠道同一条
+    const modelIdle = (m) => chanIdle({ kind: "", base_url: m.base_url, has_key: m.has_key, api_key: m.api_key });
+
+    const provRow = (p) => {
+      const chat = models.filter((m) => m.channel === p.id).length;
+      const media = medias.filter((m) => m.provider === p.id).length;
+      const label = kindLabel(p.kind);
+      // 预置渠道的名字本来就是这家的中文名，再把同一句话印一遍读起来就是同一个词写了两遍
+      const sub = [String(p.name || "").trim() === String(label).trim() ? "" : label, p.base_url].filter(Boolean).join(" · ");
+      const k = kindOf(p.kind);
+      const link = k && k.key_url
+        ? `<a class="ui-btn ui-btn--link" href="${esc(k.key_url)}" target="_blank" rel="noopener">去拿 Key</a>` : "";
+      return [
+        `<div><div>${esc(p.name)}</div>${sub ? `<div class="fd ad-mono" style="margin-top:2px">${esc(sub)}</div>` : ""}</div>`,
+        rw
+          ? `<div class="ad-row"><input class="ui-input ad-key" data-pk="${esc(p.id)}" type="password" autocomplete="off"
+               placeholder="${p.kind === "ollama" ? "本机跑的，不用填" : "粘贴这家服务商的 API Key"}"
+               value="${esc(p.api_key || "")}" style="flex:1;min-width:180px">
+             <button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-peek="${esc(p.id)}">显示</button>${link}</div>`
+          : `<span class="fd">${p.has_key ? "已填（原文只有平台管理员看得到）" : "还空着"}</span>`,
+        `${chanIdle(p) ? badge("还没填 Key", "outline") : badge("已填 Key", "success")}
+         <div class="fd" style="margin-top:4px">${chat} 个对话模型${media ? ` · ${media} 个媒体模型` : ""}</div>`,
+      ];
+    };
+    // 填好的排前面。这页是「来填 Key 的」，所以空着的照样全列出来——
+    // 把它们收起来，就又变成用户抱怨过的那句「设置里面都没有填 apikey 的地方啊」
+    const rows = [...provs.filter((p) => !chanIdle(p)), ...provs.filter((p) => chanIdle(p))].map(provRow);
+
+    const opts = (cur, none) =>
+      (none ? `<option value=""${cur ? "" : " selected"}>${esc(none)}</option>` : "") +
+      models.map((m) => `<option value="${esc(m.name)}"${m.name === cur ? " selected" : ""}>${esc(m.name)}（${esc(m.model)}）${modelIdle(m) ? " · 还没填 Key" : ""}</option>`).join("");
+    const cur = models.find((m) => m.name === s.active_model);
+    const noKeyNow = cur && modelIdle(cur);
+
+    return `<div class="ad-wrap">
+      ${note("这几项配的是<b>整台服务器</b>，不是单个组织——一个部署一套 Key，所有组织的任务都花它。改完立刻生效，<b>已经在跑</b>的任务用的还是旧的那把。")}
+      ${!models.length ? note("这台服务器<b>一个对话模型都还没有</b>，谁来了都发不出话。先去工作台 → 设置 → 模型 里加一条，再回来填 Key。", true)
+        : noKeyNow ? note(`默认模型「<b>${esc(s.active_model)}</b>」所在的渠道<b>还没填 Key</b>，现在发任务会当场失败。在下面那张表里把它填上。`, true) : ""}
+
+      ${cardT(headRow(secT("渠道与 Key", "一个渠道一把 Key，挂在它底下的对话模型和媒体模型都共用这一把——换 Key 只改这一处。")),
+        table([{ t: "渠道" }, { t: "API Key" }, { t: "状态" }], rows))}
+
+      ${!models.length ? "" : card(`${secT("默认走哪条")}
+        <div style="margin-top:14px">
+          ${field("默认模型", "成员没有单独指定的时候用它。每个人还可以在输入框右下角临时换一条，只影响他自己那一次。",
+            `<select class="ui-input ui-select" data-sel="active_model"${rw ? "" : " disabled"} style="min-width:260px">${opts(s.active_model, "")}</select>`)}
+          ${field("主渠道挂了换谁", "默认不换。<b>绝不静默降级</b>：只有你在这儿亲手选了一条，换道才会发生，而且会在对话里大声说出来——不然账单涨了都不知道是哪条在跑。",
+            `<select class="ui-input ui-select" data-sel="failover_model"${rw ? "" : " disabled"} style="min-width:260px">${opts((s.agent || {}).failover_model || "", "不换道（默认）")}</select>`)}
+        </div>`)}
+
+      ${cardT(headRow(secT("这台服务器上的模型", "加模型、改型号、看每条的战绩在工作台 → 设置 → 模型。这儿只列出来核对。")),
+        table([{ t: "名字" }, { t: "模型 id" }, { t: "挂在哪个渠道" }, { t: "状态" }],
+          models.map((m) => {
+            const p = provs.find((x) => x.id === m.channel);
+            return [
+              esc(m.name),
+              `<span class="ad-mono">${esc(m.model)}</span>`,
+              p ? esc(p.name) : `<span class="fd">（渠道已删）</span>`,
+              [m.name === s.active_model ? badge("默认", "secondary") : "", modelIdle(m) ? badge("还没填 Key", "outline") : ""].filter(Boolean).join(" ") || "—",
+            ];
+          })))}
+
+      ${rw ? saveBar() : note("这页要<b>平台管理员</b>（默认组织的管理员）才能改。Key 是整台服务器的账单凭证，不归单个组织管。", true)}
+    </div>`;
+  },
+  bind: (root, d) => {
+    // 填完 Key 想核一眼填的是不是那把。默认是 password：后台常常是开着投屏在讲的
+    const keys = new Map([...root.querySelectorAll(".ad-key")].map((i) => [i.dataset.pk, i]));
+    root.querySelectorAll("[data-peek]").forEach((b) => (b.onclick = () => {
+      const i = keys.get(b.dataset.peek);
+      if (!i) return;
+      const hidden = i.type === "password";
+      i.type = hidden ? "text" : "password";
+      b.textContent = hidden ? "隐藏" : "显示";
+    }));
+
+    const btn = root.querySelector("[data-save]");
+    const tip = root.querySelector("[data-dirty]");
+    if (!btn) return; // 只读那一版根本没有保存条
+    const sels = new Map([...root.querySelectorAll("[data-sel]")].map((x) => [x.dataset.sel, x]));
+    const readAll = () => {
+      // providers 是整表覆盖的：必须把没动过的那些原样送回去，只换 Key 那一格。
+      // 只送改动的那几条 = 其余渠道当场消失，连带挂在它们底下的模型全断线
+      const body = {
+        providers: (d.s.providers || []).map((p) => ({ ...p, api_key: keys.has(p.id) ? keys.get(p.id).value.trim() : p.api_key })),
+      };
+      if (sels.has("active_model")) body.active_model = sels.get("active_model").value;
+      if (sels.has("failover_model")) body.agent = { failover_model: sels.get("failover_model").value };
+      return body;
+    };
+    const base = JSON.stringify(readAll());
+    const check = () => {
+      const dirty = JSON.stringify(readAll()) !== base;
+      btn.disabled = !dirty;
+      tip.style.display = dirty ? "" : "none";
+    };
+    [...keys.values(), ...sels.values()].forEach((c) => { c.addEventListener("input", check); c.addEventListener("change", check); });
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await post("/api/settings", readAll());
+        toast("已保存，立刻生效");
+        route(true);
+      } catch (e) {
+        toast(e.message, true);
+        btn.disabled = false;
+      }
+    };
   },
 };
 
