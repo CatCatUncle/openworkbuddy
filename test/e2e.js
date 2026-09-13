@@ -9914,7 +9914,19 @@ async function testRunOwnership() {
   assert.ok(!/role === "admin"/.test(running),
     "/api/chat/running 还在用「是不是管理员」一刀切：那是跨组织的，同组织与否根本没看");
 
-  console.log("✅ 跑着的任务防插手：插队/代答/停止/续流四条都查归属（本人·同组织管理员·老会话放行，跨组织连管理员也拒），/api/chat 归属先于 SSE 头，running 按侧栏窄口径");
+  // 直调口（重跑一格不过模型）。它拿 sessionId 只为定产物落点，可 sess.dir 本身就是别人的
+  // 成果目录——不查归属的话，随便一个登录用户都能把自己生成的图写进别人的交付文件夹里
+  const direct = routeOf('app.post("/api/tool/run"', 1600);
+  const iOwn = direct.indexOf("sessionAllowed(user, sess)");
+  const iDir = direct.indexOf("sess.dir");
+  assert.ok(iOwn > 0, "POST /api/tool/run 没查会话归属 → 拿到别人的会话 id 就能往他的成果目录里写文件");
+  assert.ok(iDir > 0 && iOwn < iDir, "POST /api/tool/run 的归属检查排在用 sess.dir 之后了，等于没查");
+  // 白名单必须只有一份（agent.js 的 DIRECT_TOOLS）。路由自己去 require tools.executeTool 的话，
+  // 白名单就绕过去了——那条路能直接从 HTTP 扣动 run_shell
+  assert.ok(/runtime\.runTool\(/.test(direct), "POST /api/tool/run 没走 runtime.runTool");
+  assert.ok(!/executeTool\(/.test(direct), "★POST /api/tool/run 绕开 runtime 自己调了 executeTool★ 白名单就此形同虚设，HTTP 能直接扣动 run_shell");
+
+  console.log("✅ 跑着的任务防插手：插队/代答/停止/续流四条都查归属（本人·同组织管理员·老会话放行，跨组织连管理员也拒），/api/chat 归属先于 SSE 头，running 按侧栏窄口径，/api/tool/run 查归属且只走白名单");
 }
 
 /**

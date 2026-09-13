@@ -1159,7 +1159,16 @@ function modePrompt(mode) {
         isError: false,
       };
     }
-    return await executeTool(tc.name, tc.input, {
+    return await executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec }));
+  }
+
+  /**
+   * 一次工具执行要带的全套上下文。agent 循环和「不过模型、直接扣扳机」的直调口共用这一份——
+   * 各写各的早晚会漂：少传一个 media，generate_image 连模型都点不了名；
+   * 少传一个 actor，审批卡片就跑去问了别人。
+   */
+  function execOpts({ depth = 0, deadline, stopSignal, taskLabel, user, baseDir, sec }) {
+    return {
       knownTools: toolList(depth, "craft").map((t) => t.name), // 拼错工具名时用来给出最接近的真名
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
@@ -1173,7 +1182,7 @@ function modePrompt(mode) {
       actor: user, // 审批归谁：多人共用一台服务器时，别人不该看见、更不该替他点「允许」
       baseDir, // 相对路径读写、脚本 cwd、产物落点全在本对话的成果子目录
       memory: { user },
-    });
+    };
   }
 
 
@@ -2153,7 +2162,33 @@ function modePrompt(mode) {
     }
   }
 
-  return { runTask, getSkills, toolList };
+  /**
+   * 直调一个工具：不过模型、不进对话历史、不记 token 账。
+   *
+   * 「把这一格重画一遍」是个确定性动作：用户要的是同样的输入再来一次。走对话的话，
+   * 每点一次都得先烧一轮主模型的 token 把 prompt 复述给它听，而且模型有权改写那段话、
+   * 甚至顺手多干点别的——按下去的是「重画」，回来的是「差不多的东西」。这条路把参数
+   * 原样交给工具，一个字都不改。
+   *
+   * 白名单只有这四个，形状都是「给定输入 → 一个产物文件」的纯函数。写文件、跑脚本这些
+   * 不在里面：那些要的是模型的判断，不该做成一颗界面上能直接按的按钮。
+   */
+  async function runTool(name, input, { user, baseDir, taskLabel, sec, stopSignal } = {}) {
+    if (!DIRECT_TOOLS.includes(String(name || ""))) {
+      throw Object.assign(new Error(`「${name}」不支持直调。能直接跑的只有：${DIRECT_TOOLS.join("、")}`), { status: 400 });
+    }
+    // 不给 deadline：它在 executeTool 里只用来压缩审批的等待时间，而这四个工具一个闸门都不过。
+    // 真正的超时是工具自己那份（生图/配音最少给到 5 分钟），拿一个更短的期限去卡它只会误伤。
+    return await executeTool(String(name), input || {}, execOpts({
+      stopSignal,
+      taskLabel: taskLabel || "直调工具",
+      user,
+      baseDir,
+      sec,
+    }));
+  }
+
+  return { runTask, getSkills, toolList, runTool, DIRECT_TOOLS };
 }
 
 // 并发上限：抓页面是等网络，开太多既没有更快，还容易被对方站点当成扫站封 IP
@@ -2173,6 +2208,12 @@ const PARALLEL_MAX = 3;
  * （一个 Electron 窗口轮流截图），放进来也并发不了，白给用户一个「在并发」的假象。
  */
 const GEN_TOOLS = ["generate_image", "generate_video", "text_to_speech"];
+/**
+ * 允许「不过模型直接跑」的工具。挑选标准只有一条：给定输入 → 一个产物文件，中间不需要任何判断。
+ * 花钱的那三个都在这儿（重画一格本来就是为了省下复述 prompt 的那一轮），外加一个本机渲染的截图。
+ * write_file / run_shell 这些永远不进来：把它们做成界面上一按就执行的按钮，等于开了一个没人看守的门。
+ */
+const DIRECT_TOOLS = ["generate_image", "generate_video", "text_to_speech", "html_to_image"];
 /** 生成类的并发上限。默认 2 而不是 3：这一类每条都花钱，宁可慢一点也别一次并出去三条视频 */
 const GEN_PARALLEL_MAX = 2;
 
@@ -2477,4 +2518,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
 }
 
-module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter };
+module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter };

@@ -1731,7 +1731,12 @@ function renderDataPane(pane, s) {
   pane.querySelector("#ws-open").onclick = () => openWorkspaceOnHost();
   const cacheDesc = pane.querySelector("#cache-desc");
   const loadCache = () => fetch("/api/cache").then(r => r.json()).then(c => {
-    cacheDesc.textContent = `界面缓存 ${fmtSize(c.ui)} · 临时脚本 ${fmtSize(c.tmp)}，共 ${fmtSize(c.total)}。只清可再生的缓存，不动会话记录、工作区文件和登录态。`;
+    const g = c.gen || {};
+    // 生成结果缓存单独说一句：它不是磁盘垃圾，是「这一格已经买过了」的账。
+    // 省下的次数要摆出来——看不见的省钱，用户只会当它不存在
+    const saved = g.hits ? `已经替你省下 ${g.hits} 次生成调用` : "还没派上用场（同一格再跑一次就会命中）";
+    cacheDesc.textContent = `界面缓存 ${fmtSize(c.ui)} · 临时脚本 ${fmtSize(c.tmp)}，共 ${fmtSize(c.total)}。只清可再生的缓存，不动会话记录、工作区文件和登录态。`
+      + `\n另有生成结果缓存 ${g.entries || 0} 条（生图/生视频/配音），${saved}。这份不在清理范围里——清掉只会让下次重新花钱。`;
   }).catch(() => { cacheDesc.textContent = "统计失败"; });
   loadCache();
   pane.querySelector("#cache-clear").onclick = async (e) => {
