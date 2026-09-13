@@ -9,6 +9,9 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Sep 13** Your terminal can finally see what the agent drew: `/open` hands it to the system viewer, and capable terminals render it inline
+- **Sep 13** Release pipeline closed up: PRs get a red/green light, a version mismatch fails loudly, one platform failing no longer sinks the whole release
+- **Sep 13** Generated sites stop looking alike: pick a visual direction before writing a line
 - **Sep 13** Every step now shows how long it took, and a closing tally: tool time vs. model-thinking time
 - **Sep 13** Plug in Langfuse and you can read the raw input/output of every model call
 - **Sep 13** Five API-key traps fixed at once: key not recognized, wizard every launch, duplicate channels, nowhere to paste, missing models
