@@ -523,6 +523,7 @@ ${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 用 render_page 真渲�
    把「需要登录 Cookie / 需要官方 API 权限」当结论直接停手，是不合格的交付。真要用户的登录态才继续，先把不需要登录也能拿到的那部分做完再说。
 5.2 **不许用文字问句结束回合**：严禁用「请告诉我你的选择：1... 2... 3...」「需要我尝试哪种方式？」这类话收尾，那是把活推回给用户。**技术路线**（用哪个库、抓哪条接口、跑几轮、代码怎么组织）的优劣你自己判断得了——挑最可能成的那个直接动手，失败了再换。这一条禁的是把选择题写在**回复正文**里，**不是禁 ask_user 工具**：成品形态会完全不同的岔路（封面图走生图还是排版截图、报告交 Word 还是 PDF、视频出横版还是竖版）该用 ask_user 就用，它弹的是可点的选项卡片，用户点一下就继续。同理，严禁把代码贴在回复里说"我能这样做"——能跑就 run_node / run_shell 真跑，回复里只放结论。
 5.3 **只读的活一次性并发发出去**：要查 5 个关键词、要抓 6 个链接、要读 3 个文件时，在同一轮里一口气发多个工具调用（web_search / fetch_url / read_file / read_document / list_files / library_read），系统会并发执行，只花最慢那一个的时间；一个一个来是把等待时间叠加。会写文件、跑命令、委派专家的调用不要和别的混在一轮里发——那些的先后顺序有意义，混在一起会被退回串行。
+5.4 **出图/出片/出声也一起发**：generate_image / generate_video / text_to_speech 这三个同样可以在一轮里连着发多条，系统会并发执行（比只读那档保守，默认同时 2 条，因为每条都花钱）。这三个跟只读工具不要混在同一轮里发。**每条都给一个不一样的 filename**（voice_01.mp3 / voice_02.mp3 这样）：并发下同名就是互相覆盖，而两条都会报成功，出事了看不出来。
 6. 完成后简要总结做了什么、生成了哪些文件。
 7. 始终用中文交流——包括报错说明、失败复盘、自我纠正这些中途叙述，任何时候都不许切成英文。工具返回的英文报错要翻成人话讲给用户听（原始报错可以放进代码块，但结论必须是中文）。
 8. 用户消息里的「@某文件名」指工作目录中的文件（用 read_file 读取）；「/某技能名」表示要求使用该技能（先 use_skill 加载）；「【任务类型：X】」是场景标签，按该场景的最佳实践来做。
@@ -2033,13 +2034,17 @@ function modePrompt(mode) {
       //
       // 以前是「整批全只读才并发」，于是 [搜, 搜, 写文件] 这种最常见的组合退回全串行，
       // 白等一次搜索的时间。切段之后前两个搜索照样并发，写文件仍旧排在它们后面。
-      const groups = splitParallelRuns(result.toolCalls, READ_ONLY_TOOLS);
+      //
+      // 生成类（出图/出片/出声）同理，但单独一类、单独一个上限：一集短剧十二个镜头，
+      // 一条条排队最坏要等上一两个小时，而这些调用之间本来就没有先后关系。
+      const groups = splitParallelRuns(result.toolCalls, READ_ONLY_TOOLS, GEN_TOOLS);
+      const genMax = Math.max(1, Math.min(4, Math.round(+config.agent.gen_parallel_max) || GEN_PARALLEL_MAX));
       let toolResults = [];
       try {
         for (const g of groups) {
           if (g.length > 1) {
-            emit({ type: "parallel", count: g.length, depth });
-            toolResults.push(...(await mapPool(g, PARALLEL_MAX, runOne)));
+            emit({ type: "parallel", count: g.length, kind: g._kind, depth });
+            toolResults.push(...(await mapPool(g, g._kind === "gen" ? genMax : PARALLEL_MAX, runOne)));
           } else {
             toolResults.push(await runOne(g[0]));
           }
@@ -2155,17 +2160,46 @@ function modePrompt(mode) {
 const PARALLEL_MAX = 3;
 
 /**
- * 把一批工具调用切成若干「可并发的段」：连续的只读工具合成一段（段内并发），
+ * 生成类工具：出图、出片、出声。
+ *
+ * 跟只读工具分成两类而不是并进一类，是因为这两类的约束正好相反：
+ *   · 只读工具便宜、快、失败了重来一次也不心疼，瓶颈只是网络往返；
+ *   · 生成类每一条都要钱（视频按条计费），慢的以分钟计（tools.js 里视频轮询上限 10 分钟），
+ *     而且**会写文件**。
+ * 所以两类既不能混进同一段（只读段里混进写文件的，会打乱「先写再读」的先后依赖），
+ * 并发上限也得各给各的。
+ *
+ * html_to_image 不在这儿：htmlshot.js 自己就是一条 `let queue = Promise.resolve()` 的串行队列
+ * （一个 Electron 窗口轮流截图），放进来也并发不了，白给用户一个「在并发」的假象。
+ */
+const GEN_TOOLS = ["generate_image", "generate_video", "text_to_speech"];
+/** 生成类的并发上限。默认 2 而不是 3：这一类每条都花钱，宁可慢一点也别一次并出去三条视频 */
+const GEN_PARALLEL_MAX = 2;
+
+/**
+ * 把一批工具调用切成若干「可并发的段」：连续的同类工具合成一段（段内并发），
  * 其余每个自成一段（单独跑）。段的先后顺序＝模型给的原顺序，一步都不许挪——
  * 「先写文件再读回来」这种前后依赖，顺序错了结果就是错的。
+ *
+ * 类别有三种：ro（只读）、gen（生成类，见 GEN_TOOLS）、solo（其余一律单跑）。
+ * 只有**同一类**的相邻调用才合段：并发上限不同是一层原因，更要紧的是生成类会写文件，
+ * 跟 read_file 混进同一段就等于把先后顺序交给了调度器。
+ *
+ * gen 这个名单是**可选第三参**：不传时这个函数的行为跟以前逐字节一致（只有只读会合段），
+ * 所以只认两个参数的老调用点和老测试都不用改。
  */
-function splitParallelRuns(calls, readOnly) {
+function splitParallelRuns(calls, readOnly, gen) {
   const groups = [];
   for (const tc of calls || []) {
-    const ro = readOnly.includes(tc.name);
+    const kind = (readOnly || []).includes(tc.name) ? "ro" : (gen || []).includes(tc.name) ? "gen" : "solo";
     const last = groups[groups.length - 1];
-    if (ro && last && last._ro) last.push(tc);
-    else { const g = [tc]; g._ro = ro; groups.push(g); }
+    if (kind !== "solo" && last && last._kind === kind) last.push(tc);
+    else {
+      const g = [tc];
+      g._kind = kind;
+      g._ro = kind === "ro"; // 老字段留着：改之前的调用方是按它认「这段是不是只读」的，删了等于给下游埋一个 undefined
+      groups.push(g);
+    }
   }
   return groups;
 }
@@ -2443,4 +2477,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
 }
 
-module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, makeOwnership, makeFilesEmitter };
+module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter };

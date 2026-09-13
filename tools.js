@@ -531,9 +531,31 @@ const OUT_EXT_ALIAS = {
   ".mp3": [".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".wav"],
   ".wav": [".wav", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac"],
 };
+/**
+ * 兜底文件名用的时间戳，同一毫秒里绝不发第二次同样的数。
+ *
+ * 生图 / 生视频 / 配音的 filename 都是可选的，不给就按 `image_时间戳.png` 兜底。
+ * 以前这三个工具是一条条串行跑的，Date.now() 天然错不开；现在同一批里能并发两条，
+ * 两张图在同一毫秒返回就会写同一个文件名——后写的把先写的盖掉，而界面上两张卡都报成功，
+ * 这种错不留任何痕迹。所以撞上同一毫秒就往后缀上接 _2、_3。
+ *
+ * 注意这只管「模型没起名」那一路。模型点名要某个文件名时照旧覆盖：那是它自己要的，
+ * 「重新生成刚才那张」正是靠覆盖实现的，替它改名反而会让正文里的引用全指空。
+ */
+let lastStamp = 0, stampDup = 0;
+function stampOnce() {
+  const t = Date.now();
+  if (t === lastStamp) stampDup++;
+  else {
+    lastStamp = t;
+    stampDup = 0;
+  }
+  return stampDup ? `${t}_${stampDup + 1}` : String(t);
+}
+
 function safeOutName(name, ext, stem) {
   let n = String(name || "").trim().replace(/[\/\\:*?"<>|]/g, "_").slice(0, 80);
-  if (!n) n = `${stem}_${Date.now()}${ext}`;
+  if (!n) n = `${stem}_${stampOnce()}${ext}`;
   const ok = OUT_EXT_ALIAS[ext] || [ext];
   const low = n.toLowerCase();
   if (!ok.some((e) => low.endsWith(e))) n += ext;
