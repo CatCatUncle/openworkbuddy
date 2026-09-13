@@ -605,6 +605,9 @@
   .picker-menu .mi.ro:hover { background: transparent; }
   .picker-menu .mi.ro[data-cur] { color: var(--wb-brand-text); }
   .picker-menu .mi.sub-only { display: block; white-space: normal; font-size: 12px; color: var(--wb-text-3); border-top: 1px solid var(--wb-border); margin-top: 4px; padding-top: 8px; }
+  /* 一条说明，不是一条可选项：没填 Key 的模型不进列表（点下去必然 401），但得有地方交代它们去哪了。
+     没有 border-top——紧跟着的「管理模型…」自带一条，两条挨在一起太吵 */
+  .picker-menu .mi-note { display: flex; align-items: center; gap: 6px; white-space: normal; padding: 6px 12px; font-size: 12px; line-height: 1.6; color: var(--wb-text-3); }
   /* 兜底：任何一条菜单项都不许把菜单撑出屏幕。以前没有上限，一段长说明就能把它撑到
      一千多像素宽，右对齐的菜单于是往左飞出可视区，字被裁掉一半 */
   .picker-menu { max-width: min(340px, calc(100vw - 24px)); }

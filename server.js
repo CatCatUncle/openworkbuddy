@@ -1366,9 +1366,10 @@ app.get("/api/onboarding", async (req, res) => {
   const brainOk = brainViaEngine || !!(active && hasKey(active));
   const seen = !!((config.onboarding || {}).done_at);
 
-  // 本机 CLI 探测要跑 which + --version，只在向导真会弹出来的时候做，老用户每次开机别白等
+  // 本机 CLI 探测要跑 which + --version，只在向导真要渲染的时候做，老用户每次开机别白等。
+  // 开机那一趟（maybeOnboard）只是拿来判断"要不要弹"，不带 probe；真弹出来时会再拉一次带 probe 的。
   let found = [];
-  if (!brainOk || !seen) {
+  if (req.query.probe === "1") {
     try { found = await engines.detectAll(myAgent.engine_options || {}); } catch {}
   }
   const media = config.media || {};
@@ -1386,7 +1387,8 @@ app.get("/api/onboarding", async (req, res) => {
   ].filter(Boolean).length;
   const sp = (config.search || {}).provider || "jina";
   res.json({
-    // 大脑没接上 = 一句话都发不出去，必须弹引导；接上了但没走完向导也弹一次，让人知道还有哪些能力可以开
+    // 大脑没接上 = 一句话都发不出去，必须弹引导。接上了就不再自动弹了：
+    // 用户在第一步填完 Key 就跳过是最常见的一条路，以前那种"没走完就再弹一次"每次开机都要拦他一遍。
     needs_setup: !brainOk,
     seen,
     // 向导最后一步写的是服务器级设置（工作目录 + done_at），只有平台管理员落得了盘。
