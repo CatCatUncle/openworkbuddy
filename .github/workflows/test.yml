@@ -28,6 +28,10 @@ jobs:
             cmd: npm test
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    # 兜底的保险丝。GitHub 默认给 6 小时，2026-09-13 那次就是这么烧掉的：
+    # e2e 里一个 electron 子进程不回话，五个 job 一起挂着，谁也拿不到结论。
+    # 测试本身本机 137 秒、CI 上几分钟；40 分钟还没完就是卡了，早点红早点查。
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -29,6 +29,23 @@ if (typeof require("electron") === "string") {
   process.exit(1);
 }
 const { app: electronApp, BrowserWindow } = require("electron");
+
+// 看门狗，理由同 test/frontend.js：CI 的无头机器上 electron 可能连 whenReady 都不回，
+// 父进程强杀只拿得到一具尸体。这里自己记「ready 没有 / 最后跑完哪一步」，超时先说清楚再退。
+const WATCH_MS = Number(process.env.WB_TEST_WATCHDOG_MS || 180000);
+let READY = false;
+let LAST_LINE = "（一步都还没跑完）";
+const _log = console.log.bind(console);
+console.log = (...a) => { LAST_LINE = a.map(String).join(" ").trim(); _log(...a); };
+const WATCHDOG = setTimeout(() => {
+  console.error(
+    `❌ 企业后台测试卡死：${Math.round(WATCH_MS / 1000)} 秒没跑完。` +
+    `app.whenReady ${READY ? "已经回来了" : "从来没回来——这台机器上 electron 根本起不来"}；` +
+    `最后跑完的一步：${LAST_LINE}`
+  );
+  process.exit(1);
+}, WATCH_MS);
+
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
 const account = require(path.join(ROOT, "account"));
@@ -171,6 +188,7 @@ const GOTO = (id) => `(async () => {
 (async () => {
   await listening;
   await electronApp.whenReady();
+  READY = true;
 
   // ---------- 造一份「有内容」的数据：空数据库那一版全是空状态，测不出 render 里的坑 ----------
   let r = await call("POST", "/api/auth/register", { body: { username: "laoban", password: "pw-laoban-123" } });
@@ -330,10 +348,12 @@ const GOTO = (id) => `(async () => {
   server.close();
   console.log(`\n✅ 企业管理后台：17 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 且不误删别的渠道 ${pass} 项通过`);
   fs.rmSync(TMP, { recursive: true, force: true });
+  clearTimeout(WATCHDOG);
   electronApp.exit(0);
 })().catch((e) => {
   console.error("❌ 企业后台测试失败: " + ((e && (e.stack || e.message)) || String(e)) + "\n   已过 " + pass + " 项");
   try { server.close(); } catch {}
   fs.rmSync(TMP, { recursive: true, force: true });
+  clearTimeout(WATCHDOG);
   electronApp.exit(1);
 });

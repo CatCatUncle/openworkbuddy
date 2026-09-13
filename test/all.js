@@ -50,6 +50,12 @@ if (only) {
   }
 }
 
+// 最外面那层保险丝。本机全套 137 秒，最慢的 e2e 120 秒，其余每个都在 10 秒以内，
+// 所以 30 分钟这个数只在「底下几层看门狗全失灵」时才会烧到——
+// 2026-09-13 的 CI 正是这种情况：没有任何一层有超时，五个 job 各挂了一个多小时，
+// 既不给结论也不放人走。宁可红，不许一直挂着。
+const SUITE_TIMEOUT_MS = Number(process.env.WB_SUITE_TIMEOUT_MS || 1800000);
+
 console.log("跑 " + list.length + " 个测试套件\n");
 const results = [];
 for (const [name, what] of list) {
@@ -57,11 +63,18 @@ for (const [name, what] of list) {
   // stdio inherit：套件自己的输出直接透到终端，挂了能当场看见是哪一条。
   // stdin 给 ignore：cli 那几个套件会起子进程，不关 stdin 的话跑完不退出。
   const r = spawnSync(process.execPath, [path.join(__dirname, name + ".js")],
-    { stdio: ["ignore", "inherit", "inherit"], env: process.env });
+    { stdio: ["ignore", "inherit", "inherit"], env: process.env,
+      timeout: SUITE_TIMEOUT_MS, killSignal: "SIGKILL" });
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
-  const code = r.status == null ? 1 : r.status;
-  results.push({ name, what, code, secs });
-  console.log("\n" + (code === 0 ? "√" : "×") + " " + name + "  " + secs + "s\n" + "─".repeat(60));
+  const timedOut = r.error && r.error.code === "ETIMEDOUT";
+  if (timedOut) {
+    console.error(`\n× ${name} 跑了 ${secs}s 还没完，按 ${Math.round(SUITE_TIMEOUT_MS / 60000)} 分钟的上限强杀了。`
+      + "\n  往上翻这个套件最后打出来的那一行，就是卡住的地方。");
+  }
+  const code = timedOut ? 1 : r.status == null ? 1 : r.status;
+  results.push({ name, what, code, secs, timedOut });
+  console.log("\n" + (code === 0 ? "√" : "×") + " " + name + "  " + secs + "s"
+    + (timedOut ? "（超时强杀）" : "") + "\n" + "─".repeat(60));
 }
 
 const bad = results.filter((r) => r.code !== 0);
