@@ -240,5 +240,65 @@ if (!HAS_GIT) {
   }
 }
 
+// ---------- 规则三：专家绑的技能必须随包发出去 ----------
+// electron-builder.config.js 的技能白名单是 `git ls-files skills` 现算的，本机 skills/ 下
+// 躺着的第三方技能不进包。所以 experts.json 里一旦绑了一个被 .gitignore 排掉的技能，
+// 开发机上一切正常，用户装完打开就是「专家绑定的技能『xxx』不存在」。
+// experts-lib.js 的 validateExperts 拿的是 loadSkills()——读的是本机磁盘，照不出这一层。
+// 这条只能问 git：磁盘上有不算数，进了索引才算数。
+function shippedSkills() {
+  try {
+    const out = execFileSync("git", ["ls-files", "skills"], { cwd: ROOT, encoding: "utf8" });
+    const s = new Set();
+    for (const line of out.split("\n")) {
+      const m = /^skills\/([^/]+)\//.exec(line.trim());
+      if (m) s.add(m[1]);
+    }
+    return s.size ? s : null;
+  } catch (e) { return null; }
+}
+
+/** 绑了但没随包发的那些。抽成纯函数，下面好拿编出来的输入做反向对照 */
+const unshipped = (bound, shipped) => bound.filter((n) => !shipped.has(n));
+
+console.log("\n【3】experts.json 绑的技能，必须是 git 跟踪的");
+{
+  const meta = JSON.parse(fs.readFileSync(path.join(ROOT, "experts.json"), "utf8"));
+  const bound = [...new Set((meta.experts || [])
+    .flatMap((e) => (Array.isArray(e.skills) ? e.skills : [])))].sort();
+  ok(bound.length > 0, `experts.json 里一共绑了 ${bound.length} 个技能`, bound.join(" "));
+
+  const shipped = shippedSkills();
+  if (!shipped) {
+    console.log("  - 跳过：问不到 git 清单（release tarball 解出来跑就没有 .git）");
+  } else {
+    ok(shipped.size >= 10, `git ls-files skills 数出 ${shipped.size} 个随包发的技能`);
+
+    const bad = unshipped(bound, shipped);
+    ok(bad.length === 0,
+      `${bound.length} 个绑定的技能全都随包发`,
+      bad.map((n) => `skills/${n} 没被 git 跟踪`).join("\n      ")
+      + "\n      （本机有、新克隆没有：用户装完打开就报「绑定的技能不存在」。"
+      + "要么 git add 这个技能，要么把它从 experts.json 的 skills 里摘掉）");
+
+    // 反向对照一：.gitignore 掉的技能，一个都不该出现在随包清单里。
+    // 这条兜的是「shipped 集合算错了，宽到什么都认」——那样上面那条绿就是假的。
+    const ign = ignoredSkills();
+    const leaked = ign.filter((n) => shipped.has(n));
+    ok(ign.length >= 5 && leaked.length === 0,
+      `反向对照：.gitignore 掉的 ${ign.length} 个技能，随包清单里一个都没有`,
+      "漏出来的：" + leaked.join(" "));
+
+    // 反向对照二：编一份「绑了本机私货」的名单喂进去，必须抓得出来。
+    // 兜的是另一头——unshipped() 恒返回空数组，那它永远绿。
+    // 底料只取「确实随包发」的那些：直接拿 bound 当底料的话，一旦上面那条真红了，
+    // 这条对照会跟着一起红——一个缺陷报两次，看的人分不清哪个是因、哪个是果。
+    const fake = [...bound.filter((n) => shipped.has(n)), ign[0] || "brand-guidelines"];
+    ok(unshipped(fake, shipped).join() === (ign[0] || "brand-guidelines"),
+      `反向对照：名单里混进一个不随包发的 ${ign[0]}，抓得出来`,
+      JSON.stringify(unshipped(fake, shipped)));
+  }
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

@@ -7601,7 +7601,14 @@ function testConnectorsAndExperts() {
   const catalogMod = require("../mcp-catalog");
   const demoMask = require("../scripts/demo-mask");
   const meta = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "experts.json"), "utf8"));
-  const skillNames = new Set(fs.readdirSync(path.join(__dirname, "..", "skills")).filter((d) => fs.existsSync(path.join(__dirname, "..", "skills", d, "SKILL.md"))));
+  // 大小写要跟 skills.js 里的 /^skill\.md$/i 对齐。原来写死 "SKILL.md"：macOS 的文件系统
+  // 大小写不敏感，二十个小写 skill.md 全都碰巧认得出来，换到 Linux 一个都认不出，
+  // skillNames 成了空集合，validateExperts 会把每一条绑定都判成「技能不存在」——一片假红。
+  const SKILLS_ROOT = path.join(__dirname, "..", "skills");
+  const skillNames = new Set(fs.readdirSync(SKILLS_ROOT, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && fs.readdirSync(path.join(SKILLS_ROOT, d.name)).some((f) => /^skill\.md$/i.test(f)))
+    .map((d) => d.name));
+  assert(skillNames.size >= 15, "技能目录一个都没认出来（多半是文件名大小写写死了）：" + skillNames.size);
   const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
   const app05 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
   const recSrc = fs.readFileSync(path.join(__dirname, "..", "scripts", "record-demo.js"), "utf8");
