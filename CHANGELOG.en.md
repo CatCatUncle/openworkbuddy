@@ -9,6 +9,9 @@ each message says *why*, not *which file*, so it reads better than this list.
 
 ## 2026
 
+- **Sep 13** Point it at an SMTP server and the agent emails the report it just wrote; a recipient allowlist is a hard gate, and every message shows you the full text before it leaves
+- **Sep 13** The agent schedules its own recurring work: say "every Monday 9am, turn last week's numbers into a table" once and it runs on time
+- **Sep 13** Recordings, meeting videos and voice notes turn into text, and it writes the minutes straight from there
 - **Sep 13** Read the Word / Excel / PPT / PDF a client sent you, pull material straight from the shared library, and push a finished file to your group chat in one line
 - **Sep 13** Your terminal can finally see what the agent drew: `/open` hands it to the system viewer, and capable terminals render it inline
 - **Sep 13** Release pipeline closed up: PRs get a red/green light, a version mismatch fails loudly, one platform failing no longer sinks the whole release

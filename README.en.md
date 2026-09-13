@@ -152,11 +152,12 @@ wb engines && wb engines use claude-code   # use a local Claude Code / Codex as 
 
 ## What's new
 
+- **Sep 13** Point it at an SMTP server and the agent emails the report it just wrote; a recipient allowlist is a hard gate, and every message shows you the full text before it leaves
+- **Sep 13** The agent schedules its own recurring work: say "every Monday 9am, turn last week's numbers into a table" once and it runs on time
+- **Sep 13** Recordings, meeting videos and voice notes turn into text, and it writes the minutes straight from there
 - **Sep 13** Read the Word / Excel / PPT / PDF a client sent you, pull material straight from the shared library, and push a finished file to your group chat in one line
 - **Sep 13** Every step now shows how long it took, and a closing tally: tool time vs. model-thinking time
 - **Sep 13** Plug in Langfuse and you can read the raw input/output of every model call
-- **Sep 13** Five API-key traps fixed at once: key not recognized, wizard every launch, duplicate channels, nowhere to paste, missing models
-- **Sep 13** The admin console gets a "Models & Keys" page — admins configure there, not on the home page
 - **Sep 11** Sidebar splits work into **Office / Engineering**; a `wb` run in your terminal shows up on your phone and takes interjections
 - **Sep 11** Image / video / voice / vision each take several models, and one provider key covers all of them
 - **Sep 11** Six ways the app could fail to open on launch, each now explained in a real window, plus a boot log
