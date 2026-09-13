@@ -327,9 +327,9 @@ async function renderEvolvePane(pane) {
     const color = sc && sc.verdict === "有效" ? "var(--wb-ok-text)" : sc && sc.verdict === "没起作用" ? "var(--wb-err-text)" : "var(--wb-text-3)";
     return `<div style="padding:8px 0;border-bottom:1px solid var(--wb-border)">
       <div style="font-size: 14px;color:var(--wb-text);white-space:pre-wrap">${escInline(r.text)}</div>
-      <div style="margin-top:4px;font-size: 13px;color:var(--wb-text-3)">
-        ${esc((r.meta.at || "").slice(0, 10))} 起 · <span style="color:${color}">${esc(sc ? sc.verdict : "还没打分")}</span>${sc && sc.why ? " · " + escInline(sc.why) : ""}
-        · <a href="#" class="link danger" data-retire="${esc(r.id)}">下架</a>
+      <div style="margin-top:4px;font-size: 13px;color:var(--wb-text-3);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span>${esc((r.meta.at || "").slice(0, 10))} 起 · <span style="color:${color}">${esc(sc ? sc.verdict : "还没打分")}</span>${sc && sc.why ? " · " + escInline(sc.why) : ""}</span>
+        <a href="#" class="link danger" style="margin-left:auto" data-retire="${esc(r.id)}">${ic("archive", "i-sm")}下架</a>
       </div></div>`;
   }).join("") : '<div style="color:var(--wb-text-3);font-size: 14px">还没有生效的规则。规则来自被你采纳的提案，不会自己长出来。</div>';
 
@@ -358,7 +358,7 @@ async function renderEvolvePane(pane) {
       <div class="d" style="margin-bottom:6px">按次数排。只有标「提示词能治」的才允许变成规则——改代码/换渠道的毛病，加多少句提示词都没用。</div>
       ${sigRows}
     </div>
-    <div class="t" style="margin:16px 0 8px;font-weight:600">${ic("inbox")} 待你裁决（${pending.length}）</div>
+    <div class="hub-sec-title" style="margin:16px 0 8px">${ic("inbox")} 待你裁决（${pending.length}）</div>
     ${propCards}
     <div class="card-item">
       <div class="t">${ic("pin")} 已生效的规则（${rules.length}/${caps.rules}）</div>
@@ -399,6 +399,8 @@ async function renderEvolvePane(pane) {
   });
   pane.querySelectorAll("[data-retire]").forEach(a => a.onclick = async (e) => {
     e.preventDefault();
+    // 下架是写服务端的：规则文件被挪进 retired/，界面上没有重新上架的入口，对用户就是单向的
+    if (!confirm("下架这条规则？往后的提示词里不再带它。")) return;
     const r = await fetch("/api/evolve/rule/" + encodeURIComponent(a.dataset.retire) + "/retire", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ why: "在设置里人工下架" }),
     }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
@@ -459,11 +461,16 @@ function renderAboutPane(pane) {
     </div>
     <div class="card-item">
       <div class="t">OpenWorkBuddy</div>
-      <div class="d">开源复刻的 AI Agent 办公工作台。功能：Agent 自主执行 · Ask/Plan/Craft 模式 · 技能系统 · MCP 连接器 · 专家团多智能体 · 定时自动化 · 飞书/企业微信/Webhook 远程指挥 · 多模型可插拔 · 会话持久化与回放 · 文件上传 · 工作空间切换。</div>
+      <div class="d">开源复刻的 AI Agent 办公工作台。会做这些事：</div>
+      <div class="ab-feats">${["Agent 自主执行","Ask/Plan/Craft 模式","技能系统","MCP 连接器","专家团多智能体","定时自动化","飞书/企业微信/Webhook 远程指挥","多模型可插拔","会话持久化与回放","文件上传","工作空间切换"].map((f) => `<span class="ui-badge ui-badge--sm ui-badge--outline">${esc(f)}</span>`).join("")}</div>
     </div>
     <div class="card-item">
       <div class="t">运行方式</div>
-      <div class="d">桌面版：npm run app（或桌面快捷方式）· Web 版：npm start 后浏览器打开 localhost:3800 · 测试：npm test</div>
+      <div class="d run-ways">
+        <div>桌面版：<code>npm run app</code>（或直接点桌面快捷方式）</div>
+        <div>网页版：<code>npm start</code>，然后浏览器打开 <code>localhost:3800</code></div>
+        <div>跑测试：<code>npm test</code></div>
+      </div>
     </div>
     <div class="card-item">
       <div class="t">${ic("compass")} 新手引导</div>

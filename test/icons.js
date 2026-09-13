@@ -178,7 +178,7 @@ console.log("\n② 前端源码（界面上的图形全走 sprite）");
 const FRONT = ["public/index.html", "public/pet.html", "mcp-catalog.js", "experts.json"]
   .concat(fs.readdirSync(path.join(ROOT, "public", "js")).filter((f) => f.endsWith(".js")).map((f) => "public/js/" + f));
 const FRONT_ALLOW = {
-  "public/js/app-02.js": { 1098: "TOAST_ICON 兼容层：插件/技能的老写法还会往消息前面塞表情，这张表就是用来认出它们再换成图标的" },
+  "public/js/app-02.js": { 1100: "TOAST_ICON 兼容层：插件/技能的老写法还会往消息前面塞表情，这张表就是用来认出它们再换成图标的" },
 };
 const frontAllowUsed = new Set();
 for (const rel of FRONT) {

@@ -718,6 +718,25 @@
       "启动命令已填好，点「添加并连接」就能用": "Launch command filled in. Click \"Add & connect\" to use it",
       "还没有连接器，从下面的推荐里挑一个点「接入」": "No connectors yet. Pick one below and click \"Connect\"",
       "环境变量要写成 KEY=值": "Environment variables must be KEY=value",
+      // 关于页：三种跑法各占一行，中间夹着 <code>，所以每一截都是独立文本节点，得各翻各的
+      "桌面版：": "Desktop: ",
+      "网页版：": "Web: ",
+      "跑测试：": "Run tests: ",
+      "（或直接点桌面快捷方式）": " (or just click the desktop shortcut)",
+      "，然后浏览器打开": ", then open in your browser: ",
+      "商业授权怎么谈": "Commercial licensing",
+      "许可证全文": "Full license text",
+      // 设置页第三层：字段名上面那行卡标题
+      "执行上限": "Execution limits",
+      // 头像选择器那三个页签 + 专家/团队表单里的同一个词
+      "图标": "Icon",
+      "表情": "Emoji",
+      "图片": "Image",
+      "挑个图标": "Pick an icon",
+      // 模型设置里那两组折起来的渠道
+      "还没填 Key 的渠道": "Channels with no key yet",
+      "没挂渠道的": "No channel attached",
+      "地址和 Key 都还空着": "Host and key are both empty",
     },
   };
 

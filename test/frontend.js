@@ -1926,8 +1926,9 @@ const GATE_CHECKS = `
     && mpo2.textContent.includes("/images/generations") && !/你粘贴（⌘V）或拖进来的截图/.test(mpo2.textContent),
     "展开了 " + mpo2.querySelectorAll(".mm-new").length + " 路");
   // 媒体那一节的小标题不在 .card-item 里，字重得自己带；图标跟字之间也得留条缝，
-  // 不然渲染出来是「⊠看图」，读着像乱码而不是图标
-  const secT = mpo2.querySelector(".sec-t");
+  // 不然渲染出来是「⊠看图」，读着像乱码而不是图标。这里用的是全站统一那个 .hub-sec-title
+  // ——它以前自带一个只服务这一处的 .sec-t，跟 .hub-sec-title 只差 6px 下边距，已经合并掉了
+  const secT = mpo2.querySelector(".hub-sec-title");
   ok("「看图 / 画图 / 视频 / 配音」是个真小标题：字重 600，图标跟字之间有缝",
     !!secT && !!secT.querySelector(".i") && getComputedStyle(secT).fontWeight === "600"
     && parseFloat(getComputedStyle(secT).columnGap) >= 4,
@@ -2436,6 +2437,30 @@ const IMPANE_CHECKS = `
   const naR = fsC.querySelector('[data-newapp-r="feishu"]');
   ok("建不出来就红叉说原因、二维码不留在页面上", !!naR.querySelector('use[href="#i-circle-x"]') && /没装/.test(naR.textContent) && disp(naBox) === "none", naR.innerHTML.slice(0, 120));
   ok("失败后按钮解禁，可以再试", !na.disabled);
+
+  // ---- 设置卡里的三层：卡标题 / 字段名 / 说明 ----
+  // 以前字段名跟卡标题共用 .t，「执行上限」那张卡八个输入框的标签全是 15px/600 的黑标题，
+  // 整张卡没有一处比字段名更重，看不出这八项是同一组的下属。这条钉的是三层真的分得开。
+  {
+    const probe = document.createElement("div");
+    probe.innerHTML = '<div class="card-item"><div class="t">执行上限</div><div class="f">最大执行步数</div><div class="d">一次任务最多跑多少步</div></div>';
+    pane.appendChild(probe);
+    const px = (el) => Math.round(parseFloat(getComputedStyle(el).fontSize));
+    const cs = (sel) => getComputedStyle(probe.querySelector(sel));
+    const t = cs(".t"), f = cs(".f"), d = cs(".d");
+    ok("卡标题比字段名大一号（15 / 13）", px(probe.querySelector(".t")) === 15 && px(probe.querySelector(".f")) === 13, t.fontSize + " / " + f.fontSize);
+    ok("字段名和说明同字号，靠字重分层", px(probe.querySelector(".f")) === px(probe.querySelector(".d")) && Number(f.fontWeight) >= 600 && Number(d.fontWeight) < 600, f.fontWeight + " vs " + d.fontWeight);
+    ok("字段名走主文字色、说明走次级灰——同号同色就糊成一层了", f.color !== d.color, f.color + " vs " + d.color);
+    probe.remove();
+
+    // 反向对照：历史写法把字段名也写成 .t，两行量出来一样大，第二层根本不存在
+    const old = document.createElement("div");
+    old.innerHTML = '<div class="card-item"><div class="t">执行上限</div><div class="t" style="margin-top:8px">最大执行步数</div></div>';
+    pane.appendChild(old);
+    const two = [...old.querySelectorAll(".t")].map(px);
+    ok("反向对照：字段名写成 .t 时两行一样大，分不出层", two[0] === two[1] && two[0] === 15, two.join("/"));
+    old.remove();
+  }
   return names;
 })();
 `;
@@ -3446,6 +3471,12 @@ const TRAIL_CHECKS = `
   ok("原始入参一个字没丢，只是收着", /报告\.md/.test(c9.querySelector("pre").textContent) && disp(c9.querySelector("pre")) === "none");
   u9.handleEvent({ type: "tool_result", id: "x", name: "read_file", outcome: "120 行", preview: "..." });
   ok("结果的量就写在同一行上", c9.querySelector(".out").textContent === "· 120 行", c9.querySelector(".out").textContent);
+  // 「·」左边必须真的挨着标题。以前 .desc 是 flex:1，短标题会把圆点一路推到右半边，
+  // 前面空一大片，看着像个没有主语的孤儿点。这里钉的是「标题右边缘到圆点左边缘」的实测距离。
+  {
+    const d9 = c9.querySelector(".desc").getBoundingClientRect(), o9 = c9.querySelector(".out").getBoundingClientRect();
+    ok("「· 120 行」紧跟在标题后面，不是被推到行右", o9.left - d9.right < 20, "间隔 " + Math.round(o9.left - d9.right) + "px");
+  }
   u9.handleEvent({ type: "tool_use", id: "y", name: "run_shell", title: "命令 npm test" });
   u9.handleEvent({ type: "tool_result", id: "y", name: "run_shell", isError: true, outcome: "退出码 1：2 个用例没过" });
   const c9b = [...u9.turn.querySelectorAll(".step-card")][1];
@@ -5874,6 +5905,9 @@ if (AB0 < 0) throw new Error("app-06.js 里找不到 renderAboutPane");
 const AB_SRC = APP06.slice(AB0);
 const AB_HTML = "<!doctype html><meta charset='utf-8'><body><div id='pane'></div></body>";
 const AB_STUBS = `
+  ${IC_STUB}
+  // 真界面里 esc/ic 都由 app-00-ui.js 挂在 window 上，这个夹具只切了 app-06.js，得自己补上
+  var esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   let NEXT = {};
   const mask = { classList: { remove() {} } };
   function openOnboarding() {}
