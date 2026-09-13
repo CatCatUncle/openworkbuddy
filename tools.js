@@ -199,6 +199,21 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "read_document",
+    description:
+      "读 Word / Excel / PPT / 压缩包（.docx / .xlsx / .pptx / .zip），拍平成纯文本给你看。这几种是压缩包格式，用 read_file 读回来只会是乱码。内嵌图片会变成「［图片］」占位。表格很大时用 sheet / from / to 分段读。PDF 不走这里，用 read_file 看提示。",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "相对路径" },
+        sheet: { type: "string", description: "只读某张工作表：表名或序号（1 起）。只对 .xlsx 有意义" },
+        from: { type: "number", description: "从第几行开始（1 起，只对 .xlsx 有意义）" },
+        to: { type: "number", description: "读到第几行为止（含，只对 .xlsx 有意义）" },
+      },
+      required: ["path"],
+    },
+  },
+  {
     name: "search_files",
     description:
       "在 workspace 里按内容搜索，返回 文件:行号: 命中行。找函数定义、找某个字符串在哪些文件里用到、改名前找全部调用点，用它，比一个个 read_file 快得多。自动跳过 node_modules/.git/二进制文件。",
@@ -277,10 +292,20 @@ const TOOL_DEFS = [
   },
   {
     name: "library_read",
-    description: "读取资料库中的一个文本文件内容（最多返回前 50000 字符）。文件名来自 library_list 的结果。",
+    description: "读取资料库中的一个文本文件内容（最多返回前 50000 字符）。文件名来自 library_list 的结果。资料库里的 PDF / 图片 / Word / 压缩包不是文本，读不了，改用 library_import。",
     input_schema: {
       type: "object",
       properties: { name: { type: "string", description: "资料库中的文件名" } },
+      required: ["name"],
+    },
+  },
+  {
+    name: "library_import",
+    description:
+      "把资料库里的一个文件复制到工作目录，之后就能用相对路径直接处理它——PDF、图片、Word/Excel/PPT、压缩包这些非文本素材都靠它落地（复制完再用 read_document / look_at_image）。只能从资料库往工作目录复制，不能往资料库里写。",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string", description: "资料库中的文件名，来自 library_list" } },
       required: ["name"],
     },
   },
@@ -1195,10 +1220,213 @@ function libraryList() {
   return parts.join("\n\n");
 }
 
+/**
+ * 读资料库里的一个文件。
+ *
+ * 两处老毛病一起修：
+ *   1. **一律按 utf8 读。** 资料库是用户在界面上直接拖文件进来的，里面躺的是 PDF、截图、
+ *      Word、压缩包——按文本读回来是五万字符乱码。模型看不出这是「格式不对」，只会当成
+ *      内容读进去再拿它下结论。先嗅一眼文件头（跟 fetch_url 共用同一个 looksBinary），
+ *      是二进制就说实话，并且指出下一步该怎么走。
+ *   2. **文件不存在时把绝对路径抖进对话。** 原来的 ENOENT 会带出 `/Users/xxx/...` 整条
+ *      本机路径。名字打错是常事，代价不该是泄露用户的目录结构。
+ */
 function libraryRead(name) {
   const base = path.basename(String(name || ""));
-  if (!base || base.startsWith(".")) throw new Error("文件名不合法");
-  return fs.readFileSync(path.join(LIB_DIR, base), "utf8").slice(0, 50000);
+  if (!base || base.startsWith(".")) return { text: "文件名不合法。名字要一字不差地取自 library_list 的结果。", bad: true };
+  const abs = path.join(LIB_DIR, base);
+  let buf;
+  try { buf = fs.readFileSync(abs); }
+  catch { return { text: `资料库里没有「${base}」。先用 library_list 看看到底有哪些文件，名字要一字不差。`, bad: true }; }
+  if (looksBinary("", buf)) {
+    const next = DOC_EXT.test(base)
+      ? "先用 library_import 把它复制到工作目录，再用 read_document 读。"
+      : /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(base)
+        ? "先用 library_import 把它复制到工作目录，再用 look_at_image 看（记得带上你想知道的具体问题）。"
+        : /\.pdf$/i.test(base)
+          ? `先用 library_import 复制到工作目录，然后：${pdfHowTo(base)}`
+          : "先用 library_import 把它复制到工作目录，再按它的真实类型处理。";
+    return { text: `${base} 不是文本文件（${(buf.length / 1024).toFixed(0)} KB，按文本读只会得到乱码）。${next}`, bad: true };
+  }
+  return { text: buf.toString("utf8").slice(0, 50000), bad: false };
+}
+
+/**
+ * 把资料库里的一个文件复制到当前对话的工作目录。
+ *
+ * 为什么非有不可：资料库是个「只读的共享素材架」，模型能列能读，但 read_document /
+ * look_at_image / run_node 这些全都只认工作目录里的相对路径——素材摆在架子上却一个也用不了。
+ * 没有这个工具时模型唯一的出路是自己拼绝对路径去 run_shell cp，而那条路径落在 data 目录里，
+ * 安全中心本来就该拦（也确实拦了），于是变成一条必然撞墙的死路。
+ *
+ * **只往一个方向复制：库 → 工作目录。** 反过来不做。资料库是整台服务器共用的一份，
+ * 界面上写得明明白白「往里放东西归平台管理员」（非管理员那里挂的是「只读」角标）。
+ * 给 agent 开一个写回的口子，等于任何一个租户用户都能借 agent 的手改公共素材架——
+ * 这是权限绕过，不是便利。
+ */
+function libraryImport(name, dir) {
+  const base = path.basename(String(name || ""));
+  if (!base || base.startsWith(".")) return { text: "文件名不合法。名字要一字不差地取自 library_list 的结果。", bad: true };
+  const src = path.join(LIB_DIR, base);
+  let st;
+  try { st = fs.statSync(src); }
+  catch { return { text: `资料库里没有「${base}」。先用 library_list 看看到底有哪些文件，名字要一字不差。`, bad: true }; }
+  if (!st.isFile()) return { text: `${base} 不是文件。`, bad: true };
+  const into = dir || ws();
+  fs.mkdirSync(into, { recursive: true });
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  // 重名不覆盖，跟 saveDownload 同一个口径：工作目录里可能已经躺着用户自己的同名文件。
+  // 用 COPYFILE_EXCL 而不是「先看在不在再写」——只读工具是并发跑的，那道缝真会撞上
+  for (let i = 1; i < 50; i++) {
+    const out = i === 1 ? base : `${stem}_${i}${ext}`;
+    try {
+      fs.copyFileSync(src, path.join(into, out), fs.constants.COPYFILE_EXCL);
+      return { text: `已把资料库里的「${base}」复制到工作目录：${out}（${(st.size / 1024).toFixed(0)} KB）。现在直接用相对路径 ${out} 读它就行。`, bad: false };
+    } catch (e) {
+      if (e.code !== "EEXIST") return { text: `复制失败：${e.code || e.message}`, bad: true };
+    }
+  }
+  return { text: `工作目录里已经有太多个同名的「${base}」了，先清理一下。`, bad: true };
+}
+
+// ---------------- 结构化文档：docx / xlsx / pptx / zip ----------------
+// 甲方发过来最多的就是这几样，也正是这个产品自己的主交付物。解析器早就写好了
+// （preview.js，零新依赖：Node 自带 zlib 读 zip + 本来就有的 exceljs），但一直只接在
+// 预览接口上给人看，agent 一个入口都没有——read_file 把 .docx 按 utf8 读回来是五万字符
+// 乱码，白烧一大块上下文还什么都没看到。这里把同一个解析器拍平成纯文本喂给模型。
+//
+// 三条不能破的线：
+//   1. **内嵌图一律换成 ［图片］ 占位。** preview.js 会把图转成 data URI（20 张 × 3MB 封顶），
+//      拼进文本等于往上下文里灌几十 MB base64，比乱码更糟。
+//   2. **截断要如实说。** previewData 自己有 LIMITS（3000 段 / 20 表 / 2000 行 / 300 页）和
+//      truncated 标志，拍平后还要再按字符截一次。不说清楚，模型会拿半份当全文下结论。
+//   3. **PDF 不归这里。** previewData 只认这四种，pdf 进来会抛「不认识的预览类型」。
+//      PDF 走 read_file 里那条 pdftotext 指路，别把模型骗到一个必然报错的工具上。
+const DOC_EXT = /\.(docx|xlsx|pptx|zip)$/i;
+const DOC_CHARS = 50000; // 跟 read_file 同一个口径
+
+/**
+ * PDF 怎么取文字。**这段话必须是能照着做完的**——之前写的是「没装就在 run_node 里解析」，
+ * 而 run_node 那个沙箱里压根没有任何 PDF 库，模型照着做必然撞墙，白烧两三轮。
+ * 现在给的是真装得上的命令，各平台一条。`wb doctor` 里也会把 pdftotext 列进体检项。
+ */
+function pdfHowTo(name) {
+  const q = `"${name}"`;
+  const install =
+    process.platform === "darwin"
+      ? "`brew install poppler`"
+      : process.platform === "win32"
+        ? "`scoop install poppler` 或 `choco install poppler`"
+        : "`apt install poppler-utils`（或 `dnf install poppler-utils`）";
+  return (
+    `PDF 取文字要靠 pdftotext：先 run_shell 跑 \`${process.platform === "win32" ? "where" : "which"} pdftotext\`，` +
+    `装了就 \`pdftotext -layout ${q} -\`；没装先装 ${install}。` +
+    `装不上就直说装不上，别自己写代码解析——run_node 里没有任何 PDF 库。`
+  );
+}
+
+/** 一串 run 拼成纯文本。加粗/斜体这些格式对模型没意义，丢掉 */
+const runsText = (runs) => (runs || []).map((r) => String(r.s || "")).join("");
+
+function docToText(d) {
+  const out = [];
+  for (const b of d.blocks || []) {
+    if (b.t === "img") { out.push("［图片］"); continue; } // 绝不把 data URI 拼进上下文
+    if (b.t === "table") {
+      for (const row of b.rows || []) out.push("| " + row.map((c) => runsText(c.runs).replace(/\n/g, " ")).join(" | ") + " |");
+      out.push("");
+      continue;
+    }
+    const s = runsText(b.runs);
+    if (!s.trim()) { out.push(""); continue; }
+    if (b.t === "h") out.push("#".repeat(Math.min(6, Number(b.lvl) || 1)) + " " + s);
+    else if (b.t === "li") out.push("  ".repeat(Number(b.lvl) || 0) + "- " + s);
+    else out.push(s);
+  }
+  return out.join("\n");
+}
+
+function slidesToText(d) {
+  const out = [];
+  for (const s of d.slides || []) {
+    out.push(`## 第 ${s.n} 页　${s.title || "(无标题)"}`);
+    for (const l of s.lines || []) out.push("  ".repeat(Number(l.lvl) || 0) + "- " + l.s);
+    if (s.notes) out.push("【备注】" + s.notes);
+    out.push("");
+  }
+  return out.join("\n");
+}
+
+// 大表一次全吐会把上下文吃光，所以 sheet/from/to 三个参数就是用来翻页的。
+// sheet 可以给名字也可以给序号（1 起）——模型手里只有 library_list 那种纯文本，
+// 让它必须精确拼出工作表名字是给自己找麻烦。
+function sheetsToText(d, want, from, to) {
+  const all = d.sheets || [];
+  const q = String(want == null ? "" : want).trim();
+  let picked = all;
+  if (q) {
+    const byIndex = /^\d+$/.test(q) ? all[Number(q) - 1] : null;
+    const byName = all.find((s) => s.name === q) || all.find((s) => String(s.name).toLowerCase() === q.toLowerCase());
+    const hit = byName || byIndex;
+    if (!hit) return { text: `没有名为「${q}」的工作表。这份表里有：${all.map((s, i) => `${i + 1}.${s.name}`).join("、")}`, bad: true };
+    picked = [hit];
+  }
+  const out = [];
+  for (const s of picked) {
+    const a = Math.max(1, Number(from) || 1);
+    const b = Math.max(a, Number(to) || s.rows.length);
+    const slice = s.rows.slice(a - 1, b);
+    out.push(`## 工作表「${s.name}」　共 ${s.totalRows} 行 × ${s.totalCols} 列`);
+    if (a > 1 || b < s.rows.length) out.push(`（本次只给第 ${a}-${Math.min(b, s.rows.length)} 行）`);
+    for (const row of slice) out.push(row.join("\t"));
+    if (s.truncated) out.push(`（这张表太大，解析时已截断：最多取 ${s.rows.length} 行 × 每行 ${(s.rows[0] || []).length} 列）`);
+    out.push("");
+  }
+  return { text: out.join("\n"), bad: false };
+}
+
+function archiveToText(d) {
+  const out = [`共 ${d.total} 个文件，解压后 ${(d.bytes / 1024).toFixed(0)} KB`];
+  for (const e of d.entries || []) out.push(`${e.name}\t${e.size} 字节`);
+  if (d.truncated) out.push(`（只列了前 ${(d.entries || []).length} 个）`);
+  return out.join("\n");
+}
+
+/**
+ * 读一份结构化文档，拍平成纯文本。
+ * @param {string} abs 已经过 resolveFile 的绝对路径
+ * @param {string} rel 用户/模型给的原始相对路径，只用来说人话
+ */
+async function readDocument(abs, rel, input) {
+  const { previewData } = require("./preview");
+  if (!DOC_EXT.test(abs)) {
+    throw new Error(`read_document 只读 .docx / .xlsx / .pptx / .zip。${rel} 不是这几种——纯文本用 read_file，PDF 用 pdftotext（read_file 会告诉你怎么装）。`);
+  }
+  const d = await previewData(abs, path.basename(abs)); // xlsx 分支是 async，必须 await
+  let body = "", head = "";
+  if (d.kind === "doc") {
+    body = docToText(d);
+    head = `《${path.basename(rel)}》Word 文档`;
+    if (d.truncated) head += `（正文太长，解析时已截断，后面还有没读到的段落）`;
+  } else if (d.kind === "slides") {
+    body = slidesToText(d);
+    head = `《${path.basename(rel)}》PPT，共 ${d.total} 页`;
+    if (d.truncated) head += `（只解析了前 ${(d.slides || []).length} 页）`;
+  } else if (d.kind === "sheet") {
+    const r = sheetsToText(d, input.sheet, input.from, input.to);
+    // 表名对不上要按失败报，不能当正常结果返回：模型看见 isError=false 会以为这就是内容，
+    // 接着拿「没有名为 X 的工作表」这句话去下结论
+    if (r.bad) throw new Error(r.text);
+    body = r.text;
+    head = `《${path.basename(rel)}》Excel，共 ${d.total} 张工作表`;
+    if (d.truncated) head += `（只解析了前 ${(d.sheets || []).length} 张）`;
+  } else {
+    body = archiveToText(d);
+    head = `《${path.basename(rel)}》压缩包`;
+  }
+  const cut = body.length > DOC_CHARS;
+  return head + "\n\n" + body.slice(0, DOC_CHARS) + (cut ? `\n\n（已截断，还有 ${body.length - DOC_CHARS} 字符没给你。Excel 可以用 sheet/from/to 分段读。）` : "");
 }
 
 const LIST_SKIP = new Set([".tmp", "node_modules", ".git", ".DS_Store", ".history"]);
@@ -2046,8 +2274,10 @@ async function fetchUrl(url, { render, saveDir } = {}) {
     return (
       `这不是网页，是二进制文件（${ct || "类型未知"}，${buf.byteLength} 字节），已下载到工作目录：${name}\n` +
       (kind === "pdf"
-        ? `读它的文字：先 run_shell 跑 \`${process.platform === "win32" ? "where" : "which"} pdftotext\`，装了就 \`pdftotext -layout "${name}" -\`；没装就在 run_node 里解析。`
-        : `按类型处理：Office 文档用 docx/exceljs 读，压缩包先 unzip，图片音视频直接当素材用。`) +
+        ? pdfHowTo(name)
+        : DOC_EXT.test(name)
+          ? `Office 文档和压缩包用 read_document 读（会拍平成纯文本），别按文本 read_file。`
+          : `按类型处理：图片用 look_at_image，音视频直接当素材用。`) +
       `\n别再把这个地址当网页正文抓一遍了。`
     );
   }
@@ -2554,6 +2784,15 @@ async function executeTool(name, input, opts = {}) {
         if (IMAGE_EXT.test(p)) {
           return { content: `${input.path} 是图片，按文本读只会得到乱码。改用 look_at_image，并带上你想知道的具体问题。`, isError: true };
         }
+        // docx/xlsx/pptx 本质是 zip，按 utf8 读回来同样是一大坨乱码。这个产品自己就产出这几种
+        // 文件，读不了等于交付完看不了自己的活
+        if (DOC_EXT.test(p)) {
+          return { content: `${input.path} 是打包格式（Office 文档 / 压缩包），按文本读只会得到乱码。改用 read_document。`, isError: true };
+        }
+        // PDF 没有内置解析器，只能指条真路。别说「自己写代码解析」——run_node 里也没有这个库
+        if (/\.pdf$/i.test(p)) {
+          return { content: `${input.path} 是 PDF，按文本读只会得到乱码。${pdfHowTo(String(input.path))}`, isError: true };
+        }
         const s = Math.max(0, Number(input.start_line) || 0);
         const e = Math.max(0, Number(input.end_line) || 0);
         // 大文件走分块读：整份读会把事件循环钉住十几到几百毫秒，界面当场定住
@@ -2581,6 +2820,19 @@ async function executeTool(name, input, opts = {}) {
           content: content.slice(0, 50000) + (cut ? `\n\n（文件 ${content.length} 字符，这里只给了前 50000。要看后面用 start_line/end_line）` : ""),
           isError: false,
         };
+      }
+      case "read_document": {
+        const rel = String(input.path || "");
+        const abs = resolveFile(rel);
+        let st = null;
+        try { st = fs.statSync(abs); } catch {}
+        if (!st) return { content: `${rel} 不存在。先用 list_files 看看工作目录里到底有什么。`, isError: true };
+        if (st.isDirectory()) return { content: dirInsteadOfFile(abs, rel).message, isError: true };
+        try {
+          return { content: await readDocument(abs, rel, input), isError: false };
+        } catch (e) {
+          return { content: `读不了 ${rel}：${e.message}`, isError: true };
+        }
       }
       case "list_files":
         return { content: listFiles(resolveFile(input.dir || "."), input.depth), isError: false };
@@ -2618,8 +2870,16 @@ async function executeTool(name, input, opts = {}) {
       }
       case "library_list":
         return { content: libraryList(), isError: false };
-      case "library_read":
-        return { content: libraryRead(input.name), isError: false };
+      case "library_read": {
+        const r = libraryRead(input.name);
+        return { content: r.text, isError: r.bad };
+      }
+      case "library_import": {
+        // 落点是本对话的成果子目录，跟 write_file / fetch_url 下载一致：
+        // 复制进来的素材和它产出的东西待在同一个目录里，交付时才是完整一包
+        const r = libraryImport(input.name, fileBase);
+        return { content: r.text, isError: r.bad };
+      }
       case "look_at_image":
         return await lookAtImage(opts, input, timeoutMs, resolveFile);
       case "generate_image":

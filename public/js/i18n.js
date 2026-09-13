@@ -803,24 +803,24 @@
   // 这里只把打头的动词翻掉，对象一个字不动。轨迹条上的短标（TOOL_SHORT）也一并翻。
   // ⚠️ 改了 agent.js 的 TOOL_VERB 或 app-01.js 的 TOOL_SHORT，记得同步这张表（test/e2e.js 有闸门盯着）。
   const TOOL_VERB_EN = {
-    "读资料": "Read doc", "读": "Read", "写": "Write", "改": "Edit", "列目录": "List",
+    "读资料": "Read lib", "读文档": "Read doc", "读": "Read", "写": "Write", "改": "Edit", "列目录": "List",
     "搜文件": "Find", "搜": "Search", "命令": "Shell", "跑脚本": "Run", "抓": "Fetch",
     "渲染": "Render", "体检": "Check", "截图": "Screenshot", "看图": "View",
     "生图": "Image", "生成视频": "Video", "画图表": "Chart", "配音": "Voice",
-    "记住": "Remember", "忘掉": "Forget", "翻资料库": "Library", "存技能": "Save skill",
+    "记住": "Remember", "忘掉": "Forget", "翻资料库": "Library", "取素材": "Import", "存技能": "Save skill",
     "用技能": "Use skill", "桌面宠物": "Desktop pet", "问你一句": "Ask you",
-    "飞书文档": "Feishu doc", "委派专家团": "Delegate to team", "委派专家": "Delegate to",
+    "飞书文档": "Feishu doc", "推到群": "Push to group", "委派专家团": "Delegate to team", "委派专家": "Delegate to",
   };
   // 轨迹条（折叠条上那排小徽章）用的是另一套更短的标，见 app-01.js 的 TOOL_SHORT
   // 短标现在只剩字，图标是 sprite 里另一张表（app-01.js 的 TOOL_ICON）。
   // 以前这儿的键长这样："📄 读" —— 表情跟着一起进翻译表，加个工具要在两处各抄一遍图。
   const TOOL_SHORT_EN = {
-    "读": "Read", "写": "Write", "改": "Edit", "列": "List",
+    "读": "Read", "读文档": "Read doc", "写": "Write", "改": "Edit", "列": "List",
     "找": "Find", "命令": "Shell", "搜": "Search",
     "抓": "Fetch", "渲染": "Render", "查页": "Check", "截图": "Shot",
     "看图": "View", "生图": "Image", "视频": "Video", "图表": "Chart",
     "配音": "Voice", "记": "Save", "忘": "Forget", "库": "Library",
-    "读库": "Read lib", "存技能": "Save skill", "宠物": "Pet",
+    "读库": "Read lib", "取素材": "Import", "存技能": "Save skill", "宠物": "Pet", "推群": "Push",
   };
   for (const [zh, en] of Object.entries(TOOL_SHORT_EN)) if (!(zh in DICT.en)) DICT.en[zh] = en;
   for (const [zh, en] of Object.entries(TOOL_VERB_EN)) {

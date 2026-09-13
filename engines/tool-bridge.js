@@ -62,6 +62,7 @@ const LENDABLE = [
   "html_to_image",    // 网页转长图/封面
   "gen_diagram",      // mermaid / echarts / graphviz 出图
   "look_at_image",    // 看图（CLI 在无头管道里读不了本地图片）
+  "read_document",    // 读 Office 文档/压缩包：CLI 只会按文本读，拿回去是一坨乱码
   "render_page",      // 带 JS 渲染后取正文
   "check_page",       // 打开做好的网页，看控制台报错和实际效果
   "web_search",       // 走本项目配的搜索渠道
@@ -85,9 +86,17 @@ const ALLOW = new Set(
     .split(",").map((s) => s.trim()).filter(Boolean)
 );
 
-/** 白名单 ∩ 本项目真有的工具。名字对不上就不挂——挂一个调不通的比没有更糟。 */
+// 这两个要真浏览器。桥是个纯 node 子进程，没有 Electron，调了必抛「需要桌面版环境」——
+// 挂一个必然失败的工具，比不挂更糟：CLI 那边的模型会先照着做一遍，再回来重想。
+const NEEDS_RENDERER = ["html_to_image", "render_page"];
+
+/** 白名单 ∩ 本项目真有的工具 ∩ 这个进程里真跑得通的。名字对不上就不挂。 */
 function lentDefs() {
-  return tools.TOOL_DEFS.filter((d) => ALLOW.has(d.name) && LENDABLE.includes(d.name));
+  let gui = false;
+  try { gui = !!require("../browser-render").available(); } catch {}
+  return tools.TOOL_DEFS.filter(
+    (d) => ALLOW.has(d.name) && LENDABLE.includes(d.name) && (gui || !NEEDS_RENDERER.includes(d.name))
+  );
 }
 
 /**

@@ -11,6 +11,7 @@ const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Cl
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
 const prefs = require("./prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
 const callout = require("./callout"); // 正文里的提示条：网页画图标，终端/IM 换文字标签
+const security = require("./security"); // 审计中心：对外推送这种「出了门就收不回来」的动作必须留痕
 const tracing = require("./trace"); // 执行追踪：整趟任务的模型调用/工具调用发去 Langfuse，默认关
 
 const DELEGATE_TOOL = {
@@ -94,6 +95,24 @@ const FEISHU_DOC_TOOL = {
   },
 };
 
+// 界面上早就写着「任务完成推到群里」，可真能推的只有系统自己：定时任务跑完推一条、
+// 自进化复盘推一条、IM 里那条链路推一条——全是 notify.pushBots 的固定调用点。
+// agent 手上一个入口都没有。于是「跑完发群里」这种最普通的办公请求，它只能在回复里
+// 写一句「已为你准备好，请手动发送」。webhook 明明就配在 设置 → 通知 里。
+const NOTIFY_TOOL = {
+  name: "notify_user",
+  description:
+    "把一条消息推到用户配置好的群机器人（企业微信 / 钉钉）。用户说「发到群里」「推给我」「跑完通知我」时用它。" +
+    "纯文本，2000 字以内，太长就先自己缩成摘要——群消息不是交付物，链接和文件名要写全，别让人回头再找你要。",
+  input_schema: {
+    type: "object",
+    properties: {
+      text: { type: "string", description: "要推送的正文（纯文本，2000 字以内）" },
+    },
+    required: ["text"],
+  },
+};
+
 const USE_SKILL_TOOL = {
   name: "use_skill",
   description: "加载一个技能包的完整内容（操作指南与代码模板）。执行对应类型任务前先加载相关技能。",
@@ -115,7 +134,9 @@ const mediaModels = require("./media-models"); // 四路媒体模型：把「默
 // ================= 成果核验（治「幻觉执行」） =================
 // 模型有时在文本里"表演"跑命令并声称文件已生成，实际一个工具都没调。
 // 收尾前核对它声称的产物是否真在磁盘上，不在就打回去要求真实执行。
+/* emoji-数据区 起：CLAIM_RE 要匹配模型自己写出来的那个勾，它是待匹配的数据不是界面图形，删了就漏判「口头交付」 */
 const CLAIM_RE = /(生成成功|导出成功|保存成功|创建成功|已生成|已保存|已导出|已创建|已写入|生成完毕|制作完成|下载|✅)/;
+/* emoji-数据区 止 */
 const DELIVER_EXTS = "pptx|pptm|docx|doc|xlsx|xls|pdf|zip|mp4|mov|png|jpe?g|gif|csv|html|md|svg";
 
 /**
@@ -269,9 +290,21 @@ function historyChars(history) {
   return n;
 }
 
+// 这三个工具没有渲染器就是死的：html_to_image 和 render_page 张口就抛
+// 「需要桌面版环境」，desktop_pet 连实现都没注册。纯 node 起服务（npm start / Docker /
+// wb 命令行）时它们照样挂在工具清单里，模型看得见就会去用——调一次、吃一条必然的失败、
+// 再重想一个方案，白烧一轮，还容易被当成偶发故障去重试。定义一起摘掉才是真的关掉。
+// 三条定义加起来 2100 多字符，占整份工具清单的 17%，摘掉顺带把每一步的输入都变便宜。
+const DESKTOP_ONLY_TOOLS = ["html_to_image", "render_page", "desktop_pet"];
+
+/** 有没有真能用的渲染器。探不到就当没有——宁可少给一个工具，也不给一个必然失败的 */
+function hasRenderer() {
+  try { return !!require("./browser-render").available(); } catch { return false; }
+}
+
 // 「可重取」的工具结果：截掉不心疼——要用的时候再调一次工具就能拿回原文。
 // 跑代码的输出/报错不在此列：那是一次性的现场证据，截掉就真没了。
-const REFETCHABLE_TOOLS = new Set(["read_file", "fetch_url", "list_files", "search_files", "library_read", "library_list", "web_search", "render_page", "check_page"]);
+const REFETCHABLE_TOOLS = new Set(["read_file", "read_document", "fetch_url", "list_files", "search_files", "library_read", "library_list", "web_search", "render_page", "check_page"]);
 
 // 削到多低才收手。削"刚好够"是个隐形的烧钱姿势：一超预算就每步再削一点点，
 // 而历史被改了一个字节，后面整段缓存前缀就作废——于是每一步都是全价重买。
@@ -371,6 +404,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - run_node：执行 Node.js 代码。已安装库：pptxgenjs(PPT)、docx(Word)、exceljs(Excel)，以及 Node 内置模块。
 - run_shell：执行 shell 命令（${process.platform === "win32" ? "Windows cmd，注意用 cmd 语法：del/copy/where、路径反斜杠" : "zsh/bash"}），可用系统已装的 CLI 工具（git、curl、ffmpeg、lark-cli 等）。调现成命令行工具用它，写程序逻辑用 run_node。
 - read_file：读文件（大文件用 start_line/end_line 只读要看的那段）
+- read_document：读 Word/Excel/PPT/压缩包（.docx/.xlsx/.pptx/.zip）。这几种是打包格式，read_file 读出来是乱码。甲方发来的材料、自己刚产出的文档，都用它复核
 - write_file：**新建**文件。写长文档用 append:true 一节一节续写，别把前文重新吐一遍（既慢又容易越写越短）。写完会自动做语法/结构自检，报了问题就当场修
 - edit_file：改已有文件里的某一段（精确替换）。改代码、改文档只用它，不要 write_file 整篇重写
 - search_files：全文搜索，返回 文件:行号:命中行。找定义、找调用点、改名前找引用，用它
@@ -378,13 +412,15 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - remember / forget：把跨任务成立的用户偏好记进长期记忆 / 删掉某条
 - web_search：联网搜索（标题/链接/摘要），查资料先搜索定位来源
 - fetch_url：抓取网页全文或直接调 JSON 接口（带真实浏览器请求头；配合 web_search 的结果 URL 用）
-- render_page：用内置浏览器真打开页面、等 JS 渲染完再取正文，专治动态站点（B 站、微博、单页应用）
-- check_page：验收做好的网页（静态体检 + 真浏览器打开一遍看有没有报错、是不是白屏）。交付 HTML 之前必须跑
+${hasRenderer() ? "- render_page：用内置浏览器真打开页面、等 JS 渲染完再取正文，专治动态站点（B 站、微博、单页应用）\n" : ""}- check_page：验收做好的网页（静态体检 + 真浏览器打开一遍看有没有报错、是不是白屏）。交付 HTML 之前必须跑
 - gen_diagram：文本描述 → 专业图（mermaid 流程/时序/甘特、dot 架构图、echarts 数据图表、plantuml UML），一次生成 SVG+PNG 文件。文档/PPT/飞书文档要配图一律用它，不要手写 SVG 文件
 - use_skill：加载技能包（做对应任务前先加载）
-- library_list / library_read：查看用户的资料库与灵感笔记（跨项目共享的长期参考资料，任务涉及用户偏好/素材时先查）`;
+- library_list / library_read / library_import：查看用户的资料库与灵感笔记（跨项目共享的长期参考资料，任务涉及用户偏好/素材时先查）。库里的 PDF/图片/Word/压缩包不是文本，用 library_import 复制到工作目录后再按类型处理${hasRenderer() ? "" : "\n- **当前没有内置浏览器**（纯命令行/服务端模式）：html_to_image、render_page、桌面宠物都不可用，技能文档里提到它们的步骤一律跳过。要做排版图就把 HTML 写出来交付，告诉用户在桌面版里截；要出图表用 gen_diagram（它有云端兜底）。"}`;
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) {
       p += `\n- feishu_doc_create：把 Markdown 内容创建成飞书云文档交付给用户（用户要求"发到飞书/建飞书文档"时用它，不要自己找凭证写脚本）`;
+    }
+    if (botWebhookOn()) {
+      p += `\n- notify_user：把一条消息推到用户的群机器人（企业微信/钉钉）。用户说"发到群里/推给我/跑完通知我"时用它，别在回复里写"请你手动转发"`;
     }
 
     if (skills.length) {
@@ -407,13 +443,12 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 4.1 **大任务先立进度档**：预计十步以上、或要产出多个文件的任务，第一步先在工作目录 write_file 建 PROGRESS.md：目标一句话 + 分步清单（- [ ] 待做 / - [x] 已完成）。此后每完成一步就 edit_file 打勾。任务被打断或续跑时，先读 PROGRESS.md 从断点接着做，绝不从头重来。
 5. 代码报错要读懂原因、修正重试，不要放弃；同一处连续失败 3 次就换思路，别在死路上空转。
 5.1 抓不到网页不等于做不到（高频翻车点）。一条路走不通就换下一条，**同一个目标至少真试满三种路子**才允许说抓不到：
-   - fetch_url 拿回来是空壳 → 用 render_page 真渲染一遍；
-   - 页面正文是异步加载的 → 去找它背后的数据接口（站点常见的 api.xxx.com/... 形式）直接 fetch_url，接口返回 JSON 比解析 HTML 靠谱得多；
+${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 用 render_page 真渲染一遍；\n" : "   - fetch_url 拿回来是空壳 → 去找它背后的数据接口，或者 run_shell 调本机 curl 带上完整请求头再抓一次（当前没有内置浏览器，别去找 render_page，它不在你的工具清单里）；\n"}   - 页面正文是异步加载的 → 去找它背后的数据接口（站点常见的 api.xxx.com/... 形式）直接 fetch_url，接口返回 JSON 比解析 HTML 靠谱得多；
    - 接口要签名/被风控挡 → 用 run_shell 调本机现成的命令行工具（curl 带完整请求头、yt-dlp 取视频站元数据、rss 源等），本机装了什么先 \`which\` 一下再说没有；
    - 还是不行 → web_search 搜同样的内容，从能打开的转载页/镜像站/第三方数据站拿。
    把「需要登录 Cookie / 需要官方 API 权限」当结论直接停手，是不合格的交付。真要用户的登录态才继续，先把不需要登录也能拿到的那部分做完再说。
 5.2 **不许用文字问句结束回合**：严禁用「请告诉我你的选择：1... 2... 3...」「需要我尝试哪种方式？」这类话收尾，那是把活推回给用户。**技术路线**（用哪个库、抓哪条接口、跑几轮、代码怎么组织）的优劣你自己判断得了——挑最可能成的那个直接动手，失败了再换。这一条禁的是把选择题写在**回复正文**里，**不是禁 ask_user 工具**：成品形态会完全不同的岔路（封面图走生图还是排版截图、报告交 Word 还是 PDF、视频出横版还是竖版）该用 ask_user 就用，它弹的是可点的选项卡片，用户点一下就继续。同理，严禁把代码贴在回复里说"我能这样做"——能跑就 run_node / run_shell 真跑，回复里只放结论。
-5.3 **只读的活一次性并发发出去**：要查 5 个关键词、要抓 6 个链接、要读 3 个文件时，在同一轮里一口气发多个工具调用（web_search / fetch_url / render_page / read_file / list_files / library_read），系统会并发执行，只花最慢那一个的时间；一个一个来是把等待时间叠加。会写文件、跑命令、委派专家的调用不要和别的混在一轮里发——那些的先后顺序有意义，混在一起会被退回串行。
+5.3 **只读的活一次性并发发出去**：要查 5 个关键词、要抓 6 个链接、要读 3 个文件时，在同一轮里一口气发多个工具调用（web_search / fetch_url / read_file / read_document / list_files / library_read），系统会并发执行，只花最慢那一个的时间；一个一个来是把等待时间叠加。会写文件、跑命令、委派专家的调用不要和别的混在一轮里发——那些的先后顺序有意义，混在一起会被退回串行。
 6. 完成后简要总结做了什么、生成了哪些文件。
 7. 始终用中文交流——包括报错说明、失败复盘、自我纠正这些中途叙述，任何时候都不许切成英文。工具返回的英文报错要翻成人话讲给用户听（原始报错可以放进代码块，但结论必须是中文）。
 8. 用户消息里的「@某文件名」指工作目录中的文件（用 read_file 读取）；「/某技能名」表示要求使用该技能（先 use_skill 加载）；「【任务类型：X】」是场景标签，按该场景的最佳实践来做。
@@ -539,18 +574,34 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     return p;
   }
 
-  const READ_ONLY_TOOLS = ["read_file", "list_files", "search_files", "fetch_url", "render_page", "web_search", "library_list", "library_read", "look_at_image"];
+  const READ_ONLY_TOOLS = ["read_file", "read_document", "list_files", "search_files", "fetch_url", "render_page", "web_search", "library_list", "library_read", "look_at_image"];
+
+  /** 配没配群机器人。两个通道任一有地址就算配了——notify.pushBots 本来就是有哪个推哪个 */
+  function botWebhookOn() {
+    const im = config.im || {};
+    return !!(im.wecom_bot_webhook || im.dingtalk_webhook);
+  }
 
   function toolList(depth, mode) {
     if (mode === "ask" || mode === "plan") {
-      return [...TOOL_DEFS.filter((t) => READ_ONLY_TOOLS.includes(t.name)), USE_SKILL_TOOL];
+      const gui = hasRenderer();
+      return [
+        ...TOOL_DEFS.filter((t) => READ_ONLY_TOOLS.includes(t.name) && (gui || !DESKTOP_ONLY_TOOLS.includes(t.name))),
+        USE_SKILL_TOOL,
+      ];
     }
     // 组织关掉了命令行：连工具定义一起摘掉，别只在执行时拦。留着定义等于让模型先想一个
     // 用 shell 的方案、调一次、吃一条拒绝、再重想——白烧一轮，还容易被它当成偶发失败去重试
     const shellOff = orgPolicy() && orgPolicy().allow_shell === false;
-    const base = shellOff ? TOOL_DEFS.filter((t) => t.name !== "run_shell" && t.name !== "run_node") : TOOL_DEFS;
+    const noGui = !hasRenderer();
+    const base = TOOL_DEFS.filter(
+      (t) =>
+        !(shellOff && (t.name === "run_shell" || t.name === "run_node")) &&
+        !(noGui && DESKTOP_ONLY_TOOLS.includes(t.name))
+    );
     const tools = [...base, USE_SKILL_TOOL, ASK_USER_TOOL, ...mcpManager.toolDefs()];
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) tools.push(FEISHU_DOC_TOOL);
+    if (botWebhookOn()) tools.push(NOTIFY_TOOL);
     if (depth === 0 && experts.length) tools.push(DELEGATE_TOOL);
     // 团委派只给主协调者：专家在团里接力时 depth 已经 >0，再让它组团会套娃
     if (depth === 0 && expertTeams.some((t) => teamMembers(t).length >= 2)) tools.push(DELEGATE_TEAM_TOOL);
@@ -653,6 +704,25 @@ function modePrompt(mode) {
     }
     if (mcpManager.isMcpTool(tc.name)) {
       return await mcpManager.call(tc.name, tc.input);
+    }
+    if (tc.name === "notify_user") {
+      const raw = String(tc.input.text || "").trim();
+      if (!raw) return { content: "notify_user 要带上 text（推送正文）。", isError: true };
+      // 正文里的提示条是给界面画图标用的标记，推到群里就是一串乱标签
+      const text = callout.strip(raw).slice(0, 2000);
+      security.audit("对外推送", text, "放行");
+      let sent = [];
+      try {
+        sent = await require("./notify").pushBots(config, text);
+      } catch (e) {
+        return { content: `推送失败：${e.message}`, isError: true };
+      }
+      // pushBots 单通道失败只写一行 console.warn 就咽了，返回的数组才是真凭据。
+      // 不看它就会出现「工具说成功、群里什么都没有」——比报错更难查
+      if (!sent.length) {
+        return { content: "一个通道都没推成（webhook 可能填错了或已失效）。去 设置 → 通知 里核对企业微信/钉钉的地址。", isError: true };
+      }
+      return { content: `已推送到：${sent.map((s) => ({ wecom: "企业微信", dingtalk: "钉钉" }[s] || s)).join("、")}（${text.length} 字）`, isError: false };
     }
     if (tc.name === "feishu_doc_create") {
       try {
@@ -1197,9 +1267,11 @@ function modePrompt(mode) {
       has("generate_image") && "  · mcp__openworkbuddy__generate_image  生图（用户在本项目里配好的图像模型，你直接调，图会落到工作目录）",
       has("generate_video") && "  · mcp__openworkbuddy__generate_video  生视频     · mcp__openworkbuddy__text_to_speech 配音",
       has("gen_diagram") && "  · mcp__openworkbuddy__gen_diagram     流程图/架构图/统计图（dot 离线可用）",
-      has("html_to_image") && "  · mcp__openworkbuddy__html_to_image   网页转长图  · mcp__openworkbuddy__look_at_image 看图",
+      has("html_to_image") && "  · mcp__openworkbuddy__html_to_image   网页转长图（排版好的 HTML 截成图）",
+      has("look_at_image") && "  · mcp__openworkbuddy__look_at_image   看图（带上你想知道的具体问题）",
+      has("read_document") && "  · mcp__openworkbuddy__read_document   读 Word/Excel/PPT/压缩包（你自带的读文件工具读这几种只会得到乱码）",
       has("check_page") && "  · mcp__openworkbuddy__check_page      打开你做的网页，看真实效果和控制台报错",
-      has("web_search") && "  · mcp__openworkbuddy__web_search / render_page   联网搜索、取网页正文",
+      has("web_search") && ("  · mcp__openworkbuddy__web_search" + (has("render_page") ? " / render_page" : "") + "   联网搜索、取网页正文"),
       has("library_list") && "  · mcp__openworkbuddy__library_list / library_read / save_skill   技能库",
       has("remember") && "  · mcp__openworkbuddy__remember / forget           长期记忆",
     ].filter(Boolean).join("\n");
@@ -1792,12 +1864,12 @@ async function mapPool(items, limit, fn) {
 // 原始入参和完整返回一个字没删，收在卡里，想看点开就是。
 // 默认展示的是「发生了什么」，不是「传了什么参数」——后者是排障才要看的东西。
 const TOOL_VERB = {
-  read_file: "读", write_file: "写", edit_file: "改", list_files: "列目录", search_files: "搜文件",
+  read_file: "读", read_document: "读文档", write_file: "写", edit_file: "改", list_files: "列目录", search_files: "搜文件",
   run_shell: "命令", run_node: "跑脚本", web_search: "搜", fetch_url: "抓", render_page: "渲染",
   check_page: "体检", html_to_image: "截图", look_at_image: "看图", generate_image: "生图",
   generate_video: "生成视频", gen_diagram: "画图表", text_to_speech: "配音", remember: "记住",
-  forget: "忘掉", library_list: "翻资料库", library_read: "读资料", save_skill: "存技能",
-  use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档",
+  forget: "忘掉", library_list: "翻资料库", library_read: "读资料", library_import: "取素材", save_skill: "存技能",
+  use_skill: "用技能", desktop_pet: "桌面宠物", ask_user: "问你一句", feishu_doc: "飞书文档", notify_user: "推到群",
   delegate_to_expert: "委派专家", delegate_to_team: "委派专家团",
 };
 
@@ -1860,7 +1932,7 @@ function toolHeadline(name, input) {
 // 返回的是「数据」的工具：结果就是文件内容/搜索结果本身，第一行是数据不是交代，
 // 拿它当摘要等于把文件第一行糊到界面上。这些一律报「拿回来多少」。
 const DATA_RESULT_TOOLS = new Set([
-  "read_file", "list_files", "search_files", "web_search", "fetch_url", "render_page",
+  "read_file", "read_document", "list_files", "search_files", "web_search", "fetch_url", "render_page",
   "run_shell", "run_node", "library_list", "library_read", "look_at_image", "check_page",
 ]);
 
