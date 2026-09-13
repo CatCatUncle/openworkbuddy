@@ -5575,7 +5575,7 @@ const TH_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</sty
       + `<div class="out-info"><span class="out-name">图 ${i}</span><span class="out-meta">1 KB</span></div>`
       + `<div class="out-acts"></div></div>`).join("")
   + "</div></div></div></body>";
-const TH_CHECKS = `
+const TH_CHECKS = FLUSH_SRC + `
 (async () => {
   const names = [];
   const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
@@ -5598,6 +5598,7 @@ const TH_CHECKS = `
     });
     return bad;
   };
+  flush();
   const now = judge();
   ok("每张图渲染出来还是它原本的形状（没被拉扁拉长）", now.拉伸.length === 0, now.拉伸);
   ok("每张图整块都落在缩略图盒子里（没被裁掉边角）", now.切掉.length === 0, now.切掉);
@@ -5610,11 +5611,11 @@ const TH_CHECKS = `
   // ★反向对照★ 把改之前 index.html 里真写着的那两条压回去，这三把尺子必须当场全红
   const back = document.createElement("style");
   back.textContent = ".out-thumb { height: 92px; }\\n.out-thumb img { width: 100%; height: 100%; object-fit: cover; }";
-  document.head.appendChild(back);
+  document.head.appendChild(back); flush();
   const old = judge();
   ok("反向对照：退回 cover + 100%，图当场被拉成盒子的形状（" + old.拉伸.length + " 张）", old.拉伸.length >= 4, old.拉伸);
   ok("反向对照：退回 cover + 100%，小图当场被撑大", old.放大.length >= 1, old.放大);
-  back.remove();
+  back.remove(); flush();
   const again = judge();
   ok("撤掉对照又全好了（这轮不是蒙的）", again.拉伸.length === 0 && again.放大.length === 0);
   return names;
@@ -5651,7 +5652,7 @@ const PILL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</s
   + `<div class="tag">开源版 · 一句话让 AI 替你上班</div></div></div></aside>`
   + PILL_SELS.map((c) => `<div data-case="${c.sel}">${c.html}</div>`).join("")
   + "</body>";
-const PILL_CHECKS = `
+const PILL_CHECKS = FLUSH_SRC + `
 (() => {
   const names = [];
   const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
@@ -5681,10 +5682,10 @@ const PILL_CHECKS = `
   const plain = host.querySelector("i").getBoundingClientRect().height;
   const withIcon = document.createElement("i");
   withIcon.innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-wrench"></use></svg> deep-research';
-  host.appendChild(withIcon);
+  host.appendChild(withIcon); flush();
   const iconed = withIcon.getBoundingClientRect().height;
   ok("同一个标记里塞了图标也还是这么高（" + plain + " vs " + iconed + "）", Math.abs(plain - iconed) < 0.5, [plain, iconed]);
-  withIcon.remove();
+  withIcon.remove(); flush();
 
   // 名字撞车：侧栏品牌副标题不许带药丸皮
   const bt = document.querySelector(".brand .tag");
@@ -5718,7 +5719,7 @@ const PILL_CHECKS = `
     ".eng-b { font-size: 11px; padding: 1px 7px; border-radius: var(--radius-full); }",
     ".picker-menu.eng .ep-free { display: inline-block; padding: 1px 6px; border-radius: var(--radius-sm); font-size: 11.5px; font-weight: 600; }",
   ].join("\\n");
-  document.head.appendChild(back);
+  document.head.appendChild(back); flush();
   const old = geo();
   const oldKinds = [...new Set(old.map(key))];
   ok("反向对照：退回十三条各写各的，当场就是 " + oldKinds.length + " 种尺寸", oldKinds.length >= 10, oldKinds);
@@ -5726,7 +5727,7 @@ const PILL_CHECKS = `
   ok("反向对照：退回裸 .tag，品牌副标题当场又顶了一身药丸底色",
      !bare(oldBt.backgroundColor) && parseFloat(oldBt.paddingLeft) > 0, [oldBt.backgroundColor, oldBt.paddingLeft]);
   const oldTg = document.querySelector('[data-case="tg-i"] .tg i').getBoundingClientRect().height;
-  back.remove();
+  back.remove(); flush();
   const again = geo();
   ok("撤掉对照又回到一种尺寸（这轮不是蒙的）", [...new Set(again.map(key))].length === 1);
   names.push("反向对照下 .ex-card .tg i 的高度是 " + Math.round(oldTg * 10) / 10 + "px，不再是 20");
@@ -5764,7 +5765,7 @@ const ICO_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</st
   + `<div class="fx-row"><span class="chip" id="fx-chip">附件.png <a href="#" class="icon-btn" id="fx-chip-x"><svg class="i"><use href="#i-x"></use></svg></a></span></div>`
   + `<div class="fx-row user-row"><div class="user-chip" id="fx-uchip">小林</div><button id="gear-btn" class="icon-btn"><svg class="i"><use href="#i-settings"></use></svg></button></div>`
   + "</body>";
-const ICO_CHECKS = `
+const ICO_CHECKS = FLUSH_SRC + `
 (() => {
   const names = [];
   const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
@@ -5835,7 +5836,7 @@ const ICO_CHECKS = `
     ".row-more { width: 24px; height: 24px; flex: none; padding: 0; border-radius: var(--radius-sm); display: inline-flex; align-items: center; justify-content: center; }",
     ".side-nav .nav-head #proj-add { padding: 0; width: 24px; height: 24px; flex: none; border-radius: var(--radius-sm); display: inline-flex; align-items: center; justify-content: center; }",
   ].join(" ");
-  document.head.appendChild(back);
+  document.head.appendChild(back); flush();
   const old = [...BIG, ...DENSE, "#gear-btn"].map(R);
   const oldSizes = [...new Set(old.map((r) => r.w + "×" + r.h))];
   const oldRads = [...new Set(old.map((r) => r.rad))];
@@ -5847,7 +5848,7 @@ const ICO_CHECKS = `
      oddShape.length >= 2, oddShape);
   const oldAt = R("#attach-btn"), oldPk = R("#fx-pick");
   ok("反向对照：输入区那两颗又差 " + Math.round(Math.abs(oldAt.h - oldPk.h) * 10) / 10 + "px", oldAt.h !== oldPk.h, [oldAt.h, oldPk.h]);
-  back.remove();
+  back.remove(); flush();
 
   const again = [...new Set(BIG.map(R).map((r) => r.w + "×" + r.h + " " + r.rad))];
   ok("撤掉对照又回到一种尺寸（这轮不是蒙的）", again.length === 1, again);
@@ -5877,7 +5878,7 @@ const CTL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</st
   + "<div class='hub-head' id='r-sel'><select id='k-sel'><option>甲</option></select>"
   + "  <button class='btn-brand' id='k-brand2'>开跑</button></div>"
   + "</body>";
-const CTL_CHECKS = `
+const CTL_CHECKS = FLUSH_SRC + `
 (() => {
   const names = [];
   const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
@@ -5913,15 +5914,15 @@ const CTL_CHECKS = `
   // 不是造一个现编的场景：32 就是改之前 index.html 里真写着的那个数。
   const back = document.createElement("style");
   back.textContent = ".btn-plain { height: 32px; padding: 0 12px; }";
-  document.head.appendChild(back);
+  document.head.appendChild(back); flush();
   ok("反向对照：次要键退回 32px，hub-head 当场又不齐了", H("#k-plain") !== H("#k-brand"), [H("#k-plain"), H("#k-brand")]);
-  back.remove();
+  back.remove(); flush();
   // ★反向对照★ 把下拉的定高撤掉，它会自己涨回 37
   const back2 = document.createElement("style");
   back2.textContent = "select { height: auto; padding: 8px 12px; }";
-  document.head.appendChild(back2);
+  document.head.appendChild(back2); flush();
   ok("反向对照：撤掉下拉定高，它比输入框高出来", H("#k-sel") > H("#k-q"), [H("#k-sel"), H("#k-q")]);
-  back2.remove();
+  back2.remove(); flush();
   ok("反向对照撤干净了，三行又齐了", [...new Set(ROWS.flatMap(([, s]) => s.map(H)))].length === 1);
   return names;
 })()
@@ -6223,7 +6224,7 @@ const SETL_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "
   + "<div class='modal-mask show' id='modal-mask'><div class='modal wide' id='modal-box'>"
   + "<div class='m-head'><h3 id='m-title'>设置</h3><button class='m-close'>x</button></div>"
   + "<div class='m-body' id='m-body'></div></div></div></body>";
-const SETL_CHECKS = `
+const SETL_CHECKS = FLUSH_SRC + `
 (() => {
   const names = [];
   const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
@@ -6235,6 +6236,12 @@ const SETL_CHECKS = `
     + '</div><div class="settings-pane" id="settings-pane"></div></div>';
   const pane = document.getElementById("settings-pane");
   pane.innerHTML = new Array(14).fill('<div class="card-item"><div class="t">一张卡</div><div class="d">占位</div></div>').join("");
+
+  // .m-body:has(> .settings-layout){padding:0} 是靠「子节点插进来」这件事去重新匹配父节点的。
+  // CI 的离屏窗口上这次重新匹配会漏掉：量到的还是插之前那份 padding，
+  // 图标列就整整右移 20px——跟下面反向对照故意造出来的错位一模一样，看日志分不出真假。
+  // 先逼一次全树重算，再开量。
+  flush();
 
   const lay = document.querySelector(".settings-layout");
   /** 量文字真正的左边缘：量盒子再加内边距是算出来的，量文字节点才是眼睛看到的 */
@@ -6248,17 +6255,20 @@ const SETL_CHECKS = `
 
   const h = Math.round(lay.getBoundingClientRect().height);
   ok("940 高的窗口里设置层撑到 700 以上（写死 60vh 时只有 564）", h >= 700, h);
-  ok("图标列和弹窗标题文字同一列", iconLeft() === titleLeft(), { icon: iconLeft(), title: titleLeft() });
+  const mb = getComputedStyle(body);
+  ok("图标列和弹窗标题文字同一列", iconLeft() === titleLeft(),
+    { icon: iconLeft(), title: titleLeft(), "m-body 的左右留白": mb.paddingLeft + "/" + mb.paddingRight,
+      "这个引擎认不认 :has()": !!(window.CSS && CSS.supports && CSS.supports("selector(:has(*))")) });
 
   // ---- 反向对照：把这两条改回修之前的写法，两个断言都得当场挂 ----
   const undo = document.createElement("style");
   undo.textContent = ".settings-layout { height: 60vh; } .m-body:has(> .settings-layout) { padding: 14px 20px 20px; }";
-  document.head.appendChild(undo);
+  document.head.appendChild(undo); flush();
   const h2 = Math.round(lay.getBoundingClientRect().height);
   ok("反向对照：改回 60vh 层高立刻掉回 600 以下", h2 < 600, h2);
   ok("反向对照：m-body 的留白加回去，图标列就和标题错开", iconLeft() !== titleLeft(), { icon: iconLeft(), title: titleLeft() });
   ok("反向对照：错开的量正好是 m-body 那 20px", iconLeft() - titleLeft() === 20, iconLeft() - titleLeft());
-  undo.remove();
+  undo.remove(); flush();
   ok("撤掉对照样式之后又对回去了", iconLeft() === titleLeft());
 
   return names;
@@ -6365,10 +6375,10 @@ const CONTRAST_CHECKS = FLUSH_SRC + `
   shrink.textContent = ".m-close { width: auto; height: auto; padding: 0; font-size: 18px; }"
     + " .row-more { width: auto; height: auto; padding: 2px 4px; line-height: 0; }"
     + " .side-nav .nav-head #proj-add { width: auto; height: auto; padding: 0 4px; }";
-  document.head.appendChild(shrink);
+  document.head.appendChild(shrink); flush();
   const shrunk = HITS.filter(([, sel]) => { const [w, h] = box(sel); return w < 24 || h < 24; }).map(([l]) => l);
   ok("反向对照：改回旧写法，三个热区全跌回 24 以下", shrunk.length === 3, shrunk);
-  shrink.remove();
+  shrink.remove(); flush();
 
   // ---- 勾选框别被 .m-body input{width:100%} 一起扫走 ----
   // 账号弹窗里「开启积分限额」那个勾选框实测被撑成 850×13，还套了边框和 8px 内边距。
@@ -6392,9 +6402,9 @@ const CONTRAST_CHECKS = FLUSH_SRC + `
   //   量到的是浏览器默认的 13px，反倒证明不了 bug 存在过。）
   const bleed = document.createElement("style");
   bleed.textContent = ".m-body input#c-chk { width: 100%; padding: 8px 10px; }";
-  document.head.appendChild(bleed);
+  document.head.appendChild(bleed); flush();
   ok("反向对照：把 width:100% 重新压回勾选框，它当场被撑成整行", box("#c-chk")[0] >= rowW() - 1, [box("#c-chk")[0], rowW()]);
-  bleed.remove();
+  bleed.remove(); flush();
 
   return names;
 })()
