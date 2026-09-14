@@ -60,16 +60,16 @@ async function renderHubMcp(box) {
     <div class="card-grid">
       ${po ? `<div class="ex-card add" id="mcp-open-add">${ic("plus")}添加连接器</div>` : ""}
       ${list.map(({ sv, i }) => `
-        <div class="ex-card" data-mi="${i}">
+        <div class="ex-card mcp-server-card" data-mi="${i}">
           ${sv.plugin ? `<span class="flag">来自插件 ${esc(sv.plugin)}</span>` : ""}
           <div class="hd"><div class="av">${ic(sv.connected ? "plug" : "triangle-alert")}</div>
             <div class="nm"><span>${esc(sv.name)}</span><span class="al" style="color:var(${sv.connected ? "--wb-ok" : "--wb-err"})">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
-          <div class="ds" style="font-family:var(--mono,ui-monospace,monospace);font-size: 12px;word-break:break-all">${isRemote(sv)
+          <div class="ds mcp-server-command" title="${esc(isRemote(sv) ? sv.url : [sv.command, ...(sv.args || [])].join(" "))}">${isRemote(sv)
             ? `<b style="font-family:inherit;opacity:.6">远程 ·</b> ` + esc(sv.url) + ((sv.header_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.header_keys.length} 个请求头：${esc(sv.header_keys.join("、"))}）</span>` : "")
             : `<b style="font-family:inherit;opacity:.6">本地 ·</b> ` + esc(sv.command) + " " + esc((sv.args || []).join(" ")) + ((sv.env_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.env_keys.length} 个环境变量：${esc(sv.env_keys.join("、"))}）</span>` : "")}</div>
           <div class="tg">${sv.connected
             ? (sv.tools || []).slice(0, 8).map(t => `<i title="${esc(t.description || "")}">${esc(t.name)}</i>`).join("") + ((sv.tools || []).length > 8 ? `<i>…共 ${sv.tools.length} 个</i>` : "")
-            : `<i style="color:var(--wb-err-text)">${esc(sv.error || "命令启动失败或握手超时，详见应用日志")}</i>`}</div>
+            : `<i class="mcp-server-error" title="${esc(sv.error || "命令启动失败或握手超时，详见应用日志")}">${esc(sv.error || "命令启动失败或握手超时，详见应用日志")}</i>`}</div>
           <div class="ops">${!po ? "" : sv.plugin
             ? '<button disabled title="这条是插件声明的，要去「插件」页卸载整个插件">插件提供</button>'
             : '<button class="mcp-del">删除</button>'}</div>
@@ -646,10 +646,20 @@ function paintModels(pane, s) {
   const ready = s.providers.filter((p) => !chanIdle(p));
   const idle = s.providers.filter((p) => chanIdle(p));
   const idleShown = idleOpen || !ready.length; // 一个能用的都没有时直接摊开，否则新用户会以为这儿是空的
+  const active = s.models.find((model) => model.name === s.active_model);
+  const mediaRoute = (cap, empty) => { const model = s.media_models.find((item) => item.cap === cap && item.default) || s.media_models.find((item) => item.cap === cap); return model?.name || model?.model || empty; };
   pane.innerHTML = `
-    <div style="color:var(--wb-text-2);margin-bottom:10px">${po
-      ? "一个渠道一把 Key，底下挂多少模型都共用它——换 Key 只改这一处。点渠道名展开看它下面的模型。"
-      : "这台服务器上能用的模型。渠道和 Key 归平台管理员配——那是整台机器的账单。你自己这一次想用哪个，在输入框右下角随时切，只影响你。"}</div>
+    <div class="model-route-head"><div><b>当前模型路由</b><span>对话、看图、生图、生视频和配音分开设置，互不串用</span></div><span>${ready.length} 个渠道可用</span></div>
+    <div class="model-route-grid">
+      <div class="is-primary"><span>${ic("message-circle")}对话</span><b>${esc(active?.name || s.active_model || "未设置")}</b><small>${esc(active?.model || "全局默认")}</small></div>
+      <div><span>${ic("eye")}看图</span><b>${esc(mediaRoute("vision", "跟随对话"))}</b><small>理解图片与截图</small></div>
+      <div><span>${ic("image")}生图</span><b>${esc(mediaRoute("image", "未设置"))}</b><small>画布与对话生成</small></div>
+      <div><span>${ic("video")}视频</span><b>${esc(mediaRoute("video", "未设置"))}</b><small>首尾帧与参考视频</small></div>
+      <div><span>${ic("volume-2")}配音</span><b>${esc(mediaRoute("tts", "未设置"))}</b><small>对白、旁白与声音</small></div>
+    </div>
+    <div class="model-route-note">${po
+      ? "先配置渠道和 Key，再把模型挂到对应能力。每个渠道只填一次 Key；画布节点仍可临时指定具体图片或视频模型。"
+      : "这是服务器当前生效的模型路由。你可在输入框临时切换对话模型，媒体模型由平台管理员统一维护。"}</div>
     <div id="prov-list">${ready.map((p) => chanCard(p, s, po, kindLabel, dupeTag(p))).join("")
       || `<div class="d" style="padding:8px 0">还没有能用的渠道。${po ? "在下面挑一家填上 Key，或者自己加一个。" : "等平台管理员配好 Key。"}</div>`}</div>
     ${!idle.length ? "" : `
@@ -1094,10 +1104,63 @@ function renderSearchPane(pane, s) {
  *   ② 自己用 Docker 搭的就在自己机器里，填官方 cloud 就是发给别人；
  *   ③ 「开了但一条都没到」和「开了且正常」在界面上得长得不一样——所以下面那排计数是真账本。
  */
+function traceFmtDuration(ms) {
+  const n = Math.max(0, Number(ms) || 0);
+  if (n < 1000) return `${Math.round(n)}ms`;
+  if (n < 60000) return `${(n / 1000).toFixed(1)}s`;
+  return `${Math.floor(n / 60000)}m ${Math.round((n % 60000) / 1000)}s`;
+}
+function traceModels(trace) {
+  return [...new Set((trace.observations || []).filter((item) => item.kind === "generation" || item.model).map((item) => item.model || item.metadata?.model).filter(Boolean))];
+}
+function traceUsage(trace) {
+  return (trace.observations || []).reduce((total, item) => {
+    const usage = item.usage || {};
+    total.input += Number(usage.input || usage.prompt || usage.input_tokens || usage.prompt_tokens || 0);
+    total.output += Number(usage.output || usage.completion || usage.output_tokens || usage.completion_tokens || 0);
+    return total;
+  }, { input: 0, output: 0 });
+}
+function traceObsHtml(item, children, depth = 0) {
+  const duration = item.startTime && item.endTime ? new Date(item.endTime).getTime() - new Date(item.startTime).getTime() : 0;
+  const bad = item.error || item.level === "ERROR";
+  const usage = traceUsage({ observations: [item] });
+  const tokens = usage.input || usage.output ? ` · ${usage.input.toLocaleString()} in / ${usage.output.toLocaleString()} out` : "";
+  const nested = (children.get(item.id) || []).map((child) => traceObsHtml(child, children, depth + 1)).join("");
+  const body = `${item.input !== null && item.input !== undefined ? `<details><summary>输入</summary><pre>${esc(typeof item.input === "string" ? item.input : JSON.stringify(item.input, null, 2))}</pre></details>` : ""}${item.output ? `<details><summary>输出</summary><pre>${esc(typeof item.output === "string" ? item.output : JSON.stringify(item.output, null, 2))}</pre></details>` : ""}${item.metadata && Object.keys(item.metadata).length ? `<details><summary>元数据</summary><pre>${esc(JSON.stringify(item.metadata, null, 2))}</pre></details>` : ""}`;
+  return `<div class="trace-observation${bad ? " is-error" : ""}" style="--trace-depth:${Math.min(depth, 8)}"><div class="trace-observation-head"><span class="trace-kind">${esc(item.kind === "generation" ? "模型" : "工具/子任务")}</span><b>${esc(item.name || item.kind)}</b>${item.model ? `<span class="trace-model">${esc(item.model)}</span>` : ""}<span class="trace-observation-meta">${traceFmtDuration(duration)}${tokens}</span></div>${item.error ? `<div class="trace-error">${esc(item.error)}</div>` : ""}${body}${nested}</div>`;
+}
+function renderLocalTraceDetail(box, trace) {
+  if (!box || !trace) return;
+  const children = new Map(), roots = [];
+  for (const item of trace.observations || []) { const parent = item.parentId && item.parentId !== trace.id; if (parent) { if (!children.has(item.parentId)) children.set(item.parentId, []); children.get(item.parentId).push(item); } else roots.push(item); }
+  const total = trace.duration_ms || (trace.startTime && trace.endTime ? new Date(trace.endTime).getTime() - new Date(trace.startTime).getTime() : 0);
+  const models = traceModels(trace), usage = traceUsage(trace);
+  box.innerHTML = `<div class="trace-detail-head"><div><b>${esc(trace.name || "任务")}</b><small>${esc(trace.id)} · ${trace.status === "error" ? "失败" : trace.status === "running" ? "运行中" : "完成"}</small></div><button type="button" class="btn-plain" data-trace-detail-close>收起</button></div><div class="trace-detail-summary"><span><b>${traceFmtDuration(total)}</b> 总耗时</span><span><b>${trace.observations?.length || 0}</b> 执行节点</span><span><b>${(usage.input + usage.output).toLocaleString()}</b> Token</span><span>${models.length ? models.map((model) => `<i>${esc(model)}</i>`).join("") : "未记录模型"}</span><time>${esc(trace.startTime ? new Date(trace.startTime).toLocaleString() : "-")}</time></div>${trace.input !== null && trace.input !== undefined ? `<details open><summary>任务输入</summary><pre>${esc(typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input, null, 2))}</pre></details>` : ""}<div class="trace-observations"><div class="trace-timeline-label">执行时间线</div>${roots.map((item) => traceObsHtml(item, children)).join("") || '<div class="trace-empty">这条 Trace 还没有模型或工具节点。</div>'}</div>${trace.output ? `<details open class="trace-final"><summary>最终结果</summary><pre>${esc(typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output, null, 2))}</pre></details>` : ""}`;
+  box.querySelector("[data-trace-detail-close]")?.addEventListener("click", () => { box.innerHTML = ""; });
+}
+async function loadLocalTraces(pane) {
+  const list = pane.querySelector("#local-trace-list"), detail = pane.querySelector("#local-trace-detail"), stat = pane.querySelector("#local-trace-stat");
+  if (!list) return;
+  const data = await fetch("/api/traces?limit=80").then((r) => r.json()).catch(() => ({ traces: [] }));
+  const traces = Array.isArray(data.traces) ? data.traces : [];
+  const completed = traces.filter((trace) => trace.status === "completed"), failed = traces.filter((trace) => trace.status === "error"), running = traces.filter((trace) => trace.status === "running"), avg = completed.length ? completed.reduce((sum, trace) => sum + Number(trace.duration_ms || 0), 0) / completed.length : 0;
+  if (stat) stat.textContent = `保存在当前工作区 · 默认不上传外部服务`;
+  const metrics = pane.querySelector("#local-trace-metrics");
+  if (metrics) metrics.innerHTML = `<div><b>${traces.length}</b><span>最近任务</span></div><div><b>${completed.length}</b><span>成功</span></div><div class="${failed.length ? "is-error" : ""}"><b>${failed.length}</b><span>失败</span></div><div><b>${running.length}</b><span>运行中</span></div><div><b>${traceFmtDuration(avg)}</b><span>平均耗时</span></div>`;
+  list.innerHTML = traces.length ? traces.map((trace) => { const models = traceModels(trace), usage = traceUsage(trace); return `<button type="button" class="local-trace-row ${trace.status === "error" ? "is-error" : trace.status === "running" ? "is-running" : ""}" data-local-trace="${esc(trace.id)}"><span class="local-trace-dot"></span><span class="local-trace-main"><b>${esc(trace.name || "任务")}</b><small>${esc(trace.startTime ? new Date(trace.startTime).toLocaleString() : "-")} · ${trace.observations?.length || 0} 步 · ${(usage.input + usage.output).toLocaleString()} Token</small></span><span class="local-trace-model">${esc(models[0] || "模型未记录")}</span><span class="local-trace-time">${traceFmtDuration(trace.duration_ms)}</span><span class="local-trace-status">${trace.status === "error" ? "失败" : trace.status === "running" ? "运行中" : "完成"}</span></button>`; }).join("") : '<div class="trace-empty">还没有本地 Trace。下一次对话或画布 Agent 任务会自动记录。</div>';
+  list.querySelectorAll("[data-local-trace]").forEach((row) => row.addEventListener("click", async () => { const id = row.dataset.localTrace; const d = await fetch("/api/traces/" + encodeURIComponent(id)).then((r) => r.json()).catch(() => null); if (d?.trace) renderLocalTraceDetail(detail, d.trace); }));
+}
 function renderTracePane(pane, s) {
   const lf = s.langfuse || {};
   const st = lf.stats || {};
   pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">本地 Trace（内置）</div>
+      <div class="d" style="margin-bottom:6px">不依赖 Langfuse，任务默认记录在当前 workspace。可以展开查看每个模型调用、工具调用、参数、结果、耗时和 Token；只有你主动打开 Langfuse 才会外发。</div>
+      <div id="local-trace-metrics" class="trace-metrics"></div><div class="trace-local-bar"><span id="local-trace-stat">正在读取…</span><span><button class="btn-plain" id="local-trace-refresh">刷新</button><button class="btn-plain" id="local-trace-clear">清空</button></span></div>
+      <div id="local-trace-list" class="local-trace-list"></div><div id="local-trace-detail" class="local-trace-detail"></div>
+    </div>
     <div class="card-item">
       <div class="t">执行追踪</div>
       <div class="d" style="margin-bottom:6px">开了之后，每趟任务的每次模型调用、每个工具、每笔 token 都会发到 Langfuse，在那边一层层展开看。默认关着——<b>打开等于把提示词原文、模型回复、工具参数发到下面填的那台机器</b>。自己用 Docker 搭一个就全在自己机器里；填官方 cloud.langfuse.com 就是发给别人。</div>
@@ -1165,6 +1228,12 @@ function renderTracePane(pane, s) {
     }
     e.target.disabled = false;
   };
+  pane.querySelector("#local-trace-refresh")?.addEventListener("click", () => loadLocalTraces(pane));
+  pane.querySelector("#local-trace-clear")?.addEventListener("click", async (e) => {
+    if (!confirm("清空本机保存的 Trace？不会影响工作区文件和 Langfuse。")) return;
+    e.target.disabled = true; await fetch("/api/traces", { method: "DELETE" }).catch(() => {}); await loadLocalTraces(pane); e.target.disabled = false;
+  });
+  loadLocalTraces(pane);
 }
 async function renderAgentPane(pane, s) {
   pane.innerHTML = `

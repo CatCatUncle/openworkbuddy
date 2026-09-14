@@ -131,6 +131,28 @@ function safePath(rel) {
 
 const TOOL_DEFS = [
   {
+    name: "canvas_manage",
+    description:
+      "控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。画布不是普通白板：节点可以是 note/script/agent/character/location/storyboard/scene/shot/image/video/audio/timeline，连线表示输入关系。" +
+      "用 list 查看当前项目的多张画布；用 get 读取当前画布；用 add 创建节点；用 update 修改节点 payload 或位置；用 connect 建立输入关系；用 delete 删除节点；用 clear 清空画布。" +
+      "短剧制作建议按 script → character/location → storyboard/scene → shot → image/video/audio → timeline 建图。先调用 get，不要凭空覆盖用户已经摆好的节点。" +
+      "生成图片/视频时先调用 generate_image 或 generate_video，拿到真实 file 路径后再用 update 把 first_frame/video/path 写回节点；这样画布会自动显示结果。所有操作只作用于当前项目，不连接其他本地项目。",
+    input_schema: {
+      type: "object",
+      properties: {
+        operation: { type: "string", enum: ["list", "get", "add", "update", "connect", "delete", "clear"], description: "要执行的画布操作" },
+        canvas_name: { type: "string", description: "可选的画布名称；不填则操作用户当前选中的画布" },
+        node_id: { type: "string", description: "update/delete 时的节点 id" },
+        source_id: { type: "string", description: "connect 时的上游节点 id" },
+        target_id: { type: "string", description: "connect 时的下游节点 id" },
+        kind: { type: "string", enum: ["note", "script", "agent", "character", "location", "storyboard", "scene", "shot", "image", "video", "audio", "timeline"], description: "add 时的节点类型" },
+        payload: { type: "object", description: "add 时的节点数据；update 时是要合并的字段，如 {prompt, first_frame, video}" },
+        position: { type: "object", description: "add/update 时的位置，如 {x: 100, y: 200}" },
+      },
+      required: ["operation"],
+    },
+  },
+  {
     name: "run_node",
     description:
       "在工作目录(workspace)中执行一段 Node.js (CommonJS) 代码并返回 stdout/stderr。可以 require 以下已安装的库：pptxgenjs(生成PPT)、docx(生成Word)、exceljs(生成Excel)，以及 Node 内置模块(fs/path等)。生成的成果文件必须写到当前工作目录(直接用相对路径/文件名即可，不要写绝对路径)。用于数据处理、文件生成、计算等一切需要编程的任务。输出太长时只回「开头 + 结尾 + 省略了多少 + 全文日志路径」，中间那段不是没有、是在那个文件里，需要就 read_file 或 grep 它，别拿结尾当全部内容。",
@@ -310,28 +332,43 @@ const TOOL_DEFS = [
       required: ["name"],
     },
   },
+  // 取网页只留这一个入口。以前还有个 render_page（"用内置浏览器真打开一遍"），两件事高度重叠：
+  // fetch_url 本来就会在抓到空壳时自动渲染兜底，render_page 只多了个「不管像不像空壳都渲染」。
+  // 代价却是实打实的——模型每次抓网页都要先做一道选择题，提示词里还得专门教它先后顺序
+  // （"先用 fetch_url，读不到再用它"），教了也常常第一次就挑错。现在那道选择题变成 fetch_url
+  // 的一个参数：render:"force"。render_page 这个名字仍然能调（见 executeTool），但不在工具清单里了。
   {
     name: "fetch_url",
     description:
-      "抓取一个 URL 的内容（最多 20000 字符）。带真实浏览器请求头，网页会去掉导航/页脚只留正文，JSON 接口原样返回——查资料和直接调数据接口都用它。静态 HTML 是空壳时会自动用内置浏览器渲染一遍再读；地址是 PDF/图片/压缩包时会自动下载到工作目录并告诉你文件名（不会把二进制乱码返回给你）。要抓多个地址就在同一轮里一次性发多个 fetch_url，系统会并发执行。",
+      "抓取一个 URL 的内容（最多 20000 字符）。带真实浏览器请求头，网页会去掉导航/页脚只留正文，JSON 接口原样返回——查资料和直接调数据接口都用它。地址是 PDF/图片/压缩包时会自动下载到工作目录并告诉你文件名（不会把二进制乱码返回给你）。要抓多个地址就在同一轮里一次性发多个 fetch_url，系统会并发执行。",
     input_schema: {
       type: "object",
       properties: {
         url: { type: "string" },
-        render: { type: "boolean", description: "是否允许在抓到空壳时自动渲染兜底，默认 true" },
+        // 这一条的正文写在参数里而不是工具描述里，是故意的：没有内置浏览器的时候（纯命令行/
+        // 服务端模式）整个参数会被摘掉，描述里就不会剩下一句"会自动渲染"的空头支票
+        render: {
+          type: "string",
+          enum: ["auto", "force", "off"],
+          description:
+            'auto（默认）=抓回来是空壳时自动用内置浏览器渲染一遍再读；force=不管像不像空壳都渲染一遍，正文全靠 JS 的站点（B 站、微博、各类单页应用）直接用它，省掉白跑的那一次；off=只要静态 HTML',
+        },
+        wait_ms: { type: "number", description: "渲染时每轮等待的毫秒数，默认 2500，内容多的页面可调大" },
       },
       required: ["url"],
     },
   },
+  // 桌面版保留旧名字作为显式「强制浏览器渲染」入口，兼容已经在跑的会话和旧版 CLI；
+  // 纯 node 模式由 agent.js 的 DESKTOP_ONLY_TOOLS 摘掉。新任务优先用 fetch_url 的 render:force；
+  // render_page 作为兼容别名保留，避免旧技能和已有会话突然失效。
   {
     name: "render_page",
-    description:
-      "用内置浏览器真实打开一个页面、等 JS 渲染完再取正文。专治 fetch_url 只拿到空壳的动态站点（B 站、微博、各类单页应用）。比 fetch_url 慢几秒，所以先用 fetch_url，读不到再用它。",
+    description: "用内置浏览器真实打开一个页面、等 JavaScript 渲染完再取正文。只在桌面版可用；服务端模式请用 fetch_url 的静态结果或直接找数据接口。",
     input_schema: {
       type: "object",
       properties: {
         url: { type: "string" },
-        wait_ms: { type: "number", description: "每轮等待渲染的毫秒数，默认 2500，内容多的页面可调大" },
+        wait_ms: { type: "number", description: "等待渲染的毫秒数，默认 2500，范围 500~8000" },
       },
       required: ["url"],
     },
@@ -2509,6 +2546,10 @@ function looksEmptyPage(text, status) {
   return /(请开启\s*JavaScript|enable\s+JavaScript|<noscript)/i.test(t) && t.length < 2000;
 }
 
+// 渲染每轮等多久。夹在 0.5~8 秒之间：给 0 会变成忙等把 CPU 占满，给 60000 会让一次抓取
+// 挂着不回话，模型那头只看得到"这一步很久没动静"，分不清是慢还是死了
+const clampWait = (ms) => Math.min(Math.max(Number(ms) || 2500, 500), 8000);
+
 // PDF / 压缩包 / 图片这类东西按文本读出来是一堆乱码，20000 字乱码进上下文既污染判断又白烧钱。
 // content-type 常常是错的（不少站点一律回 octet-stream 甚至 text/html），所以再看一眼文件头。
 const BIN_CT = /^(image|audio|video|font)\/|^application\/(pdf|zip|gzip|x-[\w.+-]+|octet-stream|msword|vnd\.)/i;
@@ -2571,7 +2612,14 @@ function decodeBody(buf, ct) {
   }
 }
 
-async function fetchUrl(url, { render, saveDir } = {}) {
+/**
+ * @param {string} url
+ * @param {{render?: "auto"|"force"|"off"|boolean, waitMs?: number, saveDir?: string}} [opts]
+ *   render 收 "auto"/"force"/"off"；老调用方传的 true/false 也认（false = off）。
+ */
+async function fetchUrl(url, { render, saveDir, waitMs } = {}) {
+  // 归一化放在这儿而不是 executeTool 里：内部调用方（测试、以后可能的别的入口）也得到同一套语义
+  const mode = render === false || render === "off" ? "off" : render === "force" ? "force" : "auto";
   let resp;
   try {
     resp = await fetch(url, { redirect: "follow", headers: browserHeaders(url), signal: AbortSignal.timeout(30000) });
@@ -2610,18 +2658,31 @@ async function fetchUrl(url, { render, saveDir } = {}) {
   const title = pageTitle(body);
   const head = `HTTP ${resp.status}${title ? ` · ${title}` : ""}`;
 
-  // 空壳/被拦：能渲染就渲染一遍，渲染不了也要把原因说清楚，别让模型以为"这个网站读不到"就此收手
-  if (render !== false && looksEmptyPage(text, resp.status)) {
-    const rendered = await renderPage(url).catch((e) => ({ error: e.message }));
-    if (rendered && rendered.text && rendered.text.length > text.length) {
-      return `HTTP ${resp.status}${rendered.title || title ? ` · ${rendered.title || title}` : ""}（静态 HTML 是空壳，已用内置浏览器渲染后读取）\n${rendered.text.slice(0, 20000)}`;
+  // 空壳/被拦：能渲染就渲染一遍，渲染不了也要把原因说清楚，别让模型以为"这个网站读不到"就此收手。
+  // force 是模型明说了"这页的正文得靠 JS"，那就不再看像不像空壳，直接渲染。
+  const forced = mode === "force";
+  if (forced || (mode !== "off" && looksEmptyPage(text, resp.status))) {
+    const rendered = await renderPage(url, waitMs ? { waitMs: clampWait(waitMs) } : {}).catch((e) => ({ error: e.message }));
+    // auto 那档要比长短：渲染没渲出东西时，原样返回静态正文比返回一段更短的壳有用。
+    // force 不比——模型要的就是渲染后的那一份，哪怕它比静态 HTML 短（静态里那些长度
+    // 往往正是导航和推荐位，恰恰是它想绕开的东西）
+    if (rendered && rendered.text && (forced || rendered.text.length > text.length)) {
+      const how = forced ? "已用内置浏览器渲染后读取" : "静态 HTML 是空壳，已用内置浏览器渲染后读取";
+      return `HTTP ${resp.status}${rendered.title || title ? ` · ${rendered.title || title}` : ""}（${how}）\n${rendered.text.slice(0, 20000)}`;
+    }
+    // force 撞上"这台机器没有内置浏览器"（纯命令行 / 服务端模式）：静态正文其实是有的，
+    // 这时候报"没能拿到正文"就是撒谎，把手上这份给它，同时讲清少了哪块
+    if (forced && rendered && rendered.error && !looksEmptyPage(text, resp.status)) {
+      return `${head}（要的是浏览器渲染，但没渲染成：${rendered.error}。下面是静态 HTML 里能读到的部分，动态加载的那块不在里面）\n${text.slice(0, 20000)}`;
     }
     const why =
-      resp.status === 412 || resp.status === 403
-        ? `对方站点把这次请求判成了爬虫（HTTP ${resp.status}）`
-        : resp.status >= 400
-          ? `对方站点返回 HTTP ${resp.status}`
-          : "这个页面的正文是 JavaScript 动态渲染的，静态 HTML 里没有内容";
+      rendered && !rendered.error && !rendered.text
+        ? "内置浏览器打开了，但页面正文是空的——多半是要登录，或者内容在 iframe / canvas 里"
+        : resp.status === 412 || resp.status === 403
+          ? `对方站点把这次请求判成了爬虫（HTTP ${resp.status}）`
+          : resp.status >= 400
+            ? `对方站点返回 HTTP ${resp.status}`
+            : "这个页面的正文是 JavaScript 动态渲染的，静态 HTML 里没有内容";
     return (
       `没能拿到正文：${why}。${rendered && rendered.error ? `（渲染兜底也失败：${rendered.error}）` : ""}\n` +
       `别就此打住，换条路：① 找这个页面背后的数据接口直接请求（浏览器 F12 网络面板里那种 api 地址）；` +
@@ -2940,6 +3001,94 @@ async function withGenCache(kind, cap, opts, input, dir, resolveFile, run) {
   return out;
 }
 
+const CANVAS_KINDS = new Set(["note", "script", "agent", "character", "location", "storyboard", "scene", "shot", "image", "video", "audio", "timeline"]);
+const CANVAS_MAX_NODES = 500;
+const CANVAS_MAX_EDGES = 1200;
+
+function canvasSafeName(value) {
+  const name = String(value || "main").trim();
+  if (!name || name === "." || name === ".." || name.length > 80 || /[\\/\\0]/.test(name)) return "main";
+  return name;
+}
+function canvasCurrentPath() { return path.join(ws(), ".openworkbuddy", "canvas-current.json"); }
+function canvasCurrentName() {
+  try { return canvasSafeName(JSON.parse(fs.readFileSync(canvasCurrentPath(), "utf8")).name); } catch { return "main"; }
+}
+function canvasSetCurrentName(name) {
+  const dir = path.dirname(canvasCurrentPath()); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(canvasCurrentPath(), JSON.stringify({ name: canvasSafeName(name), updatedAt: Date.now() }), "utf8"); return canvasSafeName(name);
+}
+function canvasStatePath(name = canvasCurrentName()) {
+  const safe = canvasSafeName(name);
+  return safe === "main" ? path.join(ws(), ".openworkbuddy", "canvas.json") : path.join(ws(), ".openworkbuddy", "canvases", safe + ".json");
+}
+function canvasEmptyState() { return { version: 1, nodes: [], edges: [], updatedAt: 0 }; }
+function canvasNormalizeState(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  const nodes = Array.isArray(raw.nodes) ? raw.nodes.filter((node) => node && node.id && CANVAS_KINDS.has(String(node.kind))).slice(0, CANVAS_MAX_NODES).map((node) => ({
+    id: String(node.id), kind: String(node.kind), payload: node.payload && typeof node.payload === "object" ? node.payload : {},
+    position: { x: Number(node.position && node.position.x) || 0, y: Number(node.position && node.position.y) || 0 },
+    size: node.size && typeof node.size === "object" ? { width: Number(node.size.width) || undefined, height: Number(node.size.height) || undefined } : undefined,
+  })) : [];
+  const ids = new Set(nodes.map((node) => node.id));
+  const edges = Array.isArray(raw.edges) ? raw.edges.filter((edge) => edge && ids.has(edge.source?.id || edge.source) && ids.has(edge.target?.id || edge.target) && (edge.source?.id || edge.source) !== (edge.target?.id || edge.target)).slice(0, CANVAS_MAX_EDGES).map((edge) => ({ source: { id: String(edge.source?.id || edge.source) }, target: { id: String(edge.target?.id || edge.target) } })) : [];
+  return { version: 1, nodes, edges, updatedAt: Number(raw.updatedAt) || 0 };
+}
+function canvasReadState(name = canvasCurrentName()) {
+  try { return canvasNormalizeState(JSON.parse(fs.readFileSync(canvasStatePath(name), "utf8"))); } catch { return canvasEmptyState(); }
+}
+function canvasWriteState(value, name = canvasCurrentName()) {
+  const state = canvasNormalizeState(value); state.updatedAt = Date.now();
+  const active = canvasSetCurrentName(name), file = canvasStatePath(active), dir = path.dirname(file), tmp = file + "." + process.pid + ".tmp";
+  fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8"); fs.renameSync(tmp, file);
+  return state;
+}
+function canvasList() {
+  const dir = path.join(ws(), ".openworkbuddy", "canvases"), out = [], add = (name, file) => {
+    let stat = null, state = canvasEmptyState();
+    try { stat = fs.statSync(file); state = canvasReadState(name); } catch {}
+    out.push({ name, title: name === "main" ? "主画布" : name, nodes: state.nodes.length, updatedAt: state.updatedAt || (stat ? stat.mtimeMs : 0) });
+  };
+  const legacy = path.join(ws(), ".openworkbuddy", "canvas.json"); if (fs.existsSync(legacy)) add("main", legacy);
+  try { fs.readdirSync(dir, { withFileTypes: true }).forEach((entry) => { if (entry.isFile() && /\.json$/i.test(entry.name)) add(entry.name.replace(/\.json$/i, ""), path.join(dir, entry.name)); }); } catch {}
+  if (!out.length) out.push({ name: "main", title: "主画布", nodes: 0, updatedAt: 0 });
+  return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+function canvasManage(input = {}) {
+  const op = String(input.operation || "get");
+  const canvasName = canvasSafeName(input.canvas_name || canvasCurrentName());
+  if (op === "list") return { content: JSON.stringify({ current: canvasCurrentName(), canvases: canvasList() }), isError: false };
+  let state = canvasReadState(canvasName);
+  if (op === "get") return { content: JSON.stringify({ canvas_name: canvasName, version: state.version, updatedAt: state.updatedAt, nodes: state.nodes, edges: state.edges }), isError: false };
+  if (op === "clear") { state = canvasWriteState(canvasEmptyState(), canvasName); return { content: `画布 ${canvasName} 已清空（${state.updatedAt}）。`, isError: false }; }
+  if (op === "add") {
+    const kind = String(input.kind || ""); if (!CANVAS_KINDS.has(kind)) return { content: `不支持的画布节点类型：${kind}`, isError: true };
+    const id = String(input.node_id || `agent_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`);
+    if (state.nodes.some((node) => node.id === id)) return { content: `节点 id 已存在：${id}`, isError: true };
+    state.nodes.push({ id, kind, payload: input.payload && typeof input.payload === "object" ? input.payload : {}, position: { x: Number(input.position?.x) || 120 + (state.nodes.length % 4) * 390, y: Number(input.position?.y) || 120 + Math.floor(state.nodes.length / 4) * 300 } });
+    state = canvasWriteState(state, canvasName); return { content: `已添加${kind}节点 ${id} 到画布 ${canvasName}。`, isError: false };
+  }
+  if (op === "update") {
+    const node = state.nodes.find((item) => item.id === String(input.node_id || "")); if (!node) return { content: `找不到节点：${input.node_id || "（空）"}`, isError: true };
+    if (input.payload && typeof input.payload === "object") node.payload = { ...node.payload, ...input.payload };
+    if (input.position && typeof input.position === "object") node.position = { x: Number(input.position.x) || node.position.x, y: Number(input.position.y) || node.position.y };
+    state = canvasWriteState(state, canvasName); return { content: `已更新节点 ${node.id}。`, isError: false };
+  }
+  if (op === "connect") {
+    const source = String(input.source_id || ""), target = String(input.target_id || "");
+    if (!state.nodes.some((node) => node.id === source) || !state.nodes.some((node) => node.id === target)) return { content: "connect 需要存在的 source_id 和 target_id。", isError: true };
+    if (source === target) return { content: "不能把节点连接到自己。", isError: true };
+    if (!state.edges.some((edge) => edge.source.id === source && edge.target.id === target)) state.edges.push({ source: { id: source }, target: { id: target } });
+    state = canvasWriteState(state, canvasName); return { content: `已连接 ${source} → ${target}。`, isError: false };
+  }
+  if (op === "delete") {
+    const id = String(input.node_id || ""), before = state.nodes.length; state.nodes = state.nodes.filter((node) => node.id !== id); state.edges = state.edges.filter((edge) => edge.source.id !== id && edge.target.id !== id);
+    if (state.nodes.length === before) return { content: `找不到节点：${id}`, isError: true };
+    state = canvasWriteState(state, canvasName); return { content: `已删除节点 ${id} 及其连线。`, isError: false };
+  }
+  return { content: `不支持的画布操作：${op}`, isError: true };
+}
+
 async function executeTool(name, input, opts = {}) {
   const timeoutMs = opts.timeoutMs || 120000;
   // 安全中心策略（settings 里配置）；未传时用纯默认值（等价于旧行为 + 默认黑名单）
@@ -3034,6 +3183,8 @@ async function executeTool(name, input, opts = {}) {
       return { content: badToolArgs(name, input._raw, input._parseError, input._rawLen), isError: true };
     }
     switch (name) {
+      case "canvas_manage":
+        return canvasManage(input);
       case "run_node": {
         if (orgBlocksShell()) return shellBlocked("run_node");
         if (sec.runtime_node === false) {
@@ -3248,7 +3399,12 @@ async function executeTool(name, input, opts = {}) {
         if (!global.__wbPetTool) return { content: "桌面宠物功能没装起来（服务端未注册 desktop_pet 的实现）。", isError: true };
         return await global.__wbPetTool.run(input, fileBase);
       }
-      case "fetch_url": {
+      // render_page 是 fetch_url 的兼容别名，执行时统一走同一套渲染逻辑。
+      // 这条 case 留着不是为了将来：还活着的 CLI 会话、外部 MCP 客户端、历史排期任务里都可能
+      // 还攥着这个名字，落到 default 分支只会得到一句"未知工具"加一个猜出来的名字。
+      // 关键是它必须走同一道安全闸——绕开 checkUrl 的别名等于给黑名单开了个后门。
+      case "fetch_url":
+      case "render_page": {
         const orgNet = hostAllowed(null, input.url);
         if (!orgNet.ok) return netBlocked(input.url, orgNet.why);
         const gate = security.checkUrl(sec, input.url);
@@ -3256,25 +3412,10 @@ async function executeTool(name, input, opts = {}) {
           security.audit("网络拦截", input.url, "拦截");
           return { content: `网络访问被安全中心拦截：${gate.reason}（设置 → 安全中心 → 网络安全）`, isError: true };
         }
-        security.audit("网络访问", `网络访问已执行：${input.url}`, "放行");
-        return { content: await fetchUrl(input.url, { render: input.render !== false, saveDir: fileBase }), isError: false };
-      }
-      case "render_page": {
-        const orgNet2 = hostAllowed(null, input.url);
-        if (!orgNet2.ok) return netBlocked(input.url, orgNet2.why);
-        const gate = security.checkUrl(sec, input.url);
-        if (!gate.allowed) {
-          security.audit("网络拦截", input.url, "拦截");
-          return { content: `网络访问被安全中心拦截：${gate.reason}（设置 → 安全中心 → 网络安全）`, isError: true };
-        }
-        security.audit("网络访问", `浏览器渲染已执行：${input.url}`, "放行");
-        try {
-          const r = await renderPage(input.url, { waitMs: Math.min(Math.max(input.wait_ms || 2500, 500), 8000) });
-          if (!r.text) return { content: "渲染成功但页面正文为空——多半是要登录，或者内容在 iframe / canvas 里。", isError: true };
-          return { content: (r.title ? `HTTP 200 · ${r.title}\n` : "") + r.text.slice(0, 20000), isError: false };
-        } catch (e) {
-          return { content: `渲染失败：${e.message}`, isError: true };
-        }
+        // 老名字的语义就是"必须渲染"；新参数里 render 只认三个值，其余（含老的布尔 false）交给 fetchUrl 归一化
+        const mode = name === "render_page" ? "force" : input.render;
+        security.audit("网络访问", `${mode === "force" ? "浏览器渲染" : "网络访问"}已执行：${input.url}`, "放行");
+        return { content: await fetchUrl(input.url, { render: mode, waitMs: input.wait_ms, saveDir: fileBase }), isError: false };
       }
       case "web_search":
         security.audit("网络访问", `联网搜索：${input.query}`, "放行");
@@ -3337,7 +3478,14 @@ function filesScope(files) {
 function outputFiles() {
   ensureDirs();
   const all = [];
-  const SKIP = new Set([".tmp", "node_modules", ".git"]);
+  const SKIP = new Set([".tmp", ".openworkbuddy", "node_modules", ".git"]);
+  // 服务端自己的运行数据（im-log.json、audit.json、会话、审计、记忆向量…全在 data/ 下）不是
+  // 用户的成果文件。工作目录指到工程上层时（workspace_dir=/Users/bryce/startup_get），这批文件
+  // 会被 walk 进「可交付列表」，两个后果：①IM 附件逻辑「回复里点名的文件自动附上」把内部日志
+  // 发进了用户手机；②任务期间日志被写、mtime 变动，「本回合产出」也会把它们当成新产出。
+  // data/ 只装运行状态、永远不会是交付物，整目录排除；用户自己项目里的 data/ 文件夹不受影响
+  // （只排除「恰好等于 DATA_DIR/data」的那一个路径）。
+  const APP_DATA_DIR = dataPath("data") + path.sep;
   (function walk(dir, rel, depth) {
     if (depth > 3 || all.length >= WALK_CAP) return;
     let entries;
@@ -3350,6 +3498,7 @@ function outputFiles() {
       if (all.length >= WALK_CAP) return;
       if (e.name.startsWith(".") || SKIP.has(e.name)) continue;
       const full = path.join(dir, e.name);
+      if (full + path.sep === APP_DATA_DIR) continue; // 服务端运行数据目录：不算交付物
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
         walk(full, r, depth + 1);
@@ -3408,4 +3557,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

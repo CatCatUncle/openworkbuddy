@@ -32,7 +32,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/demo.gif" width="960" alt="OpenWorkBuddy demo: say what you need, the agent does the work and hands you real files">
+  <img src="docs/images/demo-canvas.gif" width="960" alt="Sanitized live recording: enter the infinite canvas, create a drama workflow, keep the links, and talk to the canvas agent">
 </p>
 
 ---

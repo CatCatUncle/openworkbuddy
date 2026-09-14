@@ -21,7 +21,7 @@ seedDataDir();
 const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder, anthropicBase } = require("./llm");
-const { outputFiles, filesScope, safePath, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const { outputFiles, filesScope, safePath, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
@@ -644,6 +644,21 @@ const app = express();
 app.set("case sensitive routing", true);
 app.use(express.json({ limit: "60mb" }));
 app.use(express.static(appPath("public")));
+// JointJS 是短剧画布的开源底座。它从 node_modules 原样提供给前端，
+// 不复制、不改写 vendor 源码；这样开发态、桌面包和离线模式使用的是同一份 MPL-2.0 文件。
+app.get("/vendor/joint/joint.min.js", (_req, res) => {
+  res.sendFile(appPath("node_modules/@joint/core/dist/joint.min.js"));
+});
+app.get("/vendor/joint/LICENSE", (_req, res) => {
+  res.sendFile(appPath("node_modules/@joint/core/LICENSE"));
+});
+// Dagre（MIT）只负责按真实有向边计算节点层级和紧凑坐标，JointJS 继续负责渲染与交互。
+app.get("/vendor/dagre/dagre.min.js", (_req, res) => {
+  res.sendFile(appPath("node_modules/@dagrejs/dagre/dist/dagre.min.js"));
+});
+app.get("/vendor/dagre/LICENSE", (_req, res) => {
+  res.sendFile(appPath("node_modules/@dagrejs/dagre/LICENSE"));
+});
 /**
  * 「这个端口上应答的是谁」——唯一一个不需要登录的接口。
  *
@@ -770,6 +785,101 @@ app.get("/api/update", async (req, res) => {
 });
 
 app.get("/api/files", (_req, res) => res.json(outputFiles()));
+
+// 无限画布的项目内状态：浏览器负责渲染，Agent 通过 canvas_manage 工具改同一份 JSON。
+// 不把它放到 localStorage 作为唯一真源，否则 Agent 改完节点浏览器永远看不到。
+app.get("/api/canvas/list", (_req, res) => res.json({ canvases: canvasList() }));
+app.get("/api/canvas", (req, res) => {
+  const name = String(req.query.name || "").trim();
+  res.json({ name: name || undefined, ...canvasReadState(name || undefined) });
+});
+app.put("/api/canvas", (req, res) => {
+  try { const body = req.body || {}; res.json({ ok: true, name: body.name || undefined, state: canvasWriteState(canvasNormalizeState(body.state || body), body.name || undefined) }); }
+  catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.post("/api/canvas/boards", (req, res) => {
+  try {
+    const name = String(req.body && req.body.name || "").trim();
+    if (!name || /[\\/\0]/.test(name) || name.length > 80) throw new Error("画布名称不合法");
+    if (canvasList().some((item) => item.name === name)) throw new Error("已经有同名画布，请换一个名称");
+    const state = canvasWriteState({ version: 1, nodes: [], edges: [], updatedAt: 0 }, name);
+    res.json({ ok: true, name, state, canvases: canvasList() });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.delete("/api/canvas/boards/:name", (req, res) => {
+  try {
+    const name = String(req.params.name || "");
+    if (!name || name === "main") throw new Error("主画布不能删除");
+    const file = path.join(getWorkspaceDir(), ".openworkbuddy", "canvases", name + ".json");
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    res.json({ ok: true, canvases: canvasList() });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+// ---------- AI 短剧分镜表 / 无限画布 ----------
+// 画布只读/回写分镜表，不另造一份数据库。这样命令行技能、画布和下一次会话看到的始终
+// 是同一份 JSON；镜头单格重跑产生的路径也会立刻回到唯一真源里。
+const DRAMA_JSON_MAX = 4 * 1024 * 1024;
+function dramaName(raw) {
+  const name = String(raw || "").replace(/\\/g, "/").trim();
+  if (!name || !/\.json$/i.test(name) || name.split("/").includes("..") || name.startsWith("/")) return "";
+  return name;
+}
+function dramaSummary(name, data, stat) {
+  const scenes = Array.isArray(data && data.scenes) ? data.scenes : [];
+  const shots = scenes.reduce((n, s) => n + (Array.isArray(s && s.shots) ? s.shots.length : 0), 0);
+  return {
+    name, title: String((data && data.title) || name.replace(/\.json$/i, "")),
+    aspect: String((data && data.aspect) || "9:16"), scenes: scenes.length, shots,
+    size: stat ? stat.size : 0, mtime: stat ? stat.mtimeMs : 0,
+  };
+}
+function readDramaJson(name) {
+  const rel = dramaName(name);
+  if (!rel) throw new Error("分镜表文件名不合法（只允许工作区内的 .json 文件）");
+  const p = safePath(rel);
+  if (!fs.existsSync(p)) throw new Error("分镜表不存在：" + rel);
+  const stat = fs.statSync(p);
+  if (!stat.isFile() || stat.size > DRAMA_JSON_MAX) throw new Error("分镜表不是普通文件，或超过 4MB 上限");
+  let data;
+  try { data = JSON.parse(fs.readFileSync(p, "utf8")); }
+  catch { throw new Error("分镜表不是合法 JSON：" + rel); }
+  if (!data || typeof data !== "object" || !Array.isArray(data.scenes)) throw new Error("这不是可识别的分镜表：缺少 scenes 数组");
+  return { rel, p, stat, data };
+}
+app.get("/api/drama/storyboards", (_req, res) => {
+  try {
+    const rows = outputFiles().filter((f) => /(?:分镜表|storyboard|shotlist)[^/]*\.json$/i.test(f.name));
+    const out = [];
+    for (const f of rows) {
+      try {
+        const r = readDramaJson(f.name);
+        out.push(dramaSummary(r.rel, r.data, r.stat));
+      } catch {}
+    }
+    res.json({ storyboards: out });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.get("/api/drama/storyboard", (req, res) => {
+  try {
+    const r = readDramaJson(req.query.name);
+    res.json({ name: r.rel, data: r.data, summary: dramaSummary(r.rel, r.data, r.stat) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.put("/api/drama/storyboard", async (req, res) => {
+  try {
+    const rel = dramaName(req.body && req.body.name);
+    const data = req.body && req.body.data;
+    if (!rel || !data || typeof data !== "object" || Array.isArray(data) || !Array.isArray(data.scenes)) {
+      return res.status(400).json({ error: "缺少合法的分镜表 name / data.scenes" });
+    }
+    const raw = JSON.stringify(data, null, 2) + "\n";
+    if (Buffer.byteLength(raw) > DRAMA_JSON_MAX) return res.status(400).json({ error: "分镜表超过 4MB 上限" });
+    const p = safePath(rel);
+    await fs.promises.writeFile(p, raw, "utf8");
+    res.json({ ok: true, name: rel, summary: dramaSummary(rel, data, fs.statSync(p)) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 
 // 助理身份：界面一进来就要拿它画头像，所以单开一个轻接口，不用为了个名字去拉整份设置
 app.get("/api/assistant", (_req, res) => res.json(config.assistant));
@@ -1315,6 +1425,26 @@ app.post("/api/trace/test", async (req, res) => {
     secret_key: !sk || /^\*+$/.test(sk) ? cur.secret_key || "" : sk,
   });
   res.json(out);
+});
+
+// 本地 Trace：默认记录在当前 workspace/.openworkbuddy/traces.jsonl，不依赖 Langfuse。
+// Langfuse 只是可选的外部副本，用户可以先用本地追踪排查任务，再决定是否外发。
+app.get("/api/traces", (_req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(200, Number(_req.query.limit) || 50));
+    res.json({ traces: tracing.getTracer(config).localTraces({ limit }) });
+  } catch (e) { res.status(500).json({ error: e.message, traces: [] }); }
+});
+app.get("/api/traces/:id", (req, res) => {
+  try {
+    const trace = tracing.getTracer(config).localTraces({ traceId: String(req.params.id || "") });
+    if (!trace) return res.status(404).json({ error: "找不到这条 Trace" });
+    res.json({ trace });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete("/api/traces", (_req, res) => {
+  try { tracing.getTracer(config).clearLocalTraces(); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ---------- 首次开箱引导：没有 API Key 时，什么都干不了，得先把这一步走完 ----------
@@ -3421,6 +3551,10 @@ app.get("/api/files/view/*", (req, res) => {
   try {
     const p = safePath(relOf(req));
     if (!fs.existsSync(p)) return res.status(404).send("文件不存在");
+    // Chromium 对 .wav 的容忍度取决于上游 MIME；显式标注避免被当成
+    // application/octet-stream 后在画布 <audio> 里静默无法播放。
+    const audioMime = { ".wav": "audio/wav", ".wave": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac" }[path.extname(p).toLowerCase()];
+    if (audioMime) res.set("Content-Type", audioMime);
     res.sendFile(p);
   } catch (e) {
     res.status(400).send(e.message);

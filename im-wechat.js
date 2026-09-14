@@ -18,6 +18,7 @@
  */
 
 const crypto = require("crypto");
+const fs = require("fs");
 const imMedia = require("./im-media");
 
 // ---------- WXBizMsgCrypt：AES-256-CBC + PKCS7，签名为 sha1(排序拼接) ----------
@@ -95,6 +96,28 @@ function splitBytes(text, maxBytes) {
   return out.length ? out : [""];
 }
 
+function mediaKindOf(name) {
+  const ext = String(name || "").toLowerCase().split(".").pop() || "";
+  if (["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext)) return "image";
+  if (["amr", "mp3", "wav", "ogg", "m4a", "aac", "opus"].includes(ext)) return "voice";
+  if (["mp4", "mov", "m4v", "webm"].includes(ext)) return "video";
+  return "file";
+}
+
+/** 微信临时素材上传：企业微信与公众号共用这个 multipart 形状，返回 media_id。 */
+async function uploadWechatMedia({ endpoint, token, buf, fileName, kind }) {
+  const type = kind === "voice" ? "voice" : kind;
+  const fd = new FormData();
+  fd.append("media", new Blob([buf]), fileName);
+  const r = await fetch(`${endpoint}?access_token=${encodeURIComponent(token)}&type=${encodeURIComponent(type)}`, {
+    method: "POST", body: fd, signal: AbortSignal.timeout(120000),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.errcode) throw new Error(`微信上传${kind}失败：${d.errmsg || `HTTP ${r.status}`}（${d.errcode || r.status}）`);
+  if (!d.media_id) throw new Error("微信上传成功但没返回 media_id");
+  return d.media_id;
+}
+
 // ---------- 通用 access_token 缓存 ----------
 
 function makeTokenCache(fetchToken) {
@@ -163,6 +186,33 @@ function createWecomApp({ getConfig, log = () => {} }) {
     }
   }
 
+  /** 企业微信自建应用的主动媒体消息：图片 / AMR 语音 / 视频 / 文件。 */
+  async function sendFile(touser, absPath, fileName) {
+    const { corp_id, secret, agent_id } = cfg();
+    const token = await getToken(`${corp_id}:${secret}`);
+    const name = String(fileName || absPath.split(/[\\/]/).pop() || "文件");
+    const buf = fs.readFileSync(absPath);
+    if (!buf.length) throw new Error("文件是空的");
+    if (buf.length > imMedia.MAX_INBOUND_BYTES) throw new Error(`文件超过 ${imMedia.MAX_INBOUND_BYTES / 1048576}MB 上限`);
+    const detected = mediaKindOf(name);
+    // 微信语音消息只认 AMR；其他音频仍作为 file 发送，避免伪装成不可播放的 voice。
+    const kind = detected === "voice" && !/\.amr$/i.test(name) ? "file" : detected;
+    const mediaId = await uploadWechatMedia({
+      endpoint: "https://qyapi.weixin.qq.com/cgi-bin/media/upload",
+      token, buf, fileName: name, kind,
+    });
+    const media = kind === "video"
+      ? { media_id: mediaId, title: name, description: "OpenWorkBuddy 生成" }
+      : { media_id: mediaId };
+    const r = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ touser, msgtype: kind, agentid: +agent_id || 0, [kind]: media }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const d = await r.json();
+    if (d.errcode) throw new Error(`企业微信发送${imMedia.KIND_CN[kind] || "文件"}失败：${d.errmsg}（${d.errcode}）`);
+  }
+
   /** URL 验证（腾讯保存回调地址时来一次 GET） */
   function verifyUrl(query) {
     const { token, aes_key } = cfg();
@@ -202,7 +252,7 @@ function createWecomApp({ getConfig, log = () => {} }) {
     };
   }
 
-  return { push, verifyUrl, parseCallback, fetchMedia, status };
+  return { push, sendFile, verifyUrl, parseCallback, fetchMedia, status };
 }
 
 // ---------- 微信公众号 ----------
@@ -240,6 +290,34 @@ function createWechatMp({ getConfig, log = () => {} }) {
         throw new Error(`公众号发送失败：${d.errmsg}（${d.errcode}）`);
       }
     }
+  }
+
+  /** 公众号客服消息支持图片 / AMR 语音 / 视频；官方接口没有 file 客服消息类型。 */
+  async function sendFile(openid, absPath, fileName) {
+    const { app_id, app_secret } = cfg();
+    const token = await getToken(`${app_id}:${app_secret}`);
+    const name = String(fileName || absPath.split(/[\\/]/).pop() || "文件");
+    const buf = fs.readFileSync(absPath);
+    if (!buf.length) throw new Error("文件是空的");
+    if (buf.length > imMedia.MAX_INBOUND_BYTES) throw new Error(`文件超过 ${imMedia.MAX_INBOUND_BYTES / 1048576}MB 上限`);
+    const detected = mediaKindOf(name);
+    if (detected === "file" || (detected === "voice" && !/\.amr$/i.test(name))) {
+      throw new Error("公众号客服消息接口不支持直接发普通文件（语音需 AMR 格式）");
+    }
+    const mediaId = await uploadWechatMedia({
+      endpoint: "https://api.weixin.qq.com/cgi-bin/media/upload",
+      token, buf, fileName: name, kind: detected,
+    });
+    const media = detected === "video"
+      ? { media_id: mediaId, title: name, description: "OpenWorkBuddy 生成" }
+      : { media_id: mediaId };
+    const r = await fetch(`https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=${token}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ touser: openid, msgtype: detected, [detected]: media }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const d = await r.json();
+    if (d.errcode) throw new Error(`公众号发送${imMedia.KIND_CN[detected] || "媒体"}失败：${d.errmsg}（${d.errcode}）`);
   }
 
   /** URL 验证：sha1(token/timestamp/nonce 排序拼接) 与 signature 比对 */
@@ -289,7 +367,7 @@ function createWechatMp({ getConfig, log = () => {} }) {
     };
   }
 
-  return { push, verifyUrl, parseCallback, fetchMedia, status };
+  return { push, sendFile, verifyUrl, parseCallback, fetchMedia, status };
 }
 
 module.exports = {

@@ -3,6 +3,7 @@
  * 首屏 demo 录屏：用 Electron 离屏渲染把「输入任务 → 助理干活 → 出结果」录成 GIF（+ mp4）。
  *
  *   npm run demo:record -- --dry                 # 只录打字、不发送，零成本，验证管线
+ *   npm run demo:record -- --canvas --out docs/images/demo-canvas.gif  # 录真实无限画布（隔离账号、无模型调用）
  *   npm run demo:record -- --prompt "帮我把 workspace 里的 销售明细.csv 按月汇总成一张表，给三条结论"
  *
  * 参数：
@@ -16,6 +17,7 @@
  *   --max-sec <秒>    任务最长等待（默认 300）
  *   --port <端口>     演示服务端口（默认 3897，不碰你正在用的 3800）
  *   --keep           录完保留演示数据目录（默认删）
+ *   --canvas         录制无限画布入口、短剧节点和关系连线，不发送模型请求
  *
  * 马赛克：页面里出现的临时目录 / home 目录 / 用户名 / 主机名全部替换掉再截帧（scripts/demo-mask.js），
  *   每次录制先自检遮罩生效，没生效直接报错不出片——录出去的 GIF 是要放公开仓库的。
@@ -48,10 +50,11 @@ const SAMPLE_CSV = [
 ].join("\n") + "\n";
 
 function parseArgs(argv) {
-  const a = { prompt: DEFAULT_PROMPT, out: path.join(ROOT, "docs", "images", "demo.gif"), dry: false, speed: 1, width: 960, fps: 6, maxSec: 300, port: 3897, keep: false, targetSec: 40 };
+  const a = { prompt: DEFAULT_PROMPT, out: path.join(ROOT, "docs", "images", "demo.gif"), dry: false, canvas: false, speed: 1, width: 960, fps: 6, maxSec: 300, port: 3897, keep: false, targetSec: 40 };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i], v = argv[i + 1];
     if (k === "--dry") a.dry = true;
+    else if (k === "--canvas") a.canvas = true;
     else if (k === "--keep") a.keep = true;
     else if (k === "--prompt") { a.prompt = v; i++; }
     else if (k === "--out") { a.out = path.resolve(v); i++; }
@@ -208,14 +211,38 @@ app.whenReady().then(async () => {
     await sleep(1200); // 让首屏动画/历史加载完再开录
 
     const rec = new Recorder(win, framesDir, ARGS.fps);
-    rec.start();
-    await sleep(1000);
-    await typeInto(win, ARGS.prompt);
-    await sleep(900);
-    if (ARGS.dry) {
+    if (ARGS.canvas) {
+      // 从真正的侧栏入口进画布，再点「新建短剧工作流」；没有伪造 DOM，也没有模型/真实账号。
+      await win.webContents.executeJavaScript(`(() => document.querySelector('.item[data-view="canvas"]')?.click())()`);
+      for (let i = 0; i < 30; i++) {
+        const readyCanvas = await win.webContents.executeJavaScript(`!!(document.querySelector('.canvas-page') && document.querySelector('[data-canvas-starter]'))`);
+        if (readyCanvas) break;
+        await sleep(250);
+      }
+      const readyCanvas = await win.webContents.executeJavaScript(`!!document.querySelector('[data-canvas-starter]')`);
+      if (!readyCanvas) throw new Error("无限画布页面没有加载出来");
+      await sleep(900);
+      // 临时演示画布从零开始：通过真实的「清空」按钮清掉示例节点，避免历史 seed 把首屏缩成缩略图。
+      await win.webContents.executeJavaScript(`(() => { const clear = document.querySelector('[data-canvas-clear]'); if (!clear) return; const old = window.confirm; window.confirm = () => true; clear.click(); window.confirm = old; })()`);
+      await sleep(180);
+      await win.webContents.executeJavaScript(`document.querySelector('[data-canvas-starter]')?.click()`);
+      await sleep(1100);
+      await win.webContents.executeJavaScript(`document.querySelector('[data-canvas-layout]')?.click(); document.querySelector('[data-canvas-fit]')?.click()`);
+      // README / GitHub 通常先展示 GIF 的第一帧：从已打开的真实画布开始录，第一眼就能看到功能，
+      // 进入侧栏的动作仍由上面真实 UI 完成，但不让首页空镜抢走封面。
+      rec.start();
+      rec.mark("sent"); rec.mark("done");
+      await sleep(2800); // 停在真实的 DAG、侧栏入口和画布 Agent 输入框上
+      log("已录制无限画布：入口、短剧骨架、连线与画布 Agent");
+    } else {
+      rec.start();
+      await sleep(1000);
+      await typeInto(win, ARGS.prompt);
+      await sleep(900);
+      if (ARGS.dry) {
       log("--dry：不发送，只录打字");
       await sleep(1500);
-    } else {
+      } else {
       await win.webContents.executeJavaScript(`send()`);
       rec.mark("sent");
       log("已发送，等助理跑完…");
@@ -240,6 +267,7 @@ app.whenReady().then(async () => {
       })()`);
       if (clicked) log(`点开产出 chip 预览：${clicked}`);
       await sleep(clicked ? 3500 : 2500); // 停在结果上让人看清
+      }
     }
     await rec.stop();
     log(`采样 ${rec.shots} 次，落盘 ${rec.frames.length} 帧（相邻相同的已合并）`);
@@ -258,7 +286,7 @@ app.whenReady().then(async () => {
     if (fs.existsSync(mp4)) log(`MP4 ${mp4}  ${(fs.statSync(mp4).size / 1024 / 1024).toFixed(2)} MB`);
     if (size > 8 * 1024 * 1024) log("GIF 超过 8MB，README 里会加载得慢：试试 --target-sec 25 或 --width 800");
     // 真录才挂进 README 首屏（--dry 的片子是验管线的，不上门面）；已经挂过就不重复
-    if (!ARGS.dry) {
+    if (!ARGS.dry || ARGS.canvas) {
       const wired = wireReadmes(ROOT, ARGS.out);
       const rel = path.relative(ROOT, ARGS.out).split(path.sep).join("/");
       if (wired.length) log(`已把 demo 挂进 ${wired.join(" / ")} 首屏；提交时一起加：git add -- ${rel} ${wired.join(" ")}`);

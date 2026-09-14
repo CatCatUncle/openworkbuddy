@@ -19,6 +19,7 @@ OpenWorkBuddy 自身按 [PolyForm Noncommercial 1.0.0](LICENSE) 发布，商业�
 | @anthropic-ai/sdk | 0.125.0 | MIT | https://github.com/anthropics/anthropic-sdk-typescript |
 | @larksuiteoapi/node-sdk | 1.72.0 | MIT | https://github.com/larksuite/node-sdk |
 | @viz-js/viz | 3.29.0 | MIT | https://github.com/mdaines/viz-js |
+| @joint/core | 4.3.3 | MPL-2.0 | https://github.com/clientIO/joint |
 | docx | 9.7.1 | MIT | https://github.com/dolanmiu/docx |
 | echarts | 6.1.0 | Apache-2.0 | https://github.com/apache/echarts |
 | exceljs | 4.4.0 | MIT | https://github.com/exceljs/exceljs |
@@ -31,6 +32,7 @@ OpenWorkBuddy 自身按 [PolyForm Noncommercial 1.0.0](LICENSE) 发布，商业�
 
 Apache-2.0 的那条（echarts）要求保留它自己的 NOTICE 和许可头——我们没有改它的源码，
 安装出来的包里原样带着，这一条就算尽到了。
+短剧画布通过 `/vendor/joint/joint.min.js` 使用 `@joint/core` 的原文件，不改源码。
 
 ## 三、外部服务（不随包发布，用户自己配）
 
@@ -38,13 +40,7 @@ PlantUML 渲染在本机没装 `plantuml` 命令时，会把图源发给用户�
 这是一次网络请求，不是分发别人的代码，因此不涉及许可，但涉及隐私——
 **图里有敏感内容就别用远端渲染**，装个本机 `plantuml` 更稳妥。
 
-## 四、计划引入（尚未进仓库）
-
-| 组件 | 许可 | 用途 | 约束 |
-|---|---|---|---|
-| @joint/core | MPL-2.0 | 短剧无限画布的底座，见 [docs/短剧画布选型.md](docs/短剧画布选型.md) | MPL 是**逐文件** copyleft：原样放进 `public/vendor/joint/`、一个字节不改，我们自己的代码就不受影响；真要改它，改动的文件得以 MPL 发出来。所以约定「只在外面包，不动里面」 |
-
-## 五、我们借鉴但没有复制代码的项目
+## 四、我们借鉴但没有复制代码的项目
 
 写下来是为了讲清楚边界——**看过、学过、没抄**：
 

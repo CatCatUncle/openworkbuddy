@@ -46,11 +46,13 @@ const ERRCODE_SESSION_EXPIRED = -14; // 登录态失效，只能重新扫码
 
 // 发附件：先问微信要一个上传地址，加密上传到 CDN，再把 CDN 凭证塞进消息体
 const MEDIA_IMAGE = 1;
+const MEDIA_VIDEO = 2;
 const MEDIA_FILE = 3;
 // getuploadurl 校验这两个身份头，缺了直接回 {"ret":-1}（图片不校验，一起带上无害）
 const ILINK_APP_ID = "bot";
 const ILINK_APP_CLIENT_VERSION = "131329"; // "2.1.1" → (2<<16)|(1<<8)|1
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+const VIDEO_EXT_RE = /\.(mp4|mov|m4v|webm)$/i;
 
 const DEFAULT_LONGPOLL_MS = 35000;
 const LONGPOLL_EXTRA_MS = 5000;
@@ -264,7 +266,8 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
   /**
    * 把工作目录里的成果文件发进微信聊天。
    * 三步：getuploadurl 拿预签名地址 → AES-128-ECB 加密上传到 CDN → 用 CDN 凭证发一条媒体消息。
-   * 图片按图片发（聊天里能直接看），其他一律按文件发。
+   * 图片按图片发、视频按视频发，其他按文件发。iLink 当前公开协议的上传类型没有独立 voice
+   * 入口，所以音频保留原扩展名作为文件发送，不伪造 voice_item 破坏消息。
    */
   async function sendFile(userId, absPath, fileName) {
     const ct = contextTokens.get(userId);
@@ -276,6 +279,7 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
       throw new Error(`文件 ${(buf.length / 1048576).toFixed(1)}MB，超过微信 ${imMedia.MAX_INBOUND_BYTES / 1048576}MB 上限`);
     }
     const isImage = IMAGE_EXT_RE.test(name);
+    const isVideo = VIDEO_EXT_RE.test(name);
     const aesKey = crypto.randomBytes(16);
     const aesKeyHex = aesKey.toString("hex");
     // filekey 必须是纯 ASCII：拿中文文件名当 key，服务端回 {"ret":-1}
@@ -283,7 +287,7 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     const cipherSize = imMedia.aesEcbPaddedSize(buf.length);
     const up = await apiPost("ilink/bot/getuploadurl", {
       filekey,
-      media_type: isImage ? MEDIA_IMAGE : MEDIA_FILE,
+      media_type: isImage ? MEDIA_IMAGE : isVideo ? MEDIA_VIDEO : MEDIA_FILE,
       to_user_id: userId,
       rawsize: buf.length,
       rawfilemd5: crypto.createHash("md5").update(buf).digest("hex"),
@@ -306,7 +310,9 @@ function createIlinkConnection({ getConfig, onMessage, onCursor = () => {}, log 
     const media = { encrypt_query_param: downloadParam, aes_key: aesKeyField, encrypt_type: 1 };
     const item = isImage
       ? { type: ITEM_IMAGE, image_item: { media, mid_size: cipherSize } }
-      : { type: ITEM_FILE, file_item: { media, file_name: name, len: String(buf.length) } };
+      : isVideo
+        ? { type: ITEM_VIDEO, video_item: { media } }
+        : { type: ITEM_FILE, file_item: { media, file_name: name, len: String(buf.length) } };
     const r = await apiPost("ilink/bot/sendmessage", {
       msg: {
         to_user_id: userId,
