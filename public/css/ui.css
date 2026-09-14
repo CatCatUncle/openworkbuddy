@@ -561,7 +561,7 @@ html[data-theme="dark"] .ui-select {
 .canvas-chat-send.is-interject { background: color-mix(in srgb, var(--wb-brand) 84%, var(--destructive)); }
 .canvas-chat-compose.is-dragging { border-color: var(--wb-brand); background: color-mix(in srgb, var(--wb-brand) 7%, var(--wb-bg)); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--wb-brand) 18%, transparent); }
 /* 画布是主工作区：工具和属性以浮层存在，不再挤压画布本体。 */
-.canvas-page { position: relative; }
+.canvas-page { position: relative; margin-top: -16px; }
 .canvas-page > .canvas-toolbar { position: absolute; z-index: 24; top: 42px; right: 10px; left: 10px; justify-content: space-between; margin: 0; pointer-events: none; }
 .canvas-tool-cluster { position: relative; display: inline-flex; align-items: center; gap: 2px; height: 34px; padding: 2px; border: 1px solid var(--wb-border); border-radius: var(--radius-md); background: color-mix(in srgb, var(--wb-bg) 92%, transparent); box-shadow: var(--shadow-surface); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); pointer-events: auto; }
 .canvas-tool-cluster .canvas-node-menu, .canvas-tool-cluster .canvas-library { position: relative; width: 30px; margin: 0; border: 0; border-radius: var(--radius-sm); background: transparent; }
