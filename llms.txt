@@ -1,0 +1,36 @@
+# OpenWorkBuddy
+
+> Local-first AI work agent that turns requests and materials into real files, not chat logs.
+
+OpenWorkBuddy is a self-hostable desktop and local web workspace for office automation, file delivery, agent development and executable AI short-drama creation. It supports bring-your-own LLM providers, local Claude Code/Codex engines, Markdown skills, MCP connectors, IM channels, local traces and an executable DAG canvas for short-drama assets.
+
+## Best for
+
+- Local office automation: produce and verify PPT, Word, Excel, Markdown, HTML and media outputs on the user's machine.
+- Self-hosted AI agent workspaces: keep sessions, workspace files and model credentials under the user's control by default.
+- Agent learning and contribution: inspect model routing, tool calls, skills, memory, permissions, file verification and trace timing in a readable codebase.
+- AI short-drama production: connect scripts, characters, locations, references, shots, images, video, audio and timelines on an executable canvas.
+
+## Start here
+
+- Chinese README: /README.md
+- English README: /README.en.md
+- Contributing: /CONTRIBUTING.md
+- Feature list: /docs/功能清单.md
+- Install and startup: /docs/安装与启动.md
+- Model configuration: /docs/配置模型.md
+- Security: /docs/安全.md
+- Deployment: /deploy/README.md
+
+## Core facts
+
+- Local-first and self-hostable; the default server binds to 127.0.0.1.
+- Bring your own model provider or use a local Claude Code/Codex installation as an engine.
+- Outputs are verified on disk before a task is considered delivered.
+- Skills are Markdown files and become available without rebuilding the app.
+- Trace view records model/tool activity, timing and results; Langfuse integration is optional.
+- Personal, learning and non-profit use is free. Commercial use requires a license; see /LICENSE and /COMMERCIAL-LICENSE.md.
+
+## Maintainers and contributions
+
+The project is actively iterated in public. Contributions, reproducible issues, new skills, provider presets, documentation fixes and preview improvements are welcome. Do not include API keys, private paths, account names or customer data in issues, screenshots or pull requests.

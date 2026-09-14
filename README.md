@@ -5,8 +5,8 @@
 <h1 align="center">OpenWorkBuddy</h1>
 
 <p align="center">
-  <b>一个真吐文件的本机 AI 办公 agent。</b><br>
-  说一句人话，它自己规划、动手、验收——交给你的是能直接打开的 PPT / Word / Excel / 网页，<b>不是一段聊天记录</b>。
+  <b>让 AI 真正替你交付工作的本机 Agent。</b><br>
+  把需求和材料交给它：自己规划、动手、验收，把 PPT / Word / Excel / 网页落到你的电脑；<b>交付的是可打开的文件，不是一段聊天记录。</b>
 </p>
 
 <p align="center">
@@ -14,8 +14,14 @@
 </p>
 
 <p align="center">
+  <sub>适合本地部署办公、把 Agent 用进真实交付、或想从模型、工具、记忆、Trace 一路读懂 Agent 的人。项目持续迭代，欢迎你一起维护。</sub>
+</p>
+
+<p align="center">
   <a href="#跑起来"><b>⚡ 三分钟跑起来</b></a> ·
   <a href="https://github.com/CatCatUncle/openworkbuddy/releases">下载安装包</a> ·
+  <a href="#第一次上手">第一次上手</a> ·
+  <a href="#一起把它做下去">贡献一个能力</a> ·
   <a href="CHANGELOG.md">变更记录</a> ·
   <a href="#交流群">飞书交流群</a> ·
   <a href="docs/功能清单.md">功能清单</a>
@@ -37,6 +43,16 @@
 
 ---
 
+## 第一次上手
+
+**最快的验证方式：下载 → 选一个模型 → 把下面这句话贴进输入框。**
+
+> 把我拖进来的材料整理成一页清晰的要点，并交付为一个可打开的 Markdown 文件。
+
+它会在右侧留下真实文件；点击即可预览、下载或继续让它修改。没有材料？直接说「帮我做一份本周工作周报」，也能先跑通完整闭环。
+
+如果这 3 分钟替你省下了一次重复劳动，欢迎点一下仓库右上角的 **Star**。这是最直接的推广，也让维护者知道该继续把时间投在哪些能力上。
+
 ## 为什么是它
 
 **交付的是文件，不是聊天记录。** PPT / Word / Excel / 网页都是真生成的，成果面板里点开就能验收。声称写了文件却不在磁盘上，会被当场拦下重做。
@@ -44,6 +60,8 @@
 **不绑任何一家模型，东西都在你手里。** DeepSeek / 通义 / 智谱 / Kimi / OpenRouter / Ollama 本地模型界面点一下就切；本机装了 **Claude Code / Codex** 的，一键拿它当发动机，不再另买 token。自托管，会话、文件、Key 全在本机，默认只监听 `127.0.0.1`。
 
 **加一个能力 = 丢一个 Markdown 文件。** 存成 `skills/<名字>/skill.md`，存盘后下一条任务就生效——不改代码、不重启、不打包。往外接 MCP 连接器和 [Agent Plugins](https://agent-plugins.org) 开放标准，别人的插件粘个 GitHub 地址就装。
+
+**既能拿来干活，也适合拿来学 Agent。** 模型路由、工具调用、文件验收、技能、连接器、记忆、权限和本地 Trace 都在同一个开源仓库里；你能从一条真实任务一路看到 Agent 为什么这样做、用了什么模型、每步花了多久、最后交付了什么。
 
 ## 和其他 Agent 的位置
 
@@ -60,7 +78,7 @@ OpenWorkBuddy 不试图替代所有工具：Codex / Pi 更偏终端与代码，C
 | 可观测性 | 内置本地 Trace：模型、工具、耗时、Token、输入输出；可选 Langfuse | 依工具链配置 | 平台内过程可查看 | 依部署与插件 | 企业审计、用量和治理更完整 |
 | 许可证与数据控制 | 开源、自托管、非商用免费；可接自己的模型 | 开源项目 / 各自模型策略 | 商业产品 | 开源项目 / 依组件 | 商业企业产品 |
 
-上表只比较公开定位和本项目当前能力，不代表任何项目在所有场景都更好。更完整的官方入口： [Codex](https://github.com/openai/codex)、[Pi](https://github.com/earendil-works/pi)、[OpenClaw](https://github.com/openclaw/openclaw)、[Hermes Agent](https://github.com/NousResearch/hermes-agent)、[Claude Cowork](https://claude.com/product/cowork)、[Manus Cloud Browser](https://www.manus.im/docs/features/cloud-browser)、[Tencent WorkBuddy](https://www.workbuddy.ai/docs/workbuddy/Overview)。
+上表只比较公开定位和本项目当前能力，不代表任何项目在所有场景都更好。对比对象包括 Codex、Pi、OpenClaw、Hermes Agent、Claude Cowork、Manus 与 WorkBuddy；请以各项目自己的最新文档和许可为准。
 
 如果你觉得某一格不准确，欢迎直接提 Issue 或提交 PR：能复现、能验证、能落到代码里的反馈，我们会优先处理。
 
@@ -188,9 +206,9 @@ wb engines && wb engines use claude-code   # 本机装了 Claude Code / Codex？
 
 ## 最新动态
 
-- **09-13** 讲故事的片子能拍了：先把分镜表摆出来给你点头，再角色定妆照 → 每镜首帧 → 生视频 → 配音 → 拼成带字幕的竖版片；改哪一镜就只有那一镜再花钱
 - **09-14** 增加 AI 短剧无限画布模式：剧本、角色、场景、分镜、素材、生成结果和本项目 Agent 在同一张可执行画布内协作，支持多张短剧工程、素材拖入、框选批量操作、自动排版和画布内对话
 - **09-14** 优化无限画布短剧创作 UI：参考图/视频/音频可预览，图片支持放大查看，画布对话支持附件、`@` 引用节点与素材、执行模式和模型选择
+- **09-13** 讲故事的片子能拍了：先把分镜表摆出来给你点头，再角色定妆照 → 每镜首帧 → 生视频 → 配音 → 拼成带字幕的竖版片；改哪一镜就只有那一镜再花钱
 - **09-13** 配一条 SMTP，AI 就能把写好的报告、做好的文件直接发到对方邮箱；收件人白名单是硬闸，每封信出门前还要你看全文点头
 - **09-13** AI 能自己排定时任务了：「每周一早九点把上周数据整理成表」说一句就定下，到点自己跑
 - **09-13** 录音、会议视频、语音留言直接转文字，转完接着往下写纪要，不用自己再听一遍

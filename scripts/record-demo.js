@@ -231,7 +231,6 @@ app.whenReady().then(async () => {
       // README / GitHub 通常先展示 GIF 的第一帧：从已打开的真实画布开始录，第一眼就能看到功能，
       // 进入侧栏的动作仍由上面真实 UI 完成，但不让首页空镜抢走封面。
       rec.start();
-      rec.mark("sent"); rec.mark("done");
       await sleep(2800); // 停在真实的 DAG、侧栏入口和画布 Agent 输入框上
       log("已录制无限画布：入口、短剧骨架、连线与画布 Agent");
     } else {
