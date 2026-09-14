@@ -27,6 +27,69 @@
  */
 
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+const { DATA_DIR } = require("./paths");
+
+// 本地 Trace 是主记录，Langfuse 只是可选的外部副本。这样不开 Langfuse 时，
+// 用户仍然能在 WorkBuddy 里看到完整的任务树；换机器或换账号也不会把 trace 丢给第三方。
+const LOCAL_MAX_LINES = 30000;
+function localTraceFile(config) {
+  const root = config && config.workspace_dir ? path.resolve(String(config.workspace_dir)) : path.join(DATA_DIR, "workspace");
+  return path.join(root, ".openworkbuddy", "traces.jsonl");
+}
+function localRecord(config, event) {
+  try {
+    const file = localTraceFile(config);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, JSON.stringify({ schema: 1, recordedAt: Date.now(), ...event }) + "\n", "utf8");
+    const stat = fs.statSync(file);
+    if (stat.size > 12 * 1024 * 1024) {
+      const lines = fs.readFileSync(file, "utf8").trim().split("\n").slice(-LOCAL_MAX_LINES);
+      fs.writeFileSync(file, lines.join("\n") + "\n", "utf8");
+    }
+  } catch (e) {
+    // Trace 不能反过来把任务搞挂；服务端日志留一条，设置页仍能显示其它账本。
+    if (process.env.OPENWORKBUDDY_TRACE_DEBUG) console.warn("[本地追踪] 写入失败:", e.message);
+  }
+}
+function localReadEvents(config) {
+  try {
+    const raw = fs.readFileSync(localTraceFile(config), "utf8");
+    return raw.split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((event) => event && event.traceId);
+  } catch { return []; }
+}
+function localTraceList(config, { limit = 50, traceId = "" } = {}) {
+  const traces = new Map();
+  const ensure = (id) => {
+    if (!traces.has(id)) traces.set(id, { id, name: "任务", startTime: "", endTime: "", input: null, output: "", metadata: {}, tags: [], error: "", observations: [] });
+    return traces.get(id);
+  };
+  for (const event of localReadEvents(config)) {
+    if (traceId && event.traceId !== traceId) continue;
+    const trace = ensure(event.traceId);
+    if (event.kind === "trace") {
+      if (event.phase === "start") Object.assign(trace, { name: event.name || trace.name, startTime: event.startTime || trace.startTime, input: event.input, metadata: event.metadata || {}, tags: event.tags || [] });
+      else Object.assign(trace, { endTime: event.endTime || trace.endTime, output: event.output !== undefined ? event.output : trace.output, error: event.error || trace.error, metadata: { ...trace.metadata, ...(event.metadata || {}) } });
+      continue;
+    }
+    if (!event.observationId) continue;
+    let observation = trace.observations.find((item) => item.id === event.observationId);
+    if (!observation) { observation = { id: event.observationId, traceId: event.traceId, parentId: event.parentId || "", kind: event.kind, name: event.name || event.kind, startTime: "", endTime: "", input: null, output: "", metadata: {}, usage: null, error: "" }; trace.observations.push(observation); }
+    if (event.phase === "start") Object.assign(observation, { kind: event.kind, name: event.name || observation.name, startTime: event.startTime || observation.startTime, parentId: event.parentId || observation.parentId, input: event.input, metadata: event.metadata || observation.metadata, model: event.model || observation.model, modelParameters: event.modelParameters || observation.modelParameters });
+    else Object.assign(observation, { endTime: event.endTime || observation.endTime, output: event.output !== undefined ? event.output : observation.output, metadata: { ...observation.metadata, ...(event.metadata || {}) }, usage: event.usage || observation.usage, error: event.error || observation.error, level: event.level || observation.level });
+  }
+  const out = [...traces.values()].map((trace) => {
+    trace.observations.sort((a, b) => String(a.startTime).localeCompare(String(b.startTime)));
+    trace.duration_ms = trace.startTime && trace.endTime ? Math.max(0, new Date(trace.endTime).getTime() - new Date(trace.startTime).getTime()) : 0;
+    trace.status = trace.error || trace.observations.some((item) => item.error) ? "error" : trace.endTime ? "completed" : "running";
+    return trace;
+  }).sort((a, b) => String(b.startTime).localeCompare(String(a.startTime)));
+  return traceId ? out[0] || null : out.slice(0, Math.max(1, Math.min(200, Number(limit) || 50)));
+}
+function localTraceClear(config) {
+  try { fs.rmSync(localTraceFile(config), { force: true }); } catch {}
+}
 
 // ── Langfuse 的上报接口（这一段是唯一跟 Langfuse 绑死的地方，将来换别的后端只用改这里）──
 // POST {host}/api/public/ingestion，Basic 认证（公钥:私钥），body 是 { batch: [事件…] }。
@@ -258,25 +321,40 @@ function createTracer(config) {
     return cfg.ready && traceId ? `${cfg.host}/trace/${traceId}` : "";
   };
 
+  function localBodyOf(o = {}) {
+    const b = {};
+    if (o.input !== undefined) b.input = typeof o.input === "string" ? capText(o.input, CAP_TEXT) : o.input;
+    if (o.output !== undefined) b.output = typeof o.output === "string" ? capText(o.output, CAP_TEXT) : o.output;
+    if (o.metadata) b.metadata = o.metadata;
+    const u = o.usage;
+    if (u && (u.prompt || u.completion || u.input || u.output)) b.usage = { prompt: u.prompt || u.input || 0, completion: u.completion || u.output || 0, cached: u.cached || 0, total: (u.prompt || u.input || 0) + (u.completion || u.output || 0) };
+    if (o.error) b.error = capText(o.error, 500);
+    if (o.level) b.level = o.level;
+    return b;
+  }
+
   /** 一个观测节点（trace 根 / span / generation 共用同一副外壳，调用方只管 .span/.generation/.end） */
   function node({ id, traceId, kind }) {
     let ended = false;
     const self = {
       id,
       traceId,
-      enabled: true,
+      // `enabled` 是对外部 Langfuse 上报是否就绪，不把「本地也留了一份」混成开关。
+      // Agent 据此决定是否给前端挂外链；没配 Langfuse 时不能出现一个点不开的链接。
+      get enabled() { return cfgNow().ready; },
       get url() { return urlOf(traceId); },
-      span(o) { return obs("span", traceId, id, o); },
-      generation(o) { return obs("generation", traceId, id, o); },
+      span(o) { return cfgNow().ready ? obs("span", traceId, id, o) : OFF; },
+      generation(o) { return cfgNow().ready ? obs("generation", traceId, id, o) : OFF; },
       end(o) {
         if (ended) return; // 收尾路径有好几条（正常结束、超时、抛异常），重复 end 会在 Langfuse 上留两条互相覆盖的记录
         ended = true;
+        localRecord(config, { traceId, kind, phase: "end", ...(kind === "trace" ? {} : { observationId: id }), endTime: nowIso(), ...localBodyOf(o) });
         if (kind === "trace") {
           // 根节点认的字段跟 observation 不是一套：没有 endTime，也没有 traceId / usage / level。
           // 多塞字段轻则被忽略、重则整条被拒收，所以这儿另拼一份，token 账和出没出错折进 metadata
-          push("trace-create", { id, ...traceBodyOf(o) });
+          if (cfgNow().ready) push("trace-create", { id, ...traceBodyOf(o) });
         } else {
-          push(kind + "-update", { id, traceId, endTime: nowIso(), ...bodyOf(o) });
+          if (cfgNow().ready) push(kind + "-update", { id, traceId, endTime: nowIso(), ...bodyOf(o) });
         }
       },
     };
@@ -321,14 +399,14 @@ function createTracer(config) {
   }
 
   function obs(kind, traceId, parentId, o = {}) {
-    if (!cfgNow().ready) return OFF;
     const id = uid();
+    const startTime = nowIso();
     const body = {
       id,
       traceId,
       parentObservationId: parentId && parentId !== traceId ? parentId : undefined,
       name: String((o && o.name) || kind),
-      startTime: nowIso(),
+      startTime,
     };
     if (o.input !== undefined) body.input = typeof o.input === "string" ? capText(o.input, CAP_TEXT) : o.input;
     if (o.metadata) body.metadata = o.metadata;
@@ -336,12 +414,13 @@ function createTracer(config) {
       if (o.model) body.model = String(o.model);
       if (o.modelParameters) body.modelParameters = o.modelParameters;
     }
-    push(kind + "-create", body);
+    localRecord(config, { traceId, observationId: id, parentId: parentId && parentId !== traceId ? parentId : "", kind, phase: "start", name: body.name, startTime, input: body.input, metadata: body.metadata, model: body.model, modelParameters: body.modelParameters });
+    if (cfgNow().ready) push(kind + "-create", body);
     return node({ id, traceId, kind });
   }
 
   return {
-    /** 这台机器现在到底在不在记 */
+    /** 兼容调用方：这里只表示 Langfuse 外部追踪是否可用；本地记录始终是旁路。 */
     get enabled() { return cfgNow().ready; },
     config: cfgNow,
     urlOf,
@@ -352,9 +431,8 @@ function createTracer(config) {
      * 不然用户得等任务跑完才看得到，长任务里最想看的恰恰是跑到一半的时候。
      */
     trace(o = {}) {
-      if (!cfgNow().ready) return OFF;
       const id = uid();
-      push("trace-create", {
+      const body = {
         id,
         name: String(o.name || "task").slice(0, 200),
         userId: o.userId ? String(o.userId).slice(0, 120) : undefined,
@@ -363,7 +441,9 @@ function createTracer(config) {
         metadata: o.metadata,
         tags: Array.isArray(o.tags) ? o.tags.filter(Boolean).map((t) => String(t).slice(0, 40)).slice(0, 10) : undefined,
         timestamp: nowIso(),
-      });
+      };
+      localRecord(config, { traceId: id, kind: "trace", phase: "start", name: body.name, startTime: body.timestamp, input: body.input, metadata: body.metadata, tags: body.tags });
+      if (cfgNow().ready) push("trace-create", body);
       return node({ id, traceId: id, kind: "trace" });
     },
     /** 发一条探针上去并**当场等结果**，专给设置页那颗「测一下」用：能不能通，现在就要知道 */
@@ -410,6 +490,8 @@ function createTracer(config) {
         last_ok_at: ctx.lastOkAt || 0,
       };
     },
+    localTraces(options) { return localTraceList(config, options); },
+    clearLocalTraces() { localTraceClear(config); },
     flush,
   };
 }

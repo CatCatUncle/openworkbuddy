@@ -872,8 +872,11 @@ function testDocLinkGate() {
     const seg = m[1].split("/").filter(Boolean);
     if (seg.length >= 3) slugs.add(seg.slice(-2).join("/"));
   }
-  slugs.forEach((sl) => assert(sl === "CatCatUncle/openworkbuddy", "README 里出现了别的仓库地址：" + sl));
-  assert(slugs.size === 1, "README 里没找到仓库地址");
+  // README 的徽章、clone、安装地址必须是本仓库；但「和其他 Agent 的位置」需要给出
+  // 可核验的官方开源项目入口。白名单只允许这几个比较对象，避免把徽章误接到别人仓库。
+  const referenceRepos = new Set(["openai/codex", "earendil-works/pi", "openclaw/openclaw", "NousResearch/hermes-agent"]);
+  slugs.forEach((sl) => assert(sl === "CatCatUncle/openworkbuddy" || referenceRepos.has(sl), "README 里出现了未经允许的仓库地址：" + sl));
+  assert(slugs.has("CatCatUncle/openworkbuddy"), "README 里没找到本仓库地址");
   // shields 的 release 徽章在没发过 release 时会渲染成 "no releases or repo not found"。
   // 用本地 git tag 当代理：发布都是从 tag 切的，打了 tag 这条自然放行，不用另外维护标记
   if (/img\.shields\.io\/github\/v\/release/.test(readme)) {

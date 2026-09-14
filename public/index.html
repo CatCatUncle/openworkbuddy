@@ -300,7 +300,7 @@
   .a-text ul, .a-text ol { margin: 6px 0; padding-left: 22px; }
   .a-text li { margin: 3px 0; }
   /* markdown 里的图：不许撑破容器，也别顶到贴边 */
-  .md-img { display: block; max-width: 100%; height: auto; margin: 10px 0; border-radius: var(--radius-lg); border: 1px solid var(--wb-border); }
+  .md-img { display: block; max-width: 100%; height: auto; max-height: min(70vh, 720px); object-fit: contain; object-position: center; margin: 10px 0; border-radius: var(--radius-lg); border: 1px solid var(--wb-border); background: var(--wb-bg-side); }
   .a-text blockquote { border-left: 3px solid var(--wb-brand); background: var(--wb-brand-weak); padding: 8px 12px; margin: 8px 0; border-radius: 0 var(--radius-md) var(--radius-md) 0; color: var(--wb-text-2); }
   .a-text blockquote p { margin: 2px 0; }
   /* 提示条：系统插在正文里的那几条（核验没过 / 还没做完 / 原地打转）。
@@ -539,6 +539,10 @@
   .im-row .im-ava { width: 26px; height: 26px; border-radius: var(--radius-md); background: var(--wb-bg-hover); display: flex; align-items: center; justify-content: center; font-size: 15px; flex: none; }
   .assist-page .im-feed { max-height: none; overflow: visible; }
   .im-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  /* 助理页的连接状态、模型、工作目录和设置是常用工具栏。
+     消息很多时只滚动下面的内容，这一排始终贴在聊天视口顶部，方便随时切模型或改设置。 */
+  .assist-page .im-head { position: sticky; top: 0; z-index: 12; margin: -24px 0 10px; padding: 14px 0 10px; background: color-mix(in srgb, var(--wb-canvas) 92%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--wb-border) 72%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+  .assist-page .im-head::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: linear-gradient(90deg, transparent, var(--wb-border), transparent); opacity: .7; pointer-events: none; }
   .im-head .btn-plain { flex: none; font-size: 13px; padding: 0 12px; }
   .im-head .picker { flex: none; }
   #ab-ic .ab-ava { width: 18px; height: 18px; font-size: 15px; vertical-align: -4px; }
@@ -646,7 +650,7 @@
   .attach-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .attach-chips span { font-size: 13px; background: var(--wb-bg-hover); border-radius: var(--radius-md); padding: 3px 10px; color: var(--wb-text-2); }
   .attach-chips span { display: inline-flex; align-items: center; gap: 6px; }
-  .attach-chips .attach-thumb { width: 28px; height: 28px; object-fit: cover; border-radius: var(--radius-sm); display: block; }
+  .attach-chips .attach-thumb { width: 28px; height: 28px; object-fit: contain; object-position: center; border-radius: var(--radius-sm); display: block; background: var(--wb-bg-side); }
   .attach-chips span b { cursor: pointer; font-weight: 400; margin-left: 6px; opacity: .55; }
   .attach-chips span b:hover { opacity: 1; }
   .input-card.dragging { outline: 2px dashed var(--wb-brand); outline-offset: -2px; }
@@ -665,13 +669,17 @@
   .pv-deploy button:hover { border-color: var(--wb-brand-text); }
   .pv-deploy button.primary:hover { opacity: .9; }
   .pv-deploy code { font-size: 12px; background: var(--wb-bg); border-radius: var(--radius-xs); padding: 2px 6px; user-select: all; }
-  #pv-body { flex: 1; min-height: 0; overflow: auto; }
-  #pv-body iframe { width: 100%; height: 100%; border: none; background: #fff; }
-  #pv-body img { max-width: 100%; display: block; margin: 20px auto; }
+  /* 预览默认态：内容落在右侧面板的可用空间正中，矮图/短文本不再贴着顶部。
+     文档和网页仍然铺满面板，长内容交给自己的滚动区域。 */
+  #pv-body { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; }
+  #pv-body iframe { flex: 1 1 auto; min-width: 0; width: 100%; height: 100%; border: none; background: #fff; align-self: stretch; }
+  #pv-body > .pv-text { width: min(100%, 760px); box-sizing: border-box; }
+  #pv-body > .ov-doc { align-self: stretch; flex: 1 1 auto; min-width: 0; width: 100%; box-sizing: border-box; overflow: auto; }
+  #pv-body img { max-width: 100%; height: auto; max-height: 100%; object-fit: contain; object-position: center; display: block; margin: 20px auto; }
   /* 单张图 / 一条片子的预览：横竖都居中，别顶在天花板上 */
   #pv-body.pv-mid { display: flex; align-items: center; justify-content: center; padding: 20px; }
   #pv-body.pv-mid img, #pv-body.pv-mid video.pv-media { margin: 0; max-height: 100%; object-fit: contain; }
-  #pv-body audio.pv-media { display: block; width: calc(100% - 40px); margin: 28px auto; }
+  #pv-body audio.pv-media { display: block; width: min(calc(100% - 40px), 760px); margin: 0 auto; }
   #pv-body video.pv-media { display: block; width: 100%; height: auto; max-height: 100%; object-fit: contain; background: #000; border-radius: var(--radius-md); }
   #pv-body .pv-text { padding: 16px 20px; font-size: 14px; line-height: 1.7; }
   #pv-body .pv-text button { border: 1px solid var(--wb-border); background: var(--wb-bg); border-radius: var(--radius-md); padding: 4px 12px; font-size: 13px; color: var(--wb-text-2); cursor: pointer; }
@@ -684,7 +692,7 @@
   #pv-body .ov-p { margin: 8px 0; overflow-wrap: anywhere; }
   #pv-body .ov-li { margin: 4px 0; padding-left: 16px; position: relative; overflow-wrap: anywhere; }
   #pv-body .ov-li::before { content: "·"; position: absolute; left: 4px; color: var(--wb-text-3); }
-  #pv-body .ov-img { max-width: 100%; display: block; margin: 12px 0; border-radius: var(--radius-sm); }
+  #pv-body .ov-img { max-width: 100%; height: auto; max-height: 720px; object-fit: contain; object-position: center; display: block; margin: 12px 0; border-radius: var(--radius-sm); background: var(--wb-bg-side); }
   #pv-body .ov-scroll { overflow-x: auto; margin: 12px 0; }
   #pv-body .ov-table { border-collapse: collapse; font-size: 13px; }
   #pv-body .ov-table th, #pv-body .ov-table td { border: 1px solid var(--wb-border); padding: 5px 10px; text-align: left; vertical-align: top; max-width: 340px; overflow-wrap: anywhere; }
@@ -1878,6 +1886,7 @@
     <div class="item" id="ab-head" title="助理模式：IM 远程指挥 + 直接对话"><span class="ic" id="ab-ic"><svg class="i" aria-hidden="true"><use href="#i-bot"></use></svg></span><span class="tx"><span id="ab-name">助理模式</span><span class="sub" id="ab-sub">IM 远程指挥</span></span></div>
     <div class="item nav-head" data-view="proj" title="项目管理"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-folder"></use></svg></span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目"><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg></a></div>
     <div id="proj-list"></div>
+    <div class="item" data-view="canvas" title="无限画布"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-map"></use></svg></span><span class="tx">无限画布<span class="sub">节点 · 拖拽 · 缩放</span></span></div>
     <div class="item" data-view="hub"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-blocks"></use></svg></span><span class="tx">专家<span class="sub">技能 · 连接器</span></span></div>
     <div class="item" data-view="autom"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-clock"></use></svg></span><span class="tx">自动化<span class="sub">定时 · 运行记录</span></span></div>
     <div class="item more-toggle" id="more-toggle"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-ellipsis"></use></svg></span><span class="tx">更多<span class="sub">资料库 · 灵感</span></span><span class="caret" id="more-caret"><svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></span></div>
@@ -2011,5 +2020,10 @@
 <script src="js/app-04.js"></script>
 <script src="js/app-05.js"></script>
 <script src="js/app-06.js"></script>
+<!-- @joint/core（MPL-2.0）：无限画布的开源底座，服务端从 node_modules 原样提供，离线可用 -->
+<script src="/vendor/joint/joint.min.js"></script>
+<!-- Dagre（MIT）：按真实连线做紧凑的有向图自动排版 -->
+<script src="/vendor/dagre/dagre.min.js"></script>
+<script src="js/app-07-canvas.js"></script>
 </body>
 </html>

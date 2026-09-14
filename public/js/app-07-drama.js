@@ -1,0 +1,264 @@
+/* AI 短剧画布（第二期最小闭环）
+ *
+ * 这不是另一套分镜数据：画布只读/回写 short-drama 技能定义的 JSON。
+ * 节点是普通 DOM，因而主题、字体、无障碍和现有工作台保持一致；拖拽/滚轮只是视口变换，
+ * 不会改动分镜表里的内容。真正会写盘的动作只有「单格重跑」成功后的产物路径回写。
+ */
+let dramaState = { name: "", data: null, busy: new Set(), scale: 1, x: 0, y: 0, graph: null, paper: null, wheelHandler: null };
+
+function dramaFileUrl(name) {
+  return "/api/files/view/" + String(name || "").split("/").filter(Boolean).map(encodeURIComponent).join("/");
+}
+function dramaBaseName(name) { return String(name || "").split(/[\\/]/).pop() || ""; }
+function dramaShotId(shot, scene, i) { return String((shot && shot.id) || `${scene && scene.id || "S"}-${String(i + 1).padStart(2, "0")}`); }
+function dramaChars(data) {
+  return new Map((Array.isArray(data && data.characters) ? data.characters : []).map((c) => [String(c.id), c]));
+}
+function dramaAllShots(data) {
+  const out = [];
+  for (const scene of Array.isArray(data && data.scenes) ? data.scenes : []) {
+    for (const [i, shot] of (Array.isArray(scene.shots) ? scene.shots : []).entries()) out.push({ scene, shot, i });
+  }
+  return out;
+}
+function dramaToast(text, icon, kind) {
+  if (typeof toast === "function") return toast(text, icon || (kind === "err" ? "circle-x" : "circle-check"));
+  console[kind === "err" ? "error" : "log"](text);
+}
+
+async function dramaList() {
+  const r = await fetch("/api/drama/storyboards").then((x) => x.json());
+  if (!r || !Array.isArray(r.storyboards)) throw new Error(r && r.error || "分镜表列表读取失败");
+  return r.storyboards;
+}
+async function dramaLoad(name) {
+  const q = "/api/drama/storyboard?name=" + encodeURIComponent(name);
+  const r = await fetch(q).then((x) => x.json());
+  if (!r || !r.data) throw new Error(r && r.error || "分镜表读取失败");
+  dramaState.name = r.name;
+  dramaState.data = r.data;
+  return r.data;
+}
+async function dramaSave() {
+  const r = await fetch("/api/drama/storyboard", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: dramaState.name, data: dramaState.data }),
+  }).then((x) => x.json());
+  if (!r || !r.ok) throw new Error(r && r.error || "分镜表回写失败");
+}
+
+function dramaShotRefs(shot, chars) {
+  return (Array.isArray(shot.cast) ? shot.cast : [])
+    .map((id) => chars.get(String(id)))
+    .map((c) => c && c.ref)
+    .filter(Boolean)
+    .slice(0, 4);
+}
+function dramaShotFilename(shot, kind) {
+  const id = dramaShotId(shot, null, 0).replace(/[^\w\-一-龥]+/g, "_");
+  const existing = kind === "image" ? shot.first_frame : shot.video;
+  if (existing) return dramaBaseName(existing);
+  return kind === "image" ? `镜头_${id}_首帧.png` : `镜头_${id}.mp4`;
+}
+async function dramaRerun(scene, shot, kind) {
+  const id = dramaShotId(shot, scene, 0);
+  const key = `${id}:${kind}`;
+  if (dramaState.busy.has(key)) return;
+  if (kind === "video" && !shot.first_frame) return dramaToast(`镜头 ${id} 还没有首帧，先重跑首帧`, "triangle-alert", "err");
+  dramaState.busy.add(key);
+  const page = document.getElementById("assist-page");
+  page && page.classList.add("drama-busy");
+  try {
+    const chars = dramaChars(dramaState.data);
+    const style = String(dramaState.data.style || "").trim();
+    let input;
+    if (kind === "image") {
+      input = {
+        prompt: [dramaState.data.aspect ? `${dramaState.data.aspect} 画幅` : "", style, scene.place, scene.time, shot.shot_size, shot.frame_prompt].filter(Boolean).join("，"),
+        reference_images: dramaShotRefs(shot, chars),
+        filename: dramaShotFilename(shot, "image"), no_cache: true,
+      };
+    } else {
+      input = {
+        prompt: String(shot.motion_prompt || "保持画面稳定，动作自然，镜头轻微推进").trim(),
+        first_frame: shot.first_frame,
+        ...(shot.last_frame ? { last_frame: shot.last_frame } : {}),
+        filename: dramaShotFilename(shot, "video"), no_cache: true,
+      };
+    }
+    const resp = await fetch("/api/tool/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tool: kind === "image" ? "generate_image" : "generate_video", input }),
+    });
+    const result = await resp.json().catch(() => ({}));
+    if (!resp.ok || result.isError || result.ok === false) throw new Error(result.error || result.content || "生成失败");
+    const file = String(result.file || "").trim();
+    if (!file) throw new Error("生成接口成功，但没有返回产物路径");
+    if (kind === "image") shot.first_frame = file;
+    else shot.video = file;
+    shot.note = `${shot.note ? shot.note + "；" : ""}${kind === "image" ? "首帧" : "视频"}已重跑${result.cached ? "（命中缓存）" : ""}`;
+    await dramaSave();
+    dramaToast(`${id} ${kind === "image" ? "首帧" : "视频"}已生成：${dramaBaseName(file)}`, "circle-check", "ok");
+    renderDramaCanvas();
+  } catch (e) {
+    dramaToast(`${id} 重跑失败：${String(e.message || e).slice(0, 180)}`, "circle-x", "err");
+  } finally {
+    dramaState.busy.delete(key);
+    page && page.classList.remove("drama-busy");
+  }
+}
+
+function dramaCard(scene, shot, i, chars) {
+  const id = dramaShotId(shot, scene, i);
+  const busyImage = dramaState.busy.has(`${id}:image`), busyVideo = dramaState.busy.has(`${id}:video`);
+  const frame = shot.first_frame || "";
+  const thumb = frame ? `<img class="drama-shot-thumb" src="${esc(dramaFileUrl(frame))}" alt="${esc(id)} 首帧" loading="lazy">` : `<div class="drama-shot-empty">暂无首帧</div>`;
+  const line = shot.line ? `<div class="drama-shot-line">“${esc(shot.line)}”${shot.speaker ? ` <span>· ${esc(shot.speaker)}</span>` : ""}</div>` : "<div class=\"drama-shot-line muted\">无人声镜头</div>";
+  return `<article class="drama-shot" data-shot="${esc(id)}">
+    <div class="drama-shot-top"><b>${esc(id)}</b><span>${esc(shot.shot_size || "镜头")}</span>${shot.duration ? `<span>${esc(String(shot.duration))}s</span>` : ""}</div>
+    ${thumb}
+    <div class="drama-shot-copy"><div class="drama-shot-place">${esc(scene.place || "未写地点")} · ${esc(scene.time || "未写时间")}</div>${line}</div>
+    <div class="drama-shot-actions">
+      <button class="ui-btn ui-btn--xs ui-btn--outline" data-drama-act="image" ${busyImage ? "disabled" : ""}>${busyImage ? "生成中…" : "重跑首帧"}</button>
+      <button class="ui-btn ui-btn--xs ui-btn--ghost" data-drama-act="video" ${busyVideo ? "disabled" : ""}>${busyVideo ? "生成中…" : "重跑视频"}</button>
+    </div>
+  </article>`;
+}
+function dramaScene(scene, si, chars) {
+  const shots = Array.isArray(scene.shots) ? scene.shots : [];
+  return `<section class="drama-scene" style="--drama-col:${si % 4};height:100%">
+    <header class="drama-scene-head"><span class="drama-scene-id">${esc(scene.id || `S${si + 1}`)}</span><div><b>${esc(scene.place || "未命名场次")}</b><small>${esc(scene.time || "")}</small></div><span class="drama-scene-count">${shots.length} 镜</span></header>
+    <div class="drama-shot-list">${shots.map((s, i) => dramaCard(scene, s, i, chars)).join("") || '<div class="drama-empty-shot">这场还没有镜头</div>'}</div>
+  </section>`;
+}
+let dramaJointSceneType = null;
+function dramaJointType(J) {
+  if (dramaJointSceneType) return dramaJointSceneType;
+  dramaJointSceneType = J.dia.Element.define("openworkbuddy.DramaScene", {
+    attrs: {
+      body: { width: "calc(w)", height: "calc(h)", fill: "transparent", stroke: "transparent", pointerEvents: "none" },
+      foreignObject: { width: "calc(w)", height: "calc(h)", overflow: "visible" },
+    },
+  }, {
+    markup: [{
+      tagName: "rect", selector: "body",
+    }, {
+      tagName: "foreignObject", selector: "foreignObject", attributes: { overflow: "visible" },
+      children: [{
+        tagName: "div", namespaceURI: "http://www.w3.org/1999/xhtml", selector: "card", className: "drama-joint-scene",
+      }],
+    }],
+  });
+  return dramaJointSceneType;
+}
+function dramaJointZoom(page, value) {
+  const paper = dramaState.paper;
+  if (!paper) return;
+  dramaState.scale = Math.max(.55, Math.min(1.45, value));
+  paper.scale(dramaState.scale, dramaState.scale);
+  const z = page.querySelector("#drama-zoom"); if (z) z.textContent = Math.round(dramaState.scale * 100) + "%";
+}
+function dramaJointPan(page) {
+  const paper = dramaState.paper, world = page.querySelector("#drama-world");
+  if (!paper || !world) return;
+  let drag = null;
+  paper.on("blank:pointerdown", (evt) => {
+    if (evt.button !== undefined && evt.button !== 0) return;
+    drag = { x: evt.clientX, y: evt.clientY, tx: dramaState.x, ty: dramaState.y };
+    world.classList.add("dragging");
+  });
+  paper.on("blank:pointermove", (evt) => {
+    if (!drag) return;
+    dramaState.x = drag.tx + evt.clientX - drag.x;
+    dramaState.y = drag.ty + evt.clientY - drag.y;
+    paper.translate(dramaState.x, dramaState.y);
+  });
+  paper.on("blank:pointerup", () => { drag = null; world.classList.remove("dragging"); });
+  if (dramaState.wheelHandler) world.removeEventListener("wheel", dramaState.wheelHandler);
+  dramaState.wheelHandler = (evt) => {
+    evt.preventDefault();
+    dramaJointZoom(page, dramaState.scale * (evt.deltaY > 0 ? .92 : 1.08));
+  };
+  world.addEventListener("wheel", dramaState.wheelHandler, { passive: false });
+}
+function renderDramaCanvas() {
+  const page = document.getElementById("assist-page");
+  if (!page || !dramaState.data) return;
+  const data = dramaState.data, chars = dramaChars(data), all = dramaAllShots(data), J = typeof joint !== "undefined" ? joint : null;
+  const totalDur = all.reduce((n, x) => n + (+x.shot.duration || 0), 0);
+  const world = page.querySelector("#drama-world");
+  if (!world) return;
+  if (!J || !J.dia || !J.dia.Paper) {
+    world.innerHTML = '<div class="drama-empty-shot">画布组件加载失败，请刷新页面。</div>';
+    return;
+  }
+  if (dramaState.graph) dramaState.graph.clear();
+  if (!dramaState.paper) {
+    dramaState.graph = new J.dia.Graph({}, { cellNamespace: J.shapes });
+    dramaState.paper = new J.dia.Paper({
+      el: world,
+      model: dramaState.graph,
+      width: world.clientWidth || 1200,
+      height: world.clientHeight || 640,
+      gridSize: 16,
+      drawGrid: { name: "dot", args: { color: "var(--wb-text-3)", thickness: 1, gap: 22 } },
+      background: { color: "transparent" },
+      cellViewNamespace: J.shapes,
+      interactive: { elementMove: true, linkMove: false, labelMove: false, addLinkFromMagnet: false },
+    });
+  }
+  const Scene = dramaJointType(J), scenes = Array.isArray(data.scenes) ? data.scenes : [];
+  const rowHeights = [];
+  scenes.forEach((scene, si) => {
+    const shots = Array.isArray(scene.shots) ? scene.shots : [];
+    const h = 78 + Math.max(1, shots.length) * 141;
+    const row = Math.floor(si / 2), col = si % 2;
+    rowHeights[row] = Math.max(rowHeights[row] || 0, h);
+    const y = 32 + rowHeights.slice(0, row).reduce((n, v) => n + v + 28, 0);
+    const node = new Scene({ position: { x: 36 + col * 570, y }, size: { width: 520, height: h } });
+    node.set("dramaSceneId", String(scene.id || `S${si + 1}`));
+    dramaState.graph.addCell(node);
+    const view = node.findView(dramaState.paper);
+    const root = view && view.el && view.el.querySelector(".drama-joint-scene");
+    if (!root) return;
+    root.innerHTML = dramaScene(scene, si, chars);
+    root.querySelectorAll("[data-drama-act]").forEach((btn) => btn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      dramaRerun(scene, (shots.find((s, i) => dramaShotId(s, scene, i) === btn.closest("[data-shot]")?.dataset.shot) || shots[0]), btn.dataset.dramaAct);
+    }));
+  });
+  dramaState.paper.scale(dramaState.scale, dramaState.scale);
+  dramaState.paper.translate(dramaState.x, dramaState.y);
+  dramaJointPan(page);
+  page.querySelector("#drama-count").textContent = `${data.scenes ? data.scenes.length : 0} 场 · ${all.length} 镜${totalDur ? ` · ${totalDur.toFixed(1)} 秒` : ""}`;
+}
+async function renderDramaPage() {
+  const page = document.getElementById("assist-page");
+  if (!page) return;
+  if (dramaState.paper) dramaState.paper.remove();
+  dramaState.paper = null; dramaState.graph = null; dramaState.wheelHandler = null;
+  page.innerHTML = '<div class="drama-loading">加载分镜表…</div>';
+  try {
+    const rows = await dramaList();
+    if (!rows.length) {
+      page.innerHTML = `<div class="drama-empty"><div class="drama-empty-icon">${ic("clapperboard")}</div><h2>还没有分镜表</h2><p>先在任务里 use_skill short-drama，写出 <code>分镜表.json</code> 并让用户确认；确认后这里会自动出现。</p><button class="ui-btn ui-btn--default" id="drama-start">去创建分镜表</button></div>`;
+      page.querySelector("#drama-start").onclick = () => { closeAssistView(); document.getElementById("new-task").click(); inputEl.value = "用 short-drama 技能先帮我写一份分镜表，先不要生成任何图片或视频。"; inputEl.focus(); };
+      return;
+    }
+    const selected = rows.some((x) => x.name === dramaState.name) ? dramaState.name : rows[0].name;
+    await dramaLoad(selected);
+    page.innerHTML = `<div class="drama-head"><div><div class="drama-kicker">AI 短剧 · 分镜唯一真源</div><h1>${esc(dramaState.data.title || selected)}</h1><div class="drama-sub">${esc(dramaState.data.logline || "画布只展示分镜表；重跑单格后会把产物路径写回 JSON")}</div></div><div class="drama-head-actions"><select id="drama-select" class="ui-select"></select><button class="ui-btn ui-btn--outline ui-btn--sm" id="drama-refresh">${ic("refresh-cw")}刷新</button></div></div>
+      <div class="drama-toolbar"><span id="drama-count"></span><span class="drama-toolbar-hint">拖动画布 · 滚轮缩放 · 重跑会真实调用生成模型</span><span class="drama-zoom-box"><button class="ui-btn ui-btn--ghost ui-btn--xs" id="drama-zoom-out">−</button><span id="drama-zoom">100%</span><button class="ui-btn ui-btn--ghost ui-btn--xs" id="drama-zoom-in">+</button><button class="ui-btn ui-btn--ghost ui-btn--xs" id="drama-reset">${ic("target")}复位</button></span></div>
+      <div id="drama-viewport" class="drama-viewport"><div id="drama-world" class="drama-world"></div></div>`;
+    const sel = page.querySelector("#drama-select");
+    sel.innerHTML = rows.map((x) => `<option value="${esc(x.name)}">${esc(x.title)} · ${x.shots} 镜</option>`).join(""); sel.value = selected;
+    sel.onchange = async () => { await dramaLoad(sel.value); renderDramaPage(); };
+    page.querySelector("#drama-refresh").onclick = () => renderDramaPage();
+    page.querySelector("#drama-zoom-in").onclick = () => { dramaState.scale = Math.min(1.45, dramaState.scale + .1); renderDramaCanvas(); page.querySelector("#drama-zoom").textContent = Math.round(dramaState.scale * 100) + "%"; };
+    page.querySelector("#drama-zoom-out").onclick = () => { dramaState.scale = Math.max(.55, dramaState.scale - .1); renderDramaCanvas(); page.querySelector("#drama-zoom").textContent = Math.round(dramaState.scale * 100) + "%"; };
+    page.querySelector("#drama-reset").onclick = () => { dramaState.scale = 1; dramaState.x = 0; dramaState.y = 0; renderDramaCanvas(); page.querySelector("#drama-zoom").textContent = "100%"; };
+    // JointJS 画布创建后会在 renderDramaCanvas 内绑定拖拽和滚轮；这里不能先调用旧的
+    // 旧的手写 DOM 视口绑定已移除；旧页面仅保留作迁移参考。
+    renderDramaCanvas();
+  } catch (e) { page.innerHTML = `<div class="drama-empty"><div class="drama-empty-icon">${ic("circle-x")}</div><h2>分镜表读取失败</h2><p>${esc(e.message || e)}</p><button class="ui-btn ui-btn--outline" id="drama-retry">重试</button></div>`; page.querySelector("#drama-retry").onclick = renderDramaPage; }
+}

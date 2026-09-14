@@ -364,12 +364,30 @@ function historyChars(history) {
   return n;
 }
 
-// 这三个工具没有渲染器就是死的：html_to_image 和 render_page 张口就抛
-// 「需要桌面版环境」，desktop_pet 连实现都没注册。纯 node 起服务（npm start / Docker /
-// wb 命令行）时它们照样挂在工具清单里，模型看得见就会去用——调一次、吃一条必然的失败、
-// 再重想一个方案，白烧一轮，还容易被当成偶发故障去重试。定义一起摘掉才是真的关掉。
-// 三条定义加起来 2100 多字符，占整份工具清单的 17%，摘掉顺带把每一步的输入都变便宜。
+// 这两个工具没有渲染器就是死的：html_to_image 张口就抛「需要桌面版环境」，
+// desktop_pet 连实现都没注册。纯 node 起服务（npm start / Docker / wb 命令行）时它们照样
+// 挂在工具清单里，模型看得见就会去用——调一次、吃一条必然的失败、再重想一个方案，
+// 白烧一轮，还容易被当成偶发故障去重试。定义一起摘掉才是真的关掉。
+// 两条定义加起来 1900 多字符，占整份工具清单的 14%，摘掉顺带把每一步的输入都变便宜。
+// 这些工具依赖 Electron/内置浏览器；保留 fetch_url 的 render 参数作为无浏览器兜底，
+// 但 render_page 兼容别名不能在纯 Node 子进程里暴露，否则模型会反复调用必失败的工具。
 const DESKTOP_ONLY_TOOLS = ["html_to_image", "render_page", "desktop_pet"];
+
+// 同一个道理，往下再走一层：fetch_url 本身到哪儿都能用，但它的 render / wait_ms 两个参数
+// 靠的是内置浏览器。没有渲染器时把参数留在清单里，模型会先 render:"force" 一次、
+// 吃一条「没有内置浏览器」、再回头重想——跟摆一个必然失败的工具是一回事。
+const RENDERER_PARAMS = { fetch_url: ["render", "wait_ms"] };
+
+/** 摘掉靠渲染器才成立的参数。原定义不动（TOOL_DEFS 是共享的），只在这一份清单里换成裁过的副本 */
+function dropRendererParams(defs) {
+  return defs.map((t) => {
+    const drop = RENDERER_PARAMS[t.name];
+    if (!drop) return t;
+    const props = { ...((t.input_schema || {}).properties || {}) };
+    for (const k of drop) delete props[k];
+    return { ...t, input_schema: { ...t.input_schema, properties: props } };
+  });
+}
 
 /** 有没有真能用的渲染器。探不到就当没有——宁可少给一个工具，也不给一个必然失败的 */
 function hasRenderer() {
@@ -660,8 +678,9 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
   function toolList(depth, mode) {
     if (mode === "ask" || mode === "plan") {
       const gui = hasRenderer();
+      const readOnly = TOOL_DEFS.filter((t) => READ_ONLY_TOOLS.includes(t.name) && (gui || !DESKTOP_ONLY_TOOLS.includes(t.name)));
       return [
-        ...TOOL_DEFS.filter((t) => READ_ONLY_TOOLS.includes(t.name) && (gui || !DESKTOP_ONLY_TOOLS.includes(t.name))),
+        ...(gui ? readOnly : dropRendererParams(readOnly)),
         // 只看不动的档位里也该答得上「我都定了些什么」——list_schedules 只读，schedule_task 不给
         ...(scheduler.activeScheduler() ? [LIST_SCHEDULES_TOOL] : []),
         USE_SKILL_TOOL,
@@ -671,11 +690,12 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     // 用 shell 的方案、调一次、吃一条拒绝、再重想——白烧一轮，还容易被它当成偶发失败去重试
     const shellOff = orgPolicy() && orgPolicy().allow_shell === false;
     const noGui = !hasRenderer();
-    const base = TOOL_DEFS.filter(
+    let base = TOOL_DEFS.filter(
       (t) =>
         !(shellOff && (t.name === "run_shell" || t.name === "run_node")) &&
         !(noGui && DESKTOP_ONLY_TOOLS.includes(t.name))
     );
+    if (noGui) base = dropRendererParams(base);
     const tools = [...base, USE_SKILL_TOOL, ASK_USER_TOOL, ...mcpManager.toolDefs()];
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) tools.push(FEISHU_DOC_TOOL);
     if (botWebhookOn()) tools.push(NOTIFY_TOOL);
@@ -2265,7 +2285,7 @@ async function mapPool(items, limit, fn) {
 // 原始入参和完整返回一个字没删，收在卡里，想看点开就是。
 // 默认展示的是「发生了什么」，不是「传了什么参数」——后者是排障才要看的东西。
 const TOOL_VERB = {
-  read_file: "读", read_document: "读文档", write_file: "写", edit_file: "改", list_files: "列目录", search_files: "搜文件",
+  canvas_manage: "改画布", read_file: "读", read_document: "读文档", write_file: "写", edit_file: "改", list_files: "列目录", search_files: "搜文件",
   run_shell: "命令", run_node: "跑脚本", web_search: "搜", fetch_url: "抓", render_page: "渲染",
   check_page: "体检", html_to_image: "截图", look_at_image: "看图", generate_image: "生图",
   generate_video: "生成视频", gen_diagram: "画图表", text_to_speech: "配音", transcribe_audio: "转文字", remember: "记住",
@@ -2295,6 +2315,8 @@ function toolHeadline(name, input) {
   const q = (v) => "「" + tailText(v, 40) + "」";
   let obj = "";
   switch (name) {
+    case "canvas_manage":
+      obj = `${i.operation || "get"}${i.kind ? " · " + i.kind : ""}${i.node_id ? " · " + i.node_id : ""}`; break;
     case "read_file": case "write_file": case "edit_file": case "html_to_image": case "look_at_image":
       obj = tailText(i.path, 46); break;
     case "list_files": case "search_files":

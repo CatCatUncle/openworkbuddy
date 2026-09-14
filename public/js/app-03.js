@@ -725,6 +725,7 @@ const PAGE_VIEWS = {
   hub: { icon: "puzzle", title: "专家 · 技能 · 连接器", wide: true, render: () => renderHubPage() },
   prompts: { icon: "book-open-text", title: "参考模板库", wide: true, render: () => renderPromptPage() },
   proj: { icon: "folder", title: "项目", wide: true, render: () => renderProjPage() },
+  canvas: { icon: "map", title: "无限画布", wide: true, render: () => renderCanvasPage() },
   autom: { icon: "clock", title: "自动化", wide: true, render: () => renderAutomPage() },
   lib: { icon: "book", title: "资料库", wide: true, render: () => renderLibPage() },
   eval: { icon: "flask-conical", title: "评测", wide: true, render: () => renderEvalPage() },

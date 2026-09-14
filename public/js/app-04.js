@@ -660,6 +660,30 @@ async function renderHubSkills(box) {
   const defs = (hubState._defaults || []).filter(s => hubMatch(hubState.q, s.name, s.title, s.why, s.author));
   const missing = (hubState._defaults || []).filter(s => !s.installed);
   box.innerHTML = `
+    ${po ? `<div class="ex-editor hub-install-box">
+      <div class="hub-sec-title">${ic("download")} 从 GitHub 安装 <span class="sub">支持整仓库、tree 子目录、blob 单文件和 raw 直链；安装后立即生效</span></div>
+      <div class="row"><input id="sk-url" placeholder="粘贴 GitHub 技能地址，例如 anthropics/skills/tree/main/skills/docx" style="flex:1">
+        <button class="btn-brand" id="sk-install" style="flex:none">安装</button></div>
+      <div id="sk-install-msg" class="ab-empty" style="margin-top:6px"></div>
+    </div>` : ""}
+    <div id="hub-editor"></div>
+    <div class="hub-sec-title" style="margin-top:14px">${po ? "已安装技能" : "可用技能"} <span class="sub">${
+      po ? "本机 skills/ 目录与插件带入的能力" : "这台服务器已经装好的能力；装新技能归平台管理员"}</span></div>
+    <div class="card-grid" id="hub-grid">
+      ${po ? `<div class="ex-card add" id="sk-add">${ic("plus")}添加技能<span class="add-sub">手写一份操作说明书，保存立即生效</span></div>` : ""}
+      ${list.map((s, i) => `
+        <div class="ex-card" data-si="${i}">
+          ${s.plugin ? `<span class="flag">插件</span>` : ""}
+          <div class="hd"><div class="av">${ic(s.plugin ? "puzzle" : "wrench")}</div><div class="nm"><span>${esc(s.name)}</span>${
+            s.plugin ? `<span class="al">来自插件 ${esc(s.plugin)}</span>` : ""}</div></div>
+          <div class="ds">${esc(s.description || "（无描述）")}</div>
+          <div class="ops"><button class="primary sk-use">立即使用</button><button class="sk-view">正文</button>${
+            s.plugin || !po ? "" : '<button class="sk-edit">修改</button><button class="sk-del">删除</button>'}</div>
+          <div class="sk-start" style="display:none"></div>
+          <pre class="sk-preview" style="display:none"></pre>
+        </div>`).join("")}
+      ${list.length ? "" : `<div class="hub-empty">${hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的技能` : "暂无技能"}</div>`}
+    </div>
     ${defs.length ? `
     <div class="hub-sec-title" style="margin-top:14px">${ic("sparkles")} 推荐技能
       <span class="sub">不随本项目打包，点一下从上游仓库现取（只下这一个子目录，不拖整仓）。协议与作者都写在卡片上，装谁的东西自己心里有数</span>
@@ -677,31 +701,7 @@ async function renderHubSkills(box) {
             : '<button class="primary sk-def-install">安装</button>'}</div>
           <div class="ab-empty sk-def-msg" style="margin-top:4px"></div>
         </div>`).join("")}
-    </div>` : ""}
-    ${po ? `<div class="ex-editor" style="margin-top:14px">
-      <div class="hub-sec-title">${ic("download")} 从 GitHub 安装 <span class="sub">整仓库 / tree 子目录 / blob 单文件 / raw 直链都行，装完立即生效不用重启</span></div>
-      <div class="row"><input id="sk-url" placeholder="https://github.com/anthropics/skills/tree/main/skills/docx" style="flex:1">
-        <button class="btn-brand" id="sk-install" style="flex:none">安装</button></div>
-      <div id="sk-install-msg" class="ab-empty" style="margin-top:6px"></div>
-    </div>` : ""}
-    <div id="hub-editor"></div>
-    <div class="hub-sec-title" style="margin-top:14px">${po ? "我的技能" : "可用技能"} <span class="sub">${
-      po ? "本机 skills/ 目录里的，加上插件带进来的" : "这台服务器上装好的，点「立即使用」就能用；装新技能归平台管理员"}</span></div>
-    <div class="card-grid" id="hub-grid">
-      ${po ? `<div class="ex-card add" id="sk-add">${ic("plus")}添加技能<span class="add-sub">手写一份操作说明书，智能体按需加载</span></div>` : ""}
-      ${list.map((s, i) => `
-        <div class="ex-card" data-si="${i}">
-          ${s.plugin ? `<span class="flag">插件</span>` : ""}
-          <div class="hd"><div class="av">${ic(s.plugin ? "puzzle" : "wrench")}</div><div class="nm"><span>${esc(s.name)}</span>${
-            s.plugin ? `<span class="al">来自插件 ${esc(s.plugin)}</span>` : ""}</div></div>
-          <div class="ds">${esc(s.description || "（无描述）")}</div>
-          <div class="ops"><button class="primary sk-use">立即使用</button><button class="sk-view">正文</button>${
-            s.plugin || !po ? "" : '<button class="sk-edit">修改</button><button class="sk-del">删除</button>'}</div>
-          <div class="sk-start" style="display:none"></div>
-          <pre class="sk-preview" style="display:none"></pre>
-        </div>`).join("")}
-      ${list.length ? "" : `<div class="hub-empty">${hubState.q ? `没有找到与「${esc(hubState.q)}」匹配的技能` : "暂无技能"}</div>`}
-    </div>`;
+    </div>` : ""}`;
 
   // 推荐技能：装一个 / 装齐缺的。装完刷新缓存再重绘，卡片上的「已安装」和真实体积才对得上。
   const installDefaults = async (names, msgEl, btn, force) => {

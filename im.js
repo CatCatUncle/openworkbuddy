@@ -25,11 +25,18 @@
  *
  * 状态/日志接口：GET /im/status（各通道连接状态）、GET /im/log（最近消息进出记录）、
  * POST /im/feishu/test（校验凭证 + 取机器人信息 + 重建长连接）。
+ *
+ * 飞书对话长这样（三段式，参考 catclaw 的做法）：
+ *   1) 收到消息立刻在用户那条上贴一个「稍等」表情 —— 不新发消息，不刷屏；
+ *   2) 随即发一张卡片，卡片里能看见执行过程（当前在跑第几步、动了哪个工具、给了什么文件）；
+ *   3) 任务跑完，同一张卡片原地变成最终回答（正文打字机式流出）并撤掉表情。
+ *   卡片发不出去 / 平台不支持时逐级降级：CardKit 流式 → CardKit 静态卡 → 普通交互卡 → 纯文本。
  */
 
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { dataPath } = require("./paths");
 const notify = require("./notify");
 const callout = require("./callout"); // IM 里没有图标，正文提示条换成文字标签
@@ -181,6 +188,310 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     }
   }
 
+  // ---------- 飞书卡片：一段执行过程 + 一个最终回答 ----------
+  //
+  // 为什么不用自己发文本再编辑：飞书文本消息能改，但改不出结构（标题、分栏、分隔线都不行），
+  // 而且编辑接口对 text 有频控。CardKit（cardkit.v1）是飞书给「流式卡片」的正路：
+  // 先建一张卡 → 发出去 → 之后按 element_id 局部推内容，正文那格还自带打字机效果。
+  // 参考实现：catclaw 的 feishu-streaming-card.ts。
+
+  const FEISHU_STEPS_KEEP = 6; // 卡片上最多列几行执行过程，多了留最近几条 + 「另有 n 步」
+  const FEISHU_FLUSH_MS = 1200; // 卡片最快多久推一次（打字机由飞书渲染，推太勤只是白花配额）
+  const FEISHU_STREAM_MAX = 4000; // 一条飞书消息的正文上限，正文超过就只把摘要放卡上
+
+  /** 卡片放不下（正文超 4000 / 表格超 5 个）时，正文走文本消息，卡片里说一句「见下条」 */
+  function feishuCardBody(text, budget) {
+    const lines = String(text || "").split("\n");
+    let tables = 0;
+    // 飞书卡片最多 5 个 markdown 表格。按连续的 | 行算一个表格块，
+    // 不要把一张表的每一行都算成一个表格。
+    let inTable = false;
+    for (const l of lines) {
+      const row = /^\s*\|.*\|\s*$/.test(l);
+      if (row && !inTable) tables++;
+      inTable = row;
+    }
+    if (String(text).length <= budget && tables <= 5) return { body: text, split: false };
+    const cut = lines.slice(0, 12).join("\n").slice(0, Math.min(budget, 500));
+    return { body: cut + "\n\n> 内容较长（" + String(text).length + " 字），正文见下一条消息。", split: true };
+  }
+
+  /** 卡片上的执行过程：从 agent 事件里挑「用户看得懂在干什么」的那些 */
+  function feishuCardLine(ev, st) {
+    if (ev.type === "step_start" && !ev.depth) { st.step = ev.step; return null; }
+    if (ev.type === "tool_use") {
+      const label = TOOL_LABELS[ev.name] || ev.name;
+      const det = String(ev.purpose || "").replace(/\s+/g, " ").trim().slice(0, 60);
+      return `**第 ${st.step || 1} 步** · ${label}${det ? "： " + det : ""}`;
+    }
+    if (ev.type === "expert_start") return `已委派专家「${ev.expert}」`;
+    if (ev.type === "expert_done") return `专家「${ev.expert}」已交回结果`;
+    if (ev.type === "compact") return "整理长会话上下文（自动压缩早前内容）";
+    if (ev.type === "parallel") return "并行跑几个子任务";
+    if (ev.type === "auto_continue") return "继续往下做（上一轮还没做完）";
+    return null;
+  }
+
+  /** 秒 → 人话时长 */
+  function feishuDur(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + "s";
+    return Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0") + "s";
+  }
+
+  // CardKit 的 element_id 是建卡时我们自己定的，后面按这个名字推内容
+  const CARD_IDS = { HEAD: "owb_head", PROC: "owb_proc", NOTE: "owb_note", BODY: "owb_body" };
+
+  /** 卡片 JSON：schema 2.0，正文 markdown 单列，执行过程放一个灰底折叠面板里 */
+  function feishuProgressCard({ title, procLines, note, body, summary, expanded = true, streaming = true }) {
+    const els = [];
+    if (procLines && procLines.length) {
+      els.push({
+        tag: "collapsible_panel",
+        element_id: "owb_proc_panel",
+        expanded,
+        header: {
+          title: { tag: "markdown", content: "**执行过程**" },
+          background_color: "grey-50",
+          padding: "6px 10px 6px 10px",
+          icon: { tag: "standard_icon", token: "down-small-ccm_outlined" },
+        },
+        elements: [{ tag: "markdown", element_id: CARD_IDS.PROC, content: procLines.join("\n") }],
+      });
+    }
+    if (note) els.push({ tag: "markdown", element_id: CARD_IDS.NOTE, content: note, text_size: "notation" });
+    els.push({ tag: "markdown", element_id: CARD_IDS.BODY, content: body || "…" });
+    const cleanTitle = String(title || "生成中").replace(/[\*_`#]/g, "").trim().slice(0, 80) || "生成中";
+    const template = streaming ? "blue" : (cleanTitle.includes("没做成") ? "orange" : "green");
+    return {
+      schema: "2.0",
+      config: {
+        update_multi: true,
+        streaming_mode: streaming,
+        enable_forward: true,
+        width_mode: "fill",
+        streaming_config: { print_frequency_ms: { default: 30 }, print_step: { default: 2 }, print_strategy: "fast" },
+        ...(summary ? { summary: { content: summary.slice(0, 40) } } : {}),
+      },
+      header: { title: { tag: "plain_text", content: cleanTitle }, template },
+      body: { direction: "vertical", vertical_spacing: "medium", elements: els },
+    };
+  }
+
+  /**
+   * 一张「活的」飞书卡片：建卡 → 发送 → 按元素推内容 → 收尾。
+   * 全程吞掉自己的异常：卡片只是锦上添花，坏掉也绝不能把任务本身带崩。
+   */
+  function createFeishuCard({ chatId, replyTo, summary, onDegrade }) {
+    let cardId = null, messageId = null, seq = 1, broken = false;
+    const hashes = new Map();
+    let chain = Promise.resolve(); // 同一张卡的所有请求串行，否则 sequence 会乱序被飞书拒掉
+    const st = { step: 0, lines: [], extra: 0 };
+    let lastFlush = 0, timer = null, pending = null;
+    let startedAt = Date.now(), done = false;
+
+    const enqueue = (fn) => { const run = chain.then(fn, fn); chain = run.then(() => undefined, () => undefined); return run; };
+
+    async function api(pathname, init) {
+      const transient = /ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|timeout|fetch failed|aborted/i;
+      const delays = [600, 1500];
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const token = await getFeishuToken();
+          const r = await fetch("https://open.feishu.cn" + pathname, {
+            ...init,
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8", ...(init && init.headers) },
+            signal: AbortSignal.timeout(15000),
+          });
+          const j = await r.json().catch(() => ({ code: -1, msg: "响应不是 JSON" }));
+          if (j.code !== 0) { const e = new Error(`code ${j.code}: ${j.msg}`); e.code = j.code; throw e; }
+          return j.data || {};
+        } catch (e) {
+          if (attempt >= delays.length || !transient.test(String(e && e.message || e))) throw e;
+          await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+        }
+      }
+    }
+
+    const push = (pathname, init) => enqueue(() => (broken ? null : api(pathname, init).catch((e) => { broken = true; failNote = e.message; return null; })));
+    let failNote = "";
+
+    function header(name) {
+      return { step: st.step, startedAt, elapsed: feishuDur(Date.now() - startedAt), done, name };
+    }
+
+    // ---- 内部：把当前状态推给飞书 ----
+    async function flush() {
+      if (broken || done) return; // 收尾定格之后，迟到的进度刷新不许再覆盖卡片
+      const lines = st.lines.slice(-FEISHU_STEPS_KEEP);
+      const extra = st.lines.length - lines.length;
+      const proc = (extra > 0 ? `（更早还有 ${extra} 步）\n` : "") + (lines.join("\n") || "接到任务了，准备开工…");
+      const card = feishuProgressCard({ procLines: [proc], body: st.bodyText || "…", summary: st.title });
+      const key = quickCardHash(card);
+      if (hashes.get("__full") === key) return;
+      hashes.set("__full", key);
+      await push(`/open-apis/cardkit/v1/cards/${cardId}`, { method: "PUT", body: JSON.stringify({ card: { type: "card_json", data: JSON.stringify(card) }, sequence: ++seq }) });
+    }
+    function quickCardHash(o) { return crypto.createHash("md5").update(JSON.stringify(o)).digest("hex"); }
+
+    async function flushNow() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      pending = null;
+      lastFlush = Date.now();
+      await flush();
+    }
+    function schedule() {
+      if (broken) return;
+      const wait = FEISHU_FLUSH_MS - (Date.now() - lastFlush);
+      if (wait <= 0) return void flushNow();
+      if (!timer) timer = setTimeout(() => { timer = null; flush(); lastFlush = Date.now(); }, wait);
+    }
+
+    return {
+      /** 建卡 + 发出；返回 false 表示这条路走不通（调用方自动降级） */
+      async start(title) {
+        try {
+          const card = feishuProgressCard({ title, procLines: ["接到任务了，准备开工…"], body: "…", summary });
+          const created = await api("/open-apis/cardkit/v1/cards", {
+            method: "POST",
+            body: JSON.stringify({ type: "card_json", data: JSON.stringify(card) }),
+          });
+          cardId = created.card_id;
+          if (!cardId) throw new Error("建卡接口没返回 card_id");
+          const token = await getFeishuToken();
+          const content = JSON.stringify({ type: "card", data: { card_id: cardId } });
+          const resp = replyTo
+            ? await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${replyTo}/reply`, {
+                method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ content, msg_type: "interactive" }), signal: AbortSignal.timeout(15000),
+              })
+            : await fetch("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
+                method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ receive_id: chatId, msg_type: "interactive", content }), signal: AbortSignal.timeout(15000),
+              });
+          const rj = await resp.json();
+          if (rj.code !== 0 || !(rj.data || {}).message_id) throw new Error(`code ${rj.code}: ${rj.msg}`);
+          messageId = rj.data.message_id;
+          hashes.set("__sent", quickCardHash(card));
+          return true;
+        } catch (e) {
+          broken = true;
+          onDegrade && onDegrade(e);
+          return false;
+        }
+      },
+      get ok() { return !!cardId && !broken; },
+      get messageId() { return messageId; },
+
+      /** agent 事件 → 卡片上的执行过程 */
+      onEvent(ev) {
+        if (broken) return;
+        const isFiles = ev.type === "files" && Array.isArray(ev.changed) && ev.changed.length;
+        const line = feishuCardLine(ev, st);
+        const changed = !!(line || isFiles);
+        if (line) st.lines.push(line);
+        if (isFiles) st.lines.push(`产出文件：${ev.changed.slice(0, 3).join("、")}${ev.changed.length > 3 ? ` 等 ${ev.changed.length} 个` : ""}`);
+        if (!changed) return;
+        schedule();
+      },
+
+      /** 收尾：正文流出去，卡片定格成最终回答 */
+      async finish(fullText) {
+        done = true;
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (broken || !cardId) return false;
+        try {
+          const info = feishuCardBody(fullText, 3000);
+          st.title = info.split ? "做完啦 · 正文见下一条" : "做完啦";
+          st.bodyText = info.body;
+          st.doneText = fullText;
+          const lines = st.lines.slice(-FEISHU_STEPS_KEEP);
+          const extra = st.lines.length - lines.length;
+          const procText = (extra > 0 ? `（更早还有 ${extra} 步）\n` : "") + lines.join("\n");
+          // 整卡一次推到位：别先推正文元素再推整卡——两次都往同一格里流正文，卡上会重复两遍。
+          // 执行过程收起定格；没有实际步骤（纯聊天）就整块不出现，别留「准备开工…」占位
+          const finalCard = feishuProgressCard({
+            title: "做完啦" + (info.split ? " · 正文见下一条" : ""),
+            procLines: procText ? [procText] : [],
+            expanded: false,
+            body: info.split ? "见下条消息" : info.body,
+            summary: st.title,
+            streaming: false, // 收尾直接在整卡 config 里关流式，卡片定格
+          });
+          // 整卡一次推到位。别再调 /cards/:id/settings 关流式——飞书这个端点返回 404，
+          // push 会把 broken 置真，调用方误判卡片没改成、又用纯文本补发一遍，回答就出现两遍。
+          const putOk = await push("/open-apis/cardkit/v1/cards/" + cardId, {
+            method: "PUT",
+            body: JSON.stringify({ card: { type: "card_json", data: JSON.stringify(finalCard) }, sequence: ++seq }),
+          });
+          if (!putOk) return false; // 只有整卡这一推真失败了才降级纯文本
+          return info.split ? "split" : true;
+        } catch (e) {
+          onDegrade && onDegrade(e);
+          broken = true;
+          return false;
+        }
+      },
+
+      /** 任务失败时把卡片也标成失败，别让用户盯着一张「准备开工…」发呆 */
+      async fail(why) {
+        if (broken || !cardId) return;
+        try {
+          const finalCard = feishuProgressCard({
+            title: "没做成",
+            procLines: st.lines.slice(-FEISHU_STEPS_KEEP),
+            body: `出错了：${String(why).slice(0, 300)}`,
+            summary: "任务出错",
+            streaming: false,
+          });
+          await push("/open-apis/cardkit/v1/cards/" + cardId, {
+            method: "PUT",
+            body: JSON.stringify({ card: { type: "card_json", data: JSON.stringify(finalCard) }, sequence: ++seq }),
+          });
+        } catch { /* 卡片状态改不动就算了，错误消息本来就还要用文本发一遍 */ }
+      },
+    };
+  }
+
+  /**
+   * 飞书原生的「收到了」：在用户那条消息上贴一个表情，答完再撤掉。
+   * 不新发消息，所以不会刷屏；表情撤不掉也不影响任何事（飞书对 reaction 有配额）。
+   */
+  const FEISHU_ACK_EMOJI = "OnIt"; // 飞书表情 key，「收到」含义
+  async function feishuAck(msgId) {
+    if (!msgId) return null;
+    try {
+      const token = await getFeishuToken();
+      const r = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${msgId}/reactions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ reaction_type: { emoji_type: FEISHU_ACK_EMOJI } }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const j = await r.json();
+      if (j.code !== 0) {
+        // 4009/234001 之类：应用没开 im:message.reaction 权限，或对这条消息不适用——静默放弃
+        console.warn(`[飞书] 贴表情失败(code ${j.code}: ${j.msg})，跳过 ack`);
+        return null;
+      }
+      return j.data?.reaction_id || null;
+    } catch (e) {
+      console.warn("[飞书] 贴表情出错:", e.message);
+      return null;
+    }
+  }
+  async function feishuAckClear(msgId, reactionId) {
+    if (!msgId || !reactionId) return;
+    try {
+      const token = await getFeishuToken();
+      await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${msgId}/reactions/${reactionId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch { /* 撤不掉就留着，用户看到「收到」表情并不困扰 */ }
+  }
+
   // ---------- 飞书消息处理（长连接与事件回调共用） ----------
 
   // 同一会话的任务必须串行：并发跑 runTask 会同时写一份历史，把 tool_calls 序列写坏（LLM 400）
@@ -233,19 +544,37 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     return null;
   }
 
-  function runInbound({ channel, sessionKey, text, reply, status, sendFile, logExtra = {} }) {
+  async function runInbound({ channel, sessionKey, text, reply, status, sendFile, card, cardPromise, logExtra = {} }) {
     logIm(channel, "in", text, logExtra);
     maybeResetIdleSession(sessionKey, channel);
     // 「正在做」状态消息：收到即发（只在支持撤回的通道传 status），跑的过程中原地改成
-    // 当前进度，出结果前撤回——聊天里最终只留结果，跟用户「别刷确认消息」的要求不冲突
+    // 当前进度，出结果前撤回——聊天里最终只留结果，跟用户「别刷确认消息」的要求不冲突。
+    // 飞书走 card 那条路（贴表情 + 执行过程卡片），不再需要 state 消息，传了 card 就自动不挂 status。
     const queued = taskQueues.has(sessionKey);
-    let statusHandle = status ? status.send(queued).catch(() => null) : null;
+    let statusHandle = card ? null : (status ? status.send(queued).catch(() => null) : null);
+
     const recallStatus = async () => {
       if (!statusHandle) return;
       const h = statusHandle;
       statusHandle = null;
       try { await status.recall(await h); } catch {}
     };
+    // 飞书卡片：贴表情 ack 之后立刻建一张，跑的过程中往里推执行过程，最后定格成回答。
+    // 建卡失败不算任务失败——直接不带卡片继续跑，最终回答走原来那条 reply 路。
+    // 卡片建卡和任务可以并行。不能用 Promise.race 把 1.5 秒后才建好的卡片句柄丢掉，
+    // 否则卡片会停在「正在处理」，而最终结果只能另发一条消息。
+    let cardHandle = null;
+    const cardEvents = [];
+    const cardReady = card && cardPromise
+      ? Promise.resolve(cardPromise).then((h) => {
+          if (h && h.ok) {
+            cardHandle = h;
+            statusHandle = null;
+            for (const ev of cardEvents.splice(0)) h.onEvent(ev);
+          }
+          return cardHandle;
+        }).catch(() => null)
+      : Promise.resolve(null);
     // 进度节流：最快 4 秒改一次状态消息，别撞飞书编辑接口的频控
     let lastUpd = 0, updTimer = null, progText = "";
     const progState = { step: 0 };
@@ -299,6 +628,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
           history,
           emit: (ev) => {
             if (ev.type === "files" && Array.isArray(ev.changed)) for (const n of ev.changed) changedNames.add(n);
+            if (cardHandle) cardHandle.onEvent(ev);
+            else if (card && cardPromise && cardEvents.length < 60) cardEvents.push(ev);
             emitProgress(ev);
           },
           sec: imSec(),
@@ -327,9 +658,38 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         if (updTimer) { clearTimeout(updTimer); updTimer = null; }
         await recallStatus();
         phase = "回复发送";
-        await twice(() => reply(out));
-        logIm(channel, "out", out, logExtra);
-        phase = "附件发送";
+        // 飞书：卡片原地变成最终回答，正文打字机式流出；回复里点名的文件列表也贴在卡上，
+        // 方便回看。真正发出去的附件仍然走下面的 sendFile。
+        if (!cardHandle && cardPromise) {
+          // 短任务可能在卡片建好前就结束；给 CardKit 一点时间接住最终结果，
+          // 仍设上限，避免飞书网络异常拖住真正的文本降级回复。
+          await Promise.race([
+            cardReady,
+            new Promise((resolve) => setTimeout(resolve, 5000)),
+          ]);
+        }
+        if (cardHandle) {
+          const withFiles = toSend && toSend.length
+            ? out + "\n\n---\n" + toSend.map((f) => f.name.split("/").pop()).join(" · ")
+            : out;
+          const r = await cardHandle.finish(withFiles).catch(() => null);
+          if (r === true) { logIm(channel, "out", out, logExtra); phase = "附件发送"; }
+          else if (r === "split") {
+            // 卡片放不下全文（超长/表格超 5 个）：卡片停在上半段 + 提示，正文改用文本发一条
+            await twice(() => reply(out));
+            logIm(channel, "out", out, logExtra);
+            phase = "附件发送";
+          } else {
+            // 卡片这条路整个废了（建卡失败/推内容被拒）：退回老的交互卡或纯文本，保证回答必达
+            await twice(() => reply(out));
+            logIm(channel, "out", out, logExtra);
+            phase = "附件发送";
+          }
+        } else {
+          await twice(() => reply(out));
+          logIm(channel, "out", out, logExtra);
+          phase = "附件发送";
+        }
         for (const f of toSend) {
           try {
             await twice(() => sendFile(f.name));
@@ -349,12 +709,14 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         if (updTimer) { clearTimeout(updTimer); updTimer = null; }
         try {
           await recallStatus();
+          if (cardHandle) await cardHandle.fail(why).catch(() => {});
           await reply(phase === "任务执行"
             ? `任务执行出错：${why}`
             : `任务已经跑完了，但${phase}失败：${why}。结果和文件都在 OpenWorkBuddy 工作台里，去那儿拿。`);
         } catch {}
       } finally {
         liveProgress.delete(sessionKey); // 任务收尾，进度条目摘掉，别让网页一直显示「执行中」
+        if (card && card.ackMsgId) feishuAckClear(card.ackMsgId, card.ackId).catch(() => {}); // 表情收尾：任务完了就把「稍等」摘掉
       }
     });
   }
@@ -476,14 +838,47 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     }
   }
 
-  const handledMsgs = new Set(); // message_id 去重（飞书会重试推送）
+  // 飞书长连接在应用重启后会补推最近事件；公网回调与长连接误同时开启时，也可能同时投递同一条。
+  // 不能只靠内存，更不能等 120ms 再落盘：刚回复完就重启时，那个定时器可能还没来得及写。
+  // 最近 2000 个键同步、原子落盘；只存 message_id 或内容指纹，不存正文和联系人。
+  const FEISHU_DEDUPE_FILE = dataPath("data", "feishu-handled-messages.json");
+  const handledMsgs = (() => {
+    try {
+      const rows = JSON.parse(fs.readFileSync(FEISHU_DEDUPE_FILE, "utf8"));
+      return new Set(Array.isArray(rows) ? rows.slice(-2000).map(String) : []);
+    } catch { return new Set(); }
+  })();
+  function feishuDedupeKeys(msg) {
+    const messageId = String(msg?.message_id || "").trim();
+    const chatId = String(msg?.chat_id || "").trim();
+    // 保留旧版裸 message_id 的兼容键，升级后不会把旧记录重新跑一遍。
+    if (messageId) return [`m:${chatId}:${messageId}`, messageId];
+    // 极少数异常投递没有 message_id 时才走指纹；摘要不可逆，且只保留 32 位。
+    const fingerprint = crypto.createHash("sha256").update(JSON.stringify([chatId, msg?.message_type || "", msg?.create_time || "", msg?.content || ""])).digest("hex").slice(0, 32);
+    return [`f:${fingerprint}`];
+  }
+  function persistHandledFeishuMessages() {
+    try {
+      fs.mkdirSync(path.dirname(FEISHU_DEDUPE_FILE), { recursive: true });
+      const tmp = FEISHU_DEDUPE_FILE + ".tmp";
+      fs.writeFileSync(tmp, JSON.stringify([...handledMsgs]), { encoding: "utf8", mode: 0o600 });
+      fs.renameSync(tmp, FEISHU_DEDUPE_FILE);
+    } catch (e) { console.warn("[飞书] 消息去重记录写入失败:", e.message); }
+  }
+  function rememberFeishuMessage(msg) {
+    const keys = feishuDedupeKeys(msg);
+    for (const id of keys) { handledMsgs.delete(id); handledMsgs.add(id); }
+    while (handledMsgs.size > 2000) handledMsgs.delete(handledMsgs.values().next().value);
+    persistHandledFeishuMessages(); // 必须在下载附件、调用模型、发送卡片之前完成
+  }
   async function handleFeishuMessage(msg) {
     if (!msg || !msg.message_type) return;
-    if (msg.message_id) {
-      if (handledMsgs.has(msg.message_id)) return;
-      handledMsgs.add(msg.message_id);
-      if (handledMsgs.size > 2000) handledMsgs.clear();
+    const dedupeKeys = feishuDedupeKeys(msg);
+    if (dedupeKeys.some((id) => handledMsgs.has(id))) {
+      logIm("feishu", "sys", "忽略重复投递的消息", { chat: msg.chat_id });
+      return;
     }
+    rememberFeishuMessage(msg);
     const type = msg.message_type;
     let content = {};
     try { content = JSON.parse(msg.content || "{}"); } catch {}
@@ -491,38 +886,61 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     const saved = [];
     const failed = [];
 
-    if (type === "text") {
-      text = String(content.text || "").replace(/@_user_\d+/g, "").trim(); // 去掉 @机器人 占位
-    } else if (type === "post") {
-      text = feishuPostText(content);
-    } else if (FEISHU_MEDIA[type]) {
-      const kind = FEISHU_MEDIA[type].kind;
-      try {
-        saved.push({ kind, name: await feishuSaveResource(msg) });
-      } catch (e) {
-        logIm("feishu", "error", `接收${imMedia.KIND_CN[kind] || "附件"}失败: ${e.message}`, { chat: msg.chat_id });
-        failed.push({ kind, name: String(content.file_name || ""), why: String(e.message || e).slice(0, 120) });
+    try {
+      if (type === "text") {
+        text = String(content.text || "").replace(/@_user_\d+/g, "").trim(); // 去掉 @机器人 占位
+      } else if (type === "post") {
+        text = feishuPostText(content);
+      } else if (FEISHU_MEDIA[type]) {
+        const kind = FEISHU_MEDIA[type].kind;
+        try {
+          saved.push({ kind, name: await feishuSaveResource(msg) });
+        } catch (e) {
+          logIm("feishu", "error", `接收${imMedia.KIND_CN[kind] || "附件"}失败: ${e.message}`, { chat: msg.chat_id });
+          failed.push({ kind, name: String(content.file_name || ""), why: String(e.message || e).slice(0, 120) });
+        }
+      } else {
+        // 名片/位置/日程/投票…解析不了就明说一句，别整条丢掉——机器人不吭声比说不会更吓人
+        failed.push({ kind: "sticker", name: "", why: `这类消息（${type}）我这边解析不了` });
       }
-    } else {
-      // 名片/位置/日程/投票…解析不了就明说一句，别整条丢掉——机器人不吭声比说不会更吓人
-      failed.push({ kind: "sticker", name: "", why: `这类消息（${type}）我这边解析不了` });
-    }
 
     if (saved.length || failed.length) text = imMedia.inboundNote({ channel: "飞书", saved, failed, text });
     if (!text) return;
 
     const chatId = msg.chat_id;
-    // 收到先发「正在做」状态，出结果时撤回状态再回结果；微信 iLink 桥没有撤回接口，不挂 status
+    // 三段式的第一段：先在用户那条消息上贴个表情，表示「收到了」。
+    // 贴表情是个网络请求，超时就当没贴上，绝不拦住任务起步。
+    const ackId = await feishuAck(msg.message_id);
+    // 第二段：一张卡片，跑的过程中能看见执行过程；第三段（最终回答）会落回这张卡片上。
+    // 命令类的短消息(/help 之类)开卡不值当。卡片请求和任务并行启动，
+    // 由 runInbound 缓存早到的事件，避免「卡片慢一点就永远收不到最终结果」。
+    const isCmd = /^[\/／]/.test(text);
+    const cardP = isCmd
+      ? null
+      : (() => {
+          const h = createFeishuCard({
+            chatId,
+            replyTo: msg.message_id, // 作为对用户那条消息的回复发出，上下文不会乱
+            summary: text.slice(0, 40),
+            onDegrade: (e) => console.warn("[飞书] 卡片降级为普通回复:", e.message),
+          });
+          return h.start(`**${CH_NAME.feishu} · 正在处理**`).then((ok) => (ok ? h : null));
+        })().catch(() => null);
     await runInbound({
       channel: "feishu",
       sessionKey: `feishu_${chatId}`,
       text,
       logExtra: { chat: chatId },
-      status: { send: (q) => feishuStatusSend(chatId, q), update: (id, t) => feishuStatusUpdate(id, t), recall: (id) => feishuRecall(id) },
+      card: cardP ? { ackMsgId: msg.message_id, ackId } : null,
+      cardPromise: cardP,
       sendFile: (rel) => feishuSendFileMsg(chatId, rel),
       reply: (out) => feishuReply(chatId, out.slice(0, 3500)),
     });
+    // 收尾：表情是「收到了」的意思，活干完了就该摘掉（runInbound 内部已按任务真正收尾时摘）
+  } catch (e) {
+    console.error("[飞书] 处理消息出错:", e.message);
   }
+}
 
   // ---------- 飞书长连接（WSClient 主动拨出，无需公网地址） ----------
 
@@ -695,6 +1113,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         text,
         logExtra: { chat: msg.fromUser },
         reply: (out) => wecom.push(msg.fromUser, out),
+        sendFile: (rel) => wecom.sendFile(msg.fromUser, path.join(getWorkspaceDir(), rel), rel.split("/").pop()),
       });
     })().catch((e) => console.error("[企业微信] 任务出错:", e.message));
   });
@@ -728,6 +1147,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         text,
         logExtra: { chat: msg.fromUser },
         reply: (out) => mp.push(msg.fromUser, out),
+        sendFile: (rel) => mp.sendFile(msg.fromUser, path.join(getWorkspaceDir(), rel), rel.split("/").pop()),
       });
     })().catch((e) => console.error("[公众号] 任务出错:", e.message));
   });

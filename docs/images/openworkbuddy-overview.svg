@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">OpenWorkBuddy 本地 AI 工作台</title>
+  <desc id="desc">脱敏示意动画：任务进入后，Agent 读取素材、生成文件并在画布中形成可追踪的工作流。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#111827"/><stop offset="1" stop-color="#241b4b"/></linearGradient>
+    <linearGradient id="brand" x1="0" x2="1"><stop stop-color="#635bff"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#000" flood-opacity=".28"/></filter>
+    <style>
+      .sans{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}
+      .muted{fill:#a5aec4}.white{fill:#fff}.line{stroke:#8078ff;stroke-width:3;stroke-linecap:round;stroke-dasharray:8 10;animation:flow 2.8s linear infinite}
+      @keyframes flow{to{stroke-dashoffset:-72}} @keyframes pulse{0%,100%{opacity:.64;transform:scale(1)}50%{opacity:1;transform:scale(1.035)}}
+      .card{animation:pulse 4s ease-in-out infinite;transform-box:fill-box;transform-origin:center}.delay{animation-delay:1.2s}.delay2{animation-delay:2.2s}
+    </style>
+  </defs>
+  <rect width="960" height="420" rx="28" fill="url(#bg)"/>
+  <circle cx="825" cy="70" r="160" fill="#7168ff" opacity=".1"/><circle cx="120" cy="360" r="180" fill="#d946ef" opacity=".08"/>
+  <text x="54" y="58" class="sans white" font-size="24" font-weight="700">OpenWorkBuddy</text>
+  <text x="54" y="88" class="sans muted" font-size="14">本地优先 · 可执行 Agent · 真实文件交付</text>
+  <rect x="54" y="124" width="852" height="62" rx="16" fill="#fff" opacity=".08" stroke="#fff" stroke-opacity=".12"/>
+  <circle cx="83" cy="155" r="12" fill="url(#brand)"/><text x="110" y="162" class="sans white" font-size="16">做一支 6 镜头短剧，保留角色一致性并导出成片</text>
+  <rect x="54" y="224" width="244" height="132" rx="18" fill="#fff" opacity=".1" stroke="#fff" stroke-opacity=".14" class="card"/>
+  <text x="78" y="257" class="sans" fill="#c4b5fd" font-size="12">01 · Agent 读取</text><text x="78" y="286" class="sans white" font-size="17" font-weight="700">剧本与参考素材</text><text x="78" y="316" class="sans muted" font-size="13">工作区文件 / 画布节点</text>
+  <rect x="358" y="224" width="244" height="132" rx="18" fill="#fff" opacity=".1" stroke="#fff" stroke-opacity=".14" class="card delay"/>
+  <text x="382" y="257" class="sans" fill="#93c5fd" font-size="12">02 · Agent 执行</text><text x="382" y="286" class="sans white" font-size="17" font-weight="700">节点、模型与工具</text><text x="382" y="316" class="sans muted" font-size="13">可审核 · 可重跑 · 有 Trace</text>
+  <rect x="662" y="224" width="244" height="132" rx="18" fill="#fff" opacity=".1" stroke="#fff" stroke-opacity=".14" class="card delay2"/>
+  <text x="686" y="257" class="sans" fill="#86efac" font-size="12">03 · 交付结果</text><text x="686" y="286" class="sans white" font-size="17" font-weight="700">文件与成果预览</text><text x="686" y="316" class="sans muted" font-size="13">本机保存 · IM 可收发</text>
+  <path d="M298 290h60M602 290h60" class="line"/>
+  <text x="54" y="398" class="sans muted" font-size="12">示例数据 · 不包含个人任务、聊天记录、本机路径或密钥</text>
+</svg>
