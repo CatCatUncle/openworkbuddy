@@ -17,6 +17,7 @@ OpenWorkBuddy 自身按 [PolyForm Noncommercial 1.0.0](LICENSE) 发布，商业�
 | 包 | 版本 | 许可 | 出处 |
 |---|---|---|---|
 | @anthropic-ai/sdk | 0.125.0 | MIT | https://github.com/anthropics/anthropic-sdk-typescript |
+| @dagrejs/dagre | 1.1.8 | MIT | https://github.com/dagrejs/dagre |
 | @larksuiteoapi/node-sdk | 1.72.0 | MIT | https://github.com/larksuite/node-sdk |
 | @viz-js/viz | 3.29.0 | MIT | https://github.com/mdaines/viz-js |
 | @joint/core | 4.3.3 | MPL-2.0 | https://github.com/clientIO/joint |
@@ -33,6 +34,7 @@ OpenWorkBuddy 自身按 [PolyForm Noncommercial 1.0.0](LICENSE) 发布，商业�
 Apache-2.0 的那条（echarts）要求保留它自己的 NOTICE 和许可头——我们没有改它的源码，
 安装出来的包里原样带着，这一条就算尽到了。
 短剧画布通过 `/vendor/joint/joint.min.js` 使用 `@joint/core` 的原文件，不改源码。
+短剧画布使用 `@dagrejs/dagre` 计算节点的有向无环图（DAG）布局，不改源码。
 
 ## 三、外部服务（不随包发布，用户自己配）
 

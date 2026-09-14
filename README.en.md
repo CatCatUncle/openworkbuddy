@@ -5,8 +5,8 @@
 <h1 align="center">OpenWorkBuddy</h1>
 
 <p align="center">
-  <b>A local-first AI office agent that hands you files, not chat logs.</b><br>
-  Say what you need in plain language. It plans, does the work, checks the result — and delivers a real PPT / Word / Excel / web page you can open.
+  <b>A local-first agent that actually delivers the work.</b><br>
+  Give it a request and your material. It plans, executes and checks the result, then leaves a real PPT / Word / Excel / web page on your machine — <b>not another chat log.</b>
 </p>
 
 <p align="center">
@@ -14,8 +14,14 @@
 </p>
 
 <p align="center">
+  <sub>For local office automation, self-hosted agent workspaces, and people who want to learn agents from real models, tools, memory and traces. Actively iterated and open to contributors.</sub>
+</p>
+
+<p align="center">
   <a href="#run-it-in-three-minutes"><b>⚡ Run it in three minutes</b></a> ·
   <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a> ·
+  <a href="#your-first-run">Your first run</a> ·
+  <a href="#contributing">Contribute a capability</a> ·
   <a href="CHANGELOG.en.md">Changelog</a> ·
   <a href="docs/功能清单.md">Feature list (zh)</a> ·
   <a href="README.md#交流群">Feishu group</a>
@@ -37,6 +43,16 @@
 
 ---
 
+## Your first run
+
+**The fastest proof: download → choose one model → paste this into the composer.**
+
+> Turn the material I attach into one clear page of key points and deliver it as an openable Markdown file.
+
+The actual file appears in the output panel on the right, ready to preview, download or revise. No file handy? Say “write my weekly work report” to run the whole loop first.
+
+If those three minutes save you one repetitive task, a **Star** is the most useful signal you can give this project — it helps more people find it and tells maintainers what to keep improving.
+
 ## Why this one
 
 **Files, not chat logs.** PPT / Word / Excel / HTML are really generated and show up in an output panel you can open. If the model *claims* it wrote a file that isn't on disk, the run is stopped and redone.
@@ -44,6 +60,8 @@
 **Any model. Your machine.** Switch between DeepSeek / Qwen / GLM / Kimi / OpenRouter / local Ollama with one click. Have **Claude Code or Codex** installed? Use it as the engine and stop buying extra tokens. Self-hosted: sessions, files and API keys stay local; the server binds to `127.0.0.1` by default.
 
 **Adding a capability = dropping one Markdown file.** Save it as `skills/<name>/skill.md` and it's live on the next task — no code, no restart, no build. Beyond that: MCP connectors and the open [Agent Plugins](https://agent-plugins.org) standard — paste a GitHub URL to install someone else's plugin.
+
+**Useful for work; legible for learning agents.** Model routing, tool calls, file verification, skills, connectors, memory, permissions and local traces live in one open-source repository. Follow a real task end-to-end: why the agent chose an action, which model it used, how long each step took and what it actually delivered.
 
 ## What it does for you
 

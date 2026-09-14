@@ -8198,7 +8198,7 @@ function testDemoReadmeWire() {
   assert(/require\("\.\/demo-readme"\)/.test(rec), "record-demo.js 没接 demo-readme");
   const call = rec.indexOf("wireReadmes(ROOT, ARGS.out)");
   assert(call > 0, "record-demo.js 没在录完后调 wireReadmes");
-  assert(/if \(!ARGS\.dry\) \{\s*\n\s*const wired = wireReadmes\(ROOT, ARGS\.out\)/.test(rec), "wireReadmes 必须只在真录（非 --dry）时调");
+  assert(/if \(!ARGS\.dry && !ARGS\.canvas\) \{\s*\n\s*const wired = wireReadmes\(ROOT, ARGS\.out\)/.test(rec), "wireReadmes 必须只在真录的任务演示（非 --dry、非画布录制）时调");
   assert(call > rec.indexOf('log(`GIF ${ARGS.out}'), "挂 README 应在 GIF 落盘之后");
   for (const name of ["README.md", "README.en.md"]) {
     const real = fs.readFileSync(path.join(__dirname, "..", name), "utf8");
