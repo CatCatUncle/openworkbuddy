@@ -30,7 +30,7 @@ let canvasState = {
   graph: null, paper: null, wheelHandler: null, scale: 1, x: 0, y: 0, next: 1,
   boards: [], files: [], busy: new Set(), selected: null, selectedIds: new Set(), nodeType: null,
   selectedAll: false, keyHandler: null, keyUpHandler: null, fullscreenHandler: null, spacePanning: false,
-  nodeGesture: null, skipNodeClick: null,
+  inspectorOpen: false, nodeGesture: null, multiMove: null, skipNodeClick: null, suppressInspectorUntil: 0,
   remoteUpdatedAt: 0, remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWritePending: false, suspendSync: false,
   canvasName: "main", canvasList: [], taskSessionId: null, chatBusy: false, chatStopping: false, chatReferences: new Map(), history: [], historyIndex: -1, historyTimer: null, historyMute: false,
   workspaceProjects: [], workspaceLocked: false, workspaceName: "", workspaceDir: "",
@@ -202,9 +202,10 @@ function canvasBindViewport(page) {
   if (!paper || !world) return;
   let drag = null, boxDrag = null, selectionBox = null;
   paper.on("blank:pointerdown", (evt) => {
-    // 空白处默认框选；按住 Space 或使用中键才平移，两个动作不再抢同一手势。
-    const pan = evt.button === 1 || canvasState.spacePanning;
+    // 空白左拖是最常用的平移；Shift+拖拽才进入框选，中键与 Space 也可平移。
+    const pan = evt.button === 1 || canvasState.spacePanning || !evt.shiftKey;
     if (evt.button !== undefined && evt.button !== 0 && evt.button !== 1) return;
+    if (canvasState.inspectorOpen) { canvasState.inspectorOpen = false; canvasRenderInspector(false); }
     if (!pan) {
       boxDrag = { x: evt.clientX, y: evt.clientY };
       selectionBox = document.createElement("div"); selectionBox.className = "canvas-selection-box"; page.querySelector("#canvas-viewport").appendChild(selectionBox);
@@ -227,7 +228,7 @@ function canvasBindViewport(page) {
     if (boxDrag) {
       const left = Math.min(boxDrag.x, evt.clientX), right = Math.max(boxDrag.x, evt.clientX), top = Math.min(boxDrag.y, evt.clientY), bottom = Math.max(boxDrag.y, evt.clientY);
       canvasState.selectedIds = new Set((canvasState.graph?.getElements?.() || []).filter((node) => { const rect = node.findView(canvasState.paper)?.el?.getBoundingClientRect(); return rect && rect.left >= left && rect.right <= right && rect.top >= top && rect.bottom <= bottom; }).map((node) => node.id));
-      canvasState.selectedAll = canvasState.selectedIds.size === (canvasState.graph?.getElements?.() || []).length && canvasState.selectedIds.size > 0; canvasState.selected = [...canvasState.selectedIds][0] || null;
+      canvasState.selectedAll = canvasState.selectedIds.size === (canvasState.graph?.getElements?.() || []).length && canvasState.selectedIds.size > 0; canvasState.selected = [...canvasState.selectedIds][0] || null; canvasState.inspectorOpen = false;
       selectionBox?.remove(); selectionBox = null; boxDrag = null; canvasRenderInspector(false); return;
     }
     drag = null; world.classList.remove("dragging");
@@ -430,7 +431,7 @@ function canvasOpenContextMenu(clientX, clientY, node = null) {
     if (action === "agent") canvasRunInternal(node);
     else if (action === "preview") canvasPreviewRight(media);
     else if (action === "duplicate") { const p = node.position(); canvasAddNode(canvasKind(node), canvasPayload(node), { x: p.x + 42, y: p.y + 42 }); }
-    else if (action === "connect") { canvasState.selected = node.id; canvasState.selectedIds = new Set([node.id]); canvasRenderInspector(false); window.setTimeout(() => document.querySelector("[data-connect-target]")?.focus(), 0); }
+    else if (action === "connect") { canvasState.selected = node.id; canvasState.selectedIds = new Set([node.id]); canvasState.inspectorOpen = true; canvasRenderInspector(false); window.setTimeout(() => document.querySelector("[data-connect-target]")?.focus(), 0); }
     else if (action === "layout") canvasAutoLayout(document.getElementById("assist-page"));
     else if (action === "fit") canvasFitAll(document.getElementById("assist-page"));
     else if (action === "delete") canvasDeleteSelection(node);
@@ -1029,12 +1030,12 @@ async function canvasGenerate(node, kind) {
 
 function canvasBindNode(node, root) {
   root.querySelector("[data-canvas-remove]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); if (!confirm(`删除节点「${canvasNodeLabel(node)}」？关联连线也会一起删除。`)) return; if (canvasState.selected === node.id) { canvasState.selected = null; canvasRenderInspector(); } node.remove(); canvasPersist(); });
-  root.querySelector("[data-canvas-settings]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasRenderInspector(); });
+  root.querySelector("[data-canvas-settings]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasState.inspectorOpen = true; canvasRenderInspector(); });
   root.addEventListener("click", (evt) => {
     if (evt.target.closest("button,select,input,textarea,[contenteditable=true]")) return;
-    // 浏览器会在拖拽结束后补一枚 click；这枚 click 不能把右侧属性面板又弹出来。
-    if (canvasState.skipNodeClick === node.id) { canvasState.skipNodeClick = null; return; }
-    canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasRenderInspector(false);
+    // 节点本体只负责选中：属性面板只能由右上角齿轮显式打开，拖拽结束后的 click 绝不遮挡画布。
+    if (canvasState.skipNodeClick === node.id || Date.now() < canvasState.suppressInspectorUntil) { canvasState.skipNodeClick = null; return; }
+    canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasState.inspectorOpen = false; canvasRenderInspector(false);
   });
   root.querySelectorAll("[data-canvas-image-preview]").forEach((image) => image.addEventListener("dblclick", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasOpenImagePreview(image.dataset.canvasMediaPath, image.alt || "图片预览"); }));
   root.querySelectorAll("[data-canvas-audio-preview]").forEach((audio) => {
@@ -1084,7 +1085,7 @@ function canvasAddNode(kind, payload = {}, position, options = {}) {
   const def = CANVAS_NODE_DEFS[kind] || CANVAS_NODE_DEFS.note, Type = canvasType(J), n = canvasState.next++;
   const node = new Type({ id: options.id, position: position || { x: 90 + ((n - 1) % 3) * 410, y: 100 + Math.floor((n - 1) / 3) * 300 }, size: { width: def.width, height: def.height }, z: 2 });
   node.set({ canvasKind: kind, canvasPayload: { ...canvasDefaultPayload(kind), ...payload } }); canvasState.graph.addCell(node); canvasRefreshNode(node);
-  if (!options.skipSelect) { canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasRenderInspector(); }
+  if (!options.skipSelect) { canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasState.inspectorOpen = false; canvasRenderInspector(false); }
   if (options.persist !== false) canvasPersist(); return node;
 }
 
@@ -1102,7 +1103,7 @@ function canvasRenderInspector(focus = true) {
     root?.classList.toggle("is-selected", canvasState.selectedAll || canvasState.selectedIds.has(item.id) || item.id === canvasState.selected);
   });
   const layout = box.closest(".canvas-layout");
-  if (!node || canvasState.selectedIds.size > 1) { box.innerHTML = ""; layout?.classList.add("canvas-inspector-hidden"); return; }
+  if (!canvasState.inspectorOpen || !node || canvasState.selectedIds.size > 1) { box.innerHTML = ""; layout?.classList.add("canvas-inspector-hidden"); return; }
   layout?.classList.remove("canvas-inspector-hidden");
   const kind = canvasKind(node), p = canvasPayload(node), def = CANVAS_NODE_DEFS[kind] || CANVAS_NODE_DEFS.note; let fields = "";
   if (kind === "note") fields = canvasField("内容", "text", p.text || "", "textarea", "记录想法、任务或素材线索");
@@ -1124,7 +1125,7 @@ function canvasRenderInspector(focus = true) {
   box.querySelector("[data-inspect-tags]")?.addEventListener("change", (evt) => canvasUpdateSelected("tags", evt.target.value));
   box.querySelector("[data-inspect-board]")?.addEventListener("change", (evt) => canvasUpdateSelected("board", evt.target.value, true));
   box.querySelector("[data-connect]")?.addEventListener("click", () => { const target = canvasState.graph.getCell(box.querySelector("[data-connect-target]")?.value); canvasConnect(node, target); canvasRenderInspector(false); });
-  box.querySelector("[data-inspect-close]")?.addEventListener("click", () => { canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(false); });
+  box.querySelector("[data-inspect-close]")?.addEventListener("click", () => { canvasState.inspectorOpen = false; canvasRenderInspector(false); });
   box.querySelector("[data-inspect-delete]")?.addEventListener("click", () => { if (!confirm("删除这个节点？关联连线也会一起删除。")) return; node.remove(); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(); canvasPersist(); });
   box.querySelectorAll("[data-inspect-generate]").forEach((button) => button.addEventListener("click", () => canvasGenerate(node, button.dataset.inspectGenerate)));
   box.querySelector("[data-inspect-agent]")?.addEventListener("click", () => canvasRunInternal(node)); if (focus) box.querySelector("[data-inspect-key]")?.focus();
@@ -1214,7 +1215,7 @@ function canvasRestoreOrSeed(remote = null) {
   if (script && storyboard) canvasConnect(script, storyboard); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(false); canvasPersist();
 }
 
-function canvasDestroy() { if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer); if (canvasState.remoteWriteTimer) clearTimeout(canvasState.remoteWriteTimer); if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer); if (canvasState.fullscreenHandler) document.removeEventListener("fullscreenchange", canvasState.fullscreenHandler); const page = document.getElementById("assist-page"); if (page && canvasState.keyHandler) page.removeEventListener("keydown", canvasState.keyHandler); if (page && canvasState.keyUpHandler) page.removeEventListener("keyup", canvasState.keyUpHandler); if (canvasState.paper) canvasState.paper.remove(); canvasState.graph = null; canvasState.paper = null; canvasState.wheelHandler = null; canvasState.keyHandler = null; canvasState.keyUpHandler = null; canvasState.spacePanning = false; canvasState.fullscreenHandler = null; canvasState.selected = null; canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasState.remoteSnapshot = null; canvasState.remoteWritePending = false; canvasState.taskSessionId = null; canvasState.chatReferences = new Map(); canvasState.history = []; canvasState.historyIndex = -1; canvasState.historyTimer = null; }
+function canvasDestroy() { if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer); if (canvasState.remoteWriteTimer) clearTimeout(canvasState.remoteWriteTimer); if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer); if (canvasState.fullscreenHandler) document.removeEventListener("fullscreenchange", canvasState.fullscreenHandler); const page = document.getElementById("assist-page"); if (page && canvasState.keyHandler) page.removeEventListener("keydown", canvasState.keyHandler); if (page && canvasState.keyUpHandler) page.removeEventListener("keyup", canvasState.keyUpHandler); if (canvasState.paper) canvasState.paper.remove(); canvasState.graph = null; canvasState.paper = null; canvasState.wheelHandler = null; canvasState.keyHandler = null; canvasState.keyUpHandler = null; canvasState.spacePanning = false; canvasState.inspectorOpen = false; canvasState.nodeGesture = null; canvasState.multiMove = null; canvasState.fullscreenHandler = null; canvasState.selected = null; canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasState.remoteSnapshot = null; canvasState.remoteWritePending = false; canvasState.taskSessionId = null; canvasState.chatReferences = new Map(); canvasState.history = []; canvasState.historyIndex = -1; canvasState.historyTimer = null; }
 
 async function renderCanvasPage() {
   const page = document.getElementById("assist-page"); if (!page) return; canvasDestroy(); await Promise.all([canvasLoadWorkspaceProjects(), canvasLoadCanvasList()]); canvasState.scale = 1; canvasState.x = 0; canvasState.y = 0; canvasState.next = 1;
@@ -1288,19 +1289,27 @@ async function renderCanvasPage() {
   page.querySelector("#canvas-library-kind").onchange = canvasRenderLibrary;
   page.querySelector("#canvas-viewport").addEventListener("pointerdown", () => toolMenus.forEach((menu) => { menu.open = false; }), { capture: true });
   canvasState.paper.on("element:pointerdown", (view, event) => {
+    const movingIds = canvasState.selectedIds.has(view.model.id) && canvasState.selectedIds.size > 1 ? [...canvasState.selectedIds] : [];
     canvasState.nodeGesture = { id: view.model.id, x: Number(event?.clientX) || 0, y: Number(event?.clientY) || 0, moved: false };
+    canvasState.multiMove = movingIds.length ? { anchor: view.model.id, positions: new Map(movingIds.map((id) => { const item = canvasState.graph.getCell(id); const point = item?.position?.() || { x: 0, y: 0 }; return [id, { x: point.x, y: point.y }]; })) } : null;
   });
   canvasState.paper.on("element:pointermove", (view, event) => {
     const gesture = canvasState.nodeGesture;
-    if (!gesture || gesture.id !== view.model.id || gesture.moved) return;
+    if (!gesture || gesture.id !== view.model.id) return;
     const dx = (Number(event?.clientX) || 0) - gesture.x, dy = (Number(event?.clientY) || 0) - gesture.y;
-    if (Math.hypot(dx, dy) > 4) gesture.moved = true;
+    if (Math.hypot(dx, dy) > 4 && !gesture.moved) { gesture.moved = true; if (canvasState.inspectorOpen) { canvasState.inspectorOpen = false; canvasRenderInspector(false); } }
+    const group = canvasState.multiMove;
+    if (group?.anchor === view.model.id && gesture.moved) {
+      const scale = canvasState.scale || 1;
+      group.positions.forEach((start, id) => { if (id !== view.model.id) canvasState.graph.getCell(id)?.position(start.x + dx / scale, start.y + dy / scale); });
+    }
   });
   canvasState.paper.on("element:pointerup", (view) => {
     const gesture = canvasState.nodeGesture; canvasState.nodeGesture = null;
+    canvasState.multiMove = null;
     if (!gesture || gesture.id !== view.model.id || !gesture.moved) return;
-    canvasState.skipNodeClick = view.model.id;
-    window.setTimeout(() => { if (canvasState.skipNodeClick === view.model.id) canvasState.skipNodeClick = null; }, 180);
+    canvasState.skipNodeClick = view.model.id; canvasState.suppressInspectorUntil = Date.now() + 650;
+    window.setTimeout(() => { if (canvasState.skipNodeClick === view.model.id) canvasState.skipNodeClick = null; }, 650);
   });
   canvasRestoreOrSeed(remote && remote.nodes.length ? remote : null); canvasHistoryReset(canvasSnapshot()); canvasStartRemoteSync();
   window.setTimeout(() => canvasFitAll(page), 0);

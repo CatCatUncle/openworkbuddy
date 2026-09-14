@@ -32,7 +32,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/demo-canvas.gif" width="960" alt="Sanitized live recording: enter the infinite canvas, create a drama workflow, keep the links, and talk to the canvas agent">
+  <img src="docs/images/demo.gif" width="960" alt="OpenWorkBuddy demo: say what you need, the agent does the work and hands you real files">
 </p>
 
 ---
@@ -55,6 +55,25 @@
 | "Every day at 9, collect industry news and send it to me on Feishu" | cron + IM push; missed runs catch up |
 
 > Also: parallel tasks, goal-based acceptance, 👍👎 feedback that feeds self-evolution proposals, two-layer memory, permission tiers, remote control over Feishu / QQ / WeChat, a desktop pet… Full list (Chinese): **[功能清单](docs/功能清单.md)**.
+
+## AI short-drama infinite canvas
+
+Put a premise, script, characters, locations, shots, reference images, video, audio and a timeline on one **executable creative graph**. Links are not decoration: they are the character, scene, first/last-frame or audio inputs that the next generation actually reads. Both you and the agent can add nodes, revise relationships and rerun results.
+
+<p align="center">
+  <img src="docs/images/demo-canvas.gif" width="960" alt="Sanitized live recording: enter the infinite canvas, create a drama workflow, keep the links, and talk to the canvas agent">
+</p>
+
+<p align="center">
+  <img src="docs/images/short-drama-canvas-overview.png" width="960" alt="OpenWorkBuddy short-drama infinite canvas: characters, locations, references and shots connected as a DAG">
+</p>
+
+- Create freely: edit and connect notes, scripts, characters and shots; one canvas is one drama project.
+- Keep assets useful: select, drag in or upload workspace media with aspect-ratio-safe previews; double-click an image to inspect it.
+- Keep generations traceable: storyboards, scenes, shots, frames, video, voice and timelines form a DAG whose links survive auto-layout.
+- Co-create in place: the bottom composer supports files, `@` references, model choice and execution modes; the agent’s process stays with this canvas task.
+
+Open **Infinite Canvas** from the sidebar. Drag blank space to pan; `Shift`+drag to select; then drag any selected node to move the group. Properties open only from a node’s gear button.
 
 ## What it looks like
 
