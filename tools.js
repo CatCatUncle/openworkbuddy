@@ -134,7 +134,7 @@ const TOOL_DEFS = [
     name: "canvas_manage",
     description:
       "控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。画布不是普通白板：节点可以是 note/script/agent/character/location/storyboard/scene/shot/image/video/audio/timeline，连线表示输入关系。" +
-      "用 list 查看当前项目的多张画布；用 get 读取当前画布；用 add 创建节点；用 update 修改节点 payload 或位置；用 connect 建立输入关系；用 delete 删除节点；用 clear 清空画布。" +
+      "用 list 查看当前项目的多张画布；用 get 读取当前画布；用 add 创建节点；用 update 修改节点 payload 或位置；用 connect 建立输入关系（可声明 relation，如 character/background/motion/style/first_frame）；用 delete 删除节点；用 clear 清空画布。" +
       "短剧制作建议按 script → character/location → storyboard/scene → shot → image/video/audio → timeline 建图。先调用 get，不要凭空覆盖用户已经摆好的节点。" +
       "生成图片/视频时先调用 generate_image 或 generate_video，拿到真实 file 路径后再用 update 把 first_frame/video/path 写回节点；这样画布会自动显示结果。所有操作只作用于当前项目，不连接其他本地项目。",
     input_schema: {
@@ -145,6 +145,7 @@ const TOOL_DEFS = [
         node_id: { type: "string", description: "update/delete 时的节点 id" },
         source_id: { type: "string", description: "connect 时的上游节点 id" },
         target_id: { type: "string", description: "connect 时的下游节点 id" },
+        relation: { type: "string", enum: ["input", "split", "generate", "character", "background", "composition", "motion", "style", "prop", "continuity", "first_frame", "last_frame", "audio", "reference"], description: "connect 时这条输入的用途；例如 character=人物身份，background=场景空间，motion=动作参考，first_frame=首帧。省略则按节点类型推断" },
         kind: { type: "string", enum: ["note", "script", "agent", "character", "location", "storyboard", "scene", "shot", "image", "video", "audio", "timeline"], description: "add 时的节点类型" },
         payload: { type: "object", description: "add 时的节点数据；update 时是要合并的字段，如 {prompt, first_frame, video}" },
         position: { type: "object", description: "add/update 时的位置，如 {x: 100, y: 200}" },
@@ -3002,6 +3003,9 @@ async function withGenCache(kind, cap, opts, input, dir, resolveFile, run) {
 }
 
 const CANVAS_KINDS = new Set(["note", "script", "agent", "character", "location", "storyboard", "scene", "shot", "image", "video", "audio", "timeline"]);
+// 连线不是纯视觉箭头：用途会进入生成请求、Trace 与下一次 Agent 会话。
+// 白名单既让旧画布兼容，也避免把任意对象原样写进项目状态。
+const CANVAS_EDGE_RELATIONS = new Set(["input", "split", "generate", "character", "background", "composition", "motion", "style", "prop", "continuity", "first_frame", "last_frame", "audio", "reference"]);
 const CANVAS_MAX_NODES = 500;
 const CANVAS_MAX_EDGES = 1200;
 
@@ -3031,7 +3035,10 @@ function canvasNormalizeState(value) {
     size: node.size && typeof node.size === "object" ? { width: Number(node.size.width) || undefined, height: Number(node.size.height) || undefined } : undefined,
   })) : [];
   const ids = new Set(nodes.map((node) => node.id));
-  const edges = Array.isArray(raw.edges) ? raw.edges.filter((edge) => edge && ids.has(edge.source?.id || edge.source) && ids.has(edge.target?.id || edge.target) && (edge.source?.id || edge.source) !== (edge.target?.id || edge.target)).slice(0, CANVAS_MAX_EDGES).map((edge) => ({ source: { id: String(edge.source?.id || edge.source) }, target: { id: String(edge.target?.id || edge.target) } })) : [];
+  const edges = Array.isArray(raw.edges) ? raw.edges.filter((edge) => edge && ids.has(edge.source?.id || edge.source) && ids.has(edge.target?.id || edge.target) && (edge.source?.id || edge.source) !== (edge.target?.id || edge.target)).slice(0, CANVAS_MAX_EDGES).map((edge) => {
+    const relation = String(edge.relation || edge.role || "");
+    return { source: { id: String(edge.source?.id || edge.source) }, target: { id: String(edge.target?.id || edge.target) }, ...(CANVAS_EDGE_RELATIONS.has(relation) ? { relation } : {}) };
+  }) : [];
   return { version: 1, nodes, edges, updatedAt: Number(raw.updatedAt) || 0 };
 }
 function canvasReadState(name = canvasCurrentName()) {
@@ -3078,7 +3085,11 @@ function canvasManage(input = {}) {
     const source = String(input.source_id || ""), target = String(input.target_id || "");
     if (!state.nodes.some((node) => node.id === source) || !state.nodes.some((node) => node.id === target)) return { content: "connect 需要存在的 source_id 和 target_id。", isError: true };
     if (source === target) return { content: "不能把节点连接到自己。", isError: true };
-    if (!state.edges.some((edge) => edge.source.id === source && edge.target.id === target)) state.edges.push({ source: { id: source }, target: { id: target } });
+    const relation = String(input.relation || "");
+    if (relation && !CANVAS_EDGE_RELATIONS.has(relation)) return { content: `不支持的连线用途：${relation}`, isError: true };
+    const existing = state.edges.find((edge) => edge.source.id === source && edge.target.id === target);
+    if (existing) { if (relation) existing.relation = relation; }
+    else state.edges.push({ source: { id: source }, target: { id: target }, ...(relation ? { relation } : {}) });
     state = canvasWriteState(state, canvasName); return { content: `已连接 ${source} → ${target}。`, isError: false };
   }
   if (op === "delete") {

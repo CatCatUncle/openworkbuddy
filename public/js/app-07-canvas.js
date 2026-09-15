@@ -22,8 +22,12 @@ const CANVAS_NODE_DEFS = {
 };
 
 const CANVAS_REFERENCE_USES = [
-  ["character", "人物"], ["background", "背景"], ["motion", "动作参考"], ["style", "画面风格"],
-  ["first_frame", "首帧"], ["last_frame", "尾帧"], ["audio", "声音"], ["reference", "其他参考"],
+  ["character", "人物身份"], ["background", "场景空间"], ["composition", "构图"], ["motion", "动作参考"], ["style", "画面风格"],
+  ["prop", "道具"], ["continuity", "连续性"], ["first_frame", "首帧"], ["last_frame", "尾帧"], ["audio", "声音"], ["reference", "其他参考"],
+];
+
+const CANVAS_EDGE_RELATIONS = [
+  ["input", "输入"], ["split", "拆分"], ["generate", "生成"], ...CANVAS_REFERENCE_USES,
 ];
 
 let canvasState = {
@@ -63,6 +67,24 @@ function canvasEndpointId(endpoint) {
   if (typeof endpoint === "string") return endpoint.trim();
   if (!endpoint || typeof endpoint !== "object") return String(endpoint || "").trim();
   return String(endpoint.id || endpoint.cell || "").trim();
+}
+function canvasRelationLabel(relation) { return CANVAS_EDGE_RELATIONS.find(([key]) => key === relation)?.[1] || "输入"; }
+function canvasDefaultRelation(source, target) {
+  const sourceKind = canvasKind(source), targetKind = canvasKind(target);
+  if (["image", "video", "audio"].includes(targetKind)) return "generate";
+  if (sourceKind === "script" && targetKind === "storyboard") return "split";
+  if (sourceKind === "character") return "character";
+  if (sourceKind === "location") return "background";
+  if (sourceKind === "video") return "motion";
+  if (sourceKind === "audio") return "audio";
+  if (sourceKind === "image") return "reference";
+  return "input";
+}
+function canvasLinkRelation(link, source, target) { return String(link?.get?.("canvasRelation") || canvasDefaultRelation(source, target)); }
+function canvasRelationOptions(selected, source, target) {
+  const defaults = new Set([canvasDefaultRelation(source, target), "reference"]);
+  const allowed = CANVAS_EDGE_RELATIONS.filter(([key]) => ["input", "split", "generate"].includes(key) || defaults.has(key) || ["character", "background", "composition", "motion", "style", "prop", "continuity", "first_frame", "last_frame", "audio"].includes(key));
+  return allowed.map(([key, label]) => `<option value="${key}" ${key === selected ? "selected" : ""}>${label}</option>`).join("");
 }
 function canvasNodeLabel(node) {
   const kind = canvasKind(node), p = canvasPayload(node);
@@ -370,14 +392,14 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
       : payload.reference_video
         ? `<video class="canvas-node-preview" src="${esc(canvasFileUrl(payload.reference_video))}" controls preload="metadata"></video>`
         : "";
-    return `<article class="canvas-node canvas-node-shot">${header(payload.id || payload.title || "新镜头", `${payload.shot_size || "镜头"} · ${payload.duration || "4"}s`)}<div class="canvas-node-body">${shotMedia}<div class="canvas-shot-prompt">${esc(payload.prompt || "还没有镜头提示词")}</div><div class="canvas-shot-line">${esc(payload.line || "无人声")}</div><div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-generate="image" ${imageBusy ? "disabled" : ""}>${imageBusy ? "生成中…" : payload.first_frame ? "重跑首帧" : "生成首帧"}</button><button class="ui-btn ui-btn--sm ui-btn--ghost" data-canvas-generate="video" ${videoBusy || !payload.first_frame ? "disabled" : ""}>${videoBusy ? "生成中…" : "生成视频"}</button>${payload.first_frame ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(payload.first_frame)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
+    return `<article class="canvas-node canvas-node-shot">${header(payload.id || payload.title || "新镜头", `${payload.shot_size || "镜头"} · ${payload.duration || "4"}s`)}<div class="canvas-node-body">${shotMedia}<div class="canvas-shot-prompt">${esc(payload.prompt || "还没有镜头提示词")}</div><div class="canvas-shot-line">${esc(payload.line || "无人声")}</div>${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-generate="image" ${imageBusy ? "disabled" : ""}>${imageBusy ? "生成中…" : payload.first_frame ? "重跑首帧" : "生成首帧"}</button><button class="ui-btn ui-btn--sm ui-btn--ghost" data-canvas-generate="video" ${videoBusy || !payload.first_frame ? "disabled" : ""}>${videoBusy ? "生成中…" : "生成视频"}</button>${payload.first_frame ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(payload.first_frame)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
   }
   if (kind === "agent") return `<article class="canvas-node canvas-node-agent">${header(payload.title || "Agent任务", payload.role || "本项目 Agent") }<div class="canvas-node-body"><div class="canvas-agent-status">${esc(payload.status || "待执行")}</div><div class="canvas-node-copy">${esc(payload.task || "描述要让 Agent 完成的创作任务")}</div><button class="ui-btn ui-btn--sm ui-btn--brand" data-canvas-agent>${ic("sparkles")}运行这个任务</button></div></article>`;
   if (kind === "video") {
     const busy = canvasState.busy.has(`${nodeId}:video`), mediaPath = String(payload.video || canvasMediaPath(payload) || "").trim(), frame = String(payload.first_frame || "").trim();
     const preview = mediaPath ? `<video class="canvas-video-preview" src="${esc(canvasFileUrl(mediaPath))}" controls preload="metadata"></video>` : `<div class="canvas-video-empty">${ic("play")}<span>生成结果会显示在这里</span></div>`;
     const refs = [frame ? `首帧 · ${frame.split(/[\\/]/).pop()}` : "首帧 · 未设置", payload.last_frame ? `尾帧 · ${String(payload.last_frame).split(/[\\/]/).pop()}` : "尾帧 · 可选", payload.reference_video ? `参考视频 · ${String(payload.reference_video).split(/[\\/]/).pop()}` : "参考视频 · 可选"];
-    return `<article class="canvas-node canvas-node-video">${header(payload.title || "Video", `${payload.model || "视频生成"} · ${payload.aspect_ratio || "16:9"}`)}<div class="canvas-node-body"><div class="canvas-video-stage">${preview}</div><textarea class="canvas-video-prompt" data-canvas-inline-key="prompt" rows="2" placeholder="描述任何你想生成的内容…">${esc(payload.prompt || "")}</textarea><div class="canvas-video-refs">${refs.map((ref) => `<span>${esc(ref)}</span>`).join("")}</div><div class="canvas-video-settings"><span>${esc(payload.model || "默认模型")}</span><span>${esc(payload.aspect_ratio || "16:9")}</span><span>${esc(payload.resolution || "1080p")}</span><span>${esc(payload.duration || "5s")}</span></div><div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--brand" data-canvas-generate="video" ${busy ? "disabled" : ""}>${busy ? "生成中…" : mediaPath ? "重新生成" : "生成视频"}</button>${mediaPath ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
+    return `<article class="canvas-node canvas-node-video">${header(payload.title || "Video", `${payload.model || "视频生成"} · ${payload.aspect_ratio || "16:9"}`)}<div class="canvas-node-body"><div class="canvas-video-stage">${preview}</div><textarea class="canvas-video-prompt" data-canvas-inline-key="prompt" rows="2" placeholder="描述任何你想生成的内容…">${esc(payload.prompt || "")}</textarea><div class="canvas-video-refs">${refs.map((ref) => `<span>${esc(ref)}</span>`).join("")}</div><div class="canvas-video-settings"><span>${esc(payload.model || "默认模型")}</span><span>${esc(payload.aspect_ratio || "16:9")}</span><span>${esc(payload.resolution || "1080p")}</span><span>${esc(payload.duration || "5s")}</span></div>${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--brand" data-canvas-generate="video" ${busy ? "disabled" : ""}>${busy ? "生成中…" : mediaPath ? "重新生成" : "生成视频"}</button>${mediaPath ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
   }
   if (kind === "image" || kind === "audio") {
     const mediaText = payload.text || payload.prompt || "还没有素材或描述";
@@ -389,7 +411,7 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
     const missing = mediaPath && !mediaAvailable ? `<div class="canvas-media-missing">素材已从工作区移除，请在右侧重新选择或上传。</div>` : "";
     const action = kind === "audio" ? "生成配音" : mediaPath && mediaAvailable ? `重跑${def.label}` : `生成${def.label}`;
     const busy = canvasState.busy.has(`${nodeId}:${kind}`);
-    return `<article class="canvas-node canvas-node-media canvas-node-${kind}">${header(payload.title || def.label, kind === "image" ? "点击图片放大" : "可直接播放")}<div class="canvas-node-body">${media}${missing}<div class="canvas-media-text">${esc(mediaText)}</div><div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-generate="${kind}" ${busy ? "disabled" : ""}>${busy ? "生成中…" : action}</button>${mediaPath && mediaAvailable ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
+    return `<article class="canvas-node canvas-node-media canvas-node-${kind}">${header(payload.title || def.label, kind === "image" ? "点击图片放大" : "可直接播放")}<div class="canvas-node-body">${media}${missing}<div class="canvas-media-text">${esc(mediaText)}</div>${canvasGenerationSummary(payload)}<div class="canvas-node-actions"><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-generate="${kind}" ${busy ? "disabled" : ""}>${busy ? "生成中…" : action}</button>${mediaPath && mediaAvailable ? `<button class="canvas-node-icon-action" data-canvas-side-preview="${esc(mediaPath)}" title="右侧预览" aria-label="右侧预览">${ic("eye")}</button>` : ""}</div></div></article>`;
   }
   if (kind === "timeline") return `<article class="canvas-node canvas-node-timeline">${header(payload.title || "最终剪辑", "本项目 AI 剪辑时间线")}<div class="canvas-node-body"><p>${esc(payload.description || "把镜头按顺序交给本项目 Agent 生成时间线。")}</p><button class="ui-btn ui-btn--sm ui-btn--outline" data-canvas-agent>开始本项目剪辑</button></div></article>`;
   if (kind === "script") return `<article class="canvas-node canvas-node-script">${header(payload.title || "新剧本")}<div class="canvas-node-body canvas-node-copy">${esc(payload.text || "还没有剧本内容")}</div></article>`;
@@ -452,7 +474,10 @@ function canvasSnapshot() {
   return {
     version: 1,
     nodes: canvasState.graph.getElements().map((node) => ({ id: node.id, kind: canvasKind(node), payload: canvasPayload(node), position: node.position(), size: node.size() })),
-    edges: canvasState.graph.getLinks().map((link) => ({ source: { id: canvasEndpointId(link.get("source")) }, target: { id: canvasEndpointId(link.get("target")) } })).filter((edge) => edge.source.id && edge.target.id && edge.source.id !== edge.target.id),
+    edges: canvasState.graph.getLinks().map((link) => {
+      const source = canvasState.graph.getCell(canvasEndpointId(link.get("source"))), target = canvasState.graph.getCell(canvasEndpointId(link.get("target")));
+      return { source: { id: canvasEndpointId(link.get("source")) }, target: { id: canvasEndpointId(link.get("target")) }, relation: canvasLinkRelation(link, source, target) };
+    }).filter((edge) => edge.source.id && edge.target.id && edge.source.id !== edge.target.id),
     updatedAt: Date.now(),
   };
 }
@@ -618,15 +643,23 @@ function canvasLoadSaved() {
   try { const value = JSON.parse(localStorage.getItem(CANVAS_STORAGE_KEY) || "null"); return value && Array.isArray(value.nodes) ? value : null; } catch { return null; }
 }
 
-function canvasConnect(source, target) {
+function canvasDecorateLink(link, relation) {
+  if (!link) return;
+  const text = canvasRelationLabel(relation);
+  link.set("canvasRelation", relation);
+  link.labels([{ position: .5, attrs: { text: { text, fill: "var(--wb-brand-text)", fontSize: 10, fontWeight: 650 }, rect: { fill: "var(--wb-bg)", stroke: "var(--wb-border)", strokeWidth: 1, rx: 7, ry: 7 } } }]);
+}
+
+function canvasConnect(source, target, relation = "") {
   if (!canvasState.graph || !source || !target || source.id === target.id) return;
-  const exists = canvasState.graph.getLinks().some((link) => canvasEndpointId(link.get("source")) === source.id && canvasEndpointId(link.get("target")) === target.id);
-  if (exists) return;
+  const normalizedRelation = CANVAS_EDGE_RELATIONS.some(([key]) => key === relation) ? relation : canvasDefaultRelation(source, target);
+  const existing = canvasState.graph.getLinks().find((link) => canvasEndpointId(link.get("source")) === source.id && canvasEndpointId(link.get("target")) === target.id);
+  if (existing) { canvasDecorateLink(existing, normalizedRelation); canvasPersist(); return existing; }
   const J = typeof joint !== "undefined" ? joint : null; if (!J) return;
-  const sourceKind = canvasKind(source), targetKind = canvasKind(target);
-  const relation = ["image", "video", "audio"].includes(targetKind) ? "生成" : sourceKind === "script" && targetKind === "storyboard" ? "拆分" : ["character", "location", "image"].includes(sourceKind) ? "参考" : "输入";
-  const link = new J.shapes.standard.Link({ source: { id: source.id }, target: { id: target.id }, router: { name: "manhattan", args: { step: 16, padding: 20 } }, attrs: { line: { stroke: "var(--wb-brand-text)", strokeWidth: 2.25, strokeLinecap: "round", targetMarker: { type: "path", d: "M 9 -4.5 0 0 9 4.5 z" } } }, connector: { name: "rounded" }, labels: [{ position: .5, attrs: { text: { text: relation, fill: "var(--wb-brand-text)", fontSize: 10, fontWeight: 600 }, rect: { fill: "var(--wb-bg)", stroke: "var(--wb-border)", strokeWidth: 1, rx: 7, ry: 7 } } }], z: 1 });
+  const link = new J.shapes.standard.Link({ source: { id: source.id }, target: { id: target.id }, router: { name: "manhattan", args: { step: 16, padding: 20 } }, attrs: { line: { stroke: "var(--wb-brand-text)", strokeWidth: 2.25, strokeLinecap: "round", targetMarker: { type: "path", d: "M 9 -4.5 0 0 9 4.5 z" } } }, connector: { name: "rounded" }, z: 1 });
+  canvasDecorateLink(link, normalizedRelation);
   canvasState.graph.addCell(link); canvasPersist();
+  return link;
 }
 
 async function canvasLoadRemote() {
@@ -660,7 +693,7 @@ function canvasApplySnapshot(snapshot) {
   try {
     canvasState.graph.clear(); const byId = new Map();
     restoredSnapshot.nodes.forEach((item) => { const node = canvasAddNode(item.kind, item.payload, item.position, { persist: false, skipSelect: true, id: item.id }); if (node) { if (item.size) node.resize(Number(item.size.width) || node.size().width, Number(item.size.height) || node.size().height); byId.set(item.id, node); } });
-    (restoredSnapshot.edges || []).forEach((edge) => canvasConnect(byId.get(canvasEndpointId(edge.source)), byId.get(canvasEndpointId(edge.target))));
+    (restoredSnapshot.edges || []).forEach((edge) => canvasConnect(byId.get(canvasEndpointId(edge.source)), byId.get(canvasEndpointId(edge.target)), edge.relation));
     // 加载或同步不应抢走画布空间：只保留用户已经打开、且仍存在的节点属性。
     const keepSelection = previousSelection && byId.has(previousSelection) ? previousSelection : null;
     canvasState.selectedAll = false; canvasState.selectedIds = new Set(keepSelection ? [keepSelection] : []); canvasState.selected = keepSelection; canvasState.remoteUpdatedAt = Number(snapshot.updatedAt) || canvasState.remoteUpdatedAt; canvasRenderInspector(false);
@@ -681,7 +714,7 @@ function canvasStartRemoteSync() {
 function canvasRunInternal(node) {
   const kind = node && String(node.get("canvasKind") || "note"), p = canvasPayload(node);
   const text = kind === "shot"
-    ? `请处理这个短剧镜头：${p.id || p.title || "新镜头"}\n景别：${p.shot_size || "未指定"}\n时长：${p.duration || "4"} 秒\n镜头提示词：${p.prompt || ""}\n对白/旁白：${p.line || ""}\n需要时直接调用 generate_image / generate_video，并用 canvas_manage 更新当前镜头节点的 first_frame 或 video。`
+    ? `请处理这个短剧镜头：${p.id || p.title || "新镜头"}\n景别：${p.shot_size || "未指定"}\n时长：${p.duration || "4"} 秒\n镜头提示词：${p.prompt || ""}\n对白/旁白：${p.line || ""}\n读取连线时必须按用途区分人物身份、场景空间、构图、动作与连续性；需要时直接调用 generate_image / generate_video，并用 canvas_manage 更新当前镜头节点的 first_frame 或 video。`
     : kind === "script" ? `请使用 /short-drama 把下面剧本拆成角色、场景和可执行镜头，并用 canvas_manage 写入当前项目画布，生成可审核的创作计划：\n${p.text || ""}`
       : kind === "timeline" ? "请在当前 OpenWorkBuddy 项目内检查镜头顺序、音频和字幕，并使用 /video-compose 或相关技能给出可执行方案。"
         : kind === "agent" ? `请执行这个本项目 Agent 任务，并把计划、产物和需要我确认的地方写回当前画布：\n角色：${p.role || "导演 Agent"}\n任务：${p.task || ""}\n审批规则：${p.approval || "先给方案，等我确认"}`
@@ -696,24 +729,58 @@ function canvasRunInternal(node) {
   canvasToast("已把当前节点加入画布对话，确认后发送。", "sparkles");
 }
 
-function canvasUpstreamNodes(node) {
+function canvasUpstreamInputs(node) {
   if (!node || !canvasState.graph) return [];
-  const ids = canvasState.graph.getLinks().filter((link) => link.get("target")?.id === node.id).map((link) => link.get("source")?.id);
-  return ids.map((id) => canvasState.graph.getCell(id)).filter(Boolean);
+  return canvasState.graph.getLinks().filter((link) => link.get("target")?.id === node.id).map((link) => {
+    const source = canvasState.graph.getCell(link.get("source")?.id);
+    if (!source) return null;
+    const kind = canvasKind(source), payload = canvasPayload(source);
+    const path = String(canvasMediaPath(payload) || canvasEmbeddedImage(payload, kind) || payload.first_frame || "").trim();
+    return { node: source, nodeId: source.id, kind, label: canvasNodeLabel(source), relation: canvasLinkRelation(link, source, node), path };
+  }).filter(Boolean);
 }
 
+function canvasUpstreamNodes(node) { return canvasUpstreamInputs(node).map((item) => item.node); }
+
 function canvasGenerationContext(node) {
-  return canvasUpstreamNodes(node).map((source) => {
-    const kind = canvasKind(source), p = canvasPayload(source);
-    return `${CANVAS_NODE_DEFS[kind]?.label || "节点"}：${p.title || p.name || p.id || "未命名"}\n${p.description || p.text || p.prompt || p.line || p.task || ""}`;
+  return canvasUpstreamInputs(node).map((item) => {
+    const p = canvasPayload(item.node);
+    return `【${canvasRelationLabel(item.relation)}】${CANVAS_NODE_DEFS[item.kind]?.label || "节点"}：${item.label}\n${p.description || p.text || p.prompt || p.line || p.task || ""}`;
   }).join("\n");
 }
 
 function canvasUpstreamMedia(node) {
-  return canvasUpstreamNodes(node).map((source) => {
-    const p = canvasPayload(source), value = p.path || p.first_frame || p.reference || p.file || "";
-    return String(value).trim();
-  }).filter((value) => value && !/^https?:/i.test(value)).slice(0, 4);
+  return canvasUpstreamInputs(node).filter((item) => item.path && !/^https?:/i.test(item.path)).map((item) => item.path).filter((value, index, list) => list.indexOf(value) === index).slice(0, 4);
+}
+
+function canvasGenerationInputs(node) {
+  return canvasUpstreamInputs(node).filter((item) => item.path).map((item) => ({ nodeId: item.nodeId, label: item.label, relation: item.relation, path: item.path })).slice(0, 8);
+}
+
+function canvasGenerationSummary(payload) {
+  const run = payload?.generation;
+  if (!run || !run.output) return "";
+  const model = run.model ? ` · ${run.model}` : "";
+  const inputs = Array.isArray(run.inputs) ? run.inputs.length : 0;
+  return `<div class="canvas-generation-lineage" title="${esc(run.output)}">${ic("git-branch")}<span>最近生成${model} · ${inputs} 个输入</span></div>`;
+}
+
+function canvasGenerationInspector(payload) {
+  const run = payload?.generation;
+  if (!run || !run.output) return "";
+  const inputs = Array.isArray(run.inputs) ? run.inputs : [];
+  const time = run.at ? new Date(run.at).toLocaleString() : "刚刚";
+  return `<div class="canvas-inspector-section canvas-provenance"><span class="canvas-inspector-section-title">最近一次生成</span><div class="canvas-provenance-meta"><span>${esc(run.kind === "image" ? "图片" : run.kind === "video" ? "视频" : "音频")}</span><span>${esc(run.model || "默认模型")}</span><span>${esc(time)}</span>${run.reused ? "<span>缓存复用</span>" : ""}</div><div class="canvas-provenance-output" title="${esc(run.output)}">${ic("file-check")}<span>${esc(String(run.output).split(/[\\/]/).pop())}</span></div>${inputs.length ? `<div class="canvas-provenance-inputs">${inputs.map((item) => `<span title="${esc(item.path)}">${esc(canvasRelationLabel(item.relation))} · ${esc(item.label)}</span>`).join("")}</div>` : '<p class="canvas-inspector-hint">本次没有使用画布上游素材。</p>'}${run.replaced ? `<p class="canvas-inspector-hint">已保留上一版记录：${esc(String(run.replaced).split(/[\\/]/).pop())}</p>` : ""}</div>`;
+}
+
+function canvasRecordGeneration(node, kind, input, output, result) {
+  const previous = canvasPayload(node), oldOutput = kind === "image" ? previous.first_frame || previous.path || previous.url : kind === "video" ? previous.video || previous.path || previous.url : previous.audio || previous.path || previous.url;
+  const run = {
+    id: `run_${Date.now().toString(36)}`, kind, at: Date.now(), model: String(input.model || previous.model || ""), output,
+    inputs: canvasGenerationInputs(node), reused: !!result?.cached, ...(oldOutput && oldOutput !== output ? { replaced: oldOutput } : {}),
+  };
+  const runs = [...(Array.isArray(previous.generation_runs) ? previous.generation_runs : []), run].slice(-12);
+  return { ...previous, generation: run, generation_runs: runs };
 }
 
 function canvasUpsertResult(source, kind, file) {
@@ -950,7 +1017,7 @@ async function canvasChatRun() {
   if (requestedModel) await fetch(`/api/session/${encodeURIComponent(sessionId)}/model`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: requestedModel }) }).catch(() => {});
   const referenceContext = canvasReferenceContext(references);
   const mode = document.querySelector("[data-canvas-chat-mode]")?.value || "craft";
-  const directive = "你正在控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点；需要生图、生视频或配音时直接调用对应工具，并把真实产物路径写回当前画布。" + referenceContext + "\n用户指令：" + userText;
+  const directive = "你正在控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。只操作当前项目和当前画布，不连接其他本地项目。先用 canvas_manage 的 get 读取现有画布，再按用户要求 add/update/connect/delete 节点；connect 时必须为真实创作依赖填写 relation（character/background/composition/motion/style/prop/continuity/first_frame/last_frame/audio/reference），不能只画装饰箭头。需要生图、生视频或配音时直接调用对应工具，并把真实产物路径写回当前画布。" + referenceContext + "\n用户指令：" + userText;
   let answer = "", assistant = null;
   const write = (value) => {
     if (!assistant) assistant = canvasChatAppend("agent", "", "is-live");
@@ -985,8 +1052,8 @@ async function canvasGenerate(node, kind) {
   if (!node || !["image", "video", "audio"].includes(kind)) return;
   const key = `${node.id}:${kind}`;
   if (canvasState.busy.has(key)) return;
-  const p = canvasPayload(node), upstream = canvasUpstreamMedia(node);
-  let firstFrame = p.first_frame || (kind === "video" ? upstream[0] : "");
+  const p = canvasPayload(node), upstream = canvasUpstreamMedia(node), upstreamInputs = canvasUpstreamInputs(node);
+  let firstFrame = p.first_frame || (kind === "video" ? upstreamInputs.find((item) => item.relation === "first_frame")?.path || upstream[0] : "");
   if (kind === "video" && !firstFrame && canvasKind(node) === "shot") {
     canvasToast("这个视频节点还没有首帧，请先生成首帧或连接一个参考图节点。", "triangle-alert", "err"); return;
   }
@@ -1009,7 +1076,7 @@ async function canvasGenerate(node, kind) {
     if (!response.ok || result.isError || result.ok === false) throw new Error(result.error || result.content || "生成失败");
     const file = String(result.file || "").trim();
     if (!file) throw new Error("生成接口成功，但没有返回产物路径");
-    const next = canvasPayload(node);
+    const next = canvasRecordGeneration(node, kind, input, file, result);
     if (canvasKind(node) === "shot") {
       if (kind === "image") next.first_frame = file;
       if (kind === "video") next.video = file;
@@ -1118,13 +1185,19 @@ function canvasRenderInspector(focus = true) {
   if (kind === "video") fields = canvasField("名称", "title", p.title || "Video") + canvasMediaModelField("生视频模型", "video", p.model || "") + canvasField("画面比例", "aspect_ratio", p.aspect_ratio || "16:9") + canvasField("分辨率", "resolution", p.resolution || "1080p") + canvasField("时长", "duration", p.duration || "5s") + canvasAssetField("首帧（可选）", p.first_frame || "", "image", "first_frame") + canvasAssetField("尾帧（可选）", p.last_frame || "", "image", "last_frame") + canvasAssetField("参考视频（可选）", p.reference_video || "", "video", "reference_video") + canvasAssetField("已有视频（可选）", p.url || p.path || "", kind) + canvasFilePicker("上传参考视频", "video/*", p.url || p.path || "", "video-media") + canvasField("生成提示词", "prompt", p.prompt || "", "textarea");
   if (kind === "audio") fields = canvasField("名称", "title", p.title || "声音") + canvasField("素材用途", "role", p.role || "对白/音乐") + canvasTagField(p.tags) + canvasAssetField("音频路径/URL（工作区）", p.url || p.path || "", "audio") + canvasFilePicker("上传音频", "audio/*", p.url || p.path || "", "audio-media") + canvasField("对白/音乐说明", "text", p.text || "", "textarea");
   if (kind === "timeline") fields = canvasField("名称", "title", p.title || "最终剪辑") + canvasField("剪辑目标", "description", p.description || "", "textarea");
-  const allNodes = canvasState.graph.getElements().filter((item) => item.id !== node.id), connected = canvasState.graph.getLinks().filter((link) => link.get("source")?.id === node.id).map((link) => link.get("target")?.id);
+  const allNodes = canvasState.graph.getElements().filter((item) => item.id !== node.id);
+  const connected = canvasState.graph.getLinks().filter((link) => link.get("source")?.id === node.id).map((link) => ({ link, target: canvasState.graph.getCell(link.get("target")?.id) })).filter((item) => item.target);
+  const defaultTarget = allNodes[0], defaultRelation = defaultTarget ? canvasDefaultRelation(node, defaultTarget) : "input";
   const generateActions = kind === "shot" ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="image">${ic("image")}生成首帧</button><button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="video" ${p.first_frame ? "" : "disabled"}>${ic("video")}生成视频</button>` : ["image", "video", "audio"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="${kind}">${ic(kind === "audio" ? "volume-2" : kind)}${kind === "audio" ? "生成配音" : `生成${def.label}`}</button>` : "";
-  box.innerHTML = `<div class="canvas-inspector-head"><div><small>节点属性</small><h3>${esc(def.label)}</h3></div><button class="canvas-node-remove" data-inspect-close title="关闭设置">${ic("x")}</button></div><div class="canvas-inspector-fields">${fields}</div><div class="canvas-inspector-section"><span class="canvas-inspector-section-title">工作流连接</span><div class="canvas-connect-row"><select data-connect-target><option value="">连接到下游节点…</option>${allNodes.map((item) => `<option value="${item.id}">${esc(canvasNodeLabel(item))}</option>`).join("")}</select><button class="ui-btn ui-btn--sm ui-btn--outline" data-connect>${ic("link")}连接</button></div>${connected.length ? `<div class="canvas-connected-list">${connected.map((id) => `<span>${esc(canvasNodeLabel(canvasState.graph.getCell(id)) || "节点")}</span>`).join("")}</div>` : '<p class="canvas-inspector-hint">还没有下游节点。连接后，AI 才能理解输入关系。</p>'}</div><div class="canvas-inspector-actions">${generateActions}${["agent", "shot", "script", "scene", "storyboard", "timeline"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-agent>${ic("sparkles")}交给本项目 Agent</button>` : ""}<button class="ui-btn ui-btn--sm ui-btn--ghost canvas-inspector-delete" data-inspect-delete>删除节点</button></div>`;
+  box.innerHTML = `<div class="canvas-inspector-head"><div><small>节点属性</small><h3>${esc(def.label)}</h3></div><button class="canvas-node-remove" data-inspect-close title="关闭设置">${ic("x")}</button></div><div class="canvas-inspector-fields">${fields}</div>${canvasGenerationInspector(p)}<div class="canvas-inspector-section"><span class="canvas-inspector-section-title">工作流连接</span><div class="canvas-connect-row"><select data-connect-target><option value="">连接到下游节点…</option>${allNodes.map((item) => `<option value="${item.id}">${esc(canvasNodeLabel(item))}</option>`).join("")}</select><select data-connect-relation title="这个节点为下游提供什么">${canvasRelationOptions(defaultRelation, node, defaultTarget)}</select><button class="ui-btn ui-btn--sm ui-btn--outline" data-connect>${ic("link")}连接</button></div>${connected.length ? `<div class="canvas-connected-list">${connected.map(({ link, target }) => `<span title="${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))}">${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))} · ${esc(canvasNodeLabel(target) || "节点")}</span>`).join("")}</div>` : '<p class="canvas-inspector-hint">选择用途再连线。Agent 会把它当作真实生成输入，而不是一条装饰箭头。</p>'}</div><div class="canvas-inspector-actions">${generateActions}${["agent", "shot", "script", "scene", "storyboard", "timeline"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-agent>${ic("sparkles")}交给本项目 Agent</button>` : ""}<button class="ui-btn ui-btn--sm ui-btn--ghost canvas-inspector-delete" data-inspect-delete>删除节点</button></div>`;
   box.querySelectorAll("[data-inspect-key]").forEach((field) => { const update = () => canvasUpdateSelected(field.dataset.inspectKey, field.value); field.addEventListener("input", update); field.addEventListener("change", update); });
   box.querySelector("[data-inspect-tags]")?.addEventListener("change", (evt) => canvasUpdateSelected("tags", evt.target.value));
   box.querySelector("[data-inspect-board]")?.addEventListener("change", (evt) => canvasUpdateSelected("board", evt.target.value, true));
-  box.querySelector("[data-connect]")?.addEventListener("click", () => { const target = canvasState.graph.getCell(box.querySelector("[data-connect-target]")?.value); canvasConnect(node, target); canvasRenderInspector(false); });
+  box.querySelector("[data-connect-target]")?.addEventListener("change", (event) => {
+    const target = canvasState.graph.getCell(event.target.value); const select = box.querySelector("[data-connect-relation]");
+    if (target && select) select.innerHTML = canvasRelationOptions(canvasDefaultRelation(node, target), node, target);
+  });
+  box.querySelector("[data-connect]")?.addEventListener("click", () => { const target = canvasState.graph.getCell(box.querySelector("[data-connect-target]")?.value); canvasConnect(node, target, box.querySelector("[data-connect-relation]")?.value); canvasRenderInspector(false); });
   box.querySelector("[data-inspect-close]")?.addEventListener("click", () => { canvasState.inspectorOpen = false; canvasRenderInspector(false); });
   box.querySelector("[data-inspect-delete]")?.addEventListener("click", () => { if (!confirm("删除这个节点？关联连线也会一起删除。")) return; node.remove(); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(); canvasPersist(); });
   box.querySelectorAll("[data-inspect-generate]").forEach((button) => button.addEventListener("click", () => canvasGenerate(node, button.dataset.inspectGenerate)));
