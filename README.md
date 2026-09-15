@@ -32,6 +32,12 @@
 </p>
 
 <p align="center">
+  <a href="https://catcatuncle.github.io/openworkbuddy/"><b>🌐 项目主页</b></a> ·
+  <a href="https://github.com/CatCatUncle/openworkbuddy">GitHub 源码</a> ·
+  <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Releases</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&logo=github&label=Star&color=5b5ff7" alt="Star"></a>
   <a href="https://github.com/CatCatUncle/openworkbuddy/forks"><img src="https://img.shields.io/github/forks/CatCatUncle/openworkbuddy?style=flat-square&logo=github&color=5b5ff7" alt="Fork"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="License"></a>
