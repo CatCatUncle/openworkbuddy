@@ -5623,6 +5623,7 @@ async function main() {
   testNoticeCoverage();
   testStyleDirection();
   testShortDrama();
+  testCanvasCreativeLineage();
   testReleasePipeline();
   testNoNestedRoutes();
   await testAdminConsoleUI();
@@ -5714,6 +5715,32 @@ async function main() {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
   }
   console.log("=== 全部测试通过 ===");
+}
+
+/**
+ * 画布的线必须是可执行创作关系，不是只给人看的箭头。
+ * 这一闸钉住：浏览器保存、服务端归一化、Agent 工具定义三处都保留用途；否则角色图
+ * 连到镜头后，下一次同步就会退化成无意义的「输入」。
+ */
+function testCanvasCreativeLineage() {
+  const tools = require("../tools");
+  const valid = tools.canvasNormalizeState({ nodes: [
+    { id: "char", kind: "character", payload: {}, position: { x: 1, y: 2 } },
+    { id: "shot", kind: "shot", payload: {}, position: { x: 3, y: 4 } },
+  ], edges: [
+    { source: { id: "char" }, target: { id: "shot" }, relation: "character" },
+    { source: { id: "char" }, target: { id: "shot" }, relation: "not-a-real-role" },
+  ] });
+  assert.strictEqual(valid.edges[0].relation, "character", "画布同步后丢了人物身份用途");
+  assert.strictEqual(valid.edges[1].relation, undefined, "未知用途不该原样落盘");
+  const def = tools.TOOL_DEFS.find((item) => item.name === "canvas_manage");
+  assert.ok(def?.input_schema?.properties?.relation?.enum?.includes("continuity"), "Agent 不能声明连续性关系，画布就会退化成装饰箭头");
+  assert.ok(def.input_schema.properties.relation.enum.includes("first_frame"), "Agent 不能声明首帧关系，镜头生成不知道该取哪个输入");
+  const canvas = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  assert.ok(/function canvasGenerationInputs\(/.test(canvas) && /canvasRecordGeneration\(/.test(canvas), "画布没有记录生成输入和可回看的本次执行");
+  assert.ok(/data-connect-relation/.test(canvas) && /canvasRelationLabel\(/.test(canvas), "界面不能选择或展示连线用途");
+  assert.ok(/relation: canvasLinkRelation/.test(canvas), "浏览器保存画布时没有把连线用途写回唯一真源");
+  console.log("✅ 画布创作谱系：连线用途可选/可保存/Agent 可写，生成节点保留模型、输入与产物记录");
 }
 
 /**

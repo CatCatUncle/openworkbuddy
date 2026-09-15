@@ -53,7 +53,7 @@
 
 The actual file appears in the output panel on the right, ready to preview, download or revise. No file handy? Say “write my weekly work report” to run the whole loop first.
 
-If those three minutes save you one repetitive task, a **Star** is the most useful signal you can give this project — it helps more people find it and tells maintainers what to keep improving.
+**Want to keep up with OpenWorkBuddy? Star the repo to save it, then choose `Watch → All Activity` in the top-right to receive GitHub notifications about project activity.** Every Star helps more people find a local AI work agent and tells us what is worth improving next.
 
 ## Why this one
 
@@ -250,7 +250,7 @@ It runs commands, reads and writes files, reaches the network — so the gates a
 
 ## Contributing
 
-**Made it this far and it looks useful? Star it.** There is no marketing budget; discoverability is that number.
+**Looks useful? Star it so more people can find it; choose `Watch → All Activity` in the top-right to follow its progress.** New capabilities, fixes, and release notes are published openly on GitHub.
 
 **Broke it? Stuck? Open an [issue](https://github.com/CatCatUncle/openworkbuddy/issues/new) — even one line of error text helps.** Strip your API keys first.
 
