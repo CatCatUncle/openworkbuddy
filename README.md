@@ -21,6 +21,8 @@
   <a href="#跑起来"><b>⚡ 三分钟跑起来</b></a> ·
   <a href="https://github.com/CatCatUncle/openworkbuddy/releases">下载安装包</a> ·
   <a href="#第一次上手">第一次上手</a> ·
+  <a href="#技术架构">技术架构</a> ·
+  <a href="#roadmap">Roadmap</a> ·
   <a href="#一起把它做下去">贡献一个能力</a> ·
   <a href="CHANGELOG.md">变更记录</a> ·
   <a href="#交流群">飞书交流群</a> ·
@@ -62,6 +64,30 @@
 **加一个能力 = 丢一个 Markdown 文件。** 存成 `skills/<名字>/skill.md`，存盘后下一条任务就生效——不改代码、不重启、不打包。往外接 MCP 连接器和 [Agent Plugins](https://agent-plugins.org) 开放标准，别人的插件粘个 GitHub 地址就装。
 
 **既能拿来干活，也适合拿来学 Agent。** 模型路由、工具调用、文件验收、技能、连接器、记忆、权限和本地 Trace 都在同一个开源仓库里；你能从一条真实任务一路看到 Agent 为什么这样做、用了什么模型、每步花了多久、最后交付了什么。
+
+## 技术架构
+
+一台机器就能跑完整闭环：入口、Agent、模型、工具、工作区和可观测性彼此解耦；需要时再接入飞书、微信或 Langfuse，默认不把本机文件和会话送到公网。
+
+```mermaid
+flowchart TB
+  subgraph Entry["你的设备"]
+    Desktop["桌面端 / Web"]
+    CLI["wb CLI"]
+    IM["飞书 / 微信等远程入口"]
+  end
+
+  Entry --> Runtime["OpenWorkBuddy 本地运行时\n会话 · 权限 · 项目 · API"]
+  Runtime --> Agent["Agent 编排\n规划 · 工具调用 · 文件验收"]
+  Agent <--> Models["模型路由\n云端 LLM / Ollama / Claude Code / Codex"]
+  Agent <--> Capabilities["能力层\nMarkdown Skills · 专家 · MCP · Plugins"]
+  Agent <--> Workspace["本机工作区\n文件 · 素材 · 项目上下文 · 记忆"]
+  Agent --> Canvas["可执行无限画布\n剧本 · 角色 · 镜头 · 素材 · 时间线"]
+  Agent --> Trace["本地 Trace\n模型 · 工具 · 耗时 · Token · 输入输出"]
+  Trace -. 可选 .-> Langfuse["Langfuse"]
+```
+
+这张图也是读代码的路线：从 `server.js` 的本地运行时进入，再看 `agent.js` 如何编排模型和工具；画布、CLI、IM 与 Trace 都是同一条交付链上的不同入口或观察点。
 
 ## 和其他 Agent 的位置
 
@@ -111,6 +137,19 @@ OpenWorkBuddy 不试图替代所有工具：Codex / Pi 更偏终端与代码，C
 - **和 Agent 同屏共创**：底部对话支持附件、`@` 引用节点或素材、模型和执行模式选择；Agent 的处理过程和结果留在当前画布任务里。
 
 进入左侧「无限画布」即可开始。空画布只有剧本和分镜两个有实际意义的起点；空白处拖拽平移、`Shift`+拖拽框选，框选后拖任一节点可整体移动，属性只在点节点齿轮时打开。
+
+## Roadmap
+
+下面是明确的后续方向，不是已经发布的功能承诺；已完成内容以[功能清单](docs/功能清单.md)和[变更记录](CHANGELOG.md)为准。
+
+| 方向 | 下一步 | 为什么值得做 |
+|---|---|---|
+| 短剧创作闭环 | 节点级下游重算与缓存、分镜到时间线交付、更多可复用短剧工作流 | 改一个镜头只影响必要的下游，降低重跑成本 |
+| 素材与渠道 | 更顺畅的素材归档、引用与跨节点复用；继续打磨飞书、微信等附件交付 | 让参考图、音频、视频真正可找、可用、可交付 |
+| 可观测与协作 | Trace 对比/回放、Langfuse 连接体验、跨机器任务查看与安全边界 | 让人和团队都能解释“Agent 做了什么、花了多久、为何失败” |
+| 开源生态 | 更多经验证的 Skills、专家工作流、MCP 预设与贡献模板 | 让贡献者用更小的改动带来可复用能力 |
+
+想参与其中，优先欢迎能复现的问题、真实任务样本（请脱敏）、小而完整的 Skill，以及能把一个卡点变成可测试改动的 PR。更详细的取舍和验收标准见[路线图](docs/路线图.md)。
 
 ## 长这样
 
