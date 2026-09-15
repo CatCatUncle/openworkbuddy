@@ -1410,10 +1410,15 @@ function engineExtraHtml(e) {
   const o = e.options || {};
   const listId = "eng-models-" + e.id;
   const models = Array.isArray(e.models) ? e.models : [];
+  const modelHint = e.modelSource === "codex_config"
+    ? "下拉只展示当前 Codex 配置中真实出现的模型；留空会用它当前默认值，也可直接输入 Codex 支持的其他名字。"
+    : e.id === "codex"
+      ? "Codex CLI 没有可查询的模型目录；这里不会伪造候选。留空用 Codex 默认模型，或直接输入你已开通的模型名。"
+      : "留空 = 用 CLI 自己的默认模型；也可以直接输入它支持的模型名。";
   return `<div class="eng-x" onclick="event.stopPropagation()">
     <label>可执行文件路径<span style="color:var(--wb-text-3)">（留空 = 自动找。装在 nvm/homebrew 里也能找到；只有自动找不到时才需要填绝对路径）</span>
       <input type="text" data-k="bin" placeholder="${esc(e.path || e.id)}" value="${esc(o.bin || "")}"></label>
-    <label>模型<span style="color:var(--wb-text-3)">（留空 = 用 ${esc(e.label)} 自己的默认模型。填它认的名字，跟「模型」页的 API 渠道无关；下拉里是常用值，可以直接输别的）</span>
+    <label>模型<span style="color:var(--wb-text-3)">（${esc(modelHint)}）</span>
       <input type="text" data-k="model" list="${listId}" placeholder="默认" value="${esc(o.model || "")}" autocomplete="off">
       <datalist id="${listId}">${models.map((m) => `<option value="${esc(m)}">`).join("")}</datalist></label>
     <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--wb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
@@ -2001,8 +2006,9 @@ const IM_CHANNELS = [
     newapp: true, // 一键新建应用：连 App ID / Secret 都不用手打
     paste: { hint: "从飞书开放平台「凭证与基础信息」整页复制粘过来就行，不用一个字段一个字段抠", parse: parseFeishuCreds },
     fields: [["app_id", "App ID"], ["app_secret", "App Secret", "password"], ["verification_token", "Verification Token（可选，仅旧回调模式）", "", "opt"]],
+    groupPolicy: true,
     test: { url: "/im/feishu/test", ok: (d) => `凭证有效${d.bot_name ? `，机器人「${d.bot_name}」` : ""}，长连接：${WS_STATE_TXT[(d.ws || {}).state] || (d.ws || {}).state || "启动中"}` },
-    help: ["飞书开放平台创建自建应用，添加「机器人」能力", "权限开通 im:message 与 im:message:send_as_bot", "事件订阅方式选「使用长连接接收事件」，添加 im.message.receive_v1", "发布一个版本，回来填 App ID / App Secret（或把那一页整段复制，用卡片里的「粘一段过来自动识别」）", "嫌麻烦就点上面的「扫码新建应用」——本机装了 lark-cli 的话，应用直接替你建好，App ID 自动填；App Secret 被系统钥匙串锁着的话，会给你一条直达凭证页的链接，复制回来粘一下"],
+    help: ["飞书开放平台创建自建应用，添加「机器人」能力", "权限开通 im:message 与 im:message:send_as_bot", "事件订阅方式选「使用长连接接收事件」，添加 im.message.receive_v1；把机器人拉进群后，成员 @ 它即可下任务", "要在云文档评论里 @ 机器人：再添加 drive.notice.comment_add_v1 事件，并开 docs:document.comment:read；文档需要已授予应用可读权限。机器人只处理被 @ 的评论，并在原评论下回复", "发布一个版本，回来填 App ID / App Secret（或把那一页整段复制，用卡片里的「粘一段过来自动识别」）", "嫌麻烦就点上面的「扫码新建应用」——本机装了 lark-cli 的话，应用直接替你建好，App ID 自动填；App Secret 被系统钥匙串锁着的话，会给你一条直达凭证页的链接，复制回来粘一下"],
     // 缺哪一半就写哪一半：以前只写「未连接」，用户看不出是没填、填错、还是没联网
     status: (st) => { const f = st.feishu || {}; const m = f.missing || [];
       if (m.length === 1) return ["warn", "还差 " + m[0]];
@@ -2088,7 +2094,14 @@ function renderImPane(pane, s) {
   const bodyHtml = (c) => {
     if (c.qr) return `<div id="ilk-box" style="display:none;margin:4px 0 8px"><img id="ilk-img" alt="微信登录二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--wb-border)"></div><div class="im-r ok-msg" id="ilk-r">还没扫码。点右上角「连接」取二维码</div>${helpHtml(c)}`;
     if (c.lark) return `<div id="fs-qr-body" class="d" style="font-size:13px">检测 lark-cli…</div>${helpHtml(c)}`;
-    return `${newappHtml(c)}${fieldsHtml(c)}${pasteHtml(c)}${c.src ? `<div class="im-src">${keyLink(c.src)}</div>` : ""}<div class="im-r ok-msg" data-r="${c.key}"></div>${helpHtml(c)}`;
+    const groupPolicy = c.groupPolicy ? `<label class="im-group-policy">群聊响应方式
+      <select id="im-feishu-group_reply_mode" aria-label="飞书群聊响应方式">
+        <option value="mention" ${cfgVal(c, "group_reply_mode") !== "all" ? "selected" : ""}>仅 @ 机器人（推荐）</option>
+        <option value="all" ${cfgVal(c, "group_reply_mode") === "all" ? "selected" : ""}>群内所有消息</option>
+      </select>
+      <small>把机器人拉进群后即可使用。默认只在成员 @ 它时执行，避免把群聊闲话当任务。</small>
+    </label>` : "";
+    return `${newappHtml(c)}${fieldsHtml(c)}${groupPolicy}${pasteHtml(c)}${c.src ? `<div class="im-src">${keyLink(c.src)}</div>` : ""}<div class="im-r ok-msg" data-r="${c.key}"></div>${helpHtml(c)}`;
   };
   const cardHtml = (c) => `<div class="im-card packed" data-ch="${c.key}">
       <div class="im-card-h" role="button" tabindex="0" aria-expanded="false" data-activate="1" title="点一下展开 / 收起">
@@ -2125,6 +2138,8 @@ function renderImPane(pane, s) {
       const v = getField(c.key, f);
       if (c.path) out[c.path][f] = v; else out[f] = v;
     }
+    const groupMode = pane.querySelector("#im-feishu-group_reply_mode");
+    if (groupMode) out.feishu.group_reply_mode = groupMode.value === "all" ? "all" : "mention";
     out.session_idle_hours = +pane.querySelector("#im-idle").value || 0;
     return { im: out };
   };

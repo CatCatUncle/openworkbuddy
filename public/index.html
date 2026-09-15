@@ -619,6 +619,11 @@
      一千多像素宽，右对齐的菜单于是往左飞出可视区，字被裁掉一半 */
   .picker-menu { max-width: min(340px, calc(100vw - 24px)); }
   .picker-menu .mi > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* 路径、文件名这类不可控的长单行绝不能把菜单顶出屏幕。图标不缩，文字吃剩余空间；
+     完整值放在 title 里，悬停仍能核对。这个类也可复用到以后任何「菜单里显示路径」的地方。 */
+  .picker-menu .mi.ws-current { min-width: 0; max-width: 100%; }
+  .picker-menu .mi.ws-current > .i { flex: 0 0 auto; }
+  .picker-menu .mi .mi-truncate { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* 本机 CLI 在跑时：这张卡回答的是「谁在跑、花不花钱、去哪儿改」，不是一排可选项 */
   .picker-menu.eng { width: 272px; }
   .picker-menu.eng .ep-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md); background: var(--wb-brand-weak); color: var(--wb-brand-text); }
@@ -669,11 +674,11 @@
   .pv-deploy button:hover { border-color: var(--wb-brand-text); }
   .pv-deploy button.primary:hover { opacity: .9; }
   .pv-deploy code { font-size: 12px; background: var(--wb-bg); border-radius: var(--radius-xs); padding: 2px 6px; user-select: all; }
-  /* 预览默认态：内容落在右侧面板的可用空间正中，矮图/短文本不再贴着顶部。
-     文档和网页仍然铺满面板，长内容交给自己的滚动区域。 */
-  #pv-body { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; }
+  /* 文档/Markdown/网页必须从顶部开始读。把一篇长内容在 flex 轴上居中，会让内容顶部
+     跑到可滚动区域外，滚轮怎么往上推也回不到第一行。图片/视频仍由 .pv-mid 单独居中。 */
+  #pv-body { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: stretch; justify-content: flex-start; }
   #pv-body iframe { flex: 1 1 auto; min-width: 0; width: 100%; height: 100%; border: none; background: #fff; align-self: stretch; }
-  #pv-body > .pv-text { width: min(100%, 760px); box-sizing: border-box; }
+  #pv-body > .pv-text { width: min(100%, 760px); box-sizing: border-box; align-self: flex-start; }
   #pv-body > .ov-doc { align-self: stretch; flex: 1 1 auto; min-width: 0; width: 100%; box-sizing: border-box; overflow: auto; }
   #pv-body img { max-width: 100%; height: auto; max-height: 100%; object-fit: contain; object-position: center; display: block; margin: 20px auto; }
   /* 单张图 / 一条片子的预览：横竖都居中，别顶在天花板上 */

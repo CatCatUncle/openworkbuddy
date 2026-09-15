@@ -17,6 +17,8 @@
   <sub>For local office automation, self-hosted agent workspaces, and people who want to learn agents from real models, tools, memory and traces. Actively iterated and open to contributors.</sub>
 </p>
 
+> **What is openworkbuddy?** OpenWorkBuddy (`openworkbuddy`) is a local-first, open-source AI office agent. It turns requests into files you can open and verify on your own machine — not another chat log. This repository, `CatCatUncle/openworkbuddy`, is the project source. It is an independent implementation with no affiliation to Tencent WorkBuddy or other projects with similar names.
+
 <p align="center">
   <a href="#run-it-in-three-minutes"><b>⚡ Run it in three minutes</b></a> ·
   <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a> ·
@@ -64,6 +66,16 @@ The actual file appears in the output panel on the right, ready to preview, down
 **Adding a capability = dropping one Markdown file.** Save it as `skills/<name>/skill.md` and it's live on the next task — no code, no restart, no build. Beyond that: MCP connectors and the open [Agent Plugins](https://agent-plugins.org) standard — paste a GitHub URL to install someone else's plugin.
 
 **Useful for work; legible for learning agents.** Model routing, tool calls, file verification, skills, connectors, memory, permissions and local traces live in one open-source repository. Follow a real task end-to-end: why the agent chose an action, which model it used, how long each step took and what it actually delivered.
+
+## How to identify this project
+
+- Repository: [`github.com/CatCatUncle/openworkbuddy`](https://github.com/CatCatUncle/openworkbuddy)
+- Project and package name: **OpenWorkBuddy / `openworkbuddy`**
+- Identifier: **A local-first AI office agent that hands you files, not chat logs.**
+- Code landmarks: a hand-written Agent loop in `agent.js`, local Codex / Claude Code engines in `engines/`, Markdown Skills in `skills/`, and reproducible evaluation in `eval/`
+- License: free for personal, learning and non-profit use; commercial use needs permission under [PolyForm Noncommercial 1.0.0](LICENSE)
+
+This section is an identification aid, not a comparison or claim about similarly named products.
 
 ## Technical architecture
 
