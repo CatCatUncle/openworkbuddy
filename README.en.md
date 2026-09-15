@@ -21,6 +21,8 @@
   <a href="#run-it-in-three-minutes"><b>⚡ Run it in three minutes</b></a> ·
   <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a> ·
   <a href="#your-first-run">Your first run</a> ·
+  <a href="#technical-architecture">Architecture</a> ·
+  <a href="#roadmap">Roadmap</a> ·
   <a href="#contributing">Contribute a capability</a> ·
   <a href="CHANGELOG.en.md">Changelog</a> ·
   <a href="docs/功能清单.md">Feature list (zh)</a> ·
@@ -63,6 +65,30 @@ If those three minutes save you one repetitive task, a **Star** is the most usef
 
 **Useful for work; legible for learning agents.** Model routing, tool calls, file verification, skills, connectors, memory, permissions and local traces live in one open-source repository. Follow a real task end-to-end: why the agent chose an action, which model it used, how long each step took and what it actually delivered.
 
+## Technical architecture
+
+One machine can run the full loop. Entry points, the agent, models, tools, workspace, and observability are decoupled; Feishu, WeChat, and Langfuse are optional connections. Local files and conversations do not go to the public internet by default.
+
+```mermaid
+flowchart TB
+  subgraph Entry["Your device"]
+    Desktop["Desktop / Web"]
+    CLI["wb CLI"]
+    IM["Feishu / WeChat and remote channels"]
+  end
+
+  Entry --> Runtime["OpenWorkBuddy local runtime\nsessions · permissions · projects · API"]
+  Runtime --> Agent["Agent orchestration\nplanning · tools · file verification"]
+  Agent <--> Models["Model routing\ncloud LLMs / Ollama / Claude Code / Codex"]
+  Agent <--> Capabilities["Capabilities\nMarkdown Skills · experts · MCP · plugins"]
+  Agent <--> Workspace["Local workspace\nfiles · media · project context · memory"]
+  Agent --> Canvas["Executable infinite canvas\nscripts · characters · shots · media · timeline"]
+  Agent --> Trace["Local Trace\nmodels · tools · duration · tokens · I/O"]
+  Trace -. optional .-> Langfuse["Langfuse"]
+```
+
+It is also a good code-reading path: start at the local runtime in `server.js`, then follow `agent.js` through model and tool orchestration. Canvas, CLI, IM, and Trace are different entry points or observation points on the same delivery path.
+
 ## What it does for you
 
 | You say | You get |
@@ -92,6 +118,19 @@ Put a premise, script, characters, locations, shots, reference images, video, au
 - Co-create in place: the bottom composer supports files, `@` references, model choice and execution modes; the agent’s process stays with this canvas task.
 
 Open **Infinite Canvas** from the sidebar. Drag blank space to pan; `Shift`+drag to select; then drag any selected node to move the group. Properties open only from a node’s gear button.
+
+## Roadmap
+
+These are deliberate next directions, not features already shipped. For what exists today, see the [feature list](docs/功能清单.md) and [changelog](CHANGELOG.en.md).
+
+| Direction | Next | Why it matters |
+|---|---|---|
+| Short-drama creation loop | Node-level downstream recomputation and caching, storyboard-to-timeline delivery, reusable drama workflows | Change one shot without paying to regenerate unrelated downstream work |
+| Media and channels | Smoother asset filing, references and reuse across nodes; keep improving Feishu, WeChat and other attachment delivery | Make image, audio and video references easy to find, use and deliver |
+| Observability and collaboration | Trace comparison/replay, a smoother Langfuse connection, cross-machine task viewing with clear security boundaries | Let individuals and teams explain what an agent did, how long it took and why it failed |
+| Open ecosystem | More field-tested Skills, expert workflows, MCP presets and contribution templates | Let a small contribution become a reusable capability |
+
+Good contributions are reproducible issues, privacy-safe real task samples, small complete Skills, and PRs that turn one friction point into a testable change. The detailed Chinese [roadmap](docs/路线图.md) explains trade-offs and acceptance criteria.
 
 ## What it looks like
 
