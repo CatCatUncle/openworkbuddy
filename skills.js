@@ -360,6 +360,14 @@ const DEFAULT_SKILLS = [
     why: "画封面、海报、社交图；自带字体资源，所以体积偏大",
   },
   {
+    name: "archify",
+    title: "交互式架构图 Archify",
+    repo: "tt-a1i/archify", branch: "main", subpath: "archify",
+    license: "MIT", author: "tt-a1i",
+    bytes: 43 * 1024 * 1024,
+    why: "把系统架构、工作流、时序、数据流和生命周期做成可验证、可交互、可独立打开的 HTML；很适合交付 Agent 方案、Trace 和自动化流程图",
+  },
+  {
     name: "theme-factory",
     title: "配色主题工厂",
     repo: "anthropics/skills", branch: "main", subpath: "skills/theme-factory",

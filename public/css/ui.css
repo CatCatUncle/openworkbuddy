@@ -634,6 +634,9 @@ html[data-theme="dark"] .ui-select {
 .canvas-page .canvas-chat-tools { padding-top: 2px; }
 .canvas-page .canvas-chat-mode, .canvas-page .canvas-chat-model { max-width: 128px; }
 .canvas-page .canvas-chat-mention-menu { bottom: 92px; }
+.im-group-policy { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 7px 9px; margin-top: 8px; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--wb-brand) 18%, var(--wb-border)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--wb-brand) 4%, var(--wb-bg)); color: var(--wb-text-2); font-size: 12px; }
+.im-group-policy select { min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--wb-border); border-radius: var(--radius-sm); background: var(--wb-bg); color: var(--wb-text); font: inherit; }
+.im-group-policy small { grid-column: 1 / -1; color: var(--wb-text-3); font-size: 11px; line-height: 1.45; }
 .canvas-media-lightbox { position: fixed; z-index: 1200; inset: 0; display: flex; align-items: center; justify-content: center; padding: 28px; background: rgba(8, 9, 12, .76); opacity: 0; transition: opacity .16s var(--wb-ease); }
 .canvas-media-lightbox.is-open { opacity: 1; }
 .canvas-media-lightbox-card { width: min(1120px, 94vw); max-height: 92vh; overflow: hidden; border: 1px solid color-mix(in srgb, var(--primary-foreground) 18%, transparent); border-radius: var(--radius-xl); background: var(--wb-bg); box-shadow: 0 24px 80px rgba(0, 0, 0, .42); }

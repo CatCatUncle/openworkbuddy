@@ -58,6 +58,36 @@ function dropVectorTwins(list) {
   return list.filter((f) => !(/\.svg$/i.test(f.name) && pngs.has(f.name.replace(/\.svg$/i, ""))));
 }
 
+/**
+ * 飞书事件既可能直接给 message，也可能包在 event.message / data.message 里。
+ * 统一在这里拆，后面的去重永远拿真实 message_id，不会因为 SDK 或回调模式换了
+ * 载荷形状而退化成内容指纹。
+ */
+function unwrapFeishuInbound(envelope) {
+  const root = envelope && typeof envelope === "object" ? envelope : {};
+  const options = [root.message, root.event?.message, root.data?.message, root.data?.event?.message, root];
+  const message = options.find((item) => item && typeof item === "object" && item.message_type) || null;
+  const eventId = String(root.header?.event_id || root.event_id || root.data?.header?.event_id || root.data?.event_id || "").trim();
+  return { message, eventId };
+}
+
+function feishuDedupeKeys(message, eventId = "") {
+  const msg = message || {};
+  const messageId = String(msg.message_id || "").trim();
+  const chatId = String(msg.chat_id || "").trim();
+  const keys = [];
+  // 同一次事件的 event_id 与消息 message_id 双键落盘：长连接补投、HTTP 回调重试、
+  // 甚至两条通道同时开启，都只能占到同一把锁。
+  if (eventId) keys.push(`e:${eventId}`);
+  if (messageId) keys.push(`m:${chatId}:${messageId}`, messageId); // 裸 id 是旧版兼容键
+  if (keys.length) return keys;
+  // 极少数异常投递没有 message_id 时才走指纹；摘要不可逆，且只保留 32 位。
+  const fingerprint = crypto.createHash("sha256").update(JSON.stringify([
+    chatId, msg.message_type || "", msg.create_time || "", msg.content || "",
+  ])).digest("hex").slice(0, 32);
+  return [`f:${fingerprint}`];
+}
+
 function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = () => {} }) {
   const router = express.Router();
   const imCfg = () => config.im || {};
@@ -125,6 +155,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   // ---------- 飞书 token / 发消息 ----------
 
   let feishuToken = { value: "", expireAt: 0, forApp: "" };
+  let feishuBot = { openId: "", name: "", expireAt: 0 };
   async function getFeishuToken(fresh = false) {
     const { app_id, app_secret } = fsCfg();
     const miss = feishuMissing();
@@ -146,6 +177,25 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     }
     feishuToken = { value: data.tenant_access_token, expireAt: Date.now() + (data.expire - 300) * 1000, forApp: app_id };
     return feishuToken.value;
+  }
+
+  // 群聊里必须分清「有人 @ 了任意同事」和「有人 @ 机器人」。不猜机器人名字，
+  // 直接用飞书给应用机器人的 open_id 比对，改名也不会失效。
+  async function getFeishuBotInfo(fresh = false) {
+    if (!fresh && feishuBot.openId && Date.now() < feishuBot.expireAt) return feishuBot;
+    const token = await getFeishuToken();
+    const r = await fetch("https://open.feishu.cn/open-apis/bot/v3/info", {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    const d = await r.json();
+    if (!r.ok || d.code !== 0 || !d.bot?.open_id) throw new Error(d.msg || "拿不到机器人身份");
+    feishuBot = {
+      openId: String(d.bot.open_id),
+      name: String(d.bot.app_name || d.bot.bot_name || ""),
+      expireAt: Date.now() + 60 * 60 * 1000,
+    };
+    return feishuBot;
   }
 
   async function feishuSend(token, chatId, msgType, content) {
@@ -382,6 +432,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       },
       get ok() { return !!cardId && !broken; },
       get messageId() { return messageId; },
+      get sent() { return !!messageId; },
 
       /** agent 事件 → 卡片上的执行过程 */
       onEvent(ev) {
@@ -399,7 +450,10 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       async finish(fullText) {
         done = true;
         if (timer) { clearTimeout(timer); timer = null; }
-        if (broken || !cardId) return false;
+        // 卡片已经作为回复发出后，不能因为最后一次 PUT 超时再补发普通文本；
+        // 那会把同一个任务变成两条用户可见回复。调用方会记录「卡片待同步」，
+        // 但不会重新发送答案。
+        if (broken || !cardId) return messageId ? "sent" : false;
         try {
           const info = feishuCardBody(fullText, 3000);
           st.title = info.split ? "做完啦 · 正文见下一条" : "做完啦";
@@ -424,12 +478,12 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
             method: "PUT",
             body: JSON.stringify({ card: { type: "card_json", data: JSON.stringify(finalCard) }, sequence: ++seq }),
           });
-          if (!putOk) return false; // 只有整卡这一推真失败了才降级纯文本
+          if (!putOk) return messageId ? "sent" : false;
           return info.split ? "split" : true;
         } catch (e) {
           onDegrade && onDegrade(e);
           broken = true;
-          return false;
+          return messageId ? "sent" : false;
         }
       },
 
@@ -599,14 +653,10 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     // 出错时到底是哪一步炸的。以前整段共用一个 try，用户看到的永远是「任务执行出错」——
     // 实际上有一类是任务早跑完了、只是回消息那一下超时，说成「执行出错」等于骗人。
     let phase = "任务执行";
-    // 发消息失败多半是网络抖一下，自动补一次；两次都不行才认输
-    const twice = async (fn) => {
-      try { return await fn(); }
-      catch {
-        await new Promise((r) => setTimeout(r, 1500));
-        return fn();
-      }
-    };
+    // 消息发送不是幂等请求：网络超时不等于飞书没有收到。过去在这里自动补发一次，
+    // 就会出现「服务端已发出、客户端没收到响应 → 同一段答案又发一遍」。
+    // 所有 IM 的用户可见消息一律至多发送一次；卡片 API 自己有安全的更新重试。
+    const sendOnce = async (fn) => fn();
     return enqueueTask(sessionKey, async () => {
       try {
         if (!sessions.has(sessionKey)) sessions.set(sessionKey, []);
@@ -618,7 +668,9 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         // 以前在这儿对整个工作区做 mtime 差分，别的对话同时写的文件会被当成这次的产出发到用户手机上
         const changedNames = new Set();
         // 告诉 agent 文件是怎么送达的，别再跟用户说「我发不了文件」
-        const imNote = sendFile
+        const imNote = channel === "feishu_doc"
+          ? "这条消息来自飞书云文档里 @ 机器人的评论。完成后系统会把答复发回同一条评论线程；不要让用户去网页聊天窗口查看，也不要假装已经改动文档。需要修改文档时，先说明将修改的范围并按权限实际执行。"
+          : sendFile
           ? "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台，也看不到你在电脑上弹的任何窗口——别用 open 之类命令给用户「展示」东西，没人看得见）。文件送达机制：任务完成后，系统会自动把本次新建/修改的文件、以及你最终回复里点到名字的文件，作为附件直接发进这个聊天，用户在手机上就能收到。所以用户要某个文件时，只需确保它在工作目录里、并在最终回复里写出文件名（含扩展名），然后告诉用户「文件马上作为附件发给你」。但注意分清用户要的是「文件」还是「内容」：如果用户说「发我内容/直接贴出来/别发文件」，就把全文原样写进回复正文（别摘要、别截断），并在回复最后单独一行写 [[不发文件]] —— 系统认到这个标记就不附任何文件，标记本身用户看不到。反过来，只要回复里出现了文件名，系统默认会把那个文件附上，所以「只要内容」时必须带 [[不发文件]]。用户的口语指令按最直白的意思执行，别反复追问、别解释机制。注意：如果本会话早前的历史里你说过「发不了文件/只能放进文件夹/需要扫码授权才能发」，那些是系统升级前的旧信息，已全部作废，禁止再重复。"
           : "这条消息来自 IM 远程会话（用户不在电脑前，看不到工作台）。产出的文件请报清楚文件名，用户回头在 OpenWorkBuddy 工作台下载。";
         // 只取 finalText 是够的：撞上限 / 超时 / 手动停止那半句，runTask 两条引擎路径都已经
@@ -676,23 +728,28 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
           if (r === true) { logIm(channel, "out", out, logExtra); phase = "附件发送"; }
           else if (r === "split") {
             // 卡片放不下全文（超长/表格超 5 个）：卡片停在上半段 + 提示，正文改用文本发一条
-            await twice(() => reply(out));
+            await sendOnce(() => reply(out));
             logIm(channel, "out", out, logExtra);
+            phase = "附件发送";
+          } else if (r === "sent") {
+            // 初始卡已作为对这条消息的唯一回复发出；末次更新异常时宁可留一条可诊断日志，
+            // 也绝不能再补一条文本把用户刷两遍。下次事件/任务会重新走正常卡片。
+            logIm(channel, "sys", "结果卡片已发出，末次同步失败；未补发重复回复", logExtra);
             phase = "附件发送";
           } else {
             // 卡片这条路整个废了（建卡失败/推内容被拒）：退回老的交互卡或纯文本，保证回答必达
-            await twice(() => reply(out));
+            await sendOnce(() => reply(out));
             logIm(channel, "out", out, logExtra);
             phase = "附件发送";
           }
         } else {
-          await twice(() => reply(out));
+          await sendOnce(() => reply(out));
           logIm(channel, "out", out, logExtra);
           phase = "附件发送";
         }
         for (const f of toSend) {
           try {
-            await twice(() => sendFile(f.name));
+            await sendOnce(() => sendFile(f.name));
             logIm(channel, "out", `已发送文件：${f.name}`, logExtra);
           } catch (e) {
             logIm(channel, "error", `发送文件 ${f.name} 失败: ${e.message}`, logExtra);
@@ -848,15 +905,6 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       return new Set(Array.isArray(rows) ? rows.slice(-2000).map(String) : []);
     } catch { return new Set(); }
   })();
-  function feishuDedupeKeys(msg) {
-    const messageId = String(msg?.message_id || "").trim();
-    const chatId = String(msg?.chat_id || "").trim();
-    // 保留旧版裸 message_id 的兼容键，升级后不会把旧记录重新跑一遍。
-    if (messageId) return [`m:${chatId}:${messageId}`, messageId];
-    // 极少数异常投递没有 message_id 时才走指纹；摘要不可逆，且只保留 32 位。
-    const fingerprint = crypto.createHash("sha256").update(JSON.stringify([chatId, msg?.message_type || "", msg?.create_time || "", msg?.content || ""])).digest("hex").slice(0, 32);
-    return [`f:${fingerprint}`];
-  }
   function persistHandledFeishuMessages() {
     try {
       fs.mkdirSync(path.dirname(FEISHU_DEDUPE_FILE), { recursive: true });
@@ -865,20 +913,50 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       fs.renameSync(tmp, FEISHU_DEDUPE_FILE);
     } catch (e) { console.warn("[飞书] 消息去重记录写入失败:", e.message); }
   }
-  function rememberFeishuMessage(msg) {
-    const keys = feishuDedupeKeys(msg);
+  function rememberFeishuMessage(msg, eventId) {
+    const keys = feishuDedupeKeys(msg, eventId);
     for (const id of keys) { handledMsgs.delete(id); handledMsgs.add(id); }
     while (handledMsgs.size > 2000) handledMsgs.delete(handledMsgs.values().next().value);
     persistHandledFeishuMessages(); // 必须在下载附件、调用模型、发送卡片之前完成
   }
-  async function handleFeishuMessage(msg) {
+  function feishuMentionIds(mentions) {
+    const ids = new Set();
+    for (const item of Array.isArray(mentions) ? mentions : []) {
+      for (const value of [item?.open_id, item?.user_id, item?.id, item?.id?.open_id, item?.id?.user_id]) {
+        if (typeof value === "string" && value.trim()) ids.add(value.trim());
+      }
+    }
+    return ids;
+  }
+  async function feishuAcceptsGroupMessage(msg) {
+    if (String(msg.chat_type || "").toLowerCase() !== "group") return true;
+    // 群里默认只接 @ 机器人，避免机器人把成员之间的闲聊也当成任务。明确选「群内所有消息」
+    // 才会放开——这是便利与刷屏/误执行之间应由管理员决定的一道闸。
+    if (String(fsCfg().group_reply_mode || "mention") === "all") return true;
+    const ids = feishuMentionIds(msg.mentions);
+    try {
+      const bot = await getFeishuBotInfo();
+      return ids.has(bot.openId);
+    } catch (e) {
+      logIm("feishu", "error", `无法确认群聊 @ 对象，已安全忽略：${String(e.message || e).slice(0, 120)}`, { chat: msg.chat_id });
+      return false;
+    }
+  }
+  async function handleFeishuMessage(envelope) {
+    const { message: msg, eventId } = unwrapFeishuInbound(envelope);
     if (!msg || !msg.message_type) return;
-    const dedupeKeys = feishuDedupeKeys(msg);
+    const dedupeKeys = feishuDedupeKeys(msg, eventId);
     if (dedupeKeys.some((id) => handledMsgs.has(id))) {
       logIm("feishu", "sys", "忽略重复投递的消息", { chat: msg.chat_id });
       return;
     }
-    rememberFeishuMessage(msg);
+    // 这一步必须在任何 await 之前：同一进程里同时到达的重投也会看见已占位；
+    // 同步原子落盘则覆盖「刚收到就重启」这条路径。
+    rememberFeishuMessage(msg, eventId);
+    if (!(await feishuAcceptsGroupMessage(msg))) {
+      logIm("feishu", "sys", "忽略未 @ 机器人的群聊消息", { chat: msg.chat_id });
+      return;
+    }
     const type = msg.message_type;
     let content = {};
     try { content = JSON.parse(msg.content || "{}"); } catch {}
@@ -940,7 +1018,80 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   } catch (e) {
     console.error("[飞书] 处理消息出错:", e.message);
   }
-}
+  }
+
+  // ---------- 飞书云文档评论 @ 机器人 ----------
+  // 文档里的 @ 不是 im.message 事件。飞书会以 drive.notice.comment_add_v1 通知被提及者，
+  // 再由我们读取那条评论、把 Agent 的答案回写到同一评论线程。
+  function feishuCommentPlainText(comment, replyId) {
+    const replies = comment?.reply_list?.replies || comment?.replies || [];
+    const reply = replies.find((item) => String(item.reply_id) === String(replyId)) || replies[replies.length - 1];
+    return (reply?.content?.elements || []).map((item) => {
+      if (item?.type === "text_run") return item.text_run?.text || "";
+      if (item?.type === "person") return item.person?.name ? `@${item.person.name}` : "@成员";
+      if (item?.type === "docs_link") return item.docs_link?.url || "";
+      return "";
+    }).join("").trim();
+  }
+  async function feishuGetDocComment(fileToken, commentId, fileType) {
+    const token = await getFeishuToken();
+    const qs = new URLSearchParams({ file_type: fileType || "docx" });
+    const r = await fetch(`https://open.feishu.cn/open-apis/drive/v1/files/${encodeURIComponent(fileToken)}/comments/${encodeURIComponent(commentId)}?${qs}`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000),
+    });
+    const d = await r.json();
+    if (!r.ok || d.code !== 0) throw new Error(d.msg || "读取文档评论失败");
+    return d.data || {};
+  }
+  async function feishuReplyDocComment(fileToken, commentId, fileType, text) {
+    const token = await getFeishuToken();
+    const r = await fetch(`https://open.feishu.cn/open-apis/drive/v1/files/${encodeURIComponent(fileToken)}/comments/${encodeURIComponent(commentId)}/replies`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        file_type: fileType || "docx",
+        content: { elements: [{ type: "text_run", text_run: { text: String(text || "").slice(0, 3000) } }] },
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const d = await r.json();
+    if (!r.ok || d.code !== 0) throw new Error(d.msg || "回复文档评论失败");
+  }
+  async function handleFeishuDocMention(envelope) {
+    const root = envelope && typeof envelope === "object" ? envelope : {};
+    // SDK 分发器传来的是 event 本体；HTTP 回调则包在 body.event 里，两种都接。
+    const event = root.event || root.data?.event || root;
+    if (!event.is_mentioned) return;
+    const meta = event.notice_meta || {};
+    const fileToken = String(meta.file_token || "").trim();
+    const commentId = String(event.comment_id || "").trim();
+    const replyId = String(event.reply_id || commentId).trim();
+    const fileType = String(meta.file_type || "docx").trim();
+    const eventId = String(root.header?.event_id || root.event_id || root.data?.header?.event_id || "").trim();
+    const key = eventId ? `doc:e:${eventId}` : `doc:f:${crypto.createHash("sha256").update([fileToken, commentId, replyId].join("\u0000")).digest("hex").slice(0, 32)}`;
+    if (!fileToken || !commentId || handledMsgs.has(key)) return;
+    handledMsgs.add(key);
+    while (handledMsgs.size > 2000) handledMsgs.delete(handledMsgs.values().next().value);
+    persistHandledFeishuMessages();
+    try {
+      const comment = await feishuGetDocComment(fileToken, commentId, fileType);
+      const text = feishuCommentPlainText(comment, replyId);
+      if (!text) {
+        logIm("feishu_doc", "sys", "文档评论没有可执行文本，已忽略", { doc: fileToken });
+        return;
+      }
+      await runInbound({
+        channel: "feishu_doc",
+        sessionKey: `feishu_doc_${fileToken}`,
+        text,
+        logExtra: { doc: fileToken },
+        reply: (out) => feishuReplyDocComment(fileToken, commentId, fileType, out),
+      });
+    } catch (e) {
+      logIm("feishu_doc", "error", `处理文档 @ 失败: ${String(e.message || e).slice(0, 200)}`, { doc: fileToken });
+      console.error("[飞书文档] 处理 @ 失败:", e.message);
+    }
+  }
 
   // ---------- 飞书长连接（WSClient 主动拨出，无需公网地址） ----------
 
@@ -975,10 +1126,17 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       eventDispatcher: new lark.EventDispatcher({}).register({
         "im.message.receive_v1": async (data) => {
           try {
-            await handleFeishuMessage(data.message);
+            await handleFeishuMessage(data);
           } catch (e) {
             console.error("[飞书] 处理长连接消息出错:", e.message);
             logIm("feishu", "error", `处理消息出错: ${e.message}`);
+          }
+        },
+        "drive.notice.comment_add_v1": async (data) => {
+          try {
+            await handleFeishuDocMention(data);
+          } catch (e) {
+            console.error("[飞书文档] 处理长连接事件出错:", e.message);
           }
         },
       }),
@@ -1271,8 +1429,8 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     }
     res.json({ code: 0 }); // 先应答，飞书要求 3 秒内返回
     try {
-      if (body.header?.event_type !== "im.message.receive_v1") return;
-      await handleFeishuMessage(body.event?.message);
+      if (body.header?.event_type === "im.message.receive_v1") await handleFeishuMessage(body);
+      else if (body.header?.event_type === "drive.notice.comment_add_v1") await handleFeishuDocMention(body);
     } catch (e) {
       console.error("[飞书] 处理事件出错:", e.message);
     }
@@ -1330,15 +1488,10 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
 
   router.post("/im/feishu/test", async (_req, res) => {
     try {
-      const token = await getFeishuToken(true);
+      await getFeishuToken(true);
       let botName = "";
       try {
-        const r = await fetch("https://open.feishu.cn/open-apis/bot/v3/info", {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: AbortSignal.timeout(15000),
-        });
-        const d = await r.json();
-        botName = d.bot?.app_name || "";
+        botName = (await getFeishuBotInfo(true)).name;
       } catch {}
       const status = await startFeishuWs(true);
       res.json({ ok: true, bot_name: botName, ws: status });
@@ -1441,4 +1594,4 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   return { router, startFeishuWs, startQQ, startIlink };
 }
 
-module.exports = { createImRouter };
+module.exports = { createImRouter, unwrapFeishuInbound, feishuDedupeKeys };

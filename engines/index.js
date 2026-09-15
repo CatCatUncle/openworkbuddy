@@ -78,8 +78,10 @@ async function detectAllUncached(overrides = {}) {
       launchHeader: b.launchHeader, supportsResume: b.supportsResume,
       installed: !!r.installed, path: r.path, version: r.version || "",
       how: r.how || "", error: r.error || "",
-      // 设置页要画「模型」候选和「思考/effort」下拉：候选和标签写在引擎自己身上
-      models: b.models || [],
+      // 候选优先来自这次真探测（Codex 是当前用户 config 里的真实 model），
+      // 没有动态来源的 CLI 再回落到后端内置的稳定候选。
+      models: Array.isArray(r.models) ? r.models : (b.models || []),
+      modelSource: r.modelSource || "builtin",
       thinkingLabel: b.thinkingLabel || "",
       // 用户在设置里给这个引擎填过什么（路径 / 模型 / 思考档），前端要能回显出来
       options: {

@@ -1011,7 +1011,7 @@ app.get("/api/settings", (req, res) => {
       brave_key: (config.search || {}).brave_key || "",
     },
     im: {
-      feishu: (config.im || {}).feishu || { app_id: "", app_secret: "", verification_token: "" },
+      feishu: (config.im || {}).feishu || { app_id: "", app_secret: "", verification_token: "", group_reply_mode: "mention" },
       qq: (config.im || {}).qq || { app_id: "", app_secret: "" },
       wecom_app: (config.im || {}).wecom_app || { corp_id: "", agent_id: "", secret: "", token: "", aes_key: "" },
       wechat_mp: (config.im || {}).wechat_mp || { app_id: "", app_secret: "", token: "", aes_key: "" },
@@ -1285,7 +1285,13 @@ app.post("/api/settings", (req, res) => {
     config.im = config.im || {};
     if (b.im) {
       const clear = new Set(Array.isArray(b.im.clear) ? b.im.clear.map(String) : []);
-      if (b.im.feishu) imAssign(config.im.feishu = config.im.feishu || {}, b.im.feishu, ["app_id", "app_secret", "verification_token", "doc_app_id", "doc_app_secret"], clear, "feishu.");
+      if (b.im.feishu) {
+        const feishu = config.im.feishu = config.im.feishu || {};
+        imAssign(feishu, b.im.feishu, ["app_id", "app_secret", "verification_token", "doc_app_id", "doc_app_secret"], clear, "feishu.");
+        if (b.im.feishu.group_reply_mode !== undefined) {
+          feishu.group_reply_mode = b.im.feishu.group_reply_mode === "all" ? "all" : "mention";
+        }
+      }
       if (b.im.qq) imAssign(config.im.qq = config.im.qq || {}, b.im.qq, ["app_id", "app_secret"], clear, "qq.");
       if (b.im.wecom_app) imAssign(config.im.wecom_app = config.im.wecom_app || {}, b.im.wecom_app, ["corp_id", "agent_id", "secret", "token", "aes_key"], clear, "wecom_app.");
       if (b.im.wechat_mp) imAssign(config.im.wechat_mp = config.im.wechat_mp || {}, b.im.wechat_mp, ["app_id", "app_secret", "token", "aes_key"], clear, "wechat_mp.");

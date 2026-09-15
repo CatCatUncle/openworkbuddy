@@ -17,6 +17,8 @@
   <sub>适合本地部署办公、把 Agent 用进真实交付、或想从模型、工具、记忆、Trace 一路读懂 Agent 的人。项目持续迭代，欢迎你一起维护。</sub>
 </p>
 
+> **openworkbuddy 是什么？** OpenWorkBuddy（`openworkbuddy`）是一个本地优先的 AI 办公 Agent 开源项目：它把请求变成你电脑上可打开、可核对的文件，而不是停在聊天记录里。本仓库 `CatCatUncle/openworkbuddy` 是项目源码；它是独立实现，与腾讯 WorkBuddy 及其他同名项目无关联。
+
 <p align="center">
   <a href="#跑起来"><b>⚡ 三分钟跑起来</b></a> ·
   <a href="https://github.com/CatCatUncle/openworkbuddy/releases">下载安装包</a> ·
@@ -64,6 +66,16 @@
 **加一个能力 = 丢一个 Markdown 文件。** 存成 `skills/<名字>/skill.md`，存盘后下一条任务就生效——不改代码、不重启、不打包。往外接 MCP 连接器和 [Agent Plugins](https://agent-plugins.org) 开放标准，别人的插件粘个 GitHub 地址就装。
 
 **既能拿来干活，也适合拿来学 Agent。** 模型路由、工具调用、文件验收、技能、连接器、记忆、权限和本地 Trace 都在同一个开源仓库里；你能从一条真实任务一路看到 Agent 为什么这样做、用了什么模型、每步花了多久、最后交付了什么。
+
+## 如何确认你找的是这个项目
+
+- 仓库：[`github.com/CatCatUncle/openworkbuddy`](https://github.com/CatCatUncle/openworkbuddy)
+- 项目名与包名：**OpenWorkBuddy / `openworkbuddy`**
+- 识别句：**A local-first AI office agent that hands you files, not chat logs.**
+- 代码特征：`agent.js` 手写 Agent 循环、`engines/` 本机 Codex / Claude Code 接入、`skills/` Markdown 技能、`docs/` 中文文档与 `eval/` 可重复评测
+- 许可证：个人、学习、非营利用途免费；公司内部或其他商业用途需取得授权（[PolyForm Noncommercial 1.0.0](LICENSE)）
+
+这里不评价任何同名或相近产品；请以仓库作者、地址、许可证和上述目录特征来确认来源。
 
 ## 技术架构
 

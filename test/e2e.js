@@ -8602,10 +8602,11 @@ async function testEngineContextParity() {
   // ⑥ 设置页：每个引擎自己的模型候选 + 思考/effort 档位要能存、能回显
   const idx = fs.readFileSync(path.join(__dirname, "..", "engines", "index.js"), "utf8");
   assert(/thinking:\s*\(overrides\[b\.id\]\s*\|\|\s*\{\}\)\.thinking/.test(idx), "detectAll 没把 engine_options[id].thinking 回显给前端");
-  assert(/models:\s*b\.models/.test(idx), "detectAll 没把模型候选带给前端");
+  assert(/models:\s*Array\.isArray\(r\.models\)/.test(idx), "detectAll 没把探测到的真实模型候选带给前端");
   for (const id of ["claude-code", "codex"]) {
     const be = engines.get(id);
-    assert(Array.isArray(be.models) && be.models.length >= 3, id + " 没给模型候选");
+    assert(Array.isArray(be.models), id + " 的模型候选不是数组");
+    if (id === "claude-code") assert(be.models.length >= 3, id + " 没给模型候选");
     assert(be.thinkingLabel, id + " 没给思考档位的标签（codex 叫 effort，claude 只有开关，界面不能一概叫「思考」）");
   }
   const ui = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
@@ -8842,7 +8843,17 @@ async function testFeedbackAndUsage() {
 async function testImInboundMedia() {
   const crypto = require("crypto");
   const M = require("../im-media");
+  const IM = require("../im");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-im-media-"));
+
+  // ---- 飞书重投：SDK 直传 / HTTP 回调包裹的载荷必须拿到同一条 message_id ----
+  const rawFs = { message_id: "om_demo", chat_id: "oc_demo", message_type: "text", content: '{"text":"你好"}' };
+  const wrappedFs = { header: { event_id: "evt_demo" }, event: { message: rawFs } };
+  assert.strictEqual(IM.unwrapFeishuInbound(rawFs).message, rawFs, "飞书 SDK 直传消息没拆出来");
+  assert.strictEqual(IM.unwrapFeishuInbound(wrappedFs).message, rawFs, "飞书 HTTP 回调消息没拆出来");
+  const dedupe = IM.feishuDedupeKeys(rawFs, "evt_demo");
+  assert(dedupe.includes("e:evt_demo") && dedupe.includes("m:oc_demo:om_demo"),
+    "飞书去重没有同时记 event_id 和 message_id：" + JSON.stringify(dedupe));
 
   // ---- 文件头认扩展名：CDN 下来的是裸字节，没名字也没 Content-Type ----
   const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.alloc(16)]);
@@ -8958,6 +8969,10 @@ async function testImInboundMedia() {
   assert(/wxInboundText/.test(imSrc), "企微/公众号没走统一的附件处理");
   assert(/FEISHU_MEDIA/.test(imSrc) && /feishuPostText/.test(imSrc), "飞书没覆盖语音/表情/富文本");
   assert(/这类消息（\$\{type\}）我这边解析不了/.test(imSrc), "飞书认不出的类型没留话");
+  assert(/const sendOnce = async \(fn\) => fn\(\)/.test(imSrc) && !/await twice\(/.test(imSrc),
+    "IM 发送还在盲目重试；请求超时后可能已经送达，会把同一回复发两次");
+  assert(/drive\.notice\.comment_add_v1/.test(imSrc) && /is_mentioned/.test(imSrc) && /feishuReplyDocComment/.test(imSrc),
+    "飞书文档评论 @ 没走事件 → 读评论 → 原评论回复的闭环");
   // 只盯代码里的字面量：注释里写「以前是本版暂不下载」是留档，留档不该算回归
   const ilkSrc = fs.readFileSync(path.join(__dirname, "..", "im-ilink.js"), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");

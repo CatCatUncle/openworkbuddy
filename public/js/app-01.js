@@ -259,7 +259,7 @@ function applyAssistantIdentity() {
   }
   document.querySelectorAll(".a-msg .avatar").forEach(el => paintAvatar(el, assistant.avatar, assistant.name));
   const h1 = document.querySelector("#empty h1");
-  if (h1) h1.textContent = `${assistant.name}, 我帮你`;
+  if (h1) h1.textContent = "把事情交给我";
 }
 // ================= 长对话滚动引导 =================
 // 生成回复时用户往上翻，就不再往下拽（能安心看历史）；翻回底部附近才恢复跟随。
@@ -1362,7 +1362,7 @@ function buildEmpty() {
   // 记住用户在空态里最后浏览的场景分类，回空态时仍在原处（少一次切换）
   let startScene = "日常办公";
   try { const s = localStorage.getItem("owb_last_scene"); if (s && SCENES[s]) startScene = s; } catch {}
-  tpl.innerHTML = `<h1>${esc(assistant.name)}, 我帮你</h1>
+  tpl.innerHTML = `<h1>把事情交给我</h1>
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
       `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}">${ic(SCENE_ICON[i] || "sparkles")}${esc(k)}</button>`).join("")}</div>
     <div class="chips" id="scene-chips"></div>`;
@@ -2024,6 +2024,10 @@ async function previewFile(name) {
   document.getElementById("pv-name").textContent = name;
   document.getElementById("pv-dl").href = "/api/files/download/" + fpath(name);
   const body = document.getElementById("pv-body");
+  // 每次换文件都从第一行/第一屏开始。浏览器不会因为 innerHTML 换了就可靠地清掉
+  // overflow 容器的旧 scrollTop；Markdown、HTML 和纯文本共用这一层，统一在这里归零。
+  body.scrollTop = 0;
+  body.scrollLeft = 0;
   const url = "/api/files/view/" + fpath(name) + "?t=" + Date.now();
   const kind = previewKind(name);
   // 单张图就把它摆在面板正中间。以前是 margin:20px auto——横向居中、纵向顶着天花板，
@@ -2070,6 +2074,9 @@ async function previewFile(name) {
     else body.innerHTML = `<div class="pv-text" translate="no"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
   }
   bindPvFallback(body, name);
+  // 异步加载替换内容后再归零一次：长 Markdown/HTML 的旧滚动位置不能把新文件带到中段。
+  body.scrollTop = 0;
+  body.scrollLeft = 0;
   syncNavByRole(); // 标题栏那两颗「在本机打开」也按身份收一收（下载那颗一直在）
   pvPanel.classList.add("show");
   renderDeployBar();

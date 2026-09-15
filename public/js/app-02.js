@@ -105,8 +105,10 @@ async function setWorkspaceDir(p) {
 }
 function renderWsMenu() {
   const owner = amPlatformOwner();
+  const workspacePath = String(settingsCache.workspace_dir || "");
   wsMenu.innerHTML =
-    `<div class="mi ro" data-cur="1">${ic("folder")}${esc(settingsCache.workspace_dir)}</div>` +
+    // 长路径不该把弹层撑出屏幕：视觉上省略，title 仍保留完整路径给核对/复制。
+    `<div class="mi ro ws-current" data-cur="1" title="${esc(workspacePath)}">${ic("folder")}<span class="mi-truncate">${esc(workspacePath)}</span></div>` +
     (owner ? `<div class="mi" data-act="pick">${ic("folder-open")}选择新文件夹…</div>` : "") +
     (canOpenOnHost() ? `<div class="mi" data-act="open">${ic("folder-tree")}打开当前文件夹</div>` : "") +
     (owner ? "" : `<div class="mi ro sub-only">这台服务器上大家共用一个工作目录，归平台管理员设</div>`);

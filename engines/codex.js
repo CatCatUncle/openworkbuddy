@@ -22,11 +22,58 @@
 const { runJsonl, probeVersion } = require("./jsonl");
 const thinking = require("./../thinking");
 const { resolveBin } = require("./which");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { dataPath } = require("../paths");
 
 const ID = "codex";
 
 function shorten(s, n = 80) {
   return String(s == null ? "" : s).replace(/\s+/g, " ").trim().slice(0, n);
+}
+
+const SKILL_CONTEXT_WARNING = /Skill descriptions were shortened to fit the skills context budget/i;
+
+/**
+ * Codex 把登录态、插件开关、用户技能和会话全放在 CODEX_HOME。直接让桌面助理继承整份
+ * ~/.codex 很容易发生一件很反直觉的事：技能太多时 CLI 会往 JSONL 里塞一条 error item，
+ * 即使随后已经给出了回答，调用方也会把整轮当失败。
+ *
+ * OpenWorkBuddy 因此有自己的轻量运行窝：只链接用户已有的 auth.json，绝不复制 token，
+ * 不加载全局插件/技能；线程仍保留在应用数据目录，resume 不会失效。用户原来的 Codex
+ * 终端和插件配置一字不动。
+ */
+function sourceCodexHome(env = process.env) {
+  return path.resolve(env.CODEX_HOME || path.join(os.homedir(), ".codex"));
+}
+
+function configuredModels(env = process.env) {
+  const cfg = path.join(sourceCodexHome(env), "config.toml");
+  let text = "";
+  try { text = fs.readFileSync(cfg, "utf8"); } catch { return []; }
+  // 只读 model 字段，不碰 auth，也不把整份个人 config 返回给前端。
+  const values = [...text.matchAll(/^\s*model\s*=\s*["']([^"']+)["']\s*$/gm)].map((m) => m[1].trim()).filter(Boolean);
+  return [...new Set(values)];
+}
+
+function openWorkBuddyCodexHome(env = process.env) {
+  const sourceHome = sourceCodexHome(env);
+  const auth = path.join(sourceHome, "auth.json");
+  const home = dataPath("data", "runtime", "codex");
+  fs.mkdirSync(home, { recursive: true });
+  const linkedAuth = path.join(home, "auth.json");
+  try {
+    const current = fs.readlinkSync(linkedAuth);
+    if (path.resolve(path.dirname(linkedAuth), current) !== auth) fs.unlinkSync(linkedAuth);
+  } catch {
+    try { fs.unlinkSync(linkedAuth); } catch {}
+  }
+  // 没有 auth 时也让 Codex 在隔离目录里启动：它会给出正常的「请登录」错误，不会偷偷
+  // 回落去加载一大堆全局插件。符号链接让 token 刷新仍写回用户自己的登录态。
+  if (!fs.existsSync(linkedAuth) && fs.existsSync(auth)) fs.symlinkSync(auth, linkedAuth);
+  const defaults = configuredModels(env);
+  return { env: { ...env, CODEX_HOME: home }, defaultModel: defaults[0] || "" };
 }
 
 /** 把 Codex 的 item 归成 (工具名, 目的说明)；认不出的原样带过去，不假装认识 */
@@ -57,9 +104,14 @@ async function detect(opts) {
   const found = await resolveBin("codex", explicit);
   if (!found.bin) return { id: ID, installed: false, path: explicit || "codex", version: "", how: "", error: found.why };
   const r = await probeVersion(found.bin, ["--version"]);
+  const models = configuredModels(process.env);
   return {
     id: ID, installed: r.installed, path: found.bin, version: r.version, how: found.how,
     error: r.installed ? "" : "找到了 " + found.bin + "，但 --version 跑不通（装坏了？）",
+    // 不再塞一张会过期的硬编码 GPT 名称表。Codex CLI 没有公开的本地 models 命令，
+    // 所以候选只来自用户当前 Codex 配置里真实出现过的 model 字段。
+    models,
+    modelSource: models.length ? "codex_config" : "manual",
   };
 }
 
@@ -71,6 +123,8 @@ async function run({
   const found = await resolveBin("codex", bin);
   if (!found.bin) throw new Error(found.why + "。装一个（npm i -g @openai/codex），或在设置里填 codex 的绝对路径。");
   const exe = found.bin;
+  const isolated = openWorkBuddyCodexHome({ ...process.env, ...(env || {}) });
+  const effectiveModel = model || isolated.defaultModel;
   // 同 claude 那边：本机 CLI 冷启动那几秒界面本来全空，看着像发送没点上。
   // bin 一确认存在就先挂一枚「正在启动」的牌子占位，thread.started 一到原地换成带模型名的
   // 正式版（前端认的是同一个 .run-eng 节点）。
@@ -86,7 +140,7 @@ async function run({
   // workspace-write 默认只让写 cwd。本项目借出去的工具里，remember / save_skill 要写到
   // 数据目录（在 cwd 外面），不开这个口子就是「工具调得动、东西存不下」，报错还特别难懂。
   if (writableRoots.length) args.push("-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(writableRoots)}`);
-  if (model) args.push("-m", model);
+  if (effectiveModel) args.push("-m", effectiveModel);
   // 本项目自己的工具（生图/视频/技能/记忆）当成 MCP 服务器挂上去，
   // 否则切到本机 Codex 就等于把这些全丢了
   for (const a of mcpArgs) args.push(a);
@@ -110,7 +164,7 @@ async function run({
     if (m.type === "thread.started") {
       sessionId = m.thread_id || sessionId;
       // 把实际用的模型带上：设置页那个「测试连接」要显示它，用户下一个任务看到的得是同一个名字
-      emit({ type: "status", text: `本机 Codex 已启动（模型 ${model || "默认"}），不消耗 API 额度`, model: model || "", depth: 0 });
+      emit({ type: "status", text: `本机 Codex 已启动（模型 ${effectiveModel || "默认"}），不消耗 API 额度`, model: effectiveModel || "", depth: 0 });
       return;
     }
     if (m.type === "turn.started") {
@@ -142,7 +196,13 @@ async function run({
       return;
     }
     if (item.type === "error") {
-      if (m.type === "item.completed") failure = item.message || "Codex 报了一个没有说明的错误";
+      if (m.type === "item.completed") {
+        const message = item.message || "Codex 报了一个没有说明的错误";
+        // 新版 Codex 会在技能描述被压缩时发一个 error item，但仍继续完成 turn 并给出答案。
+        // 这不是任务失败；真正的修复是上面的隔离运行窝，这里只是保证旧会话/特殊环境不会
+        // 因为一条可恢复告警把已经成功的任务误判为失败。
+        if (!SKILL_CONTEXT_WARNING.test(message)) failure = message;
+      }
       return;
     }
     const t = toolOf(item);
@@ -163,7 +223,7 @@ async function run({
     }
   };
 
-  const r = await runJsonl({ bin: exe, args, cwd, env, stdin: prompt, onLine, deadline, stopSignal });
+  const r = await runJsonl({ bin: exe, args, cwd, env: isolated.env, stdin: prompt, onLine, deadline, stopSignal });
   usage.elapsed_ms = Date.now() - startedAt;
 
   if (r.killed === "stopped") return { finalText, usage, stopped: "已手动停止", sessionId };
@@ -185,7 +245,7 @@ module.exports = {
   install: "npm i -g @openai/codex，然后终端里跑一次 codex login",
   login: "在终端里跑一次 codex login 完成登录，再回来点一次",
   supportsResume: true,
-  models: ["gpt-5.4-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5-codex", "gpt-5"],
+  models: [], // 真正的候选由 detect() 从当前 Codex 配置读取，不能拿过期硬编码冒充真实数据
   thinkingLabel: "推理强度 effort（关闭=none，低/中/高=low/medium/high）",
   detect, run, explain,
 };
