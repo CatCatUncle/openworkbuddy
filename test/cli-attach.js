@@ -193,10 +193,13 @@ console.log("\n⑥ 「（已上传文件：…）」跟网页端一个字节都�
   eq(A.withNote("", ["a.png"]), "（已上传文件：a.png）", "只有文件没正文时只剩标记");
   eq(A.withNote("看看", []), "看看", "只有正文时一个字都不加");
 
-  // 网页端两头：app-02.js 拼出来的、app-01.js 解回去的，必须跟这儿是同一句
+  // 网页端两头：app-02.js 仍拼兼容清单、app-01.js 仍能解回去；
+  // 但网页输入已升级为可见素材锚点，图片和文字的相对关系不再在发送时丢掉。
   const web02 = fs.readFileSync(path.join(ROOT, "public", "js", "app-02.js"), "utf8");
-  ok(web02.includes("`（已上传文件：${pendingAttach.join(\"、\")}）`"),
-    "★网页端拼标记的那行还在★ 它改了这儿也得跟着改，不然两头对不上", "app-02.js");
+  ok(web02.includes("attachmentOrder(typed)") && web02.includes("`（已上传文件：${attached.map(x => x.name).join(\"、\")}）`"),
+    "★网页端仍拼同一份兼容清单，而且按输入里的素材锚点排序★", "app-02.js");
+  ok(web02.includes("【${ATTACH_KIND[type].label} ${index}：${markerName(name)}】"),
+    "★网页端上传后会在输入框留下可见素材锚点★", "app-02.js");
   const web01 = fs.readFileSync(path.join(ROOT, "public", "js", "app-01.js"), "utf8");
   const m = web01.match(/\/（已上传文件：\(\[\^）\]\+\)）\/g/);
   ok(!!m, "★网页端解标记的那个正则还在★", "app-01.js");

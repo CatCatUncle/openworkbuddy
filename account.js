@@ -476,7 +476,21 @@ function fixLegacyCache(e) {
   return { ...e, prompt: (e.prompt || 0) + (e.cached || 0) };
 }
 
-/** 用量详情：今日/本月汇总 + 近 7 天曲线 + 最近流水（管理员看全员，成员只看自己） */
+/**
+ * 用量详情：今日/本月汇总 + 近 7 天曲线 + 流水（管理员看全员，成员只看自己）。
+ *
+ * opts.from / opts.to  —— `YYYY-MM-DD`，闭区间，按记账当天算。
+ * opts.q               —— 在成员/模型/入口里做不分大小写的子串搜。
+ * opts.offset/limit    —— 翻页。返回里的 total 是「符合筛选的总条数」，不是这一页的条数。
+ *
+ * 为什么非得有这三样：以前这里只会 `slice(0, limit)`，界面上就只能写「最近 25 条，
+ * 再往前的看不了，要全量请导出」。财务问「上个月小圆花了多少」——这个后台答不上来，
+ * 只能导出一个 CSV 再拿 Excel 去算。一个管钱的后台连这都做不到，说不过去。
+ *
+ * from/to 给了的时候，by_user / by_model / by_source 也跟着这个区间算
+ *（「上个月谁花得最多」问的就是这个），而 today / month / last7 永远按各自的窗口算——
+ * 它们的定义里就带着时间，再被区间截一刀只会算出一个没人看得懂的数。
+ */
 function usageSummary(user, opts = {}) {
   const all = loadUsage().map(fixLegacyCache);
   // 管理员看的是**本组织**全员，不是全库全员：多租户下后者等于把别家的账摊开给他看。
@@ -487,6 +501,26 @@ function usageSummary(user, opts = {}) {
   const scope = opts.user ? (e) => e.user === opts.user : admin ? (e) => inOrg.has(e.user) : (e) => e.user === user.username;
   const mine = all.filter(scope);
   const runs = mine.filter((e) => e.kind === "run");
+
+  // ---- 筛选：时间区间 + 关键词 ----
+  const from = String(opts.from || "").slice(0, 10);
+  const to = String(opts.to || "").slice(0, 10);
+  // 老流水没有 day 字段的，从 ts 现推一个，别把它们判成「不在任何区间里」而整段消失
+  const dayOf = (e) => e.day || String(e.ts || "").slice(0, 10);
+  const inRange = (e) => {
+    if (!from && !to) return true;
+    const d = dayOf(e);
+    if (!d) return false;
+    return (!from || d >= from) && (!to || d <= to);
+  };
+  const needle = String(opts.q || "").trim().toLowerCase();
+  const hit = (e) =>
+    !needle ||
+    [e.user, e.model, e.provider, e.source, e.kind].some((x) => String(x || "").toLowerCase().includes(needle));
+  const picked = mine.filter((e) => inRange(e) && hit(e));
+  const rangeRuns = (from || to || needle) ? runs.filter((e) => inRange(e) && hit(e)) : runs;
+  const offset = Math.max(0, Math.floor(+opts.offset || 0));
+  const limit = Math.max(1, Math.min(1000, Math.floor(+opts.limit || 50)));
   const today = localDay();
   const month = today.slice(0, 7);
   // cached 是后加的字段，老流水没有它。算命中率时只拿「记过这个字段的那些条」当分母，
@@ -514,14 +548,20 @@ function usageSummary(user, opts = {}) {
     today: agg(runs.filter((e) => e.day === today)),
     month: agg(runs.filter((e) => e.day && e.day.slice(0, 7) === month)),
     last7,
-    recent: mine.slice(0, opts.limit || 50),
+    recent: picked.slice(offset, offset + limit),
+    // 这三个是给翻页条用的：total 是符合筛选的**全部**条数
+    total: picked.length,
+    offset,
+    limit,
+    // 筛选区间内的合计。没给区间时等于「全部流水」的合计，界面照样能显示
+    range: agg(rangeRuns),
     // 按人 / 按模型的分组，管理后台的「成员用量」「应用用量」两块直接用
-    by_user: groupUsage(runs, (e) => e.user || "?"),
-    by_model: groupUsage(runs, (e) => e.model || "（未记录）"),
-    by_source: groupUsage(runs, (e) => e.source || "web"),
+    by_user: groupUsage(rangeRuns, (e) => e.user || "?"),
+    by_model: groupUsage(rangeRuns, (e) => e.model || "（未记录）"),
+    by_source: groupUsage(rangeRuns, (e) => e.source || "web"),
     // 按部门：流水里的 dept 是**记账当时**的部门。人换了部门老账不跟着搬，
     // 因为账本记的是「当时谁在哪个部门花的钱」，跟着搬会把上个月的部门账改掉
-    by_dept: groupUsage(runs, (e) => e.dept || "未分组"),
+    by_dept: groupUsage(rangeRuns, (e) => e.dept || "未分组"),
   };
 }
 

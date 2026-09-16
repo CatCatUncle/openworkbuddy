@@ -29,6 +29,8 @@ const SHARED = "*"; // 共享作用域：所有账号都看得到
 const MAX_TEXT = 400; // 单条上限：记忆是一句话结论，不是任务日志
 const MAX_PER_SCOPE = 120; // 每个作用域最多留多少条
 const MAX_PROMPT_CHARS = 6000; // 注入提示词的总预算，超了截断并明说
+const HIT_FLUSH_MS = 20000; // 命中回写的合并窗口：一次任务可能连着注入好几轮，没必要每轮写一次盘
+const DUP_IN_PROMPT = 0.62; // 同一段提示词里两条像到这个程度，就只留新的那条（见 dedupeForPrompt）
 
 /**
  * 不该被记下来的东西。记忆文件是明文 JSON，还会原样进每一次请求的系统提示词——
@@ -67,6 +69,67 @@ const CAPABILITY_SUBJECT = /(工具|接口|api|服务端|后端|内置|系统|�
 const FIXED_CLAIM = /(已解决|已修复|已修好|已经修|现已支持|现在已支持|已经支持|已支持|已生效|已经生效|已经可以|现在可以|已可用|已经正常|不再有|已经没有|问题不存在)/;
 function looksStaleClaim(text) {
   return CAPABILITY_SUBJECT.test(text) && FIXED_CLAIM.test(text);
+}
+
+/**
+ * 命中回写：哪几条真被塞进过系统提示词。
+ *
+ * 为什么非要记这个——淘汰。老写法超量了丢最旧的，于是一条用了四十次的「报告别写开场白」
+ * 会因为它记得早而被一条昨天记下、一次都没派上用场的条目挤掉。「旧」和「没用」是两回事，
+ * 按错的那个丢，越用越难用。
+ *
+ * 写盘是合并的：promptBlock 每次只往 Map 里记一笔，20 秒内的合并成一次写。
+ * 计时器 unref 掉——统计这种事不配把进程吊着不让退出。
+ * add/remove/forget/renameScope 进来之前先同步冲一次：它们都是「load → 改 → save」，
+ * 中间要是插进来一次回写，后写的那个会把前一个的结果原样盖掉。
+ */
+const pendingHits = new Map(); // id → 这一窗口内被注入了几次
+let hitTimer = null;
+
+function noteUsed(ids) {
+  if (!ids || !ids.length) return;
+  for (const id of ids) pendingHits.set(id, (pendingHits.get(id) || 0) + 1);
+  if (hitTimer) return;
+  hitTimer = setTimeout(flushHits, HIT_FLUSH_MS);
+  if (hitTimer.unref) hitTimer.unref();
+}
+
+function flushHits() {
+  if (hitTimer) { clearTimeout(hitTimer); hitTimer = null; }
+  if (!pendingHits.size) return 0;
+  const items = load();
+  const now = new Date().toISOString();
+  let n = 0;
+  for (const x of items) {
+    const c = pendingHits.get(x.id);
+    if (!c) continue;
+    x.hits = (x.hits || 0) + c;
+    x.last_used = now;
+    n++;
+  }
+  pendingHits.clear();
+  // 一条都没对上说明这些 id 已经被删了，那就没什么可写的——别为了空转多写一次盘
+  if (n) save(items);
+  return n;
+}
+
+/**
+ * 超量时该先丢谁。分越低越先走。
+ *
+ * 四条尺子，按重要性排：
+ *   - **用过几次**：真被召回过的最值钱。封顶 20 次，免得一条老条目靠刷次数永远不死；
+ *   - **谁写的**：用户在设置里亲手敲的（source:"user"）不该被 agent 自己记的挤掉；
+ *   - **多久没用上**：闲置越久越先丢。从没用过的按「记下来到现在」算，等于给新条目一段观察期；
+ *   - **记了多久**：只用来在前三条打平时破局，权重压得很小——保持老行为「同等条件下旧的先走」。
+ */
+function keepScore(x, now = Date.now()) {
+  const born = Date.parse(x.created_at || "") || now;
+  const ageDays = Math.max(0, (now - born) / 86400000);
+  const idleDays = x.last_used ? Math.max(0, (now - (Date.parse(x.last_used) || now)) / 86400000) : ageDays;
+  return Math.min(x.hits || 0, 20) * 2
+    + (x.source === "user" ? 12 : 0)
+    - Math.min(idleDays, 90) / 10
+    - Math.min(ageDays, 365) / 120;
 }
 
 /** 去重用的归一化：大小写、空白、句末标点不同不算两条 */
@@ -197,6 +260,7 @@ function add({ text, user, shared = false, source = "agent" }) {
     };
   }
   const scope = scopeOf(user, shared);
+  flushHits(); // 先把攒着的命中写下去，不然下面这次 save 会把它们原样盖掉
   const items = load();
   const dup = items.find((x) => x.scope === scope && normalize(x.text) === normalize(t));
   if (dup) return { ok: true, id: dup.id, note: "已经记过一模一样的了，没有重复写入" };
@@ -208,12 +272,21 @@ function add({ text, user, shared = false, source = "agent" }) {
   const id = "m_" + Date.now().toString(36) + "_" + Math.floor(Math.random() * 1e6).toString(36);
   items.push({ id, text: t, scope, source, created_at: new Date().toISOString() });
 
-  // 超量丢最旧的。丢东西必须留痕：日志里写清楚丢了哪条，回执里也告诉 agent。
+  // 超量了丢谁：按 keepScore 从低往高丢，不是按记入先后。
+  // 丢东西必须留痕：日志里写清楚丢了哪条、为什么是它，回执里也告诉 agent。
   let dropped = 0;
   const mine = items.filter((x) => x.scope === scope);
   if (mine.length > MAX_PER_SCOPE) {
-    const kill = new Set(mine.slice(0, mine.length - MAX_PER_SCOPE).map((x) => x.id));
-    for (const x of items) if (kill.has(x.id)) console.warn(`[记忆] ${scope} 超过 ${MAX_PER_SCOPE} 条，丢弃最旧的一条：${x.text.slice(0, 60)}`);
+    const now = Date.now();
+    const doomed = mine
+      .map((x) => ({ x, s: keepScore(x, now) }))
+      .sort((a, b) => a.s - b.s || String(a.x.created_at).localeCompare(String(b.x.created_at)))
+      .slice(0, mine.length - MAX_PER_SCOPE);
+    const kill = new Set(doomed.map((d) => d.x.id));
+    for (const d of doomed) {
+      console.warn(`[记忆] ${scope} 超过 ${MAX_PER_SCOPE} 条，丢弃价值最低的一条`
+        + `（用过 ${d.x.hits || 0} 次，${d.x.last_used ? "最近用于 " + String(d.x.last_used).slice(0, 10) : "从没用过"}）：${d.x.text.slice(0, 60)}`);
+    }
     dropped = kill.size;
     for (let i = items.length - 1; i >= 0; i--) if (kill.has(items[i].id)) items.splice(i, 1);
   }
@@ -224,7 +297,7 @@ function add({ text, user, shared = false, source = "agent" }) {
     id,
     dropped,
     similar: near ? { id: near.id, text: near.text } : null,
-    note: (dropped ? `记住了（${scope === SHARED ? "共享" : scope}）。这个作用域超过 ${MAX_PER_SCOPE} 条，已丢弃最旧的 ${dropped} 条` : `记住了（${scope === SHARED ? "共享" : scope}）`)
+    note: (dropped ? `记住了（${scope === SHARED ? "共享" : scope}）。这个作用域超过 ${MAX_PER_SCOPE} 条，已丢弃最旧最没派上用场的 ${dropped} 条（按「用过几次 + 多久没用上」排，不是单纯按记入先后）` : `记住了（${scope === SHARED ? "共享" : scope}）`)
       + (near ? `。注意：跟已有的一条很像——「${near.text.slice(0, 80)}」。如果这是同一件事的新说法，再调 forget 把旧的那条删掉，别让两条一起进提示词打架` : ""),
   };
 }
@@ -248,6 +321,64 @@ function mostSimilar(text, items, threshold = 0.4) {
   return best ? { ...best, score: +bestScore.toFixed(2) } : null;
 }
 
+/**
+ * 同一段提示词里，两条说的其实是一件事 —— 只留新的那条。
+ *
+ * add() 那儿对 0.4 以上的相似只提示、不自动删，理由在那儿写着：0.4~0.5 附近
+ * 「用户改口了」和「两件相关但不同的事」长得一样，机器分不出来。这儿门槛高得多（0.62），
+ * 到这个程度两条几乎一定是同一句话的两种说法。
+ *
+ * 为什么非删不可：留着的代价不是多费几十个 token 那么轻。
+ * 「周报别写开场白」和「周报开头先来一句结论」一起进系统提示词，模型只能挑一条听，
+ * 挑哪条全看运气 —— 而用户那边的感受是「我明明改过了，它有时候听有时候不听」。
+ * 这种随机不听话最难查，因为两条记忆分开看都是对的。
+ *
+ * 只在同一作用域内比：共享区和个人区撞车是另一回事（那是「组里的规矩 vs 我自己的偏好」），
+ * 不该在这儿悄悄吃掉一边。删不是真删，只是这一次不进提示词，记忆面板里两条都还在。
+ */
+function dedupeForPrompt(items) {
+  const byNew = items.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  const kept = [];
+  const keptG = [];
+  const shadowed = [];
+  for (const x of byNew) {
+    const g = judgeableGrams(x.text);
+    let clash = false;
+    if (g) {
+      for (let i = 0; i < kept.length && !clash; i++) {
+        if (kept[i].scope !== x.scope) continue;
+        const B = keptG[i];
+        if (!B) continue;
+        let inter = 0;
+        for (const q of g) if (B.has(q)) inter++;
+        if (inter / Math.min(g.size, B.size) >= DUP_IN_PROMPT) clash = true;
+      }
+    }
+    if (clash) shadowed.push(x);
+    else { kept.push(x); keptG.push(g); }
+  }
+  return { kept, shadowed };
+}
+
+/**
+ * 能不能拿这段文本的二元组去比相似度；不能就返回 null（这一条谁也不压、也不被压）。
+ *
+ * 两道门：
+ *  - 太短（不同二元组不足 6 个）：几个字重合说明不了什么，这条原来就有；
+ *  - 太重复（不同二元组不到字数的 15%）：这是后加的，因为二元组是**集合**，不记次数。
+ *    "占位偏好0：" 后面跟 180 个「字」，整段只有 7 个不同的二元组，
+ *    换成 "占位偏好1：" 也还是那 7 个里的 6 个 —— 相似度算出来 0.86，
+ *    于是四十条互不相同的条目会被压成一条。正常人话不会这样（不同二元组一般占到字数九成以上），
+ *    真长成这样的文本，它的「相似度」本身就没有意义，不如老实说判不了。
+ */
+function judgeableGrams(text) {
+  const g = bigrams(text);
+  const len = normalize(text).length;
+  if (g.size < 6) return null;
+  if (g.size < len * 0.15) return null;
+  return g;
+}
+
 /** 语义召回现在到底开没开、算出来几条：给记忆面板看的。向量一条都没有而嵌入模型「配了」，就是渠道没通 */
 function vectorStatus() {
   const items = load();
@@ -269,6 +400,7 @@ function vectorStatus() {
  *   跟「本来就没有」分开报：前者要说出来，后者是正常竞态（别处已经删过）。
  */
 function remove(id, scopeTo) {
+  flushHits();
   const items = load();
   const hit = items.find((x) => x.id === id);
   if (!hit) return { removed: 0 };
@@ -285,6 +417,7 @@ function forget({ text, user }) {
   const q = normalize(text);
   if (!q) return { removed: 0, note: "要忘掉什么没说清楚" };
   const scope = scopeOf(user, false);
+  flushHits();
   const items = load();
   const hit = items.filter((x) => (x.scope === scope || x.scope === SHARED) && (normalize(x.text) === q || normalize(x.text).includes(q)));
   if (!hit.length) return { removed: 0, note: "没找到匹配的记忆条目（可以先用记忆面板看看都记了什么）" };
@@ -295,6 +428,7 @@ function forget({ text, user }) {
 
 /** 改登录名时把归属搬过去，不然那个人的记忆当场变成孤儿 */
 function renameScope(from, to) {
+  flushHits();
   const items = load();
   let n = 0;
   for (const x of items) if (x.scope === from) { x.scope = to; n++; }
@@ -331,14 +465,16 @@ function saveManual(content) {
  */
 async function promptBlock(user, hint) {
   let md = manual();
-  const items = list(user);
-  if (!md && !items.length) return "";
+  const all = list(user);
+  if (!md && !all.length) return "";
+  const { kept: items, shadowed } = dedupeForPrompt(all);
   const line = (x) => `- ${x.text}${x.scope === SHARED && user ? "（共享）" : ""}`;
 
   let body = "";
   if (md) body += `${md}\n`;
   if (items.length) body += (md ? "\n" : "") + items.map(line).join("\n");
   let note = "";
+  let used = items; // 最后真进了提示词的那几条，出门前回写命中
 
   if (body.length > MAX_PROMPT_CHARS) {
     // 手写区是用户亲手敲的，优先级最高；但它自己超预算也得截，并明说
@@ -347,6 +483,7 @@ async function promptBlock(user, hint) {
       md = md.slice(0, MAX_PROMPT_CHARS);
       note = `\n（手写记忆太长，截掉了最后 ${cut} 字；条目区一条都没放进来。请去设置 → 记忆里精简一下）`;
       body = md;
+      used = [];
     } else {
       // 条目按相关度排：有向量用「余弦为主 + 关键词兜底」，没向量纯关键词，连线索都没有就按新旧
       let ranked;
@@ -386,8 +523,13 @@ async function promptBlock(user, hint) {
       picked.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
       body = (md ? md + "\n\n" : "") + picked.map(line).join("\n");
       note = `\n（记忆条目共 ${items.length} 条装不下，这里按${hint ? "与本次任务的相关度" : "新旧"}挑了 ${picked.length} 条；要看全部请去设置 → 记忆）`;
+      used = picked;
     }
   }
+  // 被同义压掉的那几条也说一句：不说的话，用户在记忆面板里看得见、在行为上却感觉不到，
+  // 只会以为记忆时灵时不灵。说清楚「同一件事只留了新的」，他才知道去把旧的那条删掉。
+  if (shadowed.length) note += `\n（另有 ${shadowed.length} 条和上面某条说的是同一件事，本次只用了较新的那条）`;
+  noteUsed(used.map((x) => x.id));
   return `\n\n## 长期记忆（跨任务保留，优先级高于你的默认习惯）\n${body}${note}`;
 }
 
@@ -406,5 +548,6 @@ module.exports = {
   setEmbedder,
   vectorStatus,
   ensureVectors,
-  _internals: { normalize, looksSecret, looksStaleClaim, load, save, ITEMS_FILE, MANUAL_FILE, VEC_FILE, bigrams, keywordScore, cosine, vecLoad, mostSimilar },
+  flushHits,
+  _internals: { normalize, looksSecret, looksStaleClaim, load, save, ITEMS_FILE, MANUAL_FILE, VEC_FILE, bigrams, keywordScore, cosine, vecLoad, mostSimilar, keepScore, dedupeForPrompt, judgeableGrams, noteUsed },
 };

@@ -337,6 +337,77 @@ async function login(username, password) {
   ok(actions.includes("使用邀请码"), "用邀请码有留痕", actions);
   ok(actions.includes("改企业设置"), "改设置有留痕", actions);
 
+  console.log("\n【15.5】账本查得到：时间范围 / 关键词 / 翻页，且不许越过组织墙");
+  // 这三样以前一样都没有，界面只能给「最近 200 条」。财务问「上个月谁花了多少」答不上来。
+  // 造够两页的量，才测得出 offset/limit 是真翻页还是每次都从头切。
+  for (let i = 0; i < 120; i++) {
+    account.chargeRun({ username: "xiaoyuan" },
+      { prompt: 100, completion: 50, model: i % 2 ? "mA" : "mB", provider: "p", source: i % 3 ? "web" : "feishu", elapsed_ms: 100 });
+  }
+  r = await call("GET", "/api/admin/usage?limit=50&offset=0", { cookie: fen });
+  const p1 = r.json;
+  ok(p1.total > 100, "total 报的是**符合筛选的全部条数**，不是这一页的条数", p1.total);
+  eq(p1.detail.length, 50, "一页就是 50 条");
+  r = await call("GET", "/api/admin/usage?limit=50&offset=50", { cookie: fen });
+  const p2 = r.json;
+  eq(p2.detail.length, 50, "第二页也满 50 条");
+  eq(p2.offset, 50, "offset 原样回给前端（翻页条要拿它算「第几条」）");
+  ok(p1.detail[0].ts !== p2.detail[0].ts || JSON.stringify(p1.detail) !== JSON.stringify(p2.detail),
+     "第二页不是第一页的复制品（offset 真的生效了，不是每次都从头 slice）");
+  const ids = new Set([...p1.detail, ...p2.detail].map((e) => JSON.stringify([e.ts, e.model, e.prompt, e.user])));
+  ok(ids.size >= 60, "两页之间没有大面积重叠", ids.size);
+
+  // 关键词
+  r = await call("GET", "/api/admin/usage?limit=500&q=mA", { cookie: fen });
+  ok(r.json.total > 0 && r.json.detail.every((e) => /mA/i.test(e.model || "")), "搜关键词只回命中的", r.json.total);
+  const onlyMA = r.json.total;
+  r = await call("GET", "/api/admin/usage?limit=500&q=" + encodeURIComponent("绝对搜不到的词"), { cookie: fen });
+  eq(r.json.total, 0, "反向对照：搜一个不存在的词，一条都不回");
+
+  // 时间范围
+  // 必须按**本地**日期算：账本里记的是 localDay()，而 toISOString() 给的是 UTC。
+  // 东八区凌晨那几个小时两者差一天，照 UTC 去筛「今天」会一条都筛不出来。
+  const d = (n) => { const t = new Date(Date.now() - n * 86400000);
+    return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; };
+  r = await call("GET", `/api/admin/usage?limit=500&from=${d(0)}&to=${d(0)}`, { cookie: fen });
+  ok(r.json.total > 0, "「今天」查得到（这批账都是刚记的）", r.json.total);
+  r = await call("GET", `/api/admin/usage?limit=500&from=${d(90)}&to=${d(60)}`, { cookie: fen });
+  eq(r.json.total, 0, "两三个月前那段是空的");
+  // range 聚合要跟着筛选走，不然界面上「合计」跟列表对不上，比没有还坏
+  r = await call("GET", "/api/admin/usage?limit=500&q=mA", { cookie: fen });
+  ok(r.json.range && r.json.range.runs === onlyMA, "合计只统计筛选命中的那些（不是永远算全量）",
+     { range: r.json.range && r.json.range.runs, total: onlyMA });
+  ok(r.json.by_model.every((x) => /mA/i.test(x.key)), "按模型分组也跟着筛选走", r.json.by_model.map((x) => x.key));
+
+  // 组织墙：筛选不是绕过隔离的后门
+  r = await call("GET", "/api/admin/usage?limit=500&q=laoban", { cookie: fen });
+  ok(r.json.detail.every((e) => e.user !== "laoban"), "分公司拿关键词搜总部的人，一条也搜不出来",
+     r.json.detail.map((e) => e.user).slice(0, 5));
+
+  // 审计同一套
+  r = await call("GET", "/api/admin/audit?limit=5&offset=0", { cookie: fen });
+  const a1 = r.json;
+  ok(a1.total > 5, "审计的 total 也是全量条数", a1.total);
+  eq(a1.audit.length, 5, "审计一页 5 条");
+  ok(Array.isArray(a1.actors) && a1.actors.length > 0, "回了操作人清单（筛选下拉要用）", a1.actors);
+  ok(Array.isArray(a1.actions) && a1.actions.includes("添加成员"), "回了动作清单", a1.actions);
+  r = await call("GET", "/api/admin/audit?limit=500&action=" + encodeURIComponent("添加成员"), { cookie: fen });
+  ok(r.json.total > 0 && r.json.audit.every((x) => x.action === "添加成员"), "按动作筛只回这个动作", r.json.total);
+  ok(r.json.actions.length > 1, "筛过之后动作下拉的选项还是全的（不然选完就选不回去了）", r.json.actions);
+  r = await call("GET", `/api/admin/audit?limit=500&from=${d(90)}&to=${d(60)}`, { cookie: fen });
+  eq(r.json.total, 0, "审计按老日期筛也是空的");
+  // 分公司确实搜得到 laoban——因为组织就是他开的，这三条（创建组织 / 生成邀请码 / 改席位）
+  // 本来就属于这个组织的账。组织墙要盯的不是「别出现总部管理员的名字」，
+  // 而是「别混进别的组织的记录」。
+  r = await call("GET", "/api/admin/audit?limit=500&q=" + encodeURIComponent("laoban"), { cookie: fen });
+  ok(r.json.audit.length > 0 && r.json.audit.every((x) => x.org === org2),
+     "关键词搜出来的每一条都还在本组织里（筛选不是绕过隔离的后门）", r.json.audit.length);
+  const hqAudit = (await call("GET", "/api/admin/audit?limit=500", { cookie: boss })).json.audit;
+  const fenAudit = (await call("GET", "/api/admin/audit?limit=500", { cookie: fen })).json.audit;
+  const fenTs = new Set(fenAudit.map((x) => x.ts));
+  ok(hqAudit.some((x) => !fenTs.has(x.ts)), "反向对照：总部有分公司看不到的记录，两边不是同一本账",
+     { hq: hqAudit.length, fen: fenAudit.length });
+
   console.log("\n【16】单组织部署：一行行为都不该变");
   eq(org.multiTenant(), true, "本测试里确实是多组织");
   eq(admin.ownsGlobalWorkspace({ org: "default", role: "admin" }), true, "默认组织管理员 = 平台管理员");
@@ -739,7 +810,12 @@ async function login(username, password) {
   ok(/can_finish: isPlatformOwner\(req\)/.test(onbFn),
      "server.js 的 GET /api/onboarding 真把 can_finish 回出去了（替身对了真源没对，等于没测）");
 
-  console.log("\n【23】助理页：一台服务器一份上下文 = 所有人共用一个脑子");
+  // 说清楚这一节在测什么，免得标题被当成现状读：
+  // 桌面版是一台机器一个人，助理模式连的就是本机，上下文本来就该只有一份——这里不动它。
+  // 会话键按**账号**算（local_<keyOf(username)>），跟设备无关，所以手机用同一个账号连回来，
+  // 接着看到的就是桌面上那段对话。这一节盯的是另一头：VPS 上一个进程多人用，
+  // 以前那行写死 local_assist，谁登录都接在同一个话头上，/im/log 还把整本日志倒给任何人。
+  console.log("\n【23】助理页：多人共用一个实例时，一人一段上下文（以前是全服务器一段）");
   // 助理页是有登录的，可登录之后的每一步都当没登录过：会话键写死 "local_assist"（全服务器一段上下文，
   // A 问完 B 接着问，接的是 A 的话头），/im/log 是 (_req, res) 把整本日志倒出去（谁都读得到别人说的话），
   // 跑任务不带 user（成员的任务顶着管理员的身份跑，记忆串到别人那儿、审批卡弹在别人屏幕上）。

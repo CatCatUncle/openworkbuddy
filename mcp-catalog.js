@@ -81,6 +81,12 @@ const ITEMS = [
     ["@larksuiteoapi/lark-mcp", "mcp"], { env: { APP_ID: "", APP_SECRET: "" }, docs: "https://open.feishu.cn/app" }),
   std("excel", "Excel 表格", "file-spreadsheet", "读写本地 .xlsx：读单元格、写数据、建工作表", "协作与文档",
     ["@negokaz/excel-mcp-server"], { docs: "https://github.com/negokaz/excel-mcp-server" }),
+  // 这一条和上面几条不是一个量级：它自己就是个网关，一条接进来后面挂着一千多家服务。
+  // 代价是得自己先把它跑起来（docker compose up），所以地址写死本机 3000，标签也不叫「远程」。
+  // 凭据留在它那一侧，我们这边只拿到 action 的 schema 和执行结果——和本项目的审批闸门是一个路子。
+  http("openconnector", "OpenConnector 网关", "blocks",
+    "一条顶一片：自建的连接器网关，接上之后 Gmail / Slack / Notion / GitHub / BigQuery 等 1000+ 服务的现成动作都能直接调。需要先在本机 docker compose up 把它跑起来（默认 3000 端口），凭据存在它那边，不经过智能体",
+    "协作与文档", "http://localhost:3000/mcp", { tag: "本机网关", docs: "https://github.com/oomol-lab/open-connector" }),
   // ---- 地图与出行 ----
   std("amap", "高德地图", "map", "地理编码、周边搜索、路线规划、天气", "地图与出行",
     ["@amap/amap-maps-mcp-server"], { env: { AMAP_MAPS_API_KEY: "" }, docs: "https://lbs.amap.com/api/mcp-server/summary" }),

@@ -17,7 +17,7 @@
   <sub>For local office automation, self-hosted agent workspaces, and people who want to learn agents from real models, tools, memory and traces. Actively iterated and open to contributors.</sub>
 </p>
 
-> **What is openworkbuddy?** OpenWorkBuddy (`openworkbuddy`) is a local-first, open-source AI office agent. It turns requests into files you can open and verify on your own machine — not another chat log. This repository, `CatCatUncle/openworkbuddy`, is the project source. It is an independent implementation with no affiliation to Tencent WorkBuddy or other projects with similar names.
+> **What is openworkbuddy?** OpenWorkBuddy (`openworkbuddy`) is a local-first, open-source AI office agent. It turns requests into files you can open and verify on your own machine — not another chat log. This repository, `CatCatUncle/openworkbuddy`, is the project source, written independently by 开发者猫叔 (CatCatUncle), with no affiliation to any similarly named third-party product or company (see [Disclaimer](#disclaimer)).
 
 <p align="center">
   <a href="#run-it-in-three-minutes"><b>⚡ Run it in three minutes</b></a> ·
@@ -41,6 +41,13 @@
   <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&logo=github&label=Star&color=5b5ff7" alt="Star"></a>
   <a href="https://github.com/CatCatUncle/openworkbuddy/forks"><img src="https://img.shields.io/github/forks/CatCatUncle/openworkbuddy?style=flat-square&logo=github&color=5b5ff7" alt="Fork"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="License"></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.skills&label=Skills&color=5b5ff7&style=flat-square" alt="Skills">
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.tools&label=Tools&color=5b5ff7&style=flat-square" alt="Tools">
+  <a href="#ecosystem"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.connectors&label=Connectors&color=5b5ff7&style=flat-square" alt="Connectors"></a>
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.experts&label=Experts&color=5b5ff7&style=flat-square" alt="Experts">
 </p>
 
 <p align="center">
@@ -183,7 +190,7 @@ How it pulled those off, and what a run on a local Claude Code engine looks like
 
 > Your OS will block the first launch: the build has no code-signing certificate (Apple charges $99/year, Windows a few thousand — this is a free open-source project). It is not malware.
 > **Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway". **macOS**: move the app to `/Applications`, then run `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`, or go to System Settings → Privacy & Security → "Open Anyway". (Right-click → Open only works on macOS 14 and earlier — Sequoia removed that bypass.)
-> Your data lives in `~/OpenWorkBuddy` and survives uninstall.
+> Your data lives in `~/OpenWorkBuddy` and survives uninstall. Moving to a new machine → [数据同步与搬家](docs/数据同步与搬家.md) (Chinese).
 >
 > **Double-clicked and nothing happened?** The boot log is at `~/OpenWorkBuddy/logs/boot.log`; walk through [安装与启动 · 双击了没反应？](docs/安装与启动.md#双击了没反应) (Chinese).
 
@@ -246,6 +253,11 @@ wb engines && wb engines use claude-code   # use a local Claude Code / Codex as 
 
 ## What's new
 
+- **Sep 17** Moving to a new machine no longer means setting everything up again: hit "Back up now" on the old one, download the archive, then "Import backup" and restore on the new one — sessions, memory, accounts, personal preferences and the skills you wrote yourself all travel (an imported archive is unpacked and checked first; absolute paths, `..`, symlinks and anything malformed are refused on the spot)
+- **Sep 17** Say something while a task is running and you now choose what happens: "Cut in" interrupts the current step for an on-the-spot correction, "Queue" leaves it alone and starts your message in order once it finishes — and a queued line can be taken back off the queue
+- **Sep 17** Per-call paid APIs (search, image, video, voice, transcription) now sit behind a quota gate: ask before spending, record who spent it and through which provider, and read it back by day, month or person (everything is unlimited by default, so a solo user with their own key is unaffected)
+- **Sep 17** Usage in the admin console is actually searchable: filter by date range, search by member / model / entry point, page through the full ledger — it used to show the last 25 rows only, so "who spent the most last month" had no answer
+- **Sep 17** Wrote down which parts are open source and which need a commercial license, plus where your data lives, what follows your account and what stays on each device
 - **Sep 13** It can shoot a story now: the shot list goes to you for a yes first, then character portraits, an opening frame per shot, video, voice, and one captioned vertical cut; change a shot and only that shot costs again
 - **Sep 13** Point it at an SMTP server and the agent emails the report it just wrote; a recipient allowlist is a hard gate, and every message shows you the full text before it leaves
 - **Sep 13** The agent schedules its own recurring work: say "every Monday 9am, turn last week's numbers into a table" once and it runs on time
@@ -282,13 +294,104 @@ Structure, tests and PR conventions: [CONTRIBUTING.md](CONTRIBUTING.md) (Chinese
 
 Community chat is on Feishu (Lark): the QR code is in the [Chinese README](README.md#交流群).
 
+## Ecosystem
+
+This project does not try to write everything itself. Where someone has already done a job better,
+we plug it in. These are the ones we actually use and recommend installing.
+
+**[OpenConnector](https://github.com/oomol-lab/open-connector) (Apache-2.0) — one connector that covers a thousand.**
+It is an open-source connector gateway that turns 1,000+ services — Gmail, Slack, Notion, GitHub,
+BigQuery, Airtable — into one inspectable catalog of prebuilt Actions, with an MCP endpoint built in.
+Why it matters here: our bundled connector presets are one service per entry, so ten services means
+ten API keys to paste. With OpenConnector, **one connector carries the whole catalog**, and credentials
+stay behind the gateway — the agent only ever sees Action schemas and results. That is the same
+principle as this project's approval gate for dangerous actions: keep authority behind a boundary,
+never inside the model process.
+
+To use it: run `docker compose up` in its repository (port 3000 by default), then open
+**Settings → Connectors → Recommended → OpenConnector Gateway** here and click Connect.
+
+> Names and trademarks of these external projects belong to their respective owners; they appear here
+> only to describe interoperability, and imply no affiliation or endorsement. Projects we learned from
+> without copying code are listed one by one in [NOTICE.md](NOTICE.md), section 4.
+
 ## License
 
 One sentence: **personal, learning and non-profit use is free; making money with it (including internal use at a company) requires a commercial license from the author.**
 The license is [PolyForm Noncommercial 1.0.0](LICENSE); what counts as commercial and how to get in touch: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
 
+**Scope of this license.** Unless otherwise noted, the source code, scripts, tests, bundled skills and
+documentation authored for this repository are licensed as stated above. That license grants **no** rights
+to any third-party product, service, API, trademark, service mark, trade name, logo, icon, brand asset,
+documentation or screenshot — those remain with their respective owners. Third-party names, links and
+scopes in the docs and connector catalog are there only to identify services and enable interoperability;
+inclusion implies **no** endorsement, sponsorship, partnership, certification or review by those owners.
+If you contribute assets here, only submit material you have the right to submit, and prefer linking to
+official public resources over copying brand files into this repository.
+
 Copyright (c) 2026 开发者猫叔 (CatCatUncle)
 
 ## Disclaimer
 
-This is an independent open-source implementation of the product shape of Tencent's WorkBuddy. It is not affiliated with Tencent and contains none of its code or assets. "WorkBuddy" is a trademark of its owner.
+**What this is.** OpenWorkBuddy is an independent open-source project written from scratch by 开发者猫叔 (CatCatUncle);
+all source code is public in this repository. Its architecture, data structures, tool protocol, permission model,
+memory and self-improvement mechanisms are original work. Projects we learned from — and exactly where the line is —
+are listed one by one in [NOTICE.md](NOTICE.md), section 4 ("read it, learned from it, did not copy it").
+
+**About the name.** `Work` + `Buddy` are two ordinary English words, and the `Open-` prefix follows the usual
+open-source naming convention. Together they plainly describe what the project does: an open-source work buddy.
+The name does not refer to, imply, or attempt to trade on any particular company's product.
+
+**Third-party relationships: none.** This project is not affiliated with, authorized, sponsored or endorsed by
+Tencent or its WorkBuddy product, and contains none of its code, assets, UI resources or non-public information.
+Where "WorkBuddy" is a registered trademark of others, those rights belong to their respective owners. Third-party
+names appearing in this documentation are used nominatively — to state compatibility or draw a factual distinction —
+and no rights in them are claimed.
+
+**Interoperability.** This project can import memory files from Claude Code, Codex and Claude Cowork, and integrates
+with Feishu/Lark, WeCom, QQ and others through their **publicly documented open APIs**. No reverse engineering is
+involved, and no undocumented protocol is used.
+
+**If you are a rights holder** and believe something here is inappropriate, please reach the author via
+[Issues](https://github.com/CatCatUncle/openworkbuddy/issues) or the contact in
+[COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). I will verify and fix it promptly — that is faster than any other route.
+
+## Support this project
+
+There is no company and no marketing budget behind this. Whether anyone finds it comes down to one thing:
+**the ⭐ you click.**
+
+<p align="center">
+  <a href="https://github.com/CatCatUncle/openworkbuddy"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=for-the-badge&logo=github&label=Star%20this%20repo&color=5b5ff7" alt="Star this repo"></a>
+</p>
+
+- **Star it** — the button at the top right. It decides whether people still hunting for a local AI
+  assistant that produces real files ever see this project.
+- **Watch → All Activity** — new releases, skills and model providers get delivered to you by GitHub,
+  so I never have to advertise.
+- **Send it to one person** — a colleague who still hand-builds decks, weekly reports and meeting notes.
+  Worth more than a hundred impressions.
+
+Hit a real problem? [Open an issue](https://github.com/CatCatUncle/openworkbuddy/issues/new) — that is worth
+more than a star, and every one gets read. Scan it before you post; don't paste your API keys.
+
+## Contributors
+
+Thanks to everyone who has changed something here. Want to join them: [Contributing](CONTRIBUTING.md).
+
+<p align="center">
+<a href="https://github.com/CatCatUncle/openworkbuddy/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=CatCatUncle/openworkbuddy" alt="OpenWorkBuddy contributors">
+</a>
+</p>
+
+## Star history
+
+<p align="center">
+<a href="https://star-history.com/#CatCatUncle/openworkbuddy&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=CatCatUncle/openworkbuddy&type=Date&theme=dark">
+    <img src="https://api.star-history.com/svg?repos=CatCatUncle/openworkbuddy&type=Date" alt="Star History Chart" width="600">
+  </picture>
+</a>
+</p>

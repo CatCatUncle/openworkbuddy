@@ -17,7 +17,7 @@
   <sub>适合本地部署办公、把 Agent 用进真实交付、或想从模型、工具、记忆、Trace 一路读懂 Agent 的人。项目持续迭代，欢迎你一起维护。</sub>
 </p>
 
-> **openworkbuddy 是什么？** OpenWorkBuddy（`openworkbuddy`）是一个本地优先的 AI 办公 Agent 开源项目：它把请求变成你电脑上可打开、可核对的文件，而不是停在聊天记录里。本仓库 `CatCatUncle/openworkbuddy` 是项目源码；它是独立实现，与腾讯 WorkBuddy 及其他同名项目无关联。
+> **openworkbuddy 是什么？** OpenWorkBuddy（`openworkbuddy`）是一个本地优先的 AI 办公 Agent 开源项目：它把请求变成你电脑上可打开、可核对的文件，而不是停在聊天记录里。本仓库 `CatCatUncle/openworkbuddy` 是项目源码，由 开发者猫叔 独立开发，与任何名称相近的第三方产品或公司均无关联（详见[免责与边界](#免责与边界)）。
 
 <p align="center">
   <a href="#跑起来"><b>⚡ 三分钟跑起来</b></a> ·
@@ -41,6 +41,13 @@
   <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&logo=github&label=Star&color=5b5ff7" alt="Star"></a>
   <a href="https://github.com/CatCatUncle/openworkbuddy/forks"><img src="https://img.shields.io/github/forks/CatCatUncle/openworkbuddy?style=flat-square&logo=github&color=5b5ff7" alt="Fork"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="License"></a>
+</p>
+
+<p align="center">
+  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.skills&label=Skills&color=5b5ff7&style=flat-square" alt="Skills"></a>
+  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.tools&label=Tools&color=5b5ff7&style=flat-square" alt="Tools"></a>
+  <a href="#生态和它一起用的项目"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.connectors&label=Connectors&color=5b5ff7&style=flat-square" alt="Connectors"></a>
+  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.experts&label=Experts&color=5b5ff7&style=flat-square" alt="Experts"></a>
 </p>
 
 <p align="center">
@@ -72,6 +79,8 @@
 **加一个能力 = 丢一个 Markdown 文件。** 存成 `skills/<名字>/skill.md`，存盘后下一条任务就生效——不改代码、不重启、不打包。往外接 MCP 连接器和 [Agent Plugins](https://agent-plugins.org) 开放标准，别人的插件粘个 GitHub 地址就装。
 
 **既能拿来干活，也适合拿来学 Agent。** 模型路由、工具调用、文件验收、技能、连接器、记忆、权限和本地 Trace 都在同一个开源仓库里；你能从一条真实任务一路看到 Agent 为什么这样做、用了什么模型、每步花了多久、最后交付了什么。
+
+**内容创作也有完整工作流。** `content-studio` 把素材、网页、音视频、笔记、引用和成稿放进同一个项目：先理解和标注来源，再写母稿，最后派生公众号、知乎、小红书、口播、图片、音频或视频。输出保留 Markdown/HTML 等可编辑源文件，适合持续迭代，不是生成一次就结束。
 
 ## 如何确认你找的是这个项目
 
@@ -111,11 +120,11 @@ flowchart TB
 
 ## 和其他 Agent 的位置
 
-OpenWorkBuddy 不试图替代所有工具：Codex / Pi 更偏终端与代码，Claude Cowork / Manus 更偏托管式通用工作，OpenClaw / Hermes 更偏个人自动化与多渠道 Agent，WorkBuddy 更偏企业协作与治理。它的取舍是：把“本机文件交付 + 可安装能力 + IM 远程指挥 + AI 短剧无限画布”放进一个可自托管的工作台。
+OpenWorkBuddy 不试图替代所有工具：Codex / Pi 更偏终端与代码，Claude Cowork / Manus 更偏托管式通用工作，OpenClaw / Hermes 更偏个人自动化与多渠道 Agent，各家大厂的企业级 Agent 工作台更偏协作与治理。它的取舍是：把“本机文件交付 + 可安装能力 + IM 远程指挥 + AI 短剧无限画布”放进一个可自托管的工作台。
 
-| 维度 | OpenWorkBuddy | Codex / Pi | Claude Cowork / Manus | OpenClaw / Hermes | WorkBuddy |
+| 维度 | OpenWorkBuddy | Codex / Pi | Claude Cowork / Manus | OpenClaw / Hermes | 企业级 Agent 工作台（品类） |
 |---|---|---|---|---|---|
-| 核心定位 | 本地文件交付 + Agent 工作台 | 终端 / 编程 Agent | 通用知识工作 / 云端浏览器 | 个人自动化与 Agent 平台 | 企业级 Agent 工作台 |
+| 核心定位 | 本地文件交付 + Agent 工作台 | 终端 / 编程 Agent | 通用知识工作 / 云端浏览器 | 个人自动化与 Agent 平台 | 企业协作与治理 |
 | 本地优先 | 会话、文件、模型 Key 默认在本机 | 终端工作流为主 | Cowork 可访问授权文件；Manus 主要在云端执行 | 依部署方式而定 | 云端能力与企业部署并存 |
 | AI 短剧创作 | 原生无限画布：角色、场景、镜头、首帧、视频、音频、时间线 | 需自行搭建工作流 | 没有本项目的短剧画布闭环 | 需自行编排 | 通用内容生产，不以短剧画布为核心 |
 | 可视化关系 | DAG 连线、紧凑排版、框选、撤销/重做、右侧预览 | 以终端 / 对话为主 | 过程可跟随，但不是同一张创作图 | 视前端与插件而定 | 任务与专家协作视图为主 |
@@ -124,9 +133,13 @@ OpenWorkBuddy 不试图替代所有工具：Codex / Pi 更偏终端与代码，C
 | 可观测性 | 内置本地 Trace：模型、工具、耗时、Token、输入输出；可选 Langfuse | 依工具链配置 | 平台内过程可查看 | 依部署与插件 | 企业审计、用量和治理更完整 |
 | 许可证与数据控制 | 开源、自托管、非商用免费；可接自己的模型 | 开源项目 / 各自模型策略 | 商业产品 | 开源项目 / 依组件 | 商业企业产品 |
 
-上表只比较公开定位和本项目当前能力，不代表任何项目在所有场景都更好。对比对象包括 Codex、Pi、OpenClaw、Hermes Agent、Claude Cowork、Manus 与 WorkBuddy；请以各项目自己的最新文档和许可为准。
+表中出现的产品名称与商标归各自权利人所有，此处仅用于识别和做事实对比，不代表任何形式的关联、背书或赞助。最后一列描述的是「企业级 Agent 工作台」这一**产品品类**的普遍形态，不指向任何特定厂商的产品。
+
+上表只比较公开定位和本项目当前能力，不代表任何项目在所有场景都更好。对比对象包括 Codex、Pi、OpenClaw、Hermes Agent、Claude Cowork、Manus，以及「企业级 Agent 工作台」这一类商业产品的公开定位；请以各项目自己的最新文档和许可为准。
 
 如果你觉得某一格不准确，欢迎直接提 Issue 或提交 PR：能复现、能验证、能落到代码里的反馈，我们会优先处理。
+
+内容创作可以从 [content-studio Skill](skills/content-studio/skill.md) 开始：把素材当输入、把笔记和引用当处理中间层、把文章和媒体当可编辑输出；再叠加 `wechat-article`、`xhs-cards`、`video-compose` 等专用 Skill。
 
 ## 它替你做完的事
 
@@ -193,6 +206,13 @@ OpenWorkBuddy 不试图替代所有工具：Codex / Pi 更偏终端与代码，C
 
 ## 跑起来
 
+先挑一条路，三条都是完整功能，没有哪条是「阉割版」：
+
+| 🖥️ 装在自己电脑上 | 🐳 放服务器给团队用 | 🏢 公司要落地 |
+|---|---|---|
+| 下个安装包双击，五步向导三分钟说出第一句话。数据全在本机。 | 一台 VPS + Docker，一条命令起来，自带 HTTPS 和企业管理后台。 | 自托管之外还要 SSO、审计外送、内网部署、SLA —— 这些走商业授权。 |
+| [下载安装包 ↓](https://github.com/CatCatUncle/openworkbuddy/releases) | [部署文档 →](docs/部署.md) | [商业授权 →](COMMERCIAL-LICENSE.md) |
+
 **装包**：去 [Releases](https://github.com/CatCatUncle/openworkbuddy/releases) 下对应的包，打开后**五步向导**带你注册账号、粘 Key（当场验活）、选引擎——三分钟内说出第一句话。
 
 | 系统 | 下哪个 |
@@ -204,7 +224,7 @@ OpenWorkBuddy 不试图替代所有工具：Codex / Pi 更偏终端与代码，C
 
 > 第一次打开会被系统拦一下，因为这个包没有代码签名证书（苹果一年 99 美元、Windows 一年几千块，这是个免费开源项目），不是有毒。
 > **Windows**：弹窗里点灰色小字「更多信息」→「仍要运行」。**macOS**：拖进「应用程序」后终端跑 `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`，或 系统设置 → 隐私与安全性 → 「仍要打开」（右键图标 → 打开只在 macOS 14 及更早有效）。
-> 你的数据在 `~/OpenWorkBuddy`，卸载不会删。
+> 你的数据在 `~/OpenWorkBuddy`，卸载不会删。换电脑整个搬过去 → [数据同步与搬家](docs/数据同步与搬家.md)。
 >
 > **双击了没反应？** 启动日志在 `~/OpenWorkBuddy/logs/boot.log`，对照 [安装与启动 · 双击了没反应？](docs/安装与启动.md#双击了没反应) 逐条排查。
 
@@ -265,6 +285,11 @@ wb engines && wb engines use claude-code   # 本机装了 Claude Code / Codex？
 
 ## 最新动态
 
+- **09-17** 换电脑不用从头再配一遍了：旧机器点「立即备份」把包下载走，新机器「导入备份文件」再点恢复，会话、记忆、账号、个人偏好和自己写的技能一起搬过去（外来的包会先整个拆开验一遍，绝对路径、`..`、软链接、形状不对的一律当场拒掉）
+- **09-17** 任务跑着的时候再说一句话，现在由你挑：「插队」立刻打断当前这步就地纠偏，「排队」不打断、等它做完再按顺序开始；排错了的那条还能从队列上撤下来
+- **09-17** 搜索、生图、生视频、配音、转写这类按次计费的接口有额度闸门了：调之前先问还有没有份额，调完记一笔是谁、哪个组织、走的哪家，后台按天/按月/按人看得出账（默认全部不限，一个人用自己的 Key 不受影响）
+- **09-17** 企业后台的用量查得动了：按时间区间筛、按成员/模型/入口搜、翻页看全部流水——以前只有最近 25 条，「上个月谁花得最多」这个后台答不上来
+- **09-17** 把哪些开源、哪些要商业授权写成了一份文档，数据存在哪、什么跟着账号走、什么每台设备各管各的也单独写了一份
 - **09-14** 增加 AI 短剧无限画布模式：剧本、角色、场景、分镜、素材、生成结果和本项目 Agent 在同一张可执行画布内协作，支持多张短剧工程、素材拖入、框选批量操作、自动排版和画布内对话
 - **09-14** 优化无限画布短剧创作 UI：参考图/视频/音频可预览，图片支持放大查看，画布对话支持附件、`@` 引用节点与素材、执行模式和模型选择
 - **09-13** 讲故事的片子能拍了：先把分镜表摆出来给你点头，再角色定妆照 → 每镜首帧 → 生视频 → 配音 → 拼成带字幕的竖版片；改哪一镜就只有那一镜再花钱
@@ -311,6 +336,23 @@ wb engines && wb engines use claude-code   # 本机装了 Claude Code / Codex？
 
 项目结构、测试、PR 规范都在 [参与贡献](CONTRIBUTING.md)。不用先开 issue 问，直接发 PR。
 
+## 生态：和它一起用的项目
+
+这个项目不打算什么都自己写。有人已经把某件事做得更好，就接过来用——下面这些是我们真的在用、也推荐你装的。
+
+**[OpenConnector](https://github.com/oomol-lab/open-connector)（Apache-2.0）—— 一条连接器顶一片。**
+它是个开源的连接器网关，把 Gmail、Slack、Notion、GitHub、BigQuery、Airtable 等 1000+ 服务的现成动作
+统一成一套可检视的 Action 契约，自带 MCP 端点。对本项目的意义很直接：内置的连接器预设是一条服务一条，
+接十家就得填十次 Key；接上 OpenConnector 之后，**一条连接器后面挂着一千多家**，而且凭据留在网关那一侧，
+智能体只拿得到动作的 schema 和执行结果——这和本项目「危险动作先过审批闸门」是同一个路子：
+把权力关在边界里，不交给模型进程。
+
+用法：在它的仓库里 `docker compose up` 把网关跑起来（默认 3000 端口），
+回到 **设置 → 连接器 → 推荐连接器 → OpenConnector 网关**，点「接入」即可。
+
+> 这类外部项目的名称与商标归各自权利人所有；此处仅为说明互操作性，不代表任何关联或背书。
+> 我们借鉴过、但没有复制代码的项目，逐条记在 [NOTICE.md](NOTICE.md) 第四节。
+
 ## 文档
 
 | | |
@@ -324,19 +366,86 @@ wb engines && wb engines use claude-code   # 本机装了 Claude Code / Codex？
 | [IM 与定时任务](docs/IM与定时任务.md) | 飞书 / QQ / 企微 / 微信 / 钉钉，cron |
 | [多人协作](docs/多人协作.md) | 多租户、账号、权限、积分额度 |
 | [安全](docs/安全.md) | 审批闸门、黑白名单、审计 |
+| [数据同步与搬家](docs/数据同步与搬家.md) | 数据存在哪、什么跟着账号走、换电脑怎么整个搬过去 |
 | [部署](docs/部署.md) | 服务器 / Docker / 反代 |
 | [实现细节](docs/实现细节.md) | agent 主循环怎么转的 |
 | [路线图](docs/路线图.md) | 接下来做什么：无限画布、把企业方案里的工具搬回来 |
 | [变更记录](CHANGELOG.md) | 一句话一条，最新在上面 |
 | [参与贡献](CONTRIBUTING.md) | 项目结构、测试、提 PR |
+| [开源与商业版边界](docs/开源与商业版边界.md) | 哪些开源、哪些收费，以及这条线是怎么划的 |
 
 ## 协议
 
 一句话：**自己用、学习用、非营利机构用——免费；拿去赚钱（公司内部提效也算）——找作者买商业授权。**
 协议是 [PolyForm Noncommercial 1.0.0](LICENSE)，哪些算商用、怎么谈见 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)。
 
+**开源版有没有被砍过？没有。** 你在这个仓库里看到的就是全部能力：Agent 主循环、40+ 工具、
+短剧画布、IM 远程指挥、执行追踪、自进化与记忆，连多租户和企业管理后台都在里面，
+没有一处功能开关、试用倒计时或者「此功能需商业版」的灰按钮。
+商业授权卖的是另一类东西——SSO、审计外送、内网离线部署、白标、SLA。
+这条线是怎么划的、每个模块归哪边，写在 [开源与商业版边界](docs/开源与商业版边界.md)。
+
+**协议管到哪儿为止。** 除另有说明外，本仓库自行编写的源码、脚本、测试、内置技能与文档按上述协议授权。
+这份协议**不授予**任何第三方产品、服务、API、商标、服务标记、商号、logo、图标、品牌素材、文档或截图的权利——
+那些归各自权利人。文档与连接器目录中出现的第三方名称、链接、权限范围仅用于识别服务、说明如何互通；
+被收录**不代表**对方的背书、赞助、合作、认证或审核。
+向本仓库贡献素材时，只提交你有权提交的东西；能链官方公开资源就别把品牌文件拷进仓库。
+
 Copyright (c) 2026 开发者猫叔
 
-## 免责
+## 免责与边界
 
-本项目是对腾讯 WorkBuddy 产品形态的独立开源实现，与腾讯没有任何关系，不含其任何代码或资源。「WorkBuddy」是其权利人的商标。
+**这是什么。** OpenWorkBuddy 是 开发者猫叔 从零写起的独立开源项目，全部源码在本仓库公开可查。
+架构、数据结构、工具协议、权限模型、记忆与自进化机制均为自行设计与实现；
+所借鉴的外部项目及其边界，已在 [NOTICE.md](NOTICE.md) 第四节逐条列明（看过、学过、没抄）。
+
+**名字怎么来的。** `Work` + `Buddy` 是两个通用英文词（办公 + 搭档），`Open-` 前缀沿用开源项目的通行做法，
+合起来直白描述这个项目做的事：一个开源的办公搭档。它不指向、不影射、也不试图借用任何特定公司的产品。
+
+**与第三方的关系：没有。** 本项目与腾讯公司及其 WorkBuddy 产品无任何关联、授权、赞助或背书关系，
+不含其任何代码、素材、界面资源或非公开信息。「WorkBuddy」若为他人注册商标，其权利归各自权利人所有；
+本项目在文档中提及第三方名称时，仅为说明兼容性或做事实区分（指示性使用），不主张任何权利。
+
+**互操作性说明。** 本项目支持导入 Claude Code、Codex、Claude Cowork 等工具的记忆文件，
+以及对接飞书、企业微信、QQ 等平台的**公开开放接口**。这些均通过各自公开发布的文档与 API 实现，
+不涉及逆向工程，也不使用任何未公开的协议。
+
+**发现问题请直接联系。** 如果你是某商标或著作权的权利人，认为本项目的某处表述或实现有不妥，
+请通过 [Issues](https://github.com/CatCatUncle/openworkbuddy/issues) 或 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)
+里的方式联系作者，我会在核实后尽快修改——这比走别的路都快。
+
+## 支持这个项目
+
+这个项目没有公司、没有推广预算，能被看见基本只靠一件事：**你点的那颗 ⭐**。
+
+<p align="center">
+  <a href="https://github.com/CatCatUncle/openworkbuddy"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=for-the-badge&logo=github&label=Star%20this%20repo&color=5b5ff7" alt="Star this repo"></a>
+</p>
+
+- **点 Star** —— 仓库右上角那颗星。它直接决定了还在到处找「能落文件的本地 AI 助理」的人能不能刷到这个项目。
+- **点 `Watch → All Activity`** —— 新版本、新技能、新模型渠道，GitHub 会替我通知你，不用我发广告。
+- **把它转给一个人** —— 一个天天手搓 PPT、周报、会议纪要的同事，比一百次曝光管用。
+
+真用出问题了，[开个 issue](https://github.com/CatCatUncle/openworkbuddy/issues/new) 比点 Star 更值钱——
+每一条都会看。贴之前扫一眼，别把 API Key 带上。
+
+## 贡献者
+
+感谢每一个动手改过这个项目的人。想加入他们：[参与贡献](CONTRIBUTING.md)。
+
+<p align="center">
+<a href="https://github.com/CatCatUncle/openworkbuddy/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=CatCatUncle/openworkbuddy" alt="OpenWorkBuddy contributors">
+</a>
+</p>
+
+## Star 历史
+
+<p align="center">
+<a href="https://star-history.com/#CatCatUncle/openworkbuddy&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=CatCatUncle/openworkbuddy&type=Date&theme=dark">
+    <img src="https://api.star-history.com/svg?repos=CatCatUncle/openworkbuddy&type=Date" alt="Star History Chart" width="600">
+  </picture>
+</a>
+</p>

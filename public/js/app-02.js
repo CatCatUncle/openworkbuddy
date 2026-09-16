@@ -155,12 +155,62 @@ modeMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => {
 
 // ================= ＋ 上传文件到工作空间（选择/拖拽共用） =================
 const attachChips = document.getElementById("attach-chips");
-const pendingAttach = []; // 已上传、待随下一条消息发出的附件名。发送时才拼进消息文本，绝不往输入框里塞标记
-function addAttachChip(name, thumbUrl, hint) {
-  if (pendingAttach.includes(name)) return; // 同名重复上传只留一个 chip（文件本身已覆盖更新）
-  pendingAttach.push(name);
+/**
+ * 一条待发素材不再只是文件名，而是输入框里一个可见的“素材锚点”。
+ *
+ * 以前所有附件都在 composeOutgoing() 的最后拼成一行，用户写「第一张是人物，第二张是背景」时，
+ * 图片和文字的相对位置早已丢失；模型只能猜“第一张”是哪张。现在上传成功就在光标位置放
+ * `【图片 1：xxx.png】`，输入顺序就是给模型的顺序，用户也能围着锚点直接写关系和动作。
+ */
+const pendingAttach = [];
+const ATTACH_KIND = {
+  image: { label: "图片", icon: "image" },
+  video: { label: "视频", icon: "film" },
+  audio: { label: "音频", icon: "volume-2" },
+  text: { label: "文本摘录", icon: "file-text" },
+  file: { label: "文件", icon: "paperclip" },
+};
+function attachKind(name, mime, forced) {
+  if (forced && ATTACH_KIND[forced]) return forced;
+  const type = String(mime || "").toLowerCase();
+  const n = String(name || "").toLowerCase();
+  if (type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|heic|svg)$/i.test(n)) return "image";
+  if (type.startsWith("video/") || /\.(mp4|mov|m4v|webm|avi|mkv)$/i.test(n)) return "video";
+  if (type.startsWith("audio/") || /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(n)) return "audio";
+  return "file";
+}
+function markerName(name) { return String(name || "文件").replace(/[\r\n【】]/g, " ").trim() || "文件"; }
+function attachmentOrder(typed) {
+  // 用户可以拖动/剪切标记；发出时按当前输入里出现的位置排，而不是按网络上传完成的先后排。
+  return pendingAttach.slice().sort((a, b) => {
+    const ia = typed.indexOf(a.marker), ib = typed.indexOf(b.marker);
+    const aa = ia < 0 ? Number.MAX_SAFE_INTEGER : ia;
+    const bb = ib < 0 ? Number.MAX_SAFE_INTEGER : ib;
+    return aa - bb || a.order - b.order;
+  });
+}
+function removeAttachmentMarker(marker) {
+  const at = inputEl.value.indexOf(marker);
+  if (at < 0) return;
+  let end = at + marker.length;
+  // 上传时在标记后补了一个换行；只吃这一个，不碰用户在标记前后写的描述。
+  if (inputEl.value[end] === "\n") end++;
+  inputEl.value = inputEl.value.slice(0, at) + inputEl.value.slice(end);
+  inputEl.selectionStart = inputEl.selectionEnd = at;
+  inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+}
+function insertAttachmentMarker(item) {
+  const before = inputEl.value && !/\n$/.test(inputEl.value) ? "\n" : "";
+  insertAtCursor(inputEl, `${before}${item.marker}\n`);
+}
+function addAttachChip(item, thumbUrl, hint) {
+  const old = pendingAttach.find(x => x.name === item.name);
+  if (old) return null; // 同名文件本身已覆盖更新，引用也只留一个，避免模型看到两份同名素材
+  pendingAttach.push(item);
   syncSendBtn(); // 运行中光贴了个附件也算「有话要说」，按钮得从「停下」变回「发出」
   const chip = document.createElement("span");
+  chip.className = `attach-chip attach-${item.kind}`;
+  chip.dataset.marker = item.marker;
   if (thumbUrl) {
     // 截图之间光看文件名分不出谁是谁，给张缩略图才知道自己贴对了没有
     const img = document.createElement("img");
@@ -169,15 +219,28 @@ function addAttachChip(name, thumbUrl, hint) {
     img.alt = "";
     chip.appendChild(img);
   }
-  if (!thumbUrl) chip.insertAdjacentHTML("beforeend", ic("paperclip"));
-  chip.appendChild(document.createTextNode(name));
-  if (hint) chip.title = hint; // 鼠标停上去能看见开头几行，确认贴的是哪一段
+  if (!thumbUrl) chip.insertAdjacentHTML("beforeend", ic(ATTACH_KIND[item.kind].icon));
+  const ref = document.createElement("em");
+  ref.textContent = `${ATTACH_KIND[item.kind].label} ${item.index}`;
+  chip.appendChild(ref);
+  const name = document.createElement("span");
+  name.className = "attach-name";
+  name.textContent = item.name;
+  chip.appendChild(name);
+  chip.title = [item.marker, hint].filter(Boolean).join("\n"); // 可确认它在输入里叫第几项、文本摘录开头是什么
   const x = document.createElement("b");
   x.innerHTML = ic("x", "i-sm");
   x.title = "从这条消息移除（文件仍在工作目录里）";
-  x.onclick = () => { const i = pendingAttach.indexOf(name); if (i >= 0) pendingAttach.splice(i, 1); chip.remove(); syncSendBtn(); };
+  x.onclick = () => {
+    const i = pendingAttach.indexOf(item);
+    if (i >= 0) pendingAttach.splice(i, 1);
+    removeAttachmentMarker(item.marker);
+    chip.remove();
+    syncSendBtn();
+  };
   chip.appendChild(x);
   attachChips.appendChild(chip);
+  return item;
 }
 /** 二进制转 base64。必须分块喂 fromCharCode：一个字节一个字节拼字符串，30MB 的文件能把界面卡死好几秒 */
 function bytesToB64(u8) {
@@ -186,7 +249,7 @@ function bytesToB64(u8) {
   return btoa(s);
 }
 /** 往工作空间放一份内容并挂上 chip。文件、截图、粘贴进来的大段文字，最后都走这里 */
-async function uploadBytes(name, u8, { thumbMime, hint } = {}) {
+async function uploadBytes(name, u8, { thumbMime, hint, mime, kind } = {}) {
   const b64 = bytesToB64(u8);
   const resp = await fetch("/api/upload", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -194,16 +257,30 @@ async function uploadBytes(name, u8, { thumbMime, hint } = {}) {
     body: JSON.stringify({ name, data_b64: b64, session: sessionId }),
   });
   if (!resp.ok) throw new Error("HTTP " + resp.status);
-  addAttachChip(name, thumbMime ? `data:${thumbMime};base64,${b64}` : "", hint);
+  const type = attachKind(name, mime || thumbMime, kind);
+  const index = pendingAttach.filter(x => x.kind === type).length + 1;
+  const item = {
+    name,
+    kind: type,
+    index,
+    order: pendingAttach.length,
+    marker: `【${ATTACH_KIND[type].label} ${index}：${markerName(name)}】`,
+  };
+  const attached = addAttachChip(item, thumbMime ? `data:${thumbMime};base64,${b64}` : "", hint);
   fetch("/api/files").then(r => r.json()).then(renderFiles);
+  return attached;
 }
-async function uploadFiles(fileList, { rename } = {}) {
+async function uploadFiles(fileList, { rename, insertMarkers = true } = {}) {
   for (const file of fileList) {
     if (file.size > 30 * 1048576) { toast(`${file.name} 超过 30MB，跳过`); continue; }
     try {
       const name = rename ? rename(file) : file.name;
       const buf = await file.arrayBuffer();
-      await uploadBytes(name, new Uint8Array(buf), { thumbMime: /^image\//.test(file.type) ? file.type : "" });
+      const item = await uploadBytes(name, new Uint8Array(buf), {
+        thumbMime: /^image\//.test(file.type) ? file.type : "",
+        mime: file.type,
+      });
+      if (item && insertMarkers) insertAttachmentMarker(item);
     } catch (err) {
       toast(`上传失败: ${file.name}`, "circle-x"); // 拖进来的是文件夹时读不出内容，也走这里
     }
@@ -218,7 +295,7 @@ function stampName(prefix, ext) {
   const p2 = (x) => String(x).padStart(2, "0");
   const stem = `${prefix}_${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
   let name = `${stem}.${ext}`;
-  for (let i = 2; pendingAttach.includes(name); i++) name = `${stem}-${i}.${ext}`;
+  for (let i = 2; pendingAttach.some(x => x.name === name); i++) name = `${stem}-${i}.${ext}`;
   return name;
 }
 /**
@@ -228,22 +305,29 @@ function stampName(prefix, ext) {
  * 要看第几行看第几行。
  */
 const BIG_TEXT_CHARS = 2000;
-async function uploadText(text, { name } = {}) {
+async function uploadText(text, { name, insertMarker = true } = {}) {
   const fname = name || stampName("粘贴文本", "txt");
   const head = text.replace(/\s+/g, " ").trim().slice(0, 80);
   try {
-    await uploadBytes(fname, new TextEncoder().encode(text), { hint: head + (text.length > 80 ? "…" : "") });
-    toast(`大段文字已存成 ${fname}（${text.length.toLocaleString()} 字），发消息时一起带给它`);
-    return true;
+    const item = await uploadBytes(fname, new TextEncoder().encode(text), {
+      hint: head + (text.length > 80 ? "…" : ""), mime: "text/plain", kind: "text",
+    });
+    if (item && insertMarker) insertAttachmentMarker(item);
+    toast(`已加入 ${item ? item.marker : fname} · ${text.length.toLocaleString()} 字`, "circle-check");
+    return item || false;
   } catch (err) {
     toast("文字存盘失败，已按普通粘贴处理", "circle-x");
     return false;
   }
 }
-/** 把输入框文字和待发附件合成一条要发出的消息，并清空两者。附件标记只在这里拼，界面上永远只见 chip */
+/**
+ * 输入里的素材锚点是人和模型共同看到的顺序协议；末尾附件清单只是兼容旧会话/CLI 的兜底。
+ * 即便用户手动删掉一个锚点，仍有 chip 的文件也不会对模型“凭空消失”。
+ */
 function composeOutgoing() {
   const typed = inputEl.value.trim();
-  const note = pendingAttach.length ? `（已上传文件：${pendingAttach.join("、")}）` : "";
+  const attached = attachmentOrder(typed);
+  const note = attached.length ? `（已上传文件：${attached.map(x => x.name).join("、")}）` : "";
   if (!typed && !note) return "";
   inputEl.value = "";
   syncInputHl();
@@ -313,21 +397,24 @@ document.addEventListener("paste", async (e) => {
   if (editable && t !== inputEl) return;
   const cd = e.clipboardData;
   if (!cd) return;
-  // 有文字就按文字处理——从网页/表格复制来的内容常常同时带一张图，那时用户要的是文字。
-  // 纯截图不带 text/plain，正好落到下面走文件那条路。
+  // 不交给浏览器默认粘贴：一段文字 + 多张图混在同一份剪贴板时，默认行为会把文字塞进框、
+  // 图片悄悄丢掉。统一在这里按“文字在前、随后每张图”的可见锚点顺序放入，用户可再手动调整。
   const text = cd.getData("text/plain");
-  if (text.trim()) {
-    if (text.length <= BIG_TEXT_CHARS) return; // 短文本照常粘进输入框，别多管
-    e.preventDefault();
-    // 存盘失败就退回普通粘贴，别把用户复制的东西弄丢（焦点不在输入框时无处可退，只能作罢）
-    if (!(await uploadText(text)) && t === inputEl) insertAtCursor(inputEl, text);
-    return;
-  }
   const files = [...(cd.files || [])];
-  if (!files.length) return;
+  if (!text.trim() && !files.length) return;
   e.preventDefault();
-  await uploadFiles(files, { rename: pastedName });
-  toast(files.length > 1 ? `已贴上 ${files.length} 个文件` : "图片已贴上，发消息时会一起带给它");
+  if (text.trim()) {
+    if (text.length > BIG_TEXT_CHARS) {
+      // 存盘失败也不能吞掉人刚复制的内容：退回到输入框，至少让他能继续编辑或手动发送。
+      if (!(await uploadText(text)) && t === inputEl) insertAtCursor(inputEl, text);
+    } else {
+      insertAtCursor(inputEl, text);
+    }
+  }
+  if (files.length) {
+    await uploadFiles(files, { rename: pastedName });
+    toast(files.length > 1 ? `已加入 ${files.length} 个素材锚点` : "已加入素材锚点，可在输入里写它和文字/其他素材的关系", "circle-check");
+  }
 });
 
 // ================= 两条工作线：办公 / 工程 =================
@@ -498,16 +585,27 @@ function projectSessions() {
   // 老会话没记过 lane，按服务端算的回落值归位——不会整批「消失」到另一个标签底下
   return inProject.filter(s => laneOfSession(s) === activeLane);
 }
+/* 侧栏历史的过滤词。任务攒到几十条的时候翻列表不如打字——标题栏那个放大镜展开的就是它。
+   只过滤显示，不动 sessions 本身，所以清空输入框立刻全回来。 */
+let histQuery = "";
+function histMatch(t) {
+  const q = histQuery.trim().toLowerCase();
+  return !q || String(t || "").toLowerCase().includes(q);
+}
 function renderHistory() {
-  const list = projectSessions();
+  const all = projectSessions();
+  const list = all.filter((s) => histMatch(stripSceneTag(s.title)));
+  const cnt = document.getElementById("hist-count");
+  // 过滤时写「命中/总数」，不过滤就只写总数；0 条不写数字（旁边已经有空状态那段话了）
+  if (cnt) cnt.textContent = !all.length ? "" : (list.length === all.length ? String(all.length) : list.length + "/" + all.length);
   const rows = list.map(s =>
     `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">${ic("x")}</span></div>`);
   // 工程线顶上单独一撮：这台机器的终端此刻正在跑的活儿。点进去就能看见它在干什么、插话。
   // 已经在历史里的不重复列（跑完之后它就是一条普通记录了）
   let head = "";
   if (activeLane === "cli") {
-    const known = new Set(list.map((s) => s.id));
-    const live = cliLiveRows.filter((r) => !known.has(r.id));
+    const known = new Set(all.map((s) => s.id));
+    const live = cliLiveRows.filter((r) => !known.has(r.id) && histMatch(stripSceneTag(r.title) || "终端里的任务"));
     if (live.length) {
       head = `<div class="hist-group">${esc("终端里（wb 命令行）")}</div>` + live.map((r) => {
         const t = stripSceneTag(r.title) || "终端里的任务";
@@ -517,12 +615,30 @@ function renderHistory() {
       }).join("");
     }
   }
-  const empty = activeLane === "cli"
-    ? "这条线还空着。在终端里跑 <code>wb 你的活儿</code>，它就会出现在这儿——手机上也看得见。"
-    : (projectsLocked ? "这条线上还没有任务" : "该项目在这条线上还没有任务");
+  const empty = histQuery.trim()
+    ? `没有名字里带「${esc(histQuery.trim())}」的任务`
+    : (activeLane === "cli"
+      ? "这条线还空着。在终端里跑 <code>wb 你的活儿</code>，它就会出现在这儿——手机上也看得见。"
+      : (projectsLocked ? "这条线上还没有任务" : "该项目在这条线上还没有任务"));
   document.getElementById("history").innerHTML = head + rows.join("")
     || `<div class="hist-empty">${empty}</div>`;
 }
+/* 放大镜：展开就聚焦，收起就顺手清掉过滤词——不然收起来之后列表还少一半，
+   用户会以为任务丢了。Esc 也收（跟其他弹层一个手感）。 */
+(function initHistFind() {
+  const btn = document.getElementById("hist-find"), q = document.getElementById("hist-q");
+  if (!btn || !q) return;
+  const open = (on) => {
+    q.hidden = !on;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-expanded", on ? "true" : "false");
+    if (on) q.focus();
+    else if (histQuery) { histQuery = ""; q.value = ""; renderHistory(); }
+  };
+  btn.addEventListener("click", () => open(q.hidden));
+  q.addEventListener("input", () => { histQuery = q.value; renderHistory(); });
+  q.addEventListener("keydown", (e) => { if (e.key === "Escape") { open(false); btn.focus(); } });
+})();
 document.getElementById("history").addEventListener("click", async (e) => {
   const item = e.target.closest(".hist-item");
   if (!item) return;
@@ -711,12 +827,13 @@ const MODE_PLACEHOLDER = {
   craft: "今天帮你做些什么？可以让我处理数据、写报告、做 PPT、联网调研…",
 };
 const BUSY_PLACEHOLDER = "想补一句或改方向？直接打字，按 Enter 就插进来，我做完这一步就看";
+const QUEUE_PLACEHOLDER = "打字按 Enter 排进队尾，不打断现在这件事——想立刻插进去，把上面的开关拨到「插队」";
 const CLI_PLACEHOLDER = "这趟是在终端里跑的。打字按 Enter 能插一句给它；想让它停，回终端按 Ctrl+C";
 /** 输入框的提示语跟着状态走：任务在跑时告诉用户「打字 + Enter 就能插话」，闲着时按模式提示 */
 function syncPlaceholder() {
   // 跟着终端里那趟活儿时只能插话，停不了——停它得回终端按 Ctrl+C。这里就照实说
   inputEl.placeholder = cliBusy() ? CLI_PLACEHOLDER
-    : curBusy() ? BUSY_PLACEHOLDER
+    : curBusy() ? (busySendMode === "queue" ? QUEUE_PLACEHOLDER : BUSY_PLACEHOLDER)
     : (MODE_PLACEHOLDER[currentMode] || MODE_PLACEHOLDER.craft);
 }
 /** 框里有没有还没发出去的东西（文字或待发附件） */
@@ -730,11 +847,16 @@ function syncSendBtn() {
   const busy = curBusy(), draft = hasDraft();
   // 终端里那趟不给「停」：这个进程不归网页管，画一颗按下去没反应的停止键是骗人
   const stopMode = !cli && busy && !draft;
+  // 排队模式下按钮得换个样子和说法，不然选了「排队」按钮还写着「插一句」，
+  // 人按下去心里是没底的——不知道自己这条到底打没打断它。
+  const queueMode = busy && !cli && draft && busySendMode === "queue";
   sendBtn.classList.toggle("stop", stopMode);
-  sendBtn.classList.toggle("interject", (busy || cli) && draft);
-  sendBtn.innerHTML = ic(stopMode ? "square" : "arrow-up");
+  sendBtn.classList.toggle("interject", (busy || cli) && draft && !queueMode);
+  sendBtn.classList.toggle("queued", queueMode);
+  sendBtn.innerHTML = ic(stopMode ? "square" : queueMode ? "hourglass" : "arrow-up");
   sendBtn.title = stopMode ? "让我停下（Esc）"
     : cli ? "插一句给终端里的它（Enter）"
+    : queueMode ? "排到队尾：不打断现在这件事，做完了自己开始（Enter）"
     : busy ? "插一句进去，我做完这一步就看（Enter）" : "发送（Enter）";
 }
 function updateSendUI() {
@@ -750,10 +872,25 @@ function renderQueueBar() {
   if (!curBusy() && !q.length) { bar.classList.remove("show"); bar.innerHTML = ""; return; }
   bar.classList.add("show");
   // 说人话：讲清「现在怎么插话」「怎么停」「想并行怎么办」三件事，停止给一颗真按钮，别让用户去找 ◼ 在哪
+  // 开关只在「真的在跑」时出现：闲着的时候这两个词没有意义，摆在那儿只会让人猜。
+  const sw = curBusy() ? `<span class="qb-sw" role="radiogroup" aria-label="任务在跑时，我发的消息怎么算">
+      <button type="button" class="qb-o${busySendMode === "interject" ? " is-on" : ""}" data-m="interject"
+        role="radio" aria-checked="${busySendMode === "interject"}"
+        title="立刻把这句注入当前任务——适合「等等，标题用蓝色」这种就地纠偏">${ic("zap")}插队</button>
+      <button type="button" class="qb-o${busySendMode === "queue" ? " is-on" : ""}" data-m="queue"
+        role="radio" aria-checked="${busySendMode === "queue"}"
+        title="不打断现在这件事，等它做完再按顺序开始——适合「顺便再做个 B」这种新活儿">${ic("hourglass")}排队</button>
+    </span>` : "";
   bar.innerHTML =
     q.map((m, i) => `<span class="q-chip" title="${esc(m.text)}"><span class="qt">${ic("hourglass")}${esc(m.text.slice(0, 30))}</span><span class="qx" data-i="${i}" title="取消这条">${ic("x", "i-sm")}</span></span>`).join("") +
-    (curBusy() ? `<span class="qb-hint"><span>我正忙着这件事。想补一句或改方向？在下面打字、按 Enter，我做完这一步就看。</span><button type="button" class="qb-stop" title="停下当前任务（Esc）">${ic("square")}让我停下</button><span>想同时做别的，点左上「新建任务」。</span></span>` : "");
+    (curBusy() ? `<span class="qb-hint"><span>我正忙着这件事。下面打字按 Enter，这条${busySendMode === "queue" ? "排到队尾，等我做完再开始" : "我做完这一步就看"}。</span>${sw}<button type="button" class="qb-stop" title="停下当前任务（Esc）">${ic("square")}让我停下</button><span>想同时做别的，点左上「新建任务」。</span></span>` : "");
   bar.querySelectorAll(".qx").forEach(x => x.onclick = () => { q.splice(+x.dataset.i, 1); renderQueueBar(); });
+  bar.querySelectorAll(".qb-o").forEach(b => b.onclick = () => {
+    setBusySendMode(b.dataset.m);
+    renderQueueBar();  // 开关自己要变色
+    syncSendBtn();     // 发送键跟着换图标和提示语
+    syncPlaceholder();
+  });
   const stopBtn = bar.querySelector(".qb-stop");
   if (stopBtn) stopBtn.onclick = () => stopTask();
 }
@@ -764,6 +901,15 @@ function bindComposer() {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
   inputEl.addEventListener("input", syncSendBtn);
+}
+/**
+ * 排队：这条不进当前这趟，挂在队尾。跑完那一刻 runTurn 收尾处的 drainQueue 会把它取出来当新一轮跑。
+ * 排着的每条在队列栏上是一枚可撤销的 chip——排错了能拿下来，不用等它跑起来再按停止。
+ */
+function queueText(text) {
+  qOf(sessionId).push({ text, mode: currentMode });
+  renderQueueBar();
+  syncSendBtn();
 }
 function drainQueue(sid) {
   const q = sessionQueues.get(sid);
@@ -808,6 +954,8 @@ async function stopTask() {
 async function send() {
   let text = composeOutgoing();
   if (!text) return;
+  // 委派标签在这一刻才变成一句话。标签本身只是界面上的一枚 chip，正文里一个字都没留过
+  if (useTag) { text = useDirective(useTag) + text; setUseTag(null); }
   if (sceneTag) {
     text = `【任务类型：${sceneTag.replace(/^[^一-龥A-Za-z]+\s*/, "")}】` + text;
     setSceneTag(null);
@@ -816,7 +964,10 @@ async function send() {
   if (pageKind === "assist") { await sendAssistLocal(text); return; }
   if (cliBusy()) { await interjectCli(text); return; } // 跟着终端那趟：话插到它的任务里，不在网页这边另起一趟
   if (curBusy()) {
-    // 本对话的任务在跑 → 默认直接插队：消息立即注入当前任务一起处理（要另起并行任务用「新建任务」）
+    // 本对话的任务在跑 → 按用户选的来（插队栏上那个开关，默认插队）：
+    // 插队 = 立即注入当前任务一起处理；排队 = 等这趟跑完再按顺序开始。
+    // 要另起一趟并行的，还是走左上「新建任务」。
+    if (busySendMode === "queue") { queueText(text); return; }
     await interjectText(text);
     return;
   }
@@ -1157,7 +1308,7 @@ function navTask(dir) {
 }
 const SHORTCUT_ACTIONS = {
   "open-settings": () => openModal("settings"),
-  "voice-record": () => toast("语音录制暂未支持（复刻版）"),
+  "voice-record": () => toast("语音录制暂未支持"),
   "chat-search": () => openChatSearch(),
   "new-chat": () => document.getElementById("new-task").click(),
   "stop": () => {

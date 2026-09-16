@@ -282,3 +282,107 @@ function initResizers() {
 }
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initResizers);
 else initResizers();
+
+/* ---------- 侧栏里那条横的：任务历史的高度 ----------
+ * 竖着那条调的是「侧栏多宽」，这条调的是「侧栏里导航和历史怎么分」。
+ * 默认自适应（导航先按内容拿够、历史吃剩下）；拖过一次就固定成用户拖出来的那个高度，
+ * 剩下的全归导航。双击回自适应。用户原话「任务历史那个tab你也搞成可以拉伸和拖拽自适应的吧」。 */
+const HIST_KEY = "wb-h-hist", HIST_MIN = 56, NAV_MIN = 56;
+// 上限得现算：侧栏多高、上面的品牌行/新建/工作线/账号行占多少，都会变（窗口缩放、工作线标签换行）。
+// chrome = 侧栏高度里既不是导航也不是历史的那部分，拖动过程中它不变，所以够用。
+function histMax() {
+  const a = document.querySelector("aside"), nav = document.querySelector(".side-nav.top"), h = document.getElementById("history");
+  if (!a || !nav || !h) return 9999;
+  const chrome = a.clientHeight - nav.offsetHeight - h.offsetHeight;
+  return Math.max(HIST_MIN, a.clientHeight - chrome - NAV_MIN);
+}
+function setHistH(px) {
+  const v = Math.round(Math.max(HIST_MIN, Math.min(histMax(), px)));
+  document.documentElement.classList.add("hist-h");
+  document.documentElement.style.setProperty("--wb-hist-h", v + "px");
+  try { localStorage.setItem(HIST_KEY, String(v)); } catch {}
+  return v;
+}
+function resetHistH() {
+  document.documentElement.classList.remove("hist-h");
+  document.documentElement.style.removeProperty("--wb-hist-h");
+  try { localStorage.removeItem(HIST_KEY); } catch {}
+  toast("任务历史高度已恢复自适应");
+}
+function applyStoredHistH() {
+  let v = 0;
+  try { v = parseInt(localStorage.getItem(HIST_KEY) || "", 10); } catch {}
+  if (!(v > 0)) return;
+  // 先挂上类再夹上限：没挂类的时候 #history 还是 flex:1 1 0，量出来的 offsetHeight 不是它「想要」的高度
+  document.documentElement.classList.add("hist-h");
+  document.documentElement.style.setProperty("--wb-hist-h", v + "px");
+  document.documentElement.style.setProperty("--wb-hist-h", Math.round(Math.max(HIST_MIN, Math.min(histMax(), v))) + "px");
+}
+function initHistResizer() {
+  applyStoredHistH();
+  let raf = 0;
+  window.addEventListener("resize", () => {
+    if (!document.documentElement.classList.contains("hist-h")) return;
+    cancelAnimationFrame(raf); raf = requestAnimationFrame(applyStoredHistH);
+  });
+  const h = document.querySelector('.rsz-v[data-rszv="hist"]');
+  if (!h) return;
+  h.addEventListener("pointerdown", (e) => {
+    if (e.button) return;
+    const el = document.getElementById("history");
+    if (!el) return;
+    // 握把在历史的**上**边，所以往上拖 = 历史变高，这里是减号
+    const y0 = e.clientY, h0 = el.getBoundingClientRect().height;
+    const move = (ev) => setHistH(h0 - (ev.clientY - y0));
+    const up = () => {
+      h.removeEventListener("pointermove", move);
+      h.removeEventListener("pointerup", up);
+      h.removeEventListener("lostpointercapture", up);
+      document.body.classList.remove("rszv-on");
+      h.classList.remove("on");
+    };
+    try { h.setPointerCapture(e.pointerId); } catch {}
+    document.body.classList.add("rszv-on");
+    h.classList.add("on");
+    h.addEventListener("pointermove", move);
+    h.addEventListener("pointerup", up);
+    h.addEventListener("lostpointercapture", up);
+    e.preventDefault();
+  });
+  h.addEventListener("dblclick", resetHistH);
+  h.addEventListener("keydown", (e) => {            // 键盘也能推，一次 16px（Shift 一次 48px）
+    if (e.key === "Escape") { resetHistH(); e.preventDefault(); return; }
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    const el = document.getElementById("history");
+    if (!el) return;
+    setHistH(el.getBoundingClientRect().height + (e.key === "ArrowUp" ? 1 : -1) * (e.shiftKey ? 48 : 16));
+    e.preventDefault();
+  });
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initHistResizer);
+else initHistResizer();
+
+/* 会滚的容器，边沿加一层渐隐。
+ * 导航装不下的时候最后一行会被切掉半截；光秃秃的切口看着像「坏了」，而不是「还能往下滚」——
+ * 上一轮用户正是从这个切口发现整段导航出事的。渐隐是最省事的一句「下面还有」。
+ * 内容是随时在变的（项目增删、「更多」展开、历史来一条），所以 scroll / ResizeObserver /
+ * MutationObserver 三处都接一下，别指望某一次渲染之后就不动了。 */
+function fadeOnOverflow(el) {
+  if (!el) return;
+  const sync = () => {
+    el.classList.toggle("sc-more", el.scrollHeight - el.clientHeight - el.scrollTop > 2);
+    el.classList.toggle("sc-up", el.scrollTop > 2);
+  };
+  el.addEventListener("scroll", sync, { passive: true });
+  try { new ResizeObserver(sync).observe(el); } catch {}
+  try { new MutationObserver(sync).observe(el, { childList: true, subtree: true, characterData: true }); } catch {}
+  sync();
+}
+function initSideFades() {
+  fadeOnOverflow(document.querySelector(".side-nav.top"));
+  fadeOnOverflow(document.getElementById("history"));
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initSideFades);
+else initSideFades();
+
+

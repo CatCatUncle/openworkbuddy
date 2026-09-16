@@ -184,8 +184,19 @@ const note = (text, kind) => {
   const k = kind === true ? "warn" : kind || "info";
   return `<div class="ui-alert ui-alert--${k}">${ic(ALERT_ICON[k] || "info")}<div>${text}</div></div>`;
 };
+/**
+ * 一行放几张 KPI 卡。以前交给 CSS 的 auto-fit 自己算，结果是：容器宽度决定列数，
+ * 六张就排成 5 + 1、八张排成 5 + 3——最后一行孤零零吊着一两张，看着像页面没加载完。
+ * 这里反过来，按**张数**挑一个排得整齐的列数：能整除的优先，5 张以内就一行排开。
+ * （窄屏另说，CSS 里有断点接手。）
+ */
+function statCols(n) {
+  if (n <= 5) return n || 1;
+  for (const c of [5, 4, 3]) if (n % c === 0) return c;
+  return 4;
+}
 const kpi = (list) =>
-  `<div class="ui-stats">${list
+  `<div class="ui-stats" style="--n:${statCols(list.length)}">${list
     .map((k) => `<div class="ui-stat"><div class="l">${esc(k.label)}</div><div class="v">${k.value}</div>${k.hint ? `<div class="h">${k.hint}</div>` : ""}</div>`)
     .join("")}</div>`;
 const badge = (text, kind) => `<span class="ui-badge${kind ? " ui-badge--" + kind : ""}">${esc(text)}</span>`;
@@ -208,13 +219,133 @@ function table(cols, rows) {
     .map((r) => `<tr>${r.map((cell, i) => `<td${cols[i] && cols[i].right ? ' class="ui-num"' : ""}>${cell}</td>`).join("")}</tr>`)
     .join("")}</tbody></table></div>`;
 }
-/** 7 日柱状。取的是 tokens，因为运行次数看不出「一次跑了多大」 */
+/* ---------------- 流水筛选（用量明细 / 操作审计 共用） ----------------
+ * 这两张表以前都是「给你看最近 200 条，看不到的自己导出去用 Excel 查」。
+ * 管钱和管合规的人来后台，问的第一句就是「上个月」「9 月 3 号」「小圆那几笔」——
+ * 时间范围、搜索、翻页这三样缺一样，这个后台在他手里就等于没有。
+ */
+const DAY = 86400000;
+const iso = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+/** 快捷区间。返回 [from, to]，都是闭区间的本地日期 */
+function presetRange(key) {
+  const now = new Date();
+  const today = iso(now);
+  if (key === "today") return [today, today];
+  if (key === "7d") return [iso(new Date(now.getTime() - 6 * DAY)), today];
+  if (key === "30d") return [iso(new Date(now.getTime() - 29 * DAY)), today];
+  if (key === "month") return [today.slice(0, 8) + "01", today];
+  if (key === "last-month") {
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastEnd = new Date(first.getTime() - DAY);
+    return [iso(new Date(lastEnd.getFullYear(), lastEnd.getMonth(), 1)), iso(lastEnd)];
+  }
+  return ["", ""]; // all
+}
+/** 当前筛选跟哪个快捷键对得上（对不上就是「自定义」），用来点亮那个按钮 */
+function activePreset(f) {
+  for (const k of ["today", "7d", "30d", "month", "last-month", "all"]) {
+    const [a, b] = presetRange(k);
+    if (a === (f.from || "") && b === (f.to || "")) return k;
+  }
+  return "custom";
+}
+const PRESETS = [["today", "今天"], ["7d", "近 7 天"], ["30d", "近 30 天"], ["month", "本月"], ["last-month", "上月"], ["all", "全部"]];
+/**
+ * 筛选条。extra 里放这张表专有的下拉（比如审计的「操作人」）。
+ * 日期用原生 date 输入：后台是给内部人用的，自己写日历控件只会多一堆没人维护的代码。
+ */
+function filterBar(f, opts = {}) {
+  const cur = activePreset(f);
+  const chips = PRESETS.map(
+    ([k, t]) => `<button class="ad-chip${cur === k ? " is-on" : ""}" data-preset="${k}">${t}</button>`
+  ).join("");
+  return `<div class="ad-filter">
+    <div class="ad-chips">${chips}${cur === "custom" ? '<span class="ad-chip is-on">自定义</span>' : ""}</div>
+    <div class="ad-filter-r">
+      <input type="date" class="ui-input ad-date" data-from value="${esc(f.from || "")}" aria-label="起始日期">
+      <span class="ad-dash">至</span>
+      <input type="date" class="ui-input ad-date" data-to value="${esc(f.to || "")}" aria-label="结束日期">
+      ${opts.extra || ""}
+      <input class="ui-input ad-search" data-q value="${esc(f.q || "")}" placeholder="${esc(opts.placeholder || "搜索")}" aria-label="搜索">
+      ${opts.right || ""}
+    </div>
+  </div>`;
+}
+/** 把筛选条上的交互接起来。onChange 收到的是改好的 f，调用方自己决定重新拉数据 */
+function bindFilter(root, f, onChange) {
+  root.querySelectorAll("[data-preset]").forEach((b) => {
+    b.onclick = () => { const [a, z] = presetRange(b.dataset.preset); onChange({ ...f, from: a, to: z, offset: 0 }); };
+  });
+  const from = root.querySelector("[data-from]"), to = root.querySelector("[data-to]");
+  if (from) from.onchange = () => onChange({ ...f, from: from.value, offset: 0 });
+  if (to) to.onchange = () => onChange({ ...f, to: to.value, offset: 0 });
+  const q = root.querySelector("[data-q]");
+  if (q) {
+    // 防抖 300ms：不防的话打一个字发一次请求，一个词打完就是六七次
+    let t = 0;
+    q.oninput = () => { clearTimeout(t); t = setTimeout(() => onChange({ ...f, q: q.value, offset: 0 }), 300); };
+    q.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(t); onChange({ ...f, q: q.value, offset: 0 }); } };
+  }
+}
+/**
+ * 翻页条。写「第 X-Y 条，共 N 条」而不是「第 3 页」——
+ * 对账的人心里记的是条数，不是页码。
+ */
+function pager(f, total, limit) {
+  if (!total) return "";
+  const from = f.offset + 1, to = Math.min(total, f.offset + limit);
+  const more = f.offset + limit < total;
+  if (!more && f.offset === 0) return `<div class="ad-pager"><span class="ad-pager-n">共 ${num(total)} 条</span></div>`;
+  return `<div class="ad-pager">
+    <span class="ad-pager-n">第 ${num(from)}-${num(to)} 条，共 ${num(total)} 条</span>
+    <span class="ad-row">
+      <button class="ui-btn ui-btn--outline ui-btn--sm" data-prev${f.offset ? "" : " disabled"}>上一页</button>
+      <button class="ui-btn ui-btn--outline ui-btn--sm" data-next${more ? "" : " disabled"}>下一页</button>
+    </span>
+  </div>`;
+}
+function bindPager(root, f, limit, onChange) {
+  const p = root.querySelector("[data-prev]"), n = root.querySelector("[data-next]");
+  if (p) p.onclick = () => onChange({ ...f, offset: Math.max(0, f.offset - limit) });
+  if (n) n.onclick = () => onChange({ ...f, offset: f.offset + limit });
+}
+/** 存成 CSV 下载。BOM 不能省，不然 Excel 打开中文表头是乱码 */
+function downloadCsv(name, head, rows) {
+  const q = (x) => `"${String(x == null ? "" : x).replace(/"/g, '""')}"`;
+  const lines = [head.map(q).join(",")].concat(rows.map((r) => r.map(q).join(",")));
+  const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${name}_${iso(new Date())}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast("已导出 " + rows.length + " 条");
+}
+/** 把筛选拼成 query string。空值不拼，URL 干净点，后端也少判几个空串 */
+const qs = (o) =>
+  Object.entries(o)
+    .filter(([, v]) => v !== "" && v != null)
+    .map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
+    .join("&");
+
+/**
+ * 7 日柱状。取的是 tokens，因为运行次数看不出「一次跑了多大」。
+ *
+ * 两件事以前是错的，都得在这儿改：
+ *   1. 数只写在 title 里，非得把鼠标停上去才看得见。截图发群里、打印、用键盘的人
+ *      看到的就是七根没有刻度的柱子——等于一张插图。所以数直接写在柱子头上。
+ *   2. 没有用量的那天也被 `Math.max(2, h)` 顶出一根小柱子，看着跟「跑了一点点」
+ *      一模一样。空就该是空的：不画柱子，只留一条地平线和一个「—」。
+ */
 function bars7(last7) {
   const max = Math.max(1, ...last7.map((d) => d.tokens));
   return `<div class="ad-bars">${last7
     .map((d) => {
       const h = Math.round((d.tokens / max) * 100);
-      return `<div class="b" title="${esc(d.day)}：${num(d.runs)} 次 · ${num(d.tokens)} tokens"><i style="height:${Math.max(2, h)}%"></i><u>${esc(d.day.slice(5))}</u></div>`;
+      return `<div class="b${d.tokens ? "" : " z"}" title="${esc(d.day)}：${num(d.runs)} 次 · ${num(d.tokens)} tokens">
+        <b>${d.tokens ? big(d.tokens) : ""}</b>
+        <span class="t">${d.tokens ? `<i style="height:${Math.max(3, h)}%"></i>` : "<em>—</em>"}</span>
+        <u>${esc(d.day.slice(5))}</u></div>`;
     })
     .join("")}</div>`;
 }
@@ -240,7 +371,10 @@ let MULTI = false;      // 有没有开第二个组织
  * 一个管理员打开后台，八成是来看这个月花了多少、谁在花的，不是来改配置的。
  */
 const NAV = [
-  { grp: "", items: [{ id: "security", icon: "shield", title: "客户端安全", sub: "管住这个组织的成员在客户端能做什么" }] },
+  { grp: "", items: [
+    { id: "home", icon: "app-window", title: "总览", sub: "今天这个组织怎么样，有什么等着你处理" },
+    { id: "security", icon: "shield", title: "客户端安全", sub: "管住这个组织的成员在客户端能做什么" },
+  ] },
   {
     grp: "订阅与用量",
     items: [
@@ -267,6 +401,7 @@ const NAV = [
       { id: "net", icon: "globe", title: "网络设置", sub: "抓网页时放行哪些域名" },
       { id: "meter", icon: "zap", title: "计量设置", sub: "开不开用量闸门、每人每月发多少" },
       { id: "models", icon: "sparkles", title: "模型与 Key", sub: "这台服务器用哪些模型、哪把 Key", platform: true },
+      { id: "apiquota", icon: "sliders-horizontal", title: "API 与额度", sub: "搜索、生图、生视频这些按次收费的接口，统一配、统一限", platform: true },
       { id: "orgs", icon: "building", title: "组织管理", sub: "新建组织、给别的组织配套餐", platform: true },
       { id: "audit", icon: "clock", title: "操作审计", sub: "谁在什么时候改了什么" },
     ],
@@ -276,6 +411,95 @@ const NAV = [
 const PAGES = {};
 
 /* ============ 客户端安全 ============ */
+/* ============ 总览 ============ */
+/**
+ * 后台以前的落地页是「订阅管理」——一个管理员打开后台，第一眼看到的是套餐和席位。
+ * 可他八成不是来看套餐的，是来看「今天团队怎么样」「有没有事等着我点头」。
+ *
+ * 所以这页分两半：上半是数，下半是**待办**。待办才是这页存在的理由——
+ * 一个不会告诉你「有 3 个人等着审核」的后台，等于要人每天挨个页面翻一遍。
+ */
+PAGES.home = {
+  load: async () => {
+    const [o, st, m] = await Promise.all([
+      api("/api/admin/overview"),
+      api("/api/admin/stats"),
+      api("/api/admin/members").catch(() => ({ members: [] })),
+    ]);
+    return { o, st, m };
+  },
+  render: ({ o, st, m }) => {
+    const t = st.totals;
+    const seatPct = o.seats.total ? (o.seats.used / o.seats.total) * 100 : 0;
+    const members = m.members || [];
+
+    // ---- 待办：只列真的需要人动手的，凑数的条目会让人很快学会无视这一整块 ----
+    const todo = [];
+    if (o.seats.pending)
+      todo.push({ kind: "warn", icon: "circle-check", text: `<b>${o.seats.pending} 个人</b>自助注册后等着审核，没通过之前他们进不来。`, to: "pending", act: "去审核" });
+    if (o.seats.total && o.seats.used >= o.seats.total)
+      todo.push({ kind: "warn", icon: "users", text: `席位满了（${o.seats.used} / ${o.seats.total}），再加人会被挡下。`, to: "sub", act: "看套餐" });
+    else if (seatPct >= 80)
+      todo.push({ kind: "info", icon: "users", text: `席位用到 ${Math.round(seatPct)}%，还剩 ${o.seats.total - o.seats.used} 个。`, to: "sub", act: "看套餐" });
+    // 额度见底的人：闸门开着才有意义，关着的时候额度只是记账，拦不住人
+    if (o.settings && o.settings.meter_on) {
+      const dry = members.filter((u) => u.status === "active" && (u.monthly_quota || 0) > 0 && (u.monthly_left || 0) <= 0);
+      if (dry.length)
+        todo.push({ kind: "warn", icon: "zap", text: `<b>${dry.length} 个人</b>本月固定额度已用完（${dry.slice(0, 3).map((u) => esc(u.nickname || u.username)).join("、")}${dry.length > 3 ? " 等" : ""}），他们现在发不出请求。`, to: "usage-member", act: "去充值" });
+    }
+    if (!t.runs_month)
+      todo.push({ kind: "info", icon: "info", text: "这个月还没有人跑过任务。新部署的话，先去「模型与 Key」确认渠道填好了。", to: PLATFORM ? "models" : "usage-org", act: "去看看" });
+    const todoHtml = todo.length
+      ? `<ul class="ad-todo">${todo
+          .map(
+            (x) => `<li class="ad-todo-i ad-todo-i--${x.kind}">${ic(x.icon)}<span>${x.text}</span>
+              <a class="ui-btn ui-btn--outline ui-btn--sm" href="#/${x.to}">${esc(x.act)}</a></li>`
+          )
+          .join("")}</ul>`
+      : `<div class="ad-todo-ok">${ic("circle-check")}<div><b>没有要处理的事。</b><span class="fd">席位够用，没人卡在审核里，额度也没见底。</span></div></div>`;
+
+    const topUser = st.by_user.slice(0, 5).map((x) => [esc(x.key), num(x.runs), big(x.tokens)]);
+    const topModel = st.by_model.slice(0, 5).map((x) => [`<span class="ad-mono">${esc(x.key)}</span>`, num(x.runs), big(x.tokens)]);
+
+    return `<div class="ad-wrap ad-wrap--wide">
+      ${cardT(
+        headRow(
+          secT(o.org.name, `${esc(o.plan.label)} · ${o.seats.used}/${o.seats.total} 席${o.plan.expired ? " · <b>已过期</b>" : o.plan.days_left != null && o.plan.days_left <= 30 ? ` · ${o.plan.days_left} 天后到期` : ""} · 建于 ${esc(fmtDate(o.org.created_at))}`),
+          `<a class="ui-btn ui-btn--outline ui-btn--sm" href="#/usage-detail">${ic("file-text")} 查流水</a>`
+        ),
+        // 只留四张卡，不是为了少显示，是为了排得开：一行六张在 1400px 以下会折成 5 + 1，
+        // 剩下那张孤零零吊在第二行，看着像页面坏了。平均耗时和缓存命中本来也不是独立的指标，
+        // 它们是在形容旁边那个数——「本月跑了 240 次」和「平均 3 秒一次」写在一起才有意义，
+        // 拆成两张并排的卡反而要人自己在心里连线。
+        `<div class="ad-card-b">${kpi([
+          { label: "今日运行", value: num(o.today.runs), hint: `今天有 ${num(t.active_today)} 个人在用` },
+          { label: "今日 tokens", value: big(o.today.tokens) },
+          { label: "本月运行", value: num(t.runs_month), hint: t.avg_ms ? `平均 ${Math.round(t.avg_ms / 1000)} 秒跑完一次` : "" },
+          { label: "本月 tokens", value: big(t.tokens_month), hint: t.cache_hit == null ? "" : `缓存命中 ${t.cache_hit}%，越高越省钱` },
+        ])}</div>`
+      )}
+
+      ${cardT(
+        secT("要你处理的", todo.length ? `有 ${todo.length} 件事等着你点头，处理完这块就空了。` : "这块是空的才算正常。"),
+        `<div class="ad-card-b">${todoHtml}</div>`
+      )}
+
+      ${cardT(secT("最近 7 天", "柱子高低看的是 tokens——只数次数看不出「一次跑了多大」。"), `<div class="ad-card-b">${bars7(st.last7)}</div>`)}
+
+      <div class="ad-two">
+        ${cardT(
+          headRow(secT("谁在用", "本月按 tokens 排"), `<a class="ui-btn ui-btn--ghost ui-btn--sm" href="#/usage-member">全部</a>`),
+          table([{ t: "成员" }, { t: "运行", right: true }, { t: "tokens", right: true }], topUser)
+        )}
+        ${cardT(
+          headRow(secT("用了哪些模型", "本月按 tokens 排"), `<a class="ui-btn ui-btn--ghost ui-btn--sm" href="#/usage-app">全部</a>`),
+          table([{ t: "模型" }, { t: "运行", right: true }, { t: "tokens", right: true }], topModel)
+        )}
+      </div>
+    </div>`;
+  },
+};
+
 PAGES.security = {
   load: () => api("/api/admin/org"),
   render: (d) => {
@@ -476,9 +700,16 @@ PAGES["usage-app"] = {
 };
 
 /* ============ 用量明细 ============ */
+/**
+ * 用量明细 = 这个组织的账本。四件事缺一不可：按时间查、按关键词搜、往下翻、导出。
+ * 以前只有「最近 25 条 + 导出」，等于让财务拿 Excel 当查询工具。
+ */
 let detailUser = "";
+let detailF = { from: "", to: "", q: "", offset: 0 };
+const DETAIL_PAGE = 50;
 PAGES["usage-detail"] = {
-  load: () => api("/api/admin/usage?limit=500" + (detailUser ? "&user=" + encodeURIComponent(detailUser) : "")),
+  load: () =>
+    api("/api/admin/usage?" + qs({ limit: DETAIL_PAGE, offset: detailF.offset, user: detailUser, from: detailF.from, to: detailF.to, q: detailF.q })),
   render: (d) => {
     const rows = d.detail.map((e) => [
       `<span class="ad-mono">${esc(fmtTs(e.ts))}</span>`,
@@ -494,40 +725,44 @@ PAGES["usage-detail"] = {
     const opts = ['<option value="">全部成员</option>']
       .concat(d.members.map((m) => `<option value="${esc(m.username)}"${m.username === detailUser ? " selected" : ""}>${esc(m.nickname || m.username)}</option>`))
       .join("");
-    return `<div class="ad-wrap">
+    const r = d.range || {};
+    const filtered = !!(detailF.from || detailF.to || detailF.q || detailUser);
+    return `<div class="ad-wrap ad-wrap--wide">
       ${cardT(
         headRow(
-          secT("用量明细", `最近 ${d.detail.length} 条。再往前的记录还在服务器上，只是这页不往下翻——要全量请导出。`),
-          `<select class="ui-input ui-select" data-user style="width:180px;height:32px;font-size:13px">${opts}</select>
-           <button class="ui-btn ui-btn--outline ui-btn--sm" data-csv>${ic("download")} 导出 CSV</button>`
+          secT("用量明细", filtered ? "下面这些数只统计<b>当前筛选</b>命中的流水。" : "这个组织的全部流水。选个时间范围或者搜一下，下面的合计跟着变。"),
+          `<button class="ui-btn ui-btn--outline ui-btn--sm" data-csv>${ic("download")} 导出本页</button>`
         ),
-        table(
+        `${filterBar(detailF, {
+          placeholder: "搜成员 / 模型 / 入口",
+          extra: `<select class="ui-input ui-select ad-pick" data-user>${opts}</select>`,
+        })}
+        ${kpi([
+          { label: "命中条数", value: num(d.total || 0) },
+          { label: "运行次数", value: num(r.runs || 0) },
+          { label: "tokens", value: big(r.tokens || 0) },
+          { label: "积分", value: num(r.credits || 0) },
+          { label: "平均耗时", value: r.runs ? Math.round(r.elapsed_ms / r.runs / 1000) + " 秒" : "—" },
+        ])}
+        ${table(
           [{ t: "时间" }, { t: "成员" }, { t: "类型" }, { t: "模型" }, { t: "入口" }, { t: "tokens", right: true }, { t: "命中缓存", right: true }, { t: "积分", right: true }, { t: "耗时", right: true }],
           rows
-        )
+        )}
+        ${pager(detailF, d.total || 0, DETAIL_PAGE)}`
       )}
     </div>`;
   },
   bind: (root, d) => {
-    root.querySelector("[data-user]").onchange = (e) => { detailUser = e.target.value; route(true); };
-    root.querySelector("[data-csv]").onclick = () => {
-      const head = ["时间", "成员", "类型", "模型", "入口", "prompt", "completion", "命中缓存", "积分", "耗时毫秒"];
-      const lines = [head.join(",")].concat(
-        d.detail.map((e) =>
-          [e.ts, e.user, e.kind, e.model || "", e.source || "", e.prompt || 0, e.completion || 0, e.cached || 0, e.credits || 0, e.elapsed_ms || 0]
-            .map((x) => `"${String(x == null ? "" : x).replace(/"/g, '""')}"`)
-            .join(",")
-        )
+    const go = (f) => { detailF = f; route(true); };
+    bindFilter(root, detailF, go);
+    bindPager(root, detailF, DETAIL_PAGE, go);
+    root.querySelector("[data-user]").onchange = (e) => { detailUser = e.target.value; detailF = { ...detailF, offset: 0 }; route(true); };
+    root.querySelector("[data-csv]").onclick = () =>
+      downloadCsv(
+        "用量明细",
+        ["时间", "成员", "类型", "模型", "入口", "prompt", "completion", "命中缓存", "积分", "耗时毫秒"],
+        d.detail.map((e) => [e.ts, e.user, e.kind, e.model || "", e.source || "", e.prompt || 0, e.completion || 0, e.cached || 0, e.credits || 0, e.elapsed_ms || 0])
       );
-      // ﻿：不加这个 BOM，Excel 打开中文表头是乱码
-      const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `用量明细_${new Date().toISOString().slice(0, 10)}.csv`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-      toast("已导出 " + d.detail.length + " 条");
-    };
   },
 };
 
@@ -560,13 +795,26 @@ PAGES.stats = {
 };
 
 /* ============ 成员与部门 ============ */
+/**
+ * 成员筛选是在**前端**做的：这份名单一次就全拉回来了，几百人也就几十 KB，
+ * 打一个字往服务器跑一趟只会更慢。用量明细那边相反——那是几万条的账本，必须后端筛。
+ */
+let memberQ = { q: "", role: "", status: "" };
 PAGES.members = {
   load: async () => {
     const [m, i] = await Promise.all([api("/api/admin/members"), api("/api/admin/invites")]);
     return { m, i };
   },
   render: ({ m, i }) => {
-    const rows = m.members.map((u) => [
+    const needle = memberQ.q.trim().toLowerCase();
+    const shown = m.members.filter(
+      (u) =>
+        (!needle || [u.username, u.nickname, u.dept].some((x) => String(x || "").toLowerCase().includes(needle))) &&
+        (!memberQ.role || u.role === memberQ.role) &&
+        (!memberQ.status || u.status === memberQ.status)
+    );
+    const filtered = shown.length !== m.members.length;
+    const rows = shown.map((u) => [
       `<div style="font-weight:500">${esc(u.nickname || u.username)}${u.owner ? " " + badge("所有者", "outline") : ""}</div><div class="fd ad-mono">${esc(u.username)}</div>`,
       badge(ROLE_LABEL[u.role] || u.role, u.role === "member" ? "outline" : "secondary"),
       esc(u.dept || "—"),
@@ -601,17 +849,34 @@ PAGES.members = {
       RO
         ? ""
         : `<div class="ad-actions">
-            <button class="ui-btn ui-btn--ghost ui-btn--xs" data-copy="${esc(v.code)}">${ic("copy", "i-sm")} 复制</button>
+            <button class="ui-btn ui-btn--ghost ui-btn--xs" data-copy="${esc(v.code)}" title="${esc(inviteLink(v.code))}">${ic("link", "i-sm")} 复制链接</button>
+            <button class="ui-btn ui-btn--ghost ui-btn--xs" data-copycode="${esc(v.code)}" title="只复制这串码本身">${ic("copy", "i-sm")}</button>
             <button class="ui-btn ui-btn--ghost ui-btn--xs" data-revoke="${esc(v.code)}">${ic("trash", "i-sm")}</button>
           </div>`,
     ]);
-    return `<div class="ad-wrap">
+    const pick = (k, cur, list, all) =>
+      `<select class="ui-input ui-select ad-pick" data-m${k}>` +
+      [`<option value="">${all}</option>`]
+        .concat(list.map(([v, t]) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(t)}</option>`))
+        .join("") + `</select>`;
+    // 人多的时候才出筛选条：三个人的团队顶一条筛选栏在头上，纯属添乱
+    const bar = m.members.length < 8 ? "" : `<div class="ad-filter">
+      <div class="ad-chips"><span class="ad-sub">${filtered ? `筛出 ${shown.length} / ${m.members.length} 人` : `共 ${m.members.length} 人`}</span></div>
+      <div class="ad-filter-r">
+        ${pick("role", memberQ.role, Object.entries(ROLE_LABEL), "全部角色")}
+        ${pick("status", memberQ.status, [["active", "正常"], ["pending", "待审核"], ["disabled", "已停用"]], "全部状态")}
+        <input class="ui-input ad-search" data-mq value="${esc(memberQ.q)}" placeholder="搜姓名 / 账号 / 部门">
+      </div>
+    </div>`;
+    return `<div class="ad-wrap ad-wrap--wide">
       ${cardT(
         headRow(
           secT("成员", `共 ${m.members.length} 人。停用的成员不占席位，账号和他产出的文件都还在。`),
           RO ? "" : `<button class="ui-btn ui-btn--default ui-btn--sm" data-add>${ic("plus")} 添加成员</button>`
         ),
-        table([{ t: "成员" }, { t: "角色" }, { t: "部门" }, { t: "状态" }, { t: "可用余额", right: true }, { t: "最近活跃" }, { t: "" }], rows)
+        bar + (shown.length
+          ? table([{ t: "成员" }, { t: "角色" }, { t: "部门" }, { t: "状态" }, { t: "可用余额", right: true }, { t: "最近活跃" }, { t: "" }], rows)
+          : empty("没有符合条件的成员"))
       )}
 
       ${card(`${headRow(
@@ -630,6 +895,16 @@ PAGES.members = {
     </div>`;
   },
   bind: (root, { m }) => {
+    // 筛选是纯前端的，所以重渲染走 route(true) 就行，不用回服务器拉
+    const mq = root.querySelector("[data-mq]");
+    if (mq) {
+      let t = 0;
+      mq.oninput = () => { clearTimeout(t); t = setTimeout(() => { memberQ = { ...memberQ, q: mq.value }; route(true); }, 250); };
+    }
+    for (const k of ["role", "status"]) {
+      const el = root.querySelector("[data-m" + k + "]");
+      if (el) el.onchange = () => { memberQ = { ...memberQ, [k]: el.value }; route(true); };
+    }
     const deptOpts = [{ value: "", label: "（不分部门）" }].concat(m.depts.map((d) => ({ value: d.name, label: d.name })));
     const roleOpts = [
       { value: "member", label: "成员 —— 只能用，看不到后台" },
@@ -744,13 +1019,16 @@ PAGES.members = {
           ok: "生成",
           onOk: async (v) => {
             const inv = await post("/api/admin/invites", v);
-            copyText(inv.code);
-            toast("邀请码 " + inv.code + " 已生成并复制");
+            copyText(inviteLink(inv.code));
+            toast("邀请码 " + inv.code + " 已生成，注册链接已复制");
             route(true);
           },
         });
     root.querySelectorAll("[data-copy]").forEach((b) => {
-      b.onclick = () => { copyText(b.dataset.copy); toast("已复制 " + b.dataset.copy); };
+      b.onclick = () => { copyText(inviteLink(b.dataset.copy)); toast("链接已复制，发给他就行"); };
+    });
+    root.querySelectorAll("[data-copycode]").forEach((b) => {
+      b.onclick = () => { copyText(b.dataset.copycode); toast("已复制 " + b.dataset.copycode); };
     });
     root.querySelectorAll("[data-revoke]").forEach((b) => {
       b.onclick = () =>
@@ -772,6 +1050,19 @@ function showPassword(username, password, title) {
     ok: "复制并关闭",
     onOk: async () => { copyText(password); toast("已复制"); },
   });
+}
+/**
+ * 邀请码拼成一条能点的链接。
+ *
+ * 以前「复制」复制的是那六位码本身。管理员把它粘到群里，收到的人得自己想明白：
+ * 去哪个地址、点哪个「注册」、把这串字贴到哪个框——而自助注册按安全默认是关的，
+ * 他打开首页压根看不到注册入口，多半直接回一句「点不动」。
+ * 链接把这三步省掉：打开就是注册页，码已经填好了（工作台侧认 ?invite=）。
+ *
+ * 码本身仍然能单独复制——有人就是要发在工单里、念给对方听。
+ */
+function inviteLink(code) {
+  return location.origin + "/?invite=" + encodeURIComponent(code);
 }
 function copyText(t) {
   if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(t).catch(() => fallbackCopy(t));
@@ -894,6 +1185,144 @@ PAGES.roles = {
           route(true);
         });
     });
+  },
+};
+
+
+/* ============ 付费 API 与额度 ============ */
+/**
+ * 为什么这一页要单独存在，而不是把额度塞进各自的设置页：
+ *
+ * 模型的 Key 配在「模型与 Key」，搜索的 Key 配在设置→搜索，生图的配在设置→媒体……
+ * 管理员想回答一个再普通不过的问题——「这台服务器这个月在外部接口上花了多少、谁花的」——
+ * 得翻四五个页面，而且每个页面都只告诉他「配了没有」，不告诉他「花了多少」。
+ *
+ * 这一页把**所有按次计费的接口**排成一列，每一行同时回答三件事：
+ *   配没配 → 用了多少 → 限不限。
+ * 三件事在同一行里，才能做出「这一路用得太凶，给它设个上限」这个判断。
+ */
+PAGES.apiquota = {
+  load: () => api("/api/admin/api-quota"),
+  render: (d) => {
+    const caps = d.caps || [];
+    const on = caps.filter((c) => c.quota.enabled).length;
+    const today = caps.reduce((n, c) => n + c.today, 0);
+    const month = caps.reduce((n, c) => n + c.month, 0);
+    // 「开了闸门却没配 Key」不是错，但值得说一声：这一路根本没通，限额限了个空气
+    const idle = caps.filter((c) => c.quota.enabled && !c.configured);
+
+    const lim = (cap, k, ph) =>
+      `<input class="ui-input ad-mono" type="number" min="0" placeholder="${ph}" style="width:110px"
+        data-cap="${esc(cap.key)}" data-lim="${esc(k)}" value="${cap.quota[k] || ""}"${RO ? " disabled" : ""}>`;
+
+    const capCard = (c) => {
+      const q = c.quota;
+      // 进度只在设了上限时才画。没设上限画一根永远填不满的条，等于告诉管理员「还早着呢」——
+      // 而真相是这一路根本没有上限
+      const bar = q.enabled && q.org_monthly
+        ? `<div style="margin-top:10px">${progress((c.month / q.org_monthly) * 100)}
+             <div class="fd" style="margin-top:4px">本月 ${num(c.month)} / ${num(q.org_monthly)} ${esc(c.unit)}</div></div>`
+        : "";
+      const provs = c.providers.length
+        ? `<div class="fd" style="margin-top:8px">走的服务商：${c.providers.map((p) => `${esc(p.name)} ${num(p.n)}`).join(" · ")}</div>`
+        : "";
+      const top = c.top.length
+        ? `<div class="fd" style="margin-top:4px">用得最多：${c.top.map((t) => `${esc(t.user)} ${num(t.n)}`).join(" · ")}</div>`
+        : "";
+      const state = c.configured
+        ? badge(c.paid ? "已配置 · 按次计费" : "已就绪 · 不花钱", c.paid ? "secondary" : "outline")
+        : badge("还没配", "outline");
+      return cardT(
+        headRow(
+          secT(c.label, esc(c.why)),
+          `${state}<span class="ad-mono fd">今天 ${num(c.today)} · 本月 ${num(c.month)} ${esc(c.unit)}</span>`
+        ),
+        `<div style="padding:0 20px 18px">
+          ${bar}${provs}${top}
+          <div class="ad-field" style="margin-top:12px">
+            <div><div class="fl">开启额度闸门</div>
+              <div class="fd">关着的时候照常记流水、不拦人。打开之后，撞上任何一道上限的调用会被当场挡下，
+                模型收到的是一句说明白的话（撞的哪道闸、还剩多少、去哪儿改），它不会换个工具重试。</div></div>
+            <div class="fc"><label class="ui-switch"><input type="checkbox" data-cap="${esc(c.key)}" data-lim="enabled"${
+              q.enabled ? " checked" : ""}${RO ? " disabled" : ""}><i></i></label></div>
+          </div>
+          <div class="ad-field">
+            <div><div class="fl">上限</div><div class="fd">留空或填 0 = 这一档不限。三道闸独立，撞上任何一道就挡。</div></div>
+            <div class="fc ad-row" style="gap:8px;flex-wrap:wrap">
+              ${lim(c, "user_daily", "每人每天")}${lim(c, "org_daily", "全组织每天")}${lim(c, "org_monthly", "全组织每月")}
+            </div>
+          </div>
+          <div class="fd">依次是：每人每天 · 全组织每天 · 全组织每月（单位：${esc(c.unit)}）</div>
+        </div>`
+      );
+    };
+
+    return `<div class="ad-wrap">
+      ${note("这一页管的是<b>按次计费的外部接口</b>——搜一次、生一张图、转一段音频。模型 token 不在这儿，"
+        + "它按字数折算成积分，在「计量设置」和「成员用量」里。两本账分开记，是因为它们的单位根本不一样，"
+        + "硬折成一个数就没法回答「这个月搜索到底花了多少次」。")}
+      ${kpi([
+        { label: "已开闸门", value: `${on} / ${caps.length}`, hint: "其余的只记账不拦人" },
+        { label: "今天调用", value: num(today), hint: d.day },
+        { label: "本月调用", value: num(month), hint: d.month },
+        { label: "本月最贵的一路", value: esc((caps.filter((c) => c.paid).sort((a, b) => b.month - a.month)[0] || {}).label || "—"),
+          hint: "按调用次数排，不是按钱" },
+      ])}
+      ${idle.length ? note(`这几路开了闸门，但还没配 Key，实际根本调不通：<b>${idle.map((c) => esc(c.label)).join("、")}</b>。`
+        + `去「模型与 Key」或工作台的设置页配上，再回来限额才有意义。`, true) : ""}
+      ${card(headRow(
+        secT("一键设个合理额度", "按「一个十来人的团队正常用一个月」估的一组值，填进去并打开全部闸门。"
+          + "填完还能逐项改——这只是个起点，不是规定。"),
+        RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" id="aq-suggest">填入建议值</button>`
+      ))}
+      ${caps.map(capCard).join("")}
+      ${saveBar()}
+    </div>`;
+  },
+  bind: (root, d) => {
+    if (RO) return;
+    const btn = root.querySelector("[data-save]");
+    const tip = root.querySelector("[data-dirty]");
+    const ctls = [...root.querySelectorAll("[data-cap]")];
+    const readAll = () => {
+      const out = {};
+      for (const c of ctls) {
+        const cap = (out[c.dataset.cap] = out[c.dataset.cap] || {});
+        cap[c.dataset.lim] = c.type === "checkbox" ? c.checked : Math.max(0, +c.value || 0);
+      }
+      return out;
+    };
+    const base = JSON.stringify(readAll());
+    const check = () => {
+      const dirty = JSON.stringify(readAll()) !== base;
+      btn.disabled = !dirty;
+      tip.style.display = dirty ? "" : "none";
+    };
+    ctls.forEach((c) => { c.addEventListener("input", check); c.addEventListener("change", check); });
+    const sug = root.querySelector("#aq-suggest");
+    if (sug) sug.onclick = () => {
+      // 只填表单、不直接落盘：管理员看得见填了什么，改两处再一起保存。
+      // 点一下就静默生效的按钮，是这一页最不该有的东西——它管的是别人花钱的上限
+      for (const c of ctls) {
+        const v = (d.suggest || {})[c.dataset.cap];
+        if (!v) continue;
+        if (c.type === "checkbox") c.checked = !!v.enabled;
+        else c.value = v[c.dataset.lim] || "";
+      }
+      check();
+      toast("建议值已填入，确认后点保存");
+    };
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await post("/api/admin/api-quota", { quota: readAll() });
+        toast("已保存");
+        route(true);
+      } catch (e) {
+        btn.disabled = false;
+        toast(e.message, true);
+      }
+    };
   },
 };
 
@@ -1084,8 +1513,17 @@ PAGES.orgs = {
 };
 
 /* ============ 操作审计 ============ */
+/**
+ * 操作审计。合规的人来看这张表，问的是「9 月 3 号谁动了额度」「这半年谁重置过密码」——
+ * 所以时间范围、按操作人/动作筛、搜索、导出这四样是刚需，不是锦上添花。
+ *
+ * 导出给的是 CSV：开源版到这儿为止。商业版卖的是「导出的东西能当证据」——
+ * 防篡改链、直推 SIEM、保留期策略，那是另一套东西，不在这个文件里。
+ */
+let auditF = { from: "", to: "", q: "", actor: "", action: "", offset: 0 };
+const AUDIT_PAGE = 50;
 PAGES.audit = {
-  load: () => api("/api/admin/audit?limit=300"),
+  load: () => api("/api/admin/audit?" + qs({ limit: AUDIT_PAGE, offset: auditF.offset, from: auditF.from, to: auditF.to, q: auditF.q, actor: auditF.actor, action: auditF.action })),
   render: (d) => {
     const rows = d.audit.map((a) => [
       `<span class="ad-mono">${esc(fmtTs(a.ts))}</span>`,
@@ -1094,13 +1532,38 @@ PAGES.audit = {
       esc(a.target || "—"),
       `<span class="fd">${esc(a.detail || "")}</span>`,
     ]);
-    return `<div class="ad-wrap">
+    const pick = (name, cur, list, all) =>
+      `<select class="ui-input ui-select ad-pick" data-${name}>` +
+      [`<option value="">${all}</option>`]
+        .concat(list.map((x) => `<option value="${esc(x)}"${x === cur ? " selected" : ""}>${esc(x)}</option>`))
+        .join("") +
+      `</select>`;
+    return `<div class="ad-wrap ad-wrap--wide">
       ${note("记的是<b>管理动作</b>：谁加了人、谁改了额度、谁动了安全开关。任务本身跑了什么在「用量明细」里。密码、密钥这类东西<b>不会</b>进这张表。")}
       ${cardT(
-        secT("操作审计", `最近 ${d.audit.length} 条。`),
-        table([{ t: "时间" }, { t: "操作人" }, { t: "动作" }, { t: "对象" }, { t: "详情" }], rows)
+        headRow(
+          secT("操作审计", "这个组织建起来到现在的全部管理动作，按时间倒序。"),
+          `<button class="ui-btn ui-btn--outline ui-btn--sm" data-csv>${ic("download")} 导出本页</button>`
+        ),
+        `${filterBar(auditF, {
+          placeholder: "搜操作人 / 对象 / 详情",
+          extra: pick("actor", auditF.actor, d.actors || [], "全部操作人") + pick("action", auditF.action, d.actions || [], "全部动作"),
+        })}
+        ${table([{ t: "时间" }, { t: "操作人" }, { t: "动作" }, { t: "对象" }, { t: "详情" }], rows)}
+        ${pager(auditF, d.total || 0, AUDIT_PAGE)}`
       )}
     </div>`;
+  },
+  bind: (root, d) => {
+    const go = (f) => { auditF = f; route(true); };
+    bindFilter(root, auditF, go);
+    bindPager(root, auditF, AUDIT_PAGE, go);
+    const a = root.querySelector("[data-actor]"), k = root.querySelector("[data-action]");
+    if (a) a.onchange = () => go({ ...auditF, actor: a.value, offset: 0 });
+    if (k) k.onchange = () => go({ ...auditF, action: k.value, offset: 0 });
+    root.querySelector("[data-csv]").onclick = () =>
+      downloadCsv("操作审计", ["时间", "操作人", "动作", "对象", "详情"],
+        d.audit.map((x) => [x.ts, x.actor || "", x.action || "", x.target || "", x.detail || ""]));
   },
 };
 
@@ -1359,25 +1822,40 @@ PAGES.models = {
 };
 
 /* ============ 开放与集成 ============ */
+/**
+ * 这页只能是索引——渠道配的是整台服务器，入口在工作台，不在这儿。
+ * 但「只是索引」不等于「只能是一张写着路怎么走的纸」：原来每行右边写的
+ * 「工作台 → 设置 → 消息渠道」是**纯文字**，管理员看完得自己关掉后台、回工作台、
+ * 在三层菜单里重新找一遍，中途忘了要点哪一项是常事。现在那一句是链接，
+ * 点了直接把工作台开在那个面板上（工作台侧 `#go=` 深链负责落地）。
+ */
 PAGES.integration = {
   load: () => api("/api/admin/overview"),
   render: () => {
-    const row = (name, desc, where) =>
-      field(name, desc, `<span class="fd" style="text-align:right;max-width:200px">${where}</span>`);
+    // go 有值就是能跳的，没有就是还没做的功能——那种就别画成链接骗人点
+    const row = (name, desc, where, go) =>
+      field(
+        name,
+        desc,
+        go
+          ? `<a class="ad-go" href="/#go=${esc(go)}" target="_blank" rel="noopener">${esc(where)}${ic("arrow-up-right")}</a>`
+          : `<span class="fd" style="text-align:right;max-width:200px">${esc(where)}</span>`
+      );
     return `<div class="ad-wrap">
-      ${note("下面这些渠道配的是<b>这台服务器</b>，不是单个组织——一个飞书机器人对应一个部署。所以入口在工作台的设置里，归平台管理员管，这页只做个索引。")}
+      ${note("下面这些渠道配的是<b>这台服务器</b>，不是单个组织——一个飞书机器人对应一个部署。所以入口在工作台的设置里，归平台管理员管，这页只做个索引。点右边的链接会在新标签页直接打开对应的面板。")}
       ${card(`${secT("机器人渠道", "接上之后，成员在聊天软件里 @ 一下就能发任务，产出直接回到会话里。")}
         <div style="margin-top:14px">
-          ${row("飞书 / Lark", "支持扫码绑定，不用手填 App ID。", "工作台 → 设置 → 消息渠道")}
-          ${row("企业微信", "自建应用或群机器人 Webhook 二选一。", "工作台 → 设置 → 消息渠道")}
-          ${row("钉钉", "群机器人 Webhook。", "工作台 → 设置 → 消息渠道")}
-          ${row("QQ / 微信公众号", "需要对应平台的开发者资质。", "工作台 → 设置 → 消息渠道")}
+          ${row("飞书 / Lark", "支持扫码绑定，不用手填 App ID。", "去配消息渠道", "settings:im")}
+          ${row("企业微信", "自建应用或群机器人 Webhook 二选一。", "去配消息渠道", "settings:im")}
+          ${row("钉钉", "群机器人 Webhook。", "去配消息渠道", "settings:im")}
+          ${row("QQ / 微信公众号", "需要对应平台的开发者资质。", "去配消息渠道", "settings:im")}
         </div>`)}
       ${card(`${secT("能力扩展")}
         <div style="margin-top:14px">
-          ${row("MCP 服务器", "把外部系统的工具接进来给任务用。", "工作台 → 设置 → MCP")}
-          ${row("技能与专家", "把重复的活儿固化成可复用的流程。", "工作台 → 技能 / 专家")}
-          ${row("定时任务", "让任务按点自己跑，产出推到聊天软件里。", "工作台 → 定时任务")}
+          ${row("MCP 服务器", "把外部系统的工具接进来给任务用。", "去接连接器", "hub:mcp")}
+          ${row("技能", "把重复的活儿固化成可复用的流程。", "去看技能", "hub:skills")}
+          ${row("专家", "给不同的活儿配不同的角色和工具。", "去看专家", "hub:experts")}
+          ${row("定时任务", "让任务按点自己跑，产出推到聊天软件里。", "去排定时任务", "view:autom")}
         </div>`)}
       ${card(`${secT("对外接口", "现在还没有<b>按组织发放的 API 密钥</b>——所以这里不给你一个点了没用的开关。")}
         <div style="margin-top:14px">
@@ -1389,10 +1867,26 @@ PAGES.integration = {
 };
 
 /* ---------------- 导航 + 路由 ---------------- */
+/**
+ * 十七个页面分六组，在 13 寸笔记本上一屏根本放不下——侧栏自己会滚，
+ * 而「要滚」这件事只有那根细滚动条在提示。管理员找「每人每月发多少额度」在哪，
+ * 得先猜它属于「订阅与用量」还是「企业设置」（答案是后者，叫「计量设置」），
+ * 猜错就得上下翻两遍。所以加一个搜索框：打「额度」直接把相关的两页筛出来。
+ *
+ * 匹配面要宽——标题、那句副标题、分组名、路由 id 都算。用户记得住的往往不是
+ * 我们起的页面名，而是他要干的那件事（「充值」「邀请码」「白名单」）。
+ */
+let navQ = "";
+function navHit(it, grp, q) {
+  return (it.title + " " + (it.sub || "") + " " + grp + " " + it.id).toLowerCase().includes(q);
+}
 function renderNav(current) {
-  $("ad-nav").innerHTML = NAV.map((g) => {
-    const items = g.items.filter((it) => !it.platform || PLATFORM);
+  const q = navQ.trim().toLowerCase();
+  let shown = 0;
+  const html = NAV.map((g) => {
+    const items = g.items.filter((it) => (!it.platform || PLATFORM) && (!q || navHit(it, g.grp, q)));
     if (!items.length) return "";
+    shown += items.length;
     return (
       (g.grp ? `<div class="ad-grp">${esc(g.grp)}</div>` : "") +
       items
@@ -1403,6 +1897,43 @@ function renderNav(current) {
         .join("")
     );
   }).join("");
+  $("ad-nav").innerHTML = shown
+    ? html
+    : `<div class="ad-nav-none">没有叫「${esc(navQ.trim())}」的页面。<br>试试「额度」「邀请」「白名单」这类词。</div>`;
+  // 当前页在折叠的视野之外时把它滚进来——不然搜完一清空，人就不知道自己站在哪了
+  const on = $("ad-nav").querySelector(".ad-nav-i.on");
+  if (on && !q) on.scrollIntoView({ block: "nearest" });
+}
+/** 搜索框：输入即筛，回车进第一条，Esc 清空。挂一次，之后 renderNav 只管 innerHTML */
+function bindNavSearch() {
+  const box = $("ad-nav-q");
+  if (!box) return;
+  box.oninput = () => {
+    navQ = box.value;
+    renderNav(location.hash.replace(/^#\/?/, "").split("?")[0] || "home");
+  };
+  box.onkeydown = (e) => {
+    if (e.key === "Escape") {
+      box.value = "";
+      box.oninput();
+      box.blur();
+    } else if (e.key === "Enter") {
+      const first = $("ad-nav").querySelector(".ad-nav-i");
+      if (first) {
+        location.hash = first.getAttribute("href").slice(1);
+        box.blur();
+      }
+    }
+  };
+  // 光标不在输入框里的时候，「/」直接跳到搜索——这是列表类界面的老习惯，不用教
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+    e.preventDefault();
+    box.focus();
+    box.select();
+  });
 }
 function navItem(id) {
   for (const g of NAV) for (const it of g.items) if (it.id === id) return it;
@@ -1411,10 +1942,10 @@ function navItem(id) {
 
 let routeSeq = 0;
 async function route(keepScroll) {
-  const id = (location.hash.replace(/^#\/?/, "") || "sub").split("?")[0];
-  const it = navItem(id) && PAGES[id] ? navItem(id) : navItem("sub");
+  const id = (location.hash.replace(/^#\/?/, "") || "home").split("?")[0];
+  const it = navItem(id) && PAGES[id] ? navItem(id) : navItem("home");
   const pid = it.id;
-  if (it.platform && !PLATFORM) return (location.hash = "#/sub");
+  if (it.platform && !PLATFORM) return (location.hash = "#/home");
   const seq = ++routeSeq;
   const body = $("ad-body");
   const scroll = keepScroll ? body.scrollTop : 0;
@@ -1468,6 +1999,7 @@ async function boot() {
     $("ad-sub").textContent = "进不来";
     return;
   }
+  bindNavSearch();
   addEventListener("hashchange", () => route(false));
   await route(false);
 }

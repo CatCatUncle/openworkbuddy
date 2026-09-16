@@ -461,7 +461,7 @@ function renderAboutPane(pane) {
     </div>
     <div class="card-item">
       <div class="t">OpenWorkBuddy</div>
-      <div class="d">开源复刻的 AI Agent 办公工作台。会做这些事：</div>
+      <div class="d">开源的 AI Agent 办公工作台。会做这些事：</div>
       <div class="ab-feats">${["Agent 自主执行","Ask/Plan/Craft 模式","技能系统","MCP 连接器","专家团多智能体","定时自动化","飞书/企业微信/Webhook 远程指挥","多模型可插拔","会话持久化与回放","文件上传","工作空间切换"].map((f) => `<span class="ui-badge ui-badge--sm ui-badge--outline">${esc(f)}</span>`).join("")}</div>
     </div>
     <div class="card-item">
@@ -523,3 +523,29 @@ function renderAboutPane(pane) {
   pane.querySelector("#ab-up-btn").onclick = () => loadUpdate(true);
   loadUpdate(false);
 }
+
+/**
+ * 深链落地。
+ *
+ * 管理后台那页「开放与集成」原来只是一张索引表：每一行右边写着
+ * 「工作台 → 设置 → 消息渠道」——一句让人自己走路的说明，点不动。管理员看完得
+ * 关掉后台、回到工作台、自己找那三层菜单，中途忘了要点哪一项是常事。
+ * 现在那些字是真链接，带 `#go=…` 打过来，由这里负责落到对应的面板。
+ *
+ * 落地后立刻把 hash 抹掉：留着的话刷新一次就又弹一遍，而用户此刻多半已经在干别的了。
+ */
+(function deepLink() {
+  const LAND = {
+    settings: (arg) => openModal("settings", arg),   // 设置弹窗的某个标签页
+    hub: (arg) => openHub(arg),                      // 专家 · 技能 · 连接器
+    view: (arg) => openPageView(arg),                // 主区页面（定时任务、资料库…）
+  };
+  const go = () => {
+    const m = /^#go=([a-z]+):([a-z-]+)$/.exec(location.hash || "");
+    if (!m || !LAND[m[1]]) return;
+    history.replaceState(null, "", location.pathname + location.search);
+    try { LAND[m[1]](m[2]); } catch (e) { console.warn("[deeplink]", e); }
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", go);
+  else go();
+})();

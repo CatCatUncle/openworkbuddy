@@ -55,6 +55,10 @@ cat > "$APP/Contents/Resources/app/main.js" <<JS
 const fs = require("fs");
 const path = require("path");
 const REPO = $REPO_JS;
+// 这是开发态外壳：代码和账号数据都应该来自当前仓库，避免直接运行 Electron.app
+// 与 OpenWorkBuddy.app 各自读一套账号库，表现成「用户名或密码不对」。正式安装包不走这个入口，
+// 仍由 paths.js 使用 ~/OpenWorkBuddy 保存用户数据。
+process.env.OPENWORKBUDDY_HOME = REPO;
 // 从 Finder 启动时 PATH 只有系统目录，agent 要用的 node/npx/brew 工具全都找不到——把生成时的 node 位置烤进去
 process.env.PATH = [$NODE_DIR_JS, "/opt/homebrew/bin", "/usr/local/bin", process.env.PATH || ""].filter(Boolean).join(":");
 // 日志落盘：Finder 启动没有终端，出了事到 ~/Library/Logs/OpenWorkBuddy.log 看

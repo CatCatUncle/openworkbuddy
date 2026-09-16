@@ -15,7 +15,18 @@
  * 有任何一个挂了，整体退出码就是 1 ——发版脚本看的是这个。
  */
 const path = require("path");
+const os = require("os");
+const fs = require("fs");
 const { spawnSync } = require("child_process");
+
+// 测试的 Trace 账本必须另起一份。不隔离的话，套件里那些 `t.trace({ name: "任务 0" })`
+// 会一路写进用户真正的 workspace/.openworkbuddy/traces.jsonl——跑一次测试灌几千条，
+// 真任务被淹在里面翻不出来（实测淹到 14650 条假记录对 533 条真记录）。
+// 放在这儿而不是各个套件里：子进程再拉起的 server / electron 也一并继承。
+if (!process.env.OPENWORKBUDDY_TRACE_FILE) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-test-trace-"));
+  process.env.OPENWORKBUDDY_TRACE_FILE = path.join(dir, "traces.jsonl");
+}
 
 // e2e 放最后：它最慢（会拉起真 server 和两个 Electron 窗口），
 // 前面十三个几秒钟就能把大部分低级错误拦下来，别让人等五分钟才看到一个拼写错误。
@@ -33,6 +44,7 @@ const SUITES = [
   ["chat-models", "模型渠道与选型"],
   ["media-models", "生图 / 生视频 / 配音 / 转写 多模型"],
   ["gen-cache", "生成结果缓存：同一格重跑别再烧第二次钱"],
+  ["quota", "付费 API 额度闸门：搜索 / 生图 / 生视频 / 配音 / 转写 按次限额"],
   ["tenant", "多租户与权限"],
   ["deploy", "Docker 部署物静态检查"],
   ["trace", "执行追踪（Langfuse）上报"],

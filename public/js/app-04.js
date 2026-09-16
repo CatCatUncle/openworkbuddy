@@ -16,7 +16,8 @@ async function updateEvalView() {
     else setMsg(state, "triangle-alert", "上一轮有失分，看日志或点历史行看明细");
   }
   if (st.lines && st.lines.length) {
-    log.style.display = "";
+    // hidden 属性是 UA 的 display:none，style.display="" 顶不掉它——得撤属性
+    log.hidden = false;
     log.textContent = st.lines.join("\n");
     if (st.running) log.scrollTop = log.scrollHeight;
   }
@@ -24,87 +25,106 @@ async function updateEvalView() {
   if (pageKind !== "eval") return;
   const hist = Array.isArray(hj) ? hj : (hj && hj.runs) || [];
   const baseline = (hj && !Array.isArray(hj) && hj.baseline) || null;
-  if (!hist.length) { histBox.textContent = "还没跑过。选个模型点「开始评测」，或命令行 npm run eval"; return; }
+  if (!hist.length) {
+    histBox.innerHTML = `<div class="ev-empty">还没跑过。上面选个模型点「开始评测」，或者命令行 <code>npm run eval</code>。<br>第一轮跑完记得点开成绩设为基线——之后每轮才有得比。</div>`;
+    return;
+  }
   const blBanner = baseline
-    ? `<div style="font-size:12px;color:var(--wb-text-3);margin:0 0 6px">${ic("pin")} 当前基线：${esc(baseline.model || "")} · ${esc(String(baseline.at || "").slice(0, 16).replace("T", " "))} · <code>${esc(baseline.commit || "—")}</code>（每次跑批自动逐题对比）</div>`
-    : `<div style="font-size:12px;color:var(--wb-text-3);margin:0 0 6px">还没钉基线——点开一次成绩，点「${ic("pin")} 设为基线」，之后每轮自动对比退步/进步</div>`;
-  const th = (t, tip) => `<th style="padding:6px 8px" ${tip ? `title="${esc(tip)}"` : ""}>${t}</th>`;
-  histBox.innerHTML = blBanner + `
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tr style="color:var(--wb-text-3);text-align:left">${th("时间")}${th("模型")}${th("次数", "每题重复几次")}${th("pass@1", "各题通过率的平均：能不能做对")}${th("稳定全过", "k 次全过的题数：稳不稳；时过时不过的题会单独标出来")}${th("Δ基线", "与钉住的基线逐题对比")}${th("AI 评委", "逐条质量维度二元判定的达标率（旧格式为 1-5 均分）")}${th("人工", "人工打星的均分")}${th("tokens")}${th("版本", "跑分时的代码 commit")}</tr>
-      ${hist.map((h) => {
+    ? `<div class="ev-bl">${ic("pin")}当前基线：${esc(baseline.model || "")} · ${esc(String(baseline.at || "").slice(0, 16).replace("T", " "))} · <code>${esc(baseline.commit || "—")}</code> · 每次跑批自动逐题对比</div>`
+    : `<div class="ev-bl">${ic("pin")}还没钉基线——点开一次成绩，点「设为基线」，之后每轮自动对比退步和进步</div>`;
+  const th = (t, tip) => `<th${tip ? ` title="${esc(tip)}"` : ""}>${t}</th>`;
+  histBox.innerHTML = blBanner + `<div class="ev-tab-wrap"><table class="ev-tab">
+      <thead><tr>${th("时间")}${th("模型")}${th("次数", "每题重复几次")}${th("pass@1", "各题通过率的平均：能不能做对")}${th("稳定全过", "k 次全过的题数：稳不稳；时过时不过的题会单独标出来")}${th("对比基线", "与钉住的基线逐题对比")}${th("AI 评委", "逐条质量维度二元判定的达标率（旧格式为 1-5 均分）")}${th("人工", "人工打星的均分")}${th("tokens")}${th("版本", "跑分时的代码 commit")}</tr></thead>
+      <tbody>${hist.map((h) => {
         const p1 = h.pass1_avg != null ? h.pass1_avg : h.score_pct;
-        const scoreColor = p1 >= 100 ? "var(--wb-ok-text)" : p1 >= 80 ? "var(--wb-text)" : "var(--wb-err-text)";
+        const scoreCls = p1 >= 100 ? " is-ok" : p1 >= 80 ? "" : " is-bad";
         const bl = h.baseline;
         const dCell = !bl ? "—" : (bl.regressions && bl.regressions.length
-          ? `<span style="color:var(--wb-err-text)" title="退步：${esc(bl.regressions.join(", "))}">${ic("trending-down")} ${bl.regressions.length}题</span>`
-          : (bl.improvements && bl.improvements.length ? `<span style="color:var(--wb-ok-text)" title="进步：${esc(bl.improvements.join(", "))}">${ic("trending-up")} ${bl.improvements.length}题</span>` : `<span title="与基线持平">±0</span>`));
+          ? `<span class="ev-down" title="退步：${esc(bl.regressions.join(", "))}">${ic("trending-down")} ${bl.regressions.length} 题</span>`
+          : (bl.improvements && bl.improvements.length ? `<span class="ev-up" title="进步：${esc(bl.improvements.join(", "))}">${ic("trending-up")} ${bl.improvements.length} 题</span>` : `<span title="与基线持平">持平</span>`));
         const jd = h.judge ? (h.judge.avg_pct != null ? ic("scale") + " " + h.judge.avg_pct + "%" : (h.judge.avg != null ? ic("scale") + " " + h.judge.avg + "/5" : "—")) : "—";
-        return `<tr data-dir="${esc(h.dir || "")}" style="border-top:1px solid var(--wb-line);cursor:pointer">
-          <td style="padding:6px 8px;white-space:nowrap">${esc(String(h.at || "").slice(0, 16).replace("T", " "))}</td>
-          <td style="padding:6px 8px">${esc(h.model || "")}</td>
-          <td style="padding:6px 8px">${h.repeat || 1}×</td>
-          <td style="padding:6px 8px;font-weight:700;color:${scoreColor}">${p1}%</td>
-          <td style="padding:6px 8px">${h.full_pass}/${h.tasks}${(h.flaky_tasks || []).length ? ` <span title="不稳定：${esc((h.flaky_tasks || []).join(", "))}">${ic("zap")} ${h.flaky_tasks.length}</span>` : ""}</td>
-          <td style="padding:6px 8px">${dCell}</td>
-          <td style="padding:6px 8px">${jd}</td>
-          <td style="padding:6px 8px">${h.human && h.human.avg ? "★ " + h.human.avg : "—"}</td>
-          <td style="padding:6px 8px">${((h.tokens_total || 0) / 1000).toFixed(0)}k</td>
-          <td style="padding:6px 8px"><code style="font-size:12px">${esc(h.commit || "—")}</code></td>
+        return `<tr data-dir="${esc(h.dir || "")}"${h.dir && h.dir === evalDetailDir ? ' class="on"' : ""}>
+          <td>${esc(String(h.at || "").slice(0, 16).replace("T", " "))}</td>
+          <td>${esc(h.model || "")}</td>
+          <td class="num">${h.repeat || 1}×</td>
+          <td class="score${scoreCls}">${p1}%</td>
+          <td class="num">${h.full_pass}/${h.tasks}${(h.flaky_tasks || []).length ? ` <span class="ev-flaky" title="不稳定：${esc((h.flaky_tasks || []).join(", "))}">${ic("zap")}${h.flaky_tasks.length}</span>` : ""}</td>
+          <td>${dCell}</td>
+          <td class="num">${jd}</td>
+          <td class="num">${h.human && h.human.avg ? ic("star") + " " + h.human.avg : "—"}</td>
+          <td class="num">${((h.tokens_total || 0) / 1000).toFixed(0)}k</td>
+          <td><code>${esc(h.commit || "—")}</code></td>
         </tr>`;
-      }).join("")}
-    </table>`;
+      }).join("")}</tbody>
+    </table></div>`;
   histBox.querySelectorAll("tr[data-dir]").forEach((tr) => { if (tr.dataset.dir) tr.onclick = () => openEvalDetail(tr.dataset.dir); });
 }
 async function openEvalDetail(dir) {
   const box = document.getElementById("ev-detail");
   if (!box) return;
-  if (evalDetailDir === dir) { evalDetailDir = null; box.innerHTML = ""; return; }
+  if (evalDetailDir === dir) { evalDetailDir = null; box.innerHTML = ""; updateEvalView(); return; }
   evalDetailDir = dir;
-  box.innerHTML = `<div style="font-size:13px;color:var(--wb-text-3);margin:0 0 10px">加载明细…</div>`;
+  box.innerHTML = `<div class="ev-empty">加载明细…</div>`;
   const j = await fetch("/api/eval/run/" + encodeURIComponent(dir)).then((r) => r.json()).catch(() => null);
   if (evalDetailDir !== dir) return;
   if (!j || j.error) { box.innerHTML = ""; evalDetailDir = null; return toast(((j && j.error) || "明细加载失败"), "circle-x"); }
   const p1 = j.pass1_avg != null ? j.pass1_avg : j.score_pct;
-  const jdHead = j.judge ? (j.judge.avg_pct != null ? ` · 评委质量 ${j.judge.avg_pct}%（${esc(j.judge.model || "")}）` : (j.judge.avg != null ? ` · AI 评委 ${j.judge.avg}/5（${esc(j.judge.model || "")}）` : "")) : "";
-  const blHead = j.baseline ? (j.baseline.regressions && j.baseline.regressions.length ? ` · <span style="color:var(--wb-err-text)">${ic("trending-down")} 对比基线退步 ${esc(j.baseline.regressions.join(", "))}</span>` : " · 对比基线无退步") : "";
-  const head = `<div style="display:flex;align-items:center;gap:10px;margin:0 0 8px;flex-wrap:wrap">
-      <b style="font-size:14px">${esc(String(j.at || "").slice(0, 16).replace("T", " "))} · ${esc(j.model || "")}${(j.repeat || 1) > 1 ? ` · 每题 ${j.repeat} 次` : ""}</b>
-      <span style="font-size:12px;color:var(--wb-text-3)">pass@1 均值 ${p1}% · 稳定全过 ${j.full_pass}/${j.tasks}${jdHead}${j.human && j.human.avg ? ` · 人工 ★${j.human.avg}（已评 ${j.human.scored} 题）` : ""}${j.commit ? ` · 版本 ${esc(j.commit)}` : ""}${blHead}</span>
-      <a href="#" id="ev-pin" class="link" style="margin-left:auto;font-size:12px;white-space:nowrap">${ic("pin")} 设为基线</a>
-      <a href="#" id="ev-close" class="link" style="font-size:12px">收起${ic("x")}</a>
+  const cell = (v, k, cls) => `<div><b${cls ? ` class="${cls}"` : ""}>${v}</b><span>${k}</span></div>`;
+  const bl = j.baseline;
+  const blCell = !bl ? cell("—", "对比基线")
+    : bl.regressions && bl.regressions.length ? cell(`${ic("trending-down")} ${bl.regressions.length} 题`, "对比基线退步", "is-bad")
+      : cell(bl.improvements && bl.improvements.length ? `${ic("trending-up")} ${bl.improvements.length} 题` : "持平", bl.improvements && bl.improvements.length ? "对比基线进步" : "对比基线", bl.improvements && bl.improvements.length ? "is-ok" : "");
+  // 概览这一排就是「这轮到底怎么样」的答案：三条评分线各占一格，别再挤成一行小灰字
+  const head = `<div class="ev-det-head">
+      <b>${esc(String(j.at || "").slice(0, 16).replace("T", " "))} · ${esc(j.model || "")}</b>
+      <span class="ev-lv">${(j.repeat || 1) > 1 ? `每题 ${j.repeat} 次` : "每题 1 次"}</span>
+      ${j.judge && j.judge.model ? `<span class="ev-lv">评委 ${esc(j.judge.model)}</span>` : ""}
+      ${j.commit ? `<span class="ev-lv">版本 ${esc(j.commit)}</span>` : ""}
+      <span class="ev-det-ops"><a href="#" id="ev-pin" class="link">${ic("pin")} 设为基线</a><a href="#" id="ev-close" class="link">${ic("x")} 收起</a></span>
+    </div>
+    <div class="ev-sum">
+      ${cell(p1 + "%", "pass@1 均值", p1 >= 100 ? "is-ok" : p1 >= 80 ? "" : "is-bad")}
+      ${cell(`${j.full_pass}/${j.tasks}`, "稳定全过", j.full_pass === j.tasks ? "is-ok" : "")}
+      ${cell((j.flaky_tasks || []).length || "0", "时过时不过", (j.flaky_tasks || []).length ? "is-bad" : "")}
+      ${cell(`${j.checks_passed}/${j.checks_total}`, "机器判分检查项")}
+      ${cell(j.judge ? (j.judge.avg_pct != null ? j.judge.avg_pct + "%" : (j.judge.avg != null ? j.judge.avg + "/5" : "—")) : "—", "AI 评委质量")}
+      ${cell(j.human && j.human.avg ? ic("star") + " " + j.human.avg : "—", j.human && j.human.scored ? `人工分（已评 ${j.human.scored} 题）` : "人工分")}
+      ${cell(((j.tokens_total || 0) / 1000).toFixed(1) + "k", "Token 合计")}
+      ${blCell}
     </div>`;
   const rows = (j.results || []).map((r) => {
     const k = r.k || 1;
     const passes = r.passes != null ? r.passes : (r.passed === r.total ? 1 : 0);
-    // 颜色原来是 emoji 自带的，换成描边图标后得自己上色，不然四种结论一个样
-    const icon = passes === k ? `<span style="color:var(--wb-ok-text)">${ic("circle-check")}</span>`
-      : passes ? `<span style="color:var(--wb-warn)">${ic("zap")}</span>`
-        : `<span style="color:var(--wb-err-text)">${ic(r.passed ? "triangle-alert" : "circle-x")}</span>`;
-    const lv = r.level ? `<span style="font-size:11px;padding:1px 6px;border-radius:5px;background:var(--wb-bg);border:1px solid var(--wb-line);color:var(--wb-text-3)">L${r.level}${r.kind ? "·" + esc(r.kind) : ""}</span>` : "";
-    const cells = (r.attempts && r.attempts.length > 1) ? `<span style="display:inline-flex;gap:3px" title="每格一次尝试">${r.attempts.map((a) => `<span title="第${a.n}次：${a.passed}/${a.total}${a.fail_code ? " · " + (EV_FAIL_LABELS[a.fail_code] || a.fail_code) : ""}" class="ev-try" style="width:17px;height:17px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;background:${a.passed === a.total ? "rgba(34,197,94,.15)" : "rgba(239,68,68,.15)"};color:${a.passed === a.total ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${ic(a.passed === a.total ? "check" : "x")}</span>`).join("")}</span>` : "";
-    const chips = (r.fail_codes || []).map((c) => `<span style="font-size:11px;padding:1px 7px;border-radius:999px;background:rgba(239,68,68,.12);color:var(--wb-err-text)">${EV_FAIL_LABELS[c] || esc(c)}</span>`).join("");
-    const checks = (r.checks || []).map((c) => `<div class="chk-line" style="font-size:12px;color:${c.ok ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${ic(c.ok ? "check" : "x")} ${esc(c.name)}${c.note ? `<span style="color:var(--wb-text-3)"> — ${esc(c.note)}</span>` : ""}</div>`).join("");
+    const cls = passes === k ? "" : passes ? " is-flaky" : " is-bad";
+    const icon = passes === k ? "circle-check" : passes ? "zap" : (r.passed ? "triangle-alert" : "circle-x");
+    const lv = r.level ? `<span class="ev-lv">L${r.level}${r.kind ? " · " + esc(r.kind) : ""}</span>` : "";
+    const tries = (r.attempts && r.attempts.length > 1)
+      ? `<span class="ev-tries" title="每格一次尝试">${r.attempts.map((a) => `<span class="ev-try${a.passed === a.total ? "" : " is-bad"}" title="第${a.n}次：${a.passed}/${a.total}${a.fail_code ? " · " + (EV_FAIL_LABELS[a.fail_code] || a.fail_code) : ""}">${ic(a.passed === a.total ? "check" : "x")}</span>`).join("")}</span>`
+      : "";
+    const chips = (r.fail_codes || []).map((c) => `<span class="ev-code">${EV_FAIL_LABELS[c] || esc(c)}</span>`).join("");
+    const checks = (r.checks || []).map((c) => `<div class="ev-chk${c.ok ? "" : " is-bad"}">${ic(c.ok ? "check" : "x")}<span>${esc(c.name)}${c.note ? `<em> — ${esc(c.note)}</em>` : ""}</span></div>`).join("");
     const judge = r.judge && r.judge.dims
-      ? `<div style="margin-top:6px;font-size:12px">${ic("scale")} 质量维度 <b>${r.judge.passed}/${r.judge.total}</b>${r.judge.dims.map((d) => `<div class="chk-line" style="color:${d.pass ? "var(--wb-ok-text)" : "var(--wb-err-text)"}">${ic(d.pass ? "check" : "x")} ${esc(d.q)}${d.note ? `<span style="color:var(--wb-text-3)"> — ${esc(d.note)}</span>` : ""}</div>`).join("")}</div>`
+      ? `<div class="ev-judge"><b>${ic("scale")}质量维度 ${r.judge.passed}/${r.judge.total}</b>${r.judge.dims.map((d) => `<div class="ev-chk${d.pass ? "" : " is-bad"}">${ic(d.pass ? "check" : "x")}<span>${esc(d.q)}${d.note ? `<em> — ${esc(d.note)}</em>` : ""}</span></div>`).join("")}</div>`
       : r.judge && r.judge.score
-        ? `<div style="margin-top:6px;font-size:12px">${ic("scale")} AI 评委 <b>${r.judge.score}/5</b> — ${esc(r.judge.verdict || "")}${(r.judge.reasons || []).length ? `<div style="color:var(--wb-text-3)">${r.judge.reasons.map((x) => "· " + esc(x)).join("<br>")}</div>` : ""}${(r.judge.deductions || []).length ? `<div style="color:var(--wb-err-text)">${r.judge.deductions.map((x) => "扣分：" + esc(x)).join("<br>")}</div>` : ""}</div>`
-        : (r.judge && r.judge.error ? `<div style="margin-top:6px;font-size:12px;color:var(--wb-text-3)">${ic("scale")} 评委失败：${esc(r.judge.error)}</div>` : "");
+        ? `<div class="ev-judge"><b>${ic("scale")}AI 评委 ${r.judge.score}/5 — ${esc(r.judge.verdict || "")}</b>${(r.judge.reasons || []).length ? `<div class="note">${r.judge.reasons.map((x) => "· " + esc(x)).join("<br>")}</div>` : ""}${(r.judge.deductions || []).length ? `<div class="cut">${r.judge.deductions.map((x) => "扣分：" + esc(x)).join("<br>")}</div>` : ""}</div>`
+        : (r.judge && r.judge.error ? `<div class="ev-judge"><b>${ic("scale")}评委没跑成</b><div class="note">${esc(r.judge.error)}</div></div>` : "");
     const hs = (r.human && r.human.score) || 0;
-    const stars = [1, 2, 3, 4, 5].map((n) => `<button class="ev-star" data-task="${esc(r.id)}" data-star="${n}" title="人工打 ${n} 分" style="border:none;background:none;cursor:pointer;font-size:16px;padding:0 1px;line-height:1;color:${n <= hs ? "#f59e0b" : "var(--wb-text-3)"}">${n <= hs ? "★" : "☆"}</button>`).join("");
-    return `<div style="border:1px solid var(--wb-line);border-radius:10px;padding:10px 12px;margin:0 0 8px;background:var(--wb-card)">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <b style="font-size:13px">${icon} ${esc(r.name)}</b>${lv}${cells}${chips}
-        <span style="font-size:12px;color:var(--wb-text-3)">${k > 1 ? `${passes}/${k} 次全过 · 首轮 ` : ""}${r.passed}/${r.total} · ${r.elapsed_s}s · ${r.tool_calls || 0} 步${r.tool_errors ? `（${r.tool_errors} 次工具报错）` : ""}${r.stopped ? " · " + esc(r.stopped) : ""}${r.crashed ? " · 崩溃" : ""}</span>
-        <span style="margin-left:auto;white-space:nowrap;display:flex;align-items:center">${stars}<input class="ev-cmt" data-task="${esc(r.id)}" placeholder="点评（可选）" value="${esc((r.human && r.human.comment) || "")}" style="width:150px;margin-left:6px;padding:3px 8px;border:1px solid var(--wb-line);border-radius:6px;background:var(--wb-bg);color:var(--wb-text);font-size:12px"></span>
+    const stars = [1, 2, 3, 4, 5].map((n) => `<button class="ev-star${n <= hs ? " on" : ""}" data-task="${esc(r.id)}" data-star="${n}" title="人工打 ${n} 分">${ic("star")}</button>`).join("");
+    return `<div class="ev-task${cls}">
+      <div class="ev-task-head">
+        ${ic(icon)}<span class="nm">${esc(r.name)}</span>${lv}${tries}${chips}
+        <span class="ev-facts">${k > 1 ? `${passes}/${k} 次全过 · 首轮 ` : ""}${r.passed}/${r.total} 项 · ${r.elapsed_s}s · ${r.tool_calls || 0} 步${r.tool_errors ? ` · ${r.tool_errors} 次工具报错` : ""}${r.stopped ? " · " + esc(r.stopped) : ""}${r.crashed ? " · 崩溃" : ""}</span>
+        <span class="ev-rate"><span class="ev-stars">${stars}</span><input class="ev-cmt" data-task="${esc(r.id)}" placeholder="点评（可选）" value="${esc((r.human && r.human.comment) || "")}"></span>
       </div>
-      <div style="margin-top:6px">${checks}</div>
+      <div class="ev-chks">${checks}</div>
       ${judge}
-      ${r.final_text ? `<details style="margin-top:6px"><summary style="font-size:12px;color:var(--wb-text-3);cursor:pointer">最终回复摘录</summary><pre style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow:auto;margin:4px 0 0;background:var(--wb-bg);border-radius:8px;padding:8px 10px">${esc(String(r.final_text).slice(0, 1500))}</pre></details>` : ""}
+      ${r.final_text ? `<details class="ev-final"><summary>最终回复摘录</summary><pre>${esc(String(r.final_text).slice(0, 1500))}</pre></details>` : ""}
     </div>`;
   }).join("");
-  box.innerHTML = `<div style="margin:0 0 14px">${head}${rows}</div>`;
-  box.querySelector("#ev-close").onclick = (e) => { e.preventDefault(); evalDetailDir = null; box.innerHTML = ""; };
+  box.innerHTML = `<div class="ev-det">${head}<div class="ev-tasks">${rows}</div></div>`;
+  updateEvalView();
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  box.querySelector("#ev-close").onclick = (e) => { e.preventDefault(); evalDetailDir = null; box.innerHTML = ""; updateEvalView(); };
   box.querySelector("#ev-pin").onclick = async (e) => {
     e.preventDefault();
     const r = await fetch("/api/eval/baseline", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir }) }).then((x) => x.json()).catch(() => null);
@@ -116,10 +136,9 @@ async function openEvalDetail(dir) {
     const cmt = box.querySelector(`.ev-cmt[data-task="${taskId}"]`);
     const r = await fetch("/api/eval/human", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir, task_id: taskId, score, comment: cmt ? cmt.value : "" }) }).then((x) => x.json()).catch(() => null);
     if (!r || r.error) return toast(((r && r.error) || "保存失败"), "circle-x");
-    toast("★ 人工分已保存");
+    toast("人工分已保存");
     evalDetailDir = null;
     openEvalDetail(dir);
-    updateEvalView();
   };
   box.querySelectorAll(".ev-star").forEach((b) => b.onclick = () => saveHuman(b.dataset.task, +b.dataset.star));
   box.querySelectorAll(".ev-cmt").forEach((inp) => inp.onchange = () => {
@@ -127,6 +146,145 @@ async function openEvalDetail(dir) {
     if (row && row.human && row.human.score) saveHuman(inp.dataset.task, row.human.score);
   });
 }
+/**
+ * 这份文件是哪次任务做出来的。只认工作区产物（src==="ws"）：资料库里的文件是人手动传的，
+ * 本来就没有「哪次任务」这回事，硬找只会给出一个凑出来的答案。
+ * 一个文件可能被多次任务先后改写，取最近那次——用户想回去的是「上次动它的那回」。
+ */
+function libTaskOf(src, name) {
+  if (src !== "ws" || !libOutCache) return null;
+  for (const t of libOutCache.tasks || []) {          // tasks 已按时间倒序，第一个命中就是最近一次
+    if ((t.files || []).some((f) => f.name === name)) return t;
+  }
+  return null;
+}
+/** 文件名 -> 图标。资料库、按任务、搜索结果三处都走这一个函数，图例才对得上 */
+function libIcon(n) {
+  return ic(/\.html?$/i.test(n) ? "globe" : /\.csv$/i.test(n) ? "file-spreadsheet" : /\.(md|markdown)$/i.test(n) ? "file-pen-line" : /\.(png|jpe?g|gif|webp|svg)$/i.test(n) ? "image" : /\.pdf$/i.test(n) ? "file-type" : "file-text");
+}
+function libSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+/**
+ * 类型筛选。用户想找「那张图」「那个表」的时候，按名字他根本想不起来叫什么，
+ * 但一定记得它是什么形状的东西。六个格子覆盖了实际产出的绝大多数。
+ */
+const LIB_KINDS = [
+  ["all", "全部", () => true],
+  ["doc", "文档", (n) => /\.(md|markdown|txt|docx?|pdf|rtf)$/i.test(n)],
+  ["sheet", "表格", (n) => /\.(csv|tsv|xlsx?|numbers)$/i.test(n)],
+  ["web", "网页", (n) => /\.html?$/i.test(n)],
+  ["img", "图片", (n) => /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(n)],
+  ["media", "音视频", (n) => /\.(mp4|mov|webm|mkv|mp3|wav|m4a|aac|flac)$/i.test(n)],
+];
+function libKindOk(name) {
+  const k = LIB_KINDS.find((x) => x[0] === (libState.kind || "all"));
+  return !k || k[2](name);
+}
+/** 这个文件归哪一类（给「按类型分组」用；跟上面的筛选共用同一套判定，两处不会打架） */
+function libKindOf(name) {
+  const k = LIB_KINDS.find((x) => x[0] !== "all" && x[2](name));
+  return k ? k[1] : "其他";
+}
+/** 取文件内容的地址。资料库和工作区两套路由，四处都要用，抄第四遍就该抽出来了 */
+function libUrl(src, name) {
+  return "/api/" + (src === "lib" ? "library/file/" : "files/view/") + fpath(name);
+}
+const LIB_IMG = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+/**
+ * 三种摆法，照 macOS 访达那套来的。
+ * 关键决定：三种摆法**共用同一份行 HTML**，只靠 .lib-list 上的类名换 CSS。
+ * 各写一套渲染函数看着直观，但选中态、点击、键盘、分组、筛选就要各维护三遍——
+ * 那才是真正会长歪的地方。
+ */
+const LIB_MODES = [["list", "列表", "list"], ["icon", "图标", "layout-grid"], ["gallery", "画廊", "gallery-horizontal"]];
+const LIB_GROUPS = [["none", "不分组"], ["kind", "按类型"], ["time", "按时间"]];
+/** 「今天 / 最近 7 天 / 本月 / 更早」——访达的「使用组」按日期就是这么分的 */
+function libTimeBucket(iso) {
+  const t = typeof iso === "number" ? iso : Date.parse(iso || "");
+  if (!t) return "时间不详";
+  const d = (Date.now() - t) / 86400000;
+  return d < 1 ? "今天" : d < 7 ? "最近 7 天" : d < 30 ? "最近 30 天" : "更早";
+}
+/**
+ * 按当前的分组方式把一串文件分堆。不分组就回一个没有标题的大堆——
+ * 调用方只管铺 `[{ label, items }]`，不用到处写 if。
+ */
+function libGroupFiles(files) {
+  const how = libState.group || "none";
+  if (how === "none") return [{ label: "", items: files }];
+  const order = how === "kind"
+    ? LIB_KINDS.filter((k) => k[0] !== "all").map((k) => k[1]).concat("其他")
+    : ["今天", "最近 7 天", "最近 30 天", "更早", "时间不详"];
+  const bag = new Map();
+  for (const f of files) {
+    const key = how === "kind" ? libKindOf(f.name) : libTimeBucket(f.mtime);
+    if (!bag.has(key)) bag.set(key, []);
+    bag.get(key).push(f);
+  }
+  // 按固定次序排，不按谁先出现：同一个目录来回进出，分组的顺序不该跟着抖
+  return order.filter((k) => bag.has(k)).map((k) => ({ label: k, items: bag.get(k) }));
+}
+/** 「3 分钟前 / 昨天 / 09-14」——绝对时间在这种列表里没人读得动，相对时间才有信息量 */
+function libWhen(iso) {
+  const t = typeof iso === "number" ? iso : Date.parse(iso || "");
+  if (!t) return "";
+  const d = (Date.now() - t) / 1000;
+  if (d < 60) return "刚刚";
+  if (d < 3600) return Math.floor(d / 60) + " 分钟前";
+  if (d < 86400) return Math.floor(d / 3600) + " 小时前";
+  if (d < 172800) return "昨天";
+  const dt = new Date(t);
+  return (dt.getMonth() + 1) + "-" + String(dt.getDate()).padStart(2, "0");
+}
+/** 把命中的那几个字标出来。搜索结果里不标，用户得自己在一行字里找自己刚打的词 */
+function libMark(text, q) {
+  const s = String(text == null ? "" : text);
+  const needle = String(q || "").trim();
+  if (!needle) return esc(s);
+  const i = s.toLowerCase().indexOf(needle.toLowerCase());
+  if (i < 0) return esc(s);
+  return esc(s.slice(0, i)) + "<mark>" + esc(s.slice(i, i + needle.length)) + "</mark>" + esc(s.slice(i + needle.length));
+}
+
+/**
+ * 一行 = 一个文件。文件夹视图、按任务、搜索结果、三种摆法——全都走这一份 HTML。
+ * 之前每处各拼各的 <div class="lib-it">，结果是：搜索结果里有缩略图、按任务里没有；
+ * 文件夹里显示修改时间、别处不显示。同一个东西在同一页里长出四个样子。
+ *
+ * o.full  拿内容用的完整名字（工作区那边是「任务_0916_xx/配音文案.md」这样的相对路径）
+ * o.label 给人看的那一截（默认取最后一段）
+ * o.note  顶掉体积那一列的字（「已不在」用这个）
+ */
+function libRowHtml(src, f, o) {
+  const opt = o || {};
+  const full = opt.full !== undefined ? opt.full : (f.path || f.name);
+  const label = opt.label !== undefined ? opt.label : String(full).split("/").pop();
+  const dir = opt.dir !== undefined ? opt.dir : String(full).split("/").slice(0, -1).join("/");
+  const on = libState.pick && libState.pick.src === src && libState.pick.name === full;
+  const gone = !!(opt.gone || f.gone);
+  // 图片就直接拿真图当缩略图——图标视图里一排「图片」图标等于没有视图。
+  // 文件没了就别发这个请求：拿一串 404 换一排碎图标没有意义。
+  const thumb = !gone && LIB_IMG.test(label) ? `<img loading="lazy" src="${libUrl(src, full)}" alt="">` : libIcon(label);
+  return `
+  <div class="lib-it ${opt.cls || ""} ${gone ? "gone" : ""} ${on ? "active" : ""}" data-src="${src}" data-name="${esc(full)}"${opt.task ? ` data-task="${esc(opt.task)}"` : ""} title="${esc(full)}">
+    <span class="th">${thumb}</span>
+    <span class="nm">${libMark(label, opt.q)}${dir ? `<span class="pth">${esc(dir)}</span>` : ""}</span>
+    <span class="sz">${opt.note !== undefined ? opt.note : libSize(f.size || 0)}</span>
+    <span class="tm">${esc(libWhen(f.mtime))}</span>
+  </div>`;
+}
+/**
+ * 一行摆得下几个（给 ← → ↑ ↓ 翻文件用）。不写死格子数：直接量 offsetTop，
+ * 窗口多宽、CSS 以后怎么改，键盘的「上一行」都还对得上。
+ */
+function libPerRow(scope) {
+  const items = [...scope.querySelectorAll(".lib-it:not(.lib-dir)")];
+  if (items.length < 2) return 1;
+  const top = items[0].offsetTop;
+  let n = 0;
+  for (const it of items) { if (it.offsetTop !== top) break; n++; }
+  return Math.max(1, n);
+}
+
 async function renderLibPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
@@ -134,41 +292,142 @@ async function renderLibPage() {
   // 资料库是**整台服务器共用的一份**，谁往里放东西归平台管理员管；读是所有人的
   // （每个人的 agent 本来就带着 library_list / library_read，同样的内容它随口就念得出来）。
   const po = amPlatformOwner();
-  const [lib, ws] = await Promise.all([
-    fetch("/api/library").then(r => r.json()).catch(() => ({ files: [], notes: [] })),
+  const q = (libState.q || "").trim();
+  // libState 是页面级的一份状态，别的入口（深链、老的调用点、测试）可能只塞了一半字段。
+  // 在这儿兜一次底：认不出来的值一律退回默认，否则 mode=undefined 会让列表挂上
+  // .as-undefined 这种谁也没写过样式的类名，整页就散了。
+  if (!LIB_MODES.some((m) => m[0] === libState.mode)) libState.mode = "list";
+  if (!LIB_GROUPS.some((g) => g[0] === libState.group)) libState.group = "none";
+  if (libState.view !== "task") libState.view = "dir";
+  // 四趟并发。产出索引（outputs）三种视图都要——不只是「按任务」那一栏：从文件夹里随手点开
+  // 一个文件，右边也要说得出「这是哪次任务做的」。服务端按会话文件 mtime 增量缓存，
+  // 多这一趟不会真去重解析几百个 JSON。
+  const [lib, ws, out, found] = await Promise.all([
+    fetch("/api/library?dir=" + encodeURIComponent(libState.dir || "")).then(r => r.json()).catch(() => ({ files: [], notes: [] })),
     fetch("/api/files").then(r => r.json()).catch(() => []),
+    fetch("/api/library/outputs").then(r => r.json()).catch(() => ({ error: "读不到任务产出" })),
+    q ? fetch("/api/library/search?q=" + encodeURIComponent(q)).then(r => r.json()).catch(() => ({ error: "搜不动了" })) : Promise.resolve(null),
   ]);
+  // 服务端把越界/不存在的 dir 规整成了 ""，界面跟着回到根，否则面包屑指着一个进不去的地方
+  libState.dir = (lib && typeof lib.dir === "string") ? lib.dir : "";
   // 接口回的是 { error } 而不是资料清单时别装作「还没有参考资料」——那是句瞎话，
   // 用户会当成自己没传过东西，而真相是这一趟根本没读成
   if (lib && lib.error) {
     page.innerHTML = `<div class="hub-empty">${ic("book-open-text")} 资料库<br><br>${esc(lib.error)}</div>`;
     return;
   }
-  const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
-  const q = libState.q.toLowerCase();
-  const hit = (n) => !q || n.toLowerCase().includes(q);
-  const icon = (n) => ic(/\.html?$/i.test(n) ? "globe" : /\.csv$/i.test(n) ? "file-spreadsheet" : /\.(md|markdown)$/i.test(n) ? "file-pen-line" : /\.(png|jpe?g|gif|webp|svg)$/i.test(n) ? "image" : /\.pdf$/i.test(n) ? "file-type" : "file-text");
-  const item = (src, name, size) => `
-    <div class="lib-it ${libState.pick && libState.pick.src === src && libState.pick.name === name ? "active" : ""}" data-src="${src}" data-name="${esc(name)}">
-      <span>${icon(name)}</span><span class="nm" title="${esc(name)}">${esc(name)}</span>${size !== undefined ? `<span class="sz">${fmtSize(size)}</span>` : ""}
+  if (out && out.tasks) libOutCache = out;
+
+  const libRow = (src, f, o) => libRowHtml(src, f, { q, ...(o || {}) });
+  // 分组小标题。不分组时 label 是空串，这儿就什么都不画——调用方不用到处写 if
+  const groupHead = (label, n) => label ? `<div class="sec lib-grp">${esc(label)} <span class="n">${n}</span></div>` : "";
+  const groupedRows = (files, src, mk) => libGroupFiles(files)
+    .map((g) => groupHead(g.label, g.items.length) + g.items.map((f) => libRow(src, f, mk ? mk(f) : undefined)).join("")).join("");
+  // 文件夹行：点一下是「进去」，不是「选中预览」，所以单独一个类名，事件也分开接
+  const folder = (f) => `
+    <div class="lib-it lib-dir" data-dir="${esc(f.path)}" title="${esc(f.name)}">
+      <span class="th">${ic("folder")}</span><span class="nm">${esc(f.name)}</span><span class="sz">${f.count || 0} 项</span><span class="tm"></span>
     </div>`;
+  const crumbs = `<div class="lib-crumbs">
+    <a href="#" data-dir="">${ic("book-open-text")}资料库</a>
+    ${(lib.crumbs || []).map(c => `<span>/</span><a href="#" data-dir="${esc(c.path)}">${esc(c.name)}</a>`).join("")}
+  </div>`;
   const recents = JSON.parse(localStorage.getItem("wb_lib_recent") || "[]");
+
+  // ── 三种视图 ────────────────────────────────────────────────────────────
+  // 「文件夹」= 东西放在哪；「按任务」= 东西是哪次做出来的。后者是用户原话点名要的
+  //（「资料库那块按照任务看到产出吧」）——人记文件是按「上周让它写的那份周报」记的，
+  // 不是按 out/2026-09/report-final-v3.md 记的。搜索一开口就接管整块列表，
+  // 因为搜的时候「我现在在哪一层」已经不重要了。
+  const libFiles = (lib.files || []).filter(f => libKindOk(f.name));
+  const wsFiles = ws.filter(f => libKindOk(f.name)).slice(0, 120);
+  let body = "";
+  if (q) body = libSearchHtml(found, q, recents);
+  else if (libState.view === "task") body = libTasksHtml(out);
+  else body = `
+    ${(lib.dirs || []).map(folder).join("")}
+    ${libFiles.length
+      ? groupedRows(libFiles, "lib", (f) => ({ full: f.path, label: f.name, dir: "" }))
+      : ((lib.dirs || []).length ? "" : `<div class="lib-none">${libState.dir ? "这个文件夹还是空的" : "还没有参考资料"}</div>`)}
+    <div class="sec">本地产物（当前项目）<span class="n">${wsFiles.length}</span></div>
+    ${wsFiles.length ? groupedRows(wsFiles, "ws") : '<div class="lib-none">工作目录还没有成果文件</div>'}`;
+
+  // 预览栏什么时候占位置：选了东西才占（列表/图标），画廊里永远占——它就是主角。
+  // 画廊里还没选东西也照占：底下几行会替用户挑第一个，位置得先留出来。
+  const prevOn = libState.mode === "gallery" || !!libState.pick;
+
   page.innerHTML = `
-    <div class="lib-page">
+    <div class="lib-page" data-mode="${libState.mode}" data-prev="${prevOn ? "on" : "off"}">
       <div class="lib-side">
-        <div class="hub-search">${ic("search")}<input id="lb-q" placeholder="搜索资料" value="${esc(libState.q)}"></div>
-        <div class="lib-it ${libState.pick && libState.pick.src === "notes" ? "active" : ""}" data-src="notes" data-name="" style="margin-top:10px"><span>${ic("lightbulb")} </span><span class="nm">灵感笔记（${(lib.notes || []).length}）</span></div>
-        ${recents.length ? `<div class="sec">最近</div>` + recents.filter(r => hit(r.name)).slice(0, 6).map(r => item(r.src, r.name)).join("") : ""}
-        <div class="sec">${po ? "我的文档" : "共享资料"} ${po ? `<a href="#" id="lb-up" class="link" style="font-size: 13px">${ic("plus")}上传</a><input type="file" id="lb-file" multiple style="display:none">` : `<span style="font-weight:400;color:var(--wb-text-3)" title="资料库是整台服务器共用的一份，往里放东西归平台管理员">只读</span>`}</div>
-        ${(lib.files || []).filter(f => hit(f.name)).map(f => item("lib", f.name, f.size)).join("") || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 8px">还没有参考资料</div>'}
-        <div class="sec">本地产物（当前项目）</div>
-        ${ws.filter(f => hit(f.name)).slice(0, 60).map(f => item("ws", f.name, f.size)).join("") || '<div style="font-size: 13px;color:var(--wb-text-3);padding:4px 8px">工作目录还没有成果文件</div>'}
+        <div class="hub-search">${ic("search")}<input id="lb-q" placeholder="搜文件名、正文、任务名…" value="${esc(libState.q)}">${q ? `<a href="#" id="lb-qx" class="lb-qx" title="清空搜索">${ic("x")}</a>` : ""}</div>
+        <div class="lib-tabs" role="tablist">
+          <button type="button" class="lib-tab ${libState.view === "dir" ? "on" : ""}" data-view="dir" role="tab" aria-selected="${libState.view === "dir"}">${ic("folder-tree")}文件夹</button>
+          <button type="button" class="lib-tab ${libState.view === "task" ? "on" : ""}" data-view="task" role="tab" aria-selected="${libState.view === "task"}">${ic("sparkles")}按任务</button>
+          <button type="button" class="lib-tab ${libState.pick && libState.pick.src === "notes" ? "on" : ""}" data-src="notes" role="tab" aria-selected="${!!(libState.pick && libState.pick.src === "notes")}">${ic("lightbulb")}笔记 ${(lib.notes || []).length || ""}</button>
+        </div>
+        <div class="lib-kinds">${LIB_KINDS.map(([k, label]) => `<button type="button" class="lib-kind ${(libState.kind || "all") === k ? "on" : ""}" data-kind="${k}">${esc(label)}</button>`).join("")}</div>
+        <div class="lib-side-tip">${po ? "我的文档" : "共享资料"}${po ? "" : ` · <span title="资料库是整台服务器共用的一份，往里放东西归平台管理员">只读</span>`}<br>
+          任务里 AI 也读得到这儿的资料（library_list / library_read）</div>
       </div>
-      <div class="lib-prev" id="lb-prev"><div class="ph">左边挑一个文件看内容<br><br>${ic("file-pen-line")} Markdown 直接排版 · ${ic("file-spreadsheet")} CSV 变表格 · ${ic("globe")} HTML 真渲染<br>任务里 AI 也能读这里的资料（library_list / library_read）</div></div>
+      <div class="lib-main">
+        <div class="lib-bar">
+          ${q ? `<div class="lib-where">${ic("search")}搜「${esc(q)}」</div>`
+            : libState.view === "task" ? `<div class="lib-where">${ic("sparkles")}按任务看产出</div>` : crumbs}
+          <div class="lib-bar-acts">
+            <div class="lib-seg" role="group" aria-label="分组方式">${LIB_GROUPS.map(([g, label]) =>
+              `<button type="button" class="lib-gp ${(libState.group || "none") === g ? "on" : ""}" data-group="${g}" aria-pressed="${(libState.group || "none") === g}">${esc(label)}</button>`).join("")}</div>
+            <div class="lib-seg" role="group" aria-label="显示方式">${LIB_MODES.map(([m, label, icon]) =>
+              `<button type="button" class="lib-md ${libState.mode === m ? "on" : ""}" data-mode="${m}" title="${esc(label)}视图" aria-label="${esc(label)}视图" aria-pressed="${libState.mode === m}">${ic(icon)}</button>`).join("")}</div>
+            ${po && !q && libState.view === "dir" ? `<a href="#" id="lb-mkdir" class="link">${ic("folder")}新建</a><a href="#" id="lb-up" class="link">${ic("plus")}上传</a><input type="file" id="lb-file" multiple style="display:none">` : ""}
+          </div>
+        </div>
+        <div class="lib-list as-${libState.mode}">${body}</div>
+      </div>
+      <div class="lib-prev" id="lb-prev"><div class="ph">左边挑一个文件看内容<br><br>${ic("file-pen-line")} Markdown 直接排版 · ${ic("file-spreadsheet")} CSV 变表格 · ${ic("globe")} HTML 真渲染<br>画廊视图里按 ← → 一张张翻</div></div>
     </div>`;
+
+  // 没选中东西的画廊是一整块空白——替用户挑第一个。访达的画廊视图也是这么干的。
+  // 从渲染好的 DOM 里挑，不从 body 字符串里正则抠：三种视图拼出来的 HTML 长得不一样，
+  // 正则抠第一个 data-name 早晚会抠到隔壁那个属性上去。
+  if (libState.mode === "gallery" && !libState.pick) {
+    const el0 = page.querySelector(".lib-it:not(.lib-dir)");
+    if (el0) {
+      libState.pick = { src: el0.dataset.src, name: el0.dataset.name, task: el0.dataset.task || "" };
+      el0.classList.add("active");
+    }
+  }
+
   const qEl = page.querySelector("#lb-q");
-  qEl.oninput = () => { libState.q = qEl.value; clearTimeout(page._t); page._t = setTimeout(renderLibPage, 200); };
-  if (po) {
+  // 搜索要打到服务端（跨目录、翻正文），所以节流放宽到 260ms，并且重画后把光标和选区放回去，
+  // 不然每敲一个字焦点就掉回页面，根本打不完一个词
+  qEl.oninput = () => {
+    libState.q = qEl.value;
+    clearTimeout(page._t);
+    page._t = setTimeout(async () => { const at = qEl.selectionStart; await renderLibPage(); const el2 = document.getElementById("lb-q"); if (el2) { el2.focus(); try { el2.setSelectionRange(at, at); } catch {} } }, 260);
+  };
+  const qx = page.querySelector("#lb-qx");
+  if (qx) qx.onclick = (e) => { e.preventDefault(); libState.q = ""; renderLibPage(); };
+  page.querySelectorAll(".lib-tab[data-view]").forEach(b => b.onclick = () => {
+    libState.view = b.dataset.view;
+    try { localStorage.setItem("wb_lib_view", libState.view); } catch {}
+    renderLibPage();
+  });
+  const nb = page.querySelector('.lib-tab[data-src="notes"]');
+  if (nb) nb.onclick = () => { libState.pick = { src: "notes", name: "" }; renderLibPage(); };
+  page.querySelectorAll(".lib-kind").forEach(b => b.onclick = () => { libState.kind = b.dataset.kind; renderLibPage(); });
+  // 摆法和分组都记到本地：这一页每个人的用法差很远——有人一直用列表找文档，有人一直用画廊过图
+  page.querySelectorAll(".lib-md").forEach(b => b.onclick = () => {
+    libState.mode = b.dataset.mode;
+    try { localStorage.setItem("wb_lib_mode", libState.mode); } catch {}
+    renderLibPage();
+  });
+  page.querySelectorAll(".lib-gp").forEach(b => b.onclick = () => {
+    libState.group = b.dataset.group;
+    try { localStorage.setItem("wb_lib_group", libState.group); } catch {}
+    renderLibPage();
+  });
+
+  if (po && page.querySelector("#lb-up")) {
     page.querySelector("#lb-up").onclick = (e) => { e.preventDefault(); page.querySelector("#lb-file").click(); };
     page.querySelector("#lb-file").onchange = async (e) => {
       // 以前这儿不看返回值，一律 toast「✅ 已上传」——重名、超大、权限不够、磁盘满，
@@ -176,7 +435,7 @@ async function renderLibPage() {
       let done = 0, err = "";
       for (const file of e.target.files) {
         const data_b64 = await new Promise((ok) => { const rd = new FileReader(); rd.onload = () => ok(rd.result.split(",")[1]); rd.readAsDataURL(file); });
-        const r = await fetch("/api/library/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: file.name, data_b64 }) })
+        const r = await fetch("/api/library/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: file.name, dir: libState.dir || "", data_b64 }) })
           .then(x => x.json()).catch(() => ({ error: "网络异常" }));
         if (r && r.ok) done++; else err = err || `${file.name}：${(r && r.error) || "上传失败"}`;
       }
@@ -184,8 +443,41 @@ async function renderLibPage() {
       renderLibPage();
     };
   }
-  page.querySelectorAll(".lib-it").forEach(el => el.onclick = () => {
-    libState.pick = { src: el.dataset.src, name: el.dataset.name };
+  // 面包屑和文件夹：往上跳 / 往下进。进去之前把选中的预览清掉，
+  // 否则左边已经换了一层、右边还挂着上一层某个文件，看着像是没切成功
+  page.querySelectorAll(".lib-crumbs a, .lib-dir").forEach(el => el.onclick = (e) => {
+    e.preventDefault();
+    libState.dir = el.dataset.dir || "";
+    libState.pick = null;
+    libState.view = "dir";
+    renderLibPage();
+  });
+  if (po && page.querySelector("#lb-mkdir")) {
+    page.querySelector("#lb-mkdir").onclick = async (e) => {
+      e.preventDefault();
+      const name = prompt(libState.dir ? `在「${libState.dir}」里新建文件夹，叫什么？` : "新建文件夹，叫什么？");
+      if (!name || !name.trim()) return;
+      const r = await fetch("/api/library/folder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir: libState.dir || "", name: name.trim() }) })
+        .then(x => x.json()).catch(() => ({ error: "网络异常" }));
+      if (!r || !r.ok) return toast(((r && r.error) || "建不了"), "circle-x");
+      renderLibPage();
+    };
+  }
+  // 任务分组：标题那一行点开/收起，右边「打开对话」直接跳回产生它的那次对话。
+  // 这是这一页跟「一张文件表格」最不一样的地方——产出和它的来历始终连着
+  page.querySelectorAll(".lib-task-h").forEach(h => h.onclick = (e) => {
+    if (e.target.closest("[data-open]")) return;
+    const id = h.dataset.task;
+    if (libTaskShut.has(id)) libTaskShut.delete(id); else libTaskShut.add(id);
+    renderLibPage();
+  });
+  page.querySelectorAll("[data-open]").forEach(a => a.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openSession(a.dataset.open);
+  });
+  page.querySelectorAll(".lib-it:not(.lib-dir)").forEach(el => el.onclick = () => {
+    libState.pick = { src: el.dataset.src, name: el.dataset.name, task: el.dataset.task || "" };
     if (el.dataset.src !== "notes") {
       const rec = [{ src: el.dataset.src, name: el.dataset.name }, ...recents.filter(r => !(r.src === el.dataset.src && r.name === el.dataset.name))].slice(0, 8);
       localStorage.setItem("wb_lib_recent", JSON.stringify(rec));
@@ -194,7 +486,108 @@ async function renderLibPage() {
     renderLibPreview(page.querySelector("#lb-prev"), lib);
   });
   if (libState.pick) renderLibPreview(page.querySelector("#lb-prev"), lib);
+
+  // ← → ↑ ↓ 翻文件。画廊视图里这是主要的用法——过一批图的时候手不该在鼠标和键盘之间来回换。
+  // 监听只能挂在 document 上（.lib-list 不 focus 就收不到键），所以每次重画都要把上一个摘掉，
+  // 否则切几次视图就叠了一堆监听，按一下跳好几格。
+  if (window.__libKey) document.removeEventListener("keydown", window.__libKey);
+  window.__libKey = (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const dir = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -2, ArrowDown: 2 }[e.key];
+    if (!dir) return;
+    const pg = document.querySelector(".lib-page");
+    // 页面已经换走了（去了别的 tab），自己摘干净——留着的话下一页按方向键会往一个不存在的列表里找
+    if (!pg || !document.body.contains(pg)) { document.removeEventListener("keydown", window.__libKey); window.__libKey = null; return; }
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return; // 搜索框里方向键是移光标
+    const items = [...pg.querySelectorAll(".lib-it:not(.lib-dir)")];
+    if (!items.length) return;
+    const at = items.findIndex((x) => x.classList.contains("active"));
+    // 图标是网格，上下要跨一整行；列表是一条竖线，四个方向都只挪一格
+    const per = libState.mode === "list" ? 1 : libPerRow(pg);
+    const step = Math.abs(dir) === 2 ? (dir / 2) * per : dir;
+    const to = at < 0 ? 0 : at + step;
+    if (to < 0 || to >= items.length) return; // 到头就停住，不绕回去：绕回去的列表没人数得清自己在哪
+    e.preventDefault();
+    items[to].click();
+    items[to].scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+  document.addEventListener("keydown", window.__libKey);
 }
+
+/**
+ * 「按任务」视图。一组 = 一次对话，组里是那次对话真正写出来的文件。
+ *
+ * 数据不是猜的：每跑完一批工具，服务端会往 transcript 里记一条 files 事件，
+ * 里面的 changed 是认过主的那几个文件。这一页只是把那份记录倒过来读一遍。
+ */
+function libTasksHtml(data) {
+  if (!data) return `<div class="lib-none">读取中…</div>`;
+  if (data.error) return `<div class="lib-none">${esc(data.error)}</div>`;
+  const tasks = (data.tasks || []).map((t) => ({ ...t, files: (t.files || []).filter((f) => libKindOk(f.name)) })).filter((t) => t.files.length);
+  const orphans = (data.orphans || []).filter((f) => libKindOk(f.name));
+  const group = (t) => {
+    const shut = libTaskShut.has(t.id);
+    return `<div class="lib-task">
+      <div class="lib-task-h ${shut ? "shut" : ""}" data-task="${esc(t.id)}" role="button" tabindex="0" title="${esc(t.title)}">
+        <span class="cv">${ic("chevron-down")}</span>
+        <span class="tk">${ic("sparkles")}</span>
+        <span class="nm">${esc(t.title)}</span>
+        <span class="n">${t.files.length}</span>
+        <span class="tm">${esc(libWhen(t.at))}</span>
+        <a href="#" class="go" data-open="${esc(t.id)}" title="回到产生这些文件的那次对话">${ic("message-square")}</a>
+      </div>
+      ${shut ? "" : `<div class="lib-fs">${t.files.map((f) => libRowHtml("ws", f, {
+        cls: "lib-sub", task: t.id, dir: "", note: f.gone ? "已不在" : undefined,
+      })).join("")}</div>`}
+    </div>`;
+  };
+  return `<div class="sec">按任务看产出 <span style="font-weight:400;color:var(--wb-text-3)">${tasks.length} 个任务</span></div>
+    ${tasks.map(group).join("") || `<div class="lib-none">还没有任务产出过文件。跑一个任务，它写出来的东西会自动归到这儿。</div>`}
+    ${orphans.length ? `<div class="sec">未归属 <span style="font-weight:400;color:var(--wb-text-3)">${data.orphan_total || orphans.length} 个</span></div>
+      <div class="lib-note-tip">这些文件在工作目录里，但没有哪次任务认领过——多半是手动拷进来的，或者是更早的版本留下的。</div>
+      <div class="lib-fs">${orphans.slice(0, 80).map((f) => libRowHtml("ws", f)).join("")}</div>` : ""}`;
+}
+
+/**
+ * 搜索结果。四类来源分块列，每块都写明它是从哪儿搜出来的。
+ *
+ * 之所以要分来源：同一个词在「资料库里的一份合同」和「上周那次任务的产出」里出现，
+ * 对用户是两件完全不同的事。混在一张列表里按相关度排，看起来聪明，用起来得挨个点开确认。
+ */
+function libSearchHtml(data, q, recents) {
+  if (!data) return `<div class="lib-none">搜索中…</div>`;
+  if (data.error) return `<div class="lib-none">${esc(data.error)}</div>`;
+  const lib = (data.lib || []).filter((f) => libKindOk(f.name));
+  const ws = (data.ws || []).filter((f) => libKindOk(f.name));
+  const notes = data.notes || [];
+  const tasks = data.tasks || [];
+  const total = lib.length + ws.length + notes.length + tasks.length;
+  if (!total) return `<div class="lib-none">没搜到「${esc(q)}」。<br>文件名、文件正文、任务名、灵感笔记都翻过了。${data.capped ? "<br>（这次正文没翻完，换个更短的词再试试）" : ""}</div>`;
+  // 名字一列只放文件名本身、目录用小字挂在后面（工作区那边 name 是
+  // 「任务_0916_xxx/配音文案.md」这样的相对路径，不切开的话目录会在一行里出现两遍）——
+  // 这件事 libRowHtml 已经做好了。搜索这儿只多一样东西：命中的那几行正文。
+  const fileRow = (src, f) => libRowHtml(src, f, { q })
+    + ((f.lines || []).length ? `<div class="lib-hits">${f.lines.map((l) => `<div><em>${l.line}</em>${libMark(l.text, q)}</div>`).join("")}</div>` : "");
+  return `
+    ${tasks.length ? `<div class="sec">任务 <span style="font-weight:400;color:var(--wb-text-3)">${tasks.length}</span></div>
+      ${tasks.map((t) => `<div class="lib-task">
+        <div class="lib-task-h" data-task="${esc(t.id)}" role="button" tabindex="0" title="${esc(t.title)}">
+          <span class="cv">${ic("chevron-down")}</span><span class="tk">${ic("sparkles")}</span>
+          <span class="nm">${libMark(t.title, t.by === "title" ? q : "")}</span><span class="n">${(t.files || []).length}</span><span class="tm">${esc(libWhen(t.at))}</span>
+          <a href="#" class="go" data-open="${esc(t.id)}" title="回到这次对话">${ic("message-square")}</a>
+        </div>
+        <div class="lib-fs">${(t.files || []).filter((f) => libKindOk(f.name)).map((f) => libRowHtml("ws", f, {
+          cls: "lib-sub", task: t.id, dir: "", q, note: f.gone ? "已不在" : undefined,
+        })).join("")}</div>
+      </div>`).join("")}` : ""}
+    ${lib.length ? `<div class="sec">资料库 <span style="font-weight:400;color:var(--wb-text-3)">${lib.length}</span></div>${lib.map((f) => fileRow("lib", f)).join("")}` : ""}
+    ${ws.length ? `<div class="sec">本地产物 <span style="font-weight:400;color:var(--wb-text-3)">${ws.length}</span></div>${ws.map((f) => fileRow("ws", f)).join("")}` : ""}
+    ${data.capped ? `<div class="lib-capped">${ic("circle-alert")}正文只翻了前 ${data.scanned || 0} 个文件就到预算上限了，下面可能还有没露面的。词写长一点、或者先用左边的类型筛一下。</div>` : ""}
+    ${notes.length ? `<div class="sec">灵感笔记 <span style="font-weight:400;color:var(--wb-text-3)">${notes.length}</span></div>
+      ${notes.map((n) => `<div class="lib-it" data-src="notes" data-name=""><span class="th">${ic("lightbulb")}</span><span class="nm" title="${esc(n.text)}">${libMark(String(n.text).slice(0, 80), q)}</span><span class="sz"></span><span class="tm"></span></div>`).join("")}` : ""}`;
+}
+
 async function renderLibPreview(prev, lib) {
   const { src, name } = libState.pick || {};
   if (!src) return;
@@ -235,12 +628,19 @@ async function renderLibPreview(prev, lib) {
     });
     return;
   }
-  const url = src === "lib" ? "/api/library/file/" + encodeURIComponent(name) : "/api/files/view/" + fpath(name);
+  // 两边都用 fpath：资料库现在也有子目录了，整条路径 encodeURIComponent 一下斜杠会变 %2F，
+  // 服务端的通配路由只认得真斜杠（这跟成果预览里图片全裂是同一个坑）
+  const url = "/api/" + (src === "lib" ? "library/file/" : "files/view/") + fpath(name);
+  // 「这份东西是哪次任务做出来的」。反查用的是同一份 files 事件记录，所以从文件夹视图里
+  // 随手点开一个文件，也能顺着它走回那次对话——不只是「按任务」那一栏里点进来的才有。
+  // 这一条是这一页跟一张普通文件表格最要紧的区别：产出和它的来历始终连着。
+  const from = libTaskOf(src, name);
   const bar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
     <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</b>
     <a class="link" href="${url}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>
     ${src === "lib" && po ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
-  </div>`;
+  </div>
+  ${from ? `<div class="lib-from">${ic("sparkles")}<span>出自任务</span><a href="#" class="link" data-open="${esc(from.id)}" title="回到产生这份文件的那次对话">${esc(from.title)}</a><em>${esc(libWhen(from.at))}</em></div>` : ""}`;
   prev.innerHTML = bar + '<div class="ph">加载中…</div>';
   const body = prev.lastElementChild;
   const wireDel = () => {
@@ -248,7 +648,7 @@ async function renderLibPreview(prev, lib) {
     if (d) d.onclick = async (e) => {
       e.preventDefault();
       if (!confirm(`删除资料「${name}」？`)) return;
-      const r = await fetch("/api/library/file/" + encodeURIComponent(name), { method: "DELETE" })
+      const r = await fetch("/api/library/file/" + fpath(name), { method: "DELETE" })
         .then(x => x.json()).catch(() => ({ error: "网络异常" }));
       if (!r || !r.ok) return toast(((r && r.error) || "删不掉"), "circle-x");
       libState.pick = null;
@@ -278,6 +678,8 @@ async function renderLibPreview(prev, lib) {
     body.outerHTML = `<div class="ph">预览失败：${esc(e.message)}</div>`;
   }
   wireDel();
+  // 「出自任务」那条链接得在 innerHTML 重排之后再接一次事件（上面几条 outerHTML 会换掉节点）
+  prev.querySelectorAll("[data-open]").forEach((a) => a.onclick = (e) => { e.preventDefault(); openSession(a.dataset.open); });
 }
 
 // ================= 专家 · 技能 · 连接器（主区页面，三合一） =================
@@ -388,7 +790,7 @@ function renderHubExperts(box) {
     if (teamAdd) teamAdd.onclick = () => { hubState.editing = { type: "team", data: null }; renderHubEditor(); };
     grid.querySelectorAll(".ex-card[data-ti]").forEach(card => {
       const t = list[+card.dataset.ti];
-      card.querySelector(".t-use").onclick = () => { startTaskWith(`请把下面这个任务整体委派给专家团「${t.name}」（用 delegate_to_team）：\n\n`); toast(`已成功召唤专家团「${t.name}」`); };
+      card.querySelector(".t-use").onclick = () => { startTaskUsing("team", t.name); toast(`专家团「${t.name}」已就位，说说要做什么`); };
       if (!po) return;
       card.querySelector(".t-edit").onclick = () => { hubState.editing = { type: "team", data: t }; renderHubEditor(); };
       card.querySelector(".t-del").onclick = async () => {
@@ -424,7 +826,7 @@ function renderHubExperts(box) {
     if (exAdd) exAdd.onclick = () => { hubState.editing = { type: "expert", data: null }; renderHubEditor(); };
     grid.querySelectorAll(".ex-card[data-ei]").forEach(card => {
       const e = list[+card.dataset.ei];
-      card.querySelector(".e-use").onclick = () => { startTaskWith(`请把下面这个任务委派给专家「${e.name}」：\n\n`); toast(`已成功召唤专家「${e.name}」`); };
+      card.querySelector(".e-use").onclick = () => { startTaskUsing("expert", e.name); toast(`专家「${e.name}」已就位，说说要做什么`); };
       if (!po) return;
       card.querySelector(".e-edit").onclick = () => { hubState.editing = { type: "expert", data: e }; renderHubEditor(); };
       card.querySelector(".e-del").onclick = async () => {
@@ -768,10 +1170,10 @@ async function renderHubSkills(box) {
         `<div class="sk-start-hint">${eg.length ? "挑一件最像你要做的事，下一步再补素材：" : "这份说明书没写「适用场景」，先照这个格式说清你要什么："}</div>` +
         (eg.length ? `<div class="sk-eg">${eg.map((t, i) => `<button class="chip" data-i="${i}">${esc(t)}</button>`).join("")}</div>` : "") +
         `<button class="sk-own">我自己写一句${ic("arrow-right")}</button>`;
-      panel.querySelectorAll(".chip").forEach(b => b.onclick = () => startTaskWith(
-        `用「${s.name}」技能帮我：${eg[+b.dataset.i]}\n\n__把素材和背景贴在这一行：要做的是什么、给谁看、手上已经有的内容__`));
-      panel.querySelector(".sk-own").onclick = () => startTaskWith(
-        `用「${s.name}」技能帮我：__一句话说清你要它做出什么__\n\n素材/背景：`);
+      panel.querySelectorAll(".chip").forEach(b => b.onclick = () => startTaskUsing("skill", s.name,
+        `${eg[+b.dataset.i]}\n\n__把素材和背景贴在这一行：要做的是什么、给谁看、手上已经有的内容__`));
+      panel.querySelector(".sk-own").onclick = () => startTaskUsing("skill", s.name,
+        `__一句话说清你要它做出什么__\n\n素材/背景：`);
     };
     card.querySelector(".sk-view").onclick = async () => {
       const pre = card.querySelector(".sk-preview");

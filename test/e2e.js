@@ -7,6 +7,11 @@
  */
 
 const fs = require("fs");
+// 单独跑这个文件时也别写进用户真账本（all.js 里已经设过一次，这里只兜底）
+if (!process.env.OPENWORKBUDDY_TRACE_FILE) {
+  process.env.OPENWORKBUDDY_TRACE_FILE =
+    require("path").join(require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "owb-test-trace-")), "traces.jsonl");
+}
 const os = require("os");
 const path = require("path");
 const assert = require("assert");
@@ -765,6 +770,24 @@ function testSurfaceLayerGate() {
 }
 
 /**
+ * README 里允许出现的「别人家的仓库」白名单。
+ *
+ * 两道闸门都要用它：testDocLinkGate 扫全文链接和徽章，testReadmeFrontGate 扫门面。
+ * 原来两边各写各的——前者有白名单、后者写死「只许出现一个仓库」，
+ * 结果「生态」那节一加上游项目，前者放行、后者报红，两把尺子自己先打起来了。所以只留一份。
+ *
+ * 白名单本身还是紧的：徽章、clone、安装地址必须是本仓库，这里只放「正文里点得进去的可核验入口」——
+ * 「和其他 Agent 的位置」要给对比对象的官方仓库，「生态」要给我们真在用的上游项目。
+ * 多一条就得在这儿写一行并说清为什么；写不上来，就是该拦住。
+ */
+const REFERENCE_REPOS = new Set([
+  // 「和其他 Agent 的位置」：对比表点名的开源项目，给个可核验入口
+  "openai/codex", "earendil-works/pi", "openclaw/openclaw", "NousResearch/hermes-agent",
+  // 「生态」：连接器网关，同时收进了 mcp-catalog.js 的推荐目录，用户点「接入」就能用
+  "oomol-lab/open-connector",
+]);
+
+/**
  * 定时任务「假绿」闸门。
  *
  * 守的是 scheduler.js 原来那条 `finish(true, finalText || "完成")`——只要 runTask 没抛异常
@@ -872,10 +895,8 @@ function testDocLinkGate() {
     const seg = m[1].split("/").filter(Boolean);
     if (seg.length >= 3) slugs.add(seg.slice(-2).join("/"));
   }
-  // README 的徽章、clone、安装地址必须是本仓库；但「和其他 Agent 的位置」需要给出
-  // 可核验的官方开源项目入口。白名单只允许这几个比较对象，避免把徽章误接到别人仓库。
-  const referenceRepos = new Set(["openai/codex", "earendil-works/pi", "openclaw/openclaw", "NousResearch/hermes-agent"]);
-  slugs.forEach((sl) => assert(sl === "CatCatUncle/openworkbuddy" || referenceRepos.has(sl), "README 里出现了未经允许的仓库地址：" + sl));
+
+  slugs.forEach((sl) => assert(sl === "CatCatUncle/openworkbuddy" || REFERENCE_REPOS.has(sl), "README 里出现了未经允许的仓库地址：" + sl));
   assert(slugs.has("CatCatUncle/openworkbuddy"), "README 里没找到本仓库地址");
   // shields 的 release 徽章在没发过 release 时会渲染成 "no releases or repo not found"。
   // 用本地 git tag 当代理：发布都是从 tag 切的，打了 tag 这条自然放行，不用另外维护标记
@@ -3706,13 +3727,63 @@ function testMemoryLayer() {
     assert.strictEqual(long.ok, false);
     assert.ok(/结论/.test(long.note), long.note);
 
-    // 超量：丢最旧的，而且必须在回执里说出来（闷声吞就等于用户以为记住了其实没有）
+    // 超量：丢东西必须在回执里说出来（闷声吞就等于用户以为记住了其实没有）；
+    // 全都没用过时，退化成老行为「最旧的先走」
     let last;
     for (let i = 0; i < mem.MAX_PER_SCOPE + 3; i++) last = mem.add({ text: "第 " + i + " 条偏好", user: "丙" });
     assert.ok(last.dropped > 0, "超量了却没丢也没说");
-    assert.ok(/丢弃最旧/.test(last.note), last.note);
+    assert.ok(/丢弃/.test(last.note) && /用过几次/.test(last.note), last.note);
     assert.strictEqual(mem.list().filter((x) => x.scope === "丙").length, mem.MAX_PER_SCOPE, "超量后条数不对");
-    assert.strictEqual(mem.list("丙").some((x) => x.text === "第 0 条偏好"), false, "该丢的最旧那条还在");
+    assert.strictEqual(mem.list("丙").some((x) => x.text === "第 0 条偏好"), false, "谁都没用过时该丢最旧的，那条却还在");
+
+    // 淘汰按价值不按先后：一条用了四十次的老偏好，不该被昨天记下、一次没派上用场的新条目挤掉。
+    // 这是老写法真会犯的错——「旧」和「没用」是两回事，按错的那个丢，越用越难用。
+    {
+      const older = new Date(Date.now() - 40 * 864e5).toISOString();
+      const newer = new Date(Date.now() - 1 * 864e5).toISOString();
+      const ks = mem._internals.keepScore;
+      const 老而有用 = { created_at: older, last_used: new Date().toISOString(), hits: 40, source: "agent" };
+      const 新而没用 = { created_at: newer, source: "agent" };
+      assert.ok(ks(老而有用) > ks(新而没用), "淘汰打分把「用了四十次的老偏好」排在了「一次没用过的新条目」前面");
+      // 反向对照：两条都没人用过时，旧的确实该先走（别把老行为改坏了）
+      assert.ok(ks({ created_at: newer, source: "agent" }) > ks({ created_at: older, source: "agent" }), "都没用过时旧的没有先走");
+      // 用户亲手写的不该被 agent 自己记的挤掉，哪怕它更老、也没被召回过
+      assert.ok(ks({ created_at: older, source: "user" }) > ks({ created_at: newer, hits: 3, source: "agent" }), "用户手写的被 agent 记的挤掉了");
+    }
+
+    // 命中回写：真进过提示词的条目要记一笔，而且是合并写盘（不是每轮任务写一次）
+    {
+      const { noteUsed } = mem._internals;
+      const mine = mem.list("丙");
+      const target = mine[mine.length - 1];
+      noteUsed([target.id, target.id, target.id]);
+      assert.strictEqual((mem.list("丙").find((x) => x.id === target.id) || {}).hits, undefined, "命中还没到窗口就写盘了（该攒着合并）");
+      assert.ok(mem.flushHits() >= 1, "冲一次却一条都没落盘");
+      const after = mem.list("丙").find((x) => x.id === target.id);
+      assert.strictEqual(after.hits, 3, "三次命中没并成 3：" + after.hits);
+      assert.ok(after.last_used, "命中了却没记最近用于哪天");
+      // 反向对照：没有待写的命中时，冲一次应该什么都不做（别为了空转多写一次盘）
+      assert.strictEqual(mem.flushHits(), 0, "没东西可写时还是写了一次盘");
+    }
+
+    // 同一段提示词里两条说的是一件事：只留新的那条。留着的代价是模型随机挑一条听，
+    // 用户那边的感受是「我明明改过了，它有时候听有时候不听」——最难查的那种不听话。
+    {
+      const { dedupeForPrompt } = mem._internals;
+      const a = { id: "a", scope: "戊", text: "周报开头不要写废话开场白", created_at: "2026-01-01T00:00:00Z" };
+      const b = { id: "b", scope: "戊", text: "周报开头不要写开场白废话", created_at: "2026-02-01T00:00:00Z" };
+      const c = { id: "c", scope: "戊", text: "所有交付物一律不加水印", created_at: "2026-01-15T00:00:00Z" };
+      const r = dedupeForPrompt([a, b, c]);
+      assert.strictEqual(r.kept.length, 2, "同义的两条没被压成一条：" + r.kept.map((x) => x.id).join(","));
+      assert.ok(r.kept.some((x) => x.id === "b") && r.shadowed.some((x) => x.id === "a"), "留下的不是新的那条");
+      assert.ok(r.kept.some((x) => x.id === "c"), "把不相干的那条也一起吃掉了");
+      // 反向对照一：共享区和个人区撞车是「组里的规矩 vs 我自己的偏好」，不许在这儿悄悄吃掉一边
+      const shared = { id: "s", scope: "*", text: "周报开头不要写开场白废话", created_at: "2026-03-01T00:00:00Z" };
+      assert.strictEqual(dedupeForPrompt([a, shared]).kept.length, 2, "跨作用域的同义条目被吃掉了");
+      // 反向对照二：只是沾点边的两条不许被当成同一件事
+      const d = { id: "d", scope: "戊", text: "周报要发给直属领导抄送 HR", created_at: "2026-04-01T00:00:00Z" };
+      assert.strictEqual(dedupeForPrompt([b, d]).kept.length, 2, "只是都提到「周报」就被当成同一件事了");
+    }
 
     // 改登录名：归属要跟着搬，不然那个人的记忆当场变孤儿
     assert.strictEqual(mem.renameScope("乙", "乙二"), 1);
@@ -5578,6 +5649,172 @@ function testOutputFilesRecency() {
   }
 }
 
+
+/**
+ * 备份的一整趟来回：打包 → 下载 → 换台机器传回去 → 恢复。
+ *
+ * 为什么现在才补：在「导入」这一头做出来之前，restore 解的每一个包都是本机自己 makeBackup()
+ * 打的，怎么解都安全，也就没什么可测。现在包可能是从别的机器、别人手里来的，
+ * 而 restore 那一步是实打实的 `tar -xzf 包 -C DATA_DIR`——包里塞一个 /etc/... 或者
+ * 一个 data/x -> ~/.ssh 的软链接，就能写到数据目录外面去。
+ * 所以这条测试的重头不在「传得上去」，在下面那几个必须被拒的形状。
+ */
+async function testBackupRoundTrip() {
+  const { execFileSync } = require("child_process");
+  // 得显式 require：不写这行拿到的是全局那个 WebCrypto，只有 getRandomValues，
+  // 没有 randomBytes，整条测试会以 "crypto.randomBytes is not a function" 当场炸
+  const crypto = require("crypto");
+  // http 同理：这个文件里每条要发请求的测试都在自己函数里 require 一次，模块顶上没有全局的那份
+  const http = require("http");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-bk-"));
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ 标记: "旧机器上的配置" }));
+  fs.writeFileSync(path.join(home, "schedules.json"), "[]");
+  fs.writeFileSync(path.join(home, "data", "memory.md"), "旧机器上的记忆");
+  // 自己写的技能（出厂列表里没有这个名字）要跟着走；出厂那份被改过也不跟着走，
+  // 不然随包那几个技能加起来一百多兆，每备一次背一遍。
+  // 这里的出厂样本必须挑 git 真跟踪的（ppt-design），不能拿 .gitignore 掉的那些：
+  // 那些本机有、新 clone 没有，userSkillEntries() 在 CI 上会把它当用户自建的背进包
+  const mine = path.join(home, "skills", "e2e-我自己写的");
+  fs.mkdirSync(mine, { recursive: true });
+  fs.writeFileSync(path.join(mine, "skill.md"), "# 我自己写的");
+  // prefs/ 在 data/ 外面，漏了它搬完家宠物、快捷指令、上次挑的模型全要重设
+  fs.mkdirSync(path.join(home, "prefs"), { recursive: true });
+  fs.writeFileSync(path.join(home, "prefs", "boss-abc123.json"), JSON.stringify({ pet: { on: true } }));
+  fs.mkdirSync(path.join(home, "skills", "ppt-design"), { recursive: true });
+  fs.writeFileSync(path.join(home, "skills", "ppt-design", "big.bin"), "出厂技能，新机器上本来就有");
+
+  const token = "bk" + crypto.randomBytes(12).toString("hex");
+  const plain = "bkp" + crypto.randomBytes(8).toString("hex");
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [
+      { username: "boss", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() },
+      { username: "clerk", salt: "x", hash: "x", role: "user", credits: 0, created_at: Date.now() },
+    ],
+    tokens: { [token]: { user: "boss", at: Date.now() }, [plain]: { user: "clerk", at: Date.now() } },
+  }));
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const { up, port, why: bootWhy } = await booted.wait();
+
+  // 回包可能是 JSON，也可能是备份文件本身（下载那一路），所以统一拿 Buffer 收
+  const call = (method, p, { body, type, tok = token } = {}) => new Promise((resolve) => {
+    const headers = { Cookie: "wb_token=" + tok };
+    if (type) headers["Content-Type"] = type;
+    if (body != null) headers["Content-Length"] = Buffer.byteLength(body);
+    const req = http.request({ host: "127.0.0.1", port, path: p, method, headers }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        const buf = Buffer.concat(chunks);
+        let json = null;
+        try { json = JSON.parse(buf.toString("utf8")); } catch {}
+        resolve({ code: res.statusCode, buf, json });
+      });
+    });
+    req.on("error", (e) => resolve({ code: 0, buf: Buffer.alloc(0), json: { error: e.message } }));
+    if (body != null) req.write(body);
+    req.end();
+  });
+  const upload = (buf, tok) => call("POST", "/api/backup/upload", { body: buf, type: "application/gzip", tok });
+  const names = async () => (((await call("GET", "/api/backup")).json || {}).list || []).map((b) => b.name);
+
+  // 在 dir 里按 spec 打一份 tar.gz，返回它的字节
+  const brew = (dir, args, cwd) => {
+    fs.mkdirSync(dir, { recursive: true });
+    const out = path.join(dir, "x.tar.gz");
+    execFileSync("tar", ["-czPf", out, ...args], { cwd: cwd || dir });
+    return fs.readFileSync(out);
+  };
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
+
+    // ① 打一份，下载下来——这就是「换电脑带走」的那个文件
+    const made = (await call("POST", "/api/backup")).json;
+    assert(made && made.ok && /^wb-backup-[\w.-]+\.tar\.gz$/.test(made.name), "备份没打成：" + JSON.stringify(made));
+    const dl = await call("GET", "/api/backup/download/" + encodeURIComponent(made.name));
+    assert(dl.code === 200 && dl.buf[0] === 0x1f && dl.buf[1] === 0x8b, "下载回来的不是 gzip（HTTP " + dl.code + "）");
+
+    // ①.5 包里该有什么：自己写的技能在，出厂技能不在，成果文件不在
+    const probe = path.join(home, "probe.tar.gz");
+    fs.writeFileSync(probe, dl.buf);
+    const inside = execFileSync("tar", ["-tzf", probe], { encoding: "utf8" }).split("\n");
+    const has = (re) => inside.some((n) => re.test(n));
+    assert(has(/^skills\/e2e-我自己写的\/skill\.md$/), "自己写的技能没进备份，搬完家就没了：" + JSON.stringify(inside.slice(0, 20)));
+    assert(!has(/^skills\/ppt-design\//), "出厂技能被背进了备份——随包那几个加起来一百多兆，备份会大到没人敢点");
+    assert(has(/^data\/memory\.md$/) && has(/^config\.json$/), "备份没覆盖 data/ 和 config.json");
+    assert(has(/^prefs\/boss-abc123\.json$/), "个人偏好没进备份，搬完家宠物和快捷指令要重设一遍");
+    assert(!has(/^workspace\//), "成果文件不该进备份");
+
+    // ② 传回去：这就是新机器上那一步。以前没有这个接口，包到了新机器就没有下文
+    const before = (await names()).length;
+    const got = await upload(dl.buf);
+    assert(got.code === 200 && got.json.ok, "备份传不回去：" + JSON.stringify(got.json));
+    assert(/-imported(-\d+)?\.tar\.gz$/.test(got.json.name), "导入的包名字上要看得出是外来的：" + got.json.name);
+    assert(got.json.entries > 0, "导入应报出包里有多少条目");
+    assert((await names()).includes(got.json.name), "导入完列表里得有它，不然用户没法点恢复");
+    assert((await names()).length === before + 1, "导入应当只多出一份");
+
+    // ③ 同一秒内连导两份不能互相盖掉（名字里的时间戳只到秒）
+    const again = await upload(dl.buf);
+    assert(again.code === 200 && again.json.name !== got.json.name, "同一秒导入第二份把第一份盖了：" + again.json.name);
+
+    // ④ 恢复一次：验这条路真能走通（tar 也得认 --no-same-owner 这个参数）
+    const rs = await call("POST", "/api/backup/restore", { body: JSON.stringify({ name: got.json.name }), type: "application/json" });
+    assert(rs.code === 200 && rs.json.ok && rs.json.safety, "从导入的包恢复失败：" + JSON.stringify(rs.json));
+    assert(fs.readFileSync(path.join(home, "data", "memory.md"), "utf8") === "旧机器上的记忆", "恢复后数据没落到盘上");
+    assert(fs.readFileSync(path.join(mine, "skill.md"), "utf8") === "# 我自己写的", "恢复后自己写的技能没落到盘上");
+
+    // ⑤ 该拒的几种形状。每一种都得原地拒掉，且不能在 backups/ 里留下任何痕迹
+    const n0 = (await names()).length;
+    const evil = path.join(home, "evil");
+    const zipMagic = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from("我是个 zip")]);
+    const bad = [
+      ["空 body", Buffer.alloc(0), /没收到文件/],
+      ["不是 gzip", zipMagic, /不是 .tar.gz/],
+      ["半截 gzip", Buffer.concat([Buffer.from([0x1f, 0x8b]), crypto.randomBytes(200)]), /打不开|不是完整/],
+    ];
+    // 绝对路径：解出来会写到 DATA_DIR 外面
+    fs.mkdirSync(evil, { recursive: true });
+    fs.writeFileSync(path.join(evil, "probe.txt"), "x");
+    bad.push(["绝对路径", brew(path.join(evil, "abs"), [path.join(evil, "probe.txt")]), /绝对路径/]);
+    // ../ 跳出去：同上，换个写法
+    const dd = path.join(evil, "dd");
+    fs.mkdirSync(path.join(dd, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(dd, "out.txt"), "x");
+    bad.push(["../ 跳出目录", brew(dd, ["../out.txt"], path.join(dd, "sub")), /跳出目录/]);
+    // 软链接：先塞一个 data/key -> 别人的私钥，后面往它里头写就落到链接指的地方
+    const sym = path.join(evil, "sym");
+    fs.mkdirSync(path.join(sym, "data"), { recursive: true });
+    fs.symlinkSync("/etc/passwd", path.join(sym, "data", "key"));
+    bad.push(["软链接", brew(sym, ["data"]), /链接文件/]);
+    // 形状不对：顶层不是 data/ 和那三个 json，根本不是这套系统的备份
+    const oos = path.join(evil, "oos");
+    fs.mkdirSync(path.join(oos, "workspace"), { recursive: true });
+    fs.writeFileSync(path.join(oos, "workspace", "x.txt"), "x");
+    bad.push(["不属于备份范围", brew(oos, ["workspace"]), /不属于备份范围/]);
+
+    for (const [what, buf, re] of bad) {
+      const r = await upload(buf);
+      assert(r.code === 400, `「${what}」的包居然收下了（HTTP ${r.code}）——它是要拿 tar 解到数据目录上的`);
+      assert(re.test(String(r.json && r.json.error)), `「${what}」的拒绝理由看不出是怎么回事：${JSON.stringify(r.json)}`);
+    }
+    assert((await names()).length === n0, "被拒的包在 backups/ 里留了尸体");
+    assert(!fs.readdirSync(path.join(home, "backups")).some((f) => f.startsWith(".incoming-")), "验不过的临时文件没删干净");
+
+    // ⑥ 备份里有 config.json（API Key）和全部账号——普通成员碰不得
+    const denied = await upload(dl.buf, plain);
+    assert(denied.code === 403, `普通成员能往备份里塞东西（HTTP ${denied.code}）`);
+    const deniedList = await call("GET", "/api/backup", { tok: plain });
+    assert(deniedList.code === 403, "普通成员能看备份列表");
+  } finally {
+    booted.child.kill();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+  console.log("✅ 备份来回：打包→下载→传回新机器→恢复走得通，绝对路径/../、软链接、形状不对的包一律原地拒且不留尸体");
+}
+
 async function main() {
   console.log("=== OpenWorkBuddy e2e 测试 ===");
   testCron();
@@ -5710,6 +5947,7 @@ async function main() {
   testWindowsLaunch();
   testSkillRenameKeepsAssets();
   testOutNameKeepsExt();
+  await testBackupRoundTrip();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -6978,7 +7216,8 @@ function testReadmeFrontGate() {
   assert(/\(README\.en\.md\)|href="README\.en\.md"/.test(zh) && /\(README\.md[)#]|href="README\.md/.test(en), "中英 README 没有互相链接");
   for (const [name, t] of [["README.md", zh], ["README.en.md", en]]) {
     const slugs = new Set([...t.matchAll(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?[/"?)\s]/g)].map((m) => m[1]));
-    assert(slugs.size === 1 && slugs.has("CatCatUncle/openworkbuddy"), name + " 指向了别的仓库：" + [...slugs].join(","));
+    const strays = [...slugs].filter((sl) => sl !== "CatCatUncle/openworkbuddy" && !REFERENCE_REPOS.has(sl));
+    assert(slugs.has("CatCatUncle/openworkbuddy") && strays.length === 0, name + " 指向了别的仓库：" + strays.join(","));
     assert(/img\.shields\.io\/github\/stars\/CatCatUncle\/openworkbuddy/.test(t), name + " 缺 Star 徽章");
   }
   // 首屏三句差异
@@ -8089,7 +8328,11 @@ function testConnectorsAndExperts() {
     assert(!JSON.stringify(it.args || []).includes("{HOME}") && !String(it.url || "").includes("{HOME}"), `预设「${it.name}」{HOME} 没替换`);
     for (const k of Object.keys(it.env || {})) assert(/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && !/[一-鿿]/.test(it.env[k]), `预设「${it.name}」的环境变量 ${k} 不合法`);
     const norm = normalizeMcpServer(catalogMod.resolve(it, { home: "/Users/tester", env: { PATH: "/usr/bin:/bin" } }), 0);
-    assert(norm.name === it.name && (norm.transport === "stdio" ? !!norm.command : /^https:\/\//.test(norm.url)), `预设「${it.name}」过不了后端规整`);
+    // 出网的必须 https；跑在本机上的自建网关（OpenConnector 这类）明文 http 是允许的——
+    // 报文不出网卡，没有中间人可言，normalizeMcpServer 本来就给 localhost 开了这个口子。
+    // 这条尺子只跟着它走，不比它更严：更严的话，等于永远不许用户接自己跑的东西。
+    const okUrl = /^https:\/\//.test(norm.url || "") || /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\//.test(norm.url || "");
+    assert(norm.name === it.name && (norm.transport === "stdio" ? !!norm.command : okUrl), `预设「${it.name}」过不了后端规整：${norm.url || norm.command}`);
     assert(it.needs === (it.kind === "http" ? "" : it.command.split("/").pop()) || it.needs === it.command, `预设「${it.name}」needs 不对：${it.needs}`);
     assert(typeof it.configured === "undefined", "catalog() 不该自己判断 configured（那是路由的事）");
   }

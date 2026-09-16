@@ -138,42 +138,135 @@ async function renderAccount() {
 // ================= 登录 / 注册 =================
 let authMode = "login"; // login | register
 let canRegister = false; // 管理员开了才给注册入口，省得点进去再被拒
+/**
+ * 邀请码：管理后台生成、发给人、人拿它注册——这条路后端一直是通的
+ * （POST /api/auth/register 收 invite），但登录框上从来就没有填它的地方。
+ * 结果是企业版最主要的那条开户路径在界面上根本走不通：管理员把码发过去，
+ * 对方打开页面只看到用户名和密码两个框；更糟的是自助注册按安全默认是**关**的，
+ * 「注册一个」那行字压根不显示，他连注册页都进不去。
+ *
+ * 所以这里做三件事：
+ *   1. 注册时多一个邀请码框；
+ *   2. 「有邀请码？」这个入口跟 open_register 无关，永远在——邀请码本来就是绕开自助注册的那条路；
+ *   3. 认 URL 上的 ?invite=xxxx，管理后台复制出去的是一条链接，点开就已经填好了。
+ */
+let invitePrefill = "";
 function showAuth(setup) {
-  authMode = setup ? "register" : "login";
+  try {
+    const u = new URL(location.href);
+    invitePrefill = (u.searchParams.get("invite") || "").trim();
+    if (invitePrefill) {
+      // 邀请码留在地址栏上，刷新一次又走一遍注册、分享链接时还会把码带出去。读完就擦掉。
+      u.searchParams.delete("invite");
+      history.replaceState(null, "", u.pathname + (u.search || "") + u.hash);
+    }
+  } catch {}
+  authMode = setup || invitePrefill ? "register" : "login";
   applyAuthMode(setup);
   document.getElementById("auth-mask").classList.add("show");
   setTimeout(() => document.getElementById("auth-user").focus(), 50);
 }
 function applyAuthMode(setup) {
   const reg = authMode === "register";
+  const inv = document.getElementById("auth-invite");
   document.getElementById("auth-title").textContent = setup ? "创建管理员账号" : reg ? "注册" : "登录";
   document.getElementById("auth-sub").textContent = setup
     ? "首次使用：第一个注册的账号就是管理员（能开号、能改全局设置）"
-    : reg ? (creditsOn ? "新账号默认为成员（1000 积分）" : "新账号默认为成员") : "登录后使用你自己的任务历史";
+    : reg
+    ? invitePrefill
+      ? "用管理员给你的邀请码开号，角色和部门都按他设好的来"
+      : creditsOn ? "新账号默认为成员（1000 积分）" : "新账号默认为成员"
+    : "登录后使用你自己的任务历史";
   document.getElementById("auth-go").textContent = reg ? "注册并登录" : "登录";
+  // 首次建管理员那次不要邀请码：那会儿一个组织都还没有，没人能给他发码
+  inv.style.display = reg && !setup ? "" : "none";
+  // 自助注册开着的时候邀请码是可选的，得在框里说明白——不然人看见个空框就以为自己缺了什么东西
+  inv.placeholder = canRegister && !invitePrefill ? "邀请码（没有就留空）" : "邀请码（管理员给你的）";
+  if (reg && invitePrefill && !inv.value) inv.value = invitePrefill;
+  document.getElementById("auth-invite-hint").style.display = reg && !setup && invitePrefill ? "" : "none";
   document.getElementById("auth-alt").style.display = setup || !canRegister ? "none" : "";
   document.getElementById("auth-alt").innerHTML = reg
     ? '已有账号？<a id="auth-switch">去登录</a>'
     : '还没有账号？<a id="auth-switch">注册一个</a>';
   document.getElementById("auth-switch")?.addEventListener("click", () => { authMode = reg ? "login" : "register"; applyAuthMode(false); });
+  // 自助注册关着也要留这条路：邀请码是管理员一个一个发的，本来就不该受那个开关管
+  const ia = document.getElementById("auth-invite-alt");
+  ia.style.display = setup || reg ? "none" : "";
+  ia.innerHTML = '有邀请码？<a id="auth-invite-go">用邀请码注册</a>';
+  document.getElementById("auth-invite-go")?.addEventListener("click", () => {
+    authMode = "register";
+    applyAuthMode(false);
+    setTimeout(() => document.getElementById("auth-invite").focus(), 30);
+  });
   document.getElementById("auth-err").textContent = "";
 }
 async function submitAuth() {
   const username = document.getElementById("auth-user").value.trim();
   const password = document.getElementById("auth-pass").value;
+  const invite = document.getElementById("auth-invite").value.trim();
   const errEl = document.getElementById("auth-err");
   if (!username || !password) { errEl.textContent = "用户名和密码都要填"; return; }
-  const resp = await fetch(authMode === "register" ? "/api/auth/register" : "/api/auth/login", {
+  const reg = authMode === "register";
+  const go = document.getElementById("auth-go");
+  go.disabled = true; // scrypt 要算一会儿，不锁住的话用户会连点，服务端那边就多几次限流计数
+  const resp = await fetch(reg ? "/api/auth/register" : "/api/auth/login", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify(reg && invite ? { username, password, invite } : { username, password }),
   }).catch(() => null);
+  go.disabled = false;
   const d = resp ? await resp.json().catch(() => ({})) : {};
-  if (resp && resp.ok) location.reload(); // 带上 cookie 重新初始化整个界面（最省事也最不易漏）
-  else errEl.textContent = d.error || "失败了，稍后再试";
+  if (resp && resp.ok) return location.reload(); // 带上 cookie 重新初始化整个界面（最省事也最不易漏）
+  errEl.textContent = d.error || "失败了，稍后再试";
+  // 「要邀请码才能注册」是后端在自助注册关着时的原话——那就把那个框摆出来给他填
+  if (/邀请码/.test(String(d.error || "")) && authMode === "register") {
+    document.getElementById("auth-invite").style.display = "";
+    document.getElementById("auth-invite").focus();
+  }
 }
 document.getElementById("auth-go").onclick = submitAuth;
 document.getElementById("auth-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
+document.getElementById("auth-invite").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
 document.getElementById("auth-user").addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("auth-pass").focus(); });
+// 看一眼密码。管理员重置出来的是一串随机字符，盲打十有八九要错一次
+document.getElementById("auth-eye").onclick = () => {
+  const el = document.getElementById("auth-pass");
+  const show = el.type === "password";
+  el.type = show ? "text" : "password";
+  document.getElementById("auth-eye").classList.toggle("on", show);
+  document.getElementById("auth-eye").setAttribute("aria-label", show ? "隐藏密码" : "显示密码");
+  el.focus();
+};
+
+/**
+ * 登录成功了，但一步也走不了的两种人：等审核的、被停用的。
+ *
+ * 后端 authGuard 对他们每一个 /api/* 都回 403（pending / disabled 两个标记），
+ * 而界面以前照常把整个工作台画出来——于是他点什么都弹一次报错，
+ * 完全看不出自己是「排队中」还是「被踢了」。这里在进工作台之前就把话说清楚。
+ */
+function showAuthBlocked(status, user) {
+  const pending = status === "pending";
+  const card = document.querySelector("#auth-mask .auth-card");
+  card.classList.add("auth-wait");
+  card.innerHTML = `
+    <div class="ico${pending ? "" : " bad"}">${ic(pending ? "hourglass" : "circle-x")}</div>
+    <h2>${pending ? "在等管理员通过" : "这个账号被停用了"}</h2>
+    <div class="sub">${
+      pending
+        ? `<b>${esc(displayName(user) || "")}</b> 已经注册好了，管理员点头之后就能用。催一下比在这儿刷新快。`
+        : `管理员把 <b>${esc(displayName(user) || "")}</b> 停用了。账号和你产出的文件都还在，要用得找管理员把它改回「正常」。`
+    }</div>
+    <div class="row">
+      <button id="auth-blocked-retry">再查一次</button>
+      <button id="auth-blocked-out">退出登录</button>
+    </div>`;
+  document.getElementById("auth-mask").classList.add("show");
+  document.getElementById("auth-blocked-retry").onclick = () => location.reload();
+  document.getElementById("auth-blocked-out").onclick = async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    location.reload();
+  };
+}
 
 async function initAuth() {
   const st = await fetch("/api/auth/state").then(r => r.json()).catch(() => null);
@@ -181,6 +274,8 @@ async function initAuth() {
   canRegister = !!st.open_register;
   creditsOn = !!st.credits_enabled;
   if (!st.authed) { showAuth(st.users === 0); return; }
+  // 登录了不等于用得了：待审核 / 已停用的人到此为止，后面那一整套初始化全是白跑
+  if (st.status === "pending" || st.status === "disabled") return showAuthBlocked(st.status, st.user);
   currentUser = st.user;
   renderUserChip();
   // 助理身份要在第一条消息渲染之前就位，否则头像会先闪一下默认值
@@ -729,6 +824,7 @@ const PAGE_VIEWS = {
   autom: { icon: "clock", title: "自动化", wide: true, render: () => renderAutomPage() },
   lib: { icon: "book", title: "资料库", wide: true, render: () => renderLibPage() },
   eval: { icon: "flask-conical", title: "评测", wide: true, render: () => renderEvalPage() },
+  trace: { icon: "activity", title: "执行追踪", wide: true, render: () => renderTracePage() },
 };
 function openPageView(kind) {
   const v = PAGE_VIEWS[kind];
@@ -914,7 +1010,7 @@ function renderAssistFeed(log) {
 
 
 // ================= 项目页（主区：卡片广场 + 模板 + 新建/编辑弹窗） =================
-// 官方 WorkBuddy 的「项目」不只是切目录：一个项目自带指令（背景/规范）和挂载的专家/技能/连接器。
+// 这里的「项目」不只是切工作目录：一个项目自带指令（背景/规范）和挂载的专家/技能/连接器。
 // 指令会真的进系统提示词（服务端 projectContext），不是摆设。
 const PROJ_TEMPLATES = [
   { icon: "clipboard-list", tt: "产品需求全流程", dd: "从需求规划、PRD 到研发测试验收", ins: "这是一个产品研发项目。输出遵守：需求先写用户故事和验收标准；PRD 用「背景/目标/方案/边界/里程碑」结构；技术方案要列出取舍理由；每个交付物开头放一段 3 句话内的摘要。" },
@@ -928,8 +1024,14 @@ async function renderProjPage() {
   await refreshProjects();
   const q = (page._q || "").toLowerCase();
   const mine = projects.filter(p => !q || p.name.toLowerCase().includes(q));
+  // 路径从**左边**截。右边那两级（.../工程目录/我的项目）才是分得清谁是谁的部分，
+  // 用默认的尾部省略号会把它们全吃掉，剩下一串 /Users/xxx/Library/Application… 谁也认不出来
+  const shortDir = (d) => {
+    const a = String(d || "").replace(/\\/g, "/").split("/").filter(Boolean);
+    return !a.length ? "（还没设目录）" : a.length > 2 ? "…/" + a.slice(-2).join("/") : String(d);
+  };
   page.innerHTML = `
-    <div class="pg-hero"><h1>项目</h1><div class="sub">每个项目一个独立工作目录，自带指令与专属配置，任务历史按项目分组</div></div>
+    <div class="pg-hero"><h1>项目</h1><div class="sub">每个项目 = 一个工作空间目录（任务产出落在这儿）+ 可选挂载资料库的一块（AI 只看得到这块）</div></div>
     <div class="hub-head">
       <button class="btn-brand" id="pj-new" style="padding:8px 16px">${ic("plus")}新建项目</button>
       <div class="hub-search" style="margin-left:auto">${ic("search")}<input id="pj-q" placeholder="搜索项目" value="${esc(page._q || "")}"></div>
@@ -939,7 +1041,8 @@ async function renderProjPage() {
       <div class="proj-card ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}">
         <div class="tt">${ic("folder-open")} ${esc(p.name)} ${p.name === activeProject ? '<span class="badge">当前</span>' : ""}</div>
         <div class="dd">${p.instructions ? esc(p.instructions.slice(0, 60)) + (p.instructions.length > 60 ? "…" : "") : "还没有写项目指令"}</div>
-        <div class="dd" title="${esc(p.dir)}">${p.created_at ? "添加于 " + esc(p.created_at.slice(0, 10)) : esc(p.dir)}</div>
+        <div class="dd sp" title="工作空间：${esc(p.dir || "")}">${ic("folder")}<span class="pth">${esc(shortDir(p.dir))}</span></div>
+        <div class="dd sp" title="${p.library_dir ? "这个项目的 AI 只看得到资料库的「" + esc(p.library_dir) + "」这一块" : "这个项目的 AI 能看到整个资料库"}">${ic("book-open-text")}<span class="pth">${p.library_dir ? esc(p.library_dir) : "整个资料库"}</span>${p.created_at ? `<span class="at">${esc(p.created_at.slice(0, 10))}</span>` : ""}</div>
         <div class="ops">
           <a class="link" data-act="open" href="#">${p.name === activeProject ? "去新建任务" : "切换到此项目"}</a>
           <a class="link" data-act="edit" href="#">编辑</a>
@@ -989,10 +1092,11 @@ async function openProjEditor(proj, tpl) {
   modalBox.classList.add("wide");
   mTitle.textContent = proj ? `编辑项目「${proj.name}」` : "新建项目";
   // 可挂载的专家/技能/连接器清单（挂载=写进项目配置；任务执行时优先用这些）
-  let [experts, skills, mcp] = await Promise.all([
+  let [experts, skills, mcp, lib] = await Promise.all([
     fetch("/api/experts").then(r => r.json()).catch(() => []),
     fetch("/api/skills").then(r => r.json()).catch(() => []),
     fetch("/api/mcp").then(r => r.json()).catch(() => []),
+    fetch("/api/library").then(r => r.json()).catch(() => ({})),
   ]);
   // /api/mcp 回的是 { servers, total_tools } 不是数组；这里不容错的话整个弹窗都渲染不出来
   mcp = Array.isArray(mcp) ? mcp : (mcp && Array.isArray(mcp.servers) ? mcp.servers : []);
@@ -1018,6 +1122,19 @@ async function openProjEditor(proj, tpl) {
       </select>
     </label>
     <textarea id="pj-ins" rows="5" placeholder="提供当前项目的背景信息和规范，让 AI 的回复更精准、更符合要求。比如：项目目标、团队习惯、风格偏好、输出约束等">${esc((proj || {}).instructions || (tpl || {}).ins || "")}</textarea>
+    <label>工作空间目录 <span class="cnt">这个项目的任务产出都落在这儿</span></label>
+    <div class="proj-dir">
+      <input id="pj-dir" placeholder="${proj ? "留空＝不改" : "留空＝自动建一个（藏在应用数据目录里，不好找）"}" value="${esc((proj || {}).dir || "")}">
+      <button type="button" class="btn-plain" id="pj-pick">选择文件夹</button>
+    </div>
+    <label>挂载资料库 <span class="cnt">只让这个项目的 AI 看见其中一块</span></label>
+    <select id="pj-lib">
+      <option value="">整个资料库（默认）</option>
+      ${(lib.folders || []).map(f => `<option value="${esc(f)}" ${((proj || {}).library_dir || "") === f ? "selected" : ""}>${esc(f)}</option>`).join("")}
+      ${((proj || {}).library_dir && !(lib.folders || []).includes(proj.library_dir))
+        ? `<option value="${esc(proj.library_dir)}" selected>${esc(proj.library_dir)}（目录已不存在）</option>` : ""}
+    </select>
+    ${(lib.folders || []).length ? "" : `<div class="proj-hint">资料库现在还是平铺的一层。去<a href="#" class="link" id="pj-to-lib">资料库</a>页建几个文件夹（比如按客户、按项目分），这里就能挑了。</div>`}
     ${pickRow("connectors", "连接器", mcp.map(m => m.name))}
     ${pickRow("experts", "专家", experts.map(e => e.name))}
     ${pickRow("skills", "技能", skills.map(k => k.name))}
@@ -1042,6 +1159,14 @@ async function openProjEditor(proj, tpl) {
     pk.classList.toggle("on");
     mBody.querySelector("#pk-n-" + key).textContent = sel[key].size;
   });
+  // 桌面版能开系统的文件夹选择框；Web 版没有这个东西，接口回 501，就老老实实让用户敲路径
+  mBody.querySelector("#pj-pick").onclick = async () => {
+    const r = await fetch("/api/pick-folder", { method: "POST" }).then(x => x.json()).catch(() => ({ error: "网络异常" }));
+    if (r && r.path) mBody.querySelector("#pj-dir").value = r.path;
+    else if (r && r.error) toast(r.error, "circle-x");
+  };
+  const toLib = mBody.querySelector("#pj-to-lib");
+  if (toLib) toLib.onclick = (e) => { e.preventDefault(); mask.classList.remove("show"); openPageView("lib"); };
   mBody.querySelector("#pj-cancel").onclick = () => mask.classList.remove("show");
   mBody.querySelector("#pj-ok").onclick = async () => {
     const name = nameEl.value.trim();
@@ -1049,6 +1174,8 @@ async function openProjEditor(proj, tpl) {
     const body = {
       name,
       instructions: mBody.querySelector("#pj-ins").value.trim(),
+      dir: mBody.querySelector("#pj-dir").value.trim(),
+      library_dir: mBody.querySelector("#pj-lib").value,
       connectors: [...sel.connectors], experts: [...sel.experts], skills: [...sel.skills],
     };
     const resp = proj
@@ -1070,7 +1197,7 @@ const AUTOM_TEMPLATES = [
   { icon: "wrench", tt: "每小时网站巡检", cron: "0 * * * *", task: "用 fetch_url 检查以下网址是否能正常打开、响应是否异常（先在这里填上你的网址）：https://example.com 。异常时写清楚状态码和现象。" },
   { icon: "eraser", tt: "每周清理临时文件", cron: "0 10 * * 1", task: "列出工作目录里超过 7 天没动过的 .tmp/.log/中间产物文件，汇总成清单报告（只报告，不要直接删除）。" },
 ];
-const automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), editing: null, showForm: false };
+const automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), editing: null, showForm: false, runTaskId: "" };
 function buildCronFrom(root) {
   const freq = root.querySelector("#sf-freq").value;
   const t = (root.querySelector("#sf-time").value || "09:00").split(":");
@@ -1114,19 +1241,32 @@ async function renderAutomPage() {
   const q = st.q.toLowerCase();
   const match = list.filter(t => !q || t.name.toLowerCase().includes(q) || t.task.toLowerCase().includes(q));
   const on = match.filter(t => t.enabled), off = match.filter(t => !t.enabled);
-  const row = (t) => `
-    <div class="at-row" data-id="${t.id}">
+  const statusOf = (t) => t.running ? { key: "run", text: "执行中…" }
+    : !t.enabled ? { key: "off", text: "已暂停" }
+    : t.last_result ? (/^出错/.test(t.last_result) ? { key: "err", text: "上次失败" } : { key: "ok", text: "上次成功" })
+      : { key: "idle", text: "待首跑" };
+  const compactResult = (t) => String(t.last_result || "还没有运行结果。首次执行后，这里会保留一段可快速判断是否需要处理的摘要。").replace(/\s+/g, " ").slice(0, 160);
+  const row = (t) => {
+    const status = statusOf(t);
+    return `
+    <div class="at-row${st.bulk ? " bulk" : ""}" data-id="${t.id}">
       ${st.bulk ? `<input type="checkbox" data-sel="${t.id}" ${st.sel.has(t.id) ? "checked" : ""}>` : ""}
-      <span class="nm">${esc(t.name)}</span>
-      <span class="meta" title="${esc(t.task)}">${esc(t.task.slice(0, 50))} · ${esc(cronToHuman(t.cron))}${t.last_run ? " · 上次 " + esc(t.last_run.slice(5, 16).replace("T", " ")) : ""}</span>
-      <span class="st ${t.running ? "" : !t.enabled ? "" : t.last_result ? (/^出错/.test(t.last_result) ? "err" : "ok") : ""}">${t.running ? "执行中…" : !t.enabled ? "已暂停" : t.last_result ? (/^出错/.test(t.last_result) ? "上次失败" : "上次成功") : "待首跑"}</span>
+      <div class="at-main">
+        <div class="at-title"><span class="nm">${esc(t.name)}</span><span class="st ${status.key}">${status.text}</span></div>
+        <div class="at-schedule"><span>${ic("clock")} ${esc(cronToHuman(t.cron))}</span><span title="${t.catch_up === false ? "设备休眠或服务重启期间错过的时间点将直接跳过" : "设备休眠或服务重启后，最近 24 小时内错过的一次会补跑"}">${ic(t.catch_up === false ? "clock" : "refresh-cw")} ${t.catch_up === false ? "错过不补跑" : "错过补跑"}</span>${t.last_run ? `<span>${ic("history")} 上次 ${esc(t.last_run.slice(5, 16).replace("T", " "))}</span>` : ""}</div>
+        <div class="at-task" title="${esc(t.task)}">${esc(t.task)}</div>
+        <div class="at-result ${status.key === "err" ? "err" : ""}" title="${esc(t.last_result || "")}">${ic(status.key === "err" ? "triangle-alert" : status.key === "ok" ? "circle-check" : "info")} ${esc(compactResult(t))}</div>
+      </div>
       <span class="ops">
         <a class="link" data-act="run" href="#">立即执行</a>
+        <a class="link" data-act="history" href="#">记录</a>
+        <a class="link" data-act="catchup" href="#">${t.catch_up === false ? "开启补跑" : "关闭补跑"}</a>
         <a class="link" data-act="edit" href="#">编辑</a>
         <a class="link" data-act="toggle" href="#">${t.enabled ? "暂停" : "启用"}</a>
         <a class="link danger" data-act="del" href="#">删除</a>
       </span>
     </div>`;
+  };
   page.innerHTML = `
     <div class="hub-head">
       <div class="hub-tabs">
@@ -1137,6 +1277,9 @@ async function renderAutomPage() {
       <button class="btn-plain" id="at-bulk" style="${st.bulk ? "border-color: var(--wb-brand-text);color: var(--wb-brand-text)" : ""}">${ic("list-checks")} 批量管理</button>
       <button class="btn-plain" id="at-tpl">${ic("clipboard-list")} 从模版添加</button>
       <button class="btn-brand" id="at-new">${ic("plus")}添加自动化</button>
+    </div>
+    <div class="at-overview" aria-label="自动化概览">
+      <span><b>${on.length}</b> 正在启用</span><span><b>${off.length}</b> 已暂停</span><span class="${match.some((t) => /^出错/.test(t.last_result || "")) ? "warn" : ""}"><b>${match.filter((t) => /^出错/.test(t.last_result || "")).length}</b> 需要处理</span><span><b>${match.filter((t) => t.catch_up !== false).length}</b> 开启补跑</span>
     </div>
     ${st.bulk ? `<div class="hub-bar" style="margin:0 0 8px">
       <a class="link" id="bk-all" href="#">全选</a>
@@ -1180,8 +1323,13 @@ async function renderAutomPage() {
     const t = list.find(x => x.id === id);
     const act = a.dataset.act;
     if (act === "edit") { st.editing = t; st.showForm = true; renderAutomForm(page.querySelector("#at-form-box")); window.scrollTo(0, 0); return; }
+    if (act === "history") { st.runTaskId = id; st.tab = "runs"; return renderAutomPage(); }
     if (act === "del") { if (!confirm(`确认删除「${t.name}」？`)) return; await fetch("/api/schedules/" + id, { method: "DELETE" }); }
     else if (act === "toggle") await fetch(`/api/schedules/${id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !t.enabled }) });
+    else if (act === "catchup") {
+      const r = await fetch(`/api/schedules/${id}/catchup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ catch_up: t.catch_up === false }) }).then(r => r.json()).catch(() => ({}));
+      toast(r.ok ? (t.catch_up === false ? "已开启错过补跑" : "已关闭错过补跑") : r.error || "补跑设置失败", r.ok ? "circle-check" : "circle-x");
+    }
     else if (act === "run") {
       a.textContent = "执行中…";
       const r = await fetch(`/api/schedules/${id}/run`, { method: "POST" }).catch(() => null);
@@ -1230,6 +1378,7 @@ function renderAutomForm(box, tpl) {
     </div>
     <input id="sf-cron" placeholder="cron 表达式：分 时 日 月 周" style="display:none">
     <textarea id="sf-task" rows="2" placeholder="要自动执行的任务描述，如：抓取今天的 AI 新闻生成晨报">${esc((ed || tpl || {}).task || "")}</textarea>
+    <label class="sf-catchup"><input id="sf-catchup" type="checkbox" ${(ed || tpl || {}).catch_up !== false ? "checked" : ""}>错过后补跑最近一次 <span>适合晨报、周报；时效任务可关闭</span></label>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn-brand" id="sf-add">${ed ? "保存修改" : "添加"}</button>
       <button class="btn-plain" id="sf-cancel">收起</button>
@@ -1252,8 +1401,8 @@ function renderAutomForm(box, tpl) {
     if (!task) return toast("请填写任务描述", "circle-x");
     if (!cron) return toast("请完成时间设置", "circle-x");
     const resp = ed
-      ? await fetch("/api/schedules/" + ed.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task }) })
-      : await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task }) });
+      ? await fetch("/api/schedules/" + ed.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task, catch_up: box.querySelector("#sf-catchup").checked }) })
+      : await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task, catch_up: box.querySelector("#sf-catchup").checked }) });
     if (!resp.ok) return toast(((await resp.json()).error || "保存失败"), "circle-x");
     toast(ed ? "已保存" : "已添加", "circle-check");
     automState.showForm = false; automState.editing = null;
@@ -1266,6 +1415,9 @@ async function renderAutomRuns(page) {
     page.innerHTML = `<div class="hub-empty">${ic("scroll-text")} 运行记录<br><br>${esc(runsErr)}</div>`;
     return;
   }
+  const taskId = automState.runTaskId;
+  const taskRuns = taskId ? runs.filter((run) => run.task_id === taskId) : runs;
+  const taskName = taskId && (runs.find((run) => run.task_id === taskId) || {}).name;
   const fmtMs = (ms) => ms >= 60000 ? Math.round(ms / 60000) + " 分" : Math.max(1, Math.round(ms / 1000)) + " 秒";
   // 判据里的 **重点** 是写给人看的，交给共享的 escInline（转义完再翻标记），不然界面上会印出一串星号
   const bold = escInline;
@@ -1286,11 +1438,12 @@ async function renderAutomRuns(page) {
         <button data-tab="tasks">${ic("timer")} 定时任务</button>
         <button class="active" data-tab="runs">${ic("scroll-text")} 运行记录</button>
       </div>
-      <span style="font-size: 13px;color:var(--wb-text-3);margin-left:auto">最近 ${runs.length} 次执行，最新在前</span>
+      <span style="font-size: 13px;color:var(--wb-text-3);margin-left:auto">${taskId ? `「${esc(taskName || "已删除任务")}」的 ${taskRuns.length} 次执行` : `最近 ${taskRuns.length} 次执行`}，最新在前</span>
+      ${taskId ? '<button class="btn-plain" id="at-runs-all">查看全部</button>' : ""}
     </div>
-    ${runs.length ? `<table class="at-runs">
+    ${taskRuns.length ? `<table class="at-runs">
       <tr><th>时间</th><th>任务</th><th>触发</th><th>耗时</th><th>结果</th></tr>
-      ${runs.map(r => `<tr>
+      ${taskRuns.map(r => `<tr>
         <td style="white-space:nowrap">${esc((r.started_at || "").slice(5, 16).replace("T", " "))}</td>
         <td>${esc(r.name)}</td>
         <td>${esc(r.trigger || "")}</td>
@@ -1298,11 +1451,32 @@ async function renderAutomRuns(page) {
         <td>${ic(r.ok === null ? "hourglass" : r.ok ? "circle-check" : "circle-x")} ${runCell(r)}</td>
       </tr>`).join("")}
     </table>` : '<div class="hub-empty">还没有运行记录。任务跑过之后（定时触发或手动执行）这里会留下每一次的流水。</div>'}`;
-  page.querySelector('[data-tab="tasks"]').onclick = () => { automState.tab = "tasks"; renderAutomPage(); };
+  page.querySelector('[data-tab="tasks"]').onclick = () => { automState.tab = "tasks"; automState.runTaskId = ""; renderAutomPage(); };
+  page.querySelector("#at-runs-all")?.addEventListener("click", () => { automState.runTaskId = ""; renderAutomRuns(page); });
 }
 
-// ================= 资料库页（左侧文件树 + 右侧预览：MD 渲染 / CSV 表格 / HTML 真渲染） =================
-const libState = { pick: null, q: "" }; // pick: {src:"lib"|"ws"|"notes", name}
+// ================= 资料库页（左栏导航 + 中间浏览 + 右侧预览） =================
+// 四个维度是**正交**的，别混成一个下拉：
+//   view  按什么找：文件夹（东西放在哪）/ 按任务（哪次做出来的）/ 笔记。
+//         后者是用户点名要的（「资料库那块按照任务看到产出吧」）——人想起一份文件靠的是
+//         「上周让它写的那份周报」，不是 out/2026-09/report-final-v3.md。
+//   mode  怎么摆：列表 / 图标 / 画廊。照 macOS 访达那套来的（用户原话：「资料库那块预览
+//         你参考一下mac电脑的文件预览啥的，列表视图还有图标视图还有画廊视图」）。
+//         找文档用列表（名字最全、还能带上大小时间），找图用图标（看一眼就认出来），
+//         一张张过用画廊（大图在上、胶片在下，方向键翻）。
+//   group 分不分堆：不分 / 按类型 / 按时间。访达叫「使用组」。
+//   kind  只看哪一类：想不起名字，但一定记得它是张图还是个表。
+// 四个都记在 localStorage 里：这一页每个人的用法差得很远，每次回默认值等于每次重选一遍。
+const libPrefer = (k, ok, dflt) => { try { const v = localStorage.getItem(k); return ok.includes(v) ? v : dflt; } catch { return dflt; } };
+const libState = {
+  pick: null, q: "", dir: "",
+  view: libPrefer("wb_lib_view", ["dir", "task"], "dir"),
+  mode: libPrefer("wb_lib_mode", ["list", "icon", "gallery"], "list"),
+  group: libPrefer("wb_lib_group", ["none", "kind", "time"], "none"),
+  kind: "all",
+}; // pick: {src:"lib"|"ws"|"notes", name, task?}
+let libOutCache = null;              // 最近一次 /api/library/outputs 的结果：预览页要靠它反查「这文件是哪次任务做的」
+const libTaskShut = new Set();       // 收起来的任务分组（默认全展开：这一页就是来看文件的）
 function csvToTable(text) {
   // 迷你 CSV 解析（带引号转义）。行数封顶，别让一个 10 万行的表把页面卡死
   const rows = [];
@@ -1354,7 +1528,7 @@ async function renderFeedbackSummary(days = 30) {
     `<div class="ev-fb-cards">${card("反馈总数", d.total, `${d.up} ${ic("thumbs-up")} · ${d.down} ${ic("thumbs-down")}`)}${card("好评率", pct(d.up, d.total), ic("thumbs-up") + " ÷ 全部反馈")}` +
     `${card(ic("thumbs-down") + " 写了理由", pct(d.downWithNote, d.down), "写了理由的才进得了复盘")}${card("近 7 天", `${d.last7.up} / ${d.last7.down}`, `${ic("thumbs-up")} / ${ic("thumbs-down")}`)}</div>` +
     rows(d.byModel.filter((r) => r.name !== "（未知）" || d.byModel.length === 1), "按模型") + rows(d.byMode.filter((r) => r.name !== "（未知）"), "按模式") +
-    (d.down ? `<div class="side-label" style="margin:10px 0 4px">最近的${ic("thumbs-down")}（${d.down} 条）· 点「打开对话」回到现场</div>${downs}` : "");
+    (d.down ? `<div class="ev-sec" style="margin:12px 0 6px">最近的差评<span>${d.down} 条 · 点「打开对话」回到现场</span></div>${downs}` : "");
   box.querySelectorAll("a[data-sid]").forEach((a) => { a.onclick = (e) => { e.preventDefault(); openSession(a.dataset.sid); }; });
 }
 
@@ -1368,41 +1542,46 @@ async function renderEvalPage() {
   const models = (settingsCache && settingsCache.models) || [];
   const cur = (settingsCache && settingsCache.active_model) || "";
   const opts = (sel) => models.map((m) => `<option value="${esc(m.name)}" ${m.name === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("");
-  page.innerHTML = `
-    <div class="hub-head" style="flex-wrap:wrap;gap:8px">
-      <div style="font-weight:700;font-size:15px">${ic("flask-conical")} 智能体评测</div>
-      <label style="font-size:12px;color:var(--wb-text-3)">被测模型</label>
-      <select id="ev-model">${opts(cur)}</select>
-      <label style="font-size:12px;color:var(--wb-text-3)">每题次数</label>
-      <select id="ev-repeat" title="重复跑才能看出稳定性：pass@1 均值看「能不能」，k 次全过看「稳不稳」。费用按次数翻倍">
+  // 「怎么打分」原来是开门第一屏那一整段灰字，谁也读不完。拆成三张卡：一条评分线一张，
+  // 每张只说清「凭什么算过」。控件自己归一张卡，别再跟标题挤在一行里换行乱飞。
+  page.innerHTML = `<div class="ev">
+    <div class="ev-run">
+      <label class="ev-f"><span>被测模型</span><select id="ev-model">${opts(cur)}</select></label>
+      <label class="ev-f"><span>每题次数</span><select id="ev-repeat" title="重复跑才看得出稳定性，费用按次数翻倍">
         <option value="1">1 次 · 最快</option><option value="3">3 次 · 测稳定</option><option value="5">5 次 · 严格</option>
-      </select>
-      <label style="font-size:12px;color:var(--wb-text-3)">AI 评委</label>
-      <select id="ev-judge"><option value="">不用（只机器判分）</option>${opts("")}</select>
-      <button class="btn-brand" id="ev-start">开始评测</button>
-      <span id="ev-state" style="font-size:13px;color:var(--wb-text-3)"></span>
+      </select></label>
+      <label class="ev-f"><span>AI 评委</span><select id="ev-judge"><option value="">不用（只机器判分）</option>${opts("")}</select></label>
+      <button class="btn-brand" id="ev-start">${ic("play")} 开始评测</button>
+      <span class="ev-state" id="ev-state"></span>
+      <div class="ev-run-note">15 道分层任务（L1 基础 / L2 进阶 / L3 高难）把整个智能体当黑盒考：写代码、算表格、修 bug、跨文件重构、日志管线。<b>会真实调用所选模型、真实计费</b>，费用随次数翻倍（DeepSeek 单轮约几毛钱）。命令行同款：<code>npm run eval -- --repeat 3</code></div>
     </div>
-    <div style="font-size:13px;color:var(--wb-text-3);line-height:1.7;margin:0 0 10px">
-      15 道分层任务（L1 基础 / L2 进阶 / L3 高难）把整个智能体当黑盒考（写代码 / 算表格 / 修 bug / 跨文件重构 / 日志管线…）。三条评分线互相独立：<b>机器判分</b>（跑代码、对数字、验结构，只认硬证据，失败自动归因成败因码）、<b>稳定性</b>（每题重复 k 次：pass@1 均值看能不能，k 次全过看稳不稳）、<b>AI 评委</b>（逐条质量维度只判 是/否，不打印象分）。跑完可「设为基线」——之后每轮自动逐题对比，退步点名。
-      <b>会真实调用所选模型计费</b>，费用随次数翻倍（DeepSeek 单次约几毛钱）。命令行同款：<code>npm run eval -- --repeat 3 --judge 评委名</code>
+    <div class="ev-lines">
+      <div class="ev-line"><b>${ic("terminal")}机器判分</b><p>跑代码、对数字、验结构，<em>只认硬证据</em>。没过的题自动归一个败因码：崩溃、超时、步数用尽、没交产物。</p></div>
+      <div class="ev-line"><b>${ic("repeat")}稳定性</b><p>同一题重复 k 次。<em>pass@1 均值</em>看能不能做对，<em>k 次全过</em>看稳不稳；时过时不过的题单独标出来。</p></div>
+      <div class="ev-line"><b>${ic("scale")}AI 评委</b><p>逐条质量维度<em>只判是或否</em>，不打印象分。选了评委才跑，评委本身也要花钱。</p></div>
     </div>
-    <div class="side-label" style="margin:6px 0">用户反馈 · 近 30 天在对话里点的 ${ic("thumbs-up")}${ic("thumbs-down")}</div>
-    <div id="ev-fb" style="font-size:13px;color:var(--wb-text-3);margin:0 0 14px">加载中…</div>
-    <pre id="ev-log" style="display:none;background:var(--wb-card);border:1px solid var(--wb-line);border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.8;max-height:320px;overflow:auto;white-space:pre-wrap;margin:0 0 14px"></pre>
+    <div>
+      <div class="ev-sec">用户反馈<span>近 30 天在对话里点的 ${ic("thumbs-up")}${ic("thumbs-down")}，比机器判分更接近真实体感</span></div>
+      <div id="ev-fb">加载中…</div>
+    </div>
+    <pre class="ev-log" id="ev-log" hidden></pre>
     <div id="ev-detail"></div>
-    <div class="side-label" style="margin:6px 0">历史成绩 · 点一行看每题明细 / 打人工分 / 设为基线</div>
-    <div id="ev-hist" style="font-size:13px;color:var(--wb-text-3)">加载中…</div>`;
+    <div>
+      <div class="ev-sec">历史成绩<span>点一行看每题明细 · 打人工分 · 设为基线</span></div>
+      <div id="ev-hist">加载中…</div>
+    </div>
+  </div>`;
   renderFeedbackSummary();
   document.getElementById("ev-start").onclick = async () => {
     const btn = document.getElementById("ev-start");
     if (!evalArm) {
       evalArm = true;
-      btn.textContent = "确认开跑？真实计费 · 再点一次";
-      btn.style.background = "var(--wb-err)";
-      setTimeout(() => { if (evalArm && pageKind === "eval") { evalArm = false; btn.textContent = "开始评测"; btn.style.background = ""; } }, 6000);
+      btn.innerHTML = ic("triangle-alert") + " 确认开跑？真实计费 · 再点一次";
+      btn.classList.add("is-arm");
+      setTimeout(() => { if (evalArm && pageKind === "eval") { evalArm = false; btn.innerHTML = ic("play") + " 开始评测"; btn.classList.remove("is-arm"); } }, 6000);
       return;
     }
-    evalArm = false; btn.textContent = "开始评测"; btn.style.background = "";
+    evalArm = false; btn.innerHTML = ic("play") + " 开始评测"; btn.classList.remove("is-arm");
     const model = document.getElementById("ev-model").value;
     const judge = document.getElementById("ev-judge").value;
     const repeat = +document.getElementById("ev-repeat").value || 1;

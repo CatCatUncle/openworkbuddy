@@ -70,14 +70,35 @@
   }
   .ad-brand img { border-radius: 8px; flex: none; }
   .ad-brand .ui-badge { flex: none; }
-  .ad-nav { flex: 1; overflow-y: auto; padding: 4px 10px 16px; }
+  /* 索引行右边那句「去哪儿配」：是链接就得长得像链接，还得看得出会新开一页 */
+  .ad-go {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 13.5px;
+    color: var(--brand-text); white-space: nowrap;
+  }
+  .ad-go .i { width: 13px; height: 13px; opacity: .7; }
+  .ad-go:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .ad-side-q { flex: none; position: relative; padding: 2px 10px 6px; }
+  .ad-side-q .i {
+    position: absolute; left: 20px; top: 50%; transform: translateY(-50%) translateY(-2px);
+    width: 14px; height: 14px; color: var(--subtle-foreground); pointer-events: none;
+  }
+  .ad-side-q input {
+    width: 100%; height: 32px; padding: 0 10px 0 30px; font: inherit; font-size: 13px;
+    color: var(--foreground); background: var(--muted); border: 1px solid transparent;
+    border-radius: var(--radius-md); outline: none; appearance: none;
+  }
+  .ad-side-q input::placeholder { color: var(--subtle-foreground); }
+  .ad-side-q input::-webkit-search-cancel-button { appearance: none; }
+  .ad-side-q input:focus { background: var(--card); border-color: var(--border); box-shadow: 0 0 0 3px var(--ring-weak); }
+  .ad-nav { flex: 1; overflow-y: auto; padding: 2px 10px 16px; }
+  .ad-nav-none { padding: 18px 12px; font-size: 13px; line-height: 1.7; color: var(--muted-foreground); }
   .ad-grp {
-    padding: 16px 10px 6px; font-size: 12px; font-weight: 500;
+    padding: 12px 10px 4px; font-size: 12px; font-weight: 500;
     color: var(--subtle-foreground); letter-spacing: .04em;
   }
   .ad-nav-i {
     display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
-    height: 38px; padding: 0 10px; margin-bottom: 2px; border: 0; border-radius: var(--radius-md);
+    height: 34px; padding: 0 10px; margin-bottom: 1px; border: 0; border-radius: var(--radius-md);
     background: transparent; color: var(--muted-foreground); font: inherit; font-size: 14px;
     text-decoration: none; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     transition: background-color .15s var(--wb-ease), color .15s var(--wb-ease);
@@ -99,6 +120,72 @@
   .ad-top-r { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
   .ad-body { flex: 1; overflow-y: auto; padding: 24px 28px 48px; }
   .ad-wrap { max-width: 960px; display: flex; flex-direction: column; gap: 16px; }
+  /* 表格页放宽到 1320：设置页 960 是为了一行字别太长（读的东西），
+     但账本页是拿来扫的，九列挤在 960 里每列都在换行，右边却空着四百多像素。 */
+  .ad-wrap--wide { max-width: 1320px; }
+
+  /* ---------- 流水筛选条 ---------- */
+  .ad-filter {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    padding: 12px 20px; border-top: 1px solid var(--border); background: var(--muted);
+  }
+  .ad-filter-r { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ad-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+  .ad-chip {
+    padding: 5px 11px; font-size: 13px; line-height: 1.4; border-radius: 999px; cursor: pointer;
+    border: 1px solid transparent; background: transparent; color: var(--muted-foreground);
+    transition: background .15s var(--wb-ease), color .15s var(--wb-ease);
+  }
+  .ad-chip:hover { background: var(--card); color: var(--foreground); }
+  /* 选中态用实心而不是描边：一排六个胶囊里，描边那一个远看跟没选一样 */
+  .ad-chip.is-on { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .ad-chip.is-on:hover { background: var(--primary); color: #fff; }
+  .ad-date { width: 140px; height: 32px; font-size: 13px; padding: 0 8px; }
+  .ad-dash { color: var(--subtle-foreground); font-size: 13px; }
+  .ad-pick { width: auto; min-width: 118px; height: 32px; font-size: 13px; }
+  .ad-search { width: 190px; height: 32px; font-size: 13px; }
+  /* 窄屏：筛选条整条竖过来，两半各占满一行，别把日期框挤成 40px */
+  @media (max-width: 720px) {
+    .ad-filter { flex-direction: column; align-items: stretch; }
+    .ad-filter-r > * { flex: 1 1 auto; }
+    .ad-search { width: auto; }
+  }
+
+  /* ---------- 总览的「要你处理的」 ---------- */
+  .ad-todo { display: flex; flex-direction: column; gap: 8px; }
+  .ad-todo-i {
+    display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+    border: 1px solid var(--border); border-radius: 12px; font-size: 14px; line-height: 1.6;
+  }
+  .ad-todo-i > span { flex: 1; min-width: 0; }
+  .ad-todo-i > .i { flex: none; width: 17px; height: 17px; }
+  /* 待办只有两档：要动手的（warn）和知道一声的（info）。
+     再分细一档，人第一眼就分不出哪条该先点。 */
+  .ad-todo-i--warn {
+    border-color: color-mix(in srgb, var(--warning) 36%, var(--border));
+    background: color-mix(in srgb, var(--warning) 7%, transparent);
+  }
+  .ad-todo-i--warn > .i { color: var(--warning); }
+  .ad-todo-i--info > .i { color: var(--muted-foreground); }
+  .ad-todo-ok {
+    display: flex; align-items: center; gap: 10px; padding: 14px;
+    border-radius: 12px; background: var(--muted); font-size: 14px;
+  }
+  .ad-todo-ok .i { width: 18px; height: 18px; color: var(--success-text); flex: none; }
+  .ad-todo-ok .fd { display: block; margin-top: 2px; }
+  /* 并排两张卡。窄了自己叠成一列——后台常常开在半屏上 */
+  .ad-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; align-items: start; }
+  .ad-sub { font-size: 13px; color: var(--muted-foreground); }
+
+  /* ---------- 翻页条 ---------- */
+  .ad-pager {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    padding: 12px 20px; border-top: 1px solid var(--border);
+  }
+  .ad-pager-n { font-size: 13px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+  /* 合计那排卡片夹在筛选条和表格之间，上下都得留白，不然三样东西糊成一坨 */
+  .ad-filter + .ui-stats { padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .ui-stats + .ui-table-wrap { border-top: 0; }
 
   /* ---------- 卡片 ---------- */
   /* 卡片头和卡片身分开：表格能一直画到卡片边上，不再是一截停在内边距上的悬空横线 */
@@ -134,13 +221,20 @@
   .ad-empty .i { width: 22px; height: 22px; opacity: .6; }
 
   /* 7 日柱状：纯 div，不引图表库（这页要能离线打开） */
-  .ad-bars { display: flex; align-items: flex-end; gap: 8px; height: 136px; padding-top: 8px; }
-  .ad-bars .b { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 8px; height: 100%; }
+  .ad-bars { display: flex; align-items: flex-end; gap: 0; height: 150px; padding-top: 4px; }
+  .ad-bars .b { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; padding: 0 4px; }
+  .ad-bars .b .t { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; border-bottom: 1px solid var(--border); }
   .ad-bars .b i {
     width: 100%; max-width: 52px; min-height: 3px; background: var(--primary); opacity: .82;
-    border-radius: var(--radius-sm) var(--radius-sm) 3px 3px; transition: opacity .15s var(--wb-ease);
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0; transition: opacity .15s var(--wb-ease);
   }
   .ad-bars .b:hover i { opacity: 1; }
+  .ad-bars .b b {
+    font-size: 12px; font-weight: 500; color: var(--muted-foreground); line-height: 1.4;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .ad-bars .b.z b { min-height: 17px; }
+  .ad-bars .b .t em { font-style: normal; font-size: 13px; line-height: 1; color: var(--subtle-foreground); padding-bottom: 2px; }
   .ad-bars .b u { text-decoration: none; font-size: 12px; color: var(--subtle-foreground); font-variant-numeric: tabular-nums; }
 
   /* ---------- 设置项（左说明 / 右控件） ---------- */
@@ -221,6 +315,7 @@
 <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /> <circle cx="9" cy="7" r="4" /> <path d="M22 21v-2a4 4 0 0 0-3-3.87" /> <path d="M16 3.13a4 4 0 0 1 0 7.75" /></symbol>
 <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16" /> <path d="M18 17V9" /> <path d="M13 17V5" /> <path d="M8 17v-3" /></symbol>
 <symbol id="i-key" viewBox="0 0 24 24"><path d="m15.5 7.5 3 3L22 7l-3-3" /> <path d="m21 2-9.6 9.6" /> <circle cx="7.5" cy="15.5" r="5.5" /></symbol>
+<symbol id="i-sliders-horizontal" viewBox="0 0 24 24"><path d="M10 5H3" /> <path d="M12 19H3" /> <path d="M14 3v4" /> <path d="M16 17v4" /> <path d="M21 12h-9" /> <path d="M21 19h-5" /> <path d="M21 5h-7" /> <path d="M8 10v4" /> <path d="M8 12H3" /></symbol>
 <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" /> <path d="M20 2v4" /> <path d="M22 4h-4" /> <circle cx="4" cy="20" r="2" /></symbol>
 <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1" /> <path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4" /></symbol>
 <symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5" /> <path d="M9 8V2" /> <path d="M15 8V2" /> <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" /></symbol>
@@ -228,6 +323,9 @@
 <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7" /> <path d="M19 12H5" /></symbol>
 <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18" /> <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /> <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></symbol>
 <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /> <path d="M18.375 2.625a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z" /></symbol>
+<symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 7h10v10" /> <path d="M7 17 17 7" /></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34" /> <circle cx="11" cy="11" r="8" /></symbol>
+<symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /> <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></symbol>
 <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" /> <path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol>
 </svg>
 
@@ -237,6 +335,11 @@
       <img src="/icon.png" alt="" width="24" height="24" style="border-radius:6px">
       <span>OpenWorkBuddy</span>
       <span class="ui-badge ui-badge--secondary" style="font-size:11px">企业版</span>
+    </div>
+    <div class="ad-side-q">
+      <svg class="i" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input id="ad-nav-q" type="search" autocomplete="off" spellcheck="false"
+             placeholder="搜页面（快捷键 /）" aria-label="搜索管理后台的页面">
     </div>
     <nav class="ad-nav" id="ad-nav" aria-label="管理后台导航"></nav>
     <div class="ad-side-foot">
