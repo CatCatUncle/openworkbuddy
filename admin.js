@@ -15,6 +15,7 @@ const express = require("express");
 const account = require("./account");
 const org = require("./org");
 const prefs = require("./prefs"); // 哪些设置算「个人的」，那张表在这儿
+const quota = require("./quota"); // 按次计费的第三方 API：清单、额度、流水
 
 function platformAdmin(user) {
   return account.isAdmin(user) && org.orgIdOf(user) === org.DEFAULT_ORG;
@@ -201,6 +202,7 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir }) {
   return (req, res, next) => {
     let root = "";
     let policy = null;
+    let actor = null;
     try {
       const o = org.getOrg(org.orgIdOf(req.user));
       root = o.id === org.DEFAULT_ORG ? "" : org.rootDirOf(o, getWorkspaceDir());
@@ -208,6 +210,11 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir }) {
       // 只在真配了限制时才进 ALS：默认组织默认值 = 不限 = 不设 store = 老行为一字不差
       if (s.allow_shell === false || (s.net_allow || []).length || (s.net_deny || []).length)
         policy = { allow_shell: s.allow_shell !== false, net_allow: s.net_allow || [], net_deny: s.net_deny || [] };
+      // 付费 API 的额度上下文。同样只在**真打开了某一路闸门**时才建：
+      // 没打开的时候连流水都不必带着 org/user 走一遍 ALS，跟以前一模一样。
+      const qt = quota.quotaTable(s);
+      if (Object.values(qt).some((c) => c.enabled))
+        actor = { org: o.id, user: (req.user && req.user.username) || "", quota: qt };
     } catch (e) {
       console.warn("[租户] 取组织工作目录失败：" + e.message);
     }
@@ -219,7 +226,7 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir }) {
     } catch (e) {
       console.warn("[个人偏好] 读取失败，本次按全局设置走：" + e.message);
     }
-    withWorkspace(root, () => withPolicy(policy, () => prefs.withPrefs(mine, next)));
+    withWorkspace(root, () => withPolicy(policy, () => quota.withActor(actor, () => prefs.withPrefs(mine, next))));
   };
 }
 
@@ -303,11 +310,16 @@ function createAdminRouter(deps = {}) {
    */
   router.get("/api/admin/usage", guarded((req) => {
     const q = req.query || {};
-    const sum = account.usageSummary(req.user, { user: q.user || "", limit: Math.min(500, +q.limit || 200) });
+    const sum = account.usageSummary(req.user, {
+      user: q.user || "",
+      from: q.from || "", to: q.to || "", q: q.q || "",
+      offset: q.offset || 0,
+      limit: Math.min(500, +q.limit || 200),
+    });
     return {
-      today: sum.today, month: sum.month, last7: sum.last7,
+      today: sum.today, month: sum.month, last7: sum.last7, range: sum.range,
       by_user: sum.by_user, by_model: sum.by_model, by_source: sum.by_source,
-      detail: sum.recent,
+      detail: sum.recent, total: sum.total, offset: sum.offset, limit: sum.limit,
       members: account.listMembers(org.orgIdOf(req.user)).map((m) => ({
         username: m.username, nickname: m.nickname, dept: m.dept, role: m.role, status: m.status,
         monthly_quota: m.monthly_quota, monthly_left: m.monthly_left, credits: m.credits, balance: m.balance,
@@ -335,6 +347,47 @@ function createAdminRouter(deps = {}) {
     return { ok: true, org: { ...o, settings: org.settingsOf(o) } };
   }));
 
+  // ---------- 付费 API 与额度（平台管理员）----------
+  /**
+   * 这一页要回答管理员的三个问题，所以三样东西必须一次给齐：
+   *   ① 有哪些要花钱的 API、现在配没配（configured）——不配就是根本没开，谈额度没意义；
+   *   ② 这个月已经花了多少、谁花的（summary）；
+   *   ③ 额度设成多少（quota）。
+   * 分三个接口的话，前端要串三次请求才能画出一行，而这三样天然是一行里的三格。
+   */
+  router.get("/api/admin/api-quota", platformOnly, guarded((req) => {
+    const o = org.getOrg(org.orgIdOf(req.user));
+    const s = org.settingsOf(o);
+    const table = quota.quotaTable(s);
+    const sum = quota.summary(o.id, table);
+    const cfg = safeCall(deps.readConfig, null) || {};
+    // 每一路「配没配」由服务端认：前端不该拿到 Key，也就没法自己判断
+    const at = (obj, dotted) => dotted.split(".").reduce((x, k) => (x == null ? x : x[k]), obj);
+    const configured = {
+      search: !!(cfg.search && (cfg.search.jina_key || cfg.search.api_key || cfg.search.tavily_key || cfg.search.brave_key)),
+      image: !!at(cfg, "media.image.model") || !!at(cfg, "media.image.provider"),
+      video: !!at(cfg, "media.video.model") || !!at(cfg, "media.video.provider"),
+      tts: !!at(cfg, "media.tts.model") || !!at(cfg, "media.tts.provider"),
+      asr: !!at(cfg, "media.asr.model") || !!at(cfg, "media.asr.provider"),
+      fetch: true, // 抓网页不需要钥匙，永远是「已就绪」
+    };
+    return {
+      ...sum,
+      caps: sum.caps.map((c) => ({ ...c, configured: !!configured[c.key] })),
+      suggest: quota.suggested(),
+      org: { id: o.id, name: o.name },
+    };
+  }));
+  router.post("/api/admin/api-quota", platformOnly, guarded((req) => {
+    const body = req.body || {};
+    // 「一键设个合理额度」：前端只发一个 preset=suggest，值由服务端出——
+    // 建议值跟能力清单绑在一起（quota.js），不该在前端再抄一份，抄了就会两边对不上
+    const table = body.preset === "suggest" ? quota.suggested() : quota.normalizeTable(body.quota);
+    const o = org.updateOrg(org.orgIdOf(req.user), { settings: { api_quota: table } }, req.user.username);
+    const saved = quota.quotaTable(org.settingsOf(o));
+    return { ok: true, quota: saved, caps: quota.summary(o.id, saved).caps };
+  }));
+
   // ---------- 组织管理（平台管理员）----------
   router.get("/api/admin/orgs", platformOnly, guarded(() => {
     const members = account.listMembers; // 每个组织各查一次，组织数量是个位数，不值得为它做索引
@@ -357,7 +410,11 @@ function createAdminRouter(deps = {}) {
 
   // ---------- 审计 ----------
   router.get("/api/admin/audit", guarded((req) =>
-    ({ audit: org.listAudit(org.orgIdOf(req.user), req.query.limit) })));
+    org.listAudit(org.orgIdOf(req.user), {
+      from: req.query.from, to: req.query.to, q: req.query.q,
+      actor: req.query.actor, action: req.query.action,
+      offset: req.query.offset, limit: req.query.limit,
+    })));
 
   // ---------- 数据统计 ----------
   router.get("/api/admin/stats", guarded((req) => {

@@ -32,11 +32,45 @@ const path = require("path");
 const { DATA_DIR } = require("./paths");
 
 // 本地 Trace 是主记录，Langfuse 只是可选的外部副本。这样不开 Langfuse 时，
-// 用户仍然能在 WorkBuddy 里看到完整的任务树；换机器或换账号也不会把 trace 丢给第三方。
+// 用户仍然能在 OpenWorkBuddy 里看到完整的任务树；换机器或换账号也不会把 trace 丢给第三方。
 const LOCAL_MAX_LINES = 30000;
 function localTraceFile(config) {
-  const root = config && config.workspace_dir ? path.resolve(String(config.workspace_dir)) : path.join(DATA_DIR, "workspace");
-  return path.join(root, ".openworkbuddy", "traces.jsonl");
+  // 环境变量优先。这一条不是为了让用户换地方存，是为了**测试别写进真账本**：
+  // 测试里的 config 大多没有 workspace_dir，会一路退到 DATA_DIR/workspace，
+  // 于是每跑一次测试就往用户的真账本里灌上千条「任务 0」「不该被记下来的任务」，
+  // 把真实记录淹掉（实测灌到一万四千条，真任务只剩零头）。
+  // 顺序有讲究：**明确配了工作空间的以配的为准**，环境变量只顶替那个「没人配就用真 workspace」的兜底。
+  // 反过来写的话，测试里那些特意指定了临时目录、跟着还要把文件读回来的用例会全部读空。
+  if (config && config.workspace_dir) return path.join(path.resolve(String(config.workspace_dir)), ".openworkbuddy", "traces.jsonl");
+  if (process.env.OPENWORKBUDDY_TRACE_FILE) return path.resolve(process.env.OPENWORKBUDDY_TRACE_FILE);
+  return path.join(DATA_DIR, "workspace", ".openworkbuddy", "traces.jsonl");
+}
+
+/**
+ * 从一趟任务的输入里抠一句能当名字的话。
+ *
+ * 为什么要在**读的时候**也做一遍，而不是只靠写入时的 name：
+ * 账本里已经躺着的老记录改不了了，而它们恰恰是最需要区分的那批——
+ * 一屏二十行全叫「任务」，点进去才知道是哪一趟，这个列表就等于没用。
+ */
+function labelFromInput(input) {
+  const pick = (t) => {
+    const line = String(t || "").replace(/\s+/g, " ").trim();
+    if (!line) return "";
+    // 系统提示和工具回执都不是「用户想干什么」，拿来当名字全是一个样
+    return line.slice(0, 60);
+  };
+  if (typeof input === "string") return pick(input);
+  if (Array.isArray(input)) {
+    const user = input.filter((m) => m && m.role === "user");
+    // 取第一条：最后一条常常是「继续」「好的」这种接不上的短句
+    for (const m of user) {
+      const t = pick(typeof m.content === "string" ? m.content : JSON.stringify(m.content || ""));
+      if (t) return t;
+    }
+  }
+  if (input && typeof input === "object") return pick(input.text || input.message || input.prompt || "");
+  return "";
 }
 function localRecord(config, event) {
   try {
@@ -62,14 +96,16 @@ function localReadEvents(config) {
 function localTraceList(config, { limit = 50, traceId = "" } = {}) {
   const traces = new Map();
   const ensure = (id) => {
-    if (!traces.has(id)) traces.set(id, { id, name: "任务", startTime: "", endTime: "", input: null, output: "", metadata: {}, tags: [], error: "", observations: [] });
+    // 名字先留空。默认成「任务」的话，下面「名字是不是空的」就永远判不出来，
+    // 也就没机会从 input 里补一个能认人的出来
+    if (!traces.has(id)) traces.set(id, { id, name: "", startTime: "", endTime: "", input: null, output: "", metadata: {}, tags: [], userId: "", sessionId: "", error: "", observations: [] });
     return traces.get(id);
   };
   for (const event of localReadEvents(config)) {
     if (traceId && event.traceId !== traceId) continue;
     const trace = ensure(event.traceId);
     if (event.kind === "trace") {
-      if (event.phase === "start") Object.assign(trace, { name: event.name || trace.name, startTime: event.startTime || trace.startTime, input: event.input, metadata: event.metadata || {}, tags: event.tags || [] });
+      if (event.phase === "start") Object.assign(trace, { name: event.name || trace.name, startTime: event.startTime || trace.startTime, input: event.input, metadata: event.metadata || {}, tags: event.tags || [], userId: event.userId || trace.userId, sessionId: event.sessionId || trace.sessionId });
       else Object.assign(trace, { endTime: event.endTime || trace.endTime, output: event.output !== undefined ? event.output : trace.output, error: event.error || trace.error, metadata: { ...trace.metadata, ...(event.metadata || {}) } });
       continue;
     }
@@ -79,10 +115,39 @@ function localTraceList(config, { limit = 50, traceId = "" } = {}) {
     if (event.phase === "start") Object.assign(observation, { kind: event.kind, name: event.name || observation.name, startTime: event.startTime || observation.startTime, parentId: event.parentId || observation.parentId, input: event.input, metadata: event.metadata || observation.metadata, model: event.model || observation.model, modelParameters: event.modelParameters || observation.modelParameters });
     else Object.assign(observation, { endTime: event.endTime || observation.endTime, output: event.output !== undefined ? event.output : observation.output, metadata: { ...observation.metadata, ...(event.metadata || {}) }, usage: event.usage || observation.usage, error: event.error || observation.error, level: event.level || observation.level });
   }
+  // 一趟任务停多久还没收尾就该判「断了」。进程被关掉、机器重启、任务被 kill——
+  // 这三种都不会写 end，而列表把它们一律画成「还在跑」，于是一个从没跑过东西的人
+  // 打开 Trace 会看到「63 还在跑」。超过这个时间还没动静，就是断了。
+  const STALE_MS = 30 * 60 * 1000;
+  const now = Date.now();
   const out = [...traces.values()].map((trace) => {
     trace.observations.sort((a, b) => String(a.startTime).localeCompare(String(b.startTime)));
     trace.duration_ms = trace.startTime && trace.endTime ? Math.max(0, new Date(trace.endTime).getTime() - new Date(trace.startTime).getTime()) : 0;
-    trace.status = trace.error || trace.observations.some((item) => item.error) ? "error" : trace.endTime ? "completed" : "running";
+    // 名字：写的时候没给（或给了个没信息量的「任务」）就从输入里补一句真话出来
+    if (!trace.name || trace.name === "任务" || trace.name === "task") {
+      trace.name = labelFromInput(trace.input) || labelFromInput((trace.observations[0] || {}).input) || "";
+      trace.name_derived = !!trace.name; // 界面上可以弱化一档：这不是用户起的名字
+    }
+    // token 账：顶层 metadata 有就用，没有就把每次模型调用的 usage 加起来。
+    // 加不出来时留 null 而不是 0——「没记到账」和「真的一个 token 没花」是两回事，
+    // 都画成 0 Token 会让人以为模型白跑了
+    const md = trace.metadata || {};
+    let tin = Number(md.tokens_in) || 0, tout = Number(md.tokens_out) || 0, seen = md.tokens_in !== undefined || md.tokens_out !== undefined;
+    for (const o of trace.observations) {
+      const u = o.usage;
+      if (!u) continue;
+      if (u.prompt || u.completion || u.total) { seen = true; tin += Number(u.prompt) || 0; tout += Number(u.completion) || 0; }
+    }
+    trace.tokens = seen ? { in: tin, out: tout, total: tin + tout } : null;
+    // 工具/模型各调了几次，列表里要用来做区分，在这儿算一次比前端每行再遍历一遍便宜
+    trace.tool_count = trace.observations.filter((o) => o.kind === "span" && o.name && !/^外部引擎/.test(o.name)).length;
+    trace.model_count = new Set(trace.observations.filter((o) => o.kind === "generation" && o.model).map((o) => o.model)).size;
+    trace.models = [...new Set(trace.observations.filter((o) => o.kind === "generation" && o.model).map((o) => o.model))].slice(0, 4);
+    trace.tools = [...new Set(trace.observations.filter((o) => o.kind === "span" && o.name).map((o) => o.name))].slice(0, 6);
+    const stale = !trace.endTime && trace.startTime && now - new Date(trace.startTime).getTime() > STALE_MS;
+    trace.status = trace.error || trace.observations.some((item) => item.error)
+      ? "error"
+      : trace.endTime ? "completed" : stale ? "interrupted" : "running";
     return trace;
   }).sort((a, b) => String(b.startTime).localeCompare(String(a.startTime)));
   return traceId ? out[0] || null : out.slice(0, Math.max(1, Math.min(200, Number(limit) || 50)));
@@ -343,8 +408,11 @@ function createTracer(config) {
       // Agent 据此决定是否给前端挂外链；没配 Langfuse 时不能出现一个点不开的链接。
       get enabled() { return cfgNow().ready; },
       get url() { return urlOf(traceId); },
-      span(o) { return cfgNow().ready ? obs("span", traceId, id, o) : OFF; },
-      generation(o) { return cfgNow().ready ? obs("generation", traceId, id, o) : OFF; },
+      // 这里**不能**拿 ready 当开关。本地那份是主记录，Langfuse 只是可选副本（obs 内部自己判 ready 再决定发不发）。
+      // 一旦在这层短路成 OFF，没配 Langfuse 的人本地就只剩一头一尾两条 trace，中间工具和模型调用全丢——
+      // 界面上就是「跑了半天不知道调了什么、路径也没有」
+      span(o) { return obs("span", traceId, id, o); },
+      generation(o) { return obs("generation", traceId, id, o); },
       end(o) {
         if (ended) return; // 收尾路径有好几条（正常结束、超时、抛异常），重复 end 会在 Langfuse 上留两条互相覆盖的记录
         ended = true;
@@ -442,7 +510,10 @@ function createTracer(config) {
         tags: Array.isArray(o.tags) ? o.tags.filter(Boolean).map((t) => String(t).slice(0, 40)).slice(0, 10) : undefined,
         timestamp: nowIso(),
       };
-      localRecord(config, { traceId: id, kind: "trace", phase: "start", name: body.name, startTime: body.timestamp, input: body.input, metadata: body.metadata, tags: body.tags });
+      // userId / sessionId 也要落本地：以前只发给 Langfuse，本地账本里一条都没有，
+      // 于是「这趟是谁跑的、属于哪个会话」在不开 Langfuse 的人那儿永远看不到——
+      // 而不开 Langfuse 才是默认状态
+      localRecord(config, { traceId: id, kind: "trace", phase: "start", name: body.name, startTime: body.timestamp, userId: body.userId, sessionId: body.sessionId, input: body.input, metadata: body.metadata, tags: body.tags });
       if (cfgNow().ready) push("trace-create", body);
       return node({ id, traceId: id, kind: "trace" });
     },
@@ -511,4 +582,4 @@ function getTracer(config) {
   return t;
 }
 
-module.exports = { createTracer, getTracer, noop: OFF, _internals: { messagesOf, capText, cleanHost, readCfg, OFF } };
+module.exports = { createTracer, getTracer, noop: OFF, _internals: { messagesOf, capText, cleanHost, readCfg, labelFromInput, localTraceFile, OFF } };

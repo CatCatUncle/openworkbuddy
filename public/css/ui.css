@@ -62,6 +62,20 @@
                                         它同时被 color-mix 当淡染底和边框用，暗这一档对那几处只有好处 */
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
+  /* 状态胶囊的淡染底：绿/红各自 12% 压在页面底上，配 --success-text / --danger-text 那两档文字色，
+     浅色下 4.9:1 以上。之前每处各写一串 color-mix，同一个「成功」在三个页面深浅都不一样 */
+  --success-bg: color-mix(in srgb, var(--success) 12%, transparent);
+  --danger-bg: color-mix(in srgb, var(--destructive) 12%, transparent);
+  --warning-bg: color-mix(in srgb, var(--warning) 14%, transparent);
+  /* 紫这一档是给「素材种类」用的（语音/音频）：品牌紫已经被 @引用 和图片锚点占了，
+     再拿它标音频就分不出谁是谁。#8b6cf5 当填充，文字要压到 #6a46d4（淡紫底 4.63 / 白底 6.11） */
+  --violet: #8b6cf5;
+  --violet-text: #6a46d4;
+  --violet-bg: color-mix(in srgb, var(--violet) 14%, transparent);
+  /* 投影的底色。上面三档 --shadow-* 里的 rgba(19,21,28) 就是它，
+     单独留一个名字是给那些只要「一层淡影」、不想整档抬起来的地方用（如自动化页的行悬停） */
+  --shadow-color: #13151c;
+
   /* ---------- 表面层级与投影（照 Linear / Multica 那套做法补的） ----------
      之前 --background 和 --card 都是纯白：外壳、画布、卡片三层一个颜色，
      卡片只能靠一根 1px 灰线证明自己在那儿，整页看着像一张摊平的表格——这正是「糙」的来源。
@@ -111,6 +125,14 @@ html[data-theme="dark"] {
   --danger-text: #f2757a;         /* 同上：暗红底上 #e5484d 3.63 → 5.14 */
   --success-text: #3fc978;        /* 暗绿底上 #16a34a 4.18 → 6.46 */
   --warning: #d9a441;
+  /* 暗色底上 12% 的染色几乎看不出来，要厚一倍多才读得出「这是个状态」 */
+  --success-bg: color-mix(in srgb, var(--success) 26%, transparent);
+  --danger-bg: color-mix(in srgb, var(--destructive) 26%, transparent);
+  --warning-bg: color-mix(in srgb, var(--warning) 26%, transparent);
+  --violet: #8b6cf5;
+  --violet-text: #b9a5ff;   /* 暗紫底上 #8b6cf5 当文字只有 3.2，提亮到 5.47 */
+  --violet-bg: color-mix(in srgb, var(--violet) 26%, transparent);
+  --shadow-color: #000000;
   /* 暗色的三层：外壳最深、画布中间、卡片最浅——和浅色恰好反过来，
      但「卡片比它所在的底更亮」这条关系不变，所以卡片仍然是浮起来的那一层。 */
   --app-shell: #16171c;
@@ -648,69 +670,299 @@ html[data-theme="dark"] .ui-select {
 .canvas-media-lightbox-stage { display: flex; align-items: center; justify-content: center; min-height: min(68vh, 720px); max-height: calc(92vh - 45px); padding: 18px; background: var(--secondary); }
 .canvas-media-lightbox-stage img { display: block; max-width: 100%; max-height: calc(92vh - 90px); object-fit: contain; }
 .canvas-page:fullscreen .canvas-viewport { height: calc(100vh - 90px); }
-/* ---------- 本地 Trace ---------- */
-.trace-local-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; color: var(--wb-text-3); font-size: 12px; }
-.trace-local-bar > span:last-child { display: inline-flex; gap: 6px; }
-.trace-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 10px 0 8px; }
-.trace-metrics > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 9px 10px; border: 1px solid var(--wb-border); border-radius: var(--radius-md); background: var(--wb-bg-side); }
-.trace-metrics b { color: var(--wb-text); font-size: 15px; line-height: 1.2; }
-.trace-metrics span { color: var(--wb-text-3); font-size: 10px; }
-.trace-metrics .is-error b { color: var(--wb-err-text); }
-.local-trace-list { display: grid; gap: 5px; max-height: 330px; overflow: auto; }
-.local-trace-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 9px; border: 1px solid var(--wb-border); border-radius: var(--radius-md); background: var(--wb-bg); color: var(--wb-text); text-align: left; cursor: pointer; }
-.local-trace-row:hover { border-color: var(--wb-brand); background: var(--wb-bg-hover); }
-.local-trace-row.is-error { border-color: color-mix(in srgb, var(--wb-err) 55%, var(--wb-border)); }
-.local-trace-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--wb-ok); }
-.local-trace-row.is-error .local-trace-dot { background: var(--wb-err); }
-.local-trace-row.is-running .local-trace-dot { background: var(--wb-brand); box-shadow: 0 0 0 3px var(--wb-brand-weak); }
-.local-trace-main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.local-trace-main b, .local-trace-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.local-trace-main b { font-size: 12px; }
-.local-trace-main small { margin-top: 2px; color: var(--wb-text-3); font-size: 10px; }
-.local-trace-status { flex: none; color: var(--wb-text-3); font-size: 11px; }
-.local-trace-model { max-width: 150px; overflow: hidden; padding: 3px 7px; border-radius: 999px; background: var(--wb-brand-weak); color: var(--wb-brand-text); font: 10px/1.2 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.local-trace-time { min-width: 48px; color: var(--wb-text-2); font: 10px/1.2 var(--font-mono); text-align: right; }
-.local-trace-detail { margin-top: 8px; }
-.trace-detail-head, .trace-detail-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.trace-detail-head { padding: 9px 10px; border: 1px solid var(--wb-border); border-bottom: 0; border-radius: var(--radius-md) var(--radius-md) 0 0; background: var(--wb-bg-side); }
-.trace-detail-head > div { display: flex; flex-direction: column; min-width: 0; }
-.trace-detail-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.trace-detail-head small { margin-top: 2px; color: var(--wb-text-3); font-size: 10px; }
-.trace-detail-summary { justify-content: flex-start; flex-wrap: wrap; gap: 7px 14px; padding: 9px 10px; border: 1px solid var(--wb-border); border-top: 0; color: var(--wb-text-3); font-size: 10px; }
-.trace-detail-summary > span { display: inline-flex; align-items: center; gap: 4px; }
-.trace-detail-summary b { color: var(--wb-text); font-size: 12px; }
-.trace-detail-summary i, .trace-model { padding: 2px 6px; border-radius: 999px; background: var(--wb-brand-weak); color: var(--wb-brand-text); font: normal 9px/1.4 var(--font-mono); }
-.trace-detail-summary time { margin-left: auto; }
-.local-trace-detail details { margin: 6px 0; padding: 0 8px; border: 1px solid var(--wb-border); border-radius: var(--radius-sm); background: var(--wb-bg); }
-.local-trace-detail summary { padding: 6px 0; color: var(--wb-text-2); cursor: pointer; font-size: 11px; }
-.local-trace-detail pre { max-height: 230px; margin: 0 0 7px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--wb-text-2); font: 11px/1.5 var(--font-mono); }
-.trace-observations { display: grid; gap: 5px; margin-top: 8px; }
-.trace-observations { --trace-depth: 0; }
-.trace-timeline-label { color: var(--wb-text-3); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
-.trace-observation { margin-left: calc(var(--trace-depth) * 14px); padding: 7px 8px; border: 1px solid var(--wb-border); border-radius: var(--radius-sm); background: var(--wb-bg); }
-.trace-observation.is-error { border-color: color-mix(in srgb, var(--wb-err) 55%, var(--wb-border)); }
-.trace-observation-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.trace-observation-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--wb-text); font-size: 11px; }
-.trace-final { border-color: color-mix(in srgb, var(--wb-ok) 42%, var(--wb-border)) !important; background: color-mix(in srgb, var(--wb-ok) 5%, var(--wb-bg)) !important; }
-@media (max-width: 900px) { .trace-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .local-trace-model { display: none; } }
-.trace-kind { padding: 2px 5px; border-radius: 999px; background: var(--wb-brand-weak); color: var(--wb-brand-text); font-size: 9px; white-space: nowrap; }
-.trace-observation-meta { margin-left: auto; color: var(--wb-text-3); font-size: 10px; white-space: nowrap; }
-.trace-error { margin-top: 5px; color: var(--wb-err-text); font-size: 11px; white-space: pre-wrap; }
-.trace-empty { padding: 10px; color: var(--wb-text-3); font-size: 11px; }
-.model-route-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-.model-route-head > div { display: flex; flex-direction: column; gap: 2px; }
+/* ---------- 执行追踪（更多 → 执行追踪，整页） ---------- */
+/* 这块原来长在设置页那条窄栏里：字号被压到 9–10px、列表限高 330px、工具名和路径挤在
+   同一行里被省略号切掉，结果就是「看不出调了什么工具、动了哪个文件」。搬到整页之后按
+   正常阅读尺寸重画——左边一列任务，右边是那趟任务的时间线，路径单独占一行完整显示。 */
+.tp { display: flex; flex-direction: column; gap: 14px; }
+.tp-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tp-bar .tp-grow { flex: 1; }
+.tp-note { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-bg-side); color: var(--wb-text-2); font-size: 12px; }
+.tp-note .i { width: 15px; height: 15px; flex: none; color: var(--wb-text-3); }
+.tp-note a { margin-left: auto; white-space: nowrap; }
+.tp-note.is-on { border-color: color-mix(in srgb, var(--wb-ok) 45%, var(--wb-border)); background: var(--wb-ok-bg); color: var(--wb-ok-text); }
+.tp-note.is-warn { border-color: color-mix(in srgb, var(--wb-warn) 45%, var(--wb-border)); background: var(--wb-warn-bg); color: var(--wb-warn-text); }
+
+/* 「还在跑」和「中断」是按需出现的，格子数会在 4 和 6 之间变。写死 5 列会留一个空洞，
+   auto-fit 让它自己排匀 */
+.tp-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; }
+.tp-stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 12px 14px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-card); }
+.tp-stat b { color: var(--wb-text); font: 600 22px/1.15 inherit; font-variant-numeric: tabular-nums; }
+.tp-stat span { color: var(--wb-text-3); font-size: 12px; }
+.tp-stat.is-error b { color: var(--wb-err-text); }
+.tp-stat.is-run b { color: var(--wb-brand-text); }
+.tp-stat.is-stale b { color: var(--wb-warn-text); }
+
+.tp-body { display: grid; grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); gap: 14px; align-items: start; }
+.tp-list { display: grid; align-content: start; gap: 8px; max-height: calc(100vh - 290px); overflow-y: auto; scrollbar-gutter: stable; }
+.tp-row { display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: start; gap: 10px; width: 100%; padding: 11px 13px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-card); color: var(--wb-text); text-align: left; cursor: pointer; }
+.tp-row:hover { border-color: var(--wb-brand); background: var(--wb-bg-hover); }
+.tp-row.on { border-color: var(--wb-brand); background: var(--wb-brand-weak); }
+.tp-row i.dot { width: 8px; height: 8px; margin-top: 5px; border-radius: var(--radius-full); background: var(--wb-ok); }
+.tp-row.is-error i.dot { background: var(--wb-err); }
+.tp-row.is-running i.dot { background: var(--wb-brand); box-shadow: 0 0 0 3px var(--wb-brand-weak); }
+/* 开工记了、收尾没记上。用警示色而不是品牌色：它跟「还在跑」长得太像的话，
+   用户会一直等一个永远不会亮的绿灯 */
+.tp-row.is-stale i.dot { background: var(--wb-warn); }
+.tp-rmain { display: block; min-width: 0; }
+/* 名字和耗时同一行：耗时靠右不换行，名字吃掉剩下的宽度并省略。
+   以前耗时挤在第二行的第一格，扫一列的时候要跳着看 */
+.tp-rtop { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.tp-rtop b { flex: 1; }
+.tp-rtop em { flex: none; color: var(--wb-text-3); font-style: normal; font-family: var(--mono); font-size: 12px; }
+.tp-row b { display: block; overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+/* 名字是从用户第一句话里截来的、不是他起的标题：用引号和常规字重标出来，
+   免得「随便做点什么」看着像个正式任务名 */
+.tp-row b.is-said, .tp-dhead b.is-said { font-weight: 500; font-style: normal; color: var(--wb-text-2); }
+.tp-row b.is-said::before, .tp-dhead b.is-said::before { content: "\201C"; }
+.tp-row b.is-said::after, .tp-dhead b.is-said::after { content: "\201D"; }
+.tp-row .tp-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 5px; color: var(--wb-text-3); font-size: 12px; }
+.tp-row .tp-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.tp-row .tp-meta em { font-style: normal; font-family: var(--mono); }
+.tp-row .tp-rst { padding: 0 7px; border-radius: var(--radius-full); background: var(--wb-bg-side); color: var(--wb-text-2); }
+.tp-row.is-error .tp-rst { background: var(--wb-err-bg); color: var(--wb-err-text); }
+.tp-row.is-stale .tp-rst { background: var(--wb-warn-bg); color: var(--wb-warn-text); }
+.tp-row.is-running .tp-rst { background: var(--wb-brand-weak); color: var(--wb-brand-text); }
+
+.tp-detail { border: 1px solid var(--wb-border); border-radius: var(--radius-xl); background: var(--wb-card); overflow: hidden; }
+.tp-dhead { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--wb-border); }
+.tp-dhead > div { min-width: 0; }
+.tp-dhead b { display: block; font-size: 15px; font-weight: 600; }
+.tp-dhead small { display: block; margin-top: 3px; overflow: hidden; color: var(--wb-text-3); font: 12px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.tp-pill { flex: none; padding: 3px 10px; border-radius: var(--radius-full); background: var(--wb-ok-bg); color: var(--wb-ok-text); font-size: 12px; white-space: nowrap; }
+.tp-pill.is-error { background: var(--wb-err-bg); color: var(--wb-err-text); }
+.tp-pill.is-running { background: var(--wb-brand-weak); color: var(--wb-brand-text); }
+.tp-pill.is-stale { background: var(--wb-warn-bg); color: var(--wb-warn-text); }
+.tp-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 1px; background: var(--wb-border); border-bottom: 1px solid var(--wb-border); }
+.tp-sum > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 11px 14px; background: var(--wb-bg); }
+.tp-sum b { overflow: hidden; color: var(--wb-text); font-size: 15px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.tp-sum span { color: var(--wb-text-3); font-size: 11px; }
+.tp-models { display: flex; flex-wrap: wrap; gap: 5px; padding: 10px 16px; border-bottom: 1px solid var(--wb-border); color: var(--wb-text-3); font-size: 12px; }
+.tp-models i { padding: 2px 9px; border-radius: var(--radius-full); background: var(--wb-brand-weak); color: var(--wb-brand-text); font: normal 12px/1.5 var(--mono); }
+
+.tp-steps { display: grid; gap: 8px; padding: 14px 16px; }
+.tp-steps-label { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--wb-text-3); font-size: 12px; }
+.tp-step { --trace-depth: 0; margin-left: calc(var(--trace-depth) * 20px); border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-bg); }
+.tp-step.is-error { border-color: color-mix(in srgb, var(--wb-err) 50%, var(--wb-border)); }
+.tp-step > summary { display: grid; grid-template-columns: 26px auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 13px; cursor: pointer; list-style: none; }
+.tp-step > summary::-webkit-details-marker { display: none; }
+.tp-step > summary:hover { background: var(--wb-bg-hover); border-radius: var(--radius-lg); }
+.tp-no { color: var(--wb-text-3); font: 12px/1 var(--mono); text-align: right; }
+.tp-kind { padding: 2px 8px; border-radius: var(--radius-full); font-size: 11px; white-space: nowrap; }
+.tp-kind.is-tool { background: var(--wb-bg-side); color: var(--wb-text-2); }
+.tp-kind.is-model { background: var(--wb-brand-weak); color: var(--wb-brand-text); }
+.tp-kind.is-agent { background: var(--wb-violet-bg); color: var(--wb-violet-text); }
+.tp-sname { min-width: 0; overflow: hidden; font: 600 13px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.tp-cost { display: flex; align-items: center; gap: 10px; color: var(--wb-text-3); font: 12px/1 var(--mono); white-space: nowrap; }
+.tp-cost b { color: var(--wb-text-2); font-weight: 600; }
+.tp-step.is-error .tp-cost b { color: var(--wb-err-text); }
+/* 路径单独占一行、完整显示：这一行就是「它到底动了哪个文件」的答案，不许被省略号切掉 */
+.tp-target { margin: 0 13px 9px 49px; color: var(--wb-text-2); font: 12px/1.6 var(--mono); overflow-wrap: anywhere; }
+.tp-bar-line { height: 3px; margin: 0 13px 10px 49px; border-radius: var(--radius-full); background: var(--wb-border); }
+.tp-bar-line > i { display: block; height: 100%; border-radius: var(--radius-full); background: var(--wb-brand); }
+.tp-step.is-error .tp-bar-line > i { background: var(--wb-err); }
+.tp-err { margin: 0 13px 10px 49px; padding: 8px 10px; border-radius: var(--radius-md); background: var(--wb-err-bg); color: var(--wb-err-text); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tp-fold { margin: 0 13px 10px 49px; }
+.tp-fold details { margin-top: 6px; border: 1px solid var(--wb-border); border-radius: var(--radius-md); background: var(--wb-card); }
+.tp-fold summary { padding: 7px 10px; color: var(--wb-text-2); cursor: pointer; font-size: 12px; }
+.tp-fold pre { max-height: 300px; margin: 0; padding: 0 10px 9px; overflow: auto; scrollbar-gutter: stable; color: var(--wb-text-2); font: 12px/1.65 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tp-io { padding: 0 16px 16px; }
+.tp-io details { border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-bg); }
+.tp-io summary { padding: 10px 13px; color: var(--wb-text-2); cursor: pointer; font-size: 13px; }
+.tp-io pre { max-height: 340px; margin: 0; padding: 0 13px 11px; overflow: auto; scrollbar-gutter: stable; color: var(--wb-text-2); font: 12px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tp-io details.is-final { border-color: color-mix(in srgb, var(--wb-ok) 40%, var(--wb-border)); background: color-mix(in srgb, var(--wb-ok) 5%, var(--wb-bg)); }
+.tp-empty { padding: 28px 16px; color: var(--wb-text-3); font-size: 13px; text-align: center; }
+@media (max-width: 1080px) {
+  .tp-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .tp-body { grid-template-columns: minmax(0, 1fr); }
+  .tp-list { max-height: 260px; }
+}
+/* ---------- 评测（更多 → 评测，整页） ---------- */
+/* 这页原来整个是内联样式堆出来的：开门第一屏是一段 13px 的灰字，把「三条评分线怎么打分」
+   压成一整坨没人读得完的话；三个下拉挤在标题行里换行乱飞；历史成绩十列表格上下内边距
+   只有 6px，密到看不出哪行是哪行；明细卡片里颜色全靠 style 现写，深浅两套主题各飘各的。
+   重画的思路很直白：跑一轮的控件归一张卡、怎么打分的解释拆成三张扫一眼就懂的小卡、
+   成绩表按正常行高喘口气、明细做成一张有头有脸的面板。 */
+.ev { display: flex; flex-direction: column; gap: 18px; }
+.ev-sec { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; color: var(--wb-text); font-size: 14px; font-weight: 600; }
+.ev-sec span { color: var(--wb-text-3); font-size: 12px; font-weight: 400; }
+
+/* 跑一轮：三个下拉一人一格、标签在上，按钮和状态跟在同一条基线上 */
+.ev-run { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 14px; padding: 15px 16px; border: 1px solid var(--wb-border); border-radius: var(--radius-xl); background: var(--wb-card); }
+.ev-f { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ev-f > span { color: var(--wb-text-3); font-size: 12px; }
+.ev-f select { min-width: 168px; }
+.ev-run .btn-brand { white-space: nowrap; }
+.ev-run .btn-brand.is-arm { background: var(--wb-err); border-color: var(--wb-err); }
+.ev-state { display: flex; align-items: center; gap: 6px; color: var(--wb-text-3); font-size: 13px; }
+.ev-run-note { flex: 1 1 260px; min-width: 0; color: var(--wb-text-3); font-size: 12px; line-height: 1.7; }
+.ev-run-note b { color: var(--wb-warn-text); font-weight: 600; }
+.ev-run-note code { padding: 1px 6px; border-radius: var(--radius-xs); background: var(--wb-bg-side); font: 12px/1.5 var(--mono); }
+
+/* 三条评分线：原来是一段话里的三个加粗词，现在一人一张卡，各自说清「凭什么算过」 */
+.ev-lines { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.ev-line { display: flex; flex-direction: column; gap: 5px; padding: 13px 15px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-bg-side); }
+.ev-line b { display: flex; align-items: center; gap: 7px; color: var(--wb-text); font-size: 13px; font-weight: 600; }
+.ev-line b .i { width: 15px; height: 15px; color: var(--wb-text-3); }
+.ev-line p { margin: 0; color: var(--wb-text-2); font-size: 12px; line-height: 1.75; }
+.ev-line p em { font-style: normal; color: var(--wb-text-3); }
+
+/* 跑批日志：黑底终端那套在浅色主题下是个突兀的黑洞，跟别处一样走卡片底色 */
+.ev-log { max-height: 320px; margin: 0; padding: 12px 14px; overflow: auto; scrollbar-gutter: stable; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-bg-side); color: var(--wb-text-2); font: 12px/1.8 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 历史成绩 */
+.ev-bl { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; color: var(--wb-text-3); font-size: 12px; }
+.ev-bl .i { width: 14px; height: 14px; }
+.ev-bl code { padding: 1px 6px; border-radius: var(--radius-xs); background: var(--wb-bg-side); font: 12px/1.5 var(--mono); }
+.ev-tab-wrap { overflow-x: auto; scrollbar-gutter: stable; border: 1px solid var(--wb-border); border-radius: var(--radius-xl); background: var(--wb-card); }
+.ev-tab { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ev-tab th { padding: 10px 12px; color: var(--wb-text-3); font-size: 12px; font-weight: 500; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--wb-border); }
+.ev-tab td { padding: 11px 12px; border-top: 1px solid var(--wb-border); white-space: nowrap; }
+.ev-tab tbody tr { cursor: pointer; }
+.ev-tab tbody tr:hover { background: var(--wb-bg-hover); }
+.ev-tab tbody tr.on { background: var(--wb-brand-weak); }
+.ev-tab .num { font-variant-numeric: tabular-nums; }
+.ev-tab .score { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ev-tab .score.is-ok { color: var(--wb-ok-text); }
+.ev-tab .score.is-bad { color: var(--wb-err-text); }
+.ev-tab code { color: var(--wb-text-3); font: 12px/1.5 var(--mono); }
+.ev-up { color: var(--wb-ok-text); }
+.ev-down { color: var(--wb-err-text); }
+.ev-flaky { color: var(--wb-warn-text); }
+.ev-empty { padding: 26px 16px; border: 1px dashed var(--wb-border); border-radius: var(--radius-xl); color: var(--wb-text-3); font-size: 13px; line-height: 1.8; text-align: center; }
+.ev-empty code { padding: 1px 6px; border-radius: var(--radius-xs); background: var(--wb-bg-side); font-family: var(--mono); }
+
+/* 单轮明细 */
+.ev-det { border: 1px solid var(--wb-border); border-radius: var(--radius-xl); background: var(--wb-card); overflow: hidden; }
+.ev-det-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--wb-border); }
+.ev-det-head b { font-size: 15px; font-weight: 600; }
+.ev-det-head .ev-det-ops { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.ev-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); gap: 1px; background: var(--wb-border); border-bottom: 1px solid var(--wb-border); }
+.ev-sum > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 11px 14px; background: var(--wb-bg); }
+.ev-sum b { overflow: hidden; color: var(--wb-text); font-size: 15px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.ev-sum b.is-ok { color: var(--wb-ok-text); }
+.ev-sum b.is-bad { color: var(--wb-err-text); }
+.ev-sum span { color: var(--wb-text-3); font-size: 11px; }
+.ev-tasks { display: grid; gap: 10px; padding: 14px 16px; }
+.ev-task { border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-bg); }
+.ev-task.is-bad { border-color: color-mix(in srgb, var(--wb-err) 45%, var(--wb-border)); }
+.ev-task.is-flaky { border-color: color-mix(in srgb, var(--wb-warn) 45%, var(--wb-border)); }
+.ev-task-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; padding: 11px 14px; }
+.ev-task-head > .i { width: 17px; height: 17px; }
+.ev-task-head .nm { font-size: 13px; font-weight: 600; }
+.ev-task.is-bad .ev-task-head > .i { color: var(--wb-err-text); }
+.ev-task.is-flaky .ev-task-head > .i { color: var(--wb-warn-text); }
+.ev-task:not(.is-bad):not(.is-flaky) .ev-task-head > .i { color: var(--wb-ok-text); }
+.ev-lv { padding: 2px 8px; border: 1px solid var(--wb-border); border-radius: var(--radius-full); background: var(--wb-bg-side); color: var(--wb-text-3); font-size: 11px; white-space: nowrap; }
+.ev-code { padding: 2px 9px; border-radius: var(--radius-full); background: var(--wb-err-bg); color: var(--wb-err-text); font-size: 11px; white-space: nowrap; }
+.ev-tries { display: inline-flex; gap: 4px; }
+.ev-try { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: var(--radius-xs); background: var(--wb-ok-bg); color: var(--wb-ok-text); }
+.ev-try.is-bad { background: var(--wb-err-bg); color: var(--wb-err-text); }
+.ev-try .i { width: 12px; height: 12px; }
+.ev-facts { color: var(--wb-text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ev-rate { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.ev-stars { display: inline-flex; gap: 1px; }
+.ev-star { padding: 2px; border: none; background: none; color: var(--wb-text-3); cursor: pointer; line-height: 0; }
+.ev-star .i { width: 16px; height: 16px; }
+.ev-star:hover { color: var(--wb-warn); }
+.ev-star.on { color: var(--wb-warn); }
+.ev-star.on .i { fill: currentColor; }
+.ev-cmt { width: 148px; padding: 5px 9px; border: 1px solid var(--wb-border); border-radius: var(--radius-md); background: var(--wb-bg-side); color: var(--wb-text); font-size: 12px; }
+.ev-chks { display: grid; gap: 4px; padding: 0 14px 12px; }
+.ev-chk { display: flex; align-items: flex-start; gap: 7px; color: var(--wb-ok-text); font-size: 12px; line-height: 1.6; }
+.ev-chk.is-bad { color: var(--wb-err-text); }
+.ev-chk .i { width: 14px; height: 14px; margin-top: 2px; }
+.ev-chk em { font-style: normal; color: var(--wb-text-3); }
+.ev-judge { margin: 0 14px 12px; padding: 10px 12px; border-radius: var(--radius-md); background: var(--wb-bg-side); font-size: 12px; }
+.ev-judge > b { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; color: var(--wb-text-2); font-weight: 600; }
+.ev-judge > b .i { width: 14px; height: 14px; }
+.ev-judge .ev-chk { padding: 1px 0; }
+.ev-judge .note { color: var(--wb-text-3); line-height: 1.7; }
+.ev-judge .cut { color: var(--wb-err-text); line-height: 1.7; }
+.ev-final { margin: 0 14px 12px; }
+.ev-final summary { color: var(--wb-text-3); font-size: 12px; cursor: pointer; }
+.ev-final pre { max-height: 220px; margin: 6px 0 0; padding: 10px 12px; overflow: auto; scrollbar-gutter: stable; border-radius: var(--radius-md); background: var(--wb-bg-side); color: var(--wb-text-2); font: 12px/1.75 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 1080px) {
+  .ev-lines { grid-template-columns: minmax(0, 1fr); }
+  .ev-f select { min-width: 140px; }
+}
+
+/* ---------- 模型与 Key（设置 → 模型） ----------
+   老版本这一页是「渠道优先」的：顶上五个只能看的小格，底下一长串渠道卡，媒体那四路再吊在最后。
+   可用户的原话是「每个任务包括文本、语音、视频、图像都可能要配置多个渠道和多个模型的啊」——
+   他脑子里的单位是「能力」，不是「渠道」。渠道只是那把 Key 住的地方。
+   所以改成能力优先：顶上六格说清「现在在用谁、还压着几个备选」，中间六张卡一路一张
+   （对话和看图/画图/视频/配音/转写长一个样），最后才是渠道与 Key 那一段。
+   六格现在是按钮：点哪一路就展开哪一路——原来那五格看完只能干瞪眼，而人看完第一反应就是想改它。 */
+.model-route-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.model-route-head > div { display: flex; flex-direction: column; gap: 3px; }
 .model-route-head b { color: var(--wb-text); font-size: 15px; }
-.model-route-head span, .model-route-note { color: var(--wb-text-3); font-size: 11px; }
-.model-route-head > span { padding: 4px 8px; border-radius: 999px; background: var(--wb-ok-bg, var(--wb-brand-weak)); color: var(--wb-ok-text, var(--wb-brand-text)); white-space: nowrap; }
-.model-route-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-bottom: 8px; }
-.model-route-grid > div { display: flex; flex-direction: column; min-width: 0; padding: 9px; border: 1px solid var(--wb-border); border-radius: var(--radius-md); background: var(--wb-bg-side); }
-.model-route-grid > div.is-primary { border-color: color-mix(in srgb, var(--wb-brand) 45%, var(--wb-border)); background: var(--wb-brand-weak); }
-.model-route-grid span { display: flex; align-items: center; gap: 4px; color: var(--wb-text-3); font-size: 10px; }
-.model-route-grid span .i { width: 12px; height: 12px; }
-.model-route-grid b, .model-route-grid small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-route-grid b { margin-top: 6px; color: var(--wb-text); font-size: 12px; }
-.model-route-grid small { margin-top: 2px; color: var(--wb-text-3); font-size: 9px; }
-.model-route-note { margin-bottom: 12px; padding: 8px 10px; border-left: 2px solid var(--wb-brand); background: color-mix(in srgb, var(--wb-brand) 5%, transparent); }
+.model-route-head > div > span { color: var(--wb-text-3); font-size: 12px; line-height: 1.6; }
+.model-route-head > span { flex: none; padding: 4px 10px; border-radius: var(--radius-full); background: var(--wb-brand-weak); color: var(--wb-brand-text); font-size: 12px; white-space: nowrap; }
+
+/* 六格两行，一行三个。挤成一行六个的话每格只剩 110px，模型名一律省略号，等于白写 */
+.model-route-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+.model-route-grid .rt { display: flex; flex-direction: column; align-items: stretch; min-width: 0; padding: 10px 12px; border: 1px solid var(--wb-border); border-radius: var(--radius-lg); background: var(--wb-bg-side); text-align: left; cursor: pointer; font: inherit; color: inherit; }
+.model-route-grid .rt:hover { border-color: color-mix(in srgb, var(--wb-brand) 50%, var(--wb-border)); background: var(--wb-bg-hover); }
+.model-route-grid .rt.is-primary { border-color: color-mix(in srgb, var(--wb-brand) 45%, var(--wb-border)); background: var(--wb-brand-weak); }
+.model-route-grid .rt-k { display: flex; align-items: center; gap: 5px; color: var(--wb-text-3); font-size: 11px; }
+.model-route-grid .rt-k .i { width: 13px; height: 13px; }
+.model-route-grid b, .model-route-grid small, .model-route-grid i { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-route-grid b { margin-top: 7px; color: var(--wb-text); font-size: 13px; font-weight: 600; }
+.model-route-grid small { margin-top: 3px; color: var(--wb-text-3); font-family: var(--mono); font-size: 11px; }
+.model-route-grid i { margin-top: 5px; color: var(--wb-brand-text); font-size: 11px; font-style: normal; }
+/* 这一路一个都没配：主名字降成灰的，别让「未设置」看着像个模型名 */
+.model-route-grid .rt.is-empty b { color: var(--wb-text-3); font-weight: 400; }
+.model-route-grid .rt.is-empty small { font-family: inherit; }
+
+.model-route-warn { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 8px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--wb-warn) 40%, transparent); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--wb-warn) 8%, transparent); color: var(--wb-warn); font-size: 12px; line-height: 1.7; }
+.model-route-warn .i { flex: none; width: 14px; height: 14px; margin-top: 3px; }
+.model-route-note { margin-bottom: 18px; padding: 9px 12px; border-left: 2px solid var(--wb-brand); background: color-mix(in srgb, var(--wb-brand) 5%, transparent); color: var(--wb-text-3); font-size: 12px; line-height: 1.7; }
+
+/* 两段小标题：「按能力配置」和「渠道与 Key」。这一页最要紧的一件事就是让人看懂
+   「上面挑模型、下面填 Key」是两件事——老版本这两段之间什么分隔都没有。
+   标题本身复用全站那个 .hub-sec-title，这儿只补一条：右侧那颗「添加渠道」推到行尾 */
+.settings-pane .hub-sec-title { align-items: baseline; }
+.settings-pane .hub-sec-title > .i { align-self: center; }
+.settings-pane .hub-sec-title .sub { min-width: 0; line-height: 1.6; }
+.mm-sec-act { flex: none; margin: 0 0 0 auto; }
+
+/* 能力卡头上那颗图标：对话 / 看图 / 画图… 六张卡一眼扫下来靠它区分，不靠读字 */
+.cap-ic { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); background: var(--wb-bg-side); color: var(--wb-text-2); }
+.cap-ic .i { width: 13px; height: 13px; }
+.ch-card.open .cap-ic { background: var(--wb-brand-weak); color: var(--wb-brand-text); }
+.ch-count.is-empty { color: var(--wb-text-3); opacity: .75; }
+/* 正在用的那一行加一点底色：一张卡里五六行，光靠一个选中的单选钮找不出是哪行 */
+.mrow.is-on { margin: 0 -8px; padding-right: 8px; padding-left: 8px; border-radius: var(--radius-md); background: var(--wb-brand-weak); }
+.mrow.is-on + .mrow { border-top-color: transparent; }
+
+/* 渠道测活：折起来时看头上那颗点，展开时看底下那一整句 */
+.ch-pill { display: inline-flex; flex: none; align-items: center; gap: 4px; margin-left: 2px; padding: 2px 8px; border-radius: var(--radius-full); font-size: 11px; white-space: nowrap; }
+.ch-pill .i { width: 12px; height: 12px; }
+.ch-pill.is-ok { background: var(--wb-ok-bg); color: var(--wb-ok-text); }
+.ch-pill.is-bad { background: color-mix(in srgb, var(--wb-err) 14%, transparent); color: var(--wb-err-text); }
+.ch-pill.is-run { background: var(--wb-bg-side); color: var(--wb-text-3); }
+.ch-res { display: flex; align-items: flex-start; gap: 7px; margin: 0 0 10px; padding: 9px 12px; border-radius: var(--radius-lg); font-size: 12px; line-height: 1.75; }
+.ch-res .i { flex: none; width: 14px; height: 14px; margin-top: 3px; }
+.ch-res code { padding: 1px 5px; border-radius: var(--radius-xs); background: color-mix(in srgb, currentColor 10%, transparent); font-family: var(--mono); font-size: 11px; }
+.ch-res.is-ok { background: color-mix(in srgb, var(--wb-ok) 9%, transparent); color: var(--wb-ok-text); }
+.ch-res.is-bad { background: color-mix(in srgb, var(--wb-err) 9%, transparent); color: var(--wb-err-text); }
+.ch-key .ck-test { margin: 0; }
+
+/* 「主模型挂了换谁」：从 智能体设置 挪过来的，落在对话卡最底下 */
+.ch-fb { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--wb-border); }
+.ch-fb label { flex: none; color: var(--wb-text-2); font-size: 12px; }
+.ch-fb select { min-width: 220px; margin: 0; }
+.ch-fb > span { flex: 1 1 100%; color: var(--wb-text-3); font-size: 12px; line-height: 1.7; }
+
+/* 自定义模型「它会什么」。勾错了只影响提醒，所以说明写在同一行，不另起一段吓人 */
+.ca-caps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 8px; font-size: 12px; }
+.ca-caps > span { color: var(--wb-text-2); }
+.ca-caps label { display: inline-flex; align-items: center; gap: 5px; color: var(--wb-text); cursor: pointer; }
+.ca-caps input { margin: 0; }
+.ca-caps em { flex: 1 1 100%; color: var(--wb-text-3); font-size: 11px; font-style: normal; line-height: 1.6; }
+
+
 .hub-install-box { margin: 4px 0 14px !important; border-color: color-mix(in srgb, var(--wb-brand) 42%, var(--wb-border)); background: linear-gradient(135deg, color-mix(in srgb, var(--wb-brand) 6%, var(--wb-bg)), var(--wb-bg)); }
 /* MCP 卡片里的路径与启动错误来自外部进程，长度不可控：必须在卡片内折行，不能挤开操作区。 */
 .mcp-server-card { min-width: 0; overflow: hidden; }
@@ -745,7 +997,10 @@ html[data-theme="dark"] .ui-select {
 }
 
 /* ---------- Stat（KPI 卡：标签在上、数字在下、注脚更淡） ---------- */
-.ui-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(172px, 1fr)); gap: 12px; }
+.ui-stats { display: grid; grid-template-columns: repeat(var(--n, 4), minmax(0, 1fr)); gap: 12px; }
+/* 窄了就不认那个列数了，交给 auto-fit：宁可多折一行，也别把卡片挤成一条 */
+@media (max-width: 1100px) { .ui-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); } }
+@media (max-width: 560px) { .ui-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .ui-stat { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-surface); }
 .ui-stat .l { font-size: 13px; color: var(--muted-foreground); line-height: 1.5; }
 .ui-stat .v { margin-top: 6px; font-size: 26px; font-weight: 600; line-height: 1.2; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }

@@ -80,15 +80,87 @@ wb-data/
 
 ---
 
-## 不用 Docker：PM2 直接跑
+## 不用 Docker：systemd 直接跑（小内存机器推荐）
+
+1 GB 内存的 VPS 上，`docker build` 那一步比跑起来还费劲（镜像带中文字体和 python，一个多 G）。
+直接跑省心得多：13 个运行时依赖全是纯 JS，没有一个要编译。
+
+```bash
+# 1) 代码和 Node
+sudo mkdir -p /opt/openworkbuddy && cd /opt/openworkbuddy
+git clone https://github.com/CatCatUncle/openworkbuddy.git .
+npm ci --omit=dev
+
+# 2) 一个专门的系统用户。别用 root 跑——这个 agent 手里有 run_shell
+sudo useradd --system --home-dir /var/lib/openworkbuddy --create-home --shell /usr/sbin/nologin openworkbuddy
+sudo chmod -R a+rX /opt/openworkbuddy
+```
+
+> **Node 装在哪很要命。** 用 nvm 装在 `/root/.nvm/` 下面的话，服务起不来，报的是
+> `status=203/EXEC`——一条完全看不出跟权限有关的错。原因是 `/root` 是 700，系统用户
+> 连进都进不去，那个 node 对它来说等于不存在。把运行时整份拷到 `/opt/node`
+> （`cp -a /root/.nvm/versions/node/vXX /opt/node && chmod -R a+rX /opt/node`）或者用发行版的包，
+> 别让服务去读别人家目录里的东西。
+
+`/etc/systemd/system/openworkbuddy.service`：
+
+```ini
+[Unit]
+Description=OpenWorkBuddy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openworkbuddy
+WorkingDirectory=/opt/openworkbuddy
+# 只听回环，外面那层 nginx/caddy 负责 HTTPS
+Environment=HOST=127.0.0.1
+Environment=PORT=3800
+Environment=OPENWORKBUDDY_HOME=/var/lib/openworkbuddy
+Environment=WB_TRUST_PROXY=1
+Environment=NODE_ENV=production
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/node/bin/node /opt/openworkbuddy/server.js
+Restart=always
+RestartSec=3
+# 1G 内存的机器：到顶先杀自己，三秒后再拉起来，别把整台机器拖进 swap 死地
+MemoryMax=600M
+OOMPolicy=continue
+# 它只该往数据目录里写
+ProtectSystem=full
+ReadWritePaths=/var/lib/openworkbuddy
+PrivateTmp=true
+NoNewPrivileges=true
+StandardOutput=append:/var/log/openworkbuddy.log
+StandardError=append:/var/log/openworkbuddy.log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo touch /var/log/openworkbuddy.log && sudo chown openworkbuddy /var/log/openworkbuddy.log
+sudo systemctl enable --now openworkbuddy
+systemctl status openworkbuddy
+```
+
+日志记得 logrotate（`/etc/logrotate.d/openworkbuddy`，`copytruncate` + `su openworkbuddy openworkbuddy`），
+不然几个月后它会一个人吃掉半块盘。
+
+更新就是「拉代码 → 装依赖 → 重启」，数据在 `/var/lib/openworkbuddy` 不受影响：
+
+```bash
+cd /opt/openworkbuddy && git pull && npm ci --omit=dev && sudo systemctl restart openworkbuddy
+```
+
+嫌 systemd 啰嗦也可以 PM2：
 
 ```bash
 npm install -g pm2
 HOST=127.0.0.1 PORT=3800 OPENWORKBUDDY_HOME=$HOME/wb-data pm2 start server.js --name openworkbuddy
 pm2 save && pm2 startup
 ```
-
-`OPENWORKBUDDY_HOME` 不设也行，那样数据就散在代码目录里（开发态的行为），`git pull` 的时候容易碍事。
 
 ---
 
@@ -158,6 +230,80 @@ WB_TRUST_PROXY=2     # Cloudflare → 你的 nginx → 本应用
 等于谁往请求里塞一行 `X-Forwarded-For: 随便什么` 就换一个新 IP，限流闸直接废掉。
 打开之后服务端也只信两种情况：请求是从私网/环回地址进来的（也就是真有一层反代在本机），
 并且只认从右往左数第 N 跳——最左边那一跳恰好是客户端唯一能伪造的，所以永远不取它。
+
+---
+
+## 手机连回家里那台（不把桌面版挂到公网）
+
+常见的需求不是「再开一台服务器」，而是「人在外面，想看家里那台电脑上的 agent 在干什么、
+接着指挥它」。**工程线连着的就是那台机器的 `wb` 命令行，办公线里的对话、历史、成果文件
+也都是那台机器上的**——所以要的是把桌面版那台**接出来**，不是在服务器上再开一份。
+
+别为这件事把桌面版绑到 `0.0.0.0`。桌面版按 `Electron 壳 + 只听回环` 判定为「个人模式」，
+这个模式下平台闸和凭证脱敏是关着的（一个人的机器不该被服务器的规矩管）；一旦它开始听公网，
+这个前提就不成立了。正确的做法是 SSH 反向隧道 —— 家里那台**主动往外连**，
+不需要公网 IP、不需要在路由器上开端口、不需要动防火墙。
+
+家里那台（macOS 为例，Linux 同理，换成 systemd user unit）：
+
+```bash
+brew install autossh
+autossh -M 0 -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+        -o ExitOnForwardFailure=yes \
+        -R 13800:127.0.0.1:3800 root@你的服务器
+```
+
+> `-R` 后面**必须写 `127.0.0.1`，不能写 `localhost`**。桌面版只绑 IPv4 回环，
+> 而 macOS 上 `localhost` 先解析成 `::1`，偏偏 ssh 的端口转发不做 Happy Eyeballs 回退
+> （curl / Node / Python 都会，唯独它不会）。写错的表现极具迷惑性：服务器上那个口
+> 照常 `LISTEN`，但每个请求都超时。
+
+想开机自起、断线自重连，macOS 上写成 LaunchAgent（`KeepAlive` + `RunAtLoad`），
+Linux 上写成 `systemd --user` 服务。
+
+服务器那头（nginx）：
+
+```nginx
+# 这个 map 放在 http 块里（conf.d/*.conf 本来就在 http 块里，直接写文件开头就行）。
+# 漏了它 nginx 起不来，报 unknown "connection_upgrade" variable。
+map $http_upgrade $connection_upgrade { default upgrade; "" close; }
+
+server {
+    listen 9444 ssl;
+    server_name 你的域名或IP;
+    ssl_certificate     /path/fullchain.pem;
+    ssl_certificate_key /path/privkey.pem;
+
+    # 第二把锁。应用自己的登录闸照常在，但家里那台手里就是你本人电脑的 shell，
+    # 值得在外面再加一道——而且它把扫端口的脚本挡在应用之外，连登录页都碰不到。
+    auth_basic           "Remote";
+    auth_basic_user_file /etc/nginx/ssl/remote.htpasswd;
+
+    client_max_body_size 64m;
+    location / {
+        proxy_pass         http://127.0.0.1:13800;   # 隧道那头
+        proxy_http_version 1.1;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Upgrade    $http_upgrade;
+        proxy_set_header   Connection $connection_upgrade;
+        proxy_buffering    off;      # SSE 和终端那条线都是长连接
+        proxy_read_timeout 3600s;
+    }
+}
+```
+
+`htpasswd` 文件记得 `chown root:nginx` + `640`。只 `chmod 640 root:root` 的话，
+不带密码访问正常返回 401、**带**密码反而 500（worker 读不动那个文件），
+错法很容易被当成密码错。
+
+没有域名也能上 HTTPS：Let's Encrypt 现在给 IP 签证书（`--cert-profile shortlived`，
+6 天有效期，acme.sh 的 cron 自己续）。手机上直接绿锁，不用装自签 CA。
+`--webroot` 别用 standalone 模式——80 口被 nginx 占着，standalone 会一直续不上，
+而这种失败是静默的：证书过期那天你才发现它从几个月前就没续过。
+
+**家里那台睡着 = 502。** 这不是故障，是那头不在。真要随时能连，把电脑的自动睡眠关掉。
 
 ---
 

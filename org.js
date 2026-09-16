@@ -60,6 +60,10 @@ const ORG_DEFAULTS = {
   net_allow: [],                // 网络设置：抓网页的域名白名单（空 = 不限）
   net_deny: [],                 // 域名黑名单（优先于白名单）
   session_days: 90,             // 登录令牌有效期（天），1 - 365
+  // 按次计费的第三方 API（搜索 / 生图 / 生视频 / 配音 / 转写 / 抓网页）各自的额度闸门。
+  // 一路一个 { enabled, org_daily, org_monthly, user_daily }，默认空表 = 全部不限。
+  // 清单和默认值在 quota.js，执行在 tools.js 每个付费调用点上。
+  api_quota: {},
 };
 
 function emptyDb() {
@@ -200,6 +204,9 @@ function updateOrg(id, patch, actor) {
         typeof ORG_DEFAULTS[k] === "boolean" ? !!v
           : typeof ORG_DEFAULTS[k] === "number" ? Math.max(0, Math.floor(+v) || 0)
           : Array.isArray(ORG_DEFAULTS[k]) ? (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 200) : [])
+          // api_quota 是张表，不是一个值：交给 quota.js 拍干净（只认清单里的能力，数字一律非负整数）。
+          // 不能走 String(v) 那条 —— 那会把整张表存成 "[object Object]"。
+          : k === "api_quota" ? require("./quota").normalizeTable(v)
           : String(v);
       if (JSON.stringify(s[k]) === JSON.stringify(cast)) continue;
       s[k] = cast;
@@ -336,8 +343,44 @@ function audit(e) {
   pushAudit(db, e);
   save(db);
 }
-function listAudit(orgId, limit) {
-  return load().audit.filter((a) => a.org === (orgId || DEFAULT_ORG)).slice(0, Math.max(1, Math.min(500, +limit || 200)));
+/**
+ * 审计流水。opts：from/to（`YYYY-MM-DD` 闭区间）、q（操作人/动作/对象/详情里搜）、
+ * actor、action、offset/limit。返回 { audit, total, offset, limit }——
+ * total 是符合筛选的总条数，界面靠它决定还能不能往下翻。
+ *
+ * 第二个参数以前是个裸 limit（`listAudit(org, 300)`），这里兼容着：传数字还是当 limit。
+ * 合规的人来看这张表，第一句问的就是「9 月 3 号谁动了额度」——没有时间范围就只能干瞪眼。
+ */
+function listAudit(orgId, opts) {
+  if (typeof opts === "number" || typeof opts === "string") opts = { limit: opts };
+  opts = opts || {};
+  const all = load().audit.filter((a) => a.org === (orgId || DEFAULT_ORG));
+  const from = String(opts.from || "").slice(0, 10);
+  const to = String(opts.to || "").slice(0, 10);
+  const needle = String(opts.q || "").trim().toLowerCase();
+  const actor = String(opts.actor || "").trim();
+  const action = String(opts.action || "").trim();
+  const picked = all.filter((a) => {
+    const d = String(a.ts || "").slice(0, 10);
+    if (from && (!d || d < from)) return false;
+    if (to && (!d || d > to)) return false;
+    if (actor && a.actor !== actor) return false;
+    if (action && a.action !== action) return false;
+    if (needle && ![a.actor, a.action, a.target, a.detail].some((x) => String(x || "").toLowerCase().includes(needle))) return false;
+    return true;
+  });
+  const offset = Math.max(0, Math.floor(+opts.offset || 0));
+  const limit = Math.max(1, Math.min(1000, Math.floor(+opts.limit || 200)));
+  return {
+    audit: picked.slice(offset, offset + limit),
+    total: picked.length,
+    offset,
+    limit,
+    // 筛选栏的下拉项要列全，所以从**未筛选**的全集里取，不然选了一个动作之后
+    // 下拉里就只剩这一个，人再也选不回去
+    actors: [...new Set(all.map((a) => a.actor).filter(Boolean))].sort(),
+    actions: [...new Set(all.map((a) => a.action).filter(Boolean))].sort(),
+  };
 }
 
 module.exports = {

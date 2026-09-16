@@ -789,9 +789,12 @@ function runConfigGates() {
   //
   // 断言钉在 lint 的结论上，不钉在「我以为它在哪份名册里」：两份名册哪一份收了它都行。
   const app05 = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
-  const agBlock = /saveSettings\(\{\s*agent:\s*\{([\s\S]*?)\}\s*\}/.exec(app05);
-  ok(!!agBlock, "在 app-05.js 里找不到设置页保存 agent 的那段了（这条尺子失效了，别让它绿着）");
-  const savedKeys = [...(agBlock ? agBlock[1] : "").matchAll(/^\s*([a-z_][a-z0-9_]*)\s*:/gim)].map((m) => m[1]);
+  // 往 agent 里写的地方不止一处：智能体设置页存的是一大把，而「主模型挂了换谁」那颗下拉
+  // 已经挪到模型页的对话卡里，自己单独存一个 failover_model。只咬第一处的话，非贪婪的正则
+  // 会停在那个只有一个字段的小块上，后面整串断言就全成了假绿（这条真踩过）。所以全都收上来取并集。
+  const agBlocks = [...app05.matchAll(/saveSettings\(\{\s*agent:\s*\{([\s\S]*?)\}\s*\}/g)];
+  ok(agBlocks.length >= 1, "在 app-05.js 里找不到设置页保存 agent 的那段了（这条尺子失效了，别让它绿着）");
+  const savedKeys = [...new Set(agBlocks.flatMap((b) => [...b[1].matchAll(/^\s*([a-z_][a-z0-9_]*)\s*:/gim)].map((m) => m[1])))];
   ok(savedKeys.length >= 8, `  └ 解析出 ${savedKeys.length} 个字段（太少说明正则没咬住，下面那一串就都是假绿）`, savedKeys);
   for (const k of savedKeys) {
     // ① 登记过没。两处名册任选一处：写进模板就等于顺带公布了默认值，

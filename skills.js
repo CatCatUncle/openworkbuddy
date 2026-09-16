@@ -1,6 +1,10 @@
 "use strict";
 /**
- * 技能（Skills）系统 — 对标腾讯 WorkBuddy 的技能包机制。
+ * 技能（Skills）系统 —— 把「怎么做一类活」写成文件，让 agent 按需加载，而不是塞进系统提示词常驻。
+ *
+ * 为什么不常驻：提示词里每多一段，每一条任务都要为它付一遍 token，而一份「做 PPT 的规矩」
+ * 在写周报的任务里一个字都用不上。技能是按需加载的：agent 看 description 判断这次用不用得上，
+ * 用得上才 use_skill 把正文读进来。
  * skills/<技能名>/skill.md，带 frontmatter：
  *   ---
  *   name: ppt-design

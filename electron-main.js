@@ -115,7 +115,8 @@ try {
 // 改过两次名（workbuddy-clone → openbuddy → openworkbuddy）。Electron 的 userData 目录跟着
 // package.json 的 name 走，不搬家的话老用户会丢 localStorage（表现为莫名其妙被登出）。
 // 按时间倒序找最近的一个旧目录搬过来，只在新目录不存在时搬一次。
-// ⚠️ 白名单里只有我们自己用过的精确名字：同级还躺着腾讯官方 WorkBuddy 的目录，绝不能碰。
+// ⚠️ 白名单只放我们自己用过的精确名字，并且只做全等匹配、不做前缀/模糊匹配：
+// appData 底下还躺着别家同类应用的目录，名字跟我们挨得很近，匹配放宽一格就是删别人的数据。
 const LEGACY_USERDATA = ["openbuddy", "workbuddy-clone"];
 // 显示名叫 OpenWorkBuddy（「关于」面板、系统通知的署名），但 userData 目录钉死在 openworkbuddy：
 // app.setName 会连带把 userData 改成 appData/OpenWorkBuddy，那等于第三次改名、用户又被登出一次

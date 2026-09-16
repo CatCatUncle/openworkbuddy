@@ -12,7 +12,7 @@ require("./boot-check").enforce({ rootDir: __dirname, packaged: require("./paths
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const { DATA_DIR, dataPath, appPath, seedDataDir, resolvePort } = require("./paths");
+const { APP_DIR, DATA_DIR, dataPath, appPath, seedDataDir, resolvePort } = require("./paths");
 // 数据目录跟代码目录不是同一个地方时（装机版、以及 Docker 里设了 OPENWORKBUDDY_HOME），
 // 得先把随包出厂的技能和专家铺过去，否则 skills.js 只认 dataPath("skills")，
 // 容器起来是能起来，但技能列表空空如也。开发态两个目录本来就是一个，这行是空操作。
@@ -21,7 +21,7 @@ seedDataDir();
 const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder, anthropicBase } = require("./llm");
-const { outputFiles, filesScope, safePath, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const { outputFiles, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
@@ -126,6 +126,13 @@ if (config.workspace_dir) {
     console.warn("workspace_dir 无效，使用默认工作空间:", e.message);
   }
 }
+// 开机把当前项目挂载的那块资料库也接回去。少了这一句，重启之后工作目录是对的、
+// 资料库却退回了整个库，agent 在「客户 A」的项目里照样翻得到别家的合同——
+// 而这种错不会报错，只会安静地引用错资料。
+try {
+  const boot = (config.projects || []).find((p) => p && p.name === config.active_project);
+  if (boot && boot.library_dir) setLibraryDir(boot.library_dir);
+} catch {}
 let llmInner = createLLM(config);
 // 记忆向量召回：有能算 embeddings 的渠道就接上，没有就退回关键词匹配（memory 自己兜底）
 memory.setEmbedder(createEmbedder(config));
@@ -250,6 +257,10 @@ function assignSessionDir(sess, message) {
   for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)) || assignedDirs.has(dir); i++) dir = `任务_${stamp}_${slug}_${i}`;
   assignedDirs.add(dir);
   sess.dir = dir; // 存进会话，后续轮次/重启都落同一个文件夹
+  // 连**哪个根**下的这个文件夹也一起记住。只记相对名的后果就是用户换一次工作目录，
+  // 这条对话的成果全部变成「文件不存在」——文件没丢，是坐标系换了而没人记得旧的那套。
+  sess.root = getWorkspaceDir();
+  rememberRoot(sess.root);
   const full = path.join(getWorkspaceDir(), dir);
   try { fs.mkdirSync(full, { recursive: true }); } catch {}
   for (const n of sess.pending_uploads || []) {
@@ -711,6 +722,9 @@ const isPlatformOwner = (req) => admin.isSoloDesktop() || ownsGlobalWorkspace(re
 // 企业管理后台 /api/admin/*：自带 adminGuard（管理员+审计员可看，只有管理员能改）
 app.use(
   admin.createAdminRouter({
+    // 付费 API 那一页要判「这一路配没配 Key」。传函数而不是传 config 本身：
+    // config 是活的（设置页存一次就整体替换），传引用会让后台一直看着一份旧快照
+    readConfig: () => config,
     // 「这个组织的成果目录占了多大」——直接数当前请求这条链上的根，跨租户不会串
     orgUsage: () => {
       const fs2 = outputFiles();
@@ -937,6 +951,43 @@ app.post("/api/provider-models", async (req, res) => {
 });
 
 /**
+ * 渠道测活：拿这条渠道真发一次「ping」，把上游的回答翻成人话。
+ *
+ * 为什么非有不可：用户的原话是「看着是一个模型，然后我从飞书对话的时候跟我聊天的是另外一个模型啊，
+ * 跟我说欠费了」。界面上一把 Key 填进去就显示「已配置」，可「填了」和「能用」是两回事——
+ * 余额扣光了、Key 是别家的、模型名在这家不存在，界面全都看不出来，非要等某个任务跑到一半才炸。
+ * probeModel 早就把 401/402/404/429 翻成了人话，只是一直只有开箱向导在用；这里把它摆到渠道卡上。
+ *
+ * 拿哪个模型去 ping：优先用调用方点名的 → 这条渠道下面的第一个对话模型 → 精选目录里这个 kind 的第一条。
+ * 一个都没有就直说「先加个模型」，而不是拿 gpt-3.5 之类瞎猜一个去打——猜错了报的 404 会让人以为 Key 坏了。
+ */
+app.post("/api/provider-test", async (req, res) => {
+  // 出网请求 + 带着 Key，跟 /api/provider-models 同一条规矩：只有平台管理员能发起
+  if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "渠道归平台管理员配", platform_only: true });
+  const b = req.body || {};
+  const known = (config.providers || []).find((p) => p.id === b.id) || {};
+  const kind = String(b.kind || known.kind || "").trim();
+  const base = String(b.base_url == null ? known.base_url || "" : b.base_url).trim();
+  // 掩码原样传回来时用库里那把真的：界面上 Key 框平时是空的（只显示末四位），
+  // 没重填就点「测一下」是最常见的一次点击，这时候不该测成「Key 为空」
+  const rawKey = String(b.api_key == null ? "" : b.api_key).trim();
+  const key = !rawKey || /^\*+$/.test(rawKey) ? String(known.api_key || "") : rawKey;
+  const local = kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(base);
+  if (!key && !local) return res.json({ ok: false, error: "这个渠道还没填 Key，填完再测" });
+  if (kind !== "anthropic" && !/^https?:\/\//i.test(base)) return res.json({ ok: false, error: "接口地址得是 http(s) 开头的完整地址" });
+  const mine = (config.models || []).filter((m) => m.channel === known.id);
+  const model = String(b.model || "").trim()
+    || (mine[0] || {}).model
+    || ((mediaModels.catalogFor("chat", kind) || [])[0] || {}).id;
+  if (!model) {
+    return res.json({ ok: false, error: "这个渠道下面还没有对话模型。加一个再测——测活要拿一个真模型去打一次招呼，瞎猜一个名字测出来的 404 会让人误以为 Key 坏了" });
+  }
+  const t0 = Date.now();
+  const why = await probeModel({ provider: mediaModels.protoOfKind(kind), base_url: base, api_key: key, model });
+  res.json({ ok: !why, ms: Date.now() - t0, model, error: why || "" });
+});
+
+/**
  * 四路媒体的老扁平配置（tools.js 读的那份）发给界面之前，按身份把 Key 掩掉。
  * 掩成一串星号而不是空串：空串会被界面读成「还没配」，于是有人会去重填一遍——
  * 而他根本没有改这台服务器 Key 的权限，白填一次还要吃一个 403。
@@ -957,11 +1008,15 @@ app.get("/api/settings", (req, res) => {
   const myModel = prefs.modelCfg(config);
   res.json({
     workspace_dir: getWorkspaceDir(),
-    // Key 一律按身份掩码。普通成员看得见有哪些模型（他要选着用），但看不到 Key——
-    // 那是整台服务器的账单凭证，他既改不了也不该拿到手。has_key 让界面照样能提示「这条还没配 Key」
+    // Key 从不发原文，谁来问都一样：回一串八颗星（= 「没改」的暗号）+ has_key（配没配）。
+    // 平台管理员多拿一个 key_hint（sk-…4f2a）用来认「我装的是哪一把」；普通成员连这截也没有——
+    // 那是整台服务器的账单凭证，他既改不了也不该拿到手。
+    // 管理员也一样掩：八颗星是「原样传回来 = 没改」的约定暗号（POST 那边认这个正则），
+    // 界面真正显示的是 key_hint 那一小截
     models: (config.models || []).map((m) => ({
       ...m,
-      api_key: isPlatformOwner(req) ? m.api_key || "" : (m.api_key ? "********" : ""),
+      api_key: m.api_key ? "********" : "",
+      key_hint: isPlatformOwner(req) ? keyHint(m.api_key) : "",
       has_key: !!m.api_key,
     })),
     active_model: config.active_model,
@@ -1029,7 +1084,8 @@ app.get("/api/settings", (req, res) => {
     // 那是整台服务器的账单凭证，他既改不了也不该拿到手
     providers: (config.providers || []).map((p) => ({
       id: p.id, name: p.name, kind: p.kind, base_url: p.base_url,
-      api_key: isPlatformOwner(req) ? p.api_key || "" : (p.api_key ? "********" : ""),
+      api_key: p.api_key ? "********" : "",
+      key_hint: isPlatformOwner(req) ? keyHint(p.api_key) : "",
       has_key: !!p.api_key,
     })),
     media_models: config.media_models || [],
@@ -1165,7 +1221,8 @@ app.post("/api/settings", (req, res) => {
       for (const m of b.models) {
         if (!m.name || !m.model) throw new Error("每个模型需要 name 和 model 字段");
         m.provider = m.provider === "anthropic" ? "anthropic" : "openai";
-        delete m.has_key; // 读接口给界面加的，不进配置文件
+        delete m.has_key;  // 读接口给界面加的，不进配置文件
+        delete m.key_hint; // 同上：Key 的末四位只是给人看的，落盘就成了第二份 Key 副本
         // 读接口给非管理员回的是掩码。真有人把掩码原样存回来，按「没改」处理，别把 Key 抹成八个星号
         if (/^\*+$/.test(String(m.api_key == null ? "" : m.api_key).trim())) {
           m.api_key = String((old.get(m.name) || {}).api_key || "");
@@ -1435,20 +1492,31 @@ app.post("/api/trace/test", async (req, res) => {
 
 // 本地 Trace：默认记录在当前 workspace/.openworkbuddy/traces.jsonl，不依赖 Langfuse。
 // Langfuse 只是可选的外部副本，用户可以先用本地追踪排查任务，再决定是否外发。
-app.get("/api/traces", (_req, res) => {
+// 这三条一律锁平台管理员。一本账里记的是**整台服务器**上跑过的每趟任务：提示词原文、
+// 工具参数、文件路径、最终回复，全都在里面，而且不带账号维度——多人服务器上放开给成员看，
+// 等于把同事的对话内容原样端出去。界面上这一页也只对平台管理员显示（PLATFORM_ONLY_VIEWS）。
+const traceOwnerOnly = (req, res) => {
+  if (isPlatformOwner(req)) return false;
+  res.status(403).json({ error: "执行记录是整台服务器一份的，归平台管理员看", platform_only: true, traces: [] });
+  return true;
+};
+app.get("/api/traces", (req, res) => {
+  if (traceOwnerOnly(req, res)) return;
   try {
-    const limit = Math.max(1, Math.min(200, Number(_req.query.limit) || 50));
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
     res.json({ traces: tracing.getTracer(config).localTraces({ limit }) });
   } catch (e) { res.status(500).json({ error: e.message, traces: [] }); }
 });
 app.get("/api/traces/:id", (req, res) => {
+  if (traceOwnerOnly(req, res)) return;
   try {
     const trace = tracing.getTracer(config).localTraces({ traceId: String(req.params.id || "") });
     if (!trace) return res.status(404).json({ error: "找不到这条 Trace" });
     res.json({ trace });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.delete("/api/traces", (_req, res) => {
+app.delete("/api/traces", (req, res) => {
+  if (traceOwnerOnly(req, res)) return;
   try { tracing.getTracer(config).clearLocalTraces(); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1460,6 +1528,20 @@ function isLocalModel(m) {
 }
 function hasKey(m) {
   return isLocalModel(m) || !!String(m.api_key || "").trim();
+}
+
+/**
+ * Key 的「认得出是哪一把」凭据：前三位 + 末四位，中间省略。
+ *
+ * 成熟产品（OpenAI / Stripe / Vercel 后台）一律是这个做法：Key 写进去就再也读不出来，
+ * 界面上只留末四位。我们以前是平台管理员每打开一次设置页，九把明文 Key 就往浏览器里送一趟——
+ * 页面上任何一处 XSS 都能整包端走。现在管理员那边也只给这一小截：
+ * 「我装的是哪一把」还看得出来，「这把还能不能用」交给渠道卡上的「测一下」。
+ */
+function keyHint(k) {
+  const v = String(k || "").trim();
+  if (!v) return "";
+  return v.length <= 8 ? "•".repeat(v.length) : v.slice(0, 3) + "…" + v.slice(-4);
 }
 
 /** 发一条最小的真实请求验活。返回 null = 通过，返回字符串 = 人话版失败原因。
@@ -2061,11 +2143,16 @@ app.post("/api/mcp", async (req, res) => {
  */
 function projectMeta(body) {
   const arr = (v) => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean).slice(0, 30) : []);
+  // library_dir：这个项目挂载资料库的哪一块。""=整个资料库（老行为）。
+  // 挂坏了不该让整次保存失败——目录可能是后来被人在磁盘上删的——所以校验不过就当没挂
+  let lib = "";
+  try { lib = libRel(body.library_dir); } catch { lib = ""; }
   return {
     instructions: String(body.instructions || "").slice(0, 4000),
     connectors: arr(body.connectors),
     experts: arr(body.experts),
     skills: arr(body.skills),
+    library_dir: lib,
   };
 }
 function activeProject() {
@@ -2081,6 +2168,9 @@ function projectContextOf(p) {
   if (!p) return "";
   const parts = [];
   if (p.instructions) parts.push(p.instructions);
+  // 挂载了资料库的某一块就说出来。不说的话模型只会看见一个小得可疑的文件清单，
+  // 然后自作主张去 run_shell 翻整个 data 目录找「应该还有的那些文件」——那条路本来就该被安全中心拦下
+  if (p.library_dir) parts.push(`本项目只挂载了资料库的「${p.library_dir}」这一块，library_list 列出来的就是全部；别去别处找资料，也别猜库里还有什么。`);
   const alive = (names, pool) => (names || []).filter((n) => pool.includes(n));
   const exps = alive(p.experts, experts.map((e) => e.name));
   if (exps.length) parts.push(`本项目挂载的专家：${exps.join("、")}。相应领域的子任务优先 delegate_to_expert 委派给他们。`);
@@ -2154,6 +2244,19 @@ function ensureProjects() {
   }
   if (!config.projects.some((p) => p.name === config.active_project)) config.active_project = config.projects[0].name;
 }
+
+/**
+ * 把一个项目的「空间」落到运行时：工作空间根 + 资料库挂载的那一块。
+ *
+ * 这两件事必须一起做。只切工作目录不切资料库挂载，就是「我明明在客户 A 的项目里，
+ * 它翻出来的是客户 B 的合同」；只切挂载不切目录，产出会写进上一个项目的文件夹。
+ * 切完顺手把根记进名单（rememberRoot），这样以后回看这条项目下的老对话还找得到文件。
+ */
+function applyProjectSpaces(p) {
+  if (!p) return;
+  try { setLibraryDir(p.library_dir || ""); } catch {}
+  if (p.dir) rememberRoot(p.dir);
+}
 /**
  * config.json 是唯一一份存着所有 API Key 的文件，还不入 git——写坏了就是全丢。
  * 所以全应用只留这一个写入口，走原子改名 + .bak。
@@ -2223,8 +2326,10 @@ app.post("/api/projects", (req, res) => {
     if (!dir) dir = dataPath("projects", name.replace(/[/\\:*?"<>|]/g, "_"));
     const real = setWorkspaceDir(dir); // 建目录并切换过去
     config.projects.push({ name, dir: real, ...projectMeta(req.body || {}), created_at: new Date().toISOString() });
+    rememberRoot(real); // 以后在别的项目里回看这条项目下的老对话，靠的就是这份名单
     config.active_project = name;
     config.workspace_dir = real;
+    applyProjectSpaces(config.projects[config.projects.length - 1]);
     saveConfig();
     res.json({ ok: true, projects: config.projects, active: name });
   } catch (e) {
@@ -2240,8 +2345,9 @@ app.post("/api/projects/switch", (req, res) => {
 
     config.workspace_dir = setWorkspaceDir(p.dir);
     config.active_project = p.name;
+    applyProjectSpaces(p);
     saveConfig();
-    res.json({ ok: true, active: p.name, dir: p.dir });
+    res.json({ ok: true, active: p.name, dir: p.dir, library_dir: p.library_dir || "" });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -2258,6 +2364,7 @@ app.post("/api/workspace/reset", (_req, res) => {
       config.workspace_dir = setWorkspaceDir(ap.dir);
       saveConfig();
     }
+    applyProjectSpaces(ap);
     res.json({ ok: true, workspace_dir: getWorkspaceDir() });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -2270,12 +2377,30 @@ app.patch("/api/projects/:name", (req, res) => {
   const p = config.projects.find((x) => x.name === req.params.name);
   if (!p) return res.status(404).json({ error: "项目不存在" });
   Object.assign(p, projectMeta({ ...p, ...(req.body || {}) }));
+  // 换工作空间目录。老版本这儿根本收不了 dir，新建项目时也没处填，用户只能拿到
+  // data/projects/<名字> 这个藏在应用数据里的目录——「新增的项目好像没地方设置目录」说的就是它。
+  const nd = String((req.body || {}).dir || "").trim();
+  if (nd) {
+    try {
+      const real = path.resolve(nd);
+      if (!path.isAbsolute(real)) throw new Error("工作空间必须是绝对路径");
+      fs.mkdirSync(real, { recursive: true }); // 没权限/盘不在，在这儿就炸，别等任务跑到一半
+      p.dir = real;
+      rememberRoot(real);
+      // 改的是当前项目就得同步切根，否则界面显示新目录、任务还往老目录写，
+      // 下一次回看就是满屏「文件不存在」
+      if (config.active_project === p.name) config.workspace_dir = setWorkspaceDir(real);
+    } catch (e) {
+      return res.status(400).json({ error: "工作空间目录设置失败：" + e.message });
+    }
+  }
   const rename = String((req.body || {}).name || "").trim();
   if (rename && rename !== p.name) {
     if (config.projects.some((x) => x.name === rename)) return res.status(400).json({ error: "同名项目已存在" });
     if (config.active_project === p.name) config.active_project = rename;
     p.name = rename;
   }
+  if (config.active_project === p.name) applyProjectSpaces(p);
   saveConfig();
   res.json({ ok: true, project: p, projects: config.projects, active: config.active_project });
 });
@@ -2308,52 +2433,135 @@ function readNotes() {
 function writeNotes(notes) {
   store.writeJsonAtomic(NOTES_FILE, notes, { pretty: true });
 }
-function libSafe(name) {
-  const base = path.basename(String(name || ""));
-  if (!base || base.startsWith(".")) throw new Error("文件名不合法");
-  return path.join(LIB_DIR, base);
+/**
+ * 资料库里的相对路径 → 绝对路径。
+ *
+ * 老版本这儿是一句 `path.basename(name)`：资料库被硬压成**一层平铺**。用户传二十份合同进来
+ * 就是二十条并排，分不出「客户 A / 客户 B」，项目也没法只挂载其中一块——
+ * 这正是「资料库看起来没有子目录或者指定目录的概念」那条反馈的根。
+ *
+ * 允许子目录之后越界检查就得自己做：basename 那一刀顺手也把 `../` 剁掉了，现在没有了。
+ * 三道：段里不许有 `..`、不许以 `.` 开头（.git/.ssh 这类别被翻出来）、不许有 Windows 非法字符；
+ * 拼完再让 safePathIn 按根复核一遍，两道都过才算数。
+ */
+function libPath(rel, root = LIB_DIR) {
+  const parts = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
+  for (const seg of parts) {
+    if (seg === ".." || seg.startsWith(".") || /[<>:"|?*\u0000-\u001f]/.test(seg)) throw new Error(`路径不合法：${seg}`);
+  }
+  return safePathIn(root, parts.join("/"));
+}
+/** 规整成对外用的相对路径（统一正斜杠、去掉首尾斜杠）；越界的在 libPath 里抛 */
+function libRel(rel) {
+  const parts = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
+  libPath(parts.join("/")); // 只为触发校验
+  return parts.join("/");
+}
+/** 资料库里所有子目录的相对路径（给项目弹窗那个「挂哪一块」的下拉用）。深度封 4 层，防止有人把整个硬盘软链进来 */
+function libFolders(rel = "", depth = 0, out = []) {
+  if (depth >= 4) return out;
+  let ents = [];
+  try { ents = fs.readdirSync(libPath(rel), { withFileTypes: true }); } catch { return out; }
+  for (const e of ents) {
+    if (!e.isDirectory() || e.name.startsWith(".")) continue;
+    const child = rel ? `${rel}/${e.name}` : e.name;
+    out.push(child);
+    libFolders(child, depth + 1, out);
+  }
+  return out;
+}
+/** 一个资料库目录里直接躺着几个文件（列表上给个「3 份」的角标，免得点进去才发现是空的） */
+function libCount(abs) {
+  try { return fs.readdirSync(abs, { withFileTypes: true }).filter((e) => !e.name.startsWith(".")).length; }
+  catch { return 0; }
 }
 
-app.get("/api/library", (_req, res) => {
+app.get("/api/library", (req, res) => {
+  const dir = (() => { try { return libRel((req.query || {}).dir); } catch { return ""; } })();
   let files = [];
+  let dirs = [];
   try {
-    files = fs
-      .readdirSync(LIB_DIR, { withFileTypes: true })
-      .filter((e) => e.isFile() && !e.name.startsWith("."))
-      .map((e) => {
-        const st = fs.statSync(path.join(LIB_DIR, e.name));
-        return { name: e.name, size: st.size, mtime: st.mtime.toISOString() };
-      })
-      .sort((a, b) => b.mtime.localeCompare(a.mtime));
+    for (const e of fs.readdirSync(libPath(dir), { withFileTypes: true })) {
+      if (e.name.startsWith(".")) continue;
+      const abs = path.join(libPath(dir), e.name);
+      let st;
+      try { st = fs.statSync(abs); } catch { continue; }
+      const row = { name: e.name, path: dir ? `${dir}/${e.name}` : e.name, size: st.size, mtime: st.mtime.toISOString() };
+      if (e.isDirectory()) dirs.push({ ...row, count: libCount(abs) });
+      else if (e.isFile()) files.push(row);
+    }
   } catch {}
-  res.json({ files, notes: readNotes() });
+  dirs.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+  files.sort((a, b) => b.mtime.localeCompare(a.mtime));
+  // crumbs：["", "客户A", "客户A/2026"] 这样一层层的可点路径，前端不用自己切字符串
+  const segs = dir ? dir.split("/") : [];
+  const crumbs = segs.map((name, i) => ({ name, path: segs.slice(0, i + 1).join("/") }));
+  res.json({ dir, crumbs, dirs, files, folders: libFolders(), notes: readNotes() });
+});
+
+app.post("/api/library/folder", (req, res) => {
+  try {
+    const parent = libRel((req.body || {}).dir);
+    const name = String((req.body || {}).name || "").trim();
+    if (!name) return res.status(400).json({ error: "文件夹名不能为空" });
+    const rel = parent ? `${parent}/${name}` : name;
+    const abs = libPath(rel);
+    if (fs.existsSync(abs)) return res.status(400).json({ error: "同名文件夹已存在" });
+    fs.mkdirSync(abs, { recursive: true });
+    res.json({ ok: true, dir: rel });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// 删空文件夹。非空的不给删：资料库是共享的一份，一条 rm -rf 下去别人的素材也跟着没了，
+// 而这个接口的调用方是一个「删除」小链接，点错的代价不该是不可逆的
+app.delete("/api/library/folder", (req, res) => {
+  try {
+    const rel = libRel((req.query || {}).dir || (req.body || {}).dir);
+    if (!rel) return res.status(400).json({ error: "没说删哪个" });
+    const abs = libPath(rel);
+    if (!fs.existsSync(abs)) return res.json({ ok: true });
+    if (libCount(abs)) return res.status(400).json({ error: "文件夹里还有东西，先清空再删" });
+    fs.rmdirSync(abs);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 app.post("/api/library/upload", (req, res) => {
   try {
     const { name, data_b64 } = req.body || {};
     if (!name || !data_b64) return res.status(400).json({ error: "缺少 name 或 data_b64" });
-    fs.mkdirSync(LIB_DIR, { recursive: true });
-    fs.writeFileSync(libSafe(name), Buffer.from(data_b64, "base64"));
-    res.json({ ok: true, name: path.basename(name) });
+    const dir = libRel((req.body || {}).dir);
+    // 浏览器拖整个文件夹进来时 file.name 可能自带层级，一并接住；两边都有就拼起来
+    const rel = libRel(dir ? `${dir}/${name}` : name);
+    const abs = libPath(rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, Buffer.from(data_b64, "base64"));
+    res.json({ ok: true, name: path.basename(rel), path: rel });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
-app.get("/api/library/file/:name", (req, res) => {
+// 通配而不是 :name —— 子目录以后路径里有斜杠，:name 只吃得下一段
+app.get("/api/library/file/*", (req, res) => {
   try {
-    const p = libSafe(req.params.name);
-    if (!fs.existsSync(p)) return res.status(404).send("文件不存在");
+    const p = libPath(relOf(req));
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).send("文件不存在");
     res.download(p);
   } catch (e) {
     res.status(400).send(e.message);
   }
 });
 
-app.delete("/api/library/file/:name", (req, res) => {
+app.delete("/api/library/file/*", (req, res) => {
   try {
-    fs.rmSync(libSafe(req.params.name), { force: true });
+    const p = libPath(relOf(req));
+    if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return res.status(400).json({ error: "这是文件夹，用删文件夹那个接口" });
+    fs.rmSync(p, { force: true });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -2372,6 +2580,247 @@ app.post("/api/library/note", (req, res) => {
 app.delete("/api/library/note/:id", (req, res) => {
   writeNotes(readNotes().filter((n) => n.id !== req.params.id));
   res.json({ ok: true });
+});
+
+// ---------- 资料库：按任务看产出 / 全库搜索 ----------
+/**
+ * 「这次任务到底产出了哪些文件」——这份数据一直都在，只是从来没人从这个方向读过。
+ *
+ * 每跑完一批工具，recordingEmit 会往 transcript 里压一条 { type:"files", changed:[…] }，
+ * changed 是 makeOwnership 认过主的那几个文件（不是整棵树的快照）。把一条会话里所有这种
+ * 事件的 changed 并起来，就是「这条任务产出了什么」的权威答案。
+ *
+ * 用户原话：「资料库那块按照任务看到产出吧」。以前资料库只能按目录翻，而人记事情是按
+ * 「我那天让它做的那份周报」记的，不是按 out/2026-09/report-final-v3.md 记的。
+ *
+ * 按文件 mtime 增量缓存，跟 listSessionsOnDisk 同一个路子：几百个会话不能每次全量解析 JSON。
+ */
+const outIndexCache = new Map(); // 会话文件名 -> { mtime, row }
+function sessionOutputRow(id, s) {
+  if (!s || !Array.isArray(s.transcript) || !s.transcript.length) return null;
+  const names = [];
+  const seen = new Set();
+  let firstAt = 0;
+  for (const turn of s.transcript) {
+    if (turn.type !== "assistant" || !Array.isArray(turn.events)) continue;
+    for (const ev of turn.events) {
+      if (ev.type !== "files") continue;
+      for (const n of ev.changed || []) {
+        if (typeof n !== "string" || seen.has(n)) continue;
+        seen.add(n);
+        names.push(n);
+        if (!firstAt) firstAt = Date.parse(turn.at || "") || 0;
+      }
+    }
+  }
+  if (!names.length) return null; // 没产出的对话不进这一页：这一页问的是「东西呢」，不是「聊过啥」
+  return {
+    id,
+    title: s.title || "未命名任务",
+    user: s.user || "",
+    project: s.project || "",
+    lane: lanes.normalize(s.lane) || undefined,
+    dir: s.dir || "",
+    at: Date.parse(s.updated_at || "") || firstAt,
+    names,
+  };
+}
+function listTaskOutputs() {
+  let files = [];
+  try { files = fs.readdirSync(SESS_DIR).filter((n) => n.endsWith(".json")); } catch { return []; }
+  const rows = [];
+  const seen = new Set();
+  for (const n of files) {
+    const id = n.slice(0, -5);
+    seen.add(n);
+    const live = sessions.get(id);
+    if (live) { const r = sessionOutputRow(id, live); if (r) rows.push(r); continue; }
+    let mtime = 0;
+    try { mtime = fs.statSync(path.join(SESS_DIR, n)).mtimeMs; } catch { continue; }
+    const hit = outIndexCache.get(n);
+    if (hit && hit.mtime === mtime) { if (hit.row) rows.push(hit.row); continue; }
+    const row = sessionOutputRow(id, store.readJson(path.join(SESS_DIR, n), null));
+    outIndexCache.set(n, { mtime, row });
+    if (row) rows.push(row);
+  }
+  for (const k of outIndexCache.keys()) if (!seen.has(k)) outIndexCache.delete(k);
+  rows.sort((a, b) => b.at - a.at);
+  return rows;
+}
+
+app.get("/api/library/outputs", (req, res) => {
+  const now = outputFiles();
+  const meta = new Map(now.map((f) => [f.name, f]));
+  const scope = filesScope(now);
+  const claimed = new Set();
+  const tasks = [];
+  for (const row of listTaskOutputs()) {
+    if (!ownSession(req.user, row)) continue; // 跟侧栏一个口径：别人的任务不该出现在我的资料库里
+    const files = [];
+    for (const n of row.names) {
+      const f = meta.get(n);
+      if (f) claimed.add(n);
+      // scope.full=false 时这份清单本来就不全，"文件不在列表里"证明不了它被删了，别乱盖章
+      files.push({ name: n, size: f ? f.size : 0, mtime: f ? f.mtime : "", gone: scope.full && !f });
+    }
+    files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
+    const { names, user, ...rest } = row;
+    tasks.push({ ...rest, files, live: files.filter((f) => !f.gone).length });
+    if (tasks.length >= 200) break;
+  }
+  // 「未归属」：工作目录里确实有、但没有任何一条任务认领过的文件——手动拷进来的素材、
+  // 更早版本产出的东西、别的工具写的。不列出来的话这一页就成了半份清单，用户会以为文件丢了。
+  const orphans = now.filter((f) => !claimed.has(f.name))
+    .map((f) => ({ name: f.name, size: f.size, mtime: f.mtime, gone: false }));
+  res.json({ tasks, orphans: orphans.slice(0, 200), orphan_total: orphans.length, ...scope });
+});
+
+// 能当正文搜的类型。二进制（图片/压缩包/PDF）只搜文件名——把 PDF 当 utf8 读进来
+// 匹配到的只会是一堆乱码里的巧合，比搜不到更糟
+const TEXTY = /\.(md|markdown|txt|csv|tsv|json|jsonl|ya?ml|html?|xml|log|ini|conf|toml|js|ts|py|sh|css|srt|vtt)$/i;
+const SEARCH_MAX_BYTES = 512 * 1024;  // 单个文件超过这个大小只搜名字：搜一个 30MB 的日志会把请求拖死
+const SEARCH_SCAN_CAP = 600;          // 最多读多少个文件的正文
+// 光数文件个数不够：600 个 400KB 的导出日志就是 240MB 的同步读，那几百毫秒里事件循环整个停着。
+// 两道闸哪道先到都停，然后如实把 capped 报给界面——搜不全可以，假装搜全了不行。
+const SEARCH_BYTE_CAP = 12 * 1024 * 1024;
+
+/**
+ * 正文缓存。搜索框是边打字边搜的（前端 260ms 防抖），「周报」四个字就是四趟请求，
+ * 不缓存的话同一批文件要被原样读四遍。键里带了大小和 mtime——文件一动键就失效，
+ * 所以永远读不到过期的内容（跟 tools.js 里 digestCache 同一个路子）。
+ * 满了整份丢掉重来：维护 LRU 不值这个复杂度，代价不过是下一次键入冷一趟。
+ */
+const searchTextCache = new Map();
+let searchTextBytes = 0;
+function searchRead(full, size, mtime) {
+  const key = `${full}|${size}|${mtime}`;
+  const hit = searchTextCache.get(key);
+  if (hit !== undefined) return hit;
+  let text = "";
+  try { text = fs.readFileSync(full, "utf8"); } catch { text = ""; }
+  if (searchTextBytes > SEARCH_BYTE_CAP) { searchTextCache.clear(); searchTextBytes = 0; }
+  searchTextCache.set(key, text);
+  searchTextBytes += text.length;
+  return text;
+}
+/** 命中行的上下文摘录：给出行号和那一行，用户一眼能判断「是不是我要找的那份」 */
+function searchExcerpt(text, needle, max = 3) {
+  const out = [];
+  const lower = text.toLowerCase();
+  let from = 0;
+  while (out.length < max) {
+    const i = lower.indexOf(needle, from);
+    if (i < 0) break;
+    const s = text.lastIndexOf("\n", i) + 1;
+    let e = text.indexOf("\n", i);
+    if (e < 0) e = text.length;
+    const line = text.slice(s, e).trim();
+    out.push({ line: text.slice(0, s).split("\n").length, text: line.length > 200 ? line.slice(0, 200) + "…" : line });
+    from = e + 1;
+  }
+  return out;
+}
+/** 递归走资料库；depth 封 6 层、条数封 4000，软链成环也走不死 */
+function libWalk(rel = "", depth = 0, out = []) {
+  if (depth >= 6 || out.length >= 4000) return out;
+  let ents = [];
+  try { ents = fs.readdirSync(libPath(rel), { withFileTypes: true }); } catch { return out; }
+  for (const e of ents) {
+    if (e.name.startsWith(".")) continue;
+    const child = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) { libWalk(child, depth + 1, out); continue; }
+    if (!e.isFile()) continue;
+    let st; try { st = fs.statSync(libPath(child)); } catch { continue; }
+    out.push({ name: e.name, path: child, size: st.size, mtime: st.mtime.toISOString() });
+    if (out.length >= 4000) break;
+  }
+  return out;
+}
+
+/**
+ * 全库搜索。用户原话：「还有支持搜索功能吧」。
+ *
+ * 以前那个 #lb-q 只是把**当前这一层已经加载出来的**文件名过滤一遍——换句话说，
+ * 东西在隔壁文件夹里就搜不到，正文里写了什么更是无从谈起。那不叫搜索，叫筛选。
+ *
+ * 这里搜四种东西，每种都如实标明来源：
+ *   lib   资料库文件（文件名 + 正文，正文命中给出行号和那一行）
+ *   ws    当前工作区的产出文件（文件名 + 正文，跟资料库共用同一份扫描预算）
+ *   note  灵感笔记
+ *   task  任务标题，附带这条任务的产出文件——「那份周报是哪次做的」这种找法才是常态
+ */
+app.get("/api/library/search", (req, res) => {
+  const q = String((req.query || {}).q || "").trim().slice(0, 120);
+  if (!q) return res.json({ q: "", lib: [], ws: [], notes: [], tasks: [], scanned: 0, capped: false });
+  const needle = q.toLowerCase();
+  const hitName = (n) => String(n).toLowerCase().includes(needle);
+
+  // 两棵树共用一份预算（资料库先扫、工作区后扫）。scanned/bytes 任一道到顶就只剩搜名字，
+  // capped 一路带到界面上明说「还有没搜到的」。
+  const budget = { scanned: 0, bytes: 0, capped: false };
+  /** 名字 + 正文各搜一遍，返回 null 表示这个文件根本没命中 */
+  const probe = (name, full, size, mtime) => {
+    const byName = hitName(name);
+    let lines = [];
+    if (TEXTY.test(name) && size <= SEARCH_MAX_BYTES) {
+      if (budget.scanned >= SEARCH_SCAN_CAP || budget.bytes >= SEARCH_BYTE_CAP) budget.capped = true;
+      else {
+        budget.scanned++;
+        budget.bytes += size;
+        const text = searchRead(full, size, mtime);
+        if (text) lines = searchExcerpt(text, needle);
+      }
+    }
+    if (!byName && !lines.length) return null;
+    return { by: byName && lines.length ? "both" : byName ? "name" : "text", lines };
+  };
+  // 名字命中排在正文命中前面：搜「周报」的人多半在找那个叫周报的文件，不是找提到周报的文件
+  const byNameFirst = (a, b) =>
+    (a.by === "text" ? 1 : 0) - (b.by === "text" ? 1 : 0) || String(b.mtime).localeCompare(String(a.mtime));
+
+  const lib = [];
+  for (const f of libWalk()) {
+    let hit;
+    try { hit = probe(f.path, libPath(f.path), f.size, f.mtime); } catch { continue; }
+    if (hit) lib.push({ ...f, ...hit });
+    if (lib.length >= 200) break;
+  }
+  lib.sort(byNameFirst);
+
+  // 工作区产出也搜正文。以前这儿只过滤文件名，理由写的是「正文可能是几百兆的中间产物」——
+  // 可那正是 TEXTY 和 SEARCH_MAX_BYTES 两道闸在管的事。真实后果是：这台机器上资料库一个文件
+  // 都没有，东西全在工作区，于是「全文搜索」实际上一次都没真正跑起来过，搜「上个月那份复盘里
+  // 提到的那家供应商」永远是空的。用户原话：「还有支持搜索功能吧」——搜的是内容，不是文件名。
+  const wsRoot = getWorkspaceDir();
+  const wsAll = outputFiles();
+  const ws = [];
+  for (const f of wsAll) {
+    let hit;
+    try { hit = probe(f.name, safePathIn(wsRoot, f.name), f.size, f.mtime); } catch { continue; }
+    if (hit) ws.push({ name: f.name, size: f.size, mtime: f.mtime, ...hit });
+    if (ws.length >= 200) break;
+  }
+  ws.sort(byNameFirst);
+
+  const notes = readNotes().filter((n) => String(n.text || "").toLowerCase().includes(needle))
+    .slice(0, 50).map((n) => ({ id: n.id, text: n.text, at: n.at }));
+
+  const wsMeta = new Map(wsAll.map((f) => [f.name, f])); // 上面已经遍历过一次，别再走一趟全树
+  const tasks = [];
+  for (const row of listTaskOutputs()) {
+    if (!ownSession(req.user, row)) continue;
+    const titleHit = hitName(row.title);
+    const files = row.names.filter((n) => titleHit || hitName(n));
+    if (!titleHit && !files.length) continue;
+    tasks.push({
+      id: row.id, title: row.title, at: row.at, project: row.project, lane: row.lane,
+      by: titleHit ? "title" : "file",
+      files: files.slice(0, 20).map((n) => { const f = wsMeta.get(n); return { name: n, size: f ? f.size : 0, mtime: f ? f.mtime : "", gone: !f }; }),
+    });
+    if (tasks.length >= 50) break;
+  }
+
+  res.json({ q, lib, ws, notes, tasks, scanned: budget.scanned, capped: budget.capped });
 });
 
 // ---------- 长期记忆 ----------
@@ -2770,7 +3219,31 @@ function cacheStats() {
 // 工作空间成果文件不进备份（可能巨大，且用户自己看得见摸得着）。备份放项目根 backups/，
 // 用系统 tar（mac/linux 自带，win10+ 也有），不为这事拖第三方压缩依赖。
 const BACKUP_DIR = dataPath("backups");
-const BACKUP_ENTRIES = ["data", "config.json", "schedules.json", "experts.json"];
+// prefs/ 在 data/ 外面（prefs.js 直接落 DATA_DIR/prefs），得单列一项——
+// 漏了它的话搬完家宠物、快捷指令、上次挑的模型全要重设一遍
+const BACKUP_ENTRIES = ["data", "prefs", "config.json", "schedules.json", "experts.json"];
+// 包里允许出现的顶层条目。比 BACKUP_ENTRIES 多一个 skills/——自己写的技能是跟着备份走的
+// （见 userSkillEntries），所以列清单和解包的时候也得认它。
+const BACKUP_TOP = [...BACKUP_ENTRIES, "skills"];
+
+/**
+ * 自己写的技能也得跟着搬家。
+ *
+ * 随包出厂的那一堆不进包：光 ppt-master 一个就 170M，装机时 seedDataDir 本来就会把它们
+ * 铺到数据目录，新机器上一样有；每次备份都背一遍只会把包撑到没人敢点「立即备份」。
+ * 所以这儿只挑「出厂列表里没有的」——用户自己建的、或者从别处装进来的那些。
+ * 开发态（DATA_DIR === APP_DIR）下 skills/ 就是仓库里那份，git 管着，整个跳过。
+ * 代价说在明处：出厂技能被改过的话，那份改动不进包，到新机器上会是出厂那一版。
+ */
+function userSkillEntries() {
+  if (DATA_DIR === APP_DIR) return [];
+  const dirs = (d) => {
+    try { return fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); }
+    catch { return []; }
+  };
+  const shipped = new Set(dirs(appPath("skills")));
+  return dirs(dataPath("skills")).filter((n) => !shipped.has(n)).map((n) => path.join("skills", n));
+}
 
 // 备份里有 config.json（含 API Key）和全部账号数据——只有管理员能碰。
 // 本地单人用没登录态时视同管理员（和任务归属的口径一致）
@@ -2797,7 +3270,7 @@ function makeBackup(tag) {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
     const name = `wb-backup-${stamp}${tag ? "-" + tag : ""}.tar.gz`;
-    const entries = BACKUP_ENTRIES.filter((e) => fs.existsSync(dataPath(e)));
+    const entries = [...BACKUP_ENTRIES.filter((e) => fs.existsSync(dataPath(e))), ...userSkillEntries()];
     if (!entries.length) return reject(new Error("没有可备份的数据"));
     require("child_process").execFile(
       "tar", ["-czf", path.join(BACKUP_DIR, name), "-C", DATA_DIR, ...entries],
@@ -2813,9 +3286,57 @@ function backupFile(name) {
   return hit ? path.join(BACKUP_DIR, hit.name) : null;
 }
 
+// 备份包里允许出现的顶层条目，和 BACKUP_ENTRIES 一一对应（data/ 是目录，其余三个是文件）。
+const BACKUP_SAFE_ENTRY = new RegExp(
+  "^(?:\\./)?(?:" + BACKUP_TOP.map((e) => e.replace(/\./g, "\\.") + (/\.json$/.test(e) ? "$" : "(?:/|$)")).join("|") + ")"
+);
+
+/**
+ * 把一个 .tar.gz 拆开看一遍，看不过就不收。
+ *
+ * 这是整套备份里唯一一个「外面来的文件」会经过的地方。restore 那一步是 `tar -xzf 包 -C DATA_DIR`，
+ * 在有这个接口之前，它解的每一个包都是本机自己 makeBackup() 打出来的，所以怎么解都安全；
+ * 现在包可能是从另一台机器、甚至从别人手里拿来的，那就得按不可信的东西对待：
+ *   · 绝对路径（/etc/...）和带 .. 的路径能写到 DATA_DIR 外面去；
+ *   · 软链接/硬链接更狠——先塞一个 data/x -> /Users/xxx/.ssh，后面往 data/x 里写就落到链接指的地方了；
+ *   · 顶层只认 data/ 和那三个 json，别的形状根本不是这套系统的备份，收进来也只会解出一地垃圾。
+ * 这里只看不解，验完才落盘。
+ */
+function inspectBackup(p) {
+  const execFile = require("child_process").execFile;
+  // 32MB 的清单大概装得下四十万条；再多的包不是正常备份，让它在这儿失败比解到一半失败强
+  const opt = { timeout: 300000, maxBuffer: 32 * 1024 * 1024 };
+  const run = (args) =>
+    new Promise((resolve, reject) =>
+      execFile("tar", args, opt, (err, out) => {
+        if (!err) return resolve(String(out || ""));
+        if (err.code === "ENOENT") return reject(new Error("系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带）"));
+        if (err.code === "ENOBUFS") return reject(new Error("这个包里的文件太多了，不像是 OpenWorkBuddy 的备份"));
+        reject(new Error("这个文件打不开，可能不是完整的 .tar.gz：" + (err.message || "").split("\n")[0]));
+      })
+    );
+
+  return (async () => {
+    const names = (await run(["-tzf", p])).split("\n").map((x) => x.trim()).filter(Boolean);
+    if (!names.length) throw new Error("这个包是空的");
+    for (const n of names) {
+      if (n.startsWith("/")) throw new Error(`包里有绝对路径：${n}`);
+      if (n.split("/").includes("..")) throw new Error(`包里有跳出目录的路径：${n}`);
+      if (!BACKUP_SAFE_ENTRY.test(n)) throw new Error(`包里有不属于备份范围的东西：${n}`);
+    }
+    // 详细清单第一个字符就是条目类型：- 文件、d 目录、l 软链接、h 硬链接。只收前两种。
+    for (const line of (await run(["-tzvf", p])).split("\n")) {
+      const t = line.trim()[0];
+      if (!t) continue;
+      if (t !== "-" && t !== "d") throw new Error("包里有链接文件（软链接/硬链接），正常备份不会有，不收");
+    }
+    return names.length;
+  })();
+}
+
 app.get("/api/backup", (req, res) => {
   if (!backupAllowed(req, res)) return;
-  res.json({ list: listBackups(), covers: BACKUP_ENTRIES });
+  res.json({ list: listBackups(), covers: BACKUP_ENTRIES, skills: userSkillEntries().length });
 });
 app.post("/api/backup", async (req, res) => {
   if (!backupAllowed(req, res)) return;
@@ -2838,6 +3359,39 @@ app.delete("/api/backup/:name", (req, res) => {
   fs.unlinkSync(p);
   res.json({ ok: true });
 });
+// 上传导入：换电脑、换服务器、从旧机器搬家时，把下载下来的那个包送回来。
+// 没有这一步的话「下载备份带走」就是句空话——新机器上没有任何地方能把它放进去。
+// 只有这里用 raw body：备份是二进制，走 JSON 得先 base64（凭空胖三分之一），
+// 而全局那个 express.json 的上限是给接口留的，不该为了搬家把它撑到 GB 级。
+app.post(
+  "/api/backup/upload",
+  express.raw({ type: () => true, limit: "2gb" }),
+  async (req, res) => {
+    if (!backupAllowed(req, res)) return;
+    const buf = req.body;
+    if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: "没收到文件" });
+    // gzip 的前两个字节永远是 1f 8b。先拦一道，省得把一个 .zip / 半截文件写到磁盘上再去解
+    if (buf[0] !== 0x1f || buf[1] !== 0x8b) return res.status(400).json({ error: "这不是 .tar.gz 备份文件" });
+
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    // 点开头的临时名不会被 listBackups() 的 wb-backup-*.tar.gz 捞到，验不过的包不会在列表里露脸
+    const tmp = path.join(BACKUP_DIR, `.incoming-${Date.now()}.tar.gz`);
+    try {
+      fs.writeFileSync(tmp, buf);
+      const entries = await inspectBackup(tmp);
+      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+      let name = `wb-backup-${stamp}-imported.tar.gz`;
+      for (let i = 2; fs.existsSync(path.join(BACKUP_DIR, name)); i++) name = `wb-backup-${stamp}-imported-${i}.tar.gz`;
+      fs.renameSync(tmp, path.join(BACKUP_DIR, name));
+      security.audit("数据备份", `已导入外部备份 ${name}（${(buf.length / 1048576).toFixed(1)} MB，${entries} 个条目）`, "放行");
+      res.json({ ok: true, name, entries, size: buf.length });
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch {}
+      security.audit("数据备份", `导入备份被拒：${e.message}`, "拦截");
+      res.status(400).json({ error: e.message });
+    }
+  }
+);
 app.post("/api/backup/restore", async (req, res) => {
   if (!backupAllowed(req, res)) return;
   const p = backupFile(String((req.body || {}).name || ""));
@@ -2846,7 +3400,9 @@ app.post("/api/backup/restore", async (req, res) => {
     // 恢复前先把现状自动备一份——恢复错了还能回来，这一步绝不省
     const safety = await makeBackup("before-restore");
     await new Promise((resolve, reject) =>
-      require("child_process").execFile("tar", ["-xzf", p, "-C", DATA_DIR], { timeout: 300000 },
+      // --no-same-owner：包可能是从另一台机器导进来的，里面记的 uid 跟这儿对不上，
+      // 不加这个的话以 root 跑的服务会把文件的属主改成那台机器上的号，恢复完自己反而读不了
+      require("child_process").execFile("tar", ["-xzf", p, "--no-same-owner", "-C", DATA_DIR], { timeout: 300000 },
         (err) => (err ? reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带）" : "tar 解包失败：" + err.message)) : resolve()))
     );
     security.audit("数据恢复", `已从 ${path.basename(p)} 恢复（恢复前现状已存为 ${safety}）`, "放行");
@@ -2870,8 +3426,8 @@ app.post("/api/backup/restart", (req, res) => {
 // ---------- 记忆搬家：导出 / 从其它 agent 导入 ----------
 // 导出成一份人能读的 Markdown（手写区 + 条目区），到哪都能用。
 // 导入支持两路：① 扫描本机已知的其它 agent 记忆文件（Claude Code / Codex / Claude Cowork），
-// 只读扫描白名单里的路径，绝不接受任意路径；② 粘贴任意文本（腾讯 WorkBuddy 等没有固定
-// 路径的，从它界面里复制出来贴进来就行）。解析是确定性的，不烧 token。
+// 只读扫描白名单里的路径，绝不接受任意路径；② 粘贴任意文本（记忆不落在固定文件里的工具，
+// 从它界面里复制出来贴进来就行）。解析是确定性的，不烧 token。
 app.get("/api/memory/export", (req, res) => {
   const u = req.user ? req.user.username : undefined;
   const items = memory.list(u);
@@ -3515,7 +4071,7 @@ app.post("/api/files/tidy", (_req, res) => {
 });
 app.post("/api/files/reveal", (req, res) => {
   try {
-    const p = safePath(String((req.body || {}).name || "")); // 越界一律抛错，跟下载走同一道门
+    const p = rootedPath(req, String((req.body || {}).name || "")); // 越界一律抛错，跟下载走同一道门
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
     let revealed = false;
     try {
@@ -3530,9 +4086,81 @@ app.post("/api/files/reveal", (req, res) => {
 /** 通配路由里取出工作区相对路径。Express 已经解码过，%2F 老写法和真斜杠新写法都落这里 */
 function relOf(req) { return String(req.params[0] || ""); }
 
+/**
+ * 成果文件的跨工作目录解析。
+ *
+ * 问题：会话里记的成果路径是**相对**的（任务_0905_xx/报告.html），safePath 永远拿
+ * 「此刻的」工作目录去拼。用户在输入框里切一次文件夹、或者切一次项目，再回到之前那条对话，
+ * 满屏的产出卡片点下去全是「文件不存在」——东西还在旧目录里躺着，是坐标系被换掉了。
+ *
+ * 三条线索按可靠度排，全都只在**用户自己配过的目录**里找，不会因为带了个 root 参数
+ * 就能读到工作区以外的任何地方：
+ *   ① ?root=<8位指纹>：files 事件本来就带着它、也跟着会话存了盘，前端照原样回传；
+ *   ② ?sid=<会话 id>：新会话都记了 sess.root，比指纹更直接（也查归属）；
+ *   ③ 兜底扫一遍已知的根：老会话盘上什么线索都没有，只能按「哪个根下真有这个文件」认，
+ *      多个根都有就取改动时间最新的那个。这条是专门救用户手上那些已经存在的旧对话的。
+ * 找不到就退回当前根的路径，让调用方照常报 404。
+ */
+// 用过的工作目录根。反查只在这份名单里找，不会因为链接上带了 root 参数就能读到名单外的任何地方。
+// 开机先把上次记下的读回来：这个 Set 是进程内的，空着启动再写回去，等于每次重启都把历史抹一遍
+const seenRoots = new Set((config.workspace_roots || []).filter((d) => d && typeof d === "string").map((d) => path.resolve(d)));
+const SEEN_ROOTS_MAX = 40; // 记这么多个目录够用了；再多就是很久以前的目录，留着也只是拖慢反查
+/** 记下一个用过的根，并落进 config，免得重启后「这条老对话属于哪个目录」这条线索又断了 */
+function rememberRoot(dir) {
+  if (!dir || typeof dir !== "string") return;
+  let abs;
+  try { abs = path.resolve(dir); } catch { return; }
+  if (seenRoots.has(abs)) return;
+  seenRoots.add(abs);
+  while (seenRoots.size > SEEN_ROOTS_MAX) seenRoots.delete(seenRoots.values().next().value); // Set 按插入序，先进先出
+  config.workspace_roots = [...seenRoots];
+  saveConfig();
+}
+function knownRoots() {
+  const set = new Set();
+  const add = (d) => { if (d && typeof d === "string") { set.add(d); try { set.add(path.resolve(d)); } catch {} } };
+  add(getWorkspaceDir());
+  add(getDefaultWorkspaceDir());
+  add(config.workspace_dir);
+  for (const p of config.projects || []) add(p && p.dir);
+  for (const d of config.workspace_roots || []) add(d);
+  for (const d of seenRoots) add(d);
+  for (const s of sessions.values()) add(s && s.root);
+  return [...set];
+}
+function rootFromKey(key) {
+  const k = String(key || "");
+  if (!/^[0-9a-f]{6,40}$/.test(k)) return "";
+  for (const d of knownRoots()) if (workspaceKeyOf(d) === k) return d;
+  return "";
+}
+/** 只读接口用：把请求里的相对路径解析成真实绝对路径，必要时换到它原本所属的根 */
+function rootedPath(req, rel) {
+  const here = safePath(rel); // 先按当前根算，顺带做越界检查（越界直接抛，下面一律不碰）
+  if (fs.existsSync(here)) return here;
+  const tryRoot = (d) => {
+    if (!d) return "";
+    try { const p = safePathIn(d, rel); return fs.existsSync(p) ? p : ""; } catch { return ""; }
+  };
+  const hint = (k) => String((req.query || {})[k] || (req.body || {})[k] || ""); // GET 走 query，reveal/open 那两个 POST 走 body
+  const hinted = tryRoot(rootFromKey(hint("root")));
+  if (hinted) return hinted;
+  const sid = hint("sid");
+  if (sid) {
+    const s = getSession(sid);
+    // 归属照查：会话 id 出现在链接和截图里，不是秘密
+    if (s && sessionAllowed(req.user, s)) { const p = tryRoot(s.root); if (p) return p; }
+  }
+  const hits = [];
+  for (const d of knownRoots()) { const p = tryRoot(d); if (p) hits.push(p); }
+  if (!hits.length) return here;
+  if (hits.length === 1) return hits[0];
+  return hits.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+}
+
 app.get("/api/files/download/*", (req, res) => {
   try {
-    const p = safePath(relOf(req));
+    const p = rootedPath(req, relOf(req));
     if (!fs.existsSync(p)) return res.status(404).send("文件不存在");
     res.download(p);
   } catch (e) {
@@ -3555,7 +4183,7 @@ app.get("/api/files/download/*", (req, res) => {
  */
 app.get("/api/files/view/*", (req, res) => {
   try {
-    const p = safePath(relOf(req));
+    const p = rootedPath(req, relOf(req));
     if (!fs.existsSync(p)) return res.status(404).send("文件不存在");
     // Chromium 对 .wav 的容忍度取决于上游 MIME；显式标注避免被当成
     // application/octet-stream 后在画布 <audio> 里静默无法播放。
@@ -3573,7 +4201,7 @@ app.get("/api/files/view/*", (req, res) => {
 app.get("/api/files/preview/*", async (req, res) => {
   try {
     const rel = relOf(req);
-    const p = safePath(rel);
+    const p = rootedPath(req, rel);
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
     res.json(await previewData(p, rel));
   } catch (e) {
@@ -3774,7 +4402,7 @@ const OPEN_EXT_OK = /\.(pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|markdown|json|ya?ml
 // 用系统默认程序打开（Word/PPT/Excel 等交给本机 Office/WPS）
 app.post("/api/files/open/*", (req, res) => {
   try {
-    const p = safePath(relOf(req));
+    const p = rootedPath(req, relOf(req));
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
     if (!fs.statSync(p).isDirectory() && !OPEN_EXT_OK.test(p))
       return res.status(400).json({ error: "这种类型不能交给系统程序打开，只放行文档、图片、音视频" });
@@ -4428,6 +5056,25 @@ app.post("/api/schedules/:id/run", async (req, res) => {
   }
 });
 
+/**
+ * 无人值守那几条路（飞书 / 企微 / QQ / 定时任务）该用哪个模型。
+ *
+ * 助理页和 IM 是同一个助理的两张脸——助理页发的消息走的就是 /im/local，同一份日志、同一套会话。
+ * 可模型是各用各的：助理页每次请求把自己选的那个带在 body 里，IM 这条路一个字都不传，
+ * 直接落到全局默认上。于是电脑上标签写着 A，掏出手机在飞书里说话的是 B，B 还欠着费。
+ * 用户原话：「看着是一个模型，然后我从飞书对话的时候跟我聊天的是另外一个模型啊，跟我说欠费了」。
+ *
+ * IM 那头没有登录态，只能认管理员（掏 API 钱的那个人）名下的助理模型；他没单独选过就回全局默认。
+ * 选过、但那条模型后来被从列表里删了，也回全局默认：这条路是无人值守的，
+ * 宁可用一个能跑的，也别让手机上收到一句「模型不在列表里，去点输入框右下角」。
+ * 定时任务不跟：它跑的是批量活，该由全局默认（通常是便宜那档）扛，不该被助理页的临时选择带偏。
+ */
+function assistModelOf(owner) {
+  let name = "";
+  try { name = String((owner ? prefs.read(owner) : {}).assist_model || config.assist_model || ""); } catch { name = String(config.assist_model || ""); }
+  return name && Array.isArray(config.models) && config.models.some((m) => m.name === name) ? name : "";
+}
+
 /** 给 IM / 定时任务的 runtime 包一层记账：消耗记到管理员（首个用户）名下，开了积分闸门才在 0 分时拒跑 */
 function accountedRuntime(baseRuntime, source) {
   return {
@@ -4440,7 +5087,9 @@ function accountedRuntime(baseRuntime, source) {
       // 调用方（助理页）指定了模型就解析成真正的 LLM 顶上去。模型名不在列表里时 llmForSession
       // 返回的是会报错的桩，宁可当场报错也不许悄悄退回全局默认
       const { modelName, user: caller, ...rest } = args || {};
-      const runLLM = modelName ? llmForSession({ model: modelName }) : llm;
+      // 调用方没指定时，IM 跟着助理页那个选择走（见 assistModelOf）
+      const want = modelName || (source === "im" ? assistModelOf(owner) : "");
+      const runLLM = want ? llmForSession({ model: want }) : llm;
       // 「记谁的账」和「用谁的记忆、替谁审批」是两件事：钱一律记在管理员头上（他才是掏 API 费的人），
       // 身份则听调用方的。助理页那边是真有登录态的，成员发的消息不能顶着管理员的身份跑；
       // 飞书 / 定时任务确实没有登录态，那才退回管理员。
@@ -4455,7 +5104,7 @@ function accountedRuntime(baseRuntime, source) {
             : null,
         projectContext: projectContextOf(activeProject()),
         ...rest,
-        ...(modelName ? { llmOverride: runLLM } : {}),
+        ...(want ? { llmOverride: runLLM } : {}),
       });
       if (owner && r && r.usage && r.usage.calls > 0) {
         const ran = r.provider ? { model: r.model || r.provider, provider: r.provider } : runLLM;

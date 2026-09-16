@@ -1,5 +1,7 @@
 node_modules/
 workspace/
+# 本地执行追踪账本：工作目录被设成仓库根时就落在这儿，里面是提示词原文和工具参数，不进版本库
+.openworkbuddy/
 schedules.json
 schedules.json.bak
 schedules.json.corrupt*
@@ -56,3 +58,14 @@ docs/images/demo.mp4
 # 只维护 package-lock.json（CI 和 Dockerfile 都走 npm ci）。
 # 两份锁文件长期手工对齐必然漂：上一份 pnpm-lock.yaml 过期五周、缺 7 个包
 pnpm-lock.yaml
+
+# 改大文件前手抖存的时间戳快照（im.js.bak.0914_0116 那种）：本机留着当后悔药，不入库。
+# 这种文件最坑的是它跟真文件只差一个后缀，混进仓库后很容易被当成现役代码读
+*.bak.[0-9]*
+
+# 出片过程里的半成品：README 和官网里嵌的是 demo-canvas.gif 和 short-drama-canvas-overview.png，
+# 下面这几张/这段是录制和调色时顺手产的，谁都没引用，加起来 4 个多 MB，不入库
+docs/images/demo-canvas.mp4
+docs/images/short-drama-canvas.png
+docs/images/short-drama-canvas-ui.png
+docs/images/short-drama-canvas-agent.png

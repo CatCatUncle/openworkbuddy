@@ -507,7 +507,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 ${hasRenderer() ? "- render_page：用内置浏览器真打开页面、等 JS 渲染完再取正文，专治动态站点（B 站、微博、单页应用）\n" : ""}- check_page：验收做好的网页（静态体检 + 真浏览器打开一遍看有没有报错、是不是白屏）。交付 HTML 之前必须跑
 - gen_diagram：文本描述 → 专业图（mermaid 流程/时序/甘特、dot 架构图、echarts 数据图表、plantuml UML），一次生成 SVG+PNG 文件。文档/PPT/飞书文档要配图一律用它，不要手写 SVG 文件
 - use_skill：加载技能包（做对应任务前先加载）
-- library_list / library_read / library_import：查看用户的资料库与灵感笔记（跨项目共享的长期参考资料，任务涉及用户偏好/素材时先查）。库里的 PDF/图片/Word/压缩包不是文本，用 library_import 复制到工作目录后再按类型处理${hasRenderer() ? "" : "\n- **当前没有内置浏览器**（纯命令行/服务端模式）：html_to_image、render_page、桌面宠物都不可用，技能文档里提到它们的步骤一律跳过。要做排版图就把 HTML 写出来交付，告诉用户在桌面版里截；要出图表用 gen_diagram（它有云端兜底）。"}`;
+- library_list / library_read / library_import：查看用户的资料库与灵感笔记（跨项目共享的长期参考资料，任务涉及用户偏好/素材时先查）。资料库可能有子目录，library_list 列出来的名字自带子目录前缀，后面读取/取用要一字不差地照抄；当前项目可能只挂载了其中一块，列出来的就是你能看到的全部。库里的 PDF/图片/Word/压缩包不是文本，用 library_import 复制到工作目录后再按类型处理${hasRenderer() ? "" : "\n- **当前没有内置浏览器**（纯命令行/服务端模式）：html_to_image、render_page、桌面宠物都不可用，技能文档里提到它们的步骤一律跳过。要做排版图就把 HTML 写出来交付，告诉用户在桌面版里截；要出图表用 gen_diagram（它有云端兜底）。"}`;
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) {
       p += `\n- feishu_doc_create：把 Markdown 内容创建成飞书云文档交付给用户（用户要求"发到飞书/建飞书文档"时用它，不要自己找凭证写脚本）`;
     }
@@ -529,8 +529,9 @@ ${hasRenderer() ? "- render_page：用内置浏览器真打开页面、等 JS �
 2. 涉及已有文件/项目的任务，动手前先 list_files、search_files、read_file 把现场看清楚，不要凭文件名猜内容。**看明白之后直接改**——用户让你改，你就改，不要回头问"要不要我改""确认后我再动手"；只有删文件、清空目录、推远端这类不可逆的事才值得停下来问一句。改的方式是 edit_file 精准替换，不是 write_file 整篇盖掉。
 3. 成果文件写到工作目录根目录，文件名有意义。**一件产出只留一份**——写完不要再 cp 一份到别处（工作空间根目录也不行）：聊天里的产出卡片和右侧文件面板本来就能直接预览、直接「所在位置」，多出来的副本只会让用户看到同一个文件显示两遍。用户要把成果拿去别的地方，等他开口再动。**HTML / Markdown / CSS / JSON / 纯文本一律用 write_file 直接写内容，绝不要在 run_node 里用模板字符串拼**——网页正文里几乎必然出现 \`\${...}\`、反引号或 </script\>，会把外层模板字面量截断，直接 SyntaxError。run_node 只留给真的需要跑逻辑的活（pptxgenjs 出 PPT、docx 出 Word、exceljs 出 Excel、批量处理、算数据）。
 3.1 消息里带「已上传文件：xxx」就是用户拖进来或粘贴进来的东西，一律先看再动手：
+   - 用户输入中可能还有「【图片 1：xxx.png】」「【视频 1：xxx.mp4】」「【音频 1：xxx.wav】」「【文本摘录 1：xxx.txt】」这类素材锚点。**锚点出现的顺序和它前后的描述就是用户指定的输入关系**：例如「【图片 1】是人物、【图片 2】是背景」或两个锚点中间的动作描述，必须照此理解、引用和生成，不能按文件名或上传时间自行重排。末尾的「已上传文件」清单只是在兼容旧会话，文件是否可用以它为准。
    - 图片（.png/.jpg/…）用 look_at_image，带上一个具体问题（"把报错原文一字不差抄下来"、"这页分几块、各放了什么"）。**别用 read_file 读图**，读出来是乱码。图不进对话历史，只有你问到的答案会进，所以一次就把要用的细节问全。
-   - 「粘贴文本_….txt」是用户粘进来的大段文字（日志、报错、整篇文档），用 read_file 读；很长就先读头尾再 search_files 定位，别整篇灌进上下文。
+   - 「粘贴文本_….txt」或「【文本摘录 N：…】」是用户粘进来的大段文字（日志、报错、整篇文档），用 read_file 读；很长就先读头尾再 search_files 定位，别整篇灌进上下文。
 4. 交付前自检：凡是生成的文件，写完必须再 read_file / list_files 读回来确认真的存在、内容完整（长文档至少核对开头结尾和篇幅），发现残缺就当场修好再交付。
 4.1 **大任务先立进度档**：预计十步以上、或要产出多个文件的任务，第一步先在工作目录 write_file 建 PROGRESS.md：目标一句话 + 分步清单（- [ ] 待做 / - [x] 已完成）。此后每完成一步就 edit_file 打勾。任务被打断或续跑时，先读 PROGRESS.md 从断点接着做，绝不从头重来。
 5. 代码报错要读懂原因、修正重试，不要放弃；同一处连续失败 3 次就换思路，别在死路上空转。
@@ -1641,6 +1642,26 @@ function modePrompt(mode) {
     ].filter(Boolean).join("\n");
   }
 
+  // 只表示「打哪儿来的」、不表示「在干嘛」的那几个标签。它们当名字用的时候，
+  // 一屏十条全一个样——得再接一句用户到底说了什么
+  const GENERIC_LABELS = new Set(["IM 对话", "定时任务", "任务", "直调工具", "im", "schedule", "api", "cli"]);
+
+  /**
+   * 给这一趟任务起个在列表里认得出来的名字。
+   *
+   * 之前是 `taskLabel || "任务"`：taskLabel 缺席或者只是个来源标签时，
+   * 账本里就会堆出几百条一模一样的「任务」，点进去才知道是哪趟——这个列表等于没用。
+   * 现在缺席就从用户说的第一句话里截，来源标签则保留在前面当限定词（「IM 对话 · 帮我查下日程」），
+   * 这样既知道从哪进来的，也知道要干什么。
+   */
+  function traceNameOf(taskLabel, history) {
+    const from = String(taskLabel || "").trim();
+    const said = tracing._internals.labelFromInput(tracing._internals.messagesOf("", history));
+    if (from && !GENERIC_LABELS.has(from)) return from.slice(0, 120);
+    if (from && said) return `${from} · ${said}`.slice(0, 120);
+    return (said || from || "任务").slice(0, 120);
+  }
+
   /**
    * 运行一次 Agent 任务循环。
    * @param history 统一格式会话历史（会被就地追加）
@@ -1656,7 +1677,7 @@ function modePrompt(mode) {
     const ownsTrace = !traceNode; // 自己开的才自己收尾；专家收到的是别人的 span，轮不到它 end
     const tr = traceNode || (depth === 0
       ? tracer.trace({
-          name: String(taskLabel || "任务").slice(0, 120),
+          name: traceNameOf(taskLabel, history),
           userId: user ? String(user.username || user.name || user.id || "") : "",
           sessionId,
           input: tracing._internals.messagesOf("", history),
@@ -1682,10 +1703,10 @@ function modePrompt(mode) {
       const picked = engines.resolve(prefs.agentView(config)); // 引擎名写错会在这里抛错，不会静默退回内置
       if (picked.backend) {
         const sp = tr.span({
-          name: `外部引擎 ${picked.backend}`,
+          name: `外部引擎 ${picked.backend.label || picked.backend.id}`,
           input: tracing._internals.messagesOf("", history),
           metadata: {
-            engine: picked.backend,
+            engine: picked.backend.id,
             // 这句得写清楚，不然看 trace 的人会以为这个引擎统共只调了一次模型
             说明: "这一趟整个交给本机 CLI 跑了。它内部分几步、每步调了什么模型、烧了多少 token，本项目拿不到——这条 span 只有进去的话和出来的结果，中间是黑盒。想看逐步明细就把引擎切回「内置」。",
           },
@@ -1696,7 +1717,7 @@ function modePrompt(mode) {
             history, emit, mode, deadline, stopSignal, baseDir, engineSession, user, projectContext, lang,
           });
           sp.end({ output: out.finalText || "", usage: out.usage, metadata: { stopped: out.stopped || "", engine_session: out.sessionId || "" } });
-          if (ownsTrace) tr.end({ output: out.finalText || "", usage: out.usage, metadata: { engine: picked.backend } });
+          if (ownsTrace) tr.end({ output: out.finalText || "", usage: out.usage, metadata: { engine: picked.backend.id } });
           return out;
         } catch (e) {
           const why = (e && e.message) || String(e);

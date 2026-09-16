@@ -26,6 +26,11 @@
  */
 
 const fs = require("fs");
+// 单独跑这个文件时也别写进用户真账本（all.js 里已经设过一次，这里只兜底）
+if (!process.env.OPENWORKBUDDY_TRACE_FILE) {
+  process.env.OPENWORKBUDDY_TRACE_FILE =
+    require("path").join(require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "owb-test-trace-")), "traces.jsonl");
+}
 const os = require("os");
 const path = require("path");
 const http = require("http");
@@ -101,6 +106,56 @@ async function main() {
     await t.flush();
     eq(lf.hits.length, 0, "关着时一次网络请求都没有", lf.hits.map((h) => h.url));
     eq(t.stats().queued, 0, "  └ 发完一轮队列还是空的");
+  }
+
+  // ===================================================================
+  console.log("\n【1·续】关着 Langfuse ≠ 什么都不记：本地那本账得是完整的一棵树");
+  // ===================================================================
+  // 这一节钉的是一个真出过的事故：node() 里把 span/generation 也拿 ready 当开关短路成了 OFF，
+  // 而 trace()/end() 是无条件落本地的。结果没配 Langfuse 的人本地账本里只剩一头一尾两条，
+  // 中间调了什么工具、动了哪个文件、烧了多少 token 全没有——界面上就是「跑了半天啥也看不到」。
+  // 本地是**主记录**，Langfuse 只是可选副本，这两件事不能共用一个开关。
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-trace-local-"));
+    const config = { workspace_dir: dir }; // langfuse 那块压根没有 = 彻底关着
+    const t = tracing.createTracer(config);
+    eq(t.enabled, false, "Langfuse 是关着的（这一节全程零网络）");
+
+    const tr = t.trace({ name: "写份报告", input: "帮我写份报告" });
+    const sp = tr.span({ name: "工具 write_file", input: { path: "workspace/季度报告.md" }, metadata: { tool: "write_file", depth: 0 } });
+    sp.end({ output: "已写入 workspace/季度报告.md" });
+    const gen = sp.generation({ name: "第 1 步", model: "deepseek-chat", input: [{ role: "user", content: "写报告" }] });
+    gen.end({ output: "好了", usage: { prompt: 100, completion: 20 } });
+    tr.end({ output: "报告在 workspace/季度报告.md" });
+
+    const list = t.localTraces({});
+    eq(list.length, 1, "本地账本上有这趟任务");
+    const one = list[0];
+    eq(one.observations.length, 2, "★中间那两步（工具 + 模型）也在★——只剩 0 条就是那个事故复发了", one.observations.length);
+    const tool = one.observations.find((o) => o.kind === "span");
+    ok(!!tool && tool.name === "工具 write_file", "工具这一步记下了**调的是哪个工具**", tool && tool.name);
+    ok(!!tool && tool.input && tool.input.path === "workspace/季度报告.md",
+       "  └ 连同它动的**那个具体路径**（用户要的就是这个，不是一句「调用了工具」）", tool && tool.input);
+    ok(!!tool && /季度报告\.md/.test(String(tool.output || "")), "  └ 以及它干完之后的回话");
+    const g = one.observations.find((o) => o.kind === "generation");
+    ok(!!g && g.model === "deepseek-chat", "模型这一步记下了**实际用的哪个模型**", g && g.model);
+    ok(!!g && g.usage && g.usage.total === 120, "  └ 和这次真烧掉的 token（120 = 100 进 + 20 出）", g && g.usage);
+    eq(g.parentId, tool.id, "  └ 父子关系也在：模型这步挂在工具那步底下，不是摊平的一排");
+    eq(one.status, "completed", "整趟的状态算得出来");
+    ok(one.duration_ms >= 0, "  └ 耗时也算得出来");
+
+    eq(lf.hits.length, 0, "★反向对照★ 本地记满了，但对外**一个包都没出去**（关着就是关着）", lf.hits.length);
+    eq(t.stats().queued, 0, "  └ 队列里也没偷偷攒着等开关一开就发");
+
+    // ★反向对照★ 空壳（agent.js 里 depth>0 又没拿到父节点时用的 tracing.noop）一个字都不该落盘
+    const before = fs.readFileSync(path.join(dir, ".openworkbuddy", "traces.jsonl"), "utf8").length;
+    tracing.noop.span({ name: "不该出现的一步", input: { path: "x" } }).end({ output: "x" });
+    const after = fs.readFileSync(path.join(dir, ".openworkbuddy", "traces.jsonl"), "utf8").length;
+    eq(after, before, "反向对照：空壳上的 span 不落盘（不然子任务会凭空多出一堆没爹的节点）");
+
+    t.clearLocalTraces();
+    eq(t.localTraces({}).length, 0, "「清空」是真清空");
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 
   // ===================================================================

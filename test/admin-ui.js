@@ -4,7 +4,7 @@
  *
  * 跑法：npx electron test/admin-ui.js（由 test/e2e.js 拉起；没装 electron 就整体跳过）
  *
- * 为什么非得开真 Chromium：这一页是 17 个面板 + 哈希路由 + 弹窗表单，六成的坏法是
+ * 为什么非得开真 Chromium：这一页是 18 个面板 + 哈希路由 + 弹窗表单，六成的坏法是
  * 「某一页 render 里读了个 undefined，整块白屏」——这种错在 node 里一个字节都测不出来，
  * 只有真的把每一页点一遍、盯着 console 有没有报错才看得见。
  *
@@ -227,13 +227,13 @@ const GOTO = (id) => `(async () => {
   r = await call("POST", "/api/auth/login", { body: { username: "kuaiji", password: auditorPw } });
   const auditor = r.cookie;
 
-  // ================= 1. 管理员：17 个面板一个一个点过去 =================
+  // ================= 1. 管理员：18 个面板一个一个点过去 =================
   console.log("\n【1】平台管理员：每一页都真渲染出东西，且 console 干净");
   const A = await openAdmin(boss, "boss");
   ok("首屏就有内容，不是白屏", (await A.js(`document.getElementById("ad-body").textContent.trim().length > 40`)));
   ok("标题写的是这个组织的名字", /企业管理后台/.test(await A.js(`document.title`)), await A.js(`document.title`));
 
-  const IDS = ["security", "sub", "usage-member", "usage-org", "usage-app", "usage-detail", "stats",
+  const IDS = ["home", "security", "sub", "usage-member", "usage-org", "usage-app", "usage-detail", "stats",
                "members", "pending", "roles", "basic", "net", "meter", "models", "orgs", "audit", "integration"];
   const seen = [];
   for (const id of IDS) {
@@ -242,8 +242,8 @@ const GOTO = (id) => `(async () => {
     if (res.len < 30) throw new Error(`【${id}】几乎是空的（${res.len} 字）：` + res.html);
     seen.push(`${id}=${res.len}`);
   }
-  ok("17 个面板全部渲染出正文（没有一页白屏 / 没有一页掉进错误挡板）", seen.length === 17, seen.join(" "));
-  ok("点完 17 页，console 一条 error 都没有", A.errs.length === 0, A.errs);
+  ok("18 个面板全部渲染出正文（没有一页白屏 / 没有一页掉进错误挡板）", seen.length === 18, seen.join(" "));
+  ok("点完 18 页，console 一条 error 都没有", A.errs.length === 0, A.errs);
 
   // 侧边导航：平台管理员看得到「组织管理」（这是 platform: true 的那一项）
   ok("侧栏分组齐了（订阅与用量 / 数据统计 / 成员授权 / 企业设置 / 开放与集成）",
@@ -263,6 +263,68 @@ const GOTO = (id) => `(async () => {
   const appTxt = await A.js(`document.getElementById("ad-body").textContent`);
   ok("应用用量按模型和入口拆开了（gpt-x / claude-x / 飞书）", /gpt-x/.test(appTxt) && /claude-x/.test(appTxt) && /飞书/.test(appTxt));
   ok("全量聚合的表标的是「累计」不是「本月」（数字不许无声撒谎）", /累计/.test(appTxt) && !/本月消耗排行/.test(appTxt), appTxt.replace(/\s+/g, " ").slice(0, 160));
+
+  // ================= 1.5 账本：时间范围 / 搜索 / 翻页 =================
+  // 这三样以前一样都没有，界面上写的是「最近 25 条，再往前的看不了」。
+  // 它们是「这个后台能不能当账本用」的分界线，所以要真点一遍，不能只测接口。
+  console.log("\n【1.5】用量明细 + 操作审计：查得到、搜得着、翻得动");
+  const wait = (ms) => `new Promise(r=>setTimeout(r,${ms}))`;
+  const kpi0 = `[...document.querySelectorAll(".ui-stat")].map(e=>e.textContent.replace(/\\s+/g,""))[0]`;
+  const rowN = `document.querySelectorAll("#ad-body tbody tr").length`;
+
+  await A.js(GOTO("usage-detail"));
+  ok("用量明细有筛选条（六个快捷区间 + 两个日期框 + 搜索框）",
+     await A.js(`document.querySelectorAll("[data-preset]").length === 6 && !!document.querySelector("[data-from]") && !!document.querySelector("[data-q]")`));
+  ok("默认停在「全部」上（不是默默只给你看今天，那种默认最坑人）",
+     (await A.js(`document.querySelector(".ad-chip.is-on").textContent.trim()`)) === "全部");
+  const allN = await A.js(rowN);
+  ok("「全部」下看得到流水", allN > 0, allN);
+
+  await A.js(`document.querySelector('[data-preset="last-month"]').click(); ` + wait(500));
+  ok("切到「上月」一条都不剩（这批流水都是今天造的，剩下才说明筛选没生效）",
+     (await A.js(rowN)) === 0 && /命中条数0/.test(await A.js(kpi0)), await A.js(kpi0));
+
+  await A.js(`document.querySelector('[data-preset="today"]').click(); ` + wait(500));
+  ok("切回「今天」又回来了（反向对照：上一条不是因为整页都空了）", (await A.js(rowN)) === allN);
+
+  // 每条 executeJavaScript 都在**同一个**页面全局作用域里跑：`const q` 声明第二次直接抛
+  // 「Identifier 'q' has already been declared」。所以这里一律不留声明。
+  const typeQ = (v) => A.js(`(()=>{const e=document.querySelector("[data-q]"); e.value=${JSON.stringify(v)}; e.dispatchEvent(new Event("input"));})(); ` + wait(700));
+  await typeQ("claude");
+  const claudeAll = await A.js(`[...document.querySelectorAll("#ad-body tbody tr")].every(t=>/claude/.test(t.textContent))`);
+  ok("搜「claude」之后每一行都真的含 claude，且比全量少", claudeAll && (await A.js(rowN)) < allN, await A.js(rowN));
+
+  await typeQ("");
+  await A.js(`(()=>{const e=document.querySelector("[data-user]"); e.value="xiaoyuan"; e.dispatchEvent(new Event("change"));})(); ` + wait(700));
+  ok("按成员筛之后只剩这个人的账", await A.js(`[...document.querySelectorAll("#ad-body tbody tr")].every(t=>/xiaoyuan/.test(t.textContent))`));
+  ok("翻页条报的是条数不是页码（对账的人记的是条数）", /共 \d+ 条|第 \d+-\d+ 条/.test(await A.js(`(document.querySelector(".ad-pager-n")||{}).textContent||""`)),
+     await A.js(`(document.querySelector(".ad-pager-n")||{}).textContent||""`));
+
+  await A.js(GOTO("audit"));
+  ok("审计页也有同一套筛选条 + 操作人/动作两个下拉",
+     await A.js(`document.querySelectorAll("[data-preset]").length === 6 && !!document.querySelector("[data-actor]") && !!document.querySelector("[data-action]")`));
+  ok("审计页能导出（合规的人第一件事就是要一份带走）", await A.js(`!!document.querySelector("[data-csv]")`));
+  const auditAll = await A.js(rowN);
+  await A.js(`(()=>{const e=document.querySelector("[data-action]"); e.value="添加成员"; e.dispatchEvent(new Event("change"));})(); ` + wait(600));
+  ok("按动作筛「添加成员」，剩下的行全是这个动作", auditAll > 0
+     && (await A.js(rowN)) > 0 && (await A.js(rowN)) < auditAll
+     && (await A.js(`[...document.querySelectorAll("#ad-body tbody tr")].every(t=>/添加成员/.test(t.textContent))`)),
+     `全部 ${auditAll} 条 → 筛后 ${await A.js(rowN)} 条`);
+  await A.js(`document.querySelector('[data-preset="last-month"]').click(); ` + wait(600));
+  ok("审计按「上月」筛也是空的（动作下拉的选项没被筛没：还列得出全部动作）",
+     (await A.js(rowN)) === 0 && (await A.js(`document.querySelector("[data-action]").options.length > 1`)));
+
+  // 总览页：它是落地页，坏了等于整个后台打不开
+  // 先跑去别的页再把 hash 清空，才测得到「没有 hash 时落在哪」——
+  // 本来就停在 #/home 的话，清 hash 不触发 hashchange，这条会假绿
+  await A.js(GOTO("basic"));
+  ok("总览是落地页（不带 hash 打开后台，落在总览而不是订阅管理）",
+     (await A.js(`(async()=>{location.hash="#/"; await ${wait(500)}; return document.getElementById("ad-title").textContent})()`)) === "总览");
+  await A.js(GOTO("home"));
+  const homeTxt = await A.js(`document.getElementById("ad-body").textContent`);
+  ok("总览把今天和本月的数都摆出来了", /今日运行/.test(homeTxt) && /本月 tokens/.test(homeTxt));
+  ok("总览有「要你处理的」，且席位满了这条真的报出来（席位 3/3）",
+     /要你处理的/.test(homeTxt) && /席位满了/.test(homeTxt), homeTxt.replace(/\s+/g, " ").slice(0, 240));
 
   // ================= 2. 审计员：能查账，改不动 =================
   console.log("\n【2】审计员：进得来、看得见，但写操作的控件全禁掉");
@@ -470,7 +532,7 @@ const GOTO = (id) => `(async () => {
   ok("这一页 console 还是干净的", A.errs.length === 0, A.errs);
 
   server.close();
-  console.log(`\n✅ 企业管理后台：17 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 能自己加改删渠道且不误删别的 ${pass} 项通过`);
+  console.log(`\n✅ 企业管理后台：18 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 能自己加改删渠道且不误删别的 ${pass} 项通过`);
   fs.rmSync(TMP, { recursive: true, force: true });
   clearTimeout(WATCHDOG);
   electronApp.exit(0);

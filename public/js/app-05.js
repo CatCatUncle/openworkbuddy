@@ -41,7 +41,7 @@ async function renderHubMcp(box) {
       <div class="hd"><div class="av">${ava(it.icon, "plug")}</div>
         <div class="nm"><span>${esc(it.label || it.name)}</span><span class="al">${esc(it.name)}</span></div></div>
       <div class="ds">${esc(it.desc || "")}</div>
-      <div class="tg">${it.kind === "http" ? "<i>远程</i>" : `<i>${esc(String(it.command || "").split(/[\\/]/).pop())}</i>`}${keys ? `<i>要填 ${keys} 个 Key</i>` : "<i>免 Key</i>"}${it.docs ? `<a class="mcp-docs-link" href="${esc(it.docs)}" target="_blank" rel="noopener">去哪拿${ic("arrow-right")}</a>` : ""}</div>
+      <div class="tg">${it.tag ? `<i>${esc(it.tag)}</i>` : it.kind === "http" ? "<i>远程</i>" : `<i>${esc(String(it.command || "").split(/[\\/]/).pop())}</i>`}${keys ? `<i>要填 ${keys} 个 Key</i>` : "<i>免 Key</i>"}${it.docs ? `<a class="mcp-docs-link" href="${esc(it.docs)}" target="_blank" rel="noopener">去哪拿${ic("arrow-right")}</a>` : ""}</div>
       ${po ? `<div class="ops"><button class="mcp-use${on ? "" : " primary"}"${on ? " disabled" : ""}>${on ? "已接入" : "接入"}</button></div>` : ""}
     </div>`;
   };
@@ -268,6 +268,21 @@ function startTaskWith(text) {
   // 长模板会把输入框滚到末尾，用户看不见开头。选区在开头就直接滚回顶部。
   inputEl.scrollTop = 0;
 }
+/**
+ * 「用这个专家 / 专家团 / 技能」：回对话页、把它挂成一枚标签，正文留空给用户自己写。
+ * 跟 startTaskWith 的分工是：那个是**模板**（用户要在里面填空），这个是**身份**（谁来干这活）。
+ * 身份不该以普通文本的形式赖在输入框里，见 app-01.js 的 useTag。
+ */
+function startTaskUsing(kind, name, seed) {
+  document.getElementById("new-task").click();
+  setUseTag({ kind, name });
+  inputEl.value = seed || "";
+  inputEl.dispatchEvent(new Event("input")); // 先让输入框按新内容撑高，否则下面的定位会被这次改高冲掉
+  inputEl.focus();
+  const m = seed ? /__[^_\n]*__/.exec(seed) : null;
+  if (m) inputEl.setSelectionRange(m.index, m.index + m[0].length);
+  inputEl.scrollTop = 0;
+}
 
 // ================= 定时任务（可视化，不写 cron） =================
 function cronToHuman(cron) {
@@ -431,10 +446,10 @@ function renderMediaPane(box, s) {
 }
 
 function paintMedia(box, s) {
+  // 标题归上一层（paintModels 的「按能力配置」那一条）：对话和这五路现在是并排的六张卡，
+  // 中间再插一行小标题，读起来就成了「对话是一类、别的是另一类」——可它们是同一类事
   const provName = (id) => { const p = s.providers.find((x) => x.id === id); return p ? p.name : "（渠道已删）"; };
   box.innerHTML = `
-    <div class="hub-sec-title" style="margin-bottom:4px">${ic("image")}看图 / 画图 / 视频 / 配音</div>
-    <div class="d" style="margin-bottom:2px">这四路各自挑模型，Key 就用上面渠道里那一把，不用再填一遍。</div>
     ${MEDIA_CAPS.map((c) => capCard(c, s, provName)).join("")}
     <span class="ok-msg" id="media-msg"></span>`;
   bindMedia(box, s);
@@ -451,28 +466,35 @@ function capCard(c, s, provName) {
   const mine = s.media_models.filter((m) => m.cap === c.cap);
   const open = openCaps.has(c.cap);
   const def = mine.find((m) => m.default) || mine[0];
-  const sum = mine.length ? `${mine.length} 个 · 默认 ${esc(def.name || def.model || "")}` : "还没配";
+  // 一路挂几个模型、这几个又散在几个渠道上——这两个数才是「我这一路配全了没有」的答案。
+  // 老的摘要只说「2 个 · 默认 X」，同一家挂两个和两家各挂一个长得一模一样，可后者才是真有备份
+  const chans = new Set(mine.map((m) => m.provider));
+  const sum = mine.length
+    ? `${mine.length} 个模型${chans.size > 1 ? ` · 跨 ${chans.size} 个渠道` : ""} · 主用 ${esc(def.name || def.model || "")}`
+    : "还没配";
   return `
     <div class="ch-card${open ? " open" : ""}">
       <div class="ch-head" data-cap="${c.cap}">
         ${ic(open ? "chevron-down" : "chevron-right", "ch-caret i-sm")}
+        <span class="cap-ic">${ic(c.icon)}</span>
         <span class="ch-title"><b>${esc(c.title)}</b><span class="ch-sub">${esc(c.tool)}</span></span>
-        <span class="ch-count">${sum}</span>
+        <span class="ch-count${mine.length ? "" : " is-empty"}">${sum}</span>
       </div>
       ${!open ? "" : `<div class="ch-body">
         <div class="ch-note">${esc(c.hint)}</div>
         ${mine.length ? mine.map((m) => {
           const i = s.media_models.indexOf(m);
-          const meta = [m.default ? "默认" : "", provName(m.provider), m.voice ? `音色 ${m.voice}` : ""].filter(Boolean).map(esc).join(" · ");
+          const meta = [m.default ? "主用" : "备用", provName(m.provider), m.voice ? `音色 ${m.voice}` : ""].filter(Boolean).map(esc).join(" · ");
           return `
-          <div class="mrow">
-            <input type="radio" name="def-${c.cap}" ${m.default ? "checked" : ""} data-def="${i}" title="设为这一路的默认">
+          <div class="mrow${m.default ? " is-on" : ""}">
+            <input type="radio" name="def-${c.cap}" ${m.default ? "checked" : ""} data-def="${i}" title="设为这一路的主用模型">
             <span class="mrow-name">${esc(m.name)}</span>
             <span class="mrow-id">${esc(m.model)}</span>
             <span class="mrow-meta">${meta}</span>
             ${rowMenu([["mdel", i, "删除", "danger"]])}
           </div>`;
         }).join("") : `<div class="ch-note">还没配。加一个之后 agent 才用得了 ${esc(c.tool)}。</div>`}
+        ${mine.length > 1 ? `<div class="ch-note">挂了多个：平时走「主用」那条；要指定别的，在对话里点名它的名字（例如「用${esc((mine.find((m) => !m.default) || mine[0]).name)}画」），agent 会按名字挑。</div>` : ""}
         <div class="mm-form" data-cap="${c.cap}" style="display:none;border-top:1px solid var(--wb-border);padding-top:8px;margin-top:6px">
           <div class="form-row">
             <select class="mm-prov"></select>
@@ -612,11 +634,12 @@ function renderModelsPane(pane, s) {
   s.media_models = s.media_models || [];
   modelsPaneEl = pane;
   if (chanFirstPaint) {
-    // 头一次打开只展开「当前默认模型」所在的那个渠道：人来这一页十有八九是为了换模型，
-    // 全展开等于回到老界面那堵墙，全收起又得多点一下才看得见自己在用哪个
+    // 头一次打开只展开「对话」那张卡：人来这一页十有八九是为了换对话模型，而那张卡
+    // 横着列了所有渠道下的所有对话模型——以前是展开「当前默认模型所在的那个渠道」，
+    // 可默认模型的同伴们散在别的渠道里，还是得一张张点开找。
+    // 别的五路和所有渠道卡都收着：全展开就是回到老界面那堵墙。
     chanFirstPaint = false;
-    const cur = s.models.find((m) => m.name === s.active_model);
-    if (cur && cur.channel) openChans.add(cur.channel);
+    openCaps.add("chat");
   }
   loadMediaCatalog().then(() => { if (pane.isConnected) paintModels(pane, s); });
   paintModels(pane, s);
@@ -647,19 +670,77 @@ function paintModels(pane, s) {
   const idle = s.providers.filter((p) => chanIdle(p));
   const idleShown = idleOpen || !ready.length; // 一个能用的都没有时直接摊开，否则新用户会以为这儿是空的
   const active = s.models.find((model) => model.name === s.active_model);
-  const mediaRoute = (cap, empty) => { const model = s.media_models.find((item) => item.cap === cap && item.default) || s.media_models.find((item) => item.cap === cap); return model?.name || model?.model || empty; };
+
+  /* ── 顶上那六格：这台机器「现在到底在用谁」 ──────────────────────────────
+   * 老版本只有五格、纯展示，而且每格只写得下一个名字——可用户的原话是
+   * 「每个任务包括文本、语音、视频、图像都可能要配置多个渠道和多个模型的啊」。
+   * 一格里只写主用那个，就永远看不出「这一路我到底有没有备份」。
+   * 所以每格现在是三行：主用是谁、它的模型 id、以及还压着几个备选、散在几个渠道上。
+   * 而且格子是能点的——点哪一路就展开哪一路的配置卡，不用自己在下面一张张找。
+   */
+  const capTile = (key, icon, title, hint, main, sub, n, chans, empty) => {
+    const has = !!main;
+    const spare = n > 1 ? `+${n - 1} 备选${chans > 1 ? ` · ${chans} 个渠道` : ""}` : has ? "只有这一个" : "";
+    return `<button type="button" class="rt${key === "chat" ? " is-primary" : ""}${has ? "" : " is-empty"}" data-goto="${key}" title="${esc(hint)}">
+      <span class="rt-k">${ic(icon)}${esc(title)}</span>
+      <b>${esc(has ? main : empty)}</b>
+      <small>${esc(has ? sub : hint)}</small>
+      <i>${esc(spare)}</i>
+    </button>`;
+  };
+  const chatChans = new Set(s.models.filter((m) => m.channel).map((m) => m.channel));
+  const tiles = [capTile("chat", "message-circle", "对话", "正文、工具调用、写文件都走它",
+    active ? active.name : s.active_model || "", active ? active.model : "全局默认",
+    s.models.length, chatChans.size, "未设置")]
+    .concat(MEDIA_CAPS.map((c) => {
+      const mine = s.media_models.filter((m) => m.cap === c.cap);
+      const def = mine.find((m) => m.default) || mine[0];
+      const chans = new Set(mine.map((m) => m.provider)).size;
+      // 看图是唯一一路「不配也能用」的：没配就拿当前对话模型去看。这跟「没配就用不了」
+      // 是两件事，格子里必须分开说，不然纯文本主模型的人会以为看图已经能用了
+      return capTile(c.cap, c.icon, c.title, c.tool, def ? def.name : "", def ? def.model : "",
+        mine.length, chans, c.cap === "vision" ? "跟随对话模型" : "未设置");
+    }));
+
+  // 主模型自称不会调工具 = 这台机器跑不了任务。这种配置错误以前要等第一个任务炸了才知道
+  const noTools = active && Array.isArray(active.caps) && !active.caps.includes("tools");
+  // 看图这一路没单配，又明说了主模型不会看图：粘张图进来必然报错，提前讲比事后报错强
+  const blindVision = !s.media_models.some((m) => m.cap === "vision")
+    && active && Array.isArray(active.caps) && !active.caps.includes("vision");
+  const warns = [
+    noTools ? `主模型「${active.name}」标了不会调用工具，任务跑起来会卡在第一步。换一个，或者去它那行的 ⋯ → 编辑 把「能调工具」勾回来。` : "",
+    blindVision ? `「看图」这一路没单配模型，会拿主模型「${active.name}」去看，而它标了不会看图。往「看图」里加一个能看图的模型。` : "",
+  ].filter(Boolean);
+
   pane.innerHTML = `
-    <div class="model-route-head"><div><b>当前模型路由</b><span>对话、看图、生图、生视频和配音分开设置，互不串用</span></div><span>${ready.length} 个渠道可用</span></div>
-    <div class="model-route-grid">
-      <div class="is-primary"><span>${ic("message-circle")}对话</span><b>${esc(active?.name || s.active_model || "未设置")}</b><small>${esc(active?.model || "全局默认")}</small></div>
-      <div><span>${ic("eye")}看图</span><b>${esc(mediaRoute("vision", "跟随对话"))}</b><small>理解图片与截图</small></div>
-      <div><span>${ic("image")}生图</span><b>${esc(mediaRoute("image", "未设置"))}</b><small>画布与对话生成</small></div>
-      <div><span>${ic("video")}视频</span><b>${esc(mediaRoute("video", "未设置"))}</b><small>首尾帧与参考视频</small></div>
-      <div><span>${ic("volume-2")}配音</span><b>${esc(mediaRoute("tts", "未设置"))}</b><small>对白、旁白与声音</small></div>
+    <div class="model-route-head">
+      <div><b>现在在用谁</b><span>对话、看图、画图、视频、配音、转写分开走，互不串用。点一格就跳到那一路的配置</span></div>
+      <span>${ready.length} 个渠道可用</span>
     </div>
+    <div class="model-route-grid">${tiles.join("")}</div>
+    ${warns.map((w) => `<div class="model-route-warn">${ic("triangle-alert")}<span>${esc(w)}</span></div>`).join("")}
     <div class="model-route-note">${po
-      ? "先配置渠道和 Key，再把模型挂到对应能力。每个渠道只填一次 Key；画布节点仍可临时指定具体图片或视频模型。"
-      : "这是服务器当前生效的模型路由。你可在输入框临时切换对话模型，媒体模型由平台管理员统一维护。"}</div>
+      ? "先在下面「渠道与 Key」里填好一家的 Key，再回到「按能力配置」把模型挂到用得上的那一路。一个渠道的 Key 只填一次，六路共用；画布节点仍可临时指定具体的图片或视频模型。"
+      : "这是服务器当前生效的模型路由。你可在输入框临时切换对话模型，其余几路由平台管理员统一维护。"}</div>
+
+    <div class="hub-sec-title" style="margin:20px 0 8px">${ic("sliders-horizontal")}按能力配置 <span class="sub">一路可以挂多个渠道的多个模型：平时走「主用」，在对话里点名就能临时换别的</span></div>
+    <div id="chat-overview">${chatOverview(s, po, kindLabel)}</div>
+    <div id="media-pane"></div>
+
+    <div class="hub-sec-title" style="margin:22px 0 8px">${ic("plug")}渠道与 Key <span class="sub">一家服务商一条，Key 只填在这儿；上面各路的模型都只引用渠道，不抄 Key</span>
+      ${po ? `<button type="button" class="btn-plain mm-sec-act" id="pf-new">${ic("plus")}添加渠道</button>` : ""}</div>
+    ${!po ? "" : `
+    <div id="prov-form" style="display:none">
+      <select id="pf-kind">${kinds.map((k) => `<option value="${esc(k.kind)}">${esc(k.label)}</option>`).join("")}</select>
+      <input id="pf-name" placeholder="给它起个名（如：我的火山方舟）">
+      <input id="pf-base" placeholder="接口地址（选了类型会自动填）">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <input id="pf-key" type="password" placeholder="API Key" autocomplete="off" style="flex:1;min-width:0;margin:0">
+        <span id="pf-key-src"></span>
+      </div>
+      <button class="btn-brand" id="pf-save">保存渠道</button>
+      <button class="btn-plain" id="pf-cancel">取消</button>
+    </div>`}
     <div id="prov-list">${ready.map((p) => chanCard(p, s, po, kindLabel, dupeTag(p))).join("")
       || `<div class="d" style="padding:8px 0">还没有能用的渠道。${po ? "在下面挑一家填上 Key，或者自己加一个。" : "等平台管理员配好 Key。"}</div>`}</div>
     ${!idle.length ? "" : `
@@ -678,27 +759,88 @@ function paintModels(pane, s) {
       </div>
       <div class="ch-body">${loose.map((m) => modelRow(m, s, po)).join("")}</div>
     </div>`}
-    ${!po ? "" : `
-    <div id="prov-form" style="display:none;border-top:1px solid var(--wb-border);padding-top:10px;margin-top:8px">
-      <select id="pf-kind">${kinds.map((k) => `<option value="${esc(k.kind)}">${esc(k.label)}</option>`).join("")}</select>
-      <input id="pf-name" placeholder="给它起个名（如：我的火山方舟）">
-      <input id="pf-base" placeholder="接口地址（选了类型会自动填）">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-        <input id="pf-key" type="password" placeholder="API Key" style="flex:1;min-width:0;margin:0">
-        <span id="pf-key-src"></span>
-      </div>
-      <button class="btn-brand" id="pf-save">保存渠道</button>
-      <button class="btn-plain" id="pf-cancel">取消</button>
-    </div>
-    <button class="btn-plain" id="pf-new" style="margin-top:6px">${ic("plus")}添加渠道</button>`}
-    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size: 13px;color:var(--wb-text-2);cursor:pointer">
+    <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size: 13px;color:var(--wb-text-2);cursor:pointer">
       <input type="checkbox" id="mf-follow-last" style="margin:0" ${s.model_follow_last ? "checked" : ""}>
       新对话自动沿用上次手动选过的模型（不勾则新对话总是用全局默认）
     </label>
-    <div id="media-pane" style="margin-top:14px;border-top:1px solid var(--wb-border);padding-top:12px"></div>
     <span class="ok-msg" id="models-msg"></span>`;
   renderMediaPane(pane.querySelector("#media-pane"), s);
   bindModels(pane, s, po);
+}
+
+/**
+ * 「对话」那张卡：跟下面五路媒体长一个样，只是数据来自 config.models。
+ *
+ * 为什么要单开一张：对话模型平时是散在各个渠道卡里的，想知道「我一共有几个对话模型、
+ * 现在默认是哪个、备用挂的谁」，得把每张渠道卡都点开数一遍。可这正是用户最常问的一件事。
+ * 这张卡把它们横着摊在一起，按渠道标出处；「主渠道挂了换谁」也挪到这儿——
+ * 它本来在「智能体设置」里，跟步数上限、超时排在一起，选的却是模型，找不着是应该的。
+ */
+function chatOverview(s, po, kindLabel) {
+  const open = openCaps.has("chat");
+  const active = s.models.find((m) => m.name === s.active_model);
+  const chans = new Set(s.models.filter((m) => m.channel).map((m) => m.channel));
+  const sum = s.models.length
+    ? `${s.models.length} 个模型${chans.size > 1 ? ` · 跨 ${chans.size} 个渠道` : ""} · 主用 ${esc(active ? active.name : s.active_model || "未设置")}`
+    : "还没配";
+  const fb = String((s.agent || {}).failover_model || "");
+  return `
+    <div class="ch-card${open ? " open" : ""}">
+      <div class="ch-head" data-chatcap="1">
+        ${ic(open ? "chevron-down" : "chevron-right", "ch-caret i-sm")}
+        <span class="cap-ic">${ic("message-circle")}</span>
+        <span class="ch-title"><b>对话</b><span class="ch-sub">正文 · 工具调用 · 写文件</span></span>
+        <span class="ch-count${s.models.length ? "" : " is-empty"}">${sum}</span>
+      </div>
+      ${!open ? "" : `<div class="ch-body">
+        <div class="ch-note">整台服务器的默认对话模型。每个人还能在输入框右下角临时换一个，那是各人自己的偏好，不影响这里。</div>
+        ${s.models.length ? s.models.map((m) => modelRow(m, s, po, true)).join("")
+          : `<div class="ch-note">一个都还没有。去下面的渠道卡里加一个，或者点这儿的「添加对话模型」。</div>`}
+        ${!po ? "" : `
+        <div class="ch-fb">
+          <label for="ov-failover">主模型挂了换谁</label>
+          <select id="ov-failover">
+            <option value="">不换道（默认）</option>
+            ${s.models.map((m) => `<option value="${esc(m.name)}"${fb === m.name ? " selected" : ""}>${esc(m.name)}（${esc(m.model)}）${modelKeyed(m, s) ? "" : "（这条还没 Key）"}</option>`).join("")}
+          </select>
+          <span>主模型连续卡壳或持续报错时，自动切到这条接着跑当前任务，并在任务流里醒目播报。不选就绝不悄悄换模型，宁可如实报错；每个任务最多换一次道。</span>
+        </div>`}
+        ${!po ? "" : `
+        <div class="ca-form" data-chan="__all__" style="display:none">
+          <div class="form-row">
+            <select class="ca-chan"></select>
+            <select class="ca-model"></select>
+          </div>
+          <div class="form-row">
+            <input class="ca-custom" placeholder="模型名（上面选「自己填…」时用这个）" style="display:none">
+            <input class="ca-name" placeholder="别名（可空，默认用模型名；对话里按这个名字认）">
+          </div>
+          ${capsRow()}
+          <div class="d ca-tip" style="font-size:12px;margin-bottom:6px"></div>
+          <button class="btn-brand ca-save">保存</button>
+          <button class="btn-plain ca-cancel">取消</button>
+        </div>
+        <button class="btn-plain ca-new" data-chan="__all__" style="margin-top:6px">${ic("plus")}添加对话模型</button>`}
+      </div>`}
+    </div>`;
+}
+
+/**
+ * 自定义模型那一行「它会什么」。
+ *
+ * 自己填模型名的人最常踩的两个坑：挑了个纯文本模型当主力，粘图进去才发现看不了；
+ * 或者挑了个不支持 function calling 的模型，任务卡在第一步谁也不知道为什么。
+ * 目录里的模型我们知道它会什么，手填的不知道——所以让填的人自己说一句。
+ * 不勾也不猜：caps 没有这个字段就是「不知道」，界面一个字都不提示（老配置全是这种）。
+ */
+function capsRow(caps) {
+  const has = (k) => !Array.isArray(caps) || caps.includes(k); // 新建时两项默认都勾上：绝大多数对话模型都会
+  return `<div class="ca-caps">
+      <span>它会什么</span>
+      <label><input type="checkbox" class="ca-cap-tools" ${has("tools") ? "checked" : ""}>能调工具</label>
+      <label><input type="checkbox" class="ca-cap-vision" ${has("vision") ? "checked" : ""}>能看图</label>
+      <em>照着服务商文档勾。勾错了只影响这儿的提醒，不改真实请求</em>
+    </div>`;
 }
 
 /**
@@ -710,6 +852,47 @@ function chanIdle(p) {
   if (local) return false;
   // has_key 是读接口给非管理员回的（真 Key 被打了掩码），管理员那边看 api_key 本身
   return p.has_key === false || !String(p.api_key || "").trim();
+}
+
+/**
+ * 这个模型现在有没有 Key 可用。
+ *
+ * 不能只看 m.api_key：改成「渠道持 Key、模型只引用渠道」之后，挂了渠道的模型自己那一栏
+ * 本来就是空的（server.js 的 normalize 是在发请求前才把渠道的 base_url/api_key 摊回行上的）。
+ * 光看行上那一栏，会把一屏配得好好的模型全标成「还没配 Key」。
+ */
+function modelKeyed(m, s) {
+  if (String(m.api_key || "").trim() || m.has_key) return true;
+  if (!m.channel) return /ollama|本地|本机/i.test(String(m.name || "") + String(m.base_url || ""));
+  const p = (s.providers || []).find((x) => x.id === m.channel);
+  return !!p && !chanIdle(p);
+}
+
+/**
+ * 渠道测活结果：id → { running | ok, ms, model, error }。
+ *
+ * 存在模块里而不是 DOM 里：这一页任何一处改动都会整屏重画（换默认模型、加一个媒体模型都会），
+ * 结果挂在 DOM 上的话，刚测出来的绿勾下一秒就被重画抹掉，人会以为没测成功。
+ */
+const chanTest = new Map();
+
+/** 头上那颗状态点：卡片折起来的时候，这是唯一能看出「这家到底通不通」的地方 */
+function chanTestPill(p) {
+  const t = chanTest.get(p.id);
+  if (!t) return "";
+  if (t.running) return `<span class="ch-pill is-run">测活中…</span>`;
+  return t.ok
+    ? `<span class="ch-pill is-ok" title="拿模型 ${esc(t.model)} 真发了一次请求">${ic("circle-check", "i-sm")}通 · ${t.ms} 毫秒</span>`
+    : `<span class="ch-pill is-bad" title="${esc(t.error)}">${ic("circle-x", "i-sm")}不通</span>`;
+}
+
+/** 展开后那一行结论。失败的原因必须整句写出来——「不通」三个字没法让人知道下一步做什么 */
+function chanTestNote(p) {
+  const t = chanTest.get(p.id);
+  if (!t || t.running) return "";
+  return t.ok
+    ? `<div class="ch-res is-ok">${ic("circle-check")}<span>通了（${t.ms} 毫秒）。刚才拿 <code>${esc(t.model)}</code> 真发了一次请求，Key、地址、模型名三样都对。</span></div>`
+    : `<div class="ch-res is-bad">${ic("triangle-alert")}<span>${esc(t.error)}</span></div>`;
 }
 
 /** 一个渠道一张卡：头是一行摘要，展开才是它底下的模型 + 那把 Key */
@@ -729,19 +912,22 @@ function chanCard(p, s, po, kindLabel, dupeTag) {
         ${ic(open ? "chevron-down" : "chevron-right", "ch-caret")}
         <span class="ch-title"><b>${esc(p.name)}</b>${sub ? `<span class="ch-sub">${esc(sub)}</span>` : ""}</span>
         ${po && noKey ? `<button type="button" class="ch-warn" data-fillkey="${esc(p.id)}" title="展开这张卡，直接填 Key">${ic("triangle-alert", "i-sm")}未填 Key</button>` : ""}
+        ${chanTestPill(p)}
         <span class="ch-count">${mine.length} 个对话模型${mediaN ? ` · ${mediaN} 个媒体模型` : ""}</span>
-        ${!po ? "" : rowMenu([["pedit", i, "编辑渠道", ""], ["pdel", i, "删除渠道", "danger"]])}
+        ${!po ? "" : rowMenu([["pedit", i, "编辑渠道", ""], ...(p.has_key ? [["pclr", i, "清空 Key", ""]] : []), ["pdel", i, "删除渠道", "danger"]])}
       </div>
       ${!open ? "" : `<div class="ch-body">
         ${!po ? "" : `
         <div class="ch-key">
           <label for="ck-${esc(p.id)}">API Key</label>
           <input id="ck-${esc(p.id)}" class="ck-input" type="password" data-chan="${esc(p.id)}"
-                 placeholder="${p.kind === "ollama" ? "Ollama 本机跑，不用填" : "粘贴这家服务商的 API Key"}"
-                 value="${esc(p.api_key || "")}" autocomplete="off">
+                 placeholder="${p.key_hint ? `已装 ${esc(p.key_hint)}，要换就粘一把新的` : p.kind === "ollama" ? "Ollama 本机跑，不用填" : "粘贴这家服务商的 API Key"}"
+                 value="" autocomplete="off">
           <button type="button" class="btn-brand ck-save" data-chan="${esc(p.id)}">保存</button>
+          <button type="button" class="btn-plain ck-test" data-chan="${esc(p.id)}">测一下</button>
           ${kindKeyLink(p.kind, p.base_url)}
-        </div>`}
+        </div>
+        ${chanTestNote(p)}`}
         ${mine.length ? mine.map((m) => modelRow(m, s, po)).join("")
           : `<div class="ch-note">这个渠道下面还没有对话模型。${po ? "加一个，它就会出现在输入框右下角那个选择器里。" : ""}</div>`}
         ${!po ? "" : `
@@ -754,6 +940,7 @@ function chanCard(p, s, po, kindLabel, dupeTag) {
             <input class="ca-custom" placeholder="模型名（上面选「自己填…」时用这个）" style="display:none">
             <input class="ca-name" placeholder="别名（可空，默认用模型名；对话里按这个名字认）">
           </div>
+          ${capsRow()}
           <div class="d ca-tip" style="font-size:12px;margin-bottom:6px"></div>
           <button class="btn-brand ca-save">保存</button>
           <button class="btn-plain ca-cancel">取消</button>
@@ -763,13 +950,21 @@ function chanCard(p, s, po, kindLabel, dupeTag) {
     </div>`;
 }
 
-/** 模型行：名字 · 模型 id · 战绩，剩下的都收进 ⋯。地址和 Key 不在这儿——那是渠道的事 */
-function modelRow(m, s, po) {
+/**
+ * 模型行：名字 · 模型 id · 战绩，剩下的都收进 ⋯。地址和 Key 不在这儿——那是渠道的事。
+ * withChan：在「对话」总览里用。那张卡横跨所有渠道，不标出处就分不清哪个是哪家的。
+ */
+function modelRow(m, s, po, withChan) {
   const i = s.models.indexOf(m);
   const cur = m.name === s.active_model;
-  const meta = [cur ? "默认" : "", healthBadge(m.name)].filter(Boolean).join(" · ");
+  const p = withChan && m.channel ? s.providers.find((x) => x.id === m.channel) : null;
+  // caps 没这个字段 = 「不知道它会什么」（老配置、目录里挑的都算），一个字都不提示。
+  // 只有人亲手说了「它不会调工具 / 它能看图」，才值得在行里标一句
+  const caps = Array.isArray(m.caps) ? m.caps : null;
+  const flags = !caps ? [] : [caps.includes("tools") ? "" : "不调工具", caps.includes("vision") ? "能看图" : ""].filter(Boolean);
+  const meta = [cur ? "主用" : "", p ? esc(p.name) : "", ...flags.map(esc), healthBadge(m.name)].filter(Boolean).join(" · ");
   return `
-    <div class="mrow">
+    <div class="mrow${cur ? " is-on" : ""}">
       ${po ? `<input type="radio" name="active" ${cur ? "checked" : ""} data-i="${i}" title="设为全局默认模型">`
            : `<span class="mrow-dot" title="${cur ? "当前默认" : ""}">${cur ? "●" : "○"}</span>`}
       <span class="mrow-name">${esc(m.name)}</span>
@@ -828,6 +1023,23 @@ function bindModels(pane, s, po) {
     if (openChans.has(id)) openChans.delete(id); else openChans.add(id);
     paintModels(pane, s);
   }));
+  // 「对话」那张卡跟下面五路共用一套折叠状态（openCaps），只是键是 "chat"
+  const chatHead = pane.querySelector(".ch-head[data-chatcap]");
+  if (chatHead) chatHead.onclick = () => {
+    if (openCaps.has("chat")) openCaps.delete("chat"); else openCaps.add("chat");
+    paintModels(pane, s);
+  };
+  // 顶上六格是可点的：点哪一路就展开哪一路的卡并滚过去。
+  // 不这么做的话，那六格就只是六个只能看的标签——而人看完第一反应就是想改它
+  pane.querySelectorAll("[data-goto]").forEach((b) => (b.onclick = () => {
+    const cap = b.dataset.goto;
+    openCaps.add(cap);
+    paintModels(pane, s);
+    const card = cap === "chat"
+      ? pane.querySelector(".ch-head[data-chatcap]")
+      : pane.querySelector(`.ch-head[data-cap="${cap}"]`);
+    if (card) card.scrollIntoView({ block: "center", behavior: "smooth" });
+  }));
   bindRowMenus(pane);
   const idleBtn = pane.querySelector("#idle-toggle");
   if (idleBtn) idleBtn.onclick = () => { idleOpen = !idleOpen; paintModels(pane, s); };
@@ -862,6 +1074,50 @@ function bindModels(pane, s, po) {
     openChans.add(id);
     if (await saveAllModelTables(s, msg)) { toast("Key 已保存"); paintModels(pane, s); }
   }));
+  // 「测一下」：拿这条渠道真打一次招呼。填了 Key 不等于能用——余额扣光了、Key 是别家的、
+  // 模型名在这家不存在，界面上全都一个样，非要等某个任务跑到一半才炸。
+  // 输入框里现打的那把也一起送过去：刚粘上还没点保存就想先验一验，是最自然的一次点击
+  pane.querySelectorAll(".ck-test").forEach((b) => (b.onclick = async () => {
+    const id = b.dataset.chan;
+    const inp = pane.querySelector(`.ck-input[data-chan="${id}"]`);
+    const p = s.providers.find((x) => x.id === id);
+    if (!p) return;
+    chanTest.set(id, { running: true });
+    paintModels(pane, s);
+    let d;
+    try {
+      const r = await fetch("/api/provider-test", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, kind: p.kind, base_url: p.base_url, api_key: (inp && inp.value.trim()) || "" }),
+      });
+      d = await r.json();
+    } catch (e) {
+      d = { ok: false, error: "请求没发出去：" + String((e && e.message) || e) };
+    }
+    chanTest.set(id, { ok: !!d.ok, ms: d.ms || 0, model: d.model || "", error: d.error || "没说原因" });
+    openChans.add(id);
+    paintModels(pane, s);
+  }));
+  // 清空 Key 走 ⋯ 菜单，不给输入框「留空即清除」那条路：那条路会让每一次
+  // 「只是想改个模型名」的保存都变成一次误删（整张渠道表是一起存出去的）
+  pane.querySelectorAll("a[data-pclr]").forEach((a) => (a.onclick = async (e) => {
+    e.preventDefault();
+    const idx = +a.dataset.pclr;
+    const p = s.providers[idx];
+    if (!confirm(`清空「${p.name}」的 API Key？挂在它下面的模型会立刻用不了，但配置都留着，重新填一把 Key 就恢复。`)) return;
+    s.providers[idx] = { ...p, api_key: "", has_key: false, key_hint: "" };
+    chanTest.delete(p.id);
+    liveModels.delete(p.id);
+    if (await saveAllModelTables(s, msg)) { toast("Key 已清空"); paintModels(pane, s); }
+  }));
+  // 「主模型挂了换谁」：以前排在 智能体设置 里，夹在步数上限和超时中间——选的明明是模型，
+  // 却要去另一页找。挪到对话卡里，跟它要替的那些模型摆在一起
+  const fb = pane.querySelector("#ov-failover");
+  if (fb) fb.onchange = async () => {
+    s.agent = { ...(s.agent || {}), failover_model: fb.value };
+    await saveSettings({ agent: { failover_model: fb.value } }, msg);
+    if (settingsCache) Object.assign(s, settingsCache);
+  };
 
   const kinds = (mediaCatalog || {}).kinds || [];
   const form = pane.querySelector("#prov-form");
@@ -871,7 +1127,10 @@ function bindModels(pane, s, po) {
     pane.querySelector("#pf-kind").value = (p && p.kind) || (kinds[0] || {}).kind || "custom";
     pane.querySelector("#pf-name").value = (p && p.name) || "";
     pane.querySelector("#pf-base").value = (p && p.base_url) || "";
-    pane.querySelector("#pf-key").value = (p && p.api_key) || "";
+    // Key 框永远是空的：服务端只回末四位，原文谁也拿不到。留空 = 不动它（见 pf-save）
+    const keyEl = pane.querySelector("#pf-key");
+    keyEl.value = "";
+    keyEl.placeholder = p && p.key_hint ? `已装 ${p.key_hint}，留空就不动它` : "API Key";
     pane.querySelector("#pf-key-src").innerHTML = kindKeyLink((p && p.kind) || "", (p && p.base_url) || "");
   };
   pane.querySelector("#pf-kind").onchange = (e) => {
@@ -915,7 +1174,12 @@ function bindModels(pane, s, po) {
     if (!v("pf-name")) return toast("给渠道起个名字，下面挑模型时要按名字认");
     // Anthropic 官方不用填地址（SDK 自带），别的都得是完整的 http(s) 地址
     if (kind !== "anthropic" && !/^https?:\/\//i.test(v("pf-base"))) return toast("接口地址要填完整的 http(s) 地址");
-    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, base_url: v("pf-base"), api_key: v("pf-key"), has_key: !!v("pf-key") };
+    // 改一个已有渠道时把 Key 框留空 = 「这次不动 Key」。八颗星是后端约定的暗号（/^\*+$/ 原样保留），
+    // 直接送空串会把人家的 Key 抹掉——而「只是想改个地址」正是最常见的一次编辑
+    const typed = v("pf-key");
+    const had = editP >= 0 && s.providers[editP].has_key;
+    const key = typed || (had ? "********" : "");
+    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, base_url: v("pf-base"), api_key: key, has_key: !!key };
     if (editP >= 0) s.providers[editP] = { ...s.providers[editP], ...entry }; else s.providers.push(entry);
     liveModels.clear(); // 换了地址或 Key，之前拉回来的清单就不作数了
     if (await saveAllModelTables(s, msg)) { form.style.display = "none"; paintModels(pane, s); }
@@ -933,8 +1197,15 @@ function bindModels(pane, s, po) {
     if (!f) return toast("这个渠道的卡片没展开，先点开它");
     pane.querySelectorAll(".ca-form").forEach((x) => (x.style.display = "none")); // 一次只开一张表单
     f.style.display = "";
-    fillChanSelect(f, s, chanId);
+    // "__all__" 是「对话」总览里那张表单：它横跨所有渠道，所以渠道由模型自己说了算，
+    // 新建时就停在下拉的第一项上让人挑
+    fillChanSelect(f, s, (m && m.channel) || (chanId === "__all__" ? "" : chanId));
     f.querySelector(".ca-name").value = (m && m.name) || "";
+    const caps = m && Array.isArray(m.caps) ? m.caps : null;
+    const cbT = f.querySelector(".ca-cap-tools"), cbV = f.querySelector(".ca-cap-vision");
+    // 编辑一条没标过能力的老模型：两项都勾上（等于「按常见情况算」），人改了才落盘
+    if (cbT) cbT.checked = !caps || caps.includes("tools");
+    if (cbV) cbV.checked = !caps || caps.includes("vision");
     const sel = f.querySelector(".ca-model");
     const cust = f.querySelector(".ca-custom");
     cust.value = "";
@@ -985,8 +1256,10 @@ function bindModels(pane, s, po) {
       const name = f.querySelector(".ca-name").value.trim() || model;
       if (s.models.some((m, i) => m.name === name && i !== editM)) return toast(`已经有叫「${name}」的模型了，换个别名`);
       const was = editM >= 0 ? s.models[editM] : null;
-      // 保留条目上别处写的字段（比如以后加的备注），只覆盖这三样；地址和 Key 由服务端按渠道压平
-      const entry = { ...(was || {}), name, channel: chan, model };
+      const cbT = f.querySelector(".ca-cap-tools"), cbV = f.querySelector(".ca-cap-vision");
+      const caps = [cbT && cbT.checked ? "tools" : "", cbV && cbV.checked ? "vision" : ""].filter(Boolean);
+      // 保留条目上别处写的字段（比如以后加的备注），只覆盖这几样；地址和 Key 由服务端按渠道压平
+      const entry = { ...(was || {}), name, channel: chan, model, caps };
       if (was) s.models[editM] = entry; else s.models.push(entry);
       openChans.add(chan);
       // 改的正好是当前默认那条，且改了名字：默认项要跟着改，不然 active_model 指向一个不存在的名字
@@ -1121,45 +1394,283 @@ function traceUsage(trace) {
     return total;
   }, { input: 0, output: 0 });
 }
-function traceObsHtml(item, children, depth = 0) {
-  const duration = item.startTime && item.endTime ? new Date(item.endTime).getTime() - new Date(item.startTime).getTime() : 0;
-  const bad = item.error || item.level === "ERROR";
+function traceObsDuration(item) {
+  if (!item) return 0;
+  if (item.startTime && item.endTime) return Math.max(0, new Date(item.endTime).getTime() - new Date(item.startTime).getTime());
+  return Number(item.duration_ms || 0);
+}
+function traceObsStats(trace) {
+  const observations = Array.isArray(trace?.observations) ? trace.observations : [];
+  const tools = observations.filter((item) => item.kind !== "generation");
+  const generations = observations.filter((item) => item.kind === "generation");
+  const toolMs = tools.reduce((sum, item) => sum + traceObsDuration(item), 0);
+  const modelMs = generations.reduce((sum, item) => sum + traceObsDuration(item), 0);
+  const slowest = observations.reduce((best, item) => traceObsDuration(item) > traceObsDuration(best) ? item : best, null);
+  return { observations, tools, generations, toolMs, modelMs, slowest };
+}
+function traceTimeRange(item) {
+  if (!item?.startTime) return "时间未记录";
+  const start = new Date(item.startTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const end = item.endTime ? new Date(item.endTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "进行中";
+  return `${start} → ${end}`;
+}
+/**
+ * 这一步到底动了什么——「实际具体的路径」就是从这儿来的。
+ *
+ * 界面上以前只有一句「工具 write_file」，跑完根本不知道它写到哪去了。工具的真实参数本来
+ * 就在 trace 里躺着（input），只是没人把它捞出来。这里按常见字段挑一个最能说明问题的，
+ * 挑不着就把整包参数摊平——宁可显示得糙一点，也不能留一行空白让人去猜。
+ */
+const TRACE_TARGET_KEYS = ["path", "file", "filename", "dir", "url", "command", "query", "spec", "prompt", "text", "question", "expert", "team", "skill", "code"];
+function traceTarget(item) {
+  const i = item && item.input;
+  if (i && typeof i === "object" && !Array.isArray(i)) {
+    for (const k of TRACE_TARGET_KEYS) {
+      const v = i[k];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+    const keys = Object.keys(i).filter((k) => k !== "_raw");
+    if (keys.length) return keys.map((k) => `${k}=${typeof i[k] === "string" ? i[k] : JSON.stringify(i[k])}`).join("   ");
+  }
+  if (typeof i === "string" && i.trim()) return i.trim();
+  return String((item && item.metadata && item.metadata.title) || "");
+}
+/** 长参数（shell 脚本、整段代码）只留前三行，剩下的展开「输入」里看 */
+function traceTargetText(item) {
+  const raw = traceTarget(item);
+  if (!raw) return "";
+  const lines = raw.split("\n");
+  let head = lines.slice(0, 3).join("\n");
+  if (head.length > 420) head = head.slice(0, 420) + "…";
+  else if (lines.length > 3) head += "\n…";
+  return head;
+}
+function traceJson(v) {
+  return typeof v === "string" ? v : JSON.stringify(v, null, 2);
+}
+function traceFold(label, value, open) {
+  if (value === null || value === undefined || value === "") return "";
+  return `<details${open ? " open" : ""}><summary>${esc(label)}</summary><pre>${esc(traceJson(value))}</pre></details>`;
+}
+/** 时间线上的一步。层级靠左边距表示，耗时靠底下那根横条——一眼看得出哪步最慢 */
+function traceStepHtml(item, children, depth, ctx) {
+  const dur = traceObsDuration(item);
+  const bad = !!(item.error || item.level === "ERROR");
+  const gen = item.kind === "generation";
   const usage = traceUsage({ observations: [item] });
-  const tokens = usage.input || usage.output ? ` · ${usage.input.toLocaleString()} in / ${usage.output.toLocaleString()} out` : "";
-  const nested = (children.get(item.id) || []).map((child) => traceObsHtml(child, children, depth + 1)).join("");
-  const body = `${item.input !== null && item.input !== undefined ? `<details><summary>输入</summary><pre>${esc(typeof item.input === "string" ? item.input : JSON.stringify(item.input, null, 2))}</pre></details>` : ""}${item.output ? `<details><summary>输出</summary><pre>${esc(typeof item.output === "string" ? item.output : JSON.stringify(item.output, null, 2))}</pre></details>` : ""}${item.metadata && Object.keys(item.metadata).length ? `<details><summary>元数据</summary><pre>${esc(JSON.stringify(item.metadata, null, 2))}</pre></details>` : ""}`;
-  return `<div class="trace-observation${bad ? " is-error" : ""}" style="--trace-depth:${Math.min(depth, 8)}"><div class="trace-observation-head"><span class="trace-kind">${esc(item.kind === "generation" ? "模型" : "工具/子任务")}</span><b>${esc(item.name || item.kind)}</b>${item.model ? `<span class="trace-model">${esc(item.model)}</span>` : ""}<span class="trace-observation-meta">${traceFmtDuration(duration)}${tokens}</span></div>${item.error ? `<div class="trace-error">${esc(item.error)}</div>` : ""}${body}${nested}</div>`;
+  const model = item.model || (item.metadata && item.metadata.model) || "";
+  const bare = String(item.name || "").replace(/^工具\s*/, "");
+  const name = gen ? (model || "模型调用") : ((item.metadata && item.metadata.tool) || bare || "工具");
+  const kind = gen ? ["is-model", "模型"] : /^专家|^外部引擎/.test(bare) ? ["is-agent", "子任务"] : ["is-tool", "工具"];
+  const target = traceTargetText(item);
+  const pct = ctx.max > 0 ? Math.max(2, Math.round((dur / ctx.max) * 100)) : 0;
+  const tokens = usage.input || usage.output ? ` · <b>${usage.input.toLocaleString()}</b> in / <b>${usage.output.toLocaleString()}</b> out` : "";
+  const n = ++ctx.n;
+  const nested = (children.get(item.id) || []).map((kid) => traceStepHtml(kid, children, depth + 1, ctx)).join("");
+  return `<details class="tp-step${bad ? " is-error" : ""}" style="--trace-depth:${Math.min(depth, 6)}">
+    <summary><span class="tp-no">${n}</span><span class="tp-kind ${kind[0]}">${kind[1]}</span><span class="tp-sname" title="${esc(name)}">${esc(name)}</span><span class="tp-cost"><b>${traceFmtDuration(dur)}</b>${tokens}${bad ? ' · <b>失败</b>' : item.endTime ? "" : " · 进行中"}</span></summary>
+    ${target ? `<div class="tp-target">${esc(target)}</div>` : ""}
+    ${pct ? `<div class="tp-bar-line"><i style="width:${pct}%"></i></div>` : ""}
+    ${item.error ? `<div class="tp-err">${esc(item.error)}</div>` : ""}
+    <div class="tp-fold">${traceFold("完整输入", item.input)}${traceFold("输出", item.output)}${item.metadata && Object.keys(item.metadata).length ? traceFold("元数据", item.metadata) : ""}<div style="margin-top:6px;color:var(--wb-text-3);font-size:12px">${esc(traceTimeRange(item))}</div></div>
+  </details>${nested}`;
 }
-function renderLocalTraceDetail(box, trace) {
-  if (!box || !trace) return;
+function renderTraceDetail(box, trace) {
+  if (!box) return;
+  if (!trace) { box.innerHTML = '<div class="tp-detail"><div class="tp-empty">左边点一条任务，这里显示它每一步调了什么、动了哪个文件、花了多久。</div></div>'; return; }
   const children = new Map(), roots = [];
-  for (const item of trace.observations || []) { const parent = item.parentId && item.parentId !== trace.id; if (parent) { if (!children.has(item.parentId)) children.set(item.parentId, []); children.get(item.parentId).push(item); } else roots.push(item); }
+  for (const item of trace.observations || []) {
+    const parented = item.parentId && item.parentId !== trace.id && (trace.observations || []).some((x) => x.id === item.parentId);
+    if (parented) { if (!children.has(item.parentId)) children.set(item.parentId, []); children.get(item.parentId).push(item); }
+    else roots.push(item);
+  }
   const total = trace.duration_ms || (trace.startTime && trace.endTime ? new Date(trace.endTime).getTime() - new Date(trace.startTime).getTime() : 0);
-  const models = traceModels(trace), usage = traceUsage(trace);
-  box.innerHTML = `<div class="trace-detail-head"><div><b>${esc(trace.name || "任务")}</b><small>${esc(trace.id)} · ${trace.status === "error" ? "失败" : trace.status === "running" ? "运行中" : "完成"}</small></div><button type="button" class="btn-plain" data-trace-detail-close>收起</button></div><div class="trace-detail-summary"><span><b>${traceFmtDuration(total)}</b> 总耗时</span><span><b>${trace.observations?.length || 0}</b> 执行节点</span><span><b>${(usage.input + usage.output).toLocaleString()}</b> Token</span><span>${models.length ? models.map((model) => `<i>${esc(model)}</i>`).join("") : "未记录模型"}</span><time>${esc(trace.startTime ? new Date(trace.startTime).toLocaleString() : "-")}</time></div>${trace.input !== null && trace.input !== undefined ? `<details open><summary>任务输入</summary><pre>${esc(typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input, null, 2))}</pre></details>` : ""}<div class="trace-observations"><div class="trace-timeline-label">执行时间线</div>${roots.map((item) => traceObsHtml(item, children)).join("") || '<div class="trace-empty">这条 Trace 还没有模型或工具节点。</div>'}</div>${trace.output ? `<details open class="trace-final"><summary>最终结果</summary><pre>${esc(typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output, null, 2))}</pre></details>` : ""}`;
-  box.querySelector("[data-trace-detail-close]")?.addEventListener("click", () => { box.innerHTML = ""; });
+  const models = traceModels(trace), usage = traceUsage(trace), stats = traceObsStats(trace);
+  const max = Math.max(0, ...(trace.observations || []).map(traceObsDuration));
+  const ctx = { n: 0, max };
+  const slow = stats.slowest ? `${(stats.slowest.metadata && stats.slowest.metadata.tool) || stats.slowest.name || stats.slowest.kind}` : "-";
+  const [statusCls, statusText] = TRACE_STATUS[trace.status] || TRACE_STATUS.completed;
+  const cell = (b, t, title) => `<div${title ? ` title="${esc(title)}"` : ""}><b>${b}</b><span>${esc(t)}</span></div>`;
+  box.innerHTML = `<div class="tp-detail">
+    <div class="tp-dhead"><div><b${trace.name_derived ? ' class="is-said"' : ""}>${esc(trace.name || "（没留下名字）")}</b><small>${esc(trace.startTime ? new Date(trace.startTime).toLocaleString() : "-")} · ${esc(trace.id)}</small></div><span class="tp-pill ${statusCls}">${esc(statusText)}</span></div>
+    <div class="tp-sum">
+      ${cell(esc(traceFmtDuration(total)), "总耗时")}
+      ${cell(String(stats.tools.length), "工具调用")}
+      ${cell(String(stats.generations.length), "模型调用")}
+      ${cell(esc(traceFmtDuration(stats.toolMs)), "花在工具上")}
+      ${cell(esc(traceFmtDuration(stats.modelMs)), "花在模型上")}
+      ${cell(usage.input + usage.output ? (usage.input + usage.output).toLocaleString() : "—", "Token",
+        usage.input + usage.output ? `${usage.input.toLocaleString()} 进 / ${usage.output.toLocaleString()} 出` : "这趟没记到 token 账（模型渠道没回用量，或是在记账修好之前跑的）")}
+      ${cell(esc(slow), "最慢的一步", stats.slowest ? traceFmtDuration(traceObsDuration(stats.slowest)) : "")}
+    </div>
+    ${models.length ? `<div class="tp-models">用到的模型${models.map((m) => `<i>${esc(m)}</i>`).join("")}</div>` : ""}
+    <div class="tp-steps">
+      <div class="tp-steps-label"><span>执行时间线 · 点开任意一步看完整参数和结果</span><span>共 ${(trace.observations || []).length} 步</span></div>
+      ${roots.map((item) => traceStepHtml(item, children, 0, ctx)).join("") || '<div class="tp-empty">这趟任务没有工具或模型记录。老会话是在修复之前跑的，重跑一次就有了。</div>'}
+    </div>
+    <div class="tp-io">${traceFold("任务输入（完整提示词）", trace.input)}${trace.output ? `<details open class="is-final"><summary>最终回复</summary><pre>${esc(traceJson(trace.output))}</pre></details>` : ""}</div>
+  </div>`;
 }
-async function loadLocalTraces(pane) {
-  const list = pane.querySelector("#local-trace-list"), detail = pane.querySelector("#local-trace-detail"), stat = pane.querySelector("#local-trace-stat");
+
+// ================= 更多 → 执行追踪（整页） =================
+let traceCache = [];
+let traceSel = "";
+let traceQuery = "";
+let traceOnlyBad = false;
+/** 搜索匹配到任务名、工具名，也匹配路径——「我上次写的那个报告在哪一趟任务里」靠这个找 */
+function traceHit(t, q) {
+  if (!q) return true;
+  const hay = [t.name, t.id, ...(t.observations || []).flatMap((o) => [o.name, o.model, (o.metadata && o.metadata.tool) || "", traceTarget(o)])].join("\n").toLowerCase();
+  return hay.includes(q.toLowerCase());
+}
+async function renderTracePage() {
+  const page = document.getElementById("assist-page");
+  if (!page) return;
+  page.innerHTML = `<div class="tp">
+    <div class="tp-bar">
+      <div class="hub-search tp-grow">${ic("search")}<input id="tp-q" placeholder="搜任务名、工具名、文件路径…" value="${esc(traceQuery)}"></div>
+      <label class="chip" style="gap:6px;cursor:pointer"><input type="checkbox" id="tp-bad"${traceOnlyBad ? " checked" : ""} style="margin:0"> 只看出过错的</label>
+      <button class="btn-plain" id="tp-refresh">${ic("refresh-cw")} 刷新</button>
+      <button class="btn-plain" id="tp-clear">${ic("eraser")} 清空</button>
+    </div>
+    <div id="tp-note"></div>
+    <div class="tp-stats" id="tp-stats"></div>
+    <div class="tp-body"><div class="tp-list" id="tp-list"></div><div id="tp-detail"></div></div>
+  </div>`;
+  const q = page.querySelector("#tp-q");
+  q.oninput = () => { traceQuery = q.value; paintTraceList(); };
+  page.querySelector("#tp-bad").onchange = (e) => { traceOnlyBad = e.target.checked; paintTraceList(); };
+  page.querySelector("#tp-refresh").onclick = () => loadTracePage();
+  page.querySelector("#tp-clear").onclick = async (e) => {
+    if (!confirm("清空本机保存的执行记录？工作区文件和 Langfuse 上的副本都不受影响。")) return;
+    e.currentTarget.disabled = true;
+    await fetch("/api/traces", { method: "DELETE" }).catch(() => {});
+    traceSel = "";
+    await loadTracePage();
+    e.currentTarget.disabled = false;
+    toast("已清空");
+  };
+  await loadTracePage();
+}
+async function loadTracePage() {
+  const [data, s] = await Promise.all([
+    fetch("/api/traces?limit=200").then((r) => r.json()).catch(() => ({ traces: [] })),
+    settingsCache ? Promise.resolve(settingsCache) : fetch("/api/settings").then((r) => r.json()).catch(() => null),
+  ]);
+  if (pageKind !== "trace") return;
+  traceCache = Array.isArray(data.traces) ? data.traces : [];
+  const stats = document.getElementById("tp-stats");
+  const done = traceCache.filter((t) => t.status === "completed"), bad = traceCache.filter((t) => t.status === "error");
+  const run = traceCache.filter((t) => t.status === "running"), stale = traceCache.filter((t) => t.status === "interrupted");
+  const avg = done.length ? done.reduce((sum, t) => sum + Number(t.duration_ms || 0), 0) / done.length : 0;
+  const tok = traceCache.reduce((sum, t) => { const u = traceUsage(t); return sum + u.input + u.output; }, 0);
+  // 「累计 Token」以前恒等于 0：大多数记录压根没记到账，加起来当然是 0，
+  // 而屏幕上一个大写的 0 会让人以为模型是白嫖的。记到几条就说几条
+  const billed = traceCache.filter((t) => { const u = traceUsage(t); return u.input + u.output > 0; }).length;
+  if (stats) stats.innerHTML = `
+    <div class="tp-stat"><b>${traceCache.length}</b><span>最近任务</span></div>
+    <div class="tp-stat"><b>${done.length}</b><span>跑完</span></div>
+    <div class="tp-stat${bad.length ? " is-error" : ""}"><b>${bad.length}</b><span>出过错</span></div>
+    ${run.length ? `<div class="tp-stat is-run"><b>${run.length}</b><span>还在跑</span></div>` : ""}
+    ${stale.length ? `<div class="tp-stat is-stale" title="开工记了、收尾没记上——多半是当时把进程关了或者机器重启了"><b>${stale.length}</b><span>中断</span></div>` : ""}
+    <div class="tp-stat" title="${billed} / ${traceCache.length} 趟任务记到了 token 账；其余的是在记账修好之前跑的">
+      <b>${tok ? (tok >= 1000 ? (tok / 1000).toFixed(1) + "k" : tok) : "—"}</b><span>累计 Token</span></div>`;
+  // Langfuse 那条只是一行状态，改配置还是去设置页——这一页管的是「看记录」，不是「配上报」
+  const note = document.getElementById("tp-note");
+  const lf = (s && s.langfuse) || {}, st = lf.stats || {};
+  if (note) {
+    const cls = st.bad_host || (lf.enabled && !st.ready) ? "is-warn" : lf.enabled && st.ready ? "is-on" : "";
+    const txt = st.bad_host ? "Langfuse 开着，但地址不像个网址，一条都没往外发（本地这份不受影响）"
+      : lf.enabled && !st.ready ? "Langfuse 开着，但钥匙没填全，一条都没往外发（本地这份不受影响）"
+        : lf.enabled ? `同时上报到 Langfuse · 已发出 ${st.sent || 0} 条${st.failed ? ` · 失败 ${st.failed} 条` : ""}`
+          : "只存在这台机器上（当前工作区的 .openworkbuddy/traces.jsonl），没有往任何外部服务发";
+    note.innerHTML = `<div class="tp-note ${cls}">${ic(cls === "is-warn" ? "triangle-alert" : cls === "is-on" ? "cloud" : "hard-drive")}<span>${esc(txt)}</span>${amPlatformOwner() ? '<a href="#" class="link" id="tp-cfg">去设置里配 Langfuse</a>' : ""}</div>`;
+    const cfg = note.querySelector("#tp-cfg");
+    if (cfg) cfg.onclick = (e) => { e.preventDefault(); openModal("settings", "trace"); };
+  }
+  paintTraceList();
+}
+/** 这一趟是谁跑的、在哪个工作区跑的——两趟任务长得一样时，就靠这两样分开 */
+function traceWho(t) {
+  const md = t.metadata || {};
+  return String(t.userId || md.user || "").slice(0, 24);
+}
+function traceWhere(t) {
+  const ws = String((t.metadata || {}).workspace || "");
+  if (!ws) return "";
+  // 只要最后一段：完整路径又长又全是重复前缀，在一行里挤掉了真正有用的东西
+  return ws.split(/[/\\]/).filter(Boolean).pop() || "";
+}
+const TRACE_STATUS = {
+  error: ["is-error", "失败"],
+  running: ["is-running", "还在跑"],
+  // 「开着没收尾」和「真的还在跑」得分开。进程关掉、机器重启、任务被掐，都不会写收尾那条，
+  // 一律画成「还在跑」的话，一个早就没在跑的人打开这页会看到几十条假的进行中
+  interrupted: ["is-stale", "中断"],
+  completed: ["", "完成"],
+};
+/**
+ * 列表里的一行。
+ *
+ * 改之前每行是「任务 / 809ms / 3 工具 · 2 模型 / 0 Token / 09/17 03:09」——
+ * 名字全一样，工具只有个数，Token 恒等于 0。二十行长得一模一样，只能一条条点开试。
+ * 现在第一行放这趟到底要干什么（写的时候没名字就取用户第一句话），
+ * 第二行放真正能把两趟分开的东西：用了哪几个工具、哪个模型、谁跑的、在哪个工作区。
+ */
+function traceRowHtml(t) {
+  const u = traceUsage(t), st = traceObsStats(t);
+  const [cls, label] = TRACE_STATUS[t.status] || TRACE_STATUS.completed;
+  const name = t.name || "（没留下名字）";
+  // 工具列名字而不是个数：「3 工具」谁都一样，「web_search · write_file」一眼认得出是哪趟
+  const toolNames = [...new Set(st.tools
+    .map((o) => (o.metadata && o.metadata.tool) || String(o.name || "").replace(/^工具\s*/, ""))
+    .filter((x) => x && !/^外部引擎/.test(x)))];
+  const tools = toolNames.length
+    ? toolNames.slice(0, 3).join(" · ") + (toolNames.length > 3 ? ` +${toolNames.length - 3}` : "")
+    : "";
+  const models = traceModels(t);
+  const tok = u.input + u.output;
+  // 「没记到账」和「一个 token 没花」不是一回事，别都写成 0
+  const tokText = tok ? `${tok >= 1000 ? (tok / 1000).toFixed(1) + "k" : tok} Token` : (st.generations.length ? "Token 未记" : "");
+  const bits = [
+    t.startTime ? new Date(t.startTime).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "",
+    tools,
+    models.length ? models[0] + (models.length > 1 ? ` +${models.length - 1}` : "") : "",
+    tokText,
+    traceWho(t),
+    traceWhere(t),
+  ].filter(Boolean);
+  return `<button type="button" class="tp-row ${cls}${t.id === traceSel ? " on" : ""}" data-trace="${esc(t.id)}">
+    <i class="dot"></i>
+    <span class="tp-rmain">
+      <span class="tp-rtop"><b title="${esc(name)}"${t.name_derived ? ' class="is-said"' : ""}>${esc(name)}</b><em>${esc(traceFmtDuration(t.duration_ms))}</em></span>
+      <span class="tp-meta">${bits.map((b) => `<span>${esc(b)}</span>`).join("")}${
+        cls ? `<span class="tp-rst">${esc(label)}</span>` : ""}</span>
+    </span>
+  </button>`;
+}
+function paintTraceList() {
+  const list = document.getElementById("tp-list"), detail = document.getElementById("tp-detail");
   if (!list) return;
-  const data = await fetch("/api/traces?limit=80").then((r) => r.json()).catch(() => ({ traces: [] }));
-  const traces = Array.isArray(data.traces) ? data.traces : [];
-  const completed = traces.filter((trace) => trace.status === "completed"), failed = traces.filter((trace) => trace.status === "error"), running = traces.filter((trace) => trace.status === "running"), avg = completed.length ? completed.reduce((sum, trace) => sum + Number(trace.duration_ms || 0), 0) / completed.length : 0;
-  if (stat) stat.textContent = `保存在当前工作区 · 默认不上传外部服务`;
-  const metrics = pane.querySelector("#local-trace-metrics");
-  if (metrics) metrics.innerHTML = `<div><b>${traces.length}</b><span>最近任务</span></div><div><b>${completed.length}</b><span>成功</span></div><div class="${failed.length ? "is-error" : ""}"><b>${failed.length}</b><span>失败</span></div><div><b>${running.length}</b><span>运行中</span></div><div><b>${traceFmtDuration(avg)}</b><span>平均耗时</span></div>`;
-  list.innerHTML = traces.length ? traces.map((trace) => { const models = traceModels(trace), usage = traceUsage(trace); return `<button type="button" class="local-trace-row ${trace.status === "error" ? "is-error" : trace.status === "running" ? "is-running" : ""}" data-local-trace="${esc(trace.id)}"><span class="local-trace-dot"></span><span class="local-trace-main"><b>${esc(trace.name || "任务")}</b><small>${esc(trace.startTime ? new Date(trace.startTime).toLocaleString() : "-")} · ${trace.observations?.length || 0} 步 · ${(usage.input + usage.output).toLocaleString()} Token</small></span><span class="local-trace-model">${esc(models[0] || "模型未记录")}</span><span class="local-trace-time">${traceFmtDuration(trace.duration_ms)}</span><span class="local-trace-status">${trace.status === "error" ? "失败" : trace.status === "running" ? "运行中" : "完成"}</span></button>`; }).join("") : '<div class="trace-empty">还没有本地 Trace。下一次对话或画布 Agent 任务会自动记录。</div>';
-  list.querySelectorAll("[data-local-trace]").forEach((row) => row.addEventListener("click", async () => { const id = row.dataset.localTrace; const d = await fetch("/api/traces/" + encodeURIComponent(id)).then((r) => r.json()).catch(() => null); if (d?.trace) renderLocalTraceDetail(detail, d.trace); }));
+  const rows = traceCache.filter((t) => (!traceOnlyBad || t.status === "error") && traceHit(t, traceQuery));
+  list.innerHTML = rows.length ? rows.map(traceRowHtml).join("")
+    : `<div class="tp-empty">${traceCache.length ? "没有匹配的任务" : "还没有记录。下一次对话或画布任务会自动记下来。"}</div>`;
+  list.querySelectorAll("[data-trace]").forEach((row) => row.onclick = async () => {
+    traceSel = row.dataset.trace;
+    paintTraceList();
+    const d = await fetch("/api/traces/" + encodeURIComponent(traceSel)).then((r) => r.json()).catch(() => null);
+    if (pageKind === "trace") renderTraceDetail(document.getElementById("tp-detail"), d && d.trace);
+  });
+  if (!traceSel) renderTraceDetail(detail, null);
 }
 function renderTracePane(pane, s) {
   const lf = s.langfuse || {};
   const st = lf.stats || {};
   pane.innerHTML = `
     <div class="card-item">
-      <div class="t">本地 Trace（内置）</div>
-      <div class="d" style="margin-bottom:6px">不依赖 Langfuse，任务默认记录在当前 workspace。可以展开查看每个模型调用、工具调用、参数、结果、耗时和 Token；只有你主动打开 Langfuse 才会外发。</div>
-      <div id="local-trace-metrics" class="trace-metrics"></div><div class="trace-local-bar"><span id="local-trace-stat">正在读取…</span><span><button class="btn-plain" id="local-trace-refresh">刷新</button><button class="btn-plain" id="local-trace-clear">清空</button></span></div>
-      <div id="local-trace-list" class="local-trace-list"></div><div id="local-trace-detail" class="local-trace-detail"></div>
+      <div class="t">记录去哪看</div>
+      <div class="d" style="margin-bottom:8px">每趟任务调了哪些工具、动了哪些文件、花了多久、烧了多少 Token，都默认记在当前工作区里（<code>.openworkbuddy/traces.jsonl</code>），不依赖 Langfuse、也不往外发。这一页只管「要不要同时抄一份到 Langfuse」；<b>看记录在侧栏「更多 → 执行追踪」</b>——那儿是整页的，一眼扫得完。</div>
+      <button class="btn-plain" id="lf-goto-page">${ic("activity")} 打开执行追踪</button>
     </div>
     <div class="card-item">
       <div class="t">执行追踪</div>
@@ -1228,12 +1739,7 @@ function renderTracePane(pane, s) {
     }
     e.target.disabled = false;
   };
-  pane.querySelector("#local-trace-refresh")?.addEventListener("click", () => loadLocalTraces(pane));
-  pane.querySelector("#local-trace-clear")?.addEventListener("click", async (e) => {
-    if (!confirm("清空本机保存的 Trace？不会影响工作区文件和 Langfuse。")) return;
-    e.target.disabled = true; await fetch("/api/traces", { method: "DELETE" }).catch(() => {}); await loadLocalTraces(pane); e.target.disabled = false;
-  });
-  loadLocalTraces(pane);
+  pane.querySelector("#lf-goto-page").onclick = () => { closeModal(); openPageView("trace"); };
 }
 async function renderAgentPane(pane, s) {
   pane.innerHTML = `
@@ -1273,11 +1779,10 @@ async function renderAgentPane(pane, s) {
       <div class="d" style="margin-bottom:6px">单个任务（含专家子代理和自动续跑）的 token 总量上限，超过后强制收尾且不再自动续跑，防止长任务烧钱失控。0 = 不限（默认）。用到 80% 会先提醒</div>
       <input id="ag-tokbudget" type="number" min="0" step="1" value="${Math.round((s.agent.max_tokens_budget || 0) / 10000)}">
       <div class="f">备用渠道（主模型挂起自动换道）</div>
-      <div class="d" style="margin-bottom:6px">主模型连续卡壳超时或服务端持续报错时，自动切到这里选的渠道接着跑当前任务，并在任务流里醒目播报。默认关闭：不选就绝不悄悄换模型，宁可如实报错。每个任务最多换一次道</div>
-      <select id="ag-failover">
-        <option value="">关闭（默认，不自动换道）</option>
-        ${(s.models || []).map((m) => `<option value="${esc(m.name)}"${(s.agent.failover_model || "") === m.name ? " selected" : ""}>${esc(m.name)}（${esc(m.model)}）${String(m.api_key || "").trim() || /ollama|本地/i.test(m.name || "") ? "" : "（未配 Key）"}</option>`).join("")}
-      </select>
+      <div class="d" style="margin-bottom:6px">${(s.agent.failover_model || "")
+        ? `现在选的是「<b>${esc(s.agent.failover_model)}</b>」。`
+        : "现在是关闭的：主模型挂了就如实报错，绝不悄悄换成别的模型。"}
+        这个下拉已经挪到 <b>设置 → 模型 → 对话</b>，跟它要替的那些模型摆在一起——选的是模型，却排在步数和超时中间，原来那个位置没人找得到</div>
       <div class="f">上下文预算（千字符）</div>
       <div class="d" style="margin-bottom:6px">超出后自动截短较早的工具输出（最近 3 步始终保留原文），避免长任务撞模型上下文上限整个失败。上下文大的模型可以调高（默认 120）</div>
       <input id="ag-ctx" type="number" min="20" max="2000" value="${Math.round((s.agent.max_context_chars || 120000) / 1000)}">
@@ -1303,7 +1808,9 @@ async function renderAgentPane(pane, s) {
       max_context_chars: +pane.querySelector("#ag-ctx").value * 1000,
       gen_parallel_max: +pane.querySelector("#ag-genpar").value,
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
-      failover_model: pane.querySelector("#ag-failover").value,
+      // 下拉挪走了，但这一单还是得把它原样带上：整个 agent 对象是一起存的，
+      // 漏掉这个字段不会报错，只会在某次「改了下步数上限」之后悄悄把备用渠道关掉
+      failover_model: (s.agent || {}).failover_model || "",
     } }, pane.querySelector("#ag-msg"));
   renderEngineCard(pane.querySelector("#ag-engines"));
   renderThinkingCard(pane.querySelector("#ag-thinking"), pane.querySelector("#ag-thinking-note"), pane.querySelector("#ag-thinking-msg"));
@@ -1686,7 +2193,7 @@ async function renderMemoryPane(pane) {
     ${!m.can_edit_manual ? "" : `
     <div class="card-item">
       <div class="t">${ic("truck")} 记忆搬家（导出 / 从其它 agent 导入）</div>
-      <div class="d" style="margin-bottom:8px">导出成一份 Markdown 到哪都能用。导入自动扫描本机 Claude Code / Codex / Claude Cowork 的记忆文件；腾讯 WorkBuddy 等没有固定文件的，从它界面里把记忆复制出来粘到下面即可。「导入为条目」逐行进上面的条目区（自动去重），「并入背景说明」整段接到背景说明后面。</div>
+      <div class="d" style="margin-bottom:8px">导出成一份 Markdown 到哪都能用。导入自动扫描本机 Claude Code / Codex / Claude Cowork 的记忆文件；记忆不落在固定文件里的工具，从它界面里把记忆复制出来粘到下面即可。「导入为条目」逐行进上面的条目区（自动去重），「并入背景说明」整段接到背景说明后面。</div>
       <div style="margin-bottom:8px"><button class="btn-plain" id="mem-export">${ic("upload")} 导出全部记忆（.md）</button></div>
       <div id="mem-scan" style="font-size: 13px;color:var(--wb-text-2)">扫描中…</div>
       <textarea id="mem-paste" rows="4" placeholder="或把其它 agent 的记忆文本粘到这里…" style="margin-top:8px"></textarea>
@@ -1784,16 +2291,19 @@ function renderDataPane(pane, s) {
     </div>
     <div class="card-item">
       <div class="t">${ic("save")} 数据备份与恢复</div>
-      <div class="d" style="margin-bottom:8px">一键把会话记录、记忆、账号、用量、定时任务和全部配置（含 API Key）打包成 tar.gz 存到本机 backups/ 文件夹；换电脑就下载备份文件带走。<b>不含工作空间成果文件</b>（那些你自己看得见）。恢复会先自动备份当前现状，恢复后需重启应用生效。</div>
+      <div class="d" style="margin-bottom:8px">一键把会话记录、记忆、账号、个人偏好、用量、定时任务、自己写的技能和全部配置（含 API Key）打包成 tar.gz 存到本机 backups/ 文件夹。换电脑就「下载」带走，在新机器上「导入备份文件」再点「恢复」，人和数据一起搬过去。<b>不含工作空间成果文件</b>（那些你自己看得见），也不含出厂自带的技能（新机器上本来就有）。恢复会先自动备份当前现状，恢复后需重启应用生效。</div>
       <div style="margin-bottom:8px">
         <button class="btn-brand" id="bk-create">立即备份</button>
+        <button class="btn-plain" id="bk-import">${ic("upload")} 导入备份文件</button>
+        <input type="file" id="bk-file" accept=".gz,.tgz,application/gzip" style="display:none">
         <span class="ok-msg" id="bk-msg"></span>
       </div>
       <div id="bk-list" style="font-size: 13px;color:var(--wb-text-2)">加载中…</div>
     </div>
     <div class="card-item">
       <div class="t">数据说明</div>
-      <div class="d">会话记录持久化在 data/sessions/ · 定时任务在 schedules.json · 配置在 config.json（含 API Key，默认不入 git）· 记忆在 data/memory.md 与 data/memories.json</div>
+      <div class="d">会话记录持久化在 data/sessions/ · 定时任务在 schedules.json · 配置在 config.json（含 API Key，默认不入 git）· 记忆在 data/memory.md 与 data/memories.json · 技能在 skills/ · 成果文件在 workspace/ · 备份在 backups/</div>
+      <div class="d" style="margin-top:6px">手机、网页、终端连的都是这一台，所以它们看到的是同一份数据，不用同步。只有主题、字号这类「这台屏幕看着舒服」的设置存在各自的浏览器里，换设备不跟着走。</div>
     </div>`;
   pane.querySelector("#ws-pick").onclick = async () => {
     const r = await fetch("/api/pick-folder", { method: "POST" }).then(r => r.json()).catch(() => ({}));
@@ -1860,6 +2370,23 @@ function renderDataPane(pane, s) {
     });
   }).catch(() => { bkList.textContent = "加载失败"; });
   loadBackups();
+  // ---- 导入：把另一台机器上下载下来的包送回来 ----
+  // 少了这一头，「下载备份带走」到了新机器就没有下文了——包躺在下载目录里，界面上没有任何地方能接住它。
+  const bkFile = pane.querySelector("#bk-file");
+  pane.querySelector("#bk-import").onclick = () => bkFile.click();
+  bkFile.onchange = async () => {
+    const f = bkFile.files && bkFile.files[0];
+    bkFile.value = ""; // 清掉：不清的话同一个文件选第二次不触发 change，用户会以为按钮坏了
+    if (!f) return;
+    if (!/\.(tar\.gz|tgz)$/i.test(f.name)) return setMsg(bkMsg, "circle-x", "只认 .tar.gz 备份文件", "err");
+    setMsg(bkMsg, "upload", `上传中…（${fmtSize(f.size)}）`);
+    // 直接把 File 当 body 发原始字节。走 JSON 得先 base64，凭空胖三分之一，几百兆的包扛不住
+    const r = await fetch("/api/backup/upload", { method: "POST", headers: { "Content-Type": "application/gzip" }, body: f })
+      .then(r => r.json()).catch(() => ({ error: "上传失败（文件太大或网络中断）" }));
+    if (r.error) return setMsg(bkMsg, "circle-x", r.error, "err");
+    setMsg(bkMsg, "circle-check", `已导入 ${r.name}，在下面点「恢复」才会生效`, "ok");
+    loadBackups();
+  };
   pane.querySelector("#bk-create").onclick = async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true; btn.textContent = "备份中…";

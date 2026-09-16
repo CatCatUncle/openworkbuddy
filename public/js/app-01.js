@@ -61,6 +61,22 @@ const curBusy = () => !!(sessionId && runningSessions.has(sessionId));
 /** 当前开着的是「终端里那趟还在跑的活儿」：插得上话，但停不了——停它得回终端按 Ctrl+C */
 const cliBusy = () => !!(cliWatch && cliWatch.live && cliWatch.id === sessionId);
 const qOf = (sid) => { let q = sessionQueues.get(sid); if (!q) { q = []; sessionQueues.set(sid, q); } return q; };
+/**
+ * 任务正跑着又发了一条，这条怎么算——两种都对，看人当时想干什么：
+ *   interject 插队：立刻注入当前这趟。适合「等等，标题用蓝色」这种就地纠偏。
+ *   queue     排队：不打断，等它做完再按顺序自己开始。适合「顺便再做个 B」这种新活儿。
+ * 以前只有插队一条路，代价是：一句补充说明能让 Agent 中途改道，前面几步白做，
+ * 而且用户根本没机会说「我这条不急」。
+ * 存本地而不是跟着会话走：这是个人的工作习惯，换个对话不该重选一遍。
+ */
+let busySendMode = (() => {
+  try { return localStorage.getItem("wb_busy_send") === "queue" ? "queue" : "interject"; }
+  catch { return "interject"; }
+})();
+function setBusySendMode(m) {
+  busySendMode = m === "queue" ? "queue" : "interject";
+  try { localStorage.setItem("wb_busy_send", busySendMode); } catch {}
+}
 let SESS_KEY = "wb_sessions"; // 登录后切换为 wb_sessions:<用户名>（每人一份任务历史）
 let sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
 const chatCol = document.getElementById("chat-col");
@@ -183,6 +199,27 @@ function dirOf(name) { const i = String(name || "").lastIndexOf("/"); return i <
  * <img src="fig.jpg"> 这种相对写法就会去工作区根目录找图 —— 用户看到的就是"预览时图片全裂"。
  */
 function fpath(name) { return String(name == null ? "" : name).split("/").map(encodeURIComponent).join("/"); }
+/**
+ * 给文件接口的链接补上「这份成果属于哪个工作目录」。
+ *
+ * 成果在事件里存的是**工作区相对路径**，服务端一直按「当前工作目录」去解析它。
+ * 用户换一次目录，旧对话里的卡片就全指到新根下面不存在的位置——文件一个没少，
+ * 是坐标系换了而没人记得旧的那套。用户原话：「我经常切换文件夹后，返回之前的对话
+ * 很多成果就看不到打不开了啊，跟我说文件不存在啊」。
+ *
+ * 带的是 sha1 前 8 位的指纹（服务端 workspaceKey），不是真路径：这串会出现在
+ * 截图、日志和分享出去的链接里，本机目录名不该跟着漏出去。服务端只在**自己用过的**
+ * 目录名单里反查这枚指纹，认不出来就当没带，读不到名单外的任何地方。
+ */
+function withRoot(url, root) {
+  const r = String(root || "");
+  return r ? url + (url.includes("?") ? "&" : "?") + "root=" + encodeURIComponent(r) : url;
+}
+/** 顺着 DOM 往上问「这块是哪个根下的」。产出卡和清单行都挂在 .out-block 里，根记在它的 data-root 上 */
+function rootOf(el) {
+  const b = el && el.closest ? el.closest("[data-root]") : null;
+  return (b && b.dataset.root) || "";
+}
 /** 把文档里写的相对路径，按这份文档所在的目录拼成工作区相对路径（./ 和 ../ 都认） */
 function joinRel(base, rel) {
   const p = String(rel || "");
@@ -200,13 +237,17 @@ function joinRel(base, rel) {
  * 相对路径必须按 base（文档自己所在的目录）算，否则又回到"去工作区根目录找图"的老问题。
  * 安全：url 里出现引号/尖括号/空白一律丢掉（拼进属性会把标签撑破），
  * 除 http(s) 和 data:image 之外的协议一律不认（挡 javascript:）。
+ *
+ * root 跟卡片上的下载/预览链接是同一枚指纹（见 withRoot）。少了它，切过一次文件夹之后
+ * 报告本身还打得开（那条链接带了 root），报告**里面**的插图却全裂——因为图走的是另一条
+ * 没带根的 URL，服务端只好按当前目录去找。用户看到的是「打开了但是图没了」，比整个打不开更费解。
  */
-function mdImg(alt, url, base) {
+function mdImg(alt, url, base, root) {
   const u = String(url || "").trim();
   if (!u || /["'<>\s\\]/.test(u)) return "";
   const src = /^(https?:)?\/\//.test(u) || /^data:image\//.test(u) ? u
     : /^[a-zA-Z][\w+.-]*:/.test(u) ? ""
-    : "/api/files/view/" + fpath(joinRel(base, u));
+    : withRoot("/api/files/view/" + fpath(joinRel(base, u)), root);
   if (!src) return "";
   return `<img class="md-img" src="${src}" alt="${String(alt || "").replace(/"/g, "")}" loading="lazy">`;
 }
@@ -354,7 +395,7 @@ function repairBareCode(str) {
  * live=true 表示「这一段正在往外吐字」，只有流式那条路（paintStream）会传。
  * 它一路传到 SVG 卡片那儿决定要不要说「绘制中」——停笔之后、回放历史的时候都不该再说。
  */
-function renderMd(src, base, live) {
+function renderMd(src, base, live, root) {
   if (!src) return "";
   // 先把正文里的 <svg> 抠出来换成占位符（在 esc 之前——它们要当图渲染，不能被转义成文字）
   const { text: pre, figs } = SvgFig.extractSvgFigures(src, live);
@@ -374,7 +415,7 @@ function renderMd(src, base, live) {
   s = autoLinkUrls(s);
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
-  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => mdImg(alt, url, base));
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => mdImg(alt, url, base, root));
   s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   const lines = s.split("\n");
   const out = [];
@@ -522,7 +563,13 @@ function sealStream(el) {
 }
 // 【任务类型：X】跟「（已上传文件：×××）」一样，是发给模型的协议前缀，不是用户自己写的话。
 // 气泡和任务历史标题里一律洗掉；原文照旧发给模型，「复制我的输入」复制的也还是原文
-function stripSceneTag(t) { return String(t == null ? "" : t).replace(/^\s*【任务类型：[^】]*】\s*/, ""); }
+// 侧栏标题只留用户自己那句话。委派标签那行也得摘：不摘的话历史列表整排都是
+// 「【交给专家团：…】把下面这件事整体委派给…」，24 个字全被同一句模板占满，谁是谁分不出来
+function stripSceneTag(t) {
+  return String(t == null ? "" : t)
+    .replace(/^\s*【任务类型：[^】]*】\s*/, "")
+    .replace(/^\s*【(?:交给专家团|交给专家|使用技能)：[^】]*】[^\n]*\n*/, "");
+}
 
 // ================= 回合渲染（实时流式与历史回放共用） =================
 function createTurnUI(userText, turnMode, forSid) {
@@ -718,19 +765,22 @@ function createTurnUI(userText, turnMode, forSid) {
       r2.lastChild.textContent = "最慢：" + slow.map((c) => `${(c._label || "").slice(0, 24)} ${fmtStep(c._dur)}`).join(" · ");
       box.appendChild(r2);
     }
-    // 更细的记录去哪看。开了追踪就直接给这一趟的地址；没开就把入口指出来——
+    // 更细的记录去哪看。开了 Langfuse 就直接给这一趟在那边的地址；没开也有得看——
+    // 本地那本账是一直在记的，指到「更多 → 执行追踪」那一页去。
     // 只在这儿说一次（得先展开过程区才看得见），不往对话里插横幅，那是骚扰
-    const a = document.createElement("a");
-    a.className = "link ps-more";
-    if (turn._trace) {
-      a.href = turn._trace; a.target = "_blank"; a.rel = "noopener";
-      a.textContent = "每次模型调用的输入输出 →";
-    } else {
-      a.href = "#";
-      a.textContent = "想看每次模型调用的输入输出？打开执行追踪 →";
-      a.onclick = (ev) => { ev.preventDefault(); openModal("settings", "trace"); };
+    if (turn._trace || amPlatformOwner()) {
+      const a = document.createElement("a");
+      a.className = "link ps-more";
+      if (turn._trace) {
+        a.href = turn._trace; a.target = "_blank"; a.rel = "noopener";
+        a.textContent = "每次模型调用的输入输出 →";
+      } else {
+        a.href = "#";
+        a.textContent = "这一趟调了哪些工具、动了哪些文件？打开执行追踪 →";
+        a.onclick = (ev) => { ev.preventDefault(); openPageView("trace"); };
+      }
+      box.appendChild(a);
     }
-    box.appendChild(a);
     host.appendChild(box);
   };
 
@@ -1350,11 +1400,46 @@ const SCENES = {
 };
 const SCENE_ICON = ["briefcase", "code", "palette", "megaphone"];
 let sceneTag = null; // 选中的任务类型标签
-function setSceneTag(label) {
-  sceneTag = label;
+/**
+ * 「用这个专家 / 专家团 / 技能」点下去之后，挂在输入框上方的那枚标签。
+ *
+ * 以前点一下是把一整句话灌进输入框：「请把下面这个任务整体委派给专家团「调研出报告」
+ * （用 delegate_to_team）：」。用户原话：「也是没有特俗格式啊，还是普通文本这样，
+ * 使用专家/专家团还有技能都不要给我搞什么普通文本啊！」两个毛病：
+ *   1. 它跟用户自己打的字长得一模一样——选中了什么没有任何视觉交代，想反悔还得一个字一个字删；
+ *   2. delegate_to_team 是给模型看的内部工具名，不该出现在人的屏幕上。
+ * 现在界面上只留一枚能一键摘掉的标签，那句指令在**发送的一瞬间**才拼进正文（见 useDirective）。
+ */
+let useTag = null; // { kind: "team" | "expert" | "skill", name }
+const USE_TAG_META = { team: ["users", "专家团"], expert: ["user", "专家"], skill: ["puzzle", "技能"] };
+/** 任务类型标签和委派标签共用输入框上方那一条，一起重画，免得两边各自 innerHTML 把对方抹了 */
+function renderComposerTags() {
   const box = document.getElementById("scene-tag-box");
-  box.innerHTML = label ? `<span class="scene-tag">${esc(label)} <b onclick="setSceneTag(null)">${ic("x", "i-sm")}</b></span>` : "";
+  if (!box) return;
+  let h = sceneTag ? `<span class="scene-tag">${esc(sceneTag)} <b data-clr="scene" title="去掉这个任务类型">${ic("x", "i-sm")}</b></span>` : "";
+  if (useTag) {
+    const [icon, label] = USE_TAG_META[useTag.kind] || USE_TAG_META.expert;
+    h += `<span class="use-tag" data-kind="${esc(useTag.kind)}">${ic(icon, "i-sm")}<i>${esc(label)}</i>${esc(useTag.name)} <b data-clr="use" title="这次不用它">${ic("x", "i-sm")}</b></span>`;
+  }
+  box.innerHTML = h;
+  box.querySelectorAll("[data-clr]").forEach((b) => { b.onclick = () => (b.dataset.clr === "scene" ? setSceneTag(null) : setUseTag(null)); });
+}
+function setSceneTag(label) { sceneTag = label; renderComposerTags(); inputEl.focus(); }
+/** 挂上（或摘掉）委派标签。kind 取 team / expert / skill，传 null 就是摘掉 */
+function setUseTag(tag) {
+  useTag = tag && tag.name ? { kind: tag.kind || "expert", name: String(tag.name) } : null;
+  renderComposerTags();
   inputEl.focus();
+}
+/**
+ * 标签 → 真正发出去的那句指令。界面上是一枚标签，模型收到的仍是一句说明白的话，
+ * 两边各拿各该拿的那一半。摆在正文最前面而不是末尾：模型读第一句就该知道这活派给谁。
+ */
+function useDirective(t) {
+  if (!t || !t.name) return "";
+  if (t.kind === "team") return `【交给专家团：${t.name}】把下面这件事整体委派给这个专家团（delegate_to_team），拿回结果后自己核一遍再交给我。\n\n`;
+  if (t.kind === "skill") return `【使用技能：${t.name}】按这份技能说明书的步骤，做下面这件事。\n\n`;
+  return `【交给专家：${t.name}】把下面这件事委派给这位专家（delegate_to_expert）。\n\n`;
 }
 function buildEmpty() {
   const tpl = document.createElement("div");
@@ -1438,13 +1523,15 @@ function applyMention(insert) {
   syncInputHl();
 }
 
-// ---------- @文件 //技能 token 高亮：镜像层与 textarea 逐字对齐，只画底色不碰文字 ----------
+// ---------- @文件 /技能 /素材锚点高亮：镜像层与 textarea 逐字对齐，只画底色不碰文字 ----------
 const inputHl = document.getElementById("input-hl");
 // 这里以前是开页面时把 textarea 的字号字体抄一份到镜像层的内联样式上。抄一次就再也不更新了，
 // 用户去设置里改字号，底色就永远停在开页那一刻的尺寸上。现在两层在 CSS 里吃同一个 var，不用抄。
 function hlTokens(text, cls) {
-  // /token 只在命中已装技能时高亮（避免把 /Users/... 这类路径误当指令）；@token 一律高亮
-  return esc(text).replace(/(^|[\s（(：:，,])(@[^\s@，。！？；：、（）()<>"']+|\/[^\s@/，。！？；：、（）()<>"']+)/g, (m, pre, tok) => {
+  // `【图片 1：xxx】` 是粘贴/拖拽素材的可见引用，和 @文件一样是“发给模型也让人看得见”的协议。
+  // 必须先命中整块锚点，再认 @/技能；不然锚点里带 @ 或 / 时会把一截标记拆成两种颜色。
+  return esc(text).replace(/(【(?:图片|视频|音频|文本摘录|文件)\s+\d+：[^】]+】)|(^|[\s（(：:，,])(@[^\s@，。！？；：、（）()<>"']+|\/[^\s@/，。！？；：、（）()<>"']+)/g, (m, ref, pre, tok) => {
+    if (ref) return `<span class="${cls} ${cls}-ref">${ref}</span>`;
     if (tok[0] === "/" && !skillsCache.some(s => tok.slice(1).toLowerCase() === String(s.name).toLowerCase())) return m;
     return pre + `<span class="${cls}">${tok}</span>`;
   });
@@ -1607,9 +1694,9 @@ function isResultFile(name) {
 // 时间段记的是**收起过的**那些，不是展开的：默认全展开，所以空集合就是正确的初始状态
 const closedBuckets = new Set();
 /** 在访达/资源管理器里打开文件所在的文件夹并选中它。按钮挂在文件行/卡片上，别冒泡触发预览 */
-function revealFile(name, e) {
+function revealFile(name, e, root) {
   if (e) { e.stopPropagation(); e.preventDefault(); }
-  fetch("/api/files/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) })
+  fetch("/api/files/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, root: root || "" }) })
     .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast((j.error || "打不开所在位置"), "circle-x"); }))
     .catch(() => toast("打不开所在位置", "circle-x"));
 }
@@ -1618,8 +1705,8 @@ function revealFile(name, e) {
  * 老写法是 fetch(...) 后面挂个 .catch(() => {})，于是 403（没权限）和 400（类型不给开）
  * 一样静悄悄——用户只看到「我点了，什么都没发生」。
  */
-function openOnHost(name) {
-  return fetch("/api/files/open/" + fpath(name), { method: "POST" })
+function openOnHost(name, root) {
+  return fetch(withRoot("/api/files/open/" + fpath(name), root), { method: "POST" })
     .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast((j.error || "打不开这个文件"), "circle-x"); }))
     .catch(() => toast("打不开这个文件", "circle-x"));
 }
@@ -1631,9 +1718,9 @@ function openWorkspaceOnHost() {
     .catch(() => toast("打不开工作目录", "circle-x"));
 }
 /** 下载到用户自己的电脑。Web 部署下这才是「把文件拿到手」的正路 */
-function downloadFile(name) {
+function downloadFile(name, root) {
   const a = document.createElement("a");
-  a.href = "/api/files/download/" + fpath(name);
+  a.href = withRoot("/api/files/download/" + fpath(name), root);
   a.download = String(name).split("/").pop();
   document.body.appendChild(a); a.click(); a.remove();
 }
@@ -1832,6 +1919,7 @@ setTimeout(async () => {
 const OFFICE_RE = /\.(doc|ppt|xls)$/i;
 const pvPanel = document.getElementById("preview-panel");
 let pvCurrent = null;
+let pvRoot = "";   // pvCurrent 那份文件所属的工作目录指纹，见 withRoot
 // 用户自己把预览关掉的时刻。收尾时的自动预览要看它：这一趟里他亲手关过，就别再给他弹回来
 let pvClosedAt = 0;
 
@@ -1913,13 +2001,14 @@ const pvFallback = (why) =>
   }</div></div>`;
 /** 把 pvFallback 里那几颗按钮接上。单独一个函数是因为它要被调两次：
  *  一次是渲染完，一次是 <video> 解码失败之后现换的那块内容——晚绑的那次没人接就是死按钮 */
-function bindPvFallback(body, name) {
+function bindPvFallback(body, name, root) {
+  const r = root === undefined ? pvRoot : root;
   const sysBtn = body.querySelector(".pv-open-sys");
-  if (sysBtn) sysBtn.onclick = () => openOnHost(name);
+  if (sysBtn) sysBtn.onclick = () => openOnHost(name, r);
   const rvBtn = body.querySelector(".pv-reveal");
-  if (rvBtn) rvBtn.onclick = () => revealFile(name);
+  if (rvBtn) rvBtn.onclick = () => revealFile(name, null, r);
   const dlBtn = body.querySelector(".pv-download");
-  if (dlBtn) dlBtn.onclick = () => downloadFile(name);
+  if (dlBtn) dlBtn.onclick = () => downloadFile(name, r);
 }
 const pvTrunc = (total) =>
   `<div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--wb-border);color:var(--wb-text-3);font-size:13px">文件太大，只显示了开头 ${PV_TEXT_MAX / 1024} KB${total ? `（整个文件 ${fmtSize(total)}）` : ""}。要看全的话下载或用系统程序打开。</div>`;
@@ -2008,27 +2097,28 @@ function csvHtml(text, name) {
   return `<div class="ov-doc">${gridHtml(shown, "ov-table ov-sheet")}${note}</div>`;
 }
 
-async function previewFile(name) {
+async function previewFile(name, root) {
   if (OFFICE_RE.test(name)) {
     // Office 文件交给本机 Office/WPS 打开。多人服务器上「本机」是服务端那台，
     // 对成员没意义也没权限——那边直接给他下载，这才是他真正想要的结果
-    if (canOpenOnHost()) await openOnHost(name); else downloadFile(name);
+    if (canOpenOnHost()) await openOnHost(name, root); else downloadFile(name, root);
     return;
   }
   pvCurrent = name;
+  pvRoot = String(root || ""); // 这份预览是从哪个工作目录的成果点进来的，面板里的下载/定位都跟着它
   document.getElementById("files-panel").classList.remove("show"); // 预览时收起文件列表，给聊天区留空间
   // 立刻亮预览面板再去异步拉内容：晚亮的话，自动预览的调用方同步检查时以为预览没开，
   // 会把成果文件面板弹回来，右侧双开互相盖字（用户反馈过）
   pvPanel.classList.add("show");
   document.getElementById("pv-body").innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">加载中…</div>`;
   document.getElementById("pv-name").textContent = name;
-  document.getElementById("pv-dl").href = "/api/files/download/" + fpath(name);
+  document.getElementById("pv-dl").href = withRoot("/api/files/download/" + fpath(name), pvRoot);
   const body = document.getElementById("pv-body");
   // 每次换文件都从第一行/第一屏开始。浏览器不会因为 innerHTML 换了就可靠地清掉
   // overflow 容器的旧 scrollTop；Markdown、HTML 和纯文本共用这一层，统一在这里归零。
   body.scrollTop = 0;
   body.scrollLeft = 0;
-  const url = "/api/files/view/" + fpath(name) + "?t=" + Date.now();
+  const url = withRoot("/api/files/view/" + fpath(name) + "?t=" + Date.now(), pvRoot);
   const kind = previewKind(name);
   // 单张图就把它摆在面板正中间。以前是 margin:20px auto——横向居中、纵向顶着天花板，
   // 一张矮图挂在顶上、底下一大片空白。用户原话：「应该放在右边中间居中的位置啊，不要放在顶上放啊」
@@ -2056,7 +2146,7 @@ async function previewFile(name) {
       bindPvFallback(body, name);
     };
   } else if (kind === "doc" || kind === "sheet" || kind === "slides" || kind === "archive") {
-    const d = await fetch("/api/files/preview/" + fpath(name) + "?t=" + Date.now()).then(r => r.json()).catch(() => null);
+    const d = await fetch(withRoot("/api/files/preview/" + fpath(name) + "?t=" + Date.now(), pvRoot)).then(r => r.json()).catch(() => null);
     if (!d || d.error) body.innerHTML = pvFallback(d && d.error ? d.error : "读不出这个文件的内容");
     else body.innerHTML = kind === "doc" ? docHtml(d) : kind === "sheet" ? sheetHtml(d) : kind === "slides" ? slidesHtml(d) : archiveHtml(d);
     body.querySelectorAll(".ov-tab").forEach((t) => { t.onclick = () => {
@@ -2069,7 +2159,7 @@ async function previewFile(name) {
     const r = await fetchTextHead(url);
     if (!r) body.innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">加载失败</div>`;
     else if (looksBinary(r.text)) body.innerHTML = pvFallback("这个文件不是文本"); // 后缀没认出来，内容说了算
-    else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text" translate="no">${renderMd(r.text, dirOf(name))}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
+    else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text" translate="no">${renderMd(r.text, dirOf(name), false, pvRoot)}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
     else if (kind === "csv") body.innerHTML = csvHtml(r.text, name) + (r.truncated ? pvTrunc(r.total) : "");
     else body.innerHTML = `<div class="pv-text" translate="no"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
   }
@@ -2081,9 +2171,9 @@ async function previewFile(name) {
   pvPanel.classList.add("show");
   renderDeployBar();
 }
-document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; pvClosedAt = Date.now(); };
-document.getElementById("pv-sys").onclick = () => { if (pvCurrent) openOnHost(pvCurrent); };
-document.getElementById("pv-rv").onclick = () => { if (pvCurrent) revealFile(pvCurrent); };
+document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; pvRoot = ""; pvClosedAt = Date.now(); };
+document.getElementById("pv-sys").onclick = () => { if (pvCurrent) openOnHost(pvCurrent, pvRoot); };
+document.getElementById("pv-rv").onclick = () => { if (pvCurrent) revealFile(pvCurrent, null, pvRoot); };
 
 // ---- 本地部署预览：iframe 里看长相够了，但真网页要有自己的 origin（相对路径/fetch/localStorage/手机上开）----
 let previewSrv = { running: false };
@@ -2294,6 +2384,9 @@ function renderTurnOutputs(body, changed, live, ev) {
   }
   const grid = block.querySelector(".out-grid");
   const list = block.querySelector(".out-list");
+  // 这块产出算在哪个工作目录名下。块自己记的优先——重放到一半用户又换了目录的话，
+  // ev.root 说的是「现在」，而这些卡片属于「当时」
+  const blkRoot = block.dataset.root || (ev && ev.root) || "";
   // 顺序要紧：先撤掉已删的，再派卡。反过来的话上限还是被死掉的中间文件占着，成品照样进不来
   reapDeletedOutputs(block, live, ev);
   for (const f of changed) {
@@ -2314,13 +2407,13 @@ function renderTurnOutputs(body, changed, live, ev) {
       const mate = twin ? null : pairedCard(grid, f.name);
       if (mate) {
         // PNG 当门面：缩略图直接渲染，插飞书/Word 用的也是它；SVG 退居「另一种格式」
-        if (extOf(f.name) === "png") { const c = makeOutCard(f, false); attachAltFmt(c, mate.dataset.name); mate.replaceWith(c); }
-        else attachAltFmt(mate, f.name);
+        if (extOf(f.name) === "png") { const c = makeOutCard(f, false, blkRoot); attachAltFmt(c, mate.dataset.name, blkRoot); mate.replaceWith(c); }
+        else attachAltFmt(mate, f.name, blkRoot);
       } else if (!twin) {
-        if (grid.querySelectorAll(".out-card").length < OUT_CARD_MAX) grid.appendChild(makeOutCard(f, isHtml));
+        if (grid.querySelectorAll(".out-card").length < OUT_CARD_MAX) grid.appendChild(makeOutCard(f, isHtml, blkRoot));
       } else if (!same && pathDepth(f.name) < pathDepth(twin.dataset.name)) {
         // 副本留路径最浅的那份：点「所在位置」多半是想去工作目录根，而不是任务子目录
-        twin.replaceWith(makeOutCard(f, isHtml));
+        twin.replaceWith(makeOutCard(f, isHtml, blkRoot));
       }
     }
     if (!list.querySelector(`[data-name="${cssEsc(f.name)}"]`)) { // 同一文件改多次只记一行
@@ -2333,9 +2426,9 @@ function renderTurnOutputs(body, changed, live, ev) {
       // 目录和文件名分开放：一行放不下时省略号只许吃目录。以前整串挤在一个省略号里，
       // 「任务_0909_怎么推广我这个项目啊/PROGRESS.md」被截在中间，最该看的文件名反而没了
       const dir = f.name.slice(0, f.name.length - base.length);
-      row.innerHTML = `<span class="ic">${ic(fileIcon(f.name))}</span><span class="nm">${dir ? `<span class="dim">${esc(dir)}</span>` : ""}<span class="bs">${esc(base)}</span></span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">${ic("download")}</a>`;
-      row.querySelector("[data-rv]").onclick = (e) => revealFile(f.name, e);
-      row.onclick = (e) => { if (e.target.closest("a") || e.target.closest(".rv")) return; previewFile(f.name); };
+      row.innerHTML = `<span class="ic">${ic(fileIcon(f.name))}</span><span class="nm">${dir ? `<span class="dim">${esc(dir)}</span>` : ""}<span class="bs">${esc(base)}</span></span><span class="sz">${fmtSize(f.size)}</span>${revealBtn(f.name)}<a class="dl" href="${withRoot("/api/files/download/" + fpath(f.name), blkRoot)}" download title="下载">${ic("download")}</a>`;
+      row.querySelector("[data-rv]").onclick = (e) => revealFile(f.name, e, blkRoot);
+      row.onclick = (e) => { if (e.target.closest("a") || e.target.closest(".rv")) return; previewFile(f.name, blkRoot); };
       // 计划/说明这类脚手架沉到底、压暗：PROGRESS.md 在长任务里每几步就重写一次，
       // 它是过程账本不是交付物，却总占着清单第一行——过程要看去上面那张里程碑卡
       if (SCAFFOLD_RE.test(base)) row.classList.add("sub");
@@ -2410,8 +2503,9 @@ function pairedCard(grid, name) {
 // 不能光把 SVG 藏掉——藏了用户想要矢量图就只能回右侧文件面板里翻，那是把一个 bug 换成另一个。
 // 两个键都是「图标 + 格式名」：之前本体那个键是纯图标、挂上来的那个是纯文字且没有 class，
 // 一个被挤进 30px 的方框里、一个是条裸链接，用户看到的就是两个长得不一样的下载键
-function attachAltFmt(card, alt) {
+function attachAltFmt(card, alt, root) {
   if (!card || !alt || card.dataset.alt === alt) return;
+  if (root === undefined) root = card.dataset.root || rootOf(card); // 收尾合并（mergeFmtPairs）不传根，从卡片自己身上取
   card.dataset.alt = alt;
   const acts = card.querySelector(".out-acts");
   if (!acts) return;
@@ -2425,7 +2519,7 @@ function attachAltFmt(card, alt) {
   const a = document.createElement("a");
   a.className = "oa-ico oa-fmt oa-alt";
   a.dataset.name = alt;
-  a.href = "/api/files/download/" + fpath(alt);
+  a.href = withRoot("/api/files/download/" + fpath(alt), root);
   a.setAttribute("download", "");
   a.title = "下载 " + fmt(alt) + "（" + alt + "）";
   a.innerHTML = ic("download") + `<span class="tx">${fmt(alt)}</span>`;
@@ -2450,12 +2544,12 @@ function mergeFmtPairs(grid) {
   }
 }
 
-function makeOutCard(f, isHtml) {
+function makeOutCard(f, isHtml, root) {
   // 缓存键用「这一版文件」本身（mtime/大小），不是 Date.now()。
   // 以前每来一个文件事件，整片卡都带着新时间戳重建一次：七张图 = 每次重新下 2.7MB，
   // 屏幕上那一格先白一下再慢慢长出来——用户看到的就是「图怎么不渲染」。
   // 文件真被改写时 mtime 会变，缓存照样失效，该刷新的一次不少。
-  const url = "/api/files/view/" + fpath(f.name) + "?v=" + encodeURIComponent(f.mtime || f.size || "");
+  const url = withRoot("/api/files/view/" + fpath(f.name) + "?v=" + encodeURIComponent(f.mtime || f.size || ""), root);
   // 产出卡：缩略图在上、文件名和大小在下、三个图标钮收在底边。
   // 交付物看得见长什么样才叫产出；只有一行文件名的话，用户还得点开才知道自己拿到了什么
   // 图（含 svg）直接出缩略图——用户原话「那种预览小图标怎么给我改成文件名的形式了啊」：
@@ -2476,6 +2570,7 @@ function makeOutCard(f, isHtml) {
   card.dataset.name = f.name;
   card.dataset.base = f.name.split("/").pop();      // 判重按「文件名 + 大小」，光看全路径认不出复制出来的副本
   card.dataset.stem = f.name.replace(/\.[^./]+$/, ""); // 去掉扩展名的全路径：认 svg / png 是同一张图用
+  if (root) card.dataset.root = root;                  // 卡片被挪走/换掉时根跟着走，见 attachAltFmt
   if (f.size) card.dataset.size = String(f.size);
   card.title = f.name + " · " + (OFFICE_RE.test(f.name) ? "点击用系统程序打开" : "点击预览");
   card.tabIndex = 0; // 键盘也能落到 chip 上（不加 role=button：里面还有三个真按钮，按钮套按钮读屏会吞掉它们）
@@ -2485,7 +2580,7 @@ function makeOutCard(f, isHtml) {
     <div class="out-acts">
       <button class="oa-main" data-a="${isHtml ? "br" : "pv"}" title="${mainTx}">${isHtml ? ic("globe") : ic("file-text")}<span class="tx">${mainTx}</span></button>
       <button class="oa-ico" data-a="rv" title="打开所在位置">${ic("folder-open")}</button>
-      <a class="oa-ico" href="/api/files/download/${fpath(f.name)}" download title="下载">${ic("download")}</a></div>`;
+      <a class="oa-ico" href="${withRoot("/api/files/download/" + fpath(f.name), root)}" download title="下载">${ic("download")}</a></div>`;
   // 缩略图读不出来（文件被改名、挪走、删了，或者这个格式浏览器解不了）就退回文件类型图标。
   // 以前它只留一个空灰方框，卡片自己一个字都不说——用户原话：「这些图片怎么不渲染啊，现在看着比较丑啊」。
   const th = card.querySelector(".out-thumb img, .out-thumb video");
@@ -2496,7 +2591,7 @@ function makeOutCard(f, isHtml) {
   };
   onActivate(card, (e) => {
     if (e.target.closest("a")) return;
-    if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e);
+    if (e.target.closest('[data-a="rv"]')) return revealFile(f.name, e, root);
     if (e.target.closest('[data-a="br"]')) {
       e.stopPropagation();
       startPreview(previewSrv.lan_open, f.name).then(st => {
@@ -2504,7 +2599,7 @@ function makeOutCard(f, isHtml) {
       });
       return;
     }
-    previewFile(f.name);
+    previewFile(f.name, root);
   });
   return card;
 }
@@ -2750,7 +2845,7 @@ async function refreshSettingsCache() {
  * 用 style.display 而不是 hidden：.side-nav .item 自带 display，hidden 压不住——
  * 跟「项目」那一栏踩的是同一个坑。
  */
-const PLATFORM_ONLY_VIEWS = ["autom", "eval"];
+const PLATFORM_ONLY_VIEWS = ["autom", "eval", "trace"];
 function syncNavByRole() {
   const po = amPlatformOwner();
   for (const v of PLATFORM_ONLY_VIEWS) {

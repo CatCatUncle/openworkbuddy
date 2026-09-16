@@ -774,7 +774,7 @@ const ATTACH_CHECKS = `
     ok("剪贴板的通用名换成时间戳", /^粘贴图片_\\d{4}_\\d{6}\\.png$/.test(up.name), up.name);
     ok("图片二进制没被改坏", up.data_b64 === B64PNG);
     ok("chip 带缩略图", !!document.querySelector("#attach-chips img.attach-thumb"));
-    ok("粘贴被接管（没再往输入框里塞）", ev.defaultPrevented);
+    ok("粘贴被接管并在光标处留下图片锚点", ev.defaultPrevented && /【图片 1：粘贴图片_\\d{4}_\\d{6}\\.png】/.test(inputEl.value), inputEl.value);
   }
 
   // ---- 2. 同一秒连贴两张：撞名要编号，不能悄悄覆盖掉第一张 ----
@@ -795,7 +795,7 @@ const ATTACH_CHECKS = `
     dt.setData("text/plain", "帮我改一下标题");
     const ev = fire(inputEl, "paste", "clipboardData", dt);
     await tick();
-    ok("短文本不当附件", !ev.defaultPrevented && uploads.length === before);
+    ok("短文本不当附件、仍准确落在输入框", ev.defaultPrevented && uploads.length === before && inputEl.value.includes("帮我改一下标题"), inputEl.value);
   }
 
   // ---- 4. 大段文字：落成 txt 附件，输入框不被撑爆，中文不能乱码 ----
@@ -810,7 +810,7 @@ const ATTACH_CHECKS = `
     ok("大段文字落成 txt", /^粘贴文本_\\d{4}_\\d{6}\\.txt$/.test(up.name), up.name);
     const back = new TextDecoder().decode(bytes(up.data_b64));
     ok("中文原文一字不差", back === big, "长度 " + back.length + " vs " + big.length);
-    ok("输入框没被撑爆", inputEl.value === "帮我看看这个" && ev.defaultPrevented);
+    ok("输入框没被撑爆、留下可引用的文本摘录锚点", inputEl.value.startsWith("帮我看看这个") && /【文本摘录 1：粘贴文本_\\d{4}_\\d{6}\\.txt】/.test(inputEl.value) && ev.defaultPrevented, inputEl.value);
     ok("chip 上能看见开头几个字", /第一行是报错/.test(chips().at(-1).title || ""));
   }
 
@@ -845,11 +845,19 @@ const ATTACH_CHECKS = `
     ok("拖进来的大段文字也落成 txt", /^粘贴文本_\\d{4}_\\d{6}(-\\d+)?\\.txt$/.test(uploads.at(-1).name), uploads.at(-1).name);
   }
 
-  // ---- 8. 发消息时附件名随消息一起走，输入框里永远不出现这些标记 ----
+  // ---- 8. 发送保留输入里的素材顺序，末尾清单仍兼容旧会话 / CLI ----
   {
+    const imageRefs = pendingAttach.filter((x) => x.kind === "image");
+    const textRef = pendingAttach.find((x) => x.kind === "text");
+    // 前面几段测试会主动改输入框内容；这里明确重建一个“人物 → 文本设定 → 背景”的真实创作指令，
+    // 验收 composeOutgoing 排的是当前锚点位置，而不是早先上传的时间。
+    inputEl.value = imageRefs[1].marker + " 是背景。\\n" + textRef.marker + " 是剧情设定。\\n" + imageRefs[0].marker + " 是人物，请让人物出现在这个背景里。";
     const n = chips().length;
     const out = composeOutgoing();
-    ok("附件名拼进了消息", (out.match(/已上传文件：/g) || []).length === 1 && n > 0);
+    ok("图片和大段文字的可见锚点真的随消息发出", /【图片 1：/.test(out) && /【文本摘录 1：/.test(out), out);
+    ok("附件名仍拼进兼容清单", (out.match(/已上传文件：/g) || []).length === 1 && n > 0);
+    const noteAt = out.lastIndexOf("（已上传文件：");
+    ok("兼容清单按输入里的锚点顺序排列", out.indexOf(imageRefs[1].name, noteAt) < out.indexOf(textRef.name, noteAt) && out.indexOf(textRef.name, noteAt) < out.indexOf(imageRefs[0].name, noteAt), out.slice(noteAt));
     ok("发完 chip 清空", chips().length === 0);
   }
   return names;
@@ -1053,6 +1061,8 @@ const TRAIL_STUBS = [
   "var inputEl = document.createElement('textarea');",
   "var isReplaying = false;",
   "var MODALS = []; var openModal = (a, b) => MODALS.push(a + ':' + (b || ''));",
+  // 过程区底下那条「看执行记录」指的是整页的 更多 → 执行追踪（平台管理员才画）
+  "var VIEWS = []; var openPageView = (v) => VIEWS.push(v); var amPlatformOwner = () => true;",
   // 收尾那两件事要用的外部符号。这两条正则跟 app-01.js 里的真源一字不差（e2e 的 testOutputArrivalStatic 会比对字面量）
   "var OFFICE_RE = /\\.(doc|ppt|xls)$/i;",
   "var SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)\\.(md|txt)$/i;",
@@ -1461,13 +1471,15 @@ const MEM_CHECKS = `
 const APP01_NAV = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
 const APP03_AT = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-03.js"), "utf8");
 const APP04_LIB = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-04.js"), "utf8");
-const NAV0 = APP01_NAV.indexOf('const PLATFORM_ONLY_VIEWS = ["autom", "eval"];');
+const NAV0 = APP01_NAV.indexOf('const PLATFORM_ONLY_VIEWS = ["autom", "eval", "trace"];');
 const NAV1 = APP01_NAV.indexOf("// 这个选择器只管「当前对话」用哪个模型");
 const AUT0 = APP03_AT.indexOf("async function renderAutomPage() {");
 const AUT1 = APP03_AT.indexOf("function renderAutomTplPicker(box) {");
 const RUN0 = APP03_AT.indexOf("async function renderAutomRuns(page) {");
-const RUN1 = APP03_AT.indexOf("// ================= 资料库页（左侧文件树");
-const LIB0 = APP04_LIB.indexOf("async function renderLibPage() {");
+const RUN1 = APP03_AT.indexOf("// ================= 资料库页（");
+// 起点是 libTaskOf 而不是 renderLibPage：libIcon / LIB_KINDS / libKindOk / libWhen / libMark
+// 这几个帮手都排在 renderLibPage 前面，从 renderLibPage 切起会把它们整批漏在外面
+const LIB0 = APP04_LIB.indexOf("function libTaskOf(src, name) {");
 const LIB1 = APP04_LIB.indexOf("// ================= 专家 · 技能 · 连接器");
 for (const [a, b, why] of [[NAV0, NAV1, "app-01.js 的 syncNavByRole"], [AUT0, AUT1, "app-03.js 的 renderAutomPage"],
   [RUN0, RUN1, "app-03.js 的 renderAutomRuns"], [LIB0, LIB1, "app-04.js 的 renderLibPage/renderLibPreview"]])
@@ -1478,8 +1490,170 @@ const DEAD_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</s
   + "<div class='side-nav top'>"
   + "<div class='item' data-view='hub'>专家</div><div class='item' data-view='autom'>自动化</div>"
   + "<div class='item' data-view='prompts'>参考模板库</div><div class='item' data-view='lib'>资料库</div>"
-  + "<div class='item' data-view='eval'>评测</div></div>"
+  + "<div class='item' data-view='eval'>评测</div><div class='item' data-view='trace'>执行追踪</div></div>"
   + "<div class='assist-page' id='assist-page'></div></body>";
+// ---- 登录卡：邀请码 · 看一眼密码 · 待审核/已停用 ----
+// 这三样以前全是断的，而且断得一声不响：
+//   · 后端 register 一直收 invite，登录框上却没有填它的地方——企业版最主要的开户路径在界面上走不通；
+//   · 自助注册按安全默认是**关**的，于是连「注册一个」那行字都不显示，拿着邀请码的人连注册页都进不去；
+//   · 待审核 / 已停用的人照样被放进完整工作台，然后每点一下弹一个 403。
+// 这类事故截图看不出来（页面画得好好的），只能钉在真源码 + 真 DOM 上。
+const AUTH_MARK = "// ================= 登录 / 注册 =================";
+const AU0 = APP03_AT.indexOf(AUTH_MARK);
+const AU1 = APP03_AT.indexOf("async function initAuth() {");
+if (AU0 < 0 || AU1 <= AU0) throw new Error("app-03.js 里的登录/注册段找不到了，登录卡测试没法定位真源码");
+const AUTH_SRC = APP03_AT.slice(AU0, AU1);
+// 卡片本身的 HTML 也从 index.html 真拿：markup 和 JS 里的 id 对不上是这块最常见的坏法
+const AUTH_CARD = (() => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const a = html.indexOf('<div class="auth-mask" id="auth-mask">');
+  const b = html.indexOf("</div>\n</div>", a);
+  if (a < 0 || b <= a) throw new Error("public/index.html 里找不到登录卡");
+  return html.slice(a, b + "</div>\n</div>".length);
+})();
+const AUTH_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style><body>" + AUTH_CARD + "</body>";
+const AUTH_STUBS = [
+  IC_STUB,
+  // 这几个在 app-01/app-00 里，这一屏只借它们的行为
+  "function esc(s){ const d=document.createElement('div'); d.textContent = s==null?'':String(s); return d.innerHTML; }",
+  "function displayName(u){ return (u && (u.nickname || u.username)) || ''; }",
+  "let currentUser = null, creditsOn = false;",
+  "window.__posts = [];",
+  "window.__resp = { ok: true, body: { ok: true } };",
+  "window.fetch = async (url, init) => {",
+  "  window.__posts.push({ url, body: init && init.body ? JSON.parse(init.body) : null });",
+  "  const r = window.__resp;",
+  "  return { ok: r.ok, json: async () => r.body };",
+  "};",
+].join("\n");
+// 真源码读 location / 写 history，而这两个在页面里都是改不动的（`const location` 直接 SyntaxError，
+// 真的 location.reload() 会把夹具整个冲掉）。所以把整段包进一个拿它俩当参数的工厂：
+// 里面一个字节没改，外面能换地址、能数刷新了几次。
+// authMode / canRegister 是段内的 let，用取值器透出去，用例照样能摆布它们。
+const AUTH_WRAP = (src) =>
+  "window.__mkAuth = (location, history) => {\n" + src + "\nreturn { showAuth, applyAuthMode, submitAuth, showAuthBlocked,\n" +
+  "  get authMode(){ return authMode; }, set authMode(v){ authMode = v; },\n" +
+  "  get canRegister(){ return canRegister; }, set canRegister(v){ canRegister = v; } };\n};";
+const AUTH_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const $ = (id) => document.getElementById(id);
+  const vis = (el) => !!el && getComputedStyle(el).display !== "none";
+  const nav = { reloads: 0, replaced: [] };
+  const loc = { origin: "http://x", pathname: "/", search: "", hash: "", href: "http://x/", reload(){ nav.reloads++; } };
+  const setUrl = (href) => { const u = new URL(href); loc.href = href; loc.pathname = u.pathname; loc.search = u.search; loc.hash = u.hash; };
+  const A = window.__mkAuth(loc, { replaceState(a, b, u){ nav.replaced.push(u); } });
+
+  // ---- 1. 普通登录：邀请码框收着，但那条入口一直在 ----
+  A.canRegister = false; // 自助注册关着（放公网的默认配置）
+  setUrl("http://x/");
+  A.showAuth(false);
+  ok("默认是登录模式", $("auth-go").textContent === "登录");
+  ok("登录时不显示邀请码框", !vis($("auth-invite")));
+  ok("自助注册关着时「注册一个」确实藏起来了", !vis($("auth-alt")));
+  ok("但「有邀请码？」这条路照样在", vis($("auth-invite-alt")),
+     "这就是老版本的死结：注册入口被 open_register 藏了，拿着邀请码的人连注册页都进不去");
+
+  // ---- 2. 点「用邀请码注册」→ 进注册模式，框出来 ----
+  $("auth-invite-go").click();
+  ok("点了之后进注册模式", $("auth-go").textContent === "注册并登录");
+  ok("邀请码框露出来了", vis($("auth-invite")));
+  ok("自己点进来的（不是链接带码）就不用那句说明", !vis($("auth-invite-hint")));
+  ok("进了注册模式就不再重复显示那条入口", !vis($("auth-invite-alt")));
+  ok("自助注册关着时，框里说清楚这是必填", $("auth-invite").placeholder.includes("管理员给你的"));
+  A.canRegister = true; A.applyAuthMode(false);
+  ok("自助注册开着时，框里说清楚可以留空", $("auth-invite").placeholder.includes("留空"),
+     "不然人看见个空框就以为自己还缺一个码");
+  A.canRegister = false; A.applyAuthMode(false);
+
+  // ---- 3. 注册带邀请码：payload 里真有 invite ----
+  window.__posts.length = 0;
+  $("auth-user").value = " 小王 ";
+  $("auth-pass").value = "pw123456";
+  $("auth-invite").value = " AB12CD ";
+  await A.submitAuth();
+  const p = window.__posts[0];
+  ok("注册打的是 /api/auth/register", p && p.url === "/api/auth/register");
+  ok("邀请码进了 payload 且去了首尾空格", p.body.invite === "AB12CD", JSON.stringify(p.body));
+  ok("用户名也去了首尾空格", p.body.username === "小王");
+  ok("成功之后整页重来（cookie 才生效）", nav.reloads === 1);
+
+  // ---- 4. 纯登录不夹带 invite 字段 ----
+  window.__posts.length = 0;
+  A.authMode = "login"; A.applyAuthMode(false);
+  $("auth-pass").value = "pw123456";
+  await A.submitAuth();
+  ok("登录打的是 /api/auth/login", window.__posts[0].url === "/api/auth/login");
+  ok("登录 payload 里没有 invite 这个键", !("invite" in window.__posts[0].body), JSON.stringify(window.__posts[0].body));
+
+  // ---- 5. 链接直接带码：?invite=… 打开就是填好的注册页 ----
+  setUrl("http://x/?invite=XYZ789");
+  $("auth-invite").value = "";
+  A.showAuth(false);
+  ok("带码的链接直接落在注册模式", $("auth-go").textContent === "注册并登录");
+  ok("码已经替他填好了", $("auth-invite").value === "XYZ789");
+  ok("并且说清楚那串字是哪来的", vis($("auth-invite-hint")), "不然框里一串 XYZ789 没头没尾，人只会盯着它猜");
+  ok("地址栏上的码被抹掉了", nav.replaced.pop() === "/",
+     "留着的话刷新一次又走一遍注册，把链接转发出去还会把码带出去");
+
+  // ---- 6. 首次开箱（还没有任何用户）不该问邀请码 ----
+  setUrl("http://x/");
+  A.showAuth(true);
+  ok("建第一个管理员时不显示邀请码框", !vis($("auth-invite")), "那会儿一个组织都没有，没人能发码");
+  ok("建第一个管理员时两条 alt 都收起来", !vis($("auth-alt")) && !vis($("auth-invite-alt")));
+
+  // ---- 7. 后端说「要邀请码」时，把框摆出来 ----
+  A.authMode = "register"; A.applyAuthMode(false);
+  $("auth-invite").style.display = "none";
+  $("auth-invite").value = "";
+  window.__resp = { ok: false, body: { error: "要邀请码才能注册，找管理员要一个" } };
+  $("auth-user").value = "小李"; $("auth-pass").value = "pw123456";
+  await A.submitAuth();
+  ok("报错原话照抄给用户", $("auth-err").textContent.includes("要邀请码才能注册"));
+  ok("顺手把邀请码框打开", vis($("auth-invite")), "只报一句错等于让他自己猜那个框在哪");
+  ok("失败之后按钮解锁，还能再试", !$("auth-go").disabled);
+  window.__resp = { ok: true, body: { ok: true } };
+
+  // ---- 8. 看一眼密码 ----
+  const eye = $("auth-eye"), pw = $("auth-pass");
+  ok("密码默认是遮住的", pw.type === "password");
+  eye.click();
+  ok("点一下变明文", pw.type === "text");
+  ok("按钮自己也要看得出是开着的", eye.classList.contains("on"));
+  ok("读屏器那边跟着改口", eye.getAttribute("aria-label") === "隐藏密码");
+  eye.click();
+  ok("再点一下遮回去", pw.type === "password" && !eye.classList.contains("on"));
+
+  // ---- 9. 待审核：不放进工作台，直接把话说清楚 ----
+  A.showAuthBlocked("pending", { username: "xiaowang", nickname: "小王" });
+  const card = document.querySelector("#auth-mask .auth-card");
+  ok("换成等待卡", card.classList.contains("auth-wait"));
+  ok("标题说的是在等谁", card.querySelector("h2").textContent.includes("等管理员"));
+  ok("卡里叫的是他的昵称", card.querySelector(".sub").innerHTML.includes("小王"));
+  ok("遮罩是开着的（工作台碰不到）", $("auth-mask").classList.contains("show"));
+  ok("等待卡上没有输入框了", !card.querySelector("input"));
+  ok("给了两个出口：再查一次 / 退出登录", !!$("auth-blocked-retry") && !!$("auth-blocked-out"));
+  nav.reloads = 0;
+  $("auth-blocked-retry").click();
+  ok("「再查一次」就是重来一遍", nav.reloads === 1);
+
+  // ---- 10. 已停用：话不一样，图标也不一样 ----
+  A.showAuthBlocked("disabled", { username: "xiaoli" });
+  const card2 = document.querySelector("#auth-mask .auth-card");
+  ok("停用卡说的是停用", card2.querySelector("h2").textContent.includes("停用"));
+  ok("停用卡的图标是红的那一路", card2.querySelector(".ico").classList.contains("bad"));
+  ok("告诉他东西还在、找谁能恢复", /文件都还在/.test(card2.querySelector(".sub").textContent) && /管理员/.test(card2.querySelector(".sub").textContent));
+  window.__posts.length = 0;
+  $("auth-blocked-out").click();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("「退出登录」真去退了登录", window.__posts[0] && window.__posts[0].url === "/api/auth/logout");
+  ok("两颗按钮都是一行放得下的短词", [...card2.querySelectorAll(".row button")].every((b) => b.textContent.length <= 5),
+     "「我已经通过了，刷新」在 340px 的卡里会折成两行，旁边那颗只有一行——看着像画坏了");
+
+  return names;
+})()`;
+
 const DEAD_CHECKS = `
 (async () => {
   const names = [];
@@ -1494,7 +1668,12 @@ const DEAD_CHECKS = `
   }
   // 这几页周边的零碎（表单、模版选择器、CSV/Markdown 渲染）不是这次要测的，喂桩
   window.automState = { tab: "tasks", q: "", bulk: false, sel: new Set(), showForm: false, editing: null };
-  window.libState = { q: "", pick: null };
+  // 资料库现在有三种视图和类型筛选，state 少一个字段就整页塌，所以桩要跟真的一样全
+  window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all" };
+  window.libOutCache = null;          // 产出索引：renderLibPage 拿到就往这儿存，预览页靠它反查「出自哪次任务」
+  window.libTaskShut = new Set();     // 收起来的任务分组
+  window.opened = [];
+  window.openSession = (id) => window.opened.push(id);
   window.cronToHuman = () => "每天 9:00";
   window.escInline = (s) => String(s == null ? "" : s);
   window.renderAutomForm = () => {};
@@ -1512,7 +1691,7 @@ const DEAD_CHECKS = `
   window.confirm = () => true;
 
   const FORBID = { error: "这块是服务器级设置，归平台管理员管", platform_only: true };
-  let owner = false, denyRead = false, uploadResp = { ok: true, name: "a.md" };
+  let owner = false, denyRead = false, denyOut = false, uploadResp = { ok: true, name: "a.md" };
   const posts = [];
   window.fetch = (url, opt) => {
     const method = (opt && opt.method) || "GET";
@@ -1520,9 +1699,70 @@ const DEAD_CHECKS = `
     const j = (v, code) => Promise.resolve({ ok: !code || code < 400, status: code || 200, json: () => Promise.resolve(v), text: () => Promise.resolve("") });
     if (url === "/api/schedules") return denyRead ? j(FORBID, 403) : j([{ id: "s1", name: "早报", task: "发早报", cron: "0 9 * * *", enabled: true }]);
     if (url.startsWith("/api/schedules/runs")) return denyRead ? j(FORBID, 403) : j([{ at: "2026-09-11T09:00:00Z", name: "早报", by: "定时", ms: 3000, result: "成功" }]);
-    if (url === "/api/library") return denyRead ? j(FORBID, 403) : j({ files: [{ name: "手册.md", size: 2048, mtime: "2026-09-01T00:00:00Z" }], notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
-    if (url === "/api/files") return j([]);
+    // 资料库带子目录之后接口带 ?dir=，回的也是「这一层」：面包屑 + 子文件夹 + 文件（文件带 path，
+    // 因为下钻之后名字得是 "客户A/合同.md" 才取得到内容，显示时才截成 name）
+    if (url === "/api/library" || url.startsWith("/api/library?")) {
+      if (denyRead) return j(FORBID, 403);
+      const dir = decodeURIComponent((url.split("dir=")[1] || "").split("&")[0] || "");
+      if (dir === "客户A") return j({
+        dir: "客户A", crumbs: [{ name: "客户A", path: "客户A" }], dirs: [],
+        files: [{ name: "合同.md", path: "客户A/合同.md", size: 1024, mtime: "2026-09-02T00:00:00Z" }],
+        notes: [],
+      });
+      return j({
+        dir: "", crumbs: [], dirs: [{ name: "客户A", path: "客户A", count: 1 }],
+        files: [{ name: "手册.md", path: "手册.md", size: 2048, mtime: "2026-09-01T00:00:00Z" }],
+        notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }],
+      });
+    }
+    // 工作目录里的成果文件。分组和摆法这两块要靠它：三种类型（文档/表格/图片）、
+    // 两个时间段（今天 / 很久以前），刚好能验出「按类型」和「按时间」分出来的堆对不对
+    if (url === "/api/files") return j([
+      { name: "设计稿.png", size: 30000, mtime: new Date().toISOString() },
+      { name: "数据.csv", size: 2048, mtime: new Date().toISOString() },
+      { name: "月报.md", size: 4096, mtime: "2026-01-05T00:00:00Z" },
+    ]);
+    // 「按任务看产出」的数据源。服务端把 transcript 里的 files 事件倒过来读了一遍：
+    // 一组 = 一次对话，组里是那次对话真正写出来的文件；orphans 是工作目录里没人认领的那些
+    if (url === "/api/library/outputs") {
+      if (denyOut) return j({ error: "读不到任务产出" }, 500);
+      return j({
+        root: "abc12345", full: true, orphan_total: 2,
+        tasks: [
+          { id: "s_2", title: "做九月周报", project: "默认项目", lane: "office", dir: "任务_0916_周报", at: Date.parse("2026-09-16T10:00:00Z"),
+            live: 1, files: [
+              { name: "任务_0916_周报/九月周报.md", size: 4096, mtime: "2026-09-16T10:00:00Z", gone: false },
+              { name: "任务_0916_周报/旧草稿.md", size: 0, mtime: "", gone: true },
+            ] },
+          { id: "s_1", title: "算一版预算表", project: "默认项目", at: Date.parse("2026-09-15T10:00:00Z"),
+            live: 1, files: [{ name: "任务_0915_预算/预算.csv", size: 2048, mtime: "2026-09-15T10:00:00Z", gone: false }] },
+        ],
+        orphans: [
+          { name: "随手拷进来的.png", size: 9000, mtime: "2026-09-10T00:00:00Z", gone: false },
+          { name: "老版本.md", size: 100, mtime: "2026-09-09T00:00:00Z", gone: false },
+        ],
+      });
+    }
+    // 全库搜索：四种来源各一块，正文命中带行号
+    if (url.startsWith("/api/library/search")) {
+      const term = decodeURIComponent((url.split("q=")[1] || "").split("&")[0] || "");
+      if (term === "谁都没提过的词") return j({ q: term, lib: [], ws: [], notes: [], tasks: [], scanned: 3, capped: false });
+      return j({
+        q: term, scanned: 42, capped: true,
+        tasks: [{ id: "s_2", title: "做九月周报", at: Date.parse("2026-09-16T10:00:00Z"), by: "title",
+          files: [{ name: "任务_0916_周报/九月周报.md", size: 4096, mtime: "2026-09-16T10:00:00Z", gone: false }] }],
+        lib: [{ name: "手册.md", path: "手册.md", size: 2048, mtime: "2026-09-01T00:00:00Z", by: "text",
+          lines: [{ line: 12, text: "这一段里写了周报的格式要求" }] }],
+        ws: [{ name: "任务_0916_周报/九月周报.md", size: 4096, mtime: "2026-09-16T10:00:00Z", by: "both",
+          lines: [{ line: 3, text: "九月周报正文第一行" }] }],
+        notes: [{ id: "n1", text: "周报要短", at: "2026-09-01T00:00:00Z" }],
+      });
+    }
+    // 预览一个工作区产出：这里只要 text()，正文是什么不重要，重要的是预览条上那句「出自任务」
+    if (url.startsWith("/api/files/view/"))
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}), text: () => Promise.resolve("# 九月周报") });
     if (url === "/api/library/upload") return owner ? j(uploadResp, uploadResp.ok ? 200 : 403) : j(FORBID, 403);
+    if (url.startsWith("/api/library/folder")) return owner ? j({ ok: true }) : j(FORBID, 403);
     if (url.startsWith("/api/library/note")) return owner ? j({ ok: true }) : j(FORBID, 403);
     if (url.startsWith("/api/library/file/")) return owner ? j({ ok: true }) : j(FORBID, 403);
     return j({ ok: true });
@@ -1563,11 +1803,12 @@ const DEAD_CHECKS = `
   syncNavByRole();
   ok("侧栏：成员看不到「自动化」", !shown("autom"));
   ok("侧栏：成员看不到「评测」（真金白银调模型）", !shown("eval"));
+  ok("侧栏：成员看不到「执行追踪」（一本账记着整台服务器上每个人的提示词原文）", !shown("trace"));
   ok("侧栏：「资料库」照留（他的 agent 本来就读得到，只是写不了）", shown("lib"));
   ok("侧栏：「专家」「参考模板库」一个没动", shown("hub") && shown("prompts"));
   window.settingsCache = { platform_owner: true };
   syncNavByRole();
-  ok("反向对照：平台管理员五个入口一个不少", shown("autom") && shown("eval") && shown("lib") && shown("hub") && shown("prompts"));
+  ok("反向对照：平台管理员六个入口一个不少", shown("autom") && shown("eval") && shown("trace") && shown("lib") && shown("hub") && shown("prompts"));
 
   // ④ 资料库：成员只读
   window.settingsCache = { platform_owner: false };
@@ -1606,6 +1847,223 @@ const DEAD_CHECKS = `
   window.libState.pick = { src: "notes", name: "" };
   await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
   ok("反向对照：输入框、「保存」、每条的「删除」都在", !!page.querySelector("#lb-note") && !!page.querySelector("#lb-note-save") && !!page.querySelector("a[data-nid]"));
+
+  // ⑤b 子目录：资料库以前是一层平铺，用户原话「这个资料库看起来没有子目录或者指定目录的概念」。
+  // 现在带 ?dir= 逐层进，进去之后文件名得是 "客户A/合同.md"（带前缀才取得到内容），显示的才是 "合同.md"
+  window.libState = { q: "", pick: null, dir: "" };
+  await renderLibPage();
+  const dirRow = page.querySelector(".lib-it.lib-dir");
+  ok("子目录：根目录列得出文件夹，还报了条数", !!dirRow && dirRow.dataset.dir === "客户A" && html().includes("1 项"), html().slice(0, 300));
+  ok("子目录：文件夹排在文件前面（先挑地方再挑文件）",
+     html().indexOf("客户A") < html().indexOf("手册.md"));
+  ok("根目录的面包屑只有「资料库」自己一截", page.querySelectorAll(".lib-crumbs a").length === 1);
+  dirRow.click();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("子目录：点进去之后 libState.dir 跟着走", window.libState.dir === "客户A", String(window.libState.dir));
+  ok("子目录：里面的文件显示成「合同.md」而不是全路径",
+     !!page.querySelector('.lib-it[data-name="客户A/合同.md"]')
+     && page.querySelector('.lib-it[data-name="客户A/合同.md"]').querySelector(".nm").textContent.trim() === "合同.md",
+     html().slice(0, 400));
+  ok("子目录：面包屑多出一截，点得回根", page.querySelectorAll(".lib-crumbs a").length === 2
+     && page.querySelectorAll(".lib-crumbs a")[0].dataset.dir === "");
+  ok("子目录：「新建文件夹」这个入口在（管理员才有）", !!page.querySelector("#lb-mkdir"));
+  page.querySelectorAll(".lib-crumbs a")[0].click();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("反向对照：点面包屑第一截回根，又看得见「手册.md」和「客户A」",
+     window.libState.dir === "" && html().includes("手册.md") && html().includes("客户A"), String(window.libState.dir));
+
+  // ⑤c 按任务看产出。用户原话：「资料库那块按照任务看到产出吧」。
+  // 人记一份文件是按「上周让它写的那份周报」记的，不是按 任务_0916_周报/九月周报.md 记的。
+  // 数据不是新攒的：服务端把每回合那条 files 事件（changed = 认过主的文件）倒过来读了一遍。
+  window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all" };
+  window.libTaskShut = new Set();
+  await renderLibPage();
+  ok("反向对照：文件夹视图里没有任务分组（这是「东西放在哪」，不是「哪次做出来的」）",
+     !page.querySelector(".lib-task"), html().slice(0, 200));
+  page.querySelector('.lib-tab[data-view="task"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("按任务：切过去之后按次分组，一次对话一组", page.querySelectorAll(".lib-task").length === 2, html().slice(0, 300));
+  ok("按任务：组名是那次任务的标题，不是文件夹名", html().includes("做九月周报") && html().includes("算一版预算表"));
+  ok("按任务：这个选择记在 localStorage 里（有人只用文件夹、有人只用按任务，不该每次回默认值）",
+     localStorage.getItem("wb_lib_view") === "task", String(localStorage.getItem("wb_lib_view")));
+  const sub = page.querySelector('.lib-it.lib-sub[data-name="任务_0916_周报/九月周报.md"]');
+  ok("按任务：组里的文件只显示文件名——目录名已经在组标题上说过一遍了",
+     !!sub && sub.querySelector(".nm").textContent.trim() === "九月周报.md", sub ? sub.outerHTML.slice(0, 200) : "没有这一行");
+  ok("按任务：产出过但现在不在磁盘上的，划掉并写「已不在」，不假装它还在",
+     !!page.querySelector(".lib-it.lib-sub.gone") && html().includes("已不在"));
+  ok("按任务：没人认领的文件单独列成「未归属」，不然这一页就是半份清单、用户会以为文件丢了",
+     html().includes("未归属") && html().includes("随手拷进来的.png"));
+
+  // 折叠 / 回到那次对话：产出和它的来历始终连着，这是这一页跟一张文件表格最要紧的区别
+  const head = page.querySelector('.lib-task-h[data-task="s_2"]');
+  head.onclick({ target: head });
+  await new Promise((r) => setTimeout(r, 0));
+  ok("按任务：点组标题收起来，组里的文件跟着收",
+     !page.querySelector('.lib-it.lib-sub[data-name="任务_0916_周报/九月周报.md"]') && html().includes("做九月周报"));
+  const head2 = page.querySelector('.lib-task-h[data-task="s_2"]');
+  head2.onclick({ target: head2 });
+  await new Promise((r) => setTimeout(r, 0));
+  ok("反向对照：再点一下又展开", !!page.querySelector('.lib-it.lib-sub[data-name="任务_0916_周报/九月周报.md"]'));
+  window.opened = [];
+  const go = page.querySelector('.lib-task-h[data-task="s_2"] a[data-open]');
+  go.onclick({ preventDefault() {}, stopPropagation() {}, target: go });
+  ok("按任务：组标题右边那个入口跳回产生这些文件的那次对话", window.opened.join("|") === "s_2", window.opened.join("|"));
+  ok("反向对照：点它不该顺手把组也收了（事件得在标题那层拦住）",
+     !!page.querySelector('.lib-it.lib-sub[data-name="任务_0916_周报/九月周报.md"]'));
+
+  // 类型筛选：想不起名字，但一定记得它是张表还是份文档
+  page.querySelector('.lib-kind[data-kind="sheet"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("类型筛选：挑「表格」只剩 csv，md 那组整个不露面（一组文件全被筛掉就不该留个空壳）",
+     html().includes("预算.csv") && !html().includes("九月周报.md") && !html().includes("做九月周报"), html().slice(0, 300));
+  page.querySelector('.lib-kind[data-kind="all"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("反向对照：切回「全部」两组都回来", html().includes("预算.csv") && html().includes("九月周报.md"));
+
+  // 产出索引读不成的时候，说读不成——别画一句「还没有任务产出过文件」，那会让人以为自己白跑了
+  denyOut = true;
+  await renderLibPage();
+  ok("按任务：索引读不成就照实说，不装成「还没产出过」",
+     html().includes("读不到任务产出") && !html().includes("还没有任务产出过文件"), html().slice(0, 240));
+  denyOut = false;
+
+  // ⑤d 搜索。用户原话：「还有支持搜索功能吧」。
+  // 以前那个框只把**当前这一层已经加载出来的**文件名过滤一遍——东西在隔壁文件夹里就搜不到，
+  // 正文里写了什么更无从谈起。那不叫搜索，叫筛选。
+  window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all" };
+  await renderLibPage();
+  page.querySelector("#lb-q").value = "周报";
+  window.libState.q = "周报";
+  await renderLibPage();
+  ok("搜索：四种来源分块列，每块写明它是从哪儿搜出来的",
+     html().includes("任务") && html().includes("资料库") && html().includes("本地产物") && html().includes("灵感笔记"), html().slice(0, 300));
+  const listHtml = () => (page.querySelector(".lib-list") || { innerHTML: "(没有 .lib-list)" }).innerHTML;
+  // 断言走 textContent 不走 innerHTML：命中的词被 <mark> 包起来了，拿原始 HTML 做 includes 永远对不上
+  const listText = () => (page.querySelector(".lib-list") || { textContent: "" }).textContent;
+  ok("搜索：正文命中给出行号和那一行，一眼判断是不是要找的那份",
+     !!page.querySelector(".lib-hits em") && page.querySelector(".lib-hits em").textContent.trim() === "12"
+     && listText().includes("这一段里写了周报的格式要求"), listHtml().slice(0, 900));
+  ok("搜索：命中的那几个字标出来，不用自己在一行字里再找一遍", !!page.querySelector(".lib-hits mark"));
+  // :not(.lib-sub)：同一个文件在「任务」那一块里也有一行，那一行本来就只显示文件名、不带目录小字，
+  // 不排掉的话选到的是它，这条断言就测不到「本地产物」那一块
+  const wsRow = page.querySelector('.lib-it:not(.lib-sub)[data-src="ws"][data-name="任务_0916_周报/九月周报.md"]');
+  ok("搜索：工作区那条只在名字列放文件名，目录挂在后面的小字里（不切开的话目录会出现两遍）",
+     !!wsRow && wsRow.querySelector(".nm").firstChild.textContent.indexOf("任务_0916_周报") < 0
+     && !!wsRow.querySelector(".pth") && wsRow.querySelector(".pth").textContent === "任务_0916_周报",
+     wsRow ? wsRow.outerHTML.slice(0, 260) : "没有这一行");
+  ok("搜索：正文没翻完就说没翻完，还报了翻过几个——半截清单装成全的最坑人",
+     !!page.querySelector(".lib-capped") && html().includes("42"), html().slice(-300));
+  window.libState.q = "谁都没提过的词";
+  await renderLibPage();
+  ok("反向对照：真没搜到就说没搜到，并交代翻过哪些地方",
+     html().includes("没搜到") && html().includes("谁都没提过的词") && !page.querySelector(".lib-capped"), html().slice(0, 300));
+
+  // ⑤e 「出自任务」：从文件夹里随手点开一个文件，也要说得出它是哪次做的
+  window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all" };
+  await renderLibPage(); // 先把产出索引灌进 libOutCache
+  window.libState.pick = { src: "ws", name: "任务_0916_周报/九月周报.md" };
+  await renderLibPreview(page.querySelector("#lb-prev"), { notes: [] });
+  ok("预览：工作区产出顶上挂一条「出自任务」，点得回那次对话",
+     !!page.querySelector(".lib-from") && html().includes("出自任务") && html().includes("做九月周报"), html().slice(0, 400));
+  window.opened = [];
+  const back = page.querySelector(".lib-from a[data-open]");
+  back.onclick({ preventDefault() {}, stopPropagation() {}, target: back });
+  ok("预览：这条链接在正文渲染完之后还活着（上面几行 outerHTML 会把节点整个换掉）",
+     window.opened.join("|") === "s_2", window.opened.join("|"));
+  window.libState.pick = { src: "lib", name: "手册.md" };
+  await renderLibPreview(page.querySelector("#lb-prev"), { notes: [] });
+  ok("反向对照：资料库里的文件是人手动传的，本来就没有「哪次任务」，不硬凑一个出来",
+     !page.querySelector(".lib-from"), html().slice(0, 300));
+  window.libState.pick = null;
+
+  // ⑤f 三种摆法 + 分组。用户原话：「资料库那块预览你参考一下mac电脑的文件预览啥的，
+  // 列表视图还有图标视图还有画廊视图还有按照分类」。关键是这四件事**正交**：
+  // 「怎么摆」和「按什么分堆」各是各的控件，合成一个下拉就会出现「按类型 + 图标」选不出来的死角。
+  try { localStorage.removeItem("wb_lib_mode"); localStorage.removeItem("wb_lib_group"); } catch {}
+  window.settingsCache = { platform_owner: true };
+  owner = true;
+  window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all", mode: "list", group: "none" };
+  await renderLibPage();
+  const pg = () => page.querySelector(".lib-page");
+  const list = () => page.querySelector(".lib-list");
+  ok("摆法：默认列表，页面和列表两处的标记对得上",
+     pg().dataset.mode === "list" && list().classList.contains("as-list"), pg().dataset.mode + "/" + list().className);
+  ok("摆法：三颗按钮都在（列表 / 图标 / 画廊）", page.querySelectorAll(".lib-md").length === 3);
+  ok("分组：三颗按钮都在（不分组 / 按类型 / 按时间）", page.querySelectorAll(".lib-gp").length === 3);
+  ok("不分组时不画分组小标题（没分堆就别摆一个假的堆名）", !page.querySelector(".lib-grp"));
+  // 列表视图里每一行都得说得出「多大、什么时候改的」——这是列表视图存在的理由
+  const pngRow = () => page.querySelector('.lib-it[data-src="ws"][data-name="设计稿.png"]');
+  ok("列表：一行四列齐了（图 / 名字 / 大小 / 时间）",
+     !!pngRow() && !!pngRow().querySelector(".th") && !!pngRow().querySelector(".nm")
+     && pngRow().querySelector(".sz").textContent.includes("KB") && !!pngRow().querySelector(".tm").textContent.trim(),
+     pngRow() ? pngRow().outerHTML.slice(0, 260) : "没有这一行");
+  ok("缩略图：图片就拿真图，不是一排「图片」图标（那等于没有缩略图）",
+     !!pngRow().querySelector("img") && pngRow().querySelector("img").getAttribute("src").includes("%E8%AE%BE%E8%AE%A1%E7%A8%BF.png"),
+     pngRow().querySelector(".th").innerHTML.slice(0, 160));
+  ok("反向对照：不是图片的就退回图标，不去发一串必然 404 的请求",
+     !page.querySelector('.lib-it[data-name="月报.md"] img') && !!page.querySelector('.lib-it[data-name="月报.md"] .th svg'));
+
+  page.querySelector('.lib-md[data-mode="icon"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("摆法：切图标，页面和列表的标记一起换", pg().dataset.mode === "icon" && list().classList.contains("as-icon"), pg().dataset.mode);
+  ok("摆法：换完之后行还是那些行——三种摆法共用同一份 HTML，只换 CSS",
+     !!pngRow() && !!pngRow().querySelector(".th") && !!pngRow().querySelector(".nm"));
+  ok("摆法：记在 localStorage 里（有人一直用列表找文档，有人一直用图标过图）",
+     localStorage.getItem("wb_lib_mode") === "icon", String(localStorage.getItem("wb_lib_mode")));
+
+  page.querySelector('.lib-gp[data-group="kind"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  const grpNames = () => [...page.querySelectorAll(".lib-grp")].map((g) => g.firstChild.textContent.trim());
+  ok("分组：按类型分堆，堆名就是类型筛选里那几个词（两处共用一套判定，说法才对得上）",
+     grpNames().includes("文档") && grpNames().includes("表格") && grpNames().includes("图片"), grpNames().join("/"));
+  ok("分组：堆名后面报个数，不用自己数", !!page.querySelector(".lib-grp .n"));
+  ok("分组：分堆归分堆，摆法没被顺手改掉（这两件事是正交的）",
+     pg().dataset.mode === "icon" && localStorage.getItem("wb_lib_group") === "kind", pg().dataset.mode);
+  ok("分组：文件一个没少，只是换了个摆放次序",
+     !!page.querySelector('.lib-it[data-name="设计稿.png"]') && !!page.querySelector('.lib-it[data-name="数据.csv"]')
+     && !!page.querySelector('.lib-it[data-name="月报.md"]'));
+
+  page.querySelector('.lib-gp[data-group="time"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("分组：按时间分堆，今天改的和很久以前的分开（访达的「使用组」按日期就是这么分的）",
+     grpNames().includes("今天") && grpNames().includes("更早"), grpNames().join("/"));
+
+  page.querySelector('.lib-gp[data-group="none"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("反向对照：切回不分组，小标题全收掉", !page.querySelector(".lib-grp"));
+
+  // 画廊：右边那块是主角，所以不选东西也得占位置——不然打开就是一整块空白
+  ok("画廊之前：没选东西时预览栏不占位，列表能用满整屏", pg().dataset.prev === "off", pg().dataset.prev);
+  page.querySelector('.lib-md[data-mode="gallery"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  ok("画廊：预览栏常驻", pg().dataset.prev === "on" && list().classList.contains("as-gallery"), pg().dataset.prev);
+  ok("画廊：没选东西就替他挑第一个，别开门先给一块空白",
+     !!window.libState.pick && !!window.libState.pick.name && !!page.querySelector(".lib-it.active"),
+     JSON.stringify(window.libState.pick));
+
+  // ← → 翻文件：过一批图的时候手不该在鼠标和键盘之间来回换
+  const activeName = () => (page.querySelector(".lib-it.active") || { dataset: {} }).dataset.name;
+  const items0 = [...page.querySelectorAll(".lib-it:not(.lib-dir)")].map((x) => x.dataset.name);
+  const first = activeName();
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  await new Promise((r) => setTimeout(r, 0));
+  ok("画廊：按 → 翻到下一个", activeName() === items0[items0.indexOf(first) + 1], first + " -> " + activeName());
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+  await new Promise((r) => setTimeout(r, 0));
+  ok("画廊：按 ← 翻回上一个", activeName() === first, activeName());
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+  await new Promise((r) => setTimeout(r, 0));
+  ok("画廊：到头就停住，不绕回末尾（绕回去的列表没人数得清自己在哪）", activeName() === first, activeName());
+  // 搜索框里方向键得还是移光标——不然一个词都打不利索
+  const qi = page.querySelector("#lb-q");
+  qi.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  await new Promise((r) => setTimeout(r, 0));
+  ok("反向对照：焦点在搜索框里时方向键归输入框，不去翻文件", activeName() === first, activeName());
+
+  window.libState.mode = "list";
+  window.libState.group = "none";
+  window.libState.pick = null;
+  try { localStorage.removeItem("wb_lib_mode"); localStorage.removeItem("wb_lib_group"); } catch {}
 
   // ⑥ 上传：假的成功比失败更难查
   window.settingsCache = { platform_owner: true };
@@ -1929,11 +2387,32 @@ const GATE_CHECKS = `
     && MEDIA_CAPS.length >= 5 && mpo.querySelectorAll(".ch-head[data-cap]").length === MEDIA_CAPS.length,
     "渠道表 " + !!mpo.querySelector("#prov-list") + " · 添加模型 " + !!mpo.querySelector(".ca-new")
     + " · 能力卡 " + mpo.querySelectorAll(".ch-head[data-cap]").length + "/" + MEDIA_CAPS.length);
+  // 头一次进这一页，展开的是「对话」那张能力卡，不是某个渠道卡：人来这儿十有八九是为了换对话模型，
+  // 而对话模型散在各个渠道里，按渠道展开等于让他一张张点开找。渠道卡全收着，点了才开。
+  ok("首屏展开的是「对话」那一路，渠道卡一张都没自动摊开",
+    !!mpo.querySelector('.ch-head[data-chatcap] + .ch-body, .ch-card.open .ch-head[data-chatcap]')
+    && mpo.querySelectorAll("#prov-list .ch-card.open").length === 0
+    && mpo.querySelector("#chat-overview").textContent.includes("主力"),
+    "摊开的渠道卡 " + mpo.querySelectorAll("#prov-list .ch-card.open").length);
+  // 六格路由图：对话那一格得写出「主用谁 + 还压着几个备选」。老版本一格只写得下一个名字，
+  // 用户原话「每个任务…都可能要配置多个渠道和多个模型」，一格一个名字就永远看不出有没有备份
+  const rtChat = mpo.querySelector('.model-route-grid .rt[data-goto="chat"]');
+  ok("顶上路由图第一格就是对话：主用是谁、模型 id、还剩几个备选，三样都在，而且是可点的",
+    !!rtChat && rtChat.tagName === "BUTTON" && rtChat.textContent.includes("主力")
+    && rtChat.textContent.includes("gpt-5.2") && rtChat.textContent.includes("+1 备选"),
+    rtChat && rtChat.textContent.replace(/\s+/g, " ").trim());
+  ok("反向对照：六格一路一格，媒体那五路一个不少，没配的那几格写「未设置」不是留白",
+    mpo.querySelectorAll(".model-route-grid .rt").length === MEDIA_CAPS.length + 1
+    && (mpo.querySelector(".model-route-grid").textContent.match(/未设置|跟随对话模型/g) || []).length === MEDIA_CAPS.length,
+    mpo.querySelectorAll(".model-route-grid .rt").length + " 格");
   // 一把 Key 挂两个模型：整屏的行数应该比「每条模型摊一行」少——这是 #96 要的那个「不密」
+  mpo.querySelector('.ch-head[data-chan="or"]').onclick();
+  const mpoC = mBody.querySelector("#settings-pane");
   ok("两个模型折在一个渠道卡里，「去拿 Key」这类提示全屏只出现一次，不是一条模型一遍",
-    mpo.querySelectorAll("#prov-list .ch-card").length === 1 && mpo.querySelectorAll("#prov-list .mrow").length === 2
-    && (mpo.textContent.match(/去拿 Key/g) || []).length === 1,
-    "渠道卡 " + mpo.querySelectorAll("#prov-list .ch-card").length + " · 模型行 " + mpo.querySelectorAll("#prov-list .mrow").length);
+    mpoC.querySelectorAll("#prov-list .ch-card").length === 1 && mpoC.querySelectorAll("#prov-list .mrow").length === 2
+    && (mpoC.textContent.match(/去拿 Key/g) || []).length === 1,
+    "渠道卡 " + mpoC.querySelectorAll("#prov-list .ch-card").length + " · 模型行 " + mpoC.querySelectorAll("#prov-list .mrow").length);
+  mpoC.querySelector('.ch-head[data-chan="or"]').onclick(); // 收回去，后面几条还按「渠道卡默认收着」验
 
   // ②-bis 用户那两句话得同时成立：「没有设置 apikey 的渠道不要显示」+「然后要给地方去显示啊」。
   // 只做前半句就是把渠道藏死，人再也找不到去哪儿填；只做后半句就是原来那堵十来家服务商的墙。
@@ -1977,8 +2456,10 @@ const GATE_CHECKS = `
     "主列表卡数 " + mpoR.querySelectorAll("#prov-list .ch-card").length);
   posts = [];
   window.toasts = [];
-  mpoR.querySelector('.ck-input[data-chan="or"]').value = "   ";
-  await mpoR.querySelector('.ck-save[data-chan="or"]').onclick();
+  mpoR.querySelector('.ch-head[data-chan="or"]').onclick(); // 渠道卡默认收着，先点开才摸得到里面那个输入框
+  const mpoW = mBody.querySelector("#settings-pane");
+  mpoW.querySelector('.ck-input[data-chan="or"]').value = "   ";
+  await mpoW.querySelector('.ck-save[data-chan="or"]').onclick();
   ok("反向对照：把 Key 清空再点保存，不存也不假装成功，直说「Key 是空的」",
     !posts.length && window.toasts.join("|").includes("Key 是空的"),
     JSON.stringify(window.toasts) + " · 发出去 " + posts.length + " 次");
@@ -3220,7 +3701,9 @@ const LOOK_CHECKS = FLUSH_SRC + `
   ok("本页 localStorage 被禁（验证内存回退的前提成立）", storageBlocked);
 
   ok("默认：<html> 不带 data-fs/skin/font/density 脏属性", !html.dataset.fs && !html.dataset.skin && !html.dataset.font && !html.dataset.density);
-  ok("默认：正文 15 / 标题 17 / 左栏 14 / 输入框 15 / 行内代码 13", px("body") === 15 && px("#h1") === 17 && px("#hi") === 14 && px("#input") === 15 && px("#cd") === 13);
+  // 左栏这一条量的是 .hist-item（任务历史）。它比正文小两号是有意的：历史是次要内容，
+  // 用户原话「办公那里的任务历史不要给我占地那么多喧宾夺主」「主次不分啊」。
+  ok("默认：正文 15 / 标题 17 / 左栏历史 13 / 输入框 15 / 行内代码 13", px("body") === 15 && px("#h1") === 17 && px("#hi") === 13 && px("#input") === 15 && px("#cd") === 13);
 
   I18N.setLang("zh"); // 系统语言可能是英文；下面按中文文案断言，先钉住
   renderLookPane(pane);
@@ -3247,10 +3730,10 @@ const LOOK_CHECKS = FLUSH_SRC + `
   // 字号
   click("fs", "xl");
   ok("点「特大」：<html data-fs=xl>，正文 18", html.dataset.fs === "xl" && px("body") === 18 && px("#p") === 18);
-  ok("特大：标题 20 / 左栏 17 / 输入框 18 / 行内代码 16 / 预览行 18 都跟着走", px("#h1") === 20 && px("#hi") === 17 && px("#input") === 18 && px("#cd") === 16 && px("#look-prev") === 18);
+  ok("特大：标题 20 / 左栏历史 16 / 输入框 18 / 行内代码 16 / 预览行 18 都跟着走", px("#h1") === 20 && px("#hi") === 16 && px("#input") === 18 && px("#cd") === 16 && px("#look-prev") === 18);
   ok("特大：字号组选中态跟着切到 xl", onePressed("fs") && pane.querySelector('[data-k="fs"] button.on').dataset.v === "xl");
   click("fs", "s");
-  ok("点「小」：正文 14 / 左栏 13", html.dataset.fs === "s" && px("body") === 14 && px("#hi") === 13);
+  ok("点「小」：正文 14 / 左栏历史 12", html.dataset.fs === "s" && px("body") === 14 && px("#hi") === 12);
   ok("偏好读回：lookGet('fs') === 's'（存储被禁也记得住）", lookGet("fs") === "s");
   click("fs", "m");
   ok("点回「标准」：data-fs 属性摘掉，不留默认值脏属性", !("fs" in html.dataset) && px("body") === 15);
@@ -3359,7 +3842,7 @@ const LOOK_CHECKS = FLUSH_SRC + `
 // 拿 textarea 的 computed style 复刻一个探针 div，用 Range 量出技能名真正占的那块地方，
 // 再跟镜像层里那个 .tk 的位置尺寸对一遍。对不上就是用户看见的那个症状。
 const HL_SRC = (() => {
-  const a0 = APP02X.indexOf("// ---------- @文件 //技能 token 高亮");
+  const a0 = APP02X.indexOf("// ---------- @文件 /技能 /素材锚点高亮");
   const a1 = APP02X.indexOf('inputEl.addEventListener("input", detectMention);');
   if (a0 < 0 || a1 <= a0) throw new Error("输入框高亮切片锚点丢了");
   return APP02X.slice(a0, a1);
@@ -3720,10 +4203,13 @@ const TRAIL_CHECKS = `
   ok("最慢那几步按人话的名字点出来，最慢的排头一个", /^最慢：读 报告\\.md 4\\.0s · 读 数据\\.csv 4\\.0s/.test(slowTxt), slowTxt);
   ok("0.5s 那步排在最后，不冒充最慢", slowTxt.indexOf("命令 npm test") > slowTxt.indexOf("读 数据.csv"), slowTxt);
   const more = sum.querySelector(".ps-more");
-  ok("没开追踪时把入口指在这儿（要展开过程区才看得见，不往对话里插横幅骚扰）", /打开执行追踪/.test(more.textContent), more.textContent);
-  MODALS.length = 0;
+  ok("没开 Langfuse 也有得看：入口指在这儿（要展开过程区才看得见，不往对话里插横幅骚扰）", /打开执行追踪/.test(more.textContent), more.textContent);
+  VIEWS.length = 0; MODALS.length = 0;
   more.click();
-  ok("点它直接开「设置 → 执行追踪」", MODALS.join() === "settings:trace", MODALS.join());
+  // 本地那本账一直在记，所以这里该开的是「更多 → 执行追踪」那一页，不是设置里那半页 Langfuse 配置。
+  // 指回设置，用户点进去看到的是两个填 Key 的输入框，跟他想看的「这趟调了什么」没一点关系
+  ok("点它直接开「更多 → 执行追踪」那一页", VIEWS.join() === "trace", VIEWS.join() + " ｜ modal=" + MODALS.join());
+  ok("★反向对照★ 不再跳去设置页（那儿现在只剩 Langfuse 的连接配置）", MODALS.length === 0, MODALS.join());
 
   // 开了 Langfuse：直接给这一趟的地址，别让人自己去 trace 列表里猜哪条是刚才那趟
   const u12 = createTurnUI("再跑一趟", "craft", "s_t");
@@ -4584,8 +5070,8 @@ const CHECKS = `(() => {
 // 这里验的是交互不是措辞：排队条讲清三件事（怎么插话 / 怎么停 / 想并行怎么办）、停止是一颗真按钮、
 // 一颗发送键看框里有没有字决定是「停下」还是「插一句」、提示语跟着忙/闲切换、发完框空了按钮自己回到「停下」。
 const C0 = APP02.indexOf("// ================= 发送（运行中按钮变「停止」）");
-const C1 = APP02.indexOf("function drainQueue(sid) {");
-if (C0 < 0 || C1 <= C0) throw new Error("app-02.js 里找不到「发送（运行中按钮变「停止」）… drainQueue」那一段");
+const C1 = APP02.indexOf("/** 把一条消息立即注入正在执行的任务");
+if (C0 < 0 || C1 <= C0) throw new Error("app-02.js 里找不到「发送（运行中按钮变「停止」）… interjectText」那一段");
 const COMPOSER_SRC = APP02.slice(C0, C1);
 const COMPOSER_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div class='queue-bar' id='queue-bar'></div><textarea id='input'></textarea><button id='send'>↑</button><button id='new-task'>新建任务</button></body>";
@@ -4598,12 +5084,22 @@ const COMPOSER_STUBS = [
   "const inputEl = document.getElementById('input'), sendBtn = document.getElementById('send');",
   "const pendingAttach = [];",
   "let sessionId = 's1'; const sessionQueues = new Map();",
+  "const qOf = (sid) => { let q = sessionQueues.get(sid); if (!q) { q = []; sessionQueues.set(sid, q); } return q; };",
+  // 「任务在跑时再发一条」是插队还是排队。真源码里这两个在 app-01.js（带 localStorage 落盘），
+  // 这里只要行为，不要存储——存储那一半由下面的 localStorage 往返那一节单独验
+  "let busySendMode = 'interject';",
+  "function setBusySendMode(m) { busySendMode = m === 'queue' ? 'queue' : 'interject'; }",
+  "async function interjectText(t) { CALLS.push('interject:' + t); }",
   "const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');",
   "let HIST = 0; function renderHistory() { HIST++; }",
   "const CALLS = [];",
   "async function stopTask() { CALLS.push('stop'); }",
   "// 模拟真 send()：有草稿才发，发完框清空并让按钮重算（真源码里由 composeOutgoing 做）",
-  "async function send() { const t = inputEl.value.trim(); if (!t && !pendingAttach.length) { CALLS.push('send:empty'); return; } CALLS.push('send:' + (t || '[附件]')); inputEl.value = ''; pendingAttach.length = 0; syncSendBtn(); }",
+  "async function send() { const t = inputEl.value.trim(); if (!t && !pendingAttach.length) { CALLS.push('send:empty'); return; }"
+  + " const text = t || '[附件]'; inputEl.value = ''; pendingAttach.length = 0; syncSendBtn();"
+  // 真 send() 里这一段：本机任务在跑 → 按开关分岔；其余照旧
+  + " if (curBusy() && !cliBusy()) { if (busySendMode === 'queue') { queueText(text); CALLS.push('queue:' + text); return; } await interjectText(text); return; }"
+  + " CALLS.push('send:' + text); }",
 ].join("\n");
 const COMPOSER_CHECKS = `
 (async () => {
@@ -4611,6 +5107,9 @@ const COMPOSER_CHECKS = `
   const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + extra : "")); names.push(n); };
   const bar = document.getElementById("queue-bar");
   const stops = () => CALLS.filter((c) => c === "stop").length;
+  // 一条消息忙时会落在三条路径上（send / interject / queue）。只关心「发出去了没」的断言
+  // 用这个取正文，别钉死在某一条路径上——不然以后默认从插队改成排队，一整片断言集体误报
+  const sentText = () => { const c = CALLS[CALLS.length - 1] || ""; const i = c.indexOf(":"); return i < 0 ? "" : c.slice(i + 1); };
   const typeIn = (t) => { inputEl.value = t; inputEl.dispatchEvent(new Event("input", { bubbles: true })); };
   const press = (key, shift) => { const e = new KeyboardEvent("keydown", { key, shiftKey: !!shift, bubbles: true, cancelable: true }); inputEl.dispatchEvent(e); return e.defaultPrevented; };
   bindComposer();
@@ -4651,11 +5150,14 @@ const COMPOSER_CHECKS = `
   ok("一打字：发送键变回「↑」、去掉 .stop、加 .interject", sendIcon() === "arrow-up" && !sendBtn.classList.contains("stop") && sendBtn.classList.contains("interject"), sendBtn.className);
   ok("打了字的 title 说清是「插一句」+ Enter", sendBtn.title.includes("插一句") && sendBtn.title.includes("Enter"), sendBtn.title);
   const b1 = stops(); sendBtn.click();
-  ok("打了字点发送键：走 send（插队）不走停止 —— 以前这里一点任务就没了", CALLS[CALLS.length - 1] === "send:改成蓝色" && stops() === b1, CALLS.join(","));
+  // 这一条盯的是「不许误停」，不是走的哪条投递路径：默认插队所以落在 interject: 上，
+  // 拨到排队会落在 queue: 上，两种都算过——真正要红的是 stops() 涨了
+  ok("打了字点发送键：走发送不走停止 —— 以前这里一点任务就没了",
+     CALLS[CALLS.length - 1] === "interject:改成蓝色" && stops() === b1, CALLS.join(","));
   ok("发出去框空了：按钮自己回到「◼ 停下」，不用等下一次 updateSendUI", sendIcon() === "square" && sendBtn.classList.contains("stop") && !sendBtn.classList.contains("interject"), sendBtn.className);
   typeIn("再加个标题");
-  ok("Shift+Enter 只换行不发", !press("Enter", true) && CALLS[CALLS.length - 1] !== "send:再加个标题");
-  ok("Enter 发出去（默认行为被拦，不会真换行）", press("Enter", false) && CALLS[CALLS.length - 1] === "send:再加个标题", CALLS.join(","));
+  ok("Shift+Enter 只换行不发", !press("Enter", true) && sentText() !== "再加个标题");
+  ok("Enter 发出去（默认行为被拦，不会真换行）", press("Enter", false) && sentText() === "再加个标题", CALLS.join(","));
   ok("Enter 发完按钮回到「◼」", sendIcon() === "square");
   pendingAttach.push("截图.png"); syncSendBtn();
   ok("只贴了附件没打字：也算有话要说 → 「↑」", sendIcon() === "arrow-up" && !sendBtn.classList.contains("stop"));
@@ -4673,12 +5175,52 @@ const COMPOSER_CHECKS = `
   ok("框空着点一下也不会去停（停不了就别假装能停）", stops() === c0, CALLS.join(","));
   typeIn("顺便把日志也贴出来");
   ok("打了字：按钮说的是「插一句给终端里的它」", sendBtn.title.includes("插一句") && sendBtn.title.includes("终端") && sendBtn.classList.contains("interject"), sendBtn.title);
-  ok("Enter 照样送得出去", press("Enter", false) && CALLS[CALLS.length - 1] === "send:顺便把日志也贴出来", CALLS.join(","));
+  ok("Enter 照样送得出去", press("Enter", false) && sentText() === "顺便把日志也贴出来", CALLS.join(","));
   // 反向对照：同样是「忙着 + 框空着」，本机那趟就该给停止键——证明上面几条不是恒真
   CLI = false; BUSY = true; typeIn(""); updateSendUI();
   ok("反向对照：本机自己跑的那趟，框空着就是「◼ 停下」", sendIcon() === "square" && sendBtn.classList.contains("stop"), sendBtn.className);
   const c1 = stops(); sendBtn.click();
   ok("反向对照：这一下是真的去停了", stops() === c1 + 1);
+
+  // ---- 「插队 / 排队」二选一 ----
+  // 以前只有插队一条路：一句补充说明当场塞进去，Agent 中途改道，前面几步白做，
+  // 用户连「我这条不急」都没地方说。这一节验的是这个选择真的改变了行为，不只是换了个字。
+  CLI = false; BUSY = true; typeIn(""); sessionQueues.set("s1", []); updateSendUI();
+  const sw = bar.querySelector(".qb-sw");
+  ok("任务在跑：插队/排队的开关出来了，两个都在", !!sw && sw.querySelectorAll(".qb-o").length === 2, bar.innerHTML.slice(0, 120));
+  const optOf = (m) => bar.querySelector('.qb-o[data-m="' + m + '"]');
+  ok("默认选中的是「插队」（保持老行为，不偷偷改掉所有人的习惯）",
+     optOf("interject").classList.contains("is-on") && !optOf("queue").classList.contains("is-on"));
+  ok("选中态是能被读屏读出来的 radio，不只是一层颜色",
+     sw.getAttribute("role") === "radiogroup" && optOf("interject").getAttribute("aria-checked") === "true"
+     && optOf("queue").getAttribute("aria-checked") === "false");
+  typeIn("等等，标题改成蓝色");
+  ok("插队态：按钮是「↑」、说的是插一句", sendIcon() === "arrow-up" && sendBtn.title.includes("插一句"), sendBtn.title);
+  const i0 = CALLS.length; sendBtn.click(); await new Promise((r) => setTimeout(r, 0));
+  ok("插队态点发送：走注入，不进队列",
+     CALLS[CALLS.length - 1] === "interject:等等，标题改成蓝色" && (sessionQueues.get("s1") || []).length === 0, CALLS.slice(i0).join(","));
+
+  optOf("queue").click();
+  ok("拨到「排队」：选中态跟着换（两边都要变，不然会出现两个都亮）",
+     optOf("queue").classList.contains("is-on") && !optOf("interject").classList.contains("is-on"));
+  ok("排队态：提示语改口说「排到队尾」，别让人以为还会插进去",
+     inputEl.placeholder.includes("排进队尾") || inputEl.placeholder.includes("排到队尾"), inputEl.placeholder);
+  typeIn("顺便再做个 B 方案");
+  ok("排队态：发送键换成沙漏 + 说「不打断」", sendIcon() === "hourglass" && sendBtn.classList.contains("queued")
+     && !sendBtn.classList.contains("interject") && sendBtn.title.includes("不打断"), sendBtn.title + " / " + sendBtn.className);
+  const q0 = CALLS.length; sendBtn.click(); await new Promise((r) => setTimeout(r, 0));
+  ok("排队态点发送：进队列，一次都没去打断当前任务",
+     (sessionQueues.get("s1") || []).length === 1 && sessionQueues.get("s1")[0].text === "顺便再做个 B 方案"
+     && !CALLS.slice(q0).some((c) => c.startsWith("interject:")), CALLS.slice(q0).join(","));
+  ok("排进去的当场变成一枚 chip，看得见也撤得掉", bar.querySelectorAll(".q-chip").length === 1);
+  ok("排队条的提示语也跟着改口（不然开关说排队、提示说插队，两边打架）",
+     bar.querySelector(".qb-hint").textContent.includes("排到队尾"), bar.querySelector(".qb-hint").textContent);
+  // 反向对照：拨回插队，同样一句话就不进队列了——证明上面几条不是「反正都进队列」
+  optOf("interject").click(); typeIn("再补一句");
+  const r0 = (sessionQueues.get("s1") || []).length; sendBtn.click(); await new Promise((r) => setTimeout(r, 0));
+  ok("反向对照：拨回插队，同一个动作又走注入了", (sessionQueues.get("s1") || []).length === r0
+     && CALLS[CALLS.length - 1] === "interject:再补一句", CALLS[CALLS.length - 1]);
+  sessionQueues.set("s1", []); typeIn(""); updateSendUI();
 
   // ---- 排了队的消息 ----
   sessionQueues.set("s1", [{ text: "顺便把页脚也改了", mode: "craft" }]);
@@ -5146,6 +5688,146 @@ const laneHtml = (sideW) => "<!doctype html><meta charset='utf-8'><style>" + UI_
   + "<body style='margin:0'><aside style='width:" + sideW + "px'>"
   + "<div class='lane-tabs' id='lane-tabs' role='tablist' aria-label='工作线'></div>"
   + "<div id='history'></div></aside><button id='new-task'>新任务</button></body>";
+
+// ================= 侧栏：主次分明 + 任务历史可拖 =================
+// 这一屏是两次事故 + 一次返工的留证：
+//   1. 事故：`#history { flex: 1 1 auto }` 让历史的「基准高度」等于它内容的高度，
+//      任务攒到几十条就有上千像素，整列进入收缩状态，而历史自己有 min-height 兜底，
+//      收缩全落到导航头上（当时导航 min-height: 0）——用户原话
+//      「怎么办公tab下面助理模式/项目/无限画布/专家/自动化这些都没了啊，都不显示了啊」。
+//      所以第一条守的是：**历史再长，导航一行都不许少**。
+//   2. 返工：「办公那里的任务历史不要给我占地那么多喧宾夺主啊」→「主次不分啊」。
+//      光调高度不够，字号/颜色也得分开。第二组守的是这个。
+//   3. 新要求：「任务历史那个tab你也搞成可以拉伸和拖拽自适应的吧」。第三组守拖拽。
+// 样式和 <aside> 都切真源码：只验 JS 的话，把那两条 flex 规则删掉测试照样全绿，
+// 而用户看到的就是整段导航消失。
+const ASIDE_SRC = (() => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const a = html.indexOf("<aside>");
+  const b = html.indexOf("</aside>", a);
+  if (a < 0 || b <= a) throw new Error("index.html 里的 <aside> 段找不到了，前端测试没法定位真源码");
+  return html.slice(a, b + "</aside>".length);
+})();
+const HIST_RSZ_SRC = (() => {
+  const a = UI00_SRC.indexOf("/* ---------- 侧栏里那条横的");
+  const b = UI00_SRC.indexOf('if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initHistResizer);', a);
+  if (a < 0 || b <= a) throw new Error("app-00-ui.js 里的历史高度拖拽段找不到了，前端测试没法定位真源码");
+  return UI00_SRC.slice(a, b);
+})();
+// 窗口得宽过 900px：窄于这个数侧栏整个变成浮层（@media 里 aside { display: none }），量出来全是 0。
+// 高度给 640——这是最容易复现「导航被挤没」的那档（笔记本半屏 / 外接竖屏下半截）
+const SIDEBAR_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS
+  + "\nhtml,body{height:100%}body{margin:0;display:flex}</style><body>" + ASIDE_SRC + "</body>";
+const SIDEBAR_CHECKS = `
+  const names = [];
+  const $ = (q) => document.querySelector(q);
+  const px = (q, prop) => parseFloat(getComputedStyle($(q))[prop || "fontSize"]);
+  const fails = [];
+  const ok = (name, cond, extra) => {
+    if (cond) { names.push(name); return; }
+    fails.push("✗ " + name + (extra ? " ｜ " + extra : ""));
+  };
+  var toast = () => {};
+  // 攒 200 条历史。数量不是随手写的：出事那套 CSS 下，导航被挤掉多少 = 历史内容高度占两段总高的比例，
+  // 60 条时导航还剩 122px（看着只是「有点挤」），200 条才塌到 44px——也就是用户看到的「都没了」。
+  // 拿 60 条当夹具的话，下面那条反向对照会「过不了」，等于把事故写成了没发生。
+  const hist = document.getElementById("history");
+  hist.innerHTML = Array.from({ length: 200 }, (_, i) =>
+    '<div class="hist-item"><span class="ht">第 ' + i + ' 趟活儿，标题还挺长的免得被省略号吃掉</span></div>').join("");
+  // 项目也塞几个：真实场景里导航自己也不短
+  document.getElementById("proj-list").innerHTML = Array.from({ length: 5 }, (_, i) =>
+    '<div class="proj-item"><span class="pn">项目 ' + i + '</span></div>').join("");
+  document.getElementById("more-box").classList.add("open");   // 「更多」展开，导航最高的那档
+
+  // ① 事故留证：历史再长，导航一行都不许少
+  const aside = document.querySelector("aside");
+  const nav = document.querySelector(".side-nav.top");
+  const navItems = Array.from(nav.querySelectorAll(".item"));
+  ok("导航区没被历史挤没（height > 0）", nav.getBoundingClientRect().height > 0,
+     "nav=" + nav.getBoundingClientRect().height + " aside=" + aside.getBoundingClientRect().height);
+  ok("导航区至少还有 120px 的兜底（min-height 那条没被删）", nav.getBoundingClientRect().height >= 120,
+     "nav=" + nav.getBoundingClientRect().height);
+  ok("九个导航入口一个都没塌（助理/项目/画布/专家/自动化/更多/模板/资料库/评测/追踪）",
+     navItems.length >= 10 && navItems.every((el) => el.getBoundingClientRect().height > 0),
+     "共 " + navItems.length + " 项，塌了 " + navItems.filter((el) => !el.getBoundingClientRect().height).length + " 项");
+  ok("导航长过一屏时是它自己内部滚，不是把自己缩没", nav.scrollHeight > nav.clientHeight,
+     "scrollH=" + nav.scrollHeight + " clientH=" + nav.clientHeight);
+  ok("历史也还在，没被导航反过来吃掉", hist.getBoundingClientRect().height >= 56,
+     "hist=" + hist.getBoundingClientRect().height);
+  // 反向对照：把那两条 flex 规则改回出事前的写法，导航当场塌回去
+  const undo = document.createElement("style");
+  undo.textContent = ".side-nav.top{flex:0 1 auto;min-height:0;max-height:none}#history{flex:1 1 auto;min-height:min(200px,34vh)}";
+  document.head.appendChild(undo);
+  ok("反向对照：改回 flex:1 1 auto / min-height:0 的老写法，导航当场被挤没（塌到 60px 以下）",
+     nav.getBoundingClientRect().height < 60, "nav=" + nav.getBoundingClientRect().height);
+  undo.remove();
+  ok("反向对照撤掉之后导航自己回来了", nav.getBoundingClientRect().height >= 120);
+
+  // ② 主次：导航是主，历史是次——字号、颜色、有没有图标，三样都得分开
+  const navFs = px(".side-nav .item"), hiFs = px(".hist-item");
+  ok("历史行比导航项小一号（" + hiFs + " < " + navFs + "）", hiFs < navFs);
+  const navColor = getComputedStyle($(".side-nav .item")).color;
+  const hiColor = getComputedStyle($(".hist-item")).color;
+  ok("历史行的字色比导航项淡（不是同一个色值）", navColor !== hiColor, navColor + " vs " + hiColor);
+  ok("导航项有图标，历史行没有（图标本身就是一层主次）",
+     !!$(".side-nav .item .ic") && !$(".hist-item .ic"));
+  ok("「任务历史」这个小标题比历史行本身还小（它只是个分隔标签）", px(".side-label") < hiFs,
+     px(".side-label") + " vs " + hiFs);
+  ok("历史行的行距比导航项紧", px(".hist-item", "paddingTop") < px(".side-nav .item", "paddingTop"),
+     px(".hist-item", "paddingTop") + " vs " + px(".side-nav .item", "paddingTop"));
+
+  // ③ 拖拽：往上拖历史变高、往下拖导航变高，双击回自适应
+  const h = document.querySelector('.rsz-v[data-rszv="hist"]');
+  ok("导航和历史之间有那条拖拽线", !!h && h.getAttribute("role") === "separator"
+     && h.getAttribute("aria-orientation") === "horizontal");
+  initHistResizer();
+  const drag = (dy) => {
+    const y0 = h.getBoundingClientRect().top;
+    h.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientY: y0, pointerId: 1 }));
+    h.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientY: y0 + dy, pointerId: 1 }));
+    h.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientY: y0 + dy, pointerId: 1 }));
+  };
+  const h0 = hist.getBoundingClientRect().height, n0 = nav.getBoundingClientRect().height;
+  drag(-120);   // 握把在历史上边，往上拖 = 历史变高
+  ok("往上拖：历史变高了", hist.getBoundingClientRect().height > h0 + 40,
+     h0 + " → " + hist.getBoundingClientRect().height);
+  ok("往上拖：腾出来的地方是从导航身上出的，导航跟着变矮", nav.getBoundingClientRect().height < n0,
+     n0 + " → " + nav.getBoundingClientRect().height);
+  ok("拖过之后 <html> 上挂了 hist-h，高度写进 --wb-hist-h",
+     document.documentElement.classList.contains("hist-h")
+     && getComputedStyle(document.documentElement).getPropertyValue("--wb-hist-h").trim().endsWith("px"),
+     getComputedStyle(document.documentElement).getPropertyValue("--wb-hist-h"));
+  const h1 = hist.getBoundingClientRect().height;
+  drag(120);    // 往下拖 = 历史变矮
+  ok("往下拖：历史又变矮了", hist.getBoundingClientRect().height < h1,
+     h1 + " → " + hist.getBoundingClientRect().height);
+  drag(9999);   // 使劲往下拖：历史不许缩到零
+  ok("使劲往下拖也留得住历史（下限 56px，不许缩成一条缝）",
+     hist.getBoundingClientRect().height >= 56, String(hist.getBoundingClientRect().height));
+  drag(-9999);  // 使劲往上拖：导航不许被吃没——这是 ① 那个事故的另一条路径
+  ok("使劲往上拖也留得住导航（这条要是没夹住，拖拽就成了复现事故的新入口）",
+     nav.getBoundingClientRect().height >= 56, String(nav.getBoundingClientRect().height));
+  h.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  ok("双击那条线：回到自适应（hist-h 摘掉、--wb-hist-h 也摘掉）",
+     !document.documentElement.classList.contains("hist-h")
+     && !getComputedStyle(document.documentElement).getPropertyValue("--wb-hist-h").trim());
+  ok("回自适应之后导航又拿回了内容高度", nav.getBoundingClientRect().height >= 120,
+     String(nav.getBoundingClientRect().height));
+  // 键盘也得能推：这条线是 role=separator + tabindex=0，只能鼠标拖的话键盘用户就没这功能
+  const h2 = hist.getBoundingClientRect().height;
+  h.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
+  ok("按 ↑ 一次，历史高 16px", Math.abs(hist.getBoundingClientRect().height - (h2 + 16)) <= 1,
+     h2 + " → " + hist.getBoundingClientRect().height);
+  h.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown", shiftKey: true }));
+  ok("按 Shift+↓ 一次，历史矮 48px", Math.abs(hist.getBoundingClientRect().height - (h2 + 16 - 48)) <= 1,
+     String(hist.getBoundingClientRect().height));
+  h.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+  ok("按 Esc 也回自适应", !document.documentElement.classList.contains("hist-h"));
+
+  if (fails.length) throw new Error("侧栏主次/拖拽：" + names.length + " 条过，挂了 " + fails.length + " 条：\\n" + fails.join("\\n"));
+  names;
+`;
+
 const LANE_HTML = laneHtml(250);
 const LANE_NARROW_HTML = laneHtml(180);
 const LANE_STUBS = [
@@ -6684,6 +7366,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：侧栏项目栏 + 任务历史（租户端整栏不画·历史一条不滤·假项目顶上就滤空的事故留证·状态来回切）${namesPJ.length} 项通过`);
     } finally { if (!winPJ.isDestroyed()) winPJ.destroy(); }
 
+    const winSB = mkWin({ show: false, width: 1100, height: 640, webPreferences: { offscreen: true } });
+    try {
+      await winSB.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SIDEBAR_HTML));
+      const namesSB = await winSB.webContents.executeJavaScript(IC_BOOT + HIST_RSZ_SRC + "\n" + SIDEBAR_CHECKS, true)
+        .catch((e) => { throw new Error("[侧栏主次/拖拽] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesSB) console.log("  ✓ " + n);
+      console.log(`✅ 前端：侧栏主次分明 + 任务历史可拖（两百条历史也挤不没导航·字号颜色图标三层分主次·上下拖/键盘推/双击回自适应）${namesSB.length} 项通过`);
+    } finally { if (!winSB.isDestroyed()) winSB.destroy(); }
+
     const winLN = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
     try {
       await winLN.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
@@ -6739,6 +7430,15 @@ app.whenReady().then(async () => {
       for (const n of namesGATE) console.log("  ✓ " + n);
       console.log(`✅ 前端：设置页按权限画（四页纯管理员的不画·模型只读·个性化只留宠物·安全只留档位·🛡️ 菜单不装成能点的）${namesGATE.length} 项通过`);
     } finally { if (!winGATE.isDestroyed()) winGATE.destroy(); }
+
+    const winAUTH = mkWin({ show: false, width: 900, height: 760, webPreferences: { offscreen: true } });
+    try {
+      await winAUTH.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(AUTH_HTML));
+      const namesAUTH = await winAUTH.webContents.executeJavaScript(IC_BOOT + AUTH_STUBS + "\n" + AUTH_WRAP(AUTH_SRC) + "\n" + AUTH_CHECKS, true)
+        .catch((e) => { throw new Error("[登录卡] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesAUTH) console.log("  ✓ " + n);
+      console.log(`✅ 前端：登录卡（邀请码有地方填且链接带码直达·自助注册关着也进得来·看一眼密码·待审核/已停用当场说清楚而不是放进去挨 403）${namesAUTH.length} 项通过`);
+    } finally { if (!winAUTH.isDestroyed()) winAUTH.destroy(); }
 
     const winDEAD = mkWin({ show: false, width: 1100, height: 900, webPreferences: { offscreen: true } });
     try {

@@ -13,6 +13,8 @@ const security = require("./security");
 const memory = require("./memory");
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉的多模型选择（同一把 Key 配多个型号）
 const genCache = require("./gen-cache"); // 生图/生视频/配音的内容寻址缓存：同一格重跑不再烧第二次钱
+const cdp = require("./cdp"); // 可选的本机 Chrome CDP：不捆绑浏览器、不连接远程地址
+const quota = require("./quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
 let workspaceDir = dataPath("workspace");
@@ -124,6 +126,23 @@ function ensureDirs() {
 function safePath(rel) {
   const p = path.resolve(ws(), String(rel || ".").replace(/\\/g, "/"));
   if (p !== ws() && !p.startsWith(ws() + path.sep)) {
+    throw new Error(`路径越界，只允许访问 workspace 内: ${rel}`);
+  }
+  return p;
+}
+
+/**
+ * 跟 safePath 同一套越界判定，只是根由调用方给。
+ *
+ * 为什么非要这个：成果文件在会话里记的是**相对**路径（任务_0905_xx/报告.html），
+ * 而 safePath 永远拿「此刻的」工作目录去拼。用户换一次工作目录，旧对话里那些卡片
+ * 就全指到新根下面不存在的位置，界面上一律「文件不存在」——文件明明还好端端躺在旧目录里。
+ * 跨根只读访问走这里，根由 server.js 从坐标系指纹反查出来，仍然只能是用户自己配过的目录。
+ */
+function safePathIn(root, rel) {
+  const base = path.resolve(String(root || ""));
+  const p = path.resolve(base, String(rel || ".").replace(/\\/g, "/"));
+  if (p !== base && !p.startsWith(base + path.sep)) {
     throw new Error(`路径越界，只允许访问 workspace 内: ${rel}`);
   }
   return p;
@@ -311,15 +330,15 @@ const TOOL_DEFS = [
   },
   {
     name: "library_list",
-    description: "列出用户资料库中的参考文件与灵感笔记（跨项目共享的长期沉淀素材）。任务涉及用户的偏好、过往素材、参考资料时先查这里。",
+    description: "列出用户资料库中的参考文件与灵感笔记（跨项目共享的长期沉淀素材）。资料库可以有子目录，列出来的名字自带子目录前缀（如 客户A/合同.md），后面读取和取用时要一字不差地照抄。当前项目可能只挂载了资料库的某一块，列出来的就是它全部能看到的范围。任务涉及用户的偏好、过往素材、参考资料时先查这里。",
     input_schema: { type: "object", properties: {} },
   },
   {
     name: "library_read",
-    description: "读取资料库中的一个文本文件内容（最多返回前 50000 字符）。文件名来自 library_list 的结果。资料库里的 PDF / 图片 / Word / 压缩包不是文本，读不了，改用 library_import。",
+    description: "读取资料库中的一个文本文件内容（最多返回前 50000 字符）。文件名来自 library_list 的结果，带子目录的要连子目录一起写（客户A/合同.md）。资料库里的 PDF / 图片 / Word / 压缩包不是文本，读不了，改用 library_import。",
     input_schema: {
       type: "object",
-      properties: { name: { type: "string", description: "资料库中的文件名" } },
+      properties: { name: { type: "string", description: "资料库中的文件名，来自 library_list；在子目录里的要带上子目录，如 客户A/合同.md" } },
       required: ["name"],
     },
   },
@@ -329,7 +348,7 @@ const TOOL_DEFS = [
       "把资料库里的一个文件复制到工作目录，之后就能用相对路径直接处理它——PDF、图片、Word/Excel/PPT、压缩包这些非文本素材都靠它落地（复制完再用 read_document / look_at_image）。只能从资料库往工作目录复制，不能往资料库里写。",
     input_schema: {
       type: "object",
-      properties: { name: { type: "string", description: "资料库中的文件名，来自 library_list" } },
+      properties: { name: { type: "string", description: "资料库中的文件名，来自 library_list；在子目录里的要带上子目录，如 客户A/合同.md" } },
       required: ["name"],
     },
   },
@@ -357,6 +376,26 @@ const TOOL_DEFS = [
         wait_ms: { type: "number", description: "渲染时每轮等待的毫秒数，默认 2500，内容多的页面可调大" },
       },
       required: ["url"],
+    },
+  },
+  {
+    name: "chrome_cdp",
+    description:
+      "通过本机 Chrome DevTools Protocol 操作已由用户显式开启远程调试的 Chrome。只允许 127.0.0.1/localhost/::1，不会连接公网浏览器。action=list_tabs 查看标签页；inspect 读取页面文字；navigate 打开 URL；click/type 按 CSS 选择器操作；evaluate 执行页面内 JavaScript；screenshot 截图并保存到 workspace。除 list_tabs 外建议先列标签页并明确 tab_id，避免误操作；服务器部署时要在同一台 Agent 机器启动 Chrome CDP（默认 9222），不能把桌面 Chrome 的端口暴露到公网。",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list_tabs", "inspect", "navigate", "click", "type", "evaluate", "screenshot"] },
+        tab_id: { type: "string", description: "Chrome 标签页 id；list_tabs 不需要" },
+        port: { type: "number", description: "本机 CDP 端口，默认 9222" },
+        selector: { type: "string", description: "inspect/click/type 的 CSS 选择器" },
+        text: { type: "string", description: "type 要输入的内容" },
+        url: { type: "string", description: "navigate 要打开的 URL" },
+        expression: { type: "string", description: "evaluate 要执行的页面 JavaScript" },
+        path: { type: "string", description: "screenshot 保存到 workspace 的相对路径，默认 chrome-screenshot.png" },
+        max_chars: { type: "number", description: "inspect 最多返回多少字符，默认 20000" },
+      },
+      required: ["action"],
     },
   },
   // 桌面版保留旧名字作为显式「强制浏览器渲染」入口，兼容已经在跑的会话和旧版 CLI；
@@ -1549,23 +1588,92 @@ function runShell(command, timeoutMs, cwd) {
 const LIB_DIR = dataPath("data", "library");
 const NOTES_FILE = dataPath("data", "inspirations.json");
 
+/**
+ * 当前项目挂载了资料库的哪一块（相对 LIB_DIR 的子目录，""=整个库）。
+ *
+ * 为什么要有：资料库是整台服务器**共用的一份**。人一多、素材一杂，做「客户 A 的合同」那个项目时
+ * 把「短剧素材」「公司规章」一股脑塞进 library_list，模型就要在一堆不相干的文件名里挑——
+ * 挑错了不会报错，只会安静地引用错资料。挂上子目录之后，这个项目的 agent 眼里的资料库就只有那一块。
+ *
+ * 跟工作目录一样走 ALS：租户请求各自跑在自己的异步链上，用模块级变量会串台。
+ * 没 run 过就退回 defaultLibraryRel（= 当前项目的挂载），单机个人版一行行为没变。
+ */
+let defaultLibraryRel = "";
+const libStore = new AsyncLocalStorage();
+/** 把一段相对路径洗干净：统一正斜杠、去空段、拒绝 `..` 和以 `.` 开头的段（别让人翻到 .ssh 去） */
+function cleanLibRel(rel) {
+  const parts = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
+  return parts.some((x) => x === ".." || x.startsWith(".")) ? "" : parts.join("/");
+}
+function setLibraryDir(rel) {
+  defaultLibraryRel = cleanLibRel(rel);
+  return defaultLibraryRel;
+}
+function getLibraryDir() {
+  const v = libStore.getStore();
+  return v === undefined ? defaultLibraryRel : v;
+}
+function withLibraryDir(rel, fn) {
+  return libStore.run(cleanLibRel(rel), fn);
+}
+/** agent 这一侧看得见的资料库根。挂载目录被人在磁盘上删掉了就退回整个库，别让工具整个哑掉 */
+function libRoot() {
+  const rel = getLibraryDir();
+  if (!rel) return LIB_DIR;
+  const abs = path.join(LIB_DIR, rel);
+  try { if (fs.statSync(abs).isDirectory()) return abs; } catch {}
+  return LIB_DIR;
+}
+/** 解析资料库里的相对路径，越界（../、绝对路径、软链跳出去）一律拒绝 */
+function libResolve(name) {
+  const rel = cleanLibRel(name);
+  if (!rel) return "";
+  const root = libRoot();
+  const abs = path.resolve(root, rel);
+  if (abs !== root && !abs.startsWith(root + path.sep)) return "";
+  return abs;
+}
+
+/**
+ * 列资料库。
+ *
+ * 递归而不是只列一层：资料库支持子目录之后，只列第一层的话模型看到的是三个文件夹名字，
+ * 然后它没有「进目录」这个工具，等于把素材锁在了门后面。深度封 4 层、条数封 300，
+ * 再多就换成一句「还有 N 个没列出来」——上下文烧光了比列不全更糟。
+ */
+const LIB_LIST_MAX = 300;
 function libraryList() {
-  let files = [];
-  try {
-    files = fs
-      .readdirSync(LIB_DIR, { withFileTypes: true })
-      .filter((e) => e.isFile() && !e.name.startsWith("."))
-      .map((e) => {
-        const st = fs.statSync(path.join(LIB_DIR, e.name));
-        return `${e.name}\t${st.size} 字节\t${st.mtime.toISOString()}`;
-      });
-  } catch {}
+  const root = libRoot();
+  const files = [];
+  let more = 0;
+  const walk = (rel, depth) => {
+    if (depth >= 4) return;
+    let ents = [];
+    try { ents = fs.readdirSync(path.join(root, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (e.name.startsWith(".")) continue;
+      const child = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { walk(child, depth + 1); continue; }
+      if (!e.isFile()) continue;
+      if (files.length >= LIB_LIST_MAX) { more++; continue; }
+      let st;
+      try { st = fs.statSync(path.join(root, child)); } catch { continue; }
+      files.push(`${child}\t${st.size} 字节\t${st.mtime.toISOString()}`);
+    }
+  };
+  walk("", 0);
+  files.sort();
   let notes = [];
   try {
     notes = JSON.parse(fs.readFileSync(NOTES_FILE, "utf8"));
   } catch {}
   const parts = [];
-  parts.push(files.length ? `【资料文件】（用 library_read 读取）\n${files.join("\n")}` : "【资料文件】（空）");
+  const scope = getLibraryDir() && libRoot() !== LIB_DIR
+    ? `（本项目只挂载了资料库的「${getLibraryDir()}」这一块，下面的路径都相对它）`
+    : "";
+  parts.push(files.length
+    ? `【资料文件】${scope}（用 library_read 读取，名字要带上子目录，一字不差）\n${files.join("\n")}${more ? `\n…… 还有 ${more} 个没列出来，太多了` : ""}`
+    : `【资料文件】${scope}（空）`);
   parts.push(
     notes.length
       ? `【灵感笔记】\n${notes.map((n) => `- [${(n.at || "").slice(0, 10)}] ${n.text}`).join("\n")}`
@@ -1586,9 +1694,9 @@ function libraryList() {
  *      本机路径。名字打错是常事，代价不该是泄露用户的目录结构。
  */
 function libraryRead(name) {
+  const abs = libResolve(name);
   const base = path.basename(String(name || ""));
-  if (!base || base.startsWith(".")) return { text: "文件名不合法。名字要一字不差地取自 library_list 的结果。", bad: true };
-  const abs = path.join(LIB_DIR, base);
+  if (!abs) return { text: "文件名不合法。名字要一字不差地取自 library_list 的结果（含子目录，如 客户A/合同.md）。", bad: true };
   let buf;
   try { buf = fs.readFileSync(abs); }
   catch { return { text: `资料库里没有「${base}」。先用 library_list 看看到底有哪些文件，名字要一字不差。`, bad: true }; }
@@ -1619,9 +1727,9 @@ function libraryRead(name) {
  * 这是权限绕过，不是便利。
  */
 function libraryImport(name, dir) {
+  const src = libResolve(name);
   const base = path.basename(String(name || ""));
-  if (!base || base.startsWith(".")) return { text: "文件名不合法。名字要一字不差地取自 library_list 的结果。", bad: true };
-  const src = path.join(LIB_DIR, base);
+  if (!src) return { text: "文件名不合法。名字要一字不差地取自 library_list 的结果（含子目录，如 客户A/合同.md）。", bad: true };
   let st;
   try { st = fs.statSync(src); }
   catch { return { text: `资料库里没有「${base}」。先用 library_list 看看到底有哪些文件，名字要一字不差。`, bad: true }; }
@@ -2852,6 +2960,9 @@ async function webSearch(query, count, searchCfg) {
     try {
       const items = await fn(key, query, n);
       if (items.length) {
+        // 只有付费引擎真回了结果才记账。下面 DuckDuckGo / 百度那两条兜底不花钱，
+        // 记进去会让管理员对着一个虚高的数字去砍额度
+        quota.record("search", { provider: p, meta: String(query).slice(0, 80) });
         return items
           .map((r, i) => `${i + 1}. ${r.title || "(无标题)"}\n   ${r.url}\n   ${(r.desc || "").slice(0, 300)}`)
           .join("\n\n");
@@ -2998,8 +3109,27 @@ async function withGenCache(kind, cap, opts, input, dir, resolveFile, run) {
     }
   }
   const out = await run();
+  // 记账放在这儿而不是调用点：上面命中缓存的那条路径直接 return 了，一个子儿没花。
+  // 记在调用点的话，同一张图重跑十次会记十笔，而实际只付了一次钱
+  if (!out.isError) quota.record(cap, { provider: mediaProviderOf(opts.media, cap), model, meta: String(input.prompt || input.text || "").slice(0, 80) });
   if (k) genCache.put(k, out, dir, ws(), model);
   return out;
+}
+
+/** 这一路当前走的是哪家服务商——只为流水好看，取不到就空着，绝不因此中断调用 */
+function mediaProviderOf(media, cap) {
+  try { return String(mediaModels.pick(media, cap).provider || "").slice(0, 40); } catch { return ""; }
+}
+/**
+ * 付费 API 的额度闸门。挡下来时返回的是一条**给模型看**的错误：
+ * 它会把这句话念给用户，所以必须写清楚撞的是哪道闸、去哪儿改，
+ * 而不是甩一句「调用失败」让模型接着换个工具重试。
+ */
+function quotaGate(cap) {
+  const g = quota.check(cap);
+  if (g.ok) return null;
+  security.audit("额度拦截", `${(quota.CAPS[cap] || {}).label || cap}：${g.why}`, "拦截");
+  return { content: g.why + "\n\n先别重试——重试不会变出额度来。把这句话原样告诉用户，让他找管理员调额度，或者换一条不花钱的路子（比如让用户自己贴内容进来）。", isError: true };
 }
 
 const CANVAS_KINDS = new Set(["note", "script", "agent", "character", "location", "storyboard", "scene", "shot", "image", "video", "audio", "timeline"]);
@@ -3348,6 +3478,22 @@ async function executeTool(name, input, opts = {}) {
         return { content: listFiles(resolveFile(input.dir || "."), input.depth), isError: false };
       case "search_files":
         return { content: await searchFiles(resolveFile(input.dir || "."), input), isError: false };
+      case "chrome_cdp": {
+        const action = String(input.action || "list_tabs");
+        if (action === "navigate" && !/^https?:\/\//i.test(String(input.url || ""))) {
+          return { content: "navigate 只接受 http/https URL。", isError: true };
+        }
+        const r = await cdp.run(input);
+        if (action === "screenshot") {
+          const rel = String(input.path || "chrome-screenshot.png").replace(/^[/\\]+/, "");
+          const p = resolveFile(rel);
+          const blocked = await passGate(security.checkWrite(sec, rel), "写截图", rel, { force: true });
+          if (blocked) return blocked;
+          fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from(r.data, "base64"));
+          return { content: `已保存 Chrome 截图：${rel}（${Math.round(fs.statSync(p).size / 1024)}KB，tab ${r.tab_id}）`, isError: false };
+        }
+        return { content: JSON.stringify(r, null, 2), isError: false };
+      }
       case "remember": {
         const r = memory.add({ text: input.text, user: opts.memory && opts.memory.user, shared: !!input.shared });
         return { content: r.note, isError: !r.ok };
@@ -3392,19 +3538,33 @@ async function executeTool(name, input, opts = {}) {
       }
       case "look_at_image":
         return await lookAtImage(opts, input, timeoutMs, resolveFile);
-      case "generate_image":
+      case "generate_image": {
+        const g = quotaGate("image");
+        if (g) return g;
         return await withGenCache("generate_image", "image", opts, input, fileBase, resolveFile,
           () => generateImage(opts.media, input, timeoutMs, fileBase, resolveFile));
-      case "generate_video":
+      }
+      case "generate_video": {
+        const g = quotaGate("video");
+        if (g) return g;
         return await withGenCache("generate_video", "video", opts, input, fileBase, resolveFile,
           () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile }));
+      }
       case "html_to_image":
         return await htmlToImage(input, resolveFile, fileBase);
-      case "text_to_speech":
+      case "text_to_speech": {
+        const g = quotaGate("tts");
+        if (g) return g;
         return await withGenCache("text_to_speech", "tts", opts, input, fileBase, resolveFile,
           () => textToSpeech(opts.media, input, timeoutMs, fileBase));
-      case "transcribe_audio":
-        return await transcribeAudio(opts.media, input, timeoutMs, resolveFile, fileBase);
+      }
+      case "transcribe_audio": {
+        const g = quotaGate("asr");
+        if (g) return g;
+        const r = await transcribeAudio(opts.media, input, timeoutMs, resolveFile, fileBase);
+        if (!r.isError) quota.record("asr", { provider: mediaProviderOf(opts.media, "asr"), meta: String(input.path || input.file || "").slice(0, 80) });
+        return r;
+      }
       case "desktop_pet": {
         // 真正的活儿在 server.js（那儿才同时握着 config、data/ 和活着的 Electron 窗口），这里只转发
         if (!global.__wbPetTool) return { content: "桌面宠物功能没装起来（服务端未注册 desktop_pet 的实现）。", isError: true };
@@ -3418,6 +3578,8 @@ async function executeTool(name, input, opts = {}) {
       case "render_page": {
         const orgNet = hostAllowed(null, input.url);
         if (!orgNet.ok) return netBlocked(input.url, orgNet.why);
+        const fg = quotaGate("fetch");
+        if (fg) return fg;
         const gate = security.checkUrl(sec, input.url);
         if (!gate.allowed) {
           security.audit("网络拦截", input.url, "拦截");
@@ -3426,11 +3588,17 @@ async function executeTool(name, input, opts = {}) {
         // 老名字的语义就是"必须渲染"；新参数里 render 只认三个值，其余（含老的布尔 false）交给 fetchUrl 归一化
         const mode = name === "render_page" ? "force" : input.render;
         security.audit("网络访问", `${mode === "force" ? "浏览器渲染" : "网络访问"}已执行：${input.url}`, "放行");
-        return { content: await fetchUrl(input.url, { render: mode, waitMs: input.wait_ms, saveDir: fileBase }), isError: false };
+        const page = await fetchUrl(input.url, { render: mode, waitMs: input.wait_ms, saveDir: fileBase });
+        quota.record("fetch", { provider: mode === "force" ? "render" : "http", meta: String(input.url).slice(0, 120) });
+        return { content: page, isError: false };
       }
-      case "web_search":
+      case "web_search": {
+        const g = quotaGate("search");
+        if (g) return g;
         security.audit("网络访问", `联网搜索：${input.query}`, "放行");
-        return { content: await webSearch(input.query, input.count, opts.search), isError: false };
+        const hits = await webSearch(input.query, input.count, opts.search);
+        return { content: hits, isError: false };
+      }
       default: {
         // 模型常把 MCP 工具的前缀吃掉（调 directory_tree 而不是 mcp__filesystem__directory_tree），
         // 真实数据里这一种拼错白烧了 4 轮模型调用。光说「未知工具」它只能接着瞎猜，把最像的真名给它。
@@ -3458,8 +3626,11 @@ const WALK_CAP = 20000;
  * 只发 8 位哈希、不发真实路径：这个字段会跟着会话一起存盘，用户的本地目录名不该写进
  * 可以分享出去的记录里。
  */
+function workspaceKeyOf(dir) {
+  return require("crypto").createHash("sha1").update(String(dir || "")).digest("hex").slice(0, 8);
+}
 function workspaceKey() {
-  return require("crypto").createHash("sha1").update(getWorkspaceDir()).digest("hex").slice(0, 8);
+  return workspaceKeyOf(getWorkspaceDir());
 }
 
 /** files 事件统一带上的作用域信息：哪套坐标系（root）、这份清单是不是完整的（full，到 500 条会截断） */
@@ -3568,4 +3739,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, filesScope, safePath, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
