@@ -598,7 +598,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     return null;
   }
 
-  async function runInbound({ channel, sessionKey, text, reply, status, sendFile, card, cardPromise, logExtra = {} }) {
+  async function runInbound({ channel, sessionKey, text, reply, status, sendFile, card, cardPromise, projectContext = "", logExtra = {} }) {
     logIm(channel, "in", text, logExtra);
     maybeResetIdleSession(sessionKey, channel);
     // 「正在做」状态消息：收到即发（只在支持撤回的通道传 status），跑的过程中原地改成
@@ -685,7 +685,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
             emitProgress(ev);
           },
           sec: imSec(),
-          projectContext: imNote,
+          projectContext: projectContext ? `${imNote}\n\n${projectContext}` : imNote,
         });
         saveSession(sessionKey); // runTask 是就地往 history 里追加的，得自己招呼一声存盘
         const fresh = outputFiles().filter((f) => changedNames.has(f.name)); // 只算本次任务真产出/真改过的
@@ -1033,29 +1033,86 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       return "";
     }).join("").trim();
   }
+  function feishuCommentFileTypes(fileType) {
+    const type = String(fileType || "docx").trim().toLowerCase();
+    // 飞书事件里的 file_type 和 Drive 评论接口在历史文档/新版文档上偶尔不一致。
+    // CatClaw 的实现会沿用事件类型；这里再对 doc/docx 做一次安全别名兜底，避免直接报 not exist。
+    if (type === "doc") return ["doc", "docx"];
+    if (type === "docx") return ["docx", "doc"];
+    return [type];
+  }
   async function feishuGetDocComment(fileToken, commentId, fileType) {
     const token = await getFeishuToken();
-    const qs = new URLSearchParams({ file_type: fileType || "docx" });
-    const r = await fetch(`https://open.feishu.cn/open-apis/drive/v1/files/${encodeURIComponent(fileToken)}/comments/${encodeURIComponent(commentId)}?${qs}`, {
+    let last = null;
+    for (const type of feishuCommentFileTypes(fileType)) {
+      const qs = new URLSearchParams({ file_type: type, user_id_type: "open_id" });
+      const r = await fetch(`https://open.feishu.cn/open-apis/drive/v1/files/${encodeURIComponent(fileToken)}/comments/${encodeURIComponent(commentId)}?${qs}`, {
+        headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.code === 0) return { data: d.data || {}, fileType: type };
+      last = new Error(d.msg || `读取文档评论失败（${r.status}）`);
+      last.fileType = type;
+      // 只有类型/资源不存在时才尝试别名；权限、鉴权等错误应原样暴露，便于配置修复。
+      if (!/not exist|不存在|not_found/i.test(String(d.msg || ""))) throw last;
+    }
+    throw last || new Error("读取文档评论失败");
+  }
+  async function feishuListDocComments(fileToken, fileType) {
+    const token = await getFeishuToken();
+    let last = null;
+    for (const type of feishuCommentFileTypes(fileType)) {
+      const qs = new URLSearchParams({ file_type: type, user_id_type: "open_id", page_size: "50" });
+      const r = await fetch(`https://open.feishu.cn/open-apis/drive/v1/files/${encodeURIComponent(fileToken)}/comments?${qs}`, {
+        headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.code === 0) return { items: d.data?.items || [], fileType: type };
+      last = new Error(d.msg || `列出文档评论失败（${r.status}）`);
+      last.fileType = type;
+      if (!/not exist|不存在|not_found/i.test(String(d.msg || ""))) throw last;
+    }
+    throw last || new Error("列出文档评论失败");
+  }
+  async function feishuGetDocText(fileToken, fileType) {
+    if (!["doc", "docx"].includes(String(fileType || "").toLowerCase())) return "";
+    const token = await getFeishuToken();
+    const qs = new URLSearchParams({ lang: "0" });
+    const r = await fetch(`https://open.feishu.cn/open-apis/docx/v1/documents/${encodeURIComponent(fileToken)}/raw_content?${qs}`, {
       headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000),
     });
-    const d = await r.json();
-    if (!r.ok || d.code !== 0) throw new Error(d.msg || "读取文档评论失败");
-    return d.data || {};
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.code !== 0) return "";
+    const content = String(d.data?.content || "").trim();
+    return content.length > 12000 ? `${content.slice(0, 12000)}\n…（文档正文过长，已截断）` : content;
+  }
+  function feishuDocumentTitle(meta, docText, fileToken) {
+    const fromMeta = [meta?.file_name, meta?.document_title, meta?.title, meta?.name]
+      .map((value) => String(value || "").trim())
+      .find(Boolean);
+    if (fromMeta) return fromMeta.slice(0, 160);
+    const firstLine = String(docText || "").split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+    if (firstLine) return firstLine.replace(/^#{1,6}\s*/, "").slice(0, 160);
+    return `飞书文档（${String(fileToken || "").slice(0, 12)}）`;
   }
   async function feishuReplyDocComment(fileToken, commentId, fileType, text) {
     const token = await getFeishuToken();
-    const r = await fetch(`https://open.feishu.cn/open-apis/drive/v1/files/${encodeURIComponent(fileToken)}/comments/${encodeURIComponent(commentId)}/replies`, {
+    const qs = new URLSearchParams({
+      file_type: fileType || "docx",
+      user_id_type: "open_id",
+    });
+    const r = await fetch(`https://open.feishu.cn/open-apis/drive/v1/files/${encodeURIComponent(fileToken)}/comments/${encodeURIComponent(commentId)}/replies?${qs}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
-        file_type: fileType || "docx",
         content: { elements: [{ type: "text_run", text_run: { text: String(text || "").slice(0, 3000) } }] },
       }),
       signal: AbortSignal.timeout(15000),
     });
     const d = await r.json();
-    if (!r.ok || d.code !== 0) throw new Error(d.msg || "回复文档评论失败");
+    if (!r.ok || d.code !== 0) {
+      throw new Error(d.msg || `回复文档评论失败（HTTP ${r.status}，code ${d.code ?? "unknown"}）`);
+    }
   }
   async function handleFeishuDocMention(envelope) {
     const root = envelope && typeof envelope === "object" ? envelope : {};
@@ -1074,18 +1131,44 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
     while (handledMsgs.size > 2000) handledMsgs.delete(handledMsgs.values().next().value);
     persistHandledFeishuMessages();
     try {
-      const comment = await feishuGetDocComment(fileToken, commentId, fileType);
+      let commentResult;
+      try {
+        commentResult = await feishuGetDocComment(fileToken, commentId, fileType);
+      } catch (firstError) {
+        // 某些文档事件的详情接口会返回 not exist，但评论列表接口能正常返回同一线程。
+        // 与 CatClaw 一样，详情失败后列出评论再按 comment_id 定位，不让事件静默丢失。
+        if (!/not exist|不存在|not_found/i.test(String(firstError.message || ""))) throw firstError;
+        const listed = await feishuListDocComments(fileToken, fileType);
+        const item = listed.items.find((entry) => String(entry.comment_id || entry.id) === commentId);
+        if (!item) throw firstError;
+        commentResult = { data: item, fileType: listed.fileType };
+      }
+      const comment = commentResult.data;
+      const effectiveFileType = commentResult.fileType || fileType;
       const text = feishuCommentPlainText(comment, replyId);
       if (!text) {
         logIm("feishu_doc", "sys", "文档评论没有可执行文本，已忽略", { doc: fileToken });
         return;
       }
+      const docText = await feishuGetDocText(fileToken, effectiveFileType);
+      const docTitle = feishuDocumentTitle(meta, docText, fileToken);
+      // 评论是用户的任务指令；正文属于引用上下文，不能和指令拼成一条普通用户消息。
+      // 否则模型很容易把整篇文档当成需要复述的聊天内容，尤其是长文档会直接污染最终回复。
+      const docContext = [
+        "你正在处理一条飞书云文档评论 @ 任务。",
+        `目标文档：${docTitle}`,
+        `文档标识：${fileToken}`,
+        "处理要求：先判断用户评论要求；文档正文只用于核对事实和决定是否需要更新。不要原样复述、复制或截断回显文档正文。",
+        "如果用户要求更新文档，必须实际调用已有文档工具完成修改；如果当前权限或工具不足，要明确说明原因和建议的下一步，不要声称已经更新。",
+        docText ? `【文档正文，仅供阅读】\n<feishu_document>\n${docText}\n</feishu_document>` : "【文档正文】读取失败，仅根据评论内容处理。",
+      ].join("\n");
       await runInbound({
         channel: "feishu_doc",
         sessionKey: `feishu_doc_${fileToken}`,
         text,
-        logExtra: { doc: fileToken },
-        reply: (out) => feishuReplyDocComment(fileToken, commentId, fileType, out),
+        projectContext: docContext,
+        logExtra: { doc: fileToken, docTitle, fileType: effectiveFileType, hasDocText: !!docText },
+        reply: (out) => feishuReplyDocComment(fileToken, commentId, effectiveFileType, out),
       });
     } catch (e) {
       logIm("feishu_doc", "error", `处理文档 @ 失败: ${String(e.message || e).slice(0, 200)}`, { doc: fileToken });
