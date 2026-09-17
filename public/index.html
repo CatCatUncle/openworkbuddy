@@ -1706,8 +1706,21 @@
   @keyframes wbPop { from { opacity: 0; transform: translateY(12px) scale(.97); } }
   @keyframes wbRise { from { opacity: 0; transform: translateY(6px); } }
 
+  /* 系统里开了「减弱动态效果」就别再动了。
+     这里不能照抄网上那段流传最广的写法（transition-duration: .01ms !important）：
+     transition-property 的初始值是 all，把时长从 0s 抬成 .01ms，等于给**每一个属性的每一次变化**
+     都真造出一个过渡对象来。过渡在 t=0 那一刻的值是**变化前**的旧值，于是改完样式紧接着
+     读 offsetHeight / getComputedStyle 拿到的是上一帧的数——侧栏那条拖拽线正是这么算夹取上限的
+     （histMax() 要用 nav.offsetHeight 和 hist.offsetHeight），开了这个开关的用户拖起来会夹错。
+     实测一屏就凭空多出 474 个过渡动画，本身也是白烧的性能。
+     直接写 0s：压根不生成过渡，改完立刻就是新值。全项目没有人监听 transitionend，不会有谁因此等不到事件。
+     动画那条仍留 .01ms（不是 0s）——animationend 还是得发出来，不然等它的代码会卡住。 */
   @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    *, *::before, *::after {
+      animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+      transition-duration: 0s !important; transition-delay: 0s !important;
+      scroll-behavior: auto !important;
+    }
   }
 
   /* 滚到底之后别把滚动传给外层：文件面板、设置弹窗、聊天流都是独立的一块，
