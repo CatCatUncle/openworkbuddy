@@ -244,13 +244,13 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 17** The licence question, settled: the copy you install has every feature — a commercial licence buys the right to make money with it, not an unlock. Deployment configs, CI, scripts and the eval set are MIT, take them
 - **Sep 17** The terminal asks you questions too now — "Word or PDF?"; `wb -f` attaches files and images, and typing `/` drops down the command menu
 - **Sep 17** Video generation speaks five protocols (Tongyi Wanxiang / Seedance / CogVideoX / Hailuo / SiliconFlow) — and refuses to send when it cannot tell which one, because per-clip billing makes a wasted call expensive
 - **Sep 17** Paste a key with a stray space or a full-width comma in it and it names the offending character on save, instead of a 401 later
 - **Sep 17** The home screen's scenes are regrouped by what you get back; the infinite canvas moved up the sidebar; `[report](report.md)` links in an answer now open the file
 - **Sep 17** Moving to a new machine: back up on the old one, import and restore on the new one — sessions, memory, accounts and the skills you wrote yourself all travel
 - **Sep 17** Say something while a task is running and you choose: cut in, or queue it until the task finishes (and a queued line can be taken back)
-- **Sep 17** Per-call paid APIs (search, image, video, voice) sit behind a quota gate; the admin console reports spend by day and by person
 - **Sep 14** An AI short-drama infinite canvas: script, characters, shots, assets and the cut, all on one canvas
 - **Sep 13** It can shoot video: shot list → you approve → character stills → first frame → video → voice → subtitled cut. Change one shot, only that shot costs again
 
@@ -280,7 +280,7 @@ Most docs are in Chinese; the code and comments are the source of truth.
 | [案例](docs/案例.md) | How the pictures above were made | [多人协作](docs/多人协作.md) | Multi-tenant, accounts, quotas |
 | [安装与启动](docs/安装与启动.md) | Installers, source, common snags | [安全](docs/安全.md) | Approval gates, allowlists, audit |
 | [配置模型](docs/配置模型.md) | base_url / model names per provider | [数据同步与搬家](docs/数据同步与搬家.md) | Where data lives, moving machines |
-| [命令行用法](docs/命令行用法.md) | CLI flags, pipes, `--json`, cron | [开源与商业版边界](docs/开源与商业版边界.md) | What's open, what's paid |
+| [命令行用法](docs/命令行用法.md) | CLI flags, pipes, `--json`, cron | [开源与商业版边界](docs/开源与商业版边界.md) | What a licence actually buys |
 | [扩展](docs/扩展.md) | Skills, MCP, plugins, experts | [路线图](docs/路线图.md) | What's next, what counts as done |
 | [IM与定时任务](docs/IM与定时任务.md) | Feishu / QQ / WeCom / WeChat / DingTalk | [实现细节](docs/实现细节.md) | How the agent loop actually runs |
 
@@ -289,7 +289,9 @@ Most docs are in Chinese; the code and comments are the source of truth.
 In one sentence: **personal, learning and non-profit use is free; making money with it (including internal productivity at a company) needs a commercial license from the author.**
 The license is [PolyForm Noncommercial 1.0.0](LICENSE); what counts as commercial and how to get one: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
 
-**Has the open-source edition been stripped? No.** What you see in this repo is everything: the agent loop, 40+ tools, the short-drama canvas, IM remote control, execution traces, memory and self-evolution — multi-tenancy and the admin console included. No feature flags, no trial countdown, no greyed-out "available in the commercial edition" buttons. The commercial license sells a different category of thing: SSO, audit export, air-gapped deployment, white-labeling, SLA. Where the line runs → [开源与商业版边界](docs/开源与商业版边界.md).
+**A commercial license unlocks nothing.** There is one codebase — this repo — and what you see is all of it: the agent loop, 40+ tools, the short-drama canvas, IM remote control, execution traces, memory and self-evolution, multi-tenancy and the admin console included. No feature flags, no trial countdown, no greyed-out "available in the commercial edition" buttons. What you buy is three other things: **a licence to make money with it, the door to trademark and white-labelling, and a person who picks up the phone.** Where the line runs → [开源与商业版边界](docs/开源与商业版边界.md).
+
+**Part of it isn't even restricted to non-commercial use.** Deployment configs, CI workflows, helper scripts, the evaluation task set, the skill template and the code samples in the docs are additionally MIT-licensed — take them → [LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md). And **skills, plugins and connector configs you write yourself are your own work**, not derivatives of this project.
 
 This license grants **no** rights to any third-party product, trademark, logo, brand asset or screenshot — those belong to their respective owners.
 

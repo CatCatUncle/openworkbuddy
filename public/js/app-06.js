@@ -483,7 +483,10 @@ function renderAboutPane(pane) {
       自己用、学习研究、学校与公益机构用 —— 免费，不用问。<br>
       公司或任何以营利为目的的使用（内部提效、对外产品、给客户交付、打包售卖）—— 需要单独购买商业授权。<br>
       名称「OpenWorkBuddy」和项目标志不在授权范围内，换名换标对外售卖要另谈。<br>
+      买授权不解锁功能：只有一份代码，你装的这份功能就是全部。买的是「可以拿它赚钱」这件事、商标口子和有人接电话。<br>
+      部署配置、CI、脚本、评测集、技能模板和文档里的示例代码另按 MIT 发布，商用也随便拿。<br>
       <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/COMMERCIAL-LICENSE.md" target="_blank" rel="noreferrer">商业授权怎么谈</a>
+      · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE-ECOSYSTEM.md" target="_blank" rel="noreferrer">哪些按 MIT</a>
       · <a class="link" href="https://github.com/CatCatUncle/openworkbuddy/blob/main/LICENSE" target="_blank" rel="noreferrer">许可证全文</a></div>
     </div>
     <div class="card-item">

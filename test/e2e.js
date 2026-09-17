@@ -842,7 +842,7 @@ function testDocLinkGate() {
   const docs = path.join(root, "docs");
   const mdUnder = (dir) => !fs.existsSync(dir) ? [] : fs.readdirSync(dir, { withFileTypes: true })
     .flatMap((e) => e.isDirectory() ? mdUnder(path.join(dir, e.name)) : e.name.endsWith(".md") ? [path.join(dir, e.name)] : []);
-  const files = ["README.md", "README.en.md", "CONTRIBUTING.md", "COMMERCIAL-LICENSE.md"]
+  const files = ["README.md", "README.en.md", "CONTRIBUTING.md", "COMMERCIAL-LICENSE.md", "LICENSE-ECOSYSTEM.md"]
     .map((f) => path.join(root, f))
     .filter((f) => fs.existsSync(f))
     .concat(mdUnder(docs));
@@ -8399,7 +8399,9 @@ function testNoticeCoverage() {
   // 光写对还不够，这份署名得真跟着包走。桌面版 asar:false，node_modules 原样发出去，
   // 而 files 是白名单——NOTICE.md 不点名就一个字都不进包，等于分发了别人的代码却没带署名。
   // 这种漏不报错、不崩溃，只有翻开装机包才看得见，所以钉在这儿。
-  const legal = ["LICENSE", "COMMERCIAL-LICENSE.md", "NOTICE.md"];
+  // LICENSE-ECOSYSTEM.md 也在这儿：LICENSE 正文点名让人去它那儿看「哪些路径按 MIT」，
+  // 它不进包的话，装机版里那句话指向一个不存在的文件——比不写还糟
+  const legal = ["LICENSE", "COMMERCIAL-LICENSE.md", "LICENSE-ECOSYSTEM.md", "NOTICE.md"];
   const shipped = (globs) => legal.filter((f) => !globs.includes(f));
   const cfgFiles = require(path.join(root, "electron-builder.config.js")).files;
   assert(shipped(cfgFiles).length === 0, "这几份法务文件没进安装包白名单：" + shipped(cfgFiles).join("、"));
