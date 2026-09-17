@@ -108,10 +108,12 @@ The hard part isn't drawing a person — it's keeping **the same** person across
 **"Build me a Hunan travel guide site — all 14 prefectures, no skipping."**
 
 <p align="center">
-  <a href="https://hunan-travel.pages.dev/"><img src="docs/images/case-hunan-site.jpg" width="820" alt="Hunan travel guide — a single-page site built by OpenWorkBuddy"></a>
+  <a href="https://hunan-travel.pages.dev/"><img src="docs/images/case-hunan-site.jpg" width="860" alt="Hunan travel guide: the ink-wash landing screen, and the index of all 14 prefectures grouped by region"></a>
 </p>
 
-It's live, go click around: **<https://hunan-travel.pages.dev/>**. Single-page HTML, no external CDN — drop it on any static host and it's a site. This isn't a mockup screenshot; it's the file it handed over.
+That's two screens — the landing and the province index. Below them sit 14 city cards, each with ticket prices, opening hours, how long to budget, what to eat and which trap to skip, plus three ready-made 3 / 5 / 7-day routes.
+
+**<https://hunan-travel.pages.dev/>** — it's live, go click around. One HTML file plus a folder of images: layout, motion and palette all live in that one file, no external CDN. Drop it on any static host and it's a site. Not a mockup — the thing it actually handed over.
 
 How it pulled those off → **[三个案例，拆开讲](docs/案例.md)** (Chinese, but the screenshots speak for themselves)
 

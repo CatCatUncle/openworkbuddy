@@ -15,6 +15,61 @@
 const { spawn } = require("child_process");
 
 const PROTOCOL_VERSION = "2025-06-18";
+
+/**
+ * 把连接失败翻译成「下一步该干什么」。
+ *
+ * 起因：Node 的 fetch 把所有网络层错误都压成一句 `fetch failed`，真凶埋在 e.cause.code 里。
+ * 界面直接显示 e.message，用户看到的就是干巴巴一句 fetch failed——分不清是端口没开、
+ * 域名写错、还是 Key 填错。飞书/QQ 那边早就改成「缺哪一半就写哪一半」了（见 app-05.js 里
+ * 那段注释），MCP 连接器这条路一直没跟上，这里补上。
+ *
+ * 只认有把握的几种；认不出来就老老实实回原文，不硬编故事。
+ */
+function whyFailed(err, cfg = {}) {
+  const raw = String((err && err.message) || err || "");
+  const cause = (err && err.cause) || {};
+  // fetch 失败时 cause 可能是 AggregateError（IPv4/IPv6 各试一次都挂了）。多数 Node 会把
+  // 第一个错的 code 抬到外层，但不保证——所以再往 errors[] 里翻一层兜底。
+  const code = cause.code || (Array.isArray(cause.errors) && cause.errors.length && cause.errors[0].code) || err.code || "";
+  const url = cfg.url || "";
+  const host = (() => { try { return new URL(url).host; } catch { return url; } })();
+  const cmd = cfg.command || "";
+
+  // —— HTTP：真凶在 cause 里 ——
+  if (code === "ECONNREFUSED") {
+    const local = /^(localhost|127\.0\.0\.1|\[::1\])/.test(host);
+    return local
+      ? `${host} 没有东西在听。这台服务要你先在本机把它跑起来，跑起来了再连`
+      : `连不上 ${host}（对方拒绝连接）。确认地址端口没写错、服务确实开着`;
+  }
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return `域名 ${host} 解析不了。检查地址拼写和本机 DNS／代理`;
+  if (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT") return `连 ${host} 超时，一直没握上手。多半是被墙、被防火墙挡了，或者要挂代理`;
+  if (code === "CERT_HAS_EXPIRED") return `${host} 的证书过期了`;
+  if (code === "DEPTH_ZERO_SELF_SIGNED_CERT" || code === "SELF_SIGNED_CERT_IN_CHAIN") return `${host} 用的是自签证书，Node 不认`;
+  if (code === "ECONNRESET" || /socket hang up/i.test(raw)) return `跟 ${host} 的连接被中途掐断了，重试一次看看`;
+
+  // —— HTTP 状态码：地址对了，是身份或路径的问题 ——
+  const st = raw.match(/HTTP\s+(\d{3})/);
+  if (st) {
+    const n = +st[1];
+    if (n === 401 || n === 403) return `${host} 拒绝了这次请求（${n}）。多半是 Key／令牌没填、填错或过期了`;
+    if (n === 404) return `${host} 上没有这个地址（404）。对一下 MCP 端点路径，常见是少了结尾的 /mcp`;
+    if (n >= 500) return `${host} 自己出错了（${n}），不是这边的问题，过会儿再试`;
+  }
+
+  // —— stdio：命令没装，是目前最常见的一种 ——
+  if (code === "ENOENT" || /spawn .* ENOENT/.test(raw)) {
+    const base = cmd.split("/").pop();
+    const tip = base === "npx" ? "先装 Node.js" : base === "uvx" ? "先装 uv（curl -LsSf https://astral.sh/uv/install.sh | sh）" : `先把 ${base} 装上`;
+    return `找不到命令 ${base || cmd}。${tip}`;
+  }
+  if (/退出码 127/.test(raw)) return `${cmd || "启动命令"} 跑起来了，但它要调的东西不在 PATH 上`;
+  if (/超时/.test(raw) && /\.(initialize|tools\/list)/.test(raw)) return `连上了但迟迟没握手完。${cmd ? "第一次跑要下载依赖，可能就是慢；再试一次通常就好" : "对方没按 MCP 协议回话"}`;
+
+  return raw || "连接失败，没拿到原因";
+}
+
 const CLIENT_INFO = { name: "openworkbuddy", version: "0.1.0" };
 
 /** 子进程 + 按行 JSON-RPC。响应是异步回来的，所以要自己维护 id → pending 表。 */
@@ -274,8 +329,10 @@ class McpManager {
         const from = cfg.plugin ? `插件 ${cfg.plugin} · ` : "";
         console.log(`[MCP] ${from}${cfg.name}(${client.kind}) 已连接，提供 ${tools.length} 个工具: ${tools.map((t) => t.name).join(", ")}`);
       } catch (e) {
-        console.warn(`[MCP] ${cfg.name} 连接失败: ${e.message}`);
-        this.failures.push({ name: cfg.name, plugin: cfg.plugin || "", error: e.message });
+        // 存翻译过的那句：界面上显示的就是这条，e.message 原文对用户没有信息量
+        const why = whyFailed(e, cfg);
+        console.warn(`[MCP] ${cfg.name} 连接失败: ${why}${why === e.message ? "" : `（原文 ${e.message}）`}`);
+        this.failures.push({ name: cfg.name, plugin: cfg.plugin || "", error: why, raw: e.message });
         client.stop();
       }
     }
@@ -355,4 +412,4 @@ class McpManager {
   }
 }
 
-module.exports = { McpManager, McpClient, StdioTransport, HttpTransport, PROTOCOL_VERSION };
+module.exports = { McpManager, McpClient, StdioTransport, HttpTransport, PROTOCOL_VERSION, whyFailed };

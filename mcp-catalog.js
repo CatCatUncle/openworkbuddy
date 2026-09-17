@@ -62,8 +62,10 @@ const ITEMS = [
   http("cloudflare-docs", "Cloudflare 文档", "cloud", "Cloudflare 官方文档检索，免 Key", "搜索与网页",
     "https://docs.mcp.cloudflare.com/mcp", { docs: "https://github.com/cloudflare/mcp-server-cloudflare" }),
   // ---- 数据库 ----
+  // --with 'mcp<2'：这两个上游包都还在用 mcp.server.fastmcp，Python SDK 2.x 把 FastMCP 改名成了
+  // MCPServer，装最新 SDK 就 ModuleNotFoundError 起不来。钉住 1.x 是它们修好之前唯一能跑的装法。
   uvx("postgres", "PostgreSQL", "database", "查表结构、跑 SQL、看慢查询（默认受限模式，不会误删）", "数据库",
-    ["postgres-mcp", "--access-mode=restricted"], { env: { DATABASE_URI: "postgresql://user:password@localhost:5432/dbname" }, docs: "https://github.com/crystaldba/postgres-mcp" }),
+    ["--with", "mcp<2", "postgres-mcp", "--access-mode=restricted"], { env: { DATABASE_URI: "postgresql://user:password@localhost:5432/dbname" }, docs: "https://github.com/crystaldba/postgres-mcp" }),
   std("mysql", "MySQL", "database", "查表和跑 SQL（默认只读）", "数据库",
     ["@benborla29/mcp-server-mysql"], { env: { MYSQL_HOST: "127.0.0.1", MYSQL_PORT: "3306", MYSQL_USER: "", MYSQL_PASS: "", MYSQL_DB: "" }, docs: "https://github.com/benborla/mcp-server-mysql" }),
   std("mongodb", "MongoDB", "leaf", "查集合、聚合、看索引", "数据库",
@@ -71,7 +73,7 @@ const ITEMS = [
   uvx("redis", "Redis", "server", "读写键值、看队列和集合", "数据库",
     ["--from", "redis-mcp-server@latest", "redis-mcp-server", "--url", "redis://localhost:6379/0"], { docs: "https://github.com/redis/mcp-redis" }),
   uvx("sqlite", "SQLite", "hard-drive", "本地单文件数据库，参数里改成你的 .db 路径", "数据库",
-    ["mcp-server-sqlite", "--db-path", "{HOME}/Documents/data.db"], { docs: "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/sqlite" }),
+    ["--with", "mcp<2", "mcp-server-sqlite", "--db-path", "{HOME}/Documents/data.db"], { docs: "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/sqlite" }),
   // ---- 协作与文档 ----
   std("notion", "Notion", "notebook-pen", "读写 Notion 页面和数据库", "协作与文档",
     ["@notionhq/notion-mcp-server"], { env: { NOTION_TOKEN: "" }, docs: "https://www.notion.so/profile/integrations" }),
@@ -81,12 +83,6 @@ const ITEMS = [
     ["@larksuiteoapi/lark-mcp", "mcp"], { env: { APP_ID: "", APP_SECRET: "" }, docs: "https://open.feishu.cn/app" }),
   std("excel", "Excel 表格", "file-spreadsheet", "读写本地 .xlsx：读单元格、写数据、建工作表", "协作与文档",
     ["@negokaz/excel-mcp-server"], { docs: "https://github.com/negokaz/excel-mcp-server" }),
-  // 这一条和上面几条不是一个量级：它自己就是个网关，一条接进来后面挂着一千多家服务。
-  // 代价是得自己先把它跑起来（docker compose up），所以地址写死本机 3000，标签也不叫「远程」。
-  // 凭据留在它那一侧，我们这边只拿到 action 的 schema 和执行结果——和本项目的审批闸门是一个路子。
-  http("openconnector", "OpenConnector 网关", "blocks",
-    "一条顶一片：自建的连接器网关，接上之后 Gmail / Slack / Notion / GitHub / BigQuery 等 1000+ 服务的现成动作都能直接调。需要先在本机 docker compose up 把它跑起来（默认 3000 端口），凭据存在它那边，不经过智能体",
-    "协作与文档", "http://localhost:3000/mcp", { tag: "本机网关", docs: "https://github.com/oomol-lab/open-connector" }),
   // ---- 地图与出行 ----
   std("amap", "高德地图", "map", "地理编码、周边搜索、路线规划、天气", "地图与出行",
     ["@amap/amap-maps-mcp-server"], { env: { AMAP_MAPS_API_KEY: "" }, docs: "https://lbs.amap.com/api/mcp-server/summary" }),
