@@ -50,7 +50,7 @@
 ### 1.3 Key 一共能从哪儿来
 
 1. `config.json` 的 `providers[].api_key`（设置页写的就是它）
-2. `WB_KEY_<渠道id>` 环境变量 —— **这轮新加的**
+2. `OPENWORKBUDDY_KEY_<渠道id>` 环境变量 —— **这轮新加的**
 3. `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` —— 通用兜底，现在只发给这家自己的域名
 4. 搜索那一路另有三个：`JINA_API_KEY` / `TAVILY_API_KEY` / `BRAVE_API_KEY`（`tools.js`）
 
@@ -70,7 +70,7 @@ $ ls -l config.json config.json.bak
 这是全机器上**唯一一份明文装着所有 API Key 的文件**，而同一台 VPS、同一台办公电脑上的
 任何一个别的账号，一句 `cat` 就把九把 Key 全拿走了。
 
-连坐的还有两处：`.bak` 跟正本一字不差；`data/backups/wb-backup-*.tar.gz` 里装着
+连坐的还有两处：`.bak` 跟正本一字不差；`data/backups/openworkbuddy-backup-*.tar.gz` 里装着
 config.json + 账号表 + 积分账本 + 审计流水——下载接口是管理员专属的，可文件本身就躺在那儿，
 等于绕开了上面所有的权限判断。
 
@@ -150,18 +150,18 @@ store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true, mode: store.SECRET_MO
 | 优先级 | 来源 | 认哪些地址 |
 |---|---|---|
 | ① | 渠道自己填的 `api_key` | 全认 |
-| ② | `WB_KEY_<渠道id>` | 全认（用户点了名，不存在发错家） |
+| ② | `OPENWORKBUDDY_KEY_<渠道id>` | 全认（用户点了名，不存在发错家） |
 | ③ | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | **只发给这家自己的域名**，或地址留空（= 走官方） |
 
 第 ② 级是顺手补上的一块：Docker / VPS 部署不用再把明文 Key 写进 config.json 了。
-渠道 id 就是设置页那张卡上的 id，大写、非字母数字换成下划线：`openrouter-2` → `WB_KEY_OPENROUTER_2`。
+渠道 id 就是设置页那张卡上的 id，大写、非字母数字换成下划线：`openrouter-2` → `OPENWORKBUDDY_KEY_OPENROUTER_2`。
 
 ③ 被跳过时在控制台说一次为什么、该怎么办——不说的话，用户只会看到一句 401，然后以为是软件坏了：
 
 ```
 [模型] 渠道「Kimi」没填 Key，环境变量 OPENAI_API_KEY 也没用上——它是 OpenAI 的 Key，
 这条渠道打的是 api.moonshot.cn，发过去等于把 Key 交给了别家。
-要给这条渠道配 Key：设置 → 模型 里填，或者设环境变量 WB_KEY_KIMI。
+要给这条渠道配 Key：设置 → 模型 里填，或者设环境变量 OPENWORKBUDDY_KEY_KIMI。
 ```
 
 本机地址（localhost / 127.0.0.1）不唠叨：绝大多数是 Ollama，它压根不要 Key。
@@ -191,7 +191,7 @@ store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true, mode: store.SECRET_MO
 | 段 | 判什么 | 负向对照 |
 |---|---|---|
 | ① | 存完是 0600、`.bak` 同待遇、老机器开机就修好 | 不传 mode 的流水账文件**不该**被收紧（证明 mode 真在起作用） |
-| ② | `OPENAI_API_KEY` 不发给别家域名 | 地址就是 OpenAI 官方时**必须**照认（不能因噎废食）；`WB_KEY_<渠道>` 点名生效；渠道自己填的压得住环境变量；本机不唠叨 |
+| ② | `OPENAI_API_KEY` 不发给别家域名 | 地址就是 OpenAI 官方时**必须**照认（不能因噎废食）；`OPENWORKBUDDY_KEY_<渠道>` 点名生效；渠道自己填的压得住环境变量；本机不唠叨 |
 | ③ | 撞 401 说人话且点名渠道、给出下一步 | —— |
 | ④ | 换 Key 进审计流水 | 流水里**不许**出现 Key 明文，且要能认出是哪一把 |
 
@@ -223,8 +223,8 @@ VPS / Docker 上装，推荐这么配 Key：
 
 ```bash
 # 不把明文 Key 写进 config.json——渠道 id 在 设置 → 模型 的卡片上能看到
-export WB_KEY_DEEPSEEK=sk-xxx
-export WB_KEY_OPENROUTER=sk-or-xxx
+export OPENWORKBUDDY_KEY_DEEPSEEK=sk-xxx
+export OPENWORKBUDDY_KEY_OPENROUTER=sk-or-xxx
 ```
 
 已经写进 config.json 的不用动，它优先级最高。检查一下权限：

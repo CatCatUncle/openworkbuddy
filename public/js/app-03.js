@@ -24,15 +24,15 @@ async function renderAccount() {
   const isAdmin = d.user.role === "admin";
   mBody.innerHTML = `
     <div class="card-item">
-      <div class="t">${(() => { const a = avatarBits(d.user.avatar, d.user.username); return `<span class="ava${a.cls ? " " + a.cls : ""}" style="width:22px;height:22px;border-radius:50%;background:var(--wb-brand-grad);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size: 13px;overflow:hidden;vertical-align:-6px">${a.html}</span>`; })()}
+      <div class="t">${(() => { const a = avatarBits(d.user.avatar, d.user.username); return `<span class="ava${a.cls ? " " + a.cls : ""}" style="width:22px;height:22px;border-radius:50%;background:var(--owb-brand-grad);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size: 13px;overflow:hidden;vertical-align:-6px">${a.html}</span>`; })()}
         ${esc(displayName(d.user))}（${d.user.role === "admin" ? "管理员" : "成员"}${d.user.nickname ? " · 登录名 " + esc(d.user.username) : ""}）
         <button id="acc-logout" style="float:right;padding:2px 10px;font-size: 13px">退出登录</button>
         <button id="acc-pass" style="float:right;padding:2px 10px;font-size: 13px;margin-right:6px">改密码</button>
         <button id="acc-profile" style="float:right;padding:2px 10px;font-size: 13px;margin-right:6px">改名字 / 头像</button>
       </div>
       <div class="d">${creditsOn
-        ? `积分余额 <b style="color: var(--wb-brand-text);font-size:16px">${ic("sparkles")} ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，命中缓存的部分按 1/10 折算（上游就是这么收的），每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）`
-        : `<b style="color: var(--wb-brand-text)">不限额</b> · 任务想跑多少跑多少，下面的用量只是给你看花了多少 tokens，不会拦人`}</div>
+        ? `积分余额 <b style="color: var(--owb-brand-text);font-size:16px">${ic("sparkles")} ${(+d.user.credits).toLocaleString()}</b> · 计费规则：每 1000 tokens 扣 1 积分，命中缓存的部分按 1/10 折算（上游就是这么收的），每次任务至少 1 积分（网页/CLI/IM/定时任务同一本账）`
+        : `<b style="color: var(--owb-brand-text)">不限额</b> · 任务想跑多少跑多少，下面的用量只是给你看花了多少 tokens，不会拦人`}</div>
       ${isAdmin ? `${creditsOn ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
         <input id="topup-user" placeholder="给谁充（留空=自己）" style="max-width:150px">
         <input id="topup-amt" type="number" placeholder="积分数" style="max-width:110px">
@@ -71,7 +71,7 @@ async function renderAccount() {
           <td${e.kind === "topup" ? "" : ` title="输入 ${(e.prompt || 0).toLocaleString()}（其中缓存命中 ${e.cached != null ? e.cached.toLocaleString() : "未统计"}）· 输出 ${(e.completion || 0).toLocaleString()}"`}>${e.kind === "topup" ? "—" : ((e.prompt || 0) + (e.completion || 0)).toLocaleString()}</td>
           ${creditsOn ? `<td>${e.kind === "topup" ? "+" : "-"}${e.credits}</td>` : ""}
           <td>${esc(e.model || "—")}</td>
-        </tr>`).join("") || `<tr><td colspan="7" style="color:var(--wb-text-3)">还没有用量记录</td></tr>`}
+        </tr>`).join("") || `<tr><td colspan="7" style="color:var(--owb-text-3)">还没有用量记录</td></tr>`}
       </table></div>
     </div>`;
   document.getElementById("acc-logout").onclick = async () => {
@@ -136,7 +136,7 @@ async function renderAccount() {
 }
 
 // ================= 登录 / 注册 =================
-let authMode = "login"; // login | register
+let authMode = "login"; // login | register | pair
 let canRegister = false; // 管理员开了才给注册入口，省得点进去再被拒
 /**
  * 邀请码：管理后台生成、发给人、人拿它注册——这条路后端一直是通的
@@ -151,71 +151,181 @@ let canRegister = false; // 管理员开了才给注册入口，省得点进去�
  *   3. 认 URL 上的 ?invite=xxxx，管理后台复制出去的是一条链接，点开就已经填好了。
  */
 let invitePrefill = "";
+let pairPrefill = "";
 function showAuth(setup) {
   try {
     const u = new URL(location.href);
     invitePrefill = (u.searchParams.get("invite") || "").trim();
-    if (invitePrefill) {
-      // 邀请码留在地址栏上，刷新一次又走一遍注册、分享链接时还会把码带出去。读完就擦掉。
+    pairPrefill = (u.searchParams.get("pair") || "").trim();
+    if (invitePrefill || pairPrefill) {
+      // 码留在地址栏上，刷新一次又走一遍、分享链接时还会把码带出去。读完就擦掉。
+      // 配对码尤其不能留：它是一把能直接开门的钥匙，而地址栏是这台设备上最公开的地方
       u.searchParams.delete("invite");
+      u.searchParams.delete("pair");
       history.replaceState(null, "", u.pathname + (u.search || "") + u.hash);
     }
   } catch {}
-  authMode = setup || invitePrefill ? "register" : "login";
+  authMode = pairPrefill ? "pair" : setup || invitePrefill ? "register" : "login";
   applyAuthMode(setup);
   document.getElementById("auth-mask").classList.add("show");
-  setTimeout(() => document.getElementById("auth-user").focus(), 50);
+  setTimeout(() => document.getElementById(authMode === "pair" ? "auth-pair" : "auth-user").focus(), 50);
 }
 function applyAuthMode(setup) {
   const reg = authMode === "register";
+  const pair = authMode === "pair";
   const inv = document.getElementById("auth-invite");
-  document.getElementById("auth-title").textContent = setup ? "创建管理员账号" : reg ? "注册" : "登录";
-  document.getElementById("auth-sub").textContent = setup
+  // 配对模式下把用户名密码收起来——这条路的全部意义就是**不用**在这台设备上敲密码。
+  // 两个框还摆在那儿，人多半还是会去填，那这个功能就白做了
+  document.getElementById("auth-user").style.display = pair ? "none" : "";
+  document.querySelector(".auth-pw").style.display = pair ? "none" : "";
+  const pc = document.getElementById("auth-pair");
+  const pn = document.getElementById("auth-pair-name");
+  pc.style.display = pair ? "" : "none";
+  pn.style.display = pair ? "" : "none";
+  if (pair && pairPrefill && !pc.value) pc.value = pairPrefill;
+  // pair 要排在 setup 前面，跟上面那行 authMode 的优先级保持一致。
+  // 顺序反过来会出这么一幕（真浏览器里量到的）：服务器刚重装、一个账号都还没有，
+  // 有人从手机历史里点开旧的配对链接 —— 底下那半张脸已经是配对表单了
+  // （用户名密码都收起来了、码也填好了、按钮写着「连接」），
+  // 上面标题却还在说「创建管理员账号」，副标题教人怎么开管理员号。两句话互相打架。
+  document.getElementById("auth-title").textContent = pair ? "用配对码连接" : setup ? "创建管理员账号" : reg ? "注册" : "登录";
+  document.getElementById("auth-sub").textContent = pair
+    ? "在那台已经登录的电脑上打开 设置 → 安全 → 远程访问，生成一个配对码填到这儿。密码不用敲进这台设备。"
+    : setup
     ? "首次使用：第一个注册的账号就是管理员（能开号、能改全局设置）"
     : reg
     ? invitePrefill
       ? "用管理员给你的邀请码开号，角色和部门都按他设好的来"
       : creditsOn ? "新账号默认为成员（1000 积分）" : "新账号默认为成员"
     : "登录后使用你自己的任务历史";
-  document.getElementById("auth-go").textContent = reg ? "注册并登录" : "登录";
+  document.getElementById("auth-go").textContent = pair ? "连接" : reg ? "注册并登录" : "登录";
   // 首次建管理员那次不要邀请码：那会儿一个组织都还没有，没人能给他发码
   inv.style.display = reg && !setup ? "" : "none";
   // 自助注册开着的时候邀请码是可选的，得在框里说明白——不然人看见个空框就以为自己缺了什么东西
   inv.placeholder = canRegister && !invitePrefill ? "邀请码（没有就留空）" : "邀请码（管理员给你的）";
   if (reg && invitePrefill && !inv.value) inv.value = invitePrefill;
   document.getElementById("auth-invite-hint").style.display = reg && !setup && invitePrefill ? "" : "none";
-  document.getElementById("auth-alt").style.display = setup || !canRegister ? "none" : "";
+  document.getElementById("auth-alt").style.display = setup || pair || !canRegister ? "none" : "";
   document.getElementById("auth-alt").innerHTML = reg
     ? '已有账号？<a id="auth-switch">去登录</a>'
     : '还没有账号？<a id="auth-switch">注册一个</a>';
   document.getElementById("auth-switch")?.addEventListener("click", () => { authMode = reg ? "login" : "register"; applyAuthMode(false); });
   // 自助注册关着也要留这条路：邀请码是管理员一个一个发的，本来就不该受那个开关管
   const ia = document.getElementById("auth-invite-alt");
-  ia.style.display = setup || reg ? "none" : "";
+  ia.style.display = setup || reg || pair ? "none" : "";
   ia.innerHTML = '有邀请码？<a id="auth-invite-go">用邀请码注册</a>';
   document.getElementById("auth-invite-go")?.addEventListener("click", () => {
     authMode = "register";
     applyAuthMode(false);
     setTimeout(() => document.getElementById("auth-invite").focus(), 30);
   });
+  // 首次建管理员那次不显示这条：一个用户都还没有，谁也生不出配对码
+  const pa = document.getElementById("auth-pair-alt");
+  pa.style.display = setup ? "none" : "";
+  pa.innerHTML = pair
+    ? '<a id="auth-pair-back">用账号密码登录</a>'
+    : '在手机或别的电脑上？<a id="auth-pair-go">用配对码连接</a>';
+  pa.querySelector("#auth-pair-go")?.addEventListener("click", () => {
+    authMode = "pair";
+    applyAuthMode(false);
+    setTimeout(() => document.getElementById("auth-pair").focus(), 30);
+  });
+  pa.querySelector("#auth-pair-back")?.addEventListener("click", () => {
+    authMode = "login";
+    applyAuthMode(false);
+    setTimeout(() => document.getElementById("auth-user").focus(), 30);
+  });
+  // 忘了密码。**没有「发一封重置邮件」这条路**——本项目默认装在你自己的电脑或自己的 VPS 上，
+  // 为一个一年用两次的功能接一整套 SMTP、发信域名、反垃圾记录，代价和攻击面都不划算
+  //（那条重置链接本身就是一把能登进来的钥匙，它会躺在邮箱里）。
+  // 所以这里不摆一个点了没反应的「发送重置邮件」按钮，而是直说该去哪儿、敲哪一句。
+  // 只在登录态显示：注册和首次建管理员时还没有密码可忘，配对那条路压根不用密码。
+  const fa = document.getElementById("auth-forgot-alt");
+  const fh = document.getElementById("auth-forgot-hint");
+  fa.style.display = setup || reg || pair ? "none" : "";
+  if (setup || reg || pair) fh.style.display = "none";
+  fa.innerHTML = '忘了密码？<a id="auth-forgot-go">改回来的办法</a>';
+  fa.querySelector("#auth-forgot-go")?.addEventListener("click", () => {
+    const open = fh.style.display === "none";
+    fh.style.display = open ? "" : "none";
+    if (open) fh.innerHTML = forgotHintHtml();
+  });
   document.getElementById("auth-err").textContent = "";
+  // 换模式 = 这一次登录重来。上一次输到一半的二次验证状态不能跟过来——
+  // 留着的话，人去注册页转一圈回来，框还摆在那儿，他会以为新账号也要填码
+  twoFaStep = false;
+  document.getElementById("auth-code").value = "";
+  document.getElementById("auth-code").style.display = "none";
+  document.getElementById("auth-code-hint").style.display = "none";
 }
+/**
+ * 「忘了密码怎么办」那段话。
+ *
+ * 两种人会点开它，答案不一样，所以两句都得写：
+ *   · 服务器就是自己这台 —— 开个终端敲一句就完事；
+ *   · 用的是同事/公司的服务器 —— 自己敲不了，得找管理员在后台重置。
+ * 只写前一句，第二种人会去翻一个他根本没有权限碰的终端；只写后一句，
+ * 一个人单机用的时候就没有任何出路了（而这恰恰是最常见的装法）。
+ */
+function forgotHintHtml() {
+  // 每句话单独一行、命令单独一块：一来照着敲不容易抄错，二来切英文时整句整句地换，
+  // 不会出现「半句中文半句英文」——i18n 换的是文本节点，句子被标签劈开就会劈着翻。
+  return `<div>在跑着这个服务的那台电脑上开个终端，敲一句：</div>
+    <code>openworkbuddy passwd your-username</code>
+    <div>屏幕上会出现一串新密码，拿它登进来，再到「设置 → 账号」里改成自己记得住的。</div>
+    <div>用的是别人的服务器？那就找管理员——他在管理后台的「成员」里能给你重置。</div>
+    <div>手机也丢了、二次验证进不去？在同一台机器上再敲一句这个：</div>
+    <code>openworkbuddy 2fa your-username --off</code>`;
+}
+/**
+ * 登录到了第二步没有：密码对了、还差一个 6 位码。
+ *
+ * 这一步是**后端说了算**的：密码对但没给码的时候它回 401 + `need_2fa`，这边才把框摆出来。
+ * 前端自己猜不得——「这个账号开没开二次验证」得等密码对了才能说，一上来就把框画出来，
+ * 等于拿账号名去问服务器「他开了吗」，撞库的人最想先知道的就是这个。
+ */
+let twoFaStep = false;
 async function submitAuth() {
+  if (authMode === "pair") return submitPair();
   const username = document.getElementById("auth-user").value.trim();
   const password = document.getElementById("auth-pass").value;
   const invite = document.getElementById("auth-invite").value.trim();
+  const code = document.getElementById("auth-code").value.trim();
   const errEl = document.getElementById("auth-err");
   if (!username || !password) { errEl.textContent = "用户名和密码都要填"; return; }
+  if (twoFaStep && !code) { errEl.textContent = "把验证器上的 6 位数字填进来"; return; }
   const reg = authMode === "register";
   const go = document.getElementById("auth-go");
   go.disabled = true; // scrypt 要算一会儿，不锁住的话用户会连点，服务端那边就多几次限流计数
   const resp = await fetch(reg ? "/api/auth/register" : "/api/auth/login", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(reg && invite ? { username, password, invite } : { username, password }),
+    body: JSON.stringify(reg && invite ? { username, password, invite } : code ? { username, password, code } : { username, password }),
   }).catch(() => null);
   go.disabled = false;
   const d = resp ? await resp.json().catch(() => ({})) : {};
-  if (resp && resp.ok) return location.reload(); // 带上 cookie 重新初始化整个界面（最省事也最不易漏）
+  if (resp && resp.ok) {
+    // 恢复码剩几条，后端顺手写在响应头上。用掉一条就提醒一次——
+    // 剩 0 条的时候手机再丢一次就真进不来了，而这件事没人会主动去查
+    const left = resp.headers.get("X-Recovery-Left");
+    if (left !== null) { try { sessionStorage.setItem("owb-recovery-left", left); } catch {} }
+    return location.reload(); // 带上 cookie 重新初始化整个界面（最省事也最不易漏）
+  }
+  if (d.need_2fa) {
+    const codeEl = document.getElementById("auth-code");
+    const first = !twoFaStep;
+    twoFaStep = true;
+    codeEl.style.display = "";
+    document.getElementById("auth-code-hint").style.display = "";
+    document.getElementById("auth-go").textContent = "验证并登录";
+    // 码错了就把框清空：留着上一次那六位数，人多半会直接再点一次按钮，
+    // 白撞一次限流计数（而二次验证的错码是**计次**的）
+    if (!first) codeEl.value = "";
+    codeEl.focus();
+    // 第一次进这一步不算「错」，只是还差一步，别用红字吓人
+    errEl.textContent = first ? "" : (d.error || "验证码不对");
+    if (first) document.getElementById("auth-code-hint").scrollIntoView?.({ block: "nearest" });
+    return;
+  }
   errEl.textContent = d.error || "失败了，稍后再试";
   // 「要邀请码才能注册」是后端在自助注册关着时的原话——那就把那个框摆出来给他填
   if (/邀请码/.test(String(d.error || "")) && authMode === "register") {
@@ -223,6 +333,39 @@ async function submitAuth() {
     document.getElementById("auth-invite").focus();
   }
 }
+/**
+ * 拿配对码换一条设备令牌。
+ *
+ * 这条路存在的全部理由是**密码不用敲进这台设备**——手机丢了，在电脑上把这台踢掉就完了，
+ * 不用改密码、不用把别的设备一起踢下线。
+ */
+async function submitPair() {
+  const errEl = document.getElementById("auth-err");
+  const code = document.getElementById("auth-pair").value.trim();
+  if (!code) { errEl.textContent = "把电脑上显示的那串码填进来"; return; }
+  const go = document.getElementById("auth-go");
+  go.disabled = true;
+  const resp = await fetch("/api/devices/claim", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, name: document.getElementById("auth-pair-name").value.trim() }),
+  }).catch(() => null);
+  go.disabled = false;
+  const d = resp ? await resp.json().catch(() => ({})) : {};
+  if (resp && resp.ok) return location.reload();
+  errEl.textContent = d.error || "连不上，稍后再试";
+  // 码错了就把框清空并选中：这串是照着敲的，错了多半要整串重敲，
+  // 让他在一串敲错的字符里找那一个错字，不如直接给个干净的框
+  const pc = document.getElementById("auth-pair");
+  pc.select();
+}
+// 敲的时候自动补上中间那道横杠，并统一成大写：码本身是大写的，
+// 手机键盘默认小写，不归一化的话第一次十有八九直接被拒
+document.getElementById("auth-pair").addEventListener("input", (e) => {
+  const raw = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+  e.target.value = raw.length > 4 ? raw.slice(0, 4) + "-" + raw.slice(4) : raw;
+});
+document.getElementById("auth-pair").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
+document.getElementById("auth-pair-name").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
 document.getElementById("auth-go").onclick = submitAuth;
 document.getElementById("auth-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
 document.getElementById("auth-invite").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
@@ -268,6 +411,35 @@ function showAuthBlocked(status, user) {
   };
 }
 
+/**
+ * 组织开了「强制二次验证」，而这个人还没绑：把绑定页挡在工作台前面。
+ *
+ * 这道门必须在这儿，不能只靠设置页里那张卡——那一刻后端对他每一个 `/api/*` 都回 403，
+ * 工作台画出来也是一屏点什么弹什么错的死界面，而唯一的出路（绑定）恰恰藏在
+ * 一个他同样打不开的设置页里。管理员今天把开关一拨，昨天还在正常用的人明天就卡在这儿——
+ * 卡住是对的，但得告诉他往哪儿走。
+ *
+ * 绑定流程本身跟设置页里的是同一段代码（app-06.js 的 renderTwoFactorBox），
+ * 传 gate:true 让它绑完整页重来：那一刻起后端才肯放行，半途初始化过的界面不如推倒重画。
+ */
+function showTwoFactorGate(user) {
+  const card = document.querySelector("#auth-mask .auth-card");
+  card.classList.add("auth-2fa");
+  card.innerHTML = `
+    <h2>先绑一下二次验证</h2>
+    <div class="sub"><span>你的组织要求所有人都开二次验证。</span><b>${esc(displayName(user) || "")}</b><span> 还没绑，绑完就能正常用了——这一步之后，光有密码登不进你的账号。</span></div>
+    <div id="tfa-box" style="font-size:13px">读取中…</div>
+    <div class="alt" style="text-align:left;margin-top:14px">
+      <span>绑不了？</span><a id="tfa-gate-out">退出登录</a><span>换个账号，或者找管理员到 企业管理后台 → 客户端安全 里把「强制二次验证」关掉。</span>
+    </div>`;
+  document.getElementById("auth-mask").classList.add("show");
+  document.getElementById("tfa-gate-out").onclick = async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    location.reload();
+  };
+  renderTwoFactorBox(card.querySelector("#tfa-box"), { gate: true });
+}
+
 async function initAuth() {
   const st = await fetch("/api/auth/state").then(r => r.json()).catch(() => null);
   if (!st) return; // 服务器没起来时不挡界面
@@ -276,16 +448,24 @@ async function initAuth() {
   if (!st.authed) { showAuth(st.users === 0); return; }
   // 登录了不等于用得了：待审核 / 已停用的人到此为止，后面那一整套初始化全是白跑
   if (st.status === "pending" || st.status === "disabled") return showAuthBlocked(st.status, st.user);
+  // 强制二次验证还没绑：同理，后面那一整套初始化全是白跑（每一条都会 403）
+  if (st.need_2fa_setup) return showTwoFactorGate(st.user);
   currentUser = st.user;
   renderUserChip();
   // 助理身份要在第一条消息渲染之前就位，否则头像会先闪一下默认值
   assistant = { ...assistant, ...(await fetch("/api/assistant").then(r => r.json()).catch(() => null) || {}) };
   applyAssistantIdentity();
-  // 每人一份任务历史：切到带用户名的 key；首个用户继承旧的公共列表
-  SESS_KEY = "wb_sessions:" + st.user.username;
-  if (!localStorage.getItem(SESS_KEY) && localStorage.getItem("wb_sessions")) {
-    localStorage.setItem(SESS_KEY, localStorage.getItem("wb_sessions"));
-    localStorage.removeItem("wb_sessions");
+  // 每人一份任务历史：切到带用户名的 key。旧键名按「先私有后公共」认一次就搬走：
+  //   owb_sessions          —— 改名后、还没分账号那阵的公共列表
+  //   wb_sessions:<用户名>  —— 改名前的私有列表（前缀退休了，浏览器里还留着）
+  //   wb_sessions           —— 更早的公共列表
+  // 这一段是一次性的：不认这几个旧名字，老用户升上来侧边栏的任务历史会整个空掉。
+  SESS_KEY = "owb_sessions:" + st.user.username;
+  if (!localStorage.getItem(SESS_KEY)) {
+    for (const k of ["owb_sessions", "wb_sessions:" + st.user.username, "wb_sessions"]) {
+      const v = localStorage.getItem(k);
+      if (v) { localStorage.setItem(SESS_KEY, v); localStorage.removeItem(k); break; }
+    }
   }
   sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
   renderHistory();
@@ -422,8 +602,8 @@ let onbState = null;
 let onbSkipMem = false;
 function onbSkipFlag(set) {
   try {
-    if (set) sessionStorage.setItem("wb_onb_skipped", "1");
-    else return onbSkipMem || sessionStorage.getItem("wb_onb_skipped") === "1";
+    if (set) sessionStorage.setItem("owb_onb_skipped", "1");
+    else return onbSkipMem || sessionStorage.getItem("owb_onb_skipped") === "1";
   } catch { /* 存储不可用 */ }
   if (set) onbSkipMem = true;
   return onbSkipMem;
@@ -817,12 +997,53 @@ async function finishOnb({ dir, silent } = {}) {
 let assistViewOn = false;
 let pageKind = null;
 let assistTimer = null;
+/**
+ * 按需把脚本拉进来，只拉一次。
+ *
+ * 首屏原先要背着无限画布那 686KB 走（joint + dagre + 画布本体），而画布是个标签页——
+ * 来聊天的人从头到尾不会点它。现在挪到这儿：点进去那一刻才拿。
+ */
+const scriptCache = new Map(); // src → Promise
+function loadScriptOnce(src) {
+  if (scriptCache.has(src)) return scriptCache.get(src);
+  const p = new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = () => resolve();
+    // 失败了要把这条从缓存里删掉，否则第一次没网、之后有网了也永远重试不了
+    el.onerror = () => { scriptCache.delete(src); reject(new Error(src)); };
+    document.head.appendChild(el);
+  });
+  scriptCache.set(src, p);
+  return p;
+}
+/** 画布那三件套。有先后：joint 和 dagre 都得先在，画布本体才认得出它们 */
+async function loadCanvasDeps() {
+  await Promise.all([loadScriptOnce("/vendor/joint/joint.min.js"), loadScriptOnce("/vendor/dagre/dagre.min.js")]);
+  await loadScriptOnce("js/app-07-canvas.js");
+}
+async function renderCanvasLazy() {
+  const page = document.getElementById("assist-page");
+  // 只在真要等的时候才摆这行字。已经加载过的话，下一帧就画出来了，
+  // 闪一下「正在载入」比直接出来更难受
+  if (typeof renderCanvasPage === "undefined" && page) {
+    page.innerHTML = `<div style="padding:40px;text-align:center;color:var(--owb-text-3)">正在载入画布…</div>`;
+  }
+  try {
+    await loadCanvasDeps();
+  } catch {
+    if (page) page.innerHTML = `<div style="padding:40px;text-align:center;color:var(--owb-text-3)">画布没载入成功，刷新页面再试。</div>`;
+    return;
+  }
+  return renderCanvasPage();
+}
+
 const PAGE_VIEWS = {
   assist: { icon: "bot", title: "助理模式", keepInput: true, render: () => renderAssistPage() },
   hub: { icon: "puzzle", title: "专家 · 技能 · 连接器", wide: true, render: () => renderHubPage() },
   prompts: { icon: "book-open-text", title: "参考模板库", wide: true, render: () => renderPromptPage() },
   proj: { icon: "folder", title: "项目", wide: true, render: () => renderProjPage() },
-  canvas: { icon: "map", title: "无限画布", wide: true, render: () => renderCanvasPage() },
+  canvas: { icon: "map", title: "无限画布", wide: true, render: () => renderCanvasLazy() },
   autom: { icon: "clock", title: "自动化", wide: true, render: () => renderAutomPage() },
   lib: { icon: "book", title: "资料库", wide: true, render: () => renderLibPage() },
   eval: { icon: "flask-conical", title: "评测", wide: true, render: () => renderEvalPage() },
@@ -908,10 +1129,10 @@ async function renderAssistPage() {
   page.innerHTML = `
     <div class="im-head">
       <div class="im-strip" style="flex:1;border:0;padding:0;background:none">
-        <b style="color:var(--wb-text-2);font-weight:500">已连接：</b>
+        <b style="color:var(--owb-text-2);font-weight:500">已连接：</b>
         ${conn.length
           ? conn.map(([icon, nm, _c, ok, st]) => chip(icon, nm, ok ? "ok" : "err", ok ? "" : st)).join("")
-          : '<span style="color:var(--wb-text-3)">还没有连接任何 IM 通道</span>'}
+          : '<span style="color:var(--owb-text-3)">还没有连接任何 IM 通道</span>'}
       </div>
       <div class="picker" id="im-model-picker">
         <button class="btn-plain" id="im-model-btn" title="助理页发消息用哪个模型（飞书 / QQ 等远程消息仍按全局默认跑）">${ic("sparkles")}<span id="im-model-label">模型</span>${ic("chevron-down")}</button>
@@ -921,7 +1142,7 @@ async function renderAssistPage() {
       <button class="btn-plain" id="im-cfg">${ic("settings")} 设置</button>
     </div>
     <div class="im-feed" id="im-feed"></div>
-    <div style="text-align:center;color:var(--wb-text-3);font-size: 13px;margin-top:8px">下方输入框直接对话，和在飞书/QQ/微信里 @机器人 一样，任务在这台电脑上执行。微信走扫码登录；企微应用与公众号得有公网 HTTPS 回调地址才能收消息。</div>`;
+    <div style="text-align:center;color:var(--owb-text-3);font-size: 13px;margin-top:8px">下方输入框直接对话，和在飞书/QQ/微信里 @机器人 一样，任务在这台电脑上执行。微信走扫码登录；企微应用与公众号得有公网 HTTPS 回调地址才能收消息。</div>`;
   setupPicker("im-model-btn", "im-model-menu");
   updateModelLabel(); // 顶栏每次重画都是新元素，标签和菜单当场填上
   page.querySelector("#im-cfg").onclick = () => openModal("settings", "im");
@@ -982,7 +1203,7 @@ async function updateAssistLive() {
   const CH = { feishu: "飞书", qq: "QQ", wechat_ilink: "微信", wecom_app: "企业微信", webhook: "Webhook" };
   const txt = remote.map(([k, v]) => `${CH[v.channel] || v.channel || k} · ${v.text}`).join("；");
   if (!el) {
-    feed.insertAdjacentHTML("beforeend", `<div class="im-row bot" id="im-remote-live"><div class="im-ava">${ic("hourglass")} </div><div class="im-col"><div class="im-b bot" style="color:var(--wb-text-2)"></div></div></div>`);
+    feed.insertAdjacentHTML("beforeend", `<div class="im-row bot" id="im-remote-live"><div class="im-ava">${ic("hourglass")} </div><div class="im-col"><div class="im-b bot" style="color:var(--owb-text-2)"></div></div></div>`);
     el = document.getElementById("im-remote-live");
     if (feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120) feed.scrollTop = feed.scrollHeight;
   }
@@ -1115,7 +1336,7 @@ async function openProjEditor(proj, tpl) {
     <label>${label} <span class="cnt">（可选，已选 <span id="pk-n-${key}">${sel[key].size}</span>）</span></label>
     <div class="picks" data-key="${key}">${items.length
       ? items.map(n => `<span class="pk ${sel[key].has(n) ? "on" : ""}" data-v="${esc(n)}">${esc(n)}</span>`).join("")
-      : '<span style="font-size: 13px;color:var(--wb-text-3)">还没有可挂载的条目</span>'}</div>`;
+      : '<span style="font-size: 13px;color:var(--owb-text-3)">还没有可挂载的条目</span>'}</div>`;
   mBody.innerHTML = `<div class="proj-form">
     <label>项目名称 <span class="cnt"><span id="pj-cnt">0</span>/15</span></label>
     <input id="pj-name" maxlength="15" placeholder="请输入项目名称" value="${esc((proj || {}).name || (tpl || {}).tt || "")}">
@@ -1278,7 +1499,7 @@ async function renderAutomPage() {
         <button data-tab="runs">${ic("scroll-text")} 运行记录</button>
       </div>
       <div class="hub-search">${ic("search")}<input id="at-q" placeholder="搜索自动化" value="${esc(st.q)}"></div>
-      <button class="btn-plain" id="at-bulk" style="${st.bulk ? "border-color: var(--wb-brand-text);color: var(--wb-brand-text)" : ""}">${ic("list-checks")} 批量管理</button>
+      <button class="btn-plain" id="at-bulk" style="${st.bulk ? "border-color: var(--owb-brand-text);color: var(--owb-brand-text)" : ""}">${ic("list-checks")} 批量管理</button>
       <button class="btn-plain" id="at-tpl">${ic("clipboard-list")} 从模版添加</button>
       <button class="btn-brand" id="at-new">${ic("plus")}添加自动化</button>
     </div>
@@ -1287,7 +1508,7 @@ async function renderAutomPage() {
     </div>
     ${st.bulk ? `<div class="hub-bar" style="margin:0 0 8px">
       <a class="link" id="bk-all" href="#">全选</a>
-      <span style="font-size: 13px;color:var(--wb-text-3)">已选 ${st.sel.size} 个</span>
+      <span style="font-size: 13px;color:var(--owb-text-3)">已选 ${st.sel.size} 个</span>
       <a class="link" id="bk-en" href="#">批量启用</a>
       <a class="link" id="bk-dis" href="#">批量暂停</a>
       <a class="link danger" id="bk-del" href="#">批量删除</a>
@@ -1360,7 +1581,7 @@ function renderAutomTplPicker(box) {
 }
 function renderAutomForm(box, tpl) {
   const ed = automState.editing;
-  box.innerHTML = `<div style="border:1px solid var(--wb-border);border-radius:12px;padding:14px 16px;margin:4px 0 16px">
+  box.innerHTML = `<div style="border:1px solid var(--owb-border);border-radius:12px;padding:14px 16px;margin:4px 0 16px">
     <div style="font-weight:600;margin-bottom:10px">${ed ? `编辑「${esc(ed.name)}」` : "添加自动化"}</div>
     <input id="sf-name" placeholder="任务名（如：每日晨报）" value="${esc((ed || tpl || {}).name || (tpl || {}).tt || "")}">
     <div class="form-row">
@@ -1442,7 +1663,7 @@ async function renderAutomRuns(page) {
         <button data-tab="tasks">${ic("timer")} 定时任务</button>
         <button class="active" data-tab="runs">${ic("scroll-text")} 运行记录</button>
       </div>
-      <span style="font-size: 13px;color:var(--wb-text-3);margin-left:auto">${taskId ? `「${esc(taskName || "已删除任务")}」的 ${taskRuns.length} 次执行` : `最近 ${taskRuns.length} 次执行`}，最新在前</span>
+      <span style="font-size: 13px;color:var(--owb-text-3);margin-left:auto">${taskId ? `「${esc(taskName || "已删除任务")}」的 ${taskRuns.length} 次执行` : `最近 ${taskRuns.length} 次执行`}，最新在前</span>
       ${taskId ? '<button class="btn-plain" id="at-runs-all">查看全部</button>' : ""}
     </div>
     ${taskRuns.length ? `<table class="at-runs">
@@ -1474,10 +1695,15 @@ async function renderAutomRuns(page) {
 const libPrefer = (k, ok, dflt) => { try { const v = localStorage.getItem(k); return ok.includes(v) ? v : dflt; } catch { return dflt; } };
 const libState = {
   pick: null, q: "", dir: "",
-  view: libPrefer("wb_lib_view", ["dir", "task"], "dir"),
-  mode: libPrefer("wb_lib_mode", ["list", "icon", "gallery"], "list"),
-  group: libPrefer("wb_lib_group", ["none", "kind", "time"], "none"),
+  view: libPrefer("owb_lib_view", ["dir", "task"], "dir"),
+  mode: libPrefer("owb_lib_mode", ["list", "icon", "gallery"], "list"),
+  group: libPrefer("owb_lib_group", ["none", "kind", "time"], "none"),
   kind: "all",
+  // 已经不在工作目录里的产出，默认不摆出来。用户原话：「不要出现去点击的时候说不存在啊」。
+  // 摆出来的每一行都是一句「这儿有个文件」，点开却说没有——那一趟点击是纯亏的，
+  // 而这种行往往成百上千（一次视频任务拆出几百张帧图，分析完自己清掉了）。
+  // 不是删掉这件事不记：下面那行小字会说还有多少个、一点就全显示出来。
+  gone: libPrefer("owb_lib_gone", ["on", "off"], "off") === "on",
 }; // pick: {src:"lib"|"ws"|"notes", name, task?}
 let libOutCache = null;              // 最近一次 /api/library/outputs 的结果：预览页要靠它反查「这文件是哪次任务做的」
 const libTaskShut = new Set();       // 收起来的任务分组（默认全展开：这一页就是来看文件的）
@@ -1505,7 +1731,7 @@ function csvToTable(text) {
   const [head, ...body] = rows;
   return `<table class="csv"><tr>${head.map(h => `<th>${esc(h)}</th>`).join("")}</tr>` +
     body.map(r => `<tr>${head.map((_, i) => `<td>${esc(r[i] || "")}</td>`).join("")}</tr>`).join("") +
-    `</table>${rows.length >= 500 ? '<div style="font-size: 13px;color:var(--wb-text-3);margin-top:6px">表太长，只显示前 500 行</div>' : ""}`;
+    `</table>${rows.length >= 500 ? '<div style="font-size: 13px;color:var(--owb-text-3);margin-top:6px">表太长，只显示前 500 行</div>' : ""}`;
 }
 // ================= 评测页：给模型跑基准，机器判分 =================
 let evalArm = false; // 两段式确认：真实计费的操作不许一键就跑

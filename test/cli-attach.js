@@ -2,7 +2,7 @@
 /**
  * 终端里带文件进来：拖进来的路径、@ 补全、剪贴板。
  *
- * 用户原话：「还有我的wb cli也要支持复制文件 图片这些啊」。
+ * 用户原话：「还有我的 cli 也要支持复制文件 图片这些啊」（原话里用的是改名前的旧命令名）。
  *
  * 这一套要挡的是三类事故，三类都不报错、只是悄悄办错事：
  *
@@ -341,7 +341,7 @@ console.log("\n⑨ cli.js 接线：顺序和边界");
   const iWanted = CLI_SRC.indexOf("const wanted = namedFiles.concat(shot.files);");
   const iPipe = CLI_SRC.indexOf("const piped = await readStdin();");
   ok(iWanted > 0 && iPipe > 0 && iWanted < iPipe,
-    "★摘文件必须排在读管道前面★ `cat 报错.log | wb \"这什么意思\"` 里提到的路径是材料不是附件，" +
+    "★摘文件必须排在读管道前面★ `cat 报错.log | openworkbuddy \"这什么意思\"` 里提到的路径是材料不是附件，" +
     "扫一遍会把人家日志里随口提到的文件全搬进工作目录", { iWanted, iPipe });
 
   const iEmpty = CLI_SRC.indexOf("if (!oneShot && wanted.length)");

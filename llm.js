@@ -132,7 +132,7 @@ function anthropicBase(baseUrl) {
  *
  * 所以取 Key 分三级，越明确的越优先：
  *   ① 渠道自己填的（设置页 / config.json）——最明确，什么地址都认；
- *   ② `WB_KEY_<渠道 id>`——按渠道点名，给 Docker / VPS 用：不用把明文写进 config.json，
+ *   ② `OPENWORKBUDDY_KEY_<渠道 id>`——按渠道点名，给 Docker / VPS 用：不用把明文写进 config.json，
  *      又因为点了名，不存在发错家的问题（渠道 id 见设置页那张卡，大写、非字母数字换成下划线）；
  *   ③ `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`——通用兜底，**只发给这家自己的域名**。
  *      地址是别家的就跳过，并在控制台说一次为什么跳过、该怎么办；不说的话，
@@ -144,10 +144,10 @@ const KEY_ENV = {
 };
 const warnedEnvSkip = new Set(); // 同一个地址只唠叨一次，别把日志刷满
 
-/** 渠道 id → 环境变量名。`openrouter-2` → `WB_KEY_OPENROUTER_2` */
+/** 渠道 id → 环境变量名。`openrouter-2` → `OPENWORKBUDDY_KEY_OPENROUTER_2` */
 function channelEnvName(channel) {
   const id = String(channel || "").trim();
-  return id ? "WB_KEY_" + id.toUpperCase().replace(/[^A-Z0-9]+/g, "_") : "";
+  return id ? "OPENWORKBUDDY_KEY_" + id.toUpperCase().replace(/[^A-Z0-9]+/g, "_") : "";
 }
 
 function hostOf(baseUrl) {
@@ -175,7 +175,7 @@ function resolveKey(cfg, which) {
     console.warn(
       `[模型] 渠道「${(cfg && cfg.name) || host}」没填 Key，环境变量 ${rule.env} 也没用上——` +
         `它是 ${rule.label} 的 Key，这条渠道打的是 ${host}，发过去等于把 Key 交给了别家。` +
-        `要给这条渠道配 Key：设置 → 模型 里填，或者设环境变量 ${named || "WB_KEY_<渠道id>"}。`
+        `要给这条渠道配 Key：设置 → 模型 里填，或者设环境变量 ${named || "OPENWORKBUDDY_KEY_<渠道id>"}。`
     );
   }
   return "";

@@ -37,7 +37,7 @@ const http = require("http");
 
 const ROOT = path.join(__dirname, "..");
 const tracing = require(path.join(ROOT, "trace"));
-const { messagesOf, cleanHost, readCfg } = tracing._internals;
+const { messagesOf, cleanHost, readCfg, labelFromInput } = tracing._internals;
 
 let pass = 0, fail = 0;
 const ok = (cond, msg, extra) => {
@@ -116,7 +116,7 @@ async function main() {
   // 中间调了什么工具、动了哪个文件、烧了多少 token 全没有——界面上就是「跑了半天啥也看不到」。
   // 本地是**主记录**，Langfuse 只是可选副本，这两件事不能共用一个开关。
   {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-trace-local-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-trace-local-"));
     const config = { workspace_dir: dir }; // langfuse 那块压根没有 = 彻底关着
     const t = tracing.createTracer(config);
     eq(t.enabled, false, "Langfuse 是关着的（这一节全程零网络）");
@@ -155,6 +155,93 @@ async function main() {
 
     t.clearLocalTraces();
     eq(t.localTraces({}).length, 0, "「清空」是真清空");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  // ===================================================================
+  console.log("\n【1·续续】任务名：同一个会话聊十轮，不能是十行一模一样的名字");
+  // ===================================================================
+  // 用户原话：「思考一下这个trace名字叫啥，现在还是这么多同名的啊」，附的截图里
+  // 连着五行都叫「OpenWorkBuddy日志技术选型」——那是这个会话的**第一句**。
+  // 根子在 agent.js 每轮都把**整段历史**当 input 传进来，而取名取的是历史里第一条用户消息：
+  // 第一句从头到尾不变，于是每轮都取到同一句。改成取最近那句有内容的话。
+  {
+    const L = (msgs) => labelFromInput(msgs);
+    const u = (c) => ({ role: "user", content: c });
+    const a = (c) => ({ role: "assistant", content: c });
+
+    eq(L([u("OpenWorkBuddy日志技术选型")]), "OpenWorkBuddy日志技术选型", "只聊了一轮：还是取那一句（原来就对的别改坏）");
+    eq(L([u("OpenWorkBuddy日志技术选型"), a("建议 pino"), u("那把 pino 接进来")]), "那把 pino 接进来",
+       "★聊到第二轮，名字跟着第二轮走★——这才是这一趟真在干的事");
+    eq(L([u("OpenWorkBuddy日志技术选型"), a("建议 pino"), u("那把 pino 接进来"), a("好了"), u("再补上按天滚动")]),
+       "再补上按天滚动", "  └ 第三轮同理：三轮三个名字，列表上分得开");
+
+    // 「继续」这种话本身没有信息量，拿它当名字等于没名字（这也是当初为什么取第一句）。
+    // 往前退一句：这一趟本来就是上一句的续集，用上一句命名是准的。
+    eq(L([u("把日志按天滚动"), a("好"), u("继续")]), "把日志按天滚动", "最后一句是「继续」：往前退到上一句有内容的话");
+    for (const filler of ["好的", "嗯", "ok", "OK", "继续吧", "行", "谢谢", "下一步", "继续。", "好的~"]) {
+      eq(L([u("把日志按天滚动"), a("好"), u(filler)]), "把日志按天滚动", `  └ 「${filler}」也算接不上的短句`);
+    }
+    eq(L([u("先看看现状"), a("好"), u("继续把日志接上")]), "继续把日志接上",
+       "★反向对照：「继续把日志接上」是正经需求★——只挡整条就是一句「继续」的，不挡带内容的");
+    eq(L([u("好的"), a("?"), u("嗯")]), "嗯", "  └ 全程都是短句时也得给个名字，不能返回空（宁可叫「嗯」，也不能又退回「任务」）");
+
+    // 每轮开一条 trace，名字得两两不同——这就是用户截图里那一屏该长的样子
+    const hist = [];
+    const names = [];
+    for (const said of ["OpenWorkBuddy日志技术选型", "那把 pino 接进来", "再补上按天滚动", "顺手把告警也接了"]) {
+      hist.push(u(said));
+      names.push(L(messagesOf("你是一个助手", hist)));
+      hist.push(a("好的"));
+    }
+    eq(new Set(names).size, 4, "★四轮跑出四个不同的名字★（改之前这里是 1）", names);
+    ok(!names.some((n) => /^你是一个助手/.test(n)), "  └ 而且一个都没取到系统提示词上去（system 那条不是「用户想干什么」）", names);
+  }
+
+  // ===================================================================
+  console.log("\n【1·续续续】老账本里已经重名的那批：读的时候按新规矩重算，并标出第几轮");
+  // ===================================================================
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-trace-name-"));
+    const config = { workspace_dir: dir };
+    const t = tracing.createTracer(config);
+    const u = (c) => ({ role: "user", content: c });
+    const a = (c) => ({ role: "assistant", content: c });
+    const hist = [];
+    // 照旧规矩写进账本：名字一律等于第一句。这就是用户现在打开界面看到的东西
+    for (const said of ["OpenWorkBuddy日志技术选型", "那把 pino 接进来", "再补上按天滚动"]) {
+      hist.push(u(said));
+      t.trace({ name: "OpenWorkBuddy日志技术选型", sessionId: "s1", input: hist.slice() }).end({ output: "ok" });
+      hist.push(a("好"));
+    }
+    const rows = t.localTraces({});
+    eq(rows.length, 3, "账本上三趟");
+    eq(new Set(rows.map((r) => r.name)).size, 3,
+       "★老记录读出来也不重名了★——磁盘上的字改不了，但每条都存着当时的输入，重算一遍就分得开", rows.map((r) => r.name));
+    // 只有被重算过的那几行才标「推出来的」（界面上弱化一档）。第一轮那条没动过——
+    // 它的名字本来就等于用户当时说的那句，再标一道反而是污蔑
+    eq(rows.filter((r) => r.name_derived).length, 2, "  └ 被重算过的那两行标成「这名字是推出来的」，界面上弱化一档",
+       rows.map((r) => [r.turn, r.name, !!r.name_derived]));
+    ok(!rows.find((r) => r.turn === 1).name_derived,
+       "  └ 反向对照：第一轮那条一个字没改（它的名字本来就是用户说的那句），不跟着标");
+    eq(rows.map((r) => r.turn).sort().join(","), "1,2,3", "每趟算得出是第几轮", rows.map((r) => r.turn));
+
+    // 点进详情页是一条条单取的：这条路径上不做分组，所以得跟列表显示同一个名字
+    const one = t.localTraces({ traceId: rows[0].id });
+    eq(one.name, rows[0].name, "★详情页单取一条，名字跟列表里那行一致★（分组去重的话这里会露馅）");
+    eq(one.turn, rows[0].turn, "  └ 轮次也一致");
+
+    // 来源前缀得留着：「IM 对话 · xxx」改完还是「IM 对话 · 新的那句」
+    const h2 = [u("帮我查下日程"), a("好"), u("把明天的会挪到后天")];
+    t.trace({ name: "IM 对话 · 帮我查下日程", sessionId: "s2", input: h2 }).end({ output: "ok" });
+    const im = t.localTraces({}).find((r) => r.sessionId === "s2");
+    eq(im.name, "IM 对话 · 把明天的会挪到后天", "★只换掉「第一句」那一截，前面的来源标签留着★", im.name);
+
+    // 用户自己起的名字不许乱改
+    t.trace({ name: "季度报告初稿", sessionId: "s3", input: [u("随便写点什么"), a("好"), u("再改改")] }).end({ output: "ok" });
+    eq(t.localTraces({}).find((r) => r.sessionId === "s3").name, "季度报告初稿",
+       "反向对照：名字不是从输入里来的（不以第一句结尾），一个字都不动");
+
     fs.rmSync(dir, { recursive: true, force: true });
   }
 

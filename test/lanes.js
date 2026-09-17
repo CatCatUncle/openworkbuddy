@@ -3,7 +3,7 @@
  * 两条工作线（lanes.js）的判据测试。
  *
  * 这个模块只回答一件事：「这次的活儿归哪一栏」——办公（做表写稿出图）还是工程
- * （写代码跑脚本，连着本机的 wb 命令行）。它**不**决定用哪个引擎：引擎是用户在设置里
+ * （写代码跑脚本，连着本机的 openworkbuddy 命令行）。它**不**决定用哪个引擎：引擎是用户在设置里
  * 挑一次、两条线共用的另一件事。早先版本把两件事捆在一起，后果是切个标签能把别人配的
  * 模型换掉——服务器上两个人共用一份配置的时候，这是实打实的越权。
  *
@@ -128,3 +128,4 @@ const view = prefs.agentView({ agent: { engine: "builtin", cli_engine: "codex" }
 eq(backendId(engines.resolve(view)), "builtin", "config 里残留的 cli_engine 影响不到实际引擎");
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
+process.exit(fail === 0 ? 0 : 1); // 少了这一行，这个套件挂了也是绿的——CI 看的是退出码，不是这段话

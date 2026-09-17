@@ -186,9 +186,16 @@ function libKindOf(name) {
   const k = LIB_KINDS.find((x) => x[0] !== "all" && x[2](name));
   return k ? k[1] : "其他";
 }
-/** 取文件内容的地址。资料库和工作区两套路由，四处都要用，抄第四遍就该抽出来了 */
-function libUrl(src, name) {
-  return "/api/" + (src === "lib" ? "library/file/" : "files/view/") + fpath(name);
+/**
+ * 取文件内容的地址。资料库和工作区两套路由，四处都要用，抄第四遍就该抽出来了。
+ * w 传了就要缩略图：这一页的图框最大也就 64px（.lib-list.as-gallery .lib-it .th），
+ * 而工作空间里真实躺着 3552×4736 的图，一张解码后 64 MB；一屏最多摆 120 张，
+ * 拿原图当缩略图是让浏览器解码好几个 GB 的位图。服务端缩不动会自己发原图（细账在
+ * thumb.js），所以这儿不用判断跑在哪儿。svg 不缩：矢量本来就小，栅格化反而更大更糊。
+ */
+function libUrl(src, name, w) {
+  const url = "/api/" + (src === "lib" ? "library/file/" : "files/view/") + fpath(name);
+  return w && !/\.svg$/i.test(name) ? url + "?thumb=" + w : url;
 }
 const LIB_IMG = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
 /**
@@ -265,7 +272,7 @@ function libRowHtml(src, f, o) {
   const gone = !!(opt.gone || f.gone);
   // 图片就直接拿真图当缩略图——图标视图里一排「图片」图标等于没有视图。
   // 文件没了就别发这个请求：拿一串 404 换一排碎图标没有意义。
-  const thumb = !gone && LIB_IMG.test(label) ? `<img loading="lazy" src="${libUrl(src, full)}" alt="">` : libIcon(label);
+  const thumb = !gone && LIB_IMG.test(label) ? `<img loading="lazy" src="${libUrl(src, full, 160)}" alt="">` : libIcon(label);
   return `
   <div class="lib-it ${opt.cls || ""} ${gone ? "gone" : ""} ${on ? "active" : ""}" data-src="${src}" data-name="${esc(full)}"${opt.task ? ` data-task="${esc(opt.task)}"` : ""} title="${esc(full)}">
     <span class="th">${thumb}</span>
@@ -334,7 +341,7 @@ async function renderLibPage() {
     <a href="#" data-dir="">${ic("book-open-text")}资料库</a>
     ${(lib.crumbs || []).map(c => `<span>/</span><a href="#" data-dir="${esc(c.path)}">${esc(c.name)}</a>`).join("")}
   </div>`;
-  const recents = JSON.parse(localStorage.getItem("wb_lib_recent") || "[]");
+  const recents = JSON.parse(localStorage.getItem("owb_lib_recent") || "[]");
 
   // ── 三种视图 ────────────────────────────────────────────────────────────
   // 「文件夹」= 东西放在哪；「按任务」= 东西是哪次做出来的。后者是用户原话点名要的
@@ -411,7 +418,7 @@ async function renderLibPage() {
   if (qx) qx.onclick = (e) => { e.preventDefault(); libState.q = ""; renderLibPage(); };
   page.querySelectorAll(".lib-tab[data-view]").forEach(b => b.onclick = () => {
     libState.view = b.dataset.view;
-    try { localStorage.setItem("wb_lib_view", libState.view); } catch {}
+    try { localStorage.setItem("owb_lib_view", libState.view); } catch {}
     renderLibPage();
   });
   const nb = page.querySelector('.lib-tab[data-src="notes"]');
@@ -420,12 +427,12 @@ async function renderLibPage() {
   // 摆法和分组都记到本地：这一页每个人的用法差很远——有人一直用列表找文档，有人一直用画廊过图
   page.querySelectorAll(".lib-md").forEach(b => b.onclick = () => {
     libState.mode = b.dataset.mode;
-    try { localStorage.setItem("wb_lib_mode", libState.mode); } catch {}
+    try { localStorage.setItem("owb_lib_mode", libState.mode); } catch {}
     renderLibPage();
   });
   page.querySelectorAll(".lib-gp").forEach(b => b.onclick = () => {
     libState.group = b.dataset.group;
-    try { localStorage.setItem("wb_lib_group", libState.group); } catch {}
+    try { localStorage.setItem("owb_lib_group", libState.group); } catch {}
     renderLibPage();
   });
 
@@ -473,6 +480,12 @@ async function renderLibPage() {
     if (libTaskShut.has(id)) libTaskShut.delete(id); else libTaskShut.add(id);
     renderLibPage();
   });
+  page.querySelectorAll("[data-gone-toggle]").forEach(a => a.onclick = (e) => {
+    e.preventDefault();
+    libState.gone = !libState.gone;
+    try { localStorage.setItem("owb_lib_gone", libState.gone ? "on" : "off"); } catch {}
+    renderLibPage();
+  });
   page.querySelectorAll("[data-open]").forEach(a => a.onclick = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -482,7 +495,7 @@ async function renderLibPage() {
     libState.pick = { src: el.dataset.src, name: el.dataset.name, task: el.dataset.task || "" };
     if (el.dataset.src !== "notes") {
       const rec = [{ src: el.dataset.src, name: el.dataset.name }, ...recents.filter(r => !(r.src === el.dataset.src && r.name === el.dataset.name))].slice(0, 8);
-      localStorage.setItem("wb_lib_recent", JSON.stringify(rec));
+      localStorage.setItem("owb_lib_recent", JSON.stringify(rec));
     }
     page.querySelectorAll(".lib-it").forEach(x => x.classList.toggle("active", x === el));
     renderLibPreview(page.querySelector("#lb-prev"), lib);
@@ -526,7 +539,9 @@ async function renderLibPage() {
 function libTasksHtml(data) {
   if (!data) return `<div class="lib-none">读取中…</div>`;
   if (data.error) return `<div class="lib-none">${esc(data.error)}</div>`;
-  const tasks = (data.tasks || []).map((t) => ({ ...t, files: (t.files || []).filter((f) => libKindOk(f.name)) })).filter((t) => t.files.length);
+  const all = (data.tasks || []).map((t) => ({ ...t, files: (t.files || []).filter((f) => libKindOk(f.name)) }));
+  const nGone = all.reduce((n, t) => n + t.files.filter((f) => f.gone).length, 0);
+  const tasks = (libState.gone ? all : all.map((t) => ({ ...t, files: t.files.filter((f) => !f.gone) }))).filter((t) => t.files.length);
   const orphans = (data.orphans || []).filter((f) => libKindOk(f.name));
   const group = (t) => {
     const shut = libTaskShut.has(t.id);
@@ -544,9 +559,14 @@ function libTasksHtml(data) {
       })).join("")}</div>`}
     </div>`;
   };
-  return `<div class="sec">按任务看产出 <span style="font-weight:400;color:var(--wb-text-3)">${tasks.length} 个任务</span></div>
-    ${tasks.map(group).join("") || `<div class="lib-none">还没有任务产出过文件。跑一个任务，它写出来的东西会自动归到这儿。</div>`}
-    ${orphans.length ? `<div class="sec">未归属 <span style="font-weight:400;color:var(--wb-text-3)">${data.orphan_total || orphans.length} 个</span></div>
+  // 没了的那些不声不响地滤掉是不行的——用户会以为是这一页漏了。说清有多少、一点就能看
+  const goneTip = !nGone ? "" : `<div class="lib-note-tip">${libState.gone
+    ? `上面灰着的 ${nGone} 个已经不在工作目录里了，点开只会告诉你文件不存在。<a href="#" data-gone-toggle>收起来不看</a>`
+    : `另有 ${nGone} 个产出已经不在工作目录里了（多半是任务跑完自己清掉的中间产物），默认不摆出来。<a href="#" data-gone-toggle>还是显示</a>`}</div>`;
+  return `<div class="sec">按任务看产出 <span style="font-weight:400;color:var(--owb-text-3)">${tasks.length} 个任务</span></div>
+    ${tasks.map(group).join("") || `<div class="lib-none">${nGone ? "这些任务产出的文件都已经不在工作目录里了。" : "还没有任务产出过文件。跑一个任务，它写出来的东西会自动归到这儿。"}</div>`}
+    ${goneTip}
+    ${orphans.length ? `<div class="sec">未归属 <span style="font-weight:400;color:var(--owb-text-3)">${data.orphan_total || orphans.length} 个</span></div>
       <div class="lib-note-tip">这些文件在工作目录里，但没有哪次任务认领过——多半是手动拷进来的，或者是更早的版本留下的。</div>
       <div class="lib-fs">${orphans.slice(0, 80).map((f) => libRowHtml("ws", f)).join("")}</div>` : ""}`;
 }
@@ -572,21 +592,21 @@ function libSearchHtml(data, q, recents) {
   const fileRow = (src, f) => libRowHtml(src, f, { q })
     + ((f.lines || []).length ? `<div class="lib-hits">${f.lines.map((l) => `<div><em>${l.line}</em>${libMark(l.text, q)}</div>`).join("")}</div>` : "");
   return `
-    ${tasks.length ? `<div class="sec">任务 <span style="font-weight:400;color:var(--wb-text-3)">${tasks.length}</span></div>
+    ${tasks.length ? `<div class="sec">任务 <span style="font-weight:400;color:var(--owb-text-3)">${tasks.length}</span></div>
       ${tasks.map((t) => `<div class="lib-task">
         <div class="lib-task-h" data-task="${esc(t.id)}" role="button" tabindex="0" title="${esc(t.title)}">
           <span class="cv">${ic("chevron-down")}</span><span class="tk">${ic("sparkles")}</span>
           <span class="nm">${libMark(t.title, t.by === "title" ? q : "")}</span><span class="n">${(t.files || []).length}</span><span class="tm">${esc(libWhen(t.at))}</span>
           <a href="#" class="go" data-open="${esc(t.id)}" title="回到这次对话">${ic("message-square")}</a>
         </div>
-        <div class="lib-fs">${(t.files || []).filter((f) => libKindOk(f.name)).map((f) => libRowHtml("ws", f, {
+        <div class="lib-fs">${(t.files || []).filter((f) => libKindOk(f.name) && (libState.gone || !f.gone)).map((f) => libRowHtml("ws", f, {
           cls: "lib-sub", task: t.id, dir: "", q, note: f.gone ? "已不在" : undefined,
         })).join("")}</div>
       </div>`).join("")}` : ""}
-    ${lib.length ? `<div class="sec">资料库 <span style="font-weight:400;color:var(--wb-text-3)">${lib.length}</span></div>${lib.map((f) => fileRow("lib", f)).join("")}` : ""}
-    ${ws.length ? `<div class="sec">本地产物 <span style="font-weight:400;color:var(--wb-text-3)">${ws.length}</span></div>${ws.map((f) => fileRow("ws", f)).join("")}` : ""}
+    ${lib.length ? `<div class="sec">资料库 <span style="font-weight:400;color:var(--owb-text-3)">${lib.length}</span></div>${lib.map((f) => fileRow("lib", f)).join("")}` : ""}
+    ${ws.length ? `<div class="sec">本地产物 <span style="font-weight:400;color:var(--owb-text-3)">${ws.length}</span></div>${ws.map((f) => fileRow("ws", f)).join("")}` : ""}
     ${data.capped ? `<div class="lib-capped">${ic("circle-alert")}正文只翻了前 ${data.scanned || 0} 个文件就到预算上限了，下面可能还有没露面的。词写长一点、或者先用左边的类型筛一下。</div>` : ""}
-    ${notes.length ? `<div class="sec">灵感笔记 <span style="font-weight:400;color:var(--wb-text-3)">${notes.length}</span></div>
+    ${notes.length ? `<div class="sec">灵感笔记 <span style="font-weight:400;color:var(--owb-text-3)">${notes.length}</span></div>
       ${notes.map((n) => `<div class="lib-it" data-src="notes" data-name=""><span class="th">${ic("lightbulb")}</span><span class="nm" title="${esc(n.text)}">${libMark(String(n.text).slice(0, 80), q)}</span><span class="sz"></span><span class="tm"></span></div>`).join("")}` : ""}`;
 }
 
@@ -597,11 +617,11 @@ async function renderLibPreview(prev, lib) {
   if (src === "notes") {
     prev.innerHTML = `
       <div style="font-weight:600;margin-bottom:4px">${ic("lightbulb")} 灵感笔记</div>
-      <div style="font-size:12px;color:var(--wb-text-3);margin-bottom:10px;line-height:1.6">不是文件，是几句话。助理每次任务查资料库（library_list）时都会连着读到，所以适合放「我们公司简称叫 X」「配色一律用主色 #0F62FE」这种长期成立的事。</div>
+      <div style="font-size:12px;color:var(--owb-text-3);margin-bottom:10px;line-height:1.6">不是文件，是几句话。助理每次任务查资料库（library_list）时都会连着读到，所以适合放「我们公司简称叫 X」「配色一律用主色 #0F62FE」这种长期成立的事。</div>
       ${po ? `<div style="display:flex;gap:6px;margin-bottom:10px">
         <input id="lb-note" placeholder="随手记一条灵感/偏好，回车保存" style="flex:1">
         <button class="btn-brand" id="lb-note-save" style="flex:none">保存</button>
-      </div>` : `<div style="font-size: 13px;color:var(--wb-text-3);margin-bottom:10px">这块是整台服务器共用的，归平台管理员记。<br>只想让助理记住你自己的事？去<a href="#" class="link" id="lb-to-mem">记忆</a>页，那儿记的只有你自己看得到。</div>`}
+      </div>` : `<div style="font-size: 13px;color:var(--owb-text-3);margin-bottom:10px">这块是整台服务器共用的，归平台管理员记。<br>只想让助理记住你自己的事？去<a href="#" class="link" id="lb-to-mem">记忆</a>页，那儿记的只有你自己看得到。</div>`}
       <div>${(lib.notes || []).map(n =>
         `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span>${po ? `<a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a>` : ""}</div></div>`).join("")
         || '<div class="ph">还没有灵感笔记。<br>比如：「周报只要三段」「对外材料一律叫全称」——记一条，之后每次任务助理都会看到。</div>'}</div>`;
@@ -687,8 +707,12 @@ async function renderLibPreview(prev, lib) {
         // HTML 真渲染，而且不受下面那道 400KB 的闸限制（网页本来就容易几 MB，正是最该看长相的一类）。
         // sandbox 掐掉同源和弹窗：资料是外来的，不能让它碰应用本身
         if (/\.html?$/i.test(name)) {
-          const blob = URL.createObjectURL(new Blob([text], { type: "text/html" }));
-          body.outerHTML = `<iframe src="${blob}" sandbox="allow-scripts"></iframe>`;
+          // 按宽度缩成整页，理由同工作区预览：1200 宽的卡片塞进这条窄栏，1:1 只能看见左上角一块。
+          // 这里读不到 contentDocument（sandbox 没给 allow-same-origin，是故意的），所以往页面尾巴上
+          // 挂一小段脚本让它自己把尺寸报出来——只进这个临时 blob，磁盘上那份文件一个字没动
+          const blob = URL.createObjectURL(new Blob([text + PV_FIT_REPORTER], { type: "text/html" }));
+          body.outerHTML = `<div class="pv-fit"><iframe src="${blob}" sandbox="allow-scripts" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
+          fitPreviewFrame(prev, { selfReport: true });
         } else if (text.length > 400000) body.outerHTML = '<div class="ph">文件太大，预览不动，请下载后本地打开</div>';
         else if (/\.csv$/i.test(name)) body.outerHTML = csvToTable(text);
         else if (/\.(md|markdown)$/i.test(name)) body.outerHTML = `<div class="md">${renderMd(text, "", false, "", { fileLinks: false })}</div>`;
@@ -708,7 +732,7 @@ async function renderLibPreview(prev, lib) {
 
 // ================= 专家 · 技能 · 连接器（主区页面，三合一） =================
 // 把原来分散在三个弹窗里的专家/技能/MCP 合成一页：左边挑 Tab，右边搜索，中间是卡片广场。
-const hubState = { tab: "experts", sub: "expert", cat: "全部", q: "", mine: false, editing: null };
+const hubState = { tab: "experts", sub: "expert", cat: "全部", q: "", mine: false, editing: null, mcpAdvice: null };
 // 精选场景：点一下就带着写好的提示词开一条新任务。全是本地已具备的能力，不画饼。
 const HUB_SCENES = [
   { icon: "file-spreadsheet", tt: "把 Excel 变成周报", dd: "读数据 → 算指标 → 生成带图表的周报文档", p: "把工作区里的数据文件读进来，算出核心指标的环比变化，生成一份带图表的周报（Word），结论写在最前面。" },
@@ -1168,14 +1192,20 @@ async function renderHubSkills(box) {
     const url = box.querySelector("#sk-url").value.trim();
     const msg = box.querySelector("#sk-install-msg");
     if (!url) return;
-    setMsg(msg, "loader-circle", "安装中…（整仓库首次下载可能要十几秒）");
-    try {
-      const resp = await fetch("/api/skills/install", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+    const go = async (extra) => {
+      setMsg(msg, "loader-circle", "安装中…（整仓库首次下载可能要十几秒）");
+      const resp = await fetch("/api/skills/install", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, ...extra }) });
       const d = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(d.error || "安装失败");
-      setMsg(msg, "circle-check", `已安装 ${d.installed.length} 个：${d.installed.map(s => s.name).join("、")}`, "ok");
-      setTimeout(renderHubPage, 1000);
-    } catch (e) { setMsg(msg, "circle-x", e.message, "err"); }
+      if (resp.ok) {
+        setMsg(msg, "circle-check", `已安装 ${d.installed.length} 个：${d.installed.map(s => s.name).join("、")}`, "ok");
+        setTimeout(renderHubPage, 1000);
+        return;
+      }
+      if (d.needs) return showScanGate(msg, d, go);   // 体检没过：把清单摊开，让人自己判
+      setMsg(msg, "circle-x", d.error || "安装失败", "err");
+    };
+    go({}).catch(e => setMsg(msg, "circle-x", e.message, "err"));
   };
   box.querySelectorAll(".ex-card[data-si]").forEach(card => {
     const s = list[+card.dataset.si];
@@ -1242,21 +1272,76 @@ function renderHubSkillEditor() {
         <button id="skf-cancel" style="padding:6px 14px">取消</button></div>
     </div>`;
   box.querySelector("#skf-cancel").onclick = () => { hubState.editing = null; renderHubSkillEditor(); };
+  // 保存失败的话要有地方摊开体检清单——toast 那一行塞不下文件名和行号
+  const skfMsg = document.createElement("div");
+  skfMsg.className = "sk-install-msg";
+  box.querySelector(".ex-editor").appendChild(skfMsg);
   box.querySelector("#skf-save").onclick = async () => {
-    const resp = await fetch("/api/skills", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: box.querySelector("#skf-name").value.trim(),
-        description: box.querySelector("#skf-desc").value.trim(),
-        content: box.querySelector("#skf-content").value,
-        original_name: x.name || undefined,
-      }) });
-    const d = await resp.json().catch(() => ({}));
-    if (!resp.ok) return toast((d.error || "保存失败"), "circle-x");
-    hubState.editing = null;
-    toast("技能已保存，立即生效");
-    renderHubPage();
+    const save = async (extra) => {
+      const resp = await fetch("/api/skills", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: box.querySelector("#skf-name").value.trim(),
+          description: box.querySelector("#skf-desc").value.trim(),
+          content: box.querySelector("#skf-content").value,
+          original_name: x.name || undefined,
+          ...extra,
+        }) });
+      const d = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        hubState.editing = null;
+        toast("技能已保存，立即生效");
+        renderHubPage();
+        return;
+      }
+      if (d.needs) return showScanGate(skfMsg, d, save);
+      toast((d.error || "保存失败"), "circle-x");
+    };
+    save({}).catch(e => toast(e.message, "circle-x"));
   };
   box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/**
+ * 技能装之前的体检没过时，画出来的那块东西。
+ *
+ * 为什么不是弹一句红字了事：这道检查唯一的价值就是**让人看见具体哪一行**。
+ * 只说「该技能存在安全风险」，用户能做的只有点确定或者放弃，跟没检查一样；
+ * 而且这种提示见多了，人就练成了看都不看直接点。所以这里摊开到文件 + 行号 + 原文片段，
+ * 外加它会连哪些外网地址 —— 判断交给人，但得先给人可判断的东西。
+ *
+ * 两档按钮不一样：warn 是「我看过了，装」；block 是平台管理员才给的「仍然安装」，
+ * 点下去会记进日志和技能目录里的 .install.json（谁、什么时候、放行了哪一条）。
+ */
+function showScanGate(msgEl, d, retry) {
+  const scan = d.scan || { findings: [], hosts: [] };
+  const isBlock = d.needs === "force";
+  const rows = (scan.findings || []).slice(0, 20).map(f => `
+    <div class="sk-scan-row ${f.level === "block" ? "is-block" : ""}">
+      <div class="sk-scan-where">${ic(f.level === "block" ? "circle-x" : "triangle-alert")} ${esc(f.file)}${f.line ? ":" + f.line : ""}</div>
+      <div class="sk-scan-why">${esc(f.why || "")}</div>
+      ${f.excerpt ? `<pre class="sk-scan-ex">${esc(f.excerpt)}</pre>` : ""}
+    </div>`).join("");
+  const more = (scan.findings || []).length > 20 ? `<div class="sk-scan-more">…另外 ${scan.findings.length - 20} 处</div>` : "";
+  const hosts = (scan.hosts || []).length
+    ? `<div class="sk-scan-hosts">${ic("globe")} 会连这些地址：${esc(scan.hosts.slice(0, 12).join("、"))}${scan.hosts.length > 12 ? " …" : ""}</div>` : "";
+
+  msgEl.style.color = "";
+  msgEl.innerHTML = `
+    <div class="sk-scan ${isBlock ? "is-block" : ""}">
+      <div class="sk-scan-head">${ic(isBlock ? "shield" : "triangle-alert")} ${isBlock
+        ? "这份技能里有不该出现在办公技能里的写法，默认没装。"
+        : "装之前有几处要你看一眼——不是说它一定有问题，是这几处只有你能判断。"}</div>
+      ${rows}${more}${hosts}
+      <div class="sk-scan-foot">
+        <button class="btn-brand sk-scan-go">${isBlock ? "仍然安装（会留档）" : "我看过了，装"}</button>
+        <button class="sk-scan-no">算了</button>
+        <span class="sk-scan-note">${isBlock
+          ? "强装这一下会记进系统日志和技能目录里的 .install.json。只有平台管理员能点。"
+          : "静态检查只能认出已知的那些写法，点过去不等于它是安全的。"}</span>
+      </div>
+    </div>`;
+  msgEl.querySelector(".sk-scan-no").onclick = () => setMsg(msgEl, "", "");
+  msgEl.querySelector(".sk-scan-go").onclick = () => retry(isBlock ? { force: true } : { confirm: true });
 }
 
 // ---- Tab 4：插件（Agent Plugins 1.0.0 标准包）----
@@ -1287,16 +1372,16 @@ async function renderHubPlugins(box) {
     <div class="card-grid">
       ${list.map((p, i) => `
         <div class="ex-card" data-pi="${i}">
-          <span class="flag" style="${p.ok ? "" : "background:var(--wb-err);color:#fff"}">${p.ok ? ic("puzzle") + " 插件" : "装不上"}</span>
+          <span class="flag" style="${p.ok ? "" : "background:var(--owb-err);color:#fff"}">${p.ok ? ic("puzzle") + " 插件" : "装不上"}</span>
           <div class="hd"><div class="av">${ic(p.ok ? "puzzle" : "triangle-alert")}</div>
             <div class="nm"><span>${esc(p.name)}</span><span class="al">${esc([p.version && "v" + p.version, p.license, p.author].filter(Boolean).join(" · ") || "未标注版本")}</span></div></div>
           <div class="ds">${esc(p.description || (p.ok ? "（插件没写 description）" : p.error))}</div>
           ${p.ok ? `<div class="tg">
             ${(p.skills || []).map(s => `<i title="${esc(s.description || "")}">${ic("wrench")} ${esc(s.name)}</i>`).join("")}
-            ${(p.mcp_servers || []).map(s => `<i style="color:var(${conn.has(s.name) ? "--wb-ok" : "--wb-err"})" title="${esc(fails[s.name] || "")}">${ic(conn.has(s.name) ? "plug" : "triangle-alert")} ${esc(s.name)}（${esc(s.transport)}）</i>`).join("")}
+            ${(p.mcp_servers || []).map(s => `<i style="color:var(${conn.has(s.name) ? "--owb-ok" : "--owb-err"})" title="${esc(fails[s.name] || "")}">${ic(conn.has(s.name) ? "plug" : "triangle-alert")} ${esc(s.name)}（${esc(s.transport)}）</i>`).join("")}
             ${(p.skills || []).length || (p.mcp_servers || []).length ? "" : "<i>这个插件没带任何可用组件</i>"}
             <i>${ic("save")} ${fmtBytes(p.bytes)}</i></div>` : ""}
-          ${(p.warnings || []).length ? `<div class="ds" style="font-size: 12px;color:var(--wb-warn,#b26a00)">${ic("triangle-alert")} 有零件被跳过：<br>${p.warnings.map(w => "· " + esc(w)).join("<br>")}</div>` : ""}
+          ${(p.warnings || []).length ? `<div class="ds" style="font-size: 12px;color:var(--owb-warn,#b26a00)">${ic("triangle-alert")} 有零件被跳过：<br>${p.warnings.map(w => "· " + esc(w)).join("<br>")}</div>` : ""}
           ${p.homepage || p.repository ? `<div class="ds" style="font-size: 12px"><a href="${esc(p.homepage || p.repository)}" target="_blank" rel="noreferrer" style="word-break:break-all">${esc(p.homepage || p.repository)}</a></div>` : ""}
           <div class="ops">${po ? `${p.source ? '<button class="pl-upd" title="从当初安装的地址重新拉一遍">更新</button>' : ""}<button class="pl-del">卸载</button>` : ""}</div>
         </div>`).join("")}

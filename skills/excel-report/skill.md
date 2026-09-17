@@ -11,8 +11,8 @@ description: 用 exceljs 生成带格式、公式、汇总的 Excel 报表的规
 
 ```js
 const ExcelJS = require("exceljs");
-const wb = new ExcelJS.Workbook();
-const ws = wb.addWorksheet("数据");
+const book = new ExcelJS.Workbook();
+const ws = book.addWorksheet("数据");
 
 // 表头（加粗、底色、冻结首行）
 ws.columns = [
@@ -36,7 +36,7 @@ ws.getRow(ws.rowCount).font = { bold: true };
 // 金额列格式
 ws.getColumn("amount").numFmt = "#,##0.00";
 
-await wb.xlsx.writeFile("报表.xlsx");
+await book.xlsx.writeFile("报表.xlsx");
 ```
 
 ## 规范

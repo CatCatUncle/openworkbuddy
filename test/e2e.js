@@ -143,13 +143,13 @@ function makeFakeLLM() {
         const code = `
 const ExcelJS = require("exceljs");
 (async () => {
-  const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("测试");
+  const book = new ExcelJS.Workbook();
+  const ws = book.addWorksheet("测试");
   ws.addRow(["项目", "数量"]);
   ws.addRow(["A", 1]);
   ws.addRow(["B", 2]);
   ws.addRow(["合计", { formula: "SUM(B2:B3)" }]);
-  await wb.xlsx.writeFile(${JSON.stringify(XLSX_NAME)});
+  await book.xlsx.writeFile(${JSON.stringify(XLSX_NAME)});
   console.log("xlsx written");
 })();`;
         return {
@@ -248,11 +248,11 @@ const fs = require("fs");
   ] }] });
   fs.writeFileSync("e2e-预览样本.docx", await Packer.toBuffer(doc));
 
-  const wb = new ExcelJS.Workbook();
-  const s1 = wb.addWorksheet("第一表");
+  const book = new ExcelJS.Workbook();
+  const s1 = book.addWorksheet("第一表");
   s1.addRow(["日期", "金额"]); s1.addRow(["2026-01-01", 12.5]);
-  wb.addWorksheet("第二表").addRow(["只有一行"]);
-  await wb.xlsx.writeFile("e2e-预览样本.xlsx");
+  book.addWorksheet("第二表").addRow(["只有一行"]);
+  await book.xlsx.writeFile("e2e-预览样本.xlsx");
 
   const pptx = new pptxgen();
   const s = pptx.addSlide();
@@ -457,11 +457,11 @@ async function testSessionFileLayout() {
 }
 
 // 成果核验闸门：声称生成的文件必须真的在、而且不能是 0 字节空壳
-// CSS 令牌闸门：引用了却没定义的 --wb-* / --* 变量，浏览器不报错、不回退，直接当没写——
-// 之前 --wb-line/--wb-card/--wb-warn/--mono 就这么空跑了很久（评测页边框一路是空的），
-// 后来又因为手滑吃掉一个分号，让 --wb-ok-text 整个失效。这类事故没有任何运行时能替你发现。
-// 顺带把「文字色拿填充色令牌」也钉死：--wb-brand/--wb-err/--wb-ok 是给背景用的，
-// 当文字色在浅底/暗底上都过不了 WCAG AA，必须走 --wb-*-text 那三档。
+// CSS 令牌闸门：引用了却没定义的 --owb-* / --* 变量，浏览器不报错、不回退，直接当没写——
+// 之前 --owb-line/--owb-card/--owb-warn/--mono 就这么空跑了很久（评测页边框一路是空的），
+// 后来又因为手滑吃掉一个分号，让 --owb-ok-text 整个失效。这类事故没有任何运行时能替你发现。
+// 顺带把「文字色拿填充色令牌」也钉死：--owb-brand/--owb-err/--owb-ok 是给背景用的，
+// 当文字色在浅底/暗底上都过不了 WCAG AA，必须走 --owb-*-text 那三档。
 function testCssTokenGate() {
   const pub = path.join(__dirname, "..", "public");
   const files = [
@@ -478,21 +478,21 @@ function testCssTokenGate() {
   const fillAsText = [];
   // 填充色当文字色用，代码里有三种写法，只堵一种是堵不住的——头两版闸门就只认第 ① 种，
   // 结果 ②③ 在评测页和自进化页躺了一路（绿勾绿字在白底上 3.30，暗底上 4.18，两头都不够 AA）：
-  //   ① 写死：color: var(--wb-err)
-  //   ② 插值：color:${ok ? "var(--wb-ok)" : "var(--wb-err)"}
-  //   ③ 先存变量再用：const color = "var(--wb-err)" … style="color:${color}"
-  // ①② 看 color: 后面那一段值；③ 看「光秃秃一个 var(--wb-x) 字符串」——这种字符串除了当颜色值传没别的用处，
+  //   ① 写死：color: var(--owb-err)
+  //   ② 插值：color:${ok ? "var(--owb-ok)" : "var(--owb-err)"}
+  //   ③ 先存变量再用：const color = "var(--owb-err)" … style="color:${color}"
+  // ①② 看 color: 后面那一段值；③ 看「光秃秃一个 var(--owb-x) 字符串」——这种字符串除了当颜色值传没别的用处，
   // 同一行提到 background/border/fill/stroke/shadow/outline 才放行（那是真把它当填充色用，正是它该待的地方）。
-  const FILL = /var\(\s*--wb-(brand|err|ok)\s*[,)]/;
+  const FILL = /var\(\s*--owb-(brand|err|ok)\s*[,)]/;
   const FG_VALUE = /(?<![-a-zA-Z])color:\s*(\$\{[^}]*\}|[^;"'`\n]*)/g;
-  const LOOSE_STR = /["'`]var\(\s*--wb-(brand|err|ok)\s*\)["'`]/g;
+  const LOOSE_STR = /["'`]var\(\s*--owb-(brand|err|ok)\s*\)["'`]/g;
   const REALLY_FILL = /background|border|fill|stroke|shadow|outline/;
   const lineOf = (t, i) => t.slice(0, i).split("\n").length;
   const scanFillAsText = (t, name, out) => {
     for (const m of t.matchAll(FG_VALUE)) if (FILL.test(m[1])) out.push(name + ":" + lineOf(t, m.index) + " 的 color");
     for (const m of t.matchAll(LOOSE_STR)) {
       const line = t.slice(t.lastIndexOf("\n", m.index) + 1, (t.indexOf("\n", m.index) + 1 || t.length + 1) - 1);
-      if (!REALLY_FILL.test(line)) out.push(name + ":" + lineOf(t, m.index) + " 的 --wb-" + m[1] + "（存进变量再当颜色用）");
+      if (!REALLY_FILL.test(line)) out.push(name + ":" + lineOf(t, m.index) + " 的 --owb-" + m[1] + "（存进变量再当颜色用）");
     }
   };
   for (const f of files) {
@@ -504,23 +504,23 @@ function testCssTokenGate() {
     scanFillAsText(t, path.basename(f), fillAsText);
   }
   assert(missing.size === 0, "引用了没定义的 CSS 变量：" + [...missing].map(([k, v]) => k + "(" + [...new Set(v)].join(",") + ")").join("、"));
-  assert(fillAsText.length === 0, "填充色令牌被当文字色用了，应换成 --wb-*-text：" + fillAsText.join("、"));
+  assert(fillAsText.length === 0, "填充色令牌被当文字色用了，应换成 --owb-*-text：" + fillAsText.join("、"));
   // 反向断言：三种写法各造一份坏样本喂进去，一种抓不到就说明闸门这一路是摆设
-  const bad1 = []; scanFillAsText(".x .i { color: var(--wb-err, #dc2626); }", "假1", bad1);
-  const bad2 = []; scanFillAsText("`<b style=\"color:${ok ? \"var(--wb-ok)\" : \"var(--wb-text)\"}\">`", "假2", bad2);
-  const bad3 = []; scanFillAsText('const tone = "var(--wb-brand)";', "假3", bad3);
+  const bad1 = []; scanFillAsText(".x .i { color: var(--owb-err, #dc2626); }", "假1", bad1);
+  const bad2 = []; scanFillAsText("`<b style=\"color:${ok ? \"var(--owb-ok)\" : \"var(--owb-text)\"}\">`", "假2", bad2);
+  const bad3 = []; scanFillAsText('const tone = "var(--owb-brand)";', "假3", bad3);
   assert(bad1.length && bad2.length && bad3.length, `闸门漏了：写死=${bad1.length} 插值=${bad2.length} 变量=${bad3.length}`);
   // 正向对照：真拿它当填充色的三种写法一个都不许误报，不然逼着人把背景色也换成文字档
   const good = [];
-  scanFillAsText('.chip { background: var(--wb-err); border-left-color: var(--wb-brand); }', "真1", good);
-  scanFillAsText('btn.style.background = "var(--wb-err)";', "真2", good);
-  scanFillAsText('`<i style="background:var(--wb-err);color:#fff">`', "真3", good);
+  scanFillAsText('.chip { background: var(--owb-err); border-left-color: var(--owb-brand); }', "真1", good);
+  scanFillAsText('btn.style.background = "var(--owb-err)";', "真2", good);
+  scanFillAsText('`<i style="background:var(--owb-err);color:#fff">`', "真3", good);
   assert(good.length === 0, "闸门误伤了正经的填充用法：" + good.join("、"));
-  assert(!defined.has("--wb-根本没有这个"), "闸门定义集失效");
+  assert(!defined.has("--owb-根本没有这个"), "闸门定义集失效");
 
   // 同一个毛病还有第 ④ 种写法，上面三种一个都盯不到：**直接写死十六进制**。
   // 令牌那一路堵死之后，自动化页和引擎卡片里躺着 6 条 `color: #16a34a` / `color: #dc2626`——
-  // 绿字压白卡片只有 3.30:1（令牌层为此专门留了 --wb-ok-text，5.79:1），
+  // 绿字压白卡片只有 3.30:1（令牌层为此专门留了 --owb-ok-text，5.79:1），
   // 红字压深色卡片只有 3.41:1；而且写死的颜色压根不跟着主题翻，深色下要么糊要么刺眼。
   // 中性灰放行（分隔线、占位字本来就该用灰），只抓有颜色的。
   const hexSat = (h) => {
@@ -530,9 +530,9 @@ function testCssTokenGate() {
     const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
     return mx === 0 ? 0 : (mx - mn) / mx;
   };
-  // 两头都是深色的面：浅色主题下它也还是深的，套 --wb-*-text（浅色档是深红/深绿）反而看不见。
+  // 两头都是深色的面：浅色主题下它也还是深的，套 --owb-*-text（浅色档是深红/深绿）反而看不见。
   // 只放这一条具体选择器，不放整类——新加的写死颜色照样会被抓。
-  const DARK_SURFACE = /#wb-toast/;
+  const DARK_SURFACE = /#owb-toast/;
   // 免死判定要看「这条声明属于哪条规则」，不能只看它自己那一行：一条规则常常折成好几行写，
   // 选择器在第一行、background 在第二行，按行取就永远读不到选择器（pet.html 的 #drop 就是这样）。
   // 往前找到上一个 } 为止，中间那段一定含选择器。
@@ -554,8 +554,8 @@ function testCssTokenGate() {
     "文字颜色写死成十六进制了，不跟主题翻色、也绕开了 *-text 那一档（绿的在白底只有 3.30:1）：" + hexAsText.join("、"));
   // 反向对照：写死的抓得到；灰的和令牌的一个都不许误报；免死的那条只免它自己
   const h1 = []; scanHexAsText(".x .st.ok { color: #16a34a; }", "假", h1);
-  const h2 = []; scanHexAsText(".x .meta { color: #6a6f7d; }\n.y { color: var(--wb-ok-text); }\n.z { background: #16a34a; }", "真", h2);
-  const h3 = []; scanHexAsText("#wb-toast.err .i { color: #ff8f8f; }", "免", h3);
+  const h2 = []; scanHexAsText(".x .meta { color: #6a6f7d; }\n.y { color: var(--owb-ok-text); }\n.z { background: #16a34a; }", "真", h2);
+  const h3 = []; scanHexAsText("#owb-toast.err .i { color: #ff8f8f; }", "免", h3);
   const h4 = []; scanHexAsText(".other .i { color: #ff8f8f; }", "非免", h4);
   assert(h1.length === 1, "写死的十六进制文字色抓不到，这道闸是摆设");
   assert(h2.length === 0, "误伤了灰字/令牌/背景色：" + h2.join("、"));
@@ -570,7 +570,7 @@ function testCssTokenGate() {
   //     上面的字是深色主题那档浅灰，白底浅灰 2.29:1，读不了。
   // 注意这三个的饱和度分别是 18 / 5 / 3——按「够不够花」筛一个都抓不到，
   // 所以这一路不看饱和度：底色和边框里只准出现 #fff / #000（蒙层、视频留黑那种跟主题无关的），
-  // 其余一律要走令牌。var() 里的兜底值放行（var(--wb-warn, #d97706) 是本项目既有写法，主题照样翻）。
+  // 其余一律要走令牌。var() 里的兜底值放行（var(--owb-warn, #d97706) 是本项目既有写法，主题照样翻）。
   const stripVar = (s) => { let o = s, n; do { n = o; o = o.replace(/var\([^()]*\)/g, " "); } while (o !== n); return o; };
   // 故意长期是深色 / 本来就是插画固有色的几处：单列具体选择器，不放整类
   const FIXED_SURFACE = /\.code-head|\.code-wrap|#drop/;
@@ -601,7 +601,7 @@ function testCssTokenGate() {
     `写死的底色/边框抓不到，这道闸是摆设：淡橙=${f1.length} 橙边=${f2.length} 近黑=${f8.length} 近白=${f9.length}`);
   // 正向对照：var 兜底、纯黑白、以及归另一道闸管的 color: 一个都不许误报
   const f3 = [];
-  scanHexAsFill(".a { background: color-mix(in srgb, var(--wb-warn, #d97706) 10%, transparent); }", "真1", f3);
+  scanHexAsFill(".a { background: color-mix(in srgb, var(--owb-warn, #d97706) 10%, transparent); }", "真1", f3);
   scanHexAsFill(".b { background: #fff; } .b2 { background: #000; } .b3 { border: 1px solid #FFFFFF; }", "真2", f3);
   scanHexAsFill(".c { color: #16a34a; }", "真3", f3);
   assert(f3.length === 0, "误伤了 var 兜底/纯黑白/文字色：" + f3.join("、"));
@@ -617,7 +617,7 @@ function testCssTokenGate() {
 }
 
 // 动效闸门：transition 不写曲线，浏览器就按默认的 ease 走——两头慢中间快，那是「网页味」，
-// 跟界面里其他用 --wb-ease 的地方不是一套动法。这类不一致肉眼要盯很久才看得出来，
+// 跟界面里其他用 --owb-ease 的地方不是一套动法。这类不一致肉眼要盯很久才看得出来，
 // 而且每加一条新样式就可能悄悄漏一个，靠人复查是守不住的，所以钉成闸门。
 // 同理钉住字体栈：拉丁必须先落 -apple-system（SF），中文再落苹方；
 // 反过来写（苹方在前）整句英文会用苹方自带的西文，字重字距都不对。
@@ -630,7 +630,7 @@ function testMotionGate() {
   for (const f of files) {
     const t = fs.readFileSync(f, "utf8");
     for (const m of t.matchAll(/transition:\s*([^;}]+)/g)) {
-      // 按逗号切段，但要绕开括号里的逗号——var(--wb-ease, ease) 的那个回退逗号
+      // 按逗号切段，但要绕开括号里的逗号——var(--owb-ease, ease) 的那个回退逗号
       // 直接 split(",") 会把它劈成两半，于是「ease)」被当成一条没写曲线的过渡（假阳性）
       const segs = [];
       let depth = 0, cur = "";
@@ -647,7 +647,7 @@ function testMotionGate() {
         // transition: none 是刻意关掉过渡（拖着改栏宽时就不该有动画），根本不产生动画，
         // 不存在「吃默认 ease」一说，放行。
         if (v === "none") continue;
-        if (!/var\(\s*--wb-ease/.test(seg)) bare.push(path.basename(f) + ": " + v);
+        if (!/var\(\s*--owb-ease/.test(seg)) bare.push(path.basename(f) + ": " + v);
       }
     }
   }
@@ -684,7 +684,7 @@ function testMotionGate() {
 
   // 反向断言：闸门本身得能抓到东西
   const probeBare = "transition: opacity .2s";
-  assert(!/var\(\s*--wb-ease/.test(probeBare), "裸过渡的判别失效");
+  assert(!/var\(\s*--owb-ease/.test(probeBare), "裸过渡的判别失效");
   assert('"PingFang SC", -apple-system'.split(",")[0].trim().replace(/^["']|["']$/g, "") !== "-apple-system",
     "字体栈顺序的判别失效");
   console.log("✅ 动效闸门：过渡曲线全部走令牌（没有一条吃默认 ease）· 拉丁先落 SF 中文再落苹方 · 浮层毛玻璃且有降级兜底");
@@ -730,23 +730,23 @@ function testSurfaceLayerGate() {
 
   // 真接上了没：外壳 / 画布各自落在哪个元素上
   const wired = [
-    [/body \{[^}]*background: var\(--wb-shell\)/, "body 没用外壳底色，三级表面的最外层是空的"],
-    [/aside \{[^}]*background: var\(--wb-shell\)/, "左栏没用外壳底色"],
-    [/\.main \{[^}]*background: var\(--wb-canvas\)/, ".main 没用画布底色——主区还是纯白，白卡片浮不起来"],
-    [/--wb-shell: var\(--app-shell\)/, "--wb-shell 没接到 ui.css 的真源上"],
-    [/--wb-canvas: var\(--page-canvas\)/, "--wb-canvas 没接到 ui.css 的真源上"],
+    [/body \{[^}]*background: var\(--owb-shell\)/, "body 没用外壳底色，三级表面的最外层是空的"],
+    [/aside \{[^}]*background: var\(--owb-shell\)/, "左栏没用外壳底色"],
+    [/\.main \{[^}]*background: var\(--owb-canvas\)/, ".main 没用画布底色——主区还是纯白，白卡片浮不起来"],
+    [/--owb-shell: var\(--app-shell\)/, "--owb-shell 没接到 ui.css 的真源上"],
+    [/--owb-canvas: var\(--page-canvas\)/, "--owb-canvas 没接到 ui.css 的真源上"],
   ];
   for (const [re, msg] of wired) assert(re.test(html), msg);
 
   // 字形抗锯齿：admin.html 一直开着，主界面漏了，两边看着不像一个产品
   assert(/-webkit-font-smoothing: antialiased/.test(html), "index.html 的 body 没开 antialiased，整页比设计稿粗一档");
 
-  // 滚动条：只允许一套规则，且滑块不能是 --wb-border（压白底看不见）
+  // 滚动条：只允许一套规则，且滑块不能是 --owb-border（压白底看不见）
   const thumbs = [...html.matchAll(/::-webkit-scrollbar-thumb\s*\{([^}]*)\}/g)].map((m) => m[1]);
   const thumbBg = thumbs.filter((r) => /background:/.test(r) && !/:hover/.test(r));
   assert(thumbs.length <= 4, "滚动条滑块规则有 " + thumbs.length + " 条，八成是两套规则在打架");
-  assert(thumbBg.every((r) => !/var\(--wb-border\)/.test(r)),
-    "滚动条滑块还是 --wb-border，压在白底上等于没画：" + thumbBg.join(" | "));
+  assert(thumbBg.every((r) => !/var\(--owb-border\)/.test(r)),
+    "滚动条滑块还是 --owb-border，压在白底上等于没画：" + thumbBg.join(" | "));
   assert(thumbBg.some((r) => /var\(--scrollbar-thumb\)/.test(r)), "滚动条滑块没走 --scrollbar-thumb 令牌");
 
   // 手写投影不能再冒出来：菜单/弹层那几个类必须走三档令牌
@@ -764,7 +764,7 @@ function testSurfaceLayerGate() {
 
   // 反向断言：闸门本身得能抓到东西
   assert(new Set(["#fff", "#fff", "#eee"]).size !== 3, "三值互异的判别失效");
-  assert(!/body \{[^}]*background: var\(--wb-根本没有\)/.test(html), "接线判别失效");
+  assert(!/body \{[^}]*background: var\(--owb-根本没有\)/.test(html), "接线判别失效");
   assert(/box-shadow:[^;]*rgba?\(/.test("box-shadow: 0 1px 2px rgba(0,0,0,.1);"), "手写投影的判别失效");
   console.log("✅ 表面层级闸门：外壳/画布/卡片三档在浅暗两套主题下都互异且真接到了 body/aside/.main · 三档投影齐全 · 滚动条只剩一套且看得见");
 }
@@ -779,8 +779,17 @@ function testSurfaceLayerGate() {
  * 要提第三方（模型服务商、飞书这类平台）只写名字、不给仓库链接，需要链接就落到 docs/ 里去。
  *
  * 所以这个集合应当保持为空。真要加一条，就在这儿写明为什么非它不可；写不上来，就是该拦住。
+ *
+ * 现在有一条。为什么是它，三句话：
+ *   1. **同一个人的仓库。** CatCatUncle/toolward 和 CatCatUncle/openworkbuddy 一个 owner，
+ *      不存在「替别人带路」这回事，商标和背书的顾虑一条都不成立。
+ *   2. **不是推荐，是接线。** toolward.js 真的会去调它的命令行，技能和连接器装之前多扫一遍。
+ *      装它的人需要那个地址才能装；不给链接，README 上那句「装了更安全」就是一句空话。
+ *   3. **授权上必须说清楚。** 它是 PolyForm Noncommercial：公司用要另外授权。
+ *      正因为有这条，它才不能进 package.json，也才更得在 README 里写明白是哪个项目、去哪看。
+ * 再要加第四条的时候，回来重读上面那三句：凑不齐就是不该加。
  */
-const REFERENCE_REPOS = new Set([]);
+const REFERENCE_REPOS = new Set(["CatCatUncle/toolward"]);
 
 /**
  * 定时任务「假绿」闸门。
@@ -856,9 +865,14 @@ function testDocLinkGate() {
     ...[...t.matchAll(/\[[^\]]*\]\(([^)\s]+)/g)].map((m) => m[1]),
     ...[...t.matchAll(/(?:href|src)="([^"]+)"/g)].map((m) => m[1]),
   ];
-  // GitHub 给标题生成锚点的规则：小写、去掉标点、空格转连字符，中文原样保留
+  // GitHub 给标题生成锚点的规则：小写、去掉标点、空格转连字符，汉字原样保留。
+  // ⚠️ 「汉字」不等于 \u4e00-\u9fff 那一段。〇（U+3007）是数字零的汉字写法，排在 CJK 符号区、
+  // 不在基本汉字块里；GitHub 的 slugger 只删标点符号，〇 是字母类，它留着。
+  // 白名单写窄了，闸门算出来的锚点会比真锚点少一个字：文档里 #〇两个总开关… 这种链接在 GitHub 上点得开，
+  // 闸门却报死链——然后人会去把链接改成闸门认的那个，改完 GitHub 上才真的点不开了。假红比假绿更能骗人动手。
+  const CJKISH = "\\u3005\\u3006\\u3007\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af\\uf900-\\ufaff";
   const slugify = (h) => h.trim().replace(/[*`~]/g, "").toLowerCase()
-    .replace(/[^\w\u4e00-\u9fff\s-]/g, "").trim().replace(/\s+/g, "-");
+    .replace(new RegExp("[^\\w" + CJKISH + "\\s-]", "g"), "").trim().replace(/\s+/g, "-");
   const dead = [];
   let checked = 0;
   const anchorsOf = (file) => new Set([...fs.readFileSync(file, "utf8").matchAll(/^#{1,6}\s+(.+?)\s*$/gm)].map((m) => slugify(m[1])));
@@ -908,6 +922,8 @@ function testDocLinkGate() {
   // 反向断言：闸门得真能抓到死链和错仓库，否则改坏了也全绿
   assert(grab("[x](docs/根本没有这个.md)").length === 1, "链接提取失效");
   assert(slugify("## 一起把它做下去") === "-一起把它做下去".slice(1), "标题锚点算法失效");
+  // 〇 得留住。这一条挂了说明白名单又被写窄回去了，中文小标题里用「〇、一、二」编号的那几篇会集体误报死链
+  assert(slugify("〇、两个总开关：默认都关着") === "〇两个总开关默认都关着", "〇 被当标点删了——中文编号小标题的锚点会集体算错");
   assert(!fs.existsSync(path.resolve(root, "docs/根本没有这个.md")), "存在性检查失效");
   assert([...("github.com/someoneelse/repo\"".matchAll(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?[/"?)\s]/g))][0][1] === "someoneelse/repo", "仓库地址正则失效");
   const probeSlug = [...("img.shields.io/github/v/release/someoneelse/repo?x=1".matchAll(/img\.shields\.io\/github\/([^"?\s]+)/g))][0][1].split("/").slice(-2).join("/");
@@ -934,7 +950,7 @@ async function testImageWatermarkGate() {
   const http = require("http");
   const os = require("os");
   const { generateImage } = require("../tools")._internals;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-wm-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-wm-"));
   const seen = [];
   let mode = "accept";
   const srv = http.createServer((req, res) => {
@@ -1005,7 +1021,7 @@ async function testVideoWatermarkGate() {
   const http = require("http");
   const os = require("os");
   const { generateVideo } = require("../tools")._internals;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-vwm-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-vwm-"));
   const submits = [];
   let mode = "accept";
   const srv = http.createServer((req, res) => {
@@ -1079,7 +1095,7 @@ async function testMediaImageInputGate() {
   const http = require("http");
   const os = require("os");
   const { generateImage, generateVideo } = require("../tools")._internals;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-refimg-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-refimg-"));
   // 1×1 的真 PNG。内容无所谓，但扩展名和「是个文件不是目录」这两关是真要过的
   fs.writeFileSync(path.join(dir, "参考.png"),
     Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
@@ -1274,7 +1290,7 @@ async function testVideoProtocols() {
   const http = require("http");
   const os = require("os");
   const { generateVideo } = require("../tools")._internals;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-vproto-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-vproto-"));
   fs.writeFileSync(path.join(dir, "首帧.png"),
     Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
   fs.writeFileSync(path.join(dir, "尾帧.png"), fs.readFileSync(path.join(dir, "首帧.png")));
@@ -1480,7 +1496,7 @@ async function testMediaKeyHygiene() {
   const http = require("http");
   const os = require("os");
   const T = require("../tools")._internals;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-mkey-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mkey-"));
   fs.writeFileSync(path.join(dir, "图.png"),
     Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
   fs.writeFileSync(path.join(dir, "录音.mp3"), Buffer.alloc(4096, 7)); // 只要过「>200 字节 + 扩展名」那两关
@@ -1562,15 +1578,15 @@ async function testMediaKeyHygiene() {
  *     其实拖着当天前面每一条任务的完整对话去问模型，既烧 token 又让它在别的任务的
  *     阴影里答新问题。同时要有正向对照：明确 --session 续接时，上下文必须还在，
  *     否则「不串台」可能只是因为历史根本没存住。
- *  2. 答案走 stdout、进度走 stderr。`wb "..." > 答案.md` 拿到的得是干净答案。
- *  3. 退出码说实话。以前无论成败恒 0，`wb ... && 下一步` 在任务失败时照样往下走。
+ *  2. 答案走 stdout、进度走 stderr。`openworkbuddy "..." > 答案.md` 拿到的得是干净答案。
+ *  3. 退出码说实话。以前无论成败恒 0，`openworkbuddy ... && 下一步` 在任务失败时照样往下走。
  *  4. -C 指了个用不了的目录必须当场停，不许默默退回默认目录——那会把文件写到别处。
  */
 async function testCliMode() {
   const http = require("http");
   const os = require("os");
   const { spawn } = require("child_process");
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wb-cli-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cli-"));
   const seen = [];
   let mode = "ok";
   const srv = http.createServer((req, res) => {
@@ -1668,7 +1684,7 @@ async function testCliMode() {
     assert(String(done.session).startsWith("cli_"), "done 里没带会话 id");
 
     // 5b）-q 拿到的必须是干净正文：不许有前导空行，也不许多一个尾巴
-    //     这条是重定向出来直接当文件用的（wb -q "写周报" > 周报.md），多一行就是脏数据
+    //     这条是重定向出来直接当文件用的（openworkbuddy -q "写周报" > 周报.md），多一行就是脏数据
     const rq = await run(["--no-mcp", "-q", "给我个答案"]);
     assert.strictEqual(rq.status, 0, "-q 模式失败：" + rq.stderr.slice(-500));
     assert.strictEqual(rq.stdout, "答案是四十二。\n",
@@ -1697,13 +1713,13 @@ async function testCliMode() {
     //
     //   这条钉的是**危险的那个方向**。cli.js 现在会在有人坐在终端前时给 agent 传 askUser
     //   （在这之前它从来不传，于是最近在场的那个人反倒是唯一问不到的人）。可管道喂进来的
-    //   `wb "…" < 任务.txt`、给脚本读的 --json，那头确实没人——要是把这两种也算成「有人」，
-    //   agent 会一直等一个永远不会来的回答，`wb` 就此挂死。这里 stdin 是条管道：
+    //   `openworkbuddy "…" < 任务.txt`、给脚本读的 --json，那头确实没人——要是把这两种也算成「有人」，
+    //   agent 会一直等一个永远不会来的回答，`openworkbuddy` 就此挂死。这里 stdin 是条管道：
     //   必须原样跑完、退出码 0，而且模型收到的得是「无人值守」那句。
     mode = "ask";
     const rAsk = await run(["--no-mcp", "帮我写个报告"], "");
     mode = "ok";
-    assert.strictEqual(rAsk.status, 0, "模型问了一句，管道模式下 wb 没能跑完（多半是在等一个永远不会来的回答）：" + rAsk.stderr.slice(-500));
+    assert.strictEqual(rAsk.status, 0, "模型问了一句，管道模式下 openworkbuddy 没能跑完（多半是在等一个永远不会来的回答）：" + rAsk.stderr.slice(-500));
     const askBodies = seen.map((b) => JSON.stringify(b)).join("\n");
     assert(askBodies.includes("无人值守"), "管道模式下 agent 没被告知没人在线，它会傻等");
     assert(!/答> /.test(rAsk.stderr), "没人的时候还把选择题摆了出来：" + rAsk.stderr.slice(-300));
@@ -1711,7 +1727,7 @@ async function testCliMode() {
     // 3）退出码说实话
     mode = "boom";
     const r7 = await run(["--no-mcp", "这条会炸"]);
-    assert.notStrictEqual(r7.status, 0, "模型报错了退出码还是 0，脚本里 `wb ... && 下一步` 会照样往下走");
+    assert.notStrictEqual(r7.status, 0, "模型报错了退出码还是 0，脚本里 `openworkbuddy ... && 下一步` 会照样往下走");
     assert(r7.stderr.includes("出错"), "出错了 stderr 上没说：" + r7.stderr.slice(-300));
     mode = "ok";
 
@@ -1721,7 +1737,7 @@ async function testCliMode() {
     assert.notStrictEqual(r8.status, 0, "-C 指了个用不了的目录却照跑，文件会被写到别处");
     assert(/工作目录用不了/.test(r8.stderr), "-C 失败时没说清是目录的问题：" + r8.stderr.slice(-300));
 
-    // 9）带文件进去：真跑一趟 wb，看挂在请求体上的是不是那句标记
+    // 9）带文件进去：真跑一趟 openworkbuddy，看挂在请求体上的是不是那句标记
     //    单元测试证得了每个零件对，证不了这趟进程真把它挂上了——中间少接一根线，
     //    人拖进来的文件就是「发出去了但模型没看见」，而终端上什么异常都不会有。
     const att = path.join(home, "带进来的.md");
@@ -1865,6 +1881,38 @@ function testContextBudget() {
   assert(byId.t2.includes("已截断") || byId.t3.includes("已截断"), "可重取的 read_file 没有先被裁");
   assert(!byId.t1.includes("已截断") && !byId.t4.includes("已截断"), "预算够时不该动 run_node 的一次性输出");
   console.log("✅ 上下文预算：老结果截短 / 最近 3 轮保原文 / 不删任何工具消息 / 可重取结果先挨刀");
+}
+
+// 上下文余量条得跟着会话走。
+// 用户原话：「怎么我切换对话了它还是一样的啊」——这根条全界面只有一根，画在输入框上头，
+// 而它只在后端播 context 事件的时候重画。换会话没有事件可等（新对话本来就还没跑），
+// 于是上一条对话那句「上下文 87%…」原样挂着，指着一个跟眼前这条对话毫不相干的数。
+// 条子本身怎么画，test/frontend.js 在真 Chromium 里验；这儿只钉死接线——
+// 每一条「换对话」的路上都得把它收回去，以及后台并行会话的数不许画到当前这条上。
+// 接线断了在界面上是看不出来的（条子还在、数还对，只是对的是别人那条对话），所以钉在这儿。
+function testCtxMeterWiring() {
+  const A1 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-01.js"), "utf8");
+  const A2 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
+  assert(/function resetCtxMeter\(/.test(A1), "app-01.js 里没有 resetCtxMeter：换会话没人收这根条");
+
+  // 后台会话的余量不许画到当前这条对话上（这一段 app-01.js 全篇的口径都是 turnSid === sessionId）
+  const ctxBranch = A1.slice(A1.indexOf('} else if (ev.type === "context") {'), A1.indexOf('} else if (ev.type === "usage") {'));
+  assert(ctxBranch.length > 20, "app-01.js 里 context 事件那个分支找不到了（事件改名了？），这一条在空转");
+  assert(/turnSid === sessionId/.test(ctxBranch) && /renderCtxMeter\(/.test(ctxBranch),
+    "后台并行会话的 context 事件会画到当前这条对话的余量条上——切走的那条在跑，眼前这条的百分比跟着它跳");
+
+  // 三条「换对话」的路：历史列表点开、终端那趟的直播、新任务
+  const paths = [
+    ["点开一条历史对话", A2.indexOf("async function openSession(id) {"), A2.indexOf('document.getElementById("new-task").onclick')],
+    ["跟一趟终端里起的任务", A2.indexOf("async function openCliLive(row) {"), A2.indexOf("es.onmessage", A2.indexOf("async function openCliLive(row) {"))],
+    ["开新任务", A2.indexOf('document.getElementById("new-task").onclick'), A2.indexOf("renderHistory();\nrenderLaneTabs();")],
+  ];
+  for (const [what, a, b] of paths) {
+    assert(a > 0 && b > a, `app-02.js 里「${what}」那段切不出来（改名/挪窝了？），这一条在空转，别让它悄悄变绿`);
+    assert(/resetCtxMeter\(\)/.test(A2.slice(a, b)),
+      `「${what}」没把上下文余量条收回去：上一条对话的百分比会留在屏幕上，指着一个跟新对话无关的数`);
+  }
+  console.log("✅ 上下文余量条接线：三条换对话的路都收条子 / 后台会话的数不画到当前对话上");
 }
 
 // 工具配对自愈：带 tool_calls 的 assistant 后面必须逐个 id 跟上工具结果，缺一个就整条请求 400。
@@ -2710,7 +2758,7 @@ async function testDockerDeploy() {
 /**
  * 跑一个独立的 node 子测试文件，把它的结论并进 e2e 的成绩单。
  *
- * 这几个文件（多租户、个人偏好）都得在**进程一开始**就把 WB_DATA_DIR 指到临时目录，
+ * 这几个文件（多租户、个人偏好）都得在**进程一开始**就把 OPENWORKBUDDY_DATA_DIR 指到临时目录，
  * 才能保证一个字节都不碰真账号、真偏好；e2e 这个进程早就把那几个模块 require 过了，
  * 所以只能另起进程。以前 test/tenant.js 就因为没人调，写完就没再跑过——
  * 一个没人跑的测试比没有测试更糟，它让人以为那块是有人看着的。
@@ -3024,6 +3072,38 @@ function testPermissionModes() {
     "显式放行名单没能压过运行时开关"
   );
 
+  // 命令行的 --perm / :perm 也能换档，而且**只换这一趟**。
+  //
+  // 原来这四档只有网页点得到，命令行想换档只能去改 config.json——而 config.json 是长期设置：
+  // 为了让一条 cron 跑全自动，人得先把文件改成 full、跑完再改回来，忘了改回来就是明天所有
+  // 交互式的活儿也不问人了，而他根本不记得自己动过这个开关。所以这里钉两件事：
+  //   ① 覆盖之后闸门真的按新档判（不是只把状态行那行字改了）；
+  //   ② 原来那份配置一个字节都没被写回去。
+  {
+    const cliSrc = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
+    assert(/if \(opts\.perm\)/.test(cliSrc), "cli.js 里没有 --perm 的落地：参数表上有这个选项、真跑起来却不认");
+    assert(!/writeJson\w*\([^)]*CONFIG_PATH[^)]*permission_mode/.test(cliSrc), "cli.js 把 --perm 回写进 config.json 了：这就成了长期设置，跟 -C 的规矩不一致");
+    // 这四行就是 cli.js 里那段覆盖，原样搬过来
+    const cfg = { security: { gateway: true, delete_protect: true, permission_mode: "auto" } };
+    const snapshot = JSON.stringify(cfg.security);
+    const applyPerm = (perm) => { cfg.security = { ...(cfg.security || {}), permission_mode: perm }; };
+    assert.strictEqual(security.checkWrite(security.getSecurity(cfg), "a.md").action, "allow");
+    applyPerm("plan");
+    assert.strictEqual(security.permissionMode(cfg.security), "plan");
+    assert.strictEqual(security.checkWrite(security.getSecurity(cfg), "a.md").action, "deny", "--perm plan 没真的关掉写文件");
+    assert.strictEqual(security.checkCommand(security.getSecurity(cfg), "ls").action, "deny", "--perm plan 没真的关掉跑命令");
+    applyPerm("ask");
+    assert.strictEqual(security.checkWrite(security.getSecurity(cfg), "a.md").action, "ask", "--perm ask 没真的开始问");
+    // 覆盖只动 permission_mode，别的字段（黑名单、删除保护、运行时开关）必须原样留着——
+    // 一个「换档顺手把删除保护也抹了」的实现，比不能换档危险得多
+    const after = JSON.parse(JSON.stringify(cfg.security));
+    const before = JSON.parse(snapshot);
+    for (const k of Object.keys(before)) {
+      if (k === "permission_mode") continue;
+      assert.deepStrictEqual(after[k], before[k], `--perm 把 security.${k} 也改了`);
+    }
+  }
+
   // 规则粒度：批一个不等于批一片
   assert.strictEqual(security.ruleFor("git status"), "git status");
   assert.strictEqual(security.ruleFor("git push --force origin main"), "git push");
@@ -3070,6 +3150,31 @@ function testPermissionModes() {
  * 加了规则却没人看数字有没有降。所以这里守的全是这几条：
  * 按形状归类 · 只有 prompt 类才准变规则 · 三次证据才算模式 · 重复的进不来 · 打分只看数字。
  */
+/**
+ * 「哪些事件入账」这张名单，服务端和前端必须一字不差。
+ *
+ * 它不是装饰：断流重连时，前端拿自己数出来的 `from` 去问服务端要后半截。
+ * 两边名单一旦分家，计数就差一格——用户看到的是重连之后少一条工具调用、
+ * 或者同一段正文重复一遍。而这种错只在「网断了一下」的时候才现形，
+ * 平时跑一百遍测试都碰不到，所以只能靠这一条钉死。
+ *
+ * 本轮加 context 事件时两边都改了；下次谁只改一边，这儿当场拦下来。
+ */
+function testEventLedgerParity() {
+  const srv = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const web = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
+  const pick = (src, re, who) => {
+    const m = src.match(re);
+    assert(m, who + " 里找不到事件入账名单（改名/挪走了？断流续传的计数就没人对得上了）");
+    return m[1].split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+  };
+  const a = pick(srv, /"tool_use", "tool_result",([\s\S]*?)\]\.includes\(ev\.type\)/, "server.js");
+  const b = pick(web, /const KEEP = \["tool_use", "tool_result",([\s\S]*?)\];/, "app-02.js");
+  assert.deepStrictEqual(a, b, "服务端和前端的事件入账名单对不上：断流重连会数错格（多/少的是 "
+    + JSON.stringify([...a.filter((x) => !b.includes(x)), ...b.filter((x) => !a.includes(x))]) + "）");
+  assert(a.includes("context"), "context 事件没进名单：网页上那根上下文余量条重连之后就不动了");
+}
+
 function testEvolveLoop() {
   const { spawnSync } = require("child_process");
   const os = require("os");
@@ -3079,7 +3184,7 @@ function testEvolveLoop() {
     const fs = require("fs");
     const path = require("path");
     const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
-    const DATA = process.env.WB_DATA_DIR;
+    const DATA = process.env.OPENWORKBUDDY_DATA_DIR;
     const SESS = path.join(DATA, "sessions");
     fs.mkdirSync(SESS, { recursive: true });
 
@@ -3208,7 +3313,7 @@ function testEvolveLoop() {
     console.log("OK");
   `;
   const r = spawnSync(process.execPath, ["-e", script], {
-    env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") },
+    env: { ...process.env, OPENWORKBUDDY_DATA_DIR: path.join(dir, "data") },
     encoding: "utf8",
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -3234,7 +3339,7 @@ function testEvolveRecency() {
     const fs = require("fs");
     const path = require("path");
     const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
-    const SESS = path.join(process.env.WB_DATA_DIR, "sessions");
+    const SESS = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "sessions");
     fs.mkdirSync(SESS, { recursive: true });
 
     const NOW = Date.now();
@@ -3275,7 +3380,7 @@ function testEvolveRecency() {
 
     // 兑现处：规则生效之后一次都没再犯，就不许判它「没起作用」
     const born = NOW - 2 * 86400e3;
-    fs.mkdirSync(path.join(process.env.WB_DATA_DIR, "learned"), { recursive: true });
+    fs.mkdirSync(path.join(process.env.OPENWORKBUDDY_DATA_DIR, "learned"), { recursive: true });
     const [p] = ev.addProposals([{
       kind: "add_rule", signal: "zsh_glob", rule: "通配符路径一律加引号，别指望 shell 帮你展开。",
       verify: "zsh_glob 出现率降到 0.1 以下",
@@ -3284,7 +3389,7 @@ function testEvolveRecency() {
     ev.decideProposal(p.id, "accept", { by: "测试" });
     const r0 = ev.activeRules()[0];
     // 规则的出生时间要盖回 2 天前，才谈得上"生效之后这 2 天"
-    const rf = path.join(process.env.WB_DATA_DIR, "learned", r0.id + ".md");
+    const rf = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "learned", r0.id + ".md");
     fs.writeFileSync(rf, fs.readFileSync(rf, "utf8").replace(r0.meta.at, iso(born)));
 
     const sc = ev.scoreRules({ minTurns: 1, now: NOW }).find(x => x.signal === "zsh_glob");
@@ -3295,7 +3400,7 @@ function testEvolveRecency() {
     console.log("OK");
   `;
   const r = spawnSync(process.execPath, ["-e", script], {
-    env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") },
+    env: { ...process.env, OPENWORKBUDDY_DATA_DIR: path.join(dir, "data") },
     encoding: "utf8",
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -3337,7 +3442,7 @@ function testEvolvePromptBudget() {
     const fs = require("fs");
     const path = require("path");
     const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
-    const DATA = process.env.WB_DATA_DIR;
+    const DATA = process.env.OPENWORKBUDDY_DATA_DIR;
     const SESS = path.join(DATA, "sessions");
     const RULES = path.join(DATA, "learned");
     fs.mkdirSync(SESS, { recursive: true });
@@ -3436,7 +3541,7 @@ function testEvolvePromptBudget() {
     console.log("OK");
   `;
   const r = spawnSync(process.execPath, ["-e", "(async()=>{" + script + "})().catch(e=>{console.error(e);process.exit(1)})"], {
-    env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") },
+    env: { ...process.env, OPENWORKBUDDY_DATA_DIR: path.join(dir, "data") },
     encoding: "utf8",
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -3773,7 +3878,7 @@ async function testCodingTools() {
     })().catch((e) => { console.error(e); process.exit(1); });
   `;
   const r = spawnSync(process.execPath, ["-e", script], {
-    env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") },
+    env: { ...process.env, OPENWORKBUDDY_DATA_DIR: path.join(dir, "data") },
     encoding: "utf8",
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -3960,7 +4065,7 @@ async function testDeliverableQuality() {
     })().catch((e) => { console.error(e); process.exit(1); });
   `;
   const r = spawnSync(process.execPath, ["-e", script], {
-    env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") },
+    env: { ...process.env, OPENWORKBUDDY_DATA_DIR: path.join(dir, "data") },
     encoding: "utf8",
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -4093,7 +4198,7 @@ function testEvolveCaliberAndSpread() {
     const fs = require("fs");
     const path = require("path");
     const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
-    const SESS = path.join(process.env.WB_DATA_DIR, "sessions");
+    const SESS = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "sessions");
     fs.mkdirSync(SESS, { recursive: true });
     const NOW = Date.now();
     const iso = (ms) => new Date(ms).toISOString();
@@ -4134,14 +4239,14 @@ function testEvolveCaliberAndSpread() {
     assert.ok(after.days > 0 && after.days < 1, "since 模式下 days 该是精确的小数：" + after.days);
 
     // 端到端：规则生效后一次没犯，打分必须判「有效」而不是建议下架
-    fs.mkdirSync(path.join(process.env.WB_DATA_DIR, "learned"), { recursive: true });
+    fs.mkdirSync(path.join(process.env.OPENWORKBUDDY_DATA_DIR, "learned"), { recursive: true });
     const [p] = ev.addProposals([{
       kind: "add_rule", signal: "zsh_glob", rule: "通配符路径一律加引号。", verify: "zsh_glob 降到 0",
       baseline: { key: "zsh_glob", rate: 0.5, count: 5, turns: 10, at: iso(BORN), caliber: "dated" },
     }]);
     ev.decideProposal(p.id, "accept", { by: "测试" });
     const r0 = ev.activeRules()[0];
-    const rf = path.join(process.env.WB_DATA_DIR, "learned", r0.id + ".md");
+    const rf = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "learned", r0.id + ".md");
     fs.writeFileSync(rf, fs.readFileSync(rf, "utf8").replace(r0.meta.at, iso(BORN)));
     const sc = ev.scoreRules({ minTurns: 1, now: NOW }).find((x) => x.signal === "zsh_glob");
     assert.ok(sc, "没打出分");
@@ -4180,7 +4285,7 @@ function testEvolveCaliberAndSpread() {
     assert.strictEqual(ev.decideProposal(mk({ key: "thumbs_down", count: 3, rate: 0.2, actionable: "prompt", label: "👎", sessions: 1 }).id, "accept", { by: "t" }).status, "applied", "👎 快照没带 kind 就被会话数卡住了");
     console.log("OK");
   `;
-  const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") }, encoding: "utf8" });
+  const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, OPENWORKBUDDY_DATA_DIR: path.join(dir, "data") }, encoding: "utf8" });
   fs.rmSync(dir, { recursive: true, force: true });
   assert.strictEqual(r.status, 0, "自进化口径/铺开度测试失败：\n" + (r.stderr || r.stdout));
 
@@ -4370,7 +4475,7 @@ function testMemoryLayer() {
     })().catch((e) => { console.error((e && e.stack) || e); process.exit(1); });
   `;
   const r = spawnSync(process.execPath, ["-e", script], {
-    env: { ...process.env, WB_DATA_DIR: dir },
+    env: { ...process.env, OPENWORKBUDDY_DATA_DIR: dir },
     encoding: "utf8",
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -4422,7 +4527,7 @@ function testMemoryNearDup() {
     console.log("OK");
     })().catch((e) => { console.error(e && e.stack || e); process.exit(1); });
   `;
-  const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") }, encoding: "utf8" });
+  const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, OPENWORKBUDDY_DATA_DIR: path.join(dir, "data") }, encoding: "utf8" });
   fs.rmSync(dir, { recursive: true, force: true });
   assert.strictEqual(r.status, 0, "记忆改口/向量状态测试失败：\n" + (r.stderr || r.stdout));
   // 三头钉住：工具说明教模型看回执、接口把向量状态吐出去、面板真把它画出来
@@ -4545,9 +4650,9 @@ function testAccountStore() {
   const { clientIp, isPrivateAddr } = require("../account")._internals;
   const req = (peer, xff) => ({ socket: { remoteAddress: peer }, headers: xff ? { "x-forwarded-for": xff } : {} });
   const withTrust = (n, fn) => {
-    const old = process.env.WB_TRUST_PROXY;
-    if (n === null) delete process.env.WB_TRUST_PROXY; else process.env.WB_TRUST_PROXY = String(n);
-    try { return fn(); } finally { if (old === undefined) delete process.env.WB_TRUST_PROXY; else process.env.WB_TRUST_PROXY = old; }
+    const old = process.env.OPENWORKBUDDY_TRUST_PROXY;
+    if (n === null) delete process.env.OPENWORKBUDDY_TRUST_PROXY; else process.env.OPENWORKBUDDY_TRUST_PROXY = String(n);
+    try { return fn(); } finally { if (old === undefined) delete process.env.OPENWORKBUDDY_TRUST_PROXY; else process.env.OPENWORKBUDDY_TRUST_PROXY = old; }
   };
   assert(isPrivateAddr("172.18.0.5") && isPrivateAddr("127.0.0.1") && isPrivateAddr("::1") && isPrivateAddr("::ffff:10.1.2.3"), "私网地址没认出来");
   assert(!isPrivateAddr("1.2.3.4") && !isPrivateAddr("172.32.0.1") && !isPrivateAddr(""), "公网地址被当成私网了");
@@ -4570,7 +4675,7 @@ function testAccountStore() {
 /**
  * 积分闸门：默认必须是**关**的。本地个人部署时它拦不住任何真实开销（key 是用户自己的，
  * 账单在服务商那边），却会在干到一半时把任务掐了，还得自己给自己充值。
- * 账本落在 data/ 下，所以整段丢进子进程跑，WB_DATA_DIR 指到临时目录——测试绝不能碰真账号。
+ * 账本落在 data/ 下，所以整段丢进子进程跑，OPENWORKBUDDY_DATA_DIR 指到临时目录——测试绝不能碰真账号。
  */
 function testCreditsGate() {
   const { spawnSync } = require("child_process");
@@ -4627,7 +4732,7 @@ function testCreditsGate() {
     console.log("OK");
   `;
   const r = spawnSync(process.execPath, ["-e", script], {
-    env: { ...process.env, WB_DATA_DIR: dir },
+    env: { ...process.env, OPENWORKBUDDY_DATA_DIR: dir },
     encoding: "utf8",
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -4682,7 +4787,7 @@ function testCachedLedger() {
     console.log("OK");
   `;
   const r = spawnSync(process.execPath, ["-e", script], {
-    env: { ...process.env, WB_DATA_DIR: dir },
+    env: { ...process.env, OPENWORKBUDDY_DATA_DIR: dir },
     encoding: "utf8",
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -4701,7 +4806,7 @@ function testCachedLedger() {
 
 /**
  * 改登录名：挂在旧名字底下的东西必须一起搬走，搬漏一样就是历史对不上人。
- * 同样丢子进程里跑，WB_DATA_DIR 指到临时目录，不碰真账号。
+ * 同样丢子进程里跑，OPENWORKBUDDY_DATA_DIR 指到临时目录，不碰真账号。
  */
 function testRenameLogin() {
   const { spawnSync } = require("child_process");
@@ -4711,7 +4816,7 @@ function testRenameLogin() {
     const assert = require("assert");
     const acc = require(${JSON.stringify(path.join(__dirname, "..", "account.js"))});
     const orgs = require(${JSON.stringify(path.join(__dirname, "..", "org.js"))});
-    const { register, renameUser, loadUsers, saveUsers, loadUsage, issueToken } = acc._internals;
+    const { register, renameUser, loadUsers, saveUsers, loadUsage, saveUsage, issueToken } = acc._internals;
     const names = () => loadUsers().users.map((u) => u.username);
 
     register("老名字", "pw123456");
@@ -4733,16 +4838,19 @@ function testRenameLogin() {
       "登录令牌没跟着搬——用户改完名当场被踢下线，还得重登一次");
     assert.strictEqual(loadUsage()[0].user, "新名字", "用量流水还挂在旧名字底下");
 
-    // 充值记录里的 by（谁充的）也是个登录名，一样得搬
-    const usage = loadUsage(); usage.unshift({ kind: "topup", user: "别人", by: "新名字", credits: 5 });
-    require("fs").writeFileSync(require("path").join(process.env.WB_DATA_DIR, "usage.json"), JSON.stringify(usage));
+    // 充值记录里的 by（谁充的）也是个登录名，一样得搬。
+    // 走 saveUsage 而不是直接写文件：账本已经是按月分片的 jsonl，
+    // 往 usage.json 里写等于写进一个没人再读的老文件，测试会白跑一场还显示通过
+    const usage = loadUsage();
+    usage.unshift({ ts: new Date().toISOString(), day: new Date().toISOString().slice(0, 10), kind: "topup", user: "别人", by: "新名字", credits: 5 });
+    saveUsage(usage);
     renameUser("新名字", "更新的名字");
     assert.strictEqual(loadUsage()[0].by, "更新的名字", "充值记录里的「谁充的」没搬");
     assert.strictEqual(names()[0], "更新的名字", "第二次改名没生效");
     console.log("OK");
   `;
   const r = spawnSync(process.execPath, ["-e", script], {
-    env: { ...process.env, WB_DATA_DIR: dir },
+    env: { ...process.env, OPENWORKBUDDY_DATA_DIR: dir },
     encoding: "utf8",
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -5279,20 +5387,20 @@ async function testDesktopPet() {
 
   // ② 工具层：没有落地实现时如实报错
   const { executeTool } = require("../tools");
-  const saved = global.__wbPetTool;
-  delete global.__wbPetTool;
+  const saved = global.__openworkbuddyPetTool;
+  delete global.__openworkbuddyPetTool;
   const noImpl = await executeTool("desktop_pet", { action: "status" }, {});
   assert(noImpl.isError, "没有实现时 desktop_pet 应该报错而不是假装成功");
 
   // ③ 参数原样转发给服务端实现（action / image / scale 一个都不能丢）
   let got = null;
-  global.__wbPetTool = { async run(input, baseDir) { got = { input, baseDir }; return { content: "ok", isError: false }; } };
+  global.__openworkbuddyPetTool = { async run(input, baseDir) { got = { input, baseDir }; return { content: "ok", isError: false }; } };
   const ok = await executeTool("desktop_pet", { action: "create", image: "头像.png", scale: 1.2 }, { baseDir: "e2e-pet-dir" });
   assert(!ok.isError && got && got.input.action === "create" && got.input.image === "头像.png" && got.input.scale === 1.2, "desktop_pet 参数没原样转发: " + JSON.stringify(got));
   // 用户在某个对话里传的图落在该对话的成果子目录，实现要靠这个 baseDir 才找得到
   assert.strictEqual(got.baseDir, path.join(WORKSPACE, "e2e-pet-dir"), "desktop_pet 没把本次对话的成果目录传给实现");
   fs.rmSync(path.join(WORKSPACE, "e2e-pet-dir"), { recursive: true, force: true });
-  if (saved) global.__wbPetTool = saved; else delete global.__wbPetTool;
+  if (saved) global.__openworkbuddyPetTool = saved; else delete global.__openworkbuddyPetTool;
 
   // ④ 工具声明本身：模型只能看到这五个动作，且 action 必填
   const { TOOL_DEFS } = require("../tools");
@@ -5374,7 +5482,7 @@ async function testMcpFailureReason() {
   // 假服务器：往 stderr 喊一句就带着非零退出码死掉，跟真实的 filesystem 一个形状
   await mgr.startAll([
     { name: "会喊一嗓子再死的", command: process.execPath, args: ["-e", 'console.error("配的目录不存在: /nope"); process.exit(3);'] },
-    { name: "命令根本不存在的", command: "wb-no-such-binary-" + Date.now(), args: [] },
+    { name: "命令根本不存在的", command: "owb-no-such-binary-" + Date.now(), args: [] },
   ]);
   const byName = Object.fromEntries(mgr.failures.map((x) => [x.name, x.error]));
   const rawByName = Object.fromEntries(mgr.failures.map((x) => [x.name, x.raw || ""]));
@@ -5387,7 +5495,7 @@ async function testMcpFailureReason() {
   // 另一头：连命令都没有时，ENOENT 说的是「什么东西不在」，但没说该怎么办。
   // 现在界面上那句写成人话（哪个命令没找到、拿什么装），技术原文原样留在 raw 里给日志和排障用。
   const gone = byName["命令根本不存在的"] || "";
-  assert(/wb-no-such-binary-/.test(gone) && /装/.test(gone), "命令不存在时没写清是哪个命令、怎么装: " + gone);
+  assert(/owb-no-such-binary-/.test(gone) && /装/.test(gone), "命令不存在时没写清是哪个命令、怎么装: " + gone);
   assert(/ENOENT/.test(rawByName["命令根本不存在的"] || ""), "技术原文（ENOENT）没留在 raw 里，排障时就查不到了");
   mgr.stop([]);
   console.log("✅ 连接器：死了会说清死因（退出码 + 它自己最后喊的那句），不是光一句「已退出」");
@@ -5396,7 +5504,7 @@ async function testMcpFailureReason() {
 function testPetSprites() {
   const os = require("os");
   const sprites = require("../pet-sprites");
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wb-pets-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pets-"));
   const mk = (dir, meta, sheetName, buf) => {
     fs.mkdirSync(path.join(dir), { recursive: true });
     if (meta) fs.writeFileSync(path.join(dir, "pet.json"), JSON.stringify(meta));
@@ -5679,6 +5787,62 @@ function enginePathProblems(src) {
 }
 
 /**
+ * 手搓一张真 PNG，专供测试当料用。
+ *
+ * **故意不复用 thumb-png.js 的编码器**：那头正是被测的东西，拿它造料再拿它解，
+ * 等于自己判自己的卷子——编码和解码一起写错，测试照样全绿。
+ * 这里只按 PNG 规范老老实实写：签名 + IHDR(8 位 RGB，非隔行) + 一个 IDAT(每行 filter 0) + IEND。
+ * 像素用一个定死种子的伪随机填：内容压不动，出来的文件才过得了 thumb.js 那道 100 KB 的门槛
+ * （渐变之类一压就剩几 KB，走不到缩放那一步，测了个寂寞）。
+ */
+function e2ePng(w, h, pixel) {
+  const zlib = require("zlib");
+  const { crc32 } = require("../thumb-png");   // CRC 不是被测的东西，借一下不影响判卷
+  const raw = Buffer.alloc(h * (w * 3 + 1));
+  // xorshift32（不是随手写的线性同余：seed * 1103515245 会越过 53 位有效位，
+  // 低位被抹掉之后序列很快退化成重复花样，deflate 一压 780 KB 只剩 19 KB，
+  // 连 100 KB 的门槛都过不去——这条测试就悄悄变成什么都没测）
+  let seed = 0x2f6e2b1;
+  for (let y = 0; y < h; y++) {
+    const off = y * (w * 3 + 1);
+    raw[off] = 0;                               // filter 0：none
+    for (let x = 0; x < w; x++) {
+      const i = off + 1 + x * 3;
+      if (pixel) {                                // 要一张压得很小的图时用（比如验体积门槛）
+        const v = pixel(x, y);
+        raw[i] = v[0]; raw[i + 1] = v[1]; raw[i + 2] = v[2];
+        continue;
+      }
+      for (let c = 0; c < 3; c++) {
+        seed ^= seed << 13; seed >>>= 0;
+        seed ^= seed >>> 17;
+        seed ^= seed << 5;  seed >>>= 0;
+        raw[i + c] = seed & 255;
+      }
+    }
+  }
+  const chunk = (type, data) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(data.length, 0);
+    head.write(type, 4, "ascii");
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0, 0);
+    return Buffer.concat([head, data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;                                  // 位深
+  ihdr[9] = 2;                                  // 色型 2 = RGB
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+/**
  * 成果预览的相对路径。用户的原话是「怎么在预览的时候图片都不正常显示」。
  *
  * 根因不在图上，在地址上：成果按会话分了子文件夹（任务_0905_.../hunan.html），
@@ -5705,6 +5869,10 @@ async function testFilePathRouting() {
   fs.mkdirSync(ws, { recursive: true });
   fs.writeFileSync(path.join(ws, "site.html"), '<!doctype html><img src="fig hero.jpg"><img src="pics/deep.png">');
   fs.writeFileSync(path.join(ws, "fig hero.jpg"), Buffer.from("JPEGDATA"));
+  // ?thumb= 的退路要用的料：得过 thumb.js 那道 100 KB 的门槛，不然走不到 nativeImage 那一步，
+  // 下面那条就成了在测「文件太小不缩」。内容用可见字符，方便直接比字符串
+  const BIG = Buffer.from("THUMBFALLBACK".repeat(12000));   // ≈152 KB
+  fs.writeFileSync(path.join(ws, "大图.png"), BIG);
   fs.mkdirSync(path.join(ws, "pics"), { recursive: true });
   fs.writeFileSync(path.join(ws, "pics", "deep.png"), Buffer.from("PNGDATA"));
   fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ 机密: "这份不许被 ../ 取走" }));
@@ -5721,13 +5889,18 @@ async function testFilePathRouting() {
   const child = booted.child;
   const { up, port, why: bootWhy } = await booted.wait();
 
+  // 收成 Buffer 再给两个视角：body 当文字看，buf 当字节看。
+  // 之前这里是 b += c，等于拿 utf8 解——文字没事，PNG 的字节会被替换成 U+FFFD，怎么看都是坏图
   const get = (p) => new Promise((resolve) => {
-    const req = http.request({ host: "127.0.0.1", port, path: p, headers: { Cookie: "wb_token=" + token } }, (res) => {
-      let b = "";
-      res.on("data", (c) => (b += c));
-      res.on("end", () => resolve({ code: res.statusCode, body: b }));
+    const req = http.request({ host: "127.0.0.1", port, path: p, headers: { Cookie: "openworkbuddy_token=" + token } }, (res) => {
+      const parts = [];
+      res.on("data", (c) => parts.push(c));
+      res.on("end", () => {
+        const buf = Buffer.concat(parts);
+        resolve({ code: res.statusCode, body: buf.toString("utf8"), buf });
+      });
     });
-    req.on("error", (e) => resolve({ code: 0, body: e.message }));
+    req.on("error", (e) => resolve({ code: 0, body: e.message, buf: Buffer.alloc(0) }));
     req.end();
   });
 
@@ -5761,7 +5934,68 @@ async function testFilePathRouting() {
     assert(esc1.code >= 400 && esc2.code >= 400, "通配路由能读到工作区外面去（" + esc1.code + " / " + esc2.code + "）");
     assert(!/机密/.test(esc1.body + esc2.body), "越界请求把工作区外的内容吐出来了");
 
-    console.log("✅ 成果预览路径：会话子目录里的网页和它相对路径引的图都取得到（压平写法负对照 404，%2F 老链接不断，越界仍拦得住）");
+    // ⑥ ?thumb=320 的退路：**文件缩不动的时候必须原样发原图**。
+    // 大图.png 里装的是 "THUMBFALLBACK" 重复填的字节，扩展名是 .png 但根本不是 PNG
+    // （工作空间里真有两张这样的：JPEG 的字节配 .png 的名字）。
+    // 缩略图是锦上添花，绝不许因为它让一张图显示不出来。
+    assert(BIG.length > 100 * 1024, "料不够大，走不到缩放那一步，⑥ 等于没测（" + BIG.length + " B）");
+    const asThumb = await get(enc(DIR + "/大图.png") + "?thumb=320");
+    assert(asThumb.code === 200, "带 ?thumb=320 的坏图取不到（HTTP " + asThumb.code + "）——产出卡上会是一片空白");
+    assert(asThumb.body === BIG.toString(), "不是 PNG 却没原样发回原图，退路断了");
+    const asIs = await get(enc(DIR + "/大图.png"));
+    assert(asIs.body === asThumb.body, "带不带 ?thumb= 发回来的东西不一样（缩不动时应该完全一致）");
+    const thumbDir = path.join(home, "data", "thumbs");
+    // 负向对照：缩不出来就不许在磁盘上留一份空缓存，下次也不会把空文件当缩略图发出去
+    assert(!fs.existsSync(thumbDir) || fs.readdirSync(thumbDir).filter((f) => !f.startsWith(".")).length === 0,
+      "缩不动却往缓存目录里写了东西：" + (fs.existsSync(thumbDir) ? fs.readdirSync(thumbDir).join(",") : ""));
+
+    // ⑥b 真 PNG 在**纯 node** 下要真的缩出来。这一条是用户那句「这个网页版感觉很卡」的正主：
+    // 缩放原本只有 Electron 的 nativeImage 一条路，而 `npm start`（还有内网、私有化部署那台
+    // 服务器，它连 electron 都没装，那只是个 devDependency）跑的是纯 node —— 等于**网页版
+    // 一张缩略图都没有**，7 MB 的原图整张丢给浏览器解。thumb-png.js + thumb-worker.js 补的就是这条。
+    // bootRealServer 起的正是 `node server.js`，所以这里量的就是网页版那一边。
+    const realPng = e2ePng(420, 620);
+    // 料不到 100 KB 就走不到缩放那一步（thumb.js THUMB_MIN_BYTES），下面几条等于没测
+    assert(realPng.length > 100 * 1024, "造出来的 PNG 只有 " + realPng.length + " B，压得太狠，⑥b 等于没测");
+    fs.writeFileSync(path.join(ws, "真图.png"), realPng);
+    const real = await get(enc(DIR + "/真图.png") + "?thumb=320");
+    assert(real.code === 200, "纯 node 下真 PNG 的缩略图取不到（HTTP " + real.code + "）");
+    const shrunk = real.buf;
+    const meta = require("../thumb-png").pngInfo(shrunk);
+    assert(meta, "纯 node 发回来的不是一张 PNG —— 缩略图那条路把图弄坏了");
+    assert(Math.max(meta.width, meta.height) === 320,
+      "缩出来的长边是 " + meta.width + "×" + meta.height + "，不是 320");
+    assert(meta.height === 320 && meta.width === 217,
+      "长宽比没保住（420×620 应缩成 217×320，实际 " + meta.width + "×" + meta.height + "）");
+    const orig = fs.statSync(path.join(ws, "真图.png")).size;
+    assert(shrunk.length < orig / 4,
+      "缩完只有 " + orig + " → " + shrunk.length + " B，没省下什么，白折腾一趟");
+    // 落盘缓存：第二次要同一张图不该再缩一遍
+    const cached = fs.readdirSync(thumbDir).filter((f) => !f.startsWith("."));
+    assert(cached.length === 1, "缓存目录里躺着 " + cached.length + " 个文件（应只有刚缩出来那一个）");
+    const again = await get(enc(DIR + "/真图.png") + "?thumb=320");
+    assert(again.buf.equals(real.buf), "第二次要同一张缩略图，发回来的跟第一次不一样");
+    assert(fs.readdirSync(thumbDir).filter((f) => !f.startsWith(".")).length === 1,
+      "第二次又缩了一遍，缓存没命中");
+    assert(!fs.readdirSync(thumbDir).some((f) => f.endsWith(".part")),
+      "缓存目录里留下了写了一半的临时文件");
+
+
+    // ⑦ 资料库那条路由（/api/library/file/*）走的是同一段。它要登录才够得着，
+    // 这里不另起一套会话，只钉住两件事：两处都调了 thumbFileAsync，且共用同一个缓存目录——
+    // 缓存键里带的是绝对路径，同一个目录不会串，各写一个目录才会漏缓存、重复缩
+    const ssrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+    const calls = ssrc.split("\n").filter((line) => /const thumb = await thumbFileAsync\(/.test(line));
+    assert(calls.length === 2, "server.js 里调 thumbFileAsync 的地方有 " + calls.length + " 处（应为产出预览和资料库两处）");
+    // 少一个 await，返回的就是个 Promise，if (thumb) 永远为真，sendFile 会拿到一个对象直接 500
+    assert(!/const thumb = thumbFileAsync\(/.test(ssrc), "有一处调 thumbFileAsync 忘了 await");
+    assert(calls.every((line) => line.includes('path.join(dataPath("data"), "thumbs")')),
+      "两处缩略图没共用同一个缓存目录：\n" + calls.join("\n"));
+    const libRoute = ssrc.slice(ssrc.indexOf('app.get("/api/library/file/*"'));
+    assert(libRoute.indexOf("thumbFileAsync(") < libRoute.indexOf("res.download(p)"),
+      "资料库那条路由把 ?thumb= 写在 res.download 后面了——永远走不到，资料库还是一屏原图");
+
+    console.log("✅ 成果预览路径：会话子目录里的网页和它相对路径引的图都取得到（压平写法负对照 404，%2F 老链接不断，越界仍拦得住，纯 node 下真 PNG 真缩出 320、坏文件原样发原图，资料库共用同一段缩略图）");
   } finally {
     try { child.kill("SIGKILL"); } catch {}
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
@@ -5818,12 +6052,25 @@ async function testLibraryOutputsTruth() {
   // ④ 名字在、东西不在：这就是用户点了半天没反应的那一类
   const GONE = OUT + "/场景_吴川小卖部.png";
 
+  // ⑤ 名字在、东西被**挪走**了：升级时 migrate.js 把工作区根目录下的散文件收进
+  // 「以前的文件_日期」，而这次对话记的是当时那个裸文件名。这一类跟 ④ 长得一模一样
+  // （按原地址一查就是没有），但它根本没丢，只是往下挪了一层——
+  // 报成「已不在」的话，用户看见的是「我的文件被你删了」。
+  const MOVED = "海报初稿.png";
+  const movedBody = "PNG-ish-bytes-海报";
+  const ARCH = "以前的文件_20260917";
+  fs.mkdirSync(path.join(ws, ARCH), { recursive: true });
+  fs.writeFileSync(path.join(ws, ARCH, MOVED), movedBody);
+  // ⑥ 反向对照：同样是根下的裸名字，但归档目录里也没有。回落这一手不能把所有查不到的
+  // 名字都说成「在归档里」——那就成了另一个方向的谎，而且是更难查的那种
+  const NOWHERE = "根本没生成出来.png";
+
   // 一次对话，产出上面三个名字
   const at = "2026-09-16T10:00:00.000Z";
   fs.mkdirSync(path.join(home, "data", "sessions"), { recursive: true });
   fs.writeFileSync(path.join(home, "data", "sessions", "s_drama.json"), JSON.stringify({
     id: "s_drama", title: "粤西狗奶AI短剧", user: "e2e", updated_at: at,
-    transcript: [{ type: "assistant", at, events: [{ type: "files", changed: [OLD, GONE, FRESH] }] }],
+    transcript: [{ type: "assistant", at, events: [{ type: "files", changed: [OLD, GONE, FRESH, MOVED, NOWHERE] }] }],
   }));
 
   const token = "e2e" + crypto.randomBytes(12).toString("hex");
@@ -5837,7 +6084,7 @@ async function testLibraryOutputsTruth() {
   const { up, port, why: bootWhy } = await booted.wait();
 
   const get = (p, method = "GET") => new Promise((resolve) => {
-    const req = http.request({ host: "127.0.0.1", port, path: p, method, headers: { Cookie: "wb_token=" + token } }, (res) => {
+    const req = http.request({ host: "127.0.0.1", port, path: p, method, headers: { Cookie: "openworkbuddy_token=" + token } }, (res) => {
       let b = "";
       res.on("data", (c) => (b += c));
       res.on("end", () => resolve({ code: res.statusCode, body: b }));
@@ -5859,6 +6106,7 @@ async function testLibraryOutputsTruth() {
     const task = (data.tasks || []).find((t) => t.id === "s_drama");
     assert(task, "那次对话的产出整组不见了：" + JSON.stringify(data.tasks || []).slice(0, 300));
     const by = new Map(task.files.map((f) => [f.name, f]));
+    const enc = (rel) => "/api/files/view/" + rel.split("/").map(encodeURIComponent).join("/");
 
     // ① 掉出快照 ≠ 没了：单独 stat 一次，体积和时间都得是真的
     const old = by.get(OLD);
@@ -5877,13 +6125,30 @@ async function testLibraryOutputsTruth() {
            "磁盘上根本没有这个文件，清单却说它还在：界面照常画一行、点进去 404 —— 这就是用户点了半天没反应的那一下");
     assert(!gone.size, "不存在的文件还报了体积：" + gone.size);
 
+    // ⑤ 搬过家的要认出来，而且给的是**能打开的那个**地址
+    const moved = by.get(ARCH + "/" + MOVED);
+    assert(moved, `被升级整理搬走的那份没按新地址报出来，清单里是：${JSON.stringify(task.files.map((f) => f.name))}
+       —— 按老名字查不到就判「已不在」的话，一次升级能让整批还在盘上的文件集体「消失」`);
+    assert(moved.gone === false && moved.size === Buffer.byteLength(movedBody),
+           "搬过家的文件报错了体积或还在说它没了：" + JSON.stringify(moved));
+    assert(!by.get(MOVED),
+           "同一个文件按老地址又报了一遍：界面上会出现两行，一行能开一行开不了");
+    const movedGet = await get(enc(ARCH + "/" + MOVED));
+    assert(movedGet.code === 200 && movedGet.body === movedBody,
+           `清单给的新地址打不开（HTTP ${movedGet.code}）—— 那还不如老老实实说它不在`);
+    assert(!(data.orphans || []).some((f) => f.name === ARCH + "/" + MOVED),
+           "搬过家的文件同时又挂在「未归属」里：同一份东西在一页上出现两回");
+    // ⑥ 反向对照：归档里也没有的裸名字，照旧得说「已不在」
+    const nowhere = by.get(NOWHERE);
+    assert(nowhere && nowhere.gone === true,
+           "回落到归档目录那一手把所有查不到的裸名字都说成还在了：" + JSON.stringify(nowhere));
+
     // ③ 阳性对照：快照里的那份一切照旧
     const fresh = by.get(FRESH);
     assert(fresh && fresh.gone === false && fresh.size > 0 && fresh.mtime,
            "快照里的正常文件被改坏了：" + JSON.stringify(fresh));
 
     // ④ 预览这一路对得上：前端就是靠 404 才敢说「已经不在工作目录里」
-    const enc = (rel) => "/api/files/view/" + rel.split("/").map(encodeURIComponent).join("/");
     const okGet = await get(enc(OLD));
     assert(okGet.code === 200 && okGet.body === oldBody,
            `掉出快照但还在的文件预览不出来（HTTP ${okGet.code}）—— 清单说它在、预览说它不在，等于自相矛盾`);
@@ -5894,7 +6159,7 @@ async function testLibraryOutputsTruth() {
     assert(goneHead.code === 404,
            `HEAD 和 GET 不一个口径（HEAD ${goneHead.code}）—— 图片裂了之后补问的那一下就是 HEAD，两边不一致会把「没了」说成「文件坏了」`);
 
-    console.log("✅ 产出清单说实话：文件多到挤爆快照时，还在的照报真体积真时间 · 没了的写明「已不在」（两头互为反向对照）· 预览的 404/HEAD 跟清单一个口径");
+    console.log("✅ 产出清单说实话：文件多到挤爆快照时，还在的照报真体积真时间 · 没了的写明「已不在」（两头互为反向对照）· 被升级整理搬走的按新地址找回来、不重复挂进「未归属」· 预览的 404/HEAD 跟清单一个口径");
   } finally {
     try { child.kill("SIGKILL"); } catch {}
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
@@ -5914,6 +6179,135 @@ async function testLibraryOutputsTruth() {
  *   ② 坐着的是另一台 OWB    → 必须不重复起服务（负对照：证明「换口」是签名说了算，不是见占就换）
  *   ③ 坐着的人一声不吭      → 不许卡死在握手上，照样换口起来
  */
+/**
+ * 「整理文件夹 · 腾出空间」那两个口子，走真 HTTP。
+ *
+ * 规则本身在 test/sweep.js 里逐条测过了（41 条，带反向对照）。这里测的是**接线**：
+ * 同一套规则挂到 server.js 上之后，登录闸有没有兜住、圈定范围的参数传没传下去、
+ * 以及那条红线在 HTTP 这一层还成不成立。
+ *
+ * 最后一条是重点。sweep.apply() 的安全靠的是「不信任传进来的路径」——它自己重算一遍清单，
+ * 只删这次也算得出来的。这个性质只有从外面打才算验过：单元测试里我是直接调函数的，
+ * 而真正会构造恶意路径的人是从这个 POST 打进来的。
+ */
+async function testSweepApi() {
+  const crypto = require("crypto");
+  const http = require("http");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sweep-api-"));
+  const ws = path.join(home, "workspace");
+  const put = (rel, bytes) => {
+    const abs = path.join(ws, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, Buffer.alloc(bytes, 0x61));
+  };
+  // 一个做完了的短视频任务：成片在，逐帧图和 cookie 库是剩下的脚手架
+  put("任务_短片/成片.mp4", 4000);
+  for (let i = 1; i <= 30; i++) put(`任务_短片/frames/f_${String(i).padStart(3, "0")}.jpg`, 1000);
+  put("任务_短片/ck.db", 800);
+  // 另一个任务，用来验「只整理这一个」时它一根汗毛都不少
+  put("任务_报告/ck.db", 500);
+  put("任务_报告/报告.md", 2000);
+  // 工作区里的正经成品，绝不许被点名删掉
+  put("任务_短片/交付说明.md", 1500);
+
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const { up, port, why: bootWhy } = await booted.wait();
+  const call = (method, p, body, auth = true) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const req = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+      ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      ...(auth ? { Cookie: "openworkbuddy_token=" + token } : {}),
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    req.on("error", (e) => resolve({ code: 0, body: e.message }));
+    if (data) req.write(data);
+    req.end();
+  });
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
+
+    // ① 登录闸。清单里有用户每个任务的目录名，那本身就是隐私
+    const anon = await call("GET", "/api/files/sweep", null, false);
+    assert(anon.code === 401, "没登录居然能看见清单（HTTP " + anon.code + "）：" + anon.body.slice(0, 120));
+    const anonDel = await call("POST", "/api/files/sweep", { paths: ["任务_短片/ck.db"] }, false);
+    assert(anonDel.code === 401, "没登录居然能删东西（HTTP " + anonDel.code + "）：" + anonDel.body.slice(0, 120));
+    assert(fs.existsSync(path.join(ws, "任务_短片/ck.db")), "没登录那一发真把文件删了");
+
+    // ② 清单：规则确实挂上去了
+    const r = await call("GET", "/api/files/sweep");
+    assert(r.code === 200 && r.json, "取不到清单（HTTP " + r.code + "）：" + r.body.slice(0, 200));
+    const keys = (r.json.groups || []).map((g) => g.key).sort();
+    assert(keys.join() === "frames,scratch", "认出来的组不对：" + keys.join() + "（原始回包 " + r.body.slice(0, 200) + "）");
+    assert(r.json.bytes === 30000 + 800 + 500, "能腾出多少算错了：" + r.json.bytes);
+    assert(r.json.usage === undefined, "没要地盘账却算了一份（白走一趟）");
+
+    // ③ 地盘账：面板上半截是「能清什么」，下半截是「地方花在哪了」
+    const u = await call("GET", "/api/files/sweep?usage=1");
+    assert(u.json && u.json.usage && u.json.usage.tasks.length === 2,
+      "地盘账不对：" + JSON.stringify(u.json && u.json.usage).slice(0, 200));
+    assert(u.json.usage.tasks[0].name === "任务_短片", "没按占用从大到小排：" + u.json.usage.tasks.map((t) => t.name).join());
+
+    // ④ 圈定到一个任务：另一个任务的东西一条都不许进来
+    const one = await call("GET", "/api/files/sweep?task=" + encodeURIComponent("任务_报告"));
+    const onePaths = (one.json.groups || []).flatMap((g) => g.items.map((i) => i.path));
+    assert(onePaths.join() === "任务_报告/ck.db", "圈定范围没传下去：" + onePaths.join());
+
+    // ⑤ ★红线★ 从 HTTP 这一层构造一串没在清单上的路径
+    const evil = await call("POST", "/api/files/sweep", { paths: [
+      "任务_短片/交付说明.md",            // 工作区里的成品，但不在清单上
+      "任务_报告/报告.md",
+      "../users.json",                     // 往上翻
+      "../../../../etc/hosts",             // 一路翻到根
+      "/etc/hosts",                        // 绝对路径
+    ] });
+    assert(evil.code === 200 && evil.json.removed.length === 0,
+      "清单外的路径被删了：" + JSON.stringify(evil.json).slice(0, 200));
+    assert(evil.json.skipped === 5, "五条应该全被挡下，实际 skipped=" + evil.json.skipped);
+    assert(fs.existsSync(path.join(ws, "任务_短片/交付说明.md")), "★成品被删了★ 它被点了名，但它不在清单上");
+    assert(fs.existsSync(path.join(ws, "任务_报告/报告.md")), "★另一个任务的成品被删了★");
+    assert(fs.existsSync(path.join(home, "data", "users.json")), "★../ 翻出去把账号文件删了★");
+    assert(fs.existsSync("/etc/hosts"), "★绝对路径得逞了★");
+
+    // ⑥ 正路：勾了的真删掉，而且报的是真腾出来的字节数
+    const plan = r.json.groups.flatMap((g) => g.items.flatMap((i) => i.paths || [i.path]));
+    const del = await call("POST", "/api/files/sweep", { paths: plan });
+    assert(del.code === 200 && del.json.ok, "清理没成功：" + del.body.slice(0, 200));
+    assert(del.json.bytes === 31300, "腾出来的字节数不对：" + del.json.bytes);
+    assert(!fs.existsSync(path.join(ws, "任务_短片/ck.db")), "ck.db 没删掉");
+    assert(!fs.existsSync(path.join(ws, "任务_短片/frames/f_001.jpg")), "逐帧图没删掉");
+    assert(fs.existsSync(path.join(ws, "任务_短片/成片.mp4")), "★成片被一起删了★ 这是这次任务唯一要留的东西");
+    assert(fs.existsSync(path.join(ws, "任务_短片/交付说明.md")), "★交付说明被一起删了★");
+    // 删就是真删：挪进 .trash 的话用户的盘一个字节都没腾出来
+    assert(!fs.existsSync(path.join(ws, ".trash")), "★挪进 .trash 了★ 那样一点空间都没腾出来");
+    assert(Array.isArray(del.json.files), "回包里没带刷新后的产物清单，界面上那一栏会停在删之前的样子");
+
+    // ⑦ 再问一遍：该空了。这一条顺带证明清单不是缓存出来的
+    const after = await call("GET", "/api/files/sweep");
+    assert((after.json.groups || []).length === 0, "删完了还报得出东西来：" + after.body.slice(0, 200));
+
+    // ⑧ 审计留档：事后有人问「我那个文件呢」，得查得出来。
+    // 读接口不读文件——落盘有 500ms 的攒批，读文件会变成一条看时序的脆测试
+    const au = await call("GET", "/api/security/audit");
+    const line = JSON.stringify(au.json || []);
+    assert(/任务_短片\/ck\.db/.test(line) && /任务_短片\/frames/.test(line),
+      "审计里没记下删了什么，只记个数目等于没记：" + line.slice(0, 400));
+  } finally {
+    try { booted.child.kill(); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+  console.log("✓ 整理文件夹：登录闸 / 圈定范围 / 地盘账 / 清单外的路径删不动（含 ../ 和绝对路径）");
+}
+
 async function testConfigExternalEdit() {
   const os = require("os");
   const http = require("http");
@@ -5934,7 +6328,7 @@ async function testConfigExternalEdit() {
     r.end();
   });
 
-  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home, WB_DATA_DIR: path.join(home, "data") });
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_DATA_DIR: path.join(home, "data") });
   try {
     const { up, port, why } = await booted.wait();
     assert(up, "服务端没起来，这条测不了：" + why);
@@ -6047,7 +6441,7 @@ async function testKeyGuard() {
     });
   });
 
-  const savedEnv = { o: process.env.OPENAI_API_KEY, a: process.env.ANTHROPIC_API_KEY, c: process.env.WB_KEY_KIMI };
+  const savedEnv = { o: process.env.OPENAI_API_KEY, a: process.env.ANTHROPIC_API_KEY, c: process.env.OPENWORKBUDDY_KEY_KIMI };
   try {
     process.env.OPENAI_API_KEY = "sk-这是我的-OPENAI-KEY";
     // 冒充「Kimi」那条预置渠道：地址是别家的、Key 空着——这就是初始 config.json 的默认状态。
@@ -6059,11 +6453,11 @@ async function testKeyGuard() {
     assert(resolveKey({ ...kimi, name: "OpenAI", channel: "openai", base_url: "https://api.openai.com/v1" }, "openai") === "sk-这是我的-OPENAI-KEY",
            "地址就是 OpenAI 官方，OPENAI_API_KEY 反倒不认了——Docker 里靠环境变量注入的人全得改配置");
     // 按渠道点名的环境变量：用户自己指的，什么地址都认
-    process.env.WB_KEY_KIMI = "sk-点名给-kimi-的";
+    process.env.OPENWORKBUDDY_KEY_KIMI = "sk-点名给-kimi-的";
     assert(resolveKey(kimi, "openai") === "sk-点名给-kimi-的",
-           "WB_KEY_<渠道id> 不生效，等于逼着 Docker/VPS 用户把明文 Key 写进 config.json");
-    assert(channelEnvName("openrouter-2") === "WB_KEY_OPENROUTER_2", "渠道 id 换算成环境变量名的规则不对");
-    delete process.env.WB_KEY_KIMI;
+           "OPENWORKBUDDY_KEY_<渠道id> 不生效，等于逼着 Docker/VPS 用户把明文 Key 写进 config.json");
+    assert(channelEnvName("openrouter-2") === "OPENWORKBUDDY_KEY_OPENROUTER_2", "渠道 id 换算成环境变量名的规则不对");
+    delete process.env.OPENWORKBUDDY_KEY_KIMI;
     // 渠道自己填了 Key 就以它为准，环境变量插不了队
     assert(resolveKey({ ...kimi, api_key: "sk-渠道自己填的" }, "openai") === "sk-渠道自己填的",
            "渠道上填了 Key 还被环境变量压过去了，用户在界面上改什么都不生效");
@@ -6102,7 +6496,7 @@ async function testKeyGuard() {
   } finally {
     if (savedEnv.o === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = savedEnv.o;
     if (savedEnv.a === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = savedEnv.a;
-    if (savedEnv.c === undefined) delete process.env.WB_KEY_KIMI; else process.env.WB_KEY_KIMI = savedEnv.c;
+    if (savedEnv.c === undefined) delete process.env.OPENWORKBUDDY_KEY_KIMI; else process.env.OPENWORKBUDDY_KEY_KIMI = savedEnv.c;
   }
 
   // ---------- ③ 撞 401 说人话，跟「测一下」按钮一个口径 ----------
@@ -6144,7 +6538,7 @@ async function testKeyGuard() {
     if (data) r.write(data);
     r.end();
   });
-  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home, WB_DATA_DIR: path.join(home, "data") });
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_DATA_DIR: path.join(home, "data") });
   try {
     const { up, port, why } = await booted.wait();
     assert(up, "服务端没起来，这条测不了：" + why);
@@ -6177,7 +6571,7 @@ async function testKeyGuard() {
     fs.rmSync(home, { recursive: true, force: true });
   }
 
-  console.log("✅ Key 这一路：落盘 0600（.bak 同待遇·老机器开机就修好·流水账不连坐）· 环境变量不串门（官方域名照认·WB_KEY_<渠道> 点名生效·本机不唠叨）· 撞 401 跟「测一下」一个口径 · 换 Key 进审计且只留掩码");
+  console.log("✅ Key 这一路：落盘 0600（.bak 同待遇·老机器开机就修好·流水账不连坐）· 环境变量不串门（官方域名照认·OPENWORKBUDDY_KEY_<渠道> 点名生效·本机不唠叨）· 撞 401 跟「测一下」一个口径 · 换 Key 进审计且只留掩码");
 }
 
 async function testPortCollision() {
@@ -6585,7 +6979,7 @@ async function testBackupRoundTrip() {
 
   // 回包可能是 JSON，也可能是备份文件本身（下载那一路），所以统一拿 Buffer 收
   const call = (method, p, { body, type, tok = token } = {}) => new Promise((resolve) => {
-    const headers = { Cookie: "wb_token=" + tok };
+    const headers = { Cookie: "openworkbuddy_token=" + tok };
     if (type) headers["Content-Type"] = type;
     if (body != null) headers["Content-Length"] = Buffer.byteLength(body);
     const req = http.request({ host: "127.0.0.1", port, path: p, method, headers }, (res) => {
@@ -6618,7 +7012,7 @@ async function testBackupRoundTrip() {
 
     // ① 打一份，下载下来——这就是「换电脑带走」的那个文件
     const made = (await call("POST", "/api/backup")).json;
-    assert(made && made.ok && /^wb-backup-[\w.-]+\.tar\.gz$/.test(made.name), "备份没打成：" + JSON.stringify(made));
+    assert(made && made.ok && /^openworkbuddy-backup-[\w.-]+\.tar\.gz$/.test(made.name), "备份没打成：" + JSON.stringify(made));
     const dl = await call("GET", "/api/backup/download/" + encodeURIComponent(made.name));
     assert(dl.code === 200 && dl.buf[0] === 0x1f && dl.buf[1] === 0x8b, "下载回来的不是 gzip（HTTP " + dl.code + "）");
 
@@ -6701,8 +7095,479 @@ async function testBackupRoundTrip() {
   console.log("✅ 备份来回：打包→下载→传回新机器→恢复走得通，绝对路径/../、软链接、形状不对的包一律原地拒且不留尸体");
 }
 
+/**
+ * thumb-png.js —— 纯 node 那条缩图路，**不用任何依赖**，只靠 zlib。
+ *
+ * 为什么要自己写一个 PNG 解码器：桌面版有 Electron 的 nativeImage，可 `npm start`
+ * 是纯 node，国央企内网、私有化部署那台服务器上连 electron 都没装（它只在
+ * devDependencies 里）。而 sharp / jimp 装不进去——那边下不动 npm，也编不了原生模块。
+ * 用户那句「这个网页版感觉很卡」说的正是这一边。
+ *
+ * 自己写解码器最怕的就是**悄悄解错**：不报错，图也出得来，只是颜色错位、整片糊掉。
+ * 所以这条测试不看「有没有返回 Buffer」，看**像素**：
+ *   ① 左红右蓝下绿的图，缩完还得是左红右蓝下绿（行错位、通道错位一律现形）
+ *   ② 同一张图用五种 filter 分别编码，缩出来必须**一个字节都不差**
+ *      —— Sub/Up/Average/Paeth 四条解滤波的逆运算里错一个，这条立刻红
+ *   ③ 五种色型（灰/RGB/调色板/灰+A/RGBA）、8 位和 16 位都要认
+ *   ④ 认不了的一律返回 null（调用方原样发原图），而不是抛、也不是吐一张坏图
+ *
+ * 出图用测试自己写的编码器，读图也用测试自己写的解码器（只认 filter 0，
+ * 而 thumb-png 出的图正好每行都是 filter 0）——两头都不借被测代码，免得自己判自己的卷子。
+ */
+function testThumbPng() {
+  const zlib = require("zlib");
+  const { shrinkPng, pngInfo, crc32 } = require("../thumb-png");
+  const SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const CH = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+
+  const chunk = (type, data) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(data.length, 0);
+    head.write(type, 4, "ascii");
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0, 0);
+    return Buffer.concat([head, data, crc]);
+  };
+
+  /** 按 PNG 规范编一张图。filter 那一段是规范里的正向公式，跟 thumb-png 的逆运算各写各的 */
+  function enc(w, h, color, depth, pixel, opts = {}) {
+    const step = depth === 16 ? 2 : 1;
+    const bpp = CH[color] * step;
+    const stride = w * bpp;
+    const rows = [];
+    for (let y = 0; y < h; y++) {
+      const row = Buffer.alloc(stride);
+      for (let x = 0; x < w; x++) {
+        const v = pixel(x, y);                       // 每通道一个 0..255
+        for (let c = 0; c < CH[color]; c++) {
+          if (step === 2) { row[x * bpp + c * 2] = v[c]; row[x * bpp + c * 2 + 1] = v[c]; }
+          else row[x * bpp + c] = v[c];
+        }
+      }
+      rows.push(row);
+    }
+    const f = opts.filter || 0;
+    const paeth = (a, b, c) => {
+      const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+      // pa <= pb 里的等号看着像个可以随便改的细节，其实改不动：pa == pb 只在 a == b 时
+      // 才可能同时满足 pa <= pc（枚举过全部 256³ 组，65536 组平局全是 a == b），
+      // 两种写法输出完全一致。变异测试在这儿会留一个"漏网"，那是等价变异，不是测试的洞
+      return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+    };
+    const lines = Buffer.alloc(h * (stride + 1));
+    let prev = Buffer.alloc(stride);
+    for (let y = 0; y < h; y++) {
+      const base = y * (stride + 1);
+      lines[base] = f;
+      const cur = rows[y];
+      for (let i = 0; i < stride; i++) {
+        const a = i >= bpp ? cur[i - bpp] : 0;       // 左
+        const b = prev[i];                           // 上
+        const c = i >= bpp ? prev[i - bpp] : 0;      // 左上
+        const sub = f === 1 ? a : f === 2 ? b : f === 3 ? (a + b) >> 1 : f === 4 ? paeth(a, b, c) : 0;
+        lines[base + 1 + i] = (cur[i] - sub) & 255;
+      }
+      prev = cur;
+    }
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(w, 0);
+    ihdr.writeUInt32BE(opts.claimHeight || h, 4);   // 头里写多少行，跟真写了多少行可以不一样
+    ihdr[8] = depth;
+    ihdr[9] = color;
+    ihdr[12] = opts.interlace || 0;
+    const tail = [chunk("IHDR", ihdr)];
+    if (opts.plte) tail.push(chunk("PLTE", opts.plte));
+    if (opts.trns) tail.push(chunk("tRNS", opts.trns));
+    tail.push(chunk("IDAT", zlib.deflateSync(lines)), chunk("IEND", Buffer.alloc(0)));
+    return Buffer.concat([SIG, ...tail]);
+  }
+
+  /** 读一张 thumb-png 出的图。它每行都是 filter 0，所以这儿只需要认 filter 0 */
+  function dec(buf) {
+    const info = pngInfo(buf);
+    assert(info, "出来的东西根本不是 PNG");
+    const idat = [];
+    let off = 8;
+    while (off + 8 <= buf.length) {
+      const len = buf.readUInt32BE(off);
+      const type = buf.toString("ascii", off + 4, off + 8);
+      if (type === "IDAT") idat.push(buf.subarray(off + 8, off + 8 + len));
+      off += 12 + len;
+    }
+    const raw = zlib.inflateSync(Buffer.concat(idat));
+    const ch = CH[info.color];
+    const stride = info.width * ch;
+    for (let y = 0; y < info.height; y++) {
+      assert(raw[y * (stride + 1)] === 0, "第 " + y + " 行不是 filter 0，thumb-png 编码那头变了，这个解码器跟不上");
+    }
+    return {
+      ...info,
+      px(x, y) {
+        const i = y * (stride + 1) + 1 + x * ch;
+        if (ch === 3) return [raw[i], raw[i + 1], raw[i + 2], 255];
+        if (ch === 4) return [raw[i], raw[i + 1], raw[i + 2], raw[i + 3]];
+        if (ch === 2) return [raw[i], raw[i], raw[i], raw[i + 1]];
+        return [raw[i], raw[i], raw[i], 255];
+      },
+    };
+  }
+  const near = (got, want, tol, what) =>
+    assert(Math.abs(got - want) <= tol, what + "：拿到 " + got + "，应该在 " + want + "±" + tol);
+
+  // ① 像素得对得上。左半红、右半蓝、最下面四分之一整条绿。
+  // 缩放是按格子取平均的，所以色块中心必须还是那个颜色——行错位、通道对调、
+  // 上下颠倒，任何一种都会让下面某一条炸掉
+  const RED = [220, 30, 30], BLUE = [30, 30, 220], GREEN = [30, 200, 30];
+  const paint = (x, y) => (y >= 300 ? GREEN : x < 100 ? RED : BLUE);
+  const img = dec(shrinkPng(enc(200, 400, 2, 8, paint), 100));
+  assert(img.width === 50 && img.height === 100, "200×400 缩到长边 100 应是 50×100，实际 " + img.width + "×" + img.height);
+  near(img.px(12, 30)[0], 220, 6, "左上应是红的 R");
+  near(img.px(12, 30)[2], 30, 6, "左上应是红的 B");
+  near(img.px(37, 30)[2], 220, 6, "右上应是蓝的 B");
+  near(img.px(37, 30)[0], 30, 6, "右上应是蓝的 R");
+  near(img.px(25, 90)[1], 200, 6, "底下那条应是绿的 G");
+  // 负对照：要是整张图被涂成一个色，上面那几条也能"过"，所以再钉一下三处互不相同
+  assert(img.px(12, 30)[0] !== img.px(37, 30)[0] && img.px(25, 90)[1] !== img.px(12, 30)[1],
+    "三块颜色缩完变成一样了——整张图被抹平了");
+
+  // ② 五种 filter 编出来的是同一张图，缩完必须一模一样。
+  // 这是解滤波那四个逆运算唯一的照妖镜：Sub/Up/Average/Paeth 哪个写错，
+  // 出来的图就跟 filter 0 那张对不上，而单看它自己是不报错的
+  // 料必须是噪声，不能是上面那张色块图：纯色块里 Paeth 的左/上/左上三个预测值几乎总相等，
+  // 平局判给谁结果都一样——把 pa <= pb 写成 pa < pb 这种错，用色块图是**抓不到的**（试过，绿）
+  const noise = (x, y) => {
+    let v = (x * 2654435761 + y * 40503) >>> 0;
+    v ^= v >>> 13; v = (v * 1274126177) >>> 0; v ^= v >>> 16;
+    return [v & 255, (v >>> 8) & 255, (v >>> 16) & 255];
+  };
+  for (const pixel of [paint, noise]) {
+    const base = shrinkPng(enc(200, 400, 2, 8, pixel, { filter: 0 }), 100);
+    for (const f of [1, 2, 3, 4]) {
+      const got = shrinkPng(enc(200, 400, 2, 8, pixel, { filter: f }), 100);
+      assert(got, "filter " + f + " 编的图缩不出来（返回 null）");
+      assert(got.equals(base), "filter " + f + "（" + ["", "Sub", "Up", "Average", "Paeth"][f] + "）解滤波解错了：" +
+        "同一张图缩出来跟 filter 0 那张对不上（料：" + (pixel === noise ? "噪声" : "色块") + "）");
+    }
+  }
+
+  // ③ 五种色型 + 16 位
+  const gray = dec(shrinkPng(enc(200, 400, 0, 8, (x, y) => [y >= 300 ? 240 : 40]), 100));
+  near(gray.px(25, 30)[0], 40, 6, "灰度图上半应是暗的");
+  near(gray.px(25, 90)[0], 240, 6, "灰度图下半应是亮的");
+
+  const deep = dec(shrinkPng(enc(200, 400, 2, 16, paint), 100));
+  near(deep.px(12, 30)[0], 220, 6, "16 位图的红没认出来（只取高字节那一步）");
+  assert(deep.depth === 8, "16 位缩完应该降成 8 位，实际 " + deep.depth);
+
+  const plte = Buffer.from([...RED, ...BLUE, ...GREEN]);
+  const pal = dec(shrinkPng(enc(200, 400, 3, 8, (x, y) => [y >= 300 ? 2 : x < 100 ? 0 : 1], { plte }), 100));
+  near(pal.px(12, 30)[0], 220, 6, "调色板图没查表（左上应是红）");
+  near(pal.px(37, 30)[2], 220, 6, "调色板图没查表（右上应是蓝）");
+
+  // ④ 有半透明就得留住 alpha，没有就该省掉那条通道（同一张图小掉四分之一）
+  const solid = dec(shrinkPng(enc(200, 400, 6, 8, (x, y) => [...paint(x, y), 255]), 100));
+  assert(solid.color === 2, "整张不透明的 RGBA 图应该写成 RGB（色型 2），实际色型 " + solid.color);
+  const glass = dec(shrinkPng(enc(200, 400, 6, 8, (x, y) => [...paint(x, y), x < 100 ? 0 : 255]), 100));
+  assert(glass.color === 6, "左半全透明的图被写成了不透明（色型 " + glass.color + "）——透明底会变成黑块");
+  near(glass.px(12, 30)[3], 0, 6, "左半应该是透明的");
+  near(glass.px(37, 30)[3], 255, 6, "右半应该是不透明的");
+  const ga = dec(shrinkPng(enc(200, 400, 4, 8, (x, y) => [y >= 300 ? 240 : 40, x < 100 ? 0 : 255]), 100));
+  assert(ga.color === 6 && Math.abs(ga.px(12, 30)[3] - 0) <= 6, "灰+A 的 alpha 没留住");
+
+  // ⑤ 认不了的一律 null，让调用方原样发原图。绝不许抛，也绝不许吐一张坏图出来
+  const no = (buf, why) => assert(shrinkPng(buf, 100) === null, why);
+  no(Buffer.from("THUMBFALLBACK".repeat(999)), "一堆乱字节被当成 PNG 收了");
+  no(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), "只有签名没有 IHDR 的也收了");
+  no(enc(200, 400, 2, 8, paint).subarray(0, 200), "断在半截的文件也收了——连块都读不全");
+  // 另一种断法：块都完整、CRC 也对，只是 IHDR 说有 800 行、IDAT 里只有 400 行。
+  // 上面那条拦不住它（readChunks 会顺利读完），得靠「行数够不够」那道闸
+  no(enc(200, 400, 2, 8, paint, { claimHeight: 800 }), "头里写 800 行、实际只有 400 行，照缩——后半张会是花的");
+  no(enc(200, 400, 2, 8, paint, { interlace: 1 }), "隔行（Adam7）的没拦住——按逐行解会整片错位");
+  no(enc(60, 80, 2, 8, paint), "本来就比要的小，还去缩了一趟（只会更糊）");
+  no(enc(200, 400, 3, 8, () => [0]), "调色板图没有 PLTE 也照缩，查表要越界");
+  assert(shrinkPng(enc(200, 400, 2, 8, paint), 0) === null, "宽度 0 也收了");
+  assert(shrinkPng(null, 100) === null && shrinkPng(undefined, 100) === null, "null / undefined 没挡住");
+  // 随机字节喂一百次，一次都不许抛
+  const crypto = require("crypto");
+  for (let i = 0; i < 100; i++) {
+    const junk = Buffer.concat([SIG, crypto.randomBytes(200)]);
+    try { shrinkPng(junk, 100); } catch (e) { assert(false, "喂垃圾字节抛了：" + e.message); }
+  }
+
+  // ⑥ 横图、竖图、正方形：长边都得正好是要的那个数，短边按比例
+  for (const [w, h, ew, eh] of [[400, 200, 100, 50], [200, 400, 50, 100], [300, 300, 100, 100], [1000, 40, 100, 4]]) {
+    const o = pngInfo(shrinkPng(enc(w, h, 2, 8, () => [10, 20, 30]), 100));
+    assert(o.width === ew && o.height === eh,
+      w + "×" + h + " 应缩成 " + ew + "×" + eh + "，实际 " + o.width + "×" + o.height);
+  }
+
+  console.log("✅ 纯 node 缩图：像素对得上（左红右蓝下绿）、五种 filter 解出同一张图、五种色型 + 16 位都认，认不了的返回 null 不抛");
+}
+
+/**
+ * thumb.js 的异步那一层：缩图到底有没有被赶到别的线程上去。
+ *
+ * 这一层存在的唯一理由是**别挡住 SSE**。解滤波和缩放是纯 JS，一张 2360×3720 的图要跑
+ * 209 ms；而这台服务器同时在把回答一个字一个字推给浏览器，主线程被占住 209 ms，
+ * 用户看到的就是字卡住不动。一屏产出卡八张图，排着做就是一秒多的停顿——
+ * 那比干脆不做缩略图还难受。所以这条测试真正要钉的是**主线程的卡顿**，
+ * 而不是"有没有返回一个路径"。
+ */
+async function testThumbPool() {
+  const os = require("os");
+  const thumb = require("../thumb");
+  const { pngInfo } = require("../thumb-png");
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pool-"));
+  const cache = path.join(dir, "thumbs");
+  // 缩图的 promise 要是永远不 resolve（线程起不来、活卡在队列里），node 会觉得没事可做
+  // 直接 exit 0 —— 测试"通过"了，其实一句都没跑完。所以每一次等待都套上限时
+  const timers = new Set();
+  const within = (p, why) => Promise.race([
+    p.finally(() => { for (const t of timers) clearTimeout(t); timers.clear(); }),
+    // 这个定时器**不许 unref**：unref 了它就拦不住进程退出，
+    // node 照样在 promise 永远不 resolve 的时候悄悄 exit 0——限时等于没设
+    new Promise((_, rej) => {
+      timers.add(setTimeout(() => rej(new Error("等了 20 秒没回来：" + why + "（缩图的活卡住了）")), 20000));
+    }),
+  ]);
+  try {
+    assert(!thumb.hasNativeImage(),
+      "这条测试是跑在纯 node 下的（`npm start` 那一边），可这儿居然有 nativeImage —— 它会走桌面版那条路，等于没测");
+
+    const big = path.join(dir, "大图.png");
+    fs.writeFileSync(big, e2ePng(700, 500));
+    assert(fs.statSync(big).size > 100 * 1024, "料不到 100 KB，走不到缩放那一步");
+
+    // ① 主线程不许被占住。
+    //
+    // 不拿绝对毫秒数当门槛（换台机器就得改），而是**同一批活跑两遍**：
+    // 一遍老老实实在主线程上做（对照组），一遍走线程池。两遍都在旁边每 10 ms 打一次点，
+    // 比的是这两次的卡顿差多少。对照组同时还证明了这批料够重——要是它自己都卡不出来，
+    // 那实验组不卡也说明不了任何事。
+    const batch = [];
+    for (let i = 0; i < 8; i++) {
+      const f = path.join(dir, "图" + i + ".png");
+      fs.writeFileSync(f, e2ePng(700 + i, 500));   // 尺寸各不相同，免得被缓存去重
+      batch.push(f);
+    }
+    const heartbeat = () => {
+      const m = { worst: 0, beats: 0, last: Date.now() };
+      m.timer = setInterval(() => {
+        const now = Date.now();
+        m.worst = Math.max(m.worst, now - m.last - 10);
+        m.last = now;
+        m.beats++;
+      }, 10);
+      return m;
+    };
+
+    // 对照组：搁主线程上同步缩——这正是没有 thumb-worker.js 时会发生的事
+    const { shrinkPng } = require("../thumb-png");
+    const ctl = heartbeat();
+    const ctlT0 = Date.now();
+    for (const f of batch) shrinkPng(fs.readFileSync(f), 320);
+    const ctlSpent = Date.now() - ctlT0;
+    // 让一下事件循环：同步循环跑完紧接着 clearInterval 的话，那个 10 ms 的定时器
+    // 从头到尾一次都没轮上，量出来的卡顿会是 0——"没卡"其实是"没量"
+    await new Promise((r) => setTimeout(r, 20));
+    clearInterval(ctl.timer);
+    assert(ctlSpent > 30 && ctl.worst > 10,
+      "对照组自己都没卡（" + ctlSpent + "ms，卡顿 " + ctl.worst + "ms）——这批料太轻，① 等于没测");
+
+    // 实验组：同一批活走线程池。先空转一次把 worker 起起来，起线程是一次性开销
+    await within(thumb.thumbFileAsync(batch[0], 640, cache), "预热线程池");
+    const m = heartbeat();
+    const t0 = Date.now();
+    const got = await within(Promise.all(batch.map((f) => thumb.thumbFileAsync(f, 320, cache))), "8 张一起缩");
+    const spent = Date.now() - t0;
+    clearInterval(m.timer);
+    const worst = m.worst;
+    assert(got.every(Boolean), "8 张里有缩不出来的：" + got.filter((x) => !x).length + " 张");
+    assert(m.beats > 3, "心跳只打了 " + m.beats + " 下，采样太少，测不出卡顿");
+    // 阈值放得很宽（对照组的三分之一），GC 和机器负载都容得下。
+    // 真把缩放挪回主线程，这两个数会一样大，这条立刻红
+    assert(worst < ctl.worst / 3,
+      "走线程池卡了 " + worst + "ms，搁主线程做卡 " + ctl.worst + "ms —— 差不多，说明缩放根本没离开主线程，SSE 会被卡住");
+
+    // ② 缩出来的得是真缩过的
+    const meta = pngInfo(fs.readFileSync(got[0]));
+    assert(meta && Math.max(meta.width, meta.height) === 320,
+      "缩出来的长边不是 320（" + (meta ? meta.width + "×" + meta.height : "根本不是 PNG") + "）");
+
+    // ③ 同一张图同时被点三下，只许缩一次（产出卡和资料库可能同时要同一张图）。
+    // 注意不能靠数缓存目录里的文件：三个请求本来就写同一个文件名，
+    // 重复缩了目录里也还是一个文件，光看文件数是**看不出来**的（第一版就是这么漏的）
+    let n0 = thumb.thumbPoolStats().shrinks;
+    const trio = await within(Promise.all([
+      thumb.thumbFileAsync(big, 160, cache),
+      thumb.thumbFileAsync(big, 160, cache),
+      thumb.thumbFileAsync(big, 160, cache),
+    ]), "同图三连");
+    assert(trio[0] && trio[0] === trio[1] && trio[1] === trio[2], "同一张图三次要到了不同的缩略图");
+    assert(thumb.thumbPoolStats().shrinks === n0 + 1,
+      "同一张图同时点三下，派出去缩了 " + (thumb.thumbPoolStats().shrinks - n0) + " 次（应该只有 1 次）");
+
+    // ④ 第二次要同一张，走缓存，一件活都不许再派
+    n0 = thumb.thumbPoolStats().shrinks;
+    const again = await within(thumb.thumbFileAsync(big, 160, cache), "缓存命中");
+    assert(again === trio[0], "第二次要同一张缩略图，给的路径变了");
+    assert(thumb.thumbPoolStats().shrinks === n0, "缓存已经有了还是又缩了一遍");
+
+    // ⑤ 该退回原图的一律 null，而且**连线程都不该惊动**。
+    // 绝不许因为缩略图让一张图显示不出来
+    const refuses = async (f, w, why) => {
+      const before = thumb.thumbPoolStats().shrinks;
+      assert((await within(thumb.thumbFileAsync(f, w, cache), why)) === null, why);
+      assert(thumb.thumbPoolStats().shrinks === before, why + "：退回原图了，可还是白派了一件活给线程");
+    };
+    // 体积不够：图够大（500 长边 > 320，不拦的话是会缩的），但压完不到 100 KB，
+    // 缩一趟省下的还不够那次往返。料必须是压得动的纯色，噪声图压不小
+    const small = path.join(dir, "小图.png");
+    fs.writeFileSync(small, e2ePng(400, 500, () => [10, 20, 30]));
+    assert(fs.statSync(small).size < 100 * 1024, "这张「小图」其实不小（" + fs.statSync(small).size + " B），⑤ 的第一条等于没测");
+    await refuses(small, 320, "不到 100 KB 的图也缩了，省下的还不够那一趟");
+    // 档位外的尺寸。用 321 而不是 999：999 比原图还大，本来就会被"图比要的小"那条挡掉，
+    // 挡在哪一步就分不出来了
+    await refuses(big, 321, "?thumb=321 不在档位里（只认 160/320/640），居然也缩了");
+    const fake = path.join(dir, "冒牌.png");
+    fs.writeFileSync(fake, Buffer.from("THUMBFALLBACK".repeat(12000)));
+    assert((await within(thumb.thumbFileAsync(fake, 320, cache), "冒牌 png")) === null,
+      "扩展名是 .png 但根本不是 PNG，居然没退回原图");
+    // 内容是货真价实的 PNG，只是名字叫 .jpg。纯 node 这条路只认 .png，
+    // 连线程都不该派——派了也是白跑一趟（缩得出来，但那是另一回事）
+    const misnamed = path.join(dir, "其实是png.jpg");
+    fs.writeFileSync(misnamed, fs.readFileSync(big));
+    await refuses(misnamed, 320, "纯 node 只缩 .png，.jpg 应该直接退回原图");
+    await refuses(path.join(dir, "根本没有这个文件.png"), 320, "文件不存在却给了个缩略图路径");
+    assert(!fs.readdirSync(cache).some((f) => f.endsWith(".part")), "缓存目录里留下了写了一半的临时文件");
+
+    // ⑥ 缩图线程本身起不来的时候（最典型的是打包漏了 thumb-worker.js——
+    // electron-builder 的 files 一改就可能漏），必须**认栽退回原图**，
+    // 而不是"起线程→挂→补位→再起"一直烧 CPU 转圈。
+    // 造这个场景不往生产代码里加开关：把 thumb.js 和它依赖的那两个文件复制到别处，
+    // 单单不复制 thumb-worker.js —— 那正是漏文件时的样子
+    const brokeDir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-broke-"));
+    for (const f of ["thumb.js", "thumb-png.js"]) {
+      fs.copyFileSync(path.join(__dirname, "..", f), path.join(brokeDir, f));
+    }
+    const broke = require(path.join(brokeDir, "thumb.js"));
+    try {
+      const bT0 = Date.now();
+      const bad = await within(Promise.all(
+        batch.map((f) => broke.thumbFileAsync(f, 320, path.join(brokeDir, "c")))
+      ), "线程起不来时的一批请求");
+      assert(bad.every((x) => x === null), "缩图线程根本起不来，却给出了缩略图路径");
+      assert(Date.now() - bT0 < 10000, "线程起不来这件事花了 " + (Date.now() - bT0) + " ms 才认栽");
+      assert(broke.thumbPoolStats().broken, "连着起不来这么多次，居然还没把这条路关掉——会一直转圈烧 CPU");
+      // 关掉之后再来的请求要直接退回原图，一个线程都不许再起。
+      // 看的是"一共起过几个"这种只增不减的数，不是"现在活着几个"——
+      // 后者会因为起起来又立刻挂掉而恰好读回 0，看着像没起过
+      const spawnedBefore = broke.thumbPoolStats().spawned;
+      assert((await within(broke.thumbFileAsync(batch[0], 160, path.join(brokeDir, "c")), "认栽后再来一次")) === null,
+        "已经认栽了还给出缩略图");
+      assert(broke.thumbPoolStats().spawned === spawnedBefore,
+        "认栽之后又起了 " + (broke.thumbPoolStats().spawned - spawnedBefore) + " 个线程");
+    } finally {
+      broke.closeThumbPool();
+      try { fs.rmSync(brokeDir, { recursive: true, force: true }); } catch {}
+    }
+
+    // ⑥b 认栽是有门槛的：偶尔崩一次不算数，干成过一件就该清零重新数。
+    // 不然一台跑几个月的服务器攒够三次互不相干的崩溃，缩略图就永久关了，谁也不知道为什么。
+    // 造法还是复制到别处，只是这回自己写一个**会挑食的** thumb-worker：
+    // 名字带"毒"的就自杀，别的老实缩。生产代码里一个开关都不用加
+    const flakyDir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-flaky-"));
+    for (const f of ["thumb.js", "thumb-png.js"]) {
+      fs.copyFileSync(path.join(__dirname, "..", f), path.join(flakyDir, f));
+    }
+    fs.writeFileSync(path.join(flakyDir, "thumb-worker.js"), [
+      'const fs = require("fs"), path = require("path");',
+      'const { parentPort } = require("worker_threads");',
+      'const { shrinkPng } = require("./thumb-png");',
+      'parentPort.on("message", (job) => {',
+      '  if (job.file.includes("毒")) process.exit(1);',   // 崩给它看
+      '  let ok = false;',
+      '  try {',
+      '    const png = shrinkPng(fs.readFileSync(job.file), job.w);',
+      '    if (png) { fs.mkdirSync(path.dirname(job.out), { recursive: true }); fs.writeFileSync(job.out, png); ok = true; }',
+      '  } catch {}',
+      '  parentPort.postMessage({ id: job.id, ok });',
+      '});',
+    ].join("\n"));
+    const flaky = require(path.join(flakyDir, "thumb.js"));
+    try {
+      const fc = path.join(flakyDir, "c");
+      const poison = path.join(flakyDir, "毒图.png");
+      fs.writeFileSync(poison, fs.readFileSync(big));
+      const good = path.join(flakyDir, "好图.png");
+      fs.writeFileSync(good, fs.readFileSync(batch[1]));
+      // 崩两次——还没到认栽的线
+      for (let i = 0; i < 2; i++) {
+        assert((await within(flaky.thumbFileAsync(poison, 320, fc), "崩第 " + (i + 1) + " 次")) === null,
+          "线程崩了却给出了缩略图路径");
+      }
+      assert(!flaky.thumbPoolStats().broken, "才崩两次就把整条路关了");
+      // 干成一件：这一下必须把计数清零
+      assert(await within(flaky.thumbFileAsync(good, 320, fc), "崩过之后缩一张好图"),
+        "线程崩过两次之后，好图也缩不出来了");
+      // 再崩两次。要是刚才那次成功没清零，这会儿就凑够三次、整条路被误关了
+      for (let i = 0; i < 2; i++) await within(flaky.thumbFileAsync(poison, 160 + i * 160, fc), "再崩一次");
+      assert(!flaky.thumbPoolStats().broken,
+        "中间明明缩成过一张，崩的次数却还在累加——一台跑几个月的机器早晚被这样误关");
+      assert(await within(flaky.thumbFileAsync(good, 640, fc), "误关之后再缩一张"),
+        "被误关了：零星崩溃攒够三次就再也不缩图了");
+    } finally {
+      flaky.closeThumbPool();
+      try { fs.rmSync(flakyDir, { recursive: true, force: true }); } catch {}
+    }
+
+    // ⑦ 缩完图，进程得能自己走。闲着的 worker 要是没 unref，它会一直吊着事件循环——
+    // `openworkbuddy` 命令行跑完一条命令就该退出，测试跑完也该退出，结果都会卡在那儿等一个永远不来的消息。
+    // 这条必须另起一个进程才测得出来：本进程 finally 里会 closeThumbPool，把线程收掉，
+    // 就算没 unref 也一样能退，等于什么都没验
+    const exitProbe = path.join(dir, "probe.js");
+    fs.writeFileSync(exitProbe, [
+      'const thumb = require(' + JSON.stringify(path.join(__dirname, "..", "thumb.js")) + ');',
+      'thumb.thumbFileAsync(' + JSON.stringify(big) + ', 640, ' + JSON.stringify(path.join(dir, "probe-cache")) + ')',
+      '  .then((r) => { console.log(r ? "缩出来了" : "没缩"); });',
+      '// 故意不调 closeThumbPool：模拟 CLI 跑完一条命令就撒手不管',
+    ].join("\n"));
+    const probe = await within(new Promise((resolve) => {
+      const t0 = Date.now();
+      const child = require("child_process").spawn(process.execPath, [exitProbe], { stdio: ["ignore", "pipe", "pipe"] });
+      let out = "";
+      child.stdout.on("data", (c) => (out += c));
+      const kill = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 12000);
+      child.on("exit", (code) => { clearTimeout(kill); resolve({ code, ms: Date.now() - t0, out: out.trim() }); });
+    }), "另起进程验能不能自己退出");
+    assert(probe.out === "缩出来了", "另起的进程没缩出图来（" + JSON.stringify(probe.out) + "）——这条测的就不是退出了");
+    assert(probe.code === 0, "缩完图的进程没能正常退出（退出码 " + probe.code + "）——闲着的缩图线程把它吊住了");
+    assert(probe.ms < 10000, "缩完图的进程等了 " + probe.ms + " ms 才退出——闲着的缩图线程把它吊住了");
+
+    console.log("✅ 缩图线程：同一批 8 张图，搁主线程做卡 " + ctl.worst + "ms，走线程池只卡 " + worst +
+      "ms（" + spent + "ms 缩完）；同图去重、缓存命中不重缩，缩不动一律退回原图，" +
+      "线程起不来就认栽（不转圈），缩完进程能自己退（" + probe.ms + "ms）");
+  } finally {
+    thumb.closeThumbPool();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 async function main() {
   console.log("=== OpenWorkBuddy e2e 测试 ===");
+  // 只跑其中几个：E2E_ONLY=testDramaCompose,testI18n node test/e2e.js
+  // 一条走真 ffmpeg 的测试要跑一分多钟，改配乐那一段时不该连带跑另外五十个。
+  // 用 eval 是因为这些测试是模块作用域里的顶层函数声明，不在 globalThis 上，拿不到。
+  if (process.env.E2E_ONLY) {
+    for (const name of process.env.E2E_ONLY.split(",").map((x) => x.trim()).filter(Boolean)) {
+      let fn = null; try { fn = eval(name); } catch {}
+      assert(typeof fn === "function", "没有这个测试：" + name);
+      console.log("— " + name);
+      await fn();
+    }
+    return;
+  }
   testCron();
   testCommandGate();
   await testPermissionModes();
@@ -6732,6 +7597,7 @@ async function main() {
   await testCliMode();
   testDeliverableGate();
   testContextBudget();
+  testCtxMeterWiring();
   testToolPairRepair();
   await testFetchRetry();
   testCheckPageConsole();
@@ -6749,6 +7615,8 @@ async function main() {
   testStyleDirection();
   testShortDrama();
   testCanvasCreativeLineage();
+  testCanvasThumb();
+  await testCanvasMissingAssets();
   testReleasePipeline();
   testNoNestedRoutes();
   await testAdminConsoleUI();
@@ -6757,12 +7625,12 @@ async function main() {
   await testNodeSuite("media-models.js", "多模型配置（渠道表 / 点名 / 不静默降级）");
   await testNodeSuite("chat-models.js", "对话模型：渠道共用一把 Key");
   await testNodeSuite("lanes.js", "两条工作线（工程 / 办公）");
-  await testNodeSuite("cli-live.js", "终端里 wb 跑的活儿，网页和手机怎么看见");
-  await testNodeSuite("doctor.js", "开机闸门与 wb doctor 体检（Node / 依赖 / 端口 / 配置 / 引擎）");
+  await testNodeSuite("cli-live.js", "终端里 openworkbuddy 跑的活儿，网页和手机怎么看见");
+  await testNodeSuite("doctor.js", "开机闸门与 openworkbuddy doctor 体检（Node / 依赖 / 端口 / 配置 / 引擎）");
   await testNodeSuite("cli-args.js", "命令行参数声明表：拼错的选项当场拦下并给建议，老写法逐条对齐不变");
-  await testNodeSuite("repl-commands.js", "wb 交互模式：多行粘贴合成一条、打错的斜杠命令当场拦下、Ctrl+C 停活儿不退出");
+  await testNodeSuite("repl-commands.js", "openworkbuddy 交互模式：多行粘贴合成一条、打错的斜杠命令当场拦下、Ctrl+C 停活儿不退出");
   await testNodeSuite("md-tty.js", "终端里的 Markdown 渲染：记号不裸奔、代码不被改坏、流式切片结果一致");
-  await testNodeSuite("cli-attach.js", "wb 带文件进来：拖进来的路径 / @ 补全 / 剪贴板，文件不进对话历史");
+  await testNodeSuite("cli-attach.js", "openworkbuddy 带文件进来：拖进来的路径 / @ 补全 / 剪贴板，文件不进对话历史");
   await testNodeSuite("icons.js", "界面不许再冒 emoji：源码闸门 + 图标名核对 + 提示条记号转换");
   await testDockerDeploy();
   await testFetchUrlShapes();
@@ -6776,6 +7644,7 @@ async function main() {
   await testSessionFileLayout();
   await testOfficeLibs();
   await testPreviewExtract();
+  testEventLedgerParity();
   testEvolveLoop();
   testEvolveRecency();
   testEvolvePromptBudget();
@@ -6799,10 +7668,24 @@ async function main() {
   await testFilesEmitter();
   await testHeavyTools();
   testOutputFilesRecency();
+  testThumbPng();
+  await testThumbPool();
+  await testIntranet();
+  await testCanvasDataLoss();
+  await testUpgradeMigration();
+  await testDramaAssets();
+  await testDramaPipeline();
+  await testDramaCompose();
+  await testDramaCast();
+  await testDramaShotRefs();
+  await testDramaVoice();
+  await testDramaBoardExpand();
+  await testDramaBoardWriteback();
   await testFilePathRouting();
   await testLibraryOutputsTruth();
   await testPortCollision();
   await testConfigExternalEdit();
+  await testSweepApi();
   await testKeyGuard();
   await testDesktopPet();
   testPetSprites();
@@ -6862,15 +7745,227 @@ function testCanvasCreativeLineage() {
     { source: { id: "char" }, target: { id: "shot" }, relation: "not-a-real-role" },
   ] });
   assert.strictEqual(valid.edges[0].relation, "character", "画布同步后丢了人物身份用途");
-  assert.strictEqual(valid.edges[1].relation, undefined, "未知用途不该原样落盘");
+  // 认不出来的用途照留：序列化是「读出来再存回去」的必经之路，在这儿挑食
+  // 等于用新版本打开老画布就把人家标好的关系抹了。该拦的是新建连线那一步（见下）
+  assert.strictEqual(valid.edges[1].relation, "not-a-real-role", "序列化不许挑食：不认识的用途也得原样留着，不然老画布一打开就被抹");
   const def = tools.TOOL_DEFS.find((item) => item.name === "canvas_manage");
   assert.ok(def?.input_schema?.properties?.relation?.enum?.includes("continuity"), "Agent 不能声明连续性关系，画布就会退化成装饰箭头");
   assert.ok(def.input_schema.properties.relation.enum.includes("first_frame"), "Agent 不能声明首帧关系，镜头生成不知道该取哪个输入");
+  // 序列化那头放行了，闸门就必须在建线这头。这条断言盯的是「闸门还在不在」——
+  // 两头同时松掉的话，随便一个字符串都能变成连线用途，画布上就会出现画不出来的关系
+  const toolsSrc = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
+  const connectIdx = toolsSrc.indexOf('if (op === "connect")');
+  const gateIdx = toolsSrc.indexOf("CANVAS_EDGE_RELATIONS.has(relation)", connectIdx);
+  assert.ok(connectIdx > 0 && gateIdx > connectIdx && gateIdx - connectIdx < 900, "connect 里查 CANVAS_EDGE_RELATIONS 的那道闸没了：新建连线不再校验用途");
   const canvas = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
   assert.ok(/function canvasGenerationInputs\(/.test(canvas) && /canvasRecordGeneration\(/.test(canvas), "画布没有记录生成输入和可回看的本次执行");
   assert.ok(/data-connect-relation/.test(canvas) && /canvasRelationLabel\(/.test(canvas), "界面不能选择或展示连线用途");
   assert.ok(/relation: canvasLinkRelation/.test(canvas), "浏览器保存画布时没有把连线用途写回唯一真源");
   console.log("✅ 画布创作谱系：连线用途可选/可保存/Agent 可写，生成节点保留模型、输入与产物记录");
+}
+
+/**
+ * 无限画布不许张口就说「素材已从工作区移除」。
+ *
+ * 用户原话：「怎么又说素材从工作区移除了在无限画布里面，你在搞什么？」——「又」是重点，
+ * 这事犯过不止一次。真身：画布拿 /api/files 那份列表当全集，判「不在列表里 = 文件被删了」。
+ * 可那份列表是**截断过的**（tools.js outputFiles：最深 3 层、最多 500 条），
+ * server.js 的 filesScope() 专门发一个 full 字段就是为了让前端知道「别拿它给谁盖章」。
+ * 于是三种情况下文件好端端在盘上，画布却说它没了：
+ *   ① 工作目录攒过 500 个文件，老素材集体被判死刑；
+ *   ② 素材落在第 4 层（对话成果/某会话/某轮/图.png），从来就没进过列表；
+ *   ③ /api/files 这一趟本身失败，列表是空的，满画布一起挂横幅。
+ * 更狠的是右侧面板那个下拉：判缺失之后它把 <option value="" selected> 设成选中，
+ * select 的 value 当场掉成 ""，用户点开面板看一眼就把这条引用抹了——那是丢数据。
+ *
+ * 所以这一条守三头：盘上那个口子问得准、前端默认「认在」、下拉不抹路径。
+ */
+async function testCanvasMissingAssets() {
+  const os = require("os");
+  const http = require("http");
+  const crypto = require("crypto");
+  const file = path.join(__dirname, "..", "public", "js", "app-07-canvas.js");
+  const src = fs.readFileSync(file, "utf8");
+
+  // ---------- ① 前端：不在列表里 ≠ 没了 ----------
+  const from = src.indexOf("function canvasResolvedFileName(");
+  const to = src.indexOf("function canvasAudioPreview(");
+  assert.ok(from > 0 && to > from, "切不出 canvasMediaAvailable 那一段了（改名/搬窝了？），这一条在空转");
+  const mk = (files, missing) => new Function("canvasState",
+    src.slice(from, to) + "\nreturn { canvasMediaAvailable };")({ files, missing: new Set(missing || []) }).canvasMediaAvailable;
+
+  const listed = mk([{ name: "任务_0917/镜头01_首帧.png" }], []);
+  assert.ok(listed("镜头01_首帧.png"), "列表里明明有，却说没有");
+  // 这一条就是用户看到的那一下：列表截断（或深目录、或请求失败）导致文件不在列表里
+  assert.ok(mk([], [])("任务_0917/子目录/更深/图.png"),
+    "只是「不在那份截断过的列表里」就判文件没了——这正是满画布「素材已从工作区移除」的来源");
+  assert.ok(mk([], [])("镜头01_首帧.png"), "/api/files 失败导致列表为空时，全画布的素材被一起判死");
+  // 反向对照：问过盘、盘说真没有，那才是真没有——否则上面几条只是在测「这函数永远返回 true」
+  assert.ok(!mk([], ["任务_0917/子目录/更深/图.png"])("任务_0917/子目录/更深/图.png"),
+    "服务端都确认盘上没有了还说它在，横幅永远出不来");
+  assert.ok(mk([], ["别的图.png"])("这张图.png"), "别人的缺失判决串到这张图头上了");
+  // 外链和 data: 不归工作区管，永远算在
+  assert.ok(mk([], [])("https://example.com/a.png") && mk([], [])("data:image/png;base64,AA"),
+    "外链 / data: 被当成工作区文件判了缺失");
+
+  // ---------- ② 右侧下拉：没确认缺失就不许把路径抹掉 ----------
+  const pf = src.indexOf("const inGroups = files.includes(current)");
+  assert.ok(pf > 0, "右侧下拉那段 currentOption 改写没了（这一条在空转）");
+  const seg = src.slice(pf, src.indexOf("</label>`;", pf));
+  assert.ok(/canvasMediaAvailable\(current\)/.test(seg),
+    "下拉判「素材已移除」没走 canvasMediaAvailable，又会拿截断列表当全集");
+  assert.ok(/<option value="\$\{esc\(current\)\}" selected>/.test(seg),
+    "没确认缺失时下拉没把当前路径摆成选中项：select 的 value 会掉成空串，用户点开面板看一眼就把引用抹了");
+
+  // ---------- ③ 接线：列表回来之后得真去问盘 ----------
+  assert.ok(/function canvasVerifyMissing\(/.test(src), "没有 canvasVerifyMissing：缺失判决没人去盘上确认");
+  const lib = src.slice(src.indexOf("async function canvasLoadLibrary("), src.indexOf("function canvasEmbeddedImage("));
+  assert.ok(lib.length > 40 && /canvasVerifyMissing\(/.test(lib),
+    "canvasLoadLibrary 没叫 canvasVerifyMissing：missing 永远是空的，横幅再也不会出现（从「全冤枉」滑到「全不报」，一样是撒谎）");
+
+  // canvasVerifyMissing 本体：盘说有就撤判决、盘说没有才进 missing、问不到维持原判
+  const vf = src.indexOf("const CANVAS_REF_KEYS =");
+  const vt = src.indexOf("async function canvasLoadLibrary(");
+  assert.ok(vf > 0 && vt > vf, "切不出 canvasVerifyMissing 了（改名/搬窝？）");
+  const runVerify = async (payloads, exists, { fail = false } = {}) => {
+    const st = { files: [], missing: new Set(), graph: { getElements: () => payloads.map((p, i) => ({ id: "n" + i, _p: p })) } };
+    let refreshed = 0;
+    const ctx = new Function("canvasState", "canvasPayload", "canvasRefreshNode", "canvasSelectedNode",
+      "canvasRenderInspector", "canvasResolvedFileName", "fetch",
+      src.slice(vf, vt) + "\nreturn { canvasVerifyMissing };");
+    await ctx(st, (n) => n._p, () => { refreshed += 1; }, () => null, () => {}, (x) => x,
+      async () => (fail ? Promise.reject(new Error("断网")) : { json: async () => ({ exists }) }))
+      .canvasVerifyMissing();
+    return { missing: [...st.missing], refreshed };
+  };
+  const gone = await runVerify([{ path: "没了.png" }], { "没了.png": false });
+  assert.deepStrictEqual(gone.missing, ["没了.png"], "盘说没有，却没记进 missing");
+  assert.ok(gone.refreshed > 0, "判决变了却没重画节点，横幅要等下次刷新才出现");
+  const alive = await runVerify([{ path: "还在.png" }], { "还在.png": true });
+  assert.deepStrictEqual(alive.missing, [], "盘说文件在，却仍判它没了");
+  const offline = await runVerify([{ path: "问不到.png" }], null, { fail: true });
+  assert.deepStrictEqual(offline.missing, [], "网断了也敢给文件盖「已删除」的章");
+  // 首帧/尾帧这些字段也得问，不然镜头节点上的图照旧被冤枉
+  const frame = await runVerify([{ first_frame: "首帧.png", last_frame: "尾帧.png" }], { "首帧.png": false, "尾帧.png": true });
+  assert.deepStrictEqual(frame.missing, ["首帧.png"], "first_frame / last_frame 这些字段没被拿去问盘");
+
+  // ---------- ④ 盘上那个口子：深目录里的文件要认得出来 ----------
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-canvasmiss-"));
+  const deep = path.join(home, "workspace", "对话成果", "任务_0917", "第三轮");
+  fs.mkdirSync(deep, { recursive: true });
+  fs.writeFileSync(path.join(deep, "镜头01_首帧.png"), Buffer.from("PNG"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const { up, port, why } = await booted.wait();
+  const post = (p, body) => new Promise((resolve) => {
+    const data = Buffer.from(JSON.stringify(body));
+    const req = http.request({ host: "127.0.0.1", port, path: p, method: "POST",
+      headers: { Cookie: "openworkbuddy_token=" + token, "Content-Type": "application/json", "Content-Length": data.length } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, json: j, body: b }); });
+    });
+    req.on("error", (e) => resolve({ code: 0, json: null, body: e.message }));
+    req.end(data);
+  });
+  const get = (p) => new Promise((resolve) => {
+    const req = http.request({ host: "127.0.0.1", port, path: p, headers: { Cookie: "openworkbuddy_token=" + token } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, json: j }); });
+    });
+    req.on("error", () => resolve({ code: 0, json: null }));
+    req.end();
+  });
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+    const rel = "对话成果/任务_0917/第三轮/镜头01_首帧.png";
+    // 先立一个前提：这张图**确实**不在 /api/files 里（第 4 层，outputFiles 只走 3 层）。
+    // 没有这一步，下一条就只是在测一个刚好也在列表里的文件，证明不了任何事
+    const list = await get("/api/files");
+    assert.ok(Array.isArray(list.json), "/api/files 没给出列表");
+    assert.ok(!list.json.some((f) => String(f.name) === rel),
+      "前提没立住：这张图居然进了 /api/files（outputFiles 的深度上限变了？），下面那条不再是在测深目录");
+    const r = await post("/api/files/exists", { paths: [rel, "根本没有这个.png"] });
+    assert.strictEqual(r.code, 200, "/api/files/exists 没通（HTTP " + r.code + "）：" + r.body);
+    assert.strictEqual(r.json.exists[rel], true,
+      "盘上躺着的图被答成不存在——画布照旧会说「素材已从工作区移除」");
+    assert.strictEqual(r.json.exists["根本没有这个.png"], false, "不存在的文件被答成存在，横幅永远出不来");
+    // 越界不许当成「存在」，也不许把错误当成缺失——一律按「不敢说」返回 true 见 server.js
+    const esc = await post("/api/files/exists", { paths: ["../config.json"] });
+    assert.strictEqual(esc.code, 200, "越界路径把接口打挂了");
+  } finally {
+    booted.child.kill();
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+  console.log("✅ 画布素材缺失：不在那份截断列表里不算没了（深目录/超 500/请求失败三种都不冤枉）· 盘说没有才挂横幅 · 下拉不抹路径");
+}
+
+/**
+ * 无限画布上的图别拿原图当缩略图。
+ *
+ * 用户原话：「现在无限画布还有很大文件都没有办法正常显示了啊」。
+ * 现场账：节点里的预览框最高 204px（ui.css .canvas-node-preview），可短剧画布上摆的是
+ * 生成出来的成图——本机工作空间里真实躺着 3552×4736 的图，一张解码后 64 MB。
+ * 一块摆满三十个镜头的画布就是几个 GB 的位图，浏览器直接放弃，画面上一片空白。
+ * 所以节点预览一律要 640 的缩略图，双击放大那个灯箱才给原图。
+ *
+ * 这儿分两头验：
+ *   ① 把 canvasFileUrl 真切出来跑一遍（它只依赖 canvasState，切得动），看拼出来的地址对不对；
+ *   ② 三处节点预览确实传了宽度、灯箱确实没传——这两件事只在调用处，函数本身看不出来。
+ */
+function testCanvasThumb() {
+  const file = path.join(__dirname, "..", "public", "js", "app-07-canvas.js");
+  const src = fs.readFileSync(file, "utf8");
+  const from = src.indexOf("function canvasResolvedFileName(");
+  const to = src.indexOf("function canvasMediaPath(");
+  assert.ok(from > 0 && to > from, "切不出 canvasFileUrl 那一段了（函数被改名或搬走？）");
+  // 这两个函数只认 canvasState.files，其余什么都不碰——所以能单独拎出来跑
+  const build = new Function("canvasState", src.slice(from, to) + "\nreturn { canvasFileUrl, canvasResolvedFileName };");
+  const { canvasFileUrl } = build({ files: [{ name: "任务_0916_短剧/镜头01_首帧.png" }] });
+
+  // ① 工作区里的成图：短名字要能认回全路径，且带上缩略图参数
+  const shot = canvasFileUrl("镜头01_首帧.png", 640);
+  assert.ok(shot.startsWith("/api/files/view/"), "画布节点的图没走工作区路由：" + shot);
+  assert.ok(shot.endsWith("?thumb=640"), "画布节点预览拿的是原图，不是 640 缩略图（一屏三十张成图 = 几个 GB 位图）：" + shot);
+  assert.ok(shot.includes(encodeURIComponent("任务_0916_短剧")), "短名字没认回工作区里的全路径：" + shot);
+
+  // ② 不传宽度就是原图。双击放大的灯箱走的正是这一条：那时候屏幕上就这一张，本来就该看清楚
+  const full = canvasFileUrl("镜头01_首帧.png");
+  assert.ok(!full.includes("thumb"), "不传宽度也偷偷缩了，灯箱里看到的就是一张糊图：" + full);
+
+  // ③ svg 不缩：矢量本来就小，栅格化只会更大更糊
+  assert.ok(!canvasFileUrl("图表.svg", 640).includes("thumb"), "svg 也去要缩略图了：" + canvasFileUrl("图表.svg", 640));
+
+  // ④ 外链和 data: 不是本机文件，服务端缩不了，加参数只会把地址改坏
+  assert.strictEqual(canvasFileUrl("https://example.com/a.png", 640), "https://example.com/a.png", "外链被加上了 ?thumb=");
+  assert.strictEqual(canvasFileUrl("data:image/png;base64,AAAA", 640), "data:image/png;base64,AAAA", "data: 被加上了 ?thumb=");
+
+  // ⑤ 已经是完整路由的地址：补参数要看清有没有问号，也不能补第二遍
+  assert.strictEqual(canvasFileUrl("/api/files/view/a.png", 640), "/api/files/view/a.png?thumb=640", "完整路由没补上缩略图参数");
+  assert.strictEqual(canvasFileUrl("/api/files/view/a.png?v=9", 640), "/api/files/view/a.png?v=9&thumb=640", "已经带参数了还用问号接，地址直接坏掉");
+  assert.strictEqual(canvasFileUrl("/api/files/view/a.png?thumb=320", 640), "/api/files/view/a.png?thumb=320", "同一个参数补了两遍");
+
+  // ⑥ 空值照旧是空字符串——节点上没图的时候不许拼出一个 "/api/files/view/?thumb=640" 去 404
+  assert.strictEqual(canvasFileUrl("", 640), "", "没有文件名却拼出了一个地址");
+
+  // ⑦ 调用处：三处节点预览（首帧 / 生成图 / 人物地点的内嵌图）都要传宽度
+  const previews = src.match(/canvasFileUrl\([^)]*\)/g) || [];
+  const withW = previews.filter((x) => /,\s*640\)/.test(x)).length;
+  assert.ok(withW >= 3, "节点预览传宽度的只剩 " + withW + " 处（应有首帧 / 生成图 / 内嵌图三处）");
+  // 只挑 <img>：同一个类名下面还有个 <video>（视频没有「缩略图」这回事，缩不了也不该缩）
+  const nodeImgs = src.match(/<img class="canvas-node-preview[^"]*"[^>]*src="\$\{esc\(canvasFileUrl\([^)]*\)\)\}"/g) || [];
+  assert.ok(nodeImgs.length >= 3, "画布节点上的 <img> 只找到 " + nodeImgs.length + " 处，对不上三处预览");
+  for (const tag of nodeImgs) assert.ok(/,\s*640\)/.test(tag), "有一处节点预览还在发原图：" + tag.slice(0, 120));
+
+  // ⑧ 反向对照：双击放大那个灯箱不许传宽度
+  const lightbox = src.slice(src.indexOf("function canvasOpenImagePreview("));
+  const call = (lightbox.match(/canvasFileUrl\([^)]*\)/) || [""])[0];
+  assert.ok(call && !/,/.test(call), "双击放大也只给缩略图了（" + call + "）——那正是用户要看清楚的那一下");
+  console.log("✅ 画布缩略图：节点预览要 640 的缩略图、双击放大仍是原图，svg / 外链 / data: 一律不动");
 }
 
 /**
@@ -6901,16 +7996,23 @@ function testCanvasCreativeLineage() {
 async function testGoalOnLocalEngine() {
   const engines = require("../engines");
   const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  // 判定逻辑后来整段搬去了 goal.js（网页和命令行共用一份），只有「这句话问谁」还留在 server.js。
+  // 所以下面分两头看：问谁看 server.js 的 goalThink，拆解/验收的骨头看 goal.js。
+  const gsrc = fs.readFileSync(path.join(__dirname, "..", "goal.js"), "utf8");
 
   // ① 两处「动脑」都改走 goalThink，源码里不许再直接钉死 sessLLM
   const think = src.match(/async function goalThink\(([\s\S]*?)\n}/);
   assert(think, "server.js 里没有 goalThink（Goal 的拆解/验收该由谁来答）");
   assert(/engines\.ask\(/.test(think[1]), "goalThink 没走 engines.ask：本机引擎在跑时还在偷偷花 API 的钱");
-  for (const [re, fn, label] of [[/async function deriveGoalCriteria\(([\s\S]*?)\n}/, "deriveGoalCriteria", "拆验收标准"],
-                                 [/async function verifyGoal\(([\s\S]*?)\n}/, "verifyGoal", "验收判分"]]) {
-    const body = src.match(re);
-    assert(body, "找不到 " + fn);
-    assert(/await goalThink\(/.test(body[1]), fn + "（" + label + "）没走 goalThink，本机引擎用户这一步永远失败");
+  // goal.js 自己不许认识 llm/engines：它只会调外面递进来的 think，
+  // 这正是「网页用登录用户的引擎、命令行用自己那份配置」能共用一份判定逻辑的原因。
+  assert(!/require\(["'][.][^"']*(llm|engines)["']\)/.test(gsrc), "goal.js 自己去 require llm/engines 了：那它就绑死在一个入口上，命令行那边又会走回老路");
+  assert(/const goalThinkFor = /.test(src), "server.js 里没有 goalThinkFor：goal.js 要的 think 是谁包的？");
+  for (const [re, fn, label] of [[/async function deriveCriteria\(([\s\S]*?)\n  }/, "deriveCriteria", "拆验收标准"],
+                                 [/async function verify\(([\s\S]*?)\n  }/, "verify", "验收判分"]]) {
+    const body = gsrc.match(re);
+    assert(body, "goal.js 里找不到 " + fn);
+    assert(/await think\(/.test(body[1]), fn + "（" + label + "）没走外面递进来的 think，本机引擎用户这一步永远失败");
     assert(!/catch\s*\{\s*\}/.test(body[1]), fn + " 里还有裸 catch {}：这一步挂了用户永远看不见，只会以为是活没干好");
     assert(/warn\(/.test(body[1]), fn + " 挂了没留痕（warn），目标卡上不会写为什么不动");
   }
@@ -7057,7 +8159,7 @@ async function testEmbedFailoverResilience() {
       console.log("OK");
     })().catch((e) => { console.error((e && e.stack) || e); process.exit(1); });
   `;
-  const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, WB_DATA_DIR: dir }, encoding: "utf8" });
+  const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, OPENWORKBUDDY_DATA_DIR: dir }, encoding: "utf8" });
   fs.rmSync(dir, { recursive: true, force: true });
   assert.strictEqual(r.status, 0, "向量库存活测试失败：\n" + (r.stderr || r.stdout));
 
@@ -7314,7 +8416,7 @@ async function testOnboardingWizardApi() {
     const data = body === undefined ? null : JSON.stringify(body);
     const r = http.request({
       host: "127.0.0.1", port, path: p, method,
-      headers: { Cookie: "wb_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+      headers: { Cookie: "openworkbuddy_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
     }, (res) => {
       let b = "";
       res.on("data", (c) => (b += c));
@@ -7434,7 +8536,7 @@ async function testOnboardingWizardApi() {
     const app06 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-06.js"), "utf8");
     assert(/id="about-onb"/.test(app06) && /openOnboarding\(\)/.test(app06), "设置 → 关于 里缺「重新打开新手引导」");
     const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
-    assert(/## 命令行也能用/.test(readme) && /wb engines use/.test(readme) && /--json/.test(readme) && /命令行用法\.md/.test(readme), "README 缺命令行一节（wb 单发 / --json / engines use / 链到 docs）");
+    assert(/## 命令行也能用/.test(readme) && /openworkbuddy engines use/.test(readme) && /--json/.test(readme) && /命令行用法\.md/.test(readme), "README 缺命令行一节（openworkbuddy 单发 / --json / engines use / 链到 docs）");
     const cliHelp = fs.readFileSync(path.join(__dirname, "..", "cli.js"), "utf8");
     for (const flag of ["--json", "-q", "-c", "-C", "engines use", "sessions"]) assert(cliHelp.includes(flag), "README 里写的 " + flag + " 在 cli.js 里找不到");
 
@@ -7467,7 +8569,7 @@ async function testThinkingSettingsApi() {
     const data = body === undefined ? null : JSON.stringify(body);
     const r = http.request({
       host: "127.0.0.1", port, path: p, method,
-      headers: { Cookie: "wb_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+      headers: { Cookie: "openworkbuddy_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
     }, (res) => {
       let b = "";
       res.on("data", (c) => (b += c));
@@ -7628,11 +8730,39 @@ async function testFilesEmitter() {
       assert(evs.length === n0 + 1, "收尾的 push(true) 没有立刻发：任务结束了产出还没上屏");
       assert((evs[evs.length - 1].changed || []).includes(DIR + "/最后一份.html"), "收尾那一下漏了最后写出来的成品");
     }
+
+    // ⑦ ★陈年旧文件不许冒充今天的产出★
+    //    outputFiles() 按 mtime 倒序只取最新 500 条。任务中途造一批中间文件、干完又删掉，
+    //    这个窗口就往回滑一截，几个月前的旧文件重新挤进列表——它们不在基线里，老判据
+    //    （"不在基线里 = 新产出"）就把它们整批认成了这回合刚做的。用户看到的是对话末尾
+    //    「本回合产出」里躺着从 0828 到今天的几百个文件，这次真做的 8 张卡被埋在最底下。
+    //    用户原话：「还有这里也是灾难啊，把产出文件给删除了，下面这里显示的全部文件出来啊」。
+    {
+      const { evs, e } = mk(0);
+      e.push(true);
+      const n0 = evs.length;
+      // 造一个"刚挤进窗口的旧文件"：发射器建完之后才出现（所以不在基线里），但 mtime 是几个月前
+      const stale = path.join(ws, DIR, "半年前的稿子.md");
+      fs.writeFileSync(stale, "old");
+      const longAgo = new Date("2026-03-01T00:00:00Z");
+      fs.utimesSync(stale, longAgo, longAgo);
+      // 同一轮里再写一个真·今天的产出，验闸门只拦旧的、不误伤新的
+      fs.writeFileSync(path.join(ws, DIR, "今天的成品.html"), "<b>new</b>");
+      e.push(true);
+      e.stop();
+      const chg = evs[evs.length - 1].changed || [];
+      assert(!chg.includes(DIR + "/半年前的稿子.md"),
+        "半年前的文件被认成了这回合的产出：对话里那块「本回合产出」会把整个工作目录倒出来，真正的成果被埋在最底下");
+      assert(chg.includes(DIR + "/今天的成品.html"),
+        "★负向对照★ 时间闸把真的新产出也拦掉了——那就从「多显示几百个」变成「一个都不显示」");
+      assert(evs[evs.length - 1].files.some((f) => f.name === DIR + "/半年前的稿子.md"),
+        "旧文件不该进 changed，但它在工作目录里是真实存在的，右侧面板的清单里必须还有它");
+    }
   } finally {
     tools.setWorkspaceDir(prevWs);
     fs.rmSync(ws, { recursive: true, force: true });
   }
-  console.log("✅ 产出清单发射器：不写盘就不推（100 步只 1 条）· 写了的晚一点也一定到 · 删除照推 · 别人文件夹不记账 · 收摊后闭嘴 · 收尾同步发");
+  console.log("✅ 产出清单发射器：不写盘就不推（100 步只 1 条）· 写了的晚一点也一定到 · 删除照推 · 别人文件夹不记账 · 收摊后闭嘴 · 收尾同步发 · 陈年旧文件冒充不了今天的产出");
 }
 
 /**
@@ -8410,6 +9540,217 @@ function testNoticeCoverage() {
 }
 
 /**
+ * 内网 / 私有化：不少客户是国央企，机器上不去外网，也不让用国外组件。
+ *
+ * 要命的是这种环境下**连不上不等于立刻失败**——防火墙默默丢包、不回 RST，
+ * 于是每一处外链都变成"等满超时"。所以这里钉三件事：
+ *   ① 交付物里一个外链都不许有（含 Google Fonts，实测内网首屏白等 5.1 秒）；
+ *   ② 连接器目录每条都要说清楚"内网能不能用"，别让人填完 Key 再对着超时发呆；
+ *   ③ 开关本身认得出来、而且配置文件坏了不会误判成"打开"。
+ * 这几处散在四个文件里，改一处忘三处不报错也不崩，只能在这儿钉住。
+ */
+async function testIntranet() {
+  const root = path.join(__dirname, "..");
+  const { isIntranet } = require("../intranet");
+  const { catalog, ITEMS } = require("../mcp-catalog");
+
+  // ---- ① 开关 ----
+  assert(isIntranet({ env: {}, cfg: {} }) === false, "默认居然是内网模式");
+  assert(isIntranet({ env: { OWB_INTRANET: "1" }, cfg: {} }), "OWB_INTRANET=1 没打开内网模式");
+  assert(isIntranet({ env: { OWB_INTRANET: "true" }, cfg: {} }), "OWB_INTRANET=true 没认");
+  assert(isIntranet({ env: {}, cfg: { intranet: true } }), "config.json 里的 intranet 没认");
+  // 一台设了全局变量的机器上要能单独关掉，所以显式的 0 必须压过 config
+  assert(isIntranet({ env: { OWB_INTRANET: "0" }, cfg: { intranet: true } }) === false, "显式 OWB_INTRANET=0 没能压过 config");
+  // 配置写坏了、写成字符串了，都不是"打开内网模式"的理由——
+  // 误开的后果是一台好机器上所有境外连接器凭空排到最后并标成连不上
+  assert(isIntranet({ env: {}, cfg: { intranet: "true" } }) === false, "字符串 \"true\" 被当成了真，配置写错就会误开");
+  assert(isIntranet({ env: {}, cfg: { intranet: 1 } }) === false, "数字 1 被当成了真");
+  assert(isIntranet({ env: { OWB_INTRANET: "" }, cfg: {} }) === false, "空环境变量被当成了打开");
+  // 正名是 OPENWORKBUDDY_INTRANET（跟 OPENWORKBUDDY_DATA / _PORT 一个前缀）；OWB_ 那个是旧名。
+  // 旧名必须继续认：它已经写在别人的 systemd / docker-compose 里，改名当天要是悄悄失效，
+  // 一台出不了网的机器会重新显示「一切正常」，用户填完 Key 等到超时才发现。
+  assert(isIntranet({ env: { OPENWORKBUDDY_INTRANET: "1" }, cfg: {} }), "OPENWORKBUDDY_INTRANET=1 没打开内网模式");
+  assert(isIntranet({ env: { OPENWORKBUDDY_INTRANET: "0" }, cfg: { intranet: true } }) === false, "显式 OPENWORKBUDDY_INTRANET=0 没能压过 config");
+  assert(isIntranet({ env: { OPENWORKBUDDY_INTRANET: "", OWB_INTRANET: "1" }, cfg: {} }), "新名字留了个空串，旧名字就不认了——只改了一半的机器会被这行救回来");
+  assert(/OPENWORKBUDDY_INTRANET/.test(fs.readFileSync(path.join(root, "skills.js"), "utf8")),
+    "skills.js 那句给用户看的提示还在教人设旧名字 OWB_INTRANET");
+
+  // ---- ② 连接器目录 ----
+  const noTag = ITEMS.filter((it) => !["local", "cn", "intl"].includes(it.reach));
+  assert(noTag.length === 0, "这些连接器没说清楚内网能不能用（reach 没打标）：" + noTag.map((i) => i.name).join("、"));
+
+  const off = catalog({ intranet: false });
+  const on = catalog({ intranet: true });
+  assert(off.items.length === on.items.length && on.items.length === ITEMS.length,
+    "内网模式把连接器删掉了——有代理的用户就再也找不到它们了，应该只标不删");
+  assert(off.items.every((it) => !it.blocked), "没开内网模式却拦下了连接器");
+  const blocked = on.items.filter((it) => it.blocked);
+  assert(blocked.length > 0 && blocked.every((it) => it.reach === "intl"), "内网模式拦错了对象");
+  assert(blocked.every((it) => /内网连不上/.test(it.blockedWhy || "")), "拦下了却没说为什么");
+  // 本机跑的、境内的，一个都不许拦：这些恰恰是内网里唯一还能用的
+  assert(!on.items.some((it) => it.blocked && (it.reach === "local" || it.reach === "cn")),
+    "把本机/境内的连接器也拦了，内网用户就一个能用的都没有了");
+  for (const n of ["filesystem", "sqlite", "postgres", "amap", "lark"]) {
+    assert(!on.items.find((it) => it.name === n).blocked, n + " 在内网里明明能用，却被拦了");
+  }
+  for (const n of ["slack", "notion", "google-maps", "supabase"]) {
+    assert(on.items.find((it) => it.name === n).blocked, n + " 要连境外，内网模式该标出来");
+  }
+  // 能连不能连的排序：拦下的一律靠后，别占着前排让人白填 Key
+  const firstBlocked = on.items.findIndex((it) => it.blocked);
+  assert(!on.items.slice(firstBlocked).some((it) => !it.blocked), "拦下的连接器没排到最后，还混在能用的里面");
+  // 自托管能救的那几个要给出具体做法，不能只说"连不上"
+  const gl = on.items.find((it) => it.name === "gitlab");
+  assert(/GITLAB_API_URL/.test(gl.blockedWhy), "GitLab 明明改个地址就能连内网实例，却没告诉用户怎么改");
+  // 比单个连接器更要命的一条：npx -y 每次都要去 registry 拉包，内网没镜像的话
+  // 连标着「本机」的也装不上。不提这一句，用户会错怪到连接器头上
+  // 造一个一定找得到 npx / uvx 的 PATH。不能靠本机真装没装：
+  // 装了才断言、没装就放过，等于这条断言在 CI 上随缘生效（上一轮变异测试就是这么漏掉的）
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "owb-bin-"));
+  for (const n of ["npx", "uvx", "npx.cmd", "uvx.cmd"]) fs.writeFileSync(path.join(fakeBin, n), "");
+  const withTools = catalog({ intranet: true, env: { PATH: fakeBin } });
+  assert(withTools.tools.npx && withTools.tools.uvx, "造的假 npx / uvx 都没被找到，这条断言白写了");
+  assert(withTools.notes.some((n) => /npx/.test(n) && /registry|镜像/.test(n)),
+    "内网模式没提醒 npx 要配内部镜像——用户会把「装不上」错怪到连接器头上，白查半天");
+  assert(withTools.notes.some((n) => /uvx/.test(n) && /PyPI|镜像|UV_INDEX_URL/.test(n)),
+    "内网模式没提醒 uvx 要配 PyPI 镜像");
+  fs.rmSync(fakeBin, { recursive: true, force: true });
+  assert(catalog({ intranet: false }).notes.length === 0, "没开内网模式却塞了内网提醒");
+
+  // ---- ③ 交付物里的外链 ----
+  // 这几处以前是互相打架的：提示词说"绝不引 CDN"，技能文档转头就教你从 jsdelivr import。
+  // 模型照着技能文档做，检查器还放行，于是内网客户拿到一份打不开的页面
+  const read = (f) => fs.readFileSync(path.join(root, f), "utf8");
+  const deliverable = ["skills/data-viz/skill.md", "skills/html-page/skill.md", "skills/web-styles/skill.md"];
+  for (const f of deliverable) {
+    const t = read(f);
+    // 允许出现 curl 取文件的行（那是在自己机器上跑），但不许把地址写进 <script src> / <link href>
+    const embeds = [...t.matchAll(/<(?:script|link)\b[^>]*?(?:src|href)=["']https?:\/\/[^"']+/gi)].map((m) => m[0]);
+    assert(embeds.length === 0, f + " 还在教人把外链写进交付的 HTML 里：" + embeds[0]);
+  }
+  const sk = read("skills.js");
+  assert(!/import \{[^}]*\} from "https:\/\/cdn\./.test(sk),
+    "skills.js 还在教人从 CDN 直接 import——ESM 解析不到时整个 <script type=module> 不执行，不报错也不回退");
+
+  // ④ 从界面真能把开关拨动：起一台真 server.js，走 /api/settings 存、走 /api/mcp/catalog 看效果。
+  // 前面三组测的都是「函数算得对」，这一组测的是「这台机器上真的接得通」——开关落在 config.json 里、
+  // 目录当场跟着变、而且拨得回去。拨不回去的开关等于单程票，判断错了就只能手改配置文件。
+  {
+    const os = require("os");
+    const http = require("http");
+    const crypto = require("crypto");
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-intra-"));
+    const token = "e2e" + crypto.randomBytes(12).toString("hex");
+    fs.mkdirSync(path.join(home, "data"), { recursive: true });
+    fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+      users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+      tokens: { [token]: { user: "e2e", at: Date.now() } },
+    }));
+    const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+    const child = booted.child;
+    const { up, port, why: bootWhy } = await booted.wait();
+    const req = (method, p2, body) => new Promise((resolve) => {
+      const data = body === undefined ? null : JSON.stringify(body);
+      const r = http.request({
+        host: "127.0.0.1", port, path: p2, method,
+        headers: { Cookie: "openworkbuddy_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+      }, (res) => {
+        let b = "";
+        res.on("data", (c) => (b += c));
+        res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+      });
+      r.on("error", (e) => resolve({ code: 0, body: e.message, json: null }));
+      if (data) r.write(data);
+      r.end();
+    });
+    // 只取要看的那个字段往断言消息里塞：整份 config.json 里有 api_key，
+    // 断言一挂就会原样打进 CI 日志
+    const onDisk = () => { try { return JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8")); } catch { return null; } };
+    try {
+      assert(up, "真 server.js 没起来，内网开关这条测试作废：" + bootWhy);
+
+      const c0 = await req("GET", "/api/mcp/catalog");
+      assert(c0.code === 200 && c0.json, "拿不到连接器目录：HTTP " + c0.code + " " + c0.body.slice(0, 200));
+      assert(c0.json.intranet === false, "干净家目录默认不该是内网模式：" + JSON.stringify(c0.json.intranet));
+      assert((c0.json.items || []).every((it) => !it.blocked), "没开内网就不许有连接器被标成连不上");
+
+      const on = await req("POST", "/api/settings", { intranet: true });
+      assert(on.code === 200, "打开内网模式失败：HTTP " + on.code + " " + on.body.slice(0, 200));
+      assert((onDisk() || {}).intranet === true, "内网模式没落到 config.json，重启就丢：intranet=" + JSON.stringify((onDisk() || {}).intranet));
+
+      const c1 = await req("GET", "/api/mcp/catalog");
+      assert(c1.json.intranet === true, "开关存了，目录却还说不是内网——中间隔了一层没跟上");
+      const bl = (c1.json.items || []).filter((it) => it.blocked);
+      assert(bl.length > 0, "开了内网，却一条境外连接器都没标出来");
+      assert(bl.every((it) => it.reach === "intl"), "标错人了：只有境外(intl)的才该标，被标的里有 " +
+        JSON.stringify((bl.find((it) => it.reach !== "intl") || {}).name));
+      assert(c1.json.items.length === c0.json.items.length, "内网模式把连接器删掉了——只许标，不许删（有代理的人还要接）");
+      const firstBlocked = c1.json.items.findIndex((it) => it.blocked);
+      assert(c1.json.items.slice(firstBlocked).every((it) => it.blocked), "连不上的没排到最后，混在能用的中间");
+      assert(bl.every((it) => it.blockedWhy && it.blockedWhy.length > 6), "标了却没说为什么，用户只会以为是软件坏了");
+
+      // 拨得回去。这条最容易漏：存的时候只写了 `if (b.intranet) config.intranet = true`
+      // 这种半截逻辑，开得了关不掉，人就只能去手改 config.json
+      const off = await req("POST", "/api/settings", { intranet: false });
+      assert(off.code === 200, "关掉内网模式失败：HTTP " + off.code + " " + off.body.slice(0, 200));
+      assert((onDisk() || {}).intranet === false, "关掉后 config.json 里没变回 false：intranet=" + JSON.stringify((onDisk() || {}).intranet));
+      const c2 = await req("GET", "/api/mcp/catalog");
+      assert(c2.json.intranet === false && (c2.json.items || []).every((it) => !it.blocked),
+        "关掉之后目录没恢复，标记还挂着");
+
+      // 只认布尔。字符串 "true" 要是也算数，那前端哪天传错类型就会把整台机器悄悄切进内网模式
+      await req("POST", "/api/settings", { intranet: "true" });
+      assert((onDisk() || {}).intranet === false, '字符串 "true" 不该被当成打开：intranet=' + JSON.stringify((onDisk() || {}).intranet));
+    } finally {
+      child.kill("SIGKILL");
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  // ⑤ 内网里从 GitHub 装技能：当场说清楚，别让人白等 30 秒超时再去猜是不是链接填错了
+  {
+    const skills = require("../skills");
+    const save = process.env.OWB_INTRANET;
+    try {
+      process.env.OWB_INTRANET = "1";
+      let msg = "";
+      await skills.installFromGitHub("https://github.com/owner/repo").then(
+        () => { msg = "__居然过了__"; }, (e) => { msg = e.message; });
+      assert(/内网/.test(msg), "内网模式下装 GitHub 技能没被当场拦下，只会白等超时：" + msg.slice(0, 120));
+      assert(/skill\.md/.test(msg), "拦是拦了，却没给出走得通的法子（把含 skill.md 的目录拷进技能目录）：" + msg.slice(0, 160));
+
+      // 关掉之后不许还拦着——这颗开关只影响提示，不该把功能锁死
+      process.env.OWB_INTRANET = "0";
+      let msg2 = "";
+      // 用一个根本不是 GitHub 的地址：走到原来的格式判断就停，不会真发请求出去
+      await skills.installFromGitHub("https://example.com/not-github").then(
+        () => { msg2 = "__居然过了__"; }, (e) => { msg2 = e.message; });
+      assert(!/内网/.test(msg2), "开关关了还在拦 GitHub 安装：" + msg2.slice(0, 120));
+      assert(/链接格式/.test(msg2), "关掉后该走回原来的格式判断，实际报的是：" + msg2.slice(0, 120));
+    } finally {
+      if (save === undefined) delete process.env.OWB_INTRANET; else process.env.OWB_INTRANET = save;
+    }
+  }
+
+  // ⑥ 界面上那颗开关：画了、绑了、存不上还得拨回去
+  {
+    const app05 = fs.readFileSync(path.join(root, "public", "js", "app-05.js"), "utf8");
+    assert(/id="mcp-intranet"/.test(app05), "连接器页上没有内网模式开关：只能改 config.json 的设置等于没有");
+    assert(/cat\.intranet \? " checked" : ""/.test(app05), "开关没回显当前状态，进页面永远是关着的");
+    assert(/intranetBox\.onchange/.test(app05) && /JSON\.stringify\(\{ intranet: want \}\)/.test(app05),
+      "开关没接到 /api/settings，拨了不存");
+    assert(/intranetBox\.checked = !want/.test(app05),
+      "存不上时没把钩子拨回去：界面显示开着、盘上其实是关的，下次进来又变回去，用户会以为设置被吃了");
+  }
+
+  console.log("✅ 内网 / 私有化：开关三档（环境变量压过配置、配置写坏了不误开）· " + ITEMS.length +
+    " 条连接器全都说清楚内网能不能用（拦 " + blocked.length + " 条境外的、只标不删、排到最后、自托管给出改法）· " +
+    "交付物里一个外链都不许有（含 Google Fonts，实测内网白等 5.1 秒）· " +
+    "开关从界面真拨得动也拨得回（真起一台 server 走 /api/settings + /api/mcp/catalog，只认布尔）· " +
+    "内网装 GitHub 技能当场说清并给出本地装法，关掉就不拦");
+}
+
+/**
  * 「做出来的网页千篇一律」不是某一个文件的锅，是一条链：内置提示词、html-page 技能、
  * 网页设计师专家、界面上那几个提示词模板——四处各自写死一套配方（白底居中一栏、圆角卡片、
  * 三个卖点 + 五条 FAQ、正文 860px），模型照着做就一定长同一张脸。
@@ -8428,9 +9769,35 @@ function styleDirectionDrift(src) {
 
   need("agent.js 的做网页规范里没有「先定视觉方向」这一步", /视觉方向/.test(agentJs));
   need("agent.js 没指路去 web-styles 挑方向", /web-styles/.test(agentJs));
-  // 字体是唯一该放行的外链：tools.js 的 check_page 早就把 fonts.googleapis 放进白名单了，
-  // 提示词这边还一刀切禁掉，等于自己跟自己打架
-  need("agent.js 仍在一刀切禁外部 CDN，字体这个例外没留", /fonts\.googleapis/.test(agentJs));
+  // 这条以前是反着钉的（"字体是唯一该放行的外链"），依据是"断网时页面只是字体变普通、不能塌"。
+  // 那个依据是错的：<link rel=stylesheet> 挡渲染，而国央企内网的防火墙是**默默丢包**不回 RST，
+  // 浏览器只能等到自己的 5 秒超时。拿 Electron（同一套 Chromium）对着 203.0.113.9 实测：
+  // 引一个连不上的样式表，首屏 5132ms；同一页零外链，116ms。白屏五秒换一款西文标题字体，不值。
+  // 现在提示词、专家、技能文档、check_page 四处一起禁，谁也别跟谁打架
+  need("agent.js 还留着 Google Fonts 这个例外（内网里等于白屏 5 秒）", !/fonts\.googleapis\.com\/css/.test(agentJs) && /Google Fonts 也不行/.test(agentJs));
+  need("html-page 技能还允许引 Google Fonts", /都不引网络字体/.test(htmlPage) && !/只允许引 Google Fonts/.test(htmlPage));
+  need("网页设计师专家还允许引 Google Fonts", !/可以引 Google Fonts/.test(experts));
+  {
+    // 光改提示词不改检查器没用：模型照样会写，没人拦得住。
+    // auditHtml 是 check_page 背后那个纯静态分析，直接喂它一页就行
+    const { auditHtml } = require("../tools")._internals;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-font-"));
+    const page = (head) => '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+      '<meta name="viewport" content="width=device-width, initial-scale=1"><title>标题</title>' + head +
+      '</head><body><h1>嗨</h1></body></html>';
+    const say = (head) => JSON.stringify(auditHtml(page(head), dir));
+    need("check_page 仍然对网络字体睁一只眼闭一只眼",
+      /白等 5 秒/.test(say('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">')));
+    need("换成 gstatic 就漏过去了",
+      /白等 5 秒/.test(say('<link rel="stylesheet" href="https://fonts.gstatic.com/s/inter.css">')));
+    // 反向对照：一页干净的不许被误报，不然这条断言等于「见 link 就喊」
+    need("零外链的干净页面被误报成引了网络字体", !/白等 5 秒|外部资源/.test(say('<style>body{font-family:system-ui}</style>')));
+    // 别的 CDN 仍然走原来那句，两句话不许串
+    const cdnSaid = say('<script src="https://cdn.jsdelivr.net/npm/echarts"></script>');
+    need("普通 CDN 外链不报了", /外部资源/.test(cdnSaid));
+    need("普通 CDN 被错报成网络字体", !/白等 5 秒/.test(cdnSaid));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
   need("agent.js 把「4 个主色 / 4 的倍数」当配方而不是下限", /及格线，不是配方/.test(agentJs));
 
   need("html-page 只给了一副报告骨架，没给三选一", ["A · 分析报告式", "B · 叙事流式", "C · 面板式"].every((k) => htmlPage.includes(k)));
@@ -8464,7 +9831,11 @@ function testStyleDirection() {
 
   // 反向对照：每一处单独退回原样，都必须被抓出来——一条没红就说明这道闸门是摆设
   const bad = [
-    ["agent.js 退回一刀切禁 CDN", { "agent.js": src["agent.js"].replace(/fonts\.googleapis/g, "example") }],
+    // 这四条以前是反着钉的（"字体是唯一该放行的外链"）。实测推翻了它的依据，见上面 need 那段的注释
+    ["agent.js 又给 Google Fonts 开了例外", { "agent.js": src["agent.js"].replace("Google Fonts 也不行", "唯一的例外是 Google Fonts") }],
+    ["agent.js 里直接写了一条字体外链", { "agent.js": src["agent.js"] + '\n<link href="https://fonts.googleapis.com/css2?family=Inter">\n' }],
+    ["html-page 又允许引 Google Fonts", { "skills/html-page/skill.md": src["skills/html-page/skill.md"].replace("都不引网络字体", "只允许引 Google Fonts") }],
+    ["网页设计师专家又允许引 Google Fonts", { "experts.json": src["experts.json"].replace("都不引网络字体（含 Google Fonts）", "可以引 Google Fonts") }],
     ["agent.js 删掉视觉方向那一步", { "agent.js": src["agent.js"].replace(/视觉方向/g, "配色") }],
     ["html-page 退回单副骨架", { "skills/html-page/skill.md": src["skills/html-page/skill.md"].replace("B · 叙事流式", "分节正文") }],
     ["html-page 又把正文宽度写死", { "skills/html-page/skill.md": src["skills/html-page/skill.md"] + "\nmax-width: 860px 居中\n" }],
@@ -8687,6 +10058,18 @@ function releasePipelineDrift(src) {
   if (forgotten.length) miss.push("这些套件在 CI 上一次都不会跑：" + forgotten.join("、") + "（补进 test.yml 的 --only）");
   const ghost = [...inCI].filter((s) => !suites.includes(s));
   if (ghost.length) miss.push("test.yml 的 --only 里有 test/all.js 没有的套件：" + ghost.join("、") + "（会直接 exit 2）");
+
+  // —— 套件挂了必须让退出码变 1。all.js 判成败只看退出码，套件自己打的那句
+  //    「有失败：N 挂」它根本不读。少写一行 process.exit，那个套件就变成**摆设**：
+  //    断言照跑、红叉照打、CI 照样绿。这比套件没进 CI 更坏——没进 CI 至少没人以为它在跑。
+  //    2026-09-17 逮到三个这样的：lanes（54 条）、cli-live（160 条）、chat-models。
+  for (const f of fs.readdirSync(__dirname)) {
+    if (!f.endsWith(".js") || f === "all.js") continue;
+    const body = fs.readFileSync(path.join(__dirname, f), "utf8");
+    if (!/process\.exit\s*\(|process\.exitCode\s*=/.test(body)) {
+      miss.push(`test/${f} 挂了也不会把退出码变成 1（没有 process.exit / process.exitCode）：这个套件在 CI 眼里永远是绿的`);
+    }
+  }
 
   // —— 发版前先跑测试
   if (!/^\s{2}test:/m.test(rel)) miss.push("release.yml 没有 test job：一个把 require 图改坏的 commit 能一路走到 Release");
@@ -8958,7 +10341,7 @@ async function testAdminModelsPage() {
   const child = booted.child;
   const { up, port, why: bootWhy } = await booted.wait();
   const req = (method, p) => new Promise((resolve) => {
-    const r = http.request({ host: "127.0.0.1", port, path: p, method, headers: { Cookie: "wb_token=" + token } }, (res) => {
+    const r = http.request({ host: "127.0.0.1", port, path: p, method, headers: { Cookie: "openworkbuddy_token=" + token } }, (res) => {
       let b = "";
       res.on("data", (c) => (b += c));
       res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
@@ -9497,7 +10880,9 @@ function testLookPrefsStatic() {
   assert(/act === "appearance"\) openModal\("settings", "look"\)/.test(a02), "头像菜单的「外观」没有直达外观页");
   const cats = a05.slice(a05.indexOf("const SETTING_CATS = ["), a05.indexOf("];", a05.indexOf("const SETTING_CATS = [")));
   const rows = [...cats.matchAll(/\["([a-z]+)", "([^"]+)", "([^"]+)"\]/g)];
-  assert(rows.length === 13 && rows.every((m) => m[3].length && m[2].length <= 4), "设置目录每项都要 [id, ≤4字短名, 图标] 三元组，现在：" + rows.length + " 项");
+  // 这个数字是故意钉死的：加一页设置就得回来改一次，顺手确认新页也接了线、图标也真存在。
+  // 13 → 14 是「运行状况」那页进来的（日志/告警/指标那条线）。
+  assert(rows.length === 14 && rows.every((m) => m[3].length && m[2].length <= 4), "设置目录每项都要 [id, ≤4字短名, 图标] 三元组，现在：" + rows.length + " 项");
   // 第三格从 emoji 换成图标名之后，多了一种新的翻车方式：忘了套 ic() 就直接把 "palette" 这几个字母印在目录上。
   // 这事只有人打开设置页才看得见，所以两头都钉死：名字得是 sprite 里真有的 symbol，画的时候得走 ic()。
   const { iconNames } = require("../icons");
@@ -9517,11 +10902,11 @@ function testLookPrefsStatic() {
   // 存储层：读写都要 try 包住（file:// / 隐私模式 / data: 页面会抛 SecurityError），且内存兜底
   const look = a02.slice(a02.indexOf("// ---------- 外观：主题"), a02.indexOf("// ---------- 头像菜单"));
   assert(/function lookRead\(k\) \{ try \{/.test(look) && /function lookWrite\(k, v\) \{ lookMem\[k\] = v; try \{/.test(look), "lookRead/lookWrite 没有 try + 内存兜底");
-  assert(!/[^.]localStorage\.(get|set)Item\("wb-theme"/.test(look), "主题还在直连 localStorage，绕过了兜底层");
+  assert(!/[^.]localStorage\.(get|set)Item\("owb-theme"/.test(look), "主题还在直连 localStorage，绕过了兜底层");
   assert(/^applyLook\(\);$/m.test(look) && /^applyTheme\(\);$/m.test(look), "外观/主题没有在脚本加载时立刻应用（会先闪一下默认样式）");
   // CSS：字号四档 + 五套皮肤各带浅/暗两块 + 密度规则 + body 走变量
-  for (const [k, px] of [["s", 14], ["l", 16], ["xl", 18]]) assert(html.includes(`html[data-fs="${k}"] { --wb-fs: ${px}px; }`), "字号档 " + k + " 缺了");
-  assert(/:root \{[^}]*--wb-fs: 15px;/.test(html), "默认字号变量 --wb-fs 没定义");
+  for (const [k, px] of [["s", 14], ["l", 16], ["xl", 18]]) assert(html.includes(`html[data-fs="${k}"] { --owb-fs: ${px}px; }`), "字号档 " + k + " 缺了");
+  assert(/:root \{[^}]*--owb-fs: 15px;/.test(html), "默认字号变量 --owb-fs 没定义");
   // 字号选择器里那四个 A 的大小，必须就是真档位。预览夸大差距的话，人挑了「小」
   // 以为会小一圈、实际只小 1px，只会觉得这个开关坏了——比不给预览还糟。
   {
@@ -9530,8 +10915,8 @@ function testLookPrefsStatic() {
     assert(m, "找不到字号预览的那张表 LOOK_FS_PX");
     const preview = {};
     for (const kv of m[1].split(",")) { const [k, v] = kv.split(":").map((x) => x.trim()); if (k) preview[k] = Number(v); }
-    const real = { m: Number((html.match(/:root \{[^}]*--wb-fs: (\d+)px;/) || [])[1]) };
-    for (const k of ["s", "l", "xl"]) real[k] = Number((html.match(new RegExp(`html\\[data-fs="${k}"\\] \\{ --wb-fs: (\\d+)px;`)) || [])[1]);
+    const real = { m: Number((html.match(/:root \{[^}]*--owb-fs: (\d+)px;/) || [])[1]) };
+    for (const k of ["s", "l", "xl"]) real[k] = Number((html.match(new RegExp(`html\\[data-fs="${k}"\\] \\{ --owb-fs: (\\d+)px;`)) || [])[1]);
     for (const k of ["s", "m", "l", "xl"]) {
       assert.strictEqual(preview[k], real[k],
         `字号档「${k}」的预览写着 ${preview[k]}px，真档位是 ${real[k]}px——预览在骗人`);
@@ -9541,12 +10926,12 @@ function testLookPrefsStatic() {
     try { assert.strictEqual(preview.s + 1, real.s, "x"); } catch { moved = true; }
     assert(moved, "字号预览这把尺子失灵了，差一格也判绿");
   }
-  assert(/body \{[^}]*font-size: var\(--wb-fs\)/.test(html) && /body \{[^}]*font-family: var\(--font-sans\)/.test(html), "body 字号/字体没接到变量上");
+  assert(/body \{[^}]*font-size: var\(--owb-fs\)/.test(html) && /body \{[^}]*font-family: var\(--font-sans\)/.test(html), "body 字号/字体没接到变量上");
   for (const skin of ["ocean", "forest", "sunset", "rose", "graphite"]) {
     const light = html.match(new RegExp(`^  html\\[data-skin="${skin}"\\] \\{([^}]*)\\}`, "m"));
     const dark = html.match(new RegExp(`^  html\\[data-theme="dark"\\]\\[data-skin="${skin}"\\] \\{([^}]*)\\}`, "m"));
     assert(light && dark, "皮肤 " + skin + " 缺浅色或暗色块");
-    for (const t of ["--primary", "--ring", "--ring-weak", "--brand-text", "--wb-brand-on-white", "--wb-brand-grad"]) assert(light[1].includes(t + ":"), "皮肤 " + skin + " 浅色块缺 " + t);
+    for (const t of ["--primary", "--ring", "--ring-weak", "--brand-text", "--owb-brand-on-white", "--owb-brand-grad"]) assert(light[1].includes(t + ":"), "皮肤 " + skin + " 浅色块缺 " + t);
     for (const t of ["--ring", "--ring-weak", "--brand-text"]) assert(dark[1].includes(t + ":"), "皮肤 " + skin + " 暗色块缺 " + t + "（暗底上浅色的字色/描边会看不清）");
   }
   assert((html.match(/^  html\[data-density="compact"\] /gm) || []).length >= 5, "紧凑密度至少要收 5 处间距");
@@ -9557,10 +10942,10 @@ function testLookPrefsStatic() {
   // 逐字对齐那屏就是拿这个当尺子的），所以这儿钉的是那一条，不是只管宽度的那条。
   const fsRule = (sel) => { const i = html.indexOf(sel); assert(i > 0, "找不到 " + sel); return html.slice(i, html.indexOf("}", i)); };
   for (const sel of ["\n  .a-text h1 {", "\n  .a-text h2 {", "\n  #input-hl, textarea#input { font-size", "\n  .hist-item { padding"]) {
-    assert(/var\(--wb-fs\)/.test(fsRule(sel)), sel + " 的字号还写死 px，没跟 --wb-fs 联动");
+    assert(/var\(--owb-fs\)/.test(fsRule(sel)), sel + " 的字号还写死 px，没跟 --owb-fs 联动");
   }
   // ★反向对照★：这把尺子不是见谁都绿——只管布局不管字号的那条就该判不合格
-  assert(!/var\(--wb-fs\)/.test(fsRule("\n  textarea#input { width")), "字号联动这把尺子失灵了，连不含字号的规则都判绿");
+  assert(!/var\(--owb-fs\)/.test(fsRule("\n  textarea#input { width")), "字号联动这把尺子失灵了，连不含字号的规则都判绿");
   // 上手那节必须提一句外观在哪改：字号和主题是最先被嫌弃的两样，翻文档才找得到就等于没有。
   // 按小标题切片再查，比 [\s\S]* 一路跨到下一节严——不然写在别的节里也能蒙混过关
   const readmeRun = (fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")
@@ -9859,10 +11244,10 @@ async function testFeedbackAndUsage() {
   assert(r1.usage.cached <= r1.usage.prompt, "cached 大于 prompt，界面又会算出 3209%");
   fs.rmSync(home, { recursive: true, force: true });
 
-  // ② 账本 + ③ 反馈：各起一个子进程，WB_DATA_DIR 指到临时目录，不碰真账本
+  // ② 账本 + ③ 反馈：各起一个子进程，OPENWORKBUDDY_DATA_DIR 指到临时目录，不碰真账本
   const run = (script, tag) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-fbu-"));
-    const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, WB_DATA_DIR: dir }, encoding: "utf8" });
+    const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, OPENWORKBUDDY_DATA_DIR: dir }, encoding: "utf8" });
     fs.rmSync(dir, { recursive: true, force: true });
     assert.strictEqual(r.status, 0, tag + "测试失败：\n" + (r.stderr || r.stdout));
   };
@@ -9905,7 +11290,7 @@ async function testFeedbackAndUsage() {
     const fs = require("fs");
     const path = require("path");
     const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
-    const DATA = process.env.WB_DATA_DIR;
+    const DATA = process.env.OPENWORKBUDDY_DATA_DIR;
     fs.mkdirSync(path.join(DATA, "sessions"), { recursive: true });
     fs.mkdirSync(path.join(DATA, "learned"), { recursive: true });
     const NOW = Date.now();
@@ -10225,7 +11610,7 @@ async function testImCredentialGuard() {
     const data = body === undefined ? null : JSON.stringify(body);
     const r = http.request({
       host: "127.0.0.1", port, path: p, method,
-      headers: { Cookie: "wb_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+      headers: { Cookie: "openworkbuddy_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
     }, (res) => {
       let b = "";
       res.on("data", (c) => (b += c));
@@ -10778,7 +12163,7 @@ exit 1
     const data = body === undefined ? null : JSON.stringify(body);
     const r = http.request({
       host: "127.0.0.1", port, path: p, method,
-      headers: { Cookie: "wb_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+      headers: { Cookie: "openworkbuddy_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
     }, (res) => {
       let b = "";
       res.on("data", (c) => (b += c));
@@ -11097,10 +12482,10 @@ function testWindowsLaunch() {
 /**
  * 内存里的会话副本会不会吃陈（server.js 的 getSession / saveSession）。
  *
- * 桌面版和命令行的 wb 写的是同一批文件（data/sessions/<id>.json），而 `wb resume` 不给 id 时
+ * 桌面版和命令行的 openworkbuddy 写的是同一批文件（data/sessions/<id>.json），而 `openworkbuddy resume` 不给 id 时
  * 接的就是「最近动过的那条」，包括桌面上刚开的那个——这是它自己注释里写的「丝滑切换」的落点。
  * 可 server.js 这边的 sessions Map 一旦读进来就再也不回头看盘：
- * 「桌面开个头 → 终端 wb resume 接着做几轮 → 回桌面再发一句」，
+ * 「桌面开个头 → 终端 openworkbuddy resume 接着做几轮 → 回桌面再发一句」，
  * 桌面那一句存盘时用的还是几小时前那份内存副本，终端做的那几轮整段消失。
  * 用户看到的是「我在终端做的那半截凭空没了」，而且没有任何报错。
  *
@@ -11115,7 +12500,7 @@ function testSessionCacheReload() {
   const SLICE = src.slice(a, b);
 
   const store = require(path.join(__dirname, "..", "store.js"));
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wb-sesscache-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sesscache-"));
   const SESS_DIR = path.join(home, "sessions");
   fs.mkdirSync(SESS_DIR, { recursive: true });
 
@@ -11141,26 +12526,26 @@ function testSessionCacheReload() {
 
   // 1) 桌面开了这条会话
   store.writeJsonAtomic(file, { history: H("帮我整理下装修报价"), transcript: [], title: "装修报价", updated_at: null });
-  const wb = build(false);
-  const s1 = wb.getSession(id);
+  const srv = build(false);
+  const s1 = srv.getSession(id);
   assert.strictEqual(s1.history.length, 1, "第一次读盘就没读对");
 
-  // 2) 用户切到终端，wb resume 接着做了两轮，直接写同一个文件
+  // 2) 用户切到终端，openworkbuddy resume 接着做了两轮，直接写同一个文件
   store.writeJsonAtomic(file, { history: H("帮我整理下装修报价", "拆成了三张表", "再加一列单价"), transcript: [], title: "装修报价", updated_at: null });
-  const s2 = wb.getSession(id);
-  assert.strictEqual(s2.history.length, 3, "★命令行 wb 写进去的那几轮，桌面这边看不见（内存副本一直没回头看盘）★");
+  const s2 = srv.getSession(id);
+  assert.strictEqual(s2.history.length, 3, "★命令行 openworkbuddy 写进去的那几轮，桌面这边看不见（内存副本一直没回头看盘）★");
 
   // 3) 回桌面再发一句 —— 终端那两轮必须还在
   s2.history.push({ role: "assistant", content: "单价加好了" });
-  wb.saveSession(id);
+  srv.saveSession(id);
   const onDisk = JSON.parse(fs.readFileSync(file, "utf8"));
   assert.strictEqual(onDisk.history.length, 4, "★桌面这边一存盘，就把命令行做的那几轮整段盖掉了★");
   assert.ok(onDisk.history.some((h) => h.content === "拆成了三张表"), "终端那轮的内容没了");
 
   // 4) 自己刚写完的盘不算「别人改的」：不然每次存完盘都要白读一遍，
   //    手上那份内存对象一换引用，正在拼的那一轮就跟着丢
-  assert.strictEqual(wb.getSession(id), s2, "★自己刚写进去的盘被当成别人改的，下一次取会话就把手上这份换掉——正在拼的那轮跟着丢★");
-  assert.strictEqual(wb.sessions.get(id), s2, "内部状态对不上");
+  assert.strictEqual(srv.getSession(id), s2, "★自己刚写进去的盘被当成别人改的，下一次取会话就把手上这份换掉——正在拼的那轮跟着丢★");
+  assert.strictEqual(srv.sessions.get(id), s2, "内部状态对不上");
 
   // 4b) 只比 mtime 或只比体积都会漏。这两个用例分别把另一半钉死：
   //     改了内容但字数正好一样（体积不变，只有 mtime 变）
@@ -11200,7 +12585,7 @@ function testSessionCacheReload() {
   wb4.activeRuns.delete(id);
 
   // 6) 盘上压根没有这个 id（新会话）：给空壳，不能炸
-  assert.deepStrictEqual(wb.getSession("s_1730000000009_new").history, [], "新会话没给空壳");
+  assert.deepStrictEqual(srv.getSession("s_1730000000009_new").history, [], "新会话没给空壳");
 
   // ---- 阴性对照：摘掉「回头看盘」，第 2 步必须塌 ----
   const id2 = "s_1730000000001_def";
@@ -11217,7 +12602,7 @@ function testSessionCacheReload() {
     "删会话没清掉 mtime 印记：同一个 id 万一再被建出来，会拿着上一条的尺寸去比对");
 
   fs.rmSync(home, { recursive: true, force: true });
-  console.log("✅ 会话不吃陈内存：命令行 wb 写的几轮桌面能看见、存盘不覆盖；自己写的不误判、跑着的任务不被盘上旧版盖回去");
+  console.log("✅ 会话不吃陈内存：命令行 openworkbuddy 写的几轮桌面能看见、存盘不覆盖；自己写的不误判、跑着的任务不被盘上旧版盖回去");
 }
 
 /**
@@ -11353,7 +12738,12 @@ async function testSessionIndex() {
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sessidx-"));
   try {
-    const store = { readJson: (p2, dflt) => { try { return JSON.parse(fs.readFileSync(p2, "utf8")); } catch { return dflt; } } };
+    let sessReads = 0; // 盘上索引那一节要数「这一趟到底回去读了几个会话文件」
+    const readNames = []; // 光有个数不够：有时候要问的是「**哪一个**被回去读了」
+    const store = {
+      readJson: (p2, dflt) => { if (/\.json$/.test(p2)) { sessReads++; readNames.push(path.basename(p2)); } try { return JSON.parse(fs.readFileSync(p2, "utf8")); } catch { return dflt; } },
+      writeJsonAtomic: (p2, d) => fs.writeFileSync(p2, JSON.stringify(d)),
+    };
     const live = new Map();
     // lanes 注真模块，不给桩：「老会话该不该被替他填一条线」正是下面要验的事
     const lanesMod = require("../lanes");
@@ -11417,10 +12807,83 @@ async function testSessionIndex() {
     assert.ok(!rows.some((r) => r.id === "s_2"), "删掉的会话还在清单里");
     assert.ok(![...M.sessMetaCache.keys()].includes("s_2.json"), "删掉的会话赖在缓存里，占着内存还会被下一轮读到");
 
+    // ---- 盘上那份索引：重启后别再把每条会话整个读一遍 ----
+    //
+    // 内存里那个 Map 只在进程活着时管用。1500 条会话（20MB）实测，重启后第一次拉侧栏
+    // 要 326ms——全花在「把每个 JSON 整个 parse 一遍，只为了取标题和轮数」上，
+    // 而且用得越久越慢。落一份到盘上之后同一趟是 31ms。
+    // 判据还是 mtime，所以下面既要验「真的没回去读」，也要验「文件一改就不认旧的了」。
+    // 上面为了验别的事 build() 了好几份，每一份都是**独立一个实例**、各带一个攒 2 秒的定时器，
+    // 写的又是同一个文件——谁最后落地谁说了算。真跑起来只有一个进程在写，
+    // 不存在这个赛跑；但两个进程共用一个数据目录（桌面版 + openworkbuddy serve）确实可能互相盖。
+    // 那也不会出错：判据始终是 mtime，索引旧了顶多白读一次盘，绝不会让侧栏显示错的东西。
+    // 这里先把所有旧定时器放干净，再让「被测的这一份」最后写一次，结果才是确定的。
+    await new Promise((r) => setTimeout(r, 2200));
+    const idxFile = path.join(dir, ".index");
+    fs.rmSync(idxFile, { force: true });   // 先清掉，下面看到的那份就一定是 Mw 写的
+    const Mw = build();
+    Mw.listSessionsOnDisk();
+    // 写盘是攒 2 秒的。原来这儿是 `await sleep(2200)`——只给那个定时器留 200ms 的富余，
+    // 跑整套 `npm test` 时（前面刚跑完一屏 Electron）它迟到得毫不费力，落在盘上的就还是
+    // 某个旧实例写的老索引：s_1 的 mtime 对不上，M2 回去读了它一个文件，于是下面那条
+    // 「sessReads === 0」红一下，而被测的这段代码根本没问题。改成等到**确认是 Mw 那一份**为止。
+    const want = fs.statSync(path.join(dir, "s_1.json")).mtimeMs;
+    const isMine = () => {
+      try {
+        const got = JSON.parse(fs.readFileSync(idxFile, "utf8"));
+        const hit = got && got.rows && got.rows["s_1.json"];
+        return !!(hit && hit.mtime === want);
+      } catch { return false; }
+    };
+    const deadline = Date.now() + 20000;
+    while (!isMine() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(fs.existsSync(idxFile), "索引没落盘，重启后还是要全量重读");
+    assert.ok(isMine(), "等了 20 秒，盘上那份索引还不是 Mw 写的（攒 2 秒的定时器没落地？）");
+    assert.ok(!fs.readdirSync(dir).some((f) => f !== ".index" && /index/.test(f)),
+      "索引文件名带了 .json，会被当成一条假会话摆进侧栏第一行");
+    assert.deepStrictEqual(M.listSessionsOnDisk().map((r) => r.id), rows.map((r) => r.id),
+      "索引落盘后同一个进程的清单就变了");
+
+    const M2 = build(); // 装作重启：新的一份内存缓存，盘没动
+    sessReads = 0;
+    readNames.length = 0;   // 计数归零的时候名字也得归零，不然报错里列的是从头到现在读过的一整串
+    const afterBoot = M2.listSessionsOnDisk();
+    assert.deepStrictEqual(afterBoot.map((r) => r.id), rows.filter((r) => !live.has(r.id)).map((r) => r.id),
+      "重启后从索引里拼出来的清单跟直接读盘的不一样：" + JSON.stringify(afterBoot.map((r) => r.id)));
+    assert.strictEqual(afterBoot[0].title, rows.find((r) => r.id === afterBoot[0].id).title, "索引里存的标题不对");
+    assert.strictEqual(sessReads, 0, "有索引还是把 " + sessReads + " 个会话文件重读了一遍（" + readNames.join("、")
+      + "）——这节省下的正是那 300ms");
+
+    // 盘上的会话被改了：mtime 对不上就必须回去读原文件，不许吃旧索引
+    put("s_3", { title: "同事的周报（背着服务器改的）", user: "staff", updated_at: "2026-09-08T00:00:00.000Z" });
+    const t3 = Date.now() / 1000 + 20;
+    fs.utimesSync(path.join(dir, "s_3.json"), t3, t3);
+    const M3 = build();
+    sessReads = 0;
+    const refreshed = M3.listSessionsOnDisk();
+    assert.ok(/背着服务器改的/.test(refreshed.find((r) => r.id === "s_3").title),
+      "★吃到了旧索引★ 会话在别处改过，侧栏还显示改之前的标题");
+    assert.strictEqual(sessReads, 1, "只有 s_3 变了，却重读了 " + sessReads + " 个文件（mtime 判据失效了）");
+
+    // 索引坏了 / 是别的形状：顶多白读一次盘，不许把侧栏整条炸掉
+    fs.writeFileSync(idxFile, "{ 这也不是 JSON");
+    assert.deepStrictEqual(build().listSessionsOnDisk().map((r) => r.id), refreshed.map((r) => r.id),
+      "索引文件坏了，清单就出不来了");
+    fs.writeFileSync(idxFile, JSON.stringify({ v: 1, rows: { "s_1.json": { mtime: 1 }, "s_9.json": null, "s_x.json": { mtime: 2, row: {} } } }));
+    const guarded = build().listSessionsOnDisk();
+    assert.deepStrictEqual(guarded.map((r) => r.id), refreshed.map((r) => r.id),
+      "索引里塞了缺 row / row 没 id 的条目，被当成真会话放进清单了：" + JSON.stringify(guarded.map((r) => r.id)));
+
     // 内存里正在跑的那份优先：刚改过还没落盘，侧栏不能显示旧标题
+    readNames.length = 0;
     live.set("s_1", { title: "正在跑，标题刚被模型润色过", user: "boss", transcript: [{}, {}], updated_at: "2026-09-07T00:00:00.000Z" });
     rows = M.listSessionsOnDisk();
-    assert.strictEqual(rows[0].title, "正在跑，标题刚被模型润色过", "内存里那份没被优先用，侧栏显示的是盘上的旧标题");
+    // 认 id 找，不看第几行：s_3 上面刚被改到 09-08，本来就该排在 s_1（09-07）前头。
+    // 这里验的是「同一条会话，内存里那份赢过盘上那份」，跟谁排第一无关（排序上面已经验过了）。
+    const hot = rows.find((r) => r.id === "s_1");
+    assert.strictEqual(hot.title, "正在跑，标题刚被模型润色过", "内存里那份没被优先用，侧栏显示的是盘上的旧标题");
+    assert.strictEqual(hot.turns, 2, "轮数还是盘上那份的——说明整行都是从索引里拼的，内存里跑着的那份没赢");
+    assert.ok(!readNames.includes("s_1.json"), "内存里明明有，还是回去把 s_1.json 读了一遍");
 
     // sessionRow 的守卫：残缺的对象一律不进清单，不许拿 undefined 去撑 UI
     assert.strictEqual(M.sessionRow("x", null), null, "null 也生成了一行");
@@ -11450,4 +12913,2550 @@ async function testSessionIndex() {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+
+/**
+ * 画布不许把用户的东西弄没了。
+ *
+ * 用户原话：「现在无限画布还有很大文件都没有办法正常显示了啊，用户之前下载我老版本的软件，
+ * 要更新的话你也要给我解决这个问题啊」。查下来不是显示不出来，是**真的被删了**：
+ * canvasNormalizeState 既当序列化又当校验器，还同时站在读和写两条路上，于是
+ *   · 超过 CANVAS_MAX_NODES 的画布，读出来就被截断，界面拖一下自动回存 → 盘上真的只剩 500 个；
+ *   · 老版本/新版本建的、这个版本不认识的 kind，读的时候直接扔掉 → 升级一次少一批节点；
+ *   · 文件写到一半断电，读出来是一张空画布 → 界面画白板 → 自动保存 → 残骸被盖成 []。
+ * 三条都是「打开一看东西没了」，而且都发生在升级之后，正好对上用户说的那个场景。
+ *
+ * 所以这条测试盯的不是某个函数的返回值，是这三条路本身：拿真 server.js 跑一遍，
+ * 每一条都验「数据还在不在」，而不是验「有没有报错」。
+ */
+async function testCanvasDataLoss() {
+  const http = require("http"), crypto = require("crypto");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-canvas-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const child = booted.child;
+  const { up, port, why } = await booted.wait();
+
+  const call = (method, p, body) => new Promise((resolve) => {
+    const data = body === undefined ? null : JSON.stringify(body);
+    const r = http.request({ host: "127.0.0.1", port, path: p, method, headers: { Cookie: "openworkbuddy_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) } },
+      (res) => { let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); }); });
+    r.on("error", (e) => resolve({ code: 0, body: e.message, json: null }));
+    if (data) r.write(data);
+    r.end();
+  });
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+
+    // ── ① 超上限 + 这个版本不认识的类型：存进去再读出来，一个不少 ──────────
+    const nodes = [];
+    for (let i = 0; i < 600; i++) nodes.push({ id: "n" + i, kind: "note", payload: { text: "第" + i + "条" }, position: { x: i, y: i } });
+    nodes.push({ id: "future", kind: "未来版本才有的类型", payload: { title: "别删我", secret: "原样保留" }, position: { x: 9, y: 9 } });
+    const edges = [{ source: { id: "n0" }, target: { id: "future" }, relation: "这个版本也不认识的用途" },
+                   { source: { id: "n1" }, target: { id: "不存在的节点" } }];
+    const put = await call("PUT", "/api/canvas", { name: "main", state: { version: 1, nodes, edges, updatedAt: Date.now() } });
+    assert(put.code === 200, "画布写不进去（HTTP " + put.code + "）：" + put.body.slice(0, 200));
+    const got = await call("GET", "/api/canvas");
+    assert(got.code === 200, "画布读不出来（HTTP " + got.code + "）：" + got.body.slice(0, 200));
+    assert(got.json.nodes.length === 601,
+      `★往返丢节点★ 存进去 601 个，读出来 ${got.json.nodes.length} 个。上限该拦的是「再往里加」，不是替用户删已经有的——` +
+      "一张叫无限画布的东西，打开自己的旧文件被删到 500 个，说不过去");
+    const future = got.json.nodes.find((n) => n.id === "future");
+    assert(future && future.kind === "未来版本才有的类型",
+      "★认不出的节点类型被扔了★ 老版本或新版本建的节点，在这个版本里打开一次就没了——升级用户正是这么丢东西的");
+    assert(future.payload.secret === "原样保留", "认不出的节点 payload 被抹了，等于节点还在但内容没了");
+    assert(got.json.edges.length === 1 && got.json.edges[0].relation === "这个版本也不认识的用途",
+      "认不出的连线用途被抹成一根没名字的线，或者挂空的连线没清掉：" + JSON.stringify(got.json.edges));
+    assert(got.json.lost && got.json.lost.overflowNodes === 101,
+      "超上限得如实记账，界面才提醒得了用户，而不是默默留着：" + JSON.stringify(got.json.lost));
+
+    // 挂空的连线是写进去那一下就丢的（界面上本来也画不出来），要验读的这条路得绕开 PUT
+    // 直接往盘上写一份——老版本留下的文件正是这样进来的
+    const hits = [];
+    (function walk(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else if (e.name === "canvas.json") hits.push(f); } })(home);
+    assert(hits.length === 1, "画布文件没找着或找着多个：" + hits.join(" "));
+    const file = hits[0];
+    const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+    fs.writeFileSync(file, JSON.stringify({ ...raw, nodes: raw.nodes.concat([{ kind: "note", payload: {} }]), edges: raw.edges.concat([{ source: { id: "n1" }, target: { id: "早就删了的节点" } }]) }));
+    const relisted = await call("GET", "/api/canvas");
+    assert(relisted.json.lost && relisted.json.lost.danglingEdges === 1 && relisted.json.lost.noId === 1,
+      "读的时候确实清掉的那两类（没 id 的节点、挂空的连线）没记账，用户看不见自己少了东西：" + JSON.stringify(relisted.json.lost));
+
+    // ── ② 文件坏掉：得说「读不出来」，绝不能给一张空画布 ────────────────────
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").slice(0, 400));   // 写到一半断电的样子
+    const broken = await call("GET", "/api/canvas");
+    assert(broken.code === 409, "坏掉的画布还回 200（实得 " + broken.code + "）——界面会照着画白板，然后自动保存把残骸盖掉");
+    assert(broken.json && broken.json.unreadable === true, "409 没带 unreadable 标记，前端分不清「读不出来」和「还没建过」");
+    assert(!("nodes" in broken.json),
+      "★409 的响应里带了 nodes★ 只看 body 不看状态码的那条路会把它当成一张空画布——这一整套防护就是为了拦这个");
+    assert(fs.readdirSync(path.dirname(file)).some((n) => n.includes("坏了")),
+      "坏掉的原件没备份。画布是用户一笔一笔摆出来的，没有回收站，出事就是白干：" + fs.readdirSync(path.dirname(file)).join(" "));
+
+    // ── ③ 坏着的时候不许覆盖，除非用户自己说 force ─────────────────────────
+    const before = fs.readFileSync(file, "utf8");
+    const blind = await call("PUT", "/api/canvas", { name: "main", state: { version: 1, nodes: [], edges: [] } });
+    assert(blind.code === 409, "★读不出来的文件被闷头覆盖了★「打开 → 报错 → 界面照常自动存一次」这条路照样能把还有救的文件盖成空画布");
+    assert(fs.readFileSync(file, "utf8") === before, "被挡下来了但文件还是变了，等于没挡");
+    const forced = await call("PUT", "/api/canvas", { name: "main", force: true, state: { version: 1, nodes: [{ id: "a", kind: "note", payload: {} }], edges: [] } });
+    assert(forced.code === 200, "用户自己说了 force 还是写不进去，人就没有恢复的路了（HTTP " + forced.code + "）：" + forced.body.slice(0, 200));
+    assert(JSON.parse(fs.readFileSync(file, "utf8")).nodes.length === 1, "force 之后盘上不是用户给的那份");
+
+    // ── ④ 列表里坏掉的画布要显成「读不出来」，不是「0 个节点」────────────────
+    const second = await call("PUT", "/api/canvas", { name: "第二张", state: { version: 1, nodes: [{ id: "x", kind: "note", payload: {} }], edges: [] } });
+    assert(second.code === 200, "第二张画布建不起来（HTTP " + second.code + "）");
+    fs.writeFileSync(path.join(path.dirname(file), "canvases", "第二张.json"), "{坏");
+    const list = await call("GET", "/api/canvas/list");
+    const row = (list.json.canvases || []).find((c) => c.name === "第二张");
+    assert(row && row.broken,
+      "坏掉的画布在列表里显示成「0 个节点」——看着就是一张空画布，用户会直接点进去开始画，然后把它盖掉：" + JSON.stringify(row));
+
+    // ── ⑤ 前端那半边：静态闸门 ────────────────────────────────────────────
+    // 上面四条验的都是服务端。服务端拦住了不等于用户看得见——前端要是还把 409
+    // 当空画布、把认不出的类型画成一张能写字的空笔记，用户照样会在不知情的情况下把数据覆盖掉
+    const ui = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+    assert(/if \(!response\.ok \|\| \(body && body\.unreadable\)\)/.test(ui),
+      "canvasLoadRemote 没看状态码/unreadable，又会把读不出来当成空画布");
+    assert(/canvasState\.remoteBroken/.test(ui) && /function canvasRenderBroken/.test(ui),
+      "画布读不出来的时候没有整页兜底，界面还是会照常起 JointJS、铺底、自动保存");
+    assert(/if \(canvasState\.remoteBroken\) \{ canvasRenderBroken/.test(ui),
+      "兜底函数写了但没接到初始化路径上，等于没写");
+    assert(/if \(!CANVAS_NODE_DEFS\[kind\]\) \{/.test(ui) && /canvas-node-unknown/.test(ui),
+      "认不出的类型还是画成可编辑的空白笔记，用户随手一打字就把人家的 payload 盖了");
+    assert(/response\.status === 409 && result\.unreadable/.test(ui),
+      "自动保存撞上 409 不吭声，用户会一直以为在存，关掉页面才发现白干了");
+    assert(/function canvasStorageKey/.test(ui) && !/localStorage\.setItem\(CANVAS_STORAGE_KEY,/.test(ui),
+      "本机副本还是所有画布共用一个键：切到还没内容的 B 画布会把 A 的节点铺上去，自动保存一次就写进 B 的文件了");
+
+    console.log("✅ 画布不丢数据：601 个节点原样往返 · 认不出的类型/用途照留 · 少了什么如实记账 · 坏文件报错不当空画布且原样备份 · 不带 force 绝不覆盖 · 列表标坏 · 前端不把 409 当白板");
+  } finally {
+    try { child.kill("SIGKILL"); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+}
+
+// 从老版本升上来那一下：旧文件收进新文件夹、画布先留底、跑一次就不再跑。
+// 用户的原话是「用户之前下载我老版本的软件，要更新的话你也要给我解决这个问题啊……
+// 更新的时候你记得把之前的文件放到新文件夹里面整理下啊」。
+// 这条测试真起 server.js，对着一个照老版本样子摆好的 home，因为要验的恰恰是「开机那一下」。
+async function testUpgradeMigration() {
+  const http = require("http"), crypto = require("crypto");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-upgrade-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  // 照老版本用久了的样子摆：产出一股脑堆在工作区根上，任务目录、画布、回收站各就各位
+  const ws = path.join(home, "workspace");
+  fs.mkdirSync(path.join(ws, ".openworkbuddy", "canvases"), { recursive: true });
+  fs.mkdirSync(path.join(ws, "任务_20250101_老任务"), { recursive: true });
+  fs.mkdirSync(path.join(ws, ".trash"), { recursive: true });
+  fs.mkdirSync(path.join(ws, "我自己建的文件夹"), { recursive: true });
+  const OLD = (Date.now() - 9 * 86400000) / 1000;
+  const oldFile = (rel, body) => { const f = path.join(ws, rel); fs.writeFileSync(f, body); fs.utimesSync(f, OLD, OLD); };
+  oldFile("老报告.md", "# 老版本产出\n");
+  oldFile("图 一.png", "PNG");
+  oldFile(".隐藏的", "x");
+  fs.writeFileSync(path.join(ws, "刚写的.txt"), "今天的");                       // 刚动过，不算历史遗留
+  fs.writeFileSync(path.join(ws, "任务_20250101_老任务", "里面的.txt"), "不该动");
+  fs.writeFileSync(path.join(ws, ".openworkbuddy", "canvas.json"), JSON.stringify({ version: 1, nodes: [{ id: "a", kind: "note", payload: { text: "老画布" } }], edges: [] }));
+  fs.writeFileSync(path.join(ws, ".openworkbuddy", "canvases", "b.json"), JSON.stringify({ version: 1, nodes: [], edges: [] }));
+  // 文件夹的时间也拨回去。不拨的话「文件夹也一起搬」这个错会从安静期那道口子溜过去，
+  // 而真实的老用户目录里，文件夹恰恰都是旧的
+  for (const d of ["任务_20250101_老任务", "我自己建的文件夹"]) fs.utimesSync(path.join(ws, d), OLD, OLD);
+
+  const boot1 = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const r1 = await boot1.wait();
+  let folder = "", bak = "";
+  try {
+    assert(r1.up, "真 server.js 没起来，这条测试作废：" + r1.why);
+
+    // ── ① 散在根上的旧文件收进了一个带日期的新文件夹 ───────────────────────
+    folder = fs.readdirSync(ws).find((n) => n.startsWith("以前的文件_")) || "";
+    assert(folder,
+      "★升级没整理★ 老版本的产出还一股脑摊在工作区根目录上。用户要的就是这一下：" +
+      "「更新的时候你记得把之前的文件放到新文件夹里面整理下啊」");
+    const inside = fs.readdirSync(path.join(ws, folder)).sort();
+    assert(inside.join("|") === ["图 一.png", "整理清单.json", "老报告.md"].sort().join("|"),
+      "整理进新文件夹的东西不对：" + inside.join(" "));
+    assert(fs.readFileSync(path.join(ws, folder, "老报告.md"), "utf8") === "# 老版本产出\n",
+      "★搬的过程中把内容弄坏了★ 整理是搬家不是重写");
+
+    // ── ② 只搬该搬的。搬错一个，用户就得去新文件夹里刨自己的东西 ───────────
+    assert(fs.existsSync(path.join(ws, "刚写的.txt")), "★刚写的文件被当成历史遗留搬走了★ 刚跑完的任务产出不能碰");
+    assert(fs.existsSync(path.join(ws, ".隐藏的")), "点文件被搬走了（.openworkbuddy 这类就藏在点文件里，搬了等于弄丢画布）");
+    assert(fs.existsSync(path.join(ws, "任务_20250101_老任务", "里面的.txt")), "★任务目录被动了★ 那是成果目录，不是散落的旧文件");
+    assert(fs.existsSync(path.join(ws, "我自己建的文件夹")), "用户自己建的文件夹被搬走了");
+    assert(fs.existsSync(path.join(ws, ".trash")), "回收站被搬走了");
+
+    // ── ③ 留了账，才谈得上「想放回去随时能放」 ────────────────────────────
+    const manifest = JSON.parse(fs.readFileSync(path.join(ws, folder, "整理清单.json"), "utf8"));
+    assert(manifest.files.sort().join("|") === ["图 一.png", "老报告.md"].sort().join("|"),
+      "★清单和实际搬的对不上★ 对不上的清单比没有更糟，用户照着搬回去会漏：" + JSON.stringify(manifest.files));
+
+    // ── ④ 新版本碰画布之前，先把老画布原样拷一份走 ────────────────────────
+    bak = fs.readdirSync(path.join(ws, ".openworkbuddy")).find((n) => n.startsWith("升级前备份_")) || "";
+    assert(bak, "★升级前没给画布留底★ 新版本改了画布的读写规矩，万一判错，用户手里得有一份升级前的原件");
+    const baked = fs.readdirSync(path.join(ws, ".openworkbuddy", bak)).sort();
+    assert(baked.join("|") === "b.json|canvas.json", "画布留底不全：" + baked.join(" "));
+    assert(fs.existsSync(path.join(ws, ".openworkbuddy", "canvas.json")), "★把画布搬走当备份了★ 留底只准拷，原件必须还在原地");
+
+    // ── ⑤ 动过用户的文件就得告诉他 ────────────────────────────────────────
+    const notes = await new Promise((resolve) => {
+      http.get({ host: "127.0.0.1", port: r1.port, path: "/api/migrations", headers: { Cookie: "openworkbuddy_token=" + token } },
+        (res) => { let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => { try { resolve(JSON.parse(b)); } catch { resolve(null); } }); })
+        .on("error", () => resolve(null));
+    });
+    assert(notes && Array.isArray(notes.notes) && notes.notes.length === 2,
+      "★整理完了不吭声★ 动了用户工作区里的文件，界面上必须能说清搬到哪儿了：" + JSON.stringify(notes));
+    assert(notes.notes.some((n) => n.note.includes(folder)), "告知里没写搬到哪个文件夹，等于没说：" + JSON.stringify(notes.notes));
+  } finally { boot1.child.kill(); }
+
+  // ── ⑥ 再开一次机：一件事都不许再做 ──────────────────────────────────────
+  // 每次启动都新建一个「以前的文件_日期」，用几天工作区就长出一排空文件夹
+  const before = fs.readdirSync(ws).sort().join("|");
+  const boot2 = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const r2 = await boot2.wait();
+  try {
+    assert(r2.up, "第二次没起来：" + r2.why);
+    assert(fs.readdirSync(ws).sort().join("|") === before, "★第二次开机又整理了一遍★ 跑过的迁移必须认得出来，账记在 data/migrations.json");
+    assert(fs.readdirSync(path.join(ws, ".openworkbuddy")).filter((n) => n.startsWith("升级前备份_")).length === 1, "画布留底又拷了一份");
+    const ledger = JSON.parse(fs.readFileSync(path.join(home, "data", "migrations.json"), "utf8"));
+    const ids = Object.values(ledger.done || {})[0] || [];
+    assert(ids.includes("tidy-root-v1") && ids.includes("canvas-backup-v1"), "账本里没记全跑过的迁移：" + JSON.stringify(ledger));
+  } finally { boot2.child.kill(); }
+
+  // ── ⑦ 撞名一律跳过。宁可这一个不整理，也不能盖掉那边那份 ─────────────────
+  const migrate = require(path.join(__dirname, "..", "migrate.js"));
+  const ws2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-upgrade2-"));
+  const dst = path.join(ws2, "以前的文件_" + migrate._internals.stampToday());
+  fs.mkdirSync(dst, { recursive: true });
+  fs.writeFileSync(path.join(dst, "撞名.txt"), "早就在这儿的");
+  const clash = path.join(ws2, "撞名.txt");
+  fs.writeFileSync(clash, "根上那份"); fs.utimesSync(clash, OLD, OLD);
+  const r3 = migrate._internals.tidyLooseFiles(ws2, {});
+  assert(fs.readFileSync(path.join(dst, "撞名.txt"), "utf8") === "早就在这儿的", "★撞名的被覆盖了★ 整理不能吃掉任何一个文件");
+  assert(fs.existsSync(clash), "★撞名的两份变成一份★");
+  assert(r3.skipped.length === 1, "跳过的没记下来，用户不知道有一个没整理：" + JSON.stringify(r3));
+
+  // ── ⑧ 根上本来就没有散文件：一个空文件夹都不许建 ────────────────────────
+  const ws3 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-upgrade3-"));
+  migrate.runMigrations(ws3, path.join(ws3, "..", "ledger-" + Date.now() + ".json"), { priorUse: true, version: "9.9.9" });
+  assert(fs.readdirSync(ws3).length === 0, "★干净的工作区被建了个空文件夹★ 没事可做就该什么都不做：" + fs.readdirSync(ws3).join(" "));
+
+  // ── ⑨ 全新装的机器：一个文件都不许动 ───────────────────────────────────
+  // 用户说的是「**更新的时候**你记得把之前的文件放到新文件夹里面整理下」。
+  // 刚装完就去翻人家文件夹，那不是整理，那是擅自动别人的东西——
+  // 而且这条最容易写错：只要拿「账本里没记过」当升级的证据，全新装的机器就全中招
+  const ws4 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-fresh-"));
+  const freshLedger = path.join(ws4, "..", "ledger-fresh-" + Date.now() + ".json");
+  for (const n of ["用户自己的稿子.md", "别人给的素材.png"]) {
+    const f = path.join(ws4, n); fs.writeFileSync(f, "x"); fs.utimesSync(f, OLD, OLD);
+  }
+  migrate.runMigrations(ws4, freshLedger, { priorUse: false, version: "1.0.0" });
+  assert(!fs.readdirSync(ws4).some((n) => n.startsWith("以前的文件_")),
+    "★全新装也去整理用户的文件夹了★ 人家刚装完，工作目录里的东西是人家自己放的：" + fs.readdirSync(ws4).join(" "));
+  assert(fs.readdirSync(ws4).sort().join("|") === ["别人给的素材.png", "用户自己的稿子.md"].sort().join("|"),
+    "全新装的机器上文件被动过了：" + fs.readdirSync(ws4).join(" "));
+  // 而且以后升级也不该回头补整理这一刀：全新装的时候就已经销账了
+  migrate.runMigrations(ws4, freshLedger, { priorUse: false, version: "1.1.0" });
+  assert(!fs.readdirSync(ws4).some((n) => n.startsWith("以前的文件_")),
+    "★全新装的机器后来升级时补整理了★ 这刀早就不该有了：" + fs.readdirSync(ws4).join(" "));
+
+  // ⑨-2 反向对照：同样没有账本，但这台机器以前用过 —— 这才是用户说的那种「升级」
+  const ws5 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-old-install-"));
+  const f5 = path.join(ws5, "老版本的产出.md"); fs.writeFileSync(f5, "x"); fs.utimesSync(f5, OLD, OLD);
+  migrate.runMigrations(ws5, path.join(ws5, "..", "ledger-old-" + Date.now() + ".json"), { priorUse: true, version: "1.1.0" });
+  assert(fs.readdirSync(ws5).some((n) => n.startsWith("以前的文件_")),
+    "★老用户升上来却没整理★ ⑨ 那条闸门关过头了，把真正该跑的那次也挡了：" + fs.readdirSync(ws5).join(" "));
+
+  console.log("✅ 升级迁移：旧文件收进「" + folder + "」·画布先留底·清单可回退·只搬散落文件·撞名不覆盖·开第二次不再动手·全新装一个不碰");
+}
+
+// 短剧素材台账：哪个文件是干什么用的、谁在用、谁没人用、谁引用了却已经不在了。
+// 用户的原话是「做好素材管理」。素材管理的价值全在这四个问题上——
+// 只列一堆文件名，这四个一个都答不上来。
+async function testDramaAssets() {
+  const http = require("http"), crypto = require("crypto");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-assets-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+  const ws = path.join(home, "workspace");
+  fs.mkdirSync(path.join(ws, ".openworkbuddy"), { recursive: true });
+  for (const f of ["角色_小满.png", "镜头_S1-01_首帧.png", "镜头_S1-01.mp4", "配音_S1-01.mp3", "没人用的图.png", "说明.txt"]) fs.writeFileSync(path.join(ws, f), "x");
+  fs.writeFileSync(path.join(ws, "分镜表.json"), JSON.stringify({
+    title: "测试", aspect: "9:16",
+    characters: [{ id: "c1", name: "小满", ref: "角色_小满.png" }],
+    scenes: [{ id: "S1", shots: [
+      { id: "S1-01", first_frame: "镜头_S1-01_首帧.png", video: "镜头_S1-01.mp4", audio: "配音_S1-01.mp3", line: "你好" },
+      { id: "S1-02", first_frame: "镜头_S1-02_首帧.png" },   // 引用了，但盘上没有
+    ] }],
+  }, null, 2));
+  fs.writeFileSync(path.join(ws, ".openworkbuddy", "canvas.json"), JSON.stringify({
+    version: 1, nodes: [{ id: "n1", kind: "image", payload: { title: "定妆", path: "角色_小满.png" } }], edges: [], updatedAt: Date.now(),
+  }));
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const { up, port, why } = await booted.wait();
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+    const r = await new Promise((resolve) => {
+      http.get({ host: "127.0.0.1", port, path: "/api/canvas/assets", headers: { Cookie: "openworkbuddy_token=" + token } },
+        (res) => { let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, json: j, body: b }); }); })
+        .on("error", (e) => resolve({ code: 0, json: null, body: e.message }));
+    });
+    assert(r.code === 200 && r.json, "素材台账读不出来（HTTP " + r.code + "）：" + String(r.body).slice(0, 200));
+    const by = new Map(r.json.assets.map((a) => [a.base, a]));
+
+    // ① 认得出用途。分不清定妆照和首帧，素材面板就退化成一个文件列表
+    assert(by.get("角色_小满.png") && by.get("角色_小满.png").role === "定妆照", "★认不出定妆照★：" + JSON.stringify(by.get("角色_小满.png")));
+    assert(by.get("镜头_S1-01_首帧.png").role === "首帧", "认不出首帧");
+    assert(by.get("镜头_S1-01.mp4").role === "镜头" && by.get("镜头_S1-01.mp4").kind === "video", "认不出成片镜头");
+    assert(by.get("配音_S1-01.mp3").role === "配音" && by.get("配音_S1-01.mp3").kind === "audio", "认不出配音");
+    assert(!by.has("说明.txt"), "非媒体文件混进素材台账了");
+
+    // ② 算得出谁在用。画布和分镜表两边的引用都得算，缺一边就会把在用的当成没人用
+    const look = by.get("角色_小满.png").usedBy.map((u) => u.from).sort();
+    assert(look.join("|") === "分镜表|画布",
+      "★「谁在用」算漏了★ 画布节点和分镜表都指着这张定妆照，两边都得认；只认一边，用户会把还在用的素材当垃圾删掉：" + JSON.stringify(by.get("角色_小满.png").usedBy));
+    assert(by.get("镜头_S1-01.mp4").usedBy.some((u) => u.id === "S1-01"), "镜头视频没对上是哪一镜在用");
+
+    // ③ 没人用的要标出来。重跑攒下的旧版本就混在这里，不标出来永远清不掉
+    assert(by.get("没人用的图.png").orphan === true, "★没人用的素材没标出来★");
+    assert(by.get("角色_小满.png").orphan === false, "★在用的被标成了没人用★ 照着删就是删掉正在用的素材，这比不标更糟");
+
+    // ④ 引用了却不在盘上的，必须主动摆出来。它在文件列表里永远不出现，
+    //    用户只会看见「这一镜怎么老是生不出来」
+    assert(Array.isArray(r.json.missing) && r.json.missing.length === 1 && r.json.missing[0].base === "镜头_S1-02_首帧.png",
+      "★引用了但文件不在的没报出来★ 这类最要紧：那一镜现在就是做不下去的：" + JSON.stringify(r.json.missing));
+    assert(r.json.missing[0].usedBy.some((u) => u.id === "S1-02"), "没说清是哪一镜在等这个文件");
+    assert(r.json.stat.total === 5 && r.json.stat.orphan === 1 && r.json.stat.missing === 1,
+      "台账小结对不上：" + JSON.stringify(r.json.stat));
+  } finally { booted.child.kill(); }
+
+  // ⑤ 画布坏了，素材台账照样得能看。两件事互不相干，绑一起等于一处坏两处瞎
+  const home2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-assets2-"));
+  fs.mkdirSync(path.join(home2, "data"), { recursive: true });
+  const token2 = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.writeFileSync(path.join(home2, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token2]: { user: "e2e", at: Date.now() } },
+  }));
+  const ws2 = path.join(home2, "workspace");
+  fs.mkdirSync(path.join(ws2, ".openworkbuddy"), { recursive: true });
+  fs.writeFileSync(path.join(ws2, "角色_小满.png"), "x");
+  fs.writeFileSync(path.join(ws2, ".openworkbuddy", "canvas.json"), "{ 这不是 JSON");
+  const b2 = bootRealServer({ OPENWORKBUDDY_HOME: home2 });
+  const s2 = await b2.wait();
+  try {
+    assert(s2.up, "第二台没起来：" + s2.why);
+    const r2 = await new Promise((resolve) => {
+      http.get({ host: "127.0.0.1", port: s2.port, path: "/api/canvas/assets", headers: { Cookie: "openworkbuddy_token=" + token2 } },
+        (res) => { let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, json: j, body: b }); }); })
+        .on("error", (e) => resolve({ code: 0, json: null, body: e.message }));
+    });
+    assert(r2.code === 200 && r2.json && r2.json.assets.length === 1,
+      "★画布坏了就连素材也看不了★ 这两件事互不相干，绑一起等于一处坏两处瞎：HTTP " + r2.code + " " + String(r2.body).slice(0, 160));
+    assert(r2.json.boardUnreadable, "画布读不出来这件事得说出来，不能默默当成「没人在用任何素材」");
+  } finally { b2.child.kill(); }
+
+  // ⑥ 前端得真用上台账，而不是继续只列文件名
+  const ui = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  for (const [needle, why] of [
+    ['fetch("/api/canvas/assets', "素材面板没去读台账，那它显示的还是一串文件名"],
+    ["function canvasAssetUseText", "面板不显示「谁在用」，用户还是不知道哪张图能删"],
+    ["canvas-library-missing", "「引用了但文件不在」没在面板上摆出来"],
+    ['id="canvas-library-role"', "没有按用途筛选，十二镜的项目里根本翻不动"],
+  ]) assert(ui.includes(needle), "前端缺了：" + why);
+
+  console.log("✅ 短剧素材台账：认用途（定妆照/首帧/镜头/配音）· 画布+分镜表两边算占用 · 标出没人用的 · 引用丢文件主动报 · 画布坏了素材照样能看");
+}
+
+// 短剧制片进度：这部戏做到哪了、卡在哪、还剩多少活儿。
+// 用户的原话是「真的能拿这个做 AI 短剧啊，短剧的各个流程……还有整个无限画布做短剧的能力」。
+// 这条测试盯的是一条最容易写错、错了还全绿的规矩：
+// **字段里写着 first_frame ≠ 这一镜做完了**。文件不在盘上，这一镜就是卡着的。
+async function testDramaPipeline() {
+  const http = require("http"), crypto = require("crypto");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pipeline-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+  const ws = path.join(home, "workspace");
+  fs.mkdirSync(path.join(ws, ".openworkbuddy"), { recursive: true });
+  fs.mkdirSync(path.join(ws, "素材"), { recursive: true });
+  const put = (n) => fs.writeFileSync(path.join(ws, "素材", n), "x");
+  // 盘上真有的：两张首帧、一段视频、一张定妆照
+  put("角色_阿明.png"); put("镜头_S1-01_首帧.png"); put("镜头_S1-01.mp4"); put("镜头_S1-02_首帧.png");
+  // 故意不建：角色_阿芳.png、镜头_S1-02.mp4、配音_S1-02.mp3 —— 画布上写了，盘上没有
+
+  // r0 是「记 ms 之前的版本留下的那种记录」——老画布里全是这种。
+  // 把它当成 0 秒算进去，中位数立刻被拉垮，估时会短得离谱
+  const RUNS = [{ id: "r0", kind: "image", at: 0 }, { id: "r1", kind: "image", at: 1, ms: 20000 }, { id: "r2", kind: "image", at: 2, ms: 40000 }, { id: "r3", kind: "video", at: 3, ms: 120000 }];
+  const node = (id, kind, payload) => ({ id, kind, payload, x: 0, y: 0 });
+  fs.writeFileSync(path.join(ws, ".openworkbuddy", "canvas.json"), JSON.stringify({
+    version: 1, edges: [], nodes: [
+      node("n_script", "script", { title: "粤西狗奶", text: "阿明回乡接手父亲的士多店，发现账本里藏着十年前的一笔钱。三集反转，结局和解。" }),
+      node("n_c1", "character", { name: "阿明", path: "素材/角色_阿明.png" }),
+      node("n_c2", "character", { name: "阿芳", path: "素材/角色_阿芳.png" }),          // 定妆照丢了
+      node("n_s1", "shot", { id: "S1-01", prompt: "士多店门口，阿明推门", shot_size: "中景", duration: "4", line: "", first_frame: "素材/镜头_S1-01_首帧.png", video: "素材/镜头_S1-01.mp4", generation_runs: RUNS }),
+      node("n_s2", "shot", { id: "S1-02", prompt: "柜台后翻账本", shot_size: "特写", duration: "5", line: "这笔钱是谁的？", first_frame: "素材/镜头_S1-02_首帧.png", video: "素材/镜头_S1-02.mp4", audio: "素材/配音_S1-02.mp3" }),
+      node("n_s3", "shot", { id: "S1-03", prompt: "阿芳站在门口", shot_size: "全景", duration: "4", line: "" }),
+      node("n_s4", "shot", { id: "S1-04", prompt: "镜头内容与运动…", shot_size: "中景", duration: "4", line: "" }),   // 模板没改
+      node("n_tl", "timeline", { title: "最终剪辑" }),
+    ],
+  }));
+
+  const boot = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const { up, port, why } = await boot.wait();
+  const get = (p) => new Promise((resolve) => {
+    const req = http.request({ host: "127.0.0.1", port, path: p, headers: { Cookie: "openworkbuddy_token=" + token } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => resolve({ code: res.statusCode, body: b }));
+    });
+    req.on("error", (e) => resolve({ code: 0, body: e.message })); req.end();
+  });
+
+  let progressData = null;   // 下面 ⑩ 要拿这份真数据去渲染一遍
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+    const r = await get("/api/canvas/progress");
+    assert(r.code === 200, "制片进度取不到（HTTP " + r.code + "）：" + r.body.slice(0, 200));
+    const d = progressData = JSON.parse(r.body);
+    const stage = (k) => d.stages.find((s) => s.key === k) || {};
+    const shot = (id) => (d.shots || []).find((s) => s.id === id) || {};
+
+    // ── ① 七档分得开，每档说得出「几个/一共几个」 ────────────────────────
+    assert(d.stages.map((s) => s.key).join(",") === "script,cast,shots,frame,video,voice,cut",
+      "七档顺序不对，进度带上的顺序就是短剧的做片顺序：" + d.stages.map((s) => s.key).join(","));
+    assert(stage("script").done === 1 && stage("script").total === 1, "剧本这一档算错了：" + JSON.stringify(stage("script")));
+    // 反向对照：模板原样没动、或者只敲了两个字，都不能算「剧本写好了」——
+    // 算成写好了，下一步就会指到拆场次上去，而那一步必然拆不出东西
+    const stub = require(path.join(__dirname, "..", "drama-pipeline.js"));
+    for (const [text, why] of [["", "空的"], ["在这里写一句话概念、人物关系、冲突、对白和结局。", "模板原样"], ["随便写两句", "只敲了几个字"]]) {
+      const g = stub.dramaProgress({ nodes: [{ id: "s", kind: "script", payload: { text } }] }, { onDisk: new Set() });
+      assert(g.stages.find((x) => x.key === "script").done === 0, `★${why}也算剧本写好了★：` + JSON.stringify(g.stages[0]));
+      assert(g.blockers.some((b) => /剧本/.test(b.text)), `${why}的时候没提醒先写剧本：` + JSON.stringify(g.blockers));
+    }
+    assert(stage("shots").done === 3 && stage("shots").total === 4,
+      "★没写提示词的镜头被算成做好了★ 那一镜点生成只会失败：" + JSON.stringify(stage("shots")));
+
+    // ── ② 核心规矩：写着路径 ≠ 做完了。文件不在盘上就是没做完 ──────────────
+    assert(stage("frame").done === 2 && stage("frame").total === 4, "首帧这一档算错了：" + JSON.stringify(stage("frame")));
+    assert(stage("video").done === 1,
+      "★画布上写着 video 就算成片了★ 那个文件根本不在盘上——这正是用户点了半天没反应的那一类：" + JSON.stringify(stage("video")));
+    assert(stage("cast").done === 1 && stage("cast").total === 2,
+      "★定妆照文件丢了还算这个角色做完了★：" + JSON.stringify(stage("cast")));
+    assert(shot("S1-02").video && shot("S1-02").video.ok === false, "S1-02 的视频该标成「文件没了」：" + JSON.stringify(shot("S1-02")));
+    assert(shot("S1-01").video && shot("S1-01").video.ok === true, "S1-01 的视频真在盘上，不该标成丢了（阳性对照）");
+
+    // ── ③ 配音只算真有台词的那几镜 ────────────────────────────────────────
+    assert(stage("voice").total === 1 && stage("voice").done === 0,
+      "★把没台词的镜头也算进配音里了★ 那几镜本来就不需要配音，凑进分母只会让进度永远到不了头：" + JSON.stringify(stage("voice")));
+    assert(shot("S1-01").needsVoice === false && shot("S1-02").needsVoice === true, "谁需要配音判错了");
+
+    // ── ④ 卡在哪：说得出来，还得给得出是哪几个节点 ────────────────────────
+    const texts = (d.blockers || []).map((b) => b.text).join(" | ");
+    assert(/提示词/.test(texts), "没报「有镜头没写提示词」：" + texts);
+    assert(/定妆照/.test(texts), "没报「定妆照文件丢了」：" + texts);
+    assert(/视频文件/.test(texts), "没报「镜头视频文件丢了」：" + texts);
+    const withIds = (d.blockers || []).filter((b) => Array.isArray(b.ids) && b.ids.length);
+    assert(withIds.length >= 3, "★卡点没带节点 id★ 界面上就跳不过去，说了等于没说：" + JSON.stringify(d.blockers));
+    assert(withIds.every((b) => b.ids.every((id) => d.shots.some((s) => s.nodeId === id) || ["n_c1", "n_c2", "n_script", "n_tl"].includes(id))),
+      "卡点里的 id 在画布上不存在：" + JSON.stringify(withIds));
+    assert(d.next && /提示词|定妆照|视频文件/.test(d.next.text), "下一步该先说卡死的那件事：" + JSON.stringify(d.next));
+
+    // ── ⑤ 还剩多少活儿 ────────────────────────────────────────────────────
+    assert(d.pending.image === 2, "还差几张首帧算错了：" + JSON.stringify(d.pending));
+    assert(d.pending.video === 1,
+      "★把没首帧的镜头也算进「要生视频」里了★ 那几镜现在根本生不了视频：" + JSON.stringify(d.pending));
+    assert(d.pending.audio === 1, "还差几段配音算错了：" + JSON.stringify(d.pending));
+    // 定妆照丢了的那个角色，是一件实打实还没做完的活儿。以前它在 pending 里根本没有位置，
+    // 于是「还要生成」那排不给按钮、「还要多久」也不算它——整条产线唯一一档没人管的就是它
+    assert(d.pending.cast === 1,
+      "★定妆照没进「还剩多少活儿」★ 丢了定妆照的角色得重跑一张，不然后面每一镜的脸都不是同一个人："
+      + JSON.stringify(d.pending));
+
+    // ── ⑥ 时间只按这张画布自己跑过的算，没跑过就明说估不出来 ───────────────
+    // 生图中位数 30s ×（首帧 2 + 定妆照 1）+ 视频 120s × 1 = 210s。
+    // 定妆照跑的就是生图那条命令，漏掉它，屏幕上写的就是一个偏小的数
+    assert(d.eta && d.eta.ms === 210000,
+      "★估时不是按这张画布真跑过的耗时算的★（生图中位数 30s ×（首帧 2 + 定妆照 1）+ 视频 120s × 1 = 210s；"
+      + "算成 180s 说明把要重跑的定妆照漏了，算成 190s 说明把老版本那条没记 ms 的记录当成 0 秒了）："
+      + JSON.stringify(d.eta));
+    assert(/中位数/.test(d.eta.basis || ""), "估时得说清楚凭什么这么估：" + JSON.stringify(d.eta));
+    assert(d.eta.partial === true, "配音一次都没跑过，这个估时是不全的，得标出来：" + JSON.stringify(d.eta));
+
+    assert(typeof d.percent === "number" && d.percent > 0 && d.percent < 100, "总进度不该是 0 或 100：" + d.percent);
+  } finally { boot.child.kill(); }
+
+  // ── ⑦ 反向对照：一次都没跑过的画布，宁可不给时间也不许编 ─────────────────
+  const pipeline = require(path.join(__dirname, "..", "drama-pipeline.js"));
+  const bare = pipeline.dramaProgress({ nodes: [{ id: "x", kind: "shot", payload: { id: "S1", prompt: "有提示词" } }] }, { onDisk: new Set() });
+  assert(bare.eta === null, "★没跑过也硬给一个时间★：" + JSON.stringify(bare.eta));
+  assert(bare.pending.image === 1 && bare.pending.video === 0, "没首帧的镜头不该排进生视频的队：" + JSON.stringify(bare.pending));
+  const empty = pipeline.dramaProgress({ nodes: [] }, { onDisk: new Set() });
+  assert(empty.percent === 0 && /空/.test(empty.next.text), "空画布该说它是空的，不该说「做完了」：" + JSON.stringify(empty.next));
+  const allDone = pipeline.dramaProgress({ nodes: [{ id: "s", kind: "shot", payload: { id: "S1", prompt: "p", first_frame: "a.png", video: "a.mp4" } }] }, { onDisk: new Set(["a.png", "a.mp4"]) });
+  assert(allDone.percent === 100 && !allDone.blockers.length, "全做完了还报卡点：" + JSON.stringify(allDone));
+
+  // ── ⑧ 画布坏了：进度看不了是小事，把界面打成白板才是事故 ─────────────────
+  const home2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-pipeline-bad-"));
+  fs.mkdirSync(path.join(home2, "workspace", ".openworkbuddy"), { recursive: true });
+  fs.mkdirSync(path.join(home2, "data"), { recursive: true });
+  const token2 = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.writeFileSync(path.join(home2, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token2]: { user: "e2e", at: Date.now() } },
+  }));
+  fs.writeFileSync(path.join(home2, "workspace", ".openworkbuddy", "canvas.json"), "{这不是 JSON");
+  const boot2 = bootRealServer({ OPENWORKBUDDY_HOME: home2 });
+  const b2 = await boot2.wait();
+  try {
+    assert(b2.up, "第二台没起来：" + b2.why);
+    const r2 = await new Promise((resolve) => {
+      const req = http.request({ host: "127.0.0.1", port: b2.port, path: "/api/canvas/progress", headers: { Cookie: "openworkbuddy_token=" + token2 } }, (res) => {
+        let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => resolve({ code: res.statusCode, body: b }));
+      });
+      req.on("error", (e) => resolve({ code: 0, body: e.message })); req.end();
+    });
+    assert(r2.code === 200, "画布坏了就连进度都 500 了（HTTP " + r2.code + "）：" + r2.body.slice(0, 160));
+    const d2 = JSON.parse(r2.body);
+    assert(d2.boardUnreadable, "画布读不出来却没说，界面会拿它当一张空画布：" + r2.body.slice(0, 160));
+  } finally { boot2.child.kill(); }
+
+  // ── ⑨ 界面那头真接上了 ────────────────────────────────────────────────
+  const fe = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  for (const needle of ['fetch("/api/canvas/progress', "function canvasRenderProgress", "function canvasRunPending", 'id="canvas-progress"', "data-cp-focus", "data-cp-run"]) {
+    assert(fe.includes(needle), "前端没接上制片进度，缺：" + needle);
+  }
+  assert(/canvasRecordGeneration\(node, kind, input, file, result, Date\.now\(\) - startedAt\)/.test(fe),
+    "★生成耗时没记★ 不记就永远只能猜「还要多久」");
+  const css = fs.readFileSync(path.join(__dirname, "..", "public", "css", "ui.css"), "utf8");
+  assert(css.includes(".cp-chip") && css.includes(".cp-shots"), "进度带没有样式");
+
+  // ── ⑩ 真把它渲染一遍，看屏幕上写的是不是人话 ──────────────────────────
+  // 光断言「代码里有这个函数」证明不了用户能看见什么。这里把渲染那一段单独抠出来，
+  // 拿假 DOM 跑一遍，断言的是**屏幕上真出现的字**
+  {
+    const from = fe.indexOf("function canvasEtaText("), to = fe.indexOf("async function canvasLoadProgress(");
+    assert(from > 0 && to > from, "抠不出进度带的渲染代码，这段测试作废（函数改名了？）");
+    // 合成那一条在进度带里面（canvasRenderProgress 直接调 canvasComposeHtml），但它排在
+    // canvasLoadProgress 后头，落在上面那一刀之外。少了它整段 eval 起来就是 ReferenceError——
+    // 所以第二刀单抠一段接上，而不是往沙箱里塞个空壳桩：塞了桩，屏幕上这一条写什么就没人验了
+    const cFrom = fe.indexOf("function canvasComposeHtml("), cTo = fe.indexOf("/** 起手模板里那几句占位文字");
+    assert(cFrom > 0 && cTo > cFrom, "抠不出合成那一条的渲染代码（函数改名了？）");
+    let html = "";
+    const stubEl = { addEventListener() {} };
+    const box = {
+      hidden: true,
+      set innerHTML(v) { html = v; }, get innerHTML() { return html; },
+      querySelector: () => stubEl, querySelectorAll: () => [],
+    };
+    const sandbox = {
+      esc: (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])),
+      ic: (n) => `<i>${n}</i>`,
+      canvasState: { progress: null, progressOpen: true, batch: null, graph: null, composeJob: null, composePlan: null, composeSub: false },
+      canvasToast() {}, canvasRenderInspector() {}, canvasCenterSelected() {}, canvasRefreshNode() {}, canvasRunPending() {},
+      document: { getElementById: () => box, querySelector: () => null },
+    };
+    const keys = Object.keys(sandbox);
+    const make = new Function(...keys, fe.slice(from, to) + fe.slice(cFrom, cTo) + "\nreturn { canvasRenderProgress, canvasEtaText, canvasComposeHtml };");
+    const ui = make(...keys.map((k) => sandbox[k]));
+
+    assert(ui.canvasEtaText(180000) === "约 3 分钟", "时间说人话这一关没过：" + ui.canvasEtaText(180000));
+    assert(ui.canvasEtaText(0) === "", "没有时间就别写时间");
+
+    // 读不到进度 = 整条不显示。显示一个「0%」是在撒谎
+    sandbox.canvasState.progress = null;
+    ui.canvasRenderProgress();
+    assert(box.hidden === true && html === "", "★进度读不到却画了一条出来★ 那个 0% 是编的：" + html);
+
+    sandbox.canvasState.progress = progressData;      // 用上面真 server 返回的那份
+    ui.canvasRenderProgress();
+    assert(box.hidden === false, "有数据却不显示");
+    assert(html.includes(`${progressData.percent}%`), "屏幕上没有总进度：" + html.slice(0, 200));
+    assert(/首帧<b>2\/4<\/b>/.test(html), "★屏幕上没写清「几个/一共几个」★ 只给个百分比，用户还是不知道还差几张：" + html.slice(0, 400));
+    assert(html.includes("文件没了"), "★视频文件丢了，表格里却没说★ 这正是用户点了半天没反应的那一类");
+    assert(html.includes("data-cp-focus"), "卡点没有「跳过去看」的按钮");
+    assert(/data-cp-run="image"[^>]*>首帧 2 个/.test(html), "★没给「一键补齐」★ 还差 2 张首帧，用户只能一个个点：" + html.slice(0, 600));
+    assert(html.includes("约 4 分钟"), "估时没显示出来（210 秒该写成「约 4 分钟」）：" + html.slice(0, 600));
+    // 定妆照也得在「还要生成」那排有个能点的按钮。以前这一档只能自己去文件夹里挑图，
+    // 或者指望 Agent 临场发挥——而它是后面每一镜脸能不能对上的地基
+    assert(/data-cp-run="cast"[^>]*>定妆照 1 个/.test(html),
+      "★定妆照没有「一键补齐」★ 丢了定妆照的角色得一个个手点：" + html.slice(0, 700));
+
+    // 正在跑的时候：按钮全禁掉，且看得见跑到第几个了
+    sandbox.canvasState.batch = { kind: "image", total: 2, at: 1, label: "S1-03", stop: false };
+    ui.canvasRenderProgress();
+    assert(/data-cp-run="image"[^>]*disabled/.test(html), "★跑着还能再点一次★ 同一批活儿会被发两遍：" + html.slice(0, 600));
+    assert(html.includes("正在跑第 1/2 个") && html.includes("S1-03"), "跑着的时候不说跑到哪了：" + html.slice(0, 600));
+    assert(html.includes("data-cp-stop"), "★停不下来★ 一批要跑几十分钟，必须给个停");
+    sandbox.canvasState.batch = null;
+
+    // ── 合成成片那一条：四种状态，各自该在屏幕上写什么 ──────────────────
+    // 这一条是整条流水线的最后一步，也是最贵的一步：前面几十个镜头的钱都花完了才走到这儿。
+    // 所以它不能「看着能点、点下去白跑」，也不能「跑挂了只说四个字」。
+    const shotsOk = (n, ok = true) => Array.from({ length: n }, (_, i) => ({ id: "S1-0" + (i + 1), video: { ok } }));
+    assert(ui.canvasComposeHtml({ shots: shotsOk(3, false) }) === "",
+      "★镜头还没出全就把「合成成片」画出来了★ 点下去必然白跑一趟");
+    assert(ui.canvasComposeHtml({ shots: [] }) === "", "一个镜头都没有的时候也别画");
+    let ch = ui.canvasComposeHtml({ shots: shotsOk(3) });
+    assert(ch.includes("data-cp-compose") && ch.includes("合成成片"), "★镜头全好了却没有合成入口★：" + ch.slice(0, 200));
+    assert(ch.includes("不花钱"), "没说清这一步是本机跑的（用户会以为又要烧一次钱）：" + ch.slice(0, 200));
+    // 方案摆出来了：顺序要看得见，做不了的时候按钮必须是灰的
+    sandbox.canvasState.composePlan = {
+      shots: [{ id: "S1-01", seconds: 2, audio: true, line: "台词" },
+              { id: "S1-02", seconds: 0, line: "台词", why: "时长探不到" }],
+      blockers: [{ level: "stop", text: "S1-02 的视频文件不在了" }],
+      mode: "copy", target: { w: 540, h: 960 }, totalSeconds: 4, etaMs: 180000,
+      outputs: { film: "成片.mp4", subtitled: "成片_字幕.mp4", srt: "成片.srt", clips: ["a.mp4"], dir: "中间片段" },
+      ready: false,
+    };
+    ch = ui.canvasComposeHtml({ shots: shotsOk(2) });
+    assert(/S1-01[\s\S]*S1-02/.test(ch), "★成片顺序没摆出来★ 顺序错是最贵的一种错：钱全花完了才看出情节是乱的");
+    assert(ch.includes("S1-02 的视频文件不在了"), "拦住不让跑，却不说为什么：" + ch.slice(0, 400));
+    assert(/data-cp-compose-go[^>]*disabled/.test(ch), "★方案说了做不了，按钮还是能点的★：" + ch.slice(0, 600));
+    assert(ch.includes("约 3 分钟"), "估时没写出来（这一步要跑好几分钟，不说用户会以为卡死了）");
+    assert(ch.includes("成片.mp4") && ch.includes("同名的旧成片不会被盖掉"), "没说清会写出什么文件、会不会盖掉旧的");
+    sandbox.canvasState.composePlan = null;
+    // 跑着的时候：第几步、在干什么、能不能停
+    sandbox.canvasState.composeJob = { at: 2, total: 5, steps: [{}, { label: "S1-02 接配音" }], log: ["S1-01 好了"], done: false };
+    ch = ui.canvasComposeHtml({ shots: shotsOk(2) });
+    assert(ch.includes("第 2/5 步") && ch.includes("S1-02 接配音"), "跑着却不说跑到哪一步：" + ch.slice(0, 300));
+    assert(ch.includes("data-cp-compose-stop"), "★停不下来★ 合成是最长的一步，必须给个停");
+    // 跑挂了：得说清是哪一步挂的、为什么
+    sandbox.canvasState.composeJob = { done: true, error: "ffmpeg 退出码 1", steps: [{ label: "烧字幕", state: "fail", note: "缺 libass" }] };
+    ch = ui.canvasComposeHtml({ shots: shotsOk(2) });
+    assert(ch.includes("烧字幕") && ch.includes("缺 libass"),
+      "★只说「没拼成」，不说哪一步挂的★ 用户拿不到任何能查的线索：" + ch.slice(0, 300));
+    // 拼好了：路径 + 打开 + 重来
+    sandbox.canvasState.composeJob = { done: true, output: "成片.mp4", subtitled: "成片_字幕.mp4", log: [] };
+    ch = ui.canvasComposeHtml({ shots: shotsOk(2) });
+    assert(ch.includes('data-cp-compose-open="成片_字幕.mp4"'), "拼好了却没有「打开看看」：" + ch.slice(0, 300));
+    assert(ch.includes("不带字幕的那条也在：成片.mp4"), "烧了字幕就把原片藏了，用户想要干净那条时找不到");
+    sandbox.canvasState.composeJob = null;
+  }
+
+  console.log("✅ 短剧制片进度：七档算得出且屏幕上写「2/4」不是光给百分比 · 写着路径但文件没了一律不算完（定妆/首帧/视频三处都验）· 卡点带 id 能跳过去 · 没台词的不进配音分母 · 没首帧的不进生视频队 · 估时只按自己跑过的中位数（老记录没 ms 不当 0）、没跑过就说估不出来 · 一键补齐跑着时锁按钮、报进度、能叫停 · 画布坏了进度不 500");
+}
+
+// 短剧的最后一步：把一堆镜头真的拼成一条能播的片子。
+// 这条测试盯的是三类「全绿但片子是废的」的错法：
+//   ① 顺序错 —— 片子能播、时长也对，只有情节是乱的。这是最贵的一种错：钱全花完了才发现
+//   ② 悄悄把台词切了 —— 配音 4.5 秒、画面 2 秒，直接拼就是把后半句吃掉
+//   ③ 最后一步才发现干不了 —— 没 ffmpeg / 没 libass，要在**开跑前**说，不是等三十个镜头拼完再说
+async function testDramaCompose() {
+  const http = require("http"), crypto = require("crypto");
+  const { spawnSync, execFileSync } = require("child_process");
+  const C = require(path.join(__dirname, "..", "drama-compose.js"));
+
+  // ── 计划这一层不碰 ffmpeg，全是纯函数，跑起来是毫秒级 ────────────────────
+  const planOf = (shots, ex = {}) => {
+    const files = new Map(), onDisk = new Set(), probes = {};
+    for (const [base, p] of Object.entries(ex.disk || {})) {
+      files.set(base, "素材/" + base); onDisk.add(base); if (p) probes[base] = p;
+    }
+    for (const base of ex.plain || []) { files.set(base, base); onDisk.add(base); }
+    const nodes = shots.map((s, i) => ({ id: "n" + i, kind: "shot", payload: s, position: { x: i * 100, y: 0 } }));
+    return C.composePlan({ nodes, edges: [] }, {
+      files, onDisk, probes,
+      ffmpeg: "ffmpeg" in ex ? ex.ffmpeg : "/usr/bin/ffmpeg", ffprobe: "ffprobe" in ex ? ex.ffprobe : "/usr/bin/ffprobe",
+      install: "brew install ffmpeg", burn: ex.burn !== false, subtitles: ex.subtitles === undefined ? null : ex.subtitles,
+    });
+  };
+  const V = (sec, w, h, more) => ({ dur: sec, w, h, fps: 25, vcodec: "h264", pix: "yuv420p", ...(more || {}) });
+  const A = (sec) => ({ dur: sec });
+
+  // ① 顺序按镜头 ID，不按数组顺序、不按谁先被拖进画布
+  {
+    const p = planOf([
+      { id: "S1-03", prompt: "p", video: "c.mp4" },
+      { id: "S1-01", prompt: "p", video: "a.mp4" },
+      { id: "S1-10", prompt: "p", video: "d.mp4" },
+      { id: "S1-02", prompt: "p", video: "b.mp4" },
+    ], { disk: { "a.mp4": V(2, 540, 960), "b.mp4": V(2, 540, 960), "c.mp4": V(2, 540, 960), "d.mp4": V(2, 540, 960) } });
+    assert(p.shots.map((r) => r.id).join(">") === "S1-01>S1-02>S1-03>S1-10",
+      "★镜头顺序错了★ 片子照样能播、时长也对，只有情节是乱的——而这时候钱已经全花完了："
+      + p.shots.map((r) => r.id).join(">"));
+    // S1-10 不能排在 S1-02 前面：按字符串排就会
+    assert(p.shots[3].id === "S1-10", "第 10 镜被当成字符串排到第 2 镜前面了");
+  }
+
+  // ② 配音比画面长 → 补画面，不许切台词
+  {
+    const p = planOf([{ id: "S1-01", prompt: "p", line: "这句话四秒半", video: "a.mp4", audio: "v.mp3" }],
+      { disk: { "a.mp4": V(2, 540, 960), "v.mp3": A(4.5) } });
+    assert(p.shots[0].pad > 2.4 && Math.abs(p.shots[0].seconds - 4.5) < 0.05,
+      "★配音 4.5 秒、画面 2 秒，直接拼就是把后半句台词吃掉★ 得按配音时长补画面：" + JSON.stringify(p.shots[0]));
+    assert(p.mode === "reencode" && p.steps.some((s) => /tpad=stop_mode=clone/.test((s.argv || []).join(" "))),
+      "补画面这件事没落到命令里：" + JSON.stringify(p.steps.map((s) => s.key)));
+    // 反向对照：配音比画面短，不补
+    const q = planOf([{ id: "S1-01", prompt: "p", line: "短句", video: "a.mp4", audio: "v.mp3" }],
+      { disk: { "a.mp4": V(2, 540, 960), "v.mp3": A(1.2) } });
+    assert(!q.shots[0].pad && q.mode === "copy", "配音比画面短却也补了画面 / 没直拼：" + JSON.stringify(q.shots[0]) + q.mode);
+  }
+
+  // ③ 画幅不一致 → 必须重新编码，且统一到最大那个（直拼出来会花屏）
+  {
+    const p = planOf([
+      { id: "S1-01", prompt: "p", video: "a.mp4" },
+      { id: "S1-02", prompt: "p", video: "b.mp4" },
+    ], { disk: { "a.mp4": V(2, 540, 960), "b.mp4": V(2, 720, 1280) } });
+    assert(p.mode === "reencode" && p.target.w === 720 && p.target.h === 1280,
+      "★画幅不一样还直拼★ 拼出来要么花屏要么直接失败：" + JSON.stringify({ mode: p.mode, target: p.target }));
+    assert(p.blockers.some((b) => b.level === "warn" && /画幅|尺寸/.test(b.text)), "画幅不一致没提醒：" + JSON.stringify(p.blockers));
+
+    // 帧率不一致：这条是实测逼出来的。30fps + 25fps 各 2 秒直拼，ffmpeg 退出码 0、
+    // 文件也在，出来的片子只有 3.33 秒——「文件在不在、有没有字节」这类检查一条都拦不住
+    const r = planOf([
+      { id: "S1-01", prompt: "p", video: "a.mp4" },
+      { id: "S1-02", prompt: "p", video: "b.mp4" },
+    ], { disk: { "a.mp4": V(2, 540, 960, { fps: 30 }), "b.mp4": V(2, 540, 960, { fps: 25 }) } });
+    assert(r.mode === "reencode" && r.fps === 30,
+      "★帧率不一样还直拼★ 退出码是 0、文件也在，就是片子短了一大截，只有用户能发现：" + JSON.stringify({ mode: r.mode, fps: r.fps }));
+    assert(r.blockers.some((b) => /帧率/.test(b.text)), "帧率不一致没提醒：" + JSON.stringify(r.blockers));
+
+    // 像素格式不一样：拼出来颜色会在中途跳一下
+    const x = planOf([
+      { id: "S1-01", prompt: "p", video: "a.mp4" },
+      { id: "S1-02", prompt: "p", video: "b.mp4" },
+    ], { disk: { "a.mp4": V(2, 540, 960), "b.mp4": V(2, 540, 960, { pix: "yuvj420p" }) } });
+    assert(x.mode === "reencode" && x.blockers.some((b) => /像素格式/.test(b.text)), "像素格式不一致还直拼：" + JSON.stringify(x.blockers));
+
+    // 阳性对照：全都一模一样就该直拼，别平白重压一遍画质
+    const same = planOf([
+      { id: "S1-01", prompt: "p", video: "a.mp4" },
+      { id: "S1-02", prompt: "p", video: "b.mp4" },
+    ], { disk: { "a.mp4": V(2, 540, 960), "b.mp4": V(2, 540, 960) } });
+    assert(same.mode === "copy", "规格完全一致却还要重新编码，白白掉一遍画质：" + JSON.stringify(same.blockers));
+  }
+
+  // ④ 干不了的事，开跑前就得说清楚——不是等片子拼完了才在最后一条命令上报错
+  {
+    const noFf = planOf([{ id: "S1-01", prompt: "p", video: "a.mp4" }], { disk: { "a.mp4": V(2, 540, 960) }, ffmpeg: "" });
+    assert(!noFf.ready && noFf.blockers.some((b) => b.level === "stop" && /ffmpeg/.test(b.text) && /brew install/.test(b.text)),
+      "★没装 ffmpeg 却不拦，还不给安装命令★ 这条链路最后一步才用到 ffmpeg，不先拦就是花完钱再报错："
+      + JSON.stringify(noFf.blockers));
+    assert(!noFf.steps.length, "都拼不了了还排了命令出来");
+
+    const gone = planOf([{ id: "S1-01", prompt: "p", video: "a.mp4" }], {});     // 字段写着，盘上没有
+    assert(!gone.ready && gone.blockers.some((b) => b.level === "stop" && /没在盘上|文件/.test(b.text)),
+      "★画布上写着 video 就当它在★：" + JSON.stringify(gone.blockers));
+
+    const wrong = planOf([{ id: "S1-01", prompt: "p", video: "a.png" }], { disk: { "a.png": null } });
+    assert(!wrong.ready && wrong.blockers.some((b) => b.level === "stop"),
+      "★video 字段指着一张图片也照拼★：" + JSON.stringify(wrong.blockers));
+
+    const bare = C.composePlan({ nodes: [] }, { ffmpeg: "/usr/bin/ffmpeg" });
+    assert(!bare.ready && bare.blockers.some((b) => /一个镜头/.test(b.text)), "空画布没说它是空的：" + JSON.stringify(bare.blockers));
+  }
+
+  // ⑤ 本机 ffmpeg 没带 libass：烧不了字幕 ≠ 不给字幕。
+  //   计划里就说、不排这一步、.srt 照出（导进剪辑软件就是一行菜单）
+  {
+    const shots = [{ id: "S1-01", prompt: "p", line: "第一句", video: "a.mp4", audio: "v.mp3" }];
+    const disk = { "a.mp4": V(2, 540, 960), "v.mp3": A(2) };
+    const can = planOf(shots, { disk });
+    assert(can.steps.some((s) => s.key === "subtitle") && can.outputs.subtitled, "有 libass 却不排烧字幕（阳性对照）");
+    const cant = planOf(shots, { disk, burn: false });
+    assert(!cant.steps.some((s) => s.key === "subtitle") && !cant.outputs.subtitled,
+      "★烧不了字幕还把这一步排进去★ 那就是等整条片子拼完了再在最后一步报一句英文错：" + JSON.stringify(cant.steps.map((s) => s.key)));
+    assert(cant.blockers.some((b) => b.level === "warn" && /libass/.test(b.text)), "没在计划里说烧不了：" + JSON.stringify(cant.blockers));
+    assert(cant.outputs.srt && cant.srt.includes("第一句"), "★烧不了就连字幕文件都不给了★ 这是把能给的也扣下了：" + JSON.stringify(cant.outputs));
+    assert(can.ready && cant.ready, "烧不了字幕不该拦着出片");
+  }
+
+  // ⑥ 探不到时长 → 宁可不给字幕，也不给一条对不上的时间轴
+  {
+    const p = planOf([{ id: "S1-01", prompt: "p", line: "有台词", video: "a.mp4" }], { disk: { "a.mp4": null }, ffprobe: "" });
+    assert(!p.srt && !p.outputs.srt,
+      "★探不到时长还硬生成字幕★ 时间轴必然是错的，错字幕比没字幕更坑人：" + JSON.stringify(p.srt));
+    assert(p.ready, "探不到时长不该拦着出片（直拼试试，拼不上会自动改重编码）");
+    // 台词全是模板占位文字：也不给字幕，不写一个空文件充数
+    const ph = planOf([{ id: "S1-01", prompt: "p", line: "对白或旁白…", video: "a.mp4" }], { disk: { "a.mp4": V(2, 540, 960) } });
+    assert(!ph.outputs.srt, "★模板占位文字被当成台词做进字幕了★：" + JSON.stringify(ph.srt));
+  }
+
+  // ⑦ 不许盖掉已有的成片。用户手改过的那一版，盖了就找不回来了
+  {
+    const p = planOf([{ id: "S1-01", prompt: "p", video: "a.mp4" }],
+      { disk: { "a.mp4": V(2, 540, 960) }, plain: ["成片.mp4", "成片_2.mp4"] });
+    assert(p.outputs.film === "成片_3.mp4",
+      "★新片子直接盖掉旧成片★ 用户手改过的那版就没了：" + p.outputs.film);
+  }
+
+  // ⑧ 每一条命令都得是能直接跑的 argv 数组，不是拼出来的字符串。
+  //   拼字符串 = 文件名里有空格或中文引号就炸，而短剧的素材名全是中文
+  {
+    const p = planOf([{ id: "S1-01", prompt: "p", video: "a.mp4" }], { disk: { "a.mp4": V(2, 540, 960) } });
+    for (const s of p.steps) {
+      assert(Array.isArray(s.argv) && s.argv.every((x) => typeof x === "string" && x.length),
+        "命令不是 argv 数组（或有空参数）：" + s.key + " " + JSON.stringify(s.argv));
+      assert(!s.argv.some((x) => /^ffmpeg$/i.test(x)), "argv 里不该自带 ffmpeg 本身：" + JSON.stringify(s.argv));
+    }
+    const concat = p.steps.find((s) => s.key === "concat");
+    assert(concat && concat.fallback && concat.fallbackWhy, "★直拼失败没有退路★ 那一下失败整条就白跑了：" + JSON.stringify(concat));
+    assert(p.listText.split("\n").filter(Boolean).every((l) => /^file '/.test(l)), "concat 清单格式不对：" + p.listText);
+  }
+
+  // ⑨ 配乐。三种错法都是「片子照样能播、每条断言都绿、只有耳朵知道不对」：
+  //   把配音当成配乐垫到全片底下 / 人声被 amix 平白除以 2 / 音乐比片子短了就断在半路
+  {
+    const musicPlan = (nodes, ex = {}) => {
+      const files = new Map(), onDisk = new Set(), probes = {};
+      for (const [base, pr] of Object.entries(ex.disk || {})) { files.set(base, "素材/" + base); onDisk.add(base); if (pr) probes[base] = pr; }
+      return C.composePlan({ nodes, edges: [] }, {
+        files, onDisk, probes, ffmpeg: "/usr/bin/ffmpeg", ffprobe: "/usr/bin/ffprobe", burn: true,
+        duck: ex.duck !== false, limiter: ex.limiter !== false,
+        ...(ex.music === undefined ? {} : { music: ex.music }),
+      });
+    };
+    const shot = (extra) => ({ id: "n1", kind: "shot", payload: { id: "S1-01", prompt: "p", video: "素材/a.mp4", ...extra }, position: { x: 0, y: 0 } });
+    const audioNode = (payload, y) => ({ id: "m" + y, kind: "audio", payload, position: { x: 0, y } });
+    const disk10 = { "a.mp4": V(10, 540, 960), "v.mp3": A(6), "bgm.mp3": A(60), "短曲.mp3": A(3) };
+
+    // a. 标成配乐的声音节点 → 排一步混音，而且**成片这个名字归配好乐的那一版**
+    const withMusic = musicPlan([shot({ line: "一句", audio: "素材/v.mp3" }), audioNode({ title: "主题曲", role: "配乐", url: "素材/bgm.mp3" }, 400)], { disk: disk10 });
+    assert(withMusic.musicOn && withMusic.music && withMusic.music.base === "bgm.mp3", "★画布上摆着配乐却不混★：" + JSON.stringify(withMusic.music));
+    const mus = withMusic.steps.find((x) => x.key === "music");
+    assert(mus && mus.out === withMusic.outputs.film, "★配乐混完不叫成片★ 写回画布、进度带、「打开看看」认的都是成片那一条，配乐等于白做："
+      + JSON.stringify({ out: mus && mus.out, film: withMusic.outputs.film }));
+    assert(withMusic.steps.find((x) => x.key === "concat").out === withMusic.outputs.merged && /^成片素材\//.test(withMusic.outputs.merged),
+      "★没配乐的那条拼接稿占了成片的名字★：" + JSON.stringify(withMusic.outputs));
+    assert(withMusic.steps.map((x) => x.key).join(">") === "clip:S1-01>concat>music>subtitle",
+      "★配乐和烧字幕的先后排错了★ 字幕得烧在**已经配好乐**的那条上，不然两条片子各缺一样：" + withMusic.steps.map((x) => x.key).join(">"));
+    assert(withMusic.steps.find((x) => x.key === "subtitle").argv.includes(withMusic.outputs.film), "烧字幕烧的不是配好乐的那条");
+
+    // b. 最容易踩的那脚：声音节点「素材用途」的默认值就是**「对白/音乐」**。
+    //    只认「音乐」两个字的话，每一段配音都会被当成配乐垫到全片底下——
+    //    症状是整条片子有人在念第三镜的台词，而所有断言都是绿的
+    const dflt = musicPlan([shot({}), audioNode({ title: "S1-01 配音", role: "对白/音乐", url: "素材/v.mp3" }, 400)], { disk: disk10 });
+    assert(!dflt.musicOn && !dflt.music, "★把「对白/音乐」（声音节点的默认用途）当成了配乐★ 整条片子底下会一直有人念台词：" + JSON.stringify(dflt.music));
+    // 反过来：已经被某一镜当配音用的文件，就算标成配乐也不许混
+    const reused = musicPlan([shot({ line: "一句", audio: "素材/v.mp3" }), audioNode({ title: "配乐", role: "配乐", url: "素材/v.mp3" }, 400)], { disk: disk10 });
+    assert(!reused.musicOn, "★把第一镜的配音又垫了一遍到全片底下★：" + JSON.stringify(reused.music));
+
+    // c. 手动关掉：不混，但**那段音乐还得报上来**，不然界面上那个勾就没了，用户没地方再打开
+    const off = musicPlan([shot({}), audioNode({ title: "主题曲", role: "配乐", url: "素材/bgm.mp3" }, 400)], { disk: disk10, music: false });
+    assert(!off.musicOn && off.music && off.music.base === "bgm.mp3", "★关掉配乐之后连「有这段音乐」都不说了★ 界面上的勾会消失：" + JSON.stringify({ on: off.musicOn, m: off.music }));
+    assert(off.steps.find((x) => x.key === "concat").out === off.outputs.film && !off.steps.some((x) => x.key === "music"),
+      "关掉配乐之后还留着中间文件 / 还排了混音：" + JSON.stringify(off.steps.map((x) => x.key)));
+
+    // d. 音乐 60 秒、片子 10 秒 → 不循环；音乐 3 秒 → 必须循环垫到片尾，并且说出来
+    assert(!mus.argv.includes("-stream_loop"), "音乐比片子长却还要循环：" + mus.argv.join(" "));
+    const shortMusic = musicPlan([shot({}), audioNode({ title: "短曲", role: "背景音乐", url: "素材/短曲.mp3" }, 400)], { disk: disk10 });
+    const sm = shortMusic.steps.find((x) => x.key === "music");
+    assert(sm.argv.join(" ").includes("-stream_loop -1 -i 素材/短曲.mp3"),
+      "★音乐比片子短却不循环★ 片子后半截会突然没声音：" + sm.argv.join(" "));
+    assert(shortMusic.blockers.some((b) => /循环/.test(b.text)), "循环了却不说：" + JSON.stringify(shortMusic.blockers));
+
+    // e. amix 默认 normalize=1，会把每一路都除以 2。不先把人声乘回来，
+    //    整条片子的台词平白小一半——听起来只是「有点闷」，没人会想到是混音写错了
+    const fc = mus.argv[mus.argv.indexOf("-filter_complex") + 1];
+    assert(/\[0:a\][^;]*asplit/.test(fc) && /volume=2/.test(fc),
+      "★配乐混完人声小了一半★ amix 默认 normalize=1，两路都除以 2，人声必须先乘回来：" + fc);
+    assert(/amix=inputs=2:duration=first/.test(fc), "★amix 没按画面时长收★ 音乐会把片子拖长：" + fc);
+    assert(/sidechaincompress/.test(fc), "本机有 sidechaincompress 却不做「说话时压低」（阳性对照）：" + fc);
+    const noDuck = musicPlan([shot({ line: "一句", audio: "素材/v.mp3" }), audioNode({ title: "主题曲", role: "配乐", url: "素材/bgm.mp3" }, 400)], { disk: disk10, duck: false });
+    const nd = noDuck.steps.find((x) => x.key === "music");
+    assert(!/sidechaincompress/.test(nd.argv.join(" ")),
+      "★本机没有 sidechaincompress 还往命令里写★ 那就是等整条片子拼完了，在最后一步报一句英文错：" + nd.argv.join(" "));
+    assert(noDuck.blockers.some((b) => b.level === "warn" && /sidechaincompress|压低/.test(b.text)), "压不低也不说：" + JSON.stringify(noDuck.blockers));
+    assert(noDuck.musicOn, "没有 sidechaincompress 不该连配乐都不做了");
+
+    // f. 混音这一步必须有退路：一个滤镜不认识 ≠ 三十个镜头白拼
+    assert(mus.fallback && mus.fallback.includes(withMusic.outputs.merged) && mus.fallback.includes(withMusic.outputs.film) && mus.fallbackWhy,
+      "★配乐混不上就连片子都不给了★：" + JSON.stringify({ f: mus.fallback, why: mus.fallbackWhy }));
+    assert(mus.fallback.join(" ").includes("-c copy"), "退路把画面重压了一遍，白掉一次画质：" + mus.fallback.join(" "));
+
+    // g. 淡出不能排到片子外面去，也不能长到把整首都淡掉
+    const fadeAt = /afade=t=out:st=([\d.]+):d=([\d.]+)/.exec(fc);
+    assert(fadeAt && Number(fadeAt[1]) + Number(fadeAt[2]) <= withMusic.totalSeconds + 0.01 && Number(fadeAt[1]) > 0,
+      "★配乐的淡出排到片子外面去了★ 那就是结尾硬切：" + JSON.stringify({ fade: fadeAt && fadeAt[0], total: withMusic.totalSeconds }));
+    const tiny = musicPlan([{ id: "n1", kind: "shot", payload: { id: "S1-01", prompt: "p", video: "素材/b.mp4" }, position: { x: 0, y: 0 } },
+      audioNode({ title: "主题曲", role: "配乐", url: "素材/bgm.mp3" }, 400)], { disk: { "b.mp4": V(2, 540, 960), "bgm.mp3": A(60) } });
+    const tf = /afade=t=in:st=0:d=([\d.]+)/.exec(tiny.steps.find((x) => x.key === "music").argv.join(" "));
+    assert(tf && Number(tf[1]) <= 1, "★2 秒的片子上来个 1.5 秒淡入★ 音乐从头到尾没到过正常音量，听着像忘了放：" + tf[0]);
+
+    // h. 文件不在盘上 / 标成配乐的是张图：说清楚为什么没配乐，但片子照出
+    const lost = musicPlan([shot({}), audioNode({ title: "主题曲", role: "配乐", url: "素材/没了.mp3" }, 400)], { disk: disk10 });
+    assert(lost.ready && !lost.musicOn && lost.blockers.some((b) => b.level === "warn" && /配乐/.test(b.text)),
+      "★配乐文件没了，要么闷头不配，要么连片子都不给★：" + JSON.stringify({ ready: lost.ready, b: lost.blockers }));
+    const notAudio = musicPlan([shot({}), audioNode({ title: "主题曲", role: "配乐", url: "素材/封面.png" }, 400)], { disk: { ...disk10, "封面.png": null } });
+    assert(notAudio.ready && !notAudio.musicOn && notAudio.blockers.some((b) => /不是音频/.test(b.text)), "标成配乐的是张图却照混：" + JSON.stringify(notAudio.blockers));
+
+    // i. 画布上一段音乐都没有 → 一切照旧，不许平白多出一个中间文件
+    const none = musicPlan([shot({})], { disk: disk10 });
+    assert(!none.music && !none.musicOn && none.steps.find((x) => x.key === "concat").out === none.outputs.film,
+      "没有配乐的时候也走了中间文件那条路：" + JSON.stringify(none.outputs));
+  }
+
+
+  // ── 屏幕上真出现的字：把渲染那一段抠出来，拿真计划渲染一遍 ───────────────
+  // 「代码里有这个函数」证明不了用户看得见什么。这里断言的是画面上的字，
+  // 尤其是**顺序**——那是唯一一个在开跑前还来得及纠正、跑完就得重花一遍钱的东西
+  {
+    const fe = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+    const from = fe.indexOf("function canvasEtaText("), to = fe.indexOf("async function canvasLoadProgress(");
+    assert(from > 0 && to > from, "抠不出渲染代码，这段作废（函数改名或挪走了？）");
+    const sandbox = {
+      esc: (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])),
+      ic: (n) => `<i>${n}</i>`,
+      canvasState: { composePlan: null, composeJob: null, composeSub: true, composeBgm: true, progress: null, progressOpen: true, batch: null, graph: null },
+      canvasToast() {}, canvasRenderInspector() {}, canvasCenterSelected() {}, canvasRefreshNode() {}, canvasRunPending() {},
+      document: { getElementById: () => null, querySelector: () => null },
+    };
+    const keys = Object.keys(sandbox);
+    const ui = new Function(...keys, fe.slice(from, to) + "\nreturn { canvasComposeHtml };")(...keys.map((k) => sandbox[k]));
+    const shotsOf = (p) => (p.shots || []).map((r) => ({ ...r, video: { ok: true } }));
+
+    const good = planOf([
+      { id: "S1-02", prompt: "p", line: "第二句", video: "b.mp4", audio: "v.mp3" },
+      { id: "S1-01", prompt: "p", video: "a.mp4" },
+    ], { disk: { "a.mp4": V(2, 540, 960), "b.mp4": V(2, 540, 960), "v.mp3": A(1.5) } });
+    sandbox.canvasState.composePlan = { ...good, shots: shotsOf(good) };
+    let html = ui.canvasComposeHtml({ shots: shotsOf(good) });
+    const ord = [...html.matchAll(/<b>(S1-\d+)<\/b>/g)].map((m) => m[1]).join(">");
+    assert(ord === "S1-01>S1-02",
+      "★屏幕上没把顺序摆出来，或者摆错了★ 顺序是唯一一个开跑前还来得及改、跑完就得重花一遍钱的东西：" + ord);
+    assert(/data-cp-compose-go(?![^>]*disabled)/.test(html), "能拼却把「开始合成」禁掉了");
+    assert(html.includes("同名的旧成片不会被盖掉"), "没告诉用户旧成片会不会被盖");
+
+    // 配乐：勾得出来、说得清垫的是哪一首、怎么垫
+    assert(!/data-cp-compose-bgm/.test(html) && /声音/.test(html) && /配乐/.test(html),
+      "★画布上没有配乐，屏幕上就一个字不提★ 用户不会知道「放个声音节点、用途写配乐」就能有：" + html.slice(0, 600));
+    sandbox.canvasState.composePlan = { ...good, shots: shotsOf(good), music: { base: "配乐_主题.mp3", title: "主题曲", duck: true }, musicOn: true };
+    html = ui.canvasComposeHtml({ shots: shotsOf(good) });
+    assert(/data-cp-compose-bgm[^>]*checked/.test(html) && html.includes("主题曲"),
+      "★认出了配乐却不写是哪一首、也不给取消的勾★ 画布上摆着好几段音乐时，混错了只能整条重跑：" + html.slice(0, 600));
+    assert(html.includes("说话的时候自动压低"),
+      "★没说配乐是怎么垫的★ 「一说话就自动压低」和「固定音量垫着」是两种成片，这台机器有没有这个滤镜用户得知道");
+    sandbox.canvasState.composePlan = { ...good, shots: shotsOf(good), music: { base: "配乐_主题.mp3", title: "主题曲", duck: false }, musicOn: true };
+    assert(ui.canvasComposeHtml({ shots: shotsOf(good) }).includes("固定音量垫在台词底下"),
+      "★这台机器没有 sidechaincompress，屏幕上却还说「说话的时候自动压低」★");
+    sandbox.canvasState.composeBgm = false;
+    assert(!/data-cp-compose-bgm[^>]*checked/.test(ui.canvasComposeHtml({ shots: shotsOf(good) })),
+      "★把勾去掉了，重画一次又自己勾回来★");
+    sandbox.canvasState.composeBgm = true;
+
+    // 拦下来的时候：说清楚为什么 + 「开始合成」必须点不动
+    const blocked = planOf([{ id: "S1-01", prompt: "p", video: "a.mp4" }], { disk: { "a.mp4": V(2, 540, 960) }, ffmpeg: "" });
+    sandbox.canvasState.composePlan = { ...blocked, shots: shotsOf(blocked) };
+    html = ui.canvasComposeHtml({ shots: shotsOf(blocked) });
+    assert(/data-cp-compose-go[^>]*disabled/.test(html), "★拼不了还能点「开始合成」★：" + html.slice(0, 300));
+    assert(/brew install ffmpeg/.test(html), "★只说「不能合成」，不说缺什么、怎么装★：" + html.slice(0, 400));
+
+    // 没 libass：屏幕上要说清「烧不进画面，但字幕文件照样给」，不能只留一句「做不了」
+    const noBurn = planOf([{ id: "S1-01", prompt: "p", line: "有台词", video: "a.mp4", audio: "v.mp3" }],
+      { disk: { "a.mp4": V(2, 540, 960), "v.mp3": A(2) }, burn: false });
+    sandbox.canvasState.composePlan = { ...noBurn, shots: shotsOf(noBurn) };
+    html = ui.canvasComposeHtml({ shots: shotsOf(noBurn) });
+    assert(/libass/.test(html) && /字幕文件照样给/.test(html),
+      "★烧不了字幕，屏幕上却没说字幕文件还在★ 用户会以为字幕根本没生成：" + html.slice(0, 500));
+    assert(html.includes(noBurn.outputs.srt), "会写出哪些文件里没列上字幕文件：" + html.slice(0, 600));
+
+    // 跑着 / 跑完 / 跑挂：三种状态各自给的是「下一步能干什么」
+    sandbox.canvasState.composePlan = null;
+    sandbox.canvasState.composeJob = { done: false, at: 2, total: 3, steps: [{ label: "第 1 镜" }, { label: "第 2 镜：画面接配音" }], log: [] };
+    html = ui.canvasComposeHtml({ shots: [] });
+    assert(html.includes("第 2/3 步") && html.includes("第 2 镜：画面接配音") && html.includes("data-cp-compose-stop"),
+      "★跑着的时候不说跑到哪、也停不下来★ 一条片子要拼好几分钟：" + html.slice(0, 300));
+    sandbox.canvasState.composeJob = { done: true, output: "成片.mp4", subtitled: "成片_带字幕.mp4", steps: [], log: [] };
+    html = ui.canvasComposeHtml({ shots: [] });
+    assert(html.includes("成片好了") && html.includes("data-cp-compose-open") && html.includes("成片.mp4"),
+      "★片子拼好了却不给「打开看看」★：" + html.slice(0, 300));
+    // 烧不进画面的那台机器上：字幕文件就躺在旁边，不说的话用户会以为字幕根本没做出来
+    sandbox.canvasState.composeJob = { done: true, output: "成片.mp4", subtitled: "", subtitleFile: "字幕.srt", steps: [], log: [] };
+    html = ui.canvasComposeHtml({ shots: [] });
+    assert(html.includes("字幕.srt") && /拖进剪辑软件/.test(html),
+      "★字幕没烧进画面，也没告诉用户字幕文件在哪★：" + html.slice(0, 400));
+    sandbox.canvasState.composeJob = { done: true, error: "ffmpeg 退出码 1", steps: [{ label: "把 3 段接成一条", state: "fail", note: "这里是 ffmpeg 自己那句话" }], log: [] };
+    html = ui.canvasComposeHtml({ shots: [] });
+    assert(html.includes("没拼成") && html.includes("这里是 ffmpeg 自己那句话"),
+      "★挂了只说「失败」，不给 ffmpeg 自己那句话★ 那句话比我们转述的准：" + html.slice(0, 300));
+
+    // 有镜头还没视频：根本不该出现「合成成片」这个按钮——点了也只会拼出一条缺戏的片子
+    sandbox.canvasState.composeJob = null;
+    assert(ui.canvasComposeHtml({ shots: [{ id: "S1-01", video: { ok: true } }, { id: "S1-02", video: null }] }) === "",
+      "★还有镜头没生成，却给了「合成成片」按钮★");
+    assert(ui.canvasComposeHtml({ shots: [{ id: "S1-01", video: { ok: true } }] }).includes("data-cp-compose"), "全做完了却不给合成按钮（阳性对照）");
+  }
+
+  // ── 真机这一段：有 ffmpeg 才跑。造两条规格不同的真视频，走一遍完整合成 ────
+  const hasFf = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0
+    && spawnSync("ffprobe", ["-version"], { stdio: "ignore" }).status === 0;
+  if (!hasFf) {
+    console.log("✅ 短剧一键合成（真机那段跳过：本机没有 ffmpeg）：顺序按镜头 ID · 配音长了补画面不切台词 · 画幅不齐转重编码 · 没 ffmpeg/没 libass 开跑前就说 · 探不到时长宁可不给字幕 · 不盖旧成片 · 命令是 argv 不是拼串 · 开跑前把顺序摆到屏幕上、拼不了时按钮点不动");
+    return;
+  }
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-compose-"));
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+  const ws = path.join(home, "workspace"), mat = path.join(ws, "素材");
+  fs.mkdirSync(path.join(ws, ".openworkbuddy"), { recursive: true });
+  fs.mkdirSync(mat, { recursive: true });
+  const mkV = (name, sec, size, color) => execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i", `color=c=${color}:s=${size}:d=${sec}:r=25`,
+    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", path.join(mat, name)], { stdio: "ignore" });
+  const mkA = (name, sec) => execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i", `sine=f=440:d=${sec}`, path.join(mat, name)], { stdio: "ignore" });
+  mkV("镜头_S1-01.mp4", 1, "360x640", "red");
+  mkV("镜头_S1-02.mp4", 1, "480x854", "green");      // 画幅故意不一样
+  mkA("配音_S1-02.mp3", 2.5);                         // 配音比画面长 —— 台词不许被切
+  const nd = (id, kind, payload, x) => ({ id, kind, payload, position: { x, y: 0 } });
+  fs.writeFileSync(path.join(ws, ".openworkbuddy", "canvas.json"), JSON.stringify({
+    version: 1, edges: [], nodes: [
+      // 数组顺序故意反着放
+      nd("n2", "shot", { id: "S1-02", prompt: "p", line: "第二句得读完", video: "素材/镜头_S1-02.mp4", audio: "素材/配音_S1-02.mp3" }, 500),
+      nd("n1", "shot", { id: "S1-01", prompt: "p", line: "", video: "素材/镜头_S1-01.mp4" }, 100),
+    ],
+  }));
+
+  const boot = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const { up, port, why } = await boot.wait();
+  const call = (method, p, body) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const r = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+      Cookie: "openworkbuddy_token=" + token, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}),
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { try { resolve({ code: res.statusCode, body: JSON.parse(b) }); } catch { resolve({ code: res.statusCode, body: b }); } });
+    });
+    r.on("error", (e) => resolve({ code: 0, body: e.message }));
+    if (data) r.write(data); r.end();
+  });
+  const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+    const dry = await call("POST", "/api/canvas/compose", { subtitles: true });
+    const plan = (dry.body || {}).plan || {};
+    assert(dry.code === 200 && plan.ready, "算不出合成方案：" + JSON.stringify(dry.body).slice(0, 300));
+    assert(plan.shots.map((r) => r.id).join(">") === "S1-01>S1-02", "真画布上的顺序也得按镜头 ID：" + plan.shots.map((r) => r.id).join(">"));
+    assert(plan.mode === "reencode" && plan.shots[1].pad > 1.4, "真素材上没认出画幅不齐 / 配音更长：" + JSON.stringify({ m: plan.mode, s: plan.shots[1] }));
+
+    const run = await call("POST", "/api/canvas/compose", { subtitles: true, run: true });
+    assert(run.code === 200 && run.body.job && run.body.job.id, "合成起不来：" + JSON.stringify(run.body).slice(0, 300));
+    let job = run.body.job;
+    for (let i = 0; i < 180 && job && !job.done; i++) { await nap(500); job = (await call("GET", "/api/canvas/compose?job=" + job.id)).body.job; }
+    assert(job && job.done && !job.error, "合成没跑完或报错了：" + ((job && job.error) || "超时")
+      + " | " + ((job && job.steps) || []).map((s) => `${s.label}=${s.state}${s.note ? "(" + s.note.slice(0, 80) + ")" : ""}`).join(" | "));
+
+    // 关键一条：不是「命令退出码 0」就算成了，得盘上真有一个有字节的文件
+    assert(job.output && fs.existsSync(path.join(ws, job.output)) && fs.statSync(path.join(ws, job.output)).size > 1000,
+      "★ffmpeg 说成了就当成了★ 磁盘满/被杀在半路都会留下一个 0 字节的壳：" + JSON.stringify({ o: job.output }));
+    const probe = JSON.parse(execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,width,height:format=duration", "-of", "json", path.join(ws, job.output)]).toString());
+    assert(Math.abs(Number(probe.format.duration) - 3.5) < 0.6,
+      "★成片时长对不上（1 + 2.5 ≈ 3.5s）★ 多半是把长配音那一镜按画面时长切了，台词被吃掉半句：" + probe.format.duration);
+    assert(probe.streams.some((s) => s.codec_type === "video") && probe.streams.some((s) => s.codec_type === "audio"),
+      "★成片少一条流★ 有画面没声音 / 有声音没画面：" + JSON.stringify(probe.streams.map((s) => s.codec_type)));
+    assert(probe.streams.some((s) => s.codec_type === "video" && s.width === 480 && s.height === 854), "画幅没统一到最大那个：" + JSON.stringify(probe.streams[0]));
+    // 字幕文件跟能不能烧无关，一定要在
+    assert(fs.existsSync(path.join(ws, plan.outputs.srt || "字幕.srt")), "★字幕文件没落盘★ 烧不烧得进画面是另一回事");
+
+    // 写回画布 + 制片进度：必须因为「盘上真有这个文件」才翻绿
+    const board = await call("GET", "/api/canvas");    // 注意：这个接口把 state 摊在顶层
+    const tl = (board.body.nodes || []).filter((n) => n.kind === "timeline");
+    assert(tl.length === 1 && tl[0].payload.video === job.output,
+      "★片子拼出来了，画布上却没有★ 用户回到画布看见的还是一张没有成片的板子：" + JSON.stringify(tl.map((n) => n.payload)));
+    const cut = ((await call("GET", "/api/canvas/progress")).body.stages || []).find((s) => s.key === "cut") || {};
+    assert(cut.done === 1 && cut.total === 1, "制片进度的「成片」档没翻绿：" + JSON.stringify(cut));
+    fs.renameSync(path.join(ws, job.output), path.join(ws, "挪走了.mp4"));
+    const cut2 = ((await call("GET", "/api/canvas/progress")).body.stages || []).find((s) => s.key === "cut") || {};
+    assert(cut2.done === 0, "★成片文件都不在了，进度还是绿的★ 说明它读的是字段不是盘：" + JSON.stringify(cut2));
+    fs.renameSync(path.join(ws, "挪走了.mp4"), path.join(ws, job.output));
+
+    const again = await call("POST", "/api/canvas/compose", { subtitles: false });
+    assert(again.body.plan.outputs.film !== job.output,
+      "★再合成一次会盖掉刚才那条成片★：" + again.body.plan.outputs.film);
+
+    // ── 配乐这一段：垫没垫上，只有量音量能证明 ──────────────────────────────
+    // 「有没有生成 music 这一步」「argv 里有没有 amix」都不算数：滤镜链写对了、
+    // 音量却被 amix 默认的 normalize 除成了背景噪音，这两种断言全是绿的。
+    // 唯一能分清的是拿 ffmpeg 自己量一遍成片：
+    //   S1-01 那一镜没有配音 —— 第 1 秒本该是数字静音，垫上配乐之后必须响。
+    const meanDb = (file, ss, t) => {
+      const r = spawnSync("ffmpeg", ["-v", "info", "-ss", String(ss), "-t", String(t), "-i", file, "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8" });
+      const m = /mean_volume:\s*(-?[\d.]+) dB/.exec(String(r.stderr || "") + String(r.stdout || ""));
+      return m ? Number(m[1]) : NaN;
+    };
+    const dry1 = path.join(ws, job.output);                       // 刚才那条没配乐的成片，就是阴性对照
+    const silent = meanDb(dry1, 0, 1), voiceDry = meanDb(dry1, 1.5, 0.8);
+    assert(silent < -40, "★没配乐的成片第 1 秒并不安静★ 那这条对照就证明不了配乐是不是真垫上了：" + silent);
+    assert(voiceDry > -40, "★第二镜的台词量不到声音★ 后面「配乐没盖过台词」那条就无从比起：" + voiceDry);
+
+    mkA("配乐_主题.mp3", 6);                                       // 比片子长 —— 不该循环、也不该把片子拉长
+    const shotNodes = [
+      nd("n2", "shot", { id: "S1-02", prompt: "p", line: "第二句得读完", video: "素材/镜头_S1-02.mp4", audio: "素材/配音_S1-02.mp3" }, 500),
+      nd("n1", "shot", { id: "S1-01", prompt: "p", line: "", video: "素材/镜头_S1-01.mp4" }, 100),
+    ];
+    fs.writeFileSync(path.join(ws, ".openworkbuddy", "canvas.json"), JSON.stringify({
+      version: 1, edges: [], nodes: [...shotNodes,
+        // 素材用途写「配乐」才算配乐；节点默认那个「对白/音乐」在单测里钉过了，这儿测的是真能认出来
+        nd("n3", "audio", { title: "主题曲", role: "配乐", url: "素材/配乐_主题.mp3" }, 900),
+      ],
+    }));
+    const mDry = await call("POST", "/api/canvas/compose", { subtitles: false });
+    assert(mDry.body.plan.music && mDry.body.plan.musicOn,
+      "★画布上明明有一个「配乐」声音节点，方案里却没认出来★：" + JSON.stringify(mDry.body.plan.music));
+    const offDry = await call("POST", "/api/canvas/compose", { subtitles: false, music: false });
+    assert(offDry.body.plan.music && !offDry.body.plan.musicOn
+      && !(offDry.body.plan.steps || []).some((s) => /配乐/.test(s.label || "")),
+      "★把「垫上配乐」的勾去掉了，后端照垫★ 勾是给用户否决用的：" + JSON.stringify((offDry.body.plan.steps || []).map((s) => s.label)));
+
+    const mRun = await call("POST", "/api/canvas/compose", { subtitles: false, run: true });
+    let mJob = mRun.body.job;
+    for (let i = 0; i < 180 && mJob && !mJob.done; i++) { await nap(500); mJob = (await call("GET", "/api/canvas/compose?job=" + mJob.id)).body.job; }
+    assert(mJob && mJob.done && !mJob.error, "带配乐的合成没跑完或报错了：" + ((mJob && mJob.error) || "超时")
+      + " | " + ((mJob && mJob.steps) || []).map((s) => `${s.label}=${s.state}${s.note ? "(" + s.note.slice(0, 80) + ")" : ""}`).join(" | "));
+    const mStep = (mJob.steps || []).find((s) => /配乐/.test(s.label || ""));
+    assert(mStep && mStep.state === "done" && !mStep.note,
+      "★配乐那一步退回了「先把没配乐的成片交出来」★ 那后面量出来的就只是台词：" + JSON.stringify(mStep));
+    const film = path.join(ws, mJob.output);
+    assert(mJob.output && fs.existsSync(film) && fs.statSync(film).size > 1000, "带配乐的成片没落盘：" + mJob.output);
+
+    const mProbe = JSON.parse(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "json", film]).toString());
+    assert(Math.abs(Number(mProbe.format.duration) - 3.5) < 0.6,
+      "★配乐把片子拉长了★ 6 秒的音乐垫在 3.5 秒的片子下面，片尾多出来两秒半黑屏：" + mProbe.format.duration);
+    // 量三个窗口（阈值都是相对的，换台机器换个 ffmpeg 版本也不会飘）：
+    //   ① 0.88–1.0s：淡入已经走完、第二镜的台词还没进来 —— 这一段听到的纯粹是配乐
+    //   ② 0–0.12s：淡入刚起头，必须明显比 ① 轻，否则就是淡入参数没生效
+    //   ③ 1.5–2.3s：台词段，跟没配乐那条逐 dB 对比
+    const src = meanDb(path.join(mat, "配乐_主题.mp3"), 0, 3);
+    const bed = meanDb(film, 0.88, 0.11), head = meanDb(film, 0, 0.12), voiceMix = meanDb(film, 1.5, 0.8);
+    assert(bed > src - 21,
+      "★配乐那一步跑绿了，成片里却几乎听不见★ 滤镜链接错了路、或者音量被一层层除没了，看命令是看不出来的："
+      + JSON.stringify({ 音乐文件: src, 成片里的配乐: bed }));
+    assert(bed < voiceMix - 8,
+      "★配乐盖过台词了★ 它是垫在底下的床，不是主角（漏掉 volume=" + (C._internals.MUSIC_GAIN * 2) + " 就是这个后果）："
+      + JSON.stringify({ 配乐: bed, 台词: voiceMix }));
+    assert(head < bed - 8,
+      "★配乐从第一帧就整音量砸进来★ 淡入没生效，片头会被音乐怼一下：" + JSON.stringify({ 开头: head, 淡入之后: bed }));
+    assert(voiceMix > voiceDry - 2.5,
+      "★台词被配乐这一步压小了★ amix 默认 normalize=1 会把每一路都除以 2，听感只是「有点闷」，最容易蒙混过去："
+      + JSON.stringify({ 没配乐: voiceDry, 垫了配乐: voiceMix }));
+    assert(!fs.existsSync(path.join(ws, "成片素材", "拼接.mp4")) || fs.statSync(path.join(ws, "成片素材", "拼接.mp4")).size > 0,
+      "中间那条没配乐的拼接片留了个 0 字节的壳");
+
+
+    // ── 跑挂的时候：说的是 ffmpeg 自己那句话，而且不许在盘上留半截文件 ────────
+    // 半截的「成片.mp4」跟真成片在文件列表里长得一模一样，留着迟早被当成成片发出去
+    fs.writeFileSync(path.join(mat, "配音_坏的.mp3"), "这不是音频，只是个后缀像音频的文本文件");
+    fs.writeFileSync(path.join(ws, ".openworkbuddy", "canvas.json"), JSON.stringify({
+      version: 1, edges: [], nodes: [nd("n1", "shot", { id: "S1-01", prompt: "p", video: "素材/镜头_S1-01.mp4", audio: "素材/配音_坏的.mp3" }, 100)],
+    }));
+    const badDry = await call("POST", "/api/canvas/compose", { subtitles: false });
+    const badPlan = badDry.body.plan;
+    assert(badPlan.ready, "这一步要的是「跑起来才挂」，计划这层就拦下来的话就测不到了");
+    const badRun = await call("POST", "/api/canvas/compose", { subtitles: false, run: true });
+    let bad = badRun.body.job;
+    for (let i = 0; i < 120 && bad && !bad.done; i++) { await nap(500); bad = (await call("GET", "/api/canvas/compose?job=" + bad.id)).body.job; }
+    assert(bad && bad.done && bad.error, "★喂了个坏文件进去却报成功★：" + JSON.stringify(bad && bad.steps));
+    assert(/ffmpeg|退出码/.test(bad.error) && bad.steps.some((x) => x.state === "fail" && x.note),
+      "★只说「失败了」，不给 ffmpeg 自己那几行★ 那几行比我们转述的准：" + bad.error);
+    assert(!bad.output, "挂了还给了成片路径：" + bad.output);
+    for (const leftover of [badPlan.outputs.film, ...(badPlan.outputs.clips || [])]) {
+      assert(!fs.existsSync(path.join(ws, leftover)),
+        "★挂了却在盘上留了个半截文件★ 它在文件列表里跟真成片长得一模一样：" + leftover);
+    }
+    const cut3 = ((await call("GET", "/api/canvas/progress")).body.stages || []).find((s) => s.key === "cut") || {};
+    assert(cut3.done === 0, "这次没拼成，「成片」档不该是绿的：" + JSON.stringify(cut3));
+  } finally { boot.child.kill(); }
+
+  console.log("✅ 短剧一键合成：顺序按镜头 ID（不按数组/坐标）且开跑前摆到屏幕上 · 配音长了补画面绝不切台词 · 画幅不齐自动转重编码 · 没 ffmpeg/没 libass 开跑前就说清楚（还给装法，按钮点不动）· 探不到时长宁可不给字幕 · 配乐认得出来、量得到声、不压台词也不拉长片子 · 退出码 0 还得盘上真有字节 · 写回画布 + 进度按盘上文件翻绿 · 不盖旧成片");
+}
+
+/**
+ * 短剧定妆照 / 场景图：这条产线上唯一一档「进度条给你打分、产品却不给你做」的活儿。
+ *
+ * 定妆照是整部戏一致性的地基：镜头生首帧时会把上游角色节点的图当参考图带上，
+ * 没有它，每一镜的脸都不是同一个人。而在这之前它有三个洞，每个都能单独毁一部戏：
+ *   ① 属性面板「参考图」挑好的定妆照落在 payload.reference，进度条的 image 口径里没这个字段 ——
+ *      图就在节点上、文件就在盘上、画布上都画出来了，定妆那一档永远是 0/N，
+ *      「下一步」还一直催你「继续做定妆：还差 2 个」。照着催的做，就是花钱重跑已经有的图。
+ *   ② 服务端的 ASSET_REF_KEYS 同样没有 reference，于是定妆照在素材台账里算「没人用」——
+ *      而「没人用」那一栏是加粗显示的，旁边写着「多半是重跑留下的旧版本，占地方」。
+ *      等于指着这部戏最要命的几张图叫人删。删了，后面每一镜的脸就开始换人。
+ *   ③ 角色节点上压根没有生成按钮：定妆照只能自己去文件夹里挑，或者指望 Agent 临场发挥。
+ *      连「定妆照文件丢了」那条卡点自己写的 action 都是「重生成定妆照」——一个不存在的动作。
+ *
+ * 这条套件把三个洞各钉一根：算得对、认得出、点得动。外加一根反向的：
+ * 镜头节点上的 reference 是**喂进去的**参考图，绝不许被当成产出的首帧算完成。
+ */
+async function testDramaCast() {
+  const pipeline = require(path.join(__dirname, "..", "drama-pipeline.js"));
+  const node = (id, kind, payload) => ({ id, kind, payload, position: { x: 0, y: 0 } });
+
+  // ── ① 算得对：「参考图」里挑的定妆照就是定妆照 ─────────────────────────
+  {
+    const state = { nodes: [
+      node("c1", "character", { name: "阿岚", role: "主角", description: "红衣女孩", reference: "素材/角色_阿岚_定妆.png" }),
+      node("c2", "character", { name: "老陈", role: "配角", description: "茶馆老板", reference: "素材/角色_老陈_定妆.png" }),
+    ], edges: [] };
+    const d = pipeline.dramaProgress(state, { onDisk: new Set(["角色_阿岚_定妆.png", "角色_老陈_定妆.png"]) });
+    const cast = d.stages.find((s) => s.key === "cast");
+    assert(cast.done === 2 && cast.total === 2,
+      "★定妆照就在节点上、文件也在盘上，进度条却说一个都没做★ 这一档会永远停在 0：" + JSON.stringify(cast));
+    assert(d.pending.cast === 0, "都做完了还说有活儿：" + JSON.stringify(d.pending));
+    assert(!/定妆/.test(d.next.text),
+      "★催你去做已经做完的定妆★ 照着这句做就是花钱把已有的图重跑一遍：" + JSON.stringify(d.next));
+    assert(d.cast.length === 2 && d.cast[0].nodeId === "c1" && d.cast[0].name === "阿岚" && d.cast[0].image.ok === true,
+      "定妆那一档得给得出是哪几个角色、图在哪，界面上才跳得过去：" + JSON.stringify(d.cast));
+  }
+
+  // ── ② 写着路径不等于文件在盘上 ────────────────────────────────────────
+  {
+    const state = { nodes: [
+      node("c1", "character", { name: "阿岚", description: "红衣女孩", reference: "素材/角色_阿岚_定妆.png" }),
+      node("c2", "character", { name: "老陈", description: "茶馆老板", reference: "素材/角色_老陈_定妆.png" }),
+      node("c3", "character", { name: "路人", description: "没有图" }),
+    ], edges: [] };
+    const d = pipeline.dramaProgress(state, { onDisk: new Set(["角色_阿岚_定妆.png"]) });
+    assert(d.stages.find((s) => s.key === "cast").done === 1, "文件没了还算这个角色定妆做完了");
+    assert(d.pending.cast === 2, "丢了的和没做的都得算成还有活儿：" + JSON.stringify(d.pending));
+    const stop = (d.blockers || []).find((b) => /定妆照/.test(b.text));
+    assert(stop && stop.level === "stop" && stop.ids.includes("c2") && !stop.ids.includes("c1"),
+      "★定妆照丢了不报、或者报了指不出是谁★：" + JSON.stringify(d.blockers));
+    assert(stop.action === "重生成定妆照", "卡点说的动作要跟界面上真有的按钮对得上：" + JSON.stringify(stop));
+  }
+
+  // ── ③ 反向对照：镜头上的 reference 是喂进去的，不是产出的 ──────────────
+  {
+    const d = pipeline.dramaProgress({ nodes: [
+      node("s1", "shot", { id: "S1-01", prompt: "有提示词", reference: "素材/参考_构图.png" }),
+    ] }, { onDisk: new Set(["参考_构图.png"]) });
+    assert(d.stages.find((s) => s.key === "frame").done === 0,
+      "★把喂进去的参考图当成产出的首帧算完成了★ 这一镜其实一张首帧都没生，屏幕上却是绿的："
+      + JSON.stringify(d.stages.find((s) => s.key === "frame")));
+    assert(d.pending.image === 1, "这一镜的首帧还得生：" + JSON.stringify(d.pending));
+    assert(d.pending.cast === 0, "镜头节点不该被算成角色：" + JSON.stringify(d.pending));
+  }
+
+  // ── ④ 文件名：客户端起的名字，服务端的「用途」得认得出来 ────────────────
+  {
+    const fe = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+    const m = /function canvasOutputFilename\([\s\S]*?\n}/.exec(fe);
+    assert(m, "抠不出 canvasOutputFilename（改名了？）");
+    const nameOf = new Function(m[0] + "\nreturn canvasOutputFilename;")();
+    const cast = nameOf({ name: "阿岚" }, "image", "character");
+    const place = nameOf({ name: "茶馆" }, "image", "location");
+    assert(cast === "角色_阿岚_定妆.png", "定妆照文件名不对：" + cast);
+    assert(place === "场景_茶馆.png", "场景图文件名不对：" + place);
+    assert(nameOf({ id: "S1-01" }, "image", "shot") === "镜头_S1-01_首帧.png", "镜头首帧的名字被改坏了");
+    assert(nameOf({ id: "S1-01" }, "video", "shot") === "镜头_S1-01.mp4", "镜头视频的名字被改坏了");
+
+    // 跨模块对口径：服务端按文件名判「用途」，两边对不上，生成完就掉进「其他」里找不着
+    const srv = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+    const r = /function assetRoleOf\([\s\S]*?\n}/.exec(srv);
+    assert(r, "抠不出 assetRoleOf（改名了？）");
+    const roleOf = new Function(r[0] + "\nreturn assetRoleOf;")();
+    assert(roleOf(cast) === "定妆照", "★客户端生成的定妆照，服务端认不出用途★ 台账里会掉进「其他」：" + roleOf(cast));
+    assert(roleOf(place) === "场景图", "★场景图认不出用途★：" + roleOf(place));
+    assert(roleOf("定妆_阿岚.png") === "定妆照", "手起的「定妆_」名字也得认：" + roleOf("定妆_阿岚.png"));
+
+    // 两边的字段口径也得一样：少一个 reference，定妆照就成了「没人用」
+    const keys = /const ASSET_REF_KEYS = \[([^\]]*)\]/.exec(srv);
+    assert(keys && /["']reference["']/.test(keys[1]),
+      "★服务端不认 reference★ 定妆照会被算成「没人用」，而那一栏是加粗提示可以删的：" + (keys && keys[1]));
+    const cKeys = /const CANVAS_REF_KEYS = \[([^\]]*)\]/.exec(fe);
+    assert(cKeys && /["']reference["']/.test(cKeys[1]), "客户端的字段口径也得有 reference：" + (cKeys && cKeys[1]));
+
+    // 占位文字两边各存一份，注释里写着「是同一份口径」。分了家就是：
+    // 一边说「这句还是模板、不许开枪」，另一边说「写了，算你做完了」
+    const pick = (src, re) => (re.exec(src) || [])[1] || "";
+    const cp = pick(fe, /const CANVAS_PROMPT_PLACEHOLDERS = \[([\s\S]*?)\];/);
+    const sp = pick(fs.readFileSync(path.join(__dirname, "..", "drama-pipeline.js"), "utf8"), /const PLACEHOLDERS = \[([\s\S]*?)\];/);
+    const norm = (t) => (t.match(/"[^"]*"/g) || []).map((x) => x.slice(1, -1)).sort().join("|");
+    assert(norm(cp) && norm(cp) === norm(sp),
+      "★占位文字两边对不上了★ 一边拦、一边放，同一句话在两处判得不一样：\n前端 " + norm(cp) + "\n服务端 " + norm(sp));
+  }
+
+  // ── ⑤ 点得动：角色 / 场景节点屏幕上真有那个按钮 ────────────────────────
+  {
+    const fe = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+    const from = fe.indexOf("function canvasNodeHtml("), to = fe.indexOf("\nfunction canvasSelectedNode(");
+    assert(from > 0 && to > from, "抠不出节点渲染代码（函数改名了？）");
+    const sandbox = {
+      esc: (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])),
+      ic: (n) => `<i>${n}</i>`,
+      canvasState: { busy: new Set() },
+      CANVAS_NODE_DEFS: { character: { label: "角色", icon: "user", subtitle: "角色" }, location: { label: "场景", icon: "map", subtitle: "场景" } },
+      canvasEmbeddedImage: (p) => String(p.reference || p.image || ""),
+      canvasFileUrl: (v) => "/f/" + v,
+      canvasGenerationSummary: () => "",
+      canvasMediaPath: () => "", canvasMediaImage: () => "", canvasMediaVideo: () => "", canvasMediaAudio: () => "",
+      canvasKind: () => "", canvasPayload: () => ({}),
+    };
+    const keys = Object.keys(sandbox);
+    const ui = new Function(...keys, fe.slice(from, to) + "\nreturn canvasNodeHtml;")(...keys.map((k) => sandbox[k]));
+
+    const blank = ui("character", { name: "阿岚", role: "主角", description: "红衣女孩" }, "c1");
+    assert(/data-canvas-generate="image"/.test(blank) && /生成定妆照/.test(blank),
+      "★角色节点上没有生成定妆照的按钮★ 这一档只能自己去文件夹里挑图：" + blank.slice(0, 400));
+    assert(!/disabled/.test(blank), "没在跑却把按钮禁了：" + blank.slice(0, 400));
+
+    const has = ui("character", { name: "阿岚", description: "红衣女孩", reference: "素材/角色_阿岚_定妆.png" }, "c1");
+    assert(/重生成定妆照/.test(has), "已经有图了，按钮该写「重生成」：" + has.slice(0, 400));
+    assert(/data-canvas-side-preview="素材\/角色_阿岚_定妆\.png"/.test(has), "有图却给不出预览：" + has.slice(0, 400));
+
+    sandbox.canvasState.busy.add("c1:image");
+    const busy = ui("character", { name: "阿岚", description: "红衣女孩" }, "c1");
+    assert(/生成中…/.test(busy) && /disabled/.test(busy),
+      "★正在跑还能再点一次★ 同一张图会被发两遍，钱也烧两遍：" + busy.slice(0, 400));
+    sandbox.canvasState.busy.clear();
+
+    const place = ui("location", { name: "茶馆", description: "旧木桌" }, "l1");
+    assert(/生成场景图/.test(place) && /data-canvas-generate="image"/.test(place), "场景节点也得能生图：" + place.slice(0, 400));
+  }
+
+  // ── ⑥ 真按下去发出的那一枪：名字、提示词、写回哪个字段 ──────────────────
+  // 这一步是要花钱的。花出去的那一次请求里带的是什么、回来的路径写去了哪，
+  // 只有把 fetch 拦下来看一眼才知道；写回错字段 = 图生出来了、界面上还说你没做
+  {
+    const fe = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+    const gFrom = fe.indexOf("async function canvasGenerate("), gTo = fe.indexOf("\nfunction canvasBindNode(");
+    const nFrom = fe.indexOf("function canvasOutputFilename("), nTo = fe.indexOf("\nfunction canvasDefaultPayload(");
+    const pFrom = fe.indexOf("const CANVAS_PROMPT_PLACEHOLDERS ="), pTo = fe.indexOf("\nasync function canvasLoadAssets(");
+    assert(gFrom > 0 && gTo > gFrom && nFrom > 0 && nTo > nFrom && pFrom > 0 && pTo > pFrom, "抠不出生成那段代码（函数改名了？）");
+
+    let sent = null, toast = "", back = "素材/角色_阿岚_定妆.png";
+    const mk = (kind, payload) => { const p = { ...payload }; return { id: "c1", kind, p, set(_k, v) { Object.keys(this.p).forEach((k) => delete this.p[k]); Object.assign(this.p, v); } }; };
+    const sandbox = {
+      canvasState: { busy: new Set(), selected: null },
+      canvasKind: (n) => n.kind, canvasPayload: (n) => n.p,
+      canvasUpstreamImages: () => [], canvasUpstreamInputs: () => [], canvasGenerationContext: () => "",
+      canvasToast: (t) => { toast = String(t); },
+      canvasRefreshNode() {}, canvasRenderInspector() {}, canvasPersist() {}, canvasUpsertResult() {},
+      canvasRecordGeneration: (n, k, input, file) => ({ ...n.p, generation: { output: file } }),
+      canvasResolvedFileName: (v) => v, previewFile: null,
+      CANVAS_NODE_DEFS: { image: { label: "图片" }, video: { label: "视频" }, audio: { label: "声音" } },
+      fetch: async (url, opt) => { sent = { url, body: JSON.parse(opt.body) }; return { ok: true, json: async () => ({ ok: true, file: back }) }; },
+    };
+    const keys = Object.keys(sandbox);
+    const ui = new Function(...keys,
+      fe.slice(nFrom, nTo) + fe.slice(pFrom, pTo) + fe.slice(gFrom, gTo) + "\nreturn canvasGenerate;")(...keys.map((k) => sandbox[k]));
+
+    // 设定还是模板里那句 → 一枪都不许开
+    const lazy = mk("character", { name: "阿岚", description: "人物外形、性格、目标与关系…" });
+    await ui(lazy, "image");
+    assert(sent === null,
+      "★只有一个名字就去生图★ 生出来的脸每次都不一样，当参考图没用，钱白花：" + JSON.stringify(sent));
+    assert(/人物设定/.test(toast), "拦下来了却不说为什么：" + toast);
+
+    // 写了设定 → 名字、提示词、写回的字段三样都得对
+    const real = mk("character", { name: "阿岚", role: "主角", description: "十七岁，红衣，左眉有疤" });
+    await ui(real, "image");
+    assert(sent && sent.body.tool === "generate_image", "没走生图那条：" + JSON.stringify(sent));
+    assert(sent.body.input.filename === "角色_阿岚_定妆.png", "落盘名字不对：" + JSON.stringify(sent.body.input));
+    assert(/定妆照/.test(sent.body.input.prompt) && /左眉有疤/.test(sent.body.input.prompt),
+      "★提示词里没带人物设定★ 那就是拿一个名字去生图：" + JSON.stringify(sent.body.input.prompt));
+    assert(/参考/.test(sent.body.input.prompt),
+      "定妆照是要被后面每一镜反复引用的，提示词里得说清楚这件事：" + JSON.stringify(sent.body.input.prompt));
+    assert(real.p.reference === "素材/角色_阿岚_定妆.png",
+      "★定妆照没写回 reference★ 图生出来了，进度条和素材台账认的是这个字段，写去别处等于白生："
+      + JSON.stringify(real.p));
+    assert(!real.p.path && !real.p.url, "别再顺手写一份 path/url，台账会把同一张图数两遍：" + JSON.stringify(real.p));
+
+    // 场景图写回 image
+    back = "素材/场景_茶馆.png";
+    const place = mk("location", { name: "茶馆", description: "旧木桌，午后斜光" });
+    await ui(place, "image");
+    assert(sent.body.input.filename === "场景_茶馆.png", "场景图落盘名字不对：" + JSON.stringify(sent.body.input));
+    assert(place.p.image === "素材/场景_茶馆.png", "场景图该写回 image：" + JSON.stringify(place.p));
+  }
+
+  // ── ⑦ 真 server：进度条认、台账认、用途也认 ────────────────────────────
+  {
+    const http = require("http"), crypto = require("crypto");
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cast-"));
+    const token = "e2e" + crypto.randomBytes(12).toString("hex");
+    fs.mkdirSync(path.join(home, "data"), { recursive: true });
+    fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+      users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+      tokens: { [token]: { user: "e2e", at: Date.now() } },
+    }));
+    const ws = path.join(home, "workspace"), mat = path.join(ws, "素材");
+    fs.mkdirSync(path.join(ws, ".openworkbuddy"), { recursive: true });
+    fs.mkdirSync(mat, { recursive: true });
+    fs.writeFileSync(path.join(mat, "角色_阿岚_定妆.png"), "x");
+    fs.writeFileSync(path.join(mat, "场景_茶馆.png"), "x");
+    fs.writeFileSync(path.join(ws, ".openworkbuddy", "canvas.json"), JSON.stringify({ version: 1, edges: [], nodes: [
+      node("c1", "character", { name: "阿岚", role: "主角", description: "红衣女孩", reference: "素材/角色_阿岚_定妆.png" }),
+      node("l1", "location", { name: "茶馆", description: "旧木桌", image: "素材/场景_茶馆.png" }),
+    ] }));
+    const boot = bootRealServer({ OPENWORKBUDDY_HOME: home });
+    const { up, port, why } = await boot.wait();
+    const get = (p) => new Promise((resolve) => {
+      const req = http.request({ host: "127.0.0.1", port, path: p, headers: { Cookie: "openworkbuddy_token=" + token } }, (res) => {
+        let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => resolve({ code: res.statusCode, body: b }));
+      });
+      req.on("error", (e) => resolve({ code: 0, body: e.message })); req.end();
+    });
+    try {
+      assert(up, "真 server.js 没起来，这条测试作废：" + why);
+      const pr = JSON.parse((await get("/api/canvas/progress")).body);
+      const cast = (pr.stages || []).find((s) => s.key === "cast");
+      assert(cast && cast.done === 1 && cast.total === 1,
+        "★真 server 上定妆还是 0★ 图在节点上、文件在盘上、画布也画出来了：" + JSON.stringify(cast));
+      assert(!/定妆/.test((pr.next || {}).text || ""),
+        "★催你去做已经做完的定妆★ 照着这句做就是花钱重跑已有的图：" + JSON.stringify(pr.next));
+      const as = JSON.parse((await get("/api/canvas/assets")).body);
+      const rows = as.assets || [];
+      const lan = rows.find((r) => /角色_阿岚_定妆/.test(r.name || ""));
+      const cha = rows.find((r) => /场景_茶馆/.test(r.name || ""));
+      assert(lan && (lan.usedBy || []).length > 0 && !lan.orphan,
+        "★定妆照被算成「没人用」★ 那一栏是加粗写着「多半是旧版本，占地方」的，照着删就毁了整部戏："
+        + JSON.stringify(lan));
+      assert(lan.role === "定妆照", "定妆照的用途认错了，在「用途」筛选里找不着：" + JSON.stringify(lan));
+      assert(cha && !cha.orphan && cha.role === "场景图", "场景图也得认：" + JSON.stringify(cha));
+      assert(!(as.stat || {}).orphan, "没人用的数量不该是 " + (as.stat || {}).orphan + "：" + JSON.stringify(as.stat));
+    } finally { boot.child.kill(); }
+  }
+
+  console.log("✅ 短剧定妆照：「参考图」挑的图就算定妆（进度不再永远 0/N、也不再催你重跑花过的钱）· 镜头上喂进去的参考图绝不冒充首帧 · 定妆照在台账里算「有人在用」不进「没人用」那一栏 · 角色/场景节点真有生成按钮（跑着锁、有图变重生成）· 只有名字不开枪 · 客户端起的名字服务端认得出用途 · 定妆照写回 reference、场景图写回 image");
+}
+
+async function testDramaShotRefs() {
+  // 定妆照做出来了，进度条也绿了——可它只有真被带进「生首帧」那一枪里才算数。
+  // 这一档以前有两个坑，都不是「效果差一点」，是花了钱拿不到东西：
+  //   · 把分镜按顺序连起来（画布上摆一部戏最自然的做法），上一镜一旦出了视频，
+  //     它交给下一镜的是 .mp4；generate_image 收到非图片参考当场退回（tools.js 的 IMAGE_EXT），
+  //     于是后面每一镜的首帧都生不出来，「一键补齐首帧」会一路红到底；
+  //   · 生视频找不到首帧时拿 upstream[0] 顶，上游第一个是谁全看连线顺序——多半是角色的定妆照。
+  //     拿定妆照当首帧生出来的片子跟这一镜没关系，而那一枪是要付钱的。
+  const fe = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  const cut = (from, to) => {
+    const a = fe.indexOf(from), b = fe.indexOf(to, a + 1);
+    assert(a >= 0 && b > a, "抠不出这段代码（函数改名了？）：" + from);
+    return fe.slice(a, b);
+  };
+  const src = [
+    cut("function canvasMediaPath(payload)", "\nfunction canvasMediaMime("),
+    cut("function canvasFileKind(name)", "\n/**"),
+    cut("function canvasEmbeddedImage(payload, kind)", "\nfunction canvasMaterializeResultNodes("),
+    cut("function canvasUpstreamInputs(node)", "\nfunction canvasUpstreamNodes("),
+    cut("function canvasGenerationContext(node)", "\n// 参考图和首尾帧能收哪些后缀"),
+    cut("// 参考图和首尾帧能收哪些后缀", "\nfunction canvasGenerationInputs("),
+    cut("function canvasOutputFilename(", "\nfunction canvasDefaultPayload("),
+    cut("const CANVAS_PROMPT_PLACEHOLDERS =", "\nasync function canvasLoadAssets("),
+    cut("async function canvasGenerate(node, kind)", "\nfunction canvasBindNode("),
+  ].join("\n");
+
+  let sent = null, toast = "";
+  const N = {};
+  const mk = (id, kind, p) => (N[id] = { id, kind, p: { ...p }, set(_k, v) { Object.keys(this.p).forEach((k) => delete this.p[k]); Object.assign(this.p, v); } });
+  const link = (from, to, rel) => ({ get: (k) => (k === "source" ? { id: from } : k === "target" ? { id: to } : k === "canvasRelation" ? rel : null) });
+  const sandbox = {
+    canvasState: { busy: new Set(), selected: null, graph: { links: [], getLinks() { return this.links; }, getCell: (id) => N[id] } },
+    canvasKind: (n) => n.kind, canvasPayload: (n) => n.p,
+    canvasNodeLabel: (n) => n.p.name || n.p.title || n.id,
+    canvasLinkRelation: (l) => String(l.get("canvasRelation") || "input"),
+    canvasRelationLabel: (r) => r,
+    CANVAS_NODE_DEFS: { image: { label: "图片" }, video: { label: "视频" }, audio: { label: "声音" }, character: { label: "角色" }, location: { label: "场景" }, shot: { label: "镜头" } },
+    canvasToast: (t) => { toast = String(t); },
+    canvasRefreshNode() {}, canvasRenderInspector() {}, canvasPersist() {}, canvasUpsertResult() {},
+    canvasRecordGeneration: (n, k, input, file) => ({ ...n.p, generation: { output: file } }),
+    canvasResolvedFileName: (v) => v, previewFile: null,
+    fetch: async (url, opt) => { sent = { url, body: JSON.parse(opt.body) }; return { ok: true, json: async () => ({ ok: true, file: "素材/镜头_新_首帧.png" }) }; },
+  };
+  const keys = Object.keys(sandbox);
+  const gen = new Function(...keys, src + "\nreturn canvasGenerate;")(...keys.map((k) => sandbox[k]));
+  const wire = (...links) => { sandbox.canvasState.graph.links = links; };
+  const refsOf = () => (sent && sent.body.input.reference_images) || [];
+
+  // ── ① 一部戏在画布上正常的样子：两个角色 + 一个场景 + 上一镜 ────────────────
+  mk("c1", "character", { name: "阿岚", description: "十七岁，红衣", reference: "素材/角色_阿岚_定妆.png" });
+  mk("c2", "character", { name: "老陈", description: "五十岁，灰袄", reference: "素材/角色_老陈_定妆.png" });
+  mk("l1", "location", { name: "码头", description: "雾天清晨", image: "素材/场景_码头.png" });
+  mk("s1", "shot", { id: "S1-01", first_frame: "素材/镜头_S1-01_首帧.png", video: "素材/镜头_S1-01.mp4", audio: "素材/配音_S1-01.mp3" });
+  const s2 = mk("s2", "shot", { id: "S1-02", prompt: "阿岚回头看向老陈" });
+  wire(link("c1", "s2", "character"), link("c2", "s2", "character"), link("l1", "s2", "background"), link("s1", "s2", "continuity"));
+  sent = null;
+  await gen(s2, "image");
+  assert(sent && sent.body.tool === "generate_image", "没走生图那条：" + JSON.stringify(sent));
+  const bad = refsOf().filter((r) => !/\.(png|jpe?g|webp|gif|bmp)$/i.test(r));
+  assert(bad.length === 0,
+    "★参考图里混进了不是图的东西★ 服务端会把整枪退回（tools.js：不是图片），这一镜的首帧根本生不出来："
+    + JSON.stringify(bad));
+  assert(refsOf().includes("素材/角色_阿岚_定妆.png") && refsOf().includes("素材/角色_老陈_定妆.png"),
+    "★定妆照没被带进参考图★ 那前面那一档做得再绿也白做，每一镜的脸还是不是同一个人：" + JSON.stringify(refsOf()));
+  assert(refsOf().includes("素材/场景_码头.png"), "场景图没被带上，景会一镜一个样：" + JSON.stringify(refsOf()));
+  assert(refsOf().includes("素材/镜头_S1-01_首帧.png"),
+    "上一镜连过来是为了接得上，它该交出那张首帧图（不是成片 mp4）：" + JSON.stringify(refsOf()));
+
+  // ── ② 上一镜只有片子没有图：它一张都不贡献，但不许连累别人 ────────────────
+  mk("s1b", "shot", { id: "S1-01b", video: "素材/镜头_S1-01b.mp4", audio: "素材/配音_S1-01b.mp3" });
+  const s2b = mk("s2b", "shot", { id: "S1-02b", prompt: "接上一镜" });
+  wire(link("s1b", "s2b", "continuity"), link("c1", "s2b", "character"));
+  sent = null;
+  await gen(s2b, "image");
+  assert(sent, "★一个交不出图的上游把整枪堵死了★ 别人的定妆照还在，这一镜该照生：" + toast);
+  assert(refsOf().length === 1 && refsOf()[0] === "素材/角色_阿岚_定妆.png",
+    "上游交不出图就该跳过它，不是跟着一起报销：" + JSON.stringify(refsOf()));
+
+  // ── ③ 四个位子不够分的时候，别让 .mp4 挤掉一张脸 ───────────────────────
+  mk("c3", "character", { name: "小满", description: "十岁", reference: "素材/角色_小满_定妆.png" });
+  mk("c4", "character", { name: "老板娘", description: "四十岁", reference: "素材/角色_老板娘_定妆.png" });
+  const s4 = mk("s4", "shot", { id: "S2-01", prompt: "四个人挤在船舱里" });
+  wire(link("s1", "s4", "continuity"), link("c1", "s4", "character"), link("c2", "s4", "character"),
+    link("c3", "s4", "character"), link("c4", "s4", "character"));
+  sent = null;
+  await gen(s4, "image");
+  assert(refsOf().length === 4, "参考图上限是 4 张（服务端超了就报错）：" + JSON.stringify(refsOf()));
+  assert(refsOf().every((r) => /\.(png|jpe?g|webp|gif|bmp)$/i.test(r)), "挤到最后还混进了非图：" + JSON.stringify(refsOf()));
+
+  // ── ④ 生视频：没有首帧就说没有首帧，别拿定妆照顶着把钱花了 ────────────────
+  const v1 = mk("v1", "shot", { id: "S1-03", prompt: "推进" });
+  wire(link("c1", "v1", "character"), link("s1", "v1", "continuity"));
+  sent = null; toast = "";
+  await gen(v1, "video");
+  assert(sent === null,
+    "★拿手边第一张图当首帧就去生视频★ 那多半是角色的定妆照，生出来的片子跟这一镜没关系，钱照花："
+    + JSON.stringify(sent && sent.body.input));
+  assert(/首帧/.test(toast), "拦下来了却没说缺的是首帧：" + toast);
+
+  // ── ⑤ 连线明写「首帧」的那个节点，身上有片子也得交出那张图 ────────────────
+  mk("i1", "image", { title: "分镜草图", path: "素材/草图_S1-03.png" });
+  const v2 = mk("v2", "shot", { id: "S1-04", prompt: "推进" });
+  wire(link("c1", "v2", "character"), link("i1", "v2", "first_frame"));
+  sent = null;
+  await gen(v2, "video");
+  assert(sent && sent.body.input.first_frame === "素材/草图_S1-03.png",
+    "连线上明写着「首帧」，就该用它：" + JSON.stringify(sent && sent.body.input));
+
+  const v3 = mk("v3", "shot", { id: "S1-05", prompt: "推进" });
+  wire(link("s1", "v3", "first_frame"));
+  sent = null;
+  await gen(v3, "video");
+  assert(sent && sent.body.input.first_frame === "素材/镜头_S1-01_首帧.png",
+    "★把一个 .mp4 当首帧发出去了★ 服务端只收 png/jpg/webp/gif/bmp，这一枪会原地退回："
+    + JSON.stringify(sent && sent.body.input));
+
+  // ── ⑥ 上游挂着的图片节点，才是「连接一个参考图节点」那句话说的东西 ──────────
+  const v4 = mk("v4", "shot", { id: "S1-06", prompt: "推进" });
+  wire(link("c1", "v4", "character"), link("i1", "v4", "reference"));
+  sent = null;
+  await gen(v4, "video");
+  assert(sent && sent.body.input.first_frame === "素材/草图_S1-03.png",
+    "界面上写着「请先生成首帧或连接一个参考图节点」，那就得认这个图片节点，别认定妆照："
+    + JSON.stringify(sent && sent.body.input));
+
+  // ── ⑦ 节点自己填的 reference 不是图：也得在这儿拦住，别让服务端替我们发现 ────
+  const s5 = mk("s5", "shot", { id: "S3-01", prompt: "夜戏", reference: "素材/镜头_S2-09.mp4" });
+  wire(link("c1", "s5", "character"));
+  sent = null;
+  await gen(s5, "image");
+  assert(!refsOf().includes("素材/镜头_S2-09.mp4"),
+    "★节点上随手填的 .mp4 被当参考图发出去了★ 整枪退回，用户只会看见一句「不是图片」："
+    + JSON.stringify(refsOf()));
+  assert(refsOf().includes("素材/角色_阿岚_定妆.png"), "该留的那张反而没了：" + JSON.stringify(refsOf()));
+
+  // ── ⑧ 客户端这条后缀口径必须跟服务端一个字不差 ──────────────────────────
+  // 两边各写一份、字面不一样，就是「这边放行那边退回」的假绿：界面上看不出任何异常，
+  // 钱花出去了才在 toast 里读到一句「不是图片」。
+  {
+    const clientLine = (fe.match(/const CANVAS_REF_IMAGE_EXT = (\/.+\/i);/) || [])[1];
+    const serverLine = (fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8")
+      .match(/const IMAGE_EXT = (\/.+\/i);/) || [])[1];
+    assert(clientLine && serverLine, "两边的图片后缀表至少有一张找不着了：" + clientLine + " / " + serverLine);
+    assert(clientLine === serverLine,
+      "★画布收的图片后缀跟服务端不是一套★ 宽的那边会把服务端不认的文件发出去，整枪退回：\n"
+      + "  app-07-canvas.js: " + clientLine + "\n  tools.js:         " + serverLine);
+  }
+
+  console.log("✅ 短剧镜头参考图：定妆照/场景图真的被带进生首帧那一枪 · 上一镜交的是它那张首帧图不是 .mp4（以前整枪被服务端退回，分镜一连起来后面全生不出来）· 交不出图的上游只跳过它不连累整枪 · 四张位子不被非图挤占 · 生视频的首帧不拿定妆照顶（宁可说「还没有首帧」也不花那笔钱）· 连线明写首帧的节点身上有片子也交图 · 客户端收的后缀跟服务端一个字不差");
+}
+
+async function testDramaVoice() {
+  // 配音这一档以前漏了一件事：text_to_speech 那一枪只递 text，不递 voice。
+  // 于是整部戏所有角色都用设置里那一个默认音色——十个镜头听下来是同一个人在自言自语。
+  // 这种错没有任何一条会报红：文件生成了、进度条绿了、成片也拼出来了，
+  // 要等到把片子放给人看才听得出来「怎么爷爷和小孙女是一个嗓子」。所以得在这儿钉住。
+  const fe = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  const cut = (from, to) => {
+    const a = fe.indexOf(from), b = fe.indexOf(to, a + 1);
+    assert(a >= 0 && b > a, "抠不出这段代码（函数改名了？）：" + from);
+    return fe.slice(a, b);
+  };
+  const src = [
+    cut("function canvasMediaPath(payload)", "\nfunction canvasMediaMime("),
+    cut("function canvasFileKind(name)", "\n/**"),
+    cut("function canvasEmbeddedImage(payload, kind)", "\nfunction canvasMaterializeResultNodes("),
+    cut("function canvasUpstreamInputs(node)", "\nfunction canvasUpstreamNodes("),
+    cut("function canvasGenerationContext(node)", "\n// 参考图和首尾帧能收哪些后缀"),
+    cut("// 参考图和首尾帧能收哪些后缀", "\n/**\n * 这一句台词该用谁的嗓子"),
+    cut("/**\n * 这一句台词该用谁的嗓子", "\nfunction canvasGenerationInputs("),
+    cut("function canvasOutputFilename(", "\nfunction canvasDefaultPayload("),
+    cut("function canvasDefaultPayload(kind)", "\nfunction canvasZoom("),
+    cut("const CANVAS_PROMPT_PLACEHOLDERS =", "\nasync function canvasLoadAssets("),
+    cut("async function canvasGenerate(node, kind)", "\nfunction canvasBindNode("),
+    cut("async function canvasRunPending(kind)", "\n/**\n * 合成成片"),
+  ].join("\n");
+
+  let sent = null, toast = "", focused = [];
+  const N = {};
+  // set 得换一个新对象，不能就地改：真的 JointJS 就是这么干的，
+  // 而「一键补齐」正是拿 before !== after 判这一枪到底做成了没有
+  const mk = (id, kind, p) => (N[id] = { id, kind, p: { ...p }, set(_k, v) { this.p = { ...v }; } });
+  const link = (from, to, rel) => ({ get: (k) => (k === "source" ? { id: from } : k === "target" ? { id: to } : k === "canvasRelation" ? rel : null) });
+  const sandbox = {
+    canvasState: {
+      busy: new Set(), selected: null, batch: null, progress: null,
+      graph: { links: [], nodes: [], getLinks() { return this.links; }, getElements() { return this.nodes; }, getCell: (id) => N[id] },
+    },
+    canvasKind: (n) => n.kind, canvasPayload: (n) => n.p,
+    canvasNodeLabel: (n) => n.p.name || n.p.title || n.id,
+    canvasLinkRelation: (l) => String(l.get("canvasRelation") || "input"),
+    canvasRelationLabel: (r) => r,
+    CANVAS_NODE_DEFS: { image: { label: "图片" }, video: { label: "视频" }, audio: { label: "声音" }, character: { label: "角色" }, location: { label: "场景" }, shot: { label: "镜头" } },
+    canvasToast: (t) => { toast = String(t); },
+    canvasRefreshNode() {}, canvasRenderInspector() {}, canvasPersist() {}, canvasUpsertResult() {},
+    canvasRenderProgress() {}, canvasLoadProgress: async () => {}, canvasLoadLibrary() {},
+    canvasProgressFocus: (ids) => { focused = (ids || []).map(String); },
+    canvasRecordGeneration: (n, k, input, file) => ({ ...n.p, generation: { output: file } }),
+    canvasResolvedFileName: (v) => v, previewFile: null,
+    canvasUpstreamImages: () => [],
+    fetch: async (url, opt) => { sent = { url, body: JSON.parse(opt.body) }; return { ok: true, json: async () => ({ ok: true, file: "素材/配音_" + Math.random().toString(36).slice(2, 7) + ".mp3" }) }; },
+  };
+  const keys = Object.keys(sandbox);
+  const made = new Function(...keys, src + "\nreturn { canvasGenerate, canvasRunPending, canvasResolveVoice, canvasDefaultPayload };")(...keys.map((k) => sandbox[k]));
+  const gen = made.canvasGenerate;
+  const wire = (...links) => { sandbox.canvasState.graph.links = links; };
+  const voiceOf = () => (sent && sent.body.input && sent.body.input.voice);
+
+  mk("c1", "character", { id: "A", name: "阿岚", description: "十七岁，红衣", voice: "Cherry" });
+  mk("c2", "character", { id: "B", name: "老陈", description: "五十岁，灰袄", voice: "Serena" });
+  mk("c3", "character", { id: "C", name: "小满", description: "十岁" });
+
+  // ── ① 一个角色，一个音色：这句台词得用它的嗓子 ──────────────────────────
+  const a1 = mk("a1", "shot", { id: "S1-01", prompt: "阿岚回头", line: "你到底要不要走" });
+  wire(link("c1", "a1", "character"));
+  sent = null; toast = "";
+  await gen(a1, "audio");
+  assert(sent && sent.body.tool === "text_to_speech", "没走配音那条：" + JSON.stringify(sent));
+  assert(voiceOf() === "Cherry",
+    "★配音没带音色★ 整部戏所有角色共用设置里那一个默认嗓子，而且一路都是绿的，要等成片放出来才听得出："
+    + JSON.stringify(sent.body.input));
+  assert(sent.body.input.text === "你到底要不要走", "念的应该是这一镜的台词：" + JSON.stringify(sent.body.input));
+
+  // ── ② 两个角色，音色不一样，又没说是谁在讲：不许替用户挑 ──────────────────
+  const a2 = mk("a2", "shot", { id: "S1-02", prompt: "对峙", line: "我不走" });
+  wire(link("c1", "a2", "character"), link("c2", "a2", "character"));
+  sent = null; toast = "";
+  await gen(a2, "audio");
+  assert(sent === null,
+    "★两个角色音色不同，却自己挑了一个★ 挑错了声音还是好声音，只是不是这个人的——这种错只有放片子才发现："
+    + JSON.stringify(sent && sent.body.input));
+  assert(/说话的角色/.test(toast), "拦下来了却没说该去哪儿点名：" + toast);
+
+  // ── ③ 一个定了音色、另一个还没定：一样算岔路 ───────────────────────────
+  // 「没定音色」不是「没有候选」，它代表用默认音色——跟 Cherry 是两个不一样的结果
+  const a3 = mk("a3", "shot", { id: "S1-03", prompt: "两个人", line: "走吧" });
+  wire(link("c1", "a3", "character"), link("c3", "a3", "character"));
+  sent = null; toast = "";
+  await gen(a3, "audio");
+  assert(sent === null, "一个定了一个没定，结果照样是两种嗓子，不能自己挑：" + JSON.stringify(sent && sent.body.input));
+
+  // ── ④ 点了名就按点名的来（名字 / 分镜表里的角色 id 都认） ─────────────────
+  const a4 = mk("a4", "shot", { id: "S1-04", prompt: "对峙", line: "我不走", speaker: "老陈" });
+  wire(link("c1", "a4", "character"), link("c2", "a4", "character"));
+  sent = null; toast = "";
+  await gen(a4, "audio");
+  assert(voiceOf() === "Serena", "点名了就该用点名那个人的音色：" + JSON.stringify(sent && sent.body.input) + " / " + toast);
+
+  const a5 = mk("a5", "shot", { id: "S1-05", prompt: "对峙", line: "我不走", speaker: "B" });
+  wire(link("c1", "a5", "character"), link("c2", "a5", "character"));
+  sent = null; toast = "";
+  await gen(a5, "audio");
+  assert(voiceOf() === "Serena",
+    "分镜表里 speaker 写的是角色短 id（A/B），展开到画布上也得认：" + JSON.stringify(sent && sent.body.input) + " / " + toast);
+
+  // ── ⑤ 点了名，可连上来的角色里没这个人：停下，别拿在场另一个人的嗓子顶 ──────
+  const a6 = mk("a6", "shot", { id: "S1-06", prompt: "对峙", line: "我不走", speaker: "小满" });
+  wire(link("c1", "a6", "character"), link("c2", "a6", "character"));
+  sent = null; toast = "";
+  await gen(a6, "audio");
+  assert(sent === null, "★点名的人不在场，却拿别人的嗓子念了★ 等于把这句台词换了个人说：" + JSON.stringify(sent && sent.body.input));
+  assert(/小满/.test(toast), "该把点错的那个名字念回来，不然不知道哪儿写错了：" + toast);
+
+  // ── ⑥ 「展开分镜表」生出来的画布：镜头带着 speaker，但一个角色节点都没连 ────
+  // 这时候 speaker 只是一条从分镜表抄过来的备注，没有谁跟谁要分辨。
+  // 在这儿报错等于把展开出来的整张画布堵死，一句配音都生不出来。
+  const a7 = mk("a7", "shot", { id: "S1-07", prompt: "独白", line: "天亮了", speaker: "A" });
+  wire();
+  sent = null; toast = "";
+  await gen(a7, "audio");
+  assert(sent, "★没连角色节点就一句都不给生★ 刚展开的分镜表画布会整个堵死：" + toast);
+  assert(!("voice" in sent.body.input), "没人定音色的时候不该硬塞一个：" + JSON.stringify(sent.body.input));
+
+  // ── ⑦ 节点自己写死的音色优先（画布 Agent / 声音节点都是这么写的） ───────────
+  const a8 = mk("a8", "audio", { title: "旁白", text: "三年后。", voice: "nova" });
+  wire(link("c1", "a8", "character"), link("c2", "a8", "character"));
+  sent = null; toast = "";
+  await gen(a8, "audio");
+  assert(voiceOf() === "nova", "节点自己写死的音色最大，连上游都不用看：" + JSON.stringify(sent && sent.body.input) + " / " + toast);
+
+  // ── ⑧ 起手模板里那句占位文字：三种素材节点都不许直接开枪 ──────────────────
+  // 这几个节点的面板上就摆着「生成…」按钮，一按就是真花钱，买回来一句「对白、旁白或音乐说明…」
+  const def = made.canvasDefaultPayload;
+  for (const [kind, gk] of [["image", "image"], ["video", "video"], ["audio", "audio"]]) {
+    const n = mk("ph-" + kind, kind, def(kind));
+    wire();
+    sent = null; toast = "";
+    await gen(n, gk);
+    assert(sent === null, `★${kind} 节点的占位文案原样就发出去了★ 这一枪照样花钱：` + JSON.stringify(sent && sent.body.input));
+    assert(/占位文字/.test(toast), "拦下来了却没说是占位文字：" + toast);
+  }
+
+  // ── ⑨ 一键补齐配音：说不清谁在讲的那几个摘出来，其余照跑，最后一起说 ────────
+  const runPending = made.canvasRunPending;
+  const okShot = mk("b1", "shot", { id: "S2-01", prompt: "阿岚独白", line: "我知道了" });
+  const askShot = mk("b2", "shot", { id: "S2-02", prompt: "两个人", line: "你说什么" });
+  sandbox.canvasState.graph.nodes = [okShot, askShot];
+  sandbox.canvasState.progress = { shots: [
+    { nodeId: "b1", needsVoice: true, audio: null, frame: { ok: true } },
+    { nodeId: "b2", needsVoice: true, audio: null, frame: { ok: true } },
+  ] };
+  wire(link("c1", "b1", "character"), link("c1", "b2", "character"), link("c2", "b2", "character"));
+  sent = null; toast = ""; focused = [];
+  await runPending("audio");
+  assert(okShot.p.audio, "★一个说不清的镜头把整批配音都堵死了★ 二十镜里有一镜没点名，另外十九镜也别想做：" + toast);
+  assert(/1 个做好了/.test(toast), "能生的那一镜得真算进「做好了」里：" + toast);
+  assert(/1 个不知道该用谁的嗓子/.test(toast),
+    "★摘出来了却没说★ 用户只看见「1 个做好了」，剩下那一镜凭空消失，进度条永远差一格：" + toast);
+  assert(focused.includes("b2"), "说了有镜头卡住就得能点过去，不然等于没说：" + JSON.stringify(focused));
+
+  // ── ⑩ 客户端发的键名跟服务端收的必须是同一个 ──────────────────────────
+  // 这一条不钉住，服务端改个参数名就是典型的假绿：接口照样 200、文件照样落盘，
+  // 只是音色被悄悄忽略了，所有角色又变回同一个嗓子，而且没有任何一条会红。
+  {
+    const srv = fs.readFileSync(path.join(__dirname, "..", "tools.js"), "utf8");
+    const schema = srv.slice(srv.indexOf('name: "text_to_speech"'), srv.indexOf('name: "text_to_speech"') + 1200);
+    assert(/voice: \{ type: "string"/.test(schema), "text_to_speech 的 schema 里没有 voice 了（客户端还在发）：" + schema.slice(0, 200));
+    assert(/const voice = String\(input\.voice \|\| cfg\.voice \|\| ""\)/.test(srv),
+      "服务端不再从 input.voice 取音色了，画布发过去的那个键会被静静吃掉");
+    assert(/\.\.\.\(voice \? \{ voice \} : \{\}\)/.test(fe),
+      "客户端发的键名得是 voice（跟服务端 schema 一个字不差）");
+  }
+
+  console.log("✅ 短剧配音音色：台词按角色的音色念（以前整部戏一个嗓子，绿着跑完、放片子才听出来）· 两个角色音色不同不替用户挑 · 点名认名字也认分镜表的角色 id · 点错名不拿在场另一个人顶 · 刚展开的分镜表没连角色也不堵死 · 一键补齐把说不清的摘出来单说并能点过去 · 三种素材节点的占位文案不许直接开枪 · 客户端发的 voice 跟服务端收的一个字不差");
+}
+
+async function testDramaBoardExpand() {
+  // 「展开场次与镜头」是分镜表进画布的唯一一道门。以前这道门只摆场次和镜头：
+  //   · characters[] 一个节点都不建 —— 而角色节点是定妆照、参考图、音色三条链子唯一的挂点。
+  //     于是展开出来的戏，每一镜生首帧都没有参考图（同一个人一镜一个样），
+  //     每一句台词都用设置里那个默认音色（全剧一个嗓子）。
+  //   · shot 原样铺开 —— 分镜表写的是 frame_prompt / motion_prompt，画布上的镜头读的是 prompt，
+  //     所以每一镜的 prompt 都还是起手模板那句「镜头内容与运动…」。「制片进度」把整部戏判成
+  //     「没写提示词」，一键补齐一个都不做。
+  // 这两件事都不报错：按钮变成「已展开 3 场」，屏幕上满满都是节点，人得自己一个个点开才发现点不动。
+  const fe = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  const cut = (from, to) => {
+    const a = fe.indexOf(from), b = fe.indexOf(to, a + 1);
+    assert(a >= 0 && b > a, "抠不出这段代码（函数改名了？）：" + from);
+    return fe.slice(a, b);
+  };
+  const src = [
+    cut("function canvasMediaPath(payload)", "\nfunction canvasMediaMime("),
+    cut("function canvasFileKind(name)", "\n/**"),
+    cut("function canvasEmbeddedImage(payload, kind)", "\nfunction canvasMaterializeResultNodes("),
+    cut("function canvasUpstreamInputs(node)", "\nfunction canvasUpstreamNodes("),
+    cut("function canvasGenerationContext(node)", "\n// 参考图和首尾帧能收哪些后缀"),
+    cut("// 参考图和首尾帧能收哪些后缀", "\n/**\n * 这一句台词该用谁的嗓子"),
+    cut("/**\n * 这一句台词该用谁的嗓子", "\nfunction canvasGenerationInputs("),
+    cut("function canvasOutputFilename(", "\nfunction canvasDefaultPayload("),
+    cut("function canvasDefaultPayload(kind)", "\nfunction canvasZoom("),
+    cut("const CANVAS_PROMPT_PLACEHOLDERS =", "\nasync function canvasLoadAssets("),
+    cut("async function canvasGenerate(node, kind)", "\nfunction canvasBindNode("),
+    cut("/**\n * 分镜表 → 画布上摆什么", "\nfunction canvasAddNode("),
+    // 存盘那道批量闸门要用真的：拿桩子去测桩子，改坏了也是绿的
+    cut("function canvasPersist()", "\nfunction canvasLoadSaved("),
+  ].join("\n");
+
+  // 一份真按 references/分镜表.schema.json 写的分镜表：两个角色各有音色和定妆照，
+  // 三镜分别是「只有 A」「A 和 B 都在」「点了个表里没有的 C」
+  const board = {
+    title: "最后一班车", aspect: "9:16", style: "冷蓝夜色，胶片颗粒，浅景深",
+    characters: [
+      { id: "A", name: "阿岚", look: "十七岁女生，齐肩黑发，红色校服外套", ref: "角色_阿岚_定妆.png", voice: "Cherry" },
+      { id: "B", name: "老陈", look: "五十岁男人，灰色棉袄，右手戴旧手表", ref: "角色_老陈_定妆.png", voice: "Serena" },
+    ],
+    scenes: [{
+      id: "S1", place: "末班公交站", time: "冬夜",
+      shots: [
+        { id: "S1-01", cast: ["A"], shot_size: "近景", frame_prompt: "阿岚站在站牌下，侧脸被路灯照亮", motion_prompt: "她缓缓抬头，镜头轻微推进", line: "你到底要不要走", speaker: "A" },
+        { id: "S1-02", cast: ["A", "B"], shot_size: "中景", frame_prompt: "两人隔着半米对站", motion_prompt: "镜头横移半步", line: "我不走", speaker: "B" },
+        { id: "S1-03", cast: ["C"], shot_size: "全景", frame_prompt: "空荡的街", motion_prompt: "固定机位" },
+      ],
+    }],
+  };
+
+  let sent = null, toast = "", saves = 0, history = 0, seq = 0, realPersist = () => {}, addBoom = false;
+  const N = {}, links = [], added = [];
+  const link = (from, to, rel) => ({ get: (k) => (k === "source" ? { id: from } : k === "target" ? { id: to } : k === "canvasRelation" ? rel : null) });
+  const sandbox = {
+    canvasState: {
+      // suspendSync：真 canvasPersist 后半段是往服务端回写，这儿只关心「存了几次盘、记了几步撤销」
+      bulk: false, suspendSync: true, busy: new Set(), selected: null, batch: null, progress: null,
+      graph: { getLinks: () => links, getElements: () => Object.values(N), getCell: (id) => N[id] },
+    },
+    canvasSnapshot: () => ({ nodes: [], edges: [] }),
+    canvasStorageKey: () => "owb-canvas:test",
+    canvasHistorySchedule: () => { history++; },
+    localStorage: { setItem() { saves++; }, getItem: () => null },
+    window: { setTimeout: () => 0 },
+    canvasKind: (n) => n.kind, canvasPayload: (n) => n.p,
+    canvasNodeLabel: (n) => n.p.name || n.p.title || n.id,
+    canvasLinkRelation: (l) => String(l.get("canvasRelation") || "input"),
+    canvasRelationLabel: (r) => r,
+    CANVAS_NODE_DEFS: { image: { label: "图片" }, video: { label: "视频" }, audio: { label: "声音" }, character: { label: "角色" }, location: { label: "场景" }, shot: { label: "镜头" }, scene: { label: "场次" } },
+    canvasToast: (t) => { toast = String(t); },
+    canvasRefreshNode() {}, canvasRenderInspector() {}, canvasUpsertResult() {},
+    canvasRenderProgress() {}, canvasLoadProgress: async () => {}, canvasLoadLibrary() {},
+    canvasProgressFocus() {},
+    canvasRecordGeneration: (n, k, input, file) => ({ ...n.p, generation: { output: file } }),
+    canvasResolvedFileName: (v) => v, previewFile: null,
+    canvasUpstreamImages: () => [],
+    canvasAddNode: null, canvasConnect: null,
+    fetch: async (url, opt) => { sent = { url, body: JSON.parse(opt.body) }; return { ok: true, json: async () => ({ ok: true, file: "素材/out_" + (++seq) + ".bin" }) }; },
+  };
+  // 建节点、连线都走真的那条路会用到 joint / DOM，这儿只记账；
+  // 但 payload 必须按真的来：canvasDefaultPayload 打底 + 展开给的字段覆盖，
+  // 少了这一层，「展开出来的镜头 prompt 还是起手模板那句」这条根本测不出来。
+  const defaults = {};
+  sandbox.canvasAddNode = (kind, payload, position, options) => {
+    // 这个开关得在桩子内部读：参数是构造那一刻绑死的，事后换 sandbox.canvasAddNode 根本不生效
+    if (addBoom) throw new Error("摆节点的时候炸了");
+    const id = "n" + (++seq);
+    added.push({ id, kind, payload, position, options });
+    realPersist();   // 真的 canvasAddNode 在 persist !== false 时会存盘，这儿照走那条真路
+    return (N[id] = { id, kind, p: { ...(defaults[kind] || {}), ...payload }, set(_k, v) { this.p = { ...v }; } });
+  };
+  sandbox.canvasConnect = (a, b, rel) => { if (!a || !b) return; links.push(link(a.id, b.id, rel || "input")); realPersist(); };
+
+  const keys = Object.keys(sandbox);
+  const made = new Function(...keys, src + "\nreturn { canvasBoardPlan, canvasApplyBoardPlan, canvasGenerate, canvasResolveVoice, canvasDefaultPayload, canvasPersist };")(...keys.map((k) => sandbox[k]));
+  realPersist = made.canvasPersist;
+  for (const k of ["character", "scene", "shot"]) defaults[k] = made.canvasDefaultPayload(k);
+
+  // ── ① 分镜表里的角色得变成画布上的角色节点 ────────────────────────────────
+  const plan = made.canvasBoardPlan(board);
+  assert(plan.characters.length === 2,
+    "★分镜表里的角色一个节点都没摆★ 角色节点是定妆照 / 参考图 / 音色唯一的挂点，没有它这部戏每一镜都没有参考图、每句台词都是同一个默认嗓子："
+    + JSON.stringify(plan.characters));
+  const lan = plan.characters[0].payload;
+  assert(lan.name === "阿岚" && lan.voice === "Cherry" && lan.reference === "角色_阿岚_定妆.png",
+    "角色身上的 name / voice / ref 没落到画布认得的字段上：" + JSON.stringify(lan));
+  assert(lan.description === "十七岁女生，齐肩黑发，红色校服外套",
+    "★look 没落进人物设定★ 空着的话角色节点上那颗「生成定妆照」会拒跑（只有名字生出来的脸每次都不是同一个人）：" + JSON.stringify(lan));
+
+  // ── ② frame_prompt 要落到画布的 prompt 上，还要带上全片画风 ────────────────
+  const shots = plan.scenes[0].shots;
+  assert(shots.length === 3, "镜头数不对：" + shots.length);
+  assert(/阿岚站在站牌下/.test(shots[0].payload.prompt),
+    "★frame_prompt 没落到 prompt 上★ 画布上的镜头只读 prompt，落不进去就等于这一镜没提示词："
+    + JSON.stringify(shots[0].payload.prompt));
+  assert(/冷蓝夜色，胶片颗粒，浅景深/.test(shots[0].payload.prompt),
+    "★全片画风没跟着每一镜走★ 不带上镜与镜之间画风会飘（skill 第 1 节写死的规矩）：" + JSON.stringify(shots[0].payload.prompt));
+  assert(shots[0].payload.motion_prompt === "她缓缓抬头，镜头轻微推进",
+    "★motion_prompt 丢了★ 原样铺开的话它存在 payload 里没人读、面板上也看不见，等于用户写的运镜白写了："
+    + JSON.stringify(shots[0].payload));
+
+  // ── ③ 反向对照：不做映射的话，展开出来的每一镜都是「没写提示词」 ─────────────
+  const raw = { ...defaults.shot, ...board.scenes[0].shots[0] };   // 以前那版：{...shot} 原样铺开
+  const placeholders = made.canvasBoardPlan.toString() && (() => {
+    const m = fe.match(/const CANVAS_PROMPT_PLACEHOLDERS = (\[[^\]]*\]);/);
+    assert(m, "找不到占位文案表");
+    return JSON.parse(m[1].replace(/'/g, '"'));
+  })();
+  assert(placeholders.includes(raw.prompt),
+    "反向对照失效了：原样铺开时 prompt 本该还是起手模板那句（这条一旦恒假，②就成了摆设）：" + JSON.stringify(raw.prompt));
+  assert(!placeholders.includes(shots[0].payload.prompt), "映射之后 prompt 不该还是占位文案");
+
+  // ── ④ 摆到画布上：角色、场次、镜头都建了，cast 点到的角色真连了线 ────────────
+  const boardNode = N.b1 = { id: "b1", kind: "storyboard", p: { board: "最后一班车" }, set() {}, position: () => ({ x: 90, y: 100 }) };
+  saves = 0; history = 0;
+  const stat = made.canvasApplyBoardPlan(boardNode, plan);
+  assert(stat.characters === 2 && stat.scenes === 1 && stat.shots === 3, "摆出来的数目不对：" + JSON.stringify(stat));
+  const shotNodes = added.filter((a) => a.kind === "shot").map((a) => N[a.id]);
+  const charNodes = added.filter((a) => a.kind === "character").map((a) => N[a.id]);
+  assert(charNodes.length === 2 && added.filter((a) => a.kind === "scene").length === 1, "节点种类摆错了：" + added.map((a) => a.kind).join("/"));
+  const up = (n) => links.filter((l) => l.get("target").id === n.id).map((l) => l.get("source").id);
+  assert(up(shotNodes[0]).includes(charNodes[0].id),
+    "★cast 里点了角色，画布上却没连线★ 参考图和音色都是顺着连线找过去的，没线等于这一镜没有角色："
+    + JSON.stringify(up(shotNodes[0])));
+  assert(up(shotNodes[1]).includes(charNodes[0].id) && up(shotNodes[1]).includes(charNodes[1].id),
+    "两个人都在场的那一镜没把两个角色都连上：" + JSON.stringify(up(shotNodes[1])));
+  assert(!up(shotNodes[0]).includes(charNodes[1].id),
+    "★没出场的角色也连上去了★ 那一镜生首帧会拿错人的定妆照当参考图，四个位子本来就不够分：" + JSON.stringify(up(shotNodes[0])));
+
+  // ── ⑤ cast 写了个表里没有的角色 id：摘出来说，不悄悄吞 ─────────────────────
+  assert(stat.missing.join() === "C",
+    "★分镜表里点了个 characters 里查无此人的角色，却没人吭声★ 那一镜会安静地少参考图少音色，"
+    + "等十二镜都生完、发现人一镜一个样才看得出来：" + JSON.stringify(stat.missing));
+
+  // ── ⑥ 手写的 cast 多半写名字，不写 id ─────────────────────────────────────
+  const byName = made.canvasBoardPlan({
+    characters: [{ id: "A", name: "阿岚", look: "红衣", voice: "Cherry" }],
+    scenes: [{ id: "S1", shots: [{ id: "S1-01", cast: ["阿岚"], frame_prompt: "x" }] }],
+  });
+  const n2 = { id: "b2", kind: "storyboard", p: {}, set() {} };
+  const before = links.length;
+  const stat2 = made.canvasApplyBoardPlan(n2, byName);
+  assert(stat2.missing.length === 0, "★写名字就连不上了★ 人手动补 cast 的时候写的是名字不是 id：" + JSON.stringify(stat2.missing));
+  assert(links.slice(before).some((l) => l.get("canvasRelation") === "character"), "角色连到镜头的那条线没标成「人物身份」：连线用途是生首帧挑参考图的依据");
+
+  // ── ⑦ 一次展开只存一次盘，而且这个开关一定复位 ─────────────────────────────
+  assert(saves === 0 && history === 0,
+    "★摆几十个节点就整图序列化存盘几十次★ 十二镜的戏光展开这一下就要跑六十来趟，"
+    + `顺带把撤销记成六十步（人想退回展开前得按六十次 ⌘Z）：存盘 ${saves} 次、记了 ${history} 步撤销`);
+  // 反向对照：闸门关掉之后这条路真的会存盘（不然上面那条是恒真的）
+  sandbox.canvasState.bulk = false; realPersist();
+  assert(saves === 1 && history === 1, "反向对照失效：不在批量里的一次 canvasPersist 本该真存一次盘、记一步撤销");
+  assert(sandbox.canvasState.bulk === false, "★批量开关没复位★ 之后画布上做的任何改动都不再存盘，关掉浏览器全没了");
+  let threw = false;
+  addBoom = true;
+  try { made.canvasApplyBoardPlan(boardNode, plan); } catch { threw = true; }
+  addBoom = false;
+  assert(threw, "桩子没炸，这一条等于没测");
+  assert(sandbox.canvasState.bulk === false,
+    "★摆到一半出错，批量开关就永久留在开着★ 从此这块画布上做的任何改动都不再存盘，"
+    + "人照常拖节点、照常填字，关掉页面才发现今天白干了");
+
+  // ── ⑧ 展开出来的镜头，音色真能定得出来（①⑤ 串起来才算数） ─────────────────
+  const v1 = made.canvasResolveVoice(shotNodes[0], shotNodes[0].p);
+  assert(!v1.error && v1.voice === "Cherry",
+    "★展开出来的镜头配音还是默认嗓子★ 这才是这一条链子要的东西：" + JSON.stringify(v1));
+  const v2 = made.canvasResolveVoice(shotNodes[1], shotNodes[1].p);
+  assert(!v2.error && v2.voice === "Serena",
+    "两个人在场、分镜表点了 speaker=B 的那一镜，音色该是老陈的：" + JSON.stringify(v2));
+
+  // ── ⑨ 生视频只递运镜，不把首帧提示词再递一遍 ───────────────────────────────
+  shotNodes[0].p.first_frame = "素材/镜头_S1-01_首帧.png";
+  sent = null; toast = "";
+  await made.canvasGenerate(shotNodes[0], "video");
+  assert(sent && sent.body.tool === "generate_video", "没走生视频那条：" + JSON.stringify(sent));
+  assert(/她缓缓抬头，镜头轻微推进/.test(sent.body.input.prompt), "运镜提示词没递过去：" + JSON.stringify(sent.body.input.prompt));
+  assert(!/阿岚站在站牌下/.test(sent.body.input.prompt),
+    "★把首帧提示词又递了一遍★ 画面内容已经在首帧里了，再描述一遍模型会照着它重画，"
+    + "生出来的片子跟你刚确认过的那张首帧对不上（skill 第 4 节）：" + JSON.stringify(sent.body.input.prompt));
+
+  // ── ⑩ 空表不许炸，也不许假装摆了东西 ──────────────────────────────────────
+  const empty = made.canvasBoardPlan(null);
+  assert(empty.characters.length === 0 && empty.scenes.length === 0, "空分镜表该是空计划：" + JSON.stringify(empty));
+
+  console.log("✅ 短剧分镜表展开：角色也摆上画布（以前只有场次和镜头，整部戏没参考图、一个嗓子）· frame_prompt 落到 prompt 并带上全片画风（以前每一镜都判「没写提示词」，一键补齐一个不做）· 运镜单独一格且生视频只递它 · cast 按 id 也按名字连线、查无此人的点名单独报 · 一次展开只存一次盘且开关必复位 · 展开出来的镜头音色当场定得出来");
+}
+
+/**
+ * 画布生出来的东西，回不回得到分镜表里。
+ *
+ * 技能里写死了「分镜表是唯一真源……产物路径全部回写进分镜表——它是下次改一镜重跑的依据」，
+ * server.js 顶上那段注释也写着「镜头单格重跑产生的路径也会立刻回到唯一真源里」。
+ * 可画布那一头一直只读不写：在画布上把十二镜的首帧和视频全生完，盘上那份分镜表里
+ * 一个路径都没有。这件事全程没有一条红——画布上缩略图都出来了，人以为做完了。
+ * 代价在别处收：
+ *   · 短剧页每张卡还写着「暂无首帧」，人照着点「重跑首帧」，十二镜再买一遍（那条路关着缓存）；
+ *   · 命令行 / Agent 那条「改一镜只重算一镜」读的也是这份 JSON，它看到的是一部没开工的戏；
+ *   · 定妆照落不进 characters[].ref，短剧页那头重跑首帧就没有参考图，人一镜一个样。
+ *
+ * 所以这条分两头钉：客户端有没有发出那一笔回写、服务端有没有把它真写到盘上那一个字段里。
+ */
+async function testDramaBoardWriteback() {
+  const os = require("os");
+  const http = require("http");
+  const crypto = require("crypto");
+
+  // ══ 前半场：客户端 ══════════════════════════════════════════════════════
+  const fe = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  const cut = (from, to) => {
+    const a = fe.indexOf(from), b = fe.indexOf(to, a + 1);
+    assert(a >= 0 && b > a, "抠不出这段代码（函数改名了？）：" + from);
+    return fe.slice(a, b);
+  };
+  const src = [
+    cut("function canvasMediaPath(payload)", "\nfunction canvasMediaMime("),
+    cut("function canvasFileKind(name)", "\n/**"),
+    cut("function canvasEmbeddedImage(payload, kind)", "\nfunction canvasMaterializeResultNodes("),
+    cut("function canvasUpstreamInputs(node)", "\nfunction canvasGenerationContext("),
+    cut("function canvasGenerationContext(node)", "\n// 参考图和首尾帧能收哪些后缀"),
+    cut("// 参考图和首尾帧能收哪些后缀", "\n/**\n * 这一句台词该用谁的嗓子"),
+    cut("/**\n * 这一句台词该用谁的嗓子", "\nfunction canvasGenerationInputs("),
+    cut("function canvasOutputFilename(", "\nfunction canvasDefaultPayload("),
+    cut("function canvasDefaultPayload(kind)", "\nfunction canvasZoom("),
+    cut("const CANVAS_PROMPT_PLACEHOLDERS =", "\nasync function canvasLoadAssets("),
+    // 回写那个函数跟 canvasGenerate 挨着，一刀抠俩：用真的，拿桩子测桩子等于没测
+    cut("/**\n * 在画布上给一镜多连一个角色", "\nfunction canvasBindNode("),
+    cut("/**\n * 分镜表 → 画布上摆什么", "\nfunction canvasAddNode("),
+  ].join("\n");
+
+  const board = {
+    title: "最后一班车", aspect: "9:16", style: "冷蓝夜色，胶片颗粒",
+    characters: [
+      { id: "A", name: "阿岚", look: "十七岁女生，齐肩黑发", ref: "", voice: "Cherry" },
+      { id: "B", name: "老陈", look: "五十岁男人，灰色棉袄", ref: "", voice: "Serena" },
+    ],
+    scenes: [{
+      id: "S1", place: "末班公交站", time: "冬夜",
+      shots: [
+        { id: "S1-01", cast: ["A"], shot_size: "近景", frame_prompt: "阿岚站在站牌下", motion_prompt: "镜头轻微推进", line: "你到底要不要走", speaker: "A" },
+        { id: "S1-02", cast: ["A", "B"], shot_size: "中景", frame_prompt: "两人隔着半米对站", motion_prompt: "镜头横移半步", line: "我不走", speaker: "B" },
+      ],
+    }],
+  };
+  const BOARD_NAME = "分镜表/最后一班车.json";
+
+  let calls = [], toast = "", seq = 0, fetchMode = "ok";
+  const N = {}, links = [];
+  const sandbox = {
+    canvasState: { bulk: false, suspendSync: true, busy: new Set(), selected: null, batch: null, progress: null,
+      graph: { getLinks: () => links, getElements: () => Object.values(N), getCell: (id) => N[id] } },
+    canvasPersist() {}, canvasKind: (n) => n.kind, canvasPayload: (n) => n.p,
+    canvasNodeLabel: (n) => n.p.name || n.p.title || n.id,
+    canvasLinkRelation: (l) => String(l.get("canvasRelation") || "input"),
+    canvasRelationLabel: (r) => r,
+    CANVAS_NODE_DEFS: { image: { label: "图片" }, video: { label: "视频" }, audio: { label: "声音" }, character: { label: "角色" }, location: { label: "场景" }, shot: { label: "镜头" }, scene: { label: "场次" } },
+    canvasToast: (t) => { toast = String(t); },
+    canvasRefreshNode() {}, canvasRenderInspector() {}, canvasUpsertResult() {},
+    canvasRenderProgress() {}, canvasLoadProgress: async () => {}, canvasLoadLibrary() {},
+    canvasProgressFocus() {},
+    canvasRecordGeneration: (n, k, input, file) => ({ ...n.p, generation: { output: file } }),
+    canvasResolvedFileName: (v) => v, previewFile: null,
+    canvasUpstreamImages: () => [],
+    canvasAddNode: () => null, canvasConnect: () => {},
+    fetch: async (url, opt) => {
+      const body = JSON.parse(opt.body);
+      calls.push({ url, body });
+      if (String(url).includes("/api/drama/storyboard/output")) {
+        if (fetchMode === "boom") throw new Error("网络断了");
+        if (fetchMode === "reject") return { ok: false, status: 404, json: async () => ({ error: "分镜表里没有镜头 S9-99" }) };
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true, file: "素材/out_" + (++seq) + ".png" }) };
+    },
+  };
+  const keys = Object.keys(sandbox);
+  const made = new Function(...keys, src + "\nreturn { canvasBoardPlan, canvasBoardWriteback, canvasBoardContentSync, canvasBoardCastOf, canvasBoardCastSync, canvasGenerate, canvasDefaultPayload };")(...keys.map((k) => sandbox[k]));
+  const defaults = {}; for (const k of ["character", "shot"]) defaults[k] = made.canvasDefaultPayload(k);
+  const mk = (kind, payload) => (N["n" + (++seq)] = { id: "n" + seq, kind, p: { ...(defaults[kind] || {}), ...payload }, set(_k, v) { this.p = { ...v }; } });
+  const backCalls = () => calls.filter((c) => String(c.url).includes("/api/drama/storyboard/output"));
+
+  // ── ① 展开的时候就得盖戳，不然生成完了根本不知道该往哪一镜回写 ──────────────
+  const plan = made.canvasBoardPlan(board, BOARD_NAME);
+  const s1 = plan.scenes[0].shots[0].payload;
+  assert(s1.board === BOARD_NAME && s1.board_scene === "S1" && s1.board_shot === "S1-01",
+    "★展开出来的镜头身上没盖分镜表的戳★ 没有它，这一镜生出来的首帧回不到唯一真源里，短剧页那头会让人再买一遍："
+    + JSON.stringify({ board: s1.board, scene: s1.board_scene, shot: s1.board_shot }));
+  assert(plan.characters[0].payload.board === BOARD_NAME && plan.characters[0].payload.board_character === "A",
+    "★角色身上没盖戳★ 定妆照回不进 characters[].ref，短剧页重跑首帧就没有参考图，人一镜一个样："
+    + JSON.stringify(plan.characters[0].payload));
+  // 反向对照：不是从分镜表展开来的（手搓节点）就不许平白多出这几个字段，
+  // 否则它们会带着一个空的 board 名去敲接口，每生成一次弹一条红
+  const bare = made.canvasBoardPlan(board).scenes[0].shots[0].payload;
+  assert(!("board" in bare) && !("board_shot" in bare), "没给分镜表名的时候不该盖戳：" + JSON.stringify(bare));
+  // 上面两条测的是这个纯函数收到名字会盖戳，可真正把名字递进去的是「展开场次与镜头」那颗按钮。
+  // 那一句写成 canvasBoardPlan(r.data) 少一个参数，整张展开出来的画布就一个戳都没有，
+  // 而上面几条照样全绿——这种改法只能钉在源码上
+  const planCalls = (fe.match(/canvasBoardPlan\([^)]*\)/g) || []).filter((c) => !/^canvasBoardPlan\(data/.test(c));
+  assert(planCalls.length >= 1 && planCalls.every((c) => c.includes(",")),
+    "★画布里有地方调 canvasBoardPlan 没把分镜表名递进去★ 那条路展开出来的节点一个戳都没有，生成完回不到真源，短剧页会让人再买一遍："
+    + JSON.stringify(planCalls));
+
+  // ── ② 镜头首帧：生成之后真发出那一笔回写，写的是 first_frame ──────────────
+  const shot = mk("shot", plan.scenes[0].shots[0].payload);
+  calls = []; await made.canvasGenerate(shot, "image");
+  let back = backCalls();
+  assert(back.length === 1, "★镜头首帧生成完没往分镜表回写★ 画布上有图、分镜表里没有，短剧页会让人再买一遍：发出去 " + calls.length + " 笔，回写 " + back.length + " 笔");
+  assert(back[0].body.name === BOARD_NAME && back[0].body.shot === "S1-01" && back[0].body.scene === "S1",
+    "回写发到了别的地方：" + JSON.stringify(back[0].body));
+  assert(back[0].body.fields && back[0].body.fields.first_frame === shot.p.first_frame && shot.p.first_frame,
+    "★回写的不是刚生出来那张首帧★ " + JSON.stringify({ 回写: back[0].body.fields, 节点上: shot.p.first_frame }));
+  assert(/已生成/.test(toast) && !/回写/.test(toast), "顺利回写时不该额外报警：" + toast);
+
+  // ── ③ 视频写 video、配音写 audio（三种产物不能挤到同一个字段里） ────────────
+  calls = []; await made.canvasGenerate(shot, "video");
+  back = backCalls();
+  assert(back.length === 1 && back[0].body.fields.video && !back[0].body.fields.first_frame,
+    "★镜头视频回写的字段不对★ 写错字段等于没写，短剧页照样当它没做：" + JSON.stringify(back.map((c) => c.body.fields)));
+  calls = []; await made.canvasGenerate(shot, "audio");
+  back = backCalls();
+  assert(back.length === 1 && back[0].body.fields.audio, "★配音回写的字段不对★：" + JSON.stringify(back.map((c) => c.body.fields)));
+
+  // ── ④ 定妆照回 characters[].ref，不是回镜头 ──────────────────────────────
+  const role = mk("character", plan.characters[0].payload);
+  role.p.description = "十七岁女生，齐肩黑发，红色校服外套，站姿自然";
+  calls = []; await made.canvasGenerate(role, "image");
+  back = backCalls();
+  assert(back.length === 1 && back[0].body.character === "A" && !back[0].body.shot && back[0].body.fields.ref,
+    "★定妆照没回写进角色的 ref★ 短剧页那头重跑首帧就没有参考图，十二镜里同一个人会一镜一个样："
+    + JSON.stringify(back.map((c) => c.body)));
+
+  // ── ⑤ 手搓的节点没有真源，一笔都不许发（否则每生成一次弹一条没头没脑的红） ──
+  const hand = mk("shot", { title: "手搓镜头", prompt: "一只猫走过窗台，黄昏侧光", id: "X1" });
+  calls = []; await made.canvasGenerate(hand, "image");
+  assert(backCalls().length === 0, "没挂在分镜表上的节点不该发回写：" + JSON.stringify(backCalls().map((c) => c.body)));
+  assert(/已生成/.test(toast), "手搓节点照样该报生成成功：" + toast);
+
+  // ── ⑥ 回写失败要说，但绝不能说成「生成失败」 ────────────────────────────────
+  // 这一步跑到的时候钱已经花掉、文件已经落盘。报成「生成失败」是假红，人会再点一次，
+  // 于是真的又花一次——比不报还糟
+  for (const mode of ["reject", "boom"]) {
+    fetchMode = mode; toast = ""; calls = [];
+    await made.canvasGenerate(shot, "image");
+    assert(/已生成/.test(toast) && !/生成失败/.test(toast),
+      `★回写${mode === "boom" ? "整个炸了" : "被退回"}的时候把「生成成功」说成了「生成失败」★ 这是假红：钱已经花了，人看见红会再点一次，于是真的又花一次：` + toast);
+    assert(/回写/.test(toast) && /再花一次钱/.test(toast), "回写没成功却没说清后果：" + toast);
+    assert(shot.p.first_frame, "回写失败不该把节点上已经生出来的路径抹掉：" + JSON.stringify(shot.p));
+  }
+  fetchMode = "ok";
+  // 单独再钉一遍：这个函数任何情况下都不许抛。它一抛就会被 canvasGenerate 外面那层 catch 接走，
+  // 界面上就是「生成失败」
+  fetchMode = "boom";
+  const msg = await made.canvasBoardWriteback({ board: BOARD_NAME, board_shot: "S1-01" }, { first_frame: "x.png" });
+  assert(typeof msg === "string" && msg, "网络炸了该返回一句话，不该抛也不该返回空：" + JSON.stringify(msg));
+  fetchMode = "ok";
+  assert(await made.canvasBoardWriteback({}, { first_frame: "x.png" }) === "", "没有戳的节点该安静跳过");
+
+
+  // ── ⑮ 画布上改内容，也得回到分镜表（不回的代价是拿老提示词买回一张老图）─────────
+  {
+    const stamped = made.canvasBoardPlan(board, BOARD_NAME);
+    const sp = stamped.scenes[0].shots[0].payload, cp = stamped.characters[0].payload;
+    assert(sp.board_style === board.style,
+      "★展开的时候没把接上去的那段画风留一份★ 回写提示词时剥不掉它，下次展开又接一遍，接几次堆几次：" + JSON.stringify(sp.board_style));
+    assert(sp.prompt === board.scenes[0].shots[0].frame_prompt + "\n" + board.style, "展开出来的提示词不是「原文 + 画风」：" + JSON.stringify(sp.prompt));
+
+    const shotN = mk("shot", { ...sp });
+    calls = []; toast = "";
+    // 人只改了提示词前半段：回表的必须是剥掉画风的那段原文
+    shotN.p.prompt = "阿岚回头，睫毛上有雪\n" + board.style;
+    let back = await made.canvasBoardContentSync(shotN, "prompt");
+    assert(back === "", "提示词回表顺利却报了一句错：" + back);
+    assert(backCalls().length === 1 && backCalls()[0].body.fields.frame_prompt === "阿岚回头，睫毛上有雪",
+      "★画布上改的提示词没剥掉画风就写回分镜表了★ 下次展开会在它后面再接一遍画风，接几次堆几次：" + JSON.stringify(backCalls().map((c) => c.body.fields)));
+    assert(backCalls()[0].body.shot === "S1-01" && backCalls()[0].body.scene === "S1" && !("prompt" in backCalls()[0].body.fields),
+      "★回表的字段名不对★ 分镜表里叫 frame_prompt，塞个 prompt 进去整份表就读不出来了：" + JSON.stringify(backCalls()[0].body));
+
+    // 剩下几样是同名直传，但漏一样就是漏一样：台词不回表，重跑配音念的还是老台词
+    for (const [k, v, field] of [["line", "我走了", "line"], ["speaker", "B", "speaker"], ["shot_size", "特写", "shot_size"], ["motion_prompt", "镜头缓缓拉远", "motion_prompt"]]) {
+      calls = []; shotN.p[k] = v;
+      assert(await made.canvasBoardContentSync(shotN, k) === "", k + " 回表报错了");
+      assert(backCalls().length === 1 && backCalls()[0].body.fields[field] === v,
+        `★画布上改的${k}没回分镜表★ 从短剧页或命令行重跑，用的还是改之前那句：` + JSON.stringify(backCalls().map((c) => c.body.fields)));
+    }
+    // 台词是可以清空的（无人声镜头），别把「清空」当成「没填」给拦下来
+    calls = []; shotN.p.line = "";
+    assert(await made.canvasBoardContentSync(shotN, "line") === "" && backCalls()[0].body.fields.line === "",
+      "★台词清不掉★ 空着就是无人声镜头，拦下来等于逼人去手改 JSON：" + JSON.stringify(backCalls().map((c) => c.body.fields)));
+
+    // 时长在分镜表里是数字。输入框给的是字符串，原样发过去整份表就不合法了
+    calls = []; shotN.p.duration = "6.5";
+    assert(await made.canvasBoardContentSync(shotN, "duration") === "", "时长回表报错了");
+    assert(backCalls()[0].body.fields.duration === 6.5,
+      "★时长是拿字符串回表的★ 分镜表里它是 number，写成字符串下一个读这份表的人会收到「这不是可识别的分镜表」：" + JSON.stringify(backCalls()[0].body.fields));
+    calls = []; shotN.p.duration = "abc";
+    assert(/秒数/.test(await made.canvasBoardContentSync(shotN, "duration")) && backCalls().length === 0,
+      "★填了个不是数的时长照样发出去了★：" + JSON.stringify(backCalls().map((c) => c.body.fields)));
+    shotN.p.duration = 4;
+
+    // 角色那头：画布上叫「人物设定」，分镜表里叫 look
+    const charN = mk("character", { ...cp });
+    calls = []; charN.p.description = "十七岁女生，齐肩黑发，左眉有疤";
+    assert(await made.canvasBoardContentSync(charN, "description") === "", "角色设定回表报错了");
+    assert(backCalls().length === 1 && backCalls()[0].body.character === "A" && backCalls()[0].body.fields.look === "十七岁女生，齐肩黑发，左眉有疤"
+      && !("shot" in backCalls()[0].body),
+      "★角色设定没回到 characters[].look★ 那段外貌是「跨镜头长得一样」的依据，不回表下次重跑就是另一个人：" + JSON.stringify(backCalls()[0].body));
+    calls = []; charN.p.voice = "Serena";
+    assert(await made.canvasBoardContentSync(charN, "voice") === "" && backCalls()[0].body.fields.voice === "Serena", "音色没回表");
+
+    // 画风那段被人自己改了：剥不掉就别偷偷猜，整段写回去 + 说清楚下次展开会再接一遍
+    calls = []; shotN.p.prompt = "阿岚回头\n暖黄灯光，手持晃动";
+    back = await made.canvasBoardContentSync(shotN, "prompt");
+    assert(/画风/.test(back) && /style/.test(back),
+      "★画风那段被改过，回写时一声没吭★ 下次展开会在它后面再接一遍分镜表里的画风，越堆越长：" + JSON.stringify(back));
+    assert(backCalls().length === 1 && backCalls()[0].body.fields.frame_prompt === "阿岚回头\n暖黄灯光，手持晃动",
+      "★剥不掉画风就干脆不写了★ 那这一笔就丢了：" + JSON.stringify(backCalls().map((c) => c.body.fields)));
+    shotN.p.prompt = "阿岚回头，睫毛上有雪\n" + board.style;
+
+    // 在画布上把镜头号改了：这个节点已经指不着分镜表里那一镜了。不猜着往老编号那一镜写——
+    // 写错地方比不写更难查，得等放片子才发现
+    calls = []; shotN.p.id = "S1-77"; shotN.p.line = "改完编号又改的台词";
+    back = await made.canvasBoardContentSync(shotN, "line");
+    assert(/S1-77/.test(back) && /S1-01/.test(back) && backCalls().length === 0,
+      "★镜头号在画布上改过了，内容还往老那一镜写★ 写错那一镜，人要放片子才发现：" + JSON.stringify(back) + " " + JSON.stringify(backCalls().map((c) => c.body)));
+    shotN.p.id = "S1-01";
+
+    // 画布上有、分镜表里没有的字段（标题、角色身份、编号本身）一个请求都不该发
+    for (const k of ["title", "role", "id", "reference"]) {
+      calls = [];
+      assert(await made.canvasBoardContentSync(shotN, k) === "" && backCalls().length === 0,
+        `★${k} 也往分镜表里塞★ schema 是 additionalProperties:false，塞进去整份表就读不出来了`);
+    }
+    // 手搓的节点没有真源可回，安静跳过。两种都要试：什么都没有的，和戳盖了一半的
+    //（有镜头号没分镜表名——真源名是空的，敲过去只会在界面上弹一条红）
+    for (const bareP of [{ id: "X-01", prompt: "手搓的", line: "随便写的" },
+      { id: "S1-01", board_shot: "S1-01", board_scene: "S1", line: "戳盖了一半" }]) {
+      calls = [];
+      const bareN = mk("shot", bareP);
+      assert(await made.canvasBoardContentSync(bareN, "line") === "" && backCalls().length === 0,
+        "★没有分镜表名的节点也去敲回写接口★ 名字是空的，接口只会退回来，界面上白弹一条红：" + JSON.stringify(backCalls().map((c) => c.body)));
+    }
+
+    // 跟别处一样：回不去就把回不去这件事说清楚，绝不抛（它挂在输入框的 change 上，
+    // 抛出去就是一个没人接的 Promise，界面上什么都不会发生）
+    for (const mode of ["reject", "boom"]) {
+      fetchMode = mode; calls = [];
+      const m = await made.canvasBoardContentSync(shotN, "line").catch((e) => ({ threw: String(e.message || e) }));
+      assert(typeof m === "string" && /没写回分镜表/.test(m) && /改之前那句/.test(m),
+        `★回写${mode === "boom" ? "整个炸了" : "被退回"}的时候没说清后果，或者干脆抛了出去★：` + JSON.stringify(m));
+    }
+    fetchMode = "ok";
+
+    // 源码闸门：这个函数是挂在检查面板输入框的 change 上的，整个面板抠不出来跑。
+    // 挂丢了行为上一点红都不会有——改完一句台词，界面照常，分镜表里一个字没变
+    const bind = fe.slice(fe.indexOf('box.querySelectorAll("[data-inspect-key]")'), fe.indexOf('box.querySelectorAll("[data-inspect-key]")') + 900);
+    assert(/canvasBoardContentSync\(/.test(bind) && /addEventListener\("change"/.test(bind) && !/addEventListener\("input", async/.test(bind),
+      "★检查面板的输入框上没挂内容回写（或者挂到 input 上了，每敲一个字写一次盘）★：" + bind.slice(0, 300));
+  }
+
+  // ── ⑰ 在画布上连一根线／拆一根线，分镜表里那一镜的 cast 也得跟着改 ──────────
+  // cast 不是装饰：这一镜出图时按它去取谁的定妆照当参考图。画布上连了两个人、表里还写着一个人，
+  // 从短剧页或命令行重跑这一镜只会带一张参考图，第二个人当场换一张脸——而界面上写的是「已生成」
+  {
+    const link = (from, to, rel) => ({ get: (k) => (k === "source" ? { id: from } : k === "target" ? { id: to } : k === "canvasRelation" ? rel : null) });
+    const stamp = { board: BOARD_NAME, board_scene: "S1", board_shot: "S1-01" };
+    const shotN = mk("shot", { id: "S1-01", ...stamp });
+    const a = mk("character", { id: "A", name: "阿岚", board: BOARD_NAME, board_character: "A" });
+    const b = mk("character", { id: "B", name: "老陈", board: BOARD_NAME, board_character: "B" });
+    links.length = 0; links.push(link(a.id, shotN.id, "character"), link(b.id, shotN.id, "character"));
+
+    assert(JSON.stringify(made.canvasBoardCastOf(shotN)) === '["A","B"]',
+      "★连上来的角色没按分镜表里的编号数出来★：" + JSON.stringify(made.canvasBoardCastOf(shotN)));
+
+    calls = [];
+    assert(await made.canvasBoardCastSync(shotN) === "", "连线回写不该报错");
+    assert(backCalls().length === 1, "★连线动了却没回分镜表★ 重跑这一镜会少带一张参考图：" + backCalls().length);
+    assert(JSON.stringify(backCalls()[0].body) === JSON.stringify({ name: BOARD_NAME, shot: "S1-01", scene: "S1", fields: { cast: ["A", "B"] } }),
+      "★连线回写的报文不对★：" + JSON.stringify(backCalls()[0].body));
+
+    // 拆掉一根：表里那一镜也得少一个人。多带一张不相干的参考图比少带更糟，两张脸会糊到一块儿
+    links.length = 1; calls = [];
+    assert(await made.canvasBoardCastSync(shotN) === "" && JSON.stringify(backCalls()[0].body.fields.cast) === '["A"]',
+      "★拆掉一根角色线，分镜表里那一镜还留着他★：" + JSON.stringify(backCalls().map((c) => c.body.fields)));
+
+    // 全拆光是合法的：空镜。这一笔必须真写出去，不能因为「空的」就当没事发生
+    links.length = 0; calls = [];
+    assert(await made.canvasBoardCastSync(shotN) === "" && backCalls().length === 1 && JSON.stringify(backCalls()[0].body.fields.cast) === "[]",
+      "★把角色线全拆了，分镜表里还站着人★ 空镜也得回：" + JSON.stringify(backCalls().map((c) => c.body.fields)));
+
+    // 没盖过 board_character 的角色节点（人自己搓的）按 id、再退到名字；连上来的非角色节点不算人头
+    const c = mk("character", { id: "C", name: "售票员" });
+    const d = mk("character", { id: "", name: "路人甲" });
+    const img = mk("image", { id: "img1", name: "参考图" });
+    links.length = 0; links.push(link(c.id, shotN.id, "character"), link(d.id, shotN.id, "character"), link(img.id, shotN.id, "input"));
+    assert(JSON.stringify(made.canvasBoardCastOf(shotN)) === '["C","路人甲"]',
+      "★角色编号取错了，或者把图片节点也当成了出场角色★：" + JSON.stringify(made.canvasBoardCastOf(shotN)));
+
+    // 在画布上把角色改名／改 id，分镜表里那一条还是按展开时盖的戳认人——认错人＝重跑时取错定妆照
+    const renamed = mk("character", { id: "A-我自己改的", name: "岚岚", board: BOARD_NAME, board_character: "A" });
+    links.length = 0; links.push(link(renamed.id, shotN.id, "character"));
+    assert(JSON.stringify(made.canvasBoardCastOf(shotN)) === '["A"]',
+      "★角色在画布上改了名，回表就按新名字认人了★ 分镜表里根本没这个人，重跑时取不到定妆照：" + JSON.stringify(made.canvasBoardCastOf(shotN)));
+
+    // 同一个人连了两根线：分镜表里不该出现两次（schema 不拦，拦的是参考图会重复占额度）
+    links.length = 0; links.push(link(a.id, shotN.id, "character"), link(a.id, shotN.id, "input"));
+    assert(JSON.stringify(made.canvasBoardCastOf(shotN)) === '["A"]',
+      "★同一个角色连了两根线就数成两个人★：" + JSON.stringify(made.canvasBoardCastOf(shotN)));
+
+    // 没盖过戳的节点不去敲接口；戳盖了一半（有 board_shot 没 board）也不行——名字是空的，只会白弹一条红
+    links.length = 0; links.push(link(a.id, shotN.id, "character"));
+    for (const bare of [{ id: "手搓的一镜" }, { id: "S1-01", board_shot: "S1-01", board_scene: "S1" }, { id: "S1-01", board: BOARD_NAME }]) {
+      calls = [];
+      const bn = mk("shot", bare); links.push(link(a.id, bn.id, "character"));
+      assert(await made.canvasBoardCastSync(bn) === "" && backCalls().length === 0,
+        "★没盖戳的节点也去敲回写接口★：" + JSON.stringify(backCalls().map((c) => c.body)));
+    }
+
+    // 只有镜头节点才有 cast。角色节点如此；生成出来的结果节点更要紧——它身上带着那一镜的戳，
+    // 往它上面连一张参考图，就会拿这张图当「出场角色」写回那一镜
+    for (const other of [a, mk("image", { id: "S1-01", board: BOARD_NAME, board_scene: "S1", board_shot: "S1-01" })]) {
+      calls = []; links.length = 0; links.push(link(b.id, other.id, "character"));
+      assert(await made.canvasBoardCastSync(other) === "" && backCalls().length === 0,
+        "★往不是镜头的节点上写 cast★ 分镜表里只有镜头有 cast，写串了整份表就读不出来了：" + JSON.stringify(backCalls().map((c) => c.body)));
+    }
+    links.length = 0; links.push(link(a.id, shotN.id, "character"));
+
+    // 镜头号在画布上被改过：这个节点已经跟分镜表脱钩了，猜着往老编号那一镜写比不写更难查
+    calls = [];
+    const moved = mk("shot", { ...stamp, id: "S1-77" });
+    links.length = 0; links.push(link(a.id, moved.id, "character"));
+    assert(await made.canvasBoardCastSync(moved) === "" && backCalls().length === 0,
+      "★镜头号改过了还往老那一镜写 cast★ 写错地方要等放片子才发现：" + JSON.stringify(backCalls().map((c) => c.body)));
+
+    // 回不去就说清后果，绝不抛：它挂在图的 add/remove 上，抛出去就是一个没人接的 Promise
+    links.length = 0; links.push(link(a.id, shotN.id, "character"));
+    for (const mode of ["reject", "boom"]) {
+      fetchMode = mode; calls = [];
+      const m = await made.canvasBoardCastSync(shotN).catch((e) => ({ threw: String(e.message || e) }));
+      assert(typeof m === "string" && /出场角色没写回分镜表/.test(m) && /变脸/.test(m),
+        `★连线回写${mode === "boom" ? "整个炸了" : "被退回"}的时候没说清后果，或者干脆抛了出去★：` + JSON.stringify(m));
+    }
+    fetchMode = "ok"; links.length = 0;
+
+    // 源码闸门：这两个钩子挂在真的 joint 图上，整张图抠不出来跑。
+    // 挂丢了行为上一点红都不会有；两个守卫丢了更糟——展开一份十二镜的分镜表会当场往真源上糊十二笔
+    const hookAt = fe.indexOf("const castQueue = new Set();");
+    assert(hookAt > 0, "★连线回写的钩子整个不见了★ 在画布上连一根线，分镜表里那一镜的 cast 永远不会变");
+    const hook = fe.slice(hookAt, hookAt + 1500);
+    assert(/canvasBoardCastSync\(/.test(hook), "★钩子里没去回写★：" + hook.slice(0, 300));
+    assert(/canvasState\.graph\.on\("add", castWatch\)/.test(hook) && /canvasState\.graph\.on\("remove", castWatch\)/.test(hook),
+      "★钩子没挂到图的 add/remove 上★ 在画布上直接拖一条线根本不走 canvasConnect：" + hook.slice(0, 400));
+    assert(/canvasState\.bulk \|\| canvasState\.suspendSync/.test(hook),
+      "★钩子没挡住批量那两下★ 展开分镜表和恢复快照都会成批连线，一条线一次回写＝往真源上糊十二笔：" + hook.slice(0, 400));
+  }
+
+  // ── ⑭ 短剧页那头重跑一格，也只准写这一格 ────────────────────────────────
+  // 画布一回写，短剧页的整份 PUT 就成了新的踩踏点：它手里是**打开页面那一刻**的副本，
+  // 中间画布上生的十二笔会被这一次重跑连带抹掉，而界面上写的是「已生成」
+  {
+    const dr = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-drama.js"), "utf8");
+    const dcut = (from, to) => {
+      const a = dr.indexOf(from), b = dr.indexOf(to, a + 1);
+      assert(a >= 0 && b > a, "抠不出短剧页这段代码（函数改名了？）：" + from);
+      return dr.slice(a, b);
+    };
+    // 源码闸门：重跑那条路上不许再出现整份写。这一条纯函数断言看不见——
+    // 把 dramaSaveShot 的内容原样搬回 dramaSave 里，行为一模一样，钱照样丢
+    const rerunBody = dcut("async function dramaRerun(", "\n}\n");
+    assert(/dramaSaveShot\(/.test(rerunBody) && !/[^S]dramaSave\(/.test(rerunBody),
+      "★短剧页重跑那一格又走回整份写回了★ 它手里是打开页面那一刻的副本，会把画布上刚生的那十二笔一起抹掉，人还以为「重跑成功」：" + rerunBody.slice(0, 400));
+    // 回写没成功要跟「已生成」摆在同一条提示里说。dramaRerun 整个挂在 DOM 上抠不出来跑，
+    // 所以这一条也只能钉在源码上：把这个分支删掉，回写失败就成了一次静悄悄的分家
+    assert(/const back = await dramaSaveShot\(/.test(rerunBody) && /if \(back\)/.test(rerunBody),
+      "★重跑那格拿到回写失败之后没吭声★ 画布上有图、分镜表里没有，要等下次重跑白花一次钱才看得出来：" + rerunBody.slice(0, 400));
+
+    let dcalls = [], dmode = "ok";
+    const dsrc = dcut("async function dramaSave()", "\nasync function dramaRerun(");
+    const dmade = new Function("fetch", "dramaState", "console",
+      dsrc + "\nreturn { dramaSave, dramaSaveShot };")(
+      async (url, opt) => {
+        dcalls.push({ url, body: JSON.parse((opt && opt.body) || "{}") });
+        if (dmode === "boom") throw new Error("网络断了");
+        return { json: async () => (dmode === "reject" ? { error: "分镜表里没有这一镜" } : { ok: true }) };
+      },
+      { name: BOARD_NAME, data: { title: "x" } },
+      { warn() {} });
+
+    const scene = { id: "S1" }, one = { id: "S1-07" };
+    let back = await dmade.dramaSaveShot(scene, one, { first_frame: "a.png", note: "首帧已重跑" });
+    assert(back === "", "回写顺利却报了一句错：" + back);
+    assert(dcalls.length === 1 && dcalls[0].url === "/api/drama/storyboard/output",
+      "★重跑写回去的还是整份分镜表★：" + JSON.stringify(dcalls.map((c) => c.url)));
+    assert(dcalls[0].body.shot === "S1-07" && dcalls[0].body.scene === "S1" && dcalls[0].body.name === BOARD_NAME
+      && dcalls[0].body.fields.first_frame === "a.png" && dcalls[0].body.fields.note === "首帧已重跑",
+      "★单格回写的身份没带全，服务端指不着是哪一场的哪一镜★：" + JSON.stringify(dcalls[0].body));
+
+    // 表被人手改坏、这一镜没有镜头号：指不着就退回整份写，总比这一笔干脆不落盘强
+    dcalls = [];
+    back = await dmade.dramaSaveShot(scene, { shot_size: "近景" }, { first_frame: "b.png" });
+    assert(back === "" && dcalls.length === 1 && dcalls[0].url === "/api/drama/storyboard",
+      "★没有镜头号的那一镜既指不着单格、又没退回整份写，这一笔就丢了★：" + JSON.stringify(dcalls.map((c) => c.url)));
+    // 退回去的那条整份写自己也会失败（dramaSave 是会抛的）。让它一路抛到 dramaRerun 的 catch，
+    // 界面上就是「重跑失败」——钱已经花了、图已经落盘了，那是假红，人会再点一次
+    dcalls = []; dmode = "reject";
+    const m0 = await dmade.dramaSaveShot(scene, { shot_size: "近景" }, { first_frame: "d.png" }).catch((e) => ({ threw: String(e.message || e) }));
+    assert(typeof m0 === "string" && /再花一次钱/.test(m0),
+      "★退回整份写的那条路上失败了，异常被掀了出去★ 外面那层 catch 会把它显示成「重跑失败」，人会再点一次、再花一次钱：" + JSON.stringify(m0));
+    dmode = "ok";
+
+    // 跟画布那边同一条道理：钱已经花了、图已经落盘了，这时候抛出去就会被 dramaRerun 的
+    // catch 接走显示成「重跑失败」——人会再点一次，于是真的又花一次
+    for (const mode of ["reject", "boom"]) {
+      dmode = mode;
+      const m = await dmade.dramaSaveShot(scene, one, { first_frame: "c.png" });
+      assert(typeof m === "string" && /写回分镜表/.test(m) && /再花一次钱/.test(m),
+        `★回写${mode === "boom" ? "整个炸了" : "被退回"}的时候没说清后果，或者干脆抛了出去★ 抛出去界面上就是「重跑失败」，那是假红：` + JSON.stringify(m));
+    }
+    dmode = "ok";
+  }
+
+  // ══ 后半场：服务端真把它写到盘上那一个字段里 ════════════════════════════
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-drama-"));
+  const ws = path.join(home, "workspace", "分镜表");
+  fs.mkdirSync(ws, { recursive: true });
+  const boardPath = path.join(ws, "最后一班车.json");
+  // 两场里各有一个 S2-01：镜头号在真分镜表里重复过，服务端不许替人猜是哪一场的那一镜
+  const onDisk = JSON.parse(JSON.stringify(board));
+  onDisk.scenes.push({ id: "S2", place: "老陈家", time: "深夜", shots: [{ id: "S2-01", cast: ["B"], shot_size: "特写", frame_prompt: "手表特写", motion_prompt: "固定机位" }] });
+  onDisk.scenes.push({ id: "S3", place: "天桥", time: "凌晨", shots: [{ id: "S2-01", cast: ["A"], shot_size: "远景", frame_prompt: "天桥空镜", motion_prompt: "固定机位" }] });
+  fs.writeFileSync(boardPath, JSON.stringify(onDisk, null, 2) + "\n");
+
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const { up, port, why } = await booted.wait();
+  const post = (body) => new Promise((resolve) => {
+    const raw = Buffer.from(JSON.stringify(body));
+    const req = http.request({
+      host: "127.0.0.1", port, path: "/api/drama/storyboard/output", method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": raw.length, Cookie: "openworkbuddy_token=" + token },
+    }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, json: j, body: b }); });
+    });
+    req.on("error", (e) => resolve({ code: 0, json: null, body: e.message }));
+    req.end(raw);
+  });
+  const read = () => JSON.parse(fs.readFileSync(boardPath, "utf8"));
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+
+    // ── ⑦ 真写到盘上，而且只动那一个字段 ────────────────────────────────────
+    const r1 = await post({ name: BOARD_NAME, scene: "S1", shot: "S1-01", fields: { first_frame: "镜头_S1-01_首帧.png" } });
+    assert(r1.code === 200 && r1.json && r1.json.ok, "回写接口没收：" + r1.code + " " + r1.body);
+    let now = read();
+    assert(now.scenes[0].shots[0].first_frame === "镜头_S1-01_首帧.png",
+      "★回写说成功了，盘上那一镜还是空的★ 这是最骗人的一种绿：" + JSON.stringify(now.scenes[0].shots[0]));
+    assert(now.scenes[0].shots[0].frame_prompt === "阿岚站在站牌下" && now.scenes[0].shots[1].first_frame === undefined
+      && now.title === "最后一班车" && now.characters.length === 2,
+      "★回写一笔顺手动了别的地方★ 分镜表是唯一真源，旁边那些字是人手写的：" + JSON.stringify(now.scenes[0]));
+
+    const rNote = await post({ name: BOARD_NAME, scene: "S1", shot: "S1-02", fields: { video: "镜头_S1-02.mp4", note: "视频已重跑" } });
+    assert(rNote.code === 200 && read().scenes[0].shots[1].note === "视频已重跑",
+      "★短剧页重跑写的那行流水落不进去★ note 是那条单格回写唯一收的非产物字段，它进不来重跑就只能走整份写：" + rNote.code + " " + rNote.body);
+
+    // ── ⑧ 查无此镜要当场说，不许静悄悄成功 ──────────────────────────────────
+    const before404 = fs.readFileSync(boardPath, "utf8");
+    const r2 = await post({ name: BOARD_NAME, shot: "S9-99", fields: { first_frame: "x.png" } });
+    assert(r2.code === 404 && /S9-99/.test(String(r2.json && r2.json.error)),
+      "★分镜表里没有这一镜，接口却没报★ 画布上写着路径、真源里一个字没有，要等下次白花一次钱才看得出来：" + r2.code + " " + r2.body);
+    assert(fs.readFileSync(boardPath, "utf8") === before404, "查无此镜的那一笔不该动盘上的文件");
+
+    // ── ⑨ 白名单外的字段直接退回（schema 是 additionalProperties:false，塞进去整份表就读不出来了）──
+    // id 是定位用的钥匙，要改得去分镜表里改；类型错了更要当场拦：
+    // 时长写成字符串，整份分镜表从此读不出来，错在这一笔赔的是整部戏
+    for (const bad of [{ evil: "x" }, { id: "S9-99" }, { title: "换个名" },
+      { first_frame: "" }, { first_frame: 3 }, { frame_prompt: "" }, { shot_size: "   " },
+      { line: 3 }, { duration: "4" }, { duration: 0 }, { duration: -2 }, { duration: NaN }]) {
+      const r = await post({ name: BOARD_NAME, shot: "S1-01", fields: bad });
+      assert(r.code === 400 && String((r.json && r.json.error) || "").includes(Object.keys(bad)[0]),
+        "★这条接口没拦住它不该收的字段，或者是自己崩了一下（兜底的 catch 也给 400）★ " + JSON.stringify(bad) + " → " + r.code + " " + r.body);
+    }
+    assert(read().scenes[0].shots[0].frame_prompt === "阿岚站在站牌下", "被退回的那几笔居然写进去了");
+
+    // ── ⑯ 内容字段真能回：提示词、台词、时长（时长必须是数字落盘）──────────────
+    // 画布上改了提示词不回表，从命令行重跑的还是老那句，而且参数变了缓存命不中——
+    // 等于花钱买回一张老图，把刚改好的那张盖掉
+    assert((await post({ name: BOARD_NAME, scene: "S1", shot: "S1-01", fields: { frame_prompt: "阿岚回头，睫毛上有雪" } })).code === 200, "提示词回表没收");
+    assert((await post({ name: BOARD_NAME, scene: "S1", shot: "S1-01", fields: { duration: 6.5 } })).code === 200, "时长回表没收");
+    assert((await post({ name: BOARD_NAME, scene: "S1", shot: "S1-01", fields: { line: "" } })).code === 200, "★台词清不掉★ 空着就是无人声镜头");
+    now = read();
+    assert(now.scenes[0].shots[0].frame_prompt === "阿岚回头，睫毛上有雪" && now.scenes[0].shots[0].line === "",
+      "★内容改了却没落盘★：" + JSON.stringify(now.scenes[0].shots[0]));
+    assert(typeof now.scenes[0].shots[0].duration === "number" && now.scenes[0].shots[0].duration === 6.5,
+      "★时长落盘落成了字符串★ 分镜表里它是 number，下一个读这份表的人会收到「这不是可识别的分镜表」：" + JSON.stringify(now.scenes[0].shots[0].duration));
+    assert((await post({ name: BOARD_NAME, character: "A", fields: { look: "十七岁女生，左眉有疤" } })).code === 200, "角色设定回表没收");
+    assert(read().characters[0].look === "十七岁女生，左眉有疤", "★角色外貌没落盘★ 那段是跨镜头长得一样的依据");
+
+
+    // ── ⑱ cast 真能回，而且只有它能进去 ────────────────────────────────────
+    // 画布上连了两个人、表里还写着一个，重跑这一镜只带一张参考图，第二个人当场换一张脸
+    assert((await post({ name: BOARD_NAME, scene: "S1", shot: "S1-01", fields: { cast: ["A", "B"] } })).code === 200, "连线回写没收");
+    now = read();
+    assert(JSON.stringify(now.scenes[0].shots[0].cast) === '["A","B"]',
+      "★出场角色没落盘★ 重跑这一镜会少带一张参考图：" + JSON.stringify(now.scenes[0].shots[0].cast));
+    assert(now.scenes[0].shots[0].frame_prompt === "阿岚回头，睫毛上有雪", "写 cast 顺手把提示词也动了");
+    // 空数组是合法的：角色线全拆了就是个空镜。这一笔必须真写进去，不能当没事发生
+    assert((await post({ name: BOARD_NAME, scene: "S1", shot: "S1-01", fields: { cast: [] } })).code === 200, "★空镜不让写★ 把角色线全拆了，表里还站着人");
+    assert(JSON.stringify(read().scenes[0].shots[0].cast) === "[]", "★清空 cast 没落盘★");
+    // 里头混进一个空串或者数字，整份分镜表就不合 schema 了（cast 是 string 数组），
+    // 下次读这份表的人只会收到一句「这不是可识别的分镜表」——错在这一笔，赔的是整部戏
+    const longCast = []; for (let i = 0; i < 25; i++) longCast.push("R" + i);
+    for (const bad of [{ cast: "A" }, { cast: ["A", ""] }, { cast: ["A", "   "] }, { cast: ["A", 3] }, { cast: ["A", null] }, { cast: ["A", "A"] }, { cast: longCast }]) {
+      const r = await post({ name: BOARD_NAME, shot: "S1-01", fields: bad });
+      // 光看 400 是软的：校验拆掉之后它多半是自己绊一跤（v.some is not a function），
+      // 兜底的 catch 照样给 400。得是接口点名说了是哪个字段不对
+      assert(r.code === 400 && String((r.json && r.json.error) || "").includes("cast"),
+        "★这条接口没拦住会把分镜表写坏的 cast，或者是自己崩了一下★ " + JSON.stringify(bad) + " → " + r.code + " " + r.body);
+    }
+    assert(JSON.stringify(read().scenes[0].shots[0].cast) === "[]", "被退回的那几笔居然写进去了：" + JSON.stringify(read().scenes[0].shots[0].cast));
+    assert((await post({ name: BOARD_NAME, character: "A", fields: { cast: ["B"] } })).code === 400,
+      "★角色身上也让写 cast★ 分镜表里角色没这个字段，塞进去整份表就读不出来了");
+
+    // ── ⑩ 角色：按 id 也按名字，落的是 ref ──────────────────────────────────
+    assert((await post({ name: BOARD_NAME, character: "A", fields: { ref: "角色_阿岚_定妆.png" } })).code === 200, "按 id 回写定妆照没成");
+    assert((await post({ name: BOARD_NAME, character: "老陈", fields: { ref: "角色_老陈_定妆.png" } })).code === 200, "按名字回写定妆照没成");
+    now = read();
+    assert(now.characters[0].ref === "角色_阿岚_定妆.png" && now.characters[1].ref === "角色_老陈_定妆.png",
+      "★定妆照没落到 characters[].ref★ 短剧页那头重跑首帧就没有参考图：" + JSON.stringify(now.characters));
+
+    // ── ⑪ 镜头号撞了不替人猜；给了场次号就分得清 ────────────────────────────
+    const dup = await post({ name: BOARD_NAME, shot: "S2-01", fields: { video: "撞号.mp4" } });
+    assert(dup.code === 409 && /S2-01/.test(String(dup.json && dup.json.error)),
+      "★两场里都有 S2-01，接口却随手挑了一个写★ 写错那一镜，人要放片子才发现：" + dup.code + " " + dup.body);
+    assert((await post({ name: BOARD_NAME, scene: "S3", shot: "S2-01", fields: { video: "S3的那一镜.mp4" } })).code === 200, "给了场次号还是分不清");
+    now = read();
+    assert(!now.scenes[1].shots[0].video && now.scenes[2].shots[0].video === "S3的那一镜.mp4",
+      "★给了场次号还是写错了场★：" + JSON.stringify([now.scenes[1].shots[0], now.scenes[2].shots[0]]));
+
+    // ── ⑫ 十二镜几乎同时生完：一笔都不许被别人的写盘冲掉 ─────────────────────
+    // 这正是不复用整份 PUT 的原因。读到写之间只要有一个 await，这条就会红
+    const many = [];
+    for (let i = 0; i < 12; i++) many.push({ id: "P-" + i });
+    const big = read();
+    big.scenes.push({ id: "P", place: "并发", time: "无", shots: many.map((m) => ({ id: m.id, shot_size: "中景", frame_prompt: "p", motion_prompt: "m" })) });
+    fs.writeFileSync(boardPath, JSON.stringify(big, null, 2) + "\n");
+    const rs = await Promise.all(many.map((m) => post({ name: BOARD_NAME, scene: "P", shot: m.id, fields: { first_frame: m.id + ".png" } })));
+    assert(rs.every((r) => r.code === 200), "并发回写里有没收下的：" + JSON.stringify(rs.map((r) => r.code)));
+    const after = read().scenes.find((s) => s.id === "P").shots;
+    const lost = after.filter((s) => s.first_frame !== s.id + ".png").map((s) => s.id);
+    assert(lost.length === 0,
+      "★十二镜同时回写，有 " + lost.length + " 笔被别人的写盘冲掉了★ 画布上有图、分镜表里没有，下次重跑就是再花一次钱：" + lost.join("、"));
+
+    // ── ⑬ 分镜表名仍然只能指向工作区里的 .json ──────────────────────────────
+    // 光断言「≥400」是软的：闸门拆掉之后它多半是读不到文件自己崩一下，照样 400。
+    // 所以在工作区外面摆一份**长得就像分镜表、里面正好有 S1-01**的文件：闸门真拆了，
+    // 这一笔会安安静静写进去，而返回码还是 200。看的是那份文件动没动
+    const outside = path.join(home, "机密.json");
+    const outsideRaw = JSON.stringify({ title: "工作区外面的东西", scenes: [{ id: "S1", shots: [{ id: "S1-01" }] }] }, null, 2) + "\n";
+    fs.writeFileSync(outside, outsideRaw);
+    for (const name of ["../机密.json", "../../机密.json", "/etc/passwd.json", "最后一班车.txt", ""]) {
+      const r = await post({ name, shot: "S1-01", fields: { first_frame: "越界了.png" } });
+      assert(r.code >= 400, "★越界的分镜表名被放进来了★ " + JSON.stringify(name) + " → " + r.code + " " + r.body);
+    }
+    assert(fs.readFileSync(outside, "utf8") === outsideRaw,
+      "★工作区外面那份文件被这条接口改了★ 分镜表名的闸门漏了：" + fs.readFileSync(outside, "utf8").slice(0, 200));
+  } finally {
+    booted.child.kill();
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+
+  console.log("✅ 短剧画布回写分镜表：生出来的首帧/视频/配音/定妆照当场回到唯一真源（以前只留在画布里，短剧页照样写「暂无首帧」，人再点一次就是再花一次钱）· 在画布上改的提示词/台词/景别/时长/音色也回表（以前不回，重跑就是拿老提示词买回一张老图把新的盖掉），提示词先剥掉接上去的全片画风、剥不掉如实说 · 时长按数字落盘、台词清得掉、镜头号被改过就不猜着往老那一镜写 · 展开时盖戳、手搓节点不打扰 · 回写失败单独报且绝不冒充「生成失败」 · 服务端只动那一个字段、查无此镜当场报、撞号不替人猜、id/cast/类型不对一律进不去 · 十二镜同时回写一笔不丢 · 短剧页重跑那一格也只写那一格 · 在画布上连一根角色线／拆一根，分镜表里那一镜的 cast 当场跟着改（以前不跟，重跑就少带或多带一张定妆照，人当场换脸），空镜也照回、重复不算两个人、批量展开和恢复快照不糊真源");
 }

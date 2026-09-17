@@ -172,11 +172,39 @@ function createScheduler({ runtime, onResult, storePath }) {
   // 上次看表是什么时候。开机第一眼不补跑，否则第一次装起来就会把历史全部重放一遍
   let lastTickMs = store.last_tick_at ? Date.parse(store.last_tick_at) || 0 : 0;
 
-  function list() {
-    return store.tasks.map((t) => ({ ...t, running: running.has(t.id), running_since: running.get(t.id) ? new Date(running.get(t.id)).toISOString() : null }));
+  /**
+   * 这条排期，这个人碰不碰得到。
+   *
+   * 排期表以前一条归属都不记：任何一个登录进来的人都能列出、改掉、删掉、甚至**手动触发**
+   * 别人的定时任务。任务描述本身就是商业内容（「把本月华东区回款拉出来发给张总」），
+   * 列表一拉就全看见了；手动触发更狠——用的是公司的额度，结果推到的是原主人的通知渠道。
+   *
+   * 判据跟会话那边（server.js 的 sessionAllowed）保持同一条，不另起一套：
+   *   本人放行 → 管理员限本组织 → 升级上来的老任务没记归属，按公共处理（不然一升级全员任务消失）。
+   * viewer 传空 = 内部调用（tick 循环、测试、CLI），不过闸。
+   */
+  function allowed(t, viewer) {
+    if (!viewer || !t) return true;
+    if (!t.user) return true;                       // 老任务：没记过归属，不能凭空判给谁
+    if (t.user === viewer.username) return true;
+    if (!viewer.admin) return false;
+    return (t.org || "") === (viewer.org || "");     // 管理员也只看得到本组织的
   }
 
-  function add({ name, cron, task, catch_up }) {
+  /** viewer 省略 = 全部（tick 循环 / 测试 / 离职清理要看全表）；传了就按归属过滤 */
+  function list(viewer) {
+    return store.tasks
+      .filter((t) => allowed(t, viewer))
+      .map((t) => ({ ...t, running: running.has(t.id), running_since: running.get(t.id) ? new Date(running.get(t.id)).toISOString() : null }));
+  }
+
+  /** 单条取用，顺带过闸。取不到和没权限都返回 null——不区分，免得成了「这个 id 存不存在」的探针 */
+  function get(id, viewer) {
+    const t = store.tasks.find((x) => x.id === id);
+    return t && allowed(t, viewer) ? t : null;
+  }
+
+  function add({ name, cron, task, catch_up, user, org }) {
     task = String(task || "").trim();
     if (!task) throw new Error("任务描述不能为空");
     parseCron(cron); // 校验
@@ -188,6 +216,10 @@ function createScheduler({ runtime, onResult, storePath }) {
       enabled: true,
       // 错过了要不要补：默认补。笔记本合上盖子过一夜，晨报不该就这么没了
       catch_up: catch_up !== false,
+      // 归属。单机个人版这两个字段是空的，一切照旧；多人装机里它们是上面 allowed 的唯一依据，
+      // 也是「这个人离职了，他的定时任务要跟着停」能落地的前提（见 lifecycle.js）
+      user: String(user || ""),
+      org: String(org || ""),
       created_at: new Date().toISOString(),
       last_run: null,
       last_result: null,
@@ -198,8 +230,8 @@ function createScheduler({ runtime, onResult, storePath }) {
   }
 
   /** 改一个已有任务（名字/时间/内容）。以前只能删了重建，改个时间点就丢了运行记录 */
-  function update(id, patch) {
-    const t = store.tasks.find((t) => t.id === id);
+  function update(id, patch, viewer) {
+    const t = get(id, viewer);
     if (!t) return null;
     if (patch.name !== undefined) t.name = String(patch.name).trim() || t.name;
     if (patch.task !== undefined) {
@@ -216,12 +248,15 @@ function createScheduler({ runtime, onResult, storePath }) {
     return t;
   }
 
-  /** 运行记录，最近的在前 */
-  function runs(limit = 100) {
-    return store.runs.slice(-Math.max(1, limit)).reverse();
+  /** 运行记录，最近的在前。运行记录里带着任务产出的原文，跟任务本体同一条归属判据 */
+  function runs(limit = 100, viewer) {
+    const own = new Set(store.tasks.filter((t) => allowed(t, viewer)).map((t) => t.id));
+    const mine = viewer ? store.runs.filter((r) => own.has(r.task_id)) : store.runs;
+    return mine.slice(-Math.max(1, limit)).reverse();
   }
 
-  function remove(id) {
+  function remove(id, viewer) {
+    if (!get(id, viewer)) return false;               // 不是你的，就当没这条
     const before = store.tasks.length;
     store.tasks = store.tasks.filter((t) => t.id !== id);
     store.runs = store.runs.filter((r) => r.task_id !== id);
@@ -229,8 +264,8 @@ function createScheduler({ runtime, onResult, storePath }) {
     return store.tasks.length < before;
   }
 
-  function toggle(id, enabled) {
-    const t = store.tasks.find((t) => t.id === id);
+  function toggle(id, enabled, viewer) {
+    const t = get(id, viewer);
     if (!t) return false;
     t.enabled = enabled;
     saveStore(store, file);
@@ -238,12 +273,38 @@ function createScheduler({ runtime, onResult, storePath }) {
   }
 
   /** 错过了补不补跑 */
-  function setCatchUp(id, on) {
-    const t = store.tasks.find((t) => t.id === id);
+  function setCatchUp(id, on, viewer) {
+    const t = get(id, viewer);
     if (!t) return false;
     t.catch_up = !!on;
     saveStore(store, file);
     return true;
+  }
+
+  /**
+   * 某个人名下的排期全部停掉，返回停掉的那几条。办离职用（见 lifecycle.js）。
+   *
+   * 为什么是停用不是删除：定时任务是交接物。人走了，任务本身多半还得有人接着跑，
+   * 删掉就只剩「上个月那份周报是怎么来的」这种没人答得上来的问题了。
+   * 停用之后管理员在后台看得见、能改归属、能重新打开。
+   */
+  function disableOwnedBy(username) {
+    const name = String(username || "");
+    if (!name) return [];
+    const hit = store.tasks.filter((t) => t.user === name && t.enabled);
+    for (const t of hit) { t.enabled = false; t.disabled_reason = "原负责人已离职"; }
+    if (hit.length) saveStore(store, file);
+    return hit.map((t) => ({ id: t.id, name: t.name }));
+  }
+
+  /** 排期换负责人。离职交接用：不换的话这条任务永远停在那儿没人认领 */
+  function reassign(id, username) {
+    const t = store.tasks.find((x) => x.id === id);
+    if (!t) return null;
+    t.user = String(username || "");
+    delete t.disabled_reason;
+    saveStore(store, file);
+    return t;
   }
 
   async function runOne(ref, trigger) {
@@ -389,7 +450,7 @@ function createScheduler({ runtime, onResult, storePath }) {
   const timer = setInterval(tick, 20000);
   timer.unref && timer.unref();
 
-  return { list, add, update, remove, toggle, setCatchUp, runOne, runs, tick, catchUp, stop: () => clearInterval(timer) };
+  return { list, get, add, update, remove, toggle, setCatchUp, disableOwnedBy, reassign, runOne, runs, tick, catchUp, stop: () => clearInterval(timer) };
 }
 
 module.exports = { createScheduler, parseCron, cronMatches, describeCron, setActiveScheduler, activeScheduler, SCHEDULE_LABEL };

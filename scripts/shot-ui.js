@@ -64,7 +64,7 @@ function pageScript(scene) {
     // 演示身份：不读、不写真数据
     try { localStorage.clear(); } catch {}
     sessions = []; sessionId = "demo"; isReplaying = false;
-    try { localStorage.setItem("wb_proc_open", ${scene.open ? '"1"' : '"0"'}); } catch {}
+    try { localStorage.setItem("owb_proc_open", ${scene.open ? '"1"' : '"0"'}); } catch {}
     document.getElementById("empty")?.remove();
     chatCol.innerHTML = "";
     const ui = createTurnUI(${JSON.stringify(scene.ask)}, "craft", "demo");

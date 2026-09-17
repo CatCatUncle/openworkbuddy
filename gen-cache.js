@@ -38,7 +38,7 @@ const crypto = require("crypto");
 const { dataPath } = require("./paths");
 const store = require("./store");
 
-const DATA_DIR = process.env.WB_DATA_DIR || dataPath("data");
+const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 const FILE = path.join(DATA_DIR, "gen-cache.json");
 
 /** 索引上限。超了按「最近用过」淘汰——指针很小，几百条也就几十 KB */

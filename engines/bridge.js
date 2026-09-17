@@ -52,9 +52,9 @@ function buildServers({ home, baseDir = "", user = "", tools, extraServers = [] 
       env: {
         ...nodeEnv,
         OPENWORKBUDDY_HOME: home,
-        WB_BRIDGE_BASEDIR: baseDir,
-        WB_BRIDGE_USER: user,
-        ...(tools && tools.length ? { WB_BRIDGE_TOOLS: tools.join(",") } : {}),
+        OPENWORKBUDDY_BRIDGE_BASEDIR: baseDir,
+        OPENWORKBUDDY_BRIDGE_USER: user,
+        ...(tools && tools.length ? { OPENWORKBUDDY_BRIDGE_TOOLS: tools.join(",") } : {}),
       },
     },
   };

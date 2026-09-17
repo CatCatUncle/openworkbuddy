@@ -7,7 +7,7 @@
 #   bash deploy.sh --logs                       # 跟日志
 #   bash deploy.sh --down                       # 停掉（数据留着）
 #
-# 数据全在 ./wb-data 一个目录里。容器随便删，那个目录别删。
+# 数据全在 ./openworkbuddy-data 一个目录里。容器随便删，那个目录别删。
 #
 # 这个脚本不装 Docker、不改防火墙、不动系统配置——那些得你自己点头。
 # 缺什么它会告诉你怎么装。
@@ -88,34 +88,34 @@ setenv() {  # setenv KEY VALUE
     printf '%s=%s\n' "$k" "$v" >> .env
   fi
 }
-[ -n "$DOMAIN" ] && setenv WB_DOMAIN "$DOMAIN"
-[ -n "$BIND" ]   && setenv WB_BIND   "$BIND"
-[ -n "$PORT" ]   && setenv WB_PORT   "$PORT"
+[ -n "$DOMAIN" ] && setenv OPENWORKBUDDY_DOMAIN "$DOMAIN"
+[ -n "$BIND" ]   && setenv OPENWORKBUDDY_BIND   "$BIND"
+[ -n "$PORT" ]   && setenv OPENWORKBUDDY_PORT   "$PORT"
 # 走 --domain 就是我们自己在前面起 caddy，那这一层反代是确定存在的，直接把开关打开。
 # 不打开的话：所有请求在应用看来都来自 caddy 那一个 IP，注册限流 5 次/15 分钟
 # 会变成「第 6 个同事注册不了」，登录限流会变成「有人连错几次密码全公司一起进不去」。
 # 只在 --domain 时自动填，是因为「填了却没反代」比「没填」更糟——那等于把闸拆给外网。
-[ -n "$DOMAIN" ] && setenv WB_TRUST_PROXY 1
+[ -n "$DOMAIN" ] && setenv OPENWORKBUDDY_TRUST_PROXY 1
 
 # 读回最终值（.env 是纯 KEY=VALUE，可以直接 source）
 set -a; . ./.env; set +a
-WB_HOME="${WB_HOME:-./wb-data}"
-WB_BIND="${WB_BIND:-127.0.0.1}"
-WB_PORT="${WB_PORT:-3800}"
-WB_DOMAIN="${WB_DOMAIN:-}"
-WB_TRUST_PROXY="${WB_TRUST_PROXY:-0}"
+OPENWORKBUDDY_DATA="${OPENWORKBUDDY_DATA:-./openworkbuddy-data}"
+OPENWORKBUDDY_BIND="${OPENWORKBUDDY_BIND:-127.0.0.1}"
+OPENWORKBUDDY_PORT="${OPENWORKBUDDY_PORT:-3800}"
+OPENWORKBUDDY_DOMAIN="${OPENWORKBUDDY_DOMAIN:-}"
+OPENWORKBUDDY_TRUST_PROXY="${OPENWORKBUDDY_TRUST_PROXY:-0}"
 
-mkdir -p "$WB_HOME"
+mkdir -p "$OPENWORKBUDDY_DATA"
 
 # 空数组在 macOS 自带的 bash 3.2 + set -u 下直接展开会报 unbound variable，
 # 所以下面一律写成 ${PROFILE[@]+"${PROFILE[@]}"}
 PROFILE=()
-[ -n "$WB_DOMAIN" ] && PROFILE=(--profile https)
+[ -n "$OPENWORKBUDDY_DOMAIN" ] && PROFILE=(--profile https)
 
 # ---------- 4. 干活 ----------
 case "$ACTION" in
   logs) exec docker compose ${PROFILE[@]+"${PROFILE[@]}"} logs -f ;;
-  down) docker compose ${PROFILE[@]+"${PROFILE[@]}"} down; ok "停了。数据还在 $WB_HOME，下次 bash deploy.sh 接着用"; exit 0 ;;
+  down) docker compose ${PROFILE[@]+"${PROFILE[@]}"} down; ok "停了。数据还在 $OPENWORKBUDDY_DATA，下次 bash deploy.sh 接着用"; exit 0 ;;
   update)
     if [ -d .git ]; then say "拉最新代码"; git pull --ff-only || warn "拉取失败（本地有改动？），用现有代码继续"; fi
     ;;
@@ -144,10 +144,10 @@ done
 if [ "$HEALTHY" != "1" ]; then
   warn "没等到健康。最后 40 行日志："
   docker compose logs --tail=40 app || true
-  die "起不来。常见原因：端口被占（换 --port）、config.json 写坏了（删掉 $WB_HOME/config.json 让它重建）。"
+  die "起不来。常见原因：端口被占（换 --port）、config.json 写坏了（删掉 $OPENWORKBUDDY_DATA/config.json 让它重建）。"
 fi
 
-if [ -n "$WB_DOMAIN" ]; then URL="https://$WB_DOMAIN"; else URL="http://$WB_BIND:$WB_PORT"; fi
+if [ -n "$OPENWORKBUDDY_DOMAIN" ]; then URL="https://$OPENWORKBUDDY_DOMAIN"; else URL="http://$OPENWORKBUDDY_BIND:$OPENWORKBUDDY_PORT"; fi
 
 cat <<EOF
 
@@ -160,7 +160,7 @@ $(ok "起来了：$URL")
      空着的实例挂在那儿，等于谁先访问谁是管理员。
 
   2. 填模型 API Key（界面会引导），填完当场发一条真请求验活，通过才存。
-     Key 存在 $WB_HOME/config.json，不进镜像也不进 git。
+     Key 存在 $OPENWORKBUDDY_DATA/config.json，不进镜像也不进 git。
 
   管理员登录后，头像菜单 → 企业管理后台，可以建组织、分席位、看用量、
   配组织级的安全策略（能不能跑命令行、能访问哪些域名、登录多久过期）。
@@ -172,7 +172,7 @@ $(ok "起来了：$URL")
 
 EOF
 
-if [ -z "$WB_DOMAIN" ] && [ "$WB_BIND" = "127.0.0.1" ]; then
+if [ -z "$OPENWORKBUDDY_DOMAIN" ] && [ "$OPENWORKBUDDY_BIND" = "127.0.0.1" ]; then
   cat <<'EOF'
   现在只有这台机器自己连得上。要让别人也能用，二选一：
       bash deploy.sh --domain buddy.example.com     # 自带 HTTPS，推荐
@@ -181,7 +181,7 @@ if [ -z "$WB_DOMAIN" ] && [ "$WB_BIND" = "127.0.0.1" ]; then
 EOF
 fi
 
-if [ "$WB_BIND" = "0.0.0.0" ] && [ -z "$WB_DOMAIN" ]; then
+if [ "$OPENWORKBUDDY_BIND" = "0.0.0.0" ] && [ -z "$OPENWORKBUDDY_DOMAIN" ]; then
   warn "你把它直接挂在 0.0.0.0 上，而且没有 HTTPS。这个 agent 手里有 run_shell，"
   warn "等于把这台机器的 shell 用明文 HTTP 挂到了公网。至少去设置 → 安全中心把命令审批打开。"
 fi

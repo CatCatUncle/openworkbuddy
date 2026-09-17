@@ -30,7 +30,7 @@ const path = require("path");
 const { dataPath } = require("./paths");
 const store = require("./store");
 
-const DATA_DIR = process.env.WB_DATA_DIR || dataPath("data");
+const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 const SESS_DIR = path.join(DATA_DIR, "sessions");
 const FEEDBACK_FILE = path.join(DATA_DIR, "feedback.json");
 const PROPOSALS_FILE = path.join(DATA_DIR, "proposals.json");

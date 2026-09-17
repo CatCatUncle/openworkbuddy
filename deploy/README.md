@@ -48,7 +48,7 @@ sudo usermod -aG docker $USER   # 然后重新登录，不然每条命令都得 
 1. **马上打开地址注册第一个账号。** 第一个注册的就是管理员，注册完之后默认不再允许别人自建账号。
    空实例挂在公网上，等于谁先访问谁是管理员。
 2. **填模型 API Key**（界面会引导）。填完当场发一条真请求验活，通过才存。
-   Key 落在 `wb-data/config.json`，既不进镜像也不进 git。
+   Key 落在 `openworkbuddy-data/config.json`，既不进镜像也不进 git。
 
 管理员登录后，头像菜单 → **企业管理后台**：建组织、分席位、看用量、配组织级安全策略
 （能不能跑命令行、能访问哪些域名、登录多久过期）。多租户的规则见下面「多租户」一节。
@@ -57,10 +57,10 @@ sudo usermod -aG docker $USER   # 然后重新登录，不然每条命令都得 
 
 ## 数据在哪
 
-**全在 `./wb-data` 一个目录里**：
+**全在 `./openworkbuddy-data` 一个目录里**：
 
 ```
-wb-data/
+openworkbuddy-data/
 ├── config.json      模型 Key、IM 配置
 ├── data/            账号、组织、席位、会话历史、用量账本
 ├── workspace/       成果文件（各租户按组织分子目录）
@@ -69,12 +69,12 @@ wb-data/
 └── backups/         备份
 ```
 
-容器随便删随便重建，删了 `wb-data` 才是真丢数据。备份就是把这个目录打包带走。
+容器随便删随便重建，删了 `openworkbuddy-data` 才是真丢数据。备份就是把这个目录打包带走。
 
 > **从旧版 compose 升级过来**：老版本按文件挂了五个 bind mount（`./config.json`、`./data`、
 > `./workspace`、`./skills`、`./experts.json`）。新版只有一个卷。搬过去：
 > ```bash
-> mkdir -p wb-data && mv config.json experts.json wb-data/ && mv data workspace skills wb-data/
+> mkdir -p openworkbuddy-data && mv config.json experts.json openworkbuddy-data/ && mv data workspace skills openworkbuddy-data/
 > docker compose up -d --build
 > ```
 
@@ -118,7 +118,7 @@ WorkingDirectory=/opt/openworkbuddy
 Environment=HOST=127.0.0.1
 Environment=PORT=3800
 Environment=OPENWORKBUDDY_HOME=/var/lib/openworkbuddy
-Environment=WB_TRUST_PROXY=1
+Environment=OPENWORKBUDDY_TRUST_PROXY=1
 Environment=NODE_ENV=production
 Environment=TZ=Asia/Shanghai
 ExecStart=/opt/node/bin/node /opt/openworkbuddy/server.js
@@ -158,7 +158,7 @@ cd /opt/openworkbuddy && git pull && npm ci --omit=dev && sudo systemctl restart
 
 ```bash
 npm install -g pm2
-HOST=127.0.0.1 PORT=3800 OPENWORKBUDDY_HOME=$HOME/wb-data pm2 start server.js --name openworkbuddy
+HOST=127.0.0.1 PORT=3800 OPENWORKBUDDY_HOME=$HOME/openworkbuddy-data pm2 start server.js --name openworkbuddy
 pm2 save && pm2 startup
 ```
 
@@ -207,7 +207,7 @@ buddy.example.com {
 }
 ```
 
-### 挂了反代，记得告诉它：`WB_TRUST_PROXY`
+### 挂了反代，记得告诉它：`OPENWORKBUDDY_TRUST_PROXY`
 
 自己配反代的话，**这一步必须做**，不然会撞上一个很难往「限流」上想的故障：
 
@@ -220,8 +220,8 @@ buddy.example.com {
 
 ```bash
 # .env
-WB_TRUST_PROXY=1     # 前面就一层你的 nginx/caddy
-WB_TRUST_PROXY=2     # Cloudflare → 你的 nginx → 本应用
+OPENWORKBUDDY_TRUST_PROXY=1     # 前面就一层你的 nginx/caddy
+OPENWORKBUDDY_TRUST_PROXY=2     # Cloudflare → 你的 nginx → 本应用
 ```
 
 用 `bash deploy.sh --domain <域名>` 的话不用管，脚本自己会填 1（那层 caddy 是它起的）。
@@ -236,7 +236,7 @@ WB_TRUST_PROXY=2     # Cloudflare → 你的 nginx → 本应用
 ## 手机连回家里那台（不把桌面版挂到公网）
 
 常见的需求不是「再开一台服务器」，而是「人在外面，想看家里那台电脑上的 agent 在干什么、
-接着指挥它」。**工程线连着的就是那台机器的 `wb` 命令行，办公线里的对话、历史、成果文件
+接着指挥它」。**工程线连着的就是那台机器的 `openworkbuddy` 命令行，办公线里的对话、历史、成果文件
 也都是那台机器上的**——所以要的是把桌面版那台**接出来**，不是在服务器上再开一份。
 
 别为这件事把桌面版绑到 `0.0.0.0`。桌面版按 `Electron 壳 + 只听回环` 判定为「个人模式」，
@@ -341,12 +341,12 @@ server {
 **把它裸挂到公网 = 把这台机器的 shell 挂到公网。** 部署前至少做到：
 
 1. **第一时间注册管理员账号**（见上面）。
-2. **别把 `WB_BIND` 改成 `0.0.0.0` 然后就不管了**。默认只绑回环，外面必须走反代 + HTTPS。
+2. **别把 `OPENWORKBUDDY_BIND` 改成 `0.0.0.0` 然后就不管了**。默认只绑回环，外面必须走反代 + HTTPS。
    `deploy.sh --domain` 会把这套配好。
 3. **打开安全中心的闸门**：设置 → 安全中心，把 `gateway`（命令审批）打开，配好
    `cmd_allow` / `cmd_ask`，删文件保护也开着。
 4. **组织级把命令行关掉**：企业后台 → 企业设置 → 网络设置，不需要跑命令的租户直接关 `allow_shell`。
-5. **API Key 只在 `wb-data/config.json`**。这个文件在 `.gitignore` 和 `.dockerignore` 里都有——
+5. **API Key 只在 `openworkbuddy-data/config.json`**。这个文件在 `.gitignore` 和 `.dockerignore` 里都有——
    镜像层是只读快照，Key 一旦烤进去，push 到任何 registry 就是公开，还删不掉。
 6. **别 `--privileged`、别挂 `/`**、别用 root 跑宿主机上的 docker 命令。
 7. 要更强隔离就一个租户一个容器，别指望应用层隔离扛住恶意用户。

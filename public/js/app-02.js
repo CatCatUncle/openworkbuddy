@@ -37,17 +37,17 @@ function renderModelMenu(menu = modelMenu) {
   const usable = settingsCache.models.filter(modelReady);
   const waiting = settingsCache.models.length - usable.length;
   menu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
-      <span>${ic("rotate-ccw")}跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${hbDef ? " · " + hbDef : ""}</span></span>${ov ? "" : `<span style="color:var(--wb-ok-text)">${ic("check")}</span>`}</div>`
+      <span>${ic("rotate-ccw")}跟随全局默认 <span class="sub">${esc(settingsCache.active_model)}${hbDef ? " · " + hbDef : ""}</span></span>${ov ? "" : `<span style="color:var(--owb-ok-text)">${ic("check")}</span>`}</div>`
     + usable.map(m => {
       const on = m.name === ov;
       const hb = healthBadge(m.name);
       return `<div class="mi ${on ? "on" : ""}" data-name="${esc(m.name)}" style="justify-content:space-between">
       <span>${ic("sparkles")}${esc(m.name)} <span class="sub">${esc(m.model)}${hb ? " · " + hb : ""}</span></span>
-      ${on ? `<span style="color:var(--wb-ok-text)">${ic("check")}</span>` : ""}</div>`;
+      ${on ? `<span style="color:var(--owb-ok-text)">${ic("check")}</span>` : ""}</div>`;
     }).join("")
     + (!usable.length ? `<div class="mi-note">${ic("triangle-alert")}一个填了 Key 的模型都还没有，先去下面加一个</div>`
       : waiting ? `<div class="mi-note">还有 ${waiting} 个模型没填 Key，填上才会出现在这里</div>` : "")
-    + `<div class="mi" data-act="manage" style="border-top:1px solid var(--wb-border);margin-top:4px">${ic("settings")}管理模型…</div>`;
+    + `<div class="mi" data-act="manage" style="border-top:1px solid var(--owb-border);margin-top:4px">${ic("settings")}管理模型…</div>`;
   menu.querySelectorAll(".mi").forEach(mi => mi.onclick = async () => {
     menu.classList.remove("show");
     if (mi.dataset.act === "manage") return openModal("settings", "models");
@@ -136,22 +136,42 @@ refreshSettingsCache();
 
 // ================= 模式选择（快捷栏"默认权限"式下拉） =================
 const modeMenu = setupPicker("mode-btn", "mode-menu");
-// 只留字。图标在 index.html 的下拉里已经是 sprite 了，按钮上那个跟着切——
-// 以前这儿是「✅ Craft · 执行」，显示时还得 .slice(2) 把表情切掉，加一个模式就要记着切几个字符
-const MODE_LABEL = { craft: "Craft · 执行", goal: "Goal · 目标", plan: "Plan · 规划", ask: "Ask · 问答" };
-const MODE_ICON = { craft: "circle-check", goal: "target", plan: "map", ask: "message-circle" };
+// 模式表从 /api/modes 取，不在前端存第二份。
+// 以前这儿是 `const MODE_LABEL = { craft:…, goal:…, plan:…, ask:… }`，index.html 里还有一份四行的
+// HTML，命令行里又有一份 `["craft","plan","ask"]`——三份手抄，goal 只抄进了两份。
+// 用户在网页上用了半年的 Goal 模式，到终端里 `openworkbuddy --mode goal` 说没有这个模式。
+// 现在四个模式只写在 modes.js 里一次，这三处都是它的读者。
+let execModes = [];   // [{id,label,sub,icon}]，/api/modes 回来的原样
+function modeInfo(mode) { return execModes.find(m => m.id === mode) || null; }
 function setMode(mode) {
   currentMode = mode;
-  document.getElementById("mode-label").textContent = MODE_LABEL[mode];
+  const info = modeInfo(mode);
+  const label = document.getElementById("mode-label");
+  // 表还没回来时别把标签擦成空白：留着 index.html 里那句初始文案，等 loadExecModes 补上
+  if (info && label) label.textContent = info.label;
   const mbi = document.querySelector("#mode-btn .i"); // 按钮上的图标跟着模式换，别一直停在 Craft 那个
-  if (mbi) mbi.outerHTML = ic(MODE_ICON[mode] || "circle-check");
+  if (mbi) mbi.outerHTML = ic((info && info.icon) || "circle-check");
   modeMenu.querySelectorAll(".mi").forEach(x => x.classList.toggle("on", x.dataset.mode === mode));
   syncPlaceholder();
 }
-modeMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => {
-  setMode(mi.dataset.mode);
-  modeMenu.classList.remove("show");
-});
+async function loadExecModes() {
+  const d = await fetch("/api/modes").then(r => r.json()).catch(() => null);
+  // 取不回来就把菜单画成一句人话。以前这里是四行写死的 HTML，取不回来也能点；
+  // 但那正是漂移的来源。宁可在服务端挂掉时少一个下拉，也不要再养一份会骗人的副本。
+  if (!d || !Array.isArray(d.modes) || !d.modes.length) {
+    modeMenu.innerHTML = '<div class="mi ro sub-only">模式表没取到（服务端没响应），当前按默认模式跑</div>';
+    return;
+  }
+  execModes = d.modes;
+  modeMenu.innerHTML = execModes.map(m =>
+    `<div class="mi" data-mode="${esc(m.id)}">${ic(m.icon)} ${esc(m.label)} <span class="sub">${esc(m.sub)}</span></div>`).join("");
+  modeMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => {
+    setMode(mi.dataset.mode);
+    modeMenu.classList.remove("show");
+  });
+  setMode(currentMode && modeInfo(currentMode) ? currentMode : d.default || "craft");
+}
+loadExecModes();
 
 // ================= ＋ 上传文件到工作空间（选择/拖拽共用） =================
 const attachChips = document.getElementById("attach-chips");
@@ -422,7 +442,7 @@ document.addEventListener("paste", async (e) => {
  * 同一个人一天里在两种活儿之间来回切：做表写稿出图（鼠标流），和写代码跑脚本查日志（键盘流）。
  * 两种活儿的历史混在一列里，找东西全靠翻——所以分成两条线，各记各的会话，共用同一份文件和工作目录。
  *
- * 工程线还多一件事：它连着**这台机器的 `wb` 命令行**。在终端里起的任务会自己挂到服务端能读到的
+ * 工程线还多一件事：它连着**这台机器的 `openworkbuddy` 命令行**。在终端里起的任务会自己挂到服务端能读到的
  * 目录里，这条线上就看得见它此刻在干什么、也能从手机上补一句话。这就是「人在外面，接管电脑里
  * 那个正在干活的 agent」那个场景——也是这两个标签存在的全部理由。
  *
@@ -457,7 +477,7 @@ async function refreshLanes() {
     if (d.current === "cli" || d.current === "office") defaultLane = d.current;
     if (Array.isArray(d.cliLive)) cliLiveRows = d.cliLive;
     let saved = null;
-    try { saved = localStorage.getItem("wb_lane"); } catch {}
+    try { saved = localStorage.getItem("owb_lane"); } catch {}
     if (saved !== "cli" && saved !== "office") activeLane = defaultLane;
   } catch {}
   renderLaneTabs();
@@ -467,7 +487,7 @@ document.getElementById("lane-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-lane]");
   if (!btn || btn.dataset.lane === activeLane) return;
   activeLane = btn.dataset.lane;
-  try { localStorage.setItem("wb_lane", activeLane); } catch {}
+  try { localStorage.setItem("owb_lane", activeLane); } catch {}
   renderLaneTabs();
   // 当前开着的这条对话属于另一条线：切过去等于换了张桌子，给一张空白的新任务。
   // 正在后台跑的任务不受影响（它绑的是自己的 sid，切走照跑，回来还能接上直播）。
@@ -476,7 +496,7 @@ document.getElementById("lane-tabs").addEventListener("click", (e) => {
   else renderHistory();
 });
 
-// ---------- 工程线：终端（wb 命令行）里正在跑的活儿 ----------
+// ---------- 工程线：终端（openworkbuddy 命令行）里正在跑的活儿 ----------
 /**
  * 终端是另一个进程，服务端也只是替我们读那个目录，所以只能轮询。
  * 人就在工程线上看着时勤一点，在办公线上懒一点——标签上那个数字不许是假的，
@@ -508,6 +528,7 @@ async function openCliLive(row) {
   closeAssistView();
   stopCliWatch();
   sessionId = row.id;
+  resetCtxMeter(); // 上一条对话的上下文余量别挂到这趟终端任务头上
   pvPanel.classList.remove("show"); pvCurrent = null;
   document.getElementById("files-panel").classList.remove("show");
   document.getElementById("session-title").textContent = stripSceneTag(row.title) || "终端里的任务";
@@ -516,6 +537,8 @@ async function openCliLive(row) {
   const ui = createTurnUI(row.title || "（终端里起的任务）", "craft", row.id);
   if (ui.turn && !ui.turn.parentNode) chatCol.appendChild(ui.turn);
   cliWatch = { id: row.id, es: null, ui, live: !!row.live };
+  cliAskSeen.clear();
+  if (row.live) pollCliAsk(); // 它可能此刻正卡在一道题上等人
   renderHistory();
   updateSendUI();
   let es = null;
@@ -554,6 +577,58 @@ function finishCliWatch(ev) {
   renderHistory();
   updateSendUI();
 }
+/**
+ * 终端里那趟卡在等回答时，把那道题也摆到这一屏上。
+ *
+ * 终端那边等回答是「卡住不动直到超时」，而超时对一道选择题来说就是替人选了。
+ * 人起了个活儿转头去开会，回来只看见「没等到回答，按默认继续了」——他根本没被问到过。
+ * 所以这一屏也得能答：终端和手机谁先答算谁的，命令行那边按 askId 认，不会串。
+ *
+ * 只在跟着某一趟看的时候轮询：它是终端进程写在盘上的文件，服务端也只是替我们读，
+ * 没人看着的时候一直问它纯属白烧电。
+ */
+const cliAskSeen = new Set(); // 已经画出来的题，轮询每 1.5 秒回来一次，不能每次都重画一张
+async function pollCliAsk() {
+  const w = cliWatch;
+  if (!w || !w.live) return;
+  let d = null;
+  try {
+    d = await fetch("/api/cli/pending?sessionId=" + encodeURIComponent(w.id)).then((r) => r.json());
+  } catch { d = null; }
+  if (!cliWatch || cliWatch !== w || !w.live) return; // 这期间人切走了
+  if (d && d.allowed === false) return; // 不是这台机器的主人，不用再问了
+  const rows = (d && Array.isArray(d.rows)) ? d.rows : [];
+  const now = new Set(rows.map((a) => a.id));
+  // 题没了 = 终端那边答了或者超时了。把卡定格，别在屏幕上留一道点了没反应的题
+  for (const el of w.ui.body ? w.ui.body.querySelectorAll(".ask-card[data-cli-ask]") : []) {
+    if (!now.has(el.dataset.cliAsk) && !el.classList.contains("done")) {
+      el.classList.add("done");
+      const ap = el.classList.contains("ask-approve");
+      el.querySelector(".ask-lb").textContent = ap ? "这条在终端里点过了" : "这道题在终端里答了";
+      el.querySelector(".ask-ans").innerHTML = `<span class="ic">${ic("terminal")}</span>${ap ? "准不准是在命令行那边点的（也可能是等超时了，那就是没准）" : "答案是在命令行那边给的"}`;
+    }
+  }
+  for (const a of rows) {
+    if (cliAskSeen.has(a.id)) continue;
+    cliAskSeen.add(a.id);
+    const card = makeAskCard(
+      a.type === "approval"
+        // 审批：命令原文、拦它的规则、三档选择都从终端那边原样带过来，这一屏不自己编一套
+        ? { ask_id: a.id, kind: "approval", apKind: a.kind, text: a.text, rule: a.rule, choices: a.choices || [] }
+        : { ask_id: a.id, question: a.question, options: a.options || [] },
+      w.id,
+      (value) => fetch("/api/cli/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: w.id, askId: a.id, value }),
+      }),
+    );
+    card.dataset.cliAsk = a.id;
+    if (w.ui.body) w.ui.body.appendChild(card);
+  }
+  setTimeout(pollCliAsk, 1500);
+}
+
 /** 往终端里那趟插一句话。送不到就直说，别在界面上显示「已发送」 */
 async function interjectCli(text) {
   const id = cliWatch && cliWatch.id;
@@ -577,7 +652,7 @@ async function interjectCli(text) {
 /** 当前项目下的任务。租户端没有「项目」这回事（服务端 locked），一条都不过滤——
  *  以前那儿顶着个假项目「本组织工作目录」，跟老会话记的项目名对不上，整排历史被过滤没了。*/
 function projectSessions() {
-  // 工程线不按项目过滤：终端里 `wb` 起的任务没有「项目」这个概念（命令行不问这个），
+  // 工程线不按项目过滤：终端里 `openworkbuddy` 起的任务没有「项目」这个概念（命令行不问这个），
   // 一过滤就整条线空着，看起来像功能坏了。这条线本来就是「这台机器的终端干过的活儿」。
   if (activeLane === "cli") return sessions.filter(s => laneOfSession(s) === "cli");
   const inProject = projectsLocked ? sessions : sessions.filter(s => (s.project || "默认项目") === activeProject);
@@ -596,29 +671,37 @@ function renderHistory() {
   const all = projectSessions();
   const list = all.filter((s) => histMatch(stripSceneTag(s.title)));
   const cnt = document.getElementById("hist-count");
-  // 过滤时写「命中/总数」，不过滤就只写总数；0 条不写数字（旁边已经有空状态那段话了）
-  if (cnt) cnt.textContent = !all.length ? "" : (list.length === all.length ? String(all.length) : list.length + "/" + all.length);
+  // 只在过滤时写「命中/总数」。平时那个数字是纯噪音——Claude Cowork 和 Codex 的任务列表
+  // 都不挂计数徽章，因为「我有几条任务」从来不是用户打开侧栏要问的问题，
+  // 而它占掉的正是标题行里最显眼的位置。用户原话：「怎么一开始显示：任务历史 10 …」
+  if (cnt) cnt.textContent = (!all.length || list.length === all.length) ? "" : list.length + "/" + all.length;
   const rows = list.map(s =>
     `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">${ic("x")}</span></div>`);
-  // 工程线顶上单独一撮：这台机器的终端此刻正在跑的活儿。点进去就能看见它在干什么、插话。
-  // 已经在历史里的不重复列（跑完之后它就是一条普通记录了）
+  // 终端里正在跑的那几条，直接排在同一张列表的最上面，不再单开一撮。
+  //
+  // 以前这里是「任务历史 → 10 → 终端里（openworkbuddy 命令行） → 才轮到内容」，三行铺垫才见着第一条任务。
+  // Claude Cowork 和 Codex 的做法是一张扁平列表：来路和状态用行内的小图标表示，
+  // 正在跑的排前面，不为一种来路单开一节。分组标题只有在「有好几组」时才帮得上忙，
+  // 这儿永远只有一组，那行字就是纯占地方。用户原话：
+  // 「怎么一开始显示：任务历史 10 终端里（命令行） 然后是具体的内容了」（原话里是改名前的旧命令名）
   let head = "";
   if (activeLane === "cli") {
     const known = new Set(all.map((s) => s.id));
     const live = cliLiveRows.filter((r) => !known.has(r.id) && histMatch(stripSceneTag(r.title) || "终端里的任务"));
-    if (live.length) {
-      head = `<div class="hist-group">${esc("终端里（wb 命令行）")}</div>` + live.map((r) => {
-        const t = stripSceneTag(r.title) || "终端里的任务";
-        const tip = r.live ? "正在跑——点开能看见它在干什么，也能插话" : (r.died ? "终端被关掉了，没跑完" : "刚跑完");
-        return `<div class="hist-item ${r.id === sessionId ? "active" : ""}" data-cli="${esc(r.id)}" title="${esc(t + "\n" + (r.cwd || "") + "\n" + tip)}">`
-          + `<span class="ht">${esc(t)}</span>${r.live ? '<span class="hrun" title="正在跑"></span>' : ""}</div>`;
-      }).join("");
-    }
+    // 正在跑的排最前，其余按原顺序。翻列表的人要找的多半就是还在跑的那条
+    const ordered = [...live].sort((a, b) => Number(!!b.live) - Number(!!a.live));
+    head = ordered.map((r) => {
+      const t = stripSceneTag(r.title) || "终端里的任务";
+      const tip = r.live ? "正在跑——点开能看见它在干什么，也能插话" : (r.died ? "终端被关掉了，没跑完" : "刚跑完");
+      return `<div class="hist-item ${r.id === sessionId ? "active" : ""}" data-cli="${esc(r.id)}" title="${esc(t + "\n" + (r.cwd || "") + "\n" + "来自终端（openworkbuddy 命令行）· " + tip)}">`
+        + `<span class="hsrc" title="${esc("在终端里起的（openworkbuddy 命令行）")}" aria-label="${esc("来自终端")}">${ic("terminal")}</span>`
+        + `<span class="ht">${esc(t)}</span>${r.live ? '<span class="hrun" title="正在跑"></span>' : ""}</div>`;
+    }).join("");
   }
   const empty = histQuery.trim()
     ? `没有名字里带「${esc(histQuery.trim())}」的任务`
     : (activeLane === "cli"
-      ? "这条线还空着。在终端里跑 <code>wb 你的活儿</code>，它就会出现在这儿——手机上也看得见。"
+      ? "这条线还空着。在终端里跑 <code>openworkbuddy 你的活儿</code>，它就会出现在这儿——手机上也看得见。"
       : (projectsLocked ? "这条线上还没有任务" : "该项目在这条线上还没有任务"));
   document.getElementById("history").innerHTML = head + rows.join("")
     || `<div class="hist-empty">${empty}</div>`;
@@ -670,6 +753,7 @@ async function openSession(id) {
   stopCliWatch(); // 换了会话就别再往上一趟里塞事件了
   sessionId = id;
   // 上个会话开着的预览/文件面板不带进来
+  resetCtxMeter(); // 余量条也是：先收回去，下面回放到本会话自己的 context 事件再填
   pvPanel.classList.remove("show"); pvCurrent = null;
   document.getElementById("files-panel").classList.remove("show");
   const s = sessions.find(x => x.id === sessionId);
@@ -678,7 +762,7 @@ async function openSession(id) {
   const sLane = laneOfSession(s);
   if (s && sLane !== activeLane) {
     activeLane = sLane;
-    try { localStorage.setItem("wb_lane", activeLane); } catch {}
+    try { localStorage.setItem("owb_lane", activeLane); } catch {}
     renderLaneTabs();
   }
   document.getElementById("session-title").textContent = s ? stripSceneTag(s.title) : "任务";
@@ -716,7 +800,7 @@ async function openSession(id) {
     document.getElementById("empty")?.remove();
     chatCol.appendChild(live.ui.turn);
   } else if (!transcript.length) {
-    chatCol.innerHTML = '<div style="text-align:center;color:var(--wb-text-3);font-size: 13px;padding:20px">该任务还没有保存的对话记录（可能创建于旧版本），继续对话即可。</div>';
+    chatCol.innerHTML = '<div style="text-align:center;color:var(--owb-text-3);font-size: 13px;padding:20px">该任务还没有保存的对话记录（可能创建于旧版本），继续对话即可。</div>';
   }
   updateSendUI();
   scrollBottom(true);
@@ -728,12 +812,14 @@ document.getElementById("new-task").onclick = () => {
   pendingModel = defaultPendingModel();
   updateModelLabel();
   renderGoalCard();
+  resetCtxMeter(); // 新对话的上下文是空的，别让上一条那个百分比留在屏幕上吓人
   pvPanel.classList.remove("show"); pvCurrent = null;
   document.getElementById("files-panel").classList.remove("show");
   updateSendUI(); // 新对话不是忙态：别的对话在跑也能立刻并行发任务
   document.getElementById("session-title").textContent = "新任务";
   chatCol.innerHTML = "";
   chatCol.appendChild(buildEmpty());
+  refreshSweepHint();   // 新任务回到空态：上一轮可能刚清过，数字得重算
   renderHistory();
   // 上个任务里临时切过的工作文件夹不带进新任务：回到当前项目的默认目录
   fetch("/api/workspace/reset", { method: "POST" }).then(r => r.json()).then(st => {
@@ -993,7 +1079,7 @@ async function doSend(text, mode, regen) {
 /** 镜像 server.js recordingEmit 的记录口径：数出服务端 transcript 已记录到第几个事件。
  *  断流重连时靠它算出准确的 from/textOffset 从断点续流——哪些事件入账、text 怎么合并必须和服务端完全一致 */
 function makeRecCounter() {
-  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones", "trace"];
+  const KEEP = ["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones", "context", "trace"];
   const st = { n: 0, lastIsText: false, textLen: 0 };
   st.feed = (ev) => {
     if (ev.type === "text") {
@@ -1032,9 +1118,12 @@ async function pumpStream(resp, ui, rc) {
 /** 主流断了但服务端任务可能还在跑（电脑睡眠/网络抖动/页面刚刷新）：从断点续流接回，直到任务真结束 */
 async function keepAttached(sid, ui, rc, sawDone, netErr) {
   while (!sawDone) {
-    let still = null;
-    try { const r = await fetch("/api/chat/running"); if (r.ok) still = await r.json(); } catch {}
-    if (!still) break; // 网络彻底不通：把最后攒下的错误亮出来
+    // 「还在跑吗」这一问**不能只问一次**。它失败最常见的原因不是网断了，是服务端正好在重启
+    // （改了配置、装了依赖、Electron 自己重载），那只有一两秒。问一次就放弃的话，用户看到
+    // 「连接中断」而任务其实在后台跑得好好的——他去点「重新生成」，于是同一件事跑两遍、
+    // 烧两份钱，先跑完的那份还会把后跑的顶掉。退避着多问几次，代价是几秒，省的是这一整串。
+    const still = await probeRunning();
+    if (still === null) break; // 连着问了几次都不通：这才是真的断了
     if (!still.includes(sid)) { netErr = null; break; } // 服务端已经跑完：不算错误，安静收尾
     netErr = null;
     try {
@@ -1047,7 +1136,22 @@ async function keepAttached(sid, ui, rc, sawDone, netErr) {
       await new Promise((r) => setTimeout(r, 1500));
     }
   }
-  if (netErr) ui.handleEvent({ type: "error", message: "连接中断：" + netErr.message });
+  if (netErr) ui.handleEvent({ type: "error", message: "连接中断：" + netErr.message + "。这一趟可能还在后台跑——刷新页面就会接回来，别急着点重新生成（那会让同一件事跑两遍）" });
+}
+
+/**
+ * 「服务端此刻还在跑哪几趟」。连不上就退避重问，一共约 7 秒。
+ * 返回 id 数组；连着几次都连不上才返回 null（= 真的断了）。
+ */
+async function probeRunning(tries = 4) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch("/api/chat/running");
+      if (r.ok) return await r.json();
+    } catch {}
+    if (i < tries - 1) await new Promise((r) => setTimeout(r, 500 * 2 ** i)); // 0.5s → 1s → 2s
+  }
+  return null;
 }
 
 /** 一轮任务收尾（正常结束/出错/被停止都走这里） */
@@ -1272,8 +1376,8 @@ let toastTimer = null;
 const TOAST_ICON = { "❌": "circle-x", "⚠️": "triangle-alert", "⚠": "triangle-alert", "✅": "circle-check", "✓": "circle-check" };
 /* emoji-数据区 止 */
 function toast(msg, kind) {
-  let t = document.getElementById("wb-toast");
-  if (!t) { t = document.createElement("div"); t.id = "wb-toast"; document.body.appendChild(t); }
+  let t = document.getElementById("owb-toast");
+  if (!t) { t = document.createElement("div"); t.id = "owb-toast"; document.body.appendChild(t); }
   let text = String(msg == null ? "" : msg);
   let icon = kind || "";
   for (const [mark, name] of Object.entries(TOAST_ICON)) {
@@ -1358,7 +1462,7 @@ function openChatSearch() {
   if (!bar) {
     bar = document.createElement("div");
     bar.id = "chat-search";
-    bar.innerHTML = `<input id="cs-input" placeholder="搜索对话内容…"><span id="cs-count" style="color:var(--wb-text-3);font-size: 13px;white-space:nowrap"></span><button id="cs-prev" title="上一个">${ic("chevron-up")}</button><button id="cs-next" title="下一个">${ic("chevron-down")}</button><button id="cs-close" title="关闭 (Esc)">${ic("x")}</button>`;
+    bar.innerHTML = `<input id="cs-input" placeholder="搜索对话内容…"><span id="cs-count" style="color:var(--owb-text-3);font-size: 13px;white-space:nowrap"></span><button id="cs-prev" title="上一个">${ic("chevron-up")}</button><button id="cs-next" title="下一个">${ic("chevron-down")}</button><button id="cs-close" title="关闭 (Esc)">${ic("x")}</button>`;
     document.querySelector(".main").appendChild(bar);
     bar.querySelector("#cs-input").oninput = runChatSearch;
     bar.querySelector("#cs-input").addEventListener("keydown", (e) => {
@@ -1706,7 +1810,7 @@ function renderProfile() {
       renderUserChip();
       msg.style.color = "";
       msg.textContent = "已保存";
-    } else { msg.style.color = "var(--wb-err-text)"; msg.textContent = r.error || "保存失败"; }
+    } else { msg.style.color = "var(--owb-err-text)"; msg.textContent = r.error || "保存失败"; }
   };
   mBody.querySelector("#pf-uname-go").onclick = async () => {
     const msg = mBody.querySelector("#pf-uname-msg");
@@ -1724,7 +1828,7 @@ function renderProfile() {
       msg.textContent = `已改成 ${r.user.username}`;
       mBody.querySelector("#pf-upass").value = "";
       setTimeout(() => renderProfile(), 900); // 重画一遍，把"现在是 xxx"那句更新掉
-    } else { msg.style.color = "var(--wb-err-text)"; msg.textContent = r.error || "改不动"; }
+    } else { msg.style.color = "var(--owb-err-text)"; msg.textContent = r.error || "改不动"; }
   };
 }
 function renderUserChip() {
@@ -1747,13 +1851,13 @@ function lookRead(k) { try { const v = localStorage.getItem(k); if (v != null) r
 function lookWrite(k, v) { lookMem[k] = v; try { localStorage.setItem(k, v); } catch { /* 存储不可用 */ } }
 const THEME_LABEL = { light: "浅色", dark: "深色", system: "跟随系统" };
 const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
-function getTheme() { const t = lookRead("wb-theme"); return THEME_LABEL[t] ? t : "system"; }
+function getTheme() { const t = lookRead("owb-theme"); return THEME_LABEL[t] ? t : "system"; }
 function applyTheme() {
   const t = getTheme();
   document.documentElement.dataset.theme = t === "dark" || (t === "system" && themeMedia.matches) ? "dark" : "light";
 }
 themeMedia.addEventListener("change", applyTheme);
-function setTheme(t) { if (!THEME_LABEL[t]) return; lookWrite("wb-theme", t); applyTheme(); }
+function setTheme(t) { if (!THEME_LABEL[t]) return; lookWrite("owb-theme", t); applyTheme(); }
 applyTheme();
 // 皮肤 = 只换品牌色那一组 token（主色/描边/弱底/品牌文字/渐变），版式不动；字号 = 正文 15px 的四档，其余尺寸按 calc 跟着走
 const LOOK_OPTS = {
@@ -1763,7 +1867,7 @@ const LOOK_OPTS = {
   density: { cozy: "舒适", compact: "紧凑" },
 };
 const LOOK_DEFAULT = { skin: "default", fs: "m", font: "system", density: "cozy" };
-function lookGet(k) { const v = lookRead("wb-look-" + k); return LOOK_OPTS[k] && LOOK_OPTS[k][v] ? v : LOOK_DEFAULT[k]; }
+function lookGet(k) { const v = lookRead("owb-look-" + k); return LOOK_OPTS[k] && LOOK_OPTS[k][v] ? v : LOOK_DEFAULT[k]; }
 function applyLook() {
   const ds = document.documentElement.dataset;
   for (const k of Object.keys(LOOK_OPTS)) {
@@ -1771,7 +1875,7 @@ function applyLook() {
     if (v === LOOK_DEFAULT[k]) delete ds[k]; else ds[k] = v;
   }
 }
-function setLook(k, v) { if (!LOOK_OPTS[k] || !LOOK_OPTS[k][v]) return; lookWrite("wb-look-" + k, v); applyLook(); }
+function setLook(k, v) { if (!LOOK_OPTS[k] || !LOOK_OPTS[k][v]) return; lookWrite("owb-look-" + k, v); applyLook(); }
 applyLook();
 
 // ---------- 头像菜单：设置 / 外观 / 帮助与反馈 / 检查更新 / 退出登录 ----------
@@ -1785,7 +1889,7 @@ function openUserMenu() {
   const lang = i18n ? i18n.getLang() : "zh";
   userMenu.innerHTML = `
     <div class="um-head" data-act="account" title="点击查看用量明细">
-      <span class="ava${av.cls ? " " + av.cls : ""}" style="width:30px;height:30px;border-radius:50%;background:var(--wb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size: 15px;font-weight:600;flex:none;overflow:hidden">${av.html}</span>
+      <span class="ava${av.cls ? " " + av.cls : ""}" style="width:30px;height:30px;border-radius:50%;background:var(--owb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size: 15px;font-weight:600;flex:none;overflow:hidden">${av.html}</span>
       <div style="min-width:0"><div class="n">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</div>
       <div class="s">${creditsOn ? `${ic("sparkles")}${(+currentUser.credits).toLocaleString()} 积分 · ` : ""}账号与用量</div></div>
     </div>
@@ -1799,7 +1903,7 @@ function openUserMenu() {
     <div class="um-i" data-act="appearance">${ic("palette")}外观 <span class="hint">${THEME_LABEL[getTheme()]} · ${LOOK_OPTS.fs[lookGet("fs")]}字</span></div>
     <div class="um-i" data-act="help">${ic("message-circle")}帮助与反馈</div>
     <div class="um-i" data-act="update">${ic("refresh-cw")}检查更新</div>
-    <div class="um-i" data-act="logout" style="color:var(--wb-err-text)">${ic("log-out")}退出登录</div>`;
+    <div class="um-i" data-act="logout" style="color:var(--owb-err-text)">${ic("log-out")}退出登录</div>`;
   userMenu.querySelectorAll("[data-act]").forEach(el => el.onclick = async (e) => {
     e.stopPropagation();
     const act = el.dataset.act;

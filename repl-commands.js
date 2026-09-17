@@ -1,6 +1,6 @@
 "use strict";
 /**
- * `wb` 交互模式里的那张命令表 —— 纯的：不碰 process、不碰 fs、不打印、不读 argv。
+ * `openworkbuddy` 交互模式里的那张命令表 —— 纯的：不碰 process、不碰 fs、不打印、不读 argv。
  *
  * 单独拆一层，是因为 REPL 里每一种「没认出来」都在花钱办错事，而且在健康机器上
  * 一声不吭。改写前实测到的四样：
@@ -18,9 +18,14 @@
  * 两边给的「你是不是想说」才会一样宽松、一样严格。
  */
 
+const { MODE_IDS, MODE_ARG } = require("./modes"); // 执行模式的唯一真源，别在这儿抄第二份
+
 const path = require("path");
 const { cols, padCols } = require("./text-width"); // 中文占两列，padEnd 数的是码位——对齐一律走它
 const { editDistance } = require("./cli-args");
+const { PERMISSION_MODES } = require("./security"); // 权限档的唯一真源，跟网页那四档、跟 --perm 是同一份
+const PERM_IDS = Object.keys(PERMISSION_MODES);
+const PERM_ARG = PERM_IDS.join("|"); // 跟 MODE_ARG 一个写法：不带尖括号，帮助里直接印取值
 
 /**
  * 命令表。`arg` 填了就是「吃一个参数」，不填就是「不吃参数」；`choices` 填了就连取值一起管。
@@ -28,7 +33,8 @@ const { editDistance } = require("./cli-args");
  */
 const COMMANDS = [
   { name: "help", aliases: ["?"], desc: "看这些命令都是干什么的" },
-  { name: "mode", arg: "craft|plan|ask", choices: ["craft", "plan", "ask"], desc: "换执行模式；不给值就说当前是哪个" },
+  { name: "mode", arg: MODE_ARG, choices: MODE_IDS, desc: "换执行模式；不给值就说当前是哪个" },
+  { name: "perm", arg: PERM_ARG, choices: PERM_IDS, desc: "换这一趟放多少权（只看不动/每步都问/自动改文件/全自动）；不给值就把四档摆出来" },
   { name: "new", desc: "开一个新会话；刚才那段不会丢，还能翻回去" },
   { name: "session", desc: "当前会话的 id 和存盘位置" },
   { name: "status", desc: "模式、底层引擎、工作目录、这个会话跑了几轮" },
@@ -259,7 +265,7 @@ function modelListText(rows) {
     // 带箭头那行就会比别的行多缩进一格——一张表里唯一那行歪的，恰好是「你现在用的」
     return `${r.current ? ">" : " "} ${String(r.n).padStart(2)}  ${bits.join(" ").trimEnd()}`;
   };
-  const out = ["", "wb> 这趟活儿谁来干："];
+  const out = ["", "openworkbuddy> 这趟活儿谁来干："];
   if (eng.length) { out.push("", "  本机引擎（装了就能选，花的是你自己的订阅，不走 API 额度）", ...eng.map(line)); }
   if (mod.length) { out.push("", "  你配的模型（内置循环 + 你的 API Key）", ...mod.map(line)); }
   else { out.push("", "  还没配过模型：设置 → 模型 里加一条，或者直接改 config.json 的 models"); }
@@ -297,7 +303,7 @@ function helpText() {
   const lines = rows.map((r) => `  ${padCols(r.left, w + GAP)}${r.desc}`);
   return [
     "",
-    "wb> 这儿能敲的命令：",
+    "openworkbuddy> 这儿能敲的命令：",
     "",
     ...lines,
     "",

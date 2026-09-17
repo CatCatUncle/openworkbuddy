@@ -16,7 +16,7 @@ const os = require("os");
 const path = require("path");
 
 // 必须在 require 任何业务模块之前定好数据根：paths.js 是在模块加载时一次性算出来的
-const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "wb-cli-live-"));
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cli-live-"));
 process.env.OPENWORKBUDDY_HOME = HOME;
 delete process.env.OPENWORKBUDDY_CLI_LIVE;
 
@@ -253,23 +253,33 @@ eq(live.announce({ id: "s_back" }).live, true, "（对照）打开就又能用�
  * server.js 是 require 就监听端口的，起不了进程内 HTTP；但这四个处理函数是纯的，
  * 把 app / lanes / cliLive / isPlatformOwner 注进去就能照着真源码跑。
  */
-console.log("\n⑪ 服务端四个口子（/api/lanes · /api/cli/live · stream · interject）");
+console.log("\n⑪ 服务端六个口子（/api/lanes · /api/cli/live · stream · interject · pending · answer）");
 {
   const srcAll = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  // 从 canRemoteControl 那两行切起、而不是从第一个路由切起：那两行才是「主人 + 后台开关」
+  // 合成一道闸的地方，跟着一起跑进来，测的就是真的判断，不是我在测试里重写一遍
+  const a0 = srcAll.indexOf("const canRemoteControl = (req)");
+  // 只切这两行，别把它俩和路由之间那段（挂后台路由的）也拖进来
+  const a1 = srcAll.indexOf("\n\n", a0);
   const a = srcAll.indexOf('app.get("/api/lanes", (req, res) => {');
   const b = srcAll.indexOf('app.get("/api/thinking"', a);
-  ok(a >= 0 && b > a, "在 server.js 里定位到了这四个口子的真源码");
+  ok(a0 >= 0 && a1 > a0 && a1 < a, "在 server.js 里定位到了 canRemoteControl / cliOffReason");
+  ok(/cliOffReason/.test(srcAll.slice(a0, a1)), "切出来的那段里得有 cliOffReason，不然拒绝理由那几条验的是空气");
+  ok(a >= 0 && b > a, "在 server.js 里定位到了这六个口子的真源码");
 
   const routes = [];
   const fakeApp = {
     get: (p2, h) => routes.push({ m: "GET", p: p2, h }),
     post: (p2, h) => routes.push({ m: "POST", p: p2, h }),
   };
-  let owner = true; // 这一节里用它开关「你是不是这台机器的主人」
-  new Function("app", "lanes", "cliLive", "isPlatformOwner", srcAll.slice(a, b))(
-    fakeApp, require(path.join(ROOT, "lanes")), live, () => owner);
+  let owner = true;   // 这一节里用它开关「你是不是这台机器的主人」
+  let remoteOn = true; // 这个开关是「后台允不允许远程操控终端任务」（org 设置，默认关）
+  // account 也得注：canRemoteControl 里要问它开关开没开。给个只认这一个键的替身，
+  // 比拉起真的组织表干净，也让下面能把开关拨来拨去
+  new Function("app", "lanes", "cliLive", "isPlatformOwner", "account", srcAll.slice(a0, a1) + "\n" + srcAll.slice(a, b))(
+    fakeApp, require(path.join(ROOT, "lanes")), live, () => owner, { remoteAllowed: () => remoteOn });
   const routeOf = (m, p2) => (routes.find((r) => r.m === m && r.p === p2) || {}).h;
-  eq(routes.length, 4, "四个口子一个不少");
+  eq(routes.length, 6, "六个口子一个不少");
 
   // 极简 res/req 替身：只记下处理函数真做了什么
   const mkRes = () => {
@@ -370,9 +380,157 @@ console.log("\n⑪ 服务端四个口子（/api/lanes · /api/cli/live · stream
   eq(hRun.interjections().join("|"), "标题换成《九月复盘》",
     "命令行那头真读到了这句——这一条才是「人在外面用手机改需求」的全部意义");
   eq(hRun.interjections().length, 0, "同一句不会被读第二遍");
+
+  // ---- /api/cli/pending + /api/cli/answer ----
+  // 这两条是「人不在电脑前」那条线的全部：终端里等回答是卡住不动直到超时，
+  // 而超时对一道选择题来说就是替人选了。手机上答得了，这件事才不成立。
+  const pendH = routeOf("GET", "/api/cli/pending");
+  const ansH = routeOf("POST", "/api/cli/answer");
+  ok(!!pendH && !!ansH, "pending / answer 两条都挂上了");
+
+  hRun.pend({ id: "q1", at: Date.now(), kind: "ask", question: "交 Word 还是 PDF？",
+    options: [{ label: "Word", detail: "可继续编辑" }, { label: "PDF", detail: "版式固定" }] });
+
+  owner = false;
+  r = call(pendH, mkReq({ query: { sessionId: "srv_run" } }));
+  eq(r.body.allowed, false, "租户成员看不见终端里的题");
+  eq(r.body.rows.length, 0, "而且一条都不给");
+  r = call(ansH, mkReq({ body: { sessionId: "srv_run", askId: "q1", value: "1" } }));
+  eq(r.code, 403, "更答不了");
+  owner = true;
+
+  r = call(pendH, mkReq({ query: { sessionId: "srv_run" } }));
+  eq(r.code, 200, "主人问：200");
+  eq(r.body.rows.length, 1, "看见了那道题");
+  eq(r.body.rows[0].question, "交 Word 还是 PDF？", "题面原样带过来");
+  eq(r.body.rows[0].options.length, 2, "选项也带过来了——只给题面的话，「Word / PDF」在手机上就是两个没差别的词");
+  eq(r.body.rows[0].sessionId, "srv_run", "标了是哪一趟的题：不带这个，手机上答完不知道往哪儿送");
+
+  r = call(pendH, mkReq({}));
+  eq(r.body.rows.length, 1, "不指定哪一趟时，把所有还活着的题一起给（手机上那一屏就是这么画的）");
+
+  r = call(ansH, mkReq({ body: { sessionId: "srv_run", value: "1" } }));
+  eq(r.code, 400, "不说答的是哪道题：当场挡下");
+  r = call(ansH, mkReq({ body: { sessionId: "srv_没这趟", askId: "q1", value: "1" } }));
+  eq(r.code, 404, "答一趟不存在的：404");
+  r = call(ansH, mkReq({ body: { sessionId: "srv_done", askId: "q1", value: "1" } }));
+  eq(r.code, 409, "已经跑完的那趟：明说没人接");
+  r = call(ansH, mkReq({ body: { sessionId: "srv_run", askId: "q-别的题", value: "1" } }));
+  eq(r.code, 409, "答一道没在等的题：不许回 ok。界面上显示「已提交」而其实没人收，比说送不到糟得多");
+
+  r = call(ansH, mkReq({ body: { sessionId: "srv_run", askId: "q1", value: "2" } }));
+  eq(r.code, 200, "答一道正在等的题：送得出去");
+  eq(hRun.answers().map((a) => a.id + "=" + a.value).join("|"), "q1=2",
+    "命令行那头真收到了——这一条才是「人在会议室里把电脑上那道题答了」的全部意义");
+  eq(hRun.answers().length, 0, "同一个答案不会被读第二遍");
+
+  // ---- 后台那个开关（remote_control，默认关）----
+  // 这一节验的是「关掉之后这六条真的全闭」。分开两道闸的意义就在这儿：你是主人，
+  // 但这台机器现在不对外开这个口子——两件事，两句不一样的拒绝话
+  remoteOn = false;
+  owner = true;
+  eq(call(routeOf("GET", "/api/cli/live"), mkReq({})).body.allowed, false, "开关关掉：主人自己也看不到终端里在跑什么");
+  eq(call(routeOf("GET", "/api/cli/live"), mkReq({})).body.remote_off, true, "而且说清楚了是被开关关掉的，不是「你没权限」");
+  eq(call(routeOf("GET", "/api/lanes"), mkReq({})).body.cliRunning, 0, "工作线那条也一起闭：不然侧栏还亮着「1 趟在跑」，点进去却是空的");
+  eq(call(streamH, mkReq({ params: { id: "srv_run" }, query: {} })).code, 403, "跟流：403");
+  eq(call(injH, mkReq({ body: { sessionId: "srv_run", message: "插一句" } })).code, 403, "插话：403");
+  eq(call(pendH, mkReq({})).body.allowed, false, "看题：不给");
+  eq(call(ansH, mkReq({ body: { sessionId: "srv_run", askId: "q2", value: "1" } })).code, 403, "答题：403");
+  // 认的是页面名而不是整句话：句子会改，但「去哪一页打开」这件事得一直在。
+  // 顺带钉死菜单名——以前这句指的是「公司设置 → 安全」，而侧栏里根本没有这两级
+  ok(/客户端安全/.test(call(injH, mkReq({ body: { sessionId: "srv_run", message: "x" } })).body.error),
+    "★拒绝的理由得告诉人去哪儿打开★（说成「只有主人能插话」的话，主人本人会以为是程序坏了；指到一个不存在的菜单上也一样白说）");
+  owner = false;
+  ok(/只有这台机器的主人/.test(call(injH, mkReq({ user: { username: "同事" }, body: { sessionId: "srv_run", message: "x" } })).body.error),
+    "★反向★ 不是主人的那句话不变：两种拒绝不能混成同一句");
+  // 摆回原样，免得这一节的状态漏给后面
+  remoteOn = true; owner = true;
+  eq(call(routeOf("GET", "/api/cli/live"), mkReq({})).body.allowed, true, "开关拨回来，口子照常开");
+
+  // 终端那边答完自己撤题。撤了之后手机上再点就该被挡下，而不是石沉大海
+  hRun.unpend("q1");
+  r = call(pendH, mkReq({ query: { sessionId: "srv_run" } }));
+  eq(r.body.rows.length, 0, "撤下之后手机上那道题就没了");
+  r = call(ansH, mkReq({ body: { sessionId: "srv_run", askId: "q1", value: "1" } }));
+  eq(r.code, 409, "终端里先答了，手机上再答一次：说清楚已经答过了");
+
+  // 收尾时必须清干净：留着的话手机上会一直挂着一道没人接的题
+  hRun.pend({ id: "q2", at: Date.now(), kind: "ask", question: "还要继续吗？", options: [] });
+  eq(call(pendH, mkReq({ query: { sessionId: "srv_run" } })).body.rows.length, 1, "又摆了一道");
+  hRun.finish({});
+  eq(call(pendH, mkReq({ query: { sessionId: "srv_run" } })).body.rows.length, 0,
+    "跑完了就一道不剩——不清的话手机上留着一道点了不会有任何反应的题");
+}
+
+console.log("\n⑫ 等回答这件事，出了岔子也不许把正事拖死");
+{
+  for (const r of live.list({ prune: false })) live.drop(r.id);
+  const h = live.announce({ id: "ask_robust", title: "等回答", cwd: "/tmp" });
+
+  // 进程不活着就一律当没有：Ctrl-C 之后 .ask.json 还躺在盘上，照着画就是给人一道
+  // 点了不会有反应的题——比不显示更糟
+  h.pend({ id: "z1", at: Date.now(), kind: "ask", question: "在吗", options: [] });
+  eq(live.pending("ask_robust").length, 1, "活着的时候看得见");
+  writeMeta("ask_robust", { pid: 999999999, beatAt: Date.now() - 10 * 60 * 1000 });
+  eq(live.pending("ask_robust").length, 0, "进程没了/心跳停了：一道都不给，不摆死题");
+
+  // 坏数据
+  fs.writeFileSync(live.fileOf("ask_robust", ".ask.json"), "{不是 JSON");
+  eq(live.pending("ask_robust").length, 0, "文件坏了也只是没有题，不抛");
+  eq(live.pending("从来没有过这趟").length, 0, "根本不存在的会话：空数组，不抛");
+
+  eq(live.answer("ask_robust", "z1", "x"), true, "正常情况下写得进去");
+  eq(live.answer("ask_robust", "", "x"), false, "没有题号：直接说没送出去，不瞎写一行");
+  eq(live.answer("ask_robust", null, "x"), false, "题号是 null 也一样");
+
+  // 这是个只为了「让你在手机上也能答」的旁路，不许有权力弄死终端里正在跑的正事。
+  // 盘上那几个文件全删掉，模拟目录被清/权限没了，再把整套动作过一遍：只许返回空/false，不许抛
+  for (const ext of [".ask.json", ".ans", ".json"]) {
+    try { fs.rmSync(live.fileOf("ask_robust", ext), { force: true }); } catch {}
+  }
+  let threw = null;
+  try {
+    h.pend({ id: "z2", at: Date.now(), kind: "ask", question: "在吗", options: [] });
+    h.unpend("z2");
+    h.answers();
+    live.pending("ask_robust");
+    live.answer("ask_robust", "z2", "x");
+  } catch (e) { threw = e; }
+  ok(!threw, "元信息文件都没了，整套动作走一遍照样不抛", threw && String(threw.message));
+}
+
+// ---------- get(id)：按 id 取一行，别为了一行把整个目录读一遍 ----------
+//
+// 手机上看终端镜像那条流是 400ms 一拍、一拍调两次。原来每次都是
+// `list({prune:false}).find(r => r.id === sid)`——readdir 整个目录 + 把每一趟的 meta 都 parse 一遍，
+// 只为了拿一个**已经知道 id** 的行。这里钉两件事：
+//   1) get 出来的那一行跟 list 里对应的那一行逐字段一致（含 live / died 这两个最容易两边跑偏的）；
+//   2) 查不到 / id 里带路径分隔符时给 null，不抛也不越出目录。
+{
+  const now = Date.now();
+  for (const [id, meta] of [
+    ["g_run", { pid: process.pid, title: "跑着的", cwd: "/tmp", mode: "craft", user: "boss", startedAt: now - 3000, beatAt: now }],
+    ["g_done", { pid: process.pid, title: "跑完的", cwd: "/tmp", mode: "craft", user: "boss", startedAt: now - 5000, beatAt: now - 900, endedAt: now - 800 }],
+    ["g_killed", { pid: process.pid, title: "被强杀的", cwd: "/tmp", mode: "craft", user: "boss", startedAt: now - 9e5, beatAt: now - 9e5 }],
+  ]) fs.writeFileSync(live.fileOf(id, ".json"), JSON.stringify(meta));
+
+  const rows = live.list({ prune: false, now });
+  let same = 0;
+  for (const r of rows) {
+    if (JSON.stringify(live.get(r.id, { now })) === JSON.stringify(r)) same++;
+    else ok(false, "get 和 list 对不上：" + r.id, JSON.stringify(r) + " vs " + JSON.stringify(live.get(r.id, { now })));
+  }
+  ok(same === rows.length && rows.length >= 3, `get 出来的 ${same} 行跟 list 逐字段一致（跑着的/跑完的/被强杀的都在）`);
+  eq(live.get("g_killed", { now }).died, true, "被强杀的那条，get 也要如实说 died——两边判法不许跑偏");
+  eq(live.get("g_run", { now }).live, true, "跑着的那条在 get 里成了「没跑」");
+  eq(live.get("根本没这趟", { now }), null, "查不到就给 null");
+  eq(live.get("../../etc/passwd", { now }), null, "id 里带路径分隔符，不许顺着爬出目录");
+  eq(live.get("", { now }), null, "空 id 给 null");
+  for (const id of ["g_run", "g_done", "g_killed"]) try { fs.rmSync(live.fileOf(id, ".json"), { force: true }); } catch {}
 }
 
 // 收摊
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
+process.exit(fail === 0 ? 0 : 1); // 少了这一行，这个套件挂了也是绿的——CI 看的是退出码，不是这段话

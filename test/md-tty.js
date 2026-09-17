@@ -2,7 +2,7 @@
 /**
  * 终端里的 Markdown 渲染。
  *
- * 起因是用户在 `wb` 里看到的那一屏：
+ * 起因是用户在命令行里看到的那一屏：
  *   「- **查资料** — 行业调研…  怎么cli里面还有**这种啊」
  * 模型的回答本来就是 Markdown，网页那边翻成 HTML，终端这边一直原样打印，
  * 于是星号、井号、方括号全糊在脸上。
@@ -11,7 +11,7 @@
  *   1. 记号裸奔：`**加粗**` 打成四个星号；
  *   2. 矫枉过正：`2 * 3`、`snake_case`、`` `a ** b` `` 这些本来就是字面量的，被当记号翻掉；
  *   3. 流式切坏：正文是一小片一小片来的，半个 `**` 先吐出去就再也收不回来（终端不能重绘）；
- *   4. 管道里掺转义：`wb "…" > 答案.md`、`wb … | pbcopy` 必须拿到原始 Markdown。
+ *   4. 管道里掺转义：`openworkbuddy "…" > 答案.md`、`openworkbuddy … | pbcopy` 必须拿到原始 Markdown。
  *
  * 所以每节都配反向对照：不然「渲染对了」和「什么都没做」在测试里长得一模一样。
  */
@@ -106,7 +106,7 @@ console.log("\n【4】流式：切成几片喂进去，结果必须跟一次性�
     "",
     "本周做了 **三件事**：",
     "",
-    "1. 把 `wb` 的输出[改成了终端能看的样子](https://example.com/pr/42)",
+    "1. 把命令行的输出[改成了终端能看的样子](https://example.com/pr/42)",
     "2. 修了 *一个* 老 bug",
     "3. 写了 ~~一堆~~ 几行测试",
     "",
@@ -184,13 +184,13 @@ console.log("\n【7】颜色：该加的时候加，不该加的时候一个转�
   ok(!q.includes(ESC + "[0m"), "引用块里更明显：粗体收尾时把引用的灰一起清掉，后面半句就变色了", JSON.stringify(q));
 }
 
-console.log("\n【8】接进 wb：只在「那头真是终端」时渲染");
+console.log("\n【8】接进命令行：只在「那头真是终端」时渲染");
 {
   const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
   const line = (src.split("\n").find((l) => l.startsWith("const renderMd =")) || "");
   ok(line, "cli.js 里有一处统一的开关，而不是散在各处判断");
   ok(line.includes("process.stdout.isTTY"),
-     "★不是终端就不渲染★ `wb \"…\" > 答案.md`、`wb … | pbcopy` 要的是原始 Markdown——那才是能接着加工的东西", line);
+     "★不是终端就不渲染★ `openworkbuddy \"…\" > 答案.md`、`openworkbuddy … | pbcopy` 要的是原始 Markdown——那才是能接着加工的东西", line);
   ok(line.includes("!opts.json"), "--json 走事件流，不归渲染管", line);
   ok(line.includes("!opts.raw"), "留一条 --raw：人明说了别动就别动", line);
   ok(/state\.finalParts\.push\(text\)/.test(src),
@@ -199,7 +199,7 @@ console.log("\n【8】接进 wb：只在「那头真是终端」时渲染");
   ok(/answer\(state\.md\.end\(\)\)/.test(src),
      "★收尾要把渲染器里压着的半行吐干净★ 不吐的话，最后一句没配平记号的话会整句消失");
   const A = require(path.join(ROOT, "cli-args"));
-  ok(A.parse(["--raw", "问题"]).opts.raw === true, "wb --raw 能解析出来");
+  ok(A.parse(["--raw", "问题"]).opts.raw === true, "openworkbuddy --raw 能解析出来");
   ok(A.parse(["问题"]).opts.raw === false, "反向对照：不写 --raw 时默认是关的（默认要渲染）");
   ok(A.helpText().includes("--raw"), "帮助里写着这条路");
 }

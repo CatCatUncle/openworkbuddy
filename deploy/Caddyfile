@@ -1,8 +1,11 @@
-# 域名从环境变量来（compose 里由 .env 的 WB_DOMAIN 传进来），不用改这个文件。
-{$WB_DOMAIN} {
+# 域名从环境变量来（compose 里由 .env 的 OPENWORKBUDDY_DOMAIN 传进来），不用改这个文件。
+{$OPENWORKBUDDY_DOMAIN} {
 	reverse_proxy app:3800 {
-		# 任务是 SSE 一行一行推的。不加这行，caddy 会攒够一个缓冲区才发，
-		# 表现就是「点了开始，界面一直转圈，过半天突然全刷出来」。
+		# 任务是 SSE 一行一行推的，攒起来发就是「点了开始，界面一直转圈，
+		# 过半天突然全刷出来」。
+		# 实测 caddy v2.11.4 其实自己认得 text/event-stream，这行写不写都逐行到
+		#（263/522/771/1027/1282/1532 对 274/518/764/1025/1278/1517，单位 ms）；
+		# 留着是因为它管的不只是 SSE —— 将来任何非 SSE 的长响应，靠的就是这一行。
 		flush_interval -1
 	}
 
@@ -11,5 +14,8 @@
 		max_size 64MB
 	}
 
+	# 应用自己压的只有静态文件和 res.json 的动态 JSON；/metrics、审计导出、工作区里直接
+	# 下载的成果文件都漏在外面，归这一层管。caddy 的 encode 不会去压已经带着
+	# Content-Encoding 上来的东西，也不碰 SSE。
 	encode zstd gzip
 }

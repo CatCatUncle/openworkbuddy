@@ -120,7 +120,14 @@ function modal(opts) {
         ctl = `<select class="ui-input ui-select" id="${id}">${(f.options || [])
           .map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(f.value) ? " selected" : ""}>${esc(o.label)}</option>`)
           .join("")}</select>`;
-      else if (f.type === "textarea")
+      else if (f.type === "checks") {
+        // 一组勾选＋一个隐藏格。勾选的结果同步进隐藏格，
+        // 下面读值那一句（querySelector("#mf-"+name).value）就一个字都不用改。
+        const on = new Set((Array.isArray(f.value) ? f.value : String(f.value || "").split(",")).map((x) => String(x).trim()).filter(Boolean));
+        ctl = `<div class="ad-checks" data-checks>${(f.options || [])
+          .map((o) => `<label><input type="checkbox" value="${esc(o.value)}"${on.has(String(o.value)) ? " checked" : ""}>${esc(o.label)}</label>`)
+          .join("")}<input type="hidden" id="${id}"></div>`;
+      } else if (f.type === "textarea")
         ctl = `<textarea class="ui-input" id="${id}" rows="4" style="height:auto;resize:vertical" placeholder="${esc(f.placeholder || "")}">${esc(f.value || "")}</textarea>`;
       else
         ctl = `<input class="ui-input" id="${id}" type="${f.type || "text"}" value="${esc(f.value == null ? "" : f.value)}" placeholder="${esc(f.placeholder || "")}">`;
@@ -136,6 +143,15 @@ function modal(opts) {
     </div>
   </div>`;
   document.body.appendChild(mask);
+  // 勾选组 → 隐藏格。先同步一次，否则「没动过就点保存」会把原来勾着的全清掉
+  mask.querySelectorAll("[data-checks]").forEach((box) => {
+    const hid = box.querySelector('input[type="hidden"]');
+    const sync = () => {
+      hid.value = [...box.querySelectorAll('input[type="checkbox"]')].filter((c) => c.checked).map((c) => c.value).join(",");
+    };
+    box.addEventListener("change", sync);
+    sync();
+  });
   const close = () => { document.removeEventListener("keydown", onKey); mask.remove(); };
   const onKey = (e) => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
@@ -383,6 +399,7 @@ const NAV = [
       { id: "usage-org", icon: "building", title: "组织用量", sub: "整个组织今天/本月花了多少" },
       { id: "usage-app", icon: "blocks", title: "应用用量", sub: "按模型、按入口拆开看" },
       { id: "usage-detail", icon: "file-text", title: "用量明细", sub: "一条一条的流水，可导出" },
+      { id: "relay", icon: "link", title: "API 中转站", sub: "对外发 Key、按型号计价、按人按月限额" },
     ],
   },
   { grp: "数据统计", items: [{ id: "stats", icon: "chart", title: "数据统计", sub: "活跃、效率、缓存命中和成果文件占用" }] },
@@ -510,6 +527,17 @@ PAGES.security = {
         <div style="margin-top:14px">
           ${field("允许运行命令行", "开着的时候，任务可以在这台服务器上执行 shell 命令和 Node 代码。安全要求高的组织建议关掉。", sw("allow_shell", s.allow_shell !== false))}
           ${field("登录有效期", "单位是天，1 - 365。改小之后成员手上已经登录的浏览器会在下一次请求时被踢出去，不用等他自己退出。", inp("session_days", s.session_days, 'type="number" min="1" max="365" style="width:120px"'))}
+        </div>`)}
+      ${card(`${secT("密码与二次验证", "改完<b>只对之后设的新密码生效</b>——已经在用的旧密码不会被追着作废，也不会有人突然登不进来。")}
+        <div style="margin-top:14px">
+          ${field("密码最短位数", "6 - 64。注册、成员自己改密码、你在这儿点「重置密码」，三个地方一起管。系统发给成员的那串随机密码也会跟着变长。", inp("password_min", s.password_min == null ? 6 : s.password_min, 'type="number" min="6" max="64" style="width:120px"'))}
+          ${field("要求密码有复杂度", "开了之后，密码里要凑够「大写字母、小写字母、数字、符号」四类里的至少三类。不开也一样会挡掉 123456、woaini1314 这种常见弱密码。", sw("password_strong", !!s.password_strong))}
+          ${field("强制二次验证", "开了之后，没绑验证器的成员登进来只能停在绑定页，别的什么都做不了。你自己也一样——<b>先把自己绑上再开这个开关</b>，不然你会被自己锁在门外（真锁上了也有救：在服务器上跑 <code>openworkbuddy 2fa --off 用户名</code>）。", sw("require_2fa", !!s.require_2fa))}
+        </div>`)}
+      ${card(`${secT("远程访问与远程操控", "这两条<b>默认都是关的</b>。装好之后没人动过它，这台机器就只能在它自己面前用——要在手机上用，得先在这儿主动打开。")}
+        <div style="margin-top:14px">
+          ${field("允许远程设备接入", "开了之后，才能在「设置 → 设备」里生成二维码，把手机或另一台电脑扫码连上来共用这份数据（密码不会离开这台机器）。<b>关掉的同时，已经扫码连上的设备下一次请求就会被踢下线</b>，不用一台台去撤。", sw("remote_devices", !!s.remote_devices))}
+          ${field("允许远程操控终端任务", "开了之后，网页和手机上才看得到这台机器终端里 <code>openworkbuddy</code> 正在跑的活儿，才能给它插话、替它批准危险操作。关掉之后终端照跑不误，只是外面看不见也插不上手。", sw("remote_control", !!s.remote_control))}
         </div>`)}
       ${saveBar()}
     </div>`;
@@ -826,19 +854,29 @@ PAGES.members = {
         : `<div class="ad-actions">
             <button class="ui-btn ui-btn--ghost ui-btn--xs" data-edit="${esc(u.username)}">${ic("pencil", "i-sm")} 改</button>
             <button class="ui-btn ui-btn--ghost ui-btn--xs" data-pwd="${esc(u.username)}">${ic("key", "i-sm")} 重置密码</button>
+            ${u.owner || u.status === "disabled" ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-off="${esc(u.username)}" title="一次关掉他手上所有还能用的口子">${ic("log-out", "i-sm")} 办离职</button>`}
             ${u.owner ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-del="${esc(u.username)}">${ic("trash", "i-sm")}</button>`}
           </div>`,
     ]);
-    const deptChips = m.depts.length
-      ? m.depts
-          .map(
-            (d) =>
-              `<span class="ui-badge ui-badge--secondary" style="gap:4px">${esc(d.name)}${
-                RO ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--icon" style="width:16px;height:16px;padding:0" data-deldept="${esc(d.id)}" title="删除部门">${ic("x", "i-sm")}</button>`
-              }</span>`
-          )
-          .join(" ")
-      : `<span class="fd">还没有部门。分了部门之后，用量能按部门拆开看。</span>`;
+    // 部门以前只画成一排标签。加了权限模板之后标签就不够用了——「销售部进来的人默认是成员、
+    // 每月 2000 额度」这句话得摆在明处，不然模板改了没人看得见，下一个新人按着一份谁都不记得的
+    // 配置进的门。所以改成表：一行一个部门，模板长什么样直接写在旁边
+    const T = m.templates || {};
+    const deptRows = m.depts.map((d) => {
+      const t = T[d.name];
+      return [
+        `<span style="font-weight:500">${esc(d.name)}</span>`,
+        t ? badge(ROLE_LABEL[t.role] || t.role, t.role === "member" ? "outline" : "secondary") : `<span class="fd">成员</span>`,
+        t && t.monthly_quota !== null && t.monthly_quota !== undefined ? num(t.monthly_quota) : `<span class="fd">跟随团队</span>`,
+        RO
+          ? ""
+          : `<div class="ad-actions">
+              <button class="ui-btn ui-btn--ghost ui-btn--xs" data-tpl="${esc(d.name)}" title="这个部门进来的新人，默认按什么权限开号">${ic("sliders-horizontal", "i-sm")} 权限模板</button>
+              ${t ? `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-tplx="${esc(d.name)}" title="清掉模板，以后这个部门进来的人按默认（成员 · 跟随团队额度）">${ic("x", "i-sm")} 清空模板</button>` : ""}
+              <button class="ui-btn ui-btn--ghost ui-btn--xs" data-deldept="${esc(d.id)}" title="删除部门">${ic("trash", "i-sm")}</button>
+            </div>`,
+      ];
+    });
     const invRows = i.invites.map((v) => [
       `<span class="ad-mono" style="font-weight:600">${esc(v.code)}</span>`,
       badge(ROLE_LABEL[v.role] || v.role, "outline"),
@@ -879,11 +917,15 @@ PAGES.members = {
           : empty("没有符合条件的成员"))
       )}
 
-      ${card(`${headRow(
-        secT("部门", "只是个标签，用来把用量拆开看，不影响权限。"),
-        RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-adddept>${ic("plus")} 新建部门</button>`
+      ${cardT(
+        headRow(
+          secT("部门", "用量能按部门拆开看。另外每个部门可以存一份<b>权限模板</b>——添加成员时角色/额度留空，就按这个部门的模板开号，同一个部门第三个人和第一个人的权限长得一模一样。"),
+          RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-adddept>${ic("plus")} 新建部门</button>`
+        ),
+        m.depts.length
+          ? table([{ t: "部门" }, { t: "新人默认角色" }, { t: "新人默认月额度" }, { t: "" }], deptRows)
+          : empty("还没有部门。分了部门之后，用量能按部门拆开看，也能给每个部门存一份新人权限模板。")
       )}
-      <div class="ad-row" style="margin-top:14px">${deptChips}</div>`)}
 
       ${cardT(
         headRow(
@@ -911,6 +953,9 @@ PAGES.members = {
       { value: "auditor", label: "审计员 —— 能查账，改不动" },
       { value: "admin", label: "管理员 —— 能改所有东西" },
     ];
+    // 走 /api/admin/onboard 而不是 /api/admin/members：两条路都建号，区别在前者会套部门模板。
+    // 角色和额度默认留空（= 跟模板走），填了就以填的为准——模板是默认值，不是强制
+    const T = m.templates || {};
     const add = root.querySelector("[data-add]");
     if (add)
       add.onclick = () =>
@@ -918,17 +963,65 @@ PAGES.members = {
           title: "添加成员",
           fields: [
             { name: "username", label: "登录名", placeholder: "字母数字，建议用工号或邮箱前缀", desc: "登录名<b>之后不能改</b>——改了就等于换了个账号。" },
-            { name: "role", label: "角色", type: "select", options: roleOpts, value: "member" },
             { name: "dept", label: "部门", type: "select", options: deptOpts, value: "" },
-            { name: "monthly_quota", label: "每月固定额度", type: "number", placeholder: "留空 = 跟随团队设置", desc: "只想给某个人开小灶时才填。" },
+            {
+              name: "role", label: "角色", type: "select", value: "",
+              options: [{ value: "", label: "跟部门模板（没存模板就按「成员」）" }].concat(roleOpts),
+              desc: Object.keys(T).length ? "已存模板的部门：" + Object.keys(T).map((d) => esc(d) + "→" + esc(ROLE_LABEL[T[d].role] || T[d].role)).join("、") : "",
+            },
+            { name: "monthly_quota", label: "每月固定额度", type: "number", placeholder: "留空 = 跟部门模板 / 团队设置", desc: "只想给某个人开小灶时才填。" },
           ],
           ok: "创建",
           onOk: async (v) => {
-            const r = await post("/api/admin/members", v);
-            showPassword(r.user.username, r.password, "账号建好了");
+            const r = await post("/api/admin/onboard", v);
+            const a = r.applied || {};
+            showPassword(
+              r.user.username,
+              r.password,
+              "账号建好了" + (a.from_template ? `（套用了「${a.dept}」的权限模板：${ROLE_LABEL[a.role] || a.role}、每月额度 ${a.monthly_quota}）` : "")
+            );
             route(true);
           },
         });
+
+    // 部门权限模板。改的是「以后」——已经建好的账号一个都不动，
+    // 不然改一次模板，全部门的人权限跟着跳，谁也说不清昨天谁能干什么
+    root.querySelectorAll("[data-tpl]").forEach((b) => {
+      const d = b.dataset.tpl;
+      const cur = T[d] || null;
+      b.onclick = () =>
+        modal({
+          title: "「" + d + "」的新人权限模板",
+          fields: [
+            { name: "role", label: "默认角色", type: "select", options: roleOpts, value: (cur && cur.role) || "member" },
+            {
+              name: "monthly_quota", label: "默认每月额度", type: "number",
+              value: cur && cur.monthly_quota !== null && cur.monthly_quota !== undefined ? cur.monthly_quota : "",
+              desc: "留空 = 跟随团队设置。",
+            },
+          ],
+          body: `<div class="fd" style="margin-bottom:12px">只影响<b>之后</b>从这个部门进来的新人，已经建好的账号一个都不动。添加成员时角色/额度填了具体值的，以填的为准。</div>`,
+          ok: cur ? "保存" : "存下模板",
+          onOk: async (v) => {
+            await post("/api/admin/dept-templates", {
+              dept: d,
+              template: { role: v.role, monthly_quota: v.monthly_quota === "" ? null : +v.monthly_quota },
+            });
+            toast("模板已保存");
+            route();
+          },
+        });
+    });
+    root.querySelectorAll("[data-tplx]").forEach((b) => {
+      const d = b.dataset.tplx;
+      b.onclick = () =>
+        confirmBox(
+          "清空「" + d + "」的权限模板",
+          "以后从这个部门进来的新人按默认开号（成员 · 跟随团队额度）。<b>已经建好的账号不受影响。</b>",
+          "清空",
+          async () => { await post("/api/admin/dept-templates", { dept: d, remove: true }); toast("模板已清空"); route(); }
+        );
+    });
 
     root.querySelectorAll("[data-edit]").forEach((b) => {
       const u = m.members.find((x) => x.username === b.dataset.edit);
@@ -970,6 +1063,40 @@ PAGES.members = {
             showPassword(b.dataset.pwd, r.password, "新密码");
           }
         );
+    });
+
+    // 办离职。为什么不是「改 → 状态 → 停用」就够：停用只删登录令牌，
+    // 他名下的定时任务照跑（花公司的钱、推到他自己的企业微信）、他发出去的邀请码照样能注册进来。
+    // 整段缘由在 lifecycle.js 头上；这里把「交接给谁」一并问掉，因为问完这一次就再没人会回头补了
+    root.querySelectorAll("[data-off]").forEach((b) => {
+      b.onclick = () => {
+        const who = b.dataset.off;
+        const mates = shown.filter((x) => x.username !== who && x.status === "active").map((x) => x.username);
+        modal({
+          title: "给「" + who + "」办离职",
+          body: `<div class="fd" style="font-size:14px;color:var(--foreground)">会一次性关掉：
+            <b>账号</b>、<b>所有登录令牌</b>（含扫码连进来的手机 / 平板）、<b>他名下的定时任务</b>、
+            <b>他发出去还没过期的邀请码</b>、<b>他绑的二次验证</b>，并掐断他正在跑的任务。<br><br>
+            <b>不会删任何数据</b>：用量流水、对话记录、产出文件、历史审计一律原样保留——人走了账还得能对。</div>`,
+          fields: [
+            {
+              name: "handover",
+              label: "名下的定时任务交接给谁",
+              type: "select",
+              value: "",
+              options: [{ value: "", label: mates.length ? "不交接（只停掉）" : "不交接（当前没有别的在职成员）" }].concat(mates.map((x) => ({ value: x, label: x }))),
+              desc: "交接过去也是<b>关着</b>的——接手的人得先看清楚这条任务到底在干什么，再自己打开。直接接着跑最容易出的事是：他根本不知道每周一早上那封邮件是自己发的。",
+            },
+          ],
+          ok: "办理离职",
+          danger: true,
+          onOk: async (v) => {
+            const r = await post("/api/admin/members/" + encodeURIComponent(who) + "/offboard", { handover: (v.handover || "").trim() });
+            showReceipt(who, r.text);
+            route(true);
+          },
+        });
+      };
     });
 
     root.querySelectorAll("[data-del]").forEach((b) => {
@@ -1041,6 +1168,20 @@ PAGES.members = {
   },
 };
 
+/**
+ * 离职回执。做成能整段复制的纯文本，是因为它的下一站是交接单 / 工单 / 群里那条消息——
+ * 一个只能看不能拿走的弹窗，等于逼人对着屏幕手抄一遍。
+ */
+function showReceipt(username, text) {
+  modal({
+    title: "已办理离职：" + username,
+    body: `<div class="fd" style="font-size:13px">这张回执逐项写明关了什么、留了什么。<b>复制下来贴进交接单</b>，比事后回忆靠谱。</div>
+      <pre class="ad-mono" style="margin-top:8px;padding:12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--muted);white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.7;max-height:52vh;overflow:auto">${esc(text)}</pre>`,
+    fields: [],
+    ok: "复制并关闭",
+    onOk: async () => { copyText(text); toast("回执已复制"); },
+  });
+}
 function showPassword(username, password, title) {
   modal({
     title: title || "密码",
@@ -1261,6 +1402,10 @@ PAGES.apiquota = {
       ${note("这一页管的是<b>按次计费的外部接口</b>——搜一次、生一张图、转一段音频。模型 token 不在这儿，"
         + "它按字数折算成积分，在「计量设置」和「成员用量」里。两本账分开记，是因为它们的单位根本不一样，"
         + "硬折成一个数就没法回答「这个月搜索到底花了多少次」。")}
+      ${note("这儿是<b>次数闸</b>，另外还有一道<b>钱闸</b>：公司内部在界面上生图、生视频、转写，"
+        + "跟中转站发出去的 Key <b>花的是同一笔预算</b>、走的是同一本账，在「API 中转站」那一页设。"
+        + "<br>两道都得有：次数闸管「别把服务商的频率限制跑爆」，它对所有人一视同仁；"
+        + "钱闸管「这个月的预算还剩多少」——200 张万相 plus 跟 200 张 flux 差了五十倍，只看次数的话两个长得一模一样。")}
       ${kpi([
         { label: "已开闸门", value: `${on} / ${caps.length}`, hint: "其余的只记账不拦人" },
         { label: "今天调用", value: num(today), hint: d.day },
@@ -1323,6 +1468,503 @@ PAGES.apiquota = {
         toast(e.message, true);
       }
     };
+  },
+};
+
+/* ============ API 中转站 ============ */
+/**
+ * 一页四件事：发 Key、看账、设上限、（平台管理员）改价目。
+ *
+ * 为什么挤在一页而不是拆成四页：管理员来这儿只有两个问题——「这个月花了多少」
+ * 和「谁在花」。这两个问题的答案分别落在 Key 表、成员表和账单表上，
+ * 它们必须是**同一时刻**的数：上限 100、已花 97、剩 3 这三格来自三次请求的话，
+ * 三个数之间那个唯一会被核的关系（剩 = 上限 − 已花）就随时对不上。
+ * 所以后端也是一个 GET 回全部（admin.js 里 /api/admin/relay 那段）。
+ */
+const yuan = (n) => {
+  const v = Math.abs(+n || 0);
+  if (v === 0) return "0";
+  if (v < 0.01) return v.toFixed(4);
+  if (v < 1000) return v.toFixed(2);
+  return v.toFixed(0);
+};
+/** 「不限」和「0 元」在这一页上差着一整个语义，绝不能都显示成 0 */
+const cap = (n) => (+n > 0 ? yuan(n) + " 元" : "不限");
+
+PAGES.relay = {
+  load: () => api("/api/admin/relay"),
+  render: (d) => {
+    const keys = d.keys || [];
+    const live = keys.filter((k) => k.enabled);
+    const sp = d.spend || { by_key: [], by_user: [], by_model: [], by_cap: [], total: 0, calls: 0 };
+    // 能力名的中文说法统一从后端拿（vkeys.CAP_CN）。前后端各维一份的话，
+    // 哪天加了一路能力，这一页会静静地把它显示成一串英文 id。
+    const CAPN = new Map((d.caps || []).map((c) => [c.key, c.label]));
+    const capName = (k) => CAPN.get(k) || k || "对话";
+    const orgLv = (d.levels || []).find((l) => l.level === "org") || null;
+    const disc = d.budget.price_discount;
+    // 「记了账但不知道多少钱」的那些：型号没登记价目。这一格必须单独显示——
+    // 一张全是数字的账单里，看不出哪几行的 0 是真的 0、哪几行是「没算出来」
+    const unknown = sp.by_model.reduce((n, m) => n + m.unknown, 0);
+    const estimated = sp.by_model.reduce((n, m) => n + m.estimated, 0);
+
+    const base = location.origin + "/v1";
+
+    /* ---- 上面四格 ---- */
+    const head = kpi([
+      // 这一格的口径跟闸子（budget.spentOf）完全一致：**中转站 + 内部自己用**都算。
+      // 只算中转那一半的话，它旁边站着的「组织上限」就是另一把尺子，
+      // 管理员看到「还剩很多」而闸子已经快拦人了——同一屏上两个数互相矛盾，比少一个数更坏。
+      { label: "本月已花", value: yuan(sp.total) + " 元",
+        hint: `中转站 ${yuan(sp.relay)} 元 · 公司内部 ${yuan(sp.internal)} 元 · 共 ${num(sp.calls)} 次 · ${esc(d.month)}` },
+      { label: "组织上限", value: cap(d.budget.org_yuan),
+        hint: orgLv && orgLv.limit ? `还剩 ${yuan(orgLv.left)} 元` + (orgLv.blocked ? ` · 本月拦过 ${num(orgLv.blocked)} 次` : "") : "没设上限，花多少是多少" },
+      { label: "在用的 Key", value: `${live.length} / ${keys.length}`, hint: keys.length > live.length ? `${keys.length - live.length} 把已停用` : "全部启用中" },
+      { label: "人均默认上限", value: cap(d.budget.default_user_yuan), hint: disc !== 1 ? `记账按 ${(disc * 10).toFixed(1)} 折` : "没单独设过的人按这个走" },
+    ]);
+
+    /* ---- 怎么接 ---- */
+    // 路由表写在这儿而不是丢给文档：管理员发完 Key 要把一句话发给业务方，
+    // 而那句话里最常被问回来的就是「生图调哪个地址」。
+    const ROUTES = [
+      ["POST /v1/chat/completions", "对话（支持流式）"],
+      ["POST /v1/embeddings", "向量化"],
+      ["POST /v1/images/generations", "生图"],
+      ["POST /v1/videos/generations", "生视频"],
+      ["POST /v1/audio/speech", "语音合成（直接回音频字节）"],
+      ["POST /v1/audio/transcriptions", "语音转写（multipart 上传）"],
+      ["POST /v1/search", "联网搜索"],
+      ["GET&nbsp; /v1/models", "这把 Key 能调的全部型号"],
+      ["GET&nbsp; /v1/files/{id}", "取回生成的图 / 视频（留 24 小时）"],
+    ];
+    const how = card(`${secT("业务方怎么接", "把这两行填进他们现有的 OpenAI SDK 里就行，一个字的代码都不用改。")}
+      <div class="ad-mono" style="margin-top:12px;background:var(--muted);border-radius:8px;padding:12px 14px;font-size:13px;line-height:2;word-break:break-all">
+        base_url = <b>${esc(base)}</b><br>api_key&nbsp; = <b>${esc(d.prefix)}…</b>（下面发一把，明文只出现一次）
+      </div>
+      <div class="fd" style="margin-top:10px">这台机器对外是不是这个地址，取决于你的反代怎么配的；上面这行是按你现在访问后台的地址拼的。</div>
+      <div style="margin-top:14px;display:grid;grid-template-columns:auto 1fr;gap:4px 14px;align-items:baseline">
+        ${ROUTES.map(([r, t]) => `<code class="ad-mono">${r}</code><span class="fd">${esc(t)}</span>`).join("")}
+      </div>
+      <div class="fd" style="margin-top:10px">除了对话和向量化按 token 算，其余几路按量算（张 / 秒 / 千字符 / 分钟 / 次），
+        走的是<b>同一套额度和同一本账</b>——一把 Key 把额度花在生视频上，对话那一路也一样会被拦。</div>`);
+
+    /* ---- 渠道 ---- */
+    const chRows = (d.channels || []).map((c) => [
+      `<b>${esc(c.name)}</b><div class="fd">${esc(c.kind || "—")}</div>`,
+      c.has_key ? badge("有 Key", "secondary") : badge("没填 Key", "outline"),
+      c.models.length ? c.models.map((m) => `<code class="ad-mono">${esc(m)}</code>`).join(" ") : `<span class="fd">这条渠道下面一个型号都没挂</span>`,
+    ]);
+    const chan = cardT(
+      headRow(secT("转得出去的渠道", "中转站认的是「型号挂在哪条渠道上」。没挂渠道的型号，业务方调过来只会收到一句「没有可用渠道」——"
+        + "所以这张表把它们直说出来，而不是等对方来问。")),
+      table([{ t: "渠道" }, { t: "状态" }, { t: "这条渠道下的型号" }], chRows) +
+        ((d.orphans || []).length
+          ? `<div style="padding:0 20px 18px">${note(`这些型号登记了但<b>没挂渠道</b>，中转站转不出去：`
+              + d.orphans.map((m) => `<code>${esc(m)}</code>`).join("、")
+              + `。去「模型与 Key」把它们归到一条渠道上。`, true)}</div>`
+          : "")
+    );
+
+    /* ---- Key 表 ---- */
+    const keyRow = (k) => {
+      const pct = k.budget_yuan ? (k.spent_month / k.budget_yuan) * 100 : 0;
+      const state = !k.enabled ? badge("已吊销", "outline")
+        : k.expires_at && k.expires_at < iso(new Date()) ? badge("已过期", "destructive")
+        : badge("在用", "secondary");
+      return [
+        `<b>${esc(k.name)}</b><div class="ad-mono fd">${esc(k.mask)}</div>`,
+        state,
+        k.user ? esc(k.user) : `<span class="fd">没挂人</span>`,
+        `<div class="ad-mono">${yuan(k.spent_month)} / ${cap(k.budget_yuan)}</div>${
+          k.budget_yuan ? `<div style="margin-top:4px;max-width:140px">${progress(pct)}</div>` : ""}`,
+        `<div class="fd">${(k.caps || []).length ? (k.caps || []).map((c) => capName(c)).map(esc).join("、") : "七路能力全开"}</div>
+         <div class="fd">${k.models.length ? k.models.map(esc).join("、") : "不限型号"}</div>
+         <div class="fd">${k.ips.length ? "来源 " + k.ips.map(esc).join("、") : "不限来源"}${k.expires_at ? " · 到期 " + esc(k.expires_at) : ""}</div>`,
+        `<span class="ad-mono">${num(k.calls)}</span><div class="fd">${k.last_used_at ? ago(k.last_used_at) : "从未"}</div>`,
+        RO ? "" : `<div class="ad-row">
+          <button class="ui-btn ui-btn--ghost ui-btn--sm" data-edit="${esc(k.id)}" title="改额度 / 型号 / 有效期">${ic("pencil")}</button>
+          ${k.enabled
+            ? `<button class="ui-btn ui-btn--ghost ui-btn--sm" data-revoke="${esc(k.id)}" title="吊销">${ic("lock")}</button>`
+            : k.calls ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--sm" data-del="${esc(k.id)}" title="删除">${ic("trash")}</button>`}
+        </div>`,
+      ];
+    };
+    const keyCard = cardT(
+      headRow(
+        secT("发出去的 Key", "每一把都能单独限额度、限型号、限来源 IP、限有效期。吊销之后上游那把真 Key 一个字节都不用换。"),
+        RO ? "" : `<button class="ui-btn ui-btn--default ui-btn--sm" id="rl-new">${ic("plus")}发一把</button>`
+      ),
+      keys.length ? table(
+        [{ t: "名字" }, { t: "状态" }, { t: "归属" }, { t: "本月 / 上限" }, { t: "限制" }, { t: "调用", right: true }, { t: "" }],
+        keys.map(keyRow)
+      ) : empty("还没发过 Key。发一把，把上面那两行给业务方就能接了")
+    );
+
+    /* ---- 账单 ---- */
+    const spendTab = (title, rows, label) => cardT(
+      headRow(secT(title, "")),
+      rows.length ? table(
+        [{ t: label }, { t: "调用", right: true }, { t: "输入 token", right: true }, { t: "输出 token", right: true }, { t: "本月花费", right: true }],
+        rows.slice(0, 50).map((r) => [
+          esc(r.key) + (r.unknown ? ` ${badge("有 " + r.unknown + " 次算不出钱", "outline")}` : ""),
+          num(r.calls), big(r.prompt), big(r.completion), `<b class="ad-mono">${yuan(r.yuan)}</b>`,
+        ])
+      ) : empty("这个月还没有走中转站的调用")
+    );
+    const keyName = new Map(keys.map((k) => [k.id, k.name]));
+    /**
+     * 按能力分的那张单独列，而不是拼进上面三张：它的“量”每一行单位都不一样
+     * （张 / 秒 / 千字符 / 分钟 / 次），token 那两列对它们来说永远是 0。
+     * 按型号那张回答不了「钱是哪一路花的」——同一个型号名今天生图、明天生视频。
+     */
+    const capRows = (sp.by_cap || []).map((r) => [
+      `<b>${esc(capName(r.key))}</b>` + (r.unknown ? ` ${badge("有 " + r.unknown + " 次算不出钱", "outline")}` : ""),
+      num(r.calls),
+      r.units ? `<span class="ad-mono">${esc(String(r.units))} ${esc(r.unit || "")}</span>` : `<span class="fd">按 token</span>`,
+      `<b class="ad-mono">${yuan(r.yuan)}</b>`,
+    ]);
+    const capCard = cardT(
+      headRow(secT("按能力", "公司买的不只是对话：搜索、生图、生视频、语音合成、语音转写——每一路一个单位、一份价。"
+        + "最贵的那一路通常是生视频（1 条 5 秒的片子≈ 几百次对话），这张表就是拿来看这个的。")),
+      capRows.length ? table(
+        [{ t: "能力" }, { t: "调用", right: true }, { t: "用量", right: true }, { t: "本月花费", right: true }],
+        capRows
+      ) : empty("这个月还没有记到账的调用")
+    );
+    const billing = capCard
+      + spendTab("按 Key", sp.by_key.map((r) => ({ ...r, key: keyName.get(r.key) || r.key })), "Key")
+      + spendTab("按人", sp.by_user, "成员")
+      + spendTab("按型号", sp.by_model, "型号");
+
+    /* ---- 上限 ---- */
+    const memRows = (d.members || []).filter((m) => m.status !== "disabled").map((m) => [
+      `<b>${esc(m.nickname || m.username)}</b><div class="fd">${esc(m.username)}${m.dept ? " · " + esc(m.dept) : ""}</div>`,
+      `<span class="ad-mono">${yuan(m.spent_month)} 元</span>`,
+      m.budget_yuan ? `<span class="ad-mono">${yuan(m.budget_yuan)} 元</span>` : `<span class="fd">跟随团队（${cap(d.budget.default_user_yuan)}）</span>`,
+      RO ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--sm" data-mem="${esc(m.username)}" data-cur="${esc(m.budget_yuan || "")}">${ic("pencil")}</button>`,
+    ]);
+    const limits = card(`${secT("上限", "三档从小往大依次判：这把 Key 的 → 这个人的 → 整个组织的。撞上任何一档就当场拦下，"
+      + "业务方收到的是一句说明白的 402（撞的哪档、上限多少、已用多少），而不是一个看不懂的错。"
+      + "<br><b>员工在界面上的调用同样受这三档管</b>（没挂 Key 那一档自动跳过）——"
+      + "有人拿内部工具批量生视频，跟一把外包 Key 失控是一样的后果，得用同一道闸拦。"
+      + "次数层面的上限（一天最多搜多少次、生多少张）在「API 与额度」那一页。")}
+      ${field("整个组织每月封顶", "0 = 不限。这是最后一道闸，谁都绕不过去。",
+        `<input class="ui-input ad-mono" type="number" min="0" step="0.01" style="width:140px" data-b="org_yuan" value="${esc(d.budget.org_yuan || "")}" placeholder="不限"${RO ? " disabled" : ""}>`)}
+      ${field("没单独设过的人，每人每月封顶", "0 = 不限。部门模板里填了 API 月预算的，按部门那个走，这一格只管剩下的人。",
+        `<input class="ui-input ad-mono" type="number" min="0" step="0.01" style="width:140px" data-b="default_user_yuan" value="${esc(d.budget.default_user_yuan || "")}" placeholder="不限"${RO ? " disabled" : ""}>`)}
+      ${field("跟上游谈下来的折扣", "0.8 = 八折，填 1 就是原价。<b>只改我们自己账本上的数，不改转发本身</b>——"
+        + "上游照旧按原价扣我们的，这一格是让内部结算对得上实际付出去的钱。",
+        `<input class="ui-input ad-mono" type="number" min="0.01" max="1" step="0.01" style="width:140px" data-b="price_discount" value="${esc(disc)}"${RO ? " disabled" : ""}>`)}
+      ${RO ? note("你是<b>审计员</b>：这页能看，改不了。", true)
+           : `<div class="ad-actions"><button class="ui-btn ui-btn--default ui-btn--sm" id="rl-save-budget">保存上限</button></div>`}`);
+    const memCard = cardT(
+      headRow(secT("每个人单独的上限", "留空 = 跟随团队默认。这本账跟「成员用量」那页的积分是两回事：那边算的是界面上用了几次，这边算的是拿 Key 调 API 花了多少钱。")),
+      table([{ t: "成员" }, { t: "本月已花", right: false }, { t: "月上限" }, { t: "" }], memRows)
+    );
+
+    /* ---- 价目（平台管理员） ---- */
+    let priceCard = "";
+    if (d.prices) {
+      const SRC = { builtin: ["内置", "outline"], admin: ["手填", "secondary"], channel: ["渠道自带", "secondary"] };
+      priceCard = cardT(
+        headRow(
+          secT("价目表", `按<b>元 / 百万 token</b> 算——各家官网价目页印的就是这个形状，写成一样才比得了、抄错了也一眼看得出来。`
+            + `内置那份是 ${esc(d.prices_as_of)} 抄的公开报价、按 1 美元 = ${esc(d.usd_cny)} 元折的，`
+            + `只是个起点——你实际签的价八成不一样，手填的那份会盖住内置的。`
+            + `<br>没登记价目的型号照样能转，只是那几笔记成 0 并标一句「算不出钱」，不会拦人。`),
+          RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" id="rl-price-new">${ic("plus")}加一个型号</button>`
+        ),
+        table(
+          [{ t: "型号" }, { t: "输入", right: true }, { t: "缓存命中", right: true }, { t: "输出", right: true }, { t: "来自" }, { t: "" }],
+          d.prices.map((p) => [
+            `<code class="ad-mono">${esc(p.model)}</code>`,
+            `<span class="ad-mono">${p.in == null ? "—" : yuan(p.in)}</span>`,
+            `<span class="ad-mono">${p.cached_in == null ? "—" : yuan(p.cached_in)}</span>`,
+            `<span class="ad-mono">${p.out == null ? "—" : yuan(p.out)}</span>`,
+            badge(...(SRC[p.src] || ["内置", "outline"])),
+            RO ? "" : `<div class="ad-row">
+              <button class="ui-btn ui-btn--ghost ui-btn--sm" data-price="${esc(p.model)}" data-in="${esc(p.in == null ? "" : p.in)}" data-cin="${esc(p.cached_in == null ? "" : p.cached_in)}" data-out="${esc(p.out == null ? "" : p.out)}">${ic("pencil")}</button>
+              ${p.src === "admin" ? `<button class="ui-btn ui-btn--ghost ui-btn--sm" data-price-del="${esc(p.model)}" title="删掉手填的，回到内置价">${ic("trash")}</button>` : ""}
+            </div>`,
+          ])
+        )
+      );
+    }
+
+    /* ---- 按量计价的那五路（平台管理员）---- */
+    let unitCard = "";
+    if (d.unit_prices) {
+      const SRC = { builtin: ["内置", "outline"], admin: ["手填", "secondary"], channel: ["渠道自带", "secondary"] };
+      unitCard = cardT(
+        headRow(
+          secT("按量计价：搜索 / 生图 / 生视频 / 语音",
+            `这五路不按 token 收，按「几张」「几秒」「几千字符」「几分钟」「几次」收，`
+            + `所以单列一张表——跟上面那张混在一起，「0.14 元/张」很容易被看成「0.14 元/百万 token」，`
+            + `而这两个数差着百万倍。<br>`
+            + `内置那份同样是 ${esc(d.prices_as_of)} 抄的公开报价，只是个起点；手填的会盖住内置的。`),
+          RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" id="rl-unit-new">${ic("plus")}加一个</button>`
+        ),
+        (d.unit_prices || []).map((g) => {
+          const rows = (g.rows || []).map((p) => [
+            `<code class="ad-mono">${esc(p.model)}</code>${p.note ? `<div class="fd">${esc(p.note)}</div>` : ""}`,
+            `<span class="ad-mono">${yuan(p.price)} 元 / ${esc(g.unit)}</span>`,
+            badge(...(SRC[p.src] || ["内置", "outline"])),
+            RO ? "" : `<div class="ad-row">
+              <button class="ui-btn ui-btn--ghost ui-btn--sm" data-uprice="${esc(p.model)}" data-ucap="${esc(g.cap)}" data-uval="${esc(p.price)}" data-unote="${esc(p.note || "")}">${ic("pencil")}</button>
+              ${p.src === "admin" ? `<button class="ui-btn ui-btn--ghost ui-btn--sm" data-uprice-del="${esc(p.model)}" data-ucap="${esc(g.cap)}" title="删掉手填的，回到内置价">${ic("trash")}</button>` : ""}
+            </div>`,
+          ]);
+          return `<div class="ad-card-h" style="border-top:1px solid var(--border)">${
+            secT(`${g.cn}（元 / ${g.unit}）`, "")}</div>`
+            + (rows.length ? table([{ t: "型号" }, { t: "单价", right: true }, { t: "来自" }, { t: "" }], rows)
+                           : empty(`这一路还没登记过单价`));
+        }).join("")
+      );
+    }
+
+    /**
+     * 催填单。这两行比上面两张价目表都重要：表里有什么是静态的，
+     * 而这儿列的是「本月真调过、但查不到价」——每一条都是一笔真花了钱但记成 0 的账。
+     * 不拦人（拦了业务方比少算一笔账惨得多），但得天天挂在这儿。
+     */
+    const nag = [];
+    if ((d.prices_missing || []).length)
+      nag.push(`这几个型号本月真调过，但<b>价目表里没有</b>，它们的账全记成了 0：`
+        + d.prices_missing.map((m) => `<code>${esc(m)}</code>`).join("、"));
+    if ((d.unit_missing || []).length)
+      nag.push(`按量那几路里，这几个<b>没登记单价</b>：`
+        + d.unit_missing.map((u) => `<code>${esc(u.model)}</code>（${esc(capName(u.cap))}，元/${esc(u.unit)}）`).join("、"));
+
+    return `<div class="ad-wrap">
+      ${note("中转站解决的是这么一件事：公司统一买了模型、搜索、生图、生视频、语音的额度，"
+        + "现在小程序后台要接、数据组的脚本要接、外包也要接一点。"
+        + "把上游那几把真 Key 发出去，就收不回来、也分不清谁花的钱。这一页发的是<b>虚拟 Key</b>——"
+        + "各有各的额度、能力、型号、有效期和来源限制，随时能吊销，而上游那几把真 Key 一个字节都不用换。"
+        + "<br><b>公司内部自己用也走同一笔预算</b>：下面那三档上限同时管着发出去的 Key 和员工在界面上的调用——"
+        + "分两本账的话，「这个月花了多少」永远差一截，而差的那一截恰好是没人盯着的那一截。")}
+      ${head}
+      ${unknown || estimated ? note(`本月有 <b>${num(unknown)}</b> 次调用算不出钱（型号没登记价目），`
+        + `<b>${num(estimated)}</b> 次的花费是估的（流式那一路上游没报 usage，按字数折的）。`
+        + `上面那个「本月已花」不含前者。`, true) : ""}
+      ${how}
+      ${keyCard}
+      ${chan}
+      ${limits}
+      ${memCard}
+      ${billing}
+      ${nag.length ? note(nag.join("<br>"), true) : ""}
+      ${priceCard}
+      ${unitCard}
+    </div>`;
+  },
+
+  bind: (root, d) => {
+    if (RO) return;
+    const reload = () => route(true);
+
+    /* ---- 发一把 ---- */
+    const KEY_FIELDS = (k) => [
+      { name: "name", label: "给它起个名字", value: (k && k.name) || "", placeholder: "小程序后台",
+        desc: "出事的时候你是靠这个名字认出「该吊销哪一把」的，所以写用途，别写「key1」" },
+      { name: "user", label: "归到谁名下", type: "select", value: (k && k.user) || "",
+        options: [{ value: "", label: "（不挂人）" }].concat((d.members || []).map((m) => ({ value: m.username, label: `${m.nickname || m.username}（${m.username}）` }))),
+        desc: "挂上人，账才算得清「谁花的」；而且<b>他离职的时候这把 Key 会跟着被吊销</b>——"
+          + "躺在某个业务系统环境变量里的 Key，不会因为人走了就自己失效。" },
+      { name: "budget_yuan", label: "这把 Key 每月最多花多少（元）", type: "number", value: (k && k.budget_yuan) || "",
+        placeholder: "留空 = 不单独限", desc: "留空的话它仍然受这个人和整个组织那两档限制。" },
+      { name: "expires_at", label: "到期日", type: "date", value: (k && k.expires_at) || "",
+        desc: "留空 = 不过期。给外包的建议填上——做完自动作废，不用记得回来收。" },
+      { name: "caps", label: "只允许走这几路能力", type: "checks", value: (k && k.caps) || [],
+        options: (d.caps || []).map((c) => ({ value: c.key, label: c.label })),
+        desc: "一个不勾 = 全开。跟型号白名单是两回事：发给外包做文案的那把，该限的不是「哪个型号」而是"
+          + "<b>不准生视频</b>——视频是最贵的一路，而型号名一个月一变，拿型号白名单去拦能力，下个月上游改一个 id 就漏了。" },
+      { name: "models", label: "只允许这几个型号", value: ((k && k.models) || []).join(", "),
+        placeholder: "留空 = 不限，多个用逗号隔开", desc: "填了之后，调别的型号会被当场挡下。对话、生图、语音那几路都算。" },
+      { name: "ips", label: "只允许这几个来源", value: ((k && k.ips) || []).join(", "),
+        placeholder: "留空 = 不限，支持 1.2.3.4 和 1.2.3.0/24", desc: "服务器对服务器的调用建议填上：Key 泄漏之后，这一条就是最后一道门。" },
+    ];
+    const nn = (v) => String(v || "").trim();
+
+    const newBtn = root.querySelector("#rl-new");
+    if (newBtn) newBtn.onclick = () => modal({
+      title: "发一把新 Key",
+      fields: KEY_FIELDS(null),
+      ok: "发出来",
+      onOk: async (v) => {
+        if (!nn(v.name)) throw new Error("给它起个名字——没名字的 Key，三个月后没人知道是谁在用");
+        const out = await post("/api/admin/relay/keys", {
+          name: nn(v.name), user: nn(v.user), budget_yuan: v.budget_yuan,
+          expires_at: nn(v.expires_at), caps: nn(v.caps), models: nn(v.models), ips: nn(v.ips),
+        });
+        showSecret(out.secret, out.key);
+      },
+    });
+
+    /**
+     * 明文只在这一次出现。这个弹层刻意做得啰嗦：关掉之后**任何接口都拿不回来**，
+     * 而人在「发完就关」的惯性下是不会读小字的——所以复制按钮就摆在正中间，
+     * 关闭按钮写的是「我已经存好了」。
+     */
+    function showSecret(secret, key) {
+      modal({
+        title: "存好这一把，它不会再出现第二次",
+        body: `<div class="fd" style="font-size:14px;color:var(--foreground);line-height:1.8">
+            <b>${esc(key.name)}</b> 已经发出来了。下面这串明文<b>只在这一次显示</b>——
+            库里存的是它的 sha256，之后任何接口、任何日志、任何导出都拿不回原文。
+            丢了就回来重发一把（这是便宜操作），但没有「再看一次」。
+          </div>
+          <div class="ad-mono" id="rl-secret" style="margin-top:12px;background:var(--muted);border-radius:8px;padding:14px;font-size:13px;word-break:break-all;user-select:all">${esc(secret)}</div>
+          <div class="ad-actions" style="margin-top:10px"><button class="ui-btn ui-btn--outline ui-btn--sm" id="rl-copy">${ic("copy")}复制</button></div>`,
+        fields: [],
+        ok: "我已经存好了",
+        onOk: async () => { reload(); },
+      });
+      const btn = document.getElementById("rl-copy");
+      if (btn) btn.onclick = async () => {
+        try { await navigator.clipboard.writeText(secret); toast("已复制"); }
+        catch { toast("复制不了，手动选中上面那串", true); }
+      };
+    }
+
+    /* ---- 改 / 吊销 / 删 ---- */
+    root.querySelectorAll("[data-edit]").forEach((b) => {
+      b.onclick = () => {
+        const k = (d.keys || []).find((x) => x.id === b.dataset.edit);
+        if (!k) return;
+        modal({
+          title: "改「" + k.name + "」",
+          body: `<div class="fd">改不到明文，也改不了它归哪个组织。</div>`,
+          fields: KEY_FIELDS(k).concat([
+            { name: "enabled", label: "还能用吗", type: "select", value: k.enabled ? "1" : "",
+              options: [{ value: "1", label: "启用" }, { value: "", label: "停用" }] },
+          ]),
+          ok: "保存",
+          onOk: async (v) => {
+            await post("/api/admin/relay/keys/" + encodeURIComponent(k.id), {
+              name: nn(v.name), user: nn(v.user), budget_yuan: v.budget_yuan,
+              expires_at: nn(v.expires_at), caps: nn(v.caps), models: nn(v.models), ips: nn(v.ips), enabled: !!v.enabled,
+            });
+            toast("已保存");
+            reload();
+          },
+        });
+      };
+    });
+    root.querySelectorAll("[data-revoke]").forEach((b) => {
+      b.onclick = () => {
+        const k = (d.keys || []).find((x) => x.id === b.dataset.revoke);
+        if (!k) return;
+        confirmBox("吊销「" + k.name + "」", `吊销之后，<b>正在用它的程序下一次调用就会收到 401</b>——先去通知对接的人。<br>`
+          + `这一行会留在表里（花过的 ${yuan(k.spent_month)} 元得查得到是谁花的），只是再也调不通了。`,
+          "吊销", async () => {
+            await post("/api/admin/relay/keys/" + encodeURIComponent(k.id), { revoke: true });
+            toast("已吊销");
+            reload();
+          }, true);
+      };
+    });
+    root.querySelectorAll("[data-del]").forEach((b) => {
+      b.onclick = () => {
+        const k = (d.keys || []).find((x) => x.id === b.dataset.del);
+        if (!k) return;
+        confirmBox("删掉「" + k.name + "」", "这把 Key 一次都没用过，删了不影响任何账。", "删除", async () => {
+          await del("/api/admin/relay/keys/" + encodeURIComponent(k.id));
+          toast("已删除");
+          reload();
+        }, true);
+      };
+    });
+
+    /* ---- 上限 ---- */
+    const saveB = root.querySelector("#rl-save-budget");
+    if (saveB) saveB.onclick = async () => {
+      const g = (k) => root.querySelector(`[data-b="${k}"]`).value;
+      saveB.disabled = true;
+      try {
+        await post("/api/admin/relay/budget", {
+          budget: { org_yuan: g("org_yuan"), default_user_yuan: g("default_user_yuan") },
+          price_discount: g("price_discount"),
+        });
+        toast("已保存，下一次调用就按新上限判");
+        reload();
+      } catch (e) { saveB.disabled = false; toast(e.message, true); }
+    };
+    root.querySelectorAll("[data-mem]").forEach((b) => {
+      b.onclick = () => modal({
+        title: "改「" + b.dataset.mem + "」的 API 月预算",
+        fields: [{ name: "budget_yuan", label: "每月最多花多少（元）", type: "number", value: b.dataset.cur,
+          placeholder: "留空 = 跟随团队默认",
+          desc: "留空或填 0 <b>不是「一分钱都不给」</b>，是「不单独设」——按部门模板、再按组织默认走。" }],
+        ok: "保存",
+        onOk: async (v) => { await post("/api/admin/relay/members/" + encodeURIComponent(b.dataset.mem), { budget_yuan: v.budget_yuan }); toast("已保存"); reload(); },
+      });
+    });
+
+    /* ---- 价目 ---- */
+    const PRICE_FIELDS = (m, i, ci, o) => [
+      { name: "model", label: "型号名", value: m || "", placeholder: "gpt-4o-mini",
+        desc: "按前缀匹配：填 <code>gpt-4o</code>，<code>gpt-4o-2026-05-01</code> 也认。" },
+      { name: "in", label: "输入（元 / 百万 token）", type: "number", value: i == null ? "" : i },
+      { name: "cached_in", label: "缓存命中的输入（元 / 百万 token）", type: "number", value: ci == null ? "" : ci,
+        desc: "留空 = 命中也按输入价收。<b>不替供应商猜一个折扣</b>：猜低了账永远对不上，而对不上的方向是「我们以为便宜」。" },
+      { name: "out", label: "输出（元 / 百万 token）", type: "number", value: o == null ? "" : o },
+    ];
+    const pNew = root.querySelector("#rl-price-new");
+    if (pNew) pNew.onclick = () => modal({
+      title: "加一个型号的价目",
+      body: `<div class="fd">价目是<b>整台服务器一份</b>的，改了对所有组织的账都生效。</div>`,
+      fields: PRICE_FIELDS("", "", "", ""),
+      ok: "保存",
+      onOk: async (v) => { await post("/api/admin/relay/prices", v); toast("已保存"); reload(); },
+    });
+    root.querySelectorAll("[data-price]").forEach((b) => {
+      b.onclick = () => modal({
+        title: "改「" + b.dataset.price + "」的价目",
+        fields: PRICE_FIELDS(b.dataset.price, b.dataset.in, b.dataset.cin, b.dataset.out),
+        ok: "保存",
+        onOk: async (v) => { await post("/api/admin/relay/prices", v); toast("已保存"); reload(); },
+      });
+    });
+    root.querySelectorAll("[data-price-del]").forEach((b) => {
+      b.onclick = () => confirmBox("删掉「" + b.dataset.priceDel + "」的手填价目",
+        "删掉之后这个型号回到内置价目（内置里没有的话，它的调用就记成「算不出钱」）。", "删除",
+        async () => { await post("/api/admin/relay/prices", { model: b.dataset.priceDel, remove: true }); toast("已删除"); reload(); }, true);
+    });
+
+    /* ---- 按量单价 ---- */
+    // 走另一条接口（/unit-prices），不是上面那条。两边的单位不一样，
+    // 合成一条的话一个写错字段名的请求会静静地写进另一张表。
+    const UNIT_FIELDS = (cap, m, price, note) => [
+      { name: "cap", label: "哪一路", type: "select", value: cap || "image",
+        options: (d.unit_prices || []).map((g) => ({ value: g.cap, label: `${g.cn}（元 / ${g.unit}）` })) },
+      { name: "model", label: "型号名", value: m || "", placeholder: "wanx2.1-t2i-turbo",
+        desc: "搜索那一路填的是<b>引擎名</b>（tavily / brave / jina），不是型号。" },
+      { name: "price", label: "单价（元）", type: "number", value: price == null ? "" : price,
+        desc: "单位看上面那一格选的是哪一路。填 0 是「确实不收钱」，跟「不知道多少钱」不是一回事。" },
+      { name: "note", label: "备注", value: note || "", placeholder: "比如：按 720p 折算，分辨率一变就不准了",
+        desc: "折算过的价请务必写一句依据。半年后看到一个 0.30，没人记得它是怎么来的。" },
+    ];
+    const uNew = root.querySelector("#rl-unit-new");
+    if (uNew) uNew.onclick = () => modal({
+      title: "加一个按量单价",
+      body: `<div class="fd">价目是<b>整台服务器一份</b>的，改了对所有组织的账都生效。</div>`,
+      fields: UNIT_FIELDS("", "", "", ""),
+      ok: "保存",
+      onOk: async (v) => { await post("/api/admin/relay/unit-prices", v); toast("已保存"); reload(); },
+    });
+    root.querySelectorAll("[data-uprice]").forEach((b) => {
+      b.onclick = () => modal({
+        title: "改「" + b.dataset.uprice + "」的单价",
+        fields: UNIT_FIELDS(b.dataset.ucap, b.dataset.uprice, b.dataset.uval, b.dataset.unote),
+        ok: "保存",
+        onOk: async (v) => { await post("/api/admin/relay/unit-prices", v); toast("已保存"); reload(); },
+      });
+    });
+    root.querySelectorAll("[data-uprice-del]").forEach((b) => {
+      b.onclick = () => confirmBox("删掉「" + b.dataset.upriceDel + "」的手填单价",
+        "删掉之后回到内置单价（内置里没有的话，它的调用就记成「算不出钱」）。", "删除",
+        async () => { await post("/api/admin/relay/unit-prices", { cap: b.dataset.ucap, model: b.dataset.upriceDel, remove: true }); toast("已删除"); reload(); }, true);
+    });
   },
 };
 
@@ -1868,7 +2510,7 @@ PAGES.integration = {
 
 /* ---------------- 导航 + 路由 ---------------- */
 /**
- * 十七个页面分六组，在 13 寸笔记本上一屏根本放不下——侧栏自己会滚，
+ * 十九个页面分六组，在 13 寸笔记本上一屏根本放不下——侧栏自己会滚，
  * 而「要滚」这件事只有那根细滚动条在提示。管理员找「每人每月发多少额度」在哪，
  * 得先猜它属于「订阅与用量」还是「企业设置」（答案是后者，叫「计量设置」），
  * 猜错就得上下翻两遍。所以加一个搜索框：打「额度」直接把相关的两页筛出来。

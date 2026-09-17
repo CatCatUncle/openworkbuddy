@@ -180,12 +180,16 @@ git clone https://github.com/CatCatUncle/openworkbuddy.git && cd openworkbuddy
 bash deploy.sh --domain buddy.example.com   # automatic HTTPS, reachable from outside
 ```
 
-It **waits for the health check to actually pass** before claiming success; if it won't start you get the logs, not a happy message. All data sits in `./wb-data` — delete the container freely, keep that directory.
+It **waits for the health check to actually pass** before claiming success; if it won't start you get the logs, not a happy message. All data sits in `./openworkbuddy-data` — delete the container freely, keep that directory.
 
 > [!IMPORTANT]
 > **Register the admin account first thing.** The first account to register becomes the admin, and self-registration closes right after. An empty instance on a public IP means whoever gets there first is your admin.
 
 **Multi-tenant + admin console**: one process serves several companies. Output files, sessions, accounts, seats, usage ledgers and audit logs are invisible across tenants. Avatar menu → **Admin console**.
+
+**Onboarding and offboarding in one action.** New hires are created from a department template (role, monthly credits). When someone leaves, one click closes five doors at once: paired phones/tablets, **their scheduled jobs** (disabling an account does nothing to these — the scheduler doesn't go through the login gate, so their "email last month's receivables to the boss every Monday 8am" keeps running on the company's credits), invite codes they issued that haven't been used up, the 2FA bound to their phone, and tasks still running. **Revoke access, keep the data** — their tasks, spend, and output files stay exactly as they were, and you get a receipt you can paste straight into the handover doc.
+
+**Logging and alerting are built in.** One metrics snapshot per minute (tasks, failure rate, p95 duration, token spend, free disk, per-channel failure streaks); breach a threshold and it pushes to WeCom / DingTalk. Structured logs are browsable by day, level and keyword in the console. To scrape it with your existing monitoring, hit `/api/ops/metrics.prom` — **that endpoint is behind the platform-owner check like every other one**, not open (this also ships as a desktop app; an extra unauthenticated port would be a world-readable hole on a user's own machine).
 
 Reverse proxy, upgrades, migration, security checklist → [deploy/README.md](deploy/README.md) (Chinese)
 
@@ -202,23 +206,71 @@ Reverse proxy, upgrades, migration, security checklist → [deploy/README.md](de
 
 ## Command line
 
-`wb` shares the desktop app's config, skills, memory and connectors. Answers go to stdout, so it fits into any pipe, script or cron job:
+`openworkbuddy` shares **one** set of config, skills, memory, connectors and sessions with the desktop app — a run you start in the terminal shows up on your phone and takes interjections; start something on the desktop and `openworkbuddy resume` picks it up mid-thread.
 
 ```bash
-npm link                                   # once: install `wb` globally
-wb "write my weekly report"                # one-shot: exit code 0/1 tells the truth
-wb -f q3.xlsx "build a deck from this"     # attach files/images, repeat -f for more
-cat error.log | wb "what is this error"    # pipe: stdin becomes attached material
-wb --json "summarize this meeting" | jq -j 'select(.type=="text") | .delta'
-wb engines && wb engines use claude-code   # use a local Claude Code / Codex as the engine
-wb completion zsh > ~/.zsh/completions/_wb # Tab completion (bash / zsh / fish)
+npm link      # once: install openworkbuddy globally (or just run `node cli.js …`)
 ```
 
-At a fork in the road it **asks you a question** — "Word or PDF?" — with one line under each option saying what picking it commits you to. Behind a pipe or in cron it never asks; it decides and keeps going.
+### Three ways to use it
 
-Plain `wb` opens an interactive shell: type `/` and the command menu drops down (`/model` switches who answers this one, `/paste` pulls in a screenshot from the clipboard, `/open` opens what it just made). Dragging a file onto the window works too.
+```bash
+openworkbuddy "write this week's status report"       # ① one-shot: runs, exits, clean context each time
+openworkbuddy                                         # ② interactive: type / for the command menu
+cat error.log | openworkbuddy "what's going wrong"    # ③ pipe: stdin becomes attached material
+```
 
-Everything → [命令行用法](docs/命令行用法.md) (Chinese).
+One-shot and pipe mode **never ask you anything** — they decide and keep going, so scripts and cron never hang. Interactive mode does ask at real forks ("Word or PDF?"), spelling out what each choice means.
+
+### Subcommands
+
+| Command | What it does |
+| --- | --- |
+| `openworkbuddy sessions [n]` | List the last n sessions (desktop ones included) |
+| `openworkbuddy resume [id] ["keep going…"]` | Resume a session; with no id, **the most recently touched one**, desktop or terminal |
+| `openworkbuddy engines` / `openworkbuddy engines use <id>` | See what this machine can run as the engine, or switch to it |
+| `openworkbuddy doctor` | Run this first when nothing works: Node / deps / port / config / engine |
+| `openworkbuddy pair` | Connect a phone or second machine: scan a QR, no password typed across |
+| `openworkbuddy completion <shell>` | Generate Tab completion (bash / zsh / fish) |
+
+### Options
+
+| Option | What it does |
+| --- | --- |
+| `--mode craft\|goal\|plan\|ask` | Execution mode (default `craft`) |
+| `--perm plan\|ask\|auto\|full` | How much it may do **this run only** — never writes to the config file |
+| `-C, --workspace <dir>` | Work in this directory for this run only |
+| `-f, --file <path>` | Attach a file/image; repeat for more |
+| `-c, --continue` | Resume the last CLI session |
+| `--session <id>` | Resume a specific session |
+| `--list [n]` | List the last n CLI sessions (default 10) |
+| `--json` | Emit events as NDJSON on stdout, for scripts |
+| `-q, --quiet` | Final answer only, no progress (use this when redirecting to a file) |
+| `--raw` | Print the answer as plain Markdown, unrendered |
+| `--no-mcp` | Skip MCP connectors, start faster |
+| `--ask-remote` | Let it ask even with nobody at the terminal — answer from your phone |
+| `-V, --version` / `-h, --help` | Version / help |
+| `--` | Everything after this is task text (for tasks starting with a dash) |
+
+### Slash commands in interactive mode
+
+Type `/` for the menu, Tab to complete. A typo is caught rather than silently sent to the model:
+
+`/help` `/mode` `/perm` `/model` `/new` `/session` `/status` `/cd` `/files` `/open` `/paste` `/drop` `/clear` `/exit`
+
+Worth calling out: `/model` switches who does this run (a local engine or any model you configured), `/paste` pulls a **screenshot** or a wall of text straight off the clipboard, `/open` opens a deliverable in its native app (SVG, Excel, video — things a terminal can't show). You can also drag files into the window, or type `@` for path completion.
+
+### Exit codes mean something
+
+```bash
+openworkbuddy -q "write the weekly report" > report.md                  # just the report, no progress lines
+openworkbuddy -q "check src/ for null-deref risks" && git commit        # won't proceed when it fails
+openworkbuddy --json "sort these logs" | jq -j 'select(.type=="text") | .delta'
+```
+
+`0` success, `1` the task failed, `2` bad arguments, `130` Ctrl+C. `openworkbuddy doctor && npm start` will actually stop a misconfigured box.
+
+Full reference → [CLI usage](docs/命令行用法.md)
 
 ## How it's put together
 
@@ -226,7 +278,7 @@ Everything → [命令行用法](docs/命令行用法.md) (Chinese).
 flowchart TB
   subgraph Entry["Your devices"]
     Desktop["Desktop / Web"]
-    CLI["wb CLI"]
+    CLI["openworkbuddy CLI"]
     IM["Feishu / WeChat and other remote entries"]
   end
 
@@ -244,8 +296,16 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 17** A finished task asks before it leaves a mess behind: the hundreds of extracted frames, the separated audio stems, the build output - clear them out? The cut and the report are never touched. The "Give me the work" home screen carries the same entry with the figure you would get back written on it, plus a per-task breakdown of where the space actually went and a way to tidy just one of them. Delete means delete - nothing is moved to a trash folder to go on occupying the disk
+- **Sep 17** The library no longer hands you a screen of rows that answer "this file no longer exists" when you click them: files the upgrade swept into the dated archive folder are followed to their new path and open properly, while the hundreds of intermediate frames a task cleaned up after itself stay hidden by default — a line underneath says how many, and one click brings them back
+- **Sep 17** Every API the company buys now goes through one door: the real keys are entered once in the admin page, what goes out is a virtual key, and the wire protocol is plain OpenAI — nobody's code changes, only the `base_url`. Chat, embeddings, images, video, speech, transcription and web search all pass the same gate, and each key has its own capability switches: an image-only key that calls speech gets a 401
+- **Sep 17** The relay bills the way each vendor actually sells, and the quota is a gate rather than a report: images per picture, video per second, speech per thousand characters, transcription per minute — over the cap is a 402 on the spot, not a surprise on next month's invoice. Three levels of cap (organisation / department / single key), and **what your staff run from the UI comes out of that same budget**
+- **Sep 17** Open a `.mjs` or `.py` in the workspace and it reads as code now: line numbers, five-colour highlighting, and no wrapping. Minified bundler output — one line of fifty thousand characters — is laid out for you by default, with "show original" one click away
+- **Sep 17** Skills get screened before they're installed: `curl | bash`, reading `id_rsa` and their kind are blocked outright; outbound hosts and dependency installs show you the actual lines and ask again. It reads combinations, not keywords, so "never use `curl | bash`" is not treated as an attack — and what it misses is written down too
+- **Sep 17** If [toolward](https://github.com/CatCatUncle/toolward) is installed on the machine, installing a skill or saving a connector picks up a second ruler for free: both sets of findings merge into one list, and merging only ever tightens. It is never a dependency and never `npx`-ed for you, a missing or crashed binary counts as "it never ran", and connector keys and tokens stay home — only variable names are handed over, with every value replaced by `***`
+- **Sep 17** The film can carry a music bed: drop an "Audio" node on the canvas, set its purpose to "BGM", and compose gains a checkbox. The music ducks while someone speaks, and the dialogue doesn't lose a dB
 - **Sep 17** The licence question, settled: the copy you install has every feature — a commercial licence buys the right to make money with it, not an unlock. Deployment configs, CI, scripts and the eval set are MIT, take them
-- **Sep 17** The terminal asks you questions too now — "Word or PDF?"; `wb -f` attaches files and images, and typing `/` drops down the command menu
+- **Sep 17** The terminal asks you questions too now — "Word or PDF?"; `openworkbuddy -f` attaches files and images, and typing `/` drops down the command menu
 - **Sep 17** Video generation speaks five protocols (Tongyi Wanxiang / Seedance / CogVideoX / Hailuo / SiliconFlow) — and refuses to send when it cannot tell which one, because per-clip billing makes a wasted call expensive
 - **Sep 17** Paste a key with a stray space or a full-width comma in it and it names the offending character on save, instead of a 401 later
 - **Sep 17** The home screen's scenes are regrouped by what you get back; the infinite canvas moved up the sidebar; `[report](report.md)` links in an answer now open the file
@@ -261,6 +321,35 @@ Older entries → **[Changelog](CHANGELOG.en.md)**.
 > [!WARNING]
 > It runs commands, reads and writes files and reaches the network — so the gates are real: command approval, a file blacklist, a URL allowlist, audit logs and four permission tiers.
 > **Read [安全](docs/安全.md) (Chinese) before exposing it to the internet**; the defaults are tuned for local use only.
+
+### Skills get screened before they're installed
+
+A "skill" is a directory with a `skill.md` in it, and that file is **instructions written for the agent**. So installing one really means **wiring a stranger's instructions into something that can run commands on your machine**. That is not the same as `npm install`: an npm package only runs once you `require` it, whereas a skill is something the agent reads and follows on its own. There is no second gate after the install.
+
+So installing from GitHub — or pasting a skill into the editor — first runs a static pass (34 rules) and then **shows you what it saw**:
+
+```
+Skill "xxx" — 3 things you should look at (not proof of anything; these are the
+parts only you can judge):
+  · references/setup.md:62  Pipes a download straight into a shell. What you
+                            reviewed and what actually runs need not be the same file.
+      powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  Hosts it will contact: astral.sh, github.com
+```
+
+The choices behind it, including what each one costs:
+
+- **No score, three outcomes.** A 0–100 score teaches people that "42 is probably fine". There is only: install, look-then-install, and not-by-default.
+- **Only 10 rules actually block** (reverse shells, `curl | bash`, reading SSH private keys, wiping disks, fork bombs, clearing shell history, Unicode bidi characters disguising a filename…). The other 24 are laid out for you to read. **A block can be overridden by the platform owner**, and that override is written to the system log and to `.install.json` in the skill's directory — who, when, from which repo and commit, and which finding they waved through. Without that escape hatch people route around the tool entirely: copying a directory into `skills/` is something nothing can stop.
+- **Combinations, not keywords.** `curl` is fine. `printenv` is fine. Reading a secret *and* sending it out from the same file is the complete shape of exfiltration.
+- **A hit inside frontmatter is escalated one level**, because that `description` line goes into the system prompt of **every** task whether or not the skill is used. An injection in the body waits to be loaded; one in the frontmatter is always on.
+- **Skills are one directory for the whole machine**, so installing, editing and deleting are platform-owner only. Before this gate, any newly registered colleague could hand every user's agent a set of instructions.
+
+**What it does and does not do:** the job is *say what's in it before you install it*, not antivirus. On a public labelled corpus, static rules alone detect about three quarters of real malicious skills (74.9% detected, 60.1% correctly told not to install) — **roughly one in four gets through**. In the other direction, measured against the 34 real skills shipped in this repo, 2 were blocked (5.9%), and both are genuine rule matches rather than rule bugs: one document really does contain `irm … | iex`, and the other is a news-aggregation skill whose cached article *describes* this attack. The same sentence is an attack in instructions and a news story in cached data, and a regex cannot tell them apart. That ceiling is exactly why the override has to exist.
+
+**Want a second ruler? If it's on the machine, it gets used.** [toolward](https://github.com/CatCatUncle/toolward) is another project by the same author, built for exactly this job: 37 rules in six families (prompt injection and tool poisoning, supply chain, secrets, execution and permissions, network and exfiltration, governance). If it's installed, every skill install and every saved connector gets a second pass, both sets of findings land in one list with the source labelled on each line, and merging **only ever tightens**: what it blocks is blocked, what it doesn't mention keeps the original verdict — bolting it on can never turn a block into a pass. **It is not a dependency, and it will never `npx` one for you**: `npm i -g toolward` is yours to run, and not installed, crashed or timed out all mean "it never ran", with the install flow byte-for-byte unchanged. Not auto-fetching is the point rather than laziness — pulling an unaudited version on the fly while auditing the supply chain is precisely what its own TW2xx family flags. Like this project it is PolyForm Noncommercial 1.0.0: free for personal, teaching, academic, charity and government use, **a company needs a separate licence** (licensing@aijentra.com, 30-day evaluation), which is why we cannot put it into your `package.json` for you. On the connector side it only advises, never blocks — and **the keys and tokens you typed stay on your machine**: only variable names are handed over, every value is replaced with `***`, and addresses are cut back to their path with everything after the `?` dropped.
+
+And the one that matters more than every rule above: **read the `skill.md` yourself before installing.** It's Markdown, not a binary.
 
 ## Contributing
 
@@ -283,6 +372,11 @@ Most docs are in Chinese; the code and comments are the source of truth.
 | [命令行用法](docs/命令行用法.md) | CLI flags, pipes, `--json`, cron | [开源与商业版边界](docs/开源与商业版边界.md) | What a licence actually buys |
 | [扩展](docs/扩展.md) | Skills, MCP, plugins, experts | [路线图](docs/路线图.md) | What's next, what counts as done |
 | [IM与定时任务](docs/IM与定时任务.md) | Feishu / QQ / WeCom / WeChat / DingTalk | [实现细节](docs/实现细节.md) | How the agent loop actually runs |
+| [安全基线](docs/安全基线.md) | Where data lands, who can read it, what isn't covered | [远程访问](docs/远程访问.md) | Reaching your machine from outside; both switches off by default |
+
+## Also by the same author
+
+- **[toolward](https://github.com/CatCatUncle/toolward)** — a static safety check for agent skills and MCP connectors: 37 rules in six families (prompt injection and tool poisoning, supply chain, secrets, execution and permissions, network and exfiltration, governance), zero runtime dependencies, Node 20.10+. Run `npm i -g toolward` and OpenWorkBuddy picks it up as a second ruler automatically (the skill-screening section above explains how the two verdicts are merged); skip it and nothing changes. Like this project it is PolyForm Noncommercial: free for personal, teaching, academic, charity and government use, a company needs a separate licence.
 
 ## License
 

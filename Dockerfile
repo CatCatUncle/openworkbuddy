@@ -35,7 +35,7 @@ RUN npm ci --omit=dev
 COPY . .
 
 # 所有会被写的东西都落在 /data：config.json、账号、会话、成果文件、技能、备份。
-# compose 把宿主机的 ./wb-data 挂到这儿。
+# compose 把宿主机的 ./openworkbuddy-data 挂到这儿。
 # 这里故意不写 VOLUME：写了的话每次重建容器都会多出一个匿名卷，
 # 攒着占磁盘，还容易让人以为数据存在里面（其实挂载点被 compose 覆盖了）。
 ENV NODE_ENV=production \

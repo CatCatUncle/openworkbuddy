@@ -3,7 +3,7 @@
  * 个人偏好 vs 服务器级设置 —— 那条线画在哪儿，以及它有没有真的接上。
  *
  * 跑法：node test/prefs.js
- * 用临时 WB_DATA_DIR，绝不碰真账号、真偏好、真 config.json。
+ * 用临时 OPENWORKBUDDY_DATA_DIR，绝不碰真账号、真偏好、真 config.json。
  *
  * 起因是两条用户抱怨：普通成员点一下桌面宠物的开关，回「这块是服务器级设置，归平台管理员管」；
  * 切底层引擎，界面上只显示四个字「切换失败」。改法是把设置分成两层。分层这件事一旦做错，
@@ -26,9 +26,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "wb-prefs-"));
-process.env.WB_DATA_DIR = path.join(TMP, "data");
-fs.mkdirSync(process.env.WB_DATA_DIR, { recursive: true });
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-prefs-"));
+process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
+fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
@@ -167,7 +167,7 @@ ok(Object.keys(only.personal).length === 0, "整块都是服务器级时，个�
 // ===================================================================
 console.log("\n【3】一人一个文件：文件名不许被账号名带沟里");
 
-const PREFS_DIR = path.join(process.env.WB_DATA_DIR, "prefs");
+const PREFS_DIR = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "prefs");
 eq(prefs.keyOf(""), "", "空账号名不给文件名（拿不到当前账号时就该回落 config）");
 eq(prefs.fileOf(""), "", "自然也没有文件路径");
 ok(/^[a-z0-9_-]+$/.test(prefs.keyOf("张三")), "中文账号名也只产出安全字符", prefs.keyOf("张三"));
@@ -183,7 +183,7 @@ ok(prefs.fileOf({ username: "catuncle" }) === prefs.fileOf("catuncle"), "传 use
 // ===================================================================
 // 【4】读写与缓存：别的进程改了，这边得看得见
 // ===================================================================
-console.log("\n【4】读写：缓存要带 mtime 校验（命令行 wb 是另一个进程，多开的窗口也是）");
+console.log("\n【4】读写：缓存要带 mtime 校验（命令行 openworkbuddy 是另一个进程，多开的窗口也是）");
 
 const U = "cachetest";
 ok(Object.keys(prefs.read(U)).length === 0, "没写过就是空的（不是抛错）");
@@ -434,7 +434,7 @@ function call(method, url, { body, cookie } = {}) {
   eq(r.json.sameObject, true, "  └ 也不白复制一份视图出来");
   admin.setDeployment({ shell: false, host: "0.0.0.0" });
 
-  console.log("\n【9】没有请求上下文的地方（定时任务 / IM / 命令行 wb）必须回落到 config");
+  console.log("\n【9】没有请求上下文的地方（定时任务 / IM / 命令行 openworkbuddy）必须回落到 config");
   eq(prefs.current(), null, "ALS 外面取不到当前账号");
   eq(prefs.agentCfg(CONFIG).engine, "builtin", "取值回落到 config.agent");
   eq(prefs.agentView(CONFIG), CONFIG, "整份 config 原样交出去");
@@ -741,9 +741,9 @@ function runConfigGates() {
      "  └ 合完重新补一遍默认值（用户可能把 server 整块删了，少了兜底下一行就崩）");
   ok(/mergeDiskEdits\(\)[\s\S]{0,1100}?security\.getSecurity\(config\);/.test(serverSrc),
      "  └ 安全策略也跟着新内容重算");
-  // 同一个病在命令行那边也有一份：wb engine 探测引擎要跑好几秒，这期间桌面端很可能刚存过
+  // 同一个病在命令行那边也有一份：openworkbuddy engine 探测引擎要跑好几秒，这期间桌面端很可能刚存过
   ok(/const latest = store\.readJson\(CONFIG_PATH, config\) \|\| config;[\s\S]{0,200}?store\.writeJsonAtomic\(CONFIG_PATH, latest/.test(cliSrc),
-     "wb engine 存盘前重新读一遍磁盘，不拿几秒前的整份内存盖回去");
+     "openworkbuddy engine 存盘前重新读一遍磁盘，不拿几秒前的整份内存盖回去");
 
   // ===================================================================
   console.log("\n【13】配置写错了当场说——但不许喊狼");
@@ -761,7 +761,7 @@ function runConfigGates() {
   eq(broken.find((f) => f.path === "agent.engine").level, "bad", "引擎名不在册也是硬错（启动当场抛一句用户看不懂的话）");
   eq(broken.find((f) => f.path === "agent.max_step").level, "warn", "键名疑似拼错只是提醒（说不定是给以后留的）");
   ok(/max_steps/.test(broken.find((f) => f.path === "agent.max_step").hint), "  └ 而且直接说出「你是不是想写 max_steps」");
-  ok(cfgLint.lines(broken).every((l) => /^[×▲] /.test(l)), "排出来的每行都带档位记号（启动日志和 wb doctor 共用这一份措辞）");
+  ok(cfgLint.lines(broken).every((l) => /^[×▲] /.test(l)), "排出来的每行都带档位记号（启动日志和 openworkbuddy doctor 共用这一份措辞）");
 
   // ★反向对照★ 一：自带模板必须一条都查不出来。查得出来说明尺子本身是歪的。
   eq(cfgLint.lint(template, template).length, 0, "反向对照：自带的 config.example.json 一条都不报");
@@ -843,7 +843,7 @@ function runConfigGates() {
   ok(/cfgLint\.lines\(cfgLint\.lint\(config, CONFIG_DEFAULTS\)\)/.test(serverSrc), "启动时真的跑一遍体检并打出来");
   const doctorSrc = fs.readFileSync(path.join(ROOT, "doctor.js"), "utf8");
   ok(/verdictConfigLint\(/.test(doctorSrc) && /require\("\.\/config-lint"\)/.test(doctorSrc),
-     "wb doctor 里也有这一行（用户不看启动日志，但出事时会跑 doctor）");
+     "openworkbuddy doctor 里也有这一行（用户不看启动日志，但出事时会跑 doctor）");
   const doctor = require(path.join(ROOT, "doctor"));
   eq(doctor.verdictConfigLint([]).level, "ok", "doctor：没查出问题时这行是绿的");
   eq(doctor.verdictConfigLint([{ level: "warn", text: "t", hint: "h" }]).level, "warn", "  └ 只有提醒时是黄的");

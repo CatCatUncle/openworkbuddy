@@ -115,13 +115,13 @@ eq(doctor.verdictConfig({ file: "/x/config.json", exists: false }).level, "warn"
   "★还没有 config.json 只是「留意」★ 第一次启动会生成，把它判成故障等于吓唬每个新用户");
 const eNo = doctor.verdictEngine({ id: "claude-code", label: "本机 Claude Code", installed: false, install: "npm i -g x" });
 eq(eNo.level, "bad", "选了本机 CLI 却没装 —— 这是「设置里看着好好的、一跑任务就报错」那类坑");
-ok(/wb engines use builtin/.test(eNo.fix), "给了「换回内置引擎」这条不用装东西的退路", eNo.fix);
+ok(/openworkbuddy engines use builtin/.test(eNo.fix), "给了「换回内置引擎」这条不用装东西的退路", eNo.fix);
 eq(doctor.verdictEngine({ id: "builtin", label: "内置引擎" }).level, "ok", "反向对照：内置引擎永远是好的");
 eq(doctor.verdictWorkspace({ dir: "/x", writable: true, exists: true }).level, "ok", "工作区能写");
 eq(doctor.verdictWorkspace({ dir: "/x", writable: false, errCode: "EACCES" }).level, "bad", "反向对照：工作区写不进去");
 
-// 外部 CLI：缺了只算「留意」，绝不能让 wb doctor 退 1——安装脚本里写的是
-// `wb doctor && npm start`，为一个可选工具挡住启动是本末倒置
+// 外部 CLI：缺了只算「留意」，绝不能让 openworkbuddy doctor 退 1——安装脚本里写的是
+// `openworkbuddy doctor && npm start`，为一个可选工具挡住启动是本末倒置
 const tAll = [
   { name: "ffmpeg", use: "图文成片、录屏", bin: "/usr/bin/ffmpeg", install: "brew install ffmpeg" },
   { name: "pandoc", use: "Word 互转", bin: "/usr/bin/pandoc", install: "brew install pandoc" },
@@ -129,7 +129,7 @@ const tAll = [
 eq(doctor.verdictTools(tAll).level, "ok", "外部工具都在");
 const tMiss = doctor.verdictTools([tAll[0], { name: "pandoc", use: "Word 互转", bin: "", install: "brew install pandoc" }]);
 eq(tMiss.level, "warn", "缺外部工具只算「留意」，不是「要处理」");
-eq(doctor.worst([tMiss]), doctor.LEVELS.warn, "反向对照：缺外部工具时 wb doctor 的退出码还是 0");
+eq(doctor.worst([tMiss]), doctor.LEVELS.warn, "反向对照：缺外部工具时 openworkbuddy doctor 的退出码还是 0");
 ok(/pandoc/.test(tMiss.detail) && /Word/.test(tMiss.detail), "说清楚缺的是哪个、它是干嘛用的", tMiss.detail);
 ok(/brew install pandoc/.test(tMiss.fix), "给了照着能敲的装法", tMiss.fix);
 ok(!/ffmpeg/.test(tMiss.fix), "反向对照：已经装了的不该出现在「怎么修」里", tMiss.fix);
@@ -242,11 +242,11 @@ const body = srv.slice(ping, ping + 300);
 ok(/app: "openworkbuddy"/.test(body), "回的是认得出的应用名——doctor 靠它分辨「是我自己」还是「别人占了」", body.slice(0, 120));
 ok(!/api_key|token|user|cookie/i.test(body), "★只回应用名和版本号★ 免登录的接口多回一个字段就是多一处白送的情报", body.slice(0, 200));
 
-// ── ⑩ 真跑一遍：什么都没配的机器上，wb doctor 自己不能先死 ──────────────
+// ── ⑩ 真跑一遍：什么都没配的机器上，openworkbuddy doctor 自己不能先死 ──────────────
 // 这是整条链路唯一没法靠纯函数验的一环。cli.js 在读不到 config.json 时是 exit 1 的，
 // 而「读不到 config.json」正是最需要体检的时刻——体检工具被自己那道闸挡在门外，
 // 等于这个功能对最需要它的人不存在。所以这里起一个真的子进程，用一个空目录当家目录。
-console.log("\n⑩ 空机器上真跑一遍 wb doctor");
+console.log("\n⑩ 空机器上真跑一遍 openworkbuddy doctor");
 const { spawnSync } = require("child_process");
 const EMPTY = fs.mkdtempSync(path.join(os.tmpdir(), "owb-doctor-"));
 try {
@@ -260,7 +260,7 @@ try {
   ok(!/找不到 config\.json/.test(out), "★没有 config.json 也照跑★ 被自己那道闸挡住的话，这个功能对最需要它的人等于不存在", out.slice(0, 200));
   ok(/Node 版本/.test(out) && /端口/.test(out) && /模型渠道/.test(out) && /外部工具/.test(out), "九项体检都画出来了", out.slice(0, 200));
   ok(/还没有/.test(out) && /config\.json/.test(out), "如实说「还没有 config.json」，并告诉他怎么生成");
-  eq(r.status, 1, "有要处理的项时退出码是 1（wb doctor && npm start 才拦得住）");
+  eq(r.status, 1, "有要处理的项时退出码是 1（openworkbuddy doctor && npm start 才拦得住）");
   ok(!fs.existsSync(path.join(EMPTY, "config.json")), "体检不往用户磁盘上写东西");
   ok(fs.readdirSync(EMPTY).length === 0, "★连目录都没顺手建★ 体检是来看病的，不该改用户的磁盘", fs.readdirSync(EMPTY));
   // 反向对照：配齐了就该是 0。拿一份最小可用配置再跑一遍，证明上面那个 1 不是「永远都 1」

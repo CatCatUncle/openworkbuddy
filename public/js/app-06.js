@@ -4,10 +4,10 @@ function renderSecurityPane(pane, s) {
   const chk = (id, on, label, desc) => `
     <label style="display:flex;align-items:flex-start;gap:8px;margin:7px 0;cursor:pointer;font-size: 14px">
       <input type="checkbox" id="${id}" ${on ? "checked" : ""} style="margin:3px 0 0">
-      <span><b>${label}</b><span style="color:var(--wb-text-3)"> — ${desc}</span></span>
+      <span><b>${label}</b><span style="color:var(--owb-text-3)"> — ${desc}</span></span>
     </label>`;
   const listCol = (title, id, val, rows) => `
-    <div style="flex:1;min-width:0"><div style="font-size: 13px;color:var(--wb-text-2);margin:6px 0 4px">${title}</div>
+    <div style="flex:1;min-width:0"><div style="font-size: 13px;color:var(--owb-text-2);margin:6px 0 4px">${title}</div>
     <textarea id="${id}" rows="${rows || 4}" style="width:100%;font-size: 13px;font-family:Consolas,monospace;resize:vertical">${val}</textarea></div>`;
   // 这一整页动的都是**整台服务器**的安全策略：档位、黑白名单、运行时开关、审计。
   // 多人服务器上的普通成员一样都改不了，全画出来等于摆一屏点了就 403 的控件。
@@ -15,12 +15,27 @@ function renderSecurityPane(pane, s) {
   const po = !!s.platform_owner;
   pane.innerHTML = `
     <div class="card-item">
+      <div class="t">${ic("key-round")} 二次验证</div>
+      <div class="d">开了之后，光有密码登不进来——还要验证器 App 上那串每 30 秒一换的 6 位数字。密码可能在别处泄漏、可能被人看着敲，而那串数字只在你手机上。</div>
+      <div id="tfa-box" style="margin-top:10px;font-size:13px">读取中…</div>
+    </div>
+    <div class="card-item">
       <div class="t">${ic("sliders-horizontal")} 权限档位</div>
       <div class="d">决定 AI 动手前问不问你。改文件、跑命令都按这个档来；文件黑名单在任何档位下都拦得住。${po ? "输入框下方那个盾牌下拉也能随时切。" : "<b>这台服务器上大家共用一个档位，归平台管理员设。</b>下面是当前生效的这档。"}</div>
       <div id="sec-modes" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
-      <div style="margin-top:8px;font-size: 13px;color:var(--wb-text-3)">
+      <div style="margin-top:8px;font-size: 13px;color:var(--owb-text-3)">
         本次运行期间记住的批准：<span id="sec-sess-allow">（无）</span>
         ${po ? `<a href="#" class="link" id="sec-sess-clear">清掉</a>` : ""}
+      </div>
+    </div>
+    <div class="card-item">
+      <div class="t">${ic("smartphone")} 远程访问 · 已授权设备</div>
+      <div class="d">想在手机或另一台电脑上用，<b>不用把密码敲过去</b>：在这台已经登录的机器上生成一串配对码，去那台设备上填，就换到一条只属于那台设备的凭证。谁能进来这里全列着，哪台不想要了当场踢掉——不用改密码，也不会把别的设备一起踢下线。</div>
+      <div id="dev-pair-box" style="margin-top:10px"></div>
+      <div id="dev-list" style="margin-top:10px;font-size: 13px">读取中…</div>
+      <div style="margin-top:8px;font-size: 13px;color:var(--owb-text-3)">
+        配对码三分钟就作废，只能用一次，只存在内存里——重启服务就没了，硬盘上不留。
+        这张表里的「设备 id」是凭证的哈希，不是凭证本身：就算这一页被别人看见，他也拿不走任何一台设备的登录态。
       </div>
     </div>
     ${!po ? `
@@ -36,7 +51,7 @@ function renderSecurityPane(pane, s) {
         批量删除审批阈值 <input id="sec-batch" type="number" min="1" style="width:70px;margin:0" value="${esc(String(sec.batch_delete_threshold ?? 50))}"> 个文件 ·
         审批等待上限 <input id="sec-aptimeout" type="number" min="10" style="width:70px;margin:0" value="${esc(String(sec.approval_timeout_s ?? 120))}"> 秒（超时按拒绝）
       </div>
-      <div style="font-size: 13px;color:var(--wb-text-3)">传输加密：前后端走本机回环地址通信不经公网；对外仅按你配置的通道（飞书/企微/钉钉官方 HTTPS API）传输。</div>
+      <div style="font-size: 13px;color:var(--owb-text-3)">传输加密：前后端走本机回环地址通信不经公网；对外仅按你配置的通道（飞书/企微/钉钉官方 HTTPS API）传输。</div>
     </div>
     <div class="card-item">
       <div class="t">${ic("folder")} 沙箱安全 · 文件</div>
@@ -68,8 +83,13 @@ function renderSecurityPane(pane, s) {
       ${chk("sec-py", sec.runtime_python !== false, "Python（run_shell 里的 python/pip）", "关闭后 python/pip 命令直接拒绝")}
     </div>
     <div class="card-item">
+      <div class="t">${ic("shield-check")} 技能与连接器体检 · 第二把尺子</div>
+      <div class="d">装技能、存连接器之前都会先扫一遍：自带的那把尺子一定跑，这里说的是要不要再叫一把外面的（<a class="link" href="https://github.com/CatCatUncle/toolward" target="_blank" rel="noopener">toolward</a>，37 条规则，认提示词注入、工具投毒、供应链、密钥外传那几类）。两把尺子照着不同的案例写，重合的互相印证，不重合的才是真多出来的覆盖面。</div>
+      <div id="sec-tw" style="margin-top:10px;font-size: 13px">检测中…</div>
+    </div>
+    <div class="card-item">
       <div class="t">${ic("monitor")} 系统授权（macOS）</div>
-      <div id="sec-sys" style="font-size: 14px;color:var(--wb-text-3)">检测中…</div>
+      <div id="sec-sys" style="font-size: 14px;color:var(--owb-text-3)">检测中…</div>
     </div>
     <div class="card-item">
       <div class="t">${ic("clipboard-list")} 审计中心 <span style="float:right;font-weight:400;font-size: 13px"><a href="#" class="link" id="audit-all">查看全部</a> · <a class="link" href="/api/security/audit/export" download>导出日志</a> · <a href="#" class="link danger" id="audit-clear">清空记录</a></span></div>
@@ -77,8 +97,14 @@ function renderSecurityPane(pane, s) {
     </div>
     <button class="btn-brand" id="sec-save">保存</button><span class="ok-msg" id="sec-msg"></span>`}`;
 
+  // 这个得在 renderPairBox() 之前声明：函数声明会提升，let 不会——
+  // 摆在下面「远程访问」那一节里的话，第一次调用当场就是 TDZ 报错
+  let pairTimer = null;
   renderModes();
   renderSessAllow();
+  renderDevices();
+  renderPairBox();
+  renderTwoFactorBox(pane.querySelector("#tfa-box"));
   if (!po) return; // 下面全是平台管理员那套卡片的事件；没画出来就别去 querySelector
 
   const linesOf = (sel) => pane.querySelector(sel).value.split(/\n/).map(x => x.trim()).filter(Boolean);
@@ -96,8 +122,39 @@ function renderSecurityPane(pane, s) {
       url_blacklist: linesOf("#sec-ubl"),
       runtime_node: pane.querySelector("#sec-node").checked,
       runtime_python: pane.querySelector("#sec-py").checked,
+      // 这张卡片没装 toolward 时只画一行说明，没有这两个控件——取不到就别往后端塞空值，
+      // 那会把用户原来填好的路径洗掉
+      ...(pane.querySelector("#sec-tw-mode") ? {
+        toolward: pane.querySelector("#sec-tw-mode").value,
+        toolward_bin: pane.querySelector("#sec-tw-bin").value.trim(),
+      } : {}),
     },
   }, pane.querySelector("#sec-msg"));
+
+  renderToolward();
+  // ---- 第二把尺子 ----
+  async function renderToolward() {
+    const box = pane.querySelector("#sec-tw");
+    if (!box) return;
+    const d = await fetch("/api/security/toolward").then(r => r.json()).catch(() => null);
+    if (!d) { box.textContent = "读不到状态（不影响安装，自带那把尺子照样在跑）"; return; }
+    const opt = (v, label) => `<option value="${v}"${(d.mode || "auto") === v ? " selected" : ""}>${label}</option>`;
+    // 没装：不画开关。画一排「设置成 auto」但根本没有程序可调用的下拉，比不画更误导——
+    // 用户会以为自己已经打开了第二道检查。
+    box.innerHTML = d.installed
+      ? `<div>${d.on ? "已接上" : "装着，但这会儿没在用"}：toolward ${esc(d.version || "")} · <code style="font-size:12px">${esc(d.bin)}</code>${d.on ? "" : `　<span style="color:var(--owb-text-3)">${esc(d.why || "")}</span>`}</div>
+         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size: 14px">
+           怎么用它 <select id="sec-tw-mode" style="margin:0">${opt("auto", "它报「严重」就拦下来（推荐）")}${opt("advisory", "只提醒，从不拦人")}${opt("off", "不叫它")}</select>
+         </div>
+         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size: 14px">
+           指定路径 <input id="sec-tw-bin" style="flex:1;min-width:220px;margin:0;font-family:Consolas,monospace;font-size:12px" placeholder="留空 = 自己在 PATH 里找" value="${esc(d.bin_pref || "")}">
+         </div>
+         <div style="color:var(--owb-text-3);margin-top:8px">拦下来的技能，平台管理员在技能页点「仍然安装」还是装得进去，那一下会记进日志和 .install.json。连接器那边只提醒、从不拦。</div>
+         <div style="color:var(--owb-text-3);margin-top:6px">${esc(d.licence || "")}</div>`
+      : `<div>没在用：${esc(d.why || "本机没找到 toolward")}。自带的那把尺子照样在跑，功能一个不少。</div>
+         <div style="margin-top:8px">想加上第二把：<code style="font-size:12px">${esc(d.install || "npm i -g toolward")}</code></div>
+         <div style="color:var(--owb-text-3);margin-top:6px">${esc(d.licence || "")}</div>`;
+  }
 
   // ---- 权限档位 ----
   async function renderModes() {
@@ -108,13 +165,13 @@ function renderSecurityPane(pane, s) {
     // 画一排他一点就 403 的单选钮，比不画更气人——单选钮还会先跳过去再弹错，看着像切成功了又弹回来。
     if (d.can_switch === false) {
       const cur = d.modes[d.current] || {};
-      box.innerHTML = `<div style="font-size: 14px"><b>${esc(cur.label || d.current || "未知")}</b><span style="color:var(--wb-text-3)"> — ${esc(cur.desc || "")}</span></div>`;
+      box.innerHTML = `<div style="font-size: 14px"><b>${esc(cur.label || d.current || "未知")}</b><span style="color:var(--owb-text-3)"> — ${esc(cur.desc || "")}</span></div>`;
       return;
     }
     box.innerHTML = Object.entries(d.modes).map(([k, m]) => `
       <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size: 14px">
         <input type="radio" name="permmode" value="${esc(k)}" ${k === d.current ? "checked" : ""} style="margin:3px 0 0">
-        <span><b>${esc(m.label)}</b><span style="color:var(--wb-text-3)"> — ${esc(m.desc)}</span></span>
+        <span><b>${esc(m.label)}</b><span style="color:var(--owb-text-3)"> — ${esc(m.desc)}</span></span>
       </label>`).join("");
     box.querySelectorAll("input[name=permmode]").forEach(r => r.onchange = async () => {
       await setPermMode(r.value);
@@ -135,6 +192,112 @@ function renderSecurityPane(pane, s) {
     toast("已清掉本次运行期间记住的批准");
   };
 
+  // ---- 远程访问 ----
+  /** 没在配的时候只有一个按钮；配的时候是一张大码 + 倒计时 */
+  function renderPairBox(p) {
+    const box = pane.querySelector("#dev-pair-box");
+    if (!box) return;
+    clearInterval(pairTimer);
+    if (!p) {
+      box.innerHTML = `<button class="btn-plain" id="dev-pair-go">${ic("link")} 生成配对码</button>`;
+      box.querySelector("#dev-pair-go").onclick = async (e) => {
+        e.target.disabled = true;
+        const d = await fetch("/api/devices/pair", { method: "POST" }).then(r => r.json()).catch(() => null);
+        // 开关关着不是「失败」，是「这台机器现在就不干这件事」。说成「刷新再试」会让人
+        // 一直刷，刷多少次都是同一个结果——得把该去哪儿打开这件事说出来
+        if (d && d.remote_off) {
+          e.target.disabled = false;
+          box.innerHTML = `<div style="font-size:13px;color:var(--owb-text-2);line-height:1.7">远程设备接入是关着的（<b>默认就是关的</b>）。要在手机上用，先去 <b>企业管理后台 → 客户端安全 → 远程访问与远程操控</b> 打开「允许远程设备接入」。</div>`;
+          return;
+        }
+        if (!d || !d.pretty) { e.target.disabled = false; return toast("生成失败，刷新页面再试", "err"); }
+        renderPairBox(d);
+      };
+      return;
+    }
+    box.innerHTML = `
+      <div style="border:1px solid var(--owb-border);border-radius:10px;padding:14px;background:var(--owb-bg-hover);display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+        ${p.qr ? `<img src="${esc(p.qr)}" width="150" height="150" alt="配对二维码"
+             style="border-radius:8px;background:#fff;padding:6px;image-rendering:pixelated;flex:none">` : ""}
+        <div style="flex:1;min-width:180px">
+          <div style="font-size: 13px;color:var(--owb-text-2)">${p.qr ? "拿手机扫它，" : ""}或者打开 <b>${esc(p.url || location.origin)}</b> 填这串码：</div>
+          <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:28px;letter-spacing:.14em;font-weight:600;margin:6px 0">${esc(p.pretty)}</div>
+          <div style="font-size: 13px">
+            <span id="dev-pair-left" style="color:var(--owb-text-3)"></span>
+            · <a href="#" class="link" id="dev-pair-copy">复制</a>
+            · <a href="#" class="link danger" id="dev-pair-cancel">不配了</a>
+          </div>
+        </div>
+      </div>`;
+    pane.querySelector("#dev-pair-copy").onclick = (e) => {
+      e.preventDefault();
+      navigator.clipboard.writeText(p.pretty).then(() => toast("配对码已复制"), () => toast("复制失败，手抄一下", "err"));
+    };
+    pane.querySelector("#dev-pair-cancel").onclick = async (e) => {
+      e.preventDefault();
+      await fetch("/api/devices/pair/cancel", { method: "POST" }).catch(() => {});
+      renderPairBox();
+    };
+    // 倒计时每秒走一格，连上没有每两秒问一次。
+    // 少了这一问，手机那边连上的瞬间这边什么都不变，人只能盯着码看完三分钟然后猜
+    let n = 0;
+    const tick = async () => {
+      const el = pane.querySelector("#dev-pair-left");
+      if (!el) return clearInterval(pairTimer);
+      const left = Math.max(0, Math.round((p.expires_at - Date.now()) / 1000));
+      if (!left) { clearInterval(pairTimer); renderPairBox(); renderDevices(); return; }
+      el.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} 后作废`;
+      if (++n % 2) return;
+      const st = await fetch("/api/devices/pair/status").then(r => r.json()).catch(() => null);
+      if (st && st.claimed) { clearInterval(pairTimer); pairDone(st.claimed); }
+    };
+    tick();
+    pairTimer = setInterval(tick, 1000);
+  }
+  /** 连上了。这一下要给得明确——他刚在手机上敲完，正抬头看这块屏 */
+  function pairDone(c) {
+    const box = pane.querySelector("#dev-pair-box");
+    if (!box) return;
+    box.innerHTML = `
+      <div style="border:1px solid var(--owb-brand);border-radius:10px;padding:14px;background:var(--owb-bg-hover);font-size: 14px">
+        <b style="color:var(--owb-brand-text)">${ic("circle-check")} ${esc(c.name || "新设备")} 连上了</b>
+        <span style="color:var(--owb-text-3)"> — 那台设备现在能用你的账号了，密码没有离开过这台电脑。</span>
+        <a href="#" class="link" id="dev-pair-again" style="margin-left:6px">再配一台</a>
+      </div>`;
+    box.querySelector("#dev-pair-again").onclick = (e) => { e.preventDefault(); renderPairBox(); };
+    renderDevices();
+    toast(`${c.name || "新设备"} 已连接`);
+  }
+  async function renderDevices() {
+    const box = pane.querySelector("#dev-list");
+    if (!box) return;
+    const d = await fetch("/api/devices").then(r => r.json()).catch(() => null);
+    const list = (d && d.devices) || [];
+    if (!list.length) return void (box.textContent = "还没有别的设备。");
+    box.innerHTML = list.map(x => `
+      <div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--owb-border)">
+        <div style="flex:1;min-width:0">
+          <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+            ${esc(x.name)}
+            ${x.current ? `<span style="color:var(--owb-brand-text);font-size: 12px">· 本机</span>` : ""}
+            ${x.kind === "paired" ? `<span style="color:var(--owb-text-3);font-size: 12px">· 配对</span>` : ""}
+          </div>
+          <div style="color:var(--owb-text-3);font-size: 12px">${esc(x.ip || "地址不详")} · ${esc(libWhen(x.seen) || "")}活动过</div>
+        </div>
+        <a href="#" class="link danger" data-kick="${esc(x.id)}">${x.current ? "退出这台" : "踢掉"}</a>
+      </div>`).join("");
+    box.querySelectorAll("[data-kick]").forEach(a => a.onclick = async (e) => {
+      e.preventDefault();
+      const self = list.find(x => x.id === a.dataset.kick && x.current);
+      if (!confirm(self ? "退出这台设备？你会被登出。" : "踢掉这台设备？它下次打开就得重新登录。")) return;
+      const r = await fetch("/api/devices/" + encodeURIComponent(a.dataset.kick), { method: "DELETE" }).catch(() => null);
+      if (!r || !r.ok) return toast("踢不掉，刷新页面再试", "err");
+      if (self) return location.reload();
+      toast("已踢掉");
+      renderDevices();
+    });
+  }
+
   // ---- 审计 ----
   let auditLimit = 15;
   async function renderAudit() {
@@ -142,8 +305,8 @@ function renderSecurityPane(pane, s) {
     const box = pane.querySelector("#audit-list");
     if (!box) return;
     box.innerHTML = (Array.isArray(list) && list.length)
-      ? list.map(e => `<div style="padding:4px 0;border-bottom:1px solid var(--wb-border)"><span style="color:var(--wb-text-3)">${esc(String(e.ts || "").replace("T", " ").slice(5, 19))}</span> <b>[${esc(e.type)}]</b> ${esc(e.text)} <span style="color:${/拦截|拒绝/.test(e.action) ? "var(--wb-err-text)" : "var(--wb-ok-text)"}">${esc(e.action)}</span></div>`).join("")
-      : '<div style="color:var(--wb-text-3);padding:6px 0">还没有记录。AI 执行命令 / 联网访问时会自动记录在这里。</div>';
+      ? list.map(e => `<div style="padding:4px 0;border-bottom:1px solid var(--owb-border)"><span style="color:var(--owb-text-3)">${esc(String(e.ts || "").replace("T", " ").slice(5, 19))}</span> <b>[${esc(e.type)}]</b> ${esc(e.text)} <span style="color:${/拦截|拒绝/.test(e.action) ? "var(--owb-err-text)" : "var(--owb-ok-text)"}">${esc(e.action)}</span></div>`).join("")
+      : '<div style="color:var(--owb-text-3);padding:6px 0">还没有记录。AI 执行命令 / 联网访问时会自动记录在这里。</div>';
   }
   renderAudit();
   pane.querySelector("#audit-all").onclick = (e) => { e.preventDefault(); auditLimit = 1000; renderAudit(); };
@@ -162,18 +325,18 @@ function renderSecurityPane(pane, s) {
     const d = await fetch("/api/security/system").then(r => r.json()).catch(() => null);
     if (!d) { el.textContent = "读取失败"; return; }
     const txt = {
-      granted: `<span style="color:var(--wb-ok-text)">${ic("circle-check")} 已授权</span>`,
-      denied: '<span style="color:var(--wb-err-text)">未授权</span>',
-      unknown: '<span style="color:var(--wb-text-3)">无法检测</span>',
-      unchecked: '<span style="color:var(--wb-text-3)">未检测</span>',
+      granted: `<span style="color:var(--owb-ok-text)">${ic("circle-check")} 已授权</span>`,
+      denied: '<span style="color:var(--owb-err-text)">未授权</span>',
+      unknown: '<span style="color:var(--owb-text-3)">无法检测</span>',
+      unchecked: '<span style="color:var(--owb-text-3)">未检测</span>',
     };
     const row = (name, key, st, extra) =>
-      `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--wb-border)"><span style="flex:1;color:var(--wb-text)"><b>${name}</b></span>${txt[st] || esc(String(st))}${extra || ""}<a href="#" class="link" data-pane="${key}">去授权</a></div>`;
+      `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--owb-border)"><span style="flex:1;color:var(--owb-text)"><b>${name}</b></span>${txt[st] || esc(String(st))}${extra || ""}<a href="#" class="link" data-pane="${key}">去授权</a></div>`;
     el.innerHTML =
       row("完全磁盘访问权限", "fulldisk", d.fulldisk) +
       row("辅助功能", "accessibility", d.accessibility) +
       row("自动化（Apple Events）", "automation", autoState || d.automation, ' <a href="#" class="link" id="sec-autochk">检测/授权</a>') +
-      (d.desktop ? "" : '<div style="font-size: 13px;color:var(--wb-text-3);margin-top:6px">当前是 Web 模式：授权对象是启动本服务的终端；「辅助功能」状态仅桌面版（npm run app）能查询。</div>');
+      (d.desktop ? "" : '<div style="font-size: 13px;color:var(--owb-text-3);margin-top:6px">当前是 Web 模式：授权对象是启动本服务的终端；「辅助功能」状态仅桌面版（npm run app）能查询。</div>');
     el.querySelectorAll("[data-pane]").forEach(a => a.onclick = (ev) => {
       ev.preventDefault();
       fetch("/api/security/system/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pane: a.dataset.pane }) });
@@ -188,6 +351,197 @@ function renderSecurityPane(pane, s) {
     };
   }
   renderSys();
+
+
+}
+
+/**
+ * 二次验证：绑、解、换恢复码。
+ *
+ * 后端那三条接口（setup / enable / disable，外加 recovery）早就通了，界面上却一直没有入口——
+ * 于是「强制二次验证」那个开关一打开，所有人当场被锁在绑定页外面：程序要求他绑，
+ * 又没给他任何一个能绑的地方。这张卡就是补这个。
+ *
+ * 三步走，每一步都在这张卡里原地换掉上一步，不弹窗：
+ *   ① 验一次密码（这一步之后屏幕上会出现密钥，等于账号的第二把钥匙，不能谁路过都看得见）
+ *   ② 扫码 / 手抄密钥，再输一次码证明确实扫上了（信「前端说扫好了」的话，没扫上的人当场把自己锁在门外）
+ *   ③ 恢复码只在这一刻出现一次，存不存是他的事，但话得说到
+ */
+async function renderTwoFactorBox(box, opts) {
+  if (!box) return;
+  const gate = !!(opts && opts.gate);   // true = 挡在工作台前面那道门，绑完要整页重来
+  const st = await fetch("/api/auth/2fa").then((r) => r.json()).catch(() => null);
+  if (!st) { box.textContent = "取不到二次验证状态，刷新页面再看"; return; }
+  if (st.on) return viewOn(st);
+  viewOff(st);
+
+  // ---- 没开：一句话说清它挡的是什么，加一颗按钮 ----
+  function viewOff(s) {
+    box.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="color:var(--owb-text-3)"><b>当前没开。</b>${s.required ? "这个组织要求所有人都开，<b>不绑的话除了这一页，别处一步也走不了。</b>" : ""}</span>
+        <button class="${gate ? "btn-brand" : "btn-plain"}" id="tfa-start">${ic("key-round")} 开启二次验证</button>
+      </div>`;
+    box.querySelector("#tfa-start").onclick = askPassword;
+  }
+
+  // ---- 第一步：对一次密码 ----
+  function askPassword() {
+    box.innerHTML = `
+      <div style="color:var(--owb-text-2)">先确认一下是你本人：输入当前登录密码。</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <input type="password" id="tfa-pw" placeholder="当前密码" autocomplete="current-password" style="width:200px;margin:0">
+        <button class="btn-brand" id="tfa-pw-go">下一步</button>
+        <a href="#" class="link" id="tfa-cancel">算了</a>
+      </div>
+      <div id="tfa-err" style="margin-top:6px;color:var(--owb-err-text)"></div>`;
+    const pw = box.querySelector("#tfa-pw");
+    pw.focus();
+    pw.onkeydown = (e) => { if (e.key === "Enter") box.querySelector("#tfa-pw-go").click(); };
+    box.querySelector("#tfa-cancel").onclick = (e) => { e.preventDefault(); renderTwoFactorBox(box, opts); };
+    box.querySelector("#tfa-pw-go").onclick = async (e) => {
+      e.target.disabled = true;
+      const d = await post("/api/auth/2fa/setup", { password: pw.value });
+      e.target.disabled = false;
+      if (!d.ok) { box.querySelector("#tfa-err").textContent = d.error || "密码不对"; pw.select(); return; }
+      viewEnroll(d);
+    };
+  }
+
+  // ---- 第二步：扫码 + 回填一次码 ----
+  function viewEnroll(d) {
+    box.innerHTML = `
+      <div style="border:1px solid var(--owb-border);border-radius:10px;padding:14px;background:var(--owb-bg-hover);display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+        ${d.qr ? `<img src="${esc(d.qr)}" width="150" height="150" alt="二次验证二维码"
+             style="border-radius:8px;background:#fff;padding:6px;image-rendering:pixelated;flex:none">` : ""}
+        <div style="flex:1;min-width:200px">
+          <div style="color:var(--owb-text-2)">用 Google Authenticator / 微软 Authenticator / 1Password 这类验证器 App ${d.qr ? "扫左边这张码" : "手动加一个账号"}。扫不上就手输下面这串密钥：</div>
+          <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;letter-spacing:.08em;word-break:break-all;margin:6px 0">${esc(d.secret)}
+            <a href="#" class="link" id="tfa-copy-secret">复制</a></div>
+          <div style="margin-top:8px;color:var(--owb-text-2)">加好之后，把 App 上现在显示的 6 位数字填进来——<b>验过才算开通：</b></div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+            <input id="tfa-code" placeholder="6 位数字" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="width:120px;margin:0;font-family:ui-monospace,Menlo,monospace;letter-spacing:.12em">
+            <button class="btn-brand" id="tfa-enable">确认开启</button>
+            <a href="#" class="link" id="tfa-cancel2">算了</a>
+          </div>
+          <div id="tfa-err" style="margin-top:6px;color:var(--owb-err-text)"></div>
+        </div>
+      </div>`;
+    const code = box.querySelector("#tfa-code");
+    code.focus();
+    code.onkeydown = (e) => { if (e.key === "Enter") box.querySelector("#tfa-enable").click(); };
+    box.querySelector("#tfa-copy-secret").onclick = (e) => {
+      e.preventDefault();
+      navigator.clipboard.writeText(d.secret).then(() => toast("密钥已复制"), () => toast("复制失败，手抄一下", "err"));
+    };
+    // 半路不干了：这时候 totp.secret 已经存进去了但没 enabled_at，下次再来 startEnroll 会重新生成一把，
+    // 所以这儿不用清理什么，退回去就行
+    box.querySelector("#tfa-cancel2").onclick = (e) => { e.preventDefault(); renderTwoFactorBox(box, opts); };
+    box.querySelector("#tfa-enable").onclick = async (e) => {
+      e.target.disabled = true;
+      const r = await post("/api/auth/2fa/enable", { code: code.value.trim() });
+      e.target.disabled = false;
+      if (!r.ok) { box.querySelector("#tfa-err").textContent = r.error || "验证码不对"; code.select(); return; }
+      viewRecovery(r.recovery, "二次验证已开启");
+    };
+  }
+
+  // ---- 恢复码。只在这一刻出现一次，走出这一屏就再也看不到了 ----
+  function viewRecovery(list, title) {
+    const codes = Array.isArray(list) ? list : [];
+    box.innerHTML = `
+      <div style="border:1px solid var(--owb-warn,#e0a33e);border-radius:10px;padding:14px">
+        <div style="font-weight:600;margin-bottom:4px"><span>${esc(title)}</span> · <span>下面这 ${codes.length} 条是恢复码，现在存好。</span></div>
+        <div style="color:var(--owb-text-2);line-height:1.7"><span>手机丢了、验证器被误删了，就拿它们登进来，</span><b>一条只能用一次。</b>
+          <b>这一屏关掉之后再也看不到</b><span>——服务端存的是哈希，它自己也认不回原文。存到密码管理器里，或者抄在纸上收好；别存在这台电脑上跟密码同一个地方。</span></div>
+        <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;line-height:1.9;margin:10px 0;column-count:2;column-gap:20px">${
+          codes.map((c) => `<div>${esc(c)}</div>`).join("")}</div>
+        <button class="btn-plain" id="tfa-copy-rc">${ic("copy")} 复制全部</button>
+        <button class="btn-brand" id="tfa-rc-done">我存好了</button>
+      </div>`;
+    box.querySelector("#tfa-copy-rc").onclick = () =>
+      navigator.clipboard.writeText(codes.join("\n")).then(() => toast("恢复码已复制，找个安全地方存下来"), () => toast("复制失败，手抄一下", "err"));
+    box.querySelector("#tfa-rc-done").onclick = () => (gate ? location.reload() : renderTwoFactorBox(box, opts));
+  }
+
+  // ---- 已开：状态 + 两条出路 ----
+  function viewOn(s) {
+    const since = s.since ? new Date(s.since).toLocaleDateString("zh-CN") : "";
+    const low = s.recovery_left <= 2;
+    box.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="color:var(--owb-text-2)"><b style="color:var(--owb-ok-text,#3a9e5f)">已开启</b>${since ? `<span> · ${esc(since)} 绑定</span>` : ""}
+          <b style="${low ? "color:var(--owb-err-text,#d64545)" : ""}"> · 恢复码还剩 ${s.recovery_left} 条</b></span>
+        <a href="#" class="link" id="tfa-regen">重新生成恢复码</a>
+        <a href="#" class="link ${s.required ? "" : "danger"}" id="tfa-off">关闭</a>
+      </div>
+      ${low ? `<div style="color:var(--owb-text-3);margin-top:6px">恢复码快用完了。用光之后手机再丢一次，就只能到跑着这个服务的机器上敲 <code>openworkbuddy 2fa 你的用户名 --off</code> 才能解开了。</div>` : ""}
+      <div id="tfa-sub" style="margin-top:8px"></div>`;
+    const sub = box.querySelector("#tfa-sub");
+    box.querySelector("#tfa-regen").onclick = (e) => {
+      e.preventDefault();
+      // 重新生成要验码：这一步会把旧的那批**全作废**，不验一下的话，
+      // 「电脑没锁人走开」就等于路过的人能把你手上那张纸变成废纸
+      sub.innerHTML = `
+        <div style="color:var(--owb-text-2)"><b>重新生成会把原来那批全部作废。</b>先输一次验证器上的 6 位数字：</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+          <input id="tfa-rc-code" placeholder="6 位数字" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="width:120px;margin:0;font-family:ui-monospace,Menlo,monospace;letter-spacing:.12em">
+          <button class="btn-brand" id="tfa-rc-go">重新生成</button>
+          <a href="#" class="link" id="tfa-rc-cancel">算了</a>
+        </div>
+        <div id="tfa-err" style="margin-top:6px;color:var(--owb-err-text)"></div>`;
+      const c = sub.querySelector("#tfa-rc-code");
+      c.focus();
+      c.onkeydown = (ev) => { if (ev.key === "Enter") sub.querySelector("#tfa-rc-go").click(); };
+      sub.querySelector("#tfa-rc-cancel").onclick = (ev) => { ev.preventDefault(); sub.innerHTML = ""; };
+      sub.querySelector("#tfa-rc-go").onclick = async (ev) => {
+        ev.target.disabled = true;
+        const r = await post("/api/auth/2fa/recovery", { code: c.value.trim() });
+        ev.target.disabled = false;
+        if (!r.ok) { sub.querySelector("#tfa-err").textContent = r.error || "验证码不对"; c.select(); return; }
+        viewRecovery(r.recovery, "恢复码已换新，旧的全部作废");
+      };
+    };
+    box.querySelector("#tfa-off").onclick = (e) => {
+      e.preventDefault();
+      // 组织强制的时候关不掉，这是后端的判断。但**不能画一颗点了才报 403 的按钮**：
+      // 那样用户会以为是程序坏了。链接照留，点开直说为什么关不了、该找谁
+      if (s.required) {
+        sub.innerHTML = `<div style="color:var(--owb-text-2)"><b>这个组织开了「强制二次验证」，关不掉。</b>真要关，先让管理员到 企业管理后台 → 客户端安全 里取消强制。</div>`;
+        return;
+      }
+      sub.innerHTML = `
+        <div style="color:var(--owb-text-2)">关掉之后，光靠密码就能登进来了。两样都要验一次：</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+          <input type="password" id="tfa-off-pw" placeholder="当前密码" autocomplete="current-password" style="width:170px;margin:0">
+          <input id="tfa-off-code" placeholder="6 位数字" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="width:120px;margin:0;font-family:ui-monospace,Menlo,monospace;letter-spacing:.12em">
+          <button class="btn-plain" id="tfa-off-go">确认关闭</button>
+          <a href="#" class="link" id="tfa-off-cancel">算了</a>
+        </div>
+        <div id="tfa-err" style="margin-top:6px;color:var(--owb-err-text)"></div>`;
+      sub.querySelector("#tfa-off-pw").focus();
+      sub.querySelector("#tfa-off-cancel").onclick = (ev) => { ev.preventDefault(); sub.innerHTML = ""; };
+      sub.querySelector("#tfa-off-go").onclick = async (ev) => {
+        ev.target.disabled = true;
+        const r = await post("/api/auth/2fa/disable", {
+          password: sub.querySelector("#tfa-off-pw").value,
+          code: sub.querySelector("#tfa-off-code").value.trim(),
+        });
+        ev.target.disabled = false;
+        if (!r.ok) { sub.querySelector("#tfa-err").textContent = r.error || "关不掉"; return; }
+        toast("二次验证已关闭");
+        renderTwoFactorBox(box, opts);
+      };
+    };
+  }
+
+  // 四条接口的响应形状一样：成功 {ok:true,…}，失败 {error:"…"}。
+  // fetch 本身挂了也折成同一个形状，省得每个调用点各写一遍 catch
+  async function post(url, body) {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then((x) => x.json()).catch(() => null);
+    return r || { error: "连不上服务器，刷新页面再试" };
+  }
 }
 
 // ================= 快捷键面板 =================
@@ -206,13 +560,13 @@ function renderShortcutsPane(pane, s) {
       .map(([id, label, def, fixed, isGlobal]) => {
         const acc = cur[id] || def;
         const changed = cur[id] && canonAccel(cur[id]) !== canonAccel(def);
-        return `<div style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--wb-border);font-size: 14px">
-          <span style="flex:1">${esc(label)}${isGlobal ? ' <span style="font-size: 12px;color:var(--wb-text-3)">系统级</span>' : ""}${changed ? ` <a href="#" class="link" style="font-size: 12px" data-restore="${id}">恢复默认</a>` : ""}</span>
+        return `<div style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--owb-border);font-size: 14px">
+          <span style="flex:1">${esc(label)}${isGlobal ? ' <span style="font-size: 12px;color:var(--owb-text-3)">系统级</span>' : ""}${changed ? ` <a href="#" class="link" style="font-size: 12px" data-restore="${id}">恢复默认</a>` : ""}</span>
           ${fixed
-            ? `<span style="color:var(--wb-text-3);font-size: 12px">固定</span><kbd class="sc-kbd">${esc(accelDisplay(acc))}</kbd>`
+            ? `<span style="color:var(--owb-text-3);font-size: 12px">固定</span><kbd class="sc-kbd">${esc(accelDisplay(acc))}</kbd>`
             : `<kbd class="sc-kbd sc-edit" data-id="${id}" title="点击后按下新组合键">${esc(accelDisplay(acc))}</kbd>`}
         </div>`;
-      }).join("") || '<div style="color:var(--wb-text-3);padding:10px 4px;font-size: 14px">没有匹配的快捷键</div>';
+      }).join("") || '<div style="color:var(--owb-text-3);padding:10px 4px;font-size: 14px">没有匹配的快捷键</div>';
     bindRows();
   };
   const save = () => saveSettings({ shortcuts: cur }, pane.querySelector("#sc-msg"))
@@ -278,7 +632,7 @@ function renderShortcutsPane(pane, s) {
 // ================= 自进化：信号 → 提案 → 人审 → 复盘打分 =================
 // 这一屏是整条链上唯一有人的一环。提案永远不会自己生效——闸门只负责毙掉明显不该上的，
 // 剩下的必须有人点「采纳」。所以这里要把证据摆够：治什么、凭几次、原话长啥样、生效后哪个数该降。
-const EV_ACT = { prompt: ["提示词能治", "var(--wb-ok-text)"], config: ["得改配置/换渠道", "var(--wb-warn)"], code: ["得改代码", "var(--wb-err-text)"] };
+const EV_ACT = { prompt: ["提示词能治", "var(--owb-ok-text)"], config: ["得改配置/换渠道", "var(--owb-warn)"], code: ["得改代码", "var(--owb-err-text)"] };
 
 async function renderEvolvePane(pane) {
   pane.innerHTML = '<div class="card-item"><div class="d">读取中…</div></div>';
@@ -295,24 +649,24 @@ async function renderEvolvePane(pane) {
   const auto = st.auto || {};
   const signals = sg.signals || [];
 
-  const actTag = (a) => { const [txt, color] = EV_ACT[a] || ["说不好", "var(--wb-text-3)"]; return `<span style="color:${color};font-size: 13px">${txt}</span>`; };
+  const actTag = (a) => { const [txt, color] = EV_ACT[a] || ["说不好", "var(--owb-text-3)"]; return `<span style="color:${color};font-size: 13px">${txt}</span>`; };
   const sigRows = signals.length ? signals.slice(0, 12).map(s => `
-    <div style="display:flex;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px solid var(--wb-border);font-size: 13px">
-      <span style="flex:1;min-width:0;color:var(--wb-text)">${escInline(s.label)}</span>
-      <span style="color:var(--wb-text-2)">${s.count} 次 · 每回合 ${s.rate}</span>
+    <div style="display:flex;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px solid var(--owb-border);font-size: 13px">
+      <span style="flex:1;min-width:0;color:var(--owb-text)">${escInline(s.label)}</span>
+      <span style="color:var(--owb-text-2)">${s.count} 次 · 每回合 ${s.rate}</span>
       ${actTag(s.actionable)}
     </div>`).join("")
-    : '<div style="color:var(--wb-text-3);font-size: 14px">这段时间没数出毛病来——要么真没出错，要么样本太少。</div>';
+    : '<div style="color:var(--owb-text-3);font-size: 14px">这段时间没数出毛病来——要么真没出错，要么样本太少。</div>';
 
   const propCards = pending.length ? pending.map(p => `
-    <div class="card-item" data-prop="${esc(p.id)}" style="border-left:3px solid var(--wb-brand)">
+    <div class="card-item" data-prop="${esc(p.id)}" style="border-left:3px solid var(--owb-brand)">
       <div class="t">${p.kind === "retire_rule" ? "下架" : "新增"}：${escInline(p.title || p.rule || "")}</div>
       <div class="d">${escInline(p.why || "")}</div>
-      ${p.rule ? `<div style="margin-top:8px;padding:8px 10px;background:var(--wb-code-bg);color:var(--wb-code-text);border-radius:8px;font-size: 13px;white-space:pre-wrap">${escInline(p.rule)}</div>` : ""}
-      ${p.verify ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-2)">${ic("circle-check")} 验收：${escInline(p.verify)}</div>` : ""}
-      ${p.signalSnapshot ? `<div style="margin-top:4px;font-size: 13px;color:var(--wb-text-3)">证据：${esc(p.signalSnapshot.label)} · ${p.signalSnapshot.count} 次 · 每回合 ${p.signalSnapshot.rate}</div>` : ""}
-      ${(p.evidence || []).length ? `<details style="margin-top:4px"><summary style="cursor:pointer;font-size: 13px;color:var(--wb-text-3)">看现场原话（${p.evidence.length} 条）</summary>
-        ${p.evidence.map(e => `<div style="font-size: 13px;color:var(--wb-text-2);margin:5px 0 0;padding-left:8px;border-left:2px solid var(--wb-border)"><b>${esc(e.task || "")}</b><br>${escInline(e.excerpt || "")}</div>`).join("")}</details>` : ""}
+      ${p.rule ? `<div style="margin-top:8px;padding:8px 10px;background:var(--owb-code-bg);color:var(--owb-code-text);border-radius:8px;font-size: 13px;white-space:pre-wrap">${escInline(p.rule)}</div>` : ""}
+      ${p.verify ? `<div style="margin-top:6px;font-size: 13px;color:var(--owb-text-2)">${ic("circle-check")} 验收：${escInline(p.verify)}</div>` : ""}
+      ${p.signalSnapshot ? `<div style="margin-top:4px;font-size: 13px;color:var(--owb-text-3)">证据：${esc(p.signalSnapshot.label)} · ${p.signalSnapshot.count} 次 · 每回合 ${p.signalSnapshot.rate}</div>` : ""}
+      ${(p.evidence || []).length ? `<details style="margin-top:4px"><summary style="cursor:pointer;font-size: 13px;color:var(--owb-text-3)">看现场原话（${p.evidence.length} 条）</summary>
+        ${p.evidence.map(e => `<div style="font-size: 13px;color:var(--owb-text-2);margin:5px 0 0;padding-left:8px;border-left:2px solid var(--owb-border)"><b>${esc(e.task || "")}</b><br>${escInline(e.excerpt || "")}</div>`).join("")}</details>` : ""}
       <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn-brand" data-act="accept" style="height:30px;padding:0 14px;font-size: 13px">采纳，写进提示词</button>
         <input data-reason placeholder="驳回理由（会喂回给模型当负样本）" style="flex:1;min-width:160px;height:30px;font-size: 13px;margin:0">
@@ -324,14 +678,14 @@ async function renderEvolvePane(pane) {
   const scoreOf = (id) => scored.find(x => x.id === id);
   const ruleRows = rules.length ? rules.map(r => {
     const sc = scoreOf(r.id);
-    const color = sc && sc.verdict === "有效" ? "var(--wb-ok-text)" : sc && sc.verdict === "没起作用" ? "var(--wb-err-text)" : "var(--wb-text-3)";
-    return `<div style="padding:8px 0;border-bottom:1px solid var(--wb-border)">
-      <div style="font-size: 14px;color:var(--wb-text);white-space:pre-wrap">${escInline(r.text)}</div>
-      <div style="margin-top:4px;font-size: 13px;color:var(--wb-text-3);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    const color = sc && sc.verdict === "有效" ? "var(--owb-ok-text)" : sc && sc.verdict === "没起作用" ? "var(--owb-err-text)" : "var(--owb-text-3)";
+    return `<div style="padding:8px 0;border-bottom:1px solid var(--owb-border)">
+      <div style="font-size: 14px;color:var(--owb-text);white-space:pre-wrap">${escInline(r.text)}</div>
+      <div style="margin-top:4px;font-size: 13px;color:var(--owb-text-3);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <span>${esc((r.meta.at || "").slice(0, 10))} 起 · <span style="color:${color}">${esc(sc ? sc.verdict : "还没打分")}</span>${sc && sc.why ? " · " + escInline(sc.why) : ""}</span>
         <a href="#" class="link danger" style="margin-left:auto" data-retire="${esc(r.id)}">${ic("archive", "i-sm")}下架</a>
       </div></div>`;
-  }).join("") : '<div style="color:var(--wb-text-3);font-size: 14px">还没有生效的规则。规则来自被你采纳的提案，不会自己长出来。</div>';
+  }).join("") : '<div style="color:var(--owb-text-3);font-size: 14px">还没有生效的规则。规则来自被你采纳的提案，不会自己长出来。</div>';
 
   pane.innerHTML = `
     <div class="card-item">
@@ -342,16 +696,16 @@ async function renderEvolvePane(pane) {
       一条规则至少要有 ${caps.minEvidence} 次证据才准提。</div>
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn-brand" id="ev-run" style="height:30px;padding:0 14px;font-size: 13px">跑一轮复盘</button>
-        <span style="font-size: 13px;color:var(--wb-text-3)">统计最近 <input id="ev-days" type="number" min="1" max="365" value="${caps.window}" style="width:56px;height:26px;margin:0;font-size: 13px"> 天 · 会调一次模型，花钱</span>
+        <span style="font-size: 13px;color:var(--owb-text-3)">统计最近 <input id="ev-days" type="number" min="1" max="365" value="${caps.window}" style="width:56px;height:26px;margin:0;font-size: 13px"> 天 · 会调一次模型，花钱</span>
         <span class="ok-msg" id="ev-msg"></span>
       </div>
-      <div style="margin-top:6px;font-size: 13px;color:var(--wb-text-3)">规则预算：已用 ${rules.length}/${caps.rules} 条</div>
-      <label style="display:flex;align-items:center;gap:6px;font-size: 13px;color:var(--wb-text-2);margin-top:10px;cursor:pointer">
+      <div style="margin-top:6px;font-size: 13px;color:var(--owb-text-3)">规则预算：已用 ${rules.length}/${caps.rules} 条</div>
+      <label style="display:flex;align-items:center;gap:6px;font-size: 13px;color:var(--owb-text-2);margin-top:10px;cursor:pointer">
         <input type="checkbox" id="ev-auto" style="margin:0" ${auto.auto ? "checked" : ""}>
         每天 <input id="ev-hour" type="number" min="0" max="23" value="${auto.hour === undefined ? 3 : auto.hour}" style="width:48px;height:24px;margin:0;font-size: 13px"> 点自动跑一轮
-        <span style="color:var(--wb-text-3)">（默认关，因为每次都要调一次模型花钱；跑出来的提案仍然要你点头才生效）</span>
+        <span style="color:var(--owb-text-3)">（默认关，因为每次都要调一次模型花钱；跑出来的提案仍然要你点头才生效）</span>
       </label>
-      ${runs.length ? `<div style="margin-top:6px;font-size: 13px;color:var(--wb-text-3)">上次：${esc((runs[0].at || "").slice(0, 16).replace("T", " "))} · ${esc(runs[0].trigger || "")} · ${runs[0].ok ? `${runs[0].turns} 个回合，新提案 ${runs[0].added} 条` : `<span style="color:var(--wb-err-text)">没跑成：${esc(runs[0].error || "")}</span>`}</div>` : ""}
+      ${runs.length ? `<div style="margin-top:6px;font-size: 13px;color:var(--owb-text-3)">上次：${esc((runs[0].at || "").slice(0, 16).replace("T", " "))} · ${esc(runs[0].trigger || "")} · ${runs[0].ok ? `${runs[0].turns} 个回合，新提案 ${runs[0].added} 条` : `<span style="color:var(--owb-err-text)">没跑成：${esc(runs[0].error || "")}</span>`}</div>` : ""}
     </div>
     <div class="card-item">
       <div class="t">${ic("chart-column")} 最近 ${sg.days || caps.window} 天的信号（${sg.turns || 0} 个助手回合）</div>
@@ -365,7 +719,7 @@ async function renderEvolvePane(pane) {
       <div class="d" style="margin-bottom:4px">这些原样拼进每次任务的系统提示词，排在记忆前面。打分看的是「基线出现率 → 现在的出现率」，没降就该下架。</div>
       ${ruleRows}
     </div>
-    ${decided.length ? `<div class="card-item"><div class="t">${ic("folder-tree")} 审过的（近 ${decided.length} 条）</div>${decided.map(p => `<div style="padding:4px 0;font-size: 13px;color:var(--wb-text-2);border-bottom:1px solid var(--wb-border)"><b>${p.status === "applied" ? "已采纳" : p.status === "rejected" ? "已驳回" : "被闸门拦下"}</b> · ${escInline(p.title || p.rule || "")}${p.reason ? " · " + esc(p.reason) : ""}${p.gate ? " · " + esc(p.gate) : ""}</div>`).join("")}</div>` : ""}`;
+    ${decided.length ? `<div class="card-item"><div class="t">${ic("folder-tree")} 审过的（近 ${decided.length} 条）</div>${decided.map(p => `<div style="padding:4px 0;font-size: 13px;color:var(--owb-text-2);border-bottom:1px solid var(--owb-border)"><b>${p.status === "applied" ? "已采纳" : p.status === "rejected" ? "已驳回" : "被闸门拦下"}</b> · ${escInline(p.title || p.rule || "")}${p.reason ? " · " + esc(p.reason) : ""}${p.gate ? " · " + esc(p.gate) : ""}</div>`).join("")}</div>` : ""}`;
 
   const msg = pane.querySelector("#ev-msg");
   const saveAuto = () => saveSettings({ evolve: { auto: pane.querySelector("#ev-auto").checked, hour: +pane.querySelector("#ev-hour").value || 0 } }, msg);
@@ -416,7 +770,7 @@ const LOOK_ICON = {
 };
 // 色板小圆点用的就是各皮肤在浅色下的主色；真正的 token 定义在 index.html 的 html[data-skin=…] 里，这里只是「长什么样」的预览
 const LOOK_SWATCH = { default: "#5b5ff7", ocean: "#0284c7", forest: "#059669", sunset: "#ea580c", rose: "#e11d48", graphite: "#4b5563" };
-// 四个 A 的大小必须就是真档位（index.html 的 --wb-fs 阶梯），别为了「看着差别大」放大——
+// 四个 A 的大小必须就是真档位（index.html 的 --owb-fs 阶梯），别为了「看着差别大」放大——
 // 预览夸大了差距，人挑「小」时以为会小一圈，结果只小 1px，会觉得这个开关是坏的
 const LOOK_FS_PX = { s: 14, m: 15, l: 16, xl: 18 };
 function renderLookPane(pane) {
@@ -453,7 +807,7 @@ function renderLookPane(pane) {
 function renderAboutPane(pane) {
   pane.innerHTML = `
     <div class="card-item">
-      <div class="t">${ic("refresh-cw")} 版本与更新 <span id="ab-ver" style="font-weight:400;color:var(--wb-text-3);font-size:12px">读取中…</span></div>
+      <div class="t">${ic("refresh-cw")} 版本与更新 <span id="ab-ver" style="font-weight:400;color:var(--owb-text-3);font-size:12px">读取中…</span></div>
       <div class="d" id="ab-up-how" style="margin-bottom:8px">正在看有没有新版…</div>
       <button class="btn-plain" id="ab-up-btn">检查更新</button>
       <a class="link" id="ab-up-link" href="https://github.com/CatCatUncle/openworkbuddy/releases/latest" target="_blank" rel="noreferrer" style="margin-left:10px;display:none">去下载页</a>
@@ -548,6 +902,30 @@ function renderAboutPane(pane) {
     if (!m || !LAND[m[1]]) return;
     history.replaceState(null, "", location.pathname + location.search);
     try { LAND[m[1]](m[2]); } catch (e) { console.warn("[deeplink]", e); }
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", go);
+  else go();
+})();
+
+/**
+ * 升级整理的告知。
+ *
+ * 新版本第一次启动时动过用户工作区里的文件（把散在根目录的旧文件收进了一个文件夹）。
+ * 动了人家的东西就得说一声，而且要说到点子上：搬到哪儿了、原件还在不在。
+ * 一条只说一次，看过就记在本机——每次开机都弹同一句话，那叫骚扰不叫告知。
+ */
+(function migrationNotice() {
+  const SEEN = "openworkbuddy.migrations.seen";
+  const go = async () => {
+    const data = await fetch("/api/migrations").then((r) => r.json()).catch(() => null);
+    if (!data || !Array.isArray(data.notes) || !data.notes.length) return;
+    let seen = [];
+    try { seen = JSON.parse(localStorage.getItem(SEEN) || "[]"); } catch {}
+    const fresh = data.notes.filter((n) => n && n.note && !seen.includes(n.id));
+    if (!fresh.length) return;
+    try { localStorage.setItem(SEEN, JSON.stringify([...seen, ...fresh.map((n) => n.id)].slice(-40))); } catch {}
+    // 一条一条报，间隔开：toast 一次只显示一条，连着调就只剩最后一条
+    fresh.forEach((n, i) => setTimeout(() => toast("升级整理：" + n.note, "circle-check"), i * 1200));
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", go);
   else go();

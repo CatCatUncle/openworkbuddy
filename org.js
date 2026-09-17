@@ -23,8 +23,8 @@ const crypto = require("crypto");
 const { dataPath } = require("./paths");
 const store = require("./store");
 
-// WB_DATA_DIR 与 account.js 同一个口子：跑测试时指到临时目录
-const DATA_DIR = process.env.WB_DATA_DIR || dataPath("data");
+// OPENWORKBUDDY_DATA_DIR 与 account.js 同一个口子：跑测试时指到临时目录
+const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 const ORGS_FILE = path.join(DATA_DIR, "orgs.json");
 
 const DEFAULT_ORG = "default";
@@ -60,10 +60,91 @@ const ORG_DEFAULTS = {
   net_allow: [],                // 网络设置：抓网页的域名白名单（空 = 不限）
   net_deny: [],                 // 域名黑名单（优先于白名单）
   session_days: 90,             // 登录令牌有效期（天），1 - 365
+  // 密码与二次验证。三条都由 account.js 执行：
+  //   password_min / password_strong → 注册、改密码、管理员重置 三个入口一起管
+  //   require_2fa → 开了之后，没绑二次验证的人登进来只能先去绑，别的什么都干不了
+  password_min: 6,              // 密码最短位数，6 - 64
+  password_strong: false,       // 要不要求大小写字母 / 数字 / 符号里至少凑够三类
+  require_2fa: false,           // 全组织强制二次验证
+  // 远程那两件事。**默认都关**：装上就能从外面连进来，这种默认不该由我们替用户做决定——
+  //   他不一定知道自己刚把什么暴露到了局域网上。要用的人去后台自己打开，一次点两下的事。
+  //   两条都由真正的路由执行，不是摆设：
+  //   remote_devices → account.js 的 /api/devices/pair|claim 三条口子；**关掉的同时，
+  //     已经配过的设备下一次请求就被踢下线**（不然这个开关是假的：你以为手机断了，其实没断）
+  //   remote_control → server.js 的 /api/cli/* 五条口子（看终端里在跑什么、插话、替它批准）
+  remote_devices: false,        // 允不允许扫码把手机 / 另一台电脑加进来
+  remote_control: false,        // 允不允许从网页 / 手机操控终端里正在跑的任务
   // 按次计费的第三方 API（搜索 / 生图 / 生视频 / 配音 / 转写 / 抓网页）各自的额度闸门。
   // 一路一个 { enabled, org_daily, org_monthly, user_daily }，默认空表 = 全部不限。
   // 清单和默认值在 quota.js，执行在 tools.js 每个付费调用点上。
   api_quota: {},
+  // 部门权限模板：{ "销售部": { role, monthly_quota, budget_yuan } }。办入职时按部门套用（见 lifecycle.js）。
+  // 跟上面那些开关不一样，它是张表不是一个值——下面 updateOrg 里得走 normalizeDeptTemplates，
+  // 不能走 String(v) 那条（会存成 "[object Object]"）。
+  dept_templates: {},
+  // ---- API 中转站：钱那一路 ----
+  // 这两格由 budget.js / pricing.js 执行，执行点在 relay.js 每一次转发之前和之后。
+  //   budget.org_yuan          整个组织每月封顶多少钱（0 = 不限）
+  //   budget.default_user_yuan 没单独设过的人，每人每月封顶多少（0 = 不限）
+  // 为什么是「元」不是「次」：一次 gpt-4o 的调用和一次 gpt-4o-mini 的调用差三十倍，
+  // 按次数封顶的话，同样一个数对两个人的意义完全不同。
+  budget: { org_yuan: 0, default_user_yuan: 0 },
+  // 跟上游谈下来的折扣，夹在 (0,1] 里。0.8 = 八折。**只影响记账，不影响转发**——
+  // 它改的是我们记在自己账本上的那个数，上游照旧按原价扣我们的。
+  price_discount: 1,
+};
+
+/**
+ * 部门模板拍干净。**必须有这一道**：企业设置那条路由是把请求体里的 settings 整个交进来的，
+ * 认了这个键就等于认了请求体能往组织设置里写一张任意结构的表——
+ * 里头塞个 role:"superadmin" 之类的字段，办入职时就照着建号了。
+ */
+function normalizeDeptTemplates(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out = {};
+  for (const [k, t] of Object.entries(v).slice(0, 200)) {
+    const dept = String(k || "").trim().slice(0, 40);
+    if (!dept || !t || typeof t !== "object") continue;
+    const q = t.monthly_quota === undefined || t.monthly_quota === null || t.monthly_quota === ""
+      ? null : Math.max(0, Math.floor(+t.monthly_quota) || 0);
+    // budget_yuan：这个部门的人每月在中转站上封顶多少钱。budget.js 的 limitsOf 会读它
+    // （个人设置 > 部门模板 > 组织默认）。以前这一格在这里被悄悄丢掉：模板上填了、
+    // 存下来没有，于是「按部门给预算」这件事在界面上能填、在执行时永远是 0 = 不限。
+    out[dept] = {
+      role: ["admin", "auditor", "member"].includes(t.role) ? t.role : "member",
+      monthly_quota: q,
+      budget_yuan: money(t.budget_yuan),
+    };
+  }
+  return out;
+}
+
+/**
+ * 钱一律按元存成非负有限小数，最多两位。
+ *
+ * 不用 Math.floor：预算和折扣都是钱，「50.5 元」取整成 50 是把管理员填的数改了。
+ * 也不接受负数和 NaN —— 一个负的上限会让 budget.js 里的「够不够」永远为假，
+ * 表现是整个组织突然一个请求都发不出去，而设置页上看着一切正常。
+ */
+function money(x) {
+  const n = typeof x === "string" ? parseFloat(x) : x;
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0;
+}
+
+/**
+ * 预算那张表拍干净。**必须有这一道**，理由跟 normalizeDeptTemplates 一模一样：
+ * 企业设置那条路由把请求体里的 settings 整个交进来，认了 budget 这个键就等于认了
+ * 请求体能往组织设置里写一张任意结构的表。这里只认两格，别的一律丢掉。
+ */
+function normalizeBudget(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return { org_yuan: 0, default_user_yuan: 0 };
+  return { org_yuan: money(v.org_yuan), default_user_yuan: money(v.default_user_yuan) };
+}
+
+/** 有范围的数字开关：存之前夹住，界面上显示的就是真正执行的那个值 */
+const SETTING_RANGE = {
+  session_days: [1, 365],
+  password_min: [6, 64],
 };
 
 function emptyDb() {
@@ -81,7 +162,9 @@ function load() {
 }
 function save(db) {
   db.audit = (db.audit || []).slice(0, AUDIT_CAP);
-  store.writeJsonAtomic(ORGS_FILE, db, { pretty: true });
+  // 跟 users.json 一个待遇（0600）：这本里有**还没用完的邀请码**（拿到就能自己开号进来，
+  // 角色还是发码的人预置好的）和整本审计流水（谁什么时候放行了哪条命令）。默认 0644 等于摊开给同机器上别的账号看
+  store.writeJsonAtomic(ORGS_FILE, db, { pretty: true, mode: store.SECRET_MODE });
 }
 
 function newId(prefix) {
@@ -202,14 +285,24 @@ function updateOrg(id, patch, actor) {
       if (!(k in ORG_DEFAULTS)) continue; // 只认已知开关，别让请求体往设置里塞任意字段
       const cast =
         typeof ORG_DEFAULTS[k] === "boolean" ? !!v
+          // 折扣是**小数**，不能走下面那条 Math.floor：0.8 会被取整成 0，
+          // 而 0 在 pricing.discountOf 里等于「填错了」，于是八折悄悄变回原价。
+          // 上下都夹住：填 0 或者负数不是「全免」，是填错了，按不打折算，宁可多收。
+          : k === "price_discount" ? Math.min(1, money(v) || 1)
           : typeof ORG_DEFAULTS[k] === "number" ? Math.max(0, Math.floor(+v) || 0)
           : Array.isArray(ORG_DEFAULTS[k]) ? (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 200) : [])
           // api_quota 是张表，不是一个值：交给 quota.js 拍干净（只认清单里的能力，数字一律非负整数）。
           // 不能走 String(v) 那条 —— 那会把整张表存成 "[object Object]"。
           : k === "api_quota" ? require("./quota").normalizeTable(v)
+          : k === "dept_templates" ? normalizeDeptTemplates(v)
+          : k === "budget" ? normalizeBudget(v)
           : String(v);
-      if (JSON.stringify(s[k]) === JSON.stringify(cast)) continue;
-      s[k] = cast;
+      // 有范围的数字必须在**存进去的时候**就夹住。只在读的那头夹，界面会显示 3、
+      // 实际按 6 执行——管理员看到的和系统执行的不是一件事，这种设置比没有还难查。
+      const R = SETTING_RANGE[k];
+      const val = R ? Math.min(R[1], Math.max(R[0], cast)) : cast;
+      if (JSON.stringify(s[k]) === JSON.stringify(val)) continue;
+      s[k] = val;
       changed.push("设置." + k);
     }
     org.settings = s;
@@ -386,6 +479,7 @@ function listAudit(orgId, opts) {
 module.exports = {
   DEFAULT_ORG, PLANS, PLAN_ORDER, ORG_DEFAULTS,
   listOrgs, getOrg, createOrg, updateOrg, multiTenant, orgIdOf, rootDirOf, settingsOf, planInfo,
+  normalizeBudget, normalizeDeptTemplates,
   listDepts, addDept, removeDept,
   createInvite, listInvites, peekInvite, consumeInvite, revokeInvite,
   audit, listAudit,

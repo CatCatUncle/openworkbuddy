@@ -30,7 +30,7 @@ const path = require("path");
 
 // 账本必须另起一份：不隔离的话这套测试会往用户真正的 data/api-usage.json 里灌假流水
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "owb-quota-"));
-process.env.WB_DATA_DIR = HOME;
+process.env.OPENWORKBUDDY_DATA_DIR = HOME;
 
 const quota = require("../quota");
 
@@ -44,6 +44,10 @@ function eq(got, want, name) {
   ok(same, name, same ? undefined : { got, want });
 }
 function reset() {
+  // 账本现在是一个目录（月分片），老那个大文件只在升级时过一道手。
+  // 两个都得清：只删其中一个的话，上一节的流水会漏到下一节，
+  // 那种失败看起来像「额度算错了」，最难查。
+  try { fs.rmSync(quota._internals.USAGE_DIR, { recursive: true, force: true }); } catch {}
   try { fs.rmSync(quota._internals.USAGE_FILE, { force: true }); } catch {}
 }
 /** 造一张只开了 cap 这一路的额度表 */
@@ -169,8 +173,13 @@ console.log("\n【6】归档口径：跨月不把上个月算进来");
   const g = quota.withActor(actor("o1", "小明", t), () => quota.check("search"));
   ok(g.ok, "上个月用满了，这个月照样能跑");
   ok(g.left === 5, "这个月的余额是满的", g.left);
+  // 上面那一步顺手验了另一件事：load() 只读当月分片。上个月的 5 笔真在盘上（下一句
+  // loadAll 能读到），但 check() 走的那条路根本不会把它们读进内存——账本里
+  // 躺了三年还是三天，这一次读的字节数一样多。
+  ok(quota._internals.load().usage.length === 0, "本月那一片是空的（热路径不翻历史月份）", quota._internals.load().usage.length);
   // 反向对照：把那 5 笔挪到本月，就该拦住
-  const db2 = quota._internals.load();
+  const db2 = quota._internals.loadAll();
+  ok(db2.usage.length === 5, "上个月的 5 笔没丢，只是不算进本月", db2.usage.length);
   const thisMonth = quota._internals.localMonth(new Date());
   db2.usage = db2.usage.map((r) => ({ ...r, ts: Date.now(), day: quota._internals.localDay(new Date()), month: thisMonth }));
   quota._internals.save(db2);
@@ -191,14 +200,61 @@ console.log("\n【7】配置清洗：脏值进不来");
     "「一键设个合理额度」每一路都给了正数且是打开的");
 }
 
-console.log("\n【8】流水有上限，不会把磁盘吃光");
+console.log("\n【8】流水一笔不丢（老版本到两万条就开始扔最旧的）");
 {
   reset();
-  const db = quota._internals.emptyDb();
-  for (let i = 0; i < quota._internals.USAGE_CAP + 500; i++) db.usage.push({ ts: Date.now(), day: "2026-01-01", month: "2026-01", cap: "search", n: 1, org: "o1", user: "x" });
-  quota._internals.save(db);
-  const back = quota._internals.load();
-  ok(back.usage.length <= quota._internals.USAGE_CAP, `落盘时截到 ${quota._internals.USAGE_CAP} 条以内`, back.usage.length);
+  // 这一节以前断言的是反过来的事：「落盘时截到 USAGE_CAP 条以内」。
+  // 那个上限拆了，理由写在 quota.js 顶上：被扔掉的是**计费和审计数据**，
+  // 而且一个字不报。一个公司 50 个人、每人每天搜 10 次，40 天到顶；之后后台那张
+  // 「本月用量」开始安静地少算，等发现的时候已经对不上账了。
+  // 磁盘这头的担心是多余的：一条 ~280 字节，按月分片，要清理就删月份文件。
+  const OLD_CAP = 20000;
+  const N = OLD_CAP + 5000;
+  const t0 = Date.now();
+  for (let i = 0; i < N; i++) {
+    quota._internals.ledger.append({ ts: t0 + i, day: "2026-01-01", month: "2026-01", cap: "search", n: 1, org: "o1", user: "x", seq: i });
+  }
+  const back = quota._internals.loadAll().usage;
+  ok(back.length === N, `${N} 笔写进去，${N} 笔读得回来`, back.length);
+  ok(back.some((r) => r.seq === 0), "最旧的那一笔还在——老版本正是从这头开始扔的");
+  // 反向对照：确认这批数据真的够多、真的会碰到老上限。
+  // 兑的是「上面两条其实只写了三五条，怎么实现都能过」。
+  ok(back.length > OLD_CAP, `反向对照：同样这批数据摆在老那套上限下会被扔掉 ${back.length - OLD_CAP} 笔`, back.length);
+  reset();
+}
+
+console.log("\n【9】老版本升上来：api-usage.json 里的账一笔不少地搬进分片");
+{
+  const os = require("os");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-quota-mig-"));
+  const legacy = path.join(tmp, "api-usage.json");
+  // 老格式就是这个形状：一个**对象**，账在 .usage 里，新的在前
+  const raw = JSON.stringify({ usage: [
+    { ts: 3, day: "2026-02-03", month: "2026-02", cap: "search", n: 1, org: "o1", user: "小明" },
+    { ts: 2, day: "2026-01-20", month: "2026-01", cap: "image", n: 1, org: "o1", user: "小红" },
+    { ts: 1, day: "2026-01-02", month: "2026-01", cap: "search", n: 1, org: "o1", user: "小明" },
+  ] });
+  fs.writeFileSync(legacy, raw, "utf8");
+  const book = require("../usage-store").make(path.join(tmp, "api-usage"), legacy);
+  const all = book.read({});
+  ok(all.length === 3, "三笔老账全搬过来了", all.length);
+  eq(all.map((r) => r.ts), [3, 2, 1], "顺序还是新的在前（used() 和 summary() 都靠这个顺序提前 break）");
+  eq(book.shards(), ["2026-02", "2026-01"], "按月分了片");
+  ok(fs.existsSync(legacy + ".migrated"), "老文件改名留着对账，不是删掉");
+  // 反向对照：改造前 migrate 里写的是 `Array.isArray(d) ? d : []`。token 那本老文件是裸数组，
+  // 所以那句在那边对；搬到这本就不对了——老用户升上来会把整本账当成空的、
+  // 再把源文件改名挡走，后台那张「本月用量」当场归零。这一条就是拦它的。
+  const oldWay = (() => { const d = JSON.parse(raw); return Array.isArray(d) ? d : []; })();
+  ok(oldWay.length === 0 && all.length === 3,
+    "反向对照：只认裸数组的老写法对这个形状读出 0 笔，现在读出 3 笔", { oldWay: oldWay.length, now: all.length });
+  // 再兑一次：不是「见文件就编几笔出来」
+  const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-quota-mig2-"));
+  const legacy2 = path.join(tmp2, "api-usage.json");
+  fs.writeFileSync(legacy2, JSON.stringify({ usage: [] }), "utf8");
+  ok(require("../usage-store").make(path.join(tmp2, "api-usage"), legacy2).read({}).length === 0,
+    "反向对照：老文件真是空的，就真读出 0 笔");
+  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.rmSync(tmp2, { recursive: true, force: true });
 }
 
 function ok_silent(cond) { if (!cond) { fail++; console.log("  ✗ 关着闸门的时候居然拦了一次"); } }

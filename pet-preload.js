@@ -2,7 +2,7 @@
 /** 桌面宠物窗口的预加载脚本：只开五个单向通道，页面拿不到 node 能力。 */
 const { contextBridge, ipcRenderer } = require("electron");
 
-contextBridge.exposeInMainWorld("wbPet", {
+contextBridge.exposeInMainWorld("openworkbuddyPet", {
   onState: (cb) => ipcRenderer.on("pet:state", (_e, s) => { try { cb(s); } catch {} }),
   dragStart: () => ipcRenderer.send("pet:drag-start"),
   dragEnd: () => ipcRenderer.send("pet:drag-end"),

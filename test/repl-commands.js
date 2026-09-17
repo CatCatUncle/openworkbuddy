@@ -1,6 +1,6 @@
 "use strict";
 /**
- * `wb` 交互模式：一行输入到底被当成什么。
+ * `openworkbuddy` 交互模式：一行输入到底被当成什么。
  *
  * 这一套要挡的是同一类事故——**输入没读懂，却不吭声照跑**。改写前实测到的四样，
  * 每一样在健康机器上都不报错、不变慢、不留痕：
@@ -18,6 +18,9 @@ const fs = require("fs");
 
 const ROOT = path.join(__dirname, "..");
 const R = require(path.join(ROOT, "repl-commands"));
+// 模式清单从唯一真源取。在测试里抄一份的话，模式表加一个、测试还绿着——
+// 它验的是自己手里那份旧清单，而不是程序真认的那份
+const MODES = require(path.join(ROOT, "modes"));
 const { cols, padCols } = require(path.join(ROOT, "text-width"));
 
 let pass = 0, fail = 0;
@@ -299,7 +302,7 @@ console.log("\n⑬ Tab 补全");
   const [q] = R.complete("/q");
   eq(q.join(","), "/exit", "★别名也能补★ /q 打出来是 /exit");
   const [vals] = R.complete("/mode ");
-  eq(vals.join(" "), "/mode craft /mode plan /mode ask", "带取值的命令连取值一起补");
+  eq(vals.join(" "), MODES.MODE_IDS.map((m) => "/mode " + m).join(" "), "带取值的命令连取值一起补");
   eq(R.complete("/mode p")[0].join(","), "/mode plan", "补一半也认");
   eq(R.complete("把日志归个类")[0].length, 0, "★普通一句话不补★ 不然打字打一半会被塞命令");
   eq(R.complete("")[0].length, 0, "空行不补");
@@ -451,7 +454,8 @@ console.log("\n⑱ / 菜单：打一半就能看见有什么命令");
   // 第二层：命令打完了，轮到取值
   const vals = R.menu("/mode ");
   ok(vals && vals.kind === "choice", "命令后面一个空格：该轮到挑取值了");
-  eq(vals.items.map((i) => i.insert).join(" "), "/mode craft /mode plan /mode ask", "三个取值都在，挑中插回去的是整行");
+  eq(vals.items.map((i) => i.insert).join(" "), MODES.MODE_IDS.map((m) => "/mode " + m).join(" "),
+     `${MODES.MODE_IDS.length} 个取值都在，挑中插回去的是整行`);
   eq(R.menu("/mode p").items.map((i) => i.text).join(""), "plan", "取值也能打一半");
   // 反向对照：不该出菜单的地方一条都不许出——菜单是会把光标顶走的，乱弹比不弹更烦人
   eq(R.menu("你好"), null, "★普通一句话不出菜单★");
@@ -486,7 +490,7 @@ console.log("\n⑱之三 菜单的画法：不许把人的输入搞乱");
   const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
   ok(/require\("\.\/repl-commands"\)\.menu\(/.test(src), "★画之前先问上面那个纯函数★ 不问的话这一整节测的是没人用的代码");
   ok(/const menuUsable = \(\) => [^\n]*process\.stdout\.isTTY[^\n]*process\.stdin\.isTTY/.test(src),
-     "★不是终端就一行都不画★ wb … | tee 里画菜单，出来的是一堆转义序列");
+     "★不是终端就一行都不画★ openworkbuddy … | tee 里画菜单，出来的是一堆转义序列");
   ok(/pos\.rows > 0/.test(src), "★输入自己换行了就不画★ 光标不在最后一行，画下去会盖掉人打的字");
   ok(/inbox\.busy/.test(src.split("function menuDraw")[1] || ""), "★活儿跑着的时候不画★ 正文一冲下来菜单就成了残渣");
   ok(/menuClose\(\); \/\/ 活儿要开跑了/.test(src), "★回车开跑前先擦干净★");

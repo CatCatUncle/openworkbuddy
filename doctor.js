@@ -1,6 +1,6 @@
 "use strict";
 /**
- * `wb doctor` —— 「打不开 / 跑不起来」时的一次性体检。
+ * `openworkbuddy doctor` —— 「打不开 / 跑不起来」时的一次性体检。
  *
  * 为什么要有这么个东西：这个项目的报障里，绝大多数不是 bug，是环境。Node 老了、依赖没装、
  * 3800 被别的程序占着、家目录被公司策略重定向到一个连不上的网络盘、config.json 被手改坏了。
@@ -24,7 +24,7 @@ const net = require("net");
 
 const LEVELS = { ok: 0, warn: 1, bad: 2 };
 
-/** 一条体检结果。level 决定退出码：只要有一条 bad，`wb doctor` 就退 1（好写进 CI 和安装脚本） */
+/** 一条体检结果。level 决定退出码：只要有一条 bad，`openworkbuddy doctor` 就退 1（好写进 CI 和安装脚本） */
 function item(name, level, detail, fix) {
   return { name, level, detail, fix: fix || "" };
 }
@@ -119,7 +119,7 @@ function verdictModels(facts) {
   const { channels, keyed, chatModels } = facts;
   if (!channels) {
     return item("模型渠道", "bad", "一个渠道都没配",
-      "打开设置页 → 模型，填一个渠道的接口地址和 Key；或者 wb engines use claude-code 直接用本机已装的 CLI，不需要 Key。");
+      "打开设置页 → 模型，填一个渠道的接口地址和 Key；或者 openworkbuddy engines use claude-code 直接用本机已装的 CLI，不需要 Key。");
   }
   if (!keyed) {
     return item("模型渠道", "bad", `${channels} 个渠道，没有一个填了 Key`,
@@ -170,7 +170,7 @@ function verdictWorkspace(facts) {
   const { dir, writable, errCode, exists } = facts;
   if (writable) return item("工作区", "ok", dir + (exists === false ? "（还没建，第一次交付文件时会自动建）" : ""));
   return item("工作区", "bad", `${dir} 写不进去（${errCode || "未知原因"}）`,
-    "设置页 → 常规 → 工作目录，换到一个你有写权限的文件夹；命令行里也可以 wb -C <目录> 临时指定。");
+    "设置页 → 常规 → 工作目录，换到一个你有写权限的文件夹；命令行里也可以 openworkbuddy -C <目录> 临时指定。");
 }
 
 /** 底层引擎：选了本机 CLI 却没装，是「设置里看着好好的、一跑任务就报错」那类最难查的坑 */
@@ -179,7 +179,7 @@ function verdictEngine(facts) {
   if (id === "builtin") return item("底层引擎", "ok", `${label}（走配置里的模型 API）`);
   if (installed) return item("底层引擎", "ok", `${label} ${version || ""}`.trim() + "，不消耗 API 额度");
   return item("底层引擎", "bad", `选的是 ${label}，但本机没装或跑不起来`,
-    (install ? `装法：${install}；` : "") + "或者 wb engines use builtin 换回内置引擎。");
+    (install ? `装法：${install}；` : "") + "或者 openworkbuddy engines use builtin 换回内置引擎。");
 }
 
 /**
@@ -187,8 +187,8 @@ function verdictEngine(facts) {
  * pandoc 和 soffice、PDF 取文字要 pdftotext。缺一个不影响启动，但会等任务跑到一半才炸——
  * 那时候人已经等了两分钟，还得自己反推是缺了什么。体检里提前说一句，装法一并给出。
  *
- * **一律 warn，绝不 bad。** 这几个都是可选的，报 bad 会让 `wb doctor` 退 1，
- * 把安装脚本和 CI（`wb doctor && npm start`）整个拦下来——为一个「你八成用不上」的工具
+ * **一律 warn，绝不 bad。** 这几个都是可选的，报 bad 会让 `openworkbuddy doctor` 退 1，
+ * 把安装脚本和 CI（`openworkbuddy doctor && npm start`）整个拦下来——为一个「你八成用不上」的工具
  * 挡住启动，是本末倒置。
  */
 function verdictTools(found) {
@@ -200,6 +200,27 @@ function verdictTools(found) {
   return item("外部工具", "warn",
     `缺 ${miss.map((t) => `${t.name}（${t.use}）`).join("、")}` + (have.length ? `；${have.map((t) => t.name).join("、")} 在` : ""),
     miss.map((t) => `${t.name} 用 ${t.install}`).join("；") + "。用不到对应功能就不用装。");
+}
+
+/**
+ * 外挂的第二把尺子（toolward）在不在。
+ *
+ * **没装不算毛病**：它是可选的第二意见，而且授权上公司用还要另外谈（见 toolward.js 顶上那三条边界），
+ * 报成 warn 等于催每一个用户去装一个他可能不该装的东西。所以没装一律 ok，只在那一行末尾
+ * 顺一句怎么装。真要报 warn 的只有一种：**装着却没在用**——那是「你以为有两把尺子，其实只有一把」，
+ * 而这种误会正好发生在最需要它的时候。
+ */
+function verdictToolward(st) {
+  const s = st || {};
+  const name = "技能体检 · 第二把尺子";
+  if (!s.installed) {
+    return item(name, "ok", `没装 toolward（可选）：装技能只用自带的 skill-guard 扫。想多一把：${s.install || "npm i -g toolward"}`);
+  }
+  if (!s.on) {
+    return item(name, "warn", `toolward ${s.version || ""} 装着，但这会儿没在用：${s.why || "原因不明"}`,
+      "到 设置 → 安全 → 技能与连接器体检 里把它调回「它报『严重』就拦下来」。");
+  }
+  return item(name, "ok", `toolward ${s.version || ""} 也在跑（${s.bin}），装技能、存连接器时两把尺子一起量`);
 }
 
 /** 整体结论：有 bad 就退 1。给安装脚本和 CI 用 */
@@ -404,6 +425,10 @@ async function gather(deps) {
   // 放在最后：它可能要问一次登录 shell（几百毫秒），前面那些是「能不能启动」的硬指标，
   // 不该被一个可选项拖着等
   items.push(verdictTools(await probeTools(deps.which || require("./engines/which"))));
+  // 它自己会去跑一次 `toolward --version`；探不到就是没装，不该让体检本身出错
+  let tw = null;
+  try { tw = require("./toolward").status(config || {}); } catch { tw = null; }
+  items.push(verdictToolward(tw));
   return items;
 }
 
@@ -432,7 +457,7 @@ function render(items, paint) {
 
 module.exports = {
   verdictNode, verdictDeps, verdictDataDir, verdictConfig, verdictModels,
-  verdictPort, verdictWorkspace, verdictEngine, verdictTools,
+  verdictPort, verdictWorkspace, verdictEngine, verdictTools, verdictToolward,
   worst, countModels, probeWritable, probePort, probeWho, probeTools, fetchText, gather, render, cols, LEVELS,
   verdictConfigLint, EXTERNAL_TOOLS, TOOL_ALIASES, knownTool,
 };

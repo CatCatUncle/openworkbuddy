@@ -28,13 +28,28 @@
 const path = require("path");
 const { dataPath } = require("./paths");
 const store = require("./store");
+const usageStore = require("./usage-store");
+const pricing = require("./pricing");
+const budget = require("./budget");
 const { AsyncLocalStorage } = require("async_hooks");
 
-// WB_DATA_DIR 与 account.js / org.js 同一个口子：跑测试时指到临时目录
-const DATA_DIR = process.env.WB_DATA_DIR || dataPath("data");
-const USAGE_FILE = path.join(DATA_DIR, "api-usage.json");
-/** 流水上限。一条约 130 字节，两万条 ≈ 2.6MB，够看三个月；超了从最旧的开始丢 */
-const USAGE_CAP = 20000;
+// OPENWORKBUDDY_DATA_DIR 与 account.js / org.js 同一个口子：跑测试时指到临时目录
+const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
+// 这本账改成月分片的 JSONL（跟 account.js 那本 token 流水同一套东西）。
+// 原来是 data/api-usage.json 一个大文件，每记一笔要「整本读出来 → unshift 一条
+// → 截到两万条 → 整本写回去」，两个后果都是真的：
+//
+//   · 到两万条就从最旧的开始扔。扔掉的是**计费和审计数据**，而且一个字不报。
+//     50 个人每天各搜 10 次，40 天就到顶；之后后台那张「本月用量」开始安静地少算。
+//     而这本账正是给企业那把统一 Key 记账的那一本——最不该惄悉丢数据的恰恰是它。
+//   · 写入耗时跟历史长度成正比（usage-store.js 里实测过：2 万条 6MB 要 57ms）。
+//     每一次付费调用都付这笔钱。
+//
+// 现在一笔一行追加到 data/api-usage/2026-09.jsonl：追加耗时跟历史多长无关，
+// 查「本月」只读一个分片，要清理就删月份文件。老文件第一次用到时自动拆成分片。
+const USAGE_FILE = path.join(DATA_DIR, "api-usage.json");   // 改造前那个大文件，只用来迁移
+const USAGE_DIR = path.join(DATA_DIR, "api-usage");
+const ledger = usageStore.make(USAGE_DIR, USAGE_FILE);
 
 /**
  * 能力清单 —— 这一张表就是「企业后台能统一配哪些 API」的唯一出处。
@@ -92,15 +107,16 @@ const CAP_KEYS = Object.keys(CAPS).sort((a, b) => CAPS[a].order - CAPS[b].order)
 const CAP_DEFAULT = { enabled: false, org_daily: 0, org_monthly: 0, user_daily: 0 };
 
 function emptyDb() { return { usage: [] }; }
-function load() {
-  const db = store.readJson(USAGE_FILE, emptyDb(), { strict: true });
-  if (!Array.isArray(db.usage)) db.usage = [];
-  return db;
-}
-function save(db) {
-  if (db.usage.length > USAGE_CAP) db.usage = db.usage.slice(0, USAGE_CAP);
-  store.writeJsonAtomic(USAGE_FILE, db);
-}
+/**
+ * 热路径上要的只有「本月」——额度按天和按月算，上个月的账一条都用不上。
+ * 所以只读当月那一个分片：账本里躺着三年还是三天，这一次读的字节数一样多。
+ * 返回的顺序跟以前一致：**新的在前**（used() 和 summary() 都靠这个顺序提前 break）。
+ */
+function load() { return { usage: ledger.read({ from: localMonth() + "-01", to: localDay() }) }; }
+/** 整本，含历史月份。给导出和测试用，热路径别碰 */
+function loadAll() { return { usage: ledger.read({}) }; }
+/** 整本换成这一份。只给迁移和测试用——正常记账走 record() 里的追加 */
+function save(db) { ledger.replaceAll((db && db.usage) || []); }
 
 /** 本地日期，跟 account.js 的 localDay 对齐：按服务器时区切天，不按 UTC */
 function localDay(d) {
@@ -209,23 +225,133 @@ function check(cap, n = 1, actor) {
   };
 }
 
-/** 调完记一笔。记账失败绝不能反过来把已经成功的调用判成失败，所以整段吞异常 */
-function record(cap, { n = 1, provider = "", model = "", meta = "", actor } = {}) {
+// ---------- 第二道闸：钱 ----------
+/**
+ * 上面 check() 那道是**次数**闸，这一节是**钱**闸。两道都要，因为它们回答的不是同一个问题：
+ *
+ *   次数闸回答「别把服务商的频率限制跑爆」，单位是次。它对所有人一视同仁，
+ *   一天 200 张就是 200 张，不管这 200 张是五分钱一张还是一块一张。
+ *   钱闸回答「这个月的预算还剩多少」，单位是元。200 张万相 plus 跟 200 张 flux
+ *   差了五十倍，只看次数的话两个长得一模一样。
+ *
+ * 为什么钱闸直接用 budget.js 那一套，而不是在这儿再写一份：
+ * 中转站对外发的 Key 跟公司内部自己用，花的是**同一笔预算**。分两本账的话，
+ * 「部门这个月花了多少」永远差一截，而差的那一截恰好是没人盯着的那一截。
+ * 同一个 reserve/settle，就同一个预算、同一张报表。
+ */
+
+/** 这一路的计价单位（张/秒/千字符/分钟/次），没有就说明这一路不进钱账（比如抓网页） */
+function billable(cap) { return !!pricing.UNITS[cap]; }
+
+/** 拿什么去查价。搜索没有「型号」，它的价钱跟着引擎走，所以拿 provider 当型号 */
+function priceKeyOf(cap, model, provider) { return String(model || provider || "").trim(); }
+
+/**
+ * 调用之前把两道闸一起问了。返回 { ok, why, hold }。
+ *
+ *   hold 是预扣句柄，调完必须交回来：成功走 record(cap, { …, hold })，
+ *   失败走 undo(hold)。两个都不调的话，那笔预扣会一直占着，直到 15 分钟后
+ *   被 budget.sweep 扫掉——不致于漏钱，但那半小时里预算看着比实际少。
+ *
+ * 没进过 withActor 的调用（命令行、单机桌面版、定时任务）两道闸都不生效，跟以前一样。
+ */
+function gate(cap, { n = 1, model = "", units = 0, provider = "", actor } = {}) {
   const who = actor || currentActor();
+  const c = check(cap, n, who);
+  if (!c.ok) return { ok: false, why: c.why, hold: null };
+  if (!who || !who.budget || !billable(cap)) return { ok: true, hold: null };
   try {
-    const db = load();
-    db.usage.unshift({
+    const hold = budget.reserve({
+      ...who.budget,
+      usage: { cap, model: priceKeyOf(cap, model, provider), units: units || n },
+      price: who.price || {},
+    });
+    return { ok: true, hold };
+  } catch (e) {
+    if (e && e.status === 402) {
+      const meta = CAPS[cap] || { label: cap };
+      return {
+        ok: false, hold: null,
+        // budget 那边的话已经把「上限多少、已用多少、这一趟要多少」说完了，
+        // 这儿只补两件它不知道的：这一趟是哪路能力、预算去哪儿改。
+        why: `${e.message}（这一趟是「${meta.label || cap}」。）`
+          + `预算由平台管理员在「企业管理 → API 与额度」里设，每月 1 号重置。`,
+      };
+    }
+    // 预算模块自己坏了（账本读不出来、配置里塞了个怪值）不该拦住正事，
+    // 跟 check() 读不出账本时同一个选择：放行，但喊一声。
+    console.warn("[预算] 钱闸没能判（本次放行）：" + (e && e.message));
+    return { ok: true, hold: null };
+  }
+}
+
+/** 这一趟压根没发出去（渠道挂了、参数错了），把占的预算还回去 */
+function undo(hold) { try { budget.release(hold); } catch {} }
+
+/**
+ * 调完记一笔。记账失败绝不能反过来把已经成功的调用判成失败，所以整段吞异常。
+ *
+ * 一次调用落**两本账**，因为它们回答不同的问题：
+ *   ① data/api-usage/…（这本）：按**次**统计，支撑次数闸和后台那张「搜索用了多少次」。
+ *   ② data/usage/…（主账，kind:"api"）：按**元**记账，跟聊天、跟中转站共用同一本。
+ *      budget.spentOf 只认这本；不写的话，进程一重启，生图生视频花的钱就从
+ *      预算里凭空消失了——内存里那份缓存是从这本账重新累出来的。
+ */
+function record(cap, { n = 1, provider = "", model = "", meta = "", units = 0, hold, actor } = {}) {
+  const who = actor || currentActor();
+  const cnt = Math.max(1, Math.floor(+n) || 1);
+  const key = priceKeyOf(cap, model, provider);
+  const u = +units > 0 ? +units : cnt;
+
+  // 算钱。算不出来也要把 hold 结掉，否则那笔预扣占到被扫为止。
+  let cost = null;
+  if (billable(cap)) {
+    try { cost = pricing.costOfUnits({ cap, model: key, units: u }, (who && who.price) || {}); } catch {}
+  }
+  try { budget.settle(hold, cost && !cost.unknown ? cost.yuan : 0); } catch {}
+
+  try {
+    ledger.append({
       ts: new Date().toISOString(), day: localDay(), month: localMonth(),
-      cap, n: Math.max(1, Math.floor(+n) || 1),
+      cap, n: cnt,
       org: (who && who.org) || "default",
       user: (who && who.user) || "",
       provider: String(provider || "").slice(0, 40),
       model: String(model || "").slice(0, 60),
       meta: String(meta || "").slice(0, 120),
+      // 计价用的量和钱也写进这本，后台那张表才能在同一行里
+      // 既说「这个月生了 312 张图」又说「花了 43.7 元」。
+      units: u, cost: cost && !cost.unknown ? cost.yuan : 0,
+      cost_unknown: cost ? !!cost.unknown : true,
     });
-    save(db);
   } catch (e) {
     console.warn("[额度] 流水没记上（不影响本次调用）：" + e.message);
+  }
+
+  if (!billable(cap)) return;
+  try {
+    usageStore.append({
+      ts: new Date().toISOString(), day: localDay(),
+      kind: "api",                                  // 跟聊天的 "run" 、充值的 "topup" 分开
+      cap, units: u, unit: pricing.UNITS[cap].unit,
+      user: (who && who.user) || "",
+      org: (who && who.org) || "default",
+      dept: (who && who.dept) || "",
+      vkey: (who && who.budget && who.budget.vkey && who.budget.vkey.id) || "",
+      source: (who && who.source) || "",
+      provider: String(provider || "").slice(0, 40),
+      model: String(model || "").slice(0, 60),
+      // 跟 account.js:chargeRun 那边一模一样的三格：
+      // cost_unknown 必须单独记，因为「0 元」和「不知道多少钱」在账上是两回事；
+      // price_key / discount 不记的话，上游调价之后翻旧账只能拿今天的价重算。
+      cost: cost && !cost.unknown ? cost.yuan : 0,
+      cost_unknown: cost ? !!cost.unknown : true,
+      price_key: cost && !cost.unknown ? cost.key : "",
+      discount: cost ? cost.discount : 1,
+      credits: 0, prompt: 0, cached: 0, completion: 0, calls: cnt,
+    });
+  } catch (e) {
+    console.warn("[预算] 金额流水没记上（不影响本次调用）：" + e.message);
   }
 }
 
@@ -280,6 +406,6 @@ function normalizeTable(patch) {
 module.exports = {
   CAPS, CAP_KEYS, CAP_DEFAULT,
   quotaTable, normalizeCap, normalizeTable, suggested,
-  withActor, currentActor, check, record, summary,
-  _internals: { load, save, used, localDay, localMonth, USAGE_FILE, USAGE_CAP, emptyDb },
+  withActor, currentActor, check, gate, undo, record, summary, billable,
+  _internals: { load, loadAll, save, used, localDay, localMonth, USAGE_FILE, USAGE_DIR, emptyDb, ledger, priceKeyOf },
 };

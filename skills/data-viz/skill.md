@@ -54,7 +54,10 @@ digraph {
 ## 交付形态
 
 1. **插入文档**：gen_diagram 生成后，在 feishu_doc_create 的 markdown 里独占一行写 `![图说明](名字.png)` 即真插图；Word/PPT 也用 PNG
-2. **交互式大图表**：单文件 HTML + ECharts CDN（`https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js`），适合仪表盘类交付
+2. **交互式大图表**：单文件 HTML，**图表自己用内联 SVG / canvas 画，不引 CDN**。
+   仪表盘这类交付尤其别引：用户断网双击、发给同事、在国央企内网里打开，脚本一拉不到整页就是空的。
+   真要用 ECharts，先 `curl -O https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js`
+   下到本机再整个内联进 `<script>`（压缩版约 1 MB，能接受）——产出的 HTML 里不许留这个地址
 3. 图表下方补一行数据来源/口径说明
 
 ## 质量标准

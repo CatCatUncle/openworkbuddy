@@ -3,9 +3,9 @@
  * 命令行参数：声明表 + 「认不出来就停下来问」。
  *
  * 这一套要挡的是同一类事故——**参数没读懂，却不吭声照跑**：
- *   `wb --qiet "写周报"`        拼错的选项被当成任务文本，塞给模型，钱照花
- *   `wb --session --json "x"`   session 变成 "--json"，而 --json 就此消失
- *   `wb --mode crat "x"`        模式名写错了没人说
+ *   `openworkbuddy --qiet "写周报"`        拼错的选项被当成任务文本，塞给模型，钱照花
+ *   `openworkbuddy --session --json "x"`   session 变成 "--json"，而 --json 就此消失
+ *   `openworkbuddy --mode crat "x"`        模式名写错了没人说
  * 三条都不会报错、不会变慢、不会留痕，只会把结果悄悄变成另一个样子。
  *
  * 所以断言几乎都长成一个形状：**这句话必须被说出来，而且必须跟别的那句不一样。**
@@ -73,17 +73,23 @@ console.log("\n② 要跟值的选项不许吞掉后面的选项");
   eq(A.parse(["--session=-怪id"]).opts.session, "-怪id", "反向对照：等号写法能塞进以横杠开头的值");
 }
 
-// ── ③ --mode 只认三个值 ──────────────────────────────────────────────────
-console.log("\n③ --mode 只认 craft / plan / ask");
+// ── ③ --mode 只认模式表里那几个值 ────────────────────────────────────────
+// 值从 modes.js 取，不在这儿抄一份：抄一份的结果就是模式表加了一个，
+// 测试还绿着——它验的是自己手里那份旧清单，而不是程序真认的那份
+const MODES = require("../modes");
+console.log(`\n③ --mode 只认 ${MODES.MODE_IDS.join(" / ")}`);
 {
   const r = A.parse(["--mode", "crat", "x"]);
   eq(r.problems.length, 1, "写错的模式名被拦");
-  ok(/craft \/ plan \/ ask/.test(r.problems[0].message), "把三个合法值全列出来", r.problems[0].message);
+  ok(r.problems[0].message.includes(MODES.MODE_IDS.join(" / ")), "把合法值全列出来", r.problems[0].message);
   ok(/craft/.test(r.problems[0].hint), "并且猜出他想说 craft", r.problems[0].hint);
-  eq(A.parse(["--mode", "crat", "x"]).opts.mode, "craft", "拦下来之后 mode 保持默认，不会变成 crat");
-  for (const m of ["craft", "plan", "ask"]) {
+  eq(A.parse(["--mode", "crat", "x"]).opts.mode, MODES.DEFAULT_MODE, "拦下来之后 mode 保持默认，不会变成 crat");
+  for (const m of MODES.MODE_IDS) {
     ok(clean(["--mode", m, "x"]) && A.parse(["--mode", m, "x"]).opts.mode === m, `反向对照：${m} 收得到`);
   }
+  // ★这条才是这次改动的要害★：goal 以前只活在网页端，命令行 --mode goal 会被当成写错拦掉，
+  // 于是同一个产品在两个入口下模式数目不一样（一个 4 个，一个 3 个）
+  ok(MODES.MODE_IDS.includes("goal") && A.parse(["--mode", "goal", "x"]).opts.mode === "goal", "★goal 在命令行也是个真模式★");
 }
 
 // ── ④ 好用的写法都得支持：等号、短选项合写、-- ───────────────────────────
@@ -120,10 +126,10 @@ console.log("\n⑥ 子命令拼错拦下来（这条直接省钱）");
 {
   for (const [bad, good] of [["doctro", "doctor"], ["engine", "engines"], ["sesions", "sessions"], ["resumee", "resume"]]) {
     const r = A.parse([bad]);
-    eq(r.problems.length, 1, `wb ${bad} 被拦`);
-    ok(new RegExp("wb " + good).test(r.problems[0].hint), `并且猜出 wb ${good}`, r.problems[0].hint);
+    eq(r.problems.length, 1, `openworkbuddy ${bad} 被拦`);
+    ok(new RegExp("openworkbuddy " + good).test(r.problems[0].hint), `并且猜出 openworkbuddy ${good}`, r.problems[0].hint);
   }
-  ok(/-- /.test(A.parse(["doctro"]).problems[0].hint), "留了后路：真要当任务就写 wb -- doctro");
+  ok(/-- /.test(A.parse(["doctro"]).problems[0].hint), "留了后路：真要当任务就写 openworkbuddy -- doctro");
   // 反向对照：真子命令、整句话、多个词，都不许打扰
   for (const argv of [["doctor"], ["engines"], ["engines", "use", "builtin"], ["帮我写周报"], ["engine 这个词什么意思"], ["hello"], ["resume", "cli_1", "接着做"]]) {
     ok(clean(argv), `反向对照：${JSON.stringify(argv)} 不该被打扰`, say(argv));
@@ -137,7 +143,7 @@ console.log("\n⑦ --list 后面多出来的词");
   ok(/abc/.test(say(["--list", "abc"])), "点名是哪个词用不上", say(["--list", "abc"]));
   eq(A.parse(["--list", "5"]).opts.list, 5, "反向对照：--list 5 收得到");
   eq(A.parse(["--list"]).opts.list, 10, "反向对照：--list 不给数就是默认 10");
-  ok(clean(["sessions", "5"]), "反向对照：wb sessions 5 是子命令，不走这条");
+  ok(clean(["sessions", "5"]), "反向对照：openworkbuddy sessions 5 是子命令，不走这条");
 }
 
 // ── ⑧ 帮助从表里长出来，两边对不上是不可能的 ─────────────────────────────
@@ -241,18 +247,18 @@ console.log("\n⑫ 真跑：退出码");
 {
   const run = (args) => spawnSync(process.execPath, [path.join(ROOT, "cli.js"), ...args], { encoding: "utf8" });
   const h = run(["--help"]);
-  eq(h.status, 0, "wb --help 退 0");
+  eq(h.status, 0, "openworkbuddy --help 退 0");
   ok(/OpenWorkBuddy CLI/.test(h.stdout), "帮助走的是 stdout（能 | less）");
 
   const v = run(["--version"]);
-  eq(v.status, 0, "wb --version 退 0");
+  eq(v.status, 0, "openworkbuddy --version 退 0");
   ok(/^OpenWorkBuddy \d+\.\d+\.\d+/.test(v.stdout.trim()), "版本号是真的版本号", v.stdout.trim());
   eq(v.stdout.trim().split(" ")[1], require(path.join(ROOT, "package.json")).version, "★跟 package.json 对得上★");
 
   const e = run(["--qiet", "写周报"]);
   eq(e.status, 2, "★参数写错退 2★ 跟「任务失败」的 1 分开，脚本才好处理");
   ok(/--quiet/.test(e.stderr), "建议走 stderr", e.stderr);
-  eq(e.stdout, "", "★参数写错时 stdout 一个字都不许有★ 不然 wb ... > 答案.md 会收到一份报错当答案");
+  eq(e.stdout, "", "★参数写错时 stdout 一个字都不许有★ 不然 openworkbuddy ... > 答案.md 会收到一份报错当答案");
 
   const d = run(["doctro"]);
   eq(d.status, 2, "子命令拼错也退 2（而不是花钱跑一趟）");
@@ -263,7 +269,7 @@ console.log("\n⑫ 真跑：退出码");
 // 人按 Tab 补不出 --raw，只会以为没这个选项。所以这一节不看「生成了没有」，看两件事：
 //   1. 表里每一项都必须出现在三份脚本里（少一个就是漏同步）
 //   2. 拿真的 bash / zsh 跑一遍，别让脚本自己就是坏的
-console.log("\n⑬ wb completion：三种 shell");
+console.log("\n⑬ openworkbuddy completion：三种 shell");
 {
   const SH = ["bash", "zsh", "fish"];
   const ctx = { sessionsDir: "/home/me/.openworkbuddy/data/sessions", engines: ["builtin", "claude-code"] };
@@ -278,7 +284,7 @@ console.log("\n⑬ wb completion：三种 shell");
     const missSub = A.SUBS.map((x) => x.name).filter((x) => !gen[sh].includes(x));
     ok(missSub.length === 0, `${sh}：每个子命令都在补全里`, missSub);
     ok(!/\bnode\b/.test(gen[sh]),
-      `★${sh}：按 Tab 不许起 node★ wb 启动要过 boot-check，等半秒的补全没人会用`);
+      `★${sh}：按 Tab 不许起 node★ openworkbuddy 启动要过 boot-check，等半秒的补全没人会用`);
     ok(gen[sh].includes(ctx.sessionsDir), `${sh}：会话目录是烤进去的`);
   }
 
@@ -287,29 +293,29 @@ console.log("\n⑬ wb completion：三种 shell");
   ok(qd.includes("'/Users/o'\\''brien/data/sessions'"), "★路径里的撇号要转义★ 不然生成出来的脚本是坏的", qd.match(/.*brien.*/)[0]);
 
   const has = (bin) => spawnSync("command", ["-v", bin], { shell: true, encoding: "utf8" }).status === 0;
-  const tmp = path.join(require("os").tmpdir(), "wb-comp-test-" + process.pid);
+  const tmp = path.join(require("os").tmpdir(), "owb-comp-test-" + process.pid);
   fs.mkdirSync(tmp, { recursive: true });
-  fs.writeFileSync(path.join(tmp, "wb.bash"), gen.bash);
-  fs.writeFileSync(path.join(tmp, "_wb"), gen.zsh);
+  fs.writeFileSync(path.join(tmp, "openworkbuddy.bash"), gen.bash);
+  fs.writeFileSync(path.join(tmp, "_openworkbuddy"), gen.zsh);
 
   if (has("bash")) {
-    const syn = spawnSync("bash", ["-n", path.join(tmp, "wb.bash")], { encoding: "utf8" });
+    const syn = spawnSync("bash", ["-n", path.join(tmp, "openworkbuddy.bash")], { encoding: "utf8" });
     eq(syn.status, 0, "★bash 脚本本身是好的★", syn.stderr);
-    // 真驱动一次补全：把 COMP_WORDS 摆好，调 _wb_complete，看 COMPREPLY 出什么
+    // 真驱动一次补全：把 COMP_WORDS 摆好，调 _openworkbuddy_complete，看 COMPREPLY 出什么
     const drive = spawnSync("bash", ["-c", `
-      source ${JSON.stringify(path.join(tmp, "wb.bash"))}
-      COMP_WORDS=(wb --qu); COMP_CWORD=1; _wb_complete; echo "A:\${COMPREPLY[*]}"
-      COMP_WORDS=(wb do);   COMP_CWORD=1; _wb_complete; echo "B:\${COMPREPLY[*]}"
-      COMP_WORDS=(wb --mode ""); COMP_CWORD=2; _wb_complete; echo "C:\${COMPREPLY[*]}"
+      source ${JSON.stringify(path.join(tmp, "openworkbuddy.bash"))}
+      COMP_WORDS=(openworkbuddy --qu); COMP_CWORD=1; _openworkbuddy_complete; echo "A:\${COMPREPLY[*]}"
+      COMP_WORDS=(openworkbuddy do);   COMP_CWORD=1; _openworkbuddy_complete; echo "B:\${COMPREPLY[*]}"
+      COMP_WORDS=(openworkbuddy --mode ""); COMP_CWORD=2; _openworkbuddy_complete; echo "C:\${COMPREPLY[*]}"
     `], { encoding: "utf8" });
     const out = drive.stdout || "";
     ok(/A:--quiet\b/.test(out), "★bash：--qu 补成 --quiet★", out);
     ok(/B:.*\bdoctor\b/.test(out), "bash：do 补出 doctor", out);
-    ok(/C:craft plan ask/.test(out), "bash：--mode 后面给的是三个模式", out);
+    ok(out.includes("C:" + MODES.MODE_IDS.join(" ")), `bash：--mode 后面补出全部 ${MODES.MODE_IDS.length} 个模式`, out);
   } else ok(true, "（本机没有 bash，跳过真驱动）");
 
   if (has("zsh")) {
-    const syn = spawnSync("zsh", ["-n", path.join(tmp, "_wb")], { encoding: "utf8" });
+    const syn = spawnSync("zsh", ["-n", path.join(tmp, "_openworkbuddy")], { encoding: "utf8" });
     eq(syn.status, 0, "★zsh 脚本本身是好的★", syn.stderr);
     // zsh 这边栽过一次：`*{-f,--file}'[说明]'` 展开成 `*-f'[说明]'`，一个没引号的 *
     // 后面跟方括号，zsh 当通配符去匹配文件名，当场 "no matches found"，整个函数废掉。
@@ -317,9 +323,9 @@ console.log("\n⑬ wb completion：三种 shell");
     const drive = spawnSync("zsh", ["-f", "-c", `
       compadd() { :; }; _describe() { echo "D:$3"; }; _values() { echo "V:$*"; }
       _arguments() { echo "G:$#"; }; _files() { :; }
-      source ${JSON.stringify(path.join(tmp, "_wb"))} 2>/dev/null
-      words=(wb doct); CURRENT=2; _wb
-      words=(wb --mo);  CURRENT=2; _wb
+      source ${JSON.stringify(path.join(tmp, "_openworkbuddy"))} 2>/dev/null
+      words=(openworkbuddy doct); CURRENT=2; _openworkbuddy
+      words=(openworkbuddy --mo);  CURRENT=2; _openworkbuddy
     `], { encoding: "utf8" });
     ok(!/no matches found|parse error|not found/.test(drive.stderr || ""),
       "★zsh：调起来不炸★ 语法过了不代表跑得起来", (drive.stderr || "").slice(0, 200));
@@ -327,23 +333,23 @@ console.log("\n⑬ wb completion：三种 shell");
     ok(/G:\d+/.test(drive.stdout || ""), "zsh：选项位走 _arguments", drive.stdout);
   } else ok(true, "（本机没有 zsh，跳过真驱动）");
 
-  // fish 装的人少，CI 上多半没有。至少把形状钉死：除注释外每一行都得是 complete -c wb，
+  // fish 装的人少，CI 上多半没有。至少把形状钉死：除注释外每一行都得是 complete -c openworkbuddy，
   // 单引号得成对——这两条能挡住绝大多数「生成出来是半截」的事故
   const fishLines = gen.fish.split("\n").filter((l) => l.trim() && !l.startsWith("#"));
-  ok(fishLines.every((l) => l.startsWith("complete -c wb")), "fish：每一行都是一条 complete",
-    fishLines.find((l) => !l.startsWith("complete -c wb")));
+  ok(fishLines.every((l) => l.startsWith("complete -c openworkbuddy")), "fish：每一行都是一条 complete",
+    fishLines.find((l) => !l.startsWith("complete -c openworkbuddy")));
   ok(fishLines.every((l) => (l.match(/'/g) || []).length % 2 === 0), "fish：单引号都成对",
     fishLines.find((l) => (l.match(/'/g) || []).length % 2));
 
-  // 真跑 wb completion：拿不认识的 shell 要当场停，别生成一份谁也用不了的东西
+  // 真跑 openworkbuddy completion：拿不认识的 shell 要当场停，别生成一份谁也用不了的东西
   const run = (args, env) => spawnSync(process.execPath, [path.join(ROOT, "cli.js"), ...args],
     { encoding: "utf8", env: Object.assign({}, process.env, env || {}) });
   const bad = run(["completion", "powershell"]);
   eq(bad.status, 2, "不认识的 shell 退 2");
-  eq(bad.stdout, "", "★不认识就一个字节都不输出★ 不然 > _wb 会存下半份垃圾");
+  eq(bad.stdout, "", "★不认识就一个字节都不输出★ 不然 > _openworkbuddy 会存下半份垃圾");
   const good = run(["completion", "bash"]);
-  eq(good.status, 0, "wb completion bash 退 0");
-  ok(good.stdout.includes("complete -F _wb_complete wb"), "脚本走 stdout（能 > 文件）");
+  eq(good.status, 0, "openworkbuddy completion bash 退 0");
+  ok(good.stdout.includes("complete -F _openworkbuddy_complete openworkbuddy"), "脚本走 stdout（能 > 文件）");
   ok(/source|~\/\./.test(good.stderr), "★装法走 stderr★ 重定向到文件时脚本干净，人还看得见怎么装", good.stderr.slice(0, 120));
 
   fs.rmSync(tmp, { recursive: true, force: true });
@@ -371,7 +377,7 @@ console.log("\n⑮ 文档里的选项表");
   const doc = fs.readFileSync(path.join(ROOT, "docs", "命令行用法.md"), "utf8");
   const missF = A.FLAGS.filter((f) => !doc.includes("--" + f.long));
   ok(missF.length === 0, "★每个选项在文档里都有一行★", missF.map((f) => "--" + f.long));
-  const missS = A.SUBS.filter((x) => !doc.includes("wb " + x.name));
+  const missS = A.SUBS.filter((x) => !doc.includes("openworkbuddy " + x.name));
   ok(missS.length === 0, "★每个子命令在文档里都有一行★", missS.map((x) => x.name));
   ok(!doc.includes("--qiet-不存在的选项"), "★（反向对照）文档里当然找不到一个不存在的选项★");
   // 退出码 2 是后加的，文档里那句「0 成功 1 出错 130 打断」漏了它很久

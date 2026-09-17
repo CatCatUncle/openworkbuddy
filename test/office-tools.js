@@ -120,13 +120,13 @@ async function makeFixtures(dir) {
   fs.writeFileSync(path.join(dir, "带图.docx"), await Packer.toBuffer(withImg));
 
   const ExcelJS = require(path.join(ROOT, "node_modules/exceljs"));
-  const wb = new ExcelJS.Workbook();
-  const s1 = wb.addWorksheet("明细");
+  const book = new ExcelJS.Workbook();
+  const s1 = book.addWorksheet("明细");
   s1.addRow(["日期", "金额", "备注"]);
   for (let i = 1; i <= 120; i++) s1.addRow([`2026-01-${String((i % 28) + 1).padStart(2, "0")}`, i * 100, `第${i}笔`]);
-  const s2 = wb.addWorksheet("汇总");
+  const s2 = book.addWorksheet("汇总");
   s2.addRow(["合计", 726000]);
-  await wb.xlsx.writeFile(path.join(dir, "账目.xlsx"));
+  await book.xlsx.writeFile(path.join(dir, "账目.xlsx"));
 
   const PptxGenJS = require(path.join(ROOT, "node_modules/pptxgenjs"));
   const p = new PptxGenJS();
