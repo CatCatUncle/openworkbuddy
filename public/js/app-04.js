@@ -162,7 +162,9 @@ function libTaskOf(src, name) {
 function libIcon(n) {
   return ic(/\.html?$/i.test(n) ? "globe" : /\.csv$/i.test(n) ? "file-spreadsheet" : /\.(md|markdown)$/i.test(n) ? "file-pen-line" : /\.(png|jpe?g|gif|webp|svg)$/i.test(n) ? "image" : /\.pdf$/i.test(n) ? "file-type" : "file-text");
 }
-function libSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+// 0 要写成「—」，不能顺着 Math.max(1,…) 变成「1 KB」：服务端查不到体积时传过来的就是 0，
+// 画成「1 KB」等于替一个不知道的数字编了个具体值（真的空文件也是「里面什么都没有」，「—」一样对）
+function libSize(n) { return !n ? "—" : n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
 /**
  * 类型筛选。用户想找「那张图」「那个表」的时候，按名字他根本想不起来叫什么，
  * 但一定记得它是什么形状的东西。六个格子覆盖了实际产出的绝大多数。
@@ -363,7 +365,7 @@ async function renderLibPage() {
         <div class="lib-tabs" role="tablist">
           <button type="button" class="lib-tab ${libState.view === "dir" ? "on" : ""}" data-view="dir" role="tab" aria-selected="${libState.view === "dir"}">${ic("folder-tree")}文件夹</button>
           <button type="button" class="lib-tab ${libState.view === "task" ? "on" : ""}" data-view="task" role="tab" aria-selected="${libState.view === "task"}">${ic("sparkles")}按任务</button>
-          <button type="button" class="lib-tab ${libState.pick && libState.pick.src === "notes" ? "on" : ""}" data-src="notes" role="tab" aria-selected="${!!(libState.pick && libState.pick.src === "notes")}">${ic("lightbulb")}笔记 ${(lib.notes || []).length || ""}</button>
+          <button type="button" class="lib-tab ${libState.pick && libState.pick.src === "notes" ? "on" : ""}" data-src="notes" role="tab" title="给助理留的长期备忘：不是文件，是几句话。每次任务它查资料库时都会连着读到" aria-selected="${!!(libState.pick && libState.pick.src === "notes")}">${ic("lightbulb")}笔记 ${(lib.notes || []).length || ""}</button>
         </div>
         <div class="lib-kinds">${LIB_KINDS.map(([k, label]) => `<button type="button" class="lib-kind ${(libState.kind || "all") === k ? "on" : ""}" data-kind="${k}">${esc(label)}</button>`).join("")}</div>
         <div class="lib-side-tip">${po ? "我的文档" : "共享资料"}${po ? "" : ` · <span title="资料库是整台服务器共用的一份，往里放东西归平台管理员">只读</span>`}<br>
@@ -594,14 +596,15 @@ async function renderLibPreview(prev, lib) {
   const po = amPlatformOwner(); // 记笔记、删笔记、删资料都是往这台服务器的共享区写，归平台管理员
   if (src === "notes") {
     prev.innerHTML = `
-      <div style="font-weight:600;margin-bottom:10px">${ic("lightbulb")} 灵感笔记</div>
+      <div style="font-weight:600;margin-bottom:4px">${ic("lightbulb")} 灵感笔记</div>
+      <div style="font-size:12px;color:var(--wb-text-3);margin-bottom:10px;line-height:1.6">不是文件，是几句话。助理每次任务查资料库（library_list）时都会连着读到，所以适合放「我们公司简称叫 X」「配色一律用主色 #0F62FE」这种长期成立的事。</div>
       ${po ? `<div style="display:flex;gap:6px;margin-bottom:10px">
         <input id="lb-note" placeholder="随手记一条灵感/偏好，回车保存" style="flex:1">
         <button class="btn-brand" id="lb-note-save" style="flex:none">保存</button>
       </div>` : `<div style="font-size: 13px;color:var(--wb-text-3);margin-bottom:10px">这块是整台服务器共用的，归平台管理员记。<br>只想让助理记住你自己的事？去<a href="#" class="link" id="lb-to-mem">记忆</a>页，那儿记的只有你自己看得到。</div>`}
       <div>${(lib.notes || []).map(n =>
         `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span>${po ? `<a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a>` : ""}</div></div>`).join("")
-        || '<div class="ph">还没有灵感笔记</div>'}</div>`;
+        || '<div class="ph">还没有灵感笔记。<br>比如：「周报只要三段」「对外材料一律叫全称」——记一条，之后每次任务助理都会看到。</div>'}</div>`;
     if (!po) {
       const go = prev.querySelector("#lb-to-mem");
       if (go) go.onclick = (e) => { e.preventDefault(); openModal("settings", "memory"); };
@@ -655,27 +658,48 @@ async function renderLibPreview(prev, lib) {
       renderLibPage();
     };
   };
+  // 这一页最常见的失败是「名字还在，东西不在」：资料库列的是这次任务**产出过**什么，
+  // 名单来自对话记录，而文件后来可能被挪走、被删，或者跟着另一个工作目录走了。
+  // 以前这件事有三种长相，没有一种说得出到底怎么了——图裂成一个碎图标（<img> 出错浏览器不吭声）、
+  // HTML 把服务端那句「文件不存在」当网页渲染成一片空白（fetch 没看 r.ok）、
+  // 文本弹一句「预览失败：读取失败」。用户原话：「怎么点击图片没有办法预览了？」「点击md也是
+  // 没法预览啊」「html也是」「在资料库里面预览功能这么差的啊」。
+  const gonePh = `<div class="ph">这个文件已经不在工作目录里了。<br>资料库记的是这次任务产出过什么——名字来自对话记录，东西本身可能后来被挪走、被删，或者留在了另一个工作目录。<br>${
+    from ? "上面那条「出自任务」能回到当时的对话，让助理照着再做一份。" : "让助理照着再做一份，或者去访达里找找它被挪到哪儿了。"
+  }</div>`;
+  const failPh = (why) => `<div class="ph">预览不了：${esc(why)}</div>`;
+  // 只在出错时才问一句「是没了，还是读不出来」——顺利的那条路上一个多余的请求都不发
+  const alive = () => fetch(url, { method: "HEAD" }).then((r) => r.ok).catch(() => false);
   try {
     if (/\.(png|jpe?g|gif|webp|svg)$/i.test(name)) {
-      body.outerHTML = `<img src="${url}" style="max-width:100%;border-radius:8px">`;
+      body.outerHTML = `<img id="lb-img" src="${url}" style="max-width:100%;border-radius:8px">`;
+      const img = prev.querySelector("#lb-img");
+      if (img) img.onerror = async () => { img.outerHTML = (await alive()) ? failPh("这张图读不出来，文件可能是坏的") : gonePh; };
     } else if (/\.pdf$/i.test(name)) {
-      body.outerHTML = `<iframe src="${url}"></iframe>`;
-    } else if (/\.html?$/i.test(name)) {
-      // HTML 真渲染。sandbox 掐掉同源和弹窗：资料是外来的，不能让它碰应用本身
-      const text = await fetch(url).then(r => r.text());
-      const blob = URL.createObjectURL(new Blob([text], { type: "text/html" }));
-      body.outerHTML = `<iframe src="${blob}" sandbox="allow-scripts"></iframe>`;
+      // iframe 出错同样不通知外面：PDF 不在的时候，框里显示的是服务端那句「文件不存在」的纯文本
+      body.outerHTML = (await alive()) ? `<iframe src="${url}"></iframe>` : gonePh;
     } else {
       const r = await fetch(url);
-      if (!r.ok) throw new Error("读取失败");
-      const text = await r.text();
-      if (text.length > 400000) body.outerHTML = '<div class="ph">文件太大，预览不动，请下载后本地打开</div>';
-      else if (/\.csv$/i.test(name)) body.outerHTML = csvToTable(text);
-      else if (/\.(md|markdown)$/i.test(name)) body.outerHTML = `<div class="md">${renderMd(text)}</div>`;
-      else body.outerHTML = `<pre class="raw">${esc(text)}</pre>`;
+      if (r.status === 404) body.outerHTML = gonePh;
+      else if (!r.ok) body.outerHTML = failPh(`服务端回了 HTTP ${r.status}`);
+      else {
+        const text = await r.text();
+        // HTML 真渲染，而且不受下面那道 400KB 的闸限制（网页本来就容易几 MB，正是最该看长相的一类）。
+        // sandbox 掐掉同源和弹窗：资料是外来的，不能让它碰应用本身
+        if (/\.html?$/i.test(name)) {
+          const blob = URL.createObjectURL(new Blob([text], { type: "text/html" }));
+          body.outerHTML = `<iframe src="${blob}" sandbox="allow-scripts"></iframe>`;
+        } else if (text.length > 400000) body.outerHTML = '<div class="ph">文件太大，预览不动，请下载后本地打开</div>';
+        else if (/\.csv$/i.test(name)) body.outerHTML = csvToTable(text);
+        else if (/\.(md|markdown)$/i.test(name)) body.outerHTML = `<div class="md">${renderMd(text, "", false, "", { fileLinks: false })}</div>`;
+        // fileLinks 关掉的理由：这一页的文件在资料库里（/api/library/…），而 renderMd 造的
+        // 文件链接点开的是对话页右侧那个工作区预览面板——在资料库页上按下去，弹出来的是另一个
+        // 地方的另一份东西。没接通之前，宁可让它保持现在这样当普通文字
+        else body.outerHTML = `<pre class="raw">${esc(text)}</pre>`;
+      }
     }
   } catch (e) {
-    body.outerHTML = `<div class="ph">预览失败：${esc(e.message)}</div>`;
+    body.outerHTML = failPh(e.message);
   }
   wireDel();
   // 「出自任务」那条链接得在 innerHTML 重排之后再接一次事件（上面几条 outerHTML 会换掉节点）

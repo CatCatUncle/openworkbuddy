@@ -379,7 +379,7 @@ const MEDIA_CAPS = [
   { cap: "image", icon: "image", title: "画图", tool: "generate_image",
     hint: "对话里说「画一张…」就会用它，成图存进工作空间。支持 OpenAI 兼容 /images/generations；地址含 dashscope 时自动走通义原生协议。" },
   { cap: "video", icon: "clapperboard", title: "视频", tool: "generate_video",
-    hint: "生成一段通常要 1~5 分钟。支持通义万相（地址含 dashscope）和火山方舟 Seedance（地址含 ark / volces）两种协议。" },
+    hint: "生成一段通常要 1~5 分钟。五家协议各说各的话，按渠道认：通义万相（dashscope）、火山方舟 Seedance（ark / volces）、智谱 CogVideoX（bigmodel）、MiniMax 海螺（minimax）、硅基流动（siliconflow）。走中转或自建网关时地址里看不出上游，把渠道的「渠道类型」选成实际那一家即可。" },
   { cap: "tts", icon: "mic", title: "配音", tool: "text_to_speech",
     hint: "把文字念成音频，视频配音、播客旁白用它。支持 OpenAI 兼容 /audio/speech；地址含 dashscope 时自动走通义 qwen-tts 原生协议。" },
   { cap: "asr", icon: "file-audio", title: "转写", tool: "transcribe_audio",
@@ -1271,8 +1271,12 @@ function bindModels(pane, s, po) {
 
 function fillChanSelect(f, s, cur) {
   const sel = f.querySelector(".ca-chan");
-  sel.innerHTML = s.providers.length
-    ? s.providers.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")
+  // chat_only 的反面：海螺这类只做视频的渠道，对话接口路径根本不是 /chat/completions，
+  // 列在这儿只会让人选完发现跑不通——跟那边 fillProvSelect 一个道理
+  const mediaOnly = new Set(((mediaCatalog || {}).kinds || []).filter((k) => k.media_only).map((k) => k.kind));
+  const usable = s.providers.filter((p) => !mediaOnly.has(p.kind));
+  sel.innerHTML = usable.length
+    ? usable.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")
     : `<option value="">（先加一个渠道）</option>`;
   if (cur) sel.value = cur;
   fillChatModelSelect(f, s);

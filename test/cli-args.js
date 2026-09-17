@@ -258,5 +258,125 @@ console.log("\n⑫ 真跑：退出码");
   eq(d.status, 2, "子命令拼错也退 2（而不是花钱跑一趟）");
 }
 
+// ── ⑬ Tab 补全：三种 shell 都得真能用，且跟上面那张表长在一起 ──────────────
+// 补全脚本是最容易烂掉的那种东西：加一个选项，--help 里有了、解析认了，补全还停在半年前。
+// 人按 Tab 补不出 --raw，只会以为没这个选项。所以这一节不看「生成了没有」，看两件事：
+//   1. 表里每一项都必须出现在三份脚本里（少一个就是漏同步）
+//   2. 拿真的 bash / zsh 跑一遍，别让脚本自己就是坏的
+console.log("\n⑬ wb completion：三种 shell");
+{
+  const SH = ["bash", "zsh", "fish"];
+  const ctx = { sessionsDir: "/home/me/.openworkbuddy/data/sessions", engines: ["builtin", "claude-code"] };
+  const gen = {};
+  for (const sh of SH) gen[sh] = A.completionScript(sh, ctx);
+
+  for (const sh of SH) {
+    // fish 的写法是 `complete -l mode`，没有那两道横杠——按各自的规矩找
+    const token = (f) => (sh === "fish" ? "-l " + f.long : "--" + f.long);
+    const miss = A.FLAGS.map(token).filter((x) => !gen[sh].includes(x));
+    ok(miss.length === 0, `★${sh}：每个选项都在补全里★ 漏一个人就以为没这功能`, miss);
+    const missSub = A.SUBS.map((x) => x.name).filter((x) => !gen[sh].includes(x));
+    ok(missSub.length === 0, `${sh}：每个子命令都在补全里`, missSub);
+    ok(!/\bnode\b/.test(gen[sh]),
+      `★${sh}：按 Tab 不许起 node★ wb 启动要过 boot-check，等半秒的补全没人会用`);
+    ok(gen[sh].includes(ctx.sessionsDir), `${sh}：会话目录是烤进去的`);
+  }
+
+  // 家目录里带个撇号（O'Brien 这种）不能把引号顶穿。这是唯一会从外面进来的字符串
+  const qd = A.completionScript("bash", { sessionsDir: "/Users/o'brien/data/sessions", engines: [] });
+  ok(qd.includes("'/Users/o'\\''brien/data/sessions'"), "★路径里的撇号要转义★ 不然生成出来的脚本是坏的", qd.match(/.*brien.*/)[0]);
+
+  const has = (bin) => spawnSync("command", ["-v", bin], { shell: true, encoding: "utf8" }).status === 0;
+  const tmp = path.join(require("os").tmpdir(), "wb-comp-test-" + process.pid);
+  fs.mkdirSync(tmp, { recursive: true });
+  fs.writeFileSync(path.join(tmp, "wb.bash"), gen.bash);
+  fs.writeFileSync(path.join(tmp, "_wb"), gen.zsh);
+
+  if (has("bash")) {
+    const syn = spawnSync("bash", ["-n", path.join(tmp, "wb.bash")], { encoding: "utf8" });
+    eq(syn.status, 0, "★bash 脚本本身是好的★", syn.stderr);
+    // 真驱动一次补全：把 COMP_WORDS 摆好，调 _wb_complete，看 COMPREPLY 出什么
+    const drive = spawnSync("bash", ["-c", `
+      source ${JSON.stringify(path.join(tmp, "wb.bash"))}
+      COMP_WORDS=(wb --qu); COMP_CWORD=1; _wb_complete; echo "A:\${COMPREPLY[*]}"
+      COMP_WORDS=(wb do);   COMP_CWORD=1; _wb_complete; echo "B:\${COMPREPLY[*]}"
+      COMP_WORDS=(wb --mode ""); COMP_CWORD=2; _wb_complete; echo "C:\${COMPREPLY[*]}"
+    `], { encoding: "utf8" });
+    const out = drive.stdout || "";
+    ok(/A:--quiet\b/.test(out), "★bash：--qu 补成 --quiet★", out);
+    ok(/B:.*\bdoctor\b/.test(out), "bash：do 补出 doctor", out);
+    ok(/C:craft plan ask/.test(out), "bash：--mode 后面给的是三个模式", out);
+  } else ok(true, "（本机没有 bash，跳过真驱动）");
+
+  if (has("zsh")) {
+    const syn = spawnSync("zsh", ["-n", path.join(tmp, "_wb")], { encoding: "utf8" });
+    eq(syn.status, 0, "★zsh 脚本本身是好的★", syn.stderr);
+    // zsh 这边栽过一次：`*{-f,--file}'[说明]'` 展开成 `*-f'[说明]'`，一个没引号的 *
+    // 后面跟方括号，zsh 当通配符去匹配文件名，当场 "no matches found"，整个函数废掉。
+    // 语法检查查不出来——它只在**调用的时候**炸。所以这儿必须真调一次。
+    const drive = spawnSync("zsh", ["-f", "-c", `
+      compadd() { :; }; _describe() { echo "D:$3"; }; _values() { echo "V:$*"; }
+      _arguments() { echo "G:$#"; }; _files() { :; }
+      source ${JSON.stringify(path.join(tmp, "_wb"))} 2>/dev/null
+      words=(wb doct); CURRENT=2; _wb
+      words=(wb --mo);  CURRENT=2; _wb
+    `], { encoding: "utf8" });
+    ok(!/no matches found|parse error|not found/.test(drive.stderr || ""),
+      "★zsh：调起来不炸★ 语法过了不代表跑得起来", (drive.stderr || "").slice(0, 200));
+    ok(/D:/.test(drive.stdout || ""), "zsh：第一个词走子命令那条路", drive.stdout);
+    ok(/G:\d+/.test(drive.stdout || ""), "zsh：选项位走 _arguments", drive.stdout);
+  } else ok(true, "（本机没有 zsh，跳过真驱动）");
+
+  // fish 装的人少，CI 上多半没有。至少把形状钉死：除注释外每一行都得是 complete -c wb，
+  // 单引号得成对——这两条能挡住绝大多数「生成出来是半截」的事故
+  const fishLines = gen.fish.split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+  ok(fishLines.every((l) => l.startsWith("complete -c wb")), "fish：每一行都是一条 complete",
+    fishLines.find((l) => !l.startsWith("complete -c wb")));
+  ok(fishLines.every((l) => (l.match(/'/g) || []).length % 2 === 0), "fish：单引号都成对",
+    fishLines.find((l) => (l.match(/'/g) || []).length % 2));
+
+  // 真跑 wb completion：拿不认识的 shell 要当场停，别生成一份谁也用不了的东西
+  const run = (args, env) => spawnSync(process.execPath, [path.join(ROOT, "cli.js"), ...args],
+    { encoding: "utf8", env: Object.assign({}, process.env, env || {}) });
+  const bad = run(["completion", "powershell"]);
+  eq(bad.status, 2, "不认识的 shell 退 2");
+  eq(bad.stdout, "", "★不认识就一个字节都不输出★ 不然 > _wb 会存下半份垃圾");
+  const good = run(["completion", "bash"]);
+  eq(good.status, 0, "wb completion bash 退 0");
+  ok(good.stdout.includes("complete -F _wb_complete wb"), "脚本走 stdout（能 > 文件）");
+  ok(/source|~\/\./.test(good.stderr), "★装法走 stderr★ 重定向到文件时脚本干净，人还看得见怎么装", good.stderr.slice(0, 120));
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// ── ⑭ NO_COLOR ─────────────────────────────────────────────────────────
+// 外部约定（no-color.org）：设了它，谁都不该再往输出里加颜色。
+// 用的人是屏幕阅读器、日志收集器，以及一切分不清 ESC[33m 和正文的下游。
+console.log("\n⑭ NO_COLOR");
+{
+  const run = (env) => spawnSync(process.execPath, [path.join(ROOT, "cli.js"), "--qiet", "写周报"],
+    { encoding: "utf8", env: Object.assign({}, process.env, { NO_COLOR: "", FORCE_COLOR: "" }, env) });
+  const colored = run({ FORCE_COLOR: "1" });
+  ok(/\u001b\[/.test(colored.stderr), "★反向对照：FORCE_COLOR 下确实是有颜色的★ 没这条，下面那句等于没测");
+  const plain = run({ FORCE_COLOR: "1", NO_COLOR: "1" });
+  ok(!/\u001b\[/.test(plain.stderr), "★NO_COLOR 压过 FORCE_COLOR★", JSON.stringify(plain.stderr.slice(0, 120)));
+  ok(/--quiet/.test(plain.stderr), "去了颜色，话还是那句话", plain.stderr.slice(0, 80));
+}
+
+// ── ⑮ 文档里的选项表 ───────────────────────────────────────────────────
+// 跟 repl-commands 那一节同一个道理：文档里少一行，这个选项对外就等于不存在。
+// 代码里加个 FLAGS 很容易，回头去补文档很容易忘——所以让测试记着。
+console.log("\n⑮ 文档里的选项表");
+{
+  const doc = fs.readFileSync(path.join(ROOT, "docs", "命令行用法.md"), "utf8");
+  const missF = A.FLAGS.filter((f) => !doc.includes("--" + f.long));
+  ok(missF.length === 0, "★每个选项在文档里都有一行★", missF.map((f) => "--" + f.long));
+  const missS = A.SUBS.filter((x) => !doc.includes("wb " + x.name));
+  ok(missS.length === 0, "★每个子命令在文档里都有一行★", missS.map((x) => x.name));
+  ok(!doc.includes("--qiet-不存在的选项"), "★（反向对照）文档里当然找不到一个不存在的选项★");
+  // 退出码 2 是后加的，文档里那句「0 成功 1 出错 130 打断」漏了它很久
+  ok(/退出码/.test(doc) && /`2`/.test(doc), "退出码 2（参数写错）写进文档了");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1);

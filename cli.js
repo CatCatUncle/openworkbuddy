@@ -37,6 +37,7 @@ const lanes = require("./lanes"); // 终端里起的任务归「工程」线；�
 const callout = require("./callout"); // 正文里的提示条：终端没有图标，换成文字标签
 const mdTty = require("./md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
 const attach = require("./cli-attach"); // 带进来的文件/图片：拖进来的路径、@ 补全、剪贴板
+const cliAsk = require("./cli-ask"); // agent 问一句时，终端里怎么摆这道选择题
 const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
 const termImage = require("./term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
 const account = require("./account");
@@ -54,7 +55,14 @@ const words = parsed.words;
 // ---------- 输出通道 ----------
 // 着色只在「那一头真的是终端」时才加：answer 判 stdout，progress 判 stderr。
 // 两个可能一个是 tty 一个被重定向，共用一个 isTTY 会往管道里塞转义序列。
-const ttyErr = process.stderr.isTTY;
+//
+// NO_COLOR 是一条外部约定（no-color.org）：设了它，任何程序都不该再往输出里加颜色。
+// 谁在用它——盲人用的屏幕阅读器、把终端输出转成纯文本的记录工具、以及一切分不清
+// 「\x1b[33m」和正文的下游。之前这儿只看 isTTY：设了 NO_COLOR 的人照样一脸转义序列。
+// FORCE_COLOR 是反过来那条（CI 里没有 tty，但日志面板认颜色），顺手一起认了。
+const noColorEnv = !!(process.env.NO_COLOR || "");
+const forceColor = !!(process.env.FORCE_COLOR || "") && process.env.FORCE_COLOR !== "0";
+const ttyErr = !noColorEnv && (!!process.stderr.isTTY || forceColor);
 const dim = (s) => (ttyErr ? `\x1b[2m${s}\x1b[0m` : s);
 const yellow = (s) => (ttyErr ? `\x1b[33m${s}\x1b[0m` : s);
 const red = (s) => (ttyErr ? `\x1b[31m${s}\x1b[0m` : s);
@@ -74,7 +82,9 @@ const emitJson = (o) => { if (opts.json) process.stdout.write(JSON.stringify(o) 
  * --json 走事件流不归这儿管，--raw 是人明说了别动。
  */
 const renderMd = !opts.json && !opts.raw && !!process.stdout.isTTY;
-const newMdRenderer = () => (renderMd ? mdTty.createRenderer({ width: process.stdout.columns || 80 }) : null);
+const newMdRenderer = () => (renderMd
+  ? mdTty.createRenderer({ width: process.stdout.columns || 80, color: !noColorEnv })
+  : null);
 
 // ---------- 帮助 / 版本 / 参数写错了 ----------
 if (opts.help) { console.log(cliArgs.helpText()); process.exit(0); }
@@ -97,6 +107,30 @@ if (cliArgs.SUBS.some((x) => x.name === words[0])) {
   if (sub === "sessions") opts.list = Number(words[0]) > 0 ? Number(words.shift()) : opts.list || 10;
 }
 let oneShot = words.join(" ").trim();
+
+// ---------- wb completion：把 Tab 补全脚本打到 stdout ----------
+// 排在读配置前面，跟 doctor 同理：装完就该能生成，不该要求先跑过一次把 config.json 造出来。
+// 脚本本身长在 cli-args.js 的同一张表上，改一行选项，三种 shell 的补全同时就有了。
+if (sub === "completion") {
+  const shell = String(words[0] || "").trim() || path.basename(String(process.env.SHELL || "")) || "bash";
+  const ok = ["bash", "zsh", "fish"];
+  if (!ok.includes(shell)) {
+    process.stderr.write(red(`不认识这个 shell：${shell}。可选：${ok.join(" / ")}\n`));
+    process.exit(2);
+  }
+  let engineIds = [];
+  try { engineIds = require("./engines").list().map((b) => b.id); } catch {}
+  process.stdout.write(cliArgs.completionScript(shell, { sessionsDir: dataPath("data", "sessions"), engines: engineIds }));
+  // 装法写在 stderr：这样 `wb completion zsh > _wb` 拿到的是干净的脚本，说明照样看得见
+  const how = {
+    bash: "wb completion bash > ~/.wb-completion.bash\n然后在 ~/.bashrc 里加一行：source ~/.wb-completion.bash",
+    zsh: "wb completion zsh > ~/.zsh/completions/_wb\n确认 ~/.zshrc 里有：fpath=(~/.zsh/completions $fpath) 和 autoload -Uz compinit && compinit",
+    fish: "wb completion fish > ~/.config/fish/completions/wb.fish\n新开一个窗口就生效",
+  }[shell];
+  if (!process.stdout.isTTY) process.stderr.write(dim(how + "\n"));
+  else process.stderr.write(dim("\n上面这段要存成文件才起作用：\n" + how + "\n"));
+  process.exit(0);
+}
 
 // ---------- 配置与运行时（与 server.js 同源） ----------
 const CONFIG_PATH = dataPath("config.json");
@@ -258,6 +292,41 @@ function makeEmit(state) {
       prog(yellow(`\n  ◆ 委派专家「${ev.expert}」`) + dim(`：${String(ev.task || "").slice(0, 60)}`));
     } else if (ev.type === "limit") {
       prog(yellow(`\n▲ ${ev.note}，任务强制收尾`));
+    } else if (ev.type === "expert_done") {
+      prog(dim(`\n  ◇ 专家「${ev.expert}」交活了`));
+      state.streamed = false;
+    } else if (ev.type === "team_start") {
+      prog(yellow(`\n  ◆ 拉了一队人：${ev.team}`) + dim(`（${(ev.members || []).join("、")}）`));
+      state.streamed = false;
+    } else if (ev.type === "team_done") {
+      prog(dim(`\n  ◇ ${ev.team} 这一队干完了`));
+      state.streamed = false;
+    } else if (ev.type === "failover") {
+      // 这一条必须说：换渠道＝这趟活儿后半截是另一个模型答的，账也记到另一个渠道上。
+      // 不说的话，人只会觉得「怎么后面风格变了」，还以为是自己提示词写崩了
+      prog(yellow(`\n▲ ${ev.note}`));
+      state.streamed = false;
+    } else if (ev.type === "compact") {
+      // 压缩是背着人做的，但它真的会改变模型手里有什么。一声不吭地把前面几十轮换成一份摘要，
+      // 然后模型突然「忘了」刚才说好的事——不说清楚的话，这在终端里看起来就像模型坏了
+      prog(dim(`\n· 上下文压缩：${ev.removed} 条旧对话换成一份摘要（原文存在 data/compact-archive）`));
+      state.streamed = false;
+    } else if (ev.type === "trim") {
+      prog(dim(`\n· 上下文太长，截掉了 ${Math.round((ev.chars || 0) / 1000)}k 字符的旧工具输出`));
+      state.streamed = false;
+    } else if (ev.type === "auto_continue") {
+      prog(dim(`\n· 没干完，自动接着来（第 ${ev.round}/${ev.total} 轮）：${String(ev.note || "").slice(0, 60)}`));
+      state.streamed = false;
+    } else if (ev.type === "sleep") {
+      prog(dim(`\n· ${ev.note}`));
+      state.streamed = false;
+    } else if (ev.type === "milestones") {
+      prog(dim(`\n· 进度表 ${ev.file}：${(ev.items || []).length} 项`));
+      state.streamed = false;
+    } else if (ev.type === "ask_answer") {
+      // 问题和选项由 askUser 那边画（它得在人回答**之前**出现）；这儿只补一句超时的结局
+      if (ev.timeout) prog(yellow(`\n· 没等到回答，它按自己的判断接着做了`));
+      state.streamed = false;
     } else if (ev.type === "usage") {
       state.usage = ev;
     } else if (ev.type === "files") {
@@ -293,6 +362,31 @@ function printSummary(state) {
     lastFiles = state.files.slice(-8).map((f) => f.name);
     prog(dim(`▪ 工作目录 ${getWorkspaceDir()}：`) + dim(lastFiles.join("、")) + "\n");
   }
+}
+
+/**
+ * 上下文用到哪儿了。
+ *
+ * 聊到第几轮该开新会话，这件事以前在终端里完全是黑的：人只能等模型开始「忘事」才发现
+ * 压缩已经发生过了。数字按跟 agent.js 同一套算——budget 是 max_context_chars，
+ * 到 compact_threshold_chars（默认六成）就会在下一轮任务前自动压。两边算法必须一致，
+ * 不然这儿显示 40%、那边已经压过一次，这个读数就是在骗人。
+ */
+function contextLine() {
+  const { historyChars } = require("./agent");
+  const ag = config.agent || {};
+  const budget = ag.max_context_chars || 120000;
+  const threshold = ag.compact_threshold_chars || Math.floor(budget * 0.6);
+  const used = historyChars(sess.history || []);
+  const pct = Math.round((used / budget) * 100);
+  // 进度条只用 ASCII：方块字符在中文终端里按两列画，长度会跟着终端设置变
+  const w = 20;
+  const fill = Math.max(0, Math.min(w, Math.round((used / budget) * w)));
+  const bar = "=".repeat(fill) + "-".repeat(w - fill);
+  const when = ag.compact === false
+    ? "（自动压缩关着）"
+    : used > threshold ? "（下一轮开跑前会自动压一次）" : `（到 ${Math.round((threshold / budget) * 100)}% 自动压缩）`;
+  return `上下文 [${bar}] ${pct}%　${Math.round(used / 1000)}k / ${Math.round(budget / 1000)}k 字符 ${when}`;
 }
 
 // ---------- 产出的图：终端里直接看见 ----------
@@ -387,6 +481,49 @@ function hintOutputs(made, drawn, interactive) {
 let stopCurrent = null;
 /** 终端里打的插话，下一步交给 agent。跟网页/手机上补的那句合并成一份 */
 const termInterject = [];
+/**
+ * agent 问一句话时，正等着回答的那个人。
+ *
+ * 之前这里是空的——cli.js 不传 askUser，于是 agent.js 认定「当前是无人值守运行，没人在线回答」，
+ * 让模型自己猜。最近在场的那个人反倒成了唯一问不到的人：网页上点一下就过的岔路
+ * （报告交 Word 还是 PDF、封面走生图还是排版截图），在终端里全变成模型替你赌一把。
+ *
+ * 交互模式下答案从 inbox 那条口子进来（任务跑着的时候敲的字本来就走那儿），
+ * 单发模式下现开一个 readline。两条路都往这个槽里放同一样东西：一个「收到答案」的函数。
+ * @type {null | ((text: string|null) => void)}
+ */
+let pendingAsk = null;
+/** 交互模式那个常驻 readline。单发模式下一直是 null——那边现开一个用完就关 @type {import("readline").Interface|null} */
+let replRl = null;
+/** 有人能回答吗：stdin 得是终端，且不是在给脚本喂 NDJSON。管道进来的内容早读完了，那头没人 */
+const somebodyHome = () => !!process.stdin.isTTY && !opts.json;
+
+/**
+ * 把一次提问摆到终端上，等一个答案。
+ *
+ * 问题走 **stderr**：`wb "…" > 报告.md` 的时候答案在文件里，问题得还在人眼前。
+ * 也不受 --quiet 管——把一道正在等回答的选择题静音，换来的不是清净是卡死。
+ *
+ * @param {(prompt: string) => Promise<string|null>} readLine 怎么读这一行（两种模式各给各的）
+ * @returns {(a: {question: string, options: any[], timeoutMs: number}) => Promise<string|null>}
+ */
+/** 等回答时的提示符。跟平时那个 `wb>` 换个颜色和字，一眼看出来现在是它在等你，不是你在等它 */
+const askPrompt = (t) => (ttyErr ? `\x1b[33m${t}\x1b[0m` : t);
+
+function makeAskUser(readLine) {
+  const paint = {
+    q: (x) => bold(yellow(x)),
+    n: (x) => (ttyErr ? `\x1b[36m${x}\x1b[0m` : x),
+    label: bold, detail: dim, hint: dim, warn: yellow,
+  };
+  return (ask) => cliAsk.run(ask, {
+    write: (x) => process.stderr.write(x),
+    readLine,
+    width: (process.stderr.columns || 80) - 2,
+    paint: (x, k) => (paint[k] || ((y) => y))(x),
+  });
+}
+
 /** @returns {"ok"|"error"|"aborted"} 给退出码用 */
 async function runOnce(runtime, text, mode, interactive) {
   // 积分闸门：默认是关的（本地个人用不限额），开了才拦。CLI 消耗记在管理员（首个注册用户）名下
@@ -439,6 +576,41 @@ async function runOnce(runtime, text, mode, interactive) {
       stopSignal: ctrl.signal,
       // 底层 CLI 引擎的线程 id：跟会话存在一起，所以在桌面开的头能在这儿接着跑，反过来也一样
       engineSession: lanes.engineSessionFor(sess, cfgEngine()),
+      // 有人坐在终端前就让 agent 能问他。给 undefined 才是「无人值守」——
+      // 管道喂进来的（wb < 任务.txt）、--json 给脚本读的，那头确实没人，不许装作有
+      askUser: somebodyHome() ? makeAskUser((promptText, askDeadline) => new Promise((done) => {
+        let settled = false;
+        const finish = (v) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          ctrl.signal.removeEventListener("abort", onAbort);
+          pendingAsk = null;
+          // 答完把提示符收回去：任务还在跑，这时候留着「答>」会跟着正文一起冲下来
+          if (interactive && replRl) replRl.setPrompt("");
+          done(v);
+        };
+        // 超时和 Ctrl+C 都还回 null：agent.js 收到 null 会带着「用户没回应」继续跑，
+        // 而不是把这趟活儿丢掉——人走开了不该等于任务作废
+        const timer = setTimeout(() => finish(null), Math.max(30000, Number(askDeadline) || 300000));
+        if (timer.unref) timer.unref();
+        const onAbort = () => finish(null);
+        ctrl.signal.addEventListener("abort", onAbort, { once: true });
+        pendingAsk = finish;
+        if (interactive && replRl) { replRl.setPrompt(askPrompt(promptText)); replRl.prompt(); return; }
+        // 单发模式没有常驻 readline，现开一个。它自己接管 stdin，用完就关
+        const one = readline.createInterface({ input: process.stdin, output: process.stderr, prompt: askPrompt(promptText) });
+        one.prompt();
+        // 顺序不能反：one.close() 会**同步**触发下面那个 close 处理器，
+        // 先关再 finish 的话，finish(null) 抢在 finish(t) 前面把 settled 占掉——
+        // 人明明答了，agent 收到的却是「没人回应」。实测就是这样错了一版
+        one.on("line", (t) => { finish(t); one.close(); });
+        one.on("close", () => finish(null)); // Ctrl+D：当没回答（已经答过的话 finish 自己会挡掉）
+        // readline 在 TTY 上会把 Ctrl+C 截成自己的事件，外面那个 process.on("SIGINT") 收不到。
+        // 不接这一下，等回答的时候按 Ctrl+C 就什么都不会发生
+        one.on("SIGINT", () => { try { one.close(); } catch {} onSigint(); });
+        ctrl.signal.addEventListener("abort", () => { try { one.close(); } catch {} }, { once: true });
+      })) : undefined,
       // 网页/手机上补的那句话，在两步之间读走。终端这边也回显一下——
       // 不然坐在电脑前的人只会看见 agent 突然改了主意，不知道是有人从手机上插了一句
       getInterject: () => {
@@ -657,12 +829,13 @@ function splitFiles(text) {
     try { return repl.sanitizeHistory(fs.readFileSync(HIST_FILE, "utf8").split("\n").reverse()); } catch { return []; }
   };
   const saveHistory = () => {
-    // 里面是这个人自己的任务原话，权限收到 0600：跟 config.json 一个待遇
+    // 里面是这个人自己的任务原话，权限跟 config.json 一个待遇（store.SECRET_MODE = 0600）
     try {
       const list = repl.sanitizeHistory(Array.isArray(rl.history) ? rl.history : []);
       if (!list.length) return;
       fs.mkdirSync(path.dirname(HIST_FILE), { recursive: true });
-      fs.writeFileSync(HIST_FILE, list.slice().reverse().join("\n") + "\n", { mode: 0o600 });
+      fs.writeFileSync(HIST_FILE, list.slice().reverse().join("\n") + "\n", { mode: store.SECRET_MODE });
+      store.tighten(HIST_FILE, store.SECRET_MODE); // writeFileSync 的 mode 过 umask，老文件也得补收一次
     } catch {}
   };
 
@@ -675,6 +848,7 @@ function splitFiles(text) {
     historySize: repl.HISTORY_MAX,
     removeHistoryDuplicates: true,
   });
+  replRl = rl; // runOnce 里等回答时要用它读一行，那边在这个闭包外面
 
   // 输入侧：line 事件原样交给 repl.makeInbox——合并粘贴、排队、插话、关掉时叫醒等着的那个人，
   // 全在那张纯逻辑里。时钟和定时器能从外面塞进去，所以这套时序在测试里可以手动推、逐帧断言
@@ -684,6 +858,9 @@ function splitFiles(text) {
   const pending = [];
   const inbox = repl.makeInbox({
     onInterject: (text) => {
+      // 它正等着一个答案：这一行是回答，不是插话。不先认这一条的话，
+      // 人明明回答了，agent 却在那儿干等到超时，然后按「没人回应」自己定
+      if (pendingAsk) { const f = pendingAsk; pendingAsk = null; f(text); return; }
       // 任务跑着的时候敲的字是「插话」，不是下一条任务
       termInterject.push(text);
       prog(yellow(`\n  » 记下了，下一步带给它：${text.replace(/\n/g, " ").slice(0, 60)}\n`));
@@ -922,6 +1099,7 @@ function splitFiles(text) {
       const who = eng ? `底层 ${eng.label}` + green("（不花 API 额度）") : `模型 ${llm.provider}（${llm.model}）`;
       const turns = (sess.transcript || []).filter((t) => t.type === "user").length;
       prog(dim(`模式 ${opts.mode} · ${who}\n工作目录 ${getWorkspaceDir()}\n会话 ${sessionId} · 跑过 ${turns} 轮\n`));
+      prog(dim(contextLine() + "\n"));
       if (pending.length) prog(dim(`还带着没发出去的文件：${pending.join("、")}\n`));
       return;
     }

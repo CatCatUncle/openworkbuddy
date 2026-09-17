@@ -1273,7 +1273,16 @@ const ESC_STUBS = [
   IC_STUB,
   "var SvgFig = { extractSvgFigures: (s) => ({ text: s, figs: [] }) };",
   "function fpath(n) { return String(n == null ? '' : n).split('/').map(encodeURIComponent).join('/'); }",
-  "function joinRel(base, rel) { return rel; }",
+  srcBlock("function joinRel(base, rel) {"), // 真源：mdFileLink 靠它按文档目录解相对路径，假身会把这件事测没
+  // 正文里的文件链接点不点得动，真源在 app-02.js 的事件委托那段——renderMd 是拼字符串出来的，
+  // 挂不上 onclick，这段要是哪天被改回 onclick，历史回放里的链接会全哑掉而没人发现
+  (() => {
+    const i = APP02.indexOf("// 正文里 [文字](报告.md) 这类指向工作区文件的链接");
+    const j = APP02.indexOf("// 内联 SVG 图表的动作");
+    if (i < 0 || j <= i) throw new Error("app-02.js 里的文件链接事件委托段找不到了，前端测试没法定位真源码");
+    return APP02.slice(i, j);
+  })(),
+  "window.opened = []; function previewFile(n, r) { window.opened.push(n + '|' + (r || '')); }",
 ].join("\n");
 const ESC_CHECKS = `
 (() => {
@@ -1364,6 +1373,52 @@ const ESC_CHECKS = `
   ok("解完码也没执行任何注入", !window.__pwned);
   const already = "<a href=" + String.fromCharCode(34) + "https://a.com" + String.fromCharCode(34) + ">https://a.com</a>";
   ok("已经成形的 a 标签不会被再套一层", autoLinkUrls(already) === already, autoLinkUrls(already));
+
+  // ⑦ 指向工作区文件的 markdown 链接。以前这一路只认 https:——模型收尾写
+  //    「详见 [调研报告](报告.md)」，屏幕上就原样印出一串方括号圆括号，点哪儿都没反应。
+  //    用户原话：「还有返回给我一些…没有办法点击链接文本啊」
+  // 链接没生成时别让整个脚本栽在 null 上——那样只会看到一句「Script failed to execute」，
+  // 看不出是哪一条规矩破了。垫一个空壳，让具体那条 ok() 自己红
+  const NOLN = { dataset: {}, textContent: "", hasAttribute: () => false, click: () => {}, dispatchEvent: () => {} };
+  const fl = () => md.querySelector("a.file-ln") || NOLN;
+  md.innerHTML = renderMd("详见 [调研报告](报告.md) 的第二节");
+  ok("相对路径的 markdown 链接变成能点的文件链接", !!md.querySelector("a.file-ln"), md.innerHTML);
+  ok("屏幕上只剩链接文字，方括号圆括号都不见了",
+     fl().textContent === "调研报告" && md.textContent.indexOf("[") < 0 && md.textContent.indexOf("(") < 0, md.textContent);
+  ok("data-name 就是要预览的那个文件", fl().dataset.name === "报告.md", fl().dataset.name);
+  ok("没有 href：它开的是右侧预览面板，不是跳走一页", !fl().hasAttribute("href"), attrs(fl()).join(","));
+
+  md.innerHTML = renderMd("见 [附图](图/趋势.png)", "任务_A/子目录");
+  ok("相对路径按文档自己所在的目录解，不是回工作区根上找", fl().dataset.name === "任务_A/子目录/图/趋势.png", fl().dataset.name);
+  md.innerHTML = renderMd("见 [上一级](../汇总.md)", "任务_A/子目录");
+  ok("../ 照规矩往上退一级", fl().dataset.name === "任务_A/汇总.md", fl().dataset.name);
+
+  window.opened = [];
+  md.innerHTML = renderMd("详见 [调研报告](报告.md)", "", false, "root-2");
+  fl().click();
+  ok("点一下真的去开预览了，还带上了这份成果所属的工作目录",
+     window.opened.join(",") === "报告.md|root-2", window.opened.join(","));
+  window.opened = [];
+  fl().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  ok("键盘回车也开得了（这些 a 没有 href，浏览器不会自己认）", window.opened.length === 1, window.opened.join(","));
+
+  // ⑧ 反向对照：这几种**不该**变成工作区文件链接
+  md.innerHTML = renderMd("看[这里](https://a.com/x.md)");
+  ok("https 的还是普通外链，没被当成工作区文件",
+     md.querySelector("a").getAttribute("href") === "https://a.com/x.md" && !md.querySelector("a.file-ln"), md.innerHTML);
+  md.innerHTML = renderMd("详见[第三章](chapter-3)");
+  ok("不带扩展名的一律不碰（点开只会是一句「文件不存在」，比不给链接更气人）",
+     md.querySelectorAll("a").length === 0 && md.textContent.indexOf("[第三章](chapter-3)") >= 0, md.innerHTML);
+  window.opened = [];
+  md.innerHTML = renderMd("看[这里](javascript:alert(1))");
+  ok("javascript: 不变链接，也没执行", md.querySelectorAll("a").length === 0 && !window.__pwned, md.innerHTML);
+  md.innerHTML = renderMd('看[这里](a.md"onmouseover="window.__pwned=1) 和 [那里](b&quot;.md)');
+  const evilAttr = Array.from(md.querySelectorAll("*")).some((n) => Array.from(n.attributes).some((x) => /^on/i.test(x.name)));
+  ok("地址里塞引号也撑不破属性：没多出来的 on* 事件属性，也没执行", !evilAttr && !window.__pwned, md.innerHTML);
+  md.innerHTML = renderMd("见 [资料](报告.md)", "", false, "", { fileLinks: false });
+  ok("关掉 fileLinks 的那几页（资料库、助理设置里的对话记录）原样当文字",
+     md.querySelectorAll("a").length === 0 && md.textContent.indexOf("[资料](报告.md)") >= 0, md.innerHTML);
+  ok("这一节走完一次注入都没得逞", !window.__pwned);
   return names;
 })()
 `;
@@ -1692,6 +1747,8 @@ const DEAD_CHECKS = `
 
   const FORBID = { error: "这块是服务器级设置，归平台管理员管", platform_only: true };
   let owner = false, denyRead = false, denyOut = false, uploadResp = { ok: true, name: "a.md" };
+  // 预览一份产出时服务端回什么：404 = 东西没了，500 = 读不出来，200 = 正常
+  let viewResp = { code: 200, body: "# 九月周报" };
   const posts = [];
   window.fetch = (url, opt) => {
     const method = (opt && opt.method) || "GET";
@@ -1758,9 +1815,11 @@ const DEAD_CHECKS = `
         notes: [{ id: "n1", text: "周报要短", at: "2026-09-01T00:00:00Z" }],
       });
     }
-    // 预览一个工作区产出：这里只要 text()，正文是什么不重要，重要的是预览条上那句「出自任务」
+    // 预览一个工作区产出。HEAD 是预览出错后补问的那一下「到底是没了，还是读不出来」，
+    // 它必须跟 GET 一个口径——两边不一致的话，测出来的就不是页面真实的判断
     if (url.startsWith("/api/files/view/"))
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}), text: () => Promise.resolve("# 九月周报") });
+      return Promise.resolve({ ok: viewResp.code < 400, status: viewResp.code,
+        json: () => Promise.resolve({}), text: () => Promise.resolve(viewResp.body) });
     if (url === "/api/library/upload") return owner ? j(uploadResp, uploadResp.ok ? 200 : 403) : j(FORBID, 403);
     if (url.startsWith("/api/library/folder")) return owner ? j({ ok: true }) : j(FORBID, 403);
     if (url.startsWith("/api/library/note")) return owner ? j({ ok: true }) : j(FORBID, 403);
@@ -1926,6 +1985,66 @@ const DEAD_CHECKS = `
   ok("按任务：索引读不成就照实说，不装成「还没产出过」",
      html().includes("读不到任务产出") && !html().includes("还没有任务产出过文件"), html().slice(0, 240));
   denyOut = false;
+
+  // ⑤c-2 「点了没反应」的那三种长相。用户原话：「怎么点击图片没有办法预览了？」
+  // 「点击md也是没法预览啊」「html也是」「在资料库里面预览功能这么差的啊」。
+  // 三种文件走三条不同的路，以前各坏各的、还都不吭声：图裂成一个碎图标（<img> 出错浏览器不通知），
+  // HTML 把服务端那句「文件不存在」当网页渲染成一片空白（fetch 没看 r.ok），文本只弹「读取失败」。
+  // 真正的原因永远是同一个：名字还在，东西不在——那就该把这句话说出来。
+  ok("体积未知写「—」，不撞着下限编出个「1 KB」（那是替一个不知道的数字编了个具体值）",
+     libSize(0) === "—" && libSize(2048) === "2 KB", libSize(0) + " / " + libSize(2048));
+
+  window.libState = { q: "", pick: null, dir: "", view: "task", kind: "all" };
+  await renderLibPage(); // 先灌上 libOutCache，「出自任务」那条才反查得到
+  const previewOf = async (name) => {
+    window.libState.pick = { src: "ws", name }; // ws = 工作区产出，这一栏才有「出自任务」
+    const prev = page.querySelector("#lb-prev");
+    await renderLibPreview(prev, {});
+    return prev;
+  };
+
+  viewResp = { code: 404, body: "文件不存在" };
+  let pv = await previewOf("任务_0916_周报/九月周报.md");
+  ok("预览·md：东西没了就直说「已经不在工作目录里」", pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-300));
+  ok("预览·md：不把服务端那句错误当正文渲染出来", !pv.innerHTML.includes("文件不存在"), pv.innerHTML.slice(-300));
+  ok("预览·md：给得出下一步——回到那次对话让助理再做一份",
+     pv.innerHTML.includes("出自任务") && pv.innerHTML.includes("再做一份"), pv.innerHTML.slice(-300));
+
+  pv = await previewOf("任务_0916_周报/页面.html");
+  ok("预览·html：没了也说没了，不再画成一片空白", pv.innerHTML.includes("已经不在工作目录里") && !pv.querySelector("iframe"),
+     pv.innerHTML.slice(-260));
+
+  pv = await previewOf("任务_0916_周报/场景图.png");
+  const brokenImg = pv.querySelector("#lb-img");
+  ok("预览·图片：先摆一个 <img>（能画就画，不该为了保险先问一趟）", !!brokenImg);
+  await brokenImg.onerror(); // 真浏览器里 404 的 src 就是这么触发的，这里直接调，免得等网络
+  ok("预览·图片：裂图不再是个碎图标，而是说清「已经不在」", pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
+
+  // 阴性对照：东西还在的时候，三种文件都得真画出来，一个都不许误报成「没了」
+  viewResp = { code: 200, body: "# 九月周报\\n正文两行" };
+  pv = await previewOf("任务_0916_周报/九月周报.md");
+  ok("反向对照·md：文件在就渲染正文，不误报「已经不在」",
+     pv.innerHTML.includes("正文两行") && !pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
+
+  viewResp = { code: 200, body: "<!doctype html><h1>一张真网页</h1>" };
+  pv = await previewOf("任务_0916_周报/页面.html");
+  const fr = pv.querySelector("iframe");
+  ok("反向对照·html：文件在就真渲染成网页，不是把源码当文本摆出来",
+     !!fr && /^blob:/.test(fr.getAttribute("src") || "") && !pv.innerHTML.includes("&lt;h1&gt;"), pv.innerHTML.slice(-260));
+  ok("预览·html：iframe 上着 sandbox——资料是外来的，不能让它碰应用本身",
+     fr.getAttribute("sandbox") === "allow-scripts", String(fr.getAttribute("sandbox")));
+
+  pv = await previewOf("任务_0916_周报/场景图.png");
+  await pv.querySelector("#lb-img").onerror();
+  ok("反向对照·图片：东西明明还在，那就是文件坏了，不能说成「已经不在」",
+     pv.innerHTML.includes("文件可能是坏的") && !pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
+
+  // 读不出来和没了是两回事，混为一谈会把人支去找一个其实还在的文件
+  viewResp = { code: 500, body: "boom" };
+  pv = await previewOf("任务_0916_周报/九月周报.md");
+  ok("预览：服务端出错说的是「预览不了：HTTP 500」，不能说成「文件已经不在」",
+     pv.innerHTML.includes("HTTP 500") && !pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
+  viewResp = { code: 200, body: "# 九月周报" };
 
   // ⑤d 搜索。用户原话：「还有支持搜索功能吧」。
   // 以前那个框只把**当前这一层已经加载出来的**文件名过滤一遍——东西在隔壁文件夹里就搜不到，
@@ -2586,6 +2705,7 @@ const STREAM_STUBS = [
   "var SvgFig = { extractSvgFigures: (s) => ({ text: s, figs: [] }) };",
   ESC_SRC, // 转义用真源，不抄：抄本会跟真源分头演化，测的就不是线上那份了
   "function mdImg(alt, url) { return '<img alt=\"' + String(alt || '').replace(/\"/g, '') + '\">'; }",
+  srcBlock("function joinRel(base, rel) {"), // mdFileLink 要用它，以前 renderMd 用不着所以没进来
 ].join("\n");
 const STREAM_CHECKS = `
 (() => {
@@ -7481,7 +7601,7 @@ app.whenReady().then(async () => {
       const namesESC = await winESC.webContents.executeJavaScript(IC_BOOT + ESC_STUBS + "\n" + ESC_SRC + "\n" + STREAM_SRC + "\n" + ESC_CHECKS, true)
         .catch((e) => { throw new Error("[HTML 转义] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesESC) console.log("  ✓ " + n);
-      console.log(`✅ 前端：HTML 转义（引号进属性不截断·markdown 链接注不进事件属性·正常内容一字没动）${namesESC.length} 项通过`);
+      console.log(`✅ 前端：转义与链接（引号进属性不截断·[文字](报告.md) 点得开预览、回车也认、认不准的一律不给链接·正常内容一字没动）${namesESC.length} 项通过`);
     } finally { if (!winESC.isDestroyed()) winESC.destroy(); }
 
     const winMEM = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });

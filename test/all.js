@@ -39,6 +39,7 @@ const SUITES = [
   ["cli-args", "CLI 参数表"],
   ["cli-attach", "CLI 带文件和图片"],
   ["cli-live", "终端 ↔ 网页那座桥"],
+  ["cli-ask", "终端里回答 agent 的提问"],
   ["repl-commands", "REPL 命令表"],
   ["prefs", "偏好与配置落盘"],
   ["chat-models", "模型渠道与选型"],

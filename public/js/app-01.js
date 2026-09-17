@@ -391,11 +391,38 @@ function repairBareCode(str) {
   return out.join("\n");
 }
 
+// 能当成工作区文件去点的扩展名。用白名单而不是「带个点就算」：模型写 `[详见](第 3.2 节)`、
+// 「升到 v1.2」这类文字里也有点号，给它们加上链接只会点出一句「文件不存在」——比不给链接更气人。
+const MD_FILE_RE = /\.(html?|pdf|svgz?|png|jpe?g|gif|webp|bmp|ico|avif|mp3|wav|m4a|aac|ogg|oga|flac|opus|mp4|webm|mov|m4v|ogv|mkv|avi|md|markdown|txt|log|csv|tsv|json|ya?ml|docx?|xlsx?|pptx?|zip)$/i;
+/**
+ * markdown 链接 `[文字](报告.md)` → 能点开预览的工作区文件链接。
+ *
+ * 以前这一路只认 https:——模型收尾写「详见 [调研报告](报告.md)」，屏幕上就原样印出一串
+ * 方括号圆括号，点哪儿都没反应。用户原话：「还有返回给我一些…没有办法点击链接文本啊」。
+ * 图片那一路（mdImg）老早就按 base 解相对路径了，文字链接这一路一直缺着。
+ *
+ * 带协议头的一概不碰：https 上面那行已经接走了，javascript:/data:/mailto: 这些原样留着当文字。
+ * 点击不在这儿挂——renderMd 是拼字符串出来的，挂不上 onclick，由 app-02.js 那个事件委托统一接。
+ */
+function mdFileLink(label, url, base, root) {
+  const u = String(url || "").trim();
+  // 引号/尖括号/空白拼进属性会把标签撑破，跟 mdImg 同一条规矩
+  if (!u || /["'<>\s\\]/.test(u)) return "";
+  if (/^[a-zA-Z][\w+.-]*:/.test(u) || u.startsWith("//") || u.startsWith("#")) return "";
+  const clean = u.split(/[?#]/)[0];
+  if (!MD_FILE_RE.test(clean)) return "";
+  const name = joinRel(base, clean);
+  if (!name) return "";
+  // name 是从 esc 过的正文里切出来的，& 这会儿长的是 &amp; 的样子——正好是属性值该有的形态，
+  // 浏览器读 dataset 时会自己解回来。再 esc 一次就成了 &amp;amp;，文件名反而错了
+  return `<a class="file-ln" data-md="1" data-name="${name}" data-root="${esc(root || "")}" title="点击预览 ${name}" tabindex="0">${label}</a>`;
+}
+
 /**
  * live=true 表示「这一段正在往外吐字」，只有流式那条路（paintStream）会传。
  * 它一路传到 SVG 卡片那儿决定要不要说「绘制中」——停笔之后、回放历史的时候都不该再说。
  */
-function renderMd(src, base, live, root) {
+function renderMd(src, base, live, root, opts) {
   if (!src) return "";
   // 先把正文里的 <svg> 抠出来换成占位符（在 esc 之前——它们要当图渲染，不能被转义成文字）
   const { text: pre, figs } = SvgFig.extractSvgFigures(src, live);
@@ -417,6 +444,11 @@ function renderMd(src, base, live, root) {
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => mdImg(alt, url, base, root));
   s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // 资料库那一页把 fileLinks 关了：那儿的文件走的是 /api/library 那套路由，
+  // 指向工作区的预览面板对它没意义，链接得跟着那一页自己的预览走
+  if (!opts || opts.fileLinks !== false) {
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (all, label, url) => mdFileLink(label, url, base, root) || all);
+  }
   const lines = s.split("\n");
   const out = [];
   let listType = null, inQuote = false, para = [], tableRows = null;
@@ -1389,16 +1421,26 @@ function liveActivity(ev, narr) {
   }
 }
 
-// ================= 空状态（场景 tab + 分类胶囊，仿官方首页） =================
-// 每个胶囊是 [图标 id, 文案]。文案得单独一格，因为点了就直接当提示词发出去——
-// 以前文案前面粘着表情，模型收到的第一个字符就是个 emoji。
+// ================= 空状态（场景 tab + 分类胶囊） =================
+// 每个胶囊是 [图标 id, 文案]。文案得单独一格：点一下是把它挂成「任务类型」标签
+// （setSceneTag），发送时拼成「【任务类型：X】」交给模型，所以这格里只能是干净的词，
+// 前面粘个表情的话模型收到的第一个字符就是 emoji。
+//
+// 这份表重排过一次。原来分成 日常办公 / 代码开发 / 设计创意 / 内容与增长，三个毛病：
+//   1. 同一件事两个入口——「幻灯片制作」和「PPT 设计」、「网站开发」和「网站设计」
+//      各挂一边，用户得先猜该点哪个；
+//   2. 分类的尺子不统一：前三个按行当分，「内容与增长」按目的分；
+//   3. 第一个 tab 是个筐，九个胶囊什么都往里塞，里面还有「金融服务」——
+//      那是个行业名，不是一件能交待给模型去做的活，当标签发过去等于没说。
+// 现在统一按**你要交出什么东西**来分，每个胶囊都落到一件具体的活上。
 const SCENES = {
-  "日常办公": [["file-text", "文档处理"], ["chart-column", "数据分析及可视化"], ["presentation", "幻灯片制作"], ["calendar-days", "周报总结"], ["notebook-pen", "会议纪要"], ["mail", "商务邮件"], ["languages", "翻译校对"], ["scale", "合同审阅"], ["trending-up", "金融服务"]],
-  "代码开发": [["code", "日常开发"], ["globe", "网站开发"], ["bot", "Agent 应用"], ["puzzle", "Skill 开发"], ["book-open", "技术文档"], ["file-search", "代码审查"], ["bug", "找 Bug"]],
-  "设计创意": [["monitor", "网站设计"], ["presentation", "PPT 设计"], ["palette", "视觉海报"], ["smartphone", "移动端 App"], ["blocks", "设计系统"], ["app-window", "Web App"], ["rocket", "落地页"]],
-  "内容与增长": [["brain", "深度研究"], ["chart-column", "竞品分析"], ["book-open", "小红书图文"], ["newspaper", "公众号推文"], ["film", "短视频成片"], ["folder-open", "调研报告"], ["target", "营销方案"]],
+  "文档与汇报": [["notebook-pen", "会议纪要"], ["calendar-days", "周报月报"], ["presentation", "做幻灯片"], ["folder-open", "调研报告"], ["file-text", "长文档整理"], ["scale", "合同审阅"]],
+  "数据与研究": [["chart-column", "数据分析"], ["table", "表格处理"], ["brain", "深度研究"], ["target", "竞品分析"], ["trending-up", "行情与财报"]],
+  "写作与传播": [["mail", "商务邮件"], ["languages", "翻译校对"], ["book-open", "小红书图文"], ["newspaper", "公众号推文"], ["film", "短视频成片"], ["megaphone", "营销方案"]],
+  "写代码": [["code", "日常开发"], ["bug", "找 Bug"], ["file-search", "代码审查"], ["globe", "网站开发"], ["bot", "Agent 应用"], ["puzzle", "Skill 开发"], ["book-open", "技术文档"]],
+  "做设计": [["palette", "海报与封面"], ["monitor", "界面设计"], ["presentation", "PPT 美化"], ["smartphone", "移动端 App"], ["rocket", "落地页"], ["blocks", "设计系统"]],
 };
-const SCENE_ICON = ["briefcase", "code", "palette", "megaphone"];
+const SCENE_ICON = ["file-text", "chart-column", "megaphone", "code", "palette"];
 let sceneTag = null; // 选中的任务类型标签
 /**
  * 「用这个专家 / 专家团 / 技能」点下去之后，挂在输入框上方的那枚标签。
@@ -1445,7 +1487,7 @@ function buildEmpty() {
   const tpl = document.createElement("div");
   tpl.className = "empty"; tpl.id = "empty";
   // 记住用户在空态里最后浏览的场景分类，回空态时仍在原处（少一次切换）
-  let startScene = "日常办公";
+  let startScene = Object.keys(SCENES)[0];
   try { const s = localStorage.getItem("owb_last_scene"); if (s && SCENES[s]) startScene = s; } catch {}
   tpl.innerHTML = `<h1>把事情交给我</h1>
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
@@ -2648,6 +2690,15 @@ function fileLinkTargets(files) {
 }
 function linkifyOutputs(root, targets) {
   if (!root || !targets || !targets.size) return 0;
+  // renderMd 拼出来的 [文字](报告.md) 只照字面那条路径指，可模型十有八九只写文件名，
+  // 真身在任务子目录里（任务_A/报告.md）。这儿拿这一趟的产出表把它校正过来，
+  // 不然点下去就是那句用户抱怨过的「跟我说文件不存在啊」。
+  // 表里查不到的不动：那多半是上一轮的产出，链接本身是好的，只是不归这一趟管
+  for (const a of root.querySelectorAll("a.file-ln[data-md]")) {
+    const want = a.dataset.name || "";
+    const real = targets.get(want) || targets.get(want.split("/").pop());
+    if (real && real !== want) { a.dataset.name = real; a.title = "点击预览 " + real; }
+  }
   const keys = [...targets.keys()].sort((a, b) => b.length - a.length); // 长的先匹配，全路径别被切成半截
   const re = new RegExp(keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
   // 左边界：紧挨着 ASCII 路径字符说明这是更长的一串（别把 data.md 里的 a.md 挑出来）；

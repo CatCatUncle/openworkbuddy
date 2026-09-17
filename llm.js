@@ -119,6 +119,102 @@ function anthropicBase(baseUrl) {
   return { baseURL: root, messagesUrl: root + "/v1/messages" };
 }
 
+/**
+ * 这条渠道该用哪把 Key。
+ *
+ * 起因是一个能把 Key 送给外人的组合：`OPENAI_API_KEY` 是最常见的环境变量之一（几乎所有
+ * AI 命令行工具都认它，很多人直接写死在 ~/.zshrc 里），而初始 config.json 里预置着
+ * 通义 / 智谱 / Kimi / Ollama 四条**空着 Key**的渠道。老代码是一句
+ * `cfg.api_key || process.env.OPENAI_API_KEY`——于是只要选中其中任意一条，
+ * 你的 OpenAI Key 就带着 `Authorization: Bearer` 发给了 api.moonshot.cn。
+ * 这不是理论推演，本仓库 test/e2e.js 里那条「Key 不许串门」就是拿一个本地监听器
+ * 把这个头原样抓下来的。
+ *
+ * 所以取 Key 分三级，越明确的越优先：
+ *   ① 渠道自己填的（设置页 / config.json）——最明确，什么地址都认；
+ *   ② `WB_KEY_<渠道 id>`——按渠道点名，给 Docker / VPS 用：不用把明文写进 config.json，
+ *      又因为点了名，不存在发错家的问题（渠道 id 见设置页那张卡，大写、非字母数字换成下划线）；
+ *   ③ `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`——通用兜底，**只发给这家自己的域名**。
+ *      地址是别家的就跳过，并在控制台说一次为什么跳过、该怎么办；不说的话，
+ *      用户只会看到一句 401，然后以为是软件坏了。
+ */
+const KEY_ENV = {
+  openai: { env: "OPENAI_API_KEY", official: /(^|\.)openai\.com$/i, label: "OpenAI" },
+  anthropic: { env: "ANTHROPIC_API_KEY", official: /(^|\.)anthropic\.com$/i, label: "Anthropic" },
+};
+const warnedEnvSkip = new Set(); // 同一个地址只唠叨一次，别把日志刷满
+
+/** 渠道 id → 环境变量名。`openrouter-2` → `WB_KEY_OPENROUTER_2` */
+function channelEnvName(channel) {
+  const id = String(channel || "").trim();
+  return id ? "WB_KEY_" + id.toUpperCase().replace(/[^A-Z0-9]+/g, "_") : "";
+}
+
+function hostOf(baseUrl) {
+  const b = String(baseUrl || "").trim();
+  if (!b) return ""; // 没填地址 = 走这家官方，算自己人
+  try { return new URL(b).host.replace(/:\d+$/, ""); } catch { return ""; }
+}
+
+function resolveKey(cfg, which) {
+  const own = String((cfg && cfg.api_key) || "").trim();
+  if (own) return own;
+  const named = channelEnvName(cfg && cfg.channel);
+  const byChannel = named ? String(process.env[named] || "").trim() : "";
+  if (byChannel) return byChannel; // 按渠道点名的：用户自己指的，不猜
+  const rule = KEY_ENV[which];
+  const generic = rule ? String(process.env[rule.env] || "").trim() : "";
+  if (!generic) return "";
+  const host = hostOf(cfg && cfg.base_url);
+  if (!host || rule.official.test(host)) return generic;
+  // 本机地址不唠叨：绝大多数是 Ollama，它压根不要 Key（下面会兜底成 "ollama"），
+  // 为它每次开机刷一条警告纯属噪音。本机网关真要 Key 的，在设置页填一次就完事
+  if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)$/i.test(host)) return "";
+  if (!warnedEnvSkip.has(host)) {
+    warnedEnvSkip.add(host);
+    console.warn(
+      `[模型] 渠道「${(cfg && cfg.name) || host}」没填 Key，环境变量 ${rule.env} 也没用上——` +
+        `它是 ${rule.label} 的 Key，这条渠道打的是 ${host}，发过去等于把 Key 交给了别家。` +
+        `要给这条渠道配 Key：设置 → 模型 里填，或者设环境变量 ${named || "WB_KEY_<渠道id>"}。`
+    );
+  }
+  return "";
+}
+
+/**
+ * Key 递给 HTTP 头之前的最后一道。
+ *
+ * Key 是人从网页、文档、聊天窗口里复制过来的：末尾粘上一个换行，中间夹一个零宽空格，
+ * 或者把 sk- 后面连着的那句中文一起框走了，都很常见。可 HTTP 头只装得下单字节字符，
+ * 不管的话，fetch 会在请求发出去之前抛这么一句——
+ *   Cannot convert argument to a ByteString because the character at index 10 has a value of 28192…
+ * 它既没说这是 Key 的事，也没说该去哪儿改，落到界面上就是一次没头没尾的「调用失败」。
+ *
+ * 前后的空白直接吃掉：那是纯粹的复制残渣，吞掉只有好处。剩下的非 ASCII 才是真填错了，
+ * 就报出是第几个字符、是哪个字符，让人回设置里一眼能找到。
+ * 标 fatalForChannel 是给嵌入渠道看的：这种错重试一百次也还是它，别陪它试满三轮。
+ */
+const KEY_TRASH = /^[\s\u200b-\u200d\u2060]+|[\s\u200b-\u200d\u2060]+$/g;
+function cleanKey(raw, cfg) {
+  const key = String(raw || "").replace(KEY_TRASH, "");
+  const chars = [...key];
+  const at = chars.findIndex((c) => c.codePointAt(0) < 0x20 || c.codePointAt(0) > 0x7e);
+  if (at < 0) return key;
+  const who = (cfg && (cfg.name || cfg.label || cfg.model)) || "未命名";
+  const e = new Error(
+    `渠道「${who}」的 Key 第 ${at + 1} 个字符是 ${JSON.stringify(chars[at])}，这样的 Key 发不出去：` +
+      "API Key 只会由半角的字母、数字和 - _ 这类符号组成，出现中文、全角标点、空格或换行，" +
+      "多半是从网页或聊天记录里复制时多框了一段。到 设置 → 模型 里把这条渠道的 Key 重新粘一次就好。"
+  );
+  e.fatalForChannel = true;
+  throw e;
+}
+
+/** 解析出 Key，并保证它能塞进 Authorization 头 */
+function headerKey(cfg, which) {
+  return cleanKey(resolveKey(cfg, which), cfg);
+}
+
 async function anthropicChat(cfg, { system, history, tools, onTextDelta, onActivity, signal }) {
   let Anthropic;
   try {
@@ -132,7 +228,7 @@ async function anthropicChat(cfg, { system, history, tools, onTextDelta, onActiv
     );
   }
   const client = new Anthropic({
-    apiKey: cfg.api_key || process.env.ANTHROPIC_API_KEY,
+    apiKey: headerKey(cfg, "anthropic") || undefined, // 空串会被 SDK 当成"配了一把空 Key"，undefined 才会报"没配"
     baseURL: anthropicBase(cfg.base_url).baseURL, // 填了中转就真走中转，跟向导验活同一个地址
   });
 
@@ -325,7 +421,8 @@ function createLeakGuard(onTextDelta) {
 }
 
 async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity, signal }) {
-  const apiKey = cfg.api_key || process.env.OPENAI_API_KEY || "ollama";
+  // 兜底那句 "ollama" 是给本地 Ollama 的：它不校验 Key，但 Authorization 头缺了会被某些版本拒掉
+  const apiKey = headerKey(cfg, "openai") || "ollama";
   const useStream = cfg.stream !== false;
   const resp = await fetch(`${cfg.base_url.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
@@ -371,6 +468,15 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
       throw new Error(
         `渠道「${cfg.name || cfg.model}」余额不足，模型不给跑了——这不是软件出错，去这条渠道的官网充值即可；` +
           `急着继续可以在 设置 → 模型 换一条有余额的渠道，或者在 设置 → 智能体设置 里指定「备用渠道」，以后这条挂了会自动接上。\n原始报错：${body.slice(0, 200)}`
+      );
+    }
+    // Key 不对 / 过期 / 被撤回。渠道卡上那个「测一下」按钮早就把 401 翻成人话了
+    // （server.js 的 probeModel），可真跑一趟撞上同一个码，吐的却是一坨英文 JSON。
+    // 同一件事两种说法，用户的体感是「测的时候好好的，一跑就报天书」——两边统一。
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error(
+        `渠道「${cfg.name || cfg.model}」的 Key 上游不认（HTTP ${resp.status}）：检查有没有复制全、是不是这家服务商的 Key、` +
+          `有没有过期或被撤回。改在 设置 → 模型 里，改完点这条渠道的「测一下」能当场验。\n原始报错：${body.slice(0, 200)}`
       );
     }
     throw new Error(`LLM 接口错误 ${resp.status}: ${body.slice(0, 500)}`);
@@ -718,7 +824,7 @@ function createEmbedder(config) {
     try {
       const resp = await fetch(`${cfg.base_url}/embeddings`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.api_key || "ollama"}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cleanKey(cfg.api_key, cfg) || "ollama"}` },
         body: JSON.stringify({ model: cfg.model, input: texts }),
         signal: AbortSignal.timeout(15000),
       });
@@ -760,4 +866,4 @@ function createEmbedder(config) {
   return embed;
 }
 
-module.exports = { createLLM, createEmbedder, anthropicBase, _internals: { markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject } };
+module.exports = { createLLM, createEmbedder, anthropicBase, cleanKey, _internals: { resolveKey, headerKey, cleanKey, channelEnvName, warnedEnvSkip, markEmbedChannelDead, embedChannelDead, deadEmbedChannels, warnedLeakedPairs, rescueLeakedToolCalls, createLeakGuard, openaiChat, EMBED_KNOWN, embedCandidates, repairToolPairs, toOpenAIMessages, toAnthropicMessages, keepBadArgs, parseToolArgs, sliceFirstObject } };

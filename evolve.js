@@ -311,20 +311,53 @@ function ruleDigest(text) {
   return String(text).toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "").slice(0, 120);
 }
 
-/** 注入系统提示词的那一段。超预算就按时间倒序截断并且**明说截了**，不闷声吞。 */
+/** 现在这些规则一共占多少字（按注进提示词的那个形状算，不是正文长度之和） */
+function rulesChars(rules) {
+  return (rules || []).reduce((n, r) => n + `- ${r.text}\n`.length, 0);
+}
+
+/**
+ * 注入系统提示词的那一段。超预算的时候**保新的、砍最老的**，并且点名砍了哪几条。
+ *
+ * 顺序这件事栽过一次：activeRules() 是按生效时间**正序**排的（老的在前），
+ * 而这儿原来从头往下填到撑为止——于是砍掉的永远是**最新的那几条**。
+ * 那正是最不该砍的：人刚刚在评审页上点了「采纳」，界面显示「已生效」，
+ * 模型这边一个字都没收到，而且不吭声。规则越新越容易被吞，人越会觉得「这套东西没用」。
+ *
+ * 正常情况下这段截断是走不到的——gateProposal 那儿已经按字数预算卡过一道，
+ * 想超预算必须指名换下一条。留着它是因为规则是一条一个 .md 文件，明摆着让人手改，
+ * 谁往里塞一篇小作文，这儿得兜住，而且得说出来。
+ */
 function promptBlock() {
   const rules = activeRules();
   if (!rules.length) return "";
-  let body = "";
-  let dropped = 0;
-  for (const r of rules) {
-    const line = `- ${r.text}\n`;
-    if (body.length + line.length > CAPS.blockChars) { dropped++; continue; }
-    body += line;
+  const head = `\n\n## 从过往任务里学到的（自进化规则，N 条）\n` +
+    `这些是从你自己跑砸过的任务里总结出来的，每一条背后都有具体次数，别当客套话跳过：\n`;
+  // 尾巴那句「另有 N 条…」也是提示词里的字，一样要从预算里扣。
+  // 原来它是算完之后才拼上去的，于是整段稳定超预算几十个字——预算这东西一旦自己都不守，
+  // 上游（gateProposal）按它卡出来的结论就全是虚的
+  const tailOf = (ids) => ids.length
+    ? `（另有 ${ids.length} 条最老的规则超出提示词预算没放进来：${ids.join("、")}；请去自进化页下架或缩短它们）\n`
+    : "";
+  // 砍得越多尾巴越长、预算越紧、又可能得再砍一条——所以是个不动点，迭代到稳为止。
+  // 单调收敛（砍掉的只增不减），轮数封顶 rules.length + 1，跑不飞
+  let dropped = [];
+  let keep = [];
+  for (let round = 0; round <= rules.length; round++) {
+    const budget = CAPS.blockChars - head.length - tailOf(dropped).length;
+    keep = [];
+    const next = [];
+    // 从最新的往回收，收到装不下为止：砍掉的是最老的
+    for (let i = rules.length - 1; i >= 0; i--) {
+      const line = `- ${rules[i].text}\n`;
+      if (rulesChars(keep) + line.length > budget) { next.unshift(rules[i].id); continue; }
+      keep.unshift(rules[i]); // 正文仍按时间正序读，只是选谁留下来的时候从新往老挑
+    }
+    if (next.length === dropped.length) { dropped = next; break; }
+    dropped = next;
   }
-  return `\n\n## 从过往任务里学到的（自进化规则，${rules.length - dropped} 条）\n` +
-    `这些是从你自己跑砸过的任务里总结出来的，每一条背后都有具体次数，别当客套话跳过：\n${body}` +
-    (dropped ? `（还有 ${dropped} 条因为超出提示词预算没放进来）\n` : "");
+  const body = keep.map((r) => `- ${r.text}\n`).join("");
+  return head.replace("N 条", `${keep.length} 条`) + body + tailOf(dropped);
 }
 
 // ============================ 3. 闸门 ============================
@@ -361,6 +394,14 @@ function gateProposal(p, { signals = [], rules = activeRules() , datedTurns = 0 
   if (rules.length >= CAPS.rules && !p.retire)
     return `已经有 ${rules.length} 条规则（上限 ${CAPS.rules}）。要加新的就得指名下架一条——提示词只许越用越准，不许越堆越长`;
   if (p.retire && !rules.some((r) => r.id === p.retire)) return `要换下的规则 ${p.retire} 不存在`;
+  // 字数预算也得在这儿卡住，不能留给 promptBlock 去截。
+  // 12 条 × 400 字 = 4800，本来就超 4000 的总预算——也就是说条数没满、字数先满，是常态而不是意外。
+  // 卡在这里，人看到的是「要加就得换下一条」；留到注入时才截，人看到的是「已生效」而模型根本没收到。
+  const after = rules.filter((r) => r.id !== p.retire);
+  const used = rulesChars(after);
+  const need = `- ${text}\n`.length;
+  if (used + need > CAPS.blockChars)
+    return `加上这条一共 ${used + need} 字，超出提示词预算 ${CAPS.blockChars} 字${p.retire ? "（已经算上换下那条腾出的位置）" : "；指名下架一条腾地方"}——提示词只许越用越准，不许越堆越长`;
   if (!p.verify) return "没说清怎么验证：这条规则生效后，哪个数字应该降下去？";
   return null;
 }
@@ -460,7 +501,20 @@ function scoreRules({ dir = SESS_DIR, now = Date.now(), minTurns = 20 } = {}) {
     if (after.turns < minTurns) { out.push({ id: r.id, verdict: "样本不够", why: `生效后才跑了 ${after.turns} 个带时间的回合，不到 ${minTurns} 个，先别下结论` }); continue; }
     const s = after.signals.find((x) => x.key === base.key);
     const afterRate = s ? s.rate : 0;
-    const drop = base.rate ? +(((base.rate - afterRate) / base.rate) * 100).toFixed(1) : 0;
+    // 基线是 0：这条规则生效前，目标信号在**带时间的回合里**一次没出现过（证据全是老数据）。
+    // 那就无从谈「降了多少」。原来这儿算出 drop=0 → 判「没起作用」→ suggestRetire，
+    // 等于因为量不出来就把它撤掉——量不出来和没用是两回事
+    if (!base.rate) {
+      out.push({
+        id: r.id, signal: base.key, beforeRate: base.rate, afterRate, turns: after.turns,
+        verdict: "无从判断",
+        why: `生效前这个信号在带时间的回合里一次都没出现（基线 0），量不出降幅` +
+          (afterRate ? `；生效后每回合 ${afterRate}，反倒开始犯了，值得看一眼` : "；生效后也没再出现"),
+        suggestRetire: false,
+      });
+      continue;
+    }
+    const drop = +(((base.rate - afterRate) / base.rate) * 100).toFixed(1);
     // 规则生效之后用户亲手点的 👍👎 也摆出来：信号率是推断，这个是人说的
     const fbs = readFeedback().filter((f) => (Date.parse(f.at || "") || 0) >= bornAt);
     const fb = { up: fbs.filter((f) => f.verdict === "up").length, down: fbs.filter((f) => f.verdict === "down").length };
@@ -567,8 +621,26 @@ async function runReview({ llm, days = CAPS.window, promptExcerpt = "" } = {}) {
   const { proposals, notes } = await proposeEdits({ llm, mined, rejected, promptExcerpt });
   const added = addProposals(proposals.filter((p) => !p.gate));
   const scored = scoreRules();
-  for (const s of scored) if (s.suggestRetire) notes.push(`规则 ${s.id} ${s.why}，建议下架`);
-  return { mined, added, gated: proposals.filter((p) => p.gate), notes, scored };
+  // 打分说「没起作用」的，要落成**一条真提案**，而不是一句 notes。
+  // notes 只出现在这次 runReview 的返回值里，页面上那份 /api/evolve/state 根本没有它——
+  // 也就是说以前每天算出来的下架建议，除非正好有人盯着接口返回，否则看完即焚。
+  // 落成提案才进得了评审队列，跟「加一条」走同一个按钮、同一份留痕。
+  const decided = listProposals();
+  const retireProposals = scored
+    .filter((s) => s.suggestRetire)
+    // 人已经驳回过的不再端上来。加规则那条路上，驳回理由会作为负样本喂回给模型；
+    // 下架这条路上没有模型可喂——不自己记着的话，就是每天原样再提一遍
+    .filter((s) => !decided.some((x) => x.kind === "retire_rule" && x.target === s.id))
+    .map((s) => ({
+      kind: "retire_rule", target: s.id, signal: s.signal,
+      title: `下架规则 ${s.id}：${s.verdict}`,
+      why: s.why + `（生效后跑了 ${s.turns} 个带时间的回合）`,
+      verify: `下架后 ${s.signal} 的每回合出现率不该反弹回 ${s.beforeRate} 以上`,
+      auto: true, // 这条不是模型想出来的，是打分算出来的
+    }));
+  const addedRetire = addProposals(retireProposals.filter((x) => !gateProposal(x, { signals: mined.signals })));
+  for (const s of scored) if (s.suggestRetire) notes.push(`规则 ${s.id} ${s.why}，已提一条下架提案等你点头`);
+  return { mined, added: added.concat(addedRetire), gated: proposals.filter((p) => p.gate), notes, scored };
 }
 
 module.exports = {
@@ -579,5 +651,5 @@ module.exports = {
   activeRules, promptBlock, retireRule,
   gateProposal, listProposals, addProposals, decideProposal,
   proposeEdits, runReview, scoreRules,
-  _internals: { classifyToolError, classifyEvent, ruleDigest, readSessions, baselineOf, RULES_DIR, DATA_DIR },
+  _internals: { classifyToolError, classifyEvent, ruleDigest, readSessions, baselineOf, rulesChars, RULES_DIR, DATA_DIR },
 };

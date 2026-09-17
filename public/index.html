@@ -2230,9 +2230,13 @@
   <div class="lane-tabs" id="lane-tabs" role="tablist" aria-label="工作线"></div>
   <div class="side-nav top">
     <div class="item" id="ab-head" title="助理模式：IM 远程指挥 + 直接对话"><span class="ic" id="ab-ic"><svg class="i" aria-hidden="true"><use href="#i-bot"></use></svg></span><span class="tx"><span id="ab-name">助理模式</span><span class="sub" id="ab-sub">IM 远程指挥</span></span></div>
+    <!-- 无限画布排在「项目」前面，不是审美问题：项目底下挂着一列会长的子项（#proj-list），
+         排在它后面的同级项会被这列越推越远，看着像「项目的最后一条」。会长的那一组永远
+         压在自己这一组的末尾。顺带，这三条是「上哪儿干活」（对话在上面那个新建任务按钮里），
+         再往下才是「手里有什么家伙」（专家 / 自动化 / 更多）。 -->
+    <div class="item" data-view="canvas" title="无限画布：把一件事拆成节点摆在一张图上，边连边跑"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-map"></use></svg></span><span class="tx">无限画布<span class="sub">把任务摊成一张图</span></span></div>
     <div class="item nav-head" data-view="proj" title="项目管理"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-folder"></use></svg></span><span class="tx">项目<span class="sub">团队协作</span></span><a href="#" id="proj-add" title="新建项目"><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg></a></div>
     <div id="proj-list"></div>
-    <div class="item" data-view="canvas" title="无限画布"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-map"></use></svg></span><span class="tx">无限画布<span class="sub">节点 · 拖拽 · 缩放</span></span></div>
     <div class="item" data-view="hub"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-blocks"></use></svg></span><span class="tx">专家<span class="sub">技能 · 连接器</span></span></div>
     <div class="item" data-view="autom"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-clock"></use></svg></span><span class="tx">自动化<span class="sub">定时 · 运行记录</span></span></div>
     <div class="item more-toggle" id="more-toggle"><span class="ic"><svg class="i" aria-hidden="true"><use href="#i-ellipsis"></use></svg></span><span class="tx">更多<span class="sub">模板 · 资料 · 评测 · 追踪</span></span><span class="caret" id="more-caret"><svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></span></div>
