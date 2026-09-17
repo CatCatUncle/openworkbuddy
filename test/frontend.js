@@ -5755,6 +5755,20 @@ const SIDEBAR_CHECKS = `
     '<div class="proj-item"><span class="pn">项目 ' + i + '</span></div>').join("");
   document.getElementById("more-box").classList.add("open");   // 「更多」展开，导航最高的那档
 
+  // ⓪ 先钉住一件比什么都底层的事：改完样式紧接着读，读到的必须是新值。
+  // 出过事——全局那条「减弱动态效果」写的是 transition-duration: .01ms !important，
+  // 而 transition-property 的初始值是 all，于是每个属性的每次变化都真造出一个过渡；
+  // 过渡在 t=0 那一刻的值是**变化前**的旧值，改完立刻读就成了上一帧的数。
+  // 侧栏这条拖拽线的夹取上限 histMax() 正是靠 nav.offsetHeight / hist.offsetHeight 现算的，
+  // 一旦读到旧值就夹错——本机默认没开这个开关，所以只有 CI 的 macOS runner 上挂。
+  const reduceOn = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  hist.style.minHeight = "123px";
+  ok("改完样式紧接着读就是新值，没凭空生出过渡" + (reduceOn ? "（减弱动效档）" : "（常规档）"),
+     getComputedStyle(hist).minHeight === "123px" && hist.getAnimations().length === 0,
+     "读到 " + getComputedStyle(hist).minHeight + "，hist 上挂了 " + hist.getAnimations().length + " 个动画"
+     + "，过渡时长=" + getComputedStyle(hist).transitionDuration + "，减动效=" + reduceOn);
+  hist.style.minHeight = "";
+
   // ① 事故留证：历史再长，导航一行都不许少
   const aside = document.querySelector("aside");
   const nav = document.querySelector(".side-nav.top");
@@ -5840,7 +5854,34 @@ const SIDEBAR_CHECKS = `
   h.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
   ok("按 Esc 也回自适应", !document.documentElement.classList.contains("hist-h"));
 
-  if (fails.length) throw new Error("侧栏主次/拖拽：" + names.length + " 条过，挂了 " + fails.length + " 条：\\n" + fails.join("\\n"));
+  if (fails.length) {
+    // 挂了就把「到底哪几条 CSS 规则匹配上了这两个元素」整个抖出来：
+    // 同样的文件、同样的 Chromium，在别的机器上却是另一套结果——只有把命中的规则和
+    // 它们的媒体条件摆在一起，才看得出是哪一条没进来。
+    const dump = [];
+    // 注意别拿 r.cssRules 当「这是不是分组规则」的判据：新版 Chromium 里普通样式规则
+    // 也带一个（空的）cssRules（CSS 嵌套），照着分组处理会把每一条都当空组跳过，最后什么都抖不出来
+    const walk = (rules, cond) => {
+      for (const r of rules || []) {
+        if (r.cssRules && r.cssRules.length) walk(r.cssRules, r.conditionText ? (cond ? cond + " " : "") + r.conditionText : cond);
+        if (!r.selectorText || !r.style) continue;
+        const has = r.style.minHeight || r.style.maxHeight || r.style.flex || r.style.flexBasis;
+        if (!has) continue;
+        let hit = false;
+        try { hit = nav.matches(r.selectorText) || hist.matches(r.selectorText); } catch {}
+        if (hit) dump.push((cond ? "【" + cond + "】" : "") + r.selectorText + " { " + r.style.cssText.slice(0, 150) + " }");
+      }
+    };
+    for (const sh of document.styleSheets) { try { walk(sh.cssRules, ""); } catch (e) { dump.push("(读不到某张表：" + e.message + ")"); } }
+    const env = "窗口 " + innerWidth + "×" + innerHeight + " dpr=" + devicePixelRatio
+      + " 动画数=" + document.getAnimations().length + "/" + hist.getAnimations().length
+      + " 过渡=" + getComputedStyle(hist).transitionProperty + "/" + getComputedStyle(hist).transitionDuration
+      + " 1100断点=" + matchMedia("(max-width: 1100px)").matches
+      + " 900断点=" + matchMedia("(max-width: 900px)").matches
+      + " 减动效=" + matchMedia("(prefers-reduced-motion: reduce)").matches;
+    throw new Error("侧栏主次/拖拽：" + names.length + " 条过，挂了 " + fails.length + " 条：\\n" + fails.join("\\n")
+      + "\\n—— 环境 ——\\n" + env + "\\n—— 命中这两个元素、且管高度的规则（按层叠顺序）——\\n" + dump.join("\\n"));
+  }
   names;
 `;
 
@@ -7390,6 +7431,20 @@ app.whenReady().then(async () => {
       for (const n of namesSB) console.log("  ✓ " + n);
       console.log(`✅ 前端：侧栏主次分明 + 任务历史可拖（两百条历史也挤不没导航·字号颜色图标三层分主次·上下拖/键盘推/双击回自适应）${namesSB.length} 项通过`);
     } finally { if (!winSB.isDestroyed()) winSB.destroy(); }
+
+    // 再跑一遍，这次把系统的「减弱动态效果」打开。GitHub 的 macOS runner 默认就是这个状态，
+    // 本机默认不是——少了这一遍，reduce 档下的过渡行为在本地永远测不到，只能等 CI 红了再回头查。
+    // 上一次就是这么吃的亏：同样的文件同样的 Chromium，本机 24 条全过，runner 上挂 6 条。
+    const winSBR = mkWin({ show: false, width: 1100, height: 640, webPreferences: { offscreen: true } });
+    try {
+      await winSBR.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SIDEBAR_HTML));
+      winSBR.webContents.debugger.attach("1.3");
+      await winSBR.webContents.debugger.sendCommand("Emulation.setEmulatedMedia",
+        { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+      const namesSBR = await winSBR.webContents.executeJavaScript(IC_BOOT + HIST_RSZ_SRC + "\n" + SIDEBAR_CHECKS, true)
+        .catch((e) => { throw new Error("[侧栏·减弱动态效果] " + ((e && (e.stack || e.message)) || String(e))); });
+      console.log(`✅ 前端：系统开了「减弱动态效果」之后，侧栏那套主次与拖拽照样准（全局过渡不许把「改完就读」拖成上一帧的旧值）${namesSBR.length} 项通过`);
+    } finally { if (!winSBR.isDestroyed()) winSBR.destroy(); }
 
     const winLN = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
     try {
