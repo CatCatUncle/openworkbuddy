@@ -12,26 +12,26 @@
   (function () {
     try {
       var d = document.documentElement.dataset;
-      var t = localStorage.getItem("wb-theme") || "system";
+      var t = localStorage.getItem("owb-theme") || "system";
       d.theme = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-      var skin = localStorage.getItem("wb-look-skin"); if (skin && skin !== "default") d.skin = skin;
-      var fs = localStorage.getItem("wb-look-fs"); if (fs && fs !== "m") d.fs = fs;
-      var font = localStorage.getItem("wb-look-font"); if (font && font !== "system") d.font = font;
+      var skin = localStorage.getItem("owb-look-skin"); if (skin && skin !== "default") d.skin = skin;
+      var fs = localStorage.getItem("owb-look-fs"); if (fs && fs !== "m") d.fs = fs;
+      var font = localStorage.getItem("owb-look-font"); if (font && font !== "system") d.font = font;
     } catch (e) { /* 隐私模式下存储不可用，用默认外观即可 */ }
   })();
 </script>
 <style>
   :root {
-    --wb-fs: 15px;
+    --owb-fs: 15px;
     --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
-    --wb-ease: cubic-bezier(.2, .6, .3, 1);
+    --owb-ease: cubic-bezier(.2, .6, .3, 1);
     /* 这一页把圆角整体调大一档（卡片 16 / 控件 12 / 小控件 8）。
        后台是一屏十几个方块的地方，10px 的圆角在这个密度下看着像没做圆角。 */
     --radius: 14px;
   }
-  html[data-fs="s"] { --wb-fs: 14px; }
-  html[data-fs="l"] { --wb-fs: 16px; }
-  html[data-fs="xl"] { --wb-fs: 18px; }
+  html[data-fs="s"] { --owb-fs: 14px; }
+  html[data-fs="l"] { --owb-fs: 16px; }
+  html[data-fs="xl"] { --owb-fs: 18px; }
   html[data-font="serif"] { --font-sans: Georgia, "Songti SC", "Noto Serif CJK SC", SimSun, serif; }
   html[data-font="mono"] { --font-sans: var(--font-mono); }
   /* 皮肤：跟 index.html 同一套，只换品牌色那一组令牌 */
@@ -49,7 +49,7 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
   body {
-    font-family: var(--font-sans); font-size: var(--wb-fs); line-height: 1.65;
+    font-family: var(--font-sans); font-size: var(--owb-fs); line-height: 1.65;
     background: var(--background); color: var(--foreground);
     -webkit-font-smoothing: antialiased; text-size-adjust: 100%;
   }
@@ -101,7 +101,7 @@
     height: 34px; padding: 0 10px; margin-bottom: 1px; border: 0; border-radius: var(--radius-md);
     background: transparent; color: var(--muted-foreground); font: inherit; font-size: 14px;
     text-decoration: none; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    transition: background-color .15s var(--wb-ease), color .15s var(--wb-ease);
+    transition: background-color .15s var(--owb-ease), color .15s var(--owb-ease);
   }
   .ad-nav-i .i { width: 16px; height: 16px; flex: none; opacity: .85; }
   .ad-nav-i:hover { background: var(--accent); color: var(--accent-foreground); }
@@ -134,7 +134,7 @@
   .ad-chip {
     padding: 5px 11px; font-size: 13px; line-height: 1.4; border-radius: 999px; cursor: pointer;
     border: 1px solid transparent; background: transparent; color: var(--muted-foreground);
-    transition: background .15s var(--wb-ease), color .15s var(--wb-ease);
+    transition: background .15s var(--owb-ease), color .15s var(--owb-ease);
   }
   .ad-chip:hover { background: var(--card); color: var(--foreground); }
   /* 选中态用实心而不是描边：一排六个胶囊里，描边那一个远看跟没选一样 */
@@ -226,7 +226,7 @@
   .ad-bars .b .t { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; border-bottom: 1px solid var(--border); }
   .ad-bars .b i {
     width: 100%; max-width: 52px; min-height: 3px; background: var(--primary); opacity: .82;
-    border-radius: var(--radius-sm) var(--radius-sm) 0 0; transition: opacity .15s var(--wb-ease);
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0; transition: opacity .15s var(--owb-ease);
   }
   .ad-bars .b:hover i { opacity: 1; }
   .ad-bars .b b {
@@ -250,6 +250,16 @@
   textarea.ui-input { height: auto; min-height: 84px; padding: 8px 12px; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; resize: vertical; }
 
   .ad-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  /* 弹层里的一组勾选（一把 Key 能走哪几路能力）。每格都是个可点的框，
+     而不是字旁边一个 13px 的小方块——手机上那个小方块点不中 */
+  .ad-checks { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ad-checks label {
+    display: inline-flex; align-items: center; gap: 6px; margin: 0; cursor: pointer;
+    padding: 6px 11px; border: 1px solid var(--border); border-radius: 999px;
+    font-size: 13px; font-weight: 400; user-select: none;
+  }
+  .ad-checks label:has(input:checked) { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 8%, transparent); }
+  .ad-checks input { margin: 0; accent-color: var(--primary); }
   .ad-mono { font-family: var(--font-mono); font-size: 13px; }
   .ad-actions { display: flex; gap: 4px; justify-content: flex-end; }
 
@@ -263,7 +273,7 @@
     position: fixed; left: 50%; bottom: 32px; transform: translate(-50%, 8px);
     padding: 10px 18px; border-radius: 999px; font-size: 14px; z-index: 80;
     background: var(--foreground); color: var(--background); box-shadow: 0 8px 28px rgba(0,0,0,.22);
-    opacity: 0; transition: opacity .16s var(--wb-ease), transform .16s var(--wb-ease); pointer-events: none;
+    opacity: 0; transition: opacity .16s var(--owb-ease), transform .16s var(--owb-ease); pointer-events: none;
   }
   .ad-toast.show { opacity: 1; transform: translate(-50%, 0); }
   .ad-toast.bad { background: var(--destructive); color: #fff; }
@@ -294,7 +304,7 @@
 </head>
 <body>
 <!-- lucide 图标（ISC，https://lucide.dev），内联进来是为了离线可用、跟着 currentColor 变色 -->
-<svg id="wb-sprite" aria-hidden="true">
+<svg id="owb-sprite" aria-hidden="true">
 <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /></symbol>
 <symbol id="i-zap" viewBox="0 0 24 24"><path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /></symbol>
 <symbol id="i-blocks" viewBox="0 0 24 24"><path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2" /> <rect x="14" y="2" width="8" height="8" rx="1" /></symbol>
@@ -327,6 +337,7 @@
 <symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34" /> <circle cx="11" cy="11" r="8" /></symbol>
 <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /> <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></symbol>
 <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" /> <path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol>
+<symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /> <path d="m16 17 5-5-5-5" /> <path d="M21 12H9" /></symbol>
 </svg>
 
 <div class="ad">

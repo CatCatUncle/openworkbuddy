@@ -113,7 +113,7 @@ ok(/OPENWORKBUDDY_HOME:\s*\/data/.test(COMPOSE), "数据目录用 OPENWORKBUDDY_
 const appBlock = (COMPOSE.split(/^  app:$/m)[1] || "").split(/^  [a-z]/m)[0];
 const mounts = [...appBlock.matchAll(/^\s+- (.+):(\/[^:\s]+)(:ro)?$/gm)].map((m) => m[2]);
 ok(mounts.length === 1 && mounts[0] === "/data", "app 只有一个数据挂载点，没有按文件挂的 bind mount（宿主机上那个文件不存在时 Docker 会给你建个同名目录，然后报一个看不懂的错）", mounts);
-ok(/"\$\{WB_BIND:-127\.0\.0\.1\}/.test(COMPOSE), "端口默认只绑 127.0.0.1（这个 agent 手里有 shell，默认不对外）");
+ok(/"\$\{OPENWORKBUDDY_BIND:-127\.0\.0\.1\}/.test(COMPOSE), "端口默认只绑 127.0.0.1（这个 agent 手里有 shell，默认不对外）");
 
 // Dockerfile 里不许留 VOLUME：留了每次重建容器都多一个匿名卷，攒着占磁盘
 const DF = read("Dockerfile");
@@ -151,25 +151,27 @@ ok(!/[A-Za-z0-9_]{20,}\s*$/m.test(SH.split("\n").filter((l) => /KEY|TOKEN|SECRET
    "脚本里没有硬编码的密钥");
 
 const ENVX = bare(read("deploy/env.example"));
-ok(!/=[^\s#]{16,}/.test(ENVX), "deploy/env.example 里没有任何真值（全是空的或者显而易见的默认值）");
-ok(/WB_HOME|WB_BIND|WB_PORT|WB_DOMAIN/.test(ENVX), "env.example 覆盖了 compose 用到的变量");
-for (const v of ["WB_HOME", "WB_BIND", "WB_PORT", "WB_DOMAIN", "WB_TRUST_PROXY"])
+// 「长 = 可疑」这条粗规矩要放过路径：默认值 ./openworkbuddy-data 就有 20 个字符，
+// 而真漏进来的密钥不会以 ./ 或 / 开头。判据放在「开头长什么样」上，比放在长度上准。
+ok(!/=(?!\.{0,2}[\/~])[^\s#]{16,}/.test(ENVX), "deploy/env.example 里没有任何真值（全是空的、路径、或者显而易见的默认值）");
+ok(/OPENWORKBUDDY_DATA|OPENWORKBUDDY_BIND|OPENWORKBUDDY_PORT|OPENWORKBUDDY_DOMAIN/.test(ENVX), "env.example 覆盖了 compose 用到的变量");
+for (const v of ["OPENWORKBUDDY_DATA", "OPENWORKBUDDY_BIND", "OPENWORKBUDDY_PORT", "OPENWORKBUDDY_DOMAIN", "OPENWORKBUDDY_TRUST_PROXY"])
   ok(new RegExp("^" + v + "=", "m").test(ENVX), `env.example 里有 ${v}`);
 
 // 反代下的限流：挂了 caddy 之后所有请求都来自代理那一个 IP，
 // 注册闸（5 次/15 分钟）会变成「第 6 个同事注册不了」，登录闸会变成「有人错几次全公司进不去」。
 // 但这个开关只能是显式打开的——没反代却打开，等于伪造一行头就换一个新 IP。
-ok(/WB_TRUST_PROXY:\s*\$\{WB_TRUST_PROXY:-0\}/.test(COMPOSE), "compose 透传 WB_TRUST_PROXY 且默认 0（不信转发头）");
-ok(/^WB_TRUST_PROXY=0$/m.test(ENVX), "env.example 里 WB_TRUST_PROXY 默认 0");
-ok(/\[ -n "\$DOMAIN" \] && setenv WB_TRUST_PROXY 1/.test(SH), "deploy.sh --domain（自带 caddy）时才自动把它打开");
-ok(!/setenv WB_TRUST_PROXY 1\s*$/m.test(bare(SH).split("\n").filter((l) => !/\$DOMAIN/.test(l)).join("\n")),
-   "反向对照：没有一处无条件把 WB_TRUST_PROXY 打开");
+ok(/OPENWORKBUDDY_TRUST_PROXY:\s*\$\{OPENWORKBUDDY_TRUST_PROXY:-0\}/.test(COMPOSE), "compose 透传 OPENWORKBUDDY_TRUST_PROXY 且默认 0（不信转发头）");
+ok(/^OPENWORKBUDDY_TRUST_PROXY=0$/m.test(ENVX), "env.example 里 OPENWORKBUDDY_TRUST_PROXY 默认 0");
+ok(/\[ -n "\$DOMAIN" \] && setenv OPENWORKBUDDY_TRUST_PROXY 1/.test(SH), "deploy.sh --domain（自带 caddy）时才自动把它打开");
+ok(!/setenv OPENWORKBUDDY_TRUST_PROXY 1\s*$/m.test(bare(SH).split("\n").filter((l) => !/\$DOMAIN/.test(l)).join("\n")),
+   "反向对照：没有一处无条件把 OPENWORKBUDDY_TRUST_PROXY 打开");
 
-// deploy.sh 会在仓库目录里直接建 .env 和 wb-data/，而 wb-data/config.json 里就是 API Key。
+// deploy.sh 会在仓库目录里直接建 .env 和 openworkbuddy-data/，而 openworkbuddy-data/config.json 里就是 API Key。
 // 这两条不在 .gitignore 里，用户一个 `git add -A` 就把自己的 Key 提上去了。
 const GI = read(".gitignore").split("\n").map((l) => l.trim());
 ok(GI.includes(".env"), ".env 在 .gitignore 里（deploy.sh 会在仓库里建它）");
-ok(GI.includes("wb-data/") || GI.includes("wb-data"), "wb-data/ 在 .gitignore 里（里面的 config.json 就是你的 API Key）");
+ok(GI.includes("openworkbuddy-data/") || GI.includes("openworkbuddy-data"), "openworkbuddy-data/ 在 .gitignore 里（里面的 config.json 就是你的 API Key）");
 ok(GI.includes("config.json"), "反向对照：config.json 本来就在（不是刚被谁删了）");
 
 // ===================================================================
@@ -180,7 +182,7 @@ console.log("\n【4】换了数据目录，内置技能还在不在");
 ok(/^seedDataDir\(\);/m.test(serverSrc), "server.js 启动时真的调了 seedDataDir（不能是注释掉的那种——注释掉照样能匹配裸正则）（以前只有 electron-main 调，纯 node 起的容器技能是空的）");
 
 {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "wb-seed-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-seed-"));
   const r = spawnSync(process.execPath, ["-e", `
     process.env.OPENWORKBUDDY_HOME = ${JSON.stringify(tmp)};
     const p = require(${JSON.stringify(path.join(ROOT, "paths.js"))});
@@ -354,11 +356,141 @@ console.log("\n【6】装机包瘦身：既不能虚胖，也不能删过头");
   });
 }
 
+console.log("\n【7】反代模板 —— 流式输出能不能活下来，全看这几行");
+
+// 网页端「一个字一个字出」全靠 SSE。挂反代之后它最常见的死法不是报错，
+// 是**看起来没坏**：点了开始一直转圈，过半天哗一下全刷出来，用户只会以为模型慢。
+// 实测（nginx 1.30.0，上游每 250ms 吐一行，量每行到达客户端的时刻）：
+//   gzip off                       + proxy_buffering off → 276/523/774/1025/1276/1527  逐行到
+//   gzip on（types 不含 SSE 类型）   + proxy_buffering off → 256/523/758/1009/1260/1515  逐行到
+//   gzip on（types 不含 SSE 类型）   + proxy_buffering on  → 272/522/773/1023/1274/1526  逐行到
+//   gzip on（types **含** SSE 类型） + proxy_buffering off → 273/510/761/1012/1263/1515  逐行到
+//   gzip on（types **含** SSE 类型） + proxy_buffering on  → 1511ms × 6   ★全卡到最后一起出★
+// 所以真正的判据不是「gzip 开没开」，是**gzip 有没有压到 text/event-stream**，
+// 而且要配上缓冲才会出事。nginx 自带的 gzip_types 默认只有 text/html，压不到 SSE；
+// 雷是从网上抄一长串带 text/event-stream 的 MIME 清单，或者图省事写 gzip_types *;。
+// 下面这两条就是守这个：清单里不许有 SSE 类型，缓冲必须关（互为第二道保险）。
+{
+  // 只看生效的指令，注释不算。模板里那句「千万别写 proxy_set_header Accept-Encoding ""」
+  // 本身就含着要禁的那串字，上面那段说明里也反复出现 text/event-stream——
+  // 照着原文匹配的话，写警告的人反而被自己的警告判挂。
+  const ngx = read("deploy/nginx.conf").replace(/^\s*#.*$/gm, "").replace(/\s+#.*$/gm, "");
+  const types = (ngx.match(/^\s*gzip_types\s+([^;]*);/m) || [, ""])[1];
+  ok(!/text\/event-stream/.test(types),
+     "nginx 模板的 gzip_types 里混进了 text/event-stream：再配上缓冲，SSE 会整个攒到最后一起出");
+  ok(!/\*/.test(types), "nginx 模板写了 gzip_types *：等于把 text/event-stream 也圈进去了");
+  ok(/proxy_buffering off;/.test(ngx), "nginx 模板没关 proxy_buffering：流式回答会变成「卡半天然后全出来」");
+  // 这一行网上的模板很爱加（为了让 nginx 自己压）。加了之后应用收不到 Accept-Encoding，
+  // 只能发未压缩的原文，首屏从 388KB 变回 1134KB——纯亏，而且没人会发现。
+  ok(!/proxy_set_header\s+Accept-Encoding\s+""/.test(ngx),
+     "nginx 模板把 Accept-Encoding 抹掉了：应用自己压的那份就发不出来，首屏白白大三倍");
+  // keepalive 要成对出现：upstream 里写了 keepalive，却不配 proxy_http_version 1.1
+  // 和清空 Connection 的话，nginx 还是每个请求新开一条 TCP，那个 keepalive 等于没写。
+  if (/keepalive\s+\d+;/.test(ngx)) {
+    ok(/proxy_http_version 1\.1;/.test(ngx) && /proxy_set_header Connection "";/.test(ngx),
+       "upstream 配了 keepalive，却没配 proxy_http_version 1.1 + 清空 Connection —— 长连接不会生效");
+  }
+  ok(/proxy_read_timeout\s+(\d+)s;/.test(ngx) && +RegExp.$1 >= 600,
+     "proxy_read_timeout 太短：一个任务跑十几分钟很正常，短了会在中途把流掐断（服务端其实还在跑）");
+  // 文档里点名了这个文件，文件却不在 → 照着文档做的人第一步就卡住
+  ok(/deploy\/nginx\.conf/.test(read("docs/远程访问.md")), "远程访问文档里没点名 deploy/nginx.conf");
+
+  // caddy 那份是同一件事的另一种写法，别只修一边。
+  // 实测 caddy v2.11.4：encode 本来就不压 text/event-stream，flush_interval 写不写都逐行到
+  // （263/522/771/1027/1282/1532 对 274/518/764/1025/1278/1517）。所以这行是第二道保险，
+  // 不是唯一那道——留着，因为将来若有别的非 SSE 长响应，靠的就是它。
+  const caddy = read("deploy/Caddyfile");
+  ok(/flush_interval -1/.test(caddy), "Caddyfile 少了 flush_interval -1：长响应少一道保险");
+}
+
 // ===================================================================
-// 【7】--build：真起一个容器（可选，慢）
+// 【8】开源 / 商业的那条线：口子留着，但开源版身上不许有阉割的痕迹
+// ===================================================================
+{
+  console.log("\n【8】企业加装包的挂载点 + 开源版不许被阉割");
+
+  const srv = read("server.js");
+
+  // ---- 口子本身 ----
+  ok(/require\.resolve\("@openworkbuddy\/enterprise"\)/.test(srv),
+     "server.js 里没有企业加装包的挂载点：docs/开源与商业版边界.md 第 4 节承诺了「开源版留挂载点」，说了就得有");
+
+  // 先 resolve 探、再 require 载：这两步必须分开。合成一步的话，「没装」和
+  // 「装了但自己缺依赖」报的都是 MODULE_NOT_FOUND，后者会被当成前者悄悄咽掉——
+  // 客户拿到的就是一台企业功能静悄悄失踪的服务器。
+  const loader = srv.slice(srv.indexOf("const enterprise = (() =>"), srv.indexOf("const entDeps"));
+  ok(loader.length > 0, "没找到企业加装包的加载器");
+  ok(/require\.resolve\([^)]*\)[\s\S]{0,200}catch[\s\S]{0,200}return null/.test(loader),
+     "没装应当安静地返回 null；这一档要是也打日志，等于每台个人机器天天报一条假故障");
+  ok(/console\.error\(/.test(loader),
+     "「装了却加载失败」这一档被咽掉了：那是真事故，必须吵出来");
+
+  // deps 是传进去的，不是让企业包自己 require 的——它不该知道开源版的目录长什么样
+  const depsArg = (srv.match(/const entDeps = \{([^}]*)\}/) || [])[1] || "";
+  for (const d of ["org", "account", "security", "config"]) {
+    ok(new RegExp("\\b" + d + "\\b").test(depsArg), `entDeps 里没有 ${d}，企业包只能反过来 require 开源版的内部文件`);
+  }
+
+  // ---- 两个口子，以及它们跟登录闸的先后 ----
+  // 这一条是真踩出来的：起初只留了一个口子、挂在 authGuard 后面，结果 SSO 回调
+  // （SAML 的 ACS、OIDC 的 redirect_uri）被自己人挡在门外——那一跳按定义就还没登录，
+  // 身份正是它要带回来的东西。但也不能把整个企业包挪到闸前，那等于审计外送、
+  // 白标设置全都免登录。所以必须是两个口子，且先后固定。
+  const iPub = srv.indexOf("enterprise.mountPublic(app");
+  const iGuard = srv.indexOf("app.use(account.authGuard)");
+  const iMount = srv.indexOf("enterprise.mount(app");
+  ok(iPub > 0, "没有 mountPublic：SSO 回调无处可挂，IdP 打回来的那一跳会被登录闸挡住，SSO 走不通");
+  ok(iMount > 0, "没有 mount：企业包绝大部分路由无处可挂");
+  ok(iGuard > 0, "找不到登录闸");
+  ok(iPub < iGuard, "mountPublic 跑到登录闸后面去了：SSO 回调会被自己人挡在门外");
+  ok(iGuard < iMount, "mount 跑到登录闸前面去了：审计外送、白标设置这些全都免登录了，这是个洞");
+
+  // mount 不许被 try 包住：要不要「加载失败就别让服务起来」是企业包的判断
+  // （SSO 没挂上就不该悄悄退回密码登录）。包了 try，它连 fail-closed 的权利都没有。
+  ok(!/try\s*\{[^}]*enterprise\.mount(Public)?\(/.test(srv),
+     "enterprise.mount 被 try 包住了：企业包想 fail-closed 都做不到，只能被迫带病运行");
+
+  // ---- 开源版不许被阉割（文档里那条「绝对不要做」）----
+  const uiFiles = [];
+  (function walk(d) {
+    for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+      const fp = path.join(d, f.name);
+      if (f.isDirectory()) walk(fp);
+      else if (/\.(js|html|css)$/.test(f.name)) uiFiles.push(fp);
+    }
+  })(path.join(ROOT, "public"));
+
+  // 只认「拿功能换钱」那类话术。单说「商业授权」不算——关于页本来就该写清授权，
+  // 那是**说明**不是**拦路**，写它是对的，不写才是问题。
+  const GATE = /升级解锁|升级到(企业|专业|付费)版|(企业|专业|付费|高级)版才(能|有|可)|需要(企业|专业|付费)版|付费解锁|开通后可用|upgrade to (pro|enterprise|premium)|premium only|enterprise only/i;
+  const gated = [];
+  for (const fp of uiFiles) {
+    const hit = (fs.readFileSync(fp, "utf8").match(GATE) || [])[0];
+    if (hit) gated.push(`${path.relative(ROOT, fp)}（「${hit}」）`);
+  }
+  ok(gated.length === 0,
+     `界面里出现了付费墙的话术：${gated.join("、")}——开源版不许被阉割，见 docs/开源与商业版边界.md 第 4 节末尾那条「绝对不要做」`);
+  // 反向对照：上面那条恒过就等于没测。确认这把尺子真的量得出东西来
+  ok(GATE.test("这个功能需要企业版") && GATE.test("upgrade to Pro") && !GATE.test("需要单独购买商业授权"),
+     "付费墙话术的判据本身不对：要么抓不到真的，要么把关于页那句正当的授权说明也当成了付费墙");
+
+  // 也别在代码里留功能开关：一旦有人读到 if (license.pro) 这种，项目的定性就变了
+  ok(!/\b(isPro|isEnterprise|hasLicense|licenseTier|proOnly|entOnly)\b/.test(srv),
+     "server.js 里出现了按授权分档的开关，开源版不该有这种东西");
+
+  // 文档和代码得对得上：文档写了私有仓库的名字，代码里包的名字要是同一个东西
+  const boundary = read("docs/开源与商业版边界.md");
+  ok(/openworkbuddy-enterprise/.test(boundary),
+     "边界文档没写私有仓库叫什么，将来没人知道这个口子对着谁");
+  ok(/@openworkbuddy\/enterprise/.test(boundary),
+     "边界文档里的示例代码跟 server.js 里真正的包名对不上，照着文档做会挂");
+}
+
+// ===================================================================
+// 【9】--build：真起一个容器（可选，慢）
 // ===================================================================
 if (BUILD) {
-  console.log("\n【7】真 build、真跑、真注册 —— 这段慢，几分钟");
+  console.log("\n【9】真 build、真跑、真注册 —— 这段慢，几分钟");
   awaitables.forEach((fn) => { void fn(); }); // --build 时也别把上面那几条 await 断言漏掉
   const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...opts });
   const TAG = "openworkbuddy:deploytest";
@@ -367,7 +499,7 @@ if (BUILD) {
   // 是跑在虚拟机里的，只有少数几个宿主机目录被共享进去；/var/folders/... 那种系统临时目录
   // 不在其中——`-v` 上去不会报错，它会在虚拟机里悄悄建一个同名目录，于是容器写得欢，
   // 宿主机这边一个文件都看不见。实测过一次，别再踩。
-  const HOME = fs.mkdtempSync(path.join(os.homedir(), ".wb-deploytest-"));
+  const HOME = fs.mkdtempSync(path.join(os.homedir(), ".owb-deploytest-"));
   const PORT = 3899;
 
   const cleanup = () => { try { sh("docker", ["rm", "-f", NAME], { stdio: "ignore" }); } catch {} };

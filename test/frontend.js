@@ -37,7 +37,7 @@ const { app, BrowserWindow } = require("electron");
 // 连着五次 CI 各挂了一个多小时才被人手动取消。父进程那边现在有超时会强杀，但强杀只拿得到
 // 一具尸体——「卡在哪一屏」「electron 到底起没起来」都问不出来。所以这里自己留三样东西：
 // app 有没有 ready、最后跑完的是哪一屏、以及超时当场把这两句吐到 stderr 再退。
-const WATCH_MS = Number(process.env.WB_TEST_WATCHDOG_MS || 240000);
+const WATCH_MS = Number(process.env.OPENWORKBUDDY_TEST_WATCHDOG_MS || 240000);
 let READY = false;
 let LAST_LINE = "（一屏都还没跑完）";
 const _log = console.log.bind(console);
@@ -164,6 +164,170 @@ let previewSrv = {};
 function toast(){}
 const OFFICE_RE = /\.(doc|ppt|xls)$/i; // 和 app-01 里的一致：桩子只认 .ppt 不认 .pptx 的话，Office 文件的提示文案就验不到
 function onActivate(el, fn){ el.addEventListener("click", fn); }
+`;
+
+// 「整理文件夹 · 腾出空间」那一屏。用户原话：「这是个高频功能啊」。
+//
+// 这一屏必须在真 Chromium 里跑，因为要验的两件事都只在真 DOM 里成立：
+//   ① 勾选框和那个「清掉这 N 个，腾出 XX」的数字是活的——点一下就得跟着变。
+//      这个数字是用户按下确定之前唯一的依据，它要是停在初始值上，用户以为自己只删了
+//      3.7 MB，实际删掉的是 43 MB。
+//   ② 清单里两种条目的形状不一样：逐帧图那一条是**一批**（item.paths 是个数组），
+//      其余是单个（item.path 是字符串）。收集路径时漏掉哪一种，用户勾了却没删掉，
+//      界面上还报「已清掉」——那是最难查的一种坏。
+// 同样切 app-01.js 的真源码，不抄。
+const SWEEP_SRC = [srcBlock("function makeSweepCard(ev)"), srcBlock("function renderSweepPanel(p, task)"),
+                   srcLine("function fmtSize(")].join("\n");
+const SWEEP_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS
+  + "</style><body><div class='modal' id='modal-box'><div class='m-body' id='m-body'></div></div></body>";
+const SWEEP_STUBS = `
+function esc(s){ const d=document.createElement("div"); d.textContent = s==null?"":String(s); return d.innerHTML; }
+${IC_STUB}
+const mBody = document.getElementById("m-body");
+const mask = { classList: { add(){}, remove(){} } };
+const modalBox = document.getElementById("modal-box");
+const mTitle = { set textContent(v){ window.lastTitle = v; } };
+function canOpenOnHost(){ return true; }
+function revealFile(name){ window.revealed = name; }
+function renderFiles(){ window.filesRerendered = true; }
+function toast(msg){ window.toasts = (window.toasts || []).concat(msg); }
+function openSweep(scope){ window.reopened = (window.reopened || []).concat(scope && scope.task || "（全部）"); }
+window.confirm = () => (window.confirmAnswer === undefined ? true : window.confirmAnswer);
+window.posts = [];
+window.fetch = (url, opt) => {
+  window.posts.push({ url, body: opt && opt.body ? JSON.parse(opt.body) : null });
+  return Promise.resolve({ json: () => Promise.resolve({ ok: true, removed: ["a", "b"], bytes: 43300000, skipped: 1, files: [] }) });
+};
+function refreshSweepHint(){}
+`;
+
+const SWEEP_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const tick = () => new Promise((r) => setTimeout(r, 30));
+  // 一份贴着真回包形状的清单：逐帧图是一批（paths 数组），其余是单个（path 字符串），
+  // 过程脚本那组服务端默认不勾
+  const PLAN = () => ({
+    bytes: 41000000, count: 32, capped: false,
+    groups: [
+      { key: "frames", label: "抽帧 / 逐帧图", on: true, count: 30, bytes: 40000000,
+        items: [{ paths: ["任务A/frames/f_001.jpg", "任务A/frames/f_002.jpg"], path: "任务A/frames/f_*", count: 30, bytes: 40000000, why: "30 张连号抽帧图，这个任务的成片已经出来了" }] },
+      { key: "scratch", label: "零碎", on: true, count: 2, bytes: 1000000,
+        items: [{ path: "任务A/ck.db", count: 1, bytes: 900000, why: "浏览器落下的临时库" },
+                { path: "任务A/cmd.err", count: 1, bytes: 100000, why: "命令的错误输出" }] },
+      { key: "script", label: "过程脚本", on: false, count: 1, bytes: 900,
+        items: [{ path: "任务A/get_cookie.js", count: 1, bytes: 900, why: "任务目录里随手写的脚本" }] },
+    ],
+    usage: { bytes: 90000000, count: 40, tasks: [
+      { name: "任务A", bytes: 80000000, count: 35 },
+      { name: "任务B_名字特别长特别长特别长特别长特别长特别长特别长特别长特别长", bytes: 9000000, count: 4 },
+      { name: "", bytes: 1000000, count: 1 },
+    ] },
+  });
+
+  // ---------- 收尾那张卡 ----------
+  const card = makeSweepCard({ type: "sweep", since: 1758000000000, ...PLAN() });
+  document.body.appendChild(card);
+  const go = card.querySelector(".sw-go");
+  const boxes = [...card.querySelectorAll(".sw-rows input")];
+  ok("三组各占一行", boxes.length === 3, "实际 " + boxes.length + " 行");
+  ok("服务端说不勾的那组，界面上就没勾", boxes[2].checked === false && boxes[0].checked === true);
+  ok("按钮上的数字只算勾上的那些", /32 个/.test(go.textContent) && /39\\.1 MB/.test(go.textContent), go.textContent);
+  ok("每组都写了为什么认为它是中间物", [...card.querySelectorAll(".sw-why")].every((e) => e.textContent.trim().length > 4));
+
+  boxes[0].checked = false; boxes[0].dispatchEvent(new Event("change"));
+  ok("★数字是活的★ 撤掉一组，立刻变小", /2 个/.test(go.textContent) && !/32 个/.test(go.textContent), go.textContent);
+  boxes.forEach((b) => { b.checked = false; b.dispatchEvent(new Event("change")); });
+  ok("一个都没勾时按钮按不动", go.disabled === true && /没勾/.test(go.textContent), go.textContent);
+
+  // 勾回逐帧图 + 零碎，按下去
+  boxes[0].checked = true; boxes[1].checked = true;
+  boxes.forEach((b) => b.dispatchEvent(new Event("change")));
+  go.click(); await tick();
+  const sent = window.posts[window.posts.length - 1];
+  ok("真发到了清理那个口", sent && sent.url === "/api/files/sweep");
+  ok("★一批的那种也收进去了★ frames 的 paths 数组没漏",
+    sent.body.paths.indexOf("任务A/frames/f_001.jpg") >= 0 && sent.body.paths.indexOf("任务A/frames/f_002.jpg") >= 0, JSON.stringify(sent.body.paths));
+  ok("单个的那种也收进去了", sent.body.paths.indexOf("任务A/ck.db") >= 0, JSON.stringify(sent.body.paths));
+  ok("★没勾的那组一条都没送★ 过程脚本还在用户手上",
+    sent.body.paths.indexOf("任务A/get_cookie.js") < 0, JSON.stringify(sent.body.paths));
+  ok("带上了这一轮的起点（免得把三周前的旧任务一起端上来）", sent.body.since === 1758000000000);
+  ok("删完了卡片收成一句话", card.classList.contains("done") && /腾出/.test(card.textContent), card.textContent.slice(0, 80));
+  ok("已经不在的那些也说出来了", /1 个已经不在了/.test(card.textContent), card.textContent.slice(0, 120));
+  ok("成果文件那一栏跟着刷新了", window.filesRerendered === true);
+
+  // 反向对照：点「先留着」，一个字节都不许删
+  window.posts.length = 0;
+  const card2 = makeSweepCard({ type: "sweep", since: 1, ...PLAN() });
+  document.body.appendChild(card2);
+  card2.querySelector(".sw-no").click(); await tick();
+  ok("★「先留着」不发任何请求★", window.posts.length === 0, JSON.stringify(window.posts));
+  ok("「先留着」之后告诉用户以后去哪找", /整理文件夹/.test(card2.textContent), card2.textContent.slice(0, 120));
+
+  // ---------- 面板 ----------
+  mBody.innerHTML = '<div class="sweep-panel"></div>';
+  renderSweepPanel(PLAN(), "");
+  const panel = mBody.querySelector(".sweep-panel");
+  ok("先摆出「一共占了多大」", /85\\.8 MB/.test(panel.querySelector(".sw-sum").textContent), panel.querySelector(".sw-sum").textContent);
+  const tasks = [...panel.querySelectorAll(".sw-task")];
+  ok("每个任务占多大都摊开了", tasks.length === 3, "实际 " + tasks.length + " 行");
+  ok("最大的那个条最长", parseFloat(tasks[0].querySelector(".bar").style.width) === 100
+    && parseFloat(tasks[1].querySelector(".bar").style.width) < 100, tasks.map((t) => t.querySelector(".bar").style.width).join());
+  ok("根目录的散文件也有个去处", /散在根目录/.test(tasks[2].textContent), tasks[2].textContent);
+
+  // 展开某一组，看具体是哪些
+  const ar = panel.querySelector(".sw-ar");
+  ok("默认不展开（一上来糊 200 条路径等于没写）", panel.querySelector(".sw-items").hidden === true);
+  ar.click();
+  ok("点开才列具体路径", panel.querySelector(".sw-items").hidden === false
+    && /任务A\\/frames/.test(panel.querySelector(".sw-items").textContent));
+
+  // 「只整理这个任务」
+  window.reopened = [];
+  tasks[0].querySelector('[data-act="only"]').click();
+  ok("点「只整理这个任务」会带着任务名重开", (window.reopened || []).join() === "任务A", JSON.stringify(window.reopened));
+  tasks[0].querySelector('[data-act="open"]').click();
+  ok("点「在访达里打开」给的是这个任务的目录", window.revealed === "任务A", window.revealed);
+
+  // 全选 / 回到默认：默认那一档必须真的是服务端说的那一档，不是「全勾」
+  panel.querySelector(".sw-pick-all").click();
+  ok("全选真的全勾上", [...panel.querySelectorAll(".sw-rows input")].every((b) => b.checked));
+  panel.querySelector(".sw-pick-def").click();
+  ok("★「回到默认」不是「全勾」★ 过程脚本又变回不勾",
+    [...panel.querySelectorAll(".sw-rows input")].map((b) => b.checked).join() === "true,true,false");
+
+  // 删是真删，所以必须拦一道
+  window.confirmAnswer = false; window.posts.length = 0;
+  panel.querySelector(".sw-go").click(); await tick();
+  ok("★确认框里点了取消就什么都不发★", window.posts.length === 0, JSON.stringify(window.posts));
+  window.confirmAnswer = true;
+
+  // 真样式：特别长的任务名不许把面板顶宽
+  modalBox.style.width = "640px";
+  const wide = [...panel.querySelectorAll(".sw-task")].some((t) => t.scrollWidth > t.clientWidth + 1);
+  ok("长任务名被省略号收住，没把面板顶穿", !wide,
+    [...panel.querySelectorAll(".sw-task")].map((t) => t.scrollWidth + "/" + t.clientWidth).join(" "));
+  const items = panel.querySelector(".sw-items");
+  items.innerHTML = '<div><span>' + "任务A/很深的一层/".repeat(12) + 'f_001.jpg</span><span>1 KB</span></div>';
+  ok("展开后的长路径自己换行，也没顶穿", items.scrollWidth <= items.clientWidth + 1, items.scrollWidth + "/" + items.clientWidth);
+
+  // 反向对照：把 word-break 撤掉，同一条长路径立刻顶出去——证明上面那条不是摆设
+  const probe = document.createElement("style");
+  probe.textContent = ".sweep-panel .sw-items span:first-child { word-break: normal !important; white-space: pre !important; }";
+  document.head.appendChild(probe);
+  ok("★反向对照★ 撤掉换行规则，长路径当场顶穿（证明挡住它的就是那条规则）",
+    items.scrollWidth > items.clientWidth + 1, items.scrollWidth + "/" + items.clientWidth);
+  probe.remove();
+
+  // 空清单：不许摆一张「清掉 0 个」的空卡
+  mBody.innerHTML = '<div class="sweep-panel"></div>';
+  renderSweepPanel({ bytes: 0, count: 0, groups: [], usage: { bytes: 0, count: 0, tasks: [] } }, "");
+  ok("没得清的时候说人话，不摆一个按不动的按钮",
+    !mBody.querySelector(".sw-go") && /不敢乱动/.test(mBody.textContent), mBody.textContent.slice(0, 120));
+
+  return names;
+})()
 `;
 
 const TURNOUT_CHECKS = `
@@ -303,6 +467,21 @@ const TURNOUT_CHECKS = `
     ok("反向对照：文件真被改写（mtime 变了）地址就跟着变，该刷新的一次不少",
       bNew.querySelector(".out-thumb img").getAttribute("src") !== src1,
       bNew.querySelector(".out-thumb img").getAttribute("src"));
+
+    // 卡片只有 120px 宽，而工作空间里真实躺着 2800×7032 的图。原图当缩略图 = 让浏览器
+    // 解码 75 MB 位图去画一个指甲盖，一回合八张卡就是 293 MB——用户那句「这个网页版感觉很卡」。
+    // 所以图片卡一律要 ?thumb=320，服务端缩不动（纯 node 没有 nativeImage）会自己发原图。
+    ok("图片卡要的是 320px 缩略图，不是原图（原图当缩略图，八张卡能让浏览器解码 293 MB 位图）",
+      /[?&]thumb=320\\b/.test(src1), src1);
+    ok("  ← 垫在底下那层模糊背景也走同一个地址（两份地址不一样 = 同一张图下两遍）",
+      (png.querySelector(".out-bg").getAttribute("style") || "").includes("thumb=320"),
+      png.querySelector(".out-bg").getAttribute("style"));
+    const bSvg = fresh();
+    const svg = [F("图表.svg", 3000)];
+    renderTurnOutputs(bSvg, svg, svg);
+    ok("反向对照：svg 不要缩略图（矢量本来就小，栅格化只会更大更糊）",
+      !/thumb=/.test(bSvg.querySelector(".out-thumb img").getAttribute("src")),
+      bSvg.querySelector(".out-thumb img").getAttribute("src"));
 
     // 视频卡给第一帧，不给一个"这是个视频"的图标：一回合出三条片子时，图标分不出哪条是哪条
     const bv = fresh();
@@ -1241,6 +1420,82 @@ const GOAL_CHECKS = `
 })()
 `;
 
+// ================= 上下文余量条：换会话要收回去 =================
+// 用户原话：「怎么我切换对话了它还是一样的啊」。这根条画在输入框上头，全界面共用一根，
+// 只在后端播 context 事件的时候才重画——切到一条还没开跑的对话，上一条那句
+// 「上下文 87%…下一轮开跑前会自动压一次」就原样挂着，指着一个跟眼前这条对话毫不相干的数。
+// 这一屏验的是行为不是措辞：过阈值才露面、到线要变黄、收回去之后**真的看不见**
+// （量 computed display，只验 class 的话把 .ctx-bar.show 那条 CSS 删了测试照样全绿）、
+// 收完还能被下一条 context 事件重新填满。结构和样式都从 index.html 现切，不另抄一份。
+const CTX0 = APP02X.indexOf("/**\n * 上下文余量条。");
+const CTX1 = APP02X.indexOf("\nfunction procNote(");
+if (CTX0 < 0 || CTX1 <= CTX0) throw new Error("app-01.js 里的上下文余量条那段找不到了（函数改名/挪窝了？），前端测试没法定位真源码");
+const CTX_SRC = APP02X.slice(CTX0, CTX1);
+if (!/function resetCtxMeter\(/.test(CTX_SRC)) throw new Error("切出来的那段里没有 resetCtxMeter——换会话收条子的那半边没被测到");
+const CTX_BAR_HTML = (() => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const a = html.indexOf('<div class="ctx-bar" id="ctx-bar">');
+  if (a < 0) throw new Error("public/index.html 里找不到 #ctx-bar，前端测试没法验真结构");
+  return html.slice(a, html.indexOf("\n", a)).trim();
+})();
+// 条子宽度是量出来的，不是读 style 读来的（读 style 等于只验「这行赋值跑过」，
+// CSS 里那条 width 被谁覆盖了照样全绿）。但它带着 transition，量的那一刻还在从上一个
+// 宽度滑过去——第一次跑就撞上了：刚设成 87%，量出来 50%。所以测试页里把过渡整个关掉，
+// 量的是终态。动效本身有 testMotionGate 单独守着，不靠这一屏。
+const CTX_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS
+  + "\n* { transition: none !important; animation: none !important; }</style>"
+  + "<body style='margin:0;width:760px'>" + CTX_BAR_HTML + "</body>";
+const CTX_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const bar = document.getElementById("ctx-bar");
+  const txt = () => document.getElementById("ctx-text").textContent;
+  const shown = () => getComputedStyle(bar).display !== "none";
+  const fillW = () => document.getElementById("ctx-fill").getBoundingClientRect().width
+    / bar.querySelector(".ctx-track").getBoundingClientRect().width;
+  const B = 120000, TH = 72000; // 预算 12 万字符、六成自动压缩：默认配置
+  const ev = (used) => ({ used, budget: B, threshold: TH, pct: Math.round((used / B) * 100) });
+
+  ok("一上来是空的（没跑过任务就不该有这根条）", !shown() && txt() === "");
+
+  renderCtxMeter(ev(36000));
+  ok("日常对话（三成）不露面：天天挂一根条看久了等于没有", !shown(), txt());
+
+  renderCtxMeter(ev(60000));
+  ok("过半才露面", shown());
+  ok("露面时把真数字写出来，不只是一根条", /50%/.test(txt()) && /60k \\/ 120k/.test(txt()), txt());
+  ok("还没到自动压缩那条线，不报警也不多嘴", !bar.classList.contains("warn") && !/自动压/.test(txt()), txt());
+
+  renderCtxMeter(ev(104000)); // 用户截图里那一档
+  ok("到线了变黄", bar.classList.contains("warn"));
+  ok("到线了说清下一步（下一轮会压、想留全文另开会话）", /87%/.test(txt()) && /自动压一次/.test(txt()) && /另开会话/.test(txt()), txt());
+  ok("条子按百分比走", Math.abs(fillW() - 0.87) < 0.03, Math.round(fillW() * 100) + "%");
+
+  // 正题：换会话。没有任何 context 事件可等（新对话本来就没有），得靠这一下收干净
+  resetCtxMeter();
+  ok("换会话就收回去：真的看不见了，不是只掉了个 class", !shown() && !bar.classList.contains("show"));
+  ok("字也擦干净（下次露面前不许留着上一条对话的数）", txt() === "");
+  ok("黄也退掉", !bar.classList.contains("warn"));
+  // 收着的时候量不了（display:none 的元素没有宽度），可「下次一露面会不会先闪一下上一条的长度」
+  // 恰恰是要量的：临时按亮量一眼再按回去。读 style.width 代替不了——CSS 里那条 width 被别的
+  // 规则盖掉的话，读出来照样是 "0%"，屏幕上却是满的
+  bar.classList.add("show");
+  const w0 = fillW();
+  bar.classList.remove("show");
+  ok("条子退回零：下次一露面别先闪一下上一条的长度", w0 < 0.01, Math.round(w0 * 100) + "%");
+
+  // 反向对照：收了不等于废了——新对话自己跑起来照样填得回来
+  renderCtxMeter(ev(104000));
+  ok("反向对照：收完之后下一条 context 事件照样填得回来", shown() && /87%/.test(txt()) && bar.classList.contains("warn"), txt());
+
+  // 自动压缩被用户关掉：话得换一句，不然承诺了一个不会发生的动作
+  renderCtxMeter(Object.assign(ev(104000), { compact: false }));
+  ok("关了自动压缩就不许再说「会自动压一次」，改说会被截断", /自动压缩关着/.test(txt()) && !/自动压一次/.test(txt()), txt());
+  return names;
+})()
+`;
+
 // ================= 助理设置页：分区 + 双栏卡片 + 连接/取消连接 =================
 // 用户原话「太乱了，没办法自己调」。这里验的是行为不是措辞：连上的卡真收起（display:none）、
 // 状态灯颜色真变、「连接」先保存再测活、「取消连接」两步确认且只清自己那组凭证、
@@ -1539,7 +1794,15 @@ const LIB1 = APP04_LIB.indexOf("// ================= 专家 · 技能 · 连接�
 for (const [a, b, why] of [[NAV0, NAV1, "app-01.js 的 syncNavByRole"], [AUT0, AUT1, "app-03.js 的 renderAutomPage"],
   [RUN0, RUN1, "app-03.js 的 renderAutomRuns"], [LIB0, LIB1, "app-04.js 的 renderLibPage/renderLibPreview"]])
   if (a < 0 || b <= a) throw new Error(why + " 找不到了（改名/挪走？），自动化/资料库权限测试没法定位真源码");
-const DEAD_SRC = APP01_NAV.slice(NAV0, NAV1) + "\n" + APP03_AT.slice(AUT0, AUT1) + "\n" + APP03_AT.slice(RUN0, RUN1)
+// 资料库那段预览走的是 blob: iframe，页面里要塞一段自报尺寸的脚本（PV_FIT_REPORTER）。
+// 那个常量住在 app-01.js，整站是按顺序加载的所以真跑起来拿得到；这儿只切了 app-04 的一段，
+// 不把它一起带上就是 ReferenceError——而 renderLibPreview 把异常吞成一行「预览不了：…」，
+// 于是整块预览静悄悄地白着，测试报的也是那句话，看不出真因。同样切真源码，不抄一份。
+const PVF0 = APP01_NAV.indexOf("const PV_FIT_REPORTER = ");
+const PVF1 = APP01_NAV.indexOf("async function previewFile(", PVF0);
+if (PVF0 < 0 || PVF1 <= PVF0) throw new Error("app-01.js 里的 PV_FIT_REPORTER 找不到了（改名/挪走？），资料库预览测试没法定位真源码");
+const DEAD_SRC = APP01_NAV.slice(NAV0, NAV1) + "\n" + APP01_NAV.slice(PVF0, PVF1)
+  + "\n" + APP03_AT.slice(AUT0, AUT1) + "\n" + APP03_AT.slice(RUN0, RUN1)
   + "\n" + APP04_LIB.slice(LIB0, LIB1);
 const DEAD_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><body>"
   + "<div class='side-nav top'>"
@@ -1578,7 +1841,9 @@ const AUTH_STUBS = [
   "window.fetch = async (url, init) => {",
   "  window.__posts.push({ url, body: init && init.body ? JSON.parse(init.body) : null });",
   "  const r = window.__resp;",
-  "  return { ok: r.ok, json: async () => r.body };",
+  // 响应头也得有：登录成功那一下要读 X-Recovery-Left（恢复码还剩几条）。
+  // 桩里缺这一层的话，真源码一句 resp.headers.get 就炸在「读不到 undefined 的 get」上
+  "  return { ok: r.ok, headers: { get: (k) => (r.headers && k in r.headers ? r.headers[k] : null) }, json: async () => r.body };",
   "};",
 ].join("\n");
 // 真源码读 location / 写 history，而这两个在页面里都是改不动的（`const location` 直接 SyntaxError，
@@ -1586,7 +1851,7 @@ const AUTH_STUBS = [
 // 里面一个字节没改，外面能换地址、能数刷新了几次。
 // authMode / canRegister 是段内的 let，用取值器透出去，用例照样能摆布它们。
 const AUTH_WRAP = (src) =>
-  "window.__mkAuth = (location, history) => {\n" + src + "\nreturn { showAuth, applyAuthMode, submitAuth, showAuthBlocked,\n" +
+  "window.__mkAuth = (location, history, sessionStorage) => {\n" + src + "\nreturn { showAuth, applyAuthMode, submitAuth, showAuthBlocked,\n" +
   "  get authMode(){ return authMode; }, set authMode(v){ authMode = v; },\n" +
   "  get canRegister(){ return canRegister; }, set canRegister(v){ canRegister = v; } };\n};";
 const AUTH_CHECKS = `
@@ -1598,7 +1863,9 @@ const AUTH_CHECKS = `
   const nav = { reloads: 0, replaced: [] };
   const loc = { origin: "http://x", pathname: "/", search: "", hash: "", href: "http://x/", reload(){ nav.reloads++; } };
   const setUrl = (href) => { const u = new URL(href); loc.href = href; loc.pathname = u.pathname; loc.search = u.search; loc.hash = u.hash; };
-  const A = window.__mkAuth(loc, { replaceState(a, b, u){ nav.replaced.push(u); } });
+  const store = {};
+  const A = window.__mkAuth(loc, { replaceState(a, b, u){ nav.replaced.push(u); } },
+    { setItem(k, v){ store[k] = String(v); }, getItem(k){ return k in store ? store[k] : null; } });
 
   // ---- 1. 普通登录：邀请码框收着，但那条入口一直在 ----
   A.canRegister = false; // 自助注册关着（放公网的默认配置）
@@ -1652,6 +1919,29 @@ const AUTH_CHECKS = `
   ok("地址栏上的码被抹掉了", nav.replaced.pop() === "/",
      "留着的话刷新一次又走一遍注册，把链接转发出去还会把码带出去");
 
+  // ---- 5b. 链接带 ?pair=：配对模式，且**在全新安装上也得是配对模式** ----
+  // 真浏览器（Chrome 153 + CDP）里量出来的一个 bug：优先级写反了。
+  // authMode 那行是 pair 赢 setup，标题那行却是 setup 赢 pair，于是服务器刚重装、
+  // 一个账号都没有的时候，有人从手机历史里点开旧配对链接，会看到半张脸对不上：
+  // 底下已经是配对表单（用户名密码收起来了、码填好了、按钮写「连接」），
+  // 上面标题还在说「创建管理员账号」，副标题教人怎么开管理员号。
+  // 这串得是真码的样子：account.js 的 PAIR_LEN=8、字母表抠掉了 I L O 0 1、不带前缀也不带横杠。
+  // 写成别的形状也能过这一节（这里只验预填，不过服务端），但照着它手改真链接去试的人会撞上
+  // claimPair 那句 key.length !== PAIR_LEN —— 看起来像「配对功能坏了」。
+  // （这整段在一个模板字符串里，注释里不能出现反引号：它会把 AUTH_CHECKS 提前截断。）
+  setUrl("http://x/?pair=K7RQM2XD");
+  $("auth-pair").value = "";
+  A.showAuth(true); // ← setup=true：全新安装，正是出事的那一幕
+  ok("全新安装上点开配对链接，标题也得说配对", $("auth-title").textContent === "用配对码连接",
+     "标题说「创建管理员账号」、表单却是配对表单——两句话互相打架");
+  ok("副标题跟着标题走，别教人去开管理员号", $("auth-sub").textContent.includes("配对码"));
+  ok("配对码替他填好了", $("auth-pair").value === "K7RQM2XD");
+  ok("按钮是「连接」", $("auth-go").textContent === "连接");
+  ok("配对时把用户名密码收起来", !vis($("auth-user")),
+     "这条路的全部意义就是**不用**在这台设备上敲密码；框还摆着，人多半还是会去填");
+  ok("配对码从地址栏上抹掉了", nav.replaced.pop() === "/",
+     "它是一把能直接开门的钥匙，而地址栏是这台设备上最公开的地方");
+
   // ---- 6. 首次开箱（还没有任何用户）不该问邀请码 ----
   setUrl("http://x/");
   A.showAuth(true);
@@ -1679,6 +1969,59 @@ const AUTH_CHECKS = `
   ok("读屏器那边跟着改口", eye.getAttribute("aria-label") === "隐藏密码");
   eye.click();
   ok("再点一下遮回去", pw.type === "password" && !eye.classList.contains("on"));
+
+  // ---- 8b. 二次验证：密码对了才问码，两步走 ----
+  // 这一整条路以前是**断的**：后端早就在发 401 + need_2fa，前端没人接，
+  // 于是开了二次验证的账号在网页上永远登不进来——密码敲对了也只弹一句「失败了，稍后再试」，
+  // 而那句话会把人送去改密码。这一屏钉的就是「谁先开口」和「错了怎么收场」。
+  A.authMode = "login"; A.applyAuthMode(false);
+  ok("一上来不问码", !vis($("auth-code")),
+     "框一直摆着，等于拿账号名去问服务器「这人开没开二次验证」——撞库的人最想先知道的就是这个");
+  window.__posts.length = 0;
+  $("auth-user").value = "小赵"; $("auth-pass").value = "pw123456";
+  window.__resp = { ok: false, body: { need_2fa: true, error: "需要二次验证码" } };
+  await A.submitAuth();
+  ok("后端说要码，框才出来", vis($("auth-code")));
+  ok("提示也跟着出来", vis($("auth-code-hint")), "恢复码也填这个框，不说的话手机丢了的人只会盯着它发愣");
+  ok("按钮改口成「验证并登录」", $("auth-go").textContent === "验证并登录");
+  ok("★第一次进这一步不许弹红字★", $("auth-err").textContent === "",
+     "密码明明是对的，一句红色「需要二次验证码」会让人回去折腾密码");
+
+  window.__posts.length = 0;
+  await A.submitAuth();
+  ok("码空着就不发请求", window.__posts.length === 0, "二次验证的错码是**计次**的，空点几下等于自己把自己锁了");
+  ok("并且说清楚还差什么", $("auth-err").textContent.includes("6 位数字"));
+
+  $("auth-code").value = "000000";
+  window.__resp = { ok: false, body: { need_2fa: true, error: "验证码不对" } };
+  await A.submitAuth();
+  ok("带码那一趟 payload 里真有 code", window.__posts.pop().body.code === "000000");
+  ok("错码的原话照抄", $("auth-err").textContent === "验证码不对");
+  ok("★错了要把框清空★", $("auth-code").value === "",
+     "留着上一次那六位数，人多半直接再点一次按钮，白撞一次限流计数");
+
+  window.__posts.length = 0;
+  $("auth-code").value = " 123456 ";
+  window.__resp = { ok: true, body: { ok: true }, headers: { "X-Recovery-Left": "3" } };
+  nav.reloads = 0;
+  await A.submitAuth();
+  ok("码去掉首尾空格再发", window.__posts.pop().body.code === "123456");
+  ok("验过了整页重来", nav.reloads === 1);
+  ok("★用掉一条恢复码，剩几条得记下来★", store["owb-recovery-left"] === "3",
+     "剩 0 条的时候手机再丢一次就真进不来了，而这件事没人会主动去查");
+
+  delete store["owb-recovery-left"];
+  A.authMode = "register"; A.applyAuthMode(false);
+  ok("换模式就把码框收回去", !vis($("auth-code")) && $("auth-code").value === "",
+     "人去注册页转一圈回来，框还摆在那儿，他会以为新账号也要填码");
+  window.__posts.length = 0;
+  A.authMode = "login"; A.applyAuthMode(false);
+  $("auth-user").value = "小钱"; $("auth-pass").value = "pw123456";
+  window.__resp = { ok: true, body: { ok: true } };
+  await A.submitAuth();
+  ok("回到第一步：payload 里没有 code 这个键", !("code" in window.__posts[0].body), JSON.stringify(window.__posts[0].body));
+  ok("没有那个响应头就什么都不写", !("owb-recovery-left" in store),
+     "写一个空值进去，界面下回就会拿它当「还剩 0 条」报警");
 
   // ---- 9. 待审核：不放进工作台，直接把话说清楚 ----
   A.showAuthBlocked("pending", { username: "xiaowang", nickname: "小王" });
@@ -1715,7 +2058,7 @@ const DEAD_CHECKS = `
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
 
   // 测试页是 data: URL（不透明源），localStorage 一碰就抛；塞个内存版
-  try { localStorage.getItem("wb_lib_recent"); } catch {
+  try { localStorage.getItem("owb_lib_recent"); } catch {
     const mem = {};
     Object.defineProperty(window, "localStorage", { configurable: true, value: {
       getItem: (k) => (k in mem ? mem[k] : null), setItem: (k, v) => { mem[k] = String(v); }, removeItem: (k) => { delete mem[k]; },
@@ -1793,6 +2136,13 @@ const DEAD_CHECKS = `
             ] },
           { id: "s_1", title: "算一版预算表", project: "默认项目", at: Date.parse("2026-09-15T10:00:00Z"),
             live: 1, files: [{ name: "任务_0915_预算/预算.csv", size: 2048, mtime: "2026-09-15T10:00:00Z", gone: false }] },
+          // 整组都没了的那种：一次视频任务拆出几百张帧图、分析完自己清掉。
+          // 这一组默认应该整个不露面——留个只能点出「文件不存在」的空壳没有任何用处
+          { id: "s_0", title: "抖音视频拆帧", project: "默认项目", at: Date.parse("2026-09-14T10:00:00Z"),
+            live: 0, files: [
+              { name: "任务_0914_拆帧/f_010.jpg", size: 0, mtime: "", gone: true },
+              { name: "任务_0914_拆帧/f_020.jpg", size: 0, mtime: "", gone: true },
+            ] },
         ],
         orphans: [
           { name: "随手拷进来的.png", size: 9000, mtime: "2026-09-10T00:00:00Z", gone: false },
@@ -1944,12 +2294,36 @@ const DEAD_CHECKS = `
   ok("按任务：切过去之后按次分组，一次对话一组", page.querySelectorAll(".lib-task").length === 2, html().slice(0, 300));
   ok("按任务：组名是那次任务的标题，不是文件夹名", html().includes("做九月周报") && html().includes("算一版预算表"));
   ok("按任务：这个选择记在 localStorage 里（有人只用文件夹、有人只用按任务，不该每次回默认值）",
-     localStorage.getItem("wb_lib_view") === "task", String(localStorage.getItem("wb_lib_view")));
+     localStorage.getItem("owb_lib_view") === "task", String(localStorage.getItem("owb_lib_view")));
   const sub = page.querySelector('.lib-it.lib-sub[data-name="任务_0916_周报/九月周报.md"]');
   ok("按任务：组里的文件只显示文件名——目录名已经在组标题上说过一遍了",
      !!sub && sub.querySelector(".nm").textContent.trim() === "九月周报.md", sub ? sub.outerHTML.slice(0, 200) : "没有这一行");
-  ok("按任务：产出过但现在不在磁盘上的，划掉并写「已不在」，不假装它还在",
-     !!page.querySelector(".lib-it.lib-sub.gone") && html().includes("已不在"));
+  // 已经不在磁盘上的那些：默认不摆出来。用户原话：「不要出现去点击的时候说不存在啊」。
+  // 摆出来的每一行都是一句「这儿有个文件」，点开却说没有——那一趟点击是纯亏的。
+  // 而这种行往往成百上千：一次视频任务拆出几百张帧图，分析完自己清掉了。
+  ok("按任务：已经不在工作目录里的产出默认不摆出来——点开只会告诉你文件不存在，那一行是白给的",
+     !page.querySelector(".lib-it.lib-sub.gone") && !html().includes("旧草稿.md"), html().slice(0, 400));
+  ok("按任务：整组都没了的任务，整组不露面（留个空壳比不留更让人困惑）",
+     !html().includes("抖音视频拆帧") && !html().includes("f_010.jpg"), html().slice(0, 400));
+  ok("反向对照：同一组里还在的那份照旧在（不是把整组一起吃掉了）",
+     !!page.querySelector('.lib-it.lib-sub[data-name="任务_0916_周报/九月周报.md"]') && html().includes("做九月周报"));
+  // 不声不响地滤掉是不行的——用户会以为这一页漏了东西。说清有多少、一点就能看
+  ok("按任务：底下说清还有几个没了，不是悄悄吞掉",
+     html().includes("另有 3 个") && !!page.querySelector("[data-gone-toggle]"), html().slice(-500));
+  page.querySelector("[data-gone-toggle]").onclick({ preventDefault() {} });
+  await new Promise((r) => setTimeout(r, 0));
+  ok("按任务：点「还是显示」之后，没了的那些划掉并写「已不在」露出来",
+     !!page.querySelector(".lib-it.lib-sub.gone") && html().includes("已不在") && html().includes("旧草稿.md"),
+     html().slice(0, 400));
+  ok("按任务：这时整组都没了的那一组也回来了",
+     html().includes("抖音视频拆帧") && html().includes("f_010.jpg"));
+  ok("按任务：显示/隐藏记在 localStorage 里，不用每次回来重按一遍",
+     localStorage.getItem("owb_lib_gone") === "on", String(localStorage.getItem("owb_lib_gone")));
+  page.querySelector("[data-gone-toggle]").onclick({ preventDefault() {} });
+  await new Promise((r) => setTimeout(r, 0));
+  ok("反向对照：再点一下又收回去，而且 localStorage 跟着回 off",
+     !page.querySelector(".lib-it.lib-sub.gone") && !html().includes("抖音视频拆帧")
+     && localStorage.getItem("owb_lib_gone") === "off", String(localStorage.getItem("owb_lib_gone")));
   ok("按任务：没人认领的文件单独列成「未归属」，不然这一页就是半份清单、用户会以为文件丢了",
      html().includes("未归属") && html().includes("随手拷进来的.png"));
 
@@ -2098,7 +2472,7 @@ const DEAD_CHECKS = `
   // ⑤f 三种摆法 + 分组。用户原话：「资料库那块预览你参考一下mac电脑的文件预览啥的，
   // 列表视图还有图标视图还有画廊视图还有按照分类」。关键是这四件事**正交**：
   // 「怎么摆」和「按什么分堆」各是各的控件，合成一个下拉就会出现「按类型 + 图标」选不出来的死角。
-  try { localStorage.removeItem("wb_lib_mode"); localStorage.removeItem("wb_lib_group"); } catch {}
+  try { localStorage.removeItem("owb_lib_mode"); localStorage.removeItem("owb_lib_group"); } catch {}
   window.settingsCache = { platform_owner: true };
   owner = true;
   window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all", mode: "list", group: "none" };
@@ -2121,6 +2495,20 @@ const DEAD_CHECKS = `
      pngRow().querySelector(".th").innerHTML.slice(0, 160));
   ok("反向对照：不是图片的就退回图标，不去发一串必然 404 的请求",
      !page.querySelector('.lib-it[data-name="月报.md"] img') && !!page.querySelector('.lib-it[data-name="月报.md"] .th svg'));
+  // 缩略图要的是缩略图，不是原图。这一页的图框最大也就 64px（.lib-list.as-gallery .lib-it .th），
+  // 一屏能摆 120 张；工作空间里真实躺着 3552×4736 的图，一张解码后 64 MB —— 拿原图当缩略图
+  // 就是让浏览器解码好几个 GB 的位图，页面先卡住，再整片空白
+  const libSrc = () => pngRow().querySelector("img").getAttribute("src");
+  ok("缩略图：要的是 160px 的缩略图，不是原图（一屏 120 张原图 = 好几个 GB 位图）",
+     libSrc().includes("?thumb=160"), libSrc());
+  ok("  ← 地址还是那张图的地址，只是多带一个参数（缩不动服务端会照旧发原件）",
+     libSrc().startsWith("/api/files/view/") && libSrc().includes("%E8%AE%BE%E8%AE%A1%E7%A8%BF.png"), libSrc());
+  ok("资料库那一栏走的是另一条路由，缩略图一样要（两条路由共用 thumb.js 同一段）",
+     libUrl("lib", "手册.png", 160) === "/api/library/file/%E6%89%8B%E5%86%8C.png?thumb=160", libUrl("lib", "手册.png", 160));
+  ok("反向对照：svg 不缩（矢量本来就小，栅格化只会更大更糊）",
+     !libUrl("ws", "图标.svg", 160).includes("thumb"), libUrl("ws", "图标.svg", 160));
+  ok("反向对照：不传宽度就是原图——预览、下载走的是这一条，不能被缩略图截胡",
+     !libUrl("ws", "设计稿.png").includes("thumb"), libUrl("ws", "设计稿.png"));
 
   page.querySelector('.lib-md[data-mode="icon"]').click();
   await new Promise((r) => setTimeout(r, 0));
@@ -2128,7 +2516,7 @@ const DEAD_CHECKS = `
   ok("摆法：换完之后行还是那些行——三种摆法共用同一份 HTML，只换 CSS",
      !!pngRow() && !!pngRow().querySelector(".th") && !!pngRow().querySelector(".nm"));
   ok("摆法：记在 localStorage 里（有人一直用列表找文档，有人一直用图标过图）",
-     localStorage.getItem("wb_lib_mode") === "icon", String(localStorage.getItem("wb_lib_mode")));
+     localStorage.getItem("owb_lib_mode") === "icon", String(localStorage.getItem("owb_lib_mode")));
 
   page.querySelector('.lib-gp[data-group="kind"]').click();
   await new Promise((r) => setTimeout(r, 0));
@@ -2137,7 +2525,7 @@ const DEAD_CHECKS = `
      grpNames().includes("文档") && grpNames().includes("表格") && grpNames().includes("图片"), grpNames().join("/"));
   ok("分组：堆名后面报个数，不用自己数", !!page.querySelector(".lib-grp .n"));
   ok("分组：分堆归分堆，摆法没被顺手改掉（这两件事是正交的）",
-     pg().dataset.mode === "icon" && localStorage.getItem("wb_lib_group") === "kind", pg().dataset.mode);
+     pg().dataset.mode === "icon" && localStorage.getItem("owb_lib_group") === "kind", pg().dataset.mode);
   ok("分组：文件一个没少，只是换了个摆放次序",
      !!page.querySelector('.lib-it[data-name="设计稿.png"]') && !!page.querySelector('.lib-it[data-name="数据.csv"]')
      && !!page.querySelector('.lib-it[data-name="月报.md"]'));
@@ -2182,7 +2570,7 @@ const DEAD_CHECKS = `
   window.libState.mode = "list";
   window.libState.group = "none";
   window.libState.pick = null;
-  try { localStorage.removeItem("wb_lib_mode"); localStorage.removeItem("wb_lib_group"); } catch {}
+  try { localStorage.removeItem("owb_lib_mode"); localStorage.removeItem("owb_lib_group"); } catch {}
 
   // ⑥ 上传：假的成功比失败更难查
   window.settingsCache = { platform_owner: true };
@@ -2356,7 +2744,7 @@ const HUB_CHECKS = `
 
 // ---- 设置页：会 403 的按钮不该摆在那儿（模型 / 个性化 / 安全 / 导航 / 档位菜单） ----
 // 用户原话是「切换失败怎么还切换失败了啊」。根子不在那句提示，在于这一整屏都是照平台管理员画的：
-// 多人服务器上的普通成员照样看到 12 个标签页，其中「联网搜索 / 自进化 / 数据 / 助理设置」四页
+// 多人服务器上的普通成员照样看到整套标签页，其中「联网搜索 / 自进化 / 执行追踪 / 运行状况 / 数据 / 助理设置」六页
 // 从头到尾没有一样是他的；模型页那排单选钮存的是全局默认、个性化页那两张卡是全服务器共用一份、
 // 安全页八张卡全是服务器策略。点哪一颗都是 403。这一组把这四页在真 Chromium 里画出来数控件，
 // 每条都配一条平台管理员的反向对照——只删控件不写反向对照，把整页删空也能全绿。
@@ -2456,19 +2844,19 @@ const GATE_CHECKS = `
   const navCats = () => [...mBody.querySelectorAll(".cat")].map((c) => c.dataset.cat);
   const activeCat = () => (mBody.querySelector(".cat.active") || {}).dataset;
 
-  // ① 导航：五个纯服务器级的标签页不画给成员
+  // ① 导航：六个纯服务器级的标签页不画给成员
   owner = false;
   await renderSettings("models");
   const memberCats = navCats();
-  ok("成员的设置页里没有「联网搜索 / 自进化 / 执行追踪 / 数据 / 助理设置」这五页（点进去每一颗按钮都是 403）",
-    !["search", "evolve", "trace", "data", "im"].some((k) => memberCats.includes(k)), memberCats.join(","));
+  ok("成员的设置页里没有「联网搜索 / 自进化 / 执行追踪 / 运行状况 / 数据 / 助理设置」这六页（点进去每一颗按钮都是 403）",
+    !["search", "evolve", "trace", "ops", "data", "im"].some((k) => memberCats.includes(k)), memberCats.join(","));
   ok("混着他自己东西的那几页留着（模型看得到有哪些、安全看得到档位、个性化里有他的宠物）",
     ["models", "agent", "security", "persona", "memory", "shortcuts", "look", "about"].every((k) => memberCats.includes(k)), memberCats.join(","));
   await renderSettings("data");
   ok("从旧深链跳进一个已经不画的页，退回第一页，不留一屏空白", activeCat() && activeCat().cat === "models", JSON.stringify(activeCat()));
   owner = true;
   await renderSettings("models");
-  ok("反向对照：平台管理员 13 页一个不少", navCats().length === 13 && navCats().includes("data") && navCats().includes("trace"), navCats().join(","));
+  ok("反向对照：平台管理员 14 页一个不少", navCats().length === 14 && navCats().includes("data") && navCats().includes("trace") && navCats().includes("ops"), navCats().join(","));
 
   // ② 模型页：他改不了服务器的账单，但得知道有哪些模型
   owner = false;
@@ -2904,13 +3292,13 @@ const IMPANE_CHECKS = `
   ok("双栏是真排出来的（卡片落在两个不同的 x 上）", lefts.size === 2, [...lefts].join(","));
   ok("远程指挥 5 张 / 结果推送 3 张 / 发邮件 1 张 / 飞书增强 2 张", [5, 3, 1, 2].every((n, i) => secs[i].querySelectorAll(".im-card").length === n));
   const card = (k) => pane.querySelector('[data-ch="' + k + '"]');
-  const fsC = card("feishu"), qq = card("qq"), wb = card("wecom_bot"), dt = card("dingtalk"), wx = card("wechat_ilink"), wca = card("wecom_app");
+  const fsC = card("feishu"), qq = card("qq"), wcb = card("wecom_bot"), dt = card("dingtalk"), wx = card("wechat_ilink"), wca = card("wecom_app");
 
   // ---- 2. 状态决定收起/摊开/按钮 ----
   ok("连上的飞书卡：绿灯「已连接」", fsC.querySelector(".im-st").classList.contains("ok") && fsC.querySelector(".im-st em").textContent === "已连接");
   const fsLink = fsC.querySelector(".im-src a.get-key");
   ok("飞书卡有「去开放平台」直达链接：https + 新窗口", fsLink && fsLink.href.startsWith("https://open.feishu.cn/") && fsLink.target === "_blank" && fsLink.rel === "noopener" && fsLink.textContent.includes("开放平台"), fsLink && fsLink.outerHTML);
-  ok("QQ / 企微应用卡也有直达链接，推送类（企微群/钉钉/Webhook）没有（凭证在群里拿，没网页可跳）", qq.querySelector("a.get-key") && wca.querySelector("a.get-key") && !wb.querySelector("a.get-key") && !dt.querySelector("a.get-key") && !card("webhook").querySelector("a.get-key"));
+  ok("QQ / 企微应用卡也有直达链接，推送类（企微群/钉钉/Webhook）没有（凭证在群里拿，没网页可跳）", qq.querySelector("a.get-key") && wca.querySelector("a.get-key") && !wcb.querySelector("a.get-key") && !dt.querySelector("a.get-key") && !card("webhook").querySelector("a.get-key"));
   ok("绿灯不是只改类名，颜色真不一样", getComputedStyle(fsC.querySelector(".im-st .dot")).backgroundColor !== getComputedStyle(qq.querySelector(".im-st .dot")).backgroundColor);
   ok("连上的卡默认收起", fsC.classList.contains("packed") && disp(fsC.querySelector(".im-card-b")) === "none");
   ok("连上的卡按钮是「取消连接」", fsC.querySelector(".im-conn").textContent === "取消连接" && fsC.querySelector(".im-conn").dataset.act === "disconnect");
@@ -2923,7 +3311,7 @@ const IMPANE_CHECKS = `
   ok("卡头是可聚焦的按钮语义，且 aria-expanded=false（读屏用户听到的跟眼睛看到的一致）",
      allCards.every((c) => { const h = c.querySelector(".im-card-h"); return h.getAttribute("role") === "button" && h.tabIndex === 0 && h.getAttribute("aria-expanded") === "false"; }));
   ok("没连的卡按钮是「连接」", qq.querySelector(".im-conn").textContent === "连接");
-  ok("配了 webhook 的推送卡亮绿", wb.classList.contains("on") && wb.querySelector(".im-st em").textContent === "已配置");
+  ok("配了 webhook 的推送卡亮绿", wcb.classList.contains("on") && wcb.querySelector(".im-st em").textContent === "已配置");
   ok("没配的钉钉卡灰", dt.querySelector(".im-st").classList.contains("off"));
   const secretIds = [...pane.querySelectorAll("input")].filter((i) => /secret|aes_key/.test(i.id));
   ok("密钥框全是密码型", secretIds.length >= 7 && secretIds.every((i) => i.type === "password"), secretIds.map((i) => i.id + ":" + i.type).join(","));
@@ -2988,9 +3376,9 @@ const IMPANE_CHECKS = `
   }
   wca.querySelector(".im-conn").click();
   await settle();
-  // 红字不是看 class：setMsg 直接写 style.color，所以拿一个探针把 --wb-err-text 解析出来比
+  // 红字不是看 class：setMsg 直接写 style.color，所以拿一个探针把 --owb-err-text 解析出来比
   const resolved = (v) => { const d = document.createElement("div"); d.style.color = "var(" + v + ")"; document.body.appendChild(d); const c = getComputedStyle(d).color; d.remove(); return c; };
-  ok("测活失败：红叉 + 红字说明", rIcon(wca.querySelector('[data-r="wecom_app"]')) === "#i-circle-x" && getComputedStyle(wca.querySelector('[data-r="wecom_app"]')).color === resolved("--wb-err-text"), wca.querySelector('[data-r="wecom_app"]').innerHTML.slice(0, 90) + " | 色 " + getComputedStyle(wca.querySelector('[data-r="wecom_app"]')).color + " vs " + resolved("--wb-err-text"));
+  ok("测活失败：红叉 + 红字说明", rIcon(wca.querySelector('[data-r="wecom_app"]')) === "#i-circle-x" && getComputedStyle(wca.querySelector('[data-r="wecom_app"]')).color === resolved("--owb-err-text"), wca.querySelector('[data-r="wecom_app"]').innerHTML.slice(0, 90) + " | 色 " + getComputedStyle(wca.querySelector('[data-r="wecom_app"]')).color + " vs " + resolved("--owb-err-text"));
   ok("测活失败不收起、按钮仍是「连接」", !wca.classList.contains("packed") && wca.querySelector(".im-conn").textContent === "连接");
   TEST_FAIL.delete("/im/wechat/test");
 
@@ -3093,7 +3481,7 @@ const IMPANE_CHECKS = `
   const lockR = fsC.querySelector('[data-newapp-r="feishu"]');
   ok("secret 读不出来时，App ID 照样替你填上", fsC.querySelector("#im-feishu-app_id").value === "cli_locked01", fsC.querySelector("#im-feishu-app_id").value);
   ok("说清是「建好了、还差 secret」，不是失败", /建好了/.test(lockR.textContent) && /钥匙串/.test(lockR.textContent) && !lockR.querySelector('use[href="#i-circle-x"]'), lockR.innerHTML.slice(0, 120));
-  ok("不标红：这是进度不是错误（走绿勾那一档，不是红叉）", getComputedStyle(lockR).color !== resolved("--wb-err-text") && !!lockR.querySelector('use[href="#i-circle-check"]'), getComputedStyle(lockR).color + " | " + lockR.innerHTML.slice(0, 80));
+  ok("不标红：这是进度不是错误（走绿勾那一档，不是红叉）", getComputedStyle(lockR).color !== resolved("--owb-err-text") && !!lockR.querySelector('use[href="#i-circle-check"]'), getComputedStyle(lockR).color + " | " + lockR.innerHTML.slice(0, 80));
   const lockA = lockR.querySelector("a");
   ok("给一条直达凭证页的链接，省得用户自己在开放平台里翻",
     lockA && lockA.href === "https://open.feishu.cn/app/cli_locked01/baseinfo" && lockA.target === "_blank", lockA && lockA.outerHTML);
@@ -3314,7 +3702,7 @@ const ONB_CHECKS = `
   // ---- 大脑接上了就不再自动弹（不管向导走没走完）----
   // 用户原话：「设置过了不要一直在开头一直弹窗提示啊」。以前的条件是「大脑在 且 走完过」，
   // 可"第一步填完 Key 就跳过"的人 done_at 永远写不上，于是每次开机都被再拦一次
-  onbSkipMem = false; try { sessionStorage.removeItem("wb_onb_skipped"); } catch {}
+  onbSkipMem = false; try { sessionStorage.removeItem("owb_onb_skipped"); } catch {}
   ST = { ...ST, seen: false, needs_setup: false, can_finish: true, brain: { ok: true, via: "api", name: "DeepSeek", model: "deepseek-chat" } };
   await maybeOnboard(); await tick();
   ok("大脑在、向导没走完、连本窗口标记都清了：照样不弹", !mask.classList.contains("show"));
@@ -3324,7 +3712,7 @@ const ONB_CHECKS = `
   closeOnboarding();
 
   // 开机那一趟只是判断"要不要弹"，不该让服务端去跑 which + --version；真弹出来才带 probe
-  onbSkipMem = false; try { sessionStorage.removeItem("wb_onb_skipped"); } catch {}
+  onbSkipMem = false; try { sessionStorage.removeItem("owb_onb_skipped"); } catch {}
   ST = { ...ST, seen: false, needs_setup: false, brain: { ok: true, via: "api", name: "DeepSeek", model: "deepseek-chat" } };
   window.__GETS.length = 0;
   await maybeOnboard(); await tick();
@@ -3374,7 +3762,7 @@ const ONB_CHECKS = `
   closeOnboarding();
 
   // ---- 成员：这一程他根本走不完（最后一步写的是服务器级设置），就别把他放进这块没有 ✕ 的遮罩 ----
-  const forget = () => { onbSkipMem = false; try { sessionStorage.removeItem("wb_onb_skipped"); } catch {} };
+  const forget = () => { onbSkipMem = false; try { sessionStorage.removeItem("owb_onb_skipped"); } catch {} };
   forget();
   ST = { ...ST, seen: false, needs_setup: true, can_finish: false, brain: { ok: false, via: "api", name: "", model: "" } };
   await maybeOnboard(); await tick();
@@ -3613,6 +4001,151 @@ const I18N_CHECKS = `
 })().catch((e) => { throw new Error("[语言] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (window.__i18nNames || 0)); })
 `;
 
+// ---- 二次验证那张卡：绑 / 解 / 换恢复码 ----
+// 后端那几条接口早就通了，界面上却一直没有入口——于是「强制二次验证」开关一打开，
+// 所有人当场被锁在门外：程序要求他绑，又没给他任何一个能绑的地方。这一屏钉三件会要命的事：
+//   · 密钥在验过密码之前不许露脸（它就是账号的第二把钥匙，屏幕前路过一个人就抄走了）；
+//   · 恢复码只在生成那一刻出现一次，话得说到；
+//   · 组织强制的时候，「关闭」要当场讲清楚为什么关不掉——而不是点下去挨一个 403。
+const TFA0 = APP06.indexOf("/**\n * 二次验证：绑、解、换恢复码。");
+const TFA1 = APP06.indexOf("// ================= 快捷键面板 =================");
+if (TFA0 < 0 || TFA1 <= TFA0) throw new Error("app-06.js 里的 renderTwoFactorBox 找不到了（改名/挪窝？），二次验证卡测试没法定位真源码");
+// location.reload（gate 模式绑完要整页重来）在真页面里改不动，navigator.clipboard 在 data: URL
+// 这种不安全上下文里压根不存在——两个都包成参数注进去，里面的源码一个字节没动。
+const TFA_WRAP = "window.__mkTfa = (location, navigator) => {\n" + APP06.slice(TFA0, TFA1)
+  + "\nreturn { renderTwoFactorBox };\n};";
+const TFA_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS
+  + "</style><body><div id='tfa-box'></div></body>";
+const TFA_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const box = document.getElementById("tfa-box");
+  const txt = () => box.textContent;
+  const $ = (id) => box.querySelector("#" + id);
+  const tick = async () => { await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0)); };
+  window.esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+  window.toast = () => {};
+
+  const SECRET = "JBSWY3DPEHPK3PXP";
+  const RC = ["AAAA-1111", "BBBB-2222", "CCCC-3333", "DDDD-4444", "EEEE-5555",
+              "FFFF-6666", "GGGG-7777", "HHHH-8888", "IIII-9999", "JJJJ-0000"];
+  let state = null, posts = [], next = {};
+  window.fetch = (url, opt) => {
+    const method = (opt && opt.method) || "GET";
+    if (method !== "GET") posts.push({ url, body: opt && opt.body ? JSON.parse(opt.body) : null });
+    const body = method === "GET" ? state : (next[url] || { ok: true });
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+  };
+  const nav = { reloads: 0 }, copied = [];
+  const T = window.__mkTfa({ reload(){ nav.reloads++; } },
+    { clipboard: { writeText: (t) => { copied.push(t); return Promise.resolve(); } } });
+  const draw = async (st, opts) => { state = st; await T.renderTwoFactorBox(box, opts); };
+
+  // ---- 1. 没绑：一句话说清它挡的是什么 ----
+  await draw({ on: false, required: false });
+  ok("没绑的时候就一颗开关按钮", !!$("tfa-start"));
+  ok("说清当前是没开的", txt().includes("当前没开"));
+  ok("不强制时它是次要按钮", $("tfa-start").className === "btn-plain");
+  ok("★还没验密码，页面上没有密钥★", !txt().includes(SECRET));
+
+  await draw({ on: false, required: true }, { gate: true });
+  ok("组织强制时把后果说在明处", txt().includes("别处一步也走不了"));
+  ok("挡在工作台前面时它是主按钮", $("tfa-start").className === "btn-brand",
+     "那一屏上没有别的事可做，这颗就是唯一的出路");
+
+  // ---- 2. 第一步先对密码 ----
+  await draw({ on: false, required: false });
+  $("tfa-start").click();
+  ok("点开先问密码", !!$("tfa-pw"), "下一屏就会出现密钥，等于账号的第二把钥匙，不能谁路过都看得见");
+  next["/api/auth/2fa/setup"] = { error: "密码不对" };
+  $("tfa-pw").value = "bad"; $("tfa-pw-go").click(); await tick();
+  ok("密码错了原话照抄", $("tfa-err").textContent === "密码不对");
+  ok("★密码没过，屏幕上一个字节的密钥都没有★", !txt().includes(SECRET));
+  ok("按钮解锁，还能再试", !$("tfa-pw-go").disabled);
+
+  // ---- 3. 验过了才给二维码和密钥 ----
+  next["/api/auth/2fa/setup"] = { ok: true, secret: SECRET, otpauth: "otpauth://totp/x", qr: "data:image/png;base64,AAA" };
+  $("tfa-pw").value = "pw123456"; $("tfa-pw-go").click(); await tick();
+  ok("发出去的就是密码那一条", posts[posts.length - 1].body.password === "pw123456");
+  ok("二维码画出来了", !!box.querySelector("img") && box.querySelector("img").src.startsWith("data:image/png"));
+  ok("二维码有 alt", box.querySelector("img").alt.length > 0, "读屏的人和图没加载出来的时候都只剩这一句");
+  ok("密钥也明文给一份", txt().includes(SECRET), "扫不上的人得手打进验证器");
+  ok("还有个回填码的框", !!$("tfa-code"), "信「前端说扫好了」的话，没扫上的人当场把自己锁在门外");
+
+  // 服务端画不出二维码（依赖没装/字符串太长）也不能变成死路
+  await draw({ on: false, required: false });
+  $("tfa-start").click();
+  next["/api/auth/2fa/setup"] = { ok: true, secret: SECRET, otpauth: "otpauth://totp/x", qr: "" };
+  $("tfa-pw").value = "pw123456"; $("tfa-pw-go").click(); await tick();
+  ok("★二维码画不出来也得能绑下去★", !box.querySelector("img") && txt().includes(SECRET) && !!$("tfa-code"),
+     "少一张图不算失败，密钥还在，手打一样能绑");
+
+  // ---- 4. 恢复码：只在这一刻出现一次 ----
+  next["/api/auth/2fa/enable"] = { ok: true, recovery: RC };
+  $("tfa-code").value = "123456"; $("tfa-enable").click(); await tick();
+  ok("验的是填进去的那个码", posts[posts.length - 1].body.code === "123456");
+  ok("十条恢复码一条不落地摆出来", RC.every((c) => txt().includes(c)));
+  ok("★说清这一屏关掉就再也看不到★", txt().includes("再也看不到"),
+     "服务端存的是哈希，它自己也认不回原文——这句不说，丢了的人只会来问「再给我看一次」");
+  ok("也说清一条只能用一次", txt().includes("一条只能用一次"));
+  $("tfa-copy-rc").click(); await tick();
+  ok("「复制全部」真把十条都放进剪贴板", copied[copied.length - 1].split("\\n").length === 10);
+
+  // ---- 5. 存好了之后：设置页回到卡片，挡门那一屏整页重来 ----
+  state = { on: true, since: "2026-09-17T00:00:00.000Z", recovery_left: 10, required: false };
+  $("tfa-rc-done").click(); await tick();
+  ok("设置页里存完回到卡片，显示已开启", txt().includes("已开启") && nav.reloads === 0);
+
+  await draw({ on: false, required: true }, { gate: true });
+  $("tfa-start").click();
+  next["/api/auth/2fa/setup"] = { ok: true, secret: SECRET, otpauth: "otpauth://totp/x", qr: "" };
+  $("tfa-pw").value = "pw123456"; $("tfa-pw-go").click(); await tick();
+  $("tfa-code").value = "123456"; $("tfa-enable").click(); await tick();
+  $("tfa-rc-done").click(); await tick();
+  ok("★挡在门口那一屏绑完要整页重来★", nav.reloads === 1,
+     "那一刻之前后端对他每一个 /api/* 都回 403，半路初始化过的界面不如推倒重画");
+
+  // ---- 6. 已开：剩几条写在脸上，快没了要喊 ----
+  await draw({ on: true, since: "2026-09-17T00:00:00.000Z", recovery_left: 2, required: false });
+  ok("剩几条写在脸上", txt().includes("恢复码还剩 2 条"));
+  ok("★剩不多了整句标红★", box.innerHTML.includes("owb-err-text"));
+  ok("并且告诉他用光了还有哪条路", txt().includes("openworkbuddy 2fa"),
+     "手机再丢一次就只能去那台机器上敲这一句，不写的话等于没有出路");
+
+  // ---- 7. 组织强制的时候，「关闭」点下去要有话说 ----
+  await draw({ on: true, since: "2026-09-17T00:00:00.000Z", recovery_left: 8, required: true });
+  posts.length = 0;
+  $("tfa-off").click(); await tick();
+  ok("★强制时「关闭」不发请求★", posts.length === 0, "画一颗点了才挨 403 的按钮，用户只会以为程序坏了");
+  ok("而是当场讲清为什么关不掉、该找谁", txt().includes("关不掉") && txt().includes("管理员"));
+
+  // ---- 8. 不强制时关掉：密码和码两样都要 ----
+  await draw({ on: true, since: "2026-09-17T00:00:00.000Z", recovery_left: 8, required: false });
+  $("tfa-off").click(); await tick();
+  ok("关掉要密码 + 码两样", !!$("tfa-off-pw") && !!$("tfa-off-code"));
+  next["/api/auth/2fa/disable"] = { ok: true };
+  $("tfa-off-pw").value = "pw123456"; $("tfa-off-code").value = "654321";
+  posts.length = 0;
+  state = { on: false, required: false };
+  $("tfa-off-go").click(); await tick();
+  ok("两样都发出去了", posts[0] && posts[0].body.password === "pw123456" && posts[0].body.code === "654321");
+  ok("关完卡片跟着变回「没开」", txt().includes("当前没开"));
+
+  // ---- 9. 换恢复码：旧的会全废，所以得先验一次码 ----
+  await draw({ on: true, since: "2026-09-17T00:00:00.000Z", recovery_left: 8, required: false });
+  $("tfa-regen").click(); await tick();
+  ok("先说清旧的会全废", txt().includes("原来那批全部作废"));
+  ok("★换之前要验一次码★", !!$("tfa-rc-code"),
+     "不验的话，电脑没锁人走开，路过的人就能把他手上那张纸变成废纸");
+
+  // ---- 10. 状态取不到也别留一片空白 ----
+  await draw(null);
+  ok("读不到状态时给一句人话", txt().includes("刷新页面"));
+
+  return names;
+})()`;
+
 // ---------- 外观页：主题 / 皮肤 / 字号 / 字体 / 密度 ----------
 // 真源切片：app-02 的偏好层（读写本机存储 + 写到 <html>）、app-06 的外观页、app-05 的设置目录
 const APP06_LOOK = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-06.js"), "utf8");
@@ -3634,7 +4167,7 @@ const AVA_SRC = (() => {
 // 没有 sprite 的话每个图标名都会被当成「用户手打的字」，这一屏就测的不是图标了。
 const SPRITE_SVG = (() => {
   const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
-  const a = html.indexOf('<svg id="wb-sprite"'), b = html.indexOf("</svg>", a);
+  const a = html.indexOf('<svg id="owb-sprite"'), b = html.indexOf("</svg>", a);
   if (a < 0 || b <= a) throw new Error("public/index.html 里找不到 sprite，头像测试没法验真图标");
   return html.slice(a, b + 6);
 })();
@@ -3775,7 +4308,7 @@ const LOOK_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n"
   + "<textarea id='input'></textarea>"
   + "<div class='settings-layout'><div class='settings-nav' id='nav'></div><div class='settings-pane' id='pane'></div></div></body>";
 // 改完 <html> 上的属性，得逼这棵树真重算一次再去量。
-// 2026-09-13 的 CI（macOS 离屏窗口，没 GPU、没合成器）上是这样的：--wb-fs 已经是 18px 了，
+// 2026-09-13 的 CI（macOS 离屏窗口，没 GPU、没合成器）上是这样的：--owb-fs 已经是 18px 了，
 // body 的 font-size 却还报 15px，跟着 calc 走的标题 / 左栏 / 行内代码全停在旧档；
 // 而 textarea 和预览行倒是跟上了——同一棵树，一半新一半旧。本机从来不出现。
 // 把根节点的 display 摘一下再挂回去，整棵布局树重建，样式必然重算，不靠等下一帧撞运气。
@@ -3802,7 +4335,7 @@ const LOOK_CHECKS = FLUSH_SRC + `
     try {
       const before = sizes(); flush(); const after = sizes();
       return "data-*=" + JSON.stringify(Object.assign({}, html.dataset))
-        + " --wb-fs=" + cssVar("--wb-fs") + " --primary=" + cssVar("--primary")
+        + " --owb-fs=" + cssVar("--owb-fs") + " --primary=" + cssVar("--primary")
         + " 视口=" + innerWidth + "x" + innerHeight + " dpr=" + devicePixelRatio
         + " " + before + (after === before ? "" : " ｜ 强制重算后变成 " + after + "（那读到的就是陈样式）");
     } catch (e) { return "（连现场都取不到：" + ((e && e.message) || e) + "）"; }
@@ -3943,13 +4476,13 @@ const LOOK_CHECKS = FLUSH_SRC + `
   // 非法值：来自旧版本或被人手改过的存储，不能把页面搞坏
   setLook("fs", "huge"); setLook("nope", "x"); setTheme("neon"); flush();
   ok("非法值一律忽略：fs 仍是标准、theme 仍是浅色、未知键不炸", lookGet("fs") === "m" && !("fs" in html.dataset) && getTheme() === "light");
-  lookMem["wb-look-fs"] = "huge"; lookMem["wb-theme"] = "neon"; applyLook(); applyTheme(); flush();
+  lookMem["owb-look-fs"] = "huge"; lookMem["owb-theme"] = "neon"; applyLook(); applyTheme(); flush();
   ok("存储里躺着旧版本写的非法值：读回当没写（标准字号 / 跟随系统），不带脏属性", lookGet("fs") === "m" && !("fs" in html.dataset) && getTheme() === "system");
   setTheme("light"); flush();
   ok("点分区空白处：不改任何状态、不报错", (() => { pane.querySelector(".card-item").click(); return lookGet("fs") === "m" && getTheme() === "light"; })());
 
   // 左栏目录：图标 + 短名，别一列密密麻麻的字
-  ok("设置目录 13 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 13 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
+  ok("设置目录 14 项都带图标、名字 ≤ 4 字，且含「外观」", SETTING_CATS.length === 14 && SETTING_CATS.every(([k, l, i]) => i && l.length <= 4) && SETTING_CATS.some(([k, l]) => k === "look" && l === "外观"));
   if (fails.length) throw new Error("外观：" + (names.length + fails.length) + " 条里挂了 " + fails.length + " 条：\\n" + fails.join("\\n"));
   return names;
 `;
@@ -4176,7 +4709,7 @@ const TRAIL_CHECKS = `
   // 测试页是 data: URL（不透明源），localStorage 一碰就抛。塞个内存版，
   // 这样「展开/收起记不记得住」这件事能真测，而不是靠 try/catch 糊过去
   const LS = {};
-  try { localStorage.getItem("wb_proc_open"); } catch {
+  try { localStorage.getItem("owb_proc_open"); } catch {
     Object.defineProperty(window, "localStorage", { configurable: true, value: {
       getItem: (k) => (k in LS ? LS[k] : null), setItem: (k, v) => { LS[k] = String(v); }, removeItem: (k) => { delete LS[k]; },
     } });
@@ -4216,9 +4749,9 @@ const TRAIL_CHECKS = `
   // 点一下能展开，而且这个选择记下来：下次开的任务直接按你上次的来
   runWrap.querySelector(".proc-head").click();
   ok("点标题能展开看细节", runWrap.classList.contains("open") && disp(runWrap.querySelector(".proc-body")) !== "none");
-  ok("展开这个选择被记住了", localStorage.getItem("wb_proc_open") === "1", String(localStorage.getItem("wb_proc_open")));
+  ok("展开这个选择被记住了", localStorage.getItem("owb_proc_open") === "1", String(localStorage.getItem("owb_proc_open")));
   runWrap.querySelector(".proc-head").click();
-  ok("再点收起，记的也跟着改", !runWrap.classList.contains("open") && localStorage.getItem("wb_proc_open") === "0");
+  ok("再点收起，记的也跟着改", !runWrap.classList.contains("open") && localStorage.getItem("owb_proc_open") === "0");
 
   // ---- 执行过程一行流：「[图标] 读 报告.md · 120 行」，参数收在卡里 ----
   // 用户原话：「让我一直看到任务完成情况，不要看太多没有用的东西」。
@@ -4626,7 +5159,8 @@ const PREVIEW_HTML =
   "<!doctype html><meta charset='utf-8'><body>" +
   "<div id='preview-panel'></div><div id='files-panel'></div><div id='pv-body'></div>" +
   "<span id='pv-name'></span><a id='pv-dl'></a>" +
-  "<button id='pv-close'></button><button id='pv-sys'></button><button id='pv-rv'></button></body>";
+  "<button id='pv-close'></button><button id='pv-copy' hidden></button>" +
+  "<button id='pv-sys'></button><button id='pv-rv'></button></body>";
 
 // 网络请求全部截下来：既当替身，也当"到底发了什么请求"的证据（Range 头就是这么验的）
 const PREVIEW_STUBS = [
@@ -4641,14 +5175,22 @@ const PREVIEW_STUBS = [
   "  }",
   "  const name = decodeURIComponent((url.split('/api/files/view/')[1] || '').split('?')[0]);",
   "  const f = window.PV_FILES[name] || { body: '', total: 0 };",
-  "  return { ok: true, status: 206, headers: { get: (h) => (h.toLowerCase() === 'content-range' ? 'bytes 0-1/' + f.total : null) }, text: async () => f.body };",
+  "  return { ok: window.PV_FETCH_OK !== false, status: 206, headers: { get: (h) => (h.toLowerCase() === 'content-range' ? 'bytes 0-1/' + f.total : null) }, text: async () => f.body,",
+  "           blob: async () => window.PV_BLOB || new Blob([window.PNG1X1], { type: 'image/png' }) };",
   "};",
   "window.esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');",
   "window.renderMd = (t) => '<p class=md>' + window.esc(t) + '</p>';",
   "window.fmtSize = (n) => n + ' B';",
   "window.renderDeployBar = () => {};",
   "window.revealFile = (n) => { window.opened.push('reveal:' + n); };",
-  "window.toast = () => {};",
+  "window.toasts = []; window.toast = (t, i) => window.toasts.push([String(t), i || '']);",
+  // 剪贴板：Electron 离屏窗口里 navigator.clipboard.write 真调会弹权限/静默失败，
+  // 所以整个换掉，顺便当"到底往剪贴板放了什么"的证据。ClipboardItem 同理。
+  "window.copied = []; window.ClipboardItem = function (m) { this.m = m; this.types = Object.keys(m); };",
+  "Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write: async (items) => { window.copied.push(items[0]); } } });",
+  // 1×1 的真 PNG。走 canvas 重编码那条路时 <img> 要能真的解出来，光有个空 Blob 不行
+  "window.PNG1X1 = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));",
+  "window.PV_BLOB = null;",
   // 身份：默认按平台管理员验（老断言全是这一档），成员那一档在第 6.5 节里现场翻过来
   "window.settingsCache = { platform_owner: true };",
   "window.downloaded = []; window.downloadFile = (n) => window.downloaded.push(n);",
@@ -4752,10 +5294,12 @@ const PREVIEW_CHECKS = `
 
   // ---- 4. 白名单外的纯文本（这一版之前只能下载）----
   {
-    const h = await show("main.swift", { body: 'import Foundation\\nprint(1)', total: 30 });
-    ok("swift 源码直接显示内容", /import Foundation/.test(h) && !/暂不支持/.test(h), h.slice(0, 200));
-    const p = await show("build.py", { body: "def main():\\n    pass", total: 20 });
-    ok("py 源码直接显示内容", /def main/.test(p));
+    // 源码从这一版起会被着色，关键字外面裹了 <span>，所以按 textContent 比对而不是 innerHTML——
+    // 要验的是「内容出来了」，不是「内容中间一个标签都没有」
+    await show("main.swift", { body: 'import Foundation\\nprint(1)', total: 30 });
+    ok("swift 源码直接显示内容", /import Foundation/.test(body.textContent) && !/暂不支持/.test(body.textContent), body.textContent.slice(0, 200));
+    await show("build.py", { body: "def main():\\n    pass", total: 20 });
+    ok("py 源码直接显示内容", /def main/.test(body.textContent), body.textContent.slice(0, 200));
     const s = await show("字幕.srt", { body: "1\\n00:00:01,000 --> 00:00:02,000\\n你好", total: 40 });
     ok("srt 字幕直接显示内容", /00:00:01/.test(s) && /你好/.test(s));
   }
@@ -4811,9 +5355,39 @@ const PREVIEW_CHECKS = `
     const h = await show("巨大.log", { body: "第一行\\n", total: 300 * 1024 * 1024 });
     const req = window.reqs.filter((r) => r.url.includes("/api/files/view/")).at(-1);
     ok("取文本带 Range 头", /^bytes=0-\\d+$/.test(((req.init || {}).headers || {}).Range || ""), JSON.stringify(req.init));
-    ok("大文件标出只显示了开头", /只显示了开头/.test(h), h.slice(-200));
+    // 以前这儿只丢一句「文件太大，只显示了开头」就完事了。可他想看的那一行
+    // 可能就在第 520 KB 上，一句「下载或用系统程序打开」等于把人推出应用。
+    // 现在要的是三件事：读到哪儿写清楚、还能接着往后读、读完了说一声。
+    ok("大文件写清楚读到哪儿了", /已经显示到/.test(h) && /整个文件/.test(h), h.slice(-300));
+    const moreBtn = body.querySelector(".pv-more");
+    ok("给了一颗「再往后看」，而不是只给一句「下载吧」", !!moreBtn, h.slice(-300));
+    ok("按钮上写明这一下要读多少", moreBtn.textContent.indexOf("再往后看") === 0 && /[0-9]/.test(moreBtn.textContent), moreBtn.textContent);
+    ok("按钮记着从哪个字节接", Number(moreBtn.dataset.at) === PV_TEXT_MAX, moreBtn.dataset.at);
+
+    // 真点一下：发的 Range 得是接在后面的那一段，读回来的字要接在原文后面，不是把头上那段冲掉
+    window.PV_FILES["巨大.log"] = { body: "后面那段", total: 300 * 1024 * 1024 };
+    window.reqs.length = 0;
+    moreBtn.onclick();
+    await new Promise((r) => setTimeout(r, 40));
+    const req2 = window.reqs.filter((r) => r.url.includes("/api/files/view/")).at(-1);
+    ok("接着读的 Range 从上一段末尾起",
+       ((req2.init || {}).headers || {}).Range === "bytes=" + PV_TEXT_MAX + "-" + (2 * PV_TEXT_MAX - 1),
+       JSON.stringify(req2.init));
+    ok("读回来的字接在后面", body.querySelector(".pv-more-text").textContent === "后面那段",
+       body.querySelector(".pv-more-text").textContent);
+    ok("读到哪儿跟着往前走", /1\\.0 MB|1048576/.test(body.querySelector(".pv-more-at").textContent) || body.querySelector(".pv-more-at").textContent.indexOf("已经显示到") === 0,
+       body.querySelector(".pv-more-at").textContent);
+
+    // 读到头了就不能还摆着一颗按下去没反应的按钮
+    const h2 = await show("刚好超一点.log", { body: "头", total: PV_TEXT_MAX + 3 });
+    const b2 = body.querySelector(".pv-more");
+    window.PV_FILES["刚好超一点.log"] = { body: "尾巴", total: PV_TEXT_MAX + 3 };
+    b2.onclick();
+    await new Promise((r) => setTimeout(r, 40));
+    ok("读完了把按钮换成「到头了」", !body.querySelector(".pv-more") && /已经到文件末尾了/.test(body.innerHTML), body.innerHTML.slice(-260));
+
     const small = await show("小.log", { body: "就一行", total: 9 });
-    ok("小文件不乱标截断", !/只显示了开头/.test(small));
+    ok("小文件不乱标截断", !/已经显示到/.test(small) && !/pv-more/.test(small));
   }
 
   // ---- 8. 只剩 Word97 那三个二进制老格式还交给本机程序；docx/xlsx/pptx 不许再被踢出去 ----
@@ -4909,6 +5483,154 @@ const PREVIEW_CHECKS = `
     ok("分号分隔也认", /<th>q<\\/th>/.test(semi));
     const cell = await show("嵌换行.csv", { body: 'h1,h2\\n"第一行\\n第二行",x', total: 30 });
     ok("字段内换行不当成新行", cell.match(/<tr>/g).length === 2, String((cell.match(/<tr>/g) || []).length));
+  }
+
+  // ---- 15. 图片复制：用户原话「一些图片在预览的时候能不能就知道我复制啊，我能复制到其他地方啊」----
+  // 三条入口（按钮 / 双击图 / Ctrl・Cmd+C）都得真把一张 PNG 放进剪贴板；
+  // 失败了要按原因说人话并给出路（加一句「复制失败」等于没说），而且按钮不能永久按灰。
+  {
+    const btn = document.getElementById("pv-copy");
+    const tick = () => new Promise((r) => setTimeout(r, 40));
+    await show("图.png", { body: "", total: 1 });
+    ok("看图时复制按钮露出来", btn.hidden === false);
+    ok("图上写了怎么复制（不写没人知道双击能复制）", /title="双击复制这张图"/.test(body.innerHTML), body.innerHTML.slice(0, 200));
+
+    window.copied = []; window.toasts = [];
+    btn.onclick();
+    await tick();
+    ok("点按钮真往剪贴板放了一张图", window.copied.length === 1, String(window.copied.length));
+    ok("放进去的是 PNG（Chromium 只认这一种，给 jpeg 会直接抛）",
+       !!(window.copied[0] && window.copied[0].m && window.copied[0].m["image/png"]), JSON.stringify(window.copied[0] && window.copied[0].types));
+    ok("复制完说了一句人话", window.toasts.length === 1 && window.toasts[0][0].indexOf("已复制") >= 0, JSON.stringify(window.toasts));
+    ok("按钮没被永久按灰", btn.disabled === false);
+
+    // 非 PNG 得先过一道 canvas 重编码：我们产出的图大半是 jpg/webp，
+    // 这一步没了就是「点了没反应」——而且报的还是 NotAllowedError，根本看不出是这个原因
+    window.PV_BLOB = new Blob([window.PNG1X1], { type: "image/jpeg" });
+    window.copied = [];
+    btn.onclick();
+    await tick();
+    ok("jpeg 也能复制（走了 canvas 重编码）", window.copied.length === 1, String(window.copied.length));
+    ok("重编码出来的仍然是 PNG",
+       !!(window.copied[0] && window.copied[0].m && window.copied[0].m["image/png"] && window.copied[0].m["image/png"].type === "image/png"),
+       JSON.stringify(window.copied[0] && window.copied[0].types));
+    window.PV_BLOB = null;
+
+    window.copied = [];
+    body.querySelector(".pv-img").ondblclick();
+    await tick();
+    ok("双击图片也复制", window.copied.length === 1, String(window.copied.length));
+
+    // Ctrl/Cmd+C：预览开着、看的又是图，这一下才该被接管
+    const key = (el, init) => {
+      const e = new KeyboardEvent("keydown", Object.assign({ key: "c", cancelable: true, bubbles: true }, init));
+      (el || document).dispatchEvent(e);
+      return e;
+    };
+    window.copied = [];
+    const e1 = key(null, { metaKey: true });
+    await tick();
+    ok("Cmd+C 复制当前这张图", window.copied.length === 1, String(window.copied.length));
+    ok("而且拦下了浏览器默认那一下", e1.defaultPrevented);
+    window.copied = [];
+    key(null, {});
+    await tick();
+    ok("没按修饰键的 c 不算", window.copied.length === 0, String(window.copied.length));
+
+    // 人在输入框里按 Cmd+C，那是在复制文字，不该被我们抢走
+    const inp = document.createElement("input");
+    inp.value = "文件名"; document.body.appendChild(inp);
+    window.copied = [];
+    const e2 = key(inp, { metaKey: true });
+    await tick();
+    ok("输入框里的 Cmd+C 不抢", window.copied.length === 0 && !e2.defaultPrevented, String(window.copied.length));
+    inp.remove();
+
+    // 选中了文字同理：他要的是那段字，不是这张图
+    const span = document.createElement("span");
+    span.textContent = "报告.png"; document.body.appendChild(span);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.selectAllChildren(span);
+    window.copied = [];
+    const e3 = key(null, { metaKey: true });
+    await tick();
+    ok("选中文字时的 Cmd+C 不抢", window.copied.length === 0 && !e3.defaultPrevented, String(window.copied.length));
+    sel.removeAllRanges(); span.remove();
+
+    // 取不到图 / 浏览器不给写剪贴板：两条错要分开说，并且都得给出路
+    window.toasts = []; window.copied = []; window.PV_FETCH_OK = false;
+    btn.onclick();
+    await tick();
+    window.PV_FETCH_OK = true;
+    ok("图取不到时不会默默地什么都不发生", window.toasts.length === 1 && window.copied.length === 0, JSON.stringify(window.toasts));
+    ok("而且说的是图没取到，不是一句复制失败", window.toasts[0][0].indexOf("没取到") >= 0, JSON.stringify(window.toasts));
+    ok("按钮又放开了，不是卡死在灰色", btn.disabled === false);
+
+    const saveCI = window.ClipboardItem;
+    window.ClipboardItem = undefined;
+    window.toasts = [];
+    btn.onclick();
+    await tick();
+    window.ClipboardItem = saveCI;
+    ok("没剪贴板 API 时指到 HTTPS 上（局域网直连就是这个症状）",
+       window.toasts.length === 1 && window.toasts[0][0].indexOf("HTTPS") >= 0, JSON.stringify(window.toasts));
+    ok("这一条也告诉他还能右键复制", window.toasts[0][0].indexOf("右键") >= 0, JSON.stringify(window.toasts));
+
+    // 不是图的时候这颗按钮必须收起来：摆一个按下去没反应的按钮，比没有这个按钮更糟
+    await show("报告.md", { body: "# x", total: 3 });
+    ok("看文档时复制按钮收起来", btn.hidden === true);
+    window.copied = [];
+    key(null, { metaKey: true });
+    await tick();
+    ok("文档页上的 Cmd+C 也不抢", window.copied.length === 0, String(window.copied.length));
+  }
+
+  // ---- 16. 源码按代码画：行号 + 着色 + 横向滚动，压缩产物先展开 ----
+  // 用户原话：「怎么这个 mjs 代码显示的时候就看着都没格式看着像是乱码一样啊」。
+  // 他看的是打包器吐出来的 .mjs —— 整份文件一行几万字符，落进那条 pre-wrap +
+  // overflow-wrap:anywhere 的兜底 <pre>，被从任意位置断字，所以「像乱码」。
+  {
+    const MIN = 'import{t as e}from"./rt.mjs";var u={position:\`relative\`,width:\`100%\`},d={...u,color:\`#85F\`};'
+      + 'function g(e,t,n=!0){let i=c();r(()=>{n&&i===e&&t()},[i])}var re=/[/{};]+/g;var q="}}}";'
+      + 'var pad="' + "y".repeat(420) + '";';
+    const h = await show("sc6O9FDJf.Dw96dade.mjs", { body: MIN, total: MIN.length });
+    ok("mjs 走代码看法：行号栏 + 代码区都在", /pv-code-ln/.test(h) && /pv-code-src/.test(h), h.slice(0, 240));
+    ok("代码区不折行（折行正是「像乱码」的成因）", !/overflow-wrap:anywhere/.test(h), h.slice(0, 320));
+    ok("认出这是压缩产物，并且默认已经展开了", /pv-code-bar/.test(h) && /看原文/.test(h), h.slice(0, 320));
+
+    const srcOf = (html) => (html.match(/class="pv-code-src"[^>]*>([\\s\\S]*?)<\\/pre>/) || [, ""])[1];
+    const lnOf = (html) => (html.match(/class="pv-code-ln"[^>]*>([\\s\\S]*?)<\\/pre>/) || [, ""])[1];
+    const nl = String.fromCharCode(10);
+    ok("展开之后真的不止一行了", srcOf(h).split(nl).length > 8, String(srcOf(h).split(nl).length));
+    ok("行号栏的行数跟代码行数对得上（对不上就是在骗人）",
+       lnOf(h).split(nl).length === srcOf(h).split(nl).length,
+       lnOf(h).split(nl).length + " vs " + srcOf(h).split(nl).length);
+
+    // 认不认引号和正则，是这个展开器成立的前提：压缩代码里 "}}}"、/[/{};]/ 这种字面量满地都是，
+    // 不认的话第一个引号里的 } 就把后面全部缩进带歪，展开出来比不展开还难看
+    const plain = srcOf(h).replace(/<[^>]*>/g, "");
+    ok("字符串里的花括号没被当成结构（那三个仍在同一行）", /var q="\\}\\}\\}";/.test(plain), plain.slice(-300));
+    ok("正则里的 / 和 { } 也没被当成结构", /var re=\\/\\[\\/\\{\\};\\]\\+\\/g;/.test(plain), plain.slice(-300));
+
+    ok("着色真的上了（关键字和字符串至少各有一处）", /class="c-kw"/.test(h) && /class="c-str"/.test(h), h.slice(0, 400));
+
+    // 「看原文」得真的回到原文：展开是为了读，总有人要确认原文长什么样
+    document.getElementById("pv-code-raw").click();
+    const raw = body.innerHTML;
+    ok("点「看原文」回到一行原文", srcOf(raw).split(nl).length === 1 && /展开排版/.test(raw), String(srcOf(raw).split(nl).length));
+    document.getElementById("pv-code-raw").click();
+    ok("再点一下又展开回去", srcOf(body.innerHTML).split(nl).length > 8);
+
+    // 没压缩的源码不该有那条横幅 —— 手写代码本来就排好版了，弹一句「这是压缩过的」是胡说
+    const nice = await show("util.js", { body: "const a = 1;\\nfunction f() {\\n  return a;\\n}\\n", total: 40 });
+    ok("反向对照：没压缩的源码不弹展开横幅", /pv-code-ln/.test(nice) && !/pv-code-bar/.test(nice), nice.slice(0, 240));
+
+    // 日志和纯文本仍旧走折行那条路：那是散文，一行长过面板宽度就该折
+    const log = await show("跑批.log", { body: "2026-09-17 开始\\n2026-09-17 结束", total: 30 });
+    ok("反向对照：.log 不走代码路，仍是会折行的纯文本", !/pv-code-ln/.test(log) && /pre-wrap/.test(log), log.slice(0, 240));
+
+    // 源码里出现 <script> 是家常便饭（模板字符串、正则、注释里都有），一律当字符看
+    const evil = await show("bad.js", { body: 'var x = "<script>alert(1)</' + 'script>";', total: 40 });
+    ok("源码里的标签被转义，不许真进 DOM", evil.indexOf("&lt;script&gt;") >= 0 && !body.querySelector("script"), evil.slice(0, 240));
   }
 
   return names;
@@ -5198,7 +5920,7 @@ const COMPOSER_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + 
 const COMPOSER_STUBS = [
   IC_STUB,
   "var BUSY = false; const curBusy = () => BUSY;",
-  // 跟着终端（wb 命令行）里那趟活儿时是另一套：插得上话，但停不了——那个进程不归网页管
+  // 跟着终端（openworkbuddy 命令行）里那趟活儿时是另一套：插得上话，但停不了——那个进程不归网页管
   "var CLI = false; const cliBusy = () => CLI;",
   "let currentMode = 'craft';",
   "const inputEl = document.getElementById('input'), sendBtn = document.getElementById('send');",
@@ -5285,7 +6007,7 @@ const COMPOSER_CHECKS = `
   ok("附件撤掉：回到「◼」", sendIcon() === "square" && sendBtn.classList.contains("stop"));
 
   // ---- 跟着终端里那趟活儿：插得上话，但停不了 ----
-  // 这个进程是 wb 命令行起的，不归网页管。画一颗按下去没反应的「停」键是骗人，
+  // 这个进程是 openworkbuddy 命令行起的，不归网页管。画一颗按下去没反应的「停」键是骗人，
   // 所以这一档专门不给停止态，提示语直说「回终端按 Ctrl+C」
   BUSY = false; CLI = true; typeIn(""); updateSendUI();
   ok("跟着终端那趟：提示语说清能插话、也说清想停得回终端",
@@ -5773,11 +6495,11 @@ const SKEG_CHECKS = `
 // 用户原话：「命令行模式是 cli 模式啊，能连接本地的 cli 啊，是我这个 agent 的 cli 啊」
 //「参考一下 claude 怎么做的啊，放在左边 tab 啊」。
 // 两条线分的是**干哪种活儿**：办公（做表写稿出图，鼠标流）和工程（写代码跑脚本，键盘流，
-// 连着本机那个 wb 命令行）。这一段守六件事：
+// 连着本机那个 openworkbuddy 命令行）。这一段守六件事：
 //   1. 两条线各自记各自的会话——切标签不会把另一条线的历史混进来，也不会让老会话「消失」；
 //   2. **标签碰不到引擎**。早先版本让「切到工程线」顺手把引擎也换掉，服务器上两个人共用一份
 //      配置时，那是实打实的越权。这里留一条反向看门狗：服务端就算把引擎字段塞回来，标签上也不许长出来；
-//   3. 工程线**不按项目过滤**——终端里 wb 起的任务没有「项目」这个概念，一过滤整条线空着，
+//   3. 工程线**不按项目过滤**——终端里 openworkbuddy 起的任务没有「项目」这个概念，一过滤整条线空着，
 //      看起来像功能坏了；
 //   4. 终端里此刻在跑几趟，标签上那个数字不许是假的，人站在办公线上也看得见；
 //   5. 空态要说清楚「怎么让它出现」，而不是干巴巴一句「没有任务」；
@@ -5807,6 +6529,8 @@ const HIST_MIN_SRC = (() => {
 const laneHtml = (sideW) => "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
   + "<body style='margin:0'><aside style='width:" + sideW + "px'>"
   + "<div class='lane-tabs' id='lane-tabs' role='tablist' aria-label='工作线'></div>"
+  // 标题行那个计数徽章也摆上：它现在有「平时不显示、过滤时才写」这条规矩，没有这个元素就验不了
+  + "<div class='side-label'><span class='sl-t'>任务历史</span><span class='sl-n' id='hist-count'></span></div>"
   + "<div id='history'></div></aside><button id='new-task'>新任务</button></body>";
 
 // ================= 侧栏：主次分明 + 任务历史可拖 =================
@@ -5854,7 +6578,7 @@ const SIDEBAR_CHECKS = `
   const hist = document.getElementById("history");
   // 这一组一旦在别的机器上挂了，光看「96 → 96」根本不知道是哪一环断的：
   // 是 CSS 规则没匹配上、还是 setHistH 把值夹没了、还是布局压根没重算。
-  // 所以每条断言都带一份现场：两段的实测高度、--wb-hist-h、histMax() 的上限、
+  // 所以每条断言都带一份现场：两段的实测高度、--owb-hist-h、histMax() 的上限、
   // 以及 #history 真正生效的 flex-basis / min-height。
   const G = () => {
     const n = document.querySelector(".side-nav.top"), h2 = document.getElementById("history");
@@ -5862,7 +6586,7 @@ const SIDEBAR_CHECKS = `
     return "nav=" + Math.round(n.getBoundingClientRect().height)
       + " hist=" + Math.round(h2.getBoundingClientRect().height)
       + " aside=" + document.querySelector("aside").clientHeight
-      + " var=" + (getComputedStyle(document.documentElement).getPropertyValue("--wb-hist-h").trim() || "空")
+      + " var=" + (getComputedStyle(document.documentElement).getPropertyValue("--owb-hist-h").trim() || "空")
       + " 上限=" + (typeof histMax === "function" ? histMax() : "无")
       + " hist{basis:" + cs.flexBasis + ",min:" + cs.minHeight + ",grow:" + cs.flexGrow + ",shrink:" + cs.flexShrink + "}"
       + " nav{min:" + cn.minHeight + ",max:" + cn.maxHeight + ",basis:" + cn.flexBasis + "}"
@@ -5943,10 +6667,10 @@ const SIDEBAR_CHECKS = `
      h0 + " → " + hist.getBoundingClientRect().height + " ｜ " + G());
   ok("往上拖：腾出来的地方是从导航身上出的，导航跟着变矮", nav.getBoundingClientRect().height < n0,
      n0 + " → " + nav.getBoundingClientRect().height + " ｜ " + G());
-  ok("拖过之后 <html> 上挂了 hist-h，高度写进 --wb-hist-h",
+  ok("拖过之后 <html> 上挂了 hist-h，高度写进 --owb-hist-h",
      document.documentElement.classList.contains("hist-h")
-     && getComputedStyle(document.documentElement).getPropertyValue("--wb-hist-h").trim().endsWith("px"),
-     getComputedStyle(document.documentElement).getPropertyValue("--wb-hist-h"));
+     && getComputedStyle(document.documentElement).getPropertyValue("--owb-hist-h").trim().endsWith("px"),
+     getComputedStyle(document.documentElement).getPropertyValue("--owb-hist-h"));
   const h1 = hist.getBoundingClientRect().height;
   drag(120);    // 往下拖 = 历史变矮
   ok("往下拖：历史又变矮了", hist.getBoundingClientRect().height < h1,
@@ -5958,9 +6682,9 @@ const SIDEBAR_CHECKS = `
   ok("使劲往上拖也留得住导航（这条要是没夹住，拖拽就成了复现事故的新入口）",
      nav.getBoundingClientRect().height >= 56, String(nav.getBoundingClientRect().height));
   h.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
-  ok("双击那条线：回到自适应（hist-h 摘掉、--wb-hist-h 也摘掉）",
+  ok("双击那条线：回到自适应（hist-h 摘掉、--owb-hist-h 也摘掉）",
      !document.documentElement.classList.contains("hist-h")
-     && !getComputedStyle(document.documentElement).getPropertyValue("--wb-hist-h").trim());
+     && !getComputedStyle(document.documentElement).getPropertyValue("--owb-hist-h").trim());
   ok("回自适应之后导航又拿回了内容高度", nav.getBoundingClientRect().height >= 120,
      String(nav.getBoundingClientRect().height));
   // 键盘也得能推：这条线是 role=separator + tabindex=0，只能鼠标拖的话键盘用户就没这功能
@@ -6046,7 +6770,7 @@ var __LANES_OK = { lanes: [
   { id: "office", name: "办公", short: "办公", hint: "做表、写稿、出图、发消息——鼠标流",
     detail: "本机的桌面办公 agent：专家团、技能库、记忆、生图生视频都在这条线上" },
   { id: "cli", name: "工程", short: "工程", hint: "写代码、跑脚本、查日志——键盘流",
-    detail: "本机 OpenWorkBuddy 命令行（wb）那条线：终端里起的任务都归这儿，手机上点开就能接管、插话" },
+    detail: "本机 OpenWorkBuddy 命令行（openworkbuddy）那条线：终端里起的任务都归这儿，手机上点开就能接管、插话" },
 ], current: "office", cliLive: [], cliRunning: 0 };
 `;
 const LANE_CHECKS = `
@@ -6082,7 +6806,7 @@ const LANE_CHECKS = `
   await refreshLanes();
   ok("名字用服务端报的那份", byLane("cli").querySelector(".lt-name").textContent === "工程", box.textContent);
   ok("鼠标停上去说得清这条线是干什么的",
-    /键盘流/.test(byLane("cli").title) && /wb/.test(byLane("cli").title), byLane("cli").title);
+    /键盘流/.test(byLane("cli").title) && /openworkbuddy/.test(byLane("cli").title), byLane("cli").title);
 
   // ---- ③ 看门狗：标签碰不到引擎 ----
   // 曾经这里按工作线换 agent.engine，切个标签能把别人配的模型换掉。现在就算服务端把这些字段
@@ -6128,7 +6852,7 @@ const LANE_CHECKS = `
   ok("办公线只看到办公的活儿（外加没记过线的老会话）", ids() === "o1,old", hist.textContent);
   byLane("cli").click();
   ok("点一下就换线了", activeLane === "cli" && onId() === "cli");
-  ok("换过的线记在本地，下次打开还站在这儿", __LANE_LS["wb_lane"] === "cli");
+  ok("换过的线记在本地，下次打开还站在这儿", __LANE_LS["owb_lane"] === "cli");
   ok("工程线只看到工程的活儿", ids() === "c1", hist.textContent);
   ok("再点同一个标签不折腾（不重画不开新任务）",
     (() => { const n = __NEW_TASK; byLane("cli").click(); return __NEW_TASK === n && activeLane === "cli"; })());
@@ -6144,25 +6868,44 @@ const LANE_CHECKS = `
   ok("反向对照：办公线换个项目就滤掉了（证明上面那条不是恒真）", ids() === "", hist.textContent);
   byLane("cli").click();
 
-  // ---- ⑦ 终端直播那一撮：单独一小标题，点进去是跟直播不是回放 ----
+  // ---- ⑦ 终端起的那几条：并进同一张列表，来路缩成行内图标，点进去是跟直播不是回放 ----
   sessions = [{ id: "t3", title: "早上那趟（已经存成记录了）", at: 3, lane: "cli" }];
   cliLiveRows = [
     { id: "t1", title: "把这个仓库的测试跑一遍", live: true, startedAt: 9, cwd: "/w/repo" },
     { id: "t3", title: "早上那趟", live: false, startedAt: 1, cwd: "/w/repo" },
   ];
   renderHistory();
-  ok("工程线顶上单独一撮，标题说清楚是终端里的", /终端里/.test(hist.querySelector(".hist-group")?.textContent || ""), hist.textContent);
+  ok("★不再为一种来路单开一节★ 以前是「任务历史 → 10 → 终端里（openworkbuddy 命令行） → 才轮到内容」，三行铺垫才见着第一条任务",
+    hist.querySelector(".hist-group") === null, hist.innerHTML);
+  ok("来路没丢，只是从一整行标题缩成了行首一个图标（鼠标停上去说得清）",
+    hist.querySelector('[data-cli="t1"] .hsrc') !== null && /终端/.test(hist.querySelector('[data-cli="t1"]')?.getAttribute("title") || ""), hist.innerHTML);
+  ok("正在跑的排在整张列表最前面——翻列表的人要找的就是它",
+    hist.querySelector(".hist-item")?.getAttribute("data-cli") === "t1", hist.innerHTML);
   ok("正在跑的那行走 data-cli（点它是跟直播，不是回放存下来的记录）",
     hist.querySelector('[data-cli="t1"]') !== null && hist.querySelector('[data-cli="t1"] .hrun') !== null, hist.innerHTML);
   ok("已经存成历史的那趟不重复列", hist.querySelectorAll('[data-id="t3"]').length === 1 && hist.querySelector('[data-cli="t3"]') === null, hist.innerHTML);
   byLane("office").click();
-  ok("办公线上不列终端那一撮（它是工程线的东西）", hist.querySelector(".hist-group") === null, hist.innerHTML);
+  ok("办公线上不列终端起的任务（它是工程线的东西）", hist.querySelector("[data-cli]") === null, hist.innerHTML);
+  byLane("cli").click();
+
+  // ---- ⑦-2 标题行那个计数：平时不显示，过滤时才有用 ----
+  const cnt = document.getElementById("hist-count");
+  sessions = [{ id: "k1", title: "甲任务", at: 2, lane: "cli" }, { id: "k2", title: "乙任务", at: 1, lane: "cli" }];
+  cliLiveRows = [];
+  renderHistory();
+  ok("★平时不挂计数徽章★「我有几条任务」不是打开侧栏要问的问题，而它占着标题行最显眼的位置",
+    (cnt.textContent || "") === "", JSON.stringify(cnt.textContent));
+  histQuery = "甲";
+  renderHistory();
+  ok("反向对照：一过滤就写「命中/总数」——这时候才真需要知道藏起来多少条", cnt.textContent === "1/2", cnt.textContent);
+  histQuery = "";
+  renderHistory();
   byLane("cli").click();
 
   // ---- ⑧ 空态：告诉人「怎么让它出现」，不是干巴巴一句没有任务 ----
   sessions = []; cliLiveRows = [];
   renderHistory();
-  ok("工程线空着时说的是怎么让它出现", /wb/.test(hist.textContent) && /终端/.test(hist.textContent), hist.textContent);
+  ok("工程线空着时说的是怎么让它出现", /openworkbuddy/.test(hist.textContent) && /终端/.test(hist.textContent), hist.textContent);
   ok("那句命令真渲染成了代码块，不是把标签当文字显示出来",
     hist.querySelector(".hist-empty code") !== null && !/&lt;code/.test(hist.innerHTML), hist.innerHTML);
   byLane("office").click();
@@ -6583,7 +7326,7 @@ const PILL_CHECKS = FLUSH_SRC + `
   back.textContent = SELS + " { display: inline; height: auto; padding: 0; border-radius: 0;"
     + " font-size: inherit; font-weight: inherit; line-height: normal; vertical-align: baseline; }\\n"
     + [
-    ".tag { background: var(--wb-brand-weak); padding: 2px 9px; border-radius: var(--radius-lg); font-size: 12px; }",
+    ".tag { background: var(--owb-brand-weak); padding: 2px 9px; border-radius: var(--radius-lg); font-size: 12px; }",
     ".step-card .tag { font-size: 12px; padding: 2px 9px; border-radius: var(--radius-lg); }",
     ".proc-warn { border-radius: var(--radius-sm); padding: 0 6px; font-size: 12px; }",
     ".proc-head .tc { font-size: 11px; line-height: 18px; padding: 0 7px; border-radius: var(--radius-lg); }",
@@ -6619,7 +7362,7 @@ const PILL_CHECKS = FLUSH_SRC + `
 // 居然长出六个尺寸（24×24 / 36×27 / 28×28 / 30×30 / 28×32 / 36×36）、三种圆角（6 / 8 / 10）。
 // 其中两颗根本不是正方形：#toggle-side 的规则只写内边距不写宽高，高度跟着字号走；
 // #fp-close 蹲在一行窄 flex 里被邻居挤成 28 宽。
-// 现在收成两档，挂在既有的控件高度梯子上：常规档 = --wb-ctl-h-sm（30），密集档 = 24。
+// 现在收成两档，挂在既有的控件高度梯子上：常规档 = --owb-ctl-h-sm（30），密集档 = 24。
 // 这条尺子量的是真几何：宽高、圆角、里头图标的大小，以及「挤得下就被挤扁」这件事。
 const ICO_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><style>" + INDEX_CSS
   + "</style><style>body{margin:0;padding:12px;width:1100px}"
@@ -6741,7 +7484,7 @@ const ICO_CHECKS = FLUSH_SRC + `
 // 内边距 → 37（select 的内容盒天生比 input 高 2px），主按钮 → 36，次要按钮
 // 7px 14px → 32，hub-head 上的胶囊 4px 12px → 31。实测 19 个落点里，有 9 行
 // 控件并排站着却四种底边，最大差 5px（评测页三个下拉 31 挨着主按钮 36）。
-// 现在高度统一由 --wb-ctl-h 出，内边距只管左右。
+// 现在高度统一由 --owb-ctl-h 出，内边距只管左右。
 // 这条尺子量的是真几何，不是 CSS 文本——写死 36px 也好、令牌也好，只要量出来齐就算过。
 const CTL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><style>" + INDEX_CSS
   + "</style><style>*{transition:none!important;animation:none!important}</style><body>"
@@ -7156,7 +7899,7 @@ const SETL_CHECKS = FLUSH_SRC + `
 
 // ================= 对比度：量真元素压真底色，不是量令牌压令牌 =================
 // 上面那组矩阵量的是 --brand-text 压 body 底色，是「令牌层」的账。
-// 但界面上的字不一定坐在 body 上：侧栏选中行的副标题坐在 --wb-brand-weak 上，
+// 但界面上的字不一定坐在 body 上：侧栏选中行的副标题坐在 --owb-brand-weak 上，
 // 还额外压了一层 opacity——令牌层全绿，眼睛看到的是 3.55。这一块补的就是这笔账。
 // 关掉过渡：.side-nav .item 带 transition，切主题那一刻 getComputedStyle 读到的是
 // 「正在往新色渐变的中间值」——实测暗色下背景仍报浅色的 rgb(238,240,255)，
@@ -7223,7 +7966,7 @@ const CONTRAST_CHECKS = FLUSH_SRC + `
   // ---- 反向对照：把这三条改回修之前的写法，三处必须当场跌破 4.5 ----
   const undo = document.createElement("style");
   undo.textContent = ".side-nav .item.active .tx .sub { opacity: .82; }"
-    + " .side-nav .nav-head #proj-add { color: var(--wb-text-3); }"
+    + " .side-nav .nav-head #proj-add { color: var(--owb-text-3); }"
     + " a:not([class]) { color: -webkit-link; }"
     + " :root { --warning: #b26a00; }";
   document.head.appendChild(undo); flush();
@@ -7288,6 +8031,128 @@ const CONTRAST_CHECKS = FLUSH_SRC + `
   return names;
 })()
 `;
+
+// ---- 长串不许顶穿边框（真量宽度，不是看源码里写没写） ----
+// 用户第三次提这件事：「怎么回事又有这种长文件名超出边框的情况发生了啊，都给我检查一下全部解决」。
+// 前两次都是「在出事的那一处补一句 overflow-wrap」，补完下一处照犯——因为看的是源码，
+// 而这毛病只有等浏览器真排完版才看得见：一条没有空格的网址把所在的盒子顶穿，
+// 右边的字被切掉，或者整页横着多出一条滚动条。
+//
+// 这一段换个打法：把两份真 CSS 里**每一条规则**的选择器还原成真实节点，往最里面那层塞一条
+// 200 字符、一个空格都没有的网址（就用用户贴来的那条），再量它的字有没有漏到边框外面。
+// 判据是 scrollWidth > clientWidth 且自己和祖先都没在裁——裁掉并打省略号是故意的，不算漏。
+//
+// 三类不算漏，各有判据，不是拍脑袋豁免：
+//   · white-space:pre 的块是代码/命令，外面本来就套着横向滚动容器，顶出去是设计；
+//   · 固定尺寸的装饰件（圆点、图标、转圈、分隔线）——判据是「空着和塞满一样宽」，跟内容无关；
+//   · ALLOW 里那十来个不换行的小标签，装的是固定词或数字，每条都写了理由。
+//     真装动态文本的（文件名、标题、备注）一个都不在里面——它们要么会换行，要么自己裁了。
+const OVF_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS
+  + "</style><body><div id='stage'></div></body>";
+const OVF_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const TOK = "xiaohongshu.com/user/profile/5c4ac98a0000000012037eeb?channel_type=web_search_result_notes&xsec_token=ABuBhG90qX7bc28yf1WETF6cMjdnIgCthGTLH";
+  // 装的是固定词或数字，不会因为谁起了个长名字而变长。键是选择器里必然出现的那一截。
+  const ALLOW = {
+    "lane-tabs button": "工作线就服务端给的那两条（办公 / 工程），名字是内置的",
+    "ev-fb-down a": "固定文案「打开对话」；同一行里真装标题和理由的 .task/.note 自己裁了并打省略号",
+    "tp-cost": "追踪行的费用数字", "tp-pill": "追踪状态，固定词", "tp-kind": "追踪类型，固定词（工具/模型/子代理）",
+    ".at-row .st": "自动化那行右边的状态角标，固定词",
+    "ch-count": "渠道条数", "mrow-meta": "模型行的条数与时间", "out-meta": "产出卡上的文件体积",
+    "ev-lv": "评测等级，固定词", "ev-code": "评测错误码", "drama-scene-count": "分镜条数",
+  };
+  const stage = document.getElementById("stage");
+  stage.style.cssText = "width:420px;padding:0;border:0";
+  const SKIP = /::|:hover|:focus|:active|:checked|:disabled|:where|:is\\(|:not\\(|:has\\(|:nth|:empty|:target|input|textarea|select|svg|img|canvas|video|audio/i;
+
+  // 把一条选择器还原成真实节点链，塞进 TOK，回报它漏出去多少像素（不漏回 0）
+  const leakOf = (sel) => {
+    const chain = sel.split(/\\s*[>+~]\\s*|\\s+/).filter(Boolean);
+    if (!chain.length || chain.length > 4) return 0;
+    let root = null, cur = null;
+    for (const part of chain) {
+      const tagM = part.match(/^([a-z][a-z0-9]*)/i);
+      const idM = part.match(/#([\\w-]+)/);
+      // 一截里连标签名、类、id、属性都没有（:root 这种纯伪类），还原出来就是个裸 div，
+      // 量到的是 div 的默认行为、不是任何一条真样式——整条跳过，别拿它凑数
+      if (!tagM && !idM && !/[.\\[]/.test(part)) return 0;
+      const tag = tagM ? tagM[1] : "div";
+      if (/^(html|body|head)$/i.test(tag)) continue;
+      const el = document.createElement(tag);
+      if (idM) el.id = idM[1];
+      for (const c of part.matchAll(/\\.([\\w-]+)/g)) el.classList.add(c[1]);
+      for (const a of part.matchAll(/\\[([\\w-]+)(?:[~|^$*]?=["']?([^\\]"']*)["']?)?\\]/g)) { try { el.setAttribute(a[1], a[2] == null ? "" : a[2]); } catch (e) {} }
+      if (!root) { root = el; cur = el; } else { cur.appendChild(el); cur = el; }
+    }
+    if (!root || !cur) return 0;
+    stage.appendChild(root);
+    let leak = 0;
+    try {
+      const empty = cur.clientWidth;             // 空着多宽：见下面 decor
+      cur.textContent = TOK;
+      const cs = getComputedStyle(cur);
+      const w = cur.clientWidth, sw = cur.scrollWidth;
+      let clipped = cs.overflowX !== "visible";
+      for (let a = cur.parentElement; a && a !== stage && !clipped; a = a.parentElement)
+        if (getComputedStyle(a).overflowX !== "visible") clipped = true;
+      // 固定尺寸的装饰件（圆点、图标、转圈、分隔线）：空着和塞满一样宽，且本来就只有几十像素。
+      // 「一样宽」这条单独用不行——块级元素空着也占满整行，那会把 .tp-pill 这类真该量的全放走。
+      const decor = empty > 0 && empty === w && w < 60;
+      if (cs.whiteSpace !== "pre" && !clipped && !decor && w > 0 && sw > w + 1) leak = sw - w;
+    } finally { stage.removeChild(root); }
+    return leak;
+  };
+
+  const sels = new Set();
+  const walk = (rules) => { for (const r of rules) {
+    if (r.cssRules && r.cssRules.length) walk(r.cssRules);   // 现在的 CSSStyleRule 也有 cssRules（嵌套），先递归再看自己
+    if (!r.selectorText) continue;
+    for (const one of r.selectorText.split(",")) sels.add(one.trim());
+  } };
+  for (const sh of document.styleSheets) { try { walk(sh.cssRules); } catch (e) {} }
+  ok("两份真 CSS 都挂上了（规则 1500 条以上，不是空跑）", sels.size > 1500, "只扫到 " + sels.size + " 条选择器");
+
+  const sweep = () => {
+    const out = [];
+    for (const sel of sels) {
+      if (SKIP.test(sel)) continue;
+      const leak = leakOf(sel);
+      if (leak) out.push({ sel, leak });
+    }
+    return out;
+  };
+
+  const leaks = sweep();
+  const unexplained = leaks.filter((x) => !Object.keys(ALLOW).some((k) => x.sel.includes(k)));
+  ok("整份界面：塞一条 200 字符的长网址，没有一处把字漏到边框外面",
+    unexplained.length === 0,
+    unexplained.slice(0, 8).map((x) => x.sel + " 漏 " + x.leak + "px").join(" · ")
+      + (unexplained.length > 8 ? " …共 " + unexplained.length + " 处" : ""));
+
+  // 兜底真的在，而且真的是它在挡：把 :root 上那句关掉，漏的应该当场多出一大片。
+  // 不做这条反向对照的话，上面那个「0 处」有可能只是探针自己瞎了。
+  ok("兜底那句在（:root 上继承下来的 overflow-wrap:anywhere）",
+    getComputedStyle(document.documentElement).overflowWrap === "anywhere",
+    "现在是 " + getComputedStyle(document.documentElement).overflowWrap);
+  document.documentElement.style.overflowWrap = "normal";
+  const without = sweep();
+  document.documentElement.style.overflowWrap = "";
+  ok("反向对照：撤掉兜底立刻漏一大片（证明这条闸门不是摆设，也证明挡住的是它）",
+    without.length > leaks.length + 100,
+    "撤掉之后只漏 " + without.length + " 处，原来 " + leaks.length + " 处——差得太少，探针八成没在量真东西");
+  const MUST = ["h1", "h2", "ui-stat", "ev-fb-card"];   // 大标题 / 小标题 / 统计数值 / 评测卡：真装长文本的四处
+  const missed = MUST.filter((k) => !without.some((x) => x.sel.includes(k)));
+  ok("反向对照：撤掉兜底时，预览页的大标题、追踪行的结果、统计数值这些真装长文本的地方首当其冲",
+    missed.length === 0,
+    "撤掉兜底之后这几处居然还不漏：" + missed.join(" / ") + "（一共漏了 " + without.length + " 处）");
+  ok("反向对照：塞短词不该报漏（探针不是见谁都判红）",
+    (() => { const el = document.createElement("div"); el.className = "tp-rst"; el.textContent = "好"; stage.appendChild(el);
+             const bad = el.scrollWidth > el.clientWidth + 1; stage.removeChild(el); return !bad; })(),
+    "一个「好」字都被判成漏出边框了");
+  return names;
+})()`;
 
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
@@ -7361,6 +8226,15 @@ app.whenReady().then(async () => {
     } finally {
       if (!win5.isDestroyed()) win5.destroy();
     }
+    const winSw = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winSw.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SWEEP_HTML));
+      const namesSw = await winSw.webContents.executeJavaScript(IC_BOOT + SWEEP_STUBS + "\n" + SWEEP_SRC + "\n" + SWEEP_CHECKS, true);
+      for (const n of namesSw) console.log("  ✓ " + n);
+      console.log(`✅ 前端：整理文件夹 · 腾出空间（数字跟着勾变·一批和单个都收得全·先留着不删·长路径不顶穿）${namesSw.length} 项通过`);
+    } finally {
+      if (!winSw.isDestroyed()) winSw.destroy();
+    }
     const win7 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win7.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TURNOUT_HTML));
@@ -7388,6 +8262,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：轨迹条（同名合并·出错标红·中止删除线·+N 上限·收起可见·点徽章直达）+ 结论出过程区 + 命中率封顶 + 收尾接线（正文文件名变可点链接·成品自动摊开·四种情形一律不弹）${names9.length} 项通过`);
     } finally {
       if (!win9.isDestroyed()) win9.destroy();
+    }
+    const winOvf = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winOvf.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(OVF_HTML));
+      const namesOvf = await winOvf.webContents.executeJavaScript(OVF_CHECKS, true);
+      for (const n of namesOvf) console.log("  ✓ " + n);
+      console.log(`✅ 前端：长串顶不穿边框（真 CSS 每条规则都塞一遍 200 字符长网址 · 含反向对照）${namesOvf.length} 项通过`);
+    } finally {
+      if (!winOvf.isDestroyed()) winOvf.destroy();
     }
     const win12 = mkWin({ show: false, width: 900, height: 900, webPreferences: { offscreen: true } });
     try {
@@ -7595,6 +8478,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：Goal 目标卡（进度条·拆解验收失败留痕·停了说为什么并能接着冲）${namesGC.length} 项通过`);
     } finally { if (!winGC.isDestroyed()) winGC.destroy(); }
 
+    const winCTX = mkWin({ show: false, width: 760, height: 200, webPreferences: { offscreen: true } });
+    try {
+      await winCTX.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(CTX_HTML));
+      const namesCTX = await winCTX.webContents.executeJavaScript(IC_BOOT + CTX_SRC + "\n" + CTX_CHECKS, true)
+        .catch((e) => { throw new Error("[上下文余量条] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesCTX) console.log("  ✓ " + n);
+      console.log(`✅ 前端：上下文余量条（过半才露面·到线变黄·换会话收回去·收完还能重新填）${namesCTX.length} 项通过`);
+    } finally { if (!winCTX.isDestroyed()) winCTX.destroy(); }
+
     const winESC = mkWin({ show: false, width: 600, height: 400, webPreferences: { offscreen: true } });
     try {
       await winESC.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ESC_HTML));
@@ -7628,8 +8520,17 @@ app.whenReady().then(async () => {
       const namesAUTH = await winAUTH.webContents.executeJavaScript(IC_BOOT + AUTH_STUBS + "\n" + AUTH_WRAP(AUTH_SRC) + "\n" + AUTH_CHECKS, true)
         .catch((e) => { throw new Error("[登录卡] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesAUTH) console.log("  ✓ " + n);
-      console.log(`✅ 前端：登录卡（邀请码有地方填且链接带码直达·自助注册关着也进得来·看一眼密码·待审核/已停用当场说清楚而不是放进去挨 403）${namesAUTH.length} 项通过`);
+      console.log(`✅ 前端：登录卡（邀请码有地方填且链接带码直达·自助注册关着也进得来·看一眼密码·二次验证密码对了才问码·待审核/已停用当场说清楚而不是放进去挨 403）${namesAUTH.length} 项通过`);
     } finally { if (!winAUTH.isDestroyed()) winAUTH.destroy(); }
+
+    const winTFA = mkWin({ show: false, width: 760, height: 620, webPreferences: { offscreen: true } });
+    try {
+      await winTFA.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TFA_HTML));
+      const namesTFA = await winTFA.webContents.executeJavaScript(IC_BOOT + TFA_WRAP + "\n" + TFA_CHECKS, true)
+        .catch((e) => { throw new Error("[二次验证卡] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesTFA) console.log("  ✓ " + n);
+      console.log(`✅ 前端：二次验证卡（密钥验过密码才露脸·画不出二维码也能绑·恢复码只出现这一次·强制时「关闭」当场讲清而不是挨 403）${namesTFA.length} 项通过`);
+    } finally { if (!winTFA.isDestroyed()) winTFA.destroy(); }
 
     const winDEAD = mkWin({ show: false, width: 1100, height: 900, webPreferences: { offscreen: true } });
     try {
@@ -7809,6 +8710,109 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：快捷键改绑不再扣着键盘不放（点别处/点取消/Esc/面板重画 四个出口·冲突照拦·正路照存）${namesSC.length} 项通过`);
     } finally {
       if (!winSC.isDestroyed()) winSC.destroy();
+    }
+
+    // ── 产出卡缩略图（thumb.js）──────────────────────────────────────────
+    // 这一屏不开窗口：nativeImage 在主进程里就有，而 thumb.js 要验的恰恰是
+    // 「真拿一张大图缩出来」和「缩不动的时候老老实实认输」。桌面版 server.js 就跑在
+    // 这个进程里（electron-main.js 那句 require("./server.js")），跑法跟线上一致。
+    {
+      const os = require("os");
+      const { nativeImage } = require("electron");
+      const T = require("../thumb");
+      const namesTH = [];
+      const okTH = (name, cond, extra) => {
+        if (!cond) throw new Error("[缩略图] " + name + (extra === undefined ? "" : "（实际：" + extra + "）"));
+        namesTH.push(name);
+      };
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-thumb-"));
+      const cache = path.join(dir, "cache");
+      // 造一张真图。用噪点：纯色 PNG 压完只有几百字节，过不了 THUMB_MIN_BYTES 那道门槛，
+      // 那这一屏就全在测「文件太小不缩」，等于什么都没测
+      const noisePng = (w, h) => {
+        const buf = Buffer.allocUnsafe(w * h * 4);
+        let x = 123456789;
+        for (let i = 0; i < buf.length; i += 4) {
+          x = (x * 1103515245 + 12345) & 0x7fffffff;
+          buf[i] = x & 255; buf[i + 1] = (x >> 8) & 255; buf[i + 2] = (x >> 16) & 255; buf[i + 3] = 255;
+        }
+        return nativeImage.createFromBuffer(buf, { width: w, height: h }).toPNG();
+      };
+      try {
+        const wide = path.join(dir, "海报.png");
+        fs.writeFileSync(wide, noisePng(1600, 1000));
+        const srcBytes = fs.statSync(wide).size;
+        okTH("先验料：造出来的图确实过了「太小就别缩」那道门槛（" + Math.round(srcBytes / 1024) + " KB）",
+          srcBytes > T.THUMB_MIN_BYTES, srcBytes);
+
+        const out = T.thumbFile(wide, 320, cache);
+        okTH("大图真缩得出来一张缩略图", !!out && fs.existsSync(out), String(out));
+        const got = nativeImage.createFromPath(out).getSize();
+        okTH("缩完长边就是要的 320（宽图按宽收）", got.width === 320, got.width + "×" + got.height);
+        okTH("高按比例跟着走，不是拉变形的", Math.abs(got.height - 200) <= 1, got.height);
+        const outBytes = fs.statSync(out).size;
+        okTH("体积真降下来了（" + Math.round(srcBytes / 1024) + " KB → " + Math.round(outBytes / 1024) + " KB，"
+          + (srcBytes / outBytes).toFixed(1) + " 倍）；这一条要是不成立，这整套东西就白做了",
+          outBytes * 4 < srcBytes, outBytes);
+        okTH("出来的是能解的 PNG，不是一个空壳（浏览器解不了就等于卡片上一个灰方框）",
+          fs.readFileSync(out).slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+          && !nativeImage.createFromPath(out).isEmpty());
+
+        // 高图：短边是宽，得按高收，不然一张 2800×7032 的长图缩完还有 800 px 高
+        const tall = path.join(dir, "长图.png");
+        fs.writeFileSync(tall, noisePng(600, 1500));
+        const tOut = T.thumbFile(tall, 320, cache);
+        const tSz = nativeImage.createFromPath(tOut).getSize();
+        okTH("长图按高收，长边同样是 320（不然 2800×7032 缩完还有八百多 px 高）",
+          tSz.height === 320 && tSz.width < 320, tSz.width + "×" + tSz.height);
+
+        // 缓存：第二趟不许重缩。往缓存文件里塞个记号，再要一次还是它，就说明没重新编码
+        fs.writeFileSync(out, Buffer.concat([fs.readFileSync(out), Buffer.from("MARK")]));
+        const again = T.thumbFile(wide, 320, cache);
+        okTH("同一张图同一个尺寸只缩一次，第二趟直接给缓存",
+          again === out && fs.readFileSync(again).slice(-4).toString() === "MARK", String(again));
+
+        // 缓存键跟着文件走：文件改写了就得换一份，不能把过期的缩略图发出去
+        fs.writeFileSync(wide, noisePng(1600, 1001));
+        const afterEdit = T.thumbFile(wide, 320, cache);
+        okTH("文件被改写之后换一份缓存，不会发一张过期的缩略图出去",
+          afterEdit && afterEdit !== out, String(afterEdit));
+        okTH("反向对照：换个尺寸也是另一份缓存（不然 160 和 640 会互相盖）",
+          T.thumbFile(tall, 160, cache) !== tOut);
+
+        // ── 以下全是「缩不动」的路。每一条都必须返回 null，让调用方原样发原图 ──
+        // 缩略图是锦上添花，绝不许因为它让一张图显示不出来
+        okTH("尺寸不在档位里 → 认输（挡住「?thumb=任意数」把缓存目录撑爆）", T.thumbFile(wide, 321, cache) === null);
+        okTH("  ← 反向对照：三个档位本身是认的", [160, 320, 640].every((w) => T.thumbFile(wide, w, cache)));
+        okTH("thumb= 后面不是数字 → 认输（parseInt 出 NaN）", T.thumbFile(wide, NaN, cache) === null);
+        const svgF = path.join(dir, "图表.svg");
+        fs.writeFileSync(svgF, "<svg xmlns='http://www.w3.org/2000/svg'>" + "<rect/>".repeat(30000) + "</svg>");
+        okTH("svg → 认输（矢量本来就小，栅格化反而更大更糊）", T.thumbFile(svgF, 320, cache) === null);
+        const small = path.join(dir, "小图.png");
+        fs.writeFileSync(small, noisePng(1200, 800).slice(0, 4096));   // 体积小，内容也是坏的
+        okTH("文件比 100 KB 还小 → 认输（缩一趟省下的还不够那次往返）", T.thumbFile(small, 320, cache) === null);
+        const tiny = path.join(dir, "本来就小.png");
+        // 贴着 320 取像素，再在 IEND 后面垫一段（PNG 解码器读到 IEND 就停，图照样解得出来）。
+        // 噪点图压到这个尺寸只有 80 KB 出头，过不了 100 KB 的门槛 —— 那下面那条就会绿在
+        // 「文件太小」这个理由上，而不是「图本来就比要的还小」，等于没测
+        fs.writeFileSync(tiny, Buffer.concat([noisePng(318, 316), Buffer.alloc(80 * 1024, 0x5a)]));
+        okTH("先验料：这张图体积够大、但像素本来就不到 320（" + Math.round(fs.statSync(tiny).size / 1024) + " KB）",
+          fs.statSync(tiny).size > T.THUMB_MIN_BYTES);
+        okTH("图本来就比要的还小 → 认输（缩了只会更糊）", T.thumbFile(tiny, 320, cache) === null);
+        const broken = path.join(dir, "坏图.png");
+        fs.writeFileSync(broken, Buffer.alloc(200 * 1024, 0x41));      // 够大，但解不出来
+        okTH("解不出来的图 → 认输，不抛（一张坏图不许把整个请求带崩）", T.thumbFile(broken, 320, cache) === null);
+        okTH("文件根本不在 → 认输，不抛", T.thumbFile(path.join(dir, "没有这个.png"), 320, cache) === null);
+        const blocked = path.join(dir, "占位");                          // 缓存目录的位置上摆一个普通文件
+        fs.writeFileSync(blocked, "x");
+        okTH("缓存目录写不进去 → 认输，不抛（磁盘满 / 只读挂载 / 权限不对都走这条）",
+          T.thumbFile(wide, 640, path.join(blocked, "thumbs")) === null);
+
+        for (const n of namesTH) console.log("  ✓ " + n);
+        console.log(`✅ 前端：产出卡缩略图（真缩一张 320 出来·宽图按宽长图按高·体积四倍以上地降·缓存只缩一次·文件改了换一份·九条缩不动的路一律原样发原图）${namesTH.length} 项通过`);
+      } finally {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      }
     }
   } catch (e) {
     console.error("❌ 前端测试失败:", e && e.message ? e.message : e);

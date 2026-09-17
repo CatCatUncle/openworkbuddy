@@ -39,7 +39,7 @@ description: 网页生成——制作单文件精美 HTML 页面（落地页/报
      "Source Han Sans SC", system-ui, sans-serif`）；想换气质就换族——衬线走
      `Georgia, "Songti SC", "SimSun", serif`，等宽走 `ui-monospace, "SF Mono", Menlo, Consolas, monospace`。
      **回退链里别写没装的字体**（Inter / Noto Serif SC / HarmonyOS Sans SC 都不是预装的，写了等于没写）；
-     真想要一款特别的西文字体，只允许引 Google Fonts 且后面必须跟满系统回退链，**中文正文永远不引网络字体**
+     **中文西文都不引网络字体**（Google Fonts 也不行）：挡渲染的样式表一旦连不上，内网里首屏要白等 5.1 秒才出字。想要气质就在系统字体里换族
    - 间距用 4 的倍数；一屏之内主色不超过 2 个 + 1 个强调色
    - 对齐优先于装饰：相关的东西靠近、无关的拉开
 
@@ -118,4 +118,4 @@ description: 网页生成——制作单文件精美 HTML 页面（落地页/报
 - 375px 手机宽度排版正常；跟随系统的页面深浅色都可读，单色调的页面 `color-scheme` 声明到位
 - 首屏就能看懂"这是什么、给谁的、下一步干什么"
 - 说得出这页的视觉方向是什么、为什么选它——答不上来，多半就是又做了一张大路脸
-- 断网双击也能完整显示（只有 Google Fonts 例外，且断网时回退到系统字体、版面不塌）
+- 断网双击也能完整显示，**一个外链都不许有**（含 Google Fonts）——内网里连不上的样式表会让首屏白等 5 秒

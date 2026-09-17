@@ -195,7 +195,7 @@ console.log("\n⑧ SVG 栅格化这条真路");
 console.log("\n⑨ cli.js 那头接上了没");
 {
   ok(/termImage\.detect\(process\.env, !!process\.stderr\.isTTY\)/.test(CLI_SRC),
-    "★探的是 stderr 是不是终端★ 图走进度通道，判 stdout 的话 `wb … > 答案.md` 会把图灌进文件");
+    "★探的是 stderr 是不是终端★ 图走进度通道，判 stdout 的话 `openworkbuddy … > 答案.md` 会把图灌进文件");
   ok(/drawOutputs\(state\.changed\)/.test(CLI_SRC), "一轮跑完会去画这轮的产出");
   // 真踩过：一开始画的是 state.files（整个工作目录），结果一次什么图都没出的对话，
   // 末尾也会冒一句「看图：任务_0826_…/封面.png」——那是八月留下的东西

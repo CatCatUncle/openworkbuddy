@@ -3,7 +3,7 @@
  * 多租户 + 企业管理后台的端到端测试。
  *
  * 跑法：node test/tenant.js
- * 用临时 WB_DATA_DIR 和临时工作目录，绝不碰真账号、真成果文件。
+ * 用临时 OPENWORKBUDDY_DATA_DIR 和临时工作目录，绝不碰真账号、真成果文件。
  *
  * 这个测试的重点不是「接口能返回 200」，而是那几条一破就出事的线：
  *   1. 跨租户读不到对方的成果文件（工作目录是不是真的按组织分开了）
@@ -17,9 +17,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "wb-tenant-"));
-process.env.WB_DATA_DIR = path.join(TMP, "data");
-fs.mkdirSync(process.env.WB_DATA_DIR, { recursive: true });
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-tenant-"));
+process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
+fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 const express = require("express");
 const ROOT = path.join(__dirname, "..");
@@ -225,6 +225,70 @@ async function login(username, password) {
   ok(fenFiles.includes("分公司的活.md"), "分公司能看到自己的文件（反向对照：不是全都看不到）", fenFiles);
   ok(!fenFiles.includes("总部机密.md"), "分公司看不到总部的文件", fenFiles);
 
+  console.log("\n【5.5】红线一的另一半：列表里看不见，照着名字取还是取得到");
+  // 【5】拦的是「列文件」，这一节拦的是「按相对路径取文件」——成果卡片上记的本来就是相对路径
+  // （任务_0905_xx/报告.html）。rootedPath 在当前根下找不到时，会去 knownRoots() 里挨个试，
+  // 而那张表是**整台机器**的：config.projects、所有还开着的会话的 root、历史上见过的根，
+  // 跟「谁在请求」没有半点关系。于是分公司的人只要知道总部那份文件叫什么（文件名会出现在
+  // 转发的截图、聊天记录、日报标题里），照着请求一次，兜底扫描就替他把文件翻出来了：
+  // 列表里一个字都看不见，下载却是 200。
+  //
+  // 这一节把 server.js 里的 tenantRootOf + rootedPath 原样切出来跑。外部依赖里
+  // safePath / safePathIn / withWorkspace 用 tools.js 的真货（跟线上同一套越界判定），
+  // 只有 knownRoots 这张「整台机器的根」和两条线索（?root= 指纹、?sid= 会话）摆成最坏情况。
+  const SRC5 = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const cutA = SRC5.indexOf("/**\n * 租户的成果根");
+  const cutB = SRC5.indexOf('\napp.get("/api/files/download/*"');
+  ok(cutA > 0 && cutB > cutA, "从 server.js 里切得出这两个函数（切不出来 = 改名了 = 这一节在空转，别让它悄悄变绿）", { cutA, cutB });
+  const slice5 = SRC5.slice(cutA, cutB);
+  eq((slice5.match(/safePathIn\(/g) || []).length, 1,
+     "整段里只有一处 safePathIn：候选根全从 tryRoot 这一个口子过（多出一处就是一条绕开租户过滤的新路）");
+  // 最坏情况的 knownRoots：总部的根、分公司的根、分公司自己的一个子项目根、外加一个换过的目录
+  const SUB2 = path.join(root2, "子项目");
+  fs.mkdirSync(SUB2, { recursive: true });
+  fs.writeFileSync(path.join(SUB2, "上个月的稿子.md"), "old");
+  const OTHER = path.join(TMP, "换过的目录");
+  fs.mkdirSync(OTHER, { recursive: true });
+  const allRoots = [BASE_WS, root2, SUB2, OTHER];
+  const hqKey = tools.workspaceKeyOf(BASE_WS);
+  const RP = new Function(
+    "org", "path", "fs", "getDefaultWorkspaceDir", "safePath", "safePathIn",
+    "rootFromKey", "getSession", "sessionAllowed", "knownRoots",
+    slice5 + "\nreturn { tenantRootOf, rootedPath };")(
+    org, path, fs, tools.getDefaultWorkspaceDir, tools.safePath, tools.safePathIn,
+    // ?root= 指纹：照 server.js 的真算法反查，不是瞎给一个根
+    (k) => allRoots.find((d) => tools.workspaceKeyOf(d) === String(k || "")) || "",
+    // ?sid= 会话：归属检查故意放到最松（永远 allowed）。这是在验第二道闸——
+    // 就算哪天 sessionAllowed 判漏了，租户过滤也得把这条线索挡在外面
+    (sid) => (sid ? { id: sid, root: BASE_WS } : null),
+    () => true,
+    () => allRoots.slice(),
+  );
+  const uFen = { username: "fenboss", org: org2 };
+  const uBoss = { username: "laoban", org: "default" };
+  // 先看「租户根」本身算得对不对：只有真分了租户的才有值
+  eq(RP.tenantRootOf({ user: uFen }), path.resolve(root2), "分公司的人算出来的租户根 = 分公司的根");
+  eq(RP.tenantRootOf({ user: uBoss }), "", "默认组织没有租户根（个人版就是这一档，一字不差地走老路）");
+  eq(RP.tenantRootOf({}), "", "没有登录态（飞书回调、定时任务）也没有租户根，不至于把自动任务全锁死");
+  // 正戏。ask() 这一层照抄 admin.tenantScope 干的事：按请求人的组织把工作目录换过去
+  const ask = (user, rel, q) =>
+    tools.withWorkspace(org.rootDirOf(org.getOrg(org.orgIdOf(user)), BASE_WS), () =>
+      RP.rootedPath({ user, query: q || {}, body: {} }, rel));
+  const outside = (p) => !path.resolve(p).startsWith(path.resolve(BASE_WS) + path.sep);
+  let got = ask(uFen, "总部机密.md");
+  ok(outside(got) && !fs.existsSync(got), "光凭文件名要不到总部的文件（兜底扫描不认租户外的根）", got);
+  got = ask(uFen, "总部机密.md", { root: hqKey });
+  ok(outside(got) && !fs.existsSync(got), "把总部那个根的指纹抄进 ?root= 也要不到（线索是用户给的，根得服务端认）", got);
+  got = ask(uFen, "总部机密.md", { sid: "s-hq-1" });
+  ok(outside(got) && !fs.existsSync(got), "?sid= 也要不到（会话归属是第一道闸，这里故意只留第二道，它得自己扛得住）", got);
+  // 反向对照一：租户**内部**的跨根反查一点没坏——这才是 rootedPath 活着的全部理由
+  got = ask(uFen, "上个月的稿子.md");
+  eq(got, path.join(SUB2, "上个月的稿子.md"), "反向对照：分公司自己子项目里的旧文件，照样按相对路径找得回来");
+  ok(fs.existsSync(got), "而且是真找着了文件，不是拼了条路径就返回", got);
+  // 反向对照二：个人版换过工作目录，旧对话里的相对路径还得指得回老根
+  got = tools.withWorkspace(OTHER, () => RP.rootedPath({ user: null, query: {}, body: {} }, "总部机密.md"));
+  eq(got, path.join(BASE_WS, "总部机密.md"), "反向对照：个人版（无登录态）切了工作目录，旧路径照样反查得到");
+
   console.log("\n【6】红线二：分公司管理员碰不到服务器级设置");
   r = await call("POST", "/api/settings", { cookie: fen, body: { workspace_dir: "/tmp/hijack" } });
   eq(r.status, 403, "分公司管理员改设置被拒");
@@ -427,15 +491,15 @@ async function login(username, password) {
   // ---- 17.1 关掉「允许运行命令行」：两个入口一起关 ----
   const OFF = { allow_shell: false, net_allow: [], net_deny: [] };
   const ON = { allow_shell: true, net_allow: [], net_deny: [] };
-  let t = await tools.withPolicy(OFF, () => tools.executeTool("run_shell", { command: "echo wb-probe" }));
+  let t = await tools.withPolicy(OFF, () => tools.executeTool("run_shell", { command: "echo owb-probe" }));
   ok(t.isError === true && /允许运行命令行/.test(t.content), "关掉命令行后 run_shell 被拦", t.content);
-  t = await tools.withPolicy(OFF, () => tools.executeTool("run_node", { code: "console.log('wb-probe')" }));
+  t = await tools.withPolicy(OFF, () => tools.executeTool("run_node", { code: "console.log('owb-probe')" }));
   ok(t.isError === true && /允许运行命令行/.test(t.content), "关掉命令行后 run_node 也被拦（换个工具绕不过去）", t.content);
   // 反向对照：开着的时候必须真能跑，不然上面拦住的可能只是「这两个工具本来就坏了」
-  t = await tools.withPolicy(ON, () => tools.executeTool("run_shell", { command: "echo wb-probe" }));
-  ok(!t.isError && /wb-probe/.test(t.content), "开着的时候 run_shell 真的跑起来了", t.content);
-  t = await tools.executeTool("run_node", { code: "console.log('wb-probe')" });
-  ok(!t.isError && /wb-probe/.test(t.content), "压根没配组织策略时 run_node 照跑（单机版一字不差）", t.content);
+  t = await tools.withPolicy(ON, () => tools.executeTool("run_shell", { command: "echo owb-probe" }));
+  ok(!t.isError && /owb-probe/.test(t.content), "开着的时候 run_shell 真的跑起来了", t.content);
+  t = await tools.executeTool("run_node", { code: "console.log('owb-probe')" });
+  ok(!t.isError && /owb-probe/.test(t.content), "压根没配组织策略时 run_node 照跑（单机版一字不差）", t.content);
 
   // ---- 17.2 拦在工具定义层，不只是执行层 ----
   // 留着定义只在执行时拒，等于让模型先想一个用 shell 的方案、调一次、吃一条拒绝、再重想
@@ -479,7 +543,7 @@ async function login(username, password) {
 
   // ---- 17.4 登录有效期：读的时候算，不是发的时候算 ----
   // 这条的意义全在这里：人走了、电脑丢了，管理员把有效期改短，**已经发出去的** cookie 得当场作废
-  const usersFile = path.join(process.env.WB_DATA_DIR, "users.json");
+  const usersFile = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "users.json");
   const ageToken = (cookieStr, days) => {
     const tk = String(cookieStr).split("=").slice(1).join("=");
     const db = JSON.parse(fs.readFileSync(usersFile, "utf8"));
@@ -637,8 +701,8 @@ async function login(username, password) {
     ["can_switch: isPlatformOwner(req)", "/api/security/modes 回了 can_switch"],
   ]) ok(SRC20.includes(frag), "真源码对得上替身：" + why, frag);
   const FE = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
-  ok(/PLATFORM_ONLY_CATS = new Set\(\["search", "evolve", "trace", "data", "im"\]\)/.test(FE),
-    "界面真按这五页过滤（纯服务器级的标签页不画给成员；执行追踪那页装着私钥和一个能往外发请求的探针）");
+  ok(/PLATFORM_ONLY_CATS = new Set\(\["search", "evolve", "trace", "ops", "data", "im"\]\)/.test(FE),
+    "界面真按这六页过滤（纯服务器级的标签页不画给成员；执行追踪那页装着私钥和一个能往外发请求的探针，运行状况那页的日志里是全公司的任务描述）");
   // 「保存失败」四个字把服务端说的原因（如「这块归平台管理员管」）整个盖掉，是同一个病的另一半：
   // 控件画出来了、点了、后端也把原因说了，界面偏偏不转述。
   for (const [file, why] of [["public/js/app-03.js", "开箱向导"], ["public/js/app-05.js", "设置页"]]) {
@@ -700,7 +764,7 @@ async function login(username, password) {
   ok(/LIB_DIR = dataPath\("data", "library"\)/.test(TL), "资料库确实是一份全局目录，不按用户分（这就是拦读没意义的原因）");
   ok(/name: "library_read"/.test(TL) && /name: "library_list"/.test(TL), "而每个人的 agent 都带着 library_list / library_read 这两个工具");
 
-  console.log("\n【13】大小写绕闸：Express 路由默认不认大小写，两道门禁却按原样 req.path 查表");
+  console.log("\n【22】大小写绕闸：Express 路由默认不认大小写，两道门禁却按原样 req.path 查表");
   // 这一段是照着真复现写的：改掉一个字母，/API/settings 命中处理器、不命中门禁表。
   // 这里故意不给这个小测试应用开 case sensitive routing，为的就是把「门禁自己认不认大小写」
   // 单独拎出来测——服务器那边还压着一道 app.set("case sensitive routing", true)，在下面单独钉。
@@ -714,7 +778,7 @@ async function login(username, password) {
   r = await call("GET", "/IM/log", {});
   eq(r.status, 401, "/im/ 那条线同理：大写也得判成要登录（不然直接落到路由，压根没进这道闸）");
 
-  console.log("\n【14】大小写绕闸（第二道）：登录了，但普通成员用大写绕平台写表");
+  console.log("\n【23】大小写绕闸（第二道）：登录了，但普通成员用大写绕平台写表");
   const platformPatch = { search: { provider: "bing" } }; // 不是个人项，改的是整台服务器
   r = await call("POST", "/api/settings", { cookie: yuan, body: platformPatch });
   eq(r.status, 403, "基线：小写发全局设置，成员是 403");
@@ -730,7 +794,7 @@ async function login(username, password) {
   r = await call("POST", "/api/Settings", { cookie: yuan, body: { agent: { engine: "claude" } } });
   eq(r.status, 200, "反向对照：成员改自己那几项（底层引擎），大写路径也得放行");
 
-  console.log("\n【15】大小写绕闸（第三道）：脱敏也得认小写");
+  console.log("\n【24】大小写绕闸（第三道）：脱敏也得认小写");
   r = await call("GET", "/API/settings", { cookie: yuan });
   eq(r.status, 200, "成员读得到设置");
   eq(r.json.search.jina_key, "", "大写路径下 Jina Key 照样抹掉（redactGuard 曾经只认小写 /api/admin 前缀）");
@@ -756,7 +820,7 @@ async function login(username, password) {
   eq(throughRedact("/api/admin/orgs").api_key, "REAL", "反向对照：小写的后台路径本来就不抹");
   eq(throughRedact("/API/settings").api_key, "", "反向对照：非后台的接口，大写小写都照抹");
 
-  console.log("\n【16】在服务器桌面上起进程的两条，归平台管理员");
+  console.log("\n【25】在服务器桌面上起进程的两条，归平台管理员");
   r = await call("POST", "/api/files/open/report.pdf", { cookie: yuan });
   eq(r.status, 403, "成员点「用系统默认程序打开」，拉不起服务端的进程");
   r = await call("POST", "/api/files/reveal", { cookie: yuan, body: { name: "report.pdf" } });
@@ -773,7 +837,7 @@ async function login(username, password) {
   ok(writeTbl.includes("/api/files/reveal"), "写表里有 /api/files/reveal");
   ok(!readTbl.includes("/api/files"), "读表里没有 /api/files（看自己的文件不该拦）");
 
-  console.log("\n【17】服务器那边的几处，钉住别退回去");
+  console.log("\n【26】服务器那边的几处，钉住别退回去");
   const SRV = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
   ok(/app\.set\("case sensitive routing", true\)/.test(SRV),
      "server.js 开了 case sensitive routing（门禁小写化之外的第二道，两道都得在）");
@@ -790,10 +854,12 @@ async function login(username, password) {
      "/api/security/mode 自己也守一道（全站审批开关，不能只靠一张前缀表）");
   ok(/const previewServers = new Map\(\)/.test(SRV),
      "预览服务器按目录分开存（原来是一个全局变量，第二个租户一开就把第一个的端口顶掉）");
-  ok(/wbpv=/.test(SRV) && /st\.token/.test(SRV),
+  ok(/openworkbuddy_preview=/.test(SRV) && /st\.token/.test(SRV),
      "预览站点带令牌（原来起在 0.0.0.0 上，同网段谁都能翻）");
+  ok(!/\bwbpv\b/.test(SRV),
+     "预览 cookie 又叫回 wbpv 了：对外露脸的名字里不留这两个字母（浏览器 devtools 里看得见）");
 
-  console.log("\n【20】新手向导：他走不完的那一程，就别把他放进去");
+  console.log("\n【27】新手向导：他走不完的那一程，就别把他放进去");
   r = await call("GET", "/api/onboarding", { cookie: yuan });
   eq(r.status, 200, "成员读得到体检表（读没被拦）");
   eq(r.json.can_finish, false, "但界面被明确告知：这一程他走不完");
@@ -815,7 +881,7 @@ async function login(username, password) {
   // 会话键按**账号**算（local_<keyOf(username)>），跟设备无关，所以手机用同一个账号连回来，
   // 接着看到的就是桌面上那段对话。这一节盯的是另一头：VPS 上一个进程多人用，
   // 以前那行写死 local_assist，谁登录都接在同一个话头上，/im/log 还把整本日志倒给任何人。
-  console.log("\n【23】助理页：多人共用一个实例时，一人一段上下文（以前是全服务器一段）");
+  console.log("\n【28】助理页：多人共用一个实例时，一人一段上下文（以前是全服务器一段）");
   // 助理页是有登录的，可登录之后的每一步都当没登录过：会话键写死 "local_assist"（全服务器一段上下文，
   // A 问完 B 接着问，接的是 A 的话头），/im/log 是 (_req, res) 把整本日志倒出去（谁都读得到别人说的话），
   // 跑任务不带 user（成员的任务顶着管理员的身份跑，记忆串到别人那儿、审批卡弹在别人屏幕上）。

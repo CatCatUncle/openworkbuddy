@@ -365,7 +365,7 @@ function historyChars(history) {
 }
 
 // 这两个工具没有渲染器就是死的：html_to_image 张口就抛「需要桌面版环境」，
-// desktop_pet 连实现都没注册。纯 node 起服务（npm start / Docker / wb 命令行）时它们照样
+// desktop_pet 连实现都没注册。纯 node 起服务（npm start / Docker / openworkbuddy 命令行）时它们照样
 // 挂在工具清单里，模型看得见就会去用——调一次、吃一条必然的失败、再重想一个方案，
 // 白烧一轮，还容易被当成偶发故障去重试。定义一起摘掉才是真的关掉。
 // 两条定义加起来 1900 多字符，占整份工具清单的 14%，摘掉顺带把每一步的输入都变便宜。
@@ -570,7 +570,7 @@ ${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 用 render_page 真渲�
 
 ## 做网页（HTML 交付物）
 0. **动笔前先定视觉方向，一句话写进开场白**：说清三件事——**参照物**（像一份编辑部的深度报道／像终端里的监控面板／像一本纸质手册）、**主色从内容里长出来**（财报、菜谱、医疗科普不该共用一套蓝）、**版式节奏**（通栏大标题还是左侧固定目录，信息密还是大留白）。跳过这步直接写 CSS，做十个页面会长成同一张脸：白底、居中一栏、蓝色标题、圆角卡片加淡阴影。有 web-styles 技能就先 use_skill 它，从里面挑一个方向再动笔。
-1. **单文件自包含**：CSS 写 \`<style>\`、JS 写 \`<script>\`、图标用内联 SVG 或 emoji。**绝不从外部 CDN 引脚本和样式**（cdn.jsdelivr、unpkg、bootstrap、echarts CDN 等）——用户断网、换台电脑、发给同事，页面当场白屏。需要图表就自己用内联 SVG 或 canvas 画。唯一的例外是 Google Fonts（fonts.googleapis.com / fonts.gstatic.com）：西文标题想要一款有性格的字体可以引，但 \`font-family\` 后面必须把系统字体回退链写满，断网时页面只是字体变普通、不能塌。**中文正文永远不引网络字体**——一个中文字体包好几 MB，联网要白等、断网直接回退，得不偿失。
+1. **单文件自包含**：CSS 写 \`<style>\`、JS 写 \`<script>\`、图标用内联 SVG 或 emoji。**绝不从外部 CDN 引脚本和样式**（cdn.jsdelivr、unpkg、bootstrap、echarts CDN 等）——用户断网、换台电脑、发给同事，页面当场白屏。需要图表就自己用内联 SVG 或 canvas 画。**没有例外，Google Fonts 也不行**（fonts.googleapis.com / fonts.gstatic.com）：\`<link rel=stylesheet>\` 是挡渲染的，连不上时浏览器不会立刻放弃——实测在「包被防火墙默默丢掉」的内网里，首屏要等 **5.1 秒**才画出第一个字（不引外链的同一页是 0.12 秒）。这不是「字体变普通」，是白屏五秒。国央企内网、断网的笔记本、飞机上打开的同一份文件，都是这个下场。西文标题想要气质，用系统里真装着的（Georgia / Palatino / Optima / Futura / Charter）去换族。中文更不用想——一个中文字体包好几 MB，联网要白等、断网直接回退。
 2. 必备骨架：\`<!DOCTYPE html>\`、\`<meta charset="utf-8">\`、\`<meta name="viewport" content="width=device-width, initial-scale=1">\`、有信息量的 \`<title>\`、\`lang="zh-CN"\`。
 3. 手机上也要能看：宽度用 %/rem/clamp()，别写死 px；多栏布局用 flex/grid 并配 \`@media (max-width: 768px)\` 塌成单栏；表格外面套一层 \`overflow-x:auto\`。
 4. 深色模式默认跟随系统：颜色统一定义成 \`:root\` 上的 CSS 变量，再用 \`@media (prefers-color-scheme: dark)\` 覆盖一遍变量。别把颜色散写在各处，改起来必漏。**除非这次的视觉方向本身就是单色调的**（暗色终端、纸质印刷这类，硬凑两套会把风格稀释成大路货）——那就只做一套，在 \`<head>\` 里写死 \`<meta name="color-scheme" content="dark">\`（或 light）免得浏览器自作主张，并在交付说明里讲一句「这页是纯暗色的，不跟随系统」。
@@ -833,8 +833,12 @@ function modePrompt(mode) {
         const cn = scheduler.describeCron(c);
         return cn ? `${cn}（${c}）` : `cron ${c}`;
       };
+      // 这一趟是替谁跑的。多人装机里模型只该看见、只该动**这个人**的排期：
+      // 不然「帮我看看有哪些定时任务」会把全公司的任务描述一条条念出来，念完还写进了这次的对话记录。
+      // 单机个人版 user 是空的 → 传 undefined → 不过闸，跟以前一模一样。
+      const viewer = user ? { username: String(user), admin: false, org: "" } : undefined;
       if (tc.name === "list_schedules") {
-        const all = sch.list();
+        const all = sch.list(viewer);
         if (!all.length) return { content: "还没排过定时任务。", isError: false };
         return {
           content: all
@@ -863,7 +867,7 @@ function modePrompt(mode) {
           isError: true,
         };
       }
-      const all = sch.list();
+      const all = sch.list(viewer);
       const id = String(tc.input.id || "").trim();
       const hit = act === "create" ? null : all.find((t) => t.id === id);
       if (act !== "create" && !hit) {
@@ -927,7 +931,7 @@ function modePrompt(mode) {
       }
       try {
         if (act === "create") {
-          const item = sch.add({ name: tc.input.name, cron: tc.input.cron, task: wantTask, catch_up: tc.input.catch_up });
+          const item = sch.add({ name: tc.input.name, cron: tc.input.cron, task: wantTask, catch_up: tc.input.catch_up, user: user || "" });
           return {
             content: `已排好：「${item.name}」（id ${item.id}）｜${cronOf(item.cron)}｜错过${item.catch_up ? "会补跑" : "不补跑"}。用户随时能在 设置 → 定时任务 里改或停。`,
             isError: false,
@@ -936,17 +940,17 @@ function modePrompt(mode) {
         if (act === "update") {
           const patch = {};
           for (const k of ["name", "cron", "task", "catch_up"]) if (tc.input[k] !== undefined) patch[k] = tc.input[k];
-          const t = sch.update(hit.id, patch);
+          const t = sch.update(hit.id, patch, viewer);
           if (!t) return { content: `改的时候这条任务已经不在了（id ${hit.id}）。`, isError: true };
           return { content: `已改：「${t.name}」（id ${t.id}）｜${cronOf(t.cron)}｜错过${t.catch_up ? "会补跑" : "不补跑"}｜到点做：${t.task}`, isError: false };
         }
         if (act === "delete") {
-          return sch.remove(hit.id)
+          return sch.remove(hit.id, viewer)
             ? { content: `已删掉定时任务「${hit.name}」（id ${hit.id}），它的运行记录也清了。`, isError: false }
             : { content: `没删成：id ${hit.id} 已经不在排期表里了。`, isError: true };
         }
         const on = act === "enable";
-        return sch.toggle(hit.id, on)
+        return sch.toggle(hit.id, on, viewer)
           ? { content: `已${on ? "启用" : "停用"}定时任务「${hit.name}」（id ${hit.id}）。${on ? cronOf(hit.cron) + " 起自动跑。" : "任务留着，到点不再跑。"}`, isError: false }
           : { content: `没改成：id ${hit.id} 已经不在排期表里了。`, isError: true };
       } catch (e) {
@@ -1281,6 +1285,29 @@ function modePrompt(mode) {
     const cap = (set) => Array.from(set).slice(-40).join("、") || "无";
     return { read: cap(read), wrote: cap(wrote) };
   }
+  /**
+   * 上下文用到哪儿了，播给界面看。
+   *
+   * 命令行早就有这根进度条（`/status` 里那行 `上下文 [====----] 41%`），网页和手机上却是黑的：
+   * 用户只有等模型开始忘事、或者看见一句「已压缩」，才知道刚才发生过什么。等看见的时候，
+   * 「该不该开个新会话」这个决定已经晚了一轮。
+   *
+   * 数字跟 compactHistory 用的是同一组（同一个 budget、同一个 threshold），不另算一套——
+   * 两边算法一旦分家，这个读数就是在骗人：这儿显示 40%，那边其实已经压过一次了。
+   *
+   * 只在百分比真的变了的时候播。长任务一步一算，不挡着的话一轮能往 SSE 里塞几百条一模一样的。
+   */
+  function emitContext(history, emit, state) {
+    if ((config.agent || {}).context_meter === false) return;
+    const budget = config.agent.max_context_chars || 120000;
+    const threshold = config.agent.compact_threshold_chars || Math.floor(budget * 0.6);
+    const used = historyChars(history);
+    const pct = Math.round((used / budget) * 100);
+    if (state && state.lastCtxPct === pct) return;
+    if (state) state.lastCtxPct = pct;
+    emit({ type: "context", used, budget, threshold, pct, compact: (config.agent || {}).compact !== false });
+  }
+
   async function compactHistory(history, { emit = () => {}, stats, traceNode } = {}) {
     if ((config.agent || {}).compact === false) return;
     const budget = config.agent.max_context_chars || 120000;
@@ -1395,7 +1422,7 @@ function modePrompt(mode) {
    * 把整趟任务交给本机 agent CLI 跑。
    *
    * 对外的返回结构跟内置引擎一模一样（finalText / usage / stopped），多带一个 sessionId：
-   * 那是底层 CLI 自己的会话 id，存进本项目的会话文件后，桌面端和 wb 命令行能接着同一根线程续跑。
+   * 那是底层 CLI 自己的会话 id，存进本项目的会话文件后，桌面端和 openworkbuddy 命令行能接着同一根线程续跑。
    * 「已达最大步数 / 已达最大运行时间 / 已手动停止」这三种收尾原样报出去——
    * task-verdict 那层认的就是这几个词，翻译对了，假绿判定在 CLI 引擎上照样生效。
    */
@@ -1648,9 +1675,15 @@ function modePrompt(mode) {
    *
    * 之前是 `taskLabel || "任务"`：taskLabel 缺席或者只是个来源标签时，
    * 账本里就会堆出几百条一模一样的「任务」，点进去才知道是哪趟——这个列表等于没用。
-   * 现在缺席就从用户说的第一句话里截，来源标签则保留在前面当限定词（「IM 对话 · 帮我查下日程」），
+   * 现在缺席就从用户说的话里截，来源标签则保留在前面当限定词（「IM 对话 · 帮我查下日程」），
    * 这样既知道从哪进来的，也知道要干什么。
+   *
+   * 截的是**最近那句有内容的**，不是第一句：这里传进来的 history 是整段会话，
+   * 取第一句的话，聊了十轮就是十条同名的 trace，列表照样分不开（这正是之前的样子）。
    */
+  /** 这一趟是会话里的第几轮（用户开口过几次）。列表靠它把同一个会话里的几趟分开 */
+  const traceTurnOf = (history) => (Array.isArray(history) ? history.filter((m) => m && m.role === "user").length : 0);
+
   function traceNameOf(taskLabel, history) {
     const from = String(taskLabel || "").trim();
     const said = tracing._internals.labelFromInput(tracing._internals.messagesOf("", history));
@@ -1679,7 +1712,7 @@ function modePrompt(mode) {
           sessionId,
           input: tracing._internals.messagesOf("", history),
           tags: [mode, lang].filter(Boolean),
-          metadata: { mode, lang: lang || "", workspace: baseDir || "" },
+          metadata: { mode, lang: lang || "", workspace: baseDir || "", turn: traceTurnOf(history) },
         })
       : tracing.noop);
     // 链接开工就给，不等跑完——长任务里最想点开看的恰恰是跑到一半的时候
@@ -1804,9 +1837,12 @@ function modePrompt(mode) {
     });
 
     // 长会话先压缩再开跑：只在顶层任务做（专家子任务的 history 是临时的，压不着）
+    const ctxState = { lastCtxPct: -1 };
     if (depth === 0) {
       try { await compactHistory(history, { emit, stats, traceNode: tr }); }
       catch (e) { console.warn("[agent] 上下文压缩失败，本次跳过:", e.message); }
+      // 压完再播：让界面上那根条直接落到压缩后的真实位置，而不是先闪一下旧数字
+      emitContext(history, emit, ctxState);
     }
 
     // 自动续跑：撞「最大步数/最大运行时间」后自动开下一轮接着干（仅顶层任务；手动停止、模型挂死不续跑）。
@@ -1851,6 +1887,7 @@ function modePrompt(mode) {
       // 跑到几十步的长任务只能靠 trimHistory 把早期工具输出截成空壳，模型越跑越失忆
       try { await compactHistory(history, { emit, stats, traceNode: tr }); }
       catch (e) { console.warn("[agent] 任务中压缩失败，本步跳过:", e.message); }
+      if (depth === 0) emitContext(history, emit, ctxState);
       const trimmed = trimHistory(history, config.agent.max_context_chars || 120000);
       if (trimmed) {
         trimmedChars += trimmed;
@@ -2483,17 +2520,47 @@ function collectSources(name, input, content) {
  *
  * stop() 必须在任务收尾时调：尾随定时器要是烧到 SSE 关掉之后才响，就是往已经断掉的连接里写。
  */
-function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, after = null }) {
+/**
+ * 「这回合产出了什么」的判据里，除了基线还必须有一道**绝对时间闸**。
+ *
+ * 2026-09-17 的真实故障：一次做小红书图文的任务，对话末尾那块「本回合产出」把工作目录里
+ * 从 0828 到 0917 的几百个文件全倒了出来——这次真正做的 8 张卡反而被埋在最底下。
+ * 用户原话：「还有这里也是灾难啊，把产出文件给删除了，下面这里显示的全部文件出来啊」。
+ *
+ * 根子在 outputFiles()：它按 mtime 倒序**只取最新 500 条**。于是基线记的是开跑那一刻的
+ * 最新 500 条，而"不在基线里"被当成了"新产出"。任务中途造了几十个中间文件、干完又把它们删掉，
+ * 这个 500 条的窗口就往回滑一截，几个月前的旧文件重新挤进列表——它们当然不在基线里，
+ * 于是整批被认成"这回合刚做的"。ownership 那层也拦不住：CLI 是新进程，dirOwners 里只登记了
+ * 本次任务自己的文件夹，别人的目录一律"无主"，照样放行。
+ *
+ * 闸门本身很便宜：一个文件要算这回合的产出，它的 mtime 至少得在这回合开跑之后。
+ * 0905 写的文件永远过不了这一关，不管窗口怎么滑、基线丢没丢过它。
+ * 留 2 秒余量是给文件系统时间戳精度和「先建文件再落最后一笔」那点抖动的。
+ *
+ * 代价说清楚：`cp -p` 那种保留原 mtime 搬进来的文件会被漏掉。这是有意的取舍——
+ * 漏报一个搬运来的旧文件，比把几百个陈年文件冒充成今天的成果要好得多。
+ */
+const MTIME_SLACK_MS = 2000;
+function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, after = null, since = null }) {
   const baseline = new Map();
   for (const f of outputFiles()) baseline.set(f.name, f.mtime);
+  // 这回合的起点。可注入是为了能测（测试里造的文件 mtime 就在当下这一两毫秒内）
+  const startedAt = (since == null ? Date.now() : Number(since)) - MTIME_SLACK_MS;
+  const bornAfterStart = (f) => {
+    const t = Date.parse(f && f.mtime);
+    return Number.isFinite(t) ? t >= startedAt : true; // 时间戳读不出来就别拿它当拒绝的理由
+  };
   let lastAt = 0, timer = null, lastSig = "", dead = false;
   const walk = () => {
     lastAt = Date.now();
     const files = outputFiles();
     const changed = [];
     for (const f of files) {
-      if (baseline.get(f.name) === f.mtime) continue;
+      const known = baseline.get(f.name);
       baseline.set(f.name, f.mtime);
+      if (known === f.mtime) continue;
+      // 基线里没有它，只说明它刚挤进这 500 条的窗口，不说明它是今天写的
+      if (!bornAfterStart(f)) continue;
       if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);
     }
     // 指纹带 size：同一秒内原地改写、mtime 精度不够时，长度变了照样能认出来

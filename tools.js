@@ -155,7 +155,11 @@ const TOOL_DEFS = [
       "控制当前 OpenWorkBuddy 项目的 AI 短剧无限画布。画布不是普通白板：节点可以是 note/script/agent/character/location/storyboard/scene/shot/image/video/audio/timeline，连线表示输入关系。" +
       "用 list 查看当前项目的多张画布；用 get 读取当前画布；用 add 创建节点；用 update 修改节点 payload 或位置；用 connect 建立输入关系（可声明 relation，如 character/background/motion/style/first_frame）；用 delete 删除节点；用 clear 清空画布。" +
       "短剧制作建议按 script → character/location → storyboard/scene → shot → image/video/audio → timeline 建图。先调用 get，不要凭空覆盖用户已经摆好的节点。" +
-      "生成图片/视频时先调用 generate_image 或 generate_video，拿到真实 file 路径后再用 update 把 first_frame/video/path 写回节点；这样画布会自动显示结果。所有操作只作用于当前项目，不连接其他本地项目。",
+      "角色节点的 payload 里可以写 voice（这个角色全程用的音色名），镜头节点可以写 speaker（这一镜的台词是谁说的，写角色名或角色 id）。配音就按这两项决定用谁的嗓子：不写的话整部戏所有角色都是同一个默认音色，而且要等成片放出来才听得出。" +
+      "镜头节点的提示词分两格：prompt 是首帧画面长什么样，motion_prompt 只写怎么动。生视频只递 motion_prompt——画面内容已经在首帧里了，把首帧提示词再递一遍，模型会照着它重画一遍，生出来的片子跟已经确认过的首帧对不上。" +
+      "生成图片/视频时先调用 generate_image 或 generate_video，拿到真实 file 路径后再用 update 把 first_frame/video/path 写回节点；这样画布会自动显示结果。" +
+      "写回节点只让画布显示得出来，不会动分镜表（用户在界面上改字段是自动回表的，这条工具不是）。分镜表是唯一真源（「改一镜只重算一镜」读的是它），所以同一条路径还要自己写进 分镜表.json 里对应那一镜的 first_frame/video/audio、或角色的 ref——漏了这一步，下次重跑会把已经买过的镜头再买一遍。"
+      + "（用户在界面上点生成是自动回写的，Agent 这条路没有。）所有操作只作用于当前项目，不连接其他本地项目。",
     input_schema: {
       type: "object",
       properties: {
@@ -1867,7 +1871,7 @@ const DOC_CHARS = 50000; // 跟 read_file 同一个口径
 /**
  * PDF 怎么取文字。**这段话必须是能照着做完的**——之前写的是「没装就在 run_node 里解析」，
  * 而 run_node 那个沙箱里压根没有任何 PDF 库，模型照着做必然撞墙，白烧两三轮。
- * 现在给的是真装得上的命令，各平台一条。`wb doctor` 里也会把 pdftotext 列进体检项。
+ * 现在给的是真装得上的命令，各平台一条。`openworkbuddy doctor` 里也会把 pdftotext 列进体检项。
  */
 function pdfHowTo(name) {
   const q = `"${name}"`;
@@ -2434,7 +2438,14 @@ function auditHtml(src, baseDir, opts = {}) {
   if (unclosed.length) add("提", `${unclosed.join("、")} 还开着没闭——这次落盘的像是文档前半截，接着往下写就行，最后记得收尾`);
   // 外链资源：断网/发给别人就打不开了，单文件页面这是硬伤
   const ext = [...src.matchAll(/(?:src|href)=["'](https?:\/\/[^"']+)["']/gi)].map((m) => m[1]);
-  const cdn = ext.filter((u) => !/^https?:\/\/(fonts\.googleapis|fonts\.gstatic)\./i.test(u));
+  // 网络字体以前是放行的，现在不放行了。`<link rel=stylesheet>` 是挡渲染的：连不上时浏览器
+  // 不会立刻放弃，要一直等到自己那个 5 秒超时才肯画第一屏——实测把样式表指向一台「包被默默
+  // 丢掉」的主机（国央企内网防火墙的常见做法，不回 RST），首屏 5132ms；同一页不引外链 116ms。
+  // 所以这从来不是「断网时字体变普通」，是白屏五秒，换来的只是一款西文标题字体
+  const isFont = (u) => /^https?:\/\/(fonts\.googleapis|fonts\.gstatic)\./i.test(u);
+  const fontLinks = ext.filter(isFont);
+  const cdn = ext.filter((u) => !isFont(u));
+  if (fontLinks.length) add("警", `引了网络字体（${fontLinks[0].slice(0, 60)}…），内网或断网打开时首屏要白等 5 秒才出字；改用系统里真装着的字体栈`);
   if (cdn.length) add("警", `引了 ${cdn.length} 个外部资源（${cdn[0].slice(0, 60)}…），断网或换台电脑就白屏；库和图片请内联或下载到本地`);
   // 本地引用的文件在不在
   const local = [...src.matchAll(/(?:src|href)=["'](?!https?:|data:|#|mailto:|javascript:)([^"']+)["']/gi)].map((m) => m[1]);
@@ -3040,7 +3051,7 @@ function searchProviderKey(cfg, provider) {
   return "";
 }
 
-async function webSearch(query, count, searchCfg) {
+async function webSearch(query, count, searchCfg, hold) {
   const n = Math.min(Math.max(+count || 5, 1), 10);
   const cfg = searchCfg || {};
   const provider = (cfg.provider || "jina").toLowerCase();
@@ -3049,6 +3060,11 @@ async function webSearch(query, count, searchCfg) {
   // 全军覆没才退 DuckDuckGo 免费档；每一步的失败原因都记下来带给 agent
   const chain = [provider, ...Object.keys(SEARCH_PROVIDERS).filter((p) => p !== provider)];
   const errors = [];
+  // 下面三条兜底路径（DuckDuckGo / 百度 / 全军覆没）一分钱不花，
+  // 要把刚才那笔预扣退回去。记一个标志而不是在每条 return 前各写一句：
+  // 那样漏一条就是一笔常被占着的预算，而漏哪一条只有网络坏成那样的时候才看得出来。
+  let settled = false;
+  const refund = () => { if (!settled) { settled = true; quota.undo(hold); } };
   for (const p of chain) {
     const fn = SEARCH_PROVIDERS[p];
     const key = searchProviderKey(cfg, p);
@@ -3057,8 +3073,10 @@ async function webSearch(query, count, searchCfg) {
       const items = await fn(key, query, n);
       if (items.length) {
         // 只有付费引擎真回了结果才记账。下面 DuckDuckGo / 百度那两条兜底不花钱，
-        // 记进去会让管理员对着一个虚高的数字去砍额度
-        quota.record("search", { provider: p, meta: String(query).slice(0, 80) });
+        // 记进去会让管理员对着一个虚高的数字去砍额度。
+        // 注意这儿记的是 **p**，不是配置里那个首选：首选被限流时是接力的那家在收钱。
+        quota.record("search", { provider: p, units: 1, meta: String(query).slice(0, 80), hold });
+        settled = true;
         return items
           .map((r, i) => `${i + 1}. ${r.title || "(无标题)"}\n   ${r.url}\n   ${(r.desc || "").slice(0, 300)}`)
           .join("\n\n");
@@ -3088,7 +3106,7 @@ async function webSearch(query, count, searchCfg) {
     if (uddg) url = decodeURIComponent(uddg[1]);
     return `${i + 1}. ${stripTags(m[2])}\n   ${url}\n   ${stripTags((snippets[i] || ["", ""])[1]).slice(0, 300)}`;
   });
-  if (results.length) return results.join("\n\n");
+  if (results.length) { refund(); return results.join("\n\n"); }
   if (html) errors.push("duckduckgo: 页面无结果（可能被反爬拦截）");
 
   // 兜底 2：百度 HTML 版（免 key；jina/DDG 在国内网络常整条不可达，百度是最后的保命通道）
@@ -3105,6 +3123,7 @@ async function webSearch(query, count, searchCfg) {
       .map((m) => ({ url: m[1], title: stripTags(m[2]).trim() }))
       .filter((r) => r.title);
     if (items.length) {
+      refund();
       return (
         "（以下来自百度，链接多为跳转链，用 fetch_url 打开会自动到达真实页面）\n\n" +
         items
@@ -3117,6 +3136,7 @@ async function webSearch(query, count, searchCfg) {
   } catch (e) {
     errors.push(`baidu: ${String(e.message || e).slice(0, 100)}`);
   }
+  refund();
   return (
     "（本次搜索无结果" +
     (errors.length ? `。各引擎情况：${errors.join("；")}` : "") +
@@ -3187,7 +3207,7 @@ function badToolArgs(name, raw, parseError, rawLen) {
  *
  * 渠道没配好 / 型号点错时故意不算 key：让真正的那一趟去报错——它的话说得比这里清楚得多。
  */
-async function withGenCache(kind, cap, opts, input, dir, resolveFile, run) {
+async function withGenCache(kind, cap, opts, input, dir, resolveFile, hold, run) {
   let k = null, model = "";
   try {
     const cfg = mediaModels.pick(opts.media, cap, input.model);
@@ -3199,33 +3219,89 @@ async function withGenCache(kind, cap, opts, input, dir, resolveFile, run) {
   if (k) {
     const hit = genCache.get(k, ws());
     if (hit) {
+      // 命中缓存 = 一个子儿没花，所以刚才那笔预扣要当场退回去。
+      // 不退的话，一个反复重跑同一张图的任务会把预算“占”到拦人，而账单上什么都没发生。
+      quota.undo(hold);
       security.audit(kind === "text_to_speech" ? "语音合成" : kind === "generate_video" ? "视频生成" : "图像生成",
         `复用上次的产物（参数逐字一样，没有再调 ${model}）→ ${hit.file}`, "放行");
       return hit;
     }
   }
-  const out = await run();
+  let out;
+  try {
+    out = await run();
+  } catch (e) {
+    quota.undo(hold);   // 没发出去就不该占着预算
+    throw e;
+  }
   // 记账放在这儿而不是调用点：上面命中缓存的那条路径直接 return 了，一个子儿没花。
   // 记在调用点的话，同一张图重跑十次会记十笔，而实际只付了一次钱
-  if (!out.isError) quota.record(cap, { provider: mediaProviderOf(opts.media, cap), model, meta: String(input.prompt || input.text || "").slice(0, 80) });
+  if (!out.isError) {
+    quota.record(cap, {
+      provider: mediaProviderOf(opts.media, cap), model,
+      units: unitsFor(cap, input, resolveFile),
+      meta: String(input.prompt || input.text || "").slice(0, 80), hold,
+    });
+  } else {
+    quota.undo(hold);   // 渠道挂了 / 参数错了，同样一分没花
+  }
   if (k) genCache.put(k, out, dir, ws(), model);
   return out;
+}
+
+/**
+ * 这一趟按量计费的话，量是多少（张 / 秒 / 千字符 / 分钟）。
+ *
+ * 三个估值都把依据写在这儿，因为它们会直接变成后台那张表上的钱：
+ *
+ *   视频：工具没开 duration 参数，各家默认都是 5 秒，所以按 5 秒记。
+ *          哪天把 duration 放进 schema 了，这一行跟着改。
+ *   语音：字符数是准的，按字符算就行——各家计费用的也是字符数。
+ *   转写：发出去之前唯一能知道的只有文件大小，所以按 128kbps（≈16 KB/秒）折成分钟。
+ *          压过的 16k 单声道文件会被算少，没压过的会被算多，误差在一倍以内。
+ *          要精确到秒得先拆音频头，而那要为每一次转写多读一遍文件——不值。
+ */
+function unitsFor(cap, input = {}, resolveFile) {
+  if (cap === "image") return Math.max(1, Math.floor(+input.n || 1));
+  if (cap === "video") return Math.max(1, +input.duration || 5);
+  if (cap === "tts") return Math.max(0.001, String(input.text || "").length / 1000);
+  if (cap === "asr") {
+    try {
+      const st = fs.statSync(resolveFile(String(input.path || input.file || "").trim()));
+      return Math.max(0.1, st.size / 16000 / 60);
+    } catch { return 1; }
+  }
+  return 1;
 }
 
 /** 这一路当前走的是哪家服务商——只为流水好看，取不到就空着，绝不因此中断调用 */
 function mediaProviderOf(media, cap) {
   try { return String(mediaModels.pick(media, cap).provider || "").slice(0, 40); } catch { return ""; }
 }
+/** 转写这一路真正用的型号。计价要拿它去查价，而调用方常常不写 model（走默认那个） */
+function asrModelOf(media, want) {
+  try { return String(mediaModels.pick(media, "asr", want).model || "").slice(0, 60); } catch { return String(want || ""); }
+}
 /**
- * 付费 API 的额度闸门。挡下来时返回的是一条**给模型看**的错误：
- * 它会把这句话念给用户，所以必须写清楚撞的是哪道闸、去哪儿改，
- * 而不是甩一句「调用失败」让模型接着换个工具重试。
+ * 付费 API 的额度闸门。同时问两道闸：次数（一天最多生多少张）和钱（这个月最多花多少元）。
+ *
+ * 返回 { bad, hold }：
+ *   bad  挡下来了。这是一条**给模型看**的错误——它会把这句话念给用户，
+ *        所以必须写清楚撞的是哪道闸、去哪儿改，而不是甩一句「调用失败」
+ *        让模型接着换个工具重试。
+ *   hold 放行了，并且已经把预估的钱**预扣**下来了。调完必须交回去：
+ *        成功走 quota.record(…, { hold })，没发出去走 quota.undo(hold)。
+ *        两个都不调的后果不是漏钱（十五分钟后会被扫掉），而是那半小时里
+ *        预算看着比实际少，没人能解释为什么。
  */
-function quotaGate(cap) {
-  const g = quota.check(cap);
-  if (g.ok) return null;
+function quotaGate(cap, call = {}) {
+  const g = quota.gate(cap, call);
+  if (g.ok) return { bad: null, hold: g.hold };
   security.audit("额度拦截", `${(quota.CAPS[cap] || {}).label || cap}：${g.why}`, "拦截");
-  return { content: g.why + "\n\n先别重试——重试不会变出额度来。把这句话原样告诉用户，让他找管理员调额度，或者换一条不花钱的路子（比如让用户自己贴内容进来）。", isError: true };
+  return {
+    bad: { content: g.why + "\n\n先别重试——重试不会变出额度来。把这句话原样告诉用户，让他找管理员调额度，或者换一条不花钱的路子（比如让用户自己贴内容进来）。", isError: true },
+    hold: null,
+  };
 }
 
 const CANVAS_KINDS = new Set(["note", "script", "agent", "character", "location", "storyboard", "scene", "shot", "image", "video", "audio", "timeline"]);
@@ -3253,34 +3329,100 @@ function canvasStatePath(name = canvasCurrentName()) {
   return safe === "main" ? path.join(ws(), ".openworkbuddy", "canvas.json") : path.join(ws(), ".openworkbuddy", "canvases", safe + ".json");
 }
 function canvasEmptyState() { return { version: 1, nodes: [], edges: [], updatedAt: 0 }; }
-function canvasNormalizeState(value) {
+/**
+ * 规整画布状态 —— 这一层只管「把形状理顺」，不管「这条数据配不配存在」。
+ *
+ * 以前它兼着当校验器：不认识的节点类型直接扔掉、超过 500 个的节点直接截断。
+ * 问题是它同时站在读和写两条路上，于是「读一遍」本身就会掉东西，而界面拖一下节点
+ * 就会把读出来的残缺状态原样回存。实测三条路都能把用户的画布吃掉：
+ *   · 600 个节点的画布，读出来 500 个，回存之后盘上就真只剩 500 个；
+ *   · 老版本写的画布里有这个版本不认识的类型，3 个节点读出来只剩 1 个；
+ *   · 文件坏了（写一半断电）读出来是空画布，回存直接把残骸盖成 []。
+ * 用户升级完打开画布发现东西没了，就是这么没的。
+ *
+ * 所以规矩改成：**序列化不许挑食，校验挪到真正新建数据的地方**（add 那边本来就查
+ * CANVAS_KINDS，connect 那边本来就查 CANVAS_EDGE_RELATIONS，那才是该拦的地方）。
+ * 这里只做三件不会丢东西的事：补全缺的字段、把类型强制成字符串/数字、去掉挂空的连线。
+ *
+ * lost 传个对象进来就能拿到「这一趟少了什么」的账，界面据此提醒用户，而不是默默抹掉。
+ */
+function canvasNormalizeState(value, lost = null) {
   const raw = value && typeof value === "object" ? value : {};
-  const nodes = Array.isArray(raw.nodes) ? raw.nodes.filter((node) => node && node.id && CANVAS_KINDS.has(String(node.kind))).slice(0, CANVAS_MAX_NODES).map((node) => ({
-    id: String(node.id), kind: String(node.kind), payload: node.payload && typeof node.payload === "object" ? node.payload : {},
+  const note = (k, n) => { if (lost && n > 0) lost[k] = (lost[k] || 0) + n; };
+  const rawNodes = Array.isArray(raw.nodes) ? raw.nodes : [];
+  // 连 id 都没有的才丢——没有 id 的节点没法引用、没法连线，留着也指不到它
+  const usable = rawNodes.filter((node) => node && node.id);
+  note("noId", rawNodes.length - usable.length);
+  const nodes = usable.map((node) => ({
+    // kind 照原样留着，哪怕这个版本不认识：可能是老版本建的，也可能是用户装了别的版本。
+    // 认不出来就在界面上画成一张「这个版本不认识的节点」的占位卡，绝不替用户删。
+    // 只掐长度，免得有人往里塞一整篇文章当类型名
+    id: String(node.id), kind: String(node.kind || "note").slice(0, 40),
+    payload: node.payload && typeof node.payload === "object" ? node.payload : {},
     position: { x: Number(node.position && node.position.x) || 0, y: Number(node.position && node.position.y) || 0 },
     size: node.size && typeof node.size === "object" ? { width: Number(node.size.width) || undefined, height: Number(node.size.height) || undefined } : undefined,
-  })) : [];
+  }));
+  // 超上限只记账、不截断。上限该拦的是「再往里加」（见 add），不是「你已经有的」——
+  // 一张叫「无限画布」的东西，打开自己的旧文件反而被删到 500 个，说不过去
+  note("overflowNodes", Math.max(0, nodes.length - CANVAS_MAX_NODES));
   const ids = new Set(nodes.map((node) => node.id));
-  const edges = Array.isArray(raw.edges) ? raw.edges.filter((edge) => edge && ids.has(edge.source?.id || edge.source) && ids.has(edge.target?.id || edge.target) && (edge.source?.id || edge.source) !== (edge.target?.id || edge.target)).slice(0, CANVAS_MAX_EDGES).map((edge) => {
-    const relation = String(edge.relation || edge.role || "");
-    return { source: { id: String(edge.source?.id || edge.source) }, target: { id: String(edge.target?.id || edge.target) }, ...(CANVAS_EDGE_RELATIONS.has(relation) ? { relation } : {}) };
-  }) : [];
+  const rawEdges = Array.isArray(raw.edges) ? raw.edges : [];
+  // 连线两头必须都还在，且不能自己连自己——这条是真的完整性，留着也画不出来
+  const liveEdges = rawEdges.filter((edge) => edge && ids.has(edge.source?.id || edge.source) && ids.has(edge.target?.id || edge.target) && (edge.source?.id || edge.source) !== (edge.target?.id || edge.target));
+  note("danglingEdges", rawEdges.length - liveEdges.length);
+  note("overflowEdges", Math.max(0, liveEdges.length - CANVAS_MAX_EDGES));
+  const edges = liveEdges.map((edge) => {
+    // 用途同理：不认识的照留，别把用户标好的关系悄悄抹成一根没名字的线
+    const relation = String(edge.relation || edge.role || "").slice(0, 40);
+    return { source: { id: String(edge.source?.id || edge.source) }, target: { id: String(edge.target?.id || edge.target) }, ...(relation ? { relation } : {}) };
+  });
   return { version: 1, nodes, edges, updatedAt: Number(raw.updatedAt) || 0 };
 }
-function canvasReadState(name = canvasCurrentName()) {
-  try { return canvasNormalizeState(JSON.parse(fs.readFileSync(canvasStatePath(name), "utf8"))); } catch { return canvasEmptyState(); }
+/** 把一份读不动的画布文件原样挪到一边，绝不在它上面写东西。返回备份路径。 */
+function canvasBackup(file, why) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const bak = `${file}.${why}-${stamp}.bak`;
+  try { fs.copyFileSync(file, bak); return bak; } catch { return ""; }
+}
+/**
+ * 读画布。
+ *
+ * 「文件不存在」和「文件读不出来」是两件完全不同的事，以前一个 catch 全吞了，
+ * 两种都当空画布返回。后一种返回空画布是会要命的：界面显示一张白板，用户在白板上
+ * 随便动一下，自动保存就把真文件盖成空的。所以现在只有 ENOENT 才算空画布，
+ * 其余一律抛出来，让界面显示「读不出来」而不是「是空的」。
+ */
+function canvasReadState(name = canvasCurrentName(), lost = null) {
+  const file = canvasStatePath(name);
+  let text;
+  try { text = fs.readFileSync(file, "utf8"); } catch (e) {
+    if (e.code === "ENOENT") return canvasEmptyState();   // 还没建过——这才是真的空画布
+    throw new Error(`画布文件读不出来（${file}）：${e.message}。没有当成空画布，免得下一次保存把它盖掉。`);
+  }
+  try { return canvasNormalizeState(JSON.parse(text), lost); } catch (e) {
+    const bak = canvasBackup(file, "坏了");
+    throw new Error(`画布文件不是完整的 JSON，多半是上次写到一半断了（${file}）：${e.message}。` +
+      (bak ? `原文件已原样备份到 ${path.basename(bak)}，一个字节都没动。` : "备份也没做成，请先手动把这个文件复制一份再说。"));
+  }
 }
 function canvasWriteState(value, name = canvasCurrentName()) {
   const state = canvasNormalizeState(value); state.updatedAt = Date.now();
   const active = canvasSetCurrentName(name), file = canvasStatePath(active), dir = path.dirname(file), tmp = file + "." + process.pid + ".tmp";
-  fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8"); fs.renameSync(tmp, file);
+  fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
+  // 覆盖之前留一代。就一个文件、每次覆盖，不会越攒越多，但「刚才那一下把画布搞没了」
+  // 总有一步能退回去。画布是用户一笔一笔摆出来的，没有回收站，出事就是白干
+  try { if (fs.existsSync(file)) fs.copyFileSync(file, file + ".bak"); } catch {}
+  fs.renameSync(tmp, file);
   return state;
 }
 function canvasList() {
   const dir = path.join(ws(), ".openworkbuddy", "canvases"), out = [], add = (name, file) => {
-    let stat = null, state = canvasEmptyState();
-    try { stat = fs.statSync(file); state = canvasReadState(name); } catch {}
-    out.push({ name, title: name === "main" ? "主画布" : name, nodes: state.nodes.length, updatedAt: state.updatedAt || (stat ? stat.mtimeMs : 0) });
+    let stat = null, state = canvasEmptyState(), broken = "";
+    try { stat = fs.statSync(file); } catch {}
+    // 读不出来的画布在列表里要显出来是「读不出来」，不能显示成「0 个节点」——
+    // 后者看着就像一张空画布，用户会直接点进去开始画，然后把它盖掉
+    try { state = canvasReadState(name); } catch (e) { broken = e.message; }
+    out.push({ name, title: name === "main" ? "主画布" : name, nodes: state.nodes.length, updatedAt: state.updatedAt || (stat ? stat.mtimeMs : 0), ...(broken ? { broken } : {}) });
   };
   const legacy = path.join(ws(), ".openworkbuddy", "canvas.json"); if (fs.existsSync(legacy)) add("main", legacy);
   try { fs.readdirSync(dir, { withFileTypes: true }).forEach((entry) => { if (entry.isFile() && /\.json$/i.test(entry.name)) add(entry.name.replace(/\.json$/i, ""), path.join(dir, entry.name)); }); } catch {}
@@ -3291,13 +3433,19 @@ function canvasManage(input = {}) {
   const op = String(input.operation || "get");
   const canvasName = canvasSafeName(input.canvas_name || canvasCurrentName());
   if (op === "list") return { content: JSON.stringify({ current: canvasCurrentName(), canvases: canvasList() }), isError: false };
-  let state = canvasReadState(canvasName);
+  let state;
+  // 读不出来要当场告诉 agent，而不是递给它一张空画布——递空的，它会「好心」地
+  // 重新建一遍节点，一存就把原文件盖了
+  try { state = canvasReadState(canvasName); } catch (e) { return { content: e.message, isError: true }; }
   if (op === "get") return { content: JSON.stringify({ canvas_name: canvasName, version: state.version, updatedAt: state.updatedAt, nodes: state.nodes, edges: state.edges }), isError: false };
   if (op === "clear") { state = canvasWriteState(canvasEmptyState(), canvasName); return { content: `画布 ${canvasName} 已清空（${state.updatedAt}）。`, isError: false }; }
   if (op === "add") {
     const kind = String(input.kind || ""); if (!CANVAS_KINDS.has(kind)) return { content: `不支持的画布节点类型：${kind}`, isError: true };
     const id = String(input.node_id || `agent_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`);
     if (state.nodes.some((node) => node.id === id)) return { content: `节点 id 已存在：${id}`, isError: true };
+    // 上限拦在「往里加」这一步。以前是在序列化时截断，等于替用户删已有的节点；
+    // 拦在这儿最多是加不进去，一个字节都不会少
+    if (state.nodes.length >= CANVAS_MAX_NODES) return { content: `画布 ${canvasName} 已经有 ${state.nodes.length} 个节点，到上限 ${CANVAS_MAX_NODES} 了，加不进去。先删掉些用不上的，或者换一张画布（canvas_name 换个名字就是新的一张）。`, isError: true };
     state.nodes.push({ id, kind, payload: input.payload && typeof input.payload === "object" ? input.payload : {}, position: { x: Number(input.position?.x) || 120 + (state.nodes.length % 4) * 390, y: Number(input.position?.y) || 120 + Math.floor(state.nodes.length / 4) * 300 } });
     state = canvasWriteState(state, canvasName); return { content: `已添加${kind}节点 ${id} 到画布 ${canvasName}。`, isError: false };
   }
@@ -3313,6 +3461,8 @@ function canvasManage(input = {}) {
     if (source === target) return { content: "不能把节点连接到自己。", isError: true };
     const relation = String(input.relation || "");
     if (relation && !CANVAS_EDGE_RELATIONS.has(relation)) return { content: `不支持的连线用途：${relation}`, isError: true };
+    // 同 add：上限拦在这一步，不在序列化时截断
+    if (state.edges.length >= CANVAS_MAX_EDGES) return { content: `画布 ${canvasName} 的连线已经到上限 ${CANVAS_MAX_EDGES} 条了，连不上去。先删掉些用不上的连线。`, isError: true };
     const existing = state.edges.find((edge) => edge.source.id === source && edge.target.id === target);
     if (existing) { if (relation) existing.relation = relation; }
     else state.edges.push({ source: { id: source }, target: { id: target }, ...(relation ? { relation } : {}) });
@@ -3635,36 +3785,44 @@ async function executeTool(name, input, opts = {}) {
       case "look_at_image":
         return await lookAtImage(opts, input, timeoutMs, resolveFile);
       case "generate_image": {
-        const g = quotaGate("image");
-        if (g) return g;
-        return await withGenCache("generate_image", "image", opts, input, fileBase, resolveFile,
+        const g = quotaGate("image", { model: input.model, units: unitsFor("image", input) });
+        if (g.bad) return g.bad;
+        return await withGenCache("generate_image", "image", opts, input, fileBase, resolveFile, g.hold,
           () => generateImage(opts.media, input, timeoutMs, fileBase, resolveFile));
       }
       case "generate_video": {
-        const g = quotaGate("video");
-        if (g) return g;
-        return await withGenCache("generate_video", "video", opts, input, fileBase, resolveFile,
+        const g = quotaGate("video", { model: input.model, units: unitsFor("video", input) });
+        if (g.bad) return g.bad;
+        return await withGenCache("generate_video", "video", opts, input, fileBase, resolveFile, g.hold,
           () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile }));
       }
       case "html_to_image":
         return await htmlToImage(input, resolveFile, fileBase);
       case "text_to_speech": {
-        const g = quotaGate("tts");
-        if (g) return g;
-        return await withGenCache("text_to_speech", "tts", opts, input, fileBase, resolveFile,
+        const g = quotaGate("tts", { model: input.model, units: unitsFor("tts", input) });
+        if (g.bad) return g.bad;
+        return await withGenCache("text_to_speech", "tts", opts, input, fileBase, resolveFile, g.hold,
           () => textToSpeech(opts.media, input, timeoutMs, fileBase));
       }
       case "transcribe_audio": {
-        const g = quotaGate("asr");
-        if (g) return g;
+        const mins = unitsFor("asr", input, resolveFile);
+        const g = quotaGate("asr", { model: input.model, units: mins });
+        if (g.bad) return g.bad;
         const r = await transcribeAudio(opts.media, input, timeoutMs, resolveFile, fileBase);
-        if (!r.isError) quota.record("asr", { provider: mediaProviderOf(opts.media, "asr"), meta: String(input.path || input.file || "").slice(0, 80) });
+        if (!r.isError) {
+          quota.record("asr", {
+            provider: mediaProviderOf(opts.media, "asr"), model: asrModelOf(opts.media, input.model),
+            units: mins, meta: String(input.path || input.file || "").slice(0, 80), hold: g.hold,
+          });
+        } else {
+          quota.undo(g.hold);
+        }
         return r;
       }
       case "desktop_pet": {
         // 真正的活儿在 server.js（那儿才同时握着 config、data/ 和活着的 Electron 窗口），这里只转发
-        if (!global.__wbPetTool) return { content: "桌面宠物功能没装起来（服务端未注册 desktop_pet 的实现）。", isError: true };
-        return await global.__wbPetTool.run(input, fileBase);
+        if (!global.__openworkbuddyPetTool) return { content: "桌面宠物功能没装起来（服务端未注册 desktop_pet 的实现）。", isError: true };
+        return await global.__openworkbuddyPetTool.run(input, fileBase);
       }
       // render_page 是 fetch_url 的兼容别名，执行时统一走同一套渲染逻辑。
       // 这条 case 留着不是为了将来：还活着的 CLI 会话、外部 MCP 客户端、历史排期任务里都可能
@@ -3675,7 +3833,7 @@ async function executeTool(name, input, opts = {}) {
         const orgNet = hostAllowed(null, input.url);
         if (!orgNet.ok) return netBlocked(input.url, orgNet.why);
         const fg = quotaGate("fetch");
-        if (fg) return fg;
+        if (fg.bad) return fg.bad;
         const gate = security.checkUrl(sec, input.url);
         if (!gate.allowed) {
           security.audit("网络拦截", input.url, "拦截");
@@ -3689,11 +3847,18 @@ async function executeTool(name, input, opts = {}) {
         return { content: page, isError: false };
       }
       case "web_search": {
-        const g = quotaGate("search");
-        if (g) return g;
+        // 预估拿「配置里排头的那家」算。真正答上来的可能是接力的下一家（首选被限流了），
+        // 那不影响对错——结算那一步在 webSearch 里按**真答上来的那家**记。
+        const g = quotaGate("search", { provider: (opts.search && opts.search.provider) || "jina" });
+        if (g.bad) return g.bad;
         security.audit("网络访问", `联网搜索：${input.query}`, "放行");
-        const hits = await webSearch(input.query, input.count, opts.search);
-        return { content: hits, isError: false };
+        try {
+          const hits = await webSearch(input.query, input.count, opts.search, g.hold);
+          return { content: hits, isError: false };
+        } catch (e) {
+          quota.undo(g.hold);
+          throw e;
+        }
       }
       default: {
         // 模型常把 MCP 工具的前缀吃掉（调 directory_tree 而不是 mcp__filesystem__directory_tree），

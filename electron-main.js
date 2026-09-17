@@ -2,7 +2,7 @@
 /** Electron 桌面壳 — 启动内嵌服务并打开桌面窗口。运行：npm run app */
 
 const BOOT_T0 = Date.now(); // 启动分段计时：哪段慢一眼看清，别靠体感猜
-const { app, BrowserWindow, dialog, shell, globalShortcut } = require("electron");
+const { app, BrowserWindow, dialog, shell, globalShortcut, Menu, clipboard } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -292,6 +292,7 @@ app.whenReady().then(async () => {
         webPreferences: { backgroundThrottling: false },
       });
       child.webContents.setWindowOpenHandler(openHandler); // 子窗口里再点链接，同一套规矩
+      attachContextMenu(child.webContents);
       child.loadURL(url);
       return { action: "deny" };
     }
@@ -301,6 +302,7 @@ app.whenReady().then(async () => {
     return { action: "deny" };
   };
   win.webContents.setWindowOpenHandler(openHandler);
+  attachContextMenu(win.webContents);
 
   // 供 server.js（同进程内运行）访问窗口：全屏切换 / 快捷键热更新
   global.__wbWin = win;
@@ -309,7 +311,7 @@ app.whenReady().then(async () => {
   // 桌面宠物：常驻角落显示 agent 在干什么，agent 要提问时跳给你看。
   // 放在窗口之后创建，这样它一出生 global.__wbWin 就是齐的（点它要唤起主窗口）。
   const pet = require(path.join(__dirname, "pet.js"));
-  global.__wbPet = pet;
+  global.__openworkbuddyPet = pet;
   try {
     const petCfg = require(dataPath("config.json")).pet || {};
     pet.applyConfig({ enabled: petCfg.enabled === true, scale: petCfg.scale || 1, opacity: petCfg.opacity || 1, notify: petCfg.notify !== false, character: petCfg.character || "cat" });
@@ -330,6 +332,43 @@ app.whenReady().then(async () => {
  * 这段文案是「什么都打不开」时用户手里唯一的线索，所以拎成具名函数，让 test/ 能直接切片测：
  * 错一个分支的代价不是排版难看，是用户对着一句「服务端崩了」重装三遍。
  */
+/**
+ * 右键菜单。Electron 默认**一个都没有**——桌面壳里右键点任何东西都是死的。
+ *
+ * 这不是「少个锦上添花的功能」：网页里右键图片选「复制图片」是所有人的肌肉记忆，
+ * 到了桌面版按下去什么都不弹，用户的结论只会是「这软件的图导不出去」。
+ * 而图恰恰是最该导出去的产出——生成完了就是要粘进微信、粘进 PPT。
+ *
+ * copyImageAt 是 Electron 自带的：按坐标把那张图以**系统原生位图**写进剪贴板，
+ * 不走网页那条 canvas 转码的路，所以不挑格式、不掉画质，粘到哪儿都认。
+ */
+function attachContextMenu(wc) {
+  wc.on("context-menu", (_e, params) => {
+    const items = [];
+    if (params.mediaType === "image" && params.srcURL) {
+      items.push({ label: "复制图片", click: () => wc.copyImageAt(params.x, params.y) });
+      items.push({ label: "复制图片地址", click: () => clipboard.writeText(params.srcURL) });
+      items.push({ type: "separator" });
+    }
+    if (params.selectionText) {
+      items.push({ label: "复制", role: "copy" });
+      if (params.isEditable) items.push({ label: "剪切", role: "cut" });
+    }
+    if (params.isEditable) {
+      items.push({ label: "粘贴", role: "paste" });
+      items.push({ label: "全选", role: "selectAll" });
+    }
+    // 链接单独一条：模型写出来的汇报里全是链接，想存一条下来以前只能手抄
+    if (params.linkURL && /^https?:/i.test(params.linkURL)) {
+      if (items.length) items.push({ type: "separator" });
+      items.push({ label: "复制链接", click: () => clipboard.writeText(params.linkURL) });
+      items.push({ label: "在浏览器里打开", click: () => shell.openExternal(params.linkURL) });
+    }
+    if (!items.length) return;   // 没什么可做的就别弹一个空菜单
+    Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(wc) || undefined });
+  });
+}
+
 function bootHint(msg, port) {
   msg = String(msg || "");
   if (/Cannot find module/.test(msg))
@@ -415,7 +454,7 @@ app.on("will-quit", () => {
     globalShortcut.unregisterAll();
   } catch {}
   try {
-    if (global.__wbPet) global.__wbPet.destroy();
+    if (global.__openworkbuddyPet) global.__openworkbuddyPet.destroy();
   } catch {}
 });
 

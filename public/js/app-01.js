@@ -9,7 +9,7 @@ let projectsLocked = false;    // 服务端说「你这边没有项目这回事�
 /**
  * 两条工作线（lane）：侧栏上面那两个标签，管的是「这次是哪一种活儿」。
  *   办公（office）→ 做表、写稿、出图、发消息。鼠标流，跑在这台机器的桌面办公 agent 上。
- *   工程（cli）    → 写代码、跑脚本、查日志。键盘流，连的是本机的 wb 命令行：
+ *   工程（cli）    → 写代码、跑脚本、查日志。键盘流，连的是本机的 openworkbuddy 命令行：
  *                    终端里起的任务会出现在这条线上，看得见它在干什么，也插得上话。
  * 分的是活儿，不是引擎——底层引擎（内置循环 / 本机 Claude Code / Codex）在设置里挑一次，两条线共用。
  * 必须在任何 renderHistory() / renderLaneTabs() 之前声明（app-02 一加载就会用）。
@@ -19,11 +19,11 @@ let defaultLane = "office";  // 老会话没记过 lane 时归到这条线；服
 let laneInfo = [];           // /api/lanes 回来的那两行；拉回来之前用 LANE_FALLBACK 先画着
 const LANE_FALLBACK = [
   { id: "office", name: "办公", hint: "做表、写稿、出图、发消息——鼠标流" },
-  { id: "cli", name: "工程", hint: "写代码、跑脚本、查日志——键盘流；终端里 wb 起的任务也在这儿" },
+  { id: "cli", name: "工程", hint: "写代码、跑脚本、查日志——键盘流；终端里 openworkbuddy 起的任务也在这儿" },
 ];
 let cliLiveRows = []; // 终端里正在跑（或刚跑完）的那几趟，服务端从 data/cli-live/ 读来的
 let cliWatch = null;  // 正在跟的那趟终端任务 { id, es, ui, live }
-try { const v = localStorage.getItem("wb_lane"); if (v === "cli" || v === "office") activeLane = v; } catch {}
+try { const v = localStorage.getItem("owb_lane"); if (v === "cli" || v === "office") activeLane = v; } catch {}
 let currentUser = null; // 登录后由 initAuth() 填充
 /** 内置猫标的哨兵值。不是 emoji 也不是 data URI，avatarBits 单独认它 */
 const ASSISTANT_MARK = "@cat";
@@ -39,6 +39,60 @@ const TOOL_ICON = { read_file: "file-text", read_document: "book-open-text", wri
 const toolIcon = (n) => TOOL_ICON[n] || "settings";
 const shortTool = (n) => TOOL_SHORT[n] || String(n || "").replace(/^mcp[_:]/, "").replace(/_/g, " ").slice(0, 12);
 /** 过程区里那种「说一句」的提示行：一个图标 + 一句话。话是拼出来的，只走 textContent，不进 innerHTML */
+/**
+ * 上下文余量条。
+ *
+ * 数字不在这儿算——`used/budget/threshold` 全是后端 emitContext 播过来的，跟真正决定
+ * 「什么时候压缩」的是同一组值。前端自己再按 token 估一遍的话，界面说 45%、后端其实
+ * 已经压过一次了，这根条就从「提醒」退化成「误导」。
+ *
+ * 过半才露面：日常对话天天挂一根 12% 的条，看久了等于没有；真正要提醒的是
+ * 「快到自动压缩了，现在开个新会话比压完再聊干净」。
+ */
+function renderCtxMeter(ev) {
+  const bar = document.getElementById("ctx-bar");
+  if (!bar) return;
+  const budget = ev.budget || 0;
+  const pct = Math.max(0, Math.min(100, ev.pct || 0));
+  // 阈值本身是可配的（默认六成），所以「该不该露面」跟着阈值走，不写死 50
+  const showAt = budget && ev.threshold ? Math.max(30, Math.round((ev.threshold / budget) * 100) - 15) : 45;
+  if (pct < showAt) { bar.classList.remove("show"); return; }
+  bar.classList.add("show");
+  bar.classList.toggle("warn", !!ev.threshold && ev.used >= ev.threshold);
+  const fill = document.getElementById("ctx-fill");
+  if (fill) fill.style.width = pct + "%";
+  const t = document.getElementById("ctx-text");
+  if (!t) return;
+  const k = (n) => Math.round(n / 1000) + "k";
+  t.textContent = ev.compact === false
+    ? `上下文 ${pct}%（${k(ev.used)} / ${k(budget)} 字符）· 自动压缩关着，再长会被截断`
+    : ev.used >= (ev.threshold || Infinity)
+      ? `上下文 ${pct}%（${k(ev.used)} / ${k(budget)} 字符）· 下一轮开跑前会自动压一次，想留全文就另开会话`
+      : `上下文 ${pct}%（${k(ev.used)} / ${k(budget)} 字符）`;
+}
+
+/**
+ * 换会话就把余量条收回去。
+ *
+ * 这根条画在输入框上头，全界面共用一根，不跟着会话走；而它只在后端播 `context`
+ * 事件的时候才重画。于是切到一条还没开跑、或者短到播不出这条事件的对话，上一条
+ * 对话那句「上下文 87%…下一轮开跑前会自动压一次」就原封不动挂在那儿，指着一个
+ * 跟眼前这条对话毫不相干的数——用户会以为新开的对话一上来就快满了。
+ *
+ * 所以换会话的时候先收。回放里那条 `context` 事件是进存盘清单的（server.js 的
+ * recordingEmit 留着它），重播时会把本会话自己的数填回来；真没有这条事件的会话，
+ * 空着才是实话。
+ */
+function resetCtxMeter() {
+  const bar = document.getElementById("ctx-bar");
+  if (!bar) return;
+  bar.classList.remove("show", "warn");
+  const fill = document.getElementById("ctx-fill");
+  if (fill) fill.style.width = "0%";
+  const t = document.getElementById("ctx-text");
+  if (t) t.textContent = "";
+}
+
 function procNote(icon, text, cls) {
   const n = document.createElement("div");
   n.className = "proc-note" + (cls ? " " + cls : "");
@@ -70,14 +124,14 @@ const qOf = (sid) => { let q = sessionQueues.get(sid); if (!q) { q = []; session
  * 存本地而不是跟着会话走：这是个人的工作习惯，换个对话不该重选一遍。
  */
 let busySendMode = (() => {
-  try { return localStorage.getItem("wb_busy_send") === "queue" ? "queue" : "interject"; }
+  try { return localStorage.getItem("owb_busy_send") === "queue" ? "queue" : "interject"; }
   catch { return "interject"; }
 })();
 function setBusySendMode(m) {
   busySendMode = m === "queue" ? "queue" : "interject";
-  try { localStorage.setItem("wb_busy_send", busySendMode); } catch {}
+  try { localStorage.setItem("owb_busy_send", busySendMode); } catch {}
 }
-let SESS_KEY = "wb_sessions"; // 登录后切换为 wb_sessions:<用户名>（每人一份任务历史）
+let SESS_KEY = "owb_sessions"; // 登录后切换为 owb_sessions:<用户名>（每人一份任务历史）
 let sessions = JSON.parse(localStorage.getItem(SESS_KEY) || "[]");
 const chatCol = document.getElementById("chat-col");
 const chatScroll = document.getElementById("chat-scroll");
@@ -273,7 +327,7 @@ function avatarBits(av, fallbackName) {
   // "@cat" 是内置的猫标——跟应用图标同一套几何（scripts/genlogo.py 生成同一份 symbol），
   // 所以窗口图标、Dock 里那只、聊天里的头像是同一只猫，不是三张不相干的图。
   // 走 <use> 而不是塞一张 png：矢量的，任何尺寸都清楚，也不用多一次网络请求。
-  if (s === ASSISTANT_MARK) return { html: `<svg class="ava-mk" aria-hidden="true"><use href="#wb-cat"></use></svg>`, cls: "mk" };
+  if (s === ASSISTANT_MARK) return { html: `<svg class="ava-mk" aria-hidden="true"><use href="#owb-cat"></use></svg>`, cls: "mk" };
   // 图标名（"brain"、"rocket"）：描边跟着 currentColor 走，压在品牌渐变上本来就是白的，不用换中性底
   if (isIconName(s)) return { html: ic(s, "ava-ic"), cls: "" };
   if (s) return { html: esc(s), cls: "emo" };
@@ -670,7 +724,7 @@ function createTurnUI(userText, turnMode, forSid) {
   // 执行过程默认收起，跑的时候只把「跑到哪了」那一行留在外面——用户原话：
   //「不要大段大段具体的执行过程挡住了，中间那些执行过程展示的时候可以折叠下」。
   // 想盯着看的人点一下就展开，这个选择记在本机，下次直接按你上次的来。
-  const PROC_OPEN_KEY = "wb_proc_open";
+  const PROC_OPEN_KEY = "owb_proc_open";
   const procOpenPref = () => { try { return localStorage.getItem(PROC_OPEN_KEY) === "1"; } catch { return false; } };
   const ensureProc = () => {
     if (!procBody) {
@@ -860,7 +914,7 @@ function createTurnUI(userText, turnMode, forSid) {
       body.querySelector(".thinking-hint")?.remove();
       const hint = document.createElement("div");
       hint.className = "thinking-hint";
-      hint.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0;display:flex;align-items:center;gap:6px";
+      hint.style.cssText = "font-size: 13px;color:var(--owb-text-3);margin:6px 0;display:flex;align-items:center;gap:6px";
       hint.innerHTML = `<span class="spinner"></span> 第 ${ev.step} 步 · 思考规划中…`;
       // 首步的提示放正文（此时还没有过程区，别为它建一个）；后续步的提示进过程区
       (procBody || body).appendChild(hint);
@@ -895,7 +949,7 @@ function createTurnUI(userText, turnMode, forSid) {
       if (!hint) {
         hint = document.createElement("div");
         hint.className = "thinking-hint";
-        hint.style.cssText = "font-size: 13px;color:var(--wb-text-3);margin:6px 0;display:flex;align-items:center;gap:6px";
+        hint.style.cssText = "font-size: 13px;color:var(--owb-text-3);margin:6px 0;display:flex;align-items:center;gap:6px";
         (procBody || body).appendChild(hint);
       }
       hint.innerHTML = `<span class="spinner"></span> ${esc(ev.text || "")}`;
@@ -1008,6 +1062,9 @@ function createTurnUI(userText, turnMode, forSid) {
       // 会话超长时后端自动把早期轮次压成一条摘要，这里留一行告知，免得用户觉得"它忘了前面"
       const proc = ensureProc();
       proc.appendChild(procNote("archive", `会话较长，已把早前 ${ev.removed || 0} 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）`));
+    } else if (ev.type === "context") {
+      // 后台并行会话的余量不许画到当前这条对话头上：这根条全界面就一根
+      if (turnSid === sessionId) renderCtxMeter(ev);
     } else if (ev.type === "usage") {
       // 插队会触发多轮 runTask、发多个 usage 事件 → 累加而不是覆盖
       if (!turn._usage) turn._usage = { ...ev };
@@ -1085,6 +1142,10 @@ function createTurnUI(userText, turnMode, forSid) {
         pvCurrent,
         filesOpen: document.getElementById("files-panel").classList.contains("show"),
       }), ev.files);
+    } else if (ev.type === "sweep") {
+      // 只在「刚跑完的这一趟」结束时出现一次；回放历史记录时不再问——
+      // 那批文件多半早就被清过或早就不在了，再问一遍只会得到一堆「已经不在了」
+      if (!isReplaying) { endText(); body.appendChild(makeSweepCard(ev)); }
     } else if (ev.type === "sources") {
       renderSources(body, ev.items || []);
     } else if (ev.type === "milestones") {
@@ -1113,7 +1174,7 @@ function createTurnUI(userText, turnMode, forSid) {
       const t = document.createElement("div");
       t.className = "a-text";
       t.setAttribute("translate", "no");
-      t.style.color = "var(--wb-err-text)";
+      t.style.color = "var(--owb-err-text)";
       t.textContent = "出错了：" + (ev.message || "");
       body.appendChild(t); // 错误必须留在正文可见，不进折叠区
     }
@@ -1360,7 +1421,7 @@ function createTurnUI(userText, turnMode, forSid) {
     rounds: liveRound,
     outs: liveOuts,
   });
-  return { handleEvent, finish, turn, sid: turnSid, markPendingInterject, stats };
+  return { handleEvent, finish, turn, body, sid: turnSid, markPendingInterject, stats };
 }
 
 // ---- 折叠条上那行「此刻在干什么」 ----------------------------------------
@@ -1426,21 +1487,27 @@ function liveActivity(ev, narr) {
 // （setSceneTag），发送时拼成「【任务类型：X】」交给模型，所以这格里只能是干净的词，
 // 前面粘个表情的话模型收到的第一个字符就是 emoji。
 //
-// 这份表重排过一次。原来分成 日常办公 / 代码开发 / 设计创意 / 内容与增长，三个毛病：
-//   1. 同一件事两个入口——「幻灯片制作」和「PPT 设计」、「网站开发」和「网站设计」
-//      各挂一边，用户得先猜该点哪个；
-//   2. 分类的尺子不统一：前三个按行当分，「内容与增长」按目的分；
-//   3. 第一个 tab 是个筐，九个胶囊什么都往里塞，里面还有「金融服务」——
-//      那是个行业名，不是一件能交待给模型去做的活，当标签发过去等于没说。
-// 现在统一按**你要交出什么东西**来分，每个胶囊都落到一件具体的活上。
+// 这份表重排过两次。
+//
+// 第一次是从 日常办公 / 代码开发 / 设计创意 / 内容与增长 改成按**你要交出什么东西**分，
+// 治的是「同一件事两个入口」（幻灯片制作 vs PPT 设计）和「第一个 tab 是个筐」。
+//
+// 第二次就是现在这版：分类从五个并到三个。上一版每个 tab 分得都对，但**加起来太多了**——
+// 空态第一屏顶着五个标签页，用户得先做一道「我这件事算哪一类」的选择题，
+// 才轮到真正要做的那件事。而这道题本来就不该出：模型不看分类，分类只影响
+// 挂上去的那枚「任务类型」标签。分得再细也不会让结果更好，只会让第一步更慢。
+//
+// 三类的尺子还是「交出什么」：一份能交上去的文档 / 一个想清楚的结论或一条要发出去的内容 /
+// 一个能跑能看的东西。顺手去掉了「PPT 美化」——它和「做幻灯片」是同一件事的两个入口，
+// 正是上一版明令要治的毛病，上次漏网了。
 const SCENES = {
-  "文档与汇报": [["notebook-pen", "会议纪要"], ["calendar-days", "周报月报"], ["presentation", "做幻灯片"], ["folder-open", "调研报告"], ["file-text", "长文档整理"], ["scale", "合同审阅"]],
-  "数据与研究": [["chart-column", "数据分析"], ["table", "表格处理"], ["brain", "深度研究"], ["target", "竞品分析"], ["trending-up", "行情与财报"]],
-  "写作与传播": [["mail", "商务邮件"], ["languages", "翻译校对"], ["book-open", "小红书图文"], ["newspaper", "公众号推文"], ["film", "短视频成片"], ["megaphone", "营销方案"]],
-  "写代码": [["code", "日常开发"], ["bug", "找 Bug"], ["file-search", "代码审查"], ["globe", "网站开发"], ["bot", "Agent 应用"], ["puzzle", "Skill 开发"], ["book-open", "技术文档"]],
-  "做设计": [["palette", "海报与封面"], ["monitor", "界面设计"], ["presentation", "PPT 美化"], ["smartphone", "移动端 App"], ["rocket", "落地页"], ["blocks", "设计系统"]],
+  "文档与汇报": [["notebook-pen", "会议纪要"], ["calendar-days", "周报月报"], ["presentation", "做幻灯片"], ["folder-open", "调研报告"], ["file-text", "长文档整理"], ["scale", "合同审阅"], ["mail", "商务邮件"], ["languages", "翻译校对"]],
+  "数据与内容": [["chart-column", "数据分析"], ["table", "表格处理"], ["brain", "深度研究"], ["target", "竞品分析"], ["trending-up", "行情与财报"], ["newspaper", "公众号推文"], ["book-open", "小红书图文"], ["film", "短视频成片"], ["megaphone", "营销方案"]],
+  "代码与设计": [["code", "日常开发"], ["bug", "找 Bug"], ["file-search", "代码审查"], ["globe", "网站开发"], ["bot", "Agent 应用"], ["puzzle", "Skill 开发"], ["book-open", "技术文档"], ["monitor", "界面设计"], ["palette", "海报与封面"], ["rocket", "落地页"], ["smartphone", "移动端 App"]],
 };
-const SCENE_ICON = ["file-text", "chart-column", "megaphone", "code", "palette"];
+// 老用户的 localStorage 里存着已经不存在的分类名（比如「写作与传播」）。
+// 下面读的时候有 SCENES[s] 这一道判，读不到就退回第一个，不用专门写迁移
+const SCENE_ICON = ["file-text", "chart-column", "code"];
 let sceneTag = null; // 选中的任务类型标签
 /**
  * 「用这个专家 / 专家团 / 技能」点下去之后，挂在输入框上方的那枚标签。
@@ -1492,7 +1559,8 @@ function buildEmpty() {
   tpl.innerHTML = `<h1>把事情交给我</h1>
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
       `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}">${ic(SCENE_ICON[i] || "sparkles")}${esc(k)}</button>`).join("")}</div>
-    <div class="chips" id="scene-chips"></div>`;
+    <div class="chips" id="scene-chips"></div>
+    <div class="empty-tools"><button id="em-sweep" title="看看工作区里哪些是任务跑完剩下的中间文件">${ic("eraser")}整理文件夹 · 腾出空间<span class="sw-hint"></span></button></div>`;
   const chipsEl = tpl.querySelector("#scene-chips");
   const renderChips = (scene) => {
     chipsEl.innerHTML = SCENES[scene].map(([i, t]) => `<button>${ic(i)}${esc(t)}</button>`).join("");
@@ -1508,9 +1576,12 @@ function buildEmpty() {
     const b = e.target.closest("button");
     if (b) setSceneTag(b.textContent.trim());
   });
+  // 这条不挂「任务类型」标签，它自己就是一件事：点下去直接开整理面板
+  tpl.querySelector("#em-sweep").onclick = () => openSweep({});
   return tpl;
 }
 chatCol.appendChild(buildEmpty());
+refreshSweepHint();
 
 // ================= @ 引用文件 / 调用技能 自动补全 =================
 let filesCache = [], skillsCache = [];
@@ -1605,16 +1676,259 @@ inputEl.addEventListener("keydown", (e) => {
 // 于是模型只能把代价一股脑塞进问题那一句里，用户读着累，选完还常常选错。
 // 现在一条选项一行，上面是短语、下面是那句代价，键盘 1/2/3/4 直接选；
 // 右上角挂倒计时——超时服务端会替他按默认继续，这件事得让他看见，不能闷着。
-function makeAskCard(ev, turnSid) {
-  const opts = (ev.options || []).map((o) => (o && typeof o === "object" ? o : { label: String(o), detail: "" }));
+/**
+ * 一道等人回答的岔路。
+ *
+ * 本机跑的任务和终端里 `openworkbuddy` 跑的任务共用这一张卡：两边都是「AI 卡住了等一句话」，
+ * 差别只在答案往哪儿送。为这件事画第二张卡的话，数字键直选、倒计时、送出去到收到回执
+ * 这段不许重复点——这些都得再写一遍，然后慢慢长歪成两个样子。
+ * @param {object} ev 提问事件
+ * @param {string} turnSid 会话 id
+ * @param {(text: string) => Promise<Response|null>} [submit] 答案怎么送出去，缺省是本机那条
+ */
+/**
+ * 「整理文件夹 · 腾出空间」面板。
+ *
+ * 用户原话：「还有这个整理文件夹和释放电脑空间的功能也给我贴在这个主页……
+ * 然后这个功能给我好好做好啊，这是个高频功能啊」。
+ *
+ * 高频意味着两件事：入口要在第一屏（空态底下那条），以及**每次打开都得当场算**，
+ * 不能拿上次的数字糊弄——中间几分钟可能又跑了三个任务。整个工作区走一遍实测 91ms，
+ * 那就每次都走，省下的那点时间不值得换一个可能过期的数字。
+ *
+ * 面板分两截，因为「腾空间」其实是两个问题：
+ *   上半截「能清掉的」——我有把握的部分，每组带理由，勾了就真删；
+ *   下半截「地方花在哪了」——我不判断，只把每个任务占多大摊开。
+ * 只做上半截是不够的：真正吃硬盘的往往是一个用户自己早就不要了的旧任务，
+ * 规则不敢碰它（里面全是成品），但把 88 MB 摆在他眼前，他自己认得出来。
+ */
+let sweepSeq = 0; // 扫描是异步的，用户可能连点两下「只看这个任务」；只认最后一次的结果
+async function openSweep(scope) {
+  mask.classList.add("show");
+  modalBox.classList.remove("wide");
+  mTitle.textContent = "整理文件夹 · 腾出空间";
+  mBody.innerHTML = `<div class="sweep-panel"><div class="sw-empty">正在看你的工作区……</div></div>`;
+  const seq = ++sweepSeq;
+  const task = scope && scope.task ? scope.task : "";
+  let p;
+  try {
+    p = await fetch(`/api/files/sweep?usage=1${task ? `&task=${encodeURIComponent(task)}` : ""}`).then((x) => x.json());
+  } catch { p = { error: "扫不动这个文件夹" }; }
+  if (seq !== sweepSeq) return; // 已经有更新的一次扫描在跑了
+  if (p.error) { mBody.querySelector(".sweep-panel").innerHTML = `<div class="sw-empty">${esc(p.error)}</div>`; return; }
+  renderSweepPanel(p, task);
+}
+function renderSweepPanel(p, task) {
+  const box = mBody.querySelector(".sweep-panel");
+  if (!box) return;
+  const groups = (p.groups || []).filter((g) => g.count > 0);
+  const u = p.usage || { bytes: 0, count: 0, tasks: [] };
+  const top = u.tasks.filter((t) => t.bytes > 0).slice(0, 12);
+  const max = top.length ? top[0].bytes : 1;
+  const rows = groups.map((g, i) => {
+    const items = g.items || [];
+    const why = (items[0] && items[0].why) || "";
+    return `<div class="sw-row" data-gi="${i}">
+      <input type="checkbox" data-gi="${i}"${g.on ? " checked" : ""}>
+      <label class="sw-t"><b>${esc(g.label || g.key)}</b> · ${g.count} 个
+        <div class="sw-why">${esc(why)}</div></label>
+      <span class="sw-sz">${fmtSize(g.bytes)}</span>
+      <button type="button" class="sw-ar" title="看看具体是哪些">${ic("chevron-right")}</button>
+    </div><div class="sw-items" data-gi="${i}" hidden>${items.slice(0, 200).map((it) =>
+      `<div><span>${esc(it.path)}</span><span>${it.count > 1 ? `${it.count} 个 · ` : ""}${fmtSize(it.bytes)}</span></div>`
+    ).join("")}${items.length > 200 ? `<div><span>……还有 ${items.length - 200} 条</span><span></span></div>` : ""}</div>`;
+  }).join("");
+  box.innerHTML = `<div class="sw-sum">
+      <span class="g"><b>${fmtSize(u.bytes)}</b> · ${u.count} 个文件
+        <div class="sub">${task ? `只看「${esc(task)}」这一个任务` : "工作区里所有任务加起来"}${p.capped ? " · 文件太多，只看了前一批" : ""}</div></span>
+      ${task ? `<button type="button" class="sw-all">看全部任务</button>` : ""}
+      <button type="button" class="sw-re" title="重新扫一遍">${ic("refresh-cw")}</button>
+    </div>
+    <h4>${ic("eraser")}能清掉的中间文件</h4>
+    ${groups.length ? `<div class="sw-rows">${rows}</div>
+      <div class="sw-acts"><button type="button" class="sw-go"></button>
+        <button type="button" class="sw-lite sw-pick-all">全选</button>
+        <button type="button" class="sw-lite sw-pick-def">回到默认</button></div>`
+      : `<div class="sw-empty">没找着能清的——这些文件看着都是成品，我不敢乱动。</div>`}
+    <h4>${ic("hard-drive")}地方花在哪了</h4>
+    ${top.length ? `<div class="sw-tasks">${top.map((t) => `<div class="sw-task" data-task="${esc(t.name)}">
+        <span class="bar" style="width:${Math.max(2, Math.round(t.bytes / max * 100))}%"></span>
+        <span class="nm">${esc(t.name || "（散在根目录的文件）")}</span>
+        <span class="sw-sz">${fmtSize(t.bytes)}</span><span class="cnt">${t.count} 个</span>
+        ${t.name ? `<button type="button" class="op" data-act="only" title="只整理这个任务">${ic("eraser")}</button>` : ""}
+        ${t.name && canOpenOnHost() ? `<button type="button" class="op" data-act="open" title="在访达里打开">${ic("folder-open")}</button>` : ""}
+      </div>`).join("")}${u.tasks.length > top.length ? `<div class="sw-empty">还有 ${u.tasks.length - top.length} 个更小的任务没列出来。</div>` : ""}</div>`
+      : `<div class="sw-empty">工作区还是空的。</div>`}`;
+
+  const go = box.querySelector(".sw-go");
+  const boxes = [...box.querySelectorAll(".sw-rows input")];
+  const picked = () => boxes.filter((b) => b.checked).map((b) => groups[+b.dataset.gi]);
+  const sync = () => {
+    if (!go) return;
+    const sel = picked();
+    const n = sel.reduce((a, g) => a + g.count, 0);
+    const b = sel.reduce((a, g) => a + g.bytes, 0);
+    go.textContent = n ? `清掉这 ${n} 个，腾出 ${fmtSize(b)}` : "一个都没勾";
+    go.disabled = !n;
+  };
+  boxes.forEach((b) => b.addEventListener("change", sync));
+  sync();
+  // 展开/收起某一组的逐条清单。点整行的箭头，不占用勾选框那一下
+  box.querySelectorAll(".sw-ar").forEach((b) => { b.onclick = () => {
+    const row = b.closest(".sw-row");
+    const list = box.querySelector(`.sw-items[data-gi="${row.dataset.gi}"]`);
+    row.classList.toggle("open");
+    list.hidden = !row.classList.contains("open");
+  }; });
+  const reload = () => openSweep({ task });
+  if (box.querySelector(".sw-re")) box.querySelector(".sw-re").onclick = reload;
+  if (box.querySelector(".sw-all")) box.querySelector(".sw-all").onclick = () => openSweep({});
+  if (box.querySelector(".sw-pick-all")) box.querySelector(".sw-pick-all").onclick = () => { boxes.forEach((b) => (b.checked = true)); sync(); };
+  if (box.querySelector(".sw-pick-def")) box.querySelector(".sw-pick-def").onclick = () => { boxes.forEach((b) => (b.checked = !!groups[+b.dataset.gi].on)); sync(); };
+  box.querySelectorAll(".sw-task .op").forEach((b) => { b.onclick = () => {
+    const name = b.closest(".sw-task").dataset.task;
+    if (b.dataset.act === "open") revealFile(name, null);
+    else openSweep({ task: name });
+  }; });
+  if (go) go.onclick = async () => {
+    const sel = picked();
+    const paths = [];
+    for (const g of sel) for (const it of g.items || []) { if (it.paths) paths.push(...it.paths); else if (it.path) paths.push(it.path); }
+    // 删是真删、不进回收站，所以这里必须拦一道。列出的是**组**不是每一条：
+    // 一百多条路径糊在 confirm 里等于没写，反倒让人闭着眼点确定
+    const lines = sel.map((g) => `· ${g.label || g.key}：${g.count} 个，${fmtSize(g.bytes)}`).join("\n");
+    if (!confirm(`这些会被直接删掉（不进回收站、找不回来）：\n\n${lines}\n\n一共腾出 ${fmtSize(sel.reduce((a, g) => a + g.bytes, 0))}。确定吗？`)) return;
+    box.classList.add("busy");
+    try {
+      const r = await fetch("/api/files/sweep", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths, task: task || undefined }),
+      }).then((x) => x.json());
+      if (r.error) throw new Error(r.error);
+      if (r.files) renderFiles(r.files);
+      toast(`腾出 ${fmtSize(r.bytes || 0)}${r.skipped ? `，${r.skipped} 个已经不在了` : ""}`, "circle-check");
+      refreshSweepHint();   // 空态那条上的数字得跟着变小，不然用户以为没删掉
+      openSweep({ task });  // 重扫一遍：删完剩下什么，当场看见
+    } catch (e) {
+      box.classList.remove("busy");
+      toast(e.message || "清理失败", "circle-x");
+    }
+  };
+}
+/**
+ * 空态那条按钮上的「可腾出 XX」。
+ *
+ * 为什么要把数字提前算出来放在按钮上：没有数字的话它就是一个「整理文件夹」的空壳，
+ * 谁也不知道点进去有没有东西，于是谁也不点。写着「可腾出 43.3 MB」就完全是另一回事了。
+ * 算不出来（后端没起、工作区没建）就保持原样，绝不显示一个假数字。
+ */
+function refreshSweepHint() {
+  const el = document.querySelector("#em-sweep .sw-hint");
+  if (!el) return;
+  fetch("/api/files/sweep").then((x) => x.json()).then((p) => {
+    const cur = document.querySelector("#em-sweep .sw-hint");
+    if (!cur || !p || p.error || !p.bytes) return;
+    cur.innerHTML = `· 可腾出 <b>${fmtSize(p.bytes)}</b>`;
+  }).catch(() => {});
+}
+
+/**
+ * 收尾问一句：这次顺手造的中间文件要不要清掉。
+ *
+ * 为什么是「问」不是「自动清」：判断中间物靠的是规则（成片出来了 → 逐帧图可以扔），
+ * 规则会看走眼。而删是真删、不进回收站——用户要的是腾出空间，挪一下照样占着地方。
+ * 既然收不回来，那就必须是用户点的头，而且点头之前得看得见清单和理由。
+ *
+ * 为什么每组单独一个勾：几类东西的把握程度不一样。逐帧图、编译产物、cookie 库很确定；
+ * 「任务目录里随手写的脚本」就没那么确定——用户完全可能就是让我写个脚本给他。
+ * 所以那一组服务端默认不勾（g.on=false），要删得他自己伸手点上。
+ */
+function makeSweepCard(ev) {
   const card = document.createElement("div");
-  card.className = "ask-card";
+  card.className = "sweep-card";
+  const groups = (ev.groups || []).filter((g) => g.count > 0);
+  const rows = groups.map((g, i) => {
+    // 理由取第一条的：同一组里理由本来就是同一句（「成片已经出来了」），逐条印一遍是噪音
+    const why = (g.items && g.items[0] && g.items[0].why) || "";
+    const sample = (g.items || []).slice(0, 2).map((it) => esc(String(it.path).split("/").pop())).join("、");
+    const more = (g.items || []).length > 2 ? ` 等 ${(g.items || []).length} 处` : "";
+    return `<label class="sw-row">
+      <input type="checkbox" data-gi="${i}"${g.on ? " checked" : ""}>
+      <span class="sw-t"><b>${esc(g.label || g.key)}</b> · ${g.count} 个
+        <span class="sw-why">${esc(why)}${sample ? `<br>${sample}${more}` : ""}</span></span>
+      <span class="sw-sz">${fmtSize(g.bytes)}</span>
+    </label>`;
+  }).join("");
+  card.innerHTML = `<div class="sw-hd">${ic("eraser")}<span class="sw-lb"></span></div>
+    <div class="sw-rows">${rows}</div>
+    <div class="sw-acts"><button type="button" class="sw-go"></button><button type="button" class="sw-no">先留着</button></div>`;
+  const lb = card.querySelector(".sw-lb");
+  const go = card.querySelector(".sw-go");
+  const boxes = [...card.querySelectorAll(".sw-rows input")];
+  const picked = () => boxes.filter((b) => b.checked).map((b) => groups[+b.dataset.gi]);
+  const sync = () => {
+    const sel = picked();
+    const bytes = sel.reduce((n, g) => n + g.bytes, 0);
+    const count = sel.reduce((n, g) => n + g.count, 0);
+    const all = groups.reduce((n, g) => n + g.count, 0);
+    const allB = groups.reduce((n, g) => n + g.bytes, 0);
+    lb.textContent = `这一趟顺手造了 ${all} 个中间文件，占 ${fmtSize(allB)}。要清掉吗？`;
+    go.textContent = count ? `清掉这 ${count} 个（腾出 ${fmtSize(bytes)}）` : "一个都没勾";
+    go.disabled = !count;
+  };
+  boxes.forEach((b) => b.addEventListener("change", sync));
+  sync();
+  card.querySelector(".sw-no").onclick = () => {
+    card.classList.add("done");
+    card.querySelector(".sw-hd").innerHTML = `${ic("eraser")}<span class="sw-done">中间文件留着了。想清的时候去右边「成果文件 → 整理文件夹」。</span>`;
+  };
+  go.onclick = async () => {
+    const sel = picked();
+    // 路径在服务端还要再验一遍（必须出现在那一刻重新算出来的清单里），这里只管把选中的送过去
+    const paths = [];
+    for (const g of sel) for (const it of g.items || []) { if (it.paths) paths.push(...it.paths); else if (it.path) paths.push(it.path); }
+    card.classList.add("busy");
+    try {
+      const r = await fetch("/api/files/sweep", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths, since: ev.since }),
+      }).then((x) => x.json());
+      card.classList.remove("busy");
+      card.classList.add("done");
+      // 报「腾出多少」，不报「删了几个」：用户关心的是空间，一开始就是为这个来的。
+      // skipped 也要说——清单是几分钟前算的，这中间文件可能已经被别处动过了
+      const skipped = r.skipped ? `，${r.skipped} 个已经不在了` : "";
+      card.querySelector(".sw-hd").innerHTML = `${ic("eraser")}<span class="sw-done">已清掉 ${(r.removed || []).length} 处中间文件，腾出 ${fmtSize(r.bytes || 0)}${skipped}。</span>`;
+      if (r.files) renderFiles(r.files);
+    } catch {
+      card.classList.remove("busy");
+      toast("清理失败", "circle-x");
+    }
+  };
+  return card;
+}
+
+function makeAskCard(ev, turnSid, submit) {
+  // 审批走同一张卡，但有三处必须不一样，见下面每一处的注释
+  const isAp = ev.kind === "approval";
+  const opts = isAp
+    ? (ev.choices || []).map((c) => ({ label: c.label, detail: c.sub, value: { allow: !!c.allow, scope: c.scope } }))
+    : (ev.options || []).map((o) => (o && typeof o === "object" ? o : { label: String(o), detail: "" }));
+  const card = document.createElement("div");
+  card.className = "ask-card" + (isAp ? " ask-approve" : "");
   card.dataset.askId = ev.ask_id || "";
   card.innerHTML =
-    `<div class="ask-hd"><span class="ask-ic">${ic("circle-help")}</span><span class="ask-lb">${ev.expert ? `专家「${esc(ev.expert)}」拿不准，想问你一句` : "有个岔路，想让你定一下"}</span><span class="ask-timer"></span></div>` +
-    `<div class="ask-q">${esc(ev.question || "")}</div>` +
+    `<div class="ask-hd"><span class="ask-ic">${ic(isAp ? "shield-alert" : "circle-help")}</span><span class="ask-lb">${
+      isAp ? `要你点头：${esc(ev.apKind || "危险操作")}` : (ev.expert ? `专家「${esc(ev.expert)}」拿不准，想问你一句` : "有个岔路，想让你定一下")
+    }</span><span class="ask-timer"></span></div>` +
+    // 命令原文整条印出来，不截断、不折进省略号：危险就危险在被截掉的那半截
+    //（末尾那个 `| sh`、那个 --force、那个真正的路径）
+    (isAp
+      ? `<div class="ask-cmd">${esc(ev.text || "")}</div>` + (ev.rule ? `<div class="ask-rule">拦它的规则：${esc(ev.rule)}</div>` : "")
+      : `<div class="ask-q">${esc(ev.question || "")}</div>`) +
     `<div class="ask-opts"></div>` +
-    `<div class="ask-free"><input type="text" placeholder="都不是？直接说你想要的…" maxlength="500"><button type="button">发送</button></div>` +
+    // 审批没有「自由回答」：这道题只有准和不准，留个输入框只会让人以为还能讨价还价
+    (isAp ? "" : `<div class="ask-free"><input type="text" placeholder="都不是？直接说你想要的…" maxlength="500"><button type="button">发送</button></div>`) +
     `<div class="ask-ans"></div>`;
 
   const timerEl = card.querySelector(".ask-timer");
@@ -1626,22 +1940,26 @@ function makeAskCard(ev, turnSid) {
     card.classList.add("done");
     document.removeEventListener("keydown", onKey);
     stopTick();
-    card.querySelector(".ask-lb").textContent = timeout ? "这个岔路我替你定了" : "这个岔路你定过了";
+    // 超时的结局两边是反的：岔路超时＝AI 替你选了一条接着做，审批超时＝这一步没做。
+    // 写成同一句的话，人回来会以为那条命令跑过了
+    card.querySelector(".ask-lb").textContent = isAp
+      ? (timeout ? "没人点，按不允许算了" : "你点过了")
+      : (timeout ? "这个岔路我替你定了" : "这个岔路你定过了");
     card.querySelector(".ask-ans").innerHTML = timeout
-      ? `<span class="ic">${ic("clock")}</span>没等到回答，AI 按它认为最合理的默认继续了`
+      ? `<span class="ic">${ic("clock")}</span>${isAp ? "没等到你点头，这一步没做" : "没等到回答，AI 按它认为最合理的默认继续了"}`
       : `<span class="ic">${ic("circle-check")}</span>你选了 <b>${esc(text || "")}</b>`;
   };
   card._mark = markAnswered;
 
-  const answerIt = async (text) => {
+  const answerIt = async (text, value) => {
     text = String(text || "").trim();
     if (!text || card.classList.contains("done") || card.classList.contains("sending")) return;
     card.classList.add("sending"); // 送出到收到回执之间会有一小段，这期间再点/再按一次不许重复发
-    const resp = await fetch("/api/chat/answer", {
+    const resp = await (submit ? submit(value === undefined ? text : value) : fetch("/api/chat/answer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId: turnSid, askId: ev.ask_id, answer: text }),
-    }).catch(() => null);
+    })).catch(() => null);
     card.classList.remove("sending");
     if (resp && resp.ok) markAnswered(text);
     else {
@@ -1659,13 +1977,15 @@ function makeAskCard(ev, turnSid) {
       `<span class="kk">${i < 9 ? i + 1 : "·"}</span>` +
       `<span class="tx"><span class="lb">${esc(o.label)}</span>${o.detail ? `<span class="dt">${esc(o.detail)}</span>` : ""}</span>` +
       `<span class="go">${ic("corner-down-left")}</span>`;
-    b.onclick = () => answerIt(o.label);
+    b.onclick = () => answerIt(o.label, o.value);
     box.appendChild(b);
   });
 
   const inp = card.querySelector(".ask-free input");
-  card.querySelector(".ask-free button").onclick = () => answerIt(inp.value);
-  inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answerIt(inp.value); } };
+  if (inp) {
+    card.querySelector(".ask-free button").onclick = () => answerIt(inp.value);
+    inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answerIt(inp.value); } };
+  }
   // 数字键直选：手在键盘上就别再去够鼠标。焦点在输入框里时不抢——那时 1 就是要打个 1
   card.tabIndex = -1;
   const onKey = (e) => {
@@ -1718,7 +2038,7 @@ function fileIcon(name) {
 function fmtSize(n) { return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B"; }
 const openDirs = new Set(); // 记住展开状态，刷新列表不回弹
 // 「只看成果」的开关。默认关：面板是文件浏览器，先如实摆全部，用户嫌吵了再收
-let onlyResults = (() => { try { return localStorage.getItem("wb-files-only") === "1"; } catch { return false; } })();
+let onlyResults = (() => { try { return localStorage.getItem("owb-files-only") === "1"; } catch { return false; } })();
 /**
  * 这个文件算不算「交到用户手上的成果」。
  *
@@ -1779,7 +2099,7 @@ function renderFileFilter() {
     `<button class="fp-seg${onlyResults ? " on" : ""}" data-only="1">只看成果 ${nres}</button>`;
   box.querySelectorAll(".fp-seg").forEach((b) => { b.onclick = () => {
     onlyResults = b.dataset.only === "1";
-    try { localStorage.setItem("wb-files-only", onlyResults ? "1" : ""); } catch {}
+    try { localStorage.setItem("owb-files-only", onlyResults ? "1" : ""); } catch {}
     renderFiles(filesCache);
   }; });
 }
@@ -1793,8 +2113,8 @@ function renderFiles(files) {
   files = onlyResults ? filesCache.filter((f) => isResultFile(f.name)) : filesCache;
   if (!files.length) {
     el.innerHTML = onlyResults && filesCache.length
-      ? `<div style="padding:10px;color:var(--wb-text-3);font-size: 13px">这个工作目录里还没有成果文件（${hiddenN} 个中间材料已折起）</div>`
-      : '<div style="padding:10px;color:var(--wb-text-3);font-size: 13px">暂无成果文件</div>';
+      ? `<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">这个工作目录里还没有成果文件（${hiddenN} 个中间材料已折起）</div>`
+      : '<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">暂无成果文件</div>';
     return;
   }
   const fileRow = (f, nested) =>
@@ -1949,8 +2269,8 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) refr
 setTimeout(async () => {
   try {
     const d = await fetch("/api/update").then(r => r.json());
-    if (!d.has_update || localStorage.getItem("wb-update-seen") === d.latest) return;
-    localStorage.setItem("wb-update-seen", d.latest);
+    if (!d.has_update || localStorage.getItem("owb-update-seen") === d.latest) return;
+    localStorage.setItem("owb-update-seen", d.latest);
     toast(`有新版 v${d.latest}（当前 v${d.current}）· 设置 → 关于 里看怎么升`);
   } catch {}
 }, 8000);
@@ -2036,7 +2356,7 @@ async function fetchTextHead(url) {
 /** 真看不了时的兜底。以前这句写的是"可点右上 🗔 …或 ⬇"，可标题栏早就换成 SVG 图标了，
  *  用户照着找一辈子也找不到那两个 emoji——所以直接给一个能点的按钮 */
 const pvFallback = (why) =>
-  `<div class="pv-text" style="color:var(--wb-text-3)">${esc(why)}，应用内看不了。<div style="margin-top:12px;display:flex;gap:8px">${
+  `<div class="pv-text" style="color:var(--owb-text-3)">${esc(why)}，应用内看不了。<div style="margin-top:12px;display:flex;gap:8px">${
     canOpenOnHost()
       ? `<button class="pv-open-sys">用系统默认程序打开</button><button class="pv-reveal">打开所在位置</button>`
       : `<button class="pv-download">下载到本地看</button>`
@@ -2052,8 +2372,66 @@ function bindPvFallback(body, name, root) {
   const dlBtn = body.querySelector(".pv-download");
   if (dlBtn) dlBtn.onclick = () => downloadFile(name, r);
 }
-const pvTrunc = (total) =>
-  `<div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--wb-border);color:var(--wb-text-3);font-size:13px">文件太大，只显示了开头 ${PV_TEXT_MAX / 1024} KB${total ? `（整个文件 ${fmtSize(total)}）` : ""}。要看全的话下载或用系统程序打开。</div>`;
+/**
+ * 大文件截断提示。
+ *
+ * 用户的原话是「很大文件都没有办法正常显示了啊」。一次全读进来是真的会把渲染进程干死
+ * （所以 512 KB 这道口子不能拆），但只留一句「要看全的话下载或用系统程序打开」
+ * 等于把人推出应用——他想看的那一行可能就在第 520 KB 上。
+ * 所以这里给一颗按钮：一段一段往后接着读，读到哪儿写清楚到哪儿，读完了就说读完了。
+ * 接上来的一律按纯文本渲染——按 512 KB 切开的那一刀，正好可能切在一个代码围栏
+ * 或者一行 CSV 的中间，接着当 Markdown/表格渲染只会渲染出一堆错的东西。
+ */
+const pvTrunc = (total, shown) => {
+  const at = shown == null ? PV_TEXT_MAX : shown;
+  const rest = total ? Math.max(0, total - at) : 0;
+  return `<div class="pv-more-box" style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--owb-border);color:var(--owb-text-3);font-size:13px">`
+    + `<span class="pv-more-at">已经显示到 ${fmtSize(at)}${total ? ` / 整个文件 ${fmtSize(total)}` : ""}</span>`
+    + (rest
+      ? ` · <button class="pv-more" data-at="${at}">再往后看 ${fmtSize(Math.min(PV_TEXT_MAX, rest))}</button>`
+      : "")
+    + `<div class="pv-more-tip" style="margin-top:6px">接下来的内容按纯文本显示（按字节切开的地方可能正好在一行中间）。要看全的也可以下载或用系统程序打开。</div>`
+    + `<pre class="pv-more-text" style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4;margin:8px 0 0"></pre>`
+    + `</div>`;
+};
+
+/** 接着往后读一段。跟 fetchTextHead 同一条路（服务端 res.sendFile 自带 Range） */
+async function fetchTextRange(url, from, to) {
+  try {
+    const r = await fetch(url, { headers: { Range: `bytes=${from}-${to}` } });
+    if (!r.ok && r.status !== 206) return null;
+    const text = await r.text();
+    const m = /\/(\d+)\s*$/.exec(r.headers.get("Content-Range") || "");
+    return { text, total: m ? Number(m[1]) : null };
+  } catch { return null; }
+}
+
+/** 把「再往后看」接上。按钮上永远写着这一下会读多少，读完了就把按钮换成「到头了」 */
+function bindPvMore(body, url) {
+  const box = body.querySelector(".pv-more-box");
+  if (!box) return;
+  const btn = box.querySelector(".pv-more");
+  if (!btn) return;
+  btn.onclick = async () => {
+    const at = Number(btn.dataset.at) || 0;
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "读取中…";
+    const r = await fetchTextRange(url, at, at + PV_TEXT_MAX - 1);
+    if (!r) { btn.disabled = false; btn.textContent = label + "（上一次没读到，再试一次）"; return; }
+    // 按字节切，末尾那半个多字节字符是我们自己切出来的，去掉
+    const chunk = r.total != null && at + PV_TEXT_MAX < r.total ? r.text.replace(/\uFFFD$/, "") : r.text;
+    box.querySelector(".pv-more-text").textContent += chunk;
+    const now = at + PV_TEXT_MAX;
+    const total = r.total;
+    box.querySelector(".pv-more-at").textContent = `已经显示到 ${fmtSize(Math.min(now, total || now))}${total ? ` / 整个文件 ${fmtSize(total)}` : ""}`;
+    const rest = total ? Math.max(0, total - now) : 0;
+    if (!rest || !chunk) { btn.replaceWith(Object.assign(document.createElement("span"), { textContent: "已经到文件末尾了" })); return; }
+    btn.dataset.at = String(now);
+    btn.disabled = false;
+    btn.textContent = `再往后看 ${fmtSize(Math.min(PV_TEXT_MAX, rest))}`;
+  };
+}
 
 // ---- 拆出来的结构化数据 → HTML。服务端只给数据，转义全在这儿，只此一处 ----
 const runsHtml = (runs) => (runs || []).map((r) => {
@@ -2079,7 +2457,7 @@ function docHtml(d) {
     else if (b.t === "table") out.push(gridHtml(b.rows, "ov-table"));
     else out.push(`<p class="ov-p"${b.align === "center" ? ' style="text-align:center"' : b.align === "right" ? ' style="text-align:right"' : ""}>${runsHtml(b.runs)}</p>`);
   }
-  if (!out.length) out.push('<p class="ov-p" style="color:var(--wb-text-3)">这个文档里没有可显示的正文。</p>');
+  if (!out.length) out.push('<p class="ov-p" style="color:var(--owb-text-3)">这个文档里没有可显示的正文。</p>');
   if (d.truncated) out.push(`<div class="ov-note">文档太长，只显示了前 ${(d.blocks || []).length} 段。</div>`);
   return `<div class="ov-doc">${out.join("")}</div>`;
 }
@@ -2133,11 +2511,407 @@ function csvHtml(text, name) {
   const sep = /\.tsv$/i.test(name) || (head.split("\t").length > head.split(",").length) ? "\t"
     : head.split(";").length > head.split(",").length ? ";" : ",";
   const rows = parseCsv(text, sep);
-  if (!rows.length) return '<div class="pv-text" style="color:var(--wb-text-3)">空文件。</div>';
+  if (!rows.length) return '<div class="pv-text" style="color:var(--owb-text-3)">空文件。</div>';
   const shown = rows.slice(0, 2000);
   const note = rows.length > shown.length ? `<div class="ov-note">共 ${rows.length} 行，只显示了前 ${shown.length} 行。</div>` : "";
   return `<div class="ov-doc">${gridHtml(shown, "ov-table ov-sheet")}${note}</div>`;
 }
+
+// ---------------- 代码文件的看法（横向滚动 + 行号 + 着色 + 压缩产物展开） ----------------
+// 起因：工作区里点开一个 .mjs（前端打包产物），右边糊出一大坨。用户原话：
+// 「怎么这个 mjs 代码显示的时候就看着都没格式看着像是乱码一样啊」。
+//
+// 是两件事叠在一起，得分开治：
+//   1) 打包产物是**压缩过的**——整个文件常常就一行五万字符。而下面那条兜底 <pre> 用的是
+//      white-space:pre-wrap + overflow-wrap:anywhere（那是为日志和纯文本调的，长 URL 不该
+//      把面板撑宽）。于是这一行被从**任意位置**折断：`fun` 留在上一行、`ction` 掉到下一行。
+//      「像乱码」说的就是这个 —— 字都是对的，断点全是错的。
+//   2) 一点着色和行号都没有，就算源码本来有换行，也只是一坨等宽字。
+//
+// 所以代码类后缀单独走一条路：代码永远不该被拦腰折（横向滚动）+ 行号 + 着色，
+// 压缩过的先按 { } ; 展开，并且留一颗「看原文」—— 展开是为了读，不是为了改，
+// 总有人就是想确认原文长什么样。
+const PV_CODE_RE = /\.(m?[jt]sx?|cjs|cts|mts|jsonc?|json5|css|s[ac]ss|less|styl|py|pyw|rb|go|rs|java|kts?|swift|mm?|cc?|hh?|cpp|hpp|cxx|cs|php|pl|lua|r|scala|dart|sh|bash|zsh|fish|ps1|sql|vue|svelte|astro|gradle|tf|proto|gql|graphql|ya?ml|toml|ini|cfg|conf|plist|xml)$/i;
+// 没有后缀、但一眼就是配置/脚本的那些。工作区里 Dockerfile 和 .env 不算少见
+const PV_CODE_NAME_RE = /^(dockerfile|makefile|rakefile|gemfile|podfile|\.env(\..+)?|\.gitignore|\.gitattributes|\.dockerignore|\.npmrc|\.editorconfig|\.[a-z]+rc)$/i;
+
+/** 这个文件该不该按代码来画 */
+function isCodeFile(name) {
+  const base = String(name || "").split("/").pop();
+  return PV_CODE_RE.test(base) || PV_CODE_NAME_RE.test(base);
+}
+
+/** 归到哪一族。一个预览器不需要分清 Kotlin 和 Swift，只要分清「注释长什么样、
+ *  字符串长什么样」—— 真正决定画面的就这两样。 */
+function codeLang(name) {
+  const base = String(name || "").split("/").pop().toLowerCase();
+  const ext = (base.match(/\.([^.]+)$/) || ["", ""])[1];
+  if (/^(dockerfile|makefile|rakefile|gemfile|podfile)$/.test(base)) return "hash";
+  if (/^\.[a-z]+$/.test(base)) return "hash";               // .gitignore / .npmrc / .babelrc 这类
+  if (/^(json|jsonc|json5)$/.test(ext)) return "json";
+  if (/^(css|scss|sass|less|styl)$/.test(ext)) return "css";
+  if (/^(xml|plist|svg|vue|svelte|astro|html?)$/.test(ext)) return "xml";
+  if (/^(py|pyw|rb|pl|r|sh|bash|zsh|fish|ps1|ya?ml|toml|ini|cfg|conf|env|tf)$/.test(ext)) return "hash";
+  if (ext === "sql") return "sql";
+  if (/^(m?[jt]sx?|cjs|cts|mts|go|rs|java|kts?|swift|mm?|cc?|hh?|cpp|hpp|cxx|cs|php|lua|scala|dart|proto|gradle|gql|graphql)$/.test(ext)) return "c";
+  return "plain";
+}
+
+// ---- 扫描器：认得出字符串 / 注释 / 正则，就够了 ----
+// 展开和着色都要用。为什么非认不可：压缩过的代码里 `"}"`、`'//'`、`/[{};]/`
+// 这种字面量满地都是。不认引号，第一个引号里的 } 就把后面整份文件的缩进带歪；
+// 不认正则，`/[/]/` 里那个斜杠会被当成注释开头，后面半行凭空消失。
+
+/** 从 i 处的引号读到配对的引号，返回闭引号之后的下标。
+ *  反引号要额外认 ${…}：里面能再套字符串、再套反引号，拿个深度计数跟着数。 */
+function scanStr(s, i) {
+  const q = s[i];
+  let j = i + 1;
+  while (j < s.length) {
+    const c = s[j];
+    if (c === "\\") { j += 2; continue; }
+    if (c === q) return j + 1;
+    if (q === "`" && c === "$" && s[j + 1] === "{") {
+      let d = 1; j += 2;
+      while (j < s.length && d > 0) {
+        const k = s[j];
+        if (k === "\\") { j += 2; continue; }
+        if (k === '"' || k === "'" || k === "`") { j = scanStr(s, j); continue; }
+        if (k === "{") d++; else if (k === "}") d--;
+        j++;
+      }
+      continue;
+    }
+    // 单双引号不跨行：没闭合的引号（英文里的 it's、日志里截断的半句）不能把后面整份文件吞掉
+    if (q !== "`" && c === "\n") return j;
+    j++;
+  }
+  return s.length;
+}
+
+/** 从 i 处的 / 读一条正则，返回结束下标；看着不像正则就返回 i（调用方按除号处理） */
+function scanRe(s, i) {
+  let j = i + 1, cls = false;
+  if (s[j] === "/" || s[j] === "*" || s[j] === undefined) return i;
+  while (j < s.length) {
+    const c = s[j];
+    if (c === "\\") { j += 2; continue; }
+    if (c === "\n") return i;              // 正则不跨行 → 那个 / 是除号
+    if (cls) { if (c === "]") cls = false; }
+    else if (c === "[") cls = true;
+    else if (c === "/") { j++; while (j < s.length && /[a-z]/i.test(s[j])) j++; return j; }
+    j++;
+  }
+  return i;
+}
+
+// `/` 是正则开头还是除号，靠它前面那个 token 判。判错的代价只是这一段不断行、不着色，
+// 内容一个字都不会少 —— 所以这里用够用的启发式，不去建 AST。
+const RE_AFTER_CH = /[({[,;:!&|?+\-*/%=~^<>]/;
+const RE_AFTER_KW = /\b(return|typeof|instanceof|in|of|new|delete|void|do|else|case|yield|await)$/;
+function reAllowed(before) {
+  const t = before.replace(/\s+$/, "");
+  if (!t) return true;
+  if (RE_AFTER_KW.test(t)) return true;
+  return RE_AFTER_CH.test(t[t.length - 1]);
+}
+
+const MINIFIED_COL = 400;       // 一行超过这么多字符就当它是压缩产物。手写代码几乎不会越过 200
+const PV_CODE_MAX_LINES = 5000; // 展开一份 500KB 的 bundle 能出好几万行，全画出来渲染进程要卡住
+
+/** 文件里最长那一行有多少字符 */
+function longestLine(text) {
+  let max = 0, at = 0;
+  for (;;) {
+    const j = text.indexOf("\n", at);
+    const len = (j < 0 ? text.length : j) - at;
+    if (len > max) max = len;
+    if (j < 0) return max;
+    at = j + 1;
+  }
+}
+
+/** 这份内容是不是压缩过的代码（只有花括号那几族谈得上「展开」） */
+function codeMinified(text, name) {
+  return longestLine(text) > MINIFIED_COL && /^(c|css|json)$/.test(codeLang(name));
+}
+
+/**
+ * 把压缩过的代码按 { } ; 重新断行并缩进。
+ *
+ * 只断行、只补缩进，一个字符都不改、不增、不删 —— 这是刻意的克制。
+ * 真正的 formatter（prettier 那种）要先建 AST，碰上一个它不认的新语法就整份罢工；
+ * 而这儿的输入恰恰是各家打包器吐出来的花活儿。所以退到一个**不会失败**的层面：
+ * 扫一遍字符，认得出字符串/注释/正则就照抄，剩下的按三个符号断行。
+ * 最坏情况是断得不好看，不会把内容弄丢 —— 对「只是想看看这文件是啥」来说，这个取舍是对的。
+ */
+function unminify(text, lang) {
+  const out = [];
+  let depth = 0, paren = 0, line = "", i = 0;
+  const n = text.length;
+  const push = () => {
+    const t = line.trim();
+    if (t) out.push("  ".repeat(Math.max(0, depth)) + t);
+    line = "";
+  };
+  while (i < n) {
+    const c = text[i];
+    if (c === "/" && text[i + 1] === "/" && lang !== "css") {
+      const j = text.indexOf("\n", i);
+      line += text.slice(i, j < 0 ? n : j); push(); i = j < 0 ? n : j + 1; continue;
+    }
+    if (c === "/" && text[i + 1] === "*") {
+      const j = text.indexOf("*/", i + 2);
+      line += text.slice(i, j < 0 ? n : j + 2); i = j < 0 ? n : j + 2; continue;
+    }
+    if (c === '"' || c === "'" || c === "`") { const e = scanStr(text, i); line += text.slice(i, e); i = e; continue; }
+    if (c === "/" && lang === "c" && reAllowed(line)) {
+      const e = scanRe(text, i);
+      if (e > i) { line += text.slice(i, e); i = e; continue; }
+    }
+    if (c === "{") { line += c; push(); depth++; i++; continue; }
+    if (c === "}") {
+      push(); depth--; line = "}"; i++;
+      // 紧跟在 } 后面的收尾符号粘住，别让 `});` 变成三行
+      while (i < n && /[;,)\]]/.test(text[i])) { line += text[i]; i++; }
+      push(); continue;
+    }
+    // for(let i=0;i<n;i++) 里的分号不算句末 —— 所以要跟着括号深度
+    if (c === ";" && paren === 0) { line += c; push(); i++; continue; }
+    if (c === "(") paren++;
+    else if (c === ")") paren = Math.max(0, paren - 1);
+    if (c === "\n") { push(); i++; continue; }
+    line += c; i++;
+  }
+  push();
+  return out.join("\n");
+}
+
+// ---- 着色 ----
+// 五档就够：注释 / 字符串 / 数字 / 键名 / 关键字。再往下分就成了给自己看的玩具，
+// 而且每加一档就多一次「这个词到底算哪档」的争论。
+// 底色固定是深的（--owb-code-bg 在亮色和暗色下都是深色，跟对话里的代码块一致），
+// 所以只要一套配色，不用为两个主题各调一遍。
+const HI_KW_C = "abstract|as|async|await|break|case|catch|class|const|constructor|continue|debugger|default|defer|delete|do|dynamic|else|enum|export|extends|extension|extern|final|finally|fn|for|from|func|function|get|go|goto|guard|if|impl|implements|import|in|init|inline|instanceof|interface|internal|is|lateinit|let|match|mod|mut|namespace|new|of|open|operator|override|package|private|protected|pub|public|readonly|record|required|return|sealed|select|self|set|static|struct|super|switch|this|throw|throws|trait|try|type|typealias|typeof|union|unsafe|use|using|val|var|void|where|while|with|yield|true|false|null|nil|None|undefined|NaN|Infinity|bool|boolean|byte|char|double|float|int|long|short|string|uint|unsigned|usize";
+const HI_KW_HASH = "and|as|assert|async|await|break|case|class|continue|declare|def|del|do|done|echo|elif|else|elsif|end|esac|except|export|fi|finally|for|from|function|global|if|import|in|is|lambda|local|module|nonlocal|not|or|pass|raise|readonly|require|rescue|return|select|set|source|then|try|unless|unset|until|while|with|yield|True|False|None|null|true|false|nil|self";
+const HI_KW_SQL = "select|from|where|insert|into|values|update|set|delete|create|alter|drop|table|index|view|join|inner|left|right|outer|full|on|group|by|order|having|limit|offset|union|all|distinct|as|and|or|not|null|is|in|like|between|exists|case|when|then|else|end|primary|key|foreign|references|constraint|default|unique|with|returning|asc|desc";
+
+// 每族一条大正则：分组顺序就是优先级。注释必须排第一 ——
+// 不然 "// 这在字符串里" 中的两条斜杠会把后半行连同闭引号一起吃掉。
+// cls 把「第几个分组」映射到「上哪个色」；不放空分组占位，空匹配会让 exec 原地打转。
+const HI_RULES = {
+  c: {
+    re: new RegExp(
+      "(\\/\\*[\\s\\S]*?(?:\\*\\/|$)|\\/\\/[^\\n]*)" +
+      "|(\"(?:\\\\[\\s\\S]|[^\"\\\\\\n])*\"?|'(?:\\\\[\\s\\S]|[^'\\\\\\n])*'?|`(?:\\\\[\\s\\S]|[^`\\\\])*`?)" +
+      "|\\b(0[xXbBoO][0-9a-fA-F_]+|\\d[\\d_]*(?:\\.[\\d_]+)?(?:[eE][+-]?\\d+)?)\\b" +
+      "|\\b(" + HI_KW_C + ")\\b", "g"),
+    cls: ["c-com", "c-str", "c-num", "c-kw"],
+  },
+  hash: {
+    re: new RegExp(
+      "(#[^\\n]*)" +
+      "|(\"\"\"[\\s\\S]*?(?:\"\"\"|$)|'''[\\s\\S]*?(?:'''|$)|\"(?:\\\\[\\s\\S]|[^\"\\\\\\n])*\"?|'(?:\\\\[\\s\\S]|[^'\\\\\\n])*'?)" +
+      "|\\b(0[xX][0-9a-fA-F_]+|\\d[\\d_]*(?:\\.[\\d_]+)?)\\b" +
+      "|^(\\s*[\\w.$-]+)(?=\\s*[:=])" +
+      "|\\b(" + HI_KW_HASH + ")\\b", "gm"),
+    cls: ["c-com", "c-str", "c-num", "c-key", "c-kw"],
+  },
+  json: {
+    re: new RegExp(
+      "(\"(?:\\\\[\\s\\S]|[^\"\\\\])*\"(?=\\s*:))" +
+      "|(\"(?:\\\\[\\s\\S]|[^\"\\\\])*\")" +
+      "|(-?\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)" +
+      "|\\b(true|false|null)\\b", "g"),
+    cls: ["c-key", "c-str", "c-num", "c-kw"],
+  },
+  css: {
+    re: new RegExp(
+      "(\\/\\*[\\s\\S]*?(?:\\*\\/|$))" +
+      "|(\"(?:\\\\[\\s\\S]|[^\"\\\\\\n])*\"?|'(?:\\\\[\\s\\S]|[^'\\\\\\n])*'?)" +
+      "|(#[0-9a-fA-F]{3,8}\\b|-?\\d[\\d.]*(?:px|em|rem|%|vh|vw|ms|s|deg|fr|ch|pt)?\\b)" +
+      "|([-a-zA-Z]+)(?=\\s*:)" +
+      "|(@[-a-z]+|!important)", "g"),
+    cls: ["c-com", "c-str", "c-num", "c-key", "c-kw"],
+  },
+  xml: {
+    re: new RegExp(
+      "(<!--[\\s\\S]*?(?:-->|$))" +
+      "|(\"[^\"]*\"|'[^']*')" +
+      "|([\\w:.-]+)(?==)" +
+      "|(<\\/?[\\w:.-]+|\\/?>)", "g"),
+    cls: ["c-com", "c-str", "c-key", "c-kw"],
+  },
+  sql: {
+    re: new RegExp(
+      "(--[^\\n]*|\\/\\*[\\s\\S]*?(?:\\*\\/|$))" +
+      "|('(?:''|[^'])*'?|\"[^\"]*\"?)" +
+      "|\\b(\\d[\\d_]*(?:\\.\\d+)?)\\b" +
+      "|\\b(" + HI_KW_SQL + ")\\b", "gi"),
+    cls: ["c-com", "c-str", "c-num", "c-kw"],
+  },
+};
+
+/** 一段代码 → 上了色的 HTML。没有规则的语族只转义、不着色 */
+function hiCode(text, lang) {
+  const rule = HI_RULES[lang];
+  if (!rule) return esc(text);
+  const re = new RegExp(rule.re.source, rule.re.flags);   // 每次新建：全局正则的 lastIndex 会跨调用留存
+  let out = "", at = 0, m;
+  while ((m = re.exec(text))) {
+    if (m[0] === "") { re.lastIndex++; continue; }         // 空匹配保险丝
+    out += esc(text.slice(at, m.index));
+    let cls = "";
+    for (let g = 1; g <= rule.cls.length; g++) if (m[g]) { cls = rule.cls[g - 1]; break; }
+    out += cls ? `<span class="${cls}">${esc(m[0])}</span>` : esc(m[0]);
+    at = m.index + m[0].length;
+  }
+  return out + esc(text.slice(at));
+}
+
+// 正在预览的这份代码的原文。放模块变量、不放 data-* 属性：一份 500KB 的源码塞进属性里，
+// 等于把它连着 HTML 再转义一遍存第二份，切一次文件就多一份垃圾
+let pvCodeRaw = "";
+let pvCodeName = "";
+let pvCodeExpanded = false;
+
+/** 代码预览的整块 HTML。expand=true 时先展开压缩产物 */
+function codeHtml(text, name, truncHtml, expand) {
+  const lang = codeLang(name);
+  const minified = codeMinified(text, name);
+  const on = !!(expand && minified);
+  let lines = (on ? unminify(text, lang) : text).split("\n");
+  let cut = "";
+  if (lines.length > PV_CODE_MAX_LINES) {
+    cut = `<div class="ov-note">${on ? "展开后" : "这个文件"}有 ${lines.length} 行，这里只画前 ${PV_CODE_MAX_LINES} 行（文件本身没被动过，下载下来是完整的）。</div>`;
+    lines = lines.slice(0, PV_CODE_MAX_LINES);
+  }
+  const gutter = lines.map((_, i) => i + 1).join("\n");
+  const bar = !minified ? "" :
+    `<div class="pv-code-bar">${on
+      ? `<span>压缩过的文件（最长一行 ${longestLine(text).toLocaleString()} 字符），已按 <code>{ } ;</code> 断行。</span><button id="pv-code-raw" title="只加了换行和缩进，一个字符都没改">看原文</button>`
+      : `<span>这是压缩过的原文，一行几万字符，横着拉才看得完。</span><button id="pv-code-raw">展开排版</button>`}</div>`;
+  return `<div class="pv-code">${bar}<div class="pv-code-wrap"><pre class="pv-code-ln" aria-hidden="true">${gutter}</pre>` +
+    `<pre class="pv-code-src" translate="no">${hiCode(lines.join("\n"), lang)}</pre></div>${cut}${truncHtml || ""}</div>`;
+}
+
+/** 「展开排版 / 看原文」那颗按钮。切换只重画这一块，不再发一次请求 */
+function bindPvCode(body, truncHtml) {
+  const btn = body.querySelector("#pv-code-raw");
+  if (!btn) return;
+  btn.onclick = () => {
+    pvCodeExpanded = !pvCodeExpanded;
+    body.innerHTML = codeHtml(pvCodeRaw, pvCodeName, truncHtml, pvCodeExpanded);
+    body.scrollTop = 0;
+    bindPvCode(body, truncHtml);
+  };
+}
+
+/**
+ * 把一整页网页按宽度缩到预览栏里。
+ *
+ * 起因：做小红书图文那种 3:4 竖版卡片，页面是按 1200×1600 写死的，而右边这条预览栏
+ * 只有几百像素宽。iframe 按 1:1 渲染，人看到的是**左上角那一块**——看起来像"放大得太厉害"，
+ * 其实是页面比框宽，框只露出了一角。要判断一张卡排得对不对，第一眼就得是整张。
+ *
+ * 做法是量出这一页自己有多宽，再整体 scale 下去；高度按它真实的文档高度给足，
+ * 让外面那层滚动，而不是 iframe 里再套一根滚动条（套两层的结果是两根都只能滚一半）。
+ *
+ * 量尺寸有两条路，因为两个预览位的安全约束不一样：
+ *   - 工作区预览同源，直接读 contentDocument。
+ *   - 资料库预览跑在 sandbox 里（外来文件不许碰应用本身，所以不给 allow-same-origin），
+ *     读 contentDocument 会抛。那边改成页面自己 postMessage 把尺寸报出来，见 selfReport。
+ *
+ * 三处容易踩空：
+ *   - **量之前必须先把宽度放回可用宽度、并撤掉缩放**。不然第二次量到的是上次设的那个值，
+ *     响应式页面会被一路越缩越小。
+ *   - 量不到就什么都不做，保持原样，别把画面弄成一片空白。
+ *   - 页面里的图片是后到的，图一到高度就变。load 之后再补量几次，比一次量完靠谱。
+ */
+function fitPreviewFrame(host, opts) {
+  opts = opts || {};
+  const wrap = host.querySelector(".pv-fit");
+  const fr = wrap && wrap.querySelector("iframe");
+  const zoomBtn = wrap && wrap.querySelector(".pv-zoom");
+  if (!fr) return;
+  let real = false; // false = 适应宽度（默认），true = 实际大小
+  let last = null;  // 上一次量到的 {w,h}，切换缩放比时直接复用，不用重新量
+
+  const availOf = () => wrap.clientWidth || host.clientWidth || 0;
+
+  const layout = (w, h) => {
+    const avail = availOf();
+    if (!avail || !w || !h) return;
+    last = { w, h };
+    const scale = real ? 1 : Math.min(1, avail / w);
+    fr.style.width = w + "px";
+    fr.style.height = h + "px";
+    fr.style.transform = scale === 1 ? "none" : `scale(${scale})`;
+    // 外层撑到缩放后的实际占位，页面才滚得到底（transform 不改变布局占位，得自己给）
+    wrap.style.height = Math.ceil(h * scale) + "px";
+    wrap.style.overflowX = real && w > avail ? "auto" : "hidden";
+    if (zoomBtn) {
+      // 本来就装得下的页面不摆这颗按钮：没得可切的开关只会让人以为哪里不对
+      zoomBtn.hidden = !(w > avail + 1);
+      zoomBtn.textContent = real ? "实际大小 · 点这里适应宽度" : `适应宽度 · ${Math.round(scale * 100)}%`;
+      zoomBtn.title = real ? "现在是 1:1，点一下缩回整页" : "现在是整页缩放，点一下按原始尺寸看细节";
+    }
+  };
+
+  // 归位：把 iframe 放回"可用宽度、不缩放"，页面按这个视口重新排一次，才量得到它真实要多宽
+  const reset = () => {
+    const avail = availOf();
+    if (!avail) return 0;
+    fr.style.transform = "none";
+    fr.style.width = avail + "px";
+    return avail;
+  };
+
+  const apply = () => {
+    if (!fr.isConnected) return;
+    if (opts.selfReport) { reset(); return; } // 跨源：量不了，等页面自己报
+    let doc = null;
+    try { doc = fr.contentDocument; } catch { doc = null; }
+    if (!doc || !doc.documentElement) return; // 还没加载出来：保持原样
+    const avail = reset();
+    if (!avail) return;
+    const de = doc.documentElement;
+    const bd = doc.body;
+    layout(
+      Math.max(de.scrollWidth || 0, bd ? bd.scrollWidth || 0 : 0, avail),
+      Math.max(de.scrollHeight || 0, bd ? bd.scrollHeight || 0 : 0, 1),
+    );
+  };
+
+  if (opts.selfReport) {
+    const onMsg = (e) => {
+      if (!fr.isConnected) { window.removeEventListener("message", onMsg); return; }
+      // 认 source 不认 origin：sandbox 页面的 origin 是 "null"，对不上任何白名单
+      if (e.source !== fr.contentWindow || !e.data || e.data.__wbFit !== 1) return;
+      layout(Number(e.data.w) || 0, Number(e.data.h) || 0);
+    };
+    window.addEventListener("message", onMsg);
+  }
+
+  if (zoomBtn) zoomBtn.onclick = () => { real = !real; if (last) layout(last.w, last.h); else apply(); };
+  fr.addEventListener("load", () => {
+    apply();
+    // 图片是后到的，图一到高度就变；补量两次比一次量完靠谱
+    setTimeout(apply, 120);
+    setTimeout(apply, 600);
+  });
+  // 预览栏本身可以拖宽，宽度一变就得重新算
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(() => { if (fr.isConnected) apply(); else ro.disconnect(); });
+    ro.observe(host);
+  }
+  apply();
+}
+
+/** sandbox 里的页面自己报尺寸用的那段脚本（跨源读不到，只能让它主动说）。 */
+const PV_FIT_REPORTER = `<script>(function(){function s(){try{var d=document.documentElement,b=document.body;\
+parent.postMessage({__wbFit:1,w:Math.max(d.scrollWidth||0,b?b.scrollWidth||0:0),h:Math.max(d.scrollHeight||0,b?b.scrollHeight||0:0)},"*");}catch(e){}}\
+addEventListener("load",s);addEventListener("resize",s);setTimeout(s,0);setTimeout(s,150);setTimeout(s,700);})()<\/script>`;
 
 async function previewFile(name, root) {
   if (OFFICE_RE.test(name)) {
@@ -2152,7 +2926,7 @@ async function previewFile(name, root) {
   // 立刻亮预览面板再去异步拉内容：晚亮的话，自动预览的调用方同步检查时以为预览没开，
   // 会把成果文件面板弹回来，右侧双开互相盖字（用户反馈过）
   pvPanel.classList.add("show");
-  document.getElementById("pv-body").innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">加载中…</div>`;
+  document.getElementById("pv-body").innerHTML = `<div class="pv-text" style="color:var(--owb-text-3)">加载中…</div>`;
   document.getElementById("pv-name").textContent = name;
   document.getElementById("pv-dl").href = withRoot("/api/files/download/" + fpath(name), pvRoot);
   const body = document.getElementById("pv-body");
@@ -2162,14 +2936,21 @@ async function previewFile(name, root) {
   body.scrollLeft = 0;
   const url = withRoot("/api/files/view/" + fpath(name) + "?t=" + Date.now(), pvRoot);
   const kind = previewKind(name);
+  // 「复制」只对图片有意义。别的类型藏起来——摆一个按下去没反应的按钮比没有这个按钮更糟
+  const pvCopyBtn = document.getElementById("pv-copy");
+  if (pvCopyBtn) pvCopyBtn.hidden = kind !== "image";
   // 单张图就把它摆在面板正中间。以前是 margin:20px auto——横向居中、纵向顶着天花板，
   // 一张矮图挂在顶上、底下一大片空白。用户原话：「应该放在右边中间居中的位置啊，不要放在顶上放啊」
   body.classList.toggle("pv-mid", kind === "image" || kind === "video");
   if (kind === "iframe") {
     // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字
-    body.innerHTML = `<iframe src="${url}"></iframe>`;
+    body.innerHTML = `<div class="pv-fit"><iframe src="${url}" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
+    fitPreviewFrame(body);
   } else if (kind === "image") {
-    body.innerHTML = `<img src="${url}">`;
+    // title 写出来是因为这事儿不写没人知道：双击复制、Ctrl/Cmd+C 也复制
+    body.innerHTML = `<img class="pv-img" src="${url}" alt="${esc(name)}" title="双击复制这张图">`;
+    const im = body.querySelector(".pv-img");
+    if (im) im.ondblclick = () => copyPreviewImage();
   } else if (kind === "audio" || kind === "video") {
     // 服务端 res.sendFile 会回 Accept-Ranges（实测 206 + Content-Range），所以进度条能拖、长视频不用等整包下完
     const tag = kind === "audio" ? "audio" : "video";
@@ -2199,13 +2980,22 @@ async function previewFile(name, root) {
     body.innerHTML = pvFallback("这是二进制文件");
   } else {
     const r = await fetchTextHead(url);
-    if (!r) body.innerHTML = `<div class="pv-text" style="color:var(--wb-text-3)">加载失败</div>`;
+    if (!r) body.innerHTML = `<div class="pv-text" style="color:var(--owb-text-3)">加载失败</div>`;
     else if (looksBinary(r.text)) body.innerHTML = pvFallback("这个文件不是文本"); // 后缀没认出来，内容说了算
     else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text" translate="no">${renderMd(r.text, dirOf(name), false, pvRoot)}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
     else if (kind === "csv") body.innerHTML = csvHtml(r.text, name) + (r.truncated ? pvTrunc(r.total) : "");
+    else if (isCodeFile(name)) {
+      // 源码走代码看法。压缩过的默认就展开：用户点开它是想看看这是什么东西，
+      // 不是想确认它被压得有多狠 —— 让他先看到能读的那一面，想看原文再点一下
+      const trunc = r.truncated ? pvTrunc(r.total) : "";
+      pvCodeRaw = r.text; pvCodeName = name; pvCodeExpanded = codeMinified(r.text, name);
+      body.innerHTML = codeHtml(r.text, name, trunc, pvCodeExpanded);
+      bindPvCode(body, trunc);
+    }
     else body.innerHTML = `<div class="pv-text" translate="no"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">${esc(r.text)}</pre>${r.truncated ? pvTrunc(r.total) : ""}</div>`;
   }
   bindPvFallback(body, name);
+  bindPvMore(body, url);
   // 异步加载替换内容后再归零一次：长 Markdown/HTML 的旧滚动位置不能把新文件带到中段。
   body.scrollTop = 0;
   body.scrollLeft = 0;
@@ -2214,6 +3004,86 @@ async function previewFile(name, root) {
   renderDeployBar();
 }
 document.getElementById("pv-close").onclick = () => { pvPanel.classList.remove("show"); pvCurrent = null; pvRoot = ""; pvClosedAt = Date.now(); };
+/**
+ * 把正在预览的这张图放进系统剪贴板，好让人直接粘到微信 / Word / PPT 里。
+ *
+ * 两个坑，都不绕不过去：
+ *
+ * 1. **只有 PNG 能写进剪贴板**。Chromium 的 async clipboard 只认 image/png，
+ *    给它一个 image/jpeg 的 Blob 会直接抛 NotAllowedError。而我们产出的图大半是
+ *    jpg/webp。所以非 PNG 一律先画进 canvas 再 toBlob 成 PNG——多一次编码，
+ *    换来的是「粘过去真的有图」。
+ * 2. **必须在用户手势的同一跳里写**。`await fetch` 之后再 write，Safari 会判定
+ *    失去了用户激活而拒绝。Chromium/Electron 目前不拦，但把整段包进一次点击里
+ *    本来也不费事，就不赌浏览器哪天收紧。
+ *
+ * 失败了要说人话：剪贴板权限这类错，浏览器抛出来的是 NotAllowedError 这种词，
+ * 直接弹给用户等于没说。下面按原因分开讲，并且一律给出「那你还能怎么办」。
+ */
+async function copyPreviewImage() {
+  if (!pvCurrent) return;
+  if (!document.querySelector("#pv-body .pv-img")) return;
+  const btn = document.getElementById("pv-copy");
+  if (btn) btn.disabled = true;
+  try {
+    await copyImageFromUrl(withRoot("/api/files/view/" + fpath(pvCurrent), pvRoot));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** 按地址把一张图放进剪贴板。预览面板和画布灯箱共用；说明见 copyPreviewImage 上面那段 */
+async function copyImageFromUrl(url) {
+  try {
+    if (!navigator.clipboard || !window.ClipboardItem) throw new Error("no-api");
+    const src = await fetch(url).then((r) => { if (!r.ok) throw new Error("fetch"); return r.blob(); });
+    let png = src;
+    if (src.type !== "image/png") {
+      png = await new Promise((ok, no) => {
+        const im = new Image();
+        im.onload = () => {
+          const c = document.createElement("canvas");
+          // naturalWidth 为 0 的情况有：SVG 没写 width/height、图已经被换掉。给个兜底尺寸，
+          // 免得 toBlob 出来是一张 0×0 的透明图——粘过去是个看不见的东西，比报错更难查
+          c.width = im.naturalWidth || im.width || 1024;
+          c.height = im.naturalHeight || im.height || 1024;
+          c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
+          c.toBlob((b) => (b ? ok(b) : no(new Error("encode"))), "image/png");
+        };
+        im.onerror = () => no(new Error("decode"));
+        im.src = URL.createObjectURL(src);
+      });
+    }
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    toast("图片已复制，去微信 / Word / PPT 里直接粘", "circle-check");
+  } catch (e) {
+    const why = String((e && e.message) || e);
+    if (why === "no-api" || why.includes("secure")) {
+      // http:// 访问（局域网直连没套 HTTPS）时剪贴板 API 整个不存在，这不是权限问题，劝也没用
+      toast("这个浏览器不让网页写剪贴板（多半是没走 HTTPS）。右键图片选「复制图片」，或者点下载", "circle-x");
+    } else if (why === "decode" || why === "encode") {
+      toast("这张图浏览器解不开，复制不了。可以点下载，或用系统默认程序打开再复制", "circle-x");
+    } else if (why === "fetch") {
+      toast("图片没取到，可能已经被移走或删掉了", "circle-x");
+    } else {
+      toast("复制失败：" + why + "。可以右键图片选「复制图片」，或者点下载", "circle-x");
+    }
+  }
+}
+document.getElementById("pv-copy").onclick = () => copyPreviewImage();
+// 预览面板开着、看的又是图的时候，Ctrl/Cmd+C 就复制这张图。
+// 判一下有没有选中文字：用户可能是想复制文件名，那一下不该被我们抢走
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || (e.key !== "c" && e.key !== "C")) return;
+  const pv = document.getElementById("preview-panel");
+  if (!pv || !pv.classList.contains("show")) return;
+  if (!document.querySelector("#pv-body .pv-img")) return;
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if (String(window.getSelection() || "")) return;
+  e.preventDefault();
+  copyPreviewImage();
+});
 document.getElementById("pv-sys").onclick = () => { if (pvCurrent) openOnHost(pvCurrent, pvRoot); };
 document.getElementById("pv-rv").onclick = () => { if (pvCurrent) revealFile(pvCurrent, null, pvRoot); };
 
@@ -2244,7 +3114,7 @@ async function renderDeployBar() {
   const canLan = amPlatformOwner();
   bar.innerHTML = `<span>${ic("circle-check")}已本地部署</span><code>${esc(url)}</code>
     ${lan
-      ? `<span style="color:var(--wb-text-3)">手机同 Wi-Fi 可开</span><code>${esc(lan)}</code>`
+      ? `<span style="color:var(--owb-text-3)">手机同 Wi-Fi 可开</span><code>${esc(lan)}</code>`
       : canLan
         ? `<button id="pv-lan" title="同一个 Wi-Fi 下的人都能翻你的工作目录，看完记得停">放开给手机看</button>`
         : ""}
@@ -2278,16 +3148,32 @@ function startPreview(lan, open) {
 fetch("/api/preview/status").then(r => r.json()).then(s => { previewSrv = s; }).catch(() => {});
 
 // 产出快照：记住每个文件的 mtime，下一回合才认得出哪些是这回合新写/改过的
-let fileSnapshot = null; // null = 基线还没建（首屏 /api/files 还没回来）
+let fileSnapshot = null;  // null = 基线还没建（首屏 /api/files 还没回来）
+let fileSnapshotAt = 0;   // 这份基线是什么时候拍的
 function snapshotFiles(files) {
   fileSnapshot = {};
+  fileSnapshotAt = Date.now();
   for (const f of files || []) fileSnapshot[f.name] = f.mtime;
 }
 // 和上一次快照比，挑出这次任务真正新增/改动过的文件（不改快照，调用方决定什么时候推进）
 // 基线没建好就先拿这次当基线：否则首屏没加载完就发任务，整个工作目录都会被当成"本次产出"糊一屏卡片
+//
+// 这是给**老会话**兜底的一条路（新记录走服务端算好的 ev.changed）。它跟服务端那边犯过同一个错：
+// 「不在基线里」被当成了「新产出」。而 /api/files 只给最新 500 条，中途删掉一批中间文件，
+// 窗口往回滑，几个月前的旧文件就重新挤进来——于是整个工作目录被当成这回合的产出。
+// 所以这里也补同一道绝对时间闸：没见过的文件，mtime 得在基线拍下之后才算数。
+// 见 agent.js 的 makeFilesEmitter，两边的判据必须一致，不然同一条会话新旧两种读法会得出两个答案。
+const MTIME_SLACK_MS = 2000;
 function changedFiles(files) {
   if (!fileSnapshot) { snapshotFiles(files); return []; }
-  return (files || []).filter(f => fileSnapshot[f.name] !== f.mtime);
+  const since = fileSnapshotAt - MTIME_SLACK_MS;
+  return (files || []).filter((f) => {
+    const known = fileSnapshot[f.name];
+    if (known === f.mtime) return false;
+    if (known !== undefined) return true;     // 见过、而且变了：真改过
+    const t = Date.parse(f.mtime);
+    return !Number.isFinite(t) || t >= since;  // 没见过：只有确实是基线之后写的才算
+  });
 }
 
 // 来源：这一回合真正打开过的网页。不是"模型说它参考了什么"，而是工具层记下来的实际访问记录，
@@ -2604,7 +3490,12 @@ function makeOutCard(f, isHtml, root) {
   const isVid = /\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name);
   // 整张图放进来之后，扁盒子配竖图必然剩一圈留白。底下垫一层同一张图的放大模糊版把它填掉：
   // 用的是同一个 url，浏览器走缓存，不会多下一次。视频没有这层——它自己带黑底，本来就是电影画幅的样子。
-  const thumb = isPic ? `<span class="out-bg" style="background-image:url(&quot;${url}&quot;)" aria-hidden="true"></span><img src="${url}" alt="" loading="lazy" decoding="async">`
+  // 缩略图走 ?thumb=320，不要原图。卡片只有 120px 宽，而工作空间里真实躺着
+  // 2800×7032 的图——原图当缩略图是让浏览器解码 75 MB 位图去画一个指甲盖，
+  // 一回合八张卡就是 293 MB。服务端缩不动（纯 node 没有 nativeImage）会自己发原图，
+  // 所以这里不用判断跑在哪儿。svg 不走：矢量本来就小，栅格化反而更大更糊
+  const thumbUrl = /\.svg$/i.test(f.name) ? url : url + "&thumb=320";
+  const thumb = isPic ? `<span class="out-bg" style="background-image:url(&quot;${thumbUrl}&quot;)" aria-hidden="true"></span><img src="${thumbUrl}" alt="" loading="lazy" decoding="async">`
     : isVid ? `<video src="${url}#t=0.1" muted playsinline preload="metadata"></video><span class="vd-play" aria-hidden="true"></span>`
     : `<span class="ph">${ic(fileIcon(f.name))}</span>`;
   const card = document.createElement("div");
@@ -2859,6 +3750,7 @@ document.addEventListener("click", (e) => {
   }
 }, true);
 document.getElementById("open-ws").onclick = (e) => { e.preventDefault(); openWorkspaceOnHost(); };
+document.getElementById("fp-sweep").onclick = (e) => { e.preventDefault(); openSweep({}); };
 
 // ================= 下拉菜单通用 =================
 function setupPicker(btnId, menuId) {
@@ -2995,6 +3887,6 @@ function healthBadge(name) {
   const h = settingsCache && settingsCache.model_health && settingsCache.model_health[name];
   if (!h || !h.n) return "";
   let s = `近${h.n}次任务${h.ok}成`;
-  if (h.fail_streak >= 2) s += ` <span style="color:var(--wb-err-text)" title="${esc(h.last_fail || "")}">${ic("triangle-alert", "i-sm")}连挂${h.fail_streak}</span>`;
+  if (h.fail_streak >= 2) s += ` <span style="color:var(--owb-err-text)" title="${esc(h.last_fail || "")}">${ic("triangle-alert", "i-sm")}连挂${h.fail_streak}</span>`;
   return s;
 }

@@ -58,6 +58,12 @@ const DEFAULTS = {
   runtime_node: true,
   runtime_python: true,
   approval_timeout_s: 120, // 审批等待上限（秒），超时按拒绝处理
+  // 技能/连接器安全检查的第二把尺子：外部 toolward（可选，没装就只用自带的 skill-guard）。
+  // auto = 装了就用，它报 critical 就拦、high/medium 摊开给人看；
+  // advisory = 照样用，但最多只提醒，不许拦人；off = 不叫它。
+  // 为什么它不在 package.json 的依赖里：PolyForm Noncommercial 授权，公司用要单独授权。见 toolward.js 顶上那三条边界。
+  toolward: "auto",
+  toolward_bin: "", // 留空 = 在 PATH 和几个常见全局 bin 目录里找；填了就只认这一个，不回退
 };
 
 /** 给 config.security 补默认值（保留用户已改项），返回引用 */
@@ -390,6 +396,29 @@ function checkUrl(sec, url) {
 
 const approvals = new Map(); // id -> { id, kind, text, ts, owner, resolve }
 
+const approvalWatchers = new Set(); // 有人求批准 / 批完了，挨个通知
+
+/**
+ * 盯着审批的开合。
+ *
+ * 为什么要这么个钩子：网页版是自己轮询 listApprovals 的，命令行不是——`openworkbuddy` 跑在另一个进程里，
+ * 它连不上那边的 Map。没有这条通知，命令行里一条危险命令求批准的表现就是「卡住两分钟，然后被拒」，
+ * 人从头到尾没被问过。命令行订上这个钩子，才能把卡片同时印在终端和手机上。
+ *
+ * @param {(ev: {type: "open"|"close", entry?: object, id?: string}) => void} fn
+ * @returns 取消订阅
+ */
+function watchApprovals(fn) {
+  if (typeof fn !== "function") return () => {};
+  approvalWatchers.add(fn);
+  return () => approvalWatchers.delete(fn);
+}
+
+// 订阅方自己抛错不能把求批准的人拖下水：那会让 requestApproval 当场炸，比不通知还糟
+function emitApproval(ev) {
+  for (const fn of approvalWatchers) { try { fn(ev); } catch {} }
+}
+
 /**
  * @param owner 发起这次任务的登录名。多人共用一台服务器时这个字段是必须的：
  *   审批卡片上写着别人任务要跑的那条命令（路径、域名、脚本片段都在里面），
@@ -406,6 +435,7 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
       clearTimeout(timer);
       approvals.delete(id);
       if (stopSignal) stopSignal.removeEventListener("abort", onAbort);
+      emitApproval({ type: "close", id, allow: !!ok });
       resolve(ok);
     };
     const timer = setTimeout(() => finish(false), Math.max(5000, timeoutMs));
@@ -423,6 +453,8 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
       ts: new Date().toISOString(),
       resolve: finish,
     });
+    // deadline 给界面用：不告诉人还剩多久，他就是在对着一个不知道会不会过期的按钮下注
+    emitApproval({ type: "open", entry: { ...approvals.get(id), resolve: undefined, deadline: Date.now() + Math.max(5000, timeoutMs) } });
   });
 }
 /**
@@ -520,6 +552,7 @@ module.exports = {
   auditExport,
   resolvePathWithPolicy,
   PERMISSION_MODES,
+  DEFAULT_MODE, // 命令行要用它判断「现在这档是不是默认那档」，决定状态行印不印
   permissionMode,
   checkWrite,
   checkCommand,
@@ -531,6 +564,7 @@ module.exports = {
   splitSegments, // 给测试用：命令拆段是整个命令闸的地基，得能单独验
   checkUrl,
   requestApproval,
+  watchApprovals,
   listApprovals,
   resolveApproval,
   effectiveScope,

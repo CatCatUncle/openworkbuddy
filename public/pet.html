@@ -284,7 +284,7 @@
     if (on === hit) return;
     hit = on;
     hovering = on;
-    window.wbPet && window.wbPet.hit(on);
+    window.openworkbuddyPet && window.openworkbuddyPet.hit(on);
     paint();
   }
   document.addEventListener("mousemove", (e) => updateHit(solidAt(e.clientX, e.clientY)));
@@ -309,16 +309,16 @@
   document.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     document.body.classList.add("dragging");
-    window.wbPet && window.wbPet.dragStart();
+    window.openworkbuddyPet && window.openworkbuddyPet.dragStart();
   });
   document.addEventListener("mouseup", () => {
     document.body.classList.remove("dragging");
-    window.wbPet && window.wbPet.dragEnd();
+    window.openworkbuddyPet && window.openworkbuddyPet.dragEnd();
   });
   window.addEventListener("blur", () => document.body.classList.remove("dragging"));
-  document.addEventListener("contextmenu", (e) => { e.preventDefault(); window.wbPet && window.wbPet.menu(); });
+  document.addEventListener("contextmenu", (e) => { e.preventDefault(); window.openworkbuddyPet && window.openworkbuddyPet.menu(); });
 
-  window.wbPet && window.wbPet.onState((s) => {
+  window.openworkbuddyPet && window.openworkbuddyPet.onState((s) => {
     const wasRow = spec ? JSON.stringify(spriteRow()) : "";
     state = s.name || "idle";
     text = s.text || "";

@@ -302,7 +302,7 @@ if (mMap) {
     .filter((v) => /\d+(\.\d+)?px/.test(v));
 
   // ★反向对照★ 先证明扫描器抓得到，否则下面全绿等于没测
-  const planted = hardCoded(inlineCss + "\n.wb-fake { border-radius: 7px; }");
+  const planted = hardCoded(inlineCss + "\n.owb-fake { border-radius: 7px; }");
   eq(planted.length, 1, "反向对照：种一条 7px 的圆角进去，扫描器当场抓出来", planted);
 
   const left = hardCoded(inlineCss);

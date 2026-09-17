@@ -14,7 +14,7 @@
  *   2. 类型写错     —— 该给数字给了字符串、该给数组给了对象这种。端口尤其常见。
  *   3. 取值不在册   —— provider 只认 openai / anthropic 两个。
  *
- * 不做的事：不判断值对不对（Key 有没有效、地址通不通），那是 wb doctor 和渠道测试的活儿。
+ * 不做的事：不判断值对不对（Key 有没有效、地址通不通），那是 openworkbuddy doctor 和渠道测试的活儿。
  */
 
 const KIND = (v) => (Array.isArray(v) ? "数组" : v === null ? "空值" : typeof v === "object" ? "对象" : typeof v === "number" ? "数字" : typeof v === "boolean" ? "是否" : "文本");
@@ -119,7 +119,7 @@ function lint(config, defaults) {
   return out;
 }
 
-/** 排成一行一条，给启动日志和 wb doctor 共用，免得两边说法不一样 */
+/** 排成一行一条，给启动日志和 openworkbuddy doctor 共用，免得两边说法不一样 */
 function lines(found) {
   return found.map((f) => `${f.level === "bad" ? "×" : "▲"} ${f.text}　${f.hint}`);
 }

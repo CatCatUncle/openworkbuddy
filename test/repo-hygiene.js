@@ -86,6 +86,17 @@ function stripComments(src) {
     .join("\n");
 }
 
+/**
+ * 把「看起来像代码、其实是文本」的那两种挡掉：模板字符串和单引号字符串。
+ * 房间里写 require 用的是双引号，所以双引号那一种得留着。
+ * 单引号那条故意不允许跨行（[^'\\\n]）——一个写歪的引号就不会把后面半个文件吞掉。
+ */
+function stripTemplates(src) {
+  return src
+    .replace(/`(?:\\[\s\S]|[^`\\])*`/g, "``")
+    .replace(/'(?:\\.|[^'\\\n])*'/g, "''");
+}
+
 // 自检：剥完不能把代码也剥没了。这条是上面那个假绿的直接产物——
 // 扫描器看不见东西的时候，它报的「通过」和真通过长得一模一样。
 function assertStripSane(name, src) {
@@ -298,6 +309,194 @@ console.log("\n【3】experts.json 绑的技能，必须是 git 跟踪的");
       `反向对照：名单里混进一个不随包发的 ${ign[0]}，抓得出来`,
       JSON.stringify(unshipped(fake, shipped)));
   }
+}
+
+// ---------- 规则四：`wb` 这个简写不许再长回来 ----------
+// 2026-09-17 把它从仓库里清干净，是一处一处手工改的：环境变量、登录 Cookie、数据目录、
+// CSS 变量和动画名、预加载暴露给页面的那个 window 对象、几个函数名和全局量。
+// 手工清掉的东西会手工地长回来——下次谁顺手写个 wbFoo，没有任何人会注意到。
+//
+// 为什么在意：`wb` 太短，短到会被读成别家产品的缩写；这个项目跟腾讯 WorkBuddy 没有任何关系
+// （README 末尾那段声明讲的就是这件事）。所以自己的代码里不留这两个字母打头的标识符。
+//
+// 扫的是「代码里露脸的名字」：单独成词的 wb、wbXxx、wb- / wb_ / WB- / WB_。
+// **不**扫 WorkBuddy 这个词本身——README / NOTICE / 商业授权里指名道姓说「与腾讯 WorkBuddy
+// 无关」「别起容易认错的近似名」，那是指示性使用，恰恰是要留着的。
+// 也扫不到 owb- / OWB_ / --owb-*：前面那个 o 就是词的一部分，正则的左边界不认。
+const NAMING_RE = /(^|[^A-Za-z0-9_])(wb([^A-Za-z0-9_]|$)|wb[A-Z]|wb[-_]|WB[-_])/;
+
+// 白名单：老名字还得认得出来的地方，以及记录这次改名的变更日志。
+// 按「文件 + 这一行里必须出现的字样」配对——只写文件名的话，等于把整个文件放开，
+// 那么哪天有人在 server.js 里新写一个 wbFoo，这条规则就白立了。null = 整个文件豁免。
+const NAMING_ALLOW = [
+  [".gitignore", "wb-data/"],             // 改名前的数据目录：本机还在，得挡着别被 git add
+  ["server.js", "wb)-backup-"],           // 老备份包叫这个名字，列表里得认
+  ["server.js", "wb- 那个前缀"],           // 上面那行的解释
+  ["public/js/app-03.js", "wb_sessions"], // 浏览器 localStorage 里的旧键，要迁过来
+  ["CHANGELOG.md", null],                 // 改名这件事本身得写清楚，写清楚就得写出老名字
+  ["CHANGELOG.en.md", null],
+];
+const namingAllowed = (file, line) =>
+  NAMING_ALLOW.some(([f, mark]) => f === file && (mark === null || line.includes(mark)));
+
+/** 返回 ["行号: 这一行"]，没命中就是空数组 */
+function namingHits(file, src) {
+  const out = [];
+  src.split("\n").forEach((line, i) => {
+    if (!NAMING_RE.test(line)) return;
+    if (namingAllowed(file, line)) return;
+    out.push(`${i + 1}: ${line.trim().slice(0, 100)}`);
+  });
+  return out;
+}
+
+console.log("\n【4】`wb` 这个简写不许再回到代码里");
+{
+  const SKIP = new Set(["package-lock.json", path.relative(ROOT, __filename).split(path.sep).join("/")]);
+  const tracked = execFileSync("git", ["ls-files"], { cwd: ROOT, encoding: "utf8" })
+    .split("\n").map((s) => s.trim()).filter(Boolean)
+    .filter((f) => /\.(js|mjs|cjs|json|md|html|css|sh|yml|yaml|txt)$|^\.gitignore$|^Dockerfile$/.test(f))
+    .filter((f) => !SKIP.has(f) && !f.startsWith("vendor/") && !f.startsWith("public/vendor/"));
+
+  // 自检：文件列表空了、或者筛得只剩几个，下面那条「一处都没有」就是假绿。
+  ok(tracked.length >= 100, `扫了 ${tracked.length} 个随包文件（少于 100 说明列表筛坏了）`);
+
+  const hits = [];
+  for (const f of tracked) {
+    let src;
+    try { src = fs.readFileSync(path.join(ROOT, f), "utf8"); } catch { continue; }
+    for (const h of namingHits(f, src)) hits.push(`${f}:${h}`);
+  }
+  ok(hits.length === 0,
+    "随包代码里没有 wb 这个简写（老名字的兼容处走白名单）",
+    hits.slice(0, 8).join("\n      "));
+
+  // 反向对照一：编一段「刚长回来」的源码喂进去，四种写法一个都不许漏。
+  // 兜的是「正则写坏了，什么都不匹配」——那样上面那条永远绿。
+  const fake = [
+    'contextBridge.exposeInMainWorld("wbPet", {});',   // wbXxx
+    'const dir = "wb-data/";',                          // wb-
+    "Environment=WB_TRUST_PROXY=1",                     // WB_
+    "const wb = new ExcelJS.Workbook();",               // 单独成词
+  ].join("\n");
+  ok(namingHits("someplace.js", fake).length === 4,
+    "反向对照：wbPet / wb-data / WB_ / 单独的 wb，四种写法都抓得住",
+    JSON.stringify(namingHits("someplace.js", fake)));
+
+  // 反向对照二：现在正当的那些写法，一个都不许误伤。
+  // 兜的是另一头——正则宽到把 owb-、OWB_、OpenWorkBuddy 也算进去，那这条规则会天天喊狼来了，
+  // 喊到最后谁都不看，等于没有。
+  const innocent = [
+    "  .turn { animation: owbRise .24s var(--owb-ease); }",
+    "  const raw = String(env.OPENWORKBUDDY_INTRANET || env.OWB_INTRANET || \"\");",
+    "本项目与腾讯公司及其 WorkBuddy 产品无任何关联、授权、赞助或背书。",
+    'const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-skill-"));',
+  ].join("\n");
+  ok(namingHits("someplace.js", innocent).length === 0,
+    "反向对照：owb- / OWB_ / --owb-* / 声明里的 WorkBuddy 一个都没误伤",
+    JSON.stringify(namingHits("someplace.js", innocent)));
+
+  // 反向对照三：白名单是按文件配的，搬个地方就不算数。
+  // 兜的是「白名单只看那段字样、不看文件」——那样一句 wb_sessions 抄到哪儿都豁免了。
+  ok(namingHits("server.js", 'localStorage.getItem("wb_sessions");').length === 1,
+    "反向对照：app-03.js 的豁免搬到 server.js 就不认了（白名单按文件配）");
+}
+
+console.log("\n【5】CI 一次都跑不到的测试文件，至少得能解析");
+{
+  // test/all.js 的 SUITES 决定了 CI 跑哪些（macOS 那条腿 npm test 跑全套，ubuntu 跑它的子集）。
+  // 不在 SUITES 里的，两条腿都不碰——现在是 frontend.js 和 admin-ui.js 这两个要真开
+  // BrowserWindow 的（为什么不套 xvfb 赌它能过，.github/workflows/test.yml 顶上写了）。
+  //
+  // 这两个文件加起来九千多行，其中大半是塞进模板字符串、再发给页面去执行的代码。
+  // 2026-09-17 踩到的雷：在 AUTH_CHECKS 那块模板里写了一句 // 注释，注释里带了一对
+  // 反引号（拿它引一段代码）——模板当场从那儿断掉，后半截成了真代码。
+  // 这类错只有本机开着 Electron 跑一遍才看得见，而这两个文件恰恰是最少被跑到的：
+  // 改完界面的人通常只跑 npm test，而 npm test 里没它俩。
+  //
+  // 这儿只做 `node --check`：文件整体能不能解析。模板**内部**的语法错它看不见
+  // （那得连 ${} 插值一起求了，是另一件事），但上面那类「一个反引号把文件劈成两半」
+  // 的，它当场就红。
+  const os = require("os");
+  const allSrc = fs.readFileSync(path.join(__dirname, "all.js"), "utf8");
+  const suiteBlock = allSrc.slice(allSrc.indexOf("const SUITES = ["), allSrc.indexOf("\n];", allSrc.indexOf("const SUITES = [")));
+  if (!/\["repo-hygiene"/.test(suiteBlock)) throw new Error("test/all.js 的 SUITES 没切到（里头连 repo-hygiene 都找不着），下面算出来的「CI 跑不到」名单不作数");
+  const inCI = new Set([...suiteBlock.matchAll(/\["([a-z0-9-]+)"/g)].map((m) => m[1]));
+
+  // 只算真的测试：all.js 是跑器本人，fixtures/ 里是被 require 的样本（真坏了，引它的套件当场就红）。
+  const neverInCI = execFileSync("git", ["ls-files", "test"], { cwd: ROOT, encoding: "utf8" })
+    .trim().split("\n")
+    .filter((f) => f.endsWith(".js") && !f.includes("/fixtures/") && f !== "test/all.js")
+    .filter((f) => !inCI.has(path.basename(f, ".js")));
+
+  ok(neverInCI.length > 0 && neverInCI.includes("test/frontend.js") && neverInCI.includes("test/admin-ui.js"),
+    `算出 ${neverInCI.length} 个 CI 跑不到的测试文件`,
+    "名单空了或者漏了那两个 Electron 测试，说明 SUITES 解析歪了，下面两条会变成空跑：" + JSON.stringify(neverInCI));
+
+  const checkFile = (abs) => {
+    try { execFileSync(process.execPath, ["--check", abs], { stdio: "pipe" }); return ""; }
+    catch (e) { return String(e.stderr || e.message).split("\n").filter(Boolean).slice(0, 3).join(" | "); }
+  };
+  const broken = neverInCI.map((f) => [f, checkFile(path.join(ROOT, f))]).filter(([, err]) => err);
+  ok(broken.length === 0,
+    "这几个文件 node --check 都过（模板字符串没被哪个反引号提前截断）",
+    broken.map(([f, err]) => f + "\n        " + err).join("\n      "));
+
+  // 反向对照：真摆一个被反引号劈开的文件进来，得抳得住。
+  // 兑的是「checkFile 其实从来没真跑起来」——那样上面那条永远绿，和没写一样。
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-syntax-"));
+  const bait = path.join(tmp, "bait.js");
+  fs.writeFileSync(bait, 'const CHECKS = `\n  // 把 `key.length` 引起来说事，模板就从这儿断了\n  ok(1);\n`;\n');
+  const baitErr = checkFile(bait);
+  ok(baitErr !== "", "反向对照：注释里一对反引号把模板劈断，抓得住", "摆进去的坏文件居然 --check 过了");
+  fs.writeFileSync(bait, 'const CHECKS = `\n  // 把 key.length 说清楚，不用反引号\n  ok(1);\n`;\n');
+  ok(checkFile(bait) === "", "反向对照：同一句注释去掉反引号就过（不是见注释就喊）");
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log("\n【6】require 得到的文件，得真的在仓库里");
+{
+  // 跟【1】同一类毛病，只是更致命：**本机有、新克隆没有**。
+  // 新建一个 .js 写完、跑全套测试全绿，就很容易以为完事了——可它还没进 git。
+  // 本机一切正常；推上去之后别人 clone 下来、或者 Docker 里 COPY 的是纯净的工作区，
+  // 启动第一行就是 Cannot find module。CI 也拦不住：actions/checkout 拉的是提交，
+  // 而这个文件在本机工作区里好端端地躺着。
+  //
+  // （这一节写下来的当天就抳了一个：account.js 要 require("./usage-store")，
+  //   而 usage-store.js 当时还是 ?? 未跟踪。）
+  const tracked = new Set(execFileSync("git", ["ls-files"], { cwd: ROOT, encoding: "utf8" }).trim().split("\n"));
+  if (!tracked.has("account.js")) throw new Error("git ls-files 没拿到东西（连 account.js 都不在里头），下面算出来的不作数");
+
+  // 能解成哪些真文件。没后缀、.js、目录里的 index.js、.json 都算。
+  const resolves = (rel) => [rel, rel + ".js", rel + "/index.js", rel + ".json"].find((c) => tracked.has(c));
+  const onDisk = (rel) => [rel, rel + ".js", rel + "/index.js", rel + ".json"].find((c) => fs.existsSync(path.join(ROOT, c)));
+
+  const missing = [];
+  let scanned = 0, edges = 0;
+  for (const f of tracked) {
+    if (!f.endsWith(".js") || f.startsWith("node_modules/")) continue;
+    scanned++;
+    // 得先把注释和模板字符串剥掉。不剥的话满屏都是假的：
+    // 测试里大量「把一段代码写进临时目录再跑」的模板，里头的 require("./server.js")
+    // 是相对**那个临时目录**的；还有注释里随手写的 require("./x") ——这一节的
+    // 注释自己就带了一个。假的多了，真的就没人看了。
+    const src = stripTemplates(stripComments(fs.readFileSync(path.join(ROOT, f), "utf8")));
+    for (const m of src.matchAll(/require\(\s*"(\.[^"]*)"\s*\)/g)) {
+      edges++;
+      const rel = path.posix.join(path.posix.dirname(f), m[1]);
+      if (resolves(rel)) continue;
+      // 盘上有、git 里没 = 正是这一节要拓的那一种；盘上也没 = 引错了路径，一样得报
+      missing.push(`${f} 要 ${m[1]}（${onDisk(rel) ? "盘上有但没进 git" : "盘上也找不到"}）`);
+    }
+  }
+  ok(scanned > 100 && edges > 200, `扫了 ${scanned} 个跟踪中的 js，${edges} 条相对 require`,
+    "数字小得不像话，下一条就是空跑：scanned=" + scanned + " edges=" + edges);
+  ok(missing.length === 0, "每一条 require(\"./…\") 都落在跟踪中的文件上", missing.join("\n      "));
+
+  // 反向对照：真摆一个没进 git 的依赖进来，得抳得住。
+  // 兑的是 resolves() 就不该这么宽——比如不小心写成永远返真，上面那条就永远绿。
+  ok(!resolves("这个文件不存在-" + Date.now()), "反向对照：不存在的文件真的解不出来");
+  ok(!!resolves("account"), "反向对照：真存在的 account.js 解得出来（不是看什么都没有）");
 }
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

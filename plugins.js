@@ -360,7 +360,7 @@ async function installPluginFromGitHub(url) {
 
   const os = require("os");
   const { spawnSync } = require("child_process");
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "wb-plugin-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-plugin-"));
   try {
     const br = branch ? ["--branch", branch] : [];
     const gitUrl = `https://github.com/${owner}/${repo}.git`;

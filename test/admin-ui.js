@@ -4,7 +4,7 @@
  *
  * 跑法：npx electron test/admin-ui.js（由 test/e2e.js 拉起；没装 electron 就整体跳过）
  *
- * 为什么非得开真 Chromium：这一页是 18 个面板 + 哈希路由 + 弹窗表单，六成的坏法是
+ * 为什么非得开真 Chromium：这一页是 19 个面板 + 哈希路由 + 弹窗表单，六成的坏法是
  * 「某一页 render 里读了个 undefined，整块白屏」——这种错在 node 里一个字节都测不出来，
  * 只有真的把每一页点一遍、盯着 console 有没有报错才看得见。
  *
@@ -29,9 +29,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "wb-adminui-"));
-process.env.WB_DATA_DIR = path.join(TMP, "data");
-fs.mkdirSync(process.env.WB_DATA_DIR, { recursive: true });
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-adminui-"));
+process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
+fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
 // 这个文件得用 electron 跑，不是 node：`npx electron test/admin-ui.js`。
 // 用 node 跑的话下面 require("electron") 拿到的是个字符串（electron 包的 npm 入口导出的是
@@ -45,7 +45,7 @@ const { app: electronApp, BrowserWindow } = require("electron");
 
 // 看门狗，理由同 test/frontend.js：CI 的无头机器上 electron 可能连 whenReady 都不回，
 // 父进程强杀只拿得到一具尸体。这里自己记「ready 没有 / 最后跑完哪一步」，超时先说清楚再退。
-const WATCH_MS = Number(process.env.WB_TEST_WATCHDOG_MS || 180000);
+const WATCH_MS = Number(process.env.OPENWORKBUDDY_TEST_WATCHDOG_MS || 180000);
 let READY = false;
 let LAST_LINE = "（一步都还没跑完）";
 const _log = console.log.bind(console);
@@ -227,13 +227,13 @@ const GOTO = (id) => `(async () => {
   r = await call("POST", "/api/auth/login", { body: { username: "kuaiji", password: auditorPw } });
   const auditor = r.cookie;
 
-  // ================= 1. 管理员：18 个面板一个一个点过去 =================
+  // ================= 1. 管理员：19 个面板一个一个点过去 =================
   console.log("\n【1】平台管理员：每一页都真渲染出东西，且 console 干净");
   const A = await openAdmin(boss, "boss");
   ok("首屏就有内容，不是白屏", (await A.js(`document.getElementById("ad-body").textContent.trim().length > 40`)));
   ok("标题写的是这个组织的名字", /企业管理后台/.test(await A.js(`document.title`)), await A.js(`document.title`));
 
-  const IDS = ["home", "security", "sub", "usage-member", "usage-org", "usage-app", "usage-detail", "stats",
+  const IDS = ["home", "security", "sub", "usage-member", "usage-org", "usage-app", "usage-detail", "relay", "stats",
                "members", "pending", "roles", "basic", "net", "meter", "models", "orgs", "audit", "integration"];
   const seen = [];
   for (const id of IDS) {
@@ -242,8 +242,8 @@ const GOTO = (id) => `(async () => {
     if (res.len < 30) throw new Error(`【${id}】几乎是空的（${res.len} 字）：` + res.html);
     seen.push(`${id}=${res.len}`);
   }
-  ok("18 个面板全部渲染出正文（没有一页白屏 / 没有一页掉进错误挡板）", seen.length === 18, seen.join(" "));
-  ok("点完 18 页，console 一条 error 都没有", A.errs.length === 0, A.errs);
+  ok("19 个面板全部渲染出正文（没有一页白屏 / 没有一页掉进错误挡板）", seen.length === 19, seen.join(" "));
+  ok("点完 19 页，console 一条 error 都没有", A.errs.length === 0, A.errs);
 
   // 侧边导航：平台管理员看得到「组织管理」（这是 platform: true 的那一项）
   ok("侧栏分组齐了（订阅与用量 / 数据统计 / 成员授权 / 企业设置 / 开放与集成）",
@@ -325,6 +325,44 @@ const GOTO = (id) => `(async () => {
   ok("总览把今天和本月的数都摆出来了", /今日运行/.test(homeTxt) && /本月 tokens/.test(homeTxt));
   ok("总览有「要你处理的」，且席位满了这条真的报出来（席位 3/3）",
      /要你处理的/.test(homeTxt) && /席位满了/.test(homeTxt), homeTxt.replace(/\s+/g, " ").slice(0, 240));
+
+  // ================= 1.7 部门权限模板：后端早就有了，界面上得够得着 =================
+  // lifecycle.js 的部门模板是「同一个部门进来的第三个人和第一个人权限一模一样」的全部指望。
+  // 但它当初只接到了接口上，成员页那个「添加成员」还在打 /api/admin/members——那条路
+  // 一个字都不看模板。于是模板存了等于没存，谁也不会发现。这一节就守这条线。
+  console.log("\n【1.7】部门权限模板：存得下、看得见、加人时真按它开号");
+  // 上一节刚验过「席位 3/3 满了」，这一节要真加两个人——先把席位放开，
+  // 不然下面每一条都会红在「席位已用满」上，而那跟模板一点关系都没有
+  await call("POST", "/api/admin/org", { cookie: boss, body: { seats: 8 } });
+  await call("POST", "/api/admin/dept-templates", {
+    cookie: boss, body: { dept: "市场部", template: { role: "auditor", monthly_quota: 3000 } },
+  });
+  await A.js(GOTO("members"));
+  const deptTxt = await A.js(`document.getElementById("ad-body").textContent`);
+  ok("部门那块把模板摆在明处（市场部 · 审计员 · 3,000），不是藏在接口里",
+     /市场部/.test(deptTxt) && /新人默认角色/.test(deptTxt) && /审计员/.test(deptTxt) && /3,000|3000/.test(deptTxt),
+     deptTxt.replace(/\s+/g, " ").slice(0, 240));
+  ok("每个部门都有「权限模板」按钮；存了模板的那个还多一颗「清空模板」",
+     (await A.js(`document.querySelectorAll("[data-tpl]").length >= 1 && document.querySelectorAll("[data-tplx]").length === 1`)));
+
+  // 真走一遍「添加成员」：部门选市场部、角色留空 = 跟模板走
+  await A.js(`document.querySelector("[data-add]").click(); ` + wait(300));
+  await A.js(`(()=>{document.getElementById("mf-username").value="xiaohong";
+                    document.getElementById("mf-dept").value="市场部";
+                    document.getElementById("mf-role").value="";})()`);
+  await A.js(`document.querySelector(".ui-dialog [data-ok]").click(); ` + wait(900));
+  const made = (await call("GET", "/api/admin/members", { cookie: boss })).json.members.find((u) => u.username === "xiaohong");
+  ok("界面上加的人真按市场部的模板开了号（审计员 · 月额度 3000），说明这颗按钮接的是 onboard 不是裸建号",
+     !!made && made.role === "auditor" && made.monthly_quota === 3000, made);
+  ok("密码框顺带说清了套的是哪个部门的模板（不说的话，管理员根本不知道角色是从哪来的）",
+     /市场部/.test(await A.js(`(document.querySelector(".ui-dialog")||{}).textContent||""`)),
+     await A.js(`(document.querySelector(".ui-dialog")||{}).textContent||""`));
+  await A.js(`[...document.querySelectorAll(".ui-overlay")].forEach(x=>x.remove()); ` + wait(200));
+
+  // 反向对照：显式填了角色就以填的为准，模板是默认值不是强制
+  await call("POST", "/api/admin/onboard", { cookie: boss, body: { username: "xiaolan", dept: "市场部", role: "member" } });
+  const forced = (await call("GET", "/api/admin/members", { cookie: boss })).json.members.find((u) => u.username === "xiaolan");
+  ok("反向对照：明写了角色就听明写的（模板是默认值，不是强制）", forced && forced.role === "member", forced);
 
   // ================= 2. 审计员：能查账，改不动 =================
   console.log("\n【2】审计员：进得来、看得见，但写操作的控件全禁掉");

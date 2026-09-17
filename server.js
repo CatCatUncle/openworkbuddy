@@ -13,6 +13,9 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const { APP_DIR, DATA_DIR, dataPath, appPath, seedDataDir, resolvePort } = require("./paths");
+const migrate = require("./migrate");
+const dramaPipeline = require("./drama-pipeline");
+const dramaCompose = require("./drama-compose");   // 短剧最后一步：把镜头真的拼成成片
 // 数据目录跟代码目录不是同一个地方时（装机版、以及 Docker 里设了 OPENWORKBUDDY_HOME），
 // 得先把随包出厂的技能和专家铺过去，否则 skills.js 只认 dataPath("skills")，
 // 容器起来是能起来，但技能列表空空如也。开发态两个目录本来就是一个，这行是空操作。
@@ -30,13 +33,20 @@ const { createAgentRuntime } = require("./agent");
 const { createImRouter } = require("./im");
 const { createScheduler, setActiveScheduler, SCHEDULE_LABEL } = require("./scheduler");
 const account = require("./account");
+const { createStaticCompress: staticCompress } = require("./static-compress");
+const { createJsonCompress: jsonCompress } = require("./json-compress");
+const { thumbFileAsync } = require("./thumb");
 const org = require("./org"); // 组织（租户）层：席位、部门、邀请码、审计
+const budget = require("./budget"); // 钱闸：中转站发出去的 Key 和公司内部自己用，花的是同一笔预算
 const admin = require("./admin"); // 企业管理后台的接口层 /api/admin/*
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
-const lanes = require("./lanes"); // 两条工作线：办公（桌面办公 agent）/ 工程（本机 wb 命令行）
+const lanes = require("./lanes"); // 两条工作线：办公（桌面办公 agent）/ 工程（本机 openworkbuddy 命令行）
 const cliLive = require("./cli-live"); // 终端里起的任务挂在盘上的那个目录，网页/手机靠它看见并插话
 const thinking = require("./thinking"); // 思考模式档位表（各家参数名都不一样，集中在那儿）
 const security = require("./security");
+const toolward = require("./toolward");
+const sweep = require("./sweep");
+const modes = require("./modes"); // 执行模式的唯一真源（craft/goal/plan/ask）
 const cfgMerge = require("./config-merge"); // 存配置时把外面手改的那些合进来，不整份覆盖
 const cfgLint = require("./config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠道表 + 每路多模型
@@ -45,6 +55,8 @@ const tracing = require("./trace"); // 执行追踪（Langfuse），默认关；
 const genCache = require("./gen-cache"); // 生成结果缓存：同一格重跑别再烧第二次钱
 const memory = require("./memory");
 const notify = require("./notify");
+const log = require("./log");
+const metrics = require("./metrics");
 const callout = require("./callout"); // 正文提示条：机器人推送里换成文字标签
 const store = require("./store");
 const petSprites = require("./pet-sprites"); // 桌面宠物的精灵图（吃 Codex / Petdex 的格式）
@@ -64,6 +76,27 @@ if (!fs.existsSync(CONFIG_PATH)) {
 // 之后每次存盘再收一次（见 store.writeJsonAtomic 的 mode）。.bak 跟正本一字不差，一起收。
 store.tighten(CONFIG_PATH, store.SECRET_MODE);
 store.tighten(CONFIG_PATH + ".bak", store.SECRET_MODE);
+// 同一道理的还有另外两本，一起在开机时收一次（新写入的由各自的 writeJsonAtomic 保着）：
+//   users.json —— 所有活着的会话令牌（拿到就是别人的登录态，不要密码、也绕过二次验证）、
+//                 密码哈希和盐、TOTP 密钥、一次性找回码；
+//   orgs.json  —— 还没用完的邀请码（拿到就能自己开号进来，角色是发码的人预置好的）、整本审计流水。
+// 这两本原来都是 umask 给的 0644。列在这里而不是各自模块里：收权限是一次性的开机动作，
+// 散进每次读盘就是每读一条记录多一次 chmod 系统调用。
+// OPENWORKBUDDY_DATA_DIR 照认：account.js / org.js 都按它算目录，这里算得不一样就等于没收
+const ACCOUNT_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
+for (const f of ["users.json", "orgs.json"]) {
+  const p0 = path.join(ACCOUNT_DIR, f);
+  store.tighten(p0, store.SECRET_MODE);
+  store.tighten(p0 + ".bak", store.SECRET_MODE);
+}
+// 再把整个 data/ 目录收成 0700，当作上面那几条的兜底。
+// 逐个文件收权限有个绕不过去的毛病：**这个目录还在长**。今天列全了，下一个功能加一本新账
+// （会话正文、记忆库、IM 消息、审计流水都在里面），忘了带 mode 就又是一个 0644。
+// 目录没有执行位，别的本地账号连 `ls` 都进不来，里头单个文件是什么位都不要紧了。
+// 只收 data/ 不收上一层：开发态下 DATA_DIR 就是仓库根目录（见 paths.js），
+// 把源码目录改成 0700 是件没人预期的事，而真正要护的东西一件都不在那儿。
+// 失败照例吞掉——Windows 上 chmod 基本是空操作，容器挂载卷也可能不让改（见 store.tighten）。
+store.tighten(ACCOUNT_DIR, 0o700);
 // 配置读坏了不能就这么空着起来：那样界面上所有 Key 都变成空的，用户随手一保存就把
 // 真 Key 覆盖没了。store 会先拿 .bak 顶（Key 原样还在），实在顶不住才把坏文件改名隔离、
 // 退回模板——原文还在 .corrupt-时间戳 里，Key 捞得回来。
@@ -139,6 +172,27 @@ try {
   const boot = (config.projects || []).find((p) => p && p.name === config.active_project);
   if (boot && boot.library_dir) setLibraryDir(boot.library_dir);
 } catch {}
+
+// 从老版本升上来的那一下。用户的原话是「更新的时候你记得把之前的文件放到新文件夹里面整理下」。
+// 放在这儿是因为工作目录到这一行才算最终确定（上面刚认完 workspace_dir 和资料库）。
+// 每条迁移只跑一次，记在 data/migrations.json；跑不动就只是打一行日志——
+// 为了整理文件而开不了应用，那是本末倒置
+try {
+  // 「这台机器以前用过没有」——判升级还是全新装全靠它。看的是有没有会话/账号留下来，
+  // 不看 config.json：那玩意儿第一次启动就会从 example 生成一份，永远为真，什么也证明不了
+  const priorUse = (() => {
+    try { if (fs.existsSync(dataPath("data", "users.json"))) return true; } catch {}
+    try { return fs.readdirSync(dataPath("data", "sessions")).some((f) => f.endsWith(".json")); } catch {}
+    return false;
+  })();
+  const notes = migrate.runMigrations(getWorkspaceDir(), dataPath("data", "migrations.json"), {
+    version: String(require("./package.json").version || ""), priorUse,
+  });
+  for (const n of notes) console.log(`[升级整理] ${n.note}`);
+  global.__wbMigrationNotes = notes;   // 界面上给用户看一眼：动过他的文件，得说
+} catch (e) {
+  console.warn("[升级整理] 这次没做成，不影响使用：" + e.message);
+}
 let llmInner = createLLM(config);
 // 记忆向量召回：有能算 embeddings 的渠道就接上，没有就退回关键词匹配（memory 自己兜底）
 memory.setEmbedder(createEmbedder(config));
@@ -301,16 +355,16 @@ function sessChangedOnDisk(id) {
 }
 function getSession(id) {
   /**
-   * 内存里有了也要回头看一眼盘：命令行的 wb 写的是同一批文件（data/sessions/<id>.json），
-   * 而 wb resume 不给 id 时接的就是「最近动过的那个」，包括桌面上刚开的那条。
-   * 以前这个 Map 一进来就再也不回头，于是「桌面开个头 → 终端 wb resume 接着做 → 回桌面再发一句」
+   * 内存里有了也要回头看一眼盘：命令行的 openworkbuddy 写的是同一批文件（data/sessions/<id>.json），
+   * 而 openworkbuddy resume 不给 id 时接的就是「最近动过的那个」，包括桌面上刚开的那条。
+   * 以前这个 Map 一进来就再也不回头，于是「桌面开个头 → 终端 openworkbuddy resume 接着做 → 回桌面再发一句」
    * 这条路上，桌面用的是几小时前那份内存副本，一存盘就把终端那几轮整段盖掉了——
    * 用户看到的是「我在终端做的那半截凭空消失了」。
    *
    * 正在跑任务的会话不重读：那份内存对象正被这一轮改着，从盘上盖回去等于把自己的进度丢了。
    */
   if (sessions.has(id) && !activeRuns.has(id) && sessChangedOnDisk(id)) {
-    console.log(`[会话] ${id} 在别处改过（多半是命令行 wb），重新读一遍磁盘，免得把那边的记录覆盖掉`);
+    console.log(`[会话] ${id} 在别处改过（多半是命令行 openworkbuddy），重新读一遍磁盘，免得把那边的记录覆盖掉`);
     sessions.delete(id);
   }
   if (!sessions.has(id)) {
@@ -341,7 +395,53 @@ function saveSession(id) {
  * id 取的是文件名（sessFile 会把非 \w 字符换成 _，而 id 本来就是 s_<时间戳>_<随机数>，不会被改写）。
  */
 const sessMetaCache = new Map(); // 文件名 -> { mtime, row }
+// 上面那个 Map 只在进程活着的时候管用。每次重启后第一次拉侧栏，还得把 data/sessions/ 下
+// 每个 JSON 整个读出来、整个 parse 一遍，只为了取标题和轮数——1500 条会话（20MB）实测 326ms，
+// 而且用得越久越长。这一下正好卡在「点开应用、侧栏还是空的」那段空白上。
+// 所以把 {mtime, row} 落一份到盘上：重启后 mtime 对得上就直接用，对不上才回去读原文件。
+// 判据仍然是 mtime，跟内存那份一模一样，不存在「缓存比文件旧」这种状态。
+//
+// ⚠️ 名字不带 .json，是为了能安心放在 SESS_DIR 里头。扫这个目录的一共四处
+// （这儿、改名时的批量重写、成果清单、cli 的会话列表），四处都是 filter(endsWith(".json"))，
+// 所以一个没后缀的点文件对它们全都不存在——真叫 sessions-index.json 的话，
+// 侧栏第一条就会多出一个叫「sessions-index」的假会话。
+// 路径从 SESS_DIR 推、不用 dataPath()：e2e 把这一整段切出去单跑，注进去的就那几个依赖。
+const SESS_INDEX = path.join(SESS_DIR, ".index");
+let sessIndexLoaded = false;
+let sessIndexDirty = false;
+let sessIndexTimer = null;
+function loadSessIndex() {
+  if (sessIndexLoaded) return;
+  sessIndexLoaded = true;
+  const raw = store.readJson(SESS_INDEX, null);
+  if (!raw || raw.v !== 1 || !raw.rows) return;
+  for (const [name, hit] of Object.entries(raw.rows)) {
+    // 只认形状对的：这文件坏了顶多是白读一次盘，绝不能让侧栏拿着半个 row 去渲染。
+    // row 为 null 是**有效**结论（「这个文件不进侧栏」），跟「少写了 row 这个字段」不是一回事，
+    // 所以判的是「有没有 row 这个键」，不是「row 真不真」——见下面 saveSessIndex 那段。
+    if (!hit || typeof hit.mtime !== "number" || !("row" in hit)) continue;
+    if (hit.row !== null && !(hit.row && hit.row.id)) continue;
+    sessMetaCache.set(name, hit);
+  }
+}
+function saveSessIndex() {
+  if (!sessIndexDirty || sessIndexTimer) return;
+  // 攒 2 秒再写。攒的不是「一次列表里的几十条」（一次列表只调一次这儿），
+  // 是「侧栏在轮询」：网页 + 手机 + 第二个标签页，几秒一趟，每趟都重写 37KB 没意义。
+  sessIndexTimer = setTimeout(() => {
+    sessIndexTimer = null;
+    sessIndexDirty = false;
+    const rows = {};
+    // ⚠️ row 为 null 的也要写进去。它的意思是「这个文件我看过了，不进侧栏」——
+    // 空壳会话、写坏的 JSON 都落在这一类。漏掉它们的话，恰恰是这批「读了也没用」的文件
+    // 每次重启都要被完整读一遍，而这正是这份索引要省掉的开销。
+    for (const [name, hit] of sessMetaCache) if (hit && "row" in hit) rows[name] = hit;
+    try { store.writeJsonAtomic(SESS_INDEX, { v: 1, rows }, { backup: false }); } catch {}
+  }, 2000);
+  if (sessIndexTimer.unref) sessIndexTimer.unref(); // 测试里起完就关的进程，别被这个定时器吊住
+}
 function listSessionsOnDisk() {
+  loadSessIndex();
   let names = [];
   try { names = fs.readdirSync(SESS_DIR).filter((n) => n.endsWith(".json")); } catch { return []; }
   const rows = [];
@@ -358,14 +458,16 @@ function listSessionsOnDisk() {
       const data = store.readJson(path.join(SESS_DIR, n), null);
       const row = sessionRow(id, data);
       sessMetaCache.set(n, { mtime, row });
+      sessIndexDirty = true;
       if (row) rows.push(row);
       continue;
     }
     const row = sessionRow(id, live);
     if (row) rows.push(row);
   }
-  for (const k of sessMetaCache.keys()) if (!seen.has(k)) sessMetaCache.delete(k); // 删掉的会话别赖在缓存里
+  for (const k of sessMetaCache.keys()) if (!seen.has(k)) { sessMetaCache.delete(k); sessIndexDirty = true; } // 删掉的会话别赖在缓存里
   rows.sort((a, b) => b.at - a.at);
+  saveSessIndex();
   return rows;
 }
 function sessionRow(id, s) {
@@ -428,85 +530,12 @@ try {
 
 /** 包装 emit：把事件同时记录到 transcript（文本增量合并，跳过噪音事件），顺便中途存盘 */
 // ---------- Goal 目标模式 ----------
-// 用户给一个目标，先拆成可验收的标准，跑完一轮就对着标准验收，没达标自动再跑（最多 GOAL_MAX_ROUNDS 轮）。
-// 验收宁严勿宽：拿不准一律算未达成——目标卡上打了勾就必须是真的
-const GOAL_MAX_ROUNDS = 3;
-
-function goalFileInventory(sess) {
-  try {
-    if (!sess.dir) return "（本对话还没有成果文件夹）";
-    const dir = path.join(getWorkspaceDir(), sess.dir);
-    const names = fs.readdirSync(dir).filter((n) => !n.startsWith("."));
-    if (!names.length) return "（成果文件夹是空的）";
-    return names.slice(0, 40).map((n) => {
-      try { const st = fs.statSync(path.join(dir, n)); return `${n}（${st.isDirectory() ? "目录" : st.size + " 字节"}）`; }
-      catch { return n; }
-    }).join("\n");
-  } catch { return "（读取成果文件夹失败）"; }
-}
-
-/** 摘录最近改动的成果文件开头给验收员：光看文件名判「能不能用」纯靠猜，
- *  看到内容开头至少能核对结构是不是真的（有没有画布/按键监听/两个角色…）。只读文本类文件，最多 5 个 */
-function goalFileSnippets(sess) {
-  try {
-    return recentGoalFiles(sess).map((f) => {
-      let head = "";
-      try { head = fs.readFileSync(f.p, "utf8").slice(0, 600); } catch { head = "（读取失败）"; }
-      return `--- ${f.n}（共 ${f.size} 字节，以下是开头）---\n${head}`;
-    }).join("\n\n");
-  } catch { return ""; }
-}
-
-/** 最近改动的成果文本文件（新→旧，最多 5 个），内容摘录和自动体检共用一份清单 */
-function recentGoalFiles(sess) {
-  try {
-    if (!sess.dir) return [];
-    const dir = path.join(getWorkspaceDir(), sess.dir);
-    const TEXT_EXT = /\.(html?|js|mjs|css|md|txt|json|py|ts|jsx|tsx|csv|svg)$/i;
-    return fs.readdirSync(dir)
-      .filter((n) => !n.startsWith(".") && TEXT_EXT.test(n))
-      .map((n) => {
-        try { const st = fs.statSync(path.join(dir, n)); return st.isFile() ? { n, p: path.join(dir, n), mtime: st.mtimeMs, size: st.size } : null; }
-        catch { return null; }
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.mtime - a.mtime)
-      .slice(0, 5);
-  } catch { return []; }
-}
-
-/** 验收员的「动手」环节：对成果文件做机器实测——JS 语法（node --check）、JSON 能否解析、
- *  HTML 是否写完整（截断/标签不配对）。只做只读检查，绝不执行成果代码。
- *  桌面版里 process.execPath 是 Electron 二进制，必须 ELECTRON_RUN_AS_NODE 才是纯 node */
-function goalFileChecks(sess) {
-  const { execFile } = require("child_process");
-  const checkOne = (f) => new Promise((resolve) => {
-    if (/\.(js|mjs|cjs)$/i.test(f.n)) {
-      execFile(process.execPath, ["--check", f.p], { timeout: 8000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } }, (err, _o, stderr) => {
-        resolve(err ? `✗ ${f.n} JS 语法检查未通过：${String(stderr || err.message).slice(0, 200)}` : `✓ ${f.n} JS 语法检查通过`);
-      });
-    } else if (/\.json$/i.test(f.n)) {
-      try { JSON.parse(fs.readFileSync(f.p, "utf8")); resolve(`✓ ${f.n} JSON 格式合法`); }
-      catch (e) { resolve(`✗ ${f.n} JSON 解析失败：${String(e.message).slice(0, 120)}`); }
-    } else if (/\.html?$/i.test(f.n)) {
-      try {
-        const t = fs.readFileSync(f.p, "utf8");
-        const probs = [];
-        if (/<html[\s>]/i.test(t) && !/<\/html>/i.test(t)) probs.push("有 <html> 没有 </html>，疑似写到一半被截断");
-        const so = (t.match(/<script[\s>]/gi) || []).length, sc = (t.match(/<\/script>/gi) || []).length;
-        if (so !== sc) probs.push(`<script> 开闭不配对（${so} 开 ${sc} 闭）`);
-        resolve(probs.length ? `✗ ${f.n} 结构异常：${probs.join("；")}` : `✓ ${f.n} HTML 结构完整（html/script 标签配对）`);
-      } catch { resolve(null); }
-    } else resolve(null);
-  });
-  return Promise.all(recentGoalFiles(sess).map(checkOne)).then((rs) => rs.filter(Boolean).join("\n")).catch(() => "");
-}
-
-function parseJsonLoose(text) {
-  const m = String(text || "").match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try { return JSON.parse(m[0]); } catch { return null; }
-}
+// 拆验收标准、对着标准验收这套逻辑搬到了 goal.js，网页端和 `openworkbuddy` 命令行共用同一份。
+// 搬家的直接原因：这段代码原本只长在下面那个 /api/chat 里，于是 Goal 就只对网页存在——
+// 命令行的模式表是手抄的三个，goal 没抄进去，`/mode goal` 敲得进去却按 craft 跑。
+// 这里只留「动脑那句话问谁」（goalThink），因为它要看登录用户配的是哪个引擎。
+const goalKit = require("./goal").createGoalEngine({ workspaceDir: getWorkspaceDir });
+const GOAL_MAX_ROUNDS = goalKit.MAX_ROUNDS;
 
 /**
  * 把一次调用（或 agent 返回的一整轮）的用量并进本次任务的总账。
@@ -550,64 +579,18 @@ async function goalThink(sessLLM, { system, prompt, timeoutMs, total }) {
   return r.text;
 }
 
-/** 把目标拆成 3~6 条可验收标准。失败就用目标原文当唯一标准，绝不让任务卡在拆解上 */
-async function deriveGoalCriteria(sessLLM, goalText, total, warn = () => {}) {
-  try {
-    const text = await goalThink(sessLLM, {
-      system: '你是验收标准拆解器。把用户的目标拆成 3~6 条具体、可客观核验的验收标准（每条都能对着成果文件/事实判真假，不写"尽量""良好"这种没法验收的词）。只输出 JSON：{"criteria":["标准1","标准2"]}，不要其它任何文字。',
-      prompt: String(goalText).slice(0, 2000),
-      timeoutMs: 60000,
-      total,
-    });
-    const j = parseJsonLoose(text);
-    const list = (j && Array.isArray(j.criteria) ? j.criteria : []).map((c) => String(c).trim()).filter(Boolean).slice(0, 6);
-    if (list.length) return list;
-    warn("拆不出验收标准（它没按格式回 JSON），这轮先拿目标原文当唯一标准");
-  } catch (e) {
-    // 吞掉异常等于让用户对着一张「1 项、永远不打勾」的目标卡发呆——留痕，让他知道是哪一步没成
-    warn("拆验收标准失败：" + String((e && e.message) || e).slice(0, 120) + "，先拿目标原文当唯一标准");
-  }
-  return [String(goalText).slice(0, 200)];
-}
-
-/** 对着验收标准验一轮。只认成果文件清单和收尾汇报，拿不准算 false；验收调用挂了就全部保持原状 */
-async function verifyGoal(sess, sessLLM, finalText, total, warn = () => {}) {
-  const goal = sess.goal;
-  const undone = goal.criteria.map((c, i) => ({ i, c })).filter((x) => !x.c.done);
-  if (!undone.length) return;
-  const snippets = goalFileSnippets(sess);
-  const checks = await goalFileChecks(sess);
-  try {
-    const text = await goalThink(sessLLM, {
-      system: '你是验收员。根据成果文件清单和执行汇报，逐条判断验收标准是否已达成。证据不足一律 false，宁可漏判不可错判。【自动体检】是机器实测结果（不是模型自述）：标 ✗ 的文件说明有语法错误或没写完整，涉及它的标准一律 false。只输出 JSON：{"results":[{"i":0,"done":true},{"i":1,"done":false}]}，i 是标准编号。',
-      prompt:
-        `【目标】${goal.text}\n\n【待验收标准】\n${undone.map((x) => `${x.i}. ${x.c.text}`).join("\n")}\n\n【成果文件清单】\n${goalFileInventory(sess)}\n\n` +
-        (snippets ? `【成果文件内容摘录】\n${snippets}\n\n` : "") +
-        (checks ? `【自动体检（机器实测）】\n${checks}\n\n` : "") +
-        `【执行汇报】\n${String(finalText || "（无）").slice(0, 3000)}`,
-      timeoutMs: 90000,
-      total,
-    });
-    const j = parseJsonLoose(text);
-    const results = j && Array.isArray(j.results) ? j.results : [];
-    if (!results.length) warn("验收员没按格式回话，这一轮的打勾全部保持原状（宁可漏判不可错判）");
-    for (const it of results) {
-      const c = goal.criteria[it.i];
-      if (c && it.done === true) c.done = true;
-    }
-  } catch (e) {
-    // 静默失败最坑：目标卡一直 0/N，用户以为是活没干好，其实是验收这一步根本没跑通
-    warn("验收没跑通：" + String((e && e.message) || e).slice(0, 120) + "，这一轮的打勾保持原状");
-  }
-  if (goal.criteria.every((c) => c.done)) goal.status = "done";
-}
+/**
+ * 把 goalThink 包成 goal.js 要的那个 think(\{system,prompt,timeoutMs\}) —— 用量记在这一趟任务的总账上。
+ * 拆出去之后这一层就是全部的粘合剂：goal.js 不认识 sessLLM、不认识引擎、也不记账。
+ */
+const goalThinkFor = (sessLLM, total) => (a) => goalThink(sessLLM, { ...a, total });
 
 /**
  * 把任务事件翻译成桌面宠物的表情。只认深度 0 的事件——专家子代理的动静太密，
- * 宠物跟着抽风反而看不出主线在干什么。纯 node 模式下 global.__wbPet 不存在，整个是空操作。
+ * 宠物跟着抽风反而看不出主线在干什么。纯 node 模式下 global.__openworkbuddyPet 不存在，整个是空操作。
  */
 function petSay(ev) {
-  const P = global.__wbPet;
+  const P = global.__openworkbuddyPet;
   if (!P) return;
   try {
     switch (ev.type) {
@@ -643,7 +626,7 @@ function recordingEmit(send, events, sessionId) {
       // 前端拿不到全量就不能判定谁没了——早先没这个标记，回放时每来一批就把上一批的产出
       // 全盖上「已删除」，用户看到的是四个文件全被划掉，其实一个都没删
       if (chg.length) events.push({ type: "files", changed: chg, files: (ev.files || []).filter((f) => chg.includes(f.name)), partial: true, root: ev.root });
-    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones", "trace"].includes(ev.type)) {
+    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones", "context", "trace"].includes(ev.type)) {
       // 工具事件盖个时间戳（send 已经发出去了，这里只影响存盘）：回放时轨迹条才算得出每步耗时
       if (ev.type === "tool_use" || ev.type === "tool_result") ev.at = ev.at || Date.now();
       events.push(ev);
@@ -660,6 +643,47 @@ const app = express();
 // 只堵一头都会留下半扇门）。全仓路由注册和前端请求本来就全小写，打开这个开关不改变任何现有行为。
 app.set("case sensitive routing", true);
 app.use(express.json({ limit: "60mb" }));
+
+/**
+ * 几条响应头。本来这东西跑在本机没人惦记，但只要往 VPS 上一放就是公网服务了。
+ *
+ * - no-referrer：配对码是从 ?pair= 进来的。带 Referer 的话，这一页上任何一个外链
+ *   （AI 生成的网页里随便一个 <a>）都会把整条地址、连着那串码一起送到对面站点去。
+ * - nosniff：/api/files 那条路会把用户自己的文件原样吐出来。不关嗅探的话，
+ *   一个存成 .txt 的 html 会被浏览器当页面执行，那就是同源下的 XSS。
+ * - SAMEORIGIN：别人用 iframe 套住这一页骗点击（点的是「删除」，他看见的是「领奖」）。
+ * - base-uri/form-action：真出了 XSS 时，这两条能拦住最顺手的那两种偷法。
+ *
+ * 没上完整 CSP 是故意的：预览 AI 生成的网页用的是 blob: iframe，而 blob: 会继承
+ * 这一页的 CSP。加上 script-src/connect-src，生成的网页里引个图表库就白屏了——
+ * 那是主线功能。iframe 那边已经用 sandbox 隔成独立源，先靠它。
+ */
+app.use((req, res, next) => {
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Content-Security-Policy", "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'");
+  next();
+});
+/**
+ * 静态文本先压再发，摆在 express.static 前面。
+ *
+ * 首屏那 1.9 MB（HTML + 八个 app-0*.js + i18n 词典 + JointJS + Dagre）全是文本，
+ * 压完只剩三成。本机上差别看不出来，走隧道或者手机流量上来的人差十几秒。
+ * vendor 那两个不在 public 底下，得单独把前缀指过去——它们俩加起来 558 KB，
+ * 恰恰是首屏里最大的一块，漏了等于白做。
+ */
+app.use(staticCompress([
+  { prefix: "/", dir: appPath("public") },
+  { prefix: "/vendor/joint/", dir: appPath("node_modules/@joint/core/dist") },
+  { prefix: "/vendor/dagre/", dir: appPath("node_modules/@dagrejs/dagre/dist") },
+]));
+/**
+ * 动态 JSON 也压。上面那层只碰磁盘文件，而这台服务器上最大的一个响应恰恰是动态的：
+ * GET /api/session/:id 实测 936 KB（brotli 后 189 KB），用户每切一次任务就下一遍。
+ * 只包 res.json，SSE 走的是 res.write，结构上够不着——理由写在 json-compress.js 开头。
+ */
+app.use(jsonCompress());
 app.use(express.static(appPath("public")));
 // JointJS 是短剧画布的开源底座。它从 node_modules 原样提供给前端，
 // 不复制、不改写 vendor 源码；这样开发态、桌面包和离线模式使用的是同一份 MPL-2.0 文件。
@@ -679,12 +703,21 @@ app.get("/vendor/dagre/LICENSE", (_req, res) => {
 /**
  * 「这个端口上应答的是谁」——唯一一个不需要登录的接口。
  *
- * `wb doctor` 要靠它把两件意思完全相反的事分开：3800 被占着，占的是 OpenWorkBuddy 自己
- * （那叫「已经开着」），还是别的程序（那才要去处理）。不分的话，每个正常使用中的用户
- * 跑一次体检都会看到一条红色告警，看两次就再也不信这个工具了。
+ * 两个地方指着它，问的是同一件事「3800 上应答的是不是我自己」：
+ *   1）`openworkbuddy doctor`：端口被占着，占的是 OpenWorkBuddy 自己（那叫「已经开着」），
+ *      还是别的程序（那才要去处理）。不分的话，每个正常使用中的用户跑一次体检都会看到
+ *      一条红色告警，看两次就再也不信这个工具了。
+ *   2）桌面壳的 listenWithFallback：少了它，壳只能把窗口指给任何一个会应答的服务，
+ *      用户看到的是个陌生页面。
  *
  * 只回应用名和版本号——登录页上本来就写着这两样，不多泄露任何东西。
- * 位置必须在 authGuard 前面：要认的恰恰是「还没登录的那台机器」。
+ * 免登录有两把锁，各自独立：这一行在 authGuard **前面**，account.js 的 PUBLIC_API 里也列着它
+ * （那段注释在 account.js 里写着）。拆掉任意一把都还能应答，两把一起没了才会回 401——
+ * 那时候壳把自己人当成陌生人，转头换个口又起一台。
+ *
+ * 只许注册一次。原先这个文件里有一模一样的第二处，在 authGuard 后面；Express 只派给先注册的
+ * 那个，那份从来没被走到过。真正的危险是有人清理时留后删前——接口悄悄挪到闸后头，当时看着还好
+ * （PUBLIC_API 兜着），等哪天有人顺手精简那个 Set，doctor 和壳就一起瞎掉。test/remote.js 盯着这两件事。
  */
 app.get("/api/ping", (_req, res) => {
   res.json({ app: "openworkbuddy", version: require("./package.json").version });
@@ -712,10 +745,86 @@ app.use(
     },
   })
 );
+/**
+ * 企业加装包。
+ *
+ * 开源版**只留口子，不留实现**。SSO / 目录同步、审计外送 SIEM、离线许可证、高可用、
+ * 白标这几样归商业授权，将来住在私有仓库 openworkbuddy-enterprise 里，以一个 npm 包装上来。
+ * 线是怎么划的见 docs/开源与商业版边界.md。
+ *
+ * 为什么包还不存在就先把口子留出来：没有口子，将来接企业版只能去改主干，
+ * 那意味着**每次都要两边同步 diff**；有了口子，企业版永远是加法——
+ * 装了就多几条路由，没装就当它不存在。
+ *
+ * 这里刻意**不做**三件事（做了这就成了「阉割版」，那是开源项目最招人烦的东西）：
+ *   · 不因为没装而画灰按钮、弹「升级解锁」、写「此功能需企业版」；
+ *   · 不因为没装而少给任何一样现在有的能力；
+ *   · 不探测、不上报「这台装没装」。
+ * 没装的唯一表现就是：这几行什么也没干。
+ */
+const enterprise = (() => {
+  let entry = null;
+  try {
+    entry = require.resolve("@openworkbuddy/enterprise");
+  } catch {
+    return null; // 没装。这是**正常状态**不是错误，一个字都不该往日志里写
+  }
+  try {
+    return require(entry);
+  } catch (e) {
+    // 装了却加载不起来是真事故（版本对不上、依赖缺了）。必须吵出来，
+    // 否则客户拿到的是一台「企业功能静悄悄失踪」的服务器，这种最难查。
+    // 先 resolve 探、再 require 载，就是为了把这一档和「没装」彻底分开：
+    // 光看 MODULE_NOT_FOUND 分不开——企业包自己缺个依赖，报的也是这个码。
+    console.error("[enterprise] 加装包装上了，但加载失败：", (e && e.stack) || e);
+    return null;
+  }
+})();
+// deps 是**传**进去的不是让它 require 的，跟下面 createAdminRouter 一个形状——
+// 企业包不去猜开源版的目录结构，我们内部怎么重构都不会把它碰散。
+const relay = require("./relay");
+// 中转站那条路自己的防连打闸：60 次撞门就歇一会儿。跟登录那把分开计数，
+// 不然一个刷 Key 的脚本会把正常同事的登录一起锁死。
+const relayLimiter = account.createLimiter();
+
+const entDeps = { org, account, security, config, admin };
+/**
+ * 第一个口子：**认证之前**。
+ *
+ * 这一档是给 SSO 回调用的（SAML 的 ACS、OIDC 的 redirect_uri、以及离线许可证校验）。
+ * 这些请求按定义就是**还没登录**的那一个——身份正是它们要带回来的东西。
+ * 挂在 authGuard 后面的话，IdP 打回来的那一跳会被自己人挡在门外，SSO 根本走不通。
+ *
+ * 所以这里是**窄门**，不是后门：企业包该只把回调这类路由放进来，别的一律走下面那个。
+ * 名字分成两个就是为了让这件事在调用处一眼看得见——`mount` 是安全的默认，
+ * 想要免登录得**显式**写 `mountPublic`，手滑写不出这种口子。
+ */
+if (enterprise && typeof enterprise.mountPublic === "function") {
+  enterprise.mountPublic(app, entDeps);
+}
+/**
+ * 第二个口子：**API 中转站**，也在认证之前。
+ *
+ * 它的身份不是 cookie，是 Authorization 头里那把我们自己发的虚拟 Key
+ * （owb-sk-…，见 vkeys.js）。挂在 authGuard 后面的话，每个请求都会被「未登录」挡掉，
+ * 而业务方那边用的是 openai 官方 SDK——它根本没有 cookie 这个概念。
+ *
+ * 这不是一个敞开的口子：relay.js 里第一件事就是验 Key，验不过一律 401，
+ * 而且带着自己的防连打闸（跟登录用的是同一个 createLimiter）。
+ * 路径前缀是 /v1/，跟整个 /api/ 不重叠，不会误放行任何一条内部接口。
+ */
+app.use(relay.createRouter({
+  config: () => config,
+  orgSettings: (id) => org.settingsOf(org.getOrg(id)),
+  user: account.billingUser,
+  clientIp: account.clientIp,
+  limiter: relayLimiter,
+}));
+
 app.use(account.authGuard); // 其余 /api/* 与 /im/*（除外部回调）需要登录
 
 // 租户工作目录 → 服务器级接口的闸 → 凭证脱敏。三段的说明都在 admin.js 里
-app.use(admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir }));
+app.use(admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config }));
 app.use(admin.platformGuard);
 app.use(admin.redactGuard);
 const ownsGlobalWorkspace = admin.ownsGlobalWorkspace;
@@ -724,6 +833,17 @@ const ownsGlobalWorkspace = admin.ownsGlobalWorkspace;
  * 用户看到的是一颗明明能点的按钮点了没反应，只能自己去猜是不是坏了。
  */
 const isPlatformOwner = (req) => admin.isSoloDesktop() || ownsGlobalWorkspace(req && req.user);
+/**
+ * 「能不能从网页/手机操控终端里正在跑的任务」。两个条件都要满足：
+ *   ① 你得是这台机器的主人（原来就有的那道闸，租户看不见别人电脑里在跑什么）
+ *   ② 组织后台把 remote_control 打开了（**默认关**，见 org.js）
+ * 分开两道是因为它们防的不是一件事：①防的是别人，②防的是「我自己没想开着这个口子」。
+ */
+const canRemoteControl = (req) => isPlatformOwner(req) && account.remoteAllowed("remote_control", req && req.user);
+/** 拒绝的理由分清楚：是「你不是主人」还是「这台机器把远程操控关了」。混成一句话，用户不知道该去哪儿改 */
+const cliOffReason = (req, verb) => isPlatformOwner(req)
+  ? `这台机器关掉了「允许远程操控终端任务」，去 企业管理后台 → 客户端安全 打开`
+  : `终端里的任务只有这台机器的主人${verb}`;
 
 // 企业管理后台 /api/admin/*：自带 adminGuard（管理员+审计员可看，只有管理员能改）
 app.use(
@@ -731,14 +851,48 @@ app.use(
     // 付费 API 那一页要判「这一路配没配 Key」。传函数而不是传 config 本身：
     // config 是活的（设置页存一次就整体替换），传引用会让后台一直看着一份旧快照
     readConfig: () => config,
+    // 中转站那一页要改价目表（config.prices）。跟 im.js 一个形状：存盘这件事只有 server 会做，
+    // admin.js 不去猜 config.json 在哪、也不重复实现一遍原子写
+    saveConfig: () => saveConfig(),
     // 「这个组织的成果目录占了多大」——直接数当前请求这条链上的根，跨租户不会串
     orgUsage: () => {
       const fs2 = outputFiles();
       const list = Array.isArray(fs2) ? fs2 : fs2.files || [];
       return { files: list.length, bytes: list.reduce((n, f) => n + (f.size || 0), 0) };
     },
+    /**
+     * 办离职时把这个人正在跑的任务掐断，返回掐了几个。
+     *
+     * 为什么非得掐：停用只挡住**下一次**请求。已经跑起来的那一趟在自己的循环里，
+     * 手上攥着工具权限，还在读文件、还在调模型、还在往他的通知渠道推结果——
+     * 一趟深度任务能跑十几分钟，足够他走到楼下了。
+     */
+    stopRunsOf: (username) => {
+      let n = 0;
+      for (const [sid, run] of activeRuns) {
+        const sess = sessions.get(sid);
+        if (!sess || sess.user !== username) continue;
+        try { run.ctrl.abort(); n++; } catch {}
+      }
+      return n;
+    },
   })
 );
+
+/**
+ * 第二个口子：**认证之后**，也过完了租户隔离和凭证脱敏那几道。
+ * 企业包绝大部分东西（审计外送、白标设置、目录同步的管理面）都该走这儿——
+ * 进到这里的请求，req.user 已经有了，租户的根也已经绑好了。
+ *
+ * mount 故意**不**包 try：要不要「加载失败就别让服务起来」（比如 SSO 没挂上就不该
+ * 悄悄退回密码登录）是企业包自己的判断——它 throw 就是 fail-closed，不 throw 就照常起。
+ * 开源版不替它做这个决定，也就不该把它的 throw 吃掉。
+ */
+if (enterprise && typeof enterprise.mount === "function") {
+  enterprise.mount(app, entDeps);
+}
+
+
 
 /**
  * 会话归属。会话文件是按 id 存的，接口只要拿到 id 就给内容——同一台服务器上的另一个账号
@@ -775,15 +929,6 @@ function guardRun(req, res, id) {
 
 let runtime; // MCP 启动后创建
 
-/**
- * 身份签名。端口被占的时候，靠这一行区分「另一台 OpenWorkBuddy」和「别的程序」——
- * 少了它，壳只能把窗口指给任何一个会应答的服务，用户看到的是个陌生页面（详见 listenWithFallback）。
- * 只回名字和版本，不带任何配置和数据，所以在 account.js 的 PUBLIC_API 里放行，不要求登录。
- */
-app.get("/api/ping", (_req, res) => {
-  res.json({ app: "openworkbuddy", version: require("./package.json").version });
-});
-
 app.get("/api/info", (_req, res) => {
   res.json({
     app: "openworkbuddy",
@@ -809,13 +954,449 @@ app.get("/api/files", (_req, res) => res.json(outputFiles()));
 // 无限画布的项目内状态：浏览器负责渲染，Agent 通过 canvas_manage 工具改同一份 JSON。
 // 不把它放到 localStorage 作为唯一真源，否则 Agent 改完节点浏览器永远看不到。
 app.get("/api/canvas/list", (_req, res) => res.json({ canvases: canvasList() }));
+
+/**
+ * 短剧素材台账。
+ *
+ * 用户的原话是「做好素材管理」。做短剧的素材不是一堆文件，是一张关系表：
+ * 这张图是谁的定妆照、那段视频是第几镜、这条配音配的哪句台词、哪张图根本没人用、
+ * 哪一镜引用的文件已经不在盘上了。光给一个文件列表解决不了任何一个上面的问题。
+ *
+ * 所以这里做三件事：
+ *   ① 从工作区挑出媒体文件，按 short-drama 技能的命名规矩认出它是什么
+ *      （角色_*.png = 定妆照、镜头_*_首帧.* = 首帧、镜头_*.mp4 = 成片镜头、配音_*.* = 配音）；
+ *   ② 把画布节点和分镜表里所有指向文件的字段摊平，算出「谁在用这个文件」；
+ *   ③ 反过来标出两种病：**引用了但盘上没有**（镜头永远生不出来，最该先看的一类），
+ *      和**在盘上但没人用**（多半是重跑留下的旧版本，占地方，也容易选错）。
+ *
+ * 只读，不动任何文件。要删要改是用户的事，这里只负责把事实摆清楚。
+ */
+const ASSET_KINDS = { image: /\.(png|jpe?g|webp|gif|bmp|avif)$/i, video: /\.(mp4|mov|webm|m4v|mkv)$/i, audio: /\.(mp3|wav|m4a|aac|flac|ogg)$/i };
+/** 画布节点和分镜表里，这些字段装的是文件路径 */
+// reference 这一条是补上的：角色节点的定妆照就落在 reference 里。少了它，定妆照会被算成
+// 「没人用」——而「没人用」这一栏在界面上是加粗的、旁边还写着「多半是重跑留下的旧版本，占地方」，
+// 等于指着这部戏最要命的几张图叫人删。文件删了，后面每一镜的脸都会开始换人。
+const ASSET_REF_KEYS = ["path", "url", "first_frame", "last_frame", "video", "audio", "image", "reference", "ref", "voice_file", "file"];
+
+function assetKindOf(name) {
+  for (const [kind, re] of Object.entries(ASSET_KINDS)) if (re.test(name)) return kind;
+  return "";
+}
+/** 按 short-drama 技能的命名规矩认用途。认不出就是「其他」，不猜 */
+function assetRoleOf(base) {
+  if (/^(角色|定妆)[_\-]/.test(base)) return "定妆照";
+  if (/首帧/.test(base)) return "首帧";
+  if (/^配音[_\-]/.test(base)) return "配音";
+  if (/^镜头[_\-]/.test(base)) return "镜头";
+  if (/^(场景|背景)[_\-]/.test(base)) return "场景图";
+  return "其他";
+}
+function assetBase(p) { return String(p || "").split(/[\\/]/).pop() || ""; }
+
+/** 把一个 payload 里所有指向文件的值摘出来。数组和一层嵌套也要看，引用列表就藏在那儿 */
+function assetRefsIn(payload, out) {
+  if (!payload || typeof payload !== "object") return;
+  for (const key of ASSET_REF_KEYS) {
+    const v = payload[key];
+    if (typeof v === "string" && v.trim()) out.add(v.trim());
+  }
+  for (const v of Object.values(payload)) {
+    if (Array.isArray(v)) for (const item of v) { if (typeof item === "string" && /\.[a-z0-9]{2,5}$/i.test(item)) out.add(item.trim()); else assetRefsIn(item, out); }
+  }
+}
+
+app.get("/api/canvas/assets", (req, res) => {
+  try {
+    const name = String(req.query.name || "").trim();
+    // 谁在用：画布节点一份，分镜表一份。分镜表才是短剧的真源，
+    // 画布上没画出来的镜头，它的首帧照样是「有人在用」的
+    const users = new Map();   // 文件名(basename) → [{ from, id, title }]
+    const noteUse = (ref, use) => {
+      const base = assetBase(ref);
+      if (!base) return;
+      const list = users.get(base) || [];
+      if (!list.some((u) => u.from === use.from && u.id === use.id)) list.push(use);
+      users.set(base, list);
+    };
+    let boardUnreadable = "";
+    try {
+      const state = canvasReadState(name || undefined, {});
+      for (const node of state.nodes || []) {
+        const refs = new Set();
+        assetRefsIn(node.payload, refs);
+        for (const r of refs) noteUse(r, { from: "画布", id: String(node.id || ""), title: String((node.payload && (node.payload.title || node.payload.name || node.payload.id)) || node.kind || "节点"), kind: String(node.kind || "") });
+      }
+    } catch (e) { boardUnreadable = e.message; }   // 画布坏了不该连素材台账一起看不了
+
+    const boards = [];
+    for (const f of outputFiles()) {
+      if (!/(?:分镜表|storyboard|shotlist)[^/]*\.json$/i.test(f.name)) continue;
+      try {
+        const r = readDramaJson(f.name);
+        boards.push(r.rel);
+        for (const c of Array.isArray(r.data.characters) ? r.data.characters : []) {
+          const refs = new Set(); assetRefsIn(c, refs);
+          for (const x of refs) noteUse(x, { from: "分镜表", id: String(c.id || c.name || ""), title: `角色 ${c.name || c.id || ""}`.trim(), kind: "character" });
+        }
+        for (const scene of Array.isArray(r.data.scenes) ? r.data.scenes : []) {
+          for (const [i, shot] of (Array.isArray(scene.shots) ? scene.shots : []).entries()) {
+            const sid = String(shot.id || `${scene.id || "S"}-${String(i + 1).padStart(2, "0")}`);
+            const refs = new Set(); assetRefsIn(shot, refs);
+            for (const x of refs) noteUse(x, { from: "分镜表", id: sid, title: `镜头 ${sid}`, kind: "shot" });
+          }
+        }
+      } catch {}
+    }
+
+    const files = outputFiles();
+    const onDisk = new Set(files.map((f) => assetBase(f.name)));
+    const assets = [];
+    for (const f of files) {
+      const kind = assetKindOf(f.name);
+      if (!kind) continue;
+      const base = assetBase(f.name);
+      const usedBy = users.get(base) || [];
+      assets.push({ name: f.name, base, kind, role: assetRoleOf(base), size: f.size, mtime: f.mtime, dup_of: f.dup_of || undefined, usedBy, orphan: usedBy.length === 0 });
+    }
+    // 引用了但盘上没有的。这类最要紧：那一镜现在就是生不出来的，而文件列表里永远看不见它
+    const missing = [];
+    for (const [base, usedBy] of users) {
+      if (onDisk.has(base)) continue;
+      if (!assetKindOf(base)) continue;      // 引用的不是媒体文件（分镜表 JSON 之类），不归这儿管
+      missing.push({ base, usedBy });
+    }
+    assets.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
+    res.json({
+      assets, missing, boards, ...(boardUnreadable ? { boardUnreadable } : {}),
+      stat: {
+        total: assets.length, orphan: assets.filter((a) => a.orphan).length, missing: missing.length,
+        bytes: assets.reduce((n, a) => n + (a.size || 0), 0),
+        byKind: { image: assets.filter((a) => a.kind === "image").length, video: assets.filter((a) => a.kind === "video").length, audio: assets.filter((a) => a.kind === "audio").length },
+      },
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+/**
+ * 短剧制片进度。素材台账回答「这个文件谁在用」，这里回答「这部戏做到哪了、卡在哪、还剩多少活儿」。
+ *
+ * 判定放在 drama-pipeline.js（纯函数、可单测），这一层只负责两件事：把画布读出来，
+ * 以及告诉它**哪些文件真的在盘上**——「字段里写着 first_frame」和「首帧真的存在」是两回事，
+ * 后者才是能不能往下走的依据。画布读不出来不 500：进度看不了是小事，
+ * 但顺手把界面打成白板才是真事故（跟 /api/canvas/assets 一个道理）。
+ */
+app.get("/api/canvas/progress", (req, res) => {
+  try {
+    const name = String(req.query.name || "").trim();
+    let state = { nodes: [], edges: [] }, boardUnreadable = "";
+    try { state = canvasReadState(name || undefined, {}); } catch (e) { boardUnreadable = e.message; }
+    const onDisk = new Set(outputFiles().map((f) => assetBase(f.name)));
+    const data = dramaPipeline.dramaProgress(state, { onDisk });
+    res.json({ ...data, ...(boardUnreadable ? { boardUnreadable } : {}) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+/**
+ * 短剧成片：把画布上的镜头真的拼成一条片子。
+ *
+ * 在这之前，「最终剪辑」节点按下去只是往对话框里塞一句「请……给出可执行方案」——
+ * 于是这条产线的最后一步是模型临场发挥：顺序可能排错、配音可能被 -shortest 切掉、
+ * 也可能干脆在 concat 那一下撞上 `command not found: ffmpeg`，而那时候钱已经全花完了。
+ *
+ * 这里把这一步收成确定性的：顺序由 drama-compose.js 算（纯函数、可单测），
+ * 命令由它拼好，这一层只负责三件真会碰外部世界的事：
+ *   ① 探：ffmpeg / ffprobe 在不在，每个镜头的视频真实时长和画幅是多少；
+ *   ② 跑：一条一条 spawn，跑到哪、跑了多久、失败了 ffmpeg 自己说了什么，全都记下来；
+ *   ③ 认账：成片真的落在盘上（存在 + 有字节）才把路径写回画布的剪辑节点。
+ *      「字段里写着路径」不等于「文件在盘上」——这条规矩在进度那边就已经吃过亏了。
+ * 失败一律说清楚缺什么：缺 ffmpeg 就连装法一起给，别让人对着英文报错猜。
+ */
+const composeJobs = new Map();          // id → 这一次合成跑到哪了
+let composeBusy = "";                   // 同时只让跑一条：ffmpeg 是吃满 CPU 的，两条一起跑只会都慢
+
+const composeFilterCache = new Map();   // ffmpeg 路径 → 这台机器的 ffmpeg 带了哪些滤镜
+/**
+ * 这台机器的 ffmpeg 带了哪些滤镜。
+ *
+ * 值得单探一次：Homebrew 的 ffmpeg 就有不带 libass 的版本，而「烧字幕」「混配乐」都是**最后几条命令**——
+ * 不先探，就要等三十个镜头全拼完，才在最后一步撞上一句英文报错。探一次几十毫秒，缓存住。
+ * 原来这里只探 subtitles 一个，加配乐的时候才发现：探一个和探一串是同一条命令，
+ * 差别只在 grep 什么，所以干脆把整张表拿回来。
+ */
+async function composeFilterSet(bin) {
+  if (!bin) return new Set();
+  if (composeFilterCache.has(bin)) return composeFilterCache.get(bin);
+  const set = await new Promise((resolve) => {
+    require("child_process").execFile(bin, ["-hide_banner", "-filters"], { timeout: 15000, maxBuffer: 1 << 22 }, (err, stdout) => {
+      const out = new Set();
+      if (!err) for (const m of String(stdout || "").matchAll(/^\s*[TSC.]+\s+(\S+)\s/gm)) out.add(m[1]);
+      resolve(out);
+    });
+  });
+  composeFilterCache.set(bin, set);
+  return set;
+}
+
+async function composeBins() {
+  const { resolveBin } = require("./engines/which");
+  const { knownTool } = require("./doctor");
+  let ffmpeg = "", ffprobe = "";
+  try { ffmpeg = (await resolveBin("ffmpeg")).bin || ""; } catch {}
+  try { ffprobe = (await resolveBin("ffprobe")).bin || ""; } catch {}
+  const filters = await composeFilterSet(ffmpeg);
+  return {
+    ffmpeg, ffprobe, install: (knownTool("ffmpeg") || {}).install || "",
+    burn: filters.has("subtitles"),
+    duck: filters.has("sidechaincompress"),   // 说话的时候把配乐自动压下去
+    limiter: filters.has("alimiter"),         // 混完限个幅，人声乘 2 之后不至于削顶
+  };
+}
+
+/** 探一个文件：多长、多大画幅、什么编码。探不到就返回 null——宁可没有，也不编一个 */
+function composeProbe(bin, cwd, rel) {
+  return new Promise((resolve) => {
+    if (!bin) return resolve(null);
+    require("child_process").execFile(bin, [
+      "-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,avg_frame_rate,pix_fmt:format=duration", "-of", "json", rel,
+    ], { cwd, timeout: 20000, maxBuffer: 1 << 20, env: { ...process.env, PATH: shellPath() } }, (err, stdout) => {
+      if (err) return resolve(null);
+      try {
+        const j = JSON.parse(stdout || "{}");
+        const v = (j.streams || []).find((s) => s.codec_type === "video") || null;
+        const fr = v && String(v.avg_frame_rate || "").split("/");
+        const fps = fr && fr.length === 2 && Number(fr[1]) ? Number(fr[0]) / Number(fr[1]) : 0;
+        resolve({
+          dur: Number((j.format || {}).duration) || 0,
+          w: v ? Number(v.width) || 0 : 0, h: v ? Number(v.height) || 0 : 0,
+          fps: Number.isFinite(fps) ? Math.round(fps) : 0, vcodec: v ? String(v.codec_name || "") : "",
+          // 帧率和像素格式也得探：这两样不一致，直拼出来是「退出码 0、文件也在、
+          // 就是时长少了大半截」——实测 30fps + 25fps 两段各 2 秒，拼出来只有 3.33 秒
+          pix: v ? String(v.pix_fmt || "") : "",
+        });
+      } catch { resolve(null); }
+    });
+  });
+}
+
+/** 把画布和盘上的事实凑齐，算出这次合成的计划。dry 跑和真跑走的是同一条，不会算出两份不一样的东西 */
+async function composeBuildPlan(name, want, music) {
+  const bins = await composeBins();
+  let state = { nodes: [], edges: [] }, boardUnreadable = "";
+  try { state = canvasReadState(name || undefined, {}); } catch (e) { boardUnreadable = e.message; }
+  const list = outputFiles();
+  const files = new Map();
+  for (const f of list) { const b = assetBase(f.name); if (!files.has(b)) files.set(b, f.name); }
+  const onDisk = new Set(files.keys());
+  // 只探这张画布真用到的那几个文件。工作区里可能躺着几百个素材，挨个探是几十秒
+  const wanted = new Set();
+  for (const node of state.nodes || []) {
+    const p = node.payload || {};
+    // url/path/bgm 这几个是配乐那条路上的字段（声音节点的文件挂在 url/path 上）。
+    // 少探一个的后果不是报错，是配乐的淡出排不出来——而那种「有音乐但结尾硬切」没人会去查字段名
+    for (const key of ["video", "audio", "voice_file", "url", "path", "file", "bgm", "music", "bgm_file"]) {
+      const b = assetBase(p[key]); if (b && files.has(b)) wanted.add(files.get(b));
+    }
+  }
+  const probes = {};
+  const cwd = getWorkspaceDir();
+  for (const rel of wanted) { const r = await composeProbe(bins.ffprobe, cwd, rel); if (r) probes[assetBase(rel)] = r; }
+  const plan = dramaCompose.composePlan(state, {
+    files, onDisk, probes, ...bins,
+    subtitles: want == null ? null : !!want,
+    music: music == null ? null : !!music,
+  });
+  return { plan, bins, boardUnreadable };
+}
+
+/** 一条 ffmpeg 命令。stderr 全留着——出事的时候，ffmpeg 自己那句话比我们转述的准 */
+function composeRun(job, bin, cwd, argv, onChild) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const child = require("child_process").spawn(bin, argv, { cwd, env: { ...process.env, PATH: shellPath() } });
+    onChild(child);
+    let err = "";
+    child.stderr.on("data", (d) => { err = (err + d).slice(-8000); });
+    child.on("error", (e) => resolve({ ok: false, ms: Date.now() - started, err: `跑不起来：${e.message}` }));
+    child.on("close", (code, signal) => resolve({ ok: code === 0, code, signal, ms: Date.now() - started, err }));
+  });
+}
+
+/**
+ * 半截文件必须删掉。
+ * ffmpeg 被杀在半路、或者跑挂了，盘上多半已经躺着一个叫「成片.mp4」的东西——
+ * 文件名看着就是成片，点开是半截，而用户的文件列表里它跟真成片长得一模一样。
+ * 留着它比没有更危险。只删这一趟自己刚建的那个名字（名字是 freeName 挑的，开跑前盘上没有）。
+ */
+function composeDropPartial(cwd, rel, job) {
+  if (!rel) return;
+  try {
+    const p = path.join(cwd, rel);
+    if (!fs.existsSync(p)) return;
+    fs.unlinkSync(p);
+    job.log.push(`${rel} 只写了一半，已经删掉了——半截文件跟成片长得一样，留着迟早被当成成片发出去`);
+  } catch {}
+}
+
+async function composeExecute(job, plan, bin, name) {
+  const cwd = getWorkspaceDir();
+  fs.mkdirSync(path.join(cwd, plan.outputs.dir), { recursive: true });
+  for (let i = 0; i < plan.steps.length; i++) {
+    const step = plan.steps[i], slot = job.steps[i];
+    if (job.canceled) { slot.state = "skip"; continue; }
+    job.at = i + 1;
+    slot.state = "run";
+    // concat 的清单和字幕文件得在跑到那一步之前落盘。放在这儿而不是一开头：
+    // 前面哪一段没拼出来的话，清单里那一行指的就是个不存在的文件
+    try {
+      if (step.key === "concat") {
+        fs.writeFileSync(path.join(cwd, plan.outputs.list), plan.listText, "utf8");
+        // 字幕文件在这儿写，不在「烧字幕」那一步写：这台机器烧不了字幕的时候，
+        // 一份时间轴对得上的 .srt 照样要给出去——导进剪辑软件就是一行菜单的事
+        if (plan.srt && plan.outputs.srt) { fs.writeFileSync(path.join(cwd, plan.outputs.srt), plan.srt, "utf8"); job.subtitleFile = plan.outputs.srt; }
+      }
+    } catch (e) { slot.state = "fail"; slot.note = "写不进工作区：" + e.message; job.error = slot.note; job.done = true; return; }
+    let r = await composeRun(job, bin, cwd, step.argv, (c) => { job.child = c; });
+    if (!r.ok && step.fallback && !job.canceled) {
+      slot.note = step.fallbackWhy || "第一条路没走通，换一条再试";
+      job.log.push(`${slot.label}：${slot.note}`);
+      r = await composeRun(job, bin, cwd, step.fallback, (c) => { job.child = c; });
+      if (r.ok) slot.note += "（换过之后成了）";
+    }
+    job.child = null;
+    slot.ms = r.ms;
+    if (r.ok) {
+      // 退出码 0 也得看东西在不在：磁盘满、被杀在半路，ffmpeg 都可能留下一个 0 字节的壳
+      const out = path.join(cwd, step.out);
+      let size = 0; try { size = fs.statSync(out).size; } catch {}
+      if (!size) { slot.state = "fail"; slot.note = `ffmpeg 说成了，但 ${step.out} 没在盘上（或者是 0 字节）`; }
+      else { slot.state = "done"; slot.size = size; continue; }
+    } else if (job.canceled) { slot.state = "skip"; composeDropPartial(cwd, step.out, job); continue; }
+    else {
+      const tail = String(r.err || "").split("\n").filter((l) => l.trim()).slice(-4).join("\n");
+      slot.state = "fail";
+      slot.note = (r.signal ? `被中断（${r.signal}）` : `ffmpeg 退出码 ${r.code}`) + (tail ? "：" + tail : "");
+    }
+    composeDropPartial(cwd, step.out, job);
+    // 烧字幕失败不算这次合成失败：成片已经出来了，字幕文件也在，人能自己接着弄
+    if (step.optional) { job.log.push(`${slot.label}：${step.optionalWhy}`); slot.state = "skip"; continue; }
+    job.error = `${slot.label} 没成——${slot.note}`;
+    job.done = true;
+    return;
+  }
+  if (job.canceled) { job.error = "你叫停了，已经拼好的片段都留着，下次接着来不用重跑"; job.done = true; return; }
+
+  // ── 认账：文件真的在盘上，才敢说成片出来了，才敢写回画布
+  const film = path.join(cwd, plan.outputs.film);
+  let size = 0; try { size = fs.statSync(film).size; } catch {}
+  if (!size) { job.error = `每一步都跑完了，但 ${plan.outputs.film} 不在盘上——这次不算成片`; job.done = true; return; }
+  job.output = plan.outputs.film;
+  job.bytes = size;
+  const subbed = plan.outputs.subtitled;
+  if (subbed) { try { if (fs.statSync(path.join(cwd, subbed)).size > 0) job.subtitled = subbed; } catch {} }
+  try { job.wroteNode = composeWriteBack(name, plan, job); } catch (e) { job.log.push("成片好了，但写回画布没成：" + e.message); }
+  job.done = true;
+}
+
+/**
+ * 把成片挂回画布的「最终剪辑」节点。没有这个节点就补一个——
+ * 片子出来了却在画布上看不见，跟没出来差不多；而进度带那一档（成片）认的正是这个节点。
+ */
+function composeWriteBack(name, plan, job) {
+  const state = canvasReadState(name || undefined, {});
+  const patch = { video: job.output, ...(job.subtitled ? { subtitled: job.subtitled } : {}), ...(plan.outputs.srt && plan.srt ? { subtitle_file: plan.outputs.srt } : {}), shots: plan.shots.length, built_at: Date.now(), built_by: "画布一键合成" };
+  const hit = state.nodes.filter((n) => String(n.kind) === "timeline");
+  if (hit.length) { for (const n of hit) n.payload = { ...n.payload, ...patch }; }
+  else {
+    const xs = state.nodes.map((n) => Number(n.position && n.position.x) || 0);
+    const ys = state.nodes.map((n) => Number(n.position && n.position.y) || 0);
+    state.nodes.push({
+      id: "tl_" + Date.now().toString(36), kind: "timeline",
+      payload: { title: "最终剪辑", description: "画布一键合成出来的成片。", ...patch },
+      position: { x: (xs.length ? Math.max(...xs) : 0) + 520, y: ys.length ? Math.round(ys.reduce((a, b) => a + b, 0) / ys.length) : 0 },
+    });
+  }
+  canvasWriteState(state, name || undefined);
+  return hit.length ? "更新了剪辑节点" : "画布上补了一个剪辑节点";
+}
+
+function composeView(job) {
+  if (!job) return null;
+  const { child, ...rest } = job;
+  return { ...rest, running: !job.done };
+}
+
+app.post("/api/canvas/compose", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = String(body.name || "").trim();
+    if (body.cancel) {
+      const job = composeJobs.get(String(body.cancel));
+      if (!job || job.done) return res.json({ ok: true, job: composeView(job) });
+      job.canceled = true;
+      try { if (job.child) job.child.kill("SIGTERM"); } catch {}
+      return res.json({ ok: true, job: composeView(job) });
+    }
+    const { plan, bins, boardUnreadable } = await composeBuildPlan(name, body.subtitles, body.music);
+    if (!body.run) return res.json({ ok: true, plan, ...(boardUnreadable ? { boardUnreadable } : {}) });
+    if (!plan.ready) return res.status(400).json({ error: (plan.blockers.find((b) => b.level === "stop") || {}).text || "现在还合成不了", plan });
+    const running = composeJobs.get(composeBusy);
+    if (running && !running.done) return res.status(409).json({ error: "已经有一条在拼了，等它跑完或者先叫停", job: composeView(running) });
+    const id = "cmp" + Date.now().toString(36);
+    const job = {
+      id, name, at: 0, total: plan.steps.length, startedAt: Date.now(), done: false, canceled: false,
+      error: "", output: "", subtitled: "", subtitleFile: "", log: [], child: null,
+      steps: plan.steps.map((s) => ({ key: s.key, label: s.label, out: s.out, state: "wait", ms: 0, note: "" })),
+      outputs: plan.outputs, mode: plan.mode, etaMs: plan.etaMs,
+    };
+    composeJobs.set(id, job);
+    composeBusy = id;
+    // 只留最近几条。这是进度信息，不是账本
+    for (const key of [...composeJobs.keys()].slice(0, -5)) composeJobs.delete(key);
+    composeExecute(job, plan, bins.ffmpeg, name).catch((e) => { job.error = "合成中断：" + e.message; job.done = true; });
+    res.json({ ok: true, job: composeView(job), plan });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.get("/api/canvas/compose", async (req, res) => {
+  try {
+    const id = String(req.query.job || "").trim();
+    if (id) {
+      const job = composeJobs.get(id);
+      if (!job) return res.status(404).json({ error: "这条合成记录已经不在了（服务重启过，或者太久了）" });
+      return res.json({ ok: true, job: composeView(job) });
+    }
+    const running = [...composeJobs.values()].find((j) => !j.done);
+    res.json({ ok: true, job: composeView(running) || null });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 app.get("/api/canvas", (req, res) => {
   const name = String(req.query.name || "").trim();
-  res.json({ name: name || undefined, ...canvasReadState(name || undefined) });
+  try {
+    const lost = {};
+    const state = canvasReadState(name || undefined, lost);
+    res.json({ name: name || undefined, ...state, ...(Object.keys(lost).length ? { lost } : {}) });
+  } catch (e) {
+    // 读不出来就明说读不出来。以前这一层拿到的是一张空画布（tools 里一个 catch 全吞了），
+    // 界面照着画成白板，用户在白板上随手一动、自动保存一回，原文件就没了
+    // 这里绝不能带 nodes/edges。带了的话，只看 body 不看状态码的那条路就会把它当成
+    // 一张空画布——白板 + 自动保存，正好是这一整套防护要拦的那场事故
+    res.status(409).json({ error: e.message, unreadable: true });
+  }
 });
 app.put("/api/canvas", (req, res) => {
-  try { const body = req.body || {}; res.json({ ok: true, name: body.name || undefined, state: canvasWriteState(canvasNormalizeState(body.state || body), body.name || undefined) }); }
-  catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+  try {
+    const body = req.body || {};
+    const name = body.name || undefined;
+    // 盘上那份正读不出来的时候，绝不许覆盖。
+    // 少了这道闸，「打开 → 报错 → 界面照常自动存一次」这条路照样能把一个坏掉但还有救的
+    // 文件盖成空画布。真要盖，得用户自己说「就用我现在屏幕上这份」（force），
+    // 而那时候原件已经在 .坏了-*.bak 里躺着了
+    if (!body.force) {
+      try { canvasReadState(name); } catch (e) {
+        return res.status(409).json({ ok: false, unreadable: true, error: "盘上那份画布现在读不出来，所以没覆盖它：" + e.message });
+      }
+    }
+    res.json({ ok: true, name, state: canvasWriteState(canvasNormalizeState(body.state || body), name) });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 app.post("/api/canvas/boards", (req, res) => {
   try {
@@ -898,6 +1479,112 @@ app.put("/api/drama/storyboard", async (req, res) => {
     const p = safePath(rel);
     await fs.promises.writeFile(p, raw, "utf8");
     res.json({ ok: true, name: rel, summary: dramaSummary(rel, data, fs.statSync(p)) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/**
+ * 画布上生成出来的产物，回到分镜表里。
+ *
+ * 分镜表是唯一真源（技能里原话：「产物路径全部回写进分镜表——它是下次改一镜重跑的依据」），
+ * 可画布一直只读不写。在画布上把十二镜的首帧和视频全生出来之后，盘上那份分镜表还是空的。
+ * 后果不是「两个页面显示得不一样」，是钱和一致性：
+ *   · 短剧页每张卡片都还写着「暂无首帧」，人照着点「重跑首帧」——十二镜再买一遍
+ *     （那条路上 no_cache 是关着缓存的，一分钱都省不下）；
+ *   · 命令行和 Agent 那条「改一镜只重算一镜」读的也是这份 JSON，它看到的是一部什么都没开工的戏；
+ *   · 角色的定妆照落不进 characters[].ref，短剧页那头重跑首帧就没有参考图，人一镜一个样。
+ *
+ * 为什么不直接复用上面那条整份 PUT：
+ *   · 整份写回会把人在短剧页刚改的那几笔一起盖掉——画布这边手里是展开那一刻的旧副本；
+ *   · 十二镜几乎同时生完，就是十二次「读-改-写」互相踩，最后只剩一个字段活下来。
+ * 所以这条只认「哪一镜的哪个字段」，落盘的也只有那一个字段，读和写之间不许有 await
+ * （同步读同步写，两个请求就挤不进彼此中间）。
+ */
+/**
+ * 这条接口收哪些字段。分三档是因为它们的「空」不是一回事：
+ *   must   —— 必须非空。产物路径写成空串等于把已经买到手的东西抹掉；
+ *             shot_size / frame_prompt / motion_prompt 在 schema 里是 required，空着下一步根本没法跑。
+ *   text   —— 可以为空。台词空着就是无人声镜头，音色空着就是用设置里的默认音色。
+ *   number —— 时长。schema 里它是 number，写成字符串整份分镜表就不合法了，
+ *             下次读这份表的人会收到一句「这不是可识别的分镜表」。
+ *
+ * 为什么提示词也收进来：画布上改了一镜的提示词不回表，从命令行或短剧页重跑的还是老那句——
+ * 而且参数变了缓存命不中，等于花钱买一张**老提示词**的图，把刚才改好的那张盖掉。
+ * id 永远不在这儿：它是定位用的钥匙，改它得去分镜表里改。
+ */
+const DRAMA_OUTPUT_FIELDS = {
+  shot: {
+    first_frame: "must", last_frame: "must", video: "must", audio: "must",
+    shot_size: "must", frame_prompt: "must", motion_prompt: "must",
+    // note 是短剧页重跑那一格写的流水（「首帧已重跑」）。以前那里走的是整份 PUT，
+    // 写回去的是打开页面那一刻的副本——中间画布上生的十二笔会被这一次重跑连带抹掉
+    line: "text", speaker: "text", note: "text", duration: "number",
+    // cast 是画布上连出来的：连一根线多一个人。它不是装饰——这一镜出图时按 cast 去取谁的定妆照当参考图。
+    // 画布上连了两个人、表里还写着一个人，重跑这一镜只带一张参考图，第二个人当场换一张脸
+    cast: "list",
+  },
+  character: { ref: "must", name: "must", look: "must", voice: "text" },
+};
+app.post("/api/drama/storyboard/output", (req, res) => {
+  try {
+    const body = req.body || {};
+    const fields = body.fields && typeof body.fields === "object" && !Array.isArray(body.fields) ? body.fields : null;
+    if (!fields) return res.status(400).json({ error: "缺少要回写的 fields" });
+    const shotId = String(body.shot || "").trim(), charId = String(body.character || "").trim();
+    if (!shotId && !charId) return res.status(400).json({ error: "要回写到哪一镜或哪个角色：shot / character 至少给一个" });
+    if (shotId && charId) return res.status(400).json({ error: "shot 和 character 只能给一个" });
+    const target = shotId ? "shot" : "character";
+    const allowed = DRAMA_OUTPUT_FIELDS[target];
+    const keys = Object.keys(fields);
+    // 白名单外的字段直接退回，不是悄悄跳过：分镜表 schema 是 additionalProperties:false，
+    // 塞进一个它不认的字段，下一次读这份表的人会收到一句「这不是可识别的分镜表」
+    const rejected = keys.filter((k) => !allowed[k]);
+    if (rejected.length) return res.status(400).json({ error: "这条接口不收 " + target + " 上的这些字段：" + rejected.join("、") + "（镜头号和角色 id 是定位用的钥匙，要改去分镜表里改）" });
+    if (!keys.length) return res.status(400).json({ error: "fields 是空的，没有要回写的东西" });
+    for (const k of keys) {
+      const kind = allowed[k], v = fields[k];
+      if (kind === "number") {
+        // 类型错了不当场拦，整份分镜表就变成读不出来的了——错在这一笔，赔的是整部戏
+        if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return res.status(400).json({ error: k + " 要是一个大于 0 的秒数（分镜表里它是数字，写成字符串整份表就不合法了）" });
+      } else if (kind === "list") {
+        // 空数组是合法的：把角色线全拆了就是一个空镜。但里头混进一个空串或者数字，
+        // 整份分镜表就不合 schema 了（cast 是 string 数组），下次读这份表的人只会收到「这不是可识别的分镜表」
+        if (!Array.isArray(v)) return res.status(400).json({ error: k + " 要是一组角色 id（分镜表里它是数组）" });
+        if (v.length > 24) return res.status(400).json({ error: k + " 一镜里最多 24 个角色，收到 " + v.length + " 个（多半是连线连错了地方）" });
+        if (v.some((x) => typeof x !== "string" || !x.trim())) return res.status(400).json({ error: k + " 里有空的或者不是文字的角色 id" });
+        if (new Set(v).size !== v.length) return res.status(400).json({ error: k + " 里有重复的角色 id" });
+      } else if (typeof v !== "string") {
+        return res.status(400).json({ error: k + " 要是一段文字" });
+      } else if (kind === "must" && !v.trim()) {
+        return res.status(400).json({ error: k + " 不能是空的（产物路径清空等于把已经生出来的东西抹掉；景别和提示词空着下一步没法跑）" });
+      }
+    }
+
+    const r = readDramaJson(body.name);
+    const label = target === "shot" ? "镜头" : "角色";
+    const hits = [];
+    if (target === "shot") {
+      const wantScene = String(body.scene || "").trim();
+      for (const scene of r.data.scenes) {
+        if (wantScene && String((scene && scene.id) || "") !== wantScene) continue;
+        for (const shot of (Array.isArray(scene && scene.shots) ? scene.shots : [])) {
+          if (shot && typeof shot === "object" && String(shot.id || "") === shotId) hits.push(shot);
+        }
+      }
+    } else {
+      for (const c of (Array.isArray(r.data.characters) ? r.data.characters : [])) {
+        if (c && typeof c === "object" && (String(c.id || "") === charId || String(c.name || "") === charId)) hits.push(c);
+      }
+    }
+    // 查无此镜就当场说，别静悄悄成功：画布上写着文件路径、分镜表里一个字没有，
+    // 这种「两边都不报错的分家」要等到下次重跑白花一次钱才看得出来
+    if (!hits.length) return res.status(404).json({ error: "分镜表 " + r.rel + " 里没有" + label + " " + (shotId || charId) + "——它多半是被改名或删掉了，画布上这个节点已经指不着真源了" });
+    if (hits.length > 1) return res.status(409).json({ error: "分镜表 " + r.rel + " 里有 " + hits.length + " 个" + label + "都叫 " + (shotId || charId) + "，不替你猜是哪一个——先把重复的编号改掉" });
+
+    Object.assign(hits[0], fields);
+    const raw = JSON.stringify(r.data, null, 2) + "\n";
+    if (Buffer.byteLength(raw) > DRAMA_JSON_MAX) return res.status(400).json({ error: "分镜表超过 4MB 上限" });
+    fs.writeFileSync(r.p, raw, "utf8");
+    res.json({ ok: true, name: r.rel, target, id: shotId || charId, fields });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
@@ -1007,6 +1694,10 @@ function maskMedia(media, owner) {
   return out;
 }
 
+// 升级整理做了什么。动过用户的文件就必须让他知道，而且要说清搬到哪儿了、原件还在。
+// 界面看过一次就记下 id，不再打扰；这里不存「看过没有」，那是每台机器自己的事
+app.get("/api/migrations", (_req, res) => res.json({ notes: global.__wbMigrationNotes || [] }));
+
 app.get("/api/settings", (req, res) => {
   // 个人偏好压在全局配置上面。没有个人偏好文件时这几个 *Cfg 原样返回 config 的那一份
   const myAgent = prefs.agentCfg(config);
@@ -1061,7 +1752,7 @@ app.get("/api/settings", (req, res) => {
       // 本机装了哪些精灵图宠物（~/.codex/pets、~/.petdex/pets、data/pets）。
       // 扫的是文件头不是整张图，几毫秒的事，跟设置一起返回省一次往返。
       sprites: petSprites.scanPets().map((x) => ({ id: x.id, name: x.displayName, source: x.source, ok: x.ok, why: x.why })),
-      available: !!global.__wbPet, // 纯 node 模式没有桌面窗口，前端要如实说明
+      available: !!global.__openworkbuddyPet, // 纯 node 模式没有桌面窗口，前端要如实说明
     },
     persona: config.persona || "",
     assistant: config.assistant,
@@ -1241,6 +1932,11 @@ app.post("/api/settings", (req, res) => {
       config.active_model = b.active_model;
     }
     if (typeof b.model_follow_last === "boolean") config.model_follow_last = b.model_follow_last;
+    // 内网模式。这是整台机器的网络事实，不是谁的偏好，所以走服务器级这一支（prefs.split
+    // 的个人项是白名单，认不出的键一律算服务器级，非管理员改会拿到 403）。
+    // 它只负责「据实相告」：把连不上的连接器标出来、GitHub 装技能当场拒掉，
+    // 不动任何已经配好的东西——万一判断错了，用户自己关掉就全恢复。
+    if (typeof b.intranet === "boolean") config.intranet = b.intranet;
     if (b.agent) {
       if (b.agent.max_steps) config.agent.max_steps = Math.max(1, Math.min(100, +b.agent.max_steps));
       if (b.agent.tool_timeout_ms) config.agent.tool_timeout_ms = Math.max(5000, +b.agent.tool_timeout_ms);
@@ -1307,7 +2003,7 @@ app.post("/api/settings", (req, res) => {
       config.pet.character = nextChar;
       if (b.pet.scale !== undefined) config.pet.scale = Math.max(0.6, Math.min(2, Number(b.pet.scale) || pet.DEFAULT_SCALE));
       if (b.pet.opacity !== undefined) config.pet.opacity = Math.max(0.25, Math.min(1, Number(b.pet.opacity) || 1));
-      if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
+      if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
     }
     if (b.evolve) {
       config.evolve = config.evolve || {};
@@ -1434,6 +2130,13 @@ app.post("/api/settings", (req, res) => {
       for (const k of ["file_whitelist", "file_blacklist", "cmd_allow", "cmd_ask", "url_whitelist", "url_blacklist"]) {
         if (Array.isArray(b.security[k])) sec[k] = b.security[k].map((s) => String(s)).filter((s) => s.trim()).slice(0, 100);
       }
+      // 外挂的第二把尺子：auto / advisory / off 三挡，别的值一律当没填过（默认 auto）
+      if (b.security.toolward !== undefined) {
+        const m = String(b.security.toolward || "").toLowerCase();
+        sec.toolward = ["auto", "advisory", "off"].includes(m) ? m : security.DEFAULTS.toolward;
+      }
+      // 指死一个可执行文件的路径。这是条会被执行的路径，长度掐住，别让它变成往配置里塞东西的口子
+      if (b.security.toolward_bin !== undefined) sec.toolward_bin = String(b.security.toolward_bin || "").trim().slice(0, 500);
     }
     if (b.langfuse && typeof b.langfuse === "object") {
       const cur = config.langfuse || (config.langfuse = { enabled: false, host: "https://cloud.langfuse.com", public_key: "", secret_key: "" });
@@ -1530,6 +2233,60 @@ app.delete("/api/traces", (req, res) => {
   if (traceOwnerOnly(req, res)) return;
   try { tracing.getTracer(config).clearLocalTraces(); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---------- 系统日志 / 指标 / 告警 ----------
+// 跟 Trace 一样锁平台管理员，理由也一样：这几本账都是**整台机器一份**的。
+// 日志里带着别人的登录名、会话 id、报错原文；指标里带着别人的 token 花销和任务量。
+// 多人共用一台服务器时，放开给成员看等于把同事干了什么摊开。
+const opsOwnerOnly = (req, res) => {
+  if (isPlatformOwner(req)) return false;
+  res.status(403).json({ error: "系统日志和运行指标是整台机器一份的，归平台管理员看", platform_only: true, rows: [] });
+  return true;
+};
+app.get("/api/ops/logs", (req, res) => {
+  if (opsOwnerOnly(req, res)) return;
+  try {
+    res.json({
+      days: log.days(),
+      rows: log.tail({ day: String(req.query.day || ""), level: String(req.query.level || ""), q: String(req.query.q || ""), limit: Math.min(1000, +req.query.limit || 200) }),
+    });
+  } catch (e) { res.status(500).json({ error: e.message, rows: [] }); }
+});
+app.get("/api/ops/metrics", (req, res) => {
+  if (opsOwnerOnly(req, res)) return;
+  try {
+    const rows = metrics.read({ from: String(req.query.from || ""), to: String(req.query.to || ""), limit: Math.min(5000, +req.query.limit || 720) });
+    // 「现在」也给一份：刚重启完还没到一分钟时，图上总得有个东西，不然像坏了
+    res.json({ rows, alerts: metrics._internals.loadState(), rules: metrics._internals.RULES.length });
+  } catch (e) { res.status(500).json({ error: e.message, rows: [] }); }
+});
+/**
+ * Prometheus 抓取口。**故意跟别的接口一样锁在平台管理员后面**——
+ * 这套东西是打包成桌面应用发出去的，多开一个不要认证的端口出去，
+ * 等于在用户机器上开了个谁都能读的运行数据口子。要接 Prometheus 的人
+ * 在 scrape_configs 里带上 openworkbuddy_token 这个 cookie 就行（部署文档里写了怎么配）。
+ */
+app.get("/api/ops/metrics.prom", (req, res) => {
+  if (opsOwnerOnly(req, res)) return;
+  const rows = metrics.read({ limit: 1 });
+  const m = rows[rows.length - 1] || {};
+  const out = [];
+  const put = (k, v, help) => {
+    if (typeof v !== "number" || !isFinite(v)) return;
+    out.push(`# HELP openworkbuddy_${k} ${help}`, `# TYPE openworkbuddy_${k} gauge`, `openworkbuddy_${k} ${v}`);
+  };
+  put("tasks", m.tasks, "tasks finished in the last snapshot window");
+  put("tasks_failed", m.tasks_failed, "tasks that ended with an error");
+  put("task_fail_rate", m.task_fail_rate, "failed / total in the window");
+  put("task_p95_ms", m.task_p95_ms, "95th percentile wall-clock task duration");
+  put("tokens", m.tokens, "prompt + completion tokens in the window");
+  put("disk_free_pct", m.disk_free_pct, "free space on the data volume");
+  put("rss_mb", m.rss_mb, "resident memory of the server process");
+  for (const [name, n] of Object.entries(m.channel_fail_streak || {})) {
+    out.push(`openworkbuddy_channel_fail_streak{channel="${String(name).replace(/["\\]/g, "")}"} ${n}`);
+  }
+  res.type("text/plain; version=0.0.4").send(out.join("\n") + "\n");
 });
 
 // ---------- 首次开箱引导：没有 API Key 时，什么都干不了，得先把这一步走完 ----------
@@ -1830,6 +2587,10 @@ app.post("/api/security/approvals/:id", (req, res) => {
   }
   res.json({ ...r, scope, downgraded });
 });
+// 执行模式表。界面上那个下拉不再自己写四行 HTML，从这儿取——
+// 「网页四个、命令行三个」就是抄出来的：goal 是后加的，抄到第三份就漏了。
+// 这里没有任何机密，也不按人区分，所以不设门禁：没登录的首屏也得画得出模式菜单。
+app.get("/api/modes", (_req, res) => res.json({ modes: modes.EXEC_MODES, default: modes.DEFAULT_MODE }));
 app.get("/api/security/modes", (req, res) =>
   // can_switch：档位是整台服务器一份（决定 agent 动手前问不问），普通成员改不了。
   // 界面拿它决定那个 🛡️ 菜单画成可点的还是只读的——不然点下去只有一句「切换失败」。
@@ -1846,6 +2607,20 @@ app.post("/api/security/mode", (req, res) => {
   saveConfig();
   security.audit("权限档位", `切换到「${security.PERMISSION_MODES[mode].label}」`, "放行");
   res.json({ ok: true, mode });
+});
+/**
+ * 外挂的第二把尺子现在在不在。界面拿它决定那张卡片怎么画——
+ * 没装就别摆一排看着能用、实际没生效的开关，直接给一行安装命令和那句授权说明。
+ * 只回「有没有、哪个版本、在哪」，不回扫描结果：这个接口是给设置页用的，不该顺手跑一趟扫描。
+ */
+app.get("/api/security/toolward", (req, res) => {
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "这项是整台服务器一份的，归平台管理员管", platform_only: true });
+  try {
+    res.json(toolward.status(config));
+  } catch (e) {
+    // 探测本身出错也得给界面一个能画的形状，别让设置页因为一个可选组件白屏
+    res.json({ mode: "auto", on: false, bin: "", version: "", why: String(e.message || e), install: toolward.INSTALL_HINT, licence: toolward.LICENCE_NOTE });
+  }
 });
 app.post("/api/security/session-allow/clear", (_req, res) => {
   security.clearSessionAllow();
@@ -1915,7 +2690,7 @@ app.get("/api/engines", async (req, res) => {
  * 底层引擎（内置循环 / 本机 Claude Code / Codex）是用户在设置里挑一次、两条线共用的另一件事——
  * 早先版本把它俩绑在一起，结果「切个标签」能把别人配好的引擎一起换掉。
  *
- * 工程线连的是**这台机器上的 `wb` 命令行**：终端里起的任务会自己挂到 data/cli-live/ 下，
+ * 工程线连的是**这台机器上的 `openworkbuddy` 命令行**：终端里起的任务会自己挂到 data/cli-live/ 下，
  * 这里如实报「现在有几趟在跑」。前端不许自己猜这件事——命令行是不是还活着要看心跳和 pid，
  * 只有服务端摸得到。
  */
@@ -1923,7 +2698,7 @@ app.get("/api/lanes", (req, res) => {
   try {
     let cli = [];
     // 终端属于这台机器的主人。租户账号看见别人电脑里正在跑什么，是越权
-    if (isPlatformOwner(req)) { try { cli = cliLive.list(); } catch {} }
+    if (canRemoteControl(req)) { try { cli = cliLive.list(); } catch {} }
     const liveCount = cli.filter((r) => r.live).length;
     res.json({
       lanes: lanes.LANES.map((l) => ({ id: l.id, name: l.name, short: l.short, hint: l.hint, detail: l.detail })),
@@ -1941,10 +2716,11 @@ app.get("/api/lanes", (req, res) => {
  * 终端里正在跑的那几趟活儿。
  *
  * 跟 /api/chat/running 是两本账：那本是这个服务进程自己跑的（内存里），这本是**别的进程**
- * （`wb` 命令行）跑的，只能从盘上那个目录读。手机上打开「工程」标签看到的就是这一份。
+ * （`openworkbuddy` 命令行）跑的，只能从盘上那个目录读。手机上打开「工程」标签看到的就是这一份。
  */
 app.get("/api/cli/live", (req, res) => {
-  if (!isPlatformOwner(req)) return res.json({ rows: [], allowed: false });
+  // allowed:false 前端本来就认（画成一句「这里看不到」而不是空列表），所以关掉开关不会白屏
+  if (!canRemoteControl(req)) return res.json({ rows: [], allowed: false, remote_off: !account.remoteAllowed("remote_control", req.user) });
   try {
     res.json({ rows: cliLive.list(), allowed: true, staleMs: cliLive.STALE_MS });
   } catch (e) {
@@ -1960,9 +2736,9 @@ app.get("/api/cli/live", (req, res) => {
  * 读尾部比它可靠得多，而且读的是增量，不是整个文件。
  */
 app.get("/api/cli/stream/:id", (req, res) => {
-  if (!isPlatformOwner(req)) return res.status(403).json({ error: "终端里的任务只有这台机器的主人看得到" });
+  if (!canRemoteControl(req)) return res.status(403).json({ error: cliOffReason(req, "看得到") });
   const sid = String(req.params.id || "");
-  const meta = cliLive.list({ prune: false }).find((r) => r.id === sid);
+  const meta = cliLive.get(sid);
   if (!meta) return res.status(404).json({ error: "终端里没有这趟活儿（可能已经跑完很久了）" });
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
@@ -1985,7 +2761,7 @@ app.get("/api/cli/stream/:id", (req, res) => {
       if (more.reset) { pos = 0; return; } // 命令行开了新的一轮，下一拍从头补
       more.events.forEach(send);
       pos = more.pos;
-      const now = cliLive.list({ prune: false }).find((r) => r.id === sid);
+      const now = cliLive.get(sid);
       if (!now || !now.live) {
         // 跑完了（或者被强杀了）：如实说一声再收摊，别让手机上那个圈一直转
         send({ type: "cli_end", ok: !!(now && now.endedAt && !now.error), error: (now && now.error) || (now && now.died ? "命令行进程没了（可能是终端被关掉了）" : null) });
@@ -2003,14 +2779,55 @@ app.get("/api/cli/stream/:id", (req, res) => {
  * 界面上显示「已发送」而其实没送到，比直接说送不到糟得多。
  */
 app.post("/api/cli/interject", (req, res) => {
-  if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "终端里的任务只有这台机器的主人插得上话" });
+  if (!canRemoteControl(req)) return res.status(403).json({ ok: false, error: cliOffReason(req, "插得上话") });
   const { sessionId, message } = req.body || {};
   const text = String(message || "").trim();
   if (!text) return res.status(400).json({ ok: false, error: "消息为空" });
-  const row = cliLive.list({ prune: false }).find((r) => r.id === String(sessionId || ""));
+  const row = cliLive.get(String(sessionId || ""));
   if (!row) return res.status(404).json({ ok: false, error: "终端里没有这趟活儿" });
   if (!row.live) return res.status(409).json({ ok: false, error: "这趟已经跑完了，插话没人接" });
   if (!cliLive.interject(row.id, text)) return res.status(500).json({ ok: false, error: "写不进去（磁盘满了或者目录没权限）" });
+  res.json({ ok: true });
+});
+
+/**
+ * 终端里那趟活儿此刻卡在等什么（一道选择题，或者一条要批准的命令）。
+ *
+ * 这条口子是给手机用的。终端里等回答是「卡住不动直到超时」，而超时对审批来说等于**拒绝**：
+ * 人去楼下拿了杯咖啡，回来只看见「用户没批准，我跳过了」——他从来没被问到过。
+ */
+app.get("/api/cli/pending", (req, res) => {
+  if (!canRemoteControl(req)) return res.json({ rows: [], allowed: false, remote_off: !account.remoteAllowed("remote_control", req.user) });
+  const sid = String(req.query.sessionId || "").trim();
+  try {
+    const ids = sid ? [sid] : cliLive.list({ prune: false }).filter((r) => r.live).map((r) => r.id);
+    const rows = [];
+    for (const id of ids) for (const a of cliLive.pending(id)) rows.push({ ...a, sessionId: id });
+    res.json({ rows, allowed: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * 在手机上把那道题答了。
+ *
+ * 不在这儿判答案对不对：终端那边 cli-ask 本来就有一套「敲一半算选了哪条」的解析，
+ * 手机上答的走同一份，省得两边对同一句话给出两种理解。
+ */
+app.post("/api/cli/answer", (req, res) => {
+  if (!canRemoteControl(req)) return res.status(403).json({ ok: false, error: cliOffReason(req, "答得了") });
+  const { sessionId, askId, value } = req.body || {};
+  const id = String(askId || "").trim();
+  if (!id) return res.status(400).json({ ok: false, error: "不知道在答哪道题" });
+  const row = cliLive.get(String(sessionId || ""));
+  if (!row) return res.status(404).json({ ok: false, error: "终端里没有这趟活儿" });
+  if (!row.live) return res.status(409).json({ ok: false, error: "这趟已经跑完了，答案没人接" });
+  // 已经不等了（终端那边先答了，或者超时了）就说清楚，别让界面显示「已提交」而其实没人收
+  if (!cliLive.pending(row.id).some((a) => a.id === id)) {
+    return res.status(409).json({ ok: false, error: "这道题已经答过了，或者等超时了" });
+  }
+  if (!cliLive.answer(row.id, id, value)) return res.status(500).json({ ok: false, error: "写不进去（磁盘满了或者目录没权限）" });
   res.json({ ok: true });
 });
 
@@ -2082,7 +2899,8 @@ app.post("/api/engines/test", async (req, res) => {
 // 预设目录：常用 MCP 服务器一键接入；顺带告诉前端本机找没找到 npx / uvx
 app.get("/api/mcp/catalog", (_req, res) => {
   const configured = new Set((config.mcp_servers || []).map((s) => s.name));
-  const cat = mcpCatalog.catalog();
+  // 把已经在内存里的 config 递进去：内网开关就在里面，别让每次请求都去读一遍盘
+  const cat = mcpCatalog.catalog({ cfg: config });
   res.json({ ...cat, items: cat.items.map((it) => ({ ...it, configured: configured.has(it.name) })) });
 });
 
@@ -2158,6 +2976,28 @@ app.post("/api/mcp", async (req, res) => {
     const dup = next.map((s) => s.name).find((n, i, a) => a.indexOf(n) !== i);
     if (dup) throw new Error(`连接器名字重复：${dup}`);
 
+    /**
+     * 存之前让 toolward 看一眼这批连接器。
+     *
+     * 连接器以前一次安全检查都不过：从 GitHub 装个技能要过两道闸，而一条
+     * `command: npx` + 一串参数的连接器，点个保存就在这台机器上跑起来了——权限比技能大得多。
+     * 拿不到结果（没装 toolward、它崩了）就是 null，一切照旧。
+     *
+     * **只提醒，不拦**：这是用户自己填的命令和地址，不是陌生人的代码。在「保存」这一步硬拦，
+     * 用户能做的只有改回去或者关掉整个检查，那这道提醒就等于逼人学会无视它。
+     * 密钥不出门——redactServers 把 env/headers 的值全换成 ***，只留键名，见 toolward.js。
+     */
+    let advice = null;
+    try {
+      const rep = toolward.scanConnectors(next, config);
+      if (rep && rep.findings.length) {
+        advice = { level: rep.level, findings: rep.findings.slice(0, 8), more: Math.max(0, rep.findings.length - 8), toolward: rep.toolward };
+        log.warn("mcp", "连接器配置有被提醒的地方（不影响保存）", {
+          count: rep.findings.length, rules: [...new Set(rep.findings.map((f) => f.rule))].slice(0, 10),
+        });
+      }
+    } catch (e) { log.warn("mcp", "连接器体检没跑成（不影响保存）", { err: e }); }
+
     config.mcp_servers = next;
     saveConfig();
 
@@ -2173,6 +3013,7 @@ app.post("/api/mcp", async (req, res) => {
       total_tools: mcpManager.toolDefs().length,
       connected: [...mcpManager.clients.keys()],
       failures: mcpManager.failures,
+      advice, // toolward 的第二意见；没装它就是 null
     });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -2591,10 +3432,18 @@ app.post("/api/library/upload", (req, res) => {
 });
 
 // 通配而不是 :name —— 子目录以后路径里有斜杠，:name 只吃得下一段
-app.get("/api/library/file/*", (req, res) => {
+app.get("/api/library/file/*", async (req, res) => {
   try {
     const p = libPath(relOf(req));
     if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).send("文件不存在");
+    // ?thumb=160：资料库那一页的图框最大 64px，一屏摆 120 张。缩不动就照旧发原件，
+    // 跟 /api/files/view/ 走的是同一段（thumb.js），缓存键带绝对路径所以两处不会串
+    const thumb = await thumbFileAsync(p, parseInt(req.query.thumb, 10), path.join(dataPath("data"), "thumbs"));
+    if (thumb) {
+      res.set("Content-Type", "image/png");
+      res.set("Cache-Control", "private, max-age=604800");
+      return res.sendFile(thumb);
+    }
     res.download(p);
   } catch (e) {
     res.status(400).send(e.message);
@@ -2711,6 +3560,28 @@ function statLookup(roots) {
   const probe = (abs) => {
     try { const st = fs.statSync(abs); return st.isFile() ? { size: st.size, mtime: st.mtime.toISOString() } : null; } catch { return null; }
   };
+  /**
+   * 升级时 migrate.js 会把工作区根目录下的散文件收进「以前的文件_日期」。搬完之后，
+   * 资料库拿当时记下的裸文件名再去查，一律查不到——一整批还好端端躺在盘上的文件
+   * 被判成「已经不在」，点开是一句「这个文件已经不在工作目录里了」，而它只是往下挪了一层。
+   *
+   * 文件是这个程序自己搬的，那就自己跟着搬过去找。两条限制是故意的：
+   *   · 只认「以前的文件_」这一个前缀 —— 那是我们自己建的目录，跟进去不算猜；
+   *   · 只认根目录下的裸名字 —— 当初也只搬了这一种（见 migrate.js 的 tidyLooseFiles）。
+   * 不做全盘按文件名搜：两个任务目录里各有一个 cover.png，搜回来的很可能是另一份，
+   * 而「打开的不是我要的那张图」比「说它不在了」更难发现。
+   */
+  const archives = (() => {
+    let list = null;
+    return () => {
+      if (list) return list;
+      list = [];
+      try {
+        list = fs.readdirSync(getWorkspaceDir()).filter((n) => n.startsWith("以前的文件_")).sort().reverse().slice(0, 8);
+      } catch {}
+      return list;
+    };
+  })();
   return (rel) => {
     if (cache.has(rel)) return cache.get(rel);
     let v = null; // null = 没查（预算用完了）；false = 确实不在了；对象 = 还在
@@ -2725,6 +3596,17 @@ function statLookup(roots) {
           let hit = null;
           try { hit = probe(safePathIn(d, rel)); } catch { continue; }
           if (hit) { v = hit; break; }
+        }
+      }
+      // 最后一手：升级那次被收进「以前的文件_日期」的那批。只在**当前**工作目录下找，
+      // 因为 at 是要拿去当地址用的（/api/files/view/ 按当前根解析），
+      // 在别的根里找到一个同名文件却给不出能打开的地址，比说它不在了还糟。
+      if (v === false && !String(rel).includes("/")) {
+        for (const a of archives()) {
+          const at = a + "/" + rel;
+          let hit = null;
+          try { hit = probe(safePath(at)); } catch { continue; }
+          if (hit) { v = { ...hit, at }; break; }
         }
       }
     }
@@ -2747,7 +3629,9 @@ app.get("/api/library/outputs", (req, res) => {
       const f = meta.get(n);
       if (f) { claimed.add(n); files.push({ name: n, size: f.size, mtime: f.mtime, gone: false }); continue; }
       const st = statOf(n);
-      if (st) { files.push({ name: n, size: st.size, mtime: st.mtime, gone: false }); continue; }
+      // 搬过家的按新地址报出去：名字给人看的那一截没变（前端只取最后一段），
+      // 但地址是能打开的那个。顺带认领一下，免得同一个文件在「未归属」里再出现一遍
+      if (st) { const at = st.at || n; claimed.add(at); files.push({ name: at, size: st.size, mtime: st.mtime, gone: false }); continue; }
       files.push({ name: n, size: 0, mtime: "", gone: st === false });
     }
     files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
@@ -3267,7 +4151,7 @@ app.post("/api/feishu/qr/cancel", (_req, res) => {
 
 // ---- 缓存清理：界面缓存(Electron chromium) + 各项目 .tmp 临时脚本；不动会话记录/工作区文件/登录态 ----
 const CHROMIUM_CACHE_DIRS = ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "blob_storage", "Shared Dictionary"];
-function wbUserDataDir() {
+function appUserDataDir() {
   if (process.versions.electron) {
     try { return require("electron").app.getPath("userData"); } catch {}
   }
@@ -3296,7 +4180,7 @@ function cacheTmpDirs() {
   return [...set];
 }
 function cacheStats() {
-  const ud = wbUserDataDir();
+  const ud = appUserDataDir();
   const ui = CHROMIUM_CACHE_DIRS.reduce((n, d) => n + dirSize(path.join(ud, d)), 0);
   const tmp = cacheTmpDirs().reduce((n, d) => n + dirSize(d), 0);
   return { ui, tmp, total: ui + tmp };
@@ -3343,7 +4227,9 @@ function backupAllowed(req, res) {
 function listBackups() {
   try {
     return fs.readdirSync(BACKUP_DIR)
-      .filter((f) => /^wb-backup-[\w.-]+\.tar\.gz$/.test(f))
+      // wb- 那个前缀随改名退休了，但**认还得认**：老备份包就叫那个名字，
+      // 只认新名字的话，升上来这一刻磁盘上的备份会从列表里整个消失（文件还在，人以为丢了）
+      .filter((f) => /^(?:openworkbuddy|wb)-backup-[\w.-]+\.tar\.gz$/.test(f))
       .map((f) => {
         const st = fs.statSync(path.join(BACKUP_DIR, f));
         return { name: f, size: st.size, at: st.mtime.toISOString() };
@@ -3356,7 +4242,7 @@ function makeBackup(tag) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
-    const name = `wb-backup-${stamp}${tag ? "-" + tag : ""}.tar.gz`;
+    const name = `openworkbuddy-backup-${stamp}${tag ? "-" + tag : ""}.tar.gz`;
     const entries = [...BACKUP_ENTRIES.filter((e) => fs.existsSync(dataPath(e))), ...userSkillEntries()];
     if (!entries.length) return reject(new Error("没有可备份的数据"));
     require("child_process").execFile(
@@ -3468,14 +4354,14 @@ app.post(
     if (buf[0] !== 0x1f || buf[1] !== 0x8b) return res.status(400).json({ error: "这不是 .tar.gz 备份文件" });
 
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    // 点开头的临时名不会被 listBackups() 的 wb-backup-*.tar.gz 捞到，验不过的包不会在列表里露脸
+    // 点开头的临时名不会被 listBackups() 的 openworkbuddy-backup-*.tar.gz 捞到，验不过的包不会在列表里露脸
     const tmp = path.join(BACKUP_DIR, `.incoming-${Date.now()}.tar.gz`);
     try {
       fs.writeFileSync(tmp, buf);
       const entries = await inspectBackup(tmp);
       const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
-      let name = `wb-backup-${stamp}-imported.tar.gz`;
-      for (let i = 2; fs.existsSync(path.join(BACKUP_DIR, name)); i++) name = `wb-backup-${stamp}-imported-${i}.tar.gz`;
+      let name = `openworkbuddy-backup-${stamp}-imported.tar.gz`;
+      for (let i = 2; fs.existsSync(path.join(BACKUP_DIR, name)); i++) name = `openworkbuddy-backup-${stamp}-imported-${i}.tar.gz`;
       fs.renameSync(tmp, path.join(BACKUP_DIR, name));
       security.audit("数据备份", `已导入外部备份 ${name}（${(buf.length / 1048576).toFixed(1)} MB，${entries} 个条目）`, "放行");
       res.json({ ok: true, name, entries, size: buf.length });
@@ -3624,7 +4510,7 @@ app.post("/api/cache/clear", async (_req, res) => {
       try { await ses.clearStorageData({ storages: ["shadercache", "cachestorage"] }); } catch {}
     } catch (e) { console.warn("[缓存] Electron 清理失败:", e.message); }
   }
-  const ud = wbUserDataDir();
+  const ud = appUserDataDir();
   for (const d of CHROMIUM_CACHE_DIRS) {
     const dir = path.join(ud, d);
     try {
@@ -3668,19 +4554,32 @@ app.get("/api/skills", (_req, res) =>
 );
 // 技能管理：getSkills 每次现读磁盘，增删改/安装即热生效，无需重启
 const skillsMgr = require("./skills");
+const actorOf = (req) => ({ user: (req && req.user && (req.user.username || req.user.name)) || "" });
+/**
+ * 被安装检查拦下的错误，要比普通 400 多带两样东西：
+ *   needs   前端据此决定画「我知道了，还是装」还是「只有平台管理员能强装」
+ *   scan    那份清单本身，好让界面把命中的文件和行号摊开，而不是只弹一句红字
+ * 普通错误（名字空、链接格式不对）照旧只有 message。
+ */
+const skillErr = (e) => (e && e.skillScan
+  ? { error: e.message, needs: e.needs, scan: { level: e.skillScan.level, hosts: e.skillScan.hosts, findings: e.skillScan.findings } }
+  : { error: e.message });
 app.get("/api/skills/:name", (req, res) => {
   const s = skillsMgr.getSkillFull(req.params.name);
   if (!s) return res.status(404).json({ error: "技能不存在" });
   res.json(s);
 });
+// 增 / 改 / 删 / 装技能都归平台管理员，闸不在这儿——admin.js 的 PLATFORM_WRITE 表里
+// 有 "/api/skills" 前缀，app.use(admin.platformGuard) 排在所有路由前面，四条路一次拦完。
+// 这里不再写第二道：两张表迟早对不上，而对不上的那次一定是放行的那次。
 app.post("/api/skills", (req, res) => {
   try {
-    const { name, description, content, original_name } = req.body || {};
+    const { name, description, content, original_name, confirm, force } = req.body || {};
     if (!String(name || "").trim()) throw new Error("技能名不能为空");
     if (!String(content || "").trim()) throw new Error("技能内容不能为空");
-    res.json(skillsMgr.saveSkill({ name, description, content, original_name }));
+    res.json(skillsMgr.saveSkill({ name, description, content, original_name, confirm: !!confirm, force: !!force, actor: actorOf(req) }));
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json(skillErr(e));
   }
 });
 app.delete("/api/skills/:name", (req, res) => {
@@ -3692,10 +4591,11 @@ app.delete("/api/skills/:name", (req, res) => {
 });
 app.post("/api/skills/install", async (req, res) => {
   try {
-    const installed = await skillsMgr.installFromGitHub((req.body || {}).url);
+    const { url, confirm, force } = req.body || {};
+    const installed = await skillsMgr.installFromGitHub(url, { confirm: !!confirm, force: !!force, actor: actorOf(req) });
     res.json({ ok: true, installed });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json(skillErr(e));
   }
 });
 
@@ -3951,7 +4851,7 @@ app.post("/api/pet/avatar", (req, res) => {
     }
     config.pet = { ...(config.pet || {}), character: "photo", enabled: true };
     saveConfig();
-    if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
+    if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
     res.json({ ok: true, size: buf.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -3963,20 +4863,20 @@ app.delete("/api/pet/avatar", (req, res) => {
   }
   config.pet = { ...(config.pet || {}), character: "cat" };
   saveConfig();
-  if (global.__wbPet) try { global.__wbPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
+  if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.applyConfig({ ...config.pet, enabled: config.pet.enabled === true }); } catch {}
   res.json({ ok: true });
 });
 
 /**
- * 桌面宠物工具的落地实现（tools.js 的 desktop_pet 通过 global.__wbPetTool 调进来）。
+ * 桌面宠物工具的落地实现（tools.js 的 desktop_pet 通过 global.__openworkbuddyPetTool 调进来）。
  *
  * 为什么放在 server.js：改宠物要同时动三样东西——config.json（持久化）、data/pet-avatar.png（形象）、
  * 还有 Electron 主进程里那个活着的窗口。这三样的把手都在这个文件里，tools.js 只管把参数递过来。
  * 纯 node 模式没有桌面窗口，整个工具会如实报错而不是假装成功。
  */
-global.__wbPetTool = {
+global.__openworkbuddyPetTool = {
   async run(input, baseDir) {
-    const P = global.__wbPet;
+    const P = global.__openworkbuddyPet;
     const action = String((input || {}).action || "create").toLowerCase();
     if (!P) {
       return {
@@ -4163,6 +5063,45 @@ app.post("/api/files/tidy", (_req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
+/**
+ * 清中间物：先看清单，再决定删不删。
+ *
+ * 跟隔壁 /api/files/tidy 的分工：tidy 管的是「同一份东西存了两遍」，证据是逐字节相同，
+ * 所以它敢自己动手，只把副本挪进 .trash。这里管的是「过程留下的脚手架」，判断靠的是
+ * 规则（成片出来了 → 逐帧图可以扔），规则会看走眼，所以这里**只出清单不动手**，
+ * 删哪些由用户勾。而且删是真删——用户要的是腾出空间，挪进 .trash 照样占着地方。
+ *
+ * GET  给清单：?task= 只看一个任务，?since= 只看这个时刻之后动过的
+ * POST 按清单删：body.paths 里的每一条都得在**这一刻重新算出来的**清单里，否则不删
+ */
+app.get("/api/files/sweep", (req, res) => {
+  try {
+    const q = req.query || {};
+    res.json(sweep.plan(getWorkspaceDir(), {
+      task: q.task ? String(q.task) : undefined,
+      since: q.since ? Number(q.since) : undefined,
+      // 「整理文件夹」面板要多一份「地方花在哪了」。收尾那一句不要——
+      // 它只问这一轮刚造的东西，翻出三周前的旧任务只会喧宾夺主
+      usage: q.usage ? 1 : 0,
+    }));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.post("/api/files/sweep", (req, res) => {
+  try {
+    const b = req.body || {};
+    const paths = Array.isArray(b.paths) ? b.paths.slice(0, 5000) : [];
+    if (!paths.length) return res.status(400).json({ error: "没说要清哪些" });
+    const r = sweep.apply(getWorkspaceDir(), paths, {
+      task: b.task ? String(b.task) : undefined,
+      since: b.since ? Number(b.since) : undefined,
+    });
+    // 审计要记**删了什么**，不是「删了几个」：事后有人问「我那个文件呢」，得查得出来
+    security.audit("清理中间文件", r.removed.join("、") || "（清单对不上，一个都没删）", "放行");
+    res.json({ ok: true, ...r, files: outputFiles() });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 app.post("/api/files/reveal", (req, res) => {
   try {
     const p = rootedPath(req, String((req.body || {}).name || "")); // 越界一律抛错，跟下载走同一道门
@@ -4228,12 +5167,38 @@ function rootFromKey(key) {
   for (const d of knownRoots()) if (workspaceKeyOf(d) === k) return d;
   return "";
 }
+/**
+ * 租户的成果根。**只有多租户服务器上才有值**，个人版和默认组织一律空串。
+ *
+ * 干什么用：下面 rootedPath 找不到文件时会去 knownRoots() 里挨个试，而那张表是**整台机器**的
+ * （config.projects、所有还开着的会话的 root、历史上见过的根）。多租户服务器上这就是一条缝——
+ * B 公司的报告叫「季度报告.html」，A 公司的人照着这个相对路径请求一次，兜底扫描就把它翻出来了。
+ * 有租户根的时候，候选根一律只认这个根底下的。
+ *
+ * 为什么不拿「当前工作目录 ≠ 默认工作目录」当判据：个人版把工作目录换到别处是常事，
+ * 那样会把 rootedPath 存在的全部意义（旧会话里的相对路径还指得回老根）一并掐掉。
+ * 按 req.user 的组织算，只有真的分了租户才收紧，个人版一字不差。
+ */
+function tenantRootOf(req) {
+  try {
+    const o = org.getOrg(org.orgIdOf(req && req.user));
+    if (!o || o.id === org.DEFAULT_ORG) return "";
+    return path.resolve(org.rootDirOf(o, getDefaultWorkspaceDir()));
+  } catch { return ""; }
+}
+
 /** 只读接口用：把请求里的相对路径解析成真实绝对路径，必要时换到它原本所属的根 */
 function rootedPath(req, rel) {
   const here = safePath(rel); // 先按当前根算，顺带做越界检查（越界直接抛，下面一律不碰）
   if (fs.existsSync(here)) return here;
+  const tenant = tenantRootOf(req);
+  const inTenant = (d) => {
+    if (!tenant) return true;
+    const p = path.resolve(String(d || ""));
+    return p === tenant || p.startsWith(tenant + path.sep);
+  };
   const tryRoot = (d) => {
-    if (!d) return "";
+    if (!d || !inTenant(d)) return "";
     try { const p = safePathIn(d, rel); return fs.existsSync(p) ? p : ""; } catch { return ""; }
   };
   const hint = (k) => String((req.query || {})[k] || (req.body || {})[k] || ""); // GET 走 query，reveal/open 那两个 POST 走 body
@@ -4263,6 +5228,34 @@ app.get("/api/files/download/*", (req, res) => {
 });
 
 /**
+ * 「这几个文件还在不在」——只回在与不在，不回内容。
+ *
+ * 为什么要这么一个口子：产出列表（/api/files）是**有上限的**——最深 3 层、最多 500 条，
+ * 超了 filesScope() 会把 full 置成 false，意思是「这份清单不完整，别拿它给谁盖章」。
+ * 无限画布当初没接这条规矩，直接拿「不在这份列表里」当成「文件被删了」，于是：
+ *   · 工作目录攒过 500 个文件之后，老素材集体被判死刑；
+ *   · 落在第 4 层子目录里的素材（对话成果/某会话/某轮/图.png）从来就没进过列表；
+ *   · /api/files 请求本身失败时列表是空的，满画布的节点一起显示「素材已从工作区移除」。
+ * 三种情况下文件都好端端在盘上，画布却红口白牙说它没了。
+ *
+ * 所以判「没了」这件事交给盘，不交给那份截断过的清单：解析走 rootedPath（跟预览/下载同一条），
+ * 换过工作目录、素材在别的会话根下也认得回来。
+ */
+app.post("/api/files/exists", (req, res) => {
+  const list = Array.isArray((req.body || {}).paths) ? (req.body || {}).paths : [];
+  const out = {};
+  // 200 是一屏画布撑死的量级；再多也不该一次问完，何况这口子每问一条就是一次 existsSync
+  for (const raw of list.slice(0, 200)) {
+    const rel = String(raw || "").trim();
+    if (!rel) continue;
+    // 解析不出来（越界、根本不是相对路径）不等于「文件没了」——那是另一回事，
+    // 一律按「不敢说」处理返回 true，宁可不显示那条横幅，也不冤枉一个还在盘上的文件
+    try { out[rel] = fs.existsSync(rootedPath(req, rel)); } catch { out[rel] = true; }
+  }
+  res.json({ exists: out });
+});
+
+/**
  * 应用内预览：按正确 Content-Type 内联返回（HTML/图片/PDF 可直接在 iframe/img 中显示）。
  *
  * 这里必须是通配路由，不能是 :name —— 这就是「预览的时候图片都不正常显示」的真身：
@@ -4275,10 +5268,23 @@ app.get("/api/files/download/*", (req, res) => {
  * 图当然全裂。改成通配之后每一段单独编码、斜杠还是斜杠，相对路径就算得对了。
  * 老的 %2F 写法也照样能用（Express 会把参数解码回来），不用怕别处还有旧链接。
  */
-app.get("/api/files/view/*", (req, res) => {
+app.get("/api/files/view/*", async (req, res) => {
   try {
     const p = rootedPath(req, relOf(req));
     if (!fs.existsSync(p)) return res.status(404).send("文件不存在");
+    // ?thumb=320：产出卡要的是 120px 的缩略图，别把 7 MB 的原图整张塞给浏览器解码。
+    // await 是因为纯 node（网页版 / 私有化部署）那条路把缩放扔到 thumb-worker.js 的线程上做了——
+    // 解码+缩放是纯 JS，一张大图几十上百毫秒，搁主线程上做会把正在推的 SSE 卡住。
+    // 任何一步不顺（尺寸不在档位里、图太小、不是 PNG、解码失败、缓存目录写不进去）
+    // 都返回 null，落回下面原样发原图——缩略图是锦上添花，绝不许因为它让一张图显示不出来。
+    // 细账和理由在 thumb.js 开头
+    const thumb = await thumbFileAsync(p, parseInt(req.query.thumb, 10), path.join(dataPath("data"), "thumbs"));
+    if (thumb) {
+      res.set("Content-Type", "image/png");
+      // URL 里已经带了 ?v=<mtime>，内容跟着文件走，可以放心让浏览器长期留着
+      res.set("Cache-Control", "private, max-age=604800");
+      return res.sendFile(thumb);
+    }
     // Chromium 对 .wav 的容忍度取决于上游 MIME；显式标注避免被当成
     // application/octet-stream 后在画布 <audio> 里静默无法播放。
     const audioMime = { ".wav": "audio/wav", ".wave": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac" }[path.extname(p).toLowerCase()];
@@ -4464,9 +5470,9 @@ app.post("/api/preview/start", (req, res) => {
   // 第一次带 ?t= 进来就种个 cookie，之后页面里的相对路径（图片、js、fetch）不用各自带令牌。
   site.use((rq, rs, nx) => {
     const cookie = String(rq.headers.cookie || "");
-    if (cookie.includes("wbpv=" + token)) return nx();
+    if (cookie.includes("openworkbuddy_preview=" + token)) return nx();
     if (rq.query && rq.query.t === token) {
-      rs.setHeader("Set-Cookie", `wbpv=${token}; Path=/; HttpOnly; SameSite=Lax`);
+      rs.setHeader("Set-Cookie", `openworkbuddy_preview=${token}; Path=/; HttpOnly; SameSite=Lax`);
       return nx();
     }
     rs.status(401).type("text/plain; charset=utf-8").send("这个预览链接要带令牌才能看（回 OpenWorkBuddy 里重新复制一次）");
@@ -4563,6 +5569,21 @@ app.post("/api/chat", async (req, res) => {
   if (user && account.creditsEnabled(user) && account.balanceOf(user) <= 0) {
     return res.status(402).json({ error: "用量不足，无法执行任务。本月固定用量已用完、加油包也见底了——找管理员在企业后台充值，或者把「用量限额」关掉。" });
   }
+  // 钱闸。跟上面那道是两件事：积分是「所有模型一个价」的字数折算，
+  // 这一道算的是真金白银——而 Opus 的输出价是 gpt-5-nano 的一百多倍，
+  // 两个数经常是反的。中转站发出去的 Key 开头就在 budget 下面过，
+  // 内部员工在界面上跑的任务以前不过——同一笔预算漏了一半，
+  // 而漏的那一半恰好是能一直点「重试」的那一半。
+  if (user) {
+    try {
+      const o = org.getOrg(org.orgIdOf(user));
+      const hit = budget.exhausted({ org: org.settingsOf(o), orgId: o.id, user });
+      if (hit) return res.status(402).json({ error: `${hit.message}预算由管理员在「企业管理 → API 中转站」里设，每月 1 号重置。` });
+    } catch (e) {
+      // 预算模块自己坏了不该拦住正事，跟 quota.gate 那边同一个选择：放行，但喊一声
+      console.warn("[预算] 钱闸没能判（本次放行）：" + (e && e.message));
+    }
+  }
   if (activeRuns.has(sessionId)) {
     return res.status(409).json({ error: "该会话已有任务在运行，可用「插队」把补充说明注入当前任务。" });
   }
@@ -4624,6 +5645,9 @@ app.post("/api/chat", async (req, res) => {
   persistRunning();
   const emitFn = recordingEmit(send, asstEvents, sessionId);
   const total = { prompt: 0, completion: 0, cached: 0, calls: 0, elapsed_ms: 0 };
+  // 整趟任务的墙上时间。total.elapsed_ms 只累加模型调用那几段，不含工具执行和等审批——
+  // 用户感觉到的「这次怎么这么慢」恰恰常常慢在那些地方，拿它当任务耗时会一直显示很快
+  const runStartedAt = Date.now();
   // 这一轮真正干活的模型。本机引擎接管时它不是 sessLLM：以前账本和健康账本都记到 config 里那个
   // 云模型头上——跑的是 Claude Code，账本写 deepseek-chat，DeepSeek 的健康分还替别人挨了刀
   let ranLLM = { model: sessLLM.model, provider: sessLLM.provider };
@@ -4656,19 +5680,15 @@ app.post("/api/chat", async (req, res) => {
   }
   if (taskBaseDir) send({ type: "dir", dir: taskBaseDir }); // 成果面板标「本对话」用；不进回放记录
   // Goal 模式：第一次用目标消息建目标（拆成验收标准）；已有进行中的目标就直接接着冲
-  const goalMode = mode === "goal";
+  const goalMode = modes.isGoalMode(mode);
   if (goalMode && (!sess.goal || sess.goal.status !== "active")) {
-    let derailed = "";
-    const criteria = await deriveGoalCriteria(sessLLM, message, total, (w) => { derailed = w; });
-    sess.goal = { text: String(message).slice(0, 500), criteria: criteria.map((t) => ({ text: t, done: false })), status: "active", round: 0 };
-    // 这一步歪了要写在卡上：否则用户只看到「1 项标准、就是我刚才那句话」，还以为 Goal 模式就长这样
-    if (derailed) sess.goal.note = derailed;
+    sess.goal = await goalKit.start(goalThinkFor(sessLLM, total), message);
     autosaveSession(sessionId, 0);
   }
   if (sess.goal && sess.goal.status === "active") sess.goal.paused = ""; // 又开跑了，把「已暂停」摘掉
   if (sess.goal) send({ type: "goal", goal: sess.goal }); // 目标卡状态直播；不进回放记录（回放时从会话里取）
   let runFailed = null; // 整跑是否以异常收场（记进模型健康账本）
-  if (global.__wbPet) try { global.__wbPet.setState("working", sess.title || String(message).slice(0, 40)); } catch {}
+  if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.setState("working", sess.title || String(message).slice(0, 40)); } catch {}
   try {
     // 外层：目标轮（普通消息只走一轮；goal 模式没达标自动再跑，最多 GOAL_MAX_ROUNDS 轮）
     let lastFinal = "";
@@ -4676,12 +5696,7 @@ app.post("/api/chat", async (req, res) => {
     for (let goalRound = 0; ; goalRound++) {
       roundStopped = null;
       // 进行中的目标注入任务上下文：agent 每一轮都对着验收标准干活，不跑偏
-      let goalCtx = "";
-      if (sess.goal && sess.goal.status === "active") {
-        goalCtx = `\n\n## 本对话的目标（Goal 模式）\n目标：${sess.goal.text}\n验收标准（打勾的已达成，别重做）：\n` +
-          sess.goal.criteria.map((c, i) => `${i + 1}. [${c.done ? "✓" : " "}] ${c.text}`).join("\n") +
-          `\n交付物必须能通过未达成的验收标准。`;
-      }
+      const goalCtx = goalKit.contextFor(sess.goal);
       // 内层：任务收尾瞬间可能还有没被 agent 循环消化的插队消息 → 追加为新一轮，直到清空
       for (;;) {
         const r = await runtime.runTask({
@@ -4692,11 +5707,11 @@ app.post("/api/chat", async (req, res) => {
           llmOverride: sessLLM,
           history: sess.history,
           emit: emitFn,
-          mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",
+          mode: modes.agentMode(mode), // goal 是套在 craft 外面的壳，agent 只认识 ask/plan/craft
           user: user ? user.username : undefined,
           projectContext: (projectContextOf(activeProject()) || "") + goalCtx,
           stopSignal: runState.ctrl.signal,
-          // 底层 CLI 引擎自己的会话 id：存在本项目的会话文件里，桌面端和 wb 命令行
+          // 底层 CLI 引擎自己的会话 id：存在本项目的会话文件里，桌面端和 openworkbuddy 命令行
           // 打开同一个会话时接着同一根线程跑，不用把历史再贴一遍
           engineSession: lanes.engineSessionFor(sess, laneEngine),
           getInterject: () => runState.interject.splice(0),
@@ -4730,7 +5745,7 @@ app.post("/api/chat", async (req, res) => {
       if (!sess.goal || sess.goal.status !== "active" || runState.ctrl.signal.aborted) break;
       sess.goal.note = "";
       sess.goal.paused = "";
-      await verifyGoal(sess, sessLLM, lastFinal, total, (w) => { sess.goal.note = w; });
+      await goalKit.verify(goalThinkFor(sessLLM, total), sess, lastFinal, (w) => { sess.goal.note = w; });
       sess.goal.round = (sess.goal.round || 0) + 1;
       send({ type: "goal", goal: sess.goal });
       autosaveSession(sessionId, 0);
@@ -4739,7 +5754,7 @@ app.post("/api/chat", async (req, res) => {
       // 自动补跑用完了。以前到这儿就悄悄不跑了，目标卡停在「2/4 · 第 3 轮」——用户分不清是"还在跑"
       // 还是"不跑了"。写清楚为什么停、还差几项，卡上给一颗「接着冲」，把要不要继续烧钱交回给用户
       if (goalRound + 1 >= GOAL_MAX_ROUNDS) {
-        sess.goal.paused = `自动补跑已用满 ${GOAL_MAX_ROUNDS} 轮，还差 ${sess.goal.criteria.filter((c) => !c.done).length} 项没达成`;
+        sess.goal.paused = `自动补跑已用满 ${GOAL_MAX_ROUNDS} 轮，还差 ${goalKit.progress(sess.goal).unmet} 项没达成`;
         send({ type: "goal", goal: sess.goal });
         autosaveSession(sessionId, 0);
         break;
@@ -4753,8 +5768,7 @@ app.post("/api/chat", async (req, res) => {
         break;
       }
       // 没达标 → 把未达成项作为下一轮指令，接着冲（进回放记录，回放时能看懂为什么又跑了一轮）
-      const unmet = sess.goal.criteria.filter((c) => !c.done).map((c) => "· " + c.text).join("\n");
-      const fb = `【目标验收 · 第 ${sess.goal.round} 轮】以下验收标准还没达成：\n${unmet}\n只补这些未达成项，别重做已达成的部分。`;
+      const fb = goalKit.feedbackFor(sess.goal);
       sess.history.push({ role: "user", content: fb });
       emitFn({ type: "interject", text: fb });
     }
@@ -4771,12 +5785,29 @@ app.post("/api/chat", async (req, res) => {
   } finally {
     activeRuns.delete(sessionId);
     persistRunning();
-    if (global.__wbPet) try { global.__wbPet.setState(runFailed ? "error" : "done", runFailed ? String(runFailed).slice(0, 80) : "任务完成"); } catch {}
+    if (global.__openworkbuddyPet) try { global.__openworkbuddyPet.setState(runFailed ? "error" : "done", runFailed ? String(runFailed).slice(0, 80) : "任务完成"); } catch {}
   }
   if (total.calls > 0) modelFailStreak.delete(ranLLM.provider); // 有成功调用就算这个模型活着，清连挂计数
   // 健康账本：异常收场记一败；正常收场且真调过模型记一胜（秒停等一次没调的不记，记了是噪声）
   if (runFailed) recordModelHealth(ranLLM.provider, false, runFailed);
   else if (total.calls > 0) recordModelHealth(ranLLM.provider, true);
+
+  // 指标 + 运行期日志。这两行是「出了事能不能知道」的全部来源：
+  // 健康账本只留每条渠道最近 20 次，答不了「今天失败率多少」「P95 几秒」；
+  // 而 console 打出来的东西，桌面用户根本看不到。
+  if (total.calls > 0 || runFailed) {
+    metrics.bump("tasks");
+    if (runFailed) metrics.bump("tasks_failed");
+    metrics.observe("task", Date.now() - runStartedAt);
+    metrics.bump("tokens", (total.prompt || 0) + (total.completion || 0));
+    metrics.bump("model_calls", total.calls || 0);
+    if (runFailed) metrics.bump("model_fail");
+    log[runFailed ? "warn" : "info"]("chat", runFailed ? "任务失败" : "任务完成", {
+      session: sessionId, user: (user && user.username) || "", provider: ranLLM.provider, model: ranLLM.model,
+      calls: total.calls || 0, tokens: (total.prompt || 0) + (total.completion || 0),
+      ms: Date.now() - runStartedAt, err: runFailed || undefined,
+    });
+  }
 
   // 记账：按整个任务（含插队追加轮）的总 tokens 扣积分
   if (user && total.calls > 0) {
@@ -4815,6 +5846,23 @@ app.post("/api/chat", async (req, res) => {
   // 免得前端拿本地 mtime 猜一把，把工作目录里的旧文件当成新成果又把面板弹出来
   const files0 = outputFiles();
   send({ type: "files", files: files0, changed: [], ...filesScope(files0) });
+  /**
+   * 收尾问一句「这次顺手造的中间文件要不要清掉」。
+   *
+   * 为什么放在这儿、而不是让用户自己想起来去资料库翻：因为没人会想起来。
+   * 用户是攒到 4.3 GB、自己翻硬盘的时候才发现的，那时候早已经分不清哪个文件属于哪次任务了。
+   * 刚跑完这一刻是唯一「还记得这次干了什么」的时刻，问的成本也最低。
+   *
+   * since 卡在这一轮的起点：三周前那个任务留下的东西不该趁这次一起端上来——
+   * 用户点「清理」时心里想的是「刚才这一趟」，多删一个字都是背信。
+   * 门槛 20 MB / 30 个：比这还少就别打扰人，一条提示本身也是打扰。
+   */
+  try {
+    const sw = sweep.plan(getWorkspaceDir(), { since: runStartedAt });
+    if (sw.count && (sw.bytes >= 20 * 1024 * 1024 || sw.count >= 30)) {
+      send({ type: "sweep", since: runStartedAt, ...sw });
+    }
+  } catch {} // 清单算不出来不该拖累一次成功的任务
   send({ type: "done" });
   if (!res.destroyed && !res.writableEnded) { try { res.end(); } catch {} }
   for (const sub of runState.subscribers) { try { sub.end(); } catch {} }
@@ -5039,7 +6087,8 @@ app.post("/api/eval/human", (req, res) => {
 // 给单个对话指定模型（null = 跟随全局默认）。只影响这一个对话，不动全局 active_model
 app.post("/api/session/:id/model", (req, res) => {
   const name = (req.body || {}).model;
-  const s = getSession(req.params.id);
+  const s = guardSession(req, res);   // 别人的对话不许换模型——换掉之后他下一句话就烧在另一个模型上
+  if (!s) return;
   if (name === null || name === undefined || name === "") {
     delete s.model;
   } else {
@@ -5099,46 +6148,62 @@ app.post("/api/chat/stop", (req, res) => {
 let scheduler;
 
 // ---------- 定时任务管理 API ----------
-app.get("/api/schedules", (_req, res) => res.json(scheduler.list()));
+/**
+ * 「这次请求是谁」，交给 scheduler 当归属判据用。
+ *
+ * 排期表以前一条归属都不记，这九个接口全都是敞的：任何一个登录进来的人，
+ * 列表一拉就看见全公司的定时任务描述（那就是商业内容本身），还能改、能删、
+ * 能按一下「立即运行」——花的是公司的额度，结果推到的是原主人的通知渠道。
+ * 单机个人版 viewer 里两个字段都是空的，allowed() 一律放行，行为一字不差。
+ */
+function schedViewer(req) {
+  const u = req.user;
+  if (!u) return null;
+  return { username: u.username, admin: account.canAdmin(u), org: org.orgIdOf(u) };
+}
+app.get("/api/schedules", (req, res) => res.json(scheduler.list(schedViewer(req))));
 // 运行记录。只看 last_result 的话，昨天跑挂今天跑好就查无此事
-app.get("/api/schedules/runs", (req, res) => res.json(scheduler.runs(Math.min(+req.query.limit || 100, 300))));
+app.get("/api/schedules/runs", (req, res) => res.json(scheduler.runs(Math.min(+req.query.limit || 100, 300), schedViewer(req))));
 app.post("/api/schedules", (req, res) => {
   try {
-    res.json(scheduler.add(req.body || {}));
+    const v = schedViewer(req);
+    // 归属只认服务端认出来的这个人，body 里传什么都不看——不然「帮别人建一条」就成了免费的甩锅口子
+    res.json(scheduler.add({ ...(req.body || {}), user: v ? v.username : "", org: v ? v.org : "" }));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 app.patch("/api/schedules/:id", (req, res) => {
   try {
-    const t = scheduler.update(req.params.id, req.body || {});
+    const t = scheduler.update(req.params.id, req.body || {}, schedViewer(req));
     if (!t) return res.status(404).json({ error: "任务不存在" });
     res.json(t);
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
-app.delete("/api/schedules/:id", (req, res) => res.json({ ok: scheduler.remove(req.params.id) }));
+app.delete("/api/schedules/:id", (req, res) => res.json({ ok: scheduler.remove(req.params.id, schedViewer(req)) }));
 // 批量：一条条点太慢，但批量删是不可逆的，所以要求前端明确传 action
 app.post("/api/schedules/bulk", (req, res) => {
   const { ids, action } = req.body || {};
   if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: "没选中任何任务" });
   if (!["enable", "disable", "delete"].includes(action)) return res.status(400).json({ error: "未知操作" });
+  const v = schedViewer(req);
   let n = 0;
   for (const id of ids) {
-    if (action === "delete") n += scheduler.remove(id) ? 1 : 0;
-    else n += scheduler.toggle(id, action === "enable") ? 1 : 0;
+    if (action === "delete") n += scheduler.remove(id, v) ? 1 : 0;
+    else n += scheduler.toggle(id, action === "enable", v) ? 1 : 0;
   }
   res.json({ ok: true, count: n });
 });
 app.post("/api/schedules/:id/toggle", (req, res) =>
-  res.json({ ok: scheduler.toggle(req.params.id, !!(req.body || {}).enabled) })
+  res.json({ ok: scheduler.toggle(req.params.id, !!(req.body || {}).enabled, schedViewer(req)) })
 );
 app.post("/api/schedules/:id/catchup", (req, res) =>
-  res.json({ ok: scheduler.setCatchUp(req.params.id, !!(req.body || {}).catch_up) })
+  res.json({ ok: scheduler.setCatchUp(req.params.id, !!(req.body || {}).catch_up, schedViewer(req)) })
 );
 app.post("/api/schedules/:id/run", async (req, res) => {
-  const item = scheduler.list().find((t) => t.id === req.params.id);
+  const item = scheduler.get(req.params.id, schedViewer(req));
   if (!item) return res.status(404).json({ error: "任务不存在" });
   if (item.running) return res.status(409).json({ error: "这个任务正在跑，等它跑完再点" });
   try {
@@ -5177,6 +6242,18 @@ function accountedRuntime(baseRuntime, source) {
       const owner = account.defaultUser();
       if (owner && account.creditsEnabled(owner) && account.balanceOf(owner) <= 0) {
         throw new Error("积分不足：管理员可以在 Web 端「账号 · 用量」里充值，或者把「积分限额」关掉");
+      }
+      // 钱闸。定时任务这条路比界面那条更需要它：界面上是人在点，花得快了自己能看见；
+      // 定时任务是一个写错的 cron 可以每分钟跑一轮，没人看着，直到月底出账单。
+      if (owner) {
+        try {
+          const o = org.getOrg(org.orgIdOf(owner));
+          const hit = budget.exhausted({ org: org.settingsOf(o), orgId: o.id, user: owner });
+          if (hit) throw Object.assign(new Error(`${hit.message}预算在「企业管理 → API 中转站」里设，每月 1 号重置。`), { budget: hit });
+        } catch (e) {
+          if (e && e.budget) throw e;    // 真拦下来的那一句得原样往上抛
+          console.warn("[预算] 钱闸没能判（本次放行）：" + (e && e.message));
+        }
       }
       // 调用方（助理页）指定了模型就解析成真正的 LLM 顶上去。模型名不在列表里时 llmForSession
       // 返回的是会报错的桩，宁可当场报错也不许悄悄退回全局默认
@@ -5281,9 +6358,21 @@ async function main() {
   // （前端一律 r.json()，甩 HTML 的话界面只会显示「加载失败」，真正的原因谁也看不见）
   app.use((err, req, res, next) => {
     console.error(`[${req.method} ${req.path}]`, err.message);
+    // 这一条同时进日志和指标：500 是「程序自己出了 bug」，跟模型挂了不是一回事，
+    // 得能分开看。以前它只打在终端里，桌面用户那边等于从来没发生过
+    metrics.bump("http_5xx");
+    log.error("http", `${req.method} ${req.path} 未接住的异常`, { err, status: err.status || 500 });
     if (res.headersSent) return next(err);
     res.status(err.status || 500).json({ error: err.message || "服务器内部错误" });
   });
+
+  // 每分钟滚一次指标快照，命中阈值就走 notify 推企业微信 / 钉钉。
+  // 定时器是 unref 的：它只是个旁观者，不该拖着进程不让退出
+  metrics.start({
+    getConfig: () => config,
+    gauges: () => ({ active_runs: activeRuns.size, sessions: sessions.size }),
+  });
+  log.info("boot", "服务起来了", { pid: process.pid, node: process.version, version: require("./package.json").version });
 
   sweepInterruptedRuns(); // 上次没善终的任务先标注中断，再开门迎客
 

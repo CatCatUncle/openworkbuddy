@@ -33,7 +33,19 @@ const { DATA_DIR } = require("./paths");
 
 // 本地 Trace 是主记录，Langfuse 只是可选的外部副本。这样不开 Langfuse 时，
 // 用户仍然能在 OpenWorkBuddy 里看到完整的任务树；换机器或换账号也不会把 trace 丢给第三方。
-const LOCAL_MAX_LINES = 30000;
+//
+// 这本账**按大小滚动**，不按行数。原来写的是「留最后 30000 行」，可它套在一个
+// 12 MB 的体积闸门里——而 trace 的一行不是日志那种一行，是整段提示词加整段回复，
+// 本机实测**平均 29.8 KB 一行**。12 MB 除下来约 400 行，30000 那个数字从来没生效过：
+// 真实结果是「大约 400 条 trace 就开始丢老的」，谁也不知道。更糟的是那个截断动作
+// ——一旦到顶，**此后每写一条**都要把 12 MB 读出来、切一刀、再整个写回去，
+// 写一条 trace 的代价从「追加一行」变成「读写 24 MB」。
+//
+// 现在的做法：满了就 rename 成一个带日期的归档文件（O(1)，不读不写内容），
+// 重新开一个空的接着记；归档超过 KEEP_FILES 个就删最老的。
+// 于是「写」永远是追加一行，「清理」永远是删一个文件，两边都跟历史有多长无关。
+const ROTATE_BYTES = 24 * 1024 * 1024;   // 当前这本记到多大就封存换新
+const KEEP_FILES = 6;                     // 连正在写的这本在内，最多留几本（约 144 MB 封顶）
 function localTraceFile(config) {
   // 环境变量优先。这一条不是为了让用户换地方存，是为了**测试别写进真账本**：
   // 测试里的 config 大多没有 workspace_dir，会一路退到 DATA_DIR/workspace，
@@ -47,13 +59,29 @@ function localTraceFile(config) {
 }
 
 /**
+ * 「继续」「好的」「嗯」这类话本身不含任何任务信息，拿它当名字等于没名字。
+ * 只挡**整条消息就是这么一句**的情况——「继续把日志接上」是正经需求，不能挡。
+ */
+const FILLER_SAID = new Set([
+  "继续", "继续吧", "继续啊", "接着", "接着说", "接着写", "接着弄", "下一步", "下一个", "然后呢", "再来",
+  "好", "好的", "好吧", "行", "行吧", "可以", "嗯", "嗯嗯", "对", "对的", "是", "是的", "没错",
+  "谢谢", "辛苦了", "收到", "知道了", "明白", "ok", "okay", "k", "yes", "y", "yep", "yeah", "sure",
+  "no", "n", "go", "go on", "go ahead", "continue", "next", "thanks", "thank you",
+]);
+function isFillerSaid(line) {
+  // 末尾的标点不算内容：「继续。」「好的~」跟「继续」是同一句话
+  const t = String(line).replace(/[。．.!！?？~～、，,;；:：\s]+$/g, "").trim().toLowerCase();
+  return !t || FILLER_SAID.has(t);
+}
+
+/**
  * 从一趟任务的输入里抠一句能当名字的话。
  *
  * 为什么要在**读的时候**也做一遍，而不是只靠写入时的 name：
  * 账本里已经躺着的老记录改不了了，而它们恰恰是最需要区分的那批——
  * 一屏二十行全叫「任务」，点进去才知道是哪一趟，这个列表就等于没用。
  */
-function labelFromInput(input) {
+function labelFromInput(input, { prefer = "last" } = {}) {
   const pick = (t) => {
     const line = String(t || "").replace(/\s+/g, " ").trim();
     if (!line) return "";
@@ -62,36 +90,111 @@ function labelFromInput(input) {
   };
   if (typeof input === "string") return pick(input);
   if (Array.isArray(input)) {
-    const user = input.filter((m) => m && m.role === "user");
-    // 取第一条：最后一条常常是「继续」「好的」这种接不上的短句
-    for (const m of user) {
-      const t = pick(typeof m.content === "string" ? m.content : JSON.stringify(m.content || ""));
-      if (t) return t;
-    }
+    const said = input
+      .filter((m) => m && m.role === "user")
+      .map((m) => pick(typeof m.content === "string" ? m.content : JSON.stringify(m.content || "")))
+      .filter(Boolean);
+    // **从后往前**找。这里拿到的是整段历史，而一轮对话开一条 trace：
+    // 取第一条的话，同一个会话里跑十趟就是十行一模一样的名字。
+    // 最后一句才是这一趟真要干的事；除非它是「继续」「好的」这种接不上的短句——
+    // 那这趟本来就是上一句的续集，往前找一句有内容的来命名反而准。
+    if (prefer === "first") return said[0] || "";   // 只有「把老名字还原出来」那一处用得上，见下面的去重
+    for (let i = said.length - 1; i >= 0; i--) if (!isFillerSaid(said[i])) return said[i];
+    return said[said.length - 1] || "";
   }
   if (input && typeof input === "object") return pick(input.text || input.message || input.prompt || "");
   return "";
+}
+/** 归档文件长什么样：traces-2026-09-17T081530.jsonl，跟当前的 traces.jsonl 同一个目录 */
+function archiveName(file, at) {
+  const stamp = new Date(at || Date.now()).toISOString().replace(/[:.]/g, "").replace(/(\d{6})\d*Z$/, "$1");
+  return path.join(path.dirname(file), path.basename(file, ".jsonl") + "-" + stamp + ".jsonl");
+}
+/** 这个工作空间里的所有 trace 账本，**新的在前**（当前正在写的那本永远排第一） */
+function localFiles(config) {
+  const live = localTraceFile(config);
+  let olds = [];
+  try {
+    const base = path.basename(live, ".jsonl");
+    olds = fs.readdirSync(path.dirname(live))
+      .filter((f) => f.startsWith(base + "-") && f.endsWith(".jsonl"))
+      .sort().reverse()
+      .map((f) => path.join(path.dirname(live), f));
+  } catch {}
+  return [live, ...olds];
+}
+function rotateIfNeeded(file) {
+  let size = 0;
+  try { size = fs.statSync(file).size; } catch { return; }
+  if (size <= ROTATE_BYTES) return;
+  try { fs.renameSync(file, archiveName(file)); } catch { return; }
+  // 留最新的几本，多出来的删掉。删的是**最老**的——文件名带日期，排序后排在最后的那几个
+  try {
+    const base = path.basename(file, ".jsonl");
+    const olds = fs.readdirSync(path.dirname(file))
+      .filter((f) => f.startsWith(base + "-") && f.endsWith(".jsonl"))
+      .sort().reverse();
+    for (const f of olds.slice(Math.max(0, KEEP_FILES - 1))) {
+      try { fs.rmSync(path.join(path.dirname(file), f), { force: true }); } catch {}
+    }
+  } catch {}
 }
 function localRecord(config, event) {
   try {
     const file = localTraceFile(config);
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    // 只有这一行在热路径上，而它跟账本里已经躺了多少条完全无关
     fs.appendFileSync(file, JSON.stringify({ schema: 1, recordedAt: Date.now(), ...event }) + "\n", "utf8");
-    const stat = fs.statSync(file);
-    if (stat.size > 12 * 1024 * 1024) {
-      const lines = fs.readFileSync(file, "utf8").trim().split("\n").slice(-LOCAL_MAX_LINES);
-      fs.writeFileSync(file, lines.join("\n") + "\n", "utf8");
-    }
+    rotateIfNeeded(file);
   } catch (e) {
     // Trace 不能反过来把任务搞挂；服务端日志留一条，设置页仍能显示其它账本。
     if (process.env.OPENWORKBUDDY_TRACE_DEBUG) console.warn("[本地追踪] 写入失败:", e.message);
   }
 }
-function localReadEvents(config) {
+
+/**
+ * 解析过的账本缓存，按「这个文件的 修改时间 + 大小」认人。
+ *
+ * 为什么值得缓一下：Trace 页面每刷一次就要把整本账 JSON.parse 一遍，
+ * 一行 ~30 KB、几千行就是上百 MB 的解析。而绝大多数刷新之间账本根本没变——
+ * 没变就别重算。变了（哪怕只多了一行）mtime 和 size 一定会动，缓存自动作废，
+ * 所以这个缓存不可能让人读到旧数据。
+ */
+const parsedCache = new Map();
+function readEventsOf(file) {
+  let st;
+  try { st = fs.statSync(file); } catch { return []; }
+  const key = file + "|" + st.mtimeMs + "|" + st.size;
+  const hit = parsedCache.get(key);
+  if (hit) return hit;
+  let out = [];
   try {
-    const raw = fs.readFileSync(localTraceFile(config), "utf8");
-    return raw.split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((event) => event && event.traceId);
+    out = fs.readFileSync(file, "utf8").split("\n").filter(Boolean)
+      .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+      .filter((event) => event && event.traceId);
   } catch { return []; }
+  parsedCache.clear();      // 一个工作空间同时只会热一本账，留着老 key 只是占内存
+  parsedCache.set(key, out);
+  return out;
+}
+/**
+ * 读事件，**按时间先后**（老的在前）—— localTraceList 靠这个顺序把 start / end 合成一条。
+ * 从新账本往老里翻，读够 budget 就停：Trace 页面只看最近的一批，
+ * 没必要为了它把半年前封存的几本全解析一遍。
+ */
+function localReadEvents(config, { budgetBytes = 48 * 1024 * 1024 } = {}) {
+  const picked = [];
+  let used = 0;
+  for (const f of localFiles(config)) {       // 新的在前
+    let size = 0;
+    try { size = fs.statSync(f).size; } catch { continue; }
+    picked.push(f);
+    used += size;
+    if (used >= budgetBytes) break;           // 已经够了，更老的不翻
+  }
+  const out = [];
+  for (const f of picked.reverse()) out.push(...readEventsOf(f));  // 翻回「老的在前」
+  return out;
 }
 function localTraceList(config, { limit = 50, traceId = "" } = {}) {
   const traces = new Map();
@@ -132,6 +235,10 @@ function localTraceList(config, { limit = 50, traceId = "" } = {}) {
     // 加不出来时留 null 而不是 0——「没记到账」和「真的一个 token 没花」是两回事，
     // 都画成 0 Token 会让人以为模型白跑了
     const md = trace.metadata || {};
+    // 「第几轮」：一轮对话一条 trace，同一个会话里几趟的名字长得像很正常（都是从同一段历史里截的）。
+    // 把轮次单独拎成一个字段，列表就能在名字之外再给一个区分点——塞进名字里只会更难读。
+    // 老记录 metadata 里没有 turn，就按输入里的用户消息条数数一遍，数得出来就还是准的。
+    trace.turn = Number(md.turn) || (Array.isArray(trace.input) ? trace.input.filter((m) => m && m.role === "user").length : 0);
     let tin = Number(md.tokens_in) || 0, tout = Number(md.tokens_out) || 0, seen = md.tokens_in !== undefined || md.tokens_out !== undefined;
     for (const o of trace.observations) {
       const u = o.usage;
@@ -150,10 +257,27 @@ function localTraceList(config, { limit = 50, traceId = "" } = {}) {
       : trace.endTime ? "completed" : stale ? "interrupted" : "running";
     return trace;
   }).sort((a, b) => String(b.startTime).localeCompare(String(a.startTime)));
+  // 账本里已经躺着的那批老记录，名字是按旧规矩（取历史里的第一句）写进去的：
+  // 同一个会话聊了十轮，列表上就是十行一模一样的名字，点进去才知道是哪趟。
+  // 写进磁盘的字改不了，但每条都存着当时的完整输入，照新规矩重算一遍就能分开。
+  // 判断依据不是「看着像重名」，而是这条记录身上还留着旧规矩的指纹：
+  // 名字正好以这段历史的**第一句**结尾，而后面还有别的话。这两条同时成立，
+  // 基本只可能是旧规矩留下的。用户自己起的名字碰不着这个条件，不会被乱改。
+  // 而且只换掉「第一句」那一截：「IM 对话 · 帮我查日程」前面那半截是来源，得留着。
+  // 逐条判断、不靠分组，是为了让列表和点进去的详情页显示同一个名字（详情页一次只取一条）。
+  for (const t of out) {
+    const first = labelFromInput(t.input, { prefer: "first" }), last = labelFromInput(t.input);
+    if (!first || !last || first === last || !String(t.name || "").endsWith(first)) continue;
+    t.name = String(t.name).slice(0, -first.length) + last;
+    t.name_derived = true;
+  }
   return traceId ? out[0] || null : out.slice(0, Math.max(1, Math.min(200, Number(limit) || 50)));
 }
 function localTraceClear(config) {
-  try { fs.rmSync(localTraceFile(config), { force: true }); } catch {}
+  // 「清空」就得真清空：归档的那几本也是 trace，留着的话用户点完清空
+  // 一刷新还是满屏记录，会以为这个按钮坏了（更要紧的是，他可能正想删掉里面的提示词原文）
+  for (const f of localFiles(config)) { try { fs.rmSync(f, { force: true }); } catch {} }
+  parsedCache.clear();
 }
 
 // ── Langfuse 的上报接口（这一段是唯一跟 Langfuse 绑死的地方，将来换别的后端只用改这里）──
@@ -324,7 +448,7 @@ function createTracer(config) {
     if (ctx.queue.length >= MAX_BATCH) { flush(); return; }
     if (ctx.timer) return;
     ctx.timer = setTimeout(() => { ctx.timer = null; flush(); }, FLUSH_MS);
-    // 不能让这个定时器拖着进程不退出：wb 命令行跑完一句就该退，不该为了攒批多挂两秒
+    // 不能让这个定时器拖着进程不退出：openworkbuddy 命令行跑完一句就该退，不该为了攒批多挂两秒
     if (ctx.timer.unref) ctx.timer.unref();
   }
 
@@ -582,4 +706,4 @@ function getTracer(config) {
   return t;
 }
 
-module.exports = { createTracer, getTracer, noop: OFF, _internals: { messagesOf, capText, cleanHost, readCfg, labelFromInput, localTraceFile, OFF } };
+module.exports = { createTracer, getTracer, noop: OFF, _internals: { messagesOf, capText, cleanHost, readCfg, labelFromInput, isFillerSaid, localTraceFile, OFF } };

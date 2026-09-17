@@ -323,10 +323,10 @@ function pptxToSlides(zip) {
 // ---------------- xlsx ----------------
 async function xlsxToSheets(file) {
   const ExcelJS = require("exceljs"); // 项目本来就有（生成 Excel 用的），读也用它：数字格式/日期/合并单元格它都算好了
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.readFile(file);
+  const book = new ExcelJS.Workbook();
+  await book.xlsx.readFile(file);
   const sheets = [];
-  for (const ws of wb.worksheets.slice(0, LIMITS.sheets)) {
+  for (const ws of book.worksheets.slice(0, LIMITS.sheets)) {
     const nRows = Math.min(ws.actualRowCount || ws.rowCount || 0, LIMITS.rows);
     const nCols = Math.min(ws.actualColumnCount || ws.columnCount || 0, LIMITS.cols);
     const rows = [];
@@ -351,7 +351,7 @@ async function xlsxToSheets(file) {
     });
   }
   if (!sheets.length) throw new Error("这个 .xlsx 里没有工作表");
-  return { kind: "sheet", sheets, total: wb.worksheets.length, truncated: wb.worksheets.length > sheets.length };
+  return { kind: "sheet", sheets, total: book.worksheets.length, truncated: book.worksheets.length > sheets.length };
 }
 
 // ---------------- 压缩包 ----------------

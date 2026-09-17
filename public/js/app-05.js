@@ -25,6 +25,9 @@ async function renderHubMcp(box) {
     const resp = await fetch("/api/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ servers }) });
     const d = await resp.json().catch(() => ({}));
     if (!resp.ok) toast((d.error || "保存失败"), "circle-x");
+    // 体检结果只提醒不拦（后端也不拦）。挂在 hubState 上而不是弹 toast：
+    // 这几条要对着卡片一条条看，toast 三秒就没了，等于没说。
+    hubState.mcpAdvice = resp.ok ? (d.advice || null) : hubState.mcpAdvice;
     renderHubBody();
   };
   // ---- 推荐连接器（预设目录）：搜索框一起过滤；「只看已连接」时不显示 ----
@@ -37,24 +40,48 @@ async function renderHubMcp(box) {
   const presetCard = it => {
     const on = configured.has(it.name), miss = missingTool(it), keys = keyCount(it);
     return `<div class="ex-card" data-pi="${items.indexOf(it)}">
-      ${on ? '<span class="flag">已接入</span>' : miss ? `<span class="flag" style="color:var(--wb-err-text)">没找到 ${esc(miss)}</span>` : ""}
+      ${on ? '<span class="flag">已接入</span>' : miss ? `<span class="flag" style="color:var(--owb-err-text)">没找到 ${esc(miss)}</span>`
+        : it.blocked ? '<span class="flag" style="color:var(--owb-err-text)">内网连不上</span>' : ""}
       <div class="hd"><div class="av">${ava(it.icon, "plug")}</div>
         <div class="nm"><span>${esc(it.label || it.name)}</span><span class="al">${esc(it.name)}</span></div></div>
       <div class="ds">${esc(it.desc || "")}</div>
+      ${it.blocked ? `<div class="ds" style="opacity:.75">${esc(it.blockedWhy || "")}</div>` : ""}
       <div class="tg">${it.tag ? `<i>${esc(it.tag)}</i>` : it.kind === "http" ? "<i>远程</i>" : `<i>${esc(String(it.command || "").split(/[\\/]/).pop())}</i>`}${keys ? `<i>要填 ${keys} 个 Key</i>` : "<i>免 Key</i>"}${it.docs ? `<a class="mcp-docs-link" href="${esc(it.docs)}" target="_blank" rel="noopener">去哪拿${ic("arrow-right")}</a>` : ""}</div>
       ${po ? `<div class="ops"><button class="mcp-use${on ? "" : " primary"}"${on ? " disabled" : ""}>${on ? "已接入" : "接入"}</button></div>` : ""}
     </div>`;
   };
+  // 内网开关摆在连接器这一页，是因为它的后果全在这页上看得见：一打开，连不上的境外连接器
+  // 当场标出来、排到最后。只有平台管理员画得到（下面 `if (!po) return` 之后才绑事件），
+  // 而它从不删改任何已经配好的东西——判断错了关掉就全恢复，所以不用弹二次确认。
+  const intranetSec = !po ? "" : `
+    <div class="hub-sec-title" style="margin-top:22px">网络环境
+      <span class="sub">这台机器能不能连上境外服务。据实说就行——它只改提示，不动你已经配好的任何东西</span></div>
+    <label class="hub-desc" style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;margin-top:8px">
+      <input type="checkbox" id="mcp-intranet" style="margin:2px 0 0"${cat.intranet ? " checked" : ""}>
+      <span>内网模式：连不上的境外连接器给标出来、排到最后（<b>不删</b>，有代理照样接得上）；从 GitHub 装技能当场说清楚，不再白等 30 秒超时</span>
+    </label>`;
   const presetSec = !po || !presets.length ? "" : `
     <div class="hub-sec-title" style="margin-top:22px">推荐连接器
       <span class="sub">点「接入」我会把启动命令填好，要 Key 的填上就能连；都是官方或社区现成的 MCP 服务器</span></div>
     ${!tools.uvx && presets.some(it => it.needs === "uvx") ? '<div class="hub-desc">本机没找到 uvx：标着 uvx 的连接器要先装 uv（macOS 装法：brew install uv）</div>' : ""}
     ${!tools.npx && presets.some(it => it.needs && it.needs !== "uvx") ? '<div class="hub-desc">本机没找到 npx：先装 Node.js（自带 npx）再来接本地连接器</div>' : ""}
+    ${(cat.notes || []).map(n => `<div class="hub-desc">${esc(n)}</div>`).join("")}
     ${(cat.categories || []).map(c => {
       const its = presets.filter(it => it.category === c);
       return its.length ? `<div class="hub-desc" style="margin-top:12px">${esc(c)}</div><div class="card-grid">${its.map(presetCard).join("")}</div>` : "";
     }).join("")}`;
-  box.innerHTML = `
+  // 刚保存完那一趟的体检结果。只在这一页存在，切走再回来就没了——
+  // 它说的是「你刚提交的那份配置」，配置都换了还挂着旧结论会误导人。
+  const adv = hubState.mcpAdvice;
+  hubState.mcpAdvice = null;
+  const adviceBox = !adv || !po ? "" : `
+    <div class="hub-desc" style="margin-top:14px;border-left:3px solid var(--owb-warn, #d97706);padding-left:10px">
+      <b>存下了，另外有 ${adv.findings.length + (adv.more || 0)} 处想让你看一眼</b>（外挂的 toolward 扫出来的，只是提醒，没拦任何东西）：
+      ${adv.findings.map(f => `<div style="margin-top:4px">· ${esc(f.file)}${f.line ? ":" + f.line : ""} — ${esc(f.why)}</div>`).join("")}
+      ${adv.more ? `<div style="margin-top:4px">· …另外 ${adv.more} 处</div>` : ""}
+      <div style="margin-top:6px;opacity:.75">你填的 Key 和令牌没有交给它：只把变量名递过去，值全换成了 ***。</div>
+    </div>`;
+  box.innerHTML = `${adviceBox}
     <div class="hub-sec-title" style="margin-top:14px">已接入的外部工具
       <span class="sub">通过 MCP（本地 stdio / 远程 Streamable HTTP）给智能体接外部能力，当前 ${data.servers.length} 个服务器 · <b>${data.total_tools}</b> 个工具已注入，任务里可直接调用</span></div>
     <div class="card-grid">
@@ -63,7 +90,7 @@ async function renderHubMcp(box) {
         <div class="ex-card mcp-server-card" data-mi="${i}">
           ${sv.plugin ? `<span class="flag">来自插件 ${esc(sv.plugin)}</span>` : ""}
           <div class="hd"><div class="av">${ic(sv.connected ? "plug" : "triangle-alert")}</div>
-            <div class="nm"><span>${esc(sv.name)}</span><span class="al" style="color:var(${sv.connected ? "--wb-ok" : "--wb-err"})">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
+            <div class="nm"><span>${esc(sv.name)}</span><span class="al" style="color:var(${sv.connected ? "--owb-ok" : "--owb-err"})">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
           <div class="ds mcp-server-command" title="${esc(isRemote(sv) ? sv.url : [sv.command, ...(sv.args || [])].join(" "))}">${isRemote(sv)
             ? `<b style="font-family:inherit;opacity:.6">远程 ·</b> ` + esc(sv.url) + ((sv.header_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.header_keys.length} 个请求头：${esc(sv.header_keys.join("、"))}）</span>` : "")
             : `<b style="font-family:inherit;opacity:.6">本地 ·</b> ` + esc(sv.command) + " " + esc((sv.args || []).join(" ")) + ((sv.env_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.env_keys.length} 个环境变量：${esc(sv.env_keys.join("、"))}）</span>` : "")}</div>
@@ -96,11 +123,29 @@ async function renderHubMcp(box) {
         <button id="mcp-cancel" style="padding:6px 14px">取消</button>
         <a id="mcp-docs" href="#" target="_blank" rel="noopener" style="display:none;font-size:13px">去哪拿 Key${ic("arrow-right")}</a>
         <span class="ab-empty" id="mcp-msg"></span></div>
-    </div>`}` + presetSec;
+    </div>`}` + intranetSec + presetSec;
   const form = box.querySelector("#mcp-add-form");
   if (!po) return; // 下面全是写的那条路：表单、接入、删除，成员一颗都没画，也就没什么可绑
   const openForm = () => { form.style.display = ""; form.scrollIntoView({ behavior: "smooth", block: "nearest" }); };
   box.querySelector("#mcp-open-add").onclick = openForm;
+  const intranetBox = box.querySelector("#mcp-intranet");
+  if (intranetBox) intranetBox.onchange = async () => {
+    intranetBox.disabled = true;
+    const want = intranetBox.checked;
+    const resp = await fetch("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ intranet: want }),
+    });
+    if (!resp.ok) {
+      // 存不上就把钩子拨回去。留在「看着已经开了、其实没存上」的状态最坑：
+      // 用户以为设过了，下次进来又是关的，会以为是软件把设置吃了
+      const d = await resp.json().catch(() => ({}));
+      toast(d.error || "保存失败", "circle-x");
+      intranetBox.checked = !want;
+      intranetBox.disabled = false;
+      return;
+    }
+    renderHubBody(); // 目录得重算：哪些标出来、怎么排，全跟着这个开关变
+  };
   box.querySelector("#mcp-cancel").onclick = () => { form.style.display = "none"; };
   box.querySelectorAll(".ex-card[data-mi]").forEach(card => {
     const sv = data.servers[+card.dataset.mi];
@@ -312,16 +357,17 @@ const SETTING_CATS = [
   ["memory", "记忆", "notebook-pen"],
   ["evolve", "自进化", "sprout"],
   ["trace", "执行追踪", "activity"],
+  ["ops", "运行状况", "bar-chart"],
   ["data", "数据", "database"],
   ["im", "助理设置", "smartphone"],
   ["about", "关于", "info"],
 ];
 /**
- * 这五页从头到尾都是服务器级的：联网搜索的 Key、自进化规则、执行追踪、备份/工作目录、飞书企微钉钉接入。
+ * 这六页从头到尾都是服务器级的：联网搜索的 Key、自进化规则、执行追踪、运行状况的日志与告警、备份/工作目录、飞书企微钉钉接入。
  * 多人服务器上的普通成员每一颗按钮都会 403，连一行属于他自己的东西都没有——那就别画这个标签页。
  * （models / persona / security 是混的：里面有他自己的东西，标签留着，卡片各自按 platform_owner 挑。）
  */
-const PLATFORM_ONLY_CATS = new Set(["search", "evolve", "trace", "data", "im"]);
+const PLATFORM_ONLY_CATS = new Set(["search", "evolve", "trace", "ops", "data", "im"]);
 async function renderSettings(active) {
   const s = await fetch("/api/settings").then(r => r.json());
   const cats = s.platform_owner ? SETTING_CATS : SETTING_CATS.filter(([k]) => !PLATFORM_ONLY_CATS.has(k));
@@ -345,6 +391,7 @@ async function renderSettings(active) {
   else if (active === "memory") renderMemoryPane(pane);
   else if (active === "evolve") renderEvolvePane(pane);
   else if (active === "trace") renderTracePane(pane, s);
+  else if (active === "ops") renderOpsPane(pane);
   else if (active === "data") renderDataPane(pane, s);
   else if (active === "security") renderSecurityPane(pane, s);
   else if (active === "shortcuts") renderShortcutsPane(pane, s);
@@ -495,7 +542,7 @@ function capCard(c, s, provName) {
           </div>`;
         }).join("") : `<div class="ch-note">还没配。加一个之后 agent 才用得了 ${esc(c.tool)}。</div>`}
         ${mine.length > 1 ? `<div class="ch-note">挂了多个：平时走「主用」那条；要指定别的，在对话里点名它的名字（例如「用${esc((mine.find((m) => !m.default) || mine[0]).name)}画」），agent 会按名字挑。</div>` : ""}
-        <div class="mm-form" data-cap="${c.cap}" style="display:none;border-top:1px solid var(--wb-border);padding-top:8px;margin-top:6px">
+        <div class="mm-form" data-cap="${c.cap}" style="display:none;border-top:1px solid var(--owb-border);padding-top:8px;margin-top:6px">
           <div class="form-row">
             <select class="mm-prov"></select>
             <select class="mm-model"></select>
@@ -759,7 +806,7 @@ function paintModels(pane, s) {
       </div>
       <div class="ch-body">${loose.map((m) => modelRow(m, s, po)).join("")}</div>
     </div>`}
-    <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size: 13px;color:var(--wb-text-2);cursor:pointer">
+    <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size: 13px;color:var(--owb-text-2);cursor:pointer">
       <input type="checkbox" id="mf-follow-last" style="margin:0" ${s.model_follow_last ? "checked" : ""}>
       新对话自动沿用上次手动选过的模型（不勾则新对话总是用全局默认）
     </label>
@@ -931,7 +978,7 @@ function chanCard(p, s, po, kindLabel, dupeTag) {
         ${mine.length ? mine.map((m) => modelRow(m, s, po)).join("")
           : `<div class="ch-note">这个渠道下面还没有对话模型。${po ? "加一个，它就会出现在输入框右下角那个选择器里。" : ""}</div>`}
         ${!po ? "" : `
-        <div class="ca-form" data-chan="${esc(p.id)}" style="display:none;border-top:1px solid var(--wb-border);padding-top:8px;margin-top:6px">
+        <div class="ca-form" data-chan="${esc(p.id)}" style="display:none;border-top:1px solid var(--owb-border);padding-top:8px;margin-top:6px">
           <div class="form-row">
             <select class="ca-chan"></select>
             <select class="ca-model"></select>
@@ -1476,7 +1523,7 @@ function traceStepHtml(item, children, depth, ctx) {
     ${target ? `<div class="tp-target">${esc(target)}</div>` : ""}
     ${pct ? `<div class="tp-bar-line"><i style="width:${pct}%"></i></div>` : ""}
     ${item.error ? `<div class="tp-err">${esc(item.error)}</div>` : ""}
-    <div class="tp-fold">${traceFold("完整输入", item.input)}${traceFold("输出", item.output)}${item.metadata && Object.keys(item.metadata).length ? traceFold("元数据", item.metadata) : ""}<div style="margin-top:6px;color:var(--wb-text-3);font-size:12px">${esc(traceTimeRange(item))}</div></div>
+    <div class="tp-fold">${traceFold("完整输入", item.input)}${traceFold("输出", item.output)}${item.metadata && Object.keys(item.metadata).length ? traceFold("元数据", item.metadata) : ""}<div style="margin-top:6px;color:var(--owb-text-3);font-size:12px">${esc(traceTimeRange(item))}</div></div>
   </details>${nested}`;
 }
 function renderTraceDetail(box, trace) {
@@ -1496,7 +1543,7 @@ function renderTraceDetail(box, trace) {
   const [statusCls, statusText] = TRACE_STATUS[trace.status] || TRACE_STATUS.completed;
   const cell = (b, t, title) => `<div${title ? ` title="${esc(title)}"` : ""}><b>${b}</b><span>${esc(t)}</span></div>`;
   box.innerHTML = `<div class="tp-detail">
-    <div class="tp-dhead"><div><b${trace.name_derived ? ' class="is-said"' : ""}>${esc(trace.name || "（没留下名字）")}</b><small>${esc(trace.startTime ? new Date(trace.startTime).toLocaleString() : "-")} · ${esc(trace.id)}</small></div><span class="tp-pill ${statusCls}">${esc(statusText)}</span></div>
+    <div class="tp-dhead"><div><b${trace.name_derived ? ' class="is-said"' : ""}>${esc(trace.name || "（没留下名字）")}</b><small>${[trace.startTime ? new Date(trace.startTime).toLocaleString() : "-", Number(trace.turn) > 1 ? `第 ${trace.turn} 轮` : "", trace.id].filter(Boolean).map((b) => `<span>${esc(b)}</span>`).join(" · ")}</small></div><span class="tp-pill ${statusCls}">${esc(statusText)}</span></div>
     <div class="tp-sum">
       ${cell(esc(traceFmtDuration(total)), "总耗时")}
       ${cell(String(stats.tools.length), "工具调用")}
@@ -1618,8 +1665,8 @@ const TRACE_STATUS = {
  *
  * 改之前每行是「任务 / 809ms / 3 工具 · 2 模型 / 0 Token / 09/17 03:09」——
  * 名字全一样，工具只有个数，Token 恒等于 0。二十行长得一模一样，只能一条条点开试。
- * 现在第一行放这趟到底要干什么（写的时候没名字就取用户第一句话），
- * 第二行放真正能把两趟分开的东西：用了哪几个工具、哪个模型、谁跑的、在哪个工作区。
+ * 现在第一行放这趟到底要干什么（写的时候没名字就取用户最近说过的那句有内容的话），
+ * 第二行放真正能把两趟分开的东西：第几轮、用了哪几个工具、哪个模型、谁跑的、在哪个工作区。
  */
 function traceRowHtml(t) {
   const u = traceUsage(t), st = traceObsStats(t);
@@ -1636,8 +1683,12 @@ function traceRowHtml(t) {
   const tok = u.input + u.output;
   // 「没记到账」和「一个 token 没花」不是一回事，别都写成 0
   const tokText = tok ? `${tok >= 1000 ? (tok / 1000).toFixed(1) + "k" : tok} Token` : (st.generations.length ? "Token 未记" : "");
+  // 同一个会话里聊着聊着开出来的几趟，名字天然就像（都从这段历史里截的）。
+  // 轮次不塞进名字——名字已经够长了——放在这条淡色的信息行里，一眼能看出哪趟在前哪趟在后。
+  const turn = Number(t.turn) > 1 ? `第 ${t.turn} 轮` : "";
   const bits = [
     t.startTime ? new Date(t.startTime).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "",
+    turn,
     tools,
     models.length ? models[0] + (models.length > 1 ? ` +${models.length - 1}` : "") : "",
     tokText,
@@ -1667,6 +1718,114 @@ function paintTraceList() {
   });
   if (!traceSel) renderTraceDetail(detail, null);
 }
+/**
+ * 运行状况：指标折线 + 正在报的警 + 运行期日志。
+ *
+ * 这一页要回答的是三个具体问题，不是「好看」：
+ *   · 最近这几个小时有没有变糟（失败率、P95 的折线）
+ *   · 现在有没有什么正在报警，以及它报了多久了
+ *   · 刚才那次出错，日志里写的是什么
+ * 所以图用最朴素的画法（一个 svg polyline，不引图表库——这个项目没有构建步骤），
+ * 日志给到级别和关键词两个过滤器就停手。要做更花的，等真有人抱怨这一页不够用再说。
+ */
+function renderOpsPane(pane) {
+  pane.innerHTML = `
+    <div class="card-item">
+      <div class="t">最近的运行指标</div>
+      <div class="d" style="margin-bottom:8px">每分钟滚一份快照，存在 <code>data/metrics/&lt;年-月&gt;.jsonl</code>，留最近 6 个月。<b>计数是「这一分钟内」的增量</b>，不是累计值——重启不会在图上留一个假的断崖。</div>
+      <div id="ops-cards" style="display:flex;flex-wrap:wrap;gap:10px;margin:10px 0"></div>
+      <div id="ops-chart"></div>
+    </div>
+    <div class="card-item">
+      <div class="t">正在报的警</div>
+      <div class="d" style="margin-bottom:8px">命中阈值就推到企业微信 / 钉钉（在「助理设置」里配机器人地址）。<b>同一条 30 分钟内只报一次</b>，恢复了也会说一声——只报警不报恢复的系统，两周后就没人看了。</div>
+      <div id="ops-alerts"></div>
+    </div>
+    <div class="card-item">
+      <div class="t">运行日志</div>
+      <div class="d" style="margin-bottom:8px">一行一条 JSON，落 <code>logs/app-&lt;日期&gt;.jsonl</code>，留最近 14 天。出错和警告同时还会打在终端里。</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+        <select id="ops-day" style="max-width:160px"></select>
+        <select id="ops-level" style="max-width:120px">
+          <option value="">全部级别</option><option value="info">info 及以上</option>
+          <option value="warn">warn 及以上</option><option value="error">只看 error</option>
+        </select>
+        <input id="ops-q" placeholder="关键词（会话 id / 登录名 / 报错原文）" style="flex:1;min-width:180px">
+        <button class="btn-plain" id="ops-refresh">刷新</button>
+      </div>
+      <div id="ops-logs" style="max-height:420px;overflow:auto;font-family:var(--mono, ui-monospace, monospace);font-size:12px;line-height:1.7"></div>
+    </div>`;
+
+  const num = (v, unit = "") => (v == null ? "—" : v + unit);
+  /** 一条极简折线。没有坐标轴、没有 tooltip——这一页是用来「一眼看出有没有变糟」的，不是给人读数的 */
+  const spark = (rows, key, color, label, fmt) => {
+    const vals = rows.map((r) => Number(r[key]) || 0);
+    const max = Math.max(...vals, key === "task_fail_rate" ? 0.2 : 1);
+    const w = 100, h = 28;
+    const pts = vals.map((v, i) => `${(i / Math.max(1, vals.length - 1)) * w},${h - (v / max) * h}`).join(" ");
+    const last = vals[vals.length - 1] || 0;
+    return `<div style="flex:1;min-width:150px;background:var(--owb-bg-side);border-radius:10px;padding:10px 12px">
+      <div style="font-size:12px;color:var(--owb-text-2)">${label}</div>
+      <div style="font-size:19px;font-weight:600;margin:2px 0 4px">${fmt ? fmt(last) : last}</div>
+      <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:28px;display:block"><polyline fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke" points="${pts}"></polyline></svg>
+    </div>`;
+  };
+
+  const loadMetrics = async () => {
+    let d;
+    try { d = await fetch("/api/ops/metrics?limit=360").then((r) => r.json()); } catch { d = null; }
+    const cards = pane.querySelector("#ops-cards"), chart = pane.querySelector("#ops-chart"), al = pane.querySelector("#ops-alerts");
+    if (!d || d.error) { cards.innerHTML = `<div class="d">${esc((d && d.error) || "读不出来")}</div>`; return; }
+    const rows = d.rows || [];
+    if (!rows.length) {
+      // 「还没攒够一分钟」和「坏了」长得不能一样，不然用户会去查一个根本不存在的故障
+      cards.innerHTML = `<div class="d">还没有快照。服务起来之后每分钟滚一份，等一分钟再看这里。</div>`;
+      chart.innerHTML = "";
+    } else {
+      cards.innerHTML = [
+        spark(rows, "tasks", "#4c8dff", "任务数 / 分钟"),
+        spark(rows, "task_fail_rate", "#e5534b", "失败率", (v) => (v * 100).toFixed(0) + "%"),
+        spark(rows, "task_p95_ms", "#d29922", "P95 耗时", (v) => (v / 1000).toFixed(1) + "s"),
+        spark(rows, "tokens", "#3fb950", "Token / 分钟"),
+        spark(rows, "rss_mb", "#a371f7", "内存", (v) => v + " MB"),
+        spark(rows, "disk_free_pct", "#58a6ff", "磁盘剩余", (v) => (v * 100).toFixed(0) + "%"),
+      ].join("");
+      const last = rows[rows.length - 1];
+      const streak = Object.entries(last.channel_fail_streak || {});
+      chart.innerHTML = `<div class="d">最近一份快照：${esc(String(last.ts).replace("T", " ").slice(0, 19))} · 正在跑 ${num(last.active_runs)} 趟 · 未接住的 500 共 ${num(last.http_5xx)} 次${
+        streak.length ? ` · 连挂的渠道：${streak.map(([k, v]) => esc(k) + " ×" + v).join("、")}` : ""}</div>`;
+    }
+    const alerts = Object.entries(d.alerts || {});
+    al.innerHTML = alerts.length
+      ? alerts.map(([id, v]) => `<div style="padding:6px 0;border-bottom:1px solid var(--owb-line)"><b>${esc(id)}</b> <span class="d">正在报，已持续约 ${Math.max(1, Math.round((Date.now() - (v.since || Date.now())) / 60000))} 分钟</span></div>`).join("")
+      : `<div class="d">现在没有正在报的警。（这不代表没配通道——想验一下的话，可以把阈值调低再跑几趟任务。）</div>`;
+  };
+
+  const loadLogs = async () => {
+    const day = pane.querySelector("#ops-day").value, level = pane.querySelector("#ops-level").value, q = pane.querySelector("#ops-q").value;
+    const box = pane.querySelector("#ops-logs");
+    let d;
+    try { d = await fetch(`/api/ops/logs?day=${encodeURIComponent(day)}&level=${encodeURIComponent(level)}&q=${encodeURIComponent(q)}&limit=300`).then((r) => r.json()); } catch { d = null; }
+    if (!d || d.error) { box.innerHTML = `<div class="d">${esc((d && d.error) || "读不出来")}</div>`; return; }
+    const sel = pane.querySelector("#ops-day");
+    if (!sel.options.length) sel.innerHTML = (d.days || []).map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("") || `<option value="">今天</option>`;
+    const color = { error: "#e5534b", warn: "#d29922", info: "var(--owb-text-2)", debug: "var(--owb-text-3)" };
+    box.innerHTML = (d.rows || []).length
+      ? d.rows.map((r) => {
+          const extra = Object.entries(r).filter(([k]) => !["ts", "level", "mod", "msg"].includes(k)).map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ");
+          return `<div style="padding:2px 0;white-space:pre-wrap;word-break:break-all"><span style="color:var(--owb-text-3)">${esc(String(r.ts).slice(11, 19))}</span> <span style="color:${color[r.level] || "inherit"}">${esc(r.level)}</span> <b>${esc(r.mod)}</b> ${esc(r.msg)} <span style="color:var(--owb-text-3)">${esc(extra)}</span></div>`;
+        }).join("")
+      : `<div class="d">这一天没有符合条件的日志。</div>`;
+  };
+
+  pane.querySelector("#ops-refresh").onclick = () => { loadMetrics(); loadLogs(); };
+  pane.querySelector("#ops-level").onchange = loadLogs;
+  pane.querySelector("#ops-day").onchange = loadLogs;
+  pane.querySelector("#ops-q").onkeydown = (e) => { if (e.key === "Enter") loadLogs(); };
+  loadMetrics();
+  loadLogs();
+}
+
 function renderTracePane(pane, s) {
   const lf = s.langfuse || {};
   const st = lf.stats || {};
@@ -1679,7 +1838,7 @@ function renderTracePane(pane, s) {
     <div class="card-item">
       <div class="t">执行追踪</div>
       <div class="d" style="margin-bottom:6px">开了之后，每趟任务的每次模型调用、每个工具、每笔 token 都会发到 Langfuse，在那边一层层展开看。默认关着——<b>打开等于把提示词原文、模型回复、工具参数发到下面填的那台机器</b>。自己用 Docker 搭一个就全在自己机器里；填官方 cloud.langfuse.com 就是发给别人。</div>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="lf-on" style="margin:0"${lf.enabled ? " checked" : ""}> 打开执行追踪</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer"><input type="checkbox" id="lf-on" style="margin:0"${lf.enabled ? " checked" : ""}> 打开执行追踪</label>
       <div class="f">Langfuse 地址</div>
       <input id="lf-host" placeholder="https://cloud.langfuse.com 或 http://你的内网地址:3000" value="${esc(lf.host || "")}">
       <div class="f">公钥 Public Key</div>
@@ -1927,12 +2086,12 @@ function engineExtraHtml(e) {
       ? "Codex CLI 没有可查询的模型目录；这里不会伪造候选。留空用 Codex 默认模型，或直接输入你已开通的模型名。"
       : "留空 = 用 CLI 自己的默认模型；也可以直接输入它支持的模型名。";
   return `<div class="eng-x" onclick="event.stopPropagation()">
-    <label>可执行文件路径<span style="color:var(--wb-text-3)">（留空 = 自动找。装在 nvm/homebrew 里也能找到；只有自动找不到时才需要填绝对路径）</span>
+    <label>可执行文件路径<span style="color:var(--owb-text-3)">（留空 = 自动找。装在 nvm/homebrew 里也能找到；只有自动找不到时才需要填绝对路径）</span>
       <input type="text" data-k="bin" placeholder="${esc(e.path || e.id)}" value="${esc(o.bin || "")}"></label>
-    <label>模型<span style="color:var(--wb-text-3)">（${esc(modelHint)}）</span>
+    <label>模型<span style="color:var(--owb-text-3)">（${esc(modelHint)}）</span>
       <input type="text" data-k="model" list="${listId}" placeholder="默认" value="${esc(o.model || "")}" autocomplete="off">
       <datalist id="${listId}">${models.map((m) => `<option value="${esc(m)}">`).join("")}</datalist></label>
-    <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--wb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
+    <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--owb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
       <select data-k="thinking">${ENGINE_THINK_LEVELS.map(([v, l]) => `<option value="${v}"${(o.thinking || "") === v ? " selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="eng-row">
       <button class="btn-brand" data-act="test">测试连接</button>
@@ -2035,11 +2194,11 @@ function petCardHtml(p) {
   return `
     <div class="card-item">
       <div class="t">${ic("cat")} 桌面宠物</div>
-      <div class="d" style="margin-bottom:10px"><b>默认没有宠物</b>——直接在对话里说「把这张图做成桌面宠物」并传一张照片，它就现场给你做一只；这里是手动开关和微调。<br>做出来之后，它会在桌面角落实时显示 agent 在干什么：干活时敲键盘、<b>要问你问题时跳起来并弹系统通知</b>（这条最有用——主窗口被盖住时，它提的问题很容易被漏掉，超时就按默认继续了）。点它开关主窗口，拖动换位置，右键有菜单（含免打扰）。空白处不吃鼠标，不会挡住底下的应用。${p.available === false ? '<br><span style="color:var(--wb-warn,#c60)">当前是纯服务端模式（npm start），宠物只在桌面版 <code>npm run app</code> 下出现。</span>' : ""}</div>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-on" style="margin:0"${on ? " checked" : ""}> 显示桌面宠物</label>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify" style="margin:0"${p.notify !== false ? " checked" : ""}> 要提问时弹系统通知 + 图标跳动</label>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify-done" style="margin:0"${p.notify_done !== false ? " checked" : ""}> 任务干完 / 出错时也提醒我一声</label>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--wb-text-2);cursor:pointer"><input type="checkbox" id="pet-wander" style="margin:0"${p.wander ? " checked" : ""}> 闲着时让它在桌面上随便走走（默认关）</label>
+      <div class="d" style="margin-bottom:10px"><b>默认没有宠物</b>——直接在对话里说「把这张图做成桌面宠物」并传一张照片，它就现场给你做一只；这里是手动开关和微调。<br>做出来之后，它会在桌面角落实时显示 agent 在干什么：干活时敲键盘、<b>要问你问题时跳起来并弹系统通知</b>（这条最有用——主窗口被盖住时，它提的问题很容易被漏掉，超时就按默认继续了）。点它开关主窗口，拖动换位置，右键有菜单（含免打扰）。空白处不吃鼠标，不会挡住底下的应用。${p.available === false ? '<br><span style="color:var(--owb-warn,#c60)">当前是纯服务端模式（npm start），宠物只在桌面版 <code>npm run app</code> 下出现。</span>' : ""}</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer"><input type="checkbox" id="pet-on" style="margin:0"${on ? " checked" : ""}> 显示桌面宠物</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify" style="margin:0"${p.notify !== false ? " checked" : ""}> 要提问时弹系统通知 + 图标跳动</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer"><input type="checkbox" id="pet-notify-done" style="margin:0"${p.notify_done !== false ? " checked" : ""}> 任务干完 / 出错时也提醒我一声</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer"><input type="checkbox" id="pet-wander" style="margin:0"${p.wander ? " checked" : ""}> 闲着时让它在桌面上随便走走（默认关）</label>
       <div class="f">形象</div>
       <div class="d" style="margin-bottom:6px">可以换成你自己或朋友的照片——上传后自动裁成圆形，配上呼吸、摇摆、跳跃的动效"活"起来。图片只存在本机 <code>data/</code> 目录，不上传任何服务器。</div>
       ${petSpriteHint(p)}
@@ -2053,9 +2212,9 @@ function petCardHtml(p) {
         ${p.has_photo ? '<button class="btn-plain" id="pet-drop">删除照片</button>' : ""}
         <input type="file" id="pet-file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">
       </div>
-      <div class="f">大小 <span id="pet-scale-v" style="color:var(--wb-text-3)">${Math.round((p.scale || 2) * 100)}%</span></div>
+      <div class="f">大小 <span id="pet-scale-v" style="color:var(--owb-text-3)">${Math.round((p.scale || 2) * 100)}%</span></div>
       <input type="range" id="pet-scale" min="0.6" max="2" step="0.1" value="${p.scale || 2}">
-      <div class="f">透明度 <span id="pet-op-v" style="color:var(--wb-text-3)">${Math.round((p.opacity || 1) * 100)}%</span></div>
+      <div class="f">透明度 <span id="pet-op-v" style="color:var(--owb-text-3)">${Math.round((p.opacity || 1) * 100)}%</span></div>
       <input type="range" id="pet-op" min="0.25" max="1" step="0.05" value="${p.opacity || 1}">
       <div style="margin-top:8px"><span class="ok-msg" id="pet-msg"></span></div>
     </div>`;
@@ -2069,7 +2228,7 @@ function petSpriteHint(p) {
   const bad = list.filter(x => !x.ok);
   const good = list.filter(x => x.ok);
   const install = '装法：终端里跑 <code>npx petdex install &lt;名字&gt;</code>，画廊在 <a href="https://petdex.dev" target="_blank" rel="noreferrer">petdex.dev</a>；也可以把整个宠物文件夹（含 <code>pet.json</code> + <code>spritesheet.webp</code>）丢进 <code>data/pets/</code>。';
-  const badLine = bad.length ? `<br><span style="color:var(--wb-warn,#c60)">有 ${bad.length} 只装了但用不了：${bad.map(x => esc(x.name || x.id) + "（" + esc(x.why) + "）").join("、")}</span>` : "";
+  const badLine = bad.length ? `<br><span style="color:var(--owb-warn,#c60)">有 ${bad.length} 只装了但用不了：${bad.map(x => esc(x.name || x.id) + "（" + esc(x.why) + "）").join("、")}</span>` : "";
   if (!good.length) return `<div class="d" style="margin-bottom:6px">还能用 <b>Codex / Petdex 的像素宠物</b>——8 行动作（跑、跳、挥手、失败…）直接对上 agent 的状态。本机<b>一只都没扫到</b>。${install}${badLine}</div>`;
   return `<div class="d" style="margin-bottom:6px">本机扫到 <b>${good.length}</b> 只 Codex / Petdex 像素宠物，已列在下面。${install}${badLine}</div>`;
 }
@@ -2172,7 +2331,7 @@ async function renderMemoryPane(pane) {
         ${canDel(it) ? `<a href="#" class="link danger" data-del="${esc(it.id)}">删</a>`
           : `<span class="mem-src" title="共享的记忆进所有账号的提示词，要平台管理员来删">共用</span>`}
       </div>`).join("")
-    : '<div style="color:var(--wb-text-3);font-size: 14px;padding:6px 0">还没有。你说「以后都这样」「记住…」时它会自己记一条；也可以在下面手动加。</div>';
+    : '<div style="color:var(--owb-text-3);font-size: 14px;padding:6px 0">还没有。你说「以后都这样」「记住…」时它会自己记一条；也可以在下面手动加。</div>';
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">${ic("pin")} 记住的事（AI 自己记的 + 你手动加的）</div>
@@ -2184,7 +2343,7 @@ async function renderMemoryPane(pane) {
         <button class="btn-plain" id="mem-add" style="flex:0 0 auto">加进去</button>
       </div>
       ${m.can_share ? `
-      <label style="display:flex;align-items:center;gap:6px;font-size: 13px;color:var(--wb-text-3);margin-top:6px;cursor:pointer">
+      <label style="display:flex;align-items:center;gap:6px;font-size: 13px;color:var(--owb-text-3);margin-top:6px;cursor:pointer">
         <input type="checkbox" id="mem-shared" style="margin:0"> 这条给这台机器上所有账号共用
       </label>` : `
       <div class="d" style="margin-top:6px">加进去的只有你自己看得到。要让这台机器上所有账号都共用某条，得平台管理员来加。</div>`}
@@ -2199,7 +2358,7 @@ async function renderMemoryPane(pane) {
       <div class="t">${ic("truck")} 记忆搬家（导出 / 从其它 agent 导入）</div>
       <div class="d" style="margin-bottom:8px">导出成一份 Markdown 到哪都能用。导入自动扫描本机 Claude Code / Codex / Claude Cowork 的记忆文件；记忆不落在固定文件里的工具，从它界面里把记忆复制出来粘到下面即可。「导入为条目」逐行进上面的条目区（自动去重），「并入背景说明」整段接到背景说明后面。</div>
       <div style="margin-bottom:8px"><button class="btn-plain" id="mem-export">${ic("upload")} 导出全部记忆（.md）</button></div>
-      <div id="mem-scan" style="font-size: 13px;color:var(--wb-text-2)">扫描中…</div>
+      <div id="mem-scan" style="font-size: 13px;color:var(--owb-text-2)">扫描中…</div>
       <textarea id="mem-paste" rows="4" placeholder="或把其它 agent 的记忆文本粘到这里…" style="margin-top:8px"></textarea>
       <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn-plain" id="mem-paste-items">导入为条目</button>
@@ -2250,9 +2409,9 @@ async function renderMemoryPane(pane) {
   fetch("/api/memory/import/scan").then(r => r.json()).then(d => {
     const list = d.sources || [];
     scanBox.innerHTML = list.length ? list.map((s, i) => `
-      <div style="display:flex;align-items:center;gap:10px;padding:4px 0;border-bottom:1px solid var(--wb-border)">
+      <div style="display:flex;align-items:center;gap:10px;padding:4px 0;border-bottom:1px solid var(--owb-border)">
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis" title="${esc(s.path)}">${esc(s.label)}</span>
-        <span style="color:var(--wb-text-3)">${fmtSize(s.size)}</span>
+        <span style="color:var(--owb-text-3)">${fmtSize(s.size)}</span>
         <a href="#" class="link" data-imp-i="${i}" data-imp-mode="items">导入为条目</a>
         <a href="#" class="link" data-imp-i="${i}" data-imp-mode="manual">并入背景说明</a>
       </div>`).join("") : "本机没扫到其它 agent 的记忆文件（Claude Code / Codex / Claude Cowork）。可以用下面的粘贴导入。";
@@ -2302,7 +2461,7 @@ function renderDataPane(pane, s) {
         <input type="file" id="bk-file" accept=".gz,.tgz,application/gzip" style="display:none">
         <span class="ok-msg" id="bk-msg"></span>
       </div>
-      <div id="bk-list" style="font-size: 13px;color:var(--wb-text-2)">加载中…</div>
+      <div id="bk-list" style="font-size: 13px;color:var(--owb-text-2)">加载中…</div>
     </div>
     <div class="card-item">
       <div class="t">数据说明</div>
@@ -2344,9 +2503,9 @@ function renderDataPane(pane, s) {
     if (d.error) { bkList.textContent = d.error; return; }
     const list = d.list || [];
     bkList.innerHTML = list.length ? list.map(b => `
-      <div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--wb-border)">
+      <div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--owb-border)">
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(b.name)}</span>
-        <span style="color:var(--wb-text-3)">${fmtSize(b.size)}</span>
+        <span style="color:var(--owb-text-3)">${fmtSize(b.size)}</span>
         <a href="#" class="link" data-bk-restore="${esc(b.name)}">恢复</a>
         <a href="/api/backup/download/${encodeURIComponent(b.name)}" class="link">下载</a>
         <a href="#" class="link danger" data-bk-del="${esc(b.name)}">删</a>
@@ -2468,11 +2627,11 @@ async function renderLarkQr(pane) {
     if (!d.ok) { setMsg(msg, "circle-x", d.error || "启动失败", "err"); return; }
     msg.textContent = "";
     qr.innerHTML = `<div style="display:flex;gap:12px;align-items:flex-start">
-      ${d.qr ? `<img src="${d.qr}" width="176" height="176" style="border:1px solid var(--wb-border);border-radius:8px;image-rendering:pixelated">` : ""}
+      ${d.qr ? `<img src="${d.qr}" width="176" height="176" style="border:1px solid var(--owb-border);border-radius:8px;image-rendering:pixelated">` : ""}
       <div style="min-width:0">
         <div><b>用飞书 App 扫这个码</b>，或在浏览器打开下面的链接：</div>
         <div style="margin:6px 0"><a href="${esc(d.url)}" target="_blank" rel="noreferrer" style="word-break:break-all">${esc(d.url)}</a></div>
-        <div id="lk-qr-st" style="color:var(--wb-text-3)">等待授权…（${d.expires_in} 秒内有效）</div>
+        <div id="lk-qr-st" style="color:var(--owb-text-3)">等待授权…（${d.expires_in} 秒内有效）</div>
         <div style="margin-top:8px"><button id="lk-cancel">取消</button></div>
       </div></div>`;
     qr.querySelector("#lk-cancel").onclick = () => {
@@ -2487,11 +2646,11 @@ async function renderLarkQr(pane) {
       if (!s2 || !line) { clearInterval(larkQrPoll); larkQrPoll = null; return; }
       if (s2.state === "ok") {
         clearInterval(larkQrPoll); larkQrPoll = null;
-        qr.innerHTML = `<div style="color:var(--wb-ok-text)">${ic("circle-check")} 授权成功${s2.user ? "：" + esc(s2.user) : ""}。现在 AI 可以用 lark-cli 以你的身份操作飞书了。</div>`;
+        qr.innerHTML = `<div style="color:var(--owb-ok-text)">${ic("circle-check")} 授权成功${s2.user ? "：" + esc(s2.user) : ""}。现在 AI 可以用 lark-cli 以你的身份操作飞书了。</div>`;
         renderLarkQr(pane);
       } else if (s2.state === "error") {
         clearInterval(larkQrPoll); larkQrPoll = null;
-        line.style.color = "var(--wb-err-text)";
+        line.style.color = "var(--owb-err-text)";
         setMsg(line, "circle-x", s2.error || "授权失败", "err");
       }
     }, 2500);
@@ -2617,13 +2776,13 @@ function renderImPane(pane, s) {
       <button class="btn-plain" data-act="newapp">${ic("smartphone")} 扫码新建应用</button>
       <span class="d" style="font-size:12px;margin-left:8px">没有现成应用？让本机 lark-cli 替你建一个，建完 App ID 自动填上</span>
       <div data-newapp-qr="${c.key}" style="display:none;margin:8px 0">
-        <img alt="新建飞书应用的授权二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--wb-border)">
+        <img alt="新建飞书应用的授权二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--owb-border)">
         <div class="d" style="font-size:12px;margin-top:4px">用飞书扫这个码，或 <a class="link" target="_blank" rel="noopener" data-newapp-link="${c.key}">在浏览器里打开</a>，按提示建好应用即可</div>
       </div>
       <div class="im-r ok-msg" data-newapp-r="${c.key}"></div>
     </div>` : "");
   const bodyHtml = (c) => {
-    if (c.qr) return `<div id="ilk-box" style="display:none;margin:4px 0 8px"><img id="ilk-img" alt="微信登录二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--wb-border)"></div><div class="im-r ok-msg" id="ilk-r">还没扫码。点右上角「连接」取二维码</div>${helpHtml(c)}`;
+    if (c.qr) return `<div id="ilk-box" style="display:none;margin:4px 0 8px"><img id="ilk-img" alt="微信登录二维码" style="width:176px;height:176px;border-radius:8px;background:#fff;padding:6px;border:1px solid var(--owb-border)"></div><div class="im-r ok-msg" id="ilk-r">还没扫码。点右上角「连接」取二维码</div>${helpHtml(c)}`;
     if (c.lark) return `<div id="fs-qr-body" class="d" style="font-size:13px">检测 lark-cli…</div>${helpHtml(c)}`;
     const groupPolicy = c.groupPolicy ? `<label class="im-group-policy">群聊响应方式
       <select id="im-feishu-group_reply_mode" aria-label="飞书群聊响应方式">

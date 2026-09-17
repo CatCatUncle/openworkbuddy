@@ -19,7 +19,7 @@
  * （切个引擎、拖个透明度滑块都写一次），跟账号密码摆在同一个文件里，任何一次写坏都是登录出事。
  *
  * 运行期怎么生效：走 AsyncLocalStorage，跟 tools.js 里的工作目录/策略是同一套路子。
- * 没有请求上下文的地方（定时任务、IM 消息、命令行 wb）取不到当前账号，一律回落到 config.json
+ * 没有请求上下文的地方（定时任务、IM 消息、命令行）取不到当前账号，一律回落到 config.json
  * ——也就是今天的行为，一个字节不差。
  */
 
@@ -31,8 +31,8 @@ const { dataPath } = require("./paths");
 // 这个文件里 store 已经被 AsyncLocalStorage 占了名字，所以叫 jsonStore
 const jsonStore = require("./store");
 
-// WB_DATA_DIR 跟 account.js / org.js 同一个口子：跑测试时指到临时目录，免得动到真偏好
-const DATA_DIR = process.env.WB_DATA_DIR || dataPath("data");
+// OPENWORKBUDDY_DATA_DIR 跟 account.js / org.js 同一个口子：跑测试时指到临时目录，免得动到真偏好
+const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 
 const store = new AsyncLocalStorage();
 
@@ -66,7 +66,7 @@ function fileOf(user) {
 /**
  * 读。
  *
- * 内存里留一份缓存，但**带 mtime 校验**：这个文件除了本进程还有别人会写——命令行 `wb` 是另一个
+ * 内存里留一份缓存，但**带 mtime 校验**：这个文件除了本进程还有别人会写——命令行 `openworkbuddy` 是另一个
  * 进程，多开的窗口也是。只按「读过一次就不再看盘」缓存的话，另一边改完这边永远看不见，
  * 用户体感是「设置没保存」。校验一次 statSync 的代价远小于一次误判。
  */

@@ -46,19 +46,36 @@ async function dramaSave() {
   }).then((x) => x.json());
   if (!r || !r.ok) throw new Error(r && r.error || "分镜表回写失败");
 }
-
-function dramaShotRefs(shot, chars) {
-  return (Array.isArray(shot.cast) ? shot.cast : [])
-    .map((id) => chars.get(String(id)))
-    .map((c) => c && c.ref)
-    .filter(Boolean)
-    .slice(0, 4);
-}
-function dramaShotFilename(shot, kind) {
-  const id = dramaShotId(shot, null, 0).replace(/[^\w\-一-龥]+/g, "_");
-  const existing = kind === "image" ? shot.first_frame : shot.video;
-  if (existing) return dramaBaseName(existing);
-  return kind === "image" ? `镜头_${id}_首帧.png` : `镜头_${id}.mp4`;
+/**
+ * 重跑一格之后，只把这一格跑出来的字段写回去。
+ *
+ * 以前这儿走的是整份 PUT，写回去的是**打开这个页面那一刻**的副本。中间在无限画布上把十二镜
+ * 生完（画布现在也会回写分镜表了），这一次重跑就会连带把那十二笔一起抹掉——界面上显示的是
+ * 「重跑成功」，实际干的事是把别处刚做完的活儿删了，而且要等下次重跑白花一遍钱才看得出来。
+ *
+ * 分镜表里那一镜没有 id 的时候指不着（schema 要求有，手改坏的表会缺），这时候退回整份写：
+ * 丢一笔总比这一格干脆不落盘强，但会在控制台说一声为什么退回。
+ *
+ * 绝不抛：这个函数是在钱已经花掉、图已经落盘之后才跑的。让它把异常掀到 dramaRerun 的 catch，
+ * 界面上就会显示「重跑失败」——那是假红，人会以为白花了钱去再点一次，于是真的又花一次。
+ * 回不去就把回不去这件事单独说清楚。
+ */
+async function dramaSaveShot(scene, shot, fields) {
+  try {
+    if (!shot || !String(shot.id || "").trim()) {
+      console.warn("[短剧] 这一镜在分镜表里没有镜头号，指不着单格回写，只能整份写回：", scene && scene.id);
+      await dramaSave();
+      return "";
+    }
+    const r = await fetch("/api/drama/storyboard/output", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: dramaState.name, scene: String((scene && scene.id) || ""), shot: String(shot.id), fields }),
+    }).then((x) => x.json()).catch(() => ({}));
+    if (!r || !r.ok) return `没能写回分镜表（${String((r && r.error) || "接口没应答").slice(0, 120)}）——这一格下次打开还是老样子，再点重跑会再花一次钱`;
+    return "";
+  } catch (e) {
+    return `没能写回分镜表（${String(e.message || e).slice(0, 120)}）——这一格下次打开还是老样子，再点重跑会再花一次钱`;
+  }
 }
 async function dramaRerun(scene, shot, kind) {
   const id = dramaShotId(shot, scene, 0);
@@ -97,8 +114,10 @@ async function dramaRerun(scene, shot, kind) {
     if (kind === "image") shot.first_frame = file;
     else shot.video = file;
     shot.note = `${shot.note ? shot.note + "；" : ""}${kind === "image" ? "首帧" : "视频"}已重跑${result.cached ? "（命中缓存）" : ""}`;
-    await dramaSave();
-    dramaToast(`${id} ${kind === "image" ? "首帧" : "视频"}已生成：${dramaBaseName(file)}`, "circle-check", "ok");
+    const back = await dramaSaveShot(scene, shot, { ...(kind === "image" ? { first_frame: file } : { video: file }), note: shot.note });
+    const made = `${id} ${kind === "image" ? "首帧" : "视频"}已生成：${dramaBaseName(file)}`;
+    if (back) dramaToast(`${made}，但${back}`, "triangle-alert", "err");
+    else dramaToast(made, "circle-check", "ok");
     renderDramaCanvas();
   } catch (e) {
     dramaToast(`${id} 重跑失败：${String(e.message || e).slice(0, 180)}`, "circle-x", "err");
@@ -201,7 +220,7 @@ function renderDramaCanvas() {
       width: world.clientWidth || 1200,
       height: world.clientHeight || 640,
       gridSize: 16,
-      drawGrid: { name: "dot", args: { color: "var(--wb-text-3)", thickness: 1, gap: 22 } },
+      drawGrid: { name: "dot", args: { color: "var(--owb-text-3)", thickness: 1, gap: 22 } },
       background: { color: "transparent" },
       cellViewNamespace: J.shapes,
       interactive: { elementMove: true, linkMove: false, labelMove: false, addLinkFromMagnet: false },

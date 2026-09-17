@@ -16,6 +16,11 @@
 const fs = require("fs");
 const path = require("path");
 const { dataPath } = require("./paths");
+const { isIntranet } = require("./intranet");
+const guard = require("./skill-guard");
+// 外挂的第二把尺子。没装就是一串 null，merge 会原样把自带那份还回来。见 toolward.js
+const toolward = require("./toolward");
+const log = require("./log");
 
 const SKILLS_DIR = dataPath("skills");
 
@@ -122,10 +127,21 @@ function samePlace(a, b) {
   try { return fs.realpathSync(a) === fs.realpathSync(b); } catch { return false; }
 }
 
-function saveSkill({ name, description, content, original_name }) {
+function saveSkill({ name, description, content, original_name, _scanned, confirm, force, actor }) {
   assertNotPluginSkill(original_name || name, "编辑");
   const n = safeName(name);
   const body = `---\nname: ${n}\ndescription: ${String(description || "").replace(/\r?\n/g, " ").trim()}\n---\n\n${String(content || "").trim()}\n`;
+  /**
+   * 手写/粘贴进来的技能也要过同一道闸。
+   *
+   * 不然这道检查就是个摆设：装的时候拦住了，把同一段字复制粘贴到「新建技能」框里就进来了，
+   * 而那个框才是最顺手的一条路。写给自己看的技能被拦下会有点烦，所以拦下来的话
+   * 界面上是「我知道了，还是保存」再来一次，不是不让存。
+   * （_scanned 是给上面单文件安装那条路用的：那儿刚扫过一遍原文，别扫第二遍。）
+   */
+  const scan = _scanned ? null : gate(
+    toolward.merge(guard.scanOne("skill.md", body), toolward.scanText("skill.md", body, null, { subject: n })),
+    n, { confirm, force, actor });
   const oldDir = original_name ? findSkillDir(original_name) : findSkillDir(n);
   const dir = oldDir && path.basename(oldDir) !== n && !original_name ? oldDir : path.join(SKILLS_DIR, n);
   /**
@@ -149,6 +165,7 @@ function saveSkill({ name, description, content, original_name }) {
   }
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "skill.md"), body, "utf8");
+  if (scan && scan.level !== "ok") writeProvenance(n, { source: "手写", actor, forced: !!force, scan });
   return getSkillFull(n);
 }
 
@@ -231,12 +248,100 @@ function discoverSkillDirs(root) {
   return found;
 }
 
-function installedFromDir(srcDir) {
+/**
+ * 装之前那道闸。
+ *
+ * 位置很关键：必须卡在 copySkillFolder **之前**。装完再扫等于没扫——
+ * 文件已经在 SKILLS_DIR 里了，而 loadSkills 只看目录、不看有没有人放过行，
+ * 下一条任务的提示词里它就已经在了。
+ *
+ * 三档：
+ *   ok    直接装
+ *   warn  要 opts.confirm —— 界面上把清单摆出来，人点了「知道了，装」才带这个标志再来一次
+ *   block 要 opts.force  —— 而且只有平台管理员能给（路由那层管），并且一定落日志
+ *
+ * 为什么 block 也留了口子：静态规则一定会有拦错的时候，而且拦错的往往是**正当的**技能。
+ * 拿本地 34 个正常技能实测，两个被拦的都是真命中：一个是 Windows 首次运行文档里写着
+ * `irm https://astral.sh/uv/install.ps1 | iex`（它确实叫你执行远程脚本），
+ * 另一个更绝——一个资讯聚合技能缓存下来的博客正文里，有一句在**讲解**这种攻击：
+ * 「它不动声色地让 Claude 去读 ~/.aws/credentials，编码后 POST 出去」。
+ * 同一句话，写在技能的指令里是攻击，出现在它抓回来的新闻里是新闻，正则分不出来。
+ * 一道人绕不过去的闸，人就会绕过整个工具（直接把目录拷进 skills/ 就行了，谁也拦不住）。
+ * 所以留口子，但留得响：要管理员、要显式 force、要留档。
+ */
+function gate(scan, name, opts = {}) {
+  const who = (opts.actor && opts.actor.user) || "";
+  if (scan.level === "block" && !opts.force) {
+    const e = new Error(guard.explain(scan, name) + "\n\n确实要装的话，让平台管理员在技能页点「仍然安装」——那一下会记进日志和技能目录里的 .install.json。");
+    e.skillScan = scan; e.needs = "force";
+    log.warn("skill", "安装被拦下", { name, verdict: scan.level, rules: scan.findings.filter((f) => f.level === "block").map((f) => f.rule), by: who });
+    throw e;
+  }
+  if (scan.level === "warn" && !opts.confirm && !opts.force) {
+    const e = new Error(guard.explain(scan, name) + "\n\n看完还是要装，就再点一次「确认安装」。");
+    e.skillScan = scan; e.needs = "confirm";
+    throw e;
+  }
+  if (scan.level !== "ok") {
+    log.warn("skill", scan.level === "block" ? "管理员强行安装了被拦下的技能" : "带告警安装", {
+      name, verdict: scan.level, forced: !!opts.force,
+      rules: [...new Set(scan.findings.map((f) => f.rule))], hosts: scan.hosts.slice(0, 10), by: who,
+    });
+  }
+  return scan;
+}
+
+/**
+ * 装完在技能目录里留一张回执 .install.json：从哪儿装的、上游哪个 commit、扫出什么、谁放的行。
+ * 出事之后能回答「这东西什么时候、谁、从哪儿装进来的」——没有这张纸，装完就查不出来了。
+ * （名字以点开头：loadSkills 的 hasAssets 判断跳过点开头的文件，不会因此把技能误判成带资源。）
+ */
+function writeProvenance(name, info) {
+  // 干净的手写技能不留：来源是「手写」、没有 commit、扫描没话说——
+  // 一张三行都是空的回执只会让人以后懒得看这个文件。从 GitHub 装的不一样，
+  // 「哪个仓库、哪个 commit」本身就是出事之后唯一答得上话的东西，干净也要记。
+  if (!info.source || info.source === "手写") {
+    if (!info.scan || info.scan.level === "ok") return;
+  }
+  try {
+    const dir = path.join(SKILLS_DIR, safeName(name));
+    if (!fs.existsSync(dir)) return;
+    fs.writeFileSync(path.join(dir, ".install.json"), JSON.stringify({
+      installed_at: new Date().toISOString(),
+      source: info.source || "", commit: info.commit || "",
+      by: (info.actor && info.actor.user) || "", forced: !!info.forced,
+      scan: info.scan ? {
+        level: info.scan.level, files: info.scan.files, hosts: info.scan.hosts,
+        findings: info.scan.findings.map((f) => ({ level: f.level, rule: f.rule, file: f.file, line: f.line })),
+      } : null,
+    }, null, 2) + "\n");
+  } catch (e) {
+    log.warn("skill", "安装回执没写上（不影响安装本身）", { name, err: e });
+  }
+}
+
+/** 一个源目录 → 它的名字、描述、体检结果。只看不动，不碰磁盘。 */
+function inspectSkillDir(srcDir) {
   const fmFile = fs.readdirSync(srcDir).find((f) => /^skill\.md$/i.test(f));
   const fm = parseFrontmatter(fs.readFileSync(path.join(srcDir, fmFile), "utf8"));
   const name = safeName(fm.name || path.basename(srcDir));
+  /**
+   * 两把尺子量同一个目录：自带的 skill-guard 一定跑，外挂的 toolward 装了才跑。
+   * 它没装、崩了、超时了、换了输出格式，scanDir 一律还 null，merge 就把自带那份原样交出去——
+   * 安装流程一个字不变。第二意见只该多看见几条，绝不能因为自己缺席就把事情卡住。
+   */
+  const mine = guard.scanDir(srcDir);
+  return { srcDir, name, description: fm.description,
+    scan: toolward.merge(mine, toolward.scanDir(srcDir, null, { subject: name })) };
+}
+
+function installedFromDir(srcDir, opts = {}) {
+  const { name, description: fmDesc, scan: fresh } = inspectSkillDir(srcDir);
+  const fm = { description: fmDesc };
+  const scan = gate(opts.scan || fresh, name, opts);   // ← 拷贝之前
   const { skipped, bytes } = copySkillFolder(srcDir, name);
-  return { name, description: fm.description, bytes, skipped };
+  writeProvenance(name, { source: opts.source, commit: opts.commit, actor: opts.actor, forced: !!opts.force, scan });
+  return { name, description: fm.description, bytes, skipped, scan: { level: scan.level, findings: scan.findings.length, hosts: scan.hosts } };
 }
 
 /**
@@ -248,6 +353,18 @@ function installedFromDir(srcDir) {
 async function installFromGitHub(url, opts = {}) {
   const u = String(url || "").trim().replace(/\/+$/, "");
   if (!u) throw new Error("请填写 GitHub 链接");
+
+  // 内网里 github.com 是通不了的，而且国央企防火墙多半是「把包默默丢掉」——不回 RST。
+  // 于是下面那句 fetch 要白等满 30 秒（走 clone 那条路是 180 秒）才报一句看不出原因的
+  // 网络错，人只会以为是链接填错了，再试一遍、再等半分钟。当场说清楚，并给出真走得通的路子：
+  // loadSkills() 就是扫 SKILLS_DIR，把含 skill.md 的目录拷进去，重启就认。
+  if (isIntranet()) {
+    throw new Error(
+      "内网模式装不了 GitHub 上的技能：github.com 连不上，硬等只会拿到一句超时。\n" +
+      "改成本地装：把技能目录（里面要有 skill.md）拷到 " + SKILLS_DIR + " 下面，一个目录一个技能。\n" +
+      "确实能出网的话，把内网模式关掉（config.json 里 intranet 改 false，或设 OPENWORKBUDDY_INTRANET=0）。"
+    );
+  }
 
   // ---- 单个 markdown 文件 ----
   let rawUrl = null;
@@ -262,8 +379,14 @@ async function installFromGitHub(url, opts = {}) {
     const base = decodeURIComponent(rawUrl.split("/").pop()).replace(/\.md$/i, "");
     const dirHint = decodeURIComponent(rawUrl.split("/").slice(-2, -1)[0] || "");
     const name = safeName(fm.name || (/^skill$/i.test(base) ? dirHint : base));
-    saveSkill({ name, description: fm.description, content: fm.content });
-    return [{ name, description: fm.description }];
+    // 单文件这条路也得过闸。以前它直接 saveSkill 落盘，等于开了个后门：
+    // 同一份内容放进目录里要过检查，摘出来单独给一个 .md 链接反而不用。
+    const scan = gate(
+      toolward.merge(guard.scanOne("skill.md", raw), toolward.scanText("skill.md", raw, null, { subject: name })),
+      name, opts);
+    saveSkill({ name, description: fm.description, content: fm.content, _scanned: true });
+    writeProvenance(name, { source: rawUrl, actor: opts.actor, forced: !!opts.force, scan });
+    return [{ name, description: fm.description, scan: { level: scan.level, findings: scan.findings.length, hosts: scan.hosts } }];
   }
 
   // ---- 仓库 / 子目录：克隆一次拿全部 ----
@@ -277,7 +400,20 @@ async function installFromGitHub(url, opts = {}) {
     adaptLibraryAsSkill(root, opts);
     const dirs = discoverSkillDirs(root);
     if (!dirs.length) throw new Error("该链接下没找到 skill.md / SKILL.md（技能=含 skill.md 的目录）");
-    return dirs.map(installedFromDir);
+    // 记下上游这一刻是哪个 commit。「我装的时候不是这样的」这句话，只有这个数能证明。
+    let commit = "";
+    try {
+      const { spawnSync } = require("child_process");
+      const r = spawnSync("git", ["-C", tmp, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 10000 });
+      if (r.status === 0) commit = String(r.stdout || "").trim().slice(0, 40);
+    } catch {}
+    // 先把这个仓库里的技能全扫一遍，再决定动不动手。
+    // 一个链接下面可能有好几个技能（ppt-master 那种库就是），扫一个装一个的话，
+    // 第三个被拦下时前两个已经落在 skills/ 里了 —— 用户看到的是「安装失败」，
+    // 实际装进去两个，而且不会有人再去翻一遍。要拦就整单拦。
+    const found = dirs.map(inspectSkillDir);
+    for (const it of found) gate(it.scan, it.name, opts);
+    return found.map((it) => installedFromDir(it.srcDir, { ...opts, source: u, commit, scan: it.scan }));
   } finally {
     cleanup();
   }
@@ -312,7 +448,7 @@ function adaptLibraryAsSkill(root, { skillMd = "", files = null } = {}) {
 function cloneRepo({ owner, repo, branch, subpath }) {
   const os = require("os");
   const { spawnSync } = require("child_process");
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "wb-skill-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-skill-"));
   const cleanup = () => fs.rmSync(tmp, { recursive: true, force: true });
   const url = `https://github.com/${owner}/${repo}.git`;
   const br = branch ? ["--branch", branch] : [];
@@ -439,8 +575,11 @@ description: 文字排版测量库 @chenglou/pretext 的用法。做网页、海
 
 ## 安装 / 引入
 - Node / 打包工程：\`npm install @chenglou/pretext\`
-- 直接写进生成的 HTML（无需构建）：
-  \`<script type="module">import { prepare, layout } from "https://cdn.jsdelivr.net/npm/@chenglou/pretext@0.0.9/dist/layout.js";</script>\`
+- 写进生成的 HTML：**把 layout.js 下载下来内联进 \`<script type="module">\`，别从 CDN import**。
+  交付物是单文件 HTML，用户可能断网双击、发给同事、在国央企内网里打开；
+  ESM 的 import 一旦解析不到，整个 \`<script type="module">\` 直接不执行，**不报错、不回退**——
+  页面就是文字堆在一起，比白屏还难查。取文件：
+  \`curl -O https://cdn.jsdelivr.net/npm/@chenglou/pretext@0.0.9/dist/layout.js\`（这一步在你这台机器上跑，产出物里不许留这个地址）
 - 它需要浏览器环境（用 canvas 量字宽）；纯 Node 端暂不可用。
 
 ## 用法一：只要高度 / 行数
@@ -480,6 +619,12 @@ const { lineCount, maxLineWidth } = measureLineStats(p, 320); // 只要行数和
     license: "MIT", author: "zarazhangrui",
     bytes: 4 * 1024 * 1024,
     why: "一份独立开发者/AI 圈的博客、播客、X 账号订阅源，配合 web_search 追前沿（MIT 是作者在 README 里声明的，仓库没放 LICENSE 文件）",
+    // 这条会被我们自己的安装检查拦下，看过了，放行：
+    // feed-blogs.json 是它缓存下来的博客正文，第 13 行那篇文章正在**讲解**提示词注入——
+    // 原文大意是「它不动声色地让 Claude 去读 ~/.aws/credentials，编码后 POST 出去」。
+    // 同一句话写在技能的指令里是攻击，出现在它抓回来的资讯里是新闻，正则分不出这两者。
+    // 这也正是为什么 block 要能被人显式放行：静态规则的上限就在这儿。
+    reviewed: "feed-blogs.json 里缓存的一篇讲提示词注入的文章，命中 read-private-key",
   },
 ];
 
@@ -504,8 +649,25 @@ function listDefaultSkills() {
 }
 
 /** 清单条目 → installFromGitHub 的选项（库型条目要注入 skill.md、只留白名单文件） */
+/**
+ * 清单条目 → installFromGitHub 的选项（库型条目要注入 skill.md、只留白名单文件）。
+ *
+ * confirm 恒为 true：这张清单上的仓库是我们自己一条条挑的，每条都钉死了 repo + branch，
+ * 都读过、都在上面写了 license 和「为什么装它」。让一条 warn 把首次启动卡住，
+ * 换来的不是安全，是用户学会了对所有告警点「继续」。
+ *
+ * force 只有写了 reviewed 的条目才给——也就是说，**默认技能里哪一条会被自己的检查拦下、
+ * 拦在哪一行、我们看过之后为什么还是放行**，全在清单里写着，不是一个笼统的「默认的都信」。
+ * 上游哪天真被投毒，拦下来的会是**别的**行，那时它照样装不上。
+ */
 function defaultInstallOpts(s) {
-  return { skillMd: s.skill_md || "", files: Array.isArray(s.files) ? s.files : null };
+  return {
+    skillMd: s.skill_md || "",
+    files: Array.isArray(s.files) ? s.files : null,
+    confirm: true,
+    force: !!s.reviewed,
+    actor: { user: "系统（默认技能清单）" },
+  };
 }
 
 /** 装一条默认技能（已装就原样返回，幂等） */
@@ -550,4 +712,7 @@ module.exports = {
   loadSkills, SKILLS_DIR, getSkillFull, saveSkill, deleteSkill, installFromGitHub,
   DEFAULT_SKILLS, listDefaultSkills, installDefaultSkill, ensureDefaultSkills,
   parseFrontmatter, dirSize, safeName, adaptLibraryAsSkill, defaultInstallOpts,
+  // 安装那道闸的内部件：测试要能直接按住「拷贝之前」这一刻验，
+  // 走 installFromGitHub 得先有个 GitHub 仓库，那验的就不是闸而是网络了。
+  _internals: { gate, installedFromDir, writeProvenance, copySkillFolder, discoverSkillDirs },
 };

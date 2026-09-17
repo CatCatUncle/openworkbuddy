@@ -21,7 +21,7 @@
   "use strict";
 
   const LANGS = { zh: "中文", en: "English" };
-  const STORE_KEY = "wb-lang";
+  const STORE_KEY = "owb-lang";
 
   // ---------- 词典：中文原句 → 英文 ----------
   const DICT = {
@@ -109,6 +109,7 @@
       "画布 Agent": "Canvas Agent",
       "本项目内执行": "Run in this project",
       "默认模型": "Default model",
+      "时长要是一个大于 0 的秒数，这一笔没回表": "Duration must be a number of seconds greater than 0; this edit was not written back",
       "暂无首帧": "No keyframe yet",
       "无人声镜头": "Silent shot",
       "这场还没有镜头": "This scene has no shots",
@@ -214,6 +215,71 @@
       "对白/音乐说明": "Dialogue/music notes",
       "剪辑目标": "Editing goal",
       "画布已保存到本机": "Canvas saved locally",
+      // 短剧：制片进度 + 一键合成成片
+      "定妆": "Looks",
+      "分镜": "Shots",
+      "首帧": "Keyframe",
+      "镜头视频": "Shot video",
+      "成片": "Final cut",
+      "配音": "Voice",
+      "卡在哪": "What is blocking",
+      "跳过去看": "Jump to it",
+      "文件没了": "File is gone",
+      "还要生成": "Still to generate",
+      "时间估不出来": "Cannot estimate the time",
+      "停下": "Stop",
+      "合成成片": "Build the film",
+      "重新合成": "Rebuild the film",
+      "正在合成…": "Building…",
+      "正在拼成片": "Building the film",
+      "成片好了": "The film is ready",
+      "没拼成": "The build failed",
+      "打开看看": "Open it",
+      "合成方案": "Build plan",
+      "开始合成": "Start building",
+      "把字幕烧进画面": "Burn subtitles into the picture",
+      "会写出": "Will write",
+      "正在看这部戏能不能拼（在探每一镜的真实时长和画幅）…": "Checking whether this film can be built (measuring each shot's real duration and frame size)…",
+      "下面就是成片里的先后顺序，按分镜编号排的。不对就改镜头 ID 或者调整顺序后再来。": "Below is the order the shots will appear in, sorted by shot number. If it is wrong, fix the shot IDs or reorder them and come back.",
+      "逐镜头把画面接上配音 → 按顺序拼起来 → 垫配乐 → 烧字幕。全在本机跑，不花钱。": "Attach the voice-over to each shot, join them in order, lay the music underneath, then burn the subtitles. It all runs on this machine and costs nothing.",
+      "垫上配乐": "Lay music underneath",
+      "说话的时候自动压低": "ducks under the dialogue",
+      "固定音量垫在台词底下": "fixed volume under the dialogue",
+      "想加配乐：往画布上放一个「声音」节点，素材用途写成「配乐」，把音乐文件拖进去。": "To add music: drop an \"Audio\" node on the board, set its purpose to \"BGM\" or \"Score\", and put the music file in it.",
+      // 定妆照 / 场景图
+      "生成定妆照": "Generate the look",
+      "重生成定妆照": "Regenerate the look",
+      "生成场景图": "Generate the scene image",
+      "重生成场景图": "Regenerate the scene image",
+      "先把人物设定写出来：只有一个名字，生出来的脸每次都不是同一个人，当参考图没用。": "Write the character description first. With nothing but a name, every generated face comes out different, which is useless as a reference.",
+      "先把场景设定写出来：只有一个地名，生出来的景每次都不一样。": "Write the scene description first. With nothing but a place name, every generated view comes out different.",
+      "这几个角色还没写人物设定，只有名字生不出能当参考的定妆照。": "These characters have no description yet. A name alone cannot produce a look sheet worth using as a reference.",
+      "这一类没有要补的了。": "Nothing left to fill in for this kind.",
+      // 配音音色
+      "音色": "Voice",
+      "配音用的音色名，全程不换，例如 alloy / nova / Cherry": "Voice name for the voice-over, kept the same throughout — e.g. alloy / nova / Cherry",
+      "说话的角色": "Who speaks",
+      "连上来的角色里，这句话是谁说的——决定用谁的音色": "Which of the connected characters says this line — it decides whose voice is used",
+      "留空就用设置里配的默认音色": "Leave empty to use the default voice from Settings",
+      "这还是模板里那句占位文字，念出来也只是一句占位文字——先把台词或旁白写上。": "This is still the placeholder text from the template; reading it aloud just gives you a placeholder. Write the line or narration first.",
+      "这还是模板里那句占位文字，生出来的东西跟你想要的没关系——先把提示词写上。": "This is still the placeholder text from the template, so whatever comes out has nothing to do with what you want. Write the prompt first.",
+      // 分镜表展开到画布
+      "首帧提示词": "First-frame prompt",
+      "这一镜画面长什么样：景别 + 场景 + 姿态 + 光线 + 画风": "What this shot looks like: shot size + setting + pose + lighting + style",
+      "运镜提示词": "Motion prompt",
+      "只写怎么动，例如「她缓缓抬头，镜头轻微推进」。留空就拿首帧提示词顶上": "Only how things move — e.g. \u201cshe slowly lifts her head, the camera pushes in a little\u201d. Leave empty and the first-frame prompt is used instead",
+      // 素材台账
+      "全部用途": "All uses",
+      "定妆照": "Character look",
+      "场景图": "Scene image",
+      "其他": "Other",
+      "没人用": "Unused",
+      "重新读一次": "Read it again",
+      "这张画布现在读不出来": "This canvas cannot be read right now",
+      "内容已原样保留，不会丢。换回建它的那个版本就能编辑。": "The contents are kept exactly as they are and will not be lost. Switch back to the version that created it and you can edit it.",
+      "没有把它当成空画布显示——那样你在上面随手一动，自动保存就会把还有救的原件盖掉。原件一个字节都没动。": "It is not shown as an empty canvas: one stray move there and autosave would overwrite a file that is still recoverable. The original is untouched, byte for byte.",
+      "选择用途再连线。Agent 会把它当作真实生成输入，而不是一条装饰箭头。": "Pick what the link is for before drawing it. The Agent treats it as real generation input, not a decorative arrow.",
+      "重跑对应的那一镜就会重新生成；不需要了就把引用它的节点改掉。": "Rerun that shot to regenerate it; if you no longer need it, change the node that references it.",
       "找不到本项目 Agent 输入框，请回到助理页后重试。": "The project Agent input was not found. Return to the assistant view and try again.",
       "创作任务已放入本项目 Agent 输入框，确认后发送。": "The creation task was placed in this project's Agent input. Review it and send.",
       "素材库": "Asset library",
@@ -252,6 +318,31 @@
       "资料库": "Library",
       "任务历史": "Task history",
       "把事情交给我": "Hand it over to me",
+      // 整理文件夹 / 腾空间
+      "整理文件夹 · 腾出空间": "Tidy up · free disk space",
+      "整理文件夹": "Tidy up",
+      "能清掉的中间文件": "Scratch files that can go",
+      "地方花在哪了": "Where the space went",
+      "看全部任务": "All tasks",
+      "全选": "Select all",
+      "回到默认": "Back to default",
+      "一个都没勾": "Nothing selected",
+      "正在看你的工作区……": "Looking through your workspace\u2026",
+      "没找着能清的——这些文件看着都是成品，我不敢乱动。": "Nothing to clear \u2014 these all look like finished work, so I left them alone.",
+      "工作区还是空的。": "The workspace is still empty.",
+      "抽帧 / 逐帧图": "Extracted frames",
+      "分离出来的音轨": "Separated stems",
+      "编译产物": "Build output",
+      "零碎（cookie 库、空的错误输出）": "Odds and ends (cookie stores, empty error logs)",
+      "过程脚本": "Throwaway scripts",
+      "先留着": "Keep them",
+      "中间文件留着了。想清的时候去右边「成果文件 → 整理文件夹」。": "Kept. When you want them gone, use Output files \u2192 Tidy up on the right.",
+      "看看工作区里哪些是任务跑完剩下的中间文件": "See which files are left over from finished tasks",
+      "看看哪些是任务跑完剩下的中间文件": "See which files are left over from finished tasks",
+      "看看具体是哪些": "See exactly which ones",
+      "只整理这个任务": "Tidy up just this task",
+      "在访达里打开": "Reveal in Finder",
+      "重新扫一遍": "Scan again",
       "工作空间目录": "Workspace folder",
       "这个项目的任务产出都落在这儿": "Everything this project produces lands here",
       "挂载资料库": "Mount library",
@@ -383,6 +474,13 @@
       "自动改文件": "Edit files for me",
       "打开所在位置": "Reveal in folder",
       "还没有账号？": "No account yet?",
+      // 登录页「忘了密码」：整句整句地翻，别让标签把句子劈开（见 app-03.js forgotHintHtml）
+      "忘了密码？": "Forgot your password?",
+      "改回来的办法": "How to get back in",
+      "在跑着这个服务的那台电脑上开个终端，敲一句：": "Open a terminal on the machine that runs this service and type:",
+      "屏幕上会出现一串新密码，拿它登进来，再到「设置 → 账号」里改成自己记得住的。": "A new password is printed once. Sign in with it, then change it under Settings \u2192 Account.",
+      "用的是别人的服务器？那就找管理员——他在管理后台的「成员」里能给你重置。": "Not your server? Ask the admin \u2014 they can reset it for you under Members in the admin console.",
+      "手机也丢了、二次验证进不去？在同一台机器上再敲一句这个：": "Lost the phone with your two-factor codes too? On the same machine, also run:",
       "显示密码": "Show password",
       "隐藏密码": "Hide password",
       "看一眼密码": "Peek at the password",
@@ -408,6 +506,9 @@
       "完整执行并交付成果": "Execute fully and deliver",
       "定时 · 运行记录": "Schedules · Run log",
       "用系统默认程序打开": "Open with default app",
+      "复制图片（可直接粘到微信 / Word / PPT）": "Copy image (paste straight into WeChat / Word / PPT)",
+      "接下来的内容按纯文本显示（按字节切开的地方可能正好在一行中间）。要看全的也可以下载或用系统程序打开。": "The rest is shown as plain text (the byte-sized cut can land mid-line). You can also download it or open it with a system app.",
+      "已经到文件末尾了": "End of file",
       "Craft · 执行": "Craft · Execute",
       "密码（至少 6 位）": "Password (6+ characters)",
       "登录后使用你自己的任务历史": "Sign in to keep your own task history",
@@ -594,6 +695,9 @@
       "已装插件": "Installed plugins",
       "搜索资料": "Search library",
       "远程 ·": "Remote ·",
+      "在手机或别的电脑上？": "On your phone or another computer?",
+      "用配对码连接": "Connect with a pairing code",
+      "给这台设备起个名（比如 我的 iPhone）": "Name this device (e.g. My iPhone)",
       "本地 ·": "Local ·",
       "插件提供": "From plugin",
       "保存模型": "Save model",
@@ -775,6 +879,62 @@
       "选择文件夹": "Choose folder",
       "打开当前文件夹": "Open current folder",
       "权限档位": "Permission level",
+      // 二次验证（登录卡片 + 设置 → 安全 + 强制绑定那道门）
+      "验证码不对": "That code isn't right",
+      "密码不对": "Wrong password",
+      "关不掉": "Can't turn it off",
+      "你的组织要求所有人都开二次验证。": "Your organization requires two-factor for everyone.",
+      "还没绑，绑完就能正常用了——这一步之后，光有密码登不进你的账号。": " hasn't set it up yet. Do it now and you're back to normal — after this, a password alone won't get into your account.",
+      "换个账号，或者找管理员到 企业管理后台 → 客户端安全 里把「强制二次验证」关掉。": " and use another account, or ask an admin to turn off “Require two-factor” under Admin console → Client security.",
+      "当前没开。": "Currently off.",
+      "这个组织要求所有人都开，": "This organization requires everyone to turn it on, and ",
+      "不绑的话除了这一页，别处一步也走不了。": "until you do, this page is the only place you can go.",
+      "二次验证二维码": "Two-factor QR code",
+      "用 Google Authenticator / 微软 Authenticator / 1Password 这类验证器 App 扫左边这张码。扫不上就手输下面这串密钥：": "Scan the code on the left with an authenticator app — Google Authenticator, Microsoft Authenticator, 1Password. If it won't scan, type the secret below by hand:",
+      "用 Google Authenticator / 微软 Authenticator / 1Password 这类验证器 App 手动加一个账号。扫不上就手输下面这串密钥：": "Add an account by hand in an authenticator app — Google Authenticator, Microsoft Authenticator, 1Password — using the secret below:",
+      "加好之后，把 App 上现在显示的 6 位数字填进来——": "Once it's added, enter the 6 digits the app is showing right now — ",
+      "验过才算开通：": "it isn't on until that verifies:",
+      "二次验证已开启": "Two-factor is on",
+      "恢复码已换新，旧的全部作废": "New recovery codes issued; the old ones are void",
+      "手机丢了、验证器被误删了，就拿它们登进来，": "Lost the phone, deleted the authenticator by accident — these get you back in. ",
+      "一条只能用一次。": "Each one works exactly once.",
+      "这一屏关掉之后再也看不到": "Once you leave this screen they're gone for good",
+      "——服务端存的是哈希，它自己也认不回原文。存到密码管理器里，或者抄在纸上收好；别存在这台电脑上跟密码同一个地方。": " — the server keeps only hashes and can't show them again. Put them in a password manager or on paper; don't leave them on this computer next to the password.",
+      "已开启": "On",
+      "恢复码快用完了。用光之后手机再丢一次，就只能到跑着这个服务的机器上敲": "You're almost out of recovery codes. Run out, lose the phone again, and the only way back is to sit at the machine running this service and type ",
+      "才能解开了。": " there.",
+      "重新生成会把原来那批全部作废。": "Regenerating voids every code you have now.",
+      "先输一次验证器上的 6 位数字：": "Enter the 6 digits from your authenticator first:",
+      "这个组织开了「强制二次验证」，关不掉。": "This organization has “Require two-factor” on, so you can't turn it off.",
+      "真要关，先让管理员到 企业管理后台 → 客户端安全 里取消强制。": "If it really has to go, ask an admin to lift the requirement under Admin console → Client security.",
+      "关掉之后，光靠密码就能登进来了。两样都要验一次：": "Turn it off and a password alone gets in again. Both of these have to check out:",
+      "二次验证": "Two-factor authentication",
+      "开启二次验证": "Turn on two-factor",
+      "开了之后，光有密码登不进来——还要验证器 App 上那串每 30 秒一换的 6 位数字。密码可能在别处泄漏、可能被人看着敲，而那串数字只在你手机上。":
+        "Once on, a password alone won't get anyone in \u2014 they also need the 6-digit code your authenticator app rotates every 30 seconds. Passwords leak elsewhere and can be watched over your shoulder; that code only lives on your phone.",
+      "6 位验证码": "6-digit code",
+      "6 位数字": "6 digits",
+      "打开验证器 App 看这个账号的 6 位数字。手机不在手上？把当初存下来的": "Open your authenticator app and read this account's 6 digits. Phone not with you? Use one of the ",
+      "填进来也行，一条只能用一次。": " you saved when you set it up \u2014 each one works once.",
+      "恢复码": "recovery codes",
+      "验证并登录": "Verify and sign in",
+      "把验证器上的 6 位数字填进来": "Enter the 6 digits from your authenticator",
+      "先确认一下是你本人：输入当前登录密码。": "First confirm it's you: enter your current password.",
+      "算了": "Never mind",
+      "确认开启": "Turn it on",
+      "我存好了": "I've saved them",
+      "复制全部": "Copy all",
+      "重新生成恢复码": "Regenerate recovery codes",
+      "重新生成": "Regenerate",
+      "确认关闭": "Turn it off",
+      "先绑一下二次验证": "Set up two-factor first",
+      "绑不了？": "Can't set it up? ",
+      "密钥已复制": "Secret copied",
+      "恢复码已复制，找个安全地方存下来": "Recovery codes copied \u2014 put them somewhere safe",
+      "二次验证已关闭": "Two-factor turned off",
+      "复制失败，手抄一下": "Copy failed \u2014 write it down by hand",
+      "取不到二次验证状态，刷新页面再看": "Couldn't load two-factor status \u2014 refresh the page",
+      "连不上服务器，刷新页面再试": "Can't reach the server \u2014 refresh and try again",
       "数据安全": "Data security",
       "跟随全局默认": "Follow global default",
       "管理模型…": "Manage models…",
@@ -784,20 +944,20 @@
       "工作线": "Work lane",
       "终端里的任务": "Task from the terminal",
       "（终端里起的任务）": "(started in the terminal)",
-      "终端里（wb 命令行）": "In the terminal (wb)",
+      "终端里（openworkbuddy 命令行）": "In the terminal (openworkbuddy)",
       "这条线上还没有任务": "No tasks in this lane yet",
       "该项目在这条线上还没有任务": "No tasks in this lane for this project",
       "做表、写稿、出图、发消息——鼠标流": "Docs, decks, images, messages — mouse work",
       "写代码、跑脚本、查日志——键盘流": "Code, scripts, logs — keyboard work",
       "本机的桌面办公 agent：专家团、技能库、记忆、生图生视频都在这条线上": "Your desktop office agent: expert teams, skills, memory, image and video generation all live here",
-      "本机 OpenWorkBuddy 命令行（wb）那条线：终端里起的任务都归这儿，手机上点开就能接管、插话": "The OpenWorkBuddy CLI (wb) on this machine: tasks you start in a terminal show up here — open one on your phone to watch it and chime in",
+      "本机 OpenWorkBuddy 命令行那条线：终端里起的任务都归这儿，手机上点开就能接管、插话": "The OpenWorkBuddy CLI on this machine: tasks you start in a terminal show up here — open one on your phone to watch it and chime in",
       "正在跑——点开能看见它在干什么，也能插话": "Running — open it to see what it is doing, and chime in",
       "终端被关掉了，没跑完": "The terminal was closed before it finished",
       "刚跑完": "Just finished",
       "正在跑": "Running",
       "这条线还空着。在终端里跑": "Nothing here yet. Run",
       "，它就会出现在这儿——手机上也看得见。": "in a terminal and it shows up here — on your phone too.",
-      "wb 你的活儿": "wb your task",
+      "openworkbuddy 你的活儿": "openworkbuddy your task",
       "这趟是在终端里跑的。打字按 Enter 能插一句给它；想让它停，回终端按 Ctrl+C": "This one runs in your terminal. Type and press Enter to chime in; to stop it, press Ctrl+C there",
       "插一句给终端里的它（Enter）": "Chime in to the terminal run (Enter)",
       "送不到终端": "Could not reach the terminal",
@@ -1112,6 +1272,11 @@
       [/^这个工作目录里还没有成果文件（(\d+) 个中间材料已折起）$/, "No result files in this folder yet ($1 working files folded)"],
       [/^· 续跑 (\d+) 轮$/, "· continued $1 rounds"],
       [/^· 缓存命中 (\d+)%$/, "· cache hit $1%"],
+      // 上下文余量条。三句共用一个头，差别在后面那半句「现在该担心什么」——
+      // 所以不能只翻前半截，三条各自整句匹配。
+      [/^上下文 (\d+)%（(\d+k) \/ (\d+k) 字符）$/, "Context $1% ($2 / $3 chars)"],
+      [/^上下文 (\d+)%（(\d+k) \/ (\d+k) 字符）· 自动压缩关着，再长会被截断$/, "Context $1% ($2 / $3 chars) · auto-compact is off; anything longer gets truncated"],
+      [/^上下文 (\d+)%（(\d+k) \/ (\d+k) 字符）· 下一轮开跑前会自动压一次，想留全文就另开会话$/, "Context $1% ($2 / $3 chars) · will auto-compact before the next turn; start a new session to keep the full text"],
       [/^· (\d+) 积分$/, "· $1 credits"],
       [/^来自插件 (.+)$/, "From plugin $1"],
       [/^没找到 (.+)$/, "$1 not found"],
@@ -1132,6 +1297,27 @@
       [/^已暂停（(\d+)）$/, "Paused ($1)"],
       [/^共 (\d+) 页$/, "$1 pages"],
       [/^共 (\d+) 个$/, "$1 total"],
+      // 二次验证：条数和绑定日期跟中文量词长在同一个文本节点上，拆不开，整句匹配
+      [/^下面这 (\d+) 条是恢复码，现在存好。$/, "Below are your $1 recovery codes. Save them now."],
+      [/^· 恢复码还剩 (\d+) 条$/, "· $1 recovery code(s) left"],
+      [/^· ([\d\/.\-]+) 绑定$/, "· set up $1"],
+      // 进度带「还要生成」那排：档位名和数量在同一个文本节点里，得整条匹配
+      [/^定妆照 (\d+) 个$/, "$1 character look(s)"],
+      [/^首帧 (\d+) 个$/, "$1 keyframe(s)"],
+      [/^镜头视频 (\d+) 个$/, "$1 shot video(s)"],
+      [/^配音 (\d+) 个$/, "$1 voice track(s)"],
+      // 配音音色定不下来那几句：名字和数量都夹在句子中间，只能整条匹配
+      [/^这一镜写的说话人是「(.+?)」，可连到它上面的角色里没有这个人：(.+?)。检查一下名字，或者把那个角色连过来。$/,
+        "This shot names \u201c$1\u201d as the speaker, but no such character is connected to it: $2. Check the name, or connect that character."],
+      [/^这一镜连着 (\d+) 个角色，音色各不相同，不知道该用谁的嗓子念这句：(.+?)。在镜头的「说话的角色」里点个名。$/,
+        "This shot has $1 characters connected with different voices, so there is no telling whose voice should read the line: $2. Name one in the shot's \u201cWho speaks\u201d field."],
+      [/^这一批都不知道该用谁的嗓子：(\d+) 个镜头连着好几个角色，音色不一样，得先点名说话的是谁。$/,
+        "None of them can be voiced yet: $1 shot(s) have several characters connected with different voices. Name the speaker first."],
+      // 展开分镜表那两句：场次/镜头/角色的数目和角色 id 都夹在句子中间，只能整条匹配
+      [/^展开了 (\d+) 场 (\d+) 镜 (\d+) 个角色，定妆照和音色顺着连线走。$/,
+        "Expanded $1 scene(s), $2 shot(s) and $3 character(s); look sheets and voices follow the connections."],
+      [/^展开了 (\d+) 场 (\d+) 镜 (\d+) 个角色。有 (\d+) 个角色 id 在分镜表的 characters 里查无此人：(.+?)——点到它们的那几镜没连上角色，生首帧时没有定妆照当参考图、配音也只能用默认音色。$/,
+        "Expanded $1 scene(s), $2 shot(s) and $3 character(s). $4 character id(s) are not in the storyboard's characters list: $5 — the shots naming them have no character connected, so their first frames get no look sheet as reference and their lines fall back to the default voice."],
       [/^…共 (\d+) 个$/, "… $1 total"],
       [/^一键装齐缺的 (\d+) 个$/, "Install the $1 missing"],
       [/^用时 (.+)$/, "Took $1"],
@@ -1144,6 +1330,7 @@
       [/^包里有跳出目录的路径：(.+)$/, "The archive contains a path that escapes the folder: $1"],
       [/^包里有不属于备份范围的东西：(.+)$/, "The archive contains something outside the backup scope: $1"],
       [/^第 (\d+) 页$/, "Page $1"],
+      [/^第 (\d+) 轮$/, "Turn $1"],   // 执行追踪列表：同一个会话聊到第几轮
       [/^跑脚本 (\d+) 行 Node$/, "Run $1 lines of Node"],
       // 引擎小牌子：服务端推来的是「本机 Claude Code 已启动（模型 x，N 个工具），不消耗 API 额度」。
       // 界面拆成了「名字 / 括号里那截 / 不花 API 额度」三块分别显示，所以这里连整条带那一截都得能翻，
@@ -1194,6 +1381,42 @@
     PATTERNS.en.push([new RegExp("^" + q + "「(.+?)」(.*)$"), en + ' "$1"$2']);
     PATTERNS.en.push([new RegExp("^" + q + "( .*)?$"), en + "$1"]);
   }
+
+  // 画布上「生成完了」那条提示：开头那个词是节点类型（图片 / 视频 / 声音 / 定妆照 / 场景图），
+  // 夹在句子中间，只能整条匹配。后半截「但没能回写进分镜表」是同一条提示的续尾——
+  // 它说的是「钱已经花了，可分镜表那份真源没更新，去短剧页再点一次就是再花一次」，
+  // 全场最贵的一句话，漏翻等于把它留在中文里给看不懂的人看
+  const CANVAS_MADE_EN = { "图片": "Image", "视频": "Video", "声音": "Audio", "定妆照": "Character look", "场景图": "Scene image" };
+  for (const [zh, en] of Object.entries(CANVAS_MADE_EN)) {
+    // 带尾巴那条必须排在前面：光秃秃的 (.+) 会把整句连尾巴一起吞掉
+    PATTERNS.en.push([new RegExp("^" + zh + "已生成：(.+?)，但没能回写进分镜表（(.+?)）——短剧页那头还当这一步没做，再点重跑会再花一次钱$"),
+      en + " generated: $1 — but it could not be written back to the storyboard ($2). The short-drama page still treats this step as undone, so re-running it there would pay for the same thing twice."]);
+    PATTERNS.en.push([new RegExp("^" + zh + "已生成：(.+)$"), en + " generated: $1"]);
+    PATTERNS.en.push([new RegExp("^" + zh + "生成失败：(.+)$"), en + " generation failed: $1"]);
+  }
+
+  // 短剧页重跑那一格的几句提示。带尾巴那条必须排在光秃秃那条前面：
+  // 光秃秃的 (.+) 会把整句连尾巴一起吞掉
+  for (const [zh, en] of [["首帧", "first frame"], ["视频", "video"]]) {
+    PATTERNS.en.push([new RegExp("^(.+?) " + zh + "已生成：(.+?)，但没能写回分镜表（(.+?)）——这一格下次打开还是老样子，再点重跑会再花一次钱$"),
+      "$1 " + en + " generated: $2 — but it could not be written back to the storyboard ($3). This shot will look untouched next time you open it, so re-running it would pay for the same thing twice."]);
+    PATTERNS.en.push([new RegExp("^(.+?) " + zh + "已生成：(.+)$"), "$1 " + en + " generated: $2"]);
+  }
+  PATTERNS.en.push([/^(.+?) 重跑失败：(.+)$/, "$1 re-run failed: $2"]);
+  PATTERNS.en.push([/^镜头 (.+?) 还没有首帧，先重跑首帧$/, "Shot $1 has no first frame yet — re-run the first frame first"]);
+
+  // 连线改出场角色 → 回分镜表，这两句失败提示。带尾巴那条排在前面
+  PATTERNS.en.push([/^(.+?) 的出场角色没写回分镜表（(.+?)）——重跑这一镜时参考图还是按老的来，人会变脸$/,
+    "$1: the cast was not written back to the storyboard ($2). Re-running this shot would still use the old reference images, so the character's face would change"]);
+  PATTERNS.en.push([/^(.+?) 个镜头的出场角色没写回分镜表（(.+?)）$/,
+    "The cast of $1 shots was not written back to the storyboard ($2)"]);
+  // 画布上改内容 → 回分镜表，这几句失败提示
+  PATTERNS.en.push([/^这个节点的镜头号改成了 (.+?)，跟分镜表里的 (.+?) 对不上，内容就不自动回表了——编号要改请去分镜表里改$/,
+    "This node's shot id was changed to $1, which no longer matches $2 in the storyboard, so its content is not written back any more — change the id in the storyboard instead"]);
+  PATTERNS.en.push([/^(.+?) 这一笔没写回分镜表（(.+?)）——从短剧页或命令行重跑，用的还是改之前那句$/,
+    "$1: this edit was not written back to the storyboard ($2). Re-running from the short-drama page or the command line would still use the old wording"]);
+  PATTERNS.en.push([/^(.+?) 的提示词已整段写回分镜表，但里面那段全片画风是你改过的：下次「展开场次与镜头」会在它后面再接一遍分镜表里的画风。要换全片画风，改分镜表的 style$/,
+    "$1: the whole prompt was written back to the storyboard, but you edited the film-wide style inside it. Expanding scenes and shots again will append the storyboard's style once more — to change the film-wide style, edit the storyboard's style field"]);
 
   // 界面上开头那些表情（❌ ⚠️ ✅ 🪪 ⚙️ 🌐 …）正在一处处换成 SVG 图标。图标是 <svg>，
   // 翻译器不碰 SVG，所以换完之后 DOM 里的文本节点变成了光秃秃的「个人资料」，
@@ -1360,7 +1583,7 @@
     if (doc.documentElement) doc.documentElement.lang = lang === "en" ? "en" : "zh-CN";
     apply(doc.body, lang);
     watch();
-    try { doc.dispatchEvent(new root.CustomEvent("wb-lang", { detail: { lang } })); } catch {}
+    try { doc.dispatchEvent(new root.CustomEvent("owb-lang", { detail: { lang } })); } catch {}
   }
   function setLang(l) {
     if (!LANGS[l]) return false;

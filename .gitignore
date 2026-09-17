@@ -16,10 +16,17 @@ __pycache__/
 *.pyc
 data/
 backups/
+# 运行期日志。装好的机器上 log.js 写的是 dataPath("logs")，在 openworkbuddy-data/ 里，上面已经挡住了；
+# 但直接从源码树跑的时候（开发机、npm start）它就落在仓库自己的 logs/ 里。
+# 上面那条 *.log 只盖得住 boot.log，app-<日期>.jsonl 漏在外面——而那里头是真在跑的
+# 请求记录。这个仓库是公开的，差一次随手 add 就推出去了。
+logs/
 
 # Docker 部署产生的：deploy.sh 会在仓库目录里建这两个
-# wb-data/config.json 存着 API Key，.env 存着端口和域名——都不入 git
+# openworkbuddy-data/config.json 存着 API Key，.env 存着端口和域名——都不入 git
 .env
+openworkbuddy-data/
+# 改名前那个目录名。老部署的机器上还在，里面同样有 Key，别让它有机会被 add 进来
 wb-data/
 
 # 第三方技能包：仓库不打包别人的代码，在应用内一键从上游装（技能页 → 推荐技能）

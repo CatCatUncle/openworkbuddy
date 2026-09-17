@@ -4,7 +4,7 @@
  *   tooltip   顶掉浏览器原生 title
  * ========================================================================== */
 
-/** 取一个 lucide 图标的内联 svg。name 见 index.html 里 #wb-sprite 的 symbol id */
+/** 取一个 lucide 图标的内联 svg。name 见 index.html 里 #owb-sprite 的 symbol id */
 function ic(name, cls) {
   return `<svg class="i${cls ? " " + cls : ""}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 }
@@ -15,7 +15,7 @@ function ic(name, cls) {
  *  kind: "ok" 成功绿 / "err" 失败红 / 省略则用继承来的颜色。 */
 function setMsg(el, icon, text, kind) {
   if (!el) return;
-  el.style.color = kind === "err" ? "var(--wb-err-text)" : kind === "ok" ? "var(--wb-ok-text)" : "";
+  el.style.color = kind === "err" ? "var(--owb-err-text)" : kind === "ok" ? "var(--owb-ok-text)" : "";
   el.innerHTML = (icon ? ic(icon) + " " : "") + esc(text == null ? "" : String(text));
 }
 
@@ -208,9 +208,9 @@ function onActivate(el, fn) {
 const RSZ_MAIN_MIN = 470;   // 和 .main { min-width: 460px } 对齐，留一点余量
 const RSZ_SMALL = 900;      // 到这个宽度以下两栏是浮层，拖不动也不该拖（和 CSS 的断点一致）
 const RSZ = {
-  side: { css: "--wb-side-w", sel: "aside", min: 180, dir: 1 },
-  pv: { css: "--wb-pv-w", sel: "#preview-panel", min: 320, dir: -1 },
-  fp: { css: "--wb-fp-w", sel: "#files-panel", min: 200, dir: -1 },
+  side: { css: "--owb-side-w", sel: "aside", min: 180, dir: 1 },
+  pv: { css: "--owb-pv-w", sel: "#preview-panel", min: 320, dir: -1 },
+  fp: { css: "--owb-fp-w", sel: "#files-panel", min: 200, dir: -1 },
 };
 const rszW = (sel) => { const e = document.querySelector(sel); return e ? e.getBoundingClientRect().width : 0; };
 // 这一栏还能长多少：窗口宽 - 正文保底 - 另外两栏现在占的
@@ -223,18 +223,18 @@ function setPanelW(key, px) {
   if (!c) return 0;
   const w = Math.round(Math.max(c.min, Math.min(rszRoom(key), px)));
   document.documentElement.style.setProperty(c.css, w + "px");
-  try { localStorage.setItem("wb-w-" + key, String(w)); } catch {}
+  try { localStorage.setItem("owb-w-" + key, String(w)); } catch {}
   return w;
 }
 function resetPanelW(key) {
   document.documentElement.style.removeProperty(RSZ[key].css);
-  try { localStorage.removeItem("wb-w-" + key); } catch {}
+  try { localStorage.removeItem("owb-w-" + key); } catch {}
 }
 // 存过的宽度重新贴一遍（开局、窗口大小变了都走这儿）。小屏直接把变量摘掉，让 CSS 的浮层宽度说了算
 function applyStoredW() {
   Object.keys(RSZ).forEach((k) => {
     let v = 0;
-    try { v = parseInt(localStorage.getItem("wb-w-" + k) || "", 10); } catch {}
+    try { v = parseInt(localStorage.getItem("owb-w-" + k) || "", 10); } catch {}
     if (!(v > 0)) return;
     if (window.innerWidth <= RSZ_SMALL) { document.documentElement.style.removeProperty(RSZ[k].css); return; }
     const c = RSZ[k];
@@ -287,7 +287,7 @@ else initResizers();
  * 竖着那条调的是「侧栏多宽」，这条调的是「侧栏里导航和历史怎么分」。
  * 默认自适应（导航先按内容拿够、历史吃剩下）；拖过一次就固定成用户拖出来的那个高度，
  * 剩下的全归导航。双击回自适应。用户原话「任务历史那个tab你也搞成可以拉伸和拖拽自适应的吧」。 */
-const HIST_KEY = "wb-h-hist", HIST_MIN = 56, NAV_MIN = 56;
+const HIST_KEY = "owb-h-hist", HIST_MIN = 56, NAV_MIN = 56;
 // 上限得现算：侧栏多高、上面的品牌行/新建/工作线/账号行占多少，都会变（窗口缩放、工作线标签换行）。
 // chrome = 侧栏高度里既不是导航也不是历史的那部分，拖动过程中它不变，所以够用。
 function histMax() {
@@ -299,13 +299,13 @@ function histMax() {
 function setHistH(px) {
   const v = Math.round(Math.max(HIST_MIN, Math.min(histMax(), px)));
   document.documentElement.classList.add("hist-h");
-  document.documentElement.style.setProperty("--wb-hist-h", v + "px");
+  document.documentElement.style.setProperty("--owb-hist-h", v + "px");
   try { localStorage.setItem(HIST_KEY, String(v)); } catch {}
   return v;
 }
 function resetHistH() {
   document.documentElement.classList.remove("hist-h");
-  document.documentElement.style.removeProperty("--wb-hist-h");
+  document.documentElement.style.removeProperty("--owb-hist-h");
   try { localStorage.removeItem(HIST_KEY); } catch {}
   toast("任务历史高度已恢复自适应");
 }
@@ -315,8 +315,8 @@ function applyStoredHistH() {
   if (!(v > 0)) return;
   // 先挂上类再夹上限：没挂类的时候 #history 还是 flex:1 1 0，量出来的 offsetHeight 不是它「想要」的高度
   document.documentElement.classList.add("hist-h");
-  document.documentElement.style.setProperty("--wb-hist-h", v + "px");
-  document.documentElement.style.setProperty("--wb-hist-h", Math.round(Math.max(HIST_MIN, Math.min(histMax(), v))) + "px");
+  document.documentElement.style.setProperty("--owb-hist-h", v + "px");
+  document.documentElement.style.setProperty("--owb-hist-h", Math.round(Math.max(HIST_MIN, Math.min(histMax(), v))) + "px");
 }
 function initHistResizer() {
   applyStoredHistH();

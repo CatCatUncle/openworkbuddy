@@ -19,9 +19,9 @@
  *
  * 环境变量（由 engines/bridge.js 拼好后传进来）：
  *   OPENWORKBUDDY_HOME  数据根目录（config.json / workspace 都在这儿找）
- *   WB_BRIDGE_BASEDIR   本次对话的成果子目录（相对 workspace），产物落这里
- *   WB_BRIDGE_TOOLS     借出去的工具名，逗号分隔
- *   WB_BRIDGE_USER      当前用户名（记忆按人隔离用）
+ *   OPENWORKBUDDY_BRIDGE_BASEDIR   本次对话的成果子目录（相对 workspace），产物落这里
+ *   OPENWORKBUDDY_BRIDGE_TOOLS     借出去的工具名，逗号分隔
+ *   OPENWORKBUDDY_BRIDGE_USER      当前用户名（记忆按人隔离用）
  *
  * 协议：换行分隔的 JSON-RPC，跟 mcp.js 那台客户端用的是同一种框法。
  *
@@ -80,10 +80,10 @@ function loadConfig() {
 }
 
 const config = loadConfig();
-const BASE_DIR = process.env.WB_BRIDGE_BASEDIR || "";
-const USER = process.env.WB_BRIDGE_USER || "";
+const BASE_DIR = process.env.OPENWORKBUDDY_BRIDGE_BASEDIR || "";
+const USER = process.env.OPENWORKBUDDY_BRIDGE_USER || "";
 const ALLOW = new Set(
-  String(process.env.WB_BRIDGE_TOOLS || LENDABLE.join(","))
+  String(process.env.OPENWORKBUDDY_BRIDGE_TOOLS || LENDABLE.join(","))
     .split(",").map((s) => s.trim()).filter(Boolean)
 );
 
@@ -143,9 +143,9 @@ function exitIfIdle() {
 }
 
 
-/** 排障用：WB_BRIDGE_LOG=/path/x.log 时把每一条收发都记下来。
+/** 排障用：OPENWORKBUDDY_BRIDGE_LOG=/path/x.log 时把每一条收发都记下来。
  *  「工具挂上了但模型看不见」这种问题，不看真实的 JSON-RPC 往返就只能靠猜。 */
-const LOG = process.env.WB_BRIDGE_LOG || "";
+const LOG = process.env.OPENWORKBUDDY_BRIDGE_LOG || "";
 function log(dir, obj) {
   if (!LOG) return;
   try { fs.appendFileSync(LOG, `${new Date().toISOString()} ${dir} ${JSON.stringify(obj).slice(0, 4000)}\n`); } catch {}

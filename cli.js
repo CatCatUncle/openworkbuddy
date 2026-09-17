@@ -4,21 +4,21 @@
  * OpenWorkBuddy CLI — 终端里直接跑 agent 任务，与 Web/IM 共用同一套运行时与配置。
  *
  * 用法：
- *   wb "帮我调研xxx并写成报告"                 单发任务，跑完即退出
- *   wb                                          交互式 REPL（连续对话，保留上下文）
- *   wb -C ~/项目/报表 "把这个目录的表汇总一下"   指定这次在哪个目录干活
- *   wb -f 图.png "这张图里写了什么"              带一个文件/图片一起问（可以写几次）
- *   cat err.log | wb "这个报错什么意思"          管道进来的内容当附加材料
- *   wb -c "接着上面那个继续"                     续接最近一次 CLI 会话
- *   wb --json "..." | jq -r 'select(.type=="text").delta'   机器可读事件流
+ *   openworkbuddy "帮我调研xxx并写成报告"                 单发任务，跑完即退出
+ *   openworkbuddy                                          交互式 REPL（连续对话，保留上下文）
+ *   openworkbuddy -C ~/项目/报表 "把这个目录的表汇总一下"   指定这次在哪个目录干活
+ *   openworkbuddy -f 图.png "这张图里写了什么"              带一个文件/图片一起问（可以写几次）
+ *   cat err.log | openworkbuddy "这个报错什么意思"          管道进来的内容当附加材料
+ *   openworkbuddy -c "接着上面那个继续"                     续接最近一次 CLI 会话
+ *   openworkbuddy --json "..." | jq -r 'select(.type=="text").delta'   机器可读事件流
  *
  * 两条约定，都是为了能塞进管道和脚本：
- *   1. **模型的回答走 stdout，进度和日志走 stderr。** 所以 `wb "..." > 答案.md` 拿到的是
+ *   1. **模型的回答走 stdout，进度和日志走 stderr。** 所以 `openworkbuddy "..." > 答案.md` 拿到的是
  *      干净的答案，不会混进「第 3 步 思考中…」那些行。
  *   2. **退出码说实话**：正常 0，任务出错 1，Ctrl+C 打断 130。以前无论如何都返回 0，
- *      `wb ... && 下一步` 在任务失败时照样往下走。
+ *      `openworkbuddy ... && 下一步` 在任务失败时照样往下走。
  *
- * npm link 后可直接用 `wb "任务"`。
+ * npm link 后可直接用 `openworkbuddy "任务"`。
  */
 
 // Node 太老 / 依赖没装：排在所有 require 最前面，不然用户拿到的是一句 Cannot find module
@@ -37,7 +37,10 @@ const lanes = require("./lanes"); // 终端里起的任务归「工程」线；�
 const callout = require("./callout"); // 正文里的提示条：终端没有图标，换成文字标签
 const mdTty = require("./md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
 const attach = require("./cli-attach"); // 带进来的文件/图片：拖进来的路径、@ 补全、剪贴板
+const modes = require("./modes"); // 执行模式的唯一真源；界面和这儿必须是同一份
 const cliAsk = require("./cli-ask"); // agent 问一句时，终端里怎么摆这道选择题
+const cliApprove = require("./cli-approve"); // 危险操作求批准时，终端里怎么摆那张卡
+const security = require("./security"); // 审批是它发起的；命令行订它的钩子才知道有人正等着点头
 const cliLive = require("./cli-live"); // 把这趟活儿播给网页/手机：看得见、插得上话
 const termImage = require("./term-image"); // 终端里直接把产出的图画出来 + /open 交给系统程序
 const account = require("./account");
@@ -77,7 +80,7 @@ const emitJson = (o) => { if (opts.json) process.stdout.write(JSON.stringify(o) 
 /**
  * 正文要不要在终端里渲染成人看的样子。用户原话：「怎么cli里面还有**这种啊」。
  *
- * 只在 stdout 真的是终端时才渲染：`wb "…" > 答案.md`、`wb … | pbcopy` 要的是原始
+ * 只在 stdout 真的是终端时才渲染：`openworkbuddy "…" > 答案.md`、`openworkbuddy … | pbcopy` 要的是原始
  * Markdown——那才是能接着加工的东西（跟上面那条「回答走 stdout」是同一个约定）。
  * --json 走事件流不归这儿管，--raw 是人明说了别动。
  */
@@ -91,13 +94,13 @@ if (opts.help) { console.log(cliArgs.helpText()); process.exit(0); }
 if (opts.version) { console.log(`OpenWorkBuddy ${require("./package.json").version}`); process.exit(0); }
 if (parsed.problems.length) {
   // 退出码 2 单独留给「参数写错了」：脚本里能跟「任务失败」分开处理，
-  // 也免得 `wb --qiet ... && 下一步` 在打错字的时候照样往下走
+  // 也免得 `openworkbuddy --qiet ... && 下一步` 在打错字的时候照样往下走
   process.stderr.write(red(cliArgs.problemText(parsed.problems)));
-  process.stderr.write(dim("wb --help 看全部用法。\n"));
+  process.stderr.write(dim("openworkbuddy --help 看全部用法。\n"));
   process.exit(2);
 }
 
-// 子命令。动词式的写法（wb resume / wb sessions / wb engines）是给人记的，
+// 子命令。动词式的写法（openworkbuddy resume / openworkbuddy sessions / openworkbuddy engines）是给人记的，
 // 老的 --session / --list / -c 一个都没动，脚本不用改。
 let sub = "";
 if (cliArgs.SUBS.some((x) => x.name === words[0])) {
@@ -108,7 +111,7 @@ if (cliArgs.SUBS.some((x) => x.name === words[0])) {
 }
 let oneShot = words.join(" ").trim();
 
-// ---------- wb completion：把 Tab 补全脚本打到 stdout ----------
+// ---------- openworkbuddy completion：把 Tab 补全脚本打到 stdout ----------
 // 排在读配置前面，跟 doctor 同理：装完就该能生成，不该要求先跑过一次把 config.json 造出来。
 // 脚本本身长在 cli-args.js 的同一张表上，改一行选项，三种 shell 的补全同时就有了。
 if (sub === "completion") {
@@ -121,11 +124,11 @@ if (sub === "completion") {
   let engineIds = [];
   try { engineIds = require("./engines").list().map((b) => b.id); } catch {}
   process.stdout.write(cliArgs.completionScript(shell, { sessionsDir: dataPath("data", "sessions"), engines: engineIds }));
-  // 装法写在 stderr：这样 `wb completion zsh > _wb` 拿到的是干净的脚本，说明照样看得见
+  // 装法写在 stderr：这样 `openworkbuddy completion zsh > _wb` 拿到的是干净的脚本，说明照样看得见
   const how = {
-    bash: "wb completion bash > ~/.wb-completion.bash\n然后在 ~/.bashrc 里加一行：source ~/.wb-completion.bash",
-    zsh: "wb completion zsh > ~/.zsh/completions/_wb\n确认 ~/.zshrc 里有：fpath=(~/.zsh/completions $fpath) 和 autoload -Uz compinit && compinit",
-    fish: "wb completion fish > ~/.config/fish/completions/wb.fish\n新开一个窗口就生效",
+    bash: "openworkbuddy completion bash > ~/.openworkbuddy-completion.bash\n然后在 ~/.bashrc 里加一行：source ~/.openworkbuddy-completion.bash",
+    zsh: "openworkbuddy completion zsh > ~/.zsh/completions/_openworkbuddy\n确认 ~/.zshrc 里有：fpath=(~/.zsh/completions $fpath) 和 autoload -Uz compinit && compinit",
+    fish: "openworkbuddy completion fish > ~/.config/fish/completions/openworkbuddy.fish\n新开一个窗口就生效",
   }[shell];
   if (!process.stdout.isTTY) process.stderr.write(dim(how + "\n"));
   else process.stderr.write(dim("\n上面这段要存成文件才起作用：\n" + how + "\n"));
@@ -134,16 +137,154 @@ if (sub === "completion") {
 
 // ---------- 配置与运行时（与 server.js 同源） ----------
 const CONFIG_PATH = dataPath("config.json");
-// wb doctor 是个例外：它就是用来查「为什么什么都没配好」的，在这儿把它拦下等于
+// openworkbuddy doctor 是个例外：它就是用来查「为什么什么都没配好」的，在这儿把它拦下等于
 // 把唯一一根救命稻草也收走。别的命令照旧当场停——没有配置它们干不了活。
 if (!fs.existsSync(CONFIG_PATH) && sub !== "doctor") {
   process.stderr.write(red("找不到 config.json，请先运行一次 npm start 生成，或从 config.example.json 复制。\n"));
-  process.stderr.write(dim("不确定是哪儿不对的话，先跑一句 wb doctor。\n"));
+  process.stderr.write(dim("不确定是哪儿不对的话，先跑一句 openworkbuddy doctor。\n"));
   process.exit(1);
 }
 const config = store.readJson(CONFIG_PATH, {});
 
-// ---------- wb doctor：跑不起来时的一次性体检 ----------
+// ---------- --perm：这一趟放多少权 ----------
+// 网页那边四档是点得到的（设置里一个下拉），命令行原来只能改 config.json —— 而 config.json 是
+// 长期设置：为了让一条 cron 跑全自动，得先把文件改成 full、跑完再改回来，忘了改回来就是
+// 明天所有交互式的活儿也不问人了。这正是 --perm 要挡掉的那种事故。
+//
+// 所以跟 -C 一个规矩：命令行是「这一次」的意思，**只改内存里这份 config，绝不回写文件**。
+// 下面所有人（runtime、审批钩子、/perm）读的都是 config.security.permission_mode 这一个字段，
+// 改它一处就全生效，不存在 CLI 一套、内核另一套的分叉。
+if (opts.perm) {
+  config.security = { ...(config.security || {}), permission_mode: opts.perm };
+}
+/** 当前档位（同一份真源，网页/命令行/审批都读它） */
+const permNow = () => security.permissionMode(config.security);
+
+// ---------- openworkbuddy pair：在终端里把手机连上来 ----------
+// 位置在 config 读完之后——要拿 config 里的端口去找那台正在跑的服务。
+//
+// 为什么非得有服务在跑：配对码只活在服务进程的内存里（落盘的码会在硬盘上留下一把
+// 三分钟的钥匙，不值得）。命令行自己是独立进程，它生成的码服务端根本不认识。
+// 所以这儿的做法是——命令行本来就能读 users.json，它给自己签一条临时令牌，
+// 用这条令牌去请那台服务出码，出完就把这条临时令牌注销掉，不在设备表里留渣。
+if (sub === "pair") {
+  (async () => {
+    const u = account.defaultUser();
+    if (!u) {
+      process.stderr.write(red("本机还没有账号。先打开一次桌面端或网页版注册。\n"));
+      process.exit(1);
+    }
+    const port = require("./paths").resolvePort(process.env, config);
+    const base = `http://127.0.0.1:${port}`;
+    const A = account._internals;
+    const token = A.issueToken(u.username, { kind: "session", name: "openworkbuddy pair（临时）" });
+    const call = (p, init) => fetch(base + p, { ...init, headers: { ...(init || {}).headers, Cookie: `openworkbuddy_token=${token}` } });
+    const cleanup = () => { try { A.revokeDevice(u.username, A.deviceId(token)); } catch {} };
+    let d;
+    try {
+      d = await call("/api/devices/pair", { method: "POST" }).then((r) => r.json());
+    } catch {
+      cleanup();
+      process.stderr.write(red(`连不上 ${base}。\n`));
+      process.stderr.write(dim("配对要有一台服务在跑（手机也是连它）。先在另一个窗口 npm start，或者打开桌面端。\n"));
+      process.exit(1);
+    }
+    if (!d || !d.pretty) { cleanup(); process.stderr.write(red("出码失败。\n")); process.exit(1); }
+
+    if (opts.json) {
+      emitJson({ type: "pair", code: d.code, url: d.url, expires_at: d.expires_at });
+    } else {
+      if (d.url) {
+        // 终端里画二维码：手机扫一下就进去了，8 个字符一个都不用敲。
+        // small:true 用半块字符，一个码占 ~21 行而不是 ~41 行——不然一屏放不下，
+        // 滚上去只剩半张码，扫不出来
+        const art = await require("qrcode").toString(d.url, { type: "terminal", small: true, errorCorrectionLevel: "M" }).catch(() => "");
+        if (art) process.stdout.write("\n" + art);
+      }
+      process.stdout.write(`\n  ${bold(d.pretty)}   ${dim("← 手机上填这串，或者扫上面的码")}\n`);
+      if (d.url) process.stdout.write(`  ${dim(d.url.replace(/\?pair=.*/, ""))}\n`);
+      prog(dim(`\n等着…（${Math.round((d.expires_at - Date.now()) / 1000)} 秒内有效，Ctrl-C 退出）\n`));
+    }
+
+    // 盯着，连上就报一声。连上之前不退出——不然人刚扫完，终端已经回到提示符，
+    // 到底成没成全靠猜
+    process.on("SIGINT", () => { cleanup(); process.stdout.write("\n"); process.exit(130); });
+    const deadline = d.expires_at;
+    for (;;) {
+      if (Date.now() > deadline + 2000) {
+        cleanup();
+        prog(yellow("配对码过期了。再跑一次 openworkbuddy pair。\n"));
+        process.exit(1);
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+      const st = await call("/api/devices/pair/status").then((r) => r.json()).catch(() => null);
+      if (st && st.claimed) {
+        cleanup();
+        if (opts.json) emitJson({ type: "paired", name: st.claimed.name });
+        else process.stdout.write(green(`\n✓ ${st.claimed.name} 连上了\n`) + dim("  密码没有离开过这台机器。要断开：设置 → 安全 → 远程访问，把它踢掉。\n"));
+        process.exit(0);
+      }
+    }
+  })();
+  return;
+}
+
+// ---------- openworkbuddy passwd / openworkbuddy 2fa：忘了密码、丢了手机时的救急口子 ----------
+// 位置跟 pair 一样在读完 config 之后，但它们不连服务——直接改 users.json，
+// 所以服务开着关着都能用（服务开着时改完记得让本人重新登录：旧令牌已经全作废了）。
+//
+// 凭什么让命令行干这件事，见 account.js resetPasswordLocally 头上那段：能读到
+// users.json 的人早就拿到了这台机器上的全部东西，再拦一道密码只剩下「忘了密码
+// 就彻底进不去」这一个后果。反过来，这两条**绝不能接到 HTTP 上**。
+if (sub === "passwd" || sub === "2fa") {
+  const pos = words.filter((w) => !w.startsWith("-"));   // [用户名, 新密码?]
+  const who = String(pos[0] || "").trim();
+  const off = !!opts.off;
+  if (!who) {
+    process.stderr.write(red(`要说改谁：openworkbuddy ${sub} <用户名>${sub === "2fa" ? " --off" : ""}\n`));
+    // 顺手把这台机器上有哪些账号列出来：忘了密码的人往往连自己的登录名都记不准
+    let names = [];
+    try { names = (account._internals.loadUsers().users || []).map((u) => u.username); } catch {}
+    if (names.length) process.stderr.write(dim("这台机器上的账号：" + names.slice(0, 20).join("、") + (names.length > 20 ? " …" : "") + "\n"));
+    process.exit(2);
+  }
+  try {
+    if (sub === "2fa") {
+      if (!off) {
+        // 不给 --off 就只看状态：直接把人家的二次验证关掉不该是「手滑打错子命令」的后果
+        const u = (account._internals.loadUsers().users || []).find((x) => x.username === who);
+        if (!u) throw new Error("没有这个账号：" + who);
+        const st = account.twoFactorStatus(u);
+        process.stdout.write(st.on
+          ? `${who} 的二次验证：${green("开着")}${dim("（" + new Date(st.since).toLocaleString() + " 开的，还剩 " + st.recovery_left + " 个恢复码）")}\n`
+          : `${who} 的二次验证：${dim("没开")}\n`);
+        if (st.on) process.stderr.write(dim(`手机丢了就跑：openworkbuddy 2fa ${who} --off\n`));
+        process.exit(0);
+      }
+      const had = account.disableTOTP(who, { byAdmin: true, actor: "命令行" });
+      process.stdout.write(had
+        ? green(`✓ ${who} 的二次验证已关闭\n`) + dim("  他现在只用密码就能登。让他登进去后到「设置 → 安全」重新绑一次，旧的密钥和恢复码已经作废。\n")
+        : dim(`${who} 本来就没开二次验证，什么都没改。\n`));
+      process.exit(0);
+    }
+    // openworkbuddy passwd：不给新密码就随机生成一串（长度和复杂度跟着组织策略走）
+    const r = account.resetPasswordLocally(who, pos[1] || null, { actor: "命令行" });
+    process.stdout.write(green(`✓ ${who} 的密码已改\n`));
+    if (r.generated) {
+      process.stdout.write(`\n  ${bold(r.password)}   ${dim("← 新密码，这一次之后不会再显示")}\n\n`);
+      process.stderr.write(dim("  自己定一个的话：openworkbuddy passwd " + who + " '你的新密码'\n"));
+    }
+    process.stderr.write(dim("  他在别处的登录状态已经全部作废，需要重新登一次。\n"));
+    if (r.two_factor) process.stderr.write(yellow("  注意：这个账号还开着二次验证，光有密码登不进去。手机也丢了就跑：openworkbuddy 2fa " + who + " --off\n"));
+    if (r.disabled) process.stderr.write(yellow("  注意：这个账号是「已停用」状态，改了密码也登不上。到管理后台复职，或跑 openworkbuddy 里的离职/复职流程。\n"));
+    process.exit(0);
+  } catch (e) {
+    process.stderr.write(red((e && e.message) || String(e)) + "\n");
+    process.exit(1);
+  }
+}
+
+// ---------- openworkbuddy doctor：跑不起来时的一次性体检 ----------
 // 位置很讲究：必须排在下面 createLLM 前面。模型一个都没配的机器上 createLLM 当场抛
 // 「未知 provider: undefined」——而那恰恰是最需要体检的时刻，体检工具自己先死没有道理。
 if (sub === "doctor") {
@@ -158,7 +299,7 @@ if (sub === "doctor") {
       bootCheck: require("./boot-check"),
     });
     process.stdout.write(doctor.render(items, (t, lv) => (paint[lv] || ((x) => x))(t)));
-    // 退出码说实话：有要处理的就 1，好写进安装脚本和 CI（wb doctor && npm start）
+    // 退出码说实话：有要处理的就 1，好写进安装脚本和 CI（openworkbuddy doctor && npm start）
     process.exit(doctor.worst(items) >= doctor.LEVELS.bad ? 1 : 0);
   })();
   return; // CommonJS 的模块体本身就是个函数，这行是合法的「到此为止」，下面那一整套运行时不用再起
@@ -189,6 +330,38 @@ const expertsDoc = store.readJson(preferData("experts.json"), {}) || {};
 const experts = expertsDoc.experts || [];
 const expertTeams = expertsDoc.teams || [];
 const mcpManager = new McpManager();
+
+// ---------- Goal 目标模式（和网页端同一份，见 goal.js） ----------
+const goalKit = require("./goal").createGoalEngine({ workspaceDir: getWorkspaceDir });
+/**
+ * 拆验收标准、对着标准判分，这两句问谁。
+ *
+ * 跟 server.js 那边同一个道理：配了本机引擎（Claude Code / Codex）就借那个 CLI 问——
+ * 用户切过去图的就是不花 API 的钱，这两步偷偷走 API 的话，没配 Key 的人会发现
+ * 目标卡永远停在 0/N，而他根本不知道是哪一步没通。
+ */
+async function goalThink({ system, prompt, timeoutMs }) {
+  const id = cfgEngine();
+  const engMod = require("./engines");
+  if (id !== "builtin" && engMod.get(id)) {
+    return await engMod.ask({ id, opts: ((config.agent || {}).engine_options || {})[id] || {}, system, prompt, timeoutMs });
+  }
+  const r = await llm.chat({ system, history: [{ role: "user", content: prompt }], tools: [], signal: AbortSignal.timeout(timeoutMs) });
+  return r.text;
+}
+
+/** 终端里的目标卡。打勾的用绿√，没打勾的留空框——一眼看出还差哪几项 */
+function printGoalCard(goal) {
+  if (!goal) return;
+  const p = goalKit.progress(goal);
+  const head = goal.status === "done" ? green("目标达成") : `目标 ${p.done}/${p.total}` + (goal.round ? ` · 第 ${goal.round} 轮` : "");
+  prog("\n" + bold(`◆ ${head}`) + dim(`　${goal.text.slice(0, 48)}\n`));
+  for (const c of goal.criteria) prog(`  ${c.done ? green("√") : dim("□")} ${c.done ? dim(c.text) : c.text}\n`);
+  if (goal.note) prog(yellow(`  ！${goal.note}\n`));
+  if (goal.paused) prog(yellow(`  暂停：${goal.paused}\n`));
+  prog("\n");
+}
+
 
 // ---------- 会话持久化（与 server.js 同一目录同一结构） ----------
 const SESS_DIR = dataPath("data", "sessions");
@@ -229,11 +402,11 @@ function newSessionId() {
   const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   return `cli_${stamp}_${Math.random().toString(36).slice(2, 5)}`;
 }
-// wb resume 不给 id = 接最近动过的那个，不管它是在桌面开的还是命令行开的。
-// 这是"丝滑切换"的落点：桌面上做到一半，终端里 wb resume 就能接着往下走。
+// openworkbuddy resume 不给 id = 接最近动过的那个，不管它是在桌面开的还是命令行开的。
+// 这是"丝滑切换"的落点：桌面上做到一半，终端里 openworkbuddy resume 就能接着往下走。
 if (sub === "resume" && !opts.session) {
   const last = listCliSessions(1)[0];
-  if (!last) { process.stderr.write(red("没有可续接的会话。先跑一次 wb \"任务\" 或在桌面端聊一句。\n")); process.exit(1); }
+  if (!last) { process.stderr.write(red("没有可续接的会话。先跑一次 openworkbuddy \"任务\" 或在桌面端聊一句。\n")); process.exit(1); }
   opts.session = last.id;
   prog(dim(`（续接 ${last.from}会话 ${last.id}：${last.title || "无标题"}）\n`));
 }
@@ -495,19 +668,215 @@ const termInterject = [];
 let pendingAsk = null;
 /** 交互模式那个常驻 readline。单发模式下一直是 null——那边现开一个用完就关 @type {import("readline").Interface|null} */
 let replRl = null;
+/** 手机上先答了的时候，把终端这边那个还挂着的提示符撤掉 @type {null | (() => void)} */
+let cancelAsk = null;
+/** 此刻占着终端那个提示符的是哪道题。撤提示符之前得认一下，别把正等着的另一道题连坐撤掉 */
+let askOwner = null;
+/** 当前这趟活儿的现场：Ctrl+C 信号、交互还是单发。等回答的几处都要用 @type {null|{ctrl: AbortController, onSigint: () => void, interactive: boolean}} */
+let askCtx = null;
+/** 正在跑的那趟活儿的实时句柄（手机那一屏就是读它写的文件） @type {any} */
+let liveNow = null;
 /** 有人能回答吗：stdin 得是终端，且不是在给脚本喂 NDJSON。管道进来的内容早读完了，那头没人 */
 const somebodyHome = () => !!process.stdin.isTTY && !opts.json;
+
+// ---------- 手机/网页上答的那一句 ----------
+/**
+ * 答案到了、但问它的那个人已经不等了 —— 先存着。
+ *
+ * 为什么要这个抽屉：读回答用的是游标（读过的不再读），一次读会把文件里所有新行都取走。
+ * 要是取回来的那条不是当前在等的这道题，直接丢掉就等于**这个答案永远消失**——
+ * 手机上明明点了，终端里一直干等到超时。宁可存着没人来领，也不能读走了又扔掉。
+ */
+const remoteInbox = new Map();
+const remoteWaiters = new Map(); // id -> 收到答案时叫谁
+let remotePoll = null;
+
+function remoteDeliver(a) {
+  const id = String(a.id);
+  const fn = remoteWaiters.get(id);
+  if (fn) { remoteWaiters.delete(id); fn(a); return; }
+  if (remoteInbox.size > 32) remoteInbox.clear(); // 攒到这个数只可能是陈货，留着也没人来领
+  remoteInbox.set(id, a);
+}
+
+/**
+ * 等手机上给这条 id 的回答。
+ * @returns 撤销函数。最后一个等的人走了就把轮询停掉——空转着轮询一个没人等的文件没有意义
+ */
+function remoteWait(id, fn) {
+  const key = String(id);
+  const had = remoteInbox.get(key);
+  if (had) { remoteInbox.delete(key); fn(had); return () => {}; }
+  remoteWaiters.set(key, fn);
+  if (!remotePoll) {
+    remotePoll = setInterval(() => {
+      if (!liveNow || !liveNow.live) return;
+      for (const a of liveNow.answers()) remoteDeliver(a);
+    }, 600);
+    if (remotePoll.unref) remotePoll.unref();
+  }
+  return () => {
+    remoteWaiters.delete(key);
+    if (!remoteWaiters.size && remotePoll) { clearInterval(remotePoll); remotePoll = null; }
+  };
+}
+
+/**
+ * 终端和手机，谁先答算谁的。
+ *
+ * @param {string} id 这道题在实时目录里的编号
+ * @param {() => Promise<string|null>} readTerminal 终端那条路
+ * @param {(a: object) => string} mapRemote 手机上那条答案怎么变成终端里会敲的那半截
+ */
+function raceRemote(id, readTerminal, mapRemote) {
+  askOwner = String(id);
+  return new Promise((resolve) => {
+    let settled = false;
+    let off = null;
+    const done = (v) => {
+      if (settled) return;
+      settled = true;
+      if (off) off();
+      if (askOwner === String(id)) askOwner = null;
+      resolve(v);
+    };
+    off = remoteWait(id, (a) => {
+      const cancel = cancelAsk; // 先抓住：done 之后这个槽可能已经被下一道题占了
+      prog(yellow(`\n  » 手机上答了\n`));
+      done(mapRemote(a));
+      // 终端那个提示符还挂着一道已经有答案的题，不撤掉它会一直等到超时
+      if (cancel) { try { cancel(); } catch {} }
+    });
+    readTerminal().then(done, () => done(null));
+  });
+}
+
+/**
+ * 在终端里读一行 —— 提问和审批共用这一条路。
+ *
+ * 没人坐在终端前（管道喂进来的、--json 给脚本读的）也照样进来：这儿不接键盘，
+ * 只负责把超时和 Ctrl+C 变成 null，答案由手机那条路给。以前这种情况直接当「无人值守」，
+ * 于是 `openworkbuddy < 任务.txt` 挂在后台时，agent 问的每一句都没人能答——手机在手上也没用。
+ *
+ * @returns {Promise<string|null>} null = 超时 / Ctrl+C / Ctrl+D / 被手机那边抢答后撤掉
+ */
+function termReadLine(promptText, timeoutMs) {
+  const ctx = askCtx;
+  const sig = ctx ? ctx.ctrl.signal : null;
+  return new Promise((done) => {
+    let settled = false;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (sig) sig.removeEventListener("abort", onAbort);
+      pendingAsk = null;
+      cancelAsk = null;
+      // 答完把提示符收回去：任务还在跑，这时候留着「答>」会跟着正文一起冲下来
+      if (ctx && ctx.interactive && replRl) replRl.setPrompt("");
+      done(v);
+    };
+    // 超时和 Ctrl+C 都还回 null：提问那边 agent 会带着「用户没回应」继续跑，
+    // 审批那边 security 自己按拒绝收场——人走开了不该等于任务作废
+    const timer = setTimeout(() => finish(null), Math.max(5000, Number(timeoutMs) || 300000));
+    if (timer.unref) timer.unref();
+    const onAbort = () => finish(null);
+    if (sig) sig.addEventListener("abort", onAbort, { once: true });
+    cancelAsk = () => finish(null);
+    if (!somebodyHome()) return; // 这头没人，只等手机和超时
+    pendingAsk = finish;
+    if (ctx && ctx.interactive && replRl) { replRl.setPrompt(askPrompt(promptText)); replRl.prompt(); return; }
+    // 单发模式没有常驻 readline，现开一个。它自己接管 stdin，用完就关
+    const one = readline.createInterface({ input: process.stdin, output: process.stderr, prompt: askPrompt(promptText) });
+    one.prompt();
+    cancelAsk = () => { try { one.close(); } catch {} };
+    // 顺序不能反：one.close() 会**同步**触发下面那个 close 处理器，
+    // 先关再 finish 的话，finish(null) 抢在 finish(t) 前面把 settled 占掉——
+    // 人明明答了，agent 收到的却是「没人回应」。实测就是这样错了一版
+    one.on("line", (t) => { finish(t); one.close(); });
+    one.on("close", () => finish(null)); // Ctrl+D：当没回答（已经答过的话 finish 自己会挡掉）
+    // readline 在 TTY 上会把 Ctrl+C 截成自己的事件，外面那个 process.on("SIGINT") 收不到。
+    // 不接这一下，等回答的时候按 Ctrl+C 就什么都不会发生
+    one.on("SIGINT", () => { try { one.close(); } catch {} if (ctx) ctx.onSigint(); });
+    if (sig) sig.addEventListener("abort", () => { try { one.close(); } catch {} }, { once: true });
+  });
+}
+
+let askSeq = 0;
+const newId = (p) => `${p}_${Date.now()}_${++askSeq}`;
+
+/**
+ * agent 问一句：终端里摆出来，同时推到手机上。
+ *
+ * 两头哪头先答都算数。推到手机上这件事不是锦上添花——人起了个长任务就去开会了，
+ * 中途那道岔路要么等他回来（几十分钟白烧），要么模型替他赌一把。
+ */
+async function askUserBoth(ask) {
+  const id = newId("ask");
+  const timeoutMs = Math.max(30000, Number(ask && ask.timeoutMs) || 300000);
+  const live = liveNow;
+  if (live) {
+    live.pend({
+      id, type: "ask",
+      question: String((ask && ask.question) || ""),
+      options: cliAsk.normalize(ask && ask.options),
+      deadline: Date.now() + timeoutMs,
+    });
+  }
+  try {
+    return await makeAskUser((promptText, ms) =>
+      raceRemote(id, () => termReadLine(promptText, ms), (a) => (a.value == null ? "" : String(a.value))))(ask);
+  } finally {
+    if (live) live.unpend(id);
+  }
+}
+
+/**
+ * 一条危险操作求批准：终端里摆出来，同时推到手机上。
+ *
+ * 不接这个钩子的话，命令行里的审批长这样：卡住两分钟，然后「用户未批准」——
+ * 而人从头到尾没被问过。超时对审批来说等于拒绝，所以「没人看见」和「看见了不同意」
+ * 在日志里长得一模一样，这是最糟的一种沉默。
+ */
+async function handleApproval(entry) {
+  const live = liveNow;
+  const deadline = Number(entry.deadline) || Date.now() + 120000;
+  const timeoutMs = Math.max(5000, deadline - Date.now());
+  if (live) live.pend(cliApprove.card(entry, deadline));
+  let v = null;
+  try {
+    v = await cliApprove.run(entry, {
+      write: (x) => process.stderr.write(x),
+      readLine: (promptText, ms) => raceRemote(entry.id, () => termReadLine(promptText, ms),
+        (a) => (a.allow ? (a.scope === "session" || a.scope === "always" ? "2" : "1") : "3")),
+      timeoutMs,
+      width: (process.stderr.columns || 80) - 2,
+      paint: (x, k) => ({
+        warn: (y) => bold(yellow(y)), n: (y) => (ttyErr ? `\x1b[36m${y}\x1b[0m` : y),
+        label: bold, detail: dim, hint: dim, code: (y) => (ttyErr ? `\x1b[35m${y}\x1b[0m` : y),
+      }[k] || ((y) => y))(x),
+    });
+  } finally {
+    if (live) live.unpend(entry.id);
+  }
+  if (!v) return; // 超时 / Ctrl+C：不去 resolve，让 security 按它自己那套（拒绝）收场
+  const r = security.resolveApproval(entry.id, v.allow, v.scope);
+  if (!r || !r.ok) return; // 手机上已经点过了，或者已经超时——这是正常的竞态，不用报错
+  if (!v.allow) prog(yellow("  ✗ 没批准，它会换个办法或者告诉你卡在哪\n"));
+  else if (v.scope === "session") prog(green("  ✓ 批了；本次运行期间同类不再问\n"));
+  else prog(green("  ✓ 批了这一次\n"));
+}
 
 /**
  * 把一次提问摆到终端上，等一个答案。
  *
- * 问题走 **stderr**：`wb "…" > 报告.md` 的时候答案在文件里，问题得还在人眼前。
+ * 问题走 **stderr**：`openworkbuddy "…" > 报告.md` 的时候答案在文件里，问题得还在人眼前。
  * 也不受 --quiet 管——把一道正在等回答的选择题静音，换来的不是清净是卡死。
  *
  * @param {(prompt: string) => Promise<string|null>} readLine 怎么读这一行（两种模式各给各的）
  * @returns {(a: {question: string, options: any[], timeoutMs: number}) => Promise<string|null>}
  */
-/** 等回答时的提示符。跟平时那个 `wb>` 换个颜色和字，一眼看出来现在是它在等你，不是你在等它 */
+/** 等回答时的提示符。跟平时那个 `openworkbuddy>` 换个颜色和字，一眼看出来现在是它在等你，不是你在等它 */
 const askPrompt = (t) => (ttyErr ? `\x1b[33m${t}\x1b[0m` : t);
 
 function makeAskUser(readLine) {
@@ -516,9 +885,12 @@ function makeAskUser(readLine) {
     n: (x) => (ttyErr ? `\x1b[36m${x}\x1b[0m` : x),
     label: bold, detail: dim, hint: dim, warn: yellow,
   };
-  return (ask) => cliAsk.run(ask, {
+  // 「同时摆到手机上」是 askUserBoth 的活儿，不在这儿重做一遍：
+  // 两处都 pend 的话，同一道题会在手机上并排出现两张卡、各带一个 id，
+  // 而 agent 只认 askUserBoth 那个 id——点另一张的人会发现点了没反应。
+  return async (ask) => cliAsk.run(ask, {
     write: (x) => process.stderr.write(x),
-    readLine,
+    readLine: (promptText, deadline) => readLine(promptText, deadline),
     width: (process.stderr.columns || 80) - 2,
     paint: (x, k) => (paint[k] || ((y) => y))(x),
   });
@@ -566,51 +938,56 @@ async function runOnce(runtime, text, mode, interactive) {
   // 所以那边改从 stopCurrent 这个把手调进来——改写前那条路在交互模式下从来没通过
   process.on("SIGINT", onSigint);
   stopCurrent = onSigint;
+  // 等回答的那几处（提问、审批）要用到这一趟的 Ctrl+C 信号和实时句柄
+  askCtx = { ctrl, onSigint, interactive: !!interactive };
+  liveNow = live;
+  // 危险操作求批准时，把卡片同时摆到终端和手机上。不订这个钩子的话，
+  // 命令行里的审批就是「卡住两分钟然后被拒」，人从头到尾没被问过
+  const offApproval = security.watchApprovals((ev) => {
+    if (ev.type === "open") { handleApproval(ev.entry).catch(() => {}); return; }
+    // 别处点过了 / 超时了：把手机上那张卡撤下来，别留着一个点了没反应的按钮
+    if (ev.type === "close") {
+      live.unpend(ev.id);
+      // 只撤这条自己的提示符：认 id 才行，不然会把同时挂着的另一道题一起撤了
+      if (askOwner === String(ev.id) && cancelAsk) { try { cancelAsk(); } catch {} }
+    }
+  });
   let finalText = "";
+  // Goal 模式：第一次用这句话建目标（拆成验收标准），已有进行中的目标就直接接着冲。
+  // 目标卡存在会话里，跟网页端是同一份——在手机上起的头，回到终端 `openworkbuddy -s <会话>` 能接着干。
+  if (modes.isGoalMode(mode)) {
+    if (!sess.goal || sess.goal.status !== "active") {
+      prog(dim("拆验收标准…\n"));
+      try { sess.goal = await goalKit.start(goalThink, text); }
+      catch (e) { prog(yellow(`拆验收标准失败：${e.message}\n`)); }
+    }
+    if (sess.goal && sess.goal.status === "active") sess.goal.paused = ""; // 又开跑了，把「已暂停」摘掉
+    if (sess.goal) { printGoalCard(sess.goal); live.event({ type: "goal", goal: sess.goal }); }
+  }
   try {
+    // 外层：目标轮。普通模式只走一轮；goal 模式没达标自动再跑，最多 goalKit.MAX_ROUNDS 轮
+    let roundStopped = null;
+   for (let goalRound = 0; ; goalRound++) {
+    roundStopped = null;
     const r = await runtime.runTask({
       history: sess.history,
+      // 进行中的目标注进任务上下文：agent 每一轮都对着验收标准干活，不跑偏
+      projectContext: goalKit.contextFor(sess.goal) || undefined,
       emit: makeEmit(state),
-      mode: ["ask", "plan", "craft"].includes(mode) ? mode : "craft",
+      mode: modes.agentMode(mode), // goal 在外面那层循环里，agent 只认识 ask/plan/craft
       user: owner ? owner.username : undefined, // 记忆按人取，命令行走管理员这本账
       stopSignal: ctrl.signal,
       // 底层 CLI 引擎的线程 id：跟会话存在一起，所以在桌面开的头能在这儿接着跑，反过来也一样
       engineSession: lanes.engineSessionFor(sess, cfgEngine()),
-      // 有人坐在终端前就让 agent 能问他。给 undefined 才是「无人值守」——
-      // 管道喂进来的（wb < 任务.txt）、--json 给脚本读的，那头确实没人，不许装作有
-      askUser: somebodyHome() ? makeAskUser((promptText, askDeadline) => new Promise((done) => {
-        let settled = false;
-        const finish = (v) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          ctrl.signal.removeEventListener("abort", onAbort);
-          pendingAsk = null;
-          // 答完把提示符收回去：任务还在跑，这时候留着「答>」会跟着正文一起冲下来
-          if (interactive && replRl) replRl.setPrompt("");
-          done(v);
-        };
-        // 超时和 Ctrl+C 都还回 null：agent.js 收到 null 会带着「用户没回应」继续跑，
-        // 而不是把这趟活儿丢掉——人走开了不该等于任务作废
-        const timer = setTimeout(() => finish(null), Math.max(30000, Number(askDeadline) || 300000));
-        if (timer.unref) timer.unref();
-        const onAbort = () => finish(null);
-        ctrl.signal.addEventListener("abort", onAbort, { once: true });
-        pendingAsk = finish;
-        if (interactive && replRl) { replRl.setPrompt(askPrompt(promptText)); replRl.prompt(); return; }
-        // 单发模式没有常驻 readline，现开一个。它自己接管 stdin，用完就关
-        const one = readline.createInterface({ input: process.stdin, output: process.stderr, prompt: askPrompt(promptText) });
-        one.prompt();
-        // 顺序不能反：one.close() 会**同步**触发下面那个 close 处理器，
-        // 先关再 finish 的话，finish(null) 抢在 finish(t) 前面把 settled 占掉——
-        // 人明明答了，agent 收到的却是「没人回应」。实测就是这样错了一版
-        one.on("line", (t) => { finish(t); one.close(); });
-        one.on("close", () => finish(null)); // Ctrl+D：当没回答（已经答过的话 finish 自己会挡掉）
-        // readline 在 TTY 上会把 Ctrl+C 截成自己的事件，外面那个 process.on("SIGINT") 收不到。
-        // 不接这一下，等回答的时候按 Ctrl+C 就什么都不会发生
-        one.on("SIGINT", () => { try { one.close(); } catch {} onSigint(); });
-        ctrl.signal.addEventListener("abort", () => { try { one.close(); } catch {} }, { once: true });
-      })) : undefined,
+      // 能问就问。终端前有人当然能问；人起了长任务就去开会了也照样能问——askUserBoth
+      // 会把这一句同时推到手机上，两头哪头先答都算数。
+      //
+      // ⚠️ 但「播出去了」不等于「有人在看」。live.live 只说明这趟活儿在盘上登记了，
+      // 没人扫过码、手机根本没打开的时候它一样是 true。管道喂进来的 `openworkbuddy < 任务.txt`、
+      // 挂在 crontab 里的 --json，那头确实没人：按「有人」算的话，模型每问一句都要
+      // 干等满 5 分钟超时才肯往下走，一个夜里跑的批处理能就此堵成早上还没跑完。
+      // 所以默认按 TTY 判；确实打算「人不在电脑前、答案从手机上给」的，显式写 --ask-remote。
+      askUser: (somebodyHome() || (opts.askRemote && live.live)) ? askUserBoth : undefined,
       // 网页/手机上补的那句话，在两步之间读走。终端这边也回显一下——
       // 不然坐在电脑前的人只会看见 agent 突然改了主意，不知道是有人从手机上插了一句
       getInterject: () => {
@@ -623,13 +1000,52 @@ async function runOnce(runtime, text, mode, interactive) {
       },
     });
     if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || cfgEngine(), r.sessionId);
-    finalText = r.finalText || "";
+    if (r && r.finalText) finalText = r.finalText;
+    if (r && r.stopped) roundStopped = r.stopped;
+
+    // 没有进行中的目标 / 用户按了 Ctrl+C → 不验收不加轮
+    if (!sess.goal || sess.goal.status !== "active" || ctrl.signal.aborted) break;
+    sess.goal.note = "";
+    sess.goal.paused = "";
+    prog(dim("\n对着验收标准验收…\n"));
+    // 证据用「这一轮真写过的文件」，不是整个工作目录：命令行的工作目录常常是个大仓库，
+    // 整个扫进去等于拿别人早就写好的文件给这一轮打勾
+    await goalKit.verify(goalThink, sess, finalText, (w) => { sess.goal.note = w; }, state.changed);
+    sess.goal.round = (sess.goal.round || 0) + 1;
+    printGoalCard(sess.goal);
+    live.event({ type: "goal", goal: sess.goal });
+    saveSess();
+    if (sess.goal.status === "done") break;
+    if (!modes.isGoalMode(mode)) break;
+    // 自动补跑用完了。别悄悄不跑——写清楚为什么停、还差几项，要不要接着烧钱交回给用户
+    if (goalRound + 1 >= goalKit.MAX_ROUNDS) {
+      sess.goal.paused = `自动补跑已用满 ${goalKit.MAX_ROUNDS} 轮，还差 ${goalKit.progress(sess.goal).unmet} 项没达成`;
+      prog(yellow(`  暂停：${sess.goal.paused}；想接着冲就再说一句「继续」\n`));
+      live.event({ type: "goal", goal: sess.goal });
+      saveSess();
+      break;
+    }
+    // 这轮是被超时/上限硬切断的：同样的条件再跑一轮大概率原样再撞，别把用户的时间和钱烧在死循环里
+    if (roundStopped) {
+      sess.goal.paused = `这轮任务被强制收尾（${roundStopped}），暂停自动补跑`;
+      prog(yellow(`  暂停：${sess.goal.paused}；解决后说一句「继续」接着冲\n`));
+      live.event({ type: "goal", goal: sess.goal });
+      saveSess();
+      break;
+    }
+    const fb = goalKit.feedbackFor(sess.goal);
+    sess.history.push({ role: "user", content: fb });
+    prog(dim(`\n  » 第 ${sess.goal.round + 1} 轮：只补没达成的那几项\n`));
+   }
   } catch (e) {
     state.error = e.message;
     process.stderr.write(red(`\n出错了：${e.message}\n`));
   }
   process.removeListener("SIGINT", onSigint);
   stopCurrent = null;
+  offApproval();
+  askCtx = null;
+  liveNow = null;
   if (beatTimer) clearInterval(beatTimer);
   live.finish({ error: state.error, title: sess.title });
   // --json 下正文没走 stdout，最终文本从事件里攒回来，落盘的内容两种模式必须一样
@@ -641,7 +1057,7 @@ async function runOnce(runtime, text, mode, interactive) {
   if (state.usage) events.push(state.usage);
   sess.transcript.push({ type: "assistant", events, at: new Date().toISOString() });
   saveSess();
-  // 记账：与 Web 端同一本账（data/usage.json）
+  // 记账：与 Web 端同一本账（data/usage/<年-月>.jsonl，按月分片、一笔一行只追加；见 usage-store.js）
   if (owner && state.usage && state.usage.calls > 0) {
     const spent = account.chargeRun(owner, { ...state.usage, source: "cli", sessionId });
     state.credits = { spent, balance: owner.credits };
@@ -666,7 +1082,7 @@ function readStdin() {
 const STDIN_MAX = 200000; // 再多就不是「材料」是「数据集」了，该让 agent 自己去读文件
 
 // ---------- 带进来的文件 ----------
-// 用户原话：「还有我的wb cli也要支持复制文件 图片这些啊」。
+// 用户原话：「还有我的 cli 也要支持复制文件 图片这些啊」（原话里用的是改名前的旧命令名）。
 //
 // 终端里把文件带进来有三条路，三条都得认：从访达把文件拖进窗口（粘出来的是反斜杠
 // 转义过的路径）、用「拷贝路径」粘进来（空格没转义，只有整行当一条路径才认得出）、
@@ -703,7 +1119,7 @@ function splitFiles(text) {
 
 // ---------- 主流程 ----------
 (async () => {
-  // ---------- wb engines：看本机能拿什么当底层，以及一键切过去 ----------
+  // ---------- openworkbuddy engines：看本机能拿什么当底层，以及一键切过去 ----------
   if (sub === "engines") {
     const engines = require("./engines");
     const want = words[0] === "use" ? String(words[1] || "").trim() : "";
@@ -740,7 +1156,7 @@ function splitFiles(text) {
       process.stdout.write(dim(`     ${e.note}\n`));
       if (!e.installed && e.install) process.stdout.write(dim(`     装法：${e.install}\n`));
     }
-    process.stdout.write(dim("\n切换：wb engines use <id>。选了本机 Claude Code / Codex，任务就跑在你已经付过钱的订阅上，不再消耗 API 额度。\n"));
+    process.stdout.write(dim("\n切换：openworkbuddy engines use <id>。选了本机 Claude Code / Codex，任务就跑在你已经付过钱的订阅上，不再消耗 API 额度。\n"));
     process.exit(0);
   }
 
@@ -754,11 +1170,11 @@ function splitFiles(text) {
       const when = `${d.getFullYear()}-${q(d.getMonth() + 1)}-${q(d.getDate())} ${q(d.getHours())}:${q(d.getMinutes())}`;
       process.stdout.write(`${r.id}  ${when}  ${r.from}  ${String(r.turns).padStart(3)} 轮  ${r.title}${r.engine ? dim("  [" + r.engine + "]") : ""}\n`);
     }
-    process.stdout.write(dim(`\n续接：wb resume <id> "接着做…"；不给 id 就接最近动过的那个（桌面开的也能接）\n`));
+    process.stdout.write(dim(`\n续接：openworkbuddy resume <id> "接着做…"；不给 id 就接最近动过的那个（桌面开的也能接）\n`));
     process.exit(0);
   }
 
-  // 带进来的文件。这一步必须排在读管道**前面**：`cat 报错.log | wb "这什么意思"` 里
+  // 带进来的文件。这一步必须排在读管道**前面**：`cat 报错.log | openworkbuddy "这什么意思"` 里
   // 提到的路径是材料不是附件，扫一遍会把人家日志里随口提到的文件都搬进工作目录
   const namedFiles = [];
   for (const ref of opts.files) {
@@ -774,7 +1190,7 @@ function splitFiles(text) {
   if (shot.files.length) oneShot = shot.text; // 没摘出东西就一个字都不动，双空格之类的原样留着
   const wanted = namedFiles.concat(shot.files);
 
-  // 管道：有任务描述时当附加材料，没有时管道内容本身就是任务（wb < 任务.txt）
+  // 管道：有任务描述时当附加材料，没有时管道内容本身就是任务（openworkbuddy < 任务.txt）
   const piped = await readStdin();
   if (piped.trim()) {
     const body = piped.length > STDIN_MAX
@@ -788,7 +1204,7 @@ function splitFiles(text) {
   // 工作目录里就多出一份 报告-2.md——同一个文件躺两遍，之后谁也说不清该看哪一个
   if (!oneShot && wanted.length) {
     process.stderr.write(red(`带上了 ${wanted.map((f) => path.basename(f.path)).join("、")}，可没说要拿它干什么。\n`));
-    process.stderr.write(dim(`把要问的话也写上：wb -f 图.png "这张图里写了什么"\n`));
+    process.stderr.write(dim(`把要问的话也写上：openworkbuddy -f 图.png "这张图里写了什么"\n`));
     process.exit(2);
   }
   if (!oneShot && !process.stdin.isTTY) { console.log(cliArgs.helpText()); process.exit(1); }
@@ -804,7 +1220,14 @@ function splitFiles(text) {
   const engineId = (config.agent || {}).engine || "builtin";
   const engineBackend = require("./engines").get(engineId);
   const who = engineBackend ? `底层 ${engineBackend.label}` + green("（不花 API 额度）") : `模型 ${llm.provider}（${llm.model}）`;
-  prog(dim(`${who} · 模式 ${opts.mode} · 工作目录 ${getWorkspaceDir()} · 会话 ${sessionId}\n`));
+  // 权限档只在「不是默认那档」时印。默认 auto 天天见，印了就是噪音；
+  // 而 full（命令也不问了）和 plan（一个字都不写）恰恰是那种「以为自己在另一档」会出事的状态，
+  // 必须让人在第一行就看见——尤其 --perm 是一次性的，退出就没了，更不该只存在于自己的记忆里。
+  // full 单独多说半句：这一档连「删除保护」一起关掉（rm 类命令在别的档位都要点头，这档不问了），
+  // 这是 e2e 里钉死的设计，不是漏洞——但一个打了 --perm full 就走开的人，得先在这行里看见它。
+  const permLine = permNow() === security.DEFAULT_MODE ? ""
+    : ` · 权限 ${security.PERMISSION_MODES[permNow()].label}${permNow() === "full" ? yellow("（连删除也不问了）") : ""}`;
+  prog(dim(`${who} · 模式 ${modes.modeLabel(opts.mode)}${permLine} · 工作目录 ${getWorkspaceDir()} · 会话 ${sessionId}\n`));
 
   if (oneShot) {
     const r = await runOnce(runtime, attach.withNote(oneShot, attachNames), opts.mode);
@@ -822,7 +1245,7 @@ function splitFiles(text) {
   //   4. Ctrl+D 之后等在 question 上的 Promise 永远不 resolve，MCP 子进程跟着挂死。
   // 现在一行输入先过 repl-commands 那张纯表，再由这儿决定怎么说、怎么做。
   const repl = require("./repl-commands");
-  const PROMPT = ttyErr ? "\x1b[36mwb>\x1b[0m " : "wb> ";
+  const PROMPT = ttyErr ? "\x1b[36mopenworkbuddy>\x1b[0m " : "openworkbuddy> ";
   const HIST_FILE = dataPath("data", "cli-history.txt");
   const loadHistory = () => {
     // 文件里老的在前（跟 bash 一样，人直接 cat 也顺眼），readline 要的是新的在前
@@ -1025,9 +1448,32 @@ function splitFiles(text) {
     if (v.name === "help") { prog(repl.helpText()); return; }
     if (v.name === "clear") { process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); return; }
     if (v.name === "mode") {
-      if (!v.arg) { prog(dim(`当前是 ${opts.mode} 模式；换：/mode craft|plan|ask\n`)); return; }
+      if (!v.arg) { prog(dim(`当前是 ${modes.modeLabel(opts.mode)}；换：/mode ${modes.MODE_ARG}\n`)); return; }
+      // 这儿原来一个字的校验都没有。`/mode goal` 敲进去照收，状态行接着印「模式 goal」，
+      // 而底下 `["ask","plan","craft"].includes("goal")` 判 false，安静地按 craft 跑完——
+      // 用户以为自己开了目标验收，实际上从头到尾没验收过一次。认不出来就当场说，别装作切好了。
+      if (!modes.isMode(v.arg)) { prog(yellow(modes.modeHint(v.arg) + "\n")); return; }
       opts.mode = v.arg;
-      prog(dim(`已经切到 ${v.arg} 模式\n`));
+      prog(dim(`已经切到 ${modes.modeLabel(v.arg)}\n`));
+      return;
+    }
+    if (v.name === "perm") {
+      const cur = permNow();
+      if (!v.arg) {
+        // 不给值就把四档连同「这档到底意味着什么」一起摆出来。只印 id 的话，
+        // plan / ask / auto / full 四个英文词谁也分不清哪个更放得开，只能去翻文档。
+        prog(dim(`现在是「${security.PERMISSION_MODES[cur].label}」（${cur}）。换：/perm <档位>\n`));
+        for (const [id, m] of Object.entries(security.PERMISSION_MODES)) {
+          prog(`  ${id === cur ? green("◆") : dim("·")} ${id.padEnd(5)} ${m.label}　${dim(m.desc)}\n`);
+        }
+        return;
+      }
+      if (!security.PERMISSION_MODES[v.arg]) { prog(yellow(`没有「${v.arg}」这个档位，只能是 ${Object.keys(security.PERMISSION_MODES).join(" / ")}\n`)); return; }
+      // 只动内存里这份。跟 --perm 同一个道理：交互里临时松一档，不该把 config.json 也改了，
+      // 否则退出以后所有的活儿都跟着松了，而人早就忘了自己在这儿敲过一句 /perm。
+      config.security = { ...(config.security || {}), permission_mode: v.arg };
+      const m = security.PERMISSION_MODES[v.arg];
+      prog(dim(`已经切到「${m.label}」——${m.desc}（只管这一趟，没改配置文件）\n`));
       return;
     }
     if (v.name === "new") {
@@ -1036,7 +1482,7 @@ function splitFiles(text) {
       sessionId = newSessionId();
       sessFile = sessFileOf(sessionId);
       sess = { history: [], transcript: [], title: "" };
-      prog(dim(`开了新会话 ${sessionId}（刚才那段还在：wb --session ${oldId}）\n`));
+      prog(dim(`开了新会话 ${sessionId}（刚才那段还在：openworkbuddy --session ${oldId}）\n`));
       return;
     }
     if (v.name === "session") { prog(dim(`${sessionId}\n${sessFile}\n`)); return; }
