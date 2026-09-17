@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1190 142" width="1190" height="142" role="img" aria-label="Ask once → it plans, works and verifies itself → PPTX / DOCX / XLSX / HTML land on your disk">
+  <title>Ask once, it does the work, the file lands on your disk</title>
+  <style>
+    /* Hand-drawn flow diagram, not a screenshot. With animation off ("reduce motion") it rests on the final frame — the information is all still there. */
+    :root, svg {
+      --bg: #ffffff; --line: #d8dae0; --fg: #24292f; --mut: #656d76;
+      --pill: #f6f8fa; --accent: #5b5ff7; --accent-soft: #eceafe;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root, svg { --bg: #161b22; --line: #30363d; --fg: #e6edf3; --mut: #8b949e; --pill: #21262d; --accent-soft: #23204a; }
+    }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .card { fill: var(--bg); stroke: var(--line); }
+    .soft { fill: var(--accent-soft); stroke: var(--accent); stroke-opacity: .45; }
+    .chip { fill: var(--pill); stroke: var(--line); }
+    .say  { fill: var(--fg); font-size: 16px; }
+    .hd   { fill: var(--accent); font-size: 11.5px; font-weight: 700; letter-spacing: .06em; }
+    .md   { fill: var(--fg); font-size: 15px; font-weight: 600; }
+    .cap  { fill: var(--mut); font-size: 12.5px; }
+    .ext  { fill: var(--fg); font-size: 13px; font-weight: 700; }
+    .flow { stroke: var(--accent); stroke-width: 2; stroke-linecap: round; fill: none; stroke-opacity: .65; }
+
+    @keyframes dash { to { stroke-dashoffset: -28; } }
+    @keyframes pop  { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes glow { 0%,55% { stroke-opacity: .45; } 22% { stroke-opacity: 1; } 100% { stroke-opacity: .45; } }
+    .flow { stroke-dasharray: 7 7; animation: dash 1.1s linear infinite; }
+    .soft { animation: glow 5s ease-in-out infinite; }
+    .out  { animation: pop .45s ease-out both; transform-box: fill-box; }
+    .o1 { animation-delay: .30s } .o2 { animation-delay: .45s } .o3 { animation-delay: .60s } .o4 { animation-delay: .75s }
+    @media (prefers-reduced-motion: reduce) { .flow, .soft, .out { animation: none !important; } .flow { stroke-dasharray: none } }
+  </style>
+
+  <!-- 1. you ask -->
+  <rect class="card" x="10" y="26" width="356" height="72" rx="16"/>
+  <path class="card" d="M34 98 L34 112 L52 98 Z"/>
+  <text class="hd" x="30" y="50">YOU SAY</text>
+  <text class="say" x="30" y="78">Turn this Excel into a Q3 review deck</text>
+
+  <path class="flow" d="M378 62 H426"/>
+  <path class="flow" d="M418 55 l9 7 -9 7" stroke-dasharray="none"/>
+
+  <!-- 2. it works -->
+  <rect class="soft" x="440" y="22" width="268" height="80" rx="16"/>
+  <circle cx="470" cy="52" r="9" fill="var(--accent)"/>
+  <path d="M470 46.5 l1.7 3.8 4.1 .5 -3 2.8 .8 4.1 -3.6-2 -3.6 2 .8-4.1 -3-2.8 4.1-.5z" fill="var(--bg)"/>
+  <text class="hd" x="488" y="56">OPENWORKBUDDY</text>
+  <text class="md" x="574" y="86" text-anchor="middle">Plans · Executes · Verifies</text>
+
+  <path class="flow" d="M720 62 H768"/>
+  <path class="flow" d="M760 55 l9 7 -9 7" stroke-dasharray="none"/>
+
+  <!-- 3. the files you get -->
+  <g class="out o1"><rect class="chip" x="782" y="30" width="92" height="44" rx="11"/><rect x="796" y="45" width="14" height="14" rx="3" fill="#d24726"/><text class="ext" x="818" y="57">PPTX</text></g>
+  <g class="out o2"><rect class="chip" x="884" y="30" width="92" height="44" rx="11"/><rect x="898" y="45" width="14" height="14" rx="3" fill="#2b579a"/><text class="ext" x="920" y="57">DOCX</text></g>
+  <g class="out o3"><rect class="chip" x="986" y="30" width="92" height="44" rx="11"/><rect x="1000" y="45" width="14" height="14" rx="3" fill="#217346"/><text class="ext" x="1022" y="57">XLSX</text></g>
+  <g class="out o4"><rect class="chip" x="1088" y="30" width="92" height="44" rx="11"/><rect x="1102" y="45" width="14" height="14" rx="3" fill="#e34c26"/><text class="ext" x="1124" y="57">HTML</text></g>
+  <text class="cap" x="782" y="94">Saved to your disk, ready to edit — not a chat log</text>
+</svg>

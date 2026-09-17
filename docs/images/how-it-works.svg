@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 142" width="1120" height="142" role="img" aria-label="一句话交代 → 它自己规划、动手、验收 → PPTX / DOCX / XLSX / HTML 落到你硬盘上">
+  <title>一句话交代，它自己干完，文件落到你硬盘上</title>
+  <style>
+    /* 手画的流程示意图，不是截图。不加动画时（系统开了「减弱动态效果」）停在最后一帧，信息照样完整。 */
+    :root, svg {
+      --bg: #ffffff; --line: #d8dae0; --fg: #24292f; --mut: #656d76;
+      --pill: #f6f8fa; --accent: #5b5ff7; --accent-soft: #eceafe;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root, svg { --bg: #161b22; --line: #30363d; --fg: #e6edf3; --mut: #8b949e; --pill: #21262d; --accent-soft: #23204a; }
+    }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+    .card { fill: var(--bg); stroke: var(--line); }
+    .soft { fill: var(--accent-soft); stroke: var(--accent); stroke-opacity: .45; }
+    .chip { fill: var(--pill); stroke: var(--line); }
+    .say  { fill: var(--fg); font-size: 16px; }
+    .hd   { fill: var(--accent); font-size: 11.5px; font-weight: 700; letter-spacing: .06em; }
+    .md   { fill: var(--fg); font-size: 15px; font-weight: 600; }
+    .cap  { fill: var(--mut); font-size: 12.5px; }
+    .ext  { fill: var(--fg); font-size: 13px; font-weight: 700; }
+    .flow { stroke: var(--accent); stroke-width: 2; stroke-linecap: round; fill: none; stroke-opacity: .65; }
+
+    @keyframes dash { to { stroke-dashoffset: -28; } }
+    @keyframes pop  { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes glow { 0%,55% { stroke-opacity: .45; } 22% { stroke-opacity: 1; } 100% { stroke-opacity: .45; } }
+    .flow { stroke-dasharray: 7 7; animation: dash 1.1s linear infinite; }
+    .soft { animation: glow 5s ease-in-out infinite; }
+    .out  { animation: pop .45s ease-out both; transform-box: fill-box; }
+    .o1 { animation-delay: .30s } .o2 { animation-delay: .45s } .o3 { animation-delay: .60s } .o4 { animation-delay: .75s }
+    @media (prefers-reduced-motion: reduce) { .flow, .soft, .out { animation: none !important; } .flow { stroke-dasharray: none } }
+  </style>
+
+  <!-- ① 你说一句 -->
+  <rect class="card" x="10" y="26" width="322" height="72" rx="16"/>
+  <path class="card" d="M34 98 L34 112 L52 98 Z"/>
+  <text class="hd" x="30" y="50">你说一句</text>
+  <text class="say" x="30" y="78">把这个 Excel 做成 Q3 复盘 PPT</text>
+
+  <path class="flow" d="M344 62 H392"/>
+  <path class="flow" d="M384 55 l9 7 -9 7" stroke-dasharray="none"/>
+
+  <!-- ② 它自己干 -->
+  <rect class="soft" x="406" y="22" width="232" height="80" rx="16"/>
+  <circle cx="436" cy="52" r="9" fill="var(--accent)"/>
+  <path d="M436 46.5 l1.7 3.8 4.1 .5 -3 2.8 .8 4.1 -3.6-2 -3.6 2 .8-4.1 -3-2.8 4.1-.5z" fill="var(--bg)"/>
+  <text class="hd" x="454" y="56">OPENWORKBUDDY</text>
+  <text class="md" x="430" y="86">规划 · 动手 · 自己验收</text>
+
+  <path class="flow" d="M650 62 H698"/>
+  <path class="flow" d="M690 55 l9 7 -9 7" stroke-dasharray="none"/>
+
+  <!-- ③ 交给你的文件 -->
+  <g class="out o1"><rect class="chip" x="712" y="30" width="92" height="44" rx="11"/><rect x="726" y="45" width="14" height="14" rx="3" fill="#d24726"/><text class="ext" x="748" y="57">PPTX</text></g>
+  <g class="out o2"><rect class="chip" x="814" y="30" width="92" height="44" rx="11"/><rect x="828" y="45" width="14" height="14" rx="3" fill="#2b579a"/><text class="ext" x="850" y="57">DOCX</text></g>
+  <g class="out o3"><rect class="chip" x="916" y="30" width="92" height="44" rx="11"/><rect x="930" y="45" width="14" height="14" rx="3" fill="#217346"/><text class="ext" x="952" y="57">XLSX</text></g>
+  <g class="out o4"><rect class="chip" x="1018" y="30" width="92" height="44" rx="11"/><rect x="1032" y="45" width="14" height="14" rx="3" fill="#e34c26"/><text class="ext" x="1054" y="57">HTML</text></g>
+  <text class="cap" x="712" y="94">落到你硬盘上，点开就能改——不是一段聊天记录</text>
+</svg>

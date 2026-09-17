@@ -5,8 +5,9 @@
 <h1 align="center">OpenWorkBuddy</h1>
 
 <p align="center">
-  <b>A local-first agent that actually delivers the work.</b><br>
-  Give it a request and your material. It plans, executes and checks the result, then leaves a real PPT / Word / Excel / web page on your machine — <b>not another chat log.</b>
+  <b>An AI office assistant that runs on your own machine.</b><br>
+  Ask for something once; it plans, does the work, checks it, and leaves a real<br>
+  PPT / Word / Excel / web page on your disk — <b>a file you can open, not a chat log.</b>
 </p>
 
 <p align="center">
@@ -14,40 +15,21 @@
 </p>
 
 <p align="center">
-  <sub>For local office automation, self-hosted agent workspaces, and people who want to learn agents from real models, tools, memory and traces. Actively iterated and open to contributors.</sub>
-</p>
-
-> **What is openworkbuddy?** OpenWorkBuddy (`openworkbuddy`) is a local-first, open-source AI office agent. It turns requests into files you can open and verify on your own machine — not another chat log. This repository, `CatCatUncle/openworkbuddy`, is the project source, written independently by 开发者猫叔 (CatCatUncle), with no affiliation to any similarly named third-party product or company (see [Disclaimer](#disclaimer)).
-
-<p align="center">
-  <a href="#run-it-in-three-minutes"><b>⚡ Run it in three minutes</b></a> ·
-  <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a> ·
-  <a href="#your-first-run">Your first run</a> ·
-  <a href="#technical-architecture">Architecture</a> ·
-  <a href="#roadmap">Roadmap</a> ·
-  <a href="#contributing">Contribute a capability</a> ·
-  <a href="CHANGELOG.en.md">Changelog</a> ·
-  <a href="docs/功能清单.md">Feature list (zh)</a> ·
-  <a href="README.md#交流群">Feishu group</a>
-</p>
-
-<p align="center">
-  <a href="https://catcatuncle.github.io/openworkbuddy/"><b>🌐 Project homepage</b></a> ·
-  <a href="https://github.com/CatCatUncle/openworkbuddy">Source</a> ·
-  <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Releases</a>
+  <a href="https://github.com/CatCatUncle/openworkbuddy/releases"><b>⬇&nbsp;Download</b></a>
+  &nbsp;·&nbsp; <a href="#run-it-in-three-minutes">Run it in three minutes</a>
+  &nbsp;·&nbsp; <a href="docs/功能清单.md">Feature list (zh)</a>
+  &nbsp;·&nbsp; <a href="#docs">Docs</a>
+  &nbsp;·&nbsp; <a href="README.md#交流群">Feishu group</a>
+  &nbsp;·&nbsp; <a href="CHANGELOG.en.md">Changelog</a>
 </p>
 
 <p align="center">
   <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&logo=github&label=Star&color=5b5ff7" alt="Star"></a>
-  <a href="https://github.com/CatCatUncle/openworkbuddy/forks"><img src="https://img.shields.io/github/forks/CatCatUncle/openworkbuddy?style=flat-square&logo=github&color=5b5ff7" alt="Fork"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="License"></a>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.skills&label=Skills&color=5b5ff7&style=flat-square" alt="Skills">
-  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.tools&label=Tools&color=5b5ff7&style=flat-square" alt="Tools">
-  <a href="#ecosystem"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.connectors&label=Connectors&color=5b5ff7&style=flat-square" alt="Connectors"></a>
-  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.experts&label=Experts&color=5b5ff7&style=flat-square" alt="Experts">
+  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.skills&label=Skills&color=5b5ff7&style=flat-square" alt="Skills"></a>
+  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.tools&label=Tools&color=5b5ff7&style=flat-square" alt="Tools"></a>
+  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.connectors&label=Connectors&color=5b5ff7&style=flat-square" alt="Connectors"></a>
+  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.experts&label=Experts&color=5b5ff7&style=flat-square" alt="Experts"></a>
 </p>
 
 <p align="center">
@@ -60,61 +42,11 @@
 
 ---
 
-## Your first run
+## You say it, it hands you the file
 
-**The fastest proof: download → choose one model → paste this into the composer.**
-
-> Turn the material I attach into one clear page of key points and deliver it as an openable Markdown file.
-
-The actual file appears in the output panel on the right, ready to preview, download or revise. No file handy? Say “write my weekly work report” to run the whole loop first.
-
-**Want to keep up with OpenWorkBuddy? Star the repo to save it, then choose `Watch → All Activity` in the top-right to receive GitHub notifications about project activity.** Every Star helps more people find a local AI work agent and tells us what is worth improving next.
-
-## Why this one
-
-**Files, not chat logs.** PPT / Word / Excel / HTML are really generated and show up in an output panel you can open. If the model *claims* it wrote a file that isn't on disk, the run is stopped and redone.
-
-**Any model. Your machine.** Switch between DeepSeek / Qwen / GLM / Kimi / OpenRouter / local Ollama with one click. Have **Claude Code or Codex** installed? Use it as the engine and stop buying extra tokens. Self-hosted: sessions, files and API keys stay local; the server binds to `127.0.0.1` by default.
-
-**Adding a capability = dropping one Markdown file.** Save it as `skills/<name>/skill.md` and it's live on the next task — no code, no restart, no build. Beyond that: MCP connectors and the open [Agent Plugins](https://agent-plugins.org) standard — paste a GitHub URL to install someone else's plugin.
-
-**Useful for work; legible for learning agents.** Model routing, tool calls, file verification, skills, connectors, memory, permissions and local traces live in one open-source repository. Follow a real task end-to-end: why the agent chose an action, which model it used, how long each step took and what it actually delivered.
-
-## How to identify this project
-
-- Repository: [`github.com/CatCatUncle/openworkbuddy`](https://github.com/CatCatUncle/openworkbuddy)
-- Project and package name: **OpenWorkBuddy / `openworkbuddy`**
-- Identifier: **A local-first AI office agent that hands you files, not chat logs.**
-- Code landmarks: a hand-written Agent loop in `agent.js`, local Codex / Claude Code engines in `engines/`, Markdown Skills in `skills/`, and reproducible evaluation in `eval/`
-- License: free for personal, learning and non-profit use; commercial use needs permission under [PolyForm Noncommercial 1.0.0](LICENSE)
-
-This section is an identification aid, not a comparison or claim about similarly named products.
-
-## Technical architecture
-
-One machine can run the full loop. Entry points, the agent, models, tools, workspace, and observability are decoupled; Feishu, WeChat, and Langfuse are optional connections. Local files and conversations do not go to the public internet by default.
-
-```mermaid
-flowchart TB
-  subgraph Entry["Your device"]
-    Desktop["Desktop / Web"]
-    CLI["wb CLI"]
-    IM["Feishu / WeChat and remote channels"]
-  end
-
-  Entry --> Runtime["OpenWorkBuddy local runtime\nsessions · permissions · projects · API"]
-  Runtime --> Agent["Agent orchestration\nplanning · tools · file verification"]
-  Agent <--> Models["Model routing\ncloud LLMs / Ollama / Claude Code / Codex"]
-  Agent <--> Capabilities["Capabilities\nMarkdown Skills · experts · MCP · plugins"]
-  Agent <--> Workspace["Local workspace\nfiles · media · project context · memory"]
-  Agent --> Canvas["Executable infinite canvas\nscripts · characters · shots · media · timeline"]
-  Agent --> Trace["Local Trace\nmodels · tools · duration · tokens · I/O"]
-  Trace -. optional .-> Langfuse["Langfuse"]
-```
-
-It is also a good code-reading path: start at the local runtime in `server.js`, then follow `agent.js` through model and tool orchestration. Canvas, CLI, IM, and Trace are different entry points or observation points on the same delivery path.
-
-## What it does for you
+<p align="center">
+  <img src="docs/images/how-it-works.en.svg" width="1190" alt="Ask once; OpenWorkBuddy plans, executes and verifies, and hands back PPTX / DOCX / XLSX / HTML files">
+</p>
 
 | You say | You get |
 |---|---|
@@ -123,39 +55,45 @@ It is also a good code-reading path: start at the local runtime in `server.js`, 
 | "Turn this material into a page I can read on my phone" | writes HTML → serves it locally → scan the QR |
 | "Every day at 9, collect industry news and send it to me on Feishu" | cron + IM push; missed runs catch up |
 
-> Also: parallel tasks, goal-based acceptance, 👍👎 feedback that feeds self-evolution proposals, two-layer memory, permission tiers, remote control over Feishu / QQ / WeChat, a desktop pet… Full list (Chinese): **[功能清单](docs/功能清单.md)**.
+> [!NOTE]
+> Also: parallel tasks, goal-based acceptance, 👍👎 feedback that feeds self-evolution, two-layer memory, permission tiers, remote control over Feishu / WeChat, a desktop pet… Full list (Chinese): **[功能清单](docs/功能清单.md)**.
 
-## AI short-drama infinite canvas
+## Why this one
 
-Put a premise, script, characters, locations, shots, reference images, video, audio and a timeline on one **executable creative graph**. Links are not decoration: they are the character, scene, first/last-frame or audio inputs that the next generation actually reads. Both you and the agent can add nodes, revise relationships and rerun results.
+<table>
+<tr>
+<td width="50%" valign="top">
 
-<p align="center">
-  <img src="docs/images/demo-canvas.gif" width="960" alt="Sanitized live recording: enter the infinite canvas, create a drama workflow, keep the links, and talk to the canvas agent">
-</p>
+<b>📄 The files are real.</b>
 
-<p align="center">
-  <img src="docs/images/short-drama-canvas-overview.png" width="960" alt="OpenWorkBuddy short-drama infinite canvas: characters, locations, references and shots connected as a DAG">
-</p>
+Decks, documents, spreadsheets and pages are actually generated — open them from the output panel and check. Claim a file was written when it isn't on disk and the run gets stopped and redone.
 
-- Create freely: edit and connect notes, scripts, characters and shots; one canvas is one drama project.
-- Keep assets useful: select, drag in or upload workspace media with aspect-ratio-safe previews; double-click an image to inspect it.
-- Keep generations traceable: storyboards, scenes, shots, frames, video, voice and timelines form a DAG whose links survive auto-layout.
-- Co-create in place: the bottom composer supports files, `@` references, model choice and execution modes; the agent’s process stays with this canvas task.
+</td>
+<td width="50%" valign="top">
 
-Open **Infinite Canvas** from the sidebar. Drag blank space to pan; `Shift`+drag to select; then drag any selected node to move the group. Properties open only from a node’s gear button.
+<b>🔌 Swap models freely; everything stays yours.</b>
 
-## Roadmap
+DeepSeek / Qwen / GLM / Kimi / OpenRouter / Ollama switch with one click. Already have <b>Claude Code or Codex</b> on this machine? Use it as the engine — no second token bill. Sessions, files and keys never leave your disk; it listens on <code>127.0.0.1</code> by default.
 
-These are deliberate next directions, not features already shipped. For what exists today, see the [feature list](docs/功能清单.md) and [changelog](CHANGELOG.en.md).
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
 
-| Direction | Next | Why it matters |
-|---|---|---|
-| Short-drama creation loop | Node-level downstream recomputation and caching, storyboard-to-timeline delivery, reusable drama workflows | Change one shot without paying to regenerate unrelated downstream work |
-| Media and channels | Smoother asset filing, references and reuse across nodes; keep improving Feishu, WeChat and other attachment delivery | Make image, audio and video references easy to find, use and deliver |
-| Observability and collaboration | Trace comparison/replay, a smoother Langfuse connection, cross-machine task viewing with clear security boundaries | Let individuals and teams explain what an agent did, how long it took and why it failed |
-| Open ecosystem | More field-tested Skills, expert workflows, MCP presets and contribution templates | Let a small contribution become a reusable capability |
+<b>🧩 Adding a capability = dropping one Markdown file.</b>
 
-Good contributions are reproducible issues, privacy-safe real task samples, small complete Skills, and PRs that turn one friction point into a testable change. The detailed Chinese [roadmap](docs/路线图.md) explains trade-offs and acceptance criteria.
+Save it as <code>skills/&lt;name&gt;/skill.md</code> and it's live on the next task — no code, no restart, no build.
+
+</td>
+<td width="50%" valign="top">
+
+<b>🔍 It's also a readable agent.</b>
+
+Model routing, tool calls, file acceptance, memory, permissions and local traces all live in one repo: for any real task you can see why it did what it did, which model it used, how long each step took, and what it finally handed over.
+
+</td>
+</tr>
+</table>
 
 ## What it looks like
 
@@ -165,7 +103,7 @@ Good contributions are reproducible issues, privacy-safe real task samples, smal
   <img src="docs/images/case-photoreal.jpg" width="640" alt="The same person at a cafe window, on a rainy night street, at an office desk and in a morning bedroom, each holding a wooden sign reading 关注 OpenWorkBuddy 项目">
 </p>
 
-The hard part isn't drawing a person — it's keeping **the same** person across all four and the Chinese on the sign legible. So it generates one, then actually looks at what it just made (a real vision call on its own output, not a claim from memory), confirms the light and the skin came out right, and fans the rest out from there. No AI watermark on any of them.
+The hard part isn't drawing a person — it's keeping **the same** person across all four and the Chinese on the sign legible. So it generates one, then actually looks at what it just made (a real vision call on its own output, not a claim from memory), confirms the light and skin came out right, and fans the rest out from there.
 
 **"Build me a Hunan travel guide site — all 14 prefectures, no skipping."**
 
@@ -173,26 +111,49 @@ The hard part isn't drawing a person — it's keeping **the same** person across
   <a href="https://hunan-travel.pages.dev/"><img src="docs/images/case-hunan-site.jpg" width="820" alt="Hunan travel guide — a single-page site built by OpenWorkBuddy"></a>
 </p>
 
-It's live, go click around: **<https://hunan-travel.pages.dev/>**. All 14 prefectures written up one by one, plus 3/5/7-day routes. Single-page HTML, no external CDN — drop it on any static host and it's a site. This isn't a mockup screenshot; it's the file it handed over.
+It's live, go click around: **<https://hunan-travel.pages.dev/>**. Single-page HTML, no external CDN — drop it on any static host and it's a site. This isn't a mockup screenshot; it's the file it handed over.
 
-How it pulled those off, and what a run on a local Claude Code engine looks like → **[三个案例，拆开讲](docs/案例.md)** (Chinese, but the screenshots speak for themselves)
+How it pulled those off → **[三个案例，拆开讲](docs/案例.md)** (Chinese, but the screenshots speak for themselves)
+
+## AI short-drama infinite canvas
+
+Script, characters, scenes, shots, reference images, video, voice and the edit timeline all sit on one canvas. The wires aren't decoration — they are what the next generation actually reads for character, first frame and sound. Change one shot and only that shot re-runs.
+
+<p align="center">
+  <img src="docs/images/demo-canvas.gif" width="960" alt="OpenWorkBuddy: entering the infinite canvas, creating short-drama nodes, keeping the wires, and talking to the canvas agent">
+</p>
+
+Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+drag to marquee-select, and `@` any node or asset from the chat box at the bottom.
 
 ## Run it in three minutes
 
-**Installer**: grab the package for your OS from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases). A **five-step wizard** on first launch walks you through creating the admin account, pasting an API key (validated with a real request on the spot) and picking an engine.
+All three routes are the full product; none of them is a cut-down edition:
+
+| 🖥️ On your own machine | 🐳 On a server for your team | 🏢 Rolling it out at a company |
+|---|---|---|
+| Download, double-click, five-step wizard. Data stays local. | One VPS + Docker, one command, HTTPS included. | You also need SSO, audit export, air-gapped install, SLA. |
+| [Download ↓](https://github.com/CatCatUncle/openworkbuddy/releases) | [Deploy guide →](docs/部署.md) | [Commercial license →](COMMERCIAL-LICENSE.md) |
+
+<details>
+<summary><b>Which file to download · what to do when your OS blocks the first launch</b></summary>
+
+<br>
 
 | OS | File |
 |---|---|
 | macOS · Apple Silicon | `OpenWorkBuddy-*-mac-arm64.dmg` |
 | macOS · Intel | `OpenWorkBuddy-*-mac-x64.dmg` |
-| Windows 10/11 (one installer for x64 and ARM64, picks the right one) | `OpenWorkBuddy-*-win-setup.exe` |
-| Windows portable (**only if you cannot install software**) | `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe` (it is a self-extractor: every launch unpacks the whole app into `%TEMP%`, so the first start can take several minutes with a process but no window) |
+| Windows 10/11 (one installer for x64 and ARM64) | `OpenWorkBuddy-*-win-setup.exe` |
+| Windows portable (**only if you cannot install software** — every launch unpacks the whole app into `%TEMP%`, so the first start can take minutes) | `OpenWorkBuddy-*-win-x64-portable.exe` |
 
-> Your OS will block the first launch: the build has no code-signing certificate (Apple charges $99/year, Windows a few thousand — this is a free open-source project). It is not malware.
-> **Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway". **macOS**: move the app to `/Applications`, then run `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`, or go to System Settings → Privacy & Security → "Open Anyway". (Right-click → Open only works on macOS 14 and earlier — Sequoia removed that bypass.)
-> Your data lives in `~/OpenWorkBuddy` and survives uninstall. Moving to a new machine → [数据同步与搬家](docs/数据同步与搬家.md) (Chinese).
->
-> **Double-clicked and nothing happened?** The boot log is at `~/OpenWorkBuddy/logs/boot.log`; walk through [安装与启动 · 双击了没反应？](docs/安装与启动.md#双击了没反应) (Chinese).
+**Your OS will block the first launch**: the build has no code-signing certificate (Apple charges $99/year, Windows a few thousand — this is a free open-source project). It is not malware.
+
+- **Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway".
+- **macOS**: move the app to `/Applications`, then run `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`, or System Settings → Privacy & Security → "Open Anyway" (right-click → Open only works on macOS 14 and earlier).
+- Your data lives in `~/OpenWorkBuddy` and survives uninstall. Moving machines → [数据同步与搬家](docs/数据同步与搬家.md) (Chinese).
+- Double-clicked and nothing happened? The boot log is at `~/OpenWorkBuddy/logs/boot.log` — walk through [安装与启动](docs/安装与启动.md#双击了没反应) (Chinese).
+
+</details>
 
 **From source** (Node.js 18+, no build step, no framework — edit, refresh, done):
 
@@ -202,15 +163,11 @@ cd openworkbuddy && npm install
 npm run app     # desktop app; or `npm start` and open http://localhost:3800
 ```
 
-Then type something like "make a slide deck introducing OpenWorkBuddy". Appearance is yours: avatar menu → **Appearance** for language (中文 / English), theme, six color skins, four font sizes, font family and compact density. Switch to English and the assistant answers in English and writes its files for you in English too; the first-run wizard has the same toggle in its top-right corner. (v1 translates the UI only: step titles pushed from the server and replies inside Feishu / WeChat are still Chinese for now.)
+> [!TIP]
+> Then type something like "make a slide deck introducing OpenWorkBuddy".
+> Appearance is yours: avatar menu → **Appearance** for language (中文 / English), theme, six skins, font size and family. In English the assistant answers in English and writes its files in English too.
 
-Mirrors, one-line install script, port conflicts, startup hangs → [安装与启动](docs/安装与启动.md) (Chinese).
-
-## Models
-
-**Settings → Models**: pick a provider preset (OpenAI / Anthropic / OpenRouter / Volcano Ark / Bailian / DeepSeek / GLM / Kimi / Ollama), the base URL and protocol are filled in, paste a key, save — hot reload, no restart. Reasoning models can have **thinking turned off or dialed down** from the UI. Base URLs and model names per provider: [配置模型](docs/配置模型.md) (Chinese).
-
-> `config.json` is the only file holding API keys and is already in `.gitignore`. Don't commit it.
+Mirrors, one-line install script, port conflicts → [安装与启动](docs/安装与启动.md) (Chinese).
 
 ## Put it on a server for your team
 
@@ -218,24 +175,24 @@ One command on a clean VPS that already has Docker:
 
 ```bash
 git clone https://github.com/CatCatUncle/openworkbuddy.git && cd openworkbuddy
-bash deploy.sh                              # binds 127.0.0.1:3800
-bash deploy.sh --domain buddy.example.com   # or: automatic HTTPS, reachable from outside
+bash deploy.sh --domain buddy.example.com   # automatic HTTPS, reachable from outside
 ```
 
-It builds the image, starts the container and **waits for the health check to actually pass** before
-claiming success; if it won't start you get the logs, not a happy message. All data sits in `./wb-data`
-(config, accounts, output files, skills, backups) — delete the container freely, keep that directory.
+It **waits for the health check to actually pass** before claiming success; if it won't start you get the logs, not a happy message. All data sits in `./wb-data` — delete the container freely, keep that directory.
 
-**Register the admin account first thing.** The first account to register becomes the admin, and
-self-registration is closed right after. An empty instance on a public IP means whoever gets there
-first is your admin.
+> [!IMPORTANT]
+> **Register the admin account first thing.** The first account to register becomes the admin, and self-registration closes right after. An empty instance on a public IP means whoever gets there first is your admin.
 
-**Multi-tenant + admin console**: one process serves several companies. Output files, sessions,
-accounts, seats, usage ledgers and audit logs are invisible across tenants; engines and API keys
-belong to the platform admin. The four org-level switches (`allow_shell` / `net_allow` / `net_deny` /
-`session_days`) really do block — they are not decorative checkboxes.
+**Multi-tenant + admin console**: one process serves several companies. Output files, sessions, accounts, seats, usage ledgers and audit logs are invisible across tenants. Avatar menu → **Admin console**.
 
 Reverse proxy, upgrades, migration, security checklist → [deploy/README.md](deploy/README.md) (Chinese)
+
+## Models
+
+**Settings → Models**: pick a provider preset (OpenAI / Anthropic / OpenRouter / Volcano Ark / Bailian / DeepSeek / GLM / Kimi / Ollama), the base URL and protocol are filled in, paste a key, save — hot reload, no restart. Reasoning models can have thinking turned off or dialed down from the UI. Per-provider table → [配置模型](docs/配置模型.md) (Chinese).
+
+> [!IMPORTANT]
+> `config.json` is the only file holding API keys and is already in `.gitignore`. Don't commit it.
 
 ## Command line
 
@@ -245,139 +202,114 @@ Reverse proxy, upgrades, migration, security checklist → [deploy/README.md](de
 npm link                                   # once: install `wb` globally
 wb "write my weekly report"                # one-shot: exit code 0/1 tells the truth
 cat error.log | wb "what is this error"    # pipe: stdin becomes attached material
-wb --json "summarize this meeting" | jq -j 'select(.type=="text") | .delta'   # NDJSON events for scripts
+wb --json "summarize this meeting" | jq -j 'select(.type=="text") | .delta'
 wb engines && wb engines use claude-code   # use a local Claude Code / Codex as the engine
 ```
 
-`-q` answer only, `-c` continue the last session, `-C <dir>` working directory, `wb sessions` lists sessions. Everything → [命令行用法](docs/命令行用法.md) (Chinese).
+Everything → [命令行用法](docs/命令行用法.md) (Chinese).
+
+## How it's put together
+
+```mermaid
+flowchart TB
+  subgraph Entry["Your devices"]
+    Desktop["Desktop / Web"]
+    CLI["wb CLI"]
+    IM["Feishu / WeChat and other remote entries"]
+  end
+
+  Entry --> Runtime["OpenWorkBuddy local runtime\nsessions · permissions · projects · API"]
+  Runtime --> Agent["Agent orchestration\nplanning · tool calls · file acceptance"]
+  Agent <--> Models["Model routing\ncloud LLM / Ollama / Claude Code / Codex"]
+  Agent <--> Capabilities["Capabilities\nMarkdown Skills · experts · MCP · plugins"]
+  Agent <--> Workspace["Local workspace\nfiles · assets · project context · memory"]
+  Agent --> Canvas["Executable infinite canvas\nscript · characters · shots · assets · timeline"]
+  Agent --> Trace["Local trace\nmodel · tools · latency · tokens · I/O"]
+  Trace -. optional .-> Langfuse["Langfuse"]
+```
+
+The diagram doubles as a reading order: start at `server.js`, then see how `agent.js` orchestrates models and tools.
 
 ## What's new
 
-- **Sep 17** Moving to a new machine no longer means setting everything up again: hit "Back up now" on the old one, download the archive, then "Import backup" and restore on the new one — sessions, memory, accounts, personal preferences and the skills you wrote yourself all travel (an imported archive is unpacked and checked first; absolute paths, `..`, symlinks and anything malformed are refused on the spot)
-- **Sep 17** Say something while a task is running and you now choose what happens: "Cut in" interrupts the current step for an on-the-spot correction, "Queue" leaves it alone and starts your message in order once it finishes — and a queued line can be taken back off the queue
-- **Sep 17** Per-call paid APIs (search, image, video, voice, transcription) now sit behind a quota gate: ask before spending, record who spent it and through which provider, and read it back by day, month or person (everything is unlimited by default, so a solo user with their own key is unaffected)
-- **Sep 17** Usage in the admin console is actually searchable: filter by date range, search by member / model / entry point, page through the full ledger — it used to show the last 25 rows only, so "who spent the most last month" had no answer
-- **Sep 17** Wrote down which parts are open source and which need a commercial license, plus where your data lives, what follows your account and what stays on each device
-- **Sep 13** It can shoot a story now: the shot list goes to you for a yes first, then character portraits, an opening frame per shot, video, voice, and one captioned vertical cut; change a shot and only that shot costs again
-- **Sep 13** Point it at an SMTP server and the agent emails the report it just wrote; a recipient allowlist is a hard gate, and every message shows you the full text before it leaves
-- **Sep 13** The agent schedules its own recurring work: say "every Monday 9am, turn last week's numbers into a table" once and it runs on time
-- **Sep 13** Recordings, meeting videos and voice notes turn into text, and it writes the minutes straight from there
-- **Sep 13** Read the Word / Excel / PPT / PDF a client sent you, pull material straight from the shared library, and push a finished file to your group chat in one line
-- **Sep 13** Every step now shows how long it took, and a closing tally: tool time vs. model-thinking time
-- **Sep 13** Plug in Langfuse and you can read the raw input/output of every model call
-- **Sep 11** Sidebar splits work into **Office / Engineering**; a `wb` run in your terminal shows up on your phone and takes interjections
-- **Sep 11** Image / video / voice / vision each take several models, and one provider key covers all of them
-- **Sep 11** Six ways the app could fail to open on launch, each now explained in a real window, plus a boot log
-- **Sep 10** One command to deploy: `bash deploy.sh`, and `--domain` gets you HTTPS
-- **Sep 10** Multi-tenant + admin console: 16 panels; admins, auditors and members each see their own slice
-- **Sep 8** Local Claude Code / Codex as the engine, with memory, skills, files and media wired in
+- **Sep 17** Moving to a new machine: back up on the old one, import and restore on the new one — sessions, memory, accounts and the skills you wrote yourself all travel
+- **Sep 17** Say something while a task is running and you choose: cut in, or queue it until the task finishes (and a queued line can be taken back)
+- **Sep 17** Per-call paid APIs (search, image, video, voice) sit behind a quota gate; the admin console reports spend by day and by person
+- **Sep 14** An AI short-drama infinite canvas: script, characters, shots, assets and the cut, all on one canvas
+- **Sep 13** It can shoot video: shot list → you approve → character stills → first frame → video → voice → subtitled cut. Change one shot, only that shot costs again
+- **Sep 13** SMTP email with a hard recipient allowlist, cron jobs from a plain sentence, and audio/video transcription
+- **Sep 11** The sidebar splits into "Office" and "Engineering"; a task started with `wb` in a terminal is visible — and interruptible — from your phone
+- **Sep 10** One-command deploy with HTTPS; multi-tenant plus an admin console
+- **Sep 8** A local Claude Code / Codex can be the engine
 
-Older entries: **[CHANGELOG.en.md](CHANGELOG.en.md)**. The matching code is in the [commit log](https://github.com/CatCatUncle/openworkbuddy/commits/main) — every message says *why*.
+Older entries → **[Changelog](CHANGELOG.en.md)**.
 
 ## ⚠️ This agent has a shell
 
-It runs commands, reads and writes files, reaches the network — so the gates are real: command approval, file blocklist, URL allowlist, audit log, four permission tiers. **Read [安全](docs/安全.md) before exposing it beyond localhost.** Defaults are tuned for a single machine.
+> [!WARNING]
+> It runs commands, reads and writes files and reaches the network — so the gates are real: command approval, a file blacklist, a URL allowlist, audit logs and four permission tiers.
+> **Read [安全](docs/安全.md) (Chinese) before exposing it to the internet**; the defaults are tuned for local use only.
 
 ## Contributing
 
-**Looks useful? Star it so more people can find it; choose `Watch → All Activity` in the top-right to follow its progress.** New capabilities, fixes, and release notes are published openly on GitHub.
+- **Something broke? [Open an issue](https://github.com/CatCatUncle/openworkbuddy/issues/new)**, even if it's one line of error text. Scrub your API keys first.
+- **10 minutes** — write a skill: one Markdown file at `skills/<name>/skill.md`, live on save. [Template](CONTRIBUTING.md#提交一个技能3-分钟)
+- **One evening** — pick an issue: `npm install && npm start` runs it, `npm test` goes green without any API key
 
-**Broke it? Stuck? Open an [issue](https://github.com/CatCatUncle/openworkbuddy/issues/new) — even one line of error text helps.** Strip your API keys first.
+Project layout, tests and PR conventions are in [CONTRIBUTING.md](CONTRIBUTING.md). No need to open an issue first — send the PR.
 
-Three ways in, smallest first:
+## Docs
 
-- **10 minutes** — write a skill: one Markdown file at `skills/<name>/skill.md`, live on save. Template in [CONTRIBUTING.md](CONTRIBUTING.md)
-- **1 hour** — add a provider preset, fix a doc, add a preview for a file type
-- **One evening** — pick an issue. `npm install && npm start` runs it; `npm test` is green without any API key
+Most docs are in Chinese; the code and comments are the source of truth.
 
-Structure, tests and PR conventions: [CONTRIBUTING.md](CONTRIBUTING.md) (Chinese; PRs in English are welcome). No need to ask first — just send the PR.
-
-Community chat is on Feishu (Lark): the QR code is in the [Chinese README](README.md#交流群).
-
-## Ecosystem
-
-This project does not try to write everything itself. Where someone has already done a job better,
-we plug it in. These are the ones we actually use and recommend installing.
-
-**[OpenConnector](https://github.com/oomol-lab/open-connector) (Apache-2.0) — one connector that covers a thousand.**
-It is an open-source connector gateway that turns 1,000+ services — Gmail, Slack, Notion, GitHub,
-BigQuery, Airtable — into one inspectable catalog of prebuilt Actions, with an MCP endpoint built in.
-Why it matters here: our bundled connector presets are one service per entry, so ten services means
-ten API keys to paste. With OpenConnector, **one connector carries the whole catalog**, and credentials
-stay behind the gateway — the agent only ever sees Action schemas and results. That is the same
-principle as this project's approval gate for dangerous actions: keep authority behind a boundary,
-never inside the model process.
-
-To use it: run `docker compose up` in its repository (port 3000 by default), then open
-**Settings → Connectors → Recommended → OpenConnector Gateway** here and click Connect.
-
-> Names and trademarks of these external projects belong to their respective owners; they appear here
-> only to describe interoperability, and imply no affiliation or endorsement. Projects we learned from
-> without copying code are listed one by one in [NOTICE.md](NOTICE.md), section 4.
+| Doc | What's in it | Doc | What's in it |
+|---|---|---|---|
+| [功能清单](docs/功能清单.md) | Every capability, skill and tool | [部署](docs/部署.md) | Server / Docker / reverse proxy |
+| [案例](docs/案例.md) | How the pictures above were made | [多人协作](docs/多人协作.md) | Multi-tenant, accounts, quotas |
+| [安装与启动](docs/安装与启动.md) | Installers, source, common snags | [安全](docs/安全.md) | Approval gates, allowlists, audit |
+| [配置模型](docs/配置模型.md) | base_url / model names per provider | [数据同步与搬家](docs/数据同步与搬家.md) | Where data lives, moving machines |
+| [命令行用法](docs/命令行用法.md) | CLI flags, pipes, `--json`, cron | [开源与商业版边界](docs/开源与商业版边界.md) | What's open, what's paid |
+| [扩展](docs/扩展.md) | Skills, MCP, plugins, experts | [路线图](docs/路线图.md) | What's next, what counts as done |
+| [IM与定时任务](docs/IM与定时任务.md) | Feishu / QQ / WeCom / WeChat / DingTalk | [实现细节](docs/实现细节.md) | How the agent loop actually runs |
 
 ## License
 
-One sentence: **personal, learning and non-profit use is free; making money with it (including internal use at a company) requires a commercial license from the author.**
-The license is [PolyForm Noncommercial 1.0.0](LICENSE); what counts as commercial and how to get in touch: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+In one sentence: **personal, learning and non-profit use is free; making money with it (including internal productivity at a company) needs a commercial license from the author.**
+The license is [PolyForm Noncommercial 1.0.0](LICENSE); what counts as commercial and how to get one: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
 
-**Scope of this license.** Unless otherwise noted, the source code, scripts, tests, bundled skills and
-documentation authored for this repository are licensed as stated above. That license grants **no** rights
-to any third-party product, service, API, trademark, service mark, trade name, logo, icon, brand asset,
-documentation or screenshot — those remain with their respective owners. Third-party names, links and
-scopes in the docs and connector catalog are there only to identify services and enable interoperability;
-inclusion implies **no** endorsement, sponsorship, partnership, certification or review by those owners.
-If you contribute assets here, only submit material you have the right to submit, and prefer linking to
-official public resources over copying brand files into this repository.
+**Has the open-source edition been stripped? No.** What you see in this repo is everything: the agent loop, 40+ tools, the short-drama canvas, IM remote control, execution traces, memory and self-evolution — multi-tenancy and the admin console included. No feature flags, no trial countdown, no greyed-out "available in the commercial edition" buttons. The commercial license sells a different category of thing: SSO, audit export, air-gapped deployment, white-labeling, SLA. Where the line runs → [开源与商业版边界](docs/开源与商业版边界.md).
 
-Copyright (c) 2026 开发者猫叔 (CatCatUncle)
+This license grants **no** rights to any third-party product, trademark, logo, brand asset or screenshot — those belong to their respective owners.
+
+Copyright (c) 2026 开发者猫叔
 
 ## Disclaimer
 
-**What this is.** OpenWorkBuddy is an independent open-source project written from scratch by 开发者猫叔 (CatCatUncle);
-all source code is public in this repository. Its architecture, data structures, tool protocol, permission model,
-memory and self-improvement mechanisms are original work. Projects we learned from — and exactly where the line is —
-are listed one by one in [NOTICE.md](NOTICE.md), section 4 ("read it, learned from it, did not copy it").
+**What this is.** OpenWorkBuddy (repository `CatCatUncle/openworkbuddy`) is an independent open-source project written from scratch by 开发者猫叔 (CatCatUncle); all source is public here. The architecture, tool protocol, permission model, memory and self-evolution are original work; external projects that were studied are listed one by one in [NOTICE.md](NOTICE.md), section 4.
 
-**About the name.** `Work` + `Buddy` are two ordinary English words, and the `Open-` prefix follows the usual
-open-source naming convention. Together they plainly describe what the project does: an open-source work buddy.
-The name does not refer to, imply, or attempt to trade on any particular company's product.
+**Where the name comes from.** `Work` + `Buddy` are two ordinary English words (office + companion) and `Open-` is the usual open-source prefix. Together they plainly describe what the project does: an open-source work buddy.
 
-**Third-party relationships: none.** This project is not affiliated with, authorized, sponsored or endorsed by
-Tencent or its WorkBuddy product, and contains none of its code, assets, UI resources or non-public information.
-Where "WorkBuddy" is a registered trademark of others, those rights belong to their respective owners. Third-party
-names appearing in this documentation are used nominatively — to state compatibility or draw a factual distinction —
-and no rights in them are claimed.
+**Relationship to third parties: none.** This project has no affiliation with, authorization from, sponsorship by or endorsement from Tencent or its WorkBuddy product, and contains none of its code, assets, UI resources or non-public information. If "WorkBuddy" is someone's registered trademark, the rights are theirs; third-party names appear in these docs only to describe compatibility or draw a factual distinction (nominative use). Integrations with Feishu, WeCom, QQ and others use each platform's **publicly published** open APIs only; no reverse engineering is involved.
 
-**Interoperability.** This project can import memory files from Claude Code, Codex and Claude Cowork, and integrates
-with Feishu/Lark, WeCom, QQ and others through their **publicly documented open APIs**. No reverse engineering is
-involved, and no undocumented protocol is used.
-
-**If you are a rights holder** and believe something here is inappropriate, please reach the author via
-[Issues](https://github.com/CatCatUncle/openworkbuddy/issues) or the contact in
-[COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). I will verify and fix it promptly — that is faster than any other route.
+**If you hold a right and think something here is wrong**, contact me through [Issues](https://github.com/CatCatUncle/openworkbuddy/issues) or the address in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). I'll verify and fix it quickly — faster than any other route.
 
 ## Support this project
 
-There is no company and no marketing budget behind this. Whether anyone finds it comes down to one thing:
-**the ⭐ you click.**
+<p align="center">
+  <a href="https://github.com/CatCatUncle/openworkbuddy">
+    <img src="docs/images/star-guide.svg" width="640" alt="The star in the top-right corner of the repo — one click">
+  </a>
+</p>
 
 <p align="center">
   <a href="https://github.com/CatCatUncle/openworkbuddy"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=for-the-badge&logo=github&label=Star%20this%20repo&color=5b5ff7" alt="Star this repo"></a>
 </p>
 
-- **Star it** — the button at the top right. It decides whether people still hunting for a local AI
-  assistant that produces real files ever see this project.
-- **Watch → All Activity** — new releases, skills and model providers get delivered to you by GitHub,
-  so I never have to advertise.
-- **Send it to one person** — a colleague who still hand-builds decks, weekly reports and meeting notes.
-  Worth more than a hundred impressions.
-
-Hit a real problem? [Open an issue](https://github.com/CatCatUncle/openworkbuddy/issues/new) — that is worth
-more than a star, and every one gets read. Scan it before you post; don't paste your API keys.
+<p align="center">
+  <sub>And pass it to one person who still hand-builds decks, weekly reports and meeting notes — worth more than a hundred impressions.</sub>
+</p>
 
 ## Contributors
-
-Thanks to everyone who has changed something here. Want to join them: [Contributing](CONTRIBUTING.md).
 
 <p align="center">
 <a href="https://github.com/CatCatUncle/openworkbuddy/graphs/contributors">

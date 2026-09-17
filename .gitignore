@@ -1,5 +1,7 @@
 node_modules/
 workspace/
+# 项目工作目录跟 workspace/ 一样是成果，不入 git（docs/数据同步与搬家.md 里列过）
+projects/
 # 本地执行追踪账本：工作目录被设成仓库根时就落在这儿，里面是提示词原文和工具参数，不进版本库
 .openworkbuddy/
 schedules.json
