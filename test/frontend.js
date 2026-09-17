@@ -5491,13 +5491,25 @@ const PREVIEW_CHECKS = `
   {
     const btn = document.getElementById("pv-copy");
     const tick = () => new Promise((r) => setTimeout(r, 40));
+    // 正向断言不能拿固定 40ms 赌机器速度：非 PNG 那条路是 fetch → blob → <img> 解码 →
+    // canvas 重编码 → clipboard.write 五段异步，本机实测 42ms，正好卡在 40ms 外面一点点，
+    // 本机靠调度抖动侥幸过，CI 的 runner 慢一档就必挂 —— 挂的还是「copied=0」这种
+    // 看上去像功能坏了的样子。所以正向一律等到发生为止，最多等 5 秒。
+    // 反向断言（该没反应的）保持固定等待：那种情况多等只是浪费，等短了也只会放过错、不会误报。
+    const until = async (cond) => {
+      const t0 = Date.now();
+      while (!cond() && Date.now() - t0 < 5000) await tick();
+      return cond();
+    };
+    const copiedOne = () => until(() => window.copied.length === 1);
+    const toastedOne = () => until(() => window.toasts.length === 1);
     await show("图.png", { body: "", total: 1 });
     ok("看图时复制按钮露出来", btn.hidden === false);
     ok("图上写了怎么复制（不写没人知道双击能复制）", /title="双击复制这张图"/.test(body.innerHTML), body.innerHTML.slice(0, 200));
 
     window.copied = []; window.toasts = [];
     btn.onclick();
-    await tick();
+    await copiedOne();
     ok("点按钮真往剪贴板放了一张图", window.copied.length === 1, String(window.copied.length));
     ok("放进去的是 PNG（Chromium 只认这一种，给 jpeg 会直接抛）",
        !!(window.copied[0] && window.copied[0].m && window.copied[0].m["image/png"]), JSON.stringify(window.copied[0] && window.copied[0].types));
@@ -5509,7 +5521,7 @@ const PREVIEW_CHECKS = `
     window.PV_BLOB = new Blob([window.PNG1X1], { type: "image/jpeg" });
     window.copied = [];
     btn.onclick();
-    await tick();
+    await copiedOne();
     ok("jpeg 也能复制（走了 canvas 重编码）", window.copied.length === 1, String(window.copied.length));
     ok("重编码出来的仍然是 PNG",
        !!(window.copied[0] && window.copied[0].m && window.copied[0].m["image/png"] && window.copied[0].m["image/png"].type === "image/png"),
@@ -5518,7 +5530,7 @@ const PREVIEW_CHECKS = `
 
     window.copied = [];
     body.querySelector(".pv-img").ondblclick();
-    await tick();
+    await copiedOne();
     ok("双击图片也复制", window.copied.length === 1, String(window.copied.length));
 
     // Ctrl/Cmd+C：预览开着、看的又是图，这一下才该被接管
@@ -5529,7 +5541,7 @@ const PREVIEW_CHECKS = `
     };
     window.copied = [];
     const e1 = key(null, { metaKey: true });
-    await tick();
+    await copiedOne();
     ok("Cmd+C 复制当前这张图", window.copied.length === 1, String(window.copied.length));
     ok("而且拦下了浏览器默认那一下", e1.defaultPrevented);
     window.copied = [];
@@ -5559,7 +5571,7 @@ const PREVIEW_CHECKS = `
     // 取不到图 / 浏览器不给写剪贴板：两条错要分开说，并且都得给出路
     window.toasts = []; window.copied = []; window.PV_FETCH_OK = false;
     btn.onclick();
-    await tick();
+    await toastedOne();
     window.PV_FETCH_OK = true;
     ok("图取不到时不会默默地什么都不发生", window.toasts.length === 1 && window.copied.length === 0, JSON.stringify(window.toasts));
     ok("而且说的是图没取到，不是一句复制失败", window.toasts[0][0].indexOf("没取到") >= 0, JSON.stringify(window.toasts));
@@ -5569,7 +5581,7 @@ const PREVIEW_CHECKS = `
     window.ClipboardItem = undefined;
     window.toasts = [];
     btn.onclick();
-    await tick();
+    await toastedOne();
     window.ClipboardItem = saveCI;
     ok("没剪贴板 API 时指到 HTTPS 上（局域网直连就是这个症状）",
        window.toasts.length === 1 && window.toasts[0][0].indexOf("HTTPS") >= 0, JSON.stringify(window.toasts));
