@@ -1846,6 +1846,27 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// 正文里 [文字](报告.md) 这类指向工作区文件的链接（事件委托，历史回放与流式渲染共用）。
+// renderMd 是拼字符串出来的，挂不上 onclick；而 makeFileLink 造的那一批走的是自己那只 onclick，
+// 所以这儿只认带 data-md 的，免得同一下点出两次预览。
+function openMdFileLink(a) {
+  if (typeof previewFile === "function") previewFile(a.dataset.name, a.dataset.root || "");
+}
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("a.file-ln[data-md]");
+  if (!a) return;
+  e.preventDefault();
+  openMdFileLink(a);
+});
+// 键盘也得能开：这些 a 没有 href，浏览器不会自己把回车当点击
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const a = e.target.closest && e.target.closest("a.file-ln[data-md]");
+  if (!a) return;
+  e.preventDefault();
+  openMdFileLink(a);
+});
+
 // 内联 SVG 图表的动作（事件委托，历史回放与流式渲染共用）。
 // 图本身也挂着 data-a="svg-zoom"：在对话列里图被压成窄窄一条，坐标轴和小字根本看不清，
 // 总不能让人把窗口拉宽再拉回来。

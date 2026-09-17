@@ -348,6 +348,8 @@ const KEY_SOURCES = {
   "https://api.deepseek.com/v1": { url: "https://platform.deepseek.com/api_keys", name: "DeepSeek" },
   "https://open.bigmodel.cn/api/paas/v4": { url: "https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys", name: "智谱" },
   "https://api.moonshot.cn/v1": { url: "https://platform.moonshot.cn/console/api-keys", name: "Kimi" },
+  "https://api.siliconflow.cn/v1": { url: "https://cloud.siliconflow.cn/account/ak", name: "硅基流动" },
+  "https://api.minimax.chat/v1": { url: "https://platform.minimaxi.com/user-center/basic-information/interface-key", name: "MiniMax 海螺" },
   "http://localhost:11434/v1": { url: "https://ollama.com/download", name: "Ollama", label: "装 Ollama" },
   // 联网搜索：按服务商 id
   "tavily": { url: "https://app.tavily.com/home", name: "Tavily" },
@@ -390,7 +392,7 @@ const ONB_SEARCH = {
 // 多媒体四项的一键预设：[名字, 接口地址, 模型名, 默认音色]，点一下就填好，只剩粘 Key
 const ONB_MEDIA_PRESETS = {
   image: [["阿里云百炼 · qwen-image", "https://dashscope.aliyuncs.com/api/v1", "qwen-image"], ["OpenAI · gpt-image-1", "https://api.openai.com/v1", "gpt-image-1"]],
-  video: [["阿里云百炼 · 万相", "https://dashscope.aliyuncs.com/api/v1", "wan2.2-t2v-plus"], ["火山方舟 · Seedance", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedance-1-0-pro-250528"]],
+  video: [["阿里云百炼 · 万相", "https://dashscope.aliyuncs.com/api/v1", "wan2.2-t2v-plus"], ["火山方舟 · Seedance", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedance-1-0-pro-250528"], ["智谱 · CogVideoX", "https://open.bigmodel.cn/api/paas/v4", "cogvideox-3"], ["MiniMax · 海螺", "https://api.minimax.chat/v1", "MiniMax-Hailuo-02"], ["硅基流动 · 万相", "https://api.siliconflow.cn/v1", "Wan-AI/Wan2.2-T2V-A14B"]],
   tts: [["阿里云百炼 · qwen-tts", "https://dashscope.aliyuncs.com/api/v1", "qwen-tts", "Cherry"], ["OpenAI · gpt-4o-mini-tts", "https://api.openai.com/v1", "gpt-4o-mini-tts", "alloy"]],
   vision: [["阿里云百炼 · qwen-vl-max", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-vl-max"], ["OpenAI · gpt-5-mini", "https://api.openai.com/v1", "gpt-5-mini"]],
 };
@@ -1002,7 +1004,9 @@ function renderAssistFeed(log) {
         if (m.dir === "in") {
           return `<div class="im-row usr"><div class="im-col" style="text-align:right"><div class="m">${meta}</div><div class="im-b usr">${esc(m.text)}</div></div><div class="im-ava">${ic(CH_ICON[m.channel] || "link")}</div></div>`;
         }
-        return `<div class="im-row bot">${imBotAva()}<div class="im-col"><div class="m">${meta}</div><div class="im-b bot a-text">${renderMd(m.text)}</div></div></div>`;
+        // fileLinks 关掉：这一屏在助理设置弹层里，文件链接点开的是它背后那个预览面板，
+        // 按下去只会「什么都没发生」
+        return `<div class="im-row bot">${imBotAva()}<div class="im-col"><div class="m">${meta}</div><div class="im-b bot a-text">${renderMd(m.text, "", false, "", { fileLinks: false })}</div></div></div>`;
       }).join("")
     : '<div class="ab-empty">还没有对话。直接在下方输入框发条消息，或在飞书/微信里 @机器人。</div>';
   if (atBottom || feed._first === undefined) { feed.scrollTop = feed.scrollHeight; feed._first = 1; }

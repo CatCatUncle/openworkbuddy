@@ -20,7 +20,7 @@ const CAPS = ["vision", "image", "video", "tts", "asr"];
 
 /**
  * 渠道类型。kind 决定三件事：接口地址长什么样、目录里有哪些模型、协议按哪家走。
- * 协议的最终判断仍在 tools.js 里按 base_url 认（dashscope / ark），这里只管配置和目录。
+ * 视频那一路的协议判断见下面的 videoProtoOf——认 kind，认不出才退回按地址猜。
  */
 const PROVIDER_KINDS = [
   { kind: "ark", label: "火山方舟（豆包 / 即梦 / Seedance）", base_url: "https://ark.cn-beijing.volces.com/api/v3", key_url: "https://console.volcengine.com/ark" },
@@ -29,6 +29,9 @@ const PROVIDER_KINDS = [
   { kind: "openrouter", label: "OpenRouter（聚合，一把 Key 通吃）", base_url: "https://openrouter.ai/api/v1", key_url: "https://openrouter.ai/keys" },
   { kind: "siliconflow", label: "硅基流动 SiliconFlow", base_url: "https://api.siliconflow.cn/v1", key_url: "https://cloud.siliconflow.cn/account/ak" },
   { kind: "zhipu", label: "智谱 GLM / CogView / CogVideo", base_url: "https://open.bigmodel.cn/api/paas/v4", key_url: "https://bigmodel.cn/usercenter/apikeys" },
+  // media_only 是 chat_only 的反面：海螺的对话接口路径是 /text/chatcompletion_v2，不是 /chat/completions，
+  // 这个地址挂对话模型必然 404。它在这儿只为视频那一路存在，所以别让它出现在对话渠道的下拉里。
+  { kind: "minimax", label: "MiniMax 海螺（Hailuo 视频）", base_url: "https://api.minimax.chat/v1", key_url: "https://platform.minimaxi.com/user-center/basic-information/interface-key", media_only: true },
   { kind: "anthropic", label: "Anthropic Claude 官方", base_url: "", key_url: "https://console.anthropic.com/settings/keys", chat_only: true },
   { kind: "deepseek", label: "DeepSeek 官方", base_url: "https://api.deepseek.com/v1", key_url: "https://platform.deepseek.com/api_keys", chat_only: true },
   { kind: "moonshot", label: "Kimi（月之暗面）", base_url: "https://api.moonshot.cn/v1", key_url: "https://platform.moonshot.cn/console/api-keys", chat_only: true },
@@ -147,6 +150,13 @@ const CATALOG = {
     { kind: "dashscope", id: "wanx2.1-t2v-turbo", label: "通义万相 2.1 Turbo（快）" },
     { kind: "dashscope", id: "wan2.2-i2v-plus", label: "通义万相 2.2 图生视频 Plus（要首帧图）" },
     { kind: "dashscope", id: "wanx2.1-kf2v-plus", label: "通义万相 2.1 首尾帧生视频（要首尾两张图）" },
+    { kind: "zhipu", id: "cogvideox-3", label: "智谱 CogVideoX-3（文生、图生都收，能出声）" },
+    { kind: "zhipu", id: "cogvideox-flash", label: "智谱 CogVideoX Flash（免费档，出得快）" },
+    { kind: "minimax", id: "MiniMax-Hailuo-02", label: "海螺 02（文生、图生都收，运镜好）" },
+    { kind: "minimax", id: "T2V-01-Director", label: "海螺 T2V-01 导演版（文生，提示词里能写运镜）" },
+    { kind: "minimax", id: "I2V-01-live", label: "海螺 I2V-01 live 图生视频（要首帧图，适合二次元）" },
+    { kind: "siliconflow", id: "Wan-AI/Wan2.2-T2V-A14B", label: "硅基流动 · 万相 2.2 文生视频" },
+    { kind: "siliconflow", id: "Wan-AI/Wan2.2-I2V-A14B", label: "硅基流动 · 万相 2.2 图生视频（要首帧图）" },
   ],
   // 转写这一路只收「说 OpenAI 兼容 /audio/transcriptions 这门话」的型号。
   // 通义百炼的 ASR 是另一套：先上传文件、再轮询异步任务，和这里的一次 multipart 完全不同协议。
@@ -227,12 +237,49 @@ function guessKind(baseUrl) {
   if (/openrouter/.test(b)) return "openrouter";
   if (/siliconflow/.test(b)) return "siliconflow";
   if (/bigmodel\.cn/.test(b)) return "zhipu";
+  if (/minimax/.test(b)) return "minimax";
   if (/api\.openai\.com/.test(b)) return "openai";
   if (/api\.anthropic\.com/.test(b)) return "anthropic";
   if (/deepseek\.com/.test(b)) return "deepseek";
   if (/moonshot\.cn/.test(b)) return "moonshot";
   if (/(localhost|127\.0\.0\.1):11434/.test(b)) return "ollama";
   return "custom";
+}
+
+/**
+ * 视频这一路，这条渠道说的是哪门话。
+ *
+ * 聊天有 OpenAI 兼容这个最大公约数，视频没有：五家的路径、字段名、轮询方式、结果取法
+ * 没一处对得上，只能一家一条分支。所以先得知道是哪家。判断顺序是有讲究的——
+ *   ① 渠道卡片上选的「渠道类型」：用户自己指的，最准，也是唯一能覆盖前两条的口子；
+ *   ② 接口地址里的域名：直连官方的人什么都不用配，开箱就对；
+ *   ③ 模型条目上手写的 protocol：中转和自建网关（国内用的人是多数）地址里什么都看不出来，
+ *      得留一个地方能直说「我这台后面接的是万相」。
+ * 三条都认不出就返回 ""，由调用方把支持的几家摆出来——而不是闷头发一个必然失败的请求，
+ * 视频是按条计费的异步任务，白发一趟要等好几分钟才看得到错。
+ */
+const VIDEO_PROTOS = ["dashscope", "ark", "zhipu", "minimax", "siliconflow"];
+const VIDEO_PROTO_CN = {
+  dashscope: "阿里云百炼 · 通义万相",
+  ark: "火山方舟 · Seedance",
+  zhipu: "智谱 · CogVideoX",
+  minimax: "MiniMax · 海螺 Hailuo",
+  siliconflow: "硅基流动 SiliconFlow",
+};
+function videoProtoOf(cfg) {
+  const c = cfg || {};
+  const kind = String(c.kind || "").trim().toLowerCase();
+  if (VIDEO_PROTOS.includes(kind)) return kind;
+  const b = String(c.base_url || "").toLowerCase();
+  if (/dashscope/.test(b)) return "dashscope";
+  // `\/ark\b` 那半截不能省：自建网关常把上游挂在 /ark 这样的路径下（https://gw.mycorp.com/ark/api/v3），
+  // 只认 ark. 域名的话这类地址会掉到「认不出」，而它以前是认得的
+  if (/volces|\/ark\b|ark\./.test(b)) return "ark";
+  if (/bigmodel|zhipu/.test(b)) return "zhipu";
+  if (/minimax/.test(b)) return "minimax";
+  if (/siliconflow/.test(b)) return "siliconflow";
+  const hint = String(c.protocol || c.video_protocol || "").trim().toLowerCase();
+  return VIDEO_PROTOS.includes(hint) ? hint : "";
 }
 
 /** 渠道类型对应的默认接口地址（迁移时补空用） */
@@ -389,9 +436,11 @@ function flatten(providers, models, prev) {
   for (const cap of CAPS) {
     const m = models.find((x) => x.cap === cap && x.default) || models.find((x) => x.cap === cap);
     const p = m ? providers.find((x) => x.id === m.provider) : null;
+    // kind 跟着压平下来：视频那一路要靠它认协议（渠道卡上选的比按地址猜准），
+    // 以前这里只留地址和 Key，走到 tools.js 就只剩一个地址可猜了，中转地址一律认不出
     out[cap] = m && p
-      ? { base_url: baseForUse(p.base_url, "media"), api_key: p.api_key, model: m.model, ...(cap === "tts" ? { voice: m.voice || "" } : {}) }
-      : { base_url: "", api_key: "", model: "", ...(cap === "tts" ? { voice: "" } : {}) };
+      ? { base_url: baseForUse(p.base_url, "media"), api_key: p.api_key, model: m.model, kind: p.kind || "", protocol: m.protocol || "", ...(cap === "tts" ? { voice: m.voice || "" } : {}) }
+      : { base_url: "", api_key: "", model: "", kind: "", protocol: "", ...(cap === "tts" ? { voice: "" } : {}) };
     // 老配置里手填了地址却没填模型名的，迁不成条目也别在保存时给人抹掉
     const old = (prev || {})[cap] || {};
     if (!out[cap].base_url && old.base_url) out[cap] = { ...out[cap], ...old };
@@ -410,7 +459,8 @@ function resolve(config) {
     const p = providers.find((x) => x.id === m.provider) || {};
     return {
       id: m.id, cap: m.cap, name: m.name, model: m.model, voice: m.voice || "",
-      base_url: baseForUse(p.base_url || "", "media"), api_key: p.api_key || "", provider: m.provider, default: !!m.default,
+      base_url: baseForUse(p.base_url || "", "media"), api_key: p.api_key || "", kind: p.kind || "", protocol: m.protocol || "",
+      provider: m.provider, default: !!m.default,
     };
   });
   return { ...(config.media || {}), list };
@@ -446,7 +496,7 @@ function catalogFor(cap, kind) {
 
 module.exports = {
   CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
-  guessCap, guessKind, baseOfKind, catalogFor, protoOfKind,
+  guessCap, guessKind, baseOfKind, catalogFor, protoOfKind, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError,
 };

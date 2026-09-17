@@ -55,8 +55,13 @@ const DIR = path.join(WS, "任务_1");
 fs.mkdirSync(DIR, { recursive: true });
 const resolveFile = (rel) => path.join(WS, String(rel || ""));
 
-/** 这把 Key 只有一个用途：证明它一个字节都没进索引 */
-const KEY = "sk-这把钥匙绝不许进索引-9527";
+/**
+ * 这把 Key 只有一个用途：证明它一个字节都没进索引。
+ * 必须是纯 ASCII——生图/配音/生视频这几路的 Key 现在跟对话那边共用 cleanKey（见 llm.js），
+ * 里面混进中文会在发请求之前就被拦下来，这一组端到端根本跑不到索引那一步。
+ * 想让它显眼，靠这串字面本身就够显眼了，别改回中文。
+ */
+const KEY = "sk-this-key-must-never-reach-the-index-9527";
 const CFG = { model: "seedream-4", base_url: "https://gw.example.test/v1", api_key: KEY };
 /** 算一次 key。四个参数都给默认值，测哪一样就只改哪一样 */
 const K = (input, cfg, dir, wsRoot) =>

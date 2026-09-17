@@ -51,6 +51,7 @@ const SUBS = [
   { name: "resume", usage: 'wb resume [id] ["接着做…"]', desc: "续接会话；不给 id 就接最近动过的那个" },
   { name: "engines", usage: "wb engines [use <id>]", desc: "看本机能拿什么当底层，或一键换过去" },
   { name: "doctor", usage: "wb doctor", desc: "跑不起来时先跑它：Node / 依赖 / 端口 / 配置 / 引擎 一次查清" },
+  { name: "completion", usage: "wb completion <shell>", desc: "生成 Tab 补全脚本（bash / zsh / fish）" },
 ];
 
 const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, files: [], cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false };
@@ -264,9 +265,120 @@ ${flags.map((f) => `  ${pad(nameOf(f), w)}${f.desc}`).join("\n")}
   答案走 stdout，进度走 stderr；退出码 0=成功 1=出错 2=参数写错了 130=Ctrl+C 打断。`;
 }
 
+/**
+ * Tab 补全脚本。三种 shell 各生成一份，全都从上面那张 FLAGS / SUBS 表长出来。
+ *
+ * 为什么非得从同一张表生成：补全脚本是最容易烂掉的那种东西——加一个选项，帮助里有了、
+ * 解析认了，补全还停在半年前。人按 Tab 补不出来，只会以为这个选项不存在。
+ * 从表里长出来就没有「忘了同步」这回事，加一行 FLAGS 三种 shell 同时就有了。
+ *
+ * 会话 id 的补全把目录路径**烤进脚本**，而不是每次按 Tab 去起一个 node 进程问一遍：
+ * `wb` 启动要过 boot-check、要 require 一堆东西，按一下 Tab 等半秒是不能接受的。
+ * 代价是数据目录搬了家得重新生成一次——所以生成出来的脚本头上写了这句话。
+ *
+ * @param {"bash"|"zsh"|"fish"} shell
+ * @param {{sessionsDir?: string, engines?: string[]}} [ctx] 烤进脚本的本机信息
+ * @returns {string}
+ */
+function completionScript(shell, ctx) {
+  const c = ctx || {};
+  const dir = String(c.sessionsDir || "");
+  const engines = (c.engines || []).join(" ");
+  const subs = SUBS.map((x) => x.name).join(" ");
+  const longs = FLAGS.map((f) => "--" + f.long);
+  const shorts = FLAGS.filter((f) => f.short).map((f) => "-" + f.short);
+  const all = longs.concat(shorts).join(" ");
+  const modes = (FLAGS.find((f) => f.long === "mode") || {}).choices || [];
+  const head = `# OpenWorkBuddy CLI 的 Tab 补全（wb completion ${shell} 生成）
+# 会话 id 那一项认的是生成时的数据目录；换过 OPENWORKBUDDY_HOME 就重新生成一次。`;
+
+  if (shell === "fish") {
+    const lines = [head, "", "complete -c wb -f"];
+    for (const x of SUBS) lines.push(`complete -c wb -n __fish_use_subcommand -a ${x.name} -d ${q(x.desc)}`);
+    for (const f of FLAGS) {
+      const bits = [`complete -c wb -l ${f.long}`];
+      if (f.short) bits.push(`-s ${f.short}`);
+      if (f.type !== "bool") bits.push("-r");
+      if (f.choices) bits.push(`-a ${q(f.choices.join(" "))}`);
+      if (f.long === "workspace") bits.push("-F");
+      if (f.long === "file") bits.push("-F");
+      bits.push(`-d ${q(f.desc)}`);
+      lines.push(bits.join(" "));
+    }
+    lines.push(`complete -c wb -n '__fish_seen_subcommand_from engines' -a 'use ${engines}'`);
+    if (dir) lines.push(`complete -c wb -n '__fish_seen_subcommand_from resume' -a "(command ls ${sh(dir)} 2>/dev/null | string replace -r '\\.json$' '')"`);
+    return lines.join("\n") + "\n";
+  }
+
+  if (shell === "zsh") {
+    // _arguments 带描述：zsh 是 macOS 的默认 shell，`wb -<TAB>` 直接把中文说明列出来，
+    // 这是三种 shell 里唯一能把 desc 用起来的
+    const spec = FLAGS.map((f) => {
+      const names = f.short ? `{-${f.short},--${f.long}}` : `--${f.long}`;
+      const act = f.choices ? `:模式:(${f.choices.join(" ")})`
+        : f.long === "workspace" ? ":目录:_files -/"
+        : f.long === "file" ? ":文件:_files"
+        : f.type === "bool" ? "" : ":值:";
+      // 可重复的那个前面要加 *，而且这个 * 必须**自己带引号**：
+      // 写成 `*{-f,--file}'[说明]'` 的话，花括号展开出来是 `*-f'[说明]'`——一个 * 没引号、
+      // 后面跟着方括号，zsh 会拿它当通配符去匹配文件名，当场 "no matches found"，
+      // 整个补全函数就废了。'*' 单独引起来就没有裸的通配符了。
+      const rep = f.type === "strs" ? "'*'" : "";
+      return `    ${rep}${names}'[${z(f.desc)}]${act}'`;
+    }).join(" \\\n");
+    return `#compdef wb
+${head}
+_wb() {
+  local -a subs
+  subs=(
+${SUBS.map((x) => `    '${x.name}:${z(x.desc)}'`).join("\n")}
+  )
+  if (( CURRENT == 2 )) && [[ "$words[2]" != -* ]]; then
+    _describe -t commands '子命令' subs && return
+  fi
+  case "$words[2]" in
+    engines) _values '引擎' use ${engines}; return;;
+    resume)  ${dir ? `_values '会话' \${(f)"$(command ls ${sh(dir)} 2>/dev/null | sed 's/\\.json$//')"}; return;;` : "return;;"}
+  esac
+  _arguments -s \\
+${spec} \\
+    '*:任务描述:_files'
+}
+_wb "$@"
+`;
+  }
+
+  // bash：没有描述这一说，给词就行
+  return `${head}
+_wb_complete() {
+  local cur prev
+  cur="\${COMP_WORDS[COMP_CWORD]}"
+  prev="\${COMP_WORDS[COMP_CWORD-1]}"
+  case "$prev" in
+    --mode) COMPREPLY=( $(compgen -W ${q(modes.join(" "))} -- "$cur") ); return;;
+    -C|--workspace) COMPREPLY=( $(compgen -d -- "$cur") ); return;;
+    -f|--file) COMPREPLY=( $(compgen -f -- "$cur") ); return;;
+    --session) COMPREPLY=( $(compgen -W "$(command ls ${dir ? sh(dir) : '""'} 2>/dev/null | sed 's/\\.json$//')" -- "$cur") ); return;;
+    engines) COMPREPLY=( $(compgen -W "use ${engines}" -- "$cur") ); return;;
+    resume) COMPREPLY=( $(compgen -W "$(command ls ${dir ? sh(dir) : '""'} 2>/dev/null | sed 's/\\.json$//')" -- "$cur") ); return;;
+  esac
+  if [[ "$cur" == -* ]]; then COMPREPLY=( $(compgen -W ${q(all)} -- "$cur") ); return; fi
+  if (( COMP_CWORD == 1 )); then COMPREPLY=( $(compgen -W ${q(subs)} -- "$cur") ); return; fi
+  COMPREPLY=( $(compgen -f -- "$cur") )
+}
+complete -F _wb_complete wb
+`;
+}
+
+/** 塞进单引号里。shell 的单引号内没有转义，收尾再开一个是唯一的写法 */
+const sh = (s) => "'" + String(s).replace(/'/g, `'\\''`) + "'";
+const q = sh;
+/** zsh 的描述在方括号里，方括号和冒号得躲开，不然 _arguments 会把说明读成语法 */
+const z = (s) => String(s).replace(/[\[\]:'"]/g, " ");
+
 /** 报错怎么写给人看。cli.js 只管把它打到 stderr 再退出 */
 function problemText(problems) {
   return problems.map((p) => `${p.message}${p.hint ? "\n  " + p.hint : ""}`).join("\n") + "\n";
 }
 
-module.exports = { FLAGS, SUBS, DEFAULTS, parse, helpText, problemText, nearestFlag, nearestSub, looksLikeProse, editDistance };
+module.exports = { FLAGS, SUBS, DEFAULTS, parse, helpText, problemText, completionScript, nearestFlag, nearestSub, looksLikeProse, editDistance };

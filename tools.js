@@ -503,7 +503,7 @@ const TOOL_DEFS = [
       properties: {
         prompt: { type: "string", description: "视频内容描述（画面/动作/镜头）" },
         first_frame: { type: "string", description: "首帧图的相对路径（可选）。给了就是图生视频：画面从这张图长出来，角色和场景不会跑偏。需要配的是 i2v 型号。" },
-        last_frame: { type: "string", description: "尾帧图的相对路径（可选，必须同时给 first_frame）。首尾都定住就是「从这张变到那张」，转场类镜头用它。" },
+        last_frame: { type: "string", description: "尾帧图的相对路径（可选，必须同时给 first_frame）。首尾都定住就是「从这张变到那张」，转场类镜头用它。只有通义万相 kf2v 和火山方舟 Seedance 两家收尾帧，别家的渠道会在发请求之前报错。" },
         filename: { type: "string", description: "保存文件名（可选，默认 video_时间戳.mp4）" },
         model: { type: "string", description: "模型名（可选）。设置里这一路可能配了好几个，不写就用默认那个；想点名用哪个就照设置里的名字写。名字写错会直接报错并列出可选项，不会偷偷换成别的。" },
         no_cache: { type: "boolean", description: "强制重新生成（可选）。给了 filename 的调用，参数完全一样时会直接复用上一次的产物、不再花钱；确实要换一版不一样的，把这个设成 true。" },
@@ -667,6 +667,15 @@ async function fetchRetry(url, init, { tries = 3, baseMs = 1500, label = "接口
   throw lastErr;
 }
 
+// 图/声/视这四路和对话模型共用同一张渠道表（见 docs/模型与Key管理_调研与改法.md），
+// 所以同一个 Key 会被两边拿去用。以前对话那边过 cleanKey，这边只 trim()：
+// 从网页上复制 Key 时多框进一个中文字或全角引号，对话会明说「第几个字符不对、去哪儿重贴」，
+// 生图却在 undici 里炸成一句 "Cannot convert argument to a ByteString"，同一个毛病两副面孔。
+// 这里改成共用一份判断，措辞也就一致了。
+function mediaKey(cfg) {
+  return require("./llm").cleanKey((cfg || {}).api_key, cfg);
+}
+
 async function downloadToWorkspace(url, fname, dir) {
   // 图/视频已经生成完、钱也花掉了，栽在最后一步下载上最不值——这一步尤其该重试
   const r = await fetchRetry(url, { signal: AbortSignal.timeout(180000) }, { label: "下载生成结果" });
@@ -816,7 +825,7 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile) {
   // 地址算法跟主模型共用一份（llm.js 的 anthropicBase）。自己拼 `${base}/v1/messages` 的话，
   // 用户照着设置页里其它渠道的样子把 base_url 填成 .../v1，就会拼出 /v1/v1/messages 吃 404
   const url = anthropic ? require("./llm").anthropicBase(base).messagesUrl : `${base}/chat/completions`;
-  const key = String(cfg.api_key || "").trim();
+  const key = mediaKey(cfg);
   const headers = anthropic
     ? { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" }
     : { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
@@ -981,7 +990,7 @@ async function generateImage(media, input, timeoutMs, saveDir, resolveFile) {
       + "换一个支持图生图的模型或渠道（设置 → 模型 → 图像模型）。这里不会自动退回纯文生图。）"
     : "";
   const base = String(cfg.base_url).trim().replace(/\/+$/, "");
-  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${String(cfg.api_key || "").trim()}` };
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${mediaKey(cfg)}` };
   const signal = AbortSignal.timeout(Math.max(timeoutMs || 0, 300000));
   const fname = safeOutName(input.filename, ".png", "image");
   let imgUrl = null, b64 = null, watermarked = false;
@@ -1067,8 +1076,16 @@ async function generateVideo(media, input, opts = {}) {
     ? "\n（这次带了" + (lastUri ? "首尾帧" : "首帧") + "图。报错要是指向 img_url / image_url / 「不认识的参数」，就是这条渠道的视频接口不收图，换一个 i2v 型号或渠道。这里不会自动退回纯文生视频。）"
     : "";
   const base = String(cfg.base_url).trim().replace(/\/+$/, "");
-  const auth = { Authorization: `Bearer ${String(cfg.api_key || "").trim()}` };
+  const auth = { Authorization: `Bearer ${mediaKey(cfg)}` };
   const headers = { "Content-Type": "application/json", ...auth };
+  const proto = mediaModels.videoProtoOf(cfg);
+  const protoCn = mediaModels.VIDEO_PROTO_CN[proto] || "这条渠道";
+  // 尾帧只有万相 kf2v 和方舟收，另外三家的接口里根本没有这个字段。硬发过去是两种下场：
+  // 被忽略——片子照出、钱照扣，人对着成片纳闷尾帧怎么没生效；或者整单报「不认识的参数」。
+  // 都得等上几分钟才看得到，不如现在就说清。
+  if (lastUri && proto !== "dashscope" && proto !== "ark") {
+    return { content: `${protoCn} 的视频接口只收首帧，没有尾帧这一项。要首尾帧出片，到 设置 → 模型 → 视频模型 换成 通义万相 kf2v 或 火山方舟 Seedance；或者去掉 last_frame，只定首帧。`, isError: true };
+  }
   const fname = safeOutName(input.filename, ".mp4", "video");
   // 轮询异步任务：5 秒一查，上限 10 分钟，任务停止信号可中断
   const poll = async (check) => {
@@ -1084,8 +1101,11 @@ async function generateVideo(media, input, opts = {}) {
   // 万相的字段名按「几张图」分：只有首帧走 img_url，首尾都有走 first/last_frame_url
   const kfBody = lastUri ? { first_frame_url: firstUri, last_frame_url: lastUri } : firstUri ? { img_url: firstUri } : {};
   let videoUrl;
-  let vWatermarked = false;
-  if (/dashscope/i.test(base)) {
+  // 水印这件事只有三种真话：问了对面收下（clean）、问了对面不认所以降级发的（stripped）、
+  // 这家协议根本没有这个开关（unasked）。以前是个布尔量，新接的三家只能硬套一个「已按无水印出片」，
+  // 那是句假话——人会信了它不去看片尾。
+  let vWm = "clean";
+  if (proto === "dashscope") {
     // DashScope 万相（wan 系）：异步提交 + /tasks 轮询
     // 水印走跟生图同一套策略：先按「要干净的」发，只有对面明说不认识这个字段才去掉重发。
     // 以前这里是硬发 parameters.watermark=false，渠道一旦不认，整条视频任务当场就废——
@@ -1097,7 +1117,7 @@ async function generateVideo(media, input, opts = {}) {
       // 万相这边一张图和两张图是两套字段：只定首帧是 img_url（i2v），首尾都定是 first/last_frame_url（kf2v）。
       // 不传就一个字段都不出现，请求体跟纯文生那条逐字节一样
       (wm) => ({ model: cfg.model, input: { prompt, ...kfBody }, parameters: wm ? { watermark: false } : {} }), "视频接口", 1);
-    vWatermarked = stripped;
+    vWm = stripped ? "stripped" : "clean";
     const taskId = ((j || {}).output || {}).task_id;
     if (!r.ok || !taskId) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
     videoUrl = await poll(async () => {
@@ -1107,7 +1127,7 @@ async function generateVideo(media, input, opts = {}) {
       if (st === "FAILED" || st === "CANCELED") throw new Error("视频任务失败：" + JSON.stringify(s.output).slice(0, 200));
       return null;
     });
-  } else if (/volces|\/ark\b|ark\./i.test(base)) {
+  } else if (proto === "ark") {
     // 火山方舟（Seedance 系）：contents/generations/tasks 异步 + 轮询
     const r = await fetch(`${base}/contents/generations/tasks`, {
       method: "POST", headers, signal: AbortSignal.timeout(60000),
@@ -1128,18 +1148,92 @@ async function generateVideo(media, input, opts = {}) {
       if (s.status === "failed" || s.status === "cancelled") throw new Error("视频任务失败：" + JSON.stringify(s.error || s).slice(0, 200));
       return null;
     });
+  } else if (proto === "zhipu") {
+    // 智谱 CogVideoX：/videos/generations 提交，/async-result/{id} 轮询。
+    // 提交回执里的字段名是 id，老一点的型号回 request_id，两个都认一下。
+    const r = await fetch(`${base}/videos/generations`, {
+      method: "POST", headers, signal: AbortSignal.timeout(60000),
+      body: JSON.stringify({ model: cfg.model, prompt, with_audio: true, ...(firstUri ? { image_url: firstUri } : {}) }),
+    });
+    const j = await r.json().catch(() => ({}));
+    const id = j.id || j.request_id;
+    if (!r.ok || !id) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
+    videoUrl = await poll(async () => {
+      const s = await fetch(`${base}/async-result/${id}`, { headers: auth, signal: AbortSignal.timeout(30000) }).then((x) => x.json());
+      const st = String((s || {}).task_status || "").toUpperCase();
+      if (st === "SUCCESS") return (((s.video_result || [])[0]) || {}).url || null;
+      if (st === "FAIL") throw new Error("视频任务失败：" + JSON.stringify(s).slice(0, 200));
+      return null;
+    });
+    vWm = "unasked";
+  } else if (proto === "minimax") {
+    // MiniMax 海螺：提交 → 轮询 → 再拿 file_id 换下载地址，三段，比另外四家多一手。
+    // 这家最容易踩的是「HTTP 200 不等于成功」：成败写在 base_resp.status_code 里，
+    // 只看 r.ok 的话，一句「余额不足」会被当成提交成功，然后在轮询里空转满 10 分钟才报超时。
+    const r = await fetch(`${base}/video_generation`, {
+      method: "POST", headers, signal: AbortSignal.timeout(60000),
+      body: JSON.stringify({ model: cfg.model, prompt, ...(firstUri ? { first_frame_image: firstUri } : {}) }),
+    });
+    const j = await r.json().catch(() => ({}));
+    const code = ((j || {}).base_resp || {}).status_code;
+    if (!r.ok || !j.task_id || (code != null && code !== 0)) {
+      return { content: `视频接口错误 ${r.status}${code ? `（base_resp ${code}）` : ""}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
+    }
+    const fileId = await poll(async () => {
+      const s = await fetch(`${base}/query/video_generation?task_id=${encodeURIComponent(j.task_id)}`,
+        { headers: auth, signal: AbortSignal.timeout(30000) }).then((x) => x.json());
+      const st = String((s || {}).status || "");
+      if (st === "Success") return s.file_id || null;
+      if (/^fail/i.test(st)) throw new Error("视频任务失败：" + JSON.stringify(s).slice(0, 200));
+      return null;
+    });
+    // 轮询给的是 file_id 不是地址，还得再换一手。换来的地址有时效，换完立刻下载
+    const f = await fetch(`${base}/files/retrieve?file_id=${encodeURIComponent(fileId)}`,
+      { headers: auth, signal: AbortSignal.timeout(30000) }).then((x) => x.json()).catch(() => ({}));
+    videoUrl = (((f || {}).file || {}).download_url) || "";
+    if (!videoUrl) return { content: `片子出好了，但取不到下载地址（file_id ${fileId}）：${JSON.stringify(f).slice(0, 200)}。到 MiniMax 控制台按这个 file_id 能手动下。`, isError: true };
+    vWm = "unasked";
+  } else if (proto === "siliconflow") {
+    // 硅基流动：submit 拿 requestId，查状态是 POST 带 body——这点跟另外四家都不一样，
+    // 照 GET 发过去会得到一个 405，看起来像地址写错了，其实是方法不对。
+    const r = await fetch(`${base}/video/submit`, {
+      method: "POST", headers, signal: AbortSignal.timeout(60000),
+      body: JSON.stringify({ model: cfg.model, prompt, ...(firstUri ? { image: firstUri } : {}) }),
+    });
+    const j = await r.json().catch(() => ({}));
+    const rid = j.requestId || j.request_id;
+    if (!r.ok || !rid) return { content: `视频接口错误 ${r.status}: ${JSON.stringify(j).slice(0, 300)}${kfHint}`, isError: true };
+    videoUrl = await poll(async () => {
+      const s = await fetch(`${base}/video/status`, {
+        method: "POST", headers, signal: AbortSignal.timeout(30000), body: JSON.stringify({ requestId: rid }),
+      }).then((x) => x.json());
+      const st = String((s || {}).status || "");
+      if (st === "Succeed") return ((((s.results || {}).videos || [])[0]) || {}).url || null;
+      if (/^fail/i.test(st)) throw new Error("视频任务失败：" + JSON.stringify(s.reason || s).slice(0, 200));
+      return null;
+    });
+    vWm = "unasked";
   } else {
+    // 认不出是哪家。把「按什么认的、这次认到了什么」摊开说——中转和自建网关地址里看不出上游，
+    // 只说一句「不支持」的话，人会去改地址，而实际该改的是渠道类型那一栏。
+    const names = mediaModels.VIDEO_PROTOS.map((p) => mediaModels.VIDEO_PROTO_CN[p]).join("、");
     return {
-      content: "视频渠道暂支持两种协议：DashScope 万相（接口地址含 dashscope，如 https://dashscope.aliyuncs.com/api/v1）或 火山方舟 Seedance（地址含 volces/ark，如 https://ark.cn-beijing.volces.com/api/v3）。当前接口地址两者都不是。",
+      content: `认不出这条视频渠道说的是哪门话，所以没敢发——视频按条计费，发错一趟要等好几分钟才看得到错。\n`
+        + `现在支持这五家：${names}。\n`
+        + `认的顺序是：先看渠道卡上选的「渠道类型」，再看接口地址里的域名（dashscope / volces·ark / bigmodel / minimax / siliconflow）。`
+        + `这次地址是 ${base || "(空)"}，渠道类型是「${cfg.kind || "没选"}」，两头都没认出来。\n`
+        + `走中转或自建网关的话，地址里本来就看不出上游是谁。到 设置 → 模型 里把这条渠道的「渠道类型」选成它实际接的那一家就行。`,
       isError: true,
     };
   }
   if (!videoUrl) return { content: "视频任务完成但没有返回视频地址", isError: true };
   await downloadToWorkspace(videoUrl, fname, opts.saveDir);
   security.audit("视频生成", `${cfg.model}: ${prompt.slice(0, 120)}${firstUri ? (lastUri ? "（首尾帧）" : "（首帧图）") : ""} → ${fname}`, "放行");
-  const vwNote = vWatermarked
+  const vwNote = vWm === "stripped"
     ? "\n注意：这个渠道不接受 watermark 参数，片尾/角标可能带平台的「AI 生成」水印。要干净的成片就换个渠道或换个模型。"
-    : "\n已按无水印出片，不用再开片找水印。";
+    : vWm === "unasked"
+      ? `\n注意：${protoCn} 的视频接口没有水印开关，带不带平台角标由渠道自己定，这里说了不算。片尾要干净的话先自己看一眼成片。`
+      : "\n已按无水印出片，不用再开片找水印。";
   const kfNote = firstUri ? (lastUri ? "\n已按给定的首帧和尾帧出片。" : "\n已按给定的首帧出片。") : "";
   return { content: `视频已生成：${savedAt(opts.saveDir, fname)}（工作空间内的相对路径，模型 ${cfg.model}）${kfNote}${vwNote}`, isError: false, file: fname };
 }
@@ -1182,7 +1276,7 @@ async function textToSpeech(media, input, timeoutMs, saveDir) {
   if (text.length > 5000) return { content: `文字太长（${text.length} 字，上限 5000），请分段多次合成再拼接`, isError: true };
   const base = String(cfg.base_url).trim().replace(/\/+$/, "");
   const voice = String(input.voice || cfg.voice || "").trim();
-  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${String(cfg.api_key || "").trim()}` };
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${mediaKey(cfg)}` };
   const signal = AbortSignal.timeout(Math.max(timeoutMs || 0, 300000));
   let fname;
   if (/dashscope/i.test(base)) {
@@ -1270,6 +1364,8 @@ async function transcribeAudio(media, input, timeoutMs, resolveFile, saveDir) {
   if (/dashscope\.aliyuncs\.com/i.test(base)) {
     return { content: "通义百炼的转写是异步任务接口，和这里用的 OpenAI 兼容 /audio/transcriptions 不是一套，现在还没接。换 OpenAI（gpt-4o-transcribe / whisper-1）或硅基流动（FunAudioLLM/SenseVoiceSmall）这类渠道。这一步不用重试。", isError: true };
   }
+  // Key 在读文件之前先验：25MB 的音频读进内存再栽在 Key 上，白等一轮还白占一把内存
+  const auth = { Authorization: `Bearer ${mediaKey(cfg)}` };
   const wantSeg = !!input.with_timestamps;
   const form = new FormData();
   form.append("file", new Blob([fs.readFileSync(p)]), path.basename(p));
@@ -1284,7 +1380,7 @@ async function transcribeAudio(media, input, timeoutMs, resolveFile, saveDir) {
   const budget = Math.max(timeoutMs || 0, 180000 + Math.round(st.size / 1048576) * 20000);
   let r;
   try {
-    r = await fetch(`${base}/audio/transcriptions`, { method: "POST", headers: { Authorization: `Bearer ${String(cfg.api_key || "").trim()}` }, body: form, signal: AbortSignal.timeout(budget) });
+    r = await fetch(`${base}/audio/transcriptions`, { method: "POST", headers: auth, body: form, signal: AbortSignal.timeout(budget) });
   } catch (e) {
     return { content: `转写请求失败：${e.message}（文件 ${(st.size / 1048576).toFixed(1)}MB，等了 ${Math.round(budget / 1000)} 秒）`, isError: true };
   }
@@ -3739,4 +3835,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

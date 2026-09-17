@@ -196,6 +196,10 @@ Reverse proxy, upgrades, migration, security checklist → [deploy/README.md](de
 > [!IMPORTANT]
 > `config.json` is the only file holding API keys and is already in `.gitignore`. Don't commit it.
 
+**A mispasted key is caught on save.** Copying a key out of a web page or a chat usually drags a stray space, newline or full-width quote along with it — it tells you which character is wrong the moment you save, instead of handing you an unreadable 401 later.
+
+**Image / speech / video models** have their own table. Video is one branch per vendor across five protocols (Tongyi Wanxiang · Volcano Ark Seedance · GLM CogVideoX · MiniMax Hailuo · SiliconFlow): submit paths, parameter names and polling agree on nothing, so if it cannot tell which vendor it is, **it does not send the request** — video bills per clip and a wasted call takes minutes to fail.
+
 ## Command line
 
 `wb` shares the desktop app's config, skills, memory and connectors. Answers go to stdout, so it fits into any pipe, script or cron job:
@@ -203,10 +207,16 @@ Reverse proxy, upgrades, migration, security checklist → [deploy/README.md](de
 ```bash
 npm link                                   # once: install `wb` globally
 wb "write my weekly report"                # one-shot: exit code 0/1 tells the truth
+wb -f q3.xlsx "build a deck from this"     # attach files/images, repeat -f for more
 cat error.log | wb "what is this error"    # pipe: stdin becomes attached material
 wb --json "summarize this meeting" | jq -j 'select(.type=="text") | .delta'
 wb engines && wb engines use claude-code   # use a local Claude Code / Codex as the engine
+wb completion zsh > ~/.zsh/completions/_wb # Tab completion (bash / zsh / fish)
 ```
+
+At a fork in the road it **asks you a question** — "Word or PDF?" — with one line under each option saying what picking it commits you to. Behind a pipe or in cron it never asks; it decides and keeps going.
+
+Plain `wb` opens an interactive shell: type `/` and the command menu drops down (`/model` switches who answers this one, `/paste` pulls in a screenshot from the clipboard, `/open` opens what it just made). Dragging a file onto the window works too.
 
 Everything → [命令行用法](docs/命令行用法.md) (Chinese).
 
@@ -234,15 +244,15 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 17** The terminal asks you questions too now — "Word or PDF?"; `wb -f` attaches files and images, and typing `/` drops down the command menu
+- **Sep 17** Video generation speaks five protocols (Tongyi Wanxiang / Seedance / CogVideoX / Hailuo / SiliconFlow) — and refuses to send when it cannot tell which one, because per-clip billing makes a wasted call expensive
+- **Sep 17** Paste a key with a stray space or a full-width comma in it and it names the offending character on save, instead of a 401 later
+- **Sep 17** The home screen's scenes are regrouped by what you get back; the infinite canvas moved up the sidebar; `[report](report.md)` links in an answer now open the file
 - **Sep 17** Moving to a new machine: back up on the old one, import and restore on the new one — sessions, memory, accounts and the skills you wrote yourself all travel
 - **Sep 17** Say something while a task is running and you choose: cut in, or queue it until the task finishes (and a queued line can be taken back)
 - **Sep 17** Per-call paid APIs (search, image, video, voice) sit behind a quota gate; the admin console reports spend by day and by person
 - **Sep 14** An AI short-drama infinite canvas: script, characters, shots, assets and the cut, all on one canvas
 - **Sep 13** It can shoot video: shot list → you approve → character stills → first frame → video → voice → subtitled cut. Change one shot, only that shot costs again
-- **Sep 13** SMTP email with a hard recipient allowlist, cron jobs from a plain sentence, and audio/video transcription
-- **Sep 11** The sidebar splits into "Office" and "Engineering"; a task started with `wb` in a terminal is visible — and interruptible — from your phone
-- **Sep 10** One-command deploy with HTTPS; multi-tenant plus an admin console
-- **Sep 8** A local Claude Code / Codex can be the engine
 
 Older entries → **[Changelog](CHANGELOG.en.md)**.
 

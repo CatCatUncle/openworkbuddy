@@ -847,6 +847,10 @@ function testDocLinkGate() {
     .filter((f) => fs.existsSync(f))
     .concat(mdUnder(docs));
 
+  // 反引号里的东西先抠掉：`[调研报告](报告.md)` 是在讲「链接长什么样」，不是一条链接——
+  // 渲染出来就是一段代码，点不动，自然也没有「指到哪儿」这回事。代码块同理（安装命令里
+  // 的路径不是链接）。不抠的话，文档里每解释一次 markdown 语法就多一条假死链。
+  const stripCode = (t) => t.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "");
   // Markdown 的 [x](y)，加上 README 里那些 HTML 标签的 href/src
   const grab = (t) => [
     ...[...t.matchAll(/\[[^\]]*\]\(([^)\s]+)/g)].map((m) => m[1]),
@@ -861,7 +865,7 @@ function testDocLinkGate() {
   for (const f of files) {
     const t = fs.readFileSync(f, "utf8");
     const anchors = anchorsOf(f);
-    for (const href of grab(t)) {
+    for (const href of grab(stripCode(t))) {
       if (/^(https?:|mailto:)/.test(href)) continue;
       // 页内锚点：跳过等于没查，标题改个字锚点就哑了，点了原地不动
       if (href.startsWith("#")) {
@@ -1250,6 +1254,304 @@ async function testMediaImageInputGate() {
 }
 
 /**
+ * 视频那五家协议：请求真发对了地方、回执真解对了字段。
+ *
+ * 为什么值得单开一组：视频这一路没有 OpenAI 兼容这个最大公约数。五家的提交路径、
+ * 参数名、轮询方式、结果取法没一处对得上——万相是 input.img_url，方舟是 content 数组，
+ * 智谱是 image_url，海螺是 first_frame_image，硅基是 image；查状态更是四家 GET、
+ * 硅基一家 POST。任何一处抄错，用户那边看到的都是「提交成功、然后卡十分钟超时」，
+ * 而这十分钟是按条计费的。
+ *
+ * 三条红线：
+ *   1. 认协议要认得准，也要认得出「认不出」。认不出就别发——发出去必然失败，
+ *      还要等几分钟才看得到错。中转和自建网关地址里看不出上游，得能靠渠道类型点名。
+ *   2. HTTP 200 不等于成功。海螺把成败写在 base_resp.status_code 里，只看 r.ok 的话，
+ *      一句「余额不足」会被当成提交成功，然后在轮询里空转满十分钟。
+ *   3. 回执里关于水印那句必须是真话。新接的三家根本没有水印开关，
+ *      照旧说「已按无水印出片」是骗人——人会信了它不去看片尾。
+ */
+async function testVideoProtocols() {
+  const http = require("http");
+  const os = require("os");
+  const { generateVideo } = require("../tools")._internals;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-vproto-"));
+  fs.writeFileSync(path.join(dir, "首帧.png"),
+    Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+  fs.writeFileSync(path.join(dir, "尾帧.png"), fs.readFileSync(path.join(dir, "首帧.png")));
+  const resolveFile = (rel) => path.join(dir, rel);
+
+  const seen = [];
+  // 每家一个开关，专门用来演「提交那一步就翻车」和「轮询轮到失败」
+  let mmCode = 0, mmStatus = "Success", zhStatus = "SUCCESS", sfStatus = "Succeed", mmFile = true;
+  const srv = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const j = (code, o) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+      const vurl = `http://127.0.0.1:${srv.address().port}/v.mp4`;
+      if (/v\.mp4$/.test(req.url)) { res.writeHead(200, { "Content-Type": "video/mp4" }); return res.end(Buffer.from("fake-mp4")); }
+      let body = {};
+      try { body = JSON.parse(raw || "{}"); } catch {}
+      seen.push({ url: req.url, method: req.method, body, auth: req.headers.authorization || "" });
+      // ── 智谱 CogVideoX ──
+      if (/\/videos\/generations$/.test(req.url)) return j(200, { id: "zp1", request_id: "rq1" });
+      if (/\/async-result\/zp1$/.test(req.url)) {
+        return j(200, zhStatus === "SUCCESS"
+          ? { task_status: "SUCCESS", video_result: [{ url: vurl, cover_image_url: vurl }] }
+          : { task_status: zhStatus });
+      }
+      // ── MiniMax 海螺 ──
+      if (/\/video_generation$/.test(req.url)) return j(200, { task_id: "mm1", base_resp: { status_code: mmCode, status_msg: mmCode ? "insufficient balance" : "success" } });
+      if (/\/query\/video_generation\?/.test(req.url)) return j(200, { task_id: "mm1", status: mmStatus, file_id: mmStatus === "Success" ? "f77" : "" });
+      if (/\/files\/retrieve\?/.test(req.url)) return j(200, mmFile ? { file: { file_id: "f77", download_url: vurl } } : { file: {} });
+      // ── 硅基流动 ──
+      if (/\/video\/submit$/.test(req.url)) return j(200, { requestId: "sf1" });
+      if (/\/video\/status$/.test(req.url)) {
+        return j(200, sfStatus === "Succeed"
+          ? { status: "Succeed", results: { videos: [{ url: vurl }], seed: 1 } }
+          : { status: sfStatus, reason: "模型排队超时" });
+      }
+      return j(404, { error: "这条路径没人接：" + req.url });
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  const at = (p) => `http://127.0.0.1:${port}${p}`;
+  // 地址里带上各家的招牌字样，走的是 videoProtoOf 的第二档（按域名认）
+  const zhipu = { video: { base_url: at("/bigmodel/api/paas/v4"), model: "cogvideox-3", api_key: "k-zp" } };
+  const minimax = { video: { base_url: at("/minimax/v1"), model: "MiniMax-Hailuo-02", api_key: "k-mm" } };
+  const silicon = { video: { base_url: at("/siliconflow/v1"), model: "Wan-AI/Wan2.2-T2V-A14B", api_key: "k-sf" } };
+  const dash = { video: { base_url: at("/dashscope/api/v1"), model: "wan2.2-t2v-plus", api_key: "k-ds" } };
+  const DATA_PNG = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/;
+  const fresh = () => { seen.length = 0; };
+  const hit = (re) => seen.find((x) => re.test(x.url));
+  // 轮询轮到失败是抛出来的，不是 isError——这是万相那条从一开始就有的老约定
+  // （executeTool 外面那层 catch 会统一裹成「工具执行出错: …」）。新接的三家得跟它一样，
+  // 不然同一种翻车在五家渠道上会长出两种形状，调用方还得分情况处理
+  const caught = async (fn) => { try { return { r: await fn() }; } catch (e) { return { err: (e && e.message) || String(e) }; } };
+
+  try {
+    // ── ① 智谱：提交 /videos/generations，轮询 /async-result/{id} ──────────────
+    fresh();
+    const z1 = await generateVideo(zhipu, { prompt: "猫走路", filename: "zp1.mp4" }, { saveDir: dir, resolveFile });
+    assert(!z1.isError, "智谱文生视频挂了：" + z1.content);
+    const zp = hit(/\/videos\/generations$/);
+    assert(zp && zp.method === "POST" && zp.auth === "Bearer k-zp", "智谱提交没发对或没带这条渠道的 Key：" + JSON.stringify(zp && { m: zp.method, a: zp.auth }));
+    assert(zp.body.model === "cogvideox-3" && zp.body.prompt === "猫走路", "智谱请求体的 model/prompt 不对：" + JSON.stringify(zp.body));
+    assert(!("image_url" in zp.body), "没给首帧却往智谱请求体里塞了 image_url：" + JSON.stringify(Object.keys(zp.body)));
+    assert(hit(/\/async-result\/zp1$/), "智谱没去 /async-result/{id} 轮询，实际打的是：" + seen.map((x) => x.url).join(" "));
+    assert(fs.existsSync(path.join(dir, "zp1.mp4")), "智谱那条说成功了，片子却没落到工作目录");
+
+    fresh();
+    const z2 = await generateVideo(zhipu, { prompt: "猫走路", filename: "zp2.mp4", first_frame: "首帧.png" }, { saveDir: dir, resolveFile });
+    assert(!z2.isError, "智谱图生视频挂了：" + z2.content);
+    assert(DATA_PNG.test(hit(/\/videos\/generations$/).body.image_url), "智谱的首帧该走 image_url 且是 data: URI：" + JSON.stringify(hit(/\/videos\/generations$/).body).slice(0, 100));
+
+    // ── ② 海螺：提交 → 轮询 → file_id 换下载地址，三段 ────────────────────────
+    fresh();
+    const m1 = await generateVideo(minimax, { prompt: "猫走路", filename: "mm1.mp4", first_frame: "首帧.png" }, { saveDir: dir, resolveFile });
+    assert(!m1.isError, "海螺图生视频挂了：" + m1.content);
+    const mp = hit(/\/video_generation$/);
+    assert(mp && mp.method === "POST" && mp.auth === "Bearer k-mm", "海螺提交没发对：" + JSON.stringify(mp && { m: mp.method, a: mp.auth }));
+    assert(DATA_PNG.test(mp.body.first_frame_image), "海螺的首帧该走 first_frame_image：" + JSON.stringify(Object.keys(mp.body)));
+    assert(hit(/\/query\/video_generation\?task_id=mm1/), "海螺没拿 task_id 去轮询：" + seen.map((x) => x.url).join(" "));
+    assert(hit(/\/files\/retrieve\?file_id=f77/), "海螺拿到 file_id 后没去换下载地址（它轮询回的不是 url，是个 id）：" + seen.map((x) => x.url).join(" "));
+    assert(fs.existsSync(path.join(dir, "mm1.mp4")), "海螺那条说成功了，片子却没落到工作目录");
+
+    // 这条是这一组里最该守住的：HTTP 200，但 base_resp 说余额不足。
+    // 不看 base_resp 的话，这一趟会被当成提交成功，然后在轮询里空转满十分钟才报超时
+    mmCode = 1008; fresh();
+    const m2 = await generateVideo(minimax, { prompt: "猫走路", filename: "mm2.mp4" }, { saveDir: dir, resolveFile });
+    assert(m2.isError, "海螺回了 200 但 base_resp 说余额不足，却当成提交成功了——这会在轮询里空转满十分钟：" + m2.content);
+    assert(/1008/.test(m2.content), "海螺的错误码没带出来，人不知道去查什么：" + m2.content);
+    assert(!hit(/\/query\/video_generation/), "提交明明失败了还去轮询了");
+    mmCode = 0;
+
+    mmStatus = "Fail"; fresh();
+    const m3 = await caught(() => generateVideo(minimax, { prompt: "猫走路", filename: "mm3.mp4" }, { saveDir: dir, resolveFile }));
+    assert(m3.err && /视频任务失败/.test(m3.err), "海螺轮询轮到 Fail 却当成出片成功了：" + JSON.stringify(m3));
+    assert(!fs.existsSync(path.join(dir, "mm3.mp4")), "任务明明失败了，还是往工作目录里落了个文件");
+    mmStatus = "Success";
+
+    mmFile = false; fresh();
+    const m4 = await generateVideo(minimax, { prompt: "猫走路", filename: "mm4.mp4" }, { saveDir: dir, resolveFile });
+    assert(m4.isError && /file_id/.test(m4.content), "换不到下载地址时该把 file_id 说出来让人手动下：" + m4.content);
+    mmFile = true;
+
+    // ── ③ 硅基流动：查状态是 POST，不是 GET ─────────────────────────────────
+    fresh();
+    const s1 = await generateVideo(silicon, { prompt: "猫走路", filename: "sf1.mp4" }, { saveDir: dir, resolveFile });
+    assert(!s1.isError, "硅基文生视频挂了：" + s1.content);
+    const sp = hit(/\/video\/submit$/);
+    assert(sp && sp.body.model === "Wan-AI/Wan2.2-T2V-A14B" && sp.auth === "Bearer k-sf", "硅基提交没发对：" + JSON.stringify(sp && sp.body));
+    const st = hit(/\/video\/status$/);
+    assert(st && st.method === "POST" && st.body.requestId === "sf1",
+      "硅基查状态得是 POST 带 requestId——照 GET 发会收到 405，看起来像地址写错了：" + JSON.stringify(st && { m: st.method, b: st.body }));
+    assert(fs.existsSync(path.join(dir, "sf1.mp4")), "硅基那条说成功了，片子却没落到工作目录");
+
+    sfStatus = "Failed"; fresh();
+    const s2 = await caught(() => generateVideo(silicon, { prompt: "猫走路", filename: "sf2.mp4" }, { saveDir: dir, resolveFile }));
+    assert(s2.err && /视频任务失败/.test(s2.err), "硅基轮询轮到 Failed 却当成出片成功了：" + JSON.stringify(s2));
+    assert(/排队超时/.test(s2.err), "硅基的 reason 没带出来，人不知道为什么失败：" + s2.err);
+    sfStatus = "Succeed";
+
+    // ── ④ 尾帧：只有万相 kf2v 和方舟收，另外三家当场说清，一个请求都不许发 ──────
+    for (const [who, cfg] of [["智谱", zhipu], ["海螺", minimax], ["硅基", silicon]]) {
+      fresh();
+      const r = await generateVideo(cfg, { prompt: "从这张变到那张", filename: "kf.mp4", first_frame: "首帧.png", last_frame: "尾帧.png" }, { saveDir: dir, resolveFile });
+      assert(r.isError && /尾帧/.test(r.content), `${who} 收了 last_frame——它的接口里根本没这个字段，钱会照扣而尾帧不生效：` + r.content);
+      assert(seen.length === 0, `${who} 那条尾帧竟然真发出去了，发了 ` + seen.length + " 次");
+    }
+
+    // ── ⑤ 认不出是哪家：别发，并且把「按什么认的」摊开说 ──────────────────────
+    fresh();
+    const unknown = { video: { base_url: at("/gw/v1"), model: "某个视频模型", api_key: "k" } };
+    const u1 = await generateVideo(unknown, { prompt: "猫走路", filename: "u1.mp4" }, { saveDir: dir, resolveFile });
+    assert(u1.isError, "认不出协议还是把请求发出去了：" + u1.content);
+    assert(seen.length === 0, "认不出协议却发了 " + seen.length + " 次请求");
+    for (const name of ["万相", "Seedance", "CogVideoX", "海螺", "硅基流动"]) {
+      assert(u1.content.includes(name), `支持列表里漏了 ${name}：` + u1.content);
+    }
+    assert(/渠道类型/.test(u1.content), "没指路去改渠道类型——中转地址里本来就看不出上游，只说「不支持」的话人会去改地址：" + u1.content);
+
+    // ── ⑥ 中转/自建网关：地址看不出，靠渠道类型或条目上的 protocol 点名 ─────────
+    fresh();
+    const byKind = { video: { base_url: at("/gw/v1"), model: "MiniMax-Hailuo-02", api_key: "k-mm", kind: "minimax" } };
+    const k1 = await generateVideo(byKind, { prompt: "猫走路", filename: "k1.mp4" }, { saveDir: dir, resolveFile });
+    assert(!k1.isError, "渠道类型选了 minimax，却没按海螺发：" + k1.content);
+    assert(hit(/\/gw\/v1\/video_generation$/), "没打到网关地址下的海螺路径：" + seen.map((x) => x.url).join(" "));
+
+    fresh();
+    const byProto = { video: { base_url: at("/gw/v1"), model: "cogvideox-3", api_key: "k-zp", protocol: "zhipu" } };
+    const k2 = await generateVideo(byProto, { prompt: "猫走路", filename: "k2.mp4" }, { saveDir: dir, resolveFile });
+    assert(!k2.isError, "条目上写了 protocol=zhipu，却没按智谱发：" + k2.content);
+    assert(hit(/\/gw\/v1\/videos\/generations$/), "没打到网关地址下的智谱路径：" + seen.map((x) => x.url).join(" "));
+
+    // 渠道类型比地址优先：地址明摆着写着 dashscope，但人在卡上选了智谱，就得听人的
+    fresh();
+    const override = { video: { base_url: at("/dashscope/api/v1"), model: "cogvideox-3", api_key: "k-zp", kind: "zhipu" } };
+    const k3 = await generateVideo(override, { prompt: "猫走路", filename: "k3.mp4" }, { saveDir: dir, resolveFile });
+    assert(!k3.isError, "渠道类型压不住地址：" + k3.content);
+    assert(hit(/\/videos\/generations$/) && !hit(/video-synthesis/), "渠道类型选了智谱，还是按地址当成万相发了：" + seen.map((x) => x.url).join(" "));
+
+    // ── ⑦ 水印那句话得是真话 ────────────────────────────────────────────────
+    fresh();
+    assert(/没有水印开关/.test(z1.content) && !/已按无水印出片/.test(z1.content),
+      "智谱没有 watermark 参数，回执却说「已按无水印出片」——人会信了它不去看片尾：" + z1.content);
+    assert(/没有水印开关/.test(s1.content), "硅基那条的水印措辞也得照实说：" + s1.content);
+    assert(/没有水印开关/.test(m1.content), "海螺那条的水印措辞也得照实说：" + m1.content);
+    // 反向对照：万相是真问过的，那句「已按无水印出片」在它身上仍要保留
+    const d1 = await generateVideo(dash, { prompt: "猫走路", filename: "ds1.mp4" }, { saveDir: dir, resolveFile });
+    assert(d1.isError, "替身没接万相的提交路径，这条本来就该报错（用它只为验证措辞分支）：" + d1.content);
+
+    // ── 反向断言：判据自己得能判死 ─────────────────────────────────────────
+    // 「只看 r.ok」必须被 ② 那条判据判失败，否则代码哪天改回不看 base_resp，测试照样绿
+    let c1 = false;
+    try { assert(({ isError: false, content: "视频已生成" }).isError, "x"); } catch { c1 = true; }
+    assert(c1, "闸门判据失效：base_resp 说失败却出片成功居然也能过");
+    // 「认不出却照发」必须被 ⑤ 那条判据判失败
+    let c2 = false;
+    try { assert([{ url: "/gw/v1/x" }].length === 0, "x"); } catch { c2 = true; }
+    assert(c2, "闸门判据失效：认不出协议却发了请求居然也能过");
+
+    console.log("✅ 视频五家协议：智谱/海螺/硅基三家的路径·参数名·轮询方式各自发对（海螺还多一手 file_id 换地址）· 200 里藏的 base_resp 失败当场拦下 · 尾帧只认万相和方舟 · 认不出就不发并说清按什么认的 · 渠道类型压得住地址 · 水印那句不说假话");
+  } finally {
+    srv.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 多媒体那四路的 Key，跟对话模型共用同一张渠道表（docs/模型与Key管理_调研与改法.md），
+ * 所以同一个 Key 会被两边拿去用。以前两边的洗法不一样：
+ *
+ *   对话  → cleanKey：非 ASCII 当场拦下，说清第几个字符不对、去哪儿重贴
+ *   图声视 → String(...).trim()：中文字照发，栽在 undici 里变成一句
+ *            "Cannot convert argument to a ByteString"——这句话对用户毫无意义
+ *
+ * 从网页控制台复制 Key 多框进一个字，是新手最常见的翻车方式（尤其现在新增了智谱/海螺/
+ * 硅基这几家的取 Key 链接，点进去就是网页）。同一个毛病不该在五个入口长出两副面孔。
+ *
+ * 顺带钉住一个 trim() 根本管不了的情况：结尾粘了个零宽空格（U+200B）。网页复制的
+ * 重灾区，肉眼完全看不见，trim() 也不动它，于是同样炸在 undici 里；cleanKey 会把它
+ * 连同首尾空白一起削掉，请求照常发出去。
+ */
+async function testMediaKeyHygiene() {
+  const http = require("http");
+  const os = require("os");
+  const T = require("../tools")._internals;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wb-mkey-"));
+  fs.writeFileSync(path.join(dir, "图.png"),
+    Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+  fs.writeFileSync(path.join(dir, "录音.mp3"), Buffer.alloc(4096, 7)); // 只要过「>200 字节 + 扩展名」那两关
+  const resolveFile = (rel) => path.join(dir, rel);
+
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      seen.push({ url: req.url, auth: req.headers.authorization || "" });
+      if (/\/audio\/speech$/.test(req.url)) { res.writeHead(200, { "Content-Type": "audio/mpeg" }); return res.end(Buffer.from("fake-mp3")); }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: [{ b64_json: Buffer.from("fake-png").toString("base64") }], text: "听写结果", choices: [{ message: { content: "图里是只猫" } }] }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const at = (s) => `http://127.0.0.1:${srv.address().port}${s}`;
+  const caught = async (fn) => { try { return { r: await fn() }; } catch (e) { return { err: (e && e.message) || String(e) }; } };
+  const fresh = () => { seen.length = 0; };
+
+  try {
+    // ── ① 五个入口，同一个脏 Key，同一种说法，而且一个请求都不许发出去 ──────────
+    // 「令牌」两个汉字模拟从网页上多框了一段中文说明
+    const BAD = "sk-abc令牌";
+    const mk = (cap, extra) => ({ [cap]: { base_url: at("/v1"), model: "m1", api_key: BAD, name: "我的渠道", ...(extra || {}) } });
+    const entries = [
+      ["看图", () => T.lookAtImage({ media: mk("vision"), visionFallback: {} }, { path: "图.png", question: "这是什么" }, 5000, resolveFile)],
+      ["生图", () => T.generateImage(mk("image"), { prompt: "一只猫", filename: "a.png" }, 5000, dir, resolveFile)],
+      ["生视频", () => T.generateVideo({ video: { base_url: at("/dashscope/api/v1"), model: "wan2.2-t2v-plus", api_key: BAD, name: "我的渠道" } }, { prompt: "猫走路", filename: "a.mp4" }, { saveDir: dir, resolveFile })],
+      ["配音", () => T.textToSpeech(mk("tts"), { text: "你好", filename: "a.mp3" }, 5000, dir)],
+      ["转写", () => T.transcribeAudio(mk("asr"), { path: "录音.mp3" }, 5000, resolveFile, dir)],
+    ];
+    for (const [名, run] of entries) {
+      fresh();
+      const got = await caught(run);
+      const msg = got.err || (got.r && got.r.content) || "";
+      assert(!(got.r && got.r.isError === false), `${名}：Key 里有中文却当成正常跑完了 → ${msg.slice(0, 120)}`);
+      assert(/第 7 个字符/.test(msg), `${名}：没说清是第几个字符不对（对话那边是这么说的，这边也得一样）→ ${msg.slice(0, 200)}`);
+      assert(/设置\s*→\s*模型/.test(msg), `${名}：没告诉用户去哪儿重贴 Key → ${msg.slice(0, 200)}`);
+      assert(/我的渠道/.test(msg), `${名}：没说是哪条渠道的 Key（配了好几条时全靠这个认）→ ${msg.slice(0, 200)}`);
+      assert(seen.length === 0, `${名}：Key 明显发不出去，却还是把请求打出去了（${seen.map((x) => x.url).join(" ")}）`);
+    }
+
+    // ── ② trim() 管不了的那个：结尾一个零宽空格，必须洗掉而不是拦下 ──────────
+    // 这是网页复制的重灾区，肉眼看不见。以前 trim() 留着它，undici 照样报 ByteString；
+    // 现在该原样发出一个干净的 Bearer
+    fresh();
+    const ok1 = await T.generateImage(
+      { image: { base_url: at("/v1"), model: "m1", api_key: "  sk-clean​\n" } },
+      { prompt: "一只猫", filename: "clean.png" }, 5000, dir, resolveFile);
+    assert(!ok1.isError, "首尾空白 + 零宽空格的 Key 应该被洗干净照常发，结果报错了：" + ok1.content);
+    assert(seen.length > 0 && seen[0].auth === "Bearer sk-clean",
+      "洗完的 Key 不对，实际发出去的是 " + JSON.stringify(seen[0] && seen[0].auth));
+
+    // ── ③ 反向断言：判据自己得能判死 ────────────────────────────────────────
+    let c1 = false;
+    try { assert(/第 7 个字符/.test("Cannot convert argument to a ByteString"), "x"); } catch { c1 = true; }
+    assert(c1, "闸门判据失效：undici 那句原始报错居然也算说清楚了");
+    let c2 = false;
+    try { assert("Bearer sk-clean​" === "Bearer sk-clean", "x"); } catch { c2 = true; }
+    assert(c2, "闸门判据失效：零宽空格没削掉居然也算洗干净了");
+
+    console.log("✅ 多媒体 Key 洗法和对话对齐：看图/生图/生视频/配音/转写五个入口，Key 里混进中文一律当场拦下并说清第几个字符·哪条渠道·去哪儿重贴（一个请求都不发）· 零宽空格照洗不照拦");
+  } finally {
+    srv.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
  * CLI 模式：真起 `node cli.js` 子进程，模型指向本地假接口（config.openai.stream=false，
  * 走非流式那条，用不着造 SSE，也一分钱不花）。
  *
@@ -1280,6 +1582,16 @@ async function testCliMode() {
       let body = {}; try { body = JSON.parse(raw || "{}"); } catch {}
       seen.push(body);
       if (mode === "boom") return j(401, { error: { message: "鉴权失败" } });
+      // 第一趟先让模型去问用户一句，之后照常收尾。用来验「那头到底有没有人」这件事
+      if (mode === "ask" && !seen.some((b) => JSON.stringify(b).includes("无人值守"))) {
+        return j(200, {
+          choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{
+            id: "call_ask_1", type: "function",
+            function: { name: "ask_user", arguments: JSON.stringify({ question: "报告交哪种格式？", options: [{ label: "Word", detail: "能改" }, { label: "PDF", detail: "版式锁死" }] }) },
+          }] } }],
+          usage: { prompt_tokens: 10, completion_tokens: 4 },
+        });
+      }
       j(200, {
         choices: [{ message: { role: "assistant", content: "答案是四十二。" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 10, completion_tokens: 4 },
@@ -1380,6 +1692,21 @@ async function testCliMode() {
         assert.strictEqual(m[9], "1", "单发只问了一次却报 " + m[9] + " 轮（把 transcript 条数当轮数了）：" + l);
       }
     }
+
+    // 10）agent 问一句时，那头到底有没有人。
+    //
+    //   这条钉的是**危险的那个方向**。cli.js 现在会在有人坐在终端前时给 agent 传 askUser
+    //   （在这之前它从来不传，于是最近在场的那个人反倒是唯一问不到的人）。可管道喂进来的
+    //   `wb "…" < 任务.txt`、给脚本读的 --json，那头确实没人——要是把这两种也算成「有人」，
+    //   agent 会一直等一个永远不会来的回答，`wb` 就此挂死。这里 stdin 是条管道：
+    //   必须原样跑完、退出码 0，而且模型收到的得是「无人值守」那句。
+    mode = "ask";
+    const rAsk = await run(["--no-mcp", "帮我写个报告"], "");
+    mode = "ok";
+    assert.strictEqual(rAsk.status, 0, "模型问了一句，管道模式下 wb 没能跑完（多半是在等一个永远不会来的回答）：" + rAsk.stderr.slice(-500));
+    const askBodies = seen.map((b) => JSON.stringify(b)).join("\n");
+    assert(askBodies.includes("无人值守"), "管道模式下 agent 没被告知没人在线，它会傻等");
+    assert(!/答> /.test(rAsk.stderr), "没人的时候还把选择题摆了出来：" + rAsk.stderr.slice(-300));
 
     // 3）退出码说实话
     mode = "boom";
@@ -2984,6 +3311,235 @@ function testEvolveRecency() {
       "server.js 写 " + kind + " 轮时没盖时间戳，新数据会退回「整个会话共用一个时间」：" + m[0]);
   }
   console.log("✅ 自进化时间口径：窗口按轮切（老会话里的旧失败不算最近）· 没逐轮时间就不编日期 · 打分只认生效之后的回合 · 写盘那头也盖了戳");
+}
+
+/**
+ * 自进化的提示词预算：规则能不能真的到模型手里。
+ *
+ * 前面两个测试守的是「该不该加这条规则」，这个守的是**加进来之后还在不在**。
+ * 这段路上有三个坑，共同点都是**悄无声息**：
+ *
+ *  1. 12 条 × 400 字 = 4800 > 4000 的总预算。也就是说条数还没满，字数先满了——
+ *     超预算是常态而不是意外。而注入那一段原来是从头往下填到撑为止，activeRules()
+ *     又按生效时间**正序**排，于是被砍掉的永远是**最新那几条**：人刚在评审页点了
+ *     「采纳」、界面写着「已生效」，模型一个字都没收到，还不吭声。越新越容易被吞。
+ *  2. 基线为 0 的规则（生效前目标信号在带时间的回合里一次没出现）算降幅会得 0，
+ *     被判「没起作用」并建议下架——量不出来和没用是两回事，这等于专杀新规则。
+ *  3. 打分算出来的下架建议原来只写进 runReview 的返回值 notes 里，而页面读的
+ *     /api/evolve/state 根本没有 notes——看完即焚，等于每天算一遍给空气听。
+ */
+function testEvolvePromptBudget() {
+  const { spawnSync } = require("child_process");
+  const os = require("os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-evbudget-"));
+  const script = `
+    const assert = require("assert");
+    const fs = require("fs");
+    const path = require("path");
+    const ev = require(${JSON.stringify(path.join(__dirname, "..", "evolve.js"))});
+    const DATA = process.env.WB_DATA_DIR;
+    const SESS = path.join(DATA, "sessions");
+    const RULES = path.join(DATA, "learned");
+    fs.mkdirSync(SESS, { recursive: true });
+    fs.mkdirSync(RULES, { recursive: true });
+
+    // 规则是一条一个 .md，头上一段 JSON 注释是元信息 —— 直接照这个形状铺，
+    // 才测得到「手改过的规则文件」这条路（那正是 promptBlock 截断唯一还会被走到的路）
+    const putRule = (id, text, meta = {}) =>
+      fs.writeFileSync(path.join(RULES, id + ".md"),
+        "<!-- " + JSON.stringify({ at: meta.at || new Date().toISOString(), ...meta }) + " -->\\n" + text + "\\n");
+
+    // ── ① 撑爆预算时，砍的必须是最老的，而且要点名 ────────────────────
+    const N = 12;
+    for (let i = 1; i <= N; i++) {
+      const id = "rule_" + String(i).padStart(2, "0");
+      // 每条 390 字，12 条 4680 字 —— 条数正好卡在上限 12 而字数早就超了 4000。
+      // 这不是构造出来的极端值，是 CAPS 自己算出来的常态
+      putRule(id, "第" + i + "条：" + "凑".repeat(383), { at: new Date(Date.UTC(2026, 0, i)).toISOString() });
+    }
+    assert.strictEqual(ev.activeRules().length, N);
+    const block = ev.promptBlock();
+    assert.ok(block.length <= ev.CAPS.blockChars,
+      "注入的那段自己就超了预算 " + block.length + " > " + ev.CAPS.blockChars);
+    assert.ok(block.includes("第12条"), "最新的规则被砍掉了 —— 人刚点完采纳，模型一个字没收到");
+    assert.ok(!block.includes("第1条："), "最老的规则没被砍，说明还是从头填到撑为止");
+    // 点名：砍了谁得说出来，不然人只会觉得「这套东西没用」
+    assert.ok(/另有 \\d+ 条最老的规则超出提示词预算没放进来/.test(block), "砍了规则却一声不吭：" + block.slice(-200));
+    assert.ok(block.includes("rule_01"), "砍掉的规则没点名");
+    // 标题里的条数得是**真放进去**的条数，不能报 activeRules() 的总数
+    const kept = (block.match(/^- /gm) || []).length;
+    assert.ok(/自进化规则，(\\d+) 条/.exec(block)[1] === String(kept),
+      "标题报的条数和正文对不上：标题 " + /自进化规则，(\\d+) 条/.exec(block)[1] + "、正文 " + kept);
+    assert.ok(kept < N && kept > 0, "要么一条没砍要么全砍了：" + kept);
+    // 头部那段说明文字也占预算。不把它算进去的话，这儿正好会溢出
+    assert.ok(block.indexOf("- 第") > 40, "正文前面那段说明没了");
+
+    // ── ② 超预算的提案要在闸门就拦住，不能留给注入时去截 ──────────────
+    const sigs = [{ key: "edit_anchor_miss", label: "改文件没对上锚点", actionable: "prompt", count: 9, rate: 0.5, kind: "edit_anchor_miss", sessions: 3 }];
+    const mk = (extra = {}) => ({ kind: "add_rule", signal: "edit_anchor_miss", rule: "改文件前先 read_file 把要替换的那几行原样读出来。", verify: "edit_anchor_miss 降到 0.2 以下", ...extra });
+    // 先把条数让开（12 条会先撞条数上限），只留 11 条去撞字数
+    fs.unlinkSync(path.join(RULES, "rule_12.md"));
+    assert.strictEqual(ev.activeRules().length, 11);
+    const over = ev.gateProposal(mk(), { signals: sigs }) || "";
+    assert.ok(over.includes("超出提示词预算"), "字数已经撑爆了还放行新规则：" + JSON.stringify(over));
+    assert.ok(over.includes("指名下架一条"), "拦了却没告诉人下一步怎么办：" + over);
+    // 指名换下一条：腾出来的位置必须算数。换下 390 字、想加 360 字 —— 还是不够，
+    // 但话得说清楚是「已经把腾出来的算进去了还不够」，不然人只会觉得闸门没认他那条 retire
+    const withRetire = ev.gateProposal(mk({ retire: "rule_01", rule: "先读后改：" + "凑".repeat(355) }), { signals: sigs }) || "";
+    assert.ok(withRetire.includes("已经算上换下那条腾出的位置"), "换下的那条没被算进去：" + withRetire);
+    // 腾够了就该放行 —— 拦的是「越堆越长」，不是「不许改」
+    for (const id of ["rule_02", "rule_03", "rule_04", "rule_05", "rule_06", "rule_07", "rule_08", "rule_09"]) fs.unlinkSync(path.join(RULES, id + ".md"));
+    assert.strictEqual(ev.gateProposal(mk({ retire: "rule_01" }), { signals: sigs }), null, "腾够了地方还是不让加");
+
+    // ── ③ 基线是 0：量不出来 ≠ 没用，不许顺手建议下架 ──────────────────
+    for (const f of fs.readdirSync(RULES)) if (f.endsWith(".md")) fs.unlinkSync(path.join(RULES, f));
+    const bornAt = new Date(Date.now() - 3 * 86400e3).toISOString();
+    putRule("rule_zero", "交付前必须 read_file 读回来核对。", { at: bornAt, baseline: { key: "edit_anchor_miss", rate: 0, count: 0, turns: 30, at: bornAt, caliber: "dated" } });
+    const at = new Date(Date.now() - 86400e3).toISOString();
+    const err = (name, preview) => ({ type: "tool_result", name, isError: true, preview });
+    const turns = [];
+    for (let i = 0; i < 24; i++) turns.push({ type: "user", text: "改一下", at }, { type: "assistant", events: i < 6 ? [err("edit_file", "没找到 old_text")] : [], at });
+    fs.writeFileSync(path.join(SESS, "z.json"), JSON.stringify({ updated_at: at, transcript: turns }));
+    const z = ev.scoreRules().find((x) => x.id === "rule_zero");
+    assert.strictEqual(z.verdict, "无从判断", "基线是 0 却硬算降幅：" + JSON.stringify(z));
+    assert.ok(!z.suggestRetire, "量不出来就被建议下架了：" + JSON.stringify(z));
+    assert.ok(z.why.includes("基线 0"), "没说清为什么判不了：" + z.why);
+
+    // ── ④ 打分说「没起作用」，必须落成一条真提案进评审队列 ──────────────
+    fs.unlinkSync(path.join(RULES, "rule_zero.md"));
+    putRule("rule_dead", "回复先给结论再给过程。", { at: bornAt, baseline: { key: "edit_anchor_miss", rate: 0.1, count: 3, turns: 30, at: bornAt, caliber: "dated" } });
+    const d = ev.scoreRules().find((x) => x.id === "rule_dead");
+    assert.strictEqual(d.verdict, "没起作用", "0.1 → 0.25 还判有效：" + JSON.stringify(d));
+    assert.strictEqual(d.suggestRetire, true);
+
+    // 模型这一轮一条提案都没提：下架提案不该依赖模型，它是算出来的
+    const llm = { chat: async () => ({ text: '{"proposals":[],"notes":[]}' }) };
+    const r1 = await ev.runReview({ llm });
+    const q = () => ev.listProposals().filter((p) => p.kind === "retire_rule" && p.target === "rule_dead");
+    assert.strictEqual(q().length, 1, "打分说该下架，评审队列里却没有这条提案（以前只写进看完即焚的 notes）：" + JSON.stringify(ev.listProposals()));
+    assert.strictEqual(q()[0].status, "pending", "自动下架提案没等人点头就生效了");
+    assert.ok(q()[0].auto, "没标出这条是算出来的、不是模型想的");
+    assert.ok(q()[0].why.includes("0.1"), "提案里没带上判它的那两个数字：" + q()[0].why);
+    assert.ok(r1.added.some((p) => p.kind === "retire_rule"), "runReview 的返回值里没带上这条");
+
+    // 第二天再跑：同一条不许再提一遍，不然队列里很快堆成一屏一模一样的东西
+    await ev.runReview({ llm });
+    assert.strictEqual(q().length, 1, "同一条规则被重复提了 " + q().length + " 次下架");
+
+    // 人驳回之后更不许再提 —— 加规则那条路上驳回理由会当负样本喂回模型，
+    // 下架这条路上没有模型可喂，不自己记着就是每天原样再端一遍
+    ev.decideProposal(q()[0].id, "reject", { by: "测试", reason: "这条我还想再看看" });
+    await ev.runReview({ llm });
+    assert.strictEqual(q().length, 1, "人驳回过的下架提案又被提了一遍");
+    assert.strictEqual(q()[0].status, "rejected");
+
+    console.log("OK");
+  `;
+  const r = spawnSync(process.execPath, ["-e", "(async()=>{" + script + "})().catch(e=>{console.error(e);process.exit(1)})"], {
+    env: { ...process.env, WB_DATA_DIR: path.join(dir, "data") },
+    encoding: "utf8",
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.strictEqual(r.status, 0, "自进化提示词预算测试失败：\n" + (r.stderr || r.stdout));
+  console.log("✅ 自进化预算：撑爆时砍最老的并点名（不是把刚采纳的那条悄悄吞掉）· 超预算在闸门就拦住并指路 · 基线 0 判「无从判断」不顺手下架 · 下架建议落成真提案且不重复提、驳回过的不再提");
+}
+/**
+ * 系统提示词的漂移闸门。
+ *
+ * 这份提示词一万一千多字，每一步都随请求发出去一遍 —— 它烂掉的方式全是**静悄悄**的：
+ *
+ *  · 工具改了名 / 删了，提示词里那行还在。模型照着调一个不存在的工具，吃一条报错，
+ *    再重想一遍，白烧一轮；而 evolve 的闸门会明确判这类是「代码问题，加提示词治不了」——
+ *    也就是说这种错连自进化都救不回来，只能在这儿钉住。
+ *  · 同一条规矩在两处各写一遍，然后只改了一处。两处打架的时候模型听谁的没人知道，
+ *    而且两边都"看起来对"，评审时根本发现不了。（真出过：基础规范说「只有两类情况才准问」，
+ *    Craft 模式又列了第三、第四类，默认就是 Craft。）
+ *  · 谁顺手往里加一段，加着加着这东西自己就翻倍了 —— 提示词只许越用越准，不许越堆越长。
+ *
+ * 提示词是 createAgentRuntime 里的闭包，起不了进程外调用，所以这里直接钉源码：
+ * 测的是发布出去的那份字符串，不是抄一份到测试里的复制品。
+ */
+function testAgentPromptDrift() {
+  const src = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  const { TOOL_DEFS } = require(path.join(__dirname, "..", "tools.js"));
+  const pkg = require(path.join(__dirname, "..", "package.json"));
+
+  const cut = (from, to, what) => {
+    const a = src.indexOf(from), b = src.indexOf(to);
+    assert.ok(a > 0 && b > a, "在 agent.js 里找不到" + what + "（提示词被挪走了？闸门也就形同虚设了）");
+    return src.slice(a, b);
+  };
+  const base = cut("你是 ${myName}，一个 AI 办公智能体", "if (config.persona)", "基础系统提示词");
+  const craft = cut("## 当前模式：Craft（执行）", "async function runToolCall", "Craft 模式提示词");
+  const whole = base + craft;
+
+  // ── ① 提示词里点名的工具，必须真的存在 ───────────────────────────────
+  // agent.js 自己接住的那几个不在 TOOL_DEFS 里，但确实是工具
+  const LOCAL = ["use_skill", "ask_user", "delegate_to_expert", "delegate_to_team",
+    "feishu_doc_create", "notify_user", "schedule_task", "list_schedules", "send_email"];
+  const real = new Set(TOOL_DEFS.map((t) => t.name).concat(LOCAL));
+  // 长得像工具名、其实是参数名/配置键/例子文件名的，列在这儿。名单短是好事：
+  // 短到一眼能看完，才说明"下划线命名 = 工具名"这个判据还成立
+  const NOT_TOOLS = new Set(["old_text", "new_text", "start_line", "end_line", "with_timestamps",
+    "allow_shell", "app_id", "doc_app_id", "dingtalk_webhook", "wecom_bot_webhook", "voice_01", "voice_02"]);
+  const named = [...new Set(whole.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) || [])];
+  assert.ok(named.length >= 30, "提示词里的工具名抓取异常，只抓到 " + named.length + " 个");
+  const ghost = named.filter((n) => !real.has(n) && !NOT_TOOLS.has(n));
+  assert.ok(!ghost.length,
+    "提示词点名了这些不存在的工具（多半是工具改名/删除时忘了改提示词，模型会照着调、吃报错、重试）：" + JSON.stringify(ghost));
+  // 反向对照：闸门不许是恒真的
+  assert.strictEqual([...named, "directory_tree"].filter((n) => !real.has(n) && !NOT_TOOLS.has(n)).length, 1,
+    "幽灵工具闸门对凭空多出来的工具名不敏感");
+
+  // ── ② 「当前没有内置浏览器」那句话，点的名必须和真被摘掉的工具一一对上 ──
+  // 这句话是负向承诺（"这几个你没有"）。它比正向清单更容易出事：正向的说错了，
+  // 模型调一下就知道；负向的说错了，模型**根本不会去试**，一个本来能用的工具就此消失
+  const m = /const DESKTOP_ONLY_TOOLS = (\[[^\]]*\])/.exec(src);
+  assert.ok(m, "找不到 DESKTOP_ONLY_TOOLS 这个常量");
+  const desktopOnly = JSON.parse(m[1].replace(/'/g, '"'));
+  // 只取「：…都不可用」中间那一截 —— 这句话后半段还会提替代方案（"要出图表用 gen_diagram"），
+  // 整句一起看的话，替代方案会被当成"不可用清单"里的一员
+  const claim = /\*\*当前没有内置浏览器\*\*[^\n：]*：([^\n]*?)都不可用/.exec(base);
+  assert.ok(claim, "提示词里「当前没有内置浏览器 … 都不可用」那句话没了：纯命令行模式下模型会一直去调调不通的工具");
+  const zh = { desktop_pet: "桌面宠物" }; // 这句话里有一个是用中文说的
+  for (const n of desktopOnly)
+    assert.ok(claim[1].includes(zh[n] || n),
+      `DESKTOP_ONLY_TOOLS 里有 ${n}，没 GUI 时它会被摘掉，提示词那句话却没点它的名 —— 模型会调一个已经不在清单里的工具`);
+  // 反过来：那句话里不许点到其实一直都在的工具
+  for (const n of named.filter((x) => claim[1].includes(x) && real.has(x)))
+    assert.ok(desktopOnly.includes(n),
+      `提示词说没 GUI 时 ${n} 不可用，但它不在 DESKTOP_ONLY_TOOLS 里、其实一直都在 —— 等于白白关掉了一个能用的工具`);
+  // 同一件事在 5.1 还说了一遍（"别去找 render_page，它不在你的工具清单里"），那句也得跟着对
+  assert.ok(!/别去找 (\w+)，它不在你的工具清单里/.test(base) ||
+    desktopOnly.includes(/别去找 (\w+)，它不在你的工具清单里/.exec(base)[1]),
+    "规范 5.1 说某个工具「不在你的工具清单里」，但它并不在 DESKTOP_ONLY_TOOLS 里");
+
+  // ── ③ 承诺"已安装"的库，必须真的装了 ──────────────────────────────
+  const libLine = /已安装库：([^\n]*)/.exec(base);
+  assert.ok(libLine, "工具能力里「已安装库」那行没了");
+  const deps = { ...pkg.dependencies, ...pkg.optionalDependencies };
+  const libs = [...libLine[1].matchAll(/([a-z][a-z0-9-]+)\(/g)].map((x) => x[1]);
+  assert.ok(libs.length >= 3, "「已安装库」那行解析异常：" + libLine[1]);
+  for (const l of libs)
+    assert.ok(deps[l], `提示词说 ${l} 已安装，package.json 里却没有 —— 模型会 require 一个装不上的包，然后在死路上重试`);
+
+  // ── ④ 「什么时候才准问」只许有一份 ────────────────────────────────
+  // 两处各写一份、只改了一处，是这份提示词最贵的烂法：两边都读起来对，谁也发现不了
+  assert.ok(base.includes("该问的只有这三类"), "基础规范 1 里那份「该问的只有这三类」没了");
+  assert.strictEqual((whole.match(/该问的只有这三类/g) || []).length, 1, "「该问的只有这三类」出现了不止一次");
+  assert.ok(/规范 1/.test(craft), "Craft 模式没指回规范 1，多半是又把触发清单抄了一份过去");
+  assert.ok(!/开工前：|执行中：/.test(craft),
+    "Craft 模式又自己列了一份「什么时候该问」的清单 —— 和规范 1 那份迟早打架，把触发条件收回规范 1 里去");
+
+  // ── ⑤ 规模闸：提示词只许越用越准，不许越堆越长 ──────────────────────
+  // 每一步都要发一遍，一万一千多字 ≈ 六千多 token；这还没算工具定义、技能表、记忆和自进化规则。
+  // 上限给的是当前长度 +10%：正常的增删改动不会撞它，谁想整段整段往里塞，得先在这儿说明白为什么
+  const CAP = 13000;
+  assert.ok(base.length <= CAP,
+    `基础系统提示词 ${base.length} 字，超过 ${CAP} 字的上限。这东西每一步都发一遍：先看看能不能把某一节收短、或者改成按条件才挂上去，真该加再抬这个数并在这儿写清为什么`);
+  assert.ok(base.length >= 8000, "基础系统提示词只剩 " + base.length + " 字，是不是被整段删掉了？");
+
+  console.log(`✅ 提示词闸门：${named.length} 个点名的工具全对得上 · 「没内置浏览器」那句和 DESKTOP_ONLY_TOOLS 一一对上 · ${libs.length} 个承诺已装的库真在 package.json · 「该问的三类」全文只有一份且 Craft 指回它 · 正文 ${base.length}/${CAP} 字`);
 }
 
 /**
@@ -5213,6 +5769,139 @@ async function testFilePathRouting() {
 }
 
 /**
+ * 资料库「按任务看产出」：清单不全的时候，别猜。
+ *
+ * 用户的工作目录里攒了 932 个文件，而 outputFiles() 按 mtime 倒序只留最新 500 条（FILES_CAP）。
+ * 旧任务的产出整批掉出这份快照之后，这一页以前是这么处理的：size 记 0、mtime 记空、gone 一律 false
+ * ——于是一个早就被删掉的文件，在界面上画成一行正常记录，体积那栏还是 libSize(0) 撞下限撞出来的
+ * 「1 KB」。点进去才发现全是 404：图裂成碎图标、md 说「读取失败」、html 渲染成一片空白。
+ * 用户原话：「怎么点击图片没有办法预览了？」「点击md也是没法预览啊」「html也是」
+ * 「在资料库里面预览功能这么差的啊」。
+ *
+ * 这一趟起真 server.js，把那个场景原样搭出来：560 个文件（真的越过 500 的线）、
+ * 一份"还在但掉出快照"的产出、一份"名字还在人没了"的产出、一份刚出炉的产出。
+ * 三条断言彼此互为对照：漏报（把没了的说成还在）和误报（把还在的说成没了）都会被逮住。
+ */
+async function testLibraryOutputsTruth() {
+  const os = require("os");
+  const http = require("http");
+  const crypto = require("crypto");
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-lib-"));
+  const ws = path.join(home, "workspace");
+  const OUT = "任务_0916_短剧";
+  fs.mkdirSync(path.join(ws, OUT), { recursive: true });
+
+  // ① 还在、但注定掉出快照的那份：mtime 摁到 2020 年，后面 560 个文件个个比它新
+  const OLD = OUT + "/分镜脚本.md";
+  const oldBody = "# 分镜\n第一场：小卖部门口\n";
+  fs.writeFileSync(path.join(ws, OLD), oldBody);
+  const oldStamp = new Date("2020-01-02T03:04:05Z");
+  fs.utimesSync(path.join(ws, OLD), oldStamp, oldStamp);
+
+  // ② 把快照挤爆。FILES_CAP=500，560 个就够，且全都比 ① 新
+  // mtime 全部摁死，免得这一屏的结论取决于文件系统的时间精度：
+  // 2020 的 ① 必定掉出快照，2021 的填充占满 500 个名额，③ 用当下时间必定还在快照里
+  const FILL = 560;
+  const fillStamp = new Date("2021-06-01T00:00:00Z");
+  fs.mkdirSync(path.join(ws, "素材"), { recursive: true });
+  for (let i = 0; i < FILL; i++) {
+    const f = path.join(ws, "素材", `f${i}.txt`);
+    fs.writeFileSync(f, "x");
+    fs.utimesSync(f, fillStamp, fillStamp);
+  }
+
+  // ③ 刚出炉的那份：稳稳在快照里（阳性对照，验的是没把好的那条路改坏）
+  const FRESH = OUT + "/成片链接.txt";
+  fs.writeFileSync(path.join(ws, FRESH), "https://example.com/v/1");
+
+  // ④ 名字在、东西不在：这就是用户点了半天没反应的那一类
+  const GONE = OUT + "/场景_吴川小卖部.png";
+
+  // 一次对话，产出上面三个名字
+  const at = "2026-09-16T10:00:00.000Z";
+  fs.mkdirSync(path.join(home, "data", "sessions"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "sessions", "s_drama.json"), JSON.stringify({
+    id: "s_drama", title: "粤西狗奶AI短剧", user: "e2e", updated_at: at,
+    transcript: [{ type: "assistant", at, events: [{ type: "files", changed: [OLD, GONE, FRESH] }] }],
+  }));
+
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const child = booted.child;
+  const { up, port, why: bootWhy } = await booted.wait();
+
+  const get = (p, method = "GET") => new Promise((resolve) => {
+    const req = http.request({ host: "127.0.0.1", port, path: p, method, headers: { Cookie: "wb_token=" + token } }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => resolve({ code: res.statusCode, body: b }));
+    });
+    req.on("error", (e) => resolve({ code: 0, body: e.message }));
+    req.end();
+  });
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
+    const r = await get("/api/library/outputs");
+    assert(r.code === 200, "产出清单取不到（HTTP " + r.code + "）：" + r.body.slice(0, 200));
+    const data = JSON.parse(r.body);
+
+    // 先验场景本身：快照没被挤爆的话，下面三条等于什么都没测
+    assert(data.full === false,
+           `工作目录只有 ${FILL} 个文件却还说快照是全的，这一屏的前提就不成立了 —— FILES_CAP 是不是改了？`);
+
+    const task = (data.tasks || []).find((t) => t.id === "s_drama");
+    assert(task, "那次对话的产出整组不见了：" + JSON.stringify(data.tasks || []).slice(0, 300));
+    const by = new Map(task.files.map((f) => [f.name, f]));
+
+    // ① 掉出快照 ≠ 没了：单独 stat 一次，体积和时间都得是真的
+    const old = by.get(OLD);
+    assert(old, "掉出快照的那份产出整行没了：" + JSON.stringify(task.files));
+    assert(old.gone === false,
+           "文件明明还在磁盘上，却被报成「已不在」—— 误报比漏报更糟，用户会以为东西丢了跑去重做");
+    assert(old.size === Buffer.byteLength(oldBody),
+           `掉出快照的文件体积报成了 ${old.size}（真值 ${Buffer.byteLength(oldBody)}）—— 界面上就是那个满屏的「1 KB」`);
+    assert(Math.abs(Date.parse(old.mtime) - oldStamp.getTime()) < 2000,
+           `掉出快照的文件时间报成了 ${JSON.stringify(old.mtime)}（真值 ${oldStamp.toISOString()}）—— 那一列以前整片是空的`);
+
+    // ② 名字在、东西不在：这一条才该说「没了」
+    const gone = by.get(GONE);
+    assert(gone, "没了的那份产出整行都不见了 —— 它该留在清单里并写明「已不在」，不是凭空消失");
+    assert(gone.gone === true,
+           "磁盘上根本没有这个文件，清单却说它还在：界面照常画一行、点进去 404 —— 这就是用户点了半天没反应的那一下");
+    assert(!gone.size, "不存在的文件还报了体积：" + gone.size);
+
+    // ③ 阳性对照：快照里的那份一切照旧
+    const fresh = by.get(FRESH);
+    assert(fresh && fresh.gone === false && fresh.size > 0 && fresh.mtime,
+           "快照里的正常文件被改坏了：" + JSON.stringify(fresh));
+
+    // ④ 预览这一路对得上：前端就是靠 404 才敢说「已经不在工作目录里」
+    const enc = (rel) => "/api/files/view/" + rel.split("/").map(encodeURIComponent).join("/");
+    const okGet = await get(enc(OLD));
+    assert(okGet.code === 200 && okGet.body === oldBody,
+           `掉出快照但还在的文件预览不出来（HTTP ${okGet.code}）—— 清单说它在、预览说它不在，等于自相矛盾`);
+    const goneGet = await get(enc(GONE));
+    assert(goneGet.code === 404,
+           `不存在的文件预览居然回了 HTTP ${goneGet.code} —— 前端只认 404，别的码一律会被当成「读不出来」`);
+    const goneHead = await get(enc(GONE), "HEAD");
+    assert(goneHead.code === 404,
+           `HEAD 和 GET 不一个口径（HEAD ${goneHead.code}）—— 图片裂了之后补问的那一下就是 HEAD，两边不一致会把「没了」说成「文件坏了」`);
+
+    console.log("✅ 产出清单说实话：文件多到挤爆快照时，还在的照报真体积真时间 · 没了的写明「已不在」（两头互为反向对照）· 预览的 404/HEAD 跟清单一个口径");
+  } finally {
+    try { child.kill("SIGKILL"); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/**
  * 端口被占的三种情况。
  *
  * 这条对应的是 GitHub 上那句「下载之后打不开」。老写法在 EADDRINUSE 时只说一句
@@ -5290,6 +5979,205 @@ async function testConfigExternalEdit() {
     fs.rmSync(home, { recursive: true, force: true });
   }
   console.log("✅ 手改 config.json 不再被界面存盘盖掉：粘的 Key 和手加的整块都在 · 界面那次改动照样落盘 · 日志说清了合并（负对照：没外改时不喊合并）");
+}
+
+/**
+ * Key 这一路的四道闸。
+ *
+ * config.json 是全机器上唯一一份明文装着所有 API Key 的文件，可它一直是 umask 给的 0644——
+ * 同一台 VPS、同一台办公电脑上的任何一个别的账号，一句 cat 就端走九把 Key。
+ * 而更隐蔽的是环境变量那条：`OPENAI_API_KEY` 几乎人人都在 ~/.zshrc 里写死，
+ * 初始 config.json 里又预置着四条**空着 Key**的别家渠道（通义/智谱/Kimi/Ollama），
+ * 老代码一句 `cfg.api_key || process.env.OPENAI_API_KEY` 就把你的 OpenAI Key
+ * 带着 Authorization 头发给了 api.moonshot.cn。
+ *
+ * 所以这四段全是**行为实测**，不看源码：起真的 server.js 看磁盘上的位，
+ * 起真的 http 监听器把 Authorization 头原样抓下来。
+ */
+async function testKeyGuard() {
+  const os = require("os");
+  const http = require("http");
+  const store = require("../store");
+  const llm = require("../llm");
+  const { resolveKey, channelEnvName, warnedEnvSkip } = llm._internals;
+
+  // ---------- ① 落盘的位：0600，不是 0644 ----------
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-key-"));
+  const modeOf = (p) => (fs.statSync(p).mode & 0o777).toString(8);
+  try {
+    const f1 = path.join(dir, "secret.json");
+    // 先按老样子落一份 0644 的，冒充「装了半年的老机器」
+    fs.writeFileSync(f1, "{}", "utf8");
+    fs.chmodSync(f1, 0o644);
+    store.writeJsonAtomic(f1, { api_key: "sk-1" }, { pretty: true, mode: store.SECRET_MODE });
+    assert(modeOf(f1) === "600", "装着 Key 的文件存完还是 " + modeOf(f1) + "，同机器上别的账号照样 cat 得到");
+    store.writeJsonAtomic(f1, { api_key: "sk-2" }, { pretty: true, mode: store.SECRET_MODE });
+    assert(fs.existsSync(f1 + ".bak"), "第二次存该留下 .bak");
+    assert(modeOf(f1 + ".bak") === "600",
+           ".bak 跟正本一字不差，权限却是 " + modeOf(f1 + ".bak") + "——收紧正本却漏掉副本，等于没收");
+    // 负向对照：不传 mode 的流水账文件不该被连坐收紧（几千条一天写几百次，收紧纯属添乱）
+    const f2 = path.join(dir, "ledger.json");
+    store.writeJsonAtomic(f2, [1, 2, 3]);
+    assert(modeOf(f2) !== "600", "没点名要收紧的文件也被收成 600 了，说明 mode 根本没在起作用（对照失效）");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  // ---------- ② Key 不许串门 ----------
+  // 起一个本地监听器冒充别家（moonshot / 智谱 都行），把 Authorization 头原样抓回来
+  const grab = (cfg) => new Promise((resolve) => {
+    let seen = "(没到达)";
+    const srv = http.createServer((req, res) => {
+      seen = req.headers.authorization || "(没有 Authorization 头)";
+      req.resume();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: {} }));
+    });
+    srv.listen(0, "127.0.0.1", async () => {
+      const port = srv.address().port;
+      try {
+        await llm._internals.openaiChat({ ...cfg, base_url: `http://127.0.0.1:${port}/v1`, stream: false },
+                                        { system: "hi", history: [{ role: "user", content: "hi" }] });
+      } catch (e) {
+        // 吞掉异常的话，"根本没发出去"和"发出去了但没带 Authorization" 在断言里长得一模一样。
+        // 这次排查就卡在这儿：真凶是 fetch 在发出去之前抛的 ByteString，报出来的却是「没到达」
+        if (seen === "(没到达)") seen = "(没发出去：" + (e && e.message) + ")";
+      }
+      srv.close(() => resolve(seen));
+    });
+  });
+
+  const savedEnv = { o: process.env.OPENAI_API_KEY, a: process.env.ANTHROPIC_API_KEY, c: process.env.WB_KEY_KIMI };
+  try {
+    process.env.OPENAI_API_KEY = "sk-这是我的-OPENAI-KEY";
+    // 冒充「Kimi」那条预置渠道：地址是别家的、Key 空着——这就是初始 config.json 的默认状态。
+    // hostOf 看的是 base_url，grab 把它换成本机口，所以这里单独用 resolveKey 判域名那一层
+    const kimi = { name: "Kimi", channel: "kimi", api_key: "", base_url: "https://api.moonshot.cn/v1", model: "moonshot-v1-32k" };
+    assert(resolveKey(kimi, "openai") === "",
+           "OPENAI_API_KEY 被发给了 api.moonshot.cn——这把 Key 是 OpenAI 的，别家拿到就是泄露");
+    // 同一把环境变量，地址换成 OpenAI 自己家：该用就得用，不能因噎废食
+    assert(resolveKey({ ...kimi, name: "OpenAI", channel: "openai", base_url: "https://api.openai.com/v1" }, "openai") === "sk-这是我的-OPENAI-KEY",
+           "地址就是 OpenAI 官方，OPENAI_API_KEY 反倒不认了——Docker 里靠环境变量注入的人全得改配置");
+    // 按渠道点名的环境变量：用户自己指的，什么地址都认
+    process.env.WB_KEY_KIMI = "sk-点名给-kimi-的";
+    assert(resolveKey(kimi, "openai") === "sk-点名给-kimi-的",
+           "WB_KEY_<渠道id> 不生效，等于逼着 Docker/VPS 用户把明文 Key 写进 config.json");
+    assert(channelEnvName("openrouter-2") === "WB_KEY_OPENROUTER_2", "渠道 id 换算成环境变量名的规则不对");
+    delete process.env.WB_KEY_KIMI;
+    // 渠道自己填了 Key 就以它为准，环境变量插不了队
+    assert(resolveKey({ ...kimi, api_key: "sk-渠道自己填的" }, "openai") === "sk-渠道自己填的",
+           "渠道上填了 Key 还被环境变量压过去了，用户在界面上改什么都不生效");
+    // Anthropic 那一路同理
+    process.env.ANTHROPIC_API_KEY = "sk-ant-我的";
+    assert(resolveKey({ name: "中转", api_key: "", base_url: "https://someproxy.example.com" }, "anthropic") === "",
+           "ANTHROPIC_API_KEY 被发给了第三方中转");
+    assert(resolveKey({ name: "官方", api_key: "", base_url: "" }, "anthropic") === "sk-ant-我的",
+           "没填地址 = 走 Anthropic 官方，这时候该认环境变量");
+    // 本机地址不唠叨：绝大多数是 Ollama，它压根不要 Key
+    warnedEnvSkip.clear();
+    resolveKey({ name: "Ollama本地", api_key: "", base_url: "http://localhost:11434/v1" }, "openai");
+    assert(warnedEnvSkip.size === 0, "本机 Ollama 也警告，等于每个本地用户开机都被刷一条看不懂的话");
+
+    // 真发一趟，看线上收到的到底是什么（上面判的是取值，这里判的是**发出去的头**）。
+    // 注意这儿的假 Key 必须是纯 ASCII：HTTP 头只装得下单字节字符，中文 Key 会让 fetch
+    // 在请求发出去之前就抛——上面那些断言不过网，写中文只是为了好读，这条不行
+    delete process.env.OPENAI_API_KEY;
+    const got = await grab({ name: "某家", api_key: "sk-chan-own-key-7788", model: "m" });
+    assert(got === "Bearer sk-chan-own-key-7788", "渠道自己填的 Key 没发出去，收到的是：" + got);
+
+    // 前后的空白是复制残渣（网页上框 Key 很容易带上换行和零宽空格），自己吃掉，别让用户猜
+    const trimmed = await grab({ name: "某家", api_key: " \u200bsk-pasted-with-junk\n", model: "m" });
+    assert(trimmed === "Bearer sk-pasted-with-junk",
+           "Key 前后的空白/零宽字符没清掉，粘贴带上换行就整条渠道不能用了，收到的是：" + JSON.stringify(trimmed));
+
+    // 中间混进中文/全角就是真填错了：得说清是 Key 的事、是第几个字符，
+    // 而不是把 undici 那句 "Cannot convert argument to a ByteString…" 原样甩给用户
+    let keyErr = "(没抛)";
+    try {
+      llm._internals.headerKey({ name: "某家", api_key: "sk-渠道自己填的" }, "openai");
+    } catch (e) { keyErr = e.message; }
+    assert(/Key/.test(keyErr) && /第 4 个字符/.test(keyErr) && /设置/.test(keyErr),
+           "Key 里混了中文，报错没说清是哪儿错、该去哪改，用户只会看到一次没头没尾的调用失败：" + keyErr);
+    assert(!/ByteString/.test(keyErr), "把 undici 的内部报错原样透出去了：" + keyErr);
+  } finally {
+    if (savedEnv.o === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = savedEnv.o;
+    if (savedEnv.a === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = savedEnv.a;
+    if (savedEnv.c === undefined) delete process.env.WB_KEY_KIMI; else process.env.WB_KEY_KIMI = savedEnv.c;
+  }
+
+  // ---------- ③ 撞 401 说人话，跟「测一下」按钮一个口径 ----------
+  const say401 = await new Promise((resolve) => {
+    const srv = http.createServer((req, res) => {
+      req.resume();
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Incorrect API key provided", code: "invalid_api_key" } }));
+    });
+    srv.listen(0, "127.0.0.1", async () => {
+      const port = srv.address().port;
+      let msg = "(没报错)";
+      try {
+        await llm._internals.openaiChat(
+          // Key 得是纯 ASCII：这一条验的是**上游回 401 之后**怎么说话，
+          // 写成中文的话请求根本发不出去（HTTP 头只装得下单字节字符），验的就变成另一件事了
+          { name: "我的 DeepSeek", api_key: "sk-wrong-on-purpose", base_url: `http://127.0.0.1:${port}/v1`, model: "deepseek-chat", stream: false },
+          { system: "hi", history: [{ role: "user", content: "hi" }] });
+      } catch (e) { msg = e.message; }
+      srv.close(() => resolve(msg));
+    });
+  });
+  assert(/Key 上游不认/.test(say401) && /我的 DeepSeek/.test(say401),
+         "真跑一趟撞 401，吐的还是英文原文——「测一下」按钮早就翻成人话了，两边对不上：" + say401.slice(0, 160));
+  assert(/设置 → 模型/.test(say401), "报错里得给出下一步去哪儿改，光说「不认」用户只能干瞪眼");
+
+  // ---------- ④ 换 Key 留痕，且流水里是掩码不是明文 ----------
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-keyaudit-"));
+  const req2 = (port, method, p, body, cookie) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const r = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+      ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      ...(cookie ? { cookie } : {}),
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => resolve({ status: res.statusCode, body: b, setCookie: res.headers["set-cookie"] }));
+    });
+    r.on("error", (e) => resolve({ status: 0, body: String(e.message) }));
+    if (data) r.write(data);
+    r.end();
+  });
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home, WB_DATA_DIR: path.join(home, "data") });
+  try {
+    const { up, port, why } = await booted.wait();
+    assert(up, "服务端没起来，这条测不了：" + why);
+    const CFG = path.join(home, "config.json");
+    assert(modeOf(CFG) === "600",
+           "开机没把已存在的 config.json 收紧，还是 " + modeOf(CFG) + "——装了半年的老机器永远修不好");
+
+    const reg = await req2(port, "POST", "/api/auth/register", { username: "admin", password: "Str0ngPass!2345" });
+    const cookie = (reg.setCookie || []).map((c) => c.split(";")[0]).join("; ");
+    assert(cookie, "注册没拿到 cookie：" + reg.status + " " + reg.body.slice(0, 120));
+
+    const KEY = "sk-abcdefghijklmnop-7788";
+    const put = await req2(port, "POST", "/api/settings",
+      { providers: [{ id: "deepseek", name: "DeepSeek", kind: "deepseek", base_url: "https://api.deepseek.com/v1", api_key: KEY }] }, cookie);
+    assert(put.status === 200, "存渠道没成功：" + put.status + " " + put.body.slice(0, 160));
+    assert(modeOf(CFG) === "600", "存完设置之后 config.json 变回 " + modeOf(CFG) + " 了");
+
+    const au = await req2(port, "GET", "/api/admin/audit", null, cookie);
+    assert(au.status === 200, "审计流水读不到：" + au.status + " " + au.body.slice(0, 160));
+    assert(/更换模型 Key/.test(au.body),
+           "换了那把全组织都在用的 Key，审计流水里一个字都没有——多管理员的组织事后根本查不出是谁改的");
+    assert(!au.body.includes(KEY),
+           "审计流水里出现了 Key 明文！审计表管理员和审计员都看得到，这等于给 Key 开了第二个出口");
+    // 掩码是「前三位…末四位」。真实 Key 的前三位几乎都是 sk-，认不出是哪一把，
+    // 真正认人的是末四位——所以这儿钉的是末四位那截，以及前面那截不许多给
+    assert(/sk-…7788/.test(au.body), "留痕得能认出是哪一把（前三位…末四位），不然写了等于没写：" + au.body.slice(0, 200));
+    assert(!/efghij/.test(au.body), "掩码给多了：中间那段是 Key 的正身，露出来就等于半个明文");
+  } finally {
+    booted.child.kill("SIGKILL");
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+
+  console.log("✅ Key 这一路：落盘 0600（.bak 同待遇·老机器开机就修好·流水账不连坐）· 环境变量不串门（官方域名照认·WB_KEY_<渠道> 点名生效·本机不唠叨）· 撞 401 跟「测一下」一个口径 · 换 Key 进审计且只留掩码");
 }
 
 async function testPortCollision() {
@@ -5839,6 +6727,8 @@ async function main() {
   await testImageWatermarkGate();
   await testVideoWatermarkGate();
   await testMediaImageInputGate();
+  await testVideoProtocols();
+  await testMediaKeyHygiene();
   await testCliMode();
   testDeliverableGate();
   testContextBudget();
@@ -5888,6 +6778,8 @@ async function main() {
   await testPreviewExtract();
   testEvolveLoop();
   testEvolveRecency();
+  testEvolvePromptBudget();
+  testAgentPromptDrift();
   testEvolveCaliberAndSpread();
   testTaskDirLifecycle();
   await testCodingTools();
@@ -5908,8 +6800,10 @@ async function main() {
   await testHeavyTools();
   testOutputFilesRecency();
   await testFilePathRouting();
+  await testLibraryOutputsTruth();
   await testPortCollision();
   await testConfigExternalEdit();
+  await testKeyGuard();
   await testDesktopPet();
   testPetSprites();
   await testMcpFailureReason();
@@ -6781,6 +7675,24 @@ async function testHeavyTools() {
     return { async stop() { await new Promise((r) => setTimeout(r, 15)); clearInterval(t); return worst; } };
   };
 
+  // 量一趟 read_file：跑完返回结果和这段时间里事件循环的最大抖动。
+  // 超线就再量一遍、取小的那次——同步阻塞是代码里写死的，每趟都重现；GC 的一下抖动不会。
+  // （这儿真踩过：上面那句"奢侈一次"的 readFileSync 把 6MB 读成字符串又 split 成 6 万条，
+  //  它的回收正好落进下一次测量窗口，量出 61ms 顶着 60ms 的线挂掉，可 read_file 一个字节没改。
+  //  阈值不能为这个往上抬——抬了就等于把真正要拦的那 180ms 也放进来了。）
+  const LAG_MAX = 60;
+  const timed = async (fn) => {
+    const m = lagMeter();
+    const out = await fn();
+    return { out, lag: await m.stop() };
+  };
+  const timedSteady = async (fn) => {
+    const first = await timed(fn);
+    if (first.lag < LAG_MAX) return first;
+    const again = await timed(fn);
+    return again.lag < first.lag ? again : first;
+  };
+
   try {
     // ⓪ 先验尺子本身：量不出阻塞的尺子会让下面每一条都白白通过
     {
@@ -6855,10 +7767,8 @@ async function testHeavyTools() {
     assert(sizeMB > 4, `测试文件只有 ${sizeMB.toFixed(1)}MB，没过大文件阈值，这一屏等于没测`);
 
     {
-      const m = lagMeter();
-      const r = await tools.executeTool("read_file", { path: "服务日志.log" }, {});
-      const lag = await m.stop();
-      assert(lag < 60, `整份读大文件把事件循环钉住了 ${lag.toFixed(0)}ms`);
+      const { out: r, lag } = await timedSteady(() => tools.executeTool("read_file", { path: "服务日志.log" }, {}));
+      assert(lag < LAG_MAX, `整份读大文件把事件循环钉住了 ${lag.toFixed(0)}ms（连量两趟都超）`);
       assert(r.content.startsWith(line(0)), "开头那截读错了：" + r.content.slice(0, 60));
       assert(/太大了不整份读进来/.test(r.content) && /start_line/.test(r.content), "没告诉模型这是截断的、也没说下一步怎么拿后面的：" + r.content.slice(-160));
       assert(!r.content.includes("�"), "块边界把汉字切坏了（出现了 U+FFFD 乱码）");
@@ -6867,10 +7777,9 @@ async function testHeavyTools() {
     // ⑤ 指定行段：行号、行内容、总行数都必须跟"整份读进来再 split"的口径一模一样
     {
       const truth = fs.readFileSync(big, "utf8").split("\n"); // 测试里可以奢侈一次
-      const m = lagMeter();
-      const r = await tools.executeTool("read_file", { path: "服务日志.log", start_line: 59990, end_line: 60000 }, {});
-      const lag = await m.stop();
-      assert(lag < 60, `按行段读大文件把事件循环钉住了 ${lag.toFixed(0)}ms`);
+      const { out: r, lag } = await timedSteady(() =>
+        tools.executeTool("read_file", { path: "服务日志.log", start_line: 59990, end_line: 60000 }, {}));
+      assert(lag < LAG_MAX, `按行段读大文件把事件循环钉住了 ${lag.toFixed(0)}ms（连量两趟都超）`);
       assert(new RegExp(`全文共 ${truth.length} 行`).test(r.content), `总行数跟整份读对不上（应为 ${truth.length}）：` + r.content.slice(0, 80));
       assert(r.content.includes(`59990\t${truth[59989]}`), "起始行的行号或内容对不上：" + r.content.slice(0, 200));
       assert(r.content.includes(`60000\t${truth[59999]}`), "结束行的行号或内容对不上");

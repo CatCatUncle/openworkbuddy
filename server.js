@@ -58,6 +58,12 @@ if (!fs.existsSync(CONFIG_PATH)) {
   fs.copyFileSync(appPath("config.example.json"), CONFIG_PATH);
   console.log("已从 config.example.json 生成 config.json，请填入你的模型 API Key");
 }
+// 这是全机器上唯一一份明文装着所有 API Key 的文件，权限必须是「只有文件主人读得到」。
+// 以前没人管这一位，落地就是 umask 给的 0644——同一台 VPS / 同一台办公电脑上的任何一个
+// 别的账号，一句 cat 就把九把 Key 全拿走了。开机先收一次，把装了半年的老机器一并修好；
+// 之后每次存盘再收一次（见 store.writeJsonAtomic 的 mode）。.bak 跟正本一字不差，一起收。
+store.tighten(CONFIG_PATH, store.SECRET_MODE);
+store.tighten(CONFIG_PATH + ".bak", store.SECRET_MODE);
 // 配置读坏了不能就这么空着起来：那样界面上所有 Key 都变成空的，用户随手一保存就把
 // 真 Key 覆盖没了。store 会先拿 .bak 顶（Key 原样还在），实在顶不住才把坏文件改名隔离、
 // 退回模板——原文还在 .corrupt-时间戳 里，Key 捞得回来。
@@ -1394,16 +1400,21 @@ app.post("/api/settings", (req, res) => {
           api_key: /^\*+$/.test(key) ? prev.api_key || "" : key,
         };
       });
+      auditKeyChanges(req, old, config.providers);
     }
     if (Array.isArray(b.media_models)) {
       for (const m of b.media_models) {
         if (!String(m.model || "").trim()) throw new Error("每个模型都得填模型名");
         if (!mediaModels.CAPS.includes(m.cap)) throw new Error("不认识这一路能力：" + m.cap);
       }
+      // protocol 也得留住。它是手改 config.json 的人才会用的那道口子：一台 new-api 网关
+      // 后面挂着好几家上游，地址和 Key 只有一份，只能逐条说「这个型号后面是万相」。
+      // 这里不白名单它的话，下次在设置页点一下保存就被抹掉了，人还找不出是哪一步弄丢的。
       config.media_models = b.media_models.map((m) => ({
         id: String(m.id || "").trim(), cap: m.cap,
         name: String(m.name || "").trim(), provider: String(m.provider || "").trim(),
         model: String(m.model || "").trim(), voice: String(m.voice || "").trim(),
+        protocol: String(m.protocol || "").trim(),
         default: !!m.default,
       }));
     }
@@ -1528,6 +1539,39 @@ function isLocalModel(m) {
 }
 function hasKey(m) {
   return isLocalModel(m) || !!String(m.api_key || "").trim();
+}
+
+/**
+ * 换 Key 要留痕。
+ *
+ * 审计流水里躺着「谁充了值」「谁改了成员角色」「谁重置了密码」，唯独没有「谁换了那把
+ * 全组织都在用的 Key」——而这恰恰是最值得留痕的一条：多管理员的组织里，任何一个管理员
+ * 都能把渠道悄悄指到自己的账号、或者指到一个会把对话原文全存下来的中转，事后翻遍后台
+ * 一个字都查不到。企业客户做合规的时候，这一条是必问项。
+ *
+ * 只记「哪条渠道、从哪把换成哪把」，两头都是 keyHint（前三位…末四位）——
+ * 审计表是管理员和审计员都看得到的，把明文 Key 写进去等于给它开了第二个出口。
+ */
+function auditKeyChanges(req, before, after) {
+  if (!req || !req.user) return; // 个人桌面版没有账号这回事，也就没有「谁改的」可记
+  const changed = [];
+  for (const p of after) {
+    const prev = before.get(p.id);
+    const oldKey = String((prev || {}).api_key || "");
+    const newKey = String(p.api_key || "");
+    if (oldKey === newKey) continue;
+    const name = p.name || p.id;
+    if (!oldKey) changed.push(`${name}：首次填入 ${keyHint(newKey)}`);
+    else if (!newKey) changed.push(`${name}：清空（原 ${keyHint(oldKey)}）`);
+    else changed.push(`${name}：${keyHint(oldKey)} → ${keyHint(newKey)}`);
+  }
+  if (!changed.length) return;
+  try {
+    org.audit({
+      org: org.orgIdOf(req.user), actor: req.user.username,
+      action: "更换模型 Key", target: "渠道", detail: changed.join("；"),
+    });
+  } catch {} // 审计写不进去也不能把「存设置」整个失败掉
 }
 
 /**
@@ -2276,7 +2320,7 @@ function applyProjectSpaces(p) {
 function saveConfig() {
   const now = cfgMerge.mtimeOf(CONFIG_PATH);
   if (now && CONFIG_MTIME && now !== CONFIG_MTIME) mergeDiskEdits();
-  store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true });
+  store.writeJsonAtomic(CONFIG_PATH, config, { pretty: true, mode: store.SECRET_MODE });
   CONFIG_MTIME = cfgMerge.mtimeOf(CONFIG_PATH);
   CONFIG_BASE = cfgMerge.snapshot(config);
 }
@@ -2648,10 +2692,52 @@ function listTaskOutputs() {
   return rows;
 }
 
+/**
+ * 清单不全时别猜，去看一眼。
+ *
+ * outputFiles() 按 mtime 倒序只留最新 500 条（FILES_CAP）。工作目录攒到 500 个以上，
+ * 旧任务的产出就整批掉出这份快照——而"不在快照里"跟"文件没了"是两回事。以前这儿只能耸耸肩：
+ * size 记 0、mtime 记空、gone 一律 false，于是界面把一个根本不存在的文件画成一行正常记录，
+ * 体积那一栏还是 libSize(0) 撞下限撞出来的「1 KB」。点进去才发现是张 404 的碎图，
+ * 点「新窗口打开」也是空的（用户原话：「怎么点击图片没有办法预览了？」「点击md也是没法预览啊」）。
+ *
+ * 快照查不到的名字，就单独 stat 一次。任务清单最多 200 条、每条产出屈指可数，这是笔小账；
+ * 同名只查一次，再给个总预算兜底，免得某天真有人攒出几万条来。查不动的（预算用完）记 null，
+ * 那才是唯一该说「我不知道」的情况——size 留 0、gone 留 false，由界面显示成「—」。
+ */
+function statLookup(roots) {
+  const cache = new Map();
+  let budget = 4000;
+  const probe = (abs) => {
+    try { const st = fs.statSync(abs); return st.isFile() ? { size: st.size, mtime: st.mtime.toISOString() } : null; } catch { return null; }
+  };
+  return (rel) => {
+    if (cache.has(rel)) return cache.get(rel);
+    let v = null; // null = 没查（预算用完了）；false = 确实不在了；对象 = 还在
+    if (budget > 0) {
+      budget--;
+      v = false;
+      try { v = probe(safePath(rel)) || false; } catch {} // 越界的名字：safePath 直接抛，那就是不在
+      // 当前根下没有，不等于没了：这次任务可能是在别的项目目录里跑的（中途切过工作目录/换过项目）。
+      // 只在用户自己配过的那几个根里找，跟 rootedPath 同一条口径，不会读到工作区以外的地方。
+      if (v === false) {
+        for (const d of roots) {
+          let hit = null;
+          try { hit = probe(safePathIn(d, rel)); } catch { continue; }
+          if (hit) { v = hit; break; }
+        }
+      }
+    }
+    cache.set(rel, v);
+    return v;
+  };
+}
+
 app.get("/api/library/outputs", (req, res) => {
   const now = outputFiles();
   const meta = new Map(now.map((f) => [f.name, f]));
   const scope = filesScope(now);
+  const statOf = statLookup(knownRoots().slice(0, 12)); // 根的条数不设限的话，一次请求能把 stat 乘成几万次
   const claimed = new Set();
   const tasks = [];
   for (const row of listTaskOutputs()) {
@@ -2659,9 +2745,10 @@ app.get("/api/library/outputs", (req, res) => {
     const files = [];
     for (const n of row.names) {
       const f = meta.get(n);
-      if (f) claimed.add(n);
-      // scope.full=false 时这份清单本来就不全，"文件不在列表里"证明不了它被删了，别乱盖章
-      files.push({ name: n, size: f ? f.size : 0, mtime: f ? f.mtime : "", gone: scope.full && !f });
+      if (f) { claimed.add(n); files.push({ name: n, size: f.size, mtime: f.mtime, gone: false }); continue; }
+      const st = statOf(n);
+      if (st) { files.push({ name: n, size: st.size, mtime: st.mtime, gone: false }); continue; }
+      files.push({ name: n, size: 0, mtime: "", gone: st === false });
     }
     files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
     const { names, user, ...rest } = row;
@@ -3275,7 +3362,14 @@ function makeBackup(tag) {
     require("child_process").execFile(
       "tar", ["-czf", path.join(BACKUP_DIR, name), "-C", DATA_DIR, ...entries],
       { timeout: 300000 },
-      (err) => (err ? reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带；更老的 Windows 请先升级系统）" : "tar 打包失败：" + err.message)) : resolve(name))
+      (err) => {
+        if (err) return reject(new Error(err.code === "ENOENT" ? "系统里没有 tar 命令（macOS/Linux/Windows 10 1803+ 都自带；更老的 Windows 请先升级系统）" : "tar 打包失败：" + err.message));
+        // 包里整整齐齐装着 config.json（九把 Key）、账号表、积分账本、审计流水。
+        // 下载接口是管理员专属的，可这个文件本身就躺在 data/backups/ 下——tar 默认落 0644，
+        // 同机器上任何一个别的账号都能整包拿走，等于绕开了上面所有的权限判断
+        store.tighten(path.join(BACKUP_DIR, name), store.SECRET_MODE);
+        resolve(name);
+      }
     );
   });
 }

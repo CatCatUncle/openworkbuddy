@@ -272,11 +272,35 @@ app.whenReady().then(async () => {
   // 而服务端只监听了 IPv4，表现就是窗口一直空白。
   win.loadURL(`http://127.0.0.1:${PORT}`);
 
-  // 外链用系统浏览器打开
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+  // 站内链接留在应用里，只有真外链才交给系统浏览器。
+  //
+  // 这两件事以前是一件：凡 target="_blank" 一律 shell.openExternal。可登录令牌是一枚发给
+  // 这个 Electron session 的 HttpOnly cookie，系统浏览器身上根本没有——于是资料库里点一下
+  // 「新窗口打开」（那是 /api/files/view/…，站内地址），Safari 弹出来只有一行
+  //   {"error":"未登录","setup":false}
+  // 用户原话：「{"error":"未登录","setup":false} 点击新窗口打开就说这个啊」。
+  // 「本地部署预览」那条不在此列：它是另起的一个进程、另一个端口，认不了这枚 cookie，
+  // 链接里自己带着令牌，本来就该去系统浏览器（手机上扫码打开也是靠它）。
+  const sameOrigin = (u) => {
+    try { return new URL(u).origin === `http://127.0.0.1:${PORT}`; } catch { return false; }
+  };
+  const openHandler = ({ url }) => {
+    if (sameOrigin(url)) {
+      // 同一个 session，cookie 跟着走；父窗口关了它还能留着，所以不设 parent
+      const child = new BrowserWindow({
+        width: 1000, height: 780, backgroundColor: "#ffffff",
+        webPreferences: { backgroundThrottling: false },
+      });
+      child.webContents.setWindowOpenHandler(openHandler); // 子窗口里再点链接，同一套规矩
+      child.loadURL(url);
+      return { action: "deny" };
+    }
+    // 协议白名单：file:// 能把本机任意文件递出去，自定义 scheme 会唤起别的应用——
+    // 而这两种地址都可能来自模型写的网页或下载来的资料，不是用户自己打的
+    if (/^(https?|mailto):/i.test(url)) shell.openExternal(url);
     return { action: "deny" };
-  });
+  };
+  win.webContents.setWindowOpenHandler(openHandler);
 
   // 供 server.js（同进程内运行）访问窗口：全屏切换 / 快捷键热更新
   global.__wbWin = win;
