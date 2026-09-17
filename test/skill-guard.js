@@ -345,9 +345,46 @@ console.log("\n【10】默认技能清单上的豁免，两个方向都得对得
   //   · 会被拦下 → 必须在清单里写明理由，否则用户开机就看见一行装不上
   //   · 写了理由 → 现在必须真的还会被拦下，否则这是一张过期的免死金牌，
   //     上游哪天真被投毒，这一条恰好是唯一放行的那条。后者比前者危险得多。
+  // 默认技能全是开机从上游现装的，仓库里一个都不带（.gitignore 里躺着六条）。
+  // 所以下面分两段量：
+  //   第一段量清单本身 —— 仓库里就有的东西，CI 上照跑，红了就是真红；
+  //   第二段量这台机器上碰巧装了的 —— 装了几个扫几个，一个没装也不算挂。
+  // 以前这里最后一行写的是「对上 <5 个就算挂」，那等于让「我这台机器装没装」决定 CI 红绿：
+  // 干净 checkout 上一个都没装，checked 恒为 0，必挂，且挂得跟安全毫无关系。
+  const { DEFAULT_SKILLS, defaultInstallOpts } = require("../skills");
+  const ruleIds = guard.RULES.map((r) => r.id);
+  const blockIds = new Set(guard.RULES.filter((r) => r.level === "block").map((r) => r.id));
+
+  // ── 第一段：清单本身，不依赖任何已安装的技能 ──
+  const exempt = DEFAULT_SKILLS.filter((d) => d.reviewed);
+  ok(exempt.length <= 2,
+    `★${DEFAULT_SKILLS.length} 条默认技能里有 ${exempt.length} 条拿着免死金牌★ 超过两条就不是个例是习惯了：${exempt.map((d) => d.name).join("、")}`);
+
+  for (const d of exempt) {
+    ok(typeof d.reviewed === "string" && d.reviewed.trim().length >= 8,
+      `★默认技能「${d.name}」的 reviewed 写成了空壳★ 豁免理由是写给下一个人看的：哪个文件、命中哪条规则、看过之后为什么还是放行`);
+    // 理由里必须点到规则 id。不点名就没人能判断它过没过期 ——
+    // 规则哪天改名或降级，这张金牌会一直挂着，而它挂着的时候正是最危险的时候。
+    const named = ruleIds.filter((id) => String(d.reviewed).includes(id));
+    ok(named.length > 0,
+      `★默认技能「${d.name}」的豁免理由里没点名是哪条规则★ 现在写的是「${d.reviewed}」。补一个规则 id 进去，比如 ${ruleIds[0]}`);
+    for (const id of named) {
+      ok(blockIds.has(id),
+        `★默认技能「${d.name}」豁免的是「${id}」，可这条规则现在已经不是 block 级了★ 拦都拦不住了还留着强装，把 reviewed 删掉`);
+    }
+  }
+
+  // 豁免真正生效的那一下是安装选项里的 force。清单写了理由 → force 给 true，两边不许错位：
+  // 错向左，用户开机看见一行装不上；错向右，等于悄悄给一条没人审过的技能开了后门。
+  for (const d of DEFAULT_SKILLS) {
+    ok(defaultInstallOpts(d).force === !!d.reviewed,
+      `★「${d.name}」清单里${d.reviewed ? "写了" : "没写"}豁免理由，安装选项给出的 force 却是 ${defaultInstallOpts(d).force}★`);
+  }
+
+  // ── 第二段：这台机器上装了几个就扫几个 ──
   const root = path.join(__dirname, "..", "skills");
   let checked = 0;
-  for (const d of require("../skills").DEFAULT_SKILLS) {
+  for (const d of DEFAULT_SKILLS) {
     const dir = path.join(root, d.name);
     if (!fs.existsSync(dir)) continue;      // 没装的跳过，这台机器上量不了
     checked++;
@@ -360,7 +397,9 @@ console.log("\n【10】默认技能清单上的豁免，两个方向都得对得
         `★默认技能「${d.name}」的豁免过期了★ 它现在扫出来是「${lv}」，不再需要强装 —— 留着这张免死金牌，等于给这一条永久开了个洞，上游被投毒时它正好是唯一放行的那个。把 reviewed 删掉。`);
     }
   }
-  ok(checked >= 5, `只对上了 ${checked} 个默认技能，这条回归线基本没起作用`);
+  console.log(checked
+    ? `    这台机器上装了 ${checked}/${DEFAULT_SKILLS.length} 条默认技能，实扫了这 ${checked} 条`
+    : `    这台机器一条默认技能都没装（干净 checkout），实扫跳过；上面那段清单检查照跑`);
 }
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
