@@ -5732,6 +5732,22 @@ const SIDEBAR_CHECKS = `
   // 60 条时导航还剩 122px（看着只是「有点挤」），200 条才塌到 44px——也就是用户看到的「都没了」。
   // 拿 60 条当夹具的话，下面那条反向对照会「过不了」，等于把事故写成了没发生。
   const hist = document.getElementById("history");
+  // 这一组一旦在别的机器上挂了，光看「96 → 96」根本不知道是哪一环断的：
+  // 是 CSS 规则没匹配上、还是 setHistH 把值夹没了、还是布局压根没重算。
+  // 所以每条断言都带一份现场：两段的实测高度、--wb-hist-h、histMax() 的上限、
+  // 以及 #history 真正生效的 flex-basis / min-height。
+  const G = () => {
+    const n = document.querySelector(".side-nav.top"), h2 = document.getElementById("history");
+    const cs = getComputedStyle(h2), cn = getComputedStyle(n);
+    return "nav=" + Math.round(n.getBoundingClientRect().height)
+      + " hist=" + Math.round(h2.getBoundingClientRect().height)
+      + " aside=" + document.querySelector("aside").clientHeight
+      + " var=" + (getComputedStyle(document.documentElement).getPropertyValue("--wb-hist-h").trim() || "空")
+      + " 上限=" + (typeof histMax === "function" ? histMax() : "无")
+      + " hist{basis:" + cs.flexBasis + ",min:" + cs.minHeight + ",grow:" + cs.flexGrow + ",shrink:" + cs.flexShrink + "}"
+      + " nav{min:" + cn.minHeight + ",max:" + cn.maxHeight + ",basis:" + cn.flexBasis + "}"
+      + " html类=" + (document.documentElement.className || "无");
+  };
   hist.innerHTML = Array.from({ length: 200 }, (_, i) =>
     '<div class="hist-item"><span class="ht">第 ' + i + ' 趟活儿，标题还挺长的免得被省略号吃掉</span></div>').join("");
   // 项目也塞几个：真实场景里导航自己也不短
@@ -5759,7 +5775,7 @@ const SIDEBAR_CHECKS = `
   undo.textContent = ".side-nav.top{flex:0 1 auto;min-height:0;max-height:none}#history{flex:1 1 auto;min-height:min(200px,34vh)}";
   document.head.appendChild(undo);
   ok("反向对照：改回 flex:1 1 auto / min-height:0 的老写法，导航当场被挤没（塌到 60px 以下）",
-     nav.getBoundingClientRect().height < 60, "nav=" + nav.getBoundingClientRect().height);
+     nav.getBoundingClientRect().height < 60, G() + " 补丁表=" + (undo.sheet ? undo.sheet.cssRules.length + "条" : "没挂上"));
   undo.remove();
   ok("反向对照撤掉之后导航自己回来了", nav.getBoundingClientRect().height >= 120);
 
@@ -5790,9 +5806,9 @@ const SIDEBAR_CHECKS = `
   const h0 = hist.getBoundingClientRect().height, n0 = nav.getBoundingClientRect().height;
   drag(-120);   // 握把在历史上边，往上拖 = 历史变高
   ok("往上拖：历史变高了", hist.getBoundingClientRect().height > h0 + 40,
-     h0 + " → " + hist.getBoundingClientRect().height);
+     h0 + " → " + hist.getBoundingClientRect().height + " ｜ " + G());
   ok("往上拖：腾出来的地方是从导航身上出的，导航跟着变矮", nav.getBoundingClientRect().height < n0,
-     n0 + " → " + nav.getBoundingClientRect().height);
+     n0 + " → " + nav.getBoundingClientRect().height + " ｜ " + G());
   ok("拖过之后 <html> 上挂了 hist-h，高度写进 --wb-hist-h",
      document.documentElement.classList.contains("hist-h")
      && getComputedStyle(document.documentElement).getPropertyValue("--wb-hist-h").trim().endsWith("px"),
@@ -5800,7 +5816,7 @@ const SIDEBAR_CHECKS = `
   const h1 = hist.getBoundingClientRect().height;
   drag(120);    // 往下拖 = 历史变矮
   ok("往下拖：历史又变矮了", hist.getBoundingClientRect().height < h1,
-     h1 + " → " + hist.getBoundingClientRect().height);
+     h1 + " → " + hist.getBoundingClientRect().height + " ｜ " + G());
   drag(9999);   // 使劲往下拖：历史不许缩到零
   ok("使劲往下拖也留得住历史（下限 56px，不许缩成一条缝）",
      hist.getBoundingClientRect().height >= 56, String(hist.getBoundingClientRect().height));
@@ -5817,10 +5833,10 @@ const SIDEBAR_CHECKS = `
   const h2 = hist.getBoundingClientRect().height;
   h.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
   ok("按 ↑ 一次，历史高 16px", Math.abs(hist.getBoundingClientRect().height - (h2 + 16)) <= 1,
-     h2 + " → " + hist.getBoundingClientRect().height);
+     h2 + " → " + hist.getBoundingClientRect().height + " ｜ " + G());
   h.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown", shiftKey: true }));
   ok("按 Shift+↓ 一次，历史矮 48px", Math.abs(hist.getBoundingClientRect().height - (h2 + 16 - 48)) <= 1,
-     String(hist.getBoundingClientRect().height));
+     hist.getBoundingClientRect().height + " ｜ " + G());
   h.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
   ok("按 Esc 也回自适应", !document.documentElement.classList.contains("hist-h"));
 
