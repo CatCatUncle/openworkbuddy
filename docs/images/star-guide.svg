@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 176" width="640" height="176" role="img" aria-label="仓库右上角那颗 Star，点一下">
+  <title>点一下仓库右上角那颗 Star</title>
+  <style>
+    /* 这是一张手画的示意图，不是录屏：画的是「那颗星在右上角、点一下就亮」这件事。
+       不加动画时（系统开了「减弱动态效果」）停在点完的样子，信息照样完整。 */
+    :root, svg {
+      --bg: #ffffff; --line: #d8dae0; --fg: #24292f; --mut: #656d76;
+      --pill: #f6f8fa; --accent: #5b5ff7; --gold: #f5b400;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root, svg { --bg: #161b22; --line: #30363d; --fg: #e6edf3; --mut: #8b949e; --pill: #21262d; }
+    }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+    .card { fill: var(--bg); stroke: var(--line); }
+    .pill { fill: var(--pill); stroke: var(--line); }
+    .nm { fill: var(--fg); font-size: 15px; font-weight: 600; }
+    .bt { fill: var(--fg); font-size: 12.5px; }
+    .cap { fill: var(--mut); font-size: 13px; }
+    .num { fill: var(--fg); font-size: 12.5px; font-weight: 600; }
+
+    /* 静止态 = 点完之后：星是实心的、按钮文案变成 Starred、描了品牌色 */
+    .star   { fill: var(--gold); stroke: var(--gold); stroke-width: 1.2; }
+    .starpill { stroke: var(--accent); stroke-width: 1.6; }
+    .n-old  { opacity: 0; }
+    .n-new  { opacity: 1; }
+    .cursor, .ring { opacity: 0; }
+
+    .scene  { animation: fade 6s linear infinite; }
+    .cursor { animation: walk 6s cubic-bezier(.22,.61,.36,1) infinite; }
+    .ring   { animation: ping 6s linear infinite; }
+    .star   { animation: light 6s linear infinite; }
+    .starpill { animation: hi 6s linear infinite; }
+    .n-old  { animation: out 6s linear infinite; }
+    .n-new  { animation: in 6s linear infinite; }
+
+    @keyframes fade { 0%,4%,94%,100% { opacity: 0 } 8%,90% { opacity: 1 } }
+    @keyframes walk {
+      0%, 8%   { transform: translate(210px, 128px); opacity: 0 }
+      14%      { opacity: 1 }
+      44%      { transform: translate(529px, 74px); opacity: 1 }
+      48%      { transform: translate(529px, 78px); opacity: 1 }   /* 按下去那一下 */
+      52%, 76% { transform: translate(529px, 74px); opacity: 1 }
+      86%,100% { transform: translate(529px, 74px); opacity: 0 }
+    }
+    @keyframes ping { 0%,48% { r: 2; opacity: .45 } 62%,100% { r: 26; opacity: 0 } }
+    @keyframes light { 0%,48% { fill: transparent; stroke: var(--mut) } 56%,100% { fill: var(--gold); stroke: var(--gold) } }
+    @keyframes hi { 0%,48% { stroke: var(--line); stroke-width: 1 } 56%,100% { stroke: var(--accent); stroke-width: 1.6 } }
+    @keyframes out { 0%,48% { opacity: 1 } 54%,100% { opacity: 0 } }
+    @keyframes in  { 0%,52% { opacity: 0 } 58%,100% { opacity: 1 } }
+
+    @media (prefers-reduced-motion: reduce) {
+      .scene, .cursor, .ring, .star, .starpill, .n-old, .n-new { animation: none !important; }
+    }
+  </style>
+
+  <g class="scene">
+    <rect class="card" x="20" y="20" width="600" height="80" rx="13"/>
+    <circle cx="48" cy="60" r="11" fill="none" stroke="var(--mut)" stroke-width="1.4"/>
+    <path d="M43 55.5v9a3 3 0 0 1 3-3h7v-9h-7a3 3 0 0 0-3 3z" fill="none" stroke="var(--mut)" stroke-width="1.4" stroke-linejoin="round"/>
+    <text class="nm" x="70" y="65">CatCatUncle / openworkbuddy</text>
+
+    <rect class="pill" x="300" y="44" width="84" height="32" rx="8"/>
+    <text class="bt" x="316" y="64">👁 Watch</text>
+    <rect class="pill" x="392" y="44" width="76" height="32" rx="8"/>
+    <text class="bt" x="408" y="64">⑂ Fork</text>
+
+    <rect class="pill starpill" x="476" y="44" width="124" height="32" rx="8"/>
+    <polygon class="star" transform="translate(492,52) scale(.95)"
+      points="8,0.4 9.94,5.33 15.23,5.65 11.14,9.02 12.47,14.15 8,11.3 3.53,14.15 4.86,9.02 0.77,5.65 6.06,5.33"/>
+    <text class="num n-old" x="514" y="64">Star</text>
+    <text class="num n-new" x="514" y="64">Starred</text>
+    <circle class="ring" cx="529" cy="60" r="2" fill="none" stroke="var(--accent)" stroke-width="2"/>
+
+    <g class="cursor">
+      <path d="M0 0 L0 15 L4.2 11.4 L6.8 17 L9.6 15.7 L7 10.2 L12.2 10 Z"
+            fill="var(--fg)" stroke="var(--bg)" stroke-width="1.1" stroke-linejoin="round"/>
+    </g>
+
+    <text class="cap" x="20" y="132">右上角那一颗。这个项目没有公司、没有预算，能被谁刷到，基本就靠它。</text>
+    <text class="cap" x="20" y="156">顺手把 Watch 调成 All Activity —— 新版本、新技能，GitHub 替我通知你，我不用发广告。</text>
+  </g>
+</svg>

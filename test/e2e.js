@@ -770,22 +770,17 @@ function testSurfaceLayerGate() {
 }
 
 /**
- * README 里允许出现的「别人家的仓库」白名单。
+ * README 里允许出现的「别人家的仓库」白名单——现在是空的，也就是一个都不许。
  *
  * 两道闸门都要用它：testDocLinkGate 扫全文链接和徽章，testReadmeFrontGate 扫门面。
- * 原来两边各写各的——前者有白名单、后者写死「只许出现一个仓库」，
- * 结果「生态」那节一加上游项目，前者放行、后者报红，两把尺子自己先打起来了。所以只留一份。
+ * 曾经这里放过对比表点名的项目和上游连接器。后来定下的规矩是：
+ * **README 不替别人的项目带路**——它是这个项目的门面，不是导航页；
+ * 别人的仓库地址出现在这儿，读者分不清哪个是我们做的，也平白给自己惹商标和背书的麻烦。
+ * 要提第三方（模型服务商、飞书这类平台）只写名字、不给仓库链接，需要链接就落到 docs/ 里去。
  *
- * 白名单本身还是紧的：徽章、clone、安装地址必须是本仓库，这里只放「正文里点得进去的可核验入口」——
- * 「和其他 Agent 的位置」要给对比对象的官方仓库，「生态」要给我们真在用的上游项目。
- * 多一条就得在这儿写一行并说清为什么；写不上来，就是该拦住。
+ * 所以这个集合应当保持为空。真要加一条，就在这儿写明为什么非它不可；写不上来，就是该拦住。
  */
-const REFERENCE_REPOS = new Set([
-  // 「和其他 Agent 的位置」：对比表点名的开源项目，给个可核验入口
-  "openai/codex", "earendil-works/pi", "openclaw/openclaw", "NousResearch/hermes-agent",
-  // 「生态」：连接器网关，同时收进了 mcp-catalog.js 的推荐目录，用户点「接入」就能用
-  "oomol-lab/open-connector",
-]);
+const REFERENCE_REPOS = new Set([]);
 
 /**
  * 定时任务「假绿」闸门。
@@ -7224,9 +7219,9 @@ function testReadmeFrontGate() {
   const why = zh.split(/^## 为什么是它\s*$/m)[1];
   assert(why, "README 缺「为什么是它」");
   const whyBody = why.split(/^## /m)[0];
-  for (const kw of ["交付的是文件", "不绑任何一家模型", "加一个能力 = 丢一个 Markdown"]) assert(whyBody.includes(kw), "「为什么是它」缺：" + kw);
+  for (const kw of ["文件是真的", "模型随便换", "加个能力 = 丢一个 Markdown 文件"]) assert(whyBody.includes(kw), "「为什么是它」缺：" + kw);
   const whyEn = (en.split(/^## Why this one\s*$/m)[1] || "").split(/^## /m)[0];
-  for (const kw of ["Files, not chat logs", "Any model", "one Markdown file"]) assert(whyEn.includes(kw), "英文「Why this one」缺：" + kw);
+  for (const kw of ["The files are real", "Swap models freely", "one Markdown file"]) assert(whyEn.includes(kw), "英文「Why this one」缺：" + kw);
   // 最新动态：日期真实
   const git = (a) => require("child_process").execSync(a, { cwd: root, encoding: "utf8" });
   // 浅克隆里 git log 只剩 HEAD 那一天，拿它当底本核对，每条动态都会被判成假的，
@@ -7275,20 +7270,39 @@ function testReadmeFrontGate() {
   for (const [name, t] of [["README.md", zh], ["README.en.md", en]]) assert(!SOLO.test(t), name + " 里出现了「一个人做」式措辞");
   // README 只留最近几条，全量在 CHANGELOG——两份是手工对齐的，没有生成器。
   // 漂了的后果很轻但很丢人：README 吹了一条功能，点「更早的看变更记录」进去发现那条根本不在。
-  // 所以反过来查：README 上的每一条都必须能在 CHANGELOG 里逐字找到。
+  //
+  // 原来是逐字比对：README 的每一条必须是 CHANGELOG 里的原句。现在不行了——
+  // 「最新动态」被刻意改写成一句人话（读者是来看这东西能干嘛的，不是来看 commit 的），
+  // CHANGELOG 那边仍然是长技术条目，两边永远对不上字。
+  // 改成按「同一天 + 说的是同一件事」比：日期在 CHANGELOG 里必须真有条目，
+  // 且那天至少有一条跟它共享足够多的词（中文二元组和拉丁词一起数）。
+  // 松了一档，换来 README 能说人话；编一条不存在的功能照样当场红——
+  // 下面第二条反向断言就是拿「日期真实、内容瞎编」的那种来验这件事。
   const chZh = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
   const chEn = fs.readFileSync(path.join(root, "CHANGELOG.en.md"), "utf8");
-  const lines = (t, re) => [...t.matchAll(re)].map((m) => m[0].trim());
-  const RE_ZH = /^- \*\*\d\d-\d\d\*\* .+$/gm, RE_EN = /^- \*\*[A-Z][a-z]{2} \d{1,2}\*\* .+$/gm;
-  const drift = (readme, full, re, name) => lines(readme, re).filter((l) => !full.includes(l)).map((l) => name + " 有这条、CHANGELOG 里没有：" + l);
+  const RE_ZH = /^- \*\*(\d\d-\d\d)\*\* (.+)$/gm, RE_EN = /^- \*\*([A-Z][a-z]{2} \d{1,2})\*\* (.+)$/gm;
+  const toks = (t) => {
+    const out = new Set(t.toLowerCase().match(/[a-z]{3,}/g) || []);
+    const cj = t.replace(/[^\u4e00-\u9fff]/g, "");
+    for (let i = 0; i + 1 < cj.length; i++) out.add(cj.slice(i, i + 2));
+    return out;
+  };
+  const shared = (a, b) => { const B = toks(b); let n = 0; for (const t of toks(a)) if (B.has(t)) n++; return n; };
+  const MIN_SHARED = 3;   // 实测最少的一条共享 4 个，留一档余量；纯编的一条只有 0～1 个
+  const drift = (readme, full, re, name) => [...readme.matchAll(re)].map(([, d, txt]) => {
+    const sameDay = [...full.matchAll(re)].filter((m) => m[1] === d).map((m) => m[2]);
+    if (!sameDay.length) return `${name} 的「${txt.slice(0, 18)}…」写的是 ${d}，CHANGELOG 那天一条都没有`;
+    const best = Math.max(...sameDay.map((c) => shared(txt, c)));
+    return best >= MIN_SHARED ? null : `${name} 的「${txt.slice(0, 18)}…」在 CHANGELOG 的 ${d} 里找不到对应那件事（最多只共享 ${best} 个词）`;
+  }).filter(Boolean);
   const drifted = [...drift(news, chZh, RE_ZH, "README.md"), ...drift(newsEn, chEn, RE_EN, "README.en.md")];
   assert(drifted.length === 0, "README 和 CHANGELOG 走散了：\n  " + drifted.join("\n  "));
-  const nZh = lines(chZh, RE_ZH).length, nEn = lines(chEn, RE_EN).length;
+  const nZh = [...chZh.matchAll(RE_ZH)].length, nEn = [...chEn.matchAll(RE_EN)].length;
   assert(nZh === nEn, `中英 CHANGELOG 条数对不上（${nZh} vs ${nEn}）：加动态时两份都要加`);
   assert(nZh >= items.length, "CHANGELOG 比 README 还短，那它就不是「全量」了");
-  // 反向对照：改掉 README 上一条的一个字，闸门必须当场抓住——不然上面那条只证明了「我没在找」
-  const faked = news.replace(lines(news, RE_ZH)[0], lines(news, RE_ZH)[0] + "（这条是编的）");
-  assert(drift(faked, chZh, RE_ZH, "x").length === 1, "漂移闸门失灵：README 多写一条 CHANGELOG 里没有的，居然没红");
+  // 反向对照两条，不然上面那条只证明了「我没在找」
+  assert(drift("- **01-01** 这天其实什么都没发生", chZh, RE_ZH, "x").length === 1, "漂移闸门失灵：CHANGELOG 里根本没有的日期居然没红");
+  assert(drift(`- **${items[0][1]}** 支持把会议纪要一键烧进区块链做存证`, chZh, RE_ZH, "x").length === 1, "漂移闸门失灵：日期真实、内容瞎编的一条居然没红");
   // README 指向的文档得真的在。移动一份文档而忘了改链接，读者点进去是 404
   const docLinks = [...zh.matchAll(/\]\((docs\/[^)#]+|deploy\/README\.md|CHANGELOG\.md|CONTRIBUTING\.md)[)#]/g)].map((m) => m[1]);
   assert(docLinks.length >= 12, "README 的文档链接只扫出 " + docLinks.length + " 条，正则八成没匹配上");
@@ -8601,7 +8615,11 @@ function testLookPrefsStatic() {
   }
   // ★反向对照★：这把尺子不是见谁都绿——只管布局不管字号的那条就该判不合格
   assert(!/var\(--wb-fs\)/.test(fsRule("\n  textarea#input { width")), "字号联动这把尺子失灵了，连不含字号的规则都判绿");
-  assert(/## 跑起来[\s\S]*外观[\s\S]*## 配模型/.test(fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")), "README「跑起来」一节没提外观设置");
+  // 上手那节必须提一句外观在哪改：字号和主题是最先被嫌弃的两样，翻文档才找得到就等于没有。
+  // 按小标题切片再查，比 [\s\S]* 一路跨到下一节严——不然写在别的节里也能蒙混过关
+  const readmeRun = (fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")
+    .split(/^## 三分钟跑起来\s*$/m)[1] || "").split(/^## /m)[0];
+  assert(/外观/.test(readmeRun), "README「三分钟跑起来」一节没提外观设置");
   console.log("✅ 外观偏好静态闸（目录含外观页·头像菜单直达·存储 try+内存兜底·字号 4 档联动·5 皮肤×浅暗令牌齐全·密度≥5 处·字体三选·旧主题子菜单已清）");
 }
 function testUiNoRawMarkdown() {
