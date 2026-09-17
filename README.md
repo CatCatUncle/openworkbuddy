@@ -108,10 +108,12 @@ DeepSeek / 通义 / 智谱 / Kimi / OpenRouter / Ollama 界面点一下就切；
 **「做个湖南旅游攻略网站，14 个市州一个都不能少」**
 
 <p align="center">
-  <a href="https://hunan-travel.pages.dev/"><img src="docs/images/case-hunan-site.jpg" width="820" alt="湖南怎么玩 · 14 市州完全攻略——OpenWorkBuddy 生成的单页站点"></a>
+  <a href="https://hunan-travel.pages.dev/"><img src="docs/images/case-hunan-site.jpg" width="860" alt="湖南怎么玩 · 14 市州完全攻略：水墨首屏，以及按湘中/湘北/湘南/湘西分好的 14 个市州索引"></a>
 </p>
 
-点开就能逛：**<https://hunan-travel.pages.dev/>**。单页 HTML，不挂任何外部 CDN，扔到静态托管上就是一个站——这不是截图拼的示意图，是它交出来的那个文件本身。
+上面是首屏和全省索引两屏。往下还有 14 张城市卡，每张写清门票多少钱、几点开门、玩多久、吃哪口、避哪个坑，外加 3 / 5 / 7 天三条排好的路线。
+
+**<https://hunan-travel.pages.dev/>** —— 点开就能逛。一个 HTML 文件加一个图片文件夹，排版、动效、配色全在那一个文件里，不挂任何外部 CDN，扔到静态托管上就是一个站。这不是截图拼的示意图，是它交出来的那份东西本身。
 
 怎么做到的、本机 Claude Code 当发动机长什么样 → **[三个案例，拆开讲](docs/案例.md)**
 

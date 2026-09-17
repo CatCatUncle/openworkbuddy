@@ -4821,15 +4821,18 @@ async function testMcpFailureReason() {
     { name: "命令根本不存在的", command: "wb-no-such-binary-" + Date.now(), args: [] },
   ]);
   const byName = Object.fromEntries(mgr.failures.map((x) => [x.name, x.error]));
+  const rawByName = Object.fromEntries(mgr.failures.map((x) => [x.name, x.raw || ""]));
   const dead = byName["会喊一嗓子再死的"] || "";
   assert(dead, "死掉的连接器必须留下一条失败记录");
   assert(dead.includes("配的目录不存在: /nope"), "失败消息里没有 stderr 的原话，用户无从判断该改什么: " + dead);
   assert(dead.includes("3"), "失败消息里没有退出码: " + dead);
   // 负向对照：不能只剩一句「已退出」——那正是改之前的样子
   assert(dead.replace(/[\s\S]*已退出/, "").trim().length > 0, "失败消息退化成了光秃秃的「已退出」: " + dead);
-  // 另一头：连命令都没有时，spawn 自己的 ENOENT 已经说清楚了，不该被我们的话盖掉
+  // 另一头：连命令都没有时，ENOENT 说的是「什么东西不在」，但没说该怎么办。
+  // 现在界面上那句写成人话（哪个命令没找到、拿什么装），技术原文原样留在 raw 里给日志和排障用。
   const gone = byName["命令根本不存在的"] || "";
-  assert(/ENOENT/.test(gone), "命令不存在时该如实报 ENOENT: " + gone);
+  assert(/wb-no-such-binary-/.test(gone) && /装/.test(gone), "命令不存在时没写清是哪个命令、怎么装: " + gone);
+  assert(/ENOENT/.test(rawByName["命令根本不存在的"] || ""), "技术原文（ENOENT）没留在 raw 里，排障时就查不到了");
   mgr.stop([]);
   console.log("✅ 连接器：死了会说清死因（退出码 + 它自己最后喊的那句），不是光一句「已退出」");
 }
@@ -8342,7 +8345,7 @@ function testConnectorsAndExperts() {
     assert(!JSON.stringify(it.args || []).includes("{HOME}") && !String(it.url || "").includes("{HOME}"), `预设「${it.name}」{HOME} 没替换`);
     for (const k of Object.keys(it.env || {})) assert(/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && !/[一-鿿]/.test(it.env[k]), `预设「${it.name}」的环境变量 ${k} 不合法`);
     const norm = normalizeMcpServer(catalogMod.resolve(it, { home: "/Users/tester", env: { PATH: "/usr/bin:/bin" } }), 0);
-    // 出网的必须 https；跑在本机上的自建网关（OpenConnector 这类）明文 http 是允许的——
+    // 出网的必须 https；跑在本机上的自建服务明文 http 是允许的——
     // 报文不出网卡，没有中间人可言，normalizeMcpServer 本来就给 localhost 开了这个口子。
     // 这条尺子只跟着它走，不比它更严：更严的话，等于永远不许用户接自己跑的东西。
     const okUrl = /^https:\/\//.test(norm.url || "") || /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\//.test(norm.url || "");
@@ -8361,6 +8364,38 @@ function testConnectorsAndExperts() {
   assert(catalogMod.findCmd("definitely-not-a-command-xyz", { PATH: "/usr/bin" }) === "", "findCmd 对不存在的命令没回空串");
   assert(catalogMod.findCmd("ls", { PATH: "/bin:/usr/bin" }) !== "", "findCmd 连 ls 都找不到");
   assert(serverSrc.includes('app.get("/api/mcp/catalog"') && serverSrc.includes("configured: configured.has(it.name)"), "缺 /api/mcp/catalog 路由或 configured 标记");
+
+  // 3.5) 连不上的时候，界面上得写「下一步干什么」，不能只甩一句 fetch failed。
+  // Node 的 fetch 把所有网络层错误都压成 `fetch failed`，真凶在 e.cause.code 里；
+  // 以前直接把 e.message 存进 failures，用户看到的就是那句废话。
+  const { whyFailed } = require(path.join(__dirname, "..", "mcp.js"));
+  const mkErr = (msg, code, agg) => {
+    const e = new Error(msg);
+    if (code) e.cause = agg ? new AggregateError([Object.assign(new Error("x"), { code })]) : { code };
+    return e;
+  };
+  const whyCases = [
+    // [错误, 配置, 回话里必须出现的词]
+    [mkErr("fetch failed", "ECONNREFUSED"), { url: "http://localhost:3000/mcp" }, "没有东西在听"],
+    [mkErr("fetch failed", "ECONNREFUSED", true), { url: "http://127.0.0.1:8080/mcp" }, "没有东西在听"], // AggregateError 也得翻出来
+    [mkErr("fetch failed", "ECONNREFUSED"), { url: "https://tools.example.com/mcp" }, "拒绝连接"],
+    [mkErr("fetch failed", "ENOTFOUND"), { url: "https://typo.example/mcp" }, "解析不了"],
+    [mkErr("fetch failed", "UND_ERR_CONNECT_TIMEOUT"), { url: "https://slow.example/mcp" }, "超时"],
+    [new Error("MCP remote HTTP 401"), { url: "https://api.example.com/mcp" }, "Key"],
+    [new Error("MCP remote HTTP 404"), { url: "https://api.example.com/x" }, "404"],
+    [mkErr("spawn uvx ENOENT", "ENOENT"), { command: "uvx" }, "装 uv"],
+    [mkErr("spawn npx ENOENT", "ENOENT"), { command: "npx" }, "Node.js"],
+  ];
+  for (const [err, cfg, want] of whyCases) {
+    const got = whyFailed(err, cfg);
+    assert(got.includes(want), `连接失败没翻译好：${err.message} → ${got}（缺「${want}」）`);
+    assert(got !== err.message, `连接失败还在甩原文：${got}`);
+  }
+  // 阴性对照：认不出来的错要原样回，不许硬编一个故事
+  assert(whyFailed(new Error("完全没见过的错"), {}) === "完全没见过的错", "不认识的错被瞎翻译了");
+  // 存进 failures 的必须是翻译过的那句，原文另存 raw
+  const mcpSrc = fs.readFileSync(path.join(__dirname, "..", "mcp.js"), "utf8");
+  assert(/this\.failures\.push\(\{[^}]*error: why[^}]*raw: e\.message/.test(mcpSrc), "startAll 还在把 e.message 当 error 存给界面");
 
   // 4) 令牌不回前端：GET 只给 env_keys；POST 没带 env 沿用原来的（和 headers 同一套规矩）
   assert(serverSrc.includes("env_keys: Object.keys(s.env || {})") && !/\n\s*env: s\.env \|\| \{\},/.test(serverSrc), "GET /api/mcp 还在回 env 的值");
