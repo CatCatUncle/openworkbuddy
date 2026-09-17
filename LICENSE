@@ -6,6 +6,16 @@ In short: personal, hobby, study, academic, non-profit and government use is
 free. Commercial use requires a separate commercial license from the copyright
 holder — see COMMERCIAL-LICENSE.md.
 
+Exception: parts of this repository are ADDITIONALLY licensed under the MIT
+License and may be used commercially — deployment and CI configs, helper
+scripts, the evaluation task set and baseline, the skill-writing template, and
+the code samples and format specifications in the documentation. The exact
+list is in LICENSE-ECOSYSTEM.md.
+
+Anything you write yourself — skills, plugins, connector configs, workflows,
+prompts — is your own work, not a derivative of this project, and this license
+does not reach it.
+
 ===============================================================================
 
 # PolyForm Noncommercial License 1.0.0
