@@ -1,6 +1,6 @@
 {
   "name": "openworkbuddy",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "OpenWorkBuddy — AI Agent 办公工作台（自然语言下任务，AI 自主规划执行，交付 PPT/Word/Excel 等成果文件）",
   "type": "commonjs",
   "main": "electron-main.js",
@@ -41,7 +41,7 @@
     "electron-builder": "^26.15.3"
   },
   "bin": {
-    "wb": "./cli.js"
+    "openworkbuddy": "./cli.js"
   },
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": {
