@@ -1,7 +1,7 @@
 {
   "_说明": "README 徽章读的就是这个文件；改完代码跑 `npm run stats` 再提交。别手改。",
   "updated": "2026-09-17",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "skills": 25,
   "tools": 28,
   "connectors": 39,
