@@ -36,10 +36,14 @@ const COMMANDS = [
   { name: "mode", arg: MODE_ARG, choices: MODE_IDS, desc: "换执行模式；不给值就说当前是哪个" },
   { name: "perm", arg: PERM_ARG, choices: PERM_IDS, desc: "换这一趟放多少权（只看不动/每步都问/自动改文件/全自动）；不给值就把四档摆出来" },
   { name: "new", desc: "开一个新会话；刚才那段不会丢，还能翻回去" },
-  { name: "resume", aliases: ["r"], arg: "[序号或会话id]", desc: "接着之前那段往下聊；不给值就把最近的会话摆出来" },
+  { name: "resume", aliases: ["r"], arg: "[序号或会话id]", desc: "接着之前那段往下聊；不给值就弹选择器，↑↓ 挑、打字搜" },
   { name: "session", desc: "当前会话的 id 和存盘位置" },
   { name: "status", desc: "模式、底层引擎、工作目录、这个会话跑了几轮" },
-  { name: "model", arg: "[序号或名字]", desc: "换这趟活儿谁来干：本机引擎或你配的模型；不给值就把能选的列出来" },
+  { name: "init", desc: "让它把这个目录看一遍，写一份 AGENTS.md，以后每趟活儿都照着它来" },
+  { name: "compact", desc: "把前面聊过的压成一段摘要腾地方；原文照样归档，不删" },
+  { name: "diff", desc: "这个会话动过哪些文件；工作目录要是 git 仓库，顺带把 diff 也出了" },
+  { name: "mcp", desc: "外部连接器接上了没有、各自带了几个工具、没接上是卡在哪儿" },
+  { name: "model", arg: "[序号或名字]", desc: "换这趟活儿谁来干：本机引擎或你配的模型；不给值同样弹选择器" },
   { name: "cd", arg: "<目录>", desc: "换工作目录；认 .. 和 ~，不给就说当前在哪" },
   { name: "files", aliases: ["ls"], desc: "工作目录里现在有什么" },
   { name: "open", aliases: ["o"], arg: "[名字或序号]", desc: "用系统默认程序打开产出（终端里看不了的 SVG、Excel、视频都能看）；不给就打开工作目录" },
@@ -392,6 +396,171 @@ function pickSessionRow(rows, arg) {
   return { kind: "none", arg: w, why: "最近这些里没有对得上的" };
 }
 
+/* ── 通用选择器：↑↓ 挑、打字搜、回车定 ───────────────────────────────────
+ * 以前 /resume 和 /model 都是「印一张表，你数着序号敲」。序号得用眼睛数，数错一位
+ * 就接错会话、换错模型，而且会话一多就翻屏。Codex / Claude Code 的 /resume 是
+ * 上下键挑 + 打字搜，这儿把那套补上，两个命令共用同一个，省得长出两种交互。
+ *
+ * 这一层只算「给一组行 + 搜索词 + 选中位，该画哪几行」，不碰终端也不上色：
+ * 重画、收键、ANSI 都在 cli.js。行的形状统一成 { id, label, meta, hay }——
+ * label 是主名字，meta 是右边那串灰字，hay 是拿来搜的（调用方把能搜的都拼进去）。
+ */
+const PICKER_ROWS = 8; // 一屏最多列这些，多了就滚动：超过一屏人就不看了，只会瞎按
+
+function pickerRowsOf(list, make) {
+  return (Array.isArray(list) ? list : []).map(make).filter(Boolean);
+}
+
+/** 空格分词，每个词都得命中——「周报 标题」这种想缩范围的写法才有意义 */
+function filterPickerRows(rows, q) {
+  const list = Array.isArray(rows) ? rows : [];
+  const w = String(q == null ? "" : q).trim().toLowerCase();
+  if (!w) return list.slice();
+  const words = w.split(/\s+/).filter(Boolean);
+  return list.filter((r) => {
+    const hay = String((r && r.hay) || "").toLowerCase();
+    return words.every((x) => hay.includes(x));
+  });
+}
+
+/** 让选中项永远留在窗口里。列表比窗口短就整个显示，长了就把选中项摆中间 */
+function pickerWindow(n, sel, max) {
+  const total = Math.max(0, Number(n) || 0);
+  const room = Math.max(1, Number(max) || PICKER_ROWS);
+  if (total <= room) return { start: 0, end: total };
+  const at = Math.max(0, Math.min(Number(sel) || 0, total - 1));
+  let start = at - Math.floor(room / 2);
+  start = Math.max(0, Math.min(start, total - room));
+  return { start, end: start + room };
+}
+
+function pickerView(rows, o = {}) {
+  const q = String(o.q == null ? "" : o.q);
+  const max = Number(o.max) || PICKER_ROWS;
+  const verb = String(o.verb || "选它");
+  const hits = filterPickerRows(rows, q);
+  const sel = hits.length ? Math.max(0, Math.min(Number(o.sel) || 0, hits.length - 1)) : -1;
+  const { start, end } = pickerWindow(hits.length, sel, max);
+  const win = hits.slice(start, end);
+  const lw = win.reduce((w, r) => Math.max(w, cols(String((r && r.label) || ""))), 0);
+  const lines = win.map((r, i) => {
+    const at = start + i;
+    const body = ` ${at === sel ? ">" : " "} ${padCols(String(r.label || ""), lw)}${r.meta ? "  " + r.meta : ""}`;
+    return { text: body.replace(/\s+$/, ""), on: at === sel, row: r };
+  });
+  const title = String(o.title || "");
+  const head = q ? `${title}　搜「${q}」` : title;
+  // 有多少条没露出来要说清楚，不然人以为「就这几条」，其实还压着一屏
+  const more = hits.length > win.length ? `　第 ${start + 1}-${end} 条 / 共 ${hits.length}` : "";
+  const foot = hits.length
+    ? `  ↑↓ 选 · 打字搜 · 回车${verb} · Esc 算了${more}`
+    : "  没有对得上的——退格删两个字，或者 Esc 算了";
+  return { head, lines, foot, hits, sel, total: hits.length, start, end };
+}
+
+/** /resume 的行 → 选择器的行 */
+function sessionPickerRows(rows) {
+  return pickerRowsOf(rows, (r) => ({
+    id: String((r && r.id) || ""),
+    label: String((r && r.title) || "") || "无标题",
+    meta: [r && r.current ? "现在这条" : "", (r && r.from) || "", (r && r.turns) + " 轮", (r && r.when) || ""]
+      .filter(Boolean).join(" · "),
+    hay: [(r && r.title) || "", (r && r.id) || "", (r && r.from) || ""].join(" "),
+    row: r,
+  }));
+}
+
+/** /model 的行 → 选择器的行。没装的引擎也列出来，但要写明装不了就选不了 */
+function modelPickerRows(rows) {
+  return pickerRowsOf(rows, (r) => ({
+    id: String((r && r.key) || ""),
+    label: String((r && r.label) || ""),
+    meta: [r && r.current ? "在用" : "", (r && r.sub) || "", (r && r.tail) || "",
+      r && !r.ready && r.install ? "装它：" + r.install : ""].filter(Boolean).join(" · "),
+    hay: [(r && r.label) || "", (r && r.key) || "", (r && r.sub) || "", (r && r.tail) || ""].join(" "),
+    row: r,
+  }));
+}
+
+/** /init：让它自己把这个目录摸清楚，写成一份以后每趟都读得到的项目规范。
+ *  这儿只出「说什么」和「交出去哪句话」——真去看目录、真落盘的是模型走正常那条路，
+ *  于是权限档、改文件前的确认、/diff 里的记录一个都不少。绕过去自己写文件是最糟的做法：
+ *  人按了个命令，盘上就多了个文件，中间什么都没问过。 */
+function initTask(o = {}) {
+  const has = String(o.has || "");             // 已经有 AGENTS.md / CLAUDE.md 的话，是哪个
+  const note = has
+    ? `已经有 ${has} 了——这趟是读完再增补，不整篇盖掉。\n`
+    : "这就把目录看一遍，写一份 AGENTS.md 出来。\n";
+  const prompt = [
+    "把当前工作目录看一遍，写一份 AGENTS.md 放在目录根下，给以后接手这个项目的 AI 看。要求：",
+    "1. 这个项目是干什么的；怎么跑起来、怎么跑测试——命令照抄你在 package.json / Makefile / 文档里真看到的那几条，一条都别编；",
+    "2. 目录结构里哪几个是主干，新人最容易改错的是哪儿；",
+    "3. 这个项目已经定下来的规矩（代码风格、提交信息格式、哪些文件不许动），只写你真找到依据的，找不到就不写这条，别拿通用建议凑数；",
+    "4. 写成「接手前必须知道的十几条」，一条一行，不要写成说明书。",
+    has ? `目录里已经有 ${has}，先完整读一遍，在它基础上增补和纠错，不要整篇覆盖。` : "",
+    "写完告诉我你都依据了哪些文件——没依据的话直说没依据，别猜。",
+  ].filter(Boolean).join("\n");
+  return { note, prompt };
+}
+
+/** 体积说人话。不到 1K 的就报字节——「0.0K」看着像空文件，其实里头有东西 */
+function sizeText(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + " K";
+  if (n < 1024 * 1024 * 1024) return (n / 1048576).toFixed(1) + " M";
+  return (n / 1073741824).toFixed(1) + " G";
+}
+
+/** /diff：这个会话动过哪些文件。
+ *  「动过」只认 write_file / edit_file 两个工具的落点——模型嘴上说改了不算数，
+ *  以工具调用为准。文件后来被人删了也照列，标成「没了」：悄悄不显示，等于替模型圆谎。 */
+function changedFilesText(rows, o = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    return "这个会话还没动过文件。（只认 write_file / edit_file 真落到盘上的那些）\n";
+  }
+  const w = list.reduce((n, r) => Math.max(n, cols(String(r.path || ""))), 0);
+  const out = [`这个会话动过 ${list.length} 个文件：`, ""];
+  for (const r of list) {
+    const tag = r.state === "gone" ? "没了" : (r.size != null ? r.size : "");
+    out.push(`  ${padCols(String(r.path || ""), w + GAP)}${tag}${r.when ? "  " + r.when : ""}`.replace(/\s+$/, ""));
+  }
+  const git = String(o.git || "");
+  out.push("");
+  if (git) out.push("工作目录是 git 仓库，跟 HEAD 比：", "", git.replace(/\s+$/, ""), "");
+  else out.push(o.notRepo ? "工作目录不是 git 仓库，给不了逐行 diff，只能列到文件这一层。" : "", "");
+  return out.filter((l, i, a) => !(l === "" && a[i - 1] === "")).join("\n") + "\n";
+}
+
+/** /mcp：连接器接上了没有。没接上的要说清楚卡在哪儿，不然人只会反复重启 */
+function mcpText(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    return "还没配外部连接器。设置 → 连接器 里加，或者写进 config.json 的 mcpServers。\n";
+  }
+  const w = list.reduce((n, r) => Math.max(n, cols(String(r.name || ""))), 0);
+  const ok = list.filter((r) => r.ok).length;
+  const out = [`连接器 ${list.length} 个，接上了 ${ok} 个：`, ""];
+  for (const r of list) {
+    const mark = r.ok ? "◆" : "×";
+    const tail = r.ok ? `${r.tools || 0} 个工具` : (r.why || "没接上");
+    out.push(`  ${mark} ${padCols(String(r.name || ""), w + GAP)}${tail}`);
+  }
+  out.push("");
+  return out.join("\n") + "\n";
+}
+
+/** /compact：压完之后说人话，别只报个数字 */
+function compactedText(before, after, removed) {
+  const b = Number(before) || 0, a = Number(after) || 0;
+  if (!removed) return "没压：最近几轮是要留着的，再往前没有可并的了——上下文一点没动。\n";
+  const save = b > a ? Math.round(((b - a) / b) * 100) : 0;
+  return `压好了：${removed} 条聊天记录并成 1 条摘要，上下文 ${Math.round(b / 1000)}k → ${Math.round(a / 1000)}k 字符` +
+    `${save ? "，省了 " + save + "%" : ""}。原文归档在 data/compact-archive，没删。\n`;
+}
+
 function helpText() {
   const rows = COMMANDS.map((c) => ({
     left: `/${c.name}${c.arg ? " " + c.arg : ""}`,
@@ -507,5 +676,7 @@ module.exports = {
   parse, mergePaste, makeInbox, resolveCd, complete, menu, helpText, unknownText, badArgText,
   modelRows, modelListText, pickModelRow,
   RESUME_MAX, ago, sessionRows, sessionListText, pickSessionRow,
+  PICKER_ROWS, pickerRowsOf, filterPickerRows, pickerWindow, pickerView, sessionPickerRows, modelPickerRows,
+  sizeText, changedFilesText, mcpText, compactedText, initTask,
   sanitizeHistory, nearest, find,
 };

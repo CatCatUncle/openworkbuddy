@@ -1328,6 +1328,73 @@ function splitFiles(text) {
   }
   function menuClose() { menuErase(); menuState.items = []; menuState.sel = -1; }
 
+  // 模态选择器：/resume、/model 回车之后进这儿。↑↓ 挑、打字搜、回车定、Esc 走人。
+  // 跟 / 菜单共用同一个 _ttyWrite 拦截点，也共用 menuState.dead 这个「这台终端不认」的开关：
+  // 一旦画花过一次，两边一起退回「印一张表、敲序号」——少一半交互也比把人的终端搅烂强。
+  const picker = { on: false, lines: 0, view: null, key: null };
+  const pickerUsable = () =>
+    !menuState.dead && !!ttyWriteOrig && !!process.stdout.isTTY && !!process.stdin.isTTY;
+
+  function pickerErase() {
+    if (!picker.lines) return;
+    try {
+      readline.cursorTo(process.stdout, 0);
+      readline.moveCursor(process.stdout, 0, -picker.lines);
+      readline.clearScreenDown(process.stdout);
+    } catch { menuState.dead = true; }
+    picker.lines = 0;
+  }
+
+  /** 摆出来让人挑一个；挑中了给那一行，Esc / Ctrl+C 给 null。列表空就直接 null，不摆空框 */
+  function chooseFrom(rows, o) {
+    const opt = o || {};
+    const all = Array.isArray(rows) ? rows : [];
+    if (!all.length) return Promise.resolve(null);
+    return new Promise((done) => {
+      let q = "";
+      let sel = 0;
+      const paint = () => {
+        pickerErase();
+        const v = repl.pickerView(all, { q, sel, title: opt.title, verb: opt.verb, max: repl.PICKER_ROWS });
+        sel = v.sel < 0 ? 0 : v.sel;
+        picker.view = v;
+        const out = ["", dim(v.head)];
+        for (const l of v.lines) out.push(l.on ? `\x1b[36m${l.text}\x1b[39m` : dim(l.text));
+        out.push(dim(v.foot));
+        try {
+          process.stdout.write(out.join("\n") + "\n");
+          picker.lines = out.length;
+        } catch { menuState.dead = true; picker.lines = 0; }
+      };
+      const finish = (row) => {
+        picker.on = false; picker.key = null;
+        pickerErase();
+        picker.view = null;
+        done(row || null);
+      };
+      picker.key = (ch, k) => {
+        if (k.ctrl && (k.name === "c" || k.name === "d")) return finish(null);
+        if (k.name === "escape") return finish(null);
+        if (k.name === "return" || k.name === "enter") {
+          const v = picker.view;
+          return finish(v && v.total ? v.hits[v.sel] : null);
+        }
+        if (k.name === "up" || k.name === "down") {
+          const n = (picker.view && picker.view.total) || 0;
+          if (!n) return;
+          sel = k.name === "down" ? (sel + 1) % n : (sel <= 0 ? n - 1 : sel - 1);
+          return paint();
+        }
+        if (k.name === "backspace") { if (q) { q = q.slice(0, -1); sel = 0; paint(); } return; }
+        if (k.ctrl && k.name === "u") { if (q) { q = ""; sel = 0; paint(); } return; }
+        if (k.ctrl || k.meta) return;                     // 别的组合键一律忽略，不要当搜索词吃进去
+        if (typeof ch === "string" && ch && !/[\x00-\x1f\x7f]/.test(ch)) { q += ch; sel = 0; paint(); }
+      };
+      picker.on = true;
+      paint();
+    });
+  }
+
   // `@` 补路径：工作目录里有什么，边打边列。名字里有空格的按 shell 那套转义写回去——
   // 这样它跟从访达拖进来的路径长得一模一样，parseLine 两边都认得。
   // 目录补完留个 `/` 不留空格：这个词还没打完，菜单接着往下列
@@ -1394,6 +1461,56 @@ function splitFiles(text) {
     } catch { menuState.dead = true; menuState.rows = 0; }
   }
 
+  /** 说一句话但不弄乱正在打的那一行：把它收起来、说、再原样摆回去 */
+  function sayAbove(text) {
+    menuClose();
+    try {
+      readline.cursorTo(process.stdout, 0);
+      readline.clearLine(process.stdout, 0);
+    } catch { menuState.dead = true; }
+    process.stdout.write(text);
+    try { rl.prompt(true); } catch { menuState.dead = true; }
+    menuDraw();
+  }
+
+  // Shift+Tab 循环权限档。放权这件事十有八九是「手停在半路上才发现档位不对」，
+  // 那时候再去敲 /perm ask 已经太慢——Codex 的 /approvals、Claude Code 的 Shift+Tab 都在这个位置。
+  function cyclePerm() {
+    // 「全自动」不进这个圈：Shift+Tab 就挨着 Tab，误碰一下就把命令确认也关了，
+    // 而人正盯着自己那半行字，根本不会去读屏幕上多出来的一行。要到全自动得明着敲 /perm full。
+    const ids = Object.keys(security.PERMISSION_MODES).filter((id) => id !== "full");
+    if (!ids.length) return;
+    const cur = permNow();
+    const at = ids.indexOf(cur); // 当前是 full 就落到第一档，等于往回收，安全
+    const next = ids[((at < 0 ? -1 : at) + 1) % ids.length];
+    config.security = { ...(config.security || {}), permission_mode: next };
+    const m = security.PERMISSION_MODES[next];
+    sayAbove(dim(`权限 → 「${m.label}」（${next}）　${m.desc}（只管这一趟；Shift+Tab 到不了「全自动」，那个得敲 /perm full）\n`));
+  }
+
+  // Esc Esc：把之前问过的话拉回输入行改了重问。Codex 的招牌交互。
+  // 这儿只「放回去」，不回卷历史——真删掉已经跑过的那几轮，等于把模型已经做过的事悄悄抹了，
+  // 而人看不见抹了什么。要重来就开 /new，要接回去就 /resume，两条路都在明面上。
+  let escArmed = 0;
+  async function reEditLast() {
+    const msgs = (sess.transcript || [])
+      .filter((t) => t && t.type === "user" && String(t.text || "").trim());
+    if (!msgs.length) { sayAbove(dim("这个会话还没问过什么，没得改\n")); return; }
+    if (!pickerUsable()) { sayAbove(dim(`上次问的是：${String(msgs[msgs.length - 1].text).replace(/\s+/g, " ").slice(0, 60)}\n`)); return; }
+    const rows = msgs.slice(-40).reverse().map((t, i) => {
+      const text = String(t.text).replace(/\s+/g, " ").trim();
+      return { id: String(i), label: text.length > 56 ? text.slice(0, 56) + "…" : text, meta: "", hay: text, text };
+    });
+    try {
+      readline.cursorTo(process.stdout, 0);
+      readline.clearLine(process.stdout, 0);
+    } catch { menuState.dead = true; }
+    const picked = await chooseFrom(rows, { title: "openworkbuddy> 把哪一句放回去改？", verb: "放回输入行" });
+    try { rl.prompt(true); } catch { menuState.dead = true; }
+    if (picked) rl.write(picked.text);
+    menuDraw();
+  }
+
   // 按键先过这儿再交给 readline：↑↓ 在菜单开着的时候是「挑哪条」，不是翻历史。
   // _ttyWrite 是 readline 的内部，拿不到就降级成「只弹不挑」——菜单照样看得见，
   // Tab 走 readline 自己的补全。宁可少一半功能，也不能因为 Node 换了实现就崩在这儿。
@@ -1401,6 +1518,8 @@ function splitFiles(text) {
   if (ttyWriteOrig) {
     rl._ttyWrite = (ch, key) => {
       const k = key || {};
+      if (picker.on) { picker.key(ch, k); return; } // 选择器开着就整场归它，readline 一个键都收不到
+      if (k.name === "tab" && k.shift) { cyclePerm(); return; } // 得排在菜单之前，不然被当成补全的 Tab 吃掉
       if (menuState.items.length && !k.ctrl && !k.meta) {
         if (k.name === "up" || k.name === "down") {
           const n = menuState.items.length;
@@ -1419,6 +1538,15 @@ function splitFiles(text) {
           rl.write(pick.insert);
           return;
         }
+      }
+      // Esc Esc 得认 sequence，不能靠掐表：Node 的 keypress 解码器会把连按的两下 ESC
+      // 合成一个事件（sequence 是两个 \x1b），掐表那套永远等不到第二下。
+      // 计时那条留着兜底——万一哪天 Node 改了实现，真发两个事件，这边照样认。
+      if (k.name === "escape" && !rl.line && !inbox.busy) {
+        const t = Date.now();
+        if (k.sequence === "\x1b\x1b" || t - escArmed < 900) { escArmed = 0; void reEditLast(); return; }
+        escArmed = t;
+        return;
       }
       if (k.name === "return" || k.name === "enter") menuClose(); // 回车前先擦干净，不然菜单会留在正文里
       ttyWriteOrig(ch, key);
@@ -1485,6 +1613,69 @@ function splitFiles(text) {
       prog(dim(`开了新会话 ${sessionId}（刚才那段还在：/resume ${oldId}）\n`));
       return;
     }
+    if (v.name === "init") {
+      // 已经有的话先说一声再动手：整篇盖掉人手写的项目规范，是这条命令最容易犯的错
+      const ws = getWorkspaceDir();
+      const has = ["AGENTS.md", "CLAUDE.md"].filter((n) => {
+        try { return fs.statSync(path.join(ws, n)).size > 0; } catch { return false; }
+      }).join(" 和 ");
+      const t = repl.initTask({ has });
+      prog(dim(t.note));
+      return t.prompt;   // 交回主循环当一趟活儿跑：权限档、改文件前的确认、/diff 里的记录一个都不少
+    }
+    if (v.name === "compact") {
+      if (!runtime.compactHistory) { prog(yellow("这个引擎不支持手动压缩\n")); return; }
+      const before = require("./agent").historyChars(sess.history || []);
+      const n = (sess.history || []).length;
+      if (n < 4) { prog(dim("才聊了几句，没什么可压的\n")); return; }
+      prog(dim("压缩中……（要过一趟模型，十几秒）\n"));
+      let removed = 0;
+      try {
+        await runtime.compactHistory(sess.history, { force: true, emit: (e) => { if (e && e.type === "compact") removed = e.removed; } });
+      } catch (e) { prog(red(`压缩没成（${e.message}），上下文一点没动\n`)); return; }
+      prog(dim(repl.compactedText(before, require("./agent").historyChars(sess.history || []), removed)));
+      prog(dim(contextLine() + "\n"));
+      saveSess();
+      return;
+    }
+    if (v.name === "diff") {
+      // 「动过」以工具调用为准，不听模型自述：它说改了而没真调 write_file 的情况是存在的
+      const seen = new Map();
+      for (const e of sess.history || []) {
+        if (e.role !== "assistant") continue;
+        for (const c of e.toolCalls || []) {
+          if (c.name !== "write_file" && c.name !== "edit_file") continue;
+          const p = String(((c.args || c.input || {}).path) || "").trim();
+          if (p) seen.set(p, true);
+        }
+      }
+      const ws = getWorkspaceDir();
+      const rows = [...seen.keys()].map((p) => {
+        const abs = path.isAbsolute(p) ? p : path.join(ws, p);
+        try {
+          const st = fs.statSync(abs);
+          return { path: p, state: "ok", size: repl.sizeText(st.size), when: repl.ago(st.mtimeMs, Date.now()) };
+        } catch { return { path: p, state: "gone" }; }
+      });
+      let git = "", notRepo = false;
+      const inRepo = spawnSync("git", ["-C", ws, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" });
+      if (inRepo.status === 0 && String(inRepo.stdout).trim() === "true") {
+        const d = spawnSync("git", ["-C", ws, "diff", "--stat", "HEAD"], { encoding: "utf8" });
+        git = d.status === 0 ? String(d.stdout).trim() : "";
+        if (!git) git = "跟 HEAD 一模一样，没有未提交的改动。";
+      } else notRepo = true;
+      prog(repl.changedFilesText(rows, { git, notRepo }));
+      return;
+    }
+    if (v.name === "mcp") {
+      const st = mcpManager.status();
+      const rows = [
+        ...(st.connected || []).map((c) => ({ name: c.name + (c.plugin ? `（${c.plugin}）` : ""), ok: true, tools: c.tools })),
+        ...(st.failures || []).map((x) => ({ name: x.name + (x.plugin ? `（${x.plugin}）` : ""), ok: false, why: x.error || x.raw || "没接上" })),
+      ];
+      prog(repl.mcpText(rows));
+      return;
+    }
     if (v.name === "resume") {
       // 光有 `openworkbuddy resume` 不够：那条是**开新进程**才用得上的写法。人已经坐在交互模式里，
       // 想翻回半小时前那段就得先 /exit 再重开——而一 exit，当前这段的上下文、带着还没发出去的文件、
@@ -1497,7 +1688,14 @@ function splitFiles(text) {
       if (r.kind === "none" && /^(cli_|s_)[\w-]+$/.test(raw) && fs.existsSync(sessFileOf(raw))) {
         r = { kind: "ok", row: { id: raw, title: "", turns: 0, from: raw.startsWith("cli_") ? "命令行" : "桌面" } };
       }
-      if (r.kind === "list") { prog(repl.sessionListText(rows)); return; }
+      if (r.kind === "list") {
+        if (!pickerUsable()) { prog(repl.sessionListText(rows)); return; } // 管道里、或者这台终端画不了
+        const picked = await chooseFrom(repl.sessionPickerRows(rows), {
+          title: "openworkbuddy> 接着哪一条往下聊？", verb: "接上",
+        });
+        if (!picked) { prog(dim("没接，还在原来这条\n")); return; }
+        r = { kind: "ok", row: picked.row };
+      }
       if (r.kind === "none") { prog(yellow(`没认出「${r.arg}」——${r.why}。/resume 不带参数看最近这些\n`)); return; }
       if (r.kind === "many") {
         prog(yellow(`「${r.arg}」对得上好几条：${r.rows.map((x) => `${x.n} ${x.title || x.id}`).join("、")}。写序号或者写全一点\n`));
@@ -1552,8 +1750,15 @@ function splitFiles(text) {
         engine: cfgEngine(),
         activeModel: config.active_model,
       });
-      const r = repl.pickModelRow(rows, v.arg);
-      if (r.kind === "list") { prog(repl.modelListText(rows)); return; }
+      let r = repl.pickModelRow(rows, v.arg);
+      if (r.kind === "list") {
+        if (!pickerUsable()) { prog(repl.modelListText(rows)); return; }
+        const picked = await chooseFrom(repl.modelPickerRows(rows), {
+          title: "openworkbuddy> 这趟活儿谁来干？", verb: "换过去",
+        });
+        if (!picked) { prog(dim("没换，还是刚才那个\n")); return; }
+        r = { kind: "ok", row: picked.row };
+      }
       if (r.kind === "none") { prog(yellow(`没认出「${r.arg}」——${r.why}。/model 不带参数看选单\n`)); return; }
       if (r.kind === "many") {
         prog(yellow(`「${r.arg}」对得上好几条：${r.rows.map((x) => `${x.n} ${x.label}`).join("、")}。写序号或者写全一点\n`));
@@ -1678,7 +1883,7 @@ function splitFiles(text) {
   for (;;) {
     const line = await nextInput();
     if (line === null) { process.stdout.write("\n"); break; } // Ctrl+D / 关掉了：正常收尾，不挂死
-    const v = repl.parse(line);
+    let v = repl.parse(line);
     if (v.kind === "blank") {
       if (pending.length) prog(dim(`  还带着 ${pending.join("、")}；打一句要问的就一块儿发出去，不要了敲 /drop\n`));
       rl.prompt();
@@ -1686,14 +1891,18 @@ function splitFiles(text) {
     }
     if (v.kind === "unknown") { prog(yellow(repl.unknownText(v))); rl.prompt(); continue; }
     if (v.kind === "bad-arg") { prog(yellow(repl.badArgText(v))); rl.prompt(); continue; }
+    // 命令现场交出来的那趟活儿（/init）：不再过 splitFiles——那一步是摘「人拖进来的文件」的，
+    // 拿它去扫一句现成的话，会把 AGENTS.md 这种词当附件摘走，剩下的句子当场缺一块
+    let 现成的 = "";
     if (v.kind === "cmd") {
       if (v.name === "exit") break;
-      await runReplCommand(v);
-      rl.prompt();
-      continue;
+      const 交出来的 = await runReplCommand(v);
+      if (typeof 交出来的 !== "string" || !交出来的.trim()) { rl.prompt(); continue; }
+      现成的 = 交出来的;
+      v = { kind: "task", text: 现成的 };
     }
     // 这一行里带进来的文件：拖进来的、粘路径进来的、@ 补出来的，都在这儿摘出去，剩下的才是要问的话
-    const spl = splitFiles(v.text);
+    const spl = 现成的 ? { files: [], missing: [], text: 现成的 } : splitFiles(v.text);
     for (const m of spl.missing) prog(yellow(`  ！${m} 找不到，当普通文字发过去了\n`));
     for (const n of bringIn(spl.files)) if (!pending.includes(n)) pending.push(n);
     const body = spl.files.length ? spl.text : v.text;

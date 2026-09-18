@@ -638,10 +638,252 @@ console.log("\n⑱之三 菜单的画法：不许把人的输入搞乱");
   ok(!/k\.name === "pageup"/.test(tty), "★（反向对照）没处理过的键在源码里当然找不到★");
 }
 
+// ── ⑲ 选择器：↑↓ 挑、打字搜 ────────────────────────────────────────────
+// 用户原话：「这个命令 /resume 是能搜索还有按向下或者向上选择哪个对话啊」。
+// 之前是印一张表让人数着序号敲——序号得用眼睛数，数错一位就接错会话。
+// 这一层只算「该画哪几行、谁是选中的」，所以能在这儿逐帧验，不用真开终端。
+console.log("\n⑲ 选择器：算得对不对");
+{
+  const 行 = (id, label, hay) => ({ id, label, meta: "", hay: hay || label });
+  const 十条 = Array.from({ length: 10 }, (_, i) => 行("s" + i, "第" + i + "条", "第" + i + "条 " + (i % 2 ? "周报" : "日报")));
+
+  // 搜：空格分词，每个词都得命中。「周报 标题」这种想缩范围的写法才有意义
+  eq(R.filterPickerRows(十条, "").length, 10, "不搜就是全都要");
+  eq(R.filterPickerRows(十条, "周报").length, 5, "搜一个词");
+  eq(R.filterPickerRows(十条, "周报 第3").length, 1, "★两个词是「且」不是「或」★ 「或」的话越打越多，等于打字没用");
+  eq(R.filterPickerRows(十条, "周报第3").length, 0, "词之间的空格有意义，不是随便忽略的");
+  eq(R.filterPickerRows(十条, "  周报  ").length, 5, "前后空格不算词");
+  eq(R.filterPickerRows(十条, "找不着").length, 0, "搜不着就是 0，不是退回全部");
+  eq(R.filterPickerRows(null, "x").length, 0, "喂 null 不炸");
+  // 大小写：会话 id 是小写，人打大写照样得中
+  eq(R.filterPickerRows([行("A1", "Alpha")], "alpha").length, 1, "★搜不分大小写★ 分了的话人得记住当时是怎么写的");
+
+  // 窗口：选中的那条必须始终露在外面，不然按了半天不知道按到哪儿了
+  eq(JSON.stringify(R.pickerWindow(5, 0, 8)), '{"start":0,"end":5}', "列表比窗口短就整个显示");
+  eq(JSON.stringify(R.pickerWindow(20, 0, 8)), '{"start":0,"end":8}', "选第一条时窗口贴着顶");
+  eq(JSON.stringify(R.pickerWindow(20, 19, 8)), '{"start":12,"end":20}', "★选最后一条时窗口贴着底★ 硬把选中项摆中间的话，末尾会露出一截空白");
+  {
+    let 露在外 = true;
+    for (let i = 0; i < 20; i++) { const w = R.pickerWindow(20, i, 8); if (!(i >= w.start && i < w.end)) 露在外 = false; }
+    ok(露在外, "★二十条挨个选一遍，选中的那条每次都在窗口里★ 露不出来的话人按着按着就不知道按到哪儿了");
+  }
+
+  // 画出来的那几行
+  {
+    const v = R.pickerView(十条, { q: "", sel: 3, title: "挑一条", verb: "接上", max: 4 });
+    eq(v.lines.length, 4, "一屏就画 max 行");
+    eq(v.lines.filter((l) => l.on).length, 1, "★永远只有一行是选中的★ 两行同时高亮，回车到底进哪条就成了猜");
+    ok(v.lines.find((l) => l.on).text.trim().startsWith(">"), "选中那行带箭头——只靠颜色的话，不上色的终端上等于没标");
+    ok(/第 \d+-\d+ 条 \/ 共 10/.test(v.foot), "★没露出来的条数要说清楚★ 不说的话人以为「就这几条」，其实还压着一屏");
+    ok(/↑↓|回车|Esc/.test(v.foot), "脚注把能按的键写出来");
+  }
+  {
+    const v = R.pickerView(十条, { q: "周报", sel: 0, title: "挑一条" });
+    eq(v.total, 5, "搜完只剩命中的");
+    ok(v.head.includes("周报"), "★搜的词要回显★ 不回显的话，剩三条到底是搜出来的还是本来就三条，分不出来");
+  }
+  {
+    const v = R.pickerView(十条, { q: "根本没有", sel: 0 });
+    eq(v.total, 0, "搜空了");
+    eq(v.lines.length, 0, "★一行都不画★ 画个空框比说人话糟");
+    ok(/退格|Esc/.test(v.foot), "★搜空了要给出路★ 只说「没有」，人只会一直按一直没有");
+  }
+  {
+    // 选中位越界要自己夹回来：搜完命中从 10 条掉到 2 条，sel 还停在 7
+    const v = R.pickerView(十条, { q: "周报", sel: 99 });
+    ok(v.sel >= 0 && v.sel < v.total, "★选中位越界自己夹回来★ 搜一下从十条掉到两条，回车就会读到 undefined", v.sel);
+    eq(R.pickerView([], { q: "" }).sel, -1, "一条都没有时没有选中项");
+  }
+
+  // 两条命令的行长什么样
+  {
+    const rows = R.sessionRows(
+      [{ id: "a1", title: "这周的周报", turns: 8, from: "桌面", mtime: 1000 },
+       { id: "b2", title: "", turns: 1, from: "cli", mtime: 1000 }],
+      { now: 1000, currentId: "a1" });
+    const p = R.sessionPickerRows(rows);
+    eq(p.length, 2, "一条会话一行");
+    eq(p[0].id, "a1", "id 带过去了——回车之后要靠它去盘上找文件");
+    eq(p[1].label, "无标题", "★没标题也得有个能看的名字★ 空着的话那一行看起来像坏了");
+    ok(p[0].meta.includes("现在这条") && p[0].meta.includes("桌面"), "右边那串灰字带上来源和「现在这条」");
+    ok(p[0].hay.includes("a1") && p[0].hay.includes("周报"), "★id 和标题都能搜★ 记得住 id 的人不该被迫去数序号");
+    ok(p[0].row && p[0].row.id === "a1", "原行挂着——cli.js 拿它去接会话，不是拿 label 反查");
+  }
+  {
+    const rows = R.modelRows({
+      engines: [{ id: "codex", label: "Codex", installed: false, install: "npm i -g codex" }],
+      models: [{ name: "kimi", model: "k2" }], engine: "builtin", activeModel: "kimi",
+    });
+    const p = R.modelPickerRows(rows);
+    eq(p.length, 2, "引擎和模型都在同一张单子里");
+    ok(p[0].meta.includes("npm i -g codex"), "★没装的引擎要写明怎么装★ 只写「没装」等于让人自己去猜包名");
+    ok(p.find((x) => x.id === "kimi").meta.includes("在用"), "当前在用的那个标出来");
+  }
+}
+
+// ── ⑲之二 选择器在 cli.js 那头真接上了 ──────────────────────────────────
+console.log("\n⑲之二 选择器接线：键归谁管");
+{
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  ok(/repl\.pickerView\(/.test(src) && /repl\.sessionPickerRows\(/.test(src) && /repl\.modelPickerRows\(/.test(src),
+     "★画的是上面那层算出来的★ 在 cli.js 里另抄一份的话，⑲ 整节测的是没人用的代码");
+
+  const tty = src.split("const ttyWriteOrig")[1] || "";
+  const i选 = tty.indexOf("picker.on");
+  const i菜 = tty.indexOf("menuState.items.length");
+  ok(i选 >= 0 && i菜 > i选, "★选择器开着就整场归它，排在菜单前面★ 排后面的话打字搜会被菜单半路截走", { i选, i菜 });
+  ok(/if \(picker\.on\) \{ picker\.key\(ch, k\); return; \}/.test(tty), "★一个键都不漏给 readline★ 漏过去的话搜索词会同时落到输入行上");
+
+  const pu = src.split("const pickerUsable")[1] || "";
+  ok(/!menuState\.dead/.test(pu),
+     "★画花过一次就跟菜单一起退回印表格★ 两套各记各的，等于给同一台坏终端留了一条还在画的路");
+  ok(/!!process\.stdout\.isTTY/.test(pu), "不是终端就不弹");
+
+  const 两段 = [["resume", (src.split('v.name === "resume"')[1] || "").split('v.name === "session"')[0]],
+               ["model", (src.split('v.name === "model"')[1] || "").split('v.name === "cd"')[0]]];
+  for (const [名, 段] of 两段) {
+    ok(/if \(!pickerUsable\(\)\) \{ prog\(repl\.(session|model)ListText/.test(段),
+       "★/" + 名 + " 在管道里退回印表格★ 退不回去的话 openworkbuddy … | tee 出来的是一堆转义序列");
+    ok(/await chooseFrom\(/.test(段), "★/" + 名 + " 不给参数时弹的是选择器★");
+    ok(/没接|没换/.test(段), "★/" + 名 + " Esc 走人要吭一声★ 不吭声的话人不知道到底换没换");
+  }
+  // 反向对照
+  ok(!/k\.name === "pagedown"/.test(tty), "★（反向对照）没处理过的键在源码里当然找不到★");
+}
+
+// ── ⑲之三 两个键位：Shift+Tab 和 Esc Esc ───────────────────────────────
+console.log("\n⑲之三 两个键位");
+{
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const tty = src.split("const ttyWriteOrig")[1] || "";
+  const iTab = tty.indexOf('k.name === "tab" && k.shift');
+  const i菜 = tty.indexOf("menuState.items.length");
+  const iEsc = tty.indexOf('k.name === "escape" && !rl.line');
+  ok(iTab >= 0 && i菜 > iTab, "★Shift+Tab 排在菜单之前★ 排后面会被当成补全的 Tab 吃掉", { iTab, i菜 });
+  ok(iEsc >= 0 && iEsc > i菜, "★Esc Esc 排在菜单之后★ 排前面的话第一下 Esc 就收不了菜单了", { iEsc, i菜 });
+
+  const cyc = (src.split("function cyclePerm")[1] || "").slice(0, 900);
+  ok(/filter\(\(id\) => id !== "full"\)/.test(cyc),
+     "★这个圈里没有「全自动」★ Shift+Tab 就挨着 Tab，误碰一下把命令确认也关了，而人正盯着自己那半行字");
+  ok(/PERMISSION_MODES/.test(cyc), "档位从唯一真源取，不在这儿抄一份");
+  ok(/permission_mode/.test(cyc) && !/saveConfig|writeConfig/.test(cyc),
+     "★只管这一趟，不写配置文件★ 顺手按一下就把长期设置改了，人不会知道");
+  ok(/perm full/.test(cyc), "★把「想要全自动就明着敲 /perm full」说出来★ 不说的话人以为按不到就是没有");
+
+  // Node 的 keypress 解码器把连按的两下 ESC 合成**一个**事件（sequence 是两个 \x1b）。
+  // 掐表那套永远等不到第二下——这是实测出来的，不是推的
+  const esc = tty.slice(iEsc, iEsc + 400);
+  ok(/k\.sequence === "\\x1b\\x1b"/.test(esc),
+     "★认 sequence★ Node 把连按的两下 ESC 合成一个事件，纯掐表的写法永远等不到第二下");
+  ok(/escArmed/.test(esc), "掐表那条留着兜底——万一哪天 Node 改成真发两个事件，这边照样认");
+  ok(/!rl\.line/.test(esc), "★正在打字时不抢 Esc★ 抢了的话输入到一半按 Esc 想清空，弹出来的是个选择器");
+  ok(/!inbox\.busy/.test(esc), "★活儿跑着的时候不弹★ 正文一冲下来选择器就成了残渣");
+
+  const re = (src.split("async function reEditLast")[1] || "").slice(0, 1200);
+  ok(/rl\.write\(picked\.text\)/.test(re), "★挑中的原样放回输入行★ 放不回去的话这个键只是个只读的历史");
+  ok(!/sess\.history\.(splice|length =)/.test(re) && !/sess\.transcript\.(splice|length =)/.test(re),
+     "★只放回去，不回卷历史★ 真删掉跑过的那几轮，等于把模型做过的事悄悄抹了，而人看不见抹了什么");
+  ok(/没问过什么|没得改/.test(re), "★一句都没问过时说人话★ 弹个空框比说一句糟");
+}
+
+// ── ⑳ 三条新命令：/compact /diff /mcp ──────────────────────────────────
+console.log("\n⑳ /compact /diff /mcp");
+{
+  // 体积说人话：不到 1K 报字节——「0.0K」看着像空文件，其实里头有东西
+  eq(R.sizeText(0), "0 B", "0 字节就说 0 B");
+  eq(R.sizeText(900), "900 B", "★不到 1K 报字节★ 报「0.9 K」看着像个空壳");
+  eq(R.sizeText(4200), "4.1 K", "K");
+  eq(R.sizeText(2 * 1048576), "2.0 M", "M");
+  eq(R.sizeText(-1), "", "负数不瞎报");
+  eq(R.sizeText("不是数"), "", "喂脏数据不炸");
+
+  {
+    const t = R.changedFilesText([]);
+    ok(/还没动过文件/.test(t) && /write_file/.test(t),
+       "★一个都没动时讲清楚「动过」怎么算★ 只说「没有」，人会以为是坏了");
+  }
+  {
+    const t = R.changedFilesText(
+      [{ path: "周报.md", state: "ok", size: "4.1 K", when: "刚刚" },
+       { path: "草稿.md", state: "gone" }], { notRepo: true });
+    ok(/周报\.md/.test(t) && /4\.1 K/.test(t), "列出来带体积");
+    ok(/草稿\.md/.test(t) && /没了/.test(t),
+       "★后来被删掉的也照列，标「没了」★ 悄悄不显示等于替模型圆谎——它确实写过");
+    ok(/不是 git 仓库/.test(t), "★不是仓库要说明为什么没有逐行 diff★ 不说的话人以为 diff 坏了");
+  }
+  {
+    const t = R.changedFilesText([{ path: "a.md", state: "ok" }], { git: " a.md | 3 +++" });
+    ok(/a\.md \| 3 \+\+\+/.test(t) && /git 仓库/.test(t), "是仓库就把 diff --stat 一起出了");
+  }
+
+  {
+    ok(/还没配/.test(R.mcpText([])) && /mcpServers/.test(R.mcpText([])),
+       "★一个连接器都没有时说去哪儿加★ 只说「没有」，人不知道下一步干什么");
+    const t = R.mcpText([{ name: "高德", ok: true, tools: 6 }, { name: "飞书", ok: false, why: "token 过期" }]);
+    ok(/高德/.test(t) && /6 个工具/.test(t), "接上了的报带了几个工具");
+    ok(/飞书/.test(t) && /token 过期/.test(t),
+       "★没接上的要说卡在哪儿★ 只打个叉，人只会反复重启，重启一百次也还是 token 过期");
+    ok(/接上了 1 个/.test(t), "先说个总数，不用自己数");
+  }
+
+  {
+    const t0 = R.compactedText(50000, 50000, 0);
+    ok(/没压/.test(t0) && /一点没动/.test(t0),
+       "★没压成就直说「没压」★ 先说「压缩中」再说「没到阈值」，读起来像自相矛盾");
+    const t = R.compactedText(100000, 40000, 12);
+    ok(/12 条/.test(t) && /100k → 40k/.test(t) && /60%/.test(t), "压完报省了多少");
+    ok(/compact-archive/.test(t) && /没删/.test(t),
+       "★说清楚原文归档了没删★ 不说的话「压缩」听着就是「删掉」，没人敢按第二次");
+  }
+
+  // cli.js 那头
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const d = (src.split('v.name === "diff"')[1] || "").split('v.name === "mcp"')[0];
+  ok(/c\.name !== "write_file" && c\.name !== "edit_file"/.test(d),
+     "★「动过」以工具调用为准★ 模型嘴上说改了而没真调 write_file 的情况是存在的，听它自述等于替它圆谎");
+  ok(/fs\.statSync/.test(d) && /state: "gone"/.test(d), "文件还在不在当场看一眼，不是照着记录念");
+  ok(/rev-parse", "--is-inside-work-tree/.test(d), "★先问是不是 git 仓库再跑 diff★ 不是仓库的话 git 会把一堆报错吐到屏幕上");
+  const c = (src.split('v.name === "compact"')[1] || "").split('v.name === "diff"')[0];
+  ok(/force: true/.test(c), "★手动敲的 /compact 不看阈值★「关了自动压缩」管的是「别自作主张」，不是「不许我自己压」");
+  ok(/saveSess\(\)/.test(c), "★压完落盘★ 不落盘的话这一趟白压，下次打开还是老样子");
+  ok(/compactHistory/.test(c) && /不支持/.test(c), "引擎不支持时当场说，不是假装压了");
+  const m = (src.split('v.name === "mcp"')[1] || "").split('v.name === "resume"')[0];
+  ok(/mcpManager\.status\(\)/.test(m), "连接器状态问的是管理器，不是另抄一份");
+}
+
+// ── ⑳之二 /init：让它自己去看，别自己动手写文件 ──────────────────────────
+console.log("\n⑳之二 /init");
+{
+  const 新 = R.initTask({});
+  ok(/AGENTS\.md/.test(新.prompt), "交出去的那句话里点名 AGENTS.md——项目规范就是从这个文件名读的");
+  ok(/别编|真看到/.test(新.prompt),
+     "★命令照抄真看到的那几条★ 不拦一句的话它会顺手编一条 npm test 出来，而这个项目可能根本没有");
+  ok(/找不到就不写/.test(新.prompt),
+     "★找不到依据就别写★ 拿通用建议凑满十条，读的人分不出哪条是这个项目真有的规矩");
+  ok(/没依据.*直说|直说没依据/.test(新.prompt), "写完要交代依据了哪些文件");
+
+  const 旧 = R.initTask({ has: "AGENTS.md" });
+  ok(/增补|不整篇/.test(旧.note), "已经有的时候先说一声这趟是增补");
+  ok(/不要整篇覆盖/.test(旧.prompt),
+     "★已经有就不许整篇盖掉★ 那份八成是人手写的，盖掉了 git 之外一点痕迹都没有");
+  ok(旧.prompt.length > 新.prompt.length, "（反向对照：两种情况交出去的话确实不一样）");
+
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const h = (src.split('v.name === "init"')[1] || "").split('v.name === "compact"')[0];
+  ok(/return t\.prompt/.test(h),
+     "★/init 是把话交回主循环去跑，不是自己写文件★ 自己写的话，人按一下盘上就多个文件，中间什么都没问过");
+  ok(/AGENTS\.md", "CLAUDE\.md/.test(h) && /size > 0/.test(h),
+     "★两个文件名都认，空文件不算数★ 一个空的 AGENTS.md 会让它以为「已经有了」，于是只增补不重写");
+  const loop = (src.split("const line = await nextInput();")[1] || "");
+  ok(/typeof 交出来的 !== "string"/.test(loop), "★主循环真收下了命令交出来的那句话★ 不收的话 /init 按下去什么都不会发生");
+  ok(/现成的 \? \{ files: \[\], missing: \[\], text: 现成的 \}/.test(loop),
+     "★现成的那句话不过 splitFiles★ 那一步是摘「人拖进来的文件」的，拿它扫一句现成的话会把 AGENTS.md 当附件摘走，句子当场缺一块");
+}
+
 // ── 文档那张表得跟着命令表走 ─────────────────────────────────────────
 // 真实发生过：命令表里已经有 /open /paste /drop，docs/命令行用法.md 还写着「十条内置命令」、
 // 表里一条都没有。文档是很多人唯一读过的东西，少三条 = 这三个功能对外等于不存在
-console.log("\n⑲ 文档里的命令表");
+console.log("\n㉑ 文档里的命令表");
 {
   const doc = fs.readFileSync(path.join(ROOT, "docs", "命令行用法.md"), "utf8");
   const missing = R.COMMANDS.map((c) => c.name).filter((n) => !new RegExp("\\|\\s*`/" + n + "[ `]").test(doc));

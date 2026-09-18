@@ -1308,11 +1308,13 @@ function modePrompt(mode) {
     emit({ type: "context", used, budget, threshold, pct, compact: (config.agent || {}).compact !== false });
   }
 
-  async function compactHistory(history, { emit = () => {}, stats, traceNode } = {}) {
-    if ((config.agent || {}).compact === false) return;
+  // force=true 是人手动敲 /compact：这时候不看阈值也不看「关了自动压缩」这个设置——
+  // 那个设置管的是「别自作主张」，不是「不许我自己压」。
+  async function compactHistory(history, { emit = () => {}, stats, traceNode, force = false } = {}) {
+    if (!force && (config.agent || {}).compact === false) return;
     const budget = config.agent.max_context_chars || 120000;
     const threshold = config.agent.compact_threshold_chars || Math.floor(budget * 0.6);
-    if (historyChars(history) <= threshold) return;
+    if (!force && historyChars(history) <= threshold) return;
     const keepTurns = config.agent.compact_keep_turns || 4;
     const userIdx = [];
     history.forEach((e, i) => { if (e.role === "user") userIdx.push(i); });
@@ -2263,7 +2265,7 @@ function modePrompt(mode) {
     }));
   }
 
-  return { runTask, getSkills, toolList, runTool, DIRECT_TOOLS };
+  return { runTask, getSkills, toolList, runTool, DIRECT_TOOLS, compactHistory };
 }
 
 // 并发上限：抓页面是等网络，开太多既没有更快，还容易被对方站点当成扫站封 IP
