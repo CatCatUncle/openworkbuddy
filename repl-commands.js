@@ -36,6 +36,7 @@ const COMMANDS = [
   { name: "mode", arg: MODE_ARG, choices: MODE_IDS, desc: "换执行模式；不给值就说当前是哪个" },
   { name: "perm", arg: PERM_ARG, choices: PERM_IDS, desc: "换这一趟放多少权（只看不动/每步都问/自动改文件/全自动）；不给值就把四档摆出来" },
   { name: "new", desc: "开一个新会话；刚才那段不会丢，还能翻回去" },
+  { name: "resume", aliases: ["r"], arg: "[序号或会话id]", desc: "接着之前那段往下聊；不给值就把最近的会话摆出来" },
   { name: "session", desc: "当前会话的 id 和存盘位置" },
   { name: "status", desc: "模式、底层引擎、工作目录、这个会话跑了几轮" },
   { name: "model", arg: "[序号或名字]", desc: "换这趟活儿谁来干：本机引擎或你配的模型；不给值就把能选的列出来" },
@@ -294,6 +295,103 @@ function pickModelRow(rows, arg) {
   return { kind: "none", arg: w, why: "没有这一条" };
 }
 
+// ── `/resume`：接着之前那段往下聊 ─────────────────────────────────────────
+// 命令行本来就有 `openworkbuddy resume`，但那是**开一个新进程**才用得上的写法。
+// 人已经坐在交互模式里了，想翻回半小时前那段，只能先 /exit 再重开——而一 exit，
+// 当前这段的上下文、带着没发的文件、临时调过的 /mode /perm 全没了。
+// Claude Code 和 Codex 在 REPL 里都有 /resume，缺的就是这一条。
+
+const RESUME_MAX = 12; // 再多就得翻屏了；真要找更早的，按 id 接
+
+/**
+ * 多久以前。终端里「12 分钟前」有用，`2026-09-18T00:16:18.402Z` 没用——
+ * 人找的是「我刚才在哪一条上」，不是时间戳。
+ *
+ * 时钟从外面传：这一层不许自己读表（测试要能把时间钉死逐帧断言）。
+ * 没给时钟就返回空串，让上面那层少印一列，绝不拿 0 当现在——
+ * 那会把每一条都说成「刚刚」，比不显示更糟。
+ */
+function ago(ms, now) {
+  const t = Number(now) || 0, at = Number(ms) || 0;
+  if (!t || !at) return "";
+  const min = Math.floor(Math.max(0, t - at) / 60000);
+  if (min < 1) return "刚刚";
+  if (min < 60) return min + " 分钟前";
+  const h = Math.floor(min / 60);
+  if (h < 24) return h + " 小时前";
+  const day = Math.floor(h / 24);
+  if (day === 1) return "昨天";
+  if (day < 30) return day + " 天前";
+  const mo = Math.floor(day / 30);
+  return mo < 12 ? mo + " 个月前" : Math.floor(day / 365) + " 年前";
+}
+
+/**
+ * 把 cli.js 读出来的会话列表编上号。
+ *
+ * 桌面开的那些一起列——两边写的本来就是同一批文件，只列 cli_ 开头那半边，
+ * 等于把「早上在桌面开了个头，下午想在终端接着做」这条路堵死（跟 `openworkbuddy resume` 一个口径）。
+ * 所以每行都标了来源：接过去之前你得看得见这条是不是桌面那边正开着的。
+ */
+function sessionRows(list, o = {}) {
+  const now = Number(o.now) || 0;
+  const cur = String(o.currentId || "");
+  return (Array.isArray(list) ? list : []).map((s, i) => ({
+    n: i + 1,
+    id: String((s && s.id) || ""),
+    title: String((s && s.title) || "").replace(/\s+/g, " ").trim(),
+    turns: Number((s && s.turns) || 0),
+    from: String((s && s.from) || ""),
+    when: ago(s && s.mtime, now),
+    current: String((s && s.id) || "") === cur,
+  }));
+}
+
+/** 选单长什么样。标题列对齐按显示宽度算，id 甩在最后一列——它长短不一，放中间会把整张表撑歪 */
+function sessionListText(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    return ["", "openworkbuddy> 还没有可以接的会话——先说一句话，或者在桌面端聊一句。", ""].join("\n");
+  }
+  const title = (r) => r.title || "无标题";
+  const w = list.reduce((n, r) => Math.max(n, cols(title(r))), 0);
+  const fw = list.reduce((n, r) => Math.max(n, cols(r.from)), 0);
+  const tw = list.reduce((n, r) => Math.max(n, cols(r.turns + " 轮")), 0);
+  const ww = list.reduce((n, r) => Math.max(n, cols(r.when)), 0);
+  const line = (r) => {
+    const bits = [padCols(title(r), w + GAP), padCols(r.from, fw), "· " + padCols(r.turns + " 轮", tw)];
+    if (ww) bits.push("· " + padCols(r.when, ww));
+    // 标记只用 ASCII，理由同 modelListText：> 是一列，▸ 在中文终端按两列画，那一行会歪
+    return `${r.current ? ">" : " "} ${String(r.n).padStart(2)}  ${bits.join(" ")}  ${r.id}`.trimEnd();
+  };
+  const here = list.some((r) => r.current)
+    ? "  带 > 的是你现在这条。接过去之后，现在这段不会丢，/resume 回来就是。"
+    : "  你现在这条还没说过话，所以不在表里；接过去之后它就自然没了。";
+  return ["", "openworkbuddy> 最近这些会话，接哪一条：", "", ...list.map(line), "",
+    "  接一条：/resume 2　或　/resume 标题里的几个字　或　/resume <会话id>",
+    here, ""].join("\n");
+}
+
+/** 认出他说的是哪一条。序号、完整 id、标题或 id 的一部分都认；
+ *  对上两条以上就把那几条报出来，不替他挑——挑错了是接进了另一段对话，比没接更难发现 */
+function pickSessionRow(rows, arg) {
+  const list = Array.isArray(rows) ? rows : [];
+  const w = String(arg == null ? "" : arg).trim();
+  if (!w) return { kind: "list" };
+  if (/^\d+$/.test(w)) {
+    const r = list.find((x) => x.n === Number(w));
+    return r ? { kind: "ok", row: r }
+      : { kind: "none", arg: w, why: list.length ? "序号只到 " + list.length : "一条会话都还没有" };
+  }
+  const lw = w.toLowerCase();
+  const eq = list.filter((r) => r.id.toLowerCase() === lw);
+  if (eq.length === 1) return { kind: "ok", row: eq[0] };
+  const hit = list.filter((r) => (r.id + " " + r.title).toLowerCase().includes(lw));
+  if (hit.length === 1) return { kind: "ok", row: hit[0] };
+  if (hit.length > 1) return { kind: "many", arg: w, rows: hit };
+  return { kind: "none", arg: w, why: "最近这些里没有对得上的" };
+}
+
 function helpText() {
   const rows = COMMANDS.map((c) => ({
     left: `/${c.name}${c.arg ? " " + c.arg : ""}`,
@@ -408,5 +506,6 @@ module.exports = {
   COMMANDS, PASTE_GAP_MS, HISTORY_MAX,
   parse, mergePaste, makeInbox, resolveCd, complete, menu, helpText, unknownText, badArgText,
   modelRows, modelListText, pickModelRow,
+  RESUME_MAX, ago, sessionRows, sessionListText, pickSessionRow,
   sanitizeHistory, nearest, find,
 };

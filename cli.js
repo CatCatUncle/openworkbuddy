@@ -1482,7 +1482,53 @@ function splitFiles(text) {
       sessionId = newSessionId();
       sessFile = sessFileOf(sessionId);
       sess = { history: [], transcript: [], title: "" };
-      prog(dim(`开了新会话 ${sessionId}（刚才那段还在：openworkbuddy --session ${oldId}）\n`));
+      prog(dim(`开了新会话 ${sessionId}（刚才那段还在：/resume ${oldId}）\n`));
+      return;
+    }
+    if (v.name === "resume") {
+      // 光有 `openworkbuddy resume` 不够：那条是**开新进程**才用得上的写法。人已经坐在交互模式里，
+      // 想翻回半小时前那段就得先 /exit 再重开——而一 exit，当前这段的上下文、带着还没发出去的文件、
+      // 临时调过的 /mode /perm 全跟着没了。所以这儿干的是「原地换一条」，别的什么都不动。
+      const rows = repl.sessionRows(listCliSessions(repl.RESUME_MAX), { now: Date.now(), currentId: sessionId });
+      let r = repl.pickSessionRow(rows, v.arg);
+      // 选单只列最近十二条，更早的照样接得上——只要他手里有 id。/new 和下面那句都会把
+      // 「刚离开的那条」的 id 打出来，就是留给这一刻用的
+      const raw = String(v.arg || "");
+      if (r.kind === "none" && /^(cli_|s_)[\w-]+$/.test(raw) && fs.existsSync(sessFileOf(raw))) {
+        r = { kind: "ok", row: { id: raw, title: "", turns: 0, from: raw.startsWith("cli_") ? "命令行" : "桌面" } };
+      }
+      if (r.kind === "list") { prog(repl.sessionListText(rows)); return; }
+      if (r.kind === "none") { prog(yellow(`没认出「${r.arg}」——${r.why}。/resume 不带参数看最近这些\n`)); return; }
+      if (r.kind === "many") {
+        prog(yellow(`「${r.arg}」对得上好几条：${r.rows.map((x) => `${x.n} ${x.title || x.id}`).join("、")}。写序号或者写全一点\n`));
+        return;
+      }
+      const row = r.row;
+      if (row.id === sessionId) { prog(dim("本来就在这条会话里\n")); return; }
+      // 读不出来就当场停，绝不「接了一个空的」——那等于把人的旧对话悄悄换成一张白纸，
+      // 而他下一句话是冲着旧对话说的，模型却一无所知
+      const f = sessFileOf(row.id);
+      const loaded = store.readJson(f, null);
+      if (!loaded || typeof loaded !== "object") {
+        prog(red(`${row.id} 这条读不出来（${f}），没给你接过去，当前这条一点没动\n`));
+        return;
+      }
+      const leaving = sessionId;
+      sessionId = row.id;
+      sessFile = f;
+      sess = { history: [], transcript: [], title: "", ...loaded };
+      const turns = (sess.transcript || []).filter((t) => t && t.type === "user").length;
+      prog(dim(`接上了${row.from}会话 ${sessionId}${sess.title ? "：" + sess.title : ""}（${turns} 轮）\n`));
+      // 接过来的上下文是要花钱的：一条跑过二十轮的会话接过来，下一句话就带着那二十轮一起发出去。
+      // 不印这行的话，人只会在账单上发现
+      prog(dim(contextLine() + "\n"));
+      const last = (sess.transcript || []).filter((t) => t && t.type === "user").pop();
+      if (last && last.text) prog(dim(`上次问到：${String(last.text).replace(/\s+/g, " ").slice(0, 60)}\n`));
+      if (sess.goal && sess.goal.status === "active") printGoalCard(sess.goal);
+      // 桌面那边可能正开着同一条。文件是原子改名写的，坏不了，但后写的那次会盖掉前一次——
+      // 这事不说出来，人会以为两边自动同步
+      if (row.from === "桌面") prog(yellow("这条是桌面端开的；桌面要是同时开着它，两边写同一个文件，后写的会盖掉先写的\n"));
+      prog(dim(`刚才那条还在：/resume ${leaving}\n`));
       return;
     }
     if (v.name === "session") { prog(dim(`${sessionId}\n${sessFile}\n`)); return; }
