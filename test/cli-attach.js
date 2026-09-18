@@ -392,9 +392,13 @@ console.log("\n⑩ /paste 和 /drop：表里有、Tab 补得出、菜单列得�
   eq(R.parse("/paste"), { kind: "cmd", name: "paste", arg: "" }, "/paste 认得出");
   eq(R.parse("/v"), { kind: "cmd", name: "paste", arg: "" }, "/v 是 /paste 的简写");
   eq(R.parse("/drop"), { kind: "cmd", name: "drop", arg: "" }, "/drop 认得出");
+  // /d 是两条命令的开头：/diff 和 /drop。所以谁都不许把 d 收成自己的简写——
+  // 收了的话打 /d 回车就直接跑那一条，而菜单上明明列着两条，想丢附件的人会得到一张文件清单
+  ok(!R.COMMANDS.some((c) => (c.aliases || []).includes("d")), "★没有哪条命令占着 /d★ 两条命令都以 d 开头，占了就等于替人做主");
   const menu = R.menu("/d");
-  eq((menu ? menu.items : []).map((i) => i.insert), ["/drop"], "打 /d 菜单里出得来");
-  eq(R.complete("/d")[0], ["/drop"], "Tab 补得出来，跟菜单是同一张表");
+  eq((menu ? menu.items : []).map((i) => i.insert).join(" "), "/diff /drop", "打 /d 两条都摆出来");
+  eq(R.complete("/d")[0].join(" "), "/diff /drop", "Tab 补出来的跟菜单是同一张表");
+  eq(R.parse("/d").kind, "unknown", "★/d 不自己认一条★ 认了就是在两条里替人挑了一条，而他只打了一个字母");
   for (const n of ["paste", "drop"]) {
     ok(CLI_SRC.includes(`v.name === "${n}"`), `★/${n} 在 cli.js 里真有人接★ 列在菜单里却没人接，等于敲了没反应`);
   }
