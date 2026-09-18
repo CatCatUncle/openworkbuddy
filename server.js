@@ -24,6 +24,7 @@ seedDataDir();
 const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder, anthropicBase } = require("./llm");
+const sessSearch = require("./session-search");
 const { outputFiles, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
@@ -51,6 +52,9 @@ const cfgMerge = require("./config-merge"); // 存配置时把外面手改的那
 const cfgLint = require("./config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
 const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠道表 + 每路多模型
 const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
+const systemOne = require("./systemone"); // 判断模型（Jev）的纯逻辑：请求怎么拼、回答怎么读
+const jev = require("./jev"); // 判断模型的调用路：挑渠道、取 Key、发请求
+const quota = require("./quota"); // 按次计费的外部 API：调之前问一句额度，调完记一笔
 const tracing = require("./trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
 const genCache = require("./gen-cache"); // 生成结果缓存：同一格重跑别再烧第二次钱
 const memory = require("./memory");
@@ -196,6 +200,11 @@ try {
 let llmInner = createLLM(config);
 // 记忆向量召回：有能算 embeddings 的渠道就接上，没有就退回关键词匹配（memory 自己兜底）
 memory.setEmbedder(createEmbedder(config));
+// 任务历史检索的向量渠道。这两个变量本该跟下面那一块检索代码放在一起，但接线在这儿就发生了——
+// let 声明在后面的话是暂时性死区，进程会直接起不来（不是搜索不好使，是整个服务起不来）
+let sessEmbedder = null;
+let sessVecRunning = false;
+setSessEmbedder(createEmbedder(config));
 memory.ensureVectors().then((r) => { if (r.computed) console.log(`[记忆向量] 启动补算了 ${r.computed} 条`); }).catch((e) => console.warn("[记忆向量] 启动补算失败:", e.message));
 // 可热替换的 LLM 包装：设置修改后 runtime 无需重建
 const llm = {
@@ -534,7 +543,25 @@ try {
 // 搬家的直接原因：这段代码原本只长在下面那个 /api/chat 里，于是 Goal 就只对网页存在——
 // 命令行的模式表是手抄的三个，goal 没抄进去，`/mode goal` 敲得进去却按 craft 跑。
 // 这里只留「动脑那句话问谁」（goalThink），因为它要看登录用户配的是哪个引擎。
-const goalKit = require("./goal").createGoalEngine({ workspaceDir: getWorkspaceDir });
+/**
+ * 目标验收那一步借判断模型（Jev）。
+ *
+ * 走跟 /api/decide 同一道额度闸：它一道题两万分之一美金，贵不起来，可它是**在循环里**跑的——
+ * 自动补跑几轮、每轮几条标准，一晚上能问出很多道。限的是失控的量，不是钱。
+ * 没配渠道 / 被闸拦了都返回 ok:false，goal.js 会安静地退回对话模型那条老路。
+ */
+async function decideForGoal(args) {
+  const n = Object.keys((args && args.questions) || {}).length;
+  const st = jev.status(config);
+  if (!st.ready) return { ok: false, error: st.why, notReady: true };
+  const g = quota.gate("decide", { n, model: st.model, provider: st.route });
+  if (!g.ok) return { ok: false, error: g.why };
+  const out = await jev.ask(config, args);
+  if (!out.ok) { quota.undo(g.hold); return out; }
+  quota.record("decide", { n, provider: st.route, model: out.model || st.model, meta: "目标验收", hold: g.hold });
+  return out;
+}
+const goalKit = require("./goal").createGoalEngine({ workspaceDir: getWorkspaceDir, decide: decideForGoal });
 const GOAL_MAX_ROUNDS = goalKit.MAX_ROUNDS;
 
 /**
@@ -1667,6 +1694,17 @@ app.post("/api/provider-test", async (req, res) => {
   const key = !rawKey || /^\*+$/.test(rawKey) ? String(known.api_key || "") : rawKey;
   const local = kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(base);
   if (!key && !local) return res.json({ ok: false, error: "这个渠道还没填 Key，填完再测" });
+  // 判断模型（Jev）没有 /chat/completions 这条路，拿它去 ping 必然 400。
+  // 它有自己的测活：真问一道题，把答案也带回来——「通了」和「答得对不对」一次看完
+  if ((mediaModels.PROVIDER_KINDS.find((k) => k.kind === kind) || {}).decide_only) {
+    const t = Date.now();
+    const r = await jev.selftest({ providers: [{ id: known.id || "tmp", kind, base_url: base, api_key: key }] }, { timeoutMs: 20000 });
+    return res.json({
+      ok: !!r.ok, ms: Date.now() - t, model: r.model || "",
+      error: r.ok ? "" : r.error || "没答上来",
+      answers: r.ok ? r.answers.map((a) => systemOne.lineOf(a)) : [],
+    });
+  }
   if (kind !== "anthropic" && !/^https?:\/\//i.test(base)) return res.json({ ok: false, error: "接口地址得是 http(s) 开头的完整地址" });
   const mine = (config.models || []).filter((m) => m.channel === known.id);
   const model = String(b.model || "").trim()
@@ -1678,6 +1716,73 @@ app.post("/api/provider-test", async (req, res) => {
   const t0 = Date.now();
   const why = await probeModel({ provider: mediaModels.protoOfKind(kind), base_url: base, api_key: key, model });
   res.json({ ok: !why, ms: Date.now() - t0, model, error: why || "" });
+});
+
+/**
+ * 判断模型（Jev）：一段状态 + 几道有类型的题 → 几个代码能直接用的值。
+ *
+ * 为什么它不在 /api/chat 那条路上：那条路是「拿文字」，这条是「拿主意」。
+ * Jev 不会写字，它返回的是选中的选项、一个分数、或者一个 0~1 的概率，外加一个确定度。
+ * 混进对话接口只会让两边的返回都得多带一个「这次其实是另一种东西」的标记。
+ *
+ * GET 只说「现在能不能用、走的哪条路」，**不带 Key**——这一条给设置页和 doctor 看。
+ */
+app.get("/api/decide", (req, res) => {
+  res.json({
+    ...jev.status(config),
+    kinds: systemOne.KINDS, kind_cn: systemOne.KIND_CN,
+    routes: systemOne.ROUTE_IDS.map((id) => ({ ...systemOne.ROUTES[id] })),
+    max_state: systemOne.MAX_STATE, max_questions: systemOne.MAX_QUESTIONS, sure_min: systemOne.SURE_MIN,
+  });
+});
+
+/**
+ * 真问一趟。
+ *
+ * 额度按**题数**算，不按请求数：一次请求里塞 30 道题和塞 1 道题，上游收的钱差 30 倍，
+ * 按请求记的话「一天 800 次」这道闸拦不住任何东西——一次请求就能把一天的量跑完。
+ */
+app.post("/api/decide", async (req, res) => {
+  const b = req.body || {};
+  const { questions, errs } = systemOne.normalizeQuestions(b.questions);
+  if (errs.length) return res.status(400).json({ ok: false, error: errs.join("；") });
+  // 材料也在这儿查，不留到 jev.ask 里边——不然「既没材料又没配渠道」的那一趟会先被说成
+  // 「去配渠道」，人配完回来还是同一个 400。请求本身不对，跟配没配渠道没关系
+  const stateText = typeof b.state === "string" ? b.state.trim() : b.state;
+  if (!stateText || (typeof stateText === "object" && !Object.keys(stateText).length)) {
+    return res.status(400).json({ ok: false, error: "没给它要判断的东西（state）——问题问得再清楚，没有材料它也判断不了" });
+  }
+  const n = Object.keys(questions).length;
+  const st = jev.status(config);
+  if (!st.ready) return res.status(503).json({ ok: false, error: st.why + "。" + st.how, not_ready: true });
+
+  const g = quota.gate("decide", { n, model: st.model, provider: st.route });
+  if (!g.ok) {
+    security.audit("额度拦截", "判断模型：" + g.why, "拦截");
+    return res.status(429).json({ ok: false, error: g.why, quota: true });
+  }
+  const out = await jev.ask(config, { state: b.state, questions, model: b.model, timeoutMs: Number(b.timeout_ms) || 0 });
+  if (!out.ok) {
+    quota.undo(g.hold);   // 没发出去 / 上游没认，不该占着额度
+    return res.status(out.notReady ? 503 : out.badRequest ? 400 : 502).json({ ok: false, error: out.error, ms: out.ms || 0 });
+  }
+  quota.record("decide", { n, provider: st.route, model: out.model || st.model, meta: Object.keys(questions).join("、").slice(0, 80), hold: g.hold });
+  res.json({
+    ...out,
+    lines: out.answers.map((a) => systemOne.lineOf(a)),
+    cost: systemOne.costOf(out.usage),
+    cost_text: systemOne.costText(out.usage),
+  });
+});
+
+/** 一键测活：拿一段固定材料真问三道题。设置页那个「测一下」和命令行的 `openworkbuddy jev` 走的是同一条 */
+app.post("/api/decide/selftest", async (req, res) => {
+  const g = quota.gate("decide", { n: 3, provider: (jev.status(config) || {}).route || "" });
+  if (!g.ok) return res.status(429).json({ ok: false, error: g.why, quota: true });
+  const out = await jev.selftest(config);
+  if (!out.ok) { quota.undo(g.hold); return res.status(502).json({ ok: false, error: out.error }); }
+  quota.record("decide", { n: 3, provider: out.route || "", model: out.model || "", meta: "测活", hold: g.hold });
+  res.json({ ...out, lines: out.answers.map((a) => systemOne.lineOf(a)), cost_text: systemOne.costText(out.usage) });
 });
 
 /**
@@ -2168,6 +2273,7 @@ app.post("/api/settings", (req, res) => {
     }
     llmInner = createLLM(config); // 模型热切换
     memory.setEmbedder(createEmbedder(config));
+    setSessEmbedder(createEmbedder(config));
     memory.ensureVectors().catch(() => {});
     saveConfig();
     if (b.im && b.im.feishu && imBridge) {
@@ -2480,6 +2586,7 @@ app.post("/api/onboarding", async (req, res) => {
     }
     llmInner = createLLM(config);
     memory.setEmbedder(createEmbedder(config));
+    setSessEmbedder(createEmbedder(config));
     memory.ensureVectors().catch(() => {});
     saveConfig();
     res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
@@ -3492,9 +3599,16 @@ const outIndexCache = new Map(); // 会话文件名 -> { mtime, row }
 function sessionOutputRow(id, s) {
   if (!s || !Array.isArray(s.transcript) || !s.transcript.length) return null;
   const names = [];
+  const turns = [];
   const seen = new Set();
   let firstAt = 0;
+  // 「第几回合」只能数 user 条目，不能拿数组下标充数：回放时一条 user 起一个回合
+  //（openSession 就是这么拼界面的），下标里还夹着 assistant，差一倍。
+  // 同一个文件被改过好几轮就只认头一轮——用户点它是想看「这东西怎么来的」，
+  // 那句话在第一次写出它的那一段里，后面几轮是修修补补。
+  let ti = -1;
   for (const turn of s.transcript) {
+    if (turn.type === "user") { ti++; continue; }
     if (turn.type !== "assistant" || !Array.isArray(turn.events)) continue;
     for (const ev of turn.events) {
       if (ev.type !== "files") continue;
@@ -3502,6 +3616,7 @@ function sessionOutputRow(id, s) {
         if (typeof n !== "string" || seen.has(n)) continue;
         seen.add(n);
         names.push(n);
+        turns.push(ti);
         if (!firstAt) firstAt = Date.parse(turn.at || "") || 0;
       }
     }
@@ -3516,6 +3631,7 @@ function sessionOutputRow(id, s) {
     dir: s.dir || "",
     at: Date.parse(s.updated_at || "") || firstAt,
     names,
+    turns,
   };
 }
 function listTaskOutputs() {
@@ -3625,17 +3741,21 @@ app.get("/api/library/outputs", (req, res) => {
   for (const row of listTaskOutputs()) {
     if (!ownSession(req.user, row)) continue; // 跟侧栏一个口径：别人的任务不该出现在我的资料库里
     const files = [];
-    for (const n of row.names) {
+    for (let i = 0; i < row.names.length; i++) {
+      const n = row.names[i];
+      // 回合号是给「跳到写出它的那段对话」用的。老的内存缓存行没有这个字段，
+      // -1 一路传到前端会被当成第 0 回合，所以查不到就写 undefined，让界面自己决定退回顶部
+      const tn = row.turns && row.turns[i] >= 0 ? row.turns[i] : undefined;
       const f = meta.get(n);
-      if (f) { claimed.add(n); files.push({ name: n, size: f.size, mtime: f.mtime, gone: false }); continue; }
+      if (f) { claimed.add(n); files.push({ name: n, size: f.size, mtime: f.mtime, gone: false, turn: tn }); continue; }
       const st = statOf(n);
       // 搬过家的按新地址报出去：名字给人看的那一截没变（前端只取最后一段），
       // 但地址是能打开的那个。顺带认领一下，免得同一个文件在「未归属」里再出现一遍
-      if (st) { const at = st.at || n; claimed.add(at); files.push({ name: at, size: st.size, mtime: st.mtime, gone: false }); continue; }
-      files.push({ name: n, size: 0, mtime: "", gone: st === false });
+      if (st) { const at = st.at || n; claimed.add(at); files.push({ name: at, size: st.size, mtime: st.mtime, gone: false, turn: tn }); continue; }
+      files.push({ name: n, size: 0, mtime: "", gone: st === false, turn: tn });
     }
     files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
-    const { names, user, ...rest } = row;
+    const { names, turns, user, ...rest } = row;
     tasks.push({ ...rest, files, live: files.filter((f) => !f.gone).length });
     if (tasks.length >= 200) break;
   }
@@ -5930,6 +6050,136 @@ app.get("/api/chat/stream/:id", (req, res) => {
 app.get("/api/sessions", (req, res) => {
   const rows = listSessionsOnDisk().filter((r) => ownSession(req.user, r)).slice(0, 300);
   res.json({ sessions: rows.map(({ user, ...r }) => r) }); // 归属只用来过滤，不回给前端
+});
+
+// ---------- 任务历史检索 ----------
+//
+// 侧栏那个放大镜以前只筛标题。可标题是任务跑完自动起的，用户从没读过一眼；
+// 他记得的是自己当时打的那句话（「把这个 csv 里重复的行挑出来」），或者最后拿到的那个文件名。
+// 按标题筛，这两种记法一条都找不着。
+//
+// 所以这儿给每条会话摘一段能搜的正文（摘法在 session-search.js），按文件 mtime 增量缓存——
+// 跟侧栏那份 .index 同一套判据，但**分开存**：.index 是每次拉侧栏都要读的，
+// 一条会话几 KB 的正文摘要塞进去，等于让「打开应用」这条最热的路去为「偶尔搜一次」买单。
+const SESS_SEARCH_FILE = path.join(SESS_DIR, ".search");
+let sessSearchIdx = null;      // { v, model, rows: { <文件名>: { mtime, digest, files, vec } } }
+let sessSearchDirty = false;
+let sessSearchTimer = null;
+function loadSessSearchIdx() {
+  if (sessSearchIdx) return sessSearchIdx;
+  const raw = store.readJson(SESS_SEARCH_FILE, null);
+  sessSearchIdx = (raw && raw.v === 1 && raw.rows && typeof raw.rows === "object")
+    ? { v: 1, model: String(raw.model || ""), rows: raw.rows }
+    : { v: 1, model: "", rows: {} };
+  return sessSearchIdx;
+}
+function saveSessSearchIdx() {
+  if (!sessSearchDirty || sessSearchTimer) return;
+  sessSearchTimer = setTimeout(() => {
+    sessSearchTimer = null;
+    sessSearchDirty = false;
+    try { store.writeJsonAtomic(SESS_SEARCH_FILE, sessSearchIdx, { backup: false }); } catch {}
+  }, 2000);
+  if (sessSearchTimer.unref) sessSearchTimer.unref();
+}
+/** 摘要索引跟盘上的文件对齐。只重读 mtime 变过的，没变的直接用缓存 */
+function sessSearchIndex() {
+  const idx = loadSessSearchIdx();
+  let names = [];
+  try { names = fs.readdirSync(SESS_DIR).filter((n) => n.endsWith(".json")); } catch { return idx; }
+  const seen = new Set(names);
+  for (const n of names) {
+    const id = n.slice(0, -5);
+    let mtime = 0;
+    try { mtime = fs.statSync(path.join(SESS_DIR, n)).mtimeMs; } catch { continue; }
+    const live = sessions.get(id);
+    const hit = idx.rows[n];
+    if (!live && hit && hit.mtime === mtime) continue;
+    const data = live || store.readJson(path.join(SESS_DIR, n), null);
+    if (!data) { delete idx.rows[n]; sessSearchDirty = true; continue; }
+    const digest = sessSearch.digestOf(data);
+    // 正文变了，旧向量就作废——留着的话，搜出来的「意思相近」说的是这条会话上一版的意思
+    const changed = !hit || hit.digest !== digest;
+    idx.rows[n] = { mtime, digest, files: sessSearch.filesOf(data), vec: changed ? null : (hit.vec || null) };
+    sessSearchDirty = true;
+  }
+  for (const k of Object.keys(idx.rows)) if (!seen.has(k)) { delete idx.rows[k]; sessSearchDirty = true; }
+  saveSessSearchIdx();
+  return idx;
+}
+
+// 向量那一路：配了 embeddings 渠道才有。没有就只走字面 + 词面，并在结果里明说这一路没走——
+// 悄悄降级的话，用户搜不到就只会觉得「这个搜索不准」，而真正该做的是去配一条渠道。
+const SESS_VEC_MAX = 400;   // 只给最近这些条算向量：更早的靠字面找得到，而每条向量都是一次真花钱的调用
+function setSessEmbedder(fn) { sessEmbedder = typeof fn === "function" ? fn : null; }
+/** 后台补算向量。尽力而为：算不动就下次再说，绝不拖住一次搜索 */
+async function ensureSessVectors() {
+  if (!sessEmbedder || sessVecRunning) return { computed: 0 };
+  sessVecRunning = true;
+  try {
+    const idx = loadSessSearchIdx();
+    // 换了嵌入模型要全部作废重算，但「到底换没换」先探一次再说：
+    // 首选渠道欠费时 embedder 报的是首选的名字，照着它清库会把整库清空又一条算不出来
+    if (idx.model && idx.model !== sessEmbedder.model && Object.values(idx.rows).some((r) => r && r.vec)) {
+      const probe = await sessEmbedder(["嵌入模型探针"]);
+      if (!probe) return { computed: 0 };
+      if (idx.model !== sessEmbedder.model) { for (const r of Object.values(idx.rows)) if (r) r.vec = null; idx.model = sessEmbedder.model; }
+    }
+    if (!idx.model) idx.model = sessEmbedder.model;
+    const todo = Object.entries(idx.rows)
+      .filter(([, r]) => r && !r.vec)
+      .sort((a, b) => Number(b[1].mtime || 0) - Number(a[1].mtime || 0))
+      .slice(0, SESS_VEC_MAX);
+    let computed = 0;
+    for (let i = 0; i < todo.length; i += 16) {
+      const batch = todo.slice(i, i + 16);
+      const out = await sessEmbedder(batch.map(([n, r]) => sessSearch.embedTextOf({ title: n.slice(0, -5), digest: r.digest })));
+      if (!out) break;  // embedder 自己记失败次数并停用，这儿不重试
+      batch.forEach(([n], j) => { idx.rows[n].vec = out[j].map((x) => Math.round(x * 1e5) / 1e5); });
+      computed += batch.length;
+    }
+    if (computed) { sessSearchDirty = true; saveSessSearchIdx(); }
+    return { computed };
+  } catch { return { computed: 0 }; } finally { sessVecRunning = false; }
+}
+const qVecCache = new Map();   // 搜索词 → 向量。边打字边搜，同一个词几秒内会来好几趟
+async function queryVector(q) {
+  if (!sessEmbedder) return null;
+  const k = String(q).slice(0, 200);
+  if (qVecCache.has(k)) return qVecCache.get(k);
+  let v = null;
+  try { const r = await sessEmbedder([k]); v = (r && r[0]) || null; } catch { v = null; }
+  if (qVecCache.size > 50) qVecCache.delete(qVecCache.keys().next().value);
+  qVecCache.set(k, v);
+  return v;
+}
+
+app.get("/api/sessions/search", async (req, res) => {
+  const q = String((req.query || {}).q || "").trim();
+  if (!q) return res.json({ q: "", hits: [], semantic: false, note: "" });
+  const meta = new Map(listSessionsOnDisk().filter((r) => ownSession(req.user, r)).map((r) => [r.id, r]));
+  const idx = sessSearchIndex();
+  const rows = [];
+  for (const [n, r] of Object.entries(idx.rows)) {
+    const m = meta.get(n.slice(0, -5));
+    if (!m || !r) continue;   // 侧栏看不见的（别人的、空壳的）也搜不到：搜索不是绕过归属的后门
+    rows.push({ id: m.id, title: m.title, at: m.at, turns: m.turns, lane: m.lane, project: m.project, digest: r.digest, files: r.files || [], vec: r.vec || null });
+  }
+  const withVec = rows.filter((r) => r.vec).length;
+  const qVec = await queryVector(q);
+  const hits = sessSearch.rank(rows, q, { qVec, limit: 40 });
+  ensureSessVectors().then((x) => { if (x.computed) console.log(`[任务检索] 补算了 ${x.computed} 条向量`); }).catch(() => {});
+  res.json({
+    q,
+    scanned: rows.length,
+    semantic: !!qVec,
+    vectors: { ready: withVec, of: Math.min(rows.length, SESS_VEC_MAX) },
+    note: sessSearch.searchNote({ total: rows.length, semantic: !!qVec, why: sessEmbedder ? "嵌入渠道这次没算出来" : "" }),
+    hits: hits.map((h) => ({
+      id: h.id, title: h.row.title, at: h.row.at, turns: h.row.turns, lane: h.row.lane, project: h.row.project,
+      why: h.why, score: Math.round(h.score * 1000) / 1000, snippet: h.snippet,
+    })),
+  });
 });
 
 // 历史会话回放

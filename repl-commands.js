@@ -347,6 +347,7 @@ function sessionRows(list, o = {}) {
     turns: Number((s && s.turns) || 0),
     from: String((s && s.from) || ""),
     when: ago(s && s.mtime, now),
+    body: String((s && s.body) || ""),   // 对话正文 + 产出文件名，只用来搜，不上屏
     current: String((s && s.id) || "") === cur,
   }));
 }
@@ -372,7 +373,7 @@ function sessionListText(rows) {
     ? "  带 > 的是你现在这条。接过去之后，现在这段不会丢，/resume 回来就是。"
     : "  你现在这条还没说过话，所以不在表里；接过去之后它就自然没了。";
   return ["", "openworkbuddy> 最近这些会话，接哪一条：", "", ...list.map(line), "",
-    "  接一条：/resume 2　或　/resume 标题里的几个字　或　/resume <会话id>",
+    "  接一条：/resume 2　或　/resume 标题或对话里的几个字　或　/resume <会话id>",
     here, ""].join("\n");
 }
 
@@ -393,6 +394,11 @@ function pickSessionRow(rows, arg) {
   const hit = list.filter((r) => (r.id + " " + r.title).toLowerCase().includes(lw));
   if (hit.length === 1) return { kind: "ok", row: hit[0] };
   if (hit.length > 1) return { kind: "many", arg: w, rows: hit };
+  // 标题和 id 都没对上，再翻对话正文和产出文件名。放在最后而不是并进上面那一轮：
+  // 标题对上的那条肯定是他要的，正文里提过一嘴的不一定，先给确定的
+  const deep = list.filter((r) => String(r.body || "").toLowerCase().includes(lw));
+  if (deep.length === 1) return { kind: "ok", row: deep[0] };
+  if (deep.length > 1) return { kind: "many", arg: w, rows: deep };
   return { kind: "none", arg: w, why: "最近这些里没有对得上的" };
 }
 
@@ -411,16 +417,24 @@ function pickerRowsOf(list, make) {
   return (Array.isArray(list) ? list : []).map(make).filter(Boolean);
 }
 
-/** 空格分词，每个词都得命中——「周报 标题」这种想缩范围的写法才有意义 */
+/** 空格分词，每个词都得命中——「周报 标题」这种想缩范围的写法才有意义。
+ *  hay 是屏幕上看得见的那些字（标题、id、来源），deep 是看不见但搜得着的那一份（对话正文、产出文件名）。
+ *  分两层是因为：标题是任务跑完自动起的，人从没读过一眼；他记得的是自己当时打的那句话，
+ *  或者最后拿到的那个文件名。只靠 deep 对上的行会带个标记——屏幕上冒出一个看着不相干的标题，
+ *  不说清为什么，人只会以为搜坏了。 */
 function filterPickerRows(rows, q) {
   const list = Array.isArray(rows) ? rows : [];
   const w = String(q == null ? "" : q).trim().toLowerCase();
   if (!w) return list.slice();
   const words = w.split(/\s+/).filter(Boolean);
-  return list.filter((r) => {
+  const out = [];
+  for (const r of list) {
     const hay = String((r && r.hay) || "").toLowerCase();
-    return words.every((x) => hay.includes(x));
-  });
+    if (words.every((x) => hay.includes(x))) { out.push(r); continue; }
+    const deep = String((r && r.deep) || "").toLowerCase();
+    if (deep && words.every((x) => hay.includes(x) || deep.includes(x))) out.push({ ...r, viaDeep: true });
+  }
+  return out;
 }
 
 /** 让选中项永远留在窗口里。列表比窗口短就整个显示，长了就把选中项摆中间 */
@@ -445,17 +459,22 @@ function pickerView(rows, o = {}) {
   const lw = win.reduce((w, r) => Math.max(w, cols(String((r && r.label) || ""))), 0);
   const lines = win.map((r, i) => {
     const at = start + i;
-    const body = ` ${at === sel ? ">" : " "} ${padCols(String(r.label || ""), lw)}${r.meta ? "  " + r.meta : ""}`;
+    const meta = r.viaDeep ? (r.meta ? r.meta + " · 对话里" : "对话里") : r.meta;
+    const body = ` ${at === sel ? ">" : " "} ${padCols(String(r.label || ""), lw)}${meta ? "  " + meta : ""}`;
     return { text: body.replace(/\s+$/, ""), on: at === sel, row: r };
   });
-  const title = String(o.title || "");
-  const head = q ? `${title}　搜「${q}」` : title;
+  const head = String(o.title || "");
+  // 搜索框一直摆着，不等人打了字才冒出来。原来是打了字才在标题后面回显一句「搜「周报」」——
+  // 于是没打字的人根本不知道这儿能搜，而「打字搜」那三个字夹在脚注一串按键提示中间，没人会去读。
+  // 一个空框杵在那儿、光标在里头闪，比一行提示管用：它不用读就看得懂。
+  const typing = q.length > 0;
+  const search = typing ? ` 搜索 › ${q}▌` : ` 搜索 › ▌  ${String(o.hint || "打字就筛")}`;
   // 有多少条没露出来要说清楚，不然人以为「就这几条」，其实还压着一屏
   const more = hits.length > win.length ? `　第 ${start + 1}-${end} 条 / 共 ${hits.length}` : "";
   const foot = hits.length
-    ? `  ↑↓ 选 · 打字搜 · 回车${verb} · Esc 算了${more}`
+    ? `  ↑↓ 选 · 回车${verb} · Esc 算了${more}`
     : "  没有对得上的——退格删两个字，或者 Esc 算了";
-  return { head, lines, foot, hits, sel, total: hits.length, start, end };
+  return { head, search, typing, lines, foot, hits, sel, total: hits.length, start, end };
 }
 
 /** /resume 的行 → 选择器的行 */
@@ -466,6 +485,7 @@ function sessionPickerRows(rows) {
     meta: [r && r.current ? "现在这条" : "", (r && r.from) || "", (r && r.turns) + " 轮", (r && r.when) || ""]
       .filter(Boolean).join(" · "),
     hay: [(r && r.title) || "", (r && r.id) || "", (r && r.from) || ""].join(" "),
+    deep: String((r && r.body) || ""),
     row: r,
   }));
 }

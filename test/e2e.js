@@ -1903,7 +1903,7 @@ function testCtxMeterWiring() {
 
   // 三条「换对话」的路：历史列表点开、终端那趟的直播、新任务
   const paths = [
-    ["点开一条历史对话", A2.indexOf("async function openSession(id) {"), A2.indexOf('document.getElementById("new-task").onclick')],
+    ["点开一条历史对话", A2.indexOf("async function openSession("), A2.indexOf('document.getElementById("new-task").onclick')],
     ["跟一趟终端里起的任务", A2.indexOf("async function openCliLive(row) {"), A2.indexOf("es.onmessage", A2.indexOf("async function openCliLive(row) {"))],
     ["开新任务", A2.indexOf('document.getElementById("new-task").onclick'), A2.indexOf("renderHistory();\nrenderLaneTabs();")],
   ];
@@ -6167,6 +6167,129 @@ async function testLibraryOutputsTruth() {
 }
 
 /**
+ * 资料库点一份产出，要能落回「写出它的那段对话」。
+ *
+ * 用户原话：「还有在资料库里一个文件能打开在对话中的位置啊，直接定位到所在位置和对话啊」。
+ * 以前点过去只是把整条对话打开、一脚滚到最底下——一次跑了十几轮的任务，人还得自己往回翻，
+ * 等于这一跳什么忙都没帮上。
+ *
+ * 这一屏盯的是**回合号怎么数**，因为它有个一眼看不出来的坑：前端回放时一条 type:"user"
+ * 起一个 .turn，assistant 是挂进上一个回合里的，所以「第几回合」只能数 user 条目，
+ * 拿 transcript 的数组下标充数会差出将近一倍——跳过去正好落在一段跟这份文件毫无关系的话上，
+ * 比不跳更让人以为功能坏了。
+ *
+ * 下面这条会话特意排成 user/assistant/user/assistant，两个 assistant 各产出一份文件：
+ * 按下标数的话第二份会报成 3，按 user 数才是 1。两份文件互为对照，一份对一份错的实现过不去。
+ */
+async function testLibraryTurnAnchor() {
+  const os = require("os");
+  const http = require("http");
+  const crypto = require("crypto");
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-turn-"));
+  const ws = path.join(home, "workspace");
+  fs.mkdirSync(ws, { recursive: true });
+  const FIRST = "大纲.md";
+  const SECOND = "周报.md";
+  fs.writeFileSync(path.join(ws, FIRST), "# 大纲\n");
+  fs.writeFileSync(path.join(ws, SECOND), "# 周报\n");
+
+  const at = "2026-09-17T09:00:00.000Z";
+  fs.mkdirSync(path.join(home, "data", "sessions"), { recursive: true });
+  const sess = (id, o) => fs.writeFileSync(path.join(home, "data", "sessions", id + ".json"), JSON.stringify({ id, user: "e2e", updated_at: at, ...o }));
+
+  // ① 正主：两轮问答，第 0 轮出大纲、第 1 轮出周报
+  sess("s_turn", {
+    title: "周报这一摊", transcript: [
+      { type: "user", at, text: "先给我列个大纲" },
+      { type: "assistant", at, events: [{ type: "files", changed: [FIRST] }] },
+      { type: "user", at, text: "照大纲把周报写出来" },
+      { type: "assistant", at, events: [{ type: "files", changed: [SECOND] }] },
+    ],
+  });
+
+  // ② 反向对照：改过好几轮的同一份文件，只该认头一轮。
+  // 用户点它是想看「这东西怎么来的」，那句话在第一次写出它的那一段里，后面几轮是修修补补
+  sess("s_redo", {
+    title: "改了三轮的封面", transcript: [
+      { type: "user", at, text: "做张封面" },
+      { type: "assistant", at, events: [{ type: "files", changed: ["封面.png"] }] },
+      { type: "user", at, text: "换个颜色" },
+      { type: "assistant", at, events: [{ type: "files", changed: ["封面.png"] }] },
+    ],
+  });
+
+  // ③ 反向对照：老会话根本没记过回合（升级前留下的那批）。
+  // 这时候必须交白卷，不能写 0 —— 写 0 界面就会画出一个按钮、按下去跳到第一轮，
+  // 那是「一本正经地跳错地方」，比没有按钮糟得多
+  sess("s_old", {
+    title: "升级前的老会话", transcript: [
+      { type: "assistant", at, events: [{ type: "files", changed: ["老产出.txt"] }] },
+    ],
+  });
+
+  const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [token]: { user: "e2e", at: Date.now() } },
+  }));
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  const child = booted.child;
+  const { up, port, why: bootWhy } = await booted.wait();
+  const get = (p) => new Promise((resolve) => {
+    const req = http.request({ host: "127.0.0.1", port, path: p, headers: { Cookie: "openworkbuddy_token=" + token } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => resolve({ code: res.statusCode, body: b }));
+    });
+    req.on("error", (e) => resolve({ code: 0, body: e.message }));
+    req.end();
+  });
+
+  try {
+    assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
+    const r = await get("/api/library/outputs");
+    assert(r.code === 200, "产出清单取不到（HTTP " + r.code + "）：" + r.body.slice(0, 200));
+    const data = JSON.parse(r.body);
+    const taskOf = (id) => (data.tasks || []).find((t) => t.id === id);
+
+    const t = taskOf("s_turn");
+    assert(t, "那条会话整组不见了：" + JSON.stringify((data.tasks || []).map((x) => x.id)));
+    const by = new Map(t.files.map((f) => [f.name, f]));
+
+    const a = by.get(FIRST);
+    assert(a, "第一份产出没报出来：" + JSON.stringify(t.files));
+    assert(a.turn === 0, `第一份产出的回合号报成了 ${JSON.stringify(a.turn)}，该是 0 —— 它是第一句话换来的`);
+
+    const b = by.get(SECOND);
+    assert(b, "第二份产出没报出来：" + JSON.stringify(t.files));
+    assert(b.turn === 1,
+      `第二份产出的回合号报成了 ${JSON.stringify(b.turn)}，该是 1。报成 3 就是拿 transcript 下标当回合数了` +
+      "——回放时一条 user 起一个 .turn，assistant 挂在上一个回合里，两者差着将近一倍");
+
+    // 同一份文件改过两轮，认头一轮
+    const redo = taskOf("s_redo");
+    assert(redo && redo.files.length === 1,
+      "同一份文件被改过两轮就报了两行：" + JSON.stringify(redo && redo.files));
+    assert(redo.files[0].turn === 0,
+      `改过多轮的文件该定位到头一次写出它的那轮（0），实际 ${JSON.stringify(redo.files[0].turn)} —— 后面几轮是修修补补，讲不清「这东西怎么来的」`);
+
+    // 没记过回合的：字段必须整个缺席，不能是 0 也不能是 -1
+    const old = taskOf("s_old");
+    assert(old && old.files[0], "老会话那组没了：" + JSON.stringify(old));
+    assert(old.files[0].turn === undefined,
+      `没有 user 记录的老会话报了 turn=${JSON.stringify(old.files[0].turn)} —— 该交白卷。` +
+      "报 0 界面就会画个跳转按钮、按下去落在第一轮；报 -1 前端 Number.isInteger 一样认，同样画得出按钮");
+    assert(!("turns" in old) && !("names" in old),
+      "内部用的 names/turns 数组漏给前端了（一条任务几十个名字，白占带宽）：" + Object.keys(old).join(","));
+
+    console.log("✅ 资料库跳回对话：回合号按 user 条目数（不是数组下标）· 同一文件改过多轮认头一轮 · 老会话没记过就交白卷（不写 0 也不写 -1）· 内部数组不外泄");
+  } finally {
+    try { child.kill("SIGKILL"); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/**
  * 端口被占的三种情况。
  *
  * 这条对应的是 GitHub 上那句「下载之后打不开」。老写法在 EADDRINUSE 时只说一句
@@ -6306,6 +6429,220 @@ async function testSweepApi() {
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
   }
   console.log("✓ 整理文件夹：登录闸 / 圈定范围 / 地盘账 / 清单外的路径删不动（含 ../ 和绝对路径）");
+}
+
+/**
+ * 任务历史检索走一遍真服务：标题里没有的词，也得找得回那条对话。
+ * 顺带钉死一件更要紧的事——**搜索不能成为绕过归属的后门**。
+ * 侧栏按归属过滤是一道闸，检索是后开的另一扇门；两扇门不走同一道闸，
+ * 就等于给「搜一下别人的对话」开了条路，而且没人会发现：搜出来的东西看着跟自己的一模一样。
+ */
+async function testSessionSearchLive() {
+  const os = require("os");
+  const http = require("http");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-ssearch-"));
+
+  const req = (port, method, p, body, cookie) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const r = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+      ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      ...(cookie ? { cookie } : {}),
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {}
+        resolve({ status: res.statusCode, body: b, json: j, setCookie: res.headers["set-cookie"] }); });
+    });
+    r.on("error", (e) => resolve({ status: 0, body: String(e.message) }));
+    if (data) r.write(data);
+    r.end();
+  });
+  const search = async (port, cookie, q) =>
+    (await req(port, "GET", "/api/sessions/search?q=" + encodeURIComponent(q), null, cookie)).json || {};
+
+  // 三条会话：标题一律起得跟人会搜的词不沾边，逼着检索去翻正文和产出文件名
+  const sessions = {
+    s_a1: { title: "本周工作小结", user: "", turns: [["帮我把这周的进展写成周报，发给主管", "好的，周报已经生成。"]], files: ["周报-0918.docx"] },
+    s_a2: { title: "表格清洗", user: "", turns: [["这个 csv 里有很多重复的行，帮我挑出来去掉", "已去重，共删除 128 行。"]], files: ["清洗结果.xlsx"] },
+    s_b1: { title: "别人的活儿", user: "", turns: [["帮我把这周的进展写成周报", "好。"]], files: ["周报-别人的.docx"] },
+  };
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_DATA_DIR: path.join(home, "data") });
+  try {
+    const { up, port, why } = await booted.wait();
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+
+    const reg = async (username, invite) => {
+      const r = await req(port, "POST", "/api/auth/register", { username, password: "Str0ngPass!2345", ...(invite ? { invite } : {}) });
+      const c = (r.setCookie || []).map((x) => x.split(";")[0]).join("; ");
+      assert(c, "注册没拿到 cookie：" + r.status + " " + r.body.slice(0, 160));
+      return c;
+    };
+    const ca = await reg("aaa");   // 头一个注册的是平台管理员
+    // 第二个人得拿邀请码进来（默认不开自助注册）——顺手也验了这条路还通着
+    const iv = await req(port, "POST", "/api/admin/invites", { role: "member" }, ca);
+    const code = (iv.json && (iv.json.code || (iv.json.invite && iv.json.invite.code))) || "";
+    assert(code, "管理员发不出邀请码，第二个账号进不来：" + iv.status + " " + String(iv.body).slice(0, 200));
+    const cb = await reg("bbb", code);
+
+    // 直接把会话文件摆进去：这一条测的是检索，不是聊天链路
+    const dir = path.join(home, "data", "sessions");
+    fs.mkdirSync(dir, { recursive: true });
+    sessions.s_a1.user = sessions.s_a2.user = "aaa";
+    sessions.s_b1.user = "bbb";
+    for (const [id, s] of Object.entries(sessions)) {
+      const transcript = [];
+      for (const [u, a] of s.turns) {
+        transcript.push({ type: "user", text: u, at: Date.now() });
+        transcript.push({ type: "assistant", at: Date.now(), events: [
+          { type: "text", delta: a },
+          { type: "files", changed: true, files: s.files.map((n) => ({ name: n })) },
+        ] });
+      }
+      fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify({
+        title: s.title, user: s.user, transcript, history: [], updated_at: Date.now(), lane: "work",
+      }));
+    }
+
+    // ① 正文命中：标题「表格清洗」四个字里一个都不沾，可这句话是他自己打的
+    const r1 = await search(port, ca, "重复的行");
+    assert(r1.hits && r1.hits.length === 1 && r1.hits[0].title === "表格清洗",
+      "正文里写着的词没搜出来——这正是「只筛标题」那版的毛病：" + JSON.stringify(r1.hits || r1).slice(0, 300));
+    assert(r1.hits[0].why === "对话里", "没标清楚是靠什么找到的：" + r1.hits[0].why);
+    assert(r1.hits[0].snippet && r1.hits[0].snippet.text.includes("重复的行"),
+      "没给命中片段，人得点进去才知道为什么是它：" + JSON.stringify(r1.hits[0].snippet));
+
+    // ② 产出文件名命中：只记得导出过一个 xlsx
+    const r2 = await search(port, ca, "xlsx");
+    assert(r2.hits.length === 1 && r2.hits[0].why === "产出文件", "文件名没进搜索范围：" + JSON.stringify(r2.hits).slice(0, 300));
+
+    // ③ 没走语义要明说，不许悄悄降级
+    assert(r2.semantic === false && /没走/.test(r2.note || ""),
+      "这台测试机没配嵌入渠道，却没在结果里说「意思相近这一路没走」：" + JSON.stringify({ semantic: r2.semantic, note: r2.note }));
+
+    // ④ ★后门★：aaa 搜「周报」只该看见自己那条，bbb 那条一样命中却不能露面
+    const r3 = await search(port, ca, "周报");
+    const ids3 = (r3.hits || []).map((h) => h.id);
+    assert(ids3.includes("s_a1"), "自己的那条都没搜出来：" + JSON.stringify(r3.hits).slice(0, 300));
+    assert(!ids3.includes("s_b1"),
+      "★搜索绕过了归属过滤★ 侧栏看不见的会话被搜出来了，这是条谁都不会发现的越权：" + JSON.stringify(ids3));
+    const r4 = await search(port, cb, "周报");
+    const ids4 = (r4.hits || []).map((h) => h.id);
+    assert(ids4.includes("s_b1") && !ids4.includes("s_a1"), "反过来一样：" + JSON.stringify(ids4));
+
+    // ⑤ 反向对照：不相干的词一条都不给
+    const r5 = await search(port, ca, "今天天气怎么样");
+    assert((r5.hits || []).length === 0, "不相干的词也硬凑了几条出来：" + JSON.stringify(r5.hits).slice(0, 200));
+
+    // ⑥ 没登录就搜不了：这扇门跟别的门同一道闸
+    const anon = await req(port, "GET", "/api/sessions/search?q=" + encodeURIComponent("周报"));
+    assert(anon.status === 401, "没登录也能搜，登录闸漏了这一扇门：" + anon.status);
+  } finally {
+    try { booted.child.kill(); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+  console.log("✓ 任务历史检索：正文 / 产出文件名都搜得到 · 标清楚靠什么找到 · 没走语义就明说 · 搜不到别人的（含没登录）");
+}
+
+/**
+ * 判断模型（Jev）那几个接口：没配的时候要老实说没配，别编一个答案出来。
+ *
+ * 这一条**不联网、不花钱**：上游故意指到 127.0.0.1:1（一个一定没人听的端口），
+ * 连接会立刻被拒。要验的本来也不是模型答得准不准（那是 test/systemone.js 的事），
+ * 而是这条链路上的四个静默失败：没登录也能问、没配却回一个假答案、
+ * 渠道里填的地址被无视、以及判断模型被当成对话模型去 ping。
+ */
+async function testDecideLive() {
+  const os = require("os");
+  const http = require("http");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-decide-"));
+
+  const req = (port, method, p, body, cookie) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const r = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+      ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      ...(cookie ? { cookie } : {}),
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {}
+        resolve({ status: res.statusCode, body: b, json: j, setCookie: res.headers["set-cookie"] }); });
+    });
+    r.on("error", (e) => resolve({ status: 0, body: String(e.message) }));
+    if (data) r.write(data);
+    r.end();
+  });
+
+  const 一道题 = { 急不急: { type: "noul", instructions: "这位客户是不是很着急" } };
+  const 一段材料 = "客服工单：收款账号连了三天都连不上，订单都在丢，麻烦尽快。";
+
+  const booted = bootRealServer({ OPENWORKBUDDY_HOME: home, OPENWORKBUDDY_DATA_DIR: path.join(home, "data") });
+  try {
+    const { up, port, why } = await booted.wait();
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+
+    // ① 没登录就问不了：判断模型也要花钱，这扇门跟别的门同一道闸
+    const anon = await req(port, "GET", "/api/decide");
+    assert(anon.status === 401, "没登录也能问判断模型，登录闸漏了这一扇门：" + anon.status);
+
+    const reg = await req(port, "POST", "/api/auth/register", { username: "admin", password: "Str0ngPass!2345" });
+    const cookie = (reg.setCookie || []).map((c) => c.split(";")[0]).join("; ");
+    assert(cookie, "注册没拿到 cookie，后面都走不了：" + reg.status + " " + reg.body.slice(0, 160));
+
+    // ② 一条渠道都没配：要说「还没配」+ 去哪儿配，而不是一个 500
+    const st0 = await req(port, "GET", "/api/decide", null, cookie);
+    assert(st0.status === 200, "状态卡本身不该报错：" + st0.status + " " + st0.body.slice(0, 160));
+    assert(st0.json.ready === false, "一条渠道都没配，却说自己能用：" + st0.body.slice(0, 200));
+    assert(/设置|Key|渠道/.test(st0.json.how || ""),
+      "★说了「不能用」却没说下一步去哪儿点★ 这种提示等于没提示：" + JSON.stringify(st0.json).slice(0, 220));
+    assert(Array.isArray(st0.json.kinds) && st0.json.kinds.includes("noul"),
+      "状态卡没把三种问法带给界面，前端只能自己硬编一份：" + JSON.stringify(st0.json.kinds));
+
+    // ③ 题目写错在本地就该拦住——这种错不值得花一趟往返去上游换一坨 zod 回来
+    const bad = await req(port, "POST", "/api/decide",
+      { state: 一段材料, questions: { a: { type: "yesno", instructions: "急不急" } } }, cookie);
+    assert(bad.status === 400, "类型写错没被拦，等着上游报错：" + bad.status + " " + bad.body.slice(0, 200));
+    assert(/noul/.test(bad.json.error || ""), "报错没说清能写哪几种：" + bad.body.slice(0, 200));
+
+    // ④ 光有问题没有材料：上游会照答，答的是幻觉，所以这儿必须拦
+    const noState = await req(port, "POST", "/api/decide", { questions: 一道题 }, cookie);
+    assert(noState.status === 400, "没给材料也放行了：" + noState.status + " " + noState.body.slice(0, 200));
+
+    // ⑤ ★题目和材料都对，但没配渠道★ 这时候最容易出的坏事是「回一个看起来像答案的答案」
+    const notReady = await req(port, "POST", "/api/decide", { state: 一段材料, questions: 一道题 }, cookie);
+    assert(notReady.status === 503, "没配渠道却不是 503：" + notReady.status + " " + notReady.body.slice(0, 200));
+    assert(!notReady.json.answers || !notReady.json.answers.length,
+      "★没配渠道却端出了答案★ 判断模型最不能干的事就是在没问到人的时候编一个：" + notReady.body.slice(0, 200));
+
+    // ---- 加一条渠道，地址故意指到一个一定连不上的本地端口 ----
+    const save = await req(port, "POST", "/api/settings", { providers: [
+      { id: "gw", kind: "typesafe", name: "自建网关", base_url: "http://127.0.0.1:1/v1", api_key: "sk-fake-not-a-real-key" },
+    ] }, cookie);
+    assert(save.status === 200, "加渠道没成功，后面测不了：" + save.status + " " + save.body.slice(0, 200));
+
+    // ⑥ 渠道里填的地址说得算。无视它照旧发去官方，等于把人家网关的 Key 送到了另一家门口
+    const st1 = await req(port, "GET", "/api/decide", null, cookie);
+    assert(st1.json.ready === true, "加了渠道还说不能用：" + st1.body.slice(0, 200));
+    assert(String(st1.json.url || "").includes("127.0.0.1:1"),
+      "★渠道里填的地址被无视了★ 这条最凶：Key 会发到用户没指过的那台机器上：" + JSON.stringify(st1.json).slice(0, 220));
+    assert(!st1.body.includes("sk-fake-not-a-real-key"),
+      "★状态卡把 Key 带出来了★ 这张卡会落到界面、日志和截图里：" + st1.body.slice(0, 200));
+
+    // ⑦ 连不上就说连不上，别把「没问到」说成「答案是否」
+    const dead = await req(port, "POST", "/api/decide", { state: 一段材料, questions: 一道题 }, cookie);
+    assert(dead.status >= 500, "上游连不上却回了 2xx：" + dead.status + " " + dead.body.slice(0, 200));
+    assert(!dead.json.answers || !dead.json.answers.length, "连不上还端出答案：" + dead.body.slice(0, 200));
+    assert(/连不上|超时|ECONN/.test(dead.json.error || ""), "错话里看不出是网络的事：" + dead.body.slice(0, 200));
+
+    // ⑧ 设置页那个「测一下」：判断模型没有 /chat/completions，拿它去 ping 只会换回一个必然的 400
+    const probe = await req(port, "POST", "/api/provider-test",
+      { id: "gw", kind: "typesafe", base_url: "http://127.0.0.1:1/v1", api_key: "sk-fake-not-a-real-key" }, cookie);
+    assert(probe.status === 200 && probe.json.ok === false, "测活接口本身不该崩：" + probe.status + " " + probe.body.slice(0, 200));
+    assert(!/chat\/completions|不支持|404/.test(probe.json.error || ""),
+      "★测活还在拿对话接口 ping 判断模型★ 这条渠道会永远显示「不通」，而它其实是好的：" + probe.body.slice(0, 200));
+  } finally {
+    try { booted.child.kill(); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+  console.log("✓ 判断模型 Jev：没登录问不了 · 没配就说没配（不编答案）· 题目先在本地查 · 渠道里填的地址说了算 · 测活不拿对话接口去 ping");
 }
 
 async function testConfigExternalEdit() {
@@ -7683,7 +8020,10 @@ async function main() {
   await testDramaBoardWriteback();
   await testFilePathRouting();
   await testLibraryOutputsTruth();
+  await testLibraryTurnAnchor();
   await testPortCollision();
+  await testSessionSearchLive();
+  await testDecideLive();
   await testConfigExternalEdit();
   await testSweepApi();
   await testKeyGuard();

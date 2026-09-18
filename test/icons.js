@@ -243,6 +243,62 @@ if (mIcons) {
   ok(picks.filter((n) => !isIconName(n)).length === 0, "头像格子里的图标名全查得到", picks.filter((n) => !isIconName(n)));
 }
 
+// 正题：界面上每一处 ic("名字") 都得在那张 sprite 里查得到。
+//
+// 前面几条核的是「数据里写的图标名」（头像、专家、MCP 目录、提示条），可界面上绝大多数图标
+// 是代码里直接写死的那 380 处 ic("…")。这一处一直没人核过，而写错的代价恰恰是**看不出来**：
+// <use href="#i-打错的名字"> 不报错、不警告，浏览器安安静静画一个空框框，
+// 大小和留白跟正常图标一模一样，只有盯着那一格看的人才发现里头没东西。
+// 加这道闸的当天就逮出三个：history（自动化「上次跑」那行）、shield-check（安全设置页标题）、
+// file-check（画布「最近一次生成」）——三处都是线上就在画空框框。
+//
+// 两个页面各有各的 sprite（admin.html 那张只有三十几个符号），所以按页分别核；
+// 变量名拼出来的那些（ic(kind)）核不了，如实数出来报个数，别假装全覆盖了。
+console.log("\n④' 代码里写死的 ic(\"名字\") 也都查得到");
+{
+  const spriteOf = (rel) => {
+    const set = new Set();
+    const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    const re = /<symbol\s+id="i-([a-z0-9-]+)"/g;
+    let m;
+    while ((m = re.exec(src))) set.add(m[1]);
+    return set;
+  };
+  const ADMIN = spriteOf("public/admin.html");
+  ok(ADMIN.size > 20, "admin.html 自己那张 sprite 有 " + ADMIN.size + " 个符号（它跟主界面不共用）", ADMIN.size);
+
+  const JS_DIR = path.join(ROOT, "public", "js");
+  const files = fs.readdirSync(JS_DIR).filter((n) => n.endsWith(".js"));
+  ok(files.length > 5, "前端脚本 " + files.length + " 个，一个都没漏扫", files.length);
+  // 三种引号都认。带 ${} 的模板串是拼出来的名字，跟变量一样算「核不了」
+  const CALL = /\bic\(\s*("([^"]*)"|`([^`$]*)`|'([^']*)')/g;
+  let lits = 0, dyn = 0;
+  const bad = [];
+  for (const f of files) {
+    const names2 = f === "admin.js" ? ADMIN : names;
+    const src = fs.readFileSync(path.join(JS_DIR, f), "utf8");
+    dyn += (src.match(/\bic\(\s*[^"'`\s)]/g) || []).length;
+    let m;
+    CALL.lastIndex = 0;
+    while ((m = CALL.exec(src))) {
+      const n = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+      lits++;
+      if (!names2.has(n)) bad.push(f + ":" + src.slice(0, m.index).split("\n").length + " → " + JSON.stringify(n));
+    }
+  }
+  ok(lits > 300, "扫到 " + lits + " 处写死的图标名（少于三百多半是正则被改坏了，不是界面真变简单了）", lits);
+  ok(bad.length === 0, "每一处 ic(\"名字\") 都在对应那张 sprite 里查得到", bad);
+  // 反向对照：编一个名字塞进去，必须被逮出来。不做这条的话，上面那个「0 处」
+  // 有可能只是因为正则一个都没匹配上
+  const probe = 'x = ic("definitely-not-an-icon");';
+  let caught = 0;
+  CALL.lastIndex = 0;
+  let pm;
+  while ((pm = CALL.exec(probe))) if (!names.has(pm[2])) caught++;
+  ok(caught === 1, "反向对照：编一个图标名进去，这套扫描当场逮得住", caught);
+  console.log("    （另有 " + dyn + " 处是变量拼出来的名字，核不了——这道闸只管写死的那些）");
+}
+
 // ⑤ 存盘与转换 ────────────────────────────────────────────────────────
 console.log("\n⑤ 存盘认图标名、提示条记号不漏给用户");
 const normalizeAvatar = require(path.join(ROOT, "account"))._internals.normalizeAvatar;

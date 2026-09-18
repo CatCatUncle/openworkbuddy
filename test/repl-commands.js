@@ -676,17 +676,24 @@ console.log("\n⑲ 选择器：算得对不对");
     ok(v.lines.find((l) => l.on).text.trim().startsWith(">"), "选中那行带箭头——只靠颜色的话，不上色的终端上等于没标");
     ok(/第 \d+-\d+ 条 \/ 共 10/.test(v.foot), "★没露出来的条数要说清楚★ 不说的话人以为「就这几条」，其实还压着一屏");
     ok(/↑↓|回车|Esc/.test(v.foot), "脚注把能按的键写出来");
+    ok(/搜索/.test(v.search), "★一个字都没打的时候，搜索框也得摆在那儿★ 等人打了字才冒出来，等于只有已经知道能搜的人搜得了");
+    ok(v.search.includes("打字就筛"), "空框里写清楚打字就筛——一个空框不说能筛什么，人不会去试");
+    eq(v.typing, false, "没打字时标成没打字：cli.js 靠它决定这一行压不压暗");
+    ok(!/打字搜/.test(v.foot), "★脚注不再重复「打字搜」★ 框已经摆在眼前了，脚注再说一遍只是把按键提示挤长");
   }
   {
     const v = R.pickerView(十条, { q: "周报", sel: 0, title: "挑一条" });
     eq(v.total, 5, "搜完只剩命中的");
-    ok(v.head.includes("周报"), "★搜的词要回显★ 不回显的话，剩三条到底是搜出来的还是本来就三条，分不出来");
+    ok(v.search.includes("周报"), "★搜的词要回显在框里★ 不回显的话，剩三条到底是搜出来的还是本来就三条，分不出来");
+    eq(v.typing, true, "打了字就标成打了字");
+    ok(!v.head.includes("周报"), "标题别再跟着变——搜的词归框，标题归标题，两处都写就是同一句话说两遍");
   }
   {
     const v = R.pickerView(十条, { q: "根本没有", sel: 0 });
     eq(v.total, 0, "搜空了");
     eq(v.lines.length, 0, "★一行都不画★ 画个空框比说人话糟");
     ok(/退格|Esc/.test(v.foot), "★搜空了要给出路★ 只说「没有」，人只会一直按一直没有");
+    ok(v.search.includes("根本没有"), "★搜空了框里还得留着刚打的词★ 框一清空，人就不知道该退格删什么");
   }
   {
     // 选中位越界要自己夹回来：搜完命中从 10 条掉到 2 条，sel 还停在 7
@@ -725,6 +732,8 @@ console.log("\n⑲ 选择器：算得对不对");
 console.log("\n⑲之二 选择器接线：键归谁管");
 {
   const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  ok(/v\.typing \? v\.search : dim\(v\.search\)/.test(src), "★搜索框真画出来了★ 纯层算得再对，cli.js 不画就等于没做；打了字那行不压暗——那几个字是人刚敲的");
+  ok((src.match(/hint:/g) || []).length >= 3, "★三个选择器各给一句「这儿能搜什么」★ 只写「打字就筛」，人不知道筛的是标题还是 id");
   ok(/repl\.pickerView\(/.test(src) && /repl\.sessionPickerRows\(/.test(src) && /repl\.modelPickerRows\(/.test(src),
      "★画的是上面那层算出来的★ 在 cli.js 里另抄一份的话，⑲ 整节测的是没人用的代码");
 

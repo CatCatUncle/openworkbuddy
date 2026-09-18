@@ -197,6 +197,14 @@
   /* 选中的那条仍旧要看得见（不然回看时找不着自己在哪），但比导航的选中态轻一档：
      不加粗、不描左侧指示条，只换底色和字色 */
   .hist-item.active { background: var(--owb-bg-hover); color: var(--owb-text); }
+  /* 命中行比平时那行高：标题底下要摆一段「为什么是它」。不摆的话，正文命中和语义命中
+     看起来就是一串凭空冒出来的不相干任务，人会觉得搜索坏了，宁可它显得笨也不能像在乱来 */
+  .hist-item.found { white-space: normal; padding: 6px 10px; }
+  .hist-item.found .ht { font-weight: 500; }
+  .hist-item .hwhy { margin-left: 6px; font-size: 11px; padding: 0 5px; border-radius: var(--radius-sm); background: var(--owb-bg-hover); color: var(--owb-text-3); white-space: nowrap; }
+  .hist-item.found .hsnip { margin-top: 2px; font-size: 11px; line-height: 1.5; color: var(--owb-text-3); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .hist-item.found .hsnip mark { background: color-mix(in srgb, var(--owb-brand) 26%, transparent); color: inherit; border-radius: var(--radius-xs); padding: 0 1px; }
+  .hist-note { padding: 6px 10px 2px; font-size: 11px; line-height: 1.5; color: var(--owb-text-3); }
   .side-nav { border-top: 1px solid var(--owb-border); padding-top: 8px; margin-top: 8px; }
   /* 主导航挪到「项目」下面，跟任务历史之间用一条线隔开（历史是列表，导航是入口，别混在一起） */
   /* 展开「更多」会多出三行导航。侧栏是个 flex 列，多出来的高度以前全从下面的「任务历史」身上扣：
@@ -310,6 +318,24 @@
   .mention-menu .mi .sub { font-size: 12px; color: var(--owb-text-3); display: block; }
   .mention-menu .mh { font-size: 12px; color: var(--owb-text-3); padding: 4px 12px; }
   .turn { margin-bottom: 22px; }
+  /* 从资料库跳过来落在哪一轮，得让人一眼看见。滚过去不标记的话，
+     人只知道「页面动了一下」，不知道该看哪儿——尤其那一轮正好在屏幕中间时 */
+  /* 高亮用 box-shadow 的扩散而不是一个往外撑的 ::before：两者画出来一模一样（底色 + 四周
+     溢出 10px 的同色圈），但 ::before 绝对定位到盒子外面会把 .turn 的 scrollWidth 撑大 12px，
+     对话列里就多出一条横向滚动条。box-shadow 根本不进布局，画在外面也不算溢出。 */
+  .turn.turn-jumped { border-radius: var(--radius-xl); animation: owbTurnFound 2.6s var(--owb-ease) forwards; }
+  @keyframes owbTurnFound {
+    0%   { background-color: transparent; box-shadow: 0 0 0 10px transparent; }
+    12%  { background-color: var(--owb-brand-weak); box-shadow: 0 0 0 10px var(--owb-brand-weak); }
+    65%  { background-color: var(--owb-brand-weak); box-shadow: 0 0 0 10px var(--owb-brand-weak); }
+    100% { background-color: transparent; box-shadow: 0 0 0 10px transparent; }
+  }
+  /* 开了「减弱动态效果」就不淡入淡出，直接把底色摆上（2.6 秒后由 jumpToTurn 摘掉 class）。
+     不写这一条的话，上面那条全局 .01ms 会让动画瞬间走到最后一帧——最后一帧是透明的，
+     于是跳过去之后什么提示都没有：最需要「告诉我该看哪儿」的那批人，反而一点提示都收不到。 */
+  @media (prefers-reduced-motion: reduce) {
+    .turn.turn-jumped { animation: none; background-color: var(--owb-brand-weak); box-shadow: 0 0 0 10px var(--owb-brand-weak); }
+  }
   .u-msg { display: flex; justify-content: flex-end; }
   .u-msg .bubble { max-width: 78%; background: var(--owb-brand); color: #fff; border-radius: var(--radius-2xl) var(--radius-2xl) var(--radius-xs) var(--radius-2xl); padding: 10px 15px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
   .u-msg .bubble .bubble-attach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
@@ -1676,6 +1702,13 @@
      直接抹掉会让用户以为自己记错了 */
   .lib-it.gone { opacity: .55; }
   .lib-it.gone .nm { text-decoration: line-through; }
+  /* 「跳到写出它的那一段对话」。平时只留一点淡影，鼠标扫过这一行才亮起来——
+     一列文件后面挂一排实心图标，看着像每行都有个未读提醒 */
+  .lib-it .lib-jump { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); color: var(--owb-text-3); opacity: .35; }
+  .lib-it:hover .lib-jump { opacity: 1; }
+  .lib-it .lib-jump:hover { background: var(--owb-brand-weak); color: var(--owb-brand-text); }
+  .lib-it .lib-jump .i { width: 14px; height: 14px; }
+  .lib-list.as-icon .lib-it .lib-jump { display: none; } /* 图标视图是用来认脸的，一格里塞不下操作 */
 
   /* 图标视图：铺成网格，缩略图放大，名字在下面居中。auto-fill 让它跟着窗口宽度自己决定几列 */
   .lib-list.as-icon, .lib-list.as-icon .lib-fs { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 4px; align-content: start; }
@@ -1765,6 +1798,7 @@
   .lib-from { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 12px; padding: 6px 10px; background: var(--owb-bg-side); border-radius: var(--radius-md); font-size: 12px; color: var(--owb-text-3); }
   .lib-from .i { width: 13px; height: 13px; color: var(--owb-brand-text); }
   .lib-from em { font-style: normal; opacity: .8; }
+  .lib-from .lib-from-at { margin-left: auto; padding: 1px 7px; border-radius: var(--radius-full); background: var(--owb-brand-weak); color: var(--owb-brand-text); font-variant-numeric: tabular-nums; }
 
   /* 窄屏：预览沉到底下去，三栏挤在 1000px 里谁都不够用 */
   @media (max-width: 1100px) {
@@ -2227,6 +2261,9 @@
 <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 7h10v10" /> <path d="M7 17 17 7" /></symbol>
 <symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2" /> <line x1="8" x2="16" y1="21" y2="21" /> <line x1="12" x2="12" y1="17" y2="21" /></symbol>
 <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /></symbol>
+<symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /> <path d="m9 12 2 2 4-4" /></symbol>
+<symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /> <path d="M3 3v5h5" /> <path d="M12 7v5l4 2" /></symbol>
+<symbol id="i-file-check" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" /> <path d="M14 2v5a1 1 0 0 0 1 1h5" /> <path d="m9 15 2 2 4-4" /></symbol>
 <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="m16 9-5.5 5.5L8 12" /></symbol>
 <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <circle cx="12" cy="12" r="6" /> <circle cx="12" cy="12" r="2" /></symbol>
 <symbol id="i-map" viewBox="0 0 24 24"><path d="M14.106 5.553a2 2 0 0 0 1.788 0l3.659-1.83A1 1 0 0 1 21 4.619v12.764a1 1 0 0 1-.553.894l-4.553 2.277a2 2 0 0 1-1.788 0l-4.212-2.106a2 2 0 0 0-1.788 0l-3.659 1.83A1 1 0 0 1 3 19.381V6.618a1 1 0 0 1 .553-.894l4.553-2.277a2 2 0 0 1 1.788 0z" /> <path d="M15 5.764v15" /> <path d="M9 3.236v15" /></symbol>
@@ -2315,6 +2352,7 @@
 <symbol id="i-save" viewBox="0 0 24 24"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" /> <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" /> <path d="M7 3v4a1 1 0 0 0 1 1h7" /></symbol>
 <symbol id="i-bird" viewBox="0 0 24 24"><path d="M16 7h.01" /> <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20" /> <path d="m20 7 2 .5-2 .5" /> <path d="M10 18v3" /> <path d="M14 17.75V21" /> <path d="M7 18a6 6 0 0 0 3.84-10.61" /></symbol>
 <symbol id="i-message-square" viewBox="0 0 24 24"><path d="M22 17a2 2 0 0 1-2 2H6l-4 4V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z" /></symbol>
+<symbol id="i-text-quote" viewBox="0 0 24 24"><path d="M17 6H3" /> <path d="M21 12H8" /> <path d="M21 18H8" /> <path d="M3 12v6" /></symbol>
 <symbol id="i-bell" viewBox="0 0 24 24"><path d="M10.268 21a2 2 0 0 0 3.464 0" /> <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" /></symbol>
 <symbol id="i-cat" viewBox="0 0 24 24"><path d="M12 5c.67 0 1.35.09 2 .26 1.78-2 5.03-2.84 6.42-2.26 1.4.58-.42 7-.42 7 .57 1.07 1 2.24 1 3.44C21 17.9 16.97 21 12 21s-9-3-9-7.56c0-1.25.5-2.4 1-3.44 0 0-1.89-6.42-.5-7 1.39-.58 4.72.23 6.5 2.23A9.04 9.04 0 0 1 12 5Z" /> <path d="M8 14v.5" /> <path d="M16 14v.5" /> <path d="M11.25 16.25h1.5L12 17z" /></symbol>
 <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M9 10h.01" /> <path d="M15 10h.01" /> <path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z" /></symbol>
@@ -2402,7 +2440,7 @@
     <span class="sl-n" id="hist-count"></span>
     <button class="sl-b" id="hist-find" title="按名字找任务" aria-label="筛选任务历史" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-search"></use></svg></button>
   </div>
-  <input id="hist-q" class="hist-q" type="search" placeholder="找任务…" hidden aria-label="筛选任务历史">
+  <input id="hist-q" class="hist-q" type="search" placeholder="找任务：标题、说过的话、产出文件名…" hidden aria-label="筛选任务历史">
   <div id="history"></div>
   <div class="user-row" id="user-row" style="display:none">
     <div class="user-menu" id="user-menu"></div>

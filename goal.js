@@ -19,6 +19,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const so = require("./systemone");
 
 /** 自动补跑的轮数上限。用满了不是悄悄停，是在卡上写清楚为什么停、还差几项（见 server.js / cli.js 的循环） */
 const GOAL_MAX_ROUNDS = 3;
@@ -37,7 +38,7 @@ function parseJsonLoose(text) {
  * @param {() => string} o.workspaceDir 当前工作目录（服务端会被用户切换，所以传函数不传字符串）
  * @param {number} [o.maxRounds]
  */
-function createGoalEngine({ workspaceDir, maxRounds = GOAL_MAX_ROUNDS } = {}) {
+function createGoalEngine({ workspaceDir, maxRounds = GOAL_MAX_ROUNDS, decide = null } = {}) {
   const ws = typeof workspaceDir === "function" ? workspaceDir : () => String(workspaceDir || process.cwd());
   const dirOf = (sess) => (sess && sess.dir ? path.join(ws(), sess.dir) : "");
 
@@ -157,6 +158,60 @@ function createGoalEngine({ workspaceDir, maxRounds = GOAL_MAX_ROUNDS } = {}) {
     return goal;
   }
 
+
+  /**
+   * 拿判断模型验收。
+   *
+   * 为什么这一步值得换掉对话模型：验收本来就不是「写一段话」，是对着 N 条标准各答一个是非。
+   * 让对话模型输出 {"results":[…]} 是在拿一个会写字的东西模拟一张表格——它偶尔会不按格式回话，
+   * 上面那句 warn（「验收员没按格式回话」）就是为这事写的。判断模型的回答**在类型上**就只能是
+   * 是非加一个概率，格式跑不掉；顺带还快一个数量级、便宜三个数量级（一轮约两万分之一美金）。
+   *
+   * 更要紧的是它多给一样东西：**有多确定**。原来的写法里 51% 的判断和 99% 的判断都是一个
+   * true，框就打上了。这儿只有确定度过线才打勾，没过线的留着不动，并且在卡片上写清是
+   * 「拿不准」而不是「没干」——这正是这张卡最容易骗人的地方：打了勾的用户就不看了。
+   *
+   * 返回 true 表示这一轮由它判完了；返回 false 表示没答上来，交回对话模型那条路。
+   */
+  async function judgeByDecide(decide, goal, undone, sess, names, snippets, checks, finalText, warn) {
+    const questions = {};
+    for (const x of undone) questions["c" + x.i] = so.noul("这条验收标准已经达成：" + x.c.text);
+    let out = null;
+    try {
+      out = await decide({
+        state: {
+          目标: goal.text,
+          成果文件清单: fileInventory(sess, names),
+          ...(snippets ? { 成果文件内容摘录: snippets } : {}),
+          // 机器实测的结论，比模型自述硬：标 ✗ 的文件有语法错或没写完，涉及它的标准不该打勾
+          ...(checks ? { 自动体检_机器实测: checks } : {}),
+          执行汇报: String(finalText || "（无）").slice(0, 3000),
+        },
+        questions,
+      });
+    } catch (e) {
+      out = { ok: false, error: String((e && e.message) || e) };
+    }
+    if (!out || !out.ok || !Array.isArray(out.answers) || !out.answers.length) return false;
+
+    const 拿不准 = [];
+    for (const a of out.answers) {
+      const i = Number(String(a.key).slice(1));
+      const c = goal.criteria[i];
+      if (!c) continue;
+      const g = so.gate(a);
+      // value 是「达成了」的概率。过线且确实倒向「是」才打勾
+      if (g.act && Number(a.value) > 0.5) c.done = true;
+      else if (Number(a.value) > 0.5) 拿不准.push(c.text);
+    }
+    if (拿不准.length) {
+      warn("有 " + 拿不准.length + " 条像是达成了但它自己也拿不准（不到 " + so.pct(so.SURE_MIN) + "），这一轮先不打勾：" + 拿不准.slice(0, 2).join("；").slice(0, 90));
+    }
+    // 材料被截断过一定要说：判断是拿前半段做的，而这张卡是用来决定「还要不要再跑一轮」的
+    if (out.truncated) warn("验收材料太长被截了一段，这一轮的判断只看了前 " + so.MAX_STATE + " 个字");
+    return true;
+  }
+
   /** 对着验收标准验一轮。只认成果文件清单和收尾汇报，拿不准算 false；验收调用挂了就全部保持原状 */
   async function verify(think, sess, finalText, warn = () => {}, names = null) {
     const goal = sess.goal;
@@ -164,6 +219,14 @@ function createGoalEngine({ workspaceDir, maxRounds = GOAL_MAX_ROUNDS } = {}) {
     if (!undone.length) return;
     const snippets = fileSnippets(sess, names);
     const checks = await fileChecks(sess, names);
+
+    // ---- 先问判断模型（Jev）。这活儿正好是它的形状：一堆「达成了没有」的是非题 ----
+    if (decide) {
+      const r = await judgeByDecide(decide, goal, undone, sess, names, snippets, checks, finalText, warn);
+      if (r) { if (goal.criteria.every((c) => c.done)) goal.status = "done"; return; }
+      // 没答上来（没配渠道 / 连不上 / 被额度拦了）就往下走对话模型那条路，不把这一轮废掉
+    }
+
     try {
       const text = await think({
         system: '你是验收员。根据成果文件清单和执行汇报，逐条判断验收标准是否已达成。证据不足一律 false，宁可漏判不可错判。【自动体检】是机器实测结果（不是模型自述）：标 ✗ 的文件说明有语法错误或没写完整，涉及它的标准一律 false。只输出 JSON：{"results":[{"i":0,"done":true},{"i":1,"done":false}]}，i 是标准编号。',

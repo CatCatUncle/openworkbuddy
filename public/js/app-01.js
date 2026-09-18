@@ -657,6 +657,43 @@ function stripSceneTag(t) {
     .replace(/^\s*【(?:交给专家团|交给专家|使用技能)：[^】]*】[^\n]*\n*/, "");
 }
 
+/**
+ * 引用一条回复去追问。
+ *
+ * 为什么是「塞进输入框」而不是挂一枚标签：引用的内容要能改。真实用法几乎都是
+ * 「它这段里有一句不对」——人会把那句留下、其余删掉，再在下面写自己的话。
+ * 标签是不可编辑的身份（专家、技能），引用是正文的一部分，两码事。
+ *
+ * 选中了就只引选中的那截：一条回复常常好几屏，整段引过去等于什么都没指。
+ */
+function quoteTextOf(turn) {
+  const sel = window.getSelection ? window.getSelection() : null;
+  const body = turn.querySelector(".body");
+  // 光标必须落在**这一条**回复里：不加这个判断，在别处随手选中的字会被引到这条底下来
+  if (sel && !sel.isCollapsed && body && body.contains(sel.anchorNode) && body.contains(sel.focusNode)) {
+    const picked = String(sel).trim();
+    if (picked) return picked;
+  }
+  // 没选就取正文。只取 .a-text（渲染后的回复本体）——过程卡片、按钮条、token 统计都不在里面
+  return [...turn.querySelectorAll(".body .a-text")].map((n) => n.innerText.trim()).filter(Boolean).join("\n\n").trim();
+}
+// 再长就不是「引用」而是「复述」了，模型也会被这一大坨带偏。想引更多的人会自己先选中
+const QUOTE_MAX = 400;
+function quoteReply(turn) {
+  let t = quoteTextOf(turn);
+  if (!t) return toast("这条回复还没有可引用的正文", "circle-x");
+  if (t.length > QUOTE_MAX) t = t.slice(0, QUOTE_MAX).trimEnd() + "…";
+  const block = t.split("\n").map((l) => "> " + l).join("\n");
+  const cur = inputEl.value;
+  if (cur.includes(block)) { inputEl.focus(); return toast("这段已经在输入框里了", "circle-check"); }
+  // 已经写了半句话就空一行接在后面，别把人写到一半的东西冲掉
+  inputEl.value = (cur.trim() ? cur.replace(/\s+$/, "") + "\n\n" : "") + block + "\n\n";
+  inputEl.dispatchEvent(new Event("input")); // 先让输入框按新内容撑高，否则下面的定位会被这次改高冲掉
+  inputEl.focus();
+  inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+  inputEl.scrollTop = inputEl.scrollHeight; // 光标在末尾，视野也得跟过去
+}
+
 // ================= 回合渲染（实时流式与历史回放共用） =================
 function createTurnUI(userText, turnMode, forSid) {
   const turnSid = forSid !== undefined ? forSid : sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
@@ -1251,13 +1288,14 @@ function createTurnUI(userText, turnMode, forSid) {
     if (turnMode === "plan") renderPlanChecklist();
   }
 
-  // 官方式回复操作条：复制 / 👍👎 / 重新生成 + 共消耗 tokens · 模型
+  // 官方式回复操作条：复制 / 引用 / 👍👎 / 重新生成 + 共消耗 tokens · 模型
   function addActionsBar() {
     if (turn.querySelector(".turn-actions")) return;
     const bar = document.createElement("div");
     bar.className = "turn-actions";
     bar.innerHTML =
       `<button class="ta-btn" data-a="copy" title="复制回复">${ic("copy")}</button>` +
+      `<button class="ta-btn" data-a="quote" title="引用这条回复来追问（先选中一段就只引那一段）">${ic("text-quote")} 引用</button>` +
       `<button class="ta-btn" data-a="up" title="有帮助">${ic("thumbs-up")}</button>` +
       `<button class="ta-btn" data-a="down" title="没帮助">${ic("thumbs-down")}</button>` +
       `<button class="ta-btn" data-a="regen" title="重新生成">${ic("refresh-cw")} 重新生成</button>` +
@@ -1293,6 +1331,7 @@ function createTurnUI(userText, turnMode, forSid) {
       a.textContent = "看执行过程";
       bar.appendChild(a);
     }
+    bar.querySelector("[data-a=quote]").onclick = () => quoteReply(turn);
     bar.querySelector("[data-a=copy]").onclick = async (e) => {
       // 复制"渲染后"的内容而不是 markdown 源码：贴到飞书/Word 里保留格式，
       // 贴到纯文本框里也不会出现 **、<br> 这类原始标记
