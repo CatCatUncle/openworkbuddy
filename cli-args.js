@@ -53,6 +53,7 @@ const FLAGS = [
   { long: "no-mcp", type: "bool", key: "mcp", value: false, desc: "跳过 MCP 连接器，启动更快" },
   { long: "ask-remote", type: "bool", key: "askRemote", value: true, desc: "没人坐在终端前也允许 agent 提问，答案从手机上给" },
   { long: "off", type: "bool", key: "off", value: true, desc: "配合 openworkbuddy 2fa：真的把那个账号的二次验证关掉（不写就只看状态）" },
+  { long: "score", type: "bool", key: "score", value: true, desc: "配合 openworkbuddy jev：把后面那几个选项当成从低到高的档位，问一道打分题" },
   { long: "version", short: "V", type: "bool", key: "version", value: true, desc: "打印版本号" },
   { long: "help", short: "h", type: "bool", key: "help", value: true, desc: "看这份帮助" },
 ];
@@ -66,10 +67,11 @@ const SUBS = [
   { name: "pair", usage: "openworkbuddy pair", desc: "把手机/另一台电脑连上来：出一个二维码，扫了就能用，密码不用敲过去" },
   { name: "passwd", usage: 'openworkbuddy passwd <用户名> ["新密码"]', desc: "忘了密码：在服务器上改回来（不给新密码就随机生成一串）" },
   { name: "2fa", usage: "openworkbuddy 2fa <用户名> [--off]", desc: "看某个账号的二次验证状态；手机丢了用 --off 关掉" },
+  { name: "jev", usage: 'openworkbuddy jev ["材料" "问题" [选项…]]', desc: "问一下判断模型：它不写字，只回选项/分数/概率，外加一个「有多确定」。不给参数就测活" },
   { name: "completion", usage: "openworkbuddy completion <shell>", desc: "生成 Tab 补全脚本（bash / zsh / fish）" },
 ];
 
-const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, files: [], cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false, askRemote: false, off: false, perm: null };
+const DEFAULTS = { mode: "craft", session: null, mcp: true, workspace: null, files: [], cont: false, json: false, quiet: false, raw: false, list: 0, help: false, version: false, askRemote: false, off: false, score: false, perm: null };
 
 /** 编辑距离。只用来猜「你是不是想说 X」，不求快 */
 function editDistance(a, b) {

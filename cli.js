@@ -35,6 +35,7 @@ const { McpManager } = require("./mcp");
 const { createAgentRuntime } = require("./agent");
 const lanes = require("./lanes"); // 终端里起的任务归「工程」线；续跑 id 按引擎分开记
 const callout = require("./callout"); // 正文里的提示条：终端没有图标，换成文字标签
+const sessSearch = require("./session-search"); // /resume 的搜索和 --list 的摘要都要它——必须在 listCliSessions 之前
 const mdTty = require("./md-tty"); // 正文里的 Markdown：终端里渲染出来，别让 **加粗** 糊在脸上
 const attach = require("./cli-attach"); // 带进来的文件/图片：拖进来的路径、@ 补全、剪贴板
 const modes = require("./modes"); // 执行模式的唯一真源；界面和这儿必须是同一份
@@ -284,6 +285,63 @@ if (sub === "passwd" || sub === "2fa") {
   }
 }
 
+// ---------- openworkbuddy jev：问一下判断模型 ----------
+// 位置在 doctor 前面、createLLM 后面都行，它不碰 agent 那一套。
+// 三种用法一条命令收：不给参数是测活，两个参数是是非题，再多几个词就是单选（加 --score 变打分）。
+// 为什么不给它做成 /jev 那样的会话内命令：判断不是对话，它没有上下文、不产文字、不记进会话，
+// 混进会话里反而要解释「这一条为什么不算一轮」。
+if (sub === "jev") {
+  const so = require("./systemone");
+  const jevApi = require("./jev");
+  const st = jevApi.status(config);
+  const say = (s) => process.stdout.write(s);
+  (async () => {
+    if (!st.ready) {
+      process.stderr.write(red("判断模型还没法用：" + st.why + "\n") + dim(st.how + "\n"));
+      process.exit(1);
+    }
+    const head = () => prog(dim(`走 ${st.label} · ${st.model} · 来源 ${st.from}\n`));
+    let out, asked = "";
+    if (!words.length) {
+      head();
+      prog(dim("没给材料，那就拿一段固定的客服工单测一下——答得对不对一眼能看出来\n"));
+      out = await jevApi.selftest(config);
+      asked = out.state || "";
+    } else if (words.length === 1) {
+      process.stderr.write(red("还得说要判断什么。\n") + dim(
+        '  openworkbuddy jev "这段材料" "它急不急"                    → 是非题，回一个概率\n' +
+        '  openworkbuddy jev "这段材料" "该给谁做" 表格 写作 研究       → 单选题\n' +
+        '  openworkbuddy jev --score "这段材料" "风险多大" 低 中 高     → 打分题（从低到高）\n'));
+      process.exit(2);
+    } else {
+      head();
+      const [state, ask, ...opt] = words;
+      asked = state;
+      const q = !opt.length ? so.noul(ask) : opts.score ? so.score(ask, opt) : so.choice(ask, opt);
+      out = await jevApi.ask(config, { state, questions: { 判断: q } });
+    }
+    if (!out.ok) {
+      if (opts.json) say(JSON.stringify({ ok: false, error: out.error }) + "\n");
+      else process.stderr.write(red("没答上来：" + out.error + "\n"));
+      process.exit(1);
+    }
+    if (opts.json) {
+      say(JSON.stringify({ ok: true, model: out.model, ms: out.ms, answers: out.answers, usage: out.usage, cost: so.costOf(out.usage) }) + "\n");
+      process.exit(0);
+    }
+    if (!words.length) prog(dim("材料：" + asked + "\n"));
+    for (const a of out.answers) {
+      const g = so.gate(a);
+      say((g.act ? green("√ ") : yellow("? ")) + so.lineOf(a) + (g.act ? "" : dim(`　不到 ${so.pct(so.SURE_MIN)}，别自动照做`)) + "\n");
+    }
+    // 截过一定要说：判断是拿前半段做的，人却以为它看了全文，这种错事后最难查
+    if (out.truncated) process.stderr.write(yellow(`材料太长（${out.state_chars} 字），只喂了前 ${so.MAX_STATE} 字\n`));
+    prog(dim(`${out.model} · ${out.ms}ms · ${so.costText(out.usage)}\n`));
+    process.exit(0);
+  })().catch((e) => { process.stderr.write(red("挂了：" + ((e && e.message) || e) + "\n")); process.exit(1); });
+  return;
+}
+
 // ---------- openworkbuddy doctor：跑不起来时的一次性体检 ----------
 // 位置很讲究：必须排在下面 createLLM 前面。模型一个都没配的机器上 createLLM 当场抛
 // 「未知 provider: undefined」——而那恰恰是最需要体检的时刻，体检工具自己先死没有道理。
@@ -332,7 +390,12 @@ const expertTeams = expertsDoc.teams || [];
 const mcpManager = new McpManager();
 
 // ---------- Goal 目标模式（和网页端同一份，见 goal.js） ----------
-const goalKit = require("./goal").createGoalEngine({ workspaceDir: getWorkspaceDir });
+// 目标验收借判断模型：一堆「达成了没有」的是非题正是它的形状，而且它会说自己有多确定。
+// 没配渠道就返回 ok:false，goal.js 自己退回对话模型那条老路——命令行这边不用管
+const goalKit = require("./goal").createGoalEngine({
+  workspaceDir: getWorkspaceDir,
+  decide: (args) => require("./jev").ask(config, args),
+});
 /**
  * 拆验收标准、对着标准判分，这两句问谁。
  *
@@ -387,7 +450,8 @@ function listCliSessions(n, cliOnly = false) {
       // 轮数按「问了几次」算：transcript 里一问一答是两条，直接数长度会把一次问答报成 2 轮
       const turns = (j.transcript || []).filter((t) => t && t.type === "user").length;
       const id = f.replace(/\.json$/, "");
-      return { id, mtime, title: j.title || "", turns, from: id.startsWith("cli_") ? "命令行" : "桌面", engine: j.engine || "" };
+      // body 只喂给搜索，不上屏：截短一点，选单最多十二条，没必要为搜索读进几万字
+      return { id, mtime, title: j.title || "", turns, from: id.startsWith("cli_") ? "命令行" : "桌面", engine: j.engine || "", body: sessSearch.digestOf(j, 1200) };
     })
     .sort((a, b) => b.mtime - a.mtime)
     .slice(0, n);
@@ -1355,10 +1419,11 @@ function splitFiles(text) {
       let sel = 0;
       const paint = () => {
         pickerErase();
-        const v = repl.pickerView(all, { q, sel, title: opt.title, verb: opt.verb, max: repl.PICKER_ROWS });
+        const v = repl.pickerView(all, { q, sel, title: opt.title, verb: opt.verb, hint: opt.hint, max: repl.PICKER_ROWS });
         sel = v.sel < 0 ? 0 : v.sel;
         picker.view = v;
-        const out = ["", dim(v.head)];
+        // 搜索框单独一行，打了字就不压暗——框里那几个字是人自己刚敲的，压暗等于告诉他没生效
+        const out = ["", dim(v.head), v.typing ? v.search : dim(v.search)];
         for (const l of v.lines) out.push(l.on ? `\x1b[36m${l.text}\x1b[39m` : dim(l.text));
         out.push(dim(v.foot));
         try {
@@ -1505,7 +1570,7 @@ function splitFiles(text) {
       readline.cursorTo(process.stdout, 0);
       readline.clearLine(process.stdout, 0);
     } catch { menuState.dead = true; }
-    const picked = await chooseFrom(rows, { title: "openworkbuddy> 把哪一句放回去改？", verb: "放回输入行" });
+    const picked = await chooseFrom(rows, { title: "openworkbuddy> 把哪一句放回去改？", verb: "放回输入行", hint: "打字就筛你问过的话" });
     try { rl.prompt(true); } catch { menuState.dead = true; }
     if (picked) rl.write(picked.text);
     menuDraw();
@@ -1692,6 +1757,7 @@ function splitFiles(text) {
         if (!pickerUsable()) { prog(repl.sessionListText(rows)); return; } // 管道里、或者这台终端画不了
         const picked = await chooseFrom(repl.sessionPickerRows(rows), {
           title: "openworkbuddy> 接着哪一条往下聊？", verb: "接上",
+          hint: "打字就筛，标题 / 你说过的话 / 产出文件名都在里头",
         });
         if (!picked) { prog(dim("没接，还在原来这条\n")); return; }
         r = { kind: "ok", row: picked.row };
@@ -1755,6 +1821,7 @@ function splitFiles(text) {
         if (!pickerUsable()) { prog(repl.modelListText(rows)); return; }
         const picked = await chooseFrom(repl.modelPickerRows(rows), {
           title: "openworkbuddy> 这趟活儿谁来干？", verb: "换过去",
+          hint: "打字就筛，型号名和厂商都在里头",
         });
         if (!picked) { prog(dim("没换，还是刚才那个\n")); return; }
         r = { kind: "ok", row: picked.row };

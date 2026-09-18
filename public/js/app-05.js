@@ -615,7 +615,8 @@ function bindMedia(box, s) {
 function fillProvSelect(f, s) {
   const sel = f.querySelector(".mm-prov");
   // Anthropic / DeepSeek / Kimi 只做对话，没有画图配音接口。列出来只会让人选完发现跑不通
-  const chatOnly = new Set(((mediaCatalog || {}).kinds || []).filter((k) => k.chat_only).map((k) => k.kind));
+  // decide_only（Jev）一并挡掉：它连文字都不产，更不可能画图配音
+  const chatOnly = new Set(((mediaCatalog || {}).kinds || []).filter((k) => k.chat_only || k.decide_only).map((k) => k.kind));
   const usable = s.providers.filter((p) => !chatOnly.has(p.kind));
   sel.innerHTML = usable.length
     ? usable.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")
@@ -1320,7 +1321,8 @@ function fillChanSelect(f, s, cur) {
   const sel = f.querySelector(".ca-chan");
   // chat_only 的反面：海螺这类只做视频的渠道，对话接口路径根本不是 /chat/completions，
   // 列在这儿只会让人选完发现跑不通——跟那边 fillProvSelect 一个道理
-  const mediaOnly = new Set(((mediaCatalog || {}).kinds || []).filter((k) => k.media_only).map((k) => k.kind));
+  // decide_only（Jev）同样挡掉：判断模型没有 /chat/completions，挂上去每一趟都是 400
+  const mediaOnly = new Set(((mediaCatalog || {}).kinds || []).filter((k) => k.media_only || k.decide_only).map((k) => k.kind));
   const usable = s.providers.filter((p) => !mediaOnly.has(p.kind));
   sel.innerHTML = usable.length
     ? usable.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")

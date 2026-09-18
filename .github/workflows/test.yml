@@ -22,7 +22,7 @@ jobs:
         include:
           - os: ubuntu-latest
             label: 快跑（除 e2e 外全跑）
-            cmd: node test/all.js --only repo-hygiene,icons,lanes,md-tty,doctor,cli-args,cli-attach,cli-live,cli-ask,cli-approve,repl-commands,prefs,chat-models,media-models,gen-cache,sweep,quota,relay,totp,auth-2fa,skill-guard,toolward,tenant,lifecycle,ops,deploy,trace,term-image,office-tools,remote
+            cmd: node test/all.js --only repo-hygiene,icons,lanes,md-tty,doctor,cli-args,cli-attach,cli-live,cli-ask,cli-approve,repl-commands,session-search,systemone,prefs,chat-models,media-models,gen-cache,sweep,quota,relay,totp,auth-2fa,skill-guard,toolward,tenant,lifecycle,ops,deploy,trace,term-image,office-tools,remote
           - os: macos-latest
             label: 全套（含 e2e）
             cmd: npm test

@@ -158,6 +158,15 @@ function libTaskOf(src, name) {
   }
   return null;
 }
+/**
+ * 这份文件是那次任务的第几回合写出来的。拿回合号是为了「跳到那段对话」——
+ * 一个跑了三十轮的任务，只把对话打开等于还得自己翻，跟没跳一样。
+ * 服务端查不到就不给（老会话没记过，或者文件是后来手动拷进来的），由调用点退回顶部。
+ */
+function libTurnOf(task, name) {
+  const f = task && (task.files || []).find((x) => x.name === name);
+  return f && Number.isInteger(f.turn) && f.turn >= 0 ? f.turn : null;
+}
 /** 文件名 -> 图标。资料库、按任务、搜索结果三处都走这一个函数，图例才对得上 */
 function libIcon(n) {
   return ic(/\.html?$/i.test(n) ? "globe" : /\.csv$/i.test(n) ? "file-spreadsheet" : /\.(md|markdown)$/i.test(n) ? "file-pen-line" : /\.(png|jpe?g|gif|webp|svg)$/i.test(n) ? "image" : /\.pdf$/i.test(n) ? "file-type" : "file-text");
@@ -273,12 +282,19 @@ function libRowHtml(src, f, o) {
   // 图片就直接拿真图当缩略图——图标视图里一排「图片」图标等于没有视图。
   // 文件没了就别发这个请求：拿一串 404 换一排碎图标没有意义。
   const thumb = !gone && LIB_IMG.test(label) ? `<img loading="lazy" src="${libUrl(src, full, 160)}" alt="">` : libIcon(label);
+  // 「这东西是怎么来的」：一步跳回写出它的那段对话，而不是把对话从头摆出来让人自己翻。
+  // 没有回合号就不画这个按钮——画一个按下去只会滚到顶的按钮，比没有还让人恼火
+  const jp = opt.jump && Number.isInteger(opt.jump.turn) && opt.jump.turn >= 0 ? opt.jump : null;
+  const jump = jp
+    ? `<a href="#" class="lib-jump" data-open="${esc(jp.id)}" data-turn="${jp.turn}" title="跳到写出它的那一段对话（第 ${jp.turn + 1} 轮）">${ic("message-square")}</a>`
+    : "";
   return `
   <div class="lib-it ${opt.cls || ""} ${gone ? "gone" : ""} ${on ? "active" : ""}" data-src="${src}" data-name="${esc(full)}"${opt.task ? ` data-task="${esc(opt.task)}"` : ""} title="${esc(full)}">
     <span class="th">${thumb}</span>
     <span class="nm">${libMark(label, opt.q)}${dir ? `<span class="pth">${esc(dir)}</span>` : ""}</span>
     <span class="sz">${opt.note !== undefined ? opt.note : libSize(f.size || 0)}</span>
     <span class="tm">${esc(libWhen(f.mtime))}</span>
+    ${jump}
   </div>`;
 }
 /**
@@ -489,7 +505,7 @@ async function renderLibPage() {
   page.querySelectorAll("[data-open]").forEach(a => a.onclick = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    openSession(a.dataset.open);
+    openSession(a.dataset.open, { turn: a.dataset.turn === undefined ? null : +a.dataset.turn });
   });
   page.querySelectorAll(".lib-it:not(.lib-dir)").forEach(el => el.onclick = () => {
     libState.pick = { src: el.dataset.src, name: el.dataset.name, task: el.dataset.task || "" };
@@ -555,7 +571,7 @@ function libTasksHtml(data) {
         <a href="#" class="go" data-open="${esc(t.id)}" title="回到产生这些文件的那次对话">${ic("message-square")}</a>
       </div>
       ${shut ? "" : `<div class="lib-fs">${t.files.map((f) => libRowHtml("ws", f, {
-        cls: "lib-sub", task: t.id, dir: "", note: f.gone ? "已不在" : undefined,
+        cls: "lib-sub", task: t.id, dir: "", note: f.gone ? "已不在" : undefined, jump: { id: t.id, turn: f.turn },
       })).join("")}</div>`}
     </div>`;
   };
@@ -600,7 +616,7 @@ function libSearchHtml(data, q, recents) {
           <a href="#" class="go" data-open="${esc(t.id)}" title="回到这次对话">${ic("message-square")}</a>
         </div>
         <div class="lib-fs">${(t.files || []).filter((f) => libKindOk(f.name) && (libState.gone || !f.gone)).map((f) => libRowHtml("ws", f, {
-          cls: "lib-sub", task: t.id, dir: "", q, note: f.gone ? "已不在" : undefined,
+          cls: "lib-sub", task: t.id, dir: "", q, note: f.gone ? "已不在" : undefined, jump: { id: t.id, turn: f.turn },
         })).join("")}</div>
       </div>`).join("")}` : ""}
     ${lib.length ? `<div class="sec">资料库 <span style="font-weight:400;color:var(--owb-text-3)">${lib.length}</span></div>${lib.map((f) => fileRow("lib", f)).join("")}` : ""}
@@ -658,12 +674,13 @@ async function renderLibPreview(prev, lib) {
   // 随手点开一个文件，也能顺着它走回那次对话——不只是「按任务」那一栏里点进来的才有。
   // 这一条是这一页跟一张普通文件表格最要紧的区别：产出和它的来历始终连着。
   const from = libTaskOf(src, name);
+  const fromTurn = from ? libTurnOf(from, name) : null;
   const bar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
     <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</b>
     <a class="link" href="${url}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>
     ${src === "lib" && po ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
   </div>
-  ${from ? `<div class="lib-from">${ic("sparkles")}<span>出自任务</span><a href="#" class="link" data-open="${esc(from.id)}" title="回到产生这份文件的那次对话">${esc(from.title)}</a><em>${esc(libWhen(from.at))}</em></div>` : ""}`;
+  ${from ? `<div class="lib-from">${ic("sparkles")}<span>出自任务</span><a href="#" class="link" data-open="${esc(from.id)}"${fromTurn == null ? "" : ` data-turn="${fromTurn}"`} title="${fromTurn == null ? "回到产生这份文件的那次对话" : "回到产生这份文件的那次对话，并停在写出它的那一段"}">${esc(from.title)}</a><em>${esc(libWhen(from.at))}</em>${fromTurn == null ? "" : `<span class="lib-from-at">第 ${fromTurn + 1} 轮</span>`}</div>` : ""}`;
   prev.innerHTML = bar + '<div class="ph">加载中…</div>';
   const body = prev.lastElementChild;
   const wireDel = () => {
@@ -727,7 +744,7 @@ async function renderLibPreview(prev, lib) {
   }
   wireDel();
   // 「出自任务」那条链接得在 innerHTML 重排之后再接一次事件（上面几条 outerHTML 会换掉节点）
-  prev.querySelectorAll("[data-open]").forEach((a) => a.onclick = (e) => { e.preventDefault(); openSession(a.dataset.open); });
+  prev.querySelectorAll("[data-open]").forEach((a) => a.onclick = (e) => { e.preventDefault(); openSession(a.dataset.open, { turn: a.dataset.turn === undefined ? null : +a.dataset.turn }); });
 }
 
 // ================= 专家 · 技能 · 连接器（主区页面，三合一） =================

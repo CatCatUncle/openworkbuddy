@@ -94,8 +94,14 @@ const CAPS = {
     config: "media.asr", icon: "mic",
     suggest: { org_daily: 100, org_monthly: 1500, user_daily: 20 },
   },
+  decide: {
+    key: "decide", label: "判断模型", unit: "道", paid: true, order: 6,
+    why: "Jev 这类判断模型一道题两万分之一美金，贵不起来；但它快得可以放进循环里，一段脚本跑一夜能问出几十万道。限的是失控的量，不是钱。",
+    config: "providers", icon: "scale",
+    suggest: { org_daily: 5000, org_monthly: 80000, user_daily: 800 },
+  },
   fetch: {
-    key: "fetch", label: "抓取网页", unit: "次", paid: false, order: 6,
+    key: "fetch", label: "抓取网页", unit: "次", paid: false, order: 7,
     why: "自己不花钱，但浏览器渲染很吃这台服务器的内存，而且抓太狠会让对方站点把整台机器的 IP 封掉。",
     config: "", icon: "globe",
     suggest: { org_daily: 2000, org_monthly: 40000, user_daily: 300 },

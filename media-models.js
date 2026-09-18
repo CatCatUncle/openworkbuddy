@@ -36,6 +36,11 @@ const PROVIDER_KINDS = [
   { kind: "deepseek", label: "DeepSeek 官方", base_url: "https://api.deepseek.com/v1", key_url: "https://platform.deepseek.com/api_keys", chat_only: true },
   { kind: "moonshot", label: "Kimi（月之暗面）", base_url: "https://api.moonshot.cn/v1", key_url: "https://platform.moonshot.cn/console/api-keys", chat_only: true },
   { kind: "ollama", label: "Ollama 本地（不要 Key）", base_url: "http://localhost:11434/v1", key_url: "https://ollama.com/download" },
+  // decide_only 是第三种「偏科」：Jev 既不聊天也不画图，它只做判断——给它一段状态和一道有类型的题，
+  // 回一个选项 / 分数 / 概率，外加一个「我有多确定」。它的接口路径是 /v1/systemone，
+  // 拿 /chat/completions 打它会被 400 顶回来（上游原话：is a decisions model）。
+  // 所以对话和媒体两个下拉里都不该出现它，理由跟 chat_only / media_only 完全一样。
+  { kind: "typesafe", label: "TypeSafe Jev（判断模型，不产文字）", base_url: "https://api.typesafe.ai/v1", key_url: "https://console.typesafe.ai/settings/keys", decide_only: true },
   { kind: "newapi", label: "new-api / one-api 自建网关", base_url: "", key_url: "" },
   { kind: "custom", label: "其它 OpenAI 兼容接口", base_url: "", key_url: "" },
 ];
@@ -242,6 +247,7 @@ function guessKind(baseUrl) {
   if (/api\.anthropic\.com/.test(b)) return "anthropic";
   if (/deepseek\.com/.test(b)) return "deepseek";
   if (/moonshot\.cn/.test(b)) return "moonshot";
+  if (/typesafe\.ai/.test(b)) return "typesafe";
   if (/(localhost|127\.0\.0\.1):11434/.test(b)) return "ollama";
   return "custom";
 }

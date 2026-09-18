@@ -660,15 +660,80 @@ function projectSessions() {
   // 老会话没记过 lane，按服务端算的回落值归位——不会整批「消失」到另一个标签底下
   return inProject.filter(s => laneOfSession(s) === activeLane);
 }
-/* 侧栏历史的过滤词。任务攒到几十条的时候翻列表不如打字——标题栏那个放大镜展开的就是它。
-   只过滤显示，不动 sessions 本身，所以清空输入框立刻全回来。 */
+/* 侧栏历史的检索。任务攒到几十条的时候翻列表不如打字——标题栏那个放大镜展开的就是它。
+   只过滤显示，不动 sessions 本身，所以清空输入框立刻全回来。
+
+   以前这儿只筛标题。可标题是任务跑完自动起的，用户从没读过一眼；他记得的是自己当时打的那句话
+   （「把这个 csv 里重复的行挑出来」），或者最后拿到的那个文件名。按标题筛，这两种记法一条都找不着，
+   只能一条条点开看，点到第五条就放弃了。
+   现在分两层：
+     本地这一层 —— 每敲一个键立刻筛标题，不等网络。等网络的搜索框在打字时是空列表，
+                   而空列表看起来跟「没搜到」一模一样，人会在结果回来之前就改词或者放弃。
+     服务端那层 —— 慢 300ms 跟上，正文、产出文件名、意思相近的一起找，带命中片段回来。
+   服务端那层回来了就接管，没回来 / 失败了就一直是本地这层兜着，绝不会出现「先空一下再有」。 */
 let histQuery = "";
+let histHits = null;      // 服务端搜索结果；null = 还没回来 / 没在搜
+let histNote = "";        // 这次是靠什么找的，如实说
+let histErr = "";         // 搜挂了要说，不能拿「没搜到」糊过去——那是两件事
+let histTimer = null;
+let histSeq = 0;
 function histMatch(t) {
   const q = histQuery.trim().toLowerCase();
   return !q || String(t || "").toLowerCase().includes(q);
 }
+/** 服务端检索：防抖 300ms。每次请求带个序号，回来的时候对不上就丢掉——
+    打字快的时候后发的先到，不对序号的话列表会跳回上一个词的结果 */
+function histSearchSoon() {
+  clearTimeout(histTimer);
+  const q = histQuery.trim();
+  if (!q) { histHits = null; histNote = ""; histErr = ""; renderHistory(); return; }
+  histTimer = setTimeout(async () => {
+    const seq = ++histSeq;
+    try {
+      const r = await fetch("/api/sessions/search?q=" + encodeURIComponent(q));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      if (seq !== histSeq || histQuery.trim() !== q) return;
+      histHits = Array.isArray(j.hits) ? j.hits : [];
+      histNote = String(j.note || "");
+      histErr = "";
+    } catch (e) {
+      if (seq !== histSeq) return;
+      histHits = null;                    // 兜回本地筛标题，而不是摆一张空列表
+      histErr = "只筛了标题——正文检索没连上（" + (e && e.message ? e.message : "请求失败") + "）";
+    }
+    renderHistory();
+  }, 300);
+}
+/** 一条命中行：标题 + 为什么是它 + 命中那一小段。片段用下标标出命中位置，这儿负责转义 */
+function histHitRow(h, activeId) {
+  const t = stripSceneTag(h.title || "未命名任务");
+  const sn = h.snippet;
+  let snip = "";
+  if (sn && sn.text) {
+    const s = String(sn.text);
+    snip = (sn.at >= 0 && sn.len)
+      ? esc(s.slice(0, sn.at)) + "<mark>" + esc(s.slice(sn.at, sn.at + sn.len)) + "</mark>" + esc(s.slice(sn.at + sn.len))
+      : esc(s);
+  }
+  return `<div class="hist-item found ${h.id === activeId ? "active" : ""}" data-id="${esc(h.id)}" title="${esc(t)}">`
+    + `<span class="ht">${esc(t)}</span><span class="hwhy">${esc(h.why || "")}</span>`
+    + (snip ? `<div class="hsnip">${snip}</div>` : "")
+    + `</div>`;
+}
 function renderHistory() {
   const all = projectSessions();
+  // 服务端的命中列表回来了就由它接管：它找的是正文和意思，本地这层只认标题
+  if (histQuery.trim() && histHits) {
+    const cnt0 = document.getElementById("hist-count");
+    if (cnt0) cnt0.textContent = histHits.length + "/" + all.length;
+    const body = histHits.length
+      ? histHits.map((h) => histHitRow(h, sessionId)).join("")
+      : `<div class="hist-empty">没找着「${esc(histQuery.trim())}」——标题、对话正文、产出文件名都找过了</div>`;
+    document.getElementById("history").innerHTML = body
+      + (histNote ? `<div class="hist-note">${esc(histNote)}</div>` : "");
+    return;
+  }
   const list = all.filter((s) => histMatch(stripSceneTag(s.title)));
   const cnt = document.getElementById("hist-count");
   // 只在过滤时写「命中/总数」。平时那个数字是纯噪音——Claude Cowork 和 Codex 的任务列表
@@ -699,7 +764,7 @@ function renderHistory() {
     }).join("");
   }
   const empty = histQuery.trim()
-    ? `没有名字里带「${esc(histQuery.trim())}」的任务`
+    ? (histErr ? esc(histErr) : `没有名字里带「${esc(histQuery.trim())}」的任务——正文还在找`)
     : (activeLane === "cli"
       ? "这条线还空着。在终端里跑 <code>openworkbuddy 你的活儿</code>，它就会出现在这儿——手机上也看得见。"
       : (projectsLocked ? "这条线上还没有任务" : "该项目在这条线上还没有任务"));
@@ -716,10 +781,10 @@ function renderHistory() {
     btn.classList.toggle("on", on);
     btn.setAttribute("aria-expanded", on ? "true" : "false");
     if (on) q.focus();
-    else if (histQuery) { histQuery = ""; q.value = ""; renderHistory(); }
+    else if (histQuery) { histQuery = ""; q.value = ""; histHits = null; histNote = ""; histErr = ""; clearTimeout(histTimer); renderHistory(); }
   };
   btn.addEventListener("click", () => open(q.hidden));
-  q.addEventListener("input", () => { histQuery = q.value; renderHistory(); });
+  q.addEventListener("input", () => { histQuery = q.value; renderHistory(); histSearchSoon(); });
   q.addEventListener("keydown", (e) => { if (e.key === "Escape") { open(false); btn.focus(); } });
 })();
 document.getElementById("history").addEventListener("click", async (e) => {
@@ -747,8 +812,31 @@ document.getElementById("history").addEventListener("click", async (e) => {
   await openSession(item.dataset.id);
 });
 
-/** 打开一个会话并回放它的对话（历史列表点击 / 评测页「打开对话」都走这里） */
-async function openSession(id) {
+/**
+ * 滚到第 n 个回合并让它亮一下，跳不过去就返回 false（交回给调用点，照旧滚到底）。
+ *
+ * 不硬跳的理由：回合号是从对话记录里数出来的，老会话根本没记过，记录也可能被裁过。
+ * 宁可退回「把对话打开」这个老行为，也别把人扔在一段跟他点的那份文件毫无关系的对话中间——
+ * 后者看起来像功能坏了，前者只是没帮上忙。
+ */
+function jumpToTurn(n) {
+  const el = chatCol.querySelectorAll(".turn")[n];
+  if (!el) return false;
+  el.scrollIntoView({ block: "start", behavior: "smooth" });
+  el.classList.remove("turn-jumped");
+  void el.offsetWidth; // 逼一次重排，不然连点同一份文件第二次，动画不会重放
+  el.classList.add("turn-jumped");
+  clearTimeout(jumpToTurn._t);
+  jumpToTurn._t = setTimeout(() => el.classList.remove("turn-jumped"), 2600);
+  return true;
+}
+
+/**
+ * 打开一个会话并回放它的对话（历史列表点击 / 评测页「打开对话」都走这里）。
+ * opts.turn 给的是「停在第几回合」：从资料库点一份产出过来的人，要找的是
+ * 写出这份东西的那几句话，落在对话最底下等于还得自己翻一遍。
+ */
+async function openSession(id, opts) {
   closeAssistView();
   stopCliWatch(); // 换了会话就别再往上一趟里塞事件了
   sessionId = id;
@@ -803,6 +891,8 @@ async function openSession(id) {
     chatCol.innerHTML = '<div style="text-align:center;color:var(--owb-text-3);font-size: 13px;padding:20px">该任务还没有保存的对话记录（可能创建于旧版本），继续对话即可。</div>';
   }
   updateSendUI();
+  const want = opts && Number.isInteger(opts.turn) && opts.turn >= 0 ? opts.turn : null;
+  if (want != null && jumpToTurn(want)) return; // 跳过去了就别再一脚滚到底把人甩开
   scrollBottom(true);
 }
 document.getElementById("new-task").onclick = () => {
@@ -1896,11 +1986,11 @@ function openUserMenu() {
     <div class="um-i" data-act="profile">${ic("id-card")}个人资料</div>
     <div class="um-i" data-act="settings">${ic("settings")}设置</div>
     ${currentUser.role === "admin" || currentUser.role === "auditor"
-      ? `<div class="um-i" data-act="admin">${ic("building-2")}企业管理后台 <span class="hint">${currentUser.role === "auditor" ? "只读" : "成员 · 用量 · 安全"}</span></div>`
+      ? `<div class="um-i" data-act="admin">${ic("building-2")}企业管理后台${currentUser.role === "auditor" ? ` <span class="hint">只读</span>` : ""}</div>`
       : ""}
     ${i18n ? `<div class="um-i um-lang" data-act="lang" title="点一下就切换界面语言，AI 回复也跟着换"><span>${ic("globe")}语言</span><span class="um-seg" data-i18n-skip role="group" aria-label="界面语言">${Object.keys(i18n.LANGS).map((v) =>
       `<button type="button" data-lang="${v}" class="${lang === v ? "on" : ""}" aria-pressed="${lang === v}">${v === "zh" ? "中" : "En"}</button>`).join("")}</span></div>` : ""}
-    <div class="um-i" data-act="appearance">${ic("palette")}外观 <span class="hint">${THEME_LABEL[getTheme()]} · ${LOOK_OPTS.fs[lookGet("fs")]}字</span></div>
+    <div class="um-i" data-act="appearance">${ic("palette")}外观</div>
     <div class="um-i" data-act="help">${ic("message-circle")}帮助与反馈</div>
     <div class="um-i" data-act="update">${ic("refresh-cw")}检查更新</div>
     <div class="um-i" data-act="logout" style="color:var(--owb-err-text)">${ic("log-out")}退出登录</div>`;

@@ -47,6 +47,8 @@ const SUITES = [
   ["cli-ask", "终端里回答 agent 的提问"],
   ["cli-approve", "危险操作征求同意：终端卡片 + 手机上点"],
   ["repl-commands", "REPL 命令表"],
+  ["session-search", "任务历史检索：正文 / 产出文件名 / 意思相近"],
+  ["systemone", "判断模型 Jev：题目怎么拼、回答怎么读、确定度不够就不许照做"],
   ["prefs", "偏好与配置落盘"],
   ["chat-models", "模型渠道与选型"],
   ["media-models", "生图 / 生视频 / 配音 / 转写 多模型"],

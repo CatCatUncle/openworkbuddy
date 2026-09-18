@@ -455,6 +455,7 @@
       "筛选任务历史": "Filter task history",
       "按名字找任务": "Find a task by name",
       "找任务…": "Find a task…",
+      "找任务：标题、说过的话、产出文件名…": "Search tasks: title, what was said, output file names…",
       "拖动调整任务历史高度": "Drag to resize task history",
       "拖动调整高度 · 双击恢复自适应": "Drag to resize · double-click to auto-fit",
       "助理模式": "Assistant",

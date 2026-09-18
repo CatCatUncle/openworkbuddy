@@ -4648,7 +4648,7 @@ const MENU_CHECKS = `
   openUserMenu();
   ok("打开：菜单显示，八行动作 = 个人资料/设置/企业后台/语言/外观/帮助/更新/退出", menu.classList.contains("show") && acts() === "profile,settings,admin,lang,appearance,help,update,logout");
   const iconOf = (sel) => { const u = menu.querySelector(sel + " use"); return u ? u.getAttribute("href") : "(这行没画图标)"; };
-  ok("企业后台这行写清楚了点进去能干什么（成员 · 用量 · 安全）", /企业管理后台/.test(menu.textContent) && /成员 · 用量 · 安全/.test(menu.querySelector('[data-act="admin"]').textContent));
+  ok("企业后台这行只剩名字，不再把后台目录（成员 · 用量 · 安全）抄一遍", /企业管理后台/.test(menu.textContent) && !/成员 · 用量 · 安全/.test(menu.textContent) && !menu.querySelector('[data-act="admin"] .hint'));
   // 八行动作每行都得有图标，而且是各自那一个——以前这里是 🏢🪪⚙️ 一串表情，翻译一过就被当正文
   ok("八行动作用的是图标不是表情：每行一个 svg，图标各不相同", (() => {
     const rows = [...menu.querySelectorAll(".um-i")];
@@ -4663,7 +4663,7 @@ const MENU_CHECKS = `
   const bgOn = getComputedStyle(btn("zh")).backgroundColor, bgOff = getComputedStyle(btn("en")).backgroundColor;
   ok("选中胶囊有品牌底色，未选中透明（" + bgOn + " / " + bgOff + "）", bgOn !== bgOff && /rgba\\(0, 0, 0, 0\\)|transparent/.test(bgOff));
   ok("胶囊够大能点：高 ≥ 18px、宽 ≥ 30px", btn("zh").getBoundingClientRect().height >= 18 && btn("zh").getBoundingClientRect().width >= 30);
-  ok("外观行的「主题 · 字号」提示还在（没误伤）", /跟随系统 · 标准字/.test(menu.querySelector('[data-act="appearance"] .hint').textContent));
+  ok("外观行不再念两个默认值（跟随系统 · 标准字）", !/跟随系统|标准字/.test(menu.textContent) && !menu.querySelector('[data-act="appearance"] .hint'));
   btn("en").click(); await tick();
   ok("点 En：语言=en，菜单没关", I18N.getLang() === "en" && menu.classList.contains("show"));
   ok("点 En：菜单文案原地变英文（Profile / Settings / Language / Appearance），En 选中", /Profile/.test(menu.textContent) && /Settings/.test(menu.textContent) && /Language/.test(menu.textContent) && /Appearance/.test(menu.textContent) && btn("en").classList.contains("on") && !btn("zh").classList.contains("on"));
@@ -6912,6 +6912,53 @@ const LANE_CHECKS = `
   ok("反向对照：一过滤就写「命中/总数」——这时候才真需要知道藏起来多少条", cnt.textContent === "1/2", cnt.textContent);
   histQuery = "";
   renderHistory();
+
+  // ---- ⑦-3 服务端搜出来的那一层：带片段、带「为什么是它」、挂了要说挂了 ----
+  // 起因是一句抱怨：「我要找到相应的对话的时候方便点啊」。只筛标题的话，用户记得的那两样
+  // （自己打的那句话、最后拿到的文件名）一样都搜不着。
+  sessions = [{ id: "k1", title: "表格清洗", at: 2, lane: "cli" }, { id: "k2", title: "竞品调研", at: 1, lane: "cli" }];
+  cliLiveRows = [];
+  histQuery = "重复的行";
+  histHits = [{ id: "k1", title: "表格清洗", why: "对话里", score: 1.6,
+    snippet: { text: "这个 csv 里有很多重复的行，帮我挑出来", at: 11, len: 4, head: false } }];
+  histNote = "在 2 条任务里找，标题、对话正文、产出文件名都算";
+  histErr = "";
+  renderHistory();
+  const found = hist.querySelector(".hist-item.found");
+  ok("★标题里一个字都不沾的那条被搜出来了★ 这正是「只筛标题」那版找不着的那种", !!found && found.dataset.id === "k1", hist.innerHTML.slice(0, 200));
+  ok("★每条都标着是靠什么找到的★ 不标的话，语义命中看起来就是凭空冒出来的不相干任务",
+    !!hist.querySelector(".hwhy") && hist.querySelector(".hwhy").textContent === "对话里");
+  ok("命中的那句话摘出来了，不用点进去才知道为什么是它", /重复的行/.test((hist.querySelector(".hsnip") || {}).textContent || ""));
+  ok("★命中那几个字高亮，而且套在对的位置上★ 下标算错的话高亮会歪到旁边的字上",
+    (hist.querySelector(".hsnip mark") || {}).textContent === "重复的行", (hist.querySelector(".hsnip mark") || {}).textContent);
+  ok("搜完那句实话也画出来了（这次靠什么找的）", /标题、对话正文、产出文件名都算/.test(hist.textContent));
+  ok("命中行不再是单行省略号那种：.found 换了行高，两行放得下标题和片段",
+    getComputedStyle(found).whiteSpace === "normal", getComputedStyle(found).whiteSpace);
+
+  // 片段是别人对话里的原话，可能长得像标签。转义漏一处就是一个存储型 XSS
+  histHits = [{ id: "k1", title: "<img src=x onerror=alert(1)>", why: "对话里",
+    snippet: { text: "前 <script>alert(1)</script> 后", at: 2, len: 8, head: false } }];
+  renderHistory();
+  ok("★标题和片段都当文字画，不当 HTML★ 对话里的原话混进一个标签就等于一个存储型 XSS",
+    hist.querySelectorAll("img, script").length === 0 && /onerror/.test(hist.textContent), hist.innerHTML.slice(0, 200));
+
+  // 搜挂了 ≠ 没搜到。混成一件事的话，用户会以为「这个搜索不准」，而其实是请求没发出去
+  histHits = null;
+  histErr = "只筛了标题——正文检索没连上（HTTP 500）";
+  histQuery = "八竿子打不着";
+  renderHistory();
+  ok("★搜挂了照实说挂了★ 显示「没搜到」的话，两件事说成了一件，而该修的那件没人知道",
+    /正文检索没连上/.test(hist.textContent), hist.textContent.slice(0, 120));
+  histErr = "";
+  renderHistory();
+  ok("反向对照：没挂的时候说的是另一句（本地先筛着，正文还在找）",
+    !/没连上/.test(hist.textContent) && /正文还在找/.test(hist.textContent), hist.textContent.slice(0, 120));
+
+  histQuery = ""; histHits = null; histNote = ""; histErr = "";
+  renderHistory();
+  ok("清空搜索词就回到平常那张列表（两条都在，没有 .found）",
+    hist.querySelectorAll(".hist-item").length === 2 && !hist.querySelector(".found"));
+
   byLane("cli").click();
 
   // ---- ⑧ 空态：告诉人「怎么让它出现」，不是干巴巴一句没有任务 ----
@@ -8166,6 +8213,223 @@ const OVF_CHECKS = `
   return names;
 })()`;
 
+// ================= 引用一条回复 / 从资料库跳回那一轮 =================
+// 用户原话：「还有就是支持针对其中一条agent回复去做回答做引用啊，能引用对话回复啊」
+// 和「还有在资料库里一个文件能打开在对话中的位置啊，直接定位到所在位置和对话啊」。
+//
+// 这两件事都只在真 DOM 里才成立，所以放在同一屏里跑：
+// ① 引用取的是**渲染后的正文**（innerText），过程卡片、按钮条、token 统计一个字都不许带进去；
+//    光标落在别的回复里时不许把那截字引到这条底下来——这是最容易写漏的一条，
+//    而且写漏了在界面上看着完全正常（你选了字、按了引用、确实引进来了，只是引错了人）。
+// ② 跳转跳不过去要**认输**（返回 false），让调用点退回「把对话滚到底」这个老行为。
+//    硬跳的话人会落在一段跟他点的那份文件毫不相干的话上，比没跳更像功能坏了。
+// ③ 高亮得是**量出来的**：只验 class 的话，把 .turn-jumped 那条 CSS 删了测试照样全绿，
+//    用户那边则是「页面动了一下，不知道该看哪儿」。
+const QT0 = APP02X.indexOf("/**\n * 引用一条回复去追问。");
+const QT1 = APP02X.indexOf("// ================= 回合渲染（实时流式与历史回放共用） =================");
+if (QT0 < 0 || QT1 <= QT0) throw new Error("app-01.js 里的「引用回复」那段找不到了（函数改名/挪窝了？），前端测试没法定位真源码");
+const QUOTE_SRC = APP02X.slice(QT0, QT1);
+if (!/function quoteReply\(/.test(QUOTE_SRC)) throw new Error("切出来的那段里没有 quoteReply——引用这一半没被测到");
+
+const JP0 = APP02.indexOf("/**\n * 滚到第 n 个回合并让它亮一下");
+const JP1 = APP02.indexOf("/**\n * 打开一个会话并回放它的对话");
+if (JP0 < 0 || JP1 <= JP0) throw new Error("app-02.js 里的 jumpToTurn 那段找不到了（函数改名/挪窝了？），前端测试没法定位真源码");
+const JUMP_SRC = APP02.slice(JP0, JP1);
+
+// 按钮本身长在 createTurnUI 里面（闭包，切不出来单跑），但「按钮在不在、连没连上」
+// 是会被一次手滑改没的——补一道源码层的闸，图标名也一起核，免得画出个空框框
+{
+  const B0 = APP02X.indexOf("  function addActionsBar() {");
+  const B1 = APP02X.indexOf("// ================= 空状态（场景 tab + 分类胶囊）", B0);
+  if (B0 < 0 || B1 <= B0) throw new Error("app-01.js 里的回复操作条那段找不到了（函数改名/挪窝了？），前端测试没法核按钮");
+  const bar = APP02X.slice(B0, B1);
+  if (!/data-a="quote"/.test(bar)) throw new Error("回复操作条上没有「引用」按钮了：用户要的那一下按不着");
+  if (!/\[data-a=quote\]"\)\.onclick\s*=\s*\(\)\s*=>\s*quoteReply\(turn\)/.test(bar)) throw new Error("「引用」按钮没接到 quoteReply 上：画得出来、按下去没反应");
+  const sprite = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  for (const n of ["text-quote", "message-square"]) {
+    if (!sprite.includes('<symbol id="i-' + n + '"')) throw new Error("图标 " + n + " 不在 index.html 的雪碧图里：ic() 会画出一个空框框，界面上看不出报错");
+  }
+}
+
+const QUOTE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
+  + "<body style='margin:0;width:760px'>"
+  + "<div id='chat-col' style='height:300px;overflow:auto'></div>"
+  + "<textarea id='composer'></textarea></body>";
+const QUOTE_STUBS = `
+const chatCol = document.getElementById("chat-col");
+const inputEl = document.getElementById("composer");
+window.TOASTS = [];
+function toast(m) { window.TOASTS.push(String(m)); }
+`;
+const QUOTE_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+
+  // 照 createTurnUI 的结构搭一条回复：正文在 .body > .a-text，
+  // 过程卡片和按钮条也是 .body 的孩子——它们恰恰是**不该**被引进来的那部分
+  const mkTurn = (texts, extra) => {
+    const t = document.createElement("div");
+    t.className = "turn";
+    const b = document.createElement("div");
+    b.className = "body";
+    for (const x of texts) {
+      const a = document.createElement("div");
+      a.className = "a-text";
+      a.textContent = x;
+      b.appendChild(a);
+    }
+    if (extra) b.insertAdjacentHTML("beforeend", extra);
+    t.appendChild(b);
+    chatCol.appendChild(t);
+    return t;
+  };
+
+  // ---------- 引用 ----------
+  const noise = "<div class='proc'>正在读取 周报.md</div><div class='turn-actions'><button>复制</button></div>";
+  const t1 = mkTurn(["这一版周报分三块：", "第二块的数字我拿的是上周的，你确认下。"], noise);
+
+  inputEl.value = "";
+  quoteReply(t1);
+  ok("引用塞进输入框（而不是挂一枚改不了的标签）", inputEl.value.includes("> 这一版周报分三块："), JSON.stringify(inputEl.value));
+  ok("整条正文都引进来了，不是只引第一段", inputEl.value.includes("> 第二块的数字我拿的是上周的，你确认下。"), JSON.stringify(inputEl.value));
+  ok("过程卡片和按钮条一个字都没带进来", !/正在读取|复制/.test(inputEl.value), JSON.stringify(inputEl.value));
+  ok("引用尾部留了空行，人接着往下写就行", /\\n\\n$/.test(inputEl.value), JSON.stringify(inputEl.value.slice(-6)));
+  ok("光标落在末尾（不是把人甩到开头去接着打字）", inputEl.selectionStart === inputEl.value.length);
+
+  // 已经写了半句话：接在后面，不许冲掉
+  inputEl.value = "帮我改一下";
+  quoteReply(t1);
+  ok("输入框里写了一半的话没被冲掉", inputEl.value.startsWith("帮我改一下"), JSON.stringify(inputEl.value));
+  ok("接在半句话后面时空了一行，不糊成一坨", inputEl.value.includes("帮我改一下\\n\\n> "), JSON.stringify(inputEl.value));
+
+  // 连按两下：不许引两遍
+  const before = inputEl.value;
+  window.TOASTS = [];
+  quoteReply(t1);
+  ok("同一段不会被引进来两遍", inputEl.value === before, JSON.stringify(inputEl.value));
+  ok("重复引用要说一声，不是默默什么都不做", window.TOASTS.length === 1, JSON.stringify(window.TOASTS));
+
+  // 选中了一截：只引那一截。
+  // 先 blur：真实顺序就是「在回复里拖选一段」（输入框因此失焦）→「按引用」。
+  // 输入框还叼着焦点的时候，Chrome 的 document selection 归输入框管，外面这一段选不上——
+  // 不 blur 的话这一条会静默退回「整段引用」，看着像功能坏了，其实是夹具没摆对
+  const t2 = mkTurn(["前面这段没问题。", "但是这句数字不对。", "后面这段也没问题。"]);
+  const sel = window.getSelection();
+  const target = t2.querySelectorAll(".a-text")[1];
+  const pick = () => {
+    inputEl.blur();
+    const r = document.createRange();
+    r.selectNodeContents(target);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  };
+  pick();
+  ok("夹具自检：选区真的选上了（选不上的话下面两条等于什么都没测）",
+     !sel.isCollapsed && String(sel).includes("但是这句数字不对。"), JSON.stringify([sel.isCollapsed, String(sel)]));
+  inputEl.value = "";
+  quoteReply(t2);
+  ok("选中了就只引选中的那截（一条回复好几屏，整段引过去等于什么都没指）",
+     inputEl.value.includes("但是这句数字不对。") && !inputEl.value.includes("前面这段没问题。"), JSON.stringify(inputEl.value));
+
+  // 反向对照：选区停在**别的**回复里。不加这道判断的话，
+  // 在 t2 里选的字会被引到 t1 底下来——界面上看着完全正常，引的却是别人的话
+  pick(); // 选区还在 t2 上，这一回按的却是 t1 的引用
+  inputEl.value = "";
+  quoteReply(t1);
+  ok("在别处选中的字不会被引到这一条底下来（选区得落在这条回复里才算数）",
+     inputEl.value.includes("这一版周报分三块：") && !inputEl.value.includes("但是这句数字不对。"), JSON.stringify(inputEl.value));
+  sel.removeAllRanges();
+
+  // 太长的截断。再长就不是「引用」而是「复述」，模型也会被这一大坨带偏
+  const long = "很".repeat(900);
+  const t3 = mkTurn([long]);
+  inputEl.value = "";
+  quoteReply(t3);
+  ok("超长回复会被截断，不是整屏搬进输入框", inputEl.value.length < 500, inputEl.value.length + " 字");
+  ok("截断了要留个省略号，别让人以为它就说了这么多", inputEl.value.includes("…"), JSON.stringify(inputEl.value.slice(-8)));
+
+  // 多行正文：每一行都得是引用行，否则第二行往后在 markdown 里会掉出引用块。
+  // 这里搭的是**渲染后**的样子（markdown 渲染出来是一串 <p>），不是塞一个带 \\n 的 textContent
+  // ——后者在普通 div 里根本不换行，测出来的是假的
+  inputEl.value = "";
+  const t4 = mkTurn([]);
+  t4.querySelector(".body").innerHTML = "<div class='a-text'><p>第一行</p><p>第二行</p><p>第三行</p></div>";
+  quoteReply(t4);
+  ok("多行正文每一行都带 >（漏一行，后面几行就掉出引用块了）",
+     (inputEl.value.match(/^> /gm) || []).length >= 3, JSON.stringify(inputEl.value));
+
+  // 空回复：说一声，不许往输入框里塞一个空的 ">"
+  const t5 = mkTurn([]);
+  inputEl.value = "";
+  window.TOASTS = [];
+  quoteReply(t5);
+  ok("没有正文可引的时候说一声，不往输入框里塞一个空的 >", inputEl.value === "" && window.TOASTS.length === 1, JSON.stringify([inputEl.value, window.TOASTS]));
+
+  // ---------- 从资料库跳回那一轮 ----------
+  chatCol.innerHTML = "";
+  const turns = [];
+  for (let i = 0; i < 6; i++) {
+    const t = document.createElement("div");
+    t.className = "turn";
+    t.style.height = "200px";
+    t.textContent = "第 " + (i + 1) + " 轮";
+    chatCol.appendChild(t);
+    turns.push(t);
+  }
+  chatCol.scrollTop = 0;
+
+  ok("跳得过去就说跳过去了", jumpToTurn(3) === true);
+  ok("跳到的是第 4 轮那一块，不是别的哪一块", turns[3].classList.contains("turn-jumped"), turns.findIndex((t) => t.classList.contains("turn-jumped")));
+  ok("别的回合没被一起点亮", turns.filter((t) => t.classList.contains("turn-jumped")).length === 1);
+
+  // 高亮得量得出来：只验 class 的话，把那条 CSS 删了这一屏照样全绿。
+  // 认的是 owbTurnFound 这个名字而不是「有没有动画」——.turn 本来就带一个入场动画（owbRise），
+  // 拿「!== none」当判据的话，这条和下面那条反向对照会同时被它顶成绿的
+  const anim = getComputedStyle(turns[3]).animationName;
+  ok("高亮是真画出来的（量出 owbTurnFound 真挂上了，不是只认一个 class）", /owbTurnFound/.test(anim), JSON.stringify(anim));
+  const plain = getComputedStyle(turns[4]).animationName;
+  ok("反向对照：没被跳中的回合不该有这层高亮", !/owbTurnFound/.test(plain), JSON.stringify(plain));
+  // 高亮画在盒子外面，但不许把盒子撑大——撑大了对话列就多一条横向滚动条。
+  // 这正是 ::before 那版栽的地方：往外 inset 12px，scrollWidth 就跟着多 12px
+  ok("高亮不许把这一轮撑宽（否则对话列多出一条横滚动条）",
+     turns[3].scrollWidth <= turns[3].clientWidth + 1, turns[3].scrollWidth + " > " + turns[3].clientWidth);
+
+  // 跳不过去要认输，交回给调用点去滚到底
+  ok("回合号越界就认输（老会话记录被裁过，跳不过去是常态）", jumpToTurn(99) === false);
+  ok("认输的那一下不许顺手把别人的高亮擦了", turns[3].classList.contains("turn-jumped"));
+  ok("一条对话都没有时也认输，不炸", (() => { const keep = chatCol.innerHTML; chatCol.innerHTML = ""; const v = jumpToTurn(0); chatCol.innerHTML = keep; return v === false; })());
+
+  return names;
+})()
+`;
+// 再跑一小段，这次把系统的「减弱动态效果」打开。index.html 里有一条全局的
+// animation-duration:.01ms !important —— 它会让 owbTurnFound 瞬间走到最后一帧，
+// 而最后一帧是透明的。于是「跳过去之后高亮一下」在 reduce 档下等于什么都没发生，
+// 偏偏这批人才是最需要「告诉我该看哪儿」的。本机默认不是 reduce，不单独跑一遍就永远测不到。
+const JUMP_REDUCE_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  ok("夹具自检：这一遍真的是 reduce 档", matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const t = document.createElement("div");
+  t.className = "turn";
+  t.style.height = "200px";
+  chatCol.appendChild(t);
+  ok("跳得过去", jumpToTurn(0) === true);
+  const cs = getComputedStyle(t);
+  ok("reduce 档下不放动画（放了也是瞬间走完，最后一帧还是透明的）", cs.animationName === "none", JSON.stringify(cs.animationName));
+  const bg = cs.backgroundColor;
+  ok("但底色得真摆上：高亮不是锦上添花，是「你落在这儿」的唯一提示",
+     bg && bg !== "transparent" && !/rgba\\(0, 0, 0, 0\\)/.test(bg), JSON.stringify(bg));
+  ok("外圈也铺出去了（跟正常档一个观感）", /10px/.test(cs.boxShadow), JSON.stringify(cs.boxShadow));
+  t.classList.remove("turn-jumped");
+  ok("反向对照：摘掉 class 底色就退干净（不然 2.6 秒之后这一轮永远是高亮的）",
+     /rgba\\(0, 0, 0, 0\\)|transparent/.test(getComputedStyle(t).backgroundColor), JSON.stringify(getComputedStyle(t).backgroundColor));
+  return names;
+})()
+`;
+
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
   RENDERER_LOG.length = 0;
@@ -8489,6 +8753,27 @@ app.whenReady().then(async () => {
       for (const n of namesGC) console.log("  ✓ " + n);
       console.log(`✅ 前端：Goal 目标卡（进度条·拆解验收失败留痕·停了说为什么并能接着冲）${namesGC.length} 项通过`);
     } finally { if (!winGC.isDestroyed()) winGC.destroy(); }
+
+    const winQT = mkWin({ show: false, width: 760, height: 400, webPreferences: { offscreen: true } });
+    try {
+      await winQT.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(QUOTE_HTML));
+      const namesQT = await winQT.webContents.executeJavaScript(IC_BOOT + QUOTE_STUBS + "\n" + QUOTE_SRC + "\n" + JUMP_SRC + "\n" + QUOTE_CHECKS, true)
+        .catch((e) => { throw new Error("[引用回复 / 跳回那一轮] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesQT) console.log("  ✓ " + n);
+      console.log(`✅ 前端：引用一条回复 + 从资料库跳回那一轮（只引正文不带过程卡片·选中了就只引那截·别处选的字不许算在这条头上·连按不重复·跳不过去就认输）${namesQT.length} 项通过`);
+    } finally { if (!winQT.isDestroyed()) winQT.destroy(); }
+
+    const winQTR = mkWin({ show: false, width: 760, height: 400, webPreferences: { offscreen: true } });
+    try {
+      await winQTR.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(QUOTE_HTML));
+      winQTR.webContents.debugger.attach("1.3");
+      await winQTR.webContents.debugger.sendCommand("Emulation.setEmulatedMedia",
+        { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+      const namesQTR = await winQTR.webContents.executeJavaScript(IC_BOOT + QUOTE_STUBS + "\n" + JUMP_SRC + "\n" + JUMP_REDUCE_CHECKS, true)
+        .catch((e) => { throw new Error("[跳回那一轮·减弱动态效果] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesQTR) console.log("  ✓ " + n);
+      console.log(`✅ 前端：系统开了「减弱动态效果」之后，跳过去照样看得见落在哪一轮（不放动画，但底色和外圈得真摆上）${namesQTR.length} 项通过`);
+    } finally { if (!winQTR.isDestroyed()) winQTR.destroy(); }
 
     const winCTX = mkWin({ show: false, width: 760, height: 200, webPreferences: { offscreen: true } });
     try {
