@@ -436,6 +436,127 @@ console.log("\n⑰之二 /model 换完真的换掉了");
   ok(/await runReplCommand\(v\)/.test(src), "★并且主循环真的等它★ 不等的话提示符会插进输出中间");
 }
 
+// ── ⑰之三 /resume 的选单 ────────────────────────────────────────────────
+// 用户原话：「这个命令要在命令行里面给我支持啊，你参考了codex还有claude code没 /resume」。
+// `openworkbuddy resume` 一直有，但那是开新进程用的；人坐在交互里想翻回半小时前那段，
+// 只能先 /exit——一 exit，当前这段的上下文、带着没发的文件、临时调过的档位全没了。
+console.log("\n⑰之三 /resume：接着之前那段往下聊");
+{
+  const T = 1758153600000;                  // 钉死的「现在」
+  const m = (min) => T - min * 60000;
+  const LIST = [
+    { id: "cli_a", mtime: m(12), title: "给周报改个标题", turns: 3, from: "命令行" },
+    { id: "s_b", mtime: m(60 * 30), title: "分析这个 CSV", turns: 8, from: "桌面" },
+    { id: "cli_c", mtime: m(9), title: "", turns: 1, from: "命令行" },
+  ];
+  const rows = R.sessionRows(LIST, { now: T, currentId: "cli_c" });
+
+  eq(rows.map((r) => r.n).join(","), "1,2,3", "序号从 1 连着编——用户敲的是序号");
+  eq(rows.filter((r) => r.current).map((r) => r.id).join(","), "cli_c", "当前这条标出来");
+  ok(rows.some((r) => r.from === "桌面"), "★桌面端开的也列出来★ 只列 cli_ 那半边，等于把「早上在桌面开头、下午在终端接着做」这条路堵死");
+  eq(rows[0].when, "12 分钟前", "相对时间，不是时间戳");
+  eq(rows[1].when, "昨天", "跨到昨天就说昨天");
+
+  // ★时钟必须是外面那只★：不传就宁可不显示，也不许拿 0 当「现在」——
+  // 那会把每一条都说成「刚刚」，比不显示更糟，而且错得看不出来
+  eq(R.sessionRows(LIST, { currentId: "cli_a" })[0].when, "", "★没给时钟就不印这一列★");
+  eq(R.ago(m(0), T), "刚刚", "一分钟内是「刚刚」");
+  eq(R.ago(m(90), T), "1 小时前", "小时");
+  eq(R.ago(m(60 * 24 * 3), T), "3 天前", "天");
+  eq(R.ago(m(60 * 24 * 100), T), "3 个月前", "月");
+  eq(R.ago(0, T), "", "没有 mtime 也不瞎编");
+  eq(R.ago(m(12)), "", "★（反向对照）没时钟就是空串，不是「12 分钟前」★");
+
+  // 认哪一条
+  eq(R.pickSessionRow(rows, "").kind, "list", "不给值 = 看选单");
+  eq(R.pickSessionRow(rows, "2").row.id, "s_b", "序号认");
+  eq(R.pickSessionRow(rows, "cli_a").row.id, "cli_a", "完整 id 认");
+  eq(R.pickSessionRow(rows, "周报").row.id, "cli_a", "标题里的几个字也认");
+  eq(R.pickSessionRow(rows, "99").kind, "none", "越界不认");
+  ok(R.pickSessionRow(rows, "99").why.includes("3"), "并且说清楚到几");
+  eq(R.pickSessionRow(rows, "根本没有").kind, "none", "没有的不瞎认");
+  const many = R.pickSessionRow(R.sessionRows([
+    { id: "cli_x", title: "周报第一版", turns: 1, from: "命令行" },
+    { id: "cli_y", title: "周报第二版", turns: 2, from: "命令行" },
+  ], { now: T }), "周报");
+  eq(many.kind, "many", "★对得上两条就说是哪两条，不替他挑★ 挑错了是接进了另一段对话——比没接更难发现");
+  eq(many.rows.length, 2, "两条都摆出来");
+  eq(R.pickSessionRow(rows, "CLI_A").row.id, "cli_a", "id 不分大小写");
+  eq(R.pickSessionRow([], "1").kind, "none", "一条都没有时也别崩");
+
+  // 选单长什么样
+  const txt = R.sessionListText(rows);
+  eq((txt.match(/^>/gm) || []).length, 1, "★有且只有一行带标记★ 两行或零行都说明「现在在哪条」算错了");
+  ok(!/[▸»]/.test(txt), "★标记只用 ASCII★ ▸ 在东亚宽度表里算不准，中文终端会把那一行画歪");
+  ok(rows.every((r) => txt.includes(r.id)), "★每行都带 id★ 它是 /resume <id> 和 --session 要粘的那个串");
+  ok(txt.includes("无标题"), "还没起标题的那条也得有个名字占位，不然那一列是空的，看着像坏了");
+  ok(/刚才那段不会丢|不会丢|回来/.test(txt), "得说清楚接走之后现在这段没丢——不说的话没人敢按");
+  // 新开还没存过的会话：一行标记都没有才是对的
+  eq((R.sessionListText(R.sessionRows(LIST, { now: T, currentId: "cli_还没存过" })).match(/^>/gm) || []).length, 0,
+     "★（反向对照）当前这条不在列表里时，一行标记都不许有★");
+  ok(R.sessionListText([]).includes("还没有"), "一条会话都没有的时候得说人话，不是印个空表");
+  // 刚开的会话还没存过盘，压根不在表里。这时候还说「带 > 的是你现在这条」，
+  // 人会去找那个不存在的箭头，以为表印坏了
+  ok(!R.sessionListText(R.sessionRows(LIST, { now: T, currentId: "还没存过" })).includes("带 >"),
+     "★表里没有当前这条时，脚注不许再让人找箭头★");
+
+  // id 是拿眼睛扫着找、拿鼠标划走的那一列，它必须每行都从同一格开始。
+  // 「3 轮」和「21 轮」差一位、「昨天」和「12 分钟前」差四位——不补齐的话 id 那列参差不齐
+  {
+    const long = R.sessionRows([
+      { id: "cli_1", mtime: m(12), title: "短", turns: 3, from: "命令行" },
+      { id: "s_2", mtime: m(60 * 24 * 17), title: "长一点的标题在这里", turns: 21, from: "桌面" },
+    ], { now: T, currentId: "cli_1" });
+    const at = R.sessionListText(long).split("\n").filter((l) => /^[ >]\s+\d/.test(l))
+      .map((l) => cols(l.slice(0, l.lastIndexOf("  ") + 2)));
+    eq(at[0], at[1], "★id 那列每行都从同一格开始★ 轮数和时间长短不一，不补齐它就参差不齐");
+  }
+
+  // 对齐按显示宽度算（中文两列），跟 ⑫ 一个道理
+  const wide = R.sessionListText(R.sessionRows([
+    { id: "cli_1", mtime: m(1), title: "中文中文中文", turns: 1, from: "命令行" },
+    { id: "cli_2", mtime: m(2), title: "ab", turns: 1, from: "命令行" },
+  ], { now: T, currentId: "cli_1" })).split("\n").filter((l) => /^[ >]\s+\d/.test(l));
+  eq(cols(wide[0].slice(0, wide[0].indexOf("命令行"))), cols(wide[1].slice(0, wide[1].indexOf("命令行"))),
+     "★中文标题和英文标题的下一列对齐在同一格★ 按 length 算的话中文那行会短一半");
+}
+
+// ── ⑰之四 cli.js 那头真的接得过去 ───────────────────────────────────────
+console.log("\n⑰之四 /resume 换完真的换过去了");
+{
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const hand = (src.split('v.name === "resume"')[1] || "").split('v.name === "session"')[0];
+  ok(hand.length > 100, "（先证明切到了 /resume 那段）", hand.length);
+
+  // 三样必须一起换。只换 sessionId 不换 sessFile 的话，接过来的内容会被写回**旧文件**——
+  // 两条会话当场互相污染，而且要等下次打开才发现
+  ok(/sessionId = row\.id/.test(hand), "★换 sessionId★");
+  ok(/sessFile = f/.test(hand), "★sessFile 跟着换★ 不换的话新会话的内容会写回旧文件，两条当场互相污染");
+  ok(/sess = \{ history: \[\], transcript: \[\], title: "", \.\.\.loaded \}/.test(hand),
+     "★sess 整个换掉，并且补齐三个字段★ 老会话文件缺 transcript 的话，下一轮 push 就炸在 undefined 上");
+
+  ok(/store\.readJson\(f, null\)/.test(hand), "从盘上读，读不出来给 null");
+  ok(/if \(!loaded \|\| typeof loaded !== "object"\)/.test(hand) && /没给你接过去|一点没动/.test(hand),
+     "★读不出来就当场停★ 绝不「接了一个空的」——那等于把旧对话悄悄换成白纸，而他下一句是冲着旧对话说的");
+  ok(/contextLine\(\)/.test(hand),
+     "★接完印一行上下文占用★ 一条跑过二十轮的会话接过来，下一句就带着那二十轮发出去，不印只能在账单上发现");
+  ok(/桌面/.test(hand) && /盖掉/.test(hand),
+     "★接桌面那条要提醒一句★ 两边写同一个文件，后写的盖掉先写的，不说的话人以为会自动同步");
+  ok(/\/resume \$\{leaving\}/.test(hand), "★把刚离开那条的 id 打出来★ 不打的话它就掉出十二行之外，再也找不回来");
+  ok(/fs\.existsSync\(sessFileOf\(raw\)\)/.test(hand),
+     "★按 id 接不受选单十二行限制★ 选单只是给记不住 id 的人看的，记得住的不该被它挡住");
+  ok(/repl\.sessionRows\(/.test(src) && /repl\.pickSessionRow\(/.test(src) && /repl\.sessionListText\(/.test(src),
+     "★走的是纯逻辑那层★ 在 cli.js 里另抄一份的话，上面那一整节测的就是没人用的代码");
+  ok(/now: Date\.now\(\)/.test(hand), "时钟由 cli.js 供给——纯逻辑那层自己不读表");
+  // 反向对照
+  ok(!/sess\.history = \[\]/.test(hand), "★（反向对照）不是把当前这条清空，是换一条★");
+
+  // /new 得指向 /resume，不能再教人退出去重开——现在原地就能接回来
+  const nw = (src.split('v.name === "new"')[1] || "").split('v.name === "resume"')[0];
+  ok(/\/resume \$\{oldId\}/.test(nw), "★/new 把旧 id 指给 /resume★");
+  ok(!/openworkbuddy --session \$\{oldId\}/.test(nw), "★不再教人退出去重开★ 一退出，上下文、带着的文件、临时档位全没了");
+}
+
 // ── ⑱ 打 `/` 时冒出来的那张菜单 ──────────────────────────────────────────
 // 用户原话：「怎么cli模型，我输入/的时候没有自动补全啊」。Tab 补全一直都在，
 // 可一个记不住命令的人不会去按 Tab——他打个 `/` 就等着看有什么。菜单得自己冒出来。
