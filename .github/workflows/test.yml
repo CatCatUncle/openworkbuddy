@@ -37,10 +37,14 @@ jobs:
       # actions/checkout 默认 fetch-depth: 1 只克一个 commit，CI 上就只剩 HEAD 那一天，
       # 每条动态都会被判成「git 里那天没有提交」——2026-09-13 真这么红过一次，
       # 报错指向 README，实际错在这一行。releasePipelineDrift 里钉死了这个值。
-      - uses: actions/checkout@v4
+      # 这几个 action 钉的都是「第一个跑 Node 24 的大版本」。GitHub 已经在弃用 node20，
+      # 停在老大版本上每趟 CI 都刷一条 deprecation 警告，到期直接变硬失败。
+      # 只抬到 node24 那一档、不追最新：再往上是 ESM 迁移和 fork PR 的行为改动，这个仓库用不上。
+      # releasePipelineDrift 里有张表钉死这个下限，谁退回去当场红。
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm

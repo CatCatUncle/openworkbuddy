@@ -11038,7 +11038,9 @@ function releasePipelineDrift(src) {
   // 同理剥掉整行 YAML 注释：release.yml 里恰好有一行注释在解释「不写 !cancelled() 会怎样」，
   // 不剥的话把真正那句 if 删掉，闸门还会被这句解释喂饱
   const rel = (src[".github/workflows/release.yml"] || "").replace(/^[ \t]*#.*$/gm, "");
-  const tst = src[".github/workflows/test.yml"] || "";
+  // test.yml 也剥掉整行注释，理由同上：下面按大版本查 uses:，
+  // 注释里回忆一句「以前钉的是哪个版本」不该被当成真配置读
+  const tst = (src[".github/workflows/test.yml"] || "").replace(/^[ \t]*#.*$/gm, "");
   const all = src["test/all.js"] || "";
   const pkg = src["package.json"] || "";
   // 注释里也会提 AppImage / linux（删掉那段时留的恢复说明），先把行注释剥掉再查，
@@ -11053,9 +11055,28 @@ function releasePipelineDrift(src) {
   // —— checkout 默认只克一个 commit。README「最新动态」的日期核对拿 git log 当底本，
   //    浅克隆下每条动态都会被判成「git 里那天没有提交」：报错指着 README，错却在工作流。
   //    钉死这个值，省得哪天有人把 with: 那两行当冗余删掉。
-  const deep = /checkout@v4\s*\n\s*with:\s*\n\s*fetch-depth:\s*0/;
+  const deep = /checkout@v\d+\s*\n\s*with:\s*\n\s*fetch-depth:\s*0/;
   if (!deep.test(tst)) miss.push("test.yml 的 checkout 没写 fetch-depth: 0：默认浅克隆，README「最新动态」的日期核对会把每条都判成假的");
   if (!deep.test(rel)) miss.push("release.yml 的 test job checkout 没写 fetch-depth: 0：发版前那趟 npm test 会栽在同一处");
+
+  // —— GitHub 正在弃用 node20：停在老大版本上每趟 CI 都刷一条 deprecation 警告，
+  //    到期就是硬失败——而这条链一红，build 被 skip、tag 一个安装包都不产（v0.5.1 就是这么空的）。
+  //    下面记的是各 action「第一个跑 Node 24 的大版本」，退回更低的等于把那个死线捡回来。
+  const NODE24_FLOOR = {
+    "actions/checkout": 5,
+    "actions/setup-node": 5,
+    "actions/upload-artifact": 5,
+    "actions/download-artifact": 5,
+    "softprops/action-gh-release": 3,
+  };
+  for (const [name, text] of [["test.yml", tst], ["release.yml", rel]]) {
+    for (const m of text.matchAll(/uses:\s*([\w.-]+\/[\w.-]+)@v(\d+)/g)) {
+      const floor = NODE24_FLOOR[m[1]];
+      if (floor && Number(m[2]) < floor) {
+        miss.push(`${name} 的 ${m[1]} 还钉在 @v${m[2]}（跑 Node 20，GitHub 已判弃用）：至少要 @v${floor}`);
+      }
+    }
+  }
 
   // —— CI 跑的套件必须是 test/all.js 里的全集。加了新套件却忘了加进 CI 命令行，
   //    它就永远不会在 CI 上跑；而本地 npm test 照样绿，人看不出来
@@ -11145,6 +11166,8 @@ function testReleasePipeline() {
     // 补丁没打上 → 「居然没红」——闸门失效的是对照本身。改成按位置挖，挖谁都行。
     ["新加的套件忘了补进 CI 名单", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/,[a-z0-9-]+(?=,)/, "") }],
     ["CI 名单里写了个不存在的套件", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/--only [a-z0-9-]+/, "--only meiyouzhegetaojian") }],
+    ["action 退回跑 Node 20 的老大版本", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/checkout@v\d+/, "checkout@v4") }],
+    ["发版那条链的 action 退回 Node 20", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/action-gh-release@v\d+/, "action-gh-release@v2") }],
     ["CI 的 checkout 退回默认浅克隆", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
     ["发版那趟 checkout 退回默认浅克隆", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
     ["发版前不跑测试了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/needs: test\n/, "") }],
