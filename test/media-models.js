@@ -405,6 +405,117 @@ function rest() {
     eq(I2V_RE.test("multi2video-x"), false, "反向对照：i2v 得钉在分隔符上，不许在词中间命中");
   }
 
+
+  // ----------------------------------------------------------------
+  // 挂错渠道的型号：认得出来、挪得回去，更要紧的是**不许认错**。
+  //
+  // 这一层的失败长得跟成功一模一样：用户在设置页把型号填在他知道能跑的那条渠道上，
+  // 保存一下，normalize 顺手把它挪到别家去了，下次一调就是「型号不存在」，
+  // 而设置页上显示的还是他填的那个名字——他会以为是模型坏了，不会想到是自己这边挪的。
+  // 所以每条「该判挂错」后面都压一条「该放行」，判据松一格立刻红。
+  console.log("\n【11】挂错渠道的型号：挪得回去，更不许认错");
+  {
+    // ---- 认门第：目录 > 斜杠 > 方舟日期尾巴 > 前缀
+    eq(mm.brandOf("doubao-seedream-4-0-250828"), "ark", "目录里有的，直接认");
+    eq(mm.brandOf("glm-4-plus"), "zhipu", "目录里没有的，按前缀认");
+    eq(mm.brandOf("z-ai/glm-5.3-flash"), "", "带斜杠的认不出是哪边的（中转和原厂都这么写）");
+    eq(mm.brandOf("qwen3:14b"), "", "带冒号的是 Ollama 本地 tag，名字用户随便起");
+    eq(mm.brandOf("text-embedding-v3"), "openai", "前缀表里有的照认");
+    eq(mm.brandOf("随便起个名"), "", "认不出就回空串——宁可漏判不可误判");
+
+    // ---- 方舟的日期尾巴。它是个转售平台：别家的牌子 + 它自己的上架日期。
+    // 用户真配过一条 ark / glm-5-3-flash-260828，实测能调通（HTTP 200）；
+    // 只看 `glm-` 前缀会把它判成智谱家的，然后从他填对的渠道上挪走。
+    eq(mm.brandOf("glm-5-3-flash-260828"), "ark", "方舟上架的智谱型号，算方舟的");
+    eq(mm.mismatch("ark", "glm-5-3-flash-260828"), "", "所以挂在方舟渠道上是对的，不许挪");
+    eq(mm.brandOf("kimi-k2-250711"), "ark", "方舟转售的 Kimi 也算方舟的");
+    eq(mm.brandOf("deepseek-v3-250324"), "ark", "方舟转售的 DeepSeek 同理");
+    // ★反向对照★ 尾巴没了就还是原厂的，别把整条前缀规则废掉
+    eq(mm.brandOf("glm-4-plus"), "zhipu", "★对照★ 智谱自家的写法没有日期尾巴，仍判智谱");
+    eq(mm.brandOf("cogview-3"), "zhipu", "★对照★ CogView 仍判智谱");
+    eq(mm.mismatch("zhipu", "glm-4-plus"), "", "★对照★ 智谱型号挂智谱渠道，放行");
+    // ★反向对照★ 尾巴得是真日期，且只认 6 位——别家的日期写法不许被吃掉
+    eq(mm.arkDated("x-260828"), true, "YYMMDD 是方舟的写法");
+    eq(mm.arkDated("x-269928"), false, "★对照★ 99 月不是日期");
+    eq(mm.arkDated("x-260800"), false, "★对照★ 0 日不是日期");
+    eq(mm.arkDated("x-2608"), false, "★对照★ 4 位不是 YYMMDD");
+    eq(mm.brandOf("claude-sonnet-4-20250514"), "anthropic", "★对照★ Anthropic 的 8 位日期不许被认成方舟");
+    eq(mm.brandOf("gpt-4o-2024-08-06"), "openai", "★对照★ OpenAI 的日期写法不许被认成方舟");
+
+    // ---- 什么渠道不判
+    eq(mm.mismatch("ollama", "doubao-seedream-4-0-250828"), "", "本机 Ollama 的型号名用户自己起，一律不判");
+    for (const k of mm.RELAY_KINDS) {
+      eq(mm.mismatch(k, "doubao-seedream-4-0-250828"), "", `中转网关（${k}）后面接谁只有用户知道，不判`);
+    }
+    eq(mm.mismatch("", "glm-4-plus"), "", "渠道类型都没有的，不判");
+    // ★反向对照★ 真该判的那种必须判出来，不然上面几条可能是靠「整个判定废了」绿的
+    eq(mm.mismatch("ark", "qwen-max"), "dashscope", "★对照★ 通义的型号挂在方舟渠道上，判挂错");
+    eq(mm.mismatch("moonshot", "kimi-k2-250711"), "ark", "★对照★ 方舟上架的那条挂回月之暗面，也判挂错");
+
+    // ---- 真挪：往已有的同家渠道上挪，优先挑填了 Key 的那条
+    {
+      const providers = [
+        { id: "ark-empty", name: "方舟（空壳）", kind: "ark", base_url: ARK, api_key: "" },
+        { id: "ark-paid", name: "方舟（付费）", kind: "ark", base_url: ARK, api_key: K1 },
+        { id: "dash", name: "百炼", kind: "dashscope", base_url: DASH, api_key: K2 },
+      ];
+      const models = [{ id: "image-x", cap: "image", name: "画图", provider: "dash", model: "doubao-seedream-4-0-250828" }];
+      const moved = mm.rehomeMismatched(providers, models);
+      eq(moved.length, 1, "挂错了一条，就该挪一条");
+      eq(models[0].provider, "ark-paid", "挪到填了 Key 的那条方舟渠道，不是那个空壳");
+      eq(moved[0].from, "dash", "挪动记录里写明从哪儿来");
+      eq(moved[0].to, "ark-paid", "也写明到哪儿去（调用方拿去回给前端）");
+      eq(moved[0].want, "ark", "以及它本该在的那类渠道");
+    }
+
+    // ---- 本机没有同家渠道时：只警告，绝不新建空壳渠道
+    // 用户原话：「不要搞什么默认渠道填充啊，都没填 apikey 的」。新建出来的必然没 Key，
+    // 挪过去只是把「型号不存在」换成「401」，问题没解决，配置还脏了一条。
+    {
+      const providers = [{ id: "dash", name: "百炼", kind: "dashscope", base_url: DASH, api_key: K2 }];
+      const models = [{ id: "image-x", cap: "image", name: "画图", provider: "dash", model: "doubao-seedream-4-0-250828" }];
+      const moved = mm.rehomeMismatched(providers, models);
+      eq(moved.length, 0, "没处可挪就不挪");
+      eq(providers.length, 1, "更不许为了挪它新建一条没 Key 的方舟渠道");
+      eq(models[0].provider, "dash", "原地不动，留给用户自己去开号");
+    }
+
+    // ---- ★反向对照★ 没挂错的一条都不许动。这条是整组里最要紧的：
+    // rehomeMismatched 跑在每次 normalize 里，误挪一次就改了用户的存盘配置。
+    {
+      const providers = [
+        { id: "ark", name: "方舟", kind: "ark", base_url: ARK, api_key: K1 },
+        { id: "dash", name: "百炼", kind: "dashscope", base_url: DASH, api_key: K2 },
+      ];
+      const models = [
+        { id: "image-x", cap: "image", name: "画图", provider: "ark", model: "doubao-seedream-4-0-250828" },
+        { id: "video-x", cap: "video", name: "视频", provider: "dash", model: "wanx2.1-t2v-turbo" },
+        { id: "vision-x", cap: "vision", name: "看图", provider: "ark", model: "glm-5-3-flash-260828" },
+        { id: "tts-x", cap: "tts", name: "配音", provider: "dash", model: "自己起的名字" },
+      ];
+      const before = models.map((m) => m.provider).join(",");
+      const moved = mm.rehomeMismatched(providers, models);
+      eq(moved.length, 0, "★对照★ 四条都挂对了，一条都不许挪");
+      eq(models.map((m) => m.provider).join(","), before, "★对照★ provider 字段原样不动");
+    }
+
+    // ---- 走完整条 normalize：挪完再选默认，顺序反了压平下来的就还是错地址
+    {
+      const c = {
+        providers: [
+          { id: "dash", name: "百炼", kind: "dashscope", base_url: DASH, api_key: K2 },
+          { id: "ark", name: "方舟", kind: "ark", base_url: ARK, api_key: K1 },
+        ],
+        media_models: [{ id: "image-x", cap: "image", name: "画图", provider: "dash", model: "doubao-seedream-4-0-250828", default: true }],
+        media: {},
+      };
+      mm.normalize(c);
+      eq(c.media_models[0].provider, "ark", "normalize 里也会挪");
+      eq(c.media.image.base_url, ARK, "压平下来的是挪之后那条渠道的地址");
+      eq(c.media.image.api_key, K1, "Key 也是挪之后那条的——这才是「挪完再压平」的意义");
+    }
+  }
+
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   process.exit(fail ? 1 : 0);
 }

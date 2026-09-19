@@ -622,6 +622,21 @@ function brandInCatalog(modelId) {
 }
 
 /**
+ * 方舟给自己上架的每个型号都盖一个 `-YYMMDD` 的日期尾巴，别家一个都不这么写
+ * （精选目录里方舟 17 个型号 17 个带，其余十家 79 个一个不带）。
+ * 它又是个**转售别家型号**的平台：目录里 `deepseek-v3-250324`、`kimi-k2-250711`
+ * 挂的就是 ark。所以尾巴比前缀可信——光看 `glm-` 前缀会把方舟上架的
+ * `glm-5-3-flash-260828` 判成智谱家的，再被 rehomeMismatched 从用户填对的
+ * 方舟渠道上挪走，而那个型号在方舟上是真能调通的（实测 200）。
+ */
+function arkDated(id) {
+  const m = /-(\d{2})(\d{2})(\d{2})$/.exec(id);
+  if (!m) return false;
+  const mo = +m[2], d = +m[3];
+  return mo >= 1 && mo <= 12 && d >= 1 && d <= 31;
+}
+
+/**
  * 这个型号名是哪家的。认不出回空串。
  * 带冒号的（qwen3:14b）是 Ollama 的本地 tag，名字随便起，一律不认。
  */
@@ -632,6 +647,8 @@ function brandOf(modelId) {
   if (hit) return hit;
   // 带斜杠的是 `厂商/型号` 这种命名法，OpenRouter 和硅基流动都这么写，光看名字分不出是哪边的
   if (id.includes("/")) return "";
+  // 日期尾巴排在前缀之前：方舟转售的别家型号，前缀是原厂的，上架的却是方舟
+  if (arkDated(id)) return "ark";
   for (const [src, kind] of BRAND_HINTS) if (new RegExp(src, "i").test(id)) return kind;
   return "";
 }
@@ -686,5 +703,5 @@ module.exports = {
   guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError,
-  RELAY_KINDS, BRAND_HINTS, brandOf, brandInCatalog, mismatch, kindLabel, rehomeMismatched,
+  RELAY_KINDS, BRAND_HINTS, brandOf, brandInCatalog, arkDated, mismatch, kindLabel, rehomeMismatched,
 };

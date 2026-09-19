@@ -109,6 +109,26 @@ console.log("\n【4-bis】状态码撒谎时看正文：「没余额」「没这
   ok(!mh.looksNoModel("图像接口错误 400: model returned empty image"), "★反向对照★ 「model」这个词本身不算「没这个型号」");
   ok(!mh.looksBroke("图像接口错误 500: internal server error, billing service unavailable"), "★反向对照★ 「billing」一个词不算没余额，得是「余额不足 / 欠费 / 超出配额」那类整句");
   ok(mh.looksBroke("视觉模型错误 429: You exceeded your current quota, please check your plan and billing details."), "OpenAI 那句「exceeded your current quota」是没余额，不是限流");
+
+  // 阿里云百炼的欠费：HTTP 400，正文里一个「余额 / quota / overdue」都没有，只有 code=Arrearage
+  // 和一句「make sure your account is in good standing」。400 不在硬错表里，这串词以前也接不住，
+  // 于是欠费被当成「这次不巧」，每次调用都白等一个超时，充值之前天天如此。
+  const ARREARAGE = '{"error":{"message":"Access denied, please make sure your account is in good standing. ' +
+    'For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment","type":"Arrearage","param":null,"code":"Arrearage"}}';
+  ok(mh.looksBroke(ARREARAGE), "百炼欠费那条真实报文，得认出来是没余额");
+  fresh();
+  mh.record("video", CFG, err("视频接口错误 400: " + ARREARAGE));
+  const arrGate = mh.gate("video", CFG, "视频");
+  ok(!!arrGate, "所以一次就断，不再往这条渠道上撞");
+  ok(/没余额/.test((arrGate && arrGate.content) || ""), "拦住时要说「没余额」，人才知道该去充值而不是去改配置");
+  ok(/设置 → 模型/.test((arrGate && arrGate.content) || ""), "而且是硬错的措辞：让人去改，不是「等几分钟自动再试」");
+  // ★反向对照★ 同样是 400、同样来自百炼，说的不是欠费就一次都不许断
+  fresh();
+  for (let i = 0; i < 6; i++) mh.record("video", CFG, err('视频接口错误 400: {"code":"InvalidParameter","message":"size must be one of 1280*720, 720*1280"}'));
+  ok(!mh.gate("video", CFG), "★反向对照★ 参数填错是这次的问题，改一下就好，不许断");
+  // ★反向对照★ 限流是会过去的，断半小时等于把能用的渠道关掉
+  ok(!mh.looksBroke("视频接口错误 429: Requests rate limit exceeded, please try again later"),
+     "★反向对照★ 限流不是欠费");
 }
 
 console.log("\n【5】三条自愈的路都得真通");
