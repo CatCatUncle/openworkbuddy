@@ -38,6 +38,12 @@ async function renderHubMcp(box) {
     return `<div class="mcp-server-error" title="${esc(t)}"><span>${esc(t)}</span></div>` +
       `<button class="mcp-err-more" hidden>展开</button>`;
   };
+  // 角标不换行，名字太长就会顶出卡片。中文字算两格，超了就截，全名留在 title 里。
+  const shortName = (s, max = 22) => {
+    const t = String(s || ""); let w = 0, i = 0;
+    for (; i < t.length; i++) { w += /[\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef]/.test(t[i]) ? 2 : 1; if (w > max) break; }
+    return i < t.length ? t.slice(0, Math.max(1, i - 1)) + "\u2026" : t;
+  };
   // ---- 推荐连接器（预设目录）：搜索框一起过滤；「只看已连接」时不显示 ----
   const configured = new Set(data.servers.map(sv => sv.name));
   const items = cat.items || [];
@@ -96,7 +102,7 @@ async function renderHubMcp(box) {
       ${po ? `<div class="ex-card add" id="mcp-open-add">${ic("plus")}添加连接器</div>` : ""}
       ${list.map(({ sv, i }) => `
         <div class="ex-card mcp-server-card" data-mi="${i}">
-          ${sv.plugin ? `<span class="flag">来自插件 ${esc(sv.plugin)}</span>` : ""}
+          ${sv.plugin ? `<span class="flag" title="来自插件 ${esc(sv.plugin)}">来自插件 ${esc(shortName(sv.plugin))}</span>` : ""}
           <div class="hd"><div class="av${sv.connected ? "" : " bad"}">${ic(sv.connected ? "plug" : "triangle-alert")}</div>
             <div class="nm"><span>${esc(sv.name)}</span><span class="al ${sv.connected ? "ok" : "bad"}">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
           <div class="ds mcp-server-command" title="${esc(isRemote(sv) ? sv.url : [sv.command, ...(sv.args || [])].join(" "))}">${isRemote(sv)

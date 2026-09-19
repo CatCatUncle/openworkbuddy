@@ -94,6 +94,11 @@
        后台页（admin.html）一直是开着的，主界面反倒漏了，两边看起来不像一个产品。 */
     -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   }
+  /* 链接走品牌色、不带下划线。后台页（admin.html）一直是这么写的，主界面漏了，
+     于是「去哪拿」、插件主页这些链接全是浏览器默认的那种蓝加下划线，整页就这几处跳色。
+     正文里的链接是例外：一片字当中没下划线就认不出来。 */
+  a { color: var(--owb-brand-text); text-decoration: none; }
+  .a-text a { text-decoration: underline; text-underline-offset: 2px; }
   /* 标题收字距：15px 以上的粗体默认字距偏松，收紧一点才像「界面字」而不是「正文」 */
   h1, h2, h3, .topbar .title, .brand .name { letter-spacing: -.011em; }
   /* 数字走等宽字形：耗时、计数、金额在列表里逐行左右跳，是最廉价的一种「糙」 */
@@ -731,6 +736,8 @@
   /* chip 里的「前移 / 移除」：外面那颗 32 见方的通用图标键会把 chip 整个撑开 */
   .chip .icon-btn { width: 18px; height: 18px; border-radius: var(--radius-sm); flex: none; }
   .opendir .i { width: 13px; height: 13px; display: block; }
+  /* 跟旁边两颗小标记同一行，高矮字号都得对得上 */
+  .mcp-docs-link { display: inline-flex; align-items: center; height: 20px; font-size: 11px; }
   .mcp-docs-link .i { width: 12px; height: 12px; vertical-align: -.16em; margin-left: 2px; }
   .card-toolbar .grow { flex: 1; }
   .picker { position: relative; }
@@ -1641,6 +1648,9 @@
   /* 角标是绝对定位的，占着 10~30px 这一条；标题行跟它平行，右边的名字和状态字会钻到它底下。
      有角标就把卡片内容整体让下来：10 + 20 + 4 = 34。 */
   .ex-card:has(.flag) { padding-top: 34px; }
+  /* 这排卡最窄只有 248px，而角标是绝对定位、又不换行：名字长一点就顶到卡片外面去了，
+     压在旁边那张卡上。封住宽度，让它无论如何待在自己卡里。 */
+  .ex-card .flag { max-width: calc(100% - 20px); overflow: hidden; }
   .ex-card .sk-preview { margin: 0; max-height: 260px; overflow: auto; background: var(--owb-bg-side); padding: 10px; border-radius: var(--radius-md); font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
   /* 技能卡「立即使用」展开区：先摆几个具体能干的事，挑一个才进任务框 */
   .ex-card .sk-start { background: var(--owb-bg-side); border-radius: var(--radius-md); padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
