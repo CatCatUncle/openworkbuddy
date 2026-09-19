@@ -82,3 +82,6 @@ docs/images/short-drama-canvas-agent.png
 
 # 跟 Cowork / Codex 的能力对照，属于个人笔记，不进仓库
 docs/能力对照-Cowork-Codex.md
+
+# 本地 IDE 项目数据（记忆/配置/日志），不进仓库
+.codebuddy/
