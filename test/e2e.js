@@ -7744,6 +7744,71 @@ function testOutputFilesRecency() {
  * 一个 data/x -> ~/.ssh 的软链接，就能写到数据目录外面去。
  * 所以这条测试的重头不在「传得上去」，在下面那几个必须被拒的形状。
  */
+/**
+ * 文件检查点从工具一路通到审批卡：write_file / edit_file 落盘前留底、结果里带 diff 和检查点 id、
+ * 「每步都问」档位下审批条上就有那几行 diff（批的是改动，不是文件名）、
+ * 回退能退到「新建之前」把文件删掉。纯函数那半在 test/checkpoints.js，这里钉的是**接线**。
+ */
+async function testCheckpoints() {
+  const tools = require("../tools");
+  const security = require("../security");
+  const ck = require("../checkpoints");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-ckw-"));
+  const sid = "sess_ck_" + Date.now().toString(36);
+  const ask = { ...security.DEFAULTS, permission_mode: "ask" };
+  let calls = 0;
+  const run = (name, input, sec) => tools.withWorkspace(tmp, () =>
+    tools.executeTool(name, input, { security: sec || { ...security.DEFAULTS }, sessionId: sid, callId: "c" + (++calls) })
+  );
+  // 等审批条上出现这一条，拿到它再放行；等不到就是接线断了
+  const approve = async (pred) => {
+    for (let i = 0; i < 100; i++) {
+      const hit = security.listApprovals().find(pred);
+      if (hit) { security.resolveApproval(hit.id, true, "once"); return hit; }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return null;
+  };
+
+  // ① 新建：结果带 diff（新文件 hunk 是 -0,0）和检查点
+  const w = await run("write_file", { path: "笔记.md", content: "一\n二\n三\n" });
+  assert.strictEqual(w.isError, false, "write_file 失败：" + w.content);
+  assert.ok(String(w.diff || "").includes("@@ -0,0 +1,3 @@") && w.diff.includes("+二"), "write_file 结果没带新建文件的 diff：" + w.diff);
+  assert.ok(/^ck_/.test(String(w.ckpt || "")), "write_file 结果没带检查点 id");
+
+  // ② 改：ask 档位下审批条上有 diff；放行后落盘，结果里 -二/+贰
+  const pending = run("edit_file", { path: "笔记.md", old_text: "二", new_text: "贰" }, ask);
+  const hit = await approve((a) => a.ruleKey === "write:*" && /笔记\.md/.test(a.text));
+  assert.ok(hit, "ask 档位下 edit_file 没上审批条");
+  assert.ok(hit.detail.includes("-二") && hit.detail.includes("+贰"), "审批条上没有改前 diff：" + JSON.stringify(hit.detail));
+  const ed = await pending;
+  assert.strictEqual(ed.isError, false, "edit_file 失败：" + ed.content);
+  assert.ok(ed.diff.includes("-二\n+贰"), "edit_file 结果没带 diff：" + ed.diff);
+  assert.strictEqual(fs.readFileSync(path.join(tmp, "笔记.md"), "utf8"), "一\n贰\n三\n");
+
+  // ③ 内容没变的 edit 不留底、不带 diff
+  const same = await run("edit_file", { path: "笔记.md", old_text: "贰", new_text: "贰" });
+  assert.strictEqual(same.isError, false);
+  assert.ok(!same.ckpt && !same.diff, "没改动也留了底：" + JSON.stringify(same));
+
+  // ④ 列表两条；退到第 2 步之前 = 回 v1；退到第 1 步之前 = 文件删掉
+  const rows = ck.list(tmp, sid);
+  assert.strictEqual(rows.length, 2, "检查点应有 2 条，实际 " + rows.length);
+  assert.strictEqual(rows[1].tool, "edit_file");
+  const r2 = ck.rewind(tmp, sid, rows[1].id);
+  assert.ok(r2.ok, "回退失败：" + r2.error);
+  assert.strictEqual(fs.readFileSync(path.join(tmp, "笔记.md"), "utf8"), "一\n二\n三\n", "没退回改前");
+  const r1 = ck.rewind(tmp, sid, rows[0].id);
+  assert.ok(r1.ok && !fs.existsSync(path.join(tmp, "笔记.md")), "退到新建之前应把文件删掉");
+  // 撤销：文件回到改完的样子
+  const u = ck.rewind(tmp, sid, r1.undo);
+  assert.ok(u.ok, "撤销回退失败：" + u.error);
+  assert.strictEqual(fs.readFileSync(path.join(tmp, "笔记.md"), "utf8"), "一\n二\n三\n", "撤销回退没把文件找回来");
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log("✅ 文件检查点接线：write_file/edit_file 带 diff+检查点 / ask 档审批条上有 diff / 没改动不留底 / 退到新建之前删文件 / 撤销回退找回来");
+}
+
 async function testBackupRoundTrip() {
   const { execFileSync } = require("child_process");
   // 得显式 require：不写这行拿到的是全局那个 WebCrypto，只有 getRandomValues，
@@ -8437,6 +8502,7 @@ async function main() {
   await testNodeSuite("md-tty.js", "终端里的 Markdown 渲染：记号不裸奔、代码不被改坏、流式切片结果一致");
   await testNodeSuite("cli-attach.js", "openworkbuddy 带文件进来：拖进来的路径 / @ 补全 / 剪贴板，文件不进对话历史");
   await testNodeSuite("icons.js", "界面不许再冒 emoji：源码闸门 + 图标名核对 + 提示条记号转换");
+  await testNodeSuite("checkpoints.js", "文件检查点：改前留底 / 整步回退 / 改前 diff / 账本被手改也写不出工作目录");
   await testDockerDeploy();
   await testFetchUrlShapes();
   await testParallelToolBatch();
@@ -8534,6 +8600,7 @@ async function main() {
   testSkillRenameKeepsAssets();
   testOutNameKeepsExt();
   await testBackupRoundTrip();
+  await testCheckpoints();
   // 清理测试产物
   for (const f of fs.readdirSync(WORKSPACE)) {
     if (f.startsWith("e2e-")) fs.rmSync(path.join(WORKSPACE, f), { force: true });

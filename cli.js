@@ -71,6 +71,14 @@ const dim = (s) => (ttyErr ? `\x1b[2m${s}\x1b[0m` : s);
 const yellow = (s) => (ttyErr ? `\x1b[33m${s}\x1b[0m` : s);
 const red = (s) => (ttyErr ? `\x1b[31m${s}\x1b[0m` : s);
 const green = (s) => (ttyErr ? `\x1b[32m${s}\x1b[0m` : s);
+/** 改文件那几步的 diff：超过 30 行截掉——终端里要的是一眼看清动了哪儿，全文去看文件 */
+function paintDiff(text, max = 30) {
+  const lines = String(text || "").split("\n");
+  if (lines.length > 1 && lines[0].startsWith("--- ") && lines[1].startsWith("+++ ")) lines.splice(0, 2); // 文件名上一行已经报过了
+  const out = lines.slice(0, max).map((l) => (l.startsWith("+") ? green("    " + l) : l.startsWith("-") ? red("    " + l) : dim("    " + l)));
+  if (lines.length > max) out.push(dim(`    … 还有 ${lines.length - max} 行`));
+  return out.join("\n");
+}
 const bold = (s) => (ttyErr ? `\x1b[1m${s}\x1b[0m` : s);
 /** 进度/诊断：一律 stderr，且 --quiet / --json 下彻底闭嘴 */
 const prog = (s) => { if (!opts.quiet && !opts.json) process.stderr.write(s); };
@@ -523,6 +531,8 @@ function makeEmit(state) {
       prog(ev.isError ? red(" ✗") : green(" ✓"));
       state.lastToolId = null;
       if (ev.isError && ev.preview) prog(dim("\n    " + String(ev.preview).slice(0, 200).replace(/\n/g, " ")));
+      // 改文件那几步把 diff 摆出来：加的绿、删的红。改坏了当场看得见，/rewind 退回去
+      if (!ev.isError && ev.diff) { prog("\n" + paintDiff(ev.diff)); state.streamed = false; }
     } else if (ev.type === "status") {
       if (ev.depth === 0 || ev.depth === undefined) { prog(dim(`\n· ${ev.text}`)); state.streamed = false; }
     } else if (ev.type === "expert_start") {
@@ -918,6 +928,7 @@ async function handleApproval(entry) {
       paint: (x, k) => ({
         warn: (y) => bold(yellow(y)), n: (y) => (ttyErr ? `\x1b[36m${y}\x1b[0m` : y),
         label: bold, detail: dim, hint: dim, code: (y) => (ttyErr ? `\x1b[35m${y}\x1b[0m` : y),
+        add: green, del: red, // 改文件的 diff：加的绿、删的红
       }[k] || ((y) => y))(x),
     });
   } finally {
@@ -1035,6 +1046,7 @@ async function runOnce(runtime, text, mode, interactive) {
     roundStopped = null;
     const r = await runtime.runTask({
       history: sess.history,
+      sessionId, // 文件检查点记在这个会话名下，/rewind 才知道哪些是这趟活儿改的
       // 进行中的目标注进任务上下文：agent 每一轮都对着验收标准干活，不跑偏
       projectContext: goalKit.contextFor(sess.goal) || undefined,
       emit: makeEmit(state),
@@ -1733,6 +1745,18 @@ function splitFiles(text) {
         if (!git) git = "跟 HEAD 一模一样，没有未提交的改动。";
       } else notRepo = true;
       prog(repl.changedFilesText(rows, { git, notRepo }));
+      return;
+    }
+    if (v.name === "rewind") {
+      // 只退这个会话自己留的检查点：别的会话、用户手改的文件一概不碰
+      const ck = require("./checkpoints");
+      const ws = getWorkspaceDir();
+      const rows = ck.list(ws, sessionId);
+      if (!v.arg) { prog(repl.checkpointListText(rows, Date.now())); return; }
+      const pick = repl.pickCheckpoint(rows, v.arg);
+      if (!pick) { prog(yellow(`没有第 ${v.arg} 步。/rewind 不带序号先看有哪些\n`)); return; }
+      const r = ck.rewind(ws, sessionId, pick.id);
+      prog(r.ok ? repl.rewindResultText(r) : yellow(r.error + "\n"));
       return;
     }
     if (v.name === "mcp") {

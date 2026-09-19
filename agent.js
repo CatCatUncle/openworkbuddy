@@ -765,7 +765,7 @@ function modePrompt(mode) {
 - **时间盒**：调研、比价、找方案这类活儿，动手前先给自己定个量（查几个来源、看几家、试几种），够了就收手写结论。信息永远查不完，"再多查一点"是最贵的拖延；没查到的写进"待验证"一节交出去，比继续查划算得多。`;
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, lang, traceNode }) {
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, lang, sessionId, traceNode }) {
     // 参数压根不是合法 JSON（llm.js 救不回来时塞了个 _raw 进来）。tools.executeTool 里早有这道闸，
     // 可 ask_user / use_skill / MCP / 委派专家这几个是在这儿就地接住的，根本走不到那儿——
     // 于是一路掉进各自的必填校验，报出来的是「question 不能为空」。模型看了以为是自己漏填了字段，
@@ -1161,6 +1161,7 @@ function modePrompt(mode) {
         depth: depth + 1,
         user,
         taskLabel,
+        sessionId, // 专家改的文件也记在这个会话的检查点账上，回退时一并退
         runToken, // 同一任务树共用认领身份，专家的产出算整个任务的
         baseDir, // 成果子目录也一并继承
         deadline, // 专家共享同一个总运行时间预算
@@ -1210,6 +1211,7 @@ function modePrompt(mode) {
           depth: depth + 1,
           user,
           taskLabel,
+          sessionId,
           runToken,
           baseDir,
           deadline,
@@ -1231,7 +1233,7 @@ function modePrompt(mode) {
         isError: false,
       };
     }
-    return await executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec }));
+    return await executeTool(tc.name, tc.input, execOpts({ depth, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId: tc.id }));
   }
 
   /**
@@ -1239,7 +1241,7 @@ function modePrompt(mode) {
    * 各写各的早晚会漂：少传一个 media，generate_image 连模型都点不了名；
    * 少传一个 actor，审批卡片就跑去问了别人。
    */
-  function execOpts({ depth = 0, deadline, stopSignal, taskLabel, user, baseDir, sec }) {
+  function execOpts({ depth = 0, deadline, stopSignal, taskLabel, user, baseDir, sec, sessionId, callId }) {
     return {
       knownTools: toolList(depth, "craft").map((t) => t.name), // 拼错工具名时用来给出最接近的真名
       timeoutMs: config.agent.tool_timeout_ms,
@@ -1254,6 +1256,8 @@ function modePrompt(mode) {
       actor: user, // 审批归谁：多人共用一台服务器时，别人不该看见、更不该替他点「允许」
       baseDir, // 相对路径读写、脚本 cwd、产物落点全在本对话的成果子目录
       memory: { user },
+      sessionId, // 文件检查点记在哪个会话名下：回退只认自己这个会话动过的文件
+      callId, // 这一步的工具调用 id，检查点账本上和过程卡对得上号
     };
   }
 
@@ -2156,7 +2160,7 @@ function modePrompt(mode) {
             metadata: { depth, tool: tc.name, title: toolHeadline(tc.name, tc.input) },
           });
           try {
-            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser, lang, traceNode: sp });
+            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser, lang, sessionId, traceNode: sp });
           } catch (e) {
             // 工具抛出来的异常在这里就地变成一条工具结果。让它往上冒的话，下面那条
             // history.push({role:"tool"}) 就跑不到，历史里留下一条配不上对的 assistant——
@@ -2187,6 +2191,8 @@ function modePrompt(mode) {
           isError: r.isError,
           outcome: resultOutcome(tc.name, r.content, r.isError), // 过程区那一行的后半截「· 结果」
           preview: String(r.content).slice(0, 800),
+          ...(r.diff ? { diff: String(r.diff).slice(0, 4000) } : {}), // 改文件那几步：过程卡上直接看动了哪几行
+          ...(r.ckpt ? { ckpt: r.ckpt } : {}), // 检查点 id：卡上「回退到这步之前」按的就是它
         });
         if (!r.isError) {
           const srcs = collectSources(tc.name, tc.input, r.content);

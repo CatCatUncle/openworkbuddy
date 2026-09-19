@@ -678,6 +678,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
         // 那样用户手机上会收到两遍同样的告警。
         const { finalText } = await runtime.runTask({
           history,
+          sessionId: sessionKey, // 改文件留的检查点记在这个 IM 会话名下
           emit: (ev) => {
             if (ev.type === "files" && Array.isArray(ev.changed)) for (const n of ev.changed) changedNames.add(n);
             if (cardHandle) cardHandle.onEvent(ev);
@@ -1623,6 +1624,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       const changedNames = new Set();
       const { finalText } = await runtime.runTask({
         history,
+        sessionId: sessionKey,
         emit: (ev) => { if (ev.type === "files" && Array.isArray(ev.changed)) for (const n of ev.changed) changedNames.add(n); },
         sec: imSec(),
       });
@@ -1657,6 +1659,7 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
       const progState = { step: 0 };
       const { finalText } = await runtime.runTask({
         history,
+        sessionId: sessionKey,
         modelName,
         // 谁在助理页里说话，就用谁的长期记忆、把 remember 写回谁名下、审批卡也弹在谁的屏幕上。
         // 不带这个参数的话，成员跑出来的任务顶着管理员的身份，记忆串到别人那儿去
