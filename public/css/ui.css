@@ -463,7 +463,8 @@ html[data-theme="dark"] .ui-select {
 .canvas-node-character .canvas-node-copy:has(.canvas-node-preview), .canvas-node-location .canvas-node-copy:has(.canvas-node-preview) { -webkit-line-clamp: 2; }
 .canvas-image-preview { cursor: default; }
 .canvas-audio-preview { display: block; width: 100%; height: 38px; margin: 2px 0 10px; }
-.canvas-node-audio .canvas-media-text { min-height: 40px; max-height: 58px; overflow: hidden; }
+/* 12px × 1.6 = 一行，封顶写成3.2em/4.8em 这种整数倍：写成 58px 会在底下留下第四行的一条发丝。 */
+.canvas-node-audio .canvas-media-text { min-height: 3.2em; max-height: 4.8em; overflow: hidden; }
 .canvas-media-error, .canvas-media-missing { margin: 2px 0 9px; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--destructive) 32%, var(--owb-border)); border-radius: 8px; background: color-mix(in srgb, var(--destructive) 8%, var(--owb-bg)); color: var(--owb-err-text); font-size: 11px; line-height: 1.45; }
 .canvas-node-video .canvas-node-body { padding: 10px; }
 .canvas-video-stage { position: relative; display: flex; align-items: center; justify-content: center; height: 168px; overflow: hidden; border-radius: var(--radius-md); background: var(--secondary); }
@@ -672,7 +673,7 @@ html[data-theme="dark"] .ui-select {
 .canvas-chat-message-body { display: flex; flex: 1; flex-direction: column; gap: 5px; min-width: 0; }
 .canvas-chat-message-refs { display: flex; flex-wrap: wrap; gap: 5px; }
 .canvas-chat-text { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
-.canvas-chat-message.is-live .canvas-chat-text { max-height: 54px; overflow: auto; }
+.canvas-chat-message.is-live .canvas-chat-text { max-height: 4.35em; overflow: auto; }
 .canvas-chat-message.is-status { gap: 5px; color: var(--owb-text-3); font-size: 11px; }
 .canvas-chat-message.is-status .canvas-chat-role { color: var(--owb-text-3); font-weight: 500; }
 .canvas-chat-message.is-running .canvas-chat-text::before { content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 5px 1px 0; border-radius: 50%; background: var(--owb-brand); box-shadow: 0 0 0 3px var(--owb-brand-weak); }
@@ -1122,8 +1123,6 @@ html[data-theme="dark"] .ui-select {
 .ex-card .mcp-server-error.open { max-height: 240px; overflow: auto; cursor: default; }
 .ex-card .mcp-server-error.open > span { display: block; }
 .ex-card .mcp-err-more { align-self: flex-start; margin: -4px 0 0; padding: 0; border: 0; background: none; color: var(--owb-err-text); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
-/* 插件角标是绝对定位的右上角，会压住同一行的状态字；有角标时把标题行整体让下来。 */
-.ex-card.mcp-server-card:has(.flag) { padding-top: 34px; }
 .mcp-server-card .ops { display: flex; justify-content: flex-end; margin-top: auto; }
 @media (max-width: 900px) { .model-route-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 900px) {
