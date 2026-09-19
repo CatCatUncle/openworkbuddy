@@ -74,6 +74,7 @@ const SUITES = [
   ["checkpoints", "文件检查点：改前留底 / 整步回退 / 改前 diff"],
   ["shot-history", "分镜留底：改台词重跑之后，上一版首帧还拿得回来"],
   ["agent-loop", "死循环硬停：五种卡法都停得下来，没卡住的一个字不说"],
+  ["worktree", "两条任务撞一个仓库：后来那条进分身改，你的工作区一个字不动"],
   ["e2e", "端到端（含 frontend.js、admin-ui.js）"],
 ];
 
