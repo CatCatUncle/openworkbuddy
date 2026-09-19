@@ -493,5 +493,88 @@ console.log("\n【6】require 得到的文件，得真的在仓库里");
   ok(!!resolves("account"), "反向对照：真存在的 account.js 解得出来（不是看什么都没有）");
 }
 
+console.log("\n【7】临时目录得有人收：新前缀必须落在 e2e 那把扫帚的射程里");
+{
+  // 2026-09-20：磁盘报到 99%，查出来是 /var/folders 底下堆了 137G 的测试临时目录。
+  // 每个用例 mkdtemp 一个新 OPENWORKBUDDY_HOME 再起 server.js，paths.js 的 seedDataDir()
+  // 会把仓库 skills/ 整份铺进去——一个 home 就是 189M。跑完在 finally 里删掉的那些没事，
+  // 留得下来的是三种：Ctrl-C、断言挂在建目录和 finally 中间、子进程被 SIGKILL 带走。
+  //
+  // 治标那一层是 test/e2e.js 顶上的 reapStaleTempHomes()：每轮开跑先清 24 小时以上没动的。
+  // 可它靠一条写死的前缀正则认人，而新用例随手起个新前缀是再正常不过的事——头一版就漏了
+  // 整个 e2e-* 一族：owb-* 清得干干净净，光 e2e-sched- 就留了 588 个、533 个超 24 小时。
+  //
+  // 所以这一节不测「清得干不干净」（那是 e2e 自己的事），只钉一件：
+  // **仓库里每一个 mkdtemp 前缀，都得被那条正则认得出来。** 新前缀在这儿当场红，
+  // 而不是半年后靠磁盘报警来告诉你。
+  const e2eSrc = fs.readFileSync(path.join(__dirname, "e2e.js"), "utf8");
+  const body = (e2eSrc.match(/function reapStaleTempHomes\(\)\s*\{[\s\S]*?\n\}/) || [""])[0];
+  ok(body.length > 0 && /\nreapStaleTempHomes\(\);/.test(e2eSrc),
+    "e2e.js 顶上确实有 reapStaleTempHomes()，而且真被调了",
+    "找不到这个函数、或者它只是定义了没调用——那下面这些全是空跑");
+
+  // 判据直接从那个函数体里捞正则字面量，不在这儿另抄一份：抄一份迟早两边分叉
+  const reaps = [...body.matchAll(/\/\^(?:[^/\\\n]|\\.)+\/(?=\.test)/g)]
+    .map((m) => { try { return new RegExp(m[0].slice(1, -1)); } catch { return null; } })
+    .filter(Boolean);
+  ok(reaps.length >= 2, "从函数体里捞出 " + reaps.length + " 条前缀正则当判据",
+    "一条都没捞着，下一条就是空跑");
+  const swept = (name) => reaps.some((re) => re.test(name));
+
+  // 取每个 mkdtempSync(...) 括号里最后那个字符串——前缀总在最后一个参数上。
+  // 不能图省事拿「第一个引号」：require("os").tmpdir() 这种写法会让你捞回来一个 os。
+  const lastLiteralIn = (src, from) => {
+    let depth = 1, i = from, last = null;
+    while (i < src.length && depth > 0) {
+      const c = src[i];
+      if (c === '"' || c === "'") {
+        const q = c; let j = i + 1, buf = "";
+        while (j < src.length && src[j] !== q) { if (src[j] === "\\") j++; buf += src[j]; j++; }
+        last = buf; i = j + 1; continue;
+      }
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      i++;
+    }
+    return depth === 0 ? last : null;
+  };
+  // 那把扫帚只扫 os.tmpdir()。建在别处的（家目录之类）它够不着，硬塞进这条正则也是自欺——
+  // 正则在 tmp 里永远匹配不到它，看着却像「有人收了」。所以那种单独走白名单，按个数钉死：
+  // 多出一个就在这儿红一次，让人当面说清楚它凭什么建在 tmp 之外、谁来收。
+  const OUTSIDE_TMP_OK = new Map([
+    // macOS 上 Docker 跑在虚拟机里，只共享少数几个宿主机目录，/var/folders 不在其中：
+    // -v 挂上去不报错，容器写得欢，宿主机一个文件都看不见。所以这个必须落在家目录下。
+    // 只有 test/deploy.js --build 才会走到，且自己 finally 收尾。
+    [".owb-deploytest-", "deploy.js"],
+  ]);
+  const prefixes = new Map();
+  for (const f of scanTargets()) {
+    const src = fs.readFileSync(path.join(__dirname, f), "utf8");
+    for (const m of src.matchAll(/mkdtempSync\(/g)) {
+      const at = m.index + m[0].length;
+      const p = lastLiteralIn(src, at);
+      if (!p || prefixes.has(p)) continue;
+      // 括号里提没提 tmpdir()，就是它建在哪儿的判据
+      const inTmp = /tmpdir\(\)/.test(src.slice(at, at + 200));
+      prefixes.set(p, { file: f, inTmp });
+    }
+  }
+  ok(prefixes.size > 40, "扫到 " + prefixes.size + " 个 mkdtemp 前缀",
+    "数字小得不像话，多半是取前缀那段没解对，下一条等于没测");
+  const outside = [...prefixes].filter(([, v]) => !v.inTmp);
+  ok(outside.every(([p]) => OUTSIDE_TMP_OK.has(p)) && outside.length === OUTSIDE_TMP_OK.size,
+    "建在 tmp 之外的临时目录就白名单里那 " + OUTSIDE_TMP_OK.size + " 个（各自交代了为什么、谁来收）",
+    "对不上：现在是 " + outside.map(([p, v]) => p + "（" + v.file + "）").join("、"));
+  const orphans = [...prefixes].filter(([p, v]) => v.inTmp && !swept(p + "Ab12Cd"));
+  ok(orphans.length === 0,
+    "每个前缀都在 reapStaleTempHomes 的射程里（没人收的临时目录会一直堆到磁盘满）",
+    orphans.map(([p, v]) => p + "（" + v.file + "）").join("、")
+      + "\n      要么改用现成前缀，要么把它加进 e2e.js reapStaleTempHomes 的那条正则");
+
+  // 反向对照：判据不能是「看什么都认」，也不能是「看什么都不认」
+  ok(!swept("zz-别人家的-Ab12Cd"), "反向对照：不相干的前缀扫不到（不然这把扫帚会清到别人头上）");
+  ok(swept("owb-Ab12Cd"), "反向对照：owb- 认得出（证明这判据真在生效）");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);
