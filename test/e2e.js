@@ -873,6 +873,13 @@ function testDocLinkGate() {
   const CJKISH = "\\u3005\\u3006\\u3007\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af\\uf900-\\ufaff";
   const slugify = (h) => h.trim().replace(/[*`~]/g, "").toLowerCase()
     .replace(new RegExp("[^\\w" + CJKISH + "\\s-]", "g"), "").trim().replace(/\s+/g, "-");
+  // 光看盘上在不在是不够的：链到一个 .gitignore 掉的文件，本机点得开、新克隆点不开，
+  // 闸门在本机全绿、到 CI 上才红——这一条真的挡掉过一次发版。没有 git 就只好退回只看盘上
+  let tracked = null;
+  try {
+    const ls = require("child_process").execSync("git ls-files -z", { cwd: root, encoding: "utf8", maxBuffer: 33554432, stdio: ["ignore", "pipe", "ignore"] });
+    if (ls) tracked = new Set(ls.split("\0").filter(Boolean).map((p) => path.resolve(root, p)));
+  } catch {}
   const dead = [];
   let checked = 0;
   const anchorsOf = (file) => new Set([...fs.readFileSync(file, "utf8").matchAll(/^#{1,6}\s+(.+?)\s*$/gm)].map((m) => slugify(m[1])));
@@ -892,6 +899,7 @@ function testDocLinkGate() {
       checked++;
       const target = path.resolve(path.dirname(f), rel);
       if (!fs.existsSync(target)) { dead.push(path.basename(f) + " → " + href); continue; }
+      if (tracked && !tracked.has(target)) { dead.push(path.basename(f) + " → " + href + "（盘上有但没进 git：别人 clone 下来是死链）"); continue; }
       // 跨文件锚点（CONTRIBUTING.md#xxx）：文件在但标题改了，点过去落在页顶，跟死链一样
       const frag = href.split("#")[1];
       if (frag && rel.endsWith(".md") && !anchorsOf(target).has(decodeURIComponent(frag).toLowerCase())) dead.push(path.basename(f) + " → " + href + "（目标文件里没有这个标题）");
