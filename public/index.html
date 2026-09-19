@@ -1116,7 +1116,15 @@
   .file-item.res { position: relative; }
   .file-item.res::before { content: ""; position: absolute; left: 2px; top: 8px; bottom: 8px; width: 2px; border-radius: var(--radius-full); background: var(--owb-brand); opacity: .8; }
   .dir-head .cnt .res-n { color: var(--owb-brand-text); }
-  .fp-filter { display: flex; gap: 4px; padding: 0 10px 8px; }
+  .fp-filter { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 8px; }
+  /* .fp-filter/.fp-segs 是 flex，会盖掉 hidden 的默认样式 */
+  .fp-filter[hidden], .fp-segs[hidden] { display: none; }
+  .fp-segs { display: flex; gap: 4px; }
+  .fp-q { padding: 5px 8px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); color: var(--owb-text); font: inherit; font-size: 12px; outline: none; }
+  .fp-q:focus { border-color: var(--owb-brand); }
+  .fp-q::-webkit-search-cancel-button { cursor: pointer; }
+  .fp-hit { padding: 9px 10px 3px; font-size: 12px; color: var(--owb-text-3); }
+  .fp-hit b { color: var(--owb-text); }
   .fp-seg { flex: 1; padding: 5px 8px; border: 1px solid var(--owb-border); background: transparent; color: var(--owb-text-3); border-radius: var(--radius-md); font-size: 12px; cursor: pointer; }
   .fp-seg:hover { background: var(--owb-bg-hover); }
   .fp-seg.on { background: var(--owb-bg-hover); color: var(--owb-text); border-color: var(--owb-brand); }
@@ -1443,6 +1451,15 @@
   .ask-timer { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--owb-text-3); }
   .ask-timer.hot { color: var(--owb-err-text); }
   .ask-q { font-size: 15px; font-weight: 600; color: var(--owb-text); line-height: 1.5; margin-bottom: 12px; }
+  /* 「要看着它答」那一行：题面在文件里的时候，文件就摆在问题底下，点一下右边换成它。
+     第一个已经自动摊在右边了（见 askPreviewPlan），这排是给第二、第三个文件留的入口，
+     以及给「我刚才手滑关掉了」留一条回去的路 */
+  .ask-files { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -6px 0 12px; }
+  .ask-files .lb { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--owb-text-3); margin-right: 2px; }
+  .ask-file { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 4px 10px; border: 1px solid var(--owb-border); border-radius: var(--radius-full); background: var(--owb-bg-side); color: var(--owb-text-2); font-size: 12px; cursor: pointer; }
+  .ask-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ask-file:hover, .ask-file:focus-visible { border-color: var(--owb-brand-text); color: var(--owb-brand-text); background: var(--owb-brand-weak); outline: none; }
+  .ask-card.done .ask-files { display: none; }
   .ask-opts { display: flex; flex-direction: column; gap: 8px; }
   .ask-opt { display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; padding: 10px 12px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: var(--owb-bg); cursor: pointer; transition: border-color var(--owb-t-fast) var(--owb-ease), background var(--owb-t-fast) var(--owb-ease); }
   .ask-opt:hover, .ask-opt:focus-visible { border-color: var(--owb-brand-text); background: var(--owb-brand-weak); outline: none; }
@@ -2621,7 +2638,10 @@
 <div class="files-panel" id="files-panel">
   <div class="rsz l" data-rsz="fp" role="separator" aria-orientation="vertical" tabindex="0" aria-label="拖动调整成果文件面板宽度" title="拖动调整宽度 · 双击恢复默认"></div>
   <h2><span><svg class="i" aria-hidden="true"><use href="#i-folder-open"></use></svg> 成果文件</span> <a href="#" id="open-ws" class="link" style="font-weight:400;font-size: 12px">打开文件夹</a><a href="#" id="fp-sweep" class="link" style="font-weight:400;font-size: 12px" title="看看哪些是任务跑完剩下的中间文件">整理文件夹</a><span style="flex:1"></span><button id="fp-close" class="icon-btn" title="关闭"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></h2>
-  <div class="fp-filter" id="fp-filter" hidden></div>
+  <div class="fp-filter" id="fp-filter" hidden>
+    <input id="fp-q" class="fp-q" type="search" placeholder="按名字找：文件名、文件夹名…" autocomplete="off" spellcheck="false" aria-label="按名字筛选成果文件" hidden>
+    <div class="fp-segs" id="fp-segs" hidden></div>
+  </div>
   <div id="file-list"></div>
 </div>
 

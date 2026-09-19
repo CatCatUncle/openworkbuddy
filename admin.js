@@ -66,7 +66,8 @@ const PLATFORM_WRITE = [
   // 按上面那条线，这是「配这台机器」，不是租户内动作：成员开在别人机器上的窗口他也看不见，
   // 而这条路径以前连表都不在，任何登录用户都能拿它拉起服务端进程。
   // 单机桌面版走的是 platformGuard 第一行的 soloDesktop 直通，一行行为都没变。
-  "/api/files/open", "/api/files/reveal",
+  // 复制到剪贴板同理：写的是**服务器那台机器**的剪贴板，而且得先读到文件本身。
+  "/api/files/open", "/api/files/reveal", "/api/files/copy",
 ];
 const PLATFORM_READ = [
   "/api/schedules", "/api/backup", "/api/security/audit", "/api/memory",

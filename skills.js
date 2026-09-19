@@ -626,6 +626,14 @@ const { lineCount, maxLineWidth } = measureLineStats(p, 320); // 只要行数和
     // 这也正是为什么 block 要能被人显式放行：静态规则的上限就在这儿。
     reviewed: "feed-blogs.json 里缓存的一篇讲提示词注入的文章，命中 read-private-key",
   },
+  {
+    name: "holo-card-studio",
+    title: "全息闪卡 Holo Card Studio",
+    repo: "EverettFish/holo-card-studio", branch: "main", subpath: "",
+    license: "MIT", author: "EverettFish",
+    bytes: 2 * 1024 * 1024,
+    why: "一句话做出一张会随视角流光溢彩的 3D 全息闪卡：AI 画好主体/背景/线稿/文字四层图，Blender 搭场景做视差与镭射，再组装成能拖着转、翻面、拉滑块的网页，附赠可编辑的 card.blend。也支持光栅卡、双形态卡、一念神魔。本机没装 Blender 的话，它第一次跑会自己去下一份便携版",
+  },
 ];
 
 function defaultSkillUrl(s) {

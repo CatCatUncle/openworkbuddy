@@ -69,7 +69,9 @@ const SUITES = [
   ["trace", "执行追踪（Langfuse）上报"],
   ["term-image", "终端里把产出的图画出来 + /open"],
   ["office-tools", "办公工具：读 Office 文档 / 资料库取素材 / 推群 / 排期 / 发邮件 / 按环境摘挂工具"],
+  ["cdp", "真浏览器那条线：端口通不通、握手带不带 Origin、evaluate 拿不拿得到值"],
   ["checkpoints", "文件检查点：改前留底 / 整步回退 / 改前 diff"],
+  ["agent-loop", "死循环硬停：五种卡法都停得下来，没卡住的一个字不说"],
   ["e2e", "端到端（含 frontend.js、admin-ui.js）"],
 ];
 

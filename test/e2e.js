@@ -6530,9 +6530,10 @@ async function testLibraryOutputsTruth() {
     const req = http.request({ host: "127.0.0.1", port, path: p, method, headers: { Cookie: "openworkbuddy_token=" + token } }, (res) => {
       let b = "";
       res.on("data", (c) => (b += c));
-      res.on("end", () => resolve({ code: res.statusCode, body: b }));
+      // 头也要：「内联发」跟「当附件发」字节一模一样，差别全在 Content-Disposition 上
+      res.on("end", () => resolve({ code: res.statusCode, body: b, headers: res.headers }));
     });
-    req.on("error", (e) => resolve({ code: 0, body: e.message }));
+    req.on("error", (e) => resolve({ code: 0, body: e.message, headers: {} }));
     req.end();
   });
 
@@ -6627,7 +6628,31 @@ async function testLibraryOutputsTruth() {
     assert(lpEsc.code === 400 || lpEsc.code === 404,
            `拿 .. 往资料库外面翻居然回了 HTTP ${lpEsc.code}：` + lpEsc.body.slice(0, 160));
 
-    console.log("✅ 产出清单说实话：文件多到挤爆快照时，还在的照报真体积真时间 · 没了的写明「已不在」（两头互为反向对照）· 被升级整理搬走的按新地址找回来、不重复挂进「未归属」· 预览的 404/HEAD 跟清单一个口径 · 资料库里的 Office 文件有自己的拆包路由（越界照样拒）");
+    // ⑥ 资料库取文件那条路由：默认必须**内联**发。
+    // 用户原话：「怎么没有办法预览啊」——一个 1 MB 的 note_audio.mp3 在这一页上
+    // 只显示「文件太大，预览不动」。两头各坏一半，这里管服务端这一半：
+    // 以前一律 res.download，带着 Content-Disposition: attachment 的响应，
+    // <audio>/<video>/<iframe> 一个都渲染不出来，浏览器只会去下载。
+    fs.writeFileSync(path.join(libDir, "note_audio.mp3"), Buffer.alloc(4096, 7));
+    const mp3 = "/api/library/file/" + ["财务", "note_audio.mp3"].map(encodeURIComponent).join("/");
+    const inline = await get(mp3);
+    assert(inline.code === 200, `资料库里的 mp3 取不到（HTTP ${inline.code}）：` + inline.body.slice(0, 160));
+    assert(!/attachment/i.test(String(inline.headers["content-disposition"] || "")),
+           "资料库取文件又带上附件头了：" + inline.headers["content-disposition"]
+           + " —— <audio>/<video>/<iframe> 拿到 attachment 一个都渲染不出来，页面上只剩「预览不动」");
+    assert(String(inline.headers["content-type"] || "").startsWith("audio/"),
+           "mp3 发成了 " + inline.headers["content-type"]
+           + "：Chromium 按上游 MIME 决定要不要解码，标成 octet-stream 的话 <audio> 只会静默不播");
+    const dl = await get(mp3 + "?dl=1");
+    assert(/attachment/i.test(String(dl.headers["content-disposition"] || "")),
+           "?dl=1 没带附件头（" + dl.headers["content-disposition"]
+           + "）——改成内联发之后，「下载」就全靠这一条路，点下去会在原地打开、存不了盘");
+    // 反向对照：不是音视频的别瞎插一个 MIME（插错了比不插更难查）
+    const xl = await get("/api/library/file/" + ["财务", "预算表.xlsx"].map(encodeURIComponent).join("/"));
+    assert(!String(xl.headers["content-type"] || "").startsWith("audio/"),
+           ".xlsx 被当成音频发了：" + xl.headers["content-type"]);
+
+    console.log("✅ 产出清单说实话：文件多到挤爆快照时，还在的照报真体积真时间 · 没了的写明「已不在」（两头互为反向对照）· 被升级整理搬走的按新地址找回来、不重复挂进「未归属」· 预览的 404/HEAD 跟清单一个口径 · 资料库里的 Office 文件有自己的拆包路由（越界照样拒）· 取文件默认内联发且音频带对 MIME，?dl=1 才当附件");
   } finally {
     try { child.kill("SIGKILL"); } catch {}
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
@@ -9315,7 +9340,12 @@ async function testOnboardingWizardApi() {
     const st = a.json;
     assert(st.needs_setup === true && st.seen === false, "新装应当 needs_setup=true / seen=false：" + JSON.stringify({ n: st.needs_setup, s: st.seen }));
     assert(st.brain && st.brain.ok === false, "没填 Key 时 brain.ok 应为 false：" + JSON.stringify(st.brain));
-    assert(Array.isArray(st.models) && st.models.length > 0 && st.models.every((m) => typeof m.has_key === "boolean" && !("api_key" in m)), "models 要带 has_key 布尔，且绝不能把 api_key 本身吐给前端");
+    assert(Array.isArray(st.models) && st.models.every((m) => typeof m.has_key === "boolean" && !("api_key" in m)), "models 要带 has_key 布尔，且绝不能把 api_key 本身吐给前端");
+    // 新装不出厂任何模型行：以前那九行没 Key 的厂商模板让设置页凭空多一排「未填 Key」的空壳渠道，
+    // 删了下次启动又长回来。用户原话：「不要搞什么默认渠道填充啊，都没填 apikey 的，搞这个一直占位做什么？」
+    assert(st.models.length === 0, "新装 config 里不该有任何占位模型行：" + JSON.stringify(st.models.map((m) => m.name)));
+    assert(Array.isArray(st.templates) && st.templates.length >= 8 && st.templates.every((t) => t.kind && t.name && t.model && typeof t.local === "boolean" && !("api_key" in t)),
+      "体检表要带服务商清单 templates（向导靠它列服务商，不再靠 config 里的模板行）：" + JSON.stringify(st.templates));
     // 本机 CLI 探测要 which + --version，只在向导真要渲染时做（前端带 ?probe=1）。
     // 开机那一趟只是判断「要不要弹」，不该为它跑一遍 shell
     assert(Array.isArray(st.engines) && st.engines.length === 0, "不带 probe 的体检表不该去探本机 CLI：" + JSON.stringify(st.engines));
@@ -9367,25 +9397,35 @@ async function testOnboardingWizardApi() {
     // 5-bis. 首页向导填 Key：这一步以前是坏的。Key 被写在**模型条目**上，下一次规整把渠道那行的空 Key
     // 压平回来，直接抹掉；于是 hasKey 永远 false，设置页写着「未填 Key」、向导每次开机再弹一遍。
     // 用户原话：「我都在首页填了火山 APIkey，然后后台设置还说我没有设置啊」「我不是设置好了吗，怎么每次进入都让我设置啊」
-    const brainName = (a5.json.models.find((m) => !m.local) || {}).name;
-    assert(brainName, "默认配置里一个云端模型都没有，这一步测不了：" + JSON.stringify(a5.json.models));
+    // 新装 config 里一条模型都没有了：向导从服务商清单挑一家，POST {kind, api_key}，渠道和模型行都是这一步建出来的
+    assert(a5.json.templates.some((t) => t.kind === "ark"), "服务商清单里得有火山方舟：" + JSON.stringify(a5.json.templates.map((t) => t.kind)));
     const provN = (cfgOnDisk().providers || []).length;
     const WIZ_KEY = "sk-e2e-wizard-key";
-    const put = await req("POST", "/api/onboarding", { model: brainName, api_key: WIZ_KEY, skip_test: true });
+    const bad = await req("POST", "/api/onboarding", { kind: "ark", api_key: "", skip_test: true });
+    assert(bad.code === 400 && /Key/.test((bad.json || {}).error || ""), "云端服务商不填 Key 应 400：HTTP " + bad.code + " " + bad.body.slice(0, 200));
+    assert((cfgOnDisk().providers || []).length === provN, "被拒的那次不许留下半成品渠道");
+    const put = await req("POST", "/api/onboarding", { kind: "ark", api_key: WIZ_KEY, skip_test: true });
     assert(put.code === 200 && put.json && put.json.ok === true, "向导填 Key 应当成功：HTTP " + put.code + " " + put.body.slice(0, 200));
     const a6 = await req("GET", "/api/onboarding");
     assert(a6.json.needs_setup === false && a6.json.brain.ok === true && a6.json.brain.via === "api",
       "首页填完 Key，向导就不该再弹：" + JSON.stringify({ n: a6.json.needs_setup, b: a6.json.brain }));
     const c2 = cfgOnDisk();
-    const ent = (c2.models || []).find((m) => m.name === brainName);
+    const ent = (c2.models || []).find((m) => m.name === put.json.active_model);
+    assert(ent && ent.model && /ark\.cn-beijing/.test(ent.base_url || ""), "按模板建出来的模型行要带火山的地址和默认型号：" + JSON.stringify(ent));
     const prv = (c2.providers || []).find((p) => p.id === (ent || {}).channel);
     assert(prv && prv.api_key === WIZ_KEY, "Key 要落在渠道那一行（一把 Key 挂一排模型），不是只写在模型条目上：" + JSON.stringify({ ch: (ent || {}).channel, hit: !!prv }));
     assert(ent.api_key === WIZ_KEY, "压平回模型条目上的 Key 不能是空的——设置页那句「未填 Key」读的就是它");
-    assert((c2.providers || []).length === provN,
-      "填个 Key 不该多分叉出一行渠道（「怎么就是有两个火山模型啊」）：" + provN + " → " + (c2.providers || []).length);
+    assert((c2.providers || []).length === provN + 1,
+      "按模板接一家 = 恰好多一个渠道：" + provN + " → " + (c2.providers || []).length);
     const s6 = await req("GET", "/api/settings");
     const pv = ((s6.json || {}).providers || []).find((p) => p.id === ent.channel);
     assert(pv && pv.has_key === true, "设置 → 模型 里这个渠道必须显示成已填 Key：" + JSON.stringify(pv && { id: pv.id, has_key: pv.has_key }));
+    // 同一家同一把 Key 再填一次不分叉（「怎么就是有两个火山模型啊」）；按已有模型行名填 Key 的老路也还得通
+    const put2 = await req("POST", "/api/onboarding", { kind: "ark", api_key: WIZ_KEY, skip_test: true });
+    assert(put2.code === 200 && (cfgOnDisk().providers || []).length === provN + 1 && (cfgOnDisk().models || []).length === (c2.models || []).length,
+      "同一家同一把 Key 再来一次不该多出渠道或模型行：" + JSON.stringify({ p: (cfgOnDisk().providers || []).length, m: (cfgOnDisk().models || []).length }));
+    const put3 = await req("POST", "/api/onboarding", { model: ent.name, api_key: WIZ_KEY, skip_test: true });
+    assert(put3.code === 200 && put3.json.ok === true && put3.json.active_model === ent.name, "按已有模型行名填 Key 的老路还得通：HTTP " + put3.code + " " + put3.body.slice(0, 200));
 
     // 6. 未登录不给看（体检表里有渠道名、目录路径）
     const anon = await new Promise((resolve) => {
@@ -11438,6 +11478,22 @@ async function testAdminModelsPage() {
     users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
     tokens: { [token]: { user: "e2e", at: Date.now() } },
   }));
+  // 这页要验的是「字段齐不齐」，得先有几行真配过的东西才验得了。以前靠的是出厂预置那九行厂商模板，
+  // 现在出厂一行都没有（用户原话：「不要搞什么默认渠道填充啊，都没填 apikey 的」；新装该是空的那条
+  // 在 /api/onboarding 那节单独钉着），所以这里自己摆一份。名字都不跟出厂模板重名——重名的话
+  // 开机那趟 pruneSeededPresets 会把它们当占位行收走，这条测试就又变成在验空列表了。
+  const chans = [
+    { id: "c-ark", name: "我的方舟", kind: "ark", base_url: "https://ark.cn-beijing.volces.com/api/v3" },
+    { id: "c-ds", name: "我的 DeepSeek", kind: "deepseek", base_url: "https://api.deepseek.com/v1" },
+    { id: "c-or", name: "我的 OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1" },
+    { id: "c-zhipu", name: "我的智谱", kind: "zhipu", base_url: "https://open.bigmodel.cn/api/paas/v4" },
+    { id: "c-kimi", name: "我的 Kimi", kind: "moonshot", base_url: "https://api.moonshot.cn/v1" },
+  ];
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+    providers: chans.map((c) => ({ ...c, api_key: "" })),
+    models: chans.map((c, i) => ({ name: "线路" + (i + 1), provider: "openai", channel: c.id, base_url: c.base_url, api_key: "", model: "m-" + i })),
+    active_model: "线路1",
+  }, null, 2));
   const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
   const child = booted.child;
   const { up, port, why: bootWhy } = await booted.wait();
@@ -11457,7 +11513,8 @@ async function testAdminModelsPage() {
     assert(s, "GET /api/settings 读不出来");
     // 页面顶上就靠它决定画输入框还是画「只能看」，缺了会 undefined → 一律变只读
     assert(typeof s.platform_owner === "boolean", "/api/settings 没回 platform_owner，后台那页分不清能改不能改");
-    assert(Array.isArray(s.providers) && s.providers.length >= 5, "渠道列表空了或太短：" + JSON.stringify((s.providers || []).length));
+    assert(Array.isArray(s.providers) && s.providers.length >= chans.length,
+      "摆进去的 " + chans.length + " 条渠道没原样回来（开机那趟把它们当占位行收走了？）：" + JSON.stringify((s.providers || []).map((p) => p.name)));
     for (const p of s.providers)
       for (const k of ["id", "name", "kind", "base_url", "has_key"])
         assert(k in p, "渠道少字段 " + k + "：" + JSON.stringify(p));
@@ -11469,9 +11526,11 @@ async function testAdminModelsPage() {
     assert(s.models.some((m) => m.name === s.active_model), "active_model 指的模型不在列表里：" + s.active_model);
     assert(s.agent && "failover_model" in s.agent, "/api/settings 没回 agent.failover_model，「主渠道挂了换谁」那个下拉存不回去");
     assert(Array.isArray(s.media_models), "/api/settings 没回 media_models 数组，渠道那行「N 个媒体模型」会炸");
-    // 新装是一把 Key 都没有的：has_key 全 false，而且真 Key 字段不能凭空冒出内容
-    assert(s.providers.every((p) => p.has_key === false), "新装居然有渠道自称填了 Key：" + s.providers.filter((p) => p.has_key).map((p) => p.id).join(","));
-    assert(s.models.every((m) => m.has_key === false), "新装居然有模型自称填了 Key");
+    // 摆进去的那几条 Key 都空着：has_key 得全 false，而且真 Key 字段不能凭空冒出内容
+    assert(s.providers.every((p) => p.has_key === false), "没填 Key 的渠道居然自称填了：" + s.providers.filter((p) => p.has_key).map((p) => p.id).join(","));
+    assert(s.models.every((m) => m.has_key === false), "没填 Key 的模型居然自称填了");
+    // Key 是整台服务器的账单凭证，出了门就收不回来了——这一条只允许空串或八个星号
+    assert([...s.providers, ...s.models].every((p) => p.api_key === "" || p.api_key === "********"), "真 Key 被原文吐给了前端");
 
     // 替身跟真的同构：admin-ui 那份替身回的字段，真的这边一个都不能少
     const stub = fs.readFileSync(path.join(__dirname, "admin-ui.js"), "utf8");
@@ -11479,7 +11538,7 @@ async function testAdminModelsPage() {
     for (const k of ["platform_owner", "has_key", "media_models", "failover_model", "active_model"])
       assert(stub.includes(k), "替身里没提 " + k + "，它和真接口已经走散了");
 
-    console.log(`✅ 后台「模型与 Key」：${used.length} 个图标名在 admin.html sprite 里全找得到（反向对照通过）· 真 /api/settings 带齐 ${s.providers.length} 渠道 × ${s.models.length} 模型 + platform_owner/active_model/failover_model/media_models · 新装 has_key 全 false · 替身与真接口字段对齐`);
+    console.log(`✅ 后台「模型与 Key」：${used.length} 个图标名在 admin.html sprite 里全找得到（反向对照通过）· 真 /api/settings 带齐 ${s.providers.length} 渠道 × ${s.models.length} 模型 + platform_owner/active_model/failover_model/media_models · 没填 Key 的 has_key 全 false 且真 Key 不出门 · 替身与真接口字段对齐`);
   } finally {
     child.kill("SIGKILL");
     fs.rmSync(home, { recursive: true, force: true });

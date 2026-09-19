@@ -387,19 +387,26 @@ const TOOL_DEFS = [
   {
     name: "chrome_cdp",
     description:
-      "通过本机 Chrome DevTools Protocol 操作已由用户显式开启远程调试的 Chrome。只允许 127.0.0.1/localhost/::1，不会连接公网浏览器。action=list_tabs 查看标签页；inspect 读取页面文字；navigate 打开 URL；click/type 按 CSS 选择器操作；evaluate 执行页面内 JavaScript；screenshot 截图并保存到 workspace。除 list_tabs 外建议先列标签页并明确 tab_id，避免误操作；服务器部署时要在同一台 Agent 机器启动 Chrome CDP（默认 9222），不能把桌面 Chrome 的端口暴露到公网。",
+      "用真 Chrome 打开网页并操作它。要截网页效果图、要看 JS 渲染完的样子、要点开某个交互再看结果，都用这个，不用先问用户开没开调试端口——端口上没人应答时会自己拉起一个专用 Chrome（独立 user-data-dir，不碰你日常浏览器的登录态），端口由它自己挑，不跟别的程序抢。只连 127.0.0.1/localhost/::1。\n" +
+      "action：list_tabs 列标签页；navigate 打开 URL（默认等页面加载完再返回）；screenshot 截图存到 workspace，full_page=true 截整页，width/height 指定视口；inspect 读页面文字；click/type 按 CSS 选择器操作；evaluate 执行页面内 JavaScript；close_tab 关标签页；status 看当前接的是哪个 Chrome。\n" +
+      "接手用户已经开着的浏览器要给 port；不给就用本工具自己那一个。WebGL/Canvas 页面照样能截。服务器部署时 Chrome 要跟 Agent 在同一台机器，别把调试端口暴露到公网。",
     input_schema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["list_tabs", "inspect", "navigate", "click", "type", "evaluate", "screenshot"] },
-        tab_id: { type: "string", description: "Chrome 标签页 id；list_tabs 不需要" },
-        port: { type: "number", description: "本机 CDP 端口，默认 9222" },
+        action: { type: "string", enum: ["list_tabs", "inspect", "navigate", "click", "type", "evaluate", "screenshot", "close_tab", "status"] },
+        tab_id: { type: "string", description: "Chrome 标签页 id；不给就用当前第一个页面标签页" },
+        port: { type: "number", description: "本机 CDP 端口。只在接管用户自己启的 Chrome 时给；不给就用本工具自己拉起的那个" },
         selector: { type: "string", description: "inspect/click/type 的 CSS 选择器" },
         text: { type: "string", description: "type 要输入的内容" },
         url: { type: "string", description: "navigate 要打开的 URL" },
         expression: { type: "string", description: "evaluate 要执行的页面 JavaScript" },
         path: { type: "string", description: "screenshot 保存到 workspace 的相对路径，默认 chrome-screenshot.png" },
         max_chars: { type: "number", description: "inspect 最多返回多少字符，默认 20000" },
+        full_page: { type: "boolean", description: "screenshot 截整页（含需要滚动的部分），默认只截当前视口" },
+        width: { type: "number", description: "screenshot 视口宽，配合 height 用，默认按窗口实际大小" },
+        height: { type: "number", description: "screenshot 视口高" },
+        wait_ms: { type: "number", description: "navigate 等页面加载完的上限，默认 4000；screenshot 上也能给，拍之前再等一等" },
+        headless: { type: "boolean", description: "自己拉 Chrome 时用无头模式，不弹窗口。服务器上跑必须开" },
       },
       required: ["action"],
     },
@@ -3386,6 +3393,21 @@ async function viaMedia(cap, opts, input, run) {
   if (cfg && cfg.base_url) {
     const stop = mediaHealth.gate(cap, cfg, mediaModels.CAP_CN[cap]);
     if (stop) return stop;
+    // 挂错家的型号，在发请求**之前**就拦下来。
+    // 这不是为了省那一次网络往返，是为了让 agent 拿到一句它能照着做的话：上游回的原话是
+    // 400 "not a valid model ID"，模型看了只会换个参数再来一遍，撞上十轮都不会想到
+    // 「是渠道挂错了、得让用户去设置里改」。配置错不是能力问题，重试一万次也不会对。
+    const want = mediaModels.mismatch(cfg.kind || mediaModels.guessKind(cfg.base_url), cfg.model);
+    if (want) {
+      const capCn = mediaModels.CAP_CN[cap] || cap;
+      const res = { content:
+        `${capCn}用不了：型号「${cfg.model}」是${mediaModels.kindLabel(want)}家的，现在却挂在` +
+        `${mediaModels.kindLabel(cfg.kind || mediaModels.guessKind(cfg.base_url))}那条渠道上——这个型号不存在于那条渠道，调过去只会报错。\n` +
+        `请用户去 设置 → 模型 → ${capCn}，把它改挂到${mediaModels.kindLabel(want)}的渠道（没有就先加一条），或者换一个这条渠道上有的型号。\n` +
+        `这一步不用重试，也别换参数再试——换什么参数都一样。`, isError: true };
+      mediaHealth.record(cap, cfg, res);
+      return res;
+    }
   }
   const res = await run();
   if (cfg && cfg.base_url) mediaHealth.record(cap, cfg, res);

@@ -26,9 +26,13 @@
  */
 
 const {
-  PROVIDER_KINDS, guessKind, baseOfKind, protoOfKind,
+  PROVIDER_KINDS, CATALOG, guessKind, baseOfKind, protoOfKind,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
 } = require("./media-models");
+
+/** 本机地址：Ollama / LM Studio 这类压根不要 Key，没 Key 也算配过了 */
+const isLocalBase = (u) => /localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]/.test(String(u || ""));
+const nb = (u) => String(u || "").trim().replace(/\/+$/, "").toLowerCase();
 
 /**
  * 渠道的认领依据：协议 + 地址 + Key 三样都一样才是同一个渠道。
@@ -54,11 +58,147 @@ function nameForKind(kind, baseUrl) {
 /**
  * 这条模型该不该有渠道。
  *
- * 没地址、没 Key、也不是 Anthropic 协议的条目是「还没配过」——初始 config 里那一排
- * 预置渠道就长这样。给它们建渠道只会凭空多出一堆空壳，界面上还得一个个提示「未填 Key」。
+ * 填了 Key 的、或者指着本机地址的（Ollama 那类压根不要 Key）才算配过了。
+ * 只有地址没有 Key 的条目是**厂商模板**，不是渠道——老版本出厂 config 里那一排就长这样。
+ * 以前它们也建渠道，于是设置页凭空多出一排「未填 Key」的空壳，人删掉之后下一次规整又建回来。
+ * 用户原话：「不要搞什么默认渠道填充啊，都没填 apikey 的，搞这个一直占位做什么？」
  */
 function wantsChannel(m) {
-  return !!String(m.base_url || "").trim() || m.provider === "anthropic";
+  if (isLocalBase(m.base_url)) return true;
+  return !!String(m.api_key || "").trim();
+}
+
+/**
+ * 老版本出厂 config.json（以及更老的启动迁移）塞进来的那九行厂商模板。名字 + 地址就认得出来。
+ * 这张表只用来**收回我们自己塞的**：用户自己起名建的行永远不在这张表里。
+ */
+const SEEDED_PRESETS = [
+  { name: "DeepSeek", base_url: "https://api.deepseek.com/v1" },
+  { name: "通义Qwen", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+  { name: "智谱GLM", base_url: "https://open.bigmodel.cn/api/paas/v4" },
+  { name: "Kimi", base_url: "https://api.moonshot.cn/v1" },
+  { name: "Ollama本地", base_url: "http://localhost:11434/v1" },
+  { name: "OpenAI", base_url: "https://api.openai.com/v1" },
+  { name: "Anthropic Claude", base_url: "" },
+  { name: "OpenRouter", base_url: "https://openrouter.ai/api/v1" },
+  { name: "火山方舟", base_url: "https://ark.cn-beijing.volces.com/api/v3" },
+];
+const isSeededPreset = (m) => SEEDED_PRESETS.some((p) => p.name === String(m.name || "").trim() && nb(p.base_url) === nb(m.base_url));
+/** 没在行上填 Key，但环境变量能兜住的（llm.js 只把这两把通用 Key 发给官方域名）：那不算没配 */
+function envKeyFor(m) {
+  const base = String(m.base_url || "").trim();
+  if (!base) return m.provider === "anthropic" && !!process.env.ANTHROPIC_API_KEY;
+  try { return /(^|\.)openai\.com$/i.test(new URL(base).hostname) && !!process.env.OPENAI_API_KEY; } catch { return false; }
+}
+/** 向导 / 老配置迁移给模型行起的短名：跟老出厂模板同名，用户看着眼熟 */
+const SHORT_NAME = {
+  ark: "火山方舟", dashscope: "阿里云百炼", openai: "OpenAI", openrouter: "OpenRouter", siliconflow: "硅基流动",
+  zhipu: "智谱GLM", anthropic: "Anthropic Claude", deepseek: "DeepSeek", moonshot: "Kimi", ollama: "Ollama本地",
+};
+
+/**
+ * 收回出厂占位：没填 Key 的模板行，和它们留下的空壳渠道。server.js 开机跑一次，跑过盖 presets_pruned 章。
+ *
+ * 只收两种东西，别的一律不碰：
+ *   1. 名字和地址都跟出厂模板一模一样、Key 空着（环境变量也兜不住）、又不是本机地址的模型行。
+ *      本机 Ollama 那行不要 Key，「没 Key」不是没配过的证据。正在用的那条也照收：没 Key 的行
+ *      本来就一句话都发不出去，留着只是让人以为「配了」——收掉之后 active_model 清空，向导会重新弹。
+ *   2. 空 Key、地址还是这家的默认地址、底下一条对话模型和媒体模型都没挂的渠道行（模板行删掉后留下的壳）。
+ * 幂等：收完一遍再跑，什么都不会动。返回收掉了哪些（名字），调用方据此落盘、打日志。
+ */
+function pruneSeededPresets(config) {
+  const models = Array.isArray(config.models) ? config.models.filter((m) => m && typeof m === "object") : [];
+  const providers = Array.isArray(config.providers) ? config.providers.filter((p) => p && typeof p === "object") : [];
+  const mediaModels = Array.isArray(config.media_models) ? config.media_models.filter((m) => m && typeof m === "object") : [];
+  const goneRows = models.filter((m) => !String(m.api_key || "").trim() && !isLocalBase(m.base_url) && !envKeyFor(m) && isSeededPreset(m));
+  config.models = models.filter((m) => !goneRows.includes(m));
+  if (goneRows.some((m) => m.name === String(config.active_model || ""))) config.active_model = "";
+  const used = new Set([...config.models.map((m) => m.channel), ...mediaModels.map((m) => m.provider)]);
+  const goneChans = providers.filter((p) => !String(p.api_key || "").trim() && !used.has(p.id) && !isLocalBase(p.base_url) && nb(p.base_url) === nb(baseOfKind(p.kind)));
+  config.providers = providers.filter((p) => !goneChans.includes(p));
+  return { models: goneRows.map((m) => m.name), channels: goneChans.map((p) => p.name || p.id) };
+}
+
+/** 向导给每家默认挑的对话模型：老出厂模板里那几个，目录里有的以目录第一条兜底 */
+const DEFAULT_CHAT_MODEL = {
+  ark: "doubao-seed-1-6-250615", dashscope: "qwen-max", openai: "gpt-5.2", openrouter: "deepseek/deepseek-chat",
+  zhipu: "glm-4-plus", anthropic: "claude-sonnet-5", deepseek: "deepseek-chat", moonshot: "moonshot-v1-32k", ollama: "qwen3:14b",
+};
+
+/**
+ * 首页向导的「服务商」清单。以前它读的是 config.models 里那排模板行——所以模板行不能删；
+ * 现在它读目录，config 里从此只有用户真配过的东西。
+ */
+function templates() {
+  return PROVIDER_KINDS
+    .filter((k) => !k.media_only && !k.decide_only && k.kind !== "newapi" && k.kind !== "custom")
+    .map((k) => {
+      const cat = (CATALOG.chat || []).find((c) => c.kind === k.kind);
+      return {
+        kind: k.kind, label: k.label,
+        name: SHORT_NAME[k.kind] || String(k.label).replace(/（.*$/, "").trim(),
+        base_url: k.base_url || "", key_url: k.key_url || "",
+        model: DEFAULT_CHAT_MODEL[k.kind] || (cat ? cat.id : ""),
+        local: k.kind === "ollama" || isLocalBase(k.base_url),
+      };
+    })
+    .filter((t) => t.model);
+}
+
+/**
+ * 按模板起一条模型：先算好要建什么，**不动 config**——向导要先拿它验活，验过了再 commitTemplate 落下去。
+ * 同家同地址的渠道已经有了就复用（空壳补 Key；Key 一样就是同一个号）；返回 null 表示没这家。
+ */
+function planTemplate(config, kind, modelId) {
+  const t = templates().find((x) => x.kind === String(kind || "").trim());
+  if (!t) return null;
+  const providers = Array.isArray(config.providers) ? config.providers : [];
+  const models = Array.isArray(config.models) ? config.models : [];
+  const model = String(modelId || "").trim() || t.model;
+  const prov = providers.find((p) => p.kind === t.kind && nb(p.base_url) === nb(t.base_url)) || null;
+  const taken = new Set(models.map((m) => String(m.name || "")));
+  const name = taken.has(t.name) ? `${t.name} ${model}` : t.name;
+  const row = { name, provider: protoOfKind(t.kind), base_url: baseForUse(t.base_url, "chat"), api_key: "", model };
+  return { t, prov, row };
+}
+
+/** 把 planTemplate 算好的那条落进 config：渠道（带 Key）+ 模型行（挂在它下面）。返回最后那条模型行 */
+function commitTemplate(config, plan, key) {
+  config.providers = Array.isArray(config.providers) ? config.providers : [];
+  config.models = Array.isArray(config.models) ? config.models : [];
+  const k = String(key || "").trim();
+  let prov = plan.prov;
+  // 已有的那行填着另一把 Key：那是另一个号，另起一行，别把人家的 Key 盖掉
+  if (prov && String(prov.api_key || "").trim() && k && prov.api_key !== k) prov = null;
+  if (!prov) {
+    const ids = new Set(config.providers.map((p) => String(p.id)));
+    prov = { id: uniqueId(plan.t.kind, ids), name: plan.t.label, kind: plan.t.kind, base_url: plan.t.base_url, api_key: k };
+    config.providers.push(prov);
+  } else if (k) prov.api_key = k;
+  const dup = config.models.find((m) => m.channel === prov.id && String(m.model) === String(plan.row.model));
+  if (dup) return dup;
+  const row = { ...plan.row, channel: prov.id, api_key: prov.api_key };
+  config.models.push(row);
+  return row;
+}
+
+/**
+ * 还没有 models 表的老配置（provider / openai / anthropic 三块）：只把填了 Key 的那家搬成一条模型。
+ * 以前这一步会顺手塞进五家厂商的模板行——用户看到的就是一排没 Key 的占位渠道。
+ */
+function legacyRows(config) {
+  const rows = [];
+  const o = config.openai || {};
+  const a = config.anthropic || {};
+  if (String(o.api_key || "").trim() && String(o.base_url || "").trim() && String(o.model || "").trim()) {
+    const kind = guessKind(o.base_url);
+    rows.push({ name: SHORT_NAME[kind] || nameForKind(kind, o.base_url), provider: "openai", base_url: String(o.base_url).trim(), api_key: String(o.api_key).trim(), model: String(o.model).trim() });
+  }
+  if (String(a.api_key || "").trim() && String(a.model || "").trim()) {
+    rows.push({ name: "Anthropic Claude", provider: "anthropic", base_url: "", api_key: String(a.api_key).trim(), model: String(a.model).trim() });
+  }
+  if (rows.length > 1 && config.provider === "anthropic") rows.reverse();
+  return rows;
 }
 
 /**
@@ -141,4 +281,7 @@ function modelsOf(config, channelId) {
   return (Array.isArray(config.models) ? config.models : []).filter((m) => m && String(m.channel || "") === id);
 }
 
-module.exports = { normalize, modelsOf, chanKeyOf, nameForKind, wantsChannel };
+module.exports = {
+  normalize, modelsOf, chanKeyOf, nameForKind, wantsChannel,
+  pruneSeededPresets, SEEDED_PRESETS, templates, planTemplate, commitTemplate, legacyRows,
+};

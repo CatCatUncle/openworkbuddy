@@ -14,6 +14,8 @@ const callout = require("./callout"); // 正文里的提示条：网页画图标
 const security = require("./security"); // 审计中心：对外推送这种「出了门就收不回来」的动作必须留痕
 const mailer = require("./mailer"); // 发信：配没配、地址合不合法、白名单放不放行，判据只有这一份
 const tracing = require("./trace"); // 执行追踪：整趟任务的模型调用/工具调用发去 Langfuse，默认关
+const mediaHealth = require("./media-health"); // 媒体渠道熔断闸：开跑前先把暂停中的渠道写进提示词
+const { CAP_CN } = require("./media-models");
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -488,7 +490,61 @@ function activeChannel(config) {
 function stopNotice(note) {
   const resume = "要接着做就跟我说「接着上次进度做」，进度档在工作目录的 PROGRESS.md";
   if (String(note).startsWith("已手动停止")) return `注意：${note}。${resume}。`;
+  // 死循环停下来的，劝人去调大上限是反的——上限再大它也只是多转几圈
+  if (String(note).startsWith("陷入死循环")) return `注意：${note}，已经停下来不再烧时间和额度，这种停不会自动续跑。先把它撞墙的那条路修好（渠道、文件或命令），或者把要求说得更具体，再跟我说「接着上次进度做」。`;
   return `注意：${note}，任务强制收尾。${resume}；想让它一口气跑更久，去「设置 → 执行上限」调大上限、或把「自动续跑轮数」设成 1 以上（这页归平台管理员）。`;
+}
+
+/**
+ * 死循环硬停的门槛。每一档都比「提醒」和「拦截」高一截：
+ *   同一调用同一结果：3 连提醒、5 连拦截不执行、6 连硬停——拦了还来，就不是判断问题了
+ *   同一句报错：换着参数撞同一堵墙 6 次（报错原文一字不差）——参数根本不是变量
+ *   连续报错：12 次没一次成功，不管报的是什么
+ *   熔断渠道：拦到第 2 次就不再执行，还连着调到第 4 次
+ *   来回转圈：A→B→A→B 这种两步或三步一圈、每圈入参和结果都一样，转满 4 圈
+ */
+const DEAD_LOOP_LIMITS = { same: 6, sameError: 6, errors: 12, media: 4, cycleReps: 4 };
+
+/** 尾部有没有周期 2 / 3 的原样重复：[a,b,a,b,a,b,a,b] → { period: 2, reps: 4, tools: [...] }。全一样的序列不算（那归 streak 管） */
+function findCycle(seq, reps) {
+  for (const period of [2, 3]) {
+    const need = period * reps;
+    if (seq.length < need) continue;
+    const tail = seq.slice(-need);
+    const unit = tail.slice(0, period);
+    if (new Set(unit).size < period) continue;
+    let same = true;
+    for (let i = period; i < need && same; i++) if (tail[i] !== unit[i % period]) same = false;
+    if (same) return { period, reps, tools: unit.map((fp) => fp.split("\u0000")[0]) };
+  }
+  return null;
+}
+
+/**
+ * 死循环判定（纯函数，测试直接喂 Map）。返回 "" 表示还没到硬停的程度，否则是一句给人看的原因。
+ * 用户原话：「不要陷入长时间死循环这个问题给我解决下啊」——以前只提醒、只拦截，模型不听就一直
+ * 转到最大步数或最大运行时间，用户看到的是「已达最大运行时间」，还以为是活儿太多。
+ */
+function deadLoop({ loopHist, errStreaks, errSame, deadMedia, callSeq }, limits = DEAD_LOOP_LIMITS) {
+  for (const [k, v] of loopHist || []) if (v.streak >= limits.same) return `同样的参数调用 ${k.split("\u0000")[0]} 已连续 ${v.streak} 次拿到同样的结果`;
+  for (const [name, s] of errSame || []) if (s.n >= limits.sameError) return `${name} 连着 ${s.n} 次撞的是同一句报错，换参数也没用`;
+  for (const [name, n] of errStreaks || []) if (n >= limits.errors) return `${name} 已连续失败 ${n} 次，没一次成功`;
+  for (const [name, d] of deadMedia || []) if (d.n >= limits.media) return `${name} 这条渠道已经熔断，还是连着调了 ${d.n} 次`;
+  const cyc = findCycle(callSeq || [], limits.cycleReps);
+  if (cyc) return `在 ${cyc.tools.join(" → ")} 之间来回转了 ${cyc.reps} 圈，每一圈的入参和结果都一模一样`;
+  return "";
+}
+
+/** 开跑前把已熔断的媒体渠道写进提示词：模型一开始就知道「看图这条路今天走不通」，不用撞一次才知道 */
+function pausedMediaBlock(now = Date.now()) {
+  let paused = [];
+  try { paused = mediaHealth.list(); } catch { return ""; }
+  if (!paused.length) return "";
+  const lines = paused.map((p) => {
+    const mins = Math.max(1, Math.ceil((p.until - now) / 60000));
+    return `- ${CAP_CN[p.cap] || p.cap}（${p.model || "？"}）：${p.why}${p.hard ? "。要用户去 设置 → 模型 把这条修好或换一条渠道" : `。${mins} 分钟后会自动再试`}`;
+  });
+  return `\n\n## 这几条媒体渠道现在是暂停的（本地熔断闸拦的，跟问法无关）\n${lines.join("\n")}\n这一趟把它们当不可用：不要调用对应的工具，需要它们的步骤如实告诉用户这一步没做成、该怎么修。`;
 }
 
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
@@ -759,6 +815,7 @@ function modePrompt(mode) {
 - 直接改文件、直接跑命令、直接交付。**严禁**用「要不要我帮你改？」「确认后我就开始」「你希望用哪种方案？」这类话结束回合——一个回合结束时，要么活干完了，要么真的卡在只有用户本人能解决的事情上（登录、授权、付钱）。
 - 方案有好几种、但**成品长得差不多**（用哪个库、代码怎么组织、跑几轮）——自己挑最稳的那个，在开场白里说一句"我按 X 来做"，然后做。做错了再改，比停在原地问强。
 - 但**成品形态会完全不同的岔路，不许自己替用户挑**（封面图走生图还是排版截图、文案走口播稿还是图文）——挑错了等于整件事白做，照规范 1 用 ask_user 问。摆选项时：label 写选项本身，detail 写"选了它会得到什么、代价是什么"（label"AI 生图" / detail"画面有质感有氛围，但风格随机、不好复现"；label"HTML 排版截图" / detail"版式配色全可控、改起来快，但偏平面没氛围"）。detail 是用户唯一的判断依据，不许省，也不许把 label 换个说法重说一遍。
+- **要看着东西才答得上来的题，必须在问题里点名那个文件**（"三版对比在 封面三选一.html 里"）——网页端认出这个名字就把它摊到右边，用户一眼看得见。文件名要写全、带后缀、跟落盘的那个一模一样；只说"做了三版你挑一个"，用户得自己去一堆文件里翻，这题就等于没法答。同理，**几个候选摆一个对比页**（三张图并排 + 各自一句话），别让用户挨个点开三个文件比。
 - 用户已经点名走哪条路了（"你用生图 API 给我做"），就照他说的做——哪怕你觉得另一条更稳，也只能把风险一句话说在前面，不许拿它当理由偷偷换方案。技能文档里的推荐做法同理：那是没人表态时的默认值，不是用来推翻用户的。
 - 需要审批的危险动作（删除、sudo、碰黑名单文件）系统会自己弹窗拦，不用你在文字里预先请示。
 - **结论先行**：交给用户看的东西——回合的最终答复、报告、文档——一律先给结论和建议，再给理由和过程。用户要的是"所以呢"，不是你一步步怎么查到的。长文档第一屏必须有一段能独立读懂的摘要：结论 + 3 条关键依据 + 建议的下一步；把结论埋在第七节里，等于没写。
@@ -1828,7 +1885,7 @@ function modePrompt(mode) {
     // 记忆召回的线索：用户最后一条消息的前 500 字。记忆超预算时按它挑相关条目
     const lastUserMsg = [...history].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
     const memHint = lastUserMsg ? lastUserMsg.content.slice(0, 500) : "";
-    const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + projBlock + langBlock(lang) + modePrompt(mode);
+    const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + projBlock + langBlock(lang) + modePrompt(mode) + pausedMediaBlock();
     const tools = toolList(depth, mode);
     const maxSteps = config.agent.max_steps || 25;
     // 整个任务（含所有专家子代理）共享一个墙上时间预算，防止无限执行
@@ -1875,6 +1932,8 @@ function modePrompt(mode) {
     // 键里必须带结果指纹，才不会误伤「改一遍读一遍」的正常校验循环——文件改了，读回来的内容就变了，计数自动清零
     const loopHist = new Map(); // 工具名+入参 → { sig: 上次结果指纹, streak: 连续拿到相同结果的次数 }
     const errStreaks = new Map(); // 工具名 → 连续报错次数（换着参数撞同一堵墙也算）
+    const errSame = new Map();    // 工具名 → { sig, n }：连续拿到**一字不差**的同一句报错的次数（参数怎么换都一样 = 参数不是变量）
+    const callSeq = [];           // 最近几次「工具+入参+结果」指纹，抓 A→B→A→B 这种来回转圈（单看每个工具都没在重复）
     /**
      * 工具名 → { n, content }：这一路的渠道已经被 media-health 熔断了，撞了几次。
      *
@@ -2152,6 +2211,7 @@ function modePrompt(mode) {
           r = { content: `${dead.content}\n\n【本轮已停用 ${tc.name}】这条渠道连着拦了 ${dead.n} 次，再调也是这句话。按上面说的如实收尾，别把没拿到的结果当拿到过。`, isError: true };
         } else if (seen && seen.streak >= 4 && tc.name !== "ask_user") {
           // 同一调用已连续 4 次拿到一模一样的结果，第 5 次不再执行——结果不会变，只会烧钱
+          loopHist.set(loopKey, { sig: seen.sig, streak: seen.streak + 1 }); // 拦下的也计数，拦了还来就该硬停了
           r = { content: `【系统拦截】你已用完全相同的参数连续 ${seen.streak} 次调用 ${tc.name}，每次结果都一模一样，本次未执行。别再重复同样的动作：换参数、换工具或换一条实现路径；确实无路可走就停止并如实说明卡在哪里。`, isError: true };
         } else {
           const sp = tr.span({
@@ -2182,6 +2242,15 @@ function modePrompt(mode) {
           if (d.n === 2) emit({ type: "text", delta: callout.line("warn", `**这条渠道连不通，已经替你停掉了**：\`${tc.name}\` 撞的是同一堵墙（${String(r.content).split("\n")[0].replace(/^【|】$/g, "")}），不是问法的问题。它不会再往这条路上撞了，会带着「这一步没做成」继续往下走。要恢复：去 设置 → 模型 把这条渠道修好或换一条，按保存即刻生效。`), depth });
         }
         errStreaks.set(tc.name, r.isError ? (errStreaks.get(tc.name) || 0) + 1 : 0);
+        if (r.isError) {
+          const es = errSame.get(tc.name);
+          const esig = String(r.content).slice(0, 2000);
+          errSame.set(tc.name, es && es.sig === esig ? { sig: esig, n: es.n + 1 } : { sig: esig, n: 1 });
+        } else errSame.delete(tc.name);
+        if (tc.name !== "ask_user") { // 问用户的每次答案都不一样，也不该算进转圈
+          callSeq.push(loopKey + "\u0001" + String(r.content).slice(0, 2000));
+          if (callSeq.length > 12) callSeq.shift();
+        }
         if (tc.name === "look_at_image" && !r.isError) sawImage = true; // 真看成过一次，收尾就不替它复核
         emit({
           type: "tool_result",
@@ -2253,6 +2322,16 @@ function modePrompt(mode) {
         history.push({ role: "user", content: `【系统·循环检测】${nudges.join("；")}。这是在死路上空转，时间和费用都在烧：立即换思路——换参数、换工具或换一条实现路径；实在无路可走就停下收尾，如实说明卡在哪里，严禁再重复同样的动作。` });
         // 这行是给人看的：一句话说清「卡住了 → 我做了什么 → 你可能要做什么」
         emit({ type: "text", delta: callout.line("warn", `**它在原地打转了**：${humanly.join("；")}。已经要求它换条路走（换参数、换工具或换个实现方式），走不通就会停下来告诉你卡在哪——不会一直烧时间和额度。你也可以直接点「停下」自己接手。`), depth });
+      }
+
+      // 硬停：提醒过、拦截过，模型还在同一个圈里转，就不是「换个思路」能劝回来的了。再让它转下去只有两种结局：
+      // 撞到最大步数（用户看到「已达最大步数」，以为是活儿太多），或撞到自动续跑（续跑第一件事就是把同样的圈再转一遍）。
+      // 所以这里停，而且这种停不续跑（continuable 认的前缀里没有它）。
+      const dead = deadLoop({ loopHist, errStreaks, errSame, deadMedia, callSeq });
+      if (dead) {
+        stopNote = `陷入死循环（${dead}）`;
+        emit({ type: "text", delta: callout.line("warn", `**已经替你停下来了**：${dead}。提醒过它换路、也拦过它，它还是在同一个圈里转，再转只是烧时间和额度。下面是它对做到哪一步的交代；把它撞墙的那条路修好（渠道、文件或命令），或者把要求说得更具体，再说「接着上次进度做」。`), depth });
+        break;
       }
 
       if (step === maxSteps - 1) stopNote = `已达最大步数（${maxSteps} 步）`;
@@ -2724,4 +2803,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
 }
 
-module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter };
+module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, deadLoop, findCycle, pausedMediaBlock, stopNotice, DEAD_LOOP_LIMITS };

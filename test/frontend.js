@@ -118,11 +118,18 @@ if (FL0 < 0 || FL1 <= FL0) throw new Error("app-01.js 里的成果文件列表�
 // 这一屏要验的不止是 DOM 结构，还有「点了收起到底看不看得见」——所以把 index.html 里的
 // 真样式整段注进来。只验结构不验样式的话，把 .out-block.packed 那条 CSS 删掉测试照样全绿，
 // 用户点了收起却什么也没发生。
+const INDEX_SRC = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
 const INDEX_CSS = (() => {
-  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
-  const m = html.match(/<style>([\s\S]*?)<\/style>/);
+  const m = INDEX_SRC.match(/<style>([\s\S]*?)<\/style>/);
   if (!m) throw new Error("public/index.html 里找不到内联 <style>，前端测试没法验真样式");
   return m[1];
+})();
+// 面板顶上那块（按名字找 + 「全部/只看成果」两档）用真 markup，不在测试里另抄一份：
+// 抄一份的话 index.html 改了 id 测试照样全绿，用户那边搜索框直接失灵
+const INDEX_FP_FILTER = (() => {
+  const m = INDEX_SRC.match(/<div class="fp-filter"[\s\S]*?<\/div>\s*<\/div>/);
+  if (!m) throw new Error("public/index.html 里找不到 .fp-filter 那块，前端测试没法用真 markup");
+  return m[0];
 })();
 
 const FILELIST_SRC = APP02X.slice(FL0, FL1);
@@ -137,7 +144,7 @@ const DELIVER_SRC = APP02X.slice(DV0, DV1);
 // 面板这屏也把真样式注进来：重点标记要是只加类名不加样式，光验 DOM 照样全绿，
 // 用户看到的还是一模一样的一行字
 const FILELIST_HTML = "<!doctype html><meta charset='utf-8'><style>" + INDEX_CSS + "</style>"
-  + "<body><div class='fp-filter' id='fp-filter' hidden></div><div id='file-list'></div></body>";
+  + "<body>" + INDEX_FP_FILTER + "<div id='file-list'></div></body>";
 
 // 对话里的「本回合产出」区：卡片只加不减 → 中途造的临时文件删了卡片还在，还把上限占满。
 // 真实事故：agent 为了擦掉生图自带的水印造了 8 个中间文件，干完删了，但 8 张卡正好顶满
@@ -883,6 +890,47 @@ const FILELIST_CHECKS = `
   ok("反向控制：一份成果都没有时不摆开关", document.getElementById("fp-filter").hidden);
   renderFiles(["a.pptx", "b.png"].map((n, i) => f(DIR + "/" + n, t0.getTime() + i)));
   ok("反向控制：全是成果时也不摆开关", document.getElementById("fp-filter").hidden);
+
+  // ── 按名字找。用户原话：「还有文件也比较难找到在这一堆文件里」
+  //    分组能解决"翻"，解决不了"我就要那一个"——一个任务跑下来几十个文件，
+  //    得先展开对的文件夹、再一行行扫。
+  const FS = [f("任务_0918/封面三选一.html", t0.getTime()), f("任务_0918/data/points.json", t0.getTime()),
+              f("任务_0917/封面_v2.png", t0.getTime()), f("README.md", t0.getTime())];
+  const mnames = (s2) => matchFiles(FS, s2).map((x) => x.name);
+  ok("打文件名找得到", JSON.stringify(mnames("封面三")) === JSON.stringify(["任务_0918/封面三选一.html"]), JSON.stringify(mnames("封面三")));
+  ok("打文件夹名能把那个任务夹里的都捞出来", mnames("0918").length === 2, JSON.stringify(mnames("0918")));
+  ok("多个词空格隔开、全都要命中", JSON.stringify(mnames("封面 png")) === JSON.stringify(["任务_0917/封面_v2.png"]), JSON.stringify(mnames("封面 png")));
+  ok("大小写不敏感", mnames("readme").length === 1 && mnames("JSON").length === 1);
+  ok("没搜词就是原样全给（别悄悄少几个）", matchFiles(FS, "").length === 4 && matchFiles(FS, "   ").length === 4);
+  ok("搜不到就是空，不做模糊兜底（给个不相干的比给空还难受）", mnames("不存在的东西").length === 0);
+  const q = () => document.getElementById("fp-q");
+  const typed = (v) => { q().value = v; q().dispatchEvent(new Event("input")); };
+  onlyResults = false;
+  renderFiles(["a.py", "b.py"].map((n, i) => f(DIR + "/" + n, t0.getTime() + i)));
+  ok("文件少的时候不摆搜索框（一眼扫得完，摆了纯占地方）", q().hidden);
+  const many = ["raw1.json", "raw2.json", "抓取.py", "运行.log", "PROGRESS.md", "封面三选一.html", "封面_v2.png", "方案.pptx"]
+    .map((n, i) => f(DIR + "/" + n, t0.getTime() + i * 1000));
+  renderFiles(many);
+  ok("文件多起来就摆出搜索框", !q().hidden && !document.getElementById("fp-filter").hidden);
+  const box0 = q();
+  typed("封面");
+  ok("打字之后只剩名字里带这两个字的", items().map(nameOf).sort().join("/") === "封面_v2.png/封面三选一.html", items().map(nameOf).join("/"));
+  ok("重画不换 input 元素（换了的话正在打的字和光标全丢）", q() === box0);
+  ok("顶上如实写着找到几个、筛掉几个", /找到 2 个/.test(el.textContent) && /另外 6 个/.test(el.textContent), el.textContent.slice(0, 60));
+  ok("搜索结果里带上它在哪个文件夹（同名的 index.html 一个任务能有好几份）",
+    items()[0].querySelector(".meta").textContent.includes(DIR), items()[0].querySelector(".meta").textContent);
+  ok("搜索结果不分组，直接摊平（搜是为了拿到那一个，不是为了翻）", !el.querySelector(".time-head") && !el.querySelector(".dir-head"));
+  typed("封面 png");
+  ok("空格分词、全都要命中", items().map(nameOf).join() === "封面_v2.png", items().map(nameOf).join("/"));
+  typed("这个名字不存在");
+  ok("搜不到时给一句人话，不是空白", /没有名字里带/.test(el.textContent) && !items().length, el.textContent.slice(0, 60));
+  ok("搜空了搜索框还留着（不然没法清）", !q().hidden);
+  onlyResults = true;
+  renderFiles(many);
+  ok("「只看成果」开着又搜不到时，提醒他切回全部（别让人以为文件没了）", /切回「全部」/.test(el.textContent), el.textContent.slice(0, 80));
+  onlyResults = false;
+  typed("");
+  ok("清空之后又回到分组视图", !!el.querySelector(".dir-head") && !el.querySelector(".fp-hit"), el.innerHTML.slice(0, 120));
 
   // ── 📂「打开所在位置」和文件夹头上的 ↗「在本机打开」：开的都是**服务器那台**机器的窗口。
   //    多人部署里成员点了只会 403，窗口还弹在管理员的显示器上——干脆不画。⬇ 下载一直都在。
@@ -1823,7 +1871,16 @@ if (PVF0 < 0 || PVF1 <= PVF0) throw new Error("app-01.js 里的 PV_FIT_REPORTER 
 const OVH0 = APP01_NAV.indexOf("// ---- 拆出来的结构化数据 → HTML");
 const OVH1 = APP01_NAV.indexOf("// ---------------- 代码文件的看法", OVH0);
 if (OVH0 < 0 || OVH1 <= OVH0) throw new Error("app-01.js 里的 docHtml/sheetHtml/slidesHtml 那段找不到了（改名/挪走？），资料库 Office 预览测试没法定位真源码");
-const DEAD_SRC = APP01_NAV.slice(NAV0, NAV1) + "\n" + APP01_NAV.slice(PVF0, PVF1)
+// 资料库预览现在跟对话页共用同一套「这个后缀走哪条路」的尺子（PV_AUDIO_RE / PV_VIDEO_RE /
+// PV_BINARY_RE / looksBinary）。不把这段带进来就是 ReferenceError，而 renderLibPreview 把异常
+// 吞成一行「预览不了：…」——整块预览静悄悄地白着，测试还以为只是文案变了。同样切真源码。
+const PVK0 = APP01_NAV.indexOf("const PV_IFRAME_RE = ");
+const PVK1 = APP01_NAV.indexOf("const PV_TEXT_MAX = ", PVK0);
+if (PVK0 < 0 || PVK1 <= PVK0) throw new Error("app-01.js 里的 PV_*_RE / looksBinary 那段找不到了（改名/挪走？），资料库预览测试没法定位真源码");
+// 预览面板上的「所在位置」「复制文件」两颗按钮：画不画看 canOpenOnHost，点下去发什么看这两个函数
+const DEAD_SRC = HOSTCAP_SRC + "\n" + srcBlock("function revealFile(") + "\n" + srcBlock("function copyHostFile(")
+  + "\n" + APP01_NAV.slice(PVK0, PVK1) + "\n"
+  + APP01_NAV.slice(NAV0, NAV1) + "\n" + APP01_NAV.slice(PVF0, PVF1)
   + "\n" + APP01_NAV.slice(OVH0, OVH1)
   + "\n" + APP03_AT.slice(AUT0, AUT1) + "\n" + APP03_AT.slice(RUN0, RUN1)
   + "\n" + APP04_LIB.slice(LIB0, LIB1);
@@ -2121,6 +2178,9 @@ const DEAD_CHECKS = `
   // 问成 /api/files/preview/ 就是在另一个目录里找，永远 404（那正是「资料库打不开 PPT」的形状）
   let ovResp = { code: 200, body: {} };
   const ovHits = [];
+  // 谁真的去碰了文件本身。音频/二进制这两条路的要点恰恰是「别把整包拉回来」，
+  // 只看画面对不对是看不出来的——得数请求
+  const fileHits = [];
   const posts = [];
   window.fetch = (url, opt) => {
     const method = (opt && opt.method) || "GET";
@@ -2200,13 +2260,18 @@ const DEAD_CHECKS = `
       ovHits.push(url.split("?")[0]);
       return j(ovResp.body, ovResp.code);
     }
-    if (url.startsWith("/api/files/view/"))
+    if (url.startsWith("/api/files/view/")) {
+      fileHits.push({ url: url.split("?")[0], method });
       return Promise.resolve({ ok: viewResp.code < 400, status: viewResp.code,
         json: () => Promise.resolve({}), text: () => Promise.resolve(viewResp.body) });
+    }
     if (url === "/api/library/upload") return owner ? j(uploadResp, uploadResp.ok ? 200 : 403) : j(FORBID, 403);
     if (url.startsWith("/api/library/folder")) return owner ? j({ ok: true }) : j(FORBID, 403);
     if (url.startsWith("/api/library/note")) return owner ? j({ ok: true }) : j(FORBID, 403);
-    if (url.startsWith("/api/library/file/")) return owner ? j({ ok: true }) : j(FORBID, 403);
+    if (url.startsWith("/api/library/file/")) {
+      fileHits.push({ url: url.split("?")[0], method });
+      return owner ? j({ ok: true }) : j(FORBID, 403);
+    }
     return j({ ok: true });
   };
 
@@ -2541,6 +2606,119 @@ const DEAD_CHECKS = `
      cells.length === 2 && cells[1].length === 2 && cells[1][1] === "财务", JSON.stringify(cells));
   viewResp = { code: 200, body: "# 九月周报" };
   window.libState.pick = null;
+
+  // ⑤c-4 音视频。用户原话：「怎么没有办法预览啊」——一个 1 MB 的 note_audio.mp3
+  // 一直显示「文件太大，预览不动」。两头各坏一半：这一页压根没有音频这条路，mp3
+  // 被当字符串读回来、再撞上 400KB 那道闸；服务端那边 /api/library/file/ 又一律 res.download，
+  // 带着附件头的响应 <audio> 压根不渲染。
+  fileHits.length = 0;
+  pv = await libPreviewOf("素材/note_audio.mp3");
+  const au = pv.querySelector("#lb-av");
+  ok("预览·mp3：画的是一个按得下去的播放器，不再是「文件太大，预览不动」",
+     !!au && au.tagName === "AUDIO" && !pv.innerHTML.includes("文件太大"), pv.innerHTML.slice(-300));
+  ok("预览·mp3：播放器指着资料库那个根，不是工作目录（问错根永远 404）",
+     String(au.getAttribute("src")).startsWith("/api/library/file/"), String(au.getAttribute("src")));
+  ok("预览·mp3：顺利这条路上一个字节都不额外拉——整首歌 fetch 回来再丢掉是白花流量",
+     fileHits.length === 0, JSON.stringify(fileHits));
+  const dl = pv.querySelector("a[download]");
+  ok("预览·mp3：「下载」自己带着 ?dl=1——内联发了之后，光靠 <a download> 一个属性扑不掉所有情况",
+     !!dl && String(dl.getAttribute("href")).endsWith("?dl=1"), dl ? String(dl.getAttribute("href")) : "没有下载链接");
+
+  pv = await libPreviewOf("素材/片头.mp4");
+  ok("预览·mp4：视频走 <video>，不是塞进 <audio> 里只剩声音",
+     String((pv.querySelector("#lb-av") || {}).tagName) === "VIDEO", pv.innerHTML.slice(-260));
+
+  // 放不动和没了是两回事：一个该去下载，一个该回对话里重做
+  viewResp = { code: 200, body: "" };
+  pv = await previewOf("任务_0916_周报/旁白.mp3");
+  await pv.querySelector("#lb-av").onerror();
+  ok("预览·mp3：文件还在却放不动，说的是编码不支持，并指一条走得通的路",
+     pv.innerHTML.includes("编码不支持") && !pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-300));
+  viewResp = { code: 404, body: "文件不存在" };
+  pv = await previewOf("任务_0916_周报/旁白.mp3");
+  await pv.querySelector("#lb-av").onerror();
+  ok("预览·mp3：东西真没了还是那句「已经不在」，不赖到编码头上",
+     pv.innerHTML.includes("已经不在工作目录里") && !pv.innerHTML.includes("编码不支持"), pv.innerHTML.slice(-300));
+
+  // ⑤c-5 后缀就摆明不是文字的（.psd / .sqlite / .heic…）：别先花一趟把它当文本拉回来
+  viewResp = { code: 200, body: "" };
+  fileHits.length = 0;
+  pv = await previewOf("任务_0916_周报/主视觉.psd");
+  ok("预览·psd：直说它里面不是文字，并给一条用对应程序打开的路",
+     pv.innerHTML.includes("二进制文件") && !pv.innerHTML.includes("文件太大"), pv.innerHTML.slice(-300));
+  ok("预览·psd：只问了一句「还在不在」，没把几百兆当字符串读回来",
+     fileHits.length === 1 && fileHits[0].method === "HEAD", JSON.stringify(fileHits));
+  viewResp = { code: 404, body: "文件不存在" };
+  pv = await previewOf("任务_0916_周报/主视觉.psd");
+  ok("预览·psd：东西没了先说没了，「二进制」是次要的",
+     pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
+
+  // 认不出的后缀只能读回来看内容：NUL 字节就是二进制，摆一屏乱码不如直说
+  viewResp = { code: 200, body: "PK\u0003\u0004\u0000\u0000乱码" };
+  pv = await previewOf("任务_0916_周报/导出件");
+  ok("预览·没后缀：读回来发现是二进制，也直说，不摆一屏乱码",
+     pv.innerHTML.includes("二进制文件"), pv.innerHTML.slice(-300));
+  viewResp = { code: 200, body: "# 九月周报" };
+
+  // ⑤c-6 「所在位置」「复制文件」。用户原话：「应该还有打开所在文件夹并且定位到
+  // 对应位置的功能啊，还有能直接复制这个文件」。以前只有一个「下载」——
+  // 想把它发给同事，得先下一份、再去下载目录里翻。
+  window.settingsCache = { platform_owner: false };
+  pv = await libPreviewOf("素材/note_audio.mp3");
+  ok("所在位置 / 复制文件：多人服务器上的成员看不到（开的是服务器那台机器，对他没意义）",
+     !pv.querySelector("#lb-reveal") && !pv.querySelector("#lb-copy"), pv.innerHTML.slice(0, 400));
+  window.settingsCache = { platform_owner: true };
+  pv = await libPreviewOf("素材/note_audio.mp3");
+  ok("反向对照：单机桌面版上两颗按钮都在",
+     !!pv.querySelector("#lb-reveal") && !!pv.querySelector("#lb-copy"), pv.innerHTML.slice(0, 400));
+
+  posts.length = 0;
+  pv.querySelector("#lb-reveal").onclick({ preventDefault() {}, stopPropagation() {} });
+  ok("所在位置：资料库的文件得带上 src=lib——不带的话服务端按工作目录去找，必然 404",
+     posts.length === 1 && posts[0].url === "/api/files/reveal"
+     && posts[0].body.src === "lib" && posts[0].body.name === "素材/note_audio.mp3", JSON.stringify(posts));
+
+  posts.length = 0;
+  window.toasts = [];
+  await pv.querySelector("#lb-copy").onclick({ preventDefault() {}, stopPropagation() {} });
+  ok("复制文件：打的是 /api/files/copy，同样带 src=lib",
+     posts.length === 1 && posts[0].url === "/api/files/copy" && posts[0].body.src === "lib", JSON.stringify(posts));
+  ok("复制文件：成了要说一句——剪贴板看不见摸不着，不说就是「点了没反应」",
+     window.toasts.join("|").includes("已复制文件"), window.toasts.join("|") || "一句话都没说");
+
+  pv = await previewOf("任务_0916_周报/九月周报.md");
+  posts.length = 0;
+  pv.querySelector("#lb-reveal").onclick({ preventDefault() {}, stopPropagation() {} });
+  ok("反向对照：工作区产出不带 src=lib（带了就跑去资料库里找一个不存在的同名文件）",
+     posts.length === 1 && posts[0].body.src === "", JSON.stringify(posts));
+
+  // ⑤c-7 「出自任务」认的是文件夹，不是「谁最近动过它」。
+  // 用户原话：「这里说出自哪个任务也是错的位置啊！」——任务_0915_对话_2/BGM_纯配乐.mp3
+  // 被标成了另一条 9-17 任务的产出。根子在服务端记账：认文件归属的那张表是内存里的，
+  // 重启就空了，于是后一条任务只要碰一下这个文件，它就进了那条任务的 changed。
+  // 历史数据已经这么存着了，所以在读的一端把文件夹当硬证据。
+  const OUT0 = window.libOutCache;
+  const mkTask = (id, title, dir, files) => ({
+    id, title, dir, at: Date.parse("2026-09-17T10:00:00Z"),
+    files: files.map((n) => ({ name: n, size: 1, mtime: "2026-09-17T10:00:00Z", gone: false })),
+  });
+  // 倒序：新的在前。老代码「第一个把它列进 files 的任务就是主人」，命中的正是这一条
+  window.libOutCache = { tasks: [
+    mkTask("s_new", "开源项目推广小红书图文 9-17", "任务_0917_小红书",
+           ["任务_0915_对话_2/BGM_纯配乐.mp3", "任务_0801_早没了/稿.md", "随手拷进来的.png"]),
+    mkTask("s_old", "配一段纯音乐", "任务_0915_对话_2", ["任务_0915_对话_2/BGM_纯配乐.mp3"]),
+  ] };
+  const owned = (n) => libTaskOf("ws", n);
+  ok("出自任务：文件躺在谁的成果文件夹里就是谁的，后来动过它的那条任务抢不走",
+     (owned("任务_0915_对话_2/BGM_纯配乐.mp3") || {}).id === "s_old",
+     JSON.stringify(owned("任务_0915_对话_2/BGM_纯配乐.mp3") || null));
+  ok("出自任务：文件夹看着是别的任务的、又不在手头这批里，就交白卷——猜出来的那个必错",
+     owned("任务_0801_早没了/稿.md") === null, JSON.stringify(owned("任务_0801_早没了/稿.md")));
+  ok("出自任务：根目录下的文件没文件夹可依，照旧按「谁产出过」反查，别一起误伤",
+     (owned("随手拷进来的.png") || {}).id === "s_new", JSON.stringify(owned("随手拷进来的.png") || null));
+  ok("出自任务：资料库那一栏是人手动传的，本来就没有任务可言",
+     libTaskOf("lib", "任务_0917_小红书/x.md") === null);
+  window.libOutCache = OUT0;
 
   // ⑤d 搜索。用户原话：「还有支持搜索功能吧」。
   // 以前那个框只把**当前这一层已经加载出来的**文件名过滤一遍——东西在隔壁文件夹里就搜不到，
@@ -3827,6 +4005,9 @@ const ONB_STUBS = `
   let ST = { needs_setup: true, seen: false, can_finish: true, brain: { ok: false, via: "api", name: "", model: "" }, active_model: "DeepSeek", workspace_dir: "/tmp/ws",
     models: [{ name: "DeepSeek", model: "deepseek-chat", base_url: "https://api.deepseek.com/v1", local: false, has_key: false },
              { name: "Ollama", model: "qwen3", base_url: "http://localhost:11434/v1", local: true, has_key: true }],
+    // 服务商清单（从目录来）：config 里一行模型都没有时向导也得有东西可选
+    templates: [{ kind: "ark", label: "火山方舟（豆包）", name: "火山方舟", base_url: "https://ark.cn-beijing.volces.com/api/v3", key_url: "", model: "doubao-seed-1-6-250615", local: false },
+                { kind: "ollama", label: "Ollama 本地", name: "Ollama本地", base_url: "http://localhost:11434/v1", key_url: "", model: "qwen3:14b", local: true }],
     engines: [{ id: "claude-code", label: "Claude Code", installed: false, version: "", install: "npm i -g @anthropic-ai/claude-code" },
               { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "" }],
     engine: "builtin", search: { provider: "jina", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
@@ -3840,7 +4021,8 @@ const ONB_STUBS = `
     // 带不带 ?probe=1 都是同一张体检表：probe 只决定服务端要不要去探本机 CLI，前端拿到的字段一样
     if (url.split("?")[0] === "/api/onboarding" && method === "GET") { GETS.push(url); return j(JSON.parse(JSON.stringify(ST))); }
     if (url === "/api/onboarding") { POSTS.push(["onboarding", body]); if (!ONB_POST_OK) return j({ ok: false, error: "这个 Key 上游不认（HTTP 401）" });
-      ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: body.model, model: "deepseek-chat" } }; return j({ ok: true, active_model: body.model }); }
+      const nm = body.kind ? (ST.templates.find((t) => t.kind === body.kind) || {}).name : body.model;
+      ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: nm, model: "deepseek-chat" } }; return j({ ok: true, active_model: nm }); }
     if (url === "/api/engines/test") { POSTS.push(["engine-test", body]); return j(ENGINE_TEST_OK ? { ok: true, reply: "好" } : { ok: false, why: "没登录", hint: "先在终端跑 codex login" }); }
     if (url === "/api/settings" && method === "POST") { POSTS.push(["settings-raw", body]); if (body.agent && body.agent.engine) ST = { ...ST, needs_setup: false, engine: body.agent.engine, brain: { ok: true, via: "engine", name: body.agent.engine, model: "" } }; return j({ ok: true }); }
     if (url === "/api/search/test") { POSTS.push(["search-test"]); if (SEARCH_TEST_OK) ST = { ...ST, search: { provider: "tavily", has_key: true } }; return j(SEARCH_TEST_OK ? { ok: true, provider: "tavily", sample: "x" } : { ok: false, error: "tavily 返回 0 条结果" }); }
@@ -3877,6 +4059,20 @@ const ONB_CHECKS = `
   q("#onb-key").value = "sk-bad"; q("#onb-go").click(); await tick(); await tick();
   ok("验活失败：错误写在向导里、不翻页、按钮恢复", q("#onb-err").textContent.includes("401") && steps.querySelector(".onb-step.cur").textContent.includes("大模型") && !q("#onb-go").disabled && q("#onb-go").textContent === "验活并继续");
   ok("验活真 POST 了 model + api_key", POSTS.some(([k, b]) => k === "onboarding" && b.model === "DeepSeek" && b.api_key === "sk-bad"));
+  // 服务商清单：已配的行之后跟一组模板项（value 带 tpl: 前缀），选了模板 POST 的是 kind 而不是 model
+  const tplGrp = q("#onb-model optgroup");
+  // 取 option 用 querySelectorAll 而不是 .options：HTMLOptGroupElement 上没有 options 这个属性
+  // （那是 <select> 的），jsdom 里读出来是 undefined，一展开就 TypeError，测试挂在自己身上
+  const tplOpts = tplGrp ? [...tplGrp.querySelectorAll("option")] : [];
+  ok("下拉框末尾有一组服务商模板，值带 tpl: 前缀", tplGrp && tplGrp.label.includes("新接一家") && tplOpts.length === 2 && tplOpts.every((o) => o.value.startsWith("tpl:")), tplGrp && tplGrp.outerHTML);
+  q("#onb-model").value = "tpl:ollama"; q("#onb-model").dispatchEvent(new Event("change"));
+  ok("模板项也认本机：选 Ollama 模板时 Key 框禁用", q("#onb-key").disabled);
+  q("#onb-model").value = "tpl:ark"; q("#onb-model").dispatchEvent(new Event("change"));
+  ok("选火山模板：Key 框可填、提示指向火山", !q("#onb-key").disabled && /火山/.test(q("#onb-tip").textContent));
+  POSTS.length = 0;
+  q("#onb-key").value = "sk-bad2"; q("#onb-go").click(); await tick(); await tick();
+  ok("选模板验活：POST 的是 {kind, api_key}，没有 model", POSTS.some(([k, b]) => k === "onboarding" && b.kind === "ark" && b.api_key === "sk-bad2" && !("model" in b)), JSON.stringify(POSTS));
+  q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
 
   // ---- 走本机 CLI：先真连再切引擎 ----
   q("#onb-seg button[data-v=local]").click();
@@ -6623,6 +6819,26 @@ const ARRIVAL_CHECKS = `
   ok("窄窗不开（预览是盖在聊天上的浮层，一开就挡住结论）", finishPreviewPlan({ ...fb, narrow: true }).preview === null);
   ok("预览已经开着且看的就是它：不重复开", finishPreviewPlan({ ...fb, pvOpen: true, pvCurrent: "任务_0910/简历.html" }).preview === null);
   ok("预览开着但看的是别的：换成这趟的成品（面板本来就在，布局不动）", finishPreviewPlan({ ...fb, pvOpen: true, pvCurrent: "别的.html" }).preview === "任务_0910/简历.html");
+
+  // ---------- 题面在文件里的那种提问 ----------
+  // 用户原话：「然后问我这个文件里面展示的选哪个，然后这个文件也让我找半天不自己右边预览啊。
+  //           还有文件也比较难找到在这一堆文件里」
+  const askEv = { question: "封面推了三版（文字都验过没写错，三版对比在《封面三选一.html》），你要哪版？",
+                  options: [{ label: "A 极简", detail: "留白多" }, { label: "B 浓墨", detail: "压得住小图" }] };
+  ok("题面里的《文件名》要认出来", JSON.stringify(filesInAsk(askEv)) === JSON.stringify(["封面三选一.html"]), JSON.stringify(filesInAsk(askEv)));
+  ok("选项的说明里提到的文件也算", filesInAsk({ question: "选哪个？", options: [{ label: "C", detail: "见 对比/封面生图版对比.html" }] })[0] === "对比/封面生图版对比.html");
+  ok("不带后缀的不认（「升到 v1.2」「第 3.2 节」这类会被误当成文件）", filesInAsk({ question: "升到 v1.2 还是留在 v1.1？", options: [] }).length === 0);
+  const ab = { names: ["封面三选一.html"], outFiles: [F("任务_0918/封面三选一.html"), F("任务_0918/PROGRESS.md")], replaying: false, otherSession: false, pvOpen: false, pvCurrent: null, narrow: false };
+  ok("提问时就把那份文件摊到右边（别等跑完）", askPreviewPlan(ab).preview === "任务_0918/封面三选一.html");
+  ok("只写了文件名、真文件在任务子目录里：照样对得上", askPreviewPlan(ab).chips[0] === "任务_0918/封面三选一.html");
+  ok("这一趟没落过这个文件：不开，也不挂 chip（开了只会弹一句「文件不存在」）",
+     askPreviewPlan({ ...ab, outFiles: [F("任务_0918/PROGRESS.md")] }).preview === null &&
+     askPreviewPlan({ ...ab, outFiles: [F("任务_0918/PROGRESS.md")] }).chips.length === 0);
+  ok("题面里没提文件：什么都不做", askPreviewPlan({ ...ab, names: [] }).preview === null);
+  ok("回放历史不开，但文件 chip 还留着（回头还想看看当时在挑什么）",
+     askPreviewPlan({ ...ab, replaying: true }).preview === null && askPreviewPlan({ ...ab, replaying: true }).chips.length === 1);
+  ok("窄窗不开（右边那条会把题目整个盖掉）", askPreviewPlan({ ...ab, narrow: true }).preview === null);
+  ok("正看着的就是它：不重复开", askPreviewPlan({ ...ab, pvOpen: true, pvCurrent: "任务_0918/封面三选一.html" }).preview === null);
   return names;
 })()
 `;

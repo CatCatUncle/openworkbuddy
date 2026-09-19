@@ -80,6 +80,37 @@ console.log("\n【4】★反向对照★ 400 / 422 一次都不许计入渠道�
   ok(!mh.gate("image", CFG), "★反向对照★ 「接口通了但内容不对」是内容层面的事，跟渠道通不通无关");
 }
 
+console.log("\n【4-bis】状态码撒谎时看正文：「没余额」「没这个型号」不管几百都是硬错");
+{
+  // OpenRouter 把「型号 ID 不存在」报成 400。用户的看图模型挂错了渠道（火山的型号名挂在 OpenRouter 上），
+  // 每次看图都是这句 400，以前一次都不计，agent 一趟任务里能撞几十次
+  fresh();
+  const b1 = mh.record("vision", CFG, err("视觉模型错误 400: {\"error\":{\"message\":\"doubao-seed-1-6-250615 is not a valid model ID\",\"code\":400}}"));
+  ok(!!b1 && b1.hard && !!mh.gate("vision", CFG), "400 但正文说「不是合法型号 ID」→ 硬错，见一次就断");
+  ok(/型号/.test((mh.gate("vision", CFG) || {}).content || ""), "拦下来那句话得说清是型号的事，不是让人去换问法", (mh.gate("vision", CFG) || {}).content);
+  // 火山欠费：400/403 + AccountOverdueError
+  fresh();
+  const b2 = mh.record("image", CFG, err("图像接口错误 403: {\"error\":{\"code\":\"AccountOverdueError\",\"message\":\"The account is in arrears\"}}"));
+  ok(!!b2 && b2.hard && /没余额/.test(b2.why), "403 + AccountOverdue → 按「没余额」断", b2 && b2.why);
+  fresh();
+  mh.record("image", CFG, err("图像接口错误 400: {\"message\":\"Insufficient balance, please recharge\"}"));
+  ok(!!mh.gate("image", CFG), "400 + Insufficient balance → 同样断");
+  // 没带状态码的那种（tools.js 自己拼的那句「没余额了」）也认
+  fresh();
+  mh.record("vision", CFG, err("视觉模型这条渠道没余额了：余额不足"));
+  ok(!!mh.gate("vision", CFG), "正文只有中文「没余额」、没状态码 → 也断");
+  // ★反向对照★ 400 正文是内容策略 / 参数不合法：照旧一次都不计
+  fresh();
+  for (let i = 0; i < 6; i++) mh.record("image", CFG, err("图像接口错误 400: {\"error\":\"prompt violates content policy\"}"));
+  ok(!mh.gate("image", CFG), "★反向对照★ 400 + 内容策略还是不计");
+  fresh();
+  for (let i = 0; i < 6; i++) mh.record("image", CFG, err("图像接口错误 400: {\"error\":\"invalid size 123x456\"}"));
+  ok(!mh.gate("image", CFG), "★反向对照★ 400 + 尺寸不合法还是不计（正文里没说型号也没说余额）");
+  ok(!mh.looksNoModel("图像接口错误 400: model returned empty image"), "★反向对照★ 「model」这个词本身不算「没这个型号」");
+  ok(!mh.looksBroke("图像接口错误 500: internal server error, billing service unavailable"), "★反向对照★ 「billing」一个词不算没余额，得是「余额不足 / 欠费 / 超出配额」那类整句");
+  ok(mh.looksBroke("视觉模型错误 429: You exceeded your current quota, please check your plan and billing details."), "OpenAI 那句「exceeded your current quota」是没余额，不是限流");
+}
+
 console.log("\n【5】三条自愈的路都得真通");
 {
   // ① 改配置：换个型号 / 换个 Key，就是另一格

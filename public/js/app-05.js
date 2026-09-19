@@ -441,7 +441,9 @@ async function saveSettings(patch, msgEl) {
   }
   // 兜底再喊一嗓子：msgEl 可能根本不在视野里，也可能压根没传。保存失败是必须看见的事。
   if (!resp.ok && typeof toast === "function") toast(lastSaveError, "circle-x");
-  if (resp.ok) refreshSettingsCache();
+  // 等缓存真刷回来再放行：saveAllModelTables 存完立刻拿 settingsCache 重画，不等的话画的还是旧表——
+  // 删掉的渠道会在屏幕上再站一轮，用户以为「删除不成功」
+  if (resp.ok) await refreshSettingsCache();
   return resp.ok;
 }
 /* ───────────────────────── 图 / 视频 / 配音 / 看图：多模型配置 ─────────────────────────
@@ -641,7 +643,9 @@ function capCard(c, s, provName) {
         ${mine.length ? mine.map((m) => {
           const i = s.media_models.indexOf(m);
           const meta = [m.default ? "主用" : "备用", provName(m.provider), m.voice ? `音色 ${m.voice}` : ""].filter(Boolean).map(esc).join(" · ");
+          const bad = mmMismatch((s.providers.find((x) => x.id === m.provider) || {}).kind, m.model);
           return `
+          ${bad ? `<div class="ch-note mrow-bad">${ic("triangle-alert")}「${esc(m.model)}」是${esc(kindLabel(bad))}家的型号，挂在这条渠道上调不通（会报「型号不存在」）。加一条${esc(kindLabel(bad))}渠道，或者把这条删了换一个。</div>` : ""}
           <div class="mrow${m.default ? " is-on" : ""}">
             <input type="radio" name="def-${c.cap}" ${m.default ? "checked" : ""} data-def="${i}" title="设为这一路的主用模型">
             <span class="mrow-name">${esc(m.name)}</span>
@@ -715,10 +719,55 @@ function bindMedia(box, s) {
       const name = f.querySelector(".mm-name").value.trim() || model;
       if (s.media_models.some((m) => m.cap === cap && m.name === name)) return toast(`这一路已经有叫「${name}」的了，换个别名`);
       const voice = f.querySelector(".mm-voice") ? f.querySelector(".mm-voice").value.trim() : "";
-      s.media_models.push({ id: "", cap, name, provider: prov, model, voice, default: !s.media_models.some((m) => m.cap === cap) });
+      // 手填进来的型号也过一遍门第：能挪就当场挪到对的那条渠道（比存下去再报错强），
+      // 本机没有那家渠道就拦住——这时候只有用户自己知道去哪儿开号，替他瞎猜只会换一种方式失败。
+      let use = prov;
+      const want = mmMismatch((s.providers.find((x) => x.id === prov) || {}).kind, model);
+      if (want) {
+        const alt = s.providers.filter((x) => x.kind === want);
+        const fix = alt.find((x) => String(x.api_key || "").trim()) || alt[0];
+        if (!fix) return toast(`「${model}」是${kindLabel(want)}家的型号，这条渠道上没有它。先去上面加一条${kindLabel(want)}渠道，或者换一个这条渠道有的型号`);
+        use = fix.id;
+        toast(`「${model}」是${kindLabel(want)}家的型号，已经帮你挂到「${fix.name}」那条渠道上`);
+      }
+      s.media_models.push({ id: "", cap, name, provider: use, model, voice, default: !s.media_models.some((m) => m.cap === cap) });
       if (await saveMediaTables(s, msg)) repaintMedia(box, s);
     };
   });
+}
+
+/* ───────── 型号是哪家的：跟服务端 media-models.js 的 brandOf / mismatch 同一套规矩 ─────────
+ * 为什么前端也要有一份：用户在下拉框里选的那一刻就该知道挂错了，而不是存完、跑起来、
+ * 等看图那一步报一句 400 才发现。服务端那份是兜底（老配置、手改的 config.json 都走它），
+ * 这份是**当场**——两边的判断必须一致，所以规则表是服务端下发的（brand_hints），不在这儿写死。
+ *
+ * 真实事故：下拉框把火山的 doubao-seed-1-6-250615 摆在了 OpenRouter 渠道下面，
+ * 用户选了它，配置就成了「拿 OpenRouter 的地址去调豆包」，每次看图都报「不是有效的模型 ID」。
+ * 用户原话：「怎么下拉框选择的模型没有办法用」。
+ */
+function mmRelay(kind) {
+  return !!((mediaCatalog || {}).kinds || []).find((k) => k.kind === kind && k.relay);
+}
+function mmBrand(id) {
+  const v = String(id || "").trim();
+  if (!v || v.includes(":")) return "";
+  const cat = (mediaCatalog || {}).catalog || {};
+  const kinds = new Set();
+  for (const cap of Object.keys(cat)) for (const m of cat[cap]) if (String(m.id).toLowerCase() === v.toLowerCase()) kinds.add(m.kind);
+  if (kinds.size === 1) return [...kinds][0];
+  if (kinds.size > 1 || v.includes("/")) return "";
+  for (const [src, kind] of ((mediaCatalog || {}).brand_hints || [])) if (new RegExp(src, "i").test(v)) return kind;
+  return "";
+}
+function mmMismatch(kind, id) {
+  const k = String(kind || "").trim();
+  if (!k || k === "ollama" || mmRelay(k)) return "";
+  const b = mmBrand(id);
+  return b && b !== k ? b : "";
+}
+function kindLabel(kind) {
+  const k = ((mediaCatalog || {}).kinds || []).find((x) => x.kind === kind);
+  return (k && k.label) || kind || "（未知渠道）";
 }
 
 function fillProvSelect(f, s) {
@@ -742,12 +791,17 @@ function fillModelSelect(f, s) {
   const p = s.providers.find((x) => x.id === f.querySelector(".mm-prov").value);
   const cat = ((mediaCatalog || {}).catalog || {})[cap] || [];
   const mine = cat.filter((m) => !p || m.kind === p.kind);
-  const others = cat.filter((m) => p && m.kind !== p.kind);
+  // 别家的型号只在**中转网关**下面摆（new-api / 自建兼容接口：后面接谁只有用户知道，
+  // 而且它们正是按型号名往上游路由的）。直连的渠道一概不摆——以前这一组的标题写着
+  // 「地址对得上也能用」，地址根本对不上：火山的 doubao-… 在 OpenRouter 上是个不存在的 id，
+  // 选中即坏。用户原话：「怎么下拉框选择的模型没有办法用」。
+  // 真要跨家挂（自建网关做了转发），「自己填…」那条路一直都在。
+  const others = p && mmRelay(p.kind) ? cat.filter((m) => m.kind !== p.kind) : [];
   const opt = (m) => `<option value="${esc(m.id)}">${esc(m.label)}（${esc(m.id)}）</option>`;
   sel.innerHTML =
     (mine.length ? `<optgroup label="这个渠道的精选">${mine.map(opt).join("")}</optgroup>` : "") +
     `<option value="__custom__">自己填…</option>` +
-    (others.length ? `<optgroup label="其它渠道的（地址对得上也能用）">${others.map(opt).join("")}</optgroup>` : "");
+    (others.length ? `<optgroup label="别家的型号（这是中转网关，转发到上游就能用）">${others.map(opt).join("")}</optgroup>` : "");
   f.querySelector(".mm-custom").style.display = sel.value === "__custom__" ? "" : "none";
   tip.textContent = mine.length ? "" : "这个渠道没有精选条目，下面直接填模型名，或等一下从渠道拉回来的列表。";
   if (!p) return;
@@ -1415,6 +1469,10 @@ function bindModels(pane, s, po) {
       if (!model) return toast("还没选模型");
       const name = f.querySelector(".ca-name").value.trim() || model;
       if (s.models.some((m, i) => m.name === name && i !== editM)) return toast(`已经有叫「${name}」的模型了，换个别名`);
+      // 挂错家的型号：对话这一路只拦、不自动挪。媒体那边挪错了顶多是一张图没画出来，
+      // 对话这条挪错了人连话都说不上，所以这里把决定权留给用户——写清楚是哪家的，他自己改。
+      const bad = mmMismatch((s.providers.find((x) => x.id === chan) || {}).kind, model);
+      if (bad) return toast(`「${model}」是${kindLabel(bad)}家的型号，挂在这条渠道上调不通。选${kindLabel(bad)}那条渠道，或者换一个这条渠道有的型号`);
       const was = editM >= 0 ? s.models[editM] : null;
       const cbT = f.querySelector(".ca-cap-tools"), cbV = f.querySelector(".ca-cap-vision");
       const caps = [cbT && cbT.checked ? "tools" : "", cbV && cbV.checked ? "vision" : ""].filter(Boolean);
@@ -1452,12 +1510,17 @@ function fillChatModelSelect(f, s) {
   const p = s.providers.find((x) => x.id === f.querySelector(".ca-chan").value);
   const cat = ((mediaCatalog || {}).catalog || {}).chat || [];
   const mine = cat.filter((m) => !p || m.kind === p.kind);
-  const others = cat.filter((m) => p && m.kind !== p.kind);
+  // 别家的型号只在**中转网关**下面摆（new-api / 自建兼容接口：后面接谁只有用户知道，
+  // 而且它们正是按型号名往上游路由的）。直连的渠道一概不摆——以前这一组的标题写着
+  // 「地址对得上也能用」，地址根本对不上：火山的 doubao-… 在 OpenRouter 上是个不存在的 id，
+  // 选中即坏。用户原话：「怎么下拉框选择的模型没有办法用」。
+  // 真要跨家挂（自建网关做了转发），「自己填…」那条路一直都在。
+  const others = p && mmRelay(p.kind) ? cat.filter((m) => m.kind !== p.kind) : [];
   const opt = (m) => `<option value="${esc(m.id)}">${esc(m.label)}（${esc(m.id)}）</option>`;
   sel.innerHTML =
     (mine.length ? `<optgroup label="这个渠道的精选">${mine.map(opt).join("")}</optgroup>` : "") +
     `<option value="__custom__">自己填…</option>` +
-    (others.length ? `<optgroup label="其它渠道的（地址对得上也能用）">${others.map(opt).join("")}</optgroup>` : "");
+    (others.length ? `<optgroup label="别家的型号（这是中转网关，转发到上游就能用）">${others.map(opt).join("")}</optgroup>` : "");
   f.querySelector(".ca-custom").style.display = sel.value === "__custom__" ? "" : "none";
   tip.textContent = mine.length ? "" : "这个渠道没有精选条目，下面直接填模型名，或者等一下从渠道拉回来的列表。";
   if (!p) return;

@@ -340,10 +340,75 @@ function readClipboard(o) {
   return { kind: "empty", tried };
 }
 
+/**
+ * 反过来：把一个文件**放进**剪贴板，好让用户直接 Cmd+V 到微信、邮件、访达里。
+ * 用户原话：「还有能直接复制这个文件」——之前只能下载一份再自己去翻。
+ *
+ * 放的是「文件引用」不是内容：粘到访达里出来的是文件本身，粘到微信聊天框里是一个附件，
+ * 而不是一坨二进制文字。跟 clipboardPlan 一样返回命令表，好在测试里逐条对，不用真动机器。
+ *
+ * 每个平台最后都垫一条 kind:"path"：那条只把**绝对路径**当文字放进去。
+ * 剪贴板里放不下文件引用的场合（Linux 上两个粘贴板工具都没装、远程 X 会话）至少还剩一条
+ * 能走的路——用户拿到路径，自己在访达/资源管理器里定位。
+ */
+function clipboardPutPlan(platform, file) {
+  const f = String(file || "");
+  if (!f) return [];
+  if (platform === "darwin") {
+    return [
+      { kind: "file", cmd: "osascript", args: ["-e", `set the clipboard to (POSIX file ${JSON.stringify(f)})`] },
+      { kind: "path", cmd: "osascript", args: ["-e", `set the clipboard to ${JSON.stringify(f)}`] },
+    ];
+  }
+  if (platform === "win32") {
+    const ps = (script) => ({ cmd: "powershell", args: ["-NoProfile", "-Command", script] });
+    return [
+      Object.assign({ kind: "file" }, ps(`Set-Clipboard -Path ${JSON.stringify(f)}`)),
+      Object.assign({ kind: "path" }, ps(`Set-Clipboard -Value ${JSON.stringify(f)}`)),
+    ];
+  }
+  if (platform === "linux") {
+    // uri-list 是文件管理器之间传文件的通用口味；Wayland 一套、X11 一套，装了哪个算哪个
+    const uri = "file://" + f.split("/").map(encodeURIComponent).join("/");
+    return [
+      { kind: "file", cmd: "wl-copy", args: ["--type", "text/uri-list"], stdin: uri },
+      { kind: "file", cmd: "xclip", args: ["-selection", "clipboard", "-t", "text/uri-list"], stdin: uri },
+      { kind: "path", cmd: "wl-copy", args: [], stdin: f },
+      { kind: "path", cmd: "xclip", args: ["-selection", "clipboard"], stdin: f },
+    ];
+  }
+  return [];
+}
+
+/**
+ * 真去写一次剪贴板。按 clipboardPutPlan 的顺序试，谁先成算谁的。
+ * 返回 { ok, kind: "file"|"path", ... } 或 { ok:false, why }。
+ * kind 要带回前端：放进去的是文件还是一条路径，这两件事得跟用户说清楚。
+ */
+function writeClipboard(o) {
+  const opt = o || {};
+  const platform = opt.platform || process.platform;
+  const file = opt.file || "";
+  const run = opt.run || ((cmd, args, step) =>
+    require("child_process").spawnSync(cmd, args, { input: (step && step.stdin) || undefined }));
+  const plan = clipboardPutPlan(platform, file);
+  if (!plan.length) return { ok: false, why: `${platform} 上没有能写剪贴板的现成命令` };
+  const tried = [];
+  for (const step of plan) {
+    let r = null;
+    try { r = run(step.cmd, step.args, step); } catch (e) { tried.push(`${step.cmd}: ${e.message}`); continue; }
+    if (!r || r.error) { tried.push(`${step.cmd}: ${(r && r.error && r.error.message) || "起不来"}`); continue; }
+    if (r.status !== 0) { tried.push(`${step.cmd}: 退出码 ${r.status}`); continue; }
+    return { ok: true, kind: step.kind, file };
+  }
+  return { ok: false, why: "剪贴板写不进去", tried };
+}
+
 module.exports = {
   MAX_BYTES, BIG_TEXT_CHARS, IMAGE_EXT,
   tokenize, fromFileUrl, pathLike, expandHome, escPath,
   parseLine, atToken, collect, note, withNote, anyImage,
   cleanName, freeName, stampName, isInside,
   clipboardPlan, readClipboard,
+  clipboardPutPlan, writeClipboard,
 };

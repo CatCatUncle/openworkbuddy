@@ -15,6 +15,9 @@
  *   4. 幂等：跑第二遍不许再报「改了」，也不许再多建一个渠道。
  *      不幂等的后果是每次启动都落一次盘，config.json 里的渠道越攒越多。
  *   5. 不删模型。channel 指向一个已经不存在的渠道，条目连同它的地址和 Key 得原样留着。
+ *   6. **没 Key 不建渠道**。只有地址没有 Key 的行是厂商模板，不是渠道——给它建渠道，
+ *      设置页就凭空多一排「未填 Key」的空壳，删了下一次规整又长回来。
+ *      用户原话：「不要搞什么默认渠道填充啊，都没填 apikey 的，搞这个一直占位做什么？」
  *
  * 每条红线后面都跟一个「反向对照」：把该合的换成该分的（或反过来），结论必须跟着变——
  * 只会变绿不会变红的断言不是测试。
@@ -385,6 +388,167 @@ console.log("\n【11】条目上带着 Key、这家的渠道行还空着：认�
   eq(b.providers.length, 2, "反向对照：已经有 Key 的行不许被覆盖，那是另一个账号");
   eq(b.providers[0].api_key, "同事的火山号", "原来那行的 Key 原封不动");
   eq(b.models[0].api_key, K_ARK, "新模型压平到的是它自己那把 Key");
+}
+
+// ---------------------------------------------------------------- 12
+console.log("\n【12】没 Key 不建渠道：只有地址的行是模板，不是渠道");
+{
+  const DS = "https://api.deepseek.com/v1";
+  const c = {
+    models: [
+      { name: "DeepSeek", provider: "openai", base_url: DS, api_key: "", model: "deepseek-chat" },
+      { name: "Anthropic Claude", provider: "anthropic", base_url: "", api_key: "", model: "claude-sonnet-5" },
+      { name: "Ollama本地", provider: "openai", base_url: "http://localhost:11434/v1", api_key: "", model: "qwen3:14b" },
+      { name: "豆包", provider: "openai", base_url: ARK, api_key: K_ARK, model: "doubao-seed-1-6-250615" },
+    ],
+    active_model: "豆包",
+  };
+  cm.normalize(c);
+  eq(c.providers.length, 2, "四行只建两个渠道：有 Key 的火山 + 不要 Key 的本机 Ollama", c.providers.map((p) => p.id));
+  ok(!c.providers.some((p) => p.kind === "deepseek"), "没 Key 的 DeepSeek 模板行不建渠道");
+  ok(!c.providers.some((p) => p.kind === "anthropic"), "没 Key 的 Anthropic 行也不建（以前它是特例：光凭协议就建）");
+  ok(c.providers.some((p) => p.kind === "ollama"), "本机地址不要 Key，照建");
+  eq(c.models.find((m) => m.name === "DeepSeek").channel, undefined, "模板行不挂 channel");
+  eq(c.models.length, 4, "normalize 自己不删行（收模板是 pruneSeededPresets 的事）");
+  eq(cm.wantsChannel({ base_url: DS, api_key: "" }), false, "wantsChannel：只有地址 → 不要");
+  eq(cm.wantsChannel({ base_url: DS, api_key: "k" }), true, "wantsChannel：有 Key → 要");
+  eq(cm.wantsChannel({ base_url: "http://127.0.0.1:1234/v1", api_key: "" }), true, "wantsChannel：本机地址 → 要");
+  eq(cm.wantsChannel({ provider: "anthropic", base_url: "", api_key: "" }), false, "反向对照：anthropic 没 Key 也不要");
+
+  // 删渠道不许复活：删掉火山那行渠道（连同它下面的模型），再规整一遍，火山不能自己长回来
+  const d = JSON.parse(JSON.stringify(c));
+  const ark = d.providers.find((p) => p.kind === "ark");
+  d.providers = d.providers.filter((p) => p !== ark);
+  d.models = d.models.filter((m) => m.channel !== ark.id);
+  d.active_model = "";
+  cm.normalize(d);
+  ok(!d.providers.some((p) => p.kind === "ark"), "删掉的渠道不会在下一次规整时长回来");
+  eq(d.providers.length, 1, "只剩本机那一个渠道");
+}
+
+// ---------------------------------------------------------------- 13
+console.log("\n【13】收回出厂占位：只收我们自己塞的那九行，用户的东西一条不碰");
+{
+  const DS = "https://api.deepseek.com/v1";
+  const seeded = () => ({
+    models: [
+      { name: "DeepSeek", provider: "openai", base_url: DS, api_key: "", model: "deepseek-chat" },
+      { name: "通义Qwen", provider: "openai", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", api_key: "", model: "qwen-max" },
+      { name: "Kimi", provider: "openai", base_url: "https://api.moonshot.cn/v1", api_key: "", model: "moonshot-v1-32k" },
+      { name: "Ollama本地", provider: "openai", base_url: "http://localhost:11434/v1", api_key: "", model: "qwen3:14b" },
+      { name: "Anthropic Claude", provider: "anthropic", base_url: "", api_key: "", model: "claude-sonnet-5" },
+      { name: "OpenRouter", provider: "openai", base_url: OR, api_key: K_OR, model: "deepseek/deepseek-chat" },
+      { name: "我自己起的名", provider: "openai", base_url: DS, api_key: "", model: "deepseek-chat" },
+      { name: "火山方舟", provider: "openai", base_url: ARK, api_key: "", model: "doubao-seed-1-6-250615" },
+    ],
+    // 老版本给每行模板都建过渠道，这些空壳也在 config 里躺着
+    providers: [
+      { id: "deepseek", name: "DeepSeek", kind: "deepseek", base_url: DS, api_key: "" },
+      { id: "moonshot", name: "Kimi", kind: "moonshot", base_url: "https://api.moonshot.cn/v1", api_key: "" },
+      { id: "zhipu", name: "智谱", kind: "zhipu", base_url: "https://open.bigmodel.cn/api/paas/v4", api_key: "" },
+      { id: "ark-2", name: "火山（同事的号）", kind: "ark", base_url: ARK, api_key: "同事的火山号" },
+      { id: "custom-1", name: "自建网关", kind: "custom", base_url: "https://gw.example.com/v1", api_key: "" },
+    ],
+    media_models: [{ id: "img-1", cap: "image", name: "画图", model: "x", provider: "zhipu" }],
+    active_model: "火山方舟",
+  });
+  const c = seeded();
+  cm.normalize(c);
+  const r = cm.pruneSeededPresets(c);
+  const names = c.models.map((m) => m.name);
+  ok(!names.includes("DeepSeek") && !names.includes("通义Qwen") && !names.includes("Kimi") && !names.includes("Anthropic Claude"), "没 Key 的出厂模板行收掉了", names);
+  ok(!names.includes("火山方舟"), "正在用的那条没 Key 也收：没 Key 的行本来一句话都发不出去，留着只会让人以为配了");
+  eq(c.active_model, "", "收掉的是当前模型 → active_model 清空（向导会重新弹）");
+  ok(names.includes("OpenRouter"), "填了 Key 的出厂名字留着：那是用户配过的");
+  ok(names.includes("我自己起的名"), "用户自己起名的行留着，哪怕地址和模板一样、Key 也空着");
+  ok(names.includes("Ollama本地"), "本机 Ollama 不要 Key，「没 Key」不是没配过的证据，留着");
+  eq(r.models.length, 5, "报告里数得出收了几行", r);
+  const pids = c.providers.map((p) => p.id);
+  ok(!pids.includes("deepseek") && !pids.includes("moonshot"), "模板行留下的空壳渠道（默认地址、没 Key、没模型挂着）一起收掉", pids);
+  ok(pids.includes("zhipu"), "空壳但底下挂着媒体模型的渠道留着（收了它画图那条就成孤儿）");
+  ok(pids.includes("ark-2"), "有 Key 的渠道留着");
+  ok(pids.includes("custom-1"), "自建网关的地址不是哪家的默认地址，不是我们塞的，留着");
+  const again = cm.pruneSeededPresets(c);
+  eq(again.models.length + again.channels.length, 0, "幂等：再收一遍什么都没得收");
+  eq(cm.normalize(c), false, "收完之后 normalize 也不再报改动（不然每次启动都落一次盘）");
+
+  // 反向对照：当前模型有 Key 就留、active_model 不动；把 Key 填上的行永远留
+  const d = seeded(); d.active_model = "OpenRouter"; cm.normalize(d); cm.pruneSeededPresets(d);
+  ok(d.models.some((m) => m.name === "OpenRouter") && d.active_model === "OpenRouter", "反向对照：有 Key 的当前模型留着，active_model 不动");
+  // 环境变量兜得住的不算没配：OPENAI_API_KEY 在，官方地址那行留；别家的地址它兜不住，照收
+  const prevEnv = process.env.OPENAI_API_KEY; process.env.OPENAI_API_KEY = "sk-env";
+  const f = seeded(); f.models.push({ name: "OpenAI", provider: "openai", base_url: "https://api.openai.com/v1", api_key: "", model: "gpt-5.2" });
+  cm.normalize(f); cm.pruneSeededPresets(f);
+  ok(f.models.some((m) => m.name === "OpenAI"), "OPENAI_API_KEY 在环境里 → 官方那行没 Key 也留（llm.js 会用它）");
+  ok(!f.models.some((m) => m.name === "DeepSeek"), "同一把环境变量兜不住 DeepSeek 的地址，那行照收");
+  if (prevEnv === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = prevEnv;
+  const e = seeded(); e.models.find((m) => m.name === "Kimi").api_key = "sk-kimi"; cm.normalize(e); cm.pruneSeededPresets(e);
+  ok(e.models.some((m) => m.name === "Kimi"), "反向对照：填了 Key 的 Kimi 留着");
+  ok(e.providers.some((p) => p.kind === "moonshot" && p.api_key === "sk-kimi"), "而且 Key 认领进了那行空壳渠道");
+  // 脏输入不抛
+  for (const bad of [{}, { models: null }, { models: [null, 1], providers: "x" }]) {
+    let threw = null; try { cm.pruneSeededPresets(bad); } catch (err) { threw = err; }
+    eq(threw, null, "脏输入不抛：" + JSON.stringify(bad));
+  }
+}
+
+// ---------------------------------------------------------------- 14
+console.log("\n【14】向导的服务商清单从目录来，按模板起行不动 config、验过了才落");
+{
+  const ts = cm.templates();
+  ok(ts.length >= 8, "清单至少覆盖八家", ts.map((t) => t.kind));
+  for (const k of ["deepseek", "openrouter", "ark", "anthropic", "ollama", "dashscope", "zhipu", "moonshot", "openai"]) ok(ts.some((t) => t.kind === k), "清单里有 " + k);
+  ok(!ts.some((t) => t.kind === "minimax" || t.kind === "typesafe" || t.kind === "custom" || t.kind === "newapi"), "只做媒体的 / 只做判断的 / 自建网关不进清单");
+  ok(ts.every((t) => t.model && t.name && t.label), "每家都带默认型号和名字");
+  eq(ts.find((t) => t.kind === "ollama").local, true, "Ollama 标成本机（向导据此不要 Key）");
+  eq(ts.find((t) => t.kind === "anthropic").base_url, "", "Anthropic 官方没地址（走原生协议）");
+
+  const c = { models: [], providers: [], active_model: "" };
+  const plan = cm.planTemplate(c, "deepseek");
+  ok(plan && plan.row.model === "deepseek-chat" && plan.row.name === "DeepSeek", "按模板算出一行", plan && plan.row);
+  eq(c.models.length + c.providers.length, 0, "planTemplate 不动 config（验活失败时不许留半成品）");
+  const row = cm.commitTemplate(c, plan, "sk-ds");
+  eq(c.providers.length, 1, "落下去：一个渠道");
+  eq(c.providers[0].api_key, "sk-ds", "Key 在渠道上");
+  eq(row.channel, c.providers[0].id, "模型行挂在它下面");
+  cm.normalize(c);
+  eq(c.models.length, 1, "normalize 认得它（不并掉、不另建）");
+  eq(c.models[0].api_key, "sk-ds", "压平之后模型行上也有 Key（llm.js 读的是它）");
+  eq(c.models[0].base_url, "https://api.deepseek.com/v1", "地址也压平了");
+  // 同一把 Key 再来一次：不分叉
+  cm.commitTemplate(c, cm.planTemplate(c, "deepseek"), "sk-ds");
+  eq(c.providers.length, 1, "同家同 Key 再落一次还是一个渠道");
+  eq(c.models.length, 1, "同型号也不再多一行");
+  // 换个型号：同渠道下多一行
+  cm.commitTemplate(c, cm.planTemplate(c, "deepseek", "deepseek-reasoner"), "sk-ds");
+  eq(c.models.length, 2, "换个型号是同渠道下的第二行");
+  eq(c.providers.length, 1, "渠道还是那一个");
+  // 反向对照：另一把 Key 是另一个号
+  cm.commitTemplate(c, cm.planTemplate(c, "deepseek"), "sk-ds-2");
+  eq(c.providers.length, 2, "反向对照：不同的 Key 另起一个渠道，不许盖掉人家的");
+  eq(c.providers[0].api_key, "sk-ds", "原来那把 Key 原封不动");
+  eq(cm.planTemplate(c, "没有这家"), null, "没有这家 → null，路由据此报错");
+  // 本机 Ollama 不要 Key
+  const o = { models: [], providers: [] };
+  cm.commitTemplate(o, cm.planTemplate(o, "ollama"), "");
+  eq(o.providers.length, 1, "Ollama 不填 Key 也能落");
+  cm.normalize(o);
+  eq(o.providers.length, 1, "normalize 认本机渠道（不另建第二个）");
+  eq(o.models[0].channel, o.providers[0].id, "模型行还挂在它下面");
+}
+
+// ---------------------------------------------------------------- 15
+console.log("\n【15】0.2 之前的老配置：只搬填了 Key 的那家，不再塞五行模板");
+{
+  eq(cm.legacyRows({ provider: "openai", openai: { base_url: OR, api_key: "", model: "x" } }).length, 0, "没 Key → 一行都不搬（空着才是对的）");
+  eq(cm.legacyRows({}).length, 0, "什么都没有 → 空");
+  const r = cm.legacyRows({ provider: "openai", openai: { base_url: "https://api.deepseek.com/v1", api_key: "sk-ds", model: "deepseek-chat" } });
+  eq(r.length, 1, "openai 块填了 Key → 一行");
+  eq(r[0].name, "DeepSeek", "名字按地址认出厂商");
+  eq(r[0].api_key, "sk-ds", "Key 带过去");
+  const both = cm.legacyRows({ provider: "anthropic", openai: { base_url: OR, api_key: K_OR, model: "x" }, anthropic: { api_key: K_ANT, model: "claude-sonnet-5" } });
+  eq(both.length, 2, "两块都有 Key → 两行");
+  eq(both[0].provider, "anthropic", "provider 写着 anthropic 的，Claude 排前面当默认");
 }
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

@@ -41,8 +41,10 @@ const PROVIDER_KINDS = [
   // 拿 /chat/completions 打它会被 400 顶回来（上游原话：is a decisions model）。
   // 所以对话和媒体两个下拉里都不该出现它，理由跟 chat_only / media_only 完全一样。
   { kind: "typesafe", label: "TypeSafe Jev（判断模型，不产文字）", base_url: "https://api.typesafe.ai/v1", key_url: "https://console.typesafe.ai/settings/keys", decide_only: true },
-  { kind: "newapi", label: "new-api / one-api 自建网关", base_url: "", key_url: "" },
-  { kind: "custom", label: "其它 OpenAI 兼容接口", base_url: "", key_url: "" },
+  // relay：这两类是**中转**，后面接的是谁只有用户自己知道，所以别家的原始型号名在这儿是合法的
+  // （new-api 正是按型号名路由到上游渠道的）。其余每一类都只认自己家的型号名，见下面的 brandOf / mismatch。
+  { kind: "newapi", label: "new-api / one-api 自建网关", base_url: "", key_url: "", relay: true },
+  { kind: "custom", label: "其它 OpenAI 兼容接口", base_url: "", key_url: "", relay: true },
 ];
 
 /**
@@ -470,15 +472,26 @@ function normalize(config) {
   }
 
   const mids = new Set();
+  const kept = [];
   for (const m of models) {
     m.cap = CAPS.includes(m.cap) ? m.cap : "image";
     m.model = String(m.model || "").trim();
     m.name = String(m.name || "").trim() || m.model;
     m.voice = String(m.voice || "").trim();
-    if (!providers.some((p) => p.id === m.provider)) m.provider = providers.length ? providers[0].id : "";
+    // 渠道没了，挂在它下面的模型跟着没——设置页删渠道时就是这么承诺的（「挂在它下面的 N 个媒体模型也会一起删掉」）。
+    // 以前是改挂到第一个渠道上：那等于拿另一家的 Key 去调这家的型号，必然 401，人还找不出是谁改的
+    if (!providers.some((p) => p.id === m.provider)) {
+      console.warn(`[媒体模型] ${CAP_CN[m.cap] || m.cap}「${m.name}」引用的渠道「${m.provider || "（空）"}」已不存在，这条一并去掉`);
+      continue;
+    }
     m.id = m.id && !mids.has(String(m.id)) ? String(m.id) : uniqueId(`${m.cap}-${m.name}`, mids);
     mids.add(m.id);
+    kept.push(m);
   }
+  models.splice(0, models.length, ...kept);
+  // 挂错家的型号先挪回去，再选默认——顺序不能反：默认那条正是压平进 config.media 的那条，
+  // 挪之前选的话，压平下来的还是错渠道的地址，白挪一趟。
+  rehomeMismatched(providers, models);
   // 每一路恰好一个默认：一个都没标就点名第一条，标了好几个就只认第一个
   for (const cap of CAPS) {
     const mine = models.filter((m) => m.cap === cap);
@@ -560,9 +573,118 @@ function catalogFor(cap, kind) {
   return (CATALOG[cap] || []).filter((m) => !kind || m.kind === kind);
 }
 
+/**
+ * ────────── 「型号是哪家的」──────────
+ *
+ * 这一段是拿真实事故换来的。用户在 设置 → 视觉模型 的下拉框里选了「豆包 Seed 1.6」，
+ * 选的时候当前渠道是 OpenRouter，于是配置落成了：
+ *     base_url = openrouter.ai/api/v1 , model = doubao-seed-1-6-250615
+ * OpenRouter 的型号名一律是 `厂商/型号`，它那儿根本没有这个 id，每次看图都回一句
+ * 400 "not a valid model ID"。用户看到的是「我下拉框里选的模型，怎么用不了」——
+ * 他没做错任何事，是下拉框把别家的型号摆在了这条渠道下面。
+ *
+ * 所以要有一个能回答「这个型号名是哪家的」的函数，三处都要用它：
+ *   · 下拉框：非中转渠道就别再摆别家的型号（app-05.js）
+ *   · 存配置：挂错了当场挪回对的那条渠道（下面 normalize 里的自愈）
+ *   · 真要调之前：还是错的就直接拦，不浪费一次网络往返和一次熔断计数（tools.js）
+ *
+ * 判断只在**有把握**的时候给答案，拿不准一律回空串——宁可漏判，不可误判：
+ * 误判会把用户手填的、本来能跑的型号从他选的渠道上硬挪走，那比原来的 bug 更气人。
+ */
+
+/** 中转网关：后面接谁只有用户知道，别家的型号名在这儿合法，一概不判 */
+const RELAY_KINDS = new Set(PROVIDER_KINDS.filter((k) => k.relay).map((k) => k.kind));
+
+/**
+ * 认不出目录的时候按名字认门第。只放**各家自己的前缀**，不放通用词
+ * （比如不能写 /vision/：那是能力不是厂商，谁家都有）。
+ */
+const BRAND_HINTS = [
+  ["^(doubao|seedream|seedance|skylark)", "ark"],
+  ["^(qwen[0-9-]|qwen-|qwq-|wan[0-9x]|wanx)", "dashscope"],
+  ["^(gpt-|dall-e|o[134]-mini|whisper-1|tts-1|text-embedding-)", "openai"],
+  ["^(glm-|cogview|cogvideo)", "zhipu"],
+  ["^claude-", "anthropic"],
+  ["^deepseek-(chat|reasoner)$", "deepseek"],
+  ["^(kimi-|moonshot-v)", "moonshot"],
+  ["^(minimax-|abab[0-9]|[ti]2v-0)", "minimax"],
+];
+
+/** 目录里这个 id 属于哪个 kind；同一个 id 被两家用（这种确实有）就算认不出 */
+function brandInCatalog(modelId) {
+  const id = String(modelId || "").trim().toLowerCase();
+  if (!id) return "";
+  const kinds = new Set();
+  for (const cap of Object.keys(CATALOG)) {
+    for (const m of CATALOG[cap]) if (String(m.id).toLowerCase() === id) kinds.add(m.kind);
+  }
+  return kinds.size === 1 ? [...kinds][0] : "";
+}
+
+/**
+ * 这个型号名是哪家的。认不出回空串。
+ * 带冒号的（qwen3:14b）是 Ollama 的本地 tag，名字随便起，一律不认。
+ */
+function brandOf(modelId) {
+  const id = String(modelId || "").trim();
+  if (!id || id.includes(":")) return "";
+  const hit = brandInCatalog(id);
+  if (hit) return hit;
+  // 带斜杠的是 `厂商/型号` 这种命名法，OpenRouter 和硅基流动都这么写，光看名字分不出是哪边的
+  if (id.includes("/")) return "";
+  for (const [src, kind] of BRAND_HINTS) if (new RegExp(src, "i").test(id)) return kind;
+  return "";
+}
+
+/**
+ * 这个型号挂在这类渠道上是不是挂错了。挂错了就回**它本该在的那类渠道**，没挂错回空串。
+ * ollama 一并放过：本地跑的模型名是用户自己 pull 的，叫什么都算数。
+ */
+function mismatch(kind, modelId) {
+  const k = String(kind || "").trim();
+  if (!k || k === "ollama" || RELAY_KINDS.has(k)) return "";
+  const brand = brandOf(modelId);
+  return brand && brand !== k ? brand : "";
+}
+
+/** 渠道类型的中文名，报错里用得着 */
+function kindLabel(kind) {
+  return (PROVIDER_KINDS.find((k) => k.kind === kind) || {}).label || kind || "（未知渠道）";
+}
+
+/**
+ * 挂错渠道的模型，能挪就挪回去。
+ *
+ * 只往**已经存在的**同家渠道上挪，绝不新建渠道——新建出来的必然是没有 Key 的空壳，
+ * 而用户说过不止一次：「不要搞什么默认渠道填充啊，都没填 apikey 的」。
+ * 同家有好几条时优先挑填了 Key 的那条（空壳挪过去等于换一种方式失败）。
+ * 一条都没有就只留一句警告：这时候只有用户自己知道该去哪儿开号。
+ * 返回真正挪动过的条目，调用方拿去写日志 / 回给前端。
+ */
+function rehomeMismatched(providers, models) {
+  const moved = [];
+  for (const m of models) {
+    const p = providers.find((x) => x.id === m.provider);
+    const want = mismatch(p && p.kind, m.model);
+    if (!want) continue;
+    const alt = providers.filter((x) => x.kind === want);
+    const fix = alt.find((x) => String(x.api_key || "").trim()) || alt[0];
+    const what = `${CAP_CN[m.cap] || m.cap}「${m.name}」的型号 ${m.model} 是${kindLabel(want)}家的`;
+    if (fix) {
+      moved.push({ cap: m.cap, name: m.name, model: m.model, from: m.provider, to: fix.id, want });
+      m.provider = fix.id;
+      console.warn(`[媒体模型] ${what}，却挂在${kindLabel(p && p.kind)}那条渠道上（调过去必然报「型号不存在」），已改挂到「${fix.name}」`);
+    } else {
+      console.warn(`[媒体模型] ${what}，却挂在${kindLabel(p && p.kind)}那条渠道上，调过去必然报「型号不存在」；本机没有${kindLabel(want)}的渠道，去 设置 → 模型 里加一条，或者换一个这条渠道上有的型号`);
+    }
+  }
+  return moved;
+}
+
 module.exports = {
   CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
   guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError,
+  RELAY_KINDS, BRAND_HINTS, brandOf, brandInCatalog, mismatch, kindLabel, rehomeMismatched,
 };

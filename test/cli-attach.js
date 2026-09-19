@@ -331,6 +331,58 @@ function runner(map) {
     "剪贴板里的文件已经被删了：当没有，别报一个不存在的名字");
 }
 
+// ── ⑧b 反过来写剪贴板：放进去的得是文件本身 ─────────────────
+// 用户原话：「还有能直接复制这个文件」。上面⑦⑧那两节是读，这一节是写。
+// 这件事最坑的地方在于：写成一行路径也能「成功」，但粘到微信里去就是一行字。
+// 所以返回里必须带着 kind，上层才说得出到底放进去的是哪一种。
+console.log("\n⑧b 写剪贴板：文件 > 路径，而且得说得出放进去的是哪一种");
+{
+  const mac = A.clipboardPutPlan("darwin", "/w/配乐 1.mp3");
+  eq(mac.map((s) => s.kind), ["file", "path"],
+    "★顺序★ 先试放文件本身，实在不行才退而放路径；反过来就永远只能粘出一行字");
+  ok(mac[0].args[1].includes("POSIX file"),
+    "★macOS 上放的是 POSIX file★ 不包这层的话，剪贴板里就是一段纯文字", mac[0].args[1]);
+  ok(mac[0].args[1].includes('"/w/配乐 1.mp3"'),
+    "★名字里的空格要用引号包起来★ AppleScript 里裸写会当场语法错", mac[0].args[1]);
+  const win = A.clipboardPutPlan("win32", "C:\\w\\a.mp3");
+  eq(win.map((s) => s.kind), ["file", "path"], "Windows 上同一个顺序");
+  ok(win[0].args.join(" ").includes("-Path") && win[1].args.join(" ").includes("-Value"),
+    "★-Path 放的是文件，-Value 放的是字★ 两个参数差一个词，结果完全是两回事", win.map((s) => s.args.join(" ")));
+  const lin = A.clipboardPutPlan("linux", "/w/配乐.mp3");
+  eq(lin.map((s) => s.kind), ["file", "file", "path", "path"],
+    "Linux 上 Wayland 和 X11 各试一遍，但两个文件那档要排在两个路径那档前面");
+  ok(lin[0].stdin === "file:///w/%E9%85%8D%E4%B9%90.mp3",
+    "★文件管理器认的是 file:// URI★ 中文名得先编码，裸路径粘进去只是一行字", lin[0].stdin);
+  ok(lin[2].stdin === "/w/配乐.mp3", "退而求其次那一档粘的才是裸路径", lin[2].stdin);
+  eq(A.clipboardPutPlan("aix", "/w/x.mp3"), [], "没见过的系统：一条命令都不编");
+  eq(A.clipboardPutPlan("darwin", ""), [], "没告诉我复制哪个文件：也不编");
+
+  // 下面不碰真剪贴板：把 run 换成写死的结果，走的路就是确定的
+  const runner = (table) => {
+    const seen = [];
+    return { seen, run: (cmd, args, step) => { seen.push(cmd + ":" + step.kind); const v = table[cmd + ":" + step.kind]; if (v instanceof Error) throw v; return v || { status: 0 }; } };
+  };
+  let r = runner({});
+  eq(A.writeClipboard({ platform: "darwin", file: "/w/a.mp3", run: r.run }), { ok: true, kind: "file", file: "/w/a.mp3" },
+    "★第一档就成了就停下★ 再跑一遍第二档会把刚放进去的文件盖成一行路径");
+  eq(r.seen, ["osascript:file"], "成了之后不再多跑一条");
+
+  r = runner({ "osascript:file": { status: 1 } });
+  eq(A.writeClipboard({ platform: "darwin", file: "/w/a.mp3", run: r.run }).kind, "path",
+    "★放不进文件就退而放路径★ 比一句「复制不了」强，但得说清楚放进去的是路径");
+  eq(r.seen, ["osascript:file", "osascript:path"], "第一档挂了才轮到第二档");
+
+  r = runner({ "wl-copy:file": new Error("wl-copy 没装"), "xclip:file": { status: 0 } });
+  eq(A.writeClipboard({ platform: "linux", file: "/w/a.mp3", run: r.run }).kind, "file",
+    "命令起不来只算这一路没中，不抛（一台没装 wl-copy 的机器不该把整个请求带崩）");
+
+  const dead = A.writeClipboard({ platform: "linux", file: "/w/a.mp3", run: () => ({ status: 127 }) });
+  ok(dead.ok === false && Array.isArray(dead.tried) && dead.tried.length === 4,
+    "★四条路全挂了就说写不进去，并把试过什么摆出来★ 不说试过哪几条，这种毛病没人查得了", dead);
+  ok(A.writeClipboard({ platform: "aix", file: "/w/a.mp3", run: () => ({ status: 0 }) }).why.includes("aix"),
+    "★不支持的系统直说是系统的事★ 跟「命令跑挂了」混为一谈，人会去装一个根本不存在的东西");
+}
+
 // ── ⑨ cli.js 的接线 ──────────────────────────────────────────────────────
 console.log("\n⑨ cli.js 接线：顺序和边界");
 {
