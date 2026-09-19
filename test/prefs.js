@@ -450,6 +450,7 @@ function call(method, url, { body, cookie } = {}) {
   server.close();
   runSourcePins();
   runConfigGates();
+  runSeedCopy();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   fs.rmSync(TMP, { recursive: true, force: true });
   process.exit(fail === 0 ? 0 : 1);
@@ -471,6 +472,98 @@ function slice(file, name) {
   const j = src.indexOf("\n}\n", i);
   if (j < 0) throw new Error(`${file} 里 ${name} 没有以顶格 } 结尾，切不出来`);
   return src.slice(i, j + 3);
+}
+
+/**
+ * 铺出厂内容那一下：拷得对，而且别把盘写满。
+ *
+ * seedDataDir 每铺一个新数据目录都要把 skills/ 整份拷过去。本机装了几个第三方技能之后
+ * 这一份是 189M，装机用户首次启动就得干等它落盘；更凶的是端到端测试——每个用例起一个
+ * 新 HOME，一轮几十个用例约 7.5G 白写，攒几十轮就是上百 G，磁盘报到 99% 才被发现。
+ *
+ * 所以 paths.js 的 copyTree 在 macOS 上走 APFS 的 clonefile（cp -c）：写时复制，两边
+ * 各是各的文件，底下共享数据块。这一节钉三件事，缺一件这个优化就是个定时炸弹：
+ *
+ *   1. 拷出来的东西必须一模一样（嵌套目录、空目录、内容）；
+ *   2. 写时复制的语义必须真的是「拷贝」——改哪边都不许串到对面；
+ *   3. 真省盘。这条用 df 量真占用，不用 du：du 看不见 clone 的共享块，量出来是满的。
+ *      同一轮里拿 fs.cpSync 当负向对照，证明这个量法看得见占盘，不是量什么都是 0。
+ */
+function runSeedCopy() {
+  console.log("\n【铺出厂内容】拷得对，而且别把盘写满");
+  const cp = require("child_process");
+  const paths = require("../paths");
+  const copyTree = paths._copyTree;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "owb-seedcopy-"));
+  try {
+    // ---- 1. 拷得对 ----
+    const src = path.join(root, "src");
+    fs.mkdirSync(path.join(src, "nested", "deep"), { recursive: true });
+    fs.mkdirSync(path.join(src, "空目录"), { recursive: true });
+    fs.writeFileSync(path.join(src, "SKILL.md"), "出厂那一份");
+    fs.writeFileSync(path.join(src, "nested", "deep", "a.txt"), "深处那个文件");
+    const dst = path.join(root, "dst");
+    copyTree(src, dst);
+    const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? [e.name + "/"].concat(walk(path.join(d, e.name)).map((s) => e.name + "/" + s)) : [e.name]).sort();
+    ok(JSON.stringify(walk(src)) === JSON.stringify(walk(dst)),
+      "整棵树原样拷过去（嵌套目录、空目录一个不少）", { src: walk(src), dst: walk(dst) });
+    eq(fs.readFileSync(path.join(dst, "nested", "deep", "a.txt"), "utf8"), "深处那个文件",
+      "  └ 深处那个文件内容也对");
+
+    // ---- 2. 写时复制的语义必须就是「拷贝」----
+    // 这条是这个优化最要命的地方：clonefile 底下共享数据块，万一哪天换成 hardlink 之类的
+    // 写法，改用户那份就会把包里的出厂原件一起改了，而且要等到下次升级才看得出来。
+    fs.writeFileSync(path.join(dst, "SKILL.md"), "用户自己改过的");
+    eq(fs.readFileSync(path.join(src, "SKILL.md"), "utf8"), "出厂那一份",
+      "改副本不会串回原件（要是串了，用户一改技能就把包里的出厂版改了）");
+    fs.writeFileSync(path.join(src, "SKILL.md"), "升级后的新版");
+    eq(fs.readFileSync(path.join(dst, "SKILL.md"), "utf8"), "用户自己改过的",
+      "改原件也不会串到副本（要是串了，升一次级用户的改动就没了）");
+
+    // ---- 3. 真省盘：df 量真占用 ----
+    const free = () => Number(cp.execFileSync("df", ["-k", root], { encoding: "utf8" })
+      .split("\n")[1].split(/\s+/)[3]);
+    const big = path.join(root, "big");
+    fs.mkdirSync(big);
+    const BUF = Buffer.alloc(8 * 1024 * 1024, 7);
+    for (let i = 0; i < 6; i++) fs.writeFileSync(path.join(big, "f" + i + ".bin"), BUF); // 48M
+    try { cp.execFileSync("sync"); } catch {}
+    const a = free();
+    copyTree(big, path.join(root, "big-clone"));
+    const b = free();
+    fs.cpSync(big, path.join(root, "big-plain"), { recursive: true }); // 负向对照
+    const c = free();
+    const cloneMB = (a - b) / 1024, plainMB = (b - c) / 1024;
+    // 负向对照先站住：普通拷贝必须量得出实打实的占用，否则下面那条是靠「量法坏了」变绿的
+    ok(plainMB > 24, "负向对照：普通拷贝 48M 真占掉了 " + plainMB.toFixed(1) + "M（量法看得见占盘）",
+      { cloneMB, plainMB });
+    if (process.platform === "darwin") {
+      ok(cloneMB < plainMB / 4, "clone 只占 " + cloneMB.toFixed(1) + "M，不到普通拷贝的四分之一",
+        { cloneMB, plainMB });
+    } else {
+      console.log("  - 跳过省盘那条：clonefile 是 APFS 的本事，这台不是 macOS");
+    }
+
+    // ---- 4. 退路：不是 macOS 也得拷得对 ----
+    // 直接把 platform 改成 linux 再重新加载一次 paths.js，走的就是 fs.cpSync 那条路。
+    // 不测这条的话，Windows 用户首次启动技能一个都铺不出来，而我们本机永远看不见。
+    const realPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    delete require.cache[require.resolve("../paths")];
+    try {
+      const fallbackDst = path.join(root, "dst-linux");
+      require("../paths")._copyTree(src, fallbackDst);
+      ok(fs.readFileSync(path.join(fallbackDst, "nested", "deep", "a.txt"), "utf8") === "深处那个文件",
+        "不是 macOS 时退回 fs.cpSync，照样拷得对（退回的是慢，不是错）");
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
+      delete require.cache[require.resolve("../paths")];
+      require("../paths");
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function runSourcePins() {
