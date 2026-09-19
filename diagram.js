@@ -149,7 +149,7 @@ async function svgToPngAnyhow(svg) {
         "--headless", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
         `--user-data-dir=${path.join(dir, "profile")}`, "--no-first-run", "--no-default-browser-check",
         `--screenshot=${pngFile}`, `--window-size=${Math.ceil(w)},${Math.ceil(h)}`, `file://${htmlFile}`,
-      ], { stdio: "ignore" });
+      ], { stdio: "ignore", detached: true });
       let done = false;
       cp.on("exit", () => { done = true; });
       cp.on("error", () => { done = true; });
@@ -163,7 +163,9 @@ async function svgToPngAnyhow(svg) {
         last = size;
         if (done) break;
       }
-      if (!done) { try { cp.kill("SIGKILL"); } catch {} }
+      // 连整个进程组一起收。只杀主进程的话，GPU 和渲染器会被 init 收养后继续转，
+      // 那几个才是真正占着 CPU 的——这台机器上撞见过挂十个半小时、GPU 常年 160% 的
+      if (!done) { try { process.kill(-cp.pid, "SIGKILL"); } catch {} try { cp.kill("SIGKILL"); } catch {} }
       try { if (fs.statSync(pngFile).size > 0) return { png: fs.readFileSync(pngFile), via: "chrome" }; } catch {}
     } finally {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}

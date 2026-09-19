@@ -48,6 +48,57 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** 本进程自己拉起来的那个 Chrome。拉起一次就一直复用，不会每调一次开一个窗口。 */
 const OWN = { port: 0, pid: 0, dir: "" };
 
+// 拉起来的 Chrome 不会自己消失：detached + unref 之后它和本进程就断了关系，没人收就一直挂着。
+// 这台机器上真挂出过一个：跑了十个半小时，GPU 进程常年 160% CPU，load average 上了三位数。
+// 所以三条线一起兜——闲置到点自己关、本进程退出时带走、也能显式关。
+/** 闲多久自己关。0 = 不自动关。每次读环境变量，测试里改了就立刻生效。 */
+function idleMs() {
+  const raw = process.env.OWB_CDP_IDLE_MS;
+  const n = raw === undefined || raw === "" ? 10 * 60 * 1000 : Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+let idleTimer = null;
+function clearIdle() { if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } }
+/** 每用一次就把倒计时往后推。定时器要 unref，不然它自己会把进程吊住不退出。 */
+function touchIdle() {
+  clearIdle();
+  const ms = idleMs();
+  if (!ms || !OWN.pid) return;
+  idleTimer = setTimeout(() => close("闲置超时"), ms);
+  if (typeof idleTimer.unref === "function") idleTimer.unref();
+}
+/** detached 起的是一整个进程组，要连组一起收：只杀主进程的话，GPU 和渲染器那几个还在转。 */
+function killTree(pid, sig) {
+  try { process.kill(-pid, sig); } catch {}
+  try { process.kill(pid, sig); } catch {}
+}
+/** 关掉本进程拉起来的那个 Chrome。用户自己开着的窗口一律不碰。 */
+function close(why = "") {
+  clearIdle();
+  const pid = OWN.pid;
+  OWN.port = 0; OWN.pid = 0; OWN.dir = "";
+  if (!pid) return { closed: false, why: "当前这个 Chrome 不是本工具拉起来的，不动它" };
+  killTree(pid, "SIGTERM");
+  const t = setTimeout(() => killTree(pid, "SIGKILL"), 2000);
+  if (typeof t.unref === "function") t.unref();
+  return { closed: true, pid, why: why || "显式关闭" };
+}
+let hooked = false;
+/** 第一次真的 spawn 出东西之后才挂钩子，没用过这条线的进程不受影响。 */
+function hookExit() {
+  if (hooked) return;
+  hooked = true;
+  process.on("exit", () => { if (OWN.pid) killTree(OWN.pid, "SIGKILL"); });
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(sig, () => {
+      if (OWN.pid) killTree(OWN.pid, "SIGKILL");
+      // 只是搭个便车。原来没人管这个信号的话，得替 Node 把默认的「收到就退」补回来——
+      // 一旦加了监听，默认行为就被顶掉了，不补的话 Ctrl-C 会变成按了没反应。
+      if (process.listenerCount(sig) <= 1) process.exit(sig === "SIGINT" ? 130 : 143);
+    });
+  }
+}
+
 const CHROMES = {
   darwin: [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -130,6 +181,7 @@ async function launch(input = {}) {
     const port = readPortFile(portFile);
     if (port && (await probe(port, 1200))) {
       OWN.port = port; OWN.pid = child.pid || 0; OWN.dir = dir;
+      hookExit(); touchIdle();
       return { port, launched: true, pid: OWN.pid, user_data_dir: dir, bin };
     }
   }
@@ -245,11 +297,14 @@ async function run(input = {}) {
       chrome: chrome || "（这台机器上没找到 Chrome，装一个，或把路径写进 OWB_CHROME_PATH）",
       browser: v?.Browser || "", user_data_dir: OWN.dir || "（不是本工具拉起来的）",
       tabs: port ? (((await getJson(`http://127.0.0.1:${port}/json/list`).catch(() => [])) || []).filter((x) => x.type === "page").length) : 0,
+      idle_close_ms: idleMs(),
       hint: port ? "" : `${want || 9222} 上没有 DevTools。直接发一条 navigate 或 screenshot 就行，会自己拉起一个专用 Chrome。`,
     };
   }
+  if (action === "close") return close();
   const ready = await ensure(input);
   const port = ready.port;
+  touchIdle();
   if (action === "list_tabs") return { port, ...ready, tabs: (await getJson(`http://127.0.0.1:${port}/json/list`)).filter((x) => x.type === "page").map((x) => ({ id: x.id, title: x.title, url: x.url, type: x.type })) };
   if (action === "close_tab") { const id = String(input.tab_id || ""); if (!id) throw new Error("close_tab 要给 tab_id"); try { await getJson(`http://127.0.0.1:${port}/json/close/${encodeURIComponent(id)}`); } catch {} return { port, closed: id }; }
   return withTab(String(input.tab_id || ""), async (call, tab) => {
@@ -295,4 +350,4 @@ async function run(input = {}) {
     throw new Error(`不支持的 Chrome CDP 操作：${action}`);
   }, port);
 }
-module.exports = { run, ensure, probe, findChrome, launch, endpointHost };
+module.exports = { run, ensure, probe, findChrome, launch, close, endpointHost };

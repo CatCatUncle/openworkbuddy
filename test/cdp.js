@@ -135,6 +135,58 @@ function fakeChrome(opts = {}) {
     if (old === undefined) delete process.env.OWB_CHROME_PATH; else process.env.OWB_CHROME_PATH = old;
   }
 
+  console.log("【7】自己拉起来的浏览器，收得回来");
+  if (process.platform === "win32") {
+    console.log("    （Windows 上没有进程组这套杀法，跳过）");
+  } else {
+    const fs = require("fs"), os = require("os"), path = require("path");
+    // 假 Chrome：写出 DevToolsActivePort、应答 /json/version，再多开一个子进程当「GPU / 渲染器」。
+    // 真 Chrome 就是这个形状——上次漏收的正是这些子进程，主进程 0.1% CPU，子进程 160%。
+    const FAKE = `#!/usr/bin/env node
+const http=require("http"),fs=require("fs"),path=require("path"),cp=require("child_process");
+const ud=(process.argv.find(a=>a.startsWith("--user-data-dir="))||"").split("=").slice(1).join("=");
+const kid=cp.spawn(process.execPath,["-e","setInterval(()=>{},1e9)"],{stdio:"ignore"});
+const srv=http.createServer((req,res)=>{const p=srv.address().port;
+  if(req.url.startsWith("/json/version"))return res.end(JSON.stringify({Browser:"FakeChrome/1",webSocketDebuggerUrl:"ws://127.0.0.1:"+p+"/devtools/browser/x"}));
+  res.end("[]");});
+srv.listen(0,"127.0.0.1",()=>{fs.writeFileSync(path.join(ud,"kid.pid"),String(kid.pid));
+  fs.writeFileSync(path.join(ud,"DevToolsActivePort"),srv.address().port+"\\n/devtools/browser/x\\n");});
+setInterval(()=>{},1e9);
+`;
+    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const mk = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "owb-cdp-close-"));
+      const bin = path.join(d, "fake-chrome"); fs.writeFileSync(bin, FAKE, { mode: 0o755 }); return { d, bin }; };
+    const oldPath = process.env.OWB_CHROME_PATH, oldIdle = process.env.OWB_CDP_IDLE_MS;
+
+    // ① 显式关：主进程和子进程一起没
+    {
+      const { d, bin } = mk();
+      process.env.OWB_CHROME_PATH = bin; process.env.OWB_CDP_IDLE_MS = "0";
+      const r = await cdp.launch({ user_data_dir: d });
+      ok(r.launched === true && r.pid > 0, "拉起来之后要把 pid 交出来，不然根本没法收", JSON.stringify(r));
+      const kid = Number(fs.readFileSync(path.join(d, "kid.pid"), "utf8"));
+      ok(alive(r.pid) && alive(kid), "刚起来的时候父子都活着");
+      ok(cdp.run && (await cdp.run({ action: "close" })).closed === true, "close 这个 action 要真的关掉，并如实回报");
+      await new Promise((res) => setTimeout(res, 2500));
+      ok(!alive(r.pid), "主进程要没");
+      ok(!alive(kid), "子进程也得跟着走——只杀主进程，就是这次 GPU 进程 160% CPU 挂十小时的那个样子");
+      eq((await cdp.run({ action: "close" })).closed, false, "手里没有自己拉起来的浏览器时，close 不许去动别人的窗口（反向对照）");
+    }
+
+    // ② 忘了关也不会一直挂着：闲置到点自己收
+    {
+      const { d, bin } = mk();
+      process.env.OWB_CHROME_PATH = bin; process.env.OWB_CDP_IDLE_MS = "600";
+      const r = await cdp.launch({ user_data_dir: d });
+      const kid = Number(fs.readFileSync(path.join(d, "kid.pid"), "utf8"));
+      await new Promise((res) => setTimeout(res, 3200));
+      ok(!alive(r.pid) && !alive(kid), "闲置超过 OWB_CDP_IDLE_MS 之后要自己关掉，整棵树一起");
+    }
+
+    if (oldPath === undefined) delete process.env.OWB_CHROME_PATH; else process.env.OWB_CHROME_PATH = oldPath;
+    if (oldIdle === undefined) delete process.env.OWB_CDP_IDLE_MS; else process.env.OWB_CDP_IDLE_MS = oldIdle;
+  }
+
   console.log(`\n${fail === 0 ? "√" : "×"} cdp：${pass} 条通过，${fail} 条失败`);
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => { console.error("套件自己挂了：", e); process.exit(1); });

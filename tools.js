@@ -402,12 +402,12 @@ const TOOL_DEFS = [
     name: "chrome_cdp",
     description:
       "用真 Chrome 打开网页并操作它。要截网页效果图、要看 JS 渲染完的样子、要点开某个交互再看结果，都用这个，不用先问用户开没开调试端口——端口上没人应答时会自己拉起一个专用 Chrome（独立 user-data-dir，不碰你日常浏览器的登录态），端口由它自己挑，不跟别的程序抢。只连 127.0.0.1/localhost/::1。\n" +
-      "action：list_tabs 列标签页；navigate 打开 URL（默认等页面加载完再返回）；screenshot 截图存到 workspace，full_page=true 截整页，width/height 指定视口；inspect 读页面文字；click/type 按 CSS 选择器操作；evaluate 执行页面内 JavaScript；close_tab 关标签页；status 看当前接的是哪个 Chrome。\n" +
+      "action：list_tabs 列标签页；navigate 打开 URL（默认等页面加载完再返回）；screenshot 截图存到 workspace，full_page=true 截整页，width/height 指定视口；inspect 读页面文字；click/type 按 CSS 选择器操作；evaluate 执行页面内 JavaScript；close_tab 关标签页；close 把本工具拉起来的那个 Chrome 整个关掉（用完顺手发一条，不发也行，闲置十分钟自己会关）；status 看当前接的是哪个 Chrome。\n" +
       "接手用户已经开着的浏览器要给 port；不给就用本工具自己那一个。WebGL/Canvas 页面照样能截。服务器部署时 Chrome 要跟 Agent 在同一台机器，别把调试端口暴露到公网。",
     input_schema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["list_tabs", "inspect", "navigate", "click", "type", "evaluate", "screenshot", "close_tab", "status"] },
+        action: { type: "string", enum: ["list_tabs", "inspect", "navigate", "click", "type", "evaluate", "screenshot", "close_tab", "close", "status"] },
         tab_id: { type: "string", description: "Chrome 标签页 id；不给就用当前第一个页面标签页" },
         port: { type: "number", description: "本机 CDP 端口。只在接管用户自己启的 Chrome 时给；不给就用本工具自己拉起的那个" },
         selector: { type: "string", description: "inspect/click/type 的 CSS 选择器" },
