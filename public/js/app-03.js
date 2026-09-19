@@ -711,7 +711,9 @@ function renderOnbBrain(body) {
       <div id="onb-cloud">
         <label class="onb-lb">服务商</label>
         <select id="onb-model">${st.models.map(m =>
-          `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-local="${m.local ? 1 : 0}">${esc(m.name)} · ${esc(m.model)}${m.has_key ? "（已配）" : ""}</option>`).join("")}</select>
+          `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-local="${m.local ? 1 : 0}">${esc(m.name)} · ${esc(m.model)}${m.has_key ? "（已配）" : ""}</option>`).join("")}${
+          (st.templates || []).length ? `<optgroup label="${st.models.length ? "新接一家" : "选一家服务商"}">${(st.templates || []).map(t =>
+          `<option value="tpl:${esc(t.kind)}" data-url="${esc(t.base_url)}" data-local="${t.local ? 1 : 0}">${esc(t.name)} · ${esc(t.model)}</option>`).join("")}</optgroup>` : ""}</select>
         <div class="onb-tip" id="onb-tip"></div>
         <label class="onb-lb">API Key</label>
         <input id="onb-key" type="password" placeholder="粘贴 API Key" autocomplete="off" spellcheck="false">
@@ -746,9 +748,11 @@ function renderOnbBrain(body) {
   // 已经接上大脑的，默认停在正在用的那条——重新打开向导时第一眼看到的该是「现在跑的是它」，
   // 而不是一条空着 Key 的模板（那读起来像「你什么都还没配」）。
   // 还没接上的才默认第一个没配 Key 的云端模型：那种情况下用户十有八九就是要配它。
+  // config 里从此只有真配过的行；一行都没有时默认停在服务商清单第一家（模板项的 value 带 tpl: 前缀）
   const cur = st.brain.ok && st.brain.name ? st.models.find(m => m.name === st.brain.name) : null;
   const first = cur || st.models.find(m => !m.has_key && !m.local) || st.models[0];
   if (first) sel.value = first.name;
+  else if ((st.templates || []).length) sel.value = "tpl:" + st.templates[0].kind;
   const syncTip = () => {
     const opt = sel.selectedOptions[0];
     const local = !!opt && opt.dataset.local === "1";
@@ -774,7 +778,9 @@ function renderOnbBrain(body) {
         go.textContent = "正在验活…（发一条真实请求，可能要十几秒）";
         const r = await fetch("/api/onboarding", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: sel.value, api_key: keyEl.value.trim() }),
+          body: JSON.stringify(sel.value.startsWith("tpl:")
+            ? { kind: sel.value.slice(4), api_key: keyEl.value.trim() }
+            : { model: sel.value, api_key: keyEl.value.trim() }),
         }).then(r => r.json()).catch(() => ({ ok: false, error: "请求失败，服务没起来？" }));
         if (!r.ok) { err.textContent = r.error || "验活没通过"; return; }
         toast(`已接上 ${r.active_model}`, "circle-check");

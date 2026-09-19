@@ -1160,7 +1160,10 @@ function createTurnUI(userText, turnMode, forSid) {
       }
     } else if (ev.type === "ask_user") {
       endText();
-      body.appendChild(makeAskCard(ev, turnSid));
+      body.appendChild(makeAskCard(ev, turnSid, undefined, {
+        outFiles: liveOutFiles, root: ev.root || "",
+        replaying: isReplaying, otherSession: turnSid !== sessionId,
+      }));
     } else if (ev.type === "ask_answer") {
       const card = body.querySelector(`.ask-card[data-ask-id="${cssEsc(ev.ask_id || "")}"]`);
       if (card && card._mark) card._mark(ev.answer, ev.timeout);
@@ -1996,7 +1999,7 @@ function rewindButton(sid, ckptId) {
   return wrap;
 }
 
-function makeAskCard(ev, turnSid, submit) {
+function makeAskCard(ev, turnSid, submit, ctx) {
   // 审批走同一张卡，但有三处必须不一样，见下面每一处的注释
   const isAp = ev.kind === "approval";
   const opts = isAp
@@ -2018,6 +2021,32 @@ function makeAskCard(ev, turnSid, submit) {
     // 审批没有「自由回答」：这道题只有准和不准，留个输入框只会让人以为还能讨价还价
     (isAp ? "" : `<div class="ask-free"><input type="text" placeholder="都不是？直接说你想要的…" maxlength="500"><button type="button">发送</button></div>`) +
     `<div class="ask-ans"></div>`;
+
+  // 要看着文件才答得上来的题：文件挂到卡片上，第一个直接摊到右边。
+  // 审批卡不走这条——那道题看的是命令原文，就印在卡上，没有别的文件要翻。
+  if (!isAp && ctx) {
+    const plan = askPreviewPlan({
+      names: filesInAsk(ev), outFiles: ctx.outFiles || [],
+      replaying: ctx.replaying, otherSession: ctx.otherSession,
+      pvOpen: pvPanel.classList.contains("show"), pvCurrent,
+      narrow: window.innerWidth <= 900,
+    });
+    if (plan.chips.length) {
+      const row = document.createElement("div");
+      row.className = "ask-files";
+      row.innerHTML = `<span class="lb">${ic("eye")}要看着它答</span>`;
+      for (const name of plan.chips) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "ask-file";
+        b.innerHTML = `${ic(fileIcon(name))}<span>${esc(name.split("/").pop())}</span>`;
+        b.title = "在右边打开 " + name;
+        b.onclick = () => previewFile(name, ctx.root || "");
+        row.appendChild(b);
+      }
+      card.querySelector(".ask-q").after(row);
+    }
+    if (plan.preview) previewFile(plan.preview, ctx.root || "");
+  }
 
   const timerEl = card.querySelector(".ask-timer");
   let tick = null;
@@ -2127,6 +2156,9 @@ function fmtSize(n) { return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 10
 const openDirs = new Set(); // 记住展开状态，刷新列表不回弹
 // 「只看成果」的开关。默认关：面板是文件浏览器，先如实摆全部，用户嫌吵了再收
 let onlyResults = (() => { try { return localStorage.getItem("owb-files-only") === "1"; } catch { return false; } })();
+// 搜索词不落盘：刷新之后该看到的是全部文件，不是上次搜了一半的残影
+let fileQuery = "";
+const FIND_MIN = 8; // 文件少的时候一眼扫得完，搜索框纯占地方
 /**
  * 这个文件算不算「交到用户手上的成果」。
  *
@@ -2143,12 +2175,30 @@ function isResultFile(name) {
 }
 // 时间段记的是**收起过的**那些，不是展开的：默认全展开，所以空集合就是正确的初始状态
 const closedBuckets = new Set();
-/** 在访达/资源管理器里打开文件所在的文件夹并选中它。按钮挂在文件行/卡片上，别冒泡触发预览 */
-function revealFile(name, e, root) {
+/** 在访达/资源管理器里打开文件所在的文件夹并选中它。按钮挂在文件行/卡片上，别冒泡触发预览。
+ *  src 传 "lib" 时找的是资料库那一份（它不在工作区根底下，按工作区算会直接 404） */
+function revealFile(name, e, root, src) {
   if (e) { e.stopPropagation(); e.preventDefault(); }
-  fetch("/api/files/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, root: root || "" }) })
+  fetch("/api/files/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, root: root || "", src: src || "" }) })
     .then(r => r.json().catch(() => ({})).then(j => { if (!r.ok || (j && j.error)) toast((j.error || "打不开所在位置"), "circle-x"); }))
     .catch(() => toast("打不开所在位置", "circle-x"));
+}
+/**
+ * 把文件本身放进剪贴板，之后直接 Cmd+V 粘到微信 / 邮件 / 访达里。
+ * 用户原话：「还有能直接复制这个文件」——以前只能先下载一份再自己去翻下载目录。
+ * 服务端会告诉我们放进去的到底是文件还是一条路径，两者得分开说：
+ * 以为复制了文件、粘出来是一行字，比直接说「复制不了」更气人。
+ */
+function copyHostFile(name, e, o) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  const opt = o || {};
+  return fetch("/api/files/copy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, root: opt.root || "", src: opt.src || "" }) })
+    .then(r => r.json().catch(() => ({})).then(j => {
+      if (!r.ok || !j || j.error) return toast(((j && j.error) || "复制不了这个文件"), "circle-x");
+      if (j.kind === "path") return toast("这台机器放不下文件本身，已复制它的完整路径", "circle-check");
+      toast("已复制文件，去微信 / 邮件 / 访达里直接粘", "circle-check");
+    }))
+    .catch(() => toast("复制不了这个文件", "circle-x"));
 }
 /**
  * 让服务端用系统程序打开一个文件/文件夹，并且**把结果说出来**。
@@ -2176,20 +2226,47 @@ function downloadFile(name, root) {
 }
 const revealBtn = (name) => (canOpenOnHost() ? `<span class="dl rv" data-rv="${esc(name)}" title="打开所在位置">${ic("folder-open")}</span>` : "");
 
-/** 面板顶上的「全部 / 只看成果」。全是成果或一件成果都没有时不摆——切了看不出差别，白占一行 */
+// 按名字找文件。用户原话：「还有文件也比较难找到在这一堆文件里」——一个任务跑下来几十个
+// 文件，分组能解决「浏览」，解决不了「我就要那一个」。匹配的是整条相对路径，所以文件夹名
+// 也算线索（打「0918」能把那天那个任务夹里的都捞出来）；空格分词、全都命中才算
+// （「封面 html」= 名字里有封面、而且是 html），大小写不敏感。
+function matchFiles(files, q) {
+  const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return files || [];
+  return (files || []).filter((f) => {
+    const n = String((f && f.name) || "").toLowerCase();
+    return words.every((w) => n.includes(w));
+  });
+}
+/** 面板顶上的搜索框 + 「全部 / 只看成果」。
+ *  搜索框的 input 元素一直在原地，只改两个 hidden——重画 innerHTML 会把正在打字的焦点弄丢。
+ *  分段器全是成果或一件成果都没有时不摆：切了看不出差别，白占一行 */
 function renderFileFilter() {
   const box = document.getElementById("fp-filter");
   if (!box) return;
+  const segs = document.getElementById("fp-segs");
+  const find = document.getElementById("fp-q");
   const nres = filesCache.filter((f) => isResultFile(f.name)).length;
-  box.hidden = !filesCache.length || nres === 0 || nres === filesCache.length;
-  if (box.hidden) { box.innerHTML = ""; return; }
-  box.innerHTML = `<button class="fp-seg${onlyResults ? "" : " on"}" data-only="0">全部 ${filesCache.length}</button>` +
-    `<button class="fp-seg${onlyResults ? " on" : ""}" data-only="1">只看成果 ${nres}</button>`;
-  box.querySelectorAll(".fp-seg").forEach((b) => { b.onclick = () => {
-    onlyResults = b.dataset.only === "1";
-    try { localStorage.setItem("owb-files-only", onlyResults ? "1" : ""); } catch {}
-    renderFiles(filesCache);
-  }; });
+  const showSeg = filesCache.length > 0 && nres > 0 && nres < filesCache.length;
+  const showFind = filesCache.length >= FIND_MIN || !!fileQuery; // 搜空了也得留着框，不然没法清
+  box.hidden = !showSeg && !showFind;
+  if (find) find.hidden = !showFind;
+  if (segs) {
+    segs.hidden = !showSeg;
+    segs.innerHTML = !showSeg ? "" :
+      `<button class="fp-seg${onlyResults ? "" : " on"}" data-only="0">全部 ${filesCache.length}</button>` +
+      `<button class="fp-seg${onlyResults ? " on" : ""}" data-only="1">只看成果 ${nres}</button>`;
+    segs.querySelectorAll(".fp-seg").forEach((b) => { b.onclick = () => {
+      onlyResults = b.dataset.only === "1";
+      try { localStorage.setItem("owb-files-only", onlyResults ? "1" : ""); } catch {}
+      renderFiles(filesCache);
+    }; });
+  }
+  if (find && !find.dataset.wired) {
+    find.dataset.wired = "1";
+    find.oninput = () => { fileQuery = find.value; renderFiles(filesCache); };
+    find.onkeydown = (e) => { if (e.key === "Escape" && find.value) { e.stopPropagation(); find.value = ""; fileQuery = ""; renderFiles(filesCache); } };
+  }
 }
 
 function renderFiles(files) {
@@ -2199,19 +2276,33 @@ function renderFiles(files) {
   // 「只看成果」是个视图开关，不是删除：藏了多少条要如实写在底下，别让人以为文件没了
   const hiddenN = onlyResults ? filesCache.filter((f) => !isResultFile(f.name)).length : 0;
   files = onlyResults ? filesCache.filter((f) => isResultFile(f.name)) : filesCache;
-  if (!files.length) {
-    el.innerHTML = onlyResults && filesCache.length
+  const q = String(fileQuery || "").trim();
+  const hits = q ? matchFiles(files, q) : files;
+  if (!hits.length) {
+    el.innerHTML = q
+      ? `<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">没有名字里带「${esc(q)}」的文件${onlyResults ? "。「只看成果」开着，切回「全部」再找找" : ""}</div>`
+      : onlyResults && filesCache.length
       ? `<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">这个工作目录里还没有成果文件（${hiddenN} 个中间材料已折起）</div>`
       : '<div style="padding:10px;color:var(--owb-text-3);font-size: 13px">暂无成果文件</div>';
     return;
   }
-  const fileRow = (f, nested) =>
+  // 搜出来的行要带上它在哪个文件夹——同名的 index.html 一个任务能有好几份
+  const fileRow = (f, nested, withDir) =>
     `<div class="file-item${nested ? " nested" : ""}${isResultFile(f.name) ? " res" : ""}" style="cursor:pointer" data-name="${esc(f.name)}" title="${esc(f.name)}">
       <span>${ic(fileIcon(f.name))}</span>
-      <span style="min-width:0"><div class="name">${esc(f.name.split("/").pop())}</div><div class="meta">${fmtSize(f.size)}</div></span>
+      <span style="min-width:0"><div class="name">${esc(f.name.split("/").pop())}</div><div class="meta">${withDir && f.name.includes("/") ? esc(f.name.slice(0, f.name.lastIndexOf("/"))) + " · " : ""}${fmtSize(f.size)}</div></span>
       ${revealBtn(f.name)}
       <a class="dl" href="/api/files/download/${fpath(f.name)}" download title="下载">${ic("download")}</a>
     </div>`;
+  // 行上的点击：打开预览 / 定位到 Finder。分组视图和搜索结果共用
+  const wireRows = () => {
+    el.querySelectorAll("[data-rv]").forEach(b => { b.onclick = (e) => revealFile(b.dataset.rv, e); });
+    el.querySelectorAll(".file-item").forEach(item => item.onclick = (e) => {
+      if (e.target.closest(".dl")) return; // 下载/定位按钮不拦截
+      e.preventDefault();
+      previewFile(item.dataset.name);
+    });
+  };
   // 子目录归成可折叠分组，再按时间装进「今天／昨天／过去 7 天／更早（按月）」。
   //
   // 为什么时间只做在**视图**里、磁盘保持扁平：Google ADK 那套产物命名空间是
@@ -2239,6 +2330,14 @@ function renderFiles(files) {
   // 一个真实文件夹里 data/ 的十几个 json 会把那份 pptx 冲到下面去，用户得自己一行行找
   const resFirst = (tie) => (a, b2) => (isResultFile(b2.name) ? 1 : 0) - (isResultFile(a.name) ? 1 : 0) || (tie ? tie(a, b2) : 0);
   const resCount = (list) => list.filter((f) => isResultFile(f.name)).length;
+  // 搜索结果不分组：分组是给"翻"用的，搜是"我就要那一个"。成果排前面，其余按路径
+  if (q) {
+    const rest = files.length - hits.length;
+    el.innerHTML = `<div class="fp-hit"><b>找到 ${hits.length} 个</b>${rest ? ` · 另外 ${rest} 个名字里没有「${esc(q)}」` : ""}</div>` +
+      hits.slice().sort(resFirst((a, b2) => a.name.localeCompare(b2.name, "zh"))).map(f => fileRow(f, false, true)).join("");
+    wireRows();
+    return;
+  }
   const dirHead = (key, label, n, mine, tip, nres) =>
     `<div class="dir-head${mine ? " mine" : ""}" data-dir="${esc(key)}"><span class="ar">${ic(openDirs.has(key) ? "chevron-down" : "chevron-right")}</span><span>${ic("folder")}</span><div class="name">${mine ? '<span class="mine-tag">本对话</span>' : ""}${esc(label)}</div><span class="cnt">${nres ? `<b class="res-n">${nres} 份成果</b> · ` : ""}${n}</span>${canOpenOnHost() ? `<span class="opendir" data-opendir="${esc(key)}" title="${esc(tip)}">${ic("arrow-up-right")}</span>` : ""}</div>`;
 
@@ -2318,12 +2417,7 @@ function renderFiles(files) {
       fetch("/api/files").then(x => x.json()).then(renderFiles);
     } catch { toast("清理失败", "circle-x"); tidyBtn.disabled = false; }
   };
-  el.querySelectorAll("[data-rv]").forEach(b => { b.onclick = (e) => revealFile(b.dataset.rv, e); });
-  el.querySelectorAll(".file-item").forEach(item => item.onclick = (e) => {
-    if (e.target.closest(".dl")) return; // 下载/定位按钮不拦截
-    e.preventDefault();
-    previewFile(item.dataset.name);
-  });
+  wireRows();
 }
 fetch("/api/files").then(r => r.json()).then(f => { if (Array.isArray(f)) { renderFiles(f); snapshotFiles(f); } }).catch(() => {});
 
@@ -3757,6 +3851,50 @@ function makeFileLink(label, name) {
  *   · 窄窗：预览在这个宽度下是盖在聊天上的浮层，一开就把刚写完的结论挡了
  *   · 只剩 .doc/.ppt/.xls 那三个老格式：previewFile 会去拉起本机 Office，抢的是整个系统焦点，太重
  */
+// 一道题里提到的文件。
+//
+// 用户原话：「然后问我这个文件里面展示的选哪个，然后这个文件也让我找半天不自己右边预览啊。
+// 还有文件也比较难找到在这一堆文件里」。
+//
+// AI 让人「三版对比在《封面三选一.html》里，你要哪版」，题面其实**在那个文件里**——
+// 右边不摊开，这道题就是让人对着一句话猜。收尾自动预览（finishPreviewPlan）救不了它：
+// 提问发生在任务跑到一半，那会儿还早得很。
+const ASK_FILE_RE = /([^\s，。、；：！？,"'`()（）【】《》「」\[\]]+\.(?:html?|pdf|svgz?|png|jpe?g|gif|webp|bmp|avif|mp4|webm|mov|m4v|mp3|wav|m4a|md|markdown|txt|csv|tsv|json|docx?|xlsx?|pptx?))/gi;
+function filesInAsk(ev) {
+  const texts = [String((ev && ev.question) || "")];
+  for (const o of (ev && ev.options) || []) {
+    if (o && typeof o === "object") texts.push(String(o.label || ""), String(o.detail || ""));
+    else texts.push(String(o || ""));
+  }
+  const out = [];
+  for (const t of texts) {
+    for (const m of t.matchAll(ASK_FILE_RE)) {
+      const name = m[1].replace(/^[./\\]+/, "");
+      if (name && name.length <= 200 && !out.includes(name)) out.push(name);
+    }
+  }
+  return out;
+}
+/**
+ * 这道题该把哪个文件摊到右边，以及卡片上挂哪几个文件。
+ *
+ * 只认这一趟真落过盘的文件：正文里顺口提一句「参考 xxx.md」也会被上面那条正则捞出来，
+ * 照着它去开预览，用户得到的是一句「文件不存在」——比不开更糟。
+ * 纯函数，前端 harness 直接验输入输出。
+ */
+function askPreviewPlan(o) {
+  const chips = [];
+  const outs = (o.outFiles || []).map((f) => (f && f.name) || "").filter(Boolean);
+  for (const n of o.names || []) {
+    const hit = outs.includes(n) ? n : outs.find((k) => k.split("/").pop() === n.split("/").pop());
+    if (hit && !chips.includes(hit)) chips.push(hit);
+  }
+  if (!chips.length) return { preview: null, chips: [], why: "no-file" };
+  if (o.replaying || o.otherSession) return { preview: null, chips, why: "not-watching" };
+  if (o.narrow) return { preview: null, chips, why: "narrow" }; // 手机上右边那条根本没地方站
+  if (o.pvOpen && o.pvCurrent === chips[0]) return { preview: null, chips, why: "already-open" };
+  return { preview: chips[0], chips, why: "ok" };
+}
 function finishPreviewPlan(o) {
   if (o.replaying || o.otherSession) return { preview: null, why: "not-watching" };
   if (o.userClosedPreview) return { preview: null, why: "user-closed" };

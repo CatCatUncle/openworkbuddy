@@ -98,10 +98,20 @@ console.log("\n【2】每一路恰好一个默认，默认换人 config.media �
   eq(mm.normalize(c), true, "默认被抹光 → normalize 报告改了东西");
   eq(c.media_models.filter((m) => m.cap === "image" && m.default).length, 1, "自愈出一个默认");
 
-  // 引用了一个不存在的渠道：挂回第一个渠道，而不是留一条永远跑不起来的配置
-  c.media_models.find((m) => m.cap === "image").provider = "provider-does-not-exist";
-  mm.normalize(c);
-  ok(c.providers.some((p) => p.id === c.media_models.find((m) => m.cap === "image").provider), "引用不存在的渠道会被挂回去");
+  // 引用了一个不存在的渠道：这条跟着没（设置页删渠道时承诺的就是「挂在它下面的模型一起删」）。
+  // 以前是改挂到第一个渠道上——拿另一家的 Key 调这家的型号，必然 401，而且没人知道是谁改的
+  const before = c.media_models.length;
+  const orphan = c.media_models.find((m) => m.cap === "image");
+  orphan.provider = "provider-does-not-exist";
+  const warned = [];
+  const origWarn = console.warn;
+  console.warn = (s) => warned.push(String(s));
+  try { mm.normalize(c); } finally { console.warn = origWarn; }
+  eq(c.media_models.length, before - 1, "引用不存在渠道的那条被去掉，不再改挂到别家");
+  ok(!c.media_models.some((m) => m.name === orphan.name && m.cap === "image"), "去掉的正是那条孤儿");
+  ok(c.media_models.filter((m) => m.cap === "image").some((m) => m.default), "剩下的图像模型里自愈出一个默认");
+  ok(warned.some((s) => s.includes(orphan.name)), "去掉时在日志里点了名，不是悄悄消失", warned);
+  ok(c.media_models.every((m) => c.providers.some((p) => p.id === m.provider)), "反向对照：剩下的每条都挂在真实存在的渠道上");
 }
 
 // ---------------------------------------------------------------- 3

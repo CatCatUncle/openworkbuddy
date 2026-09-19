@@ -153,10 +153,38 @@ async function openEvalDetail(dir) {
  */
 function libTaskOf(src, name) {
   if (src !== "ws" || !libOutCache) return null;
-  for (const t of libOutCache.tasks || []) {          // tasks 已按时间倒序，第一个命中就是最近一次
+  const tasks = libOutCache.tasks || [];
+  const owner = libOwnerTask(tasks, name);
+  if (owner !== undefined) return owner;             // 文件夹说了算
+  for (const t of tasks) {                           // tasks 已按时间倒序，第一个命中就是最近一次
     if ((t.files || []).some((f) => f.name === name)) return t;
   }
   return null;
+}
+/**
+ * 文件躺在哪个任务的成果文件夹里，它就是那次任务的产出。这条比「谁最近动过它」硬。
+ *
+ * 用户原话：「这里说出自哪个任务也是错的位置啊！」——
+ * 任务_0915_对话_2/BGM_纯配乐.mp3 被标成了另一条 9-17 的任务的产出。
+ * 根子在所有权那一层（agent.js 的 inForeignDir）：它认的是**本进程内登记过**的
+ * 文件夹，dirOwners 这张表重启就空了。于是重启之后另一条任务只要碰一下这个文件
+ * （重命名、转存、甚至只是拿它当素材又写了一遍），它就进了那条任务的 changed。
+ *
+ * 这儿不去改服务端的记账（历史数据已经这么存着了），而是在读的一端把文件夹当成硬证据。
+ * 三种结果得分开：
+ *   任务  — 顶层文件夹正好是某次任务的 dir，就是它；
+ *   null  — 看着是个任务文件夹，但不属于手头这批任务（会话删了 / 不是我的）→ 交白卷，
+ *           别再往下按「谁动过」猜——猜出来的那个必错；
+ *   undefined — 根目录下的文件，没有文件夹归属可言 → 继续走原来那套
+ */
+function libOwnerTask(tasks, name) {
+  const s = String(name || "");
+  const i = s.indexOf("/");
+  if (i < 0) return undefined;
+  const top = s.slice(0, i);
+  const hit = (tasks || []).find((t) => String(t.dir || "") === top);
+  if (hit) return hit;
+  return /^任务_/.test(top) ? null : undefined;
 }
 /**
  * 这份文件是那次任务的第几回合写出来的。拿回合号是为了「跳到那段对话」——
@@ -689,9 +717,14 @@ async function renderLibPreview(prev, lib) {
   // 这一条是这一页跟一张普通文件表格最要紧的区别：产出和它的来历始终连着。
   const from = libTaskOf(src, name);
   const fromTurn = from ? libTurnOf(from, name) : null;
+  // 资料库那条路现在默认内联发（不内联的话 <audio>/<iframe> 渲染不出来），
+  // 所以「下载」得自己把 ?dl=1 带上，别指望 <a download> 一个属性扑掉所有情况
+  const dlUrl = url + (src === "lib" ? "?dl=1" : "");
   const bar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
     <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</b>
-    <a class="link" href="${url}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>
+    ${canOpenOnHost() ? `<a class="link" href="#" id="lb-reveal" title="在访达 / 资源管理器里打开它所在的文件夹，并选中它">所在位置</a>
+    <a class="link" href="#" id="lb-copy" title="把文件本身放进剪贴板，之后直接粘到微信 / 邮件里">复制文件</a>` : ""}
+    <a class="link" href="${dlUrl}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>
     ${src === "lib" && po ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
   </div>
   ${from ? `<div class="lib-from">${ic("sparkles")}<span>出自任务</span><a href="#" class="link" data-open="${esc(from.id)}"${fromTurn == null ? "" : ` data-turn="${fromTurn}"`} title="${fromTurn == null ? "回到产生这份文件的那次对话" : "回到产生这份文件的那次对话，并停在写出它的那一段"}">${esc(from.title)}</a><em>${esc(libWhen(from.at))}</em>${fromTurn == null ? "" : `<span class="lib-from-at">第 ${fromTurn + 1} 轮</span>`}</div>` : ""}`;
@@ -726,6 +759,21 @@ async function renderLibPreview(prev, lib) {
       body.outerHTML = `<img id="lb-img" src="${url}" style="max-width:100%;border-radius:8px">`;
       const img = prev.querySelector("#lb-img");
       if (img) img.onerror = async () => { img.outerHTML = (await alive()) ? failPh("这张图读不出来，文件可能是坏的") : gonePh; };
+    } else if (PV_AUDIO_RE.test(name) || PV_VIDEO_RE.test(name)) {
+      // 用户原话：「怎么没有办法预览啊」——一个 1 MB 的 note_audio.mp3 以前掉进最后那条
+      // 文本路，被当成字符串读进来，再被 400KB 那道闸拦成「文件太大，预览不动」。
+      // 音频本来就不该走文本路。跟图一样先画再等出错，顺利的那条路上不多发请求。
+      const vid = PV_VIDEO_RE.test(name);
+      body.outerHTML = vid
+        ? `<video id="lb-av" controls preload="metadata" src="${url}" style="width:100%;border-radius:8px;background:#000"></video>`
+        : `<audio id="lb-av" controls preload="metadata" src="${url}" style="width:100%"></audio>`;
+      const av = prev.querySelector("#lb-av");
+      // 编码解不了（ProRes 的 .mov、有些 .flac）跟「文件没了」是两件事，得分开说
+      if (av) av.onerror = async () => {
+        av.outerHTML = (await alive())
+          ? `<div class="ph">这段${vid ? "视频" : "音频"}浏览器放不动，多半是编码不支持。<br>点上面的「下载」用本地播放器打开。</div>`
+          : gonePh;
+      };
     } else if (/\.pdf$/i.test(name)) {
       // iframe 出错同样不通知外面：PDF 不在的时候，框里显示的是服务端那句「文件不存在」的纯文本
       body.outerHTML = (await alive()) ? `<iframe src="${url}"></iframe>` : gonePh;
@@ -756,6 +804,12 @@ async function renderLibPreview(prev, lib) {
       body.outerHTML = (await alive())
         ? `<div class="ph">这是 Office 97-2003 的老格式（.${esc(ext)}），里面是一包二进制记录，不是 .${esc(ext)}x 那样的压缩包，拆不出内容来。<br><br>用 Word / Excel / PowerPoint 或 WPS 打开，另存为 .${esc(ext)}x 再放回来，就能在这儿直接看。</div>`
         : gonePh;
+    } else if (PV_BINARY_RE.test(name)) {
+      // 后缀就摆明是二进制（.psd / .heic / .sqlite / .exe…）：别先花一趟把它当文本拉回来。
+      // 跟对话页用的是同一张 PV_BINARY_RE，两边不会各认各的
+      body.outerHTML = (await alive())
+        ? `<div class="ph">这是一份二进制文件，里面不是文字，没法在这儿展开。<br>点上面的「下载」用对应的程序打开。</div>`
+        : gonePh;
     } else {
       const r = await fetch(url);
       if (r.status === 404) body.outerHTML = gonePh;
@@ -771,7 +825,12 @@ async function renderLibPreview(prev, lib) {
           const blob = URL.createObjectURL(new Blob([text + PV_FIT_REPORTER], { type: "text/html" }));
           body.outerHTML = `<div class="pv-fit"><iframe src="${blob}" sandbox="allow-scripts" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
           fitPreviewFrame(prev, { selfReport: true });
-        } else if (text.length > 400000) body.outerHTML = '<div class="ph">文件太大，预览不动，请下载后本地打开</div>';
+        }
+        // 不认得的后缀里有一半是二进制（.psd、.sketch、.db、没后缀的导出件）。
+        // 当成文本读完整屏乱码，还不如直说它不是文本。判据是 NUL 字节和替换字符占比：
+        // UTF-8 解不开的字节会变成 \uFFFD，真文本里几乎不会成片出现
+        else if (looksBinary(text)) body.outerHTML = `<div class="ph">这是一份二进制文件，里面不是文字，没法在这儿展开。<br>点上面的「下载」用对应的程序打开。</div>`;
+        else if (text.length > 400000) body.outerHTML = '<div class="ph">文件太大，预览不动，请下载后本地打开</div>';
         // CSV/TSV 走跟对话页同一个 csvHtml：它按 RFC4180 认引号，还会自己判分隔符是逗号、
         // 分号还是制表符（欧洲导出的表用分号，.tsv 用制表符，按逗号拆会拆成一整列）
         else if (/\.(csv|tsv)$/i.test(name)) body.outerHTML = csvHtml(text, name);
@@ -786,6 +845,10 @@ async function renderLibPreview(prev, lib) {
     body.outerHTML = failPh(e.message);
   }
   wireDel();
+  const rev = prev.querySelector("#lb-reveal");
+  if (rev) rev.onclick = (e) => revealFile(name, e, "", src === "lib" ? "lib" : "");
+  const cp = prev.querySelector("#lb-copy");
+  if (cp) cp.onclick = (e) => copyHostFile(name, e, { src: src === "lib" ? "lib" : "" });
   // 「出自任务」那条链接得在 innerHTML 重排之后再接一次事件（上面几条 outerHTML 会换掉节点）
   prev.querySelectorAll("[data-open]").forEach((a) => a.onclick = (e) => { e.preventDefault(); openSession(a.dataset.open, { turn: a.dataset.turn === undefined ? null : +a.dataset.turn }); });
 }

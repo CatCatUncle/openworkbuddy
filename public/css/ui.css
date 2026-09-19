@@ -1045,6 +1045,9 @@ html[data-theme="dark"] .ui-select {
 /* 正在用的那一行加一点底色：一张卡里五六行，光靠一个选中的单选钮找不出是哪行 */
 .mrow.is-on { margin: 0 -8px; padding-right: 8px; padding-left: 8px; border-radius: var(--radius-md); background: var(--owb-brand-weak); }
 .mrow.is-on + .mrow { border-top-color: transparent; }
+/* 挂错家的型号：本机没有那家渠道，自愈挪不动，只能在它头上挂一行。
+   红字压在行**上面**而不是行里：行里那几列是等宽对齐的，塞一句长话进去会把整张表挤歪 */
+.mrow-bad { margin-top: 6px; border-left: 3px solid var(--owb-warn); padding-left: 8px; color: var(--owb-warn-text); background: var(--owb-warn-bg); border-radius: var(--radius-sm); }
 
 /* 渠道测活：折起来时看头上那颗点，展开时看底下那一整句 */
 .ch-pill { display: inline-flex; flex: none; align-items: center; gap: 4px; margin-left: 2px; padding: 2px 8px; border-radius: var(--radius-full); font-size: 11px; white-space: nowrap; }

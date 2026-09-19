@@ -18,6 +18,10 @@
  *   400/422 —— 多半是这次的 prompt 或这张图的事（内容策略、尺寸不合法），
  *              换一次输入就可能过，一次都不计。把它算进去等于因为一张图违规
  *              就把整条生图渠道关了。
+ *   **例外看正文**：状态码撒谎的时候正文不撒谎。OpenRouter 把「型号 ID 不存在」报成 400，
+ *   火山把「账号欠费」报成 400/403 带 AccountOverdue——这两种换一百次问法结果都一样，
+ *   正文里只要说的是「没余额」或「没这个型号」，不管什么状态码都按硬错断。
+ *   用户原话：「这个看图模型我现在没有付费用不了的啊，你不要一直给我调用浪费这个 agent 执行时间啊」
  *
  * 自愈的路留了三条，缺一条都会变成「我明明充值了它还是不干活」：
  *   1. 配置动了（地址/型号/Key 任一变了）→ 指纹变了，自然是新的一格；
@@ -61,6 +65,14 @@ function statusOf(text) {
 function looksNetwork(text) {
   return /请求失败|timeout|超时|ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up/i.test(String(text || ""));
 }
+/** 正文说的是「没余额」：状态码不管是 402 还是 400/403，充值之前都不会变 */
+function looksBroke(text) {
+  return /没余额|余额不足|欠费|insufficient[_ ](credit|balance|quota|funds)|out of credits|AccountOverdue|account (is )?overdue|in arrears|payment required|quota (has been )?exhausted|exceeded your current quota|check your plan and billing|billing hard limit/i.test(String(text || ""));
+}
+/** 正文说的是「没这个型号」：OpenRouter 报 400「is not a valid model ID」，火山报 404 ModelNotOpen——换问法不会变 */
+function looksNoModel(text) {
+  return /not a valid model|invalid model|model[_ ]not[_ ]found|no such model|unknown model|model .{0,60}(does not exist|doesn't exist|not exist)|ModelNotOpen|ModelNotFound|模型不存在|不存在的模型|型号不存在|未开通/i.test(String(text || ""));
+}
 
 function now() { return Date.now(); }
 
@@ -96,12 +108,16 @@ function record(cap, cfg, res) {
 
   const text = res.content || "";
   const http = statusOf(text);
-  if (IGNORE.has(http)) return null;
+  const broke = looksBroke(text);
+  const noModel = !broke && looksNoModel(text);
+  if (IGNORE.has(http) && !broke && !noModel) return null;
 
   const b = bucket.get(id) || { until: 0, why: "", http: 0, hard: false, soft: 0 };
-  if (HARD.has(http)) {
+  if (HARD.has(http) || broke || noModel) {
     b.hard = true; b.http = http; b.soft = 0;
-    b.why = `HTTP ${http}（${{ 401: "Key 不对或没权限", 402: "这条渠道没余额了", 403: "被拒绝访问", 404: "地址或型号不存在" }[http]}）`;
+    const why = broke ? "这条渠道没余额了" : noModel ? "这条渠道上没有这个型号（型号名写错、没开通，或者挂错了渠道）"
+      : { 401: "Key 不对或没权限", 402: "这条渠道没余额了", 403: "被拒绝访问", 404: "地址或型号不存在" }[http];
+    b.why = http ? `HTTP ${http}（${why}）` : why;
     b.until = now() + HARD_COOL_MS;
   } else if (http >= 500 || http === 429 || http === 408 || looksNetwork(text)) {
     b.soft += 1; b.http = http;
@@ -132,4 +148,4 @@ function list() {
   return out;
 }
 
-module.exports = { gate, record, reset, list, statusOf, fingerprint, HARD, IGNORE, SOFT_LIMIT, SOFT_COOL_MS, HARD_COOL_MS, _bucket: bucket };
+module.exports = { gate, record, reset, list, statusOf, looksBroke, looksNoModel, fingerprint, HARD, IGNORE, SOFT_LIMIT, SOFT_COOL_MS, HARD_COOL_MS, _bucket: bucket };

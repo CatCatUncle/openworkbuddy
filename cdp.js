@@ -3,33 +3,151 @@
  * 极小的 Chrome DevTools Protocol 客户端。
  * 不引入 puppeteer/playwright：本机 Chrome 已经有 CDP，Agent 只需要一条受限的
  * localhost WebSocket。所有调用都必须显式给 tab_id，避免误操作当前窗口。
+ *
+ * 端口没人应答时会自己拉起一个**专用** Chrome：单独的 user-data-dir，跟你日常那个
+ * 浏览器两套 cookie、两套登录态，互不打扰，也不用你记住那串启动命令。
  */
 const http = require("http");
 const https = require("https");
 const net = require("net");
 const tls = require("tls");
 const crypto = require("crypto");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { spawn } = require("child_process");
 
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+// URL 解析 IPv6 时 hostname 是带方括号的 "[::1]"，直接拿去比对集合永远不相等——
+// 于是 ::1 明明写在白名单里却一直被拒。统一剥掉方括号再比。
+const isLocal = (h) => LOCAL_HOSTS.has(String(h || "").replace(/^\[|\]$/g, ""));
 
 function endpointHost(raw) {
   const u = new URL(raw || "http://127.0.0.1:9222");
-  if (!/^https?:$/.test(u.protocol) || !LOCAL_HOSTS.has(u.hostname)) {
+  if (!/^https?:$/.test(u.protocol) || !isLocal(u.hostname)) {
     throw new Error("Chrome CDP 只允许连接本机地址（127.0.0.1 / localhost / ::1）");
   }
   return u;
 }
-function getJson(url) {
+function getJson(url, opts = {}) {
   return new Promise((resolve, reject) => {
     const u = endpointHost(url), lib = u.protocol === "https:" ? https : http;
-    const req = lib.get(u, { timeout: 4000, headers: { Accept: "application/json" } }, (res) => {
+    const req = lib.request(u, { method: opts.method || "GET", timeout: opts.timeout || 4000, headers: { Accept: "application/json" } }, (res) => {
       let body = "";
       res.setEncoding("utf8"); res.on("data", (x) => { body += x; });
       res.on("end", () => { try { resolve(JSON.parse(body)); } catch { reject(new Error(`CDP 返回的不是 JSON（HTTP ${res.statusCode}）`)); } });
     });
     req.on("timeout", () => req.destroy(new Error("连接 Chrome CDP 超时")));
     req.on("error", reject);
+    req.end();
   });
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 本进程自己拉起来的那个 Chrome。拉起一次就一直复用，不会每调一次开一个窗口。 */
+const OWN = { port: 0, pid: 0, dir: "" };
+
+const CHROMES = {
+  darwin: [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+  ],
+  win32: [
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  ],
+  linux: ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium"],
+};
+function findChrome() {
+  const envPath = String(process.env.OWB_CHROME_PATH || "").trim();
+  if (envPath) return fs.existsSync(envPath) ? envPath : "";
+  for (const c of CHROMES[process.platform] || CHROMES.linux) { try { if (fs.existsSync(c)) return c; } catch {} }
+  return "";
+}
+
+/** 端口上有没有一个真的 DevTools。有就返回版本信息，没有就 null——不抛异常，探测本来就允许失败。 */
+async function probe(port, timeout = 1500) {
+  try {
+    const v = await getJson(`http://127.0.0.1:${port}/json/version`, { timeout });
+    return v && (v.webSocketDebuggerUrl || v.Browser) ? v : null;
+  } catch { return null; }
+}
+
+function readPortFile(portFile) {
+  try { return Number(String(fs.readFileSync(portFile, "utf8")).split("\n")[0].trim()) || 0; } catch { return 0; }
+}
+function profileDir(raw) {
+  const dir = String(raw || "").trim() || path.join(os.homedir(), "OpenWorkBuddy", "chrome-cdp");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * 拉起专用 Chrome。端口写死 0：由 Chrome 自己挑一个空的，再从 DevToolsActivePort 读回来。
+ * 这样就绕开了「9222 被别的东西占着、但它根本不是 DevTools」——本机就是这个情况：
+ * Chrome 主进程在 9222 上 listen，/json/version 却是空的，于是所有人都以为调试口开着。
+ */
+function wantHeadless(input) {
+  if (input.headless !== undefined) return !!input.headless;
+  if (String(process.env.OWB_CDP_HEADLESS || "") === "1") return true;
+  // Linux 上没有 DISPLAY/WAYLAND_DISPLAY 就是台服务器，有头根本起不来。
+  return process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+}
+async function launch(input = {}) {
+  const bin = findChrome();
+  if (!bin) {
+    throw new Error("这台机器上没找到 Chrome（也没有 Chromium / Edge / Brave）。装一个，或者把浏览器可执行文件的完整路径写进环境变量 OWB_CHROME_PATH。");
+  }
+  const dir = profileDir(input.user_data_dir);
+  const portFile = path.join(dir, "DevToolsActivePort");
+  // 先认领：这个 profile 上可能已经有一个我们之前拉起的 Chrome 还活着。
+  // 顺序反过来（先删端口文件再拉）会踩坑——同一个 profile 再 spawn 一次，Chrome 只是把
+  // 网址交给已在跑的那个实例然后自己退出，端口文件又被我们删了，于是干等 20 秒然后报错。
+  const had = readPortFile(portFile);
+  if (had && (await probe(had, 1200))) { OWN.port = had; OWN.dir = dir; return { port: had, launched: false, adopted: true, user_data_dir: dir, bin }; }
+  try { fs.rmSync(portFile, { force: true }); } catch {}
+  const args = [
+    "--remote-debugging-port=0", `--user-data-dir=${dir}`,
+    "--no-first-run", "--no-default-browser-check", "--no-service-autorun", "--disable-background-networking",
+    "--disable-features=Translate,AcceptCHFrame", "--hide-crash-restore-bubble", "--password-store=basic",
+  ];
+  // 无头也要能跑 WebGL：闪卡、Three.js、地图这类页面没有 GL 上下文就只剩一句报错。
+  // 千万别顺手加 --disable-gpu——那正好把 WebGL 关掉，截出来的图上写着
+  // 「Error creating WebGL context」，而页面本身一点毛病没有。
+  if (wantHeadless(input)) args.push("--headless=new", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--disable-dev-shm-usage");
+  args.push("about:blank");
+  const child = spawn(bin, args, { detached: true, stdio: "ignore" });
+  child.on("error", () => {});
+  child.unref();
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    await sleep(150);
+    const port = readPortFile(portFile);
+    if (port && (await probe(port, 1200))) {
+      OWN.port = port; OWN.pid = child.pid || 0; OWN.dir = dir;
+      return { port, launched: true, pid: OWN.pid, user_data_dir: dir, bin };
+    }
+  }
+  throw new Error(`拉起了 ${path.basename(bin)}，但 20 秒内没等到它的调试端口。多半是这个 user-data-dir（${dir}）已经被另一个正在跑的 Chrome 占着——把那个窗口关掉，或者换个目录（user_data_dir 参数）再试。`);
+}
+
+/**
+ * 找一个能用的 CDP 端口：显式指定的 → 本进程之前拉起的 → 默认 9222 → 自己拉一个。
+ */
+async function ensure(input = {}) {
+  const want = Number(input.port) || 0;
+  if (want) { if (await probe(want)) return { port: want, launched: false }; }
+  if (OWN.port && (await probe(OWN.port))) return { port: OWN.port, launched: false, reused: true, pid: OWN.pid, user_data_dir: OWN.dir };
+  if (!want && (await probe(9222))) return { port: 9222, launched: false };
+  if (input.launch === false || process.env.OWB_CDP_NO_LAUNCH === "1") {
+    throw new Error(`${want || 9222} 端口上没有 Chrome DevTools（端口通不通都一样：有东西 listen 不代表它是调试口）。自己启一个：\n  "${findChrome() || "chrome"}" --remote-debugging-port=9222 --user-data-dir=/tmp/openworkbuddy-chrome\n或者把 OWB_CDP_NO_LAUNCH 取消掉，让它自己拉起一个专用窗口。`);
+  }
+  return await launch(input);
 }
 function frame(data, mask = true) {
   const body = Buffer.from(data), head = [0x81];
@@ -44,7 +162,7 @@ function frame(data, mask = true) {
 function connect(wsUrl) {
   return new Promise((resolve, reject) => {
     const u = new URL(wsUrl), secure = u.protocol === "wss:", port = Number(u.port) || (secure ? 443 : 80);
-    if (!/^(ws|wss):$/.test(u.protocol) || !LOCAL_HOSTS.has(u.hostname)) {
+    if (!/^(ws|wss):$/.test(u.protocol) || !isLocal(u.hostname)) {
       throw new Error("Chrome CDP WebSocket 只允许连接本机地址");
     }
     // 分开建连而不是 (secure ? tls : net).connect：运行时没区别，但 TypeScript 能精确
@@ -58,9 +176,17 @@ function connect(wsUrl) {
     const fail = (e) => { for (const p of pending.values()) p.reject(e); pending.clear(); if (!opened) reject(e); };
     socket.setTimeout(10000, () => socket.destroy(new Error("Chrome CDP 操作超时")));
     socket.on("error", fail); socket.on("close", () => fail(new Error("Chrome CDP 连接已关闭")));
-    socket.on("connect", () => socket.write(`GET ${u.pathname}${u.search} HTTP/1.1\r\nHost: ${u.host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\nOrigin: http://localhost\r\n\r\n`));
+        // 握手里**不许**带 Origin。Chrome 111 起，带 Origin 的 CDP WebSocket 一律 403，
+    // 除非启动时把它写进 --remote-allow-origins。以前这里固定发 `Origin: http://localhost`，
+    // 于是 /json/list 能列出标签页、真要操作就 403，报出来的却是「请确认用 --remote-debugging-port 启动」——
+    // 一句指着错误方向的话，人照着去查启动参数，查一晚上也查不出问题。
+    socket.on("connect", () => socket.write(`GET ${u.pathname}${u.search} HTTP/1.1\r\nHost: ${u.host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`));
     const consume = () => {
-      if (!opened) { const i = buf.indexOf("\r\n\r\n"); if (i < 0) return; const h = buf.slice(0, i).toString(); if (!/101 Switching Protocols/i.test(h)) return fail(new Error("Chrome 没有接受 CDP WebSocket，请确认用 --remote-debugging-port 启动")); buf = buf.slice(i + 4); opened = true; resolve({ call, close }); }
+      if (!opened) { const i = buf.indexOf("\r\n\r\n"); if (i < 0) return; const h = buf.slice(0, i).toString(); const line = (h.split("\r\n")[0] || "").trim();
+        // 只认状态码 101。**不要**回去比对 "Switching Protocols" 那句原因短语：
+        // 新版 Chrome 回的是「101 WebSocket Protocol Handshake」，字面比对会把一次
+        // 成功的握手判成失败，于是除了 list_tabs 什么都做不了。
+        if (!/^HTTP\/1\.[01] 101\b/i.test(line)) return fail(new Error(`Chrome 拒绝了这条 CDP WebSocket：${line || "没给状态行"}。403 多半是握手里带了 Origin（Chrome 111 起不再接受），或者这个 Chrome 是拿 --remote-allow-origins 限制过的。`)); buf = buf.slice(i + 4); opened = true; resolve({ call, close }); }
       while (buf.length >= 2) {
         const b1 = buf[0], b2 = buf[1]; let len = b2 & 127, off = 2;
         if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
@@ -81,17 +207,66 @@ function connect(wsUrl) {
   });
 }
 async function withTab(tabId, fn, port = 9222) {
-  const tabs = await getJson(`http://127.0.0.1:${port}/json/list`);
+  let tabs = await getJson(`http://127.0.0.1:${port}/json/list`);
+  const pages = (tabs || []).filter((x) => x.type === "page");
+  // 一个页面都没有（窗口全关了、或者刚拉起来还没落地）就自己开一个空白页，
+  // 而不是甩一句「没有可操作的标签页」让人去手动点。
+  if (!tabId && !pages.length) {
+    try { await getJson(`http://127.0.0.1:${port}/json/new?about:blank`, { method: "PUT" }); } catch { try { await getJson(`http://127.0.0.1:${port}/json/new?about:blank`); } catch {} }
+    tabs = await getJson(`http://127.0.0.1:${port}/json/list`);
+  }
   const tab = (tabs || []).find((x) => x.id === tabId) || (tabId ? null : (tabs || []).find((x) => x.type === "page"));
-  if (!tab || !tab.webSocketDebuggerUrl) throw new Error(tabId ? `找不到 Chrome 标签页：${tabId}` : "没有可操作的 Chrome 页面标签页");
+  if (!tab || !tab.webSocketDebuggerUrl) throw new Error(tabId ? `找不到 Chrome 标签页：${tabId}` : "这个 Chrome 里没有可操作的页面标签页");
   const c = await connect(tab.webSocketDebuggerUrl); try { return await fn(c.call, tab); } finally { c.close(); }
 }
+/** 等页面自己说加载完了。截图前不等一下，十有八九拍到一张白板。 */
+async function waitReady(call, ms) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    await sleep(200);
+    try {
+      const r = await call("Runtime.evaluate", { expression: "document.readyState", returnByValue: true });
+      if (r.result?.value === "complete") { await sleep(300); return true; }
+    } catch { return false; }
+  }
+  return false;
+}
 async function run(input = {}) {
-  const port = Number(input.port) || 9222, action = String(input.action || "list_tabs");
-  if (action === "list_tabs") return { tabs: (await getJson(`http://127.0.0.1:${port}/json/list`)).filter((x) => x.type === "page").map((x) => ({ id: x.id, title: x.title, url: x.url, type: x.type })) };
+  const action = String(input.action || "list_tabs");
+  if (action === "status") {
+    // status 只看不碰：它就是用来回答「现在到底连没连上」的，自己顺手拉起一个反而把答案改了。
+    const want = Number(input.port) || 0;
+    const cands = want ? [want] : [OWN.port, 9222].filter(Boolean);
+    let port = 0, v = null;
+    for (const c of cands) { const r = await probe(c); if (r) { port = c; v = r; break; } }
+    const chrome = findChrome();
+    return {
+      alive: !!port, port: port || 0, launched_by_us: !!port && port === OWN.port,
+      chrome: chrome || "（这台机器上没找到 Chrome，装一个，或把路径写进 OWB_CHROME_PATH）",
+      browser: v?.Browser || "", user_data_dir: OWN.dir || "（不是本工具拉起来的）",
+      tabs: port ? (((await getJson(`http://127.0.0.1:${port}/json/list`).catch(() => [])) || []).filter((x) => x.type === "page").length) : 0,
+      hint: port ? "" : `${want || 9222} 上没有 DevTools。直接发一条 navigate 或 screenshot 就行，会自己拉起一个专用 Chrome。`,
+    };
+  }
+  const ready = await ensure(input);
+  const port = ready.port;
+  if (action === "list_tabs") return { port, ...ready, tabs: (await getJson(`http://127.0.0.1:${port}/json/list`)).filter((x) => x.type === "page").map((x) => ({ id: x.id, title: x.title, url: x.url, type: x.type })) };
+  if (action === "close_tab") { const id = String(input.tab_id || ""); if (!id) throw new Error("close_tab 要给 tab_id"); try { await getJson(`http://127.0.0.1:${port}/json/close/${encodeURIComponent(id)}`); } catch {} return { port, closed: id }; }
   return withTab(String(input.tab_id || ""), async (call, tab) => {
-    if (action === "navigate") return { tab_id: tab.id, result: await call("Page.navigate", { url: String(input.url || "") }) };
-    if (action === "evaluate") return { tab_id: tab.id, result: (await call("Runtime.evaluate", { expression: String(input.expression || ""), returnByValue: true, awaitPromise: true })).result?.result?.value };
+    if (action === "navigate") {
+      const result = await call("Page.navigate", { url: String(input.url || "") });
+      const wait = input.wait_ms === undefined ? 4000 : Math.min(60000, Math.max(0, Number(input.wait_ms) || 0));
+      const loaded = wait ? await waitReady(call, wait) : null;
+      return { tab_id: tab.id, port, loaded, result };
+    }
+    if (action === "evaluate") {
+      // 注意层级：call() 已经把 msg.result 拆出来了，这里再 .result 就是 Runtime.evaluate
+      // 自己那层 RemoteObject，取 .value 即可。多绕一层 .result 会让**每一次** evaluate
+      // 都返回 undefined，而且不报错——页面里的脚本明明跑了，拿回来的却永远是空。
+      const r = await call("Runtime.evaluate", { expression: String(input.expression || ""), returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) return { tab_id: tab.id, port, error: r.exceptionDetails.exception?.description || r.exceptionDetails.text || "页面脚本抛异常了" };
+      return { tab_id: tab.id, port, result: r.result?.value };
+    }
     if (action === "inspect") {
       const selector = String(input.selector || "body");
       const maxChars = Math.min(100000, Math.max(1000, Number(input.max_chars) || 20000));
@@ -100,8 +275,24 @@ async function run(input = {}) {
     }
     if (action === "click") { const s = JSON.stringify(String(input.selector || "")); const r = await call("Runtime.evaluate", { expression: `(() => { const e=document.querySelector(${s}); if(!e) return {ok:false}; e.click(); return {ok:true,tag:e.tagName,text:(e.innerText||"").slice(0,120)}; })()`, returnByValue: true }); return { tab_id: tab.id, ...(r.result?.value || {}) }; }
     if (action === "type") { const s = JSON.stringify(String(input.selector || "")), v = JSON.stringify(String(input.text || "")); const r = await call("Runtime.evaluate", { expression: `(() => { const e=document.querySelector(${s}); if(!e) return {ok:false}; e.focus(); e.value=${v}; e.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:${v}})); e.dispatchEvent(new Event('change',{bubbles:true})); return {ok:true}; })()`, returnByValue: true }); return { tab_id: tab.id, ...(r.result?.value || {}) }; }
-    if (action === "screenshot") return { tab_id: tab.id, mime: "image/png", data: (await call("Page.captureScreenshot", { format: "png", fromSurface: true })).data };
+    if (action === "screenshot") {
+      const w = Number(input.width) || 0, h = Number(input.height) || 0;
+      if (w && h) await call("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: Number(input.scale) || 0, mobile: false });
+      if (input.wait_ms) await waitReady(call, Math.min(60000, Number(input.wait_ms)));
+      const params = { format: "png", fromSurface: true };
+      if (input.full_page) {
+        try {
+          const m = await call("Page.getLayoutMetrics", {});
+          const cs = m.cssContentSize || m.contentSize;
+          // 上限压到 16000：再高 Chrome 自己就返回空数据了，与其拿到一张废图不如截到这儿。
+          if (cs && cs.width && cs.height) { params.clip = { x: 0, y: 0, width: Math.ceil(cs.width), height: Math.min(16000, Math.ceil(cs.height)), scale: 1 }; params.captureBeyondViewport = true; }
+        } catch {}
+      }
+      const data = (await call("Page.captureScreenshot", params)).data;
+      if (w && h) { try { await call("Emulation.clearDeviceMetricsOverride", {}); } catch {} }
+      return { tab_id: tab.id, port, mime: "image/png", data };
+    }
     throw new Error(`不支持的 Chrome CDP 操作：${action}`);
   }, port);
 }
-module.exports = { run };
+module.exports = { run, ensure, probe, findChrome, launch, endpointHost };

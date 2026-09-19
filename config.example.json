@@ -1,5 +1,5 @@
 {
-  "_说明": "provider 可选 'anthropic'（Claude 官方）或 'openai'（OpenAI 兼容接口：DeepSeek/通义Qwen/智谱GLM/Kimi/Ollama 本地模型都用这个）。api_key 也可以用环境变量 ANTHROPIC_API_KEY / OPENAI_API_KEY 提供。",
+  "_说明": "模型不出厂预置：models 里只放你真配过的（首页向导或 设置→模型 从厂商预设一键添加，填了 Key 才算一条）。provider 可选 'anthropic'（Claude 官方）或 'openai'（OpenAI 兼容接口：DeepSeek/通义Qwen/智谱GLM/Kimi/Ollama 本地模型都用这个）。api_key 也可以用环境变量 ANTHROPIC_API_KEY / OPENAI_API_KEY 提供。",
   "provider": "openai",
   "anthropic": {
     "api_key": "",
@@ -82,70 +82,6 @@
     "wecom_bot_webhook": "",
     "webhook_secret": "openworkbuddy-secret-请修改"
   },
-  "models": [
-    {
-      "name": "DeepSeek",
-      "provider": "openai",
-      "base_url": "https://api.deepseek.com/v1",
-      "api_key": "",
-      "model": "deepseek-chat"
-    },
-    {
-      "name": "通义Qwen",
-      "provider": "openai",
-      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "api_key": "",
-      "model": "qwen-max"
-    },
-    {
-      "name": "智谱GLM",
-      "provider": "openai",
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "api_key": "",
-      "model": "glm-4-plus"
-    },
-    {
-      "name": "Kimi",
-      "provider": "openai",
-      "base_url": "https://api.moonshot.cn/v1",
-      "api_key": "",
-      "model": "moonshot-v1-32k"
-    },
-    {
-      "name": "Ollama本地",
-      "provider": "openai",
-      "base_url": "http://localhost:11434/v1",
-      "api_key": "",
-      "model": "qwen3:14b"
-    },
-    {
-      "name": "OpenAI",
-      "provider": "openai",
-      "base_url": "https://api.openai.com/v1",
-      "api_key": "",
-      "model": "gpt-5.2"
-    },
-    {
-      "name": "Anthropic Claude",
-      "provider": "anthropic",
-      "base_url": "",
-      "api_key": "",
-      "model": "claude-sonnet-5"
-    },
-    {
-      "name": "OpenRouter",
-      "provider": "openai",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key": "",
-      "model": "deepseek/deepseek-chat"
-    },
-    {
-      "name": "火山方舟",
-      "provider": "openai",
-      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "api_key": "",
-      "model": "doubao-seed-1-6-250615"
-    }
-  ],
-  "active_model": "DeepSeek"
+  "models": [],
+  "active_model": ""
 }

@@ -57,6 +57,25 @@ const SCENES = {
       { type: "text", delta: "\n改完了：4 个文件里 12 处超时全部统一成 30 秒，测试 38 项全过。\n这一趟走的是你本机的 Claude Code，没有花 API 额度。" },
     ],
   },
+  // 「做闪卡」：演示技能清单里的 holo-card-studio 干活，内容与推文一致（西游师徒案例）
+  "holo-card": {
+    file: "holo-card-ui.png",
+    ask: "用 holo-card-studio 把这张图做成浮世绘动漫风的全息镭射闪卡，保留四个人物和凸面镜构图",
+    clip: ".turn",
+    open: true,
+    events: [
+      { type: "text", delta: "先确认技能装好了，然后按全息镭射卡这条路线走：生成四层图 → 搭 Blender 场景 → 出网页。\n" },
+      { type: "tool_use", id: "t1", name: "use_skill", title: "加载 holo-card-studio", input_preview: "holo-card-studio" },
+      { type: "tool_result", id: "t1", outcome: "已加载：全息闪卡 Holo Card Studio" },
+      { type: "tool_use", id: "t2", name: "generate_image", title: "生成主体层 subject.png", input_preview: "浮世绘动漫风 · 保留四人构图" },
+      { type: "tool_result", id: "t2", outcome: "subject.png 1776×2368，无水印" },
+      { type: "tool_use", id: "t3", name: "run_shell", title: "跑流水线 run_pipeline.py", input_preview: "--project . --mode holographic" },
+      { type: "tool_result", id: "t3", outcome: "四层图校验通过，card.blend 已生成" },
+      { type: "tool_use", id: "t4", name: "check_page", title: "验收网页", input_preview: "http://127.0.0.1:4173/" },
+      { type: "tool_result", id: "t4", outcome: "零报错，页面正常" },
+      { type: "text", delta: "\n做好了。你在浏览器里拖着转就能看到四个人物分层凸出来，镭射光随角度流动。\n交付了：网页、card.blend、四层图、8 个角度的渲染图。" },
+    ],
+  },
 };
 
 function pageScript(scene) {

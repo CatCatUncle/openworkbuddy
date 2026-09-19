@@ -107,7 +107,12 @@ store.tighten(ACCOUNT_DIR, 0o700);
 // 真 Key 覆盖没了。store 会先拿 .bak 顶（Key 原样还在），实在顶不住才把坏文件改名隔离、
 // 退回模板——原文还在 .corrupt-时间戳 里，Key 捞得回来。
 const CONFIG_DEFAULTS = JSON.parse(fs.readFileSync(appPath("config.example.json"), "utf8"));
-const config = fillDefaults(store.readJson(CONFIG_PATH, CONFIG_DEFAULTS), CONFIG_DEFAULTS);
+// 模板另拷一份当「文件不存在」的底：readJson 找不到文件时原样把 empty 交回来，不拷的话
+// 下面所有对 config 的改动都会写进 CONFIG_DEFAULTS，后面 mergeDiskEdits 拿模板兜底时兜到的就是活配置
+const rawConfig = store.readJson(CONFIG_PATH, JSON.parse(JSON.stringify(CONFIG_DEFAULTS)));
+// 0.2 之前的老配置压根没有 models 表（只有 provider / openai / anthropic 三块）——要在模板补缺之前认出来
+const legacyNoModels = !Array.isArray(rawConfig.models);
+const config = fillDefaults(rawConfig, CONFIG_DEFAULTS);
 // 助理的名字和头像：想叫它「小秘」就叫「小秘」。界面（气泡头像/侧栏/品牌位）和系统提示词都跟着这里走
 // "@cat" 是内置猫标的哨兵值，跟应用图标同一只猫；前端 avatarBits 认它，account.normalizeAvatar 放行
 const ASSISTANT_DEFAULT = { name: "OpenWorkBuddy", avatar: "@cat" };
@@ -139,17 +144,12 @@ function fillDefaults(cur, def) {
   return cur;
 }
 
-// 旧配置迁移：生成 models 列表（内置国产模型预设 + 自定义），active_model 指定当前使用
-if (!Array.isArray(config.models) || !config.models.length) {
-  const old = config.openai || {};
-  config.models = [
-    { name: "DeepSeek", provider: "openai", base_url: "https://api.deepseek.com/v1", api_key: old.base_url?.includes("deepseek") ? old.api_key || "" : "", model: "deepseek-chat" },
-    { name: "通义Qwen", provider: "openai", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", api_key: "", model: "qwen-max" },
-    { name: "智谱GLM", provider: "openai", base_url: "https://open.bigmodel.cn/api/paas/v4", api_key: "", model: "glm-4-plus" },
-    { name: "Kimi", provider: "openai", base_url: "https://api.moonshot.cn/v1", api_key: "", model: "moonshot-v1-32k" },
-    { name: "Ollama本地", provider: "openai", base_url: "http://localhost:11434/v1", api_key: "", model: "qwen3:14b" },
-  ];
-  config.active_model = "DeepSeek";
+// 老配置迁移：还没有 models 表的，只把填了 Key 的那家搬成一条模型行。
+// 以前这里会塞五家厂商的模板行——用户看到的就是一排没 Key 的占位渠道，删了下次启动又长回来。
+// models 是空数组的不碰：那是用户自己清空的（或者就是没配），空着才是对的
+if (legacyNoModels) {
+  config.models = chatModels.legacyRows(config);
+  config.active_model = config.models.length ? config.models[0].name : "";
   saveConfig();
 }
 
@@ -158,6 +158,15 @@ if (!Array.isArray(config.models) || !config.models.length) {
 // 两者共用同一张 config.providers 表，所以媒体那边先跑（它的渠道认领只看地址+Key，不看协议）
 let migrated = mediaModels.normalize(config);
 if (chatModels.normalize(config)) migrated = true;
+// 老版本出厂 config 里那九行没 Key 的厂商模板、以及它们留下的空壳渠道，这一趟收掉。只认名字+地址
+// 跟出厂一模一样、Key 空着、又不是正在用的那条；用户自己起名建的行一条不碰。跑过一遍就没得收了
+// 只跑一次（presets_pruned 章）：之后用户自己清空某条渠道的 Key、或者起了个跟老模板同名的行，都不许再被当成占位收走
+if (!config.presets_pruned) {
+  const pruned = chatModels.pruneSeededPresets(config);
+  if (pruned.models.length || pruned.channels.length) console.log(`[渠道整理] 收回出厂占位 → 模型行：${pruned.models.join("、") || "无"}；空壳渠道：${pruned.channels.join("、") || "无"}`);
+  config.presets_pruned = true;
+  migrated = true;
+}
 if (migrated) saveConfig();
 
 security.getSecurity(config); // 补齐安全中心默认策略
@@ -1639,7 +1648,12 @@ app.get("/api/assistant", (_req, res) => res.json(config.assistant));
  * 放服务端，跟着版本走，升级一次就全对上了。
  */
 app.get("/api/model-catalog", (req, res) => {
-  res.json({ kinds: mediaModels.PROVIDER_KINDS, catalog: mediaModels.CATALOG, caps: mediaModels.CAPS, cap_cn: mediaModels.CAP_CN });
+  // brand_hints 跟着一起下发：前端要在**保存之前**就认出「这个型号是别家的」，
+  // 认的规矩必须和服务端是同一份，否则前端放行、后端自愈，用户看到的就是「我选了 A，存完变成 B」
+  res.json({
+    kinds: mediaModels.PROVIDER_KINDS, catalog: mediaModels.CATALOG, caps: mediaModels.CAPS, cap_cn: mediaModels.CAP_CN,
+    brand_hints: mediaModels.BRAND_HINTS,
+  });
 });
 
 // 从渠道现拉一次模型清单，10 分钟内不重复拉（换渠道来回点几下不该把人家接口打一遍）
@@ -2564,6 +2578,8 @@ app.get("/api/onboarding", async (req, res) => {
     active_model: config.active_model,
     workspace_dir: getWorkspaceDir(),
     models,
+    // 向导的「服务商」清单从目录来，不再靠 config 里那排没 Key 的模板行撑场面
+    templates: chatModels.templates(),
     any_key: models.some((m) => m.has_key && !m.local),
     engines: found.map((e) => ({ id: e.id, label: e.label, installed: e.installed, version: e.version, install: e.install || "", note: e.note || "" })),
     engine: engineId,
@@ -2577,9 +2593,34 @@ app.get("/api/onboarding", async (req, res) => {
 app.post("/api/onboarding", async (req, res) => {
   try {
     const b = req.body || {};
+    const key = String(b.api_key || "").trim();
+    // 按厂商模板新起一条：先算好、验活、验过了才落进 config——验不过的 Key 不该留下一个半成品渠道
+    if (b.kind) {
+      const plan = chatModels.planTemplate(config, b.kind, b.model_id);
+      if (!plan) throw new Error("没有这家服务商：" + b.kind);
+      if (!key && !plan.t.local) throw new Error("API Key 不能为空");
+      if (b.skip_test !== true) {
+        const bad = await probeModel({ ...plan.row, api_key: key || (plan.prov ? plan.prov.api_key : "") });
+        if (bad) return res.json({ ok: false, error: bad });
+      }
+      const row = chatModels.commitTemplate(config, plan, key);
+      chatModels.normalize(config);
+      config.active_model = row.name;
+      if (b.workspace_dir) {
+        config.workspace_dir = setWorkspaceDir(b.workspace_dir);
+        ensureProjects();
+        const ap = config.projects.find((p) => p.name === config.active_project);
+        if (ap) ap.dir = config.workspace_dir;
+      }
+      llmInner = createLLM(config);
+      memory.setEmbedder(createEmbedder(config));
+      setSessEmbedder(createEmbedder(config));
+      memory.ensureVectors().catch(() => {});
+      saveConfig();
+      return res.json({ ok: true, active_model: config.active_model, model: llm.model, workspace_dir: getWorkspaceDir() });
+    }
     const entry = (config.models || []).find((m) => m.name === b.model);
     if (!entry) throw new Error("没有这个模型：" + b.model);
-    const key = String(b.api_key || "").trim();
     if (!key && !isLocalModel(entry)) throw new Error("API Key 不能为空");
 
     if (b.skip_test !== true) {
@@ -3664,7 +3705,13 @@ app.get("/api/library/file/*", async (req, res) => {
       res.set("Cache-Control", "private, max-age=604800");
       return res.sendFile(thumb);
     }
-    res.download(p);
+    // 默认内联发。以前这里一律 res.download，带上 Content-Disposition: attachment 之后
+    // <audio>/<video>/<iframe> 全都渲染不出来——用户原话：「怎么没有办法预览啊」。
+    // 真要存盘的走 ?dl=1，附件头只在那一条路上加。
+    if (String(req.query.dl || "") === "1") return res.download(p);
+    const mm = mediaMime(p);
+    if (mm) res.set("Content-Type", mm);
+    res.sendFile(p);
   } catch (e) {
     res.status(400).send(e.message);
   }
@@ -5352,9 +5399,20 @@ app.post("/api/files/sweep", (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+/**
+ * 「在访达里显示」和「复制这个文件」两条路共用的定位：文件可能在工作区，也可能在资料库。
+ * 资料库那一份走 libPath（它自己那三道校验 + safePathIn 复核），工作区走 rootedPath，
+ * 两边都是越界就抛——别为了少写一行把资料库的路径塞进工作区的根里算。
+ */
+function hostFileOf(req) {
+  const b = req.body || {};
+  const name = String(b.name || "");
+  return String(b.src || "") === "lib" ? libPath(libRel(name)) : rootedPath(req, name); // root 提示 rootedPath 自己从 body 里取
+}
+
 app.post("/api/files/reveal", (req, res) => {
   try {
-    const p = rootedPath(req, String((req.body || {}).name || "")); // 越界一律抛错，跟下载走同一道门
+    const p = hostFileOf(req); // 越界一律抛错，跟下载走同一道门
     if (!fs.existsSync(p)) return res.status(404).json({ error: "文件不存在" });
     let revealed = false;
     try {
@@ -5366,8 +5424,47 @@ app.post("/api/files/reveal", (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+/**
+ * 把文件本身放进剪贴板，用户回头直接 Cmd+V 粘到微信、邮件、访达里。
+ * 用户原话：「还有能直接复制这个文件」——在这之前只能先下载一份，再自己去下载目录里翻。
+ *
+ * 优先用 Electron 的 clipboard（桌面版里最稳，不用起子进程）；纯 node 部署退回系统命令。
+ * 两条路都不通时兜底把**绝对路径**当文字放进去，并且如实告诉前端放进去的是哪一种——
+ * 「我以为复制了文件，粘出来是一行字」比直接说清楚更糟。
+ */
+app.post("/api/files/copy", (req, res) => {
+  try {
+    const p = hostFileOf(req);
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: "文件不存在" });
+    try {
+      const { clipboard } = require("electron");
+      // macOS 的文件剪贴板口味叫 NSFilenamesPboardType，内容是一段 plist；Windows/Linux 上
+      // Electron 没给对应的写法，所以那两边照旧走命令行那条。
+      if (clipboard && process.platform === "darwin" && clipboard.writeBuffer) {
+        const plist = '<?xml version="1.0" encoding="UTF-8"?>\n'
+          + '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+          + '<plist version="1.0"><array><string>' + p.replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</string></array></plist>";
+        clipboard.writeBuffer("NSFilenamesPboardType", Buffer.from(plist, "utf8"));
+        return res.json({ ok: true, kind: "file", name: path.basename(p) });
+      }
+    } catch {}
+    const r = require("./cli-attach.js").writeClipboard({ file: p });
+    if (!r.ok) return res.status(400).json({ error: r.why || "剪贴板写不进去" });
+    res.json({ ok: true, kind: r.kind, name: path.basename(p) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 /** 通配路由里取出工作区相对路径。Express 已经解码过，%2F 老写法和真斜杠新写法都落这里 */
 function relOf(req) { return String(req.params[0] || ""); }
+// Chromium 对 .wav / .mov 这类的容忍度取决于上游 MIME：标成 application/octet-stream 之后
+// <audio>/<video> 只会静默不播。资料库和工作区两条路都从这儿取，别各写各的。
+function mediaMime(p) {
+  return {
+    ".wav": "audio/wav", ".wave": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+    ".aac": "audio/aac", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac",
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".ogv": "video/ogg", ".mov": "video/quicktime",
+  }[path.extname(String(p || "")).toLowerCase()] || "";
+}
 
 /**
  * 成果文件的跨工作目录解析。
@@ -5535,10 +5632,8 @@ app.get("/api/files/view/*", async (req, res) => {
       res.set("Cache-Control", "private, max-age=604800");
       return res.sendFile(thumb);
     }
-    // Chromium 对 .wav 的容忍度取决于上游 MIME；显式标注避免被当成
-    // application/octet-stream 后在画布 <audio> 里静默无法播放。
-    const audioMime = { ".wav": "audio/wav", ".wave": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac" }[path.extname(p).toLowerCase()];
-    if (audioMime) res.set("Content-Type", audioMime);
+    const mm = mediaMime(p);
+    if (mm) res.set("Content-Type", mm);
     res.sendFile(p);
   } catch (e) {
     res.status(400).send(e.message);
