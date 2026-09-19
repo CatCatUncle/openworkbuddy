@@ -3,6 +3,12 @@
  * 评测任务集 — 每个任务 = 固定题面 + 固定输入文件 + 机器判分。
  * 判分只认硬证据（文件存在、能跑通、数值精确、结构完整），绝不让模型自己给自己打分。
  * 新增任务：往 TASKS 里加一项即可，checks 返回 [{ name, ok, note }]。
+ *
+ * 题面可选字段（都不写就是最老实的单轮题）：
+ *   turns      一串用户消息，一轮一轮喂，历史接着上一轮——考「第一轮立的规矩到第三轮还守不守」
+ *   memories   开跑前种进长期记忆的条目，题面里绝不重复它们——考召回
+ *   max_steps  只给这道题抬步数上限（只抬不降），长任务题用
+ *   timeout_ms 同理，只给这道题抬时间上限
  */
 
 const fs = require("fs");
@@ -88,7 +94,8 @@ const TASKS = [
       return [
         ck("说对了数量（3 个）", /3\s*个|三个/.test(t)),
         ck("点名 note1/note3/note5", ["note1", "note3", "note5"].every((n) => t.includes(n))),
-        ck("没把 note2/note4 算进去", !/note[24][^，。;\s]*(?:提到|包含|含|有)「?苹果/.test(t)),
+        // 纯否定的断言要先钉住「真答了话」：崩了一个字没输出的时候，这条本来是白送的
+        ck("没把 note2/note4 算进去", !!t.trim() && !/note[24][^，。;\s]*(?:提到|包含|含|有)「?苹果/.test(t)),
       ];
     },
   },
@@ -301,7 +308,8 @@ const TASKS = [
         ck("main.js 输出正确（[3.14,7.16]）", r.status === 0 && (r.stdout || "").includes("[3.14,7.16]"), ((r.stderr || r.stdout) || "").slice(0, 120)),
         ck("utils.js 存在且导出 round2", /round2/.test(read(dir, "utils.js")) && /module\.exports/.test(read(dir, "utils.js"))),
         ck("两个模块都改为引用 utils", /require\(["'][.][/]utils/.test(cj) && /require\(["'][.][/]utils/.test(rj)),
-        ck("本地 round2 副本已删干净", !/function\s+round2/.test(cj) && !/function\s+round2/.test(rj)),
+        // 同样先钉住「文件还在」：把 circle.js 和 rect.js 直接删了，副本自然也就"删干净"了
+        ck("本地 round2 副本已删干净", !!cj && !!rj && !/function\s+round2/.test(cj) && !/function\s+round2/.test(rj)),
         ck("main.js 未被篡改", read(dir, "main.js") === this._mainHash),
       ];
     },
@@ -363,6 +371,147 @@ const TASKS = [
         ck("errors.txt 恰好 6 条且都是 5xx", errLines.length === 6 && errLines.every((l) => /\s50\d\s/.test(l)), `抽到 ${errLines.length} 条`),
         ck("stats.json 数字精确（count=6, avg_ms=150）", !!j && j.count === 6 && Math.abs(Number(j.avg_ms) - 150) < 0.01, j ? JSON.stringify(j).slice(0, 80) : ""),
         ck("summary.md 引用的数字一致", /6/.test(m) && /150/.test(m) && m.length > 50),
+      ];
+    },
+  },
+  {
+    id: "long-haul",
+    name: "十二张单子照规范逐张处理（长任务·难）",
+    level: 3, kind: "长任务",
+    // 三十步开外还守不守得住第三步读到的那份规范——这是长任务唯一值得考的事。
+    // 规范故意放在文件里而不是题面里：题面那句话在历史开头，多半不会被裁掉，
+    // 裁掉的是中间那堆工具输出，规范就在那里面
+    max_steps: 60,
+    timeout_ms: 720000,
+    rubric: [
+      "十二张单子是逐张看过的（分类判断有依据，不是一把梭批量套模板）",
+      "收工前自己核对过合计和分类数，不是写完就说完成了",
+    ],
+    prompt: "当前目录有一份 规范.md 和十二张单子 order-01.txt ~ order-12.txt。先读规范，然后照规范把十二张单子逐张处理，每张写一个 out-NN.json（NN 和单子编号对应），最后把各分类的人民币合计汇总成 total.json（格式：{\"分类名\": 合计数字}）。规范里的要求从头到尾都算数。",
+    inputs: (() => {
+      const spec = [
+        "# 单据处理规范",
+        "",
+        "1. 单号里的字母一律转成**大写**（单子里写的是小写）。",
+        "2. 金额一律换算成人民币，保留两位小数。美元按 1 USD = 7.2 CNY 换算，人民币的不用换。",
+        "3. 分类只有三种：水果 / 蔬菜 / 饮料。按摘要判断是哪一种。",
+        "4. **判不进这三类的，分类写「未分类」。任何产物里都不许出现「其他」这两个字。**",
+        "5. 每张单子写一个 out-NN.json，格式：{\"单号\": \"大写单号\", \"分类\": \"分类名\", \"金额_人民币\": 数字}。",
+        "",
+      ].join("\n");
+      const rows = [
+        ["a1001", "买了三斤苹果和两个梨", "USD", "12.5"],
+        ["a1002", "采购一箱矿泉水", "CNY", "36"],
+        ["a1003", "西红柿和黄瓜各两斤", "CNY", "18.5"],
+        ["a1004", "打印机墨盒一个", "USD", "20"],
+        ["a1005", "香蕉五斤", "CNY", "22"],
+        ["a1006", "可乐两听", "USD", "1.5"],
+        ["a1007", "土豆十斤", "CNY", "15"],
+        ["a1008", "橙汁一瓶", "CNY", "8.8"],
+        ["a1009", "西瓜一个", "USD", "5"],
+        ["a1010", "菠菜三把", "CNY", "6.5"],
+        ["a1011", "办公椅一把", "USD", "45"],
+        ["a1012", "葡萄两斤", "CNY", "27.6"],
+      ];
+      const out = { "规范.md": spec };
+      rows.forEach(([no, memo, cur, amt], i) => {
+        out["order-" + String(i + 1).padStart(2, "0") + ".txt"] = `单号: ${no}\n摘要: ${memo}\n币种: ${cur}\n金额: ${amt}\n`;
+      });
+      return out;
+    })(),
+    checks(dir) {
+      const want = [
+        ["A1001", "水果", 90], ["A1002", "饮料", 36], ["A1003", "蔬菜", 18.5], ["A1004", "未分类", 144],
+        ["A1005", "水果", 22], ["A1006", "饮料", 10.8], ["A1007", "蔬菜", 15], ["A1008", "饮料", 8.8],
+        ["A1009", "水果", 36], ["A1010", "蔬菜", 6.5], ["A1011", "未分类", 324], ["A1012", "水果", 27.6],
+      ];
+      const got = want.map((_, i) => {
+        try { return JSON.parse(read(dir, "out-" + String(i + 1).padStart(2, "0") + ".json")); } catch { return null; }
+      });
+      const have = got.filter(Boolean).length;
+      const noOK = got.filter((j, i) => j && String(j["单号"]) === want[i][0]).length;
+      const clsOK = got.filter((j, i) => j && String(j["分类"]) === want[i][1]).length;
+      const amtOK = got.filter((j, i) => j && Math.abs(Number(j["金额_人民币"]) - want[i][2]) < 0.011).length;
+      let total = null;
+      try { total = JSON.parse(read(dir, "total.json")); } catch {}
+      const wantTotal = { 水果: 175.6, 饮料: 55.6, 蔬菜: 40, 未分类: 468 };
+      const totalOK = total && Object.keys(wantTotal).every((k) => Math.abs(Number(total[k]) - wantTotal[k]) < 0.011)
+        && Object.keys(total).length === 4;
+      // 「其他」这两个字扫一遍所有产物：规范第 4 条就是冲着它去的
+      const spilled = fs.readdirSync(dir).filter((n) => /^(out-\d+|total)\.json$/.test(n) && read(dir, n).includes("其他"));
+      return [
+        ck("十二张单子都有产物", have === 12, `只有 ${have} 张`),
+        ck("单号全大写（规范第 1 条）", noOK === 12, `对 ${noOK}/12`),
+        ck("分类判对（含两张归「未分类」）", clsOK === 12, `对 ${clsOK}/12`),
+        ck("美元按 7.2 换算且保留两位（规范第 2 条）", amtOK === 12, `对 ${amtOK}/12`),
+        ck("total.json 四类合计精确", !!totalOK, total ? JSON.stringify(total).slice(0, 120) : "没有 total.json"),
+        // 一张产物都没有的时候这条不算过：什么都没交，谈不上「记住了规范」
+        ck("★三十步之后还记得「不许出现『其他』」★", have > 0 && spilled.length === 0, spilled.join(",") || "一张产物都没有"),
+      ];
+    },
+  },
+  {
+    id: "multi-turn",
+    name: "改主意之后，第一轮定的规矩还算不算数（多轮）",
+    level: 3, kind: "多轮",
+    // 考的不是单轮能力，是「用户第一句话立的规矩，到第三句话还守不守」。
+    // 真实用法里这才是常态：没人会每轮都把要求重念一遍
+    rubric: [
+      "第二轮的「重算」是真的重算了（不是在旧结果上打补丁）",
+      "最后一轮没有反过来问用户单位是什么（第一轮已经说过了）",
+    ],
+    turns: [
+      "当前目录有 员工.csv（姓名,部门,职级,月薪，月薪单位是元）。帮我算各部门的月薪合计，写成 部门合计.json，格式 {\"部门名\": 合计数字}。有个规矩全程都算数：金额一律换算成「万元」，数字写成两位小数（比如 3.50，不是 3.5）。",
+      "等一下，实习生不算在内，重新算一遍，覆盖原来那个文件。",
+      "再给我一份 最高部门.txt，只写一行：合计最高的那个部门，和它的合计数。",
+    ],
+    inputs: {
+      "员工.csv": "姓名,部门,职级,月薪\n张伟,研发,正式,32000\n李娜,研发,正式,28000\n王芳,研发,实习生,6000\n刘洋,市场,正式,21000\n陈静,市场,正式,19000\n赵磊,市场,实习生,5000\n孙悦,行政,正式,14000\n周涛,行政,正式,12000\n",
+    },
+    checks(dir) {
+      let j = null;
+      try { j = JSON.parse(read(dir, "部门合计.json")); } catch {}
+      const want = { 研发: 6, 市场: 4, 行政: 2.6 };
+      const near = (a, b) => Math.abs(Number(a) - b) < 0.005;
+      const t = read(dir, "最高部门.txt");
+      const lines = t.split("\n").filter((l) => l.trim());
+      return [
+        ck("部门合计.json 三个部门齐全", !!j && Object.keys(want).every((k) => j[k] != null), j ? JSON.stringify(j).slice(0, 100) : ""),
+        ck("★第二轮的改主意生效了：实习生没算进去★", !!j && Object.keys(want).every((k) => near(j[k], want[k])), j ? JSON.stringify(j).slice(0, 100) : ""),
+        ck("最高部门.txt 只有一行且点名研发", lines.length === 1 && lines[0].includes("研发"), lines.join(" / ").slice(0, 80)),
+        ck("★第一轮定的万元口径活到了第三轮★", /6\.00/.test(t) && !/60000/.test(t), t.slice(0, 80)),
+      ];
+    },
+  },
+  {
+    id: "memory-recall",
+    name: "没人再说一遍的老规矩（记忆召回）",
+    level: 2, kind: "记忆",
+    // 长期记忆里躺着五条，只有三条跟这次交付有关。题面一个字都不提这些规矩——
+    // 提了就成了照抄题面，考的就不是召回了
+    memories: [
+      "交付物里一律不要 emoji，一个都不要",
+      "所有报告结尾必须单起一行写「—— 海川科技数据组」",
+      "日期一律写成 2026-01-01 这种带横杠的格式，不要写成 1月1日",
+      "常用浏览器是 Firefox，装的扩展别乱动",
+      "内部沟通用飞书，不用钉钉",
+    ],
+    rubric: [
+      "趋势描述跟数据对得上（不是套话）",
+      "没有把记忆里的规矩复述进正文（照做就行，不用报备）",
+    ],
+    prompt: "当前目录有 本周数据.csv（日期,访问量）。整理成一份 周报.md，说清楚这周的走势，以及最高的是哪天、多少。",
+    inputs: {
+      "本周数据.csv": "日期,访问量\n2026-09-14,1200\n2026-09-15,1350\n2026-09-16,1580\n2026-09-17,1420\n2026-09-18,1910\n2026-09-19,2050\n2026-09-20,1760\n",
+    },
+    checks(dir) {
+      const t = read(dir, "周报.md");
+      return [
+        ck("周报.md 存在", exists(dir, "周报.md")),
+        ck("说对了最高那天（2026-09-19 · 2050）", /2026-09-19/.test(t) && /2050/.test(t)),
+        ck("★记忆第 1 条：一个 emoji 都没有★", !!t && !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/u.test(t)),
+        ck("★记忆第 2 条：结尾那行落款在★", /——\s*海川科技数据组/.test(t)),
+        ck("★记忆第 3 条：日期没写成「9月19日」★", !!t && !/\d+\s*月\s*\d+\s*日/.test(t)),
       ];
     },
   },

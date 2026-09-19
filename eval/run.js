@@ -11,6 +11,7 @@
  *   npm run eval -- --save-baseline       # 跑完把本次结果钉成基线（eval/baseline.json）
  * 产物：eval/runs/<时间戳>/ 下有每个任务（×每次尝试）的工作目录 + results.json；仓库不追踪。
  * 三条线分开记：机器判分（硬对错）· 稳定性（k 次重复）· AI 评委（质量维度，只判首轮）。
+ * 题面有三种：单轮（task.prompt）· 多轮（task.turns：一条一条喂，历史接着上一轮）· 带记忆（task.memories：开跑前种进去）。
  * 每个失败的尝试都有确定性失败码，聚合后能直接看出「败在哪一类」。
  * 方法论依据见 docs/评测方法论.md。
  */
@@ -18,11 +19,30 @@
 const fs = require("fs");
 const path = require("path");
 const { dataPath, preferData } = require("../paths");
+
+// 本地时间做目录名（toISOString 是 UTC，翻记录时对不上表）
+const STAMP = (() => {
+  const d = new Date(), p2 = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+})();
+const RUN_DIR = dataPath("eval", "runs", STAMP);
+
+// 评测不许动用户的真家当。记忆、偏好、额度账本都按 OPENWORKBUDDY_DATA_DIR 算路径，
+// 而那个常量是在模块加载时定死的——所以必须赶在 require 下面这些模块**之前**指走。
+// 不这么干有两个后果：题目里 agent 顺手 remember 一句就真进了你的长期记忆；
+// 而且下一轮评测会被上一轮记下的东西影响，成绩从此不可复现。
+// 只在真开跑时改（测试自己会指好临时目录，别在它头上再盖一层，也别凭空建一堆空跑批目录）
+if (require.main === module) {
+  process.env.OPENWORKBUDDY_DATA_DIR = path.join(RUN_DIR, "data");
+  fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
+}
+
 const { spawnSync } = require("child_process");
 const { createLLM } = require("../llm");
 const { createAgentRuntime, mapPool } = require("../agent");
 const { McpManager } = require("../mcp");
 const { setWorkspaceDir } = require("../tools");
+const memory = require("../memory");
 const store = require("../store");
 const { TASKS } = require("./tasks");
 
@@ -58,6 +78,38 @@ function failCode(att) {
   return "wrong_output";
 }
 
+// ---------- 题面形状：单轮 / 多轮 / 长任务 / 带记忆 ----------
+// 老题都是一句话跑到底。新补的三类各多要一点东西，在这儿摊平成统一形状，
+// 跑批主循环只跟「一串用户消息 + 一个步数上限 + 一个时间上限」打交道。
+
+// 多轮题的每一轮都喂给同一个 history，所以第二轮能引用第一轮说过的话
+const turnsOf = (task) => (Array.isArray(task.turns) && task.turns.length ? task.turns.map(String) : [String(task.prompt || "")]);
+
+// 按题抬上限，只抬不降：--timeout / 全局步数是所有题的地板，长任务题在自己头上加。
+// 反过来让题目把上限调小就麻烦了——有人改一行题面就能悄悄把某道题变简单
+const stepsFor = (task, base) => Math.max(base, Math.round(+task.max_steps || 0) || 0);
+const timeoutFor = (task, base) => Math.max(base, Math.round(+task.timeout_ms || 0) || 0);
+
+/**
+ * 记忆题：开跑前把该记的种进去。
+ * 作用域按「这一次尝试」单独开一个：并发跑的时候，别的题不该在自己的系统提示词里
+ * 看见这题种下的记忆——串进去了，成绩就不是这道题的成绩。
+ * 种失败要当场喊（记忆模块有密钥拦截、长度上限这些闸），闷着的话题目无解，
+ * 最后会算在模型头上。
+ * @returns 该用哪个用户身份跑这道题；没有记忆要种就返回 undefined
+ */
+function seedMemories(task, dirName) {
+  const seeds = Array.isArray(task.memories) ? task.memories : [];
+  if (!seeds.length) return undefined;
+  const user = "eval_" + dirName.replace(/[^\w]/g, "_");
+  for (const m of seeds) {
+    const text = typeof m === "string" ? m : String((m && m.text) || "");
+    const r = memory.add({ text, user, source: "eval" });
+    if (!r.ok) throw new Error(`题「${task.id}」的记忆种不进去：${r.note}（原文：${text.slice(0, 40)}）`);
+  }
+  return user;
+}
+
 // ---------- AI 评委 v2（逐维度二元判定）----------
 // 打 1-5 分会漂移（评委各有各的 3 分），且长回复容易骗高分。改成逐条质量问题只答 true/false，
 // 分数 = 达标维度占比，可复现、可对比。机器判分负责硬对错，评委只管机器测不了的「质量」。
@@ -88,9 +140,11 @@ function artifactExcerpts(dir, res) {
 
 async function judgeOne(judgeLLM, task, res, dir) {
   const dims = Array.isArray(task.rubric) ? task.rubric : [String(task.rubric || "整体完成质量是否达标（正确、干净、无糊弄）")];
+  // 多轮题没有单数的 prompt，得把几轮原样摆给评委——只给最后一轮，它没法判「前面立的规矩守没守」
+  const promptText = turnsOf(task).map((t, i, a) => (a.length > 1 ? `【第 ${i + 1} 轮】` : "") + t).join("\n");
   const checksText = res.checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.name}${c.note ? "（" + c.note + "）" : ""}`).join("\n");
   const user = `# 题目
-${task.prompt}
+${promptText}
 
 # 质量维度问题（逐条判定 true/false）
 ${dims.map((q, i) => `${i}. ${q}`).join("\n")}
@@ -142,11 +196,7 @@ async function main() {
   };
   const llm = createLLM({ ...evalConfig, active_model: modelName });
 
-  // 本地时间做目录名（toISOString 是 UTC，翻记录时对不上表）
-  const d = new Date();
-  const p2 = (n) => String(n).padStart(2, "0");
-  const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-  const runDir = dataPath("eval", "runs", stamp);
+  const runDir = RUN_DIR;
   const wsDir = path.join(runDir, "workspace");
   fs.mkdirSync(wsDir, { recursive: true });
   setWorkspaceDir(wsDir);
@@ -173,6 +223,9 @@ async function main() {
     fs.mkdirSync(dir, { recursive: true });
     for (const [name, content] of Object.entries(task.inputs || {})) fs.writeFileSync(path.join(dir, name), content);
     if (task.prepare) task.prepare(dir);
+    const memUser = seedMemories(task, dirName);
+    const turns = turnsOf(task);
+    const attemptTimeout = timeoutFor(task, TASK_TIMEOUT);
 
     const log = []; // 只留诊断有用的事件（错误/重试/强制收尾），不存全量流水
     let toolCalls = 0;
@@ -183,29 +236,43 @@ async function main() {
     let loopStreak = 0;
     const t0 = Date.now();
     let r = null, crashed = null;
-    try {
-      r = await runtime.runTask({
-        taskLabel: `评测·${dirName}`,
-        baseDir: dirName,
-        history: [{ role: "user", content: task.prompt }],
-        mode: "craft",
-        deadline: t0 + TASK_TIMEOUT,
-        emit: (ev) => {
-          if (ev.type === "tool_use") {
-            toolCalls++;
-            const sig = ev.name + "|" + (ev.input_preview || "");
-            streak = sig === lastSig ? streak + 1 : 1;
-            lastSig = sig;
-            if (streak > loopStreak) loopStreak = streak;
-          }
-          if (ev.type === "tool_result" && ev.isError) toolErrors++;
-          if (["error", "status", "limit"].includes(ev.type)) log.push({ type: ev.type, text: (ev.message || ev.text || ev.note || "").slice(0, 200) });
-        },
-      });
-    } catch (e) {
-      crashed = e.message;
-      log.push({ type: "crash", text: String(e.message).slice(0, 200) });
+    // 整次尝试共用一本 token 账：多轮题跑三轮，三轮的钱都算它的
+    const stats = { prompt: 0, completion: 0, cached: 0, calls: 0, startedAt: t0 };
+    const history = [];
+    let firstStop = null;
+    for (const turn of turns) {
+      history.push({ role: "user", content: turn });
+      try {
+        r = await runtime.runTask({
+          taskLabel: `评测·${dirName}`,
+          baseDir: dirName,
+          history,
+          stats,
+          user: memUser,
+          maxSteps: stepsFor(task, evalConfig.agent.max_steps),
+          mode: "craft",
+          deadline: t0 + attemptTimeout,
+          emit: (ev) => {
+            if (ev.type === "tool_use") {
+              toolCalls++;
+              const sig = ev.name + "|" + (ev.input_preview || "");
+              streak = sig === lastSig ? streak + 1 : 1;
+              lastSig = sig;
+              if (streak > loopStreak) loopStreak = streak;
+            }
+            if (ev.type === "tool_result" && ev.isError) toolErrors++;
+            if (["error", "status", "limit"].includes(ev.type)) log.push({ type: ev.type, text: (ev.message || ev.text || ev.note || "").slice(0, 200) });
+          },
+        });
+      } catch (e) {
+        crashed = e.message;
+        log.push({ type: "crash", text: String(e.message).slice(0, 200) });
+        break;
+      }
+      // 第一轮就被强制收尾的，后面几轮接着跑也是白跑，但败因要记第一次那个
+      if (r && r.stopped && !firstStop) firstStop = r.stopped;
     }
+    if (r && firstStop) r = { ...r, stopped: firstStop };
     const elapsed = Math.round((Date.now() - t0) / 1000);
     const checks = task.checks(dir, r ? r.finalText : "");
     const passed = checks.filter((c) => c.ok).length;
@@ -295,16 +362,21 @@ async function main() {
   let baselineCmp = null;
   const base = store.readJson(BASELINE_PATH, null);
   if (base && base.tasks) {
-    const deltas = {}, regressions = [], improvements = [];
+    const deltas = {}, regressions = [], improvements = [], uncovered = [];
     for (const r of results) {
       const b = base.tasks[r.id];
-      if (!b) continue;
+      // 基线里没有这题：新加的题第一次跑，或者题目改了 id。它这轮是好是坏没有参照，
+      // 得说出来——闷着的话「回归评测」会在你以为它在看的地方留一个洞
+      if (!b) { uncovered.push(r.id); continue; }
       const dlt = +(r.pass_rate - b.pass_rate).toFixed(3);
       deltas[r.id] = dlt;
       if (dlt < 0) regressions.push(r.id);
       else if (dlt > 0) improvements.push(r.id);
     }
-    baselineCmp = { commit: base.commit || "", at: base.at || "", model: base.model || "", deltas, regressions, improvements };
+    // 基线里有、这轮没跑的题（--task 只跑了几道，或者题被删了）同理要点名
+    const ranIds = new Set(results.map((r) => r.id));
+    const missing = Object.keys(base.tasks).filter((id) => !ranIds.has(id));
+    baselineCmp = { commit: base.commit || "", at: base.at || "", model: base.model || "", deltas, regressions, improvements, uncovered, missing };
   }
 
   const summary = {
@@ -332,8 +404,13 @@ async function main() {
   if (Object.keys(failCodeCounts).length) console.log(`败因分布：${Object.entries(failCodeCounts).map(([c, n]) => `${FAIL_CODE_LABELS[c] || c}×${n}`).join(" · ")}`);
   if (baselineCmp && baselineCmp.regressions.length) console.log(`▼ 相比基线（${baselineCmp.commit}）退步：${baselineCmp.regressions.join(", ")}`);
   else if (baselineCmp) console.log(`对比基线（${baselineCmp.commit}）：无退步${baselineCmp.improvements.length ? "，进步 " + baselineCmp.improvements.join(", ") : ""}`);
+  if (baselineCmp && baselineCmp.uncovered.length) console.log(`· 基线里没有这几题，这轮没参照：${baselineCmp.uncovered.join(", ")}（跑一次 --save-baseline 把它们钉进去）`);
+  if (baselineCmp && baselineCmp.missing.length) console.log(`· 基线里有、这轮没跑：${baselineCmp.missing.join(", ")}`);
   console.log(`明细：${path.join(runDir, "results.json")}`);
   process.exit(passkCount === results.length ? 0 : 1);
 }
 
-main().catch((e) => { console.error("评测崩溃:", e); process.exit(2); });
+// 被 require 进来时一个字不跑：跑一遍评测要花真钱，测试只想验题面形状和这几个小工具
+if (require.main === module) main().catch((e) => { console.error("评测崩溃:", e); process.exit(2); });
+
+module.exports = { _internals: { turnsOf, stepsFor, timeoutFor, seedMemories, failCode, FAIL_CODE_LABELS, BASELINE_PATH } };
