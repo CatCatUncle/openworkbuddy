@@ -479,7 +479,7 @@ function emitApproval(ev) {
  *   没有归属就等于谁登录了都能看，还能替别人点「允许」。
  *   IM / 定时任务这类没有登录态的后台跑法留空，只有平台管理员看得见。
  */
-function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "", owner = "" } = {}) {
+function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = "", ruleKey = "", source = "", owner = "", detail = "" } = {}) {
   const id = "ap_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
   return new Promise((resolve) => {
     let done = false;
@@ -504,6 +504,7 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
       ruleKey: String(ruleKey || ""),
       source: String(source || "").slice(0, 60), // 发起审批的任务标题：多任务并行时用户得知道是谁在求批
       owner: String(owner || ""),
+      detail: String(detail || "").slice(0, 4000), // 改文件的 diff：审批卡上展开看，批的是具体改动不是文件名
       ts: new Date().toISOString(),
       resolve: finish,
     });
@@ -519,7 +520,7 @@ function requestApproval(kind, text, { timeoutMs = 120000, stopSignal, rule = ""
 function listApprovals(scopeTo) {
   const all = [...approvals.values()];
   const mine = scopeTo == null ? all : all.filter((e) => e.owner && e.owner === scopeTo);
-  return mine.map(({ id, kind, text, rule, ruleKey, source, ts }) => ({ id, kind, text, rule, ruleKey, source, ts }));
+  return mine.map(({ id, kind, text, rule, ruleKey, source, detail, ts }) => ({ id, kind, text, rule, ruleKey, source, detail, ts }));
 }
 /**
  * @param scope once（默认，只放这一次）/ session（本会话同类不再问）/ always（由调用方写进永久放行名单）

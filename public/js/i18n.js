@@ -651,6 +651,11 @@
       "复制回复": "Copy reply",
       "重新生成": "Regenerate",
       "本次允许": "Allow once",
+      "回退到这步之前": "Rewind to before this step",
+      "撤销回退": "Undo rewind",
+      "没退成，再试一次": "Rewind failed, try again",
+      "没有文件需要动": "No files needed changing",
+      "文件本来就是那个样子，没动": "Files were already like that, nothing changed",
       "一直允许": "Always allow",
       "上传图片": "Upload image",
       "返回账号": "Back to account",
@@ -1264,6 +1269,8 @@
   const PATTERNS = {
     en: [
       [/^第 (\d+) 步 · 思考规划中…$/, "Step $1 · thinking…"],
+      [/^已退回这步之前，(\d+) 个文件恢复了$/, "Rewound to before this step, $1 file(s) restored"],
+      [/^撤销了回退，(\d+) 个文件回到改完的样子$/, "Rewind undone, $1 file(s) back to their edited state"],
       [/^第 (\d+) 步$/, "Step $1"],
       [/^· 产出 (\d+) 件$/, "· $1 outputs"],
       [/^还有 (\d+) 个文件$/, "$1 more file(s)"],

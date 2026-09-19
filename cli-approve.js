@@ -29,7 +29,7 @@ const CHOICES = [
 /**
  * 把一次审批画成终端里的样子。
  *
- * @param {{kind?: string, text?: string, rule?: string, source?: string}} entry
+ * @param {{kind?: string, text?: string, rule?: string, source?: string, detail?: string}} entry
  * @param {{width?: number, paint?: (s: string, kind: string) => string}} [o]
  * @returns {string} 以换行结尾
  */
@@ -46,6 +46,13 @@ function render(entry, o) {
   lines.push("");
   // 原文整条印，缩进两格当引文。危险就危险在那半截被截掉的地方
   for (const ln of wrap(String(e.text || "").trim(), width - 4)) lines.push("  " + paint(ln, "code"));
+  // 改文件的 diff：批的是这几行，不是文件名。超过 40 行截掉，真要全看去开文件
+  const detail = String(e.detail || "").trim().split("\n").filter(Boolean);
+  if (detail.length) {
+    lines.push("");
+    for (const ln of detail.slice(0, 40)) lines.push("  " + paint(ln, ln.startsWith("+") ? "add" : ln.startsWith("-") ? "del" : "detail"));
+    if (detail.length > 40) lines.push("  " + paint(`… 还有 ${detail.length - 40} 行`, "detail"));
+  }
   lines.push("");
   const nw = String(CHOICES.length).length;
   CHOICES.forEach((c, i) => {
@@ -125,6 +132,7 @@ function card(entry, deadline) {
     text: String(e.text || ""),
     rule: String(e.rule || ""),
     source: String(e.source || ""),
+    detail: String(e.detail || ""), // 改文件的 diff，手机上的卡也给看
     choices: CHOICES.map((c) => ({ allow: c.allow, scope: c.scope, label: c.label, sub: c.sub })),
     deadline: Number(deadline) || 0,
   };

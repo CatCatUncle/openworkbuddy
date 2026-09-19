@@ -1056,6 +1056,15 @@ function createTurnUI(userText, turnMode, forSid) {
         tag.textContent = ev.isError ? "失败" : "完成";
         card.querySelector(".head").appendChild(tag);
         card.querySelector("pre").textContent += "\n\n── 执行结果 ──\n" + (ev.preview || "");
+        // 改文件那几步：diff 直接摆在卡上，旁边一颗「回退到这步之前」。
+        // 看见改坏了不用去翻 .history，按一下就退；退错了再按一下就回来
+        if (ev.diff) {
+          const d = document.createElement("pre");
+          d.className = "step-diff";
+          d.innerHTML = paintDiff(ev.diff);
+          card.appendChild(d);
+        }
+        if (ev.ckpt && turnSid) card.appendChild(rewindButton(turnSid, ev.ckpt));
         // 出错卡默认也收起（失败一多整片摊开太乱），靠红标 + 标题角标提示，点角标直达
         if (ev.isError) { card.classList.add("failed"); liveErr++; }
         // 这一步花了多久，写死在卡上。回放的新会话两头都有 at（服务端存盘时盖的戳），
@@ -1942,6 +1951,51 @@ function makeSweepCard(ev) {
   return card;
 }
 
+/** diff 上色：加的绿、删的红、@@ 行灰。文件名那两行不印，卡片标题上已经有了 */
+function paintDiff(text) {
+  const lines = String(text || "").split("\n");
+  if (lines.length > 1 && lines[0].startsWith("--- ") && lines[1].startsWith("+++ ")) lines.splice(0, 2);
+  return lines.map((l) => {
+    const cls = l.startsWith("+") ? "d-add" : l.startsWith("-") ? "d-del" : l.startsWith("@@") || l.startsWith("…") ? "d-hunk" : "";
+    return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l);
+  }).join("\n");
+}
+
+/**
+ * 「回退到这步之前」：把这一步和它之后改过的文件退回去。退完按钮变「撤销回退」，再按就回来——
+ * 回退本身也留了检查点，所以没有「退错了就完了」这回事
+ */
+function rewindButton(sid, ckptId) {
+  const wrap = document.createElement("div");
+  wrap.className = "step-act";
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "step-rewind";
+  let undoId = "";
+  const label = () => { b.innerHTML = `${ic(undoId ? "history" : "rotate-ccw")}<span>${undoId ? "撤销回退" : "回退到这步之前"}</span>`; };
+  label();
+  b.onclick = async () => {
+    b.disabled = true;
+    const resp = await fetch(`/api/session/${encodeURIComponent(sid)}/rewind`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: undoId || ckptId }),
+    }).catch(() => null);
+    const r = resp ? await resp.json().catch(() => ({})) : {};
+    b.disabled = false;
+    if (!resp || !resp.ok) { toast(r.error || "没退成，再试一次"); return; }
+    const n = (r.files || []).filter((f) => f.action === "restored" || f.action === "deleted").length;
+    const bad = (r.files || []).filter((f) => f.why);
+    if (undoId) { undoId = ""; toast(n ? `撤销了回退，${n} 个文件回到改完的样子` : "没有文件需要动"); }
+    else { undoId = r.undo || ""; toast(n ? `已退回这步之前，${n} 个文件恢复了` : "文件本来就是那个样子，没动"); }
+    label();
+    if (bad.length) toast(bad.map((f) => `${f.rel}：${f.why}`).join("；"));
+    refreshFilesCache(); // 文件区跟着刷新
+  };
+  wrap.appendChild(b);
+  return wrap;
+}
+
 function makeAskCard(ev, turnSid, submit) {
   // 审批走同一张卡，但有三处必须不一样，见下面每一处的注释
   const isAp = ev.kind === "approval";
@@ -1958,7 +2012,7 @@ function makeAskCard(ev, turnSid, submit) {
     // 命令原文整条印出来，不截断、不折进省略号：危险就危险在被截掉的那半截
     //（末尾那个 `| sh`、那个 --force、那个真正的路径）
     (isAp
-      ? `<div class="ask-cmd">${esc(ev.text || "")}</div>` + (ev.rule ? `<div class="ask-rule">拦它的规则：${esc(ev.rule)}</div>` : "")
+      ? `<div class="ask-cmd">${esc(ev.text || "")}</div>` + (ev.detail ? `<pre class="ask-diff">${paintDiff(ev.detail)}</pre>` : "") + (ev.rule ? `<div class="ask-rule">拦它的规则：${esc(ev.rule)}</div>` : "")
       : `<div class="ask-q">${esc(ev.question || "")}</div>`) +
     `<div class="ask-opts"></div>` +
     // 审批没有「自由回答」：这道题只有准和不准，留个输入框只会让人以为还能讨价还价

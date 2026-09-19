@@ -16,6 +16,7 @@ const genCache = require("./gen-cache"); // 生图/生视频/配音的内容寻�
 const cdp = require("./cdp"); // 可选的本机 Chrome CDP：不捆绑浏览器、不连接远程地址
 const quota = require("./quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
 const mediaHealth = require("./media-health"); // 连不通的渠道熔断：撞过的硬错下次连请求都不发
+const checkpoints = require("./checkpoints"); // 改文件前留检查点：整步能退回去，审批卡上先看 diff
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
 let workspaceDir = dataPath("workspace");
@@ -2074,6 +2075,53 @@ function keepBackup(file, rel) {
   }
 }
 
+const SNAPSHOT_MAX = 32 * 1024 * 1024;
+const DIFF_MAX_CHARS = 2 * 1024 * 1024;
+const DIFF_MAX_TEXT = 4000;
+
+/** 改之前那份内容（Buffer）。不存在、是目录、大到不像文本的都给 null */
+function readBefore(file) {
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile() || st.size > SNAPSHOT_MAX) return null;
+    return fs.readFileSync(file);
+  } catch {
+    return null;
+  }
+}
+
+function looksText(buf) {
+  const head = buf.subarray(0, 8192);
+  for (let i = 0; i < head.length; i++) if (head[i] === 0) return false;
+  return true;
+}
+
+function textOf(x) {
+  if (x == null) return "";
+  if (typeof x === "string") return x;
+  return looksText(x) ? x.toString("utf8") : null;
+}
+
+/** 给人看的 diff：两边都是文本、都不太大才算。审批卡和过程卡上用，超过 4000 字截掉 */
+function diffText(rel, before, after) {
+  const a = textOf(before), b = textOf(after);
+  if (a == null || b == null || a.length > DIFF_MAX_CHARS || b.length > DIFF_MAX_CHARS) return "";
+  let d = checkpoints.unifiedDiff(a, b, { name: rel, context: 2, maxLines: 120 });
+  if (d.length > DIFF_MAX_TEXT) d = d.slice(0, DIFF_MAX_TEXT) + "\n… 太长，后面截掉了";
+  return d;
+}
+
+/**
+ * 落盘之后：记一个检查点、把 diff 挂到结果上。
+ * diff 跟着 tool_result 事件进过程卡；检查点 id 让那张卡上的「回退到这步之前」有的可按。
+ * 留底失败不影响结果本身——文件已经写对了，账没记上只是这一步退不回去。
+ */
+function noteChange(result, { root, abs, rel, before, after, tool, session, call, record = true }) {
+  const diff = diffText(rel, before, after);
+  const entry = record ? checkpoints.record(root, { session, call, tool, abs, before, after }) : null;
+  return { ...result, ...(diff ? { diff } : {}), ...(entry ? { ckpt: entry.id } : {}) };
+}
+
 function countAll(hay, needle) {
   let n = 0,
     i = hay.indexOf(needle);
@@ -2172,14 +2220,14 @@ function missHint(lines, needle) {
  * 精确替换。改已有文件只走这里，不许整篇重写——
  * 重写会把模型没读过的部分一起抹掉，而且用户 diff 一看全是红的，根本审不了。
  * 匹配不上/不唯一都必须报清楚原因（并给出下一步怎么办），不能默默改错地方。
+ *
+ * 只算不写：返回改完的全文和回执。先算后写，中间才插得进「给用户看 diff、等他批」这一步。
  */
-function editFile(file, label, { old_text, new_text, replace_all }) {
-  if (!fs.existsSync(file)) throw new Error(`文件不存在：${label}。新建文件请用 write_file。`);
-  if (fs.statSync(file).isDirectory()) throw dirInsteadOfFile(file, label);
-  const src = fs.readFileSync(file, "utf8");
+function planEdit(src, label, { old_text, new_text, replace_all }) {
   const needle = String(old_text == null ? "" : old_text);
   const repl = String(new_text == null ? "" : new_text);
   if (!needle) throw new Error("old_text 是空的：edit_file 必须给出要被替换掉的原文");
+  const same = { src, out: src, noop: true, msg: `${label} 内容没有变化（new_text 和 old_text 一样）` };
   const idx = src.indexOf(needle);
   if (idx < 0) {
     const lines = src.split("\n");
@@ -2195,12 +2243,15 @@ function editFile(file, label, { old_text, new_text, replace_all }) {
       // new_text 是空的 = 要把这几行删掉，别塞一个空行进去
       const body = repl === "" ? [] : shiftIndent(lines[start], needle.split("\n")[0], repl).split("\n");
       const out = lines.slice(0, start).concat(body, lines.slice(end)).join("\n");
-      if (out === src) return `${label} 内容没有变化（new_text 和 old_text 一样）`;
-      fs.writeFileSync(file, out, "utf8");
-      return (
-        `已修改 ${label}：在第 ${start + 1} 行替换了 1 处，${src.length} → ${out.length} 字符。` +
-        `（你给的 old_text 缩进/行尾空白和文件里对不上，按逐行去掉首尾空白后唯一匹配到这里，替换内容已按文件原缩进写回。下次照抄文件原文就不用绕这一道。）`
-      );
+      if (out === src) return same;
+      return {
+        src,
+        out,
+        noop: false,
+        msg:
+          `已修改 ${label}：在第 ${start + 1} 行替换了 1 处，${src.length} → ${out.length} 字符。` +
+          `（你给的 old_text 缩进/行尾空白和文件里对不上，按逐行去掉首尾空白后唯一匹配到这里，替换内容已按文件原缩进写回。下次照抄文件原文就不用绕这一道。）`,
+      };
     }
     throw new Error(`没找到 old_text（必须和文件里逐字一致，包括缩进和空行）。` + missHint(lines, needle));
   }
@@ -2209,11 +2260,23 @@ function editFile(file, label, { old_text, new_text, replace_all }) {
     throw new Error(`old_text 在 ${label} 里出现了 ${hits} 次，不唯一，不敢猜改哪一处。多带几行上下文让它唯一；确实要全改就传 replace_all=true。`);
   }
   const out = replace_all ? src.split(needle).join(repl) : src.slice(0, idx) + repl + src.slice(idx + needle.length);
-  if (out === src) return `${label} 内容没有变化（new_text 和 old_text 一样）`;
-  fs.writeFileSync(file, out, "utf8");
+  if (out === src) return same;
   const line = src.slice(0, idx).split("\n").length;
   const where = replace_all && hits > 1 ? `替换了 ${hits} 处` : `在第 ${line} 行替换了 1 处`;
-  return `已修改 ${label}：${where}，${src.length} → ${out.length} 字符`;
+  return { src, out, noop: false, msg: `已修改 ${label}：${where}，${src.length} → ${out.length} 字符` };
+}
+
+function readSource(file, label) {
+  if (!fs.existsSync(file)) throw new Error(`文件不存在：${label}。新建文件请用 write_file。`);
+  if (fs.statSync(file).isDirectory()) throw dirInsteadOfFile(file, label);
+  return fs.readFileSync(file, "utf8");
+}
+
+/** 读 → 算 → 写一步到位。不用过审批的调用方和测试用这个 */
+function editFile(file, label, input) {
+  const plan = planEdit(readSource(file, label), label, input);
+  if (!plan.noop) fs.writeFileSync(file, plan.out, "utf8");
+  return plan.msg;
 }
 
 /**
@@ -3559,7 +3622,7 @@ async function executeTool(name, input, opts = {}) {
    * run_shell 和 run_node 用的是同一套 —— 只守 shell 那扇门是守不住的，
    * 一句 require("child_process") 就从旁边过去了。
    */
-  const passGate = async (verdict, label, text, { force = false } = {}) => {
+  const passGate = async (verdict, label, text, { force = false, detail = "" } = {}) => {
     // force：权限档位（只看不动/每步都问）是用户当场选的档，不受安全闸门总开关影响
     if ((!sec.gateway && !force) || verdict.action === "allow") return null;
     if (verdict.action === "deny") {
@@ -3578,6 +3641,7 @@ async function executeTool(name, input, opts = {}) {
       ruleKey: verdict.ruleKey || "",
       source: opts.taskLabel || "",
       owner: opts.actor || "",
+      detail, // 改文件的 diff：看着改了哪几行批，而不是对着一个文件名下注
     });
     security.audit(label + "审批", text, ok ? "已批准" : "已拒绝");
     if (ok) return null;
@@ -3638,14 +3702,19 @@ async function executeTool(name, input, opts = {}) {
       case "write_file": {
         const rel = String(input.path || "");
         const p = resolveFile(rel);
-        const blocked = await passGate(security.checkWrite(sec, rel), "写文件", rel, { force: true });
+        const body = String(input.content || "");
+        const n = Buffer.byteLength(body);
+        // 落盘之前先把 diff 算出来：审批卡上要给人看这次到底动了哪几行，看着批才算批
+        const was = readBefore(p);
+        const blocked = await passGate(security.checkWrite(sec, rel), "写文件", rel, {
+          force: true,
+          detail: diffText(rel, was, input.append ? Buffer.concat([was || Buffer.alloc(0), Buffer.from(body, "utf8")]) : body),
+        });
         if (blocked) return blocked;
         const existed = fs.existsSync(p);
         if (existed && fs.statSync(p).isDirectory()) return { content: dirInsteadOfFile(p, rel).message, isError: true };
         const oldSize = existed ? fs.statSync(p).size : 0;
         fs.mkdirSync(path.dirname(p), { recursive: true });
-        const body = String(input.content || "");
-        const n = Buffer.byteLength(body);
         // 整篇重写把一个现成文件砍掉一大截 = 几乎肯定是没读全就重写，写下去就找不回来了。
         // 提示词里写一百遍「别整篇重写」也拦不住，只能在工具这一层真的不让它写。
         if (existed && !input.append && !input.overwrite && oldSize >= 800 && n < oldSize * 0.6) {
@@ -3658,33 +3727,54 @@ async function executeTool(name, input, opts = {}) {
             isError: true,
           };
         }
+        // 等审批那会儿文件可能被别的任务动过：留底按批完这一刻盘上的内容算
+        const before = existed ? readBefore(p) : null;
+        const change = { root: ws(), abs: p, rel, before, tool: "write_file", session: opts.sessionId, call: opts.callId, record: !existed || before != null };
         const bak = existed && !input.append ? keepBackup(p, rel) : "";
         if (input.append) {
           fs.appendFileSync(p, body, "utf8");
           const c = selfCheck(p, rel, true);
-          return { content: `已追加到 ${rel}（+${n} 字节，现共 ${fs.statSync(p).size} 字节）${c.note}`, isError: c.bad };
+          return noteChange(
+            { content: `已追加到 ${rel}（+${n} 字节，现共 ${fs.statSync(p).size} 字节）${c.note}`, isError: c.bad },
+            { ...change, after: Buffer.concat([before || Buffer.alloc(0), Buffer.from(body, "utf8")]) }
+          );
         }
         fs.writeFileSync(p, body, "utf8");
         const c = selfCheck(p, rel);
         // 覆盖和新建要说清楚：整篇重写一个已有文件，多半是该用 edit_file 却偷懒了
-        return {
-          content:
-            (existed
-              ? `已覆盖 ${rel}（原 ${oldSize} 字节 → 现 ${n} 字节）` +
-                (bak ? `，原件留了一份在 ${bak}` : "") +
-                `。提醒：改已有文件的局部内容用 edit_file，整篇重写会连你没读过的部分一起换掉。`
-              : `已新建 ${rel}（${n} 字节）`) + c.note,
-          isError: c.bad,
-        };
+        return noteChange(
+          {
+            content:
+              (existed
+                ? `已覆盖 ${rel}（原 ${oldSize} 字节 → 现 ${n} 字节）` +
+                  (bak ? `，原件留了一份在 ${bak}` : "") +
+                  `。提醒：改已有文件的局部内容用 edit_file，整篇重写会连你没读过的部分一起换掉。`
+                : `已新建 ${rel}（${n} 字节）`) + c.note,
+            isError: c.bad,
+          },
+          { ...change, after: body }
+        );
       }
       case "edit_file": {
         const rel = String(input.path || "");
         const p = resolveFile(rel);
-        const blocked = await passGate(security.checkWrite(sec, rel), "改文件", rel, { force: true });
+        // 先算出改完是什么样：匹配不上、不唯一这些错当场就能报，不用先把用户叫来批一个改不成的改动
+        let plan = planEdit(readSource(p, rel), rel, input);
+        const blocked = await passGate(security.checkWrite(sec, rel), "改文件", rel, {
+          force: true,
+          detail: plan.noop ? "" : diffText(rel, plan.src, plan.out),
+        });
         if (blocked) return blocked;
-        const msg = editFile(p, rel, input);
+        // 等审批那会儿文件可能被别的任务动过：批完按盘上现在的内容重算一遍再落盘
+        const now = readSource(p, rel);
+        if (now !== plan.src) plan = planEdit(now, rel, input);
+        if (plan.noop) return { content: plan.msg, isError: false };
+        fs.writeFileSync(p, plan.out, "utf8");
         const c = selfCheck(p, rel);
-        return { content: msg + c.note, isError: c.bad };
+        return noteChange(
+          { content: plan.msg + c.note, isError: c.bad },
+          { root: ws(), abs: p, rel, before: plan.src, after: plan.out, tool: "edit_file", session: opts.sessionId, call: opts.callId }
+        );
       }
       case "read_file": {
         const p = resolveFile(input.path);
@@ -4071,4 +4161,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

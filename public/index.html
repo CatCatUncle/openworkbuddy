@@ -24,7 +24,7 @@
        对比度都按 #16181f 量过（注释这档最险：行号那个 #565d70 拿来写注释只有 3.1，
        提到 #8b93a7 才有 5.2 —— 注释是拿来读的，不是拿来隐身的）。 */
     --owb-code-ln: #565d70; --owb-code-com: #8b93a7; --owb-code-str: #86d6a0;
-    --owb-code-num: #e5a76a; --owb-code-kw: #ab92fa; --owb-code-key: #79bdf0;
+    --owb-code-num: #e5a76a; --owb-code-kw: #ab92fa; --owb-code-key: #79bdf0; --owb-diff-add: #86d6a0; --owb-diff-del: #f39a9a; --owb-diff-hunk: #8b93a7;
     /* 这四个一直被 JS 里的内联样式引用，却从来没人定义过——评测页、运行记录页的边框和卡片底色
        就这么一路空着（跟之前「生成的网页黑底黑字」是同一类毛病）。补上，并同样接到令牌上 */
     --owb-line: var(--border); --owb-card: var(--card); --owb-warn: var(--warning); --mono: var(--font-mono);
@@ -532,6 +532,19 @@
   .step-card .head > .spinner, .step-card .head > .tag.ok, .step-card .head > .tag.err { margin-left: auto; }
   .step-card pre { display: none; background: var(--owb-code-bg); color: var(--owb-code-text); padding: 12px; font-size: 13px; line-height: 1.5; max-height: 320px; overflow: auto; }
   .step-card.open pre { display: block; }
+  /* 改文件那几步的 diff：加的绿、删的红、@@ 行灰。压在深色代码底上，所以用代码块自己那套色，
+     不用浅底用的 *-text 令牌（深绿压在近黑上根本看不见） */
+  .step-card pre.step-diff { border-top: 1px solid var(--owb-code-ln); }
+  .d-add { color: var(--owb-diff-add); }
+  .d-del { color: var(--owb-diff-del); }
+  .d-hunk { color: var(--owb-diff-hunk); }
+  /* 「回退到这步之前」：跟 pre 一样只在展开时出现 */
+  .step-card .step-act { display: none; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--owb-border); }
+  .step-card.open .step-act { display: flex; }
+  .step-rewind { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--owb-text-2); background: var(--owb-card); border: 1px solid var(--owb-border); border-radius: var(--radius-md); padding: 4px 10px; cursor: pointer; }
+  .step-rewind:hover { color: var(--owb-text); background: var(--owb-bg-hover); }
+  .step-rewind:disabled { opacity: .6; cursor: default; }
+  .step-rewind .i { width: 12px; height: 12px; }
   /* 执行过程折叠条（仿官方「已完成 12s ›」） */
   .proc-wrap { margin: 2px 0 8px; }
   .proc-head { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; color: var(--owb-text-3); cursor: pointer; user-select: none; padding: 2px 0; }
@@ -1015,6 +1028,8 @@
   .ap-row .ap-why { color: var(--owb-text-2); }
   .ap-row .ap-src { color: var(--owb-brand-text); font-weight: normal; }
   .ap-row .ap-cmd { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; font-size: 13px; color: var(--owb-text-2); }
+  /* 改文件的 diff 摆在审批条里：批的是这几行，不是文件名 */
+  .ap-row .ap-diff { margin: 6px 0 0; max-height: 160px; overflow: auto; font-family: var(--owb-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 12px; line-height: 1.5; color: var(--owb-code-text); background: var(--owb-code-bg); border-radius: var(--radius-md); padding: 8px 10px; white-space: pre; }
   .ap-row .ap-btns { display: flex; gap: 6px; flex-wrap: wrap; }
   .ap-row button { border: none; border-radius: var(--radius-md); padding: 5px 12px; cursor: pointer; font-size: 13px; }
   /* 三个按钮的盒子尺寸必须一模一样，不然一行里高低差 1px，谁都说不出哪里别扭。
@@ -1524,6 +1539,8 @@
   /* 命令原文：等宽字、可换行、可选中复制。绝不 ellipsis——被截掉的正好是最危险的那半截 */
   .ask-cmd { font-family: var(--owb-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 13px; line-height: 1.6; color: var(--owb-text); background: var(--owb-bg-side); border: 1px solid var(--owb-border); border-radius: var(--radius-lg); padding: 10px 12px; margin-bottom: 8px; white-space: pre-wrap; word-break: break-all; user-select: text; max-height: 40vh; overflow: auto; }
   .ask-rule { font-size: 12px; color: var(--owb-text-3); margin-bottom: 12px; }
+  .ask-diff { font-family: var(--owb-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 12px; line-height: 1.5; color: var(--owb-code-text); background: var(--owb-code-bg); border-radius: var(--radius-lg); padding: 8px 10px; margin: 0 0 8px; max-height: 40vh; overflow: auto; white-space: pre; }
+  .ask-card.done .ask-diff { display: none; }
   .ask-card.done .ask-cmd { max-height: 4.8em; }
   /* ---------- 用量面板 ---------- */
   .usage-grid { display: flex; gap: 10px; margin-bottom: 12px; }

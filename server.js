@@ -26,6 +26,7 @@ const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder, anthropicBase } = require("./llm");
 const sessSearch = require("./session-search");
 const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
@@ -6485,6 +6486,25 @@ app.post("/api/session/:id/model", (req, res) => {
   }
   saveSession(req.params.id);
   res.json({ ok: true, model: s.model || null });
+});
+
+/**
+ * 文件检查点：这条对话改过哪些文件、退回某一步之前。
+ * 只认本对话的账（别人对话的检查点拿着 id 也退不了）。跑着的时候不许退——
+ * 模型下一步就要在退回去的文件上接着写，两头一起动等于把文件撕成两半。
+ */
+app.get("/api/session/:id/checkpoints", (req, res) => {
+  if (!guardSession(req, res)) return;
+  res.json({ items: checkpoints.list(getWorkspaceDir(), req.params.id) });
+});
+app.post("/api/session/:id/rewind", (req, res) => {
+  if (!guardSession(req, res)) return;
+  if (activeRuns.has(req.params.id)) return res.status(409).json({ error: "任务还在跑，先停掉再回退" });
+  const id = String((req.body || {}).id || "");
+  if (!id) return res.status(400).json({ error: "缺 id" });
+  const r = checkpoints.rewind(getWorkspaceDir(), req.params.id, id);
+  if (!r.ok) return res.status(404).json({ error: r.error });
+  res.json(r);
 });
 
 // 助理模式没有会话 id（消息走 IM 的 local 通道），模型选择只能挂在配置上：选完就存，

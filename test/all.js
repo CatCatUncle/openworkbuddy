@@ -69,6 +69,7 @@ const SUITES = [
   ["trace", "执行追踪（Langfuse）上报"],
   ["term-image", "终端里把产出的图画出来 + /open"],
   ["office-tools", "办公工具：读 Office 文档 / 资料库取素材 / 推群 / 排期 / 发邮件 / 按环境摘挂工具"],
+  ["checkpoints", "文件检查点：改前留底 / 整步回退 / 改前 diff"],
   ["e2e", "端到端（含 frontend.js、admin-ui.js）"],
 ];
 

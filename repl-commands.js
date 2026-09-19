@@ -42,6 +42,7 @@ const COMMANDS = [
   { name: "init", desc: "让它把这个目录看一遍，写一份 AGENTS.md，以后每趟活儿都照着它来" },
   { name: "compact", desc: "把前面聊过的压成一段摘要腾地方；原文照样归档，不删" },
   { name: "diff", desc: "这个会话动过哪些文件；工作目录要是 git 仓库，顺带把 diff 也出了" },
+  { name: "rewind", arg: "[序号]", desc: "把这个会话改过的文件退回某一步之前；不给序号就列出能退的步" },
   { name: "mcp", desc: "外部连接器接上了没有、各自带了几个工具、没接上是卡在哪儿" },
   { name: "model", arg: "[序号或名字]", desc: "换这趟活儿谁来干：本机引擎或你配的模型；不给值同样弹选择器" },
   { name: "cd", arg: "<目录>", desc: "换工作目录；认 .. 和 ~，不给就说当前在哪" },
@@ -554,6 +555,42 @@ function changedFilesText(rows, o = {}) {
   return out.filter((l, i, a) => !(l === "" && a[i - 1] === "")).join("\n") + "\n";
 }
 
+/** /rewind：这个会话留过的检查点，一步一行。序号给人挑，id 不给人看 */
+function checkpointListText(rows, now) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return "这个会话还没留过检查点。（write_file / edit_file 落盘前各留一份，改过才有得退）\n";
+  const out = [`这个会话留了 ${list.length} 个检查点（序号越大越新）：`, ""];
+  const w = String(list.length).length;
+  // 时钟由调用方给（cli.js 传当前时间），这层不碰系统时间，测试才能逐帧推
+  const t = Number(now) || Date.parse(list[list.length - 1].ts) || 0;
+  list.forEach((r, i) => {
+    const what = r.tool === "rewind" ? "回退" : r.before == null ? "新建" : r.after == null ? "删除" : "修改";
+    const drift = r.current === "changed" ? "  （之后又被改过）" : "";
+    out.push(`  ${String(i + 1).padStart(w)}. ${what} ${r.rel}  ${ago(Date.parse(r.ts), t)}${drift}`);
+  });
+  out.push("", "退回某一步之前：/rewind <序号>（那一步和它之后动过的文件一起退；退错了还能再 /rewind 回来）", "");
+  return out.join("\n");
+}
+
+function pickCheckpoint(rows, arg) {
+  const list = Array.isArray(rows) ? rows : [];
+  const n = parseInt(String(arg || "").trim(), 10);
+  if (!Number.isInteger(n) || n < 1 || n > list.length) return null;
+  return list[n - 1];
+}
+
+/** 回退结果：每个文件一行说清是恢复了、删了、还是没动 */
+function rewindResultText(r) {
+  const files = r && Array.isArray(r.files) ? r.files : [];
+  const word = { restored: "已恢复", deleted: "已删掉（那一步之前它还不存在）", unchanged: "没动（本来就是那样）", refused: "没退", missing: "没退", failed: "没退" };
+  const n = files.filter((f) => f.action === "restored" || f.action === "deleted").length;
+  const out = [n ? `退回去了，动了 ${n} 个文件：` : "没有文件需要退。"];
+  for (const f of files) out.push(`  ${word[f.action] || f.action}  ${f.rel}${f.why ? `：${f.why}` : ""}`);
+  if (n) out.push("", "退错了？/rewind 不带序号，最新那一步就是这次回退，退它就回来了。");
+  out.push("");
+  return out.join("\n");
+}
+
 /** /mcp：连接器接上了没有。没接上的要说清楚卡在哪儿，不然人只会反复重启 */
 function mcpText(rows) {
   const list = Array.isArray(rows) ? rows : [];
@@ -697,6 +734,6 @@ module.exports = {
   modelRows, modelListText, pickModelRow,
   RESUME_MAX, ago, sessionRows, sessionListText, pickSessionRow,
   PICKER_ROWS, pickerRowsOf, filterPickerRows, pickerWindow, pickerView, sessionPickerRows, modelPickerRows,
-  sizeText, changedFilesText, mcpText, compactedText, initTask,
+  sizeText, changedFilesText, checkpointListText, pickCheckpoint, rewindResultText, mcpText, compactedText, initTask,
   sanitizeHistory, nearest, find,
 };

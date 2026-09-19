@@ -616,7 +616,7 @@ async function pollCliAsk() {
     const card = makeAskCard(
       a.type === "approval"
         // 审批：命令原文、拦它的规则、三档选择都从终端那边原样带过来，这一屏不自己编一套
-        ? { ask_id: a.id, kind: "approval", apKind: a.kind, text: a.text, rule: a.rule, choices: a.choices || [] }
+        ? { ask_id: a.id, kind: "approval", apKind: a.kind, text: a.text, rule: a.rule, detail: a.detail, choices: a.choices || [] }
         : { ask_id: a.id, question: a.question, options: a.options || [] },
       w.id,
       (value) => fetch("/api/cli/answer", {
@@ -1631,6 +1631,7 @@ async function pollApprovals() {
       <div class="ap-main">
         <div class="ap-head">${ic("shield")}${esc(a.kind)}待审批${a.source ? ` · <span class="ap-src" title="发起审批的任务">来自「${esc(a.source)}」</span>` : ""}${a.rule ? ` · <span class="ap-why">${esc(a.rule)}</span>` : ""}</div>
         <code class="ap-cmd" title="${esc(a.text)}">${esc(a.text.slice(0, 160))}</code>
+        ${a.detail ? `<pre class="ap-diff">${paintDiff(a.detail)}</pre>` : ""}
       </div>
       <div class="ap-btns">
         <button class="ap-ok" data-id="${esc(a.id)}" data-scope="once">本次允许</button>
