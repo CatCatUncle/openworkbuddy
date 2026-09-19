@@ -65,9 +65,17 @@ function statusOf(text) {
 function looksNetwork(text) {
   return /请求失败|timeout|超时|ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up/i.test(String(text || ""));
 }
-/** 正文说的是「没余额」：状态码不管是 402 还是 400/403，充值之前都不会变 */
+/**
+ * 正文说的是「没余额」：状态码不管是 402 还是 400/403，充值之前都不会变。
+ *
+ * 阿里云百炼这一家格外要小心：它把欠费报成 **HTTP 400**，正文是
+ * `{"code":"Arrearage","message":"Access denied, please make sure your account is in good standing…"}`。
+ * 400 不在硬错表里，上面这串词老正则也一个都接不住，于是每一次调用都被当成
+ * 「这次不巧」——接着重试、接着白等一个超时，充值之前永远不会变。
+ * 用户原话：「一些不能用的模型，不要一直去用啊！」
+ */
 function looksBroke(text) {
-  return /没余额|余额不足|欠费|insufficient[_ ](credit|balance|quota|funds)|out of credits|AccountOverdue|account (is )?overdue|in arrears|payment required|quota (has been )?exhausted|exceeded your current quota|check your plan and billing|billing hard limit/i.test(String(text || ""));
+  return /没余额|余额不足|欠费|insufficient[_ ](credit|balance|quota|funds)|out of credits|AccountOverdue|account (is )?overdue|arrearage|overdue[_ -]?payment|account is in good standing|in arrears|payment required|quota (has been )?exhausted|exceeded your current quota|check your plan and billing|billing hard limit/i.test(String(text || ""));
 }
 /** 正文说的是「没这个型号」：OpenRouter 报 400「is not a valid model ID」，火山报 404 ModelNotOpen——换问法不会变 */
 function looksNoModel(text) {
