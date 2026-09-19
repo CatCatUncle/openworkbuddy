@@ -72,7 +72,7 @@ pnpm-lock.yaml
 # 这种文件最坑的是它跟真文件只差一个后缀，混进仓库后很容易被当成现役代码读
 *.bak.[0-9]*
 
-# 出片过程里的半成品：README 和官网里嵌的是 demo-canvas.gif 和 short-drama-canvas-overview.png，
+# 出片过程里的半成品：README 里嵌的是 case-canvas.jpg（官网是 short-drama-canvas-overview.png），
 # 下面这几张/这段是录制和调色时顺手产的，谁都没引用，加起来 4 个多 MB，不入库
 docs/images/demo-canvas.mp4
 docs/images/short-drama-canvas.png

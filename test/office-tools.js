@@ -534,7 +534,104 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
       ok(!del.isError, "删得掉", del.content);
       eq(sch.list().length, 1, "删完只剩一条");
 
-      // 8.9 上限兜底：审批那道闸挡的是跑飞，这条挡的是用户连点几十次「同意」
+      // ── 8.9 只跑一次 ────────────────────────────────────────────────────
+      // 用户说「五分钟后叫我去准备面试」，排出来的是一条**每天 14:00** 的 cron。
+      // 根因不在模型：cron 五个字段里压根没有「一次」这个概念，模型手上只有这一个工具，
+      // 只能拿「每天这个点」去近似「这个点」——一条提醒于是变成了一条每天都要响的闹钟。
+      {
+        const t0 = Date.now();
+        // parseAt：三种写法都得认，认不出来一律抛错，绝不猜一个时刻回去
+        const mins = (iso, from = t0) => Math.round((Date.parse(iso) - from) / 60000);
+        eq(mins(scheduler.parseAt("+5m", t0)), 5, "「+5m」= 五分钟后");
+        eq(mins(scheduler.parseAt("+5分钟", t0)), 5, "中文的「+5分钟」也认——模型多半照抄用户的说法");
+        eq(mins(scheduler.parseAt("+2h", t0)), 120, "「+2h」= 两小时后");
+        eq(mins(scheduler.parseAt("+1d", t0)), 1440, "「+1d」= 明天这个点");
+        const at6 = new Date(scheduler.parseAt("18:00", t0));
+        eq(at6.getHours() + ":" + at6.getMinutes(), "18:0", "「18:00」落在本地的 18 点整");
+        ok(Date.parse(scheduler.parseAt("18:00", t0)) > t0,
+          "★钟点过了就顺延到明天★ 不顺延的话「6 点叫我」在晚上说出口就是个已经过期的时刻，永远不响");
+        const full = new Date(scheduler.parseAt("2026-09-20 09:30", t0));
+        eq(`${full.getFullYear()}-${full.getMonth() + 1}-${full.getDate()} ${full.getHours()}:${full.getMinutes()}`, "2026-9-20 9:30",
+          "★说全的时刻按本地时间读★ 直接丢给 Date 的话这串会被当成 UTC，在东八区要差 8 小时");
+        for (const bad of ["五分钟", "", "later", "+999d", "25:00"]) {
+          let threw = false;
+          try { scheduler.parseAt(bad, t0); } catch { threw = true; }
+          eq(threw, true, `★「${bad}」认不出来就抛★ 猜一个时刻回去的话，用户点的那下「同意」批的是个他没说过的时间`);
+        }
+        has(scheduler.describeWhen({ at: scheduler.parseAt("+5m", t0) }), /只跑一次/,
+          "★人话里得写明「只跑一次」★ 只写个钟点，用户分不出这是一次还是每天");
+
+        // 到点：放它跑，并且**同步**关掉自己
+        const ONCE_FILE = path.join(HOME, "sched-once.json");
+        fs.rmSync(ONCE_FILE, { force: true });
+        let started = 0, release = null;
+        const runtime = { runTask: () => { started++; return new Promise((r) => { release = () => r({ finalText: "叫你了" }); }); } };
+        const one = scheduler.createScheduler({ runtime, onResult: () => {}, storePath: ONCE_FILE });
+        try {
+          const item = one.add({ name: "叫我去准备面试", at: new Date(Date.now() - 30000).toISOString(), task: "提醒我去准备面试" });
+          eq(item.cron, "", "只跑一次的那条不带 cron");
+          ok(item.at, "带的是 at", item);
+          one.tick();
+          eq(started, 1, "到点了，放它跑了一趟");
+          eq(one.list()[0].enabled, false,
+            "★tick 一返回就已经是关着的★ 等跑完再关的话，中间每一分钟的 tick 都看见它还开着、时刻还是过去时——一条五分钟的提醒会连着响到你手动关掉");
+          ok(one.list()[0].fired_at, "留下响过的时刻");
+          release();
+          await new Promise((r) => setTimeout(r, 50));
+          eq(started, 1, "跑完了也还是只跑过一趟");
+          eq(one.runs().length, 1, "运行记录里就一条");
+
+          // 错过太久不补：隔了两天的「五分钟后叫我」再响就是骚扰，那时候事早过去了。
+          // 得换一个调度器实例来判——tick 里有「每分钟只判一次」的闸，同一分钟里第二次 tick 直接返回
+          const STALE_FILE = path.join(HOME, "sched-stale.json");
+          fs.rmSync(STALE_FILE, { force: true });
+          const two = scheduler.createScheduler({ runtime, onResult: () => {}, storePath: STALE_FILE });
+          try {
+            two.add({ name: "过期的", at: new Date(Date.now() - 2 * 864e5).toISOString(), task: "早该提醒的事" });
+            two.tick();
+            eq(started, 1, "★错过太久就不补跑了★ 隔了两天再响，那件事早过去了");
+            eq(two.list()[0].enabled, false, "照样关掉，别让它挂在那儿每分钟判一次");
+            has(two.list()[0].last_result || "", /错过/, "说清楚是错过了，不是没跑");
+          } finally {
+            two.stop();
+            fs.rmSync(STALE_FILE, { force: true });
+          }
+
+          // at 和 cron 二选一：两个都给会各跑各的，而界面上只画得下一个时间
+          let both = "";
+          try { one.add({ at: "+5m", cron: "0 9 * * *", task: "两个都给" }); } catch (e) { both = e.message; }
+          has(both, /只能选一个/, "★at 和 cron 不许同时给★ 两个都认的话，cron 每天响一次、at 再响一次，而页面上只写得下一个");
+          const flip = one.add({ cron: "0 9 * * *", task: "本来是每天" });
+          one.update(flip.id, { at: "+1h" });
+          eq(one.list().find((t) => t.id === flip.id).cron, "", "改成只跑一次时，原来的 cron 得清掉——留着就是两条排期挂在一个 id 上");
+          one.update(flip.id, { cron: "0 9 * * *" });
+          ok(!one.list().find((t) => t.id === flip.id).at, "反向对照：改回按周期跑，at 也得清掉");
+        } finally {
+          one.stop();
+          fs.rmSync(ONCE_FILE, { force: true });
+        }
+
+        // 从模型那一头走一遍：审批卡片上得是人话，落到表里的得是 at
+        const askedBefore2 = approvals.length;
+        const onceMade = await fire({ action: "create", at: "+5m", task: "提醒我去准备面试", name: "五分钟后叫我" });
+        ok(!onceMade.isError, "「+5m」排得进去", onceMade.content);
+        has((approvals[approvals.length - 1] || {}).text, /只跑一次/,
+          "★审批卡片上写明只跑一次★ 用户要能在点头之前看出这是一次还是每天");
+        const made1 = sch.list().find((t) => t.name === "五分钟后叫我") || {};
+        ok(made1.at, "表里落的是 at", made1);
+        eq(made1.cron, "", "没有顺手塞一条 cron 进去");
+        const bothErr = await fire({ action: "create", at: "+5m", cron: "0 14 * * *", task: "两个都给" });
+        eq(bothErr.isError, true, "模型两个都给时当场拦下");
+        eq(approvals.length, askedBefore2 + 1, "★拦下的这条不许先白问一次审批★");
+        const noTime = await fire({ action: "create", task: "什么时候都没说" });
+        eq(noTime.isError, true, "时间一个都没给也当场拦下");
+        has(noTime.content, /at/, "报错里得点名 at——不点名的话模型只会把 cron 再写一遍");
+        has(noTime.content, /每天都响/, "★顺带说明白为什么不能拿 cron 凑★ 这正是「五分钟后」变成每天 14:00 的那一步");
+        sch.remove(made1.id);
+      }
+
+
+      // 8.10 上限兜底：审批那道闸挡的是跑飞，这条挡的是用户连点几十次「同意」
       const MAX = Number(/MAX_SCHEDULES = (\d+)/.exec(fs.readFileSync(path.join(ROOT, "agent.js"), "utf8"))[1]);
       ok(MAX > 0, "agent.js 里得有 MAX_SCHEDULES 这个上限", MAX);
       while (sch.list().length < MAX) sch.add({ cron: "0 9 * * *", task: "占位 " + sch.list().length });
@@ -547,7 +644,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
       const again = await fire({ action: "create", cron: "0 9 * * *", task: "腾出位置就排得进去" });
       ok(!again.isError, "反向对照：腾出一个位置就又排得进去", again.content);
 
-      // 8.10 「定时任务」这四个字是两边的暗号：server 给那一趟打这个标签，agent 靠它认出自己
+      // 8.11 「定时任务」这四个字是两边的暗号：server 给那一趟打这个标签，agent 靠它认出自己
       //      是被定时任务叫起来的。两个文件各写一遍字面量，迟早对不上，那道闸就静悄悄失效了
       eq(scheduler.SCHEDULE_LABEL, "定时任务", "暗号本身没改");
       const srvSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");

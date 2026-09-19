@@ -15,6 +15,7 @@ const mediaModels = require("./media-models"); // 图/视频/语音/视觉的多
 const genCache = require("./gen-cache"); // 生图/生视频/配音的内容寻址缓存：同一格重跑不再烧第二次钱
 const cdp = require("./cdp"); // 可选的本机 Chrome CDP：不捆绑浏览器、不连接远程地址
 const quota = require("./quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
+const mediaHealth = require("./media-health"); // 连不通的渠道熔断：撞过的硬错下次连请求都不发
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
 let workspaceDir = dataPath("workspace");
@@ -3304,6 +3305,30 @@ function quotaGate(cap, call = {}) {
   };
 }
 
+/**
+ * 五路媒体工具（看图/生图/生视频/配音/转文字）统一穿过这里。
+ *
+ * quotaGate 管的是「这次花不花得起」，这里管的是「这条渠道现在还通不通」——
+ * 一前一后两道闸，拦的都是**还没发出去的那个请求**。
+ *
+ * 为什么不写在五个函数各自的开头：那五个函数里散着三十多个 `return {isError:true}`，
+ * 一个一个去记账，早晚漏掉一条，而漏掉的那条恰好就是撞得最凶的那条。放在派发这一层，
+ * 无论里面从哪儿返回的，出口只有一个，记账必然完整。
+ */
+async function viaMedia(cap, opts, input, run) {
+  let cfg = null;
+  // pick 抛错 = 用户点名了一个不存在的型号，那是 input 的事不是渠道的事：照常放行，
+  // 让里面那句「现在能用的是：…」原样出去
+  try { cfg = mediaModels.pick((opts || {}).media, cap, (input || {}).model); } catch { cfg = null; }
+  if (cfg && cfg.base_url) {
+    const stop = mediaHealth.gate(cap, cfg, mediaModels.CAP_CN[cap]);
+    if (stop) return stop;
+  }
+  const res = await run();
+  if (cfg && cfg.base_url) mediaHealth.record(cap, cfg, res);
+  return res;
+}
+
 const CANVAS_KINDS = new Set(["note", "script", "agent", "character", "location", "storyboard", "scene", "shot", "image", "video", "audio", "timeline"]);
 // 连线不是纯视觉箭头：用途会进入生成请求、Trace 与下一次 Agent 会话。
 // 白名单既让旧画布兼容，也避免把任意对象原样写进项目状态。
@@ -3783,32 +3808,32 @@ async function executeTool(name, input, opts = {}) {
         return { content: r.text, isError: r.bad };
       }
       case "look_at_image":
-        return await lookAtImage(opts, input, timeoutMs, resolveFile);
+        return await viaMedia("vision", opts, input, () => lookAtImage(opts, input, timeoutMs, resolveFile));
       case "generate_image": {
         const g = quotaGate("image", { model: input.model, units: unitsFor("image", input) });
         if (g.bad) return g.bad;
-        return await withGenCache("generate_image", "image", opts, input, fileBase, resolveFile, g.hold,
-          () => generateImage(opts.media, input, timeoutMs, fileBase, resolveFile));
+        return await viaMedia("image", opts, input, () => withGenCache("generate_image", "image", opts, input, fileBase, resolveFile, g.hold,
+          () => generateImage(opts.media, input, timeoutMs, fileBase, resolveFile)));
       }
       case "generate_video": {
         const g = quotaGate("video", { model: input.model, units: unitsFor("video", input) });
         if (g.bad) return g.bad;
-        return await withGenCache("generate_video", "video", opts, input, fileBase, resolveFile, g.hold,
-          () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile }));
+        return await viaMedia("video", opts, input, () => withGenCache("generate_video", "video", opts, input, fileBase, resolveFile, g.hold,
+          () => generateVideo(opts.media, input, { ...opts, saveDir: fileBase, resolveFile })));
       }
       case "html_to_image":
         return await htmlToImage(input, resolveFile, fileBase);
       case "text_to_speech": {
         const g = quotaGate("tts", { model: input.model, units: unitsFor("tts", input) });
         if (g.bad) return g.bad;
-        return await withGenCache("text_to_speech", "tts", opts, input, fileBase, resolveFile, g.hold,
-          () => textToSpeech(opts.media, input, timeoutMs, fileBase));
+        return await viaMedia("tts", opts, input, () => withGenCache("text_to_speech", "tts", opts, input, fileBase, resolveFile, g.hold,
+          () => textToSpeech(opts.media, input, timeoutMs, fileBase)));
       }
       case "transcribe_audio": {
         const mins = unitsFor("asr", input, resolveFile);
         const g = quotaGate("asr", { model: input.model, units: mins });
         if (g.bad) return g.bad;
-        const r = await transcribeAudio(opts.media, input, timeoutMs, resolveFile, fileBase);
+        const r = await viaMedia("asr", opts, input, () => transcribeAudio(opts.media, input, timeoutMs, resolveFile, fileBase));
         if (!r.isError) {
           quota.record("asr", {
             provider: mediaProviderOf(opts.media, "asr"), model: asrModelOf(opts.media, input.model),
@@ -3918,6 +3943,52 @@ function filesScope(files) {
  * 历史文件，最新的那批一定在列表里。filesScope() 会把 full=false 带出去，前端据此知道
  * 「这份清单不完整」，不拿它给旧产出盖「已删除」的章。
  */
+/**
+ * 用户自己传进来的那些文件（输入框里粘的图、拖进来的素材）是**输入**，不是产出。
+ *
+ * 2026-09-18 的真实故障：一趟任务还在跑，用户粘了张图进输入框想追问，那张图当场出现在
+ * 上一轮的「本回合产出」里。用户原话：「我复制一个图片来问问题结果，之前执行的成果区
+ * 出现了我在问问题的图片啊」。
+ *
+ * 根子在 /api/upload 把文件直接落进了这条会话的成果文件夹——那一步是对的，素材和成果待在
+ * 一起，否则工作目录根下越堆越乱（真实数据里躺过 22 个）。可「本回合产出」的判据是
+ * 「在我的文件夹里 + mtime 在开跑之后」，这张图两条全占：它确实是这个文件夹里刚出现的新
+ * 文件，只是写它的人不是 agent，是用户自己。**谁写的这件事只有落盘那一刻知道**，事后从盘
+ * 上看一个文件是看不出来的，所以只能在那一刻记一笔。
+ *
+ * 记「名字 + 那一刻的 mtime」而不是只记名字：agent 后来真把这张图改写了（抠图、压缩、换
+ * 格式），mtime 一变就不再算输入——那时候它确实变成了产出，本来就该出现在卡片里。
+ */
+const userInputs = new Map(); // 「工作目录指纹 + 相对路径」 -> 落盘那一刻的 mtime
+const USER_INPUT_CAP = 500;   // 只为了不让它无限长；超了从最老的丢，最坏结果是多报一张卡
+// 分隔符写成转义 \u0000，不要直接敲一个真 NUL 字节进源码。
+// 两者运行时一模一样，但文件里一旦有真 NUL，grep 就把整个 tools.js 当二进制文件：
+// `grep -n look_at_image tools.js` 什么都不返回，也不报错。全项目最大的工具文件搜不到东西，谁都会以为是自己搜错了。
+const userInputKey = (rel) => workspaceKey() + "\u0000" + String(rel || "").split(path.sep).join("/");
+/** 落盘之后马上调：把「这份是用户传的」钉在那一刻的 mtime 上 */
+function noteUserInput(rel) {
+  try {
+    const st = fs.statSync(safePath(rel));
+    if (userInputs.size >= USER_INPUT_CAP) userInputs.delete(userInputs.keys().next().value);
+    userInputs.set(userInputKey(rel), st.mtime.toISOString());
+  } catch {} // 记不上只是少一道闸，不该让上传本身失败
+}
+/** 上传先落根目录、成果文件夹建好后再搬进去（见 server.js 的 assignSessionDir），搬完得改键 */
+function moveUserInput(from, to) {
+  const k = userInputKey(from);
+  if (!userInputs.has(k)) return;
+  const at = userInputs.get(k);
+  userInputs.delete(k);
+  let now = at;
+  try { now = fs.statSync(safePath(to)).mtime.toISOString(); } catch {} // rename 不改 mtime，但不赌它
+  userInputs.set(userInputKey(to), now);
+}
+/** @param {{name:string,mtime:string}} file outputFiles() 里的一项 */
+function isUserInput(file) {
+  if (!file || !file.name) return false;
+  return userInputs.get(userInputKey(file.name)) === file.mtime;
+}
+
 function outputFiles() {
   ensureDirs();
   const all = [];
@@ -4000,4 +4071,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

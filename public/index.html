@@ -292,12 +292,11 @@
   .chips button:hover { border-color: var(--owb-brand-text); color: var(--owb-brand-text); background: var(--owb-brand-weak); }
   /* 空态最底下那条「整理文件夹 · 腾出空间」。
      刻意没做成第四个场景胶囊：胶囊点下去只是挂一枚「任务类型」标签，还得自己打字；
-     这一条点下去直接干活。所以它得长得跟上面那排不一样——单独一行、描边淡、
-     带一个实时算出来的「可腾出 43.3 MB」，那个数字本身就是最好的按钮文案。 */
+     这一条点下去直接干活。所以它得长得跟上面那排不一样——单独一行、描边淡。 */
   .empty-tools { margin-top: 26px; }
   .empty-tools button { display: flex; align-items: center; gap: 7px; padding: 8px 16px; border-radius: var(--radius-full); border: 1px dashed var(--owb-border); background: transparent; color: var(--owb-text-2); font-size: 13px; cursor: pointer; }
   .empty-tools button:hover { border-style: solid; border-color: var(--owb-brand-text); color: var(--owb-brand-text); background: var(--owb-brand-weak); }
-  .empty-tools b { font-weight: 600; color: var(--owb-brand-text); }
+
   /* 这块底色原来写死成薄荷绿：深色模式下它不翻色，整页暗的时候留一块刺眼亮片（对页面底 14.2:1）；
      文字那一档也只有 3.76:1。改成跟着主题走的绿 */
   #scene-tag-box:not(:empty) { display: flex; flex-wrap: wrap; gap: 0 8px; }
@@ -311,11 +310,21 @@
   .use-tag b { cursor: pointer; font-weight: 400; opacity: .7; }
   .use-tag b:hover, .scene-tag b:hover { opacity: 1; }
   /* @ / 自动补全菜单 */
-  .mention-menu { display: none; position: absolute; bottom: 100%; left: 12px; margin-bottom: 8px; min-width: 260px; max-width: 420px; max-height: 260px; overflow-y: auto; background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-xl); box-shadow: var(--shadow-menu); padding: 6px; z-index: 40; }
+  .mention-menu { display: none; position: absolute; bottom: 100%; left: 12px; margin-bottom: 8px; min-width: 320px; max-width: min(460px, calc(100vw - 32px)); max-height: 300px; overflow-y: auto; background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-xl); box-shadow: var(--shadow-menu); padding: 6px; z-index: 40; }
   .mention-menu.show { display: block; }
-  .mention-menu .mi { padding: 8px 12px; border-radius: var(--radius-md); font-size: 14px; cursor: pointer; }
+  /* 一条是上下两行：图标 ＋ 名字在上，说明在下，各自单行截断。
+     这条必须自己写 display —— 全局有一条 `.mi { display: flex }`（当年把字符图标换成 svg 时加的），
+     外加 `.mi .sub { margin-left: auto }`；两条合起来把「说明」变成了名字右边并排的一块。
+     菜单只有 420px，塞一条「按这份说明书的步骤…」的长说明，名字那边被挤到只剩一个字宽，
+     于是 /feishu-doc 一个字母一行往下掉。用户原话：「我现在输入 / 看到那些技能也比较丑陋啊」
+     「现在这个 ui 太丑陋了，这么挤的 UI 吗」——说的就是这里。 */
+  .mention-menu .mi { display: grid; grid-template-columns: 16px 1fr; column-gap: 8px; align-items: center;
+    padding: 7px 12px; border-radius: var(--radius-md); font-size: 14px; cursor: pointer; }
+  .mention-menu .mi > .i { grid-row: 1 / span 2; align-self: center; color: var(--owb-text-2); }
+  .mention-menu .mi .mi-name { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mention-menu .mi:hover, .mention-menu .mi.sel { background: var(--owb-bg-hover); }
-  .mention-menu .mi .sub { font-size: 12px; color: var(--owb-text-3); display: block; }
+  .mention-menu .mi .sub { grid-column: 2; margin-left: 0; font-size: 12px; color: var(--owb-text-3);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mention-menu .mh { font-size: 12px; color: var(--owb-text-3); padding: 4px 12px; }
   .turn { margin-bottom: 22px; }
   /* 从资料库跳过来落在哪一轮，得让人一眼看见。滚过去不标记的话，
@@ -743,6 +752,58 @@
   .picker-menu .mi.ws-current { min-width: 0; max-width: 100%; }
   .picker-menu .mi.ws-current > .i { flex: 0 0 auto; }
   .picker-menu .mi .mi-truncate { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* ---------- ＋ 菜单：一级是六个入口，二级是真正的清单 ----------
+     用户原话：「我这里也有 ＋ 能看到各种工具啥的啊，还有管理已经设置好的连接器这些啊」。
+     一级菜单窄（只有六行字），二级菜单宽（要摆得下「名字 + 一句说明」两行）——
+     所以二级不是往下展开，是从一级右边飞出来一块：一级不会因为二级的宽度被撑变形，
+     来回切换二级时也不会整个菜单跳一下宽度。 */
+  /* max-width：这张根菜单是内容撑开的（picker-menu 只给了 min-width），六行里但凡有一行被翻译或改名
+     改长了，整张卡就跟着横着长出去、把子菜单顶到窗口外面。上限定在这儿，长的那行由 .pm-t 打省略号。 */
+  .plus-menu { min-width: 176px; max-width: min(260px, calc(100vw - 32px)); padding: 6px; }
+  /* overflow:hidden 不是给 .pm-t 兜底的（它自己裁）——是给这一行本身：nowrap 的行一旦装进
+     什么没预料到的东西，字会从卡片的圆角边框底下漏出去，而不是被裁掉。整份 CSS 的溢出闸门量的就是这个。 */
+  .plus-menu .pm-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md); font-size: 14px; cursor: pointer; white-space: nowrap; overflow: hidden; }
+  .plus-menu .pm-row:hover, .plus-menu .pm-row.on { background: var(--owb-bg-hover); }
+  .plus-menu .pm-row > .i { flex: none; color: var(--owb-text-2); }
+  .plus-menu .pm-row .pm-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .plus-menu .pm-row .pm-n { flex: none; font-size: 12px; color: var(--owb-text-3); }
+  /* 二级：贴着一级的右边缘飞出来。bottom:0 让它和一级底边对齐——往上长，
+     跟输入框上方那块空间的方向一致，不会掀到窗口外面 */
+  .pm-sub { display: none; position: absolute; left: calc(100% + 6px); bottom: 0; width: 300px; max-width: calc(100vw - 32px);
+    background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-xl); box-shadow: var(--shadow-menu); padding: 6px; }
+  .pm-sub.show { display: block; }
+  /* 窗口右边放不下 300px 了就翻到左边去。JS 量完宽度加这个类，不靠猜 */
+  .pm-sub.flip { left: auto; right: calc(100% + 6px); }
+  .pm-sub .pm-h { display: flex; align-items: center; gap: 6px; padding: 4px 10px 6px; font-size: 12px; color: var(--owb-text-3); }
+  .pm-sub .pm-h .pm-back { display: none; }
+  .pm-sub .pm-list { max-height: min(46vh, 380px); overflow-y: auto; }
+  .pm-sub .pm-search { display: flex; align-items: center; gap: 6px; margin: 0 4px 6px; padding: 5px 8px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg-side); }
+  .pm-sub .pm-search > .i { flex: none; color: var(--owb-text-3); }
+  .pm-sub .pm-search input { flex: 1; min-width: 0; border: none; background: transparent; outline: none; font-size: 13px; color: var(--owb-text); }
+  /* 一条条目：图标 + 名字（一行截断） + 说明（一行截断）。
+     这里是整个 ＋ 菜单唯一一处必须写死「两行、各自单行截断」的地方——用户原话
+     「现在这个 ui 太丑陋了，这么挤的 UI 吗」，说的就是长说明在窄菜单里一个字一个字换行。 */
+  .pm-it { display: grid; grid-template-columns: 18px 1fr auto; grid-template-rows: auto auto; column-gap: 8px;
+    align-items: center; padding: 7px 10px; border-radius: var(--radius-md); cursor: pointer; }
+  .pm-it:hover { background: var(--owb-bg-hover); }
+  .pm-it > .i { grid-row: 1 / span 2; align-self: center; color: var(--owb-text-2); }
+  .pm-it .pm-name { grid-column: 2; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pm-it .pm-desc { grid-column: 2; font-size: 12px; color: var(--owb-text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pm-it .pm-right { grid-column: 3; grid-row: 1 / span 2; display: flex; align-items: center; gap: 6px; }
+  .pm-it.on .pm-name { color: var(--owb-brand-text); font-weight: 600; }
+  .pm-it.ro { cursor: default; }
+  .pm-it.ro:hover { background: transparent; }
+  .pm-it .pm-bad { font-size: 12px; color: var(--owb-err-text); }
+  .pm-it .pm-mono { font-family: var(--font-mono); font-size: 13px; }
+  .pm-sub .pm-foot { margin-top: 4px; border-top: 1px solid var(--owb-border); padding-top: 4px; }
+  .pm-sub .pm-empty { padding: 10px; font-size: 13px; color: var(--owb-text-3); line-height: 1.6; }
+  /* 开关：连接器那一列右边的绿色小拨片。只有这一处用，所以不进通用组件 */
+  .pm-sw { flex: none; width: 34px; height: 18px; border-radius: var(--radius-full); border: none; padding: 0; cursor: pointer;
+    background: var(--owb-border); position: relative; transition: background var(--owb-t-fast) var(--owb-ease); }
+  .pm-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left var(--owb-t-fast) var(--owb-ease); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  .pm-sw.on { background: var(--success); }
+  .pm-sw.on::after { left: 18px; }
+  .pm-sw:disabled { opacity: .45; cursor: not-allowed; }
   /* 本机 CLI 在跑时：这张卡回答的是「谁在跑、花不花钱、去哪儿改」，不是一排可选项 */
   .picker-menu.eng { width: 272px; }
   .picker-menu.eng .ep-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md); background: var(--owb-brand-weak); color: var(--owb-brand-text); }
@@ -750,8 +811,8 @@
   .picker-menu.eng .ep-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; }
   .picker-menu.eng .ep-model { display: block; font-weight: 400; font-size: 12px; color: var(--owb-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .picker-menu.eng .ep-on { color: var(--owb-ok-text); font-size: 13px; }
-  .picker-menu.eng .ep-why { padding: 8px 10px 4px; font-size: 12px; line-height: 1.6; color: var(--owb-text-3); white-space: normal; }
-  .picker-menu.eng .ep-free { margin-right: 6px; background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--owb-ok-text); }
+  .picker-menu.eng .ep-tag { padding: 8px 10px 4px; }
+  .picker-menu.eng .ep-free { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--owb-ok-text); }
   .picker-menu.eng .ep-act { margin-top: 4px; border-top: 1px solid var(--owb-border); border-radius: 0 0 var(--radius-md) var(--radius-md); color: var(--owb-text-2); }
   /* 「这趟活谁在跑」的常驻小牌子：一行、低调、不抢正文，但一直在 */
   .run-eng { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; margin: 0 0 8px; padding: 3px 10px 3px 6px; border: 1px solid var(--owb-border); border-radius: var(--radius-full); background: var(--owb-bg-side); font-size: 12px; color: var(--owb-text-2); }
@@ -824,27 +885,32 @@
   #pv-body .pv-text button { border: 1px solid var(--owb-border); background: var(--owb-bg); border-radius: var(--radius-md); padding: 4px 12px; font-size: 13px; color: var(--owb-text-2); cursor: pointer; }
   #pv-body .pv-text button:hover { border-color: var(--owb-brand-text); color: var(--owb-text); }
   /* docx/xlsx/pptx/zip/csv 拆出来的结构化预览 */
-  #pv-body .ov-doc { padding: 18px 24px 40px; font-size: 14px; line-height: 1.75; color: var(--owb-text); }
-  #pv-body .ov-h { margin: 20px 0 8px; line-height: 1.4; font-weight: 600; }
-  #pv-body h1.ov-h { font-size: 22px; } #pv-body h2.ov-h { font-size: 19px; } #pv-body h3.ov-h { font-size: 16px; }
-  #pv-body h4.ov-h, #pv-body h5.ov-h, #pv-body h6.ov-h { font-size: 15px; }
-  #pv-body .ov-p { margin: 8px 0; overflow-wrap: anywhere; }
-  #pv-body .ov-li { margin: 4px 0; padding-left: 16px; position: relative; overflow-wrap: anywhere; }
-  #pv-body .ov-li::before { content: "·"; position: absolute; left: 4px; color: var(--owb-text-3); }
-  #pv-body .ov-img { max-width: 100%; height: auto; max-height: 720px; object-fit: contain; object-position: center; display: block; margin: 12px 0; border-radius: var(--radius-sm); background: var(--owb-bg-side); }
-  #pv-body .ov-scroll { overflow-x: auto; margin: 12px 0; }
-  #pv-body .ov-table { border-collapse: collapse; font-size: 13px; }
-  #pv-body .ov-table th, #pv-body .ov-table td { border: 1px solid var(--owb-border); padding: 5px 10px; text-align: left; vertical-align: top; max-width: 340px; overflow-wrap: anywhere; }
-  #pv-body .ov-table th { background: var(--owb-bg-side); font-weight: 600; position: sticky; top: 0; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
-  #pv-body .ov-sheet td, #pv-body .ov-sheet th { white-space: pre-wrap; }
-  #pv-body .ov-note { color: var(--owb-text-3); font-size: 13px; margin: 10px 0; }
-  #pv-body .ov-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
-  #pv-body .ov-tab { border: 1px solid var(--owb-border); background: var(--owb-bg); border-radius: var(--radius-md); padding: 3px 12px; font-size: 13px; color: var(--owb-text-2); cursor: pointer; }
-  #pv-body .ov-tab.on { border-color: var(--owb-brand-text); color: var(--owb-text); background: var(--owb-bg-side); }
-  #pv-body .ov-slide { border: 1px solid var(--owb-border); border-radius: var(--radius-lg); padding: 14px 16px; margin: 12px 0; background: var(--owb-bg-side); }
-  #pv-body .ov-slide-n { font-size: 12px; color: var(--owb-text-3); }
-  #pv-body .ov-slide-t { font-size: 17px; font-weight: 600; margin: 4px 0 8px; }
-  #pv-body .ov-notes { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--owb-border); color: var(--owb-text-3); font-size: 13px; }
+  :is(#pv-body, .lib-prev) .ov-doc { padding: 18px 24px 40px; font-size: 14px; line-height: 1.75; color: var(--owb-text); }
+  :is(#pv-body, .lib-prev) .ov-h { margin: 20px 0 8px; line-height: 1.4; font-weight: 600; }
+  :is(#pv-body, .lib-prev) h1.ov-h { font-size: 22px; } :is(#pv-body, .lib-prev) h2.ov-h { font-size: 19px; } :is(#pv-body, .lib-prev) h3.ov-h { font-size: 16px; }
+  :is(#pv-body, .lib-prev) h4.ov-h, :is(#pv-body, .lib-prev) h5.ov-h, :is(#pv-body, .lib-prev) h6.ov-h { font-size: 15px; }
+  :is(#pv-body, .lib-prev) .ov-p { margin: 8px 0; overflow-wrap: anywhere; }
+  :is(#pv-body, .lib-prev) .ov-li { margin: 4px 0; padding-left: 16px; position: relative; overflow-wrap: anywhere; }
+  :is(#pv-body, .lib-prev) .ov-li::before { content: "·"; position: absolute; left: 4px; color: var(--owb-text-3); }
+  :is(#pv-body, .lib-prev) .ov-img { max-width: 100%; height: auto; max-height: 720px; object-fit: contain; object-position: center; display: block; margin: 12px 0; border-radius: var(--radius-sm); background: var(--owb-bg-side); }
+  :is(#pv-body, .lib-prev) .ov-scroll { overflow-x: auto; margin: 12px 0; }
+  :is(#pv-body, .lib-prev) .ov-table { border-collapse: collapse; font-size: 13px; }
+  :is(#pv-body, .lib-prev) .ov-table th, :is(#pv-body, .lib-prev) .ov-table td { border: 1px solid var(--owb-border); padding: 5px 10px; text-align: left; vertical-align: top; max-width: 340px; overflow-wrap: anywhere; }
+  :is(#pv-body, .lib-prev) .ov-table th { background: var(--owb-bg-side); font-weight: 600; position: sticky; top: 0; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  :is(#pv-body, .lib-prev) .ov-sheet td, :is(#pv-body, .lib-prev) .ov-sheet th { white-space: pre-wrap; }
+  :is(#pv-body, .lib-prev) .ov-note { color: var(--owb-text-3); font-size: 13px; margin: 10px 0; }
+  :is(#pv-body, .lib-prev) .ov-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  :is(#pv-body, .lib-prev) .ov-tab { border: 1px solid var(--owb-border); background: var(--owb-bg); border-radius: var(--radius-md); padding: 3px 12px; font-size: 13px; color: var(--owb-text-2); cursor: pointer; }
+  :is(#pv-body, .lib-prev) .ov-tab.on { border-color: var(--owb-brand-text); color: var(--owb-text); background: var(--owb-bg-side); }
+  :is(#pv-body, .lib-prev) .ov-slide { border: 1px solid var(--owb-border); border-radius: var(--radius-lg); padding: 14px 16px; margin: 12px 0; background: var(--owb-bg-side); }
+  :is(#pv-body, .lib-prev) .ov-slide-n { font-size: 12px; color: var(--owb-text-3); }
+  :is(#pv-body, .lib-prev) .ov-slide-t { font-size: 17px; font-weight: 600; margin: 4px 0 8px; }
+  :is(#pv-body, .lib-prev) .ov-notes { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--owb-border); color: var(--owb-text-3); font-size: 13px; }
+  /* Office 预览这套壳（.ov-*）两边共用：对话页右边那块 #pv-body，和资料库那一栏 .lib-prev。
+     用户原话是「做PPT，workd还有excel,csv这些格式预览要给我兼容，给我做好啊」——
+     同一份 .pptx 在对话里点得开、在资料库里点不开，那就是没做好。样式只此一份，别抄第二遍 */
+  .lib-prev .ov-doc { padding: 0; }
+  .lib-prev .ov-table th { position: static; }
   /* ---------- 代码预览 ----------
      两条铁律，都是「看着像乱码」那次反馈换来的：
        1) 代码**不折行**（white-space: pre + 横向滚动）。折行的兜底 <pre> 是给日志和纯文本用的，
@@ -1190,6 +1256,19 @@
   .form-row { display: flex; gap: 8px; }
   .form-row > * { flex: 1; }
   .ok-msg { font-size: 13px; color: var(--owb-ok-text); margin-left: 8px; }
+  /* 保存失败的时候这行字还是绿的。用户原话：「怎么点击添加都没办法添加在搞什么」——
+     其实每一次都报了错，只是那个错穿着成功的衣服，挂在一整屏表单的最底下。 */
+  .ok-msg.bad { color: var(--owb-err-text); font-weight: 600; }
+  /* 设置页里「这条渠道已经被我们停掉了」那类说明块。跟审批条同一套暖色，
+     但它不等人点头，所以不加粗左边那根竖条。 */
+  .warn-box { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; padding: 10px 12px;
+    background: color-mix(in srgb, var(--owb-warn) 10%, var(--owb-shell));
+    border: 1px solid var(--owb-warn); border-radius: var(--radius-lg); font-size: 13px; line-height: 1.6; }
+  .warn-box > svg, .warn-box > i { flex: none; margin-top: 2px; color: var(--owb-warn-text); }
+  .warn-box > div { flex: 1; min-width: 0; }
+  button.mini { flex: none; align-self: center; border: 1px solid var(--owb-warn); background: var(--owb-card);
+    color: var(--owb-text); border-radius: var(--radius-md); padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  button.mini:hover { background: var(--owb-bg-hover); }
   /* ---------- 账号 / 积分 ---------- */
   .user-chip { display: flex; align-items: center; gap: 8px; margin: 8px 4px 0; padding: 8px 10px; border-radius: var(--radius-lg); border: 1px solid var(--owb-border); background: var(--owb-bg); font-size: 13px; cursor: pointer; }
   .user-chip:hover { background: var(--owb-bg-hover); }
@@ -1619,6 +1698,11 @@
      它们是给判据做注脚的，不该跟结论抢视线 */
   .at-runs .at-hint { margin-top: 3px; color: var(--owb-text-2); line-height: 1.5; }
   .at-runs .at-raw { margin-top: 3px; color: var(--owb-text-3); font-size: 12px; font-family: var(--font-mono, ui-monospace, monospace); word-break: break-all; }
+  /* 「看执行过程」：定时任务这一趟的完整回放入口。跟结果那一栏并排，因为用户看完一句结论的
+     下一个念头就是「它到底干了什么」——那一栏答不上来时，答案得就在手边，不是翻到别处去找 */
+  .at-runs .at-open { color: var(--owb-brand-text); text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+  .at-runs .at-open:hover { text-decoration: underline; }
+  .at-runs .at-nosid { color: var(--owb-text-3); cursor: help; }
 
   /* ===== 资料库页 ===== */
   /* 三栏：左边是「怎么找」（搜索 / 视图 / 类型），中间是东西本身，右边是预览。
@@ -1789,9 +1873,6 @@
   .lib-prev { border: 1px solid var(--owb-border); border-radius: var(--radius-xl); min-height: 420px; max-height: calc(100vh - 150px); padding: 18px 20px; overflow: auto; }
   .lib-page[data-mode="gallery"] .lib-prev { min-height: 300px; max-height: calc(100vh - 290px); }
   .lib-prev iframe { width: 100%; height: 70vh; border: none; border-radius: var(--radius-md); background: #fff; }
-  .lib-prev table.csv { border-collapse: collapse; font-size: 13px; width: 100%; }
-  .lib-prev table.csv td, .lib-prev table.csv th { border: 1px solid var(--owb-border); padding: 5px 9px; text-align: left; }
-  .lib-prev table.csv th { background: var(--owb-bg-side); font-weight: 600; }
   .lib-prev pre.raw { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.6; }
   .lib-prev .ph { color: var(--owb-text-3); text-align: center; padding: 80px 20px; font-size: 14px; }
   /* 预览页顶上的「出自任务」：产出和它的来历始终连着 */
@@ -2471,7 +2552,10 @@
         <div class="attach-chips" id="attach-chips"></div>
         <div id="input-box"><div id="input-hl" aria-hidden="true"></div><textarea id="input" rows="2" placeholder="今天帮你做些什么？@ 引用文件，/ 调用技能与指令"></textarea></div>
         <div class="card-toolbar">
-          <button class="icon-btn" id="attach-btn" title="上传文件到工作空间，任务中可直接使用"><svg class="i" aria-hidden="true"><use href="#i-paperclip"></use></svg></button>
+          <div class="picker" id="plus-picker">
+            <button class="icon-btn" id="attach-btn" title="添加文件 · 模式 · 专家 · 技能 · 工具 · 连接器"><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg></button>
+            <div class="picker-menu up-left plus-menu" id="plus-menu"></div>
+          </div>
           <input type="file" id="file-input" multiple style="display:none">
           <div class="grow"></div>
           <div class="picker" id="model-picker">

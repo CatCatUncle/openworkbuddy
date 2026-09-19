@@ -115,6 +115,14 @@ DeepSeek / 通义 / 智谱 / Kimi / OpenRouter / Ollama 界面点一下就切；
 
 **<https://hunan-travel.pages.dev/>** —— 点开就能逛。一个 HTML 文件加一个图片文件夹，排版、动效、配色全在那一个文件里，不挂任何外部 CDN，扔到静态托管上就是一个站。这不是截图拼的示意图，是它交出来的那份东西本身。
 
+**「每天早上七点，把今天的天气和该注意的事发到我飞书」**
+
+<p align="center">
+  <img src="docs/images/case-schedule-feishu.jpg" width="820" alt="OpenWorkBuddy 的定时任务每天早上推到飞书的早报：今天的天气、紫外线、明天的雨，外加两句今天该干什么">
+</p>
+
+这条是一句话排出来的：它自己去查当天的天气，写成人话推到飞书——不是套模板，明天有雨就多说一句「今天能办的今天办」。人不在电脑前也照跑；每一趟的完整执行过程都在「自动化 → 运行记录」里，点开就是那一趟调了哪些工具、为什么这么说。飞书 / 企微 / 钉钉 / Telegram 都是同一条路。
+
 怎么做到的、本机 Claude Code 当发动机长什么样 → **[三个案例，拆开讲](docs/案例.md)**
 
 ## AI 短剧无限画布
@@ -122,7 +130,7 @@ DeepSeek / 通义 / 智谱 / Kimi / OpenRouter / Ollama 界面点一下就切；
 剧本、角色、场景、分镜、参考图、视频、配音、时间线摆在同一张图上。连线不是装饰——它表示下一步生成真会去读的角色、首帧和声音。改哪个镜头，只有那个镜头重跑。
 
 <p align="center">
-  <img src="docs/images/demo-canvas.gif" width="960" alt="OpenWorkBuddy 脱敏实录：从侧栏进入无限画布、创建短剧节点、保留连线并直接和画布 Agent 对话">
+  <img src="docs/images/case-canvas.jpg" width="960" alt="OpenWorkBuddy 无限画布：定妆照、场景图、分镜首帧排在同一张图上，紫色连线标着「生成」指向下一步真会去读的那几张">
 </p>
 
 左侧点「无限画布」就能开始。空白处拖拽平移，`Shift`+拖拽框选，底部对话框里能 `@` 引用任意节点和素材。

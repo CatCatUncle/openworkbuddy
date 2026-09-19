@@ -131,7 +131,7 @@ async function detect(opts) {
  */
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
-  model, systemPrompt, resumeId, maxTurns, mcpConfigPath, mcpServerNames = [], shimBin = "", bin, permissionMode, env, extraArgs = [],
+  model, systemPrompt, resumeId, maxTurns, mcpConfigPath, mcpServerNames = [], shimBin = "", bin, permissionMode, guard = {}, env, extraArgs = [],
   thinking: thinkingLevel, addDirs = [],
 }) {
   // 起进程也走同一套解析：detect 认出来的是绝对路径，run 却还 spawn 裸名字的话，
@@ -148,9 +148,11 @@ async function run({
   // .run-eng 节点，不会闪成两枚。放在探测之前，是因为探测本身还要 0.09 秒，牌子没必要跟着等。
   emit({ type: "status", starting: true, text: `本机 Claude Code 正在启动（连接工具中，一般 3~8 秒），不消耗 API 额度`, depth: 0 });
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
-  // acceptEdits：本项目的定位是"替你把活干了"，每一步都停下来问等于没法用。
-  // 真正危险的动作由本项目自己的安全中心把关（工具经 MCP 回流时会走那道闸）。
-  args.push("--permission-mode", permissionMode || "acceptEdits");
+  // 档位跟着设置页那颗开关走（security.engineGuard 翻的）。
+  // 以前这里硬写死 acceptEdits：claude 自带的工具**不经过**本项目的安全中心
+  // （只有从 MCP 桥回流的那批才走那道闸），于是用户选了「只看不动」，切到本机引擎
+  // 照样随便改文件——界面上那颗开关等于摆设。engine_options 里手填的仍然最大。
+  args.push("--permission-mode", permissionMode || guard.claudeMode || "acceptEdits");
   if (model) args.push("--model", model);
   if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
   if (resumeId) args.push("--resume", resumeId);
@@ -174,7 +176,11 @@ async function run({
   // `echo` 这种它自己判得出安全的命令能直接跑，但调一个它没见过的可执行文件会返回
   // 「This command requires approval」——-p 是非交互的，没人能点同意，于是工具形同虚设。
   // 只放行 owb 这一个前缀，不是整个 Bash：本项目的工具都从这台桥回流，安全中心照样把关。
-  if (shimBin) args.push("--allowed-tools", `Bash(${shimBin}:*)`);
+  // 「只看不动」那一档连这条也不放：本项目的工具是能写文件的，从这道后门绕开档位，
+  // 跟没设过没区别。别的档位放行——这批工具从桥回流时照样过本项目的安全中心
+  if (shimBin && guard.allowShim !== false) args.push("--allowed-tools", `Bash(${shimBin}:*)`);
+  // 名单里说「这类命令要问我一下」的，在这条路上问不着（-p 非交互），只能直接不给用
+  for (const t of guard.disallow || []) args.push("--disallowed-tools", t);
   // 思考模式：跟 app 设置页那个下拉框同一个档位。auto 什么也不发（今天的行为一个字节不变），
   // 这版 claude 不认 --thinking 时也什么都不发 —— 发了会被静默吞掉，不如明着在界面上说不支持
   const think = thinking.planForEngine(ID, thinkingLevel, { thinkingFlag });

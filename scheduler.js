@@ -132,6 +132,69 @@ function parseField(field, min, max, label) {
   return values;
 }
 
+/**
+ * 「只跑一次」的时刻。
+ *
+ * 用户说了句「五分钟后叫我去准备面试」，排出来的是一条**每天 14:00** 的 cron，任务正文还成了
+ * 半句上下文「飞书上叫我去准备面试了」。他的原话是「你在搞什么啊」。
+ * 根因不在模型：cron 五个字段里压根没有「一次」这个概念，模型手上只有这一个工具，
+ * 只能拿「每天这个点」去近似「这个点」——于是一条提醒变成了一条每天都要响的闹钟。
+ *
+ * 认三种写法，都是为了让模型写得出来：
+ *   +5m / +2h / +1d  从现在起往后推。**这条是主力**——系统提示词里的当前时间只精确到「几点左右」，
+ *                    模型算不出「五分钟后」的绝对时刻，硬让它算只会算歪，还不如让它照抄用户说的那个量。
+ *   14:05            今天的这个钟点；已经过了就顺延到明天（人说「6 点叫我」时想的就是这个）。
+ *   2026-09-19 14:05 / ISO  说全了就按说的来。
+ *
+ * 认不出来一律抛错，绝不猜一个时刻回去：排期是要弹给用户点头的，猜错的那一下他点的是「同意」。
+ */
+function parseAt(expr, now = Date.now()) {
+  const raw = String(expr == null ? "" : expr).trim();
+  if (!raw) throw new Error("没写执行时刻");
+  let m = raw.match(/^\+\s*(\d+)\s*(分钟|分|小时|时|天|m|min|h|hour|d|day)$/i);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    const unit = m[2].toLowerCase();
+    const mins = /^(小时|时|h|hour)$/.test(unit) ? n * 60 : /^(天|d|day)$/.test(unit) ? n * 1440 : n;
+    if (!(mins > 0)) throw new Error(`「${raw}」推不出一个未来的时刻`);
+    // 一年以上就别当定时任务了：那是个日程，而且这么长的等待期里应用早重启过无数次
+    if (mins > 366 * 1440) throw new Error("最多只能往后排一年");
+    return new Date(now + mins * 60000).toISOString();
+  }
+  if ((m = raw.match(/^(\d{1,2})\s*[:：]\s*(\d{2})$/))) {
+    const h = +m[1], mi = +m[2];
+    if (h > 23 || mi > 59) throw new Error(`「${raw}」不是一个钟点`);
+    const d = new Date(now);
+    d.setSeconds(0, 0);
+    d.setHours(h, mi);
+    if (d.getTime() <= now) d.setDate(d.getDate() + 1); // 今天这个点过了就是明天的这个点
+    return d.toISOString();
+  }
+  // 「2026-09-19 14:05」这种当本地时间读。直接丢给 Date 的话，不带时区的写法在不同运行时里
+  // 一会儿被当 UTC 一会儿被当本地，差出八个小时——提醒就响在半夜
+  if ((m = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/))) {
+    const d = new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0), 0);
+    if (isNaN(d.getTime())) throw new Error(`「${raw}」不是一个有效时刻`);
+    return d.toISOString();
+  }
+  const t = Date.parse(raw); // 带时区的完整 ISO 走这条
+  if (!isNaN(t)) return new Date(t).toISOString();
+  throw new Error(`看不懂「${raw}」。只跑一次的写法：+5m（五分钟后）、14:05（今天或明天那个钟点）、2026-09-19 14:05`);
+}
+
+/** 这条排期什么时候跑，说成人话。一次性的说日子和钟点，周期的交给 describeCron */
+function describeWhen(item) {
+  if (item && item.at) {
+    const d = new Date(item.at);
+    if (isNaN(d.getTime())) return "";
+    const today = new Date();
+    const sameDay = d.toDateString() === today.toDateString();
+    const at = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return (sameDay ? "今天 " : `${d.getMonth() + 1} 月 ${d.getDate()} 日 `) + at + "（只跑一次）";
+  }
+  return describeCron(item && item.cron);
+}
+
 function parseCron(expr) {
   const fields = String(expr || "").trim().split(/\s+/);
   if (fields.length !== 5) throw new Error("cron 需要 5 个字段：分 时 日 月 周");
@@ -162,7 +225,15 @@ function cronMatches(cron, date) {
 
 // ---------- 调度器 ----------
 
-function createScheduler({ runtime, onResult, storePath }) {
+/**
+ * @param recorder 可选：把一次定时执行录成一段真会话。server 建调度器时插进来。
+ *   调度器自己不认识会话存储（那是 server.js 的 SESS_DIR 那一摊），所以只留这么个插座：
+ *   recorder({ item, trigger, run }) → { sessionId, opts, done(ok, text) }
+ *   - opts 会原样摊进 runTask（emit / sessionId / taskLabel / user / baseDir …）
+ *   - done 在这一趟收尾时调一次，成败都调，负责把会话落盘
+ *   没插 recorder（CLI、测试）就跟以前一模一样：不录、不留 session_id、不影响执行本身。
+ */
+function createScheduler({ runtime, onResult, storePath, recorder }) {
   // 测试要能指到别处去，不然一跑测试就把用户真的任务表洗了
   const file = storePath || STORE;
   const store = loadStore(file);
@@ -171,6 +242,19 @@ function createScheduler({ runtime, onResult, storePath }) {
   const running = new Map();
   // 上次看表是什么时候。开机第一眼不补跑，否则第一次装起来就会把历史全部重放一遍
   let lastTickMs = store.last_tick_at ? Date.parse(store.last_tick_at) || 0 : 0;
+
+  /**
+   * 运行记录没了，跟着它那段「执行过程」会话也该没。
+   *
+   * 不清的话就是个只进不出的坑：后台 cron 每跑一次多一个会话文件，运行记录到 300 条封顶、
+   * 任务删了记录也跟着删，可盘上那些会话永远没人碰——用得越久越多，而且全是没有入口的孤儿。
+   */
+  const forgetRuns = (rows) => {
+    const ids = (rows || []).map((r) => r && r.session_id).filter(Boolean);
+    if (ids.length && recorder && recorder.forget) {
+      try { recorder.forget(ids); } catch (e) { console.warn(`[定时任务] 清执行记录失败：${e.message}`); }
+    }
+  };
 
   /**
    * 这条排期，这个人碰不碰得到。
@@ -204,14 +288,21 @@ function createScheduler({ runtime, onResult, storePath }) {
     return t && allowed(t, viewer) ? t : null;
   }
 
-  function add({ name, cron, task, catch_up, user, org }) {
+  function add({ name, cron, at, task, catch_up, user, org }) {
     task = String(task || "").trim();
     if (!task) throw new Error("任务描述不能为空");
-    parseCron(cron); // 校验
+    // 只跑一次 vs 周期跑，二选一。两个都给会各跑各的（cron 每天响 + at 再响一次），
+    // 而界面上只画得下一个时间——用户看到的和实际发生的就对不上了
+    const once = at ? parseAt(at) : "";
+    if (once && cron) throw new Error("「只跑一次」和「按周期跑」只能选一个");
+    if (!once) parseCron(cron); // 校验
     const item = {
       id: "sch_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       name: String(name || "").trim() || task.slice(0, 30),
-      cron: String(cron).trim(),
+      cron: once ? "" : String(cron).trim(),
+      // 只跑一次的时刻（ISO）。跑完 tick 会把 enabled 关掉并盖上 fired_at，
+      // 记录留着不删——用户还要回头看「那条提醒到底响没响、结果是什么」
+      ...(once ? { at: once } : {}),
       task,
       enabled: true,
       // 错过了要不要补：默认补。笔记本合上盖子过一夜，晨报不该就这么没了
@@ -239,10 +330,16 @@ function createScheduler({ runtime, onResult, storePath }) {
       if (!v) throw new Error("任务描述不能为空");
       t.task = v;
     }
-    if (patch.cron !== undefined) {
+    if (patch.at !== undefined) {
+      if (patch.at) { t.at = parseAt(patch.at); t.cron = ""; t.enabled = true; delete t.fired_at; } // 改了时刻就是要它再响一次
+      else delete t.at;                                                                            // 显式清空 = 改回周期任务
+    }
+    if (patch.cron !== undefined && patch.cron) {
       parseCron(patch.cron); // 校验：写坏了当场报，别等到永远不触发才发现
       t.cron = String(patch.cron).trim();
+      delete t.at; // 排成周期的就不再是「只跑一次」了，留着 at 会在界面上画出两个时间
     }
+    if (!t.cron && !t.at) throw new Error("排期时间不能清空：要么给 cron，要么给一次性时刻");
     if (patch.catch_up !== undefined) t.catch_up = !!patch.catch_up;
     saveStore(store, file);
     return t;
@@ -259,6 +356,7 @@ function createScheduler({ runtime, onResult, storePath }) {
     if (!get(id, viewer)) return false;               // 不是你的，就当没这条
     const before = store.tasks.length;
     store.tasks = store.tasks.filter((t) => t.id !== id);
+    forgetRuns(store.runs.filter((r) => r.task_id === id));
     store.runs = store.runs.filter((r) => r.task_id !== id);
     saveStore(store, file);
     return store.tasks.length < before;
@@ -332,7 +430,7 @@ function createScheduler({ runtime, onResult, storePath }) {
       result: "",
     };
     store.runs.push(run);
-    if (store.runs.length > MAX_RUNS) store.runs.splice(0, store.runs.length - MAX_RUNS);
+    if (store.runs.length > MAX_RUNS) forgetRuns(store.runs.splice(0, store.runs.length - MAX_RUNS));
     saveStore(store, file);
     const finish = (ok, text) => {
       run.ok = ok;
@@ -343,16 +441,40 @@ function createScheduler({ runtime, onResult, storePath }) {
     // 裁定判失败时不能在 try 里直接抛——那会被下面的 catch 接住，再套一层「出错:」。
     // 先记下来，等 finally 把 running 锁松开之后再抛出去。
     let verdictErr = null;
+    // 这一趟的录像机。用户原话：「我定时任务怎么没看到具体的执行过程啊」——
+    // 以前这儿是光秃秃一句 runTask({ history })：不给 emit 就没有事件，不给 sessionId 就没有会话，
+    // 于是整趟执行只在运行记录上留下一句被截到 500 字的结果，想知道「它到底调了什么、卡在哪一步」
+    // 一点痕迹都查不到。现在录进一段跟手动对话完全同构的会话，前端那条「看执行过程」直接回放它。
+    //
+    // 录像本身不许影响执行：起录像失败就当没这回事继续跑，别让一条定时任务因为存盘问题不执行。
+    let rec = null;
+    if (recorder) {
+      try {
+        rec = recorder({ item, trigger, run });
+      } catch (e) {
+        console.warn(`[定时任务] ${item.name} 起执行记录失败（不影响执行）：${e.message}`);
+      }
+    }
+    if (rec && rec.sessionId) {
+      run.session_id = rec.sessionId;
+      saveStore(store, file); // 先把 id 落盘：任务跑到一半崩了，那半段过程也还找得回来
+    }
+    const closeRec = (ok, text) => {
+      if (!rec || !rec.done) return;
+      try { rec.done(ok, text); } catch (e) { console.warn(`[定时任务] ${item.name} 执行记录收尾失败：${e.message}`); }
+      rec = null; // 只收一次
+    };
     try {
       // 每次执行用全新会话，避免历史无限增长
       const history = [{ role: "user", content: item.task }];
       // stopped 是 runTask 自己报的「撞上限 / 模型挂死 / 手动停止」。以前这里把它解构掉了，
       // 于是一个跑满 25 步被强制收尾的任务，运行记录里照样是个 ✅——活没干完却显示干成了。
-      const { finalText, stopped } = await runtime.runTask({ history });
+      const { finalText, stopped } = await runtime.runTask({ history, ...((rec && rec.opts) || {}) });
       const v = judgeRun({ result: finalText, stopped });
       if (v.ok) {
         item.last_result = (finalText || "完成").slice(0, 500);
         finish(true, finalText || "完成");
+        closeRec(true, finalText || "完成");
         saveStore(store, file);
         if (onResult) await onResult(item, finalText);
         return finalText;
@@ -366,6 +488,7 @@ function createScheduler({ runtime, onResult, storePath }) {
       run.retryable = v.retryable;
       item.last_result = msg.slice(0, 500);
       finish(false, msg);
+      closeRec(false, msg);
       saveStore(store, file);
       if (onResult) await onResult(item, msg);
       verdictErr = Object.assign(new Error(msg), { verdict: v });
@@ -375,13 +498,39 @@ function createScheduler({ runtime, onResult, storePath }) {
       const why = explainRunError(e.message);
       item.last_result = ("出错: " + why).slice(0, 500);
       finish(false, "出错: " + why);
+      closeRec(false, "出错: " + why);
       saveStore(store, file);
       if (onResult) await onResult(item, "执行出错: " + why);
       throw e;
     } finally {
       running.delete(item.id);
+      closeRec(false, "执行中断"); // 上面三条路都收过了；能走到这儿的只剩没预料到的退出方式
     }
     throw verdictErr;
+  }
+
+  /**
+   * 「只跑一次」那条：到点了就放它走，然后当场关掉自己。
+   *
+   * 关掉这一下必须**同步**做在 fire 之前。fire 是异步的，等任务跑完再关的话，
+   * 中间每一分钟的 tick 都会看见它还开着、时刻也还是过去时——一条五分钟的提醒会连着响到你关掉它。
+   *
+   * 关机错过了照样补：这正是一次性提醒最该补的场合（合上笔记本去开会，回来该看见它响过）。
+   * 但补也有个头——隔了一天的「五分钟后叫我」再响就是骚扰了，那时候事早过去了。
+   */
+  function fireOnce(item, nowMs) {
+    const due = Date.parse(item.at);
+    if (isNaN(due)) { console.warn(`[定时任务] ${item.name} 的时刻「${item.at}」读不出来，关掉`); item.enabled = false; return; }
+    if (due > nowMs) return;
+    const late = nowMs - due;
+    item.enabled = false;
+    item.fired_at = new Date().toISOString();
+    if (late > MAX_CATCHUP_MS || (item.catch_up === false && late > GAP_MS)) {
+      item.last_result = `错过了（该在 ${new Date(due).toLocaleString("zh-CN")} 跑，晚了 ${Math.round(late / 60000)} 分钟）`;
+      console.log(`[定时任务] ${item.name} 错过太久，不补跑了`);
+      return;
+    }
+    fire(item, late > GAP_MS ? "补跑" : "定时");
   }
 
   function fire(item, trigger) {
@@ -409,6 +558,7 @@ function createScheduler({ runtime, onResult, storePath }) {
     const to = Math.floor(toMs / 60000) * 60000;
     for (const item of store.tasks) {
       if (!item.enabled || item.catch_up === false) continue;
+      if (item.at) continue; // 一次性的不走这条：fireOnce 只看「到点没」，本来就自带补跑
       let cron;
       try { cron = parseCron(item.cron); } catch { continue; }
       let at = null;
@@ -439,6 +589,7 @@ function createScheduler({ runtime, onResult, storePath }) {
     for (const item of store.tasks) {
       if (!item.enabled || caught.has(item.id)) continue; // 刚补跑过的这次就别再来一遍
       try {
+        if (item.at) { fireOnce(item, nowMs); continue; }
         if (cronMatches(parseCron(item.cron), now)) fire(item, "cron");
       } catch (e) {
         console.warn(`[定时任务] ${item.name} cron 无效:`, e.message);
@@ -453,4 +604,4 @@ function createScheduler({ runtime, onResult, storePath }) {
   return { list, get, add, update, remove, toggle, setCatchUp, disableOwnedBy, reassign, runOne, runs, tick, catchUp, stop: () => clearInterval(timer) };
 }
 
-module.exports = { createScheduler, parseCron, cronMatches, describeCron, setActiveScheduler, activeScheduler, SCHEDULE_LABEL };
+module.exports = { createScheduler, parseCron, cronMatches, describeCron, parseAt, describeWhen, setActiveScheduler, activeScheduler, SCHEDULE_LABEL };

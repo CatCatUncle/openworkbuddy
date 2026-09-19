@@ -313,8 +313,23 @@ app.whenReady().then(async () => {
   const pet = require(path.join(__dirname, "pet.js"));
   global.__openworkbuddyPet = pet;
   try {
+    /**
+     * 开机时把盘上那份原样交给宠物，一个字段都不许漏。
+     *
+     * 以前这儿手抄了五个字段，**偏偏漏掉了 sprite**。于是选了精灵图宠物的人，
+     * 每次重开都变回内置那只猫：character 传成了 "sprite"，sprite 却是空字符串，
+     * pet.js 拿空 id 去 findPet 自然找不着，create() 最后那行
+     * `character: photo ? "photo" : sp ? "sprite" : "cat"` 就静静地落回 "cat"。
+     * 用户原话：「这个宠物我之前换了的，然后重新打开又是默认的猫猫宠物了」。
+     *
+     * 同一份名单还漏了 notifyDone 和 wander，scale 的兜底值也跟 pet.js 自己的
+     * DEFAULT_SCALE 对不上（那边是 2，这里写死 1）——三处都是同一个病：
+     * 手抄一份字段清单，加字段的人不会想到回来改它。
+     * 所以现在整份摊过去，只把 enabled 单独钉死成「必须显式为 true」（没配过就不该有宠物），
+     * 其余交给 pet.js 自己的默认值。以后加字段不用再动这里。
+     */
     const petCfg = require(dataPath("config.json")).pet || {};
-    pet.applyConfig({ enabled: petCfg.enabled === true, scale: petCfg.scale || 1, opacity: petCfg.opacity || 1, notify: petCfg.notify !== false, character: petCfg.character || "cat" });
+    pet.applyConfig({ ...petCfg, enabled: petCfg.enabled === true });
   } catch {
     pet.applyConfig({ enabled: false }); // 读不到配置就当没配过：默认不该有宠物
   }

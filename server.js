@@ -25,7 +25,7 @@ const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder, anthropicBase } = require("./llm");
 const sessSearch = require("./session-search");
-const { outputFiles, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
@@ -50,7 +50,8 @@ const sweep = require("./sweep");
 const modes = require("./modes"); // 执行模式的唯一真源（craft/goal/plan/ask）
 const cfgMerge = require("./config-merge"); // 存配置时把外面手改的那些合进来，不整份覆盖
 const cfgLint = require("./config-lint"); // 手改配置写错了当场说，别让人以为「改了没反应」
-const mediaModels = require("./media-models"); // 图/视频/语音/视觉：渠道表 + 每路多模型
+const mediaModels = require("./media-models");
+const mediaHealth = require("./media-health"); // 连不通的媒体渠道熔断表：设置页要显示，保存时要清空 // 图/视频/语音/视觉：渠道表 + 每路多模型
 const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
 const systemOne = require("./systemone"); // 判断模型（Jev）的纯逻辑：请求怎么拼、回答怎么读
 const jev = require("./jev"); // 判断模型的调用路：挑渠道、取 Key、发请求
@@ -336,7 +337,11 @@ function assignSessionDir(sess, message) {
     try {
       const from = path.join(getWorkspaceDir(), n), to = path.join(full, n);
       // 根目录同名的可能是别人的旧文件，只搬确实存在、且目标位置还空着的
-      if (fs.existsSync(from) && fs.statSync(from).isFile() && !fs.existsSync(to)) fs.renameSync(from, to);
+      if (fs.existsSync(from) && fs.statSync(from).isFile() && !fs.existsSync(to)) {
+        fs.renameSync(from, to);
+        // 「这份是用户传的」那笔账记的是路径，搬完得跟着改键，否则这张图换个位置就又变成产出了
+        moveUserInput(n, path.join(dir, n));
+      }
     } catch {}
   }
   sess.pending_uploads = [];
@@ -482,6 +487,9 @@ function listSessionsOnDisk() {
 function sessionRow(id, s) {
   // 一句话都没说过的空壳不进侧栏：点进去还是空的，只会让人以为「历史又乱了」
   if (!s || !Array.isArray(s.transcript) || !s.transcript.length) return null;
+  // 定时任务跑出来的那段会话也不进侧栏：一天几十条 cron 会把真正的对话整个挤下去。
+  // 它们有自己的正经去处——自动化 → 运行记录，那边每条记录都挂着「看执行过程」直接开这一段。
+  if (s.kind === "schedule") return null;
   return {
     id,
     title: s.title || "未命名任务",
@@ -634,10 +642,14 @@ function petSay(ev) {
   } catch {}
 }
 
-function recordingEmit(send, events, sessionId) {
+/**
+ * @param opts.pet 要不要让桌面宠物跟着这趟任务动表情。定时任务传 false：
+ *   它是背着人跑的，让宠物替一条 cron 手舞足蹈会盖掉用户手头正在看的那件事。
+ */
+function recordingEmit(send, events, sessionId, { pet = true } = {}) {
   return (ev) => {
     send(ev);
-    if (!(ev.depth > 0)) petSay(ev);
+    if (pet && !(ev.depth > 0)) petSay(ev);
     if (ev.type === "text") {
       if (ev.depth > 0) return;
       const last = events[events.length - 1];
@@ -1657,10 +1669,13 @@ app.post("/api/provider-models", async (req, res) => {
     if (!r.ok) return res.json({ ok: false, why: `渠道没给列表（HTTP ${r.status}）`, models: [] });
     const j = await r.json().catch(() => ({}));
     const raw = Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : [];
+    // 渠道自己报了模态就用它报的（sure=true），没报才按名字猜。前端拿 sure 决定
+    // 敢不敢把一条拦在「看图」那一组外面——猜出来的不敢，人家自己说的敢
     const models = raw
-      .map((m) => (typeof m === "string" ? m : String(m.id || m.name || "")))
-      .filter(Boolean)
-      .map((id) => ({ id, cap: mediaModels.guessCap(id) }))
+      .map((m) => (typeof m === "string" ? { id: m } : m || {}))
+      .map((m) => ({ id: String(m.id || m.name || ""), ...mediaModels.capOfModel(m) }))
+      .filter((m) => m.id)
+      .map((m) => (m.sure ? { id: m.id, cap: m.cap, sure: true } : { id: m.id, cap: m.cap }))
       .slice(0, 600);
     modelListCache.set(base, { at: Date.now(), models });
     res.json({ ok: true, models });
@@ -2221,7 +2236,12 @@ app.post("/api/settings", (req, res) => {
     }
     // 两张表任何一张动过，就重算 id、补默认项、把「默认那条」压平回 config.media，
     // 这样 tools.js 那边永远读到一份现成的扁平配置，不用关心多模型这套
-    if (b.media || b.providers || b.media_models) mediaModels.normalize(config);
+    if (b.media || b.providers || b.media_models) {
+      mediaModels.normalize(config);
+      // 渠道配置动过 = 用户已经去处理那条断掉的路了（换了 Key、换了型号、换了家）。
+      // 熔断记录这时必须清空，否则他改完还得干等半小时，然后来问「我都改好了怎么还不动」。
+      mediaHealth.reset();
+    }
     // 渠道改了 Key，挂在它底下的对话模型要跟着换——压平这一步就是干这个的
     if (b.models || b.providers) chatModels.normalize(config);
     if (b.security) {
@@ -2698,6 +2718,19 @@ app.post("/api/security/approvals/:id", (req, res) => {
 // 「网页四个、命令行三个」就是抄出来的：goal 是后加的，抄到第三份就漏了。
 // 这里没有任何机密，也不按人区分，所以不设门禁：没登录的首屏也得画得出模式菜单。
 app.get("/api/modes", (_req, res) => res.json({ modes: modes.EXEC_MODES, default: modes.DEFAULT_MODE }));
+
+/**
+ * 哪条媒体渠道正被熔断闸停着。
+ *
+ * 熔断本身在后台默默生效就行，但「为什么它不给我看图了」必须有地方能看见——
+ * 否则用户只会觉得功能坏了，而真相是我们替他拦下了一条撞不通的路。
+ * 设置 → 模型 页顶上那条黄条读的就是这个。
+ */
+app.get("/api/media-health", (_req, res) => res.json({ paused: mediaHealth.list() }));
+app.post("/api/media-health/reset", (req, res) => {
+  mediaHealth.reset(String((req.body || {}).cap || "") || undefined);
+  res.json({ ok: true, paused: mediaHealth.list() });
+});
 app.get("/api/security/modes", (req, res) =>
   // can_switch：档位是整台服务器一份（决定 agent 动手前问不问），普通成员改不了。
   // 界面拿它决定那个 🛡️ 菜单画成可点的还是只读的——不然点下去只有一句「切换失败」。
@@ -3011,7 +3044,7 @@ app.get("/api/mcp/catalog", (_req, res) => {
   res.json({ ...cat, items: cat.items.map((it) => ({ ...it, configured: configured.has(it.name) })) });
 });
 
-app.get("/api/mcp", (_req, res) => {
+app.get("/api/mcp", (req, res) => {
   const view = (s, plugin) => {
     const client = mcpManager.clients.get(s.name);
     const failure = mcpManager.failures.find((f) => f.name === s.name);
@@ -3026,7 +3059,13 @@ app.get("/api/mcp", (_req, res) => {
       header_keys: Object.keys(s.headers || {}),
       transport: s.transport || (s.command ? "stdio" : "streamable-http"),
       plugin, // 插件带来的：界面上只读，不许当成 config 里的条目存回去
+      // 关掉的那几台：既没连上也没失败，界面要能分清「连不上」和「我自己关的」——
+      // 少了这一个字段，用户关掉一台之后看到的是一张灰卡片，跟连接失败长得一模一样
+      enabled: !mcpManager.disabled.has(s.name),
       error: failure ? failure.error : "",
+      // 「授权没了」和「连不上」在界面上是两件事：前者要用户现在就去换 Key，后者多半过会儿自己就好。
+      // 判据就是 mcp.js 里 whyFailed 翻出来的那句话——401/403 那条固定带着「（401）Key／令牌」。
+      auth_bad: failure ? /（401）|（403）|Key／令牌/.test(failure.error || "") : false,
       connected: !!client,
       tools: client ? client.tools.map((t) => ({ name: t.name, description: (t.description || "").slice(0, 200) })) : [],
     };
@@ -3037,7 +3076,80 @@ app.get("/api/mcp", (_req, res) => {
   try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该让连接器页打不开 */ }
   const servers = (config.mcp_servers || []).map((s) => view(s, ""))
     .concat(fromPlugins.map((s) => view(s, s.plugin)));
-  res.json({ servers, total_tools: mcpManager.toolDefs().length });
+  res.json({ servers, total_tools: mcpManager.toolDefs().length, can_toggle: isPlatformOwner(req) });
+});
+
+/**
+ * 单台连接器的开关。
+ *
+ * 为什么不复用 POST /api/mcp：那条是「把整张表存回去」。GET 出去的时候 env / headers 的值
+ * 被抹成了键名（里头是 API Key），前端手上根本没有完整的表；为了点一下开关而整表回存，
+ * 等于每次都拿一份缺了密钥的副本去覆盖真的那份——现在靠 prevByName 兜着，但那是兜底，不该当主路走。
+ * 何况插件带来的连接器压根不在 config.mcp_servers 里，整表回存对它们无从下手。
+ *
+ * 关掉 = 停掉进程 + 从工具表里摘掉。摘掉这一步才是重点：留着定义，模型会先想一个用它的方案、
+ * 调一次、吃一条「连不上」、再重想——白烧一轮。这和 toolList 里对 run_shell 的处理是同一个道理。
+ */
+app.post("/api/mcp/toggle", async (req, res) => {
+  // 连接器是整台机器一份的：一个人关掉，所有人的任务都少一批工具。跟权限档位同一个判据。
+  if (!isPlatformOwner(req)) return res.status(403).json({ error: "连接器是整台机器一份的，开关归平台管理员", platform_only: true });
+  try {
+    const name = String((req.body || {}).name || "").trim();
+    if (!name) throw new Error("要说明开关哪一台连接器");
+    let fromPlugins = [];
+    try { fromPlugins = pluginsMgr.pluginMcpServers(); } catch { /* 插件坏了不该让开关点不动 */ }
+    const all = [...(config.mcp_servers || []), ...fromPlugins];
+    const cfg = all.find((x) => x.name === name);
+    if (!cfg) throw new Error(`没有这台连接器：${name}`);
+    const on = (req.body || {}).enabled !== false;
+
+    const off = new Set(config.mcp_disabled || []);
+    if (on) off.delete(name); else off.add(name);
+    // 只留还存在的名字：连接器删掉之后，它的名字不该在这张表里长住
+    config.mcp_disabled = [...off].filter((n) => all.some((x) => x.name === n));
+    saveConfig();
+    mcpManager.setDisabled(config.mcp_disabled);
+
+    if (on) await mcpManager.startAll([cfg]); // 只起这一台，别把别人的连接踢了重连
+    else mcpManager.stop([name]);
+    res.json({ ok: true, name, enabled: on, connected: mcpManager.clients.has(name), total_tools: mcpManager.toolDefs().length });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/**
+ * 这一刻模型手上到底有哪些工具。
+ *
+ * 用户原话：「我这里也有 ＋ 能看到各种工具啥的啊」。以前这个问题在界面上无解——
+ * 工具表是 agent.js 的 toolList() 按「组织关没关命令行、有没有渲染器、配没配发信通道、
+ * 连上了几台连接器」当场算出来的，界面上一份都没有。于是「它到底能不能发邮件」
+ * 只能靠问它一次、等它答「没配」来确认。
+ *
+ * 所以这里不另抄一份清单，直接调 runtime.toolList()——摆出来的就是模型看见的那一份，
+ * 不会漂。抄一份的下场在 modes 那儿已经演过一遍了（三份手抄，goal 只抄进两份）。
+ */
+app.get("/api/tools", (req, res) => {
+  if (!runtime) return res.json({ tools: [], groups: [], total: 0 });
+  const mode = String(req.query.mode || "craft");
+  let defs = [];
+  try { defs = runtime.toolList(0, mode) || []; } catch (e) { return res.status(500).json({ error: e.message }); }
+  const tools = defs.map((t) => {
+    const m = String(t.name).match(/^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/);
+    return {
+      name: t.name,
+      // 连接器工具的描述前面带着 `[MCP:服务器] `，那是给模型认来源的，界面上有分组标题了，重复一遍是噪音
+      description: String(t.description || "").replace(/^\[MCP:[^\]]+\]\s*/, "").split("\n")[0].slice(0, 160),
+      source: m ? "mcp" : "builtin",
+      server: m ? m[1] : "",
+      short: m ? m[2] : "",
+    };
+  });
+  const groups = [{ key: "builtin", label: "内置工具", count: tools.filter((t) => t.source === "builtin").length }];
+  for (const name of new Set(tools.filter((t) => t.source === "mcp").map((t) => t.server))) {
+    groups.push({ key: "mcp:" + name, label: name, count: tools.filter((t) => t.server === name).length });
+  }
+  res.json({ tools, groups, total: tools.length, mode });
 });
 
 /** 一条连接器配置规整成后端认的形状；stdio 看 command，远程看 url */
@@ -3554,6 +3666,20 @@ app.get("/api/library/file/*", async (req, res) => {
     res.download(p);
   } catch (e) {
     res.status(400).send(e.message);
+  }
+});
+
+// 资料库里的 docx / xlsx / pptx / zip：浏览器自己打不开（zip 里一包 XML），得服务端先拆。
+// 跟 /api/files/preview 是同一个 previewData，只是换一个根——资料库在 data/library 下，
+// 工作目录在别处。以前这条不存在，于是同一份 .pptx 在对话里点得开、拖进资料库就点不开了。
+app.get("/api/library/preview/*", async (req, res) => {
+  try {
+    const rel = relOf(req);
+    const p = libPath(rel);
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: "文件不存在" });
+    res.json(await previewData(p, rel));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
@@ -4824,6 +4950,9 @@ app.post("/api/upload", (req, res) => {
     const p = safePath(rel);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, Buffer.from(data_b64, "base64"));
+    // 记一笔「这份是用户传的」。不记的话，正在跑的那趟任务下一次对账就会把它当成自己的产出
+    // 摆进「本回合产出」——用户粘张图想追问，图当场出现在上一轮的成果里（见 tools.js userInputs）
+    noteUserInput(rel);
     if (sess && !sess.dir) {
       sess.pending_uploads = (sess.pending_uploads || []).filter((n) => n !== base).concat(base);
     }
@@ -6189,7 +6318,10 @@ app.get("/api/session/:id", (req, res) => {
   // 之前点过的 👍👎 一起带回：反馈早落库了，重开对话不该看着像没点过
   let feedback = [];
   try { feedback = evolve.readFeedback().filter((f) => f.session === req.params.id).map((f) => ({ turn: f.turn, verdict: f.verdict, note: f.note || "" })); } catch {}
-  res.json({ transcript: s.transcript, dir: s.dir || null, model: s.model || null, goal: s.goal || null, feedback });
+  // title/kind 是给「从别处点进来」的那几条路用的：定时任务的执行过程、搜索结果、评测页。
+  // 这几段会话不在侧栏列表里（定时任务那种是故意不进的），前端就没地方取标题——
+  // 于是点开「看执行过程」，顶上写的是光秃秃一个「任务」，看不出这是哪条定时任务跑的哪一趟。
+  res.json({ transcript: s.transcript, dir: s.dir || null, model: s.model || null, goal: s.goal || null, feedback, title: s.title || "", kind: s.kind || "" });
 });
 
 // 归档目标：目标卡上点 ✕。已达成/不想要了都走这里，不删记录只改状态
@@ -6545,6 +6677,9 @@ async function main() {
   } catch (e) {
     console.warn("[插件] MCP 配置读取失败:", e.message);
   }
+  // 用户在 ＋ 菜单里关掉的那几台，开机就别连。必须在 startAll 之前灌进去，
+  // 晚一步就是「关掉的连接器每次重启都自己活过来」。
+  mcpManager.setDisabled(config.mcp_disabled || []);
   // MCP 连接不挡启动：窗口秒开，连接器在后台就绪（agent 每次跑任务都是现取 toolDefs，
   // 晚几秒连上也不丢工具）。首个定时 tick 在 +20s，届时早已连完。
   mcpManager
@@ -6555,8 +6690,65 @@ async function main() {
   for (const p of badPlugins) console.warn(`[插件] ${p.name} 装不上: ${p.error}`);
   runtime = createAgentRuntime({ config, llm, mcpManager, experts, expertTeams });
 
+  /**
+   * 把一次定时执行录成一段真会话。
+   *
+   * 用户原话：「我定时任务怎么没看到具体的执行过程啊」。以前定时任务调 runTask 时**既不给 emit
+   * 也不给 sessionId**——过程一个事件都没落下来，运行记录上只剩一句被截到 500 字的结果，
+   * 想知道「它到底调了什么工具、卡在哪一步、为什么这么久」一点痕迹都查不到。
+   *
+   * 这里把它录成跟手动对话**完全同构**的一段会话（同一个 recordingEmit、同一份 transcript 结构），
+   * 所以前端不用为定时任务另写一套回放：运行记录上那条「看执行过程」走的就是 openSession。
+   *
+   * 三条刻意的差别，都在 recordingEmit / sessionRow / sessionAllowed 那几处落地：
+   * - 不惊动桌面宠物（pet:false）——理由见 recordingEmit。
+   * - 不进侧栏任务历史（sessionRow 按 kind 挡掉）。
+   * - 归属跟着排期走（sess.user = item.user），判据跟 scheduler.allowed 是同一条：
+   *   别人的定时任务过程不该被同事顺手点开。
+   *
+   * ⚠️ opts 里只放 emit 和 sessionId。taskLabel / user / baseDir 一律不碰：那三样是
+   * accountedRuntime 在 ...rest 之前铺好的，从这儿传会把它们盖掉——盖掉 taskLabel 尤其致命，
+   * agent.js 就是靠它 === SCHEDULE_LABEL 才不许一条定时任务再去改排期表的。
+   */
+  const scheduleRecorder = ({ item }) => {
+    const sessionId = "s_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+    const at = new Date().toISOString();
+    const sess = getSession(sessionId);
+    sess.title = item.name || String(item.task || "").slice(0, 24);
+    sess.user = item.user || "";
+    sess.kind = "schedule";
+    sess.schedule_id = item.id;
+    sess.history = [{ role: "user", content: item.task }];
+    const events = [];
+    sess.transcript = [
+      { type: "user", text: item.task, mode: "craft", at },
+      { type: "assistant", events, at },
+    ];
+    saveSession(sessionId); // 先落一份空壳：任务跑一半崩了，那半截过程也还查得到（autosave 往同一份写）
+    return {
+      sessionId,
+      opts: { sessionId, emit: recordingEmit(() => {}, events, sessionId, { pet: false }) },
+      done: (ok, text) => {
+        // 这一句是给「整趟一个事件都没有」兜底：引擎没吐事件、或者刚开跑就抛了。
+        // 回放至少得看得见结论，不能点进去是一片空白。有事件时正文早在 events 里了，不重复贴。
+        if (!events.length) events.push({ type: "text", delta: String(text || (ok ? "完成" : "没有输出")) });
+        saveSession(sessionId);
+      },
+    };
+  };
+  /** 运行记录被挤掉 / 任务被删时，把跟着的那几段会话也删了——不然后台 cron 会一直往盘上堆文件 */
+  scheduleRecorder.forget = (ids) => {
+    for (const id of ids || []) {
+      if (!id) continue;
+      sessions.delete(id);
+      sessStamp.delete(id);
+      try { fs.rmSync(sessFile(id), { force: true }); } catch {}
+    }
+  };
+
   scheduler = createScheduler({
     runtime: accountedRuntime(runtime, "schedule"),
+    recorder: scheduleRecorder,
     onResult: (item, text) =>
       // 机器人那头不渲染 markdown，正文里的提示条记号先换成文字标签
       notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`),

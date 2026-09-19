@@ -115,6 +115,14 @@ That's two screens — the landing and the province index. Below them sit 14 cit
 
 **<https://hunan-travel.pages.dev/>** — it's live, go click around. One HTML file plus a folder of images: layout, motion and palette all live in that one file, no external CDN. Drop it on any static host and it's a site. Not a mockup — the thing it actually handed over.
 
+**"Every morning at seven, send me today's weather and what I should watch out for, on Feishu."**
+
+<p align="center">
+  <img src="docs/images/case-schedule-feishu.jpg" width="820" alt="A scheduled OpenWorkBuddy task pushing a morning briefing to Feishu: today's weather and UV, tomorrow's rain, plus two things worth doing today">
+</p>
+
+One sentence set this up. It looks the weather up itself and writes it like a person would — not a filled-in template: rain tomorrow, so it says do today's errands today. It runs whether or not anyone is at the machine, and every run keeps its full transcript under Automation → Run history — which tools it called, and why it said what it said. Feishu / WeCom / DingTalk / Telegram all take the same path.
+
 How it pulled those off → **[三个案例，拆开讲](docs/案例.md)** (Chinese, but the screenshots speak for themselves)
 
 ## AI short-drama infinite canvas
@@ -122,7 +130,7 @@ How it pulled those off → **[三个案例，拆开讲](docs/案例.md)** (Chin
 Script, characters, scenes, shots, reference images, video, voice and the edit timeline all sit on one canvas. The wires aren't decoration — they are what the next generation actually reads for character, first frame and sound. Change one shot and only that shot re-runs.
 
 <p align="center">
-  <img src="docs/images/demo-canvas.gif" width="960" alt="OpenWorkBuddy: entering the infinite canvas, creating short-drama nodes, keeping the wires, and talking to the canvas agent">
+  <img src="docs/images/case-canvas.jpg" width="960" alt="OpenWorkBuddy infinite canvas: character sheet, location plate and shot first-frames on one board, with purple wires labelled 「生成」 pointing at what the next generation actually reads">
 </p>
 
 Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+drag to marquee-select, and `@` any node or asset from the chat box at the bottom.

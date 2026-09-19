@@ -382,13 +382,42 @@ console.log("\n【10】默认技能清单上的豁免，两个方向都得对得
   }
 
   // ── 第二段：这台机器上装了几个就扫几个 ──
+  //
+  // 这一段想量的是「上游那份现装进来会不会被拦」，可手里只有这台机器上**已经装好**的那份当替身。
+  // 两者差在一处：技能装完还会往自己文件夹里写东西。ppt-master 的 projects/ 里躺着 09-18
+  // 那次真做 PPT 留下的 sources/，里头拷了本仓库的 README.md 和 安全.md ——
+  // 而那两份文档正正经经在讲 `curl | bash` 和 `cat ~/.ssh/id_rsa` 长什么样，于是整个技能被判 block。
+  // 那不是技能作者写的，是任务写的，上游那份里根本没有这个目录。
+  // 所以替身要按「刚装好的样子」量：顶层的产出目录和依赖树不算。
+  //
+  // 只有这条测试这么量。guard.scanDir 本身照旧整棵树全扫 —— 谁把载荷藏进 projects/，
+  // 装的时候照样拦得住（skills.js 那一路扫的是下载下来的源目录，那里没有任务产出）。
+  const OUTPUT_DIR = /^(?:projects|output|outputs|out|results|dist|build)$/i;
+  const SKIP_DIR = /^(?:node_modules|\.?venv|site-packages|vendor|third_party|bower_components)$|^\./;
+  const BIN_EXT = /\.(?:png|jpe?g|gif|webp|ico|bmp|woff2?|ttf|otf|eot|pdf|zip|gz|tar|7z|rar|mp3|mp4|wav|mov|webm|xlsx|docx|pptx)$/i;
+  const worst = (a, b) => (a === "block" || b === "block" ? "block" : a === "warn" || b === "warn" ? "warn" : "ok");
+  const scanAsFresh = (dir) => {
+    let lv = "ok";
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) {
+        if (OUTPUT_DIR.test(e.name) || SKIP_DIR.test(e.name)) continue;
+        lv = worst(lv, guard.scanDir(path.join(dir, e.name)).level);
+      } else if (e.isFile() && !BIN_EXT.test(e.name)) {
+        let t = "";
+        try { t = fs.readFileSync(path.join(dir, e.name), "utf8"); } catch { continue; }
+        lv = worst(lv, guard.scanOne(e.name, t).level);
+      }
+    }
+    return lv;
+  };
+
   const root = path.join(__dirname, "..", "skills");
   let checked = 0;
   for (const d of DEFAULT_SKILLS) {
     const dir = path.join(root, d.name);
     if (!fs.existsSync(dir)) continue;      // 没装的跳过，这台机器上量不了
     checked++;
-    const lv = guard.scanDir(dir).level;
+    const lv = scanAsFresh(dir);
     if (lv === "block") {
       ok(!!d.reviewed, `★默认技能「${d.name}」会被我们自己的检查拦下，清单里却没写豁免理由★ 用户开机就会看见它装不上`);
     }

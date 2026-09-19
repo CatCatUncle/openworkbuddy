@@ -15,14 +15,16 @@ function renderModelMenu(menu = modelMenu) {
   // 只在输入框那个选择器上换（menu === modelMenu）；助理页顶栏那个走的还是 API，不受影响
   const eng = menu === modelMenu ? activeEngine() : null;
   if (eng) {
-    // 这里不是一排可选项，是一张「现在谁在跑」的说明卡：
-    // 说明文字必须能换行（以前塞在 .mi 里，而 .mi 是 nowrap 的，菜单被撑成一整行宽，
-    // 飞出屏幕左边，字都看不全），能点的只有最后那一行——所以只有它长得像按钮。
+    // 这里不是一排可选项，是一张「现在谁在跑」的卡：谁在跑、花不花钱、去哪儿改，三行完事。
+    // 中间原来还有一段解释（「用你电脑上这个 CLI 的登录态和它自己的模型跑，所以下面那排
+    // API 模型这会儿一个都用不上」）——绿牌子「不花 API 额度」已经把这件事说完了，那段是
+    // 把它又用长句重说一遍。用户原话：「这些没有意义的注释都给我删掉」。别再加回来。
+    // 能点的只有最后那一行，所以只有它长得像按钮。
     menu.classList.add("eng");
     menu.innerHTML = `<div class="ep-head"><span class="ep-ic">${ic("monitor")}</span>
         <span class="ep-name">${esc(eng.label)}<span class="ep-model">${esc(eng.model || "用它自己的默认模型")}</span></span>
         <span class="ep-on">${ic("check")}</span></div>
-      <div class="ep-why"><b class="ep-free">不花 API 额度</b>用你电脑上这个 CLI 的登录态和它自己的模型跑，所以下面那排 API 模型这会儿一个都用不上。</div>
+      <div class="ep-tag"><b class="ep-free">不花 API 额度</b></div>
       <div class="mi ep-act" data-act="engine">${ic("settings")}改它的模型 / 换回内置引擎…</div>`;
     menu.querySelectorAll(".mi[data-act]").forEach((mi) => (mi.onclick = () => { menu.classList.remove("show"); openModal("settings", "agent"); }));
     return;
@@ -356,7 +358,7 @@ function composeOutgoing() {
   syncSendBtn(); // 框清空了：任务还在跑的话按钮回到「停下」
   return typed && note ? typed + "\n" + note : typed || note;
 }
-document.getElementById("attach-btn").onclick = () => document.getElementById("file-input").click();
+// ＋ 按钮现在开的是菜单不是文件对话框（见本文件末尾「＋ 菜单」一节）；上传走菜单里的「添加文件」
 document.getElementById("file-input").addEventListener("change", async (e) => {
   await uploadFiles(e.target.files);
   e.target.value = "";
@@ -858,6 +860,9 @@ async function openSession(id, opts) {
   // 回放服务端保存的完整对话（含工具执行过程）
   chatCol.innerHTML = "";
   const data = await fetch("/api/session/" + encodeURIComponent(sessionId)).then(r => r.json()).catch(() => ({ transcript: [] }));
+  // 侧栏里没有这一条时（自动化的「看执行过程」、搜索结果、评测页点进来的），标题从服务端取。
+  // 不然点开一趟定时任务的执行过程，顶上写的是光秃秃一个「任务」，认不出是哪条任务的哪一次。
+  if (!s && data.title) document.getElementById("session-title").textContent = (data.kind === "schedule" ? "定时 · " : "") + stripSceneTag(data.title);
   if (data.dir && sessionDirs.get(sessionId) !== data.dir) { sessionDirs.set(sessionId, data.dir); openDirs.add(data.dir); renderFiles(filesCache); }
   if (data.model) sessionModels.set(sessionId, data.model); else sessionModels.delete(sessionId);
   updateModelLabel();
@@ -909,7 +914,6 @@ document.getElementById("new-task").onclick = () => {
   document.getElementById("session-title").textContent = "新任务";
   chatCol.innerHTML = "";
   chatCol.appendChild(buildEmpty());
-  refreshSweepHint();   // 新任务回到空态：上一轮可能刚清过，数字得重算
   renderHistory();
   // 上个任务里临时切过的工作文件夹不带进新任务：回到当前项目的默认目录
   fetch("/api/workspace/reset", { method: "POST" }).then(r => r.json()).then(st => {
@@ -2252,3 +2256,278 @@ async function checkUpdate() {
   toast(r.behind > 0 ? `发现新版本：本地落后 ${r.behind} 个提交，在项目目录执行 git pull 后重启即可` : `已是最新版本（v${r.version}）`);
 }
 const SRC_TXT = { web: "网页", cli: "CLI", im: "IM", schedule: "定时" };
+
+// ================= ＋ 菜单：一个入口，装下六件常干的事 =================
+/**
+ * 用户原话：「我这里也有 ＋ 能看到各种工具啥的啊，还有管理已经设置好的连接器这些啊」
+ *          「这个对话框类似的 UI 给我加上还有功能」
+ *
+ * 在这之前，这六件事分散在六个地方：上传是输入框左边那枚回形针；模式在快捷栏最右；
+ * 专家和技能要先跳到「专家·技能·连接器」页，回来时对话已经翻页了；连接器只能去那一页开关；
+ * 而「模型现在到底有哪些工具」——**界面上根本没有**，只能问它一次，等它答「我没配发信通道」。
+ *
+ * 现在一个 ＋ 全兜住。一级只有六行字，二级从右边飞出来一块 300px 的板子摆清单：
+ * 一级不会被二级撑变形，来回切二级也不跳宽度。
+ *
+ * 三条规矩，都是踩过的坑：
+ *   1. 清单一律现取，不存第二份 —— 模式表当年抄成三份，goal 只抄进了两份；
+ *   2. 每行「名字一行、说明一行」，各自单行截断 —— 用户原话「这么挤的 UI 吗」说的就是
+ *      长说明在窄菜单里一个字一个字换行；
+ *   3. 工具那一屏直接问服务端要 runtime.toolList() 算出来的那一份，摆出来的就是模型看见的。
+ */
+const plusMenu = setupPicker("attach-btn", "plus-menu");
+const PLUS_TABS = [
+  ["file", "paperclip", "添加文件"],
+  ["mode", "circle-check", "模式"],
+  ["expert", "user", "专家"],
+  ["skill", "puzzle", "技能"],
+  ["tool", "wrench", "工具"],
+  ["mcp", "plug", "连接器"],
+];
+let plusOpen = "";      // 当前展开的二级，"" = 没展开
+let plusSkillQ = "";    // 技能那一屏的搜索词，关掉菜单才清
+
+/** 在光标处插一段文字（＋ 菜单里点文件 = 在正文里放一个 @引用） */
+function plusInsert(text) {
+  const pos = inputEl.selectionStart;
+  inputEl.value = inputEl.value.slice(0, pos) + text + " " + inputEl.value.slice(inputEl.selectionEnd);
+  const at = pos + text.length + 1;
+  inputEl.setSelectionRange(at, at);
+  inputEl.focus();
+  syncInputHl();
+}
+
+function plusClose() {
+  plusOpen = ""; plusSkillQ = "";
+  plusMenu.classList.remove("show");
+}
+
+/** 一条二级条目：图标 + 名字 + 一行说明（两行各自截断），右边可挂状态或开关 */
+function plusItem(icon, name, desc, opt = {}) {
+  const a = [`class="pm-it${opt.on ? " on" : ""}${opt.ro ? " ro" : ""}"`];
+  if (opt.act) a.push(`data-act="${esc(opt.act)}"`);
+  if (opt.val !== undefined) a.push(`data-val="${esc(String(opt.val))}"`);
+  a.push(`title="${esc(name + (desc ? " — " + desc : ""))}"`);
+  return `<div ${a.join(" ")}>${ic(icon)}
+    <span class="pm-name${opt.mono ? " pm-mono" : ""}">${esc(name)}</span>
+    <span class="pm-desc">${esc(desc || "")}</span>
+    ${opt.right ? `<span class="pm-right">${opt.right}</span>` : ""}</div>`;
+}
+const plusEmpty = (t) => `<div class="pm-empty">${esc(t)}</div>`;
+const plusHead = (t) => `<div class="pm-h">${esc(t)}</div>`;
+const plusFoot = (rows) => `<div class="pm-foot">${rows}</div>`;
+
+/** 画一级。二级那块板子挂在最后一行后面，位置靠 CSS 定死，不随行数变 */
+function renderPlusRoot() {
+  plusMenu.innerHTML = PLUS_TABS.map(([k, icon, label]) =>
+    `<div class="pm-row${plusOpen === k ? " on" : ""}" data-tab="${k}">${ic(icon)}<span class="pm-t">${esc(label)}</span>${ic("chevron-right", "i-sm")}</div>`).join("") +
+    `<div class="pm-sub" id="pm-sub"></div>`;
+  plusMenu.querySelectorAll(".pm-row").forEach((row) => {
+    const open = () => openPlusSub(row.dataset.tab);
+    row.onmouseenter = open;
+    row.onclick = (e) => { e.stopPropagation(); open(); };
+  });
+  if (plusOpen) openPlusSub(plusOpen);
+}
+
+/** 二级放不下就翻到左边去。量完再翻，不靠猜窗口宽度 */
+function plusFit(sub) {
+  sub.classList.remove("flip");
+  const r = sub.getBoundingClientRect();
+  if (r.right > window.innerWidth - 8) sub.classList.add("flip");
+}
+
+async function openPlusSub(tab) {
+  plusOpen = tab;
+  plusMenu.querySelectorAll(".pm-row").forEach((r) => r.classList.toggle("on", r.dataset.tab === tab));
+  const sub = plusMenu.querySelector("#pm-sub");
+  if (!sub) return;
+  sub.classList.add("show");
+  sub.onclick = (e) => e.stopPropagation(); // 二级里点东西不该顺手把整个菜单关了
+  sub.innerHTML = plusHead("读取中…");
+  plusFit(sub);
+  try {
+    await PLUS_RENDER[tab](sub);
+  } catch (e) {
+    sub.innerHTML = plusEmpty("这一屏没打开：" + (e && e.message ? e.message : "接口没响应"));
+  }
+  plusFit(sub);
+}
+
+const PLUS_RENDER = {
+  // ---------- 添加文件：上传一个，或引用工作空间里已有的 ----------
+  async file(sub) {
+    refreshFilesCache();
+    const files = (filesCache || []).slice(0, 8);
+    // 名字只显示最后一段，目录名让给说明那一行。
+    // 一屏八行全叫「任务_0918_帮我做一个『openwor…」是真发生过的：任务目录名本身就有二十几个字，
+    // 整条路径塞进 300px 再从尾巴截断，八行长得一模一样，等于没有列表。
+    sub.innerHTML = plusHead("添加文件") +
+      `<div class="pm-list">` +
+      plusItem("upload", "从电脑上传…", "传进工作空间，任务里直接能用", { act: "upload" }) +
+      (files.length
+        ? files.map((f) => {
+            const seg = String(f.name).split("/");
+            const base = seg.pop();
+            const dir = seg.length ? seg.join("/") : "工作空间根目录";
+            return plusItem(fileIcon(f.name), base, `${dir} · ${fmtSize(f.size || 0)}`, { act: "ref", val: f.name });
+          }).join("")
+        : plusEmpty("工作空间还没有文件。传一个，或者直接把文件拖进窗口。")) +
+      `</div>`;
+    sub.querySelectorAll(".pm-it").forEach((it) => (it.onclick = (e) => {
+      e.stopPropagation();
+      if (it.dataset.act === "upload") document.getElementById("file-input").click();
+      else plusInsert("@" + it.dataset.val);
+      plusClose();
+    }));
+  },
+
+  // ---------- 模式：跟快捷栏那个下拉同一份表（/api/modes），不另抄 ----------
+  async mode(sub) {
+    if (!execModes.length) await loadExecModes();
+    sub.innerHTML = plusHead("这次任务怎么跑") +
+      `<div class="pm-list">${execModes.length
+        ? execModes.map((m) => plusItem(m.icon, m.label, m.sub, { val: m.id, on: m.id === currentMode })).join("")
+        : plusEmpty("模式表没取到（服务端没响应），当前按默认模式跑")}</div>`;
+    sub.querySelectorAll(".pm-it").forEach((it) => (it.onclick = (e) => {
+      e.stopPropagation(); setMode(it.dataset.val); plusClose();
+    }));
+  },
+
+  // ---------- 专家 / 专家团：点一下挂一枚标签，不是往输入框灌一句话 ----------
+  async expert(sub) {
+    const [exps, teams] = await Promise.all([
+      fetch("/api/experts").then((r) => r.json()).catch(() => []),
+      fetch("/api/expert-teams").then((r) => r.json()).catch(() => []),
+    ]);
+    const ex = Array.isArray(exps) ? exps : [], tm = Array.isArray(teams) ? teams : [];
+    sub.innerHTML = plusHead("把这件事交给谁") +
+      `<div class="pm-list">${
+        (tm.length ? tm.map((t) => plusItem(t.avatar || "users", t.name,
+          t.description || `${(t.members || []).length} 人接力`, { act: "team", val: t.name })).join("") : "") +
+        (ex.length ? ex.map((e) => plusItem(e.avatar || "user", e.name,
+          e.description || e.category || "", { act: "expert", val: e.name })).join("") : "")
+      }${ex.length || tm.length ? "" : plusEmpty("还没有专家。去「专家 · 技能 · 连接器」里建一个，它就是一份写死的角色设定。")}</div>` +
+      plusFoot(plusItem("settings", "管理专家与专家团", "新建、改设定、组团", { act: "manage" }));
+    sub.querySelectorAll(".pm-it").forEach((it) => (it.onclick = (e) => {
+      e.stopPropagation();
+      if (it.dataset.act === "manage") { plusClose(); return openHub("team"); }
+      setUseTag({ kind: it.dataset.act, name: it.dataset.val });
+      plusClose();
+    }));
+  },
+
+  // ---------- 技能：带搜索框。技能多起来之后，不给搜就只能一屏屏翻 ----------
+  async skill(sub) {
+    if (!skillsCache.length) {
+      skillsCache = await fetch("/api/skills").then((r) => r.json()).catch(() => []);
+      if (!Array.isArray(skillsCache)) skillsCache = [];
+    }
+    const q = plusSkillQ.trim().toLowerCase();
+    const list = skillsCache.filter((s) =>
+      !q || String(s.name).toLowerCase().includes(q) || String(s.description || "").toLowerCase().includes(q));
+    sub.innerHTML = plusHead("按哪份说明书做") +
+      `<div class="pm-search">${ic("search", "i-sm")}<input id="pm-skill-q" placeholder="搜索技能" value="${esc(plusSkillQ)}"></div>` +
+      `<div class="pm-list">${list.length
+        ? list.slice(0, 60).map((s) => plusItem(s.plugin ? "puzzle" : "wrench", s.name,
+            s.description || "（这份技能没写说明）", { val: s.name })).join("")
+        : plusEmpty(q ? `没有匹配「${plusSkillQ}」的技能` : "还没有技能。技能就是一份写给 agent 看的操作说明书，装一个或自己写一份。")}</div>` +
+      plusFoot(plusItem("settings", "管理技能", "从 GitHub 装、自己写、改正文", { act: "manage" }));
+    const box = sub.querySelector("#pm-skill-q");
+    if (box) {
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+      box.oninput = () => { plusSkillQ = box.value; PLUS_RENDER.skill(sub); };
+      box.onkeydown = (e) => { if (e.key === "Escape") { e.stopPropagation(); plusClose(); } };
+    }
+    sub.querySelectorAll(".pm-it").forEach((it) => (it.onclick = (e) => {
+      e.stopPropagation();
+      if (it.dataset.act === "manage") { plusClose(); return openHub("skills"); }
+      setUseTag({ kind: "skill", name: it.dataset.val });
+      plusClose();
+    }));
+  },
+
+  // ---------- 工具：这一刻模型手上到底有哪些 ----------
+  async tool(sub) {
+    const d = await fetch("/api/tools?mode=" + encodeURIComponent(currentMode || "craft"))
+      .then((r) => r.json()).catch(() => null);
+    const tools = (d && d.tools) || [];
+    if (!tools.length) {
+      sub.innerHTML = plusHead("这一刻能用的工具") + plusEmpty("工具表没取到（服务端没响应）");
+      return;
+    }
+    // 按来源分组：内置一组，每台连接器各一组。连接器工具的名字是 mcp__服务器__工具，
+    // 分组标题已经写了服务器名，行里只留后半截，不然一屏全是重复的前缀
+    const secs = [["内置工具", tools.filter((t) => t.source === "builtin")]];
+    for (const name of [...new Set(tools.filter((t) => t.source === "mcp").map((t) => t.server))]) {
+      secs.push([`连接器 ${name}`, tools.filter((t) => t.server === name)]);
+    }
+    sub.innerHTML = plusHead(`这一刻能用的工具 · 共 ${tools.length} 个`) +
+      `<div class="pm-list">${secs.filter(([, l]) => l.length).map(([label, l]) =>
+        `<div class="pm-h">${esc(label)} · ${l.length}</div>` + l.map((t) => plusItem(
+          t.source === "mcp" ? "plug" : (TOOL_ICON[t.name] || "wrench"),
+          t.source === "mcp" ? t.short : (TOOL_SHORT[t.name] ? `${TOOL_SHORT[t.name]}（${t.name}）` : t.name),
+          t.description, { ro: true, mono: t.source === "mcp" })).join("")).join("")}</div>` +
+      plusFoot(plusItem("shield", "关掉其中一些", "命令行、联网这些能整类关掉，在 安全 里", { act: "sec" }));
+    sub.querySelectorAll('.pm-it[data-act="sec"]').forEach((it) => (it.onclick = (e) => {
+      e.stopPropagation(); plusClose(); openModal("settings", "security");
+    }));
+  },
+
+  // ---------- 连接器：开关 + 为什么连不上 ----------
+  async mcp(sub) {
+    const d = await fetch("/api/mcp").then((r) => r.json()).catch(() => null);
+    const list = (d && d.servers) || [];
+    const canToggle = !d || d.can_toggle !== false;
+    // 右边那一格说的是「现在什么状态」，四种情况分得清清楚楚：
+    // 我自己关的 / 授权没了（要去换 Key）/ 连不上（多半等会儿就好）/ 连上了几个工具
+    const state = (m) => {
+      if (!m.enabled) return `<span class="pm-desc">已关闭</span>`;
+      if (m.auth_bad) return `<span class="pm-bad">授权已过期</span>`;
+      if (m.error) return `<span class="pm-bad">连不上</span>`;
+      return `<span class="pm-desc">${m.tools.length} 个工具</span>`;
+    };
+    sub.innerHTML = plusHead(`连接器${d && d.total_tools ? ` · 已注入 ${d.total_tools} 个工具` : ""}`) +
+      `<div class="pm-list">${list.length
+        ? list.map((m) => plusItem(m.plugin ? "puzzle" : "plug", m.name,
+            m.error || (m.plugin ? `来自插件 ${m.plugin}` : (m.url || m.command || "")), {
+              val: m.name,
+              right: state(m) + `<button class="pm-sw${m.enabled ? " on" : ""}" data-sw="${esc(m.name)}"${
+                canToggle ? "" : " disabled"} title="${m.enabled ? "关掉它" : "打开它"}" aria-label="${esc(m.name)}"></button>`,
+            })).join("")
+        : plusEmpty("还没接连接器。连接器是把别人家的工具接进来——飞书、GitHub、数据库这些。")}</div>` +
+      plusFoot(plusItem("settings", "管理连接器", "加一台、改参数、看它到底提供了哪些工具", { act: "manage" })) +
+      (canToggle ? "" : `<div class="pm-empty">连接器是整台机器一份的，开关归平台管理员。</div>`);
+    sub.querySelectorAll('.pm-it[data-act="manage"]').forEach((it) => (it.onclick = (e) => {
+      e.stopPropagation(); plusClose(); openHub("mcp");
+    }));
+    sub.querySelectorAll(".pm-sw").forEach((sw) => (sw.onclick = async (e) => {
+      e.stopPropagation();
+      const on = !sw.classList.contains("on");
+      sw.disabled = true;
+      sw.classList.toggle("on", on); // 先动，别让人等一趟握手才看见反馈
+      const r = await fetch("/api/mcp/toggle", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: sw.dataset.sw, enabled: on }),
+      }).then((x) => x.json()).catch(() => null);
+      if (!r || r.error) {
+        sw.classList.toggle("on", !on); sw.disabled = false; // 失败要退回去，不然界面在骗人
+        return toast((r && r.error) || "开关没生效：接口没响应", "circle-x");
+      }
+      toast(on
+        ? (r.connected ? `已打开 ${r.name}，现在一共 ${r.total_tools} 个连接器工具` : `${r.name} 打开了，但没连上——点「管理连接器」看原因`)
+        : `已关掉 ${r.name}，这一轮不会再去连它`, on && !r.connected ? "triangle-alert" : "circle-check");
+      PLUS_RENDER.mcp(sub); // 重画一遍：工具数、状态字都跟着变了
+    }));
+  },
+};
+
+// setupPicker 已经把 .show 切好了（它的 onclick 先注册先跑），这里只管画。
+// 每次重新打开都回到一级：上次停在「技能」还带着搜索词，再点开时看见的是半截筛过的清单，
+// 会让人以为技能少了几个。
+document.getElementById("attach-btn").addEventListener("click", () => {
+  plusOpen = ""; plusSkillQ = "";
+  if (plusMenu.classList.contains("show")) renderPlusRoot();
+});
+plusMenu.onclick = (e) => e.stopPropagation(); // 一级里点空白不关菜单；关是靠点外面或选完

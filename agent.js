@@ -4,7 +4,7 @@
  * 主 Agent 是"协调者"：可直接干活，也可通过 delegate_to_expert 把子任务委派给专家子智能体。
  */
 
-const { TOOL_DEFS, executeTool, outputFiles, filesScope, getWorkspaceDir, orgPolicy, badToolArgs } = require("./tools");
+const { TOOL_DEFS, executeTool, outputFiles, isUserInput, filesScope, getWorkspaceDir, orgPolicy, badToolArgs } = require("./tools");
 const { loadSkills, SKILLS_DIR } = require("./skills");
 const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了顺延时限
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
@@ -127,10 +127,18 @@ const MAX_SCHEDULES = 50;
 const SCHEDULE_TOOL = {
   name: "schedule_task",
   description:
-    "给这台机器排一条定时任务：到点自动叫起 agent，执行你写好的那段任务描述（每天的日报、每周一的周报、每小时盯一次某个页面）。\n" +
-    "用户说「以后每天早上都…」「每周五帮我…」「定时提醒我…」时用它。它只管排期，不代表现在就跑——现在要做的事你直接做。\n" +
-    "cron 五个字段是「分 时 日 月 周」：`0 9 * * *` 每天 09:00；`0 9 * * 1-5` 工作日 09:00；`30 18 * * 5` 每周五 18:30；`*/15 * * * *` 每 15 分钟。\n" +
-    "task 必须是一句能独立执行的完整指令：到点时没有任何上下文，只有这一句话，所以「接着上面那个」「照旧」这类写法一律无效，人名、文件名、目标都要写全。\n" +
+    "给这台机器排一条定时任务：到点自动叫起 agent，执行你写好的那段任务描述。\n" +
+    "**先分清只跑一次还是每天都跑，这两样填不同的字段，填错了后果差很远。**\n" +
+    "· 只跑一次 → 填 at，别填 cron。「五分钟后叫我」at=`+5m`；「两小时后」at=`+2h`；「明天这个点」at=`+1d`；" +
+    "「下午 6 点提醒我」at=`18:00`（今天的，过了就是明天）；说全了就 at=`2026-09-19 14:05`。\n" +
+    "  相对量（+5m / +2h / +1d）优先：你手上的当前时间只精确到「几点左右」，算不出「五分钟后」是几点几分，照抄用户说的那个量最准。\n" +
+    "· 每天/每周反复跑 → 填 cron，别填 at。五个字段是「分 时 日 月 周」：`0 9 * * *` 每天 09:00；" +
+    "`0 9 * * 1-5` 工作日 09:00；`30 18 * * 5` 每周五 18:30；`*/15 * * * *` 每 15 分钟。\n" +
+    "  ★ 一次性的提醒绝不能用 cron 凑：`0 14 * * *` 是**每天 14 点都响**，用户要的只是今天那一下，往后每天都会被吵。\n" +
+    "task 必须是一句能独立执行的完整指令：到点时没有任何上下文，只有这一句话。\n" +
+    "  「接着上面那个」「照旧」这类写法一律无效；「飞书上叫我去准备面试了」这种转述句也无效——" +
+    "到点的那个 agent 会掉头去翻飞书找原文，找不到就只能反问用户。要写成「提醒我去准备面试」这样自己就能做完的话，" +
+    "上下文里已知的公司、岗位、时间一并写进去。\n" +
     "每一次增删改都会弹给用户确认，用户不点头就不生效。排之前先 list_schedules 看一眼，别排重。",
   input_schema: {
     type: "object",
@@ -142,7 +150,13 @@ const SCHEDULE_TOOL = {
       },
       id: { type: "string", description: "要改 / 删 / 开 / 关的任务 id（从 list_schedules 拿）。除 create 外都必填" },
       name: { type: "string", description: "任务名（可选，不写就取任务描述的前 30 字）" },
-      cron: { type: "string", description: "五字段 cron：分 时 日 月 周。create 必填；update 时不写就不改时间" },
+      at: {
+        type: "string",
+        description:
+          "只跑一次的时刻，跑完自动关掉。`+5m` `+30分钟` `+2h` `+1d` 从现在往后推（首选）；`14:05` 今天这个钟点，过了顺延到明天；" +
+          "`2026-09-19 14:05` 说全的时刻。和 cron 二选一，不能同时给",
+      },
+      cron: { type: "string", description: "反复跑用的五字段 cron：分 时 日 月 周。和 at 二选一；create 时两个必须给一个" },
       task: { type: "string", description: "到点要执行的完整任务描述。create 必填；update 时不写就不改内容" },
       catch_up: { type: "boolean", description: "错过了要不要补跑（笔记本合着盖子过一夜，晨报要不要补上）。默认 true" },
     },
@@ -833,6 +847,8 @@ function modePrompt(mode) {
         const cn = scheduler.describeCron(c);
         return cn ? `${cn}（${c}）` : `cron ${c}`;
       };
+      // 一条排期的「什么时候跑」：只跑一次的那种没有 cron，硬念 cron 会念出个空字符串
+      const whenOf = (t) => (t && t.at ? scheduler.describeWhen(t) : cronOf(t && t.cron));
       // 这一趟是替谁跑的。多人装机里模型只该看见、只该动**这个人**的排期：
       // 不然「帮我看看有哪些定时任务」会把全公司的任务描述一条条念出来，念完还写进了这次的对话记录。
       // 单机个人版 user 是空的 → 传 undefined → 不过闸，跟以前一模一样。
@@ -846,7 +862,7 @@ function modePrompt(mode) {
               const last = t.last_run
                 ? `上次 ${t.last_run.slice(0, 16).replace("T", " ")}${t.last_result ? "：" + String(t.last_result).replace(/\s+/g, " ").slice(0, 60) : ""}`
                 : "还没跑过";
-              return `${t.id}｜${t.name}｜${cronOf(t.cron)}｜${t.enabled ? "开着" : "关着"}${t.running ? "（正在跑）" : ""}｜${last}\n  到点要做的：${String(t.task).replace(/\s+/g, " ").slice(0, 200)}`;
+              return `${t.id}｜${t.name}｜${whenOf(t)}｜${t.enabled ? "开着" : "关着"}${t.running ? "（正在跑）" : ""}｜${last}\n  到点要做的：${String(t.task).replace(/\s+/g, " ").slice(0, 200)}`;
             })
             .join("\n"),
           isError: false,
@@ -876,14 +892,31 @@ function modePrompt(mode) {
       if (act === "create" && all.length >= MAX_SCHEDULES) {
         return { content: `排期表里已经有 ${all.length} 条了（上限 ${MAX_SCHEDULES}）。先让用户删掉不用的，再排新的。`, isError: true };
       }
-      // cron 和 task 先在本机校验：写坏了当场说，别让用户白点一次「同意」才发现排不进去
-      const wantCron = act === "create" || (act === "update" && tc.input.cron !== undefined);
-      if (wantCron) {
+      // 时间和 task 先在本机校验：写坏了当场说，别让用户白点一次「同意」才发现排不进去
+      const rawAt = String(tc.input.at === undefined ? "" : tc.input.at).trim();
+      const rawCron = String(tc.input.cron === undefined ? "" : tc.input.cron).trim();
+      // 两个都给会各跑各的（cron 每天响 + at 再响一次），而界面上只画得下一个时间
+      if (rawAt && rawCron) {
+        return { content: "at 和 cron 只能给一个：只跑一次填 at，反复跑填 cron。", isError: true };
+      }
+      let wantAt = "";
+      if (rawAt) {
+        try {
+          wantAt = scheduler.parseAt(rawAt);
+        } catch (e) {
+          return { content: `at 写得不对：${e.message}`, isError: true };
+        }
+      } else if (rawCron || (act === "update" && tc.input.cron !== undefined)) {
         try {
           scheduler.parseCron(tc.input.cron);
         } catch (e) {
           return { content: `cron 写得不对：${e.message}。五个字段是「分 时 日 月 周」，比如 0 9 * * 1-5 是工作日 09:00。`, isError: true };
         }
+      } else if (act === "create") {
+        return {
+          content: "create 得说清什么时候跑：只跑一次给 at（「五分钟后」就是 at=+5m），反复跑给 cron。一次性的提醒不要拿 cron 凑，那会每天都响。",
+          isError: true,
+        };
       }
       const wantTask = String(tc.input.task === undefined ? "" : tc.input.task).trim();
       if (act === "create" && !wantTask) {
@@ -896,17 +929,18 @@ function modePrompt(mode) {
       const changes = [];
       if (act === "update") {
         if (tc.input.name !== undefined) changes.push(`名字 → ${String(tc.input.name).trim()}`);
-        if (tc.input.cron !== undefined) changes.push(`时间 → ${cronOf(String(tc.input.cron).trim())}`);
+        if (wantAt) changes.push(`时间 → ${scheduler.describeWhen({ at: wantAt })}`);
+        else if (tc.input.cron !== undefined) changes.push(`时间 → ${cronOf(rawCron)}`);
         if (tc.input.task !== undefined) changes.push(`内容 → ${wantTask}`);
         if (tc.input.catch_up !== undefined) changes.push(`错过${tc.input.catch_up ? "补跑" : "不补跑"}`);
-        if (!changes.length) return { content: "update 没给出任何要改的项（name / cron / task / catch_up 至少写一个）。", isError: true };
+        if (!changes.length) return { content: "update 没给出任何要改的项（name / at / cron / task / catch_up 至少写一个）。", isError: true };
       }
       const preview = {
         create: () =>
-          `新排一条定时任务「${String(tc.input.name || "").trim() || wantTask.slice(0, 30)}」\n什么时候跑：${cronOf(String(tc.input.cron).trim())}\n到点做什么：${wantTask}\n错过了${tc.input.catch_up === false ? "不补跑" : "会补跑"}`,
-        update: () => `改定时任务「${hit.name}」（现在是 ${cronOf(hit.cron)}）\n${changes.join("\n")}`,
-        delete: () => `删掉定时任务「${hit.name}」（${cronOf(hit.cron)}），它的运行记录也一起清掉`,
-        enable: () => `启用定时任务「${hit.name}」：${cronOf(hit.cron)} 起会自动开跑`,
+          `新排一条定时任务「${String(tc.input.name || "").trim() || wantTask.slice(0, 30)}」\n什么时候跑：${wantAt ? scheduler.describeWhen({ at: wantAt }) : cronOf(rawCron)}\n到点做什么：${wantTask}\n${wantAt ? "跑完自动关掉，不会再响第二次" : `错过了${tc.input.catch_up === false ? "不补跑" : "会补跑"}`}`,
+        update: () => `改定时任务「${hit.name}」（现在是 ${whenOf(hit)}）\n${changes.join("\n")}`,
+        delete: () => `删掉定时任务「${hit.name}」（${whenOf(hit)}），它的运行记录也一起清掉`,
+        enable: () => `启用定时任务「${hit.name}」：${whenOf(hit)} 起会自动开跑`,
         disable: () => `停用定时任务「${hit.name}」：到点不再自动跑，任务本身留着`,
       }[act]();
 
@@ -931,18 +965,21 @@ function modePrompt(mode) {
       }
       try {
         if (act === "create") {
-          const item = sch.add({ name: tc.input.name, cron: tc.input.cron, task: wantTask, catch_up: tc.input.catch_up, user: user || "" });
+          const item = sch.add({ name: tc.input.name, at: wantAt || "", cron: tc.input.cron, task: wantTask, catch_up: tc.input.catch_up, user: user || "" });
           return {
-            content: `已排好：「${item.name}」（id ${item.id}）｜${cronOf(item.cron)}｜错过${item.catch_up ? "会补跑" : "不补跑"}。用户随时能在 设置 → 定时任务 里改或停。`,
+            content:
+              `已排好：「${item.name}」（id ${item.id}）｜${whenOf(item)}｜` +
+              `${item.at ? "跑完自动关掉" : `错过${item.catch_up ? "会补跑" : "不补跑"}`}。用户随时能在 设置 → 定时任务 里改或停。`,
             isError: false,
           };
         }
         if (act === "update") {
           const patch = {};
           for (const k of ["name", "cron", "task", "catch_up"]) if (tc.input[k] !== undefined) patch[k] = tc.input[k];
+          if (wantAt) patch.at = wantAt;
           const t = sch.update(hit.id, patch, viewer);
           if (!t) return { content: `改的时候这条任务已经不在了（id ${hit.id}）。`, isError: true };
-          return { content: `已改：「${t.name}」（id ${t.id}）｜${cronOf(t.cron)}｜错过${t.catch_up ? "会补跑" : "不补跑"}｜到点做：${t.task}`, isError: false };
+          return { content: `已改：「${t.name}」（id ${t.id}）｜${whenOf(t)}｜错过${t.catch_up ? "会补跑" : "不补跑"}｜到点做：${t.task}`, isError: false };
         }
         if (act === "delete") {
           return sch.remove(hit.id, viewer)
@@ -951,7 +988,7 @@ function modePrompt(mode) {
         }
         const on = act === "enable";
         return sch.toggle(hit.id, on, viewer)
-          ? { content: `已${on ? "启用" : "停用"}定时任务「${hit.name}」（id ${hit.id}）。${on ? cronOf(hit.cron) + " 起自动跑。" : "任务留着，到点不再跑。"}`, isError: false }
+          ? { content: `已${on ? "启用" : "停用"}定时任务「${hit.name}」（id ${hit.id}）。${on ? whenOf(hit) + " 起自动跑。" : "任务留着，到点不再跑。"}`, isError: false }
           : { content: `没改成：id ${hit.id} 已经不在排期表里了。`, isError: true };
       } catch (e) {
         return { content: `排期没改成：${e.message}`, isError: true };
@@ -1474,6 +1511,11 @@ function modePrompt(mode) {
       emit({ type: "status", text: `本项目工具没能挂给引擎（${e.message}），这次只能用 CLI 自带的工具`, depth: 0 });
     }
 
+    // 档位收紧了就明说一句。不说的话，用户看到的是「它怎么什么都不肯干」，
+    // 而真正的原因在另一个页面上的一颗开关里，隔着两层根本联系不起来
+    const guard = security.engineGuard(security.getSecurity(config));
+    if (guard.note) emit({ type: "status", text: guard.note, depth: 0 });
+
     try {
       const r = await backend.run({
         prompt: enginePrompt(history, engineSession),
@@ -1487,6 +1529,9 @@ function modePrompt(mode) {
         // 只对 claude 有意义（-p 模式读 cwd 外的文件要审批）；codex 的沙箱读是不限的，它忽略这项
         addDirs: engineAddDirs(),
         maxTurns: config.agent.max_steps || 25,
+        // 安全档位：这两个 CLI 自带工具、自带循环，写文件跑命令**不经过**本项目的安全中心，
+        // 所以档位得翻成它们自己认的开关一路传下去（见 security.engineGuard）
+        guard,
         // 思考模式跟 app 设置对齐：设置页选什么档，接管的本机 CLI 就用什么档。
         // 放在 opts 前面 = 单个引擎还能自己覆盖（engine_options[id].thinking）
         thinking: prefs.agentCfg(config).thinking || "auto",
@@ -1813,6 +1858,18 @@ function modePrompt(mode) {
     // 键里必须带结果指纹，才不会误伤「改一遍读一遍」的正常校验循环——文件改了，读回来的内容就变了，计数自动清零
     const loopHist = new Map(); // 工具名+入参 → { sig: 上次结果指纹, streak: 连续拿到相同结果的次数 }
     const errStreaks = new Map(); // 工具名 → 连续报错次数（换着参数撞同一堵墙也算）
+    /**
+     * 工具名 → { n, content }：这一路的渠道已经被 media-health 熔断了，撞了几次。
+     *
+     * tools.js 那道闸已经让每次重试只花半毫秒，但模型该转的圈还是照转——用户看到的是
+     * trace 里四十条一模一样的「看图 · 失败」。所以这儿再补一刀：同一个工具被熔断闸
+     * 拦到第二次，本轮就不再执行它了。
+     *
+     * 为什么是第二次而不是第一次：第一次拦下来时模型还没读到那句话，它有权按自己的判断
+     * 再试一次（比如换个 model 参数点名另一条渠道，那确实是另一条路）。读过一次还撞，
+     * 就不是判断问题了。
+     */
+    const deadMedia = new Map();
     let sawImage = false;  // 这一趟有没有成功看过一次图（收尾核验「说自己看过图」用）
     let visionRetries = 0;
     const loopNudged = new Set(); // 每个键只提醒一次，别变成新的噪音循环
@@ -2072,7 +2129,11 @@ function modePrompt(mode) {
         const loopKey = tc.name + "\u0000" + JSON.stringify(tc.input || {});
         const seen = loopHist.get(loopKey);
         let r;
-        if (seen && seen.streak >= 4 && tc.name !== "ask_user") {
+        const dead = deadMedia.get(tc.name);
+        if (dead && dead.n >= 2) {
+          // 连请求都不发了，连本地那道熔断闸也不走——直接把上次那句话奉还
+          r = { content: `${dead.content}\n\n【本轮已停用 ${tc.name}】这条渠道连着拦了 ${dead.n} 次，再调也是这句话。按上面说的如实收尾，别把没拿到的结果当拿到过。`, isError: true };
+        } else if (seen && seen.streak >= 4 && tc.name !== "ask_user") {
           // 同一调用已连续 4 次拿到一模一样的结果，第 5 次不再执行——结果不会变，只会烧钱
           r = { content: `【系统拦截】你已用完全相同的参数连续 ${seen.streak} 次调用 ${tc.name}，每次结果都一模一样，本次未执行。别再重复同样的动作：换参数、换工具或换一条实现路径；确实无路可走就停止并如实说明卡在哪里。`, isError: true };
         } else {
@@ -2095,6 +2156,13 @@ function modePrompt(mode) {
           if (r.extendMs) deadline += r.extendMs; // 等用户回答的时间不算任务运行时间
           const sig = String(r.content).slice(0, 2000);
           loopHist.set(loopKey, { sig, streak: seen && seen.sig === sig ? seen.streak + 1 : 1 });
+        }
+        if (r.mediaBreaker) {
+          const d = deadMedia.get(tc.name) || { n: 0, content: "" };
+          d.n += 1; d.content = String(r.content);
+          deadMedia.set(tc.name, d);
+          // 只喊一次。喊早了（第一次就喊）用户会以为是我们自己不让它试，喊晚了他已经干等了半天
+          if (d.n === 2) emit({ type: "text", delta: callout.line("warn", `**这条渠道连不通，已经替你停掉了**：\`${tc.name}\` 撞的是同一堵墙（${String(r.content).split("\n")[0].replace(/^【|】$/g, "")}），不是问法的问题。它不会再往这条路上撞了，会带着「这一步没做成」继续往下走。要恢复：去 设置 → 模型 把这条渠道修好或换一条，按保存即刻生效。`), depth });
         }
         errStreaks.set(tc.name, r.isError ? (errStreaks.get(tc.name) || 0) + 1 : 0);
         if (tc.name === "look_at_image" && !r.isError) sawImage = true; // 真看成过一次，收尾就不替它复核
@@ -2398,10 +2466,16 @@ function toolHeadline(name, input) {
       obj = String(i.team || ""); break;
     case "transcribe_audio":
       obj = tailText(String(i.path || "").split("/").pop(), 40); break;
-    case "schedule_task":
+    case "schedule_task": {
       // 「排期 每天 09:00 · 写日报」——动作和时间都得在这一行里，光写个 create 等于没说
+      // at 传进来的是 `+5m` 这种原样写法，这儿先算成人话；算不出来就照抄，总比不写强
+      let when = "";
+      if (i.at) {
+        try { when = scheduler.describeWhen({ at: scheduler.parseAt(i.at) }); } catch { when = String(i.at); }
+      } else if (i.cron) when = scheduler.describeCron(i.cron) || i.cron;
       obj = tailText([{ create: "新排", update: "改", delete: "删", enable: "启用", disable: "停用" }[String(i.action || "")] || String(i.action || ""),
-        i.cron ? scheduler.describeCron(i.cron) || i.cron : "", i.name || i.task || i.id || ""].filter(Boolean).join(" · "), 46); break;
+        when, i.name || i.task || i.id || ""].filter(Boolean).join(" · "), 46); break;
+    }
     case "send_email":
       // 「发邮件 张三 · 本周周报」——收件人和主题得同时在这一行里，光写个主题看不出发给谁了
       obj = tailText([mailer.parseAddrs(i.to).join("、"), i.subject || ""].filter(Boolean).join(" · "), 46); break;
@@ -2561,6 +2635,10 @@ function makeFilesEmitter({ emit, ownership, baseDir, runToken, gapMs = 300, aft
       const known = baseline.get(f.name);
       baseline.set(f.name, f.mtime);
       if (known === f.mtime) continue;
+      // 用户自己刚传进来的素材（粘进输入框的图、拖进来的文件）：它落在这条会话的成果文件夹里，
+      // mtime 也在开跑之后，两道闸都拦不住——可写它的人是用户，不是 agent。必须在 mine() 之前
+      // 挡掉：mine() 是会落账的，一旦认领，后面 agent 真改了这个文件反而会被当成"别人的"。
+      if (isUserInput(f)) continue;
       // 基线里没有它，只说明它刚挤进这 500 条的窗口，不说明它是今天写的
       if (!bornAfterStart(f)) continue;
       if (ownership.mine(f, baseDir, runToken)) changed.push(f.name);

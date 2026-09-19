@@ -516,6 +516,7 @@
       "拆解验收标准，没达成自动再跑": "Break into acceptance criteria, rerun until met",
       "跑分 · AI 评委 · 人工打分": "Benchmarks · AI judge · Manual scores",
       "上传文件到工作空间，任务中可直接使用": "Upload files to the workspace for tasks to use",
+      "添加文件 · 模式 · 专家 · 技能 · 工具 · 连接器": "Add files · Mode · Experts · Skills · Tools · Connectors",
       "一句话让 AI 替你上班": "One sentence, AI does the work",
       "助理模式：IM 远程指挥 + 直接对话": "Assistant mode: remote control via IM + direct chat",
       "不等当前任务结束，把这条消息立即注入正在执行的任务": "Inject this message into the running task right now, without waiting for it to finish",
@@ -1141,7 +1142,7 @@
       "同一个 Wi-Fi 下的人都能翻你的工作目录，看完记得停": "Anyone on the same Wi-Fi can browse your working folder. Stop it when done",
       "要自动执行的任务描述，如：抓取今天的 AI 新闻生成晨报": "What to run, e.g. Fetch today's AI news and write a morning brief",
       "当前是纯服务端模式（npm start），宠物只在桌面版": "Server-only mode (npm start); the pet only exists in the desktop app",
-      "用你电脑上这个 CLI 的登录态和它自己的模型跑，所以下面那排 API 模型这会儿一个都用不上。": "Runs on this local CLI's own login and model, so none of the API models below are used right now.",
+
       "用它自己的默认模型": "its own default model",
       "这个对话用哪个模型（点开可以只给本对话换一个）": "Which model this chat uses (open to switch just this chat)",
       "历史成绩": "History",
