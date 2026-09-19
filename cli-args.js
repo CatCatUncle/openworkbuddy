@@ -67,6 +67,7 @@ const SUBS = [
   { name: "pair", usage: "openworkbuddy pair", desc: "把手机/另一台电脑连上来：出一个二维码，扫了就能用，密码不用敲过去" },
   { name: "passwd", usage: 'openworkbuddy passwd <用户名> ["新密码"]', desc: "忘了密码：在服务器上改回来（不给新密码就随机生成一串）" },
   { name: "2fa", usage: "openworkbuddy 2fa <用户名> [--off]", desc: "看某个账号的二次验证状态；手机丢了用 --off 关掉" },
+  { name: "owner", usage: "openworkbuddy owner [用户名]", desc: "看谁是超级管理员；给用户名就把这个位子指给他（唯一的超管进不去时的救场口）" },
   { name: "jev", usage: 'openworkbuddy jev ["材料" "问题" [选项…]]', desc: "问一下判断模型：它不写字，只回选项/分数/概率，外加一个「有多确定」。不给参数就测活" },
   { name: "completion", usage: "openworkbuddy completion <shell>", desc: "生成 Tab 补全脚本（bash / zsh / fish）" },
 ];

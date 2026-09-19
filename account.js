@@ -23,6 +23,7 @@ const crypto = require("crypto");
 const express = require("express");
 const store = require("./store");
 const org = require("./org");
+const rbac = require("./rbac"); // 谁能做什么：角色分档和能力表只有那一个文件说了算
 const usageStore = require("./usage-store");
 const pricing = require("./pricing");
 const budget = require("./budget"); // 钱闸的内存账：这一笔也得算进这个月的预算里
@@ -223,8 +224,14 @@ function publicUser(u) {
     username: u.username,          // 登录名，不可改：改了就是换了个账号
     nickname: u.nickname || "",     // 昵称，界面上显示的名字
     avatar: u.avatar || "",         // 一两个 emoji，或者 data:image/... 的小图
-    role: u.role,
-    owner: !!u.owner,               // 组织所有者：不能被别的管理员降级/停用/删除
+    role: rbac.roleOf(u),
+    role_label: rbac.ROLE_LABEL[rbac.roleOf(u)],
+    // 这一格保留是为了老代码和老界面还认它；真相在 role 上（owner 现在是一档角色，不是一个布尔）
+    owner: rbac.roleOf(u) === "owner",
+    // 界面照着这两格画，别在前端再数一遍角色名：每加一档角色，写死 role === "admin"
+    // 的地方就漏掉一个人，而漏掉的方式是「那一项根本不显示」——没人会来报这种 bug
+    can_admin: rbac.can(u, "admin.read"),   // 进得去后台（审计员起）
+    is_admin: rbac.can(u, "admin.write"),   // 进去之后改得动（管理员起）
     org: u.org || org.DEFAULT_ORG,
     dept: u.dept || "",
     status: u.status || "active",   // active | pending（等审核）| disabled（已停用）
@@ -440,10 +447,10 @@ function twoFactorStatus(u) {
   };
 }
 
-/** 首个用户（管理员）：CLI / IM / 定时任务 的消耗都记在他名下 */
+/** 没有登录态时（CLI / IM / 定时任务）消耗记在谁名下：档次最高的那个人，同档取最早建的 */
 function defaultUser() {
-  const st = loadUsers();
-  return st.users.find((u) => u.role === "admin") || st.users[0] || null;
+  const us = loadUsers().users;
+  return [...us].sort((a, b) => rbac.rankOf(b) - rbac.rankOf(a) || String(a.created_at).localeCompare(String(b.created_at)))[0] || null;
 }
 
 function register(username, password, opts = {}) {
@@ -463,19 +470,24 @@ function register(username, password, opts = {}) {
     const used = st.users.filter((u) => (u.org || org.DEFAULT_ORG) === orgId && u.status !== "disabled").length;
     if (used >= seats) throw new Error(`「${o.name}」的席位已用满（${used}/${seats}），让管理员在企业设置里加席位`);
   }
+  // 这个组织有超管了没有。以前 owner 只给**全站**第一个人，于是分公司里一个超管都没有，
+  // 两个管理员可以互相停用、互相降级——「管理员权限太大」这件事最狠的一处就在这儿。
+  // 现在：开服第一个人是平台超管；一个新组织里第一个管理员级别的人，就是那个组织的超管。
+  // 普通成员先进来的话先空着，等有人被提成管理员时由 migrateOwners 补上。
+  const wanted = rbac.ASSIGNABLE.includes(opts.role) ? opts.role : "member";
+  const role = first ? "owner" : firstAdminIsOwner(st, orgId, wanted);
   const user = {
     username,
     salt,
     hash: hashPassword(password, salt),
-    // 第一个账号是组织所有者：owner 这个标记只此一份，别的管理员动不了他
-    role: first ? "admin" : opts.role === "admin" || opts.role === "auditor" ? opts.role : "member",
+    role,
     org: orgId,
     dept: String(opts.dept || ""),
     status: first ? "active" : opts.status === "pending" ? "pending" : "active",
     credits: first ? 10000 : Math.max(0, Math.floor(s.default_member_credits || 0)),
     created_at: new Date().toISOString(),
   };
-  if (first) user.owner = true;
+  syncOwner(user);
   st.users.push(user);
   saveUsers(st);
   return user;
@@ -997,7 +1009,7 @@ function usageSummary(user, opts = {}) {
   // org 字段是后加的，老流水没有——按「这个用户名属不属于本组织」兜底判，别把历史记录判丢了
   const orgId = org.orgIdOf(user);
   const inOrg = new Set(loadUsers().users.filter((u) => org.orgIdOf(u) === orgId).map((u) => u.username));
-  const admin = user.role === "admin" || user.role === "auditor";
+  const admin = rbac.can(user, "usage.read_org");
   const scope = opts.user ? (e) => e.user === opts.user : admin ? (e) => inOrg.has(e.user) : (e) => e.user === user.username;
   const mine = all.filter(scope);
   const runs = mine.filter((e) => e.kind === "run");
@@ -1082,26 +1094,90 @@ function groupUsage(runs, keyOf) {
 
 
 // ---------- 成员管理（企业管理后台用） ----------
-/** 有没有管理权限。auditor（审计员）只读，不算 */
+// 角色分档、能力表、「只能管比自己低的那一档」这三件事全在 rbac.js 里，这儿只负责落到账本上。
+
+/**
+ * 一个组织里**第一个管理员级别的人，就是这个组织的超管**。注册和提拔走同一条规矩——
+ * 只写在注册那条路上的话，「全是成员的老组织」里提两个管理员出来又是一片无主之地：
+ * 两人同档互相动不了，而这个组织谁也发不出超管。
+ */
+function firstAdminIsOwner(st, orgId, role) {
+  if (role !== "admin") return role;
+  return st.users.some((u) => org.orgIdOf(u) === orgId && rbac.roleOf(u) === "owner") ? "admin" : "owner";
+}
+
+/** owner 这一格是给老代码和回退版本留的镜像，真相在 role 上。两边必须一起改 */
+function syncOwner(u) {
+  if (rbac.roleOf(u) === "owner") u.owner = true;
+  else delete u.owner;
+  return u;
+}
+
+/** 有没有写权限（管理员、超级管理员）。auditor（审计员）只读，不算 */
 function isAdmin(u) {
-  return !!u && u.role === "admin";
+  return rbac.can(u, "admin.write");
 }
 /** 能不能进管理后台（审计员进得去，但所有写操作都会被 adminOnly 挡下） */
 function canAdmin(u) {
-  return !!u && (u.role === "admin" || u.role === "auditor");
+  return rbac.can(u, "admin.read");
+}
+/** 平台超级管理员 = 默认组织那一个超管 = 这台机器的主人 */
+function platformOwner(u) {
+  return rbac.roleOf(u) === "owner" && org.orgIdOf(u) === org.DEFAULT_ORG;
 }
 
 /**
- * 谁能动谁。规则只有三条，但每一条都是踩过的：
- *   1. 只能动同组织的人 —— 跨组织改角色就是越权
- *   2. 所有者（owner）谁都动不了，包括别的管理员 —— 否则两个管理员能互相把对方停用
- *   3. 不能动自己 —— 管理员把自己降成成员之后，这个组织就再也没有管理员了
+ * 平台超管对**别的组织**高半档。
+ *
+ * 为什么要这半档：分公司的超管跑路了，那个组织就再也没人改得动——同档动不了同档。
+ * 而这台机器本来就是他的，users.json 他直接拿编辑器就能改。这半档不降低任何安全性，
+ * 它只是把「已经是机主」换成一个不用改文件的入口。**在自己组织里不加**：
+ * 默认组织的超管对着默认组织的超管（也就是他自己）仍然是同档，转让才是那条路。
+ */
+function rankFor(actor, target) {
+  const base = rbac.rankOf(actor);
+  const cross = org.orgIdOf(actor) !== org.orgIdOf(target);
+  return cross && platformOwner(actor) ? base + 10 : base;
+}
+
+/**
+ * 谁能动谁。四条，每一条都是踩过的：
+ *   1. 得有管人的权（管理员以上）
+ *   2. 不能动自己 —— 管理员把自己降成成员之后，这个组织就再也没有管理员了
+ *   3. 只能动同组织的人；平台超管例外，他跨组织有效（分公司超管跑路了得有人救场）
+ *   4. **只能动比自己低的那一档**。这一条是新的，也是整件事的重点：
+ *      以前只挡住 owner 一个人，于是两个管理员能互相停用、互相降级、互相删号，
+ *      谁先点谁赢。现在管理员对管理员一步也走不动，要动另一个管理员只能找超管。
  */
 function assertCanManage(actor, target, what) {
-  if (!isAdmin(actor)) throw new Error("只有管理员能" + what);
-  if (org.orgIdOf(actor) !== org.orgIdOf(target)) throw new Error("这个成员不在你的组织里");
-  if (target.owner) throw new Error("组织所有者不能被" + what);
+  if (!rbac.can(actor, "member.manage")) throw new Error("只有管理员能" + what);
   if (target.username === actor.username) throw new Error("不能对自己" + what);
+  if (org.orgIdOf(actor) !== org.orgIdOf(target) && !platformOwner(actor)) throw new Error("这个成员不在你的组织里");
+  if (rankFor(actor, target) <= rbac.rankOf(target)) {
+    const t = rbac.ROLE_LABEL[rbac.roleOf(target)];
+    const a = rbac.ROLE_LABEL[rbac.roleOf(actor)];
+    throw new Error(rbac.rankOf(actor) === rbac.rankOf(target)
+      ? `同级动不了同级：${a}${what}不了另一个${a}。要动他，得由更高一档的人来`
+      : `${t}不能被${a}${what}`);
+  }
+}
+
+/**
+ * 最后一个超管删不得、停不得、降不得——不然这个组织当场变成无主之地：
+ * 谁都进不去后台，也没人再能把超管发出来。要换人只有一条路：先转让，再动他。
+ */
+function assertNotLastOwner(u, what) {
+  if (rbac.roleOf(u) !== "owner") return;
+  throw new Error(`「${u.username}」是「${org.getOrg(org.orgIdOf(u)).name}」的超级管理员，不能被${what}。` +
+    "要换人：先在「管理员角色」里把超级管理员转让给他，再回来" + what + "这个号");
+}
+
+/** 按登录名取人再过 assertCanManage。路由层要判「我管不管得到他」时用这个，别自己去翻账本 */
+function assertManageable(actor, username, what) {
+  const u = loadUsers().users.find((x) => x.username === username);
+  if (!u) throw new Error("成员不存在");
+  assertCanManage(actor, u, what);
+  return u;
 }
 
 /** 本组织成员清单（不含密码字段）。管理后台的「成员与部门」直接渲染这个 */
@@ -1131,7 +1207,6 @@ function billingUser(username) {
   return { username: u.username, org: org.orgIdOf(u), dept: u.dept || "", budget_yuan: u.budget_yuan || 0, status: u.status || "active" };
 }
 
-const MEMBER_ROLES = new Set(["admin", "auditor", "member"]);
 const MEMBER_STATUS = new Set(["active", "pending", "disabled"]);
 /** 改成员的角色 / 部门 / 状态 / 月额度 / API 月预算。只改传进来的字段，没传的一律不动 */
 function setMember(actor, username, patch) {
@@ -1140,9 +1215,14 @@ function setMember(actor, username, patch) {
   if (!u) throw new Error("成员不存在");
   assertCanManage(actor, u, "修改");
   const changed = [];
-  if (patch.role !== undefined) {
-    if (!MEMBER_ROLES.has(patch.role)) throw new Error("没有这个角色");
-    if (u.role !== patch.role) { u.role = patch.role; changed.push("角色→" + patch.role); }
+  if (patch.role !== undefined && rbac.roleOf(u) !== patch.role) {
+    // 授角色不是「改一个字段」：管理员能把成员提成审计员，但造不出第二个管理员——
+    // 不然他绕一步就给自己发了第二把钥匙，「管理员之间动不了」那条规矩当场作废
+    const bad = rbac.assignProblem(actor, u, patch.role);
+    if (bad) throw new Error(bad);
+    u.role = firstAdminIsOwner(st, org.orgIdOf(u), patch.role);
+    syncOwner(u);
+    changed.push("角色→" + rbac.ROLE_LABEL[u.role]);
   }
   if (patch.dept !== undefined) {
     const d = String(patch.dept || "");
@@ -1150,6 +1230,7 @@ function setMember(actor, username, patch) {
   }
   if (patch.status !== undefined) {
     if (!MEMBER_STATUS.has(patch.status)) throw new Error("没有这个状态");
+    if (patch.status !== "active") assertNotLastOwner(u, "停用");
     if ((u.status || "active") !== patch.status) {
       u.status = patch.status;
       changed.push("状态→" + patch.status);
@@ -1233,6 +1314,7 @@ function removeMember(actor, username) {
   const i = st.users.findIndex((x) => x.username === username);
   if (i < 0) throw new Error("成员不存在");
   assertCanManage(actor, st.users[i], "删除");
+  assertNotLastOwner(st.users[i], "删除");
   const [u] = st.users.splice(i, 1);
   for (const [t, info] of Object.entries(st.tokens)) if (info.user === username) delete st.tokens[t];
   saveUsers(st);
@@ -1242,9 +1324,14 @@ function removeMember(actor, username) {
 
 /** 管理员直接建号（不走注册闸）。返回一次性明文密码 */
 function createMember(actor, { username, role, dept, monthly_quota }) {
-  if (!isAdmin(actor)) throw new Error("只有管理员能添加成员");
+  if (!rbac.can(actor, "member.manage")) throw new Error("只有管理员能添加成员");
+  // 建号跟改角色是同一件事，得过同一道闸：不然「管理员不能发管理员」绕一步就没了——
+  // 直接新建一个管理员出来
+  const want = role === undefined || role === null || role === "" ? "member" : String(role);
+  const bad = rbac.assignProblem(actor, { role: "member" }, want);
+  if (bad) throw new Error(bad);
   const pwd = genPassword(org.orgIdOf(actor));
-  const u = register(username, pwd, { org: org.orgIdOf(actor), role, dept, status: "active" });
+  const u = register(username, pwd, { org: org.orgIdOf(actor), role: want, dept, status: "active" });
   if (monthly_quota !== undefined && monthly_quota !== null && monthly_quota !== "") {
     const st = loadUsers();
     const x = st.users.find((y) => y.username === u.username);
@@ -1253,6 +1340,103 @@ function createMember(actor, { username, role, dept, monthly_quota }) {
   }
   org.audit({ org: org.orgIdOf(u), actor: actor.username, action: "添加成员", target: u.username, detail: u.role });
   return { user: publicUser(u), password: pwd };
+}
+
+/**
+ * 转让超级管理员。**每个组织只有一个**，所以这不是「再发一个」，是把位子交出去：
+ * 新人成为超管，自己当场降成管理员。
+ *
+ * 为什么做成转让而不是「超管可以任命别的超管」：两个超管等于把「同级动不了同级」
+ * 这条规矩在最高那一档上重新打开——要么允许互相罢免（先手优势原样回来），
+ * 要么谁也罢免不了谁（点错一次就永远拿不下来）。这两种都比现在糟。
+ *
+ * 谁能转：这个组织现任的超管**本人**；或者平台超管（默认组织那一个）替别的组织指派——
+ * 分公司超管跑路了，总得有人能救场。
+ */
+function transferOwner(actor, username) {
+  const st = loadUsers();
+  const to = st.users.find((x) => x.username === username);
+  if (!to) throw new Error("成员不存在");
+  const orgId = org.orgIdOf(to);
+  const from = st.users.find((x) => rbac.roleOf(x) === "owner" && org.orgIdOf(x) === orgId);
+  const mine = org.orgIdOf(actor) === orgId;
+  const NOT_YOURS = "只有现任超级管理员本人能转让这个位子；他联系不上了，就找平台超级管理员（默认组织那一个）代为指派";
+  // 别的组织的人：这个位子交出去等于那个组织换了个主子。平台超管例外，那是救场用的
+  if (!mine && !platformOwner(actor))
+    throw new Error(rbac.can(actor, "owner.transfer") ? "只能转给本组织的人：把位子交给别的组织的人，等于这个组织换了个主子" : NOT_YOURS);
+  const isIncumbent = mine && rbac.can(actor, "owner.transfer") && (!from || from.username === actor.username);
+  if (!isIncumbent && !platformOwner(actor)) throw new Error(NOT_YOURS);
+  if (from && from.username === to.username) throw new Error("「" + username + "」已经是超级管理员了");
+  if ((to.status || "active") !== "active") throw new Error("只能转给在职的人，「" + username + "」现在是" + ((to.status === "pending") ? "待审核" : "已停用"));
+  to.role = "owner";
+  syncOwner(to);
+  // 老超管降成管理员，不是降成成员：他刚交出去的是钥匙，不是这份工作
+  if (from) { from.role = "admin"; syncOwner(from); }
+  saveUsers(st);
+  org.audit({ org: orgId, actor: (actor && actor.username) || "", action: "转让超级管理员", target: to.username,
+    detail: from ? "由 " + from.username + " 交出，他改任管理员" : "这个组织原来没有超级管理员" });
+  return { from: from ? publicUser(from) : null, to: publicUser(to) };
+}
+
+/**
+ * 在**服务器本机**指派超管：`openworkbuddy owner <用户名>`。
+ *
+ * 唯一的超管把自己锁在门外时（离职、号被停、手机和密码一起丢），界面上就没有出口了——
+ * 同级动不了同级，而他自己登不进来。凭什么信调用方：**他能读到 users.json**。
+ * 整段理由跟 resetPasswordLocally 一模一样，连结论都一样：**绝不能接到 HTTP 上**。
+ */
+function setOwnerLocally(username, { actor = "命令行" } = {}) {
+  const st = loadUsers();
+  const to = st.users.find((x) => x.username === username);
+  if (!to) throw new Error("没有这个账号：" + username);
+  const orgId = org.orgIdOf(to);
+  const from = st.users.find((x) => rbac.roleOf(x) === "owner" && org.orgIdOf(x) === orgId);
+  if (from && from.username === to.username) throw new Error("「" + username + "」已经是超级管理员了");
+  to.role = "owner";
+  syncOwner(to);
+  if (from) { from.role = "admin"; syncOwner(from); }
+  // 停用状态下改了也登不上，照 passwd 的规矩把这件事说出来，别让人改完了还在门口试
+  const disabled = (to.status || "active") !== "active";
+  saveUsers(st);
+  org.audit({ org: orgId, actor, action: "指派超级管理员", target: to.username, detail: "在服务器上用命令行改的" + (from ? "；原超管 " + from.username + " 改任管理员" : "") });
+  return { org: orgId, org_name: org.getOrg(orgId).name, from: from ? from.username : "", disabled, two_factor: twoFactorOn(to) };
+}
+
+/**
+ * 升级搬家：把老账本抬到新的角色模型上。两件事，都只做一次（做完就不满足条件了）：
+ *   1. 老账本里 owner 是**一个布尔**，抬成 role:"owner" 这一档；
+ *   2. 以前 owner 只给全站第一个人，**分公司里一个超管都没有**——那些组织的管理员
+ *      互相之间谁都能停用谁。给每个还没超管的组织补一个：在职管理员里建号最早的那个。
+ * 一个管理员都没有的组织先空着，等谁被提成管理员再说（没人可补，硬补只会补错人）。
+ */
+function migrateOwners() {
+  const st = loadUsers();
+  if (!st.users.length) return 0;
+  let n = 0;
+  for (const u of st.users) if (u.owner && rbac.roleOf(u) !== "owner") { u.role = "owner"; n++; }
+  const byOrg = new Map();
+  for (const u of st.users) {
+    const o = org.orgIdOf(u);
+    if (!byOrg.has(o)) byOrg.set(o, []);
+    byOrg.get(o).push(u);
+  }
+  for (const [orgId, list] of byOrg) {
+    if (list.some((u) => rbac.roleOf(u) === "owner")) continue;
+    const pick = list
+      .filter((u) => rbac.rankOf(u) >= rbac.ROLE_RANK.admin && (u.status || "active") === "active")
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))[0];
+    if (!pick) continue;
+    pick.role = "owner";
+    n++;
+    try {
+      org.audit({ org: orgId, actor: "升级迁移", action: "设为超级管理员", target: pick.username,
+        detail: "这个组织原来没有超级管理员，按建号顺序补上最早的那个管理员" });
+    } catch {}
+  }
+  if (!n) return 0;
+  for (const u of st.users) syncOwner(u);
+  saveUsers(st);
+  return n;
 }
 
 /** 待审核的人（自助注册进来、组织开了「需要审核」的） */
@@ -1364,6 +1548,7 @@ function createRouter(opts) {
   const router = express.Router();
   const onRename = (opts || {}).onRename;
   try { migrateLegacySettings(); } catch (e) { console.warn("[账号] 老开关搬家失败：" + e.message); }
+  try { migrateOwners(); } catch (e) { console.warn("[账号] 超级管理员搬家失败：" + e.message); }
 
   router.get("/api/auth/state", (req, res) => {
     const st = loadUsers();
@@ -1748,6 +1933,13 @@ module.exports = {
   setMember,
   createMember,
   removeMember,
+  assertManageable,
+  transferOwner,
+  setOwnerLocally,
+  migrateOwners,
+  platformOwner,
+  // 权限模型本身（角色分档、能力表、能不能授这个角色）。admin.js / lifecycle.js / 前端都要问它
+  rbac,
   resetPassword,
   resetPasswordLocally,
   topup,

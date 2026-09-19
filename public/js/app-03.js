@@ -21,11 +21,13 @@ async function renderAccount() {
   creditsOn = !!authState.credits_enabled;
   currentUser = d.user; renderUserChip();
   const maxT = Math.max(1, ...d.last7.map(x => x.tokens));
-  const isAdmin = d.user.role === "admin";
+  // 「能不能改别人的额度」这一档，后端算好了发下来（管理员起）。前端不自己数角色名：
+  // 每加一档角色就要记得回来补一处，补漏了的样子是「那一项不显示」，没人会报
+  const isAdmin = !!d.user.is_admin;
   mBody.innerHTML = `
     <div class="card-item">
       <div class="t">${(() => { const a = avatarBits(d.user.avatar, d.user.username); return `<span class="ava${a.cls ? " " + a.cls : ""}" style="width:22px;height:22px;border-radius:50%;background:var(--owb-brand-grad);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size: 13px;overflow:hidden;vertical-align:-6px">${a.html}</span>`; })()}
-        ${esc(displayName(d.user))}（${d.user.role === "admin" ? "管理员" : "成员"}${d.user.nickname ? " · 登录名 " + esc(d.user.username) : ""}）
+        ${esc(displayName(d.user))}（${esc(d.user.role_label || "成员")}${d.user.nickname ? " · 登录名 " + esc(d.user.username) : ""}）
         <button id="acc-logout" style="float:right;padding:2px 10px;font-size: 13px">退出登录</button>
         <button id="acc-pass" style="float:right;padding:2px 10px;font-size: 13px;margin-right:6px">改密码</button>
         <button id="acc-profile" style="float:right;padding:2px 10px;font-size: 13px;margin-right:6px">改名字 / 头像</button>

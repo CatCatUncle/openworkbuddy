@@ -372,6 +372,27 @@ html[data-theme="dark"] .ui-select {
 .drama-shot-line span, .drama-shot-line.muted { color: var(--owb-text-3); }
 .drama-shot-actions { display: flex; gap: 5px; align-items: end; }
 .drama-shot-actions .ui-btn { height: 25px; padding: 0 8px; }
+/* 镜头版本留底：浮层而不是卡片里的弹出层——卡片长在 JointJS 的 foreignObject 里，跟着缩放和裁切 */
+.drama-hist { position: fixed; z-index: 5000; inset: 0; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, #000 46%, transparent); animation: uiFade .16s var(--owb-ease, ease); }
+.drama-hist-panel { display: flex; flex-direction: column; width: min(520px, 100%); max-height: min(620px, 100%); border: 1px solid var(--owb-border); border-radius: var(--radius-xl); background: var(--owb-bg); box-shadow: var(--shadow-menu); animation: uiPop .18s var(--owb-ease, cubic-bezier(.16,1,.3,1)); }
+.drama-hist-head { display: flex; align-items: center; gap: 9px; padding: 15px 16px; border-bottom: 1px solid var(--owb-border); }
+.drama-hist-head b { font: 600 13px var(--font-mono); }
+.drama-hist-head span { flex: 1; min-width: 0; color: var(--owb-text-3); font-size: 11px; }
+.drama-hist-list { display: grid; gap: 8px; overflow-y: auto; margin: 0; padding: 12px; list-style: none; }
+.drama-hist-item { display: grid; grid-template-columns: 78px 1fr auto; align-items: center; gap: 11px; padding: 9px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: var(--owb-bg); }
+.drama-hist-item.is-now { border-color: color-mix(in srgb, var(--owb-brand) 50%, var(--owb-border)); background: var(--owb-brand-weak); }
+.drama-hist-thumb { width: 78px; height: 60px; object-fit: contain; border-radius: var(--radius-sm); background: var(--owb-bg-side); }
+.drama-hist-nopic { display: flex; align-items: center; justify-content: center; padding: 4px; color: var(--owb-text-3); text-align: center; font-size: 10px; }
+.drama-hist-body { min-width: 0; }
+.drama-hist-when { color: var(--owb-text); font: 600 12px var(--font-mono); }
+.drama-hist-now { margin-left: 6px; color: var(--owb-brand-text); font-weight: 600; font-size: 10px; }
+.drama-hist-why, .drama-hist-line, .drama-hist-gone { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.drama-hist-why { margin-top: 3px; color: var(--owb-text-3); }
+.drama-hist-line { margin-top: 2px; color: var(--owb-text-2); }
+.drama-hist-gone { margin-top: 3px; color: var(--owb-err-text); white-space: normal; }
+.drama-hist-loading { padding: 26px 18px; color: var(--owb-text-3); text-align: center; font-size: 12px; line-height: 1.6; }
+@media (prefers-reduced-motion: reduce) { .drama-hist, .drama-hist-panel { animation: none; } }
+
 .drama-empty-shot { padding: 18px; color: var(--owb-text-3); text-align: center; font-size: 12px; }
 .drama-empty { max-width: 620px; margin: 80px auto; padding: 36px; border: 1px solid var(--owb-border); border-radius: var(--radius-xl); background: var(--owb-bg); box-shadow: var(--shadow-surface); text-align: center; }
 .drama-empty-icon { margin-bottom: 12px; color: var(--owb-brand-text); font-size: 32px; }

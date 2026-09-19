@@ -171,8 +171,8 @@ async function login(username, password) {
   let r = await call("POST", "/api/auth/register", { body: { username: "laoban", password: "pw-laoban-123" } });
   eq(r.status, 200, "注册第一个账号返回 200");
   const boss = r.cookie;
-  eq(r.json.user.role, "admin", "第一个账号是 admin");
-  eq(r.json.user.owner, true, "第一个账号是组织所有者");
+  eq(r.json.user.role, "owner", "第一个账号是超级管理员（开服的人 = 这台机器的主人）");
+  eq(r.json.user.owner, true, "owner 这一格跟着角色走，老代码和回退版本还认它");
   eq(r.json.user.org, "default", "第一个账号在默认组织");
 
   console.log("\n【2】平台管理员建第二个组织，给它自己的工作目录");
@@ -207,7 +207,9 @@ async function login(username, password) {
   eq(r.status, 200, "拿分公司邀请码注册成功");
   const fen = r.cookie;
   eq(r.json.user.org, org2, "新人落在分公司");
-  eq(r.json.user.role, "admin", "邀请码指定的角色生效（分公司管理员）");
+  // 分公司的第一个管理员级别的人 = 这个组织的超管。以前 owner 只给全站第一个人，
+  // 分公司一个超管都没有，于是那儿的管理员可以互相停用——「管理员权限太大」最狠的一处
+  eq(r.json.user.role, "owner", "分公司第一个管理员就是分公司的超级管理员");
 
   const memInv = org.createInvite(org2, { role: "member", max_uses: 5, days: 7, actor: "fenboss" });
   r = await call("POST", "/api/auth/register", { body: { username: "xiaoyuan", password: "pw-yuan-1234", invite: memInv.code } });
@@ -349,7 +351,7 @@ async function login(username, password) {
   r = await call("POST", "/api/admin/members/fenboss", { cookie: fen, body: { role: "member" } });
   eq(r.status, 400, "不能给自己降级");
   const ownerName = account.listMembers(org2).find((m) => m.owner);
-  ok(!ownerName, "分公司是邀请码进来的，没有 owner（owner 只有开服第一个人有）");
+  eq(ownerName && ownerName.username, "fenboss", "分公司也有自己的超管，不再是一片无主之地");
 
   console.log("\n【11】只有平台管理员能建组织 / 看全部组织");
   eq((await call("GET", "/api/admin/orgs", { cookie: fen })).status, 403, "分公司管理员看不到组织列表");
