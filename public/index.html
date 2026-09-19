@@ -1561,7 +1561,9 @@
   .ask-rule { font-size: 12px; color: var(--owb-text-3); margin-bottom: 12px; }
   .ask-diff { font-family: var(--owb-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 12px; line-height: 1.5; color: var(--owb-code-text); background: var(--owb-code-bg); border-radius: var(--radius-lg); padding: 8px 10px; margin: 0 0 8px; max-height: 40vh; overflow: auto; white-space: pre; }
   .ask-card.done .ask-diff { display: none; }
-  .ask-card.done .ask-cmd { max-height: 4.8em; }
+  /* 收起后留两行：13px × 1.6 × 2 = 3.2em 内容，再加上上下 padding 20 和上下边框 2。
+     算成整行才行，差一点都会把第二行从字中间横切开。 */
+  .ask-card.done .ask-cmd { max-height: calc(3.2em + 22px); }
   /* ---------- 用量面板 ---------- */
   .usage-grid { display: flex; gap: 10px; margin-bottom: 12px; }
   .usage-cell { flex: 1; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); padding: 10px 12px; }
@@ -1636,6 +1638,9 @@
   .hub-count { grid-column: 1 / -1; font-size: 13px; color: var(--owb-text-3); padding: 4px 2px 0; }
   .hub-desc { font-size: 13px; color: var(--owb-text-3); margin: -4px 0 10px; }
   .ex-card .flag { position: absolute; top: 10px; right: 10px; color: var(--owb-text-3); background: var(--owb-bg-side); }
+  /* 角标是绝对定位的，占着 10~30px 这一条；标题行跟它平行，右边的名字和状态字会钻到它底下。
+     有角标就把卡片内容整体让下来：10 + 20 + 4 = 34。 */
+  .ex-card:has(.flag) { padding-top: 34px; }
   .ex-card .sk-preview { margin: 0; max-height: 260px; overflow: auto; background: var(--owb-bg-side); padding: 10px; border-radius: var(--radius-md); font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
   /* 技能卡「立即使用」展开区：先摆几个具体能干的事，挑一个才进任务框 */
   .ex-card .sk-start { background: var(--owb-bg-side); border-radius: var(--radius-md); padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }

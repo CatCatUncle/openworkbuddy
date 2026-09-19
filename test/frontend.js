@@ -6631,6 +6631,11 @@ const HUB_MCP_CHECKS = `
     "角标 " + JSON.stringify(fl) + " 状态 " + JSON.stringify(al));
 
   // 推荐目录：按分类分组，五张卡，标记各归各
+  // 同一条规则要管住所有带角标的卡，不只服务器卡：目录卡的副标题就是连接器 ID，也在同一行右边
+  const pc = card("mysql"), pfl = pc.querySelector(".flag").getBoundingClientRect(), pal = pc.querySelector(".al").getBoundingClientRect();
+  ok("目录卡上的「已接入」角标也不压副标题", pfl.bottom <= pal.top + 0.5 || pfl.right <= pal.left + 0.5 || pfl.left >= pal.right - 0.5,
+     "角标 " + JSON.stringify(pfl) + " 副标题 " + JSON.stringify(pal));
+
   ok("推荐连接器区块出现，按目录分类分组", html.includes("推荐连接器") && box.querySelectorAll(".ex-card[data-pi]").length === 5 && html.includes("搜索与网页") && html.includes("数据库"));
   ok("已接入的 mysql 预设：标「已接入」、按钮禁用", card("mysql").querySelector(".flag").textContent === "已接入" && card("mysql").querySelector(".mcp-use").disabled);
   ok("本机没 uvx：fetch 卡标「没找到 uvx」+ 顶部提示装 uv", card("fetch").querySelector(".flag").textContent === "没找到 uvx" && html.includes("本机没找到 uvx") && !html.includes("本机没找到 npx"));
@@ -7900,6 +7905,77 @@ const PILL_CHECKS = FLUSH_SRC + `
   const again = geo();
   ok("撤掉对照又回到一种尺寸（这轮不是蒙的）", [...new Set(again.map(key))].length === 1);
   names.push("反向对照下 .ex-card .tg i 的高度是 " + Math.round(oldTg * 10) / 10 + "px，不再是 20");
+  return names;
+})()
+`;
+
+// ---------------------------------------------------------------------------
+// 封顶的文字块不许把行横切开。
+// 这类框都是「先给你看几行，剩下的滚/展开」，封顶值必须正好等于整数行高；
+// 差几百分之一个 em，最后一行就从字腰上被切断，看着跟被什么东西压住了一样。
+// 踩过两回：连接器卡的命令行写 3.7em（1.55 行高 → 2.39 行），审批卡收起后写 4.8em
+// （含 padding 和边框算下来只有 1.94 行）。这条尺子量的是真几何，不是读 CSS 源码。
+const CLIP_SELS = [
+  { sel: "ask-cmd", tag: "审批卡·命令原文（收起后）", lines: 2,
+    html: `<div style="width:520px"><div class="ask-card ask-approve done"><div class="ask-cmd">把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，</div></div></div>` },
+  { sel: "mcp-cmd", tag: "连接器卡·命令行", lines: 3,
+    html: `<div style="width:300px"><div class="ex-card mcp-server-card"><div class="ds mcp-server-command">把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，</div></div></div>` },
+  { sel: "audio-text", tag: "画布音频节点·正文", lines: 3,
+    html: `<div style="width:320px;height:300px"><article class="canvas-node canvas-node-media canvas-node-audio"><div class="canvas-node-body"><div class="canvas-media-text">把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，</div></div></article></div>` },
+  // 头一条被 .canvas-chat-log > :first-child 藏了，得摆两条才量得到
+  { sel: "chat-live", tag: "画布对话·正在跑的那条", lines: 3,
+    html: `<div style="width:420px"><div class="canvas-chat"><div class="canvas-chat-log"><div class="canvas-chat-message"><div class="canvas-chat-message-body"><div class="canvas-chat-text">占位</div></div></div><div class="canvas-chat-message is-live"><div class="canvas-chat-message-body"><div class="canvas-chat-text">把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，把这段字写得足够长，长到怎么排都会超过封顶的那几行，</div></div></div></div></div></div>` },
+];
+const CLIP_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><style>" + INDEX_CSS
+  // 夹具里得把外壳那几条掀掉：真页面是 body{display:flex;height:100%}，
+  // 照搬过来格子会被拉满视口，量出来的全是假数
+  + "</style><style>html,body{height:auto!important;display:block!important;overflow:visible!important}"
+  + "body{margin:0;padding:12px;width:1100px}</style><body>"
+  + CLIP_SELS.map((c) => `<div data-case="${c.sel}">${c.html}</div>`).join("")
+  + "</body>";
+const CLIP_CHECKS = FLUSH_SRC + `
+(() => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + JSON.stringify(extra) : "")); names.push(n); };
+  const CASES = ${JSON.stringify(CLIP_SELS.map((c) => ({ sel: c.sel, tag: c.tag, lines: c.lines })))};
+  // 量的是内容盒。不能用 clientHeight——它是取整过的，57.6 拿到手里是 58，
+  // 恰好把要量的那几分之一个像素抹平了。getBoundingClientRect 才给小数。
+  const geo = (k) => {
+    const host = document.querySelector('[data-case="' + k + '"]');
+    const all = [...host.querySelectorAll("*")];
+    const e = all[all.length - 1], cs = getComputedStyle(e);
+    const lh = parseFloat(cs.lineHeight);
+    const box = e.getBoundingClientRect().height;
+    const inner = box - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
+      - parseFloat(cs.borderTopWidth) - parseFloat(cs.borderBottomWidth);
+    return { lh, inner: Math.round(inner * 1000) / 1000, n: inner / lh, off: Math.abs(inner - Math.round(inner / lh) * lh) };
+  };
+  const SLICE = 0.25; // px：1/64 的布局取整最多差个零点零几，切掉半行少说也有零点几
+  for (const c of CASES) {
+    const g = geo(c.sel);
+    ok(c.tag + "：封顶正好 " + c.lines + " 行（" + Math.round(g.inner * 100) / 100 + " / 行高 " + g.lh + "）",
+       g.off < SLICE && Math.round(g.n) === c.lines, g);
+  }
+  // 顺带确认这几块真的裁到了——没溢出的话上面那把尺子等于没量
+  for (const c of CASES) {
+    const host = document.querySelector('[data-case="' + c.sel + '"]');
+    const all = [...host.querySelectorAll("*")];
+    const e = all[all.length - 1];
+    ok(c.tag + "：文本确实超出了封顶，这行不是空过的", e.scrollHeight > e.clientHeight + 1, [e.scrollHeight, e.clientHeight]);
+  }
+
+  // ★反向对照★ 把改之前那几个封顶值原样压回去，上面那把尺子必须当场变红
+  const back = document.createElement("style");
+  back.textContent = ".ask-card.done .ask-cmd { max-height: 4.8em; }\\n"
+    + ".canvas-node-audio .canvas-media-text { max-height: 58px; }\\n"
+    + ".canvas-chat-message.is-live .canvas-chat-text { max-height: 54px; }\\n"
+    + ".mcp-server-command { max-height: 3.7em; }";
+  document.head.appendChild(back); flush();
+  const bad = CASES.map((c) => ({ tag: c.tag, off: Math.round(geo(c.sel).off * 100) / 100 })).filter((x) => x.off >= SLICE);
+  ok("反向对照：退回旧封顶值，四块里 " + bad.length + " 块当场被横切", bad.length === CASES.length, bad);
+  back.remove(); flush();
+  const again = CASES.filter((c) => geo(c.sel).off >= SLICE);
+  ok("撤掉对照又全部落回整行（这轮不是蒙的）", again.length === 0, again.map((c) => c.tag));
   return names;
 })()
 `;
@@ -9588,6 +9664,16 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：小标记只有一个尺寸（十三处·含反向对照）${namesPILL.length} 项通过`);
     } finally {
       if (!winPILL.isDestroyed()) winPILL.destroy();
+    }
+    const winCLIP = mkWin({ show: false, width: 1200, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await winCLIP.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(CLIP_HTML));
+      const namesCLIP = await winCLIP.webContents.executeJavaScript(CLIP_CHECKS, true)
+        .catch((e) => { throw new Error("[横切] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesCLIP) console.log("  ✓ " + n);
+      console.log(`✅ 前端：封顶的文字块不会把行横切开（四处·含反向对照）${namesCLIP.length} 项通过`);
+    } finally {
+      if (!winCLIP.isDestroyed()) winCLIP.destroy();
     }
     const winICO = mkWin({ show: false, width: 1200, height: 900, webPreferences: { offscreen: true } });
     try {

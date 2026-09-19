@@ -245,7 +245,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
-- **Sep 20** Connector cards **show the whole reason a server won't connect**: the message used to render as a tag pill, so only a slice from the middle survived — no start, no end. It's a block of red text now, three lines with a one-click expand, and the command line is no longer sliced through the glyphs
+- **Sep 20** Card text **stops being covered, and stops being sliced in half**: the reason a connector won't connect used to render as a tag pill, so only a slice from the middle survived — it's a block of red text now, three lines with a one-click expand. Every “show a few lines” box — command text, canvas node bodies — now caps on a whole line instead of cutting the last one through the glyphs, and the corner badge no longer sits on top of the title
 - **Sep 20** **35 built-in skills, 52 connectors**: ten new skills — competitor watch, market research, spreadsheet analysis, one-draft-many-platforms, customer feedback, SEO briefs, financial models, podcasts, infographics, sales outreach; connectors now include Linear, Jira / Confluence, Sentry, Vercel, Figma, Airtable, Asana, Canva, Apify, YouTube, AntV charts, EdgeOne one-click deploy and Bilibili
 - **Sep 20** The real browser **now leaves when you're done with it**: closed after ten idle minutes, taken down with the process that started it, or closed on demand — and the whole process group goes, not just the parent. One was left running for ten and a half hours with its GPU process at 160% CPU
 - **Sep 20** macOS refused to open the downloaded build; one command routes around it: `curl -fsSL .../install-mac.sh | bash` — a curl'd file carries no quarantine flag, so there is no dialog at all
