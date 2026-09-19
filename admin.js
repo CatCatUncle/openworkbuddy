@@ -233,7 +233,6 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig })
         policy = { allow_shell: s.allow_shell !== false, net_allow: s.net_allow || [], net_deny: s.net_deny || [] };
       // 付费 API 的额度上下文。同样只在**真配了限制**时才建：
       // 没配的时候连流水都不必带着 org/user 走一遍 ALS，跟以前一模一样。
-      //
       // 两道闸分开判，不能合成一个条件：
       //   次数闸（quota）管「一天最多生多少张图」，钱闸（budget）管「这个月最多花多少元」。
       //   很多公司一路次数都没限，却给每个人设了月预算——只看 quota 的话，
@@ -518,7 +517,6 @@ function createAdminRouter(deps = {}) {
     // 本月这个组织的全部花销，只扫一遍，几张表都从它上面出。
     // 直接用 usageStore.read 的 from/to：它按月分片，查「本月」就只开本月那一个文件，
     // 历史攒了多少年都不会让这一页变慢。
-    //
     // 为什么不再只看 kind==="relay"：预算那三档（budget.spentOf）数的是这个组织
     // 本月花的**全部**钱——中转出去的和公司内部自己用的花的是同一笔预算。
     // 这一页上方写着「本月已花 X」、旁边站着「组织上限 Y」，如果 X 只算中转那一半，

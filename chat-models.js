@@ -61,7 +61,6 @@ function nameForKind(kind, baseUrl) {
  * 填了 Key 的、或者指着本机地址的（Ollama 那类压根不要 Key）才算配过了。
  * 只有地址没有 Key 的条目是**厂商模板**，不是渠道——老版本出厂 config 里那一排就长这样。
  * 以前它们也建渠道，于是设置页凭空多出一排「未填 Key」的空壳，人删掉之后下一次规整又建回来。
- * 用户原话：「不要搞什么默认渠道填充啊，都没填 apikey 的，搞这个一直占位做什么？」
  */
 function wantsChannel(m) {
   if (isLocalBase(m.base_url)) return true;

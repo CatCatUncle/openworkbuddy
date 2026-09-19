@@ -18,7 +18,7 @@ function renderModelMenu(menu = modelMenu) {
     // 这里不是一排可选项，是一张「现在谁在跑」的卡：谁在跑、花不花钱、去哪儿改，三行完事。
     // 中间原来还有一段解释（「用你电脑上这个 CLI 的登录态和它自己的模型跑，所以下面那排
     // API 模型这会儿一个都用不上」）——绿牌子「不花 API 额度」已经把这件事说完了，那段是
-    // 把它又用长句重说一遍。用户原话：「这些没有意义的注释都给我删掉」。别再加回来。
+    // 把它又用长句重说一遍。别再加回来。
     // 能点的只有最后那一行，所以只有它长得像按钮。
     menu.classList.add("eng");
     menu.innerHTML = `<div class="ep-head"><span class="ep-ic">${ic("monitor")}</span>
@@ -32,10 +32,9 @@ function renderModelMenu(menu = modelMenu) {
   menu.classList.remove("eng");
   const ov = currentSessModel();
   const hbDef = healthBadge(settingsCache.active_model);
-  // 用户原话：「模型只给我展示我设置了的模型啊」。
   // 出厂 config 里预置着十来条厂商模板，一把 Key 都没有；混在这张菜单里，点下去必然 401——
   // 那不是可选项，是待办事项。所以没 Key 的不进列表，只在末尾留一行说清还剩几条、去哪儿填
-  //（跟设置页那栏「还没填 Key 的渠道」同一个口径：不是删掉，是收起来）。
+  // （跟设置页那栏「还没填 Key 的渠道」同一个口径：不是删掉，是收起来）。
   const usable = settingsCache.models.filter(modelReady);
   const waiting = settingsCache.models.length - usable.length;
   menu.innerHTML = `<div class="mi ${ov ? "" : "on"}" data-act="default" style="justify-content:space-between">
@@ -740,16 +739,15 @@ function renderHistory() {
   const cnt = document.getElementById("hist-count");
   // 只在过滤时写「命中/总数」。平时那个数字是纯噪音——Claude Cowork 和 Codex 的任务列表
   // 都不挂计数徽章，因为「我有几条任务」从来不是用户打开侧栏要问的问题，
-  // 而它占掉的正是标题行里最显眼的位置。用户原话：「怎么一开始显示：任务历史 10 …」
+  // 而它占掉的正是标题行里最显眼的位置。
   if (cnt) cnt.textContent = (!all.length || list.length === all.length) ? "" : list.length + "/" + all.length;
   const rows = list.map(s =>
     `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">${ic("x")}</span></div>`);
   // 终端里正在跑的那几条，直接排在同一张列表的最上面，不再单开一撮。
-  //
   // 以前这里是「任务历史 → 10 → 终端里（openworkbuddy 命令行） → 才轮到内容」，三行铺垫才见着第一条任务。
   // Claude Cowork 和 Codex 的做法是一张扁平列表：来路和状态用行内的小图标表示，
   // 正在跑的排前面，不为一种来路单开一节。分组标题只有在「有好几组」时才帮得上忙，
-  // 这儿永远只有一组，那行字就是纯占地方。用户原话：
+  // 这儿永远只有一组，那行字就是纯占地方。
   // 「怎么一开始显示：任务历史 10 终端里（命令行） 然后是具体的内容了」（原话里是改名前的旧命令名）
   let head = "";
   if (activeLane === "cli") {
@@ -870,7 +868,7 @@ async function openSession(id, opts) {
   renderGoalCard();
   let transcript = data.transcript || [];
   // 该会话有任务正在后台跑：回放只到本轮之前，正在跑的这轮把"活的"回合元素接回来
-  //（它切走期间一直在后台收事件更新，接上就是完整直播，不用回放+续流拼接）
+  // （它切走期间一直在后台收事件更新，接上就是完整直播，不用回放+续流拼接）
   const live = runningSessions.get(sessionId);
   if (live) {
     const lastUser = transcript.map(e => e.type).lastIndexOf("user");
@@ -1746,7 +1744,7 @@ function shrinkImage(fileObj, size) {
 }
 /** 头像编辑器。参考常见做法（Notion / Slack 那类的头像弹层）：一排分类胶囊 + 等大方格 +
  *  预览即时跟着改。以前是把 60 个候选摊在一条 flex 里，图标、猫标、表情三种大小各不相同，
- *  挤在一个 116px 高的框里翻——用户原话是「待选的这些图片 svg 都很大」。 */
+ *  挤在一个 116px 高的框里翻—— */
 function avatarEditorHtml(p, av, fallback) {
   const a = avatarBits(av, fallback);
   const cur = String(av || "").trim();
@@ -2113,8 +2111,7 @@ function flashBtn(btn, word) {
  *
  * 以前这一串是 `fetch(...).then(x => x.json()).catch(() => null)`，一个 catch 把四种
  * 完全不同的事故糊成同一句「接口无响应」：网线断了、后端崩了没回 JSON、HTTP 报了
- * 401/413/500、请求挂着一直不回。用户看到的永远是那五个字，连往哪儿查都不知道
- * （这条是用户报的：「怎么说保存失败接口没有响应啊」）。
+ * 401/413/500、请求挂着一直不回。用户看到的永远是那五个字，连往哪儿查都不知道。
  *
  * 返回 { data, why }：data 是解析出来的响应体（失败时为 null），why 是给人看的一句原因。
  */
@@ -2158,7 +2155,7 @@ function browserDownload(name, content) {
 /**
  * 把对话里生成的东西落盘。
  * 默认落到**这次对话自己的成果文件夹**（sessionDirs 里那个 任务_0911_xxx），不再一股脑丢进工作区根目录——
- * 用户原话：「默认存的位置都不是这个对话对应的文件夹下」。
+ *
  * saveAs=true 走系统保存框，自己挑地方；网页端没这能力就退回浏览器下载。
  */
 async function saveInlineFile(name, content, btn, saveAs) {
@@ -2260,8 +2257,6 @@ const SRC_TXT = { web: "网页", cli: "CLI", im: "IM", schedule: "定时" };
 
 // ================= ＋ 菜单：一个入口，装下六件常干的事 =================
 /**
- * 用户原话：「我这里也有 ＋ 能看到各种工具啥的啊，还有管理已经设置好的连接器这些啊」
- *          「这个对话框类似的 UI 给我加上还有功能」
  *
  * 在这之前，这六件事分散在六个地方：上传是输入框左边那枚回形针；模式在快捷栏最右；
  * 专家和技能要先跳到「专家·技能·连接器」页，回来时对话已经翻页了；连接器只能去那一页开关；
@@ -2272,7 +2267,7 @@ const SRC_TXT = { web: "网页", cli: "CLI", im: "IM", schedule: "定时" };
  *
  * 三条规矩，都是踩过的坑：
  *   1. 清单一律现取，不存第二份 —— 模式表当年抄成三份，goal 只抄进了两份；
- *   2. 每行「名字一行、说明一行」，各自单行截断 —— 用户原话「这么挤的 UI 吗」说的就是
+ *   2. 每行「名字一行、说明一行」，各自单行截断 ——说的就是
  *      长说明在窄菜单里一个字一个字换行；
  *   3. 工具那一屏直接问服务端要 runtime.toolList() 算出来的那一份，摆出来的就是模型看见的。
  */

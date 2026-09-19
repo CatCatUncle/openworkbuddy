@@ -23,6 +23,15 @@ REPO_JS="$(node -p 'JSON.stringify(process.argv[1])' "$REPO")"
 NODE_DIR_JS="$(node -p 'JSON.stringify(process.argv[1])' "$NODE_DIR")"
 
 mkdir -p "$(dirname "$APP")"
+# 这个位置也可能躺着 install-mac.sh 装的正式版：/Applications 写不了的时候它也落在 ~/Applications。
+# 闷头 rm -rf 就把装好的应用换成了一个开发壳，而开发壳把数据目录指向本仓库——
+# 用户的东西仍在 ~/OpenWorkBuddy 好端端躺着，界面上却一条任务都没有，看着就是数据没了。
+if [ -e "$APP" ] && ! grep -q "make-mac-app.sh" "$APP/Contents/Resources/app/main.js" 2>/dev/null; then
+  echo "❌ $APP 是装好的正式版，不是开发壳，没敢覆盖。"
+  echo "   想要开发壳：OWB_APP_OUT=\"$HOME/Applications/OpenWorkBuddy-dev.app\" bash scripts/make-mac-app.sh"
+  echo "   或者先把它挪走。你的数据在 ~/OpenWorkBuddy，删应用不会动它。"
+  exit 1
+fi
 rm -rf "$APP"
 ditto "$SRC" "$APP"
 

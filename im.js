@@ -239,7 +239,6 @@ function createImRouter({ config, runtime, sessions, outputFiles, saveConfig = (
   }
 
   // ---------- 飞书卡片：一段执行过程 + 一个最终回答 ----------
-  //
   // 为什么不用自己发文本再编辑：飞书文本消息能改，但改不出结构（标题、分栏、分隔线都不行），
   // 而且编辑接口对 text 有频控。CardKit（cardkit.v1）是飞书给「流式卡片」的正路：
   // 先建一张卡 → 发出去 → 之后按 element_id 局部推内容，正文那格还自带打字机效果。

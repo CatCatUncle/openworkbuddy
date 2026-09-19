@@ -16,7 +16,7 @@ const path = require("path");
 const { dataPath } = require("./paths");
 const zlib = require("zlib");
 const vm = require("vm");
-const { spawnSync } = require("child_process");
+const { spawnSync, spawn } = require("child_process");
 const browserRender = require("./browser-render");
 
 function diagramCfg() {
@@ -140,11 +140,31 @@ async function svgToPngAnyhow(svg) {
         htmlFile,
         `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#fff}svg{display:block;width:${w}px;height:${h}px}</style><body>${svg}`
       );
-      const r = spawnSync(chrome, [
+      // 截图落盘和 Chrome 退出是两件事。本机实测：图 2 秒就写出来了，进程还能再挂一分多钟
+      // 不退（无头模式在有显示器的 mac 上尤其容易这样）。所以不等它退——盯着文件，
+      // 写完了就自己把它收掉。等退出的写法会白等满整个超时，然后因为「超时被杀」把
+      // 那张已经好端端躺在盘上的图丢掉，最后只交付 SVG，用户看到的是「本环境无法转 PNG」。
+      // --user-data-dir 也是必须的：不给就去开用户正开着的那份 Chrome 配置，抢锁、拖慢，还动人家的浏览器
+      const cp = spawn(chrome, [
         "--headless", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
+        `--user-data-dir=${path.join(dir, "profile")}`, "--no-first-run", "--no-default-browser-check",
         `--screenshot=${pngFile}`, `--window-size=${Math.ceil(w)},${Math.ceil(h)}`, `file://${htmlFile}`,
-      ], { timeout: 30000 });
-      if (!r.error && fs.existsSync(pngFile)) return { png: fs.readFileSync(pngFile), via: "chrome" };
+      ], { stdio: "ignore" });
+      let done = false;
+      cp.on("exit", () => { done = true; });
+      cp.on("error", () => { done = true; });
+      let last = -1, stable = 0;
+      for (let waited = 0; waited < 30000; waited += 150) {
+        await new Promise((r) => setTimeout(r, 150));
+        let size = -1;
+        try { size = fs.statSync(pngFile).size; } catch {}
+        // 连着两次大小不变才算写完，不然会读到写了一半的文件
+        if (size > 0 && size === last) { if (++stable >= 2) break; } else { stable = 0; }
+        last = size;
+        if (done) break;
+      }
+      if (!done) { try { cp.kill("SIGKILL"); } catch {} }
+      try { if (fs.statSync(pngFile).size > 0) return { png: fs.readFileSync(pngFile), via: "chrome" }; } catch {}
     } finally {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     }

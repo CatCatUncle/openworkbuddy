@@ -93,10 +93,9 @@ srv.use(admin.redactGuard);
 // ---------- /api/settings 的替身 ----------
 // 「模型与 Key」那一页读的是 /api/settings，而这份 express 只挂了账号和后台两个路由——
 // 真的那条在 server.js 里是内联写的，搬不过来。所以这儿照它的口径回一份。
-//
 // 替身最怕的是「悄悄跟真的走散」：这边一直绿，线上那页却读到 undefined。
 // 所以 test/e2e.js 里有一条契约断言，拿**真的** GET /api/settings 逐个字段核对
-//（providers[].has_key、models[].channel、platform_owner、agent.failover_model…），
+// （providers[].has_key、models[].channel、platform_owner、agent.failover_model…），
 // 少一个字段那边就红。两边合起来才算把这一页保住了。
 const FAKE = {
   providers: [
@@ -463,7 +462,7 @@ const GOTO = (id) => `(async () => {
   ok("这一页 console 也是干净的", A.errs.length === 0, A.errs);
 
   // ================= 5. 「模型与 Key」：渠道能自己加、能改地址、能删 =================
-  // 用户原话：「这个管理后台也给我支持自定义渠道设定啊」。预置目录只有十来家，
+  // 预置目录只有十来家，
   // 自建网关 / 内网代理 / 换了域名的私有部署都不在里面，这页不给加就等于只做了一半。
   console.log("\n【5】渠道自定义：加一条、改地址、删一条（删是连坐的）");
   const n0 = savedSettings.length;

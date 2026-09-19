@@ -168,8 +168,8 @@ function esc(s) {
  * 长网址在正文里的**显示**形态 —— href 和 title 里始终是完整地址，一个字没少。
  *
  * 一条 https://…/RL%E7%8E%AF%E5%A2%83%E5%88%9B%E4%B8%9A… 原样铺出来有两个毛病：
- * 百分号转义人看不懂；长度还把整张表格顶出横向滚动条（用户原话：「怎么出现了链接太长，
- * 然后要移动才能看到全部的显示情况」）。所以显示时先解码回中文，还长就掐中间——
+ * 百分号转义人看不懂；长度还把整张表格顶出横向滚动条
+ * 所以显示时先解码回中文，还长就掐中间——
  * 鼠标一停看得到全的，复制粘贴拿到的也是全的。
  *
  * 入参是**已经 esc 过**的文本。decodeURI 不碰 %26 这类保留字符，但会把 %3C 解成 <，
@@ -258,8 +258,7 @@ function fpath(name) { return String(name == null ? "" : name).split("/").map(en
  *
  * 成果在事件里存的是**工作区相对路径**，服务端一直按「当前工作目录」去解析它。
  * 用户换一次目录，旧对话里的卡片就全指到新根下面不存在的位置——文件一个没少，
- * 是坐标系换了而没人记得旧的那套。用户原话：「我经常切换文件夹后，返回之前的对话
- * 很多成果就看不到打不开了啊，跟我说文件不存在啊」。
+ * 是坐标系换了而没人记得旧的那套。
  *
  * 带的是 sha1 前 8 位的指纹（服务端 workspaceKey），不是真路径：这串会出现在
  * 截图、日志和分享出去的链接里，本机目录名不该跟着漏出去。服务端只在**自己用过的**
@@ -452,7 +451,7 @@ const MD_FILE_RE = /\.(html?|pdf|svgz?|png|jpe?g|gif|webp|bmp|ico|avif|mp3|wav|m
  * markdown 链接 `[文字](报告.md)` → 能点开预览的工作区文件链接。
  *
  * 以前这一路只认 https:——模型收尾写「详见 [调研报告](报告.md)」，屏幕上就原样印出一串
- * 方括号圆括号，点哪儿都没反应。用户原话：「还有返回给我一些…没有办法点击链接文本啊」。
+ * 方括号圆括号，点哪儿都没反应。
  * 图片那一路（mdImg）老早就按 base 解相对路径了，文字链接这一路一直缺着。
  *
  * 带协议头的一概不碰：https 上面那行已经接走了，javascript:/data:/mailto: 这些原样留着当文字。
@@ -758,8 +757,8 @@ function createTurnUI(userText, turnMode, forSid) {
     actPend = true;
     setTimeout(() => { actPend = false; paintAct(); }, 100); // 尾帧靠这次超时补上，不会停在半句话
   };
-  // 执行过程默认收起，跑的时候只把「跑到哪了」那一行留在外面——用户原话：
-  //「不要大段大段具体的执行过程挡住了，中间那些执行过程展示的时候可以折叠下」。
+  // 执行过程默认收起，跑的时候只把「跑到哪了」那一行留在外面——
+  // 大段大段的中间步骤堆在正文里，人要找的那句结论就被埋了。
   // 想盯着看的人点一下就展开，这个选择记在本机，下次直接按你上次的来。
   const PROC_OPEN_KEY = "owb_proc_open";
   const procOpenPref = () => { try { return localStorage.getItem(PROC_OPEN_KEY) === "1"; } catch { return false; } };
@@ -849,7 +848,7 @@ function createTurnUI(userText, turnMode, forSid) {
   /**
    * 收尾时在过程区底下记一笔时间账：这一趟的时间到底花在哪了。
    *
-   * 用户原话：「我要看到每次执行的 trace 啊还有耗时这些各种数据啊」。Langfuse 那条路要先去
+   * Langfuse 那条路要先去
    * 搭一个实例、填两把钥匙；而「这趟慢在哪」这种最常问的问题，本地就该当场答得上来。
    *
    * 两个数怎么算，得说实话：
@@ -1191,7 +1190,7 @@ function createTurnUI(userText, turnMode, forSid) {
       renderTurnOutputs(body, turnOut, ev.files, ev); // 先算差异，快照要等 applyOutputArrival 才推进
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
       if (!isReplaying) renderFiles(ev.files);
-      // 产出到了不抢版面：以前是「有产出就把右侧预览 / 成果文件面板弹出来」，用户原话：抢版面、丑。
+      // 产出到了不抢版面：以前是「有产出就把右侧预览 / 成果文件面板弹出来」，又抢版面又难看。
       // 现在结论在正文里、产出是一排 chip，右侧只在用户本来就开着预览看这个文件时原地刷新。
       // 该做什么由 outputArrivalPlan 这个纯函数决定，前端 harness 直接验它的输入输出
       applyOutputArrival(outputArrivalPlan({
@@ -1292,7 +1291,7 @@ function createTurnUI(userText, turnMode, forSid) {
     const outBlock = body.querySelector(":scope > .out-block");
     if (outBlock) body.appendChild(outBlock);
     addActionsBar();
-    // 正文里提到的产出文件名变成可点的链接（用户：「有些这些文件你就给我搞成超连接的形式啊」）。
+    // 正文里提到的产出文件名变成可点的链接。
     // 放在收尾做而不是边流边做：流式那截正文每 100ms 就整段重渲一次，边渲边插链接会被自己抹掉
     const outTargets = fileLinkTargets(liveOutFiles);
     if (outTargets.size) body.querySelectorAll(".a-text").forEach((el) => linkifyOutputs(el, outTargets));
@@ -1487,13 +1486,11 @@ function createTurnUI(userText, turnMode, forSid) {
 }
 
 // ---- 折叠条上那行「此刻在干什么」 ----------------------------------------
-// 用户原话：「用户都一直看着一个大标题在转，没有感知具体的 agent 在干活执行」。
 // 真毛病不是没信息，是信息全锁在折叠区里：模型自己的旁白、⚡ 并发那条、🗜️ 压缩那条、
 // 每一步用了什么工具——全在 .proc-body，而它默认是收着的。外面只剩「运行中 3m20s · 第 7 步」，
 // 那说的是「跑了多久」，不是「在干什么」。
 // 所以另开一行常驻：过程区收着也照样播报当前动作，想看细节再点开——
 // 用户同一句话里也说了「具体的运行过程详情可以不展开」。
-//
 // 纯函数，好让前端测试直接喂事件验。narr 是上一次留下的旁白缓冲，随返回值一起往下传。
 const ACT_MAX = 60;
 function liveActivity(ev, narr) {
@@ -1551,17 +1548,13 @@ function liveActivity(ev, narr) {
 // 每个胶囊是 [图标 id, 文案]。文案得单独一格：点一下是把它挂成「任务类型」标签
 // （setSceneTag），发送时拼成「【任务类型：X】」交给模型，所以这格里只能是干净的词，
 // 前面粘个表情的话模型收到的第一个字符就是 emoji。
-//
 // 这份表重排过两次。
-//
 // 第一次是从 日常办公 / 代码开发 / 设计创意 / 内容与增长 改成按**你要交出什么东西**分，
 // 治的是「同一件事两个入口」（幻灯片制作 vs PPT 设计）和「第一个 tab 是个筐」。
-//
 // 第二次就是现在这版：分类从五个并到三个。上一版每个 tab 分得都对，但**加起来太多了**——
 // 空态第一屏顶着五个标签页，用户得先做一道「我这件事算哪一类」的选择题，
 // 才轮到真正要做的那件事。而这道题本来就不该出：模型不看分类，分类只影响
 // 挂上去的那枚「任务类型」标签。分得再细也不会让结果更好，只会让第一步更慢。
-//
 // 三类的尺子还是「交出什么」：一份能交上去的文档 / 一个想清楚的结论或一条要发出去的内容 /
 // 一个能跑能看的东西。顺手去掉了「PPT 美化」——它和「做幻灯片」是同一件事的两个入口，
 // 正是上一版明令要治的毛病，上次漏网了。
@@ -1578,8 +1571,8 @@ let sceneTag = null; // 选中的任务类型标签
  * 「用这个专家 / 专家团 / 技能」点下去之后，挂在输入框上方的那枚标签。
  *
  * 以前点一下是把一整句话灌进输入框：「请把下面这个任务整体委派给专家团「调研出报告」
- * （用 delegate_to_team）：」。用户原话：「也是没有特俗格式啊，还是普通文本这样，
- * 使用专家/专家团还有技能都不要给我搞什么普通文本啊！」两个毛病：
+ * （用 delegate_to_team）：」。
+ * 两个毛病：
  *   1. 它跟用户自己打的字长得一模一样——选中了什么没有任何视觉交代，想反悔还得一个字一个字删；
  *   2. delegate_to_team 是给模型看的内部工具名，不该出现在人的屏幕上。
  * 现在界面上只留一枚能一键摘掉的标签，那句指令在**发送的一瞬间**才拼进正文（见 useDirective）。
@@ -1624,8 +1617,7 @@ function buildEmpty() {
   tpl.innerHTML = `<h1>把事情交给我</h1>
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
       `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}">${ic(SCENE_ICON[i] || "sparkles")}${esc(k)}</button>`).join("")}</div>
-    <div class="chips" id="scene-chips"></div>
-    <div class="empty-tools"><button id="em-sweep" title="看看工作区里哪些是任务跑完剩下的中间文件">${ic("eraser")}整理文件夹 · 腾出空间</button></div>`;
+    <div class="chips" id="scene-chips"></div>`;
   const chipsEl = tpl.querySelector("#scene-chips");
   const renderChips = (scene) => {
     chipsEl.innerHTML = SCENES[scene].map(([i, t]) => `<button>${ic(i)}${esc(t)}</button>`).join("");
@@ -1641,8 +1633,6 @@ function buildEmpty() {
     const b = e.target.closest("button");
     if (b) setSceneTag(b.textContent.trim());
   });
-  // 这条不挂「任务类型」标签，它自己就是一件事：点下去直接开整理面板
-  tpl.querySelector("#em-sweep").onclick = () => openSweep({});
   return tpl;
 }
 chatCol.appendChild(buildEmpty());
@@ -1763,9 +1753,6 @@ inputEl.addEventListener("keydown", (e) => {
  */
 /**
  * 「整理文件夹 · 腾出空间」面板。
- *
- * 用户原话：「还有这个整理文件夹和释放电脑空间的功能也给我贴在这个主页……
- * 然后这个功能给我好好做好啊，这是个高频功能啊」。
  *
  * 高频意味着两件事：入口要在第一屏（空态底下那条），以及**每次打开都得当场算**，
  * 不能拿上次的数字糊弄——中间几分钟可能又跑了三个任务。整个工作区走一遍实测 91ms，
@@ -2025,7 +2012,7 @@ function makeAskCard(ev, turnSid, submit, ctx) {
       isAp ? `要你点头：${esc(ev.apKind || "危险操作")}` : (ev.expert ? `专家「${esc(ev.expert)}」拿不准，想问你一句` : "有个岔路，想让你定一下")
     }</span><span class="ask-timer"></span></div>` +
     // 命令原文整条印出来，不截断、不折进省略号：危险就危险在被截掉的那半截
-    //（末尾那个 `| sh`、那个 --force、那个真正的路径）
+    // （末尾那个 `| sh`、那个 --force、那个真正的路径）
     (isAp
       ? `<div class="ask-cmd">${esc(ev.text || "")}</div>` + (ev.detail ? `<pre class="ask-diff">${paintDiff(ev.detail)}</pre>` : "") + (ev.rule ? `<div class="ask-rule">拦它的规则：${esc(ev.rule)}</div>` : "")
       : `<div class="ask-q">${esc(ev.question || "")}</div>`) +
@@ -2175,7 +2162,7 @@ const FIND_MIN = 8; // 文件少的时候一眼扫得完，搜索框纯占地方
  * 这个文件算不算「交到用户手上的成果」。
  *
  * 面板里一个真实文件夹长这样：data/ 下十几个抓回来的 json、几个 .py、一份 PROGRESS.md，
- * 外加一个 .pptx。用户原话：「pptx 格式文件都没重点标记下啊」——那份唯一要交的东西，
+ * 外加一个 .pptx。那份唯一要交的东西，
  * 跟中间材料排一样的字重、混在按名字排的序里，得自己一行行找。
  *
  * 判据跟对话里的产出卡一致（isDeliverable + 图/网页），不另立一套：同一份东西在两处
@@ -2197,7 +2184,7 @@ function revealFile(name, e, root, src) {
 }
 /**
  * 把文件本身放进剪贴板，之后直接 Cmd+V 粘到微信 / 邮件 / 访达里。
- * 用户原话：「还有能直接复制这个文件」——以前只能先下载一份再自己去翻下载目录。
+ * 以前只能先下载一份再自己去翻下载目录。
  * 服务端会告诉我们放进去的到底是文件还是一条路径，两者得分开说：
  * 以为复制了文件、粘出来是一行字，比直接说「复制不了」更气人。
  */
@@ -2238,7 +2225,7 @@ function downloadFile(name, root) {
 }
 const revealBtn = (name) => (canOpenOnHost() ? `<span class="dl rv" data-rv="${esc(name)}" title="打开所在位置">${ic("folder-open")}</span>` : "");
 
-// 按名字找文件。用户原话：「还有文件也比较难找到在这一堆文件里」——一个任务跑下来几十个
+// 按名字找文件。一个任务跑下来几十个
 // 文件，分组能解决「浏览」，解决不了「我就要那一个」。匹配的是整条相对路径，所以文件夹名
 // 也算线索（打「0918」能把那天那个任务夹里的都捞出来）；空格分词、全都命中才算
 // （「封面 html」= 名字里有封面、而且是 html），大小写不敏感。
@@ -2316,14 +2303,12 @@ function renderFiles(files) {
     });
   };
   // 子目录归成可折叠分组，再按时间装进「今天／昨天／过去 7 天／更早（按月）」。
-  //
   // 为什么时间只做在**视图**里、磁盘保持扁平：Google ADK 那套产物命名空间是
   // app/user/session/文件名，**会话是默认主键，压根没有日期这一层**；而 Finder /
   // 资源管理器 / Drive 全是磁盘扁平、视图里按时间分组。真在磁盘上套一层 2026-08/
   // 的代价是老文件多一层点击、已有的绝对路径全部失效，而收益（"最近做的东西在哪"）
   // 视图分组就能给。分组用的是 mtime（跟 Finder 一致——问的是"最近动过什么"），
   // 文件夹名里那个 MMDD 仍然记着它是哪天开的。
-  //
   // 根目录散件以前是**无条件钉在最上面**的：于是每次打开面板，先撞见的是几个月前
   // 别的对话留下的文件（真实数据里 22 个），「本对话」被挤到看不见的地方——
   // 明明每个对话早就各有各的文件夹，用起来还是"一锅粥"。所以本对话有自己文件夹时，
@@ -2480,7 +2465,6 @@ let pvRoot = "";   // pvCurrent 那份文件所属的工作目录指纹，见 wi
 let pvClosedAt = 0;
 
 // 有专门看法的四类：网页/图/音/视频。其余一律先当纯文本试着打开。
-//
 // 以前这里是一张"文本扩展名白名单"（txt|csv|json|js|cjs|css|xml|log|yml|yaml），
 // 白名单外的整个掉进「该格式暂不支持应用内预览」——可真实工作目录里 .py/.swift/.plist/.srt/.h
 // 全在白名单外，明明是纯文本却只能下载；.mp3/.mp4 更离谱，文件列表里都给了 🎵🎬 图标，
@@ -2569,7 +2553,7 @@ function bindPvFallback(body, name, root) {
 /**
  * 大文件截断提示。
  *
- * 用户的原话是「很大文件都没有办法正常显示了啊」。一次全读进来是真的会把渲染进程干死
+ * 一次全读进来是真的会把渲染进程干死
  * （所以 512 KB 这道口子不能拆），但只留一句「要看全的话下载或用系统程序打开」
  * 等于把人推出应用——他想看的那一行可能就在第 520 KB 上。
  * 所以这里给一颗按钮：一段一段往后接着读，读到哪儿写清楚到哪儿，读完了就说读完了。
@@ -2712,16 +2696,13 @@ function csvHtml(text, name) {
 }
 
 // ---------------- 代码文件的看法（横向滚动 + 行号 + 着色 + 压缩产物展开） ----------------
-// 起因：工作区里点开一个 .mjs（前端打包产物），右边糊出一大坨。用户原话：
-// 「怎么这个 mjs 代码显示的时候就看着都没格式看着像是乱码一样啊」。
-//
+// 起因：工作区里点开一个 .mjs（前端打包产物），右边糊出一大坨。
 // 是两件事叠在一起，得分开治：
 //   1) 打包产物是**压缩过的**——整个文件常常就一行五万字符。而下面那条兜底 <pre> 用的是
 //      white-space:pre-wrap + overflow-wrap:anywhere（那是为日志和纯文本调的，长 URL 不该
 //      把面板撑宽）。于是这一行被从**任意位置**折断：`fun` 留在上一行、`ction` 掉到下一行。
 //      「像乱码」说的就是这个 —— 字都是对的，断点全是错的。
 //   2) 一点着色和行号都没有，就算源码本来有换行，也只是一坨等宽字。
-//
 // 所以代码类后缀单独走一条路：代码永远不该被拦腰折（横向滚动）+ 行号 + 着色，
 // 压缩过的先按 { } ; 展开，并且留一颗「看原文」—— 展开是为了读，不是为了改，
 // 总有人就是想确认原文长什么样。
@@ -3134,7 +3115,7 @@ async function previewFile(name, root) {
   const pvCopyBtn = document.getElementById("pv-copy");
   if (pvCopyBtn) pvCopyBtn.hidden = kind !== "image";
   // 单张图就把它摆在面板正中间。以前是 margin:20px auto——横向居中、纵向顶着天花板，
-  // 一张矮图挂在顶上、底下一大片空白。用户原话：「应该放在右边中间居中的位置啊，不要放在顶上放啊」
+  // 一张矮图挂在顶上、底下一大片空白。
   body.classList.toggle("pv-mid", kind === "image" || kind === "video");
   if (kind === "iframe") {
     // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字
@@ -3351,7 +3332,6 @@ function snapshotFiles(files) {
 }
 // 和上一次快照比，挑出这次任务真正新增/改动过的文件（不改快照，调用方决定什么时候推进）
 // 基线没建好就先拿这次当基线：否则首屏没加载完就发任务，整个工作目录都会被当成"本次产出"糊一屏卡片
-//
 // 这是给**老会话**兜底的一条路（新记录走服务端算好的 ev.changed）。它跟服务端那边犯过同一个错：
 // 「不在基线里」被当成了「新产出」。而 /api/files 只给最新 500 条，中途删掉一批中间文件，
 // 窗口往回滑，几个月前的旧文件就重新挤进来——于是整个工作目录被当成这回合的产出。
@@ -3411,7 +3391,7 @@ const FILES_LIST_CAP = 500;                               // 服务端 outputFil
  * 这份文件列表，够不够格给产出区的文件盖「已删除」的章。
  *
  * 「不在列表里」= 「已经没了」这一步，只有在列表本身是**同一个工作目录的完整快照**时才成立。
- * 用户原话：「换了一个文件夹怎么有些文件就给我显示已删除了啊」——四个文件全被划掉，
+ * 四个文件全被划掉，
  * 磁盘上一个都没少。两条真实路径都会掉进来：
  *
  *   1. 回放历史对话。存盘时整份 files 被裁成「这一批变更的那几条」（不然 500 条 × 每批一次
@@ -3491,7 +3471,7 @@ function renderTurnOutputs(body, changed, live, ev) {
     block = document.createElement("div");
     block.className = "out-block";
     // 只留一层开关。以前是两层：点开「本回合产出」，里面还压着一个「查看所有变更」，
-    // 用户点第一下只看到又一行标题，原话是「点击▸ 本回合产出 (2) 怎么没有反应啊」——
+    // 用户点第一下只看到又一行标题，
     // 文件躺在第二层里，谁也不会去点第二下。现在标题这一下就把文件摊开；
     // 产出多的时候用「还有 N 个文件」再展开，那是量的问题，不是再折一层。
     block.dataset.root = (ev && ev.root) || ""; // 记住这块产出属于哪个工作目录，换目录后别拿新清单判它的生死
@@ -3566,7 +3546,6 @@ function renderTurnOutputs(body, changed, live, ev) {
 }
 
 // 已经出了卡的文件，下面不再原样列一遍。
-// 用户原话：「为什么怎么又是有图标又是看到文件列表的啊，不需要看到文件列表啊」——
 // 四张图给了四张卡，卡下面又跟着四行同名文件，同一批产出画了两遍，
 // 第二遍还没有缩略图，纯占版面。清单从此只留没卡的那些：脚本、日志、PROGRESS.md
 // 这类过程文件，外加已删除的行（卡撤了，但"这个文件没了"这条信息得留着）。
@@ -3674,7 +3653,7 @@ function makeOutCard(f, isHtml, root) {
   const url = withRoot("/api/files/view/" + fpath(f.name) + "?v=" + encodeURIComponent(f.mtime || f.size || ""), root);
   // 产出卡：缩略图在上、文件名和大小在下、三个图标钮收在底边。
   // 交付物看得见长什么样才叫产出；只有一行文件名的话，用户还得点开才知道自己拿到了什么
-  // 图（含 svg）直接出缩略图——用户原话「那种预览小图标怎么给我改成文件名的形式了啊」：
+  // 图（含 svg）直接出缩略图——：
   // 一排只有文件名的行，等于把右侧文件面板抄进了对话里。图用 <img> 渲染，网页/文档给大图标，
   // 但都不内嵌 iframe：一回合出三个网页就是在对话里跑三个小浏览器，又慢又挡正文
   const isPic = /\.(png|jpe?g|gif|webp|bmp|ico|svg)$/i.test(f.name);
@@ -3709,7 +3688,7 @@ function makeOutCard(f, isHtml, root) {
       <button class="oa-ico" data-a="rv" title="打开所在位置">${ic("folder-open")}</button>
       <a class="oa-ico" href="${withRoot("/api/files/download/" + fpath(f.name), root)}" download title="下载">${ic("download")}</a></div>`;
   // 缩略图读不出来（文件被改名、挪走、删了，或者这个格式浏览器解不了）就退回文件类型图标。
-  // 以前它只留一个空灰方框，卡片自己一个字都不说——用户原话：「这些图片怎么不渲染啊，现在看着比较丑啊」。
+  // 以前它只留一个空灰方框，卡片自己一个字都不说，看着就像整个功能坏了。
   const th = card.querySelector(".out-thumb img, .out-thumb video");
   if (th) th.onerror = () => {
     const box = th.closest(".out-thumb");
@@ -3752,10 +3731,8 @@ function markDupBasenames(grid) {
 // 文件名进 CSS 属性选择器要转义（含空格、中文括号、引号的名字很常见）
 function cssEsc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"); }
 // ---- 正文里提到的产出文件名 → 可点开的链接 ----
-// 用户原话：「有些这些文件你就给我搞成超连接的形式啊」。
 // 模型收尾时爱写「简历已经写好了，在 张三_简历.html 里」——那串文件名在对话里是死的，
 // 用户得自己去右侧面板一行行找同名的那个。现在这一趟真产出过的名字，在正文里就是能点的。
-//
 // 只认「这一趟真的产出过」的名字，不拿正则去猜「长得像文件名的东西」：
 // 猜出来的链接点开是 404，比压根没有链接更气人。
 function fileLinkTargets(files) {
@@ -3777,7 +3754,7 @@ function linkifyOutputs(root, targets) {
   if (!root || !targets || !targets.size) return 0;
   // renderMd 拼出来的 [文字](报告.md) 只照字面那条路径指，可模型十有八九只写文件名，
   // 真身在任务子目录里（任务_A/报告.md）。这儿拿这一趟的产出表把它校正过来，
-  // 不然点下去就是那句用户抱怨过的「跟我说文件不存在啊」。
+  // 不然点下去就是一句「文件不存在」。
   // 表里查不到的不动：那多半是上一轮的产出，链接本身是好的，只是不归这一趟管
   for (const a of root.querySelectorAll("a.file-ln[data-md]")) {
     const want = a.dataset.name || "";
@@ -3806,7 +3783,7 @@ function linkifyOutputs(root, targets) {
     if (!t.nodeValue || !/\S/.test(t.nodeValue) || !p) continue;
     // 代码块（<pre>）里的路径是代码，链接化会把代码改样。但**行内** `报告.html` 是另一回事：
     // 模型收尾列交付物时十有八九给文件名套了反引号，以前这一套就把它们全筛掉了——
-    // 用户原话：「怎么有些文件没有链接啊，应该写着产出的这些文件应该要都有链接啊」，说的就是这批。
+    // 说的就是这批。
     if (p.closest("a, pre, .out-block, .file-ln")) continue;
     nodes.push(t);
   }
@@ -3851,8 +3828,8 @@ function makeFileLink(label, name) {
 /**
  * 一趟任务跑完了，右侧要不要直接把成果摊开。
  *
- * 「中途不弹」是定下来的（用户原话：抢版面、丑，见下面的 outputArrivalPlan）——但那说的是**中途**。
- * 跑完了还是一片空白是另一回事，用户原话：「有产出了应该要预览啊」「不仅结束了没有预览」。
+ * 「中途不弹」是定下来的
+ * 跑完了还是一片空白是另一回事，
  * 所以只在收尾这一下开，而且只开一件：这一趟真正交到手上的那个成果。
  *
  * 一律不开的情形，每一条都是「开了反而添乱」：
@@ -3864,10 +3841,6 @@ function makeFileLink(label, name) {
  *   · 只剩 .doc/.ppt/.xls 那三个老格式：previewFile 会去拉起本机 Office，抢的是整个系统焦点，太重
  */
 // 一道题里提到的文件。
-//
-// 用户原话：「然后问我这个文件里面展示的选哪个，然后这个文件也让我找半天不自己右边预览啊。
-// 还有文件也比较难找到在这一堆文件里」。
-//
 // AI 让人「三版对比在《封面三选一.html》里，你要哪版」，题面其实**在那个文件里**——
 // 右边不摊开，这道题就是让人对着一句话猜。收尾自动预览（finishPreviewPlan）救不了它：
 // 提问发生在任务跑到一半，那会儿还早得很。
@@ -3933,7 +3906,7 @@ function pickFinishDeliverable(outs) {
   cand.sort((a, b) => a.rank - b.rank || a.depth - b.depth || b.mtime.localeCompare(a.mtime) || a.name.localeCompare(b.name));
   return cand[0].name;
 }
-// 产出到了该怎么办。以前是「有产出就把右侧预览 / 成果文件面板弹出来」——用户原话：抢版面。
+// 产出到了该怎么办。以前是「有产出就把右侧预览 / 成果文件面板弹出来」——
 // 现在默认什么都不抢：快照照推进、「成果文件」按钮上记个角标、chip 就在对话里，想看再点。
 // 唯一会碰右侧的情况：用户本来就开着预览、看的正是这回合改过的那个文件——原地刷新，布局不动。
 // 纯函数：输入是当下的状态，输出是三个动作，前端 harness 直接验
