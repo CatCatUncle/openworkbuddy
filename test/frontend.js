@@ -8648,6 +8648,8 @@ const QUOTE_CHECKS = `
   // 高亮得量得出来：只验 class 的话，把那条 CSS 删了这一屏照样全绿。
   // 认的是 owbTurnFound 这个名字而不是「有没有动画」——.turn 本来就带一个入场动画（owbRise），
   // 拿「!== none」当判据的话，这条和下面那条反向对照会同时被它顶成绿的
+  ok("夹具自检：这一遍不是 reduce 档（不然下面量到的 none 是系统设置，不是代码的事）",
+     !matchMedia("(prefers-reduced-motion: reduce)").matches);
   const anim = getComputedStyle(turns[3]).animationName;
   ok("高亮是真画出来的（量出 owbTurnFound 真挂上了，不是只认一个 class）", /owbTurnFound/.test(anim), JSON.stringify(anim));
   const plain = getComputedStyle(turns[4]).animationName;
@@ -8703,8 +8705,25 @@ function mkWin(opts) {
   // （'已达成${ic("check")}'）：JS 一声不吭，界面上就直接印出一串 ${ic("check")}，
   // 只有人眼盯着才看得见。用 MutationObserver 盯全程——一屏画完又被下一屏盖掉的也算数，
   // 跑完再翻一眼 innerHTML 是抓不到的。挂在 mkWin 上，以后新增用例块不用自己记着加。
+  // 「减弱动态效果」这一档，每个窗口都明说自己要哪一边，绝不跟着跑测试那台机器的系统设置走。
+  // GitHub 的 macOS runner 默认就开着它，开发机默认没开——v0.5.1 的 CI 正是栽在这儿：
+  // 「跳回那一轮」的高亮在 runner 上量出 animation-name: "none"，一条断言把 test 和 release
+  // 两条流水线一起挡下，那个 tag 到现在都没有安装包。本机全绿、runner 全红，看着还像 CI 坏了。
+  // 所以默认钉成 no-preference；要测 reduce 的窗口在 loadURL 之后把 __motion 改掉就行。
+  let motionPinned = null;
+  const pinMotion = async () => {
+    const want = w.__motion || "no-preference";
+    if (motionPinned === want) return;
+    if (!w.webContents.debugger.isAttached()) w.webContents.debugger.attach("1.3");
+    await w.webContents.debugger.sendCommand("Emulation.setEmulatedMedia",
+      { features: [{ name: "prefers-reduced-motion", value: want }] });
+    motionPinned = want;
+  };
   const rawExec = w.webContents.executeJavaScript.bind(w.webContents);
   w.webContents.executeJavaScript = async (code, gesture) => {
+    await pinMotion().catch((e) => {
+      throw new Error("钉不住「减弱动态效果」这一档，这一屏的结果就会跟着机器的系统设置飘：" + ((e && e.message) || e));
+    });
     await rawExec(PLACEHOLDER_WATCH, true).catch(() => 0);
     const r = await rawExec(code, gesture);
     const leak = await rawExec("(window.__phFlush ? window.__phFlush() : '')", true).catch(() => "");
@@ -8979,9 +8998,7 @@ app.whenReady().then(async () => {
     const winSBR = mkWin({ show: false, width: 1100, height: 640, webPreferences: { offscreen: true } });
     try {
       await winSBR.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SIDEBAR_HTML));
-      winSBR.webContents.debugger.attach("1.3");
-      await winSBR.webContents.debugger.sendCommand("Emulation.setEmulatedMedia",
-        { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+      winSBR.__motion = "reduce";
       const namesSBR = await winSBR.webContents.executeJavaScript(IC_BOOT + HIST_RSZ_SRC + "\n" + SIDEBAR_CHECKS, true)
         .catch((e) => { throw new Error("[侧栏·减弱动态效果] " + ((e && (e.stack || e.message)) || String(e))); });
       console.log(`✅ 前端：系统开了「减弱动态效果」之后，侧栏那套主次与拖拽照样准（全局过渡不许把「改完就读」拖成上一帧的旧值）${namesSBR.length} 项通过`);
@@ -9028,9 +9045,7 @@ app.whenReady().then(async () => {
     const winQTR = mkWin({ show: false, width: 760, height: 400, webPreferences: { offscreen: true } });
     try {
       await winQTR.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(QUOTE_HTML));
-      winQTR.webContents.debugger.attach("1.3");
-      await winQTR.webContents.debugger.sendCommand("Emulation.setEmulatedMedia",
-        { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+      winQTR.__motion = "reduce";
       const namesQTR = await winQTR.webContents.executeJavaScript(IC_BOOT + QUOTE_STUBS + "\n" + JUMP_SRC + "\n" + JUMP_REDUCE_CHECKS, true)
         .catch((e) => { throw new Error("[跳回那一轮·减弱动态效果] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesQTR) console.log("  ✓ " + n);

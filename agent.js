@@ -478,6 +478,19 @@ function activeChannel(config) {
   return legacy && legacy.model ? { ...legacy, provider: config.provider } : {};
 }
 
+/**
+ * 被掐掉时追在正文后面的那半句。两条引擎路径（内置循环 / 本机 CLI 引擎）共用这一份，措辞不会漂开。
+ *
+ * 用户原话：「已达最大运行时间，任务强制收尾怎么回事啊」——老措辞只说「可提高设置中的上限」，
+ * 既没说上限在哪一页，也没提还有「自动续跑轮数」这个开关（默认 0，所以什么都不会自己接着跑），
+ * 看到的人只能回过头来问。这里把下一步写全。手动停止是用户自己按的，不该再劝他去调上限。
+ */
+function stopNotice(note) {
+  const resume = "要接着做就跟我说「接着上次进度做」，进度档在工作目录的 PROGRESS.md";
+  if (String(note).startsWith("已手动停止")) return `注意：${note}。${resume}。`;
+  return `注意：${note}，任务强制收尾。${resume}；想让它一口气跑更久，去「设置 → 执行上限」调大上限、或把「自动续跑轮数」设成 1 以上（这页归平台管理员）。`;
+}
+
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
   // 备用渠道换道要现造一个 LLM 客户端；懒 require 避免环形依赖，测试时可注入假工厂做零 token 验证
   const makeLLM = llmFactory || ((cfg) => require("./llm").createLLM(cfg));
@@ -1550,7 +1563,7 @@ function modePrompt(mode) {
       let finalText = rawFinal;
       if (r.stopped) {
         emit({ type: "limit", note: r.stopped, depth: 0 });
-        const notice = `注意：${r.stopped}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
+        const notice = stopNotice(r.stopped);
         finalText = finalText ? `${finalText}\n\n${notice}` : notice;
       }
       const usage = {
@@ -2275,7 +2288,7 @@ function modePrompt(mode) {
       // 「没做完」和「撞上限」得给不同的话：前者要把还差哪几项摆出来，后者才是叫用户调上限
       const notice = stopNote.startsWith("任务还有")
         ? `注意：${stopNote}，自动续跑轮次也用完了。还没打勾的是：${openLeft.slice(0, 5).join("、")}${openLeft.length > 5 ? ` 等 ${openLeft.length} 项` : ""}。直接跟我说「接着上次进度做」就能继续，进度档在工作目录的 PROGRESS.md。`
-        : `注意：${stopNote}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。`;
+        : stopNotice(stopNote);
       finalText = finalText ? `${finalText}\n\n${notice}` : notice;
     }
 
