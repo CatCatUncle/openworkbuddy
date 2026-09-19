@@ -1830,9 +1830,10 @@ function modePrompt(mode) {
    * 运行一次 Agent 任务循环。
    * @param history 统一格式会话历史（会被就地追加）
    * @param emit    事件回调（SSE / IM 进度）
+   * @param maxSteps 只给这一次任务的步数上限，不传就用全局配置
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, lang, sessionId, traceNode }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, lang, sessionId, traceNode, maxSteps: maxStepsOverride }) {
     // ── 执行追踪 ─────────────────────────────────────────────────────────
     // 顶层任务开一条 trace，这一趟里每次模型调用、每个工具都挂在它底下；专家子任务收到的是
     // 「委派」那次工具调用的 span，接着往下挂，层级跟界面上看到的一模一样。
@@ -1900,7 +1901,9 @@ function modePrompt(mode) {
     const memHint = lastUserMsg ? lastUserMsg.content.slice(0, 500) : "";
     const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + projBlock + langBlock(lang) + modePrompt(mode) + pausedMediaBlock();
     const tools = toolList(depth, mode);
-    const maxSteps = config.agent.max_steps || 25;
+    // 按次覆盖步数上限：评测里的长任务题要 40 步以上，但不能因此把全局上限抬高——
+    // 那等于给所有任务多开一倍预算，钱和基线可比性一起没了
+    const maxSteps = maxStepsOverride || config.agent.max_steps || 25;
     // 整个任务（含所有专家子代理）共享一个墙上时间预算，防止无限执行
     if (!deadline) deadline = Date.now() + (config.agent.max_runtime_ms || 1800000);
     // 整个任务（含专家）共享一份 token 账本，任务结束时汇总上报
