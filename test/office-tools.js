@@ -894,12 +894,10 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
   }
 
   // ── ⑩ shell 喊 command not found 时，替它说清楚缺的是什么 ────────────────
-  //
   // 这一节补的是「图文成片」那条路上最常见的一次翻车：分镜都生成完了，最后一步合片
   // 撞上一句「zsh:1: command not found: ffprobe」。模型看到的只有这一句，它不知道
   // ffprobe 跟 ffmpeg 是同一个包装出来的，多半会去重试、或者换个参数再试一遍，
   // 把用户的步数和钱一起烧光，最后还是同一句话。
-  //
   // 每种 shell 的喊法都不一样，而且**顺序会咬人**：bash 那条是「名字在冒号前面」，
   // 拿它去刮 zsh 的「zsh:1: command not found: ffmpeg」，捞回来的是 "1"。所以下面每种
   // 喊法都单测一遍，外加几条反向对照——认不出的命令、压根没出错的输出，都必须一个字

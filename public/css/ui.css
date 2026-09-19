@@ -398,10 +398,12 @@ html[data-theme="dark"] .ui-select {
 .drama-empty-icon { margin-bottom: 12px; color: var(--owb-brand-text); font-size: 32px; }
 
 /* ---------- 通用无限画布：JointJS 只管图模型与视口，节点仍吃工作台自己的视觉令牌 ---------- */
+/* 画布要接键盘（Delete / ⌘A / Space），就得能拿焦点；tabindex=-1 在 JS 里加。鼠标点出来的焦点不该有框 */
+.assist-page:focus, .assist-page:focus-visible { outline: none; }
 .canvas-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; margin-bottom: 1px; }
 .canvas-head .canvas-kicker, .canvas-head h1 { display: none; }
 .canvas-page:fullscreen { box-sizing: border-box; width: 100vw; height: 100vh; overflow: auto; padding: 18px 22px 22px; background: var(--owb-bg); }
-.canvas-page:fullscreen .canvas-viewport { height: calc(100vh - 326px); }
+.canvas-page:fullscreen .canvas-viewport { height: calc(100vh - 326px - var(--cp-h, 0px)); }
 .canvas-page:fullscreen .canvas-inspector { min-height: 0; }
 .canvas-head h1 { font-size: 18px; line-height: 1.2; }
 .canvas-kicker { color: var(--owb-brand-text); font-size: 12px; font-weight: 600; letter-spacing: .08em; margin-bottom: 6px; }
@@ -413,7 +415,7 @@ html[data-theme="dark"] .ui-select {
 .canvas-toolbar-hint { color: var(--owb-text-3); }
 .canvas-zoom-box { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; padding: 2px 4px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: var(--owb-bg); }
 .canvas-zoom-box > span { min-width: 42px; text-align: center; font-variant-numeric: tabular-nums; }
-.canvas-viewport { position: relative; height: clamp(540px, calc(100vh - 278px), 980px); min-height: 540px; overflow: hidden; border: 1px solid var(--owb-border); border-radius: var(--radius-xl); background-color: var(--owb-canvas); background-image: radial-gradient(circle, color-mix(in srgb, var(--owb-text-3) 18%, transparent) 1px, transparent 1px); background-size: 22px 22px; cursor: grab; touch-action: none; }
+.canvas-viewport { position: relative; height: clamp(420px, calc(100vh - 278px - var(--cp-h, 0px)), 980px); min-height: 420px; overflow: hidden; border: 1px solid var(--owb-border); border-radius: var(--radius-xl); background-color: var(--owb-canvas); background-image: radial-gradient(circle, color-mix(in srgb, var(--owb-text-3) 18%, transparent) 1px, transparent 1px); background-size: 22px 22px; cursor: grab; touch-action: none; }
 .canvas-viewport.dragging { cursor: grabbing; }
 .canvas-world { position: relative; width: 2400px; height: 1600px; overflow: visible; }
 .canvas-world .joint-paper, .canvas-world > svg { overflow: visible; }
@@ -570,7 +572,9 @@ html[data-theme="dark"] .ui-select {
 .canvas-page .cp-next { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--owb-text-2); font-size: 12px; }
 .canvas-page .cp-caret { flex: 0 0 auto; color: var(--owb-text-3); }
 .canvas-page .cp-caret .i { width: 14px; height: 14px; }
-.canvas-page .cp-body { padding: 0 12px 10px; border-top: 1px solid var(--owb-border); }
+.canvas-page .cp-body { max-height: 40vh; overflow: auto; padding: 0 12px 10px; border-top: 1px solid var(--owb-border); }
+/* 展开之后卡点清单加上三十行镜头表能长到一屏还多，把画布连同下面的对话区一起挤没。
+   封顶 + 自己滚，它再长也只占这么高；视口那边同时按 --cp-h 让位（canvasProgressHeight） */
 .canvas-page .cp-blockers { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
 .canvas-page .cp-blocker { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: var(--radius-sm); background: var(--owb-bg-hover); font-size: 12px; }
 .canvas-page .cp-blocker.is-stop { border-left: 2px solid var(--owb-err); }
@@ -725,7 +729,9 @@ html[data-theme="dark"] .ui-select {
 .canvas-chat-compose.is-dragging { border-color: var(--owb-brand); background: color-mix(in srgb, var(--owb-brand) 7%, var(--owb-bg)); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--owb-brand) 18%, transparent); }
 /* 画布是主工作区：工具和属性以浮层存在，不再挤压画布本体。 */
 .canvas-page { position: relative; margin-top: -16px; }
-.canvas-page > .canvas-toolbar { position: absolute; z-index: 24; top: 42px; right: 10px; left: 10px; justify-content: space-between; margin: 0; pointer-events: none; }
+/* 42 是「进度带还不存在」那会儿量出来的，浮在画布顶上正合适。进度带一出现就顶在这个位置，
+   工具条原地不动就盖在它脸上——剧本、定妆那两格永远露不出来。跟着一起让位 */
+.canvas-page > .canvas-toolbar { position: absolute; z-index: 24; top: calc(42px + var(--cp-h, 0px)); right: 10px; left: 10px; justify-content: space-between; margin: 0; pointer-events: none; }
 .canvas-tool-cluster { position: relative; display: inline-flex; align-items: center; gap: 2px; height: 34px; padding: 2px; border: 1px solid var(--owb-border); border-radius: var(--radius-md); background: color-mix(in srgb, var(--owb-bg) 92%, transparent); box-shadow: var(--shadow-surface); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); pointer-events: auto; }
 .canvas-tool-cluster .canvas-node-menu, .canvas-tool-cluster .canvas-library { position: relative; width: 30px; margin: 0; border: 0; border-radius: var(--radius-sm); background: transparent; }
 .canvas-tool-cluster .canvas-node-menu summary, .canvas-tool-cluster .canvas-library summary { display: flex; align-items: center; justify-content: center; width: 30px; min-height: 30px; padding: 0; border-radius: var(--radius-sm); color: var(--owb-text-2); }
@@ -737,6 +743,8 @@ html[data-theme="dark"] .ui-select {
 .canvas-tool-button:hover { background: var(--owb-bg-hover); color: var(--owb-brand-text); }
 .canvas-tool-button .i { width: 16px; height: 16px; }
 .canvas-tool-button.is-redo .i { transform: scaleX(-1); }
+.canvas-tool-button.is-active { background: var(--owb-brand-weak); color: var(--owb-brand-text); }
+.canvas-viewport.is-marquee { cursor: crosshair; }
 .canvas-tool-cluster .canvas-node-menu-body, .canvas-tool-cluster .canvas-library-panel { position: absolute; z-index: 30; top: 38px; left: 0; box-sizing: border-box; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--owb-bg) 97%, transparent); box-shadow: var(--shadow-menu); }
 .canvas-tool-cluster .canvas-node-menu-body { width: min(470px, calc(100vw - 370px)); }
 .canvas-tool-cluster .canvas-library-panel { width: min(340px, calc(100vw - 370px)); overflow: hidden; }
@@ -776,7 +784,7 @@ html[data-theme="dark"] .ui-select {
 .canvas-page .canvas-type-btn { justify-content: flex-start; width: 100%; min-width: 0; height: 32px; padding: 0 6px; border-color: transparent; background: var(--owb-bg); }
 .canvas-page .canvas-type-btn span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .canvas-layout { position: relative; display: block; }
-.canvas-page .canvas-viewport { height: clamp(620px, calc(100vh - 120px), 1200px); }
+.canvas-page .canvas-viewport { height: clamp(420px, calc(100vh - 120px - var(--cp-h, 0px)), 1200px); }
 .canvas-page .canvas-inspector { position: absolute; z-index: 22; top: 10px; right: 10px; width: 286px; min-height: 0; max-height: calc(100% - 20px); box-shadow: var(--shadow-menu); }
 .canvas-page .canvas-layout.canvas-inspector-hidden .canvas-inspector { display: none; }
 .canvas-page > .canvas-chat { position: absolute; z-index: 25; right: 0; bottom: 0; left: 0; margin: 0; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
@@ -800,7 +808,7 @@ html[data-theme="dark"] .ui-select {
 .canvas-media-lightbox-close .i { width: 17px; height: 17px; }
 .canvas-media-lightbox-stage { display: flex; align-items: center; justify-content: center; min-height: min(68vh, 720px); max-height: calc(92vh - 45px); padding: 18px; background: var(--secondary); }
 .canvas-media-lightbox-stage img { display: block; max-width: 100%; max-height: calc(92vh - 90px); object-fit: contain; }
-.canvas-page:fullscreen .canvas-viewport { height: calc(100vh - 90px); }
+.canvas-page:fullscreen .canvas-viewport { height: calc(100vh - 90px - var(--cp-h, 0px)); }
 /* ---------- 执行追踪（更多 → 执行追踪，整页） ---------- */
 /* 这块原来长在设置页那条窄栏里：字号被压到 9–10px、列表限高 330px、工具名和路径挤在
    同一行里被省略号切掉，结果就是「看不出调了什么工具、动了哪个文件」。搬到整页之后按
@@ -1020,8 +1028,8 @@ html[data-theme="dark"] .ui-select {
 
 /* ---------- 模型与 Key（设置 → 模型） ----------
    老版本这一页是「渠道优先」的：顶上五个只能看的小格，底下一长串渠道卡，媒体那四路再吊在最后。
-   可用户的原话是「每个任务包括文本、语音、视频、图像都可能要配置多个渠道和多个模型的啊」——
-   他脑子里的单位是「能力」，不是「渠道」。渠道只是那把 Key 住的地方。
+   可文本、语音、视频、图像每一路都可能要配好几个渠道、好几个模型——
+   人脑子里的单位是「能力」，不是「渠道」。渠道只是那把 Key 住的地方。
    所以改成能力优先：顶上六格说清「现在在用谁、还压着几个备选」，中间六张卡一路一张
    （对话和看图/画图/视频/配音/转写长一个样），最后才是渠道与 Key 那一段。
    六格现在是按钮：点哪一路就展开哪一路——原来那五格看完只能干瞪眼，而人看完第一反应就是想改它。 */
@@ -1110,7 +1118,7 @@ html[data-theme="dark"] .ui-select {
   .canvas-head { display: block; }
   .canvas-head-actions { margin-top: 12px; }
   .canvas-toolbar-hint { display: none; }
-  .canvas-viewport { height: calc(100vh - 280px); }
+  .canvas-viewport { height: calc(100vh - 280px - var(--cp-h, 0px)); }
   .canvas-layout { grid-template-columns: 1fr; }
   .canvas-inspector { min-height: 260px; max-height: 360px; }
   .canvas-menu-hint { display: none; }

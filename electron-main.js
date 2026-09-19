@@ -273,12 +273,10 @@ app.whenReady().then(async () => {
   win.loadURL(`http://127.0.0.1:${PORT}`);
 
   // 站内链接留在应用里，只有真外链才交给系统浏览器。
-  //
   // 这两件事以前是一件：凡 target="_blank" 一律 shell.openExternal。可登录令牌是一枚发给
   // 这个 Electron session 的 HttpOnly cookie，系统浏览器身上根本没有——于是资料库里点一下
   // 「新窗口打开」（那是 /api/files/view/…，站内地址），Safari 弹出来只有一行
   //   {"error":"未登录","setup":false}
-  // 用户原话：「{"error":"未登录","setup":false} 点击新窗口打开就说这个啊」。
   // 「本地部署预览」那条不在此列：它是另起的一个进程、另一个端口，认不了这枚 cookie，
   // 链接里自己带着令牌，本来就该去系统浏览器（手机上扫码打开也是靠它）。
   const sameOrigin = (u) => {
@@ -320,7 +318,6 @@ app.whenReady().then(async () => {
      * 每次重开都变回内置那只猫：character 传成了 "sprite"，sprite 却是空字符串，
      * pet.js 拿空 id 去 findPet 自然找不着，create() 最后那行
      * `character: photo ? "photo" : sp ? "sprite" : "cat"` 就静静地落回 "cat"。
-     * 用户原话：「这个宠物我之前换了的，然后重新打开又是默认的猫猫宠物了」。
      *
      * 同一份名单还漏了 notifyDone 和 wander，scale 的兜底值也跟 pet.js 自己的
      * DEFAULT_SCALE 对不上（那边是 2，这里写死 1）——三处都是同一个病：

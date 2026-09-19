@@ -173,8 +173,7 @@ const OFFICE_RE = /\.(doc|ppt|xls)$/i; // 和 app-01 里的一致：桩子只认
 function onActivate(el, fn){ el.addEventListener("click", fn); }
 `;
 
-// 「整理文件夹 · 腾出空间」那一屏。用户原话：「这是个高频功能啊」。
-//
+// 「整理文件夹 · 腾出空间」那一屏。
 // 这一屏必须在真 Chromium 里跑，因为要验的两件事都只在真 DOM 里成立：
 //   ① 勾选框和那个「清掉这 N 个，腾出 XX」的数字是活的——点一下就得跟着变。
 //      这个数字是用户按下确定之前唯一的依据，它要是停在初始值上，用户以为自己只删了
@@ -384,7 +383,7 @@ const TURNOUT_CHECKS = `
     ok("列表被截断时一律不回收", cards(b).length === 8 && !cards(b).includes("海报_clean.png"));
   }
 
-  // ── 只保留一层开关。用户原话（旧版两层「查看所有变更」嵌套）：「点击▸ 本回合产出 (2) 怎么没有反应啊」——
+  // ── 只保留一层开关。
   //    旧版点「本回合产出」第一层只展开一行新标题，文件还躺在更下面一层里。现在标题这一下就把产出摊开：
   //    卡片区、变更清单、超长展开条都收在同一个 .out-body 里，一起出来一起收，没有第二层折叠
   {
@@ -460,7 +459,6 @@ const TURNOUT_CHECKS = `
 
     // 缩略图地址得拿「这一版文件」当缓存键。以前是 ?t=Date.now()：每来一个文件事件整片卡重建一次，
     // 七张图 = 每次重新下 2.7MB，屏幕上那一格先白一下再慢慢长出来。
-    // 用户原话：「这些图片怎么不渲染啊，现在看着比较丑啊」
     const src1 = png.querySelector(".out-thumb img").getAttribute("src");
     ok("缩略图地址带的是文件自己的版本号，不是当前时间",
       src1.includes("?v=") && src1.includes(encodeURIComponent("2026-09-05T00:00:00.000Z")) && !/[?&]t=\\d{10,}/.test(src1), src1);
@@ -541,7 +539,7 @@ const TURNOUT_CHECKS = `
     ok("大小挂在名字下边", html.querySelector(".out-meta").textContent === "2048 B");
   }
 
-  // ── 「不在这份列表里」≠「已经没了」。用户原话：「换了一个文件夹怎么有些文件就给我显示已删除了啊」——
+  // ── 「不在这份列表里」≠「已经没了」。
   //    截图里四个文件全被划掉，磁盘上一个都没少。两条真实路径都会掉进来：
   //    回放历史对话（存盘时整份 files 被裁成「这一批变更」）、换工作目录（name 是相对路径，换了坐标系）。
   {
@@ -610,8 +608,7 @@ const TURNOUT_CHECKS = `
     }
   }
 
-  // ── 出过卡的文件不许在下面再列一遍。用户原话：
-  //    「为什么怎么又是有图标又是看到文件列表的啊，不需要看到文件列表啊」
+  // ── 出过卡的文件不许在下面再列一遍。
   //    四张图 → 四张卡 + 四行同名文件，同一批产出画两遍，第二遍还没缩略图，纯占版面
   {
     const rowsVisible = (b) => [...b.querySelectorAll(".out-row")].filter((r) => getComputedStyle(r).display !== "none").map((r) => r.dataset.name);
@@ -846,7 +843,7 @@ const FILELIST_CHECKS = `
   ok("没有对话文件夹时根目录文件原样摊开", el.querySelectorAll(".file-item").length === 2 && !el.querySelector(".time-head"), el.innerHTML.slice(0, 120));
 
   // ── 成果重点标记。真实文件夹长这样：data/ 十几个抓回来的 json、几个 .py、一份 PROGRESS.md，
-  //    外加一个 .pptx。用户原话：「pptx 格式文件都没重点标记下啊」——唯一要交的那份东西
+  //    外加一个 .pptx。唯一要交的那份东西
   //    跟中间材料同一个字重、混在按名字排的序里，得自己一行行找。
   window.sessionDirs = new Map([["s_now", "任务_0903_本对话"]]);
   const DIR = "任务_0903_本对话";
@@ -891,7 +888,7 @@ const FILELIST_CHECKS = `
   renderFiles(["a.pptx", "b.png"].map((n, i) => f(DIR + "/" + n, t0.getTime() + i)));
   ok("反向控制：全是成果时也不摆开关", document.getElementById("fp-filter").hidden);
 
-  // ── 按名字找。用户原话：「还有文件也比较难找到在这一堆文件里」
+  // ── 按名字找。
   //    分组能解决"翻"，解决不了"我就要那一个"——一个任务跑下来几十个文件，
   //    得先展开对的文件夹、再一行行扫。
   const FS = [f("任务_0918/封面三选一.html", t0.getTime()), f("任务_0918/data/points.json", t0.getTime()),
@@ -1147,7 +1144,7 @@ const FB_CHECKS = `
   ok("👍 带的是 up", last().body.verdict === "up");
   ok("👍 带上了归属会话", last().body.session === "s_aaa");
   ok("👍 带上了第几轮", last().body.turn === 0, "turn=" + last().body.turn);
-  ok("👍 带上了用户原话", last().body.task === "帮我写个周报");
+  ok("👍 带上了你当时说的那句", last().body.task === "帮我写个周报");
   ok("👍 带上了回复正文", last().body.reply.indexOf("这是回复正文") >= 0);
   ok("👍 亮起来了", btn(t1, "up").classList.contains("on"));
 
@@ -1300,7 +1297,7 @@ const TRAIL_STUBS = [
 ].join("\n");
 
 // ================= 本机引擎在跑时的模型选择器 =================
-// 用户原话：「切换到本地 claudecode 的时候这个 UI 有点丑」。真毛病是那段说明塞在 .mi 里，
+// 真毛病是那段说明塞在 .mi 里，
 // 而 .mi 是 nowrap 的 —— 菜单被撑成一整行宽，右对齐于是往左飞出屏幕，字被裁掉一半。
 // 所以这里验的是「宽度收得住、说明会换行、不出可视区」，不是验措辞。
 const ENGPICK_SRC = APP02.slice(0, APP02.indexOf("// ================= Goal 目标卡"))
@@ -1339,7 +1336,7 @@ const ENGPICK_CHECKS = `
 
   // 绿牌子「不花 API 额度」已经把这件事说完了，底下原来那段「用你电脑上这个 CLI 的登录态和
   // 它自己的模型跑，所以下面那排 API 模型这会儿一个都用不上」是把同一件事用长句再写一遍。
-  // 用户原话：「这些没有意义的注释都给我删掉」。这条钉住它，别哪天又被加回来
+  // 这条钉住它，别哪天又被加回来
   ok("卡里没有那段把绿牌子重说一遍的长句",
      !menu.querySelector(".ep-why") && !/登录态|用不上/.test(menu.textContent),
      menu.textContent.replace(/\s+/g, " ").trim().slice(0, 80));
@@ -1376,7 +1373,7 @@ const ENGPICK_CHECKS = `
   ok("模型又变回一排能点的了", menu.querySelectorAll(".mi").length >= 3, String(menu.querySelectorAll(".mi").length));
 
   // ---- 没填 Key 的不进这张菜单 ----
-  // 用户原话：「模型只给我展示我设置了的模型啊」。出厂 config 预置着十来条厂商模板一把 Key 都没有，
+  // 出厂 config 预置着十来条厂商模板一把 Key 都没有，
   // 混在这儿点下去必然 401——那不是可选项，是待办事项
   const MODELS0 = settingsCache.models;
   settingsCache.models = [
@@ -1421,7 +1418,7 @@ const ENGPICK_CHECKS = `
 `;
 
 // ================= Goal 目标卡 =================
-// 用户原话：「goal 模式你也给我做好啊」。这里验的是这张卡有没有把三件事说清楚：
+// 这里验的是这张卡有没有把三件事说清楚：
 // 还差几项（进度条）、拆解/验收自己歪了要留痕（不能静默）、停了要说为什么停并且能接着冲。
 const GOAL_SRC = APP02.slice(APP02.indexOf("// ================= Goal 目标卡"), APP02.indexOf("// ================= 工作空间选择"));
 const GOAL_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
@@ -1485,7 +1482,7 @@ const GOAL_CHECKS = `
 `;
 
 // ================= 上下文余量条：换会话要收回去 =================
-// 用户原话：「怎么我切换对话了它还是一样的啊」。这根条画在输入框上头，全界面共用一根，
+// 这根条画在输入框上头，全界面共用一根，
 // 只在后端播 context 事件的时候才重画——切到一条还没开跑的对话，上一条那句
 // 「上下文 87%…下一轮开跑前会自动压一次」就原样挂着，指着一个跟眼前这条对话毫不相干的数。
 // 这一屏验的是行为不是措辞：过阈值才露面、到线要变黄、收回去之后**真的看不见**
@@ -1561,7 +1558,7 @@ const CTX_CHECKS = `
 `;
 
 // ================= 助理设置页：分区 + 双栏卡片 + 连接/取消连接 =================
-// 用户原话「太乱了，没办法自己调」。这里验的是行为不是措辞：连上的卡真收起（display:none）、
+// 这里验的是行为不是措辞：连上的卡真收起（display:none）、
 // 状态灯颜色真变、「连接」先保存再测活、「取消连接」两步确认且只清自己那组凭证、
 // 微信卡走取码/断开接口、清空会话也两步。真源码切 app-05.js 的通道卡片段，只替掉网络和保存。
 const APP05 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
@@ -1643,7 +1640,6 @@ const ESC_CHECKS = `
      ta.querySelector("textarea").value === '白名单\\n"带引号的路径"', ta.querySelector("textarea").value);
 
   // ⑤ 正文里裸写的网址要能点：href 里装完整地址，屏幕上显示人看得懂的短版
-  //    用户原话：「怎么出现了链接太长，然后要移动才能看到全部的显示情况」
   const BT = String.fromCharCode(96);
   md.innerHTML = renderMd("详见 https://ex.com/a/b?x=1&y=2 就这些");
   const u1 = md.querySelector("a");
@@ -1695,7 +1691,6 @@ const ESC_CHECKS = `
 
   // ⑦ 指向工作区文件的 markdown 链接。以前这一路只认 https:——模型收尾写
   //    「详见 [调研报告](报告.md)」，屏幕上就原样印出一串方括号圆括号，点哪儿都没反应。
-  //    用户原话：「还有返回给我一些…没有办法点击链接文本啊」
   // 链接没生成时别让整个脚本栽在 null 上——那样只会看到一句「Script failed to execute」，
   // 看不出是哪一条规矩破了。垫一个空壳，让具体那条 ok() 自己红
   const NOLN = { dataset: {}, textContent: "", hasAttribute: () => false, click: () => {}, dispatchEvent: () => {} };
@@ -1867,7 +1862,7 @@ const PVF1 = APP01_NAV.indexOf("async function previewFile(", PVF0);
 if (PVF0 < 0 || PVF1 <= PVF0) throw new Error("app-01.js 里的 PV_FIT_REPORTER 找不到了（改名/挪走？），资料库预览测试没法定位真源码");
 // docx / xlsx / pptx / zip / csv 那几样，资料库和对话页共用 app-01 里同一套渲染函数。
 // 桩成 () => "<table>" 就等于只测了「有没有走进那个 if」，而用户抱怨的正是画出来的东西
-// （「这个PPT预览给我做好啊」）：几张幻灯片、表头有没有、转义漏没漏，全在这段真源码里。
+// （：几张幻灯片、表头有没有、转义漏没漏，全在这段真源码里。
 const OVH0 = APP01_NAV.indexOf("// ---- 拆出来的结构化数据 → HTML");
 const OVH1 = APP01_NAV.indexOf("// ---------------- 代码文件的看法", OVH0);
 if (OVH0 < 0 || OVH1 <= OVH0) throw new Error("app-01.js 里的 docHtml/sheetHtml/slidesHtml 那段找不到了（改名/挪走？），资料库 Office 预览测试没法定位真源码");
@@ -2355,7 +2350,7 @@ const DEAD_CHECKS = `
   await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
   ok("反向对照：输入框、「保存」、每条的「删除」都在", !!page.querySelector("#lb-note") && !!page.querySelector("#lb-note-save") && !!page.querySelector("a[data-nid]"));
 
-  // ⑤b 子目录：资料库以前是一层平铺，用户原话「这个资料库看起来没有子目录或者指定目录的概念」。
+  // ⑤b 子目录：资料库以前是一层平铺，
   // 现在带 ?dir= 逐层进，进去之后文件名得是 "客户A/合同.md"（带前缀才取得到内容），显示的才是 "合同.md"
   window.libState = { q: "", pick: null, dir: "" };
   await renderLibPage();
@@ -2379,7 +2374,7 @@ const DEAD_CHECKS = `
   ok("反向对照：点面包屑第一截回根，又看得见「手册.md」和「客户A」",
      window.libState.dir === "" && html().includes("手册.md") && html().includes("客户A"), String(window.libState.dir));
 
-  // ⑤c 按任务看产出。用户原话：「资料库那块按照任务看到产出吧」。
+  // ⑤c 按任务看产出。
   // 人记一份文件是按「上周让它写的那份周报」记的，不是按 任务_0916_周报/九月周报.md 记的。
   // 数据不是新攒的：服务端把每回合那条 files 事件（changed = 认过主的文件）倒过来读了一遍。
   window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all" };
@@ -2396,7 +2391,7 @@ const DEAD_CHECKS = `
   const sub = page.querySelector('.lib-it.lib-sub[data-name="任务_0916_周报/九月周报.md"]');
   ok("按任务：组里的文件只显示文件名——目录名已经在组标题上说过一遍了",
      !!sub && sub.querySelector(".nm").textContent.trim() === "九月周报.md", sub ? sub.outerHTML.slice(0, 200) : "没有这一行");
-  // 已经不在磁盘上的那些：默认不摆出来。用户原话：「不要出现去点击的时候说不存在啊」。
+  // 已经不在磁盘上的那些：默认不摆出来。
   // 摆出来的每一行都是一句「这儿有个文件」，点开却说没有——那一趟点击是纯亏的。
   // 而这种行往往成百上千：一次视频任务拆出几百张帧图，分析完自己清掉了。
   ok("按任务：已经不在工作目录里的产出默认不摆出来——点开只会告诉你文件不存在，那一行是白给的",
@@ -2458,8 +2453,7 @@ const DEAD_CHECKS = `
      html().includes("读不到任务产出") && !html().includes("还没有任务产出过文件"), html().slice(0, 240));
   denyOut = false;
 
-  // ⑤c-2 「点了没反应」的那三种长相。用户原话：「怎么点击图片没有办法预览了？」
-  // 「点击md也是没法预览啊」「html也是」「在资料库里面预览功能这么差的啊」。
+  // ⑤c-2 「点了没反应」的那三种长相。
   // 三种文件走三条不同的路，以前各坏各的、还都不吭声：图裂成一个碎图标（<img> 出错浏览器不通知），
   // HTML 把服务端那句「文件不存在」当网页渲染成一片空白（fetch 没看 r.ok），文本只弹「读取失败」。
   // 真正的原因永远是同一个：名字还在，东西不在——那就该把这句话说出来。
@@ -2518,8 +2512,7 @@ const DEAD_CHECKS = `
      pv.innerHTML.includes("HTTP 500") && !pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
   viewResp = { code: 200, body: "# 九月周报" };
 
-  // ⑤c-3 Office 三件套 + zip。用户原话：「这个PPT预览给我做好啊」
-  // 「做PPT，workd还有excel,csv这些格式预览要给我兼容，给我做好啊」。
+  // ⑤c-3 Office 三件套 + zip。
   // 这几样是一包 XML 压缩档，浏览器自己打不开。对话页那边早就拆得开了，资料库这边却压根
   // 没有这条路，一律掉进最后那个 <pre>——满屏 PK… 的二进制乱码。
   const libPreviewOf = async (name) => {
@@ -2607,7 +2600,7 @@ const DEAD_CHECKS = `
   viewResp = { code: 200, body: "# 九月周报" };
   window.libState.pick = null;
 
-  // ⑤c-4 音视频。用户原话：「怎么没有办法预览啊」——一个 1 MB 的 note_audio.mp3
+  // ⑤c-4 音视频。一个 1 MB 的 note_audio.mp3
   // 一直显示「文件太大，预览不动」。两头各坏一半：这一页压根没有音频这条路，mp3
   // 被当字符串读回来、再撞上 400KB 那道闸；服务端那边 /api/library/file/ 又一律 res.download，
   // 带着附件头的响应 <audio> 压根不渲染。
@@ -2660,8 +2653,8 @@ const DEAD_CHECKS = `
      pv.innerHTML.includes("二进制文件"), pv.innerHTML.slice(-300));
   viewResp = { code: 200, body: "# 九月周报" };
 
-  // ⑤c-6 「所在位置」「复制文件」。用户原话：「应该还有打开所在文件夹并且定位到
-  // 对应位置的功能啊，还有能直接复制这个文件」。以前只有一个「下载」——
+  // ⑤c-6 「所在位置」「复制文件」。
+  // 以前只有一个「下载」——
   // 想把它发给同事，得先下一份、再去下载目录里翻。
   window.settingsCache = { platform_owner: false };
   pv = await libPreviewOf("素材/note_audio.mp3");
@@ -2693,7 +2686,7 @@ const DEAD_CHECKS = `
      posts.length === 1 && posts[0].body.src === "", JSON.stringify(posts));
 
   // ⑤c-7 「出自任务」认的是文件夹，不是「谁最近动过它」。
-  // 用户原话：「这里说出自哪个任务也是错的位置啊！」——任务_0915_对话_2/BGM_纯配乐.mp3
+  // 任务_0915_对话_2/BGM_纯配乐.mp3
   // 被标成了另一条 9-17 任务的产出。根子在服务端记账：认文件归属的那张表是内存里的，
   // 重启就空了，于是后一条任务只要碰一下这个文件，它就进了那条任务的 changed。
   // 历史数据已经这么存着了，所以在读的一端把文件夹当硬证据。
@@ -2720,7 +2713,7 @@ const DEAD_CHECKS = `
      libTaskOf("lib", "任务_0917_小红书/x.md") === null);
   window.libOutCache = OUT0;
 
-  // ⑤d 搜索。用户原话：「还有支持搜索功能吧」。
+  // ⑤d 搜索。
   // 以前那个框只把**当前这一层已经加载出来的**文件名过滤一遍——东西在隔壁文件夹里就搜不到，
   // 正文里写了什么更无从谈起。那不叫搜索，叫筛选。
   window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all" };
@@ -2769,8 +2762,8 @@ const DEAD_CHECKS = `
      !page.querySelector(".lib-from"), html().slice(0, 300));
   window.libState.pick = null;
 
-  // ⑤f 三种摆法 + 分组。用户原话：「资料库那块预览你参考一下mac电脑的文件预览啥的，
-  // 列表视图还有图标视图还有画廊视图还有按照分类」。关键是这四件事**正交**：
+  // ⑤f 三种摆法 + 分组。
+  // 关键是这四件事**正交**：
   // 「怎么摆」和「按什么分堆」各是各的控件，合成一个下拉就会出现「按类型 + 图标」选不出来的死角。
   try { localStorage.removeItem("owb_lib_mode"); localStorage.removeItem("owb_lib_group"); } catch {}
   window.settingsCache = { platform_owner: true };
@@ -2840,7 +2833,7 @@ const DEAD_CHECKS = `
   ok("反向对照：切回不分组，小标题全收掉", !page.querySelector(".lib-grp"));
 
   // ⑤f-2 ★点一个文件，右边那块得真的露出来★
-  // 用户原话：「在资料库怎么没有办法打开文件啊！」。行高亮了、内容也确实渲染进 #lb-prev 了，
+  // 行高亮了、内容也确实渲染进 #lb-prev 了，
   // 但 .lib-page 还挂着 data-prev="off"，而 index.html 里那条是 display:none —— 屏幕上什么都不发生。
   // 之所以一直没人发现：随手点个筛选器就会走整页重画，那一路是照 libState.pick 现算 data-prev 的，
   // 于是又看得见了，像「偶尔抽风」；实际是**每次进这一页的第一下必挂**。
@@ -3079,7 +3072,7 @@ const HUB_CHECKS = `
 `;
 
 // ---- 设置页：会 403 的按钮不该摆在那儿（模型 / 个性化 / 安全 / 导航 / 档位菜单） ----
-// 用户原话是「切换失败怎么还切换失败了啊」。根子不在那句提示，在于这一整屏都是照平台管理员画的：
+// 根子不在那句提示，在于这一整屏都是照平台管理员画的：
 // 多人服务器上的普通成员照样看到整套标签页，其中「联网搜索 / 自进化 / 执行追踪 / 运行状况 / 数据 / 助理设置」六页
 // 从头到尾没有一样是他的；模型页那排单选钮存的是全局默认、个性化页那两张卡是全服务器共用一份、
 // 安全页八张卡全是服务器策略。点哪一颗都是 403。这一组把这四页在真 Chromium 里画出来数控件，
@@ -3243,7 +3236,7 @@ const GATE_CHECKS = `
     && mpo.querySelector("#chat-overview").textContent.includes("主力"),
     "摊开的渠道卡 " + mpo.querySelectorAll("#prov-list .ch-card.open").length);
   // 六格路由图：对话那一格得写出「主用谁 + 还压着几个备选」。老版本一格只写得下一个名字，
-  // 用户原话「每个任务…都可能要配置多个渠道和多个模型」，一格一个名字就永远看不出有没有备份
+  // 一格一个名字就永远看不出有没有备份
   const rtChat = mpo.querySelector('.model-route-grid .rt[data-goto="chat"]');
   ok("顶上路由图第一格就是对话：主用是谁、模型 id、还剩几个备选，三样都在，而且是可点的",
     !!rtChat && rtChat.tagName === "BUTTON" && rtChat.textContent.includes("主力")
@@ -3262,8 +3255,8 @@ const GATE_CHECKS = `
     "渠道卡 " + mpoC.querySelectorAll("#prov-list .ch-card").length + " · 模型行 " + mpoC.querySelectorAll("#prov-list .mrow").length);
   mpoC.querySelector('.ch-head[data-chan="or"]').onclick(); // 收回去，后面几条还按「渠道卡默认收着」验
 
-  // ②-bis 用户那两句话得同时成立：「没有设置 apikey 的渠道不要显示」+「然后要给地方去显示啊」。
-  // 只做前半句就是把渠道藏死，人再也找不到去哪儿填；只做后半句就是原来那堵十来家服务商的墙。
+  // ②-bis 两件事得同时成立：没填 Key 的渠道不摆在主列表里，但还得有地方能找到它去填。
+  // 只做前一件就是把渠道藏死，人再也找不到去哪儿填；只做后一件就是原来那堵十来家服务商的墙。
   ok("还没填 Key 的那家不摊在主列表里，主列表只剩真能用的那一张卡",
     mpo.querySelectorAll("#prov-list .ch-card").length === 1
     && !mpo.querySelector("#prov-list").textContent.includes("火山方舟"),
@@ -3281,7 +3274,7 @@ const GATE_CHECKS = `
     && (mpoI.textContent.match(/未填 Key/g) || []).length === 1,
     "收起栏里的卡 " + mpoI.querySelectorAll(".idle-body .ch-card").length);
   // 点那颗「未填 Key」得把卡展开、光标落进输入框。以前它只是一行字，人拿到 Key 回来还是没地方填——
-  // 填的地方藏在 ⋯ → 编辑渠道 里，用户原话「设置里面都没有填 apikey 的地方啊」
+  // 填的地方藏在 ⋯ → 编辑渠道 里，摸不到就等于没地方填。
   mpoI.querySelector("[data-fillkey]").onclick({ stopPropagation() {} });
   const mpoK = mBody.querySelector("#settings-pane");
   ok("点「未填 Key」把那张卡展开：里面就是 API Key 输入框、保存钮和「去拿 Key ↗」，不用再绕进 ⋯ → 编辑渠道",
@@ -3333,7 +3326,7 @@ const GATE_CHECKS = `
     "字重 " + (secT && getComputedStyle(secT).fontWeight) + " · 缝 " + (secT && getComputedStyle(secT).columnGap));
 
   // ②-ter 卡头那行副标题：预置渠道的名字本来就是这家的中文名，再印一遍就是同一个词写两遍；
-  // 而同一家开两个号（用户原话「openrouter 怎么也有两个啊」）得看得出谁是谁
+  // 而同一家开两个号得看得出谁是谁
   provs = [
     { id: "a", name: "OpenRouter（聚合）", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "k1", has_key: true },
     { id: "b", name: "OpenRouter（聚合）", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "k2", has_key: true },
@@ -3383,8 +3376,6 @@ const GATE_CHECKS = `
   medias = [];
 
   // ---- 「看图」那一路的选型下拉：渠道自己标了模态就照它分组，别再拿名字猜 ----
-  // 用户原话：「然后有些似乎是生图模型怎么给我放到看图模型里面去了啊…」
-  //          「还有我这个视觉模型现在都用不了就不要用了啊，老是卡住干嘛」。
   // 拿当天 OpenRouter 那 446 个型号实测：真能接图的 263 个，按名字只认得出 134 个——
   // 他自己配的 z-ai/glm-5.3-flash 名字里一个 vl / vision 都没有，被扔进「其它模型」；
   // 反过来 gemini-3-pro-image 这种**出图**的，名字里带 image，一直在看图的下拉里排着队，
@@ -3442,7 +3433,7 @@ const GATE_CHECKS = `
   ok("反向对照：没标模态的，名字后面也不许硬加用途——那是在把猜测说成事实",
     ![...mSel2.querySelectorAll("option")].some((o) => /（画图的）|看不了图/.test(o.textContent)), mSel2.textContent.slice(0, 200));
   // 表单开着的时候，那一遍「目录拉回来再画」不许把它冲掉。
-  // 用户原话：「怎么点击添加都没办法添加在搞什么」——点了，表单也开了，
+  // 点了，表单也开了，
   // 只是半个 tick 之后被重画抹平了，看着就像这颗按钮根本不管用。
   eyeCard().querySelector(".ch-head").onclick();          // 收起：挂上一个待重画
   eyeCard().querySelector(".ch-head").onclick();          // 再展开：又挂一个
@@ -3663,7 +3654,6 @@ const STREAM_CHECKS = `
   ok("没闭合的围栏整段都在代码块里（没被切成两半）", el.querySelectorAll("pre").length === 1 && el.querySelector("pre").textContent.split("let y").length === 301, el.querySelectorAll("pre").length + " 个 pre");
 
   // 一条超长地址不该把整块正文顶出横向滚动条。
-  // 用户原话：「怎么出现了链接太长，然后要移动才能看到全部的显示情况」。
   // word-break: break-word 治不了这个——它不降低 min-content 宽度；只有 overflow-wrap: anywhere 会。
   ref.style.width = "420px";
   const CJK_URL = "file:///Users/somebody/Downloads/RL%E7%8E%AF%E5%A2%83%E5%88%9B%E4%B8%9A%E6%B7%B1%E5%BA%A6%E8%B0%83%E7%A0%94_1.html";
@@ -3778,7 +3768,7 @@ const IMPANE_CHECKS = `
   ok("展开时 aria-expanded 跟着翻成 true", fsC.querySelector(".im-card-h").getAttribute("aria-expanded") === "true");
   fsC.querySelector(".im-card-h").click();
   ok("收起时又翻回 false（读屏用户听到的状态不能是反的）", fsC.querySelector(".im-card-h").getAttribute("aria-expanded") === "false");
-  // 上下文管理那两张静态卡以前是不折叠的，现在跟别的卡一个待遇——用户说的是「其他的也是默认收起来」
+  // 上下文管理那两张静态卡以前是不折叠的，现在跟别的卡一个待遇：一律默认收起来
   const stat = pane.querySelector(".im-card-static");
   ok("上下文管理的静态卡也默认收起", stat.classList.contains("packed") && disp(stat.querySelector(".im-card-b")) === "none");
   stat.querySelector(".im-card-h").click();
@@ -4158,7 +4148,6 @@ const ONB_CHECKS = `
   closeOnboarding();
 
   // ---- 大脑接上了就不再自动弹（不管向导走没走完）----
-  // 用户原话：「设置过了不要一直在开头一直弹窗提示啊」。以前的条件是「大脑在 且 走完过」，
   // 可"第一步填完 Key 就跳过"的人 done_at 永远写不上，于是每次开机都被再拦一次
   onbSkipMem = false; try { sessionStorage.removeItem("owb_onb_skipped"); } catch {}
   ST = { ...ST, seen: false, needs_setup: false, can_finish: true, brain: { ok: true, via: "api", name: "DeepSeek", model: "deepseek-chat" } };
@@ -4239,7 +4228,6 @@ const ONB_CHECKS = `
      q("#onb-skip-step") && q("#onb-skip-step").textContent);
   POSTS.length = 0;
   q("#onb-skip-step").click(); await tick(); await tick();
-  // 用户原话：「设置过了不要一直在开头一直弹窗提示啊」。
   // 「Key 填好了、后面几步不想配、直接跳过」是最常见的一条路，以前它只在 sessionStorage 里记一笔，
   // 关掉应用就没了——于是每次开机都被再拦一遍。现在只要大脑已经接上，跳过就跟走完一样落盘
   ok("完成页点「先跳过」：大脑已接上 → 跟走完一样往服务端记一笔 done，下次开机不再拦",
@@ -4608,7 +4596,6 @@ const TFA_CHECKS = `
 // 真源切片：app-02 的偏好层（读写本机存储 + 写到 <html>）、app-06 的外观页、app-05 的设置目录
 const APP06_LOOK = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-06.js"), "utf8");
 // ---- 助理头像编辑器：候选格子必须一样大 ----
-// 用户原话：「现在待选的这些图片 svg 都很大，你看一下其他软件都怎么选头像的参考一下」。
 // 真凶是 .ava-ic 的 62% 撞上没有宽高的行内盒子：百分比算不出来，浏览器退回 SVG 的
 // 默认替换尺寸 300×150。这一屏在真 Chromium 里把格子量出来——量尺寸而不是查类名，
 // 因为「类名都写对了、渲染出来还是一巴掌大」正是当时的情形。
@@ -4719,7 +4706,7 @@ const AVA_CHECKS = `
   ok("上传过图片的打开时停在「图片」页", shown() === "img", shown());
   ok("图片头像的预览是那张图本身", !!prev().querySelector("img.ava-img"));
 
-  // ---- ⑥ 落图区：整块框就是那颗按钮（用户原话：「这个选一张图片看着有点突兀」）----
+  // ---- ⑥ 落图区：整块框就是那颗按钮----
   const dz = card.querySelector("#as-up");
   ok("整块虚线框自己就是那颗按钮，不是框里再站一颗", !!dz && dz.tagName === "BUTTON" && dz.classList.contains("ava-drop"),
      dz && dz.tagName + "." + dz.className);
@@ -4813,7 +4800,6 @@ const LOOK_CHECKS = FLUSH_SRC + `
 
   ok("默认：<html> 不带 data-fs/skin/font/density 脏属性", !html.dataset.fs && !html.dataset.skin && !html.dataset.font && !html.dataset.density);
   // 左栏这一条量的是 .hist-item（任务历史）。它比正文小两号是有意的：历史是次要内容，
-  // 用户原话「办公那里的任务历史不要给我占地那么多喧宾夺主」「主次不分啊」。
   ok("默认：正文 15 / 标题 17 / 左栏历史 13 / 输入框 15 / 行内代码 13", px("body") === 15 && px("#h1") === 17 && px("#hi") === 13 && px("#input") === 15 && px("#cd") === 13);
 
   I18N.setLang("zh"); // 系统语言可能是英文；下面按中文文案断言，先钉住
@@ -5206,7 +5192,7 @@ const TRAIL_CHECKS = `
   ui.handleEvent({ type: "tool_use", id: "e", name: "mcp_feishu_send", purpose: "发" });
   ui.handleEvent({ type: "tool_result", id: "e", name: "mcp_feishu_send", preview: "ok" });
   ui.handleEvent({ type: "text", delta: "做完了" });
-  // 用户原话：「不要大段大段具体的执行过程挡住了」——跑的时候过程区默认收起，
+  // 跑的时候过程区默认收起，
   // 但「跑到哪了」那一行必须一直看得见，而且要钉在视口顶上，不能被日志顶走
   const runWrap = t.querySelector(".proc-wrap");
   ok("跑的时候执行过程默认是收起的", !runWrap.classList.contains("open") && disp(runWrap.querySelector(".proc-body")) === "none");
@@ -5221,7 +5207,6 @@ const TRAIL_CHECKS = `
   ok("再点收起，记的也跟着改", !runWrap.classList.contains("open") && localStorage.getItem("owb_proc_open") === "0");
 
   // ---- 执行过程一行流：「[图标] 读 报告.md · 120 行」，参数收在卡里 ----
-  // 用户原话：「让我一直看到任务完成情况，不要看太多没有用的东西」。
   // 参数是排障才要看的，「在干什么 + 拿回来多少」才是每一步都该露在外面的那半句。
   const u9 = createTurnUI("看一眼", "craft", "s_t");
   u9.handleEvent({ type: "tool_use", id: "x", name: "read_file", title: "读 报告.md", input_preview: '{"path":"报告.md"}' });
@@ -5291,7 +5276,6 @@ const TRAIL_CHECKS = `
   u10b.finish();
 
   // ---- 每步耗时 + 收尾那笔时间账 ----
-  // 用户原话：「我要看到每次执行的 trace 啊还有耗时这些各种数据啊」。
   // Langfuse 那条路要先去搭实例、填两把钥匙；而「这趟到底慢在哪」本地就该当场答得上来。
   const durOf = (c) => c.querySelector(".dur").textContent;
   const B = 1757000000000; // 固定基准时刻：这些断言算的全是差值，不许沾墙上时钟
@@ -5438,7 +5422,6 @@ const TRAIL_CHECKS = `
   ok("没 id 的结果也标到徽章上", chips(u6.turn)[0].classList.contains("err") && !chips(u6.turn)[0].classList.contains("run"));
 
   // ---- 7. 跑完这一趟：正文里的文件名能点开，成品自动摊在右边 ----
-  // 用户原话：「有些这些文件你就给我搞成超连接的形式啊，然后有产出了应该要预览啊」
   //          「不仅结束了没有预览，还看到这个文件夹」
   // ARRIVAL 那块验的是 fileLinkTargets / finishPreviewPlan 这几个纯函数本身；
   // 这里验的是另一条线：事件流真跑一遍，finish() 到底有没有把它们接上。
@@ -5513,7 +5496,6 @@ const TRAIL_CHECKS = `
   }
 
   // ---- 折叠条上那行「此刻在干什么」 ----
-  // 用户原话：「用户都一直看着一个大标题在转，没有感知具体的 agent 在干活执行」。
   // 病根不是没信息，是信息全锁在默认收起的 .proc-body 里，外面只剩「运行中 3m20s · 第 7 步」——
   // 那说的是跑了多久，不是在干什么。所以两头都验：纯函数出的话对不对，以及它在**收着**的时候看不看得见。
   {
@@ -5726,7 +5708,6 @@ const PREVIEW_CHECKS = `
     ok("mp4 出视频播放器", /<video[^>]+controls/.test(v) && /preload="metadata"/.test(v), v.slice(0, 200));
 
     // 一条片子该摆在面板正中间，不是顶在天花板上
-    // 用户原话：「图片预览的时候点击的时候应该放在右边中间居中的位置啊，不要放在顶上放啊」
     ok("视频预览是居中的", body.classList.contains("pv-mid"), body.className);
     await show("图.png");
     ok("单张图预览也是居中的", body.classList.contains("pv-mid"), body.className);
@@ -5794,7 +5775,7 @@ const PREVIEW_CHECKS = `
   }
 
   // ---- 6.5 换成普通成员：这几颗按钮开的是**服务器那台**机器，画出来点了只会 403 ----
-  // 用户原话是「切换失败怎么还切换失败了啊」——一颗明明能点的按钮，点下去只回四个字。
+  // 一颗明明能点的按钮，点下去只回四个字。
   // 所以成员那边干脆不画，改给他真能用的那条：下载到自己电脑上看。
   {
     window.settingsCache = { platform_owner: false };
@@ -5952,7 +5933,7 @@ const PREVIEW_CHECKS = `
     ok("字段内换行不当成新行", cell.match(/<tr>/g).length === 2, String((cell.match(/<tr>/g) || []).length));
   }
 
-  // ---- 15. 图片复制：用户原话「一些图片在预览的时候能不能就知道我复制啊，我能复制到其他地方啊」----
+  // ---- 15. 图片复制：----
   // 三条入口（按钮 / 双击图 / Ctrl・Cmd+C）都得真把一张 PNG 放进剪贴板；
   // 失败了要按原因说人话并给出路（加一句「复制失败」等于没说），而且按钮不能永久按灰。
   {
@@ -6064,7 +6045,6 @@ const PREVIEW_CHECKS = `
   }
 
   // ---- 16. 源码按代码画：行号 + 着色 + 横向滚动，压缩产物先展开 ----
-  // 用户原话：「怎么这个 mjs 代码显示的时候就看着都没格式看着像是乱码一样啊」。
   // 他看的是打包器吐出来的 .mjs —— 整份文件一行几万字符，落进那条 pre-wrap +
   // overflow-wrap:anywhere 的兜底 <pre>，被从任意位置断字，所以「像乱码」。
   {
@@ -6289,7 +6269,6 @@ const CHECKS = `(() => {
     ok("半截图内容已渲染", d.querySelector("svg text") && d.querySelector("svg text").textContent === "半截");
     ok("吐到一半的标签被丢掉", !d.querySelector("svg rect"));
 
-    // 用户原话：「怎么一直在绘制中，对话都结束了，这是卡住了啊」。
     // 根因是把"标签没闭合"当成了"还在写"。停笔之后这两件事必须分开说。
     const d2 = parse(F.extractSvgFigures(partial, false).figs[0]);
     ok("停笔之后不再说「绘制中」", !d2.querySelector(".svg-acts .growing"), d2.querySelector(".svg-acts").textContent);
@@ -6387,7 +6366,6 @@ const CHECKS = `(() => {
 })()`;
 
 // ================= 运行中的输入框（真源码切片：MODE_PLACEHOLDER … bindComposer） =================
-// 用户原话「任务运行中那行要写清楚：在输入框输入文字、按 Enter 能继续插进来；有人味一点」。
 // 这里验的是交互不是措辞：排队条讲清三件事（怎么插话 / 怎么停 / 想并行怎么办）、停止是一颗真按钮、
 // 一颗发送键看框里有没有字决定是「停下」还是「插一句」、提示语跟着忙/闲切换、发完框空了按钮自己回到「停下」。
 const C0 = APP02.indexOf("// ================= 发送（运行中按钮变「停止」）");
@@ -6751,7 +6729,6 @@ const ARRIVAL_CHECKS = `
   ok("清空后按钮上没有角标残留", !badge());
 
   // ---------- 正文里提到的文件名 → 可点开的链接 ----------
-  // 用户原话：「有些这些文件你就给我搞成超连接的形式啊」
   const OUTS = [F("任务_0910/张三_简历.html"), F("任务_0910/张三_简历.docx"), F("任务_0910/PROGRESS.md"), F("张三_简历.html")];
   const targets = fileLinkTargets(OUTS);
   ok("裸文件名指向路径最浅的那份（同一件产出常被拷两份）", targets.get("张三_简历.html") === "张三_简历.html");
@@ -6783,7 +6760,6 @@ const ARRIVAL_CHECKS = `
 
   // 收尾清单里的文件名十有八九被模型套了反引号，全路径和 file:// 也是常客。
   // 这三种写法以前一条链接都没有，用户看到的是一份「不能点的清单」——
-  // 原话：「怎么有些文件没有链接啊，应该写着产出的这些文件应该要都有链接啊」
   const host2 = document.createElement("div");
   host2.className = "a-text";
   host2.innerHTML = "<p>交付清单：<code>任务_0910/张三_简历.docx</code></p>"
@@ -6812,7 +6788,7 @@ const ARRIVAL_CHECKS = `
   host2.remove();
 
   // ---------- 跑完了要能看见成果 ----------
-  // 用户原话：「有产出了应该要预览啊」「不仅结束了没有预览」——中途不弹是另一码事，这里说的是收尾
+  // 中途不弹是另一码事，这里说的是收尾
   const fb = { turnOut: [F("任务_0910/PROGRESS.md"), F("任务_0910/简历.docx"), F("任务_0910/简历.html")], replaying: false, otherSession: false, userClosedPreview: false, pvOpen: false, pvCurrent: null, filesOpen: false, narrow: false };
   ok("跑完了开这一趟的成品：网页优先于 Word 稿", finishPreviewPlan(fb).preview === "任务_0910/简历.html");
   ok("同一件拷了两份：开路径最浅的那个", pickFinishDeliverable([F("任务_0910/简历.html"), F("简历.html")]) === "简历.html");
@@ -6830,8 +6806,6 @@ const ARRIVAL_CHECKS = `
   ok("预览开着但看的是别的：换成这趟的成品（面板本来就在，布局不动）", finishPreviewPlan({ ...fb, pvOpen: true, pvCurrent: "别的.html" }).preview === "任务_0910/简历.html");
 
   // ---------- 题面在文件里的那种提问 ----------
-  // 用户原话：「然后问我这个文件里面展示的选哪个，然后这个文件也让我找半天不自己右边预览啊。
-  //           还有文件也比较难找到在这一堆文件里」
   const askEv = { question: "封面推了三版（文字都验过没写错，三版对比在《封面三选一.html》），你要哪版？",
                   options: [{ label: "A 极简", detail: "留白多" }, { label: "B 浓墨", detail: "压得住小图" }] };
   ok("题面里的《文件名》要认出来", JSON.stringify(filesInAsk(askEv)) === JSON.stringify(["封面三选一.html"]), JSON.stringify(filesInAsk(askEv)));
@@ -6881,7 +6855,6 @@ const MASK_CHECKS = (script) => `
 })()
 `;
 // ================= 技能卡「立即使用」：先摆几件具体能干的事 =================
-// 用户原话：「点击技能然后点击立即使用怎么 用「xiaohongshu-topic」技能帮我： 都没什么特殊点格式啊」。
 // 以前点完只往输入框丢半句话，等于把一张空白页原样还给用户。现在从 SKILL.md 的「适用场景」里挖具体例子。
 // 这函数是纯的，但仍然放进真 Chromium 跑：正则里有中文引号和 一-龥，
 // Node 和浏览器的 Unicode 行为要是差一点点，只在浏览器里测才发现得了。
@@ -6991,8 +6964,6 @@ const SKEG_CHECKS = `
 `;
 
 // ================= 侧栏两条工作线：办公 / 工程 =================
-// 用户原话：「命令行模式是 cli 模式啊，能连接本地的 cli 啊，是我这个 agent 的 cli 啊」
-//「参考一下 claude 怎么做的啊，放在左边 tab 啊」。
 // 两条线分的是**干哪种活儿**：办公（做表写稿出图，鼠标流）和工程（写代码跑脚本，键盘流，
 // 连着本机那个 openworkbuddy 命令行）。这一段守六件事：
 //   1. 两条线各自记各自的会话——切标签不会把另一条线的历史混进来，也不会让老会话「消失」；
@@ -7036,12 +7007,10 @@ const laneHtml = (sideW) => "<!doctype html><meta charset='utf-8'><style>" + UI_
 // 这一屏是两次事故 + 一次返工的留证：
 //   1. 事故：`#history { flex: 1 1 auto }` 让历史的「基准高度」等于它内容的高度，
 //      任务攒到几十条就有上千像素，整列进入收缩状态，而历史自己有 min-height 兜底，
-//      收缩全落到导航头上（当时导航 min-height: 0）——用户原话
-//      「怎么办公tab下面助理模式/项目/无限画布/专家/自动化这些都没了啊，都不显示了啊」。
+//      收缩全落到导航头上（当时导航 min-height: 0）——
 //      所以第一条守的是：**历史再长，导航一行都不许少**。
-//   2. 返工：「办公那里的任务历史不要给我占地那么多喧宾夺主啊」→「主次不分啊」。
-//      光调高度不够，字号/颜色也得分开。第二组守的是这个。
-//   3. 新要求：「任务历史那个tab你也搞成可以拉伸和拖拽自适应的吧」。第三组守拖拽。
+//   2. 返工：导航和历史主次不分。光调高度不够，字号/颜色也得分开。第二组守的是这个。
+//   3. 新要求：任务历史那一栏要能拉伸、拖拽自适应。第三组守拖拽。
 // 样式和 <aside> 都切真源码：只验 JS 的话，把那两条 flex 规则删掉测试照样全绿，
 // 而用户看到的就是整段导航消失。
 const ASIDE_SRC = (() => {
@@ -7401,7 +7370,7 @@ const LANE_CHECKS = `
   renderHistory();
 
   // ---- ⑦-3 服务端搜出来的那一层：带片段、带「为什么是它」、挂了要说挂了 ----
-  // 起因是一句抱怨：「我要找到相应的对话的时候方便点啊」。只筛标题的话，用户记得的那两样
+  // 只筛标题的话，用户记得的那两样
   // （自己打的那句话、最后拿到的文件名）一样都搜不着。
   sessions = [{ id: "k1", title: "表格清洗", at: 2, lane: "cli" }, { id: "k2", title: "竞品调研", at: 1, lane: "cli" }];
   cliLiveRows = [];
@@ -7537,9 +7506,7 @@ const LANE_NARROW_CHECKS = FLUSH_SRC + `
 `;
 
 // ================= 侧栏：项目那一栏 + 任务历史该不该按项目过滤 =================
-// 用户两句原话是同一个根因：
-//   「本组织工作目录没有必要显示啊，没必要显示一个 tab 在那里啊，有点突兀」
-//   「我 catuncle 账号登陆之前的历史记录都没看到了，之前的任务历史都没看到了啊」
+// 侧栏那个点不动的 tab、和「登录前的任务历史全不见了」，是同一个根因：
 // 以前服务端给租户成员编了个叫「本组织工作目录」的假项目顶上，两头都出事：侧栏多一个点不动的 tab，
 // 而且这名字跟老会话记的项目名对不上，renderHistory 按项目一过滤，整排任务历史全没了——
 // 一条都没丢，只是全被滤掉了。现在服务端如实回 locked，前端见到 locked 就整块不画、也不过滤。
@@ -7721,7 +7688,6 @@ if (SCP0 < 0 || SCP1 <= SCP0) throw new Error("app-06.js 里找不到快捷键�
 // 原来那两条是 height:92px + object-fit:cover——按盒子的比例把图裁一刀。
 // 拿工作区里 336 张真产出量过：中位数只剩 78% 露在外面，132 张被切掉一半以上，
 // 最狠的只剩 8%；比盒子还小的图（二维码、图标）还会被强行拉满 168 宽再裁，放大糊掉。
-// 用户原话：「那些图都变形了啊，然后没有看到完整的」。
 // 这把尺子量的是几何事实：图自己那块矩形的形状要跟原图一致（没被拉），
 // 要整块落在缩略图盒子里（没被切），小图不许比原图大（没被撑）。
 const TH_CASES = [
@@ -8188,7 +8154,7 @@ const SC_CHECKS = `
   return names;
 })()`;
 
-// 存盘链路（#91，用户原话：「怎么说保存失败接口没有响应啊」）。真源是 app-02.js 的 postJson：
+// 存盘链路（#91，真源是 app-02.js 的 postJson：
 // 老写法一个 catch 把四种完全不同的事故糊成同一句「接口无响应」。所以这一屏要验的不是
 // 「会不会报错」，而是「几种坏法说出几句**互不相同**的人话」——只测一种坏法，
 // 当初那个 bug 一次也不会现形。
@@ -8579,15 +8545,12 @@ const CONTRAST_CHECKS = FLUSH_SRC + `
 `;
 
 // ---- 长串不许顶穿边框（真量宽度，不是看源码里写没写） ----
-// 用户第三次提这件事：「怎么回事又有这种长文件名超出边框的情况发生了啊，都给我检查一下全部解决」。
 // 前两次都是「在出事的那一处补一句 overflow-wrap」，补完下一处照犯——因为看的是源码，
 // 而这毛病只有等浏览器真排完版才看得见：一条没有空格的网址把所在的盒子顶穿，
 // 右边的字被切掉，或者整页横着多出一条滚动条。
-//
 // 这一段换个打法：把两份真 CSS 里**每一条规则**的选择器还原成真实节点，往最里面那层塞一条
 // 200 字符、一个空格都没有的网址（就用用户贴来的那条），再量它的字有没有漏到边框外面。
 // 判据是 scrollWidth > clientWidth 且自己和祖先都没在裁——裁掉并打省略号是故意的，不算漏。
-//
 // 三类不算漏，各有判据，不是拍脑袋豁免：
 //   · white-space:pre 的块是代码/命令，外面本来就套着横向滚动容器，顶出去是设计；
 //   · 固定尺寸的装饰件（圆点、图标、转圈、分隔线）——判据是「空着和塞满一样宽」，跟内容无关；
@@ -8701,9 +8664,7 @@ const OVF_CHECKS = `
 })()`;
 
 // ================= 引用一条回复 / 从资料库跳回那一轮 =================
-// 用户原话：「还有就是支持针对其中一条agent回复去做回答做引用啊，能引用对话回复啊」
-// 和「还有在资料库里一个文件能打开在对话中的位置啊，直接定位到所在位置和对话啊」。
-//
+// 和
 // 这两件事都只在真 DOM 里才成立，所以放在同一屏里跑：
 // ① 引用取的是**渲染后的正文**（innerText），过程卡片、按钮条、token 统计一个字都不许带进去；
 //    光标落在别的回复里时不许把那截字引到这条底下来——这是最容易写漏的一条，
@@ -8918,6 +8879,108 @@ const JUMP_REDUCE_CHECKS = `
   return names;
 })()
 `;
+
+// ---- 无限画布：多选选得出来，Delete / ⌘A / Escape 也得真按得动 ----
+// canvasState.keyHandler 挂在 #assist-page 上。可点完节点、点完空白，activeElement 一直是
+// <body>——body 是 #assist-page 的祖先，keydown 压根不经过它。线上表现就是：框选框得出来、
+// 选中也高亮着，按 Delete 没反应、⌘A 没反应、Escape 退不出框选，看着像多选根本没做（0.6.4 的真实症状）。
+// 所以这一屏先盯「焦点收没收上来」，后面那几个键才有意义。
+const APP07 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+const CK0 = APP07.indexOf('page.setAttribute("tabindex", "-1");');
+const CK1 = APP07.indexOf('page.addEventListener("keyup", canvasState.keyUpHandler);');
+if (CK0 < 0 || CK1 <= CK0) throw new Error("app-07-canvas.js 里 canvasBindViewport 的键盘那一段找不到了，前端测试没法定位真源码");
+const CANVASKEY_SRC = "function bindCanvasKeys(page, viewport) {\n"
+  + APP07.slice(CK0, CK1) + 'page.addEventListener("keyup", canvasState.keyUpHandler);\n}';
+const CANVASKEY_HTML = "<!doctype html><meta charset='utf-8'><body>"
+  + "<div class='assist-page canvas-page' id='assist-page'>"
+  +   "<button data-canvas-marquee class='is-active' id='marquee'>框选</button>"
+  +   "<div class='canvas-viewport is-marquee' id='canvas-viewport'>"
+  +     "<div class='canvas-joint-node' id='n1'><header class='canvas-node-head'><span id='head1'>阿明</span><button id='regen'>重生成定妆照</button></header></div>"
+  +     "<textarea id='note'></textarea>"
+  +   "</div>"
+  + "</div></body>";
+const CANVASKEY_STUBS = `
+const REMOVED = [];
+const mkNode = (id) => ({ id, remove() { REMOVED.push(id); } });
+const NODES = [mkNode("n_c1"), mkNode("n_c2"), mkNode("n_s1")];
+const canvasState = { selectedIds: new Set(), selected: null, selectedAll: false, marqueeMode: true, spacePanning: false,
+  graph: { getElements: () => NODES.filter((n) => !REMOVED.includes(n.id)) } };
+let PERSIST = 0, INSPECT = 0, UNDO = 0, REDO = 0; const TOASTS = [];
+function canvasSetSelection(ids) { canvasState.selectedIds = new Set(ids); canvasState.selected = [...canvasState.selectedIds][0] || null; }
+function canvasRenderInspector() { INSPECT++; }
+function canvasPersist() { PERSIST++; }
+function canvasToast(msg) { TOASTS.push(String(msg)); }
+function canvasUndo() { UNDO++; }
+function canvasRedo() { REDO++; }
+`;
+const CANVASKEY_CHECKS = `(async () => {
+  const names = [];
+  const ok = (n, c, extra) => { if (!c) throw new Error(n + (extra !== undefined ? "：" + extra : "")); names.push(n); };
+  const page = document.getElementById("assist-page"), vp = document.getElementById("canvas-viewport");
+  const down = (el) => el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  const key = (o) => { const e = new KeyboardEvent("keydown", Object.assign({ bubbles: true, cancelable: true }, o)); document.activeElement.dispatchEvent(e); return e; };
+  const up = (o) => document.activeElement.dispatchEvent(new KeyboardEvent("keyup", Object.assign({ bubbles: true }, o)));
+  const who = () => document.activeElement.tagName + (document.activeElement.id ? "#" + document.activeElement.id : "");
+  bindCanvasKeys(page, vp);
+
+  ok("画布自己能当焦点（tabindex=-1：鼠标点得到，Tab 键不会多停一站）", page.getAttribute("tabindex") === "-1", JSON.stringify(page.getAttribute("tabindex")));
+  ok("先验料：还没点的时候焦点在 body 上，keydown 不经过画布", document.activeElement === document.body, who());
+
+  down(document.getElementById("head1"));
+  ok("★点一下节点，焦点就收到画布上★ 收不上来的话下面这些键全是哑的", document.activeElement === page, who());
+
+  // Escape 是多选之后的出口。没有它只能去点别的节点，那又变成选中了那一个
+  canvasSetSelection(["n_c1", "n_c2"]);
+  const esc = key({ key: "Escape" });
+  ok("Escape 清空选中", canvasState.selectedIds.size === 0, canvasState.selectedIds.size);
+  ok("Escape 同时退出框选模式（光清选中不退模式，鼠标还是框不动画布）", canvasState.marqueeMode === false);
+  ok("框选按钮的按下态跟着落下去", !document.getElementById("marquee").classList.contains("is-active"));
+  ok("视口的 is-marquee 也摘掉（不摘光标一直是十字，画布拖不动）", !vp.classList.contains("is-marquee"));
+  ok("Escape 吃掉默认行为（别顺手退了全屏）", esc.defaultPrevented);
+
+  key({ key: "a", metaKey: true });
+  ok("⌘A 选中画布上全部节点", canvasState.selectedIds.size === 3, canvasState.selectedIds.size);
+  ok("提示里报出个数，顺带说下一步按 Delete", /已全选 3 个节点/.test(TOASTS[TOASTS.length - 1] || ""), JSON.stringify(TOASTS[TOASTS.length - 1]));
+
+  key({ key: "z", metaKey: true });
+  ok("⌘Z 撤销", UNDO === 1 && REDO === 0, "UNDO=" + UNDO + " REDO=" + REDO);
+  key({ key: "z", metaKey: true, shiftKey: true });
+  ok("⌘⇧Z 重做", REDO === 1, REDO);
+  key({ key: "y", ctrlKey: true });
+  ok("Ctrl+Y 也是重做（Windows 上的手势）", REDO === 2, REDO);
+
+  key({ code: "Space", key: " " });
+  ok("按住空格进平移态", canvasState.spacePanning === true);
+  up({ code: "Space", key: " " });
+  ok("松开就退出来（退不出来之后点哪儿都在拖画布）", canvasState.spacePanning === false);
+
+  canvasSetSelection(["n_c1", "n_s1"]);
+  const del = key({ key: "Delete" });
+  ok("Delete 把选中的那几个一起删掉，不是只删一个", REMOVED.join() === "n_c1,n_s1", JSON.stringify(REMOVED));
+  ok("删完清空选中，右侧检查器跟着重画", canvasState.selectedIds.size === 0 && canvasState.selected === null && INSPECT === 1, "INSPECT=" + INSPECT);
+  ok("并且立刻落盘（不落盘刷新一下节点又回来了）", PERSIST === 1, PERSIST);
+  ok("Delete 吃掉默认行为（别触发浏览器后退）", del.defaultPrevented);
+  canvasSetSelection(["n_c2"]);
+  key({ key: "Backspace" });
+  ok("Backspace 同理（Mac 上删键就是它）", REMOVED.join() === "n_c1,n_s1,n_c2", JSON.stringify(REMOVED));
+
+  const note = document.getElementById("note");
+  note.focus();
+  canvasSetSelection(["n_c1"]);
+  key({ key: "Delete" });
+  ok("★正在输入框里打字，Delete 只删字，不删节点★", REMOVED.length === 3 && canvasState.selectedIds.size === 1, JSON.stringify(REMOVED));
+  const a2 = key({ key: "a", metaKey: true });
+  ok("输入框里的 ⌘A 还是全选文字，不是全选节点", !a2.defaultPrevented && canvasState.selectedIds.size === 1);
+
+  note.blur();
+  ok("先验料：焦点已经挪走了", document.activeElement !== page, who());
+  down(document.getElementById("regen"));
+  ok("点节点上的按钮，焦点留给按钮自己（抢过来的话按钮的回车/空格就废了）", document.activeElement !== page, who());
+  down(vp);
+  ok("反向对照：点画布空白处照样收焦点", document.activeElement === page, who());
+  return names;
+})()`;
+
 
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
@@ -9613,6 +9676,14 @@ app.whenReady().then(async () => {
         try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
       }
     }
+    // 无限画布的多选：焦点收不上来的话，Delete / ⌘A / Escape 全是哑的
+    const winCK = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winCK.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(CANVASKEY_HTML));
+      const namesCK = await winCK.webContents.executeJavaScript(IC_BOOT + CANVASKEY_STUBS + "\n" + CANVASKEY_SRC + "\n" + CANVASKEY_CHECKS, true);
+      for (const n of namesCK) console.log("  ✓ " + n);
+      console.log(`✅ 前端：无限画布多选的键盘出口（点一下就收焦点·Escape 退框选·⌘A 全选·Delete 批量删并落盘·打字时一概不抢）${namesCK.length} 项通过`);
+    } finally { if (!winCK.isDestroyed()) winCK.destroy(); }
   } catch (e) {
     console.error("❌ 前端测试失败:", e && e.message ? e.message : e);
     const errs = RENDERER_LOG.filter((m) => m.level === "error" || m.level === "3");

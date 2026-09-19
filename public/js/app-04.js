@@ -164,7 +164,6 @@ function libTaskOf(src, name) {
 /**
  * 文件躺在哪个任务的成果文件夹里，它就是那次任务的产出。这条比「谁最近动过它」硬。
  *
- * 用户原话：「这里说出自哪个任务也是错的位置啊！」——
  * 任务_0915_对话_2/BGM_纯配乐.mp3 被标成了另一条 9-17 的任务的产出。
  * 根子在所有权那一层（agent.js 的 inForeignDir）：它认的是**本进程内登记过**的
  * 文件夹，dirOwners 这张表重启就空了。于是重启之后另一条任务只要碰一下这个文件
@@ -395,8 +394,8 @@ async function renderLibPage() {
   const recents = JSON.parse(localStorage.getItem("owb_lib_recent") || "[]");
 
   // ── 三种视图 ────────────────────────────────────────────────────────────
-  // 「文件夹」= 东西放在哪；「按任务」= 东西是哪次做出来的。后者是用户原话点名要的
-  //（「资料库那块按照任务看到产出吧」）——人记文件是按「上周让它写的那份周报」记的，
+  // 「文件夹」= 东西放在哪；「按任务」= 东西是哪次做出来的。后者是被点名要的——
+  // 人记文件是按「上周让它写的那份周报」记的，
   // 不是按 out/2026-09/report-final-v3.md 记的。搜索一开口就接管整块列表，
   // 因为搜的时候「我现在在哪一层」已经不重要了。
   const libFiles = (lib.files || []).filter(f => libKindOk(f.name));
@@ -552,7 +551,6 @@ async function renderLibPage() {
     // 右栏是按需出现的：没选东西时 data-prev=off，CSS 那边直接 display:none（见 index.html
     // 里 .lib-page[data-prev="off"] .lib-prev）。这一行少了的后果是——点一个文件，内容
     // 确确实实渲染进 #lb-prev 了，只是那块板子还挂着 display:none，屏幕上什么都不发生。
-    // 用户原话：「在资料库怎么没有办法打开文件啊！」。
     // 之所以一直没被发现：随便点一下筛选器就会走整页重画，那一路是照 libState.pick 算
     // data-prev 的，于是又能看了——看起来像「偶尔抽风」，其实是每次进这一页的第一下必挂。
     showLibPrev(page);
@@ -746,8 +744,7 @@ async function renderLibPreview(prev, lib) {
   // 名单来自对话记录，而文件后来可能被挪走、被删，或者跟着另一个工作目录走了。
   // 以前这件事有三种长相，没有一种说得出到底怎么了——图裂成一个碎图标（<img> 出错浏览器不吭声）、
   // HTML 把服务端那句「文件不存在」当网页渲染成一片空白（fetch 没看 r.ok）、
-  // 文本弹一句「预览失败：读取失败」。用户原话：「怎么点击图片没有办法预览了？」「点击md也是
-  // 没法预览啊」「html也是」「在资料库里面预览功能这么差的啊」。
+  // 文本弹一句「预览失败：读取失败」。三种都没说清「文件已经不在了」。
   const gonePh = `<div class="ph">这个文件已经不在工作目录里了。<br>资料库记的是这次任务产出过什么——名字来自对话记录，东西本身可能后来被挪走、被删，或者留在了另一个工作目录。<br>${
     from ? "上面那条「出自任务」能回到当时的对话，让助理照着再做一份。" : "让助理照着再做一份，或者去访达里找找它被挪到哪儿了。"
   }</div>`;
@@ -760,7 +757,7 @@ async function renderLibPreview(prev, lib) {
       const img = prev.querySelector("#lb-img");
       if (img) img.onerror = async () => { img.outerHTML = (await alive()) ? failPh("这张图读不出来，文件可能是坏的") : gonePh; };
     } else if (PV_AUDIO_RE.test(name) || PV_VIDEO_RE.test(name)) {
-      // 用户原话：「怎么没有办法预览啊」——一个 1 MB 的 note_audio.mp3 以前掉进最后那条
+      // 一个 1 MB 的 note_audio.mp3 以前掉进最后那条
       // 文本路，被当成字符串读进来，再被 400KB 那道闸拦成「文件太大，预览不动」。
       // 音频本来就不该走文本路。跟图一样先画再等出错，顺利的那条路上不多发请求。
       const vid = PV_VIDEO_RE.test(name);
@@ -779,7 +776,6 @@ async function renderLibPreview(prev, lib) {
       body.outerHTML = (await alive()) ? `<iframe src="${url}"></iframe>` : gonePh;
     } else if (/\.(docx|xlsx|pptx|zip)$/i.test(name)) {
       // Word / Excel / PPT / zip 本质是一包 XML 的压缩档，浏览器自己打不开，得服务端先拆。
-      // 用户原话：「做PPT，workd还有excel,csv这些格式预览要给我兼容，给我做好啊」——
       // 以前这一页没有这条路，同一份 .pptx 在对话里点得开、拖进资料库就变成一屏乱码。
       // 画法和样式都跟对话页那边共用同一套（docHtml / sheetHtml / slidesHtml / .ov-*），不抄第二份。
       const api = src === "lib" ? "/api/library/preview/" : "/api/files/preview/";
@@ -1187,7 +1183,7 @@ function renderHubEditor() {
  * 从 SKILL.md 正文里挖出几个「这技能到底能替我做什么」的具体例子。
  *
  * 起因是用户点了「立即使用」，输入框里只多了一句「用「xiaohongshu-topic」技能帮我：」，
- * 原话是「都没什么特殊点格式啊」——等于把空白页原样还给了用户。
+ * 等于把空白页原样还给了用户。
  * 技能作者基本都会写「## 适用场景」，里头那些「…」引号短句本身就是现成的任务描述，直接拿来当例子。
  * 挖不到就退回条目文字；再挖不到就只给占位模板，至少让人知道该往哪儿写。
  */

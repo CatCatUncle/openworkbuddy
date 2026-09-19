@@ -105,6 +105,14 @@ jobs:
           body: |
             ## 安装
 
+            **macOS 一句话装好**（下载 → 装进「应用程序」→ 摘掉隔离标记 → 打开，不会被 Gatekeeper 拦）：
+
+            ```
+            curl -fsSL https://raw.githubusercontent.com/CatCatUncle/openworkbuddy/main/install-mac.sh | bash
+            ```
+
+            手动下包的话：
+
             - **macOS（Apple 芯片）** → `OpenWorkBuddy-*-mac-arm64.dmg`
             - **macOS（Intel）** → `OpenWorkBuddy-*-mac-x64.dmg`
             - **Windows（x64 / ARM 同一个包）** → `OpenWorkBuddy-*-win-setup.exe` ← **绝大多数人下这个**（双击即装，装完自动启动，装时自动选架构）
@@ -117,8 +125,8 @@ jobs:
             这个包没有代码签名证书（苹果一年 99 美元、Windows 一年几千块，这是个免费开源项目），不是有毒。
 
             - **Windows**：弹出「Windows 已保护你的电脑」时，点弹窗里的灰色小字 **「更多信息」**，下面才会出现 **「仍要运行」**。
-            - **macOS**：提示「无法验证开发者」时，**先把 .app 从 dmg 拖进「应用程序」**（dmg 是只读卷，
-              在里面执行下面的命令会失败），然后在终端跑：
+            - **macOS**：提示「无法验证开发者」时，上面那句 curl 一步到位；要手动的话
+              **先把 .app 从 dmg 拖进「应用程序」**（dmg 是只读卷，在里面执行下面的命令会失败），然后在终端跑：
 
             ```
             xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app

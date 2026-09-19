@@ -40,7 +40,7 @@ let canvasState = {
   // 服务端**逐个确认过**盘上真没有的素材路径。注意不是「不在 files 里的那些」——
   // files 是截断过的清单（最深 3 层、最多 500 条），拿它判缺失会冤枉一大片，详见 canvasMediaAvailable
   missing: new Set(),
-  selectedAll: false, keyHandler: null, keyUpHandler: null, fullscreenHandler: null, spacePanning: false,
+  selectedAll: false, marqueeMode: false, keyHandler: null, keyUpHandler: null, fullscreenHandler: null, spacePanning: false,
   inspectorOpen: false, nodeGesture: null, multiMove: null, skipNodeClick: null, suppressInspectorUntil: 0,
   remoteUpdatedAt: 0, remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWritePending: false, suspendSync: false, castTimer: null,
   // 盘上那份画布读不出来时记下原因。有值就等于「这张画布现在不能写」，
@@ -158,8 +158,8 @@ function canvasMediaMime(value) {
  * 曾经的写法是「不在 canvasState.files 里就是被删了」，而那份列表是**截断过的**：
  * 服务端最深只走 3 层、最多给 500 条（tools.js 的 outputFiles），/api/files 那一趟失败时
  * 它还会是空的。于是工作目录一攒多、或者素材落在深一层的会话子目录里、或者网络抖一下，
- * 满画布的节点一起挂出「素材已从工作区移除」——文件明明就在盘上躺着。用户的原话是
- * 「怎么又说素材从工作区移除了在无限画布里面」，「又」字是关键：这事犯过不止一次。
+ * 满画布的节点一起挂出「素材已从工作区移除」——文件明明就在盘上躺着。
+ * 这事犯过不止一次，所以这回从根上改。
  *
  * 所以默认改成**认在**：在清单里当然在；不在清单里只能说明「这份清单里没有」，
  * 那就去问盘（canvasVerifyMissing → POST /api/files/exists），盘回了「确实没有」才进
@@ -228,7 +228,7 @@ function canvasFitToBox(page, box, padding = 64, minScale = .12) {
 
 function canvasFitAll(page) {
   const elements = canvasState.graph?.getElements?.() || [];
-  if (!elements.length) { canvasToast("画布里还没有节点。", "circle-info"); return; }
+  if (!elements.length) { canvasToast("画布里还没有节点。", "info"); return; }
   const box = elements.reduce((out, node) => {
     const b = node.getBBox();
     if (!out) return { x: b.x, y: b.y, width: b.width, height: b.height };
@@ -251,7 +251,7 @@ function canvasCenterSelected(page) {
 
 function canvasAutoLayout(page) {
   const graph = canvasState.graph, nodes = graph?.getElements?.() || [];
-  if (!nodes.length) return canvasToast("画布里还没有节点。", "circle-info");
+  if (!nodes.length) return canvasToast("画布里还没有节点。", "info");
   const D = typeof dagre !== "undefined" ? dagre : null;
   if (!D?.graphlib?.Graph || typeof D.layout !== "function") return canvasToast("DAG 排版组件没有加载，请刷新后重试。", "circle-x", "err");
   const layoutGraph = new D.graphlib.Graph({ multigraph: true }).setGraph({
@@ -277,7 +277,7 @@ function canvasBindViewport(page) {
   let drag = null, boxDrag = null, selectionBox = null;
   paper.on("blank:pointerdown", (evt) => {
     // 空白左拖是最常用的平移；Shift+拖拽才进入框选，中键与 Space 也可平移。
-    const pan = evt.button === 1 || canvasState.spacePanning || !evt.shiftKey;
+    const pan = evt.button === 1 || canvasState.spacePanning || (!evt.shiftKey && !canvasState.marqueeMode);
     if (evt.button !== undefined && evt.button !== 0 && evt.button !== 1) return;
     if (canvasState.inspectorOpen) { canvasState.inspectorOpen = false; canvasRenderInspector(false); }
     if (!pan) {
@@ -301,9 +301,17 @@ function canvasBindViewport(page) {
   paper.on("blank:pointerup", (evt) => {
     if (boxDrag) {
       const left = Math.min(boxDrag.x, evt.clientX), right = Math.max(boxDrag.x, evt.clientX), top = Math.min(boxDrag.y, evt.clientY), bottom = Math.max(boxDrag.y, evt.clientY);
-      canvasState.selectedIds = new Set((canvasState.graph?.getElements?.() || []).filter((node) => { const rect = node.findView(canvasState.paper)?.el?.getBoundingClientRect(); return rect && rect.left >= left && rect.right <= right && rect.top >= top && rect.bottom <= bottom; }).map((node) => node.id));
-      canvasState.selectedAll = canvasState.selectedIds.size === (canvasState.graph?.getElements?.() || []).length && canvasState.selectedIds.size > 0; canvasState.selected = [...canvasState.selectedIds][0] || null; canvasState.inspectorOpen = false;
-      selectionBox?.remove(); selectionBox = null; boxDrag = null; canvasRenderInspector(false); return;
+      const hit = (canvasState.graph?.getElements?.() || []).filter((node) => {
+        const rect = node.findView(canvasState.paper)?.el?.getBoundingClientRect();
+        return rect && rect.right >= left && rect.left <= right && rect.bottom >= top && rect.top <= bottom;
+      }).map((node) => node.id);
+      selectionBox?.remove(); selectionBox = null;
+      const tiny = Math.abs(evt.clientX - boxDrag.x) < 4 && Math.abs(evt.clientY - boxDrag.y) < 4;
+      boxDrag = null;
+      // 按着 Shift 在空白处点一下（没拖动）：当成「取消选中」，不要把整张画布清空得莫名其妙
+      canvasSetSelection(tiny ? new Set() : new Set(hit));
+      if (!tiny) canvasToast(hit.length ? `框选中 ${hit.length} 个节点。Shift/⌘ 点节点可加选减选，Delete 删除。` : "这个框里没有节点。", hit.length ? "square-dashed" : "info");
+      return;
     }
     drag = null; world.classList.remove("dragging");
   });
@@ -336,6 +344,15 @@ function canvasBindViewport(page) {
     if (evt.target.closest(".canvas-joint-node,button,input,textarea,select,details")) return;
     evt.preventDefault(); canvasOpenContextMenu(evt.clientX, evt.clientY);
   });
+  // Delete / Escape / ⌘A / Space 平移 这几手都挂在 #assist-page 上，而点节点、点空白之后
+  // activeElement 一直是 <body>——按键根本不经过这个元素。所以选中看得见，
+  // 按 Delete 没反应，⌘A 也没反应。在画布上点一下就把焦点收过来
+  page.setAttribute("tabindex", "-1");
+  viewport.addEventListener("mousedown", (evt) => {
+    // 正在输入或者点的是控件：那些本来就在 page 里面，键盘事件照样冒上来，别抢
+    if (evt.target?.closest?.("input,textarea,select,button,a,[contenteditable=true]")) return;
+    page.focus({ preventScroll: true });
+  }, true);
   canvasState.keyHandler = (evt) => {
     const target = evt.target, editing = target && (target.matches?.("input,textarea,select,[contenteditable=true]") || target.closest?.("input,textarea,select,[contenteditable=true]"));
     if (editing) return;
@@ -349,11 +366,15 @@ function canvasBindViewport(page) {
     } else if (command && evt.key.toLowerCase() === "a") {
       evt.preventDefault();
       const nodes = canvasState.graph?.getElements?.() || [];
-      canvasState.selectedIds = new Set(nodes.map((node) => node.id));
-      canvasState.selectedAll = nodes.length > 0;
-      canvasState.selected = nodes[0]?.id || null;
-      canvasRenderInspector(false);
-      canvasToast(nodes.length ? `已全选 ${nodes.length} 个节点。按 Delete 可删除。` : "画布里还没有节点。", nodes.length ? "check-square" : "circle-info");
+      canvasSetSelection(nodes.map((node) => node.id));
+      canvasToast(nodes.length ? `已全选 ${nodes.length} 个节点。按 Delete 可删除。` : "画布里还没有节点。", nodes.length ? "square-dashed" : "info");
+    } else if (evt.key === "Escape" && (canvasState.selectedIds.size || canvasState.marqueeMode)) {
+      // 多选之后得有个出口。没有的话只能去点别的节点，那又变成选中了那一个
+      evt.preventDefault();
+      canvasState.marqueeMode = false;
+      document.querySelector("[data-canvas-marquee]")?.classList.remove("is-active");
+      document.querySelector("#canvas-viewport")?.classList.remove("is-marquee");
+      canvasSetSelection(new Set());
     } else if ((evt.key === "Backspace" || evt.key === "Delete") && canvasState.selectedIds.size) {
       evt.preventDefault();
       const ids = new Set(canvasState.selectedIds); (canvasState.graph?.getElements?.() || []).filter((node) => ids.has(node.id)).forEach((node) => node.remove());
@@ -437,7 +458,7 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
   // 这个版本认不出的类型：照原样显示，只读。可能是新版本建的，也可能是别的分支建的。
   // 要紧的是别把它画成一张可编辑的空白笔记——那样用户随手一打字，就把人家节点的
   // payload 盖成 { text: "..." } 了。服务端已经保证读写不丢这种节点
-  //（tools.js canvasNormalizeState 不再按白名单挑食），这里只要不误导人。
+  // （tools.js canvasNormalizeState 不再按白名单挑食），这里只要不误导人。
   if (!CANVAS_NODE_DEFS[kind]) {
     const shown = Object.keys(payload || {}).filter((key) => payload[key] !== "" && payload[key] != null).slice(0, 6);
     return `<article class="canvas-node canvas-node-unknown">${header(payload.title || payload.name || payload.id || "认不出的节点", `这个版本不认识「${kind}」`)}<div class="canvas-node-body"><p class="canvas-unknown-tip">内容已原样保留，不会丢。换回建它的那个版本就能编辑。</p>${shown.length ? `<ul class="canvas-unknown-keys">${shown.map((key) => `<li><b>${esc(key)}</b><span>${esc(String(payload[key]).slice(0, 60))}</span></li>`).join("")}</ul>` : ""}</div></article>`;
@@ -502,8 +523,21 @@ function canvasNodeHtml(kind, payload, nodeId = "") {
 }
 
 function canvasSelectedNode() { return canvasState.graph && canvasState.selected ? canvasState.graph.getCell(canvasState.selected) : null; }
+/**
+ * 把选中集合落到状态里，再让界面跟上。anchor 是「这一下点的是谁」——
+ * 属性面板认的是它，不给就取集合里的第一个。
+ */
+function canvasSetSelection(ids, anchor) {
+  const next = ids instanceof Set ? ids : new Set(ids || []);
+  const all = canvasState.graph?.getElements?.() || [];
+  canvasState.selectedIds = next;
+  canvasState.selectedAll = next.size > 0 && next.size === all.length;
+  canvasState.selected = anchor && next.has(anchor) ? anchor : [...next][0] || null;
+  if (next.size !== 1) canvasState.inspectorOpen = false;
+  canvasRenderInspector(false);
+}
 function canvasPreviewRight(value) {
-  const path = String(value || "").trim(); if (!path) return canvasToast("这个节点还没有可预览的文件。", "circle-info");
+  const path = String(value || "").trim(); if (!path) return canvasToast("这个节点还没有可预览的文件。", "info");
   if (/^https?:/i.test(path) || typeof previewFile !== "function") return canvasOpenImagePreview(path, "素材预览");
   previewFile(canvasResolvedFileName(path));
 }
@@ -545,7 +579,7 @@ function canvasRefreshNode(node) {
   const view = node.findView(canvasState.paper), root = view && view.el && view.el.querySelector(".canvas-joint-node");
   if (!root) return;
   root.innerHTML = canvasNodeHtml(canvasKind(node), canvasPayload(node), node.id); canvasBindNode(node, root);
-  root.classList.toggle("is-selected", canvasState.selectedAll || canvasState.selected === node.id);
+  root.classList.toggle("is-selected", canvasState.selectedAll || canvasState.selectedIds.has(node.id) || canvasState.selected === node.id);
 }
 
 function canvasSnapshot() {
@@ -693,7 +727,7 @@ async function canvasCreateBoard() {
   await renderCanvasPage(); canvasToast(`已创建画布「${canvasState.canvasName}」`, "circle-check");
 }
 async function canvasDeleteBoard() {
-  if (canvasState.canvasName === "main") return canvasToast("主画布不能删除。", "circle-info");
+  if (canvasState.canvasName === "main") return canvasToast("主画布不能删除。", "info");
   if (!confirm("删除这张画布？画布节点会删除，素材文件不会删除。")) return;
   const response = await fetch("/api/canvas/boards/" + encodeURIComponent(canvasState.canvasName), { method: "DELETE" });
   if (!response.ok) return canvasToast("删除画布失败", "circle-x", "err");
@@ -1510,6 +1544,12 @@ function canvasBindNode(node, root) {
     if (evt.target.closest("button,select,input,textarea,[contenteditable=true]")) return;
     // 节点本体只负责选中：属性面板只能由右上角齿轮显式打开，拖拽结束后的 click 绝不遮挡画布。
     if (canvasState.skipNodeClick === node.id || Date.now() < canvasState.suppressInspectorUntil) { canvasState.skipNodeClick = null; return; }
+    if (evt.shiftKey || evt.metaKey || evt.ctrlKey) {
+      const ids = new Set(canvasState.selectedAll ? (canvasState.graph?.getElements?.() || []).map((item) => item.id) : canvasState.selectedIds);
+      if (ids.has(node.id) && ids.size > 1) ids.delete(node.id); else ids.add(node.id);
+      canvasSetSelection(ids, node.id);
+      return;
+    }
     canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasState.inspectorOpen = false; canvasRenderInspector(false);
   });
   root.querySelectorAll("[data-canvas-image-preview]").forEach((image) => image.addEventListener("dblclick", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasOpenImagePreview(image.dataset.canvasMediaPath, image.alt || "图片预览"); }));
@@ -1826,7 +1866,7 @@ function canvasEtaText(ms) {
 function canvasProgressFocus(ids) {
   const wanted = new Set((ids || []).map(String));
   const hit = (canvasState.graph?.getElements?.() || []).filter((n) => wanted.has(String(n.id)));
-  if (!hit.length) { canvasToast("这些节点在当前画布上找不到了（可能刚被删掉）。", "circle-info"); return; }
+  if (!hit.length) { canvasToast("这些节点在当前画布上找不到了（可能刚被删掉）。", "info"); return; }
   canvasState.selectedAll = false;
   canvasState.selectedIds = new Set(hit.map((n) => n.id));
   canvasState.selected = hit[0].id;
@@ -1907,14 +1947,29 @@ function canvasComposeHtml(p) {
   return `<div class="cp-compose">${button("合成成片")}<span class="cp-compose-tip">逐镜头把画面接上配音 → 按顺序拼起来 → 垫配乐 → 烧字幕。全在本机跑，不花钱。</span></div>`;
 }
 
+/**
+ * 进度条占了多高，就从画布视口里扣掉多少。
+ *
+ * 视口的高度是写死的 calc(100vh - 278px)，那个 278 是这一条还不存在时算出来的。
+ * 它一出现（展开之后还会长出卡点清单和镜头表）就把下面的画布连同对话区一起顶下去，
+ * 界面上看到的就是「又被挡住了」。所以把它的实际高度量出来喂给 CSS，视口自己让位。
+ */
+function canvasProgressHeight(box) {
+  const page = document.getElementById("assist-page");
+  // 让位只是好看，量不出来就算了：一条进度带不能因为「高度没算成」整条画不出来
+  if (!page || !page.style || typeof page.style.setProperty !== "function") return;
+  const h = box && !box.hidden ? (box.offsetHeight || 0) + 8 : 0; // +8 是它自己的下边距
+  page.style.setProperty("--cp-h", h + "px");
+}
+
 function canvasRenderProgress() {
   const box = document.getElementById("canvas-progress");
   if (!box) return;
   const p = canvasState.progress;
   // 读不到就整条不显示。显示一个「0%」比什么都不显示更糟：那是在撒谎
-  if (!p || !Array.isArray(p.stages)) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!p || !Array.isArray(p.stages)) { box.hidden = true; box.innerHTML = ""; canvasProgressHeight(box); return; }
   const counted = p.stages.filter((s) => s.total > 0);
-  if (!counted.length && !(p.blockers || []).length) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!counted.length && !(p.blockers || []).length) { box.hidden = true; box.innerHTML = ""; canvasProgressHeight(box); return; }
   box.hidden = false;
 
   const chips = p.stages.map((s) => s.total === 0
@@ -1957,19 +2012,22 @@ function canvasRenderProgress() {
     + `<button class="cp-head" type="button" data-cp-toggle aria-expanded="${canvasState.progressOpen ? "true" : "false"}">`
       + `<span class="cp-pct">${p.percent}%</span>`
       + `<span class="cp-stages">${chips}</span>`
-      + `<span class="cp-next" title="${esc(p.next?.text || "")}">${esc(p.next?.text || "")}</span>`
+      // 收起时这里是唯一一句话，展开时下面第一条卡点就是它——同一句话摆两遍，看着像出了两个故障。
+      // 展开时留着这个格子当撑满的间隔（flex:1），只是不写字
+      + `<span class="cp-next" title="${esc(p.next?.text || "")}">${(canvasState.progressOpen ? "" : esc(p.next?.text || ""))}</span>`
       + `<span class="cp-caret">${ic(canvasState.progressOpen ? "chevron-up" : "chevron-down")}</span>`
     + `</button>`
     + (canvasState.progressOpen
       ? `<div class="cp-body">${blockerHtml ? `<ul class="cp-blockers">${blockerHtml}</ul>` : ""}${jobsHtml}${canvasComposeHtml(p)}${shotsHtml}${p.boardUnreadable ? `<div class="cp-warn">画布文件读不出来，这里算的是空的：${esc(p.boardUnreadable)}</div>` : ""}</div>`
       : "");
 
+  canvasProgressHeight(box);
   box.querySelector("[data-cp-toggle]")?.addEventListener("click", () => { canvasState.progressOpen = !canvasState.progressOpen; canvasRenderProgress(); });
   const all = [...stops, ...others].slice(0, 6);
   box.querySelectorAll("[data-cp-focus]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); canvasProgressFocus(all[Number(b.dataset.cpFocus)]?.ids); }));
   box.querySelectorAll("[data-cp-shot]").forEach((tr) => tr.addEventListener("click", () => canvasProgressFocus([tr.dataset.cpShot])));
   box.querySelectorAll("[data-cp-run]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); canvasRunPending(b.dataset.cpRun); }));
-  box.querySelector("[data-cp-stop]")?.addEventListener("click", (e) => { e.stopPropagation(); if (canvasState.batch) canvasState.batch.stop = true; canvasToast("这一个跑完就停。", "circle-info"); });
+  box.querySelector("[data-cp-stop]")?.addEventListener("click", (e) => { e.stopPropagation(); if (canvasState.batch) canvasState.batch.stop = true; canvasToast("这一个跑完就停。", "info"); });
   box.querySelector("[data-cp-compose]")?.addEventListener("click", (e) => { e.stopPropagation(); canvasComposeOpen(); });
   box.querySelector("[data-cp-compose-go]")?.addEventListener("click", (e) => { e.stopPropagation(); canvasComposeStart(); });
   box.querySelector("[data-cp-compose-stop]")?.addEventListener("click", (e) => { e.stopPropagation(); canvasComposeStop(); });
@@ -2124,7 +2182,7 @@ async function canvasComposeStop() {
   await fetch("/api/canvas/compose", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cancel: id }),
   }).catch(() => null);
-  canvasToast("正在停…已经拼好的片段都留着。", "circle-info");
+  canvasToast("正在停…已经拼好的片段都留着。", "info");
 }
 
 /** 起手模板里那几句占位文字。跟服务端 drama-pipeline.js 的 PLACEHOLDERS 是同一份口径 */
@@ -2277,6 +2335,7 @@ async function renderCanvasPage() {
       <button class="canvas-tool-button" type="button" data-canvas-history="undo" title="撤销（Ctrl/Cmd+Z）" aria-label="撤销">${ic("rotate-ccw")}</button>
       <button class="canvas-tool-button is-redo" type="button" data-canvas-history="redo" title="重做（Ctrl/Cmd+Shift+Z）" aria-label="重做">${ic("rotate-ccw")}</button>
       <button class="canvas-tool-button" type="button" data-canvas-layout title="按生成关系自动排版" aria-label="自动排版">${ic("git-branch")}</button>
+      <button class="canvas-tool-button" type="button" data-canvas-marquee title="框选：拖出一个框，碰到的节点都选中（不开这个开关时按住 Shift 拖也一样）。Shift/⌘ 点节点加选减选，Delete 删除" aria-label="框选">${ic("square-dashed")}</button>
     </span><span class="canvas-zoom-box"><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-zoom="out">−</button><span id="canvas-zoom">100%</span><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-zoom="in">+</button><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-fit>适配</button><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-center>居中</button><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-zoom="reset">${ic("target")}复位</button><button class="ui-btn ui-btn--ghost ui-btn--xs" data-canvas-clear>清空</button></span></div>
     <div class="canvas-layout"><div id="canvas-viewport" class="canvas-viewport"><div id="canvas-world" class="canvas-world"></div></div><aside id="canvas-inspector" class="canvas-inspector"></aside></div>
     <section class="canvas-chat" aria-label="画布 Agent 对话"><div class="canvas-chat-head"><div><b>画布 Agent</b><small>直接对话，让 Agent 读取、添加、连接和生成节点</small></div><span>本项目内执行</span></div><div id="canvas-chat-log" class="canvas-chat-log"><div class="canvas-chat-message is-agent"><span class="canvas-chat-role">Agent</span><span class="canvas-chat-text">输入 @ 可引用画布节点或工作区素材。</span></div></div><div id="canvas-chat-mention-menu" class="canvas-chat-mention-menu" hidden></div><div class="canvas-chat-compose"><div id="canvas-chat-ref-chips" class="canvas-chat-ref-chips"></div><textarea id="canvas-chat-input" rows="2" placeholder="描述人物关系、交互动作和镜头；输入 @ 添加人物、背景、风格或首尾帧"></textarea><div class="canvas-chat-tools"><button class="canvas-chat-tool" type="button" data-canvas-chat-attach title="上传文件到当前工作文件夹">${ic("paperclip")}</button><input type="file" data-canvas-chat-file accept="image/*,video/*,audio/*" multiple hidden><button class="canvas-chat-tool" type="button" data-canvas-chat-mention title="引用画布节点或素材">@</button><div class="canvas-chat-tools-spacer"></div><select class="canvas-chat-mode" data-canvas-chat-mode title="执行模式"></select><select class="canvas-chat-model" data-canvas-chat-model title="模型"><option value="">默认模型</option></select><button class="canvas-chat-send" type="button" title="发送（Enter）" aria-label="发送" data-canvas-chat-send>${ic("arrow-up")}</button></div></div></section>`;
@@ -2324,6 +2383,18 @@ async function renderCanvasPage() {
   page.querySelector("[data-canvas-workspace-select]")?.addEventListener("change", (event) => canvasSwitchWorkspace(event.target.value));
   page.querySelector("[data-canvas-new]").onclick = canvasCreateBoard;
   page.querySelector("[data-canvas-delete]").onclick = canvasDeleteBoard;
+  // 工具条上那个「框选」开关。只有 Shift+拖 这一条路的时候没人会去试：
+  // 空白处拖出来的默认动作是平移，试一次以为不支持，就不会有第二次。
+  const marqueeBtn = page.querySelector("[data-canvas-marquee]");
+  if (marqueeBtn) {
+    const syncMarquee = () => {
+      marqueeBtn.classList.toggle("is-active", canvasState.marqueeMode);
+      marqueeBtn.setAttribute("aria-pressed", canvasState.marqueeMode ? "true" : "false");
+      page.querySelector("#canvas-viewport")?.classList.toggle("is-marquee", canvasState.marqueeMode);
+    };
+    marqueeBtn.onclick = (evt) => { evt.preventDefault(); canvasState.marqueeMode = !canvasState.marqueeMode; syncMarquee(); };
+    syncMarquee();
+  }
   page.querySelector("[data-canvas-agent]").onclick = () => canvasRunInternal(canvasSelectedNode());
   page.querySelector("[data-canvas-starter]").onclick = canvasCreateDramaWorkflow;
   page.querySelector("[data-canvas-chat-send]").onclick = canvasChatSend;
@@ -2352,7 +2423,7 @@ async function renderCanvasPage() {
       if (document.fullscreenElement) await document.exitFullscreen();
       else if (page.requestFullscreen) await page.requestFullscreen();
       else if (page.webkitRequestFullscreen) page.webkitRequestFullscreen();
-      else canvasToast("当前窗口不支持全屏模式。", "circle-info", "err");
+      else canvasToast("当前窗口不支持全屏模式。", "info", "err");
     } catch (error) { canvasToast(`进入全屏失败：${String(error.message || error).slice(0, 120)}`, "circle-x", "err"); }
   };
   updateFullscreenLabel();

@@ -1,52 +1,48 @@
 <p align="center">
-  <img src="build/icon.png" width="120" alt="OpenWorkBuddy">
+ <img src="build/icon.png" width="120" alt="OpenWorkBuddy">
 </p>
 
 <h1 align="center">OpenWorkBuddy</h1>
 
 <p align="center">
-  <b>An AI office assistant that runs on your own machine.</b><br>
-  Ask for something once; it plans, does the work, checks it, and leaves a real<br>
-  PPT / Word / Excel / web page on your disk — <b>a file you can open, not a chat log.</b>
+ <b>An AI office assistant that runs on your own machine.</b><br>
+ Ask for something once; it plans, does the work, checks it, and leaves a real<br>
+ PPT / Word / Excel / web page on your disk — <b>a file you can open, not a chat log.</b>
 </p>
 
 <p align="center">
-  <sub><a href="README.md"><b>中文</b></a> · English</sub>
+ <sub><a href="README.md"><b>中文</b></a> · English</sub>
 </p>
 
 <p align="center">
-  <a href="https://github.com/CatCatUncle/openworkbuddy/releases"><b>⬇&nbsp;Download</b></a>
-  &nbsp;·&nbsp; <a href="#run-it-in-three-minutes">Run it in three minutes</a>
-  &nbsp;·&nbsp; <a href="docs/功能清单.md">Feature list (zh)</a>
-  &nbsp;·&nbsp; <a href="#docs">Docs</a>
-  &nbsp;·&nbsp; <a href="README.md#交流群">Feishu group</a>
-  &nbsp;·&nbsp; <a href="CHANGELOG.en.md">Changelog</a>
+ <a href="#run-it-in-three-minutes"><b>▶&nbsp;Run it in three minutes</b></a>
+ &nbsp;·&nbsp; <a href="https://github.com/CatCatUncle/openworkbuddy/releases">Download</a>
+ &nbsp;·&nbsp; <a href="docs/功能清单.md">Feature list (zh)</a>
+ &nbsp;·&nbsp; <a href="#docs">Docs</a>
+ &nbsp;·&nbsp; <a href="README.md#交流群">Feishu group</a>
+ &nbsp;·&nbsp; <a href="CHANGELOG.en.md">Changelog</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&logo=github&label=Star&color=5b5ff7" alt="Star"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="License"></a>
-  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.skills&label=Skills&color=5b5ff7&style=flat-square" alt="Skills"></a>
-  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.tools&label=Tools&color=5b5ff7&style=flat-square" alt="Tools"></a>
-  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.connectors&label=Connectors&color=5b5ff7&style=flat-square" alt="Connectors"></a>
-  <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.experts&label=Experts&color=5b5ff7&style=flat-square" alt="Experts"></a>
+ <a href="https://github.com/CatCatUncle/openworkbuddy/stargazers"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=flat-square&logo=github&label=Star&color=5b5ff7" alt="Star"></a>
+ <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20NC-5b5ff7?style=flat-square" alt="License"></a>
+ <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.skills&label=Skills&color=5b5ff7&style=flat-square" alt="Skills"></a>
+ <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.tools&label=Tools&color=5b5ff7&style=flat-square" alt="Tools"></a>
+ <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.connectors&label=Connectors&color=5b5ff7&style=flat-square" alt="Connectors"></a>
+ <a href="docs/功能清单.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FCatCatUncle%2Fopenworkbuddy%2Fmain%2Fdocs%2Fstats.json&query=%24.experts&label=Experts&color=5b5ff7&style=flat-square" alt="Experts"></a>
 </p>
 
 <p align="center">
-  <sub>Free for personal, learning and non-profit use. Commercial use needs a license — <a href="#license">one sentence below ↓</a></sub>
+ <sub>Free for personal, learning and non-profit use. Commercial use needs a license — <a href="#license">one sentence below ↓</a></sub>
 </p>
 
 <p align="center">
-  <img src="docs/images/demo.gif" width="960" alt="OpenWorkBuddy demo: say what you need, the agent does the work and hands you real files">
+ <img src="docs/images/demo.gif" width="960" alt="OpenWorkBuddy demo: say what you need, the agent does the work and hands you real files">
 </p>
 
 ---
 
 ## You say it, it hands you the file
-
-<p align="center">
-  <img src="docs/images/how-it-works.en.svg" width="1190" alt="Ask once; OpenWorkBuddy plans, executes and verifies, and hands back PPTX / DOCX / XLSX / HTML files">
-</p>
 
 | You say | You get |
 |---|---|
@@ -54,6 +50,10 @@
 | "Research AI companion apps in China, write a report" | searches → reads each page → Markdown / Word |
 | "Turn this material into a page I can read on my phone" | writes HTML → serves it locally → scan the QR |
 | "Every day at 9, collect industry news and send it to me on Feishu" | cron + IM push; missed runs catch up |
+
+<p align="center">
+ <img src="docs/images/how-it-works.en.svg" width="1190" alt="Ask once; OpenWorkBuddy plans, executes and verifies, and hands back PPTX / DOCX / XLSX / HTML files">
+</p>
 
 > [!NOTE]
 > Also: parallel tasks, goal-based acceptance, 👍👎 feedback that feeds self-evolution, two-layer memory, permission tiers, remote control over Feishu / WeChat, a desktop pet… Full list (Chinese): **[功能清单](docs/功能清单.md)**.
@@ -89,39 +89,77 @@ Save it as <code>skills/&lt;name&gt;/skill.md</code> and it's live on the next t
 
 <b>🔍 It's also a readable agent.</b>
 
-Model routing, tool calls, file acceptance, memory, permissions and local traces all live in one repo: for any real task you can see why it did what it did, which model it used, how long each step took, and what it finally handed over.
+Model routing, tool calls, file acceptance, memory, permissions and local traces all live in one repo: for any real task you can see why it did what it did, which model it used, and what it finally handed over.
 
 </td>
 </tr>
 </table>
+
+## Run it in three minutes
+
+All three routes are the full product; none of them is a cut-down edition.
+
+**macOS, one line** (downloads, installs into `/Applications`, strips the quarantine flag, opens it):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CatCatUncle/openworkbuddy/main/install-mac.sh | bash
+```
+
+**Windows / manual download**: grab `-win-setup.exe` from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases) (one installer for x64 and ARM64) and double-click; on a locked-down work machine take the portable build, `-win-x64-portable.exe` (`arm64` on ARM).
+
+**From source** (Node.js 18+, no build step, no framework — edit, refresh, done):
+
+```bash
+git clone https://github.com/CatCatUncle/openworkbuddy.git
+cd openworkbuddy && npm install
+npm run app # desktop app; or `npm start` and open http://localhost:3800
+```
+
+Paste a model API key on first launch, then type something like "make a slide deck introducing OpenWorkBuddy".
+Everything you own lives in `~/OpenWorkBuddy` — config, sessions, output files, skills. **Uninstalling doesn't delete it**; moving machines is a folder copy.
+
+Text too small, or want a different skin? Avatar menu, top right → **Appearance**: four text sizes, five themes and UI density all live on that page.
+
+<details>
+<summary><b>Your OS blocks the first launch · double-clicked and nothing happened</b></summary>
+
+<br>
+
+The build has no code-signing certificate (Apple charges $99/year, Windows a few thousand — this is a free open-source project). It is not malware.
+
+- **macOS**: the `curl` line above sidesteps it — files downloaded by a browser get the quarantine flag, files fetched with curl don't. Already downloaded the dmg? Move the app to `/Applications`, then run `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`. (Right-click → Open only works on macOS 14 and earlier; Apple removed that route in 15, so following an old tutorial looks like "it just won't open".)
+- **Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway".
+- **Nothing happened**: the boot log is at `~/OpenWorkBuddy/logs/boot.log` — wherever it stops is the problem. Running from source, try `node cli.js doctor` first. Walk-through → [安装与启动](docs/安装与启动.md#双击了没反应) (Chinese)
+
+</details>
+
+Mirrors, port conflicts, moving the data directory → [安装与启动](docs/安装与启动.md)　|　moving machines → [数据同步与搬家](docs/数据同步与搬家.md) (Chinese)
 
 ## What it looks like
 
 **"Same person, four different scenes, holding a hand-written sign — make it look like a snapshot, not an AI render."**
 
 <p align="center">
-  <img src="docs/images/case-photoreal.jpg" width="640" alt="The same person at a cafe window, on a rainy night street, at an office desk and in a morning bedroom, each holding a wooden sign reading 关注 OpenWorkBuddy 项目">
+ <img src="docs/images/case-photoreal.jpg" width="640" alt="The same person at a cafe window, on a rainy night street, at an office desk and in a morning bedroom, each holding a wooden sign reading 关注 OpenWorkBuddy 项目">
 </p>
 
-The hard part isn't drawing a person — it's keeping **the same** person across all four and the Chinese on the sign legible. So it generates one, then actually looks at what it just made (a real vision call on its own output, not a claim from memory), confirms the light and skin came out right, and fans the rest out from there.
+The hard part isn't drawing a person — it's keeping the same person across all four and the Chinese on the sign legible. So it generates one, then actually looks at what it just made (a real vision call on its own output, not a claim from memory), and fans the rest out from there.
 
 **"Build me a Hunan travel guide site — all 14 prefectures, no skipping."**
 
 <p align="center">
-  <a href="https://hunan-travel.pages.dev/"><img src="docs/images/case-hunan-site.jpg" width="860" alt="Hunan travel guide: the ink-wash landing screen, and the index of all 14 prefectures grouped by region"></a>
+ <a href="https://hunan-travel.pages.dev/"><img src="docs/images/case-hunan-site.jpg" width="860" alt="Hunan travel guide: the ink-wash landing screen, and the index of all 14 prefectures grouped by region"></a>
 </p>
 
-That's two screens — the landing and the province index. Below them sit 14 city cards, each with ticket prices, opening hours, how long to budget, what to eat and which trap to skip, plus three ready-made 3 / 5 / 7-day routes.
-
-**<https://hunan-travel.pages.dev/>** — it's live, go click around. One HTML file plus a folder of images: layout, motion and palette all live in that one file, no external CDN. Drop it on any static host and it's a site. Not a mockup — the thing it actually handed over.
+**<https://hunan-travel.pages.dev/>** — it's live, go click around. One HTML file plus a folder of images, no external CDN. Drop it on any static host and it's a site. Not a mockup — the thing it actually handed over.
 
 **"Every morning at seven, send me today's weather and what I should watch out for, on Feishu."**
 
 <p align="center">
-  <img src="docs/images/case-schedule-feishu.jpg" width="820" alt="A scheduled OpenWorkBuddy task pushing a morning briefing to Feishu: today's weather and UV, tomorrow's rain, plus two things worth doing today">
+ <img src="docs/images/case-schedule-feishu.jpg" width="820" alt="A scheduled OpenWorkBuddy task pushing a morning briefing to Feishu: today's weather and UV, tomorrow's rain, plus two things worth doing today">
 </p>
 
-One sentence set this up. It looks the weather up itself and writes it like a person would — not a filled-in template: rain tomorrow, so it says do today's errands today. It runs whether or not anyone is at the machine, and every run keeps its full transcript under Automation → Run history — which tools it called, and why it said what it said. Feishu / WeCom / DingTalk / Telegram all take the same path.
+One sentence set this up. It runs whether or not anyone is at the machine, and every run keeps its full transcript under Automation → Run history. Feishu / WeCom / DingTalk / Telegram all take the same path.
 
 How it pulled those off → **[三个案例，拆开讲](docs/案例.md)** (Chinese, but the screenshots speak for themselves)
 
@@ -130,54 +168,10 @@ How it pulled those off → **[三个案例，拆开讲](docs/案例.md)** (Chin
 Script, characters, scenes, shots, reference images, video, voice and the edit timeline all sit on one canvas. The wires aren't decoration — they are what the next generation actually reads for character, first frame and sound. Change one shot and only that shot re-runs.
 
 <p align="center">
-  <img src="docs/images/case-canvas.jpg" width="960" alt="OpenWorkBuddy infinite canvas: character sheet, location plate and shot first-frames on one board, with purple wires labelled 「生成」 pointing at what the next generation actually reads">
+ <img src="docs/images/case-canvas.jpg" width="960" alt="OpenWorkBuddy infinite canvas: character sheet, location plate and shot first-frames on one board, with purple wires labelled 「生成」 pointing at what the next generation actually reads">
 </p>
 
-Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+drag to marquee-select, and `@` any node or asset from the chat box at the bottom.
-
-## Run it in three minutes
-
-All three routes are the full product; none of them is a cut-down edition:
-
-| 🖥️ On your own machine | 🐳 On a server for your team | 🏢 Rolling it out at a company |
-|---|---|---|
-| Download, double-click, five-step wizard. Data stays local. | One VPS + Docker, one command, HTTPS included. | You also need SSO, audit export, air-gapped install, SLA. |
-| [Download ↓](https://github.com/CatCatUncle/openworkbuddy/releases) | [Deploy guide →](docs/部署.md) | [Commercial license →](COMMERCIAL-LICENSE.md) |
-
-<details>
-<summary><b>Which file to download · what to do when your OS blocks the first launch</b></summary>
-
-<br>
-
-| OS | File |
-|---|---|
-| macOS · Apple Silicon | `OpenWorkBuddy-*-mac-arm64.dmg` |
-| macOS · Intel | `OpenWorkBuddy-*-mac-x64.dmg` |
-| Windows 10/11 (one installer for x64 and ARM64) | `OpenWorkBuddy-*-win-setup.exe` |
-| Windows portable (**only if you cannot install software** — every launch unpacks the whole app into `%TEMP%`, so the first start can take minutes) | `OpenWorkBuddy-*-win-x64-portable.exe` |
-
-**Your OS will block the first launch**: the build has no code-signing certificate (Apple charges $99/year, Windows a few thousand — this is a free open-source project). It is not malware.
-
-- **Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway".
-- **macOS**: move the app to `/Applications`, then run `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`, or System Settings → Privacy & Security → "Open Anyway" (right-click → Open only works on macOS 14 and earlier).
-- Your data lives in `~/OpenWorkBuddy` and survives uninstall. Moving machines → [数据同步与搬家](docs/数据同步与搬家.md) (Chinese).
-- Double-clicked and nothing happened? The boot log is at `~/OpenWorkBuddy/logs/boot.log` — walk through [安装与启动](docs/安装与启动.md#双击了没反应) (Chinese).
-
-</details>
-
-**From source** (Node.js 18+, no build step, no framework — edit, refresh, done):
-
-```bash
-git clone https://github.com/CatCatUncle/openworkbuddy.git
-cd openworkbuddy && npm install
-npm run app     # desktop app; or `npm start` and open http://localhost:3800
-```
-
-> [!TIP]
-> Then type something like "make a slide deck introducing OpenWorkBuddy".
-> Appearance is yours: avatar menu → **Appearance** for language (中文 / English), theme, six skins, font size and family. In English the assistant answers in English and writes its files in English too.
-
-Mirrors, one-line install script, port conflicts → [安装与启动](docs/安装与启动.md) (Chinese).
+Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+drag to marquee-select, `Shift`/`⌘`+click to add or drop nodes from the selection, and `@` any node or asset from the chat box at the bottom.
 
 ## Put it on a server for your team
 
@@ -185,154 +179,82 @@ One command on a clean VPS that already has Docker:
 
 ```bash
 git clone https://github.com/CatCatUncle/openworkbuddy.git && cd openworkbuddy
-bash deploy.sh --domain buddy.example.com   # automatic HTTPS, reachable from outside
+bash deploy.sh --domain buddy.example.com # automatic HTTPS, reachable from outside
 ```
 
-It **waits for the health check to actually pass** before claiming success; if it won't start you get the logs, not a happy message. All data sits in `./openworkbuddy-data` — delete the container freely, keep that directory.
+It **waits for the health check to actually pass** before claiming success; if it won't start you get the logs. All data sits in `./openworkbuddy-data`.
 
 > [!IMPORTANT]
-> **Register the admin account first thing.** The first account to register becomes the **super admin** (one per org, transferable but never issuable), and self-registration closes right after. An empty instance on a public IP means whoever gets there first owns it.
+> **Register the admin account first thing.** The first account to register becomes the super admin (one per org, transferable but never issuable), and self-registration closes right after. An empty instance on a public IP means whoever gets there first owns it.
 
-**Multi-tenant + admin console**: one process serves several companies. Output files, sessions, accounts, seats, usage ledgers and audit logs are invisible across tenants. Avatar menu → **Admin console**.
+One process serves several companies, invisible to each other. Avatar menu → **Admin console**: orgs, seats, usage, security policy. New hires are created from a department template (role and monthly credits in one go); when someone leaves, one click closes five doors at once — paired devices, **their scheduled jobs** (the scheduler doesn't go through the login gate, so disabling the account alone leaves them running on the company's credits), unused invite codes, 2FA, and tasks still running. **Revoke access, keep the data**, and you get a receipt you can paste into the handover doc.
 
-**Onboarding and offboarding in one action.** New hires are created from a department template (role, monthly credits). When someone leaves, one click closes five doors at once: paired phones/tablets, **their scheduled jobs** (disabling an account does nothing to these — the scheduler doesn't go through the login gate, so their "email last month's receivables to the boss every Monday 8am" keeps running on the company's credits), invite codes they issued that haven't been used up, the 2FA bound to their phone, and tasks still running. **Revoke access, keep the data** — their tasks, spend, and output files stay exactly as they were, and you get a receipt you can paste straight into the handover doc.
+One metrics snapshot per minute, threshold breaches pushed to WeCom / DingTalk, and `/api/ops/metrics.prom` for your existing monitoring — behind the platform-owner check like every other endpoint.
 
-**Logging and alerting are built in.** One metrics snapshot per minute (tasks, failure rate, p95 duration, token spend, free disk, per-channel failure streaks); breach a threshold and it pushes to WeCom / DingTalk. Structured logs are browsable by day, level and keyword in the console. To scrape it with your existing monitoring, hit `/api/ops/metrics.prom` — **that endpoint is behind the platform-owner check like every other one**, not open (this also ships as a desktop app; an extra unauthenticated port would be a world-readable hole on a user's own machine).
-
-Reverse proxy, upgrades, migration, security checklist → [deploy/README.md](deploy/README.md) (Chinese)
+Reverse proxy, upgrades, migration, security checklist → [部署](docs/部署.md)　|　[deploy/README.md](deploy/README.md)　|　[多人协作](docs/多人协作.md) (Chinese)
 
 ## Models
 
-**Settings → Models**: pick a provider preset (OpenAI / Anthropic / OpenRouter / Volcano Ark / Bailian / DeepSeek / GLM / Kimi / Ollama), the base URL and protocol are filled in, paste a key, save — hot reload, no restart. Reasoning models can have thinking turned off or dialed down from the UI. Per-provider table → [配置模型](docs/配置模型.md) (Chinese).
+**Settings → Models**: pick a provider preset (OpenAI / Anthropic / OpenRouter / Volcano Ark / Bailian / DeepSeek / GLM / Kimi / Ollama), the base URL and protocol are filled in, paste a key, save — hot reload, no restart. A mispasted key is caught on save and it tells you which character is wrong, instead of handing you an unreadable 401 later. Reasoning models can have thinking turned off or dialed down from the UI.
+
+Image / speech / video models have their own table; video spans five protocols (Tongyi Wanxiang · Volcano Ark Seedance · GLM CogVideoX · MiniMax Hailuo · SiliconFlow), and if it cannot tell which vendor it is, **it does not send the request** — video bills per clip and a wasted call takes minutes to fail.
+
+Per-provider table → [配置模型](docs/配置模型.md) (Chinese)
 
 > [!IMPORTANT]
 > `config.json` is the only file holding API keys and is already in `.gitignore`. Don't commit it.
 
-**A mispasted key is caught on save.** Copying a key out of a web page or a chat usually drags a stray space, newline or full-width quote along with it — it tells you which character is wrong the moment you save, instead of handing you an unreadable 401 later.
-
-**Image / speech / video models** have their own table. Video is one branch per vendor across five protocols (Tongyi Wanxiang · Volcano Ark Seedance · GLM CogVideoX · MiniMax Hailuo · SiliconFlow): submit paths, parameter names and polling agree on nothing, so if it cannot tell which vendor it is, **it does not send the request** — video bills per clip and a wasted call takes minutes to fail.
-
 ## Command line
 
-`openworkbuddy` shares **one** set of config, skills, memory, connectors and sessions with the desktop app — a run you start in the terminal shows up on your phone and takes interjections; start something on the desktop and `openworkbuddy resume` picks it up mid-thread.
+`openworkbuddy` shares **one** set of config, skills, memory, connectors and sessions with the desktop app — start something in the terminal and you can watch it and chime in from your phone; stop halfway on the desktop and `openworkbuddy resume` picks it up.
 
 ```bash
-npm link      # once: install openworkbuddy globally (or just run `node cli.js …`)
+npm link # once: install the global command (or just run `node cli.js …`)
+
+openworkbuddy "write my weekly report" # one-shot: runs and exits
+openworkbuddy # interactive: type / for the command menu
+cat error.log | openworkbuddy "what is this" # pipe: stdin becomes material
+openworkbuddy -q "write my weekly report" > report.md # just the report, no progress bars
 ```
 
-### Three ways to use it
+One-shot and pipe mode **never** ask you questions, so scripts and cron don't hang. Exit codes mean something: `0` success, `1` task failed, `2` bad arguments, `130` Ctrl+C — so `openworkbuddy doctor && npm start` stops a misconfigured machine before it starts.
 
-```bash
-openworkbuddy "write this week's status report"       # ① one-shot: runs, exits, clean context each time
-openworkbuddy                                         # ② interactive: type / for the command menu
-cat error.log | openworkbuddy "what's going wrong"    # ③ pipe: stdin becomes attached material
-```
-
-One-shot and pipe mode **never ask you anything** — they decide and keep going, so scripts and cron never hang. Interactive mode does ask at real forks ("Word or PDF?"), spelling out what each choice means.
-
-### Subcommands
-
-| Command | What it does |
-| --- | --- |
-| `openworkbuddy sessions [n]` | List the last n sessions (desktop ones included) |
-| `openworkbuddy resume [id] ["keep going…"]` | Resume a session; with no id, **the most recently touched one**, desktop or terminal |
-| `openworkbuddy engines` / `openworkbuddy engines use <id>` | See what this machine can run as the engine, or switch to it |
-| `openworkbuddy doctor` | Run this first when nothing works: Node / deps / port / config / engine |
-| `openworkbuddy pair` | Connect a phone or second machine: scan a QR, no password typed across |
-| `openworkbuddy completion <shell>` | Generate Tab completion (bash / zsh / fish) |
-
-### Options
-
-| Option | What it does |
-| --- | --- |
-| `--mode craft\|goal\|plan\|ask` | Execution mode (default `craft`) |
-| `--perm plan\|ask\|auto\|full` | How much it may do **this run only** — never writes to the config file |
-| `-C, --workspace <dir>` | Work in this directory for this run only |
-| `-f, --file <path>` | Attach a file/image; repeat for more |
-| `-c, --continue` | Resume the last CLI session |
-| `--session <id>` | Resume a specific session |
-| `--list [n]` | List the last n CLI sessions (default 10) |
-| `--json` | Emit events as NDJSON on stdout, for scripts |
-| `-q, --quiet` | Final answer only, no progress (use this when redirecting to a file) |
-| `--raw` | Print the answer as plain Markdown, unrendered |
-| `--no-mcp` | Skip MCP connectors, start faster |
-| `--ask-remote` | Let it ask even with nobody at the terminal — answer from your phone |
-| `-V, --version` / `-h, --help` | Version / help |
-| `--` | Everything after this is task text (for tasks starting with a dash) |
-
-### Slash commands in interactive mode
-
-Type `/` for the menu, Tab to complete. A typo is caught rather than silently sent to the model:
-
-`/help` `/mode` `/perm` `/model` `/new` `/session` `/status` `/cd` `/files` `/open` `/paste` `/drop` `/clear` `/exit`
-
-Worth calling out: `/model` switches who does this run (a local engine or any model you configured), `/paste` pulls a **screenshot** or a wall of text straight off the clipboard, `/open` opens a deliverable in its native app (SVG, Excel, video — things a terminal can't show). You can also drag files into the window, or type `@` for path completion.
-
-### Exit codes mean something
-
-```bash
-openworkbuddy -q "write the weekly report" > report.md                  # just the report, no progress lines
-openworkbuddy -q "check src/ for null-deref risks" && git commit        # won't proceed when it fails
-openworkbuddy --json "sort these logs" | jq -j 'select(.type=="text") | .delta'
-```
-
-`0` success, `1` the task failed, `2` bad arguments, `130` Ctrl+C. `openworkbuddy doctor && npm start` will actually stop a misconfigured box.
-
-Full reference → [CLI usage](docs/命令行用法.md)
+`sessions` / `resume` / `engines` / `doctor` / `pair` (QR-pair your phone) / `worktree`, plus `--mode` `--perm` `-C` `-f` `--json` and the rest → **[命令行用法](docs/命令行用法.md)** (Chinese)
 
 ## How it's put together
 
 ```mermaid
 flowchart TB
-  subgraph Entry["Your devices"]
-    Desktop["Desktop / Web"]
-    CLI["openworkbuddy CLI"]
-    IM["Feishu / WeChat and other remote entries"]
-  end
+ subgraph Entry["Your devices"]
+ Desktop["Desktop / Web"]
+ CLI["openworkbuddy CLI"]
+ IM["Feishu / WeChat and other remote entries"]
+ end
 
-  Entry --> Runtime["OpenWorkBuddy local runtime\nsessions · permissions · projects · API"]
-  Runtime --> Agent["Agent orchestration\nplanning · tool calls · file acceptance"]
-  Agent <--> Models["Model routing\ncloud LLM / Ollama / Claude Code / Codex"]
-  Agent <--> Capabilities["Capabilities\nMarkdown Skills · experts · MCP · plugins"]
-  Agent <--> Workspace["Local workspace\nfiles · assets · project context · memory"]
-  Agent --> Canvas["Executable infinite canvas\nscript · characters · shots · assets · timeline"]
-  Agent --> Trace["Local trace\nmodel · tools · latency · tokens · I/O"]
-  Trace -. optional .-> Langfuse["Langfuse"]
+ Entry --> Runtime["OpenWorkBuddy local runtime\nsessions · permissions · projects · API"]
+ Runtime --> Agent["Agent orchestration\nplanning · tool calls · file acceptance"]
+ Agent <--> Models["Model routing\ncloud LLM / Ollama / Claude Code / Codex"]
+ Agent <--> Capabilities["Capabilities\nMarkdown Skills · experts · MCP · plugins"]
+ Agent <--> Workspace["Local workspace\nfiles · assets · project context · memory"]
+ Agent --> Canvas["Executable infinite canvas\nscript · characters · shots · assets · timeline"]
+ Agent --> Trace["Local trace\nmodel · tools · latency · tokens · I/O"]
+ Trace -. optional .-> Langfuse["Langfuse"]
 ```
 
-The diagram doubles as a reading order: start at `server.js`, then see how `agent.js` orchestrates models and tools.
+The diagram doubles as a reading order: start at `server.js`, then see how `agent.js` orchestrates models and tools. Details → [实现细节](docs/实现细节.md) (Chinese)
 
 ## What's new
 
-- **Sep 19** Eval runs **no longer touch your real memory, preferences or quota ledger** — eval used to share one data directory with normal use, so an agent calling `remember` mid-task wrote straight into your long-term memory, and the next run was influenced by what the last one left behind. A run's whole footprint now stays inside `eval/runs/<timestamp>/`. The task set also gained three shapes a single-turn task can't test: long-haul (spec hidden in a file — does the rule still hold 40 steps later), multi-turn (the format rule is stated once, in turn one), and memory recall (rules seeded into memory, none of them in the prompt, plus two irrelevant seeds to see if it forces them in). Plus a free offline gate: feed every task's checks an empty directory and require that none go green — which caught two existing tasks scoring points for an agent that did nothing.
-- **Sep 19** When two tasks change the same repo, **the second one goes off into its own worktree**. With the working directory pointed at your own repo this used to be dangerous: A changes a function to take three arguments, B is still holding the two-argument text, and B's write erases A's change — nothing errors, the tests may even stay green. Now a collision sends the later task into a git worktree: same `.git`, its own working copy, branch `owb/<session>`, and **not one byte of the tree in front of you moves**. Your uncommitted changes are carried over (without them the task sees a repo rolled back to the last commit and redoes work you already did). It auto-commits to that branch when it finishes and never merges back — how to resolve a conflict is the last thing an agent should be deciding; the `git merge` line sits on the run card waiting for you. `openworkbuddy worktree` lists what's out there. Only a collision triggers it: one person, one task, nothing changes
-- **Sep 19** A **super-admin** tier, permissions rebuilt as RBAC. The user's words: "how can one admin revoke another admin's rights, or grant them?" — and that was exactly it: any admin could demote, disable or delete any other, and mint new admins at will. Four tiers now (super admin / admin / auditor / member) and two rules: **manage only a strictly lower tier**, and **granting a role requires outranking both the person and the role**. All four routes to minting an admin (role change, create account, invite code, department template) go through the same check; each org has exactly one super admin, transferable but never issuable. Escape hatches: the platform super admin can reassign across orgs, or run `openworkbuddy owner` on the server
-- **Sep 19** Storyboard shots can be **rolled back**. Change a line, re-run, and the old first frame used to be overwritten by a file of the same name — recording the path doesn't help, the path is the same and the bytes are not. So snapshots store the bytes, deduplicated by sha256. "Versions" lists what a shot has looked like; restoring swaps the whole shot back (merging leaves last version's video against this version's first frame), and the current version is snapshotted first, so a wrong rollback is reversible
-- **Sep 19** A channel **in arrears is cut off after one hit**. Alibaba's Model Studio reports arrears as HTTP 400 with no "balance" in the body, only `code: Arrearage` — wording the breaker caught none of, so it read as "unlucky this time" and the next call went out and waited out another timeout. The factory default video model hangs off that channel. One hit trips it now, and the message says it's out of credit rather than "retrying in a few minutes"
-- **Sep 19** Models **resold on Volcengine Ark are no longer read as mis-filed**. Ark stamps what it lists with a `-YYMMDD` suffix and resells other vendors — `kimi-k2-250711` is filed under Ark. The old rule read only the brand prefix, judged the user's correctly-filed `glm-5-3-flash-260828` to be Zhipu's and moved it on the next save, which is what actually makes it 404. The suffix now outranks the prefix, and must be a real date — other vendors' eight-digit dates are not swallowed
-- **Sep 19** A stuck task **stops itself** now. There used to be only nagging: three identical results in a row triggered a "try another route" note, five blocked one call; if the model ignored both it spun on to the cap, and what you saw was "maximum runtime reached", which reads like the job was too big. Five shapes of stuck are now recognised — the same call returning the same result, the same error text word for word, consecutive failures, calls into a tripped channel, and `A→B→A→B` loops where no single tool looks repetitive. This kind of stop never auto-continues, and it doesn't suggest raising the cap (a bigger cap just buys more laps); it names the road to fix instead
-- **Sep 19** In the library, **audio and video play when you click them** — a 1006 KB mp3 is no longer called "too large". The cause was on the server: the file endpoint always sent an attachment, so `<audio>` and `<video>` rendered nothing. It serves inline with the right MIME type now, and `?dl=1` is the save path. Binary files get a single existence check instead of being pulled down whole. **"From which task" no longer names the wrong one** — it goes by the task folder the file sits in, and returns nothing rather than guessing. Two new buttons too: "Reveal" selects the file in Finder, "Copy file" puts the file itself on the clipboard, so pasting into WeChat or PowerPoint gives you the file and not a path
-- **Sep 19** **Opening a page in a real browser to look at it** works now. Everything but "list the tabs" used to fail — navigate, screenshot, run-JS — and you had to start a Chrome with a debugging port yourself first. Four bugs stacked up: port 9222 held by a Chrome serving no debugger, an `Origin` header in the handshake (a flat 403 since Chrome 111), a successful 101 read as a failure, and `evaluate` unwrapping one level too many so it always returned `undefined`. It now starts its own Chrome with a separate profile on an OS-picked port, so it never touches the window and logins you have open; it takes full-page screenshots and runs JS for values, and WebGL renders in headless too. When it can't connect, run `status` first: it probes without touching anything
-- **Sep 19** When it asks "the three drafts are in «cover-pick.html», which do you want?", **that file opens on the right by itself**. Only files the question names *and* this run actually wrote qualify, so it can never pop a "file not found"; the files are buttons under the question too. Nothing changed for outputs that arrive at the end of a run — those still never steal the layout
-- **Sep 19** The files panel got a **search box**. It matches the whole relative path, so folder names are clues too (typing "0918" pulls up everything from that day's task folder); words separated by spaces must all match; results are flat, each row labelled with the folder it lives in. Under 8 files the box isn't shown, because when you can take it all in at a glance it's just in the way
-- **Sep 19** WeChat article covers are **actually generated images** now, not a screenshot of an HTML layout. The skill only specified sizes and said nothing about what the picture should look like, so every run fell back to typesetting one. The prompt is now built from four lines — subject, style, light and colour, composition — three directions go into one comparison page to pick from, both sizes are delivered, and the model never writes the title into the image (Chinese glyphs always come out mangled)
-- **Sep 19** File edits **can be rolled back**: the previous version is kept before every `write_file` / `edit_file`; open a step card for that step's diff and a "rewind to before this step" button — it rolls back that step and everything after it, and a wrong rewind is one "undo" away. `/rewind` on the command line. In "ask every step" mode the approval bar shows the diff lines, so you approve the change, not a filename
-- **Sep 19** Every run of a scheduled task now leaves **a full conversation you can open and replay**. Each task in Automation has a "run history" with a "see what it did" button — the tools it called, what each step returned, why it ended where it did. It used to leave one result string truncated at 500 characters and nothing else, so there was no way to see where it stalled. Scheduled sessions stay out of the sidebar (a few dozen cron runs a day would push the real conversations off the list), and the desktop pet doesn't dance for a cron job
-- **Sep 19** Scheduled tasks can be **one-shot** now. "Remind me in five minutes to prep for the interview" used to become an alarm for 14:00 every day — cron's five fields have no concept of "once", so with only that tool the model can only approximate "at this time" with "at this time every day". Three spellings are accepted: `+5m`, `14:05`, `2026-09-19 14:05`; anything else throws instead of guessing, because the schedule is shown to you for approval and a wrong guess is something you click "agree" on. After it fires the state is "done" and the record stays; a run missed while the machine was off is caught up, and one missed for too long just records "missed"
-- **Sep 19** In the library, **clicking a file actually shows it** (the content was rendering all along — the pane was still `display:none`, so the first click after entering the page always failed). Word / Excel / PPT / CSV previews were filled in here too, drawn with the same code as in a conversation: sheet tabs are clickable, and CSV detects whether the separator is a comma, a semicolon or a tab
-- **Sep 19** The **＋ next to the composer is one entrance to the six things you actually do**: add files, switch mode, pick an expert, pick a skill, see **which tools the model has in hand right now**, and turn configured connectors on and off. Those six used to live in six places, and "which tools" wasn't in the UI at all — you had to ask and wait for it to answer "I have no messaging channel configured". Switching a connector off isn't deleting it: config and keys stay, it just isn't connected this round and isn't in the tool list — leave the definition in and the model plans around it, calls it once, eats a "can't connect", and re-plans
-- **Sep 19** **Models that can't be reached are no longer hit over and over.** Look / image / video / voice / transcribe all pass one gate: 401, 402, 403 and 404 — the errors that never clear on their own — pause that channel for 30 minutes on the first hit, timeouts pause it for 5 after 3; and the second time a tool is stopped by the breaker, it isn't run again this round (the trace used to fill with forty identical "look at image · failed" lines). Swapping a key or a model works immediately without waiting out the cooldown, and a yellow bar at the top of Settings → Models says which path and how long is left. The vision dropdown now groups by the modalities the provider reports: of 446 models, 263 really accept images and names alone find 134 — while `gemini-3-pro-image`, which generates, has `image` in its name and sat in the vision list waiting to be picked
-- **Sep 19** The security tier **now reaches the command line of the local CLIs**. Both bring their own tools and their own loop, so their file writes never pass through this project's security center — and the two paths hard-coded `acceptEdits` and `workspace-write`, so setting the tier to "look, don't touch" and switching to a local engine still let it edit your files freely. All four tiers now translate down (look-don't-touch → claude `plan` / codex `read-only`), the commands on your ask-me list are refused outright on a path that has no approval channel, and look-don't-touch also withholds the borrowed command-line entry from the allowlist. When a tier tightens things the run page says so, because otherwise all you see is "why won't it do anything"
-- **Sep 18** Click a file in the library and you **land on the exchange that produced it** — instead of reopening the conversation at the bottom and scrolling back a dozen rounds yourself. Each file row has a small speech-bubble button, and the "from task" line is tagged with the round. When it can't jump (old sessions never recorded rounds) it draws no button and keeps the old behaviour
-- **Sep 18** **You can quote one reply and ask about it**: hit "quote" under a reply and that text drops into the composer as a `>` blockquote for you to write under. **Select part of it first and only that part is quoted.** Why the composer instead of a chip — a quote has to be editable; the real use is "one sentence in here is wrong", and you keep that sentence and delete the rest. A half-written message isn't clobbered, and quoting twice doesn't insert it twice
-- **Sep 18** Fixed three icons that were **rendering as empty boxes** ("last run" in automations, the scan in security settings, "last generated" on the canvas). `<use href="#i-a-typo">` throws nothing and warns about nothing — the browser just draws a blank the size of a real icon. Added a gate too: all 379 hard-coded icon names in the UI are checked against the sprite
-- **Sep 18** Added the **Jev decision model**: it doesn't write prose, it answers "which one / what score / how likely" plus **how sure it is**. That's why it isn't in the model dropdown — it gets its own path, `openworkbuddy jev` on the CLI, and if you already use OpenRouter the key you have works as-is. Its first real job here is **Goal-mode verification**: each acceptance criterion becomes one yes/no question, and **a box is ticked only above 70% — below that it stays unticked and the card says "not sure" rather than "not done"**, because the way that card misleads you is that a ticked box never gets a second look. Machines without it configured keep the old path
-- **Sep 18** The sidebar's task history **searches the conversation**, and by meaning. It used to filter titles only — but the title was written by the machine and you never read it; what you remember is the sentence you typed ("pull the duplicate rows out of this csv") or the file you got back ("cleaned.xlsx"). Both now find the session, **every hit says which way found it** (title / produced file / in the conversation / similar meaning), and the matching line is quoted underneath — otherwise the semantic hits just look like unrelated tasks. Typing filters instantly instead of waiting on the network, and a failed search says it failed rather than showing "no matches". `/resume` in the terminal works the same way
-- **Sep 18** `/resume` in the terminal went from counting numbers to choosing: a search box that is always there, ↑↓ to move, type to filter, Enter to attach, with desktop sessions in the same list; `/model` uses the same picker. Also new: `/init` (it reads the directory and writes an `AGENTS.md`), `/compact`, `/diff`, `/mcp`, plus `Shift+Tab` to cycle permission levels and `Esc Esc` to pull an earlier question back for editing
-- **Sep 17** A finished task asks before it leaves a mess behind: the hundreds of extracted frames, the separated audio stems, the build output - clear them out? The cut and the report are never touched. The "Give me the work" home screen carries the same entry with the figure you would get back written on it, plus a per-task breakdown of where the space actually went and a way to tidy just one of them. Delete means delete - nothing is moved to a trash folder to go on occupying the disk
-- **Sep 17** The library no longer hands you a screen of rows that answer "this file no longer exists" when you click them: files the upgrade swept into the dated archive folder are followed to their new path and open properly, while the hundreds of intermediate frames a task cleaned up after itself stay hidden by default — a line underneath says how many, and one click brings them back
-- **Sep 17** Every API the company buys now goes through one door: the real keys are entered once in the admin page, what goes out is a virtual key, and the wire protocol is plain OpenAI — nobody's code changes, only the `base_url`. Chat, embeddings, images, video, speech, transcription and web search all pass the same gate, and each key has its own capability switches: an image-only key that calls speech gets a 401
-- **Sep 14** An AI short-drama infinite canvas: script, characters, shots, assets and the cut, all on one canvas
+- **Sep 19** Eval runs **no longer touch your real memory, preferences or quota ledger**; the task set gained long-haul, multi-turn and memory-recall shapes that a single-turn task can't test
+- **Sep 19** When two tasks change the same repo, **the second one goes off into its own git worktree** — not one byte of the tree in front of you moves
+- **Sep 19** Permissions rebuilt as **RBAC** with a super-admin tier: manage only a strictly lower tier, and all four routes to minting an admin go through the same check
+- **Sep 19** **Models that can't be reached are no longer hit over and over**: 401 / 403 / 404 pause that channel for 30 minutes on the first hit, and a channel in arrears is cut off after one
+- **Sep 19** A stuck task **stops itself** now — five shapes of stuck are recognised, and it names the road to fix instead of suggesting you raise the cap
+- **Sep 19** **Anything can be rolled back**: storyboard shots to an earlier version, and file edits from the step card, which opens that step's diff next to a rewind button
+- **Sep 19** **Opening a page in a real browser to look at it** works now: full-page screenshots and JS values, on its own Chrome profile so it never touches the windows you have open
+- **Sep 18** The sidebar's task history **searches the conversation**, and by meaning, with every hit labelled by which way found it
+- **Sep 17** A finished task asks before it leaves a mess behind: the hundreds of extracted frames, the audio stems, the build output — **the cut and the report are never touched**
+- **Sep 14** An **AI short-drama infinite canvas**: script, characters, shots, assets and the cut, all on one canvas
 
 Older entries → **[Changelog](CHANGELOG.en.md)**.
 
@@ -342,34 +264,11 @@ Older entries → **[Changelog](CHANGELOG.en.md)**.
 > It runs commands, reads and writes files and reaches the network — so the gates are real: command approval, a file blacklist, a URL allowlist, audit logs and four permission tiers.
 > **Read [安全](docs/安全.md) (Chinese) before exposing it to the internet**; the defaults are tuned for local use only.
 
-### Skills get screened before they're installed
+**Skills get screened before they're installed.** A skill is a set of instructions written for an agent, handed to something that can run commands on your machine — unlike `npm install`, where a package only runs when you `require` it; a skill is read and followed on its own. So an install runs 34 static rules first and shows you what it found, in three buckets: install / look first / don't install by default (no score — a score just teaches people that "42 looks fine"). Ten of the rules actually block (reverse shells, `curl | bash`, reading SSH private keys, wiping disks, erasing traces); an admin can force past them, and that goes into `.install.json`.
 
-A "skill" is a directory with a `skill.md` in it, and that file is **instructions written for the agent**. So installing one means wiring a stranger's instructions into something that can run commands on your machine. Not the same as `npm install` — an npm package only runs once you `require` it; a skill is something the agent reads and follows on its own.
+**It is not antivirus.** On a public labelled set, pure static rules catch about three quarters — one in four gets through. Install [toolward](https://github.com/CatCatUncle/toolward) and it's used as a second ruler automatically, merging in a direction that only ever tightens. And the one that matters more than every rule above: **read the `skill.md` yourself before installing.** It's Markdown, not a binary.
 
-So installs run a static pass first (34 rules), then **show you what they saw**:
-
-```
-Skill "xxx" — 3 things you should look at (not proof of anything; these are the
-parts only you can judge):
-  · references/setup.md:62  Pipes a download straight into a shell. What you
-                            reviewed and what actually runs need not be the same file.
-      powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
-  Hosts it will contact: astral.sh, github.com
-```
-
-The choices behind it, and what each one costs:
-
-- **No score, three outcomes**: install, look-then-install, not-by-default. A 0–100 score just teaches people that "42 is probably fine".
-- **Only 10 rules actually block** (reverse shells, `curl | bash`, reading SSH private keys, wiping disks, clearing history…); the other 24 are laid out for you to read. The platform owner can override a block, but that override is written to `.install.json`: who, when, which commit, which finding they waved through. Without that escape hatch people route around the tool — and copying a directory into `skills/` is what nothing can stop.
-- **Combinations, not keywords.** `curl` is fine. `printenv` is fine. Reading a secret *and* sending it out from the same file is the complete shape of exfiltration.
-- **A hit inside frontmatter is escalated one level**, because that `description` line goes into the system prompt of **every** task. An injection in the body waits to be loaded; one in the frontmatter is always on.
-- **Skills are one directory for the whole machine**, so installing, editing and deleting are platform-owner only.
-
-**It isn't antivirus.** On a public labelled corpus, static rules alone catch about three quarters of real malicious skills (74.9% detected, 60.1% correctly told not to install) — **one in four gets through**. The other way round, measured against the 34 real skills shipped here, 2 were blocked, and both are genuine matches rather than rule bugs — one is a news skill whose cached article *describes* this attack. The same sentence is an attack in instructions and a news story in cached data; a regex can't tell them apart. That ceiling is exactly why the override has to exist.
-
-**Want a second ruler? If it's on the machine, it gets used.** [toolward](https://github.com/CatCatUncle/toolward) is another project by the same author, built for this job: 37 rules in six families. Every skill install and saved connector gets a second pass, both sets of findings land in one list with the source labelled, and merging **only ever tightens** — bolting it on can never turn a block into a pass. It is not a dependency and it will never `npx` one for you: `npm i -g toolward` is yours to run, and not installed, crashed or timed out all mean "it never ran". (Pulling an unaudited version on the fly while auditing the supply chain is precisely what its own rules flag.) Like this project it is PolyForm Noncommercial, and **a company needs a separate licence**, which is why we can't put it in your `package.json` for you. On the connector side it only advises, never blocks, and **your keys stay put**: only variable names are handed over, every value replaced with `***`.
-
-And the one that matters more than every rule above: **read the `skill.md` yourself before installing.** It's Markdown, not a binary.
+How the call is made, and why the force-install hatch stays → [安全](docs/安全.md)　|　[安全基线](docs/安全基线.md) (Chinese)
 
 ## Contributing
 
@@ -396,52 +295,52 @@ Most docs are in Chinese; the code and comments are the source of truth.
 
 ## Also by the same author
 
-- **[toolward](https://github.com/CatCatUncle/toolward)** — a static safety check for agent skills and MCP connectors: 37 rules in six families (prompt injection and tool poisoning, supply chain, secrets, execution and permissions, network and exfiltration, governance), zero runtime dependencies, Node 20.10+. Run `npm i -g toolward` and OpenWorkBuddy picks it up as a second ruler automatically (the skill-screening section above explains how the two verdicts are merged); skip it and nothing changes. Like this project it is PolyForm Noncommercial: free for personal, teaching, academic, charity and government use, a company needs a separate licence.
+- **[toolward](https://github.com/CatCatUncle/toolward)** — a static safety check for agent skills and MCP connectors: 37 rules in six families, zero runtime dependencies, Node 20.10+. Run `npm i -g toolward` and OpenWorkBuddy picks it up as a second ruler automatically; skip it and nothing changes. Like this project it is PolyForm Noncommercial.
 
 ## License
 
 In one sentence: **personal, learning and non-profit use is free; making money with it (including internal productivity at a company) needs a commercial license from the author.**
-The license is [PolyForm Noncommercial 1.0.0](LICENSE); what counts as commercial and how to get one: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+The license is [PolyForm Noncommercial 1.0.0](LICENSE); what counts as commercial and how to talk about it is in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
 
-**A commercial license unlocks nothing.** There is one codebase — this repo — and what you see is all of it: the agent loop, 40+ tools, the short-drama canvas, IM remote control, execution traces, memory and self-evolution, multi-tenancy and the admin console included. No feature flags, no trial countdown, no greyed-out "available in the commercial edition" buttons. What you buy is three other things: **a licence to make money with it, the door to trademark and white-labelling, and a person who picks up the phone.** Where the line runs → [开源与商业版边界](docs/开源与商业版边界.md).
+**A license does not unlock features.** There is one codebase — this repo — and you are looking at all of it: the agent loop, 40+ tools, the drama canvas, IM remote control, execution traces, self-evolution and memory, multi-tenancy and the admin console included. No feature flags, no trial countdown, no greyed-out buttons. A license buys three other things: the right to make money with it, trademark and white-label room, and someone to reach → [开源与商业版边界](docs/开源与商业版边界.md) (Chinese)
 
-**Part of it isn't even restricted to non-commercial use.** Deployment configs, CI workflows, helper scripts, the evaluation task set, the skill template and the code samples in the docs are additionally MIT-licensed — take them → [LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md). And **skills, plugins and connector configs you write yourself are your own work**, not derivatives of this project.
+**Some of it isn't even non-commercial.** Deployment configs, CI pipelines, scripts, the eval set, skill templates and sample code in the docs are additionally released under MIT → [LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md). And **skills, plugins and connector configs you write are your own work**, not derivatives of this project.
 
-This license grants **no** rights to any third-party product, trademark, logo, brand asset or screenshot — those belong to their respective owners.
+This license grants **no** rights to any third-party product, trademark, logo, brand asset or screenshot; those belong to their respective owners.
 
 Copyright (c) 2026 开发者猫叔
 
 ## Disclaimer
 
-**What this is.** OpenWorkBuddy (repository `CatCatUncle/openworkbuddy`) is an independent open-source project written from scratch by 开发者猫叔 (CatCatUncle); all source is public here. The architecture, tool protocol, permission model, memory and self-evolution are original work; external projects that were studied are listed one by one in [NOTICE.md](NOTICE.md), section 4.
+**What this is.** OpenWorkBuddy (repo `CatCatUncle/openworkbuddy`) is an independent open-source project written from scratch by 开发者猫叔; all source is in this repo. Architecture, tool protocol, permission model, memory and self-evolution are original work; projects studied along the way are listed one by one in section 4 of [NOTICE.md](NOTICE.md). The name is `Work` + `Buddy` — two ordinary English words — with the `Open-` prefix common to open-source projects.
 
-**Where the name comes from.** `Work` + `Buddy` are two ordinary English words (office + companion) and `Open-` is the usual open-source prefix. Together they plainly describe what the project does: an open-source work buddy.
+**Relationship with third parties: none.** This project is not affiliated with, authorised, sponsored or endorsed by Tencent or its WorkBuddy product, and contains none of its code, assets, UI resources or non-public information. If "WorkBuddy" is someone's registered trademark, the rights belong to its owner; third-party names appear here only to describe compatibility or draw a factual distinction (nominative use). Feishu, WeCom, QQ and the rest are integrated through their own **publicly published** open APIs; no reverse engineering is involved.
 
-**Relationship to third parties: none.** This project has no affiliation with, authorization from, sponsorship by or endorsement from Tencent or its WorkBuddy product, and contains none of its code, assets, UI resources or non-public information. If "WorkBuddy" is someone's registered trademark, the rights are theirs; third-party names appear in these docs only to describe compatibility or draw a factual distinction (nominative use). Integrations with Feishu, WeCom, QQ and others use each platform's **publicly published** open APIs only; no reverse engineering is involved.
-
-**If you hold a right and think something here is wrong**, contact me through [Issues](https://github.com/CatCatUncle/openworkbuddy/issues) or the address in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). I'll verify and fix it quickly — faster than any other route.
+**If a rights holder thinks something here is wrong**, reach me through [Issues](https://github.com/CatCatUncle/openworkbuddy/issues) or the contact in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) and it will be fixed once verified.
 
 ## Support this project
 
 <p align="center">
-  <a href="https://github.com/CatCatUncle/openworkbuddy">
-    <img src="docs/images/star-guide.svg" width="640" alt="The star in the top-right corner of the repo — one click">
-  </a>
+ <a href="https://github.com/CatCatUncle/openworkbuddy">
+ <img src="docs/images/star-guide.svg" width="640" alt="That Star button in the top-right corner — press it">
+ </a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/CatCatUncle/openworkbuddy"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=for-the-badge&logo=github&label=Star%20this%20repo&color=5b5ff7" alt="Star this repo"></a>
+ <a href="https://github.com/CatCatUncle/openworkbuddy"><img src="https://img.shields.io/github/stars/CatCatUncle/openworkbuddy?style=for-the-badge&logo=github&label=Star%20this%20repo&color=5b5ff7" alt="Star this repo"></a>
 </p>
 
 <p align="center">
-  <sub>And pass it to one person who still hand-builds decks, weekly reports and meeting notes — worth more than a hundred impressions.</sub>
+ <sub>Pass it to one colleague who hand-builds decks, weekly reports and meeting notes — worth more than a hundred impressions.</sub>
 </p>
 
 ## Contributors
 
+Thanks to everyone who has changed something here. Want to join them: [CONTRIBUTING.md](CONTRIBUTING.md).
+
 <p align="center">
 <a href="https://github.com/CatCatUncle/openworkbuddy/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=CatCatUncle/openworkbuddy" alt="OpenWorkBuddy contributors">
+ <img src="https://contrib.rocks/image?repo=CatCatUncle/openworkbuddy" alt="OpenWorkBuddy contributors">
 </a>
 </p>
 
@@ -449,9 +348,9 @@ Copyright (c) 2026 开发者猫叔
 
 <p align="center">
 <a href="https://star-history.com/#CatCatUncle/openworkbuddy&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=CatCatUncle/openworkbuddy&type=Date&theme=dark">
-    <img src="https://api.star-history.com/svg?repos=CatCatUncle/openworkbuddy&type=Date" alt="Star History Chart" width="600">
-  </picture>
+ <picture>
+ <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=CatCatUncle/openworkbuddy&type=Date&theme=dark">
+ <img src="https://api.star-history.com/svg?repos=CatCatUncle/openworkbuddy&type=Date" alt="Star History Chart" width="600">
+ </picture>
 </a>
 </p>

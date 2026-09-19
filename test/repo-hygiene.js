@@ -70,7 +70,6 @@ const ok = (cond, msg, extra) => {
 
 // ---------- 把注释剥掉，只看真正会执行的代码 ----------
 // 不剥的话，注释里那句「原先有 brand-guidelines」自己就会把自己判红。
-//
 // 按行剥，不用 /\*[\s\S]*?\*\// 那种整块匹配：这些测试里到处是正则字面量，
 // 里头的 /* 和 */ 会跟真注释乱配对。第一版就是这么写的，一口气吃掉了 frontend.js
 // 的 343KB（全文 the 90%），于是扫描器面对一个几乎空的文件，当然「全部通过」——
@@ -315,10 +314,8 @@ console.log("\n【3】experts.json 绑的技能，必须是 git 跟踪的");
 // 2026-09-17 把它从仓库里清干净，是一处一处手工改的：环境变量、登录 Cookie、数据目录、
 // CSS 变量和动画名、预加载暴露给页面的那个 window 对象、几个函数名和全局量。
 // 手工清掉的东西会手工地长回来——下次谁顺手写个 wbFoo，没有任何人会注意到。
-//
 // 为什么在意：`wb` 太短，短到会被读成别家产品的缩写；这个项目跟腾讯 WorkBuddy 没有任何关系
 // （README 末尾那段声明讲的就是这件事）。所以自己的代码里不留这两个字母打头的标识符。
-//
 // 扫的是「代码里露脸的名字」：单独成词的 wb、wbXxx、wb- / wb_ / WB- / WB_。
 // **不**扫 WorkBuddy 这个词本身——README / NOTICE / 商业授权里指名道姓说「与腾讯 WorkBuddy
 // 无关」「别起容易认错的近似名」，那是指示性使用，恰恰是要留着的。
@@ -407,13 +404,11 @@ console.log("\n【5】CI 一次都跑不到的测试文件，至少得能解析"
   // test/all.js 的 SUITES 决定了 CI 跑哪些（macOS 那条腿 npm test 跑全套，ubuntu 跑它的子集）。
   // 不在 SUITES 里的，两条腿都不碰——现在是 frontend.js 和 admin-ui.js 这两个要真开
   // BrowserWindow 的（为什么不套 xvfb 赌它能过，.github/workflows/test.yml 顶上写了）。
-  //
   // 这两个文件加起来九千多行，其中大半是塞进模板字符串、再发给页面去执行的代码。
   // 2026-09-17 踩到的雷：在 AUTH_CHECKS 那块模板里写了一句 // 注释，注释里带了一对
   // 反引号（拿它引一段代码）——模板当场从那儿断掉，后半截成了真代码。
   // 这类错只有本机开着 Electron 跑一遍才看得见，而这两个文件恰恰是最少被跑到的：
   // 改完界面的人通常只跑 npm test，而 npm test 里没它俩。
-  //
   // 这儿只做 `node --check`：文件整体能不能解析。模板**内部**的语法错它看不见
   // （那得连 ${} 插值一起求了，是另一件事），但上面那类「一个反引号把文件劈成两半」
   // 的，它当场就红。
@@ -461,7 +456,6 @@ console.log("\n【6】require 得到的文件，得真的在仓库里");
   // 本机一切正常；推上去之后别人 clone 下来、或者 Docker 里 COPY 的是纯净的工作区，
   // 启动第一行就是 Cannot find module。CI 也拦不住：actions/checkout 拉的是提交，
   // 而这个文件在本机工作区里好端端地躺着。
-  //
   // （这一节写下来的当天就抳了一个：account.js 要 require("./usage-store")，
   //   而 usage-store.js 当时还是 ?? 未跟踪。）
   const tracked = new Set(execFileSync("git", ["ls-files"], { cwd: ROOT, encoding: "utf8" }).trim().split("\n"));

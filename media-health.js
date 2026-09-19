@@ -2,9 +2,6 @@
 /**
  * 连不通的那条渠道，别让 agent 一轮一轮去撞。
  *
- * 用户原话：「一些不能用的模型，不要一直去用啊！」「之前一些 trace 出现了一直看图，
- * 看图模型不可用的问题啊」。
- *
  * 病根不在工具的返回文案——tools.js 里早就写着「这不是问法的问题，重试多少次都一样」。
  * 问题是那句话只是**建议**：模型看完照样再调一次，换个措辞再调一次，一趟任务里能撞四十次
  * 402。每一次都是一个真实的网络往返、一次 20 秒超时、一段烧掉的上下文。
@@ -21,7 +18,6 @@
  *   **例外看正文**：状态码撒谎的时候正文不撒谎。OpenRouter 把「型号 ID 不存在」报成 400，
  *   火山把「账号欠费」报成 400/403 带 AccountOverdue——这两种换一百次问法结果都一样，
  *   正文里只要说的是「没余额」或「没这个型号」，不管什么状态码都按硬错断。
- *   用户原话：「这个看图模型我现在没有付费用不了的啊，你不要一直给我调用浪费这个 agent 执行时间啊」
  *
  * 自愈的路留了三条，缺一条都会变成「我明明充值了它还是不干活」：
  *   1. 配置动了（地址/型号/Key 任一变了）→ 指纹变了，自然是新的一格；
@@ -72,7 +68,6 @@ function looksNetwork(text) {
  * `{"code":"Arrearage","message":"Access denied, please make sure your account is in good standing…"}`。
  * 400 不在硬错表里，上面这串词老正则也一个都接不住，于是每一次调用都被当成
  * 「这次不巧」——接着重试、接着白等一个超时，充值之前永远不会变。
- * 用户原话：「一些不能用的模型，不要一直去用啊！」
  */
 function looksBroke(text) {
   return /没余额|余额不足|欠费|insufficient[_ ](credit|balance|quota|funds)|out of credits|AccountOverdue|account (is )?overdue|arrearage|overdue[_ -]?payment|account is in good standing|in arrears|payment required|quota (has been )?exhausted|exceeded your current quota|check your plan and billing|billing hard limit/i.test(String(text || ""));

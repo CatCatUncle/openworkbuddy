@@ -1,10 +1,8 @@
 "use strict";
 // 版本与更新检查。
-//
-// 用户的原话是「这个代码有更新的话，这个安装包是要重新安装吗，还是能更新啊」。如实回答分两种装法：
+// 如实回答分两种装法：
 //   · 源码跑的（npm start / npm run app）：git pull && npm install，重启就是新版，不用重装。
 //   · 安装包装的：下载新的 dmg / exe 覆盖装一次。配置、会话、工作区都在 ~/OpenWorkBuddy，覆盖安装不动它们。
-//
 // 为什么不做「点一下自动装好」：这两个包都没有签名（没有 Apple Developer ID 证书，Windows 也没买代码签名证书）。
 // electron-updater 在 macOS 上走 Squirrel.Mac，会校验代码签名，未签名的包一定失败——
 // 硬做出来只会是一颗永远报「更新失败」的按钮。所以这里做的是：如实告诉你有没有新版、新版在哪、你这种装法怎么升。
@@ -21,7 +19,6 @@ function currentVersion() {
 
 // 判「你是怎么装的」。不用 electron.app.isPackaged，是因为这个模块在纯 node 模式
 // （npm start）下也要能被 require，那时候根本没有 electron 可取。
-//
 // ⚠️ 只看 app.asar 是错的：本项目的 asar 是关着的（原因见 electron-builder.config.js 文件头），
 // 装机包里代码住在 <Resources>/app/ 而不是 <Resources>/app.asar，于是每一个装了包的用户
 // 都会被判成「源码版」，点「检查更新」得到的建议是 git pull && npm install —— 他机器上

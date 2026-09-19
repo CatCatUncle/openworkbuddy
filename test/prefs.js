@@ -767,7 +767,6 @@ function runConfigGates() {
   eq(cfgLint.lint(template, template).length, 0, "反向对照：自带的 config.example.json 一条都不报");
 
   // 模板里写的默认值，必须跟代码里 `|| 数字` 那个兜底是同一个数。
-  //
   // 真出过：config.example.json 写 max_runtime_ms=600000（10 分钟），agent.js 四处兜底
   // 全是 1800000（30 分钟），server.js 回给前端的也是 1800000，设置页文案却写「默认 10」。
   // 四处没一个对得上，谁看都觉得自己那份是对的。这种漂移编译器一辈子抓不到，
@@ -781,12 +780,10 @@ function runConfigGates() {
   }
 
   // 设置页那颗「保存」真往 agent 里写的每一个键，config-lint 都必须认识。
-  //
   // 真出过：auto_continue_rounds 只活在 KNOWN_EXTRA 那份补充名册里，模板里没有——
   // 于是它在设置页存得进去，在 config.example.json 里查不到，谁想知道默认值是多少
   // 都只能翻源码。反过来更糟：哪天在设置页加个新字段却忘了登记，用户一存盘，
   // 下次开机体检就冲他喊一句「agent.xxx 不认识，是不是拼错了」——而他什么都没拼错。
-  //
   // 断言钉在 lint 的结论上，不钉在「我以为它在哪份名册里」：两份名册哪一份收了它都行。
   const app05 = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
   // 往 agent 里写的地方不止一处：智能体设置页存的是一大把，而「主模型挂了换谁」那颗下拉

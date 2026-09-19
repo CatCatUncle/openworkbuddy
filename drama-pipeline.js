@@ -1,7 +1,6 @@
 /**
  * 短剧制片进度。
  *
- * 用户的原话是「真的能拿这个做 AI 短剧啊，短剧的各个流程……还有整个无限画布做短剧的能力」。
  * 画布上早就有剧本、角色、场次、镜头、生图生视频这些节点了，缺的是「这部戏做到哪了」——
  * 一张摆了三十个镜头的画布，光靠眼睛看不出还差几张首帧、哪一镜卡着生不出来、
  * 剩下的活儿大概要跑多久。用户只能一个节点一个节点点开看，那不叫工作流，那叫一堆卡片。
@@ -15,7 +14,7 @@
  * 三条硬规矩：
  *   · 「有路径」不等于「做完了」。盘上没有那个文件，这一格就是没done——
  *     以前那种「字段里写着 first_frame 所以算完成」的算法，正好把最难查的一类事故算成绿的。
- *   · 没跑过就不估时间。eta 为 null 好过编一个数出来（用户原话之外的东西不许瞎填）。
+ *   · 没跑过就不估时间。eta 为 null 好过编一个数出来。
  *   · 纯函数，不碰 fs、不发请求。文件在不在由调用方给 onDisk，这样它能被单测钉死。
  */
 
@@ -60,6 +59,27 @@ function outputOf(payload, kind, onDisk) {
     return { path: v.trim(), base: b, ok: !onDisk || onDisk.has(b) };
   }
   return null;
+}
+
+/**
+ * 画布上所有被当成「产物」的路径。
+ *
+ * 判定本身还是纯函数：这里只负责把要核实的路径列出来，真去问盘的是调用方。
+ * 有这一条是因为 /api/files 那份清单是截断过的（最深 3 层、最多 500 条），
+ * 「不在清单里」从来就不等于「文件没了」——工作目录一攒多、素材落在深一层，
+ * 满画布的节点就会一起挂出「盘上已经没有了」，而文件好端端躺着。
+ */
+function outputPaths(state) {
+  const nodes = Array.isArray(state && state.nodes) ? state.nodes : [];
+  const out = new Set();
+  for (const n of nodes) {
+    const p = payloadOf(n);
+    for (const kind of Object.keys(OUTPUT_KEYS)) {
+      const o = outputOf(p, kind, null);
+      if (o && o.path) out.add(o.path);
+    }
+  }
+  return [...out];
 }
 
 /** 过去的生成耗时。只认真记过 ms 的，缺的一律不参与，宁可估不出来也不拿 0 凑数 */
@@ -185,4 +205,4 @@ function dramaProgress(state, opts = {}) {
   return { percent, stages, shots: rows, cast: castRows, blockers, next, pending, eta, counts: { script: scripts.length, character: characters.length, shot: shots.length, scene: scenes.length, storyboard: storyboards.length, timeline: timelines.length } };
 }
 
-module.exports = { dramaProgress, _internals: { outputOf, medianMs, isPlaceholder, SCRIPT_MIN } };
+module.exports = { dramaProgress, outputPaths, _internals: { outputOf, medianMs, isPlaceholder, SCRIPT_MIN } };

@@ -103,7 +103,7 @@ app.delete("/api/memory/item/:id", (req, res) => {
 });
 app.get("/api/memory/export", (_req, res) => res.json({ dump: "整库" }));
 // 界面靠它决定「服务器级的那些控件画不画」。画了却一点就 403，就是用户那句
-// 「切换失败怎么还切换失败了啊」——一颗明明能点的按钮，点了只回四个字。
+// 一颗明明能点的按钮，点了只回四个字。
 const isPlatformOwner = (req) => admin.isSoloDesktop() || admin.platformAdmin(req && req.user);
 app.get("/api/settings-probe", (req, res) => res.json({ platform_owner: isPlatformOwner(req) }));
 app.get("/api/security/modes", (req, res) =>
@@ -234,7 +234,6 @@ async function login(username, password) {
   // 跟「谁在请求」没有半点关系。于是分公司的人只要知道总部那份文件叫什么（文件名会出现在
   // 转发的截图、聊天记录、日报标题里），照着请求一次，兜底扫描就替他把文件翻出来了：
   // 列表里一个字都看不见，下载却是 200。
-  //
   // 这一节把 server.js 里的 tenantRootOf + rootedPath 原样切出来跑。外部依赖里
   // safePath / safePathIn / withWorkspace 用 tools.js 的真货（跟线上同一套越界判定），
   // 只有 knownRoots 这张「整台机器的根」和两条线索（?root= 指纹、?sid= 会话）摆成最坏情况。
@@ -539,7 +538,7 @@ async function login(username, password) {
   t = await tools.withPolicy(bl, () => tools.executeTool("render_page", { url: "https://evil.com/x" }));
   ok(t.isError === true && /黑名单/.test(t.content), "render_page 也拦（两个抓网页的入口都得管）", t.content);
   // 反向对照：不在黑名单里的地址，至少不该是「组织网络设置」把它拦的
-  //（本机这个测试服务器可能被安全中心的私网规则拦，那是另一道闸，报错文案不一样）
+  // （本机这个测试服务器可能被安全中心的私网规则拦，那是另一道闸，报错文案不一样）
   t = await tools.withPolicy(bl, () => tools.executeTool("fetch_url", { url: `http://127.0.0.1:${server.address().port}/api/files` }));
   ok(!/本组织的网络设置/.test(String(t.content)), "反向对照：没上黑名单的地址不会被组织这道闸拦", String(t.content).slice(0, 80));
 
@@ -693,7 +692,7 @@ async function login(username, password) {
   eq(memory.manual(), "老板写的背景", "反向对照：真写进去了");
 
   console.log("\n【20】设置页：会 403 的控件，后端得先说清楚「这颗别画」");
-  // 用户原话：「切换失败怎么还切换失败了啊」。前端不可能自己猜谁是平台管理员——
+  // 前端不可能自己猜谁是平台管理员——
   // 得后端在每个能力位上回一个布尔。这三处（/api/settings 的 platform_owner、
   // /api/security/modes 的 can_switch）就是界面挑控件的唯一依据。
   const SRC20 = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");

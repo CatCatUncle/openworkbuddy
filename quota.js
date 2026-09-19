@@ -38,13 +38,11 @@ const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 // 这本账改成月分片的 JSONL（跟 account.js 那本 token 流水同一套东西）。
 // 原来是 data/api-usage.json 一个大文件，每记一笔要「整本读出来 → unshift 一条
 // → 截到两万条 → 整本写回去」，两个后果都是真的：
-//
 //   · 到两万条就从最旧的开始扔。扔掉的是**计费和审计数据**，而且一个字不报。
 //     50 个人每天各搜 10 次，40 天就到顶；之后后台那张「本月用量」开始安静地少算。
 //     而这本账正是给企业那把统一 Key 记账的那一本——最不该惄悉丢数据的恰恰是它。
 //   · 写入耗时跟历史长度成正比（usage-store.js 里实测过：2 万条 6MB 要 57ms）。
 //     每一次付费调用都付这笔钱。
-//
 // 现在一笔一行追加到 data/api-usage/2026-09.jsonl：追加耗时跟历史多长无关，
 // 查「本月」只读一个分片，要清理就删月份文件。老文件第一次用到时自动拆成分片。
 const USAGE_FILE = path.join(DATA_DIR, "api-usage.json");   // 改造前那个大文件，只用来迁移

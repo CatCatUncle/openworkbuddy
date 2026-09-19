@@ -435,7 +435,7 @@ async function saveSettings(patch, msgEl) {
     msgEl.textContent = resp.ok ? "✓ 已保存并生效" : lastSaveError;
     // msgEl 多半是那个 class="ok-msg" 的小 span——绿色、13px、挂在一整屏表单的最底下。
     // 失败时把同一句话塞进去，用户看到的是一行绿色小字，跟「已保存」长得一模一样，
-    // 而它上面还压着五张折叠卡。用户原话：「怎么点击添加都没办法添加在搞什么」——
+    // 而它上面还压着五张折叠卡。
     // 其实每次都报了错，只是那个错穿着成功的衣服藏在屏幕外面。
     msgEl.classList.toggle("bad", !resp.ok);
   }
@@ -508,7 +508,7 @@ function repaintMedia(box, s) {
  *
  * 精选目录是现拉的，拉回来会把这一屏再画一遍。人点了「添加看图模型」、正在下拉里翻型号，
  * 目录恰好这时到了——整张卡重画，表单连同刚选好的那一行一起没了，按钮看着还在，
- * 点下去又是空的。用户原话：「怎么点击添加都没办法添加在搞什么」。
+ * 点下去又是空的。
  * 重画本来就是为了「把目录补上」这点好处，不值得拿人填了一半的东西去换。
  */
 function mediaFormOpen(root) {
@@ -743,7 +743,6 @@ function bindMedia(box, s) {
  *
  * 真实事故：下拉框把火山的 doubao-seed-1-6-250615 摆在了 OpenRouter 渠道下面，
  * 用户选了它，配置就成了「拿 OpenRouter 的地址去调豆包」，每次看图都报「不是有效的模型 ID」。
- * 用户原话：「怎么下拉框选择的模型没有办法用」。
  */
 function mmRelay(kind) {
   return !!((mediaCatalog || {}).kinds || []).find((k) => k.kind === kind && k.relay);
@@ -794,7 +793,7 @@ function fillModelSelect(f, s) {
   // 别家的型号只在**中转网关**下面摆（new-api / 自建兼容接口：后面接谁只有用户知道，
   // 而且它们正是按型号名往上游路由的）。直连的渠道一概不摆——以前这一组的标题写着
   // 「地址对得上也能用」，地址根本对不上：火山的 doubao-… 在 OpenRouter 上是个不存在的 id，
-  // 选中即坏。用户原话：「怎么下拉框选择的模型没有办法用」。
+  // 选中即坏。
   // 真要跨家挂（自建网关做了转发），「自己填…」那条路一直都在。
   const others = p && mmRelay(p.kind) ? cat.filter((m) => m.kind !== p.kind) : [];
   const opt = (m) => `<option value="${esc(m.id)}">${esc(m.label)}（${esc(m.id)}）</option>`;
@@ -824,7 +823,7 @@ function injectLive(sel, tip, d, cap) {
   const same = d.models.filter((m) => m.cap === cap);
   const rest = d.models.filter((m) => m.cap !== cap);
   // 别的那一堆里，渠道自己说死了是干什么的（sure），就把用途写在名字后面。
-  // 用户原话：「有些似乎是生图模型怎么给我放到看图模型里面去了啊」——它们一直在这个
+  // 它们一直在这个
   // 下拉里排着队，跟能用的长得一模一样，选中了才在跑的时候炸。标出来，选之前就看得见
   const why = (m) => (!m.sure ? "" : m.cap ? `（${title(m.cap)}的）` : "（只认文字，看不了图）");
   const group = (label, list) => (list.length
@@ -878,17 +877,16 @@ function paintModels(pane, s) {
   // 同一家开两个号（两把 Key）确实是两个渠道，但卡片一字不差，人只会读成「怎么有两个 OpenRouter」
   const provTags = provDupeTags(s.providers);
   const dupeTag = (p) => provTags.get(p.id) || "";
-  // 配了 Key 的排前面、没配的收进一栏。用户的原话：「没有设置 apikey 的渠道不要显示」
-  // 紧接着又是「然后要给地方去显示啊」——所以不是删掉，是收起来，点一下还在。
+  // 配了 Key 的排前面、没配的收进一栏：没设 Key 的渠道不该占着版面。
+  // 所以不是删掉，是收起来，点一下还在。
   const ready = s.providers.filter((p) => !chanIdle(p));
   const idle = s.providers.filter((p) => chanIdle(p));
   const idleShown = idleOpen || !ready.length; // 一个能用的都没有时直接摊开，否则新用户会以为这儿是空的
   const active = s.models.find((model) => model.name === s.active_model);
 
   /* ── 顶上那六格：这台机器「现在到底在用谁」 ──────────────────────────────
-   * 老版本只有五格、纯展示，而且每格只写得下一个名字——可用户的原话是
-   * 「每个任务包括文本、语音、视频、图像都可能要配置多个渠道和多个模型的啊」。
-   * 一格里只写主用那个，就永远看不出「这一路我到底有没有备份」。
+   * 老版本只有五格、纯展示，而且每格只写得下一个名字——
+   * 一格里只写主用那个，就永远看不出「这一路到底有没有备份」。
    * 所以每格现在是三行：主用是谁、它的模型 id、以及还压着几个备选、散在几个渠道上。
    * 而且格子是能点的——点哪一路就展开哪一路的配置卡，不用自己在下面一张张找。
    */
@@ -1261,7 +1259,7 @@ function bindModels(pane, s, po) {
 
   // 头上那句「未填 Key」是可点的：点它就把卡展开、光标直接落在输入框里。
   // 以前它只是一行字加一个「去拿 Key ↗」外链，人拿到 Key 回来还得自己找填在哪儿——
-  // 而填的地方藏在 ⋯ → 编辑渠道 里，用户的原话是「设置里面都没有填 apikey 的地方啊」
+  // 而填的地方藏在 ⋯ → 编辑渠道 里，摸不到就等于没地方填。
   pane.querySelectorAll("[data-fillkey]").forEach((b) => (b.onclick = (e) => {
     e.stopPropagation(); // 别让它冒泡到 .ch-head 上，那个是「开/关」，会把刚展开的又关上
     const id = b.dataset.fillkey;
@@ -1513,7 +1511,7 @@ function fillChatModelSelect(f, s) {
   // 别家的型号只在**中转网关**下面摆（new-api / 自建兼容接口：后面接谁只有用户知道，
   // 而且它们正是按型号名往上游路由的）。直连的渠道一概不摆——以前这一组的标题写着
   // 「地址对得上也能用」，地址根本对不上：火山的 doubao-… 在 OpenRouter 上是个不存在的 id，
-  // 选中即坏。用户原话：「怎么下拉框选择的模型没有办法用」。
+  // 选中即坏。
   // 真要跨家挂（自建网关做了转发），「自己填…」那条路一直都在。
   const others = p && mmRelay(p.kind) ? cat.filter((m) => m.kind !== p.kind) : [];
   const opt = (m) => `<option value="${esc(m.id)}">${esc(m.label)}（${esc(m.id)}）</option>`;
@@ -2843,8 +2841,8 @@ function setPacked(card, on) {
 // 一张卡 = 一个通道：连没连上（状态灯，取自 /im/status）、怎么连（几个输入框）、右上角一颗按钮。
 // 「连接」= 保存 + 真测活；「取消连接」= 清空这一组凭证再保存（微信是真断开登录态）。
 // 申请步骤折进「怎么拿凭证」，默认只露名字、一句副标题和状态灯——
-// 旧版是 9 大段说明文字平铺一屏，用户的原话是「太乱了，没办法自己调」。
-// 从整段粘贴里把飞书那两串凭证抠出来。用户的原话是「现在还要填 appId 这些啊」——
+// 旧版是 9 大段说明文字平铺一屏，乱到没法自己调。
+// 从整段粘贴里把飞书那两串凭证抠出来。
 // 机器人收消息必须有 app_id + app_secret（飞书的设计，扫码替代不了），但没必要让人手打：
 // 开放平台那页整段复制、或者一段 JSON、或者同事发来的两行，都能认出来。
 function parseFeishuCreds(txt) {

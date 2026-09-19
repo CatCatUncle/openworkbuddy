@@ -171,8 +171,8 @@
      收缩的份额就全落到上面那段导航头上：导航的 min-height 是 0，一路缩到零。
      用户看到的就是「助理模式、项目、无限画布、专家、自动化全没了」——任务越多越容易复现。
      basis: 0 之后这块只**吃剩下的**空间、从不产生收缩压力，导航区就不会被它挤没。
-     下限 96px（约四行）：历史是回头找东西用的，不是主角（用户原话「办公那里的任务历史
-     不要给我占地那么多喧宾夺主」），但也不能只剩两三行——那就成了「有它不如没它」。
+     下限 96px（约四行）：历史是回头找东西用的，不是主角
+     但也不能只剩两三行——那就成了「有它不如没它」。
      96 这个数是量出来的：再往上抬一档，常见窗口高度下导航就得开始内部滚动，
      最后一行「更多」会被切掉半截，看着像坏了。 */
   #history { flex: 1 1 0; overflow-y: auto; min-height: 96px; scrollbar-gutter: stable; }
@@ -208,7 +208,7 @@
   .side-nav { border-top: 1px solid var(--owb-border); padding-top: 8px; margin-top: 8px; }
   /* 主导航挪到「项目」下面，跟任务历史之间用一条线隔开（历史是列表，导航是入口，别混在一起） */
   /* 展开「更多」会多出三行导航。侧栏是个 flex 列，多出来的高度以前全从下面的「任务历史」身上扣：
-     用户原话「点击更多后压缩了任务历史那块，任务历史那块变得很窄了」——矮一点的窗口上，
+矮一点的窗口上，
      历史区只剩两三行。现在反过来：历史留一个下限，装不下的时候让导航这一段自己滚。 */
   /* 导航优先级高于历史：它是这个软件全部功能的入口，缺一行就等于少一个功能，
      而历史少几行只是要多滚两下。所以这里 flex: 0 1 auto——先按内容拿够高度、绝不为了给历史
@@ -293,9 +293,6 @@
   /* 空态最底下那条「整理文件夹 · 腾出空间」。
      刻意没做成第四个场景胶囊：胶囊点下去只是挂一枚「任务类型」标签，还得自己打字；
      这一条点下去直接干活。所以它得长得跟上面那排不一样——单独一行、描边淡。 */
-  .empty-tools { margin-top: 26px; }
-  .empty-tools button { display: flex; align-items: center; gap: 7px; padding: 8px 16px; border-radius: var(--radius-full); border: 1px dashed var(--owb-border); background: transparent; color: var(--owb-text-2); font-size: 13px; cursor: pointer; }
-  .empty-tools button:hover { border-style: solid; border-color: var(--owb-brand-text); color: var(--owb-brand-text); background: var(--owb-brand-weak); }
 
   /* 这块底色原来写死成薄荷绿：深色模式下它不翻色，整页暗的时候留一块刺眼亮片（对页面底 14.2:1）；
      文字那一档也只有 3.76:1。改成跟着主题走的绿 */
@@ -316,7 +313,7 @@
      这条必须自己写 display —— 全局有一条 `.mi { display: flex }`（当年把字符图标换成 svg 时加的），
      外加 `.mi .sub { margin-left: auto }`；两条合起来把「说明」变成了名字右边并排的一块。
      菜单只有 420px，塞一条「按这份说明书的步骤…」的长说明，名字那边被挤到只剩一个字宽，
-     于是 /feishu-doc 一个字母一行往下掉。用户原话：「我现在输入 / 看到那些技能也比较丑陋啊」
+     于是 /feishu-doc 一个字母一行往下掉。
      「现在这个 ui 太丑陋了，这么挤的 UI 吗」——说的就是这里。 */
   .mention-menu .mi { display: grid; grid-template-columns: 16px 1fr; column-gap: 8px; align-items: center;
     padding: 7px 12px; border-radius: var(--radius-md); font-size: 14px; cursor: pointer; }
@@ -373,7 +370,7 @@
      老版本是 flex 里一串行内 <span>，三类候选（猫标 25px / 图标 / 表情 17px）尺寸互不相同，
      眼睛得一格一格地对。更要命的是图标那格：.ava-ic 用 62% 量自己，而行内元素没有宽度，
      百分比找不到参照物，浏览器就退回 SVG 的默认尺寸 300×150 —— 助理设置里每个候选都有巴掌大
-     （用户原话：「待选的这些图片 svg 都很大」）。格子定死之后百分比才有参照，三类也终于一样大。 */
+     格子定死之后百分比才有参照，三类也终于一样大。 */
   .ava-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); justify-items: center;
               gap: 4px; max-height: 132px; overflow-y: auto; padding: 8px;
               border: 1px solid var(--owb-border); border-radius: var(--radius-xl); background: var(--owb-bg-side); }
@@ -400,7 +397,7 @@
   .ava-any { margin-top: 8px; max-width: 320px; }
   /* 图片那一页：整块虚线框自己就是那颗按钮，点哪儿都能挑图，拖进来也认。
      以前框里孤零零站着一颗「选一张图片」——虚线框看着是能拖的，点框里的空白却没反应，
-     只有那颗按钮管用，所以它看着突兀（用户原话：「特别是这个选一张图片看着有点突兀」）。 */
+     只有那颗按钮管用，所以它看着突兀 */
   .ava-drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
               width: 100%; min-height: 116px; padding: 16px; text-align: center; cursor: pointer;
               border: 1px dashed var(--owb-border); border-radius: var(--radius-xl); background: var(--owb-bg-side);
@@ -634,7 +631,7 @@
      中位数只剩 78% 露在外面，132 张被切掉一半以上，最狠的一张只露出 8%。
      竖版海报塞进 1.83 的扁盒子只剩中间一条，长图表被切掉两头。
      再加上 width/height:100%——二维码、小图标这种本来就比盒子小的，会被强行拉满再裁，
-     放大糊掉。用户原话：「那些图都变形了啊，然后没有看到完整的」。
+     放大糊掉。
      改法两条：contain 保证整张进来；max-* + auto 保证小图按原大小待着，不被撑。
      盒高 92 → 120：同一批图里，进来之后小得占不到盒子四成的，从 100 张降到 34 张。 */
   .out-thumb img, .out-thumb video { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
@@ -766,7 +763,7 @@
   .picker-menu .mi.ws-current > .i { flex: 0 0 auto; }
   .picker-menu .mi .mi-truncate { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* ---------- ＋ 菜单：一级是六个入口，二级是真正的清单 ----------
-     用户原话：「我这里也有 ＋ 能看到各种工具啥的啊，还有管理已经设置好的连接器这些啊」。
+
      一级菜单窄（只有六行字），二级菜单宽（要摆得下「名字 + 一句说明」两行）——
      所以二级不是往下展开，是从一级右边飞出来一块：一级不会因为二级的宽度被撑变形，
      来回切换二级时也不会整个菜单跳一下宽度。 */
@@ -794,8 +791,8 @@
   .pm-sub .pm-search > .i { flex: none; color: var(--owb-text-3); }
   .pm-sub .pm-search input { flex: 1; min-width: 0; border: none; background: transparent; outline: none; font-size: 13px; color: var(--owb-text); }
   /* 一条条目：图标 + 名字（一行截断） + 说明（一行截断）。
-     这里是整个 ＋ 菜单唯一一处必须写死「两行、各自单行截断」的地方——用户原话
-     「现在这个 ui 太丑陋了，这么挤的 UI 吗」，说的就是长说明在窄菜单里一个字一个字换行。 */
+     这里是整个 ＋ 菜单唯一一处必须写死「两行、各自单行截断」的地方——
+     不写死的话，长说明会在窄菜单里一个字一个字换行，整块挤成一团。 */
   .pm-it { display: grid; grid-template-columns: 18px 1fr auto; grid-template-rows: auto auto; column-gap: 8px;
     align-items: center; padding: 7px 10px; border-radius: var(--radius-md); cursor: pointer; }
   .pm-it:hover { background: var(--owb-bg-hover); }
@@ -920,7 +917,7 @@
   :is(#pv-body, .lib-prev) .ov-slide-t { font-size: 17px; font-weight: 600; margin: 4px 0 8px; }
   :is(#pv-body, .lib-prev) .ov-notes { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--owb-border); color: var(--owb-text-3); font-size: 13px; }
   /* Office 预览这套壳（.ov-*）两边共用：对话页右边那块 #pv-body，和资料库那一栏 .lib-prev。
-     用户原话是「做PPT，workd还有excel,csv这些格式预览要给我兼容，给我做好啊」——
+
      同一份 .pptx 在对话里点得开、在资料库里点不开，那就是没做好。样式只此一份，别抄第二遍 */
   .lib-prev .ov-doc { padding: 0; }
   .lib-prev .ov-table th { position: static; }
@@ -1111,7 +1108,7 @@
   .file-item .meta { font-size: 12px; color: var(--owb-text-3); }
   .file-item.nested { padding-left: 30px; }
   /* 成果文件重点标记：一个真实文件夹里 data/ 的十几个 json、几个 .py 会把那份 pptx 冲下去，
-     用户原话「pptx 格式文件都没重点标记下啊」。加粗 + 左侧一道品牌色，不新增第五种颜色 */
+加粗 + 左侧一道品牌色，不新增第五种颜色 */
   .file-item.res .name { font-weight: 600; }
   .file-item.res { position: relative; }
   .file-item.res::before { content: ""; position: absolute; left: 2px; top: 8px; bottom: 8px; width: 2px; border-radius: var(--radius-full); background: var(--owb-brand); opacity: .8; }
@@ -1279,7 +1276,7 @@
   .form-row { display: flex; gap: 8px; }
   .form-row > * { flex: 1; }
   .ok-msg { font-size: 13px; color: var(--owb-ok-text); margin-left: 8px; }
-  /* 保存失败的时候这行字还是绿的。用户原话：「怎么点击添加都没办法添加在搞什么」——
+  /* 保存失败的时候这行字还是绿的。
      其实每一次都报了错，只是那个错穿着成功的衣服，挂在一整屏表单的最底下。 */
   .ok-msg.bad { color: var(--owb-err-text); font-weight: 600; }
   /* 设置页里「这条渠道已经被我们停掉了」那类说明块。跟审批条同一套暖色，
@@ -1507,7 +1504,7 @@
   .sweep-card.done .sw-rows, .sweep-card.done .sw-acts { display: none; }
   .sweep-card .sw-done { color: var(--owb-text-2); }
 
-  /* 「整理文件夹 · 腾出空间」面板。用户原话：「这是个高频功能啊」，所以它有自己的入口、
+  /* 「整理文件夹 · 腾出空间」面板。所以它有自己的入口、
      自己的一屏，而不是藏在某个二级菜单里。
      两段式：上半截是「我建议清掉什么」（有把握，带理由，能一键删）；
      下半截是「地方到底花在哪了」（不判断，只摊开）——很多时候真凶是一个用户自己早就
@@ -2017,7 +2014,7 @@
      直接写 0s：压根不生成过渡，改完立刻就是新值。全项目没有人监听 transitionend，不会有谁因此等不到事件。
      动画那条仍留 .01ms（不是 0s）——animationend 还是得发出来，不然等它的代码会卡住。 */
   @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after {
+    * , *::before, *::after {
       animation-duration: .01ms !important; animation-iteration-count: 1 !important;
       transition-duration: 0s !important; transition-delay: 0s !important;
       scroll-behavior: auto !important;
@@ -2066,11 +2063,11 @@
      而后者的滑块是 --border（#e9ebf0）再被 2px 透明边裁到 4px 宽——压在白底上等于没画，
      长列表里根本看不出自己滚到哪了。改成半透明黑/白：一条规则在任何底色上都读得出来。 */
   * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
-  *::-webkit-scrollbar { width: 11px; height: 11px; }
-  *::-webkit-scrollbar-track { background: transparent; }
-  *::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: var(--radius-full); border: 3px solid transparent; background-clip: content-box; }
-  *::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); border: 3px solid transparent; background-clip: content-box; }
-  *::-webkit-scrollbar-corner { background: transparent; }
+  * ::-webkit-scrollbar { width: 11px; height: 11px; }
+  * ::-webkit-scrollbar-track { background: transparent; }
+  * ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: var(--radius-full); border: 3px solid transparent; background-clip: content-box; }
+  * ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); border: 3px solid transparent; background-clip: content-box; }
+  * ::-webkit-scrollbar-corner { background: transparent; }
 
   /* 表单控件统一：焦点环、勾选框主题色、下拉框和输入框一个观感 */
   input:focus, textarea:focus, select:focus { outline: none; border-color: var(--owb-brand-text); box-shadow: 0 0 0 3px rgba(91,95,247,.12); }
@@ -2101,8 +2098,8 @@
 
   /* 助理设置：分区 + 双栏通道卡。卡头一行 = 图标 · 名字 · 一句副标题 · 状态灯 · 右上角「连接 / 取消连接」；
      **所有卡默认收起**，点卡头或点「连接」才展开。之前是「连上的收起、没连的摊开等你填」，
-     结果一进来就有四五张你根本没打算连的渠道的空表单摊在屏幕上。用户原话：
-     「默认都收起来啊，当用户需要连接点击的时候才展开」。申请步骤折进「怎么拿凭证」。 */
+     结果一进来就有四五张你根本没打算连的渠道的空表单摊在屏幕上。
+     申请步骤折进「怎么拿凭证」。 */
   .im-sec { margin-bottom: 8px; }
   .im-sec-h { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; flex-wrap: wrap; }
   .im-sec-h b { font-size: 14px; font-weight: 600; }
@@ -2518,6 +2515,7 @@
 <symbol id="i-hard-drive" viewBox="0 0 24 24"><line x1="22" x2="2" y1="12" y2="12" /> <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /> <line x1="6" x2="6.01" y1="16" y2="16" /> <line x1="10" x2="10.01" y1="16" y2="16" /></symbol>
 <symbol id="i-train-front" viewBox="0 0 24 24"><path d="M8 3.1V7a4 4 0 0 0 8 0V3.1" /> <path d="m9 15-1-1" /> <path d="m15 15 1-1" /> <path d="M9 19c-2.8 0-5-2.2-5-5v-4a8 8 0 0 1 16 0v4c0 2.8-2.2 5-5 5Z" /> <path d="m8 19-2 3" /> <path d="m16 19 2 3" /></symbol>
 <symbol id="i-chef-hat" viewBox="0 0 24 24"><path d="M17 21a1 1 0 0 0 1-1v-5.35c0-.457.316-.844.727-1.041a4 4 0 0 0-2.134-7.589 5 5 0 0 0-9.186 0 4 4 0 0 0-2.134 7.588c.411.198.727.585.727 1.041V20a1 1 0 0 0 1 1Z" /> <path d="M6 17h12" /></symbol>
+<symbol id="i-square-dashed" viewBox="0 0 24 24"><path d="M5 3a2 2 0 0 0-2 2" /> <path d="M19 3a2 2 0 0 1 2 2" /> <path d="M21 19a2 2 0 0 1-2 2" /> <path d="M5 21a2 2 0 0 1-2-2" /> <path d="M9 3h1" /> <path d="M9 21h1" /> <path d="M14 3h1" /> <path d="M14 21h1" /> <path d="M3 9v1" /> <path d="M21 9v1" /> <path d="M3 14v1" /> <path d="M21 14v1" /></symbol>
 <symbol id="i-list-ordered" viewBox="0 0 24 24"><line x1="10" x2="21" y1="6" y2="6" /> <line x1="10" x2="21" y1="12" y2="12" /> <line x1="10" x2="21" y1="18" y2="18" /> <path d="M4 6h1v4" /> <path d="M4 10h2" /> <path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1" /></symbol>
 </svg>
 <aside>
@@ -2553,8 +2551,8 @@
     </div>
   </div>
   <!-- 导航和历史之间这条线能拖：默认「导航按内容拿够、历史吃剩下」，拖过一次就变成
-       「历史锁住高度、导航吃剩下」，双击回到自适应。用户原话「任务历史那个tab你也搞成
-       可以拉伸和拖拽自适应的吧」 -->
+       「历史锁住高度、导航吃剩下」，双击回到自适应。
+        -->
   <div class="rsz-v" data-rszv="hist" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="拖动调整任务历史高度" title="拖动调整高度 · 双击恢复自适应"></div>
   <div class="side-label">
     <span class="sl-t">任务历史</span>

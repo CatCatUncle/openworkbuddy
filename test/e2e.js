@@ -374,7 +374,6 @@ async function testShellGlobCompat() {
 // 翻译函数本身在 test/office-tools.js 里逐个 shell 测过了，这儿测的是**接没接上**：
 // 少一行 wiring，那边十几条断言照样全绿，而用户拿到的还是光秃秃一句
 // 「zsh:1: command not found: ffprobe」。
-//
 // PATH= 是为了让这条断言在装了 ffmpeg 的机器上也成立——把 PATH 清空，
 // 任何机器上都必然是「找不到」，而不是「这台碰巧没装」。
 async function testMissingBinHintWired() {
@@ -1718,7 +1717,6 @@ async function testCliMode() {
     }
 
     // 10）agent 问一句时，那头到底有没有人。
-    //
     //   这条钉的是**危险的那个方向**。cli.js 现在会在有人坐在终端前时给 agent 传 askUser
     //   （在这之前它从来不传，于是最近在场的那个人反倒是唯一问不到的人）。可管道喂进来的
     //   `openworkbuddy "…" < 任务.txt`、给脚本读的 --json，那头确实没人——要是把这两种也算成「有人」，
@@ -1892,7 +1890,7 @@ function testContextBudget() {
 }
 
 // 上下文余量条得跟着会话走。
-// 用户原话：「怎么我切换对话了它还是一样的啊」——这根条全界面只有一根，画在输入框上头，
+// 这根条全界面只有一根，画在输入框上头，
 // 而它只在后端播 context 事件的时候重画。换会话没有事件可等（新对话本来就还没跑），
 // 于是上一条对话那句「上下文 87%…」原样挂着，指着一个跟眼前这条对话毫不相干的数。
 // 条子本身怎么画，test/frontend.js 在真 Chromium 里验；这儿只钉死接线——
@@ -2815,8 +2813,8 @@ function testDesktopAppIdentity() {
   assert.ok(fs.existsSync(path.join(__dirname, "..", "build", "icon.png")) && fs.existsSync(path.join(__dirname, "..", "build", "icon.icns")), "build/icon.png|icns 缺失");
 
   // #101 最小化之后点 Dock 图标要能回到主界面。macOS 上关窗/最小化都不退进程，点 Dock 只发一个
-  // activate 事件；没人接这个事件，界面就再也叫不出来。用户原话：「我点 docker 里面的图标不会看到界面，
-  // 要点宠物才能看到完整界面」。这里不验正则，直接把回调抠出来喂假窗口跑一遍。
+  // activate 事件；没人接这个事件，界面就再也叫不出来。
+  // 这里不验正则，直接把回调抠出来喂假窗口跑一遍。
   const iAct = main.indexOf('app.on("activate"');
   assert.ok(iAct > 0, 'electron-main.js 没接 app.on("activate")：最小化后点 Dock 图标什么都不会发生');
   const actBody = main.slice(main.indexOf("{", main.indexOf("=>", iAct)) + 1, main.indexOf("\n});", iAct));
@@ -2884,10 +2882,23 @@ function testDesktopAppIdentity() {
     let failed = false;
     try { execFileSync("bash", [path.join(__dirname, "..", "scripts", "make-mac-app.sh")], { env: { ...env, OWB_ELECTRON_APP: path.join(tmp, "nope.app") }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); } catch { failed = true; }
     assert.ok(failed, "源 Electron.app 不存在还生成成功了");
+    // 反例：目标位置躺着装好的正式版时必须拒绝。这两条路会撞在同一个名字上——
+    // install-mac.sh 在 /Applications 写不了时退到 ~/Applications，而开发壳固定就写那儿。
+    // 闷头覆盖的后果不是「少个图标」：开发壳把数据目录指向源码仓库，
+    // 用户的东西还在 ~/OpenWorkBuddy 躺着，界面上却一条任务都没有，看着就是数据没了
+    const installed = path.join(tmp, "Applications2", "OpenWorkBuddy.app");
+    fs.mkdirSync(path.join(installed, "Contents", "Resources", "app"), { recursive: true });
+    fs.writeFileSync(path.join(installed, "Contents", "Resources", "app", "main.js"), "// 正式包的入口，跟开发壳没关系\n");
+    let refused = false;
+    try { execFileSync("bash", [path.join(__dirname, "..", "scripts", "make-mac-app.sh")], { env: { ...env, OWB_APP_OUT: installed }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); } catch { refused = true; }
+    assert.ok(refused, "★把装好的正式版覆盖成开发壳了★ 数据目录会从 ~/OpenWorkBuddy 悄悄换成源码仓库");
+    assert.ok(fs.readFileSync(path.join(installed, "Contents", "Resources", "app", "main.js"), "utf8").includes("正式包的入口"), "拦是拦下了，人家的文件却已经被删了");
+    // 正过来：自己生成的开发壳要能反复覆盖，不然改一行代码就得手动删一次
+    execFileSync("bash", [path.join(__dirname, "..", "scripts", "make-mac-app.sh")], { env, encoding: "utf8" });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log("  ✓ 桌面版身份：开发态 Dock 图标/关于面板/userData 钉死 + 装机态 .app 克隆改名 12 项验过");
+  console.log("  ✓ 桌面版身份：开发态 Dock 图标/关于面板/userData 钉死 + 装机态 .app 克隆改名 12 项验过 · 不覆盖装好的正式版（撞在 ~/Applications 同一个名字上）");
 }
 
 function testDefaultSkillsManifest() {
@@ -3081,7 +3092,6 @@ function testPermissionModes() {
   );
 
   // 命令行的 --perm / :perm 也能换档，而且**只换这一趟**。
-  //
   // 原来这四档只有网页点得到，命令行想换档只能去改 config.json——而 config.json 是长期设置：
   // 为了让一条 cron 跑全自动，人得先把文件改成 full、跑完再改回来，忘了改回来就是明天所有
   // 交互式的活儿也不问人了，而他根本不记得自己动过这个开关。所以这里钉两件事：
@@ -5397,7 +5407,6 @@ async function testDesktopPet() {
   //     真事：electron-main.js 里抄了五个字段，漏了 sprite。于是选了精灵图宠物的人每次重开
   //     都变回内置那只猫——character 是 "sprite"、sprite 却是空的，findPet 找不着，
   //     create() 最后那行就静静落回 "cat"，一声不吭。
-  //     用户原话：「这个宠物我之前换了的，然后重新打开又是默认的猫猫宠物了」。
   //     这条钉的是写法而不是结果：真正的失败只在 Electron 里才看得见，而这套测试跑的是纯 node。
   //     手抄清单这种写法的毛病是「加字段的人不会想到回来改它」，所以直接禁掉这种写法。
   {
@@ -5507,8 +5516,7 @@ async function testDesktopPet() {
 /**
  * 连接器的开关，和「这一刻模型手上有哪些工具」那张表。
  *
- * 由来是用户对着别家产品的 ＋ 菜单说的两句：「我这里也有 ＋ 能看到各种工具啥的啊，
- * 还有管理已经设置好的连接器这些啊」「这个连接器功能到底可用不可用呀？你要帮我测试好啊」。
+ * 由来：＋ 菜单里要能看到各种工具，也要能管已经设置好的连接器。
  *
  * 这条测试盯的是「关掉」这个动作从头到尾都算数——四段各管一件事，缺一段都能让开关变成摆设：
  *   ① mcp.js：关掉的那台压根不去连，而且开着的时候被关掉，进程要真收掉；
@@ -5716,7 +5724,6 @@ async function testConnectorToggleAndTools() {
 /**
  * 定时任务得留下「执行过程」，不是一句结果。
  *
- * 用户原话：「我定时任务怎么没看到具体的执行过程啊」→「我想要看到每次具体的运行记录啊」。
  * 当时运行记录那一屏每行只有一句被截到 500 字的正文；点不进去，也没有别处可点。
  * 根因是 scheduler.js 里那句光秃秃的 `runtime.runTask({ history })`——**不给 emit 就没有事件，
  * 不给 sessionId 就没有会话**，过程从一开始就没被记下来过，前端再怎么改也变不出来。
@@ -6133,7 +6140,6 @@ async function testPromptQuestionVsWork() {
   assert.strictEqual(bad.length, 0, "提示词会把一句问候当成办公任务：\n  - " + bad.join("\n  - "));
 
   // 负对照：把提示词按「以前犯过的那几种错」逐个改坏，这道闸必须每一种都拦得住。
-  //
   // 早先这里是拿 git show HEAD:agent.js 当负对照的——问题是修好一提交，HEAD 就是修好的版本，
   // 负对照当场退化成 0 条，闸门自己把自己看没了。改成突变体之后它永远有效，
   // 而且是一条断言配一个突变体：哪条断言被人删了，对应那个突变体立刻漏过去。
@@ -6294,7 +6300,7 @@ function e2ePng(w, h, pixel) {
 }
 
 /**
- * 成果预览的相对路径。用户的原话是「怎么在预览的时候图片都不正常显示」。
+ * 成果预览的相对路径：预览里的图片全显示不出来。
  *
  * 根因不在图上，在地址上：成果按会话分了子文件夹（任务_0905_.../hunan.html），
  * 前端曾把整条相对路径当**一个**参数 encodeURIComponent，斜杠变成 %2F，
@@ -6460,8 +6466,7 @@ async function testFilePathRouting() {
  * 旧任务的产出整批掉出这份快照之后，这一页以前是这么处理的：size 记 0、mtime 记空、gone 一律 false
  * ——于是一个早就被删掉的文件，在界面上画成一行正常记录，体积那栏还是 libSize(0) 撞下限撞出来的
  * 「1 KB」。点进去才发现全是 404：图裂成碎图标、md 说「读取失败」、html 渲染成一片空白。
- * 用户原话：「怎么点击图片没有办法预览了？」「点击md也是没法预览啊」「html也是」
- * 「在资料库里面预览功能这么差的啊」。
+ *
  *
  * 这一趟起真 server.js，把那个场景原样搭出来：560 个文件（真的越过 500 的线）、
  * 一份"还在但掉出快照"的产出、一份"名字还在人没了"的产出、一份刚出炉的产出。
@@ -6611,8 +6616,7 @@ async function testLibraryOutputsTruth() {
     assert(goneHead.code === 404,
            `HEAD 和 GET 不一个口径（HEAD ${goneHead.code}）—— 图片裂了之后补问的那一下就是 HEAD，两边不一致会把「没了」说成「文件坏了」`);
 
-    // ⑤ 资料库里的 Office 文件：得有一条自己的拆包路由。用户原话：「这个PPT预览给我做好啊」
-    //    「做PPT，workd还有excel,csv这些格式预览要给我兼容，给我做好啊」。
+    // ⑤ 资料库里的 Office 文件：得有一条自己的拆包路由。
     //    /api/files/preview/ 认的根是**工作目录**，资料库在 data/library 下——这条要是不存在，
     //    同一份 .xlsx 在对话里点得开、拖进资料库就只能掉回「当文本读」，糊出一屏 PK… 的二进制。
     const ExcelJS = require("exceljs");
@@ -6637,7 +6641,7 @@ async function testLibraryOutputsTruth() {
            `拿 .. 往资料库外面翻居然回了 HTTP ${lpEsc.code}：` + lpEsc.body.slice(0, 160));
 
     // ⑥ 资料库取文件那条路由：默认必须**内联**发。
-    // 用户原话：「怎么没有办法预览啊」——一个 1 MB 的 note_audio.mp3 在这一页上
+    // 一个 1 MB 的 note_audio.mp3 在这一页上
     // 只显示「文件太大，预览不动」。两头各坏一半，这里管服务端这一半：
     // 以前一律 res.download，带着 Content-Disposition: attachment 的响应，
     // <audio>/<video>/<iframe> 一个都渲染不出来，浏览器只会去下载。
@@ -6670,7 +6674,6 @@ async function testLibraryOutputsTruth() {
 /**
  * 资料库点一份产出，要能落回「写出它的那段对话」。
  *
- * 用户原话：「还有在资料库里一个文件能打开在对话中的位置啊，直接定位到所在位置和对话啊」。
  * 以前点过去只是把整条对话打开、一脚滚到最底下——一次跑了十几轮的任务，人还得自己往回翻，
  * 等于这一跳什么忙都没帮上。
  *
@@ -7652,9 +7655,7 @@ async function testAskUser() {
 /**
  * 成果清单的 500 条上限必须按「新旧」砍，不能按「目录遍历顺序」砍。
  *
- * 事故（2026-09-10，用户原话连着三条）：
- *   「怎么回事都看不到产出了啊」
- *   「在旁边的成果文件里面都看不到这个新文件夹啊」
+ * 事故（2026-09-10，
  *   「不仅结束了没有预览，还看到这个文件夹」
  * 那一趟任务实实在在写出了 8 个文件（简历 docx/html、公司清单 xlsx、PROGRESS.md……），
  * 磁盘上全在，界面上一个都没有。
@@ -8243,7 +8244,6 @@ async function testThumbPool() {
     assert(fs.statSync(big).size > 100 * 1024, "料不到 100 KB，走不到缩放那一步");
 
     // ① 主线程不许被占住。
-    //
     // 不拿绝对毫秒数当门槛（换台机器就得改），而是**同一批活跑两遍**：
     // 一遍老老实实在主线程上做（对照组），一遍走线程池。两遍都在旁边每 10 ms 打一次点，
     // 比的是这两次的卡顿差多少。对照组同时还证明了这批料够重——要是它自己都卡不出来，
@@ -8678,7 +8678,7 @@ function testCanvasCreativeLineage() {
 /**
  * 无限画布不许张口就说「素材已从工作区移除」。
  *
- * 用户原话：「怎么又说素材从工作区移除了在无限画布里面，你在搞什么？」——「又」是重点，
+ * 是重点，
  * 这事犯过不止一次。真身：画布拿 /api/files 那份列表当全集，判「不在列表里 = 文件被删了」。
  * 可那份列表是**截断过的**（tools.js outputFiles：最深 3 层、最多 500 条），
  * server.js 的 filesScope() 专门发一个 full 字段就是为了让前端知道「别拿它给谁盖章」。
@@ -8818,7 +8818,6 @@ async function testCanvasMissingAssets() {
 /**
  * 无限画布上的图别拿原图当缩略图。
  *
- * 用户原话：「现在无限画布还有很大文件都没有办法正常显示了啊」。
  * 现场账：节点里的预览框最高 204px（ui.css .canvas-node-preview），可短剧画布上摆的是
  * 生成出来的成图——本机工作空间里真实躺着 3552×4736 的图，一张解码后 64 MB。
  * 一块摆满三十个镜头的画布就是几个 GB 的位图，浏览器直接放弃，画面上一片空白。
@@ -8886,7 +8885,6 @@ function testCanvasThumb() {
  *   [记忆向量] 视频渠道的 key 不可用（400: Access denied…），改用 本地 Ollama   ×14 行一模一样
  *   [记忆向量] 本地 Ollama 调用失败（1/3）：fetch failed
  *   [llm] 工具调用 generate_image(call_00_…) 没有结果，已补占位              同 3 个 id 刷了 6 轮
- * 用户的感受是「怎么现在有点慢啊」。
  *
  * 三个各自独立的毛病：
  *   ① 向量库先清后算 —— embedder 一上来报的是首选渠道的模型名，而首选渠道一调就 4xx。
@@ -9154,7 +9152,7 @@ async function testEmbedFailoverResilience() {
 }
 
 /**
- * 思考模式开关：「有思考模式的模型可以支持关闭思考模式的设置啊」。
+ * 思考模式开关：
  *
  * 这个开关最容易做成花架子——界面上写着「已关闭」，请求体里一个参数都没变。
  * 所以这里不验"有没有这个下拉框"，验三件能出事的事：
@@ -9219,7 +9217,7 @@ async function testThinkingSwitch() {
   assert(!w.supported && Object.keys(w.params).length === 0, "认不出的接口居然瞎发了参数：" + JSON.stringify(w.params));
   assert(/extra_body/.test(w.note), "认不出时没告诉用户可以自己在 extra_body 里填：" + w.note);
 
-  // ⑥ 本机 CLI 那条路（用户原话：跟 app 设置保持一致）
+  // ⑥ 本机 CLI 那条路
   assert.deepStrictEqual(thinking.planForEngine("claude-code", "auto", { thinkingFlag: true }).args, [], "auto 档不该给 CLI 加参数");
   assert.deepStrictEqual(thinking.planForEngine("claude-code", "off", { thinkingFlag: true }).args, ["--thinking", "disabled"], "claude 关思考的参数不对");
   assert.deepStrictEqual(thinking.planForEngine("claude-code", "high", { thinkingFlag: true }).args, ["--thinking", "enabled"], "claude 开思考的参数不对");
@@ -9350,7 +9348,7 @@ async function testOnboardingWizardApi() {
     assert(st.brain && st.brain.ok === false, "没填 Key 时 brain.ok 应为 false：" + JSON.stringify(st.brain));
     assert(Array.isArray(st.models) && st.models.every((m) => typeof m.has_key === "boolean" && !("api_key" in m)), "models 要带 has_key 布尔，且绝不能把 api_key 本身吐给前端");
     // 新装不出厂任何模型行：以前那九行没 Key 的厂商模板让设置页凭空多一排「未填 Key」的空壳渠道，
-    // 删了下次启动又长回来。用户原话：「不要搞什么默认渠道填充啊，都没填 apikey 的，搞这个一直占位做什么？」
+    // 删了下次启动又长回来。
     assert(st.models.length === 0, "新装 config 里不该有任何占位模型行：" + JSON.stringify(st.models.map((m) => m.name)));
     assert(Array.isArray(st.templates) && st.templates.length >= 8 && st.templates.every((t) => t.kind && t.name && t.model && typeof t.local === "boolean" && !("api_key" in t)),
       "体检表要带服务商清单 templates（向导靠它列服务商，不再靠 config 里的模板行）：" + JSON.stringify(st.templates));
@@ -9404,7 +9402,6 @@ async function testOnboardingWizardApi() {
 
     // 5-bis. 首页向导填 Key：这一步以前是坏的。Key 被写在**模型条目**上，下一次规整把渠道那行的空 Key
     // 压平回来，直接抹掉；于是 hasKey 永远 false，设置页写着「未填 Key」、向导每次开机再弹一遍。
-    // 用户原话：「我都在首页填了火山 APIkey，然后后台设置还说我没有设置啊」「我不是设置好了吗，怎么每次进入都让我设置啊」
     // 新装 config 里一条模型都没有了：向导从服务商清单挑一家，POST {kind, api_key}，渠道和模型行都是这一步建出来的
     assert(a5.json.templates.some((t) => t.kind === "ark"), "服务商清单里得有火山方舟：" + JSON.stringify(a5.json.templates.map((t) => t.kind)));
     const provN = (cfgOnDisk().providers || []).length;
@@ -9428,7 +9425,7 @@ async function testOnboardingWizardApi() {
     const s6 = await req("GET", "/api/settings");
     const pv = ((s6.json || {}).providers || []).find((p) => p.id === ent.channel);
     assert(pv && pv.has_key === true, "设置 → 模型 里这个渠道必须显示成已填 Key：" + JSON.stringify(pv && { id: pv.id, has_key: pv.has_key }));
-    // 同一家同一把 Key 再填一次不分叉（「怎么就是有两个火山模型啊」）；按已有模型行名填 Key 的老路也还得通
+    // 同一家同一把 Key 再填一次不分叉（；按已有模型行名填 Key 的老路也还得通
     const put2 = await req("POST", "/api/onboarding", { kind: "ark", api_key: WIZ_KEY, skip_test: true });
     assert(put2.code === 200 && (cfgOnDisk().providers || []).length === provN + 1 && (cfgOnDisk().models || []).length === (c2.models || []).length,
       "同一家同一把 Key 再来一次不该多出渠道或模型行：" + JSON.stringify({ p: (cfgOnDisk().providers || []).length, m: (cfgOnDisk().models || []).length }));
@@ -9446,7 +9443,7 @@ async function testOnboardingWizardApi() {
     assert(/const ONB_STEPS = \[/.test(app03) && (app03.match(/\["(brain|search|media|im|done)"/g) || []).length === 5, "app-03.js 的向导应是五步：brain/search/media/im/done");
     assert(/async function openOnboarding\(/.test(app03) && /\/api\/onboarding\/done/.test(app03), "app-03.js 缺 openOnboarding 或没调 /api/onboarding/done");
     assert(/function onbSkipFlag\(/.test(app03) && /try \{[\s\S]*sessionStorage/.test(app03), "「本次跳过」标记要 try 住 sessionStorage（file:// / 隐私模式下会抛）");
-    // 用户原话：「设置过了不要一直在开头一直弹窗提示啊」。以前 maybeOnboard 写的是
+    // 以前 maybeOnboard 写的是
     // 「大脑在 且 走完过（seen）才不弹」，可 done_at 只有走完最后一步才写得上——
     // "第一步填完 Key 就跳过"的人于是每次开机再被拦一遍。这两条闸门钉住新口径
     assert(/if \(!st\.needs_setup\) return;/.test(app03) && !/!st\.needs_setup && st\.seen/.test(app03),
@@ -9541,7 +9538,7 @@ async function testThinkingSettingsApi() {
 /**
  * 产出清单发射器：任务跑着的时候「卡不卡」有一半是它决定的。
  *
- * 事故背景（用户原话：「提高一些性能，就是问问题很快能看到回复，中间不要让我看到卡顿啊」）：
+ * 事故背景：
  * 以前每来一个工具结果就 outputFiles() 走一遍全树，再把整份最多 500 条的清单原样推给前端。
  * 实测用户的工作目录：一次走树 9.6ms（其中 4.7ms 是重复检测在 readFileSync 6.48 MB —— 同步读盘，
  * 那几毫秒整条事件循环是停着的），一条 files 事件的 JSON 是 47.8 KB。本机 CLI 那条路是**每个**
@@ -9550,7 +9547,7 @@ async function testThinkingSettingsApi() {
  *
  * 改成「节流 + 没变就不推」之后：101 条 / 3.69 MB / 580ms → 5 条 / 0.18 MB / 7ms。
  *
- * 但省事件是有代价的：省过头就是产出不见了 —— 那正是用户前面骂过的「怎么回事都看不到产出了啊」。
+ * 但省事件是有代价的：省过头就是产出一条都看不到 —— 那正是这里要防的另一头。
  * 所以这一屏的重点全在负向对照上：真写了的、被删了的、别人文件夹里的，各自该怎样一条条钉死。
  */
 async function testFilesEmitter() {
@@ -9662,7 +9659,6 @@ async function testFilesEmitter() {
     //    这个窗口就往回滑一截，几个月前的旧文件重新挤进列表——它们不在基线里，老判据
     //    （"不在基线里 = 新产出"）就把它们整批认成了这回合刚做的。用户看到的是对话末尾
     //    「本回合产出」里躺着从 0828 到今天的几百个文件，这次真做的 8 张卡被埋在最底下。
-    //    用户原话：「还有这里也是灾难啊，把产出文件给删除了，下面这里显示的全部文件出来啊」。
     {
       const { evs, e } = mk(0);
       e.push(true);
@@ -9689,7 +9685,6 @@ async function testFilesEmitter() {
     //    任务还在跑，用户粘一张图进输入框想追问。/api/upload 把它落进**这条会话的成果文件夹**
     //    （那一步是对的，素材要和成果待在一起），于是两道闸全都拦不住它：文件夹是自己的、
     //    mtime 在开跑之后。结果就是上一轮的「本回合产出」里凭空多出一张用户自己的图。
-    //    用户原话：「我复制一个图片来问问题结果，之前执行的成果区出现了我在问问题的图片啊」。
     {
       const { evs, e } = mk(0);
       e.push(true);
@@ -9761,7 +9756,7 @@ async function testFilesEmitter() {
 /**
  * 两个「读盘大户」工具：搜索和读文件。它们决定任务跑到一半界面会不会突然定住。
  *
- * 事故背景（用户原话：「提高一些性能，就是问问题很快能看到回复，中间不要让我看到卡顿啊」）：
+ * 事故背景：
  * 这两个工具都是同步读盘的，读盘那几百毫秒里事件循环整条停着，SSE 一个字都发不出去 ——
  * 用户看到的就是回答说到一半突然卡住。实测（改之前，本仓库根目录）：
  *   · search_files 搜一个不存在的词：readFileSync 13552 次 / 196MB / 事件循环钉住 2170ms
@@ -9856,7 +9851,15 @@ async function testHeavyTools() {
     }
     assert(ticks >= 5, `整趟搜索期间那个 1ms 定时器只响了 ${ticks} 次 —— 等于全程霸着事件循环没撒手，攒着的 SSE 一个字都发不出去`);
     assert(/没搜到/.test(noHit.content), "没搜到就该说没搜到：" + noHit.content.slice(0, 80));
-    assert(lag1 < 60, `搜一趟全树把事件循环钉住了 ${lag1.toFixed(0)}ms —— 那段时间里 SSE 一个字发不出去，界面就是定住的`);
+    // 毫秒数跟着机器负载飘（几个套件并排跑的时候尤其），一趟量高就判红，等于在 CI 上摇骰子。
+    // 跟下面大文件那两条同一个办法：超了再量一趟取低的，连着两趟都超才算真钉住。
+    // 硬的是上面那条「中途让出去过」——这条只是兜住"让出去了但每次都让得太晚"
+    if (lag1 >= LAG_MAX) {
+      const m2 = lagMeter();
+      await tools.executeTool("search_files", { query: "绝不存在的词zzqqxx", dir: "." }, {});
+      lag1 = Math.min(lag1, await m2.stop());
+    }
+    assert(lag1 < LAG_MAX, `搜一趟全树把事件循环钉住了 ${lag1.toFixed(0)}ms（连量两趟都超）—— 那段时间里 SSE 一个字发不出去，界面就是定住的`);
     const touchedBin = readNames.filter((n) => /\.(png|mp4)$/i.test(n));
     assert.deepStrictEqual(touchedBin, [], `二进制被整份读进内存了（${touchedBin.length} 个）：改之前光这一项就是每次搜索白读 8MB`);
     assert(readNames.filter((n) => /\.ts$/.test(n)).length >= N_TEXT, "文本文件没扫全，搜索结果不可信");
@@ -9950,7 +9953,6 @@ async function testHeavyTools() {
  * 湖南网站那条对话 17:38 起跑、一直在写文件；用户 17:55 另开一条问 paywall 的新对话，
  * 新对话第一轮的 changed 里躺着五个别人的文件——
  *   任务_0905_给我做一个网站介绍湖南的/{_have.txt,_r2.txt,_dh.txt,dist/index.html,hunan_travel.html}
- * 用户原话：「这些图标是另一个对话的啊！」。
  *
  * 根因是归属只按「谁的差异检测先跑到」算，而先后跟谁写的没有关系。这里把两条对话的
  * 检测顺序两种都跑一遍——顺序反过来还能判对，才说明判据换成了确定性的那一个。
@@ -10438,7 +10440,6 @@ function testReadmeFrontGate() {
   for (const [name, t] of [["README.md", zh], ["README.en.md", en]]) assert(!SOLO.test(t), name + " 里出现了「一个人做」式措辞");
   // README 只留最近几条，全量在 CHANGELOG——两份是手工对齐的，没有生成器。
   // 漂了的后果很轻但很丢人：README 吹了一条功能，点「更早的看变更记录」进去发现那条根本不在。
-  //
   // 原来是逐字比对：README 的每一条必须是 CHANGELOG 里的原句。现在不行了——
   // 「最新动态」被刻意改写成一句人话（读者是来看这东西能干嘛的，不是来看 commit 的），
   // CHANGELOG 那边仍然是长技术条目，两边永远对不上字。
@@ -11487,7 +11488,7 @@ async function testAdminModelsPage() {
     tokens: { [token]: { user: "e2e", at: Date.now() } },
   }));
   // 这页要验的是「字段齐不齐」，得先有几行真配过的东西才验得了。以前靠的是出厂预置那九行厂商模板，
-  // 现在出厂一行都没有（用户原话：「不要搞什么默认渠道填充啊，都没填 apikey 的」；新装该是空的那条
+  // 现在出厂一行都没有；新装该是空的那条
   // 在 /api/onboarding 那节单独钉着），所以这里自己摆一份。名字都不跟出厂模板重名——重名的话
   // 开机那趟 pruneSeededPresets 会把它们当占位行收走，这条测试就又变成在验空列表了。
   const chans = [
@@ -12170,8 +12171,8 @@ main()
 /**
  * 本机 claude/codex 接管时，系统提示词必须跟内置引擎带一样的上下文。
  *
- * 用户的原话：「底层是 claude code 和 codex 的时候好像跟之前的记忆连接不上」「不能用我这个
- * openworkbuddy 的一些工具和技能和读取文件」。根因不是 CLI 记性差：engineSystemPrompt 以前
+ * 症状：底层换成 claude code / codex 之后，之前的记忆接不上，本项目的工具、技能、读文件也都用不了。
+ * 根因不是 CLI 记性差：engineSystemPrompt 以前
  * 只有"你是谁 / 工作目录 / 模式"三句，个性化偏好、自进化规则、长期记忆、项目指令一块都没带，
  * runTask 的引擎分支连 projectContext 都没往下传。这里用假引擎截住送出去的提示词逐块对账，
  * 并带负对照：没配的块不许凭空出现（否则"记忆"标题下面是空的，模型会当成"没有记忆"这一事实）。
@@ -12223,7 +12224,7 @@ async function testEngineStoppedSurfacing() {
     assert.strictEqual(inline, 1, `「，任务强制收尾。」只该出现在 stopNotice 里那一份，实际 ${inline} 处——有人手抄了一遍措辞`);
     assert(A.r.finalText.includes("注意：已达最大步数（25 步），任务强制收尾。"),
       "收尾提示的措辞跟内置引擎对不上：" + A.r.finalText);
-    // 用户原话：「已达最大运行时间，任务强制收尾怎么回事啊」——光说「提高设置中的上限」等于没说。
+    // 等于没说。
     // 撞上限这条必须自带下一步：上限在哪一页、还有「自动续跑轮数」这个开关。
     assert(A.r.finalText.includes("设置 → 执行上限") && A.r.finalText.includes("自动续跑轮数"),
       "★撞上限了却没说上限在哪一页、也没提自动续跑★ 用户只能回过头来问「怎么回事」：" + A.r.finalText);
@@ -12602,8 +12603,7 @@ async function testFeedbackAndUsage() {
 
 
 /**
- * IM 收附件 —— 用户原话：「我通过微信渠道发文件怎么接收不到吗？，从各个渠道发文件，
- * 表情包，消息还有语音的时候」。
+ * IM 收附件 ——
  *
  * 当时聊天记录里是「（文件：xxx.pdf，本版暂不下载）」：文件根本没下，agent 只看见一行字；
  * 表情包这类消息更狠，在渠道层直接 return，机器人一声不吭，看着像死机。
@@ -12759,7 +12759,7 @@ async function testImInboundMedia() {
 }
 
 /**
- * IM 凭证不许被空输入冲掉 —— 用户原话：「现在连接飞书好像有点问题」。
+ * IM 凭证不许被空输入冲掉。
  *
  * 事故原样：config.json 里 im.feishu.app_id 好好的，app_secret 是空字符串，
  * 于是长连接压根没起来，界面只显示「未连接」，一个字都不说为什么。
@@ -12852,7 +12852,7 @@ async function testImCredentialGuard() {
 }
 
 /**
- * 版本与更新 —— 用户原话：「思考一下如果这个代码有更新的话，这个安装包是要重新安装吗，还是能更新啊」。
+ * 版本与更新。
  *
  * 结论是不能做静默自动更新：构建没签名，macOS 那条路走 Squirrel.Mac 会校验代码签名，必然失败。
  * 所以做成「查得到就如实告诉你，并按你的安装方式给出该做什么」。
@@ -13101,7 +13101,7 @@ async function testCompletionGate() {
  * 执行过程那一行：`📄 读 报告.md · 120 行`。
  *
  * 以前过程区每一步长这样：`⚙ read_file` + 一坨 JSON 入参，结果只有一枚红/绿的「完成/失败」。
- * 用户原话是「让我一直看到任务完成情况，不要看太多没有用的东西」——参数是排障才要看的，
+ * 参数是排障才要看的，
  * 「在干什么 + 拿回来多少」才是每一步都该露在外面的。所以这一行由服务端算好随事件下发，
  * 前端只管渲染（回放老会话没有这两个字段，前端退回工具名，不开天窗）。
  *
@@ -13410,7 +13410,7 @@ exit 1
  *
  * 真实事故：模型给图起名 yhfig_erhai.jpg，存盘时按 ".png" 兜底，落到磁盘上就成了
  * yhfig_erhai.jpg.png。正文里写的还是 yhfig_erhai.jpg —— 名字对不上，那张图在对话里
- * 就是一个裂开的图框。用户原话：「怎么有些图都不渲染啊？」
+ * 就是一个裂开的图框。
  *
  * 判据是「同一类东西的后缀就算数」，不是「必须是我指定的那一个」。
  */
@@ -13901,7 +13901,6 @@ async function testRunOwnership() {
 /**
  * 任务历史的权威清单（server.js 的 listSessionsOnDisk / sessionRow / ownSession）。
  *
- * 用户原话：「怎么回事啊，我 catuncle 账号登陆之前的历史记录都没看到了，之前的任务历史都没看到了啊」。
  * 侧栏那份列表当时只活在浏览器 localStorage 里，对话本体一直好好躺在 data/sessions/——
  * 换台机器 / 清缓存 / 改用户名 / 换个账号先登进来，任意一件事就让列表空掉。
  *
@@ -13987,7 +13986,6 @@ async function testSessionIndex() {
     assert.ok(![...M.sessMetaCache.keys()].includes("s_2.json"), "删掉的会话赖在缓存里，占着内存还会被下一轮读到");
 
     // ---- 盘上那份索引：重启后别再把每条会话整个读一遍 ----
-    //
     // 内存里那个 Map 只在进程活着时管用。1500 条会话（20MB）实测，重启后第一次拉侧栏
     // 要 326ms——全花在「把每个 JSON 整个 parse 一遍，只为了取标题和轮数」上，
     // 而且用得越久越慢。落一份到盘上之后同一趟是 31ms。
@@ -14098,8 +14096,7 @@ async function testSessionIndex() {
 /**
  * 画布不许把用户的东西弄没了。
  *
- * 用户原话：「现在无限画布还有很大文件都没有办法正常显示了啊，用户之前下载我老版本的软件，
- * 要更新的话你也要给我解决这个问题啊」。查下来不是显示不出来，是**真的被删了**：
+ * 查下来不是显示不出来，是**真的被删了**：
  * canvasNormalizeState 既当序列化又当校验器，还同时站在读和写两条路上，于是
  *   · 超过 CANVAS_MAX_NODES 的画布，读出来就被截断，界面拖一下自动回存 → 盘上真的只剩 500 个；
  *   · 老版本/新版本建的、这个版本不认识的 kind，读的时候直接扔掉 → 升级一次少一批节点；
@@ -14222,8 +14219,7 @@ async function testCanvasDataLoss() {
 }
 
 // 从老版本升上来那一下：旧文件收进新文件夹、画布先留底、跑一次就不再跑。
-// 用户的原话是「用户之前下载我老版本的软件，要更新的话你也要给我解决这个问题啊……
-// 更新的时候你记得把之前的文件放到新文件夹里面整理下啊」。
+// 装过老版本的机器升上来，之前的文件得替人收进新文件夹里整理好。
 // 这条测试真起 server.js，对着一个照老版本样子摆好的 home，因为要验的恰恰是「开机那一下」。
 async function testUpgradeMigration() {
   const http = require("http"), crypto = require("crypto");
@@ -14264,7 +14260,7 @@ async function testUpgradeMigration() {
     folder = fs.readdirSync(ws).find((n) => n.startsWith("以前的文件_")) || "";
     assert(folder,
       "★升级没整理★ 老版本的产出还一股脑摊在工作区根目录上。用户要的就是这一下：" +
-      "「更新的时候你记得把之前的文件放到新文件夹里面整理下啊」");
+      "");
     const inside = fs.readdirSync(path.join(ws, folder)).sort();
     assert(inside.join("|") === ["图 一.png", "整理清单.json", "老报告.md"].sort().join("|"),
       "整理进新文件夹的东西不对：" + inside.join(" "));
@@ -14334,7 +14330,7 @@ async function testUpgradeMigration() {
   assert(fs.readdirSync(ws3).length === 0, "★干净的工作区被建了个空文件夹★ 没事可做就该什么都不做：" + fs.readdirSync(ws3).join(" "));
 
   // ── ⑨ 全新装的机器：一个文件都不许动 ───────────────────────────────────
-  // 用户说的是「**更新的时候**你记得把之前的文件放到新文件夹里面整理下」。
+  // 要整理的是**更新的时候**之前留下的那些文件。
   // 刚装完就去翻人家文件夹，那不是整理，那是擅自动别人的东西——
   // 而且这条最容易写错：只要拿「账本里没记过」当升级的证据，全新装的机器就全中招
   const ws4 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-fresh-"));
@@ -14363,7 +14359,7 @@ async function testUpgradeMigration() {
 }
 
 // 短剧素材台账：哪个文件是干什么用的、谁在用、谁没人用、谁引用了却已经不在了。
-// 用户的原话是「做好素材管理」。素材管理的价值全在这四个问题上——
+// 素材管理的价值全在这四个问题上——
 // 只列一堆文件名，这四个一个都答不上来。
 async function testDramaAssets() {
   const http = require("http"), crypto = require("crypto");
@@ -14466,7 +14462,6 @@ async function testDramaAssets() {
 }
 
 // 短剧制片进度：这部戏做到哪了、卡在哪、还剩多少活儿。
-// 用户的原话是「真的能拿这个做 AI 短剧啊，短剧的各个流程……还有整个无限画布做短剧的能力」。
 // 这条测试盯的是一条最容易写错、错了还全绿的规矩：
 // **字段里写着 first_frame ≠ 这一镜做完了**。文件不在盘上，这一镜就是卡着的。
 async function testDramaPipeline() {
@@ -14485,6 +14480,10 @@ async function testDramaPipeline() {
   // 盘上真有的：两张首帧、一段视频、一张定妆照
   put("角色_阿明.png"); put("镜头_S1-01_首帧.png"); put("镜头_S1-01.mp4"); put("镜头_S1-02_首帧.png");
   // 故意不建：角色_阿芳.png、镜头_S1-02.mp4、配音_S1-02.mp3 —— 画布上写了，盘上没有
+  // 阿深这张埋得深：tools.js outputFiles 只走三层，这是第四层，那份清单里永远没有它。
+  // 「不在清单里」当「文件没了」判，它就会被冤枉成丢了定妆照——而文件明明躺在盘上
+  fs.mkdirSync(path.join(ws, "素材", "角色", "定妆"), { recursive: true });
+  fs.writeFileSync(path.join(ws, "素材", "角色", "定妆", "角色_阿深.png"), "x");
 
   // r0 是「记 ms 之前的版本留下的那种记录」——老画布里全是这种。
   // 把它当成 0 秒算进去，中位数立刻被拉垮，估时会短得离谱
@@ -14495,6 +14494,7 @@ async function testDramaPipeline() {
       node("n_script", "script", { title: "粤西狗奶", text: "阿明回乡接手父亲的士多店，发现账本里藏着十年前的一笔钱。三集反转，结局和解。" }),
       node("n_c1", "character", { name: "阿明", path: "素材/角色_阿明.png" }),
       node("n_c2", "character", { name: "阿芳", path: "素材/角色_阿芳.png" }),          // 定妆照丢了
+      node("n_c3", "character", { name: "阿深", path: "素材/角色/定妆/角色_阿深.png" }), // 文件在盘上，只是太深，产出清单里没有
       node("n_s1", "shot", { id: "S1-01", prompt: "士多店门口，阿明推门", shot_size: "中景", duration: "4", line: "", first_frame: "素材/镜头_S1-01_首帧.png", video: "素材/镜头_S1-01.mp4", generation_runs: RUNS }),
       node("n_s2", "shot", { id: "S1-02", prompt: "柜台后翻账本", shot_size: "特写", duration: "5", line: "这笔钱是谁的？", first_frame: "素材/镜头_S1-02_首帧.png", video: "素材/镜头_S1-02.mp4", audio: "素材/配音_S1-02.mp3" }),
       node("n_s3", "shot", { id: "S1-03", prompt: "阿芳站在门口", shot_size: "全景", duration: "4", line: "" }),
@@ -14540,8 +14540,14 @@ async function testDramaPipeline() {
     assert(stage("frame").done === 2 && stage("frame").total === 4, "首帧这一档算错了：" + JSON.stringify(stage("frame")));
     assert(stage("video").done === 1,
       "★画布上写着 video 就算成片了★ 那个文件根本不在盘上——这正是用户点了半天没反应的那一类：" + JSON.stringify(stage("video")));
-    assert(stage("cast").done === 1 && stage("cast").total === 2,
+    assert(stage("cast").done === 2 && stage("cast").total === 3,
       "★定妆照文件丢了还算这个角色做完了★：" + JSON.stringify(stage("cast")));
+    // 反过来那一半更要命：产出清单是截断过的（最深 3 层、最多 500 条），
+    // 拿「不在清单里」当「文件没了」判，埋得深或者改得早的素材会被集体判死——
+    // 屏幕上写着「定妆照盘上已经没有了」，文件却好端端躺着，人只能一个个去文件夹里核对。
+    // 判死刑只有盘说了算：清单里没有的，服务端挨个 stat 过再说
+    assert(!(d.blockers || []).some((b) => /定妆照/.test(b.text) && (b.ids || []).includes("n_c3")),
+      "★文件在盘上却被报成丢了★ 只是它埋在第四层、产出清单扫不到：" + JSON.stringify((d.blockers || []).filter((b) => /定妆照/.test(b.text))));
     assert(shot("S1-02").video && shot("S1-02").video.ok === false, "S1-02 的视频该标成「文件没了」：" + JSON.stringify(shot("S1-02")));
     assert(shot("S1-01").video && shot("S1-01").video.ok === true, "S1-01 的视频真在盘上，不该标成丢了（阳性对照）");
 
@@ -16293,7 +16299,7 @@ async function testDramaBoardWriteback() {
         `★${k} 也往分镜表里塞★ schema 是 additionalProperties:false，塞进去整份表就读不出来了`);
     }
     // 手搓的节点没有真源可回，安静跳过。两种都要试：什么都没有的，和戳盖了一半的
-    //（有镜头号没分镜表名——真源名是空的，敲过去只会在界面上弹一条红）
+    // （有镜头号没分镜表名——真源名是空的，敲过去只会在界面上弹一条红）
     for (const bareP of [{ id: "X-01", prompt: "手搓的", line: "随便写的" },
       { id: "S1-01", board_shot: "S1-01", board_scene: "S1", line: "戳盖了一半" }]) {
       calls = [];
