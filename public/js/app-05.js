@@ -30,6 +30,14 @@ async function renderHubMcp(box) {
     hubState.mcpAdvice = resp.ok ? (d.advice || null) : hubState.mcpAdvice;
     renderHubBody();
   };
+  // 死因里带着进程最后几行 stderr，两三百字是常事：当标签胶囊放只会裁出中间一截。
+  // 换成自己的块，先显三行（卡片在网格里，一条长错误会把整行撑高），展开看全文。
+  const ERR_FALLBACK = "命令启动失败或握手超时，详见应用日志";
+  const mcpErrBlock = (why) => {
+    const t = String(why || ERR_FALLBACK);
+    return `<div class="mcp-server-error" title="${esc(t)}"><span>${esc(t)}</span></div>` +
+      `<button class="mcp-err-more" hidden>展开</button>`;
+  };
   // ---- 推荐连接器（预设目录）：搜索框一起过滤；「只看已连接」时不显示 ----
   const configured = new Set(data.servers.map(sv => sv.name));
   const items = cat.items || [];
@@ -89,14 +97,14 @@ async function renderHubMcp(box) {
       ${list.map(({ sv, i }) => `
         <div class="ex-card mcp-server-card" data-mi="${i}">
           ${sv.plugin ? `<span class="flag">来自插件 ${esc(sv.plugin)}</span>` : ""}
-          <div class="hd"><div class="av">${ic(sv.connected ? "plug" : "triangle-alert")}</div>
-            <div class="nm"><span>${esc(sv.name)}</span><span class="al" style="color:var(${sv.connected ? "--owb-ok" : "--owb-err"})">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
+          <div class="hd"><div class="av${sv.connected ? "" : " bad"}">${ic(sv.connected ? "plug" : "triangle-alert")}</div>
+            <div class="nm"><span>${esc(sv.name)}</span><span class="al ${sv.connected ? "ok" : "bad"}">${sv.connected ? `已连接 · ${sv.tools.length} 个工具` : "未连接"}</span></div></div>
           <div class="ds mcp-server-command" title="${esc(isRemote(sv) ? sv.url : [sv.command, ...(sv.args || [])].join(" "))}">${isRemote(sv)
             ? `<b style="font-family:inherit;opacity:.6">远程 ·</b> ` + esc(sv.url) + ((sv.header_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.header_keys.length} 个请求头：${esc(sv.header_keys.join("、"))}）</span>` : "")
             : `<b style="font-family:inherit;opacity:.6">本地 ·</b> ` + esc(sv.command) + " " + esc((sv.args || []).join(" ")) + ((sv.env_keys || []).length ? ` <span style="opacity:.7">（带 ${sv.env_keys.length} 个环境变量：${esc(sv.env_keys.join("、"))}）</span>` : "")}</div>
-          <div class="tg">${sv.connected
-            ? (sv.tools || []).slice(0, 8).map(t => `<i title="${esc(t.description || "")}">${esc(t.name)}</i>`).join("") + ((sv.tools || []).length > 8 ? `<i>…共 ${sv.tools.length} 个</i>` : "")
-            : `<i class="mcp-server-error" title="${esc(sv.error || "命令启动失败或握手超时，详见应用日志")}">${esc(sv.error || "命令启动失败或握手超时，详见应用日志")}</i>`}</div>
+          ${sv.connected
+            ? `<div class="tg">${(sv.tools || []).slice(0, 8).map(t => `<i title="${esc(t.description || "")}">${esc(t.name)}</i>`).join("") + ((sv.tools || []).length > 8 ? `<i>…共 ${sv.tools.length} 个</i>` : "")}</div>`
+            : mcpErrBlock(sv.error)}
           <div class="ops">${!po ? "" : sv.plugin
             ? '<button disabled title="这条是插件声明的，要去「插件」页卸载整个插件">插件提供</button>'
             : '<button class="mcp-del">删除</button>'}</div>
@@ -149,6 +157,19 @@ async function renderHubMcp(box) {
   box.querySelector("#mcp-cancel").onclick = () => { form.style.display = "none"; };
   box.querySelectorAll(".ex-card[data-mi]").forEach(card => {
     const sv = data.servers[+card.dataset.mi];
+    const errBox = card.querySelector(".mcp-server-error"), more = card.querySelector(".mcp-err-more");
+    // 整块都可以点，不止那颗按钮——三行红字看着就像个能展开的东西，点哪儿都该有反应
+    if (errBox && more) {
+      // 多长算长不用猜：直接问浏览器裁没裁，没裁就不出那颗「展开」。
+      // 整块没显示时量不出来（高度全是 0），那时候寎数字，宁可多给一颗也不能展不开。
+      const inner = errBox.firstElementChild;
+      more.hidden = inner && inner.clientHeight > 0
+        ? inner.scrollHeight <= inner.clientHeight + 1
+        : errBox.title.length <= 60;
+      const toggle = () => { const open = errBox.classList.toggle("open"); more.textContent = open ? "收起" : "展开"; };
+      errBox.onclick = () => { if (!more.hidden) toggle(); };
+      more.onclick = toggle;
+    }
     const del = card.querySelector(".mcp-del");
     if (del) del.onclick = () => {
       if (!confirm(`删除连接器「${sv.name}」？`)) return;

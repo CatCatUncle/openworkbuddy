@@ -1109,9 +1109,21 @@ html[data-theme="dark"] .ui-select {
 /* MCP 卡片里的路径与启动错误来自外部进程，长度不可控：必须在卡片内折行，不能挤开操作区。 */
 .mcp-server-card { min-width: 0; overflow: hidden; }
 .mcp-server-card .nm, .mcp-server-card .tg, .mcp-server-card .ops { min-width: 0; }
-.mcp-server-command { max-height: 3.7em; overflow: auto; overflow-wrap: anywhere; word-break: break-word; line-height: 1.55; scrollbar-width: thin; }
+/* 3 行 × 1.55 = 4.65em。写成 3.7em 会把第三行从字中间横切开，看着像被遮住了。 */
+.mcp-server-command { max-height: 4.65em; overflow: auto; overflow-wrap: anywhere; word-break: break-word; line-height: 1.55; scrollbar-width: thin; }
 .mcp-server-card .tg { align-items: flex-start; }
-.mcp-server-error { display: -webkit-box; overflow: hidden; max-width: 100%; color: var(--owb-err-text); font-style: normal; line-height: 1.45; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+/* 失败原因带着进程死前的 stderr，两三百字是常事：给它整块红底，先显三行，点一下展开全文。 */
+.ex-card .mcp-server-error { flex: none; max-width: 100%; margin: 0; padding: 7px 9px; border-radius: var(--radius-md); background: var(--owb-err-bg); color: var(--owb-err-text); font-size: 12px; font-style: normal; line-height: 1.6; overflow-wrap: anywhere; word-break: break-word; cursor: default; }
+/* 没被裁就不必装得能点：旁边那颗「展开」还在，才算有东西可展 */
+.ex-card .mcp-server-error:has(+ .mcp-err-more:not([hidden])) { cursor: pointer; }
+/* 夹行数要落在内层：-webkit-line-clamp 只管内容盒高，它自己再带 padding 的话，
+   下边那平 padding 会把第四行漏出来一条缝，正是看着像被遮住的那一条。 */
+.ex-card .mcp-server-error > span { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.ex-card .mcp-server-error.open { max-height: 240px; overflow: auto; cursor: default; }
+.ex-card .mcp-server-error.open > span { display: block; }
+.ex-card .mcp-err-more { align-self: flex-start; margin: -4px 0 0; padding: 0; border: 0; background: none; color: var(--owb-err-text); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+/* 插件角标是绝对定位的右上角，会压住同一行的状态字；有角标时把标题行整体让下来。 */
+.ex-card.mcp-server-card:has(.flag) { padding-top: 34px; }
 .mcp-server-card .ops { display: flex; justify-content: flex-end; margin-top: auto; }
 @media (max-width: 900px) { .model-route-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 900px) {
