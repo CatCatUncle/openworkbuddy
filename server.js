@@ -27,6 +27,7 @@ const { createLLM, createEmbedder, anthropicBase } = require("./llm");
 const sessSearch = require("./session-search");
 const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
+const shotHistory = require("./shot-history"); // 一镜一镜的版本留底：改台词重跑之后，上一版首帧还拿得回来
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
 const evolve = require("./evolve");
@@ -1526,8 +1527,9 @@ app.put("/api/drama/storyboard", async (req, res) => {
     const raw = JSON.stringify(data, null, 2) + "\n";
     if (Buffer.byteLength(raw) > DRAMA_JSON_MAX) return res.status(400).json({ error: "分镜表超过 4MB 上限" });
     const p = safePath(rel);
+    const kept = dramaSnapshotDiff(rel, data, "整份保存之前", String((req.body || {}).session || ""));
     await fs.promises.writeFile(p, raw, "utf8");
-    res.json({ ok: true, name: rel, summary: dramaSummary(rel, data, fs.statSync(p)) });
+    res.json({ ok: true, name: rel, summary: dramaSummary(rel, data, fs.statSync(p)), snapshots: kept.length });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
@@ -1629,11 +1631,118 @@ app.post("/api/drama/storyboard/output", (req, res) => {
     if (!hits.length) return res.status(404).json({ error: "分镜表 " + r.rel + " 里没有" + label + " " + (shotId || charId) + "——它多半是被改名或删掉了，画布上这个节点已经指不着真源了" });
     if (hits.length > 1) return res.status(409).json({ error: "分镜表 " + r.rel + " 里有 " + hits.length + " 个" + label + "都叫 " + (shotId || charId) + "，不替你猜是哪一个——先把重复的编号改掉" });
 
+    // 盖掉之前先留一张。首帧是按「镜头_<镜头号>_首帧.png」这个固定名字落盘的，重跑就是原地盖掉：
+    // 只记路径找不回上一版，留底存的是字节本身
+    shotHistory.snapshot(getWorkspaceDir(), {
+      board: r.rel, kind: target, id: shotId || charId, data: r.data,
+      why: "回写 " + keys.join("、") + " 之前", session: String(body.session || ""),
+    });
     Object.assign(hits[0], fields);
     const raw = JSON.stringify(r.data, null, 2) + "\n";
     if (Buffer.byteLength(raw) > DRAMA_JSON_MAX) return res.status(400).json({ error: "分镜表超过 4MB 上限" });
     fs.writeFileSync(r.p, raw, "utf8");
     res.json({ ok: true, name: r.rel, target, id: shotId || charId, fields });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/**
+ * 分镜节点的版本快照 + 一键恢复。
+ *
+ * 要治的是这一件：改一句台词、重跑一下，上一版的首帧被同名文件盖掉了，找不回来。
+ * 所以留底存的是**字节本身**（见 shot-history.js），不是路径。
+ *
+ * 拍照的时机有三处，少一处就有一段时间是裸奔的：
+ *   · 重跑之前——前端点「重跑首帧」的第一件事，盖掉之前这一下最要紧；
+ *   · 单格回写之前；
+ *   · 整份保存之前，且只给这一次真的动了的镜头拍——画布上挪一个节点走的也是整份保存，
+ *     整版拍一遍等于把每条视频都算一遍 sha256，那就成了拖一下卡一下。
+ *
+ * 留底失败一律不挡住保存：用户要的是这一笔先写对，退不回去是第二位的事。
+ */
+function dramaTargetIds(data, kind) {
+  const out = [];
+  if (kind === "character") for (const c of (Array.isArray(data && data.characters) ? data.characters : [])) { const id = String((c && c.id) || ""); if (id) out.push(id); }
+  else for (const s of (Array.isArray(data && data.scenes) ? data.scenes : [])) for (const sh of (Array.isArray(s && s.shots) ? s.shots : [])) { const id = String((sh && sh.id) || ""); if (id) out.push(id); }
+  return out;
+}
+/** 整份保存之前：只给这一次真的动了的拍。删掉一镜也算动了——那是最该留底的一种改法，删完连路径都不剩 */
+function dramaSnapshotDiff(rel, next, why, session) {
+  const out = [];
+  let prev;
+  try { prev = readDramaJson(rel).data; } catch { return out; } // 第一次保存，本来就没有上一版
+  const root = getWorkspaceDir(), same = (a, b) => JSON.stringify(shotHistory._internals.stable(a)) === JSON.stringify(shotHistory._internals.stable(b));
+  for (const kind of ["shot", "character"]) {
+    for (const id of new Set(dramaTargetIds(prev, kind))) {
+      const a = shotHistory._internals.findTarget(prev, kind, id);
+      if (a.length !== 1) continue;                       // 撞号的不碰：拍了也不知道拍的是哪一个
+      const b = shotHistory._internals.findTarget(next, kind, id);
+      if (b.length === 1 && same(a[0], b[0])) continue;
+      const e = shotHistory.snapshot(root, { board: rel, kind, id, data: prev, why: b.length ? why : "删掉之前", session });
+      if (e) out.push(e.id);
+    }
+  }
+  return out;
+}
+function shotHistoryArgs(src) {
+  const rel = dramaName(src && src.name);
+  if (!rel) throw new Error("分镜表文件名不合法（只允许工作区内的 .json 文件）");
+  const kind = String((src && src.kind) || "shot");
+  if (kind !== "shot" && kind !== "character") throw new Error("kind 只能是 shot 或 character");
+  const id = String((src && src.id) || "").trim();
+  if (!id) throw new Error("要看哪一镜 / 哪个角色：缺 id");
+  return { rel, kind, id, session: String((src && src.session) || "") };
+}
+app.get("/api/drama/shot-history", (req, res) => {
+  try {
+    const { rel, kind, id } = shotHistoryArgs(req.query);
+    // 分镜表读不出来照样列版本：表坏了正是最想翻留底的时候，这时候再回一句「表不合法」等于把门锁上
+    let data = null;
+    try { data = readDramaJson(rel).data; } catch {}
+    res.json({ ok: true, name: rel, kind, id, versions: shotHistory.list(getWorkspaceDir(), { board: rel, kind, id, data }), usage: shotHistory.usage(getWorkspaceDir()) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// 重跑之前先拍一张。前端在发生成请求之前调它——图一旦落盘，上一版就已经被盖掉了，那时候再拍拍到的是新的
+app.post("/api/drama/shot-history/snapshot", (req, res) => {
+  try {
+    const { rel, kind, id, session } = shotHistoryArgs(req.body);
+    const r = readDramaJson(rel);
+    const e = shotHistory.snapshot(getWorkspaceDir(), { board: rel, kind, id, data: r.data, why: String((req.body || {}).why || "重跑之前"), session });
+    res.json({ ok: true, name: rel, kind, id, saved: e ? { id: e.id, ts: e.ts } : null });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+/**
+ * 把某一版留下的那份素材直接吐出来，给界面画缩略图用。
+ *
+ * 没有它，「恢复到哪一版」只能靠时间戳猜——而这功能的整个由头就是**看一眼上一版的首帧**。
+ * 盘上那个路径早被同名盖掉了，所以只能从留底里读。
+ * 路径不来自请求：请求给的是版本号和字段名，落到哪个文件由账本里那串 sha256 决定，
+ * 而它必须是 64 位十六进制——外面递什么进来都拼不出一个能跳出 objects/ 的路径。
+ */
+app.get("/api/drama/shot-history/blob", (req, res) => {
+  try {
+    const { rel, kind, id } = shotHistoryArgs(req.query);
+    const version = String(req.query.version || "").trim(), field = String(req.query.field || "").trim();
+    const root = getWorkspaceDir();
+    const entry = shotHistory._internals.readLedger(root, rel).find((e) => e.id === version && e.kind === kind && e.target === id);
+    if (!entry) return res.status(404).json({ error: "没有这一版" });
+    const b = (entry.blobs || {})[field];
+    if (!b || !b.hash) return res.status(404).json({ error: "这一版没留下 " + field });
+    const p = shotHistory._internals.objPath(root, b.hash);
+    if (!p || !fs.existsSync(p)) return res.status(410).json({ error: "这一版的 " + field + " 留底超过保留期被清掉了" });
+    res.type(path.extname(String(b.rel || "")) || "application/octet-stream");
+    // 内容按 sha256 寻址，同一个地址的字节永远不变，可以放心让浏览器长期缓存
+    res.set("Cache-Control", "private, max-age=31536000, immutable");
+    res.sendFile(p);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/drama/shot-history/restore", (req, res) => {
+  try {
+    const { rel, kind, id, session } = shotHistoryArgs(req.body);
+    const version = String((req.body || {}).version || "").trim();
+    if (!version) return res.status(400).json({ error: "要恢复到哪一版：缺 version" });
+    const r = shotHistory.restore(getWorkspaceDir(), { board: rel, kind, id, version, session });
+    if (!r.ok) return res.status(/没有这一版|分镜表里没有/.test(r.error) ? 404 : /都叫/.test(r.error) ? 409 : 400).json(r);
+    res.json({ ...r, name: rel, kind, id });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
@@ -4148,7 +4257,7 @@ app.post("/api/feedback", (req, res) => {
 // 反馈汇总：👍👎 总数/好评率/按模型/按模式/最近的 👎 清单。管理员看全员，成员只看自己
 app.get("/api/feedback/summary", (req, res) => {
   const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
-  const user = req.user && req.user.role !== "admin" ? req.user.username : "";
+  const user = req.user && !account.canAdmin(req.user) ? req.user.username : "";
   res.json(evolve.feedbackSummary({ days, user }));
 });
 
@@ -4513,7 +4622,7 @@ function userSkillEntries() {
 // 备份里有 config.json（含 API Key）和全部账号数据——只有管理员能碰。
 // 本地单人用没登录态时视同管理员（和任务归属的口径一致）
 function backupAllowed(req, res) {
-  if (!req.user || req.user.role === "admin") return true;
+  if (!req.user || account.isAdmin(req.user)) return true;
   res.status(403).json({ error: "只有管理员能操作备份" });
   return false;
 }

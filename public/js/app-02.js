@@ -1932,7 +1932,7 @@ function renderUserChip() {
   row.style.display = "flex";
   const av = avatarBits(currentUser.avatar, currentUser.username);
   chip.innerHTML = `<span class="ava${av.cls ? " " + av.cls : ""}">${av.html}</span>`
-    + `<span class="un">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</span>`
+    + `<span class="un">${esc(displayName(currentUser))}${currentUser.role === "member" ? "" : " · " + esc(currentUser.role_label || "")}</span>`
     // 不限额时不显示余额：一个永远不会动、也拦不住任何事的数字挂在那里只会让人担心
     + (creditsOn ? `<span class="uc">${ic("sparkles")}${(+currentUser.credits).toLocaleString()}</span>` : "");
   onActivate(chip, (e) => { e.stopPropagation(); toggleUserMenu(); });
@@ -1985,13 +1985,13 @@ function openUserMenu() {
   userMenu.innerHTML = `
     <div class="um-head" data-act="account" title="点击查看用量明细">
       <span class="ava${av.cls ? " " + av.cls : ""}" style="width:30px;height:30px;border-radius:50%;background:var(--owb-brand-grad);color:#fff;display:flex;align-items:center;justify-content:center;font-size: 15px;font-weight:600;flex:none;overflow:hidden">${av.html}</span>
-      <div style="min-width:0"><div class="n">${esc(displayName(currentUser))}${currentUser.role === "admin" ? " · 管理员" : ""}</div>
+      <div style="min-width:0"><div class="n">${esc(displayName(currentUser))}${currentUser.role === "member" ? "" : " · " + esc(currentUser.role_label || "")}</div>
       <div class="s">${creditsOn ? `${ic("sparkles")}${(+currentUser.credits).toLocaleString()} 积分 · ` : ""}账号与用量</div></div>
     </div>
     <div class="um-i" data-act="profile">${ic("id-card")}个人资料</div>
     <div class="um-i" data-act="settings">${ic("settings")}设置</div>
-    ${currentUser.role === "admin" || currentUser.role === "auditor"
-      ? `<div class="um-i" data-act="admin">${ic("building-2")}企业管理后台${currentUser.role === "auditor" ? ` <span class="hint">只读</span>` : ""}</div>`
+    ${currentUser.can_admin
+      ? `<div class="um-i" data-act="admin">${ic("building-2")}企业管理后台${currentUser.is_admin ? "" : ` <span class="hint">只读</span>`}</div>`
       : ""}
     ${i18n ? `<div class="um-i um-lang" data-act="lang" title="点一下就切换界面语言，AI 回复也跟着换"><span>${ic("globe")}语言</span><span class="um-seg" data-i18n-skip role="group" aria-label="界面语言">${Object.keys(i18n.LANGS).map((v) =>
       `<button type="button" data-lang="${v}" class="${lang === v ? "on" : ""}" aria-pressed="${lang === v}">${v === "zh" ? "中" : "En"}</button>`).join("")}</span></div>` : ""}

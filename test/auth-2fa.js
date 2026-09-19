@@ -50,7 +50,7 @@ ok(/空格/.test(why(() => I.register("小赵", " Zx9#mQ2v "))), "前后空格�
 ok(why(() => I.register("小赵", "Zx9#mQ2vLp")) === "", "正常密码放行");
 
 const admin = I.loadUsers().users.find((u) => u.username === "小赵");
-ok(admin && admin.role === "admin" && admin.owner, "第一个账号是 owner 管理员");
+ok(admin && admin.role === "owner" && admin.owner, "第一个账号是超级管理员");
 
 console.log("\n② 策略改严之后，系统自己发的随机密码也得跟着变");
 org.updateOrg("default", { settings: { password_min: 16 } }, "小赵");

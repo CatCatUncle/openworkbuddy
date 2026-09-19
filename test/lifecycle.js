@@ -19,7 +19,7 @@
  *   3. 升级上来的老任务（没有 user 字段）不能凭空判给谁，否则一升级全员任务消失
  *   4. 办离职必须把六道口子一次关完（令牌 / 扫码设备 / 排期 / 邀请码 / 二次验证 / 在跑的任务）
  *   5. 该留的一样不能删：用量、会话、文件、审计——人走了账还得能对
- *   6. 两道安全联锁：办不了自己，办不掉唯一还在职的管理员
+ *   6. 三道安全联锁：办不了自己、办不掉超管（先转让）、办不掉唯一还在职的管理员
  * 每条后面都跟一个反向对照：把该拒的换成该放的，必须放行——不然测的就不是它。
  */
 
@@ -280,29 +280,40 @@ scheduler.setActiveScheduler(sched);
 }
 
 // ==========================================================================
-console.log("\n【6】两道安全联锁");
+console.log("\n【6】三道安全联锁");
 // ==========================================================================
 {
   throws(() => lifecycle.offboard(boss, "laoban"), "不能给自己办离职", "办不了自己（手一抖就把自己锁在门外）");
   throws(() => lifecycle.offboard(boss, ""), "没说要给谁", "名字传空当场报错");
   throws(() => lifecycle.offboard(boss, "根本没这个人"), "成员不存在", "人不存在当场报错");
-  // 所有者：别的管理员碰不得（这条判在 account.assertCanManage 里，离职这条路也得撞上它）
-  throws(() => lifecycle.offboard(U("laowang"), "laoban"), "组织所有者", "另一个管理员办不掉组织所有者");
+  // 超管：谁都办不掉他，包括平台超管——他一走这个位子就空在那儿，谁也发不出新的管理员。
+  // 要换人只有一条路：先在「管理员角色」里转让，再回来办他
+  throws(() => lifecycle.offboard(U("laowang"), "laoban"), "超级管理员", "另一个管理员办不掉超级管理员");
+  throws(() => lifecycle.offboard(boss, "laoban"), "自己", "他本人也办不掉自己");
   eq(U("laoban").status || "active", "active", "而且老板好好的，没被做一半");
 
-  // 唯一管理员：在分公司里验（默认组织有 owner，那条更早就拦下了）
+  // 唯一管理员这条，得在一个**没有超管**的组织里才撞得到：正常建起来的组织，第一个管理员
+  // 级别的人就是它的超管，先撞上的会是上面那条。没有超管的组织真的存在——老账本升上来的
+  // 「一个管理员都没有」的组织，migrateOwners 补不了人，先空着（见 test/rbac.js 第七节）。
+  // 所以这儿直接照那个样子摆一个出来
   const o2 = org.createOrg({ name: "华东分公司", plan: "team", seats: 5, actor: "laoban" });
-  const solo = account._internals.register("hd_admin", "pw-hd-admin-1", { org: o2.id, role: "admin" });
-  const solo2 = account._internals.register("hd_member", "pw-hd-member-1", { org: o2.id, role: "member" });
+  {
+    const st = account._internals.loadUsers();
+    const mk = (username, role, at) => ({ username, role, org: o2.id, salt: "x", hash: "x", status: "active", created_at: at });
+    st.users.push(mk("hd_admin", "admin", "2026-03-01T00:00:00.000Z"));
+    st.users.push(mk("hd_member", "member", "2026-03-02T00:00:00.000Z"));
+    account._internals.saveUsers(st);
+  }
   throws(() => lifecycle.offboard(boss, "hd_admin"), "唯一", "办不掉一个组织里唯一还在职的管理员（办完谁都进不了后台）");
   eq(U("hd_admin").status || "active", "active", "而且没做一半就停在那儿——他还是好好的");
 
-  // 反向对照：先提一个人上来当第二个管理员，这时候就办得了
-  account.setMember(solo, "hd_member", { role: "admin" });
+  // 反向对照：把那个成员提上来。这个组织本来没有超管，于是他直接就是超管——
+  // 跟注册那条路同一条规矩：一个组织里第一个管理员级别的人就是它的主人
+  account.setMember(boss, "hd_member", { role: "admin" });
+  eq(U("hd_member").role, "owner", "★没有超管的组织，提上来的第一个管理员直接就是超管★");
   const r = lifecycle.offboard(U("hd_member"), "hd_admin", {});
-  eq(r.user, "hd_admin", "反向对照：有第二个管理员在，就办得了");
+  eq(r.user, "hd_admin", "反向对照：这个组织有人镇着了，就办得了");
   eq(U("hd_admin").status, "disabled", "他真的停用了");
-  ok(!!solo2, "（分公司那个成员建出来了）");
 }
 
 // ==========================================================================
@@ -343,9 +354,17 @@ console.log("\n【7】办入职：同一个部门进来的人，权限长得一�
   throws(() => lifecycle.onboard(boss, {}), "没填用户名", "不填用户名当场报错");
   throws(() => lifecycle.setDeptTemplate(U("newbie1"), "市场部", {}), "只有管理员", "普通成员改不了部门模板");
   throws(() => lifecycle.setDeptTemplate(boss, "  ", {}), "没说是哪个部门", "部门名传空当场报错");
-  // 角色只认这三个：写歪了退回 member，而不是造出一个谁也不认识的角色
-  lifecycle.setDeptTemplate(boss, "临时部", { role: "超级管理员" });
-  eq(lifecycle.deptTemplate("default", "临时部").role, "member", "模板里的角色写歪了一律退回 member");
+  // 模板里的角色 = 以后办入职时直接授出去的角色，所以它过的是跟改角色同一道闸。
+  // 不在这儿判的话，管理员填一张 role=admin 的模板、再办一次入职，就绕开了「管理员发不了管理员」
+  throws(() => lifecycle.setDeptTemplate(boss, "临时部", { role: "超级管理员" }), "没有这个角色",
+         "写歪的角色当场报错——悄悄退回 member 等于把管理员填的东西改了，他还以为存上了");
+  throws(() => lifecycle.setDeptTemplate(U("laowang"), "临时部", { role: "admin" }), "授予",
+         "★管理员填不了 role=admin 的模板（这是绕开「管理员发不了管理员」最省事的一条路）★");
+  eq(lifecycle.listDeptTemplates("default")["临时部"], undefined, "两次都没存进去");
+  lifecycle.setDeptTemplate(boss, "临时部", { role: "auditor" });
+  eq(lifecycle.deptTemplate("default", "临时部").role, "auditor", "反向对照：够得着的角色存得进去");
+  lifecycle.setDeptTemplate(boss, "临时部", {});
+  eq(lifecycle.deptTemplate("default", "临时部").role, "member", "反向对照：不填角色还是回落到成员");
   lifecycle.setDeptTemplate(boss, "临时部", null);
 }
 

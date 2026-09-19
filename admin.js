@@ -2,18 +2,23 @@
 /**
  * 企业管理后台的接口层（/api/admin/*）。
  *
- * 权限分两档，别混：
+ * 权限分档在 rbac.js（成员 < 审计员 < 管理员 < 超级管理员），这儿只是把它接到路由上：
  *   - adminGuard：能进后台（管理员 + 审计员）。所有 GET 走这一档。
- *   - adminOnly ：能改东西（只有管理员）。所有写操作走这一档。
+ *   - adminOnly ：能改东西（管理员以上）。所有写操作走这一档。
  *   审计员这个角色存在的意义就是「能查账但改不动」——合规、外包、财务对账都需要这么一个人。
+ *   **管人**比这更严：走 account.assertCanManage，只能管比自己低的那一档，
+ *   所以管理员对管理员一步也走不动（以前能互相停用，谁先点谁赢）。
  *
- * 还有一档更高的：**平台管理员** = 默认组织的管理员。全站级的东西（新建组织、改别的组织的
- * 套餐席位）只有他能动。分公司的管理员在自己组织里权力再大，也不该能给自己加席位。
+ * 上面还有两档跟「这台机器」有关的：
+ *   - **平台管理员** = 默认组织的管理员。改引擎、密钥、MCP、技能这些服务器级设置（platformGuard）。
+ *   - **平台超级管理员** = 默认组织的超管 = 机主。新建组织、改别的组织的套餐席位只有他能动——
+ *     开一个组织等于开一份账单，还等于放出一个新的超管，这不该是随便哪个管理员能干的事。
  */
 
 const express = require("express");
 const account = require("./account");
 const org = require("./org");
+const rbac = require("./rbac"); // 角色分档和能力表
 const lifecycle = require("./lifecycle");
 const prefs = require("./prefs"); // 哪些设置算「个人的」，那张表在这儿
 const quota = require("./quota"); // 按次计费的第三方 API：清单、额度、流水
@@ -28,6 +33,11 @@ function platformAdmin(user) {
 }
 function platformOnly(req, res, next) {
   if (!platformAdmin(req.user)) return res.status(403).json({ error: "只有平台管理员（默认组织的管理员）能做这个操作" });
+  next();
+}
+/** 开组织 / 改别人的套餐席位：只有机主。见文件头 */
+function platformOwnerOnly(req, res, next) {
+  if (!account.platformOwner(req.user)) return res.status(403).json({ error: "只有平台超级管理员（默认组织的超级管理员）能做这个操作" });
   next();
 }
 /** 统一的 try/catch：管理后台的每个写接口都长一样，错了就 400 + 原话 */
@@ -288,6 +298,7 @@ function createAdminRouter(deps = {}) {
       last7: usage.last7,
       multi_tenant: org.multiTenant(),
       platform_admin: platformAdmin(req.user),
+      platform_owner: account.platformOwner(req.user),
       me: account.publicUser(req.user),
     };
   }));
@@ -299,6 +310,9 @@ function createAdminRouter(deps = {}) {
     members: account.listMembers(org.orgIdOf(req.user)),
     depts: org.listDepts(org.orgIdOf(req.user)),
     templates: lifecycle.listDeptTemplates(org.orgIdOf(req.user)),
+    // 建号和部门模板的角色下拉得照着**这个人**能发的角色画。少了这行，管理员那边
+    // 下拉里还挂着「管理员」，点下去后端一句「你没有授予…的权限」——看得见但会 403 的按钮
+    can_assign: rbac.assignableBy(req.user, { role: "member" }),
   })));
 
   router.post("/api/admin/members", account.adminOnly, guarded((req) => account.createMember(req.user, req.body || {})));
@@ -314,13 +328,37 @@ function createAdminRouter(deps = {}) {
   // **不是「帮他关掉」**：组织要是开了强制，他下次登录还是得先绑，只是绑一套新的。
   router.post("/api/admin/members/:name/reset-2fa", account.adminOnly, guarded((req) => {
     const name = req.params.name;
-    const me = account.listMembers(org.orgIdOf(req.user)).find((m) => m.username === name);
-    if (!me) throw new Error("成员不存在");   // 顺手把「改别的组织的人」挡在外面
+    // 走跟改密码同一道闸：清掉二次验证 + 重置密码就是一次完整的接管，
+    // 只判「在不在同一个组织」的话，管理员照样能接管另一个管理员的号
+    account.assertManageable(req.user, name, "重置二次验证");
     return { ok: true, was_on: account.disableTOTP(name, { byAdmin: true, actor: req.user.username }) };
   }));
 
   router.delete("/api/admin/members/:name", account.adminOnly, guarded((req) =>
     ({ ok: true, member: account.removeMember(req.user, req.params.name) })));
+
+  /**
+   * 这个组织的权限长什么样：角色表、能力表、**我**能授出去哪几个角色、超管是谁。
+   * 前端拿它渲染「管理员角色」那一页——下拉里出现的选项和后端拦的是同一张表，
+   * 而不是界面上藏一藏、后端照旧放行。
+   */
+  router.get("/api/admin/roles", guarded((req) => {
+    const members = account.listMembers(org.orgIdOf(req.user));
+    return {
+      ranks: rbac.ROLE_RANK,
+      roles: rbac.ROLES.map((r) => ({ role: r, label: rbac.ROLE_LABEL[r], caps: rbac.CAPS[r] })),
+      caps: rbac.CAP_LABEL,
+      me: { role: rbac.roleOf(req.user), can_assign: rbac.assignableBy(req.user, { role: "member" }),
+            can_transfer: rbac.can(req.user, "owner.transfer"), platform_owner: account.platformOwner(req.user) },
+      owner: (members.find((m) => m.role === "owner") || {}).username || "",
+      members,
+    };
+  }));
+
+  // 转让超级管理员。每个组织只有一个，所以这不是「再发一个」，是把位子交出去——
+  // 交完自己降成管理员。理由写在 rbac.js 文件头上。
+  router.post("/api/admin/owner", account.adminOnly, guarded((req) =>
+    ({ ok: true, ...account.transferOwner(req.user, (req.body || {}).username) })));
 
   // ---------- 入职 / 离职 ----------
   // 办离职：一次调用关掉他手上所有还能用的口子，出一张能贴进交接单的回执。
@@ -361,8 +399,14 @@ function createAdminRouter(deps = {}) {
 
   // ---------- 邀请码 ----------
   router.get("/api/admin/invites", guarded((req) => ({ invites: org.listInvites(org.orgIdOf(req.user)) })));
-  router.post("/api/admin/invites", account.adminOnly, guarded((req) =>
-    org.createInvite(org.orgIdOf(req.user), { ...(req.body || {}), actor: req.user.username })));
+  router.post("/api/admin/invites", account.adminOnly, guarded((req) => {
+    const b = req.body || {};
+    // 邀请码是「预先指定角色」的建号。不在这儿判的话，「管理员发不了管理员」绕一步就没了：
+    // 发一张 role=admin 的码，自己扫进来一个新号
+    const bad = rbac.assignProblem(req.user, { role: "member" }, b.role || "member");
+    if (bad) throw new Error("发不了这样的邀请码：" + bad);
+    return org.createInvite(org.orgIdOf(req.user), { ...b, actor: req.user.username });
+  }));
   router.delete("/api/admin/invites/:code", account.adminOnly, guarded((req) =>
     ({ ok: true, invite: org.revokeInvite(org.orgIdOf(req.user), req.params.code, req.user.username) })));
 
@@ -710,7 +754,7 @@ function createAdminRouter(deps = {}) {
   }));
 
   // ---------- 组织管理（平台管理员）----------
-  router.get("/api/admin/orgs", platformOnly, guarded(() => {
+  router.get("/api/admin/orgs", platformOwnerOnly, guarded(() => {
     const members = account.listMembers; // 每个组织各查一次，组织数量是个位数，不值得为它做索引
     return {
       orgs: org.listOrgs().map((o) => {
@@ -724,9 +768,9 @@ function createAdminRouter(deps = {}) {
       plans: org.PLANS, plan_order: org.PLAN_ORDER,
     };
   }));
-  router.post("/api/admin/orgs", platformOnly, guarded((req) =>
+  router.post("/api/admin/orgs", platformOwnerOnly, guarded((req) =>
     org.createOrg({ ...(req.body || {}), actor: req.user.username })));
-  router.post("/api/admin/orgs/:id", platformOnly, guarded((req) =>
+  router.post("/api/admin/orgs/:id", platformOwnerOnly, guarded((req) =>
     ({ ok: true, org: org.updateOrg(req.params.id, req.body || {}, req.user.username) })));
 
   // ---------- 审计 ----------

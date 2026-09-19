@@ -28,6 +28,7 @@
 
 const account = require("./account");
 const org = require("./org");
+const rbac = require("./rbac"); // 角色分档：谁能授出哪个角色
 const vkeys = require("./vkeys");
 const scheduler = require("./scheduler");
 
@@ -61,11 +62,16 @@ function offboard(actor, username, opts = {}) {
   if (!before) throw new Error("成员不存在");
   const orgId = org.orgIdOf(before);
 
+  // 超管办离职之前必须先转让：他一走，这个组织就再也发不出管理员了（同级动不了同级）
+  if (rbac.roleOf(before) === "owner") {
+    throw new Error("他是这个组织的**超级管理员**。先在「管理员角色」里把超级管理员转让给接手的人，再来办离职——" +
+      "不然这个位子就空在那儿，谁也发不出新的管理员了");
+  }
   // 只剩这一个管理员的时候不许办：办完就没人进得了后台了，
   // 连「把他重新启用」这一步都做不到——整个组织当场锁死
-  if ((before.role === "admin") && (before.status || "active") !== "disabled") {
+  if (rbac.rankOf(before) >= rbac.ROLE_RANK.admin && (before.status || "active") !== "disabled") {
     const others = account._internals.loadUsers().users
-      .filter((u) => u.username !== name && u.role === "admin" && (u.status || "active") === "active" && org.orgIdOf(u) === orgId);
+      .filter((u) => u.username !== name && rbac.rankOf(u) >= rbac.ROLE_RANK.admin && (u.status || "active") === "active" && org.orgIdOf(u) === orgId);
     if (!others.length) throw new Error("他是这个组织**唯一**还在职的管理员。先把另一个人提成管理员，再来办他的离职——不然办完谁都进不了后台了");
   }
 
@@ -222,6 +228,12 @@ function deptTemplate(orgId, dept) {
 /** 存一份部门模板。传 null 就是把这个部门的模板删掉 */
 function setDeptTemplate(actor, dept, tpl) {
   if (!account.isAdmin(actor)) throw new Error("只有管理员能改部门模板");
+  // 模板里的角色 = 以后办入职时直接授出去的角色。不在这儿判的话，管理员填一张
+  // role=admin 的模板、再办一次入职，就绕开了「管理员发不了管理员」
+  if (tpl && tpl.role) {
+    const bad = rbac.assignProblem(actor, { role: "member" }, String(tpl.role));
+    if (bad) throw new Error("模板里填不了这个角色：" + bad);
+  }
   const key = String(dept || "").trim();
   if (!key) throw new Error("没说是哪个部门");
   const orgId = org.orgIdOf(actor);
@@ -229,7 +241,7 @@ function setDeptTemplate(actor, dept, tpl) {
   const all = { ...((org.settingsOf(o) || {}).dept_templates || {}) };
   if (tpl === null) delete all[key];
   else {
-    const role = ["admin", "auditor", "member"].includes(tpl && tpl.role) ? tpl.role : "member";
+    const role = rbac.ASSIGNABLE.includes(tpl && tpl.role) ? tpl.role : "member";
     const q = tpl && tpl.monthly_quota !== undefined && tpl.monthly_quota !== null && tpl.monthly_quota !== ""
       ? Math.max(0, Math.floor(+tpl.monthly_quota) || 0) : null;
     all[key] = { role, monthly_quota: q };

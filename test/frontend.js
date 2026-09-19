@@ -5090,7 +5090,9 @@ const MENU_STUBS = `
   function displayName(u) { return (u && (u.nickname || u.username)) || ""; }
   const MODALS = []; function openModal(k, sub) { MODALS.push(k + ":" + (sub || "")); }
   function renderProfile() {} function checkUpdate() { MODALS.push("update"); }
-  let currentUser = { username: "demo", role: "admin", avatar: "", credits: 0 }; const creditsOn = false;
+  // 这几格照着 account.js 的 publicUser 摆。少一格 can_admin，替身就跟真界面分了叉，
+  // 分叉之后这一整块测的是一个线上不存在的界面
+  let currentUser = { username: "demo", role: "admin", role_label: "管理员", can_admin: true, is_admin: true, avatar: "", credits: 0 }; const creditsOn = false;
 `;
 const MENU_CHECKS = `
   const names = []; window.__menuNames = 0;
@@ -5145,15 +5147,22 @@ const MENU_CHECKS = `
 
   // 企业后台入口是按角色发的。这行要是对普通成员也冒出来，他点进去只会连吃 403——
   // 一个点了就报错的入口，比没有这个入口更伤人
-  currentUser = { username: "xiaoyuan", role: "member", avatar: "", credits: 0 };
+  currentUser = { username: "xiaoyuan", role: "member", role_label: "成员", can_admin: false, is_admin: false, avatar: "", credits: 0 };
   openUserMenu();
   ok("普通成员：菜单里根本没有企业后台这一行", !menu.querySelector('[data-act="admin"]') && !/企业管理后台/.test(menu.textContent));
   ok("反向对照：普通成员的其它七行一个不少", acts() === "profile,settings,lang,appearance,help,update,logout");
-  currentUser = { username: "kuaiji", role: "auditor", avatar: "", credits: 0 };
+  currentUser = { username: "kuaiji", role: "auditor", role_label: "审计员", can_admin: true, is_admin: false, avatar: "", credits: 0 };
   openUserMenu();
   ok("审计员：看得见入口，但标着「只读」（他进去只能查账改不动）", !!menu.querySelector('[data-act="admin"]') && /只读/.test(menu.querySelector('[data-act="admin"]').textContent));
-  ok("审计员的头衔不冒充管理员（头部不写「· 管理员」）", !/· 管理员/.test(menu.querySelector(".um-head").textContent));
-  currentUser = { username: "demo", role: "admin", avatar: "", credits: 0 };
+  ok("审计员的头衔不冒充管理员（头部写的是「· 审计员」）", /· 审计员/.test(menu.querySelector(".um-head").textContent) && !/· 管理员/.test(menu.querySelector(".um-head").textContent));
+
+  // 超管这一档是后加的。加一档角色最容易漏的就是这种「按角色名写死」的地方，
+  // 漏掉的样子是权限最大的那个人反而看不见入口——而看不见的东西没人会来报
+  currentUser = { username: "laoban", role: "owner", role_label: "超级管理员", can_admin: true, is_admin: true, avatar: "", credits: 0 };
+  openUserMenu();
+  ok("★超级管理员：入口在，而且不带「只读」★", !!menu.querySelector('[data-act="admin"]') && !/只读/.test(menu.querySelector('[data-act="admin"]').textContent));
+  ok("超管的头衔写的是「· 超级管理员」，不是「· 管理员」", /· 超级管理员/.test(menu.querySelector(".um-head").textContent));
+  currentUser = { username: "demo", role: "admin", role_label: "管理员", can_admin: true, is_admin: true, avatar: "", credits: 0 };
   closeUserMenu();
   return names;
 `;

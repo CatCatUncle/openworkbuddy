@@ -245,6 +245,46 @@ if (sub === "pair") {
 // 凭什么让命令行干这件事，见 account.js resetPasswordLocally 头上那段：能读到
 // users.json 的人早就拿到了这台机器上的全部东西，再拦一道密码只剩下「忘了密码
 // 就彻底进不去」这一个后果。反过来，这两条**绝不能接到 HTTP 上**。
+// ---------- openworkbuddy owner：唯一的超级管理员进不去时的救场口 ----------
+// 每个组织只有一个超管，而同级动不了同级——他离职、被停用、密码和手机一起丢了的话，
+// 界面上就没有出口了。凭据跟上面两条一样：你能读到 users.json，你本来就是机主。
+if (sub === "owner") {
+  const who = String((words.filter((w) => !w.startsWith("-"))[0] || "")).trim();
+  try {
+    const rbac = require("./rbac");
+    const org = require("./org");
+    if (!who) {
+      // 不给用户名就只是「看看现在是谁」：把一台机器的主子换掉不该是手滑的后果
+      account.migrateOwners();
+      const us = account._internals.loadUsers().users || [];
+      const byOrg = new Map();
+      for (const u of us) { const o = org.orgIdOf(u); if (!byOrg.has(o)) byOrg.set(o, []); byOrg.get(o).push(u); }
+      if (!byOrg.size) { process.stderr.write(dim("这台机器上还没有账号。\n")); process.exit(0); }
+      for (const [id, list] of byOrg) {
+        const own = list.find((u) => rbac.roleOf(u) === "owner");
+        const name = org.getOrg(id).name;
+        process.stdout.write(own
+          ? `${name}：超级管理员是 ${bold(own.username)}${dim("（管理员 " + list.filter((u) => rbac.roleOf(u) === "admin").length + " 人 · 共 " + list.length + " 人）")}\n`
+          : `${name}：${yellow("还没有超级管理员")}${dim("（共 " + list.length + " 人）")}\n`);
+      }
+      process.stderr.write(dim("换人：openworkbuddy owner <用户名>　（原来那个会改任管理员）\n"));
+      process.exit(0);
+    }
+    const r = account.setOwnerLocally(who, { actor: "命令行" });
+    process.stdout.write(green(`\u2713 ${who} 现在是「${r.org_name}」的超级管理员\n`));
+    if (r.from) process.stdout.write(dim(`  原来的超管 ${r.from} 已改任管理员——他还能管人、改设置，只是发不了管理员了。\n`));
+    if (r.disabled) process.stderr.write(yellow("  注意：这个账号是「已停用」状态，先到管理后台复职，不然他登不上。\n"));
+    if (r.two_factor) process.stderr.write(dim("  这个账号开着二次验证，登录还要那串码。\n"));
+    process.exit(0);
+  } catch (e) {
+    process.stderr.write(red((e && e.message) || String(e)) + "\n");
+    let names = [];
+    try { names = (account._internals.loadUsers().users || []).map((u) => u.username); } catch {}
+    if (who && names.length) process.stderr.write(dim("这台机器上的账号：" + names.slice(0, 20).join("、") + (names.length > 20 ? " …" : "") + "\n"));
+    process.exit(1);
+  }
+}
+
 if (sub === "passwd" || sub === "2fa") {
   const pos = words.filter((w) => !w.startsWith("-"));   // [用户名, 新密码?]
   const who = String(pos[0] || "").trim();

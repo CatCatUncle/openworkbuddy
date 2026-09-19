@@ -22,6 +22,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { dataPath } = require("./paths");
 const store = require("./store");
+const rbac = require("./rbac"); // 能授出去的角色只有那一张表说了算
 
 // OPENWORKBUDDY_DATA_DIR 与 account.js 同一个口子：跑测试时指到临时目录
 const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
@@ -111,7 +112,7 @@ function normalizeDeptTemplates(v) {
     // （个人设置 > 部门模板 > 组织默认）。以前这一格在这里被悄悄丢掉：模板上填了、
     // 存下来没有，于是「按部门给预算」这件事在界面上能填、在执行时永远是 0 = 不限。
     out[dept] = {
-      role: ["admin", "auditor", "member"].includes(t.role) ? t.role : "member",
+      role: rbac.ASSIGNABLE.includes(t.role) ? t.role : "member",
       monthly_quota: q,
       budget_yuan: money(t.budget_yuan),
     };
@@ -368,7 +369,9 @@ function createInvite(orgId, { role, dept, max_uses, days, actor }) {
   const inv = {
     code,
     org,
-    role: role === "admin" || role === "auditor" ? role : "member",
+    // 邀请码永远造不出超级管理员：那一档只能由现任转让（rbac.js 文件头）。
+    // 「发得了管理员的码吗」在 admin.js 那条路由上按发码人的档次判，这里是最后一道兜底
+    role: rbac.ASSIGNABLE.includes(role) ? role : "member",
     dept: String(dept || ""),
     max_uses: Math.max(1, Math.min(1000, Math.floor(+max_uses) || 1)),
     uses: 0,

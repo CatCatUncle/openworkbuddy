@@ -86,6 +86,7 @@ async function dramaRerun(scene, shot, kind) {
   const page = document.getElementById("assist-page");
   page && page.classList.add("drama-busy");
   try {
+    await dramaSnapBefore(shot, kind === "image" ? "重跑首帧之前" : "重跑视频之前");
     const chars = dramaChars(dramaState.data);
     const style = String(dramaState.data.style || "").trim();
     let input;
@@ -127,6 +128,139 @@ async function dramaRerun(scene, shot, kind) {
   }
 }
 
+/**
+ * 「版本」：这一镜有过哪些样子，一键退回去。
+ *
+ * 首帧是按「镜头_<镜头号>_首帧.png」这个固定名字落盘的，重跑一次就是原地盖掉——
+ * 所以退回去靠的是当初留下的**字节**，不是路径，缩略图也只能从留底里取。
+ * 反过来说，留底被清掉的那一版是真回不来了：按钮直接点不动，旁边写明是哪一种回不来，
+ * 让人点一下再失败等于骗他一次。
+ *
+ * 面板做成整页浮层，不塞进卡片：卡片长在 JointJS 的 foreignObject 里，跟着画布缩放和裁切，
+ * 塞进去的弹层会被切掉半边。
+ */
+const DRAMA_FIELD_CN = {
+  first_frame: "首帧", last_frame: "尾帧", video: "视频", audio: "配音",
+  line: "台词", speaker: "说话人", shot_size: "景别", frame_prompt: "画面提示词",
+  motion_prompt: "运镜提示词", duration: "时长", note: "备注", cast: "出场角色",
+  ref: "定妆照", name: "名字", look: "外形", voice: "音色", id: "编号",
+};
+const dramaFieldCn = (k) => DRAMA_FIELD_CN[k] || k;
+function dramaHistDiff(a, b) {
+  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  const out = [];
+  for (const k of keys) if (JSON.stringify((a || {})[k]) !== JSON.stringify((b || {})[k])) out.push(dramaFieldCn(k));
+  return out;
+}
+function dramaHistWhen(ts) {
+  const d = new Date(ts);
+  if (isNaN(d)) return String(ts || "");
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function dramaHistClose() {
+  const el = document.getElementById("drama-hist");
+  if (el) el.remove();
+  document.removeEventListener("keydown", dramaHistKey, true);
+}
+function dramaHistKey(e) { if (e.key === "Escape") { e.stopPropagation(); dramaHistClose(); } }
+function dramaHistBlob(name, kind, id, version, field) {
+  return "/api/drama/shot-history/blob?name=" + encodeURIComponent(name) + "&kind=" + encodeURIComponent(kind)
+    + "&id=" + encodeURIComponent(id) + "&version=" + encodeURIComponent(version) + "&field=" + encodeURIComponent(field);
+}
+function dramaHistRow(v, next, name, kind, id) {
+  const pic = v.files && v.files.first_frame;
+  const thumb = pic && pic.kept
+    ? `<img class="drama-hist-thumb" src="${esc(dramaHistBlob(name, kind, id, v.id, "first_frame"))}" alt="这一版的首帧" loading="lazy">`
+    : `<div class="drama-hist-thumb drama-hist-nopic">${esc(pic ? "首帧没留住" : "无首帧")}</div>`;
+  // 「改了什么」比时间戳有用得多：挑版本的人心里想的是「我要退回改台词之前那一版」
+  const diff = next ? dramaHistDiff(next.fields, v.fields) : [];
+  const gone = Object.entries(v.files || {}).filter(([, s]) => s && !s.kept);
+  return `<li class="drama-hist-item${v.same ? " is-now" : ""}" data-ver="${esc(v.id)}">
+    ${thumb}
+    <div class="drama-hist-body">
+      <div class="drama-hist-when">${esc(dramaHistWhen(v.ts))}${v.same ? ' <b class="drama-hist-now">现在这一版</b>' : ""}</div>
+      <div class="drama-hist-why">${esc(v.why || "改动之前")}${diff.length ? " · 这一版之后改了：" + esc(diff.join("、")) : ""}</div>
+      <div class="drama-hist-line">${v.fields && v.fields.line ? "“" + esc(String(v.fields.line).slice(0, 60)) + "”" : '<span class="muted">无人声镜头</span>'}</div>
+      ${gone.length ? `<div class="drama-hist-gone">${esc(gone.map(([f, s]) => dramaFieldCn(f) + "：" + s.why).join("；"))}</div>` : ""}
+    </div>
+    <button class="ui-btn ui-btn--xs ${v.same ? "ui-btn--ghost" : "ui-btn--outline"}" data-restore="${esc(v.id)}"
+      ${v.same ? "disabled" : ""}>${v.same ? "当前" : v.restorable ? "退到这一版" : "退（缺素材）"}</button>
+  </li>`;
+}
+async function dramaHistRender(box, scene, shot) {
+  const kind = "shot", id = dramaShotId(shot, scene, 0);
+  const body = box.querySelector(".drama-hist-list");
+  body.innerHTML = '<li class="drama-hist-loading">读取留底…</li>';
+  const q = "/api/drama/shot-history?name=" + encodeURIComponent(dramaState.name) + "&kind=" + kind + "&id=" + encodeURIComponent(id);
+  let r;
+  try { r = await fetch(q).then((x) => x.json()); } catch (e) { r = { error: String(e.message || e) }; }
+  if (!r || !r.ok) { body.innerHTML = `<li class="drama-hist-loading">${esc((r && r.error) || "留底读不出来")}</li>`; return; }
+  const vs = r.versions || [];
+  if (!vs.length) {
+    // 空不是故障：这一镜从建表到现在一次没改过。说清楚下一张什么时候会有，别让人以为功能坏了
+    body.innerHTML = '<li class="drama-hist-loading">这一镜还没有留底。每次重跑或保存之前会自动留一张，退回来就靠它。</li>';
+    return;
+  }
+  body.innerHTML = vs.map((v, i) => dramaHistRow(v, vs[i - 1] || null, dramaState.name, kind, id)).join("");
+  body.querySelectorAll("[data-restore]").forEach((btn) => btn.addEventListener("click", async () => {
+    const ver = btn.dataset.restore;
+    btn.disabled = true; btn.textContent = "退回中…";
+    try {
+      const res = await fetch("/api/drama/shot-history/restore", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: dramaState.name, kind, id, version: ver }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out.ok) throw new Error(out.error || "退回失败");
+      await dramaLoad(dramaState.name);
+      // 半截的要单独说：界面上「退回成功」配着一张没换的图，是这功能最坏的一种错法
+      const miss = (out.files || []).filter((f) => f.action === "missing");
+      if (miss.length) dramaToast(`${id} 已退回，但${miss.map((f) => dramaFieldCn(f.field) + "（" + f.why + "）").join("、")}没能一起回来`, "triangle-alert", "err");
+      else dramaToast(`${id} 已退到 ${dramaHistWhen((vs.find((v) => v.id === ver) || {}).ts)} 那一版`, "circle-check", "ok");
+      renderDramaCanvas();
+      await dramaHistRender(box, scene, dramaAllShots(dramaState.data).map((x) => x.shot).find((s) => String(s.id || "") === id) || shot);
+    } catch (e) {
+      dramaToast(`${id} 退回失败：${String(e.message || e).slice(0, 180)}`, "circle-x", "err");
+      btn.disabled = false; btn.textContent = "退到这一版";
+    }
+  }));
+}
+function dramaHistory(scene, shot) {
+  dramaHistClose();
+  const id = dramaShotId(shot, scene, 0);
+  const box = document.createElement("div");
+  box.id = "drama-hist";
+  box.className = "drama-hist";
+  box.innerHTML = `<div class="drama-hist-panel" role="dialog" aria-label="镜头 ${esc(id)} 的版本">
+    <header class="drama-hist-head"><b>${esc(id)} 的版本</b><span>退回去是整镜换回那一版，不是只换图</span><button class="ui-btn ui-btn--ghost ui-btn--xs" id="drama-hist-x">关闭</button></header>
+    <ul class="drama-hist-list"></ul>
+  </div>`;
+  box.addEventListener("click", (e) => { if (e.target === box) dramaHistClose(); });
+  document.body.appendChild(box);
+  box.querySelector("#drama-hist-x").onclick = dramaHistClose;
+  document.addEventListener("keydown", dramaHistKey, true);
+  dramaHistRender(box, scene, shot);
+}
+
+/**
+ * 重跑之前，先把这一镜现在的样子留一张。
+ *
+ * 必须在发生成请求**之前**：图一落盘，上一版就已经被同名盖掉了，那时候再留，留下的是新的那张。
+ * 留不成不挡着重跑——用户点的是「重跑」，留底是附带的事；但要在控制台留一句，
+ * 不然「怎么退不回上一版」会变成一桩查不出原因的怪事。
+ */
+async function dramaSnapBefore(shot, why) {
+  try {
+    const id = String((shot && shot.id) || "").trim();
+    if (!id || !dramaState.name) return;
+    await fetch("/api/drama/shot-history/snapshot", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: dramaState.name, kind: "shot", id, why }),
+    });
+  } catch (e) { console.warn("[短剧] 重跑前留底没做成，这一版之后可能退不回来：", e); }
+}
+
 function dramaCard(scene, shot, i, chars) {
   const id = dramaShotId(shot, scene, i);
   const busyImage = dramaState.busy.has(`${id}:image`), busyVideo = dramaState.busy.has(`${id}:video`);
@@ -140,6 +274,7 @@ function dramaCard(scene, shot, i, chars) {
     <div class="drama-shot-actions">
       <button class="ui-btn ui-btn--xs ui-btn--outline" data-drama-act="image" ${busyImage ? "disabled" : ""}>${busyImage ? "生成中…" : "重跑首帧"}</button>
       <button class="ui-btn ui-btn--xs ui-btn--ghost" data-drama-act="video" ${busyVideo ? "disabled" : ""}>${busyVideo ? "生成中…" : "重跑视频"}</button>
+      <button class="ui-btn ui-btn--xs ui-btn--ghost" data-drama-act="history" title="这一镜有过哪些样子，可以退回去">版本</button>
     </div>
   </article>`;
 }
@@ -243,7 +378,10 @@ function renderDramaCanvas() {
     root.innerHTML = dramaScene(scene, si, chars);
     root.querySelectorAll("[data-drama-act]").forEach((btn) => btn.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      dramaRerun(scene, (shots.find((s, i) => dramaShotId(s, scene, i) === btn.closest("[data-shot]")?.dataset.shot) || shots[0]), btn.dataset.dramaAct);
+      const shot = shots.find((s, i) => dramaShotId(s, scene, i) === btn.closest("[data-shot]")?.dataset.shot) || shots[0];
+      // 「版本」只是翻旧账，不许跟重跑共用一条路：手一抖点错就是真花一次钱
+      if (btn.dataset.dramaAct === "history") dramaHistory(scene, shot);
+      else dramaRerun(scene, shot, btn.dataset.dramaAct);
     }));
   });
   dramaState.paper.scale(dramaState.scale, dramaState.scale);

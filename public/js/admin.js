@@ -62,7 +62,7 @@ const mb = (b) => {
   if (b >= 1024) return (b / 1024).toFixed(0) + " KB";
   return b + " B";
 };
-const ROLE_LABEL = { admin: "管理员", auditor: "审计员", member: "成员" };
+const ROLE_LABEL = { owner: "超级管理员", admin: "管理员", auditor: "审计员", member: "成员" };
 const STATUS_LABEL = { active: "正常", pending: "待审核", disabled: "已停用" };
 const SOURCE_LABEL = { web: "网页", feishu: "飞书", wecom: "企业微信", dingtalk: "钉钉", qq: "QQ", schedule: "定时任务", api: "接口", cli: "命令行" };
 
@@ -378,6 +378,7 @@ const inp = (name, value, extra) =>
 /* ---------------- 状态 ---------------- */
 let ME = null;          // 当前登录的人
 let PLATFORM = false;   // 是不是平台管理员（默认组织的管理员）
+let OWNER = false;      // 是不是平台超级管理员（默认组织的超管 = 这台机器的主人）
 let RO = false;         // 审计员：只读
 let MULTI = false;      // 有没有开第二个组织
 
@@ -419,7 +420,7 @@ const NAV = [
       { id: "meter", icon: "zap", title: "计量设置", sub: "开不开用量闸门、每人每月发多少" },
       { id: "models", icon: "sparkles", title: "模型与 Key", sub: "这台服务器用哪些模型、哪把 Key", platform: true },
       { id: "apiquota", icon: "sliders-horizontal", title: "API 与额度", sub: "搜索、生图、生视频这些按次收费的接口，统一配、统一限", platform: true },
-      { id: "orgs", icon: "building", title: "组织管理", sub: "新建组织、给别的组织配套餐", platform: true },
+      { id: "orgs", icon: "building", title: "组织管理", sub: "新建组织、给别的组织配套餐", platform: true, owner: true },
       { id: "audit", icon: "clock", title: "操作审计", sub: "谁在什么时候改了什么" },
     ],
   },
@@ -948,11 +949,18 @@ PAGES.members = {
       if (el) el.onchange = () => { memberQ = { ...memberQ, [k]: el.value }; route(true); };
     }
     const deptOpts = [{ value: "", label: "（不分部门）" }].concat(m.depts.map((d) => ({ value: d.name, label: d.name })));
-    const roleOpts = [
-      { value: "member", label: "成员 —— 只能用，看不到后台" },
-      { value: "auditor", label: "审计员 —— 能查账，改不动" },
-      { value: "admin", label: "管理员 —— 能改所有东西" },
-    ];
+    // 下拉里只放这个人**真发得出去**的角色：管理员发不出管理员，那一档得超管来。
+    // 服务端给清单，前端不自己编——编一份迟早跟 rbac.js 那张表走散
+    const ROLE_OPT = {
+      member: "成员 —— 只能用，看不到后台",
+      auditor: "审计员 —— 能查账，改不动",
+      admin: "管理员 —— 能管成员、改设置；但改不了另一个管理员",
+    };
+    const roleOpts = (m.can_assign || ["member"]).filter((r) => ROLE_OPT[r]).map((r) => ({ value: r, label: ROLE_OPT[r] }));
+    // 改人的时候，他现在那一档得先摆在下拉里，哪怕你发不出这一档——不然下拉默认落在
+    // 第一项上，看着像「他是成员」，一点保存就把人降了。改不动的那些后端会拦，界面别先说谎
+    const roleOptsFor = (cur) =>
+      roleOpts.some((o) => o.value === cur) ? roleOpts : [{ value: cur, label: (ROLE_LABEL[cur] || cur) + "（当前，你改不了这一档）" }].concat(roleOpts);
     // 走 /api/admin/onboard 而不是 /api/admin/members：两条路都建号，区别在前者会套部门模板。
     // 角色和额度默认留空（= 跟模板走），填了就以填的为准——模板是默认值，不是强制
     const T = m.templates || {};
@@ -1029,7 +1037,7 @@ PAGES.members = {
         modal({
           title: "修改「" + (u.nickname || u.username) + "」",
           fields: [
-            { name: "role", label: "角色", type: "select", options: roleOpts, value: u.role },
+            { name: "role", label: "角色", type: "select", options: roleOptsFor(u.role), value: u.role },
             { name: "dept", label: "部门", type: "select", options: deptOpts, value: u.dept || "" },
             {
               name: "status", label: "状态", type: "select", value: u.status,
@@ -1265,50 +1273,84 @@ PAGES.pending = {
 };
 
 /* ============ 管理员角色 ============ */
+/**
+ * 这一页既是权限模型的说明书，也是它的操作台。四档角色、每一档能干什么，全部来自后端
+ * 那张表（GET /api/admin/roles），不在这儿另抄一份——界面上写的和后端拦的必须是同一件事，
+ * 不然「界面上藏一藏」就成了权限本身。
+ */
 PAGES.roles = {
-  load: () => api("/api/admin/members"),
+  load: () => api("/api/admin/roles"),
   render: (d) => {
-    const staff = d.members.filter((u) => u.role === "admin" || u.role === "auditor");
+    const rank = (r) => d.ranks[r] || 0;
+    const mine = rank(d.me.role);
+    const meName = (ME || {}).username;
+    const staff = d.members.filter((u) => rank(u.role) >= rank("auditor"));
+    const canManage = (u) => !RO && u.username !== meName && rank(u.role) < mine;
+    const why = (u) =>
+      u.username === meName ? "这是你自己"
+      : rank(u.role) > mine ? "比你高一档，你动不了"
+      : rank(u.role) === mine ? "跟你同一档，同级动不了同级"
+      : "";
     const rows = staff.map((u) => [
-      `<div style="font-weight:500">${esc(u.nickname || u.username)}${u.owner ? " " + badge("所有者", "outline") : ""}</div><div class="fd ad-mono">${esc(u.username)}</div>`,
-      badge(ROLE_LABEL[u.role], "secondary"),
+      `<div style="font-weight:500">${esc(u.nickname || u.username)}${u.username === meName ? " " + badge("你", "outline") : ""}</div><div class="fd ad-mono">${esc(u.username)}</div>`,
+      badge(ROLE_LABEL[u.role] || u.role, u.role === "owner" ? "success" : "secondary"),
       esc(u.dept || "—"),
       `<span class="fd">${esc(ago(u.last_active))}</span>`,
-      RO || u.owner ? "" : `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-demote="${esc(u.username)}">降为成员</button>`,
+      canManage(u)
+        ? `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-demote="${esc(u.username)}">降为成员</button>`
+        : `<span class="fd">${esc(why(u))}</span>`,
     ]);
-    const others = d.members.filter((u) => u.role === "member" && u.status !== "disabled");
+    const others = d.members.filter((u) => rank(u.role) < mine && u.status === "active" && u.username !== meName);
+    const promotable = others.filter((u) => u.role === "member");
+    const grants = (d.me.can_assign || []).filter((r) => r !== "member");
+
     return `<div class="ad-wrap">
-      ${card(`${secT("三种角色", "后端是按这三档拦的，不是界面上藏一藏而已。")}
+      ${card(`${secT("两条规矩", "整套权限就这两条，下面那张表全是这两条推出来的。后端按它拦，不是界面上藏一藏。")}
         <div style="margin-top:14px">
-          ${field("成员", "只能用工作台，进不来这个后台。", badge("默认", "outline"))}
-          ${field("审计员", "后台<b>全部能看</b>，一个字都改不了。合规、外包、财务对账用得上——给他看账，不给他动手。", badge("只读", "secondary"))}
-          ${field("管理员", "后台里所有东西都能改，包括加人、改额度、改安全开关。", badge("可写", "secondary"))}
-          ${field("平台管理员", "默认组织的管理员。<b>只有他</b>能新建组织、改别的组织的套餐席位，以及改引擎、密钥、MCP 这些服务器级设置。这个身份不能在界面上授予。", PLATFORM ? badge("就是你", "success") : badge("不是你", "outline"))}
+          ${field("只能管比自己低的那一档", "同级之间谁也动不了谁——<b>管理员改不了另一个管理员</b>，停用、降级、删号、重置密码一样都做不到。以前不是这样：谁先点谁赢。", badge("核心", "secondary"))}
+          ${field("授角色得够得着那个角色", "管理员能把成员提成审计员，但<b>发不出管理员</b>——那得超级管理员来。建号、发邀请码、部门模板走的是同一道闸，绕不过去。", badge("核心", "secondary"))}
         </div>`)}
+      ${card(`${secT("四档角色", "从低到高。每一档多出来的能力都列在旁边。")}
+        <div style="margin-top:14px">
+          ${[...d.roles].reverse().map((r) => field(
+            r.label + (r.role === d.me.role ? "（你）" : ""),
+            (r.caps.length ? r.caps.map((c) => "· " + esc(d.caps[c] || c)).join("<br>") : "只能用工作台，进不来这个后台。"),
+            badge(r.role === "owner" ? "每个组织一个" : r.role === "member" ? "默认" : r.role === "auditor" ? "只读" : "可写",
+                  r.role === "owner" ? "success" : "outline")
+          )).join("")}
+        </div>
+        <div class="ad-sec-d" style="margin-top:12px">超级管理员<b>不能增发、也不能罢免</b>，只能由现任<b>转让</b>。两个超管等于把「同级动不了同级」在最高那一档上重新打开：要么互相罢免（谁先点谁赢又回来了），要么谁也罢免不了谁（点错一次就永远拿不下来）。日常分权用管理员，要几个有几个。</div>
+        ${MULTI ? `<div class="ad-sec-d" style="margin-top:8px">再往上还有一档跟这台机器有关的：<b>平台超级管理员</b>（默认组织的超管）。新建组织、改别的组织的套餐席位只有他能动，分公司的超管跑路了也由他指派接手的人。${OWNER ? badge("就是你", "success") : badge("不是你", "outline")}</div>` : ""}`)}
       ${cardT(
         headRow(
-          secT("当前的管理员和审计员", `共 ${staff.length} 人。组织所有者不能被别的管理员降级或删除——不然两个管理员能互相踢。`),
-          RO || !others.length ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-promote>${ic("plus")} 提升成员</button>`
+          secT("管理员和审计员", `共 ${staff.length} 人。${d.owner ? "超级管理员是「" + esc(d.owner) + "」。" : "<b>这个组织还没有超级管理员</b>，找平台超级管理员指派一个。"}`),
+          `${RO || !d.me.can_transfer ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-transfer>${ic("key")} 转让超级管理员</button>`}
+           ${RO || !grants.length || !promotable.length ? "" : `<button class="ui-btn ui-btn--outline ui-btn--sm" data-promote>${ic("plus")} 提升成员</button>`}`
         ),
         table([{ t: "成员" }, { t: "角色" }, { t: "部门" }, { t: "最近活跃" }, { t: "" }], rows)
       )}
     </div>`;
   },
   bind: (root, d) => {
-    const others = d.members.filter((u) => u.role === "member" && u.status !== "disabled");
+    const rank = (r) => d.ranks[r] || 0;
+    const mine = rank(d.me.role);
+    const meName = (ME || {}).username;
+    const promotable = d.members.filter((u) => u.role === "member" && u.status === "active");
+    const grants = (d.me.can_assign || []).filter((r) => r !== "member");
+    const ROLE_HINT = { admin: "管理员 —— 能管成员、改设置；但改不了另一个管理员", auditor: "审计员 —— 能查账，改不动" };
+
     const p = root.querySelector("[data-promote]");
     if (p)
       p.onclick = () =>
         modal({
           title: "提升成员",
           fields: [
-            { name: "username", label: "选一个人", type: "select", options: others.map((u) => ({ value: u.username, label: (u.nickname || u.username) + "（" + u.username + "）" })) },
+            { name: "username", label: "选一个人", type: "select", options: promotable.map((u) => ({ value: u.username, label: (u.nickname || u.username) + "（" + u.username + "）" })) },
             {
-              name: "role", label: "提升为", type: "select", value: "auditor",
-              options: [
-                { value: "auditor", label: "审计员 —— 能查账，改不动" },
-                { value: "admin", label: "管理员 —— 能改所有东西" },
-              ],
+              name: "role", label: "提升为", type: "select", value: grants[grants.length - 1],
+              // 下拉里出现的就是后端允许这个人授的那几个。管理员看不到「管理员」这一项，
+              // 就算手改请求体，后端那道 assignProblem 照样拦
+              options: grants.map((r) => ({ value: r, label: ROLE_HINT[r] || ROLE_LABEL[r] })),
             },
           ],
           ok: "提升",
@@ -1318,14 +1360,40 @@ PAGES.roles = {
             route(true);
           },
         });
-    root.querySelectorAll("[data-demote]").forEach((b) => {
-      b.onclick = () =>
-        confirmBox("把「" + b.dataset.demote + "」降为成员", "降完之后他<b>进不来这个后台</b>了，工作台照常用。", "降级", async () => {
-          await post("/api/admin/members/" + encodeURIComponent(b.dataset.demote), { role: "member" });
-          toast("已降为成员");
-          route(true);
+
+    const t = root.querySelector("[data-transfer]");
+    if (t)
+      t.onclick = () => {
+        const to = d.members.filter((u) => u.status === "active" && u.username !== meName);
+        if (!to.length) return toast("这个组织里还没有别人可以接手", true);
+        modal({
+          title: "转让超级管理员",
+          body: `<div class="fd" style="margin-bottom:12px">交出去之后，<b>你会变成管理员</b>：还能管成员、改设置，但发不了管理员，也收不回这个位子——只有新的超管能再转回来。</div>`,
+          fields: [
+            { name: "username", label: "转给谁", type: "select", options: to.map((u) => ({ value: u.username, label: (u.nickname || u.username) + "（" + u.username + "·" + (ROLE_LABEL[u.role] || u.role) + "）" })) },
+          ],
+          ok: "确认转让",
+          danger: true,
+          onOk: async (v) => {
+            await post("/api/admin/owner", { username: v.username });
+            toast("超级管理员已转让给 " + v.username);
+            route(true);
+          },
         });
+      };
+
+    root.querySelectorAll("[data-demote]").forEach((b) => {
+      const u = d.members.find((x) => x.username === b.dataset.demote) || {};
+      b.onclick = () =>
+        confirmBox("把「" + b.dataset.demote + "」降为成员",
+          "降完之后他<b>进不来这个后台</b>了，工作台照常用。" + (rank(u.role) >= rank("admin") ? "他手上的邀请码和部门模板不会跟着失效，需要的话去那两页各看一眼。" : ""),
+          "降级", async () => {
+            await post("/api/admin/members/" + encodeURIComponent(b.dataset.demote), { role: "member" });
+            toast("已降为成员");
+            route(true);
+          });
     });
+    void mine;
   },
 };
 
@@ -2526,7 +2594,7 @@ function renderNav(current) {
   const q = navQ.trim().toLowerCase();
   let shown = 0;
   const html = NAV.map((g) => {
-    const items = g.items.filter((it) => (!it.platform || PLATFORM) && (!q || navHit(it, g.grp, q)));
+    const items = g.items.filter((it) => (!it.platform || PLATFORM) && (!it.owner || OWNER) && (!q || navHit(it, g.grp, q)));
     if (!items.length) return "";
     shown += items.length;
     return (
@@ -2587,7 +2655,7 @@ async function route(keepScroll) {
   const id = (location.hash.replace(/^#\/?/, "") || "home").split("?")[0];
   const it = navItem(id) && PAGES[id] ? navItem(id) : navItem("home");
   const pid = it.id;
-  if (it.platform && !PLATFORM) return (location.hash = "#/home");
+  if ((it.platform && !PLATFORM) || (it.owner && !OWNER)) return (location.hash = "#/home");
   const seq = ++routeSeq;
   const body = $("ad-body");
   const scroll = keepScroll ? body.scrollTop : 0;
@@ -2633,6 +2701,7 @@ async function boot() {
     const d = await api("/api/admin/overview");
     ME = d.me;
     PLATFORM = !!d.platform_admin;
+    OWNER = !!d.platform_owner;
     MULTI = !!d.multi_tenant;
     RO = ME && ME.role === "auditor";
     document.title = `${d.org.name} · 企业管理后台`;
