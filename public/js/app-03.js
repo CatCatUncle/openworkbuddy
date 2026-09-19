@@ -1467,6 +1467,8 @@ async function renderAutomPage() {
   const match = list.filter(t => !q || t.name.toLowerCase().includes(q) || t.task.toLowerCase().includes(q));
   const on = match.filter(t => t.enabled), off = match.filter(t => !t.enabled);
   const statusOf = (t) => t.running ? { key: "run", text: "执行中…" }
+    // 只跑一次的响过之后是「已完成」，不是「已暂停」——暂停的言下之意是「还会再跑，等你开」
+    : t.at && t.fired_at && !t.enabled ? { key: "ok", text: "已完成" }
     : !t.enabled ? { key: "off", text: "已暂停" }
     : t.last_result ? (/^出错/.test(t.last_result) ? { key: "err", text: "上次失败" } : { key: "ok", text: "上次成功" })
       : { key: "idle", text: "待首跑" };
@@ -1478,16 +1480,18 @@ async function renderAutomPage() {
       ${st.bulk ? `<input type="checkbox" data-sel="${t.id}" ${st.sel.has(t.id) ? "checked" : ""}>` : ""}
       <div class="at-main">
         <div class="at-title"><span class="nm">${esc(t.name)}</span><span class="st ${status.key}">${status.text}</span></div>
-        <div class="at-schedule"><span>${ic("clock")} ${esc(cronToHuman(t.cron))}</span><span title="${t.catch_up === false ? "设备休眠或服务重启期间错过的时间点将直接跳过" : "设备休眠或服务重启后，最近 24 小时内错过的一次会补跑"}">${ic(t.catch_up === false ? "clock" : "refresh-cw")} ${t.catch_up === false ? "错过不补跑" : "错过补跑"}</span>${t.last_run ? `<span>${ic("history")} 上次 ${esc(t.last_run.slice(5, 16).replace("T", " "))}</span>` : ""}</div>
+        <div class="at-schedule"><span>${ic(t.at ? "timer" : "clock")} ${esc(whenToHuman(t))}</span>${t.at
+          ? `<span title="跑完这一次就自动停用，任务本身留在列表里，想再跑一次点「立即执行」">${ic("circle-check")} 跑完自动停</span>`
+          : `<span title="${t.catch_up === false ? "设备休眠或服务重启期间错过的时间点将直接跳过" : "设备休眠或服务重启后，最近 24 小时内错过的一次会补跑"}">${ic(t.catch_up === false ? "clock" : "refresh-cw")} ${t.catch_up === false ? "错过不补跑" : "错过补跑"}</span>`}${t.last_run ? `<span>${ic("history")} 上次 ${esc(t.last_run.slice(5, 16).replace("T", " "))}</span>` : ""}</div>
         <div class="at-task" title="${esc(t.task)}">${esc(t.task)}</div>
         <div class="at-result ${status.key === "err" ? "err" : ""}" title="${esc(t.last_result || "")}">${ic(status.key === "err" ? "triangle-alert" : status.key === "ok" ? "circle-check" : "info")} ${esc(compactResult(t))}</div>
       </div>
       <span class="ops">
         <a class="link" data-act="run" href="#">立即执行</a>
         <a class="link" data-act="history" href="#">记录</a>
-        <a class="link" data-act="catchup" href="#">${t.catch_up === false ? "开启补跑" : "关闭补跑"}</a>
+        ${t.at ? "" : `<a class="link" data-act="catchup" href="#">${t.catch_up === false ? "开启补跑" : "关闭补跑"}</a>`}
         <a class="link" data-act="edit" href="#">编辑</a>
-        <a class="link" data-act="toggle" href="#">${t.enabled ? "暂停" : "启用"}</a>
+        ${t.at && t.fired_at ? "" : `<a class="link" data-act="toggle" href="#">${t.enabled ? "暂停" : "启用"}</a>`}
         <a class="link danger" data-act="del" href="#">删除</a>
       </span>
     </div>`;
@@ -1570,7 +1574,7 @@ function renderAutomTplPicker(box) {
   box.innerHTML = `<div class="tpl-grid" style="margin:4px 0 14px">${AUTOM_TEMPLATES.map((t, i) => `
     <div class="proj-card" data-i="${i}">
       <div class="tt">${ic(t.icon)} ${esc(t.tt)}</div>
-      <div class="dd">${esc(cronToHuman(t.cron))} · ${esc(t.task.slice(0, 46))}…</div>
+      <div class="dd">${esc(whenToHuman(t))} · ${esc(t.task.slice(0, 46))}…</div>
       <div class="ops"><a class="link" href="#">用这个模版${ic("arrow-right")}</a></div>
     </div>`).join("")}</div>`;
   box.querySelectorAll(".proj-card").forEach(el => el.onclick = (e) => {
@@ -1586,6 +1590,7 @@ function renderAutomForm(box, tpl) {
     <input id="sf-name" placeholder="任务名（如：每日晨报）" value="${esc((ed || tpl || {}).name || (tpl || {}).tt || "")}">
     <div class="form-row">
       <select id="sf-freq">
+        <option value="once">只跑一次</option>
         <option value="daily">每天</option>
         <option value="workday">工作日（周一到周五）</option>
         <option value="weekly">每周某天</option>
@@ -1600,6 +1605,7 @@ function renderAutomForm(box, tpl) {
       </select>
       <select id="sf-dom" style="display:none">${Array.from({ length: 28 }, (_, i) => `<option value="${i + 1}">${i + 1} 日</option>`).join("")}</select>
       <input id="sf-time" type="time" value="09:00">
+      <input id="sf-at" type="datetime-local" style="display:none" value="${localMin(Date.now() + 30 * 60000)}">
     </div>
     <input id="sf-cron" placeholder="cron 表达式：分 时 日 月 周" style="display:none">
     <textarea id="sf-task" rows="2" placeholder="要自动执行的任务描述，如：抓取今天的 AI 新闻生成晨报">${esc((ed || tpl || {}).task || "")}</textarea>
@@ -1615,19 +1621,35 @@ function renderAutomForm(box, tpl) {
     box.querySelector("#sf-dow").style.display = v === "weekly" ? "" : "none";
     box.querySelector("#sf-dom").style.display = v === "monthly" ? "" : "none";
     box.querySelector("#sf-cron").style.display = v === "custom" ? "" : "none";
-    box.querySelector("#sf-time").style.display = ["hourly", "half-hour", "custom"].includes(v) ? "none" : "";
+    box.querySelector("#sf-time").style.display = ["hourly", "half-hour", "custom", "once"].includes(v) ? "none" : "";
+    box.querySelector("#sf-at").style.display = v === "once" ? "" : "none";
+    // 只跑一次的没有「下一次」，补跑那一格问的是「错过了还补不补」——这条照样成立（合上盖子去开会，
+    // 回来该看见它响过），所以不藏，只把说明换成对得上的那句
+    box.querySelector(".sf-catchup span").textContent = v === "once" ? "睡眠 / 重启错过时，24 小时内仍会补上这一次" : "适合晨报、周报；时效任务可关闭";
   };
   cronToForm(box, (ed || tpl || {}).cron || "0 9 * * *");
+  // 编辑一条「只跑一次」时，cronToForm 看见空 cron 会落到自定义档；这儿把它掰回 once 档
+  const edAt = (ed || tpl || {}).at;
+  if (edAt && !isNaN(new Date(edAt))) {
+    box.querySelector("#sf-freq").value = "once";
+    box.querySelector("#sf-at").value = localMin(new Date(edAt).getTime());
+    freqEl.onchange();
+  }
   box.querySelector("#sf-cancel").onclick = () => { automState.showForm = false; automState.editing = null; box.innerHTML = ""; };
   box.querySelector("#sf-add").onclick = async () => {
     const name = box.querySelector("#sf-name").value.trim();
     const task = box.querySelector("#sf-task").value.trim();
-    const cron = buildCronFrom(box);
+    const once = box.querySelector("#sf-freq").value === "once";
+    // at 和 cron 只能给一个：两个都给会各跑各的，而这一页上只画得下一个时间
+    const cron = once ? "" : buildCronFrom(box);
+    const at = once ? box.querySelector("#sf-at").value.trim() : "";
     if (!task) return toast("请填写任务描述", "circle-x");
-    if (!cron) return toast("请完成时间设置", "circle-x");
+    if (!once && !cron) return toast("请完成时间设置", "circle-x");
+    if (once && !at) return toast("请选择要跑的那个时刻", "circle-x");
+    const body = JSON.stringify({ name, ...(once ? { at } : { cron }), task, catch_up: box.querySelector("#sf-catchup").checked });
     const resp = ed
-      ? await fetch("/api/schedules/" + ed.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task, catch_up: box.querySelector("#sf-catchup").checked }) })
-      : await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cron, task, catch_up: box.querySelector("#sf-catchup").checked }) });
+      ? await fetch("/api/schedules/" + ed.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body })
+      : await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body });
     if (!resp.ok) return toast(((await resp.json()).error || "保存失败"), "circle-x");
     toast(ed ? "已保存" : "已添加", "circle-check");
     automState.showForm = false; automState.editing = null;
@@ -1667,17 +1689,23 @@ async function renderAutomRuns(page) {
       ${taskId ? '<button class="btn-plain" id="at-runs-all">查看全部</button>' : ""}
     </div>
     ${taskRuns.length ? `<table class="at-runs">
-      <tr><th>时间</th><th>任务</th><th>触发</th><th>耗时</th><th>结果</th></tr>
+      <tr><th>时间</th><th>任务</th><th>触发</th><th>耗时</th><th>结果</th><th>过程</th></tr>
       ${taskRuns.map(r => `<tr>
         <td style="white-space:nowrap">${esc((r.started_at || "").slice(5, 16).replace("T", " "))}</td>
         <td>${esc(r.name)}</td>
         <td>${esc(r.trigger || "")}</td>
         <td style="white-space:nowrap">${r.ended_at ? fmtMs(r.ms) : "进行中…"}</td>
         <td>${ic(r.ok === null ? "hourglass" : r.ok ? "circle-check" : "circle-x")} ${runCell(r)}</td>
+        <td style="white-space:nowrap">${r.session_id
+          ? `<a href="#" class="at-open" data-sid="${esc(r.session_id)}">${ic("activity")} 看执行过程</a>`
+          : '<span class="at-nosid" title="这一次跑在旧版本上，当时还没有留过程记录。之后每次执行都会有。">—</span>'}</td>
       </tr>`).join("")}
     </table>` : '<div class="hub-empty">还没有运行记录。任务跑过之后（定时触发或手动执行）这里会留下每一次的流水。</div>'}`;
   page.querySelector('[data-tab="tasks"]').onclick = () => { automState.tab = "tasks"; automState.runTaskId = ""; renderAutomPage(); };
   page.querySelector("#at-runs-all")?.addEventListener("click", () => { automState.runTaskId = ""; renderAutomRuns(page); });
+  // 点进去就是那一趟的完整回放：每一步调了什么工具、返回了什么、最后为什么是这个结论。
+  // 走的是跟手动对话同一个 openSession（它自己会把页面从自动化切回对话），没有第二套回放逻辑。
+  page.querySelectorAll("a.at-open").forEach((a) => { a.onclick = (e) => { e.preventDefault(); openSession(a.dataset.sid); }; });
 }
 
 // ================= 资料库页（左栏导航 + 中间浏览 + 右侧预览） =================
@@ -1707,32 +1735,6 @@ const libState = {
 }; // pick: {src:"lib"|"ws"|"notes", name, task?}
 let libOutCache = null;              // 最近一次 /api/library/outputs 的结果：预览页要靠它反查「这文件是哪次任务做的」
 const libTaskShut = new Set();       // 收起来的任务分组（默认全展开：这一页就是来看文件的）
-function csvToTable(text) {
-  // 迷你 CSV 解析（带引号转义）。行数封顶，别让一个 10 万行的表把页面卡死
-  const rows = [];
-  let row = [], cell = "", inQ = false;
-  for (let i = 0; i < text.length && rows.length < 500; i++) {
-    const c = text[i];
-    if (inQ) {
-      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
-      else if (c === '"') inQ = false;
-      else cell += c;
-    } else if (c === '"') inQ = true;
-    else if (c === ",") { row.push(cell); cell = ""; }
-    else if (c === "\n" || c === "\r") {
-      if (c === "\r" && text[i + 1] === "\n") i++;
-      row.push(cell); cell = "";
-      if (row.some(x => x !== "")) rows.push(row);
-      row = [];
-    } else cell += c;
-  }
-  if (cell !== "" || row.length) { row.push(cell); if (row.some(x => x !== "")) rows.push(row); }
-  if (!rows.length) return '<div class="ph">空表</div>';
-  const [head, ...body] = rows;
-  return `<table class="csv"><tr>${head.map(h => `<th>${esc(h)}</th>`).join("")}</tr>` +
-    body.map(r => `<tr>${head.map((_, i) => `<td>${esc(r[i] || "")}</td>`).join("")}</tr>`).join("") +
-    `</table>${rows.length >= 500 ? '<div style="font-size: 13px;color:var(--owb-text-3);margin-top:6px">表太长，只显示前 500 行</div>' : ""}`;
-}
 // ================= 评测页：给模型跑基准，机器判分 =================
 let evalArm = false; // 两段式确认：真实计费的操作不许一键就跑
 let evalDetailDir = null;

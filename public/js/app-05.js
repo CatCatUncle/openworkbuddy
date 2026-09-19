@@ -343,6 +343,27 @@ function cronToHuman(cron) {
   if (/^(\d+) \* \* \* \*$/.test(cron)) return `每小时第 ${cron.split(" ")[0]} 分`;
   return cron;
 }
+/**
+ * 一条排期的「什么时候跑」。只跑一次的那种没有 cron，硬念 cron 会念出个空。
+ * 后端 scheduler.describeWhen 是同一套话术，两边得说得一样——用户在审批卡片上看到
+ * 「今天 14:05（只跑一次）」，回到这一页再看见另一种写法就会怀疑是不是排成了两条。
+ */
+/** Date → `2026-09-19T14:05`：datetime-local 只认这个格式，而且认的是**本地**时间。
+ *  用 toISOString().slice(0,16) 会差出一个时区（在东八区就是早 8 小时），提醒会提前响 */
+function localMin(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function whenToHuman(t) {
+  if (!t || !t.at) return cronToHuman((t && t.cron) || "");
+  const d = new Date(t.at);
+  if (isNaN(d)) return String(t.at);
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  return `${sameDay ? "今天" : `${d.getMonth() + 1} 月 ${d.getDate()} 日`} ${hm}（只跑一次）`;
+}
 
 // ================= 设置中心 =================
 // [id, 名字, 图标]：左栏一眼扫过去靠图标认，名字收短，别一列密密麻麻的字
@@ -410,7 +431,16 @@ async function saveSettings(patch, msgEl) {
   const resp = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
   const data = await resp.json().catch(() => ({}));
   lastSaveError = resp.ok ? "" : (data.error || `保存失败（HTTP ${resp.status}）`);
-  if (msgEl) msgEl.textContent = resp.ok ? "✓ 已保存并生效" : lastSaveError;
+  if (msgEl) {
+    msgEl.textContent = resp.ok ? "✓ 已保存并生效" : lastSaveError;
+    // msgEl 多半是那个 class="ok-msg" 的小 span——绿色、13px、挂在一整屏表单的最底下。
+    // 失败时把同一句话塞进去，用户看到的是一行绿色小字，跟「已保存」长得一模一样，
+    // 而它上面还压着五张折叠卡。用户原话：「怎么点击添加都没办法添加在搞什么」——
+    // 其实每次都报了错，只是那个错穿着成功的衣服藏在屏幕外面。
+    msgEl.classList.toggle("bad", !resp.ok);
+  }
+  // 兜底再喊一嗓子：msgEl 可能根本不在视野里，也可能压根没传。保存失败是必须看见的事。
+  if (!resp.ok && typeof toast === "function") toast(lastSaveError, "circle-x");
   if (resp.ok) refreshSettingsCache();
   return resp.ok;
 }
@@ -471,6 +501,18 @@ function repaintMedia(box, s) {
   else paintMedia(box, s);
 }
 
+/**
+ * 有「添加模型」那张表单正开着吗？开着就别重画。
+ *
+ * 精选目录是现拉的，拉回来会把这一屏再画一遍。人点了「添加看图模型」、正在下拉里翻型号，
+ * 目录恰好这时到了——整张卡重画，表单连同刚选好的那一行一起没了，按钮看着还在，
+ * 点下去又是空的。用户原话：「怎么点击添加都没办法添加在搞什么」。
+ * 重画本来就是为了「把目录补上」这点好处，不值得拿人填了一半的东西去换。
+ */
+function mediaFormOpen(root) {
+  return !!root && [...root.querySelectorAll(".mm-form")].some((f) => f.style.display !== "none");
+}
+
 function renderMediaPane(box, s) {
   if (!box) return;
   s.providers = s.providers || [];
@@ -488,18 +530,85 @@ function renderMediaPane(box, s) {
       </div>`;
     return;
   }
-  loadMediaCatalog().then(() => paintMedia(box, s));
+  loadMediaCatalog().then(() => { if (box.isConnected && !mediaFormOpen(box)) paintMedia(box, s); });
   paintMedia(box, s);
+}
+
+/**
+ * 被熔断闸停掉的渠道，在这一页顶上摊开说。
+ *
+ * 熔断在后台默默生效就行，但「为什么它突然不给我看图了」必须有地方能看见，
+ * 否则用户只会觉得功能坏了——真相是我们替他拦下了一条撞不通的路。
+ */
+function paintMediaPaused(box) {
+  const bar = box.querySelector("#media-paused");
+  if (!bar) return;
+  fetch("/api/media-health").then((r) => r.json()).then((d) => {
+    const list = (d && d.paused) || [];
+    if (!list.length) { bar.innerHTML = ""; return; }
+    bar.innerHTML = `<div class="warn-box">${ic("triangle-alert")}<div><b>这些渠道已暂停，不再往上撞</b>
+      <div style="margin-top:4px">${list.map((p) => `${esc((MEDIA_CAPS.find((c) => c.cap === p.cap) || {}).title || p.cap)}：${esc(p.model || "")} — ${esc(p.why)}`).join("<br>")}</div>
+      <div style="margin-top:6px;color:var(--owb-text-3)">改完下面的配置按保存即刻恢复；也可以现在就</div></div>
+      <button class="mini" id="media-unpause">再试一次</button></div>`;
+    const btn = bar.querySelector("#media-unpause");
+    if (btn) btn.onclick = async () => {
+      await fetch("/api/media-health/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      paintMediaPaused(box);
+      toast("✓ 已恢复，下一次调用会真的发出去");
+    };
+  }).catch(() => {});
+}
+
+/**
+ * 同名渠道编号：id → 「第 N 个」，不重名的不给号。
+ *
+ * 一家开两个号（两把 Key、两份额度）确实是两个渠道，可它们的名字一字不差。
+ * 于是「渠道」那一页并排两张「OpenRouter」，多媒体和对话的下拉里也是两个「OpenRouter」——
+ * 选完存下去，回头根本认不出用的是哪一把 Key，只能一个个点开比对。
+ * 只编在显示上：配置里存的仍是用户自己起的名字，改了名编号自己就没了。
+ * 全站共用这一个：两页各编各的话，这儿的「第 2 个」到那儿成了「第 1 个」，比不编还糟。
+ */
+function provDupeTags(providers) {
+  const seen = new Map();
+  (providers || []).forEach((p) => seen.set(p.name, (seen.get(p.name) || 0) + 1));
+  const rank = new Map(), tags = new Map();
+  (providers || []).forEach((p) => {
+    if ((seen.get(p.name) || 0) < 2) return;
+    const n = (rank.get(p.name) || 0) + 1;
+    rank.set(p.name, n);
+    tags.set(p.id, `第 ${n} 个`);
+  });
+  return tags;
+}
+/** 渠道名 + 编号（不重名就只有名字）。给一行里显示出处的地方用 */
+function provLabel(p, dupe) {
+  if (!p) return "";
+  return p.name + (dupe && dupe.get(p.id) ? `（${dupe.get(p.id)}）` : "");
+}
+/** 渠道下拉的 <option>。编号要按**所有**渠道算（all），不能只按筛剩下的这几个——
+ *  那样算出来的号跟渠道页对不上，反而更容易认错 */
+function provOptions(usable, all) {
+  const dupe = provDupeTags(all);
+  return usable.length
+    ? usable.map((p) => `<option value="${esc(p.id)}">${esc(provLabel(p, dupe))}</option>`).join("")
+    : `<option value="">（先加一个渠道）</option>`;
 }
 
 function paintMedia(box, s) {
   // 标题归上一层（paintModels 的「按能力配置」那一条）：对话和这五路现在是并排的六张卡，
   // 中间再插一行小标题，读起来就成了「对话是一类、别的是另一类」——可它们是同一类事
-  const provName = (id) => { const p = s.providers.find((x) => x.id === id); return p ? p.name : "（渠道已删）"; };
+  // 同名渠道要分得开，否则这一列写着「OpenRouter」，而机器上有两个 OpenRouter
+  const dupe = provDupeTags(s.providers);
+  const provName = (id) => {
+    const p = s.providers.find((x) => x.id === id);
+    return p ? provLabel(p, dupe) : "（渠道已删）";
+  };
   box.innerHTML = `
+    <div id="media-paused"></div>
     ${MEDIA_CAPS.map((c) => capCard(c, s, provName)).join("")}
     <span class="ok-msg" id="media-msg"></span>`;
   bindMedia(box, s);
+  paintMediaPaused(box);
 }
 
 /**
@@ -618,9 +727,7 @@ function fillProvSelect(f, s) {
   // decide_only（Jev）一并挡掉：它连文字都不产，更不可能画图配音
   const chatOnly = new Set(((mediaCatalog || {}).kinds || []).filter((k) => k.chat_only || k.decide_only).map((k) => k.kind));
   const usable = s.providers.filter((p) => !chatOnly.has(p.kind));
-  sel.innerHTML = usable.length
-    ? usable.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")
-    : `<option value="">（先加一个渠道）</option>`;
+  sel.innerHTML = provOptions(usable, s.providers);
   fillModelSelect(f, s);
 }
 
@@ -659,13 +766,26 @@ function injectLive(sel, tip, d, cap) {
     tip.textContent = d.why ? `这个渠道没给模型列表（${d.why}），上面的精选和「自己填…」照用。` : "";
     return;
   }
-  const same = d.models.filter((m) => m.cap === cap).map((m) => m.id);
-  const rest = d.models.filter((m) => m.cap !== cap).map((m) => m.id);
-  const group = (label, ids) => (ids.length ? `<optgroup label="${label}">${ids.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join("")}</optgroup>` : "");
+  const title = (c) => (MEDIA_CAPS.find((x) => x.cap === c) || {}).title || "";
+  const same = d.models.filter((m) => m.cap === cap);
+  const rest = d.models.filter((m) => m.cap !== cap);
+  // 别的那一堆里，渠道自己说死了是干什么的（sure），就把用途写在名字后面。
+  // 用户原话：「有些似乎是生图模型怎么给我放到看图模型里面去了啊」——它们一直在这个
+  // 下拉里排着队，跟能用的长得一模一样，选中了才在跑的时候炸。标出来，选之前就看得见
+  const why = (m) => (!m.sure ? "" : m.cap ? `（${title(m.cap)}的）` : "（只认文字，看不了图）");
+  const group = (label, list) => (list.length
+    ? `<optgroup label="${label}">${list.map((m) => `<option value="${esc(m.id)}">${esc(m.id + why(m))}</option>`).join("")}</optgroup>`
+    : "");
+  // 渠道自己标的排前面，按名字猜的排后面：一组里两种成色混着，人没法判断该信哪条
+  const sure = same.filter((m) => m.sure), maybe = same.filter((m) => !m.sure);
   const keep = sel.value;
-  sel.insertAdjacentHTML("beforeend", group(`这个渠道现有的（看着像${MEDIA_CAPS.find((c) => c.cap === cap).title}的）`, same) + group("这个渠道的其它模型", rest));
+  sel.insertAdjacentHTML("beforeend",
+    group(`这个渠道能${title(cap)}的（渠道自己标的）`, sure)
+    + group(`看着像${title(cap)}的（按名字猜的，不一定准）`, maybe)
+    + group("这个渠道的其它模型", rest));
   if (keep) sel.value = keep;
-  tip.textContent = `从渠道拉到 ${d.models.length} 个模型${d.cached ? "（缓存）" : ""}，挑不到就选「自己填…」。`;
+  const n = sure.length ? `，其中 ${sure.length} 个是渠道自己标明能${title(cap)}的` : "";
+  tip.textContent = `从渠道拉到 ${d.models.length} 个模型${d.cached ? "（缓存）" : ""}${n}，挑不到就选「自己填…」。`;
 }
 
 /* ───────────────────────── 模型设置：渠道卡片 → 展开看它下面的模型 ─────────────────────────
@@ -689,7 +809,7 @@ function renderModelsPane(pane, s) {
     chanFirstPaint = false;
     openCaps.add("chat");
   }
-  loadMediaCatalog().then(() => { if (pane.isConnected) paintModels(pane, s); });
+  loadMediaCatalog().then(() => { if (pane.isConnected && !mediaFormOpen(pane)) paintModels(pane, s); });
   paintModels(pane, s);
 }
 
@@ -701,17 +821,9 @@ function paintModels(pane, s) {
   const kinds = (mediaCatalog || {}).kinds || [];
   const kindLabel = (k) => (kinds.find((x) => x.kind === k) || {}).label || k || "自定义";
   const loose = s.models.filter((m) => !m.channel);
-  // 同一家开两个号（两把 Key）确实是两个渠道，但卡片一字不差，人只会读成「怎么有两个 OpenRouter」。
-  // 重名的才编号，而且只编在显示上——配置里存的还是用户自己起的名字
-  const seen = new Map();
-  s.providers.forEach((p) => seen.set(p.name, (seen.get(p.name) || 0) + 1));
-  const rank = new Map();
-  const dupeTag = (p) => {
-    if ((seen.get(p.name) || 0) < 2) return "";
-    const n = (rank.get(p.name) || 0) + 1;
-    rank.set(p.name, n);
-    return `第 ${n} 个`;
-  };
+  // 同一家开两个号（两把 Key）确实是两个渠道，但卡片一字不差，人只会读成「怎么有两个 OpenRouter」
+  const provTags = provDupeTags(s.providers);
+  const dupeTag = (p) => provTags.get(p.id) || "";
   // 配了 Key 的排前面、没配的收进一栏。用户的原话：「没有设置 apikey 的渠道不要显示」
   // 紧接着又是「然后要给地方去显示啊」——所以不是删掉，是收起来，点一下还在。
   const ready = s.providers.filter((p) => !chanIdle(p));
@@ -1010,7 +1122,7 @@ function modelRow(m, s, po, withChan) {
   // 只有人亲手说了「它不会调工具 / 它能看图」，才值得在行里标一句
   const caps = Array.isArray(m.caps) ? m.caps : null;
   const flags = !caps ? [] : [caps.includes("tools") ? "" : "不调工具", caps.includes("vision") ? "能看图" : ""].filter(Boolean);
-  const meta = [cur ? "主用" : "", p ? esc(p.name) : "", ...flags.map(esc), healthBadge(m.name)].filter(Boolean).join(" · ");
+  const meta = [cur ? "主用" : "", p ? esc(provLabel(p, provDupeTags(s.providers))) : "", ...flags.map(esc), healthBadge(m.name)].filter(Boolean).join(" · ");
   return `
     <div class="mrow${cur ? " is-on" : ""}">
       ${po ? `<input type="radio" name="active" ${cur ? "checked" : ""} data-i="${i}" title="设为全局默认模型">`
@@ -1324,9 +1436,7 @@ function fillChanSelect(f, s, cur) {
   // decide_only（Jev）同样挡掉：判断模型没有 /chat/completions，挂上去每一趟都是 400
   const mediaOnly = new Set(((mediaCatalog || {}).kinds || []).filter((k) => k.media_only || k.decide_only).map((k) => k.kind));
   const usable = s.providers.filter((p) => !mediaOnly.has(p.kind));
-  sel.innerHTML = usable.length
-    ? usable.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")
-    : `<option value="">（先加一个渠道）</option>`;
+  sel.innerHTML = provOptions(usable, s.providers);
   if (cur) sel.value = cur;
   fillChatModelSelect(f, s);
 }

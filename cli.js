@@ -1276,7 +1276,10 @@ function splitFiles(text) {
   if (attachNames.length) prog(dim(`  带上了 ${attachNames.join("、")}\n`));
 
   if (opts.mcp && (config.mcp_servers || []).length) {
-    prog(dim(`连接 MCP（${config.mcp_servers.length} 个，--no-mcp 可跳过）… `));
+    // 在界面上关掉的那几台，命令行里也别连——同一份 config，两边看见的工具表就该是同一份
+    mcpManager.setDisabled(config.mcp_disabled || []);
+    const on = config.mcp_servers.filter((x) => !mcpManager.disabled.has(x.name));
+    prog(dim(`连接 MCP（${on.length} 个${on.length < config.mcp_servers.length ? `，另有 ${config.mcp_servers.length - on.length} 个已关` : ""}，--no-mcp 可跳过）… `));
     await mcpManager.startAll(config.mcp_servers);
     prog(dim(`${mcpManager.toolDefs().length} 个工具\n`));
   }

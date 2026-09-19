@@ -198,7 +198,7 @@ window.fetch = (url, opt) => {
   window.posts.push({ url, body: opt && opt.body ? JSON.parse(opt.body) : null });
   return Promise.resolve({ json: () => Promise.resolve({ ok: true, removed: ["a", "b"], bytes: 43300000, skipped: 1, files: [] }) });
 };
-function refreshSweepHint(){}
+
 `;
 
 const SWEEP_CHECKS = `
@@ -1286,11 +1286,27 @@ const ENGPICK_CHECKS = `
   ok("本机引擎在跑：菜单换成说明卡，不再假装一排可选项", menu.classList.contains("eng") && !!menu.querySelector(".ep-head"));
   ok("菜单没被那段说明撑爆（≤340px）", box.width <= 340, Math.round(box.width) + "px");
   ok("整块都在屏幕里，左边没被裁掉", box.left >= 0 && box.right <= vw + 1, JSON.stringify({ l: Math.round(box.left), r: Math.round(box.right), vw }));
-  const why = menu.querySelector(".ep-why");
-  ok("说明文字是会换行的（真样式）", getComputedStyle(why).whiteSpace === "normal", getComputedStyle(why).whiteSpace);
-  ok("说明确实排成了好几行，而不是一条横的", why.getBoundingClientRect().height > 30, Math.round(why.getBoundingClientRect().height) + "px");
   ok("引擎名和它的模型都写清楚了", /本机 Claude Code/.test(menu.querySelector(".ep-name").textContent) && /claude-opus-5/.test(menu.querySelector(".ep-model").textContent));
   ok("「不花 API 额度」是这里最该看见的一句", /不花 API 额度/.test(menu.querySelector(".ep-free").textContent));
+
+  // 绿牌子「不花 API 额度」已经把这件事说完了，底下原来那段「用你电脑上这个 CLI 的登录态和
+  // 它自己的模型跑，所以下面那排 API 模型这会儿一个都用不上」是把同一件事用长句再写一遍。
+  // 用户原话：「这些没有意义的注释都给我删掉」。这条钉住它，别哪天又被加回来
+  ok("卡里没有那段把绿牌子重说一遍的长句",
+     !menu.querySelector(".ep-why") && !/登录态|用不上/.test(menu.textContent),
+     menu.textContent.replace(/\s+/g, " ").trim().slice(0, 80));
+  // ★反向对照★ 把那段原样塞回去，卡当场高一截。不做这条的话，上面那句完全可能是在
+  // 测一个本来就不存在的东西（比如整张卡压根没渲染出来），删没删干净根本量不到
+  const gone = document.createElement("div");
+  gone.className = "ep-why";
+  gone.style.cssText = "padding:8px 10px 4px;font-size:12px;line-height:1.6;white-space:normal";
+  gone.textContent = "不花 API 额度用你电脑上这个 CLI 的登录态和它自己的模型跑，所以下面那排 API 模型这会儿一个都用不上。";
+  menu.insertBefore(gone, menu.querySelector(".ep-act"));
+  const tall = menu.getBoundingClientRect().height;
+  gone.remove();
+  const lean = menu.getBoundingClientRect().height;
+  ok("反向对照：那段塞回来卡就高一截，删掉是真的瘦了身", tall - lean > 40,
+     JSON.stringify({ 塞回来: Math.round(tall), 现在: Math.round(lean) }));
   const acts = [...menu.querySelectorAll(".mi")];
   ok("能点的只有「去改它」那一行（说明不再长得像按钮）", acts.length === 1 && /换回内置引擎/.test(acts[0].textContent), acts.map((a) => a.textContent.trim().slice(0, 12)).join("|"));
   acts[0].click();
@@ -1801,7 +1817,14 @@ for (const [a, b, why] of [[NAV0, NAV1, "app-01.js 的 syncNavByRole"], [AUT0, A
 const PVF0 = APP01_NAV.indexOf("const PV_FIT_REPORTER = ");
 const PVF1 = APP01_NAV.indexOf("async function previewFile(", PVF0);
 if (PVF0 < 0 || PVF1 <= PVF0) throw new Error("app-01.js 里的 PV_FIT_REPORTER 找不到了（改名/挪走？），资料库预览测试没法定位真源码");
+// docx / xlsx / pptx / zip / csv 那几样，资料库和对话页共用 app-01 里同一套渲染函数。
+// 桩成 () => "<table>" 就等于只测了「有没有走进那个 if」，而用户抱怨的正是画出来的东西
+// （「这个PPT预览给我做好啊」）：几张幻灯片、表头有没有、转义漏没漏，全在这段真源码里。
+const OVH0 = APP01_NAV.indexOf("// ---- 拆出来的结构化数据 → HTML");
+const OVH1 = APP01_NAV.indexOf("// ---------------- 代码文件的看法", OVH0);
+if (OVH0 < 0 || OVH1 <= OVH0) throw new Error("app-01.js 里的 docHtml/sheetHtml/slidesHtml 那段找不到了（改名/挪走？），资料库 Office 预览测试没法定位真源码");
 const DEAD_SRC = APP01_NAV.slice(NAV0, NAV1) + "\n" + APP01_NAV.slice(PVF0, PVF1)
+  + "\n" + APP01_NAV.slice(OVH0, OVH1)
   + "\n" + APP03_AT.slice(AUT0, AUT1) + "\n" + APP03_AT.slice(RUN0, RUN1)
   + "\n" + APP04_LIB.slice(LIB0, LIB1);
 const DEAD_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "</style><body>"
@@ -2073,10 +2096,11 @@ const DEAD_CHECKS = `
   window.opened = [];
   window.openSession = (id) => window.opened.push(id);
   window.cronToHuman = () => "每天 9:00";
+  // 只跑一次那种没有 cron，页面走的是 whenToHuman；桩少这一个，自动化整页就塌在 ReferenceError 上
+  window.whenToHuman = (t) => (t && t.at ? "今天 14:05（只跑一次）" : "每天 9:00");
   window.escInline = (s) => String(s == null ? "" : s);
   window.renderAutomForm = () => {};
   window.renderAutomTplPicker = () => {};
-  window.csvToTable = () => "<table></table>";
   window.renderMd = (t) => String(t);
   window.fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
   window.pageKind = "autom";
@@ -2092,6 +2116,11 @@ const DEAD_CHECKS = `
   let owner = false, denyRead = false, denyOut = false, uploadResp = { ok: true, name: "a.md" };
   // 预览一份产出时服务端回什么：404 = 东西没了，500 = 读不出来，200 = 正常
   let viewResp = { code: 200, body: "# 九月周报" };
+  // docx/xlsx/pptx/zip 走的是另一条路：服务端先把压缩包拆成结构化数据，前端只管画。
+  // ovHits 记下问的是哪个根——资料库的文件必须问 /api/library/preview/，
+  // 问成 /api/files/preview/ 就是在另一个目录里找，永远 404（那正是「资料库打不开 PPT」的形状）
+  let ovResp = { code: 200, body: {} };
+  const ovHits = [];
   const posts = [];
   window.fetch = (url, opt) => {
     const method = (opt && opt.method) || "GET";
@@ -2167,6 +2196,10 @@ const DEAD_CHECKS = `
     }
     // 预览一个工作区产出。HEAD 是预览出错后补问的那一下「到底是没了，还是读不出来」，
     // 它必须跟 GET 一个口径——两边不一致的话，测出来的就不是页面真实的判断
+    if (url.startsWith("/api/library/preview/") || url.startsWith("/api/files/preview/")) {
+      ovHits.push(url.split("?")[0]);
+      return j(ovResp.body, ovResp.code);
+    }
     if (url.startsWith("/api/files/view/"))
       return Promise.resolve({ ok: viewResp.code < 400, status: viewResp.code,
         json: () => Promise.resolve({}), text: () => Promise.resolve(viewResp.body) });
@@ -2420,6 +2453,95 @@ const DEAD_CHECKS = `
      pv.innerHTML.includes("HTTP 500") && !pv.innerHTML.includes("已经不在工作目录里"), pv.innerHTML.slice(-260));
   viewResp = { code: 200, body: "# 九月周报" };
 
+  // ⑤c-3 Office 三件套 + zip。用户原话：「这个PPT预览给我做好啊」
+  // 「做PPT，workd还有excel,csv这些格式预览要给我兼容，给我做好啊」。
+  // 这几样是一包 XML 压缩档，浏览器自己打不开。对话页那边早就拆得开了，资料库这边却压根
+  // 没有这条路，一律掉进最后那个 <pre>——满屏 PK… 的二进制乱码。
+  const libPreviewOf = async (name) => {
+    window.libState.pick = { src: "lib", name };
+    const prev = page.querySelector("#lb-prev");
+    await renderLibPreview(prev, { notes: [] });
+    return prev;
+  };
+
+  ovHits.length = 0;
+  ovResp = { code: 200, body: { total: 2, truncated: false, slides: [
+    { n: 1, title: "三季度复盘", lines: [{ lvl: 0, s: "收入同比 +18%" }], notes: "这页别念稿" },
+    { n: 2, title: "下季度打法", lines: [{ lvl: 1, s: "先守住存量客户" }], notes: "" },
+  ] } };
+  pv = await libPreviewOf("汇报/三季度.pptx");
+  ok("预览·pptx：资料库的文件要问资料库那个根，不是工作目录那个（问错了永远 404）",
+     ovHits.length === 1 && ovHits[0].startsWith("/api/library/preview/"), ovHits.join("|") || "一次都没问");
+  ok("预览·pptx：真画成一页一页的幻灯片，不是一坨二进制",
+     pv.querySelectorAll(".ov-slide").length === 2 && !pv.querySelector("pre.raw"), pv.innerHTML.slice(-300));
+  ok("预览·pptx：标题、正文、备注都摆出来了",
+     pv.innerHTML.includes("三季度复盘") && pv.innerHTML.includes("收入同比 +18%") && pv.innerHTML.includes("这页别念稿"),
+     pv.innerHTML.slice(-400));
+
+  // 反向对照：同一段代码在工作区那一栏要换另一个根
+  ovHits.length = 0;
+  await previewOf("任务_0916_周报/三季度.pptx");
+  ok("反向对照·pptx：工作区的产出问的是 /api/files/preview/",
+     ovHits.length === 1 && ovHits[0].startsWith("/api/files/preview/"), ovHits.join("|") || "一次都没问");
+
+  ovResp = { code: 200, body: { sheets: [
+    { name: "预算", rows: [["项目", "金额"], ["差旅", "1200"]], truncated: false, totalRows: 2, totalCols: 2 },
+    { name: "人员", rows: [["姓名"], ["小李"]], truncated: false, totalRows: 2, totalCols: 1 },
+  ] } };
+  pv = await libPreviewOf("财务/预算表.xlsx");
+  const tabs = [...pv.querySelectorAll(".ov-tab")];
+  ok("预览·xlsx：几张工作表就几个标签", tabs.length === 2 && tabs[0].textContent === "预算", pv.innerHTML.slice(-300));
+  ok("预览·xlsx：先只显示第一张", pv.querySelector('.ov-pane[data-pane="0"]').hidden === false
+     && pv.querySelector('.ov-pane[data-pane="1"]').hidden === true);
+  tabs[1].onclick();
+  ok("预览·xlsx：标签点得动——接不上事件的话，第二张表就永远看不见",
+     pv.querySelector('.ov-pane[data-pane="1"]').hidden === false
+     && pv.querySelector('.ov-pane[data-pane="0"]').hidden === true
+     && tabs[1].classList.contains("on"), pv.innerHTML.slice(-300));
+
+  ovResp = { code: 200, body: { blocks: [
+    { t: "h", lvl: 1, runs: [{ s: "九月周报" }] },
+    { t: "p", runs: [{ s: "本周做完了三件事" }] },
+  ] } };
+  pv = await libPreviewOf("周报/九月.docx");
+  ok("预览·docx：标题是标题，正文是正文",
+     !!pv.querySelector(".ov-h") && pv.innerHTML.includes("本周做完了三件事"), pv.innerHTML.slice(-300));
+
+  // 出错的两种，一样不许混为一谈
+  ovResp = { code: 404, body: { error: "文件不存在" } };
+  pv = await libPreviewOf("周报/九月.docx");
+  ok("预览·docx：404 说的是「已经不在」，不是「预览不了」", pv.innerHTML.includes("已经不在"), pv.innerHTML.slice(-260));
+  ovResp = { code: 500, body: { error: "这个文件损坏了，解不开" } };
+  pv = await libPreviewOf("周报/九月.docx");
+  ok("预览·docx：拆不开就把服务端那句原话摆出来，别说成文件没了",
+     pv.innerHTML.includes("这个文件损坏了") && !pv.innerHTML.includes("已经不在"), pv.innerHTML.slice(-260));
+  ovResp = { code: 200, body: {} };
+
+  // Office 97-2003：是格式的事，不是文件坏了。以前它掉进兜底的 <pre>，
+  // 用户看到的是一屏二进制，还得自己猜「是不是文件坏了」
+  viewResp = { code: 200, body: "" }; // alive() 那一下 HEAD 要回 ok
+  pv = await libPreviewOf("旧档/合同.doc");
+  ok("预览·doc：老格式说清是格式的事，并给出一条走得通的路（另存为 .docx）",
+     pv.innerHTML.includes("97-2003") && pv.innerHTML.includes(".docx") && !pv.querySelector("pre.raw"), pv.innerHTML.slice(-320));
+  pv = await libPreviewOf("旧档/报价.xls");
+  ok("预览·xls：同一条路，扩展名跟着换成 .xlsx（写死成 .docx 就是在瞎指路）",
+     pv.innerHTML.includes(".xlsx") && !pv.innerHTML.includes(".docx"), pv.innerHTML.slice(-320));
+
+  // CSV：跟对话页共用 csvHtml。以前资料库另有一个只认逗号的迷你版，
+  // 字段里带逗号（"甲,乙"）会被拆成两格，.tsv 更是整列糊在一起
+  viewResp = { code: 200, body: '名称,备注\\n"甲,乙",两个字一格\\n' };
+  pv = await previewOf("任务_0916_周报/名单.csv");
+  let cells = [...pv.querySelectorAll(".ov-table tr")].map((tr) => [...tr.children].map((td) => td.textContent));
+  ok("预览·csv：引号里的逗号是内容不是分隔符（拆成两格就是把表拆散架了）",
+     cells.length === 2 && cells[1].length === 2 && cells[1][0] === "甲,乙", JSON.stringify(cells));
+  viewResp = { code: 200, body: "姓名\\t部门\\n小李\\t财务\\n" };
+  pv = await previewOf("任务_0916_周报/名单.tsv");
+  cells = [...pv.querySelectorAll(".ov-table tr")].map((tr) => [...tr.children].map((td) => td.textContent));
+  ok("预览·tsv：制表符分隔的也认（只按逗号拆的话整行糊成一格）",
+     cells.length === 2 && cells[1].length === 2 && cells[1][1] === "财务", JSON.stringify(cells));
+  viewResp = { code: 200, body: "# 九月周报" };
+  window.libState.pick = null;
+
   // ⑤d 搜索。用户原话：「还有支持搜索功能吧」。
   // 以前那个框只把**当前这一层已经加载出来的**文件名过滤一遍——东西在隔壁文件夹里就搜不到，
   // 正文里写了什么更无从谈起。那不叫搜索，叫筛选。
@@ -2538,6 +2660,42 @@ const DEAD_CHECKS = `
   page.querySelector('.lib-gp[data-group="none"]').click();
   await new Promise((r) => setTimeout(r, 0));
   ok("反向对照：切回不分组，小标题全收掉", !page.querySelector(".lib-grp"));
+
+  // ⑤f-2 ★点一个文件，右边那块得真的露出来★
+  // 用户原话：「在资料库怎么没有办法打开文件啊！」。行高亮了、内容也确实渲染进 #lb-prev 了，
+  // 但 .lib-page 还挂着 data-prev="off"，而 index.html 里那条是 display:none —— 屏幕上什么都不发生。
+  // 之所以一直没人发现：随手点个筛选器就会走整页重画，那一路是照 libState.pick 现算 data-prev 的，
+  // 于是又看得见了，像「偶尔抽风」；实际是**每次进这一页的第一下必挂**。
+  // 所以这一条要在「刚画完、还没碰过别的控件」的状态下点，别在前面顺手重画过的地方测。
+  window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all", mode: "list", group: "none" };
+  await renderLibPage();
+  ok("开门时右边不占位（这是前提，不是结论）", pg().dataset.prev === "off", pg().dataset.prev);
+  const firstFile = page.querySelector('.lib-it:not(.lib-dir)[data-src="ws"]');
+  firstFile.click();
+  ok("★点一个文件，预览栏当场露出来★（data-prev 得翻成 on，不然它是 display:none）",
+     pg().dataset.prev === "on", pg().dataset.prev + " / " + (firstFile && firstFile.dataset.name));
+  ok("  ← 这一下不许靠重画兜底：pick 记上了，行也高亮了",
+     !!window.libState.pick && window.libState.pick.name === firstFile.dataset.name
+     && firstFile.classList.contains("active"), JSON.stringify(window.libState.pick));
+  await new Promise((r) => setTimeout(r, 0));
+  ok("  ← 露出来的是那份文件的预览，不是一块空板", (page.querySelector("#lb-prev").innerHTML || "").trim().length > 0,
+     (page.querySelector("#lb-prev").innerHTML || "").slice(0, 160));
+  // 带着 pick 重进这一页（关掉再打开、或者从别处跳回来）：一样得是开着的
+  await renderLibPage();
+  ok("带着已选文件重进这一页，右边照旧开着（两条路——点击和初次渲染——得一个口径）",
+     pg().dataset.prev === "on", pg().dataset.prev);
+  // 文件夹是另一回事：点它是「走进去」，不是「打开一份东西」，不该顺手把预览栏撑开
+  window.libState.pick = null;
+  await renderLibPage();
+  const dirIt = page.querySelector(".lib-it.lib-dir");
+  if (dirIt) {
+    dirIt.click();
+    await new Promise((r) => setTimeout(r, 0));
+    ok("反向对照：点文件夹是走进去，不该把预览栏撑开", pg().dataset.prev === "off", pg().dataset.prev);
+    window.libState.dir = "";
+  }
+  window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all", mode: "list", group: "none" };
+  await renderLibPage();
 
   // 画廊：右边那块是主角，所以不选东西也得占位置——不然打开就是一整块空白
   ok("画廊之前：没选东西时预览栏不占位，列表能用满整屏", pg().dataset.prev === "off", pg().dataset.prev);
@@ -2804,6 +2962,11 @@ const GATE_CHECKS = `
 
   let owner = false, canSwitch = false, posts = [];
   // 渠道表在几组断言中间要换一批（验副标题和「第 N 个」），所以拎出来当变量
+  // 模型表和多媒体表同理：验「同名渠道分得开」时要把行挂到重名的那两个渠道上
+  let mods = [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or" }, { name: "备用", model: "claude-sonnet-5", api_key: "y", channel: "or" }];
+  let medias = [];
+  // 「从渠道现拉回来的模型列表」默认不出网；验分组那一组会临时换成一份真实形状的回包
+  let provModels = { ok: false, why: "测试里不出网", models: [] };
   let provs = [
     { id: "or", name: "我的 OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "sk-or-fixture", has_key: true },
     { id: "ark", name: "火山方舟（豆包）", kind: "ark", base_url: "https://ark.cn-beijing.volces.com/api/v3", api_key: "", has_key: false },
@@ -2817,8 +2980,8 @@ const GATE_CHECKS = `
       // 两条模型挂在同一个渠道上——「一把 Key 挂一排模型」正是这一屏要画对的东西；
       // 火山那行空着 Key，用来验「没填的不摊在主列表里，但要有地方能找到」
       providers: provs.map((x) => ({ ...x })),
-      models: [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or" }, { name: "备用", model: "claude-sonnet-5", api_key: "y", channel: "or" }],
-      media_models: [],
+      models: mods.map((x) => ({ ...x })),
+      media_models: medias.map((x) => ({ ...x })),
       active_model: "主力", media: {}, model_follow_last: true, persona: "回复简洁", assistant: { name: "小猫", avatar: "🐱" },
       pet: {}, security: { cmd_allow: ["ls"], cmd_ask: ["rm"] },
     });
@@ -2831,7 +2994,7 @@ const GATE_CHECKS = `
       ],
       catalog: { chat: [{ kind: "openrouter", id: "openai/gpt-5.2", label: "GPT-5.2" }] },
     });
-    if (url === "/api/provider-models") return j({ ok: false, why: "测试里不出网", models: [] });
+    if (url === "/api/provider-models") return j(provModels);
     if (url === "/api/security/modes") return j({ modes: { ask: { label: "每次问我", desc: "动手前都问" }, auto: { label: "自动执行", desc: "不问" } }, current: "ask", can_switch: canSwitch });
     if (url === "/api/security/approvals") return j({ session_allow: [] });
     if (url === "/api/security/system") return j({ fulldisk: "unknown", accessibility: "unknown", automation: "unknown", desktop: false });
@@ -3014,6 +3177,105 @@ const GATE_CHECKS = `
     && !mpoD.querySelector("#prov-list").textContent.includes("某家云")
     && /1 家/.test(mpoD.querySelector(".idle-head").textContent),
     (mpoD.querySelector(".idle-head") || {}).textContent);
+  // 编号只印在渠道卡上是不够的：真正要选的那两处（多媒体的渠道下拉、对话模型行的出处）
+  // 以前照样并排两个「OpenRouter（聚合）」，选完存下去认不出配的是哪把 Key。
+  // 三处必须是同一套编号——各编各的话，这儿的「第 2 个」到那儿成了「第 1 个」，比不编还糟
+  mods = [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "a" }, { name: "二号线", model: "gpt-5.2", api_key: "y", channel: "b" }];
+  medias = [{ cap: "image", name: "即梦", provider: "b", model: "doubao-seedream", default: true }];
+  await renderSettings("models");
+  let mpoN = mBody.querySelector("#settings-pane");
+  const chanMeta = [...mpoN.querySelectorAll("#model-list .mrow-meta, .mrow-meta")].map((x) => x.textContent);
+  ok("对话模型行的「出处」也带编号：两行都写 OpenRouter（聚合）的话，等于没写",
+    chanMeta.some((t) => t.includes("第 1 个")) && chanMeta.some((t) => t.includes("第 2 个")), chanMeta.join(" | "));
+  // 展开状态（openCaps）是跨渲染留着的：上面那组已经点开过「画图」，这儿再点一下是收起来。
+  // 所以看一眼再决定点不点，别把卡合上了还去里面找行
+  const imgCard = () => mBody.querySelector("#settings-pane").querySelector('.ch-head[data-cap="image"]').closest(".ch-card");
+  if (!imgCard().classList.contains("open")) imgCard().querySelector(".ch-head").onclick();
+  const imgMeta = imgCard().querySelector(".mrow-meta");
+  ok("多媒体那一行的渠道列跟着编号，指得出是两把 Key 里的哪一把",
+    imgMeta && imgMeta.textContent.includes("第 2 个"), imgMeta ? imgMeta.textContent : "画图那张卡里没有模型行");
+  mpoN = mBody.querySelector("#settings-pane");
+  mpoN.querySelector('.mm-new[data-cap="image"]').onclick();
+  const provOpts = [...mpoN.querySelectorAll('.mm-form[data-cap="image"] .mm-prov option')].map((o) => o.textContent);
+  ok("加一条多媒体模型时，渠道下拉里的两个同名渠道分得开（否则选哪个全靠猜）",
+    provOpts.filter((t) => /第 [12] 个/.test(t)).length === 2, provOpts.join(" | "));
+  ok("编号跟渠道卡是同一套：卡上第 1 个在下拉里也得是第 1 个",
+    provOpts[0].includes("第 1 个") && provOpts[1].includes("第 2 个"), provOpts.join(" | "));
+  mods = [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or" }, { name: "备用", model: "claude-sonnet-5", api_key: "y", channel: "or" }];
+  medias = [];
+
+  // ---- 「看图」那一路的选型下拉：渠道自己标了模态就照它分组，别再拿名字猜 ----
+  // 用户原话：「然后有些似乎是生图模型怎么给我放到看图模型里面去了啊…」
+  //          「还有我这个视觉模型现在都用不了就不要用了啊，老是卡住干嘛」。
+  // 拿当天 OpenRouter 那 446 个型号实测：真能接图的 263 个，按名字只认得出 134 个——
+  // 他自己配的 z-ai/glm-5.3-flash 名字里一个 vl / vision 都没有，被扔进「其它模型」；
+  // 反过来 gemini-3-pro-image 这种**出图**的，名字里带 image，一直在看图的下拉里排着队，
+  // 跟能用的长得一模一样，选中了才在跑的时候炸。
+  provs = [{ id: "vp", name: "带模态的聚合站", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "k", has_key: true }];
+  provModels = { ok: true, models: [
+    { id: "z-ai/glm-5.3-flash", cap: "vision", sure: true },
+    { id: "qwen-vl-max", cap: "vision" },
+    { id: "google/gemini-3-pro-image", cap: "image", sure: true },
+    { id: "openai/gpt-5.3-codex", cap: "", sure: true },
+  ] };
+  // paintModels → renderMediaPane 每一遍都挂一个「精选目录拉回来再画一次」的异步重画。
+  // 展开表单之前先把这些排空，否则待重画一到，injectLive 眼里的 sel 已经离开文档了
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+  const quiet = async () => { for (let i = 0; i < 4; i++) await settle(); };
+  await renderSettings("models");
+  await quiet();
+  const eyeCard = () => mBody.querySelector("#settings-pane").querySelector('.ch-head[data-cap="vision"]').closest(".ch-card");
+  if (!eyeCard().classList.contains("open")) eyeCard().querySelector(".ch-head").onclick();
+  await quiet();
+  eyeCard().querySelector('.mm-new[data-cap="vision"]').onclick();
+  await settle(); // 列表是现拉的，等它插进下拉
+  const mSel = mBody.querySelector('#settings-pane .mm-form[data-cap="vision"] .mm-model');
+  const grp = (label) => [...mSel.querySelectorAll("optgroup")].find((g) => g.label.includes(label));
+  const idsIn = (label) => { const g = grp(label); return g ? [...g.querySelectorAll("option")].map((o) => o.value) : null; };
+  ok("渠道自己说能接图的，排进「能看图的」那一组——名字里没有 vl / vision 也算",
+    (idsIn("渠道自己标的") || []).includes("z-ai/glm-5.3-flash"), JSON.stringify(idsIn("渠道自己标的")));
+  ok("按名字猜出来的单独一组，标明「不一定准」，不跟渠道自己标的混在一块儿",
+    (idsIn("按名字猜的") || []).join() === "qwen-vl-max", JSON.stringify(idsIn("按名字猜的")));
+  ok("出图的模型不许混进「能看图的」那一组",
+    !(idsIn("渠道自己标的") || []).includes("google/gemini-3-pro-image")
+    && !(idsIn("按名字猜的") || []).includes("google/gemini-3-pro-image"), mSel.innerHTML.slice(0, 300));
+  const others = grp("其它模型");
+  const txt = (id) => { const o = [...others.querySelectorAll("option")].find((x) => x.value === id); return o ? o.textContent : ""; };
+  ok("它还留在下拉里（人可能真知道自己在干什么），但名字后面写清楚是画图的",
+    txt("google/gemini-3-pro-image").includes("画图"), txt("google/gemini-3-pro-image"));
+  ok("渠道说死了只认文字的，也当场标出来——这正是「配了却一直卡住」的那一类",
+    txt("openai/gpt-5.3-codex").includes("看不了图"), txt("openai/gpt-5.3-codex"));
+  ok("提示语报个数：有几条是渠道自己标明能看图的，心里有底",
+    /1 个是渠道自己标明能看图的/.test(mBody.querySelector('#settings-pane .mm-form[data-cap="vision"] .mm-tip').textContent),
+    mBody.querySelector('#settings-pane .mm-form[data-cap="vision"] .mm-tip').textContent);
+  // 反向对照：渠道什么都没标（国产渠道大半如此），照旧按名字分组，一个「渠道自己标的」都不许冒出来
+  provs = [{ id: "vq", name: "不报模态的渠道", kind: "ark", base_url: "https://ark.cn-beijing.volces.com/api/v3", api_key: "k", has_key: true }];
+  provModels = { ok: true, models: [{ id: "doubao-1-5-vision-pro-250328", cap: "vision" }, { id: "doubao-seedream-4-0", cap: "image" }] };
+  await renderSettings("models");
+  await quiet();
+  if (!eyeCard().classList.contains("open")) eyeCard().querySelector(".ch-head").onclick();
+  await quiet();
+  eyeCard().querySelector('.mm-new[data-cap="vision"]').onclick();
+  await settle();
+  const mSel2 = mBody.querySelector('#settings-pane .mm-form[data-cap="vision"] .mm-model');
+  const labels2 = [...mSel2.querySelectorAll("optgroup")].map((g) => g.label);
+  ok("反向对照：渠道没报模态时，不许凭空多出一组「渠道自己标的」",
+    !labels2.some((l) => l.includes("渠道自己标的")) && labels2.some((l) => l.includes("按名字猜的")), labels2.join(" | "));
+  ok("反向对照：没标模态的，名字后面也不许硬加用途——那是在把猜测说成事实",
+    ![...mSel2.querySelectorAll("option")].some((o) => /（画图的）|看不了图/.test(o.textContent)), mSel2.textContent.slice(0, 200));
+  // 表单开着的时候，那一遍「目录拉回来再画」不许把它冲掉。
+  // 用户原话：「怎么点击添加都没办法添加在搞什么」——点了，表单也开了，
+  // 只是半个 tick 之后被重画抹平了，看着就像这颗按钮根本不管用。
+  eyeCard().querySelector(".ch-head").onclick();          // 收起：挂上一个待重画
+  eyeCard().querySelector(".ch-head").onclick();          // 再展开：又挂一个
+  eyeCard().querySelector('.mm-new[data-cap="vision"]').onclick();
+  await quiet();                                          // 待重画在这儿全部落地
+  const stillOpen = mBody.querySelector('#settings-pane .mm-form[data-cap="vision"]');
+  ok("表单开着的时候，「目录拉回来再画一遍」不许把它冲没（不然这颗添加按钮看着就是坏的）",
+    stillOpen && stillOpen.style.display !== "none" && stillOpen.querySelectorAll(".mm-prov option").length > 0,
+    stillOpen ? "display=" + stillOpen.style.display + " 渠道项=" + stillOpen.querySelectorAll(".mm-prov option").length : "表单没了");
+  provModels = { ok: false, why: "测试里不出网", models: [] };
+
   provs = [
     { id: "or", name: "我的 OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "sk-or-fixture", has_key: true },
   ];
@@ -8862,7 +9124,7 @@ app.whenReady().then(async () => {
       const namesEP = await winEP.webContents.executeJavaScript(IC_BOOT + ENGPICK_STUBS + "\n" + ENGPICK_SRC + "\n" + ENGPICK_CHECKS, true)
         .catch((e) => { throw new Error("[本机引擎选择器] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesEP) console.log("  ✓ " + n);
-      console.log(`✅ 前端：本机引擎在跑时的模型选择器（宽度收得住·说明换行·不出屏·只有一处可点·按钮换图标）${namesEP.length} 项通过`);
+      console.log(`✅ 前端：本机引擎在跑时的模型选择器（宽度收得住·没有多余的说明长句·不出屏·只有一处可点·按钮换图标）${namesEP.length} 项通过`);
     } finally {
       if (!winEP.isDestroyed()) winEP.destroy();
     }

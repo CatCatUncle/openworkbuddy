@@ -241,6 +241,33 @@ function rest() {
     eq(mm.guessCap("mistral-small"), "", "反向对照：mistral 里的 str 不算 stt");
     // 反向对照：猜不出来就留空，不硬塞进某一路
     eq(mm.guessCap("text-embedding-v3"), "", "反向对照：认不出的模型留空，不硬塞");
+    // ---- 渠道自己报的模态，比猜名字准。用户原话：「有些似乎是生图模型怎么给我放到
+    // 看图模型里面去了啊…」／「我这个视觉模型现在都用不了…老是卡住干嘛」。
+    // 拿当天 OpenRouter 那 446 个型号实测：真能接图的 263 个，按名字只认得出 134 个。
+    const co = (o) => mm.capOfModel(o);
+    // 出图的：既能接图又能出图，正业是画图，不许排进「看图」那一组
+    eq(co({ id: "google/gemini-3-pro-image", architecture: { input_modalities: ["text", "image"], output_modalities: ["image"] } }).cap,
+       "image", "出图的模型判成画图（哪怕它也能接图）");
+    ok(co({ id: "openai/gpt-5-image", architecture: { input_modalities: ["text", "image"], output_modalities: ["image"] } }).sure,
+       "渠道自己标了模态，这条是「确定」，前端才敢照它分组");
+    // 用户自己配的那条：名字里一个 vl / vision 都没有，只有模态认得出来
+    eq(co({ id: "z-ai/glm-5.3-flash", architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] } }).cap,
+       "vision", "名字看不出来、但渠道说能接图的，就是看图模型");
+    eq(mm.guessCap("z-ai/glm-5.3-flash"), "", "★对照★ 同一条只按名字猜是猜不出来的（这正是要读模态的理由）");
+    // 进出都只有文字 = 确定哪一路都不是。说死了才拦得住 codex 这类混进看图那一组
+    const codex = co({ id: "openai/gpt-5.3-codex", architecture: { input_modalities: ["text"], output_modalities: ["text"] } });
+    eq(codex.cap, "", "纯文字模型不归任何一路");
+    ok(codex.sure, "而且是「确定」不归——按名字猜的话 gpt-5 会被当成看图模型");
+    eq(mm.guessCap("openai/gpt-5.3-codex"), "vision", "★对照★ 只看名字的话它真的会掉进看图那一组");
+    // 听声的和出声的分得开
+    eq(co({ id: "x/whatever-1", architecture: { input_modalities: ["audio"], output_modalities: ["text"] } }).cap, "asr", "进音频出文字 → 转写");
+    eq(co({ id: "x/whatever-2", architecture: { input_modalities: ["text"], output_modalities: ["audio"] } }).cap, "tts", "进文字出音频 → 配音");
+    eq(co({ id: "x/whatever-3", architecture: { output_modalities: ["video"] } }).cap, "video", "出视频 → 视频");
+    // 反向对照：渠道什么都没报（国产渠道大半如此），照旧按名字猜，且标明是猜的
+    const bare = co({ id: "doubao-seedream-4-0-250828" });
+    eq(bare.cap, "image", "反向对照：渠道没报模态时，退回按名字猜");
+    ok(!bare.sure, "反向对照：猜出来的不许冒充「渠道自己标的」");
+    eq(co("qwen-vl-max").cap, "vision", "反向对照：只给一个字符串（老式 /models）也认");
     eq(mm.guessKind(ARK), "ark", "ARK 地址认得出渠道类型");
     eq(mm.guessKind(DASH), "dashscope", "百炼地址认得出渠道类型");
     eq(mm.guessKind("https://whatever.example.test/v1"), "custom", "反向对照：认不出的地址归到自定义");
@@ -282,6 +309,64 @@ function rest() {
     const mixed = prefs.split({ pet: { enabled: true }, providers: [{ id: "x" }] });
     eq(Object.keys(mixed.personal).length, 1, "反向对照：混单里的个人项被分出来");
     eq(Object.keys(mixed.rest).length, 1, "反向对照：混单里的服务器级项也被分出来（处理器据此 403）");
+  }
+
+  // ----------------------------------------------------------------
+  // 删掉的模型不许自己长回来。
+  //
+  // 真事：用户把「看图」那一路的模型全删了，刷新一下，两条又原样躺在那儿；再删，再回来。
+  // 他的原话是「这是在干什么，我删除所有的然后又马上出现两个」，接着是
+  // 「你不要搞什么默认模型设置啊！！！！！，用户没有设置就是没有啊」。
+  //
+  // 死循环由两段代码合谋而成，单看哪一段都像是好心：
+  //   flatten 那条兜底：media_models 里没有 vision 了，就把上一版 config.media.vision 留着，
+  //                     免得抹掉用户手填的地址；
+  //   normalize 顶上的迁移循环：看见 config.media.vision 有地址有模型，就建回一条 vision 模型。
+  // 于是「删」这个动作被完整地撤销，而且每存一次撤销一次。
+  //
+  // 所以这一组钉的是：迁移只认一次（从老版本升上来的那一次），兜底只留没有模型名的那种。
+  console.log("\n【10】删掉的模型不许自己长回来");
+  {
+    const one = () => ({
+      providers: [{ id: "openrouter", name: "OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "k" }],
+      media_models: [{ id: "vision-glm", cap: "vision", name: "z-ai/glm-5.3-flash", provider: "openrouter", model: "z-ai/glm-5.3-flash", default: true }],
+      media: {},
+    });
+    const c = one();
+    mm.normalize(c);
+    eq(c.media.vision.model, "z-ai/glm-5.3-flash", "先确认压平这一步是好的：默认那条落到了 config.media.vision");
+
+    // 用户在界面上把这一路删光，前端把「剩下的」提交上来
+    c.media_models = c.media_models.filter((m) => m.cap !== "vision");
+    mm.normalize(c);
+    eq(c.media_models.filter((m) => m.cap === "vision").length, 0, "删光之后，vision 一行都不许剩");
+    eq(c.media.vision.model, "", "config.media.vision 里也不许偷偷留个副本——留着下一轮就是它把人请回来的");
+    mm.normalize(c); mm.normalize(c);
+    eq(c.media_models.filter((m) => m.cap === "vision").length, 0, "再规整两轮还是零：这才叫「删掉了」");
+
+    // ★反向对照★ 真·老配置（还没有 media_models 这张表）升上来，迁移必须照做。
+    // 少了这条，上面三行完全可能是靠「迁移整个坏掉了」绿的，那是把功能删了，不是把 bug 修了。
+    const ancient = { providers: [], media_models: [], media: { image: { base_url: ARK, api_key: K1, model: "doubao-seedream-4-0-250828", } } };
+    mm.normalize(ancient);
+    eq(ancient.media_models.length, 1, "★反向对照★ 老配置首次升级，那条画图模型还得被搬过来");
+    eq(ancient.media_models[0].model, "doubao-seedream-4-0-250828", "★反向对照★ 搬过来的就是他原来那条");
+
+    // ★反向对照★ 老用户升上来的**第一次保存**恰好就是「把这一路删光」：
+    // 此时戳还没盖上，但 media_models 里已经有别的行了——那张表只可能是 normalize 自己建的,
+    // 所以搬家早就做完了。不认这一条的话，这些人还要被咬最后一口。
+    const upgrading = {
+      providers: [{ id: "openrouter", name: "OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "k" }],
+      media_models: [{ id: "image-x", cap: "image", name: "doubao-seedream-5", provider: "openrouter", model: "doubao-seedream-5", default: true }],
+      media: { vision: { base_url: "https://openrouter.ai/api/v1", api_key: "k", model: "z-ai/glm-5.3-flash" } },
+    };
+    mm.normalize(upgrading);
+    eq(upgrading.media_models.filter((m) => m.cap === "vision").length, 0, "升级中途删光看图，也不许被迁移请回来");
+
+    // 兜底本来是为谁留的：手改 config.json、填了地址还没想好用哪个型号的人。
+    // 这一条必须还在——它跟上面那些不冲突，区别只在「有没有模型名」。
+    const halfHand = { providers: [], media_models: [], media_migrated: true, media: { tts: { base_url: "https://gw.example.test/v1", api_key: "k", model: "" } } };
+    mm.normalize(halfHand);
+    eq(halfHand.media.tts.base_url, "https://gw.example.test/v1", "手填了地址、没填模型名的，保存一次不许被抹掉");
   }
 
   // ----------------------------------------------------------------

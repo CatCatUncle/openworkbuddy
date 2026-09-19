@@ -44,6 +44,60 @@ function permissionMode(sec) {
   return PERMISSION_MODES[m] ? m : DEFAULT_MODE;
 }
 
+/** 本项目的档位 → 外部 CLI 引擎自己那套开关 */
+const ENGINE_MODES = {
+  //            claude -p 的 --permission-mode   codex 的 sandbox_mode
+  plan: { claude: "plan", codex: "read-only" },
+  ask: { claude: "default", codex: "read-only" },
+  auto: { claude: "acceptEdits", codex: "workspace-write" },
+  full: { claude: "bypassPermissions", codex: "workspace-write" },
+};
+
+/**
+ * 把安全档位翻译成外部引擎（本机 Claude Code / Codex）认的开关。
+ *
+ * 非做不可的理由：这两个 CLI 自带工具、自带循环，它们写文件、跑命令**不经过**本项目的
+ * 安全中心——只有从 MCP 桥回流的那批工具才走那道闸。以前这里硬写死 `acceptEdits`，
+ * 于是用户在设置里选了「只看不动」或「每步都问」，切到本机引擎照样随便改文件，
+ * 界面上那颗开关等于摆设。档位是用户对「让它自己动到哪一步」的表态，必须一路传到底。
+ *
+ * 「每步都问」翻成 claude 的 default：-p 是非交互的，没人能点同意，于是需要审批的动作
+ * 一律被拒。听起来很废，但那正是这一档的字面意思，而且它拒了会明说，比背着人写下去强。
+ *
+ * disallow 这一串是同一个道理的第二面：名单里写着「这类命令要问我一下」，可这条路上
+ * 没有「问」这个动作，那就只剩「不给用」。全自动档不加——那一档的意思就是别再拦了。
+ *
+ * @returns {{mode:string, claudeMode:string, codexSandbox:string, allowShim:boolean, disallow:string[], note:string}}
+ */
+function engineGuard(sec) {
+  const mode = permissionMode(sec);
+  const m = ENGINE_MODES[mode] || ENGINE_MODES[DEFAULT_MODE];
+  const heads = [];
+  if (mode !== "full") {
+    // 名单里写的是前缀（"sudo "、"diskutil erase"），CLI 那边的匹配单位是可执行文件名，
+    // 所以取第一个词。"diskutil erase" 收紧成整个 diskutil：宁可多禁一点，也别放过
+    for (const p of (sec || {}).cmd_ask || []) heads.push(String(p || "").trim().split(/\s+/)[0]);
+    // 删除保护是另一颗独立开关（不在 cmd_ask 里），但道理一样：说了要问，这条路问不着
+    if ((sec || {}).delete_protect !== false) heads.push("rm");
+  }
+  const uniq = [...new Set(heads.filter(Boolean))];
+  const notes = {
+    plan: "安全档位是「只看不动」：本机 CLI 这一趟按只读跑，不写文件也不跑命令。",
+    ask: "安全档位是「每步都问」，而本机 CLI 这条路没有审批通道（非交互，没人能点同意）——它要写文件或跑命令会被直接拒。想让它动手，把档位调到「自动改文件」。",
+    auto: uniq.length ? `按你的安全设置，本机 CLI 不许自己跑这些命令：${uniq.join("、")}（这条路没有审批通道，只能直接禁）。` : "",
+    full: "",
+  };
+  return {
+    mode,
+    claudeMode: m.claude,
+    codexSandbox: m.codex,
+    // 只看不动 / 每步都问：连本项目借出去的那条命令行入口也不放行，否则等于从后门绕开档位
+    allowShim: PERMISSION_MODES[mode].cmd !== "deny",
+    disallow: uniq.map((h) => `Bash(${h}:*)`),
+    note: notes[mode] || "",
+  };
+}
+
 const DEFAULTS = {
   permission_mode: DEFAULT_MODE, // plan / ask / auto / full，见 PERMISSION_MODES
   gateway: true, // 安全网关总开关：关闭后黑名单/审批闸不再拦截（审计照记）
@@ -554,6 +608,7 @@ module.exports = {
   PERMISSION_MODES,
   DEFAULT_MODE, // 命令行要用它判断「现在这档是不是默认那档」，决定状态行印不印
   permissionMode,
+  engineGuard, // 把档位翻成外部 CLI 引擎认的开关（claude -p / codex exec）
   checkWrite,
   checkCommand,
   checkCode,

@@ -5385,6 +5385,26 @@ async function testDesktopPet() {
   assert.strictEqual(pet.enabled, false, "hide 之后 enabled 应为 false");
   pet.destroy();
 
+  // ①' 开机那一下必须把盘上那份**整个**交给 pet.js，不许手抄字段清单。
+  //     真事：electron-main.js 里抄了五个字段，漏了 sprite。于是选了精灵图宠物的人每次重开
+  //     都变回内置那只猫——character 是 "sprite"、sprite 却是空的，findPet 找不着，
+  //     create() 最后那行就静静落回 "cat"，一声不吭。
+  //     用户原话：「这个宠物我之前换了的，然后重新打开又是默认的猫猫宠物了」。
+  //     这条钉的是写法而不是结果：真正的失败只在 Electron 里才看得见，而这套测试跑的是纯 node。
+  //     手抄清单这种写法的毛病是「加字段的人不会想到回来改它」，所以直接禁掉这种写法。
+  {
+    const src = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+    const call = src.slice(src.indexOf("const petCfg = require(dataPath(\"config.json\")).pet"));
+    assert.ok(call, "electron-main.js 里那段开机读宠物配置的代码不见了（挪了位置就把这条锚点一起改掉）");
+    const boot = call.slice(0, call.indexOf("\n  } catch"));
+    assert.ok(/pet\.applyConfig\(\s*\{\s*\.\.\.petCfg/.test(boot),
+      "开机必须把 petCfg 整个摊给 applyConfig（写成 {...petCfg, ...}），不许再一个字段一个字段地抄");
+    for (const k of ["sprite", "notifyDone", "wander", "character"]) {
+      assert.ok(!new RegExp(`petCfg\\.${k}`).test(boot),
+        `开机那行又开始单独点名 petCfg.${k} 了——这正是当年漏掉 sprite 的写法，整个摊过去就不会漏`);
+    }
+  }
+
   // ② 工具层：没有落地实现时如实报错
   const { executeTool } = require("../tools");
   const saved = global.__openworkbuddyPetTool;
@@ -5476,6 +5496,415 @@ async function testDesktopPet() {
  * 「已退出」这种话等于没说：用户看不出该改配置、该装依赖、还是该重装包。
  * 所以这里钉住的不是措辞，是「失败消息里必须带上退出码和它自己最后喊的那句」。
  */
+/**
+ * 连接器的开关，和「这一刻模型手上有哪些工具」那张表。
+ *
+ * 由来是用户对着别家产品的 ＋ 菜单说的两句：「我这里也有 ＋ 能看到各种工具啥的啊，
+ * 还有管理已经设置好的连接器这些啊」「这个连接器功能到底可用不可用呀？你要帮我测试好啊」。
+ *
+ * 这条测试盯的是「关掉」这个动作从头到尾都算数——四段各管一件事，缺一段都能让开关变成摆设：
+ *   ① mcp.js：关掉的那台压根不去连，而且开着的时候被关掉，进程要真收掉；
+ *   ② 权限：连接器是整台机器一份的，一个人关掉所有人少一批工具，所以开关归平台管理员；
+ *   ③ 存盘 + 重启：关掉不是这一次运行里的事，重启之后还得是关着的；
+ *   ④ 界面能分清「我自己关的」和「连不上」——这两件事在屏幕上长得一样就等于没做。
+ */
+async function testConnectorToggleAndTools() {
+  const os = require("os");
+  const http = require("http");
+  const { McpManager, whyFailed } = require("../mcp");
+
+  // ---- ① mcp.js 这一层：关掉 = 不去连，而且真收摊 ----
+  {
+    const mgr = new McpManager();
+    const die = (code) => ({ command: process.execPath, args: ["-e", `process.exit(${code});`] });
+    mgr.setDisabled(["关掉的"]);
+    await mgr.startAll([
+      { name: "关掉的", ...die(3) },
+      { name: "开着的", ...die(4) },
+    ]);
+    const names = mgr.failures.map((f) => f.name);
+    assert(!names.includes("关掉的"),
+      "★关掉的那台还是去连了★ 界面上开关一点就回弹，而且白起一个进程：" + names.join("/"));
+    assert(names.includes("开着的"), "反向对照：没关的那台该照常去连并记下失败，实际 failures=" + names.join("/"));
+
+    // 「开着的时候被关掉」这一路：stop 必须发生在 continue 之前，否则进程成了孤儿——
+    // 开关看着是关了，工具表里也摘掉了，可那个子进程还在后台占着句柄跑着。
+    let stopped = false;
+    mgr.clients.set("正跑着的", { stop() { stopped = true; }, tools: [] });
+    mgr.setDisabled(["正跑着的"]);
+    await mgr.startAll([{ name: "正跑着的", ...die(0) }]);
+    assert(stopped, "★关掉一台正在跑的连接器，进程没被收掉★ 它会变成没人管的孤儿进程");
+    assert(!mgr.clients.has("正跑着的"), "关掉之后它还挂在 clients 里，工具表里就还摘不干净");
+    assert(mgr.toolDefs().length === 0, "关掉的连接器的工具还留在工具表里——模型会先想一个用它的方案、调一次、吃一条「连不上」、再重想，白烧一轮");
+    mgr.stop([]);
+  }
+
+  // ---- 界面上那句「授权已过期」的判据，和 whyFailed 说的话得对得上 ----
+  // server.js 里 auth_bad 是拿正则去认 whyFailed 翻出来的那句话的。两边任何一边改了措辞，
+  // 红字就会不声不响地消失——变成一张跟「连不上」一模一样的灰卡片，用户不知道该去换 Key。
+  const AUTH_BAD = /（401）|（403）|Key／令牌/;
+  for (const n of [401, 403]) {
+    const say = whyFailed(new Error(`MCP x.initialize HTTP ${n}：nope`), { url: "https://api.example.com/mcp" });
+    assert(AUTH_BAD.test(say), `★${n} 不再被认成「授权没了」★ server.js 的 auth_bad 正则和 mcp.js 的措辞对不上了：` + say);
+  }
+  assert(!AUTH_BAD.test(whyFailed(new Error("MCP x.initialize HTTP 500：boom"), { url: "https://api.example.com/mcp" })),
+    "反向对照：500 是对方自己崩了，不该被说成「授权过期」让用户白跑一趟去换 Key");
+  assert(!AUTH_BAD.test(whyFailed(Object.assign(new Error("fetch failed"), { cause: { code: "ECONNREFUSED" } }), { url: "https://api.example.com/mcp" })),
+    "反向对照：连都没连上不该被说成「授权过期」");
+
+  // ---- 起一台只会回 401 的假 MCP 端点：auth_bad 这条要跑真链路，不能只测正则 ----
+  const deny = http.createServer((_q, r) => { r.writeHead(401, { "content-type": "text/plain" }); r.end("no token"); });
+  await new Promise((r) => deny.listen(0, "127.0.0.1", r));
+  const denyPort = deny.address().port;
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mcp-toggle-"));
+  const CFG = path.join(home, "config.json");
+  const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config.example.json"), "utf8"));
+  cfg.mcp_servers = [
+    // 进程起来就死：最常见的「连不上」，一秒之内就有结果，不拖慢这条测试
+    { name: "deadproc", transport: "stdio", command: process.execPath, args: ["-e", "process.exit(3);"] },
+    // 远端回 401：界面上要显示成「授权已过期」，跟上面那台分得开
+    { name: "expired", transport: "streamable-http", url: `http://127.0.0.1:${denyPort}/mcp` },
+  ];
+  fs.writeFileSync(CFG, JSON.stringify(cfg, null, 2));
+
+  // 令牌只能用 [\w]+：account.js 的 tokenFromReq 拿这个字符类去 cookie 里抠，
+  // 带连字符的令牌会在第一个 - 处被截断，整条测试挂在一片「未登录」上，看着像权限出了问题
+  const crypto = require("crypto");
+  const owner = "owner" + crypto.randomBytes(12).toString("hex");
+  const member = "member" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [
+      { username: "boss", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() },
+      { username: "xiaoli", salt: "x", hash: "x", role: "user", credits: 0, created_at: Date.now() },
+    ],
+    tokens: { [owner]: { user: "boss", at: Date.now() }, [member]: { user: "xiaoli", at: Date.now() } },
+  }));
+
+  const call = (port, method, p, body, token = owner) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const req = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+      ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      ...(token ? { Cookie: "openworkbuddy_token=" + token } : {}),
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    req.on("error", (e) => resolve({ code: 0, body: e.message }));
+    if (data) req.write(data);
+    req.end();
+  });
+  const byName = (j) => Object.fromEntries((((j && j.json) || {}).servers || []).map((s) => [s.name, s]));
+  const diskOff = () => JSON.parse(fs.readFileSync(CFG, "utf8")).mcp_disabled || [];
+
+  let booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  try {
+    const { up, port, why } = await booted.wait();
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+
+    // ---- ② 一张卡片要说清四件事：开着没、连上没、为什么没连上、是不是授权的问题 ----
+    const first = await call(port, "GET", "/api/mcp");
+    assert(first.code === 200 && first.json, "连接器列表取不到（HTTP " + first.code + "）：" + first.body.slice(0, 200));
+    const m0 = byName(first);
+    assert(m0.deadproc && m0.expired, "配的两台没都列出来：" + Object.keys(m0).join("/"));
+    assert(m0.deadproc.enabled === true && m0.expired.enabled === true, "没关过的连接器应当是开着的");
+    assert(m0.deadproc.connected === false && m0.deadproc.error, "起不来的那台该留下失败原因：" + JSON.stringify(m0.deadproc).slice(0, 200));
+    assert(m0.deadproc.auth_bad === false, "进程起不来不是授权问题，不该让用户去换 Key：" + m0.deadproc.error);
+    assert(m0.expired.auth_bad === true,
+      "★远端回 401，界面上没标成「授权已过期」★ 用户只会看到一张灰卡片，不知道该现在就去换 Key：" + m0.expired.error);
+    assert(first.json.can_toggle === true, "平台管理员那边 can_toggle 该是 true，否则开关根本不画出来");
+
+    // 成员看得见有哪些连接器（他的任务就靠这些工具），但开关不画给他——
+    // 画一个点了必然 403 的开关，比不画更糟
+    const asMember = await call(port, "GET", "/api/mcp", null, member);
+    assert(asMember.code === 200 && asMember.json.can_toggle === false,
+      "成员那边 can_toggle 该是 false：" + asMember.body.slice(0, 200));
+
+    // ---- ③ 权限：连接器是整台机器一份的 ----
+    const denied = await call(port, "POST", "/api/mcp/toggle", { name: "deadproc", enabled: false }, member);
+    assert(denied.code === 403 && denied.json && denied.json.platform_only === true,
+      "★成员也能关掉整台机器的连接器★（HTTP " + denied.code + "）：" + denied.body.slice(0, 200));
+    assert(diskOff().length === 0, "★被拒的那一发还是写进 config.json 了★：" + JSON.stringify(diskOff()));
+
+    // ---- ④ 关掉：存盘、摘工具、界面上跟「连不上」分得开 ----
+    const off = await call(port, "POST", "/api/mcp/toggle", { name: "deadproc", enabled: false });
+    assert(off.code === 200 && off.json.ok && off.json.enabled === false, "关不掉：" + off.body.slice(0, 200));
+    assert.deepStrictEqual(diskOff(), ["deadproc"], "没落到 config.json 的 mcp_disabled 里：" + JSON.stringify(diskOff()));
+    const m1 = byName(await call(port, "GET", "/api/mcp"));
+    assert(m1.deadproc.enabled === false, "关完了列表里还说它开着");
+    assert(m1.deadproc.error === "",
+      "★关掉的连接器还挂着上一次的失败原因★ 屏幕上就成了「我自己关的」和「它连不上」一个长相：" + m1.deadproc.error);
+    assert(m1.expired.enabled === true, "关一台把另一台也带下去了");
+
+    // 认不出来的名字要当场说不行，别默默记一个不存在的名字进 config
+    const ghost = await call(port, "POST", "/api/mcp/toggle", { name: "查无此连接器", enabled: false });
+    assert(ghost.code === 400, "不存在的连接器名该被拒（HTTP " + ghost.code + "）：" + ghost.body.slice(0, 160));
+    assert.deepStrictEqual(diskOff(), ["deadproc"], "被拒的名字混进 mcp_disabled 了：" + JSON.stringify(diskOff()));
+
+    // ---- ⑤ 「这一刻模型手上有哪些工具」：摆出来的得是模型看见的那一份 ----
+    const tl = await call(port, "GET", "/api/tools");
+    assert(tl.code === 200 && tl.json && Array.isArray(tl.json.tools) && tl.json.tools.length > 0,
+      "工具表是空的（HTTP " + tl.code + "）：" + tl.body.slice(0, 200));
+    assert(tl.json.total === tl.json.tools.length, "报的总数和列出来的对不上：" + tl.json.total + " vs " + tl.json.tools.length);
+    assert((tl.json.groups || []).some((g) => g.key === "builtin" && g.count > 0), "内置工具那一组没了：" + JSON.stringify(tl.json.groups));
+    assert(tl.json.tools.every((t) => !/^\[MCP:/.test(t.description || "")),
+      "描述前面那截 `[MCP:服务器] ` 是给模型认来源的，界面上有分组标题了，别重复一遍");
+    assert(tl.json.tools.every((t) => !String(t.description || "").includes("\n")), "说明只该留第一行，多行会把菜单撑得老长");
+    // 不许另抄一份清单：抄的那份迟早和 toolList 漂开（modes 那儿已经演过一遍三份手抄）。
+    // 换个模式再要一次，条数必须跟着变——抄死的清单在这儿会原地不动。
+    const ask = await call(port, "GET", "/api/tools?mode=ask");
+    assert(ask.code === 200 && ask.json.mode === "ask", "换模式要不到：" + ask.body.slice(0, 160));
+    assert(ask.json.total !== tl.json.total || ask.json.tools.length !== tl.json.tools.length
+      || JSON.stringify(ask.json.tools.map((t) => t.name)) !== JSON.stringify(tl.json.tools.map((t) => t.name)),
+      "换了模式工具表一个字没变——多半是另抄了一份死清单，而不是问的 runtime.toolList()");
+
+    booted.child.kill();
+  } finally {
+    try { booted.child.kill(); } catch {}
+  }
+
+  // ---- ⑥ 重启：关掉不是「这一次运行里」的事 ----
+  // 少了 main() 里那句 setDisabled，重启之后它会照常去连——用户下次打开发现自己关掉的又开着了。
+  booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  try {
+    const { up, port, why } = await booted.wait();
+    assert(up, "第二次启动没起来：" + why);
+    const m2 = byName(await call(port, "GET", "/api/mcp"));
+    assert(m2.deadproc.enabled === false, "★重启之后自己关掉的连接器又开着了★");
+    assert(m2.deadproc.error === "" && m2.deadproc.connected === false,
+      "★重启之后又去连了一次关掉的那台★（留下了失败记录）：" + m2.deadproc.error);
+    assert(m2.expired.auth_bad === true, "反向对照：另一台照常连、照常报授权过期");
+
+    // 再打开：开关是双向的，而且 config 里不许留下已经没意义的名字
+    const on = await call(port, "POST", "/api/mcp/toggle", { name: "deadproc", enabled: true });
+    assert(on.code === 200 && on.json.enabled === true, "打不开：" + on.body.slice(0, 200));
+    assert.deepStrictEqual(diskOff(), [], "打开之后 mcp_disabled 没清干净：" + JSON.stringify(diskOff()));
+    const m3 = byName(await call(port, "GET", "/api/mcp"));
+    assert(m3.deadproc.enabled === true && m3.deadproc.error,
+      "反向对照：重新打开就该真去连一次，连不上照旧说连不上：" + JSON.stringify(m3.deadproc).slice(0, 200));
+  } finally {
+    try { booted.child.kill(); } catch {}
+    await new Promise((r) => deny.close(r));
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+  console.log("✅ 连接器开关：关掉就真不连（存盘 + 重启还算数）· 开关归平台管理员 · 界面分得清「我关的」和「连不上」· 工具表问的是 runtime 那一份");
+}
+
+/**
+ * 定时任务得留下「执行过程」，不是一句结果。
+ *
+ * 用户原话：「我定时任务怎么没看到具体的执行过程啊」→「我想要看到每次具体的运行记录啊」。
+ * 当时运行记录那一屏每行只有一句被截到 500 字的正文；点不进去，也没有别处可点。
+ * 根因是 scheduler.js 里那句光秃秃的 `runtime.runTask({ history })`——**不给 emit 就没有事件，
+ * 不给 sessionId 就没有会话**，过程从一开始就没被记下来过，前端再怎么改也变不出来。
+ *
+ * 所以这条测试钉的是那根链子的每一节，而不是界面上那个链接长什么样：
+ *   ① 调度器把 recorder 给的 emit/sessionId 原样交给 runTask，并把 session_id 写进运行记录
+ *   ② 成、败、抛异常三条路都得收尾（done 调一次且只调一次），不然崩一次就留下一段永远没结论的会话
+ *   ③ 运行记录被挤掉 / 任务被删，跟着的那段会话也得清掉——后台 cron 只进不出就是个漏
+ *   ④ ⚠️ recorder 的 opts 不许盖掉 taskLabel：agent.js 靠 taskLabel === "定时任务" 才不让
+ *      一条定时任务再去改排期表。这一条盖掉了会长出一个没人看着的自我繁殖闭环。
+ *   ⑤ 端到端：真 server.js + 真 agent + 一个假模型，手动触发一次，运行记录上要有 session_id，
+ *      拿它去 /api/session/<id> 要能取回**带工具调用**的完整回放。
+ */
+async function testScheduleRunTrace() {
+  const os = require("os");
+  const http = require("http");
+  const { createScheduler, SCHEDULE_LABEL } = require("../scheduler");
+
+  // ---- ① 调度器这一层：录像机插上了，过程才有地方去 ----
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sched-rec-"));
+    const storePath = path.join(dir, "schedules.json");
+    const seen = [];          // runTask 每次收到的 opts
+    const closed = [];        // done 被调了几次、报的什么
+    const forgotten = [];     // forget 收到过哪些 session id
+    let nth = 0;
+    const runtime = {
+      runTask: async (opts) => {
+        seen.push(opts);
+        // 定时任务真正跑起来时是 accountedRuntime 在铺 taskLabel，这儿照它的顺序模拟一遍：
+        // 先铺默认，再摊调用方给的。摊在后面的一旦带了 taskLabel，铺的那份就没了。
+        const merged = { taskLabel: SCHEDULE_LABEL, ...opts };
+        assert.strictEqual(merged.taskLabel, SCHEDULE_LABEL,
+          "★recorder 的 opts 把 taskLabel 盖掉了★ agent.js 就是靠它 === 「定时任务」才不许定时任务再改排期表的，" +
+          "盖掉之后一条定时任务可以排出下一条，没人看着的时候会自己越滚越多。实际收到：" + merged.taskLabel);
+        if (nth++ === 1) throw new Error("上游连不上");     // 第二趟走 catch 那条路
+        assert(typeof opts.emit === "function" && opts.sessionId,
+          "★runTask 没拿到 emit/sessionId★ 那就是一个字的过程都不会被记下来——运行记录永远只有一句结果。实际收到：" + Object.keys(opts).join("/"));
+        opts.emit({ type: "tool_use", name: "write_file", input: { path: "日报.md" } });
+        opts.emit({ type: "text", delta: "写完了" });
+        return { finalText: "日报已生成：日报.md" };
+      },
+    };
+    let n = 0;
+    const recorder = ({ item, trigger, run }) => {
+      const sessionId = "s_fake_" + ++n;
+      assert(item && item.id && trigger && run, "recorder 拿不到 item/trigger/run，外头没法给这段会话起名、也没法判归属");
+      const events = [];
+      return {
+        sessionId,
+        opts: { sessionId, emit: (ev) => events.push(ev) },
+        done: (ok, text) => closed.push({ sessionId, ok, text, events: events.length }),
+      };
+    };
+    recorder.forget = (ids) => forgotten.push(...ids);
+
+    const sched = createScheduler({ runtime, recorder, storePath });
+    const t = sched.add({ name: "每天日报", cron: "0 9 * * *", task: "写今天的日报" });
+
+    await sched.runOne(t, "手动");
+    assert(seen[0] && typeof seen[0].emit === "function" && seen[0].sessionId,
+      "★runTask 没拿到 emit/sessionId★ 那就是一个字的过程都不会被记下来——运行记录永远只有一句结果。实际：" + Object.keys(seen[0] || {}).join("/"));
+    assert(seen[0].history && seen[0].history[0].content === "写今天的日报", "任务正文没送进去，录下来的过程就对不上这条任务");
+    const r1 = sched.runs(10)[0];
+    assert.strictEqual(r1.session_id, "s_fake_1",
+      "★运行记录上没挂 session_id★ 前端那条「看执行过程」就没有 id 可点，等于这一趟又白录了");
+    assert.deepStrictEqual({ ok: closed[0].ok, events: closed[0].events }, { ok: true, events: 2 },
+      "跑成功这条路没正常收尾（或者事件没进录像）：" + JSON.stringify(closed[0]));
+
+    // 第二趟：上游抛异常。这条路最容易漏——一崩就 return/throw 走了，会话停在「正在跑」永远没结论
+    await sched.runOne(t, "手动").then(() => assert(false, "上游抛了异常，runOne 该把它抛出来"), () => {});
+    assert.strictEqual(closed.length, 2, "★出错那一趟没收尾★ 点进去是一段永远没有结论的回放，看着像卡住了");
+    assert(closed[1].ok === false && /连不上/.test(closed[1].text),
+      "出错收尾得把原因带进去（整趟没事件时全靠它兜底，不然点进去一片空白）：" + JSON.stringify(closed[1]));
+    assert.strictEqual(sched.runs(10)[0].session_id, "s_fake_2", "出错的那一趟同样要能点进去看——恰恰是它最需要看");
+
+    // ---- ③ 只进不出的话，后台 cron 会一直往盘上堆没人管的会话文件 ----
+    assert.strictEqual(forgotten.length, 0, "还没删过任何东西，不该清会话");
+    sched.remove(t.id);
+    assert.deepStrictEqual(forgotten.sort(), ["s_fake_1", "s_fake_2"],
+      "★删掉定时任务，它那几段执行过程成了孤儿★ 没有任何入口，却永远占着盘。实际清掉的：" + forgotten.join("/"));
+  }
+
+  // ---- 没插 recorder（CLI、老调用方）时一切照旧：不录、不报错、照常执行 ----
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sched-norec-"));
+    const sched = createScheduler({
+      runtime: { runTask: async (o) => { assert(!o.emit && !o.sessionId, "没插录像机就不该凭空多出 emit/sessionId"); return { finalText: "好了" }; } },
+      storePath: path.join(dir, "schedules.json"),
+    });
+    const t = sched.add({ name: "无录像", cron: "0 9 * * *", task: "干点什么" });
+    await sched.runOne(t, "手动");
+    const r = sched.runs(10)[0];
+    assert(r.ok === true && !("session_id" in r), "没录像时不该留下 session_id 字段（前端凭它决定画不画链接）：" + JSON.stringify(r));
+  }
+
+  // ---- ⑤ 端到端：真 server + 真 agent + 假模型，跑完能从 /api/session 里取回完整过程 ----
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sched-e2e-"));
+  let turn = 0;
+  const llm = http.createServer((req, res) => {
+    let raw = ""; req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const j = (o) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+      if (!req.url.includes("/chat/completions")) { res.writeHead(404); return res.end("{}"); }
+      // 第一趟让它真调一次工具：「执行过程」这四个字指的就是这一步，只有正文的回放证明不了什么
+      if (turn++ === 0) {
+        return j({
+          choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{
+            id: "call_1", type: "function",
+            function: { name: "write_file", arguments: JSON.stringify({ path: "定时产物.md", content: "# 这是定时任务写的\n" }) },
+          }] } }],
+          usage: { prompt_tokens: 9, completion_tokens: 3 },
+        });
+      }
+      j({ choices: [{ message: { role: "assistant", content: "已经写好 定时产物.md 了。" }, finish_reason: "stop" }], usage: { prompt_tokens: 9, completion_tokens: 3 } });
+    });
+  });
+  await new Promise((r) => llm.listen(0, "127.0.0.1", r));
+  const llmPort = llm.address().port;
+
+  const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config.example.json"), "utf8"));
+  // 模型列表优先于 provider/openai 那一套老字段，只改后者的话真跑起来还是去连 DeepSeek。
+  // stream:false 让 llm.js 走非流式分支，上面那个假接口回个普通 JSON 就够了
+  cfg.provider = "openai";
+  cfg.openai = { base_url: `http://127.0.0.1:${llmPort}/v1`, api_key: "k", model: "mock", stream: false };
+  cfg.models = [{ name: "假模型", provider: "openai", base_url: `http://127.0.0.1:${llmPort}/v1`, api_key: "k", model: "mock", stream: false }];
+  cfg.active_model = "假模型";
+  cfg.agent = { ...(cfg.agent || {}), max_steps: 4, tool_timeout_ms: 8000, llm_timeout_ms: 20000 };
+  cfg.mcp_servers = [];
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(cfg, null, 2));
+
+  const crypto = require("crypto");
+  const owner = "owner" + crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(path.join(home, "data"), { recursive: true });
+  fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
+    users: [{ username: "boss", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
+    tokens: { [owner]: { user: "boss", at: Date.now() } },
+  }));
+
+  const call = (port, method, p, body) => new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const req = http.request({ host: "127.0.0.1", port, path: p, method, headers: {
+      ...(data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {}),
+      Cookie: "openworkbuddy_token=" + owner,
+    } }, (res) => {
+      let b = ""; res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    req.on("error", (e) => resolve({ code: 0, body: e.message }));
+    if (data) req.write(data);
+    req.end();
+  });
+
+  const boot = bootRealServer({ OPENWORKBUDDY_HOME: home });
+  try {
+    const { up, port, why } = await boot.wait();
+    assert(up, "真 server.js 没起来，这条测试作废：" + why);
+
+    const made = await call(port, "POST", "/api/schedules", { name: "五分钟后叫我", cron: "0 9 * * *", task: "写一份 定时产物.md" });
+    assert(made.code === 200 && made.json && made.json.id, "建不了定时任务（HTTP " + made.code + "）：" + made.body.slice(0, 200));
+
+    const fired = await call(port, "POST", `/api/schedules/${made.json.id}/run`, {});
+    assert(fired.code === 200, "手动触发失败（HTTP " + fired.code + "）：" + fired.body.slice(0, 300));
+
+    const runs = await call(port, "GET", "/api/schedules/runs?limit=10");
+    const run = Array.isArray(runs.json) ? runs.json[0] : null;
+    assert(run, "运行记录是空的，这一趟压根没记下来：" + runs.body.slice(0, 300));
+    assert(run.session_id,
+      "★真跑一趟之后，运行记录上还是没有 session_id★ 界面上那条「看执行过程」画不出来，" +
+      "用户看到的就还是那一行结果——这正是他抱怨的那个样子。这一条：" + JSON.stringify(run).slice(0, 300));
+
+    const sess = await call(port, "GET", "/api/session/" + encodeURIComponent(run.session_id));
+    assert(sess.code === 200 && sess.json, "拿 session_id 去开会话开不开（HTTP " + sess.code + "）：" + sess.body.slice(0, 200));
+    const tr = sess.json.transcript || [];
+    assert(tr.length >= 2 && tr[0].type === "user" && tr[0].text.includes("定时产物"),
+      "回放的第一条该是这条定时任务的正文，不然点进去看不出这是在跑什么：" + JSON.stringify(tr).slice(0, 300));
+    const evs = (tr.find((e) => e.type === "assistant") || {}).events || [];
+    const kinds = evs.map((e) => e.type);
+    assert(kinds.includes("tool_use") && kinds.includes("tool_result"),
+      "★回放里没有工具调用★「执行过程」指的就是这几步：调了什么、返回了什么。只剩一段正文的话，等于换个地方再看一遍那句结果。实际事件：" + kinds.join("/"));
+    assert(evs.some((e) => e.type === "tool_use" && e.name === "write_file"),
+      "工具事件记下来了但认不出是哪个工具：" + JSON.stringify(evs).slice(0, 300));
+    assert(kinds.includes("text"), "最后的正文也得在回放里，不然看完过程看不到结论：" + kinds.join("/"));
+
+    // 归属：这段会话跟排期本身同一条判据，而且不该混进侧栏任务历史（一天几十条 cron 会把真对话挤没）
+    assert.strictEqual(sess.json.kind, "schedule", "定时任务跑出来的会话要认得出自己是定时任务：" + JSON.stringify(sess.json).slice(0, 200));
+    const list = await call(port, "GET", "/api/sessions");
+    const rows = ((list.json || {}).sessions) || [];
+    assert(Array.isArray(rows) && !rows.some((r) => r.id === run.session_id),
+      "★定时任务的会话挤进了侧栏任务历史★ 一天几十条 cron 会把用户自己的对话全顶下去；它的正经去处是 自动化 → 运行记录");
+
+    // ⑥ 「五分钟后叫我」这一路：HTTP 这一层得把 at 原样递到排期表里。
+    //    路由是 `{...req.body}` 直接摊进 add 的，看着不会漏；可 add 的签名一改就静悄悄少一个字段，
+    //    而少了它的表现不是报错，是变回一条每天都响的 cron——正是用户抱怨的那个样子。
+    const once = await call(port, "POST", "/api/schedules", { name: "五分钟后叫我去准备面试", at: "+5m", task: "提醒我去准备面试" });
+    assert(once.code === 200 && once.json && once.json.at,
+      "★一次性排期在 HTTP 这一层丢了★ at 递不进去的话，「五分钟后叫我」只能退回 cron 去近似，那是一条每天都响的闹钟。回的是（HTTP " +
+      once.code + "）：" + once.body.slice(0, 300));
+    assert(!once.json.cron, "只跑一次的那条不许同时带 cron（两个都认就会各响各的）：" + JSON.stringify(once.json).slice(0, 200));
+    const gapMin = Math.round((Date.parse(once.json.at) - Date.now()) / 60000);
+    assert(gapMin === 5, "「+5m」该落在五分钟后，实际落在 " + gapMin + " 分钟后：" + once.json.at);
+    const both = await call(port, "POST", "/api/schedules", { at: "+5m", cron: "0 14 * * *", task: "两个都给" });
+    assert(both.code === 400, "反向对照：at 和 cron 同时给要被拒（HTTP " + both.code + "）：" + both.body.slice(0, 200));
+  } finally {
+    boot.child.kill("SIGKILL");
+    llm.close();
+  }
+  console.log("  ✓ 定时任务留下完整执行过程（运行记录点得进去看每一步）");
+}
+
 async function testMcpFailureReason() {
   const { McpManager } = require("../mcp");
   const mgr = new McpManager();
@@ -6159,7 +6588,32 @@ async function testLibraryOutputsTruth() {
     assert(goneHead.code === 404,
            `HEAD 和 GET 不一个口径（HEAD ${goneHead.code}）—— 图片裂了之后补问的那一下就是 HEAD，两边不一致会把「没了」说成「文件坏了」`);
 
-    console.log("✅ 产出清单说实话：文件多到挤爆快照时，还在的照报真体积真时间 · 没了的写明「已不在」（两头互为反向对照）· 被升级整理搬走的按新地址找回来、不重复挂进「未归属」· 预览的 404/HEAD 跟清单一个口径");
+    // ⑤ 资料库里的 Office 文件：得有一条自己的拆包路由。用户原话：「这个PPT预览给我做好啊」
+    //    「做PPT，workd还有excel,csv这些格式预览要给我兼容，给我做好啊」。
+    //    /api/files/preview/ 认的根是**工作目录**，资料库在 data/library 下——这条要是不存在，
+    //    同一份 .xlsx 在对话里点得开、拖进资料库就只能掉回「当文本读」，糊出一屏 PK… 的二进制。
+    const ExcelJS = require("exceljs");
+    const libDir = path.join(home, "data", "library", "财务");
+    fs.mkdirSync(libDir, { recursive: true });
+    const book = new ExcelJS.Workbook();
+    book.addWorksheet("预算").addRow(["项目", "金额"]);
+    book.addWorksheet("人员").addRow(["姓名"]);
+    await book.xlsx.writeFile(path.join(libDir, "预算表.xlsx"));
+
+    const lp = await get("/api/library/preview/" + ["财务", "预算表.xlsx"].map(encodeURIComponent).join("/"));
+    assert(lp.code === 200, `资料库里的 .xlsx 拆不开（HTTP ${lp.code}）：${lp.body.slice(0, 200)}`);
+    const lpd = JSON.parse(lp.body);
+    assert(lpd.kind === "sheet" && (lpd.sheets || []).length === 2 && lpd.sheets[0].name === "预算",
+           "资料库拆出来的结构不对（前端就是照这个画的）：" + lp.body.slice(0, 240));
+    // 没了的要回 404：前端只认这个码才敢说「已经不在」，别的码一律当成「读不出来」
+    const lpGone = await get("/api/library/preview/" + encodeURIComponent("查无此表.xlsx"));
+    assert(lpGone.code === 404, `资料库里不存在的文件回了 HTTP ${lpGone.code}，前端会把「没这份」说成「读不出来」`);
+    // 这条路由跟 /api/library/file/* 共用 libPath 的三道校验，越界必须当场拒
+    const lpEsc = await get("/api/library/preview/" + encodeURIComponent("..") + "/config.json");
+    assert(lpEsc.code === 400 || lpEsc.code === 404,
+           `拿 .. 往资料库外面翻居然回了 HTTP ${lpEsc.code}：` + lpEsc.body.slice(0, 160));
+
+    console.log("✅ 产出清单说实话：文件多到挤爆快照时，还在的照报真体积真时间 · 没了的写明「已不在」（两头互为反向对照）· 被升级整理搬走的按新地址找回来、不重复挂进「未归属」· 预览的 404/HEAD 跟清单一个口径 · 资料库里的 Office 文件有自己的拆包路由（越界照样拒）");
   } finally {
     try { child.kill("SIGKILL"); } catch {}
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
@@ -7998,6 +8452,7 @@ async function main() {
   await testPromptQuestionVsWork();
   await testLocalEngineConnect();
   await testEngineToolBridge();
+  await testEngineSecurityGuard();
   await testEngineContextParity();
   await testEngineStoppedSurfacing();
   await testFeedbackAndUsage();
@@ -8030,6 +8485,8 @@ async function main() {
   await testDesktopPet();
   testPetSprites();
   await testMcpFailureReason();
+  await testConnectorToggleAndTools();
+  await testScheduleRunTrace();
   await testThinkingSwitch();
   await testThinkingSettingsApi();
   await testOnboardingWizardApi();
@@ -9098,11 +9555,78 @@ async function testFilesEmitter() {
       assert(evs[evs.length - 1].files.some((f) => f.name === DIR + "/半年前的稿子.md"),
         "旧文件不该进 changed，但它在工作目录里是真实存在的，右侧面板的清单里必须还有它");
     }
+
+    // ⑧ ★用户自己粘进来的图不是产出★
+    //    任务还在跑，用户粘一张图进输入框想追问。/api/upload 把它落进**这条会话的成果文件夹**
+    //    （那一步是对的，素材要和成果待在一起），于是两道闸全都拦不住它：文件夹是自己的、
+    //    mtime 在开跑之后。结果就是上一轮的「本回合产出」里凭空多出一张用户自己的图。
+    //    用户原话：「我复制一个图片来问问题结果，之前执行的成果区出现了我在问问题的图片啊」。
+    {
+      const { evs, e } = mk(0);
+      e.push(true);
+      const PASTED = DIR + "/粘进来问问题的图.png";
+      fs.writeFileSync(path.join(ws, PASTED), "PNGDATA");
+      tools.noteUserInput(PASTED);                       // ← /api/upload 落盘之后记的那一笔
+      fs.writeFileSync(path.join(ws, DIR, "真产出.html"), "<b>done</b>");
+      e.push(true);
+      const chg = evs[evs.length - 1].changed || [];
+      assert(!chg.includes(PASTED), "用户粘进来问问题的图被当成了这一轮的产出");
+      assert(chg.includes(DIR + "/真产出.html"),
+        "★负向对照★ 这道闸把同一轮里真正的产出也拦掉了——那就从「多一张」变成「一张都没有」");
+      assert(evs[evs.length - 1].files.some((f) => f.name === PASTED),
+        "它不算产出，但它是工作目录里真实存在的文件：右侧面板和资料库里必须还看得见");
+      e.stop();
+    }
+
+    // ⑧' 但 agent 后来真把这张图改写了（抠图、压缩、换格式），它就成了产出，该出现在卡片里。
+    //     所以那笔账钉的是「名字 + 那一刻的 mtime」，不是只钉名字——只钉名字的话，这张图
+    //     在这条会话里永远翻不了身。
+    {
+      const { evs, e } = mk(0);
+      const PASTED = DIR + "/待抠图.png";
+      fs.writeFileSync(path.join(ws, PASTED), "RAW");
+      tools.noteUserInput(PASTED);
+      e.push(true);
+      assert(!(evs[evs.length - 1].changed || []).includes(PASTED), "上传这一刻就不该算产出");
+      fs.writeFileSync(path.join(ws, PASTED), "AGENT-EDITED");   // agent 改写
+      const later = new Date(Date.now() + 1500);
+      fs.utimesSync(path.join(ws, PASTED), later, later);         // mtime 一定得真的变（同毫秒写两次是会重的）
+      e.push(true);
+      assert((evs[evs.length - 1].changed || []).includes(PASTED),
+        "agent 改写过之后它就是产出了，卡片里必须有——不然用户根本看不到抠图的结果");
+      e.stop();
+    }
+
+    // ⑧'' 上传是**先落根目录、等成果文件夹建好再搬进去**的（见 server.js 的 assignSessionDir）。
+    //      那笔账记的是路径，搬完不改键，这张图换个位置就又变回「产出」了。
+    {
+      const { evs, e } = mk(0);
+      e.push(true);
+      fs.writeFileSync(path.join(ws, "先落根目录的图.png"), "PNGDATA");
+      tools.noteUserInput("先落根目录的图.png");
+      fs.renameSync(path.join(ws, "先落根目录的图.png"), path.join(ws, DIR, "先落根目录的图.png"));
+      tools.moveUserInput("先落根目录的图.png", DIR + "/先落根目录的图.png");
+      e.push(true);
+      assert(!(evs[evs.length - 1].changed || []).includes(DIR + "/先落根目录的图.png"),
+        "搬进成果文件夹之后那笔账没跟着改键，这张图又被当成产出了");
+      e.stop();
+      // ★反向对照★：同样的搬家，不改键——必须被认成产出。不做这一条的话，上面那句
+      // 断言完全可能是靠别的原因绿的（比如整段逻辑压根没跑），改键有没有用就没人知道
+      const two = mk(0);
+      two.e.push(true);
+      fs.writeFileSync(path.join(ws, "忘了改键的图.png"), "PNGDATA");
+      tools.noteUserInput("忘了改键的图.png");
+      fs.renameSync(path.join(ws, "忘了改键的图.png"), path.join(ws, DIR, "忘了改键的图.png"));
+      two.e.push(true);
+      assert((two.evs[two.evs.length - 1].changed || []).includes(DIR + "/忘了改键的图.png"),
+        "★反向对照★ 不改键居然也没被当成产出：说明上面那条绿得不明不白，这道闸的效果没被真正量到");
+      two.e.stop();
+    }
   } finally {
     tools.setWorkspaceDir(prevWs);
     fs.rmSync(ws, { recursive: true, force: true });
   }
-  console.log("✅ 产出清单发射器：不写盘就不推（100 步只 1 条）· 写了的晚一点也一定到 · 删除照推 · 别人文件夹不记账 · 收摊后闭嘴 · 收尾同步发 · 陈年旧文件冒充不了今天的产出");
+  console.log("✅ 产出清单发射器：不写盘就不推（100 步只 1 条）· 写了的晚一点也一定到 · 删除照推 · 别人文件夹不记账 · 收摊后闭嘴 · 收尾同步发 · 陈年旧文件冒充不了今天的产出 · 用户粘进来问问题的图不算产出（改写过就算、搬过家也认得住，两条反向对照）");
 }
 
 /**
@@ -9575,6 +10099,139 @@ async function testEngineToolBridge() {
 
   fs.rmSync(home, { recursive: true, force: true });
   console.log("✅ 本机引擎借工具：命令行入口真出文件（会话子目录）· 裸命令挂 PATH 且下了放行规则（带路径会被判需审批）· 白名单拒非借出工具 · MCP 配置形状对 · 两边提示词各说各的路");
+}
+
+/**
+ * 安全档位要真的落到本机 CLI 的命令行上。
+ *
+ * 为什么非测不可：这两个 CLI 自带工具、自带循环，它们写文件、跑命令**不经过**本项目的
+ * 安全中心（只有从 MCP 桥回流的那批才走那道闸）。以前 claude 这条路硬写死 acceptEdits、
+ * codex 这条路硬写死 workspace-write，于是用户在设置页把档位调到「只看不动」、
+ * 切到本机引擎照样随便改文件——界面上那颗开关是个摆设，而且是最不能当摆设的那一颗。
+ *
+ * 这儿看三层：翻译表对不对 · claude 的 argv 上真出现了那些开关 · codex 的 -c sandbox_mode 跟着变。
+ * 全程不跑真 CLI：拿一个假可执行文件当靶子，把它收到的 argv 原样写回来。
+ */
+async function testEngineSecurityGuard() {
+  const os = require("os");
+  const security = require("../security");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-guard-"));
+
+  // ① 四个档位各翻成什么。名单里写的是前缀（"sudo "、"diskutil erase"），
+  //    CLI 那边的匹配单位是可执行文件名，所以该取第一个词
+  const SEC = { cmd_ask: ["sudo ", "diskutil erase"], delete_protect: true };
+  const G = (mode, extra) => security.engineGuard({ ...SEC, ...(extra || {}), permission_mode: mode });
+  const table = {
+    plan: ["plan", "read-only", false],
+    ask: ["default", "read-only", true],
+    auto: ["acceptEdits", "workspace-write", true],
+    full: ["bypassPermissions", "workspace-write", true],
+  };
+  for (const [mode, [claudeMode, codexSandbox, allowShim]] of Object.entries(table)) {
+    const g = G(mode);
+    assert.strictEqual(g.mode, mode, mode + " 档位自己都认错了");
+    assert.strictEqual(g.claudeMode, claudeMode, "★" + mode + " 没翻成 claude 的 " + claudeMode + "★ 用户选的档位到这条路上就丢了：" + g.claudeMode);
+    assert.strictEqual(g.codexSandbox, codexSandbox, "★" + mode + " 没翻成 codex 的 " + codexSandbox + "★：" + g.codexSandbox);
+    assert.strictEqual(g.allowShim, allowShim, mode + " 档位下「放不放行本项目借出去的命令行入口」判错了：" + g.allowShim);
+  }
+  // 「只看不动」连本项目借出去的那条命令行入口也不放：那批工具是能写文件的，
+  // 从这道后门绕开档位，跟没设过没区别
+  assert.strictEqual(G("plan").allowShim, false, "★只看不动还把命令行入口放行了★ 模型从这道后门照样写文件");
+
+  // ② 「这类命令要问我一下」在这条路上问不着（-p 非交互），只剩不给用
+  const dis = G("auto").disallow;
+  assert(dis.includes("Bash(sudo:*)"), "sudo 没进禁用名单：" + JSON.stringify(dis));
+  assert(dis.includes("Bash(diskutil:*)"), "★「diskutil erase」没收紧成整个 diskutil★ CLI 那边只认可执行文件名，带空格的写法等于没禁：" + JSON.stringify(dis));
+  assert(dis.includes("Bash(rm:*)"), "删除保护是另一颗开关（不在 cmd_ask 里），也得跟上：" + JSON.stringify(dis));
+  assert(!G("auto", { delete_protect: false }).disallow.includes("Bash(rm:*)"),
+    "用户把删除保护关了，这儿还自作主张禁 rm");
+  // 全自动那一档的意思就是别再拦了：再往里塞禁用名单就是不听人话
+  assert.deepStrictEqual(G("full").disallow, [], "全自动档不该再给禁用名单：" + JSON.stringify(G("full").disallow));
+  assert.strictEqual(G("full").note, "", "全自动档没收紧任何东西，不该在运行页刷一句废话");
+  // 档位收紧了必须明说一句。不说的话，用户看到的是「它怎么什么都不肯干」，
+  // 而真正的原因在另一个页面上的一颗开关里，隔着两层根本联系不起来
+  for (const mode of ["plan", "ask", "auto"]) {
+    assert(G(mode).note && G(mode).note.length > 10, "★" + mode + " 档位把事情收紧了却一声不吹★ 用户只会觉得它坏了：" + JSON.stringify(G(mode).note));
+  }
+  // 反向对照：没填 / 填了个不认识的档位，得落回默认（auto），不能成 undefined 又一路传到命令行上
+  for (const bad of [undefined, null, {}, { permission_mode: "乱写的" }]) {
+    const g = security.engineGuard(bad);
+    assert.strictEqual(g.claudeMode, "acceptEdits", "档位认不出来时没落回默认：" + JSON.stringify(g));
+    assert.strictEqual(g.codexSandbox, "workspace-write", "档位认不出来时 codex 那边没落回默认：" + JSON.stringify(g));
+  }
+
+  // ③ claude 的 argv：拿一个假 CLI 当靶子，把它收到的参数原样写回来
+  const argvOut = path.join(home, "argv.json");
+  const fakeClaude = path.join(home, "fakeclaude");
+  fs.writeFileSync(fakeClaude, [
+    "#!/usr/bin/env node",
+    'require("fs").writeFileSync(' + JSON.stringify(argvOut) + ", JSON.stringify(process.argv.slice(2)));",
+    'process.stdout.write(JSON.stringify({ type: "result", subtype: "success", result: "ok", usage: {} }) + String.fromCharCode(10));',
+  ].join("\n"));
+  fs.chmodSync(fakeClaude, 0o755);
+
+  const ccArgv = async (opts) => {
+    await require("../engines/claude-code").run({ prompt: "hi", cwd: home, bin: fakeClaude, shimBin: "owb", ...opts });
+    return JSON.parse(fs.readFileSync(argvOut, "utf8"));
+  };
+  const pairsOf = (argv, flag) => argv.map((a, i) => (a === flag ? argv[i + 1] : null)).filter(Boolean);
+
+  const aPlan = await ccArgv({ guard: G("plan") });
+  assert.deepStrictEqual(pairsOf(aPlan, "--permission-mode"), ["plan"],
+    "★只看不动没落到 claude 的命令行上★ 用户选的是只读，它照样写文件：" + JSON.stringify(pairsOf(aPlan, "--permission-mode")));
+  assert(!pairsOf(aPlan, "--allowed-tools").includes("Bash(owb:*)"),
+    "★只看不动还给命令行入口下了放行规则★ 这批工具能写文件，等于从后门绕开了档位");
+
+  const aAuto = await ccArgv({ guard: G("auto") });
+  assert.deepStrictEqual(pairsOf(aAuto, "--permission-mode"), ["acceptEdits"], "自动改文件档没落对");
+  assert(pairsOf(aAuto, "--allowed-tools").includes("Bash(owb:*)"), "这一档该放行命令行入口，不放模型敲了也白敲");
+  const disAuto = pairsOf(aAuto, "--disallowed-tools");
+  assert(disAuto.includes("Bash(rm:*)") && disAuto.includes("Bash(sudo:*)"),
+    "★名单上说要问的命令没禁掉★ 这条路没有审批通道，不禁就是直接放行：" + JSON.stringify(disAuto));
+
+  const aFull = await ccArgv({ guard: G("full") });
+  assert.deepStrictEqual(pairsOf(aFull, "--permission-mode"), ["bypassPermissions"], "全自动档没落对");
+  assert.deepStrictEqual(pairsOf(aFull, "--disallowed-tools"), [], "全自动档还在命令行上塞禁用名单：" + JSON.stringify(pairsOf(aFull, "--disallowed-tools")));
+
+  // 反向对照：设置里给这个引擎手填的 engine_options 仍然最大——手填是更明确的表态
+  const aManual = await ccArgv({ guard: G("plan"), permissionMode: "bypassPermissions" });
+  assert.deepStrictEqual(pairsOf(aManual, "--permission-mode"), ["bypassPermissions"],
+    "engine_options 里手填的档位被档位翻译表盖掉了：" + JSON.stringify(pairsOf(aManual, "--permission-mode")));
+  // 反向对照：没人传 guard（老调用方、单元测试）时行为一个字节不变
+  const aNone = await ccArgv({});
+  assert.deepStrictEqual(pairsOf(aNone, "--permission-mode"), ["acceptEdits"], "不传 guard 时的老行为变了");
+  assert(pairsOf(aNone, "--allowed-tools").includes("Bash(owb:*)"), "不传 guard 时不该把命令行入口也收了");
+
+  // ④ codex 的 argv：沙箱档位走 -c sandbox_mode（这个子命令不收 -s）
+  const fakeCodex = path.join(home, "fakecodex");
+  fs.writeFileSync(fakeCodex, [
+    "#!/usr/bin/env node",
+    'require("fs").writeFileSync(' + JSON.stringify(argvOut) + ", JSON.stringify(process.argv.slice(2)));",
+    'process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "t" }) + String.fromCharCode(10));',
+    'process.stdout.write(JSON.stringify({ type: "turn.completed", usage: {} }) + String.fromCharCode(10));',
+  ].join("\n"));
+  fs.chmodSync(fakeCodex, 0o755);
+
+  const cxArgv = async (opts) => {
+    await require("../engines/codex").run({ prompt: "hi", cwd: home, bin: fakeCodex, ...opts });
+    return JSON.parse(fs.readFileSync(argvOut, "utf8"));
+  };
+  const sandboxOf = (argv) => {
+    const cs = argv.map((a, i) => (a === "-c" ? argv[i + 1] : null)).filter(Boolean);
+    const hit = cs.find((c) => String(c).startsWith("sandbox_mode="));
+    return hit ? String(hit).slice("sandbox_mode=".length).replace(/"/g, "") : "";
+  };
+  for (const [mode, want] of [["plan", "read-only"], ["ask", "read-only"], ["auto", "workspace-write"], ["full", "workspace-write"]]) {
+    const got = sandboxOf(await cxArgv({ guard: G(mode) }));
+    assert.strictEqual(got, want,
+      "★codex 的沙箱没跟着" + mode + "走★ 用户选的档位到这条路上就丢了：" + got);
+  }
+  assert.strictEqual(sandboxOf(await cxArgv({ guard: G("plan"), sandbox: "danger-full-access" })), "danger-full-access",
+    "engine_options 里手填的 sandbox 被档位翻译表盖掉了");
+  assert.strictEqual(sandboxOf(await cxArgv({})), "workspace-write", "不传 guard 时 codex 的老行为变了");
+
+  fs.rmSync(home, { recursive: true, force: true });
+  console.log("✅ 安全档位真的传到了本机 CLI：只看不动→claude plan / codex read-only且连借出去的命令行入口都不放行 · 名单上说要问的命令（含删除保护）在这条没审批通道的路上直接禁 · 全自动不多拦一下 · 手填的 engine_options 仍然最大 · 收紧了会在运行页明说一句");
 }
 
 /**

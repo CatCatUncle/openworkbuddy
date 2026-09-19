@@ -117,7 +117,7 @@ async function detect(opts) {
 
 async function run({
   prompt, cwd, emit = () => {}, deadline, stopSignal,
-  model, resumeId, bin, sandbox, network = true, mcpArgs = [], writableRoots = [], env, extraArgs = [],
+  model, resumeId, bin, sandbox, network = true, guard = {}, mcpArgs = [], writableRoots = [], env, extraArgs = [],
   thinking: thinkingLevel,
 }) {
   const found = await resolveBin("codex", bin);
@@ -135,7 +135,10 @@ async function run({
   // 沙箱与网络一律走 -c 配置覆盖，不用 -s / -C：
   // `codex exec resume` 这个子命令根本不收 -s 和 -C（会直接报 unexpected argument 退出），
   // 而 -c 两条路都收。工作目录由子进程自己的 cwd 决定，本来也不需要 -C。
-  args.push("-c", `sandbox_mode="${sandbox || "workspace-write"}"`);
+  // 沙箱档位跟着设置页那颗开关走：「只看不动 / 每步都问」→ read-only。
+  // codex 自带的工具不经过本项目的安全中心，硬写死 workspace-write 的话，
+  // 用户选的档位到这条路上就丢了。engine_options 里手填的 sandbox 仍然最大
+  args.push("-c", `sandbox_mode="${sandbox || guard.codexSandbox || "workspace-write"}"`);
   if (network) args.push("-c", "sandbox_workspace_write.network_access=true");
   // workspace-write 默认只让写 cwd。本项目借出去的工具里，remember / save_skill 要写到
   // 数据目录（在 cwd 外面），不开这个口子就是「工具调得动、东西存不下」，报错还特别难懂。

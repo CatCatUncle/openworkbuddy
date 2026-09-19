@@ -311,6 +311,23 @@ class McpManager {
   constructor() {
     this.clients = new Map(); // serverName -> McpClient
     this.failures = []; // [{ name, plugin, error }] 起不来的服务器，界面要能看见为什么
+    /**
+     * 被用户手动关掉的服务器名。
+     *
+     * 为什么不是每条配置上的一个 enabled 字段：插件带来的连接器根本不在 config.mcp_servers 里，
+     * 那条路上没有地方挂字段；而「今天先别连这台」对插件连接器和自配连接器是同一件事。
+     * 所以只存一张名字表（server.js 落到 config.mcp_disabled），两种来源共用。
+     *
+     * 关掉 ≠ 删掉：配置、密钥、参数全都留着，只是这一轮不去连它，工具表里也不出现——
+     * 出现了模型就会去调，调到一半才发现连不上，白烧一轮。
+     */
+    this.disabled = new Set();
+  }
+
+  /** 哪些服务器现在是关着的（server.js 从 config.mcp_disabled 灌进来） */
+  setDisabled(names = []) {
+    this.disabled = new Set((names || []).map(String));
+    return this.disabled;
   }
 
   /**
@@ -321,6 +338,9 @@ class McpManager {
     for (const cfg of serverConfigs) {
       // 同名的先停掉再起，否则旧的子进程没人管，成了孤儿还占着端口/句柄
       this.stop([cfg.name]);
+      // 用户在 ＋ 菜单里把这台关了。停在 stop 之后、new McpClient 之前：
+      // 先停是为了「开着的时候被关掉」这一路真的能把进程收掉，再 continue 才是不去连它。
+      if (this.disabled.has(cfg.name)) continue;
       const client = new McpClient(cfg.name, cfg);
       try {
         const tools = await client.start();

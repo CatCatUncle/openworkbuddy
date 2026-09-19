@@ -310,6 +310,13 @@ function libPerRow(scope) {
   return Math.max(1, n);
 }
 
+/** 把右边那块预览板打开。见 .lib-page[data-prev] —— 关着的时候它是 display:none，
+ *  光往里塞 innerHTML 是看不见的。选中文件的每条路（点一下、键盘翻、画廊自动选）都要过这儿。 */
+function showLibPrev(page) {
+  const box = page.querySelector(".lib-page");
+  if (box) box.dataset.prev = "on";
+}
+
 async function renderLibPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
@@ -514,9 +521,16 @@ async function renderLibPage() {
       localStorage.setItem("owb_lib_recent", JSON.stringify(rec));
     }
     page.querySelectorAll(".lib-it").forEach(x => x.classList.toggle("active", x === el));
+    // 右栏是按需出现的：没选东西时 data-prev=off，CSS 那边直接 display:none（见 index.html
+    // 里 .lib-page[data-prev="off"] .lib-prev）。这一行少了的后果是——点一个文件，内容
+    // 确确实实渲染进 #lb-prev 了，只是那块板子还挂着 display:none，屏幕上什么都不发生。
+    // 用户原话：「在资料库怎么没有办法打开文件啊！」。
+    // 之所以一直没被发现：随便点一下筛选器就会走整页重画，那一路是照 libState.pick 算
+    // data-prev 的，于是又能看了——看起来像「偶尔抽风」，其实是每次进这一页的第一下必挂。
+    showLibPrev(page);
     renderLibPreview(page.querySelector("#lb-prev"), lib);
   });
-  if (libState.pick) renderLibPreview(page.querySelector("#lb-prev"), lib);
+  if (libState.pick) { showLibPrev(page); renderLibPreview(page.querySelector("#lb-prev"), lib); }
 
   // ← → ↑ ↓ 翻文件。画廊视图里这是主要的用法——过一批图的时候手不该在鼠标和键盘之间来回换。
   // 监听只能挂在 document 上（.lib-list 不 focus 就收不到键），所以每次重画都要把上一个摘掉，
@@ -715,6 +729,33 @@ async function renderLibPreview(prev, lib) {
     } else if (/\.pdf$/i.test(name)) {
       // iframe 出错同样不通知外面：PDF 不在的时候，框里显示的是服务端那句「文件不存在」的纯文本
       body.outerHTML = (await alive()) ? `<iframe src="${url}"></iframe>` : gonePh;
+    } else if (/\.(docx|xlsx|pptx|zip)$/i.test(name)) {
+      // Word / Excel / PPT / zip 本质是一包 XML 的压缩档，浏览器自己打不开，得服务端先拆。
+      // 用户原话：「做PPT，workd还有excel,csv这些格式预览要给我兼容，给我做好啊」——
+      // 以前这一页没有这条路，同一份 .pptx 在对话里点得开、拖进资料库就变成一屏乱码。
+      // 画法和样式都跟对话页那边共用同一套（docHtml / sheetHtml / slidesHtml / .ov-*），不抄第二份。
+      const api = src === "lib" ? "/api/library/preview/" : "/api/files/preview/";
+      const r = await fetch(api + fpath(name) + "?t=" + Date.now());
+      if (r.status === 404) body.outerHTML = gonePh;
+      else {
+        const d = await r.json().catch(() => null);
+        if (!d || d.error) body.outerHTML = failPh((d && d.error) || `服务端回了 HTTP ${r.status}`);
+        else body.outerHTML = /\.docx$/i.test(name) ? docHtml(d)
+          : /\.xlsx$/i.test(name) ? sheetHtml(d)
+          : /\.pptx$/i.test(name) ? slidesHtml(d) : archiveHtml(d);
+        // 一个 .xlsx 常常好几张表，标签点不动就只看得见第一张
+        prev.querySelectorAll(".ov-tab").forEach((t) => { t.onclick = () => {
+          prev.querySelectorAll(".ov-tab").forEach((x) => x.classList.toggle("on", x === t));
+          prev.querySelectorAll(".ov-pane").forEach((pn) => { pn.hidden = pn.dataset.pane !== t.dataset.sheet; });
+        }; });
+      }
+    } else if (/\.(doc|xls|ppt)$/i.test(name)) {
+      // Office 97-2003 那三种是 OLE 二进制，不是压缩包，上面那条路拆不开。
+      // 明说是格式的事、并给出一条能走通的路，比让它掉进「这个文件不是文本」强得多
+      const ext = name.split(".").pop().toLowerCase();
+      body.outerHTML = (await alive())
+        ? `<div class="ph">这是 Office 97-2003 的老格式（.${esc(ext)}），里面是一包二进制记录，不是 .${esc(ext)}x 那样的压缩包，拆不出内容来。<br><br>用 Word / Excel / PowerPoint 或 WPS 打开，另存为 .${esc(ext)}x 再放回来，就能在这儿直接看。</div>`
+        : gonePh;
     } else {
       const r = await fetch(url);
       if (r.status === 404) body.outerHTML = gonePh;
@@ -731,7 +772,9 @@ async function renderLibPreview(prev, lib) {
           body.outerHTML = `<div class="pv-fit"><iframe src="${blob}" sandbox="allow-scripts" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
           fitPreviewFrame(prev, { selfReport: true });
         } else if (text.length > 400000) body.outerHTML = '<div class="ph">文件太大，预览不动，请下载后本地打开</div>';
-        else if (/\.csv$/i.test(name)) body.outerHTML = csvToTable(text);
+        // CSV/TSV 走跟对话页同一个 csvHtml：它按 RFC4180 认引号，还会自己判分隔符是逗号、
+        // 分号还是制表符（欧洲导出的表用分号，.tsv 用制表符，按逗号拆会拆成一整列）
+        else if (/\.(csv|tsv)$/i.test(name)) body.outerHTML = csvHtml(text, name);
         else if (/\.(md|markdown)$/i.test(name)) body.outerHTML = `<div class="md">${renderMd(text, "", false, "", { fileLinks: false })}</div>`;
         // fileLinks 关掉的理由：这一页的文件在资料库里（/api/library/…），而 renderMd 造的
         // 文件链接点开的是对话页右侧那个工作区预览面板——在资料库页上按下去，弹出来的是另一个

@@ -1599,7 +1599,7 @@ function buildEmpty() {
     <div class="scene-tabs">${Object.keys(SCENES).map((k, i) =>
       `<button class="${(startScene === k ? "active" : "")}" data-scene="${k}">${ic(SCENE_ICON[i] || "sparkles")}${esc(k)}</button>`).join("")}</div>
     <div class="chips" id="scene-chips"></div>
-    <div class="empty-tools"><button id="em-sweep" title="看看工作区里哪些是任务跑完剩下的中间文件">${ic("eraser")}整理文件夹 · 腾出空间<span class="sw-hint"></span></button></div>`;
+    <div class="empty-tools"><button id="em-sweep" title="看看工作区里哪些是任务跑完剩下的中间文件">${ic("eraser")}整理文件夹 · 腾出空间</button></div>`;
   const chipsEl = tpl.querySelector("#scene-chips");
   const renderChips = (scene) => {
     chipsEl.innerHTML = SCENES[scene].map(([i, t]) => `<button>${ic(i)}${esc(t)}</button>`).join("");
@@ -1620,7 +1620,6 @@ function buildEmpty() {
   return tpl;
 }
 chatCol.appendChild(buildEmpty());
-refreshSweepHint();
 
 // ================= @ 引用文件 / 调用技能 自动补全 =================
 let filesCache = [], skillsCache = [];
@@ -1650,16 +1649,27 @@ function renderMentionMenu() {
   const { trigger, query } = mentionState;
   let items = [];
   if (trigger === "@") {
+    // 名字只显示最后一段，目录名让给说明那一行——插进正文的仍然是完整相对路径。
+    // 整条路径当名字是不行的：任务目录名本身就有二十几个字，一屏十二行全叫
+    // 「任务_0918_帮我做一个『openwor…」，谁也认不出哪行是哪个文件；而「工作空间文件」
+    // 那句说明十二行一模一样，等于白占一行。
     items = filesCache.filter(f => f.name.toLowerCase().includes(query.toLowerCase()))
-      .slice(0, 12).map(f => ({ icon: fileIcon(f.name), label: f.name, insert: "@" + f.name, sub: "工作空间文件" }));
-    if (!items.length) items = [{ label: "（工作空间还没有文件，先在输入框左边上传一个）", insert: null }];
+      .slice(0, 12).map(f => {
+        const seg = f.name.split("/"), base = seg.pop();
+        return { icon: fileIcon(f.name), label: base, insert: "@" + f.name,
+          sub: (seg.length ? seg.join("/") : "工作空间根目录") + " · " + fmtSize(f.size || 0) };
+      });
+    if (!items.length) items = [{ icon: "folder", label: "工作空间还没有文件", insert: null, sub: "点输入框左边的 ＋ 传一个，或直接把文件拖进窗口" }];
   } else {
     items = skillsCache.filter(s => s.name.toLowerCase().includes(query.toLowerCase()) || s.description.includes(query))
-      .slice(0, 12).map(s => ({ icon: "package", label: "/" + s.name, insert: "/" + s.name, sub: s.description }));
-    if (!items.length) items = [{ label: "（没有匹配的技能）", insert: null }];
+      .slice(0, 12).map(s => ({ icon: s.plugin ? "puzzle" : "wrench", label: "/" + s.name, insert: "/" + s.name, sub: s.description }));
+    if (!items.length) items = [{ icon: "search", label: "没有匹配的技能", insert: null, sub: "＋ 菜单里的「技能」能搜全部，也能去装新的" }];
   }
+  // 名字必须自己包一层 .mi-name：裸文本节点在 grid 里是匿名盒子，拿不到 text-overflow，
+  // 长文件名只能硬折。CSS 那边 .mention-menu .mi 是两行的 grid，见 index.html 里那段注释。
+  // 图标一律给（取不到就用通用的那个）：有的行有图标有的没有，名字的左边缘会错开一截。
   mentionMenu.innerHTML = `<div class="mh">${trigger === "@" ? "引用工作空间文件" : "调用技能"}</div>` +
-    items.map((it, i) => `<div class="mi ${i === 0 && it.insert ? "sel" : ""}" data-insert="${esc(it.insert || "")}">${it.icon ? ic(it.icon) : ""}${esc(it.label)}${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ""}</div>`).join("");
+    items.map((it, i) => `<div class="mi ${i === 0 && it.insert ? "sel" : ""}" data-insert="${esc(it.insert || "")}" title="${esc(it.label + (it.sub ? " — " + it.sub : ""))}">${ic(it.icon || "file-text")}<span class="mi-name">${esc(it.label)}</span>${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ""}</div>`).join("");
   mentionMenu.classList.add("show");
   mentionMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => applyMention(mi.dataset.insert));
 }
@@ -1846,29 +1856,12 @@ function renderSweepPanel(p, task) {
       if (r.error) throw new Error(r.error);
       if (r.files) renderFiles(r.files);
       toast(`腾出 ${fmtSize(r.bytes || 0)}${r.skipped ? `，${r.skipped} 个已经不在了` : ""}`, "circle-check");
-      refreshSweepHint();   // 空态那条上的数字得跟着变小，不然用户以为没删掉
       openSweep({ task });  // 重扫一遍：删完剩下什么，当场看见
     } catch (e) {
       box.classList.remove("busy");
       toast(e.message || "清理失败", "circle-x");
     }
   };
-}
-/**
- * 空态那条按钮上的「可腾出 XX」。
- *
- * 为什么要把数字提前算出来放在按钮上：没有数字的话它就是一个「整理文件夹」的空壳，
- * 谁也不知道点进去有没有东西，于是谁也不点。写着「可腾出 43.3 MB」就完全是另一回事了。
- * 算不出来（后端没起、工作区没建）就保持原样，绝不显示一个假数字。
- */
-function refreshSweepHint() {
-  const el = document.querySelector("#em-sweep .sw-hint");
-  if (!el) return;
-  fetch("/api/files/sweep").then((x) => x.json()).then((p) => {
-    const cur = document.querySelector("#em-sweep .sw-hint");
-    if (!cur || !p || p.error || !p.bytes) return;
-    cur.innerHTML = `· 可腾出 <b>${fmtSize(p.bytes)}</b>`;
-  }).catch(() => {});
 }
 
 /**
@@ -3887,7 +3880,7 @@ function updateModelLabel() {
     const use = btn.querySelector("use");
     if (use) use.setAttribute("href", eng ? "#i-monitor" : "#i-sparkles");
     btn.title = eng
-      ? `由「${eng.label}」在跑，用它自己的登录态和模型，不花 API 额度`
+      ? `由「${eng.label}」在跑 · 不花 API 额度`
       : "这个对话用哪个模型（点开可以只给本对话换一个）";
   }
   renderModelMenu();

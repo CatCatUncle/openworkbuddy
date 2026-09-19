@@ -199,6 +199,43 @@ function guessCap(modelId) {
   return CAP_HINT.vision.test(s) ? "vision" : "";
 }
 
+const MODAL = (v) => (Array.isArray(v) ? v.map((x) => String(x).toLowerCase()) : null);
+
+/**
+ * 一个模型是哪一路的：先听渠道自己怎么说，它没说才按名字猜。
+ *
+ * 名字是一层很薄的伪装。拿 OpenRouter 当天那 446 个型号实测：真能接图的有 263 个，
+ * 按名字只认得出 134 个——用户自己配的那条 z-ai/glm-5.3-flash 名字里一个 vl / vision
+ * 都没有，于是「看图」那张卡的下拉里把它扔进了「其它模型」；另一头 gpt-5-image、
+ * gemini-3-pro-image 这些**出图**的，名字里带 image，照样在看图的下拉里排着队等人选。
+ * 用户原话：「然后有些似乎是生图模型怎么给我放到看图模型里面去了啊…」
+ * 「我这个视觉模型现在都用不了就不要用了啊，老是卡住干嘛」——选中一个出图的拿去看图，
+ * 上游要么报一串看不懂的参数错，要么真去画了一张图再超时，界面上只剩「卡住」。
+ *
+ * 好在 /models 这一层越来越多家会报 architecture.input_modalities / output_modalities
+ * （OpenRouter、new-api、one-api 都透传）。那是渠道自己说的，比猜准，也比我们维护
+ * 一张永远追不上的型号表准。报了就信它，`sure: true`；没报就退回 guessCap，`sure: false`。
+ *
+ * 出图 / 出视频的一律先认「产出」那一路：gemini-3-pro-image 既能接图也能出图，
+ * 可把它配在「看图」上是纯纯的浪费和卡顿，它的正业是画图。
+ */
+function capOfModel(raw) {
+  const id = typeof raw === "string" ? raw : String((raw && (raw.id || raw.name)) || "");
+  const a = (raw && typeof raw === "object" && raw.architecture) || (raw && typeof raw === "object" ? raw : {});
+  const inp = MODAL(a.input_modalities) || MODAL(a.input_modality);
+  const out = MODAL(a.output_modalities) || MODAL(a.output_modality);
+  const guess = { cap: guessCap(id), sure: false };
+  if (!out || !out.length) return guess;
+  if (out.includes("video")) return { cap: "video", sure: true };
+  if (out.includes("image")) return { cap: "image", sure: true };
+  if (out.includes("audio")) return { cap: "tts", sure: true };
+  if (!inp || !inp.length) return guess;
+  if (inp.includes("audio")) return { cap: "asr", sure: true };
+  if (inp.includes("image")) return { cap: "vision", sure: true };
+  // 进出都只有文字：这条**确定**哪一路都不是。说死了才拦得住 gpt-5.x-codex 混进看图那一组
+  return { cap: "", sure: true };
+}
+
 const slug = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 /** 在一堆已有 id 里挑一个不撞的。撞了就 -2 -3 往后排，不用随机数——配置文件 diff 起来好看 */
@@ -381,7 +418,7 @@ function dedupeProviders(config) {
  * 返回 true 表示真改了东西（调用方据此决定要不要落盘）。
  */
 function normalize(config) {
-  const before = JSON.stringify([config.providers || null, config.media_models || null, config.media || null]);
+  const before = JSON.stringify([config.providers || null, config.media_models || null, config.media || null, !!config.media_migrated]);
   const providers = Array.isArray(config.providers) ? config.providers.filter((p) => p && typeof p === "object") : [];
   const models = Array.isArray(config.media_models) ? config.media_models.filter((m) => m && typeof m === "object") : [];
   const ids = normalizeProviders(providers);
@@ -390,8 +427,26 @@ function normalize(config) {
   config.providers = providers;
   const byKey = new Map(providers.map((p) => [providerKeyOf(p), p]));
 
-  // 老的 config.media[cap] 那份扁平配置：找/建渠道，再建一条模型条目
-  const legacy = config.media || {};
+  /**
+   * 老的 config.media[cap] 那份扁平配置：找/建渠道，再建一条模型条目。
+   *
+   * 这是**一次性的搬家**，搬完在 config 上盖个戳，以后再也不做。
+   * 以前没有这个戳，每存一次就重跑一遍迁移，于是跟下面 flatten 里那条「别把手填的地址
+   * 抹掉」的兜底凑成了一个死循环：
+   *   用户在设置里把「看图」那一路删光 → flatten 看见 media_models 里没有 vision 了，
+   *   就把上一版的 config.media.vision 原样留着（那份里还带着模型名）
+   *   → 下一轮 normalize 走到这儿，看见 config.media.vision 有地址有模型，
+   *     就又给他建回一条 vision 模型。
+   * 用户看到的就是「我删除所有的然后又马上出现两个」，而且删几次回几次。
+   * 用户原话：「你不要搞什么默认模型设置啊！！！！！，用户没有设置就是没有啊」。
+   * 所以：迁移只认「从老版本升上来的第一次」，之后用户删成空就是空。别再把这个戳去掉。
+   */
+  // 没盖过戳、但 media_models 里已经有行了的，也算搬完了——这张表只可能是 normalize 自己
+  // 建出来的，而 normalize 一次就把五路全搬了。不认这一条的话，老用户升上来的**第一次保存**
+  // 还会再被咬一口：他这一次提交的正是「把看图删光」，而 config.media.vision 里的旧值还在。
+  const migrated = config.media_migrated || (Array.isArray(config.media_models) && config.media_models.length > 0);
+  const legacy = migrated ? {} : (config.media || {});
+  config.media_migrated = true;
   for (const cap of CAPS) {
     const old = legacy[cap] || {};
     const base = String(old.base_url || "").trim();
@@ -433,7 +488,7 @@ function normalize(config) {
   config.providers = providers;
   config.media_models = models;
   config.media = flatten(providers, models, config.media);
-  return JSON.stringify([config.providers, config.media_models, config.media]) !== before;
+  return JSON.stringify([config.providers, config.media_models, config.media, !!config.media_migrated]) !== before;
 }
 
 /** 把每一路的默认那条压平回老的 config.media[cap]，让 tools.js 那边完全无感 */
@@ -447,9 +502,14 @@ function flatten(providers, models, prev) {
     out[cap] = m && p
       ? { base_url: baseForUse(p.base_url, "media"), api_key: p.api_key, model: m.model, kind: p.kind || "", protocol: m.protocol || "", ...(cap === "tts" ? { voice: m.voice || "" } : {}) }
       : { base_url: "", api_key: "", model: "", kind: "", protocol: "", ...(cap === "tts" ? { voice: "" } : {}) };
-    // 老配置里手填了地址却没填模型名的，迁不成条目也别在保存时给人抹掉
+    // 老配置里**手填了地址、却没填模型名**的：上面那个迁移循环要求 base 和 model 都在，
+    // 所以它迁不成条目，但也不该在保存时被抹掉——人下次打开 config.json 还指望地址还在。
+    //
+    // 关键是最后那个条件：old 自己也必须没有模型名。带着模型名的那份绝不能留——
+    // 留下来就等于用户刚在界面上删掉的模型，被 config.media 悄悄存了一份副本，
+    // 下一轮迁移再把它请回来。这正是「删了又自己冒出来」的另一半。
     const old = (prev || {})[cap] || {};
-    if (!out[cap].base_url && old.base_url) out[cap] = { ...out[cap], ...old };
+    if (!out[cap].base_url && old.base_url && !String(old.model || "").trim()) out[cap] = { ...out[cap], ...old };
   }
   return out;
 }
@@ -502,7 +562,7 @@ function catalogFor(cap, kind) {
 
 module.exports = {
   CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
-  guessCap, guessKind, baseOfKind, catalogFor, protoOfKind, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
+  guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError,
 };
