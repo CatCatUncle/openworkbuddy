@@ -5597,6 +5597,20 @@ async function testConnectorToggleAndTools() {
   });
   const byName = (j) => Object.fromEntries((((j && j.json) || {}).servers || []).map((s) => [s.name, s]));
   const diskOff = () => JSON.parse(fs.readFileSync(CFG, "utf8")).mcp_disabled || [];
+  // 连接是 server 起来之后在后台跑的：进程那台一秒内就退了，回 401 那台还得走一发 HTTP。
+  // 机器忙的时候（整套测试一起跑就是这样）那一发还在路上，卡片上就是一片空白——
+  // 不等它落定直接断言，等于赌运气。所以点名的这几台都得先有结论（连上了，或留下了失败原因）。
+  const settled = async (port, names, ms = 15000) => {
+    const until = Date.now() + ms;
+    let last = null;
+    for (;;) {
+      last = await call(port, "GET", "/api/mcp");
+      const m = byName(last);
+      if (names.every((n) => m[n] && (m[n].connected || m[n].error))) return last;
+      if (Date.now() > until) return last;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  };
 
   let booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
   try {
@@ -5604,7 +5618,7 @@ async function testConnectorToggleAndTools() {
     assert(up, "真 server.js 没起来，这条测试作废：" + why);
 
     // ---- ② 一张卡片要说清四件事：开着没、连上没、为什么没连上、是不是授权的问题 ----
-    const first = await call(port, "GET", "/api/mcp");
+    const first = await settled(port, ["deadproc", "expired"]);
     assert(first.code === 200 && first.json, "连接器列表取不到（HTTP " + first.code + "）：" + first.body.slice(0, 200));
     const m0 = byName(first);
     assert(m0.deadproc && m0.expired, "配的两台没都列出来：" + Object.keys(m0).join("/"));
@@ -5670,7 +5684,7 @@ async function testConnectorToggleAndTools() {
   try {
     const { up, port, why } = await booted.wait();
     assert(up, "第二次启动没起来：" + why);
-    const m2 = byName(await call(port, "GET", "/api/mcp"));
+    const m2 = byName(await settled(port, ["expired"]));
     assert(m2.deadproc.enabled === false, "★重启之后自己关掉的连接器又开着了★");
     assert(m2.deadproc.error === "" && m2.deadproc.connected === false,
       "★重启之后又去连了一次关掉的那台★（留下了失败记录）：" + m2.deadproc.error);
@@ -5680,7 +5694,7 @@ async function testConnectorToggleAndTools() {
     const on = await call(port, "POST", "/api/mcp/toggle", { name: "deadproc", enabled: true });
     assert(on.code === 200 && on.json.enabled === true, "打不开：" + on.body.slice(0, 200));
     assert.deepStrictEqual(diskOff(), [], "打开之后 mcp_disabled 没清干净：" + JSON.stringify(diskOff()));
-    const m3 = byName(await call(port, "GET", "/api/mcp"));
+    const m3 = byName(await settled(port, ["deadproc"]));
     assert(m3.deadproc.enabled === true && m3.deadproc.error,
       "反向对照：重新打开就该真去连一次，连不上照旧说连不上：" + JSON.stringify(m3.deadproc).slice(0, 200));
   } finally {
@@ -12044,12 +12058,19 @@ async function testEngineStoppedSurfacing() {
     assert(A.r.finalText.includes("已达最大步数（25 步）"),
       "CLI 引擎撞上限，正文里一个字都没提，用户看到的就是一条正常回复：" + A.r.finalText);
     // 两条路（内置循环 / 本机 CLI 引擎）各自拼这句话，措辞一旦漂开，用户在 Web 和 IM 上看到的就是两种说法。
-    // 所以这里不认某个记号，而是把 agent.js 里那份模板原样取出来对——模板改了两处一起改，只改一处就红。
-    const STOP_TPL = /注意：\$\{(?:r\.stopped|stopNote)\}，任务强制收尾。如需继续，可提高设置中的上限或让我接着上次进度做。/g;
-    const tplHits = (fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8").match(STOP_TPL) || []).length;
-    assert.strictEqual(tplHits, 2, `agent.js 里收尾提示的模板应该正好两处（内置循环 + 本机引擎），实际 ${tplHits} 处——两条路措辞漂开了`);
+    // 所以措辞只许存在一份——agent.js 里的 stopNotice()，两条路都去叫它。谁再手抄一遍，这里当场红。
+    const agentSrc = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+    const seen = (agentSrc.match(/stopNotice\(/g) || []).length;
+    assert.strictEqual(seen, 3, `agent.js 里 stopNotice 应当是「一处定义 + 两处调用」共 3 次，实际 ${seen} 次——两条路又各拼各的了`);
+    const inline = (agentSrc.match(/，任务强制收尾。/g) || []).length;
+    assert.strictEqual(inline, 1, `「，任务强制收尾。」只该出现在 stopNotice 里那一份，实际 ${inline} 处——有人手抄了一遍措辞`);
     assert(A.r.finalText.includes("注意：已达最大步数（25 步），任务强制收尾。"),
       "收尾提示的措辞跟内置引擎对不上：" + A.r.finalText);
+    // 用户原话：「已达最大运行时间，任务强制收尾怎么回事啊」——光说「提高设置中的上限」等于没说。
+    // 撞上限这条必须自带下一步：上限在哪一页、还有「自动续跑轮数」这个开关。
+    assert(A.r.finalText.includes("设置 → 执行上限") && A.r.finalText.includes("自动续跑轮数"),
+      "★撞上限了却没说上限在哪一页、也没提自动续跑★ 用户只能回过头来问「怎么回事」：" + A.r.finalText);
+    assert(A.r.finalText.includes("PROGRESS.md"), "没告诉用户进度档在哪，「接着上次进度做」就成了空话：" + A.r.finalText);
     assert(A.r.finalText.startsWith("我先看一下这个文件"), "模型原话被吃掉了：" + A.r.finalText);
     assert.strictEqual(A.limits.length, 1, "limit 事件没发或发重了：" + A.limits.length);
     assert.strictEqual(A.limits[0].note, "已达最大步数（25 步）", "limit 事件里的原因不对：" + A.limits[0].note);
@@ -12068,6 +12089,10 @@ async function testEngineStoppedSurfacing() {
     // ③ 手动停止也照说，且判定层认得出来（假绿裁定靠的就是这个字段）
     const C = await run("停在这儿了", "已手动停止");
     assert(C.r.finalText.includes("已手动停止"), "手动停止没写进正文：" + C.r.finalText);
+    // 手动停止是用户自己按的，还劝人家去调大上限就是答非所问
+    assert(!C.r.finalText.includes("执行上限") && !C.r.finalText.includes("任务强制收尾"),
+      "★用户自己按的停止，却被当成撞上限劝去调大上限★：" + C.r.finalText);
+    assert(C.r.finalText.includes("接着上次进度做"), "手动停止之后没给出怎么接着做：" + C.r.finalText);
     assert.strictEqual(judgeRun({ result: C.r.finalText, stopped: C.r.stopped }).reason, "stopped",
       "task-verdict 认不出这是手动停止");
 

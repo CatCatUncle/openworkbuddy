@@ -1072,7 +1072,9 @@ function createTurnUI(userText, turnMode, forSid) {
       }
     } else if (ev.type === "limit") {
       endText();
-      ensureProc().appendChild(procNote("timer", `${ev.note || "已达执行上限"}，任务强制收尾`, "err"));
+      // 手动停止是用户自己按的，别再跟着说一句「任务强制收尾」——那是撞上限才有的话
+      const lnote = ev.note || "已达执行上限";
+      ensureProc().appendChild(procNote("timer", /^已手动停止/.test(lnote) ? lnote : `${lnote}，任务强制收尾`, "err"));
       procWrap?.classList.add("open");
       turn._limited = true;
     } else if (ev.type === "auto_continue") {

@@ -528,7 +528,7 @@ function makeEmit(state) {
     } else if (ev.type === "expert_start") {
       prog(yellow(`\n  ◆ 委派专家「${ev.expert}」`) + dim(`：${String(ev.task || "").slice(0, 60)}`));
     } else if (ev.type === "limit") {
-      prog(yellow(`\n▲ ${ev.note}，任务强制收尾`));
+      prog(yellow(/^已手动停止/.test(ev.note || "") ? `\n▲ ${ev.note}` : `\n▲ ${ev.note}，任务强制收尾`));
     } else if (ev.type === "expert_done") {
       prog(dim(`\n  ◇ 专家「${ev.expert}」交活了`));
       state.streamed = false;
