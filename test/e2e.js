@@ -5955,8 +5955,14 @@ async function testMcpFailureReason() {
   const gone = byName["命令根本不存在的"] || "";
   assert(/owb-no-such-binary-/.test(gone) && /装/.test(gone), "命令不存在时没写清是哪个命令、怎么装: " + gone);
   assert(/ENOENT/.test(rawByName["命令根本不存在的"] || ""), "技术原文（ENOENT）没留在 raw 里，排障时就查不到了");
+  // filesystem 那类服务器把要开放的目录当参数收，路径写错时只甩一串 Warning 加一句
+  // 英文总结。直接把路径拎出来说，比让人到 stderr 里找那行 Warning 快得多。
+  const { whyFailed } = require("../mcp");
+  const dirWhy = whyFailed(new Error("MCP 服务器 filesystem 已退出（退出码 1）：Warning: Cannot access directory /nope/培训材料, skipping / Warning: Cannot access directory /also-nope, skipping / Error: None of the specified directories are accessible"), { command: "npx" });
+  assert(dirWhy.includes("/nope/培训材料") && dirWhy.includes("/also-nope"), "目录打不开时没把是哪几个目录拎出来: " + dirWhy);
+  assert(!/Warning:|skipping/.test(dirWhy), "还是把原样的 stderr 扒给用户看: " + dirWhy);
   mgr.stop([]);
-  console.log("✅ 连接器：死了会说清死因（退出码 + 它自己最后喊的那句），不是光一句「已退出」");
+  console.log("✅ 连接器：死了会说清死因（退出码 + 它自己最后喊的那句，目录打不开就点名是哪几个）");
 }
 
 function testPetSprites() {

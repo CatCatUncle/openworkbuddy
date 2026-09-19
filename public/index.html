@@ -1618,7 +1618,10 @@
   .ex-card .nm span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* 右边的状态字长的时候，别把名字挤成 0 宽（连接器卡片踩过这个坑） */
   .ex-card .nm > span:first-child { flex: 1 1 auto; min-width: 4em; }
+  .ex-card .av.bad { background: var(--owb-err-bg); color: var(--owb-err-text); }
   .ex-card .al { font-size: 12px; color: var(--owb-text-3); font-weight: 400; flex: none; }
+  .ex-card .al.ok { color: var(--owb-ok-text); }
+  .ex-card .al.bad { color: var(--owb-err-text); }
   .ex-card .ds { font-size: 13px; color: var(--owb-text-2); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 40px; }
   .ex-card .tg { display: flex; gap: 5px; flex-wrap: wrap; }
   .ex-card .tg i { color: var(--owb-text-3); background: var(--owb-bg-side); }

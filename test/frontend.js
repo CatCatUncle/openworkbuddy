@@ -6556,6 +6556,10 @@ window.confirm = () => true;
 var SERVERS = [
   { name: "mysql", transport: "stdio", command: "npx", args: ["-y", "@benborla29/mcp-server-mysql"], env_keys: ["MYSQL_USER", "MYSQL_PASS"], connected: true, tools: [{ name: "query", description: "run sql" }] },
   { name: "deepwiki2", transport: "streamable-http", url: "https://mcp.deepwiki.com/mcp", header_keys: ["Authorization"], connected: false, error: "握手超时", tools: [] },
+  // 真实形状：死因把进程最后几行 stderr 都带上了，十行都不止；命令行也长到放不下
+  { name: "filesystem", transport: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/somebody/Downloads/培训案例材料", "/Users/somebody/Documents/归档/2026"], connected: false, tools: [],
+    error: "MCP 服务器 filesystem 已退出（退出码 1）：Warning: Cannot access directory /Users/somebody/Downloads/培训案例材料, skipping / Warning: Cannot access directory /Users/somebody/Documents/归档/2026, skipping / Error: None of the specified directories are accessible" },
+  { name: "notion", transport: "streamable-http", url: "https://mcp.notion.com/mcp", header_keys: ["Authorization"], connected: true, plugin: "notion-workspace", tools: [{ name: "search", description: "搜" }] },
 ];
 var CATALOG = {
   categories: ["搜索与网页", "文件与开发", "数据库"],
@@ -6594,6 +6598,37 @@ const HUB_MCP_CHECKS = `
   ok("已接入 mysql 卡片写明带 2 个环境变量（只有键名）", html.includes("带 2 个环境变量：MYSQL_USER、MYSQL_PASS"));
   ok("远程 deepwiki2 卡片写明带 1 个请求头", html.includes("带 1 个请求头：Authorization"));
   ok("页面上没有令牌值形状（Bearer xxx / KEY=值）", !/Bearer\\s+\\S+/.test(box.textContent) && !/MYSQL_PASS=\\S/.test(box.textContent));
+
+  // ---- 连不上的卡片：死因要看得清，不能被卡成中间一截 ----
+  const mcard = (n) => [...box.querySelectorAll(".ex-card[data-mi]")].find((c) => c.querySelector(".nm > span").textContent === n);
+  const fsc = mcard("filesystem"), errBox = fsc.querySelector(".mcp-server-error"), errIn = errBox.firstElementChild;
+  const more = fsc.querySelector(".mcp-err-more");
+  const FULL = SERVERS.find((s) => s.name === "filesystem").error;
+  ok("死因走独立的错误块，不再塞进标签胶囊", !!errBox && !fsc.querySelector(".tg"));
+  ok("全文在 title 里（鼠标悬上去 / 拷得走）", errBox.title === FULL);
+  const lh = parseFloat(getComputedStyle(errIn).lineHeight);
+  ok("错误块封顶三行", Math.abs(errIn.clientHeight - lh * 3) < 1.5, "高 " + errIn.clientHeight + "，一行 " + lh);
+  // 真正被投诉的那一条：夹行数的盒子自己带 padding，下边那平会把第四行漏出来半条
+  const eb = getComputedStyle(errBox);
+  ok("夹行数的那层不带 padding，不会露出半条第四行",
+    Math.abs(errBox.clientHeight - (errIn.clientHeight + parseFloat(eb.paddingTop) + parseFloat(eb.paddingBottom))) < 1.5);
+  ok("裁了才给「展开」", !more.hidden && errIn.scrollHeight > errIn.clientHeight + 1);
+  ok("短死因不给「展开」", mcard("deepwiki2").querySelector(".mcp-err-more").hidden);
+  more.click(); await wait(10);
+  ok("点展开：全文都在、按钮变「收起」", errIn.scrollHeight <= errIn.clientHeight + 1 && more.textContent === "收起" && errBox.textContent === FULL);
+  more.click(); await wait(10);
+  ok("再点收回去", errIn.scrollHeight > errIn.clientHeight + 1 && more.textContent === "展开");
+  // 命令行同理：max-height 跟行高对不上时，第三行会从字中间横切开
+  const cmdEl = fsc.querySelector(".mcp-server-command"), clh = parseFloat(getComputedStyle(cmdEl).lineHeight);
+  ok("命令行也是整行截断，没有被横切的那一行", Math.abs(cmdEl.clientHeight % clh) < 1 || Math.abs((cmdEl.clientHeight % clh) - clh) < 1,
+    "高 " + cmdEl.clientHeight + "，一行 " + clh);
+  ok("未连接：头像和状态字都是错误色，不是跟已连接一个样",
+    fsc.querySelector(".av").classList.contains("bad") && fsc.querySelector(".al").classList.contains("bad")
+    && getComputedStyle(fsc.querySelector(".al")).color !== getComputedStyle(mcard("mysql").querySelector(".al")).color);
+  // 插件角标是绝对定位的右上角，不让一行的话它就压在「已连接 · N 个工具」上
+  const nc = mcard("notion"), fl = nc.querySelector(".flag").getBoundingClientRect(), al = nc.querySelector(".al").getBoundingClientRect();
+  ok("插件角标不压状态字", fl.bottom <= al.top + 0.5 || fl.right <= al.left + 0.5 || fl.left >= al.right - 0.5,
+    "角标 " + JSON.stringify(fl) + " 状态 " + JSON.stringify(al));
 
   // 推荐目录：按分类分组，五张卡，标记各归各
   ok("推荐连接器区块出现，按目录分类分组", html.includes("推荐连接器") && box.querySelectorAll(".ex-card[data-pi]").length === 5 && html.includes("搜索与网页") && html.includes("数据库"));
@@ -9181,7 +9216,7 @@ app.whenReady().then(async () => {
       const names15 = await win15.webContents.executeJavaScript(IC_BOOT + HUB_MCP_STUBS + "\n" + HUB_MCP_SRC + "\n" + HUB_MCP_CHECKS, true)
         .catch((e) => { throw new Error("[连接器] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of names15) console.log("  ✓ " + n);
-      console.log(`✅ 前端：连接器预设目录（一键接入预填·缺 Key 拦下·值里带等号保住·原条目不回传 Key·已接入置灰·缺 uvx 提示·搜索/只看已连接联动）${names15.length} 项通过`);
+      console.log(`✅ 前端：连接器卡片（一键接入预填·缺 Key 拦下·值里带等号保住·原条目不回传 Key·已接入置灰·搜索联动·死因整块三行可展开·命令行不被横切·角标不压状态字）${names15.length} 项通过`);
     } finally {
       if (!win15.isDestroyed()) win15.destroy();
     }

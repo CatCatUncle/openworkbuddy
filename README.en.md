@@ -245,6 +245,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 20** Connector cards **show the whole reason a server won't connect**: the message used to render as a tag pill, so only a slice from the middle survived — no start, no end. It's a block of red text now, three lines with a one-click expand, and the command line is no longer sliced through the glyphs
 - **Sep 20** **35 built-in skills, 52 connectors**: ten new skills — competitor watch, market research, spreadsheet analysis, one-draft-many-platforms, customer feedback, SEO briefs, financial models, podcasts, infographics, sales outreach; connectors now include Linear, Jira / Confluence, Sentry, Vercel, Figma, Airtable, Asana, Canva, Apify, YouTube, AntV charts, EdgeOne one-click deploy and Bilibili
 - **Sep 20** The real browser **now leaves when you're done with it**: closed after ten idle minutes, taken down with the process that started it, or closed on demand — and the whole process group goes, not just the parent. One was left running for ten and a half hours with its GPU process at 160% CPU
 - **Sep 20** macOS refused to open the downloaded build; one command routes around it: `curl -fsSL .../install-mac.sh | bash` — a curl'd file carries no quarantine flag, so there is no dialog at all
@@ -255,7 +256,6 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 - **Sep 19** Eval runs **no longer touch your real memory, preferences or quota ledger**; the task set gained long-haul, multi-turn and memory-recall shapes that a single-turn task can't test
 - **Sep 19** When two tasks change the same repo, **the second one goes off into its own git worktree** — not one byte of the tree in front of you moves
 - **Sep 19** Permissions rebuilt as **RBAC** with a super-admin tier: manage only a strictly lower tier, and all four routes to minting an admin go through the same check
-- **Sep 19** **Opening a page in a real browser to look at it** works now: full-page screenshots and JS values, on its own Chrome profile so it never touches the windows you have open
 
 Older entries → **[Changelog](CHANGELOG.en.md)**.
 

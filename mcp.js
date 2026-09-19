@@ -64,6 +64,14 @@ function whyFailed(err, cfg = {}) {
     const tip = base === "npx" ? "先装 Node.js" : base === "uvx" ? "先装 uv（curl -LsSf https://astral.sh/uv/install.sh | sh）" : `先把 ${base} 装上`;
     return `找不到命令 ${base || cmd}。${tip}`;
   }
+  // filesystem 那类服务器把要开放的目录当参数收，路径写错时它只会甩一串 Warning + 一句
+  // 英文总结。把路径捞出来单独说，比让人在 stderr 里找那行 Warning 快得多。
+  if (/None of the specified directories are accessible/i.test(raw)) {
+    const dirs = [...raw.matchAll(/Cannot access directory ([^,]+), skipping/gi)].map((m) => m[1].trim());
+    return dirs.length
+      ? `这些目录不存在或没权限读：${dirs.join("、")}。换成本机真实存在的路径再连`
+      : "配给它的目录一个都打不开。检查路径拼写，中文名和空格要留意";
+  }
   if (/退出码 127/.test(raw)) return `${cmd || "启动命令"} 跑起来了，但它要调的东西不在 PATH 上`;
   if (/超时/.test(raw) && /\.(initialize|tools\/list)/.test(raw)) return `连上了但迟迟没握手完。${cmd ? "第一次跑要下载依赖，可能就是慢；再试一次通常就好" : "对方没按 MCP 协议回话"}`;
 
