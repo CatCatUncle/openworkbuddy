@@ -25,8 +25,9 @@ const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder, anthropicBase } = require("./llm");
 const sessSearch = require("./session-search");
-const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
+const worktree = require("./worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const shotHistory = require("./shot-history"); // 一镜一镜的版本留底：改台词重跑之后，上一版首帧还拿得回来
 const prefs = require("./prefs"); // 按账号存的个人偏好：底层引擎 / 思考档 / 上次选的模型 / 宠物 / 快捷键
 const { previewData } = require("./preview");
@@ -299,6 +300,8 @@ const activeRuns = new Map(); // sessionId -> { ctrl: AbortController, interject
 // 正在跑的任务落一份名单到磁盘：应用中途被关/被重启时，内存里的 activeRuns 直接蒸发，
 // 下次启动就靠这份名单知道哪些会话是被打断的，在回放里明说，而不是让那一轮无声地断在半空
 const RUNNING_FILE = dataPath("data", "running.json");
+// git worktree 分身放这儿。放在用户仓库外面：放里面等于让 git 观察自己，清理时手一滑就删到人家代码上
+const WORKTREE_DIR = dataPath("data", "worktrees");
 function persistRunning() {
   try { store.writeJsonAtomic(RUNNING_FILE, [...activeRuns.keys()]); } catch {}
 }
@@ -676,7 +679,7 @@ function recordingEmit(send, events, sessionId, { pet = true } = {}) {
       // 前端拿不到全量就不能判定谁没了——早先没这个标记，回放时每来一批就把上一批的产出
       // 全盖上「已删除」，用户看到的是四个文件全被划掉，其实一个都没删
       if (chg.length) events.push({ type: "files", changed: chg, files: (ev.files || []).filter((f) => chg.includes(f.name)), partial: true, root: ev.root });
-    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "credits", "sources", "ask_user", "ask_answer", "milestones", "context", "trace"].includes(ev.type)) {
+    } else if (["tool_use", "tool_result", "parallel", "expert_start", "expert_done", "error", "limit", "auto_continue", "failover", "sleep", "trim", "compact", "usage", "interject", "worktree", "credits", "sources", "ask_user", "ask_answer", "milestones", "context", "trace"].includes(ev.type)) {
       // 工具事件盖个时间戳（send 已经发出去了，这里只影响存盘）：回放时轨迹条才算得出每步耗时
       if (ev.type === "tool_use" || ev.type === "tool_result") ev.at = ev.at || Date.now();
       events.push(ev);
@@ -6098,6 +6101,36 @@ app.post("/api/chat", async (req, res) => {
   activeRuns.set(sessionId, runState);
   persistRunning();
   const emitFn = recordingEmit(send, asstEvents, sessionId);
+  /**
+   * 撞车才隔离：另有任务正在改这同一个 git 仓库，这一条就去自己的 worktree 里改。
+   *
+   * 只有撞上才开，先到的那条一动不动——它在用户眼皮底下那份工作区里改，看得见摸得着，
+   * 这是用户的预期。后到的才是"多出来的"，让它去侧线。为什么非做不可、边界在哪，见 worktree.js 开头。
+   *
+   * 整段包在 try 里：分身开不出来（没装 git、仓库还没有第一次提交、磁盘满）绝不能让任务起不来。
+   * 那种情况下退回老样子——两条任务共用一份工作区，跟这个功能上线前一模一样。
+   */
+  let wtInfo = null;
+  try {
+    // 名单要把终端里那趟也算上：撞车最常见的一种就是「网页上开着一条，人又在终端里 openworkbuddy 了一句」，
+    // 而这两个是两个进程——盘上那个 cli-live 目录是它们唯一互相看得见的地方
+    const busy = [...activeRuns].map(([sid, r]) => ({ session: sid, dir: r.root || "" }));
+    try { for (const r of cliLive.list({ prune: false })) if (r.live && r.cwd) busy.push({ session: r.id, dir: r.cwd }); } catch {}
+    const p = worktree.plan(getWorkspaceDir(), { session: sessionId, busy });
+    if (p.need) {
+      const opened = worktree.open(WORKTREE_DIR, { repo: p.repo, session: sessionId });
+      if (opened && opened.dir) {
+        enterWorkspace(opened.dir); // 从这行往后，这条请求里的 getWorkspaceDir() 都是分身
+        wtInfo = opened;
+        log.info("worktree", "这条任务进了独立分身", { session: sessionId, branch: opened.branch, repo: opened.repo });
+      } else if (opened && opened.error) {
+        // 说一声就行，别拦任务。用户看到的是老样子，而日志里留得下"那天为什么没隔离"
+        log.warn("worktree", "分身没开成，照旧在原工作区跑", { session: sessionId, err: opened.error });
+      }
+    }
+  } catch (e) { log.warn("worktree", "隔离判断出错（照旧在原工作区跑）", { session: sessionId, err: e.message }); }
+  runState.root = getWorkspaceDir(); // 后面进来的任务靠它认"我们是不是在同一个仓库"
+  if (wtInfo) emitFn({ type: "worktree", phase: "start", branch: wtInfo.branch, repo: wtInfo.repo, dir: wtInfo.dir, seeded: wtInfo.seeded || null, text: worktree.hint(wtInfo) });
   const total = { prompt: 0, completion: 0, cached: 0, calls: 0, elapsed_ms: 0 };
   // 整趟任务的墙上时间。total.elapsed_ms 只累加模型调用那几段，不含工具执行和等审批——
   // 用户感觉到的「这次怎么这么慢」恰恰常常慢在那些地方，拿它当任务耗时会一直显示很快
@@ -6317,6 +6350,15 @@ app.post("/api/chat", async (req, res) => {
       send({ type: "sweep", since: runStartedAt, ...sw });
     }
   } catch {} // 清单算不出来不该拖累一次成功的任务
+  // 分身收尾：什么都没干就地收掉（跟上面"空的任务文件夹不留"同一个道理），
+  // 干了活的替它提交一笔——没提交的改动是合不回来的，用户照着提示敲 git merge 会发现什么都没有
+  if (wtInfo) {
+    try {
+      const rel = worktree.release(WORKTREE_DIR, wtInfo.dir, { title: sess.title || "" });
+      if (rel && rel.removed) emitFn({ type: "worktree", phase: "done", empty: true, branch: wtInfo.branch, text: "这条任务在独立分身里跑，没留下改动，分身已经收掉了。" });
+      else if (rel) emitFn({ type: "worktree", phase: "done", branch: rel.branch, repo: rel.repo, dir: rel.dir, touched: rel.touched, commits: rel.commits, text: worktree.hint(rel) });
+    } catch (e) { log.warn("worktree", "分身收尾出错（东西还在，没丢）", { session: sessionId, err: e.message }); }
+  }
   send({ type: "done" });
   if (!res.destroyed && !res.writableEnded) { try { res.end(); } catch {} }
   for (const sub of runState.subscribers) { try { sub.end(); } catch {} }
@@ -7041,6 +7083,12 @@ async function main() {
   log.info("boot", "服务起来了", { pid: process.pid, node: process.version, version: require("./package.json").version });
 
   sweepInterruptedRuns(); // 上次没善终的任务先标注中断，再开门迎客
+  // 分身打扫：什么都没产出的收掉，放了两周没人管的只删目录留分支（提交都在 git 里，删的是磁盘不是成果）。
+  // 开机扫一次就够——分身只在任务撞车时才生，不会一天冒出几百个
+  try {
+    const done = worktree.sweep(WORKTREE_DIR, {});
+    if (done.length) log.info("worktree", `收掉了 ${done.length} 个没人管的分身`, { dirs: done.map((d) => d.branch).filter(Boolean) });
+  } catch (e) { log.warn("worktree", "分身打扫没做成", { err: e.message }); }
 
   // config.json 是用户手改的文件，少一个顶层块很正常。以前这里直接 config.server.port，
   // 结果是启动时抛 “Cannot read properties of undefined (reading 'host')”——

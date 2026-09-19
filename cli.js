@@ -285,6 +285,37 @@ if (sub === "owner") {
   }
 }
 
+// ---------- openworkbuddy worktree：分身都在哪儿、哪些还没合回去 ----------
+// 分身是撞车时自动开的，用户没亲手建过，所以他也没有"去哪儿找"的直觉。
+// 这条就是那个找法：列出来，说清每根分支合回去的命令，顺手把白跑的那些收掉。
+if (sub === "worktree") {
+  const wt = require("./worktree");
+  const STORE = dataPath("data", "worktrees");
+  const want = String((words.filter((w) => !w.startsWith("-"))[0] || "")).trim();
+  const rows = wt.list(STORE);
+  if (want === "清理" || want === "clean") {
+    // 只收白跑的那些。有改动、有提交的一个不碰——那是还没合回去的活，删了就真没了
+    const done = wt.sweep(STORE, { alive: [], days: 0 });
+    const left = wt.list(STORE);
+    process.stdout.write(done.length ? green(`\u2713 收掉了 ${done.length} 个没产出的分身\n`) : dim("没有可收的分身（有改动的一个都不碰）。\n"));
+    if (left.length) process.stderr.write(dim(`还剩 ${left.length} 个有改动的，合回去或者自己删：git worktree remove <目录>\n`));
+    process.exit(0);
+  }
+  if (!rows.length) {
+    process.stdout.write(dim("现在没有分身。\n"));
+    process.stderr.write(dim("两条任务同时改同一个 git 仓库时，后来那条会自动去自己的 worktree 里改，不跟人抢工作区。\n"));
+    process.exit(0);
+  }
+  for (const r of rows) {
+    const tag = r.empty ? dim("（白跑，可以收）") : r.dirty ? yellow(`（${r.files} 个文件还没提交）`) : green(`（${r.commits} 笔提交）`);
+    process.stdout.write(`${bold(r.branch)} ${tag}\n`);
+    process.stdout.write(dim(`  目录 ${r.dir}\n`));
+    if (!r.empty && r.repo) process.stdout.write(dim(`  合回来 git -C ${r.repo} merge ${r.branch}\n`));
+  }
+  process.stderr.write(dim("收掉白跑的：openworkbuddy worktree 清理\n"));
+  process.exit(0);
+}
+
 if (sub === "passwd" || sub === "2fa") {
   const pos = words.filter((w) => !w.startsWith("-"));   // [用户名, 新密码?]
   const who = String(pos[0] || "").trim();
@@ -1011,8 +1042,43 @@ function makeAskUser(readLine) {
   });
 }
 
-/** @returns {"ok"|"error"|"aborted"} 给退出码用 */
+/**
+ * 撞车才隔离：别的任务（另一个终端、或者网页那边）此刻正在改同一个 git 仓库，
+ * 这一趟就去自己的 worktree 里改，改完把分支名和合回去的命令交出来。见 worktree.js 开头。
+ *
+ * 为什么包一层而不是写进 runOnce 里：交互模式下 runOnce 是在 REPL 那条异步链上被 await 的，
+ * 在里头 enterWorkspace 会把工作目录**留给 REPL**——跑完一趟之后 /cwd 显示的还是那个分身目录，
+ * 用户从此在一个他没听说过的地方干活。withWorkspace 是有边界的，出了这个函数自动还原。
+ */
 async function runOnce(runtime, text, mode, interactive) {
+  const wt = require("./worktree");
+  const STORE = dataPath("data", "worktrees");
+  let opened = null;
+  try {
+    const busy = cliLive.list({ prune: false })
+      .filter((r) => r.live && r.cwd && r.id !== sessionId)
+      .map((r) => ({ session: r.id, dir: r.cwd }));
+    const p = wt.plan(getWorkspaceDir(), { session: sessionId, busy });
+    if (p.need) {
+      const o = wt.open(STORE, { repo: p.repo, session: sessionId });
+      if (o && o.dir) opened = o;
+      else if (o && o.error) process.stderr.write(dim("（分身没开成，照旧在原工作区跑：" + o.error + "）\n"));
+    }
+  } catch {} // 隔离判断出错绝不能让任务起不来：退回老样子就是这个功能上线前的样子
+  if (!opened) return runOnceIn(runtime, text, mode, interactive);
+  process.stderr.write(yellow(wt.hint(opened)) + "\n");
+  try {
+    return await require("./tools").withWorkspace(opened.dir, () => runOnceIn(runtime, text, mode, interactive));
+  } finally {
+    try {
+      const rel = wt.release(STORE, opened.dir, { title: text.slice(0, 40) });
+      process.stderr.write(dim(rel && rel.removed ? "（这趟没留下改动，分身已经收掉）\n" : wt.hint(rel) + "\n"));
+    } catch {}
+  }
+}
+
+/** @returns {"ok"|"error"|"aborted"} 给退出码用 */
+async function runOnceIn(runtime, text, mode, interactive) {
   // 积分闸门：默认是关的（本地个人用不限额），开了才拦。CLI 消耗记在管理员（首个注册用户）名下
   const owner = account.defaultUser();
   if (owner && account.creditsEnabled() && owner.credits <= 0) {

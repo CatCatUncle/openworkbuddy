@@ -471,6 +471,19 @@ function safeWorkspaceDir(baseDir) {
   try { return baseDir ? path.join(getWorkspaceDir(), baseDir) : getWorkspaceDir(); } catch { return "（未设置）"; }
 }
 
+/**
+ * 这次是不是在 git 分身里干活。是的话必须告诉模型，两件事它自己猜不出来：
+ * 一是改动进的是另一根分支，二是**不许自己 merge 回去**——合不合、什么时候合是用户的决定，
+ * 冲突怎么取舍更是它最没资格拍板的事。不说这句，它会很热心地帮你合掉。
+ */
+function worktreeLine() {
+  try {
+    const m = require("./worktree").markOf(getWorkspaceDir());
+    if (!m) return "";
+    return `\n- 这次是在一个**独立的 git 分身（worktree）**里干活：另有任务正在改同一个仓库，所以给你单开了一份。改动只进分支 \`${m.branch}\`，用户自己的工作区不受影响，你不用担心跟别人打架。收工时改动会自动提交到这根分支上——**不要自己 merge/rebase 回主分支，也不要 push**，合不合由用户决定。`;
+  } catch { return ""; }
+}
+
 /** 当前生效的模型渠道（base_url / api_key / model / provider），给「没配视觉模型时拿主模型看图」兜底用。 */
 function activeChannel(config) {
   const list = Array.isArray(config.models) ? config.models : [];
@@ -571,7 +584,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 
 ## 当前环境
 - 现在是 ${envToday()}。凡是涉及"最新/今年/近期/本周"的判断一律以这个日期为准，不要用你训练数据里的时间。用户说"现在/马上/今晚"这类词时，按上面的钟点安排，别默认从早上开始。需要最新事实（价格、政策、版本号、人事、榜单）必须 web_search 现查，不许凭记忆答。
-- 工作目录（成果文件都放这里）：${safeWorkspaceDir(baseDir)}
+- 工作目录（成果文件都放这里）：${safeWorkspaceDir(baseDir)}${worktreeLine()}
 - 写文件一律用**相对文件名**（\`报告.html\`、\`demo/index.js\`），相对路径就是从上面这个目录起算的。别再在前面拼一遍目录名——那会在它下面又建一层同名目录。
 - 运行环境：${{ darwin: "macOS", win32: "Windows", linux: "Linux" }[process.platform] || process.platform}，本机执行，run_shell 拿到的是用户的真实电脑。
 

@@ -1158,6 +1158,15 @@ function createTurnUI(userText, turnMode, forSid) {
         note.innerHTML = `<div class="lb">${ic("zap")}已并入当前任务</div>${esc(ev.text || "")}`;
         body.appendChild(note);
       }
+    } else if (ev.type === "worktree") {
+      // 这条必须留在正文里，不能只当一行状态：合回去的 git 命令就在这儿，
+      // 用户是任务跑完半小时后才想起来找它的——那时候状态行早滚没了
+      endText();
+      const note = document.createElement("div");
+      note.className = "wt-note";
+      const head = ev.phase === "done" ? (ev.empty ? "分身已收掉" : "改动在这根分支上") : "这趟在独立分身里跑";
+      note.innerHTML = `<div class="lb">${ic("git-branch")}${esc(head)}</div>${esc(ev.text || "")}`;
+      body.appendChild(note);
     } else if (ev.type === "ask_user") {
       endText();
       body.appendChild(makeAskCard(ev, turnSid, undefined, {
@@ -1528,6 +1537,9 @@ function liveActivity(ev, narr) {
     case "failover": return say("shuffle", cut(ev.note || "主渠道不行，已切到备用渠道"));
     case "auto_continue": return say("refresh-cw", `没做完，自动续跑第 ${ev.round}/${ev.total} 轮`);
     case "limit": return say("timer", cut(ev.note || "到执行上限了", 40) + "，正在收尾");
+    case "worktree": return say("git-branch", ev.phase === "done"
+      ? (ev.empty ? "分身没留下改动，已收掉" : `改动都在分支 ${cut(ev.branch, 28)} 上`)
+      : `另有任务在改这个仓库，这趟进了分身 ${cut(ev.branch, 28)}`);
     case "sleep": return say("moon", "本机睡过一觉，任务时限已顺延");
     case "ask_user": return say("circle-help", "有事要问你，在等你回答");
     case "status": return cut(ev.text) ? say(ev.starting ? "monitor" : "loader-circle", cut(ev.text)) : keep;

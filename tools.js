@@ -43,6 +43,20 @@ function withWorkspace(root, fn) {
   if (!root) return fn();
   return wsStore.run(path.resolve(root), fn);
 }
+/**
+ * 把**当前这条异步链**的工作目录换掉，一直到这条链跑完。
+ *
+ * 跟 withWorkspace 是一回事，区别只在写法：withWorkspace 要求把后面的代码整段包进回调里。
+ * /api/chat 那个处理函数从鉴权到收尾三百多行，为了换个根把它整体缩进一层，
+ * 得到的是一份没人看得懂的 diff 和一堆没必要的合并冲突。
+ *
+ * 安全性上两者一样：express 每个请求各自一条异步链，enterWith 只染当前这条，
+ * 别的请求、后台定时任务都串不进来。
+ */
+function enterWorkspace(root) {
+  if (!root) return;
+  wsStore.enterWith(path.resolve(root));
+}
 function getWorkspaceDir() {
   return ws();
 }
@@ -4183,4 +4197,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

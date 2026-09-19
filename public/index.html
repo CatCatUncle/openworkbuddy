@@ -1444,6 +1444,12 @@
   .interject-note { align-self: flex-end; max-width: 70%; margin: 6px 0; padding: 8px 12px; border-radius: var(--radius-lg); background: var(--owb-brand-weak); color: var(--owb-brand-text); font-size: 14px; }
   .interject-note .lb { font-size: 12px; opacity: .75; margin-bottom: 2px; }
   .interject-note.pending { opacity: .6; }
+  /* 分身提示：跟插队提示同一族，但靠左、灰底——它不是用户说的话，是一条现场说明。
+     里面有 git 命令，得允许换行，不然合回去那句会被截掉一半 */
+  .wt-note { align-self: flex-start; max-width: 86%; margin: 6px 0; padding: 8px 12px; border-radius: var(--radius-lg);
+    background: var(--owb-bg-side); color: var(--owb-text-2); font-size: 13px; white-space: pre-wrap; word-break: break-word;
+    border: 1px solid var(--owb-border); }
+  .wt-note .lb { display: flex; align-items: center; gap: 4px; font-size: 12px; opacity: .8; margin-bottom: 2px; color: var(--owb-text); }
   /* AI 拿不准时的提问卡：一条选项一行（短语 + 选它意味着什么），键盘 1/2/3/4 直选 */
   .ask-card { align-self: stretch; margin: 12px 0; padding: 14px 16px 12px; border: 1px solid var(--owb-border); border-left: 3px solid var(--owb-brand); border-radius: var(--radius-xl); background: var(--owb-bg); box-shadow: var(--shadow-surface); }
   .ask-hd { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--owb-text-3); margin-bottom: 8px; }
