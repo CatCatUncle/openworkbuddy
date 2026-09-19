@@ -54,9 +54,43 @@ function preferData(...seg) {
   return fs.existsSync(mine) ? mine : appPath(...seg);
 }
 
+/**
+ * 拷一整棵目录，能走 APFS 的 clonefile 就走（cp -c）。
+ *
+ * clonefile 是写时复制：拷完两边各是各的文件，改哪边都不影响对面，语义和真拷贝一模一样，
+ * 但底下共享同一批数据块，所以几乎不占盘、也几乎不花时间。
+ *
+ * 值得为这个多写十行，是因为 seedDataDir 每铺一个新数据目录就要把 skills/ 整份拷过去。
+ * 本机装了 ppt-master 之后这一份是 189M，实测（df 量真占盘，不是 du——du 看不见 clone 共享）：
+ *
+ *     普通拷贝 170MB / 次     clone 5MB / 次
+ *
+ * 装机的真实用户首次启动就得干等这一下。更凶的是端到端测试：每个用例起一个新 HOME，
+ * 一轮几十个用例约 7.5G 白写，攒几十轮就是 /var/folders 底下上百 G——磁盘报到 99% 那次
+ * 就是这么来的（清理那一半在 test/e2e.js 的 reapStaleTempHomes）。
+ *
+ * 不是 macOS、不是 APFS、跨卷、或者 cp 不认 -c：退回 fs.cpSync。退回的是慢，不是错。
+ * 失败过一次就整个进程不再试——否则每个技能目录都要白 spawn 一次 cp。
+ */
+let canClone = process.platform === "darwin";
+function copyTree(from, to) {
+  if (canClone) {
+    try {
+      require("child_process").execFileSync("/bin/cp", ["-Rc", from, to], { stdio: "ignore" });
+      return;
+    } catch {
+      canClone = false;
+      // 挂在半道上会留下一棵拷了一半的树，下面 cpSync 撞见它就只补缺的那几个文件，
+      // 拼出来的东西比没拷更难查。先清干净再走老路。
+      try { fs.rmSync(to, { recursive: true, force: true }); } catch {}
+    }
+  }
+  fs.cpSync(from, to, { recursive: true });
+}
+
 function copyIfMissing(from, to) {
   if (fs.existsSync(to) || !fs.existsSync(from)) return false;
-  fs.cpSync(from, to, { recursive: true });
+  copyTree(from, to);
   return true;
 }
 
@@ -96,4 +130,4 @@ function resolvePort(env, cfg) {
   return (cfg && cfg.server && cfg.server.port) || 3800;
 }
 
-module.exports = { APP_DIR, DATA_DIR, dataPath, appPath, preferData, seedDataDir, isPackaged, resolvePort };
+module.exports = { APP_DIR, DATA_DIR, dataPath, appPath, preferData, seedDataDir, isPackaged, resolvePort, _copyTree: copyTree };

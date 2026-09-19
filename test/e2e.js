@@ -32,6 +32,43 @@ const mediaModels = require("../media-models");
 const WORKSPACE = setWorkspaceDir(fs.mkdtempSync(path.join(os.tmpdir(), "owb-e2e-ws-")));
 
 /**
+ * 开跑前先收拾上几轮留下的摊子。
+ *
+ * 每个用例都 mkdtemp 一个新 OPENWORKBUDDY_HOME 再起 server.js，而 paths.js 的 seedDataDir()
+ * 会把仓库 skills/ 整个 cpSync 进去——一个 home 就是 189M（光 ppt-master 占 172M）。跑完了在
+ * finally 里删掉的那些没事，问题是 Ctrl-C、断言挂在建目录和 finally 之间、子进程被 SIGKILL
+ * 带走，这三种都留得下来。一轮几十个用例 ≈ 7.5G，攒几十轮就是上百 G 躺在 /var/folders 底下，
+ * 而那地方没人会想到去翻——真出过这事，磁盘报到 99% 才查出来是这儿。
+ * macOS 自己清 /var/folders 要等重启后很久，指望不上。
+ *
+ * 所以每轮开跑时自己回收一次。只动 24 小时以上没人碰过的：并行跑的另一轮、或者刚跑完
+ * 还留着现场等人看的，都不在这个范围里。
+ */
+function reapStaleTempHomes() {
+  const TMP = os.tmpdir();
+  const DAY = 24 * 3600 * 1000;
+  let names, n = 0;
+  try { names = fs.readdirSync(TMP); } catch { return; }
+  for (const name of names) {
+    // owb-* 是各用例的 home/工作区（deploy 那边播种用的 owb-seed- 也在内），
+    // ledger-*.json 是迁移账本落在 tmp 根上的。
+    // e2e-* 也得算：这个文件里有十几个用例用的是它（e2e-sched-、e2e-mem-、e2e-plugin-……）。
+    // 头一版只写了 owb-，结果 owb-* 那边清得干干净净，e2e-* 一个没动，光
+    // e2e-sched- 就攒了 588 个、其中 533 个超 24 小时——跨了几十轮，谁也没想到去翻。
+    // 别再靠记性对前缀：repo-hygiene【7】会把这条正则跟全仓库的 mkdtemp 前缀对一遍。
+    if (!/^(owb-|e2e-)/.test(name) && !/^ledger-[\w.-]+\.json$/.test(name)) continue;
+    const full = path.join(TMP, name);
+    try {
+      if (Date.now() - fs.statSync(full).mtimeMs < DAY) continue;
+      fs.rmSync(full, { recursive: true, force: true });
+      n++;
+    } catch {}
+  }
+  if (n) console.log("🧹 清掉 " + n + " 个上几轮留下的临时目录");
+}
+reapStaleTempHomes();
+
+/**
  * 起一条真的 server.js 打端到端，端口交给系统分配。
  *
  * 以前每处各写一遍 `3900 + 随机 90` 自己挑端口。一轮 e2e 里有五处这么干，撞上就是死局：
@@ -13971,7 +14008,7 @@ async function testSessionIndex() {
     assert.deepStrictEqual(mine(boss), ["s_2", "s_1", "s_4"], "老板的侧栏漏了：" + JSON.stringify(mine(boss)));
     assert.deepStrictEqual(mine(staff), ["s_3", "s_4"], "同事的侧栏不对：" + JSON.stringify(mine(staff)));
     assert.ok(mine(boss).includes("s_4") && mine(staff).includes("s_4"),
-      "★升级上来那些没记归属的老会话被藏了★ 这正是用户说「历史全没了」的那一批");
+      "★升级上来那些没记归属的老会话被藏了★ 「历史全没了」的报障就是这一批");
     assert.deepStrictEqual(rows.filter((r) => M.ownSession(null, r)).map((r) => r.id), ["s_2", "s_3", "s_1", "s_4"],
       "没开账号体系（一个人用）时反倒过滤了");
 
@@ -14107,7 +14144,7 @@ async function testSessionIndex() {
  *   · 超过 CANVAS_MAX_NODES 的画布，读出来就被截断，界面拖一下自动回存 → 盘上真的只剩 500 个；
  *   · 老版本/新版本建的、这个版本不认识的 kind，读的时候直接扔掉 → 升级一次少一批节点；
  *   · 文件写到一半断电，读出来是一张空画布 → 界面画白板 → 自动保存 → 残骸被盖成 []。
- * 三条都是「打开一看东西没了」，而且都发生在升级之后，正好对上用户说的那个场景。
+ * 三条都是「打开一看东西没了」，而且都发生在升级之后，正好对上报障场景。
  *
  * 所以这条测试盯的不是某个函数的返回值，是这三条路本身：拿真 server.js 跑一遍，
  * 每一条都验「数据还在不在」，而不是验「有没有报错」。
@@ -14227,9 +14264,22 @@ async function testCanvasDataLoss() {
 // 从老版本升上来那一下：旧文件收进新文件夹、画布先留底、跑一次就不再跑。
 // 装过老版本的机器升上来，之前的文件得替人收进新文件夹里整理好。
 // 这条测试真起 server.js，对着一个照老版本样子摆好的 home，因为要验的恰恰是「开机那一下」。
+// 这条测试造 5 个临时 home，而每个 home 一起 server.js 就被 seedDataDir() 铺进 189M 的
+// skills/。以前它是全文件唯一一个没有 finally 的用例——挂在中间就留一堆下来，攒了 103 个、
+// 20G，磁盘报到 99% 才查出来。收尾必须兜住，不能指望跑到最后一行。
 async function testUpgradeMigration() {
+  const tmps = [];
+  const mktmp = (prefix) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); tmps.push(d); return d; };
+  try {
+    return await _testUpgradeMigrationBody(mktmp);
+  } finally {
+    for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
+  }
+}
+
+async function _testUpgradeMigrationBody(mktmp) {
   const http = require("http"), crypto = require("crypto");
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-upgrade-"));
+  const home = mktmp("owb-upgrade-");
   const token = "e2e" + crypto.randomBytes(12).toString("hex");
   fs.mkdirSync(path.join(home, "data"), { recursive: true });
   fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
@@ -14319,7 +14369,7 @@ async function testUpgradeMigration() {
 
   // ── ⑦ 撞名一律跳过。宁可这一个不整理，也不能盖掉那边那份 ─────────────────
   const migrate = require(path.join(__dirname, "..", "migrate.js"));
-  const ws2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-upgrade2-"));
+  const ws2 = mktmp("owb-upgrade2-");
   const dst = path.join(ws2, "以前的文件_" + migrate._internals.stampToday());
   fs.mkdirSync(dst, { recursive: true });
   fs.writeFileSync(path.join(dst, "撞名.txt"), "早就在这儿的");
@@ -14331,7 +14381,7 @@ async function testUpgradeMigration() {
   assert(r3.skipped.length === 1, "跳过的没记下来，用户不知道有一个没整理：" + JSON.stringify(r3));
 
   // ── ⑧ 根上本来就没有散文件：一个空文件夹都不许建 ────────────────────────
-  const ws3 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-upgrade3-"));
+  const ws3 = mktmp("owb-upgrade3-");
   migrate.runMigrations(ws3, path.join(ws3, "..", "ledger-" + Date.now() + ".json"), { priorUse: true, version: "9.9.9" });
   assert(fs.readdirSync(ws3).length === 0, "★干净的工作区被建了个空文件夹★ 没事可做就该什么都不做：" + fs.readdirSync(ws3).join(" "));
 
@@ -14339,7 +14389,7 @@ async function testUpgradeMigration() {
   // 要整理的是**更新的时候**之前留下的那些文件。
   // 刚装完就去翻人家文件夹，那不是整理，那是擅自动别人的东西——
   // 而且这条最容易写错：只要拿「账本里没记过」当升级的证据，全新装的机器就全中招
-  const ws4 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-fresh-"));
+  const ws4 = mktmp("owb-fresh-");
   const freshLedger = path.join(ws4, "..", "ledger-fresh-" + Date.now() + ".json");
   for (const n of ["用户自己的稿子.md", "别人给的素材.png"]) {
     const f = path.join(ws4, n); fs.writeFileSync(f, "x"); fs.utimesSync(f, OLD, OLD);
@@ -14354,8 +14404,8 @@ async function testUpgradeMigration() {
   assert(!fs.readdirSync(ws4).some((n) => n.startsWith("以前的文件_")),
     "★全新装的机器后来升级时补整理了★ 这刀早就不该有了：" + fs.readdirSync(ws4).join(" "));
 
-  // ⑨-2 反向对照：同样没有账本，但这台机器以前用过 —— 这才是用户说的那种「升级」
-  const ws5 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-old-install-"));
+  // ⑨-2 反向对照：同样没有账本，但这台机器以前用过 —— 这才是真正的「升级」
+  const ws5 = mktmp("owb-old-install-");
   const f5 = path.join(ws5, "老版本的产出.md"); fs.writeFileSync(f5, "x"); fs.utimesSync(f5, OLD, OLD);
   migrate.runMigrations(ws5, path.join(ws5, "..", "ledger-old-" + Date.now() + ".json"), { priorUse: true, version: "1.1.0" });
   assert(fs.readdirSync(ws5).some((n) => n.startsWith("以前的文件_")),
