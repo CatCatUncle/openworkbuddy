@@ -245,16 +245,17 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 20** macOS refused to open the downloaded build; one command routes around it: `curl -fsSL .../install-mac.sh | bash` — a curl'd file carries no quarantine flag, so there is no dialog at all
+- **Sep 20** The infinite canvas **can select a whole area now**: Shift / ⌘ to add or drop, a visible marquee toggle in the toolbar, ⌘A for all, Delete to remove them together. The box used to draw and highlight fine, and then Delete did nothing — focus never landed on the canvas
+- **Sep 20** Diagrams **no longer come out as SVG with no PNG** (Feishu docs and Word only take PNG): the image hits the disk in two seconds, Chrome just hangs around afterwards, and the old code waited out the timeout and threw the good image away with it
+- **Sep 20** An expanded storyboard progress bar **no longer covers the canvas**, and the floating toolbar moves with it, so the script and character-sheet cells are visible again
+- **Sep 20** "N character sheets are on the canvas but gone from disk" **stops crying wolf**: every path is now checked against the disk one by one, and anything unresolvable keeps quiet
 - **Sep 19** Eval runs **no longer touch your real memory, preferences or quota ledger**; the task set gained long-haul, multi-turn and memory-recall shapes that a single-turn task can't test
 - **Sep 19** When two tasks change the same repo, **the second one goes off into its own git worktree** — not one byte of the tree in front of you moves
 - **Sep 19** Permissions rebuilt as **RBAC** with a super-admin tier: manage only a strictly lower tier, and all four routes to minting an admin go through the same check
-- **Sep 19** **Models that can't be reached are no longer hit over and over**: 401 / 403 / 404 pause that channel for 30 minutes on the first hit, and a channel in arrears is cut off after one
 - **Sep 19** A stuck task **stops itself** now — five shapes of stuck are recognised, and it names the road to fix instead of suggesting you raise the cap
 - **Sep 19** **Anything can be rolled back**: storyboard shots to an earlier version, and file edits from the step card, which opens that step's diff next to a rewind button
 - **Sep 19** **Opening a page in a real browser to look at it** works now: full-page screenshots and JS values, on its own Chrome profile so it never touches the windows you have open
-- **Sep 18** The sidebar's task history **searches the conversation**, and by meaning, with every hit labelled by which way found it
-- **Sep 17** A finished task asks before it leaves a mess behind: the hundreds of extracted frames, the audio stems, the build output — **the cut and the report are never touched**
-- **Sep 14** An **AI short-drama infinite canvas**: script, characters, shots, assets and the cut, all on one canvas
 
 Older entries → **[Changelog](CHANGELOG.en.md)**.
 
