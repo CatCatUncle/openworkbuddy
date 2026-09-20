@@ -958,15 +958,26 @@ const ATTACH_HTML =
 // 页面里其他文件提供的东西，在这儿给最小替身；网络请求全部截下来当证据
 const ATTACH_STUBS = [
   IC_STUB,
-  "window.uploads = []; window.toasts = []; window.sessionId = 's_test_1';",
+  "window.uploads = []; window.toasts = []; window.previewed = []; window.sessionId = 's_test_1';",
+  // 慢和失败都得能造出来：这一段里「没传完就点发送」「传挂了怎么救回来」两条，
+  // 靠真实网络的快慢去撞是撞不出来的
+  "window.uploadDelay = 0; window.uploadFail = false;",
   "window.fetch = async (url, init) => {",
-  "  if (url === '/api/upload') { window.uploads.push(JSON.parse(init.body)); return { ok: true, json: async () => ({}) }; }",
+  "  if (url === '/api/upload') {",
+  "    const body = JSON.parse(init.body);",
+  "    window.uploads.push(body);",
+  "    if (window.uploadDelay) await new Promise((r) => setTimeout(r, window.uploadDelay));",
+  "    if (window.uploadFail) return { ok: false, status: 500, json: async () => ({}) };",
+  // 真服务端回的就是这三样；path 是文件在工作目录里的相对路径，chip 点开要靠它
+  "    return { ok: true, json: async () => ({ ok: true, name: body.name, path: 'out/' + body.name }) };",
+  "  }",
   "  return { ok: true, json: async () => [] };",
   "};",
   'window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));',
   "window.renderFiles = () => {};",
   "window.syncInputHl = () => {};",
   "window.syncSendBtn = () => {};",
+  "window.previewFile = (name) => window.previewed.push(name);",
   "window.inputEl = document.getElementById('input');",
 ].join("\n");
 
@@ -984,6 +995,26 @@ const ATTACH_CHECKS = `
     target.dispatchEvent(ev);
     return ev;
   };
+  // 固定 tick 数是会飘的：缩略图要过一遍 createImageBitmap，上传要过一遍 FileReader，
+  // 快的机器 40ms 够、慢的机器不够，测试就变成掷骰子。一律等条件，不等时间。
+  const until = async (fn, ms = 2000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const v = fn();
+      if (v) return v;
+      if (Date.now() > end) throw new Error("等了 " + ms + "ms 还没等到");
+      await new Promise((r) => setTimeout(r, 15));
+    }
+  };
+  const settle = () => until(() => !pendingAttach.some((x) => x.state === "uploading"));
+  const png = (name) => new File([bytes(B64PNG)], name, { type: "image/png" });
+  const dropFiles = async (files) => {
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(f);
+    fire(document.body, "drop", "dataTransfer", dt);
+    await tick();
+    await settle();
+  };
 
   // ---- 1. 粘贴截图：存进工作空间、chip 带缩略图、二进制一个字节都不能变 ----
   {
@@ -997,7 +1028,7 @@ const ATTACH_CHECKS = `
     ok("上传带上了会话 id", up.session === "s_test_1", JSON.stringify(up.session));
     ok("剪贴板的通用名换成时间戳", /^粘贴图片_\\d{4}_\\d{6}\\.png$/.test(up.name), up.name);
     ok("图片二进制没被改坏", up.data_b64 === B64PNG);
-    ok("chip 带缩略图", !!document.querySelector("#attach-chips img.attach-thumb"));
+    ok("chip 带缩略图", !!(await until(() => document.querySelector("#attach-chips img.attach-thumb"))));
     ok("粘贴被接管并在光标处留下图片锚点", ev.defaultPrevented && /【图片 1：粘贴图片_\\d{4}_\\d{6}\\.png】/.test(inputEl.value), inputEl.value);
   }
 
@@ -1084,6 +1115,128 @@ const ATTACH_CHECKS = `
     ok("兼容清单按输入里的锚点顺序排列", out.indexOf(imageRefs[1].name, noteAt) < out.indexOf(textRef.name, noteAt) && out.indexOf(textRef.name, noteAt) < out.indexOf(imageRefs[0].name, noteAt), out.slice(noteAt));
     ok("发完 chip 清空", chips().length === 0);
   }
+  // ---- 9. 删掉一枚再加一枚：编号不许复用 ----
+  // 以前是 filter(同类).length + 1。加「图片 1」「图片 2」，删掉图片 1，再加一张——
+  // 长度又是 1，新的还叫「图片 2」：界面上并排两个「图片 2」，发给模型的也是两个。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0;
+    await dropFiles([png("a.png"), png("b.png")]);
+    chips()[0].querySelector(".attach-x").click();          // 删掉「图片 1：a.png」
+    await dropFiles([png("c.png")]);
+    const labels = chips().map((c) => c.querySelector("em").textContent);
+    ok("删掉一枚再加一枚，编号不复用", new Set(labels).size === labels.length, labels.join(" / "));
+    ok("锚点也没撞（模型不会看到两个「图片 2」）",
+       new Set(pendingAttach.map((x) => x.marker.replace(/：.*/, ""))).size === pendingAttach.length,
+       JSON.stringify(pendingAttach.map((x) => x.marker)));
+  }
+
+  // ---- 10. 松手那一瞬间就得有东西：chip 和锚点不等网络 ----
+  // 以前是传完才挂 chip。4MB 就有 124ms 的空窗，30MB 走手机网更久——那段时间界面一片空白，
+  // 用户以为没拖进去，再拖一次。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0;
+    window.uploadDelay = 150;
+    dropFiles([new File([new Uint8Array(1024)], "片子.mp4", { type: "video/mp4" })]);
+    ok("松手当场就有 chip，不等服务器", chips().length === 1, "chip 数=" + chips().length);
+    ok("松手当场锚点就在输入里", /【视频 1：片子\\.mp4】/.test(inputEl.value), inputEl.value);
+    ok("传的过程里 chip 上转着圈", !!chips()[0].querySelector(".attach-state .spinner"), chips()[0].className);
+    ok("没传完不许点开（点开只会 404）", chips()[0].querySelector(".attach-open").disabled);
+    await until(() => pendingAttach[0] && pendingAttach[0].state === "done");
+    ok("传完转圈停了、可以点开看", !chips()[0].querySelector(".attach-state .spinner") && !chips()[0].querySelector(".attach-open").disabled);
+    window.uploadDelay = 0;
+  }
+
+  // ---- 11. 同一个文件又拖一次：不多一枚 chip，但得让人看见 ----
+  // 以前是彻底静默：照样发一次上传请求，chip 不变、输入框不变、一个字的提示都没有。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.toasts = [];
+    await dropFiles([png("同一张.png")]);
+    const n = uploads.length;
+    await dropFiles([png("同一张.png")]);
+    ok("重复的文件不挂第二枚 chip", chips().length === 1, "chip 数=" + chips().length);
+    ok("但明说了它已经在这条消息里", window.toasts.some((t) => /已经在这条消息里/.test(t)), JSON.stringify(window.toasts));
+    ok("内容照样更新成最新的那份", uploads.length === n + 1, n + " → " + uploads.length);
+  }
+
+  // ---- 12. 拖进来一个文件夹：不传、不挂 chip、说清楚该怎么办 ----
+  // 以前当成一个 0 字节的文件传上去了：工作目录里多一个同名垃圾文件，chip 还告诉用户「加好了」。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.toasts = [];
+    const n = uploads.length;
+    await dropFiles([new File([], "我的素材", { type: "" })]);
+    ok("文件夹不当文件传上去", uploads.length === n, "多发了 " + (uploads.length - n) + " 个上传请求");
+    ok("也不挂一枚骗人的 chip", chips().length === 0);
+    ok("提示里点名了是哪个，还说了该怎么办",
+       window.toasts.some((t) => t.includes("我的素材") && /文件夹/.test(t) && /zip|选中/.test(t)), JSON.stringify(window.toasts));
+  }
+
+  // ---- 13. 传失败：锚点必须撤掉，chip 留着能重试 ----
+  // 锚点留在输入里 = 告诉模型"这个文件有"，它照着去读只会扑空。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.toasts = [];
+    window.uploadFail = true;
+    await dropFiles([new File([new TextEncoder().encode("x")], "传不上去.md", { type: "text/markdown" })]);
+    await until(() => pendingAttach[0] && pendingAttach[0].state === "failed");
+    ok("失败的锚点从输入里撤掉了", !inputEl.value.includes("传不上去.md"), JSON.stringify(inputEl.value));
+    ok("chip 留着并且变红", chips().length === 1 && chips()[0].classList.contains("is-failed"), chips()[0].className);
+    ok("红 chip 上有一颗重试键", !!chips()[0].querySelector(".attach-retry"));
+    ok("失败的不进发给模型的清单", attachmentOrder(inputEl.value).length === 0);
+    window.uploadFail = false;
+    chips()[0].querySelector(".attach-retry").click();
+    await until(() => pendingAttach[0].state === "done");
+    ok("重试救得回来（文件还在用户手里，别让他重新去 Finder 找）",
+       !chips()[0].classList.contains("is-failed") && attachmentOrder(inputEl.value).length === 1);
+  }
+
+  // ---- 14. 还在传的时候点发送：拦住，别发一条自带死链的消息 ----
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.toasts = [];
+    window.uploadDelay = 150;
+    dropFiles([new File([new Uint8Array(1024)], "还在传.mp4", { type: "video/mp4" })]);
+    inputEl.value = "把这个片子剪成 30 秒";
+    const out = composeOutgoing();
+    ok("没传完就发 → 拦住", out === "", JSON.stringify(out));
+    ok("输入框一个字都没被清掉", inputEl.value === "把这个片子剪成 30 秒", JSON.stringify(inputEl.value));
+    ok("而且说清了在等什么", window.toasts.some((t) => /在传/.test(t)), JSON.stringify(window.toasts));
+    await until(() => pendingAttach[0] && pendingAttach[0].state === "done");
+    ok("传完就能发了", composeOutgoing().includes("把这个片子剪成 30 秒"));
+    window.uploadDelay = 0;
+  }
+
+  // ---- 15. chip 上能看见体积，能用键盘操作，点名字能打开 ----
+  // 以前 chip 上只有一个文件名：1KB 的草稿和 25MB 的片子长得一模一样；
+  // 删除键是个挂了 onclick 的 <b>，鼠标能点，Tab 过去空无一物，读屏也念不出来。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.previewed = [];
+    await dropFiles([new File([new Uint8Array(7 * 1048576)], "季度汇报.pdf", { type: "application/pdf" })]);
+    const c = chips()[0];
+    ok("chip 上写着多大", /7\\.0 MB/.test(c.querySelector(".attach-size").textContent), c.textContent);
+    ok("两颗都是真按钮（键盘走得到、读屏念得出）",
+       c.querySelectorAll("button").length === 2 && c.querySelector(".attach-x").getAttribute("aria-label").includes("季度汇报.pdf"),
+       c.innerHTML.slice(0, 120));
+    c.querySelector(".attach-open").click();
+    ok("点名字就把这份素材打开看", window.previewed.length === 1, JSON.stringify(window.previewed));
+    ok("打开的是它在工作目录里的真实路径，不是光一个文件名",
+       window.previewed[0] === "out/季度汇报.pdf", JSON.stringify(window.previewed));
+  }
+
+  // ---- 16. 缩略图是缩过的，不是把整份文件塞进 img.src ----
+  // 以前直接 data:...;base64,<整份文件>：实测 300KB 的图片挂上去是 409,622 个字符，
+  // 浏览器还按原分辨率解一遍码再缩到 28 像素。贴几张手机照片就是几百兆内存。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0;
+    const cv = document.createElement("canvas"); cv.width = 1600; cv.height = 1200;
+    const g = cv.getContext("2d");
+    for (let i = 0; i < 300; i++) { g.fillStyle = "hsl(" + ((i * 11) % 360) + ",70%,55%)"; g.fillRect((i * 37) % 1600, (i * 53) % 1200, 80, 60); }
+    const blob = await new Promise((r) => cv.toBlob(r, "image/png"));
+    await dropFiles([new File([blob], "大图.png", { type: "image/png" })]);
+    const img = await until(() => document.querySelector("#attach-chips img.attach-thumb"));
+    const raw = Math.ceil(blob.size / 3) * 4;  // 原来那版 img.src 就是整份文件的 base64
+    ok("缩略图没把整份文件挂到 DOM 上", img.src.length < raw / 4, img.src.length + " vs 整份 " + raw);
+    const px = await new Promise((r) => { const im = new Image(); im.onload = () => r(im.width); im.src = img.src; });
+    ok("解码的也是小图，不是 1600 宽的原图", px <= 96, "缩略图宽 " + px);
+  }
+
   return names;
 })()`;
 

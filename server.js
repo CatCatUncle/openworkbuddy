@@ -5124,7 +5124,9 @@ app.post("/api/upload", (req, res) => {
     if (sess && !sess.dir) {
       sess.pending_uploads = (sess.pending_uploads || []).filter((n) => n !== base).concat(base);
     }
-    res.json({ ok: true, name: base });
+    // 连相对路径一起回：前端那枚 chip 要按这个路径把文件打开给用户看。
+    // 只回 name 的话，落进会话成果文件夹的文件在工作目录根上根本找不到。
+    res.json({ ok: true, name: base, path: rel });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
