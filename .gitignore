@@ -85,3 +85,4 @@ docs/能力对照-Cowork-Codex.md
 
 # 本地 IDE 项目数据（记忆/配置/日志），不进仓库
 .codebuddy/
+.logs*

@@ -11186,6 +11186,50 @@ function testShortDrama() {
   console.log(`✅ AI 短剧（第一期，不碰画布）：技能教的 6 个工具参数都真收 · 分镜表 schema 钉住一镜 ${shotReq} 个必填字段 · 并发数与代码一致（${genMax}）· ${bad.length} 种改坏全被抓`);
 }
 
+/** 认得的 Linux 产物扩展名：electron-builder 的 target 名（小写）→ 上传时要收的 glob */
+const LINUX_ARTIFACT_GLOB = {
+  deb: "*.deb",
+  rpm: "*.rpm",
+  appimage: "*.AppImage",
+  snap: "*.snap",
+  "tar.gz": "*.tar.gz",
+  "tar.xz": "*.tar.xz",
+  "tar.lz": "*.tar.lz",
+  "tar.bz2": "*.tar.bz2",
+  pacman: "*.pkg.tar.zst",
+  freebsd: "*.pkg",
+  apk: "*.apk",
+  zip: "*.zip",
+  "7z": "*.7z",
+};
+
+/** 从 text[i]（一个 {）往后按括号配平，返回这整个 {...} 的原文 */
+function braceBlock(text, i) {
+  if (text[i] !== "{") return "";
+  let depth = 0;
+  for (let j = i; j < text.length; j++) {
+    if (text[j] === "{") depth++;
+    else if (text[j] === "}" && --depth === 0) return text.slice(i, j + 1);
+  }
+  return text.slice(i);
+}
+
+/** electron-builder 配置里所有 linux: {...} 块声明的 target 名（小写、去重） */
+function linuxPackageTargets(text) {
+  const out = [];
+  for (const m of text.matchAll(/^[ \t]*linux:\s*\{/gm)) {
+    const block = braceBlock(text, text.indexOf("{", m.index));
+    for (const t of block.matchAll(/target:\s*"([^"]+)"/g)) out.push(t[1].toLowerCase());
+  }
+  return [...new Set(out)];
+}
+
+/** upload-artifact 那一步的 path 里列了哪些 dist 通配符 */
+function uploadedGlobs(text) {
+  const step = (text.match(/uses:\s*actions\/upload-artifact@v\d+([\s\S]*?)(?=\n\s*- (?:uses|name|run):|$)/) || ["", ""])[1];
+  return [...step.matchAll(/dist\/(\*\.\w+(?:\.\w+)?)/g)].map((m) => m[1]);
+}
+
 /**
  * 发版这条链的静态体检。每一条对应一次真踩过或差点踩到的坑，纯读文件，不跑流水线。
  *
@@ -11202,8 +11246,8 @@ function releasePipelineDrift(src) {
   const tst = (src[".github/workflows/test.yml"] || "").replace(/^[ \t]*#.*$/gm, "");
   const all = src["test/all.js"] || "";
   const pkg = src["package.json"] || "";
-  // 注释里也会提 AppImage / linux（删掉那段时留的恢复说明），先把行注释剥掉再查，
-  // 否则「解释为什么删了」这句话本身会被当成「它还在」
+  // 注释里也会提 linux / AppImage 这类目标名（配置里留着不少解释性注释），先把行注释剥掉再查，
+  // 否则「解释为什么这么做」这句话本身会被当成一份真配置读（下面按 linux: {...} 块反查 target）
   const ebc = (src["electron-builder.config.js"] || "").replace(/^[ \t]*\/\/.*$/gm, "");
   const ish = src["install.sh"] || "";
 
@@ -11286,8 +11330,25 @@ function releasePipelineDrift(src) {
   }
 
   // —— 配了却从没在流水线上跑过的目标 = 未经验证的死代码
-  if ((/dist:linux/.test(pkg) || /AppImage/.test(ebc)) && !/\*\.AppImage/.test(rel)) {
-    miss.push("配了 Linux 目标，release.yml 的上传路径却不收它的产物 —— 这个目标从来没在流水线上打过一次（upload 那步是 if-no-files-found: error，只加腿不加 path 必红）");
+  // 这条闸门是 Linux 还没上线时写的（package.json 里没有 dist:linux，配置里只剩一段
+  // 「为什么删了」的注释），所以信号被简写成「出现 dist:linux / AppImage → 要求收 *.AppImage」。
+  // b2437e1 把 Linux 真接上线了，产物是 arm64 的 .deb（走 dpkg，不是 AppImage）：
+  // 再按 AppImage 判，就会把「收对了 deb」误判成没收。改成从 linux: {...} 里真配的 target
+  // 反推产物扩展名——以后换 rpm / AppImage / tar.gz，闸门跟着配置走，配置和流水线一错位照样当场红。
+  const uploadGlobs = uploadedGlobs(rel);
+  for (const t of linuxPackageTargets(ebc)) {
+    const glob = LINUX_ARTIFACT_GLOB[t];
+    if (!glob) {
+      miss.push(`Linux 目标 "${t}" 闸门认不出产物扩展名，收了没收没法判（认得的：${Object.keys(LINUX_ARTIFACT_GLOB).join(" / ")}）`);
+      continue;
+    }
+    if (!uploadGlobs.includes(glob)) {
+      miss.push(`Linux 目标产的是 ${glob}，release.yml 上传那步的 path 里没有它 —— 这条腿打完包什么也没收（if-no-files-found: error 会直接红）`);
+    }
+  }
+  // 脚本配了、流水线却没哪条腿调它 = 这个目标永远打不出来（只加配置不加腿，人看不出来）
+  if (/dist:linux/.test(pkg) && !/script:\s*dist:linux/.test(rel)) {
+    miss.push("package.json 里有 dist:linux，release.yml 的 build matrix 里却没有哪条腿跑它：这个目标从来不会被打出来");
   }
 
   // —— 一键安装的用法说明里还留着占位符 = 照着复制的人拿到 404
@@ -11336,8 +11397,14 @@ function testReleasePipeline() {
     ["两条腿全挂时 download-artifact 自己报错", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/\n\s*continue-on-error: true/, "") }],
     ["缺平台照发不落草稿", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/draft: .*\n/, "") }],
     ["免安装版又多产一个合体包", { "electron-builder.config.js": src["electron-builder.config.js"].replace("buildUniversalInstaller: false", "x: 1") }],
-    ["Linux 目标配了但流水线不打", { "package.json": src["package.json"].replace('"dist:mac"', '"dist:linux": "x",\n    "dist:mac"') }],
+    // Linux 那条腿整个从 matrix 里拿掉：脚本还配着 dist:linux，却没人调它
+    ["Linux 目标配了但流水线不打", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/\n\s*- os: ubuntu-latest\n\s*script: dist:linux\n\s*artifact: linux-arm64/, "") }],
+    // 腿照跑，但产物没被上传那步收走：这条腿白跑，而且 if-no-files-found: error 会当场红
+    ["Linux 的 deb 没收进上传路径", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/\n\s*dist\/\*\.deb/, "") }],
+    // 换个产物格式（deb → AppImage）：闸门得跟着配置走，不能还盯着 *.deb 放行
     ["AppImage 配了但上传路径不收它", { "electron-builder.config.js": src["electron-builder.config.js"].replace("portable: {", 'linux: { target: "AppImage" },\n  portable: {') }],
+    // 配置里冒出一个闸门不认识的 target：不许静默跳过，得说出来
+    ["Linux target 闸门认不出来", { "electron-builder.config.js": src["electron-builder.config.js"].replace('target: [{ target: "deb", arch: ["arm64"] }]', 'target: [{ target: "meiyouzhege", arch: ["arm64"] }]') }],
     ["curl 用法说明退回占位符", { "install.sh": src["install.sh"].replace("CatCatUncle/openworkbuddy/main/install.sh", "<你的仓库>/main/install.sh") }],
     ["pnpm 分支又吃 frozen-lockfile", { "install.sh": src["install.sh"].replace(" --no-frozen-lockfile", "") }],
     ["curl | bash 装完反而报失败", { "install.sh": src["install.sh"].replace("[ -t 0 ] && ", "") }],
