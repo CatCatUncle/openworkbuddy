@@ -4155,6 +4155,8 @@ const ONB_STUBS = `
               { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "" }],
     engine: "builtin", search: { provider: "jina", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
   let ONB_POST_OK = true, ENGINE_TEST_OK = true, SEARCH_TEST_OK = true, DONE_OK = true, SETTINGS_OK = true;
+  // 本机 Ollama 装了哪些模型：null = 它压根没跑起来
+  let OLLAMA_LIST = ["llama3.2:3b", "qwen3:8b", "gemma3:12b"];
   const GETS = []; window.__GETS = GETS;
   async function saveSettings(patch) { POSTS.push(["settings", patch]); return SETTINGS_OK; }
   window.fetch = async (url, opt) => {
@@ -4166,6 +4168,7 @@ const ONB_STUBS = `
     if (url === "/api/onboarding") { POSTS.push(["onboarding", body]); if (!ONB_POST_OK) return j({ ok: false, error: "这个 Key 上游不认（HTTP 401）" });
       const nm = body.kind ? (ST.templates.find((t) => t.kind === body.kind) || {}).name : body.model;
       ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: nm, model: "deepseek-chat" } }; return j({ ok: true, active_model: nm }); }
+    if (url === "/api/provider-models") { POSTS.push(["provider-models", body]); return j(OLLAMA_LIST === null ? { ok: false, why: "connect ECONNREFUSED", models: [] } : { ok: true, models: OLLAMA_LIST.map((id) => ({ id })) }); }
     if (url === "/api/engines/test") { POSTS.push(["engine-test", body]); return j(ENGINE_TEST_OK ? { ok: true, reply: "好" } : { ok: false, why: "没登录", hint: "先在终端跑 codex login" }); }
     if (url === "/api/settings" && method === "POST") { POSTS.push(["settings-raw", body]); if (body.agent && body.agent.engine) ST = { ...ST, needs_setup: false, engine: body.agent.engine, brain: { ok: true, via: "engine", name: body.agent.engine, model: "" } }; return j({ ok: true }); }
     if (url === "/api/search/test") { POSTS.push(["search-test"]); if (SEARCH_TEST_OK) ST = { ...ST, search: { provider: "tavily", has_key: true } }; return j(SEARCH_TEST_OK ? { ok: true, provider: "tavily", sample: "x" } : { ok: false, error: "tavily 返回 0 条结果" }); }
@@ -4195,6 +4198,77 @@ const ONB_CHECKS = `
   q("#onb-model").value = "Ollama"; q("#onb-model").dispatchEvent(new Event("change"));
   ok("选本地 Ollama 时 Key 框禁用", q("#onb-key").disabled && q("#onb-tip").textContent.includes("Ollama"));
   ok("本地模型：链接变成「装 Ollama」而不是「去拿 Key」", q("#onb-tip a.get-key") && q("#onb-tip a.get-key").textContent.includes("装 Ollama") && /ollama\.com/.test(q("#onb-tip a.get-key").href));
+
+  // ---- 本机 Ollama：用哪个模型得他自己挑，而且候选是现问出来的 ----
+  // 以前这一屏把模板里那个 qwen3:14b 当定局，连个选的地方都没有：手上跑着 llama3.2 也用不上，
+  // 想用就得先去下一个 9GB 的模型。本机装了什么只有这台机器知道，所以现问 /api/provider-models。
+  await tick(); await tick();
+  const mdl = () => q("#onb-mdl");
+  ok("选本机时冒出「用哪个模型」这一行", !q("#onb-mrow").hidden);
+  ok("候选是现问本机要来的，问的就是这条渠道的地址",
+     POSTS.some(([k, b]) => k === "provider-models" && b.base_url === "http://localhost:11434/v1"), JSON.stringify(POSTS));
+  const opts = [...mdl().querySelectorAll("option")].map((o) => o.value);
+  ok("列出来的就是这台机器上真装的那几个，外加「自己填…」",
+     JSON.stringify(opts) === JSON.stringify(["llama3.2:3b", "qwen3:8b", "gemma3:12b", "__custom__"]), JSON.stringify(opts));
+  ok("★默认不停在模板里那个没装的型号上★（停在那儿点下去就是一个 404）",
+     mdl().value === "llama3.2:3b" && !opts.includes("qwen3:14b"), mdl().value);
+
+  ok("选回云端时那一行收起来", (q("#onb-model").value = "DeepSeek", q("#onb-model").dispatchEvent(new Event("change")), q("#onb-mrow").hidden));
+
+  // 他照着提示去 ollama pull 了一个，回来得有地方再问一遍——没有这颗，清单就永远停在
+  // 他还没动手的那一刻，提示教他做的事做完了却没处生效
+  OLLAMA_LIST = ["llama3.2:3b", "qwen3:14b"];
+  q("#onb-model").value = "tpl:ollama"; q("#onb-model").dispatchEvent(new Event("change")); await tick(); await tick();
+  ok("★缓存不该把人锁死：拉完新模型点「重新问一次」，清单跟着变★", !!q("#onb-mdl-again"));
+  POSTS.length = 0;
+  q("#onb-mdl-again").click(); await tick(); await tick();
+  ok("「重新问一次」真的又去问了一趟", POSTS.some(([k]) => k === "provider-models"), JSON.stringify(POSTS));
+  ok("模板里那个型号本机真有，就选中它", mdl().value === "qwen3:14b", mdl().value);
+
+  // 提交时把他点的那个带上；云端那条路不带（用哪个型号是模板定死的，轮不到向导指手画脚）
+  POSTS.length = 0; ONB_POST_OK = false;
+  mdl().value = "llama3.2:3b"; q("#onb-go").click(); await tick(); await tick();
+  ok("验活带上了他点的型号", POSTS.some(([k, b]) => k === "onboarding" && b.kind === "ollama" && b.model_id === "llama3.2:3b"), JSON.stringify(POSTS));
+
+  // 「自己填…」：列表里没有的照样能用（本机 tag 名随便起，目录永远追不上）
+  mdl().value = "__custom__"; mdl().dispatchEvent(new Event("change"));
+  ok("选「自己填…」时输入框露出来", !q("#onb-mdl-custom").hidden);
+  POSTS.length = 0;
+  q("#onb-go").click(); await tick(); await tick();
+  ok("★空着就点：拦下来说人话，不拿空型号去打一趟必错的请求★",
+     !POSTS.some(([k]) => k === "onboarding") && /先选一个模型/.test(q("#onb-err").textContent), q("#onb-err").textContent);
+  q("#onb-mdl-custom").value = "  deepseek-r1:7b  ";
+  POSTS.length = 0; q("#onb-go").click(); await tick(); await tick();
+  ok("手填的型号照样带出去，两头的空格顺手去掉",
+     POSTS.some(([k, b]) => k === "onboarding" && b.model_id === "deepseek-r1:7b"), JSON.stringify(POSTS));
+
+  // Ollama 压根没跑起来：不能只丢一句「没拉到」，得告诉他在终端敲什么
+  OLLAMA_LIST = null;
+  q("#onb-mdl-again").click(); await tick(); await tick();
+  ok("连不上本机 Ollama：说清楚去终端敲哪两句，而不是一句「失败」",
+     /ollama serve/.test(q("#onb-mdl-tip").textContent) && /ollama pull/.test(q("#onb-mdl-tip").textContent), q("#onb-mdl-tip").textContent);
+  ok("连不上时也还留着「自己填…」这条路", [...mdl().querySelectorAll("option")].some((o) => o.value === "__custom__"));
+  // 「连上了，只是一个模型都没拉过」是另一档：Ollama 这时候回的是 200 + 空清单，不是错。
+  // 对这种人再喊一句 ollama serve 纯属瞎指挥——他已经起起来了
+  OLLAMA_LIST = [];
+  q("#onb-mdl-again").click(); await tick(); await tick();
+  ok("★连上了但一个模型都没装：只叫他 pull，不再叫他 serve★",
+     /ollama pull/.test(q("#onb-mdl-tip").textContent) && !/ollama serve/.test(q("#onb-mdl-tip").textContent), q("#onb-mdl-tip").textContent);
+  // ★这一条是上面那个缓存坑的正脸★：空清单不许进缓存，否则他起完 Ollama 再回来还是空的
+  OLLAMA_LIST = ["llama3.2:3b", "qwen3:8b", "gemma3:12b"];
+  q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+  q("#onb-model").value = "Ollama"; q("#onb-model").dispatchEvent(new Event("change")); await tick(); await tick();
+  ok("★起完 Ollama 再回来，这回就列得出来了（那一趟空清单没被缓存）★",
+     [...mdl().querySelectorAll("option")].map((o) => o.value).includes("gemma3:12b"),
+     [...mdl().querySelectorAll("option")].map((o) => o.value).join(","));
+
+  ONB_POST_OK = true;
+  q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+  POSTS.length = 0; ONB_POST_OK = false;
+  q("#onb-key").value = "sk-x"; q("#onb-go").click(); await tick(); await tick();
+  ok("★反向对照：云端那条路不带 model_id★",
+     POSTS.some(([k, b]) => k === "onboarding" && !("model_id" in b)), JSON.stringify(POSTS));
+  ONB_POST_OK = true;
   q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
 
   // ---- 验活失败：留在原地、原因写出来 ----
@@ -8618,6 +8692,13 @@ const AB_STUBS = `
   const mask = { classList: { remove() {} } };
   function openOnboarding() {}
   function fetch() { return Promise.resolve({ json: () => Promise.resolve(NEXT) }); }
+  // 「复制这条命令」按下去会走剪贴板和 toast；离屏窗口里两样都没有，各记一笔就行
+  let TOASTS = [], COPIED = null;
+  function toast(t, kind) { TOASTS.push(String(t) + (kind ? "/" + kind : "")); }
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: (t) => { COPIED = t; return Promise.resolve(); } },
+  });
 `;
 const AB_CHECKS = `
 (async () => {
@@ -8652,6 +8733,35 @@ const AB_CHECKS = `
   await draw({ current: "1.2.3", latest: "1.3.0", has_update: true, url: "https://example.invalid/rel", how: "去下载页拿新版。" });
   ok("有新版时「去下载页」露出来", link().style.display !== "none");
   ok("而且链接换成了服务端给的那条", link().getAttribute("href") === "https://example.invalid/rel", link().getAttribute("href"));
+
+  // ---- 那条升级命令：macOS 用户照着「下个新 dmg」升级，等于把自己升级成打不开 ----
+  // （新下的包带 com.apple.quarantine，双击就是「Apple 无法验证」，只有「完成 / 移到废纸篓」）
+  // 所以有新版时得当场把零弹窗那条 curl 摆出来，还得能点「复制」——90 个字符没人手抄。
+  const cmdBox = () => pane.querySelector("#ab-up-cmd");
+  const cmdTxt = () => pane.querySelector("#ab-up-cmd-t").textContent;
+  const CURL = "curl -fsSL https://example.invalid/install-mac.sh | bash";
+  await draw({ current: "1.2.3", latest: "1.3.0", has_update: true, how_cmd: CURL, how: "贴进终端。" });
+  ok("有新版时那条命令画出来了", cmdBox().style.display !== "none" && cmdTxt() === CURL, cmdTxt());
+  TOASTS = []; COPIED = null;
+  pane.querySelector("#ab-up-cmd-copy").click();
+  await tick();
+  ok("点「复制」进的是剪贴板里的整条命令，不是半截", COPIED === CURL, COPIED);
+  ok("而且告诉了他复制完该干什么", TOASTS.length === 1 && /终端/.test(TOASTS[0]), TOASTS);
+
+  // ---- 反向对照：已经是最新还摆一条「升级命令」，照着跑一趟等于白跑 ----
+  await draw({ current: "1.3.0", latest: "1.3.0", has_update: false, how_cmd: CURL, how: "已经是最新的了。" });
+  ok("已是最新时不摆升级命令", cmdBox().style.display === "none", cmdTxt());
+
+  // ---- 反向对照：Windows 那边没有这条命令（how_cmd 是空串），不许摆一个空框 ----
+  await draw({ current: "1.2.3", latest: "1.3.0", has_update: true, how_cmd: "", how: "下 setup.exe 覆盖装。" });
+  ok("没有命令可给时不摆一个空框", cmdBox().style.display === "none", cmdTxt());
+
+  // ---- 反向对照：上一次画出来的命令不许挂在「版本号没读到」下面 ----
+  // drawUpdate 是就地重画的（点「检查更新」不会重建这一屏），漏掉这一行就会留一条上次的命令
+  await draw({ current: "1.2.3", latest: "1.3.0", has_update: true, how_cmd: CURL, how: "贴进终端。" });
+  NEXT = d401; pane.querySelector("#ab-up-btn").click(); await tick(); await tick();
+  ok("降级成「版本号没读到」时，上一次那条命令跟着收走", cmdBox().style.display === "none",
+     pane.querySelector("#ab-ver").textContent + " | " + cmdBox().style.display);
 
   // ---- 反向对照三：版本号读到了、只是查线上失败——这时 error 该原样说出来，不能被兜底吞掉 ----
   await draw({ current: "1.2.3", error: "连不上 GitHub", how: "过会儿再点一次。" });
@@ -9840,7 +9950,7 @@ app.whenReady().then(async () => {
       const namesAB = await winAB.webContents.executeJavaScript(IC_BOOT + AB_STUBS + "\n" + AB_SRC + "\n" + AB_CHECKS, true)
         .catch((e) => { throw new Error("[关于页] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesAB) console.log("  \u2713 " + n);
-      console.log(`\u2705 \u524d\u7aef\uff1a\u5173\u4e8e\u9875\u8bfb\u4e0d\u5230\u7248\u672c\u53f7\u65f6\u4e0d\u628a undefined \u6446\u5230\u8138\u4e0a\uff08cookie \u8fc7\u671f\u00b7\u6b63\u5e38\u00b7\u6709\u65b0\u7248\u00b7\u67e5\u7ebf\u4e0a\u5931\u8d25\u00b7\u5b57\u6bb5\u6b8b\u7f3a \u4e94\u79cd\u5f62\u72b6\uff09${namesAB.length} \u9879\u901a\u8fc7`);
+      console.log(`\u2705 \u524d\u7aef\uff1a\u5173\u4e8e\u9875\u8bfb\u4e0d\u5230\u7248\u672c\u53f7\u65f6\u4e0d\u628a undefined \u6446\u5230\u8138\u4e0a\uff08cookie \u8fc7\u671f\u00b7\u6b63\u5e38\u00b7\u6709\u65b0\u7248\u00b7\u67e5\u7ebf\u4e0a\u5931\u8d25\u00b7\u5b57\u6bb5\u6b8b\u7f3a \u4e94\u79cd\u5f62\u72b6\u0020\u002b\u0020\u5347\u7ea7\u547d\u4ee4\u53ea\u5728\u6709\u65b0\u7248\u65f6\u9732\u51fa\u6765\uff09${namesAB.length} \u9879\u901a\u8fc7`);
     } finally {
       if (!winAB.isDestroyed()) winAB.destroy();
     }

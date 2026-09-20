@@ -1813,7 +1813,10 @@ app.post("/api/provider-models", async (req, res) => {
       .filter((m) => m.id)
       .map((m) => (m.sure ? { id: m.id, cap: m.cap, sure: true } : { id: m.id, cap: m.cap }))
       .slice(0, 600);
-    modelListCache.set(base, { at: Date.now(), models });
+    // 空清单不进缓存。它几乎不是稳定状态：Ollama 刚起来还没 pull 过东西、网关那头还在初始化，
+    // 都会先回一个空的 data。缓住它，用户照着提示去 ollama pull 完回来点「重新问一次」，
+    // 十分钟内拿到的还是那份空的——提示教他做的事做完了，界面上却没有任何变化
+    if (models.length) modelListCache.set(base, { at: Date.now(), models });
     res.json({ ok: true, models });
   } catch (e) {
     // 超时、DNS 挂了、返回的不是 JSON——都算「这家没有列表」，不是错误页
@@ -2742,11 +2745,17 @@ app.post("/api/onboarding", async (req, res) => {
     const entry = (config.models || []).find((m) => m.name === b.model);
     if (!entry) throw new Error("没有这个模型：" + b.model);
     if (!key && !isLocalModel(entry)) throw new Error("API Key 不能为空");
+    // 本机那条（Ollama）的型号是向导现问出来的：他电脑上装了什么只有他知道，
+    // 库里那条多半还写着出厂模板里的 qwen3:14b。点名了就照他说的来。
+    // 先只当作「这一趟拿它去验」，验过了才真写进 config——验不过还把人家原来能用的
+    // 型号改掉，等于一次失败的尝试把他本来跑得好好的配置弄坏了。
+    const wantModel = String(b.model_id || "").trim() || entry.model;
 
     if (b.skip_test !== true) {
-      const bad = await probeModel({ ...entry, api_key: key || entry.api_key });
+      const bad = await probeModel({ ...entry, model: wantModel, api_key: key || entry.api_key });
       if (bad) return res.json({ ok: false, error: bad });
     }
+    entry.model = wantModel;
 
     if (key) {
       // Key 归渠道那一层管（config.providers），不是模型条目。写在条目上看着像成了，

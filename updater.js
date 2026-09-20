@@ -52,12 +52,28 @@ function cmpVer(a, b) {
   return x.pre > y.pre ? 1 : -1;
 }
 
+// 升级要照抄的那条命令。单独出来是因为它得当一行等宽字、旁边带一颗「复制」——
+// 混在正文里既换不了行也点不动，用户只能手抄一条 90 字符的 URL。
+const MAC_INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/CatCatUncle/openworkbuddy/main/install-mac.sh | bash";
+function updateCmd(kind, platform = process.platform) {
+  return kind !== "source" && platform === "darwin" ? MAC_INSTALL_CMD : "";
+}
+
 function howToUpdate(kind, platform = process.platform) {
   if (kind === "source") {
     return "你是从源码跑的：在项目目录执行 git pull && npm install，重启即可，不用重装。";
   }
-  const pkg = platform === "win32" ? "新的 setup.exe" : platform === "darwin" ? "新的 dmg" : "新的安装包";
-  return `你装的是安装包：下载${pkg}覆盖装一次就行。配置、会话、工作区都在 ~/OpenWorkBuddy 目录里，覆盖安装不会动它们。`;
+  const keep = "配置、会话、工作区都在 ~/OpenWorkBuddy 目录里，覆盖安装不会动它们。";
+  // macOS 单独说一句：这个人手上那份是**能用的**，可他照着提示去浏览器下一个新 dmg，
+  // 新的那份带 com.apple.quarantine，双击又是「Apple 无法验证」，弹窗上只有「完成 / 移到废纸篓」——
+  // 升级一次反而把自己弄成打不开。所以在他动手之前就把零弹窗那条路给他。
+  if (platform === "darwin") {
+    return "你装的是安装包。升级最省事的是把下面这句贴进「终端」，全程没有弹窗。"
+      + "想自己下新的 dmg 也行，只是第一次打开会弹「Apple 无法验证」（签名证书还在申请）："
+      + "点「完成」→ 系统设置 → 隐私与安全性 → 滚到最下面 → 点「仍要打开」。" + keep;
+  }
+  const pkg = platform === "win32" ? "新的 setup.exe" : "新的安装包";
+  return `你装的是安装包：下载${pkg} 覆盖装一次就行。` + keep;
 }
 
 let cache = { at: 0, data: null };
@@ -66,10 +82,12 @@ let cache = { at: 0, data: null };
  * 查一次 GitHub Releases，和本机版本比一比。
  * 网络不通就如实说不通——不要静默当成「已是最新」，那会让人以为自己是最新的。
  */
-async function checkUpdate({ force = false, now = Date.now(), fetchImpl = fetch, timeoutMs = 10000, platform = process.platform } = {}) {
+async function checkUpdate({ force = false, now = Date.now(), fetchImpl = fetch, timeoutMs = 10000, platform = process.platform, install } = {}) {
   const current = currentVersion();
-  const kind = installKind();
-  const base = { current, install: kind, how: howToUpdate(kind, platform), page: RELEASES_PAGE };
+  // install 留个口子只为一件事：从仓库跑的时候 installKind() 永远是 source，
+  // 装包用户那条路（也就是唯一会撞上「Apple 无法验证」的那条）在测试里就永远走不到
+  const kind = install || installKind();
+  const base = { current, install: kind, how: howToUpdate(kind, platform), how_cmd: updateCmd(kind, platform), page: RELEASES_PAGE };
   if (!force && cache.data && now - cache.at < CACHE_MS) return { ...base, ...cache.data, cached: true };
   try {
     const r = await fetchImpl(RELEASES_API, {
@@ -98,4 +116,4 @@ async function checkUpdate({ force = false, now = Date.now(), fetchImpl = fetch,
 
 function resetCache() { cache = { at: 0, data: null }; }
 
-module.exports = { currentVersion, installKind, cmpVer, parseVer, howToUpdate, checkUpdate, resetCache, REPO, RELEASES_PAGE };
+module.exports = { currentVersion, installKind, cmpVer, parseVer, howToUpdate, updateCmd, checkUpdate, resetCache, REPO, RELEASES_PAGE };
