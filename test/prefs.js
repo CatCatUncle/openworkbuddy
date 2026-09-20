@@ -667,6 +667,36 @@ function runSourcePins() {
   ok(mainSrc.indexOf("OPENWORKBUDDY_HOME") < mainSrc.indexOf("excludedportrange"),
      "  └ 顺序钉子：数据目录那条写在端口 EACCES 前面（写后面就永远轮不到）");
 
+  // bootAdvice：开机闸门已经查出病因的三种死法，页面上不许再去猜。
+  // 闸门给的是中文人话（「依赖还没装…跑一次 npm install」），bootHint 认的是 Cannot find module、
+  // EADDRINUSE 这些英文报错——一条都对不上，于是最知道该怎么修的三种情况，
+  // 启动失败页的大标题全是「服务端启动时崩了，把这行贴到 issue 里」。
+  const bootAdvice = new Function("bootHint",
+    slice("electron-main.js", "bootAdvice") + "\nreturn bootAdvice;")(bootHint);
+  const bc = require(path.join(ROOT, "boot-check"));
+  for (const [what, facts, want] of [
+    ["Node 太老", { nodeVersion: "v16.20.2", missingDeps: [] }, /nodejs\.org|nvm/],
+    ["源码版依赖没装", { nodeVersion: "v20.0.0", missingDeps: ["express"] }, /npm install/],
+    ["装机版缺文件", { nodeVersion: "v20.0.0", missingDeps: ["express"], packaged: true }, /重新下载|Releases/],
+  ]) {
+    const p = bc.bootProblem(facts);
+    const err = Object.assign(new Error(p.title + " " + p.fix), { bootProblem: p });
+    const said = bootAdvice(err, err.message, 3800);
+    ok(want.test(said), `★启动失败页·${what}：写的是该怎么修★ 闸门已经知道了，页面上不许再写「去提 issue」`, said.slice(0, 50));
+    ok(!/贴到 GitHub issue/.test(said), `  └ ${what}：不许滑进「认不出来」那条兜底`);
+  }
+  // 反向对照：闸门没查出来的错（真崩了），照旧走 bootHint 那套猜
+  ok(/excludedportrange/.test(bootAdvice(new Error("listen EACCES: permission denied 0.0.0.0:3800"), "listen EACCES: permission denied 0.0.0.0:3800", 3800)),
+     "反向对照：不是闸门查出来的错，照旧按报错文本分诊（端口那条一字未动）");
+  ok(/issue/.test(bootAdvice(new Error("something exploded"), "something exploded", 3800)),
+     "反向对照：真认不出来的还是让他贴 issue");
+  // 先验料：不接上 bootProblem 的话，这三条确实全滑到兜底去——证明上面那几条测的是真东西
+  const bare = bc.bootProblem({ nodeVersion: "v16.20.2", missingDeps: [] });
+  ok(/贴到 GitHub issue/.test(bootHint(bare.title + " " + bare.fix, 3800)),
+     "先验料：光凭闸门那句中文，bootHint 认不出来（这正是这组断言要挡的东西）");
+  ok(/err\.bootProblem/.test(fs.readFileSync(path.join(ROOT, "boot-check.js"), "utf8")),
+     "闸门得把判据挂在错误上，壳那头才接得住");
+
   // pickBootLog：日志是出事时用户手里唯一的物证，它自己绝不许成为新的错因
   const pickBootLog = new Function("fs", "path", slice("electron-main.js", "pickBootLog") + "\nreturn pickBootLog;")(
     { mkdirSync: (d) => { if (/网络盘/.test(d)) throw new Error("EACCES"); }, statSync: () => ({ size: 0 }), truncateSync: () => {}, appendFileSync: () => {} },
@@ -684,7 +714,8 @@ function runSourcePins() {
       bootLog: () => {}, PAGE_UP: false, FATAL_SHOWN: false, win: null,
       showBootFailure: (e) => calls.failure.push(e),
       dialog: { showErrorBox: (t, b) => calls.box.push(t + "\n" + b) },
-      bootHint: () => "照着这句做", PORT: 3800, BOOT_LOG: "/tmp/ow.log",
+      bootHint: () => "照着这句做", bootAdvice: (e, m, p) => (e && e.bootProblem ? e.bootProblem.fix : "照着这句做"),
+      PORT: 3800, BOOT_LOG: "/tmp/ow.log",
       app: { isReady: () => true, whenReady: () => Promise.resolve(), exit: (c) => calls.exit.push(c) },
       ...over,
     };
@@ -697,6 +728,49 @@ function runSourcePins() {
   eq(f.calls.box.length, 1, "没有窗口时弹系统报错框（它不需要窗口就能显示——这是最后一道出口）");
   ok(/照着这句做/.test(f.calls.box[0]) && /\/tmp\/ow\.log/.test(f.calls.box[0]), "  └ 框里有人话建议，也有日志路径");
   eq(f.calls.exit[0], 1, "  └ 然后退进程，别留一个僵尸进程占着单实例锁");
+  // 没有窗口那条路（Windows 上「双击没反应」的正解）也得走同一套话：
+  // 系统报错框是这时候唯一的出口，在它里面写「去提 issue」而不是「跑一次 npm install」，
+  // 等于把已经查出来的病因又埋回去
+  f = mkFatal({});
+  f.fatal("测试阶段", Object.assign(new Error("依赖还没装"), { bootProblem: { title: "依赖还没装（找不到 express）。", fix: "在项目目录里跑一次 npm install。" } }));
+  ok(/npm install/.test(f.calls.box[0]),
+     "★系统报错框里也是闸门那句该怎么修★ 没有窗口的时候，这个框是唯一的出口", f.calls.box[0]);
+  ok(!/照着这句做/.test(f.calls.box[0]), "  └ 没有绕回去猜（猜出来的那句在这儿是错的）");
+
+  // 启动失败页那张真页面：大标题写该怎么修，下面红框里只放结论。
+  // 红框里再把解法原样重复一遍，等于同一句话读两遍，而红色的等宽字看着就像「又一条报错」
+  const mkPage = () => {
+    const seen = { url: "" };
+    const env = {
+      bootAdvice: (e, m, p) => (e && e.bootProblem ? e.bootProblem.fix : "猜出来的那句"),
+      bootHint: () => "猜出来的那句", PORT: 3800, BOOT_LOG: "/tmp/ow.log",
+      win: { isDestroyed: () => false, loadURL: (u) => { seen.url = u; }, show: () => {}, focus: () => {} },
+      fatal: () => {}, FATAL_SHOWN: false,
+      require: (id) => (id === "./package.json" ? { version: "9.9.9" } : require(id)),
+    };
+    const keys = Object.keys(env);
+    const fn = new Function(...keys, slice("electron-main.js", "showBootFailure") + "\nreturn showBootFailure;")(...keys.map((k) => env[k]));
+    return { show: fn, seen };
+  };
+  {
+    const { show, seen } = mkPage();
+    show(Object.assign(new Error("依赖还没装（找不到 express）。 在项目目录里跑一次 npm install。"),
+      { bootProblem: { title: "依赖还没装（找不到 express）。", fix: "在项目目录里跑一次 npm install。" } }));
+    const page = decodeURIComponent(seen.url.replace(/^data:text\/html;charset=utf-8,/, ""));
+    const big = (page.match(/<p>([^<]*)<\/p>/) || [])[1] || "";
+    const box = (page.match(/<pre>([\s\S]*?)<\/pre>/) || [])[1] || "";
+    ok(/npm install/.test(big), "★启动失败页的大标题就是该怎么修★", big);
+    ok(/找不到 express/.test(box), "  └ 红框里放的是结论（缺了谁）", box);
+    ok(!/npm install/.test(box), "★解法不在红框里重复第二遍★ 红色等宽字看着像又一条报错，而它其实是解法", box);
+  }
+  {
+    // 反向对照：不是闸门查出来的错，红框里照旧是原始报错——那才是贴 issue 时要的物证
+    const { show, seen } = mkPage();
+    show(new Error("listen EADDRINUSE: address already in use"));
+    const page = decodeURIComponent(seen.url.replace(/^data:text\/html;charset=utf-8,/, ""));
+    ok(/EADDRINUSE/.test((page.match(/<pre>([\s\S]*?)<\/pre>/) || [])[1] || ""),
+       "反向对照：真崩了的时候，红框里还是原始报错（贴 issue 要的就是它）");
+  }
 
   f = mkFatal({ win: { isDestroyed: () => false } });
   f.fatal("测试阶段", new Error("boom"));
