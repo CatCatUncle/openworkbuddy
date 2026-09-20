@@ -809,6 +809,10 @@ function renderAboutPane(pane) {
     <div class="card-item">
       <div class="t">${ic("refresh-cw")} 版本与更新 <span id="ab-ver" style="font-weight:400;color:var(--owb-text-3);font-size:12px">读取中…</span></div>
       <div class="d" id="ab-up-how" style="margin-bottom:8px">正在看有没有新版…</div>
+      <div id="ab-up-cmd" style="display:none;margin-bottom:8px">
+        <code id="ab-up-cmd-t" style="display:block;padding:8px 12px;border:1px solid var(--owb-border);border-radius:var(--radius-md);background:var(--owb-bg-hover);font-family:var(--owb-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);font-size:12px;overflow-x:auto;white-space:pre"></code>
+        <a href="#" class="link" id="ab-up-cmd-copy" style="display:inline-block;margin-top:4px;font-size:12px">${ic("copy")} 复制这条命令</a>
+      </div>
       <button class="btn-plain" id="ab-up-btn">检查更新</button>
       <a class="link" id="ab-up-link" href="https://github.com/CatCatUncle/openworkbuddy/releases/latest" target="_blank" rel="noreferrer" style="margin-left:10px;display:none">去下载页</a>
       <span class="ok-msg" id="ab-up-msg" style="margin-left:8px"></span>
@@ -853,6 +857,7 @@ function renderAboutPane(pane) {
 
   // 更新检查：默认用 6 小时缓存，点按钮才真去问 GitHub
   const upVer = pane.querySelector("#ab-ver"), upHow = pane.querySelector("#ab-up-how");
+  const upCmd = pane.querySelector("#ab-up-cmd"), upCmdT = pane.querySelector("#ab-up-cmd-t");
   const upMsg = pane.querySelector("#ab-up-msg"), upLink = pane.querySelector("#ab-up-link");
   // 读不到本机版本号，说明这次请求压根没走到更新检查那儿——最常见的是 cookie 过期，
   // 被登录闸以 {error:"未登录"} 挡了回来，而那个形状里没有 current 也没有 how。
@@ -865,17 +870,27 @@ function renderAboutPane(pane) {
         ? "登录状态过期了，刷新一下页面重新登录，这里就能看到版本和更新。"
         : "点右边「检查更新」再试一次；一直这样就是本机服务没起来，重启一下 OpenWorkBuddy。";
       upLink.style.display = "none";
+      upCmd.style.display = "none";     // 上一次画出来的那条命令别挂在「版本号没读到」下面
       return;
     }
     upVer.textContent = `当前 v${d.current}${d.install === "source" ? " · 源码运行" : " · 安装包"}`;
     upHow.textContent = (d.error ? `${d.error}。` : d.has_update ? `有新版 v${d.latest}。` : d.latest ? `已是最新（线上也是 v${d.latest}）。` : "") + (d.how || "");
     upLink.style.display = d.has_update ? "" : "none";
+    // 命令只在真有新版时露出来：已经是最新还摆一条「升级命令」，照着跑一趟等于白跑
+    const cmd = d.has_update ? (d.how_cmd || "") : "";
+    upCmdT.textContent = cmd;
+    upCmd.style.display = cmd ? "" : "none";
     if (d.url) upLink.href = d.url;
   };
   const loadUpdate = async (force) => {
     upMsg.style.color = ""; upMsg.textContent = force ? "查询中…" : "";
     try { drawUpdate(await fetch("/api/update" + (force ? "?force=1" : "")).then(r => r.json())); upMsg.textContent = ""; }
     catch (e) { setMsg(upMsg, "circle-x", e.message, "err"); }
+  };
+  pane.querySelector("#ab-up-cmd-copy").onclick = (e) => {
+    e.preventDefault();
+    navigator.clipboard.writeText(upCmdT.textContent)
+      .then(() => toast("命令已复制，粘到「终端」里回车就行"), () => toast("复制失败，手抄一下", "err"));
   };
   pane.querySelector("#ab-up-btn").onclick = () => loadUpdate(true);
   loadUpdate(false);

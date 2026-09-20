@@ -9354,10 +9354,16 @@ async function testOnboardingWizardApi() {
 
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "owb-onb-"));
   const token = "e2e" + crypto.randomBytes(12).toString("hex");
+  // 第二个人只为一件事：有他在，这台机器就不是「个人桌面版」了，平台管理员那道闸才真的起作用。
+  // 只留一个管理员的话，谁登进来都是平台管理员，拆掉闸门测试也照样绿
+  const memberToken = "e2em" + crypto.randomBytes(12).toString("hex");
   fs.mkdirSync(path.join(home, "data"), { recursive: true });
   fs.writeFileSync(path.join(home, "data", "users.json"), JSON.stringify({
-    users: [{ username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() }],
-    tokens: { [token]: { user: "e2e", at: Date.now() } },
+    users: [
+      { username: "e2e", salt: "x", hash: "x", role: "admin", credits: 0, created_at: Date.now() },
+      { username: "e2e同事", salt: "x", hash: "x", role: "member", status: "active", credits: 0, created_at: Date.now() },
+    ],
+    tokens: { [token]: { user: "e2e", at: Date.now() }, [memberToken]: { user: "e2e同事", at: Date.now() } },
   }));
 
   const booted = bootRealServer({ OPENWORKBUDDY_HOME: home });
@@ -9379,6 +9385,22 @@ async function testOnboardingWizardApi() {
     r.end();
   });
   const cfgOnDisk = () => { try { return JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8")); } catch { return null; } };
+  // 同一个请求换个人发：验闸门的时候「谁发的」才是变量
+  const reqAs = (tk, method, p, body) => new Promise((resolve) => {
+    const data = body === undefined ? null : JSON.stringify(body);
+    const r = http.request({
+      host: "127.0.0.1", port, path: p, method,
+      headers: { Cookie: "openworkbuddy_token=" + tk, ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+    }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ code: res.statusCode, body: b, json: j }); });
+    });
+    r.on("error", (e) => resolve({ code: 0, body: e.message, json: null }));
+    if (data) r.write(data);
+    r.end();
+  });
+  let fakeOllama = null;
 
   try {
     assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
@@ -9475,6 +9497,119 @@ async function testOnboardingWizardApi() {
     const put3 = await req("POST", "/api/onboarding", { model: ent.name, api_key: WIZ_KEY, skip_test: true });
     assert(put3.code === 200 && put3.json.ok === true && put3.json.active_model === ent.name, "按已有模型行名填 Key 的老路还得通：HTTP " + put3.code + " " + put3.body.slice(0, 200));
 
+    // 5-ter. ★本机 Ollama 那条路★：机器上装了哪些模型，只有那台机器知道。
+    // 以前向导把模板里写死的那个型号（qwen3:14b，约 9GB）直接当成事实，16G 的 Mac 拉都拉不动，
+    // 界面上还没有第二个选项可选。现在向导先问机器「你装了什么」。这一段用一台假 Ollama
+    // 钉住四件事：问得到、匿名问不到、他点名的型号真的落进配置、以及验不过时不许把原来能用的那条改坏。
+    const INSTALLED = ["llama3.2:3b", "qwen3:8b", "bge-m3:latest"];
+    let listHits = 0;
+    let lateHits = 0;
+    const pinged = [];
+    fakeOllama = http.createServer((rq, rs) => {
+      const send = (code, obj) => { rs.writeHead(code, { "Content-Type": "application/json" }); rs.end(JSON.stringify(obj)); };
+      if (rq.url === "/v1/models") { listHits++; return send(200, { object: "list", data: INSTALLED.map((id) => ({ id, object: "model" })) }); }
+      // 「刚起来还没 pull 过东西」那一档：第一趟真回一个空 data（这是 Ollama 的真实行为，
+      // 不是错误），之后才有东西。用它验空清单没被缓住
+      if (rq.url === "/late/models") { lateHits++; return send(200, { object: "list", data: lateHits > 1 ? [{ id: "qwen3:8b" }] : [] }); }
+      if (rq.url === "/v1/chat/completions") {
+        let raw = "";
+        rq.on("data", (c) => (raw += c));
+        rq.on("end", () => {
+          let m = "";
+          try { m = String(JSON.parse(raw).model || ""); } catch {}
+          pinged.push(m);
+          // 真 Ollama 碰上没 pull 过的型号就是回 404——「验不过」那条路复现的就是它
+          if (!INSTALLED.includes(m)) return send(404, { error: { message: "model " + m + " not found, try pulling it first" } });
+          send(200, { choices: [{ message: { role: "assistant", content: "pong" } }] });
+        });
+        return;
+      }
+      send(404, { error: "no" });
+    });
+    await new Promise((r) => fakeOllama.listen(0, "127.0.0.1", r));
+    const OLLAMA = "http://127.0.0.1:" + fakeOllama.address().port + "/v1";
+
+    // 匿名先打一趟：这个接口会带着渠道的 Key 出网，一条 curl 就能拿它当跳板
+    const anonList = await new Promise((resolve) => {
+      const data = JSON.stringify({ base_url: OLLAMA });
+      const r = http.request({ host: "127.0.0.1", port, path: "/api/provider-models", method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } },
+        (res) => { res.resume(); resolve(res.statusCode); });
+      r.on("error", () => resolve(0));
+      r.write(data); r.end();
+    });
+    assert(anonList === 401 || anonList === 403, "带 Key 出网的接口不许匿名打：HTTP " + anonList);
+    assert(listHits === 0, "★匿名那趟已经打到上游去了★ 拦得再晚也是拦不住：hits=" + listHits);
+    // 登录了但不是这台机器的主人也不行。这一条比匿名那条要紧：匿名有全局登录闸兜着，
+    // 这个接口自己那道闸拆掉了也看不出来；而普通成员是登得进来的，他能拿这个接口
+    // 让服务器带着平台的 Key 去打任意一个他指定的地址
+    const mem = await reqAs(memberToken, "POST", "/api/provider-models", { base_url: OLLAMA });
+    assert(mem.code === 403 && mem.json && mem.json.platform_only === true,
+      "★普通成员也能拿这个接口指挥服务器出网★：HTTP " + mem.code + " " + mem.body.slice(0, 200));
+    assert(listHits === 0, "★成员那趟已经打到上游去了★：hits=" + listHits);
+
+    const ls = await req("POST", "/api/provider-models", { base_url: OLLAMA });
+    assert(ls.code === 200 && ls.json && ls.json.ok === true, "问不到本机装了哪些模型：HTTP " + ls.code + " " + ls.body.slice(0, 200));
+    assert(JSON.stringify((ls.json.models || []).map((m) => m.id)) === JSON.stringify(INSTALLED),
+      "★清单跟机器上装的对不上★ 向导照它画下拉框，错一个就选出个跑不起来的：" + JSON.stringify(ls.json.models));
+    assert(listHits === 1, "一次请求打了上游不止一趟：hits=" + listHits);
+    const ls2 = await req("POST", "/api/provider-models", { base_url: OLLAMA });
+    assert(ls2.json && ls2.json.cached === true && listHits === 1,
+      "10 分钟内该走缓存：向导里来回点几下服务商，不该把人家接口打一遍：cached=" + ((ls2.json || {}).cached) + " hits=" + listHits);
+
+    // ★空清单不许进缓存★ Ollama 起来了但一个模型都没 pull 过时回的就是空 data（200，不是错）。
+    // 缓住它，用户照着提示 ollama pull 完回来点「重新问一次」，十分钟内拿到的还是那份空的——
+    // 提示教他做的事做完了，界面上却一点变化都没有
+    const late1 = await req("POST", "/api/provider-models", { base_url: "http://127.0.0.1:" + fakeOllama.address().port + "/late" });
+    assert(late1.json && late1.json.ok === true && (late1.json.models || []).length === 0, "空清单该是 ok:true 的空数组（连上了，只是没装）：" + late1.body.slice(0, 200));
+    const late2 = await req("POST", "/api/provider-models", { base_url: "http://127.0.0.1:" + fakeOllama.address().port + "/late" });
+    assert(lateHits === 2, "★空清单被缓住了★ 他 pull 完回来再问，还是那份空的：hits=" + lateHits);
+    assert((late2.json.models || []).map((m) => m.id).join() === "qwen3:8b", "再问一次该拿到刚拉下来的那个：" + late2.body.slice(0, 200));
+
+    // 负向对照一：Ollama 压根没起来（这是最常见的一种）——要说「没问到」和为什么，不是 500，也不是假装有清单
+    const deadList = await req("POST", "/api/provider-models", { base_url: "http://127.0.0.1:1/v1" });
+    assert(deadList.code === 200 && deadList.json && deadList.json.ok === false
+      && String(deadList.json.why || "").length > 0 && Array.isArray(deadList.json.models) && deadList.json.models.length === 0,
+      "Ollama 没起来时要老实说没问到并给出原因：HTTP " + deadList.code + " " + deadList.body.slice(0, 200));
+    // 负向对照二：地址没写全（少了 http://）。这种错要点到「地址」上，别翻译成一句网络错误
+    const junkList = await req("POST", "/api/provider-models", { base_url: "localhost:11434/v1" });
+    assert(junkList.json && junkList.json.ok === false && /地址/.test(junkList.json.why || ""),
+      "地址没写全时要点出是地址的事：" + junkList.body.slice(0, 200));
+
+    // ---- 他在向导里点了一个型号：这个型号得真被拿去验、验过了真落盘 ----
+    const ROW = "我这台的 Ollama";
+    const mk = await req("POST", "/api/settings", { models: [{ name: ROW, provider: "openai", base_url: OLLAMA, model: "qwen3:14b", api_key: "" }] });
+    assert(mk.code === 200, "加不上本机模型行，后面测不了：HTTP " + mk.code + " " + mk.body.slice(0, 200));
+    const rowNow = () => ((cfgOnDisk().models || []).find((m) => m.name === ROW) || {}).model;
+    const pick = await req("POST", "/api/onboarding", { model: ROW, api_key: "", model_id: "llama3.2:3b" });
+    assert(pick.code === 200 && pick.json && pick.json.ok === true,
+      "本机那条不填 Key 也该放行（Ollama 本来就不要 Key）：HTTP " + pick.code + " " + pick.body.slice(0, 220));
+    assert(pinged[pinged.length - 1] === "llama3.2:3b",
+      "★验活验的不是他点名的那个型号★ 验过的和跑起来用的不是同一个，绿勾就是骗人的：" + JSON.stringify(pinged));
+    assert(rowNow() === "llama3.2:3b", "★他选的型号没落盘，配置里还是模板写死的那个★：" + rowNow());
+
+    // ★验不过的时候★：以前是先把 entry.model 改掉再去验，验砸了那条改动还留在内存里，
+    // 下一次任何一次保存都会把它写进盘——一次失败的尝试，把他本来跑得好好的配置弄坏了
+    const wrong = await req("POST", "/api/onboarding", { model: ROW, api_key: "", model_id: "qwen3:400b" });
+    assert(wrong.code === 200 && wrong.json && wrong.json.ok === false && /qwen3:400b/.test(wrong.json.error || ""),
+      "选了台机器上没有的型号，要当场说清是哪个型号的事：HTTP " + wrong.code + " " + wrong.body.slice(0, 220));
+    assert(rowNow() === "llama3.2:3b", "★一次验不过把盘上那条改坏了★：" + rowNow());
+    const s7 = await req("GET", "/api/settings");
+    const live = ((s7.json || {}).models || []).find((m) => m.name === ROW) || {};
+    assert(live.model === "llama3.2:3b",
+      "★内存里那份被改坏了★ 盘上暂时没事，但下一次任何保存都会把它盖进去：" + live.model);
+
+    // ---- 按模板新建那条路也得认这个型号（新装用户走的是这条） ----
+    const tpl = await req("POST", "/api/onboarding", { kind: "ollama", model_id: "bge-m3:latest", skip_test: true });
+    assert(tpl.code === 200 && tpl.json && tpl.json.ok === true, "按本机模板建一条失败：HTTP " + tpl.code + " " + tpl.body.slice(0, 220));
+    const made = (cfgOnDisk().models || []).find((m) => m.name === tpl.json.active_model) || {};
+    assert(made.model === "bge-m3:latest", "★模板那条把他点名的型号吞了★，又回到写死的默认值：" + JSON.stringify(made));
+    // 负向对照：不点名就该退回模板默认值（不是把上一次选的记成了默认），而且这个兜底不能再是 14b
+    const tpl2 = await req("POST", "/api/onboarding", { kind: "ollama", skip_test: true });
+    const made2 = (cfgOnDisk().models || []).find((m) => m.name === tpl2.json.active_model) || {};
+    assert(made2.model && made2.model !== "bge-m3:latest", "不点名时该退回模板默认值：" + JSON.stringify(made2));
+    assert(!/14b/.test(made2.model || ""), "本机模板的兜底型号又换回了 14b（约 9GB，16G 的机器拉不动，连不上 Ollama 时就是拿它当默认）：" + made2.model);
+
     // 6. 未登录不给看（体检表里有渠道名、目录路径）
     const anon = await new Promise((resolve) => {
       http.get({ host: "127.0.0.1", port, path: "/api/onboarding" }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", () => resolve(0));
@@ -9507,8 +9642,10 @@ async function testOnboardingWizardApi() {
     for (const flag of ["--json", "-q", "-c", "-C", "engines use", "sessions"]) assert(cliHelp.includes(flag), "README 里写的 " + flag + " 在 cli.js 里找不到");
 
     console.log("✅ 首次开箱向导 API：新装体检表(不泄 Key)·大脑没接上 done 拒且不落盘·本机 CLI 算大脑·done 落 done_at+skipped 清洗+切工作目录·seen 留存 needs_setup 随大脑翻转·向导填 Key 落在渠道行不分叉、设置页当场认账·匿名 401 + 前端五步/关于页重开/README 命令行一节 静态闸门");
+    console.log("✅ 本机 Ollama 选型号：问得到机器上装了哪些(3 个)·10 分钟走缓存(上游只打 1 次)·匿名打不到上游·没起来/地址没写全各报各的·点名的型号真拿去验并落盘·验不过不许改坏原来那条(盘上+内存都查)·模板那条也认 model_id、兜底不再是 14b");
   } finally {
     child.kill("SIGKILL");
+    try { if (fakeOllama) fakeOllama.close(); } catch {}
     fs.rmSync(home, { recursive: true, force: true });
   }
 }
@@ -12975,8 +13112,25 @@ async function testUpdaterVersions() {
   assert(/dmg/.test(U.howToUpdate("app", "darwin")), "macOS 装包版没说下 dmg");
   assert(/setup\.exe/.test(U.howToUpdate("app", "win32")), "Windows 装包版没说下 setup.exe");
   for (const p of ["darwin", "win32"]) {
-    assert(/覆盖装/.test(U.howToUpdate("app", p)) && /~\/OpenWorkBuddy/.test(U.howToUpdate("app", p)),
+    assert(/覆盖(装|安装)/.test(U.howToUpdate("app", p)) && /~\/OpenWorkBuddy/.test(U.howToUpdate("app", p)),
       `${p} 没说清覆盖安装不会动配置/会话/工作区，用户不敢升级：` + U.howToUpdate("app", p));
+  }
+  // macOS 升级是个回头坑：这个人手上那份是**能用的**，他照着提示去浏览器下一个新 dmg，
+  // 新的那份带隔离标记，双击又是「Apple 无法验证」，只有「完成 / 移到废纸篓」两个键——
+  // 升级一次反而把自己弄成打不开。所以升级提示里必须当场给零弹窗那条路，外加被拦之后怎么放行。
+  {
+    const mac = U.howToUpdate("app", "darwin");
+    // 命令本身不塞在正文里（正文是一段话，选不中也点不动），单独走 updateCmd()，
+    // 前端把它画成一行等宽字加一颗「复制」。所以这儿要两头都盯：正文得指着它，它得是真命令。
+    assert(/下面这句/.test(mac), "macOS 升级提示没指向那条命令，用户不知道「下面」是哪儿：" + mac);
+    const cmd = U.updateCmd("app", "darwin");
+    assert(/^curl -fsSL \S*install-mac\.sh \| bash$/.test(cmd), "macOS 升级命令不是零弹窗那条 curl：" + JSON.stringify(cmd));
+    assert(/隐私与安全性/.test(mac) && /仍要打开/.test(mac), "macOS 升级提示没说被拦之后去哪儿放行：" + mac);
+    // 反向对照：这两条只该落在 macOS 上，Windows 那段扯 curl 和系统设置纯属噪音
+    const win = U.howToUpdate("app", "win32");
+    assert(U.updateCmd("app", "win32") === "" && !/隐私与安全性/.test(win), "Windows 的升级提示里混进了 macOS 的步骤：" + win);
+    // 源码跑的人不该看见「装包」那套：他 git pull 就完了
+    assert(U.updateCmd("source", "darwin") === "", "从源码跑的也被塞了一条重装命令");
   }
 
   const reply = (body) => async () => ({ ok: true, status: 200, json: async () => body });
@@ -12986,6 +13140,22 @@ async function testUpdaterVersions() {
   assert.strictEqual(has.has_update, true, "有新版却说没有");
   assert.strictEqual(has.error, "", "正常返回时不该带 error");
   assert(has.how && has.page, "没给出「该怎么做」和下载页地址");
+  // updateCmd 算得再对，不跟着这份返回值出去，界面上也画不出那行命令。
+  // install:"app" 是必须点明的：跑测试的这份是从仓库跑的，installKind() 只会是 source，
+  // 而会撞上「Apple 无法验证」的恰恰是装包那条路
+  {
+    U.resetCache();
+    const m = await U.checkUpdate({ force: true, platform: "darwin", install: "app", fetchImpl: reply({ tag_name: "v99.0.0" }) });
+    assert(/install-mac\.sh/.test(m.how_cmd || ""), "macOS 那条命令没跟着返回值出去，界面上画不出来：" + JSON.stringify(m.how_cmd));
+    assert(/下面这句/.test(m.how || ""), "正文没指向那条命令，用户不知道「下面」是哪儿：" + JSON.stringify(m.how));
+    U.resetCache();
+    const w = await U.checkUpdate({ force: true, platform: "win32", install: "app", fetchImpl: reply({ tag_name: "v99.0.0" }) });
+    assert.strictEqual(w.how_cmd, "", "Windows 也被塞了一条 macOS 的命令：" + JSON.stringify(w.how_cmd));
+    // 负向对照：从源码跑的人 git pull 就完了，不该收到一条重装命令
+    U.resetCache();
+    const src = await U.checkUpdate({ force: true, platform: "darwin", install: "source", fetchImpl: reply({ tag_name: "v99.0.0" }) });
+    assert.strictEqual(src.how_cmd, "", "从源码跑的也被塞了一条重装命令：" + JSON.stringify(src.how_cmd));
+  }
 
   U.resetCache();
   const cur = require("../package.json").version;
