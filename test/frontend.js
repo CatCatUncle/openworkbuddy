@@ -5946,7 +5946,11 @@ const PREVIEW_CHECKS = `
   // ---- 1. 路由表：真实工作目录里数得出来的后缀，一个都不许掉进"不支持预览" ----
   {
     const cases = {
-      iframe: ["a.html", "a.htm", "报告.pdf", "图.svg"],
+      iframe: ["a.html", "a.htm"],
+      // PDF 和 SVG 都从 iframe 里拆出来了：PDF 有自带阅读器要整个面板（量内容高度那条路
+      // 在它身上会塌成顶端一条），SVG 是图要居中。路由分不开，摆法就分不开。
+      pdf: ["报告.pdf", "a.PDF"],
+      svg: ["图.svg", "流程.SVG"],
       image: ["图.png", "a.JPG", "a.jpeg", "a.webp", "a.ico", "a.avif"],
       audio: ["口播.mp3", "a.wav", "a.m4a", "a.flac", "a.opus"],
       video: ["成片.mp4", "a.mov", "a.MOV", "a.webm", "a.m4v", "a.mkv", "a.avi", "a.wmv", "a.flv", "a.mpg", "a.mpeg", "a.3gp"],
