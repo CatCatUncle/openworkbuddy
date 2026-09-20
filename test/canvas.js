@@ -866,7 +866,7 @@ app.whenReady().then(async () => {
     (async () => {
       const 框 = document.getElementById("canvas-inspector").querySelector('[data-inspect-key="text"]');
       框.focus();
-      canvasState.typingAt = Date.now() - 20000;   // 手离开键盘 20 秒了，只是焦点还搁在这儿
+      canvasState.handsOnAt = Date.now() - 20000;   // 手离开键盘 20 秒了，只是焦点还搁在这儿
       window.__store.jia.main = { version: 2, updatedAt: Date.now() + 9000, edges: [], nodes: [
         { id: "t1", kind: "note", payload: { title: "我的笔记", text: "原来的内容" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
         { id: "t2", kind: "note", payload: { title: "走开之后对方又改了", text: "" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }] };
@@ -880,6 +880,106 @@ app.whenReady().then(async () => {
   ok(走开 === true,
      "★反向对照：光标留在框里走开了，同步照样得继续★ 「正在打字」得有个时效，不然让一让就成了永远不让",
      走开);
+
+
+  console.log("\n— 十一、拖到一半来一趟同步 —");
+  const 拖 = await run(`
+    (async () => {
+      await canvasFlushRemoteWrite();
+      await new Promise((r) => setTimeout(r, 200));
+      localStorage.clear();
+      window.__store.jia = { main: { version: 2, updatedAt: 1000, edges: [], nodes: [
+        { id: "d1", kind: "note", payload: { title: "我在拖这张" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "d2", kind: "note", payload: { title: "对方那张" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }] } };
+      window.__active = "jia"; canvasState.canvasName = "main";
+      localStorage.setItem("openworkbuddy.canvas.name", "main");
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 400));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+
+      // 按住一张卡开始拖（JointJS 拖动时就是这么改模型的：按下去、位置一路跟着走）
+      const 卡 = canvasState.graph.getCell("d1");
+      const view = canvasState.paper.findViewByModel(卡);
+      view.el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 100, clientY: 100, button: 0 }));
+      const 按下去了 = !!canvasState.nodeGesture;
+      卡.position(360, 260);
+      // 拖动会触发存盘（攒 240 毫秒再发），先让它发完：不然下面摆的「对方那份」
+      // 转脸就被这笔盖掉，这一段量的就成了空气
+      await canvasFlushRemoteWrite();
+      await new Promise((r) => setTimeout(r, 250));
+
+      // 手还按着，别处来了一趟改动
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 5000, edges: [], nodes: [
+        { id: "d1", kind: "note", payload: { title: "我在拖这张" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "d2", kind: "note", payload: { title: "对方改过的标题" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }] };
+      canvasStartRemoteSync();
+      await new Promise((r) => setTimeout(r, 4200));
+      const p = canvasState.graph.getCell("d1").position();
+      const 拖着时 = { 按下去了, 手势还在: !!canvasState.nodeGesture, 位置: p.x + "," + p.y };
+
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      拖着时.松手后手势清了 = !canvasState.nodeGesture;
+      const 到点 = Date.now() + 12000;
+      const 到了 = () => (canvasState.graph.getCell("d2")?.get("canvasPayload") || {}).title === "对方改过的标题";
+      while (Date.now() < 到点 && !到了()) await new Promise((r) => setTimeout(r, 150));
+      clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null;
+      return { ...拖着时, 松手后对方的到了: 到了() };
+    })()`);
+  ok(拖.按下去了 === true, "先验料：按下去那一下真被画布接住了（不然下面量的是个空手势）", 拖);
+  ok(拖.位置 === "360,260",
+     "★手还按在卡上，同步来一趟不许把卡拽回原处★ 铺快照是 graph.clear() 重来一遍，正在拖的那张当场被拆掉",
+     拖);
+  ok(拖.松手后对方的到了 === true,
+     "★反向对照：松手之后，对方那边的改动照样同步得过来★", 拖.松手后对方的到了);
+  ok(拖.松手后手势清了 === true, "松手那一下真被接住了（手势清了，所以上面那条绿不是靠手动清出来的）", 拖);
+
+  // 反向对照之二：松手没被接住（拖出窗外撒的手），同步不能就此停摆
+  const 卡住 = await run(`
+    (async () => {
+      canvasState.nodeGesture = { id: "d1", x: 0, y: 0, moved: true };
+      canvasState.handsOnAt = Date.now() - 20000;   // 手早离开了，只是那次松手没人接
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 9000, edges: [], nodes: [
+        { id: "d1", kind: "note", payload: { title: "我在拖这张" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "d2", kind: "note", payload: { title: "撒手之后对方又改了" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }] };
+      canvasStartRemoteSync();
+      const 到点 = Date.now() + 12000;
+      const 到了 = () => (canvasState.graph.getCell("d2")?.get("canvasPayload") || {}).title === "撒手之后对方又改了";
+      while (Date.now() < 到点 && !到了()) await new Promise((r) => setTimeout(r, 150));
+      clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null;
+      canvasState.nodeGesture = null;
+      return 到了();
+    })()`);
+  ok(卡住 === true,
+     "★反向对照：拖出窗外撒了手、那一下没被接住，同步照样得继续★ 「手上有活」得有时效，不然让一让就成了永远不让",
+     卡住);
+
+  // 有人拖一张卡能磨蹭半分钟（对位置、对齐别的卡）。时效是从「最后一下动作」算的，
+  // 不是从按下去那一刻算的，不然拖过 10 秒就被拽回原处
+  const 慢拖 = await run(`
+    (async () => {
+      await canvasFlushRemoteWrite();
+      const 卡 = canvasState.graph.getCell("d1");
+      const view = canvasState.paper.findViewByModel(卡);
+      view.el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 100, clientY: 100, button: 0 }));
+      canvasState.handsOnAt = Date.now() - 20000;          // 按下去是 20 秒前的事了
+      document.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 240, clientY: 300, button: 0 }));
+      卡.position(520, 380);                                 // 还在拖，刚挪到这儿
+      await canvasFlushRemoteWrite();
+      await new Promise((r) => setTimeout(r, 250));
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 9000, edges: [], nodes: [
+        { id: "d1", kind: "note", payload: { title: "我在拖这张" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "d2", kind: "note", payload: { title: "慢拖时对方改的" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }] };
+      canvasStartRemoteSync();
+      await new Promise((r) => setTimeout(r, 4200));
+      const p = canvasState.graph.getCell("d1").position();
+      clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null;
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      canvasState.nodeGesture = null;
+      return p.x + "," + p.y;
+    })()`);
+  ok(慢拖 === "520,380",
+     "★一张卡拖了半分钟还在拖，同样不许拽回原处★ 时效从最后一下动作算起，不是从按下去那一刻",
+     慢拖);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

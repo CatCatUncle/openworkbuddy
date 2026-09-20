@@ -953,21 +953,24 @@ function canvasApplySnapshot(snapshot, { fromRemote = false } = {}) {
   canvasPersist();
 }
 
-// 手正落在输入框里算「在打字」。10 秒没动静就不算——有人把光标留在框里走开，
+// 手上有活：正在输入框里打字，或者按着一张卡在拖。这两件事都经不起一次 graph.clear()。
+// 10 秒没动静就不算了——有人把光标留在框里走开、有人拖到一半松手没被接住，
 // 这个标签页不能从此再也不同步
-function canvasTypingNow() {
+function canvasBusyNow() {
+  if (Date.now() - Number(canvasState.handsOnAt || 0) >= 10000) return false;
+  if (canvasState.nodeGesture) return true;
   const el = typeof document !== "undefined" ? document.activeElement : null;
-  if (!el || typeof el.matches !== "function") return false;
-  if (!el.matches("input, textarea, [contenteditable=true]") || !el.closest(".canvas-layout")) return false;
-  return Date.now() - Number(canvasState.typingAt || 0) < 10000;
+  return !!(el && typeof el.matches === "function"
+    && el.matches("input, textarea, [contenteditable=true]") && el.closest(".canvas-layout"));
 }
 function canvasStartRemoteSync() {
   if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer);
   canvasState.remoteTimer = window.setInterval(async () => {
     if (!canvasState.graph || canvasState.remoteWritePending) return;
-    // 他正在打字，这一圈先放着：铺快照是整图重来、属性面板整块重画，落在打字中间
-    // 就是刚敲的半句被对面那份盖掉、光标掉回 body，接着敲的字进了空气。手一停就补上
-    if (canvasTypingNow()) return;
+    // 他手上正有活，这一圈先放着：铺快照是 graph.clear() 整图重来、属性面板整块重画。
+    // 落在打字中间是刚敲的半句被盖掉、光标掉回 body；落在拖动中间是那张卡被拆掉、
+    // 当场弹回原处，手里还按着。手一停就补上
+    if (canvasBusyNow()) return;
     const previous = Number(canvasState.remoteUpdatedAt || 0);
     const state = await canvasLoadRemote();
     if (state && Number(state.updatedAt) > previous) canvasApplySnapshot(state, { fromRemote: true });
@@ -1779,7 +1782,7 @@ function canvasAddNode(kind, payload = {}, position, options = {}) {
 }
 
 function canvasUpdateSelected(key, value, rerender = true) {
-  canvasState.typingAt = Date.now();   // 同步那边看这个时间决定要不要让一让（见 canvasTypingNow）
+  canvasState.handsOnAt = Date.now();   // 同步那边看这个时间决定要不要让一让（见 canvasBusyNow）
   const node = canvasSelectedNode(); if (!node) return;
   const next = { ...canvasPayload(node), [key]: value };
   if (key === "url") next.path = value;
@@ -2558,12 +2561,14 @@ async function renderCanvasPage() {
   page.querySelector("#canvas-viewport").addEventListener("pointerdown", () => toolMenus.forEach((menu) => { menu.open = false; }), { capture: true });
   canvasState.paper.on("element:pointerdown", (view, event) => {
     const movingIds = canvasState.selectedIds.has(view.model.id) && canvasState.selectedIds.size > 1 ? [...canvasState.selectedIds] : [];
+    canvasState.handsOnAt = Date.now();   // 拖动期间同步要让路（见 canvasBusyNow）
     canvasState.nodeGesture = { id: view.model.id, x: Number(event?.clientX) || 0, y: Number(event?.clientY) || 0, moved: false };
     canvasState.multiMove = movingIds.length ? { anchor: view.model.id, positions: new Map(movingIds.map((id) => { const item = canvasState.graph.getCell(id); const point = item?.position?.() || { x: 0, y: 0 }; return [id, { x: point.x, y: point.y }]; })) } : null;
   });
   canvasState.paper.on("element:pointermove", (view, event) => {
     const gesture = canvasState.nodeGesture;
     if (!gesture || gesture.id !== view.model.id) return;
+    canvasState.handsOnAt = Date.now();   // 还在拖，把「手上有活」续上
     const dx = (Number(event?.clientX) || 0) - gesture.x, dy = (Number(event?.clientY) || 0) - gesture.y;
     if (Math.hypot(dx, dy) > 4 && !gesture.moved) { gesture.moved = true; if (canvasState.inspectorOpen) { canvasState.inspectorOpen = false; canvasRenderInspector(false); } }
     const group = canvasState.multiMove;
