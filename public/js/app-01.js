@@ -2719,11 +2719,16 @@ function bindPvMore(body, url) {
 }
 
 // ---- 拆出来的结构化数据 → HTML。服务端只给数据，转义全在这儿，只此一处 ----
+// 文档里的链接只认这三种协议。.docx 常常是外面发进来的，
+// 里头写一句 javascript:... 的超链接完全合法，照单渲染就等于给了它一个可点的入口。
+const SAFE_LINK = /^(https?:|mailto:)/i;
 const runsHtml = (runs) => (runs || []).map((r) => {
   let h = esc(r.s || "").replace(/\n/g, "<br>");
   if (r.b) h = "<b>" + h + "</b>";
   if (r.i) h = "<i>" + h + "</i>";
   if (r.u) h = "<u>" + h + "</u>";
+  const href = String(r.href || "").trim();
+  if (href && SAFE_LINK.test(href)) h = `<a class="ov-a" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${h}</a>`;
   return h;
 }).join("");
 
@@ -2733,16 +2738,27 @@ const gridHtml = (rows, cls) =>
 
 function docHtml(d) {
   const out = [];
+  if (d.header) out.push(`<div class="ov-chrome">页眉　${esc(d.header)}</div>`);
+  // 有序列表按层级各数各的，跟 docToText 里那套一样：进深一层清零，插了正文重新起
+  const counters = [];
   for (const b of d.blocks || []) {
+    if (b.t !== "li") counters.length = 0;
     if (b.t === "img") {
       // src 是服务端从 zip 里读出来现拼的 data URI；再确认一次前缀，别让别的协议混进来
       if (/^data:image\//.test(b.src || "")) out.push(`<img class="ov-img" src="${esc(b.src)}">`);
     } else if (b.t === "h") out.push(`<h${b.lvl} class="ov-h">${runsHtml(b.runs)}</h${b.lvl}>`);
-    else if (b.t === "li") out.push(`<div class="ov-li" style="margin-left:${(b.lvl || 0) * 22}px">${runsHtml(b.runs)}</div>`);
+    else if (b.t === "li") {
+      const lvl = b.lvl || 0;
+      counters.length = lvl + 1;
+      counters[lvl] = b.ord ? (counters[lvl] || 0) + 1 : 0;
+      const mark = b.ord ? counters[lvl] + "." : "•";
+      out.push(`<div class="ov-li" style="margin-left:${lvl * 22}px"><span class="ov-mark">${mark}</span>${runsHtml(b.runs)}</div>`);
+    }
     else if (b.t === "table") out.push(gridHtml(b.rows, "ov-table"));
     else out.push(`<p class="ov-p"${b.align === "center" ? ' style="text-align:center"' : b.align === "right" ? ' style="text-align:right"' : ""}>${runsHtml(b.runs)}</p>`);
   }
   if (!out.length) out.push('<p class="ov-p" style="color:var(--owb-text-3)">这个文档里没有可显示的正文。</p>');
+  if (d.footer) out.push(`<div class="ov-chrome">页脚　${esc(d.footer)}</div>`);
   if (d.truncated) out.push(`<div class="ov-note">文档太长，只显示了前 ${(d.blocks || []).length} 段。</div>`);
   return `<div class="ov-doc">${out.join("")}</div>`;
 }

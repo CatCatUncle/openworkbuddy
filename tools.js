@@ -1958,23 +1958,47 @@ function pdfHowTo(name) {
 }
 
 /** 一串 run 拼成纯文本。加粗/斜体这些格式对模型没意义，丢掉 */
-const runsText = (runs) => (runs || []).map((r) => String(r.s || "")).join("");
+// 链接的地址跟在文字后面用括号带出来。文档里写「详见这里」的时候，
+// 只给"这里"两个字等于没给——模型答不了「文中引用了哪些网址」。
+const runsText = (runs) => (runs || []).map((r) => {
+  const t = String(r.s || "");
+  return r.href && t.trim() ? t + "（" + r.href + "）" : t;
+}).join("");
 
 function docToText(d) {
   const out = [];
+  // 有序列表得真的数出「1. 2. 3.」来。以前不管有序无序一律打"-"，
+  // 于是「合同第 3 条是什么」这种最常见的问题，模型只能自己数横杠，数错不自知。
+  // 计数按层级走：进到深一层要清零，回到浅一层要接着上次数。
+  const counters = [];
   for (const b of d.blocks || []) {
     if (b.t === "img") { out.push("［图片］"); continue; } // 绝不把 data URI 拼进上下文
     if (b.t === "table") {
+      counters.length = 0;
       for (const row of b.rows || []) out.push("| " + row.map((c) => runsText(c.runs).replace(/\n/g, " ")).join(" | ") + " |");
       out.push("");
       continue;
     }
     const s = runsText(b.runs);
+    if (b.t !== "li") counters.length = 0;   // 中间插了正文，序号就该重新起
     if (!s.trim()) { out.push(""); continue; }
     if (b.t === "h") out.push("#".repeat(Math.min(6, Number(b.lvl) || 1)) + " " + s);
-    else if (b.t === "li") out.push("  ".repeat(Number(b.lvl) || 0) + "- " + s);
-    else out.push(s);
+    else if (b.t === "li") {
+      const lvl = Number(b.lvl) || 0;
+      counters.length = lvl + 1;
+      if (b.ord) {
+        counters[lvl] = (counters[lvl] || 0) + 1;
+        out.push("  ".repeat(lvl) + counters[lvl] + ". " + s);
+      } else {
+        counters[lvl] = 0;
+        out.push("  ".repeat(lvl) + "- " + s);
+      }
+    } else out.push(s);
   }
+  // 页眉页脚放最后，标清楚是页眉页脚——「内部资料 请勿外传」这种话只写在页眉里，
+  // 混进正文会被当成某一段的内容，单独一行才知道它管的是整份文档。
+  if (d.header) out.push("", "【页眉】" + d.header);
+  if (d.footer) out.push("【页脚】" + d.footer);
   return out.join("\n");
 }
 
@@ -4241,4 +4265,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

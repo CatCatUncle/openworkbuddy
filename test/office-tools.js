@@ -956,6 +956,242 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     ok(NOT_FOUND_RE.length >= 4, "四种 shell 喊法都还在表里", NOT_FOUND_RE.length);
   }
 
+  console.log("\n⑪ Excel 读取：末行末列、公式、合并格");
+  {
+    // 这一节钉的是一批「读回来的东西跟文件里写的不一样，却报说读全了」的静默错误。
+    // 原来那条路用 actualRowCount / actualColumnCount 当行号列号上界 —— 它俩是
+    // 「非空行/列的个数」，不是「最后一行/列的号」。于是：
+    //   报表里夹一个空行分隔 → 末尾整整一行读不到，而报表的末尾那行正好是合计；
+    //   A-D 有数、E 空、F 写备注 → actualColumnCount=5，读 A-E，F 列凭空消失；
+    //   并且 truncated 报 false，也就是「我全读到了」。
+    // 模型拿着缺了合计的表去回答用户，没有任何一环会露出破绽。
+    const ExcelJS = require(path.join(ROOT, "node_modules/exceljs"));
+    const XDIR = fs.mkdtempSync(path.join(os.tmpdir(), "owb-office-xlsx-"));
+
+    const book = new ExcelJS.Workbook();
+    const ws = book.addWorksheet("月度汇总");
+    ws.mergeCells("A1:D1");
+    ws.getCell("A1").value = "2026 年 8 月 销售汇总";
+    ws.addRow([]);                                    // 空行分隔：真实报表里到处都是
+    ws.addRow(["区域", "一月", "二月", "小计"]);
+    ws.addRow(["华东", 100, 200, { formula: "SUM(B4:C4)" }]);
+    ws.addRow(["华南", 300, 400, { formula: "SUM(B5:C5)" }]);
+    ws.addRow(["合计", { formula: "SUM(B4:B5)" }, { formula: "SUM(C4:C5)" }, { formula: "SUM(D4:D5)" }]);
+    ws.getCell("F4").value = "华东含大客户返点";      // 稀疏列：E 空着，F 有字
+    const f1 = path.join(XDIR, "报表.xlsx");
+    await book.xlsx.writeFile(f1);
+
+    const d1 = await preview.previewData(f1, "报表.xlsx");
+    const s1 = d1.sheets[0];
+    const flat1 = JSON.stringify(s1.rows);
+    eq(s1.totalRows, 6, "★末尾那一行读得到★ 中间夹了空行，末行仍然是第 6 行（旧算法给 5）");
+    eq(s1.totalCols, 6, "★末尾那一列读得到★ E 列空着不影响 F 列（旧算法给 5）");
+    eq(s1.rows.length, 6, "真取回来 6 行");
+    ok(flat1.includes("合计"), "★合计行在★ 这一行没了的话，整张报表最要紧的数就没了", flat1.slice(0, 200));
+    ok(flat1.includes("大客户返点"), "★F 列的备注在★", flat1.slice(0, 300));
+    eq(s1.truncated, false, "这次没到上限，truncated 就该是 false");
+
+    // 公式格：exceljs 不算公式，也不写缓存值，cell.text 是空串。给 =SUM(...) 至少是真话
+    eq((s1.rows[3] || [])[3], "=SUM(B4:C4)", "★没缓存值的公式格给出公式本身★ 不是空白");
+    eq((s1.rows[5] || [])[1], "=SUM(B4:B5)", "合计行的公式同理");
+
+    // 合并格：exceljs 把主格的值复制进每一个被盖住的格子
+    eq(s1.rows[0], ["2026 年 8 月 销售汇总", "", "", "", "", ""],
+      "★合并标题只在主格出现一次★ 横着重复四遍的话，模型会当成四列数据");
+
+    // 反向对照：不是合并，只是四个格子碰巧写了同样的字 —— 一个都不许吞
+    const bk2 = new ExcelJS.Workbook();
+    const w2 = bk2.addWorksheet("表");
+    w2.addRow(["同样的字", "同样的字", "同样的字"]);
+    const f2 = path.join(XDIR, "重复.xlsx");
+    await bk2.xlsx.writeFile(f2);
+    const d2 = await preview.previewData(f2, "重复.xlsx");
+    eq(d2.sheets[0].rows[0], ["同样的字", "同样的字", "同样的字"],
+      "反向对照：没合并、只是内容相同的格子，一个都不许去掉");
+
+    // 反向对照：公式带了缓存值，就该给数字，而不是继续给公式
+    const bk3 = new ExcelJS.Workbook();
+    const w3 = bk3.addWorksheet("表");
+    w3.addRow(["华东", 100]);
+    w3.addRow(["华南", 200]);
+    w3.addRow(["合计", { formula: "SUM(B1:B2)", result: 300 }]);
+    const f3 = path.join(XDIR, "带缓存.xlsx");
+    await bk3.xlsx.writeFile(f3);
+    const d3 = await preview.previewData(f3, "带缓存.xlsx");
+    eq(d3.sheets[0].rows[2][1], "300",
+      "反向对照：公式带了缓存值就给数字 —— 这也是 skills/excel-report 要求写 result 的原因");
+
+    // 反向对照：真到上限了，truncated 必须是 true，而且要说清全貌有多大
+    const bk4 = new ExcelJS.Workbook();
+    const w4 = bk4.addWorksheet("宽表");
+    w4.addRow(Array.from({ length: 80 }, (_, i) => "第" + (i + 1) + "列"));
+    const f4 = path.join(XDIR, "宽表.xlsx");
+    await bk4.xlsx.writeFile(f4);
+    const d4 = await preview.previewData(f4, "宽表.xlsx");
+    const s4 = d4.sheets[0];
+    eq(s4.truncated, true, "反向对照：80 列超过 60 列的上限，truncated 必须翻成 true");
+    eq(s4.totalCols, 80, "反向对照：截断了也要照实说全貌是 80 列");
+    eq(s4.rows[0].length, 60, "反向对照：真只给了 60 列");
+
+    // 空工作表不许崩，也不许瞎报
+    const bk5 = new ExcelJS.Workbook();
+    bk5.addWorksheet("空的");
+    const f5 = path.join(XDIR, "空.xlsx");
+    await bk5.xlsx.writeFile(f5);
+    const d5 = await preview.previewData(f5, "空.xlsx");
+    eq(d5.sheets[0].rows.length, 0, "反向对照：空工作表就是 0 行，不是 1 行空的");
+
+    // 纯函数单独钉一遍：上面那些断言要连着 exceljs 一起跑，这里只判「一个格子该显示成什么」
+    const { cellText } = preview._internals;
+    eq(cellText({ text: "你好" }), "你好", "cellText：普通格原样给出");
+    eq(cellText({ text: "", formula: "SUM(A1:A2)" }), "=SUM(A1:A2)", "cellText：公式没缓存值就给公式");
+    eq(cellText({ text: "300", formula: "SUM(A1:A2)" }), "300", "cellText：有缓存值就给值");
+    eq(cellText({ text: "标题", isMerged: true, address: "B1", master: { address: "A1" } }), "",
+      "cellText：合并区里的副格给空串");
+    eq(cellText({ text: "标题", isMerged: true, address: "A1", master: { address: "A1" } }), "标题",
+      "反向对照：合并区的主格照常给字");
+    eq(cellText({ text: "", value: { sharedFormula: "B4" } }), "=B4", "cellText：共享公式也认");
+    eq(cellText({ text: null }), "", "cellText：空格子给空串不给 null");
+
+    fs.rmSync(XDIR, { recursive: true, force: true });
+  }
+
+  console.log("\n⑫ PPT：原生图表和图片不许读成一片空白");
+  {
+    // skills/ppt-design 明着鼓励用 addChart 画原生图表、用 gen_diagram 出图再 addImage。
+    // 可图表不在 p:sp 里（在 p:graphicFrame，数据在另一个部件 ppt/charts/chartN.xml），
+    // 图片也一直没人念。于是一页图表读回来是「(无标题)」加零行内容 ——
+    // 自己生成的汇报，自己再读一遍，看到的是空白。
+    const PptxGenJS = require(path.join(ROOT, "node_modules/pptxgenjs"));
+    const PDIR = fs.mkdtempSync(path.join(os.tmpdir(), "owb-office-pptx-"));
+    const p = new PptxGenJS();
+    p.addSlide().addText("只有文字这一页", { x: 0.5, y: 0.5 });
+    p.addSlide().addChart(p.ChartType.bar,
+      [{ name: "营收", labels: ["Q1", "Q2", "Q3"], values: [12, 18, 7] }], { x: 1, y: 1, w: 8, h: 4 });
+    p.addSlide().addImage({ data: "image/png;base64," + PNG1.toString("base64"), x: 1, y: 1, w: 2, h: 2 });
+    const pf = path.join(PDIR, "汇报.pptx");
+    await p.writeFile({ fileName: pf });
+
+    const pd = await preview.previewData(pf, "汇报.pptx");
+    const sl = pd.slides;
+    const txt2 = JSON.stringify(sl[1]);
+    ok(/柱状图/.test(txt2), "★图表那页认出了是柱状图★", txt2);
+    ok(txt2.includes("营收"), "★系列名念出来了★", txt2);
+    ok(/Q1=12/.test(txt2) && /Q3=7/.test(txt2), "★每个点的类别和数值都在★", txt2);
+    ok(JSON.stringify(sl[2]).includes("［图片］"), "★配图那页标出了有图★", JSON.stringify(sl[2]));
+
+    // 反向对照：纯文字那页不许凭空长出图表或图片
+    const txt1 = JSON.stringify(sl[0]);
+    ok(!/柱状图|［图片］/.test(txt1), "反向对照：只有文字的一页，不许冒出图表或图片标记", txt1);
+
+    // 反向对照：图表部件坏了，这一页别的字还得在（不能整页读不出来）
+    const broken = preview._internals.chartToLines(preview.parseXml("<c:chartSpace/>"));
+    eq(broken, [], "反向对照：拿不到 plotArea 就一行都不念，不是抛异常");
+
+    // 纯函数钉一遍：c:pt 的 idx 会跳号，直接 push 会把类别和数值错位对上
+    const skew = preview.parseXml(
+      "<c:plotArea><c:barChart><c:ser>" +
+      "<c:tx><c:strRef><c:strCache><c:pt idx=\"0\"><c:v>甲</c:v></c:pt></c:strCache></c:strRef></c:tx>" +
+      "<c:cat><c:strRef><c:strCache><c:pt idx=\"0\"><c:v>A</c:v></c:pt><c:pt idx=\"2\"><c:v>C</c:v></c:pt></c:strCache></c:strRef></c:cat>" +
+      "<c:val><c:numRef><c:numCache><c:pt idx=\"0\"><c:v>1</c:v></c:pt><c:pt idx=\"2\"><c:v>3</c:v></c:pt></c:numCache></c:numRef></c:val>" +
+      "</c:ser></c:barChart></c:plotArea>");
+    const lines = preview._internals.chartToLines(skew);
+    ok(lines.some((l) => /A=1/.test(l.s) && /C=3/.test(l.s)),
+      "★idx 跳号时类别和数值仍然一一对上★ 按出现顺序排的话 C 会配到 1 上去", JSON.stringify(lines));
+
+    // rels 里的 Target 两种写法都得解析对
+    const { resolvePart } = preview._internals;
+    eq(resolvePart("ppt/slides/slide3.xml", "/ppt/charts/chart1.xml"), "ppt/charts/chart1.xml",
+      "resolvePart：绝对写法（pptxgenjs 出的就是这种）");
+    eq(resolvePart("ppt/slides/slide3.xml", "../charts/chart1.xml"), "ppt/charts/chart1.xml",
+      "resolvePart：相对写法（PowerPoint 自己存的是这种）");
+    eq(resolvePart("ppt/slides/slide3.xml", ""), "", "resolvePart：没有 Target 就给空，别拼出个假路径");
+
+    fs.rmSync(PDIR, { recursive: true, force: true });
+  }
+
+  console.log("\n⑬ Word：有序列表、链接地址、页眉页脚");
+  {
+    // 三样以前全丢：
+    //   「1. 2. 3.」和「• • •」读回来一个样 —— 合同、制度、条款几乎全是有序列表，
+    //     「第 3 条写的是什么」这种最常见的问题答不了；
+    //   超链接只留文字不留地址 —— 满篇「详见这里」，问它引了哪些网址答不上来；
+    //   页眉页脚一个字不读 —— 而「内部资料 请勿外传」就只写在页眉里。
+    const D = require(path.join(ROOT, "node_modules/docx"));
+    const DDIR = fs.mkdtempSync(path.join(os.tmpdir(), "owb-office-docx-"));
+    const mk = async (name, opts) => {
+      const f = path.join(DDIR, name);
+      fs.writeFileSync(f, await D.Packer.toBuffer(new D.Document(opts)));
+      return await preview.previewData(f, name);
+    };
+    const numbering = { config: [
+      { reference: "ord", levels: [{ level: 0, format: D.LevelFormat.DECIMAL, text: "%1.", alignment: D.AlignmentType.START }] },
+      { reference: "dot", levels: [{ level: 0, format: D.LevelFormat.BULLET, text: "•", alignment: D.AlignmentType.START }] },
+    ] };
+
+    const dOrd = await mk("条款.docx", { numbering, sections: [{ children: [
+      new D.Paragraph({ text: "甲方应当按时付款", numbering: { reference: "ord", level: 0 } }),
+      new D.Paragraph({ text: "乙方应当按时交付", numbering: { reference: "ord", level: 0 } }),
+      new D.Paragraph({ text: "争议提交仲裁", numbering: { reference: "ord", level: 0 } }),
+    ] }] });
+    ok(dOrd.blocks.every((b) => b.ord === 1), "★有序列表标上了 ord★", JSON.stringify(dOrd.blocks));
+    const tOrd = tools._internals.docToText(dOrd);
+    has(tOrd, /1\. 甲方应当按时付款/, "★第 1 条数出来了★");
+    has(tOrd, /3\. 争议提交仲裁/, "★第 3 条数出来了★ 模型这才答得了「第 3 条写的是什么」");
+
+    // 反向对照：无序列表不许被数成 1. 2. 3.
+    const dDot = await mk("要点.docx", { numbering, sections: [{ children: [
+      new D.Paragraph({ text: "第一点", numbering: { reference: "dot", level: 0 } }),
+      new D.Paragraph({ text: "第二点", numbering: { reference: "dot", level: 0 } }),
+    ] }] });
+    ok(dDot.blocks.every((b) => !b.ord), "反向对照：项目符号列表不带 ord", JSON.stringify(dDot.blocks));
+    const tDot = tools._internals.docToText(dDot);
+    has(tDot, /- 第一点/, "反向对照：项目符号仍然打横杠");
+    ok(!/1\. 第一点/.test(tDot), "反向对照：项目符号不许被数成序号", tDot);
+
+    // 中间插一段正文，序号要重新从 1 起 —— 不清零的话第二组会接着数成 4. 5.
+    const dTwo = await mk("两组.docx", { numbering, sections: [{ children: [
+      new D.Paragraph({ text: "甲一", numbering: { reference: "ord", level: 0 } }),
+      new D.Paragraph({ text: "甲二", numbering: { reference: "ord", level: 0 } }),
+      new D.Paragraph("中间这段是正文。"),
+      new D.Paragraph({ text: "乙一", numbering: { reference: "ord", level: 0 } }),
+    ] }] });
+    const tTwo = tools._internals.docToText(dTwo);
+    has(tTwo, /1\. 乙一/, "★隔了一段正文，序号从 1 重新起★");
+    ok(!/3\. 乙一/.test(tTwo), "反向对照：不许接着上一组数下去", tTwo);
+
+    // 超链接的地址
+    const dLink = await mk("带链接.docx", { sections: [{ children: [
+      new D.Paragraph({ children: [new D.ExternalHyperlink({
+        children: [new D.TextRun("详见这里")], link: "https://example.invalid/report" })] }),
+    ] }] });
+    ok(JSON.stringify(dLink.blocks).includes("example.invalid/report"),
+      "★链接地址带出来了★", JSON.stringify(dLink.blocks));
+    has(tools._internals.docToText(dLink), /详见这里（https:\/\/example\.invalid\/report）/,
+      "★拍平成文本时地址跟在文字后面★ 只给「详见这里」四个字等于没给");
+
+    // 页眉页脚
+    const dChrome = await mk("带页眉.docx", { sections: [{
+      headers: { default: new D.Header({ children: [new D.Paragraph("内部资料 请勿外传")] }) },
+      footers: { default: new D.Footer({ children: [new D.Paragraph("第 1 页 共 3 页")] }) },
+      children: [new D.Paragraph("正文只有这一句。")],
+    }] });
+    eq(dChrome.header, "内部资料 请勿外传", "★页眉读到了★ 保密声明常常只写在这儿");
+    eq(dChrome.footer, "第 1 页 共 3 页", "★页脚读到了★");
+    const tChrome = tools._internals.docToText(dChrome);
+    has(tChrome, /【页眉】内部资料 请勿外传/, "★页眉单独标出来★ 混进正文会被当成某一段的内容");
+    has(tChrome, /【页脚】第 1 页 共 3 页/, "★页脚单独标出来★");
+
+    // 反向对照：没有页眉页脚的文档，不许凭空多出这两行
+    const dBare = await mk("没页眉.docx", { sections: [{ children: [new D.Paragraph("就一句话。")] }] });
+    eq(dBare.header, "", "反向对照：没有页眉就是空串");
+    eq(dBare.footer, "", "反向对照：没有页脚就是空串");
+    const tBare = tools._internals.docToText(dBare);
+    ok(!/【页眉】|【页脚】/.test(tBare), "反向对照：正文里不许凭空多出页眉页脚那两行", tBare);
+
+    fs.rmSync(DDIR, { recursive: true, force: true });
+  }
+
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.rmSync(WS, { recursive: true, force: true });
 

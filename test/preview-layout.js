@@ -316,6 +316,53 @@ app.whenReady().then(async () => {
     ok(r.w / r.panelW >= 0.98, `${what} 铺满面板宽度`, Math.round(r.w / r.panelW * 100) + "%");
   }
 
+  console.log("\n— Word 预览：序号真数出来、链接只认安全协议 —");
+  {
+    // docHtml 是页面里的函数，直接喂结构化数据判它吐的 HTML —— 这一段跟版面无关，
+    // 判的是「渲染对不对」，所以不量像素，只看标记。
+    const render = (blocks, extra) => win.webContents.executeJavaScript(
+      "docHtml(Object.assign({ blocks: " + JSON.stringify(blocks) + " }, " + JSON.stringify(extra || {}) + "))");
+
+    const ordered = await render([
+      { t: "li", lvl: 0, ord: 1, runs: [{ s: "甲方应当按时付款" }] },
+      { t: "li", lvl: 0, ord: 1, runs: [{ s: "乙方应当按时交付" }] },
+      { t: "li", lvl: 0, ord: 1, runs: [{ s: "争议提交仲裁" }] },
+    ]);
+    ok(/ov-mark">1\.</.test(ordered) && /ov-mark">3\.</.test(ordered),
+      "有序列表在面板里也数成 1. 2. 3.", ordered.slice(0, 200));
+    // 以前 .ov-li::before 写死一个「·」。改成真序号之后那条规则必须撤掉，
+    // 否则每一条前面会是「· 1.」两个记号叠着显示 —— 纯函数断言看不见这个。
+    const before = await win.webContents.executeJavaScript(
+      "getComputedStyle(document.querySelector('#pv-body .ov-li') || document.createElement('div'), '::before').content");
+    ok(before === "none" || before === "" || before === "normal",
+      "★项目符号的 ::before 已经撤掉★ 不撤就会「· 1.」叠着显示", before);
+
+    const bullets = await render([
+      { t: "li", lvl: 0, runs: [{ s: "第一点" }] },
+      { t: "li", lvl: 0, runs: [{ s: "第二点" }] },
+    ]);
+    ok(/ov-mark">•</.test(bullets) && !/ov-mark">1\.</.test(bullets),
+      "反向对照：无序列表还是圆点，不许被数成序号", bullets.slice(0, 200));
+
+    const safe = await render([{ t: "p", runs: [{ s: "详见这里", href: "https://example.invalid/r" }] }]);
+    ok(/<a class="ov-a" href="https:\/\/example\.invalid\/r"/.test(safe), "http 链接渲染成可点的 a", safe);
+    ok(/rel="noopener noreferrer"/.test(safe), "新窗口打开要带 noopener，别让目标页拿到 window.opener", safe);
+
+    // .docx 常常是外面发进来的，里头写一句 javascript: 的超链接完全合法。
+    // 照单渲染就等于在预览面板里给了它一个可点的入口。
+    for (const bad of ["javascript:alert(1)", "JaVaScRiPt:alert(1)", "data:text/html,<script>x</script>", "file:///etc/passwd", "vbscript:msgbox"]) {
+      const h = await render([{ t: "p", runs: [{ s: "点我", href: bad }] }]);
+      ok(!/<a /.test(h), "★不安全协议不许变成链接：" + bad.slice(0, 22) + "★", h.slice(0, 160));
+      ok(h.includes("点我"), "但文字本身还得显示出来（不是整段吞掉）", h.slice(0, 160));
+    }
+
+    const chrome = await render([{ t: "p", runs: [{ s: "正文" }] }], { header: "内部资料 请勿外传", footer: "第 1 页" });
+    ok(/ov-chrome">页眉　内部资料 请勿外传</.test(chrome), "页眉显示出来并标明是页眉", chrome.slice(0, 200));
+    ok(/ov-chrome">页脚　第 1 页</.test(chrome), "页脚同理", chrome.slice(-200));
+    const bare = await render([{ t: "p", runs: [{ s: "正文" }] }]);
+    ok(!/ov-chrome/.test(bare), "反向对照：没有页眉页脚就不许多出这两条", bare);
+  }
+
   srv.close();
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

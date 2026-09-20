@@ -161,10 +161,16 @@ const clip = (s) => (s.length > LIMITS.chars ? s.slice(0, LIMITS.chars) + "…" 
 // ---------------- docx ----------------
 const HEADING_RE = /^(?:heading|标题)\s*([1-6])$/i;
 
-function docxRuns(p) {
+function docxRuns(p, ctx) {
   const runs = [];
   for (const c of kids(p)) {
-    if (c.name === "w:hyperlink") { for (const r of docxRuns(c)) runs.push(r); continue; }
+    if (c.name === "w:hyperlink") {
+      // 以前这儿只把链接文字并进正文，地址整个丢掉：一份满是链接的文档读回来
+      // 只剩「公司官网」「详见这里」，模型再想回答「文档里都引了哪些网址」就无从答起。
+      const href = ctx && ctx.rels ? ctx.rels.get(c.attrs["r:id"]) || "" : "";
+      for (const r of docxRuns(c, ctx)) { if (href) r.href = clip(href); runs.push(r); }
+      continue;
+    }
     if (c.name !== "w:r") continue;
     const pr = child(c, "w:rPr") || { children: [] };
     const on = (t) => { const e = child(pr, t); return e ? child(pr, t).attrs["w:val"] !== "0" && child(pr, t).attrs["w:val"] !== "false" : false; };
@@ -184,9 +190,9 @@ function docxRuns(p) {
   return runs;
 }
 
-function docxParagraph(p) {
+function docxParagraph(p, ctx) {
   const pr = child(p, "w:pPr");
-  const runs = docxRuns(p);
+  const runs = docxRuns(p, ctx);
   const styleEl = pr && child(pr, "w:pStyle");
   const style = styleEl ? styleEl.attrs["w:val"] || "" : "";
   const mh = HEADING_RE.exec(style);
@@ -197,12 +203,60 @@ function docxParagraph(p) {
   if (outline) return { t: "h", lvl: Math.min(6, Number(outline.attrs["w:val"] || 0) + 1), runs };
   if (numPr) {
     const il = child(numPr, "w:ilvl");
-    return { t: "li", lvl: Math.min(5, Number(il ? il.attrs["w:val"] : 0) || 0), runs };
+    const nid = child(numPr, "w:numId");
+    const lvl = Math.min(5, Number(il ? il.attrs["w:val"] : 0) || 0);
+    const b = { t: "li", lvl, runs };
+    // 有序还是无序，得去 numbering.xml 里查这一级的 w:numFmt。不查的话「1. 2. 3.」
+    // 和「• • •」读回来是同一个样子，模型没法答「第 3 条写的是什么」——
+    // 合同、制度、条款几乎全是有序列表，这是最常被问到的那种文档。
+    const fmt = ctx && ctx.numFmt ? ctx.numFmt.get((nid ? nid.attrs["w:val"] : "") + ":" + lvl) : "";
+    if (fmt && fmt !== "bullet" && fmt !== "none") b.ord = 1;
+    return b;
   }
   const b = { t: "p", runs };
   const align = jc ? jc.attrs["w:val"] : "";
   if (align === "center" || align === "right") b.align = align;
   return b;
+}
+
+/** numId:ilvl → 这一级的记号格式（decimal / bullet / chineseCounting …）。查不到就当无序，跟以前一样 */
+function docxNumbering(zip) {
+  const fmt = new Map();
+  const xml = zip.text("word/numbering.xml");
+  if (!xml) return fmt;
+  const root = parseXml(xml);
+  const abs = new Map();
+  for (const a of findAll(root, "w:abstractNum")) {
+    const lv = new Map();
+    for (const l of findAll(a, "w:lvl")) {
+      const f = child(l, "w:numFmt");
+      lv.set(String(l.attrs["w:ilvl"] || "0"), f ? String(f.attrs["w:val"] || "") : "");
+    }
+    abs.set(String(a.attrs["w:abstractNumId"]), lv);
+  }
+  for (const nEl of findAll(root, "w:num")) {
+    const a = child(nEl, "w:abstractNumId");
+    const lv = abs.get(String(a ? a.attrs["w:val"] : ""));
+    if (!lv) continue;
+    for (const [ilvl, f] of lv) fmt.set(String(nEl.attrs["w:numId"] || "") + ":" + ilvl, f);
+  }
+  return fmt;
+}
+
+/**
+ * 页眉页脚里的字。以前一个字都不读——而「内部资料 请勿外传」「本报告仅供 XX 使用」
+ * 这类话就只写在页眉里，正文里一个字没有。让模型看不见它，它就会照着往外发。
+ * 只取 w:t 里的字（走 docxRuns），所以 PAGE 这种域代码不会混进来；多节重复的去个重。
+ */
+function docxChrome(zip, kind, ctx) {
+  const seen = new Set();
+  for (const e of zip.entries) {
+    if (!new RegExp("^word/" + kind + "\\d*\\.xml$").test(e.name)) continue;
+    const root = parseXml(zip.text(e.name) || "");
+    const txt = findAll(root, "w:p").map((p) => docxRuns(p, ctx).map((r) => r.s).join("")).join(" ").replace(/\s+/g, " ").trim();
+    if (txt) seen.add(txt);
+  }
+  return clip([...seen].join(" / "));
 }
 
 function docxToDoc(zip) {
@@ -218,6 +272,7 @@ function docxToDoc(zip) {
   const rels = new Map();
   const relXml = zip.text("word/_rels/document.xml.rels");
   if (relXml) for (const r of findAll(parseXml(relXml), "Relationship")) rels.set(r.attrs.Id, r.attrs.Target || "");
+  const ctx = { rels, numFmt: docxNumbering(zip) };
   let imgLeft = LIMITS.images;
   const imageOf = (node) => {
     const blip = findAll(node, "a:blip")[0];
@@ -241,14 +296,14 @@ function docxToDoc(zip) {
       if (blocks.length >= LIMITS.blocks) { truncated = true; return; }
       if (el.name === "w:p") {
         const src = imageOf(el);
-        const b = docxParagraph(el);
+        const b = docxParagraph(el, ctx);
         if (src) blocks.push({ t: "img", src });
         if (b.runs.length) blocks.push(b);
       } else if (el.name === "w:tbl") {
         const rows = [];
         for (const tr of kids(el).filter((c) => c.name === "w:tr")) {
           rows.push(kids(tr).filter((c) => c.name === "w:tc").map((tc) => ({
-            runs: kids(tc).filter((c) => c.name === "w:p").flatMap((p, i) => (i ? [{ s: "\n" }] : []).concat(docxRuns(p))),
+            runs: kids(tc).filter((c) => c.name === "w:p").flatMap((p, i) => (i ? [{ s: "\n" }] : []).concat(docxRuns(p, ctx))),
           })));
         }
         if (rows.length) blocks.push({ t: "table", rows });
@@ -259,12 +314,106 @@ function docxToDoc(zip) {
     }
   };
   walk(kids(bodyEl));
-  return { kind: "doc", blocks, truncated };
+  return { kind: "doc", blocks, truncated, header: docxChrome(zip, "header", ctx), footer: docxChrome(zip, "footer", ctx) };
 }
 
 // ---------------- pptx ----------------
 // 页码/日期/页脚：这三个占位符里的字是版式装饰，不是这一页的内容
 const CHROME_PH = /^(sldNum|dt|ftr)$/i;
+
+// 原生图表不在 p:sp 里，而是 p:graphicFrame → c:chart，数据在另一个部件 ppt/charts/chartN.xml。
+// 不去读它，一整页图表读回来就是「(无标题)」加一片空白——而 skills/ppt-design 恰恰鼓励用
+// addChart 画原生图表。实测：一页 addChart(bar, 营收 Q1=12 Q2=18) 读回来 title/lines/notes 全空。
+// 好在 OOXML 把渲染用的数值缓存在 c:numCache / c:strCache 里，不用去碰包里那份嵌入的 xlsx。
+const CHART_KIND = {
+  barChart: "柱状图", bar3DChart: "柱状图", lineChart: "折线图", line3DChart: "折线图",
+  pieChart: "饼图", pie3DChart: "饼图", doughnutChart: "环形图", ofPieChart: "复合饼图",
+  areaChart: "面积图", area3DChart: "面积图", scatterChart: "散点图", radarChart: "雷达图",
+  bubbleChart: "气泡图", stockChart: "股价图", surfaceChart: "曲面图", surface3DChart: "曲面图",
+};
+const CHART_SERIES = 12;  // 一页图表最多念几条系列
+const CHART_POINTS = 24;  // 每条系列最多念几个点（月度两年 = 24，再多人也看不过来）
+
+/** rels 里的 Target 解析成包内条目名。可能是 /ppt/charts/x.xml，也可能是 ../charts/x.xml */
+function resolvePart(from, target) {
+  if (!target) return "";
+  if (target.startsWith("/")) return target.slice(1);
+  const base = from.split("/").slice(0, -1);
+  for (const seg of target.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") base.pop();
+    else base.push(seg);
+  }
+  return base.join("/");
+}
+
+/** c:cat / c:val 底下缓存的那一列点，按 idx 归位（idx 会跳号，直接 push 会错位） */
+function cachePoints(holder) {
+  const pts = [];
+  for (const pt of findAll(holder, "c:pt")) {
+    const v = child(pt, "c:v");
+    pts[Number(pt.attrs.idx) || 0] = v ? textOf(v).trim() : "";
+  }
+  return pts;
+}
+
+/** 把一份 chartN.xml 念成一两行人话 */
+function chartToLines(root) {
+  const plot = findAll(root, "c:plotArea")[0];
+  if (!plot) return [];
+  const kindEl = kids(plot).find((c) => CHART_KIND[c.name.replace(/^c:/, "")]);
+  const kind = kindEl ? CHART_KIND[kindEl.name.replace(/^c:/, "")] : "图表";
+  const titleEl = findAll(root, "c:title")[0];
+  const title = titleEl ? findAll(titleEl, "a:t").map((t) => textOf(t)).join("").trim() : "";
+  const out = [{ lvl: 0, s: clip("【" + kind + "】" + (title || "")) }];
+  const sers = findAll(plot, "c:ser").slice(0, CHART_SERIES);
+  for (const ser of sers) {
+    const tx = child(ser, "c:tx");
+    const name = tx ? cachePoints(tx).filter(Boolean)[0] || "" : "";
+    const cats = cachePoints(child(ser, "c:cat") || { children: [] });
+    const vals = cachePoints(child(ser, "c:val") || { children: [] });
+    const n = Math.min(Math.max(cats.length, vals.length), CHART_POINTS);
+    const pairs = [];
+    for (let i = 0; i < n; i++) {
+      const c = cats[i] == null ? "" : cats[i];
+      const v = vals[i] == null ? "" : vals[i];
+      if (!c && !v) continue;
+      pairs.push(c && v ? c + "=" + v : c || v);
+    }
+    const more = Math.max(cats.length, vals.length) > n ? "…" : "";
+    if (name || pairs.length) out.push({ lvl: 1, s: clip((name ? name + "：" : "") + pairs.join("、") + more) });
+  }
+  return out;
+}
+
+/** 这一页上挂着的图表，按出现顺序念出来 */
+function slideCharts(zip, slideName, root) {
+  const refs = findAll(root, "c:chart").map((c) => c.attrs["r:id"]).filter(Boolean);
+  if (!refs.length) return [];
+  const relName = slideName.replace(/\/([^/]+)$/, "/_rels/$1.rels");
+  if (!zip.has(relName)) return [];
+  const rels = {};
+  for (const r of findAll(parseXml(zip.text(relName) || ""), "Relationship")) rels[r.attrs.Id] = r.attrs.Target || "";
+  const out = [];
+  for (const id of refs) {
+    const part = resolvePart(slideName, rels[id]);
+    if (!part || !zip.has(part)) continue;
+    // 图表部件坏了不该让整页读不出来——这一页别的字还是有用的
+    try { for (const l of chartToLines(parseXml(zip.text(part) || ""))) out.push(l); } catch {}
+  }
+  return out;
+}
+
+/** 这一页上的图片。只说「有张图、图说是什么」——正文在别处，别让一页配图读回来是空白 */
+function slidePictures(root) {
+  const out = [];
+  for (const pic of findAll(root, "p:pic")) {
+    const nv = findAll(pic, "p:cNvPr")[0];
+    const desc = nv ? String(nv.attrs.descr || "").trim() : "";
+    out.push({ lvl: 0, s: clip("［图片］" + (desc ? "　" + desc : "")) });
+  }
+  return out;
+}
 function pptxToSlides(zip) {
   const slideNames = zip.entries
     .filter((e) => /^ppt\/slides\/slide\d+\.xml$/.test(e.name))
@@ -299,6 +448,10 @@ function pptxToSlides(zip) {
         if (cells.some(Boolean)) lines.push({ lvl: 0, s: clip(cells.join("  |  ")) });
       }
     }
+    for (const l of slideCharts(zip, name, root)) lines.push(l);
+    for (const l of slidePictures(root)) lines.push(l);
+    // 整页只有一张图/一个图表时，上面那句"没标题就拿第一行当标题"没得可拿，
+    // 这里也不补——标题是空的就让它空着，别把「［图片］」当成标题念出去。
     const n = Number(/(\d+)\.xml$/.exec(name)[1]);
     const notesName = `ppt/notesSlides/notesSlide${n}.xml`;
     let notes = "";
@@ -321,33 +474,63 @@ function pptxToSlides(zip) {
 }
 
 // ---------------- xlsx ----------------
+/**
+ * 一个单元格在界面上该显示成什么。有两处跟 exceljs 的默认行为不一样：
+ *
+ * 公式格：exceljs 不算公式。它写文件时只写公式、不写缓存值，于是同一个格子读回来
+ *   cell.text 是空串。而 skills/excel-report 明确要求「合计必须是真公式」——
+ *   也就是说我们自己生成的每一份报表，读回来合计那一片全是空的，模型会当成「没算」，
+ *   要么报给用户说表是坏的，要么好心把公式改成硬编码数字。给 =SUM(B4:C4) 至少是真话。
+ *   （文件本身没问题：Excel/WPS/Numbers 打开时会自己算。空的只有我们这条读取线。）
+ *
+ * 合并格：exceljs 把主格的值复制进每一个被盖住的格子，A1:D1 的标题会横着重复四遍，
+ *   模型看见「销售汇总 销售汇总 销售汇总 销售汇总」会以为那是四列数据。只有主格留字。
+ */
+function cellText(cell) {
+  if (cell.isMerged && cell.master && cell.master.address !== cell.address) return "";
+  let v = cell.text;
+  if (v == null) v = "";
+  else if (typeof v !== "string") v = String(v);
+  if (v === "") {
+    const f = cell.formula || (cell.value && cell.value.sharedFormula);
+    if (f) return "=" + f;
+  }
+  return v;
+}
+
 async function xlsxToSheets(file) {
-  const ExcelJS = require("exceljs"); // 项目本来就有（生成 Excel 用的），读也用它：数字格式/日期/合并单元格它都算好了
+  const ExcelJS = require("exceljs"); // 项目本来就有（生成 Excel 用的），读也用它：数字格式/日期它都算好了
   const book = new ExcelJS.Workbook();
   await book.xlsx.readFile(file);
   const sheets = [];
   for (const ws of book.worksheets.slice(0, LIMITS.sheets)) {
-    const nRows = Math.min(ws.actualRowCount || ws.rowCount || 0, LIMITS.rows);
-    const nCols = Math.min(ws.actualColumnCount || ws.columnCount || 0, LIMITS.cols);
+    // 用过的区域看 dimensions（xlsx 里那句 <dimension ref="A1:F6"/>），拿不到再退回
+    // rowCount/columnCount —— 它们是「最后一行/列的号」。
+    //
+    // 绝不能用 actualRowCount/actualColumnCount：那两个是「非空行/列的个数」，不是行号。
+    // 中间夹一个空行，它就比真实行号小 1；拿它当上界，末尾整整一行读不到——
+    // 而报表的末尾那行正好是合计。实测：标题行+空行分隔的六行表读回来只有五行，合计没了，
+    // 还报 truncated=false（"我全读到了"）。稀疏列同理：A-D 有数、E 空、F 有备注，
+    // actualColumnCount=5，于是读 A-E，F 列的备注凭空消失。
+    const dim = (ws.dimensions && ws.dimensions.model) || null;
+    const lastRow = Math.max(0, (dim ? dim.bottom : ws.rowCount) || 0);
+    const lastCol = Math.max(0, (dim ? dim.right : ws.columnCount) || 0);
+    const nRows = Math.min(lastRow, LIMITS.rows);
+    const nCols = Math.min(lastCol, LIMITS.cols);
     const rows = [];
     for (let r = 1; r <= nRows; r++) {
       const row = ws.getRow(r);
       const cells = [];
-      for (let c = 1; c <= nCols; c++) {
-        const cell = row.getCell(c);
-        let v = cell.text;
-        if (v == null) v = "";
-        else if (typeof v !== "string") v = String(v);
-        cells.push(clip(v));
-      }
+      for (let c = 1; c <= nCols; c++) cells.push(clip(cellText(row.getCell(c))));
       rows.push(cells);
     }
     sheets.push({
       name: ws.name,
       rows,
-      truncated: (ws.actualRowCount || 0) > nRows || (ws.actualColumnCount || 0) > nCols,
-      totalRows: ws.actualRowCount || nRows,
-      totalCols: ws.actualColumnCount || nCols,
+      // 只有上限真咬着了才算截断。以前这里拿 actualRowCount 跟自己比，永远是 false
+      truncated: lastRow > nRows || lastCol > nCols,
+      totalRows: lastRow,
+      totalCols: lastCol,
     });
   }
   if (!sheets.length) throw new Error("这个 .xlsx 里没有工作表");
@@ -381,4 +564,4 @@ async function previewData(file, name) {
   throw new Error(`不认识的预览类型 .${ext}`);
 }
 
-module.exports = { previewData, readZip, parseXml, findAll, textOf, OOXML, LIMITS, _internals: { docxToDoc, pptxToSlides, xlsxToSheets, zipListing, decodeEntities } };
+module.exports = { previewData, readZip, parseXml, findAll, textOf, OOXML, LIMITS, _internals: { docxToDoc, pptxToSlides, xlsxToSheets, zipListing, decodeEntities, cellText, docxNumbering, chartToLines, resolvePart } };
