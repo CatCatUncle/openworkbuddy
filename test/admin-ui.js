@@ -568,8 +568,102 @@ const GOTO = (id) => `(async () => {
      sent.active_model === "OR-备用", sent.active_model);
   ok("这一页 console 还是干净的", A.errs.length === 0, A.errs);
 
+  // ================= 6. 审计的保留上限：到顶了要说出来，导出要能带走全部 =================
+  // 这一页以前有两句假话：副标题写「这个组织建起来到现在的全部管理动作」，
+  // 而审计是有保留上限的，存满之后最老的会被挤掉；导出按钮写「导出本页」，
+  // 合规的人筛完一个月、页脚写着 3000 条，只能一页一页导 60 次。
+  // 假话出现在审计页尤其贵：看这张表的人正是拿它当证据的人。
+  console.log("\n【6】审计保留上限：存满了说出来，导出带得走全部");
+  const auditOrg = require("../org");
+  // 前面的用例把筛选停在「上月 + 添加成员」上（面板状态是留着的），先清回全部
+  const RESET_AUDIT = `(async () => {
+    const nap = (ms) => new Promise(r=>setTimeout(r,ms));
+    location.hash = "#/audit"; await nap(80);
+    document.querySelector('[data-preset="all"]').click(); await nap(600);
+    const k = document.querySelector("[data-action]");
+    if (k && k.value) { k.value = ""; k.dispatchEvent(new Event("change")); await nap(600); }
+    const b = document.getElementById("ad-body");
+    return {
+      sub: (b.querySelector(".ad-sec-d") || {}).textContent || "",
+      btn: (b.querySelector("[data-csv]") || {}).textContent || "",
+      warn: (b.querySelector(".ui-alert--warn") || {}).textContent || "",
+      rows: b.querySelectorAll("tbody tr").length,
+    };
+  })()`;
+
+  // 反向对照先跑：没存满的时候不许摆「已被挤掉」那条提醒，副标题也该说「全部」
+  const before = await A.js(RESET_AUDIT);
+  ok("没存满时副标题说的是「全部 N 条」，不含「上限」二字",
+     /全部 \d+ 条/.test(before.sub) && !/上限/.test(before.sub), before.sub);
+  ok("反向对照：没存满就不摆「更早的已被挤掉」那条警告", before.warn === "", before.warn);
+  ok("反向对照：没存满时导出按钮说的是「本页」", /导出本页/.test(before.btn), before.btn);
+
+  // 造一本存满的。直接往 jsonl 里写，不走 org.audit()——那是 5000 次 appendFileSync，
+  // 为了一条界面断言让整个套件多跑十几秒不值得；这里要验的是「后端说满了，界面认不认」
+  // 本子要挑对：这台测试机上不止一个组织在动，往别人那本里写，这一页一个字都不会变。
+  // 组织 id 从接口自己说的那条里取——顺手也验了每条流水身上带着 org
+  const myOrg = await A.js(`(async () => {
+    const j = await (await fetch("/api/admin/audit?limit=1")).json();
+    return (j.audit && j.audit[0] && j.audit[0].org) || "";
+  })()`);
+  ok("流水身上带着组织 id（多租户下这是分本的依据）", !!myOrg, myOrg);
+  const audFile = auditOrg._internals.auditFile(myOrg);
+  ok("这本审计文件真的在（写错本子的话下面全是假绿）", fs.existsSync(audFile), audFile);
+  const CAP = auditOrg._internals.AUDIT_CAP;
+  const today = new Date().toISOString();
+  fs.appendFileSync(audFile, Array.from({ length: CAP }, (_, i) =>
+    JSON.stringify({ ts: today, org: myOrg, actor: "压测管理员", action: "放行命令", target: "任务" + i, detail: "" })
+  ).join("\n") + "\n");
+
+  const after = await A.js(RESET_AUDIT);
+  ok("★存满了，副标题改口说「最近 N 条（已到保留上限，更早的已被挤掉）」★ 不再谎称「全部」",
+     /已到保留上限/.test(after.sub) && !/全部 \d+ 条/.test(after.sub), after.sub);
+  ok("★到顶了摆一条明确的警告，写清楚上限是多少、现存最早一条是哪天★",
+     new RegExp(String(CAP)).test(after.warn) && /现存最早/.test(after.warn) && /\d{4}/.test(after.warn),
+     after.warn.replace(/\s+/g, " ").slice(0, 160));
+  ok("警告里得告诉人下一步干什么（导出存档），不是光说一句「满了」", /导出存档/.test(after.warn), after.warn.slice(0, 80));
+  ok("★导出按钮改口说「导出全部 N 条」，N 是筛选命中的总数不是屏幕上这 50 条★",
+     /导出全部 \d+ 条/.test(after.btn) && Number((after.btn.match(/(\d+)/) || [])[1]) > after.rows,
+     { btn: after.btn, 屏幕上: after.rows });
+
+  // 真点一次导出。以前这颗按钮只把屏幕上这 50 条写进 CSV——
+  // 页脚写着 5000 条、导出来 50 条，而且不吭声，对账的人是照着这份文件下结论的
+  const csv = await A.js(`(async () => {
+    const nap = (ms) => new Promise(r=>setTimeout(r,ms));
+    // a.click() 在 Electron 里会真的触发下载（还可能弹保存框），所以这两样都换掉，
+    // 顺手把 Blob 截下来——要验的是「导出了多少条」，不是浏览器怎么存文件
+    const origClick = HTMLAnchorElement.prototype.click;
+    const origCreate = URL.createObjectURL, origRevoke = URL.revokeObjectURL;
+    let blob = null;
+    HTMLAnchorElement.prototype.click = function () {};
+    URL.createObjectURL = (b) => { blob = b; return "blob:stub"; };
+    URL.revokeObjectURL = () => {};
+    try {
+      const btn = document.querySelector("[data-csv]");
+      btn.click();
+      // 同步读，不能 await 一下再读：本机服务端几十毫秒就导完了，那时按钮已经恢复，
+      // 读到 false 会被当成「没禁用」——这条断言就成了看机器快慢的掷骰子。
+      // 点击是同步派发的，处理器里 btn.disabled = true 在第一个 await 之前，所以这里读得到
+      const busy = btn.disabled; // 导出中按钮该是禁用的，不然连点几下就是几十个并发请求
+      const t0 = Date.now();
+      while (!blob && Date.now() - t0 < 30000) await nap(100);
+      const text = blob ? await blob.text() : "";
+      return { busy, restored: !btn.disabled, lines: text.split("\\n").filter((x) => x.trim()).length,
+               head: text.split("\\n")[0] || "", label: btn.textContent };
+    } finally {
+      HTMLAnchorElement.prototype.click = origClick;
+      URL.createObjectURL = origCreate; URL.revokeObjectURL = origRevoke;
+    }
+  })()`);
+  ok("★导出拿到的是全部命中，不是屏幕上这一页★ 每页 50 条，这里得有几千行",
+     csv.lines > CAP, { CSV行数: csv.lines, 上限: CAP });
+  ok("CSV 第一行是表头（时间/操作人/动作/对象/详情）",
+     /时间/.test(csv.head) && /操作人/.test(csv.head) && /详情/.test(csv.head), csv.head);
+  ok("导出中按钮是禁用的（分几趟拉，连点几下就是几十个并发请求）", csv.busy === true, csv);
+  ok("导完按钮自己恢复，不是卡在「导出中」上", csv.restored === true && !/导出中/.test(csv.label), csv.label);
+  ok("这一页 console 还是干净的", A.errs.length === 0, A.errs);
   server.close();
-  console.log(`\n✅ 企业管理后台：18 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 能自己加改删渠道且不误删别的 ${pass} 项通过`);
+  console.log(`\n✅ 企业管理后台：18 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 能自己加改删渠道且不误删别的 · 审计到顶说得出口、导得全 ${pass} 项通过`);
   fs.rmSync(TMP, { recursive: true, force: true });
   clearTimeout(WATCHDOG);
   electronApp.exit(0);

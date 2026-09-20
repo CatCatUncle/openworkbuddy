@@ -2232,6 +2232,17 @@ PAGES.orgs = {
  */
 let auditF = { from: "", to: "", q: "", actor: "", action: "", offset: 0 };
 const AUDIT_PAGE = 50;
+/**
+ * 审计那一页的副标题。以前写死「这个组织建起来到现在的全部管理动作」——
+ * 而审计是有保留上限的，存满之后最老的会被挤掉，那句话就成了假话。
+ * 假话出现在审计页尤其贵：看这张表的人正是拿它当证据的人。
+ */
+function auditScope(d) {
+  const tail = "按时间倒序。";
+  if (!d || !d.kept) return "这个组织还没有管理动作记录。" + tail;
+  if (d.capped) return `最近 ${d.kept} 条（已到保留上限，更早的已被挤掉），` + tail;
+  return `这个组织建起来到现在的全部 ${d.kept} 条管理动作，` + tail;
+}
 PAGES.audit = {
   load: () => api("/api/admin/audit?" + qs({ limit: AUDIT_PAGE, offset: auditF.offset, from: auditF.from, to: auditF.to, q: auditF.q, actor: auditF.actor, action: auditF.action })),
   render: (d) => {
@@ -2250,10 +2261,11 @@ PAGES.audit = {
       `</select>`;
     return `<div class="ad-wrap ad-wrap--wide">
       ${note("记的是<b>管理动作</b>：谁加了人、谁改了额度、谁动了安全开关。任务本身跑了什么在「用量明细」里。密码、密钥这类东西<b>不会</b>进这张表。")}
+      ${d.capped ? note(`这个组织的审计已经存满 <b>${d.cap}</b> 条，再往里记会把最老的挤掉，现存最早的一条是 <b>${esc(fmtTs(d.since))}</b>。<br>要查更早的事，先按时间范围<b>导出存档</b>——挤掉之后没有第二个地方找得回来。`, "warn") : ""}
       ${cardT(
         headRow(
-          secT("操作审计", "这个组织建起来到现在的全部管理动作，按时间倒序。"),
-          `<button class="ui-btn ui-btn--outline ui-btn--sm" data-csv>${ic("download")} 导出本页</button>`
+          secT("操作审计", auditScope(d)),
+          `<button class="ui-btn ui-btn--outline ui-btn--sm" data-csv>${ic("download")} 导出${d.total > (d.audit || []).length ? "全部 " + d.total + " 条" : "本页"}</button>`
         ),
         `${filterBar(auditF, {
           placeholder: "搜操作人 / 对象 / 详情",
@@ -2271,9 +2283,32 @@ PAGES.audit = {
     const a = root.querySelector("[data-actor]"), k = root.querySelector("[data-action]");
     if (a) a.onchange = () => go({ ...auditF, actor: a.value, offset: 0 });
     if (k) k.onchange = () => go({ ...auditF, action: k.value, offset: 0 });
-    root.querySelector("[data-csv]").onclick = () =>
-      downloadCsv("操作审计", ["时间", "操作人", "动作", "对象", "详情"],
-        d.audit.map((x) => [x.ts, x.actor || "", x.action || "", x.target || "", x.detail || ""]));
+    root.querySelector("[data-csv]").onclick = async (ev) => {
+      const btn = ev.currentTarget;
+      // 一次能取多少由后端封着（listAudit 的 limit 上限）；条数多就分几趟，
+      // 别为了省事把上限调大——那是让后端一次把整本读进内存
+      const CHUNK = 1000;
+      const rows = [];
+      btn.disabled = true;
+      const label = btn.innerHTML;
+      try {
+        for (let off = 0; off < (d.total || 0); off += CHUNK) {
+          btn.textContent = rows.length ? `导出中 ${rows.length}/${d.total}` : "导出中…";
+          const part = await api("/api/admin/audit?" + qs({
+            limit: CHUNK, offset: off,
+            from: auditF.from, to: auditF.to, q: auditF.q, actor: auditF.actor, action: auditF.action,
+          }));
+          const got = (part && part.audit) || [];
+          if (!got.length) break; // 后端没东西给了就停，免得条数对不上时空转
+          for (const x of got) rows.push(x);
+        }
+        downloadCsv("操作审计", ["时间", "操作人", "动作", "对象", "详情"],
+          rows.map((x) => [x.ts, x.actor || "", x.action || "", x.target || "", x.detail || ""]));
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = label;
+      }
+    };
   },
 };
 
