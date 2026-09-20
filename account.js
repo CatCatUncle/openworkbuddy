@@ -218,8 +218,17 @@ function genPassword(orgId) {
   }
   throw new Error("生成密码失败：当前的密码策略太严，管理员先去企业设置里放宽一点");
 }
-function publicUser(u) {
+/**
+ * @param s 这个人所属组织的设置。不传就自己去读一次（单个用户的场合本来就只读一次）。
+ *   成员列表那种一次画几百个人的地方必须传：底下三格（月额度 / 本月剩余 / 余额）
+ *   各自都会去 org.getOrg() 拿一次设置，一个人三遍、五百个人一千五百遍，
+ *   读的还是同一份不会变的东西。实测 50 个人的成员页，平台上多 500 家公司之后
+ *   从 5.6ms 变成 365.6ms——慢的不是你自己的数据，是别人家的。
+ *   传进来的必须是**这个人自己组织**的设置，别拿调用方的设置套到别人头上。
+ */
+function publicUser(u, s) {
   if (!u) return null;
+  const st = s || org.settingsOf(org.getOrg(org.orgIdOf(u)));
   return {
     username: u.username,          // 登录名，不可改：改了就是换了个账号
     nickname: u.nickname || "",     // 昵称，界面上显示的名字
@@ -236,13 +245,13 @@ function publicUser(u) {
     dept: u.dept || "",
     status: u.status || "active",   // active | pending（等审核）| disabled（已停用）
     credits: u.credits,             // 加油包余额
-    monthly_quota: monthlyQuotaOf(u),   // 每月固定用量
+    monthly_quota: monthlyQuotaOf(u, st),   // 每月固定用量
     // 中转站上这个人每月封顶多少钱（元）。0 = 没单独设过，按部门模板、再按组织默认走（budget.js 的 limitsOf）。
     // 跟上面 credits / monthly_quota 那一套不是一回事：那套算的是**界面上用了几次**，
     // 这一格算的是**业务方拿虚拟 Key 调 API 花了多少钱**，两本账互不相干。
     budget_yuan: u.budget_yuan || 0,
-    monthly_left: monthlyLeft(u),       // 本月还剩多少固定用量
-    balance: balanceOf(u),              // 固定用量剩余 + 加油包，界面和闸门都看这个数
+    monthly_left: monthlyLeft(u, st),   // 本月还剩多少固定用量
+    balance: balanceOf(u, st),          // 固定用量剩余 + 加油包，界面和闸门都看这个数
     created_at: u.created_at,
     two_factor: twoFactorOn(u),     // 只给布尔，密钥和恢复码一个字都不出去
   };
@@ -271,10 +280,10 @@ function monthlyLeft(user, s) {
   const used = user.month_key === monthKey() ? user.month_used || 0 : 0;
   return Math.max(0, quota - used);
 }
-function balanceOf(user) {
+function balanceOf(user, s) {
   if (!user) return 0;
-  const s = org.settingsOf(org.getOrg(org.orgIdOf(user)));
-  return monthlyLeft(user, s) + Math.max(0, user.credits || 0);
+  const st = s || org.settingsOf(org.getOrg(org.orgIdOf(user)));
+  return monthlyLeft(user, st) + Math.max(0, user.credits || 0);
 }
 
 // 头像允许两种：emoji（存字符）和用户自己上传的小图（存 data URI）。
@@ -1182,11 +1191,17 @@ function assertManageable(actor, username, what) {
 function listMembers(orgId) {
   const want = orgId || org.DEFAULT_ORG;
   const mine = loadUsers().users.filter((u) => org.orgIdOf(u) === want);
+  // 组织设置在这一趟里不会变，读一次就够。这里省掉的不是零头：
+  // publicUser 每个人要用三次，500 个人就是把 orgs.json 读 1500 遍、
+  // 搬 1302 KB 进内存——而 orgs.json 里装着平台上**所有**公司的数据，
+  // 于是你成员页的快慢取决于隔壁又来了几家（实测 50 人的页：2 家 5.6ms → 501 家 365.6ms）。
+  // 能这么传是因为 mine 已经按 want 筛过了，这份设置对这里每一个人都是他自己的那份
+  const s = org.settingsOf(org.getOrg(want));
   // 「最后活跃」只要每人最近的那一条。从新分片往老里翻、人齐了就停，
   // 常见情况下只开一个文件——这个列表每进一次后台就查一次，不能让它跟账本一起变长
   const lastAt = usageStore.lastActive(mine.map((u) => u.username));
   return mine
-    .map((u) => ({ ...publicUser(u), last_active: lastAt.get(u.username) || "" }))
+    .map((u) => ({ ...publicUser(u, s), last_active: lastAt.get(u.username) || "" }))
     .sort((a, b) => (b.owner ? 1 : 0) - (a.owner ? 1 : 0) || String(a.created_at).localeCompare(String(b.created_at)));
 }
 

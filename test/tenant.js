@@ -1176,6 +1176,62 @@ async function login(username, password) {
     fs.rmSync(OLD, { recursive: true, force: true });
   }
 
+  // ============================================================================
+  // 成员列表的开销不许跟「平台上开了几家公司」挂钩。
+  // publicUser 每个人身上要算三格（月额度 / 本月剩余 / 余额），2026-09-20 之前
+  // 这三格各自去 org.getOrg() 读一遍 orgs.json——一个人三遍，而 orgs.json 里装的是
+  // 平台上**所有**公司的数据。实测 50 个人的成员页：平台上 2 家公司 5.6ms，
+  // 501 家 365.6ms。慢的不是你自己的数据，是隔壁又来了几家。
+  // 判据用「读了几遍」不用「花了几毫秒」：毫秒在慢机器上会飘，次数不会。
+  // ============================================================================
+  console.log("\n【19】成员列表：隔壁开几家公司，不该拖慢你的后台");
+  {
+    const N19 = 120;
+    const nb19 = org.createOrg({ name: "隔壁十九号" }).id;
+    org.updateOrg(nb19, { settings: { member_monthly_credits: 777 } }, "平台");
+    const my19 = org.createOrg({ name: "本家十九号" }).id;
+    org.updateOrg(my19, { settings: { member_monthly_credits: 42 } }, "平台");
+
+    const st19 = account._internals.loadUsers();
+    const mk19 = (name, o) => ({ username: name, org: o, role: "member", status: "active",
+      created_at: new Date(Date.now() - 1000).toISOString(), pass: "x".repeat(60), salt: "y".repeat(32), credits: 0 });
+    for (let i = 0; i < N19; i++) st19.users.push(mk19("m19_" + i, my19));
+    st19.users.push(mk19("nb19_0", nb19));
+    account._internals.saveUsers(st19);
+
+    // 数 orgs.json 被读了几遍。这条 bug 真正的形状是「次数跟人数成正比」
+    const ORGS19 = org._internals.ORGS_FILE;
+    let reads19 = 0;
+    const rawRead19 = fs.readFileSync;
+    fs.readFileSync = function (f, ...rest) { if (String(f) === ORGS19) reads19++; return rawRead19.call(fs, f, ...rest); };
+    let list19;
+    try { list19 = account.listMembers(my19); } finally { fs.readFileSync = rawRead19; }
+
+    eq(list19.length, N19, "这家的人都列出来了");
+    ok(reads19 <= 2, "★列 " + N19 + " 个人，orgs.json 最多读两遍★ 每人各读各的话，这里会是 " + N19 * 3 + " 遍",
+       { 读了: reads19, 人数: N19 });
+
+    // 反向对照一：省下来的是读取，不是判断——设置必须还是**这个人自己组织**的那份
+    eq(list19[0].monthly_quota, 42, "本家的人按本家的月额度算");
+    eq(account.listMembers(nb19)[0].monthly_quota, 777, "★隔壁的人按隔壁的月额度算★ 把一份设置套到所有人头上的话，这里会是 42");
+
+    // 反向对照二：单独给某个人设过的额度，仍然盖得过组织默认值
+    const st19b = account._internals.loadUsers();
+    st19b.users.find((u) => u.username === "m19_0").monthly_quota = 999;
+    account._internals.saveUsers(st19b);
+    const again19 = account.listMembers(my19);
+    eq(again19.find((m) => m.username === "m19_0").monthly_quota, 999, "反向对照：单独设过额度的人，还是按他自己那份算");
+    eq(again19.find((m) => m.username === "m19_1").monthly_quota, 42, "反向对照：同一趟里没单独设过的人照旧按组织默认值");
+
+    // 反向对照三：单个用户的场合没有现成设置可传，publicUser 得自己去读，不能读出个空
+    eq(account.publicUser({ username: "m19_1", org: my19, role: "member" }).monthly_quota, 42,
+       "反向对照：不传设置时 publicUser 自己去读，读出来还是这家的 42");
+
+    // 把这一段造的人清掉，免得影响后面按人数算的断言
+    const st19c = account._internals.loadUsers();
+    st19c.users = st19c.users.filter((u) => !/^(m19_|nb19_)/.test(u.username));
+    account._internals.saveUsers(st19c);
+  }
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   fs.rmSync(TMP, { recursive: true, force: true });
