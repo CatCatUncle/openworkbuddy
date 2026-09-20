@@ -17,6 +17,11 @@
  *           confirm 却好好的（证明不该顺手把全站确认框也改了），
  *           而且 public/js 里再不许出现第二个 prompt( 调用。
  *
+ * 后来这一页又补了「删」：用户原话「资料库这里能创建目录也要能删除目录或者文件啊」。
+ * 删是撤不回来的，所以它没走 native confirm——那玩意儿挂的是原生模态框，
+ * 离屏测试一个字都验不了，框里也说不出「这个文件夹里还有 3 样东西」。
+ * 最后那一段钉的就是这件事：点得到、说得清、取消真不发、而且点「删」不会变成「进这个文件夹」。
+ *
  * 跟 test/preview-layout.js 一样开真 Chromium、喂真 public/ ——
  * 这个毛病只在真 Electron 里犯，拿假 DOM 测等于没测。
  */
@@ -82,6 +87,7 @@ function serve() {
 const STUB = `
 (() => {
   window.__posts = [];
+  window.__dels = [];
   settingsCache = { platform_owner: true, workspace_dir: "/tmp/ws" };
   const J = (d, okk) => Promise.resolve({ ok: okk !== false, status: okk === false ? 400 : 200, json: async () => d });
   const real = window.fetch;
@@ -93,21 +99,39 @@ const STUB = `
       if (b.name === "老地方") return J({ error: "同名文件夹已存在" }, false);
       return J({ ok: true, dir: b.name });
     }
+    if (s.includes("/api/library/folder") && m === "DELETE") {
+      window.__dels.push(s);
+      return J({ ok: true });
+    }
+    if (s.includes("/api/library/file/") && m === "DELETE") {
+      window.__dels.push(s);
+      return J({ ok: true });
+    }
     if (s.includes("/api/library/outputs")) return J({ tasks: [] });
     if (s.includes("/api/library/search")) return J({ items: [] });
-    if (s.includes("/api/library")) return J({ dir: window.__dir || "", files: [], folders: [], notes: [] });
+    if (s.includes("/api/library")) return J({
+      dir: window.__dir || "",
+      // 一个空的、一个里头还有东西的：这两条走的是完全不同的两句话，也是不同的结局
+      dirs: window.__bare ? [] : [{ path: "空文件夹", name: "空文件夹", count: 0 },
+                                   { path: "客户A", name: "客户A", count: 3 }],
+      files: window.__bare ? [] : [{ path: "报价单.md", name: "报价单.md", size: 2048, mtime: Date.now() }],
+      folders: [], notes: [],
+    });
     if (s.includes("/api/settings")) return J(settingsCache);
-    if (s.includes("/api/files")) return J([]);
+    // 本地产物那一段的料。它是反向对照：这几行上面**不许**有垃圾桶
+    if (s.includes("/api/files")) return J(window.__bare ? [] : [{ name: "周报.md", size: 900, mtime: Date.now() }]);
     return real.apply(this, arguments);
   };
 })()
 `;
 
 /** 把资料库那一页画出来，停在「文件夹」这一栏的根目录 */
-const OPENPAGE = (dir) => `
+const OPENPAGE = (dir, bare) => `
 (async () => {
   window.__dir = ${JSON.stringify(dir || "")};
+  window.__bare = ${bare === false ? "false" : "true"};
   window.__posts = [];
+  window.__dels = [];
   chatCol.innerHTML = '<div class="assist-page" id="assist-page"></div>';
   libState.view = "dir"; libState.q = ""; libState.dir = ${JSON.stringify(dir || "")}; libState.pick = null;
   await renderLibPage();
@@ -218,13 +242,31 @@ app.whenReady().then(async () => {
         const out = { type: typeof window.prompt };
         try { window.prompt("x"); out.threw = false; }
         catch (e) { out.threw = true; out.msg = String((e && e.message) || e); }
-        try { out.confirmOk = typeof window.confirm === "function"; } catch { out.confirmOk = false; }
         return out;
       })()
     `);
     ok(r.type === "function", "先验料：window.prompt 在这儿是个函数（所以「判断有没有」的写法挡不住）", r.type);
     ok(r.threw === true, "★它一调用就抛，整个 onclick 当场断掉——老代码就是死在这儿★", r.msg);
-    ok(r.confirmOk, "反向对照：confirm 好好的，全站那些确认框不用跟着改", r.confirmOk);
+  }
+  {
+    // 这条反向对照原来写的是 `typeof window.confirm === "function"`——而这份文件开头刚说过
+    // typeof 对一个「一调用就抛」的 API 什么都证明不了（prompt 的 typeof 也是 "function"）。
+    // 拿被自己否掉的写法当证据，等于这条断言从来没成立过。真去调一次：
+    // 它要是好使，会挂在一个原生模态框上等人点——既不返回也不抛。
+    // 所以另开一扇一次性的窗让它去挂，量完直接销毁；挂在主窗上的话后面整套断言全废。
+    const probe = new BrowserWindow({ show: false, webPreferences: { contextIsolation: false } });
+    await probe.loadURL("data:text/html,<!doctype html><meta charset=utf-8><title>probe</title>");
+    const verdict = await Promise.race([
+      probe.webContents
+        .executeJavaScript(`(() => { try { window.confirm("x"); return "返回了"; } catch (e) { return "抛了：" + e.message; } })()`)
+        .then((v) => v, (e) => "抛了：" + String((e && e.message) || e)),
+      new Promise((r) => setTimeout(() => r("挂住了"), 2500)),
+    ]);
+    probe.destroy();
+    ok(verdict === "挂住了",
+       "★反向对照：confirm 真去调一次——它不抛，是挂在一个原生模态框上等人点★ "
+       + "所以全站那些确认框对用户是好使的，不该顺手一起改；但离屏测试点不动那个框，"
+       + "新写的删除才自己画（askConfirm）", verdict);
   }
   {
     const files = fs.readdirSync(path.join(PUB, "js")).filter((f) => f.endsWith(".js"));
@@ -390,6 +432,141 @@ app.whenReady().then(async () => {
     `);
     ok(r.sel, "带默认值打开时整段选中，直接打字就能覆盖（手填工作空间路径那处要的就是这个）", r);
     ok(r.still, "★输入法选词时的那个回车不算提交——中文名几乎每次都要选一次词★", r.still);
+  }
+
+  console.log("\n— 两段分开摆：哪一段是「你放进去的」，哪一段是「任务写出来的」 —");
+  // 用户连问三遍「这儿建目录有啥用啊」，还猜「资料库指的是产出成果吧」。猜得有道理：
+  // 这一页底下就摆着「本地产物」，而「新建/上传」原来悬在整页的工具条上——
+  // 从那个位置看，它就像是在给产出建目录。所以钉两件事：两段各有标题，
+  // 而且那两颗按钮长在「参考资料」这一段的标题行里，不在整页的工具条上。
+  {
+    const r = await run(OPENPAGE("", false) + `.then(async () => {
+      const secs = [...document.querySelectorAll(".lib-list .sec")].map((s) => s.textContent.replace(/\\s+/g, " ").trim());
+      const mk = document.getElementById("lb-mkdir");
+      return {
+        secs,
+        在标题行里: !!(mk && mk.closest(".lib-sec")),
+        在整页工具条上: !!(mk && mk.closest(".lib-bar-acts")),
+        第一段说了啥: (document.querySelector(".lib-list .lib-sec .lib-sec-l em") || {}).textContent || "",
+      };
+    })`);
+    ok(r.secs.some((t) => t.startsWith("参考资料")) && r.secs.some((t) => t.startsWith("本地产物")),
+       "★「参考资料」和「本地产物」各有各的标题★ 摞在一起的后果不是「乱」，是人把两件事当成一件", r.secs);
+    ok(r.在标题行里 && !r.在整页工具条上,
+       "★「新建文件夹/上传」长在「参考资料」那一段的标题行里，不在整页的工具条上★ "
+       + "就近：一颗按钮摆在哪儿，人就以为它管哪儿", r);
+    ok(/AI/.test(r.第一段说了啥),
+       "标题旁边一句人话把这段是干嘛的说了（不然「有啥用」还得有人在旁边解释）", r.第一段说了啥);
+    const e = await run(OPENPAGE("", true) + `.then(() => (document.querySelector(".lib-none") || {}).innerHTML || "")`);
+    ok(/library_list/.test(e) && /只看得见那一块/.test(e),
+       "★空的时候说得出「往这儿放什么、放了会怎样」★ 原来只有一句「还没有参考资料」——正确的废话",
+       e.slice(0, 120));
+  }
+
+  console.log("\n— 删得掉，而且删之前说得清 —");
+  {
+    const p = await run(OPENPAGE("", false) + `.then(() => ({
+      文件夹上的垃圾桶: document.querySelectorAll(".lib-dir [data-del-dir]").length,
+      资料上的垃圾桶: document.querySelectorAll('.lib-it[data-src="lib"] [data-del-file]').length,
+      本地产物上的垃圾桶: document.querySelectorAll('.lib-it[data-src="ws"] [data-del-file]').length,
+      产物行数: document.querySelectorAll('.lib-it[data-src="ws"]').length,
+    }))`);
+    ok(p.文件夹上的垃圾桶 === 2, "★两个文件夹，两颗垃圾桶——「开关存在但找不到＝没有」，所以它长在行上★", p);
+    ok(p.资料上的垃圾桶 === 1, "★资料那一行也删得掉，不用先点开右边的预览栏才找得到「删除」★", p);
+    ok(p.产物行数 > 0 && p.本地产物上的垃圾桶 === 0,
+       "★反向对照：本地产物不给垃圾桶★ 那是任务在工作目录里写出来的，从这一页删等于伸手改任务的现场", p);
+
+    // 点「删」不能变成「进这个文件夹」：垃圾桶就长在 .lib-dir 里面，
+    // 不 stopPropagation 的话这一下会先被外层那个「进去」的处理函数接走
+    const r1 = await run(`(async () => {
+      const b1 = document.querySelector('[data-del-dir="空文件夹"]');
+      if (!b1) return { 框开着: false, 没找到垃圾桶: true, 现在在哪一层: libState.dir, 发了几条: window.__dels.length };
+      b1.click();
+      await new Promise((r) => setTimeout(r, 120));
+      const m = document.querySelector(".ask-mask");
+      return {
+        框开着: !!m,
+        标题: m ? m.querySelector(".ask-t").textContent : "",
+        说明: m ? (m.querySelector(".ask-h") || {}).textContent || "" : "",
+        钮上写的: m ? m.querySelector(".ask-ok").textContent : "",
+        红的: m ? m.querySelector(".ask-ok").classList.contains("is-danger") : false,
+        焦点在: m ? (document.activeElement === m.querySelector(".ask-no") ? "算了" : "别处") : "",
+        现在在哪一层: libState.dir,
+        发了几条: window.__dels.length,
+      };
+    })()`);
+    ok(r1.框开着 && /空文件夹/.test(r1.标题), "点垃圾桶 → 先问一句，标题里带着要删的是哪个", r1);
+    ok(r1.现在在哪一层 === "", "★点「删」没有变成「进这个文件夹」★ 不拦住事件的话，人点的是删、结果是进去了", r1);
+    ok(r1.发了几条 === 0, "★问都还没问完，一个 DELETE 都还没发出去★", r1.发了几条);
+    ok(r1.焦点在 === "算了",
+       "★焦点落在「算了」上，不在「删掉」上★ 回车是这一步最容易被手快敲下去的键，它该落在撤得回来的那一边", r1);
+    ok(r1.红的 === true && r1.钮上写的 === "删掉",
+       "那颗钮不跟「保存」「建好」长一个样：人是照着位置按的，不是照着字按的", r1);
+
+    const r2 = await run(`(async () => {
+      const ok2 = document.querySelector(".ask-mask .ask-ok");
+      if (!ok2) return { 发了: ["(框没开)"], 框还在: false };
+      ok2.click();
+      await new Promise((r) => setTimeout(r, 200));
+      return { 发了: window.__dels.slice(), 框还在: !!document.querySelector(".ask-mask") };
+    })()`);
+    ok(r2.发了.length === 1 && /\/api\/library\/folder\?dir=/.test(r2.发了[0]),
+       "★按「删掉」→ 真发了一条 DELETE，而且带着删的是哪一个★", r2.发了);
+    ok(decodeURIComponent(r2.发了[0]).includes("空文件夹"), "带过去的就是刚才点的那个", r2.发了);
+    ok(!r2.框还在, "发完框自己收掉", r2);
+
+    // 非空的那个：服务端本来就不给删（共享的一份，一条 rm -rf 下去别人的素材也没了）。
+    // 与其让人点完确认再吃一句 400，不如在框里先把「还剩几样」说出来
+    const r3 = await run(OPENPAGE("", false) + `.then(async () => {
+      const b3 = document.querySelector('[data-del-dir="客户A"]');
+      if (!b3) return { 说明: "(没找到垃圾桶)", 钮: "", 发了几条: window.__dels.length };
+      b3.click();
+      await new Promise((r) => setTimeout(r, 120));
+      const m = document.querySelector(".ask-mask");
+      if (!m) return { 说明: "(框根本没开)", 钮: "", 发了几条: window.__dels.length };
+      const 说明 = (m.querySelector(".ask-h") || {}).textContent || "";
+      const 钮 = m.querySelector(".ask-ok").textContent;
+      m.querySelector(".ask-ok").click();
+      await new Promise((r) => setTimeout(r, 200));
+      return { 说明, 钮, 发了几条: window.__dels.length };
+    })`);
+    ok(/还有 3 样东西/.test(r3.说明),
+       "★里头还有几样，框里直接说出来★ 不说的话人只会点完确认再吃一句 400，还以为是坏了", r3.说明);
+    ok(r3.钮 === "知道了" && r3.发了几条 === 0,
+       "★删不了的时候那颗钮就不叫「删掉」，按下去也确实一条请求都不发★ "
+       + "摆一颗按下去必定失败的「删掉」，比没有还气人", r3);
+
+    // 删资料：取消一次、确认一次，两头都要钉
+    const r4 = await run(OPENPAGE("", false) + `.then(async () => {
+      const b4 = document.querySelector("[data-del-file]");
+      if (!b4) return { 标题: "(没找到垃圾桶)", 取消后发了: window.__dels.length, 框还在: false };
+      b4.click();
+      await new Promise((r) => setTimeout(r, 120));
+      const m = document.querySelector(".ask-mask");
+      if (!m) return { 标题: "(框根本没开)", 取消后发了: window.__dels.length, 框还在: false };
+      const 标题 = m.querySelector(".ask-t").textContent;
+      m.querySelector(".ask-no").click();
+      await new Promise((r) => setTimeout(r, 150));
+      return { 标题, 取消后发了: window.__dels.length, 框还在: !!document.querySelector(".ask-mask") };
+    })`);
+    ok(/报价单\.md/.test(r4.标题), "删资料也先问一句，标题里带着文件名", r4.标题);
+    ok(r4.取消后发了 === 0 && !r4.框还在, "★按「算了」→ 一条都不发★ 这条最容易假绿，所以上面先钉了框确实开过", r4);
+
+    const r5 = await run(`(async () => {
+      const b5 = document.querySelector("[data-del-file]");
+      if (!b5) return { 发了: ["(没找到垃圾桶)"], toast: "" };
+      b5.click();
+      await new Promise((r) => setTimeout(r, 120));
+      const ok5 = document.querySelector(".ask-mask .ask-ok");
+      if (!ok5) return { 发了: ["(框没开)"], toast: "" };
+      ok5.click();
+      await new Promise((r) => setTimeout(r, 200));
+      const t = document.getElementById("owb-toast");
+      return { 发了: window.__dels.slice(), toast: t && t.classList.contains("show") ? t.textContent.trim() : "" };
+    })()`);
+    ok(r5.发了.length === 1 && /\/api\/library\/file\//.test(r5.发了[0]) && /报价单/.test(decodeURIComponent(r5.发了[0])),
+       "★按「删掉」→ 真发了 DELETE /api/library/file/…★", r5.发了);
+    ok(/删/.test(r5.toast), "删完有回话，不是静悄悄地少了一行", r5.toast);
   }
 
   srv.close();

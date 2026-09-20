@@ -150,7 +150,9 @@ const mBody = document.getElementById("m-body");
  * 所以想靠判断类型绕开根本挡不住；异常当场把整个 onclick 打断，按钮点下去什么都不发生、
  * 界面上也不报错。资料库里「新建文件夹」失灵就是这么来的——用户原话「好像还是不能用哦」，
  * 因为从他那一侧看，那颗按钮是哑的，连个错都没有。
- * confirm() 不受影响（Electron 有原生实现），所以全站那些确认框不用动，只有要用户填字的地方得自己画。
+ * confirm() 是另一回事：实测它既不抛也不返回，而是**挂起**在一个原生模态框上（alert 同理）。
+ * 也就是说全站那些确认框对用户是好使的，不用跟着改；但它挂的是原生框，离屏测试里没人点得动，
+ * 所以新写的、撤不回来的操作走下面那个 askConfirm，要的是「测得了」和「框里说得出细节」。
  *
  * 自成一层浮在弹窗之上：资料库本身就开在弹窗里，借 #modal-box 会把它整个顶掉。
  */
@@ -218,6 +220,52 @@ function askText(opts) {
     check();
     input.focus();
     input.select();
+  });
+}
+
+/**
+ * 跟用户确认一件**做完就撤不回来**的事，返回 Promise<boolean>。
+ *
+ * 为什么不直接用 window.confirm：它在桌面版里能用（见上面那段实测），但有两处够不着——
+ *   · 它挂的是原生模态框，离屏测试点不动，于是每一条走 confirm 的删除路径都验不了；
+ *   · 框里只摆得下一句话，说不出「这个文件夹里还有 3 样东西，先清空」这种决定人要不要点的细节。
+ * 删东西是撤不回来的，这两样都不该缺。全站另外那些 confirm() 这次没跟着换，那是另一笔账。
+ */
+function askConfirm(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    // 同一时刻只留一个。前一个按「取消」收掉，不然它的 Promise 永远不 settle
+    if (askConfirm._close) askConfirm._close(false);
+    const prev = document.activeElement;
+    const wrap = document.createElement("div");
+    wrap.className = "ask-mask";
+    const title = o.title || "确认一下";
+    wrap.innerHTML =
+      `<div class="ask-box" role="alertdialog" aria-modal="true" aria-label="${esc(title)}">` +
+      `<div class="ask-t">${esc(title)}</div>` +
+      (o.hint ? `<div class="ask-h">${esc(o.hint)}</div>` : "") +
+      `<div class="ask-ops"><button type="button" class="btn-plain ask-no">${esc(o.cancel || "算了")}</button>` +
+      `<button type="button" class="btn-brand ask-ok${o.danger ? " is-danger" : ""}">${esc(o.ok || "确定")}</button></div></div>`;
+    document.body.appendChild(wrap);
+    function done(val) {
+      if (askConfirm._close !== done) return;   // 已经收过了，别收第二遍
+      askConfirm._close = null;
+      document.removeEventListener("keydown", onKey, true);
+      wrap.remove();
+      try { if (prev && prev.isConnected && prev.focus) prev.focus(); } catch {}
+      resolve(!!val);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(false); }
+    }
+    wrap.querySelector(".ask-ok").onclick = () => done(true);
+    wrap.querySelector(".ask-no").onclick = () => done(false);
+    wrap.onmousedown = (e) => { if (e.target === wrap) done(false); };
+    document.addEventListener("keydown", onKey, true);
+    askConfirm._close = done;
+    // 焦点落在「算了」上，不落在「删掉」上：回车是这一步最容易被手快敲下去的键，
+    // 它该落在撤得回来的那一边。askText 那边焦点给输入框，是因为那儿本来就是要人打字
+    wrap.querySelector(".ask-no").focus();
   });
 }
 
