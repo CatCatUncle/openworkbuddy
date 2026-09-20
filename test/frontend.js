@@ -3291,6 +3291,7 @@ const GATE_CHECKS = `
   let medias = [];
   // 「从渠道现拉回来的模型列表」默认不出网；验分组那一组会临时换成一份真实形状的回包
   let provModels = { ok: false, why: "测试里不出网", models: [] };
+  let provModelsDown = false;   // true = 连请求都发不出去（服务端没起来 / 网断了），跟「问到了但是空的」是两回事
   let provs = [
     { id: "or", name: "我的 OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "sk-or-fixture", has_key: true },
     { id: "ark", name: "火山方舟（豆包）", kind: "ark", base_url: "https://ark.cn-beijing.volces.com/api/v3", api_key: "", has_key: false },
@@ -3318,7 +3319,7 @@ const GATE_CHECKS = `
       ],
       catalog: { chat: [{ kind: "openrouter", id: "openai/gpt-5.2", label: "GPT-5.2" }] },
     });
-    if (url === "/api/provider-models") return j(provModels);
+    if (url === "/api/provider-models") return provModelsDown ? Promise.reject(new Error("测试里把这一路掐断")) : j(provModels);
     if (url === "/api/security/modes") return j({ modes: { ask: { label: "每次问我", desc: "动手前都问" }, auto: { label: "自动执行", desc: "不问" } }, current: "ask", can_switch: canSwitch });
     if (url === "/api/security/approvals") return j({ session_allow: [] });
     if (url === "/api/security/system") return j({ fulldisk: "unknown", accessibility: "unknown", automation: "unknown", desktop: false });
@@ -3596,6 +3597,45 @@ const GATE_CHECKS = `
   ok("表单开着的时候，「目录拉回来再画一遍」不许把它冲没（不然这颗添加按钮看着就是坏的）",
     stillOpen && stillOpen.style.display !== "none" && stillOpen.querySelectorAll(".mm-prov option").length > 0,
     stillOpen ? "display=" + stillOpen.style.display + " 渠道项=" + stillOpen.querySelectorAll(".mm-prov option").length : "表单没了");
+  // ---- 「问完渠道，一个模型都没有」这一档：以前上一秒还写着「正在问渠道有哪些模型…」，
+  //      下一秒那行字直接没了，问出什么结果一个字都不说。本机 Ollama 最吃这个亏：
+  //      它回的是 200 + 空清单（起来了，只是还没 pull 过东西），不是错，所以连 why 都没有 ----
+  provs = [{ id: "ol", name: "我这台的 Ollama", kind: "ollama", base_url: "http://localhost:11434/v1", api_key: "", has_key: true }];
+  provModels = { ok: true, models: [] };
+  const openMm = async () => {
+    await renderSettings("models");
+    await quiet();
+    if (!eyeCard().classList.contains("open")) eyeCard().querySelector(".ch-head").onclick();
+    await quiet();
+    eyeCard().querySelector('.mm-new[data-cap="vision"]').onclick();
+    await quiet();
+    return mBody.querySelector('#settings-pane .mm-form[data-cap="vision"] .mm-tip');
+  };
+  let mtip = await openMm();
+  ok("★本机一个模型都没装：告诉他去 ollama pull，而不是把那行字抹掉★",
+    /ollama pull/.test(mtip.textContent), JSON.stringify(mtip.textContent));
+  ok("而且不留「正在问渠道…」那句悬在那儿",
+    !/正在问渠道/.test(mtip.textContent), mtip.textContent);
+  // ★空清单不许进前端缓存★：他照着提示 pull 完回来，重新点开下拉框得真去问一次。
+  // 缓住的话，提示教他做的事做完了，界面上还是那份空的
+  provModels = { ok: true, models: [{ id: "qwen3:8b", cap: "vision", sure: true }] };
+  mtip = await openMm();
+  const olSel = mBody.querySelector('#settings-pane .mm-form[data-cap="vision"] .mm-model');
+  ok("★拉完模型回来重新点开，这回真列得出来（那一趟空清单没被前端缓住）★",
+    [...olSel.querySelectorAll("option")].some((o) => o.value === "qwen3:8b"), olSel.innerHTML.slice(0, 200));
+  // 反向对照：云端渠道回空清单是另一回事（不少国产渠道压根没有 /models），不许对着它喊 ollama pull
+  provs = [{ id: "zp", name: "智谱", kind: "zhipu", base_url: "https://open.bigmodel.cn/api/paas/v4", api_key: "k", has_key: true }];
+  provModels = { ok: true, models: [] };
+  mtip = await openMm();
+  ok("反向对照：云端渠道空清单，不许喊 ollama pull，但也得给一句话",
+    !/ollama pull/.test(mtip.textContent) && mtip.textContent.trim().length > 8, JSON.stringify(mtip.textContent));
+  // 另一档：连问都没问出去。以前和上面同一个结局——那行字抹掉，什么都不说
+  provModelsDown = true;
+  mtip = await openMm();
+  provModelsDown = false;
+  ok("★请求根本没发出去时也得说一句★ 抹掉那行字的话，界面上和「问到了、就是没有」完全一样",
+    mtip.textContent.trim().length > 8 && /没发出去|没能问到/.test(mtip.textContent), JSON.stringify(mtip.textContent));
+
   provModels = { ok: false, why: "测试里不出网", models: [] };
 
   provs = [
