@@ -1209,6 +1209,20 @@
   /* 浮层一律毛玻璃：底下的内容糊掉但还在，视线知道自己没离开原来那一页。
      只给这几层加——顶栏、侧栏都在文档流里，底下没有东西可糊，加了只是白付一份合成开销。
      backdrop-filter 不支持时退化成原来的半透明色，不会变成一块实心板。 */
+  /* 「填一下」的小对话框，askText 画的。自成一层压在 .modal-mask（z-index 50）上面——
+     资料库本身开在弹窗里，跟它抢同一个 #modal-box 会把弹窗顶掉。
+     为什么不用 window.prompt：见 app-01.js 里 askText 上面那段。 */
+  .ask-mask { position: fixed; inset: 0; z-index: 120; background: rgba(23,24,28,.35); backdrop-filter: saturate(150%) blur(6px); -webkit-backdrop-filter: saturate(150%) blur(6px); display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .ask-box { width: 400px; max-width: 100%; box-sizing: border-box; background: var(--owb-bg); border-radius: var(--radius-2xl); box-shadow: var(--shadow-floating); padding: 20px; }
+  .ask-box .ask-t { font-size: 15px; font-weight: 600; }
+  .ask-box .ask-h { font-size: 13px; line-height: 1.6; color: var(--owb-text-3); margin-top: 4px; }
+  .ask-box .ask-in { display: block; width: 100%; box-sizing: border-box; margin-top: 12px; height: var(--owb-ctl-h); padding: 0 10px; font-size: 14px; color: var(--owb-text); background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-md); outline: none; }
+  .ask-box .ask-in:focus { border-color: var(--owb-brand-text); }
+  .ask-box .ask-err { margin-top: 8px; font-size: 12px; line-height: 1.6; color: #e5484d; }
+  .ask-box .ask-ops { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  /* 名字没填或者不合规时，「确定」不许是个能点的样子——点了也不会发生任何事，
+     那就跟这次修的 bug 是同一种气人法 */
+  .ask-box .ask-ok:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; filter: none; transform: none; }
   .modal-mask { display: none; position: fixed; inset: 0; background: rgba(23,24,28,.35); backdrop-filter: saturate(150%) blur(6px); -webkit-backdrop-filter: saturate(150%) blur(6px); z-index: 50; align-items: center; justify-content: center; }
   .modal-mask.show { display: flex; }
   .modal { width: 640px; max-width: 94vw; max-height: min(900px, 90vh); background: var(--owb-bg); border-radius: var(--radius-2xl); display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow-floating); }

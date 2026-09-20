@@ -344,6 +344,23 @@ function showLibPrev(page) {
   if (box) box.dataset.prev = "on";
 }
 
+/**
+ * 文件夹名当场能不能用；能用回空串，不能用回一句给人看的话。
+ *
+ * 规矩跟服务端 libPath() 那份对齐（.. / 点开头 / <>:"|?* 和控制字符），斜杠是前端这边
+ * 额外挡的：这个入口的语义是「在当前这一层建一个」，名字里带斜杠等于偷偷建了好几层。
+ * 提前挡是为了省一个来回——点了确定、等服务端回一句「路径不合法：..」，
+ * 那句话是拿路径的口吻讲的，用户看了也不知道该改哪个字。
+ */
+function libNameWhy(v) {
+  if (/[/\\]/.test(v)) return "名字里不能带斜杠——斜杠是用来分层的。想建到下一层，先点进去再新建。";
+  if (v.startsWith(".")) return "点开头的文件夹会被当成隐藏目录，建出来在资料库里反而看不见。";
+  if (/[\u0000-\u001f]/.test(v)) return "名字里混进了看不见的控制字符，多半是从别处粘过来的，重新打一遍就好。";
+  const bad = v.match(/[<>:"|?*]/);
+  if (bad) return `名字里不能有 ${bad[0]} 这个字符（< > : " | ? * 都不行，带上之后 Windows 那边打不开）。`;
+  return "";
+}
+
 async function renderLibPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
@@ -514,9 +531,17 @@ async function renderLibPage() {
   if (po && page.querySelector("#lb-mkdir")) {
     page.querySelector("#lb-mkdir").onclick = async (e) => {
       e.preventDefault();
-      const name = prompt(libState.dir ? `在「${libState.dir}」里新建文件夹，叫什么？` : "新建文件夹，叫什么？");
-      if (!name || !name.trim()) return;
-      const r = await fetch("/api/library/folder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir: libState.dir || "", name: name.trim() }) })
+      // 这儿原来是 window.prompt——桌面版里它一调用就抛，整个处理函数当场死掉，
+      // 按钮点下去毫无动静。详见 app-01.js 里 askText 上面那段
+      const name = await askText({
+        title: "新建文件夹",
+        hint: libState.dir ? `建在「${libState.dir}」里面` : "建在资料库最外面这一层",
+        placeholder: "比如：合同模板",
+        ok: "建好",
+        validate: libNameWhy,
+      });
+      if (!name) return;
+      const r = await fetch("/api/library/folder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir: libState.dir || "", name }) })
         .then(x => x.json()).catch(() => ({ error: "网络异常" }));
       if (!r || !r.ok) return toast(((r && r.error) || "建不了"), "circle-x");
       renderLibPage();

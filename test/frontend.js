@@ -4577,7 +4577,7 @@ const WSMENU_STUBS = `
   const OPENWS_SITES = ${JSON.stringify(OPENWS_SITES)};
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   const TOASTS = [], CALLS = [];
-  let PROMPTED = 0, PROMPT_RET = null;
+  let PROMPTED = 0, PROMPT_RET = null, ASKED = null;
   function toast(m) { TOASTS.push(String(m)); }
   function renderFiles() { CALLS.push("renderFiles"); }
   function refreshSettingsCache() { CALLS.push("refresh"); }
@@ -4588,7 +4588,14 @@ const WSMENU_STUBS = `
   let PICK = { status: 200, body: { path: "/srv/ws2" } };
   let SET = { status: 200, body: { ok: true } };
   let OPENWS = { status: 200, body: { ok: true } };
-  window.prompt = () => { PROMPTED++; return PROMPT_RET; };
+  // 手填路径那条退路以前走的是 window.prompt。桌面版跑在 Electron 里，那儿的 prompt
+  // **存在、但一调用就抛**，整个处理函数当场死掉、界面上一点动静都没有
+  // （资料库「新建文件夹」失灵就是同一个根因，见 app-01.js 的 askText）。
+  // 现在换成应用内的小对话框，这儿也跟着换替身：记下问了什么，回一个预设答案。
+  async function askText(o) { PROMPTED++; ASKED = o; return PROMPT_RET; }
+  // 底下这行是反向对照：谁哪天顺手把 prompt 写回去，这一屏当场炸，
+  // 而不是等到用户在桌面版里点了没反应才发现
+  window.prompt = () => { throw new Error("prompt() is not supported."); };
   window.fetch = async (url, opt) => {
     const method = (opt && opt.method) || "GET";
     CALLS.push(method + " " + url);
@@ -4639,6 +4646,7 @@ const WSMENU_CHECKS = `
   PICK = { status: 501, body: { error: "网页端弹不出来" } };
   menu.querySelector('[data-act="pick"]').click(); await tick(); await tick(); await tick();
   ok("501：退回手填路径，填了就切", PROMPTED === 1 && CALLS.includes("ws:/srv/ws3"), JSON.stringify(CALLS));
+  ok("手填框里预填了当前目录，并说清楚为什么要手填", ASKED && ASKED.value === "/srv/ws" && /弹不出/.test(ASKED.hint || ""), JSON.stringify(ASKED));
 
   // ---- 别的非 2xx 是真出事了：说出来，别再骗他填一遍路径 ----
   CALLS.length = 0; PROMPTED = 0; TOASTS.length = 0;
