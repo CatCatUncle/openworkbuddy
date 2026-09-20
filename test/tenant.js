@@ -1560,18 +1560,167 @@ async function login(username, password) {
       ok(!("balance" in (roles.json.candidates[0] || {})), "候选人也是 lite 那五格");
       ok(roles.bytes * 3 < full.bytes, "角色页回包比一整份花名册小一大截", { 角色页: roles.bytes, 五百个: full.bytes });
 
-      // ---------- 用量明细：花名册按需捎带 ----------
+      // ---------- 用量明细 / 成员用量 / 中转上限：三处都不再捎带花名册 ----------
+      // 先造靶子：三个花钱的大户（token 和钱都分得开），外加六十个只跑过一次的人——
+      // 六十个是为了让「按人分组截到前 20 / 前 50」这两条真的被截到，不然是空断言
+      const day22 = MONTH22 + "-" + String(new Date().getDate()).padStart(2, "0");
+      // 挑的这三个是**逆着花名册**的（008 / 004 / 000，进公司的先后正好相反）：
+      // 挑 000/001/002 的话，「按花销排」和「按花名册排」排出来一模一样，
+      // 下面那条断言就成了摆设——把排序整个换成花名册顺序它照样绿
+      const SPEND22 = [["m22_008", 900, 9], ["m22_004", 300, 3], ["m22_000", 100, 1]];
+      for (const [who, tokens, yuan] of SPEND22)
+        usageStore22.append({ ts: new Date().toISOString(), day: day22, kind: "run", user: who, org: DEF22,
+          model: "m22-model", source: "web", prompt: tokens, completion: 0, credits: 2, cost: yuan, elapsed_ms: 10 });
+      for (let i = 100; i < 160; i++)
+        usageStore22.append({ ts: new Date().toISOString(), day: day22, kind: "run", user: "m22_" + i, org: DEF22,
+          model: "m22-model", source: "web", prompt: 1, completion: 0, credits: 0, elapsed_ms: 1 });
+      // 给花得最多的那个人补一笔**充值**。充值不是花销——不补这一笔的话，
+      // 「充值算进花销里」这个坏法在账本上根本无从显形，下面那条断言就是空的
+      usageStore22.append({ ts: new Date().toISOString(), day: day22, kind: "topup", user: "m22_008", org: DEF22,
+        cost: 500, credits: 0, elapsed_ms: 0 });
+
+      // ---- 用量明细：这一页只要流水 ----
       const u0 = await call("GET", "/api/admin/usage?limit=1", { cookie: boss });
       ok(!("members" in u0.json),
-         "★不说要，就不给花名册★ 以前每趟都带整份，于是 ?limit= 根本缩不小回包——"
-         + "实测 3000 人时 limit=20 是 682 KB、limit=1 还是 678 KB");
-      const un = await call("GET", "/api/admin/usage?limit=1&with=names", { cookie: boss });
-      eq(Object.keys(un.json.members[0] || {}).sort().join(","), "dept,nickname,role,status,username",
-         "with=names 给下拉框用的那五格");
-      const um = await call("GET", "/api/admin/usage?limit=1&with=members", { cookie: boss });
-      ok("balance" in (um.json.members[0] || {}),
-         "with=members 才带钱数（「按人」那张表要显示额度和余额）");
-      ok(u0.bytes * 2 < um.bytes, "不带花名册的那一趟明显更小", { 不带: u0.bytes, 全份: um.bytes });
+         "★用量明细一个人名都不捎带★ 以前每趟都带整份，于是 ?limit= 根本缩不小回包——"
+         + "实测 3000 人时 limit=20 是 682 KB、limit=1 还是 678 KB，那几百 KB 是名单不是流水");
+      const uw = await call("GET", "/api/admin/usage?limit=1&with=members", { cookie: boss });
+      ok(!("members" in uw.json),
+         "★老参数也要不出来★ 留个 with= 的后门，回包照样会按人头长，只是换个人来踩");
+      ok(uw.json.groups.users > 20, "测试自检：确实有二十个以上的人花过钱（不然下面那条是空断言）",
+         { 组数: uw.json.groups.users });
+      eq(uw.json.by_user.length, 20,
+         "★按人分组截到 20★ 跟 /api/admin/stats 一个口径。不截的话这一行是按人头长的");
+      ok(uw.json.by_user.every((r, i, a) => i === 0 || a[i - 1].tokens >= r.tokens),
+         "截的是花得最多的那 20 个，不是随手前 20 个");
+
+      // ---- 成员用量：一页 50 个人 ----
+      const um = await watch(() => call("GET", "/api/admin/usage/members?limit=10", { cookie: boss }));
+      eq(um.status, 200, "成员用量拉得到");
+      eq(um.json.rows.length, 10, "★要一页就只给一页★ 六百多人的组织，回的是 10 个");
+      eq(um.json.total, all22.length, "total 还是「这家公司一共几个人」——翻页不改变这个数");
+      eq(um.json.matched, all22.length, "没筛的时候 matched = total");
+      eq(asked(), 0, "★成员用量一次『最后活跃』都不查★ 这一页一个时间都不显示，去翻账本纯属白翻",
+         { 问了几个人: asked() });
+      const umBig = await call("GET", "/api/admin/usage/members?limit=500", { cookie: boss });
+      ok(um.bytes * 10 < umBig.bytes,
+         "★?limit= 真的缩得小回包★ 这条接口存在的全部理由：以前 limit=1 和 limit=20 一样大",
+         { 十个: um.bytes, 五百个: umBig.bytes });
+      ok(um.bytes * 10 < full.bytes, "一页十个人，比一份五百人的花名册小一个数量级",
+         { 十个: um.bytes, 五百个: full.bytes });
+
+      const sorted22 = await call("GET", "/api/admin/usage/members?limit=50&q=m22_00", { cookie: boss });
+      eq(sorted22.json.matched, 10, "测试自检：m22_00 这个前缀正好对上十个人");
+      eq(sorted22.json.rows.slice(0, 3).map((r) => r.username).join(","), "m22_008,m22_004,m22_000",
+         "★默认按累计 tokens 从多到少★ 这一页回答的是「钱花在谁身上了」；按花名册排的话，"
+         + "花得最多的那几个散在六十页中间，等于没答");
+      ok(sorted22.json.rows.every((r, i, a) => i === 0 || a[i - 1].tokens >= r.tokens),
+         "整页单调不增，不只是头三个碰巧对了");
+      eq(sorted22.json.rows[0].tokens, 900, "tokens 数对得上（prompt + completion）");
+      eq(sorted22.json.rows[0].runs, 1, "运行次数对得上");
+      eq(sorted22.json.rows[0].used_credits, 2, "消耗的积分对得上");
+      ok("balance" in sorted22.json.rows[0] && "monthly_left" in sorted22.json.rows[0],
+         "钱数这几格照旧有——这一页画的就是额度和余额", Object.keys(sorted22.json.rows[0]));
+
+      const byName22 = await call("GET", "/api/admin/usage/members?limit=50&q=m22_00&sort=name", { cookie: boss });
+      eq(byName22.json.rows.map((r) => r.username).join(","),
+         Array.from({ length: 10 }, (_, i) => "m22_00" + i).join(","),
+         "★sort=name 按进公司的先后排★ 跟成员页那张表对得上，两页之间不用重新找人");
+
+      const dry22 = await call("GET", "/api/admin/usage/members?dry=1&limit=500", { cookie: boss });
+      eq(dry22.json.matched, dryWant.length,
+         "★「只看额度见底」的口径跟首页那条待办一模一样★ 首页说三个人、点进来只剩一个的话，"
+         + "谁也说不清哪个是真的");
+      ok(dry22.json.rows.every((r) => r.dry), "回来的每一个都真的见底了");
+      ok(dry22.json.rows.every((r) => r.status === "active"), "停用的人不算见底——他本来就发不出请求");
+      eq(um.json.dry, dryWant.length,
+         "★不筛的时候 dry 报的是同一个数★ 界面上那颗钮写着这个数；跟着筛选变的话，"
+         + "一按下去它就只数筛出来的那些，钮上永远写着自己筛出来的结果");
+      ok(um.json.matched > dry22.json.matched, "反向对照：不筛的时候人多得多",
+         { 全部: um.json.matched, 见底: dry22.json.matched });
+      const dryNarrow = await call("GET", "/api/admin/usage/members?limit=10&q=m22_00", { cookie: boss });
+      eq(dryNarrow.json.matched, 10, "测试自检：这一筛只剩十个人");
+      eq(dryNarrow.json.dry, dryWant.length,
+         "★筛完了 dry 还是那个数★ 上面那条只在**不筛**的时候比过，而坏法恰恰只在筛的时候显形："
+         + "搜一个字，那颗「只看额度见底」的钮上就只剩筛出来的那几个，等于一打字它就自己归零",
+         { 筛出来的: dryNarrow.json.matched, 钮上写的: dryNarrow.json.dry, 全组织: dryWant.length });
+
+      const umOver = await call("GET", "/api/admin/usage/members?limit=10&offset=999999", { cookie: boss });
+      ok(umOver.json.rows.length > 0,
+         "★翻过头了退回最后一页，不是给一张空表★ 空表跟「这家公司没有人」长得一模一样",
+         { 回了几个: umOver.json.rows.length, offset: umOver.json.offset });
+      eq(umOver.json.offset, Math.floor((all22.length - 1) / 10) * 10, "退回来的正好是最后一页的起点");
+      eq((await call("GET", "/api/admin/usage/members?limit=99999", { cookie: boss })).json.rows.length,
+         account.MEMBER_PAGE_MAX,
+         "★HTTP 上要不来整份★ 手改地址栏也只给 MEMBER_PAGE_MAX 个");
+
+      // ---- 数据统计：要的是「几个人」这一个整数 ----
+      const stt22 = await watch(() => call("GET", "/api/admin/stats", { cookie: boss }));
+      eq(stt22.json.totals.members, all22.length,
+         "★成员数还是那个数★ 从「把全员算一遍再取 .length」换成「只数不算」，口径不能跟着变");
+      eq(asked(), 0,
+         "★数据统计一次『最后活跃』都不查★ 以前为了一个整数，把每个人的角色、额度、"
+         + "本月剩余、余额都算了一遍，还翻了一趟用量账本", { 问了几个人: asked() });
+
+      // ---- 中转 Key 页 ----
+      const rl22 = await call("GET", "/api/admin/relay", { cookie: boss });
+      eq(rl22.status, 200, "中转 Key 页拉得到");
+      ok(!("members" in rl22.json),
+         "★中转 Key 页不捎带花名册★ 3000 人时那份「跟随团队 · 本月 0 元」重复三千遍的表是 620 KB");
+      ok(rl22.json.spend.groups.users > 50, "测试自检：确实有五十个以上的人本月有账（不然下面是空断言）",
+         { 组数: rl22.json.spend.groups.users });
+      eq(rl22.json.spend.by_user.length, 50, "★账单按人那张也截到 50★ 界面上画的就是 50 行");
+      ok(rl22.bytes * 3 < full.bytes,
+         "★中转 Key 页的回包比一份花名册小一大截★ 六百人的组织里，以前那份名单占掉九成",
+         { 中转页: rl22.bytes, 五百个: full.bytes });
+
+      const cappedBefore22 = all22.filter((m) => m.status !== "disabled" && +m.budget_yuan > 0).length;
+      eq(+(all22.find((m) => m.username === "m22_005") || {}).budget_yuan || 0, 0,
+         "测试自检：m22_005 原本没有单独上限");
+      eq((await call("POST", "/api/admin/relay/members/m22_005", { cookie: boss, body: { budget_yuan: 42 } })).status,
+         200, "给 m22_005 单独设一档月上限");
+
+      const rm22 = await call("GET", "/api/admin/relay/members?limit=10", { cookie: boss });
+      eq(rm22.status, 200, "中转上限那张表拉得到");
+      eq(rm22.json.rows.length, 10, "★要一页就只给一页★");
+      eq(rm22.json.total, all22.filter((m) => m.status !== "disabled").length,
+         "★停用的人不在这张表里★ 他已经调不出去了，摆在这儿只会让「这页有多少人」对不上席位数");
+      eq(rm22.json.capped, cappedBefore22 + 1,
+         "★设过单独上限的人数★ 这个数不跟着筛选变，界面上那句话写的就是它");
+
+      const rmq22 = await call("GET", "/api/admin/relay/members?limit=50&q=m22_00", { cookie: boss });
+      eq(rmq22.json.matched, 10, "★搜索是服务端做的★");
+      eq(rmq22.json.total, all22.filter((m) => m.status !== "disabled").length, "total 不受搜索影响");
+      eq(rmq22.json.rows.map((r) => r.username).join(","),
+         "m22_008,m22_004,m22_000,m22_005,m22_001,m22_002,m22_003,m22_006,m22_007,m22_009",
+         "★该动闸子的排最前面★ 先是本月花过钱的（按花销倒序），再是设过单独上限但这个月没花的"
+         + "（那条上限会拦人，不该藏在第六十页），其余按进公司的先后");
+      eq(rmq22.json.rows[0].spent_month, 9,
+         "★本月已花对得上，而且不含充值★ 账本里给这个人补了一笔 500 的充值；"
+         + "把充值算成花销的话这儿是 509，跟中转账单、跟 budget.spentOf 三处就对不上了");
+      const rmq3 = await call("GET", "/api/admin/relay/members?limit=3&q=m22_00", { cookie: boss });
+      eq(rmq3.json.rows.map((r) => r.username).join(","), "m22_008,m22_004,m22_000",
+         "★排完整份再切页★ 上面那条要了 50 个、正好一页装得下，页内排和页外排排出来一模一样——"
+         + "把一页压到 3 个，边界才真被跨过去：先切后排的话这儿是花名册顺序的头三个",
+         { 第一页: rmq3.json.rows.map((r) => r.username) });
+      eq(rmq22.json.rows[3].budget_yuan, 42, "刚设的那档月上限回来了");
+      eq((await call("GET", "/api/admin/relay/members?limit=99999", { cookie: boss })).json.rows.length,
+         account.MEMBER_PAGE_MAX, "★这张表在 HTTP 上也要不来整份★");
+
+      // ---- 发 Key 时的归属校验：换成只读一遍 users.json 之后，拦的还是同一批 ----
+      const badKey22 = await watch(() => call("POST", "/api/admin/relay/keys",
+        { cookie: boss, body: { name: "k22-坏的", user: "根本没有这个人zzz" } }));
+      ok(badKey22.status >= 400,
+         "★挂给一个不存在的人要当场拦下★ 放过去的后果不是报错而是**静默**：那一档月预算成了摆设",
+         { status: badKey22.status });
+      eq(asked(), 0,
+         "★拦一个写错的名字，不该把全公司算一遍★ 这是个是非题：这个组织里有没有这个人。"
+         + "退回 listMembers().find() 的话，为了答这一个是非题要给六百个人算角色、额度、余额，"
+         + "还要翻一趟用量账本查「最后活跃」", { 问了几个人: asked() });
+      const okKey22 = await watch(() => call("POST", "/api/admin/relay/keys",
+        { cookie: boss, body: { name: "k22-好的", user: "m22_000" } }));
+      eq(asked(), 0, "认对了人的那条路也一样，一次都不查", { 问了几个人: asked() });
+      eq(okKey22.status, 200, "挂给本组织真有的人就放行");
 
       // ---------- queryMembers 本身 ----------
       const q1 = account.queryMembers(DEF22, { all: true });
