@@ -1220,6 +1220,31 @@ function listMembers(orgId) {
 }
 
 /**
+ * 每个组织有多少人、其中多少个还在用。平台那张组织列表要的就这两个数。
+ *
+ * 为什么不拿 listMembers 一家一家查：那个函数是给**一个**组织的成员页用的，
+ * 它会把这家公司每个人的角色、额度、本月剩余、余额全算出来，还要为「最后活跃」
+ * 翻一遍用量账本。平台上 61 家公司的时候，一张 38 KB 的表要读 62 遍 users.json、
+ * 61 遍用量账本，合计 **35.6 MB** 的盘，159ms；121 家时 98.3 MB、388ms——
+ * 而这一页上一个人名都不显示，只显示两个数字。整本账数一遍就够了。
+ *
+ * @returns Map<组织 id, { members, active }>
+ */
+function memberCounts() {
+  const out = new Map();
+  for (const u of loadUsers().users) {
+    const id = org.orgIdOf(u);
+    let c = out.get(id);
+    if (!c) out.set(id, (c = { members: 0, active: 0 }));
+    c.members++;
+    // 老账号没有 status 这一格，当 active 算——跟 publicUser 里那一格的默认值保持一致，
+    // 两处对不上的话，同一家公司在成员页和组织列表上会显示两个不同的在用人数
+    if ((u.status || "active") === "active") c.active++;
+  }
+  return out;
+}
+
+/**
  * 查一个人的记账要素，就这几格。
  *
  * 为什么不复用 listMembers：那个函数会把整本用量账翻一遍算「最后活跃」（lastActive），
@@ -1970,6 +1995,7 @@ module.exports = {
   monthlyQuotaOf,
   monthlyLeft,
   listMembers,
+  memberCounts,
   billingUser,
   pendingMembers,
   setMember,
