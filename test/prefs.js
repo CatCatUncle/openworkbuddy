@@ -739,14 +739,16 @@ function runSourcePins() {
 
   // 启动失败页那张真页面：大标题写该怎么修，下面红框里只放结论。
   // 红框里再把解法原样重复一遍，等于同一句话读两遍，而红色的等宽字看着就像「又一条报错」
-  const mkPage = () => {
+  const mkPage = (over) => {
     const seen = { url: "" };
     const env = {
       bootAdvice: (e, m, p) => (e && e.bootProblem ? e.bootProblem.fix : "猜出来的那句"),
       bootHint: () => "猜出来的那句", PORT: 3800, BOOT_LOG: "/tmp/ow.log",
       win: { isDestroyed: () => false, loadURL: (u) => { seen.url = u; }, show: () => {}, focus: () => {} },
       fatal: () => {}, FATAL_SHOWN: false,
+      dataPath: (f) => "/家/OpenWorkBuddy/" + f,
       require: (id) => (id === "./package.json" ? { version: "9.9.9" } : require(id)),
+      ...(over || {}),
     };
     const keys = Object.keys(env);
     const fn = new Function(...keys, slice("electron-main.js", "showBootFailure") + "\nreturn showBootFailure;")(...keys.map((k) => env[k]));
@@ -770,6 +772,71 @@ function runSourcePins() {
     const page = decodeURIComponent(seen.url.replace(/^data:text\/html;charset=utf-8,/, ""));
     ok(/EADDRINUSE/.test((page.match(/<pre>([\s\S]*?)<\/pre>/) || [])[1] || ""),
        "反向对照：真崩了的时候，红框里还是原始报错（贴 issue 要的就是它）");
+  }
+  {
+    // 显卡那条建议要他去改一个文件，那就得把文件在哪说清楚
+    const { show, seen } = mkPage();
+    show(new Error("boom"));
+    const page = decodeURIComponent(seen.url.replace(/^data:text\/html;charset=utf-8,/, ""));
+    ok(/\/家\/OpenWorkBuddy\/config\.json/.test(page),
+       "★显卡那条建议给的是 config.json 的真实路径★ 写「用户目录的 …」等于让卡在门外的人自己猜用户目录在哪");
+  }
+  {
+    // 算不出路径也不能崩在这一页上——它是最后一块告示牌了
+    const { show, seen } = mkPage({ dataPath: () => { throw new Error("数据目录都没建起来"); } });
+    show(new Error("boom"));
+    const page = decodeURIComponent(seen.url.replace(/^data:text\/html;charset=utf-8,/, ""));
+    ok(/OpenWorkBuddy\/config\.json/.test(page) && !/undefined/.test(page),
+       "  └ 反向对照：连数据目录都没建起来时退回一句话，不是 undefined、更不是连这页都炸掉");
+  }
+
+  // 启动失败页得是能用的一页，不只是好看的一页。
+  //
+  // 右键菜单和「外链交给系统浏览器」这两根线，原来挂在 require("./server.js") 后面。
+  // 可启动失败时那一句 require 就是抛出点——它一抛，后面一行都不会执行，于是恰恰在
+  // 最需要复制粘贴的那一页上，右键按下去什么都没有：页面写着「把这行贴到 issue 里」
+  // 「贴 issue 时带上启动日志」，而那串路径只能手抄。「提 issue」那个链接也一样，
+  // 没挂 openHandler 的话它在应用里另开一个没有地址栏、没有登录态的 Electron 窗口。
+  // 这是这个文件里第三次栽在同一件事上（前两次是 3 秒兜底亮窗和 20 秒看门狗），所以钉住顺序。
+  const wiredBeforeRequire = (src) => {
+    const menu = src.indexOf("attachContextMenu(win.webContents)");
+    const open = src.indexOf("win.webContents.setWindowOpenHandler(openHandler)");
+    const req = src.indexOf('require(path.join(__dirname, "server.js"))');
+    return menu > -1 && open > -1 && req > -1 && menu < req && open < req;
+  };
+  ok(wiredBeforeRequire(mainSrc),
+     "★右键菜单和外链跳转都挂在 require 服务端之前★ 挂在后面的话，启动失败页上右键弹不出「复制」");
+  ok(!wiredBeforeRequire('require(path.join(__dirname, "server.js"));\nwin.webContents.setWindowOpenHandler(openHandler);\nattachContextMenu(win.webContents);'),
+     "  └ 反向对照：把顺序倒过来，这条断言得挂（证明它真在看先后，不是在看有没有）");
+
+  // 挂上了还得真弹得出东西——只证明「调用排在前面」不等于那一页上右键有用
+  const mkMenu = () => {
+    const popped = [];
+    const env = {
+      Menu: { buildFromTemplate: (items) => ({ popup: () => popped.push(items) }) },
+      BrowserWindow: { fromWebContents: () => ({}) },
+      clipboard: { writeText: () => {} },
+      shell: { openExternal: () => {} },
+    };
+    const keys = Object.keys(env);
+    const attach = new Function(...keys,
+      slice("electron-main.js", "attachContextMenu") + "\nreturn attachContextMenu;")(...keys.map((k) => env[k]));
+    let fire = null;
+    attach({ on: (ev, fn) => { if (ev === "context-menu") fire = fn; }, copyImageAt: () => {} });
+    return (params) => { popped.length = 0; fire(null, params); return popped[0] || null; };
+  };
+  {
+    const fire = mkMenu();
+    const picked = fire({ selectionText: "依赖还没装（找不到 express）。" }) || [];
+    ok(picked.some((it) => it.role === "copy"),
+       "★选中启动失败页上的字，右键弹得出「复制」★ 让一个刚被挡在门外的人手抄报错，等于没给出路",
+       JSON.stringify(picked));
+    const link = fire({ selectionText: "", linkURL: "https://github.com/CatCatUncle/openworkbuddy/issues" }) || [];
+    ok(link.some((it) => /在浏览器里打开/.test(it.label || "")),
+       "  └ 那一页上的「提 issue」右键能直接丢给系统浏览器（不是在应用里另开一个没地址栏的窗）",
+       JSON.stringify(link));
+    eq(fire({ selectionText: "" }), null,
+       "  └ 反向对照：什么都没选中时不弹一个空菜单（证明上面两条是真判出来的）");
   }
 
   f = mkFatal({ win: { isDestroyed: () => false } });
