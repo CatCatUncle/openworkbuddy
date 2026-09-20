@@ -82,6 +82,41 @@ for (const p of [
 for (const p of ["node_modules/express/index.js", "dist/OpenWorkBuddy.dmg", ".git/config", "eval/runs/x.json"])
   ok(ignored(p), `不进镜像（纯体积）：${p}`);
 
+// 上面那张清单是手抄的，而手抄的清单必然漏。2026-09-20 一查就漏了五条——projects/、
+// logs/、.openworkbuddy/、openworkbuddy-data/，以及改名前那个同样存着 Key 的数据目录——
+// .gitignore 里早写着，这边一直没跟上。
+// 漏掉的后果不是镜像大一点。Dockerfile 是 COPY . .，在开发机上 build 一次，真任务的追踪账本
+// （本机那份 traces.jsonl 3.3 MB，里头是提示词原文和工具参数）和 openworkbuddy-data/config.json
+// 里的模型 Key 就固化进只读镜像层，push 到任何 registry 之后删不掉也改不了。
+// 而且这几条特别难被发现：它们只在「从源码树直接跑过」的机器上才有内容，CI 上永远是空目录。
+//
+// 所以判据改成推导的：git 不要的东西，docker 一样不许要。以后往 .gitignore 加一行，
+// 忘了同步这边就在这儿红一次，不用再指望有谁记得。
+/** 返回「git 挡住了、docker 没挡住」的那些条目。判据抽出来，下面拿编的数据反向验一遍 */
+function dockerMisses(gitTxt, dockerTxt) {
+  const norm = (txt) => txt.split("\n")
+    .map((l) => l.replace(/\s+#.*$/, "").trim())          // 行尾注释（node_modules/ 那行就有）
+    .filter((l) => l && !l.startsWith("#") && !l.startsWith("!"))
+    .map((l) => l.replace(/^\/+/, "").replace(/\/+$/, ""));
+  const pats = new Set(norm(dockerTxt));
+  const dirs = [...pats].filter((p) => !p.includes("*"));  // 目录整个排掉的，底下的文件不用再列一遍
+  return norm(gitTxt).filter((p) => !pats.has(p) && !dirs.some((d) => p.startsWith(d + "/")));
+}
+const gitOnly = dockerMisses(read(".gitignore"), IGN);
+ok(gitOnly.length === 0,
+  ".gitignore 挡住的每一条，.dockerignore 也挡着（漏的那条会被 COPY . . 烤进只读镜像层）",
+  "这几条只在 .gitignore 里：" + gitOnly.join("、"));
+
+// 反向对照：这条判据得真会红，也不能红错人
+ok(dockerMisses("projects/\n", "data/\n").join() === "projects",
+  "反向对照：docker 那边少一条就抓得到");
+ok(dockerMisses("docs/images/demo.mp4\n", "docs/images/\n").length === 0,
+  "反向对照：上级目录已经整个排掉的，不算漏（不然每加一张图都误报一次）");
+ok(dockerMisses("node_modules/\n", "node_modules/   # 镜像里自己装\n").length === 0,
+  "反向对照：行尾注释要剥干净（不剥的话现成的 node_modules/ 那行就会被判成没挡）");
+ok(dockerMisses(read(".gitignore"), "").length > 20,
+  "反向对照：把 .dockerignore 清空会抓出一大把（证明上面那条不是因为解析失败才绿的）");
+
 // 反向对照：server.js 真正 require 的本地模块，一个都不许被排除掉。
 // v0.1.1 的装机包就是被白名单漏掉 engines/ 才「装完打不开」的，同一个坑不踩第二次。
 const serverSrc = read("server.js");
