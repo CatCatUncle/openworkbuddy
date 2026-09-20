@@ -259,19 +259,24 @@ app.whenReady().then(async () => {
     // 拿被自己否掉的写法当证据，等于这条断言从来没成立过。真去调一次：
     // 它要是好使，会挂在一个原生模态框上等人点——既不返回也不抛。
     // 所以另开一扇一次性的窗让它去挂，量完直接销毁；挂在主窗上的话后面整套断言全废。
+    // 判据是「抛没抛」，不是「挂没挂」：窗是隐藏的，那个框有时会被 Electron 直接收掉，
+    // 于是同一份代码一会儿挂住一会儿返回——那是这扇窗的事，跟 confirm 好不好使无关。
+    // 两个 API 在同一扇窗里各调一次，prompt 抛、confirm 不抛，这条对比才是真的。
     const probe = new BrowserWindow({ show: false, webPreferences: { contextIsolation: false } });
     await probe.loadURL("data:text/html,<!doctype html><meta charset=utf-8><title>probe</title>");
-    const verdict = await Promise.race([
+    const 调一次 = (api) => Promise.race([
       probe.webContents
-        .executeJavaScript(`(() => { try { window.confirm("x"); return "返回了"; } catch (e) { return "抛了：" + e.message; } })()`)
+        .executeJavaScript(`(() => { try { window.${api}("x"); return "没抛"; } catch (e) { return "抛了：" + e.message; } })()`)
         .then((v) => v, (e) => "抛了：" + String((e && e.message) || e)),
-      new Promise((r) => setTimeout(() => r("挂住了"), 2500)),
+      new Promise((r) => setTimeout(() => r("没抛（挂在框上了）"), 2500)),
     ]);
+    const prompt判 = await 调一次("prompt");
+    const confirm判 = await 调一次("confirm");
     probe.destroy();
-    ok(verdict === "挂住了",
-       "★反向对照：confirm 真去调一次——它不抛，是挂在一个原生模态框上等人点★ "
+    ok(prompt判.startsWith("抛了") && !confirm判.startsWith("抛了"),
+       "★反向对照：同一扇窗里各调一次——prompt 抛，confirm 不抛★ "
        + "所以全站那些确认框对用户是好使的，不该顺手一起改；但离屏测试点不动那个框，"
-       + "新写的删除才自己画（askConfirm）", verdict);
+       + "新写的删除才自己画（askConfirm）", { prompt: prompt判, confirm: confirm判 });
   }
   {
     const files = fs.readdirSync(path.join(PUB, "js")).filter((f) => f.endsWith(".js"));

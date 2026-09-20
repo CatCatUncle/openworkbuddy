@@ -953,10 +953,21 @@ function canvasApplySnapshot(snapshot, { fromRemote = false } = {}) {
   canvasPersist();
 }
 
+// 手正落在输入框里算「在打字」。10 秒没动静就不算——有人把光标留在框里走开，
+// 这个标签页不能从此再也不同步
+function canvasTypingNow() {
+  const el = typeof document !== "undefined" ? document.activeElement : null;
+  if (!el || typeof el.matches !== "function") return false;
+  if (!el.matches("input, textarea, [contenteditable=true]") || !el.closest(".canvas-layout")) return false;
+  return Date.now() - Number(canvasState.typingAt || 0) < 10000;
+}
 function canvasStartRemoteSync() {
   if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer);
   canvasState.remoteTimer = window.setInterval(async () => {
     if (!canvasState.graph || canvasState.remoteWritePending) return;
+    // 他正在打字，这一圈先放着：铺快照是整图重来、属性面板整块重画，落在打字中间
+    // 就是刚敲的半句被对面那份盖掉、光标掉回 body，接着敲的字进了空气。手一停就补上
+    if (canvasTypingNow()) return;
     const previous = Number(canvasState.remoteUpdatedAt || 0);
     const state = await canvasLoadRemote();
     if (state && Number(state.updatedAt) > previous) canvasApplySnapshot(state, { fromRemote: true });
@@ -1768,6 +1779,7 @@ function canvasAddNode(kind, payload = {}, position, options = {}) {
 }
 
 function canvasUpdateSelected(key, value, rerender = true) {
+  canvasState.typingAt = Date.now();   // 同步那边看这个时间决定要不要让一让（见 canvasTypingNow）
   const node = canvasSelectedNode(); if (!node) return;
   const next = { ...canvasPayload(node), [key]: value };
   if (key === "url") next.path = value;
@@ -1804,6 +1816,11 @@ function canvasRenderInspector(focus = true) {
   const connected = canvasState.graph.getLinks().filter((link) => link.get("source")?.id === node.id).map((link) => ({ link, target: canvasState.graph.getCell(link.get("target")?.id) })).filter((item) => item.target);
   const defaultTarget = allNodes[0], defaultRelation = defaultTarget ? canvasDefaultRelation(node, defaultTarget) : "input";
   const generateActions = kind === "shot" ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="image">${ic("image")}生成首帧</button><button class="ui-btn ui-btn--sm ui-btn--outline" data-inspect-generate="video" ${p.first_frame ? "" : "disabled"}>${ic("video")}生成视频</button>` : ["image", "video", "audio"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-generate="${kind}">${ic(kind === "audio" ? "volume-2" : kind)}${kind === "audio" ? "生成配音" : `生成${def.label}`}</button>` : "";
+  // 重画之前他的光标在哪个框里、停在第几个字，重画完放回去。整块 innerHTML 一换，
+  // 原来那个输入框就是个被扔掉的节点了，焦点会掉回 body——接着敲的字进了空气
+  const 原焦点 = document.activeElement;
+  const 要放回 = 原焦点 && box.contains(原焦点) && 原焦点.dataset && 原焦点.dataset.inspectKey
+    ? { key: 原焦点.dataset.inspectKey, start: 原焦点.selectionStart, end: 原焦点.selectionEnd } : null;
   box.innerHTML = `<div class="canvas-inspector-head"><div><small>节点属性</small><h3>${esc(unknownKind ? kind : def.label)}</h3></div><button class="canvas-node-remove" data-inspect-close title="关闭设置">${ic("x")}</button></div><div class="canvas-inspector-fields">${fields}</div>${canvasGenerationInspector(p)}<div class="canvas-inspector-section"><span class="canvas-inspector-section-title">工作流连接</span><div class="canvas-connect-row"><select data-connect-target><option value="">连接到下游节点…</option>${allNodes.map((item) => `<option value="${item.id}">${esc(canvasNodeLabel(item))}</option>`).join("")}</select><select data-connect-relation title="这个节点为下游提供什么">${canvasRelationOptions(defaultRelation, node, defaultTarget)}</select><button class="ui-btn ui-btn--sm ui-btn--outline" data-connect>${ic("link")}连接</button></div>${connected.length ? `<div class="canvas-connected-list">${connected.map(({ link, target }) => `<span title="${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))}">${esc(canvasRelationLabel(canvasLinkRelation(link, node, target)))} · ${esc(canvasNodeLabel(target) || "节点")}</span>`).join("")}</div>` : '<p class="canvas-inspector-hint">选择用途再连线。Agent 会把它当作真实生成输入，而不是一条装饰箭头。</p>'}</div><div class="canvas-inspector-actions">${generateActions}${["agent", "shot", "script", "scene", "storyboard", "timeline"].includes(kind) ? `<button class="ui-btn ui-btn--sm ui-btn--brand" data-inspect-agent>${ic("sparkles")}交给本项目 Agent</button>` : ""}<button class="ui-btn ui-btn--sm ui-btn--ghost canvas-inspector-delete" data-inspect-delete>删除节点</button></div>`;
   box.querySelectorAll("[data-inspect-key]").forEach((field) => {
     const update = () => canvasUpdateSelected(field.dataset.inspectKey, field.value);
@@ -1828,6 +1845,10 @@ function canvasRenderInspector(focus = true) {
   box.querySelector("[data-inspect-delete]")?.addEventListener("click", () => { if (!confirm("删除这个节点？关联连线也会一起删除。")) return; node.remove(); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(); canvasPersist(); });
   box.querySelectorAll("[data-inspect-generate]").forEach((button) => button.addEventListener("click", () => canvasGenerate(node, button.dataset.inspectGenerate)));
   box.querySelector("[data-inspect-agent]")?.addEventListener("click", () => canvasRunInternal(node)); if (focus) box.querySelector("[data-inspect-key]")?.focus();
+  if (要放回) {
+    const 同一个 = box.querySelector('[data-inspect-key="' + 要放回.key.replace(/"/g, '\\"') + '"]');
+    if (同一个) { 同一个.focus(); try { 同一个.setSelectionRange(要放回.start, 要放回.end); } catch {} }
+  }
   box.querySelectorAll("[data-canvas-picker]").forEach((picker) => {
     const input = picker.querySelector("[data-inspect-file]"), choose = picker.querySelector("[data-inspect-choose]"), drop = picker.querySelector("[data-inspect-drop]"), target = picker.dataset.pickerTarget;
     const handle = async (file) => {
