@@ -11893,6 +11893,19 @@ function testI18n() {
   assert(short.length >= 300, "JS 模板短文案抓取异常：" + short.length);
   assert(pct(shortMiss.length, short.length) >= 90, `JS 模板短文案（≤14字）英文覆盖 ${pct(shortMiss.length, short.length)}% < 90%：` + JSON.stringify(shortMiss.slice(0, 10)));
   assert(pct(allMiss.length, all.length) >= 80, `JS 模板文案（≤60字）英文覆盖 ${pct(allMiss.length, all.length)}% < 80%`);
+  // 3.5 开真页面的界面测试必须钉住语言。
+  //     Electron 的 navigator.language 随系统走：本机中文、CI 英文。照中文文案写的断言
+  //     在英文那台上比的是另一份界面——要么整套白跑，要么像 v0.7.0 那次一样，
+  //     一句文案进了词典，CI 立刻红，发版卡在 test 这一步。
+  const uiFiles = fs.readdirSync(__dirname).filter((f) => f.endsWith(".js"));
+  const opensPage = uiFiles.filter((f) => {
+    const src = fs.readFileSync(path.join(__dirname, f), "utf8");
+    return /loadURL\(/.test(src) && /index\.html/.test(src);
+  });
+  const noPin = opensPage.filter((f) => !/setLang\(/.test(fs.readFileSync(path.join(__dirname, f), "utf8")));
+  assert(opensPage.length >= 3, "抓不到开真页面的测试文件：" + JSON.stringify(opensPage));
+  assert(!noPin.length, "这些测试开了真页面却没钉语言（CI 是英文机器）：" + JSON.stringify(noPin));
+
   // 4. 假 DOM：翻译 / 跳过 / 幂等 / 还原 / 改源文后重翻
   const mkText = (v) => ({ nodeType: 3, nodeValue: v, parentNode: null });
   const mkEl = (name, attrs = {}, kids = []) => {

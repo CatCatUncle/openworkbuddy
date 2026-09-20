@@ -238,6 +238,10 @@ app.whenReady().then(async () => {
   await win.loadURL(`http://127.0.0.1:${port}/index.html`);
   await new Promise((r) => setTimeout(r, 900));
   await win.webContents.executeJavaScript(STUB);
+  // 语言钉成中文：Electron 的 navigator.language 随系统走，CI 那台是英文。
+  // 这一套量的是位置和尺寸，中英文都该一样——但下面偶尔要照文案找元素，
+  // 而且英文句子比中文长，换行数不同、面板高度就不同。钉住它，量出来的数才是同一把尺子
+  await win.webContents.executeJavaScript('I18N.setLang("zh")');
   const at = (n) => win.webContents.executeJavaScript(probe(n));
 
   // 居中判据写成一句：上下留白差不超过 10px，且确实留出了一大块（不是贴着边）。

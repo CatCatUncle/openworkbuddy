@@ -234,6 +234,11 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 900));
   await win.webContents.executeJavaScript(STUB);
   const run = (code) => win.webContents.executeJavaScript(code);
+  // 语言先钉成中文。Electron 的 navigator.language 随系统走——本机是 zh，CI 那台是 en，
+  // 而下面整套断言都是照中文文案写的。不钉的话它在 CI 上比的是英文界面，
+  // 「文案对不对」这一整类断言在那边等于没跑（这套测试就是这么在 CI 上红的）。
+  // 英文界面另有一节专门验，在最后面。
+  await run('I18N.setLang("zh")');
 
   console.log("\n— 为什么非得自己画一个对话框 —");
   {
@@ -567,6 +572,122 @@ app.whenReady().then(async () => {
     ok(r5.发了.length === 1 && /\/api\/library\/file\//.test(r5.发了[0]) && /报价单/.test(decodeURIComponent(r5.发了[0])),
        "★按「删掉」→ 真发了 DELETE /api/library/file/…★", r5.发了);
     ok(/删/.test(r5.toast), "删完有回话，不是静悄悄地少了一行", r5.toast);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  console.log("\n— 切成英文：这一页不许剩中文 —");
+  {
+    // 全站已经有一道英文覆盖率闸门（test/e2e.js 的 testI18n），它按百分比算：
+    // 短文案 ≥90%、长文案 ≥80%。百分比看不见「某一页整页没翻」——这一页 20 多句中文
+    // 摊进全站七百多句里，照样在线以上。所以这儿换个量法：把页面真渲染出来，
+    // 切成英文，数屏幕上还剩几个汉字。人名、文件名、文件夹名是用户自己的数据，不该翻，
+    // 单独列出来排除掉——排除名单写死，免得哪天把漏翻也一起放过去。
+    const OWN = ["空文件夹", "客户A", "报价单.md", "周报.md"];   // 替身数据里的名字
+    const SCAN = (bare) => `
+      (async () => {
+        I18N.setLang("en");
+        window.__bare = ${bare ? "true" : "false"};
+        chatCol.innerHTML = '<div class="assist-page" id="assist-page"></div>';
+        libState.view = "dir"; libState.q = ""; libState.dir = ""; libState.pick = null;
+        await renderLibPage();
+        I18N.apply(document.body, "en");
+        await new Promise((r) => setTimeout(r, 120));
+        return window.__cjk(document.getElementById("assist-page"));
+      })()`;
+    // 数汉字的家伙什：正文和 title/placeholder/aria-label 都算——这三个属性人也看得见
+    await run(`
+      window.__cjk = (scope) => {
+        const own = ${JSON.stringify(OWN)};
+        // 用户自己的名字先抠掉再数汉字：「Delete 「报价单.md」?」这种是翻好了的——
+        // 句子是英文，中间那截是他自己起的文件名，本来就不该动
+        const bare = (t) => own.reduce((acc, n) => acc.split(n).join(""), t);
+        const left = (t) => /[\u4e00-\u9fa5]/.test(bare(t));
+        const out = [];
+        const w = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+        let n;
+        while ((n = w.nextNode())) {
+          const t = (n.nodeValue || "").trim();
+          if (t && left(t)) out.push(t);
+        }
+        for (const el of scope.querySelectorAll("[title],[placeholder],[aria-label]")) {
+          for (const a of ["title", "placeholder", "aria-label"]) {
+            const v = el.getAttribute(a);
+            if (v && left(v)) out.push(a + "=" + v);
+          }
+        }
+        return [...new Set(out)];
+      };
+      true;   // executeJavaScript 会把最后一个表达式的值送回 node —— 送一个函数过去是克隆不了的
+    `);
+
+    const full = await run(SCAN(false));
+    ok(full.length === 0,
+       "★英文界面上这一页不剩中文★ 原来剩 22 段正文 + 15 处属性：页签、筛选、分组、摆法、"
+       + "两段标题、侧栏那句、时间列，整页几乎没进词典——英文用户看到的是一页中文",
+       full.slice(0, 8));
+    const empty = await run(SCAN(true));
+    ok(empty.length === 0,
+       "★空状态那几句也翻得出来★ 这几句正是「新建文件夹到底有什么用」的答案，"
+       + "漏翻的话英文用户连问都没处问", empty.slice(0, 8));
+
+    // 反向对照：把一条词条临时抠掉，上面那个量法必须当场看得见。
+    // 不做这一步的话，「剩 0 个汉字」也可能是因为扫描器根本没扫到东西
+    const blind = await run(`
+      (async () => {
+        const save = I18N.DICT.en["参考资料"];
+        delete I18N.DICT.en["参考资料"];
+        chatCol.innerHTML = '<div class="assist-page" id="assist-page"></div>';
+        await renderLibPage();
+        I18N.apply(document.body, "en");
+        await new Promise((r) => setTimeout(r, 120));
+        const left = window.__cjk(document.getElementById("assist-page"));
+        I18N.DICT.en["参考资料"] = save;
+        return left;
+      })()`);
+    ok(blind.includes("参考资料"),
+       "★反向对照：抠掉一条词条，它当场就被数出来★ 不验这一下的话，「剩 0 个」也可能是扫描器自己瞎了",
+       blind);
+
+    // 对话框是点开才生成的，翻译靠 MutationObserver 补——单独验一遍
+    const dlg = await run(`
+      (async () => {
+        chatCol.innerHTML = '<div class="assist-page" id="assist-page"></div>';
+        window.__bare = false;
+        await renderLibPage();
+        I18N.apply(document.body, "en");
+        const out = {};
+        document.getElementById("lb-mkdir").click();
+        await new Promise((r) => setTimeout(r, 150));
+        out.新建 = window.__cjk(document.querySelector(".ask-mask"));
+        out.新建标题 = document.querySelector(".ask-mask .ask-t").textContent;
+        // 名字不合规那句也是现画出来的
+        const i = document.querySelector(".ask-mask .ask-in");
+        i.value = "a/b"; i.dispatchEvent(new Event("input", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 80));
+        out.报错 = window.__cjk(document.querySelector(".ask-mask"));
+        document.querySelector(".ask-mask .ask-no").click();
+        await new Promise((r) => setTimeout(r, 120));
+        // 非空文件夹那句：数目夹在句子中间，走的是模式匹配那条路
+        document.querySelector('[data-del-dir="客户A"]').click();
+        await new Promise((r) => setTimeout(r, 150));
+        out.删文件夹 = window.__cjk(document.querySelector(".ask-mask"));
+        out.删文件夹说了 = document.querySelector(".ask-mask .ask-h").textContent;
+        document.querySelector(".ask-mask .ask-no").click();
+        await new Promise((r) => setTimeout(r, 120));
+        document.querySelector("[data-del-file]").click();
+        await new Promise((r) => setTimeout(r, 150));
+        out.删资料 = window.__cjk(document.querySelector(".ask-mask"));
+        document.querySelector(".ask-mask .ask-no").click();
+        I18N.setLang("zh");
+        return out;
+      })()`);
+    ok(dlg.新建.length === 0, "★「新建文件夹」那个框整个翻得过来★ 它是点开才画出来的，靠观察者补翻", dlg.新建);
+    ok(/New folder/i.test(dlg.新建标题), "框的标题确实换成了英文（不是靠扫描器漏看换来的绿）", dlg.新建标题);
+    ok(dlg.报错.length === 0, "★名字不合规那句也翻得过来★ 这句是打字当场画出来的", dlg.报错);
+    ok(dlg.删文件夹.length === 0 && /3/.test(dlg.删文件夹说了),
+       "★「里面还有 3 样东西」翻得过来，数目原样带过去★ 数目夹在句子中间，整句走模式匹配",
+       { 剩下的中文: dlg.删文件夹, 框里那句: dlg.删文件夹说了 });
+    ok(dlg.删资料.length === 0, "★删资料那个框也翻得过来★", dlg.删资料);
   }
 
   srv.close();
