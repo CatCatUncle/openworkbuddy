@@ -156,6 +156,17 @@ const STUB2 = `
     if (s.includes("/api/canvas/list")) return J({ canvases: Object.keys(mine).map((n) => ({ name: n, title: n, nodes: 0 })) });
     if (s.includes("/api/canvas/assets")) return J({ files: [] });
     if (s.includes("/api/canvas/progress")) return J({});
+    if (s.includes("/api/canvas/boards") && m === "POST") {
+      const n = JSON.parse(o.body).name;
+      if (mine[n]) return Promise.resolve({ ok: false, status: 400, json: async () => ({ error: "已经有同名画布" }) });
+      // 服务端新建出来的是一份「还没人动过」的空画布：updatedAt 留 0（见 server.js 那条路由）
+      mine[n] = { version: 1, nodes: [], edges: [], updatedAt: 0 };
+      return J({ ok: true, name: n, state: mine[n] });
+    }
+    if (s.includes("/api/canvas/boards") && m === "DELETE") {
+      delete mine[decodeURIComponent(s.split("/api/canvas/boards/")[1] || "")];
+      return J({ ok: true });
+    }
     if (s.startsWith("/api/canvas") && m === "PUT") {
       const b = JSON.parse(o.body);
       window.__puts.push({ 项目: window.__active, 画布: b.name, 标题: (b.state.nodes || []).map((n) => (n.payload || {}).title) });
@@ -163,6 +174,7 @@ const STUB2 = `
       return J({ ok: true, state: mine[b.name] });
     }
     if (s.includes("/api/canvas")) {
+      if (window.__offline) return Promise.reject(new Error("断网"));   // 只掐这一条：取画布内容
       const body = mine[name] || { version: 1, nodes: [], edges: [], updatedAt: 0 };
       if (!window.__delay) return J(body);
       return new Promise((r) => setTimeout(() => r({ ok: true, status: 200, json: async () => body }), window.__delay));
@@ -513,6 +525,135 @@ app.whenReady().then(async () => {
     })()`);
   ok(顺序.项目 && 顺序.画布,
      "★两个切换口都是先把欠的写完再切★ 顺序反过来的话，上面那套就量不到真的了", 顺序);
+
+
+  console.log("\n— 八、删掉的画布不借尸还魂，清空的画布不自己长东西 —");
+  const revive = await run(`
+    (async () => {
+      localStorage.clear();
+      window.__store.jia = { main: { version: 1, nodes: [], edges: [], updatedAt: 1000 } };
+      window.__active = "jia";
+      await window.__switchProject("jia");
+      window.confirm = () => true;                  // 删画布那句是原生确认框，离屏点不动
+      canvasAskNewBoardName = async () => "分镜";    // 新建时那个起名框同理
+      await canvasCreateBoard();
+      canvasApplySnapshot({ version: 1, updatedAt: Date.now(), edges: [], nodes: [
+        { id: "k1", kind: "note", payload: { title: "删掉那张上的卡" }, position: { x: 40, y: 40 }, size: { width: 300, height: 200 } }] });
+      await new Promise((r) => setTimeout(r, 700));
+      await canvasDeleteBoard();                    // 删掉，回到 main
+      await new Promise((r) => setTimeout(r, 500));
+      window.__puts = [];
+      await canvasCreateBoard();                    // 再建一张同名的
+      await new Promise((r) => setTimeout(r, 900));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      return {
+        现在这张: canvasState.canvasName,
+        屏幕: canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title),
+        盘上: ((window.__store.jia["分镜"] || {}).nodes || []).map((n) => (n.payload || {}).title),
+        写出去的: window.__puts.filter((p) => p.画布 === "分镜").map((p) => p.标题.join("、")),
+      };
+    })()`);
+  ok(revive.现在这张 === "分镜" && !revive.屏幕.includes("删掉那张上的卡"),
+     "★删掉一张画布，再建一张同名的，上面不是删掉那张的东西★ 本机那份副本是按画布名存的，"
+     + "删画布只删了服务器上那份，本机这份留着——新建的同名画布是空的，于是它原样铺了上来",
+     revive);
+  ok(!revive.盘上.includes("删掉那张上的卡") && !revive.写出去的.some((t) => t.includes("删掉那张上的卡")),
+     "★也没有被写回服务器★ 铺上去之后还会存一次盘，用户明明删掉的东西就这么回到了盘上",
+     { 盘上: revive.盘上, 写出去的: revive.写出去的 });
+  ok(revive.屏幕.includes("一句话概念"),
+     "★反向对照：新建的画布照样给起手那两张卡★ 把本机那份副本整个不认也能让上面两条变绿，"
+     + "但那样断网时改的东西就全靠不住了，起手卡没了更是一眼看得出来",
+     revive.屏幕);
+
+  const 旁路 = await run(`
+    (async () => {
+      // 本机还留着一份同名画布的副本（上个版本留下的，或者别的设备删了又建），这边新建一张同名的
+      localStorage.setItem(canvasStorageKey("外来"), JSON.stringify({ version: 3, edges: [], nodes: [
+        { id: "s1", kind: "note", payload: { title: "本机留着的旧东西" }, position: { x: 0, y: 0 }, size: { width: 300, height: 200 } }] }));
+      canvasAskNewBoardName = async () => "外来";
+      await canvasCreateBoard();
+      await new Promise((r) => setTimeout(r, 700));
+      const 新建的屏幕 = canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title);
+
+      // 再来一遍，这回是「我删掉、别人又建了一张同名的」：我从下拉里切回去，不走新建那条路
+      canvasAddNode("note", { title: "删之前摆的" }, { x: 900, y: 300 });
+      await new Promise((r) => setTimeout(r, 600));
+      window.confirm = () => true;
+      await canvasDeleteBoard();
+      await new Promise((r) => setTimeout(r, 500));
+      window.__store.jia["外来"] = { version: 1, nodes: [], edges: [], updatedAt: 0 };   // 别人新建的，还没人动过
+      canvasState.canvasName = "外来";
+      localStorage.setItem("openworkbuddy.canvas.name", "外来");
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 700));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      return { 新建的屏幕, 切回去的屏幕: canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title) };
+    })()`);
+  ok(!旁路.新建的屏幕.includes("本机留着的旧东西"),
+     "★新建的画布不认本机留下的同名副本★ 副本是按画布名存的，上个版本或别的设备留下的那份还在，"
+     + "新建一张同名的就原样铺了上来",
+     旁路.新建的屏幕);
+  ok(!旁路.切回去的屏幕.includes("删之前摆的"),
+     "★删掉之后别人又建了一张同名的，切回去看到的不是我删掉的那些★ 这条走的不是「新建」那条路，"
+     + "只有删画布那一下把本机副本一起删掉才拦得住",
+     旁路.切回去的屏幕);
+
+  const emptied = await run(`
+    (async () => {
+      // 回到 main。光改 canvasState 不够：画布列表那一步会照着本机记的「上次开的是哪张」把它改回去
+      canvasState.canvasName = "main";
+      localStorage.setItem("openworkbuddy.canvas.name", "main");
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 400));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      canvasApplySnapshot({ version: 1, updatedAt: Date.now(), edges: [], nodes: [
+        { id: "e1", kind: "note", payload: { title: "本来有的一张卡" }, position: { x: 40, y: 40 }, size: { width: 300, height: 200 } }] });
+      await new Promise((r) => setTimeout(r, 700));
+      canvasApplySnapshot({ version: 1, updatedAt: Date.now(), edges: [], nodes: [] });   // 用户自己全删了
+      canvasPersist();
+      await new Promise((r) => setTimeout(r, 700));
+      const 清空后盘上 = (window.__store.jia.main.nodes || []).length;
+      await renderCanvasPage();                     // 再打开这一页
+      await new Promise((r) => setTimeout(r, 600));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      return { 清空后盘上,
+               重开后屏幕: canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title),
+               重开后盘上: (window.__store.jia.main.nodes || []).map((n) => (n.payload || {}).title) };
+    })()`);
+  ok(emptied.清空后盘上 === 0,
+     "★先确认：清空这一下真的写到服务器了★ 没写上去的话，下面那条是白说的", emptied.清空后盘上);
+  ok(emptied.重开后屏幕.length === 0,
+     "★自己清空的画布，再打开还是空的★ 起手那两张卡（一句话概念 + 分镜表）本来只该给「从来没人动过」的画布，"
+     + "判据却是「现在是空的」——于是每打开一次就长回来两张，跟没删一样",
+     emptied.重开后屏幕);
+  ok(emptied.重开后盘上.length === 0,
+     "★也没有被写回服务器★ 长出来那两张还会存一次盘，换台机器打开，看见的也是这两张",
+     emptied.重开后盘上);
+
+  const 别处 = await run(`
+    (async () => {
+      // 换台机器打开这张清空过的画布：本机没有副本，只有服务器那份——是空的，但早就不是「没人动过」了
+      localStorage.removeItem(canvasStorageKey("main"));
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 700));
+      const 屏幕 = canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title);
+
+      // 再来一遍，这回是断网：服务器那份拿不到，本机这份是空的（人自己清的）
+      window.__offline = true;
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 700));
+      window.__offline = false;
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      return { 屏幕, 断网屏幕: canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title) };
+    })()`);
+  ok(别处.屏幕.length === 0,
+     "★换台机器打开，清空过的画布还是空的★ 这台机器上没有副本，只能看服务器那份的 updatedAt——"
+     + "只认本机副本的话，同一张画布在别人电脑上又长出那两张卡",
+     别处.屏幕);
+  ok(别处.断网屏幕.length === 0,
+     "★断网打开也不长★ 服务器那份拿不到，只剩本机这份空副本；把它当成「新画布」就又铺起手卡，"
+     + "网一通还会顶到服务器上去",
+     别处.断网屏幕);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

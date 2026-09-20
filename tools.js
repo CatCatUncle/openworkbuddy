@@ -3599,8 +3599,10 @@ function canvasReadState(name = canvasCurrentName(), lost = null) {
       (bak ? `原文件已原样备份到 ${path.basename(bak)}，一个字节都没动。` : "备份也没做成，请先手动把这个文件复制一份再说。"));
   }
 }
-function canvasWriteState(value, name = canvasCurrentName()) {
-  const state = canvasNormalizeState(value); state.updatedAt = Date.now();
+function canvasWriteState(value, name = canvasCurrentName(), { pristine = false } = {}) {
+  // pristine：刚建出来的空画布，updatedAt 留 0，意思是「还没人动过」。界面靠这个决定要不要铺
+  // 起手那两张卡——这里要是盖上时间戳，用户自己清空的画布就跟新建的一模一样了
+  const state = canvasNormalizeState(value); state.updatedAt = pristine ? 0 : Date.now();
   const active = canvasSetCurrentName(name), file = canvasStatePath(active), dir = path.dirname(file), tmp = file + "." + process.pid + ".tmp";
   fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
   // 覆盖之前留一代。就一个文件、每次覆盖，不会越攒越多，但「刚才那一下把画布搞没了」

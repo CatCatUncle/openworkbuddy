@@ -8572,6 +8572,7 @@ async function main() {
   testStyleDirection();
   testShortDrama();
   testCanvasCreativeLineage();
+  testCanvasPristineBoard();
   testCanvasThumb();
   await testCanvasMissingAssets();
   testReleasePipeline();
@@ -8881,6 +8882,44 @@ async function testCanvasMissingAssets() {
  *   ① 把 canvasFileUrl 真切出来跑一遍（它只依赖 canvasState，切得动），看拼出来的地址对不对；
  *   ② 三处节点预览确实传了宽度、灯箱确实没传——这两件事只在调用处，函数本身看不出来。
  */
+/**
+ * 「还没人动过」和「动过之后是空的」，盘上必须分得出来。
+ *
+ * 界面靠这个决定要不要铺起手那两张卡（一句话概念 + 分镜表）。以前的判据是「现在是空的」，
+ * 于是用户把画布全清掉、再打开，两张卡原样长回来，还连着存回服务器——换台机器打开也是这两张。
+ * 分法：新建出来那一下 updatedAt 留 0，此后任何一次保存都盖上时间戳，清空也算保存。
+ */
+function testCanvasPristineBoard() {
+  const tools = require("../tools");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-canvas-pristine-"));
+  tools.withWorkspace(tmp, () => {
+    const fresh = tools.canvasWriteState({ version: 1, nodes: [], edges: [], updatedAt: 0 }, "新建的", { pristine: true });
+    assert.strictEqual(fresh.updatedAt, 0, "新建画布盖了时间戳：界面就分不出它和「用户自己清空的」了");
+    assert.strictEqual(tools.canvasReadState("新建的").updatedAt, 0, "再读出来时间戳不是 0，落盘那一步把它改了");
+    // 留 0 不能让新画布在切换列表里沉底——列表按时间排，取不到时间戳就退回文件时间
+    const listedFresh = tools.canvasList().find((item) => item.name === "新建的");
+    assert.ok(listedFresh && listedFresh.updatedAt > 0, "画布列表把 updatedAt 0 原样当排序键了，刚新建的画布会沉到最底下");
+
+    const written = tools.canvasWriteState({ version: 1, nodes: [
+      { id: "n1", kind: "note", payload: { title: "写点东西" }, position: { x: 0, y: 0 } }] }, "新建的");
+    assert.ok(written.updatedAt > 0, "正常保存没盖时间戳：另一个标签页就看不见这次改动");
+
+    // 清空也是一次保存。这一条是这次修复的要害：清空之后必须还是「动过」
+    const emptied = tools.canvasWriteState({ version: 1, nodes: [], edges: [] }, "新建的");
+    assert.ok(emptied.updatedAt > 0, "清空画布被当成了「还没人动过」，起手那两张卡下次打开又会长回来");
+    assert.strictEqual(tools.canvasReadState("新建的").nodes.length, 0, "清空没落盘");
+  });
+  // 路由那头得真把 pristine 传下去，否则上面几条全绿、用户那边照样每次长卡
+  const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const routeIdx = serverSrc.indexOf('app.post("/api/canvas/boards"');
+  const pristineIdx = serverSrc.indexOf("pristine: true", routeIdx);
+  assert.ok(routeIdx > 0 && pristineIdx > routeIdx && pristineIdx - routeIdx < 600,
+    "新建画布的路由没带 pristine：服务端照样盖时间戳，界面又分不出新建和清空了");
+  const canvasSrc = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  assert.ok(/Number\(remote\.updatedAt\) > 0/.test(canvasSrc), "界面那头没在看 updatedAt：服务端分得出来也没人用");
+  console.log("✅ 画布新建 vs 清空：新建的 updatedAt 留 0，清空算动过，列表排序不受影响");
+}
+
 function testCanvasThumb() {
   const file = path.join(__dirname, "..", "public", "js", "app-07-canvas.js");
   const src = fs.readFileSync(file, "utf8");
