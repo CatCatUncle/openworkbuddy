@@ -53,6 +53,11 @@ skills/wechat-pro/
 plugins/
 .tmp/
 
+# Claude Code 在这儿留的断点文件（.claude/RESUME.md 带 session id 和一个 refs/claude/ 的 ref）。
+# .dockerignore 一直挡着，这边漏了：它不是密钥，但属于本机的工具痕迹，公开仓库里没必要有，
+# 而且一次手滑 `git add .` 就进去了。
+.claude/
+
 # 评测跑批产物（每次跑的工作目录和分数明细）
 eval/runs/
 

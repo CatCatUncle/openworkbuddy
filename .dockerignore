@@ -28,6 +28,22 @@ schedules.json.corrupt*
 # 从聊天窗口粘出来的临时文本，常带真实姓名
 粘贴文本_*.txt
 
+# 下面这五条是 2026-09-20 补的。.gitignore 早就挡着它们，这边漏了七个月：
+# Dockerfile 是 COPY . .，于是在开发机上 build 一次，镜像里就有了
+#   projects/        真任务的成果稿 + 每个项目自己的 .openworkbuddy/traces.jsonl
+#                    （本机实测 3.3 MB，里头是提示词原文和工具参数）
+#   logs/            app-<日期>.jsonl，真在跑的请求记录（*.log 只盖得住 boot.log）
+#   .openworkbuddy/  工作目录设成仓库根时，追踪账本就落这儿
+#   openworkbuddy-data/  deploy.sh 建的数据目录，config.json 里是模型 API Key
+#   wb-data/         改名前那个目录名，老机器上还在，里面同样有 Key
+# 镜像层是只读快照，push 上去删不掉——这五条比上面那几条更容易漏，因为它们只在
+# 「从源码树直接跑过」的机器上才有，CI 上永远是空的，测不出来。
+projects/
+logs/
+.openworkbuddy/
+openworkbuddy-data/
+wb-data/
+
 # --- 没必要进镜像：体积和噪音 ---
 node_modules/          # 镜像里自己 npm install，宿主机的可能是别的架构（arm64 装的跑不了 amd64）
 dist/
@@ -46,6 +62,30 @@ test/
 __pycache__/
 *.pyc
 npm-debug.log*
+
+# 手抖存的时间戳快照（im.js.bak.0914_0116 那种），跟真文件只差一个后缀
+*.bak.[0-9]*
+# 只维护 package-lock.json，这份是过期的
+pnpm-lock.yaml
+# 个人笔记，没进 git，也别进镜像
+docs/能力对照-Cowork-Codex.md
+
+# --- 第三方技能：不进 git，也不该由我们的镜像替上游分发 ---
+# skills/ 目录本身要进镜像（首次启动从这儿铺到数据目录），排的是里面这些别人的包。
+# hongshuskill 来源不明还会开真 Chrome 操作账号，wechat-pro 带着 VPS 地址和公众号凭据。
+skills/ppt-master/
+skills/frontend-design/
+skills/canvas-design/
+skills/theme-factory/
+skills/brand-guidelines/
+skills/webapp-testing/
+skills/mcp-builder/
+skills/follow-builders/
+skills/holo-card-studio/
+skills/archify/
+skills/i-have-adhd/
+skills/hongshuskill/
+skills/wechat-pro/
 
 # 注意：桌面壳那几个文件（electron-main.js / pet-*.js）故意不排除。
 # server.js 就 require 着 pet-sprites.js，排掉它容器直接起不来——省这几 KB 不值当。

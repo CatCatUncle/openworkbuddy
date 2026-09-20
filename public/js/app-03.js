@@ -1327,8 +1327,8 @@ async function renderProjPage() {
   await refreshProjects();
   const q = (page._q || "").toLowerCase();
   const mine = projects.filter(p => !q || p.name.toLowerCase().includes(q));
-  // 路径从**左边**截。右边那两级（.../startup_get/我的项目）才是分得清谁是谁的部分，
-  // 用默认的尾部省略号会把它们全吃掉，剩下一串 /Users/bryce/Library/Application… 谁也认不出来
+  // 路径从**左边**截。右边那两级（.../工程目录/我的项目）才是分得清谁是谁的部分，
+  // 用默认的尾部省略号会把它们全吃掉，剩下一串 /Users/xxx/Library/Application… 谁也认不出来
   const shortDir = (d) => {
     const a = String(d || "").replace(/\\/g, "/").split("/").filter(Boolean);
     return !a.length ? "（还没设目录）" : a.length > 2 ? "…/" + a.slice(-2).join("/") : String(d);
