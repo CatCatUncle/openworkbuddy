@@ -152,10 +152,16 @@ module.exports = {
   },
   dmg: {
     title: "${productName} ${version}",
+    // 窗口尺寸 = build/background.png 的尺寸（540×420，见 scripts/gen-dmg-bg.py）。
+    // 背景图不用在这儿声明：build/ 下有 background.png 就自动认（dmgUtil.computeBackground），
+    // 同名 @2x 存在时会被 tiffutil 合成双分辨率。
+    // 图标中心压在 y=178：下面 288 那条分隔线以下留给「第一次打开被拦了怎么办」，
+    // 图标下面那行文件名（Finder 自己画的）刚好落在两者之间，不会压字。
     contents: [
-      { x: 140, y: 200, type: "file" },
-      { x: 400, y: 200, type: "link", path: "/Applications" },
+      { x: 140, y: 178, type: "file" },
+      { x: 400, y: 178, type: "link", path: "/Applications" },
     ],
+    iconSize: 120,
   },
 
   win: {

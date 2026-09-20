@@ -11361,7 +11361,63 @@ function testReleasePipeline() {
     assert(/macOS 14|Sequoia|Open Anyway|仍要打开/.test(t), d + " 没说明 macOS 15 起右键「打开」已经不管用");
   }
 
-  console.log(`✅ 发版这条链：PR/main 有红绿灯（CI 跑满 ${r.suites.length} 个套件，一个不落）· 发版前先跑测试 · 版本号对不上 tag 当场红 · 单平台挂了另一个照发（缺平台落草稿）· ${bad.length} 种退回全被抓 · ${docs.length} 处放行说明都认 macOS 15`);
+  // 证书还在申请，这段时间每个用户都必然撞上「Apple 无法验证」那个框，而框上只有「完成 / 移到废纸篓」。
+  // 于是每一处教人安装的地方都必须给出**不用开终端**的那条路：绝大多数人不会为了装个软件去开终端，
+  // 只给一行 xattr 命令等于没给。「已损坏」也必须单列——那是签名真的坏了，解法完全不同，
+  // 混在一起写的话，拿到「已损坏」的人会照着「仍要打开」去点，而设置里根本没有那一栏。
+  const gui = ["README.md", "docs/安装与启动.md", ".github/workflows/release.yml"];
+  for (const d of gui) {
+    const t = fs.readFileSync(path.join(root, d), "utf8");
+    assert(/隐私与安全性/.test(t), d + " 没给不开终端的那条路（系统设置 → 隐私与安全性）");
+    assert(/仍要打开/.test(t), d + " 没写出「仍要打开」这颗按钮的原名，用户在设置里照着找不到");
+    assert(/已损坏/.test(t), d + " 没把「已损坏」和「无法验证」分开写（两种提示、两种解法）");
+  }
+  {
+    const en = fs.readFileSync(path.join(root, "README.en.md"), "utf8");
+    assert(/Privacy & Security/.test(en) && /Open Anyway/.test(en),
+      "README.en.md 没给 System Settings → Privacy & Security → Open Anyway 这条路");
+    assert(/damaged/.test(en), "README.en.md 没提 \"is damaged\"（签名坏掉那种，和无法验证不是一回事）");
+  }
+  // 打不开应用的人不会去点开一个折叠块——这一段必须默认展开。
+  // 注意别拿 indexOf(标题) 去定位：正文上方的警告块里也写着这个标题（指路用的），
+  // 第一次写就是撞在那儿——量到的是警告块那一行的上文，跟折叠块没关系。认 <summary> 那一行。
+  const detailsOpen = (lines, sum) => {
+    let i = lines.findIndex((l) => l.includes("<summary") && l.includes(sum));
+    if (i < 0) return null;
+    while (i >= 0 && !lines[i].includes("<details")) i--;   // 往回找包着它的那个 <details
+    return i < 0 ? null : /<details\s+open\s*>/.test(lines[i]);
+  };
+  for (const [d, sum] of [["README.md", "第一次打开被系统拦住"], ["README.en.md", "Your OS blocks the first launch"]]) {
+    const v = detailsOpen(fs.readFileSync(path.join(root, d), "utf8").split("\n"), sum);
+    assert(v !== null, d + " 里找不到放行那一段的 <summary> 标题");
+    assert(v === true, d + " 放行那一段又变回折叠的了（<details> 少了 open）");
+  }
+  // 反向对照：这条闸门不是恒真的——少了 open 就得红，找不着就得是 null
+  assert(detailsOpen(["<details>", "<summary>拦住</summary>"], "拦住") === false, "★折叠闸门失效：<details> 没 open 也判通过★");
+  assert(detailsOpen(["<details open>", "<summary>别的</summary>"], "拦住") === null, "★折叠闸门失效：标题对不上也判通过★");
+
+  // dmg 窗口那张背景图：上半讲「拖过去」，下半（288 那条分隔线以下）讲「被拦了怎么办」。
+  // 图标位置和图是两处配置，谁动了谁就可能压在字上，所以在这儿把对齐关系钉死。
+  const bgFile = path.join(root, "build", "background.png");
+  const bg2File = path.join(root, "build", "background@2x.png");
+  assert(fs.existsSync(bgFile), "build/background.png 没了：dmg 窗口会退回默认白底，一个字的说明都没有");
+  assert(fs.existsSync(bg2File), "缺 build/background@2x.png：Retina 屏上这张图是糊的");
+  const pngSize = (f) => { const b = fs.readFileSync(f); return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) }; };
+  const bg = pngSize(bgFile), bg2 = pngSize(bg2File);
+  assert(bg.w === 540 && bg.h === 420, `背景图尺寸变了（${bg.w}×${bg.h}）：dmg 窗口大小就是这张图的大小`);
+  assert(bg2.w === bg.w * 2 && bg2.h === bg.h * 2, "@2x 不是 1x 的整两倍，tiffutil -cathidpicheck 会拒绝合成");
+  const dmgCfg = require(path.join(root, "electron-builder.config.js")).dmg;
+  const BAND_Y = 288, LABEL_H = 24;   // 图标下面那行文件名是 Finder 自己画的，得给它留出来
+  const bottom = (y, size) => y + size / 2 + LABEL_H;
+  for (const c of dmgCfg.contents) {
+    assert(bottom(c.y, dmgCfg.iconSize) < BAND_Y,
+      `dmg 图标（y=${c.y}，${dmgCfg.iconSize}px）连同下面那行文件名会压到 ${BAND_Y} 以下的放行说明上`);
+    assert(c.y - dmgCfg.iconSize / 2 > 96, `dmg 图标 y=${c.y} 会压到上半部分的标题`);
+  }
+  // 反向对照：这条对齐不是恒真的，图标再大一点就该红
+  assert(!(bottom(dmgCfg.contents[0].y, 200) < BAND_Y), "★对齐这条闸门失效：图标放到 200px 都不报★");
+
+  console.log(`✅ 发版这条链：PR/main 有红绿灯（CI 跑满 ${r.suites.length} 个套件，一个不落）· 发版前先跑测试 · 版本号对不上 tag 当场红 · 单平台挂了另一个照发（缺平台落草稿）· ${bad.length} 种退回全被抓 · ${docs.length} 处放行说明都认 macOS 15 · ${gui.length + 1} 处都给了不开终端的路且默认展开 · dmg 背景图 ${bg.w}×${bg.h} 和图标位置对得上`);
 }
 
 function testPackageAssetDrift() {
