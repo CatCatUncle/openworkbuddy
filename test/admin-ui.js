@@ -808,7 +808,8 @@ const GOTO = (id) => `(async () => {
 
     // ---------- 打字的时候光标不能掉 ----------
     // 三页都验：成员、用量明细、操作审计——它们共用同一个 route()，坏也是一起坏
-    for (const [label, id, sel] of [["成员", "members", "[data-mq]"], ["用量明细", "usage-detail", "[data-q]"], ["操作审计", "audit", "[data-q]"]]) {
+    for (const [label, id, sel] of [["成员", "members", "[data-mq]"], ["成员用量", "usage-member", "[data-uq]"],
+                                    ["用量明细", "usage-detail", "[data-q]"], ["操作审计", "audit", "[data-q]"]]) {
       await A.js(GOTO(id));
       const keep = await A.js(`(async () => {
         const b = document.getElementById("ad-body");
@@ -836,6 +837,147 @@ const GOTO = (id) => `(async () => {
       ok(`${label}页：框里的字也没被重渲染冲掉，光标停在字后面`, keep.框里还剩 === "北" && keep.选区 === 1, keep);
       ok(`${label}页：接着再打一个字，进的是搜索框不是空气`, keep.下一个字进了 === "搜索框", keep);
     }
+    ok("这一段跑完 console 还是干净的", A.errs.length === err0, A.errs.slice(err0));
+  }
+
+  // ================= 9. 成员用量 / 中转 Key / 选人框：另外三处「回包跟着人数长」 =================
+  // 第 8 段量的是花名册那一页。同一个坏法还有三处，而且更隐蔽——它们看上去都不是「名单页」：
+  //   · 成员用量：整份花名册连同每人的角色、额度、本月剩余、余额、累计 tokens 一起算一遍再甩过来
+  //   · 中转 Key：捎带一张「跟随团队 · 本月 0 元」重复三千遍的表
+  //   · 「看谁的」那两个选人框：一进页面就把全公司的人名下发一遍，三千个 <option>
+  // 共同点是**一屏只看得见十几行**。所以这一段的判据一律是「页面上画了几行」「DOM 里有几个
+  // <option>」「这一下有没有真去问服务器」，不是毫秒——毫秒在慢机器上会飘，行数不会。
+  console.log("\n【9】成员用量 + 中转 Key + 选人框：一页就是一页，选人靠打字不靠滚三千行");
+  {
+    const err0 = A.errs.length;
+    const all9 = account.listMembers("default");
+    const total9 = all9.length;
+    const live9 = all9.filter((m) => m.status !== "disabled").length;
+    const want9 = all9.filter((m) => (m.nickname || "").includes("北极星")).length;
+    ok("测试自检：公司里的人比一页多，「北极星」又只对得上少数几个（不然下面整段是空断言）",
+       total9 > 50 && want9 >= 2 && want9 < 10, { 一共: total9, 没停用的: live9, 北极星: want9 });
+    const rowN9 = `document.querySelectorAll("#ad-body tbody tr").length`;
+    const name9 = `(document.querySelector("#ad-body tbody tr .ad-mono") || {}).textContent || ""`;
+    const pagerT = `(document.querySelector(".ad-pager-n") || {}).textContent || ""`;
+
+    /* ---------- 成员用量：一页 50 行，搜索和「只看见底」都是问服务器要的 ---------- */
+    await A.js(GOTO("usage-member"));
+    // 上一段在搜索框里留了个「北」。顺手验一下清空真能回到全量——
+    // 清不干净的话，下面那条「一页 50 行」会是拿四行冒充的
+    await A.js(`(() => { const e = document.querySelector("[data-uq]");
+      if (e) { e.value = ""; e.dispatchEvent(new Event("input", { bubbles: true })); } })(); ` + wait(800));
+    const um1 = await A.js(rowN9);
+    ok("★六十多个人的成员用量，页面上画的是一页 50 行★ 以前是把每个人的额度、余额、累计 tokens "
+       + "全算一遍再整份甩过来：3000 人一趟 678 KB，而这一页一屏看得见十几行",
+       um1 === 50, { 画了: um1, 一共: total9 });
+    const umP = await A.js(pagerT);
+    ok("翻页条上写的是人数不是页码（管理员心里记的是「还有几个人没看」）",
+       /共 \d+ 人/.test(umP) && umP.includes(String(total9)), umP);
+
+    const umN1 = await A.js(name9);
+    await A.js(`document.querySelector("[data-next]").click(); ` + wait(800));
+    const um2 = await A.js(rowN9);
+    const umN2 = await A.js(name9);
+    ok("★点「下一页」真换了一批人★ 第二页正好是剩下的那些",
+       um2 === total9 - 50 && um2 > 0, { 第二页: um2, 一共: total9 });
+    ok("第二页第一个人跟第一页第一个不是同一个（反向对照：不是原地重画了一遍）",
+       umN1 !== umN2 && umN1, { 第一页: umN1, 第二页: umN2 });
+
+    await A.js(`window.__urls = []`);
+    await A.js(`(() => { const e = document.querySelector("[data-uq]"); e.focus();
+      e.value = "北极星"; e.dispatchEvent(new Event("input", { bubbles: true })); })(); ` + wait(900));
+    ok("★搜完只剩命中的那几行★", (await A.js(rowN9)) === want9, { 剩下: await A.js(rowN9), 该有: want9 });
+    ok("★这一下真去问了服务器（地址里带着 q=）★ 前端自己筛的话，整份名单还是得先下来一趟",
+       (await A.js(`window.__urls.filter((u) => /usage\\/members\\?/.test(u) && /[?&]q=/.test(u)).length`)) >= 1,
+       await A.js(`window.__urls.slice(0, 6)`));
+    ok("搜完了还告诉人「一共有多少」（不然会以为公司少了一半人）",
+       /筛出 \d+ \/ \d+ 人/.test(await A.js(`(document.querySelector(".ad-filter .ad-sub") || {}).textContent || ""`)),
+       await A.js(`(document.querySelector(".ad-filter .ad-sub") || {}).textContent || ""`));
+    // 搜完回到第一页：留在第 2 页搜一个字，多半是一张空表，而人只会以为「没这个人」
+    ok("搜完回到第一页，不是停在第 2 页上看一张空表", (await A.js(rowN9)) > 0);
+
+    /* ---------- 首页那条待办点过来，得直接落在见底的那几个人身上 ---------- */
+    await A.js(GOTO("usage-member?dry=1"));
+    ok("★首页「有人额度见底」那条点过来（#/usage-member?dry=1），「只看额度见底」是按下的★ "
+       + "落在全量上的话，人还得自己在六十行里一个个找哪个见底了",
+       await A.js(`!!document.querySelector("[data-dry].is-on")`),
+       await A.js(`(document.querySelector(".ad-chips") || {}).textContent || ""`));
+    const dryTags = await A.js(`[...document.querySelectorAll("#ad-body tbody tr")].map((t) => /见底/.test(t.textContent))`);
+    const dryTxt = await A.js(`document.getElementById("ad-body").textContent`);
+    ok("筛完要么每一行都挂着「见底」的牌子，要么就明说「没有人见底」——不许是一张不解释的空表",
+       dryTags.length ? dryTags.every(Boolean) : /没有人的本月固定额度见底/.test(dryTxt),
+       { 行数: dryTags.length, 每行都见底: dryTags.every(Boolean) });
+    await A.js(`document.querySelector("[data-dry]").click(); ` + wait(800));
+    ok("再点一下钮弹回来，全公司的人又都在（反向对照：上一条不是因为这一页本来就空）",
+       (await A.js(rowN9)) === 50, await A.js(rowN9));
+
+    /* ---------- 中转 Key：「每个人单独的上限」那张表也分页 ---------- */
+    await A.js(GOTO("relay"));
+    const memN = `(() => { const b = document.querySelector("[data-rq]");
+      return b ? b.closest(".ad-card").querySelectorAll("tbody tr").length : -1; })()`;
+    const memP = `(() => { const b = document.querySelector("[data-rq]");
+      const p = b && b.closest(".ad-card").querySelector(".ad-pager-n"); return p ? p.textContent : "(没有翻页条)"; })()`;
+    const rm1 = await A.js(memN);
+    ok("★中转 Key 页的「每个人单独的上限」也是一页 50 行★ 以前整份捎带在这一页的回包里："
+       + "3000 人一趟 631 KB，其中 620 KB 是一张「跟随团队 · 本月 0 元」重复三千遍的表",
+       rm1 === 50, { 画了: rm1, 没停用的: live9 });
+    ok("这张表的翻页条写的也是人数，且停用的人不算在内（他已经调不出去了）",
+       (await A.js(memP)).includes(String(live9)), await A.js(memP));
+
+    await A.js(`window.__urls = []`);
+    await A.js(`(() => { const e = document.querySelector("[data-rq]"); e.focus();
+      e.value = "北极星"; e.dispatchEvent(new Event("input", { bubbles: true })); })(); ` + wait(900));
+    ok("★这张表的搜索也是问服务器要的★", (await A.js(memN)) === want9
+       && (await A.js(`window.__urls.filter((u) => /relay\\/members\\?/.test(u) && /[?&]q=/.test(u)).length`)) >= 1,
+       { 剩下: await A.js(memN), 该有: want9, 请求: await A.js(`window.__urls.slice(0, 6)`) });
+
+    /* ---------- 发 Key 弹窗里的「归到谁名下」 ---------- */
+    await A.js(`document.querySelector("#rl-new").click(); ` + wait(900));
+    const mf = await A.js(`(() => { const b = document.querySelector("#mf-user");
+      return { 标签: b ? b.tagName : "没有这一格", 挂的下拉: b ? b.getAttribute("list") : "",
+               候选数: document.querySelectorAll("#mf-user-l option").length }; })()`);
+    ok("★「归到谁名下」是打字搜，不是一路滚的下拉★ 3000 人的公司里那个 <select> 就是三千个 "
+       + "<option>，人在里面找一个同事只能一路滚到底", mf.标签 === "INPUT" && mf.挂的下拉 === "mf-user-l", mf);
+    ok("一打开先给几个候选，但一次最多 20 个（别让人对着一个空框猜有谁，也别把全公司塞进 DOM）",
+       mf.候选数 > 0 && mf.候选数 <= 20, mf);
+    await A.js(`(() => { const b = document.querySelector("#mf-user");
+      b.value = "北极星"; b.dispatchEvent(new Event("input", { bubbles: true })); })(); ` + wait(900));
+    ok("打字之后候选换成命中的那几个（是现去问的服务器，不是本地过滤一份早就下发好的全量）",
+       (await A.js(`document.querySelectorAll("#mf-user-l option").length`)) === want9,
+       { 候选: await A.js(`[...document.querySelectorAll("#mf-user-l option")].map((o) => o.value)`), 该有: want9 });
+    await A.js(`document.querySelector(".ui-overlay [data-x]").click(); ` + wait(300));
+    ok("关掉弹层，页面回到原样", (await A.js(`document.querySelectorAll(".ui-overlay").length`)) === 0);
+
+    /* ---------- 用量明细的「按成员筛」：进页面时一个人名都不下发 ---------- */
+    await A.js(GOTO("usage-detail"));
+    const up = await A.js(`(() => { const e = document.querySelector("[data-user]");
+      return { 标签: e ? e.tagName : "没有这一格", 挂的下拉: e ? e.getAttribute("list") : "",
+               候选数: document.querySelectorAll("#ad-pick-user option").length }; })()`);
+    ok("★进用量明细的时候一个人名都不下发★ 以前这一格是个 <select>：3000 人就是 3000 个 "
+       + "<option>、光这份清单 491 KB，而且十次里有九次人只是来翻账的，根本不筛人",
+       up.标签 === "INPUT" && up.挂的下拉 === "ad-pick-user" && up.候选数 === 0, up);
+
+    await A.js(`window.__urls = []`);
+    await A.js(`(() => { const e = document.querySelector("[data-user]");
+      e.value = "北极星"; e.dispatchEvent(new Event("input", { bubbles: true })); })(); ` + wait(900));
+    // 「不动表格」得**先**验：打一半就去筛的话会触发整页重渲染，顺手把 datalist 冲空，
+    // 于是先红的会是下面那条「候选才出来」，而真正要盯的这条根本没跑到
+    ok("★打了一半不动表格★ 「北极星」不是谁的登录名，这会儿去筛只会得到一张空表——"
+       + "而空表跟「这个人这个月没花过钱」长得一模一样，人分不出是哪种",
+       (await A.js(`window.__urls.filter((u) => /\\/api\\/admin\\/usage\\?/.test(u)).length`)) === 0,
+       await A.js(`window.__urls`));
+    ok("打字之后候选才出来", (await A.js(`document.querySelectorAll("#ad-pick-user option").length`)) === want9,
+       await A.js(`document.querySelectorAll("#ad-pick-user option").length`));
+
+    const pickOne = all9.find((m) => (m.nickname || "").includes("北极星")).username;
+    await A.js(`window.__urls = []`);
+    await A.js(`(() => { const e = document.querySelector("[data-user]");
+      e.value = ${JSON.stringify(pickOne)}; e.dispatchEvent(new Event("change")); })(); ` + wait(900));
+    ok("★从原生下拉里点中一个真人，表格立刻跟着筛★ 判据是「这串是不是真有这么个人」，"
+       + "不是「按没按回车」——从下拉里点一下是不按回车的",
+       (await A.js(`window.__urls.filter((u) => /\\/api\\/admin\\/usage\\?/.test(u) && /[?&]user=/.test(u)).length`)) >= 1,
+       await A.js(`window.__urls`));
+
     ok("这一段跑完 console 还是干净的", A.errs.length === err0, A.errs.slice(err0));
   }
 

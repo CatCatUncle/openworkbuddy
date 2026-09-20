@@ -454,21 +454,32 @@ function createAdminRouter(deps = {}) {
     });
     return {
       today: sum.today, month: sum.month, last7: sum.last7, range: sum.range,
-      by_user: sum.by_user, by_model: sum.by_model, by_source: sum.by_source,
+      // 分组只回前 20（花得最多的那些），跟 /api/admin/stats 一个口径。不截的话这三行
+      // 是按人头长的：3000 人的组织里，205 KB 的回包有 195 KB 是这张按人分组的表，
+      // 而这一页画的是流水，一行都没用到它。groups 把真实组数带上，免得二十当成全部
+      by_user: sum.by_user.slice(0, 20), by_model: sum.by_model.slice(0, 20), by_source: sum.by_source,
+      groups: { users: sum.by_user.length, models: sum.by_model.length, sources: sum.by_source.length },
       detail: sum.recent, total: sum.total, offset: sum.offset, limit: sum.limit,
-      // 花名册按需捎带。以前是每趟都带整份，于是 ?limit= 根本缩不小回包——
-      // 实测 3000 人的组织，limit=20 是 682 KB，limit=1 还是 678 KB，
-      // 而明细页只是想拿这份名单画个「看谁的」下拉。
-      //   with=members 全份（「按人」那张表要算每个人的额度和余额）
-      //   with=names   只要名字那几格（下拉框）
-      ...(q.with === "members" || q.with === "names"
-        ? { members: account.queryMembers(org.orgIdOf(req.user), { all: true, lite: q.with === "names" }).members
-              .map((m) => (q.with === "names" ? m : {
-                username: m.username, nickname: m.nickname, dept: m.dept, role: m.role, status: m.status,
-                monthly_quota: m.monthly_quota, monthly_left: m.monthly_left, credits: m.credits, balance: m.balance,
-              })) }
-        : {}),
     };
+    // 这里**不捎带花名册**。以前捎带过，于是 ?limit= 根本缩不小回包：3000 人的组织，
+    // limit=20 是 682 KB、limit=1 还是 678 KB——那几百 KB 是名单，不是流水。
+    // 两个要名单的地方各自有了去处：
+    //   · 「成员用量」那张按人头的表 → /api/admin/usage/members，一页 50 个
+    //   · 明细页那个「看谁的」→ /api/admin/members?fields=lite&q=，打字的时候才去问
+  }));
+
+  /**
+   * 成员用量：一页 50 个人，筛、排、切都在服务端。
+   *
+   * 为什么单开一条而不是挂在上面那个接口上：上面回的是**这个组织**的汇总和流水，
+   * 那份数据跟公司多少人没关系；这一页是按人头长的，得一页一页地要。挤在一起的结果
+   * 就是上面那条注释里写的事——明明只要一条流水，回包还是大半兆。
+   */
+  router.get("/api/admin/usage/members", guarded((req) => {
+    const q = req.query || {};
+    return account.memberUsage(org.orgIdOf(req.user), {
+      q: q.q, dry: q.dry, sort: q.sort, offset: q.offset, limit: q.limit,
+    });
   }));
 
   router.post("/api/admin/topup", account.adminOnly, guarded((req) => {
@@ -544,6 +555,39 @@ function createAdminRouter(deps = {}) {
    * 本来就是并排的三格——分开取，必然出现三格来自三个时刻的情况，
    * 而这三个数之间的关系（剩余 = 上限 − 已花）正是管理员唯一会去核的东西。
    */
+  /**
+   * 本月这个组织每个人花掉的钱（元）。usageStore 按月分片，查「本月」只开本月那一个文件，
+   * 历史攒了多少年都不会让这一页变慢。
+   *
+   * 口径跟下面那一页、跟 budget.spentOf 三处一致：充值不算花销，中转出去的和公司内部
+   * 自己用的都算——它们花的是同一笔预算。三处对不上的话，同一屏上的两个数会互相矛盾。
+   */
+  function spentByUser(orgId) {
+    const mk = budget._internals.monthKey();
+    const m = new Map();
+    try {
+      for (const r of usageStore.read({ from: mk + "-01", to: mk + "-31" })) {
+        if ((r.org || org.DEFAULT_ORG) !== orgId || r.kind === "topup" || !r.user) continue;
+        m.set(r.user, (m.get(r.user) || 0) + (+r.cost || 0));
+      }
+    } catch {}
+    for (const [k, v] of m) m.set(k, Math.round(v * 1e4) / 1e4);
+    return m;
+  }
+
+  /**
+   * 「每个人单独的上限」那张表：一页 50 个，设过上限的和本月花过钱的排在最前面。
+   *
+   * 单开一条而不是挂在 /api/admin/relay 上，是因为那一页回的是**这个组织**的 Key、渠道、
+   * 价目和本月账单，那份数据跟公司多少人没关系；只有这张表是按人头长的。挤在一起的结果是
+   * 3000 人的组织一次回包 631 KB，其中 620 KB 是一张「跟随团队 · 本月 0 元」重复三千遍的表。
+   */
+  router.get("/api/admin/relay/members", guarded((req) => {
+    const q = req.query || {};
+    const orgId = org.orgIdOf(req.user);
+    return account.memberBudgets(orgId, { q: q.q, offset: q.offset, limit: q.limit, spent: spentByUser(orgId) });
+  }));
+
   router.get("/api/admin/relay", guarded((req) => {
     const orgId = org.orgIdOf(req.user);
     const o = org.getOrg(orgId);
@@ -602,11 +646,6 @@ function createAdminRouter(deps = {}) {
       return { ...k, caps: k.caps || [], spent_month: spent, left: k.budget_yuan ? Math.max(0, y4(k.budget_yuan - spent)) : null };
     });
 
-    const members = account.listMembers(orgId).map((m) => ({
-      username: m.username, nickname: m.nickname, dept: m.dept, status: m.status, budget_yuan: m.budget_yuan,
-      spent_month: y4((byUser.get(m.username) || {}).yuan || 0),
-    }));
-
     // 有哪些渠道转得出去。relay.js 认的是 config.models[i].channel，
     // 所以「登记了型号但没挂渠道」的那些在中转站上根本转不出去——这一页要直说，
     // 不然业务方拿着 Key 调一个界面上明明看得见的型号，收到的是一句「没有可用渠道」。
@@ -620,7 +659,8 @@ function createAdminRouter(deps = {}) {
     const out = {
       org: { id: o.id, name: o.name },
       keys: keyRows,
-      members,
+      // 这里**不捎带花名册**：「每个人单独的上限」那张表走 /api/admin/relay/members，一页 50 个。
+      // 捎带的时候 3000 人的组织一次 631 KB，而那张表一屏看得见十几行
       channels, orphans,
       month: mk,
       budget: { org_yuan: (st.budget || {}).org_yuan || 0, default_user_yuan: (st.budget || {}).default_user_yuan || 0, price_discount: pricing._internals.discountOf(st.price_discount) },
@@ -632,7 +672,11 @@ function createAdminRouter(deps = {}) {
         // 同一笔预算，但超支的时候该去拧哪一边完全不同。
         relay: y4(relayRows.reduce((a, r) => a + (+r.cost || 0), 0)),
         relay_calls: relayRows.length,
-        by_key: done(byKey), by_user: done(byUser), by_model: done(byModel),
+        // 三张表都只回前 50——界面上画的就是 50 行（多出来的在服务端就切掉，不占回包）。
+        // 不切的话「按人」这张是跟着公司人数长的：三千人全跑过任务，它就是三千行。
+        // groups 把真实组数带上，免得五十被当成全部
+        by_key: done(byKey).slice(0, 50), by_user: done(byUser).slice(0, 50), by_model: done(byModel).slice(0, 50),
+        groups: { keys: byKey.size, users: byUser.size, models: byModel.size },
         // 单位跟着数一起发。前端自己推的话，以后改了哪一路的计量口径
         // （比如语音合成从千字符改成万字符），页面会静静地多显示十倍。
         by_cap: done(byCap).map((c) => ({ ...c, unit: (pricing.UNITS[c.key] || {}).unit || "" })),
@@ -675,7 +719,7 @@ function createAdminRouter(deps = {}) {
     // billingUser 查不到人 → 个人预算那一档整个跳过 → 这把 Key 只受组织总额限制。
     // 「设了但没生效」的预算比没设更糟，所以在能拦住的地方拦住。
     if (b.user) {
-      const who = account.listMembers(orgId).find((m) => m.username === String(b.user).trim());
+      const who = account.findMember(orgId, b.user);
       if (!who) throw new Error(`这个组织里没有「${String(b.user).trim()}」这个人——归属写错了的话，他那一档月预算就成了摆设`);
       b.user = who.username;
     }
@@ -822,12 +866,15 @@ function createAdminRouter(deps = {}) {
   // ---------- 数据统计 ----------
   router.get("/api/admin/stats", guarded((req) => {
     const sum = account.usageSummary(req.user, { limit: 500 });
-    const members = account.listMembers(org.orgIdOf(req.user));
+    // 这一页要的是「几个人」这一个数。以前是把全员算一遍再取 .length——每人算角色、
+    // 额度、本月剩余、余额，还要为「最后活跃」翻一遍用量账本，换一个整数。
+    // memberStats 只数不算，口径一样（停用的人照样算人头，他账号还在）
+    const memberCount = account.memberStats(org.orgIdOf(req.user)).total;
     const runs = sum.recent.filter((e) => e.kind === "run");
     const active = new Set(runs.filter((e) => e.day === sum.last7[6].day).map((e) => e.user));
     return {
       totals: {
-        members: members.length,
+        members: memberCount,
         active_today: active.size,
         runs_month: sum.month.runs,
         tokens_month: sum.month.tokens,

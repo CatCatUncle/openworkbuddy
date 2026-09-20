@@ -1205,6 +1205,27 @@ function assertManageable(actor, username, what) {
 const MEMBER_PAGE_MAX = 500;
 
 /**
+ * 从**已经排好序的**那一份里切出这一页。
+ *
+ * 必须排完再进来：先切后排的话，「第 1 页是谁」取决于这些人在账本里的物理顺序——
+ * 谁昨天改过资料谁就可能跑到前面来，而人只会以为名单乱了。
+ *
+ * 两个边界都是拿地址栏改出来的，各夹一次：
+ *   · limit=0 / limit=-5 当没传，回默认的一页。夹成 1 的话界面上是「一页一个人、六百页」
+ *   · offset 翻过了头退回最后一页，不给一张空表——空表跟「这里根本没有人」长得一模一样
+ *
+ * @param opts.all 要整份。只给**确实要每一个人**的内部调用方用，别从 HTTP 上直接接过来
+ */
+function pageOf(sorted, opts = {}, fallback = 50) {
+  const all = opts.all === true;
+  const asked = Math.floor(+opts.limit);
+  const limit = all ? Math.max(1, sorted.length) : Math.min(MEMBER_PAGE_MAX, asked > 0 ? asked : fallback);
+  const last = sorted.length ? Math.floor((sorted.length - 1) / limit) * limit : 0;
+  const offset = all ? 0 : Math.max(0, Math.min(Math.floor(+opts.offset || 0), last));
+  return { page: all ? sorted : sorted.slice(offset, offset + limit), offset, limit };
+}
+
+/**
  * 本组织的成员：筛完、排完，只把**这一页**的人算出来。
  *
  * 为什么不是整份回去：实测 3000 人的组织，一次回包 1041 KB，浏览器里堆出 78098 个
@@ -1252,16 +1273,7 @@ function queryMembers(orgId, opts = {}) {
   hit.sort((a, b) => (rbac.roleOf(b) === "owner" ? 1 : 0) - (rbac.roleOf(a) === "owner" ? 1 : 0)
     || String(a.created_at).localeCompare(String(b.created_at)));
 
-  const all = opts.all === true;
-  // 地址栏里手改出来的 limit=0 / limit=-5 当没传，回默认的一页。夹成 1 的话界面上
-  // 会变成「一页一个人、六百页」，而人只会以为是后台坏了
-  const asked = Math.floor(+opts.limit);
-  const limit = all ? Math.max(1, hit.length) : Math.min(MEMBER_PAGE_MAX, asked > 0 ? asked : 50);
-  // 停在最后一页而不是给一张空表：人是会被删的，翻到第 5 页的时候别人删了几个，
-  // 回来看见「没有符合条件的成员」只会以为是自己搜错了
-  const last = hit.length ? Math.floor((hit.length - 1) / limit) * limit : 0;
-  const offset = all ? 0 : Math.max(0, Math.min(Math.floor(+opts.offset || 0), last));
-  const page = all ? hit : hit.slice(offset, offset + limit);
+  const { page, offset, limit } = pageOf(hit, opts);
   const meta = { total: mine.length, matched: hit.length, offset, limit };
 
   if (opts.lite)
@@ -1282,6 +1294,137 @@ function queryMembers(orgId, opts = {}) {
 /** 本组织成员清单（整份，不含密码字段）。界面上的列表请走 queryMembers 翻页 */
 function listMembers(orgId) {
   return queryMembers(orgId, { all: true }).members;
+}
+
+/**
+ * 成员用量：每个人的额度、余额，和他从有记录以来一共花了多少。只算**这一页**的人。
+ *
+ * 规矩跟 queryMembers 一样——先筛、再排、再切，最后才算——中间只多一步：这一页要按
+ * 「一共花了多少」排，所以得先把账本数一遍，把数贴到人身上，再排、再切。账本只翻这
+ * 一遍，它的代价跟流水条数有关、跟公司多少人无关；真正按人头往上涨的是 publicUser
+ * （角色、额度、本月剩余、余额），所以该省的是后者。实测 3000 人的组织，这一页原来
+ * 一趟回包 678 KB、读盘 5.0 MB，而屏幕上看得见的是十几行。
+ *
+ * 为什么默认按花销倒序，而不是跟成员页一样按进公司的先后：这一页回答的是「钱花在谁
+ * 身上了」。按花名册顺序排的话，花得最多的那几个散在六十页中间，等于没答。
+ *
+ * @param opts.q     搜昵称 / 登录名 / 部门，不分大小写
+ * @param opts.dry   只看本月固定额度已经见底的人（首页那条待办点「去充值」过来就是这个）
+ * @param opts.sort  tokens（默认，花得多的在前）| name（按花名册顺序，跟成员页对得上）
+ * @returns { rows, total, matched, offset, limit, dry }
+ *          dry = 这个组织**一共**几个人额度见底，不跟着筛选变——界面上那颗筛选钮要显示这个数，
+ *          筛完再数的话，钮上写的永远是「筛出来的那些」，等于一进去就归零
+ */
+function memberUsage(orgId, opts = {}) {
+  const want = orgId || org.DEFAULT_ORG;
+  const s = org.settingsOf(org.getOrg(want));
+  const mine = loadUsers().users.filter((u) => org.orgIdOf(u) === want);
+
+  // 「额度见底」的口径跟首页那条待办、跟 memberStats 必须是同一个：
+  // 在用的人、确实发过额度、这个月用完了。三处对不上的话，首页说三个人、
+  // 点进来只剩一个，谁也说不清哪个是真的
+  const isDry = (u) => (u.status || "active") === "active" && monthlyQuotaOf(u, s) > 0 && monthlyLeft(u, s) <= 0;
+  const dryAll = mine.reduce((n, u) => n + (isDry(u) ? 1 : 0), 0);
+
+  const kw = String(opts.q || "").trim().toLowerCase();
+  const onlyDry = opts.dry === true || String(opts.dry) === "1";
+  const hit = mine.filter((u) => {
+    if (onlyDry && !isDry(u)) return false;
+    if (!kw) return true;
+    return [u.username, u.nickname, u.dept].some((v) => String(v || "").toLowerCase().includes(kw));
+  });
+
+  // 整本账数一遍就够。按人分组是在这儿一次算完的，不是一个人查一次
+  const tally = new Map();
+  for (const raw of usageStore.read({})) {
+    if (!raw || raw.kind !== "run" || !raw.user) continue;
+    const e = fixLegacyCache(raw);
+    let t = tally.get(e.user);
+    if (!t) tally.set(e.user, (t = { runs: 0, tokens: 0, credits: 0 }));
+    t.runs++;
+    t.tokens += (e.prompt || 0) + (e.completion || 0);
+    t.credits += e.credits || 0;
+  }
+  const NONE = { runs: 0, tokens: 0, credits: 0 };
+  const tallyOf = (u) => tally.get(u.username) || NONE;
+  // 并列时按花名册顺序兜底。不兜的话，一屋子 0 的新人每刷新一次换一个次序，
+  // 而人会以为名单在自己动
+  const byRoster = (a, b) => (rbac.roleOf(b) === "owner" ? 1 : 0) - (rbac.roleOf(a) === "owner" ? 1 : 0)
+    || String(a.created_at).localeCompare(String(b.created_at));
+  hit.sort(String(opts.sort || "") === "name"
+    ? byRoster
+    : (a, b) => tallyOf(b).tokens - tallyOf(a).tokens || byRoster(a, b));
+
+  const { page, offset, limit } = pageOf(hit, opts);
+  const rows = page.map((u) => {
+    const p = publicUser(u, s);
+    const t = tallyOf(u);
+    return {
+      username: p.username, nickname: p.nickname, dept: p.dept, role: p.role, status: p.status,
+      monthly_quota: p.monthly_quota, monthly_left: p.monthly_left, credits: p.credits, balance: p.balance,
+      runs: t.runs, tokens: t.tokens, used_credits: t.credits, dry: isDry(u),
+    };
+  });
+  return { rows, total: mine.length, matched: hit.length, offset, limit, dry: dryAll };
+}
+
+/**
+ * 「每个人单独的 API 月上限」那张表：一页 50 个人，该动闸子的排在最前面。
+ *
+ * 为什么不按花名册顺序翻：这张表回答的是「谁的闸子要动」。三千人的公司里两千九百个是
+ * 「跟随团队 · 本月 0 元」，按名册排的话头一页全是这种行，而真正设过单独上限、真正在
+ * 花钱的那几十个人散在六十页中间——翻六十页才找得到的信息，等于没有。
+ *
+ * 停用的人不在这张表里：他已经调不出去了，摆在这儿只会让「这页有多少人」对不上席位数。
+ *
+ * @param opts.spent Map<登录名, 本月花了多少元>。由调用方扫账本得出——这一页本来就要扫一遍，
+ *                   不传就当这个月谁都没花过，那样排序会退化成「设过上限的在前」，还是能用
+ * @returns { rows, total, matched, offset, limit, capped }
+ *          capped = 这个组织**一共**几个人设过单独上限，不跟着筛选变
+ */
+function memberBudgets(orgId, opts = {}) {
+  const want = orgId || org.DEFAULT_ORG;
+  const spent = opts.spent instanceof Map ? opts.spent : new Map();
+  const mine = loadUsers().users.filter((u) => org.orgIdOf(u) === want && (u.status || "active") !== "disabled");
+  const capped = mine.reduce((n, u) => n + (+u.budget_yuan > 0 ? 1 : 0), 0);
+
+  const kw = String(opts.q || "").trim().toLowerCase();
+  const hit = kw
+    ? mine.filter((u) => [u.username, u.nickname, u.dept].some((v) => String(v || "").toLowerCase().includes(kw)))
+    : mine;
+
+  const yuanOf = (u) => spent.get(u.username) || 0;
+  // 「要不要管他」优先于「花了多少」：设过单独上限的人哪怕这个月一分没花也得看得见，
+  // 那条上限是会拦人的，而拦人的东西不该藏在第六十页
+  const notable = (u) => (+u.budget_yuan > 0 || yuanOf(u) > 0 ? 1 : 0);
+  hit.sort((a, b) => notable(b) - notable(a) || yuanOf(b) - yuanOf(a)
+    || String(a.created_at).localeCompare(String(b.created_at)));
+
+  const { page, offset, limit } = pageOf(hit, opts);
+  return {
+    rows: page.map((u) => ({
+      username: u.username, nickname: u.nickname || "", dept: u.dept || "",
+      status: u.status || "active", budget_yuan: +u.budget_yuan || 0, spent_month: yuanOf(u),
+    })),
+    total: mine.length, matched: hit.length, offset, limit, capped,
+  };
+}
+
+/**
+ * 这个组织里有没有这个人。只读一遍 users.json——不算额度、不算余额、不翻用量账本。
+ *
+ * 为什么不是 listMembers().find()：那个函数是给成员页用的，会把全公司每个人的角色、
+ * 额度、本月剩余、余额全算出来，还要为「最后活跃」翻一遍账本——只为回答一个是非题。
+ */
+function findMember(orgId, username) {
+  const want = orgId || org.DEFAULT_ORG;
+  const name = String(username || "").trim();
+  if (!name) return null;
+  const u = loadUsers().users.find((x) => x.username === name && org.orgIdOf(x) === want);
+  return u
+    ? { username: u.username, nickname: u.nickname || "", dept: u.dept || "",
+        role: rbac.roleOf(u), status: u.status || "active" }
+    : null;
 }
 
 /**
@@ -2098,6 +2241,9 @@ module.exports = {
   monthlyLeft,
   listMembers,
   queryMembers,
+  memberUsage,
+  memberBudgets,
+  findMember,
   memberStats,
   MEMBER_PAGE_MAX,
   memberCounts,
