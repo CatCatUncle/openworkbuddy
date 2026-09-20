@@ -27,6 +27,12 @@ schedules.json.corrupt*
 *.key
 # 从聊天窗口粘出来的临时文本，常带真实姓名
 粘贴文本_*.txt
+# 下面两条是 2026-09-20 补的。.gitignore 里 05f4e7e 那次加了，这边没跟上，
+# test/deploy.js 那条「git 不要的，docker 一样不许要」的推导判据当场就红了：
+#   .codebuddy/   本机 IDE 的工程数据（记忆、配置、日志），跟 .claude/ 同一类，可能带 Key
+#   .logs*        GitHub Actions 日志导出目录（.logs_96133161133 这种），是真实运行记录
+.codebuddy/
+.logs*
 
 # 下面这五条是 2026-09-20 补的。.gitignore 早就挡着它们，这边漏了七个月：
 # Dockerfile 是 COPY . .，于是在开发机上 build 一次，镜像里就有了
