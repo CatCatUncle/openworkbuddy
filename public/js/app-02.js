@@ -191,6 +191,8 @@ const ATTACH_KIND = {
   text: { label: "文本摘录", icon: "file-text" },
   file: { label: "文件", icon: "paperclip" },
 };
+// 服务端 express.json 的上限是 60MB，base64 会把体积撑到 4/3，所以这边卡 30MB 正好够它接住。
+const MAX_UPLOAD = 30 * 1048576;
 function attachKind(name, mime, forced) {
   if (forced && ATTACH_KIND[forced]) return forced;
   const type = String(mime || "").toLowerCase();
@@ -201,9 +203,17 @@ function attachKind(name, mime, forced) {
   return "file";
 }
 function markerName(name) { return String(name || "文件").replace(/[\r\n【】]/g, " ").trim() || "文件"; }
+/** 人看的体积。chip 上只有一个文件名的时候，1KB 的草稿和 25MB 的片子长得一模一样 */
+function humanSize(n) {
+  if (!(n > 0)) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + " KB";
+  return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB";
+}
 function attachmentOrder(typed) {
   // 用户可以拖动/剪切标记；发出时按当前输入里出现的位置排，而不是按网络上传完成的先后排。
-  return pendingAttach.slice().sort((a, b) => {
+  // 只算真的躺在工作目录里的那些：传失败的不能进清单，否则等于告诉模型「这个文件有」。
+  return pendingAttach.filter(x => x.state === "done").sort((a, b) => {
     const ia = typed.indexOf(a.marker), ib = typed.indexOf(b.marker);
     const aa = ia < 0 ? Number.MAX_SAFE_INTEGER : ia;
     const bb = ib < 0 ? Number.MAX_SAFE_INTEGER : ib;
@@ -224,88 +234,270 @@ function insertAttachmentMarker(item) {
   const before = inputEl.value && !/\n$/.test(inputEl.value) ? "\n" : "";
   insertAtCursor(inputEl, `${before}${item.marker}\n`);
 }
-function addAttachChip(item, thumbUrl, hint) {
-  const old = pendingAttach.find(x => x.name === item.name);
-  if (old) return null; // 同名文件本身已覆盖更新，引用也只留一个，避免模型看到两份同名素材
+/**
+ * 这一类素材下一个没被占用的编号。
+ *
+ * 不能写成 `filter(同类).length + 1`：加「图片 1」「图片 2」，删掉图片 1，再加一张——
+ * 长度又是 1，新的还叫「图片 2」。界面上并排两个「图片 2」，发给模型的也是两个
+ * `【图片 2：…】`，用户说「第二张」指谁全靠猜。这是实测出来的，test/frontend.js 里钉着。
+ */
+function nextAttachIndex(kind) {
+  return pendingAttach.reduce((m, x) => (x.kind === kind && x.index > m ? x.index : m), 0) + 1;
+}
+function makeAttachItem(name, { mime, kind, size } = {}) {
+  const type = attachKind(name, mime, kind);
+  const index = nextAttachIndex(type);
+  return {
+    name, kind: type, index,
+    size: size || 0,
+    order: pendingAttach.length,
+    state: "uploading",
+    marker: `【${ATTACH_KIND[type].label} ${index}：${markerName(name)}】`,
+  };
+}
+const ATTACH_TIP = {
+  uploading: "正在放进工作目录…",
+  done: "点一下打开看看",
+  failed: "没传上去。点 ↺ 再传一次",
+};
+/** chip 左边那一格：有缩略图就显缩略图，没有就显类型图标，状态（转圈/出错）盖在它上面 */
+function renderAttachIcon(item) {
+  const slot = item.el && item.el.querySelector(".attach-ic");
+  if (!slot) return;
+  slot.innerHTML = item.thumb ? "" : ic(ATTACH_KIND[item.kind].icon);
+  if (item.thumb) {
+    const img = document.createElement("img");
+    img.className = "attach-thumb";
+    img.src = item.thumb;
+    img.alt = "";
+    slot.appendChild(img);
+  }
+  const st = document.createElement("span");
+  st.className = "attach-state";
+  st.innerHTML = item.state === "uploading" ? '<span class="spinner"></span>'
+    : item.state === "failed" ? ic("circle-alert", "i-sm") : "";
+  slot.appendChild(st);
+}
+function setAttachState(item, state, note) {
+  item.state = state;
+  const chip = item.el;
+  if (!chip) return;
+  chip.classList.toggle("is-uploading", state === "uploading");
+  chip.classList.toggle("is-failed", state === "failed");
+  const open = chip.querySelector(".attach-open");
+  open.disabled = state !== "done"; // 还没落盘 / 没落成，点开只会看到 404
+  open.title = ATTACH_TIP[state] || "";
+  chip.querySelector(".attach-size").textContent = state === "failed" ? (note || "没传上去") : humanSize(item.size);
+  let retry = chip.querySelector(".attach-retry");
+  if (state === "failed" && !retry) {
+    retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "attach-retry";
+    retry.innerHTML = ic("rotate-ccw", "i-sm");
+    retry.title = "再传一次";
+    retry.setAttribute("aria-label", `重新上传 ${item.name}`);
+    retry.onclick = () => sendAttach(item);
+    chip.insertBefore(retry, chip.querySelector(".attach-x"));
+  } else if (state !== "failed" && retry) retry.remove();
+  chip.title = [item.marker, item.hint, ATTACH_TIP[state]].filter(Boolean).join("\n");
+  renderAttachIcon(item);
+}
+function setAttachThumb(item, url) {
+  if (!url) return;
+  item.thumb = url;
+  renderAttachIcon(item);
+}
+/** 点 chip 打开预览。上传时服务端把它放进本对话的成果文件夹，那个相对路径跟着响应回来 */
+function openAttach(item) {
+  if (item.state !== "done") return;
+  if (typeof previewFile === "function") previewFile(item.path || item.name, "");
+  else toast(`这份在工作目录里：${item.path || item.name}`, "folder");
+}
+function removeAttach(item) {
+  const i = pendingAttach.indexOf(item);
+  if (i >= 0) pendingAttach.splice(i, 1);
+  removeAttachmentMarker(item.marker);
+  if (item.el) item.el.remove();
+  item.blob = null;
+  syncSendBtn();
+}
+/** 同一个文件又拖了一次：闪一下已有的那枚，让人看见「它已经在这儿了」，而不是干瞪眼 */
+function flashAttach(item) {
+  if (!item.el) return;
+  item.el.classList.remove("attach-flash");
+  void item.el.offsetWidth; // 强制重排，不然连拖两次第二下不会再闪
+  item.el.classList.add("attach-flash");
+  setTimeout(() => item.el && item.el.classList.remove("attach-flash"), 700);
+}
+/**
+ * 建一枚素材 chip 并挂进输入框上方。
+ *
+ * 外层 span 只管排版，里面是两颗真按钮：点名字开预览，点 × 移除。以前是一个 `<b>` 挂 onclick——
+ * 鼠标能点，键盘 Tab 过去空无一物，读屏也念不出这是个能按的东西。
+ */
+function addAttachChip(item, hint) {
   pendingAttach.push(item);
   syncSendBtn(); // 运行中光贴了个附件也算「有话要说」，按钮得从「停下」变回「发出」
   const chip = document.createElement("span");
   chip.className = `attach-chip attach-${item.kind}`;
   chip.dataset.marker = item.marker;
-  if (thumbUrl) {
-    // 截图之间光看文件名分不出谁是谁，给张缩略图才知道自己贴对了没有
-    const img = document.createElement("img");
-    img.src = thumbUrl;
-    img.className = "attach-thumb";
-    img.alt = "";
-    chip.appendChild(img);
-  }
-  if (!thumbUrl) chip.insertAdjacentHTML("beforeend", ic(ATTACH_KIND[item.kind].icon));
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "attach-open";
+  const slot = document.createElement("span");
+  slot.className = "attach-ic";
   const ref = document.createElement("em");
   ref.textContent = `${ATTACH_KIND[item.kind].label} ${item.index}`;
-  chip.appendChild(ref);
   const name = document.createElement("span");
   name.className = "attach-name";
   name.textContent = item.name;
-  chip.appendChild(name);
-  chip.title = [item.marker, hint].filter(Boolean).join("\n"); // 可确认它在输入里叫第几项、文本摘录开头是什么
-  const x = document.createElement("b");
+  const size = document.createElement("span");
+  size.className = "attach-size";
+  open.append(slot, ref, name, size);
+  open.onclick = () => openAttach(item);
+  chip.appendChild(open);
+
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "attach-x";
   x.innerHTML = ic("x", "i-sm");
+  x.setAttribute("aria-label", `把 ${item.name} 从这条消息移除`);
   x.title = "从这条消息移除（文件仍在工作目录里）";
-  x.onclick = () => {
-    const i = pendingAttach.indexOf(item);
-    if (i >= 0) pendingAttach.splice(i, 1);
-    removeAttachmentMarker(item.marker);
-    chip.remove();
-    syncSendBtn();
-  };
+  x.onclick = () => removeAttach(item);
   chip.appendChild(x);
+
+  item.el = chip;
+  item.hint = hint || "";
   attachChips.appendChild(chip);
-  return item;
+  setAttachState(item, "uploading");
+  return chip;
 }
-/** 二进制转 base64。必须分块喂 fromCharCode：一个字节一个字节拼字符串，30MB 的文件能把界面卡死好几秒 */
-function bytesToB64(u8) {
-  let s = "";
-  for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
-  return btoa(s);
-}
-/** 往工作空间放一份内容并挂上 chip。文件、截图、粘贴进来的大段文字，最后都走这里 */
-async function uploadBytes(name, u8, { thumbMime, hint, mime, kind } = {}) {
-  const b64 = bytesToB64(u8);
-  const resp = await fetch("/api/upload", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    // 带上会话 id：服务端好把文件直接放进本对话的成果文件夹，别再堆到工作空间根目录
-    body: JSON.stringify({ name, data_b64: b64, session: sessionId }),
+/**
+ * 一份内容转 base64。
+ *
+ * 交给浏览器做，不自己在主线程上拼字符串：30MB 的片子，手写那版 `String.fromCharCode` 循环
+ * 要 116ms，而且这 116ms 里主线程一次都不让出去——转圈图标是停着的，点什么都没反应。
+ * FileReader 同样一份只要 35ms 且不占主线程，产物一个字节不差（实测对比过）。
+ */
+function blobToB64(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).slice(String(fr.result).indexOf(",") + 1));
+    fr.onerror = () => reject(fr.error || new Error("读不出这个文件"));
+    fr.readAsDataURL(blob);
   });
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  const type = attachKind(name, mime || thumbMime, kind);
-  const index = pendingAttach.filter(x => x.kind === type).length + 1;
-  const item = {
-    name,
-    kind: type,
-    index,
-    order: pendingAttach.length,
-    marker: `【${ATTACH_KIND[type].label} ${index}：${markerName(name)}】`,
-  };
-  const attached = addAttachChip(item, thumbMime ? `data:${thumbMime};base64,${b64}` : "", hint);
-  fetch("/api/files").then(r => r.json()).then(renderFiles);
-  return attached;
 }
-async function uploadFiles(fileList, { rename, insertMarkers = true } = {}) {
-  for (const file of fileList) {
-    if (file.size > 30 * 1048576) { toast(`${file.name} 超过 30MB，跳过`); continue; }
-    try {
-      const name = rename ? rename(file) : file.name;
-      const buf = await file.arrayBuffer();
-      const item = await uploadBytes(name, new Uint8Array(buf), {
-        thumbMime: /^image\//.test(file.type) ? file.type : "",
-        mime: file.type,
-      });
-      if (item && insertMarkers) insertAttachmentMarker(item);
-    } catch (err) {
-      toast(`上传失败: ${file.name}`, "circle-x"); // 拖进来的是文件夹时读不出内容，也走这里
-    }
+/**
+ * 缩略图。28×28 那一格不需要原图。
+ *
+ * 以前是把整份文件的 base64 直接当 img.src：实测 300KB 的图片挂上去是 409,622 个字符的
+ * data URL，浏览器还要按原分辨率解一遍码再缩到 28 像素。贴几张手机照片就是几百兆内存。
+ */
+async function thumbDataUrl(blob, px = 96) {
+  try {
+    const bmp = await createImageBitmap(blob);
+    const s = Math.min(1, px / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * s)), h = Math.max(1, Math.round(bmp.height * s));
+    const cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    cv.getContext("2d").drawImage(bmp, 0, 0, w, h);
+    if (bmp.close) bmp.close();
+    return cv.toDataURL("image/png");
+  } catch (e) {
+    return ""; // 认不出的图（坏文件、某些 SVG）就退回类型图标，不是错误
   }
+}
+/** 把 chip 对应的内容真的送上去。重试走的也是这条 */
+async function sendAttach(item) {
+  if (!item.blob) return false;
+  setAttachState(item, "uploading");
+  try {
+    const b64 = await blobToB64(item.blob);
+    const resp = await fetch("/api/upload", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      // 带上会话 id：服务端好把文件直接放进本对话的成果文件夹，别再堆到工作空间根目录
+      body: JSON.stringify({ name: item.name, data_b64: b64, session: sessionId }),
+    });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json().catch(() => ({}));
+    item.path = data.path || item.name; // 预览要按工作目录下的相对路径找它
+    item.blob = null;                   // 传完就松手，别攥着 30MB 不放
+    setAttachState(item, "done");
+    return true;
+  } catch (err) {
+    // 传不上去就把锚点从输入里撤掉：留着等于告诉模型「这个文件在」，它照着去读只会扑空。
+    // chip 留着变红，带一颗重试——文件还在用户手里，别让他重新去 Finder 里找一遍。
+    removeAttachmentMarker(item.marker);
+    setAttachState(item, "failed", "没传上去");
+    toast(`${item.name} 没传上去，点 chip 上的 ↺ 再试一次`, "circle-x");
+    return false;
+  }
+}
+/**
+ * 拖进来的是不是文件夹。
+ *
+ * Chrome/Electron 给的 File 里，文件夹长得像一个 0 字节、没有 type 的文件——以前就这么当文件
+ * 传上去了：工作目录里多一个 0 字节的同名垃圾文件，chip 还告诉用户「加好了」。实测过。
+ * `webkitGetAsEntry` 是准的，拿不到就退回「0 字节 + 没类型 + 名字里没后缀」这个判据。
+ */
+function droppedDirNames(dt) {
+  const out = new Set();
+  const items = dt && dt.items ? [...dt.items] : [];
+  for (const it of items) {
+    if (it.kind !== "file" || !it.webkitGetAsEntry) continue;
+    let entry = null;
+    try { entry = it.webkitGetAsEntry(); } catch (e) { entry = null; }
+    if (entry && entry.isDirectory) out.add(entry.name);
+  }
+  return out;
+}
+function looksLikeDir(file, dirs) {
+  if (dirs && dirs.has(file.name)) return true;
+  return !file.type && file.size === 0 && !/\.[a-z0-9]{1,8}$/i.test(file.name);
+}
+/**
+ * 选中 / 拖进来的一批文件。
+ *
+ * 顺序是**先把 chip 和锚点全摆出来，再一个一个传**。以前是传完才挂 chip：松手之后界面上
+ * 一片空白（实测 4MB 就有 124ms 的空窗，30MB 上手机网更久），用户以为没拖进去，又拖一次。
+ * 现在松手那一瞬间 chip 就在，带个转圈，进度在哪一眼看得见。
+ */
+async function uploadFiles(fileList, { rename, insertMarkers = true, dirs } = {}) {
+  const jobs = [];
+  for (const file of [...fileList]) {
+    if (looksLikeDir(file, dirs)) {
+      toast(`「${file.name}」是个文件夹，拖不进来。进去把里面的文件选中再拖，或者先压成 zip`, "folder");
+      continue;
+    }
+    if (file.size > MAX_UPLOAD) {
+      toast(`${file.name} 有 ${humanSize(file.size)}，超过 ${humanSize(MAX_UPLOAD)} 的上限，没有加进来`, "circle-x");
+      continue;
+    }
+    const name = rename ? rename(file) : file.name;
+    const dup = pendingAttach.find(x => x.name === name);
+    if (dup) {
+      // 同名的已经在这条消息里了：不再挂第二枚 chip（模型会当成两份素材），但内容照样传一遍
+      // 覆盖成最新的——用户重拖一个文件，多半就是因为它刚改过。
+      flashAttach(dup);
+      toast(`${name} 已经在这条消息里了，内容更新成最新的了`, "circle-check");
+      dup.blob = file;
+      dup.size = file.size;
+      jobs.push(dup);
+      continue;
+    }
+    const item = makeAttachItem(name, { mime: file.type, size: file.size });
+    item.blob = file;
+    addAttachChip(item);
+    if (insertMarkers) insertAttachmentMarker(item);
+    if (/^image\//.test(file.type)) thumbDataUrl(file).then(u => setAttachThumb(item, u));
+    jobs.push(item);
+  }
+  const done = [];
+  for (const item of jobs) if (await sendAttach(item)) done.push(item);
+  // 一批只刷一次文件面板。以前是每传一个文件就把整份文件列表重拉一遍，拖十个文件拉十次。
+  if (jobs.length) fetch("/api/files").then(r => r.json()).then(renderFiles);
+  return done;
 }
 /**
  * 时间戳文件名。同一秒里连贴两张截图会撞名，撞上就往后编号——
@@ -329,27 +521,34 @@ const BIG_TEXT_CHARS = 2000;
 async function uploadText(text, { name, insertMarker = true } = {}) {
   const fname = name || stampName("粘贴文本", "txt");
   const head = text.replace(/\s+/g, " ").trim().slice(0, 80);
-  try {
-    const item = await uploadBytes(fname, new TextEncoder().encode(text), {
-      hint: head + (text.length > 80 ? "…" : ""), mime: "text/plain", kind: "text",
-    });
-    if (item && insertMarker) insertAttachmentMarker(item);
-    toast(`已加入 ${item ? item.marker : fname} · ${text.length.toLocaleString()} 字`, "circle-check");
-    return item || false;
-  } catch (err) {
-    toast("文字存盘失败，已按普通粘贴处理", "circle-x");
-    return false;
-  }
+  const blob = new Blob([text], { type: "text/plain" });
+  const item = makeAttachItem(fname, { mime: "text/plain", kind: "text", size: blob.size });
+  item.blob = blob;
+  addAttachChip(item, head + (text.length > 80 ? "…" : ""));
+  if (insertMarker) insertAttachmentMarker(item);
+  if (!(await sendAttach(item))) return false;
+  toast(`已加入 ${item.marker} · ${text.length.toLocaleString()} 字`, "circle-check");
+  fetch("/api/files").then(r => r.json()).then(renderFiles);
+  return item;
 }
 /**
  * 输入里的素材锚点是人和模型共同看到的顺序协议；末尾附件清单只是兼容旧会话/CLI 的兜底。
  * 即便用户手动删掉一个锚点，仍有 chip 的文件也不会对模型“凭空消失”。
  */
 function composeOutgoing() {
+  // 还在传的时候不许发：锚点已经在输入里了，文件却还没落盘，模型照着去读就是一个 404。
+  // 宁可让他等两秒，也不要发出去一条自带死链的消息。
+  const flying = pendingAttach.filter(x => x.state === "uploading");
+  if (flying.length) {
+    toast(`还有 ${flying.length} 个文件在传，传完就能发——现在发出去模型读不到它们`, "hourglass");
+    return "";
+  }
   const typed = inputEl.value.trim();
   const attached = attachmentOrder(typed);
+  const lost = pendingAttach.filter(x => x.state === "failed");
   const note = attached.length ? `（已上传文件：${attached.map(x => x.name).join("、")}）` : "";
   if (!typed && !note) return "";
+  if (lost.length) toast(`${lost.map(x => x.name).join("、")} 没传上去，没跟着这条消息发出去`, "circle-alert");
   inputEl.value = "";
   syncInputHl();
   attachChips.innerHTML = "";
@@ -365,17 +564,39 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
 // 拖文件进窗口即上传。document 级必须拦掉默认行为，否则 Electron 会把整个页面导航到 file:// 吞掉应用
 let dragDepth = 0;
 const inputCard = attachChips.closest(".input-card");
-document.addEventListener("dragover", (e) => e.preventDefault());
+/**
+ * 拖拽时的提示条。原来只有输入框上一圈虚线，一个字都没有——拖进来会发生什么、松手落到哪，
+ * 全靠用户猜。这里明说：几个文件、落进哪条消息；拖的是一段文字就说文字。
+ */
+const dropHint = document.createElement("div");
+dropHint.className = "drop-hint";
+dropHint.setAttribute("aria-hidden", "true");
+if (inputCard) inputCard.appendChild(dropHint);
 const dragHasPayload = (e) => {
   const t = [...((e.dataTransfer || {}).types || [])];
   return t.includes("Files") || t.includes("text/plain") || t.includes("text/uri-list");
 };
+function dropHintText(e) {
+  const dt = e.dataTransfer || {};
+  const types = [...(dt.types || [])];
+  if (!types.includes("Files")) return "松手，这段文字放进输入框";
+  const n = (dt.items ? [...dt.items] : []).filter(x => x.kind === "file").length;
+  return n > 1 ? `松手，${n} 个文件放进这条消息` : "松手，文件放进这条消息";
+}
+document.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  // 不说清是「拷贝」的话，光标在某些场景下是那个禁止符号，人会以为这儿不收
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+});
 document.addEventListener("dragenter", (e) => {
   if (!dragHasPayload(e)) return;
   dragDepth++;
+  dropHint.textContent = dropHintText(e);
   inputCard?.classList.add("dragging");
 });
-document.addEventListener("dragleave", () => {
+document.addEventListener("dragleave", (e) => {
+  // 只有带货的那条拖拽才计过数，离开时也只认它——否则页面上别的拖拽一走就把提示条灭了
+  if (!dragHasPayload(e)) return;
   if (--dragDepth <= 0) { dragDepth = 0; inputCard?.classList.remove("dragging"); }
 });
 document.addEventListener("drop", async (e) => {
@@ -384,7 +605,8 @@ document.addEventListener("drop", async (e) => {
   inputCard?.classList.remove("dragging");
   const dt = e.dataTransfer || {};
   const files = [...(dt.files || [])];
-  if (files.length) { await uploadFiles(files); return; }
+  // 文件夹得在这儿当场问 dataTransfer 要——异步之后 items 就被浏览器清空了
+  if (files.length) { await uploadFiles(files, { dirs: droppedDirNames(dt) }); return; }
   // 从浏览器/编辑器里选中一段文字直接拖进来
   const text = (dt.getData ? dt.getData("text/plain") : "") || "";
   if (!text.trim()) return;
