@@ -29,7 +29,8 @@ mkdir -p "$(dirname "$APP")"
 if [ -e "$APP" ] && ! grep -q "make-mac-app.sh" "$APP/Contents/Resources/app/main.js" 2>/dev/null; then
   echo "❌ $APP 是装好的正式版，不是开发壳，没敢覆盖。"
   echo "   想要开发壳：OWB_APP_OUT=\"$HOME/Applications/OpenWorkBuddy-dev.app\" bash scripts/make-mac-app.sh"
-  echo "   或者先把它挪走。你的数据在 ~/OpenWorkBuddy，删应用不会动它。"
+  echo "   或者先把它挪走。注意两边的数据根不是同一个：正式版读 ~/OpenWorkBuddy，"
+  echo "   开发壳读本仓库目录。换壳不会删任何数据，但换完看到的是另一份账号和会话。"
   exit 1
 fi
 rm -rf "$APP"

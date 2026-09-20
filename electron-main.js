@@ -302,6 +302,26 @@ app.whenReady().then(async () => {
   win.webContents.setWindowOpenHandler(openHandler);
   attachContextMenu(win.webContents);
 
+  /**
+   * 关掉主界面 = 整个应用退出，桌面宠物跟着一起走。
+   *
+   * 这件事原本只挂在 window-all-closed 上，而那个事件要求**所有**窗口都关掉才触发。
+   * 宠物是个 BrowserWindow，只要它还飘在桌面上，主界面关了也永远轮不到它。于是：
+   *   · 进程留在后台，宠物赶不走，Dock 上那个图标也不消失；
+   *   · 单实例锁还占着，用户再点图标就撞进 second-instance 分支，而 win 此刻已经销毁，
+   *     迎面收到一句「已经在运行了，但窗口没出来，请去活动监视器结束进程」——只为了关个窗口。
+   *
+   * 旧代码那行的注释写的就是「盯的是主窗口的 closed」，底下写的却是 window-all-closed。
+   * 两边对不上的时候，错的是代码。
+   *
+   * 注意这里盯的是 closed 不是 close：快捷键收起窗口走的是 win.hide()，碰不到这条路。
+   */
+  win.on("closed", () => {
+    win = null;
+    global.__wbWin = null; // 留着一个已销毁的引用，server.js 那边取到就会往死对象上调方法
+    app.quit(); // 优雅退出：会走 will-quit，宠物在那儿 destroy、全局快捷键在那儿注销
+  });
+
   // 供 server.js（同进程内运行）访问窗口：全屏切换 / 快捷键热更新
   global.__wbWin = win;
   global.__wbRegisterShortcuts = registerShortcuts;
@@ -481,6 +501,6 @@ app.on("activate", () => {
   win.focus();
 });
 
-// 主窗口关掉就退出。宠物是个挂件不是窗口，不能让它把进程吊在那儿——
-// 所以这里盯的是主窗口的 closed，而不是 window-all-closed（宠物还开着时它永远不触发）。
+// 兜底。真正管退出的是主窗口的 closed（见上面 win.on("closed")）——那条不挑窗口数量，
+// 宠物开着照样退。这条只在宠物关着（默认就是关着）时顺带触发一次，quit 是幂等的，重复无害。
 app.on("window-all-closed", () => app.quit());
