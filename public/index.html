@@ -1225,6 +1225,8 @@
   /* 名字没填或者不合规时，「确定」不许是个能点的样子——点了也不会发生任何事，
      那就跟这次修的 bug 是同一种气人法 */
   .ask-box .ask-ok:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; filter: none; transform: none; }
+  /* 删除那颗钮不走品牌渐变：它跟「保存」「建好」长一个样的话，人是照着位置按的，不是照着字按的 */
+  .ask-box .ask-ok.is-danger { background: var(--owb-err); }
   .modal-mask { display: none; position: fixed; inset: 0; background: rgba(23,24,28,.35); backdrop-filter: saturate(150%) blur(6px); -webkit-backdrop-filter: saturate(150%) blur(6px); z-index: 50; align-items: center; justify-content: center; }
   .modal-mask.show { display: flex; }
   .modal { width: 640px; max-width: 94vw; max-height: min(900px, 90vh); background: var(--owb-bg); border-radius: var(--radius-2xl); display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow-floating); }
@@ -1919,6 +1921,19 @@
   .lib-it .lib-jump:hover { background: var(--owb-brand-weak); color: var(--owb-brand-text); }
   .lib-it .lib-jump .i { width: 14px; height: 14px; }
   .lib-list.as-icon .lib-it .lib-jump { display: none; } /* 图标视图是用来认脸的，一格里塞不下操作 */
+  /* 删除跟「跳回那段对话」并排，长相一致、只有颜色不一样：一个是去处，一个是撤不回来的事 */
+  .lib-it .lib-del { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); color: var(--owb-text-3); opacity: .35; }
+  .lib-it:hover .lib-del { opacity: 1; }
+  .lib-it .lib-del:hover { background: var(--owb-err-bg); color: var(--owb-err-text); }
+  .lib-it .lib-del .i { width: 14px; height: 14px; }
+  .lib-list.as-icon .lib-it .lib-del, .lib-list.as-gallery .lib-it .lib-del { display: none; }
+  /* 分段标题：左边「这段是什么 + 几样东西 + 一句人话」，右边是只对这一段生效的操作。
+     新建/上传原来挂在整页的工具条上，而这一页底下还摆着「本地产物」——
+     悬在最上面的两颗按钮看着就像是在给产出建目录，用户连问三遍「这儿建目录有啥用」 */
+  .lib-list .lib-sec .lib-sec-l { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .lib-list .lib-sec .lib-sec-l em { font-style: normal; font-size: 12px; color: var(--owb-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-list .lib-sec .lib-sec-acts { flex: none; display: flex; gap: 12px; font-size: 13px; }
+  .lib-list .lib-none b { font-weight: 600; color: var(--owb-text-2); }
 
   /* 图标视图：铺成网格，缩略图放大，名字在下面居中。auto-fill 让它跟着窗口宽度自己决定几列 */
   .lib-list.as-icon, .lib-list.as-icon .lib-fs { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 4px; align-content: start; }
@@ -2443,6 +2458,7 @@
 <symbol id="i-cloud-download" viewBox="0 0 24 24"><path d="M12 13v8l-4-4" /> <path d="m12 21 4-4" /> <path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284" /></symbol>
 <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3" /> <path d="M3 5V19A9 3 0 0 0 21 19V5" /> <path d="M3 12A9 3 0 0 0 21 12" /></symbol>
 <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></symbol>
+<symbol id="i-trash-2" viewBox="0 0 24 24"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M10 11v6" /><path d="M14 11v6" /></symbol>
 <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></symbol>
 <symbol id="i-blocks" viewBox="0 0 24 24"><path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2" /> <rect x="14" y="2" width="8" height="8" rx="1" /></symbol>
 <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="M12 6v6l4 2" /></symbol>

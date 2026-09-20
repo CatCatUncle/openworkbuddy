@@ -315,14 +315,33 @@ function libRowHtml(src, f, o) {
   const jump = jp
     ? `<a href="#" class="lib-jump" data-open="${esc(jp.id)}" data-turn="${jp.turn}" title="跳到写出它的那一段对话（第 ${jp.turn + 1} 轮）">${ic("message-square")}</a>`
     : "";
+  // 删：只有资料库里的东西给这颗钮，本地产物不给——那是任务写出来的，删了下一趟还会有，
+  // 而且它躺在工作目录里，从这一页删等于伸手去改任务的现场
+  const del = opt.del
+    ? `<a href="#" class="lib-del" data-del-file="${esc(opt.del)}" title="从资料库里删掉">${ic("trash-2")}</a>`
+    : "";
   return `
   <div class="lib-it ${opt.cls || ""} ${gone ? "gone" : ""} ${on ? "active" : ""}" data-src="${src}" data-name="${esc(full)}"${opt.task ? ` data-task="${esc(opt.task)}"` : ""} title="${esc(full)}">
     <span class="th">${thumb}</span>
     <span class="nm">${libMark(label, opt.q)}${dir ? `<span class="pth">${esc(dir)}</span>` : ""}</span>
     <span class="sz">${opt.note !== undefined ? opt.note : libSize(f.size || 0)}</span>
     <span class="tm">${esc(libWhen(f.mtime))}</span>
-    ${jump}
+    ${jump}${del}
   </div>`;
+}
+/**
+ * 「参考资料」为空时说什么。
+ *
+ * 原来写的是「还没有参考资料」——一句正确的废话：看完照样不知道该往里放什么、放了会怎样。
+ * 用户连着问了三遍「这儿建目录有啥用啊」，还猜「资料库指的是产出成果吧」。
+ * 他问第三遍的时候，答案就该长在屏幕上，而不是每次都要有人在旁边解释一遍。
+ */
+function libEmptyWhy(po) {
+  return po
+    ? "还没有参考资料。<br><br>往这儿放合同模板、报价单、公司简介这种<b>每次任务都可能要翻</b>的东西——"
+      + "做任务的时候 AI 会自己来查（library_list / library_read），你不用每次都粘一遍。<br>"
+      + "分成文件夹之后还多一件事：项目设置里可以只挂其中一个，让这个项目的 AI <b>只看得见那一块</b>，不会翻到隔壁客户的材料。"
+    : "还没有共享资料。这一块归平台管理员放，放进来之后你的任务也读得到。";
 }
 /**
  * 一行摆得下几个（给 ← → ↑ ↓ 翻文件用）。不写死格子数：直接量 offsetTop，
@@ -403,6 +422,7 @@ async function renderLibPage() {
   const folder = (f) => `
     <div class="lib-it lib-dir" data-dir="${esc(f.path)}" title="${esc(f.name)}">
       <span class="th">${ic("folder")}</span><span class="nm">${esc(f.name)}</span><span class="sz">${f.count || 0} 项</span><span class="tm"></span>
+      ${po ? `<a href="#" class="lib-del" data-del-dir="${esc(f.path)}" data-n="${f.count || 0}" title="删掉这个文件夹">${ic("trash-2")}</a>` : ""}
     </div>`;
   const crumbs = `<div class="lib-crumbs">
     <a href="#" data-dir="">${ic("book-open-text")}资料库</a>
@@ -420,12 +440,20 @@ async function renderLibPage() {
   let body = "";
   if (q) body = libSearchHtml(found, q, recents);
   else if (libState.view === "task") body = libTasksHtml(out);
+  // 两段分开摆，各带各的标题和各自的操作。合在一起的后果不是「乱」，是用户把两件事当成了一件：
+  // 上面这段是**他放进去的**参考资料（AI 会来查），下面那段是**任务写出来的**产出。
   else body = `
+    <div class="sec lib-sec">
+      <span class="lib-sec-l">参考资料<span class="n">${(lib.dirs || []).length + libFiles.length}</span><em>你放进来的 · 做任务时 AI 自己会来查</em></span>
+      ${po && libState.view === "dir" ? `<span class="lib-sec-acts"><a href="#" id="lb-mkdir" class="link">${ic("folder")}新建文件夹</a><a href="#" id="lb-up" class="link">${ic("plus")}上传</a><input type="file" id="lb-file" multiple style="display:none"></span>` : ""}
+    </div>
     ${(lib.dirs || []).map(folder).join("")}
     ${libFiles.length
-      ? groupedRows(libFiles, "lib", (f) => ({ full: f.path, label: f.name, dir: "" }))
-      : ((lib.dirs || []).length ? "" : `<div class="lib-none">${libState.dir ? "这个文件夹还是空的" : "还没有参考资料"}</div>`)}
-    <div class="sec">本地产物（当前项目）<span class="n">${wsFiles.length}</span></div>
+      ? groupedRows(libFiles, "lib", (f) => ({ full: f.path, label: f.name, dir: "", del: po ? f.path : "" }))
+      : ((lib.dirs || []).length ? "" : `<div class="lib-none">${libState.dir ? "这个文件夹还是空的" : libEmptyWhy(po)}</div>`)}
+    <div class="sec lib-sec">
+      <span class="lib-sec-l">本地产物<span class="n">${wsFiles.length}</span><em>当前项目的工作目录 · 任务自己写出来的</em></span>
+    </div>
     ${wsFiles.length ? groupedRows(wsFiles, "ws") : '<div class="lib-none">工作目录还没有成果文件</div>'}`;
 
   // 预览栏什么时候占位置：选了东西才占（列表/图标），画廊里永远占——它就是主角。
@@ -454,7 +482,6 @@ async function renderLibPage() {
               `<button type="button" class="lib-gp ${(libState.group || "none") === g ? "on" : ""}" data-group="${g}" aria-pressed="${(libState.group || "none") === g}">${esc(label)}</button>`).join("")}</div>
             <div class="lib-seg" role="group" aria-label="显示方式">${LIB_MODES.map(([m, label, icon]) =>
               `<button type="button" class="lib-md ${libState.mode === m ? "on" : ""}" data-mode="${m}" title="${esc(label)}视图" aria-label="${esc(label)}视图" aria-pressed="${libState.mode === m}">${ic(icon)}</button>`).join("")}</div>
-            ${po && !q && libState.view === "dir" ? `<a href="#" id="lb-mkdir" class="link">${ic("folder")}新建</a><a href="#" id="lb-up" class="link">${ic("plus")}上传</a><input type="file" id="lb-file" multiple style="display:none">` : ""}
           </div>
         </div>
         <div class="lib-list as-${libState.mode}">${body}</div>
@@ -547,6 +574,48 @@ async function renderLibPage() {
       renderLibPage();
     };
   }
+  // 删文件夹。stopPropagation 是这儿的要害：不拦住的话这一下会先被外层的 .lib-dir 接走，
+  // 人明明点的是「删」，结果是进了那个文件夹——而且进去之后还看不出刚才那一下算数没有
+  page.querySelectorAll("[data-del-dir]").forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const dir = a.dataset.delDir;
+    const n = +a.dataset.n || 0;
+    // 非空的服务端本来就不给删（资料库是整台服务器共用的一份，一条 rm -rf 下去别人的素材也没了）。
+    // 与其让人点完确认再吃一句 400，不如在框里先说清楚
+    const yes = await askConfirm({
+      title: `删掉文件夹「${dir.split("/").pop()}」？`,
+      hint: n ? `它里面还有 ${n} 样东西。资料库是整台服务器共用的一份，非空的文件夹删不了——先把里面清空。`
+              : "它现在是空的，删掉不影响别的东西。",
+      ok: n ? "知道了" : "删掉",
+      danger: !n,
+    });
+    if (!yes || n) return;
+    const r = await fetch("/api/library/folder?dir=" + encodeURIComponent(dir), { method: "DELETE" })
+      .then(x => x.json()).catch(() => ({ error: "网络异常" }));
+    if (!r || !r.ok) return toast((r && r.error) || "删不掉", "circle-x");
+    toast("文件夹已删掉", "circle-check");
+    renderLibPage();
+  });
+  // 删资料。删掉之后右边的预览栏可能还挂着这一份——不清掉的话，列表里已经没了、
+  // 右边还完整地摆着内容，看起来像是没删成
+  page.querySelectorAll("[data-del-file]").forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const path = a.dataset.delFile;
+    const yes = await askConfirm({
+      title: `删掉「${path.split("/").pop()}」？`,
+      hint: "从资料库里删掉，撤不回来。之后 AI 做任务也查不到它了。",
+      ok: "删掉", danger: true,
+    });
+    if (!yes) return;
+    const r = await fetch("/api/library/file/" + fpath(path), { method: "DELETE" })
+      .then(x => x.json()).catch(() => ({ error: "网络异常" }));
+    if (!r || !r.ok) return toast((r && r.error) || "删不掉", "circle-x");
+    if (libState.pick && libState.pick.src === "lib" && libState.pick.name === path) libState.pick = null;
+    toast("已删掉", "circle-check");
+    renderLibPage();
+  });
   // 任务分组：标题那一行点开/收起，右边「打开对话」直接跳回产生它的那次对话。
   // 这是这一页跟「一张文件表格」最不一样的地方——产出和它的来历始终连着
   page.querySelectorAll(".lib-task-h").forEach(h => h.onclick = (e) => {
