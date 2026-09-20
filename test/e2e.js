@@ -11966,12 +11966,18 @@ function testI18n() {
   //     在英文那台上比的是另一份界面——要么整套白跑，要么像 v0.7.0 那次一样，
   //     一句文案进了词典，CI 立刻红，发版卡在 test 这一步。
   const uiFiles = fs.readdirSync(__dirname).filter((f) => f.endsWith(".js"));
+  // 「哪些页算真页面」从 public/ 里现有的 .html 推出来，别写死 index.html——
+  // 企业后台开的是 admin.html，写死那个词就把它整个漏在闸门外面：
+  // v0.7.8 那次后台刚接上 i18n，CI 那台英文机器当场红在一条照中文写的断言上
+  const htmlPages = fs.readdirSync(pub).filter((f) => f.endsWith(".html"));
   const opensPage = uiFiles.filter((f) => {
     const src = fs.readFileSync(path.join(__dirname, f), "utf8");
-    return /loadURL\(/.test(src) && /index\.html/.test(src);
+    return /loadURL\(/.test(src) && htmlPages.some((h) => src.includes("/" + h));
   });
-  const noPin = opensPage.filter((f) => !/setLang\(/.test(fs.readFileSync(path.join(__dirname, f), "utf8")));
-  assert(opensPage.length >= 3, "抓不到开真页面的测试文件：" + JSON.stringify(opensPage));
+  // 两种钉法都算：页面开出来之后 I18N.setLang()，或者开页之前先把 owb-lang 写进 localStorage
+  const noPin = opensPage.filter((f) => !/setLang\(|owb-lang/.test(fs.readFileSync(path.join(__dirname, f), "utf8")));
+  assert(htmlPages.length >= 2, "public/ 里抓不到几个页面：" + JSON.stringify(htmlPages));
+  assert(opensPage.length >= 4, "抓不到开真页面的测试文件：" + JSON.stringify(opensPage));
   assert(!noPin.length, "这些测试开了真页面却没钉语言（CI 是英文机器）：" + JSON.stringify(noPin));
 
   // 4. 假 DOM：翻译 / 跳过 / 幂等 / 还原 / 改源文后重翻
