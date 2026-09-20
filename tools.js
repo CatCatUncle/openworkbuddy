@@ -4164,7 +4164,7 @@ function outputFiles() {
   const all = [];
   const SKIP = new Set([".tmp", ".openworkbuddy", "node_modules", ".git"]);
   // 服务端自己的运行数据（im-log.json、audit.json、会话、审计、记忆向量…全在 data/ 下）不是
-  // 用户的成果文件。工作目录指到工程上层时（workspace_dir=/Users/bryce/startup_get），这批文件
+  // 用户的成果文件。工作目录指到工程上层时（workspace_dir 指到 ~/工程目录 这种层级），这批文件
   // 会被 walk 进「可交付列表」，两个后果：①IM 附件逻辑「回复里点名的文件自动附上」把内部日志
   // 发进了用户手机；②任务期间日志被写、mtime 变动，「本回合产出」也会把它们当成新产出。
   // data/ 只装运行状态、永远不会是交付物，整目录排除；用户自己项目里的 data/ 文件夹不受影响

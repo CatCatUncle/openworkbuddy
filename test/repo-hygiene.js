@@ -576,5 +576,100 @@ console.log("\n【7】临时目录得有人收：新前缀必须落在 e2e 那�
   ok(swept("owb-Ab12Cd"), "反向对照：owb- 认得出（证明这判据真在生效）");
 }
 
+console.log("\n【8】仓库里不许有作者本人的痕迹，也不许有真 Key");
+{
+  const os = require("os");
+
+  // 这一节的由来：2026-09-20 查了一遍，两处代码注释里写着开发机的真实家目录
+  // （/Users/<用户名>/Library/... 和 workspace_dir=/Users/<用户名>/<私人工程目录名>）。
+  // 不是密钥，但公开仓库里躺着作者的系统用户名和私人项目的文件夹名，没必要。
+  //
+  // 判据是**推导**出来的，不是手抄名单：直接问这台机器自己叫什么，再去仓库里找。
+  // 手抄一份「禁止出现的词」有两个毛病——换个人提交就失效，而且那份名单本身
+  // 就成了一张「作者个人信息清单」躺在公开仓库里。问 os 则对每个贡献者都成立：
+  // 谁在自己机器上跑测试，护的就是谁。
+  //
+  // 够不着的地方也说清楚：这一节抓不了「别人的名字」，也抓不了历史提交里的旧版本
+  // （git 历史改不动，只能保证从现在起不再进新的）。
+
+  // CI 上账号就叫 runner、机器名是随机串，硬拿去搜会把 CHANGELOG 里那句
+  // 「runner 当时的时间戳」判成泄露。这些通用名一律跳过：这是一道开发机上的闸门，
+  // 在 CI 上退化成空转，好过在 CI 上红一次假的。
+  const GENERIC = new Set(["root", "user", "admin", "administrator", "ubuntu", "debian",
+    "runner", "build", "builder", "node", "test", "tester", "vagrant", "docker",
+    "jenkins", "circleci", "travis", "codespace", "developer", "dev", "home", "users"]);
+  const mine = [];
+  const take = (what, v) => {
+    v = String(v || "").split(".")[0].trim();
+    if (v.length >= 4 && !GENERIC.has(v.toLowerCase())) mine.push({ what, v });
+  };
+  try { take("系统用户名", os.userInfo().username); } catch {}
+  take("机器名", os.hostname());
+
+  /** 一段文字里有没有出现「这台机器的身份」。判据抽出来，下面拿编的数据反向验 */
+  const meHits = (text, who) => who.filter((m) => text.toLowerCase().includes(m.v.toLowerCase()));
+
+  // 这六个是仓库里现有的假 Key，逐字钉死。钉死而不是「test/ 下的一律放过」：
+  // 放过一整个目录，哪天有人把真 Key 粘进某个测试里就再也没人拦得住。
+  // 逐字钉死的代价是改动任何一个假 Key 都会红一次——那正是想要的：
+  // 凡是 Key 形状的字面量有变动，就该有人当面看一眼。
+  const FAKE_KEYS = new Set([
+    "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",        // e2e：记忆里不许存凭证
+    "sk-THIS-IS-MY-OPENAI-KEY",                         // docs/模型与Key管理：举例「别家域名收到了什么」
+    "sk-abcdefghijklmnop-7788",
+    "sk-abcdefghijklmnopqrstuvwxyz1234",
+    "sk-abcdefghijklmnopqrstuvwxyz123456",
+    "sk-this-key-must-never-reach-the-index-9527",      // gen-cache：缓存键里不许带 Key
+  ]);
+  const KEY_RE = new RegExp([
+    "sk-ant-[A-Za-z0-9_-]{20,}", "sk-[A-Za-z0-9_-]{20,}", "ghp_[A-Za-z0-9]{30,}",
+    "github_pat_[A-Za-z0-9_]{30,}", "AKIA[0-9A-Z]{16}", "AIza[0-9A-Za-z_-]{30,}",
+    "xox[baprs]-[A-Za-z0-9-]{10,}", "glpat-[A-Za-z0-9_-]{15,}", "hf_[A-Za-z0-9]{30,}",
+    "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+  ].join("|"), "g");
+  /** 一段文字里 Key 形状、又不在假货名单里的那些 */
+  const keyHits = (text) => [...new Set(text.match(KEY_RE) || [])].filter((k) => !FAKE_KEYS.has(k));
+
+  let files = null;
+  try {
+    files = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, encoding: "utf8" })
+      .split("\0").filter(Boolean);
+  } catch { console.log("  - 跳过：问不到 git 清单（release tarball 解出来跑就没有 .git）"); }
+
+  if (files) {
+    const badMe = [], badKey = [];
+    let scanned = 0;
+    for (const rel of files) {
+      let src;
+      try { src = fs.readFileSync(path.join(ROOT, rel), "utf8"); } catch { continue; }
+      if (src.includes("\0")) continue;   // 二进制（图标、截图）按文本读没意义
+      scanned++;
+      for (const h of meHits(src, mine)) badMe.push(rel + "（" + h.what + "）");
+      if (keyHits(src).length) badKey.push(rel);
+    }
+    ok(scanned > 100, "扫了 " + scanned + " 个跟踪中的文本文件",
+      "数字小得不像话，多半是 git ls-files 没解对，下面两条等于没测");
+    ok(badMe.length === 0,
+      mine.length
+        ? "没有一个跟踪文件带着这台机器的身份（" + mine.map((m) => m.what).join("、") + "）"
+        : "这台机器的用户名/机器名都是通用名，这条跳过（CI 上就是这样）",
+      [...new Set(badMe)].join("、") + "\n      注释里也算：公开仓库里没必要留着开发机的家目录，换成 /Users/xxx 这种占位");
+    ok(badKey.length === 0, "没有一个跟踪文件带着名单外的 Key 形状字符串",
+      badKey.join("、") + "\n      要么它是真 Key（那就撤掉并去服务商那儿吊销），"
+        + "要么是新加的假 Key（那就加进这个文件里的 FAKE_KEYS，让下一个人知道它是假的）");
+  }
+
+  // 反向对照：两条判据都得真会红，也都不能红错人
+  const FAKE_ME = [{ what: "系统用户名", v: "zqxjw" }];
+  ok(meHits("路径是 /Users/zqxjw/Library/x", FAKE_ME).length === 1, "反向对照：家目录里的用户名抓得到");
+  ok(meHits("路径是 /Users/ZQXJW/Library/x", FAKE_ME).length === 1, "反向对照：大小写不同也算（macOS 路径不分大小写）");
+  ok(meHits("路径是 /Users/xxx/Library/x", FAKE_ME).length === 0, "反向对照：占位名不误报（不然改完还是红）");
+  // 拼出来再递进去：这个文件自己被上面那轮扫描扫到，写成一整串的话它当场把自己判红
+  ok(keyHits("const k = \"" + "sk-ant-" + "api03-Q7vK2mBz9LpR4tYw8XnC1sEdHgJfUiOa" + "\";").length === 1,
+    "反向对照：没见过的 Key 形状抓得到");
+  ok(keyHits("这段话里有 sketch、skill、sk-8 这些词，都不是 Key").length === 0,
+    "反向对照：长得像但不够长的普通词不误报");
+  ok(keyHits([...FAKE_KEYS].join("\n")).length === 0, "反向对照：名单里那六个假 Key 全部放行");
+}
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);
