@@ -3669,10 +3669,21 @@ function testAgentPromptDrift() {
   for (const n of named.filter((x) => claim[1].includes(x) && real.has(x)))
     assert.ok(desktopOnly.includes(n),
       `提示词说没 GUI 时 ${n} 不可用，但它不在 DESKTOP_ONLY_TOOLS 里、其实一直都在 —— 等于白白关掉了一个能用的工具`);
-  // 同一件事在 5.1 还说了一遍（"别去找 render_page，它不在你的工具清单里"），那句也得跟着对
-  assert.ok(!/别去找 (\w+)，它不在你的工具清单里/.test(base) ||
-    desktopOnly.includes(/别去找 (\w+)，它不在你的工具清单里/.exec(base)[1]),
-    "规范 5.1 说某个工具「不在你的工具清单里」，但它并不在 DESKTOP_ONLY_TOOLS 里");
+  // ── ②-bis 已经删掉的工具名，提示词里一个字都不许留 ────────────────
+  // render_page 并进 fetch_url 的 render:"force" 之后，两种模式下都不在工具清单里了。
+  // 上面①那道幽灵闸已经能抓住它（它不在 TOOL_DEFS 里），但①是靠"下划线命名 = 工具名"
+  // 猜出来的，哪天名单一放宽就漏。这条直接钉死，并且把另一半也钉上：名字要从清单里消失，
+  // 执行入口却必须还认——老会话、外部 MCP 客户端、历史排期任务里都还攥着这个名字
+  assert.ok(!/render_page/.test(whole),
+    "提示词里还在提 render_page，可它已经不在工具清单里了 —— 模型会照着去调一个不存在的名字");
+  assert.ok(!TOOL_DEFS.some((t) => t.name === "render_page"),
+    "render_page 又回到工具清单里了：抓网页从此变成一道选择题，而 fetch_url 的 render:\"force\" 做的是同一件事");
+  {
+    const fu = TOOL_DEFS.find((t) => t.name === "fetch_url");
+    assert.ok(fu && fu.input_schema.properties.render &&
+      (fu.input_schema.properties.render.enum || []).includes("force"),
+      "fetch_url 的 render:force 没了：render_page 删掉之后，强制渲染就彻底没有入口了");
+  }
 
   // ── ③ 承诺"已安装"的库，必须真的装了 ──────────────────────────────
   const libLine = /已安装库：([^\n]*)/.exec(base);

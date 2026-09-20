@@ -249,7 +249,7 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
       config: { agent: {}, im: {}, security: {}, ...cfg },
       llm: {}, mcpManager: { toolDefs: () => [] }, experts: [], expertTeams: [],
     });
-    const DESKTOP = ["html_to_image", "render_page", "desktop_pet"];
+    const DESKTOP = ["html_to_image", "desktop_pet"];
     const rt = mk({});
     const craft = rt.toolList(0, "craft").map((t) => t.name);
     const ask = rt.toolList(0, "ask").map((t) => t.name);
@@ -267,9 +267,16 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     br.available = () => true;
     try {
       const gui = mk({}).toolList(0, "craft").map((t) => t.name);
-      for (const t of ["html_to_image", "render_page"]) {
+      for (const t of DESKTOP) {
         ok(gui.includes(t), `反向对照：探到渲染器时 ${t} 要回到清单里`, gui);
       }
+      // render_page 是另一回事：它不是「没浏览器才摘」，而是压根不发给模型了。
+      // 同一件事 fetch_url 带 render:"force" 就做了，多一个名字等于每次抓网页都先做道选择题。
+      // 这两条要一起成立，缺哪条都不算删干净——光删定义不改提示词，模型照着提示词去调一个
+      // 清单里没有的名字；光改提示词不删定义，那道选择题还在
+      ok(!gui.includes("render_page"), "★有浏览器时 render_page 也不许回到清单里★ 它已经并进 fetch_url 的 render:force 了", gui);
+      const fu = mk({}).toolList(0, "craft").find((t) => t.name === "fetch_url");
+      ok(!!(fu && fu.input_schema.properties.render), "★fetch_url 的 render 参数得在★ 删了 render_page 又没有它，强制渲染这条路就断了");
     } finally { br.available = orig; }
 
     // 桥接给外部 CLI 引擎的那份清单，同样不许挂必然失败的工具
@@ -278,6 +285,20 @@ const run = (name, input) => tools.executeTool(name, input, { security: { gatewa
     for (const t of ["html_to_image", "render_page"]) {
       ok(!lent.includes(t), `桥接清单里也没有 ${t}（桥是个纯 node 子进程，更没有 Electron）`, lent);
     }
+    // 反过来：桥上有浏览器的时候，render_page 必须还借得出去。
+    // 它从本项目自己的工具清单里删了，但外部 CLI 引擎（Claude Code / Codex）手上没有本项目的
+    // fetch_url——它们自带的抓网页工具不跑 JS，动态站点一律空壳。对它们来说这儿没有选择题，
+    // 少借一个就是真少一样能力。光看「TOOL_DEFS 里没有了」会以为跟着一起没了，所以钉一条
+    const br2 = br.available;
+    br.available = () => true;
+    let lentGui;
+    try {
+      delete require.cache[require.resolve(path.join(ROOT, "engines/tool-bridge"))];
+      lentGui = require(path.join(ROOT, "engines/tool-bridge"))._internals.lentDefs();
+    } finally { br.available = br2; }
+    const rp = lentGui.find((d) => d.name === "render_page");
+    ok(!!rp, "★桥上有浏览器时 render_page 没借出去★ 外部 CLI 抓动态站点就只剩空壳了", lentGui.map((d) => d.name));
+    ok(!!(rp && rp.input_schema && rp.input_schema.properties.url), "借出去的 render_page 没带参数表，MCP 那头调不动", rp);
     ok(lent.includes("read_document"), "★read_document 借给了外部 CLI★ 它们自带的读文件工具读 Office 只会得到乱码", lent);
   }
 
