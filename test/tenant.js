@@ -405,9 +405,14 @@ async function login(username, password) {
   console.log("\n【15.5】账本查得到：时间范围 / 关键词 / 翻页，且不许越过组织墙");
   // 这三样以前一样都没有，界面只能给「最近 200 条」。财务问「上个月谁花了多少」答不上来。
   // 造够两页的量，才测得出 offset/limit 是真翻页还是每次都从头切。
+  // prompt 带上序号：这一批账除了**毫秒级**时间戳和模型名以外全都一样（同样 100 字输入、
+  // 同样 150 字输出、同一个用户），而下面那道闸门是按 [ts, model, prompt, user] 去重的。
+  // 追加赶得快、两条落进同一毫秒时（Linux 的 CI 上真发生了：100 条只认出 58 条），两笔真账
+  // 就被当成同一笔，闸门报「两页大面积重叠」——红的不是翻页坏了，是这批测试数据认不出自己。
+  // 序号只让每一笔可辨认，判分不依赖它的具体数值（150 与 100+i+50 都是 1 积分，token 合计没人断言）。
   for (let i = 0; i < 120; i++) {
     account.chargeRun({ username: "xiaoyuan" },
-      { prompt: 100, completion: 50, model: i % 2 ? "mA" : "mB", provider: "p", source: i % 3 ? "web" : "feishu", elapsed_ms: 100 });
+      { prompt: 100 + i, completion: 50, model: i % 2 ? "mA" : "mB", provider: "p", source: i % 3 ? "web" : "feishu", elapsed_ms: 100 });
   }
   r = await call("GET", "/api/admin/usage?limit=50&offset=0", { cookie: fen });
   const p1 = r.json;
