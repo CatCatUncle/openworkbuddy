@@ -5572,7 +5572,7 @@ const TRAIL_CHECKS = `
     const wrap = t2.querySelector(".proc-wrap");
     const live = wrap.querySelector(".proc-head .act-live");
     ok("动作行挂在折叠条上（跟折叠区是两回事）", !!live);
-    ok("过程区仍然默认收着（用户说过别让执行过程挡住）", !wrap.classList.contains("open"));
+    ok("过程区仍然默认收着（正文才是主角，过程要看再展开）", !wrap.classList.contains("open"));
     const liveIcon = () => { const u = live.querySelector("use"); return u ? u.getAttribute("href") : "(没有图标)"; };
     ok("收着也看得见，说的正是此刻这一步", disp(live) !== "none" && live.textContent === "搜「深圳 OPC」", disp(live) + " / " + live.textContent);
     ok("图标是画出来的 svg，不是拿表情当图标", liveIcon() === "#i-globe" && live.querySelector("svg.i"), liveIcon());
@@ -6560,6 +6560,8 @@ var SERVERS = [
   { name: "filesystem", transport: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/somebody/Downloads/培训案例材料", "/Users/somebody/Documents/归档/2026"], connected: false, tools: [],
     error: "MCP 服务器 filesystem 已退出（退出码 1）：Warning: Cannot access directory /Users/somebody/Downloads/培训案例材料, skipping / Warning: Cannot access directory /Users/somebody/Documents/归档/2026, skipping / Error: None of the specified directories are accessible" },
   { name: "notion", transport: "streamable-http", url: "https://mcp.notion.com/mcp", header_keys: ["Authorization"], connected: true, plugin: "notion-workspace", tools: [{ name: "search", description: "搜" }] },
+  // 插件名长到一个角标装不下：这排卡最窄 248px，没封宽度的话它会顶到左边那张卡上
+  { name: "airtable", transport: "stdio", command: "npx", args: ["-y", "airtable-mcp"], env_keys: [], connected: true, plugin: "modelcontextprotocol-server-airtable-数据表", tools: [{ name: "list", description: "列" }] },
 ];
 var CATALOG = {
   categories: ["搜索与网页", "文件与开发", "数据库"],
@@ -6635,6 +6637,60 @@ const HUB_MCP_CHECKS = `
   const pc = card("mysql"), pfl = pc.querySelector(".flag").getBoundingClientRect(), pal = pc.querySelector(".al").getBoundingClientRect();
   ok("目录卡上的「已接入」角标也不压副标题", pfl.bottom <= pal.top + 0.5 || pfl.right <= pal.left + 0.5 || pfl.left >= pal.right - 0.5,
      "角标 " + JSON.stringify(pfl) + " 副标题 " + JSON.stringify(pal));
+
+  // 角标不换行又是绝对定位，只靠右边靠着：名字一长就往左长，长出卡片就压到邻居身上。
+  // 量最窄那一列（grid 最小 248px），宽屏幕下卡片被拉宽，这条尺子量不出东西。
+  const gridW = box.querySelector(".card-grid");
+  const prevW = box.style.width;
+  box.style.width = "272px"; // 248 + 12 gap + 一点富余，逼出单列
+  const spills = [...box.querySelectorAll(".ex-card")].filter((c) => c.querySelector(".flag")).map((c) => {
+    const cb = c.getBoundingClientRect(), fb = c.querySelector(".flag").getBoundingClientRect();
+    return { txt: c.querySelector(".flag").textContent, out: Math.max(cb.left - fb.left, fb.right - cb.right) };
+  });
+  ok("角标不会顶出卡片去压旁边那张（按最窄一列量）", spills.every((r) => r.out <= 0.5),
+     JSON.stringify(spills.filter((r) => r.out > 0.5)));
+  ok("长插件名在角标上截短，全名留在 title 里", (() => {
+    const c = [...box.querySelectorAll(".ex-card[data-mi]")].find((x) => (x.querySelector(".al") || {}).textContent !== undefined && x.textContent.includes("airtable"));
+    const f = c && c.querySelector(".flag");
+    return !!f && /\u2026$/.test(f.textContent) && f.title === "来自插件 modelcontextprotocol-server-airtable-数据表";
+  })());
+  // 反向对照：截短是第一道，封宽度是第二道。搬一张没经过截短的卡进来，
+  // 把封宽度去掉，它当场顶出卡片；加回来又收住了。
+  const probe = document.createElement("div");
+  probe.className = "ex-card";
+  probe.innerHTML = '<span class="flag">来自插件 一二三四五六七八九十一二三四五六七八九十</span><div class="hd"><div class="nm"><span>x</span></div></div>';
+  gridW.appendChild(probe);
+  const outOf = () => {
+    const cb = probe.getBoundingClientRect(), fb = probe.querySelector(".flag").getBoundingClientRect();
+    return Math.max(cb.left - fb.left, fb.right - cb.right);
+  };
+  ok("封了宽度之后，再长的角标也待在卡里", outOf() <= 0.5, "顶出 " + outOf());
+  const undo = document.createElement("style");
+  undo.textContent = ".ex-card .flag { max-width: none; }";
+  document.head.appendChild(undo);
+  ok("反向对照：去掉封宽度，长角标当场顶出卡片", outOf() > 0.5, "顶出 " + outOf());
+  undo.remove();
+  probe.remove();
+  box.style.width = prevW;
+
+  // 「去哪拿」是真 <a>。全库没一条 a 的基底样式的话，它就是浏览器默认那种蓝加下划线，
+  // 整页就这几处跳色。这条量的是算出来的颜色，不是读 CSS 源码。
+  const UA_BLUE = ["rgb(0, 0, 238)", "rgb(0, 0, 255)", "rgb(-webkit-link)"];
+  const dl = box.querySelector(".mcp-docs-link");
+  const dcs = dl && getComputedStyle(dl);
+  ok("「去哪拿」不是浏览器默认的蓝字下划线", !!dl && !UA_BLUE.includes(dcs.color) && !/underline/.test(dcs.textDecorationLine),
+     dl ? dcs.color + " / " + dcs.textDecorationLine : "没找到链接");
+  ok("「去哪拿」跟旁边的小标记同高同字号", (() => {
+    const tag = dl.parentElement.querySelector("i");
+    return Math.abs(dl.getBoundingClientRect().height - tag.getBoundingClientRect().height) < 0.5
+      && dcs.fontSize === getComputedStyle(tag).fontSize;
+  })(), dl.getBoundingClientRect().height + " vs " + dl.parentElement.querySelector("i").getBoundingClientRect().height);
+  // 接着往下测底座：随便一个没挂任何 class 的链接也得是品牌色（插件主页、技能仓库那一批都靠它）
+  const bare = document.createElement("a");
+  bare.href = "https://example.com"; bare.textContent = "x";
+  box.appendChild(bare);
+  ok("没挂 class 的裸链接也走品牌色", !UA_BLUE.includes(getComputedStyle(bare).color), getComputedStyle(bare).color);
+  bare.remove();
 
   ok("推荐连接器区块出现，按目录分类分组", html.includes("推荐连接器") && box.querySelectorAll(".ex-card[data-pi]").length === 5 && html.includes("搜索与网页") && html.includes("数据库"));
   ok("已接入的 mysql 预设：标「已接入」、按钮禁用", card("mysql").querySelector(".flag").textContent === "已接入" && card("mysql").querySelector(".mcp-use").disabled);
@@ -9292,7 +9348,7 @@ app.whenReady().then(async () => {
       const names15 = await win15.webContents.executeJavaScript(IC_BOOT + HUB_MCP_STUBS + "\n" + HUB_MCP_SRC + "\n" + HUB_MCP_CHECKS, true)
         .catch((e) => { throw new Error("[连接器] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of names15) console.log("  ✓ " + n);
-      console.log(`✅ 前端：连接器卡片（一键接入预填·缺 Key 拦下·值里带等号保住·原条目不回传 Key·已接入置灰·搜索联动·死因整块三行可展开·命令行不被横切·角标不压状态字）${names15.length} 项通过`);
+      console.log(`✅ 前端：连接器卡片（一键接入预填·缺 Key 拦下·值里带等号保住·原条目不回传 Key·已接入置灰·搜索联动·死因整块三行可展开·命令行不被横切·角标不压状态字也不顶出卡片）${names15.length} 项通过`);
     } finally {
       if (!win15.isDestroyed()) win15.destroy();
     }
