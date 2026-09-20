@@ -159,7 +159,7 @@ function call(method, url, { body, cookie } = {}) {
 }
 
 /** 开一个窗口，把登录 cookie 塞进它的会话，加载 /admin.html，等 boot() 跑完 */
-async function openAdmin(cookieStr, tag) {
+async function openAdmin(cookieStr, tag, lang = "zh") {
   const { session } = require("electron");
   const ses = session.fromPartition("persist:" + tag);
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -175,6 +175,13 @@ async function openAdmin(cookieStr, tag) {
     if (lvl === "error" || lvl === "3") errs.push(String(e.message).slice(0, 300));
   });
   win.webContents.on("render-process-gone", (_e, d) => errs.push("渲染进程没了：" + JSON.stringify(d)));
+  // Electron 的 navigator.language 随系统走：本机中文、CI 英文。这个后台现在真会跟着翻，
+  // 底下的断言又是照中文文案写的——不钉住语言，CI 那台比的是另一份界面。
+  // 钉法是先开一次同源页把偏好写进 localStorage，再重开：boot 一启动就读它，
+  // 省得等它按系统语言画完一遍再切（那中间有一帧是英文的）
+  await win.loadURL(base + "/admin.html");
+  await win.webContents.executeJavaScript(
+    `try { localStorage.setItem("owb-lang", ${JSON.stringify(lang)}); } catch {} 1`);
   await win.loadURL(base + "/admin.html");
   await win.webContents.executeJavaScript(`new Promise((r) => {
     const t0 = Date.now();
