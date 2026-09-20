@@ -14411,7 +14411,62 @@ async function _testUpgradeMigrationBody(mktmp) {
   assert(fs.readdirSync(ws5).some((n) => n.startsWith("以前的文件_")),
     "★老用户升上来却没整理★ ⑨ 那条闸门关过头了，把真正该跑的那次也挡了：" + fs.readdirSync(ws5).join(" "));
 
-  console.log("✅ 升级迁移：旧文件收进「" + folder + "」·画布先留底·清单可回退·只搬散落文件·撞名不覆盖·开第二次不再动手·全新装一个不碰");
+  // ── ⑩ 账本是「跑过没有」的唯一凭证。它一坏，整套迁移会从头再跑一遍 ────────
+  // 用户报的「升级之后重复备份、越占越多」就是这条路：每重跑一次就多一份升级前留底，
+  // 而画布是几十兆的量级。所以账本改成原子写 + 留 .bak，读不出来先拿 .bak 顶。
+  const ws6 = mktmp("owb-ledger-");
+  fs.mkdirSync(path.join(ws6, ".openworkbuddy"), { recursive: true });
+  const cv6 = path.join(ws6, ".openworkbuddy", "canvas.json");
+  fs.writeFileSync(cv6, JSON.stringify({ version: 1, nodes: [{ id: "a" }], edges: [] }));
+  const led6 = path.join(ws6, "..", "ledger-dur-" + Date.now() + ".json");
+  migrate.runMigrations(ws6, led6, { priorUse: true, version: "1.0.0" });
+  migrate.runMigrations(ws6, led6, { priorUse: true, version: "1.1.0" });  // 换个版本号，逼它再写一次，.bak 才会有
+  assert(fs.existsSync(led6 + ".bak"), "★账本没有 .bak★ 原子写那一版没生效，坏一次就没得退");
+
+  // 版本号没变、也没有新迁移可跑 —— 这一趟不该碰账本。
+  // 每次启动都整份重写，等于每开一次应用就把这份唯一的凭证重新赌一把
+  const t6 = new Date("2020-01-01T00:00:00Z");
+  fs.utimesSync(led6, t6, t6);
+  migrate.runMigrations(ws6, led6, { priorUse: true, version: "1.1.0" });
+  assert(fs.statSync(led6).mtimeMs === t6.getTime(), "★什么都没跑也把账本重写了一遍★ 没变就别写");
+
+  // 正本写坏（写到一半断电就是这个样子）：应该拿 .bak 顶上，迁移一条都不重跑
+  const stray6 = path.join(ws6, "老稿子.md");
+  fs.writeFileSync(stray6, "x"); fs.utimesSync(stray6, OLD, OLD);
+  fs.writeFileSync(led6, '{"done":{"' + ws6.replace(/\\/g, "/") + '":["canvas');   // 半个 JSON
+  migrate.runMigrations(ws6, led6, { priorUse: true, version: "1.2.0" });
+  assert(fs.existsSync(stray6) && !fs.readdirSync(ws6).some((n) => n.startsWith("以前的文件_")),
+    "★账本一坏就把用户的文件又整理了一遍★ .bak 没顶上：" + fs.readdirSync(ws6).join(" "));
+
+  // 反向对照：把 .bak 也删掉，同样写坏 —— 这时候确实会重跑。
+  // 没有这一条，上面那句可能只是「反正它就不整理」，证明不了 .bak 真在兜底
+  fs.rmSync(led6 + ".bak", { force: true });
+  fs.writeFileSync(led6, "{坏的");
+  migrate.runMigrations(ws6, led6, { priorUse: true, version: "1.3.0" });
+  assert(fs.readdirSync(ws6).some((n) => n.startsWith("以前的文件_")),
+    "★反向对照没成立★ 账本连 .bak 都没了却照样不重跑，说明上一条测的不是 .bak");
+
+  // ── ⑪ 同一份画布不留两遍。真重跑了，也不该为一模一样的内容再抄一份 ────────
+  const ws7 = mktmp("owb-dedup-");
+  const dir7 = path.join(ws7, ".openworkbuddy");
+  fs.mkdirSync(dir7, { recursive: true });
+  const cv7 = path.join(dir7, "canvas.json");
+  fs.writeFileSync(cv7, "A".repeat(4096));
+  const b1 = migrate._internals.backupCanvases(ws7);
+  assert(b1.copied === 1, "第一份留底就没做成，后面没法比：" + JSON.stringify(b1));
+  // 挪成「上次升级那天」的名字，模拟隔天再来一次
+  fs.renameSync(path.join(dir7, path.basename(b1.to)), path.join(dir7, "升级前备份_20200101"));
+  const b2 = migrate._internals.backupCanvases(ws7);
+  const dirs7 = () => fs.readdirSync(dir7).filter((n) => n.startsWith("升级前备份_"));
+  assert(b2.copied === 0 && dirs7().length === 1,
+    "★内容一模一样还是又抄了一份★ 重复备份就是这么攒起来的：" + dirs7().join(" "));
+  // 反向对照：内容真变了就得留，不然这条「省」是拿用户的退路换的
+  fs.writeFileSync(cv7, "B".repeat(4096));
+  const b3 = migrate._internals.backupCanvases(ws7);
+  assert(b3.copied === 1 && dirs7().length === 2,
+    "★画布改过了却没留底★ 去重不能去掉真正该留的那一份：" + dirs7().join(" "));
+
+  console.log("✅ 升级迁移：旧文件收进「" + folder + "」·画布先留底·清单可回退·只搬散落文件·撞名不覆盖·开第二次不再动手·全新装一个不碰·账本坏了不重跑·同一份画布不留两遍");
 }
 
 // 短剧素材台账：哪个文件是干什么用的、谁在用、谁没人用、谁引用了却已经不在了。
