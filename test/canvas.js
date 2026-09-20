@@ -23,6 +23,8 @@
  *      下一下 Delete 删掉的就不是你以为的那一片。
  *
  * 这三件都是「界面照常、数据在变」，假 DOM 测不出来（要 joint 真画、要真 localStorage），
+ * 第二轮又量到两件同一类的：切项目、切画布那一下，这张画布的东西会写到那张上。在第六、七节。
+ *
  * 所以跟 preview-layout / library-mkdir 一样开真 Chromium 喂真 public/。
  */
 
@@ -133,6 +135,47 @@ const PLAIN = {
   ],
   edges: [],
 };
+
+
+// 第二台假服务器：两个项目各一套画布。真实现里 /api/canvas 只收画布名，落到哪个文件是服务端
+// 按「当前打开的项目」自己定的，所以这儿照那样——PUT 一律落到「当前项目 + 请求里的画布名」那一格。
+// __delay 是给「等回包的工夫切走了」那条用的
+const STUB2 = `
+(() => {
+  window.__store = {
+    jia: { main: { version: 1, nodes: [], edges: [], updatedAt: 1000 } },
+    yi: { main: { version: 1, nodes: [], edges: [], updatedAt: 1000 } },
+  };
+  window.__active = "jia"; window.__puts = []; window.__delay = 0;
+  const J = (d) => Promise.resolve({ ok: true, status: 200, json: async () => d });
+  const real = window.fetch;
+  window.fetch = function (u, o) {
+    const s = String(u), m = ((o && o.method) || "GET").toUpperCase();
+    const name = decodeURIComponent(((s.split("?")[1] || "").match(/name=([^&]*)/) || [])[1] || "main");
+    const mine = window.__store[window.__active];
+    if (s.includes("/api/canvas/list")) return J({ canvases: Object.keys(mine).map((n) => ({ name: n, title: n, nodes: 0 })) });
+    if (s.includes("/api/canvas/assets")) return J({ files: [] });
+    if (s.includes("/api/canvas/progress")) return J({});
+    if (s.startsWith("/api/canvas") && m === "PUT") {
+      const b = JSON.parse(o.body);
+      window.__puts.push({ 项目: window.__active, 画布: b.name, 标题: (b.state.nodes || []).map((n) => (n.payload || {}).title) });
+      mine[b.name] = { ...b.state, updatedAt: Date.now() };
+      return J({ ok: true, state: mine[b.name] });
+    }
+    if (s.includes("/api/canvas")) {
+      const body = mine[name] || { version: 1, nodes: [], edges: [], updatedAt: 0 };
+      if (!window.__delay) return J(body);
+      return new Promise((r) => setTimeout(() => r({ ok: true, status: 200, json: async () => body }), window.__delay));
+    }
+    if (s.includes("/api/projects/switch")) { window.__active = JSON.parse(o.body).name; return J({ ok: true, active: window.__active }); }
+    if (s.includes("/api/projects")) return J({ active: window.__active, projects: [{ name: "jia", dir: "/tmp/jia" }, { name: "yi", dir: "/tmp/yi" }] });
+    if (s.includes("/api/settings")) return J(settingsCache);
+    if (s.includes("/api/modes")) return J({ modes: [] });
+    if (s.includes("/api/files")) return J({ files: [] });
+    return real.apply(this, arguments);
+  };
+})()
+`;
 
 app.whenReady().then(async () => {
   const srv = await serve();
@@ -295,6 +338,181 @@ app.whenReady().then(async () => {
     })()`);
   ok(bad.节点 === 1 && bad.连线 === 0 && bad.存盘里的线 === 0 && !bad.抛了,
      "★一头已经不在的线、自己连自己的线，都不画也不存，剩下的节点照常在★", bad);
+
+  console.log("\n— 六、换个项目打开，画布不许串台 —");
+  // 换一台两个项目的假服务器。真实现里 /api/canvas 是按「当前打开的那个项目」找文件的，
+  // 请求里只带画布名不带项目名——所以写错了人收不回来，只能在切之前就把账算清
+  await run(STUB2);
+  await run(`
+    // 切项目的真路是 canvasSwitchWorkspace：先把欠着的那趟写完 → POST 换项目 → renderCanvasPage 重铺。
+    // 这儿只省掉它后半截刷模型菜单、刷文件列表那几步（跟画布无关），画布这一段一步不少
+    // typeof 那一下是留给反向对照的：旧版本里根本没有这个函数，加一层才跑得完、才量得出差多少
+    window.__switchProject = async (name) => {
+      if (typeof canvasFlushRemoteWrite === "function") await canvasFlushRemoteWrite();
+      await fetch("/api/projects/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+      canvasState.canvasName = "main";
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 400));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      return canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title);
+    };
+    "定义好了";   // executeJavaScript 要把最后一句的值搬回主进程，不给个字符串它就想搬函数
+  `);
+  const cross = await run(`
+    (async () => {
+      localStorage.clear();
+      await window.__switchProject("jia");
+      canvasApplySnapshot({ version: 1, updatedAt: Date.now(), edges: [], nodes: [
+        { id: "j1", kind: "note", payload: { title: "甲客户的报价单" }, position: { x: 40, y: 40 }, size: { width: 300, height: 200 } },
+        { id: "j2", kind: "note", payload: { title: "甲客户的合同草稿" }, position: { x: 400, y: 40 }, size: { width: 300, height: 200 } }] });
+      await new Promise((r) => setTimeout(r, 600));
+      const 本机键 = Object.keys(localStorage).filter((k) => k.startsWith("openworkbuddy.canvas.v3:"));
+      // 把甲项目盘上那份清掉：这两张卡只剩本机还留着。下面切回甲的时候就得靠这份本机副本
+      window.__store.jia.main = { version: 1, nodes: [], edges: [], updatedAt: 1 };
+      window.__puts = [];
+      const 乙屏幕 = await window.__switchProject("yi");
+      const 写进乙的 = window.__puts.filter((p) => p.项目 === "yi").map((p) => p.标题.join("、"));
+      const 乙盘上 = (window.__store.yi.main.nodes || []).map((n) => (n.payload || {}).title);
+      const 甲屏幕 = await window.__switchProject("jia");
+      return { 本机键, 乙屏幕, 写进乙的, 乙盘上, 甲屏幕 };
+    })()`);
+  ok(!cross.乙屏幕.includes("甲客户的报价单"),
+     "★换个项目打开，屏幕上不是上一个项目的东西★ 本机那份副本的键上以前只有画布名、没有项目名，"
+     + "两个项目的 main 共用一格——新项目的画布是空的，于是上一个项目的卡片原样铺了上来",
+     cross.乙屏幕);
+  ok(!cross.乙盘上.includes("甲客户的报价单") && !cross.写进乙的.some((t) => t.includes("甲客户")),
+     "★也没有被写进新项目的画布文件★ 铺上去之后还会存一次盘，服务端按「当前打开的项目」找文件，"
+     + "这一下就把乙项目自己的画布顶掉了，翻不回来",
+     { 乙盘上: cross.乙盘上, 写进乙的: cross.写进乙的 });
+  ok(cross.甲屏幕.includes("甲客户的报价单") && cross.甲屏幕.includes("甲客户的合同草稿"),
+     "★反向对照：切回甲项目，本机那份照样铺得出来★ 把本机副本整个弃掉也能让上面两条变绿，"
+     + "但那样服务器上还没跟上的改动就真没了",
+     cross.甲屏幕);
+  ok(cross.本机键.length > 0 && cross.本机键.every((k) => k.includes("jia")),
+     "★本机存的那份，键上带着是哪个项目★", cross.本机键);
+
+  const legacy = await run(`
+    (async () => {
+      localStorage.clear();
+      window.__store.jia.main = { version: 1, nodes: [], edges: [], updatedAt: 1 };
+      window.__store.yi.main = { version: 1, nodes: [], edges: [], updatedAt: 1 };
+      // 老版本留在本机的那份，键上只有画布名。第一个来问的项目认领走，第二个不许再拿
+      localStorage.setItem("openworkbuddy.canvas.v3:main", JSON.stringify({ version: 1, edges: [], nodes: [
+        { id: "o1", kind: "note", payload: { title: "升上来的老画布" }, position: { x: 40, y: 40 }, size: { width: 300, height: 200 } }] }));
+      const 甲屏幕 = await window.__switchProject("jia");
+      const 乙屏幕 = await window.__switchProject("yi");
+      return { 甲屏幕, 乙屏幕 };
+    })()`);
+  ok(legacy.甲屏幕.includes("升上来的老画布"),
+     "★老版本存在本机的那份画布，升级之后照样打得开★ 换个键存不等于可以不认旧的", legacy.甲屏幕);
+  ok(!legacy.乙屏幕.includes("升上来的老画布"),
+     "★但只认领一次：第二个项目打开的时候，它不会跟着跑过去★", legacy.乙屏幕);
+
+  const race = await run(`
+    (async () => {
+      window.__store.jia.main = { version: 1, updatedAt: 9000, edges: [], nodes: [
+        { id: "r1", kind: "note", payload: { title: "甲项目盘上那份" }, position: { x: 0, y: 0 }, size: { width: 300, height: 200 } }] };
+      window.__active = "jia"; canvasState.workspaceName = "jia"; canvasState.canvasName = "main";
+      window.__delay = 400;
+      const 不切走 = await canvasLoadRemote();
+      const 迟到的 = canvasLoadRemote();
+      window.__active = "yi"; canvasState.workspaceName = "yi";   // 等回包的工夫切走了
+      const 切走了 = await 迟到的;
+      window.__delay = 0; window.__active = "jia"; canvasState.workspaceName = "jia";
+      return { 不切走: ((不切走 || {}).nodes || []).length, 切走了: 切走了 === null ? "不要了" : "照铺" };
+    })()`);
+  ok(race.不切走 === 1, "★同步拉一趟，不切走的时候拿得到盘上那份★ 拿不到的话下一条是白说的", race.不切走);
+  ok(race.切走了 === "不要了",
+     "★等回包的工夫切走了项目，这份迟到的就不要了★ 照铺上去就是拿甲项目的内容盖住乙项目的画布", race.切走了);
+
+  console.log("\n— 七、切画布之前，欠着的那笔要写回它自己那张 —");
+  const board = await run(`
+    (async () => {
+      window.__store.jia.main = { version: 1, nodes: [], edges: [], updatedAt: 1 };
+      window.__store.jia.board2 = { version: 1, updatedAt: 1, edges: [], nodes: [
+        { id: "b9", kind: "note", payload: { title: "第二张画布本来的东西" }, position: { x: 0, y: 0 }, size: { width: 300, height: 200 } }] };
+      await window.__switchProject("jia");
+      canvasApplySnapshot({ version: 1, updatedAt: Date.now(), edges: [], nodes: [
+        { id: "c1", kind: "note", payload: { title: "第一张画布的卡" }, position: { x: 40, y: 40 }, size: { width: 300, height: 200 } }] });
+      await new Promise((r) => setTimeout(r, 700));
+      window.__puts = [];
+      canvasAddNode("note", { title: "刚敲的一句话" }, { x: 800, y: 40 });   // 这一下点着 240ms 的防抖
+      const select = document.querySelector("[data-canvas-board-select]");
+      select.value = "board2";
+      select.dispatchEvent(new Event("change"));                            // 防抖还没烧完就从下拉框切走
+      await new Promise((r) => setTimeout(r, 1200));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      return {
+        现在这张: canvasState.canvasName,
+        屏幕: canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title),
+        写到第二张的: window.__puts.filter((p) => p.画布 === "board2").map((p) => p.标题.join("、")),
+        第二张盘上: (window.__store.jia.board2.nodes || []).map((n) => (n.payload || {}).title),
+        第一张盘上: (window.__store.jia.main.nodes || []).map((n) => (n.payload || {}).title),
+      };
+    })()`);
+  ok(board.现在这张 === "board2" && board.屏幕.includes("第二张画布本来的东西"),
+     "★从下拉框切过去，第二张画布上还是它自己的东西★", board);
+  ok(!board.第二张盘上.includes("第一张画布的卡") && !board.写到第二张的.some((t) => t.includes("第一张画布的卡")),
+     "★上一张画布的内容没被写到这一张上★ 存盘是攒 240 毫秒再发一次，发的时候才去读「现在是哪张画布」——"
+     + "这中间切走一下，写出去的就是新画布的名字、旧画布的内容，第二张画布上原来有什么就全没了",
+     { 第二张盘上: board.第二张盘上, 写到第二张的: board.写到第二张的 });
+  ok(board.第一张盘上.includes("刚敲的一句话"),
+     "★而刚敲的那句照样写回了第一张★ 把欠着的那趟直接丢掉也能让上一条变绿，"
+     + "但那样切走之前最后改的东西就没了",
+     board.第一张盘上);
+  const backstop = await run(`
+    (async () => {
+      window.__store.jia.main = { version: 1, nodes: [], edges: [], updatedAt: 1 };
+      window.__store.jia.board2 = { version: 1, updatedAt: 1, edges: [], nodes: [
+        { id: "b9", kind: "note", payload: { title: "第二张画布本来的东西" }, position: { x: 0, y: 0 }, size: { width: 300, height: 200 } }] };
+      canvasState.canvasName = "main"; canvasState.remoteContentKey = ""; canvasState.remoteUpdatedAt = 0;
+      canvasApplySnapshot({ version: 1, updatedAt: Date.now(), edges: [], nodes: [
+        { id: "d1", kind: "note", payload: { title: "第一张画布的卡" }, position: { x: 40, y: 40 }, size: { width: 300, height: 200 } }] });
+      await new Promise((r) => setTimeout(r, 700));
+      window.__puts = [];
+      canvasAddNode("note", { title: "又敲了一句" }, { x: 900, y: 40 });
+      canvasState.canvasName = "board2";     // 假装有哪条路忘了先写完就切走
+      await new Promise((r) => setTimeout(r, 900));
+      canvasState.canvasName = "main";
+      const 写到第二张的 = window.__puts.filter((p) => p.画布 === "board2").map((p) => p.标题.join("、"));
+      const 第二张盘上 = (window.__store.jia.board2.nodes || []).map((n) => (n.payload || {}).title);
+
+      // 再来一遍，这回是项目被切走了。请求里只有画布名，落到哪个项目是服务端按「当前打开的那个」定的——
+      // 名字对得上也拦不住，这一笔会结结实实盖到乙项目的 main 上
+      window.__store.yi.main = { version: 1, updatedAt: 1, edges: [], nodes: [
+        { id: "y9", kind: "note", payload: { title: "乙项目自己的东西" }, position: { x: 0, y: 0 }, size: { width: 300, height: 200 } }] };
+      canvasState.remoteContentKey = ""; canvasState.remoteUpdatedAt = 0;
+      canvasApplySnapshot({ version: 1, updatedAt: Date.now(), edges: [], nodes: [
+        { id: "d2", kind: "note", payload: { title: "第一张画布的卡" }, position: { x: 40, y: 40 }, size: { width: 300, height: 200 } }] });
+      await new Promise((r) => setTimeout(r, 700));
+      window.__puts = [];
+      canvasAddNode("note", { title: "甲项目最后敲的" }, { x: 900, y: 200 });
+      window.__active = "yi"; canvasState.workspaceName = "yi";   // 假装有哪条路忘了先写完就换了项目
+      await new Promise((r) => setTimeout(r, 900));
+      const 写进乙的 = window.__puts.filter((p) => p.项目 === "yi").map((p) => p.标题.join("、"));
+      const 乙盘上 = (window.__store.yi.main.nodes || []).map((n) => (n.payload || {}).title);
+      window.__active = "jia"; canvasState.workspaceName = "jia";
+      return { 写到第二张的, 第二张盘上, 写进乙的, 乙盘上 };
+    })()`);
+  ok(backstop.写到第二张的.length === 0 && backstop.第二张盘上.length === 1,
+     "★万一哪条路忘了先写完就切走，宁可这一笔不写，也不许写到别人头上★ 本机那份还留着，"
+     + "回到那张画布接着改照样存得上去；写出去就真盖掉别人的了",
+     backstop);
+  ok(backstop.写进乙的.length === 0 && backstop.乙盘上.join("、") === "乙项目自己的东西",
+     "★换项目也一样：这一笔宁可不写★ 请求里只带画布名，落到哪个项目是服务端按「当前打开的那个」定的——"
+     + "画布名对得上也拦不住，写出去就是拿甲项目的内容盖掉乙项目的画布",
+     { 写进乙的: backstop.写进乙的, 乙盘上: backstop.乙盘上 });
+  const 顺序 = await run(`
+    (() => {
+      const 项目 = String(canvasSwitchWorkspace), 画布 = String(document.querySelector("[data-canvas-board-select]").onchange);
+      const 有 = (s, w) => s.indexOf(w) > -1;
+      return {
+        项目: 有(项目, "canvasFlushRemoteWrite") && 项目.indexOf("canvasFlushRemoteWrite") < 项目.indexOf("/api/projects/switch"),
+        画布: 有(画布, "canvasFlushRemoteWrite") && 画布.indexOf("canvasFlushRemoteWrite") < 画布.indexOf("canvasState.canvasName ="),
+      };
+    })()`);
+  ok(顺序.项目 && 顺序.画布,
+     "★两个切换口都是先把欠的写完再切★ 顺序反过来的话，上面那套就量不到真的了", 顺序);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

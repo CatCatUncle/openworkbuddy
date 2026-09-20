@@ -5,10 +5,15 @@
  * 节点数据保存到本地，节点之间的连线表示“这个输入喂给下一个创作步骤”。
  */
 const CANVAS_STORAGE_KEY = "openworkbuddy.canvas.v3";
-// 本机副本得一张画布一个键。以前所有画布共用一个键，于是「切到 B 画布 → B 在项目里
-// 还是空的 → 拿本机副本来铺底」会把 A 的节点铺到 B 上，再自动保存一次就写进 B 的文件了。
-// 老键（不带后缀的那个）只当 main 的历史副本读，不再往里写，免得升级上来的人丢掉手头这张
-function canvasStorageKey(name = canvasState.canvasName) { return `${CANVAS_STORAGE_KEY}:${name || "main"}`; }
+// 本机副本得一张画布一个键，而且键上还得有项目名。以前所有画布共用一个键，于是「切到 B 画布 →
+// B 在项目里还是空的 → 拿本机副本来铺底」会把 A 的节点铺到 B 上，再自动保存一次就写进 B 的文件了。
+// 后来按画布名分开了，项目名却一直没进去：甲客户的 main 和乙客户的 main 还是同一个键——
+// 实测甲客户画布上那两张卡，切到乙客户之后原样出现在屏幕上，还被写进了乙客户的画布文件。
+// 这一页正好是拿来跟客户分开工作的，隔壁客户的东西不该出现在这儿。
+// 老键（不带项目名的那两个）只当历史副本读、只认第一个来问的项目（见 canvasLoadSaved），
+// 不再往里写，免得升级上来的人丢掉手头这张
+function canvasScope(name = canvasState.canvasName) { return `${canvasState.workspaceName || "?"}::${name || "main"}`; }
+function canvasStorageKey(name = canvasState.canvasName) { return `${CANVAS_STORAGE_KEY}:${canvasScope(name)}`; }
 
 const CANVAS_NODE_DEFS = {
   note: { label: "笔记", icon: "notebook-pen", width: 340, height: 205, subtitle: "自由记录想法与任务", group: "策划" },
@@ -43,7 +48,7 @@ let canvasState = {
   selectedAll: false, marqueeMode: false, keyHandler: null, keyUpHandler: null, fullscreenHandler: null, spacePanning: false,
   inspectorOpen: false, nodeGesture: null, multiMove: null, skipNodeClick: null, suppressInspectorUntil: 0,
   // remoteContentKey：服务器上那份画布的内容指纹。屏幕上这份跟它一样就不再往上写（见 canvasPersist）
-  remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWritePending: false, suspendSync: false, castTimer: null,
+  remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWriteArmed: null, remoteWritePending: false, suspendSync: false, castTimer: null,
   // 盘上那份画布读不出来时记下原因。有值就等于「这张画布现在不能写」，
   // 界面必须显示错误而不是一张白板——白板 + 自动保存正好把还有救的原件盖掉
   remoteBroken: "", remoteBrokenNotified: false, lostNotified: "",
@@ -670,6 +675,8 @@ async function canvasFinishWorkspaceSwitch(name, message = "") {
 
 async function canvasSwitchWorkspace(value) {
   if (!value) return;
+  // 换项目更急：服务端认的是「当前项目」，这边一换，欠着的那趟就会写进新项目的画布文件
+  await canvasFlushRemoteWrite();
   if (value === "__pick__") {
     const response = await fetch("/api/pick-folder", { method: "POST" }).catch(() => null);
     const picked = response ? await response.json().catch(() => ({})) : {};
@@ -721,6 +728,7 @@ function canvasAskNewBoardName() {
 async function canvasCreateBoard() {
   const name = await canvasAskNewBoardName();
   if (!name) return;
+  await canvasFlushRemoteWrite();   // 手上这张还欠着一趟存盘，先写完再换人
   const response = await fetch("/api/canvas/boards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return canvasToast(data.error || "新建画布失败", "circle-x", "err");
@@ -730,6 +738,7 @@ async function canvasCreateBoard() {
 async function canvasDeleteBoard() {
   if (canvasState.canvasName === "main") return canvasToast("主画布不能删除。", "info");
   if (!confirm("删除这张画布？画布节点会删除，素材文件不会删除。")) return;
+  await canvasFlushRemoteWrite();   // 欠着的那一趟要么现在写给它自己，要么等会儿写到 main 上去
   const response = await fetch("/api/canvas/boards/" + encodeURIComponent(canvasState.canvasName), { method: "DELETE" });
   if (!response.ok) return canvasToast("删除画布失败", "circle-x", "err");
   canvasState.canvasName = "main"; try { localStorage.setItem("openworkbuddy.canvas.name", "main"); } catch {}
@@ -752,33 +761,72 @@ function canvasPersist() {
   const contentKey = canvasHistoryKey(snapshot);
   if (contentKey === canvasState.remoteContentKey) return;
   if (canvasState.remoteWriteTimer) clearTimeout(canvasState.remoteWriteTimer);
-  canvasState.remoteWriteTimer = window.setTimeout(async () => {
-    canvasState.remoteWritePending = true;
-    try {
-      const response = await fetch("/api/canvas", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: canvasState.canvasName, state: snapshot }) });
-      const result = await response.json().catch(() => ({}));
-      if (response.status === 409 && result.unreadable) {
-        // 服务器拒绝拿屏幕上这份去盖一个读不出来的文件。这是对的，但必须让用户知道，
-        // 否则他会一直以为在存，关掉页面才发现今天白干了
-        canvasState.remoteBroken = result.error || "盘上那份画布读不出来，所以没有覆盖它";
-        if (!canvasState.remoteBrokenNotified) {
-          canvasState.remoteBrokenNotified = true;
-          canvasToast("项目里那份画布文件读不出来，刚才的改动没存进去（本机还留着）。刷新页面看怎么处理。", "circle-x", "err");
-        }
-      } else if (response.ok && result.state) {
-        canvasState.remoteUpdatedAt = Number(result.state.updatedAt) || canvasState.remoteUpdatedAt;
-        canvasState.remoteContentKey = contentKey;   // 存上去了，这会儿两边一样
+  // 这一趟要写给哪张画布，现在就定死。等 240 毫秒后定时器烧到了再去读 canvasState.canvasName，
+  // 这中间切走的话就写到下一张画布上了——实测防抖还没烧完就切画布，第二张画布上原来那个节点
+  // 被第一张的内容整个顶掉，而且它自己的文件从此就是这样了
+  const armed = { scope: canvasScope(), name: canvasState.canvasName, snapshot, contentKey };
+  canvasState.remoteWriteArmed = armed;
+  canvasState.remoteWriteTimer = window.setTimeout(() => { canvasState.remoteWriteTimer = null; canvasPushRemote(armed); }, 240);
+}
+
+/** 把一份快照写回它自己那张画布。写给谁是按下那一刻记好的，不看现在选的是哪张 */
+async function canvasPushRemote(armed) {
+  if (!armed) return;
+  if (canvasState.remoteWriteArmed === armed) canvasState.remoteWriteArmed = null;
+  // 已经切到别的画布、别的项目了：服务端认的是「当前项目」，这份寄不回原来那张，
+  // 硬写就是拿这张的内容去盖那张。本机副本里还留着，回到那张画布接着改照样写得上去
+  if (canvasScope() !== armed.scope) return;
+  canvasState.remoteWritePending = true;
+  try {
+    const response = await fetch("/api/canvas", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: armed.name, state: armed.snapshot }) });
+    const result = await response.json().catch(() => ({}));
+    if (response.status === 409 && result.unreadable) {
+      // 服务器拒绝拿屏幕上这份去盖一个读不出来的文件。这是对的，但必须让用户知道，
+      // 否则他会一直以为在存，关掉页面才发现今天白干了
+      canvasState.remoteBroken = result.error || "盘上那份画布读不出来，所以没有覆盖它";
+      if (!canvasState.remoteBrokenNotified) {
+        canvasState.remoteBrokenNotified = true;
+        canvasToast("项目里那份画布文件读不出来，刚才的改动没存进去（本机还留着）。刷新页面看怎么处理。", "circle-x", "err");
       }
-    } catch {} finally { canvasState.remoteWritePending = false; }
-  }, 240);
+    } else if (response.ok && result.state) {
+      canvasState.remoteUpdatedAt = Number(result.state.updatedAt) || canvasState.remoteUpdatedAt;
+      canvasState.remoteContentKey = armed.contentKey;   // 存上去了，这会儿两边一样
+    }
+  } catch {} finally { canvasState.remoteWritePending = false; }
+}
+
+/** 切画布、切项目之前，先把欠着的那一趟写完 —— 走了再写就寄不到原来那张了 */
+async function canvasFlushRemoteWrite() {
+  const armed = canvasState.remoteWriteArmed;
+  if (!armed) return;
+  if (canvasState.remoteWriteTimer) { clearTimeout(canvasState.remoteWriteTimer); canvasState.remoteWriteTimer = null; }
+  await canvasPushRemote(armed);
 }
 
 function canvasLoadSaved() {
   try {
-    const key = canvasStorageKey();
-    const raw = localStorage.getItem(key) || (key === `${CANVAS_STORAGE_KEY}:main` ? localStorage.getItem(CANVAS_STORAGE_KEY) : null);
-    const value = JSON.parse(raw || "null"); return value && Array.isArray(value.nodes) ? value : null;
+    const raw = localStorage.getItem(canvasStorageKey());
+    if (!raw) return canvasLoadLegacySaved();
+    const value = JSON.parse(raw); return value && Array.isArray(value.nodes) ? value : null;
   } catch { return null; }
+}
+
+/**
+ * 升级上来的那份本机副本，键上没有项目名，看不出是谁的。
+ * 谁问就给谁的话，第二个项目一打开画布就会看见第一个项目的东西，还会把它存进自己的画布文件。
+ * 所以只让第一个来问的项目认领一次，认领结果记在旁边；别的项目问到的是「没有」。
+ */
+function canvasLoadLegacySaved() {
+  const name = canvasState.canvasName || "main";
+  const raw = localStorage.getItem(`${CANVAS_STORAGE_KEY}:${name}`) || (name === "main" ? localStorage.getItem(CANVAS_STORAGE_KEY) : null);
+  if (!raw) return null;
+  const ownerKey = `${CANVAS_STORAGE_KEY}.owner:${name}`, me = canvasState.workspaceName || "?";
+  const owner = localStorage.getItem(ownerKey);
+  if (owner && owner !== me) return null;
+  const value = JSON.parse(raw || "null");
+  if (!value || !Array.isArray(value.nodes)) return null;
+  if (!owner) { try { localStorage.setItem(ownerKey, me); } catch {} }
+  return value;
 }
 
 function canvasDecorateLink(link, relation) {
@@ -805,9 +853,12 @@ async function canvasLoadRemote() {
   // 只看 body 的话，那个响应里的 nodes: [] 会被当成一张真的空画布——
   // 接着界面画白板、自动保存一回，原件就没了。这正是要防的那件事。
   canvasState.remoteBroken = "";                    // 先清掉上一张画布/上一次的结论，免得拿旧账报新错
+  const scope = canvasScope();                      // 这趟问的是哪张画布，先记下
   const response = await fetch("/api/canvas?name=" + encodeURIComponent(canvasState.canvasName)).catch(() => null);
   if (!response) return null;                       // 断网：什么都不做，本机那份还在
   const body = await response.json().catch(() => null);
+  // 等回包这会儿人已经切到别的画布 / 别的项目了：这份是上一张的，不能往新的身上安
+  if (canvasScope() !== scope) return null;
   if (!response.ok || (body && body.unreadable)) {
     canvasState.remoteBroken = (body && body.error) || `画布读取失败（HTTP ${response.status}）`;
     return null;
@@ -2321,7 +2372,7 @@ function canvasRenderBroken(page, world) {
   // 这一页上别的按钮都没绑（下面那一大段绑定被跳过了），但换画布得留着：
   // 一张画布坏了不该把人锁死在这儿
   const select = page.querySelector("[data-canvas-board-select]");
-  if (select) select.onchange = (event) => { canvasState.canvasName = event.target.value || "main"; try { localStorage.setItem("openworkbuddy.canvas.name", canvasState.canvasName); } catch {} renderCanvasPage(); };
+  if (select) select.onchange = async (event) => { await canvasFlushRemoteWrite(); canvasState.canvasName = event.target.value || "main"; try { localStorage.setItem("openworkbuddy.canvas.name", canvasState.canvasName); } catch {} renderCanvasPage(); };
 }
 
 /** 拿本机副本盖掉那份读不出来的文件。只有用户自己点了才会走到这儿，且原件已经备份过。 */
@@ -2348,10 +2399,12 @@ function canvasRestoreOrSeed(remote = null) {
   if (script && storyboard) canvasConnect(script, storyboard); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(false); canvasPersist();
 }
 
-function canvasDestroy() { if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer); if (canvasState.remoteWriteTimer) clearTimeout(canvasState.remoteWriteTimer); if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer); if (canvasState.fullscreenHandler) document.removeEventListener("fullscreenchange", canvasState.fullscreenHandler); const page = document.getElementById("assist-page"); if (page && canvasState.keyHandler) page.removeEventListener("keydown", canvasState.keyHandler); if (page && canvasState.keyUpHandler) page.removeEventListener("keyup", canvasState.keyUpHandler); if (canvasState.paper) canvasState.paper.remove(); canvasState.graph = null; canvasState.paper = null; canvasState.wheelHandler = null; canvasState.keyHandler = null; canvasState.keyUpHandler = null; canvasState.spacePanning = false; canvasState.inspectorOpen = false; canvasState.nodeGesture = null; canvasState.multiMove = null; canvasState.fullscreenHandler = null; canvasState.selected = null; canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasState.remoteSnapshot = null; canvasState.remoteContentKey = ""; canvasState.remoteWritePending = false; canvasState.remoteBroken = ""; canvasState.remoteBrokenNotified = false; canvasState.lostNotified = ""; canvasState.taskSessionId = null; canvasState.chatReferences = new Map(); canvasState.history = []; canvasState.historyIndex = -1; canvasState.historyTimer = null; }
+function canvasDestroy() { if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer); if (canvasState.remoteWriteTimer) clearTimeout(canvasState.remoteWriteTimer); if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer); if (canvasState.fullscreenHandler) document.removeEventListener("fullscreenchange", canvasState.fullscreenHandler); const page = document.getElementById("assist-page"); if (page && canvasState.keyHandler) page.removeEventListener("keydown", canvasState.keyHandler); if (page && canvasState.keyUpHandler) page.removeEventListener("keyup", canvasState.keyUpHandler); if (canvasState.paper) canvasState.paper.remove(); canvasState.graph = null; canvasState.paper = null; canvasState.wheelHandler = null; canvasState.keyHandler = null; canvasState.keyUpHandler = null; canvasState.spacePanning = false; canvasState.inspectorOpen = false; canvasState.nodeGesture = null; canvasState.multiMove = null; canvasState.fullscreenHandler = null; canvasState.selected = null; canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasState.remoteSnapshot = null; canvasState.remoteContentKey = ""; canvasState.remoteUpdatedAt = 0; canvasState.remoteWriteArmed = null; canvasState.remoteWritePending = false; canvasState.remoteBroken = ""; canvasState.remoteBrokenNotified = false; canvasState.lostNotified = ""; canvasState.taskSessionId = null; canvasState.chatReferences = new Map(); canvasState.history = []; canvasState.historyIndex = -1; canvasState.historyTimer = null; }
 
 async function renderCanvasPage() {
-  const page = document.getElementById("assist-page"); if (!page) return; canvasDestroy(); await Promise.all([canvasLoadWorkspaceProjects(), canvasLoadCanvasList()]); canvasState.scale = 1; canvasState.x = 0; canvasState.y = 0; canvasState.next = 1;
+  const page = document.getElementById("assist-page"); if (!page) return;
+  await canvasFlushRemoteWrite();   // canvasDestroy 会把定时器掐掉，掐之前先把欠的写出去
+  canvasDestroy(); await Promise.all([canvasLoadWorkspaceProjects(), canvasLoadCanvasList()]); canvasState.scale = 1; canvasState.x = 0; canvasState.y = 0; canvasState.next = 1;
   const groupOrder = ["策划", "世界设定", "分镜制作", "素材与生成", "交付"];
   const groupedMenu = groupOrder.map((group) => `<span class="canvas-menu-group"><span class="canvas-menu-group-label">${group}</span>${Object.entries(CANVAS_NODE_DEFS).filter(([, def]) => def.group === group).map(([kind, def]) => `<button class="canvas-type-btn" data-canvas-add="${kind}" title="${esc(def.subtitle)}">${ic(def.icon)}<span>${esc(def.label)}</span></button>`).join("")}</span>`).join("");
   const workspaceOptions = canvasState.workspaceProjects.map((item) => `<option value="${esc(item.name)}" ${item.name === canvasState.workspaceName ? "selected" : ""}>${esc(item.name)}</option>`).join("");
@@ -2409,7 +2462,7 @@ async function renderCanvasPage() {
   page.querySelector("[data-canvas-center]").onclick = () => canvasCenterSelected(page);
   page.querySelector("[data-canvas-clear]").onclick = () => { if (!canvasState.graph.getElements().length || confirm("清空当前画布的全部节点和连线？素材文件不会删除。")) { canvasState.graph.clear(); canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasState.selected = null; canvasRenderInspector(); canvasPersist(); } };
   page.querySelector("[data-canvas-save]").onclick = () => { canvasPersist(); canvasToast("画布已保存到本机", "save"); };
-  page.querySelector("[data-canvas-board-select]").onchange = (event) => { canvasState.canvasName = event.target.value || "main"; try { localStorage.setItem("openworkbuddy.canvas.name", canvasState.canvasName); } catch {} renderCanvasPage(); };
+  page.querySelector("[data-canvas-board-select]").onchange = async (event) => { await canvasFlushRemoteWrite(); canvasState.canvasName = event.target.value || "main"; try { localStorage.setItem("openworkbuddy.canvas.name", canvasState.canvasName); } catch {} renderCanvasPage(); };
   page.querySelector("[data-canvas-workspace-select]")?.addEventListener("change", (event) => canvasSwitchWorkspace(event.target.value));
   page.querySelector("[data-canvas-new]").onclick = canvasCreateBoard;
   page.querySelector("[data-canvas-delete]").onclick = canvasDeleteBoard;
