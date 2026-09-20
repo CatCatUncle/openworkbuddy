@@ -958,15 +958,26 @@ const ATTACH_HTML =
 // 页面里其他文件提供的东西，在这儿给最小替身；网络请求全部截下来当证据
 const ATTACH_STUBS = [
   IC_STUB,
-  "window.uploads = []; window.toasts = []; window.sessionId = 's_test_1';",
+  "window.uploads = []; window.toasts = []; window.previewed = []; window.sessionId = 's_test_1';",
+  // 慢和失败都得能造出来：这一段里「没传完就点发送」「传挂了怎么救回来」两条，
+  // 靠真实网络的快慢去撞是撞不出来的
+  "window.uploadDelay = 0; window.uploadFail = false;",
   "window.fetch = async (url, init) => {",
-  "  if (url === '/api/upload') { window.uploads.push(JSON.parse(init.body)); return { ok: true, json: async () => ({}) }; }",
+  "  if (url === '/api/upload') {",
+  "    const body = JSON.parse(init.body);",
+  "    window.uploads.push(body);",
+  "    if (window.uploadDelay) await new Promise((r) => setTimeout(r, window.uploadDelay));",
+  "    if (window.uploadFail) return { ok: false, status: 500, json: async () => ({}) };",
+  // 真服务端回的就是这三样；path 是文件在工作目录里的相对路径，chip 点开要靠它
+  "    return { ok: true, json: async () => ({ ok: true, name: body.name, path: 'out/' + body.name }) };",
+  "  }",
   "  return { ok: true, json: async () => [] };",
   "};",
   'window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));',
   "window.renderFiles = () => {};",
   "window.syncInputHl = () => {};",
   "window.syncSendBtn = () => {};",
+  "window.previewFile = (name) => window.previewed.push(name);",
   "window.inputEl = document.getElementById('input');",
 ].join("\n");
 
@@ -984,6 +995,26 @@ const ATTACH_CHECKS = `
     target.dispatchEvent(ev);
     return ev;
   };
+  // 固定 tick 数是会飘的：缩略图要过一遍 createImageBitmap，上传要过一遍 FileReader，
+  // 快的机器 40ms 够、慢的机器不够，测试就变成掷骰子。一律等条件，不等时间。
+  const until = async (fn, ms = 2000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const v = fn();
+      if (v) return v;
+      if (Date.now() > end) throw new Error("等了 " + ms + "ms 还没等到");
+      await new Promise((r) => setTimeout(r, 15));
+    }
+  };
+  const settle = () => until(() => !pendingAttach.some((x) => x.state === "uploading"));
+  const png = (name) => new File([bytes(B64PNG)], name, { type: "image/png" });
+  const dropFiles = async (files) => {
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(f);
+    fire(document.body, "drop", "dataTransfer", dt);
+    await tick();
+    await settle();
+  };
 
   // ---- 1. 粘贴截图：存进工作空间、chip 带缩略图、二进制一个字节都不能变 ----
   {
@@ -997,7 +1028,7 @@ const ATTACH_CHECKS = `
     ok("上传带上了会话 id", up.session === "s_test_1", JSON.stringify(up.session));
     ok("剪贴板的通用名换成时间戳", /^粘贴图片_\\d{4}_\\d{6}\\.png$/.test(up.name), up.name);
     ok("图片二进制没被改坏", up.data_b64 === B64PNG);
-    ok("chip 带缩略图", !!document.querySelector("#attach-chips img.attach-thumb"));
+    ok("chip 带缩略图", !!(await until(() => document.querySelector("#attach-chips img.attach-thumb"))));
     ok("粘贴被接管并在光标处留下图片锚点", ev.defaultPrevented && /【图片 1：粘贴图片_\\d{4}_\\d{6}\\.png】/.test(inputEl.value), inputEl.value);
   }
 
@@ -1084,6 +1115,128 @@ const ATTACH_CHECKS = `
     ok("兼容清单按输入里的锚点顺序排列", out.indexOf(imageRefs[1].name, noteAt) < out.indexOf(textRef.name, noteAt) && out.indexOf(textRef.name, noteAt) < out.indexOf(imageRefs[0].name, noteAt), out.slice(noteAt));
     ok("发完 chip 清空", chips().length === 0);
   }
+  // ---- 9. 删掉一枚再加一枚：编号不许复用 ----
+  // 以前是 filter(同类).length + 1。加「图片 1」「图片 2」，删掉图片 1，再加一张——
+  // 长度又是 1，新的还叫「图片 2」：界面上并排两个「图片 2」，发给模型的也是两个。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0;
+    await dropFiles([png("a.png"), png("b.png")]);
+    chips()[0].querySelector(".attach-x").click();          // 删掉「图片 1：a.png」
+    await dropFiles([png("c.png")]);
+    const labels = chips().map((c) => c.querySelector("em").textContent);
+    ok("删掉一枚再加一枚，编号不复用", new Set(labels).size === labels.length, labels.join(" / "));
+    ok("锚点也没撞（模型不会看到两个「图片 2」）",
+       new Set(pendingAttach.map((x) => x.marker.replace(/：.*/, ""))).size === pendingAttach.length,
+       JSON.stringify(pendingAttach.map((x) => x.marker)));
+  }
+
+  // ---- 10. 松手那一瞬间就得有东西：chip 和锚点不等网络 ----
+  // 以前是传完才挂 chip。4MB 就有 124ms 的空窗，30MB 走手机网更久——那段时间界面一片空白，
+  // 用户以为没拖进去，再拖一次。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0;
+    window.uploadDelay = 150;
+    dropFiles([new File([new Uint8Array(1024)], "片子.mp4", { type: "video/mp4" })]);
+    ok("松手当场就有 chip，不等服务器", chips().length === 1, "chip 数=" + chips().length);
+    ok("松手当场锚点就在输入里", /【视频 1：片子\\.mp4】/.test(inputEl.value), inputEl.value);
+    ok("传的过程里 chip 上转着圈", !!chips()[0].querySelector(".attach-state .spinner"), chips()[0].className);
+    ok("没传完不许点开（点开只会 404）", chips()[0].querySelector(".attach-open").disabled);
+    await until(() => pendingAttach[0] && pendingAttach[0].state === "done");
+    ok("传完转圈停了、可以点开看", !chips()[0].querySelector(".attach-state .spinner") && !chips()[0].querySelector(".attach-open").disabled);
+    window.uploadDelay = 0;
+  }
+
+  // ---- 11. 同一个文件又拖一次：不多一枚 chip，但得让人看见 ----
+  // 以前是彻底静默：照样发一次上传请求，chip 不变、输入框不变、一个字的提示都没有。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.toasts = [];
+    await dropFiles([png("同一张.png")]);
+    const n = uploads.length;
+    await dropFiles([png("同一张.png")]);
+    ok("重复的文件不挂第二枚 chip", chips().length === 1, "chip 数=" + chips().length);
+    ok("但明说了它已经在这条消息里", window.toasts.some((t) => /已经在这条消息里/.test(t)), JSON.stringify(window.toasts));
+    ok("内容照样更新成最新的那份", uploads.length === n + 1, n + " → " + uploads.length);
+  }
+
+  // ---- 12. 拖进来一个文件夹：不传、不挂 chip、说清楚该怎么办 ----
+  // 以前当成一个 0 字节的文件传上去了：工作目录里多一个同名垃圾文件，chip 还告诉用户「加好了」。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.toasts = [];
+    const n = uploads.length;
+    await dropFiles([new File([], "我的素材", { type: "" })]);
+    ok("文件夹不当文件传上去", uploads.length === n, "多发了 " + (uploads.length - n) + " 个上传请求");
+    ok("也不挂一枚骗人的 chip", chips().length === 0);
+    ok("提示里点名了是哪个，还说了该怎么办",
+       window.toasts.some((t) => t.includes("我的素材") && /文件夹/.test(t) && /zip|选中/.test(t)), JSON.stringify(window.toasts));
+  }
+
+  // ---- 13. 传失败：锚点必须撤掉，chip 留着能重试 ----
+  // 锚点留在输入里 = 告诉模型"这个文件有"，它照着去读只会扑空。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.toasts = [];
+    window.uploadFail = true;
+    await dropFiles([new File([new TextEncoder().encode("x")], "传不上去.md", { type: "text/markdown" })]);
+    await until(() => pendingAttach[0] && pendingAttach[0].state === "failed");
+    ok("失败的锚点从输入里撤掉了", !inputEl.value.includes("传不上去.md"), JSON.stringify(inputEl.value));
+    ok("chip 留着并且变红", chips().length === 1 && chips()[0].classList.contains("is-failed"), chips()[0].className);
+    ok("红 chip 上有一颗重试键", !!chips()[0].querySelector(".attach-retry"));
+    ok("失败的不进发给模型的清单", attachmentOrder(inputEl.value).length === 0);
+    window.uploadFail = false;
+    chips()[0].querySelector(".attach-retry").click();
+    await until(() => pendingAttach[0].state === "done");
+    ok("重试救得回来（文件还在用户手里，别让他重新去 Finder 找）",
+       !chips()[0].classList.contains("is-failed") && attachmentOrder(inputEl.value).length === 1);
+  }
+
+  // ---- 14. 还在传的时候点发送：拦住，别发一条自带死链的消息 ----
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.toasts = [];
+    window.uploadDelay = 150;
+    dropFiles([new File([new Uint8Array(1024)], "还在传.mp4", { type: "video/mp4" })]);
+    inputEl.value = "把这个片子剪成 30 秒";
+    const out = composeOutgoing();
+    ok("没传完就发 → 拦住", out === "", JSON.stringify(out));
+    ok("输入框一个字都没被清掉", inputEl.value === "把这个片子剪成 30 秒", JSON.stringify(inputEl.value));
+    ok("而且说清了在等什么", window.toasts.some((t) => /在传/.test(t)), JSON.stringify(window.toasts));
+    await until(() => pendingAttach[0] && pendingAttach[0].state === "done");
+    ok("传完就能发了", composeOutgoing().includes("把这个片子剪成 30 秒"));
+    window.uploadDelay = 0;
+  }
+
+  // ---- 15. chip 上能看见体积，能用键盘操作，点名字能打开 ----
+  // 以前 chip 上只有一个文件名：1KB 的草稿和 25MB 的片子长得一模一样；
+  // 删除键是个挂了 onclick 的 <b>，鼠标能点，Tab 过去空无一物，读屏也念不出来。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0; window.previewed = [];
+    await dropFiles([new File([new Uint8Array(7 * 1048576)], "季度汇报.pdf", { type: "application/pdf" })]);
+    const c = chips()[0];
+    ok("chip 上写着多大", /7\\.0 MB/.test(c.querySelector(".attach-size").textContent), c.textContent);
+    ok("两颗都是真按钮（键盘走得到、读屏念得出）",
+       c.querySelectorAll("button").length === 2 && c.querySelector(".attach-x").getAttribute("aria-label").includes("季度汇报.pdf"),
+       c.innerHTML.slice(0, 120));
+    c.querySelector(".attach-open").click();
+    ok("点名字就把这份素材打开看", window.previewed.length === 1, JSON.stringify(window.previewed));
+    ok("打开的是它在工作目录里的真实路径，不是光一个文件名",
+       window.previewed[0] === "out/季度汇报.pdf", JSON.stringify(window.previewed));
+  }
+
+  // ---- 16. 缩略图是缩过的，不是把整份文件塞进 img.src ----
+  // 以前直接 data:...;base64,<整份文件>：实测 300KB 的图片挂上去是 409,622 个字符，
+  // 浏览器还按原分辨率解一遍码再缩到 28 像素。贴几张手机照片就是几百兆内存。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0;
+    const cv = document.createElement("canvas"); cv.width = 1600; cv.height = 1200;
+    const g = cv.getContext("2d");
+    for (let i = 0; i < 300; i++) { g.fillStyle = "hsl(" + ((i * 11) % 360) + ",70%,55%)"; g.fillRect((i * 37) % 1600, (i * 53) % 1200, 80, 60); }
+    const blob = await new Promise((r) => cv.toBlob(r, "image/png"));
+    await dropFiles([new File([blob], "大图.png", { type: "image/png" })]);
+    const img = await until(() => document.querySelector("#attach-chips img.attach-thumb"));
+    const raw = Math.ceil(blob.size / 3) * 4;  // 原来那版 img.src 就是整份文件的 base64
+    ok("缩略图没把整份文件挂到 DOM 上", img.src.length < raw / 4, img.src.length + " vs 整份 " + raw);
+    const px = await new Promise((r) => { const im = new Image(); im.onload = () => r(im.width); im.src = img.src; });
+    ok("解码的也是小图，不是 1600 宽的原图", px <= 96, "缩略图宽 " + px);
+  }
+
   return names;
 })()`;
 
@@ -3138,6 +3291,7 @@ const GATE_CHECKS = `
   let medias = [];
   // 「从渠道现拉回来的模型列表」默认不出网；验分组那一组会临时换成一份真实形状的回包
   let provModels = { ok: false, why: "测试里不出网", models: [] };
+  let provModelsDown = false;   // true = 连请求都发不出去（服务端没起来 / 网断了），跟「问到了但是空的」是两回事
   let provs = [
     { id: "or", name: "我的 OpenRouter", kind: "openrouter", base_url: "https://openrouter.ai/api/v1", api_key: "sk-or-fixture", has_key: true },
     { id: "ark", name: "火山方舟（豆包）", kind: "ark", base_url: "https://ark.cn-beijing.volces.com/api/v3", api_key: "", has_key: false },
@@ -3165,7 +3319,7 @@ const GATE_CHECKS = `
       ],
       catalog: { chat: [{ kind: "openrouter", id: "openai/gpt-5.2", label: "GPT-5.2" }] },
     });
-    if (url === "/api/provider-models") return j(provModels);
+    if (url === "/api/provider-models") return provModelsDown ? Promise.reject(new Error("测试里把这一路掐断")) : j(provModels);
     if (url === "/api/security/modes") return j({ modes: { ask: { label: "每次问我", desc: "动手前都问" }, auto: { label: "自动执行", desc: "不问" } }, current: "ask", can_switch: canSwitch });
     if (url === "/api/security/approvals") return j({ session_allow: [] });
     if (url === "/api/security/system") return j({ fulldisk: "unknown", accessibility: "unknown", automation: "unknown", desktop: false });
@@ -3443,6 +3597,45 @@ const GATE_CHECKS = `
   ok("表单开着的时候，「目录拉回来再画一遍」不许把它冲没（不然这颗添加按钮看着就是坏的）",
     stillOpen && stillOpen.style.display !== "none" && stillOpen.querySelectorAll(".mm-prov option").length > 0,
     stillOpen ? "display=" + stillOpen.style.display + " 渠道项=" + stillOpen.querySelectorAll(".mm-prov option").length : "表单没了");
+  // ---- 「问完渠道，一个模型都没有」这一档：以前上一秒还写着「正在问渠道有哪些模型…」，
+  //      下一秒那行字直接没了，问出什么结果一个字都不说。本机 Ollama 最吃这个亏：
+  //      它回的是 200 + 空清单（起来了，只是还没 pull 过东西），不是错，所以连 why 都没有 ----
+  provs = [{ id: "ol", name: "我这台的 Ollama", kind: "ollama", base_url: "http://localhost:11434/v1", api_key: "", has_key: true }];
+  provModels = { ok: true, models: [] };
+  const openMm = async () => {
+    await renderSettings("models");
+    await quiet();
+    if (!eyeCard().classList.contains("open")) eyeCard().querySelector(".ch-head").onclick();
+    await quiet();
+    eyeCard().querySelector('.mm-new[data-cap="vision"]').onclick();
+    await quiet();
+    return mBody.querySelector('#settings-pane .mm-form[data-cap="vision"] .mm-tip');
+  };
+  let mtip = await openMm();
+  ok("★本机一个模型都没装：告诉他去 ollama pull，而不是把那行字抹掉★",
+    /ollama pull/.test(mtip.textContent), JSON.stringify(mtip.textContent));
+  ok("而且不留「正在问渠道…」那句悬在那儿",
+    !/正在问渠道/.test(mtip.textContent), mtip.textContent);
+  // ★空清单不许进前端缓存★：他照着提示 pull 完回来，重新点开下拉框得真去问一次。
+  // 缓住的话，提示教他做的事做完了，界面上还是那份空的
+  provModels = { ok: true, models: [{ id: "qwen3:8b", cap: "vision", sure: true }] };
+  mtip = await openMm();
+  const olSel = mBody.querySelector('#settings-pane .mm-form[data-cap="vision"] .mm-model');
+  ok("★拉完模型回来重新点开，这回真列得出来（那一趟空清单没被前端缓住）★",
+    [...olSel.querySelectorAll("option")].some((o) => o.value === "qwen3:8b"), olSel.innerHTML.slice(0, 200));
+  // 反向对照：云端渠道回空清单是另一回事（不少国产渠道压根没有 /models），不许对着它喊 ollama pull
+  provs = [{ id: "zp", name: "智谱", kind: "zhipu", base_url: "https://open.bigmodel.cn/api/paas/v4", api_key: "k", has_key: true }];
+  provModels = { ok: true, models: [] };
+  mtip = await openMm();
+  ok("反向对照：云端渠道空清单，不许喊 ollama pull，但也得给一句话",
+    !/ollama pull/.test(mtip.textContent) && mtip.textContent.trim().length > 8, JSON.stringify(mtip.textContent));
+  // 另一档：连问都没问出去。以前和上面同一个结局——那行字抹掉，什么都不说
+  provModelsDown = true;
+  mtip = await openMm();
+  provModelsDown = false;
+  ok("★请求根本没发出去时也得说一句★ 抹掉那行字的话，界面上和「问到了、就是没有」完全一样",
+    mtip.textContent.trim().length > 8 && /没发出去|没能问到/.test(mtip.textContent), JSON.stringify(mtip.textContent));
+
   provModels = { ok: false, why: "测试里不出网", models: [] };
 
   provs = [
@@ -4002,6 +4195,8 @@ const ONB_STUBS = `
               { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "" }],
     engine: "builtin", search: { provider: "jina", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
   let ONB_POST_OK = true, ENGINE_TEST_OK = true, SEARCH_TEST_OK = true, DONE_OK = true, SETTINGS_OK = true;
+  // 本机 Ollama 装了哪些模型：null = 它压根没跑起来
+  let OLLAMA_LIST = ["llama3.2:3b", "qwen3:8b", "gemma3:12b"];
   const GETS = []; window.__GETS = GETS;
   async function saveSettings(patch) { POSTS.push(["settings", patch]); return SETTINGS_OK; }
   window.fetch = async (url, opt) => {
@@ -4013,6 +4208,7 @@ const ONB_STUBS = `
     if (url === "/api/onboarding") { POSTS.push(["onboarding", body]); if (!ONB_POST_OK) return j({ ok: false, error: "这个 Key 上游不认（HTTP 401）" });
       const nm = body.kind ? (ST.templates.find((t) => t.kind === body.kind) || {}).name : body.model;
       ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: nm, model: "deepseek-chat" } }; return j({ ok: true, active_model: nm }); }
+    if (url === "/api/provider-models") { POSTS.push(["provider-models", body]); return j(OLLAMA_LIST === null ? { ok: false, why: "connect ECONNREFUSED", models: [] } : { ok: true, models: OLLAMA_LIST.map((id) => ({ id })) }); }
     if (url === "/api/engines/test") { POSTS.push(["engine-test", body]); return j(ENGINE_TEST_OK ? { ok: true, reply: "好" } : { ok: false, why: "没登录", hint: "先在终端跑 codex login" }); }
     if (url === "/api/settings" && method === "POST") { POSTS.push(["settings-raw", body]); if (body.agent && body.agent.engine) ST = { ...ST, needs_setup: false, engine: body.agent.engine, brain: { ok: true, via: "engine", name: body.agent.engine, model: "" } }; return j({ ok: true }); }
     if (url === "/api/search/test") { POSTS.push(["search-test"]); if (SEARCH_TEST_OK) ST = { ...ST, search: { provider: "tavily", has_key: true } }; return j(SEARCH_TEST_OK ? { ok: true, provider: "tavily", sample: "x" } : { ok: false, error: "tavily 返回 0 条结果" }); }
@@ -4042,6 +4238,77 @@ const ONB_CHECKS = `
   q("#onb-model").value = "Ollama"; q("#onb-model").dispatchEvent(new Event("change"));
   ok("选本地 Ollama 时 Key 框禁用", q("#onb-key").disabled && q("#onb-tip").textContent.includes("Ollama"));
   ok("本地模型：链接变成「装 Ollama」而不是「去拿 Key」", q("#onb-tip a.get-key") && q("#onb-tip a.get-key").textContent.includes("装 Ollama") && /ollama\.com/.test(q("#onb-tip a.get-key").href));
+
+  // ---- 本机 Ollama：用哪个模型得他自己挑，而且候选是现问出来的 ----
+  // 以前这一屏把模板里那个 qwen3:14b 当定局，连个选的地方都没有：手上跑着 llama3.2 也用不上，
+  // 想用就得先去下一个 9GB 的模型。本机装了什么只有这台机器知道，所以现问 /api/provider-models。
+  await tick(); await tick();
+  const mdl = () => q("#onb-mdl");
+  ok("选本机时冒出「用哪个模型」这一行", !q("#onb-mrow").hidden);
+  ok("候选是现问本机要来的，问的就是这条渠道的地址",
+     POSTS.some(([k, b]) => k === "provider-models" && b.base_url === "http://localhost:11434/v1"), JSON.stringify(POSTS));
+  const opts = [...mdl().querySelectorAll("option")].map((o) => o.value);
+  ok("列出来的就是这台机器上真装的那几个，外加「自己填…」",
+     JSON.stringify(opts) === JSON.stringify(["llama3.2:3b", "qwen3:8b", "gemma3:12b", "__custom__"]), JSON.stringify(opts));
+  ok("★默认不停在模板里那个没装的型号上★（停在那儿点下去就是一个 404）",
+     mdl().value === "llama3.2:3b" && !opts.includes("qwen3:14b"), mdl().value);
+
+  ok("选回云端时那一行收起来", (q("#onb-model").value = "DeepSeek", q("#onb-model").dispatchEvent(new Event("change")), q("#onb-mrow").hidden));
+
+  // 他照着提示去 ollama pull 了一个，回来得有地方再问一遍——没有这颗，清单就永远停在
+  // 他还没动手的那一刻，提示教他做的事做完了却没处生效
+  OLLAMA_LIST = ["llama3.2:3b", "qwen3:14b"];
+  q("#onb-model").value = "tpl:ollama"; q("#onb-model").dispatchEvent(new Event("change")); await tick(); await tick();
+  ok("★缓存不该把人锁死：拉完新模型点「重新问一次」，清单跟着变★", !!q("#onb-mdl-again"));
+  POSTS.length = 0;
+  q("#onb-mdl-again").click(); await tick(); await tick();
+  ok("「重新问一次」真的又去问了一趟", POSTS.some(([k]) => k === "provider-models"), JSON.stringify(POSTS));
+  ok("模板里那个型号本机真有，就选中它", mdl().value === "qwen3:14b", mdl().value);
+
+  // 提交时把他点的那个带上；云端那条路不带（用哪个型号是模板定死的，轮不到向导指手画脚）
+  POSTS.length = 0; ONB_POST_OK = false;
+  mdl().value = "llama3.2:3b"; q("#onb-go").click(); await tick(); await tick();
+  ok("验活带上了他点的型号", POSTS.some(([k, b]) => k === "onboarding" && b.kind === "ollama" && b.model_id === "llama3.2:3b"), JSON.stringify(POSTS));
+
+  // 「自己填…」：列表里没有的照样能用（本机 tag 名随便起，目录永远追不上）
+  mdl().value = "__custom__"; mdl().dispatchEvent(new Event("change"));
+  ok("选「自己填…」时输入框露出来", !q("#onb-mdl-custom").hidden);
+  POSTS.length = 0;
+  q("#onb-go").click(); await tick(); await tick();
+  ok("★空着就点：拦下来说人话，不拿空型号去打一趟必错的请求★",
+     !POSTS.some(([k]) => k === "onboarding") && /先选一个模型/.test(q("#onb-err").textContent), q("#onb-err").textContent);
+  q("#onb-mdl-custom").value = "  deepseek-r1:7b  ";
+  POSTS.length = 0; q("#onb-go").click(); await tick(); await tick();
+  ok("手填的型号照样带出去，两头的空格顺手去掉",
+     POSTS.some(([k, b]) => k === "onboarding" && b.model_id === "deepseek-r1:7b"), JSON.stringify(POSTS));
+
+  // Ollama 压根没跑起来：不能只丢一句「没拉到」，得告诉他在终端敲什么
+  OLLAMA_LIST = null;
+  q("#onb-mdl-again").click(); await tick(); await tick();
+  ok("连不上本机 Ollama：说清楚去终端敲哪两句，而不是一句「失败」",
+     /ollama serve/.test(q("#onb-mdl-tip").textContent) && /ollama pull/.test(q("#onb-mdl-tip").textContent), q("#onb-mdl-tip").textContent);
+  ok("连不上时也还留着「自己填…」这条路", [...mdl().querySelectorAll("option")].some((o) => o.value === "__custom__"));
+  // 「连上了，只是一个模型都没拉过」是另一档：Ollama 这时候回的是 200 + 空清单，不是错。
+  // 对这种人再喊一句 ollama serve 纯属瞎指挥——他已经起起来了
+  OLLAMA_LIST = [];
+  q("#onb-mdl-again").click(); await tick(); await tick();
+  ok("★连上了但一个模型都没装：只叫他 pull，不再叫他 serve★",
+     /ollama pull/.test(q("#onb-mdl-tip").textContent) && !/ollama serve/.test(q("#onb-mdl-tip").textContent), q("#onb-mdl-tip").textContent);
+  // ★这一条是上面那个缓存坑的正脸★：空清单不许进缓存，否则他起完 Ollama 再回来还是空的
+  OLLAMA_LIST = ["llama3.2:3b", "qwen3:8b", "gemma3:12b"];
+  q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+  q("#onb-model").value = "Ollama"; q("#onb-model").dispatchEvent(new Event("change")); await tick(); await tick();
+  ok("★起完 Ollama 再回来，这回就列得出来了（那一趟空清单没被缓存）★",
+     [...mdl().querySelectorAll("option")].map((o) => o.value).includes("gemma3:12b"),
+     [...mdl().querySelectorAll("option")].map((o) => o.value).join(","));
+
+  ONB_POST_OK = true;
+  q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+  POSTS.length = 0; ONB_POST_OK = false;
+  q("#onb-key").value = "sk-x"; q("#onb-go").click(); await tick(); await tick();
+  ok("★反向对照：云端那条路不带 model_id★",
+     POSTS.some(([k, b]) => k === "onboarding" && !("model_id" in b)), JSON.stringify(POSTS));
+  ONB_POST_OK = true;
   q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
 
   // ---- 验活失败：留在原地、原因写出来 ----
@@ -8465,6 +8732,13 @@ const AB_STUBS = `
   const mask = { classList: { remove() {} } };
   function openOnboarding() {}
   function fetch() { return Promise.resolve({ json: () => Promise.resolve(NEXT) }); }
+  // 「复制这条命令」按下去会走剪贴板和 toast；离屏窗口里两样都没有，各记一笔就行
+  let TOASTS = [], COPIED = null;
+  function toast(t, kind) { TOASTS.push(String(t) + (kind ? "/" + kind : "")); }
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: (t) => { COPIED = t; return Promise.resolve(); } },
+  });
 `;
 const AB_CHECKS = `
 (async () => {
@@ -8499,6 +8773,35 @@ const AB_CHECKS = `
   await draw({ current: "1.2.3", latest: "1.3.0", has_update: true, url: "https://example.invalid/rel", how: "去下载页拿新版。" });
   ok("有新版时「去下载页」露出来", link().style.display !== "none");
   ok("而且链接换成了服务端给的那条", link().getAttribute("href") === "https://example.invalid/rel", link().getAttribute("href"));
+
+  // ---- 那条升级命令：macOS 用户照着「下个新 dmg」升级，等于把自己升级成打不开 ----
+  // （新下的包带 com.apple.quarantine，双击就是「Apple 无法验证」，只有「完成 / 移到废纸篓」）
+  // 所以有新版时得当场把零弹窗那条 curl 摆出来，还得能点「复制」——90 个字符没人手抄。
+  const cmdBox = () => pane.querySelector("#ab-up-cmd");
+  const cmdTxt = () => pane.querySelector("#ab-up-cmd-t").textContent;
+  const CURL = "curl -fsSL https://example.invalid/install-mac.sh | bash";
+  await draw({ current: "1.2.3", latest: "1.3.0", has_update: true, how_cmd: CURL, how: "贴进终端。" });
+  ok("有新版时那条命令画出来了", cmdBox().style.display !== "none" && cmdTxt() === CURL, cmdTxt());
+  TOASTS = []; COPIED = null;
+  pane.querySelector("#ab-up-cmd-copy").click();
+  await tick();
+  ok("点「复制」进的是剪贴板里的整条命令，不是半截", COPIED === CURL, COPIED);
+  ok("而且告诉了他复制完该干什么", TOASTS.length === 1 && /终端/.test(TOASTS[0]), TOASTS);
+
+  // ---- 反向对照：已经是最新还摆一条「升级命令」，照着跑一趟等于白跑 ----
+  await draw({ current: "1.3.0", latest: "1.3.0", has_update: false, how_cmd: CURL, how: "已经是最新的了。" });
+  ok("已是最新时不摆升级命令", cmdBox().style.display === "none", cmdTxt());
+
+  // ---- 反向对照：Windows 那边没有这条命令（how_cmd 是空串），不许摆一个空框 ----
+  await draw({ current: "1.2.3", latest: "1.3.0", has_update: true, how_cmd: "", how: "下 setup.exe 覆盖装。" });
+  ok("没有命令可给时不摆一个空框", cmdBox().style.display === "none", cmdTxt());
+
+  // ---- 反向对照：上一次画出来的命令不许挂在「版本号没读到」下面 ----
+  // drawUpdate 是就地重画的（点「检查更新」不会重建这一屏），漏掉这一行就会留一条上次的命令
+  await draw({ current: "1.2.3", latest: "1.3.0", has_update: true, how_cmd: CURL, how: "贴进终端。" });
+  NEXT = d401; pane.querySelector("#ab-up-btn").click(); await tick(); await tick();
+  ok("降级成「版本号没读到」时，上一次那条命令跟着收走", cmdBox().style.display === "none",
+     pane.querySelector("#ab-ver").textContent + " | " + cmdBox().style.display);
 
   // ---- 反向对照三：版本号读到了、只是查线上失败——这时 error 该原样说出来，不能被兜底吞掉 ----
   await draw({ current: "1.2.3", error: "连不上 GitHub", how: "过会儿再点一次。" });
@@ -9687,7 +9990,7 @@ app.whenReady().then(async () => {
       const namesAB = await winAB.webContents.executeJavaScript(IC_BOOT + AB_STUBS + "\n" + AB_SRC + "\n" + AB_CHECKS, true)
         .catch((e) => { throw new Error("[关于页] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesAB) console.log("  \u2713 " + n);
-      console.log(`\u2705 \u524d\u7aef\uff1a\u5173\u4e8e\u9875\u8bfb\u4e0d\u5230\u7248\u672c\u53f7\u65f6\u4e0d\u628a undefined \u6446\u5230\u8138\u4e0a\uff08cookie \u8fc7\u671f\u00b7\u6b63\u5e38\u00b7\u6709\u65b0\u7248\u00b7\u67e5\u7ebf\u4e0a\u5931\u8d25\u00b7\u5b57\u6bb5\u6b8b\u7f3a \u4e94\u79cd\u5f62\u72b6\uff09${namesAB.length} \u9879\u901a\u8fc7`);
+      console.log(`\u2705 \u524d\u7aef\uff1a\u5173\u4e8e\u9875\u8bfb\u4e0d\u5230\u7248\u672c\u53f7\u65f6\u4e0d\u628a undefined \u6446\u5230\u8138\u4e0a\uff08cookie \u8fc7\u671f\u00b7\u6b63\u5e38\u00b7\u6709\u65b0\u7248\u00b7\u67e5\u7ebf\u4e0a\u5931\u8d25\u00b7\u5b57\u6bb5\u6b8b\u7f3a \u4e94\u79cd\u5f62\u72b6\u0020\u002b\u0020\u5347\u7ea7\u547d\u4ee4\u53ea\u5728\u6709\u65b0\u7248\u65f6\u9732\u51fa\u6765\uff09${namesAB.length} \u9879\u901a\u8fc7`);
     } finally {
       if (!winAB.isDestroyed()) winAB.destroy();
     }

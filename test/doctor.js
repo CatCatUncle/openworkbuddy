@@ -72,6 +72,30 @@ eq(missNow.length, 0, "这个仓库本身依赖是齐的（否则上面那些测
 ok(boot.findMissing(path.join(os.tmpdir(), "根本没有这个目录"), ["express"]).length === 1,
   "反向对照：换个空目录，findMissing 真的报缺");
 
+// 手写的依赖清单会漂：加第 14 个包的人不会记得回来改 boot-check，
+// 而这个文件存在的全部意义就是别让用户拿到一句 Cannot find module
+const declared = Object.keys(JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).dependencies || {});
+eq(boot.readDeps(ROOT).sort().join(","), declared.sort().join(","),
+  "★要查的依赖清单 = package.json 的 dependencies★ 差一个，那个包缺了就是一句 Cannot find module",
+  { 查的: boot.readDeps(ROOT).length, 声明的: declared.length });
+ok(declared.length > boot.FALLBACK_DEPS.length,
+  "先验料：声明的依赖本来就比手写那份兜底清单多（不然这条断言证不出东西）",
+  { declared: declared.length, fallback: boot.FALLBACK_DEPS.length });
+// 闸门自己读不到清单时不能两头极端：既不许因此把人拦在门外，也不许因此一条都不查
+eq(boot.readDeps(path.join(os.tmpdir(), "根本没有这个目录")).join(","), boot.FALLBACK_DEPS.join(","),
+  "package.json 读不出来就退回手写那三个，不是空清单（空清单 = 闸门静默失效）");
+// 一次整体装失败和真只少一个包，屏幕上不能长得一模一样——该做的事不同
+const many = boot.bootProblem({ nodeVersion: "v20.0.0", missingDeps: declared, packaged: false });
+ok(/等 \d+ 个/.test(many.title) && many.title.includes(String(declared.length)),
+  "★十三个全没有时报出总数★ 只印前三个的话，整体装失败看着就像只少三个包", many.title);
+const one = boot.bootProblem({ nodeVersion: "v20.0.0", missingDeps: ["express"], packaged: false });
+ok(!/等 \d+ 个/.test(one.title) && one.title.includes("express"),
+  "反向对照：真只少一个的时候不许硬加「等 N 个」", one.title);
+// 装机版和源码版是两份 package.json：拿这边的清单去查那边，查的就是错的清单
+const bc = fs.readFileSync(path.join(ROOT, "boot-check.js"), "utf8");
+ok(/missingDeps: findMissing\(rootDir, readDeps\(rootDir\)\)/.test(bc),
+  "enforce 里的清单得跟着 rootDir 走，不能用模块加载时那一份");
+
 // ── ④ 体检：端口那三种坏法解法完全不同，不许糊成一句 ─────────────────────
 console.log("\n④ 体检：端口");
 const pAcc = doctor.verdictPort({ port: 3800, host: "127.0.0.1", errCode: "EACCES" });

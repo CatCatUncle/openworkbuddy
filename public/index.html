@@ -849,18 +849,54 @@
   .plan-list .pl-item input { margin-top: 3px; accent-color: var(--owb-brand-text); }
   .plan-list .pl-item input:checked + span { color: var(--owb-text-3); text-decoration: line-through; }
   .plan-list .pl-run { margin-top: 8px; border: none; background: var(--owb-brand); color: #fff; border-radius: var(--radius-md); padding: 6px 14px; font-size: 13px; cursor: pointer; }
-  .attach-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .attach-chips .attach-chip { min-width: 0; max-width: min(100%, 360px); font-size: 13px; background: var(--owb-bg-hover); border: 1px solid var(--owb-border); border-radius: var(--radius-md); padding: 3px 8px 3px 6px; color: var(--owb-text-2); }
-  .attach-chips .attach-chip { display: inline-flex; align-items: center; gap: 6px; }
-  .attach-chips .attach-chip > em { flex: none; font-style: normal; color: var(--owb-brand-text); background: var(--owb-brand-weak); border-radius: var(--radius-sm); padding: 1px 5px; font-size: 11px; line-height: 1.45; }
-  .attach-chips .attach-chip.attach-text > em { color: var(--owb-ok-text); background: var(--owb-ok-bg); }
-  .attach-chips .attach-chip.attach-video > em { color: var(--owb-warn-text); background: var(--owb-warn-bg); }
-  .attach-chips .attach-chip.attach-audio > em { color: var(--owb-violet-text); background: var(--owb-violet-bg); }
+  /* ---------- 输入框上方的素材 chip ----------
+     一枚 chip = [缩略图/图标] [图片 2] [文件名] [体积] [↺] [×]。
+     缩略图那一格固定 28 见方，所有 chip 的文字因此落在同一条基线上；体积紧挨着文件名
+     （它是在说这个文件的事），删除键单独靠右——那是唯一一个会改动这条消息的动作。 */
+  .attach-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .attach-chips:not(:empty) { margin-bottom: 8px; }
+  .attach-chips .attach-chip { display: inline-flex; align-items: center; min-width: 0; max-width: min(100%, 380px);
+    font-size: 13px; color: var(--owb-text-2); background: var(--owb-bg-hover);
+    border: 1px solid var(--owb-border); border-radius: var(--radius-md); padding-right: 4px;
+    transition: border-color var(--owb-t-fast) var(--owb-ease), background var(--owb-t-fast) var(--owb-ease); }
+  .attach-chips .attach-chip:hover { border-color: var(--owb-brand-text); }
+  /* 点名字就把这份素材打开看看——贴完想确认「我贴的是不是那张」时，不用再去翻文件面板 */
+  .attach-chips .attach-open { flex: 1 1 auto; display: inline-flex; align-items: center; gap: 8px; min-width: 0;
+    padding: 4px; border: none; background: none; font: inherit; color: inherit; text-align: left;
+    border-radius: var(--radius-md); cursor: pointer; }
+  .attach-chips .attach-open:disabled { cursor: default; }
+  .attach-chips .attach-open:focus-visible { outline: 2px solid var(--owb-brand-text); outline-offset: -2px; }
+  .attach-chips .attach-ic { position: relative; flex: none; width: 28px; height: 28px; display: grid; place-items: center;
+    border-radius: var(--radius-sm); }
+  .attach-chips .attach-ic > .i { width: 16px; height: 16px; opacity: .65; }
+  .attach-chips .attach-thumb { width: 28px; height: 28px; object-fit: cover; object-position: center;
+    border-radius: var(--radius-sm); display: block; background: var(--owb-bg-side); }
+  /* 传输状态盖在缩略图上，不占一格：图先出来，转圈在它身上转，人一眼知道「是这张，还在传」 */
+  .attach-chips .attach-state { position: absolute; inset: 0; display: grid; place-items: center; border-radius: var(--radius-sm); }
+  .attach-chips .attach-state:not(:empty) { background: color-mix(in srgb, var(--owb-bg) 72%, transparent); }
+  .attach-chips .attach-state .i { width: 14px; height: 14px; opacity: 1; color: var(--owb-err-text); }
+  .attach-chips .attach-chip em { flex: none; font-style: normal; color: var(--owb-brand-text); background: var(--owb-brand-weak); border-radius: var(--radius-sm); padding: 1px 5px; font-size: 11px; line-height: 1.45; }
+  .attach-chips .attach-chip.attach-text em { color: var(--owb-ok-text); background: var(--owb-ok-bg); }
+  .attach-chips .attach-chip.attach-video em { color: var(--owb-warn-text); background: var(--owb-warn-bg); }
+  .attach-chips .attach-chip.attach-audio em { color: var(--owb-violet-text); background: var(--owb-violet-bg); }
   .attach-chips .attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .attach-chips .attach-thumb { width: 28px; height: 28px; object-fit: contain; object-position: center; border-radius: var(--radius-sm); display: block; background: var(--owb-bg-side); }
-  .attach-chips .attach-chip b { flex: none; cursor: pointer; font-weight: 400; margin-left: 2px; opacity: .55; }
-  .attach-chips .attach-chip b:hover { opacity: 1; }
+  .attach-chips .attach-size { flex: none; font-size: 11px; color: var(--owb-text-3); font-variant-numeric: tabular-nums; }
+  .attach-chips .attach-x, .attach-chips .attach-retry { flex: none; display: grid; place-items: center; width: 20px; height: 20px;
+    padding: 0; border: none; background: none; border-radius: var(--radius-sm); color: var(--owb-text-2); cursor: pointer; opacity: .55; }
+  .attach-chips .attach-x:hover, .attach-chips .attach-retry:hover { opacity: 1; background: var(--owb-bg-side); }
+  .attach-chips .attach-x:focus-visible, .attach-chips .attach-retry:focus-visible { opacity: 1; outline: 2px solid var(--owb-brand-text); outline-offset: -2px; }
+  .attach-chips .attach-chip.is-uploading .attach-name, .attach-chips .attach-chip.is-uploading em { opacity: .55; }
+  .attach-chips .attach-chip.is-failed { border-color: var(--owb-err-text); background: var(--owb-err-bg); }
+  .attach-chips .attach-chip.is-failed .attach-size { color: var(--owb-err-text); }
+  /* 同一个文件又拖了一次：闪一下已经在列的那枚。不闪的话界面上一动不动，人以为没拖进去 */
+  .attach-chips .attach-chip.attach-flash { animation: attachflash .7s var(--owb-ease); }
+  @keyframes attachflash { 0%, 100% { background: var(--owb-bg-hover); } 25%, 60% { background: var(--owb-brand-weak); } }
   .input-card.dragging { outline: 2px dashed var(--owb-brand); outline-offset: -2px; }
+  /* 拖到半空中时盖在输入框上的一句话。原来只有一圈虚线，没有一个字——松手会发生什么全靠猜 */
+  .drop-hint { display: none; }
+  .input-card.dragging .drop-hint { display: flex; align-items: center; justify-content: center; position: absolute; inset: 0;
+    border-radius: var(--radius-2xl); background: color-mix(in srgb, var(--owb-bg) 88%, transparent);
+    color: var(--owb-brand-text); font-size: 14px; font-weight: 500; pointer-events: none; z-index: 14; }
   /* ---------- 右侧预览面板（HTML/图片/文档实时预览） ---------- */
   .main { min-width: 460px; }
   .preview-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-canvas); overflow: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out); display: flex; flex-direction: column; }
@@ -1372,6 +1408,8 @@
   .onb-card .onb-lb { display: block; font-size: 13px; color: var(--owb-text-2); margin: 10px 0 6px; }
   .onb-card select { width: 100%; padding: 0 12px; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); font-size: 14px; background: var(--owb-bg); color: var(--owb-text); }
   .onb-card .onb-tip { font-size: 13px; color: var(--owb-text-3); margin-top: 6px; line-height: 1.6; }
+  /* 「自己填…」那个输入框贴在下拉框底下，两者之间留一格（4 的倍数），别顶在一起 */
+  .onb-card #onb-mdl-custom { margin-top: 8px; }
   .onb-card .onb-tip a { color: var(--owb-brand-text); }
   /* 「去拿 Key ↗」：向导、模型/搜索/IM 面板共用的小胶囊链接，一眼能点、不跟正文糊在一起 */
   .get-key { display: inline-flex; align-items: center; gap: 2px; margin-left: 6px; padding: 1px 10px; border-radius: var(--radius-full); font-size: 12px; font-weight: 500; line-height: 20px; white-space: nowrap; text-decoration: none; color: var(--owb-brand-text); border: 1px solid color-mix(in srgb, var(--owb-brand) 40%, transparent); background: color-mix(in srgb, var(--owb-brand) 8%, transparent); vertical-align: middle; }

@@ -386,7 +386,7 @@ async function gather(deps) {
   const { paths, config, engines, workspaceDir, bootCheck } = deps;
   const items = [];
   items.push(verdictNode(process.versions.node, bootCheck.MIN_NODE));
-  items.push(verdictDeps(bootCheck.findMissing(paths.APP_DIR, bootCheck.REQUIRED_DEPS), paths.isPackaged()));
+  items.push(verdictDeps(bootCheck.findMissing(paths.APP_DIR, bootCheck.readDeps(paths.APP_DIR)), paths.isPackaged()));
   items.push(verdictDataDir({ ...probeWritable(paths.DATA_DIR), viaEnv: !!process.env.OPENWORKBUDDY_HOME }));
 
   const cfgFile = paths.dataPath("config.json");

@@ -774,6 +774,23 @@ function bindMedia(box, s) {
 function mmRelay(kind) {
   return !!((mediaCatalog || {}).kinds || []).find((k) => k.kind === kind && k.relay);
 }
+/** 跑在这台机器上的服务（Ollama / 自建本地网关）。它和云端渠道有两处不一样：不用 Key，
+ *  以及「一个模型都没有」的含义完全不同——云端多半是没这个接口，本机是真的还没 pull 过东西 */
+function mmLocalProv(p) {
+  return !!p && (p.kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(String(p.base_url || "")));
+}
+/** 问完渠道、一个模型都没拿到时说什么。
+ *  以前这儿是一句空字符串：上一秒还写着「正在问渠道有哪些模型…」，下一秒那行字直接没了，
+ *  问出什么结果一个字都不说。对本机 Ollama 尤其要命——他要做的事（ollama pull）没人告诉他 */
+function mmEmptyTip(d, local) {
+  if (d && d.why) return `这个渠道没给模型列表（${d.why}），上面的精选和「自己填…」照用。`;
+  return local
+    ? "连上了，但这台机器上一个模型都还没装。终端里跑 ollama pull qwen3:8b 拉一个（约 5GB），回来重新点开这个下拉框会再问一次。"
+    : "这个渠道没回模型列表（不少国产渠道没有这个接口），上面的精选和「自己填…」照用。";
+}
+/** 连问都没问出去（服务端没起来 / 网断了 / 这一版的接口不在）。
+ *  它跟「问到了但是空的」是两回事，但结局以前一模一样：那行字直接抹掉，什么都不说 */
+const MM_FAIL_TIP = "没能问到这个渠道（请求没发出去），先用上面的精选或者「自己填…」，稍后重开这个下拉框会再问一次。";
 function mmBrand(id) {
   const v = String(id || "").trim();
   if (!v || v.includes(":")) return "";
@@ -832,18 +849,20 @@ function fillModelSelect(f, s) {
   tip.textContent = mine.length ? "" : "这个渠道没有精选条目，下面直接填模型名，或等一下从渠道拉回来的列表。";
   if (!p) return;
   const live = liveModels.get(p.id);
-  if (live) return injectLive(sel, tip, live, cap);
+  if (live) return injectLive(sel, tip, live, cap, mmLocalProv(p));
   tip.textContent = "正在问渠道有哪些模型…";
   fetch("/api/provider-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: p.id }) })
     .then((r) => r.json())
-    .then((d) => { liveModels.set(p.id, d); if (sel.isConnected) injectLive(sel, tip, d, cap); })
-    .catch(() => { tip.textContent = ""; });
+    // 空清单不记进缓存。跟服务端那道缓存同一个道理：他照着提示去 ollama pull 完回来，
+    // 重新点开下拉框得真去问一次，否则提示教他做的事做完了，界面上什么都不变
+    .then((d) => { if (d && d.ok && (d.models || []).length) liveModels.set(p.id, d); if (sel.isConnected) injectLive(sel, tip, d, cap, mmLocalProv(p)); })
+    .catch(() => { tip.textContent = MM_FAIL_TIP; });
 }
 
-function injectLive(sel, tip, d, cap) {
+function injectLive(sel, tip, d, cap, local) {
   if (!d.ok || !d.models || !d.models.length) {
     // 拉不到不是错：很多国产渠道压根没有 /models。目录和手填两条路都还在
-    tip.textContent = d.why ? `这个渠道没给模型列表（${d.why}），上面的精选和「自己填…」照用。` : "";
+    tip.textContent = mmEmptyTip(d, local);
     return;
   }
   const title = (c) => (MEDIA_CAPS.find((x) => x.cap === c) || {}).title || "";
@@ -1087,8 +1106,7 @@ function capsRow(caps) {
  * Ollama 这类本机服务不要 Key，填不填都能用，不该被归进「还没填 Key」里等着人去填。
  */
 function chanIdle(p) {
-  const local = p.kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(String(p.base_url || ""));
-  if (local) return false;
+  if (mmLocalProv(p)) return false;
   // has_key 是读接口给非管理员回的（真 Key 被打了掩码），管理员那边看 api_key 本身
   return p.has_key === false || !String(p.api_key || "").trim();
 }
@@ -1550,19 +1568,19 @@ function fillChatModelSelect(f, s) {
   tip.textContent = mine.length ? "" : "这个渠道没有精选条目，下面直接填模型名，或者等一下从渠道拉回来的列表。";
   if (!p) return;
   const live = liveModels.get(p.id);
-  if (live) return injectLiveChat(sel, tip, live);
+  if (live) return injectLiveChat(sel, tip, live, mmLocalProv(p));
   tip.textContent = "正在问渠道有哪些模型…";
   fetch("/api/provider-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: p.id }) })
     .then((r) => r.json())
-    .then((d) => { liveModels.set(p.id, d); if (sel.isConnected) injectLiveChat(sel, tip, d); })
-    .catch(() => { tip.textContent = ""; });
+    .then((d) => { if (d && d.ok && (d.models || []).length) liveModels.set(p.id, d); if (sel.isConnected) injectLiveChat(sel, tip, d, mmLocalProv(p)); })
+    .catch(() => { tip.textContent = MM_FAIL_TIP; });
 }
 
 /** 活列表里标了 cap 的（image / video / tts）显然不是对话模型，排到后面去 */
-function injectLiveChat(sel, tip, d) {
+function injectLiveChat(sel, tip, d, local) {
   if (!d.ok || !d.models || !d.models.length) {
     // 拉不到不是错：很多国产渠道压根没有 /models。目录和手填两条路都还在
-    tip.textContent = d.why ? `这个渠道没给模型列表（${d.why}），上面的精选和「自己填…」照用。` : "";
+    tip.textContent = mmEmptyTip(d, local);
     return;
   }
   const chatty = d.models.filter((m) => !m.cap || m.cap === "vision").map((m) => m.id);

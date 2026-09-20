@@ -713,10 +713,16 @@ function renderOnbBrain(body) {
       <div id="onb-cloud">
         <label class="onb-lb">服务商</label>
         <select id="onb-model">${st.models.map(m =>
-          `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-local="${m.local ? 1 : 0}">${esc(m.name)} · ${esc(m.model)}${m.has_key ? "（已配）" : ""}</option>`).join("")}${
+          `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-local="${m.local ? 1 : 0}" data-model="${esc(m.model)}">${esc(m.name)}${m.local ? "" : ` · ${esc(m.model)}`}${m.has_key ? "（已配）" : ""}</option>`).join("")}${
           (st.templates || []).length ? `<optgroup label="${st.models.length ? "新接一家" : "选一家服务商"}">${(st.templates || []).map(t =>
-          `<option value="tpl:${esc(t.kind)}" data-url="${esc(t.base_url)}" data-local="${t.local ? 1 : 0}">${esc(t.name)} · ${esc(t.model)}</option>`).join("")}</optgroup>` : ""}</select>
+          `<option value="tpl:${esc(t.kind)}" data-url="${esc(t.base_url)}" data-local="${t.local ? 1 : 0}" data-model="${esc(t.model)}">${esc(t.name)}${t.local ? "" : ` · ${esc(t.model)}`}</option>`).join("")}</optgroup>` : ""}</select>
         <div class="onb-tip" id="onb-tip"></div>
+        <div id="onb-mrow" hidden>
+          <label class="onb-lb">用哪个模型</label>
+          <select id="onb-mdl"></select>
+          <input id="onb-mdl-custom" placeholder="模型名，例如 qwen3:8b" autocomplete="off" spellcheck="false" hidden>
+          <div class="onb-tip" id="onb-mdl-tip"></div>
+        </div>
         <label class="onb-lb">API Key</label>
         <input id="onb-key" type="password" placeholder="粘贴 API Key" autocomplete="off" spellcheck="false">
       </div>
@@ -755,6 +761,63 @@ function renderOnbBrain(body) {
   const first = cur || st.models.find(m => !m.has_key && !m.local) || st.models[0];
   if (first) sel.value = first.name;
   else if ((st.templates || []).length) sel.value = "tpl:" + st.templates[0].kind;
+  // 本机 Ollama 跟云端不是一回事：云端那家有哪些型号是我们定的，本机只有他自己知道——
+  // 装的是 llama3.2 还是 qwen3:8b、下没下过 14b，全看他电脑上 `ollama pull` 过什么。
+  // 之前这一屏把模板里那个 qwen3:14b 当成定局，等于逼所有人去下一个 9GB 的模型，
+  // 手上明明跑着别的也用不上。所以选中本机那条时，现问一次它「你这儿都有啥」。
+  const mrow = body.querySelector("#onb-mrow");
+  const mdl = body.querySelector("#onb-mdl");
+  const mdlCustom = body.querySelector("#onb-mdl-custom");
+  const mdlTip = body.querySelector("#onb-mdl-tip");
+  const CUSTOM = "__custom__";
+  const listed = new Map();          // base_url → 那台机器上已经装了的模型名
+  const pickedModel = () => (mdl.value === CUSTOM ? mdlCustom.value.trim() : mdl.value.trim());
+  const syncCustom = () => { mdlCustom.hidden = mdl.value !== CUSTOM; if (!mdlCustom.hidden) setTimeout(() => mdlCustom.focus(), 20); };
+  mdl.onchange = syncCustom;
+  // 「重新问一次」：他照着提示去终端 ollama serve / ollama pull 之后，得有地方回来再问一遍。
+  // 没有这颗，清单就永远停在他还没启动 Ollama 的那一刻——提示教他去做的事做完了却没处生效。
+  const againLink = ` <a href="#" id="onb-mdl-again">重新问一次</a>`;
+  const fillModels = (url, fallback, refetch) => {
+    const has = refetch ? undefined : listed.get(url);
+    const opt = (id) => (id ? `<option value="${esc(id)}">${esc(id)}</option>` : "");
+    const bindAgain = () => {
+      const a = mdlTip.querySelector("#onb-mdl-again");
+      if (a) a.onclick = (e) => { e.preventDefault(); fillModels(url, fallback, true); };
+    };
+    if (has === undefined) {
+      mdl.innerHTML = opt(fallback) + `<option value="${CUSTOM}">自己填…</option>`;
+      mdlTip.textContent = "正在问本机 Ollama 装了哪些模型…";
+      fetch("/api/provider-models", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: url }),
+      }).then((r) => r.json()).catch(() => ({ ok: false }))
+        .then((d) => {
+          const got = (d && d.ok && Array.isArray(d.models) ? d.models : []).map((m) => String(m.id || m)).filter(Boolean);
+          // 空清单不进缓存：这一趟多半是 Ollama 还没起来，缓住了他起完再来也还是空的
+          if (got.length) listed.set(url, got);
+          else listed.delete(url);
+          // 期间他已经改选别家了，就别把 Ollama 的清单糊到人家头上
+          const cur = sel.selectedOptions[0];
+          if (!mdl.isConnected || !cur || cur.dataset.url !== url) return;
+          if (got.length) return fillModels(url, fallback);
+          // 一个都没列出来，分两种，下一步要敲的命令不一样：连都没连上要先 ollama serve，
+          // 连上了只是一个模型都没拉过，叫他再去 serve 一遍纯属瞎指挥
+          mdl.innerHTML = opt(fallback) + `<option value="${CUSTOM}">自己填…</option>`;
+          const pull = `<code>ollama pull ${esc(fallback || "qwen3:8b")}</code>`;
+          mdlTip.innerHTML = d && d.ok
+            ? `本机 Ollama 连上了，但一个模型都还没装。在终端跑 ${pull} 拉一个（约 5GB），回来点「重新问一次」。${againLink}`
+            : `没连上本机 Ollama（${esc(url)}）。先在终端跑 <code>ollama serve</code> 把它起起来，`
+              + `再 ${pull} 拉一个；已经装了别的就选「自己填…」把名字写进去。${againLink}`;
+          bindAgain();
+        });
+      return;
+    }
+    mdl.innerHTML = has.map(opt).join("") + `<option value="${CUSTOM}">自己填…</option>`;
+    // 模板里那个默认值只在他确实装了的时候才选中——没装还默认选它，验活必然 404
+    mdl.value = has.includes(fallback) ? fallback : has[0];
+    mdlTip.innerHTML = `这台机器上装了 ${has.length} 个模型。列表里没有想要的，选「自己填…」。${againLink}`;
+    bindAgain();
+    syncCustom();
+  };
   const syncTip = () => {
     const opt = sel.selectedOptions[0];
     const local = !!opt && opt.dataset.local === "1";
@@ -765,6 +828,8 @@ function renderOnbBrain(body) {
       : `${ONB_TIPS[srcId] || ONB_TIPS[url] || "去这家服务商的控制台拿 API Key。"} ${keyLink(srcId)}`;
     keyEl.disabled = local;
     keyEl.placeholder = local ? "本地模型不用填" : "粘贴 API Key";
+    mrow.hidden = !local;
+    if (local) fillModels(url, (opt.dataset.model || "").trim());
   };
   sel.onchange = syncTip;
   syncTip();
@@ -778,11 +843,16 @@ function renderOnbBrain(body) {
     try {
       if (mode === "cloud") {
         go.textContent = "正在验活…（发一条真实请求，可能要十几秒）";
+        // model_id 只在本机那条路上带：云端用哪个型号是模板定好的，本机才需要他自己点名
+        const wantModel = mrow.hidden ? "" : pickedModel();
+        if (!mrow.hidden && !wantModel) { err.textContent = "先选一个模型——本机装了哪些只有你知道，我猜不出来"; return; }
         const r = await fetch("/api/onboarding", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(sel.value.startsWith("tpl:")
-            ? { kind: sel.value.slice(4), api_key: keyEl.value.trim() }
-            : { model: sel.value, api_key: keyEl.value.trim() }),
+          body: JSON.stringify(Object.assign(
+            sel.value.startsWith("tpl:")
+              ? { kind: sel.value.slice(4), api_key: keyEl.value.trim() }
+              : { model: sel.value, api_key: keyEl.value.trim() },
+            wantModel ? { model_id: wantModel } : {})),
         }).then(r => r.json()).catch(() => ({ ok: false, error: "请求失败，服务没起来？" }));
         if (!r.ok) { err.textContent = r.error || "验活没通过"; return; }
         toast(`已接上 ${r.active_model}`, "circle-check");

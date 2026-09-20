@@ -80,7 +80,7 @@ function fatal(stage, err) {
     try {
       dialog.showErrorBox(
         "OpenWorkBuddy 没能启动",
-        `${bootHint(msg, PORT)}\n\n${msg.split("\n")[0]}\n\n启动日志：${BOOT_LOG || "（日志文件写不出来）"}`
+        `${bootAdvice(err, msg, PORT)}\n\n${((err && err.bootProblem && err.bootProblem.title) || msg).split("\n")[0]}\n\n启动日志：${BOOT_LOG || "（日志文件写不出来）"}`
       );
     } catch {}
     app.exit(1);
@@ -223,6 +223,42 @@ app.whenReady().then(async () => {
   }, 20000);
   if (watchdog.unref) watchdog.unref(); // 别让它拖着进程不退出
 
+  // 外链交给系统浏览器、右键给出「复制」——这两根线也必须排在 require("./server.js") 前面，
+  // 理由和上面那个 3 秒兜底亮窗一样：服务端 require 一抛异常，下面的代码一行都不会执行，
+  // 而这时窗口里画的恰恰是启动失败页。那一页上写着「把这行贴到 issue 里」「贴 issue 时带上
+  // 启动日志」，右键却弹不出「复制」——让一个刚被挡在门外的人手抄一串路径，等于没给出路。
+  // 页面上那个「提 issue」也一样：没挂 openHandler 的话它会在应用里另开一个没有地址栏、
+  // 没有登录态的 Electron 窗口，而不是去用户自己的浏览器。
+  // 站内链接留在应用里，只有真外链才交给系统浏览器。
+  // 这两件事以前是一件：凡 target="_blank" 一律 shell.openExternal。可登录令牌是一枚发给
+  // 这个 Electron session 的 HttpOnly cookie，系统浏览器身上根本没有——于是资料库里点一下
+  // 「新窗口打开」（那是 /api/files/view/…，站内地址），Safari 弹出来只有一行
+  //   {"error":"未登录","setup":false}
+  // 「本地部署预览」那条不在此列：它是另起的一个进程、另一个端口，认不了这枚 cookie，
+  // 链接里自己带着令牌，本来就该去系统浏览器（手机上扫码打开也是靠它）。
+  const sameOrigin = (u) => {
+    try { return new URL(u).origin === `http://127.0.0.1:${PORT}`; } catch { return false; }
+  };
+  const openHandler = ({ url }) => {
+    if (sameOrigin(url)) {
+      // 同一个 session，cookie 跟着走；父窗口关了它还能留着，所以不设 parent
+      const child = new BrowserWindow({
+        width: 1000, height: 780, backgroundColor: "#ffffff",
+        webPreferences: { backgroundThrottling: false },
+      });
+      child.webContents.setWindowOpenHandler(openHandler); // 子窗口里再点链接，同一套规矩
+      attachContextMenu(child.webContents);
+      child.loadURL(url);
+      return { action: "deny" };
+    }
+    // 协议白名单：file:// 能把本机任意文件递出去，自定义 scheme 会唤起别的应用——
+    // 而这两种地址都可能来自模型写的网页或下载来的资料，不是用户自己打的
+    if (/^(https?|mailto):/i.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  };
+  win.webContents.setWindowOpenHandler(openHandler);
+  attachContextMenu(win.webContents);
+
   // 数据目录在模块顶层就没建起来。后面服务端一定会跟着崩，但崩出来的错更难懂
   // （读不到 config.json 之类），所以在这儿就把真正的原因交出来。
   if (SEED_ERR) return fatal("准备数据目录", SEED_ERR);
@@ -272,35 +308,26 @@ app.whenReady().then(async () => {
   // 而服务端只监听了 IPv4，表现就是窗口一直空白。
   win.loadURL(`http://127.0.0.1:${PORT}`);
 
-  // 站内链接留在应用里，只有真外链才交给系统浏览器。
-  // 这两件事以前是一件：凡 target="_blank" 一律 shell.openExternal。可登录令牌是一枚发给
-  // 这个 Electron session 的 HttpOnly cookie，系统浏览器身上根本没有——于是资料库里点一下
-  // 「新窗口打开」（那是 /api/files/view/…，站内地址），Safari 弹出来只有一行
-  //   {"error":"未登录","setup":false}
-  // 「本地部署预览」那条不在此列：它是另起的一个进程、另一个端口，认不了这枚 cookie，
-  // 链接里自己带着令牌，本来就该去系统浏览器（手机上扫码打开也是靠它）。
-  const sameOrigin = (u) => {
-    try { return new URL(u).origin === `http://127.0.0.1:${PORT}`; } catch { return false; }
-  };
-  const openHandler = ({ url }) => {
-    if (sameOrigin(url)) {
-      // 同一个 session，cookie 跟着走；父窗口关了它还能留着，所以不设 parent
-      const child = new BrowserWindow({
-        width: 1000, height: 780, backgroundColor: "#ffffff",
-        webPreferences: { backgroundThrottling: false },
-      });
-      child.webContents.setWindowOpenHandler(openHandler); // 子窗口里再点链接，同一套规矩
-      attachContextMenu(child.webContents);
-      child.loadURL(url);
-      return { action: "deny" };
-    }
-    // 协议白名单：file:// 能把本机任意文件递出去，自定义 scheme 会唤起别的应用——
-    // 而这两种地址都可能来自模型写的网页或下载来的资料，不是用户自己打的
-    if (/^(https?|mailto):/i.test(url)) shell.openExternal(url);
-    return { action: "deny" };
-  };
-  win.webContents.setWindowOpenHandler(openHandler);
-  attachContextMenu(win.webContents);
+
+  /**
+   * 关掉主界面 = 整个应用退出，桌面宠物跟着一起走。
+   *
+   * 这件事原本只挂在 window-all-closed 上，而那个事件要求**所有**窗口都关掉才触发。
+   * 宠物是个 BrowserWindow，只要它还飘在桌面上，主界面关了也永远轮不到它。于是：
+   *   · 进程留在后台，宠物赶不走，Dock 上那个图标也不消失；
+   *   · 单实例锁还占着，用户再点图标就撞进 second-instance 分支，而 win 此刻已经销毁，
+   *     迎面收到一句「已经在运行了，但窗口没出来，请去活动监视器结束进程」——只为了关个窗口。
+   *
+   * 旧代码那行的注释写的就是「盯的是主窗口的 closed」，底下写的却是 window-all-closed。
+   * 两边对不上的时候，错的是代码。
+   *
+   * 注意这里盯的是 closed 不是 close：快捷键收起窗口走的是 win.hide()，碰不到这条路。
+   */
+  win.on("closed", () => {
+    win = null;
+    global.__wbWin = null; // 留着一个已销毁的引用，server.js 那边取到就会往死对象上调方法
+    app.quit(); // 优雅退出：会走 will-quit，宠物在那儿 destroy、全局快捷键在那儿注销
+  });
 
   // 供 server.js（同进程内运行）访问窗口：全屏切换 / 快捷键热更新
   global.__wbWin = win;
@@ -381,6 +408,19 @@ function attachContextMenu(wc) {
   });
 }
 
+/**
+ * 启动失败页上那句大标题该写什么。
+ *
+ * 开机闸门（boot-check.js）已经查出来的三种死法——Node 太老、源码版依赖没装、装机版缺文件——
+ * 它自己就带着一句该怎么修，原样用就行。以前这儿一律走下面的 bootHint 去**猜**：那些判据认的是
+ * "Cannot find module"、"EADDRINUSE" 这些英文报错，而闸门给的是中文人话，一条都对不上，于是
+ * 最知道该怎么修的三种情况，页面上写的全是「服务端启动时崩了，把这行贴到 issue 里」。
+ */
+function bootAdvice(err, msg, port) {
+  var bp = err && err.bootProblem;
+  return bp && bp.fix ? bp.fix : bootHint(msg, port);
+}
+
 function bootHint(msg, port) {
   msg = String(msg || "");
   if (/Cannot find module/.test(msg))
@@ -409,7 +449,12 @@ function bootHint(msg, port) {
  */
 function showBootFailure(err) {
   const msg = String((err && err.message) || err || "未知错误");
-  const hint = bootHint(msg, PORT);
+  const hint = bootAdvice(err, msg, PORT);
+  // 闸门查出来的病因，红框里只放那一句结论就够了；解法已经当大标题写在上面，重复一遍反而更长
+  const detail = (err && err.bootProblem && err.bootProblem.title) || msg;
+  // 这一页上所有要他动手的东西都得给出确切位置：写「用户目录的 OpenWorkBuddy/config.json」，
+  // 等于让一个已经卡在门外的人自己去猜用户目录在哪，而 Windows 和 macOS 还不是一个地方
+  const CFG = (() => { try { return dataPath("config.json"); } catch (e) { return "用户目录下的 OpenWorkBuddy/config.json"; } })();
   const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
   const html = `<!doctype html><meta charset="utf-8"><title>OpenWorkBuddy 启动失败</title>
 <style>
@@ -427,9 +472,9 @@ function showBootFailure(err) {
 <div class=box>
  <h1>OpenWorkBuddy 没能启动</h1>
  <p>${esc(hint)}</p>
- <pre>${esc(msg)}</pre>
- <p class=small>还可以试：窗口一直不出现、或者整片黑，多半是显卡驱动画不出来——在用户目录的
-   OpenWorkBuddy/config.json 里给 <code>server</code> 加一行 <code>"disable_gpu": true</code> 再打开。</p>
+ <pre>${esc(detail)}</pre>
+ <p class=small>还可以试：窗口一直不出现、或者整片黑，多半是显卡驱动画不出来——
+   给 <code>${esc(CFG)}</code> 里的 <code>server</code> 加一行 <code>"disable_gpu": true</code> 再打开。</p>
  <p class=small>启动日志（贴 issue 时带上它）：<code>${esc(BOOT_LOG || "写不出来")}</code></p>
  <p>版本 ${esc(require("./package.json").version)} · <a href="https://github.com/CatCatUncle/openworkbuddy/issues" target="_blank">提 issue</a></p>
 </div>`;
@@ -481,6 +526,6 @@ app.on("activate", () => {
   win.focus();
 });
 
-// 主窗口关掉就退出。宠物是个挂件不是窗口，不能让它把进程吊在那儿——
-// 所以这里盯的是主窗口的 closed，而不是 window-all-closed（宠物还开着时它永远不触发）。
+// 兜底。真正管退出的是主窗口的 closed（见上面 win.on("closed")）——那条不挑窗口数量，
+// 宠物开着照样退。这条只在宠物关着（默认就是关着）时顺带触发一次，quit 是幂等的，重复无害。
 app.on("window-all-closed", () => app.quit());

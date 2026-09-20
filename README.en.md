@@ -105,6 +105,11 @@ All three routes are the full product; none of them is a cut-down edition.
 curl -fsSL https://raw.githubusercontent.com/CatCatUncle/openworkbuddy/main/install-mac.sh | bash
 ```
 
+> ⚠️ **If you download the dmg by hand, the first launch will be blocked**: *"OpenWorkBuddy" Not Opened — Apple could not verify …*, with only **Done** and **Move to Trash** on the dialog.
+> That is Apple's blanket block on apps without a paid certificate, not a verdict about this build — the certificate is being applied for, and this step disappears once it comes through.
+> **Click Done → System Settings → Privacy & Security → scroll to the bottom → Open Anyway → enter your login password.** Once, and never again.
+> The `curl` line above has no dialog at all. Full three-route walkthrough below, under "Your OS blocks the first launch".
+
 **Windows / manual download**: grab `-win-setup.exe` from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases) (one installer for x64 and ARM64) and double-click; on a locked-down work machine take the portable build, `-win-x64-portable.exe` (`arm64` on ARM).
 
 **From source** (Node.js 18+, no build step, no framework — edit, refresh, done):
@@ -120,15 +125,27 @@ Everything you own lives in `~/OpenWorkBuddy` — config, sessions, output files
 
 Text too small, or want a different skin? Avatar menu, top right → **Appearance**: four text sizes, five themes and UI density all live on that page.
 
-<details>
+<details open>
 <summary><b>Your OS blocks the first launch · double-clicked and nothing happened</b></summary>
 
 <br>
 
-The build has no code-signing certificate (Apple charges $99/year, Windows a few thousand — this is a free open-source project). It is not malware.
+The code-signing certificate is still being applied for (Apple charges $99/year, Windows a few thousand), so today's builds are ad-hoc signed. What the OS blocks is *"I have never seen this developer"* — **not** *"this file is malware"*. The signature inside the build is intact; `codesign --verify --deep --strict` confirms it.
 
-- **macOS**: the `curl` line above sidesteps it — files downloaded by a browser get the quarantine flag, files fetched with curl don't. Already downloaded the dmg? Move the app to `/Applications`, then run `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`. (Right-click → Open only works on macOS 14 and earlier; Apple removed that route in 15, so following an old tutorial looks like "it just won't open".)
-- **Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway".
+**macOS — pick one of three**
+
+1. **Without touching a terminal (recommended)**: double-click → click **Done** on the dialog (*not* Move to Trash) → open **System Settings → Privacy & Security** → scroll all the way down to the **Security** section, where it says *"OpenWorkBuddy" was blocked to protect your Mac* → click **Open Anyway** → enter your login password → confirm with **Open**. Once, and never again.
+2. **One command**: **first drag the .app out of the dmg into Applications** (the dmg is a read-only volume, so running this inside it fails), then
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app
+   ```
+3. **No dialog at all**: use the `curl` line at the top. A browser-downloaded file gets tagged `com.apple.quarantine`; a curl-fetched one doesn't, so Gatekeeper never enters the picture.
+
+> **Don't follow the old "right-click → Open" tutorials.** That route only works on macOS 14 and earlier — Apple removed it in macOS 15 (Sequoia), and the right-click dialog no longer has a second **Open** button, which is exactly why it reads as "it just won't open".
+>
+> If the message says **"is damaged and can't be opened"** rather than *could not be verified*, the signature really was corrupted — cloud drives, sync folders and some unzip tools all do this. Download again, or re-sign in place with `codesign --force --deep --sign - /Applications/OpenWorkBuddy.app`.
+
+**Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway".
 - **Nothing happened**: the boot log is at `~/OpenWorkBuddy/logs/boot.log` — wherever it stops is the problem. Running from source, try `node cli.js doctor` first. Walk-through → [安装与启动](docs/安装与启动.md#双击了没反应) (Chinese)
 
 </details>
@@ -245,6 +262,15 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
+- **Sep 20** **You can right-click-copy on the boot-failure page now**: it says "paste this line into an issue", but the context menu was wired after the server `require` — which on a failed boot *is* the throw site, so the one page you most need to copy from was the one page you couldn't, short of copying it off the screen by hand. "File an issue" now opens your own browser instead of a chrome-less window inside the app, and the GPU tip names the real path to `config.json` instead of leaving you to guess where your home directory is
+- **Sep 20** **When it won't open, the screen now says how to fix it instead of "file an issue"**: missing dependencies → `npm install`, an installed build missing files → re-download from Releases, Node too old → get the LTS build. The gate already diagnosed all three; the window used to re-guess from English keywords, so every one of them fell through to the paste-this-into-an-issue catch-all
+- **Sep 20** **A missing package now says which one, and how many in total**: the dependency list is no longer hand-written (it had stalled at 3 while `package.json` declares 13), and past three names it appends the total — "the whole install failed" and "one package is missing" used to look identical on screen, and they call for different actions
+- **Sep 20** In settings, **asking a provider for models and getting none back no longer makes the line of text vanish**: a local Ollama now tells you which `ollama pull` to run and roughly how big it is, and reopening the dropdown after the pull really asks again (that empty answer is no longer cached); a cloud provider returning nothing is a different story and says so; and a request that never went out gets a sentence of its own
+- **Sep 20** Fetching a page is **no longer a pointless multiple-choice question**: `render_page` is folded into `fetch_url`'s `render:"force"` — they were always the same code, and two names in the list only made the model choose every time. The old name still works, and external CLI engines are still lent it
+- **Sep 20** Connecting a **local Ollama now lets you pick the model**: the wizard asks your machine what it has (`/v1/models`) and lists it. The template's default is pre-selected only if you actually have it; anything missing goes in via "type it in". If Ollama isn't running it tells you to `ollama serve` then `ollama pull`, with an "ask again" link for when you come back. The model you pick is the one probed, and a failed probe leaves your working config untouched. The offline fallback dropped from `qwen3:14b` (~9GB) to `qwen3:8b` (~5GB)
+- **Sep 20** macOS users on an installed build **are no longer sent back to a fresh dmg** when they update (which would hit "Apple could not verify" all over again): the first thing offered is the zero-dialog `curl`, drawn as its own monospace line with a copy link, and shown only when there really is a newer version
+- **Sep 20** Drag or paste a file into the composer and **the chip is there the instant you let go** (it used to wait for the upload — 124ms of blank on a 4MB clip, long enough that people drop it twice). Chips carry the file size, delete and open are real buttons, and clicking the name opens that file. A failed upload withdraws its text anchor and leaves a retry button; hitting send mid-upload is held. Duplicate files and dropped folders, both silent failures before, now say so.
+- **Sep 20** On macOS, **the "Apple could not verify" dead-end dialog now comes with the way out, everywhere**: the dmg window itself shows Done → System Settings → Privacy & Security → scroll to the bottom → Open Anyway, and the README, the install doc and all 7 published releases say the same, with the no-terminal route first. The certificate is still in review; this step disappears once it lands.
 - **Sep 20** Card text **stops being covered, and stops being sliced in half**: the reason a connector won't connect used to render as a tag pill, so only a slice from the middle survived — it's a block of red text now, three lines with a one-click expand. Every “show a few lines” box — command text, canvas node bodies — now caps on a whole line instead of cutting the last one through the glyphs, and the corner badge no longer sits on top of the title
 - **Sep 20** **35 built-in skills, 52 connectors**: ten new skills — competitor watch, market research, spreadsheet analysis, one-draft-many-platforms, customer feedback, SEO briefs, financial models, podcasts, infographics, sales outreach; connectors now include Linear, Jira / Confluence, Sentry, Vercel, Figma, Airtable, Asana, Canva, Apify, YouTube, AntV charts, EdgeOne one-click deploy and Bilibili
 - **Sep 20** The real browser **now leaves when you're done with it**: closed after ten idle minutes, taken down with the process that started it, or closed on demand — and the whole process group goes, not just the parent. One was left running for ten and a half hours with its GPU process at 160% CPU

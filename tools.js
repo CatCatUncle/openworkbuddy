@@ -376,7 +376,12 @@ const TOOL_DEFS = [
   // fetch_url 本来就会在抓到空壳时自动渲染兜底，render_page 只多了个「不管像不像空壳都渲染」。
   // 代价却是实打实的——模型每次抓网页都要先做一道选择题，提示词里还得专门教它先后顺序
   // （"先用 fetch_url，读不到再用它"），教了也常常第一次就挑错。现在那道选择题变成 fetch_url
-  // 的一个参数：render:"force"。render_page 这个名字仍然能调（见 executeTool），但不在工具清单里了。
+  // 的一个参数：render:"force"。
+  //
+  // 这句话在 2026-09-14 就写在这儿了，可当时只写了字没删定义——清单里那条 render_page 一直还在，
+  // 提示词里还专门有一行教它「空壳就用 render_page」，和这个参数的描述互相打架。这回真删了：
+  // executeTool 里的 case 保留（还活着的会话、外部 MCP 客户端、历史排期任务里都可能还攥着这个
+  // 名字，落到 default 只会得到一句「未知工具」），但模型的工具清单里不再有它，也就没有那道选择题。
   {
     name: "fetch_url",
     description:
@@ -423,21 +428,6 @@ const TOOL_DEFS = [
         headless: { type: "boolean", description: "自己拉 Chrome 时用无头模式，不弹窗口。服务器上跑必须开" },
       },
       required: ["action"],
-    },
-  },
-  // 桌面版保留旧名字作为显式「强制浏览器渲染」入口，兼容已经在跑的会话和旧版 CLI；
-  // 纯 node 模式由 agent.js 的 DESKTOP_ONLY_TOOLS 摘掉。新任务优先用 fetch_url 的 render:force；
-  // render_page 作为兼容别名保留，避免旧技能和已有会话突然失效。
-  {
-    name: "render_page",
-    description: "用内置浏览器真实打开一个页面、等 JavaScript 渲染完再取正文。只在桌面版可用；服务端模式请用 fetch_url 的静态结果或直接找数据接口。",
-    input_schema: {
-      type: "object",
-      properties: {
-        url: { type: "string" },
-        wait_ms: { type: "number", description: "等待渲染的毫秒数，默认 2500，范围 500~8000" },
-      },
-      required: ["url"],
     },
   },
   {

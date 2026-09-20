@@ -64,7 +64,7 @@ const LENDABLE = [
   "gen_diagram",      // mermaid / echarts / graphviz 出图
   "look_at_image",    // 看图（CLI 在无头管道里读不了本地图片）
   "read_document",    // 读 Office 文档/压缩包：CLI 只会按文本读，拿回去是一坨乱码
-  "render_page",      // 带 JS 渲染后取正文
+  "render_page",      // 带 JS 渲染后取正文（本项目自己的模型不用它，见下面 BRIDGE_ONLY）
   "check_page",       // 打开做好的网页，看控制台报错和实际效果
   "web_search",       // 走本项目配的搜索渠道
   "library_list",     // 技能库：有哪些
@@ -91,11 +91,33 @@ const ALLOW = new Set(
 // 挂一个必然失败的工具，比不挂更糟：CLI 那边的模型会先照着做一遍，再回来重想。
 const NEEDS_RENDERER = ["html_to_image", "render_page"];
 
+// 只借给外部引擎、本项目自己的模型看不到的工具定义。
+//
+// render_page 从 TOOL_DEFS 里删掉了，因为对本项目的模型来说它是道纯粹的选择题：同一件事
+// fetch_url 带 render:"force" 就做了，多一个名字只会让它每次抓网页都先挑一遍。
+// 但外部 CLI 引擎（Claude Code / Codex）手上没有本项目的 fetch_url——它们自带的抓网页工具
+// 不跑 JS，动态站点一律空壳。对它们来说这儿根本没有选择题，少借一个就是真少一样能力。
+// 执行走的还是 executeTool 里那条 fetch_url/render_page 合并的 case，不是第二套实现。
+const BRIDGE_ONLY = [
+  {
+    name: "render_page",
+    description: "用内置浏览器真实打开一个页面、等 JavaScript 渲染完再取正文。正文全靠 JS 的站点（B 站、微博、各类单页应用）用它，普通抓取工具在这些站点上只能拿到空壳。",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        wait_ms: { type: "number", description: "等待渲染的毫秒数，默认 2500，范围 500~8000" },
+      },
+      required: ["url"],
+    },
+  },
+];
+
 /** 白名单 ∩ 本项目真有的工具 ∩ 这个进程里真跑得通的。名字对不上就不挂。 */
 function lentDefs() {
   let gui = false;
   try { gui = !!require("../browser-render").available(); } catch {}
-  return tools.TOOL_DEFS.filter(
+  return [...tools.TOOL_DEFS, ...BRIDGE_ONLY].filter(
     (d) => ALLOW.has(d.name) && LENDABLE.includes(d.name) && (gui || !NEEDS_RENDERER.includes(d.name))
   );
 }

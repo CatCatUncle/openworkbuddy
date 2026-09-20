@@ -23,6 +23,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const store = require("./store");
 
 /** 工作区根目录下这些不算「散落的旧文件」，一概不动 */
 const KEEP_AT_ROOT = new Set([".DS_Store", ".openworkbuddy", ".trash", "node_modules", ".git"]);
@@ -35,8 +36,38 @@ function stampToday() {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
 }
 
+/**
+ * 读账本。
+ *
+ * 读不出来**不能**当成「没跑过」。账本一空，下次启动整套迁移会从头再跑一遍：
+ * 又多一个 `升级前备份_<日期>/`（画布有多大就多占多少），tidy-root-v1 还会把这中间
+ * 新产生的根目录文件当成历史遗留再收一次。所以坏了先拿 .bak 顶上——写的时候 store
+ * 会留一份跟正本一字不差的，实在顶不住才认栽。
+ */
 function readLedger(file) {
-  try { return JSON.parse(fs.readFileSync(file, "utf8")) || {}; } catch { return {}; }
+  try { return JSON.parse(fs.readFileSync(file, "utf8")) || {}; } catch {}
+  try {
+    const bak = JSON.parse(fs.readFileSync(file + ".bak", "utf8")) || {};
+    console.warn("[迁移] 账本读不出来，已回退到上一版 .bak——这一步是为了别让整套迁移白跑第二遍");
+    return bak;
+  } catch { return {}; }
+}
+
+/** 上一次升级前备份留在哪儿（日期最新的那个）。没有就空串 */
+function lastBackupDir(dir) {
+  try {
+    const olds = fs.readdirSync(dir).filter((n) => n.startsWith("升级前备份_")).sort();
+    return olds.length ? path.join(dir, olds[olds.length - 1]) : "";
+  } catch { return ""; }
+}
+
+/** 两个文件字节完全相同。先比大小，省掉绝大多数次读盘 */
+function sameBytes(a, b) {
+  try {
+    const sa = fs.statSync(a), sb = fs.statSync(b);
+    if (sa.size !== sb.size) return false;
+    return fs.readFileSync(a).equals(fs.readFileSync(b));
+  } catch { return false; }
 }
 
 /**
@@ -58,15 +89,23 @@ function backupCanvases(wsRoot) {
     }
   }
   if (!files.length) return { copied: 0, to: "" };
+  // 跟上一份留底一字不差的，不留第二份。
+  // 这条保的是「重复备份」那种占盘：迁移本该一辈子只跑一次，可它跑不跑取决于账本还在不在，
+  // 而账本只要读不出来就归零。真发生了，这儿至少不会为同一份画布再抄一遍——画布是几十兆
+  // 的量级，一次升级白占一次，攒几回就是几百兆躺在用户看不见的 .openworkbuddy 底下。
+  const prev = lastBackupDir(dir);
+  const todo = prev ? files.filter((f) => !sameBytes(f, path.join(prev, path.basename(f)))) : files;
+  if (!todo.length) return { copied: 0, to: "" };
   const to = path.join(dir, "升级前备份_" + stampToday());
   fs.mkdirSync(to, { recursive: true });
   let copied = 0;
-  for (const f of files) {
+  for (const f of todo) {
     const dest = path.join(to, path.basename(f));
     // 已经有了就不覆盖：同一天升级两回，第一份才是真正的「升级前」
     if (fs.existsSync(dest)) continue;
     try { fs.copyFileSync(f, dest); copied++; } catch {}
   }
+  if (!copied) { try { fs.rmdirSync(to); } catch {} return { copied: 0, to: "" }; }
   return { copied, to: path.relative(wsRoot, to) };
 }
 
@@ -196,13 +235,22 @@ function runMigrations(workspace, ledgerFile, options = {}) {
     done.add(m.id);
     if (note) results.push({ id: m.id, title: m.title, note });
   }
-  try {
-    fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
-    fs.writeFileSync(ledgerFile, JSON.stringify({ ...ledger, version: version || ledger.version || "", done: { ...(ledger.done || {}), [key]: [...done] } }, null, 2), "utf8");
-  } catch (e) {
-    console.warn("[迁移] 账本写不进去，下次启动会再跑一遍（不影响使用）：" + e.message);
+  // 账本落盘。跟原来两处不一样：
+  //   · **没变就不写**。原来每次启动都整份重写一遍，而绝大多数启动什么都没跑——
+  //     等于每开一次应用，就把「跑过什么」这份唯一的凭证拿出来重写一次。
+  //   · **原子写**。writeFileSync 直接盖正本，写到一半断电/断进程，盘上留的是半个 JSON；
+  //     解析不出来就等于账本归零，下次启动整套迁移全跑一遍，于是又多一个升级前备份文件夹。
+  //     改走 store：先写 .tmp 再 rename，顺手留一版 .bak 给上面 readLedger 兜底。
+  const nextVersion = version || ledger.version || "";
+  const was = (ledger.done || {})[key] || [];
+  if (nextVersion !== (ledger.version || "") || done.size !== was.length) {
+    try {
+      store.writeJsonAtomic(ledgerFile, { ...ledger, version: nextVersion, done: { ...(ledger.done || {}), [key]: [...done] } }, { pretty: true });
+    } catch (e) {
+      console.warn("[迁移] 账本写不进去，下次启动会再跑一遍（不影响使用）：" + e.message);
+    }
   }
   return results;
 }
 
-module.exports = { runMigrations, MIGRATIONS, _internals: { tidyLooseFiles, backupCanvases, stampToday } };
+module.exports = { runMigrations, MIGRATIONS, _internals: { tidyLooseFiles, backupCanvases, stampToday, readLedger, sameBytes, lastBackupDir } };
