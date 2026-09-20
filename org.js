@@ -18,6 +18,7 @@
  *    所以 multiTenant() 为假时管理后台只显示成员/用量，不显示组织切换。
  */
 
+const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { dataPath } = require("./paths");
@@ -29,7 +30,6 @@ const DATA_DIR = process.env.OPENWORKBUDDY_DATA_DIR || dataPath("data");
 const ORGS_FILE = path.join(DATA_DIR, "orgs.json");
 
 const DEFAULT_ORG = "default";
-const AUDIT_CAP = 1000;
 
 /**
  * 套餐档位。seats / monthly_credits 只是**默认值**，每个组织可以在企业设置里单独改；
@@ -149,7 +149,7 @@ const SETTING_RANGE = {
 };
 
 function emptyDb() {
-  return { orgs: [], depts: [], invites: [], audit: [] };
+  return { orgs: [], depts: [], invites: [] };
 }
 function load() {
   // strict：读不出来就抛，绝不能拿空壳把整个组织表覆盖掉（理由同 account.js 的 readStore）
@@ -158,13 +158,12 @@ function load() {
     orgs: Array.isArray(d.orgs) ? d.orgs : [],
     depts: Array.isArray(d.depts) ? d.depts : [],
     invites: Array.isArray(d.invites) ? d.invites : [],
-    audit: Array.isArray(d.audit) ? d.audit : [],
   };
 }
 function save(db) {
-  db.audit = (db.audit || []).slice(0, AUDIT_CAP);
-  // 跟 users.json 一个待遇（0600）：这本里有**还没用完的邀请码**（拿到就能自己开号进来，
-  // 角色还是发码的人预置好的）和整本审计流水（谁什么时候放行了哪条命令）。默认 0644 等于摊开给同机器上别的账号看
+  // 跟 users.json 一个待遇（0600）：这本里有**还没用完的邀请码**——拿到就能自己开号进来，
+  // 角色还是发码的人预置好的。默认 0644 等于摊开给同机器上别的账号看
+  // （审计流水 2026-09-20 搬去 data/audit/<orgId>.jsonl 了，那边同样是 0600）
   store.writeJsonAtomic(ORGS_FILE, db, { pretty: true, mode: store.SECRET_MODE });
 }
 
@@ -422,22 +421,143 @@ function revokeInvite(orgId, code, actor) {
 }
 
 // ---------- 审计 ----------
+/**
+ * 审计流水一个组织一个文件：data/audit/<orgId>.jsonl，一行一条，新的往后追。
+ *
+ * 为什么不跟 orgs.json 放一起（2026-09-20 改的，之前就是放一起的）：
+ *
+ * 1）**一个租户能把另一个租户的审计记录挤掉**。封顶是 `db.audit.slice(0, 1000)`，
+ *    而 db.audit 是所有组织**合用**的一个数组。实测：乙公司记了 21 条，甲公司之后
+ *    正常运营记了 1200 条，乙公司那 21 条一条不剩，管理后台显示「0 条」。
+ *    乙公司什么都没做错，也没有任何提示——0 看上去就是「从来没发生过事」。
+ *    多租户里这是硬伤：邻居的活动量能删掉你的合规记录。
+ *
+ * 2）**审计流水在热路径上收税**。getOrg() 有 37 处调用，每次都要把整个 orgs.json
+ *    连同全部审计记录读出来 parse 一遍。实测一次 getOrg()：审计 0 条时 0.02ms，
+ *    1000 条 0.91ms，50000 条 45.57ms。封顶定在 1000 就是被这个逼的——
+ *    也就是说第 1 条和第 2 条是同一个病：为了不拖慢每个请求，只好把合规记录删掉。
+ *
+ * 拆开之后两头都松了：orgs.json 回到只有组织/部门/邀请码，getOrg() 不再为审计付钱；
+ * 审计按组织分文件，谁也挤不掉谁，封顶可以放到每组织 5000 条。
+ * 追加是 appendFileSync 一行，不再是「整个文件读出来、改一下、整个写回去」。
+ */
+const AUDIT_DIR = path.join(DATA_DIR, "audit");
+const AUDIT_CAP = 5000; // 每个组织，不是所有组织合起来
+
+/**
+ * 组织 id 落到文件名。id 是我们自己发的（`o_` + 十六进制）或者 "default"，
+ * 但这个值一路是从 user.org 带过来的，万一哪天能被外面写进来，`../../` 就能写到数据目录外面去。
+ * 这里只放行 [A-Za-z0-9_-]，其余一律换成下划线——宁可两个怪 id 撞到同一个文件，也不许写出去。
+ */
+function auditFile(orgId) {
+  const safe = String(orgId || DEFAULT_ORG).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64) || DEFAULT_ORG;
+  return path.join(AUDIT_DIR, safe + ".jsonl");
+}
+
+/** 读一个组织的全部审计条目，最新的在前（文件里是最新的在后，这里反过来） */
+function readAudit(orgId) {
+  let text;
+  try {
+    text = fs.readFileSync(auditFile(orgId), "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw new Error(`审计流水读不出来（${e.message}）`);
+  }
+  const out = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    // 断电断在半行上，坏的只有那一行。整本因此读不出来的话，等于一次掉电抹掉全部合规记录
+    try { out.push(JSON.parse(line)); } catch { /* 这一行坏了，跳过 */ }
+  }
+  out.reverse();
+  return out;
+}
+
+/** 超过封顶就把最老的裁掉，只留最新的 AUDIT_CAP 条 */
+function trimAudit(orgId, rows) {
+  const keep = rows.slice(0, AUDIT_CAP); // rows 是新的在前
+  const body = keep.slice().reverse().map((r) => JSON.stringify(r)).join("\n") + "\n";
+  store.writeTextAtomic(auditFile(orgId), body, { mode: store.SECRET_MODE });
+}
+
 function pushAudit(db, e) {
-  db.audit.unshift({
+  appendAudit(e);
+}
+
+/** 写一条。追加一行，O(1)，不读旧的 */
+function appendAudit(e) {
+  ensureMigrated();
+  const orgId = e.org || DEFAULT_ORG;
+  const row = {
     ts: new Date().toISOString(),
-    org: e.org || DEFAULT_ORG,
+    org: orgId,
     actor: e.actor || "系统",
     action: e.action,
     target: e.target || "",
     detail: e.detail || "",
-  });
+  };
+  fs.mkdirSync(AUDIT_DIR, { recursive: true });
+  const file = auditFile(orgId);
+  // 这本里是「谁在什么时候放行了哪条命令」，跟 users.json 一个待遇（0600）：
+  // 默认 0644 等于摊开给同机器上别的账号看
+  fs.appendFileSync(file, JSON.stringify(row) + "\n", { mode: store.SECRET_MODE });
+  store.tighten(file);
+  // 每 256 条查一次要不要裁。每次都数一遍等于又把文件读回来了，那就白拆了
+  auditWrites.set(orgId, (auditWrites.get(orgId) || 0) + 1);
+  if (auditWrites.get(orgId) % 256 === 0) {
+    const rows = readAudit(orgId);
+    if (rows.length > AUDIT_CAP) trimAudit(orgId, rows);
+  }
 }
+const auditWrites = new Map();
+
+/**
+ * 老数据搬家：orgs.json 里那个合用的 audit 数组拆成一个组织一个文件。
+ * 只在还没搬过的时候跑一次（搬完 orgs.json 里就没有 audit 字段了）。
+ * 先把文件写出来、确认写成了，再动 orgs.json——顺序反了的话中间崩一次就是记录全没。
+ */
+function migrateAudit() {
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(ORGS_FILE, "utf8")); } catch { return; }
+  if (!raw || !Array.isArray(raw.audit) || !raw.audit.length) return;
+  const byOrg = new Map();
+  for (const e of raw.audit) {
+    const id = e && e.org ? e.org : DEFAULT_ORG;
+    if (!byOrg.has(id)) byOrg.set(id, []);
+    byOrg.get(id).push(e);
+  }
+  fs.mkdirSync(AUDIT_DIR, { recursive: true });
+  for (const [id, rows] of byOrg) {
+    // 老数组是新的在前，文件里要新的在后，所以反过来写。
+    // 这里是**覆盖**不是追加：搬到一半崩过的话，重跑会把同一批再写一遍——
+    // 追加的话那一批就重了。覆盖是幂等的，而且安全：能先于搬家往这些文件里写东西的只有
+    // appendAudit，而它第一件事就是 ensureMigrated()，所以此刻文件里不可能有新记录
+    const body = rows.slice(0, AUDIT_CAP).reverse().map((r) => JSON.stringify(r)).join("\n") + "\n";
+    store.writeTextAtomic(auditFile(id), body, { mode: store.SECRET_MODE });
+  }
+  delete raw.audit;
+  store.writeJsonAtomic(ORGS_FILE, raw, { pretty: true, mode: store.SECRET_MODE });
+}
+
+/**
+ * 搬家只在老装机上跑一次。读和写之前都要过这一道：
+ * 顺序反了的话，老装机上管理员先做一个操作（新记录落到新文件），随后有人打开审计页
+ * 才触发搬家，老记录就被追加到新记录**后面**去了——文件里是新的在后，于是
+ * 界面上会把一年前的事显示成刚刚发生。
+ */
+let migrated = false;
+function ensureMigrated() {
+  if (migrated) return;
+  migrated = true;
+  try { migrateAudit(); } catch (e) {
+    migrated = false; // 这次没搬成，下次还得试；吞掉不报的话老记录会一直看不见
+    throw e;
+  }
+}
+
 /** 给外部调用的单条写入（管理成员那些操作在 account.js 里发生，走这个口子记账） */
 function audit(e) {
-  const db = load();
-  ensureDefault(db);
-  pushAudit(db, e);
-  save(db);
+  appendAudit(e);
 }
 /**
  * 审计流水。opts：from/to（`YYYY-MM-DD` 闭区间）、q（操作人/动作/对象/详情里搜）、
@@ -450,7 +570,8 @@ function audit(e) {
 function listAudit(orgId, opts) {
   if (typeof opts === "number" || typeof opts === "string") opts = { limit: opts };
   opts = opts || {};
-  const all = load().audit.filter((a) => a.org === (orgId || DEFAULT_ORG));
+  ensureMigrated();
+  const all = readAudit(orgId || DEFAULT_ORG);
   const from = String(opts.from || "").slice(0, 10);
   const to = String(opts.to || "").slice(0, 10);
   const needle = String(opts.q || "").trim().toLowerCase();
@@ -476,6 +597,14 @@ function listAudit(orgId, opts) {
     // 下拉里就只剩这一个，人再也选不回去
     actors: [...new Set(all.map((a) => a.actor).filter(Boolean))].sort(),
     actions: [...new Set(all.map((a) => a.action).filter(Boolean))].sort(),
+    // 超过封顶就是真把最老的裁掉了，界面得说出来。不说的话，合规的人搜「8 月谁改了额度」
+    // 搜出 0 条，看见的是「那个月没人动过」——而实际是那段记录被我们删了。
+    // 0 是「没记过」不是「没发生」，这两件事在审计表里差着一场官司
+    capped: all.length >= AUDIT_CAP,
+    kept: all.length,
+    cap: AUDIT_CAP,
+    // 现存最早一条的时间。界面拿它说「本组织审计从 X 开始，更早的已超出保留条数」
+    since: all.length ? String(all[all.length - 1].ts || "") : "",
   };
 }
 
@@ -486,5 +615,5 @@ module.exports = {
   listDepts, addDept, removeDept,
   createInvite, listInvites, peekInvite, consumeInvite, revokeInvite,
   audit, listAudit,
-  _internals: { load, save, ensureDefault, ORGS_FILE, newId },
+  _internals: { load, save, ensureDefault, ORGS_FILE, newId, AUDIT_DIR, AUDIT_CAP, auditFile, readAudit, migrateAudit, trimAudit },
 };

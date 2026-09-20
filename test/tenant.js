@@ -967,6 +967,215 @@ async function login(username, password) {
   ok(/account\.chargeRun\(owner,/.test(SRV),
      "钱还是记在管理员头上：「记谁的账」和「用谁的记忆」是两件事，别一起改");
 
+
+  // ============================================================================
+  // 审计流水的保管。2026-09-20 之前这一段是坏的，而且坏得很安静：
+  // 全部组织的审计条目挤在 orgs.json 里同一个数组，存盘时 slice(0, 1000)。
+  // 于是 A 个忙组织正常运营一阵，B 个安静组织的合规记录会被**整个挤掉**，
+  // 界面上显示「0 条」——跟「这个组织从来没人动过」长得一模一样。
+  // 下面每条都带反向对照：光验「我的还在」是不够的，还得验「别人的没被我挤掉」。
+  // ============================================================================
+  console.log("\n【18】审计流水：邻居挤不掉你的记录，存满了要说出来");
+  {
+    const quiet = org.createOrg({ name: "安静公司" }).id;
+    const busy = org.createOrg({ name: "忙碌公司" }).id;
+    for (let i = 0; i < 20; i++) org.audit({ org: quiet, actor: "安静管理员", action: "改额度", target: "员工" + i });
+    // 建组织本身也记一条，所以是 20 + 1。别写死 20——写死的话这条断言测的是
+    // 「createOrg 记不记账」，不是「记录留不留得住」
+    const before = org.listAudit(quiet, { limit: 100 }).total;
+    eq(before, 21, "安静公司先记下 20 条改动 + 建组织那一条");
+
+    // 忙碌公司写到**超过**封顶。老实现在这里会把安静公司的 20 条全挤没
+    const CAP = org._internals.AUDIT_CAP;
+    for (let i = 0; i < CAP + 200; i++) org.audit({ org: busy, actor: "忙碌管理员", action: "放行命令", target: "任务" + i });
+
+    eq(org.listAudit(quiet, { limit: 100 }).total, before,
+       "★邻居写爆了，安静公司那些记录一条不少★ 这是多租户审计的底线");
+    const b = org.listAudit(busy, { limit: 10 });
+    ok(b.total >= CAP, "忙碌公司自己也留够了封顶那么多", { total: b.total, cap: CAP });
+    ok(b.total <= CAP + 256, "但也没无限长：超了要真裁掉最老的", { total: b.total, cap: CAP });
+    // 裁掉的必须是**最老的**那批。只验条数和「最新的在最前」是不够的：
+    // 把「留最新 CAP 条」改成「留最老 CAP 条」，那两条断言照样全绿，
+    // 而实际效果是新记录一条都留不住——审计表永远停在开服那几天
+    // 这里不能用 listAudit 取全集：它的 limit 被夹在 1000（后端不该为一个请求把整本读进内存）。
+    // 传 CAP+500 只会拿回最新 1000 条，看不见最老的那头——
+    // 而「裁掉的是最老的还是最新的」这件事，恰恰只有最老的那头能证明
+    const all = org._internals.readAudit(busy);
+    eq(org.listAudit(busy, { limit: CAP + 500 }).audit.length, 1000,
+       "反向对照：listAudit 的 limit 确实被夹在 1000，所以上面必须绕开它读文件");
+    const nums = all.map((x) => Number(String(x.target).replace("任务", ""))).filter((n) => !isNaN(n));
+    ok(nums.length > 0, "取到了忙碌公司的编号", nums.length);
+    eq(Math.max(...nums), CAP + 199, "★留下的里头有最后写的那条★");
+    ok(Math.min(...nums) > 0,
+       "★被裁掉的是最老的那头，不是最新的★ 留最老那批的话这里会是 0", { 最小: Math.min(...nums), 最大: Math.max(...nums) });
+
+    // 反向对照：两边真的是两本账，不是同一本被筛出来的
+    const qActors = new Set(org.listAudit(quiet, { limit: 100 }).audit.map((x) => x.actor));
+    ok(!qActors.has("忙碌管理员"), "反向对照：安静公司那本里没有邻居的操作人", [...qActors]);
+    ok(org.listAudit(busy, { limit: 5 }).audit.every((x) => x.org === busy), "忙碌公司那本里每条都是自己的");
+
+    // 最新的要在最前。文件是往后追加的，读回来必须反过来——顺序错了，
+    // 界面第一屏给的是一年前的事，而看这张表的人正是靠第一屏下判断的
+    const newest = org.listAudit(busy, { limit: 1 }).audit[0];
+    eq(newest.target, "任务" + (CAP + 199), "★最新一条排在最前★ 不是最老那条");
+
+    // 存满了得说出来。0 是「没记过」不是「没发生」——
+    // 合规的人搜不到，看见的必须是「超出保留条数」，不能是一片空白
+    const cap = org.listAudit(busy, { limit: 5 });
+    eq(cap.capped, true, "★到顶了要把 capped 报上去★ 界面靠它提示「更早的已被挤掉」");
+    eq(cap.cap, CAP, "封顶数也报上去，提示里要写清楚是多少条");
+    ok(cap.since && /^\d{4}-\d{2}-\d{2}T/.test(cap.since), "现存最早一条的时间报上去了", cap.since);
+    // 反向对照：没存满的组织不许瞎报
+    const q2 = org.listAudit(quiet, { limit: 5 });
+    eq(q2.capped, false, "反向对照：安静公司没存满，不许报 capped");
+    eq(q2.kept, before, "kept 是真实留下的条数");
+
+    // 组织 id 落成文件名。这个值一路从 user.org 带过来，
+    // 万一哪天能被外面写进来，`../` 就能把审计写到数据目录外面去
+    // 判据只能是「规范化之后还在不在 audit 目录里」。
+    // 不能写成 !file.includes("..")——path.join 早把 `../` 算掉了，字符串里本来就不剩 `..`，
+    // 那条断言永远是绿的，而文件已经写到 /tmp/etc 去了（这一条就是这么被变异测试抓出来的）
+    for (const bad of ["../../../etc/passwd", "..", "a/b", "o_x\u0000", "/absolute"]) {
+      const file = org._internals.auditFile(bad);
+      const inside = path.resolve(file).startsWith(path.resolve(org._internals.AUDIT_DIR) + path.sep);
+      ok(inside, "★怪 id 不许把审计写出 audit 目录：" + JSON.stringify(bad) + "★", file);
+    }
+    // 反向对照：正常 id 照常落在该落的地方，别把闸门修成谁都进不去
+    ok(path.basename(org._internals.auditFile(quiet)) === quiet + ".jsonl",
+       "反向对照：正常组织 id 原样当文件名", org._internals.auditFile(quiet));
+
+    // 审计里是「谁放行了哪条命令」，跟 users.json 一个待遇
+    const mode = fs.statSync(org._internals.auditFile(quiet)).mode & 0o777;
+    eq(mode, 0o600, "审计文件 0600：同机器上别的账号读不到");
+
+    // orgs.json 不该再背着审计——getOrg() 有 37 处调用，每次都要把它整个 parse 一遍。
+    // 实测一次 getOrg()：审计 0 条 0.02ms，1000 条 0.91ms，50000 条 45.57ms。
+    // 当年封顶只能定在 1000，就是被这条逼的；挤掉邻居记录和拖慢每个请求是同一个病
+    const rawOrgs = JSON.parse(fs.readFileSync(org._internals.ORGS_FILE, "utf8"));
+    ok(!("audit" in rawOrgs), "★orgs.json 里不许再有 audit 字段★ 它在热路径上，审计不该收这个税");
+    ok(rawOrgs.orgs.length >= 2 && Array.isArray(rawOrgs.invites), "反向对照：组织和邀请码还在这本里，没被一起搬走");
+  }
+
+  console.log("\n【18.1】老装机搬家：orgs.json 里那本合用的要原样搬出来，一条不丢");
+  {
+    // 单独开一个数据目录，摆成升级前的样子，再用子进程去读——
+    // 搬家是一次性的，在当前进程里已经跑过了，必须换个进程才试得到
+    const OLD = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mig-"));
+    const OLDD = path.join(OLD, "data");
+    fs.mkdirSync(OLDD, { recursive: true });
+    fs.writeFileSync(path.join(OLDD, "orgs.json"), JSON.stringify({
+      orgs: [{ id: "default", name: "默认" }, { id: "o_laoke", name: "老客户" }],
+      depts: [], invites: [{ code: "ABC", org: "default" }],
+      audit: [ // 老格式：新的在前
+        { ts: "2026-09-19T10:00:00.000Z", org: "o_laoke", actor: "老客户管理员", action: "改额度", target: "张三", detail: "" },
+        { ts: "2026-09-18T10:00:00.000Z", org: "default", actor: "老王", action: "放行命令", target: "rm -rf build", detail: "" },
+        { ts: "2026-09-17T10:00:00.000Z", org: "default", actor: "老王", action: "添加成员", target: "李四", detail: "" },
+      ],
+    }, null, 2));
+    const probe = `
+      process.env.OPENWORKBUDDY_DATA_DIR = ${JSON.stringify(OLDD)};
+      const org = require(${JSON.stringify(path.join(ROOT, "org"))});
+      const fs = require("fs");
+      const a = org.listAudit("default", { limit: 50 });
+      const b = org.listAudit("o_laoke", { limit: 50 });
+      const raw = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(OLDD, "orgs.json"))}, "utf8"));
+      // 同一个进程里再调一次是白调的——ensureMigrated 有进程内闸门。
+      // 幂等性得换个进程重跑才试得到，所以在下面单独起第二个子进程
+      const again = org.listAudit("default", { limit: 50 }).total;
+      console.log(JSON.stringify({
+        def: a.total, defNewest: a.audit[0] && a.audit[0].target,
+        lao: b.total, laoNewest: b.audit[0] && b.audit[0].target,
+        stillHasAudit: "audit" in raw, orgs: raw.orgs.length, invites: raw.invites.length,
+        again,
+      }));
+    `;
+    const out = require("child_process").spawnSync(process.execPath, ["-e", probe], { encoding: "utf8" });
+    let m = null;
+    try { m = JSON.parse(String(out.stdout).trim().split("\n").pop()); } catch {}
+    ok(m, "搬家探针跑起来了", (out.stderr || "").slice(0, 300));
+    if (m) {
+      eq(m.def, 2, "★default 那两条搬过来了★");
+      eq(m.lao, 1, "★老客户那一条也搬过来了，没跟 default 混在一起★");
+      eq(m.defNewest, "rm -rf build", "顺序没搬反：最新的还是最新的（文件里是往后追加，读回来要反过来）");
+      eq(m.laoNewest, "张三", "老客户那本的最新一条也对");
+      eq(m.stillHasAudit, false, "搬完 orgs.json 里的 audit 字段清掉了，不会搬第二次");
+      eq(m.orgs, 2, "反向对照：组织没被搬家弄丢");
+      eq(m.invites, 1, "反向对照：邀请码也没丢");
+      eq(m.again, 2, "★重复触发不会把同一批再写一遍★ 搬家是幂等的");
+    }
+
+    // 第二个进程，冲着同一份数据再跑一遍搬家。写重了这里就会翻倍
+    const out2 = require("child_process").spawnSync(process.execPath, ["-e", probe], { encoding: "utf8" });
+    let m2 = null;
+    try { m2 = JSON.parse(String(out2.stdout).trim().split("\n").pop()); } catch {}
+    ok(m2, "第二趟搬家探针也跑起来了", (out2.stderr || "").slice(0, 300));
+    if (m2) {
+      eq(m2.def, 2, "★换个进程重跑，default 还是 2 条★ 搬家是幂等的，不是每次都追加一遍");
+      eq(m2.lao, 1, "老客户那本也没翻倍");
+    }
+
+    // 闸门的顺序：老装机上如果**先发生一次写**（管理员点了个按钮），
+    // 新记录会先落到新文件；这时候才触发搬家的话，老记录会被追加到新记录**后面**，
+    // 文件里是新的在后，于是界面把一年前的事显示成刚刚发生
+    const OLD2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mig2-"));
+    const OLDD2 = path.join(OLD2, "data");
+    fs.mkdirSync(OLDD2, { recursive: true });
+    // 重新摆一份升级前的样子，别去捡上面那份的 .bak——那是搬家自己留的，
+    // 拿它当输入等于让被测的东西自己准备考题
+    fs.writeFileSync(path.join(OLDD2, "orgs.json"), JSON.stringify({
+      orgs: [{ id: "default", name: "默认" }], depts: [], invites: [],
+      audit: [
+        { ts: "2026-09-18T10:00:00.000Z", org: "default", actor: "老王", action: "放行命令", target: "rm -rf build", detail: "" },
+        { ts: "2026-09-17T10:00:00.000Z", org: "default", actor: "老王", action: "添加成员", target: "李四", detail: "" },
+      ],
+    }, null, 2));
+    const probe2 = `
+      process.env.OPENWORKBUDDY_DATA_DIR = ${JSON.stringify(OLDD2)};
+      const org = require(${JSON.stringify(path.join(ROOT, "org"))});
+      org.audit({ org: "default", actor: "刚升级的管理员", action: "改额度", target: "王五" });
+      const a = org.listAudit("default", { limit: 50 });
+      console.log(JSON.stringify({ total: a.total, newest: a.audit[0] && a.audit[0].target }));
+    `;
+    const out3 = require("child_process").spawnSync(process.execPath, ["-e", probe2], { encoding: "utf8" });
+    let m3 = null;
+    try { m3 = JSON.parse(String(out3.stdout).trim().split("\n").pop()); } catch {}
+    ok(m3, "先写后搬的探针跑起来了", (out3.stderr || "").slice(0, 300));
+    if (m3) {
+      eq(m3.total, 3, "老的 2 条 + 刚写的 1 条，一条不多一条不少");
+      eq(m3.newest, "王五", "★刚写的那条排在最前★ 搬家排在写之后的话，这里会是一年前那条");
+    }
+    // 搬一半崩了的样子：jsonl 已经写出去了，orgs.json 还没改。
+    // 下次启动会照着 audit 字段再搬一遍——这一趟必须是覆盖，不是追加。
+    // 上面那个「换个进程重跑」试不出这条：那时 audit 字段已经删干净，搬家直接掉头就走
+    const OLD3 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mig3-"));
+    const OLDD3 = path.join(OLD3, "data");
+    fs.mkdirSync(path.join(OLDD3, "audit"), { recursive: true });
+    const twoRows = [
+      { ts: "2026-09-18T10:00:00.000Z", org: "default", actor: "老王", action: "放行命令", target: "rm -rf build", detail: "" },
+      { ts: "2026-09-17T10:00:00.000Z", org: "default", actor: "老王", action: "添加成员", target: "李四", detail: "" },
+    ];
+    fs.writeFileSync(path.join(OLDD3, "orgs.json"), JSON.stringify({
+      orgs: [{ id: "default", name: "默认" }], depts: [], invites: [], audit: twoRows,
+    }, null, 2));
+    // 上一趟的产物：文件里是新的在后，所以倒过来写
+    fs.writeFileSync(path.join(OLDD3, "audit", "default.jsonl"),
+      twoRows.slice().reverse().map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const probe3 = `
+      process.env.OPENWORKBUDDY_DATA_DIR = ${JSON.stringify(OLDD3)};
+      const org = require(${JSON.stringify(path.join(ROOT, "org"))});
+      const a = org.listAudit("default", { limit: 50 });
+      console.log(JSON.stringify({ total: a.total }));
+    `;
+    const out4 = require("child_process").spawnSync(process.execPath, ["-e", probe3], { encoding: "utf8" });
+    let m4 = null;
+    try { m4 = JSON.parse(String(out4.stdout).trim().split("\n").pop()); } catch {}
+    ok(m4, "搬一半崩了的探针跑起来了", (out4.stderr || "").slice(0, 300));
+    if (m4) eq(m4.total, 2, "★搬一半崩过，重来一趟还是 2 条★ 追加式的话这里会是 4，审计表里每件事凭空变两遍");
+    fs.rmSync(OLD3, { recursive: true, force: true });
+    fs.rmSync(OLD2, { recursive: true, force: true });
+    fs.rmSync(OLD, { recursive: true, force: true });
+  }
+
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   fs.rmSync(TMP, { recursive: true, force: true });
