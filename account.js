@@ -41,9 +41,13 @@ const TOKEN_TTL_MS = 90 * 86400 * 1000;
  * 是为了让**已经发出去的**那些 cookie 立刻作废（人离职了、电脑丢了），
  * 只影响新令牌等于这个开关根本没用。取不到组织就退回 90 天。
  */
-function ttlMsFor(user) {
+function ttlMsFor(user, s) {
   try {
-    const d = org.settingsOf(org.getOrg(org.orgIdOf(user))).session_days;
+    // s 可以是这个人所属组织的设置，也可以是「要用的时候再去解析」的函数——
+    // 解析那一下必须留在这个 try 里面：组织表读不出来时照旧退回默认有效期，
+    // 别把一次读盘失败变成整条请求 500
+    const st = (typeof s === "function" ? s(user) : s) || org.settingsOf(org.getOrg(org.orgIdOf(user)));
+    const d = st.session_days;
     const n = Math.max(1, Math.min(365, Math.floor(+d) || 0));
     return n * 86400 * 1000;
   } catch { return TOKEN_TTL_MS; }
@@ -308,8 +312,8 @@ function normalizeAvatar(v) {
   if (chars > 2) throw new Error("头像最多两个字符");
   return s;
 }
-function hasUsers() {
-  return loadUsers().users.length > 0;
+function hasUsers(st) {
+  return (st || loadUsers()).users.length > 0;
 }
 // ---------- 二次验证（TOTP） ----------
 // 算术在 totp.js（对着 RFC 4226 / 6238 的标准向量测过），这儿只管「存在哪、怎么算数」。
@@ -735,13 +739,19 @@ function revokeDevice(username, id) {
  * 一次任务几十条轮询就是几十次全量重写 users.json——而「最后活跃」精确到分钟根本没人看。
  */
 const TOUCH_MS = 5 * 60 * 1000;
-function touchDevice(req) {
+function touchDevice(req, st0) {
   try {
     const token = tokenFromReq(req);
     if (!token) return;
+    // 先拿手上这份判节流。以前是无条件先把整本 users.json 读出来再判——
+    // 节流省下的只有写，没省读，而在这条路上读本身才是最贵的那一步
+    const seen = ((st0 || loadUsers()).tokens[token] || {}).seen || 0;
+    if (Date.now() - seen < TOUCH_MS) return;
+    // 真要写了才重新读一遍：上游那份是这趟请求开头读的，拿它盖回去等于把
+    // 这中间别人写的东西抹掉
     const st = loadUsers();
     const info = st.tokens[token];
-    if (!info || Date.now() - (info.seen || 0) < TOUCH_MS) return;
+    if (!info) return;
     info.seen = Date.now();
     info.ip = clientIp(req);
     if (!info.kind) info.kind = "session"; // 升级上来的老令牌补个类型，列表里才摆得下
@@ -755,21 +765,25 @@ function tokenFromReq(req) {
   return m ? m[1] : null;
 }
 /** 这一次请求用的是哪种令牌：扫码配对来的（paired）还是正常登录的（session）。认不出来当 session */
-function tokenKind(req) {
+function tokenKind(req, st) {
   const token = tokenFromReq(req);
   if (!token) return "";
-  const info = loadUsers().tokens[token];
+  const info = (st || loadUsers()).tokens[token];
   return info && info.kind === "paired" ? "paired" : info ? "session" : "";
 }
-function userFromReq(req) {
+/**
+ * @param st0       已经读出来的账本。一趟请求里这本不会变，读第二遍是白读。
+ * @param settings  这个人所属组织的设置（或解析它的函数），只为了判令牌过期。
+ */
+function userFromReq(req, st0, settings) {
   const token = tokenFromReq(req);
   if (!token) return null;
-  const st = loadUsers();
+  const st = st0 || loadUsers();
   const info = st.tokens[token];
   if (!info) return null;
   const u = st.users.find((x) => x.username === info.user) || null;
   if (!u) return null;
-  if (Date.now() - info.at > ttlMsFor(u)) return null;
+  if (Date.now() - info.at > ttlMsFor(u, settings)) return null;
   return u;
 }
 /** 是不是 https 进来的（部署时前面一般挂 nginx，真正的 TLS 在它那一层） */
@@ -1489,8 +1503,18 @@ function authGuard(req, res, next) {
     (p.startsWith("/api/") && !p.startsWith("/api/auth/") && !PUBLIC_API.has(p)) ||
     (p.startsWith("/im/") && !PUBLIC_IM.has(p));
   if (!needsAuth) return next();
-  const user = userFromReq(req);
-  if (!user) return res.status(401).json({ error: "未登录", setup: !hasUsers() });
+  // 这一趟请求里，users.json 和 orgs.json 各读一次就够。
+  // 改之前是 users 读 3 遍（认人 / 判令牌类型 / 记活跃）、orgs 读 4 遍
+  // （判令牌有效期 / 强制二次验证 / 远程开关 / 租户作用域），
+  // 而这两本装的是**整个平台**的账号、所有活着的登录令牌和全部公司表——
+  // 跟这个请求要干什么一点关系都没有。实测 1000 人 / 3000 个登录令牌的装机，
+  // 一个什么都不做的接口光进门就是 13.18ms、读盘 2.36 MB；3000 人时 39.12ms、7.1 MB。
+  // 聊天页几秒一次轮询，于是「公司人多了之后整个产品变慢」跟谁在用没关系。
+  const st = loadUsers();
+  let orgHit;
+  const orgOf = (u) => (orgHit !== undefined ? orgHit : (orgHit = org.getOrg(org.orgIdOf(u))));
+  const user = userFromReq(req, st, (u) => org.settingsOf(orgOf(u)));
+  if (!user) return res.status(401).json({ error: "未登录", setup: !hasUsers(st) });
   // 待审核 / 已停用的账号：cookie 还在，但一步也走不了。
   // 这道闸必须在这里（而不是只在登录时判）——不然停用一个人之后，他手上开着的那个页面还能接着跑任务
   const status = user.status || "active";
@@ -1499,19 +1523,24 @@ function authGuard(req, res, next) {
   // 组织开了「强制二次验证」而这个人还没绑：除了绑定本身，别的一步也走不了。
   // 这道闸也必须在这儿——只在登录时判的话，管理员今天打开开关，昨天已经登录的人
   // 手上那个页面还能照常用到 cookie 过期，强制就成了「对新登录的人强制」。
-  if (!twoFactorOn(user) && org.settingsOf(org.getOrg(org.orgIdOf(user))).require_2fa && !TWOFA_SETUP_PATHS.has(p)) {
+  const orgSettings = org.settingsOf(orgOf(user));
+  if (!twoFactorOn(user) && orgSettings.require_2fa && !TWOFA_SETUP_PATHS.has(p)) {
     return res.status(403).json({ error: "这个组织要求开启二次验证，先绑定验证器", need_2fa_setup: true });
   }
   // 「允许扫码连设备」关掉之后，**已经连上的那些也得断**。只拦新配对的话这个开关是假的：
   // 管理员在后台把它关了，以为丢在公司的那台手机已经进不来了，其实它手上的令牌还能用到过期。
   // 只踢 kind:"paired" 的令牌——正常在电脑上登录进来的（kind:"session"）跟这个开关无关。
-  if (!remoteAllowed("remote_devices", user) && tokenKind(req) === "paired") {
+  if (orgSettings.remote_devices !== true && tokenKind(req, st) === "paired") {
     return res.status(401).json({ error: "这台设备是扫码连上来的，而管理员已经关掉了「允许远程设备接入」", remote_off: true });
   }
   req.user = user;
+  // 组织和它的设置顺手挂在请求上：后面的 tenantScope 要的就是这两样，
+  // 不挂的话它会把 orgs.json 再读一遍，读出来的还是同一份
+  req.org = orgOf(user);
+  req.orgSettings = orgSettings;
   // 记一笔「这台设备刚才还在」。放在这儿而不是 userFromReq 里：那个函数一个请求里
   // 会被调好几次，而这件事一个请求记一次就够（里面还有 5 分钟的节流）
-  touchDevice(req);
+  touchDevice(req, st);
   next();
 }
 // 强制二次验证时唯一还放行的几条：绑定要用的三条，加上「我是谁」和登出。
