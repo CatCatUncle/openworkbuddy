@@ -733,14 +733,19 @@ async function canvasCreateBoard() {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return canvasToast(data.error || "新建画布失败", "circle-x", "err");
   canvasState.canvasName = data.name || name; try { localStorage.setItem("openworkbuddy.canvas.name", canvasState.canvasName); } catch {}
+  // 以前叫这个名字的画布留下的本机副本，跟这张新的没有关系。不擦掉的话，删一张再建一张同名的，
+  // 上面原样长出删掉那张的东西，还会被存回服务器——用户明明删过一次
+  try { localStorage.removeItem(canvasStorageKey(canvasState.canvasName)); } catch {}
   await renderCanvasPage(); canvasToast(`已创建画布「${canvasState.canvasName}」`, "circle-check");
 }
 async function canvasDeleteBoard() {
   if (canvasState.canvasName === "main") return canvasToast("主画布不能删除。", "info");
   if (!confirm("删除这张画布？画布节点会删除，素材文件不会删除。")) return;
   await canvasFlushRemoteWrite();   // 欠着的那一趟要么现在写给它自己，要么等会儿写到 main 上去
-  const response = await fetch("/api/canvas/boards/" + encodeURIComponent(canvasState.canvasName), { method: "DELETE" });
+  const gone = canvasState.canvasName;
+  const response = await fetch("/api/canvas/boards/" + encodeURIComponent(gone), { method: "DELETE" });
   if (!response.ok) return canvasToast("删除画布失败", "circle-x", "err");
+  try { localStorage.removeItem(canvasStorageKey(gone)); } catch {}   // 服务器那份删了，本机这份也得删
   canvasState.canvasName = "main"; try { localStorage.setItem("openworkbuddy.canvas.name", "main"); } catch {}
   renderCanvasPage();
 }
@@ -2389,10 +2394,18 @@ async function canvasRestoreFromLocal(local) {
 }
 
 function canvasRestoreOrSeed(remote = null) {
-  const saved = remote && remote.nodes.length ? remote : canvasLoadSaved();
+  const local = canvasLoadSaved();
+  const saved = remote && remote.nodes.length ? remote : local;
   if (saved && saved.nodes.length) {
     // 服务器那份直接铺、不回写；本机那份铺完要往上顶一次（这台机器上有、服务器上没有的改动）
     canvasApplySnapshot(saved, { fromRemote: saved === remote }); return;
+  }
+  // 起手那两张卡只给「从来没人动过」的画布。判据不能是「现在是空的」——用户把画布自己清空之后
+  // 就正好是空的，于是每打开一次长回来两张，还连带存回服务器，换台机器打开看见的也是这两张。
+  // 动过没有看两处：本机有没有存过这张画布，以及服务器那份的 updatedAt（新建出来的是 0）
+  if (local || (remote && Number(remote.updatedAt) > 0)) {
+    if (remote) canvasApplySnapshot(remote, { fromRemote: true });
+    return;
   }
   const script = canvasAddNode("script", { title: "一句话概念", text: "在这里写一句话概念、人物关系、冲突、对白和结局。" }, { x: 100, y: 110 }, { persist: false, skipSelect: true });
   const storyboard = canvasAddNode("storyboard", {}, { x: 510, y: 110 }, { persist: false, skipSelect: true });
@@ -2539,7 +2552,9 @@ async function renderCanvasPage() {
     canvasState.skipNodeClick = view.model.id; canvasState.suppressInspectorUntil = Date.now() + 650;
     window.setTimeout(() => { if (canvasState.skipNodeClick === view.model.id) canvasState.skipNodeClick = null; }, 650);
   });
-  canvasRestoreOrSeed(remote && remote.nodes.length ? remote : null); canvasHistoryReset(canvasSnapshot()); canvasStartRemoteSync();
+  // 整份传进去，别在这儿把「空的」换成 null：那样里头就只剩「现在是空的」可看，
+  // 而「服务器上那份是空的、但早就有人动过」正是不该再铺起手卡的那种
+  canvasRestoreOrSeed(remote); canvasHistoryReset(canvasSnapshot()); canvasStartRemoteSync();
   window.setTimeout(() => canvasFitAll(page), 0);
   canvasLoadLibrary();
 }
