@@ -589,9 +589,11 @@ function canvasRefreshNode(node) {
 }
 
 function canvasSnapshot() {
-  if (!canvasState.graph) return { version: 1, nodes: [], edges: [], updatedAt: Date.now() };
+  if (!canvasState.graph) return { version: 2, nodes: [], edges: [], updatedAt: Date.now() };
   return {
-    version: 1,
+    // 版本 2 的意思只有一条：这份画布把连线照实记下来了，没有连线就是真的一根都没有。
+    // 版本 1 那会儿是「连线这一段可能压根没存过」，两者得分得开，不然删不掉线（见下面两处）
+    version: 2,
     nodes: canvasState.graph.getElements().map((node) => ({ id: node.id, kind: canvasKind(node), payload: canvasPayload(node), position: node.position(), size: node.size() })),
     edges: canvasState.graph.getLinks().map((link) => {
       const source = canvasState.graph.getCell(canvasEndpointId(link.get("source"))), target = canvasState.graph.getCell(canvasEndpointId(link.get("target")));
@@ -896,7 +898,8 @@ function canvasReportLost(lost) {
 }
 
 function canvasInferLegacyEdges(snapshot) {
-  if (!snapshot || (snapshot.edges || []).length) return snapshot;
+  // 只替老画布补线。版本 2 起空着就是人自己删干净的，再补回去他就再也删不掉了
+  if (!snapshot || Number(snapshot.version) >= 2 || (snapshot.edges || []).length) return snapshot;
   const shots = snapshot.nodes.filter((item) => item.kind === "shot");
   if (shots.length !== 1) return snapshot;
   const shot = shots[0], candidates = snapshot.nodes.filter((item) => {
@@ -925,7 +928,10 @@ function canvasApplySnapshot(snapshot, { fromRemote = false } = {}) {
   const previousSelection = canvasState.selected;
   const previousIds = [...(canvasState.selectedIds || [])];
   const currentEdges = canvasState.graph.getLinks().length ? canvasSnapshot().edges : [];
-  const incomingEdges = Array.isArray(snapshot.edges) && snapshot.edges.length ? snapshot.edges : currentEdges;
+  // 来的这份没有连线，别急着拿本机这份顶上去：老画布（版本 1）确实可能没存过连线，
+  // 顶一下是护着；可版本 2 的空就是空，顶上去等于把人刚删的线又接回来——撤销、同步、重开都能碰上
+  const edgesAreExplicit = Number(snapshot.version) >= 2 || (Array.isArray(snapshot.edges) && snapshot.edges.length > 0);
+  const incomingEdges = edgesAreExplicit ? (Array.isArray(snapshot.edges) ? snapshot.edges : []) : currentEdges;
   const restoredSnapshot = canvasInferLegacyEdges({ ...snapshot, edges: incomingEdges });
   canvasState.suspendSync = true;
   try {
@@ -2384,7 +2390,7 @@ function canvasRenderBroken(page, world) {
 async function canvasRestoreFromLocal(local) {
   if (!local || !local.nodes.length) return;
   if (!confirm(`用本机这份（${local.nodes.length} 个节点）覆盖项目里那份读不出来的画布？\n\n原文件已经原样备份在 .openworkbuddy 目录里，随时能翻回去。`)) return;
-  const state = { version: 1, nodes: local.nodes, edges: local.edges || [], updatedAt: Date.now() };
+  const state = { version: Number(local.version) >= 2 ? 2 : 1, nodes: local.nodes, edges: local.edges || [], updatedAt: Date.now() };
   const response = await fetch("/api/canvas", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: canvasState.canvasName, state, force: true }) }).catch(() => null);
   const result = response ? await response.json().catch(() => ({})) : {};
   if (!response || !response.ok) { canvasToast(result.error || "恢复失败，项目里那份没有动", "circle-x", "err"); return; }

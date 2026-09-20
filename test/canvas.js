@@ -259,9 +259,14 @@ app.whenReady().then(async () => {
     (async () => {
       window.__remote = { version: 1, updatedAt: Date.now(), edges: [],
         nodes: [{ id: "m1", kind: "note", payload: { title: "对方改的" }, position: { x: 0, y: 0 }, size: { width: 300, height: 200 } }] };
+      await canvasFlushRemoteWrite();   // 上一段欠着的那笔先写完，不然下面数回写会把它算进来
       window.__puts = [];
       canvasStartRemoteSync();
-      await new Promise((r) => setTimeout(r, 2300));   // 第一圈：拉下来、铺上去
+      // 等它自己转到，别写死等几秒：一圈 1.8 秒，正在写盘的那一圈会整圈跳过，
+      // 机器慢一点就得等到第二圈（3.6 秒）——写死 2.3 秒在 CI 上量到的是「还没拉」
+      const 到点 = Date.now() + 12000;
+      const 有对方的 = () => canvasState.graph.getElements().some((n) => (n.get("canvasPayload") || {}).title === "对方改的");
+      while (Date.now() < 到点 && !有对方的()) await new Promise((r) => setTimeout(r, 120));
       const 拉到了 = canvasState.graph.getElements().map((n) => (n.get("canvasPayload") || {}).title);
       await new Promise((r) => setTimeout(r, 2000));   // 第二圈：确认它是停住了，不是慢一拍
       clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null;
@@ -654,6 +659,134 @@ app.whenReady().then(async () => {
      "★断网打开也不长★ 服务器那份拿不到，只剩本机这份空副本；把它当成「新画布」就又铺起手卡，"
      + "网一通还会顶到服务器上去",
      别处.断网屏幕);
+
+  console.log("\n— 九、用户删掉的连线不许自己回来 —");
+  const 连线 = await run(`
+    (async () => {
+      localStorage.clear();
+      window.__store.jia = { main: { version: 1, nodes: [], edges: [], updatedAt: 1000 } };
+      window.__active = "jia"; canvasState.canvasName = "main";
+      localStorage.setItem("openworkbuddy.canvas.name", "main");
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 400));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+
+      // 一个镜头 + 一个起过名的场景 + 一条线，就是画布上最常见的那一小撮
+      canvasApplySnapshot({ version: 1, updatedAt: Date.now(), nodes: [
+        { id: "shot1", kind: "shot", payload: { id: "S1-01", title: "开场" }, position: { x: 40, y: 40 }, size: { width: 300, height: 200 } },
+        { id: "loc1", kind: "location", payload: { name: "江边码头" }, position: { x: 420, y: 40 }, size: { width: 300, height: 200 } }],
+        edges: [{ source: { id: "loc1" }, target: { id: "shot1" }, relation: "location" }] });
+      await new Promise((r) => setTimeout(r, 700));
+
+      canvasState.graph.getLinks().forEach((l) => l.remove());   // 人把这条线删了
+      await new Promise((r) => setTimeout(r, 700));
+      const 删完盘上 = ((window.__store.jia.main || {}).edges || []).length;
+
+      // ① 来一趟同步：服务器那份没有线（就是刚存上去那份），别的机器动了节点位置
+      const 服务器那份 = JSON.parse(JSON.stringify(window.__store.jia.main));
+      服务器那份.updatedAt = Date.now() + 1000;
+      服务器那份.nodes[0].position = { x: 60, y: 60 };
+      canvasApplySnapshot(服务器那份, { fromRemote: true });
+      const 同步后屏幕 = canvasState.graph.getLinks().length;
+
+      // ② 关掉再打开
+      await new Promise((r) => setTimeout(r, 700));
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 700));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      return { 删完盘上, 同步后屏幕, 重开后屏幕: canvasState.graph.getLinks().length,
+               重开后盘上: ((window.__store.jia.main || {}).edges || []).length };
+    })()`);
+  ok(连线.删完盘上 === 0,
+     "★先确认：删掉那条线真的写到服务器了★ 没写上去的话，下面两条是白说的", 连线.删完盘上);
+  ok(连线.同步后屏幕 === 0,
+     "★同步不许把删掉的连线送回来★ 铺快照那一步「对面没有连线就沿用我这边的」——本来是为了别被空数据抹掉，"
+     + "可对面没有连线正是因为人刚把它删了",
+     连线.同步后屏幕);
+  ok(连线.重开后屏幕 === 0 && 连线.重开后盘上 === 0,
+     "★重开也不许把删掉的连线推回来★ 老画布文件里没有连线那一段，程序会照「一个镜头 + 一个起过名的场景」"
+     + "替它补上——可「没有连线」也可能是人自己删的，补回来就是删不掉",
+     { 屏幕: 连线.重开后屏幕, 盘上: 连线.重开后盘上 });
+
+  const 撤销 = await run(`
+    (async () => {
+      localStorage.clear();
+      window.__store.jia = { main: { version: 2, nodes: [], edges: [], updatedAt: 1000 } };
+      window.__active = "jia"; canvasState.canvasName = "main";
+      localStorage.setItem("openworkbuddy.canvas.name", "main");
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 400));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      canvasApplySnapshot({ version: 2, updatedAt: Date.now(), edges: [], nodes: [
+        { id: "jia1", kind: "note", payload: { text: "甲" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "yi1", kind: "note", payload: { text: "乙" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }] });
+      canvasHistoryReset(canvasSnapshot());
+      canvasConnect(canvasState.graph.getCell("jia1"), canvasState.graph.getCell("yi1"), "");
+      canvasHistoryFlush();
+      const 连上 = canvasState.graph.getLinks().length;
+      canvasUndo();
+      return { 连上, 撤销后: canvasState.graph.getLinks().length };
+    })()`);
+  ok(撤销.连上 === 1 && 撤销.撤销后 === 0,
+     "★刚连的线，一按撤销就该没★ 撤销就是把上一版画布铺回去，上一版本来没有这条线",
+     撤销);
+
+  const 老画布 = await run(`
+    (async () => {
+      // 先把上一段欠着的那笔存盘写完：存盘是防抖的（240ms），不等就往 __store 里摆新画布的话，
+      // 那笔迟到的写入会把刚摆好的盖掉，测出来的是上一段的画布
+      await canvasFlushRemoteWrite();
+      await new Promise((r) => setTimeout(r, 200));
+      localStorage.clear();
+      window.__store.jia = { main: { version: 1, updatedAt: 5000, edges: [], nodes: [
+        { id: "s9", kind: "shot", payload: { id: "S1-01", title: "开场" }, position: { x: 40, y: 40 }, size: { width: 300, height: 200 } },
+        { id: "l9", kind: "location", payload: { name: "江边码头" }, position: { x: 420, y: 40 }, size: { width: 300, height: 200 } }] } };
+      window.__active = "jia"; canvasState.canvasName = "main";
+      localStorage.setItem("openworkbuddy.canvas.name", "main");
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 900));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      const 补上了 = canvasState.graph.getLinks().length, 盘上版本 = (window.__store.jia.main || {}).version;
+      // 老画布来一趟同步：那份还是版本 1、没有连线，不能把刚补上的线冲掉
+      canvasApplySnapshot({ version: 1, updatedAt: Date.now() + 5000, edges: [], nodes: [
+        { id: "s9", kind: "shot", payload: { id: "S1-01", title: "开场" }, position: { x: 60, y: 60 }, size: { width: 300, height: 200 } },
+        { id: "l9", kind: "location", payload: { name: "江边码头" }, position: { x: 420, y: 40 }, size: { width: 300, height: 200 } }] }, { fromRemote: true });
+      const 同步后 = canvasState.graph.getLinks().length;
+      // 老画布上这条线是程序替他补的，他把它删掉——删完这一下就会照版本 2 存回去，
+      // 于是「空着」从此是照实记的，下回打开不该再补
+      canvasState.graph.getLinks().forEach((l) => l.remove());
+      await new Promise((r) => setTimeout(r, 700));
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 700));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+      return { 补上了, 同步后, 重开后: canvasState.graph.getLinks().length, 盘上版本: (window.__store.jia.main || {}).version };
+    })()`);
+  ok(老画布.补上了 === 1 && 老画布.同步后 === 1,
+     "★反向对照：真的老画布（版本 1）还是照旧替它把线补上★ 上面三条要是靠「干脆不补了」蒙混过关，这条就得挂",
+     老画布);
+  ok(老画布.重开后 === 0 && 老画布.盘上版本 === 2,
+     "★老画布上那条线，他删掉之后也不许再补回来★ 删这一下就把画布存成了版本 2，从此「没有连线」是照实记的",
+     { 重开后: 老画布.重开后, 盘上版本: 老画布.盘上版本 });
+
+  const 猜不出来 = await run(`
+    (async () => {
+      await canvasFlushRemoteWrite();
+      await new Promise((r) => setTimeout(r, 200));
+      const 两张笔记 = [
+        { id: "p1", kind: "note", payload: { title: "甲" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "p2", kind: "note", payload: { title: "乙" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }];
+      canvasApplySnapshot({ version: 2, updatedAt: Date.now(), nodes: 两张笔记,
+        edges: [{ source: { id: "p1" }, target: { id: "p2" } }] });
+      const 连着 = canvasState.graph.getLinks().length;
+      // 老画布（版本 1）那份没有连线这一段，而这两张笔记之间的线是猜不出来的——
+      // 只能沿用屏幕上这份，不然一升级、一同步，人连好的线就全没了
+      canvasApplySnapshot({ version: 1, updatedAt: Date.now() + 3000, nodes: 两张笔记, edges: [] }, { fromRemote: true });
+      return { 连着, 同步后: canvasState.graph.getLinks().length };
+    })()`);
+  ok(猜不出来.连着 === 1 && 猜不出来.同步后 === 1,
+     "★反向对照：老画布那份没有连线，屏幕上这条线不许被抹★ 版本 1 的文件可能压根没存过连线，"
+     + "而两张笔记之间的线也不是程序猜得出来的——一律当成「对面记全了」的话，升级那一下线就全没了",
+     猜不出来);
 
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);

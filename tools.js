@@ -3570,7 +3570,9 @@ function canvasNormalizeState(value, lost = null) {
     const relation = String(edge.relation || edge.role || "").slice(0, 40);
     return { source: { id: String(edge.source?.id || edge.source) }, target: { id: String(edge.target?.id || edge.target) }, ...(relation ? { relation } : {}) };
   });
-  return { version: 1, nodes, edges, updatedAt: Number(raw.updatedAt) || 0 };
+  // 版本号照原样留着：版本 2 说明这份文件把连线记全了，界面据此判断「没有连线」是真的没有，
+  // 还是这份文件老到没存过。在这儿统一抹成 1，用户删掉的连线会被当成「老文件缺了一段」补回来
+  return { version: Number(raw.version) >= 2 ? 2 : 1, nodes, edges, updatedAt: Number(raw.updatedAt) || 0 };
 }
 /** 把一份读不动的画布文件原样挪到一边，绝不在它上面写东西。返回备份路径。 */
 function canvasBackup(file, why) {
