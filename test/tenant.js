@@ -119,6 +119,9 @@ app.get("/api/eval", (_req, res) => res.json([]));
 // 探针：这条请求里 tools.orgPolicy() 看到的是什么。用来验「设置真的进了执行层」，
 // 而不是只躺在 org.json 里没人读——那种开关比没有这个开关更糟
 app.get("/api/policy-probe", (_req, res) => res.json({ policy: tools.orgPolicy(), ws: tools.getWorkspaceDir() }));
+// 一条什么都不做的接口。量「进门费」用：每一条请求在干正事之前，都要先走一遍
+// 登录闸 + 租户作用域，跟它自己要干什么没有半点关系。见【20】。
+app.get("/api/nothing", (_req, res) => res.json({ ok: true }));
 
 // 「用系统程序打开」「在访达里显示」：按下去是在**服务器那台机器**上起一个进程。
 // 成员在自己浏览器里点，窗口弹在管理员的显示器上——所以这是配机器，不是租户内动作。
@@ -1232,6 +1235,97 @@ async function login(username, password) {
     st19c.users = st19c.users.filter((u) => !/^(m19_|nb19_)/.test(u.username));
     account._internals.saveUsers(st19c);
   }
+
+  console.log("\n【20】进门费：每条请求在干正事之前，先把整个平台的账本翻几遍");
+  {
+    // 这一段量的不是某一页，是**每一条**请求都要先走的那段路：
+    // 认人 → 判登录有效期 → 强制二次验证 → 远程设备开关 → 租户作用域。
+    // 它翻的两本账装的是整个平台的账号、所有还活着的登录令牌和全部公司表——
+    // 跟「这条请求要干什么」一点关系都没有。所以平台上多开几家公司、多几百人在线，
+    // 不该让任何一条请求变慢；而聊天页是几秒一次轮询的，慢下来是整个产品一起慢。
+    // 判据用「翻了几遍」不用「花了几毫秒」：毫秒在慢机器上会飘，次数不会。
+    const USERS20 = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "users.json");
+    const ORGS20 = org._internals.ORGS_FILE;
+    const countReads = async (fn) => {
+      const c = { users: 0, orgs: 0 };
+      const raw = fs.readFileSync;
+      fs.readFileSync = function (f, ...rest) {
+        const s = String(f);
+        if (s === USERS20) c.users++;
+        else if (s === ORGS20) c.orgs++;
+        return raw.call(fs, f, ...rest);
+      };
+      try { c.res = await fn(); } finally { fs.readFileSync = raw; }
+      return c;
+    };
+
+    const c20 = await countReads(() => call("GET", "/api/nothing", { cookie: yuan }));
+    eq(c20.res.status, 200, "测试自检：这条什么都不做的接口本身是通的");
+    ok(c20.users >= 1 && c20.orgs >= 1, "测试自检：这两本账确实在认人这段被翻过（数得着，不是数了个 0）", c20);
+    ok(c20.users <= 1, "★一条请求，users.json 只翻一遍★ 以前是三遍：认人、判令牌类型、记活跃",
+       { 读了: c20.users });
+    ok(c20.orgs <= 1, "★一条请求，orgs.json 只翻一遍★ 以前是四遍：判有效期、强制二次验证、远程开关、租户作用域",
+       { 读了: c20.orgs });
+
+    // ---- 20.1 记活跃的 5 分钟节流：省的不能只是写，读也得省下 ----
+    const tk20 = String(yuan).split("=").slice(1).join("=");
+    const readUsers20 = () => JSON.parse(fs.readFileSync(USERS20, "utf8"));
+    const poke20 = (mut) => { const db = readUsers20(); mut(db); fs.writeFileSync(USERS20, JSON.stringify(db)); };
+    const seenOf20 = () => (readUsers20().tokens[tk20] || {}).seen || 0;
+
+    // 一分钟前露过面：还在 5 分钟窗口里。不写成「就是现在」是因为——万一没被节流住，
+    // 它会重写成 Date.now()，两个值可能落在同一毫秒上，这条断言就变成了空断言
+    poke20((db) => { db.tokens[tk20].seen = Date.now() - 60 * 1000; });
+    const seen20 = seenOf20();
+    await call("GET", "/api/nothing", { cookie: yuan });
+    eq(seenOf20(), seen20, "5 分钟内再来一条，不重写「最后活跃」（一次任务几十条轮询，写一次就够）");
+
+    poke20((db) => { db.tokens[tk20].seen = Date.now() - 6 * 60 * 1000; });
+    await call("GET", "/api/nothing", { cookie: yuan });
+    ok(seenOf20() > Date.now() - 60000, "反向对照：超过 5 分钟没露面的，这一趟就得把「最后活跃」补上",
+       { seen: seenOf20() });
+
+    // ---- 20.2 真要写的时候得重新读一遍：别拿请求开头那份盖回去 ----
+    // 故意在「请求开头读账本」之后插一笔别处的改动。省掉这次重读的话，
+    // 记一下最后活跃时间这件小事，会顺手把中间别人写的东西抹掉。
+    poke20((db) => {
+      db.tokens[tk20].seen = Date.now() - 6 * 60 * 1000;
+      db.users.find((u) => u.username === "xiaoyuan").credits = 1;
+    });
+    let poked20 = false;
+    const raw20 = fs.readFileSync;
+    fs.readFileSync = function (f, ...rest) {
+      const out = raw20.call(fs, f, ...rest);
+      if (!poked20 && String(f) === USERS20) {
+        poked20 = true;
+        const db = JSON.parse(raw20.call(fs, USERS20, "utf8"));
+        db.users.find((u) => u.username === "xiaoyuan").credits = 4242;
+        fs.writeFileSync(USERS20, JSON.stringify(db));
+      }
+      return out;
+    };
+    try { await call("GET", "/api/nothing", { cookie: yuan }); } finally { fs.readFileSync = raw20; }
+    ok(poked20, "测试自检：那一笔确实插在了「请求开头读账本」之后");
+    eq((readUsers20().users.find((u) => u.username === "xiaoyuan") || {}).credits, 4242,
+       "★记活跃要写之前重新读一遍★ 拿请求开头那份盖回去的话，别处刚写的这一笔就没了");
+    ok(seenOf20() > Date.now() - 60000,
+       "反向对照：该记的「最后活跃」也照样记上了（不是靠干脆不写来保住上面那一笔）", { seen: seenOf20() });
+
+    // ---- 20.3 挂不上的时候，租户作用域得自己去读 ----
+    // 登录闸把解析好的组织挂在请求上，tenantScope 优先用它。但这条路上不一定有人登录
+    // （单机桌面版就没有），少了那一挂不能把租户作用域一起丢了。
+    const mw20 = admin.tenantScope({ withWorkspace: tools.withWorkspace, withPolicy: tools.withPolicy, getWorkspaceDir: tools.getWorkspaceDir });
+    const uYuan20 = account._internals.loadUsers().users.find((u) => u.username === "xiaoyuan");
+    await new Promise((done) => {
+      mw20({ user: uYuan20, headers: {}, path: "/x" }, {}, () => {
+        eq(tools.getWorkspaceDir(), root2, "★请求上没挂组织时，tenantScope 自己去读，照样落在分公司的目录★");
+        ok((tools.orgPolicy() || {}).allow_shell === false,
+           "这时候那份组织设置也照样生效（不是只把目录找对了）", tools.orgPolicy());
+        done();
+      });
+    });
+  }
+
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   fs.rmSync(TMP, { recursive: true, force: true });

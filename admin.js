@@ -225,9 +225,11 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig })
     let policy = null;
     let actor = null;
     try {
-      const o = org.getOrg(org.orgIdOf(req.user));
+      // 登录闸刚刚解析过同一个组织，挂在请求上了；没有的话（比如单机桌面版
+      // 这条路上没人登录）才自己去读
+      const o = req.org || org.getOrg(org.orgIdOf(req.user));
       root = o.id === org.DEFAULT_ORG ? "" : org.rootDirOf(o, getWorkspaceDir());
-      const s = org.settingsOf(o);
+      const s = req.orgSettings || org.settingsOf(o);
       // 只在真配了限制时才进 ALS：默认组织默认值 = 不限 = 不设 store = 老行为一字不差
       if (s.allow_shell === false || (s.net_allow || []).length || (s.net_deny || []).length)
         policy = { allow_shell: s.allow_shell !== false, net_allow: s.net_allow || [], net_deny: s.net_deny || [] };
