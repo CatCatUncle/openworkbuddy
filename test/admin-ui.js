@@ -662,6 +662,86 @@ const GOTO = (id) => `(async () => {
   ok("导出中按钮是禁用的（分几趟拉，连点几下就是几十个并发请求）", csv.busy === true, csv);
   ok("导完按钮自己恢复，不是卡在「导出中」上", csv.restored === true && !/导出中/.test(csv.label), csv.label);
   ok("这一页 console 还是干净的", A.errs.length === 0, A.errs);
+
+  // ================= 7. 每一颗按钮都真点一下 =================
+  // 「渲染得好好的，点下去什么都不发生」是这一页最贵的坏法：按钮在那儿摆着，
+  // 人点三次、以为网慢，然后去别处想办法。上面 19 页各渲染一遍抓不到它——
+  // 渲染是对的，坏的是 bind 里那一下。
+  // 真抓到过一个：成员页的「办离职」在 bind 里读了个只在 render 里存在的变量（shown），
+  // 点下去是一句 Uncaught ReferenceError，界面上一点动静都没有。整套后端接口都是好的，
+  // 单元测试也全绿——因为测试打的是接口，没人点过那颗按钮。
+  console.log("\n【7】每一颗按钮都点一下：不能有「点下去只在 console 里报个错」的");
+  await A.js(`(() => {
+    window.__clickErrs = [];
+    addEventListener("error", (e) => window.__clickErrs.push(String((e && e.message) || e)));
+    addEventListener("unhandledrejection", (e) => window.__clickErrs.push("没人接的 Promise：" + String((e.reason && e.reason.message) || e.reason)));
+    // 导出类按钮会真的触发下载（Electron 里还会弹保存框，没人点就一直挂着），换掉
+    HTMLAnchorElement.prototype.click = function () {};
+    URL.createObjectURL = () => "blob:stub";
+    URL.revokeObjectURL = () => {};
+    return 1;
+  })()`);
+
+  // 复制类不点：它写的是**系统剪贴板**，跑一次测试把人正在用的剪贴板冲掉，这个代价不能收
+  const CLICK_PAGE = (id) => `(async () => {
+    const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+    const body = document.getElementById("ad-body");
+    const SKIP = ["copy", "copycode"];
+    const keys = [];
+    for (const el of body.querySelectorAll("button"))
+      for (const k of Object.keys(el.dataset || {})) if (!keys.includes(k) && !SKIP.includes(k)) keys.push(k);
+    const out = [];
+    for (const k of keys) {
+      // 同一类按钮走的是同一段代码，每类点第一个就够（一页 300 行不是为了点 300 次）
+      const el = body.querySelector("[data-" + k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase()) + "]");
+      if (!el) continue;
+      const n0 = window.__clickErrs.length;
+      const o0 = document.querySelectorAll(".ui-overlay").length;
+      el.click();
+      await nap(220);
+      const o1 = document.querySelectorAll(".ui-overlay").length;
+      document.querySelectorAll(".ui-overlay").forEach((x) => x.remove());
+      out.push({ page: "${id}", key: k, err: window.__clickErrs.slice(n0)[0] || "", opened: o1 - o0 });
+      // 有的按钮是直接生效的（保存、切时间段），点完这一页的数据就变了，重拉一遍再点下一个
+      await route(true);
+      await nap(120);
+    }
+    return out;
+  })()`;
+
+  const clicks = [];
+  for (const id of IDS) {
+    await A.js(GOTO(id));
+    clicks.push(...(await A.js(CLICK_PAGE(id))));
+  }
+  const deadBtns = clicks.filter((c) => c.err);
+  ok("测试自检：真点到了东西（30 颗以上）——数据没造起来的话这一整条就是空断言",
+     clicks.length >= 30, { 点了: clicks.length, 覆盖的页: [...new Set(clicks.map((c) => c.page))].length });
+  ok("★19 个面板上的按钮，点下去没有一颗是只在 console 里报个错的★",
+     deadBtns.length === 0, deadBtns.map((c) => c.page + "/data-" + c.key + "：" + c.err));
+
+  // 「办离职」单独再验一次：不光是「没报错」，得真把那张对话框弹出来、交接下拉里有人
+  await A.js(GOTO("members"));
+  const off = await A.js(`(async () => {
+    document.querySelectorAll(".ui-overlay").forEach((x) => x.remove());
+    const n0 = window.__clickErrs.length;
+    const btn = document.querySelector("[data-off]");
+    if (!btn) return { none: true };
+    btn.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const box = document.querySelector(".ui-overlay");
+    const sel = box && box.querySelector("select");
+    const r = { who: btn.dataset.off, err: window.__clickErrs.slice(n0)[0] || "",
+                title: box ? box.textContent.replace(/\\s+/g, " ").slice(0, 60) : "",
+                opts: sel ? [...sel.options].map((o) => o.value) : [] };
+    document.querySelectorAll(".ui-overlay").forEach((x) => x.remove());
+    return r;
+  })()`);
+  ok("★「办离职」点下去真弹出对话框★ 以前是 ReferenceError：按钮在、点了没反应、只有 console 里有一行",
+     !off.none && !off.err && /办离职/.test(off.title), off);
+  ok("交接下拉里列的是**别的在职同事**（不含他本人——把任务交接给正在办离职的那个人，等于没交接）",
+     off.opts && off.opts.length > 1 && !off.opts.includes(off.who), off);
+
   server.close();
   console.log(`\n✅ 企业管理后台：18 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 能自己加改删渠道且不误删别的 · 审计到顶说得出口、导得全 ${pass} 项通过`);
   fs.rmSync(TMP, { recursive: true, force: true });

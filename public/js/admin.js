@@ -1079,7 +1079,10 @@ PAGES.members = {
     root.querySelectorAll("[data-off]").forEach((b) => {
       b.onclick = () => {
         const who = b.dataset.off;
-        const mates = shown.filter((x) => x.username !== who && x.status === "active").map((x) => x.username);
+        // 交接对象从**整份在职名单**里挑，不是从当前筛选出来的那几行里挑。
+        // 这里原本写的是 shown——那个变量只在 render 里有，bind 里读它是个自由变量，
+        // 于是这颗按钮点下去是 ReferenceError：按钮在、点了什么都不发生、只有 console 里有一行
+        const mates = m.members.filter((x) => x.username !== who && x.status === "active").map((x) => x.username);
         modal({
           title: "给「" + who + "」办离职",
           body: `<div class="fd" style="font-size:14px;color:var(--foreground)">会一次性关掉：
