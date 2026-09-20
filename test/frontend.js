@@ -1021,7 +1021,8 @@ const ATTACH_CHECKS = `
     const dt = new DataTransfer();
     dt.items.add(new File([bytes(B64PNG)], "image.png", { type: "image/png" }));
     const ev = fire(document.body, "paste", "clipboardData", dt);
-    await tick();
+    const n0 = uploads.length;
+    await until(() => uploads.length > n0);
     const up = uploads.at(-1);
     ok("粘贴截图会上传", !!up, "根本没发上传请求");
     // 不带会话 id 的话服务端只能把它扔进工作空间根目录，用户传的素材和这轮的产出就此分家
@@ -1037,7 +1038,8 @@ const ATTACH_CHECKS = `
     const dt = new DataTransfer();
     dt.items.add(new File([bytes(B64PNG)], "image.png", { type: "image/png" }));
     fire(document.body, "paste", "clipboardData", dt);
-    await tick();
+    const n1 = uploads.length;
+    await until(() => uploads.length > n1);
     const [a, b] = uploads.slice(-2).map((u) => u.name);
     ok("连贴两张不互相覆盖", a !== b, a + " / " + b);
     ok("两张各挂一个 chip", chips().length === 2, "chip 数=" + chips().length);
@@ -1060,7 +1062,8 @@ const ATTACH_CHECKS = `
     const dt = new DataTransfer();
     dt.setData("text/plain", big);
     const ev = fire(inputEl, "paste", "clipboardData", dt);
-    await tick();
+    const n2 = uploads.length;
+    await until(() => uploads.length > n2);
     const up = uploads.at(-1);
     ok("大段文字落成 txt", /^粘贴文本_\\d{4}_\\d{6}\\.txt$/.test(up.name), up.name);
     const back = new TextDecoder().decode(bytes(up.data_b64));
@@ -1074,7 +1077,8 @@ const ATTACH_CHECKS = `
     const dt = new DataTransfer();
     dt.items.add(new File([new TextEncoder().encode("hello")], "笔记.md", { type: "text/markdown" }));
     fire(document.body, "drop", "dataTransfer", dt);
-    await tick();
+    const n3 = uploads.length;
+    await until(() => uploads.length > n3);
     ok("拖进来的文件按原名上传", uploads.at(-1).name === "笔记.md", uploads.at(-1).name);
   }
 
@@ -1096,7 +1100,8 @@ const ATTACH_CHECKS = `
     const dt = new DataTransfer();
     dt.setData("text/plain", "整篇文档".repeat(700));
     fire(document.body, "drop", "dataTransfer", dt);
-    await tick();
+    const n4 = uploads.length;
+    await until(() => uploads.length > n4);
     ok("拖进来的大段文字也落成 txt", /^粘贴文本_\\d{4}_\\d{6}(-\\d+)?\\.txt$/.test(uploads.at(-1).name), uploads.at(-1).name);
   }
 
@@ -5103,6 +5108,9 @@ const LOOK_CHECKS = FLUSH_SRC + `
   ok("点回「标准」：data-fs 属性摘掉，不留默认值脏属性", !("fs" in html.dataset) && px("body") === 15);
 
   // 皮肤
+  // 先钉到浅色再验海盐：下面这条断言说的是「浅色下」，而 theme 默认是跟随系统——
+  // 测试机若开着系统深色模式（Windows 上很常见），不钉住的话这条会拿暗色值来对浅色标准
+  click("theme", "light");
   const rgb = (hex) => { const n = parseInt(hex.slice(1), 16); return "rgb(" + (n >> 16) + ", " + ((n >> 8) & 255) + ", " + (n & 255) + ")"; };
   click("skin", "ocean");
   ok("点「海盐」：<html data-skin=ocean>，--primary 变海盐蓝", html.dataset.skin === "ocean" && rgb("#0284c7") === rgb("#" + cssVar("--primary").replace("#", "")));
