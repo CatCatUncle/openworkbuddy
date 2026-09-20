@@ -381,6 +381,107 @@ function sessChangedOnDisk(id) {
   if (!now || !mine) return false; // 文件没了 / 我们压根没记过，都不算「别人改的」
   return now.mtime !== mine.mtime || now.size !== mine.size;
 }
+/* ---------- 会话缓存：内存里只留最近用过的那几条 ----------
+ *
+ * sessions 是**缓存**不是账本 —— 真本一直在 data/sessions/<id>.json，内存里这份丢了，
+ * 大不了下次重读一遍（本机实测：最大的一条 1.3MB 重读 7.07ms，中位数那条 0.30ms，用户根本感觉不到）。
+ *
+ * 可它以前只进不出：点开过的每一条会话都原地住到进程退出为止。本机 203 条会话全读进来实测
+ * 堆 +39.6MB、进程 RSS +76MB，而且再也不回落 —— 这正是 metrics 里那条 rss 告警说的
+ * 「如果它不再回落，值得看一眼是不是有超大会话没被回收」。多人服务器上这个数还要乘人头。
+ *
+ * 所以按「最近用过」排队，超预算就从队头往外扔。四道闸门缺一不可，少一道都会悄悄吃掉数据：
+ *   1. 正在跑的不扔（activeRuns）—— 那份对象正被这一轮改着；
+ *   2. 有人长期攥着的不扔（sessHold，定时任务那条路）—— 它的 emit 还在往里写；
+ *   3. 刚碰过的不扔（SESS_CACHE_IDLE_MS）—— 来回切两条大会话不能变成来回读盘；
+ *   4. 内存里那份跟盘上那份必须一字不差才扔 —— 这是兜底的那道。
+ *      举个真会发生的：附件是「先传后发」的，上传接口把文件名记在 sess.pending_uploads 上
+ *      **而且不存盘**（见 /api/upload），等下一条消息发出去才用。这种只活在内存里的字段
+ *      光靠前三道闸门拦不住，第 4 道能：它跟盘上对不上，就不许扔。
+ */
+// 预算定在 8MB 而不是"看着够用就行"：重读一条 1MB 的会话实测 4.5ms、中位数那条 0.3ms，
+// 留着它省下的就是这几毫秒；而多留一份就是实打实几十 MB 常驻，还乘人头。
+// 这笔账两边差着三个数量级，那就往小了定。真正在跑的那些走 activeRuns，本来就不受这道线管。
+const SESS_CACHE_BYTES = 8 * 1024 * 1024;  // 按盘上那份的字节算；堆里大约是它的 1.36 倍（实测）
+const SESS_CACHE_KEEP = 8;                 // 不管多大，最近这几条一定留着
+const SESS_CACHE_IDLE_MS = 60 * 1000;      // 一分钟内碰过的不动，哪怕超预算
+const sessUsedAt = new Map();              // id -> 上次碰它的毫秒数
+const sessHold = new Map();                // id -> 还有几处长期攥着这份内存对象
+
+/** 有人要长期拿着这份对象（不是一次请求内用完就扔），先说一声，别让它被清掉 */
+function holdSession(id) { sessHold.set(id, (sessHold.get(id) || 0) + 1); }
+function releaseSession(id) {
+  const n = (sessHold.get(id) || 0) - 1;
+  if (n > 0) sessHold.set(id, n); else sessHold.delete(id);
+}
+/** 用过一次：挪到队尾。Map 记插入顺序，删了再塞就是一条现成的 LRU 队列 */
+function touchSession(id) {
+  if (!sessions.has(id)) return;   // 不在缓存里就别记：记了这个 Map 自己就成了新的只进不出
+  sessUsedAt.set(id, Date.now());
+  const v = sessions.get(id);
+  sessions.delete(id);
+  sessions.set(id, v);
+}
+/** 内存里这份跟盘上那份一字不差吗。不一样就说明还有没落盘的改动，这条不许清 */
+function sessSynced(id) {
+  const s = sessions.get(id);
+  if (!s) return false;
+  let text = "";
+  try { text = JSON.stringify(s); } catch { return false; }   // 循环引用之类：拿不准就当它脏的
+  const f = sessFile(id);
+  let st = null;
+  try { st = fs.statSync(f); } catch { return false; }        // 盘上压根没有（新会话还没存过）：更不能清
+  if (st.size !== Buffer.byteLength(text)) return false;      // 先比长度，绝大多数不一样的在这儿就刷掉了
+  try { return fs.readFileSync(f, "utf8") === text; } catch { return false; }
+}
+/** 这条会话跟它在内存里的一切痕迹都抹掉（删会话、清定时任务残留都走这儿）。
+ *  四个 Map 是一套的，漏掉任何一个，那个 Map 就变成新的只进不出 */
+function forgetSession(id) {
+  sessions.delete(id);
+  sessStamp.delete(id);
+  sessSaveAt.delete(id);
+  sessUsedAt.delete(id);
+  sessHold.delete(id);
+}
+/** 当前内存里这些会话占了多少字节（按盘上那份算） */
+function sessCacheBytes() {
+  let n = 0;
+  for (const id of sessions.keys()) n += ((sessStamp.get(id) || {}).size) || 0;
+  return n;
+}
+let sessTrimAt = 0;   // 这个时刻之前不再白跑一趟（见下）
+/** 超预算就从「最久没碰」那头往外扔。keepId 是这次要用的那条，永远不许扔它 */
+function trimSessionCache(keepId) {
+  let bytes = sessCacheBytes();
+  if (bytes <= SESS_CACHE_BYTES) return 0;
+  const now = Date.now();
+  // 上一趟一条都没清掉（全在用着、或者全都还没落盘）：歇一会儿再试。
+  // 不歇的话，超着预算的这段时间里每开一条会话都要把整份缓存重扫一遍，
+  // 而那一趟是要逐个读盘比对的——本来是省内存的，反倒成了新的开销。
+  if (now < sessTrimAt) return 0;
+  let gone = 0, looked = 0;
+  for (const id of [...sessions.keys()]) {
+    if (bytes <= SESS_CACHE_BYTES || sessions.size <= SESS_CACHE_KEEP) break;
+    looked++;
+    if (id === keepId || activeRuns.has(id) || sessHold.has(id)) continue;
+    if (now - (sessUsedAt.get(id) || 0) < SESS_CACHE_IDLE_MS) continue;
+    if (!sessSynced(id)) continue;
+    bytes -= ((sessStamp.get(id) || {}).size) || 0;
+    sessions.delete(id);
+    sessStamp.delete(id);     // 跟着一起清，不然这两个 Map 自己变成新的泄漏
+    sessSaveAt.delete(id);
+    sessUsedAt.delete(id);
+    gone++;
+  }
+  // 只有「真挑过、一条都挑不动」才歇（全在用着、或者全都还没落盘）。
+  // 一条都没挑过就歇是个陷阱：缓存刚好卡在保底条数上又超了预算时，这一趟什么都干不了，
+  // 可接下来这一分钟里用户再点开多少条都不会再清——内存在这一分钟里是彻底敞开的。
+  // 本机实测：预算 8MB、保底 8 条、每条 1MB，正好在第 8 条撞上这一格，
+  // 于是翻完 30 条一条都没清掉，30.1MB 全留着，等于这道闸门白装。
+  if (!gone && looked) sessTrimAt = now + SESS_CACHE_IDLE_MS;
+  return gone;
+}
+
 function getSession(id) {
   /**
    * 内存里有了也要回头看一眼盘：命令行的 openworkbuddy 写的是同一批文件（data/sessions/<id>.json），
@@ -401,15 +502,45 @@ function getSession(id) {
     const data = store.readJson(sessFile(id), { history: [], transcript: [], title: "", updated_at: null });
     sessions.set(id, data);
     sessStamp.set(id, sessStat(id));
+    sessUsedAt.set(id, Date.now());
+    trimSessionCache(id);   // 刚读进来的这条排在队尾，清的是队头那些老的
+  } else {
+    touchSession(id);
   }
   return sessions.get(id);
 }
-function saveSession(id) {
-  const s = sessions.get(id);
-  if (!s || !s.history) return;
+/**
+ * 把会话写回磁盘。
+ *
+ * sess 传不传都行：长期攥着对象的调用方（定时任务录制器）把手里那份直接递进来，
+ * 这样哪怕它已经被缓存清掉了，写盘照样落在对的内容上 —— 而不是悄没声地什么都不做。
+ */
+function saveSession(id, sess) {
+  const s = sess || sessions.get(id);
+  // 内存里没有、调用方也没递一份进来：这不是正常状态，必须留个痕。
+  // 悄悄 return 的话，真出了「跑完一整趟、回放里一片空白」这种事，日志里一个字都没有。
+  if (!s) return void console.warn(`[会话] 要存 ${id}，可内存里没有这份，也没人把对象递进来——这一次写盘跳过了`);
+  if (!s.history) return;
+  touchSession(id);
   s.updated_at = new Date().toISOString();
   store.writeJsonAtomic(sessFile(id), s);
-  sessStamp.set(id, sessStat(id)); // 记下自己写完之后的样子，别把自己这次写当成「别人改的」
+  // 记下自己写完之后的样子，别把自己这次写当成「别人改的」。
+  // 只给还在缓存里的记：清掉的那些记了也没人看，反倒让这个 Map 接着涨
+  if (sessions.has(id)) sessStamp.set(id, sessStat(id));
+}
+/** 跑任务途中顺手存一次盘，最快 5 秒一次。
+ *  跟 saveSession / 缓存清理摆在一块儿：它写的 sessSaveAt 是会话缓存那一套 Map 里的一个，
+ *  拆开放的话，forgetSession 清不到它，而 e2e 切这一整段出去单跑时也会当场少一个名字。 */
+const sessSaveAt = new Map();
+function autosaveSession(id, minGapMs = 5000) {
+  const now = Date.now();
+  if (now - (sessSaveAt.get(id) || 0) < minGapMs) return;
+  sessSaveAt.set(id, now);
+  try {
+    saveSession(id);
+  } catch (e) {
+    console.warn(`[会话] 中途存盘失败（${id}）：${e.message}`);
+  }
 }
 
 /**
@@ -530,18 +661,6 @@ function ownSession(user, row) {
 
 // 任务跑一半崩了 / 用户直接退出 App，这一轮的过程就全没了——中途也存，最多每 5 秒一次。
 // 存的是同一份对象，落盘又是原子改名，跟收尾时那次 saveSession 不会打架。
-const sessSaveAt = new Map();
-function autosaveSession(id, minGapMs = 5000) {
-  const now = Date.now();
-  if (now - (sessSaveAt.get(id) || 0) < minGapMs) return;
-  sessSaveAt.set(id, now);
-  try {
-    saveSession(id);
-  } catch (e) {
-    console.warn(`[会话] 中途存盘失败（${id}）：${e.message}`);
-  }
-}
-
 // IM 会话跟网页会话分开存（data/im-sessions/<键>.json），重启不丢上下文
 const imSessions = createImSessionStore({ dir: dataPath("data", "im-sessions") });
 // 助理页的上下文以前全服务器共用一个键（local_assist），现在一人一段。老库里那一段就这么晾着的话，
@@ -6792,8 +6911,7 @@ app.post("/api/assist/model", (req, res) => {
 // 删除会话（内存 + 磁盘一起删）
 app.delete("/api/session/:id", (req, res) => {
   if (!guardSession(req, res)) return;
-  sessions.delete(req.params.id);
-  sessStamp.delete(req.params.id);
+  forgetSession(req.params.id);
   try { fs.unlinkSync(sessFile(req.params.id)); } catch {}
   res.json({ ok: true });
 });
@@ -7004,7 +7122,12 @@ async function main() {
       { type: "user", text: item.task, mode: "craft", at },
       { type: "assistant", events, at },
     ];
-    saveSession(sessionId); // 先落一份空壳：任务跑一半崩了，那半截过程也还查得到（autosave 往同一份写）
+    saveSession(sessionId, sess); // 先落一份空壳：任务跑一半崩了，那半截过程也还查得到（autosave 往同一份写）
+    // 这一趟从头到尾都攥着上面这个 sess（events 就长在它的 transcript 里），
+    // 所以得跟会话缓存打个招呼别清它。定时任务不走 activeRuns，光靠那道闸门盖不住：
+    // 一条跑十几分钟的定时任务，期间用户在界面上翻几十条历史会话就足以把它挤出去，
+    // 挤出去之后这一整趟的过程记录会写到一个没人认的对象上——回放点进去一片空白。
+    holdSession(sessionId);
     return {
       sessionId,
       opts: { sessionId, emit: recordingEmit(() => {}, events, sessionId, { pet: false }) },
@@ -7012,7 +7135,8 @@ async function main() {
         // 这一句是给「整趟一个事件都没有」兜底：引擎没吐事件、或者刚开跑就抛了。
         // 回放至少得看得见结论，不能点进去是一片空白。有事件时正文早在 events 里了，不重复贴。
         if (!events.length) events.push({ type: "text", delta: String(text || (ok ? "完成" : "没有输出")) });
-        saveSession(sessionId);
+        saveSession(sessionId, sess);   // 手里这份为准：哪怕真被清过，写盘也落在对的内容上
+        releaseSession(sessionId);
       },
     };
   };
@@ -7020,8 +7144,7 @@ async function main() {
   scheduleRecorder.forget = (ids) => {
     for (const id of ids || []) {
       if (!id) continue;
-      sessions.delete(id);
-      sessStamp.delete(id);
+      forgetSession(id);
       try { fs.rmSync(sessFile(id), { force: true }); } catch {}
     }
   };
@@ -7092,7 +7215,11 @@ async function main() {
   // 定时器是 unref 的：它只是个旁观者，不该拖着进程不让退出
   metrics.start({
     getConfig: () => config,
-    gauges: () => ({ active_runs: activeRuns.size, sessions: sessions.size }),
+    gauges: () => ({
+      active_runs: activeRuns.size,
+      sessions: sessions.size,                                    // 内存里留着几条（不是一共有几条）
+      session_cache_mb: Math.round(sessCacheBytes() / 1048576),    // 这几条占多少
+    }),
   });
   log.info("boot", "服务起来了", { pid: process.pid, node: process.version, version: require("./package.json").version });
 
