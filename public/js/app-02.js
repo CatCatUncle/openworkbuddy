@@ -123,7 +123,15 @@ function renderWsMenu() {
       if (r.path) {
         if (await setWorkspaceDir(r.path)) fetch("/api/files").then(x => x.json()).then(renderFiles);
       } else if (resp.status === 501) {
-        const p = prompt("输入工作空间文件夹的完整路径：", settingsCache.workspace_dir);
+        // 同样不能用 window.prompt（桌面版里一调用就抛，见 app-01.js 的 askText）。
+        // 这条路本来就是「系统选择框弹不出来」的退路，退路自己再哑一次就没得退了
+        const p = await askText({
+          title: "工作空间文件夹",
+          hint: "这台机器弹不出系统的选择框，手填一个完整路径吧。",
+          placeholder: "/home/你的用户名/工作空间",
+          value: settingsCache.workspace_dir,
+          ok: "就用这个",
+        });
         if (p) await setWorkspaceDir(p);
       } else if (!resp.ok || r.error) {
         toast((r.error || "选择文件夹失败"), "circle-x");

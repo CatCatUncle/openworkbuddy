@@ -142,6 +142,85 @@ const modalBox = document.getElementById("modal-box");
 const mTitle = document.getElementById("m-title");
 const mBody = document.getElementById("m-body");
 
+/**
+ * 跟用户要一句话（文件夹名、路径这种），返回 Promise<string|null>，取消给 null。
+ *
+ * 为什么不用 window.prompt：桌面版跑在 Electron 里，那儿的 prompt **存在、但一调用就抛**
+ * （实测报的是 "prompt() is not supported."）。typeof window.prompt 照样是 "function"，
+ * 所以想靠判断类型绕开根本挡不住；异常当场把整个 onclick 打断，按钮点下去什么都不发生、
+ * 界面上也不报错。资料库里「新建文件夹」失灵就是这么来的——用户原话「好像还是不能用哦」，
+ * 因为从他那一侧看，那颗按钮是哑的，连个错都没有。
+ * confirm() 不受影响（Electron 有原生实现），所以全站那些确认框不用动，只有要用户填字的地方得自己画。
+ *
+ * 自成一层浮在弹窗之上：资料库本身就开在弹窗里，借 #modal-box 会把它整个顶掉。
+ */
+function askText(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    // 同一时刻只留一个。前一个按「取消」收掉，不然它的 Promise 永远不 settle，
+    // 调用方 await 在那儿再也不往下走
+    if (askText._close) askText._close(null);
+    const prev = document.activeElement;
+    const wrap = document.createElement("div");
+    wrap.className = "ask-mask";
+    const title = o.title || "填一下";
+    wrap.innerHTML =
+      `<div class="ask-box" role="dialog" aria-modal="true" aria-label="${esc(title)}">` +
+      `<div class="ask-t">${esc(title)}</div>` +
+      (o.hint ? `<div class="ask-h">${esc(o.hint)}</div>` : "") +
+      `<input class="ask-in" type="text" autocomplete="off" spellcheck="false">` +
+      `<div class="ask-err" hidden></div>` +
+      `<div class="ask-ops"><button type="button" class="btn-plain ask-no">取消</button>` +
+      `<button type="button" class="btn-brand ask-ok">${esc(o.ok || "确定")}</button></div></div>`;
+    document.body.appendChild(wrap);
+    const input = wrap.querySelector(".ask-in");
+    const okBtn = wrap.querySelector(".ask-ok");
+    const errEl = wrap.querySelector(".ask-err");
+    if (o.placeholder) input.placeholder = o.placeholder;
+    input.value = o.value == null ? "" : String(o.value);
+
+    /** 名字合不合规当场就说。等服务端回 400 的话，用户已经点了确定、等了一个来回，
+     *  拿到的还是一句拿路径口吻讲的「路径不合法：..」，看了也不知道该改哪儿 */
+    function check() {
+      const v = input.value.trim();
+      const bad = !v ? "" : String((o.validate && o.validate(v)) || "");
+      errEl.textContent = bad;
+      errEl.hidden = !bad;
+      okBtn.disabled = !v || !!bad;
+      return !okBtn.disabled;
+    }
+    function done(val) {
+      if (askText._close !== done) return;   // 已经收过了，别收第二遍
+      askText._close = null;
+      document.removeEventListener("keydown", onKey, true);
+      wrap.remove();
+      // 焦点还回去。不还的话它掉到 body 上，用键盘的人得从头 Tab 一遍才回得到原处
+      try { if (prev && prev.isConnected && prev.focus) prev.focus(); } catch {}
+      resolve(val);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
+      else if (e.key === "Enter") {
+        // 输入法正在选词时的那个回车不算提交——中文名字几乎每次都要选一次词，
+        // 认了的话用户刚打完拼音就被提交了一个半截的名字
+        if (e.isComposing || e.keyCode === 229) return;
+        e.preventDefault(); e.stopPropagation();
+        if (check()) done(input.value.trim());
+      }
+    }
+    input.oninput = check;
+    okBtn.onclick = () => { if (check()) done(input.value.trim()); };
+    wrap.querySelector(".ask-no").onclick = () => done(null);
+    // 用 mousedown 判空白处：在输入框里按下、拖到外面才松手，用 click 会被当成点空白而取消
+    wrap.onmousedown = (e) => { if (e.target === wrap) done(null); };
+    document.addEventListener("keydown", onKey, true);
+    askText._close = done;
+    check();
+    input.focus();
+    input.select();
+  });
+}
+
 // 本地只是缓存，权威列表在服务端 /api/sessions。留 300 条跟服务端一个量级，
 // 免得刚从服务端并回来的历史转头又被截成 50 条。
 function saveSessions() {
