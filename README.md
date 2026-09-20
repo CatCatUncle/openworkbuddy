@@ -107,6 +107,8 @@ curl -fsSL https://raw.githubusercontent.com/CatCatUncle/openworkbuddy/main/inst
 
 **Windows / 手动下包**：去 [Releases](https://github.com/CatCatUncle/openworkbuddy/releases) 拿 `-win-setup.exe`（x64 和 ARM 同一个），双击即装；公司电脑不让装软件的拿免安装版 `-win-x64-portable.exe`（ARM 机器换成 `arm64`）。
 
+**Linux（arm64）**：去 Releases 拿 `-linux-arm64.deb`，`sudo dpkg -i` 装上（树莓派 4/5、飞腾、鲲鹏、Apple Silicon 上的 Linux）；x64 的 Linux 没有安装包，按下面「从源码跑」一句 `node server.js` 即可。
+
 **从源码跑**（Node.js 18+，零构建零框架，改完刷新就生效）：
 
 ```bash

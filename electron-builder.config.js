@@ -192,10 +192,22 @@ module.exports = {
     deleteAppDataOnUninstall: false,
   },
 
-  // 这里原来有一段 linux / AppImage 配置，删了。它从来没在流水线上跑过一次
-  // （release.yml 的 matrix 只有 macOS 和 Windows，上传通道也只收 dmg/zip/exe），
-  // 开发机是 Mac 也造不出来——等于一份没人验证过的配置，却让读代码的人以为有 Linux 安装包。
-  // Linux 上的既定路线是跑源码：install.sh 开头就写着「一键安装（macOS / Linux）」，
-  // 服务端还有 Docker。真要恢复得四处一起改：matrix 补 ubuntu 腿、upload 的 path 补 *.AppImage
-  // （那步是 if-no-files-found: error，不补必红）、README 下载表补一行、Release 正文补一行。
+  // Linux 安装包：arm64 单架构的 .deb。
+  // 为什么只做 arm64 一个：这个项目的依赖全是纯 JS、没有原生模块，真正跑在 arm 上的
+  // Linux 桌面/开发板（树莓派 4/5、飞腾、鲲鹏、Apple Silicon 上的 Linux）才是首要用例，
+  // x64 的 Linux 用户从源码跑只要一句 node server.js，没必要再发一份包。
+  // 流水线在 x64 的 ubuntu-latest 上用 --arm64 交叉打出：electron-builder 会下 arm64 的
+  // electron 二进制塞进包，deb 本身只是个打包格式，不依赖主机架构。
+  // 不签名：deb 靠 dpkg 直接落地，没有 macOS Gatekeeper / Windows SmartScreen 那种门槛。
+  linux: {
+    icon: "build/icon.png",
+    target: [{ target: "deb", arch: ["arm64"] }],
+    artifactName: "${productName}-${version}-linux-${arch}.${ext}",
+    category: "Utility",
+    synopsis: "OpenWorkBuddy — AI Agent 办公工作台",
+    description:
+      "AI Agent 办公工作台：自然语言下任务，AI 自主规划执行，交付 PPT / Word / Excel 等成果文件。" +
+      "纯 JS 依赖、无原生模块，也可从源码一行命令运行。",
+    // 维持和 win/mac 一致的「不碰用户数据」约定：~/.config 之外不写东西，卸载不留手尾
+  },
 };

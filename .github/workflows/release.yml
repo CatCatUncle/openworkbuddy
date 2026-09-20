@@ -55,6 +55,9 @@ jobs:
           - os: windows-latest
             script: dist:win
             artifact: win
+          - os: ubuntu-latest
+            script: dist:linux
+            artifact: linux-arm64
     runs-on: ${{ matrix.os }}
     steps:
       # 大版本跟 test.yml 同一套口径：只抬到跑 Node 24 的那一档（node20 已被判弃用）
@@ -64,6 +67,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # deb 打包要 dpkg / fakeroot（electron-builder 的 deb 目标会调它们）。
+      # 只在 Linux 这条腿装，mac/win 不需要——装了也用不上，还拖慢那两条腿
+      - name: 装 deb 打包所需工具
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y dpkg fakeroot
       # 不签名、不公证：没有 Apple Developer ID 证书。用户首次打开要手动放行，README 里写了。
       # 显式写死这个变量，免得哪天 runner 的钥匙串里有了证书就被自动捡去签
       - run: npm run ${{ matrix.script }}
@@ -76,6 +84,7 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.exe
+            dist/*.deb
           if-no-files-found: error
 
   release:
@@ -119,6 +128,9 @@ jobs:
             - **Windows 免安装版** → `OpenWorkBuddy-*-win-x64-portable.exe` / `-win-arm64-portable.exe`
               —— **只在公司电脑不让装软件时才用**。它的原理是自解压：每次启动都要把整个应用解压到 `%TEMP%`，
               还要被 Defender 逐个扫一遍，第一次可能要等好几分钟，期间任务管理器里有进程、屏幕上什么都没有。
+            - **Linux（arm64）** → `OpenWorkBuddy-*-linux-arm64.deb`
+              —— 树莓派 4/5、飞腾、鲲鹏、Apple Silicon 上跑的 Linux 直接 `sudo dpkg -i` 装上；
+              x64 的 Linux 没有这个包，按 README 从源码跑只要一句 `node server.js`。
 
             ## 第一次打开会被系统拦一下
 
