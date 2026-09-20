@@ -742,6 +742,103 @@ const GOTO = (id) => `(async () => {
   ok("交接下拉里列的是**别的在职同事**（不含他本人——把任务交接给正在办离职的那个人，等于没交接）",
      off.opts && off.opts.length > 1 && !off.opts.includes(off.who), off);
 
+  // ================= 8. 成员页：人多了之后，一页就是一页；搜的时候光标不能掉 =================
+  // 这一段量的是两件在「渲染出来了」之外的事：
+  //   · 六十个人的花名册，页面上画的是**一页**，翻页条上写的是人数
+  //   · 搜索框里打字，等数据回来重渲染之后，光标还在框里
+  // 第二条以前是坏的：route() 每次都 body.innerHTML = 整页重画，搜索框那个 DOM 节点被扔掉，
+  // 光标落回 <body>，接着打的下一个字直接进了空气。人看到的是「打两个字就不动了」，
+  // 而 console 干干净净、接口全是 200——这种坏法只有真去敲键盘才量得出来。
+  console.log("\n【8】六十个人的花名册：一页就是一页，搜的时候光标不能掉");
+  {
+    const err0 = A.errs.length;
+    // 直接写账本造人，比发六十趟建号快，这一段要的就是「人多」
+    const st8 = account._internals.loadUsers();
+    for (let i = 0; i < 60; i++) {
+      const n = String(i).padStart(2, "0");
+      st8.users.push({
+        username: "m8_" + n, org: "default", role: "member",
+        created_at: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+        pass: "x".repeat(60), salt: "y".repeat(32), credits: 0,
+        nickname: i % 17 === 3 ? "北极星" + n : "同事" + n,
+        dept: i % 2 ? "市场部" : "",
+      });
+    }
+    account._internals.saveUsers(st8);
+    const total8 = account.listMembers("default").length;
+
+    // 每一趟请求都记下来：下面要证明「搜索是问服务器要的」，而不是前端把整份藏起来
+    await A.js(`(() => { window.__urls = []; const rf = window.fetch;
+      window.fetch = function (u, ...a) { window.__urls.push(String(u)); return rf.call(this, u, ...a); }; return 1; })()`);
+
+    // 先绕去别的页再回来：hash 没变的话 route() 不会重跑，看到的还是造人之前那一屏
+    await A.js(GOTO("home"));
+    await A.js(GOTO("members"));
+    const rowsOf = `[...document.querySelectorAll("#ad-body table")[0].querySelectorAll("tbody tr")].length`;
+    const firstName = `document.querySelectorAll("#ad-body table")[0].querySelector("tbody tr .ad-mono").textContent.trim()`;
+    const page1 = await A.js(rowsOf);
+    ok("★六十多个人，页面上画的是一页 50 行★ 整份甩过来的话这里是 " + total8 + " 行", page1 === 50, { 画了: page1, 一共: total8 });
+    const pagerTxt = await A.js(`(document.querySelector(".ad-pager-n") || {}).textContent || ""`);
+    ok("翻页条上写的是人数不是页码（管理员心里记的是「还有几个人没看」）",
+       /共 \d+ 人/.test(pagerTxt) && pagerTxt.includes(String(total8)), pagerTxt);
+
+    const name1 = await A.js(firstName);
+    await A.js(`document.querySelector("[data-next]").click(); ` + wait(700));
+    const page2 = await A.js(rowsOf);
+    const name2 = await A.js(firstName);
+    ok("★点「下一页」真换了一批人★ 第二页 " + page2 + " 行，正好是剩下的那些",
+       page2 === total8 - 50 && page2 > 0, { 第二页: page2, 一共: total8 });
+    ok("第二页第一个人跟第一页第一个不是同一个（反向对照：不是原地重画了一遍）", name1 !== name2, { 第一页: name1, 第二页: name2 });
+    await A.js(`document.querySelector("[data-prev]").click(); ` + wait(700));
+    ok("点回「上一页」又回到第一页那个人", (await A.js(firstName)) === name1);
+
+    // ---------- 搜索是问服务器要的 ----------
+    const want8 = account.listMembers("default").filter((m) => (m.nickname || "").includes("北极星")).length;
+    ok("测试自检：「北极星」确实只对得上少数几个人（不然下面是空断言）", want8 >= 2 && want8 < 10, { 命中: want8 });
+    await A.js(`window.__urls = []`);
+    await A.js(`(() => { const e = document.querySelector("[data-mq]"); e.focus();
+      e.value = "北极星"; e.dispatchEvent(new Event("input", { bubbles: true })); })(); ` + wait(900));
+    const hit8 = await A.js(rowsOf);
+    ok("★搜完只剩命中的那几行★", hit8 === want8, { 剩下: hit8, 该有: want8 });
+    const asked8 = await A.js(`window.__urls.filter((u) => /\\/api\\/admin\\/members\\?/.test(u) && /[?&]q=/.test(u)).length`);
+    ok("★这一下真去问了服务器（地址里带着 q=）★ 前端自己筛的话，六十个人还好，三千个人就是 1041 KB 一趟",
+       asked8 >= 1, { 这段时间发出去的请求: await A.js(`window.__urls.slice(0, 6)`) });
+    const kept8 = await A.js(`(document.querySelector(".ad-filter .ad-sub") || {}).textContent || ""`);
+    ok("筛完了还告诉人「一共有多少」（不然搜完会以为人少了一半）", /筛出 \d+ \/ \d+ 人/.test(kept8), kept8);
+
+    // ---------- 打字的时候光标不能掉 ----------
+    // 三页都验：成员、用量明细、操作审计——它们共用同一个 route()，坏也是一起坏
+    for (const [label, id, sel] of [["成员", "members", "[data-mq]"], ["用量明细", "usage-detail", "[data-q]"], ["操作审计", "audit", "[data-q]"]]) {
+      await A.js(GOTO(id));
+      const keep = await A.js(`(async () => {
+        const b = document.getElementById("ad-body");
+        const box = b.querySelector("${sel}");
+        if (!box) return { 没有搜索框: true };
+        box.focus();
+        box.value = "北";
+        box.setSelectionRange(1, 1);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 900));   // 防抖 + 一趟请求 + 重渲染
+        const now = document.getElementById("ad-body").querySelector("${sel}");
+        const a = document.activeElement;
+        // 键盘事件永远发给当前有焦点的那个元素。焦点不在框里，这一下就打进了空气
+        a.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+        return {
+          还在框里: !!now && a === now,
+          落在了: a ? a.tagName : "没有",
+          框里还剩: now ? now.value : "(框没了)",
+          选区: now ? now.selectionStart : -1,
+          下一个字进了: a === now ? "搜索框" : (a ? a.tagName : "空气"),
+        };
+      })()`);
+      ok(`★${label}页：打完一个字、数据回来重渲染之后，光标还在搜索框里★ 以前落在 BODY，接着打的字全丢`,
+         keep.还在框里 === true, keep);
+      ok(`${label}页：框里的字也没被重渲染冲掉，光标停在字后面`, keep.框里还剩 === "北" && keep.选区 === 1, keep);
+      ok(`${label}页：接着再打一个字，进的是搜索框不是空气`, keep.下一个字进了 === "搜索框", keep);
+    }
+    ok("这一段跑完 console 还是干净的", A.errs.length === err0, A.errs.slice(err0));
+  }
+
   server.close();
   console.log(`\n✅ 企业管理后台：18 面板真渲染 · 审计员只读 · 设置改了真落库 · 后台能填 Key 能自己加改删渠道且不误删别的 · 审计到顶说得出口、导得全 ${pass} 项通过`);
   fs.rmSync(TMP, { recursive: true, force: true });

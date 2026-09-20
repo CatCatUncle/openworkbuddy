@@ -1201,22 +1201,124 @@ function assertManageable(actor, username, what) {
   return u;
 }
 
-/** 本组织成员清单（不含密码字段）。管理后台的「成员与部门」直接渲染这个 */
-function listMembers(orgId) {
+/** 翻页最多一次给多少人。后台自己要 50 一页，别的调用方最多要到这儿为止 */
+const MEMBER_PAGE_MAX = 500;
+
+/**
+ * 本组织的成员：筛完、排完，只把**这一页**的人算出来。
+ *
+ * 为什么不是整份回去：实测 3000 人的组织，一次回包 1041 KB，浏览器里堆出 78098 个
+ * DOM 节点，从点进这一页到表格出来 878ms；1000 人时 346 KB / 26098 个节点 / 259ms。
+ * 而一屏看得见的是十几行。更别扭的是搜人——想找一个人，前提是先把三千人搬到浏览器里。
+ *
+ * 四步的顺序不能换：**先筛、再排、再切，最后才算**。
+ *   · 排在切前面：不然「第 1 页是谁」取决于这些人在账本里的物理顺序，来个新人就全乱
+ *   · 算在切后面：每个人要算角色、额度、本月剩余、余额，只有这一页的人值得算
+ *   · 「最后活跃」也只查这一页这几十个名字：usageStore.lastActive 是人齐了就停的，
+ *     查 50 个名字通常翻一个分片就够，查 3000 个要一路翻到底
+ *
+ * @param opts.q       搜昵称 / 登录名 / 部门，不分大小写
+ * @param opts.role    只看某一档角色
+ * @param opts.minRank 只看这一档**及以上**（给「管理员角色」那页用：它要的是管理层，不是全员）
+ * @param opts.status  active（在用）| pending（等审核）| disabled（已停用）
+ * @param opts.offset  从第几个开始；超出末尾会退回最后一页，不会给一张空表
+ * @param opts.limit   这一页要几个，最多 MEMBER_PAGE_MAX
+ * @param opts.all     要整份。只给**确实要每一个人**的内部调用方用，别从 HTTP 上直接接过来
+ * @param opts.lite    只要 username / nickname / dept / role / status —— 下拉框用得着的那几格。
+ *                     一个下拉框不需要知道每个人的余额，更不该为此翻一遍用量账本
+ * @returns { members, total, matched, offset, limit }
+ *          total = 这个组织一共多少人，matched = 筛完还剩多少（界面靠这两个数说「筛出 X / 共 Y」）
+ */
+function queryMembers(orgId, opts = {}) {
   const want = orgId || org.DEFAULT_ORG;
   const mine = loadUsers().users.filter((u) => org.orgIdOf(u) === want);
+
+  const kw = String(opts.q || "").trim().toLowerCase();
+  const role = String(opts.role || "").trim();
+  const status = String(opts.status || "").trim();
+  // 档位下限得在这儿判，不能等算完再筛：算一个人要过 publicUser（角色、额度、
+  // 本月剩余、余额），三千个人算完只留下十来个管理员，那前面那些就是白算的
+  const minRank = opts.minRank ? rbac.ROLE_RANK[opts.minRank] : null;
+  const hit = mine.filter((u) => {
+    if (role && rbac.roleOf(u) !== role) return false;
+    if (minRank != null && !(rbac.ROLE_RANK[rbac.roleOf(u)] >= minRank)) return false;
+    // 老账号没有 status 这一格，当在用算——跟 publicUser 里那一格的默认值必须是同一个
+    if (status && (u.status || "active") !== status) return false;
+    if (!kw) return true;
+    return [u.username, u.nickname, u.dept].some((v) => String(v || "").toLowerCase().includes(kw));
+  });
+  // 超管排最前，其余按进来的先后。排序看的是原始账号，不是 publicUser 算出来的那份——
+  // 算是切完页之后的事，这里还没算
+  hit.sort((a, b) => (rbac.roleOf(b) === "owner" ? 1 : 0) - (rbac.roleOf(a) === "owner" ? 1 : 0)
+    || String(a.created_at).localeCompare(String(b.created_at)));
+
+  const all = opts.all === true;
+  // 地址栏里手改出来的 limit=0 / limit=-5 当没传，回默认的一页。夹成 1 的话界面上
+  // 会变成「一页一个人、六百页」，而人只会以为是后台坏了
+  const asked = Math.floor(+opts.limit);
+  const limit = all ? Math.max(1, hit.length) : Math.min(MEMBER_PAGE_MAX, asked > 0 ? asked : 50);
+  // 停在最后一页而不是给一张空表：人是会被删的，翻到第 5 页的时候别人删了几个，
+  // 回来看见「没有符合条件的成员」只会以为是自己搜错了
+  const last = hit.length ? Math.floor((hit.length - 1) / limit) * limit : 0;
+  const offset = all ? 0 : Math.max(0, Math.min(Math.floor(+opts.offset || 0), last));
+  const page = all ? hit : hit.slice(offset, offset + limit);
+  const meta = { total: mine.length, matched: hit.length, offset, limit };
+
+  if (opts.lite)
+    return { members: page.map((u) => ({ username: u.username, nickname: u.nickname || "", dept: u.dept || "",
+      role: rbac.roleOf(u), status: u.status || "active" })), ...meta };
+
   // 组织设置在这一趟里不会变，读一次就够。这里省掉的不是零头：
   // publicUser 每个人要用三次，500 个人就是把 orgs.json 读 1500 遍、
   // 搬 1302 KB 进内存——而 orgs.json 里装着平台上**所有**公司的数据，
   // 于是你成员页的快慢取决于隔壁又来了几家（实测 50 人的页：2 家 5.6ms → 501 家 365.6ms）。
   // 能这么传是因为 mine 已经按 want 筛过了，这份设置对这里每一个人都是他自己的那份
   const s = org.settingsOf(org.getOrg(want));
-  // 「最后活跃」只要每人最近的那一条。从新分片往老里翻、人齐了就停，
-  // 常见情况下只开一个文件——这个列表每进一次后台就查一次，不能让它跟账本一起变长
-  const lastAt = usageStore.lastActive(mine.map((u) => u.username));
-  return mine
-    .map((u) => ({ ...publicUser(u, s), last_active: lastAt.get(u.username) || "" }))
-    .sort((a, b) => (b.owner ? 1 : 0) - (a.owner ? 1 : 0) || String(a.created_at).localeCompare(String(b.created_at)));
+  // 「最后活跃」只要每人最近的那一条。从新分片往老里翻、人齐了就停
+  const lastAt = usageStore.lastActive(page.map((u) => u.username));
+  return { members: page.map((u) => ({ ...publicUser(u, s), last_active: lastAt.get(u.username) || "" })), ...meta };
+}
+
+/** 本组织成员清单（整份，不含密码字段）。界面上的列表请走 queryMembers 翻页 */
+function listMembers(orgId) {
+  return queryMembers(orgId, { all: true }).members;
+}
+
+/**
+ * 概览页要的那几个数：几个人、几个占席位、几个等审核、这个月一共发下去多少额度、
+ * 几个人额度见底。一个人名都不用算。
+ *
+ * 为什么不拿 listMembers 数：概览是打开后台第一眼那一页，每次都要拉一次，
+ * 而那个函数会把每个人的角色、额度、本月剩余、余额全算出来，还要为「最后活跃」
+ * 翻一遍用量账本——3000 个人算一遍，换四个数字。这里只数数，加法都在内存里。
+ *
+ * 口径跟别处必须一致，两处各钉了断言：
+ *   · 停用的人**不占席位**，但**仍然在 total 里**（他账号还在，文件也还在）
+ *   · 等审核的人**占席位**——随时会被点头放进来，那时候席位不够就尴尬了
+ *   · 没有 status 那一格的老账号当在用算（跟 publicUser / memberCounts 同一个默认值）
+ */
+function memberStats(orgId) {
+  const want = orgId || org.DEFAULT_ORG;
+  const s = org.settingsOf(org.getOrg(want));
+  const out = { total: 0, used: 0, pending: 0, disabled: 0, granted: 0, dry: 0, dry_names: [] };
+  for (const u of loadUsers().users) {
+    if (org.orgIdOf(u) !== want) continue;
+    out.total++;
+    const status = u.status || "active";
+    if (status === "pending") out.pending++;
+    if (status === "disabled") out.disabled++;
+    else out.used++;
+    out.granted += monthlyQuotaOf(u, s);
+    // 额度见底：跟首页那条待办一个口径——在用的人、确实发过额度、这个月用完了。
+    // 停用的人不算（他本来就发不出请求），没发过额度的也不算（额度 0 = 不限，不是见底）
+    if (status === "active" && monthlyQuotaOf(u, s) > 0 && monthlyLeft(u, s) <= 0) {
+      out.dry++;
+      // 界面上只点得下三个名字，多带的一律不带。这一格是**至多三个**，不是全部——
+      // 谁要真名单，去成员页按「额度见底」筛
+      if (out.dry_names.length < 3) out.dry_names.push(u.nickname || u.username);
+    }
+  }
+  return out;
 }
 
 /**
@@ -1995,6 +2097,9 @@ module.exports = {
   monthlyQuotaOf,
   monthlyLeft,
   listMembers,
+  queryMembers,
+  memberStats,
+  MEMBER_PAGE_MAX,
   memberCounts,
   billingUser,
   pendingMembers,

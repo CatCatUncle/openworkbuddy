@@ -279,20 +279,27 @@ function createAdminRouter(deps = {}) {
     const orgId = org.orgIdOf(req.user);
     const o = org.getOrg(orgId);
     const plan = org.planInfo(o);
-    const members = account.listMembers(orgId);
+    // 这一页上一个人名都不显示，只显示「几个人 / 几个等审核 / 这个月发下去多少」。
+    // 以前是把整份花名册算一遍换这几个数字：每人算角色、额度、余额，还要为「最后活跃」
+    // 翻一遍用量账本。而这是打开后台第一眼的那一页，每次都要拉
+    const ms = account.memberStats(orgId);
     const usage = account.usageSummary(req.user);
     const s = org.settingsOf(o);
     return {
       org: { id: o.id, name: o.name, created_at: o.created_at, root_hint: o.id === org.DEFAULT_ORG ? "默认工作目录" : "独立工作目录" },
       plan,
-      seats: { total: plan.seats, used: members.filter((m) => m.status !== "disabled").length, pending: members.filter((m) => m.status === "pending").length },
+      seats: { total: plan.seats, used: ms.used, pending: ms.pending },
       settings: s,
       // 月固定用量：整个组织这个月发下去多少、用掉多少
       monthly: {
         per_member: s.member_monthly_credits,
-        granted: members.reduce((n, m) => n + (m.monthly_quota || 0), 0),
+        granted: ms.granted,
         used: usage.month.from_monthly || 0,
         credits_used: usage.month.credits || 0,
+        // 额度见底的人：首页那条待办要的就是这个。以前是前端把整份花名册拉过来自己数——
+        // 3000 人的组织为了一行待办搬 1041 KB。dry_names 至多三个，界面上也只点得下三个
+        dry: ms.dry,
+        dry_names: ms.dry_names,
       },
       today: usage.today,
       month: usage.month,
@@ -307,14 +314,24 @@ function createAdminRouter(deps = {}) {
   // ---------- 成员与部门 ----------
   // 部门模板跟着这一趟一起回去：成员页要拿它画「这个部门进来的人默认什么权限」，
   // 单开一趟请求等于让页面多等一个来回，还多一处能 403 的地方（审计员读得到模板，改不动）
-  router.get("/api/admin/members", guarded((req) => ({
-    members: account.listMembers(org.orgIdOf(req.user)),
-    depts: org.listDepts(org.orgIdOf(req.user)),
-    templates: lifecycle.listDeptTemplates(org.orgIdOf(req.user)),
-    // 建号和部门模板的角色下拉得照着**这个人**能发的角色画。少了这行，管理员那边
-    // 下拉里还挂着「管理员」，点下去后端一句「你没有授予…的权限」——看得见但会 403 的按钮
-    can_assign: rbac.assignableBy(req.user, { role: "member" }),
-  })));
+  router.get("/api/admin/members", guarded((req) => {
+    const q = req.query || {};
+    const orgId = org.orgIdOf(req.user);
+    // 筛和翻页都在服务端做。以前是整份回去、前端自己筛：3000 人的组织一次 1041 KB、
+    // 浏览器里 78098 个 DOM 节点、点进来到表格出来 878ms，而一屏看得见十几行。
+    // fields=lite 只回名字那几格，给下拉框用（交接给谁、归到谁名下……）
+    return {
+      ...account.queryMembers(orgId, {
+        q: q.q, role: q.role, status: q.status, offset: q.offset, limit: q.limit,
+        lite: q.fields === "lite",
+      }),
+      depts: org.listDepts(orgId),
+      templates: lifecycle.listDeptTemplates(orgId),
+      // 建号和部门模板的角色下拉得照着**这个人**能发的角色画。少了这行，管理员那边
+      // 下拉里还挂着「管理员」，点下去后端一句「你没有授予…的权限」——看得见但会 403 的按钮
+      can_assign: rbac.assignableBy(req.user, { role: "member" }),
+    };
+  }));
 
   router.post("/api/admin/members", account.adminOnly, guarded((req) => account.createMember(req.user, req.body || {})));
 
@@ -344,15 +361,26 @@ function createAdminRouter(deps = {}) {
    * 而不是界面上藏一藏、后端照旧放行。
    */
   router.get("/api/admin/roles", guarded((req) => {
-    const members = account.listMembers(org.orgIdOf(req.user));
+    const orgId = org.orgIdOf(req.user);
+    // 这一页要两样东西，都不是「全体成员」：
+    //   · 管理层名单（审计员起）——这张表本来就短，一家公司有三千个管理员的情况不存在
+    //   · 提拔 / 转让的候选人——只要名字，而且下拉框里塞三千个人本来就没法用
+    // 以前这里回的是整份花名册，3000 人时 1042 KB，为了画一张十来行的表
+    const staff = account.queryMembers(orgId, { all: true, minRank: "auditor" }).members;
+    const candidates = account.queryMembers(orgId, { status: "active", lite: true, limit: account.MEMBER_PAGE_MAX });
     return {
       ranks: rbac.ROLE_RANK,
       roles: rbac.ROLES.map((r) => ({ role: r, label: rbac.ROLE_LABEL[r], caps: rbac.CAPS[r] })),
       caps: rbac.CAP_LABEL,
       me: { role: rbac.roleOf(req.user), can_assign: rbac.assignableBy(req.user, { role: "member" }),
             can_transfer: rbac.can(req.user, "owner.transfer"), platform_owner: account.platformOwner(req.user) },
-      owner: (members.find((m) => m.role === "owner") || {}).username || "",
-      members,
+      owner: (staff.find((m) => m.role === "owner") || {}).username || "",
+      staff,
+      // 候选人可能被截断（超过 MEMBER_PAGE_MAX 就只回前 500 个）。截断了得说，
+      // 不然界面上「找不到那个人」会被当成他不存在
+      candidates: candidates.members,
+      candidates_total: candidates.matched,
+      candidates_capped: candidates.matched > candidates.members.length,
     };
   }));
 
@@ -428,10 +456,18 @@ function createAdminRouter(deps = {}) {
       today: sum.today, month: sum.month, last7: sum.last7, range: sum.range,
       by_user: sum.by_user, by_model: sum.by_model, by_source: sum.by_source,
       detail: sum.recent, total: sum.total, offset: sum.offset, limit: sum.limit,
-      members: account.listMembers(org.orgIdOf(req.user)).map((m) => ({
-        username: m.username, nickname: m.nickname, dept: m.dept, role: m.role, status: m.status,
-        monthly_quota: m.monthly_quota, monthly_left: m.monthly_left, credits: m.credits, balance: m.balance,
-      })),
+      // 花名册按需捎带。以前是每趟都带整份，于是 ?limit= 根本缩不小回包——
+      // 实测 3000 人的组织，limit=20 是 682 KB，limit=1 还是 678 KB，
+      // 而明细页只是想拿这份名单画个「看谁的」下拉。
+      //   with=members 全份（「按人」那张表要算每个人的额度和余额）
+      //   with=names   只要名字那几格（下拉框）
+      ...(q.with === "members" || q.with === "names"
+        ? { members: account.queryMembers(org.orgIdOf(req.user), { all: true, lite: q.with === "names" }).members
+              .map((m) => (q.with === "names" ? m : {
+                username: m.username, nickname: m.nickname, dept: m.dept, role: m.role, status: m.status,
+                monthly_quota: m.monthly_quota, monthly_left: m.monthly_left, credits: m.credits, balance: m.balance,
+              })) }
+        : {}),
     };
   }));
 
