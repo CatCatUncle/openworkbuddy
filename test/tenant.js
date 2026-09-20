@@ -153,7 +153,8 @@ function call(method, url, { body, cookie } = {}) {
           let json = null;
           try { json = JSON.parse(buf); } catch {}
           const sc = res.headers["set-cookie"];
-          resolve({ status: res.statusCode, json, cookie: sc ? String(sc[0]).split(";")[0] : null });
+          resolve({ status: res.statusCode, json, bytes: Buffer.byteLength(buf),
+                    cookie: sc ? String(sc[0]).split(";")[0] : null });
         });
       }
     );
@@ -1383,6 +1384,210 @@ async function login(username, password) {
     eq(by21.get(a21).active, mine21.filter((m) => m.status === "active").length,
        "在用人数也一致（两处对「没有 status 的老账号算什么」得是同一个默认值）");
   }
+
+  console.log("\n【22】成员页：六百人的花名册，不能整份甩给浏览器");
+  {
+    // 以前这一页是「整份回去、前端自己筛」。3000 人的组织实测：一趟 1041 KB、
+    // 浏览器里 78098 个 DOM 节点、从点进来到表格画完 878ms，而一屏看得见十几行。
+    // 改成服务端筛 + 翻页之后：17 KB、1403 个节点、38ms。同一趟顺手砍了另外三处
+    // 「捎带整份花名册」：管理员角色页 1042 KB → 48 KB，用量明细页 682 KB → 200 KB。
+    //
+    // 这一段钉的是那几条「看不见、但一破就悄悄退回从前」的性质：
+    //   · 排序在切页之前——不然「第一页」取决于人在账本里的物理顺序，今天谁在前面
+    //     取决于谁昨天改过资料
+    //   · 算钱在切页之后——每个人都要算角色、额度、本月剩余、余额，还要为「最后活跃」
+    //     翻用量账本；六百个人算完只显示五十个，前面那些全是白算的
+    //   · HTTP 上要不来整份——?limit=99999 也只给一页，不然改了前端等于没改
+    const rbac22 = require(path.join(ROOT, "rbac"));
+    const usageStore22 = require(path.join(ROOT, "usage-store"));
+    const DEF22 = "default";
+    const MONTH22 = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
+
+    const st22 = account._internals.loadUsers();
+    const born = (y, i) => new Date(Date.UTC(y, 0, 1, 0, 0, i)).toISOString();
+    const mk22 = (name, extra) => st22.users.push({
+      username: name, org: DEF22, role: "member", created_at: born(2026, st22.users.length),
+      pass: "x".repeat(60), salt: "y".repeat(32), credits: 0, ...extra,
+    });
+    // 一个「元老」：比开服那个账号还早。它是排序那条断言的靶子——
+    // 超级管理员得排在他前面，而他得排在其余所有人前面
+    mk22("m22_yuanlao", { created_at: born(2000, 0), nickname: "元老" });
+    for (let i = 0; i < 600; i++) {
+      const n = String(i).padStart(3, "0");
+      mk22("m22_" + n, {
+        nickname: i % 137 === 3 ? "叫得出名字的那个" + n : "同事" + n,
+        dept: ["市场部", "研发部", "财务部"][i % 3],
+        role: i % 211 === 5 ? "auditor" : "member",
+        status: i % 97 === 7 ? "pending" : i % 89 === 11 ? "disabled" : "active",
+        // 每 53 个里有一个是「这个月的额度用光了」——首页那条待办要数的就是他们
+        ...(i % 53 === 9 ? { monthly_quota: 100, month_key: MONTH22, month_used: 100 } : {}),
+      });
+    }
+    account._internals.saveUsers(st22);
+
+    // 期望值一律从**整份**算出来，不写死数字：这一段前面十几段也往默认组织里放过人，
+    // 写死了就会变成「改一处前面的测试、后面莫名其妙红一片」
+    const all22 = account.listMembers(DEF22);
+    const LIMIT22 = 50;
+    const hay22 = (m) => [m.username, m.nickname, m.dept].join("\u0000").toLowerCase();
+
+    // 「最后活跃」那一趟是整段里最贵的动作（要翻用量账本），拿它当探针：
+    // 它被问了几个人名，就是这一趟真正算了几个人
+    const realLA22 = usageStore22.lastActive;
+    let la22 = [];
+    usageStore22.lastActive = function (names, ...rest) {
+      la22.push((names || []).length);
+      return realLA22.call(this, names, ...rest);
+    };
+    const asked = () => la22.reduce((a, b) => a + b, 0);
+    const watch = async (fn) => { la22 = []; const res = await fn(); return res; };
+
+    try {
+      ok(all22.length > 600, "先把人造起来：默认组织现在有六百多号人", { 人数: all22.length });
+
+      // ---------- 翻页 ----------
+      const p1 = await watch(() => call("GET", `/api/admin/members?limit=${LIMIT22}`, { cookie: boss }));
+      eq(p1.status, 200, "成员页拉得到");
+      eq(p1.json.members.length, LIMIT22, "★要一页就只给一页★ 六百多人的组织，回的是 50 个");
+      eq(p1.json.total, all22.length, "total 还是「这家公司一共几个人」——翻页不改变这个数");
+      eq(p1.json.matched, all22.length, "没筛的时候 matched = total");
+      eq(asked(), LIMIT22, "★只为这一页的 50 个人查『最后活跃』★ 算钱在切页之后，不是先把六百个人都算完再扔掉",
+         { 问了几个人: asked() });
+
+      const names1 = p1.json.members.map((m) => m.username);
+      eq(names1.join(","), all22.slice(0, LIMIT22).map((m) => m.username).join(","),
+         "★切的是排好序的那一份★ 第一页 = 整份排好序之后的前 50 个，一个不差、顺序一致");
+      eq(names1[0], "laoban", "★超级管理员永远在第一页第一个★ 不管他是第几个注册进来的");
+      eq(names1[1], "m22_yuanlao",
+         "★接下来按进公司的先后排★ 元老（造他的时候故意排在账本的最后一条）在第二个——"
+         + "排序要是在切页之后做的，他会掉到最后一页去");
+
+      const p2 = await call("GET", `/api/admin/members?limit=${LIMIT22}&offset=${LIMIT22}`, { cookie: boss });
+      const names2 = p2.json.members.map((m) => m.username);
+      eq(p2.json.offset, LIMIT22, "第二页把 offset 原样报回来（前端靠它画「第几页」）");
+      eq(new Set([...names1, ...names2]).size, LIMIT22 * 2,
+         "★两页之间不重不漏★ 一百个名字就是一百个人，没有谁在两页上各出现一次");
+
+      const over = await call("GET", `/api/admin/members?limit=${LIMIT22}&offset=999999`, { cookie: boss });
+      ok(over.json.members.length > 0,
+         "★翻过头了退回最后一页，不是给一张空表★ 空表在界面上跟「这家公司没有人」长得一模一样",
+         { 回了几个: over.json.members.length, offset: over.json.offset });
+      eq(over.json.offset, Math.floor((all22.length - 1) / LIMIT22) * LIMIT22, "退回来的正好是最后一页的起点");
+
+      const greedy = await call("GET", "/api/admin/members?limit=99999", { cookie: boss });
+      eq(greedy.json.members.length, account.MEMBER_PAGE_MAX,
+         "★HTTP 上要不来整份★ ?limit=99999 也只给 MEMBER_PAGE_MAX 个——不然前端改了等于没改，"
+         + "谁手改一下地址栏就把服务器拖回去");
+      ok(greedy.json.members.length < all22.length, "反向对照：确实截断了（造的人比上限多）",
+         { 上限: account.MEMBER_PAGE_MAX, 人数: all22.length });
+
+      // ---------- 筛在服务端做 ----------
+      const kw = "叫得出名字的那个";
+      const wantKw = all22.filter((m) => hay22(m).includes(kw.toLowerCase())).length;
+      ok(wantKw >= 2 && wantKw < 10, "测试自检：这个关键词确实只对得上少数几个人（不然下面是空断言）", { 命中: wantKw });
+      const sr = await call("GET", "/api/admin/members?q=" + encodeURIComponent(kw), { cookie: boss });
+      eq(sr.json.matched, wantKw, "★搜索是服务端做的★ 回来的 matched 就是命中数");
+      eq(sr.json.members.length, wantKw, "★而且只回命中的这几个人★ 不是整份回去让浏览器自己藏");
+      eq(sr.json.total, all22.length, "total 不受搜索影响——界面上那句「筛出 N / 共 M」要的就是这两个数");
+      ok(sr.json.members.every((m) => hay22(m).includes(kw.toLowerCase())), "回来的每一个都真的对得上");
+
+      const miss = await call("GET", "/api/admin/members?q=" + encodeURIComponent("这个人不存在zzz"), { cookie: boss });
+      eq(miss.json.matched, 0, "反向对照：搜一个谁也不叫的名字，matched 是 0");
+      eq(miss.json.members.length, 0, "而且不是「筛不着就把整份给你」");
+
+      for (const [k, v] of [["status", "disabled"], ["status", "pending"], ["role", "auditor"]]) {
+        const want = all22.filter((m) => m[k] === v).length;
+        ok(want > 0, `测试自检：${k}=${v} 的人确实造出来了`, { 有: want });
+        const rr = await call("GET", `/api/admin/members?${k}=${v}&limit=${account.MEMBER_PAGE_MAX}`, { cookie: boss });
+        eq(rr.json.matched, want, `按 ${k}=${v} 筛，数目跟整份里数出来的一致`);
+        ok(rr.json.members.every((m) => m[k] === v), `按 ${k}=${v} 筛，回来的每一个都对`);
+      }
+
+      // ---------- 回包真的小了 ----------
+      const full = await call("GET", `/api/admin/members?limit=${account.MEMBER_PAGE_MAX}`, { cookie: boss });
+      ok(p1.bytes * 3 < full.bytes,
+         "★一页的回包比一整份小一大截★ 这才是这趟改动要买的东西：手机上、会议室的网上，差的是这几百 KB",
+         { 一页: p1.bytes, 五百个: full.bytes });
+
+      const lite = await watch(() => call("GET", `/api/admin/members?fields=lite&limit=${LIMIT22}`, { cookie: boss }));
+      const one = lite.json.members[0] || {};
+      eq(Object.keys(one).sort().join(","), "dept,nickname,role,status,username",
+         "★下拉框那份只有名字这几格★ 交接给谁、归到谁名下——这种地方要的是名字，不是余额");
+      ok(!("balance" in one) && !("credits" in one) && !("monthly_quota" in one),
+         "★lite 里一个钱数都没有★ 少回一格就少一个能泄出去的地方", one);
+      eq(asked(), 0,
+         "★lite 一次『最后活跃』都不查★ 它一个时间都不显示，去翻用量账本纯属白翻", { 问了几个人: asked() });
+      ok(lite.bytes * 2 < p1.bytes, "同样 50 个人，lite 的回包不到全份的一半", { lite: lite.bytes, 全份: p1.bytes });
+
+      // ---------- 首页概览：一个人名都不回，也一本账都不翻 ----------
+      const ov = await watch(() => call("GET", "/api/admin/overview", { cookie: boss }));
+      eq(ov.status, 200, "概览拉得到");
+      ok(!("members" in ov.json), "★首页不捎带花名册★ 它一个人名都不显示，只显示几个数字");
+      eq(asked(), 0, "★首页一次『最后活跃』都不查★", { 问了几个人: asked() });
+      eq(ov.json.seats.used, all22.filter((m) => m.status !== "disabled").length,
+         "在用席位 = 没停用的人（停用的不占席位，但人还在花名册上）");
+      eq(ov.json.seats.pending, all22.filter((m) => m.status === "pending").length, "等审核的人数对得上");
+      eq(ov.json.monthly.granted, all22.reduce((a, m) => a + m.monthly_quota, 0),
+         "★这个月一共发下去多少，跟一个一个加起来的一样★ 两处口径要是不一致，"
+         + "同一家公司在首页和成员页会显示两个数，而谁也说不清哪个是真的");
+      const dryWant = all22.filter((m) => m.status === "active" && m.monthly_quota > 0 && m.monthly_left <= 0);
+      ok(dryWant.length > 0, "测试自检：确实有人这个月额度用光了（不然下面那条是空断言）", { 有: dryWant.length });
+      eq(ov.json.monthly.dry, dryWant.length, "★额度见底的人数对得上★ 首页那条待办就指着它");
+      ok(ov.json.monthly.dry_names.length <= 3 && ov.json.monthly.dry_names.length > 0,
+         "★待办里至多点三个人名★ 六百人的组织要是有两百个见底的，那条待办不能变成两百个名字",
+         ov.json.monthly.dry_names);
+
+      // ---------- 管理员角色页：要的是管理层，不是全体 ----------
+      const staffWant = all22.filter((m) => rbac22.ROLE_RANK[m.role] >= rbac22.ROLE_RANK.auditor);
+      const roles = await watch(() => call("GET", "/api/admin/roles", { cookie: boss }));
+      eq(roles.status, 200, "角色页拉得到");
+      ok(!("members" in roles.json), "★角色页不再回整份花名册★ 它画的是一张十来行的管理层名单");
+      eq(roles.json.staff.length, staffWant.length, "管理层名单 = 审计员起的那些人", { 有: staffWant.length });
+      ok(roles.json.staff.every((m) => rbac22.ROLE_RANK[m.role] >= rbac22.ROLE_RANK.auditor),
+         "名单里没混进普通成员");
+      eq(roles.json.owner, "laoban", "超级管理员那一格还是从管理层名单里挑出来的");
+      eq(asked(), staffWant.length,
+         "★只为管理层这十来个人查『最后活跃』★ 档位下限得在算钱之前筛，不是算完六百个再扔掉五百九",
+         { 问了几个人: asked(), 管理层: staffWant.length });
+      ok(roles.json.candidates.length === account.MEMBER_PAGE_MAX,
+         "提拔/转让的候选人下拉最多给 MEMBER_PAGE_MAX 个", { 给了: roles.json.candidates.length });
+      eq(roles.json.candidates_capped, true,
+         "★截断了就得说★ 不然界面上「下拉里找不到那个人」会被当成他不存在");
+      eq(roles.json.candidates_total, all22.filter((m) => m.status === "active").length,
+         "候选人总数照实报（前端拿它写「共 N 人，先显示前 500」）");
+      ok(roles.json.candidates.every((m) => m.status === "active"),
+         "候选人只列在职的——提拔一个已经停用的人是没有意义的操作");
+      ok(!("balance" in (roles.json.candidates[0] || {})), "候选人也是 lite 那五格");
+      ok(roles.bytes * 3 < full.bytes, "角色页回包比一整份花名册小一大截", { 角色页: roles.bytes, 五百个: full.bytes });
+
+      // ---------- 用量明细：花名册按需捎带 ----------
+      const u0 = await call("GET", "/api/admin/usage?limit=1", { cookie: boss });
+      ok(!("members" in u0.json),
+         "★不说要，就不给花名册★ 以前每趟都带整份，于是 ?limit= 根本缩不小回包——"
+         + "实测 3000 人时 limit=20 是 682 KB、limit=1 还是 678 KB");
+      const un = await call("GET", "/api/admin/usage?limit=1&with=names", { cookie: boss });
+      eq(Object.keys(un.json.members[0] || {}).sort().join(","), "dept,nickname,role,status,username",
+         "with=names 给下拉框用的那五格");
+      const um = await call("GET", "/api/admin/usage?limit=1&with=members", { cookie: boss });
+      ok("balance" in (um.json.members[0] || {}),
+         "with=members 才带钱数（「按人」那张表要显示额度和余额）");
+      ok(u0.bytes * 2 < um.bytes, "不带花名册的那一趟明显更小", { 不带: u0.bytes, 全份: um.bytes });
+
+      // ---------- queryMembers 本身 ----------
+      const q1 = account.queryMembers(DEF22, { all: true });
+      eq(q1.members.length, all22.length, "all:true 还是整份——listMembers 和别的调用方靠它");
+      eq(q1.matched, q1.total, "整份的时候 matched = total");
+      const q2 = account.queryMembers(DEF22, { minRank: "auditor", all: true });
+      eq(q2.members.length, staffWant.length, "minRank 在算钱之前就把人筛掉了");
+      eq(account.queryMembers(DEF22, { limit: 0 }).members.length, 50, "limit=0 当没传（回默认的一页），不是回 0 个人");
+      eq(account.queryMembers(DEF22, { limit: -5 }).members.length, 50, "limit 是负数也当没传");
+      eq(account.queryMembers(DEF22, { limit: 99999 }).members.length, account.MEMBER_PAGE_MAX, "limit 夹在上限里");
+      eq(account.queryMembers(DEF22, { offset: -3, limit: 10 }).offset, 0, "offset 是负数就当 0");
+    } finally {
+      usageStore22.lastActive = realLA22;
+    }
+  }
+
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
