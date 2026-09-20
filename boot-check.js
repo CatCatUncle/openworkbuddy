@@ -8,8 +8,11 @@
  *   - 从 GitHub 下 ZIP 解压完直接 `node server.js`，报 `Cannot find module 'express'`。
  *     对不写 Node 的人来说这句话等于没说。
  *
- * 所以这个文件是三个入口（server.js / cli.js / electron-main.js）的**第一句 require**，
- * 排在 express 那一批前面——排在后面的话，缺依赖那条永远轮不到它说话。
+ * 所以这个文件是 server.js 和 cli.js 的**第一句 require**，排在 express 那一批前面——
+ * 排在后面的话，缺依赖那条永远轮不到它说话。electron-main.js 不自己挂：它是 require 了
+ * server.js 才把服务端拉起来的，那一句就带着闸门；而且它会先把 global.__wbBootFail 挂好，
+ * 于是闸门走 throwInstead 那条路，原因被画进窗口里，而不是 process.exit(1) 让主进程当场消失
+ * ——那样用户看到的是「任务管理器里有进程、屏幕上什么都没有」，正是 issue #1 的样子。
  *
  * 它自己用最老的语法写（var + 字符串拼接，不用 ?. 和 ??）：闸门自己解析不了，等于没装闸门。
  * 有条边界得说清楚：Node 老到连 `?.` 都不认（v13 及以下）时，server.js 这个文件本身
@@ -32,6 +35,17 @@ var MIN_NODE = 18;
  * @param {{nodeVersion?:string, minMajor?:number, missingDeps?:string[], packaged?:boolean}} facts
  * @returns {null | {code:string, title:string, fix:string}}
  */
+/**
+ * 缺的包名，最多报三个，后面跟上总数。
+ *
+ * 只印前三个的时候，一次整体装失败（十三个全没有）和真只少一个包，屏幕上长得一模一样——
+ * 而这两种情况该做的事不同：前者是重跑一遍 npm install，后者才是去补那一个。
+ */
+function nameList(missing) {
+  var head = "找不到 " + missing.slice(0, 3).join("、");
+  return missing.length > 3 ? head + " 等 " + missing.length + " 个" : head;
+}
+
 function bootProblem(facts) {
   facts = facts || {};
   var min = facts.minMajor || MIN_NODE;
@@ -53,13 +67,13 @@ function bootProblem(facts) {
     if (facts.packaged) {
       return {
         code: "deps-missing-packaged",
-        title: "安装包里少了文件（找不到 " + missing.slice(0, 3).join("、") + "）。",
+        title: "安装包里少了文件（" + nameList(missing) + "）。",
         fix: "到 GitHub Releases 重新下载最新版覆盖安装。最新版还是这样的话，把这行贴到 issue 里。",
       };
     }
     return {
       code: "deps-missing",
-      title: "依赖还没装（找不到 " + missing.slice(0, 3).join("、") + "）。",
+      title: "依赖还没装（" + nameList(missing) + "）。",
       fix: "在项目目录里跑一次 `npm install`，跑完再启动。"
         + "国内网络慢的话：`npm install --registry=https://registry.npmmirror.com`。",
     };
@@ -67,8 +81,31 @@ function bootProblem(facts) {
   return null;
 }
 
-/** 哪些依赖缺了就真的起不来——挑的是三个入口共同的必需品，不是把 dependencies 全列一遍 */
-var REQUIRED_DEPS = ["express", "@anthropic-ai/sdk", "exceljs"];
+/**
+ * 要查的依赖清单，直接问 package.json 要，不再手写。
+ *
+ * 手写那份是三个名字（express / @anthropic-ai/sdk / exceljs），实测只有 express 真拦得住启动——
+ * 另外两个是懒加载，缺了照样起得来，要到第一次调模型、第一次导表格才炸。这是好事：宁可在门口
+ * 说清楚，也别让人用到一半撞一句 Cannot find module。可反过来说，剩下那十个同样是 dependencies、
+ * 同样缺了就有功能是坏的，凭什么不查？手写清单的真正毛病是会**漂**：加第 14 个依赖的人不会记得
+ * 回来改这儿，而这个文件存在的全部意义就是别让用户拿到一句 Cannot find module。
+ *
+ * package.json 读不出来（打包路径不对、文件坏了）就退回手写那三个——闸门自己不能因为读不到
+ * 清单就把人拦在门外，也不能因此一条都不查。
+ */
+var FALLBACK_DEPS = ["express", "@anthropic-ai/sdk", "exceljs"];
+
+function readDeps(rootDir) {
+  try {
+    var pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
+    var names = Object.keys(pkg.dependencies || {});
+    return names.length ? names : FALLBACK_DEPS;
+  } catch (e) {
+    return FALLBACK_DEPS;
+  }
+}
+
+var REQUIRED_DEPS = readDeps(__dirname);
 
 function findMissing(rootDir, names) {
   var missing = [];
@@ -92,14 +129,22 @@ function enforce(opt) {
   var problem = bootProblem({
     nodeVersion: process.versions.node,
     minMajor: MIN_NODE,
-    missingDeps: findMissing(rootDir, REQUIRED_DEPS),
+    missingDeps: findMissing(rootDir, readDeps(rootDir)),
     packaged: packaged,
   });
   if (!problem) return null;
   var text = "\nOpenWorkBuddy 起不来：" + problem.title + "\n怎么修：" + problem.fix + "\n\n";
   try { process.stderr.write(text); } catch (e) { console.error(text); }
-  if (opt.throwInstead) throw new Error(problem.title + " " + problem.fix);
+  if (opt.throwInstead) {
+    // 判据原样挂在错误上。壳那边接住之后不必再拿正则去猜这句话是什么意思——
+    // 猜的结果是：Node 太老、依赖没装这三种我们**已经查出来**的死法，启动失败页上一律写着
+    // 「服务端启动时崩了，把这行贴到 issue 里」，而真正该做的（升 Node / npm install / 重下）
+    // 只躺在下面那个红框里。最知道该怎么修的时候，反倒让人去提 issue。
+    var err = new Error(problem.title + " " + problem.fix);
+    err.bootProblem = problem;
+    throw err;
+  }
   process.exit(1);
 }
 
-module.exports = { bootProblem, findMissing, enforce, MIN_NODE, REQUIRED_DEPS };
+module.exports = { bootProblem, nameList, findMissing, readDeps, enforce, MIN_NODE, REQUIRED_DEPS, FALLBACK_DEPS };

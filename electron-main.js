@@ -80,7 +80,7 @@ function fatal(stage, err) {
     try {
       dialog.showErrorBox(
         "OpenWorkBuddy 没能启动",
-        `${bootHint(msg, PORT)}\n\n${msg.split("\n")[0]}\n\n启动日志：${BOOT_LOG || "（日志文件写不出来）"}`
+        `${bootAdvice(err, msg, PORT)}\n\n${((err && err.bootProblem && err.bootProblem.title) || msg).split("\n")[0]}\n\n启动日志：${BOOT_LOG || "（日志文件写不出来）"}`
       );
     } catch {}
     app.exit(1);
@@ -401,6 +401,19 @@ function attachContextMenu(wc) {
   });
 }
 
+/**
+ * 启动失败页上那句大标题该写什么。
+ *
+ * 开机闸门（boot-check.js）已经查出来的三种死法——Node 太老、源码版依赖没装、装机版缺文件——
+ * 它自己就带着一句该怎么修，原样用就行。以前这儿一律走下面的 bootHint 去**猜**：那些判据认的是
+ * "Cannot find module"、"EADDRINUSE" 这些英文报错，而闸门给的是中文人话，一条都对不上，于是
+ * 最知道该怎么修的三种情况，页面上写的全是「服务端启动时崩了，把这行贴到 issue 里」。
+ */
+function bootAdvice(err, msg, port) {
+  var bp = err && err.bootProblem;
+  return bp && bp.fix ? bp.fix : bootHint(msg, port);
+}
+
 function bootHint(msg, port) {
   msg = String(msg || "");
   if (/Cannot find module/.test(msg))
@@ -429,7 +442,9 @@ function bootHint(msg, port) {
  */
 function showBootFailure(err) {
   const msg = String((err && err.message) || err || "未知错误");
-  const hint = bootHint(msg, PORT);
+  const hint = bootAdvice(err, msg, PORT);
+  // 闸门查出来的病因，红框里只放那一句结论就够了；解法已经当大标题写在上面，重复一遍反而更长
+  const detail = (err && err.bootProblem && err.bootProblem.title) || msg;
   const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
   const html = `<!doctype html><meta charset="utf-8"><title>OpenWorkBuddy 启动失败</title>
 <style>
@@ -447,7 +462,7 @@ function showBootFailure(err) {
 <div class=box>
  <h1>OpenWorkBuddy 没能启动</h1>
  <p>${esc(hint)}</p>
- <pre>${esc(msg)}</pre>
+ <pre>${esc(detail)}</pre>
  <p class=small>还可以试：窗口一直不出现、或者整片黑，多半是显卡驱动画不出来——在用户目录的
    OpenWorkBuddy/config.json 里给 <code>server</code> 加一行 <code>"disable_gpu": true</code> 再打开。</p>
  <p class=small>启动日志（贴 issue 时带上它）：<code>${esc(BOOT_LOG || "写不出来")}</code></p>
