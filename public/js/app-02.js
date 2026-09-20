@@ -1342,14 +1342,39 @@ async function interject() {
   await interjectText(text);
 }
 document.getElementById("interject-btn").onclick = interject;
+/**
+ * 按下「让我停下」。
+ *
+ * 以前这里把服务端的回话整个 .catch 吞了：服务端说「该会话没有正在运行的任务」也好，
+ * 网线断了也好，界面上都只剩一颗停在「…」上的按钮。人看到的是「点了没反应」，
+ * 于是接着连点——而连点一次都到不了后端，因为第一次就已经把这趟任务从表里摘掉了。
+ * 停不下来这件事，一半在后端（命令没接停止信号），另一半就在这三行。
+ */
 async function stopTask() {
   if (!sessionId) return;
   sendBtn.textContent = "…";
-  await fetch("/api/chat/stop", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId }),
-  }).catch(() => {});
+  sendBtn.title = "正在停…";
+  let r = null;
+  try {
+    const resp = await fetch("/api/chat/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    });
+    r = await resp.json();
+  } catch {
+    toast("没连上服务端，停止的指令没送出去", "circle-x");
+    syncSendBtn();
+    return;
+  }
+  if (r && r.ok) {
+    // 后端收到了，但正在跑的那一步还要几百毫秒才收得干净。说清楚「在停」而不是「停了」，
+    // 免得这段时间里又冒出一行输出，人以为按钮是假的。
+    toast("收到，正在停下当前这一步");
+    return;
+  }
+  toast((r && r.error) || "这条任务已经不在跑了", "circle-x");
+  syncSendBtn();
 }
 async function send() {
   let text = composeOutgoing();

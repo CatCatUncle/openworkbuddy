@@ -930,9 +930,26 @@
   /* 双击复制：光标换成十字准星，让「这张图可以拿走」这件事在鼠标碰到它的那一刻就说出来 */
   #pv-body img.pv-img { cursor: copy; }
   /* 单张图 / 一条片子的预览：横竖都居中，别顶在天花板上 */
+  /* PDF 用 Chromium 自带的阅读器，它要多高给多高、滚动也归它自己管。
+     面板这层不能再 overflow:auto，否则两条滚动条套在一起。 */
+  #pv-body.pv-full { overflow: hidden; padding: 0; }
+  #pv-body > iframe.pv-pdf { flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; border: none; background: var(--owb-bg-hover); align-self: stretch; }
   #pv-body.pv-mid { display: flex; align-items: center; justify-content: center; padding: 20px; }
   #pv-body.pv-mid img, #pv-body.pv-mid video.pv-media { margin: 0; max-height: 100%; object-fit: contain; }
-  #pv-body audio.pv-media { display: block; width: min(calc(100% - 40px), 760px); margin: 0 auto; }
+  /* 「没东西可看」的那一块，和音频卡片：两者都用 margin:auto 摆到面板正中间。
+     为什么不是父层 align-items:center —— 见 pvNotice 上面那段：内容比面板高时
+     它会把顶部推出可滚区，auto 外边距不会（剩余空间为负时按 0 算）。 */
+  #pv-body > .pv-empty { margin: auto; max-width: 420px; padding: 24px; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; font-size: 14px; line-height: 1.7; color: var(--owb-text-3); }
+  #pv-body > .pv-empty .pv-empty-ico { width: 40px; height: 40px; opacity: .5; }
+  #pv-body > .pv-empty .pv-empty-acts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  #pv-body > .pv-empty button { border: 1px solid var(--owb-border); background: var(--owb-bg); border-radius: var(--radius-md); padding: 5px 14px; font-size: 13px; color: var(--owb-text-2); cursor: pointer; }
+  #pv-body > .pv-empty button:hover { border-color: var(--owb-brand-text); color: var(--owb-brand-text); }
+  #pv-body > .pv-audio { margin: auto; width: min(calc(100% - 40px), 560px); box-sizing: border-box; padding: 24px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  #pv-body > .pv-audio .pv-audio-ico { width: 48px; height: 48px; color: var(--owb-brand-text); opacity: .7; }
+  #pv-body > .pv-audio .pv-audio-name { font-size: 14px; color: var(--owb-text-2); text-align: center; overflow-wrap: anywhere; }
+  #pv-body > .pv-audio audio.pv-media { display: block; width: 100%; margin: 0; }
+  /* SVG 是一张图：装得下摆正中间，装不下（长流程图）auto 外边距自动变 0，退回贴顶接着滚 */
+  #pv-body > .pv-fit.pv-fit-mid { margin-block: auto; }
   #pv-body video.pv-media { display: block; width: 100%; height: auto; max-height: 100%; object-fit: contain; background: #000; border-radius: var(--radius-md); }
   #pv-body .pv-text { padding: 16px 20px; font-size: 14px; line-height: 1.7; }
   #pv-body .pv-text button { border: 1px solid var(--owb-border); background: var(--owb-bg); border-radius: var(--radius-md); padding: 4px 12px; font-size: 13px; color: var(--owb-text-2); cursor: pointer; }

@@ -1550,7 +1550,48 @@ function makeOutSink(kind, headMax, tailMax) {
   };
 }
 
-function runNode(code, timeoutMs, cwd) {
+
+/**
+ * 把子进程连同它拉起来的那一窝一并收走。
+ *
+ * 为什么不是一句 child.kill()：模型跑的多半是 `npm install`、`npm run build` 这种
+ * 自己还要再 spawn 一层的命令。只杀那层 shell，孙子进程会活下来接着占 CPU 和端口——
+ * 用户点了「让我停下」，风扇还在转、端口还被占着，跟没停一样。detached 让子进程自成
+ * 一个进程组，负号 pid 才能把整组一起送走。
+ *
+ * 先 SIGTERM 再 SIGKILL：正在写文件的进程该有机会把手上那半个文件收尾，
+ * 但用户已经明确说了停，不能无限等——给 grace 毫秒，到点还在就硬杀。
+ */
+function killTree(child, grace = 2000) {
+  const send = (sig) => {
+    try {
+      if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      else process.kill(-child.pid, sig);
+    } catch {
+      try { child.kill(sig); } catch {}
+    }
+  };
+  send("SIGTERM");
+  const t = setTimeout(() => send("SIGKILL"), grace);
+  if (t.unref) t.unref();
+  child.once("close", () => clearTimeout(t));
+}
+
+/**
+ * 把「让我停下」接到一个正在跑的子进程上。
+ *
+ * 返回拆监听的函数：一趟任务里工具要跑几十上百次，不拆的话同一个 AbortSignal 上的
+ * 监听器越堆越多，Node 到 11 个就开始刷 MaxListenersExceededWarning。
+ */
+function bindStop(child, stopSignal, onStop) {
+  if (!stopSignal) return () => {};
+  const onAbort = () => { onStop(); killTree(child); };
+  if (stopSignal.aborted) { onAbort(); return () => {}; }
+  stopSignal.addEventListener("abort", onAbort, { once: true });
+  return () => stopSignal.removeEventListener("abort", onAbort);
+}
+
+function runNode(code, timeoutMs, cwd, stopSignal) {
   ensureDirs();
   const syntaxErr = precheckSyntax(code);
   if (syntaxErr) return Promise.resolve({ content: syntaxErr, isError: true });
@@ -1568,6 +1609,8 @@ function runNode(code, timeoutMs, cwd) {
     const child = spawn(process.execPath, [file], {
       cwd: cwd || ws(),
       timeout: timeoutMs,
+      // 自成进程组，好让 killTree 能连着孙子进程一起收（脚本里再 spawn 是常事）
+      detached: process.platform !== "win32",
       // ELECTRON_RUN_AS_NODE：桌面版里 execPath 是 Electron 二进制，不加这个每跑一次脚本
       // 就弹一个新的 Electron 应用实例（Dock 图标狂蹦）；加了就纯当 node 用
       // OPENWORKBUDDY_HOME：装机态下代码在只读的应用包里、数据在 ~/OpenWorkBuddy，
@@ -1578,17 +1621,23 @@ function runNode(code, timeoutMs, cwd) {
     const err = makeOutSink("node-err", 4000, 6000);
     child.stdout.on("data", (d) => out.write(d));
     child.stderr.on("data", (d) => err.write(d));
+    let stopped = false;
+    const unbind = bindStop(child, stopSignal, () => { stopped = true; });
     child.on("close", (code2, signal) => {
+      unbind();
       fs.rmSync(file, { force: true });
       const o = out.render(), e = err.render();
       let result = "";
       if (o) result += `stdout:\n${o}\n`;
       if (e) result += `stderr:\n${e}\n`;
-      if (signal === "SIGTERM") result += "(执行超时被终止)\n";
+      // 先判停止再判超时：用户按停也是走 SIGTERM，两句话反了人看见的就是「超时」
+      if (stopped) result += "(用户已停止任务，脚本被终止)\n";
+      else if (signal === "SIGTERM") result += "(执行超时被终止)\n";
       result += `exit code: ${code2}`;
-      resolve({ content: result, isError: code2 !== 0 });
+      resolve({ content: result, isError: stopped || code2 !== 0 });
     });
     child.on("error", (e) => {
+      unbind();
       resolve({ content: `启动失败: ${e.message}`, isError: true });
     });
   });
@@ -1665,13 +1714,15 @@ function missingBinHint(text, platform) {
   return lines.join("\n");
 }
 
-function runShell(command, timeoutMs, cwd) {
+function runShell(command, timeoutMs, cwd, stopSignal) {
   ensureDirs();
   return new Promise((resolve) => {
     const sh = pickShell(command);
     const child = spawn(sh.bin, sh.args, {
       cwd: cwd || ws(),
       timeout: timeoutMs,
+      // 同 runNode：整组一起杀，否则 `npm install` 那一窝会活过「让我停下」
+      detached: process.platform !== "win32",
       env: { ...process.env, PATH: shellPath(), OPENWORKBUDDY_HOME: DATA_DIR },
       ...sh.opts,
     });
@@ -1679,19 +1730,25 @@ function runShell(command, timeoutMs, cwd) {
     const err = makeOutSink("shell-err", 4000, 6000);
     child.stdout.on("data", (d) => out.write(d));
     child.stderr.on("data", (d) => err.write(d));
+    let stopped = false;
+    const unbind = bindStop(child, stopSignal, () => { stopped = true; });
     child.on("close", (code2, signal) => {
+      unbind();
       const o = out.render(), e = err.render();
       let result = "";
       if (o) result += `stdout:\n${o}\n`;
       if (e) result += `stderr:\n${e}\n`;
-      if (signal === "SIGTERM") result += "(执行超时被终止)\n";
+      // 先判停止再判超时：用户按停也是走 SIGTERM，两句话反了人看见的就是「超时」
+      if (stopped) result += "(用户已停止任务，命令被终止)\n";
+      else if (signal === "SIGTERM") result += "(执行超时被终止)\n";
       result += `exit code: ${code2}`;
       // 缺的是我们认识的外部工具时，把 shell 那句 command not found 翻译一遍再递出去
       const hint = code2 !== 0 ? missingBinHint(o + "\n" + e) : "";
       if (hint) result += "\n" + hint;
-      resolve({ content: result, isError: code2 !== 0 });
+      resolve({ content: result, isError: stopped || code2 !== 0 });
     });
     child.on("error", (e) => {
+      unbind();
       resolve({ content: `启动失败: ${e.message}`, isError: true });
     });
   });
@@ -3695,7 +3752,7 @@ async function executeTool(name, input, opts = {}) {
         const code = String(input.code || "");
         const blocked = await passGate(security.checkCode(sec, code), "代码", code.slice(0, 500));
         if (blocked) return blocked;
-        return await runNode(code, timeoutMs, fileBase);
+        return await runNode(code, timeoutMs, fileBase, opts.stopSignal);
       }
       case "run_shell": {
         if (orgBlocksShell()) return shellBlocked("run_shell");
@@ -3703,7 +3760,7 @@ async function executeTool(name, input, opts = {}) {
         const blocked = await passGate(security.checkCommand(sec, cmd), "命令", cmd);
         if (blocked) return blocked;
         security.audit("命令执行", cmd, "放行");
-        return await runShell(cmd, timeoutMs, fileBase);
+        return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal);
       }
       case "gen_diagram": {
         const rel = String(input.filename || "diagram").replace(/\.(svg|png)$/i, "");
