@@ -1326,6 +1326,64 @@ async function login(username, password) {
     });
   }
 
+
+  console.log("\n【21】平台的组织列表：多开几家公司，不该把整本用量账再翻几十遍");
+  {
+    // 这一页每家公司只显示两个数字：几个人、几个在用。以前是一家一家去查成员列表——
+    // 那个函数要算每个人的角色额度余额，还要为「最后活跃」翻一遍用量账本。
+    // 61 家公司换一张 38 KB 的表，要读 62 遍 users.json + 61 遍用量账本、35.6 MB 的盘、159ms；
+    // 121 家时 98.3 MB、388ms。判据还是「翻了几遍」，不是「花了几毫秒」。
+    const DATA21 = process.env.OPENWORKBUDDY_DATA_DIR;
+    const USERS21 = path.join(DATA21, "users.json");
+    const ORGS21 = org._internals.ORGS_FILE;
+    const USAGE21 = path.join(DATA21, "usage");
+
+    const a21 = org.createOrg({ name: "二十一号甲" }).id;
+    const b21 = org.createOrg({ name: "二十一号乙" }).id;
+    const z21 = org.createOrg({ name: "二十一号丙（一个人都还没进）" }).id;
+    const st21 = account._internals.loadUsers();
+    const mk21 = (name, o, status) => st21.users.push({
+      username: name, org: o, role: "member", created_at: new Date().toISOString(),
+      pass: "x".repeat(60), salt: "y".repeat(32), credits: 1,
+      ...(status === undefined ? {} : { status }),
+    });
+    mk21("a21_1", a21, "active");
+    mk21("a21_2", a21, "pending");    // 等审核
+    mk21("a21_3", a21, "disabled");   // 已停用
+    mk21("a21_4", a21, undefined);    // 老账号，根本没有 status 这一格
+    mk21("b21_1", b21, "active");
+    account._internals.saveUsers(st21);
+
+    const c21 = { users: 0, orgs: 0, usage: 0 };
+    const raw21 = fs.readFileSync;
+    fs.readFileSync = function (f, ...rest) {
+      const s = String(f);
+      if (s === USERS21) c21.users++;
+      else if (s === ORGS21) c21.orgs++;
+      else if (s.startsWith(USAGE21)) c21.usage++;
+      return raw21.call(fs, f, ...rest);
+    };
+    let r21;
+    try { r21 = await call("GET", "/api/admin/orgs", { cookie: boss }); } finally { fs.readFileSync = raw21; }
+    eq(r21.status, 200, "平台管理员列得出组织");
+    const by21 = new Map((r21.json.orgs || []).map((o) => [o.id, o]));
+    eq(by21.get(a21).members, 4, "甲家 4 个人（停用的也算人头——席位是按人头卖的）");
+    eq(by21.get(a21).active, 2, "★甲家 2 个在用★ 等审核的和停用的不算；老账号没有 status 那一格的，当在用算");
+    eq(by21.get(b21).members, 1, "反向对照：乙家那一个人没被算到甲家头上");
+    eq(by21.get(z21).members, 0, "反向对照：一个人都还没进的公司显示 0，不是空着也不是崩了");
+    eq(c21.usage, 0, "★这一页一遍用量账本都不用翻★ 它一个人名都不显示，只显示两个数字", { 翻了: c21.usage });
+    ok(c21.users <= 2, "★不管平台上开了几家公司，users.json 最多读两遍★ 一遍认人、一遍数人头",
+       { 读了: c21.users, 公司数: (r21.json.orgs || []).length });
+    ok(c21.orgs <= 2, "★orgs.json 也一样★ 以前是每家各读一遍", { 读了: c21.orgs });
+
+    // 反向对照：两处数出来的必须一样。对不上的话，同一家公司在成员页和组织列表上
+    // 会显示两个不同的在用人数，而谁也说不清哪个是真的
+    const mine21 = account.listMembers(a21);
+    eq(by21.get(a21).members, mine21.length, "组织列表和成员页数出来的人数一致");
+    eq(by21.get(a21).active, mine21.filter((m) => m.status === "active").length,
+       "在用人数也一致（两处对「没有 status 的老账号算什么」得是同一个默认值）");
+  }
+
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   fs.rmSync(TMP, { recursive: true, force: true });
