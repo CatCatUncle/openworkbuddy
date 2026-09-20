@@ -409,9 +409,11 @@ async function login(username, password) {
   console.log("\n【15.5】账本查得到：时间范围 / 关键词 / 翻页，且不许越过组织墙");
   // 这三样以前一样都没有，界面只能给「最近 200 条」。财务问「上个月谁花了多少」答不上来。
   // 造够两页的量，才测得出 offset/limit 是真翻页还是每次都从头切。
+  // 每条的 prompt 都不一样：120 条是一口气写进去的，时间戳全撞在同一毫秒上，
+  // 拿「时间+模型+条数+人」当身份的话，两页合起来会缩成几十个，看着就像翻页翻重了
   for (let i = 0; i < 120; i++) {
     account.chargeRun({ username: "xiaoyuan" },
-      { prompt: 100, completion: 50, model: i % 2 ? "mA" : "mB", provider: "p", source: i % 3 ? "web" : "feishu", elapsed_ms: 100 });
+      { prompt: 100 + i, completion: 50, model: i % 2 ? "mA" : "mB", provider: "p", source: i % 3 ? "web" : "feishu", elapsed_ms: 100 });
   }
   r = await call("GET", "/api/admin/usage?limit=50&offset=0", { cookie: fen });
   const p1 = r.json;
@@ -424,7 +426,7 @@ async function login(username, password) {
   ok(p1.detail[0].ts !== p2.detail[0].ts || JSON.stringify(p1.detail) !== JSON.stringify(p2.detail),
      "第二页不是第一页的复制品（offset 真的生效了，不是每次都从头 slice）");
   const ids = new Set([...p1.detail, ...p2.detail].map((e) => JSON.stringify([e.ts, e.model, e.prompt, e.user])));
-  ok(ids.size >= 60, "两页之间没有大面积重叠", ids.size);
+  ok(ids.size === 100, "两页之间一条都不重复（各 50 条，合起来正好 100 条）", ids.size);
 
   // 关键词
   r = await call("GET", "/api/admin/usage?limit=500&q=mA", { cookie: fen });
