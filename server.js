@@ -1584,7 +1584,7 @@ app.post("/api/canvas/boards", (req, res) => {
     const name = String(req.body && req.body.name || "").trim();
     if (!name || /[\\/\0]/.test(name) || name.length > 80) throw new Error("画布名称不合法");
     if (canvasList().some((item) => item.name === name)) throw new Error("已经有同名画布，请换一个名称");
-    const state = canvasWriteState({ version: 1, nodes: [], edges: [], updatedAt: 0 }, name, { pristine: true });
+    const state = canvasWriteState({ version: 2, nodes: [], edges: [], updatedAt: 0 }, name, { pristine: true });
     res.json({ ok: true, name, state, canvases: canvasList() });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });

@@ -8573,6 +8573,7 @@ async function main() {
   testShortDrama();
   testCanvasCreativeLineage();
   testCanvasPristineBoard();
+testCanvasEdgeVersion();
   testCanvasThumb();
   await testCanvasMissingAssets();
   testReleasePipeline();
@@ -8918,6 +8919,34 @@ function testCanvasPristineBoard() {
   const canvasSrc = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
   assert.ok(/Number\(remote\.updatedAt\) > 0/.test(canvasSrc), "界面那头没在看 updatedAt：服务端分得出来也没人用");
   console.log("✅ 画布新建 vs 清空：新建的 updatedAt 留 0，清空算动过，列表排序不受影响");
+}
+
+function testCanvasEdgeVersion() {
+  const tools = require("../tools");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-canvas-edgever-"));
+  tools.withWorkspace(tmp, () => {
+    // 版本 2 的意思是「这份画布把连线记全了」。落盘再读回来还得是 2——
+    // 在这儿被抹回 1，用户删掉的连线下次打开就会被当成「老文件缺了一段」补回来
+    const two = tools.canvasWriteState({ version: 2, nodes: [
+      { id: "a", kind: "shot", payload: { id: "S1-01" }, position: { x: 0, y: 0 } },
+      { id: "b", kind: "location", payload: { name: "江边码头" }, position: { x: 0, y: 0 } }], edges: [] }, "记全了");
+    assert.strictEqual(two.version, 2, "写下去的版本 2 被抹了");
+    assert.strictEqual(tools.canvasReadState("记全了").version, 2, "读回来不是版本 2：空连线会被当成老文件补线");
+    // 老画布照旧是 1：硬升上去的话，那些真的没存过连线的文件就再也补不上了
+    tools.canvasWriteState({ version: 1, nodes: [] }, "老的");
+    assert.strictEqual(tools.canvasReadState("老的").version, 1, "老画布被硬升成版本 2 了：真没存过连线的文件从此再也补不上");
+    assert.strictEqual(tools.canvasWriteState({ nodes: [] }, "没写版本").version, 1, "没写版本号的当成版本 2 了");
+  });
+  const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const routeIdx = serverSrc.indexOf('app.post("/api/canvas/boards"');
+  const verIdx = serverSrc.indexOf("version: 2", routeIdx);
+  assert.ok(routeIdx > 0 && verIdx > routeIdx && verIdx - routeIdx < 600,
+    "新建出来的画布还是版本 1：它明明是这一版建的，连线本来就记全了");
+  const canvasSrc = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  assert.ok(/version: 2,/.test(canvasSrc), "界面存盘时没标版本 2：存下去的画布还是「连线可能没记全」");
+  assert.strictEqual((canvasSrc.match(/Number\(snapshot\.version\) >= 2/g) || []).length, 2,
+    "两处（补老画布的线、同步时沿用本机连线）少了一处在看版本，删掉的连线还是会回来");
+  console.log("✅ 画布连线版本位：版本 2 落盘读回来还是 2，老画布不硬升，新建即版本 2，界面两处都在看");
 }
 
 function testCanvasThumb() {
