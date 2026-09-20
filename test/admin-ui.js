@@ -244,6 +244,99 @@ const GOTO = (id) => `(async () => {
   ok("19 个面板全部渲染出正文（没有一页白屏 / 没有一页掉进错误挡板）", seen.length === 19, seen.join(" "));
   ok("点完 19 页，console 一条 error 都没有", A.errs.length === 0, A.errs);
 
+  // ================= 1.2 切成英文：整个后台不许剩中文 =================
+  // 这个后台以前压根没引 i18n.js——工作台切成 English，点进管理后台还是满屏中文。
+  // 一页一页人眼看是看不过来的（19 页、五百多条），所以这里按机器判：切到英文，
+  // 把 19 页全走一遍，DOM 里但凡还剩一个汉字就算漏。
+  // 只有一类允许剩下：用户自己起的名字——组织名、部门名、渠道名、模型名。
+  // 那些是数据不是界面，翻了等于把人家的渠道给改了名。
+  console.log("\n【1.2】界面语言：切成英文之后，19 页里不许再剩下界面中文");
+  {
+    const 等 = (ms) => ` new Promise(r=>setTimeout(r,${ms}))`;
+    const 用户起的名 = ["我的团队", "华东分公司", "市场部", "火山方舟", "本机 Ollama", "内网网关", "方舟-主力", "OR-备用"];
+    const 扫一页 = `(() => {
+      const out = [];
+      const skip = (n) => { for (let e = n.parentNode; e && e.nodeType === 1; e = e.parentNode) {
+        if (e.hasAttribute && (e.hasAttribute("data-i18n-skip") || e.getAttribute("translate") === "no")) return true;
+        if (["SCRIPT","STYLE","CODE","PRE"].includes(e.nodeName)) return true; } return false; };
+      const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let n = w.nextNode(); n; n = w.nextNode()) {
+        const t = (n.nodeValue || "").trim();
+        if (t && /[一-鿿]/.test(t) && !skip(n)) out.push(t);
+      }
+      document.body.querySelectorAll("[placeholder],[title],[aria-label],[alt]").forEach((el) => {
+        if (el.closest("[data-i18n-skip],[translate=no]")) return;
+        for (const a of ["placeholder","title","aria-label","alt"]) {
+          const v = el.getAttribute(a);
+          if (v && /[一-鿿]/.test(v)) out.push("@" + a + ":" + v.trim());
+        }
+      });
+      return out;
+    })()`;
+    const 扫全部 = async (w) => {
+      const 剩 = [];
+      for (const id of IDS) { await w.js(GOTO(id)); 剩.push(...(await w.js(扫一页))); }
+      return [...new Set(剩)];
+    };
+
+    const L = await openAdmin(boss, "lang");
+    ok("侧栏底下有中 / 英切换（这个后台以前根本没有）",
+       (await L.js(`[...document.querySelectorAll("#ad-lang button")].map(b=>b.dataset.lang).join()`)) === "zh,en");
+
+    // 点真按钮，不是直接改 localStorage：要测的就是这颗按钮管不管用
+    await L.js(`document.querySelector('#ad-lang button[data-lang="en"]').click(); ` + 等(500));
+    ok("点 English 之后，语言真存下来了（跟工作台共用 owb-lang 这把钥匙）",
+       (await L.js(`localStorage.getItem("owb-lang")`)) === "en");
+    ok("标签页标题也跟着翻了（它在 <head> 里，翻 DOM 翻不到，得代码自己管）",
+       /Admin console/.test(await L.js(`document.title`)), await L.js(`document.title`));
+    // 两颗按钮上的字挂了 data-i18n-skip（英文界面下也得看得见「中文」两个字，不然没法切回来）。
+    // skip 只该挡那两个字，不该把外面那层整组一起挡掉——读屏软件念的是整组的 aria-label。
+    // 这条是扫描器看不见的：被 skip 的子树本来就不扫，所以只能单拎出来问一句
+    ok("语言这组按钮的无障碍名也翻了（skip 只挡按钮上的字，不该连整组一起挡）",
+       (await L.js(`document.getElementById("ad-lang").getAttribute("aria-label")`)) === "Interface language",
+       await L.js(`document.getElementById("ad-lang").getAttribute("aria-label")`));
+
+    const 剩 = await 扫全部(L);
+    const 真漏 = 剩.filter((s) => !用户起的名.some((n) => s.includes(n)));
+    ok(`★切成英文，19 页扫下来一条界面中文都不剩★ 剩下的 ${剩.length} 条全是用户自己起的名字`
+       + "（组织 / 部门 / 渠道 / 模型），那是数据不是界面",
+       真漏.length === 0, 真漏.slice(0, 12));
+
+    // 数字的写法也得跟着变：中文按「万」分档，英文按 k / M 分档。
+    // 判据不能是「页面上有没有『万』字」——这份测试数据只有 2450 tokens，本来就走不到万那一档，
+    // 那么写等于永远绿。直接问格式化函数本人
+    ok("大数在英文下按 k / M 分档，不是「万 / 亿」",
+       (await L.js(`[big(12345678), big(9876)].join("|")`)) === "12M|9,876", await L.js(`[big(12345678), big(9876)].join("|")`));
+    // 上面那个是渲染时算出来的，翻 DOM 翻不到——所以切语言必须把这页整个重画一遍
+    await L.js(`document.querySelector("#ad-body .ad-wrap,#ad-body > *").dataset.mark = "1"; 1`);
+    await L.js(`document.querySelector('#ad-lang button[data-lang="zh"]').click(); ` + 等(400));
+    await L.js(`document.querySelector('#ad-lang button[data-lang="en"]').click(); ` + 等(500));
+    ok("★切语言是把当前这页整个重画，不是只把文字换一遍★ 只换文字的话，"
+       + "「1.2 万」这种渲染时算出来的东西会一直挂在英文页面上",
+       !(await L.js(`!!document.querySelector("#ad-body [data-mark]")`)));
+
+    // ---- 反向对照：把一条词条从字典里删掉，扫描器必须当场报出来 ----
+    // 不做这一步的话，上面那条绿灯可能只是因为扫描器什么都扫不到
+    await L.js(`window.__bak = I18N.DICT.en["成员与部门"]; delete I18N.DICT.en["成员与部门"];
+                document.querySelector('#ad-lang button[data-lang="zh"]').click(); ` + 等(300));
+    await L.js(`document.querySelector('#ad-lang button[data-lang="en"]').click(); ` + 等(500));
+    const 缺一条 = await 扫全部(L);
+    ok("★反向对照：从字典里删掉「成员与部门」这一条，扫描器当场就把它报出来★ "
+       + "——证明上面那条绿灯是真扫过，不是扫了个空",
+       缺一条.includes("成员与部门"), 缺一条.filter((s) => !用户起的名.some((n) => s.includes(n))).slice(0, 8));
+    await L.js(`I18N.DICT.en["成员与部门"] = window.__bak; 1`);
+
+    // 切回中文得能切回来：翻译是覆盖文本节点，翻不回去就等于把人家界面改成英文了
+    await L.js(`document.querySelector('#ad-lang button[data-lang="zh"]').click(); ` + 等(500));
+    await L.js(GOTO("members"));
+    ok("反向对照：切回中文，同一个数又回到「万」这一档",
+       (await L.js(`big(12345678)`)) === "1235 万", await L.js(`big(12345678)`));
+    ok("再点回中文，页面就真回中文了（不是只换了个开关的高亮）",
+       /成员与部门/.test(await L.js(`document.getElementById("ad-body").textContent + document.getElementById("ad-title").textContent`)));
+    ok("这一整段跑完，console 一条 error 都没有", L.errs.length === 0, L.errs);
+    L.win.destroy();
+  }
+
   // 侧边导航：平台管理员看得到「组织管理」（这是 platform: true 的那一项）
   ok("侧栏分组齐了（订阅与用量 / 数据统计 / 成员授权 / 企业设置 / 开放与集成）",
      (await A.js(`[...document.querySelectorAll(".ad-grp")].map(x=>x.textContent).join("|")`)) === "订阅与用量|数据统计|成员授权|企业设置|开放与集成");

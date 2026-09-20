@@ -20,10 +20,17 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) =>
   String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ic = (name, cls) => `<svg class="i${cls ? " " + cls : ""}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
-const num = (n) => (+n || 0).toLocaleString("zh-CN");
-/** tokens 这类大数走「万」，一屏里塞得下也读得出量级 */
+const EN = () => typeof I18N !== "undefined" && I18N.getLang() === "en";
+const num = (n) => (+n || 0).toLocaleString(EN() ? "en-US" : "zh-CN");
+/** tokens 这类大数走「万」，一屏里塞得下也读得出量级。英文没有「万」这一档，换成 k / M / B */
 const big = (n) => {
   n = +n || 0;
+  if (EN()) {
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+    if (n >= 1e4) return Math.round(n / 1e3) + "k";
+    return num(n);
+  }
   if (n >= 100000000) return (n / 100000000).toFixed(2) + " 亿";
   if (n >= 10000) return (n / 10000).toFixed(n >= 1000000 ? 0 : 1) + " 万";
   return num(n);
@@ -2546,12 +2553,16 @@ PAGES.models = {
       const media = medias.filter((m) => m.provider === p.id).length;
       const label = kindLabel(p.kind);
       // 预置渠道的名字本来就是这家的中文名，再把同一句话印一遍读起来就是同一个词写了两遍
-      const sub = [String(p.name || "").trim() === String(label).trim() ? "" : label, p.base_url].filter(Boolean).join(" · ");
+      const subLabel = String(p.name || "").trim() === String(label).trim() ? "" : label;
+      // 目录名和地址分成两个文本节点：目录名是界面文字（要翻），地址是数据（不能翻）。
+      // 拼成一句「火山方舟（…） · https://…」之后，翻译器只看得见整条，词典里对不上就整条漏翻
+      const sub = subLabel || p.base_url
+        ? `${subLabel ? `<span>${esc(subLabel)}</span>` : ""}${subLabel && p.base_url ? " \u00b7 " : ""}${esc(p.base_url || "")}` : "";
       const k = kindOf(p.kind);
       const link = k && k.key_url
         ? `<a class="ui-btn ui-btn--link" href="${esc(k.key_url)}" target="_blank" rel="noopener">去拿 Key</a>` : "";
       const cells = [
-        `<div><div>${esc(p.name)}</div>${sub ? `<div class="fd ad-mono" style="margin-top:2px">${esc(sub)}</div>` : ""}${
+        `<div><div>${esc(p.name)}</div>${sub ? `<div class="fd ad-mono" style="margin-top:2px">${sub}</div>` : ""}${
           dupN(p) ? `<div class="fd" style="margin-top:2px">同地址还有 ${dupN(p)} 条，各自一把 Key、各花各的账</div>` : ""}</div>`,
         rw
           ? `<div class="ad-row"><input class="ui-input ad-key" data-pk="${esc(p.id)}" type="password" autocomplete="off"
@@ -2952,14 +2963,33 @@ async function boot() {
     OWNER = !!d.platform_owner;
     MULTI = !!d.multi_tenant;
     RO = ME && ME.role === "auditor";
-    document.title = `${d.org.name} · 企业管理后台`;
+    setTitle(d.org.name);
   } catch (e) {
     $("ad-body").innerHTML = gate(e);
     $("ad-sub").textContent = "进不来";
     return;
   }
   bindNavSearch();
+  bindLang();
   addEventListener("hashchange", () => route(false));
   await route(false);
 }
+const T = (zh) => (typeof I18N === "undefined" ? zh : I18N.t(zh));
+let ORG_NAME = "";
+function setTitle(name) {
+  if (name != null) ORG_NAME = name;
+  document.title = `${ORG_NAME} \u00b7 ${T("企业管理后台")}`;
+}
+/** 中 / 英：跟工作台共用一份本机偏好（owb-lang），在哪边切另一边也跟着变 */
+function bindLang() {
+  const box = $("ad-lang");
+  if (!box || typeof I18N === "undefined") return box && box.remove();
+  const mark = () => box.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.lang === I18N.getLang()));
+  box.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { I18N.setLang(b.dataset.lang); mark(); }));
+  // 翻 DOM 翻不到渲染时算出来的东西：1.2 万 / 12k、日期、千分位。整页重画一遍，
+  // 滚动位置留着——切个语言页面跳回顶部，正在对的那张表就得重新找
+  document.addEventListener("owb-lang", () => { setTitle(); route(true); });
+  mark();
+}
+
 boot();

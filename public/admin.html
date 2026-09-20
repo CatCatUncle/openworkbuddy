@@ -109,6 +109,11 @@
   .ad-nav-i.on .i { opacity: 1; }
   .ad-nav-i:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring-weak); }
   .ad-side-foot { flex: none; padding: 10px; border-top: 1px solid var(--border); }
+  .ad-lang { display: flex; gap: 4px; margin-bottom: 8px; padding: 3px; border: 1px solid var(--border); border-radius: 10px; background: var(--muted); }
+  .ad-lang button { flex: 1; padding: 5px 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted-foreground); font: inherit; font-size: 12px; cursor: pointer; }
+  .ad-lang button:hover { color: var(--foreground); }
+  .ad-lang button.on { background: var(--background); color: var(--foreground); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+  .ad-lang button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring-weak); }
 
   .ad-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--muted); }
   .ad-top {
@@ -354,6 +359,12 @@
     </div>
     <nav class="ad-nav" id="ad-nav" aria-label="管理后台导航"></nav>
     <div class="ad-side-foot">
+      <!-- 跳过的是两颗按钮上的字：中文那颗永远写「中文」、英文那颗永远写「English」，
+           不然切到英文之后「中文」也变成 Chinese，想切回来的人得先猜哪颗是哪颗 -->
+      <div class="ad-lang" id="ad-lang" role="group" aria-label="界面语言">
+        <button type="button" data-lang="zh" data-i18n-skip>中文</button>
+        <button type="button" data-lang="en" data-i18n-skip>English</button>
+      </div>
       <a class="ui-btn ui-btn--ghost ui-btn--sm ui-btn--block" href="/">
         <svg class="i" aria-hidden="true"><use href="#i-arrow-left"></use></svg> 返回工作台
       </a>
@@ -374,6 +385,7 @@
 </div>
 
 <div class="ad-toast" id="ad-toast" role="status" aria-live="polite"></div>
+<script src="/js/i18n.js"></script>
 <script src="/js/admin.js"></script>
 </body>
 </html>
