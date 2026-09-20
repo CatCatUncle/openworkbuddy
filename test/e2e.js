@@ -11434,11 +11434,23 @@ function releasePipelineDrift(src) {
   const suites = (all.match(/^\s*\["([a-z0-9-]+)"/gim) || []).map((m) => m.replace(/^\s*\["/, "").replace(/"$/, ""));
   const onlyLine = (tst.match(/--only\s+([a-z0-9,\-]+)/) || [])[1] || "";
   const inCI = new Set(onlyLine.split(",").filter(Boolean));
-  // e2e 单独走 macOS 那条腿的 npm test，不在 --only 名单里
-  const shouldBeInCI = suites.filter((s) => s !== "e2e");
+  // 谁可以不进 ubuntu 那条腿：真去拉 electron 开窗口的那几个。Linux runner 上没有显示器，
+  // 跑了必挂——这正是 test.yml 开头把 e2e 单独放 macOS 的理由，只是那条理由对 e2e 之外
+  // 的 GUI 套件同样成立（preview-layout / library-mkdir 也在真 Chromium 里量版面）。
+  //
+  // 按「代码里有没有真的去拉 electron」来判，而不是手写一张豁免名单：手写名单等于一个后门，
+  // 往里添个名字就能让任意套件悄悄躲开 CI，本地 npm test 还照样全绿，没人看得出来。
+  const launchesElectron = (name) => /process\.versions\.electron|electronBin/.test(src["test/" + name + ".js"] || "");
+  const noSrc = suites.filter((s) => src["test/" + s + ".js"] == null);
+  if (noSrc.length) miss.push("闸门自己坏了：读不到这几个套件的源码，判不了它要不要屏幕：" + noSrc.join("、"));
+  const shouldBeInCI = suites.filter((s) => !launchesElectron(s));
   const forgotten = shouldBeInCI.filter((s) => !inCI.has(s));
   if (suites.length < 10) miss.push("test/all.js 的套件清单没读出来（认出 " + suites.length + " 个），闸门自己坏了");
   if (forgotten.length) miss.push("这些套件在 CI 上一次都不会跑：" + forgotten.join("、") + "（补进 test.yml 的 --only）");
+  // 反过来也得守住：macOS 那条腿跑的是 npm test（全集），所以拉窗口的套件在那边是跑的。
+  // 但它必须真的存在于全集里，否则「豁免」就成了「谁也不跑」
+  const guiGhost = suites.filter((s) => launchesElectron(s) && !/npm test/.test(tst));
+  if (guiGhost.length) miss.push("这几个套件靠屏幕跑，可 CI 里已经没有跑全集（npm test）的那条腿了：" + guiGhost.join("、"));
   const ghost = [...inCI].filter((s) => !suites.includes(s));
   if (ghost.length) miss.push("test.yml 的 --only 里有 test/all.js 没有的套件：" + ghost.join("、") + "（会直接 exit 2）");
 
@@ -11523,6 +11535,10 @@ function testReleasePipeline() {
   ];
   const src = {};
   for (const f of files) src[f] = fs.readFileSync(path.join(root, f), "utf8");
+  // 每个套件自己的源码也喂进去：判「这个套件要不要真屏幕」得看它有没有去拉 electron
+  for (const f of fs.readdirSync(path.join(root, "test"))) {
+    if (f.endsWith(".js") && !src["test/" + f]) src["test/" + f] = fs.readFileSync(path.join(root, "test", f), "utf8");
+  }
   const r = releasePipelineDrift(src);
   assert(r.miss.length === 0, "发版这条链有问题：\n  " + r.miss.join("\n  "));
 
@@ -11534,6 +11550,9 @@ function testReleasePipeline() {
     // 补丁没打上 → 「居然没红」——闸门失效的是对照本身。改成按位置挖，挖谁都行。
     ["新加的套件忘了补进 CI 名单", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/,[a-z0-9-]+(?=,)/, "") }],
     ["CI 名单里写了个不存在的套件", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/--only [a-z0-9-]+/, "--only meiyouzhegetaojian") }],
+    // 豁免是按「有没有真拉 electron」算出来的，不是名单。把那个特征抹掉，它就该被要求进 CI
+    ["拉窗口的套件不再拉窗口了，却也没进 CI 名单", { "test/preview-layout.js": src["test/preview-layout.js"].replace(/process\.versions\.electron/g, "x").replace(/electronBin/g, "y") }],
+    ["macOS 那条跑全集的腿没了，靠屏幕的套件就谁也不跑", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/npm test/g, "node -e 0") }],
     ["action 退回跑 Node 20 的老大版本", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/checkout@v\d+/, "checkout@v4") }],
     ["发版那条链的 action 退回 Node 20", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/action-gh-release@v\d+/, "action-gh-release@v2") }],
     ["CI 的 checkout 退回默认浅克隆", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
@@ -14042,7 +14061,10 @@ function testSessionCacheReload() {
     }
     const M = new Function("fs", "path", "SESS_DIR", "store", "sessions", "activeRuns", "console",
       body + "\nreturn { getSession, saveSession, sessFile };")(
-      fs, path, SESS_DIR, store, sessions, activeRuns, { log() {} });
+      // warn 也得给：这一段里 saveSession 和 autosaveSession 都会在异常路径上 console.warn，
+      // 只注入 log 的话，测到那条路的当天会变成一句 "console.warn is not a function"，
+      // 看起来像被测代码坏了，其实是替身少了个方法
+      fs, path, SESS_DIR, store, sessions, activeRuns, { log() {}, warn() {} });
     return { ...M, sessions, activeRuns };
   };
 
@@ -14123,9 +14145,24 @@ function testSessionCacheReload() {
   assert.strictEqual(old.getSession(id2).history.length, 1,
     "阴性对照失灵：把「回头看盘」那段删掉之后测试居然还是过的，说明上面测到的不是这段代码");
 
-  // ---- 接线：删会话时得把这个 id 的印记一起清掉 ----
-  assert.ok(/sessions\.delete\(req\.params\.id\);\s*\n\s*sessStamp\.delete\(req\.params\.id\);/.test(src),
-    "删会话没清掉 mtime 印记：同一个 id 万一再被建出来，会拿着上一条的尺寸去比对");
+  // ---- 接线：删会话时，这个 id 在内存里的一切痕迹都得一起清掉 ----
+  // 从前这里钉的是「delete 路由里挨着写两行 delete」。现在这些表不止两张（缓存、mtime 印记、
+  // 上次存盘、上次使用、谁攥着），挨个手写迟早漏一张——漏哪张哪张就变成新的只进不出。
+  // 所以改成钉两件事：路由只准走 forgetSession；forgetSession 必须把这一族表全清干净。
+  assert.ok(/forgetSession\(req\.params\.id\)/.test(src),
+    "删会话没走 forgetSession：各处手写 delete，漏一张表那张就成了新的只进不出");
+  const forget = (src.match(/function forgetSession\(id\) \{[\s\S]*?\n\}/) || [""])[0];
+  assert.ok(forget, "找不到 forgetSession（改名了？）");
+  // 这一族表 = 按会话 id 存东西的那些。名单不手写，从源码里数出来，新加一张就自动被管上。
+  // sessMetaCache 不算：它按**文件名**存，而且自己会在重扫目录时把不存在的行剔掉（见那句「删掉的会话别赖在缓存里」）
+  const perSession = [...new Set((src.match(/^const (sess[A-Za-z]+) = new Map\(\);/gm) || [])
+    .map((m) => m.replace(/^const /, "").replace(/ = new Map\(\);$/, ""))
+    .filter((n) => n !== "sessMetaCache"))];
+  assert.ok(perSession.includes("sessions") && perSession.length >= 5,
+    "按会话 id 存东西的表没数出来（认出 " + perSession.length + " 张：" + perSession.join("、") + "），这条断言自己坏了");
+  const leaked = perSession.filter((m) => !new RegExp("\\b" + m + "\\.delete\\(id\\)").test(forget));
+  assert.ok(leaked.length === 0,
+    "forgetSession 没清这几张表：" + leaked.join("、") + "——删了会话它们还留着这个 id，那就是新的只进不出");
 
   fs.rmSync(home, { recursive: true, force: true });
   console.log("✅ 会话不吃陈内存：命令行 openworkbuddy 写的几轮桌面能看见、存盘不覆盖；自己写的不误判、跑着的任务不被盘上旧版盖回去");

@@ -985,7 +985,6 @@ const ATTACH_CHECKS = `
 (async () => {
   const names = [];
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
-  const tick = () => new Promise((r) => setTimeout(r, 40));
   const chips = () => [...document.getElementById("attach-chips").children];
   const B64PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
   const bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -997,6 +996,11 @@ const ATTACH_CHECKS = `
   };
   // 固定 tick 数是会飘的：缩略图要过一遍 createImageBitmap，上传要过一遍 FileReader，
   // 快的机器 40ms 够、慢的机器不够，测试就变成掷骰子。一律等条件，不等时间。
+  //
+  // 这条规矩以前只写在这儿，前七段仍在固定睡 40ms——于是 2026-09-20 的流水线上
+  // 红了一次：本机连绿三轮，GitHub 的 runner 上第 5 段拿到的 uploads.at(-1) 还是第 4 段的附件，
+  // 断言把「粘贴文本_0920_070258.txt」报成了拖拽的结果。现在这一整段里没有固定等待了，
+  // 别再加回来：要等什么就写什么条件。
   const until = async (fn, ms = 2000) => {
     const end = Date.now() + ms;
     for (;;) {
@@ -1007,12 +1011,26 @@ const ATTACH_CHECKS = `
     }
   };
   const settle = () => until(() => !pendingAttach.some((x) => x.state === "uploading"));
+  // 等**这一次**的上传落地。下面每段都得有这个：uploads 是一路累加的，
+  // 慢一拍 uploads.at(-1) 拿到的是上一段测试的附件——于是「拖进来的文件按原名上传」
+  // 拿到的实际值是「粘贴文本_0920_070258.txt」，名字里还带着当时的时间戳，
+  // 看上去像拖拽功能把文件改名了，其实是这一拍还没读完文件。CI 的机器比本机慢，
+  // 这种断言在本地绿三轮、到流水线上红一次，最难查的就是这种。
+  const nextUpload = async (n0, ms = 4000) => {
+    try { await until(() => uploads.length > n0, ms); } catch (e) {}
+    return uploads.length > n0 ? uploads.at(-1) : null;
+  };
   const png = (name) => new File([bytes(B64PNG)], name, { type: "image/png" });
+  // 一次 drop 之后该发生什么，各段测的不是同一件事：正常是多一枚 chip，重复的文件只多一次上传，
+  // 文件夹则只多一句提示。所以这儿等的是「这三样里随便哪样动了」，而不是睡一拍就当它处理完了。
   const dropFiles = async (files) => {
+    const n = [pendingAttach.length, uploads.length, window.toasts.length];
     const dt = new DataTransfer();
     for (const f of files) dt.items.add(f);
     fire(document.body, "drop", "dataTransfer", dt);
-    await tick();
+    try {
+      await until(() => pendingAttach.length > n[0] || uploads.length > n[1] || window.toasts.length > n[2], 4000);
+    } catch (e) {}
     await settle();
   };
 
@@ -1020,10 +1038,9 @@ const ATTACH_CHECKS = `
   {
     const dt = new DataTransfer();
     dt.items.add(new File([bytes(B64PNG)], "image.png", { type: "image/png" }));
-    const ev = fire(document.body, "paste", "clipboardData", dt);
     const n0 = uploads.length;
-    await until(() => uploads.length > n0);
-    const up = uploads.at(-1);
+    const ev = fire(document.body, "paste", "clipboardData", dt);
+    const up = await nextUpload(n0);
     ok("粘贴截图会上传", !!up, "根本没发上传请求");
     // 不带会话 id 的话服务端只能把它扔进工作空间根目录，用户传的素材和这轮的产出就此分家
     ok("上传带上了会话 id", up.session === "s_test_1", JSON.stringify(up.session));
@@ -1037,9 +1054,9 @@ const ATTACH_CHECKS = `
   {
     const dt = new DataTransfer();
     dt.items.add(new File([bytes(B64PNG)], "image.png", { type: "image/png" }));
+    const n0 = uploads.length;
     fire(document.body, "paste", "clipboardData", dt);
-    const n1 = uploads.length;
-    await until(() => uploads.length > n1);
+    ok("第二张也上传了", !!(await nextUpload(n0)), "只发了一次上传请求");
     const [a, b] = uploads.slice(-2).map((u) => u.name);
     ok("连贴两张不互相覆盖", a !== b, a + " / " + b);
     ok("两张各挂一个 chip", chips().length === 2, "chip 数=" + chips().length);
@@ -1051,8 +1068,10 @@ const ATTACH_CHECKS = `
     const dt = new DataTransfer();
     dt.setData("text/plain", "帮我改一下标题");
     const ev = fire(inputEl, "paste", "clipboardData", dt);
-    await tick();
-    ok("短文本不当附件、仍准确落在输入框", ev.defaultPrevented && uploads.length === before && inputEl.value.includes("帮我改一下标题"), inputEl.value);
+    // 反过来的断言（「不该有上传」）不能只等一拍就下结论：那只证明了「现在还没传」。
+    // 留一个真实的窗口去等这个不该来的请求，等不到才算数。
+    const stray = await nextUpload(before, 300);
+    ok("短文本不当附件、仍准确落在输入框", ev.defaultPrevented && !stray && inputEl.value.includes("帮我改一下标题"), inputEl.value);
   }
 
   // ---- 4. 大段文字：落成 txt 附件，输入框不被撑爆，中文不能乱码 ----
@@ -1061,11 +1080,10 @@ const ATTACH_CHECKS = `
     inputEl.value = "帮我看看这个";
     const dt = new DataTransfer();
     dt.setData("text/plain", big);
+    const n0 = uploads.length;
     const ev = fire(inputEl, "paste", "clipboardData", dt);
-    const n2 = uploads.length;
-    await until(() => uploads.length > n2);
-    const up = uploads.at(-1);
-    ok("大段文字落成 txt", /^粘贴文本_\\d{4}_\\d{6}\\.txt$/.test(up.name), up.name);
+    const up = await nextUpload(n0);
+    ok("大段文字落成 txt", !!up && /^粘贴文本_\\d{4}_\\d{6}\\.txt$/.test(up.name), String(up && up.name));
     const back = new TextDecoder().decode(bytes(up.data_b64));
     ok("中文原文一字不差", back === big, "长度 " + back.length + " vs " + big.length);
     ok("输入框没被撑爆、留下可引用的文本摘录锚点", inputEl.value.startsWith("帮我看看这个") && /【文本摘录 1：粘贴文本_\\d{4}_\\d{6}\\.txt】/.test(inputEl.value) && ev.defaultPrevented, inputEl.value);
@@ -1076,10 +1094,10 @@ const ATTACH_CHECKS = `
   {
     const dt = new DataTransfer();
     dt.items.add(new File([new TextEncoder().encode("hello")], "笔记.md", { type: "text/markdown" }));
+    const n0 = uploads.length;
     fire(document.body, "drop", "dataTransfer", dt);
-    const n3 = uploads.length;
-    await until(() => uploads.length > n3);
-    ok("拖进来的文件按原名上传", uploads.at(-1).name === "笔记.md", uploads.at(-1).name);
+    const up = await nextUpload(n0);
+    ok("拖进来的文件按原名上传", !!up && up.name === "笔记.md", String(up && up.name));
   }
 
   // ---- 6. 拖一小段选中的文字：插在光标处，别把写了一半的话顶到后面 ----
@@ -1090,19 +1108,19 @@ const ATTACH_CHECKS = `
     const dt = new DataTransfer();
     dt.setData("text/plain", "插进来");
     fire(document.body, "drop", "dataTransfer", dt);
-    await tick();
+    const stray = await nextUpload(before, 300);
     ok("拖进来的短文字插在光标处", inputEl.value === "开头插进来结尾", inputEl.value);
-    ok("短文字不当附件", uploads.length === before);
+    ok("短文字不当附件", !stray);
   }
 
   // ---- 7. 拖一大段文字：和粘贴走同一条路 ----
   {
     const dt = new DataTransfer();
     dt.setData("text/plain", "整篇文档".repeat(700));
+    const n0 = uploads.length;
     fire(document.body, "drop", "dataTransfer", dt);
-    const n4 = uploads.length;
-    await until(() => uploads.length > n4);
-    ok("拖进来的大段文字也落成 txt", /^粘贴文本_\\d{4}_\\d{6}(-\\d+)?\\.txt$/.test(uploads.at(-1).name), uploads.at(-1).name);
+    const up = await nextUpload(n0);
+    ok("拖进来的大段文字也落成 txt", !!up && /^粘贴文本_\\d{4}_\\d{6}(-\\d+)?\\.txt$/.test(up.name), String(up && up.name));
   }
 
   // ---- 8. 发送保留输入里的素材顺序，末尾清单仍兼容旧会话 / CLI ----
@@ -4559,7 +4577,7 @@ const WSMENU_STUBS = `
   const OPENWS_SITES = ${JSON.stringify(OPENWS_SITES)};
   function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
   const TOASTS = [], CALLS = [];
-  let PROMPTED = 0, PROMPT_RET = null;
+  let PROMPTED = 0, PROMPT_RET = null, ASKED = null;
   function toast(m) { TOASTS.push(String(m)); }
   function renderFiles() { CALLS.push("renderFiles"); }
   function refreshSettingsCache() { CALLS.push("refresh"); }
@@ -4570,7 +4588,14 @@ const WSMENU_STUBS = `
   let PICK = { status: 200, body: { path: "/srv/ws2" } };
   let SET = { status: 200, body: { ok: true } };
   let OPENWS = { status: 200, body: { ok: true } };
-  window.prompt = () => { PROMPTED++; return PROMPT_RET; };
+  // 手填路径那条退路以前走的是 window.prompt。桌面版跑在 Electron 里，那儿的 prompt
+  // **存在、但一调用就抛**，整个处理函数当场死掉、界面上一点动静都没有
+  // （资料库「新建文件夹」失灵就是同一个根因，见 app-01.js 的 askText）。
+  // 现在换成应用内的小对话框，这儿也跟着换替身：记下问了什么，回一个预设答案。
+  async function askText(o) { PROMPTED++; ASKED = o; return PROMPT_RET; }
+  // 底下这行是反向对照：谁哪天顺手把 prompt 写回去，这一屏当场炸，
+  // 而不是等到用户在桌面版里点了没反应才发现
+  window.prompt = () => { throw new Error("prompt() is not supported."); };
   window.fetch = async (url, opt) => {
     const method = (opt && opt.method) || "GET";
     CALLS.push(method + " " + url);
@@ -4621,6 +4646,7 @@ const WSMENU_CHECKS = `
   PICK = { status: 501, body: { error: "网页端弹不出来" } };
   menu.querySelector('[data-act="pick"]').click(); await tick(); await tick(); await tick();
   ok("501：退回手填路径，填了就切", PROMPTED === 1 && CALLS.includes("ws:/srv/ws3"), JSON.stringify(CALLS));
+  ok("手填框里预填了当前目录，并说清楚为什么要手填", ASKED && ASKED.value === "/srv/ws" && /弹不出/.test(ASKED.hint || ""), JSON.stringify(ASKED));
 
   // ---- 别的非 2xx 是真出事了：说出来，别再骗他填一遍路径 ----
   CALLS.length = 0; PROMPTED = 0; TOASTS.length = 0;
@@ -5108,7 +5134,7 @@ const LOOK_CHECKS = FLUSH_SRC + `
   ok("点回「标准」：data-fs 属性摘掉，不留默认值脏属性", !("fs" in html.dataset) && px("body") === 15);
 
   // 皮肤
-  // 先钉到浅色再验海盐：下面这条断言说的是「浅色下」，而 theme 默认是跟随系统——
+  // 先钉到浅色再验海盐：下面那条断言说的是「浅色下」，而 theme 默认是跟随系统——
   // 测试机若开着系统深色模式（Windows 上很常见），不钉住的话这条会拿暗色值来对浅色标准
   click("theme", "light");
   const rgb = (hex) => { const n = parseInt(hex.slice(1), 16); return "rgb(" + (n >> 16) + ", " + ((n >> 8) & 255) + ", " + (n & 255) + ")"; };
@@ -5931,7 +5957,11 @@ const PREVIEW_CHECKS = `
   // ---- 1. 路由表：真实工作目录里数得出来的后缀，一个都不许掉进"不支持预览" ----
   {
     const cases = {
-      iframe: ["a.html", "a.htm", "报告.pdf", "图.svg"],
+      iframe: ["a.html", "a.htm"],
+      // PDF 和 SVG 都从 iframe 里拆出来了：PDF 有自带阅读器要整个面板（量内容高度那条路
+      // 在它身上会塌成顶端一条），SVG 是图要居中。路由分不开，摆法就分不开。
+      pdf: ["报告.pdf", "a.PDF"],
+      svg: ["图.svg", "流程.SVG"],
       image: ["图.png", "a.JPG", "a.jpeg", "a.webp", "a.ico", "a.avif"],
       audio: ["口播.mp3", "a.wav", "a.m4a", "a.flac", "a.opus"],
       video: ["成片.mp4", "a.mov", "a.MOV", "a.webm", "a.m4v", "a.mkv", "a.avi", "a.wmv", "a.flv", "a.mpg", "a.mpeg", "a.3gp"],

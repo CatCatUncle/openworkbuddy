@@ -12,6 +12,7 @@
  *   ③ 会往终端 / IM 吐字的后端文件，只放行单色排版符号，例外逐条记名；
  *   ④ 头像 / 专家 / MCP 目录里写的图标名，必须在 sprite 里查得到；
  *   ⑤ 存盘和转换：图标名不许被当「超长 emoji」拦掉，提示条记号不许漏给用户看见。
+ *   ⑥ 页面上引用的图片得是网页尺寸——拿 1024 的原图当 favicon 是用户每次开工作台都要付的钱。
  *
  * 每一节都配反向对照：塞个 emoji 进去必须被抓出来，编个图标名必须被判不存在。
  * 只会变绿不会变红的断言不是测试。
@@ -606,6 +607,67 @@ if (mMap) {
     for (const h of scanDollar(src)) left.push(f + ":" + h.line + "  " + h.txt);
   }
   eq(left.length, 0, "没有 ${} 漏在普通引号里（这轮改图标时踩中两处，都会把占位符原样印到界面上）", left);
+}
+
+// ── ⑥ 页面上引用的图片，得是网页尺寸 ──────────────────────────────
+// 起因是拿尺子量首屏：public/icon.png 是 1024×1024、437KB 的应用图标原图，
+// 却同时当着浏览器标签页的 favicon 和后台页头上那个 24px 的小图。
+// 每开一次工作台就得先下 437KB（首屏总共才 502KB），渲染进程还要为它解出一张
+// 1024×1024 的位图（4MB 内存），而它在屏幕上最大只占 24 个 CSS 像素。
+// 缩到 96 之后 5.5KB，省 98.7%。这条闸门是为了别再滑回去。
+{
+  console.log("\n⑥ 页面上引用的图片得是网页尺寸");
+  const RASTER = /\.(png|jpe?g|gif|webp|ico)$/i;
+  const CAP_BYTES = 32 * 1024;
+  const CAP_SIDE = 256;   // 2 倍屏上够画 128 CSS px；页面上最大的用途是 24px 的页头图标
+
+  /** 把页面里引用到的本地图片挑出来（外链和 data: 不算，那不是我们发的字节） */
+  function pageImages(html) {
+    const out = new Set();
+    for (const m of html.matchAll(/(?:src|href)\s*=\s*"(\/[^"]+?)"/g)) {
+      if (/\.(png|jpe?g|gif|webp|ico|svg)$/i.test(m[1])) out.add(m[1]);
+    }
+    return [...out];
+  }
+  /** @param {(rel:string)=>({bytes:number,w:number,h:number}|null)} look 查这张图多大 —— 注进来是为了下面能拿假数据做反向对照 */
+  function imageProblems(refs, look) {
+    const bad = [];
+    for (const rel of refs) {
+      const info = look(rel);
+      if (!info) { bad.push(rel + "：页面引着它，盘上却没有（用户看到的是一个碎图标）"); continue; }
+      if (info.bytes > CAP_BYTES) {
+        bad.push(rel + "：" + Math.round(info.bytes / 1024) + "KB，超过 " + (CAP_BYTES / 1024) + "KB —— 这是每个人每次开页面都要付的字节");
+      }
+      if (RASTER.test(rel) && (info.w > CAP_SIDE || info.h > CAP_SIDE)) {
+        bad.push(rel + "：" + info.w + "×" + info.h + " 像素，超过 " + CAP_SIDE + " —— 页面上没有任何地方用得到这么大，多出来的全是解码内存");
+      }
+    }
+    return bad;
+  }
+
+  // 先证明这把尺子量得出来（不然下面全绿等于没测）
+  eq(pageImages('<link rel="icon" href="/favicon.png"><img src="/a.svg"><img src="https://x/y.png"><img src="data:image/png;base64,AAA">').join(","),
+    "/favicon.png,/a.svg", "反向对照：只挑本地引用，外链和 data: 不算");
+  eq(imageProblems(["/big.png"], () => ({ bytes: 446974, w: 1024, h: 1024 })).length, 2,
+    "反向对照：1024×1024 的 437KB 原图——字节和像素两条都报");
+  eq(imageProblems(["/gone.png"], () => null).length, 1, "反向对照：引了个盘上没有的图，报");
+  eq(imageProblems(["/favicon.png"], () => ({ bytes: 5663, w: 96, h: 96 })).length, 0, "反向对照：96 的小图不误报");
+
+  const look = (rel) => {
+    const f = path.join(ROOT, "public", rel.replace(/^\//, ""));
+    if (!fs.existsSync(f)) return null;
+    const buf = fs.readFileSync(f);
+    // PNG 的宽高就在头 24 个字节里（IHDR），不必为了量一张图拉一个图像库进来
+    const png = buf.length > 24 && buf.slice(1, 4).toString("latin1") === "PNG";
+    return { bytes: buf.length, w: png ? buf.readUInt32BE(16) : 0, h: png ? buf.readUInt32BE(20) : 0 };
+  };
+  const pages = fs.readdirSync(path.join(ROOT, "public")).filter((f) => f.endsWith(".html"));
+  ok(pages.length >= 2, "扫得到页面（认出 " + pages.length + " 个 html）", pages);
+  const refs = new Set();
+  for (const f of pages) for (const r of pageImages(fs.readFileSync(path.join(ROOT, "public", f), "utf8"))) refs.add(r);
+  ok(refs.size > 0, "页面里确实引了图（" + [...refs].join("、") + "）");
+  const bad = imageProblems([...refs], look);
+  eq(bad.length, 0, "页面引的图都在网页尺寸内（不超 " + (CAP_BYTES / 1024) + "KB、不超 " + CAP_SIDE + "px）", bad);
 }
 
 console.log("\n" + (fail === 0 ? "全部通过" : "有失败") + "：" + pass + " 过 / " + fail + " 挂");

@@ -142,6 +142,85 @@ const modalBox = document.getElementById("modal-box");
 const mTitle = document.getElementById("m-title");
 const mBody = document.getElementById("m-body");
 
+/**
+ * 跟用户要一句话（文件夹名、路径这种），返回 Promise<string|null>，取消给 null。
+ *
+ * 为什么不用 window.prompt：桌面版跑在 Electron 里，那儿的 prompt **存在、但一调用就抛**
+ * （实测报的是 "prompt() is not supported."）。typeof window.prompt 照样是 "function"，
+ * 所以想靠判断类型绕开根本挡不住；异常当场把整个 onclick 打断，按钮点下去什么都不发生、
+ * 界面上也不报错。资料库里「新建文件夹」失灵就是这么来的——用户原话「好像还是不能用哦」，
+ * 因为从他那一侧看，那颗按钮是哑的，连个错都没有。
+ * confirm() 不受影响（Electron 有原生实现），所以全站那些确认框不用动，只有要用户填字的地方得自己画。
+ *
+ * 自成一层浮在弹窗之上：资料库本身就开在弹窗里，借 #modal-box 会把它整个顶掉。
+ */
+function askText(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    // 同一时刻只留一个。前一个按「取消」收掉，不然它的 Promise 永远不 settle，
+    // 调用方 await 在那儿再也不往下走
+    if (askText._close) askText._close(null);
+    const prev = document.activeElement;
+    const wrap = document.createElement("div");
+    wrap.className = "ask-mask";
+    const title = o.title || "填一下";
+    wrap.innerHTML =
+      `<div class="ask-box" role="dialog" aria-modal="true" aria-label="${esc(title)}">` +
+      `<div class="ask-t">${esc(title)}</div>` +
+      (o.hint ? `<div class="ask-h">${esc(o.hint)}</div>` : "") +
+      `<input class="ask-in" type="text" autocomplete="off" spellcheck="false">` +
+      `<div class="ask-err" hidden></div>` +
+      `<div class="ask-ops"><button type="button" class="btn-plain ask-no">取消</button>` +
+      `<button type="button" class="btn-brand ask-ok">${esc(o.ok || "确定")}</button></div></div>`;
+    document.body.appendChild(wrap);
+    const input = wrap.querySelector(".ask-in");
+    const okBtn = wrap.querySelector(".ask-ok");
+    const errEl = wrap.querySelector(".ask-err");
+    if (o.placeholder) input.placeholder = o.placeholder;
+    input.value = o.value == null ? "" : String(o.value);
+
+    /** 名字合不合规当场就说。等服务端回 400 的话，用户已经点了确定、等了一个来回，
+     *  拿到的还是一句拿路径口吻讲的「路径不合法：..」，看了也不知道该改哪儿 */
+    function check() {
+      const v = input.value.trim();
+      const bad = !v ? "" : String((o.validate && o.validate(v)) || "");
+      errEl.textContent = bad;
+      errEl.hidden = !bad;
+      okBtn.disabled = !v || !!bad;
+      return !okBtn.disabled;
+    }
+    function done(val) {
+      if (askText._close !== done) return;   // 已经收过了，别收第二遍
+      askText._close = null;
+      document.removeEventListener("keydown", onKey, true);
+      wrap.remove();
+      // 焦点还回去。不还的话它掉到 body 上，用键盘的人得从头 Tab 一遍才回得到原处
+      try { if (prev && prev.isConnected && prev.focus) prev.focus(); } catch {}
+      resolve(val);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
+      else if (e.key === "Enter") {
+        // 输入法正在选词时的那个回车不算提交——中文名字几乎每次都要选一次词，
+        // 认了的话用户刚打完拼音就被提交了一个半截的名字
+        if (e.isComposing || e.keyCode === 229) return;
+        e.preventDefault(); e.stopPropagation();
+        if (check()) done(input.value.trim());
+      }
+    }
+    input.oninput = check;
+    okBtn.onclick = () => { if (check()) done(input.value.trim()); };
+    wrap.querySelector(".ask-no").onclick = () => done(null);
+    // 用 mousedown 判空白处：在输入框里按下、拖到外面才松手，用 click 会被当成点空白而取消
+    wrap.onmousedown = (e) => { if (e.target === wrap) done(null); };
+    document.addEventListener("keydown", onKey, true);
+    askText._close = done;
+    check();
+    input.focus();
+    input.select();
+  });
+}
+
 // 本地只是缓存，权威列表在服务端 /api/sessions。留 300 条跟服务端一个量级，
 // 免得刚从服务端并回来的历史转头又被截成 50 条。
 function saveSessions() {
@@ -2470,7 +2549,18 @@ let pvClosedAt = 0;
 // 点开却说不支持。白名单这个形状本身就是 bug：模型每产出一种新后缀就要回来改一次代码。
 // 所以反过来写：只列"当文本打开必然满屏乱码"的二进制后缀，其余都试，
 // 试出来真是二进制（含 NUL 或大量替换字符）再退回提示。
-const PV_IFRAME_RE = /\.(html?|pdf|svg)$/i;
+const PV_IFRAME_RE = /\.(html?)$/i;
+// SVG 也从 iframe 里拆出来。渲染方式跟网页一样（走 iframe，因为 mermaid 老文件的文字
+// 在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字），但**摆法**不一样：
+// 网页是文章，必须贴顶从第一行读；SVG 是一张图，装得下就该摆在正中间。
+// 量过：一张 900×220 的流程图（图表产出最常见的形状）贴顶时下面空 669px。
+const PV_SVG_RE = /\.svg$/i;
+// PDF 单拎出来，不跟 html/svg 混在一起走「量内容高度再整页缩放」那条路。
+// iframe 里的 PDF 是 Chromium 自带的阅读器（一个 <embed> 插件文档），
+// contentDocument.scrollHeight 量出来几乎是 0——于是外层被设成了 0 高，
+// 面板上只剩顶端一条黑边框，底下整片空白。用户原话：「就那么一小块地方是在预览的」。
+// PDF 本来就自带翻页、缩放和滚动，正确做法是把整个面板让给它，一个字都别量。
+const PV_PDF_RE = /\.pdf$/i;
 const PV_IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i;
 const PV_AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i;
 // .ts 故意不进这条：mime 库把 .ts 认成 video/mp2t，但工作目录里的 .ts 全是 TypeScript 源码。
@@ -2489,6 +2579,8 @@ const PV_BINARY_RE = /\.(zip|gz|tgz|bz2|xz|7z|rar|tar|dmg|pkg|iso|exe|dll|so|dyl
 
 /** 预览走哪条路。抽成纯函数是为了能直接断言，不用一个个文件点开肉眼验 */
 function previewKind(name) {
+  if (PV_PDF_RE.test(name)) return "pdf";
+  if (PV_SVG_RE.test(name)) return "svg";
   if (PV_IFRAME_RE.test(name)) return "iframe";
   if (PV_IMAGE_RE.test(name)) return "image";
   if (PV_AUDIO_RE.test(name)) return "audio";
@@ -2530,14 +2622,30 @@ async function fetchTextHead(url) {
   } catch { return null; }
 }
 
+/**
+ * 「这儿没东西可看」的那一块：图标 + 一句话 + 可选的几颗按钮，摆在面板正中间。
+ *
+ * 以前这几处各写各的 `<div class="pv-text">`，而 .pv-text 是给整篇文字用的——
+ * 贴左上角、左对齐。于是一句「这是二进制文件」孤零零挂在天花板左角，
+ * 底下七百多像素全空。用户看 PDF 时说的那句「就那么一小块地方是在预览的，
+ * 其他一大部分空白」，在二进制、空文件、加载失败这几处是一模一样的毛病。
+ *
+ * 居中用的是 margin:auto 而不是父层 align-items:center——后者在内容比面板高时
+ * 会把内容顶部推到可滚动区域外，滚轮再也回不到第一行；auto 外边距在剩余空间
+ * 为负时按 0 算，短的居中、长的贴顶，一条规则两头都对。
+ */
+const pvNotice = (icon, text, acts) =>
+  `<div class="pv-empty">${ic(icon, "pv-empty-ico")}<div>${esc(text)}</div>${
+    acts ? `<div class="pv-empty-acts">${acts}</div>` : ""
+  }</div>`;
+
 /** 真看不了时的兜底。以前这句写的是"可点右上 🗔 …或 ⬇"，可标题栏早就换成 SVG 图标了，
  *  用户照着找一辈子也找不到那两个 emoji——所以直接给一个能点的按钮 */
 const pvFallback = (why) =>
-  `<div class="pv-text" style="color:var(--owb-text-3)">${esc(why)}，应用内看不了。<div style="margin-top:12px;display:flex;gap:8px">${
+  pvNotice("circle-alert", why + "，应用内看不了。",
     canOpenOnHost()
       ? `<button class="pv-open-sys">用系统默认程序打开</button><button class="pv-reveal">打开所在位置</button>`
-      : `<button class="pv-download">下载到本地看</button>`
-  }</div></div>`;
+      : `<button class="pv-download">下载到本地看</button>`);
 /** 把 pvFallback 里那几颗按钮接上。单独一个函数是因为它要被调两次：
  *  一次是渲染完，一次是 <video> 解码失败之后现换的那块内容——晚绑的那次没人接就是死按钮 */
 function bindPvFallback(body, name, root) {
@@ -2688,7 +2796,7 @@ function csvHtml(text, name) {
   const sep = /\.tsv$/i.test(name) || (head.split("\t").length > head.split(",").length) ? "\t"
     : head.split(";").length > head.split(",").length ? ";" : ",";
   const rows = parseCsv(text, sep);
-  if (!rows.length) return '<div class="pv-text" style="color:var(--owb-text-3)">空文件。</div>';
+  if (!rows.length) return pvNotice("file", "这个文件是空的，里面一行内容都没有");
   const shown = rows.slice(0, 2000);
   const note = rows.length > shown.length ? `<div class="ov-note">共 ${rows.length} 行，只显示了前 ${shown.length} 行。</div>` : "";
   return `<div class="ov-doc">${gridHtml(shown, "ov-table ov-sheet")}${note}</div>`;
@@ -3100,7 +3208,7 @@ async function previewFile(name, root) {
   // 立刻亮预览面板再去异步拉内容：晚亮的话，自动预览的调用方同步检查时以为预览没开，
   // 会把成果文件面板弹回来，右侧双开互相盖字（用户反馈过）
   pvPanel.classList.add("show");
-  document.getElementById("pv-body").innerHTML = `<div class="pv-text" style="color:var(--owb-text-3)">加载中…</div>`;
+  document.getElementById("pv-body").innerHTML = pvNotice("loader-circle", "正在打开…");
   document.getElementById("pv-name").textContent = name;
   document.getElementById("pv-dl").href = withRoot("/api/files/download/" + fpath(name), pvRoot);
   const body = document.getElementById("pv-body");
@@ -3116,9 +3224,16 @@ async function previewFile(name, root) {
   // 单张图就把它摆在面板正中间。以前是 margin:20px auto——横向居中、纵向顶着天花板，
   // 一张矮图挂在顶上、底下一大片空白。
   body.classList.toggle("pv-mid", kind === "image" || kind === "video");
-  if (kind === "iframe") {
-    // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字
-    body.innerHTML = `<div class="pv-fit"><iframe src="${url}" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
+  // 自带阅读器的（目前只有 PDF）要整个面板，而且面板自己不许再滚——
+  // 两层滚动条叠在一起，滚轮到底给谁都说不清
+  body.classList.toggle("pv-full", kind === "pdf");
+  if (kind === "pdf") {
+    body.innerHTML = `<iframe class="pv-pdf" src="${url}" title="${esc(name)}"></iframe>`;
+  } else if (kind === "iframe" || kind === "svg") {
+    // SVG 也走 iframe：mermaid 老文件的文字在 <foreignObject> 里，<img> 按安全静态模式渲染会丢字。
+    // pv-fit-mid 只给 SVG：图装得下就摆正中间，装不下（长流程图）自动退回贴顶接着滚。
+    // 网页不给——文章必须从第一行读起。
+    body.innerHTML = `<div class="pv-fit${kind === "svg" ? " pv-fit-mid" : ""}"><iframe src="${url}" scrolling="no"></iframe><button type="button" class="pv-zoom" hidden></button></div>`;
     fitPreviewFrame(body);
   } else if (kind === "image") {
     // title 写出来是因为这事儿不写没人知道：双击复制、Ctrl/Cmd+C 也复制
@@ -3126,9 +3241,14 @@ async function previewFile(name, root) {
     const im = body.querySelector(".pv-img");
     if (im) im.ondblclick = () => copyPreviewImage();
   } else if (kind === "audio" || kind === "video") {
-    // 服务端 res.sendFile 会回 Accept-Ranges（实测 206 + Content-Range），所以进度条能拖、长视频不用等整包下完
-    const tag = kind === "audio" ? "audio" : "video";
-    body.innerHTML = `<${tag} class="pv-media" src="${url}" controls preload="metadata" playsinline></${tag}>`;
+    // 服务端 res.sendFile 会回 Accept-Ranges（实测 206 + Content-Range），所以进度条能拖、长视频不用等整包下完。
+    // 音频再包一层卡片：一条 54px 的播放条单摆着，在 824px 高的面板里就是「顶上一小条、
+    // 底下全空」——跟用户吐槽 PDF 的是同一件事。补上图标和文件名，整块摆正中间，
+    // 这一屏才算有东西可看（音频本来也没有画面可给）。
+    body.innerHTML = kind === "audio"
+      ? `<div class="pv-audio">${ic("file-audio", "pv-audio-ico")}<div class="pv-audio-name">${esc(name)}</div>` +
+        `<audio class="pv-media" src="${url}" controls preload="metadata"></audio></div>`
+      : `<video class="pv-media" src="${url}" controls preload="metadata" playsinline></video>`;
     // 能不能解码这一关是浏览器说了算：iPhone 拍的 HEVC .mov、mkv/avi 这类容器，Chromium 多半解不了。
     // 解不了的时候它不吭声，只留一个纹丝不动的黑框——用户从黑框里只能得出「这软件不支持看视频」。
     // 所以这儿必须自己说一句实话，并把「用系统播放器打开 / 下载」这两条真出路摆出来。
@@ -3154,7 +3274,7 @@ async function previewFile(name, root) {
     body.innerHTML = pvFallback("这是二进制文件");
   } else {
     const r = await fetchTextHead(url);
-    if (!r) body.innerHTML = `<div class="pv-text" style="color:var(--owb-text-3)">加载失败</div>`;
+    if (!r) body.innerHTML = pvNotice("circle-x", "这个文件没读出来，可能刚刚被移走或删掉了");
     else if (looksBinary(r.text)) body.innerHTML = pvFallback("这个文件不是文本"); // 后缀没认出来，内容说了算
     else if (kind === "markdown") body.innerHTML = `<div class="pv-text a-text" translate="no">${renderMd(r.text, dirOf(name), false, pvRoot)}${r.truncated ? pvTrunc(r.total) : ""}</div>`;
     else if (kind === "csv") body.innerHTML = csvHtml(r.text, name) + (r.truncated ? pvTrunc(r.total) : "");
