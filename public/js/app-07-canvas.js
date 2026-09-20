@@ -42,7 +42,8 @@ let canvasState = {
   missing: new Set(),
   selectedAll: false, marqueeMode: false, keyHandler: null, keyUpHandler: null, fullscreenHandler: null, spacePanning: false,
   inspectorOpen: false, nodeGesture: null, multiMove: null, skipNodeClick: null, suppressInspectorUntil: 0,
-  remoteUpdatedAt: 0, remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWritePending: false, suspendSync: false, castTimer: null,
+  // remoteContentKey：服务器上那份画布的内容指纹。屏幕上这份跟它一样就不再往上写（见 canvasPersist）
+  remoteUpdatedAt: 0, remoteContentKey: "", remoteSnapshot: null, remoteTimer: null, remoteWriteTimer: null, remoteWritePending: false, suspendSync: false, castTimer: null,
   // 盘上那份画布读不出来时记下原因。有值就等于「这张画布现在不能写」，
   // 界面必须显示错误而不是一张白板——白板 + 自动保存正好把还有救的原件盖掉
   remoteBroken: "", remoteBrokenNotified: false, lostNotified: "",
@@ -745,6 +746,11 @@ function canvasPersist() {
   try { localStorage.setItem(canvasStorageKey(), JSON.stringify({ ...snapshot, version: 3, savedAt: Date.now() })); } catch {}
   canvasHistorySchedule(snapshot);
   if (canvasState.suspendSync) return;
+  // 屏幕上这份跟服务器上那份一个字不差，就别再写一趟。省的不是流量，是那条死循环：
+  // 服务端每写一次都把 updatedAt 换成现在，对面那个标签页看见就当是新改动，拉下来、
+  // 铺上去、再写回来……两边每 1.8 秒各写一次盘，每次还连带把旧文件拷一份 .bak
+  const contentKey = canvasHistoryKey(snapshot);
+  if (contentKey === canvasState.remoteContentKey) return;
   if (canvasState.remoteWriteTimer) clearTimeout(canvasState.remoteWriteTimer);
   canvasState.remoteWriteTimer = window.setTimeout(async () => {
     canvasState.remoteWritePending = true;
@@ -759,7 +765,10 @@ function canvasPersist() {
           canvasState.remoteBrokenNotified = true;
           canvasToast("项目里那份画布文件读不出来，刚才的改动没存进去（本机还留着）。刷新页面看怎么处理。", "circle-x", "err");
         }
-      } else if (response.ok && result.state) canvasState.remoteUpdatedAt = Number(result.state.updatedAt) || canvasState.remoteUpdatedAt;
+      } else if (response.ok && result.state) {
+        canvasState.remoteUpdatedAt = Number(result.state.updatedAt) || canvasState.remoteUpdatedAt;
+        canvasState.remoteContentKey = contentKey;   // 存上去了，这会儿两边一样
+      }
     } catch {} finally { canvasState.remoteWritePending = false; }
   }, 240);
 }
@@ -842,23 +851,43 @@ function canvasInferLegacyEdges(snapshot) {
   return edges.length ? { ...snapshot, edges } : snapshot;
 }
 
-function canvasApplySnapshot(snapshot) {
+/**
+ * 把一份快照铺到画布上。
+ *
+ * fromRemote：这份是刚从服务器拉回来的。拉回来的东西铺完不能再写回去——
+ * 服务端每写一次就把 updatedAt 换成现在（tools.js canvasWriteState），另一个标签页
+ * 一看「又新了」就也拉、也铺、也写回去，两边能这么来回顶到天亮，谁都没动过画布。
+ * 撤销、重做、本机改动走的是同一个函数，那些当然要写回去，所以默认是 false。
+ *
+ * 这儿以前还有一句按标题删节点的代码：标题是「开始工作」或「开始创作」的一律不铺，
+ * 连着的线也一起扔。本意大概是清掉模板起始卡片，可代码里从来没有谁造过这两个标题的节点，
+ * 于是它能撞上的只有用户自己写的那张卡——而「开始工作」恰好是人给第一张卡起的名字。
+ * 删完还顺手存一次盘，本机那份、服务器那份一起变瘦。整句拿掉了。
+ */
+function canvasApplySnapshot(snapshot, { fromRemote = false } = {}) {
   if (!canvasState.graph || !snapshot || !Array.isArray(snapshot.nodes)) return;
   const previousSelection = canvasState.selected;
-  const starterIds = new Set(snapshot.nodes.filter((item) => ["开始工作", "开始创作"].includes(String(item.payload?.title || item.payload?.name || ""))).map((item) => item.id));
+  const previousIds = [...(canvasState.selectedIds || [])];
   const currentEdges = canvasState.graph.getLinks().length ? canvasSnapshot().edges : [];
   const incomingEdges = Array.isArray(snapshot.edges) && snapshot.edges.length ? snapshot.edges : currentEdges;
-  const cleanSnapshot = starterIds.size ? { ...snapshot, nodes: snapshot.nodes.filter((item) => !starterIds.has(item.id)), edges: incomingEdges.filter((edge) => !starterIds.has(canvasEndpointId(edge.source)) && !starterIds.has(canvasEndpointId(edge.target))) } : { ...snapshot, edges: incomingEdges };
-  const restoredSnapshot = canvasInferLegacyEdges(cleanSnapshot);
+  const restoredSnapshot = canvasInferLegacyEdges({ ...snapshot, edges: incomingEdges });
   canvasState.suspendSync = true;
   try {
     canvasState.graph.clear(); const byId = new Map();
     restoredSnapshot.nodes.forEach((item) => { const node = canvasAddNode(item.kind, item.payload, item.position, { persist: false, skipSelect: true, id: item.id }); if (node) { if (item.size) node.resize(Number(item.size.width) || node.size().width, Number(item.size.height) || node.size().height); byId.set(item.id, node); } });
     (restoredSnapshot.edges || []).forEach((edge) => canvasConnect(byId.get(canvasEndpointId(edge.source)), byId.get(canvasEndpointId(edge.target)), edge.relation));
     // 加载或同步不应抢走画布空间：只保留用户已经打开、且仍存在的节点属性。
-    const keepSelection = previousSelection && byId.has(previousSelection) ? previousSelection : null;
-    canvasState.selectedAll = false; canvasState.selectedIds = new Set(keepSelection ? [keepSelection] : []); canvasState.selected = keepSelection; canvasState.remoteUpdatedAt = Number(snapshot.updatedAt) || canvasState.remoteUpdatedAt; canvasRenderInspector(false);
+    // 选中的是一片就还它一片——框选十二个之后来一趟同步只剩一个还选着的话，
+    // 下一下 Delete 删掉的就不是他以为的那一片。对方真删掉的那几个才从集合里去掉。
+    const keptIds = previousIds.filter((id) => byId.has(id));
+    const keepSelection = previousSelection && byId.has(previousSelection) ? previousSelection : keptIds[0] || null;
+    canvasState.selectedIds = new Set(keptIds);
+    canvasState.selectedAll = keptIds.length > 0 && keptIds.length === byId.size;
+    canvasState.selected = keepSelection; canvasState.remoteUpdatedAt = Number(snapshot.updatedAt) || canvasState.remoteUpdatedAt; canvasRenderInspector(false);
   } finally { canvasState.suspendSync = false; }
+  // 从服务器拉回来的这份，铺完就是服务器上那份，记一下指纹：接下来那趟存盘
+  // 只存本机，不再往上顶（见 canvasPersist）
+  if (fromRemote) canvasState.remoteContentKey = canvasHistoryKey(canvasSnapshot());
   canvasPersist();
 }
 
@@ -868,7 +897,7 @@ function canvasStartRemoteSync() {
     if (!canvasState.graph || canvasState.remoteWritePending) return;
     const previous = Number(canvasState.remoteUpdatedAt || 0);
     const state = await canvasLoadRemote();
-    if (state && Number(state.updatedAt) > previous) canvasApplySnapshot(state);
+    if (state && Number(state.updatedAt) > previous) canvasApplySnapshot(state, { fromRemote: true });
   }, 1800);
 }
 
@@ -1294,7 +1323,7 @@ async function canvasChatRun() {
       });
     };
     while (true) { const part = await reader.read(); if (part.done) break; consume(part.value); }
-    const latest = await canvasLoadRemote(); if (latest && latest.updatedAt > canvasState.remoteUpdatedAt) { canvasApplySnapshot(latest); await canvasLoadLibrary(); }
+    const latest = await canvasLoadRemote(); if (latest && latest.updatedAt > canvasState.remoteUpdatedAt) { canvasApplySnapshot(latest, { fromRemote: true }); await canvasLoadLibrary(); }
   } catch (error) { write("发送失败：" + String(error.message || error).slice(0, 180)); }
   finally { canvasState.chatBusy = false; canvasState.chatStopping = false; canvasSyncChatSendButton(); if (typeof renderHistory === "function") renderHistory(); }
 }
@@ -2311,14 +2340,15 @@ async function canvasRestoreFromLocal(local) {
 function canvasRestoreOrSeed(remote = null) {
   const saved = remote && remote.nodes.length ? remote : canvasLoadSaved();
   if (saved && saved.nodes.length) {
-    canvasApplySnapshot(saved); return;
+    // 服务器那份直接铺、不回写；本机那份铺完要往上顶一次（这台机器上有、服务器上没有的改动）
+    canvasApplySnapshot(saved, { fromRemote: saved === remote }); return;
   }
   const script = canvasAddNode("script", { title: "一句话概念", text: "在这里写一句话概念、人物关系、冲突、对白和结局。" }, { x: 100, y: 110 }, { persist: false, skipSelect: true });
   const storyboard = canvasAddNode("storyboard", {}, { x: 510, y: 110 }, { persist: false, skipSelect: true });
   if (script && storyboard) canvasConnect(script, storyboard); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(false); canvasPersist();
 }
 
-function canvasDestroy() { if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer); if (canvasState.remoteWriteTimer) clearTimeout(canvasState.remoteWriteTimer); if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer); if (canvasState.fullscreenHandler) document.removeEventListener("fullscreenchange", canvasState.fullscreenHandler); const page = document.getElementById("assist-page"); if (page && canvasState.keyHandler) page.removeEventListener("keydown", canvasState.keyHandler); if (page && canvasState.keyUpHandler) page.removeEventListener("keyup", canvasState.keyUpHandler); if (canvasState.paper) canvasState.paper.remove(); canvasState.graph = null; canvasState.paper = null; canvasState.wheelHandler = null; canvasState.keyHandler = null; canvasState.keyUpHandler = null; canvasState.spacePanning = false; canvasState.inspectorOpen = false; canvasState.nodeGesture = null; canvasState.multiMove = null; canvasState.fullscreenHandler = null; canvasState.selected = null; canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasState.remoteSnapshot = null; canvasState.remoteWritePending = false; canvasState.remoteBroken = ""; canvasState.remoteBrokenNotified = false; canvasState.lostNotified = ""; canvasState.taskSessionId = null; canvasState.chatReferences = new Map(); canvasState.history = []; canvasState.historyIndex = -1; canvasState.historyTimer = null; }
+function canvasDestroy() { if (canvasState.remoteTimer) clearInterval(canvasState.remoteTimer); if (canvasState.remoteWriteTimer) clearTimeout(canvasState.remoteWriteTimer); if (canvasState.historyTimer) clearTimeout(canvasState.historyTimer); if (canvasState.fullscreenHandler) document.removeEventListener("fullscreenchange", canvasState.fullscreenHandler); const page = document.getElementById("assist-page"); if (page && canvasState.keyHandler) page.removeEventListener("keydown", canvasState.keyHandler); if (page && canvasState.keyUpHandler) page.removeEventListener("keyup", canvasState.keyUpHandler); if (canvasState.paper) canvasState.paper.remove(); canvasState.graph = null; canvasState.paper = null; canvasState.wheelHandler = null; canvasState.keyHandler = null; canvasState.keyUpHandler = null; canvasState.spacePanning = false; canvasState.inspectorOpen = false; canvasState.nodeGesture = null; canvasState.multiMove = null; canvasState.fullscreenHandler = null; canvasState.selected = null; canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasState.remoteSnapshot = null; canvasState.remoteContentKey = ""; canvasState.remoteWritePending = false; canvasState.remoteBroken = ""; canvasState.remoteBrokenNotified = false; canvasState.lostNotified = ""; canvasState.taskSessionId = null; canvasState.chatReferences = new Map(); canvasState.history = []; canvasState.historyIndex = -1; canvasState.historyTimer = null; }
 
 async function renderCanvasPage() {
   const page = document.getElementById("assist-page"); if (!page) return; canvasDestroy(); await Promise.all([canvasLoadWorkspaceProjects(), canvasLoadCanvasList()]); canvasState.scale = 1; canvasState.x = 0; canvasState.y = 0; canvasState.next = 1;
