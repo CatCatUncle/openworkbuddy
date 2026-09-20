@@ -788,6 +788,99 @@ app.whenReady().then(async () => {
      + "而两张笔记之间的线也不是程序猜得出来的——一律当成「对面记全了」的话，升级那一下线就全没了",
      猜不出来);
 
+  console.log("\n— 十、正在打字的时候来一趟同步 —");
+  const 打字 = await run(`
+    (async () => {
+      await canvasFlushRemoteWrite();
+      await new Promise((r) => setTimeout(r, 200));
+      localStorage.clear();
+      window.__store.jia = { main: { version: 2, updatedAt: 1000, edges: [], nodes: [
+        { id: "t1", kind: "note", payload: { title: "我的笔记", text: "原来的内容" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "t2", kind: "note", payload: { title: "对方那张", text: "" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }] } };
+      window.__active = "jia"; canvasState.canvasName = "main";
+      localStorage.setItem("openworkbuddy.canvas.name", "main");
+      await renderCanvasPage();
+      await new Promise((r) => setTimeout(r, 400));
+      if (canvasState.remoteTimer) { clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null; }
+
+      // 点开一个节点，光标落在属性面板的输入框里，正打到一半
+      canvasState.inspectorOpen = true; canvasState.selected = "t1"; canvasState.selectedIds = new Set(["t1"]);
+      canvasRenderInspector(false);
+      const box = document.getElementById("canvas-inspector");
+      const 输入框 = box.querySelector('[data-inspect-key="text"]');
+      if (!输入框) return { 错: "属性面板里没有输入框" };
+      输入框.focus();
+      输入框.value = "原来的内容，正在往后接着写";
+      输入框.setSelectionRange(11, 11);
+      输入框.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 700));   // 让这一笔先存出去，免得下面摆的「对方改的」被它盖掉
+
+      // 这会儿别处（另一台机器、或者本项目的 Agent）动了另一张卡
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 5000, edges: [], nodes: [
+        { id: "t1", kind: "note", payload: { title: "我的笔记", text: "原来的内容" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "t2", kind: "note", payload: { title: "对方改过的标题", text: "" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }] };
+      canvasStartRemoteSync();
+      await new Promise((r) => setTimeout(r, 4200));   // 两圈
+      const 现在的 = document.activeElement;
+      const 打字时 = { 焦点还在: !!(现在的 && 现在的.dataset && 现在的.dataset.inspectKey === "text"),
+                       屏幕上的字: 现在的 && 现在的.value, 光标: 现在的 && 现在的.selectionStart,
+                       节点里的字: (canvasState.graph.getCell("t1").get("canvasPayload") || {}).text };
+      // 打完了，光标挪开——这时候对方的改动该补上来
+      输入框.blur();
+      const 到点 = Date.now() + 12000;
+      const 对方的到了 = () => (canvasState.graph.getCell("t2")?.get("canvasPayload") || {}).title === "对方改过的标题";
+      while (Date.now() < 到点 && !对方的到了()) await new Promise((r) => setTimeout(r, 150));
+      clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null;
+      return { ...打字时, 停手后对方的到了: 对方的到了() };
+    })()`);
+  ok(打字.焦点还在 === true,
+     "★正在输入框里打字，来一趟同步不许把光标弄没★ 属性面板是整块重画的，重画一次输入框就是新的一个，"
+     + "光标掉回 body，接着敲的字进了空气",
+     打字);
+  ok(打字.屏幕上的字 === "原来的内容，正在往后接着写" && 打字.光标 === 11,
+     "★他打进去的字和光标位置都得原样留着★ 同步拉回来的那份里还是「原来的内容」——照铺上去等于把他刚打的一段抹了",
+     { 字: 打字.屏幕上的字, 光标: 打字.光标 });
+  ok(打字.停手后对方的到了 === true,
+     "★反向对照：手停下来之后，对方那边的改动照样同步得过来★ 把同步整个关掉也能让上面两条变绿",
+     打字.停手后对方的到了);
+
+
+  // 同步之外，面板自己也会重画（改个标签、跑一下节点都会），那条路上光标同样不能丢
+  const 重画 = await run(`
+    (async () => {
+      canvasState.inspectorOpen = true; canvasState.selected = "t1"; canvasState.selectedIds = new Set(["t1"]);
+      canvasRenderInspector(false);
+      const box = document.getElementById("canvas-inspector");
+      const 框 = box.querySelector('[data-inspect-key="text"]');
+      框.focus(); 框.setSelectionRange(5, 5);
+      canvasRenderInspector(false);            // 面板整块重画
+      const 后来 = document.activeElement;
+      return { 还在这个框: !!(后来 && 后来.dataset && 后来.dataset.inspectKey === "text"), 光标: 后来 && 后来.selectionStart };
+    })()`);
+  ok(重画.还在这个框 === true && 重画.光标 === 5,
+     "★面板自己重画一次，光标停在第几个字也得留住★ innerHTML 一换，原来那个输入框就是个被扔掉的节点了",
+     重画);
+
+  // 反向对照之二：把光标留在框里走开，同步不能就此停摆（不然这个标签页从此再也拉不到别人的改动）
+  const 走开 = await run(`
+    (async () => {
+      const 框 = document.getElementById("canvas-inspector").querySelector('[data-inspect-key="text"]');
+      框.focus();
+      canvasState.typingAt = Date.now() - 20000;   // 手离开键盘 20 秒了，只是焦点还搁在这儿
+      window.__store.jia.main = { version: 2, updatedAt: Date.now() + 9000, edges: [], nodes: [
+        { id: "t1", kind: "note", payload: { title: "我的笔记", text: "原来的内容" }, position: { x: 40, y: 40 }, size: { width: 280, height: 180 } },
+        { id: "t2", kind: "note", payload: { title: "走开之后对方又改了", text: "" }, position: { x: 400, y: 40 }, size: { width: 280, height: 180 } }] };
+      canvasStartRemoteSync();
+      const 到点 = Date.now() + 12000;
+      const 到了 = () => (canvasState.graph.getCell("t2")?.get("canvasPayload") || {}).title === "走开之后对方又改了";
+      while (Date.now() < 到点 && !到了()) await new Promise((r) => setTimeout(r, 150));
+      clearInterval(canvasState.remoteTimer); canvasState.remoteTimer = null;
+      return 到了();
+    })()`);
+  ok(走开 === true,
+     "★反向对照：光标留在框里走开了，同步照样得继续★ 「正在打字」得有个时效，不然让一让就成了永远不让",
+     走开);
+
   srv.close();
   console.log(fail ? `\n有失败：${pass} 过 / ${fail} 挂` : `\n全部通过：${pass} 过 / 0 挂`);
   app.exit(fail ? 1 : 0);
