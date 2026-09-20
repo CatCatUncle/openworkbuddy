@@ -384,9 +384,10 @@ function historyChars(history) {
 // 挂在工具清单里，模型看得见就会去用——调一次、吃一条必然的失败、再重想一个方案，
 // 白烧一轮，还容易被当成偶发故障去重试。定义一起摘掉才是真的关掉。
 // 两条定义加起来 1900 多字符，占整份工具清单的 14%，摘掉顺带把每一步的输入都变便宜。
-// 这些工具依赖 Electron/内置浏览器；保留 fetch_url 的 render 参数作为无浏览器兜底，
-// 但 render_page 兼容别名不能在纯 Node 子进程里暴露，否则模型会反复调用必失败的工具。
-const DESKTOP_ONLY_TOOLS = ["html_to_image", "render_page", "desktop_pet"];
+// 这些工具依赖 Electron/内置浏览器，纯 Node 子进程里挂出去等于挂了个必然失败的工具。
+// render_page 不在这儿，是因为它已经不在工具清单里了（见 tools.js 的 TOOL_DEFS）——
+// 执行入口还认这个名字，但没人会把它发给模型。
+const DESKTOP_ONLY_TOOLS = ["html_to_image", "desktop_pet"];
 
 // 同一个道理，往下再走一层：fetch_url 本身到哪儿都能用，但它的 render / wait_ms 两个参数
 // 靠的是内置浏览器。没有渲染器时把参数留在清单里，模型会先 render:"force" 一次、
@@ -597,11 +598,11 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
 - list_files：列目录（depth 给 2~3 可一次看清项目结构）
 - remember / forget：把跨任务成立的用户偏好记进长期记忆 / 删掉某条
 - web_search：联网搜索（标题/链接/摘要），查资料先搜索定位来源
-- fetch_url：抓取网页全文或直接调 JSON 接口（带真实浏览器请求头；配合 web_search 的结果 URL 用）
-${hasRenderer() ? "- render_page：用内置浏览器真打开页面、等 JS 渲染完再取正文，专治动态站点（B 站、微博、单页应用）\n" : ""}- check_page：验收做好的网页（静态体检 + 真浏览器打开一遍看有没有报错、是不是白屏）。交付 HTML 之前必须跑
+- fetch_url：抓取网页全文或直接调 JSON 接口（带真实浏览器请求头；配合 web_search 的结果 URL 用）${hasRenderer() ? "。正文全靠 JS 的动态站点（B 站、微博、单页应用）加 render:\"force\"，用内置浏览器真打开一遍再取正文" : ""}
+- check_page：验收做好的网页（静态体检 + 真浏览器打开一遍看有没有报错、是不是白屏）。交付 HTML 之前必须跑
 - gen_diagram：文本描述 → 专业图（mermaid 流程/时序/甘特、dot 架构图、echarts 数据图表、plantuml UML），一次生成 SVG+PNG 文件。文档/PPT/飞书文档要配图一律用它，不要手写 SVG 文件
 - use_skill：加载技能包（做对应任务前先加载）
-- library_list / library_read / library_import：查看用户的资料库与灵感笔记（跨项目共享的长期参考资料，任务涉及用户偏好/素材时先查）。资料库可能有子目录，library_list 列出来的名字自带子目录前缀，后面读取/取用要一字不差地照抄；当前项目可能只挂载了其中一块，列出来的就是你能看到的全部。库里的 PDF/图片/Word/压缩包不是文本，用 library_import 复制到工作目录后再按类型处理${hasRenderer() ? "" : "\n- **当前没有内置浏览器**（纯命令行/服务端模式）：html_to_image、render_page、桌面宠物都不可用，技能文档里提到它们的步骤一律跳过。要做排版图就把 HTML 写出来交付，告诉用户在桌面版里截；要出图表用 gen_diagram（它有云端兜底）。"}`;
+- library_list / library_read / library_import：查看用户的资料库与灵感笔记（跨项目共享的长期参考资料，任务涉及用户偏好/素材时先查）。资料库可能有子目录，library_list 列出来的名字自带子目录前缀，后面读取/取用要一字不差地照抄；当前项目可能只挂载了其中一块，列出来的就是你能看到的全部。库里的 PDF/图片/Word/压缩包不是文本，用 library_import 复制到工作目录后再按类型处理${hasRenderer() ? "" : "\n- **当前没有内置浏览器**（纯命令行/服务端模式）：html_to_image、桌面宠物都不可用（fetch_url 本身照常用，只是它的 render 参数没了），技能文档里提到它们的步骤一律跳过。要做排版图就把 HTML 写出来交付，告诉用户在桌面版里截；要出图表用 gen_diagram（它有云端兜底）。"}`;
     if ((config.im || {}).feishu && (config.im.feishu.app_id || config.im.feishu.doc_app_id)) {
       p += `\n- feishu_doc_create：把 Markdown 内容创建成飞书云文档交付给用户（用户要求"发到飞书/建飞书文档"时用它，不要自己找凭证写脚本）`;
     }
@@ -631,7 +632,7 @@ ${hasRenderer() ? "- render_page：用内置浏览器真打开页面、等 JS �
 4.1 **大任务先立进度档**：预计十步以上、或要产出多个文件的任务，第一步先在工作目录 write_file 建 PROGRESS.md：目标一句话 + 分步清单（- [ ] 待做 / - [x] 已完成）。此后每完成一步就 edit_file 打勾。任务被打断或续跑时，先读 PROGRESS.md 从断点接着做，绝不从头重来。
 5. 代码报错要读懂原因、修正重试，不要放弃；同一处连续失败 3 次就换思路，别在死路上空转。
 5.1 抓不到网页不等于做不到（高频翻车点）。一条路走不通就换下一条，**同一个目标至少真试满三种路子**才允许说抓不到：
-${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 用 render_page 真渲染一遍；\n" : "   - fetch_url 拿回来是空壳 → 去找它背后的数据接口，或者 run_shell 调本机 curl 带上完整请求头再抓一次（当前没有内置浏览器，别去找 render_page，它不在你的工具清单里）；\n"}   - 页面正文是异步加载的 → 去找它背后的数据接口（站点常见的 api.xxx.com/... 形式）直接 fetch_url，接口返回 JSON 比解析 HTML 靠谱得多；
+${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 原样再发一次 fetch_url，这次带 render:\"force\"，它会用内置浏览器真打开一遍；\n" : "   - fetch_url 拿回来是空壳 → 去找它背后的数据接口，或者 run_shell 调本机 curl 带上完整请求头再抓一次（当前没有内置浏览器，fetch_url 的 render 参数也不在你的清单里）；\n"}   - 页面正文是异步加载的 → 去找它背后的数据接口（站点常见的 api.xxx.com/... 形式）直接 fetch_url，接口返回 JSON 比解析 HTML 靠谱得多；
    - 接口要签名/被风控挡 → 用 run_shell 调本机现成的命令行工具（curl 带完整请求头、yt-dlp 取视频站元数据、rss 源等），本机装了什么先 \`which\` 一下再说没有；
    - 还是不行 → web_search 搜同样的内容，从能打开的转载页/镜像站/第三方数据站拿。
    把「需要登录 Cookie / 需要官方 API 权限」当结论直接停手，是不合格的交付。真要用户的登录态才继续，先把不需要登录也能拿到的那部分做完再说。
@@ -1784,7 +1785,7 @@ function modePrompt(mode) {
       has("look_at_image") && "  · mcp__openworkbuddy__look_at_image   看图（带上你想知道的具体问题）",
       has("read_document") && "  · mcp__openworkbuddy__read_document   读 Word/Excel/PPT/压缩包（你自带的读文件工具读这几种只会得到乱码）",
       has("check_page") && "  · mcp__openworkbuddy__check_page      打开你做的网页，看真实效果和控制台报错",
-      has("web_search") && ("  · mcp__openworkbuddy__web_search" + (has("render_page") ? " / render_page" : "") + "   联网搜索、取网页正文"),
+      has("web_search") && "  · mcp__openworkbuddy__web_search   联网搜索、取网页正文",
       has("library_list") && "  · mcp__openworkbuddy__library_list / library_read / save_skill   技能库",
       has("remember") && "  · mcp__openworkbuddy__remember / forget           长期记忆",
     ].filter(Boolean).join("\n");
