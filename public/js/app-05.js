@@ -678,8 +678,10 @@ function capCard(c, s, provName) {
             <span class="mrow-name">${esc(m.name)}</span>
             <span class="mrow-id">${esc(m.model)}</span>
             <span class="mrow-meta">${meta}</span>
+            ${modelTestBtn("media", m)}
             ${rowMenu([["mdel", i, "删除", "danger"]])}
-          </div>`;
+          </div>
+          ${modelTestNote("media", m)}`;
         }).join("") : `<div class="ch-note">还没配。加一个之后 agent 才用得了 ${esc(c.tool)}。</div>`}
         ${mine.length > 1 ? `<div class="ch-note">挂了多个：平时走「主用」那条；要指定别的，在对话里点名它的名字（例如「用${esc((mine.find((m) => !m.default) || mine[0]).name)}画」），agent 会按名字挑。</div>` : ""}
         <div class="mm-form" data-cap="${c.cap}" style="display:none;border-top:1px solid var(--owb-border);padding-top:8px;margin-top:6px">
@@ -711,6 +713,7 @@ function bindMedia(box, s) {
     repaintMedia(box, s);
   }));
   bindRowMenus(box);
+  bindModelTests(box, s, () => repaintMedia(box, s));
 
   box.querySelectorAll("input[data-def]").forEach((r) => (r.onchange = async () => {
     const t = s.media_models[+r.dataset.def];
@@ -1152,6 +1155,73 @@ function chanTestNote(p) {
     : `<div class="ch-res is-bad">${ic("triangle-alert")}<span>${esc(t.error)}</span></div>`;
 }
 
+/**
+ * 一行一测的结果。跟 chanTest 一样存在模块里，不存 DOM——这一页任何改动都整屏重画。
+ *
+ * key 用名字不用下标：下标一删行就全串位，绿勾会跑到隔壁那一行头上去，
+ * 而「隔壁那行也通」恰恰是最难看出错的一种错。
+ */
+const modelTest = new Map();
+const mtKey = (scope, m) => scope + ":" + (scope === "media" ? m.id || m.name : m.name);
+
+/**
+ * 行尾那颗结论。渠道测活那句话说的是「这条线通不通」，这句说的是「**这一行**能不能用」——
+ * 一条渠道下面挂五个模型，线是通的，模型名却可能错了三个，得等任务跑到一半才炸。
+ */
+function modelTestNote(scope, m) {
+  const t = modelTest.get(mtKey(scope, m));
+  if (!t) return "";
+  if (t.running) return `<div class="ch-res mrow-res"><span>正在测「${esc(m.model || m.name)}」…</span></div>`;
+  if (!t.ok) return `<div class="ch-res is-bad mrow-res">${ic("triangle-alert")}<span>${esc(t.error)}</span></div>`;
+  // 只验到一半的时候不给绿勾：拿模型清单证不了余额够不够。
+  // 一个含糊的 ✓ 比一个红叉更坑人——人会拿它当「已经能用」，然后在真任务里踩空
+  const half = t.partial || /没真生成|没法核对/.test(t.note || "");
+  return `<div class="ch-res ${half ? "is-half" : "is-ok"} mrow-res">${ic(half ? "circle-help" : "circle-check")}<span>${esc(t.note || "通了")}（${t.ms} 毫秒）</span></div>`;
+}
+
+/**
+ * 行里那颗「测」。带字不带纯图标：这一行右边本来就有个 ⋯，再放一颗光溜溜的图标，
+ * 人得挨个悬停才知道哪颗是干什么的——摆出来却认不出，等于没摆。
+ */
+function modelTestBtn(scope, m) {
+  const t = modelTest.get(mtKey(scope, m));
+  const run = !!(t && t.running);
+  return `<button type="button" class="mrow-test" data-mtscope="${scope}" data-mtkey="${esc(mtKey(scope, m))}"
+      title="拿这一行真验一次：Key 认不认、模型名在不在"${run ? " disabled" : ""}>${ic(run ? "loader-circle" : "flask-conical", "i-sm")}${run ? "测中" : "测"}</button>`;
+}
+
+/**
+ * 把「测」这颗按钮接上。对话卡和那五张能力卡共用一份：两边行长得一样，
+ * 差的只是重画哪一块，所以重画函数当参数传进来。
+ */
+function bindModelTests(root, s, repaint) {
+  root.querySelectorAll(".mrow-test").forEach((b) => (b.onclick = async (e) => {
+    e.stopPropagation(); // 行在折叠卡里，冒上去会把卡收起来，人就看不见刚测出来的那句话了
+    const scope = b.dataset.mtscope;
+    const key = b.dataset.mtkey;
+    const list = scope === "media" ? s.media_models : s.models;
+    const index = list.findIndex((m) => mtKey(scope, m) === key);
+    if (index < 0) return;
+    modelTest.set(key, { running: true });
+    repaint();
+    let d;
+    try {
+      const r = await fetch("/api/model-test", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope, index }),
+      });
+      d = await r.json();
+    } catch (err) {
+      d = { ok: false, error: "请求没发出去：" + String((err && err.message) || err) };
+    }
+    modelTest.set(key, {
+      ok: !!d.ok, ms: d.ms || 0, partial: !!d.partial,
+      note: d.note || "", error: d.error || "没说原因",
+    });
+    repaint();
+  }));
+}
+
 /** 一个渠道一张卡：头是一行摘要，展开才是它底下的模型 + 那把 Key */
 function chanCard(p, s, po, kindLabel, dupeTag) {
   const i = s.providers.indexOf(p);
@@ -1227,8 +1297,10 @@ function modelRow(m, s, po, withChan) {
       <span class="mrow-name">${esc(m.name)}</span>
       <span class="mrow-id">${esc(m.model)}</span>
       <span class="mrow-meta">${meta}</span>
+      ${!po ? "" : modelTestBtn("chat", m)}
       ${!po ? "" : rowMenu([["cedit", i, "编辑", ""], ["cdup", i, "复制一个", ""], ["cdel", i, "删除", "danger"]])}
-    </div>`;
+    </div>
+    ${!po ? "" : modelTestNote("chat", m)}`;
 }
 
 /** 行尾的 ⋯：三个链接平铺太占地方，收进来点开才有。参数是 [属性名, 下标, 文案, 样式] */
@@ -1298,6 +1370,7 @@ function bindModels(pane, s, po) {
     if (card) card.scrollIntoView({ block: "center", behavior: "smooth" });
   }));
   bindRowMenus(pane);
+  bindModelTests(pane, s, () => paintModels(pane, s));
   const idleBtn = pane.querySelector("#idle-toggle");
   if (idleBtn) idleBtn.onclick = () => { idleOpen = !idleOpen; paintModels(pane, s); };
   if (!po) return; // 下面全是平台管理员那套按钮，没画出来就别去 querySelector（null.onclick 会把整页炸掉）
@@ -1624,7 +1697,11 @@ function renderSearchPane(pane, s) {
     const [名, 占位, , 说明] = SEARCH_VENDORS[id];
     const custom = id === "custom";
     return `<div class="f">${esc(名)} ${custom ? "接口" : "API"} Key ${keyLink(id)}</div>
-      <input id="sr-k-${id}" type="password" placeholder="${esc(占位)}" value="${esc(sc[searchKeyField(id)] || "")}">
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="sr-k-${id}" type="password" placeholder="${esc(占位)}" value="${esc(sc[searchKeyField(id)] || "")}" style="flex:1;min-width:0">
+        <button type="button" class="btn-plain sr-one" data-p="${id}" style="flex:none">测这家</button>
+      </div>
+      <div class="d sr-one-msg" id="sr-r-${id}" style="margin-top:4px"></div>
       ${展开 && custom ? `<div class="f">接口地址（POST）</div>
         <input id="sr-custom-url" type="text" placeholder="https://……/search" value="${esc(sc.custom_url || "")}">
         <div class="f">请求体里问题字段叫什么（默认 query）</div>
@@ -1638,6 +1715,24 @@ function renderSearchPane(pane, s) {
       (cur ? 一行(cur, true) : `<div class="d">自动：从上往下挑第一个配好了的。下面填几家都行。</div>`)
       + `<details class="sr-more"${cur ? "" : " open"}><summary>别家的 Key（顺延时用得上，可以多填几家）</summary>`
       + 别家.map((id) => 一行(id, false)).join("") + `</details>`;
+    // 每一行后面都有自己的「测这家」。以前只有最下面一颗按钮、测的是「当前首选那家」——
+    // 填了四家 Key 的人想知道哪家能用，得把首选一家一家切过去再各测一次；
+    // 而顺延链上任何一家坏了，他在界面上永远看不出来是哪一家坏了
+    pane.querySelectorAll(".sr-one").forEach((b) => (b.onclick = async () => {
+      const id = b.dataset.p;
+      const slot = pane.querySelector("#sr-r-" + id);
+      b.disabled = true;
+      slot.textContent = "先存下来，再拿这家真搜一次…";
+      try {
+        Object.assign(sc, collect());
+        if (!(await saveSettings({ search: collect() }))) { slot.textContent = "✗ " + (lastSaveError || "保存失败"); return; }
+        const r = await fetch("/api/search/test?provider=" + encodeURIComponent(id))
+          .then((x) => x.json()).catch((e) => ({ error: "请求没发出去：" + String((e && e.message) || e) }));
+        slot.textContent = r.ok
+          ? `✓ 通了，${r.ms}ms，回了 ${r.n} 条，第一条是「${r.sample}」`
+          : "✗ " + (r.error || "测试失败");
+      } finally { b.disabled = false; }
+    }));
   };
   pane.innerHTML = `
     <div class="card-item">

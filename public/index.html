@@ -1318,6 +1318,19 @@
   .mrow-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .mrow-id { font-family: var(--font-mono); font-size: 12px; color: var(--owb-text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mrow-meta { margin-left: auto; color: var(--owb-text-3); font-size: 12px; white-space: nowrap; }
+  /* 行尾那颗「测」：一条渠道通，不代表挂在它下面的五个模型名都对。
+     摆在 ⋯ 左边而不是收进 ⋯ 里——收进去就没人会去点，等于没做 */
+  .mrow-test { display: inline-flex; flex: none; align-items: center; gap: 4px; margin-left: 8px; padding: 3px 9px;
+    border: 1px solid var(--owb-border); border-radius: var(--radius-full); background: var(--owb-card);
+    color: var(--owb-text-2); font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; white-space: nowrap; }
+  .mrow-test:hover:not(:disabled) { border-color: var(--owb-brand); color: var(--owb-brand-text); background: var(--owb-brand-weak); }
+  .mrow-test:disabled { cursor: default; opacity: .7; }
+  .mrow-test .i { width: 12px; height: 12px; }
+  /* 结论压在行**下面**，跟 .mrow-bad 一个道理：行里那几列是等宽对齐的，塞长句子会把整张表挤歪 */
+  .mrow-res { margin: 4px 0 8px; }
+  /* 只验到一半（Key 认了，但没真生成，余额没验着）既不是绿也不是红：
+     给它一个中性底色。拿绿勾糊过去，人会拿它当「已经能用」，然后在真任务里踩空 */
+  .ch-res.is-half { background: var(--owb-bg-side); color: var(--owb-text-2); }
   /* 行尾的 ⋯ 菜单：贴着行右边弹出来，点别处就收。手机上也点得到（悬停在触屏上不存在） */
   .row-acts { position: relative; flex: none; margin-left: 4px; }
   /* 实测 20×16，鼠标得瞄准才点得中。撑到 24 见方，图标本身不变大 */
