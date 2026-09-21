@@ -336,15 +336,13 @@ function libRowHtml(src, f, o) {
  * 用户连着问了三遍「这儿建目录有啥用啊」，还猜「资料库指的是产出成果吧」。
  * 他问第三遍的时候，答案就该长在屏幕上，而不是每次都要有人在旁边解释一遍。
  */
-function libEmptyWhy(po) {
+function libEmptyWhy() {
   // 每一截都是一句完整的话，各占一个文本节点：<b> 夹在句子中间的话，英文那边是按节点翻的，
   // 词序接不上，屏幕上就会出现半句中文半句英文（见 public/js/i18n.js 里资料库那一段）
-  return po
-    ? "还没有参考资料。<br><br>"
+  return "还没有参考资料。<br><br>"
       + "往这儿放每次任务都可能要翻的东西：合同模板、报价单、公司简介。<br>"
       + "做任务的时候 AI 会自己来查（library_list / library_read），你不用每次都粘一遍。<br><br>"
-      + "<b>分成文件夹之后还多一件事：项目设置里可以只挂其中一个，让这个项目的 AI 只看得见那一块，不会翻到隔壁客户的材料。</b>"
-    : "还没有共享资料。这一块归平台管理员放，放进来之后你的任务也读得到。";
+      + "<b>分成文件夹之后还多一件事：项目设置里可以只挂其中一个，让这个项目的 AI 只看得见那一块，不会翻到隔壁客户的材料。</b>";
 }
 /**
  * 一行摆得下几个（给 ← → ↑ ↓ 翻文件用）。不写死格子数：直接量 offsetTop，
@@ -387,9 +385,9 @@ async function renderLibPage() {
   const page = document.getElementById("assist-page");
   if (!page) return;
   if (!settingsCache) await refreshSettingsCache().catch(() => {});
-  // 资料库是**整台服务器共用的一份**，谁往里放东西归平台管理员管；读是所有人的
-  // （每个人的 agent 本来就带着 library_list / library_read，同样的内容它随口就念得出来）。
-  const po = amPlatformOwner();
+  // 资料库一人一份（server.js 的 libraryRootOf），所以这一页不再分两副面孔。
+  // 以前普通成员看到的是「共享资料 · 只读」，里面还摆着别人传的合同——
+  // 这正是「资料库怎么数据还是通用的吗」那句话的来处。根分开之后，他进来看见的就是自己那份，写也写得进去。
   const q = (libState.q || "").trim();
   // libState 是页面级的一份状态，别的入口（深链、老的调用点、测试）可能只塞了一半字段。
   // 在这儿兜一次底：认不出来的值一律退回默认，否则 mode=undefined 会让列表挂上
@@ -425,7 +423,7 @@ async function renderLibPage() {
   const folder = (f) => `
     <div class="lib-it lib-dir" data-dir="${esc(f.path)}" title="${esc(f.name)}">
       <span class="th">${ic("folder")}</span><span class="nm">${esc(f.name)}</span><span class="sz">${f.count || 0} 项</span><span class="tm"></span>
-      ${po ? `<a href="#" class="lib-del" data-del-dir="${esc(f.path)}" data-n="${f.count || 0}" title="删掉这个文件夹">${ic("trash-2")}</a>` : ""}
+      ${`<a href="#" class="lib-del" data-del-dir="${esc(f.path)}" data-n="${f.count || 0}" title="删掉这个文件夹">${ic("trash-2")}</a>`}
     </div>`;
   const crumbs = `<div class="lib-crumbs">
     <a href="#" data-dir="">${ic("book-open-text")}资料库</a>
@@ -448,12 +446,12 @@ async function renderLibPage() {
   else body = `
     <div class="sec lib-sec">
       <span class="lib-sec-l">参考资料<span class="n">${(lib.dirs || []).length + libFiles.length}</span><em>你放进来的 · 做任务时 AI 自己会来查</em></span>
-      ${po && libState.view === "dir" ? `<span class="lib-sec-acts"><a href="#" id="lb-mkdir" class="link">${ic("folder")}新建文件夹</a><a href="#" id="lb-up" class="link">${ic("plus")}上传</a>${libState.dir ? `<a href="#" class="link danger" data-del-dir="${esc(libState.dir)}" data-n="${(lib.dirs || []).length + (lib.files || []).length}">${ic("trash-2")}删掉这个文件夹</a>` : ""}<input type="file" id="lb-file" multiple style="display:none"></span>` : ""}
+      ${libState.view === "dir" ? `<span class="lib-sec-acts"><a href="#" id="lb-mkdir" class="link">${ic("folder")}新建文件夹</a><a href="#" id="lb-up" class="link">${ic("plus")}上传</a>${libState.dir ? `<a href="#" class="link danger" data-del-dir="${esc(libState.dir)}" data-n="${(lib.dirs || []).length + (lib.files || []).length}">${ic("trash-2")}删掉这个文件夹</a>` : ""}<input type="file" id="lb-file" multiple style="display:none"></span>` : ""}
     </div>
     ${(lib.dirs || []).map(folder).join("")}
     ${libFiles.length
-      ? groupedRows(libFiles, "lib", (f) => ({ full: f.path, label: f.name, dir: "", del: po ? f.path : "" }))
-      : ((lib.dirs || []).length ? "" : `<div class="lib-none">${libState.dir ? "这个文件夹还是空的" : libEmptyWhy(po)}</div>`)}
+      ? groupedRows(libFiles, "lib", (f) => ({ full: f.path, label: f.name, dir: "", del: f.path }))
+      : ((lib.dirs || []).length ? "" : `<div class="lib-none">${libState.dir ? "这个文件夹还是空的" : libEmptyWhy()}</div>`)}
     <div class="sec lib-sec">
       <span class="lib-sec-l">本地产物<span class="n">${wsFiles.length}</span><em>当前项目的工作目录 · 任务自己写出来的</em></span>
     </div>
@@ -473,7 +471,7 @@ async function renderLibPage() {
           <button type="button" class="lib-tab ${libState.pick && libState.pick.src === "notes" ? "on" : ""}" data-src="notes" role="tab" title="给助理留的长期备忘：不是文件，是几句话。每次任务它查资料库时都会连着读到" aria-selected="${!!(libState.pick && libState.pick.src === "notes")}">${ic("lightbulb")}笔记 ${(lib.notes || []).length || ""}</button>
         </div>
         <div class="lib-kinds">${LIB_KINDS.map(([k, label]) => `<button type="button" class="lib-kind ${(libState.kind || "all") === k ? "on" : ""}" data-kind="${k}">${esc(label)}</button>`).join("")}</div>
-        <div class="lib-side-tip">${po ? "我的文档" : "共享资料"}${po ? "" : ` · <span title="资料库是整台服务器共用的一份，往里放东西归平台管理员">只读</span>`}<br>
+        <div class="lib-side-tip">我的文档<br>
           任务里 AI 也读得到这儿的资料（library_list / library_read）</div>
       </div>
       <div class="lib-main">
@@ -533,7 +531,7 @@ async function renderLibPage() {
     renderLibPage();
   });
 
-  if (po && page.querySelector("#lb-up")) {
+  if (page.querySelector("#lb-up")) {
     page.querySelector("#lb-up").onclick = (e) => { e.preventDefault(); page.querySelector("#lb-file").click(); };
     page.querySelector("#lb-file").onchange = async (e) => {
       // 以前这儿不看返回值，一律 toast「✅ 已上传」——重名、超大、权限不够、磁盘满，
@@ -558,7 +556,7 @@ async function renderLibPage() {
     libState.view = "dir";
     renderLibPage();
   });
-  if (po && page.querySelector("#lb-mkdir")) {
+  if (page.querySelector("#lb-mkdir")) {
     page.querySelector("#lb-mkdir").onclick = async (e) => {
       e.preventDefault();
       // 这儿原来是 window.prompt——桌面版里它一调用就抛，整个处理函数当场死掉，
@@ -584,11 +582,11 @@ async function renderLibPage() {
     e.stopPropagation();
     const dir = a.dataset.delDir;
     const n = +a.dataset.n || 0;
-    // 非空的服务端本来就不给删（资料库是整台服务器共用的一份，一条 rm -rf 下去别人的素材也没了）。
+    // 非空的服务端本来就不给删：一条 rm -rf 下去，里面放了半年的材料一起没。
     // 与其让人点完确认再吃一句 400，不如在框里先说清楚
     const yes = await askConfirm({
       title: `删掉文件夹「${dir.split("/").pop()}」？`,
-      hint: n ? `它里面还有 ${n} 样东西。资料库是整台服务器共用的一份，非空的文件夹删不了——先把里面清空。`
+      hint: n ? `它里面还有 ${n} 样东西。非空的文件夹删不了——先把里面清空。`
               : "它现在是空的，删掉不影响别的东西。",
       // 非空时那颗钮原来叫「知道了」——一句正确的废话：人知道了，然后呢？
       // 现在它是一条出路，按下去就进到那一层里，清空的活在那儿干
@@ -751,8 +749,7 @@ function libSearchHtml(data, q, recents) {
   // 删：搜出来的这一份跟在文件夹里看到的是同一份东西，那儿能删这儿就得能删。
   // 少了这颗钮的后果不是「少个快捷方式」——搜索一开口就接管整块列表，
   // 用搜索找到的人根本回不到那个列表，等于这份文件删不掉了
-  const po = amPlatformOwner();
-  const fileRow = (src, f) => libRowHtml(src, f, { q, del: src === "lib" && po ? (f.path || f.name) : "" })
+  const fileRow = (src, f) => libRowHtml(src, f, { q, del: src === "lib" ? (f.path || f.name) : "" })
     + ((f.lines || []).length ? `<div class="lib-hits">${f.lines.map((l) => `<div><em>${l.line}</em>${libMark(l.text, q)}</div>`).join("")}</div>` : "");
   return `
     ${tasks.length ? `<div class="sec">任务 <span style="font-weight:400;color:var(--owb-text-3)">${tasks.length}</span></div>
@@ -776,23 +773,17 @@ function libSearchHtml(data, q, recents) {
 async function renderLibPreview(prev, lib) {
   const { src, name } = libState.pick || {};
   if (!src) return;
-  const po = amPlatformOwner(); // 记笔记、删笔记、删资料都是往这台服务器的共享区写，归平台管理员
   if (src === "notes") {
     prev.innerHTML = `
       <div style="font-weight:600;margin-bottom:4px">${ic("lightbulb")} 灵感笔记</div>
       <div style="font-size:12px;color:var(--owb-text-3);margin-bottom:10px;line-height:1.6">不是文件，是几句话。助理每次任务查资料库（library_list）时都会连着读到，所以适合放「我们公司简称叫 X」「配色一律用主色 #0F62FE」这种长期成立的事。</div>
-      ${po ? `<div style="display:flex;gap:6px;margin-bottom:10px">
+      <div style="display:flex;gap:6px;margin-bottom:10px">
         <input id="lb-note" placeholder="随手记一条灵感/偏好，回车保存" style="flex:1">
         <button class="btn-brand" id="lb-note-save" style="flex:none">保存</button>
-      </div>` : `<div style="font-size: 13px;color:var(--owb-text-3);margin-bottom:10px">这块是整台服务器共用的，归平台管理员记。<br>只想让助理记住你自己的事？去<a href="#" class="link" id="lb-to-mem">记忆</a>页，那儿记的只有你自己看得到。</div>`}
+      </div>
       <div>${(lib.notes || []).map(n =>
-        `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span>${po ? `<a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a>` : ""}</div></div>`).join("")
+        `<div class="lib-note">${esc(n.text)}<div class="lm"><span>${esc((n.at || "").slice(0, 16).replace("T", " "))}</span><a href="#" class="link danger" data-nid="${esc(n.id)}">删除</a></div></div>`).join("")
         || '<div class="ph">还没有灵感笔记。<br>比如：「周报只要三段」「对外材料一律叫全称」——记一条，之后每次任务助理都会看到。</div>'}</div>`;
-    if (!po) {
-      const go = prev.querySelector("#lb-to-mem");
-      if (go) go.onclick = (e) => { e.preventDefault(); openModal("settings", "memory"); };
-      return;
-    }
     const save = async () => {
       const el = prev.querySelector("#lb-note");
       const text = el.value.trim();
@@ -830,7 +821,7 @@ async function renderLibPreview(prev, lib) {
     ${canOpenOnHost() ? `<a class="link" href="#" id="lb-reveal" title="在访达 / 资源管理器里打开它所在的文件夹，并选中它">所在位置</a>
     <a class="link" href="#" id="lb-copy" title="把文件本身放进剪贴板，之后直接粘到微信 / 邮件里">复制文件</a>` : ""}
     <a class="link" href="${dlUrl}" ${src === "lib" ? "download" : 'target="_blank"'}>${src === "lib" ? "下载" : "新窗口打开"}</a>
-    ${src === "lib" && po ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
+    ${src === "lib" ? `<a class="link danger" href="#" id="lb-del">删除</a>` : ""}
   </div>
   ${from ? `<div class="lib-from">${ic("sparkles")}<span>出自任务</span><a href="#" class="link" data-open="${esc(from.id)}"${fromTurn == null ? "" : ` data-turn="${fromTurn}"`} title="${fromTurn == null ? "回到产生这份文件的那次对话" : "回到产生这份文件的那次对话，并停在写出它的那一段"}">${esc(from.title)}</a><em>${esc(libWhen(from.at))}</em>${fromTurn == null ? "" : `<span class="lib-from-at">第 ${fromTurn + 1} 轮</span>`}</div>` : ""}`;
   prev.innerHTML = bar + '<div class="ph">加载中…</div>';

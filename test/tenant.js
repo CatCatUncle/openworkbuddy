@@ -18,6 +18,12 @@ const os = require("os");
 const path = require("path");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-tenant-"));
+// 两个口子得一起指过来，少一个就会写到仓库里去：
+//   OPENWORKBUDDY_DATA_DIR 只管 account / org / prefs 那一批模块（它们各自读这个变量）；
+//   tools.js 的资料库、灵感笔记走的是 paths.js 的 dataPath，它只认 OPENWORKBUDDY_HOME。
+// 以前资料库的桩子返的是固定 JSON，这条缝没显出来；现在真落盘了，少这一行就是
+// 把测试文件写进开发者自己的 data/library。
+process.env.OPENWORKBUDDY_HOME = TMP;
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
 fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
@@ -44,12 +50,30 @@ const ok = (cond, msg, extra) => {
 };
 const eq = (got, want, msg) => ok(got === want, msg, { got, want });
 
+// ---------- 资料库的根：直接把 server.js 里那一段拿过来跑 ----------
+/**
+ * 不拄一份。这一段正是「资料库怎么数据还是通用的吗」那条反馈的修法本体，
+ * 拄过来的副本只会在 server.js 改了之后继续给绿灯。按函数名切源码，切不到就当场报错。
+ */
+const SERVER_SRC = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+const prefs = require(path.join(ROOT, "prefs"));
+const { dataPath } = require(path.join(ROOT, "paths"));
+const libraryRootOf = (() => {
+  const i0 = SERVER_SRC.indexOf("function libraryRootOf(user) {");
+  const i1 = SERVER_SRC.indexOf("\n}\n", i0);
+  if (i0 < 0 || i1 < 0) throw new Error("server.js 里找不到 libraryRootOf（改名了就该在这儿挂）");
+  const src = SERVER_SRC.slice(i0, i1 + 2);
+  return new Function("LIB_DIR", "ownsGlobalWorkspace", "dataPath", "prefs",
+    src + "\nreturn libraryRootOf;")(dataPath("data", "library"), admin.ownsGlobalWorkspace, dataPath, prefs);
+})();
+
 // ---------- 一个跟 server.js 中间件顺序一模一样的最小应用 ----------
 const app = express();
 app.use(express.json());
 app.use(account.createRouter({}));
 app.use(account.authGuard);
-app.use(admin.tenantScope({ withWorkspace: tools.withWorkspace, withPolicy: tools.withPolicy, getWorkspaceDir: tools.getWorkspaceDir }));
+app.use(admin.tenantScope({ withWorkspace: tools.withWorkspace, withPolicy: tools.withPolicy, getWorkspaceDir: tools.getWorkspaceDir,
+                            withLibraryBase: tools.withLibraryBase, libraryRootOf }));
 app.use(admin.platformGuard);
 app.use(admin.redactGuard);
 app.use(admin.createAdminRouter({ orgUsage: () => ({ files: tools.outputFiles().length }) }));
@@ -108,12 +132,34 @@ const isPlatformOwner = (req) => admin.isSoloDesktop() || admin.platformAdmin(re
 app.get("/api/settings-probe", (req, res) => res.json({ platform_owner: isPlatformOwner(req) }));
 app.get("/api/security/modes", (req, res) =>
   res.json({ modes: { ask: { label: "每次问我" } }, current: "ask", can_switch: isPlatformOwner(req) }));
-// 资料库：读放行、写照拦。到不了这几个 handler 就说明 platformGuard 在前面拦下了。
-app.get("/api/library", (_req, res) => res.json({ files: [{ name: "手册.md" }], notes: [{ id: "n1", text: "老板喜欢短句" }] }));
-app.post("/api/library/upload", (_req, res) => res.json({ ok: true }));
-app.post("/api/library/note", (_req, res) => res.json({ ok: true }));
-app.delete("/api/library/file/:name", (_req, res) => res.json({ ok: true }));
-app.delete("/api/library/note/:id", (_req, res) => res.json({ ok: true }));
+// 资料库：一人一份。这几个桩子故意不返固定 JSON，而是真落到 tools.libBase() 指的那个根上——
+// 「张三传的文件会不会出现在李四的库里」这件事，只有真写进盘里才算验过。
+const libDir = () => { const d = tools.libBase(); fs.mkdirSync(d, { recursive: true }); return d; };
+const notesOf = () => { try { return JSON.parse(fs.readFileSync(tools.notesFileOf(tools.libBase()), "utf8")); } catch { return []; } };
+app.get("/api/library", (_req, res) => res.json({
+  files: fs.readdirSync(libDir()).filter((f) => f[0] !== ".").map((name) => ({ name })),
+  notes: notesOf(),
+}));
+app.post("/api/library/upload", (req, res) => {
+  const name = path.basename(String((req.body || {}).name || "x.md"));
+  fs.writeFileSync(path.join(libDir(), name), Buffer.from(String((req.body || {}).data_b64 || ""), "base64"));
+  res.json({ ok: true });
+});
+app.post("/api/library/note", (req, res) => {
+  const notes = notesOf();
+  notes.push({ id: "n" + (notes.length + 1), text: String((req.body || {}).text || "") });
+  fs.mkdirSync(libDir(), { recursive: true });
+  fs.writeFileSync(tools.notesFileOf(tools.libBase()), JSON.stringify(notes));
+  res.json({ ok: true });
+});
+app.delete("/api/library/file/:name", (req, res) => {
+  try { fs.unlinkSync(path.join(libDir(), path.basename(req.params.name))); } catch {}
+  res.json({ ok: true });
+});
+app.delete("/api/library/note/:id", (req, res) => {
+  fs.writeFileSync(tools.notesFileOf(tools.libBase()), JSON.stringify(notesOf().filter((n) => n.id !== req.params.id)));
+  res.json({ ok: true });
+});
 app.get("/api/schedules", (_req, res) => res.json([]));
 app.get("/api/eval", (_req, res) => res.json([]));
 // 探针：这条请求里 tools.orgPolicy() 看到的是什么。用来验「设置真的进了执行层」，
@@ -730,46 +776,78 @@ async function login(username, password) {
   r = await call("POST", "/api/security/mode", { cookie: yuan, body: { mode: "full" } });
   eq(r.status, 403, "闸没松：can_switch 只是给界面看的，后端照样拦得住直接打过来的请求");
 
-  console.log("\n【21】资料库：拦读拦了个寂寞——同样的字节走 agent 拿得到，走界面反而 403");
-  // 原来 /api/library 整个前缀（含 GET）都在平台管理员的表里。可资料库是**一份全局目录**
-  // （tools.js 的 LIB_DIR / NOTES_FILE），每个人的 agent 都带着 library_list / library_read，
-  // 一句「翻一下资料库」就把文件清单、灵感笔记、乃至正文原样念出来。拦住 HTTP GET 什么都没保住，
-  // 只保住了一句瞎话：页面对普通成员写「还没有参考资料」。所以读放行、写照拦。
+  console.log("\n【21】资料库：一人一份——新注册的号打开它，看不见别人传进去的东西");
+  // 「资料库怎么数据还是通用的吗，跟账号也没关系吗」——以前真就是通用的一份（tools.js 的 LIB_DIR），
+  // 而且读还特地放行了（拦也白拦：每个人的 agent 都带着 library_list / library_read，
+  // 一句「翻一下资料库」照样把别人的合同念出来）。现在按 server.js 的 libraryRootOf 一人一个根，
+  // 读写都放开，谁也够不着谁那份。下面这些断言全落在真盘上，不是看状态码。
+  const libRootOf = (name) => libraryRootOf({ username: name, org: name === "laoban" ? "default" : org2, role: name === "laoban" ? "owner" : "member" });
+  const LEGACY_LIB = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "library");
+  eq(path.resolve(libRootOf("laoban")), path.resolve(LEGACY_LIB), "平台管理员还是老库 data/library，一个字节都没搬（升级完他的资料得原样还在）");
+  ok(path.resolve(libRootOf("xiaoyuan")) !== path.resolve(LEGACY_LIB), "别人拿到的是另一个根", libRootOf("xiaoyuan"));
+  ok(path.resolve(libRootOf("xiaoyuan")) !== path.resolve(libRootOf("fenboss")), "两个非管理员之间也各是各的（不是「管理员 vs 所有人」两份）");
+
+  r = await call("POST", "/api/library/upload", { cookie: boss, body: { name: "老板的合同.md", data_b64: "aHE=" } });
+  eq(r.status, 200, "平台管理员往资料库里放一份合同");
+  r = await call("POST", "/api/library/note", { cookie: boss, body: { text: "老板喜欢短句" } });
+  eq(r.status, 200, "再记一条灵感笔记");
+  const bossSnap = () => fs.readdirSync(LEGACY_LIB).filter((f) => f[0] !== ".").sort().join("|") + "::" +
+    fs.readFileSync(path.join(LEGACY_LIB, "老板的合同.md"), "utf8");
+  const before = bossSnap();
+
   r = await call("GET", "/api/library", { cookie: yuan });
   eq(r.status, 200, "普通成员读得到资料库（他的 agent 本来就读得到，界面没有理由更严）");
-  ok(Array.isArray(r.json.files) && r.json.files.length > 0, "而且真拿到了内容，不是一个空壳", JSON.stringify(r.json).slice(0, 80));
-  r = await call("POST", "/api/library/upload", { cookie: yuan, body: { name: "x.md", data_b64: "eA==" } });
-  eq(r.status, 403, "但往这份全局目录里放东西，还是平台管理员的事");
-  r = await call("POST", "/api/library/note", { cookie: yuan, body: { text: "灵感" } });
-  eq(r.status, 403, "灵感笔记也是全局共用的一份，成员写不了");
-  r = await call("DELETE", "/api/library/file/x.md", { cookie: yuan });
-  eq(r.status, 403, "删别人传的资料更不行");
-  r = await call("DELETE", "/api/library/note/n1", { cookie: yuan });
-  eq(r.status, 403, "删笔记同理");
+  eq(r.json.files.length, 0, "★但他看见的是一个空库，不是老板那份合同★（这条一红就是那句「怎么就有别人的东西了」）");
+  eq(r.json.notes.length, 0, "灵感笔记同理，一条都不该串过来");
+
+  r = await call("POST", "/api/library/upload", { cookie: yuan, body: { name: "小袁的素材.md", data_b64: "eXU=" } });
+  eq(r.status, 200, "他往自己那份里放东西，不再是 403——根都分开了还拦写，等于给他一个自己的空目录什么也放不进去");
+  r = await call("POST", "/api/library/note", { cookie: yuan, body: { text: "小袁自己的灵感" } });
+  eq(r.status, 200, "记笔记同理");
+  r = await call("GET", "/api/library", { cookie: yuan });
+  eq(r.json.files.map((f) => f.name).join("|"), "小袁的素材.md", "他自己传的立刻看得见");
+  eq(r.json.notes.map((n) => n.text).join("|"), "小袁自己的灵感", "笔记也只有他自己那条");
+
   r = await call("GET", "/api/library", { cookie: fen });
-  eq(r.status, 200, "分公司的管理员一样读得到（他不是平台管理员，但读本来就不该拦）");
-  r = await call("POST", "/api/library/upload", { cookie: fen, body: {} });
-  eq(r.status, 403, "分公司的管理员照样写不了这份全局目录");
+  eq(r.json.files.length, 0, "分公司管理员那份也是空的——他不是平台管理员，也不共用小袁那份");
+  r = await call("POST", "/api/library/upload", { cookie: fen, body: { name: "分公司的价目表.md", data_b64: "ZmVu" } });
+  eq(r.status, 200, "他也写得进自己那份");
+  r = await call("GET", "/api/library", { cookie: yuan });
+  eq(r.json.files.map((f) => f.name).join("|"), "小袁的素材.md", "★同一个组织的两个人也不共库：分公司管理员刚传的那份，小袁看不见★");
+
+  r = await call("DELETE", "/api/library/file/" + encodeURIComponent("老板的合同.md"), { cookie: yuan });
+  eq(r.status, 200, "他删「老板的合同.md」这个请求本身不报错");
+  eq(bossSnap(), before, "★但老板那份原封不动：这一刀落在他自己的根里，够不着别人★");
+  r = await call("DELETE", "/api/library/note/n1", { cookie: yuan });
+  eq(r.status, 200, "删笔记同理，不报错");
   r = await call("GET", "/api/library", { cookie: boss });
-  eq(r.status, 200, "反向对照：平台管理员读得到");
-  r = await call("POST", "/api/library/upload", { cookie: boss, body: {} });
-  eq(r.status, 200, "反向对照：平台管理员写得进");
+  eq(r.json.files.map((f) => f.name).join("|"), "老板的合同.md", "老板的文件还在");
+  eq(r.json.notes.map((n) => n.text).join("|"), "老板喜欢短句", "老板的笔记也还在（n1 是他那份里的编号，被小袁那一刀删掉就说明根没分开）");
+
   r = await call("GET", "/api/schedules", { cookie: yuan });
-  eq(r.status, 403, "负向对照：定时任务照旧拦着（花的是这台服务器的额度，没有「读无害」这一说）");
+  eq(r.status, 403, "负向对照：定时任务照旧拦着（花的是这台服务器的额度，没有「各写各的」这一说）");
   r = await call("GET", "/api/eval", { cookie: yuan });
   eq(r.status, 403, "负向对照：评测也照旧拦着（一跑就是真金白银调模型）");
-  // 别让这条判断退回去：读表里不许再出现 /api/library，写表里必须还在
+  r = await call("POST", "/api/skills", { cookie: yuan, body: {} });
+  eq(r.status, 403, "负向对照：技能照旧拦着（skills/ 真是整台机器一份，装进去全公司的 agent 都吃）");
+
+  // 别让这条判断退回去：两张表里都不许再出现 /api/library
   const ADM = fs.readFileSync(path.join(ROOT, "admin.js"), "utf8");
   const readTbl = (ADM.match(/const PLATFORM_READ = \[([\s\S]*?)\];/) || [])[1] || "";
   const writeTbl = (ADM.match(/const PLATFORM_WRITE = \[([\s\S]*?)\];/) || [])[1] || "";
   ok(readTbl.length > 0 && writeTbl.length > 0, "admin.js 里的两张平台表都读得出来（改名了就该在这儿挂）");
-  ok(!readTbl.includes("/api/library"), "读表里没有 /api/library（拦它拦了个寂寞）");
-  ok(writeTbl.includes("/api/library"), "写表里还有 /api/library（上传/删除/记笔记照拦）");
+  ok(!readTbl.includes("/api/library"), "读表里没有 /api/library");
+  ok(!writeTbl.includes("/api/library"), "写表里也没有了（各写各的根，再拦就是拦他自己那份）");
+  ok(writeTbl.includes("/api/skills"), "反向对照：技能还在写表里（那个才是真共用的）");
   ok(readTbl.includes("/api/schedules") && readTbl.includes("/api/eval"), "读表里还留着真该拦的那两个");
-  // 为什么拦读没意义：资料库压根不是按人分的
+  // 光改表不改根就是把库直接敞开了。这两条钉住「根确实按人分」这件事本身
+  ok(/app\.use\(admin\.tenantScope\(\{[\s\S]{0,400}?withLibraryBase/.test(SERVER_SRC),
+     "server.js 真把资料库根接进了 tenantScope（不接就是所有人共用一个根，而写闸刚被拿掉）");
   const TL = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
-  ok(/LIB_DIR = dataPath\("data", "library"\)/.test(TL), "资料库确实是一份全局目录，不按用户分（这就是拦读没意义的原因）");
-  ok(/name: "library_read"/.test(TL) && /name: "library_list"/.test(TL), "而每个人的 agent 都带着 library_list / library_read 这两个工具");
+  ok(/function libBase\(\)/.test(TL) && /libBaseStore\.getStore\(\) \|\| LIB_DIR/.test(TL),
+     "tools.js 里的库根走 ALS，没 run 过才退回 LIB_DIR（命令行、定时任务那一支行为不变）");
+  ok(/name: "library_read"/.test(TL) && /name: "library_list"/.test(TL),
+     "agent 手里那两个工具还在——它们读的也是 libBase()，跟界面同一个根");
 
   console.log("\n【22】大小写绕闸：Express 路由默认不认大小写，两道门禁却按原样 req.path 查表");
   // 这一段是照着真复现写的：改掉一个字母，/API/settings 命中处理器、不命中门禁表。

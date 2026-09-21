@@ -208,5 +208,66 @@ console.log("\n【8】tools.js 与 agent.js 的接线还在");
   ok(/mediaHealth\.reset\(\)/.test(s), "设置页保存之后要清空熔断表，不然用户改好了还得干等半小时");
 }
 
+console.log("\n【9】用户又开口了＝这条渠道重新放一次行");
+{
+  // 用户的原话：「我之前生图渠道断了，我去修复好了，我说了修复好了 AI 也不去自己重试一下，
+  // 还是给我说用不了」。以前自愈只有三条路：配置指纹变了、在设置页点了保存、冷却到期。
+  // 可用户是**去别处**修好的——上游充了值、续了费、把网弄通了——这三条一条都不走，
+  // 于是熔断闸一直关着。更糟的是闸门那句「这一轮别再调这个工具了」留在了对话历史里，
+  // 模型下一轮翻到它就照着念，一个请求都不发就回「这条渠道用不了」。
+  // 第四条路：人再开口，就重新放行一次，让它用结果说话。
+  mh.reset();
+  const CFG2 = { api_key: "k", base_url: "https://u/v1", model: "m" };
+  mh.record("image", CFG2, err("图像接口错误 402: {\"error\":\"insufficient credits\"}"));
+  ok(!!mh.gate("image", CFG2), "垫场：撞过 402 之后闸是关着的");
+
+  const 放开 = mh.reopen();
+  ok(Array.isArray(放开) && 放开.length === 1, "reopen() 要如实回报这一趟放开了哪几条（好让下一轮提示词点名说清）");
+  ok(放开[0].cap === "image" && 放开[0].http === 402 && 放开[0].hard === true,
+    "回报里得带上是哪一路、撞的什么错——提示词要照着这个写，泛泛一句「有渠道恢复了」模型听不懂");
+  ok(!mh.gate("image", CFG2), "★用户开了口，闸没重新放开★ 他说「我修好了」，AI 还是一个请求都不发");
+  ok(mh.reopen().length === 0, "反向对照：没有关着的闸时 reopen() 交白卷，别让提示词天天多出一段废话");
+
+  // 反向对照：reopen 不是「把撞过的事忘了」——再撞一次照样立刻关上，不能变成无限重试
+  mh.record("image", CFG2, err("图像接口错误 402: {\"error\":\"insufficient credits\"}"));
+  ok(!!mh.gate("image", CFG2), "放开之后再撞一次，闸要立刻关回去（不然就成了每轮都去烧一次钱）");
+  mh.reset();
+}
+
+console.log("\n【10】闸门那句话不许越过这一轮");
+{
+  // 同一条闸门文案会原样留在 transcript 里。它要是写成「这条渠道不可用」，
+  // 模型下一轮、下下一轮翻到都照念——用户修好了也没用。所以那句话必须自带保质期。
+  mh.reset();
+  const CFG3 = { api_key: "k", base_url: "https://u/v1", model: "m" };
+  mh.record("image", CFG3, err("图像接口错误 402: {\"error\":\"insufficient credits\"}"));
+  const 话 = String((mh.gate("image", CFG3) || {}).content || "");
+  ok(/这一轮|本轮/.test(话), "闸门那句话没说清「只管这一轮」，模型会把它当成永久结论");
+  ok(/重新放开|下次开口|再开口/.test(话), "闸门那句话没告诉模型「用户下次开口时会重新放行」");
+  ok(/如实说/.test(话), "闸门那句话没要求如实交代这一步没做成（不许把没拿到的当拿到过写进结论）");
+
+  // agent.js 那一半：重新放开之后，系统提示词里得真有一段话把历史里那几句作废掉
+  const a2 = fs.readFileSync(path.join(__dirname, "..", "agent.js"), "utf8");
+  ok(/function reopenedMediaBlock\(/.test(a2), "agent.js 少了「刚放开的渠道」那段提示词");
+  const i0 = a2.indexOf("function reopenedMediaBlock(");
+  const i1 = a2.indexOf("\n}\n", i0);
+  ok(i0 > 0 && i1 > i0, "抠不出 reopenedMediaBlock 的函数体（挪了位置就把这条锚点一起改掉）");
+  const blk = new Function("CAP_CN", a2.slice(i0, i1 + 2) + "\nreturn reopenedMediaBlock;")({ image: "生图" });
+  const 提示 = String(blk([{ cap: "image", model: "sd-x", http: 402 }]));
+  ok(/生图/.test(提示) && /sd-x/.test(提示), "提示词没点名是哪一路、哪个模型恢复了");
+  ok(/过期|不许|别/.test(提示), "提示词没作废掉历史里那几句「已暂停」，模型照样翻旧账");
+  ok(String(blk([])) === "", "反向对照：没有任何渠道被放开时一个字都不加");
+  ok(/mediaReopened/.test(a2), "runTask 没接住 mediaReopened 这个入参，提示词永远拼不上");
+
+  // server.js 那一半：只在**人开口**的那一趟放行。定时任务不许放——
+  // 一条死了的渠道会被 cron 每分钟重新撞一遍
+  const s2 = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  ok(/mediaHealth\.reopen\(\)/.test(s2), "server.js 没在人开口的那一趟调 reopen()");
+  ok(s2.split("\n").some((ln) => /source === "im"/.test(ln) && /reopen\(\)/.test(ln)),
+    "IM 那条路（飞书/微信里说话）也得算「人开口」——在飞书里说「我充值好了」同样该让它再试一次");
+  ok(!/source === "schedule"[\s\S]{0,200}reopen\(\)/.test(s2),
+    "★定时任务也去放闸了★ 一条欠费的渠道会被 cron 每分钟重新撞一次，账单按分钟涨");
+}
+
 console.log(`\n${fail ? "❌" : "✅"} media-health：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

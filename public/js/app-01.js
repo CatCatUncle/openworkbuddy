@@ -328,7 +328,10 @@ function prettyUrl(u) {
   }
   return t.replace(/[<>"']/g, (c) => ESC_MAP[c]);
 }
-const RE_AUTOLINK = /<code>[\s\S]*?<\/code>|<a\s[^>]*>[\s\S]*?<\/a>|(^|[^"'`(\[=\w/])(https?:\/\/[^\s<>"'`)\]、，。；！？]+)/g;
+const RE_AUTOLINK = /<code>[\s\S]*?<\/code>|<a\s[^>]*>[\s\S]*?<\/a>|<[a-zA-Z!/][^>]*>|(?<!["'`(\[=\w/])(https?:\/\/[^\s<>"'`\]、，。；！？：·…（）〈〉《》「」『』【】〔〕〖〗“”‘’—～]+)/g;
+// 网址末尾这些字符一律不算网址的一部分。正文是 esc 过的，所以 > " ' 这会儿长的是实体的样子，
+// 得整条实体一起剃——只剃掉那个分号会把查询串里的 &amp; 剃坏。右圆括号不在这儿，它另有算法（见下）
+const RE_URL_TAIL = /(?:&gt;|&lt;|&quot;|&#39;|[.,:!?*}\]）〉》」』】＞”’…])+$/;
 /**
  * 正文里裸写的网址变成能点的链接。
  *
@@ -341,16 +344,22 @@ const RE_AUTOLINK = /<code>[\s\S]*?<\/code>|<a\s[^>]*>[\s\S]*?<\/a>|(^|[^"'`(\[=
  * markdown 链接的 ( 和属性里的 =" 靠左边界一个字符挡掉。
  */
 function autoLinkUrls(s) {
-  return String(s).replace(RE_AUTOLINK, (all, lead, url) => {
-    // 前两个分支是「别碰」：行内代码里的网址是给人抄的，不是给人点的；
-    // 已经成形的 <a> 再套一层就成了嵌套链接，点下去谁也说不准跳哪
+  return String(s).replace(RE_AUTOLINK, (all, url) => {
+    // 前三个分支是「别碰」：行内代码里的网址是给人抄的，不是给人点的；已经成形的 <a> 再套一层
+    // 就成了嵌套链接，点下去谁也说不准跳哪；任何一个标签整个跳过，免得把 <img alt="见 https://…">
+    // 这种**属性里**的网址也变成链接——那会当场把属性撑破
     if (url === undefined) return all;
-    // 句末标点不算网址的一部分。分号故意不算在内：正文是 esc 过的，
-    // 查询串里的 & 这会儿长的是 &amp; 的样子，剃掉分号就把网址剃坏了
-    const punct = url.match(/[.,:!?)\]}]+$/);
-    const u = punct ? url.slice(0, -punct[0].length) : url;
+    let u = url, tail = "";
+    for (;;) {
+      const m = u.match(RE_URL_TAIL);
+      if (m) { tail = m[0] + tail; u = u.slice(0, -m[0].length); continue; }
+      // 末尾的右圆括号：成对的留着，落单的剃掉。维基、Confluence、飞书那类地址里
+      // .../Foo_(bar) 是正经路径的一部分，少剃一个字符就跳去另一个页面
+      if (u.endsWith(")") && (u.split("(").length) <= (u.split(")").length - 1)) { tail = ")" + tail; u = u.slice(0, -1); continue; }
+      break;
+    }
     if (!/^https?:\/\/[^/\s]/.test(u)) return all;
-    return lead + '<a href="' + u + '" target="_blank" rel="noopener" title="' + u + '">' + prettyUrl(u) + "</a>" + (punct ? punct[0] : "");
+    return '<a href="' + u + '" target="_blank" rel="noopener" title="' + u + '">' + prettyUrl(u) + "</a>" + tail;
   });
 }
 /**
@@ -632,7 +641,6 @@ function renderMd(src, base, live, root, opts) {
   // 未闭合围栏（流式输出中 / 模型忘了闭合）：从 ``` 到文末也按代码块渲染
   s = s.replace(/(^|\n)```(\w*)[^\S\n]*\n?([\s\S]*)$/, (_, pre, lang, code) => pre + pushCode(lang, code));
   s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  s = autoLinkUrls(s);
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => mdImg(alt, url, base, root));
@@ -642,6 +650,11 @@ function renderMd(src, base, live, root, opts) {
   if (!opts || opts.fileLinks !== false) {
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (all, label, url) => mdFileLink(label, url, base, root) || all);
   }
+  // 裸网址放**最后**转。以前它排在加粗前面，于是 `**https://…/abc**` 里收尾的两个星号
+  // 被当成网址的一部分吞进了 href，紧接着加粗那一遍又在 href 属性中间插进一个 </strong>——
+  // 屏幕上链接后面凭空多出「<strong>」几个字，点下去跳的还是个带标签的烂地址。
+  // 换个顺序这条路就断了：这会儿 **…** 早成了 <strong>…</strong>，网址两边干干净净
+  s = autoLinkUrls(s);
   const lines = s.split("\n");
   const out = [];
   let listType = null, inQuote = false, para = [], tableRows = null;

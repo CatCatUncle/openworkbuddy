@@ -1777,6 +1777,8 @@ const ESC_STUBS = [
   "var SvgFig = { extractSvgFigures: (s) => ({ text: s, figs: [] }) };",
   "function fpath(n) { return String(n == null ? '' : n).split('/').map(encodeURIComponent).join('/'); }",
   srcBlock("function joinRel(base, rel) {"), // 真源：mdFileLink 靠它按文档目录解相对路径，假身会把这件事测没
+  srcBlock("function withRoot(url, root) {"),
+  srcBlock("function mdImg(alt, url, base, root) {"), // 真源：裸链转换现在排在它后面，得验 alt 属性里的网址没被塞进 <a>
   // 正文里的文件链接点不点得动，真源在 app-02.js 的事件委托那段——renderMd 是拼字符串出来的，
   // 挂不上 onclick，这段要是哪天被改回 onclick，历史回放里的链接会全哑掉而没人发现
   (() => {
@@ -1875,6 +1877,56 @@ const ESC_CHECKS = `
   ok("解完码也没执行任何注入", !window.__pwned);
   const already = "<a href=" + String.fromCharCode(34) + "https://a.com" + String.fromCharCode(34) + ">https://a.com</a>";
   ok("已经成形的 a 标签不会被再套一层", autoLinkUrls(already) === already, autoLinkUrls(already));
+
+  // ⑥.5 加粗 / 斜体包着的裸网址：href 必须是干净的网址，一个标点一个标签都不许粘进去。
+  //
+  // 用户撞见的原话：「怎么点击链接后面还有 <strong> 的啊，这链接跳转链接都搞错了啊」。
+  // 当时模型写的是两个星号包着一条 feishu.cn 的地址，裸链转换排在加粗前面，于是收尾那两个星号
+  // 被当成网址的一部分吞进了 href，紧接着加粗那一遍又在 href 属性正中间插进一个 </strong>：
+  //   <strong><a href="https://feishu.cn/docx/xxxx</strong>" title="...">
+  // 屏幕上链接后面凭空多出「<strong>」几个字，点下去跳的是个带标签的烂地址。
+  // 现在裸链转换排在最后。下面这一组按 **href 的值** 判，不按屏幕上的字判——
+  // 字看着对而地址是错的，正是这个 bug 当时的样子。
+  const HREF = (m) => { md.innerHTML = renderMd(m); const a = md.querySelector("a[href]"); return a ? a.getAttribute("href") : "(没生成链接)"; };
+  const 包一层 = [
+    ["加粗", "**", "**"], ["斜体", "*", "*"],
+    ["中文圆括号", "（", "）"], ["中文书名号", "《", "》"],
+    ["中文引号", "\\u201c", "\\u201d"], ["方头括号", "【", "】"], ["尖括号", "<", ">"],
+  ];
+  const U = "https://feishu.cn/docx/A2q8dIIuWoZbllxe1f8cQK5hnYc";
+  for (const [名, 左, 右] of 包一层)
+    ok("被「" + 名 + "」包着的裸网址，href 还是干干净净那一条", HREF("文档已建好：" + 左 + U + 右) === U, 名 + " → " + HREF("文档已建好：" + 左 + U + 右));
+  ok("网址后面紧跟一段加粗，两边各归各的", HREF("见 " + U + " **重要**") === U, HREF("见 " + U + " **重要**"));
+  ok("只有一个收尾星号也不许粘进 href", HREF(U + "*") === U, HREF(U + "*"));
+  ok("整条正文里一个 <strong> / <em> 字面都没漏到屏幕上",
+     (() => { md.innerHTML = renderMd("文档已建好：**" + U + "**"); return md.textContent.indexOf("<strong>") < 0 && md.textContent.indexOf("<em>") < 0; })(), md.textContent);
+  ok("加粗确实还是加粗（别为了修这个把粗体弄没了）",
+     (() => { md.innerHTML = renderMd("文档已建好：**" + U + "**"); return !!md.querySelector("strong a[href]"); })(), md.innerHTML);
+  ok("markdown 链接被加粗包着时也照旧",
+     HREF("**[文档](https://a.com/x)**") === "https://a.com/x", HREF("**[文档](https://a.com/x)**"));
+
+  // 成对的右括号是地址的一部分（维基 / Confluence 那种），落单的才剃
+  ok("地址里成对的圆括号留住（少剃一个字符就跳去另一个页面）",
+     HREF("见 https://zh.wikipedia.org/wiki/Foo_(bar) 完") === "https://zh.wikipedia.org/wiki/Foo_(bar)",
+     HREF("见 https://zh.wikipedia.org/wiki/Foo_(bar) 完"));
+  ok("落单的右括号剃掉", HREF("见 https://a.com/x) 完") === "https://a.com/x", HREF("见 https://a.com/x) 完"));
+  ok("路径里的中文字要留住（/wiki/中文 是正经地址）",
+     HREF("见 https://zh.wikipedia.org/wiki/中文 完") === "https://zh.wikipedia.org/wiki/中文", HREF("见 https://zh.wikipedia.org/wiki/中文 完"));
+  ok("查询串里的 & 没被吃掉也没被二次转义",
+     HREF("详见 https://ex.com/a?x=1&y=2 就这些") === "https://ex.com/a?x=1&y=2", HREF("详见 https://ex.com/a?x=1&y=2 就这些"));
+
+  // 换了顺序之后最容易砸的一处：属性值里的网址。裸链转换现在跑在 <img> 生成之后，
+  // 要是它不认标签，alt="见 https://…" 里那一条会被塞进一个 <a>，当场把属性撑破
+  md.innerHTML = renderMd("![见 https://a.com/x](pic.png)");
+  ok("图片 alt 属性里的网址不变链接，属性也没被撑破",
+     md.querySelectorAll("a").length === 0 && (md.querySelector("img") || {}).alt === "见 https://a.com/x",
+     md.innerHTML);
+  md.innerHTML = renderMd(BT + BT + BT + "\\nsee https://a.com/x\\n" + BT + BT + BT);
+  ok("代码块里的网址不变链接", md.querySelectorAll("a[href]").length === 0 && /see https:\\/\\/a\\.com\\/x/.test(md.textContent), md.innerHTML);
+
+  // 表格 / 标题 / 列表里也走同一条路，别只在段落里对
+  for (const [名, 原文] of [["表格单元格", "| 名 | 址 |\\n| --- | --- |\\n| 文档 | **" + U + "** |"], ["标题", "## **" + U + "**"], ["列表项", "- **" + U + "**"]])
+    ok(名 + "里的加粗裸网址，href 同样干净", HREF(原文) === U, 名 + " → " + HREF(原文));
 
   // ⑦ 指向工作区文件的 markdown 链接。以前这一路只认 https:——模型收尾写
   //    「详见 [调研报告](报告.md)」，屏幕上就原样印出一串方括号圆括号，点哪儿都没反应。
@@ -2352,7 +2404,11 @@ const DEAD_CHECKS = `
   window.askConfirm = async () => true;
 
   const FORBID = { error: "这块是服务器级设置，归平台管理员管", platform_only: true };
-  let owner = false, denyRead = false, denyOut = false, uploadResp = { ok: true, name: "a.md" };
+  // 资料库一人一份之后，写它不再看职位——但服务端依然会因別的原因拒（盘满、重名、名字非法）。
+  // writeOk 管的就是那一拒：页面得把服务端的原话抬出来，不能让东西凭空消失。
+  const LIB_ERR = { error: "资料库读不出来（服务器没回内容）" };
+  const LIB_DENY = { error: "存不下：磁盘写满了" };
+  let writeOk = true, denyRead = false, denyOut = false, uploadResp = { ok: true, name: "a.md" };
   // 预览一份产出时服务端回什么：404 = 东西没了，500 = 读不出来，200 = 正常
   let viewResp = { code: 200, body: "# 九月周报" };
   // docx/xlsx/pptx/zip 走的是另一条路：服务端先把压缩包拆成结构化数据，前端只管画。
@@ -2373,7 +2429,7 @@ const DEAD_CHECKS = `
     // 资料库带子目录之后接口带 ?dir=，回的也是「这一层」：面包屑 + 子文件夹 + 文件（文件带 path，
     // 因为下钻之后名字得是 "客户A/合同.md" 才取得到内容，显示时才截成 name）
     if (url === "/api/library" || url.startsWith("/api/library?")) {
-      if (denyRead) return j(FORBID, 403);
+      if (denyRead) return j(LIB_ERR, 500);
       const dir = decodeURIComponent((url.split("dir=")[1] || "").split("&")[0] || "");
       if (dir === "客户A") return j({
         dir: "客户A", crumbs: [{ name: "客户A", path: "客户A" }], dirs: [],
@@ -2447,12 +2503,12 @@ const DEAD_CHECKS = `
       return Promise.resolve({ ok: viewResp.code < 400, status: viewResp.code,
         json: () => Promise.resolve({}), text: () => Promise.resolve(viewResp.body) });
     }
-    if (url === "/api/library/upload") return owner ? j(uploadResp, uploadResp.ok ? 200 : 403) : j(FORBID, 403);
-    if (url.startsWith("/api/library/folder")) return owner ? j({ ok: true }) : j(FORBID, 403);
-    if (url.startsWith("/api/library/note")) return owner ? j({ ok: true }) : j(FORBID, 403);
+    if (url === "/api/library/upload") return writeOk ? j(uploadResp, uploadResp.ok ? 200 : 403) : j(LIB_DENY, 403);
+    if (url.startsWith("/api/library/folder")) return writeOk ? j({ ok: true }) : j(LIB_DENY, 403);
+    if (url.startsWith("/api/library/note")) return writeOk ? j({ ok: true }) : j(LIB_DENY, 403);
     if (url.startsWith("/api/library/file/")) {
       fileHits.push({ url: url.split("?")[0], method });
-      return owner ? j({ ok: true }) : j(FORBID, 403);
+      return writeOk ? j({ ok: true }) : j(LIB_DENY, 403);
     }
     return j({ ok: true });
   };
@@ -2493,49 +2549,55 @@ const DEAD_CHECKS = `
   ok("侧栏：成员看不到「自动化」", !shown("autom"));
   ok("侧栏：成员看不到「评测」（真金白银调模型）", !shown("eval"));
   ok("侧栏：成员看不到「执行追踪」（一本账记着整台服务器上每个人的提示词原文）", !shown("trace"));
-  ok("侧栏：「资料库」照留（他的 agent 本来就读得到，只是写不了）", shown("lib"));
+  ok("侧栏：「资料库」照留（一人一份，进去看见的是他自己那份）", shown("lib"));
   ok("侧栏：「专家」「参考模板库」一个没动", shown("hub") && shown("prompts"));
   window.settingsCache = { platform_owner: true };
   syncNavByRole();
   ok("反向对照：平台管理员六个入口一个不少", shown("autom") && shown("eval") && shown("trace") && shown("lib") && shown("hub") && shown("prompts"));
 
-  // ④ 资料库：成员只读
+  // ④ 资料库：一人一份，所以这一页对谁都是「我的文档」
+  // 以前普通成员看到的是「共享资料 · 只读」，里面还摆着别人传的合同——
+  // 那正是「资料库怎么数据还是通用的吗，跟账号也没关系吗」那句话的形状。
+  // 后端的根已经按人分开（server.js 的 libraryRootOf），前端再按职位画两副面孔就是在骗人：
+  // 他看见的本来就是自己那份，写也写得进去。
   window.settingsCache = { platform_owner: false };
   window.libState = { q: "", pick: null };
   await renderLibPage();
-  ok("资料库：成员照样看得到共享资料（读不该拦）", html().includes("手册.md"), html().slice(0, 200));
-  ok("资料库：不画「＋ 上传」", !page.querySelector("#lb-up"));
-  ok("资料库：写着「只读」，不装成他自己的文档", html().includes("只读") && html().includes("共享资料"));
+  ok("资料库：普通成员看得到自己那份", html().includes("手册.md"), html().slice(0, 200));
+  ok("★资料库：「＋ 上传」对普通成员照画★", !!page.querySelector("#lb-up"));
+  ok("资料库：「新建文件夹」也在", !!page.querySelector("#lb-mkdir"));
+  ok("★资料库：抬头写「我的文档」，不再是「共享资料 · 只读」★",
+     html().includes("我的文档") && !html().includes("共享资料") && !html().includes("只读"), html().slice(0, 200));
+  ok("资料库：文件夹后面的删除也在（删的是他自己那一份）", !!page.querySelector("[data-del-dir]"));
+  ok("反向对照：空库的文案不再说「归平台管理员放」",
+     !html().includes("这一块归平台管理员放"), html().slice(0, 200));
 
-  // 真读不成的时候（老服务器、或者以后又把读拦回去），别说「还没有参考资料」——那是句瞎话，
+  // 真读不成的时候（服务器出错、盘挂了），别说「还没有参考资料」——那是句瞎话，
   // 用户会当成自己没传过东西，而真相是这一趟根本没读成
   denyRead = true;
   window.libState = { q: "", pick: null };
   await renderLibPage();
-  ok("资料库：读不成就说读不成，不装成「还没有参考资料」",
-     html().includes("归平台管理员管") && !html().includes("还没有参考资料"), html().slice(0, 200));
+  ok("资料库：读不成就把服务端的原话抬出来，不装成「还没有参考资料」",
+     html().includes(LIB_ERR.error) && !html().includes("还没有参考资料"), html().slice(0, 200));
   denyRead = false;
   await renderLibPage(); // 错误页把 #lb-prev 也一起收了，下面还要用，先画回来
 
+  // ⑤ 灵感笔记：同理，输入框、「保存」、每条的「删除」对谁都在
+  window.settingsCache = { platform_owner: false };
   window.libState.pick = { src: "notes", name: "" };
   await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
-  ok("灵感笔记：成员不画输入框和「保存」", !page.querySelector("#lb-note") && !page.querySelector("#lb-note-save"));
-  ok("灵感笔记：成员不画每条后面的「删除」", !page.querySelector("a[data-nid]"));
+  ok("★灵感笔记：普通成员也有输入框和「保存」★",
+     !!page.querySelector("#lb-note") && !!page.querySelector("#lb-note-save"));
+  ok("灵感笔记：每条后面的「删除」也在", !!page.querySelector("a[data-nid]"));
   ok("灵感笔记：笔记内容照样看得到", html().includes("老板喜欢短句"));
-  window.modalCalls = [];
-  page.querySelector("#lb-to-mem").onclick({ preventDefault() {} });
-  ok("灵感笔记：给了一条他真能走的路（去记忆页）", window.modalCalls.join("|") === "settings:memory", window.modalCalls.join("|"));
-
-  // ⑤ 反向对照：平台管理员这一页，上传/记笔记/删除一样不少
+  ok("灵感笔记：不再把人支开去记忆页（这儿本来就是他自己的地方）", !page.querySelector("#lb-to-mem"));
   window.settingsCache = { platform_owner: true };
-  owner = true;
+  await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
+  ok("反向对照：平台管理员那一页一样不少",
+     !!page.querySelector("#lb-note") && !!page.querySelector("#lb-note-save") && !!page.querySelector("a[data-nid]"));
+  window.settingsCache = { platform_owner: false };
   window.libState = { q: "", pick: null };
   await renderLibPage();
-  ok("反向对照：「＋ 上传」在", !!page.querySelector("#lb-up"));
-  ok("反向对照：写的是「我的文档」不是「只读」", html().includes("我的文档") && !html().includes("共享资料"));
-  window.libState.pick = { src: "notes", name: "" };
-  await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
-  ok("反向对照：输入框、「保存」、每条的「删除」都在", !!page.querySelector("#lb-note") && !!page.querySelector("#lb-note-save") && !!page.querySelector("a[data-nid]"));
 
   // ⑤b 子目录：资料库以前是一层平铺，
   // 现在带 ?dir= 逐层进，进去之后文件名得是 "客户A/合同.md"（带前缀才取得到内容），显示的才是 "合同.md"
@@ -2954,7 +3016,7 @@ const DEAD_CHECKS = `
   // 「怎么摆」和「按什么分堆」各是各的控件，合成一个下拉就会出现「按类型 + 图标」选不出来的死角。
   try { localStorage.removeItem("owb_lib_mode"); localStorage.removeItem("owb_lib_group"); } catch {}
   window.settingsCache = { platform_owner: true };
-  owner = true;
+  writeOk = true;
   window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all", mode: "list", group: "none" };
   await renderLibPage();
   const pg = () => page.querySelector(".lib-page");
@@ -3107,16 +3169,16 @@ const DEAD_CHECKS = `
 
   // ⑦ 记笔记 / 删资料：拒了就说，别让东西凭空消失
   window.settingsCache = { platform_owner: true };
-  owner = false; // 后端这一趟拒
+  writeOk = false; // 后端这一趟拒（盘满之类）
   window.libState.pick = { src: "notes", name: "" };
   await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
   page.querySelector("#lb-note").value = "新灵感";
   window.toasts = [];
   await page.querySelector("#lb-note-save").onclick();
-  ok("记笔记被拒：说出来，不再是「输入框一清，笔记没了」", window.toasts.join("|").includes("归平台管理员管"), window.toasts.join("|"));
+  ok("记笔记被拒：说出来，不再是「输入框一清，笔记没了」", window.toasts.join("|").includes(LIB_DENY.error), window.toasts.join("|"));
   window.toasts = [];
   await page.querySelector("a[data-nid]").onclick({ preventDefault() {} });
-  ok("删笔记被拒：一样说出来", window.toasts.join("|").includes("归平台管理员管"), window.toasts.join("|"));
+  ok("删笔记被拒：一样说出来", window.toasts.join("|").includes(LIB_DENY.error), window.toasts.join("|"));
 
   return names;
 })()
@@ -5401,14 +5463,18 @@ const MENU_CHECKS = `
   const btn = (v) => menu.querySelector('.um-seg button[data-lang="' + v + '"]');
   I18N.setLang("zh");
   openUserMenu();
-  ok("打开：菜单显示，八行动作 = 个人资料/设置/企业后台/语言/外观/帮助/更新/退出", menu.classList.contains("show") && acts() === "profile,settings,admin,lang,appearance,help,update,logout");
+  ok("打开：菜单显示，九行动作 = 个人资料/修改密码/设置/企业后台/语言/外观/帮助/更新/退出", menu.classList.contains("show") && acts() === "profile,password,settings,admin,lang,appearance,help,update,logout", acts());
+  // 「改自己的密码」这条以前只藏在「账号 · 用量」那一屏里、跟退出登录挤在一行的 float:right 小按钮上。
+  // 接口一直都在、那一屏也一直都在，可用户翻遍了没找着，原话是「我要能修改自己的账户密码啊」——
+  // 开关存在但找不到就等于没有。所以这条钉在头像菜单里：点头像一眼就看得见
+  ok("头像菜单里有「修改密码」这一行，且是所有人都看得见（不是管理员专享）", /修改密码/.test(menu.textContent) && !!menu.querySelector('[data-act="password"]'), menu.textContent.slice(0, 120));
   const iconOf = (sel) => { const u = menu.querySelector(sel + " use"); return u ? u.getAttribute("href") : "(这行没画图标)"; };
   ok("企业后台这行只剩名字，不再把后台目录（成员 · 用量 · 安全）抄一遍", /企业管理后台/.test(menu.textContent) && !/成员 · 用量 · 安全/.test(menu.textContent) && !menu.querySelector('[data-act="admin"] .hint'));
-  // 八行动作每行都得有图标，而且是各自那一个——以前这里是 🏢🪪⚙️ 一串表情，翻译一过就被当正文
-  ok("八行动作用的是图标不是表情：每行一个 svg，图标各不相同", (() => {
+  // 九行动作每行都得有图标，而且是各自那一个——以前这里是 🏢🪪⚙️ 一串表情，翻译一过就被当正文
+  ok("九行动作用的是图标不是表情：每行一个 svg，图标各不相同", (() => {
     const rows = [...menu.querySelectorAll(".um-i")];
     const hrefs = rows.map((r) => { const u = r.querySelector("use"); return u ? u.getAttribute("href") : null; });
-    return rows.length === 8 && hrefs.every(Boolean) && new Set(hrefs).size === 8;
+    return rows.length === 9 && hrefs.every(Boolean) && new Set(hrefs).size === 9;
   })(), [...menu.querySelectorAll(".um-i")].map((r) => (r.querySelector("use") || {}).getAttribute && r.querySelector("use").getAttribute("href")).join(","));
   ok("负对照：这把尺子认得出图标不一样（企业后台=building-2，个人资料=id-card）", iconOf('[data-act="admin"]') === "#i-building-2" && iconOf('[data-act="profile"]') === "#i-id-card");
   ok("菜单里一个表情都不剩", !/[\u{1F300}-\u{1FAFF}\u{FE0F}\u{2699}\u{1F6E1}]/u.test(menu.textContent), menu.textContent.slice(0, 80));
@@ -5424,7 +5490,7 @@ const MENU_CHECKS = `
   ok("点 En：菜单文案原地变英文（Profile / Settings / Language / Appearance），En 选中", /Profile/.test(menu.textContent) && /Settings/.test(menu.textContent) && /Language/.test(menu.textContent) && /Appearance/.test(menu.textContent) && btn("en").classList.contains("on") && !btn("zh").classList.contains("on"));
   // 词条当年是按「🪪 个人资料」收的，图标换成 svg 之后文本节点只剩「个人资料」。
   // 这条钉的是那条自动补出来的无表情别名真的生效了——不生效就会中英混着显示。
-  ok("英文下图标一个没少、一个没混进文字里", menu.querySelectorAll(".um-i use").length === 8 && !/🪪|⚙️|🌐|🎨/.test(menu.textContent), menu.textContent.slice(0, 90));
+  ok("英文下图标一个没少、一个没混进文字里", menu.querySelectorAll(".um-i use").length === 9 && !/🪪|⚙️|🌐|🎨/.test(menu.textContent), menu.textContent.slice(0, 90));
   ok("点 En：菜单外的界面词也翻了（左栏「当前」→ Current）、<html lang=en>", $("#hia").textContent === "Current" && document.documentElement.lang === "en");
   ok("English 下「中 / En」本身原样", btn("zh").textContent === "中" && btn("en").textContent === "En");
   btn("en").click(); await tick();
@@ -5445,7 +5511,9 @@ const MENU_CHECKS = `
   currentUser = { username: "xiaoyuan", role: "member", role_label: "成员", can_admin: false, is_admin: false, avatar: "", credits: 0 };
   openUserMenu();
   ok("普通成员：菜单里根本没有企业后台这一行", !menu.querySelector('[data-act="admin"]') && !/企业管理后台/.test(menu.textContent));
-  ok("反向对照：普通成员的其它七行一个不少", acts() === "profile,settings,lang,appearance,help,update,logout");
+  ok("反向对照：普通成员的其它八行一个不少", acts() === "profile,password,settings,lang,appearance,help,update,logout", acts());
+  // 「修改密码」不是管理员专享：每个账号都得能改自己的密码（后端 POST /api/auth/password 本来就对所有人开着）
+  ok("普通成员一样看得见「修改密码」", !!menu.querySelector('[data-act="password"]'), acts());
   currentUser = { username: "kuaiji", role: "auditor", role_label: "审计员", can_admin: true, is_admin: false, avatar: "", credits: 0 };
   openUserMenu();
   ok("审计员：看得见入口，但标着「只读」（他进去只能查账改不动）", !!menu.querySelector('[data-act="admin"]') && /只读/.test(menu.querySelector('[data-act="admin"]').textContent));
@@ -9916,7 +9984,7 @@ app.whenReady().then(async () => {
       const namesDEAD = await winDEAD.webContents.executeJavaScript(IC_BOOT + ESC_SRC + "\n" + DEAD_SRC + "\n" + DEAD_CHECKS, true)
         .catch((e) => { throw new Error("[自动化/资料库 403] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesDEAD) console.log("  ✓ " + n);
-      console.log(`✅ 前端：403 不该变成一片白也不该变成一句假成功（自动化整页有话说·侧栏藏掉必挂的入口·资料库只读但看得见·上传/记笔记失败照实说）${namesDEAD.length} 项通过`);
+      console.log(`✅ 前端：403 不该变成一片白也不该变成一句假成功（自动化整页有话说·侧栏藏掉必挂的入口·资料库一人一份、写也写得进·上传/记笔记失败照实说）${namesDEAD.length} 项通过`);
     } finally { if (!winDEAD.isDestroyed()) winDEAD.destroy(); }
 
     const winHUB = mkWin({ show: false, width: 1100, height: 900, webPreferences: { offscreen: true } });

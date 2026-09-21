@@ -315,6 +315,10 @@ function normalizeAvatar(v) {
 function hasUsers(st) {
   return (st || loadUsers()).users.length > 0;
 }
+/** 这台机器上一共几个账号。admin.js 用它判「这还算不算一个人的桌面」 */
+function userCount(st) {
+  return (st || loadUsers()).users.length;
+}
 // ---------- 二次验证（TOTP） ----------
 // 算术在 totp.js（对着 RFC 4226 / 6238 的标准向量测过），这儿只管「存在哪、怎么算数」。
 // 用户记录上多一个 totp 字段：
@@ -2219,6 +2223,7 @@ function createRouter(opts) {
 module.exports = {
   fixLegacyCache,
   hasUsers,
+  userCount,
   defaultUser,
   userFromReq,
   creditsFor,
