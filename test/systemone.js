@@ -362,6 +362,45 @@ console.log("\n⑮ 这一层是纯的：不联网、不读配置、不打印");
   ok(/fetch\(/.test(src("jev.js")), "（反向对照）真正联网的那一半在 jev.js，不是根本没人发请求");
 }
 
+// ───────────────────────────────────────────────────────────
+console.log("\n⑯ 两道「别让人白撞墙」的闸");
+{
+  // 第一类静默失败（挂错地方）不是设想：下拉按渠道种类挡住了，可模型名那格是个自由输入框。
+  // 手打一个 typesafe/jev-latest 照收，存得下、选得中，列表里跟别的条目长得一模一样，
+  // 而它没有 /chat/completions，每一趟都是 400。
+  for (const n of ["typesafe/jev-1.13", "~typesafe/jev-latest", "jev-latest", "JEV-1.13.0", "typesafe/anything", " jev "])
+    ok(S.isDecisionModel(n) === true, `认得出判断模型：${JSON.stringify(n)}`);
+  // 拦错一个能用的模型，比漏掉一个坏的更惹人——名字里沾个 jev 不算数
+  for (const n of ["deepseek-chat", "qwen-max", "openai/gpt-6-astra", "anthropic/claude-sonnet-5", "inclusionai/ling-3.0-flash-vl:free", "jevons-paradox-model", "x/jevel", "", null, undefined])
+    ok(S.isDecisionModel(n) === false, `（反向对照）不误伤：${JSON.stringify(n)}`);
+
+  ok(/isDecisionModel\(m\.model\)/.test(src("server.js")), "★存模型行的时候真去问了这道闸★ 判得出来但没人调，跟没写一样");
+}
+
+// ───────────────────────────────────────────────────────────
+console.log("\n⑰ 答不上来的时候，不替人下结论");
+{
+  // 早先这句超时报错写死的是「这台机器到 X 的网不通（挂代理再试）」。实测过一回：
+  // 同一台机器 curl 同一个域名 200、同一条命令过一会儿又能跑。超时只证明这一趟没回来，
+  // 证不出网断了——错的归因把人支去改梯子，比没有归因贵。
+  // 这儿拿一个已经 abort 的 signal 逼出那条分支：不出网、不花钱，地址也是个不存在的域名。
+  const cfg = { decide: { route: "typesafe", api_key: "sk-jev-test-0000", base_url: "https://jev-test.invalid/v1/systemone" } };
+  const 死信 = AbortSignal.abort();
+  const r = await jev.ask(cfg, { state: "客户说等了三天没人回", questions: { 是投诉吗: { type: "noul", instructions: "客户这段话算不算投诉" } }, timeoutMs: 5000, signal: 死信 });
+  eq(r.ok, false, "abort 了就是没答上");
+  eq(r.route, "typesafe", "★真走到了发请求那一步★ 校验阶段就被打回来的话，下面那几条测的是另一条路，全绿也是假的");
+  const e = String(r.error || "");
+  ok(!/网不通|挂代理/.test(e), "★不再把「超时」当成「网断了」★ 一趟没回来推不出一条线断了", e);
+  ok(/5 秒/.test(e), "说清楚等了多久——「超时」两个字不告诉人门槛在哪里", e);
+  ok(/jev-test\.invalid/.test(e), "说清楚是哪个地址没回，不然不知道该去 curl 谁", e);
+  ok(/curl/.test(e), "★给一条能自己分清哪一头的判据★ 不替人下结论，不等于把人丢在原地", e);
+  ok(!/\$\{/.test(e), "（反向对照）模板字串真拼上了，不是把 ${} 原样吐给人看", e);
+
+  // 不是超时的那一支不能跟着改：真连不上还得把原话抬出来
+  ok(/连不上：/.test(src("jev.js")), "（反向对照）非超时的错还是原样抬出来，没被一块含糊掉");
+  ok(!/一定是网络层面的事/.test(src("jev.js")), "注释里那句同样的断言也得一并抹掉——证伪了就回头删文档");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1);
 }

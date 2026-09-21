@@ -90,8 +90,9 @@ function status(config) {
 /**
  * 问一趟。
  *
- * 超时给 20 秒：这个模型正常三五百毫秒就回来了，20 秒还没动静一定是网络层面的事，
- * 再等下去只是让调用点白挂着。判断是用来「省时间」的，等它等出等待感就本末倒置了。
+ * 超时给 20 秒：这个模型正常三五百毫秒就回来了，再等下去只是让调用点白挂着。
+ * 判断是用来「省时间」的，等它等出等待感就本末倒置了。
+ * （别把超时当成「网断了」：实测过同一台机器 curl 同一个域名 200、同一条命令过会儿又能跑。）
  */
 async function ask(config, { state, questions, model, timeoutMs, signal } = {}) {
   const r = pickRoute(config);
@@ -120,7 +121,15 @@ async function ask(config, { state, questions, model, timeoutMs, signal } = {}) 
     text = await res.text();
   } catch (e) {
     const msg = String((e && e.message) || e);
-    const why = /timeout|abort/i.test(msg) ? "超时了，这台机器到 " + r.url.replace(/^https?:\/\//, "").split("/")[0] + " 的网不通（挂代理再试）" : "连不上：" + msg.slice(0, 200);
+    const host = r.url.replace(/^https?:\/\//, "").split("/")[0];
+    const secs = Math.round((Number(timeoutMs) > 0 ? Number(timeoutMs) : 20000) / 1000);
+    // 超时只证明「这一趟没回来」，证不出网断了。旧话直接写死「网不通（挂代理再试）」，
+    // 而实测过一回：同一台机器 curl 同一个域名 200、同一条命令过一会儿又能跑——那句话把人
+    // 支到去改梯子，改半天发现根本不在那儿。错的归因比没有归因贵，所以这儿只报事实，
+    // 再给一条能自己分清哪一头的判据，不替人下结论。
+    const why = /timeout|abort/i.test(msg)
+      ? `等了 ${secs} 秒，${host} 一个字都没回。这只说明这一趟没回来，不等于网断了——同一台机器上 curl https://${host} 要是通的，就是这趟请求或上游的事，先重试一次，别急着去动代理`
+      : "连不上：" + msg.slice(0, 200);
     return { ok: false, error: why, ms: Date.now() - ms0, route: r.route };
   }
   if (!res.ok) return { ok: false, error: so.errorOf(res.status, text), status: res.status, ms: Date.now() - ms0, route: r.route };
