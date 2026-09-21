@@ -108,9 +108,18 @@ const STUB = `
       return J({ ok: true });
     }
     if (s.includes("/api/library/outputs")) return J({ tasks: [] });
-    if (s.includes("/api/library/search")) return J({ items: [] });
+    // 搜索这一路单独给料：它一开口就接管整块列表，走的是另一套画法（libSearchHtml），
+    // 跟文件夹那一路共用的只有一个 libRowHtml。ws 那几行是反向对照：上面不许有垃圾桶
+    if (s.includes("/api/library/search")) return J({
+      lib: [{ path: "客户A/报价单.md", name: "报价单.md", size: 2048, mtime: Date.now(), lines: [] }],
+      ws: [{ name: "周报.md", size: 900, mtime: Date.now(), lines: [] }],
+      notes: [], tasks: [],
+    });
     if (s.includes("/api/library")) return J({
-      dir: window.__dir || "",
+      // 真服务端把**请求里那一层**原样回声回来（server.js 的 /api/library 是 libRel(req.query.dir)），
+      // 不是回声一个服务端自己认定的「当前层」。这儿照着来，否则前端改 libState.dir 的那些代码
+      // 会被 stub 的回声一路盖掉，测的就不是真行为了
+      dir: decodeURIComponent((String(u).split("dir=")[1] || "").split("&")[0] || ""),
       // 一个空的、一个里头还有东西的：这两条走的是完全不同的两句话，也是不同的结局
       dirs: window.__bare ? [] : [{ path: "空文件夹", name: "空文件夹", count: 0 },
                                    { path: "客户A", name: "客户A", count: 3 }],
@@ -537,14 +546,17 @@ app.whenReady().then(async () => {
       const 说明 = (m.querySelector(".ask-h") || {}).textContent || "";
       const 钮 = m.querySelector(".ask-ok").textContent;
       m.querySelector(".ask-ok").click();
-      await new Promise((r) => setTimeout(r, 200));
-      return { 说明, 钮, 发了几条: window.__dels.length };
+      await new Promise((r) => setTimeout(r, 250));
+      return { 说明, 钮, 发了几条: window.__dels.length, 按完在哪一层: libState.dir };
     })`);
     ok(/还有 3 样东西/.test(r3.说明),
        "★里头还有几样，框里直接说出来★ 不说的话人只会点完确认再吃一句 400，还以为是坏了", r3.说明);
-    ok(r3.钮 === "知道了" && r3.发了几条 === 0,
+    ok(r3.钮 !== "删掉" && r3.发了几条 === 0,
        "★删不了的时候那颗钮就不叫「删掉」，按下去也确实一条请求都不发★ "
        + "摆一颗按下去必定失败的「删掉」，比没有还气人", r3);
+    ok(r3.钮 === "进去清空" && r3.按完在哪一层 === "客户A",
+       "★而且那颗钮是条出路，不是一句「知道了」★ 「知道了」说的是「你知道了，然后呢」——"
+       + "清空的活在那一层里，按下去就该把人送进去", r3);
 
     // 删资料：取消一次、确认一次，两头都要钉
     const r4 = await run(OPENPAGE("", false) + `.then(async () => {
@@ -580,6 +592,137 @@ app.whenReady().then(async () => {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  console.log("\n— 换个摆法、换条路进来，删除都得还在 —");
+  {
+    // 上面那一节只量了「文件夹 + 列表」这一种走法。这一页实际有三种摆法和两条进入路径，
+    // 而删除原来只在其中一种里活着：图标／画廊两种摆法上 CSS 写着 display:none，
+    // 搜索结果那条路压根没画这颗钮。用户新建完文件夹连问三遍「删除在哪」，
+    // 就是撞在这儿——摆法和路径是他随手换的，删除却跟着摆法一起没了。
+    //
+    // 量的是**画出来之后的几何**，不是「HTML 里有没有这个字符串」：
+    // display:none 的那颗钮在 HTML 里一样在，宽高却是 0×0，点不着也看不见。
+    const SEE = `(el) => { if (!el) return null;
+      const cs = getComputedStyle(el), r = el.getBoundingClientRect();
+      return { 显示: cs.display, 透明度: +cs.opacity, 宽: Math.round(r.width), 高: Math.round(r.height),
+               看得见: cs.display !== "none" && cs.visibility !== "hidden" && +cs.opacity > .15
+                        && r.width >= 14 && r.height >= 14 }; }`;
+
+    for (const mode of ["list", "icon", "gallery"]) {
+      const m = await run(OPENPAGE("", false) + `.then(async () => {
+        libState.mode = ${JSON.stringify(mode)}; await renderLibPage();
+        await new Promise((r) => setTimeout(r, 60));
+        const see = ${SEE};
+        const dir = document.querySelector(".lib-dir [data-del-dir]");
+        const file = document.querySelector('.lib-it[data-src="lib"] [data-del-file]');
+        const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect();
+          return { x: r.left, y: r.top, w: r.width, h: r.height }; };
+        // 「碰没碰到」不是好判据：角标压住缩略图一个角本来就是这种钮的常规长相。
+        // 该量的是**遮了多大一片**——遮掉一个角认得出脸，遮掉半张图就是换了个毛病
+        const 盖掉 = (a, b) => { if (!a || !b) return 0;
+          const w = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+          const h = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+          return b.w * b.h ? (w * h) / (b.w * b.h) : 0; };
+        const 格 = box(dir && dir.closest(".lib-it")), 钮 = box(dir);
+        return { 摆法: document.querySelector(".lib-list").className, 文件夹上: see(dir), 资料上: see(file),
+          遮掉缩略图: +(盖掉(钮, box(dir && dir.closest(".lib-it").querySelector(".th"))) * 100).toFixed(1),
+          遮掉名字: +(盖掉(钮, box(dir && dir.closest(".lib-it").querySelector(".nm"))) * 100).toFixed(1),
+          出格: !!(钮 && 格) && (钮.x + 钮.w > 格.x + 格.w + 1 || 钮.y < 格.y - 1
+                                || 钮.x < 格.x - 1 || 钮.y + 钮.h > 格.y + 格.h + 1) };
+      })`);
+      ok(m.文件夹上 && m.文件夹上.看得见,
+         `★「${mode}」这种摆法下，文件夹的删除钮是真能看见、真点得着的★ `
+         + "原来图标／画廊两种摆法上写着 display:none——换个摆法东西就删不掉了，那两种摆法是死路", m);
+      ok(m.资料上 && m.资料上.看得见, `★「${mode}」这种摆法下，资料的删除钮也在★`, m);
+      // 图标／画廊里这颗钮是浮在格子右上角的（绝对定位），量一下它落在哪儿：
+      // 压住缩略图就等于把「认脸」这件事挡了，出了格就会盖到隔壁那一格去
+      if (mode !== "list") {
+        ok(m.遮掉缩略图 < 5 && m.遮掉名字 === 0 && !m.出格,
+           `★「${mode}」里这颗钮只占了个角：缩略图遮掉 ${m.遮掉缩略图}%、名字一点没遮、也没盖到隔壁格★ `
+           + "这种摆法本来就是拿来认脸的，钮盖住脸就等于换了个毛病", m);
+      }
+    }
+
+    // 搜索是另一条路：它一开口就接管整块列表，走 libSearchHtml，不经过文件夹那一路。
+    // 这条路上少一颗钮的后果不是「少个快捷方式」——靠搜索找到那份文件的人回不到列表，
+    // 于是这份文件对他来说就是删不掉
+    const q = await run(OPENPAGE("", false) + `.then(async () => {
+      libState.mode = "list"; libState.q = "报价"; await renderLibPage();
+      await new Promise((r) => setTimeout(r, 120));
+      const see = ${SEE};
+      return {
+        搜到几行: document.querySelectorAll(".lib-it").length,
+        资料上: see(document.querySelector('.lib-it[data-src="lib"] [data-del-file]')),
+        产物行数: document.querySelectorAll('.lib-it[data-src="ws"]').length,
+        产物上的垃圾桶: document.querySelectorAll('.lib-it[data-src="ws"] [data-del-file]').length,
+      };
+    })`);
+    ok(q.搜到几行 >= 2, "搜索这一路确实画出东西来了（不然下面两条都是空转的假绿）", q);
+    ok(q.资料上 && q.资料上.看得见, "★搜出来的那份资料也删得掉★ 搜索一接管列表，人就回不到文件夹那一路了", q);
+    ok(q.产物行数 > 0 && q.产物上的垃圾桶 === 0,
+       "★反向对照：搜索结果里的本地产物照样不给垃圾桶★ 补这颗钮不是见行就加", q);
+
+    // 站在一个文件夹**里面**：这是用户原话里的那一步——「新建完没有删除的地方」。
+    // 建它的那颗钮在这条操作条上，删它的那颗也该在，而且要带字，不是一个要猜的图标
+    const inside = await run(OPENPAGE("客户A", false) + `.then(async () => {
+      const see = ${SEE};
+      const a = document.querySelector(".lib-sec-acts [data-del-dir]");
+      return { 建: (document.getElementById("lb-mkdir") || {}).textContent || "",
+               删: a ? a.textContent.trim() : null, 几何: see(a), 删的是: a ? a.dataset.delDir : null };
+    })`);
+    ok(inside.删 && /删/.test(inside.删),
+       "★站在文件夹里面时，「删掉这个文件夹」就摆在「新建文件夹」旁边★ "
+       + "建它的地方和删它的地方是同一条操作条——用户原话是「新建完没有删除的地方」", inside);
+    ok(inside.几何 && inside.几何.看得见 && inside.删的是 === "客户A",
+       "★这颗钮看得见，而且删的是脚下这一层★", inside);
+
+    // 反向对照：站在资料库最外面这一层，没有「这个文件夹」可删，就不该画这颗钮
+    const root = await run(OPENPAGE("", false) + `.then(() => ({
+      建: !!document.getElementById("lb-mkdir"),
+      删: document.querySelectorAll(".lib-sec-acts [data-del-dir]").length,
+    }))`);
+    ok(root.建 && root.删 === 0,
+       "★反向对照：最外面这一层没有「删掉这个文件夹」——那儿没有「这个文件夹」★", root);
+
+    // 删掉脚下这一层之后要退出去。不退的话下一趟 renderLibPage 还拿着这个已经没了的路径
+    // 去问服务端，人看到的是一页空白加一句「这个文件夹还是空的」，像是删了个寂寞
+    const up = await run(OPENPAGE("客户A", false) + `.then(async () => {
+      window.__dir = "";
+      const a = document.querySelector(".lib-sec-acts [data-del-dir]");
+      if (!a) return { 问过了: false, 说明: "", 发了: [], err: "操作条上根本没有这颗钮" };
+      a.click();
+      await new Promise((r) => setTimeout(r, 150));
+      const box = document.querySelector(".ask-mask");
+      const 说明 = box ? box.querySelector(".ask-h").textContent : "";
+      // 这个夹子里有东西（stub 里 dirs+files = 3），服务端本来就不给删，框里会先说清楚
+      if (box) box.querySelector(".ask-no").click();
+      await new Promise((r) => setTimeout(r, 100));
+      return { 问过了: !!box, 说明, 发了: window.__dels.slice() };
+    })`);
+    ok(up.问过了 && /3/.test(up.说明),
+       "★操作条上这颗钮走的是同一个确认框，非空时照样先把「里头还有几样」说出来★", up);
+    ok(up.发了.length === 0, "★按「算了」→ 一条 DELETE 都没发★", up.发了);
+
+    // 真删掉脚下这一层：得退回上一级。空的那种才删得动，所以这一趟用 bare（服务端返空）
+    const gone = await run(OPENPAGE("客户A/空文件夹") + `.then(async () => {
+      const a = document.querySelector(".lib-sec-acts [data-del-dir]");
+      if (!a) return { 钮: "", 发了: [], 现在在哪一层: libState.dir, err: "操作条上根本没有这颗钮" };
+      a.click();
+      await new Promise((r) => setTimeout(r, 150));
+      const box = document.querySelector(".ask-mask");
+      if (!box) return { 钮: "", 发了: [], 现在在哪一层: libState.dir, err: "确认框没出来" };
+      const 钮 = box.querySelector(".ask-ok").textContent.trim();
+      document.querySelector(".ask-mask .ask-ok").click();
+      await new Promise((r) => setTimeout(r, 200));
+      return { 钮, 发了: window.__dels.slice(), 现在在哪一层: libState.dir };
+    })`);
+    ok(gone.钮 === "删掉" && gone.发了.length === 1 && /空文件夹/.test(decodeURIComponent(gone.发了[0])),
+       "★空的那一层，站在里面就能把它删掉★", gone);
+    ok(gone.现在在哪一层 === "客户A",
+       "★删完退回上一级★ 不退的话下一趟还拿着这个已经没了的路径去问服务端，"
+       + "人看到的是一页空白加一句「这个文件夹还是空的」，像是删了个寂寞", gone);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   console.log("\n— 切成英文：这一页不许剩中文 —");
   {
     // 全站已经有一道英文覆盖率闸门（test/e2e.js 的 testI18n），它按百分比算：
@@ -588,12 +731,13 @@ app.whenReady().then(async () => {
     // 切成英文，数屏幕上还剩几个汉字。人名、文件名、文件夹名是用户自己的数据，不该翻，
     // 单独列出来排除掉——排除名单写死，免得哪天把漏翻也一起放过去。
     const OWN = ["空文件夹", "客户A", "报价单.md", "周报.md"];   // 替身数据里的名字
-    const SCAN = (bare) => `
+    const SCAN = (bare, dir) => `
       (async () => {
         I18N.setLang("en");
         window.__bare = ${bare ? "true" : "false"};
         chatCol.innerHTML = '<div class="assist-page" id="assist-page"></div>';
-        libState.view = "dir"; libState.q = ""; libState.dir = ""; libState.pick = null;
+        window.__dir = ${JSON.stringify(dir || "")};
+        libState.view = "dir"; libState.q = ""; libState.dir = ${JSON.stringify(dir || "")}; libState.pick = null;
         await renderLibPage();
         I18N.apply(document.body, "en");
         await new Promise((r) => setTimeout(r, 120));
@@ -634,6 +778,12 @@ app.whenReady().then(async () => {
     ok(empty.length === 0,
        "★空状态那几句也翻得出来★ 这几句正是「新建文件夹到底有什么用」的答案，"
        + "漏翻的话英文用户连问都没处问", empty.slice(0, 8));
+    // 站在文件夹里面那一屏得单独扫一遍：操作条上的「删掉这个文件夹」只有进到某一层里才画出来，
+    // 停在最外面这一层的扫描永远看不见它——漏翻了也照样绿
+    const dived = await run(SCAN(false, "客户A"));
+    ok(dived.length === 0,
+       "★进到某个文件夹里那一屏也不剩中文★ 「删掉这个文件夹」这颗钮只在这一屏出现，"
+       + "停在最外层扫是扫不到的", dived.slice(0, 8));
 
     // 反向对照：把一条词条临时抠掉，上面那个量法必须当场看得见。
     // 不做这一步的话，「剩 0 个汉字」也可能是因为扫描器根本没扫到东西

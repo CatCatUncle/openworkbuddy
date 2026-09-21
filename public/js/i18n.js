@@ -578,6 +578,7 @@
       "建好": "Create",
       "建不了": "Couldn't create it",
       "删掉这个文件夹": "Delete this folder",
+      "进去清空": "Open and empty it",
       "从资料库里删掉": "Delete from the library",
       "它现在是空的，删掉不影响别的东西。": "It's empty, so deleting it affects nothing else.",
       "从资料库里删掉，撤不回来。之后 AI 做任务也查不到它了。": "Deleted from the library for good — agents won't find it in later tasks either.",
