@@ -25,7 +25,7 @@ const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder, anthropicBase } = require("./llm");
 const sessSearch = require("./session-search");
-const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./tools");
 const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const shotHistory = require("./shot-history"); // 一镜一镜的版本留底：改台词重跑之后，上一版首帧还拿得回来
@@ -2171,10 +2171,17 @@ app.get("/api/settings", (req, res) => {
     persona: config.persona || "",
     assistant: config.assistant,
     search: {
-      provider: (config.search || {}).provider || "jina",
+      provider: (config.search || {}).provider || "",
       jina_key: (config.search || {}).jina_key || (config.search || {}).api_key || "",
       tavily_key: (config.search || {}).tavily_key || "",
       brave_key: (config.search || {}).brave_key || "",
+      bocha_key: (config.search || {}).bocha_key || "",
+      zhipu_key: (config.search || {}).zhipu_key || "",
+      qiniu_key: (config.search || {}).qiniu_key || "",
+      serper_key: (config.search || {}).serper_key || "",
+      custom_key: (config.search || {}).custom_key || "",
+      custom_url: (config.search || {}).custom_url || "",
+      custom_query_field: (config.search || {}).custom_query_field || "",
     },
     im: {
       feishu: (config.im || {}).feishu || { app_id: "", app_secret: "", verification_token: "", group_reply_mode: "mention" },
@@ -2439,10 +2446,15 @@ app.post("/api/settings", (req, res) => {
     if (b.search) {
       config.search = config.search || {};
       if (b.search.provider !== undefined) {
-        if (!["jina", "tavily", "brave"].includes(b.search.provider)) throw new Error("搜索 provider 仅支持 jina / tavily / brave");
+        // 这张名单跟 tools.js 的 SEARCH_PROVIDERS 是同一份；加一家要两边一起加，
+        // 只加一边的后果是：设置里存得下，真搜的时候那家不存在，整条接力从第二家才开始
+        const 支持的 = Object.keys(SEARCH_PROVIDERS);
+        if (b.search.provider !== "" && !支持的.includes(b.search.provider)) {
+          throw new Error("搜索 provider 只认这几家：" + 支持的.join(" / "));
+        }
         config.search.provider = b.search.provider;
       }
-      for (const k of ["jina_key", "tavily_key", "brave_key"]) {
+      for (const k of ["jina_key", "tavily_key", "brave_key", "bocha_key", "zhipu_key", "qiniu_key", "serper_key", "custom_key", "custom_url", "custom_query_field"]) {
         if (b.search[k] !== undefined) config.search[k] = String(b.search[k]).trim();
       }
     }
@@ -2839,7 +2851,10 @@ app.get("/api/onboarding", async (req, res) => {
     !!String(im.wecom_bot_webhook || "").trim(),
     !!String(im.dingtalk_webhook || "").trim(),
   ].filter(Boolean).length;
-  const sp = (config.search || {}).provider || "jina";
+  // 「自动」也要报得出实际会用哪家：报成写死的一家，体检页说「已配」而真跑的是另一家
+  const sc = config.search || {};
+  const sp = (sc.provider || "").toLowerCase()
+    || Object.keys(SEARCH_PROVIDERS).find((p) => searchProviderReady(sc, p, searchProviderKey(sc, p))) || "bocha";
   res.json({
     // 大脑没接上 = 一句话都发不出去，必须弹引导。接上了就不再自动弹了：
     // 用户在第一步填完 Key 就跳过是最常见的一条路，以前那种"没走完就再弹一次"每次开机都要拦他一遍。
@@ -2969,12 +2984,18 @@ app.post("/api/onboarding/done", (req, res) => {
 app.get("/api/search/test", async (_req, res) => {
   try {
     const cfg = config.search || {};
-    const provider = (cfg.provider || "jina").toLowerCase();
+    // 选了「自动」就得跟真搜的时候走同一个挑法：从上往下第一个配好了的。
+    // 这里另外写死一家的话，测试按的是 A、实际搜的是 B，测出来的「可用」不算数
+    const provider = (cfg.provider || "").toLowerCase()
+      || Object.keys(SEARCH_PROVIDERS).find((p) => searchProviderReady(cfg, p, searchProviderKey(cfg, p))) || "";
+    if (!provider) return res.json({ ok: false, error: "一家都还没配：先填一个服务商的 Key" });
     const fn = SEARCH_PROVIDERS[provider];
     if (!fn) return res.json({ ok: false, error: `未知 provider: ${provider}` });
     const key = searchProviderKey(cfg, provider);
-    if (!key) return res.json({ ok: false, error: `${provider} 未填 API Key` });
-    const items = await fn(key, "OpenAI", 3);
+    if (!searchProviderReady(cfg, provider, key)) {
+      return res.json({ ok: false, error: provider === "custom" ? "自定义搜索还没填接口地址" : `${provider} 未填 API Key` });
+    }
+    const items = await fn(key, "OpenAI", 3, cfg);
     if (!items.length) return res.json({ ok: false, error: `${provider} 返回 0 条结果` });
     res.json({ ok: true, provider, sample: (items[0].title || items[0].url || "").slice(0, 60) });
   } catch (e) {

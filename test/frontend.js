@@ -1446,6 +1446,9 @@ const TRAIL_SRC = [
   // 流式正文的分段渲染是真源码（不是桩）：回合里那些 endText() 收尾点必须真的把两截合回去
   APP02X.slice(APP02X.indexOf("const BAL_TAG"), APP02X.indexOf("\n// 【任务类型：X】")),
   APP02X.slice(TR0, TR1),
+  // 提问卡（岔路/审批）在 createTurnUI 那段外面，但回放时是 handleEvent 调它画的，
+  // 不注真源就验不到「答过的岔路该显示成答过了」
+  APP02X.slice(APP02X.indexOf("function makeAskCard(ev, turnSid, submit, ctx)"), APP02X.indexOf("function fileIcon(name)")),
   // 收尾那两件事（正文文件名变可点链接、把成品摊开）的真源码也一起注进来。
   // ARRIVAL 那块验的是这几个纯函数本身；这里验的是另一条线：事件流真跑一遍，finish() 有没有接上它们
   TR_LINKIFY,
@@ -4289,7 +4292,7 @@ const ONB_STUBS = `
                 { kind: "ollama", label: "Ollama 本地", name: "Ollama本地", base_url: "http://localhost:11434/v1", key_url: "", model: "qwen3:14b", local: true }],
     engines: [{ id: "claude-code", label: "Claude Code", installed: false, version: "", install: "npm i -g @anthropic-ai/claude-code" },
               { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "" }],
-    engine: "builtin", search: { provider: "jina", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
+    engine: "builtin", search: { provider: "", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
   let ONB_POST_OK = true, ENGINE_TEST_OK = true, SEARCH_TEST_OK = true, DONE_OK = true, SETTINGS_OK = true;
   // 本机 Ollama 装了哪些模型：null = 它压根没跑起来
   let OLLAMA_LIST = ["llama3.2:3b", "qwen3:8b", "gemma3:12b"];
@@ -4442,10 +4445,16 @@ const ONB_CHECKS = `
   ok("负对照：还没走到的那几步不打勾，各是各的图标", stepIcon(1) !== "#i-check" && stepIcon(1).startsWith("#i-") && stepIcon(2) !== stepIcon(1));
 
   // ---- 第二步：搜索 ----
-  ok("搜索步标「推荐」、默认 jina、说清没填会怎样", q(".onb-tag.rec") && q("#onb-sp").value === "jina" && body.innerText.includes("DuckDuckGo"));
+  ok("搜索步标「推荐」、新装默认博查（国内那家排头）、说清没填会怎样", q(".onb-tag.rec") && q("#onb-sp").value === "bocha" && body.innerText.includes("免费通道"));
+  // 反向对照：用户自己挑过的那家不许被「国内优先」顶掉——换个默认值就把人家的选择改了，是另一种坑
+  onbState.st = { ...onbState.st, search: { provider: "brave", has_key: false } };
+  renderOnbSearch(body);
+  ok("反向对照：存过 provider 就按存的来，不被默认值顶掉", q("#onb-sp").value === "brave");
+  onbState.st = { ...onbState.st, search: { provider: "", has_key: false } };
+  renderOnbSearch(body);
   q("#onb-sp").value = "tavily"; q("#onb-sp").dispatchEvent(new Event("change"));
   ok("换服务商：占位符和提示跟着换", q("#onb-sp-key").placeholder === "tvly-..." && q("#onb-sp-tip").textContent.includes("不用绑卡"));
-  ok("搜索步：Tavily 排第一且标「推荐」，链接直达 app.tavily.com", q("#onb-sp option").value === "tavily" && q("#onb-sp option").textContent.includes("推荐") && q("#onb-sp-tip a.get-key") && q("#onb-sp-tip a.get-key").href.startsWith("https://app.tavily.com/") && q("#onb-sp-tip a.get-key").target === "_blank");
+  ok("搜索步：博查排第一且标「推荐」，国内三家排在海外那几家前面", q("#onb-sp option").value === "bocha" && q("#onb-sp option").textContent.includes("推荐") && [...q("#onb-sp").options].slice(0, 3).map(o => o.value).join() === "bocha,zhipu,qiniu" && q("#onb-sp-tip a.get-key"));
   q("#onb-sp").value = "brave"; q("#onb-sp").dispatchEvent(new Event("change"));
   ok("换到 Brave：链接跟着换、说清要绑卡", /brave\.com/.test(q("#onb-sp-tip a.get-key").href) && q("#onb-sp-tip").textContent.includes("绑卡"));
   q("#onb-sp").value = "tavily"; q("#onb-sp").dispatchEvent(new Event("change"));
@@ -5977,6 +5986,46 @@ const TRAIL_CHECKS = `
     ok("动作行里的字一律当字看，不当 HTML", live.querySelectorAll("img").length === 0 && live.textContent.includes("<img src=x"), live.innerHTML.slice(0, 120));
     u.finish();
     ok("跑完就撤掉这行：那时候该看的是「已完成 · 产出几件」，不是最后一句旁白", disp(live) === "none", disp(live));
+  }
+
+  // ---- 回放一条已经跑完的对话：不许看起来像正在跑 ----
+  // 用户报的就是这个：打开历史记录，一条早就答过的岔路还画成「想让你定一下」，
+  // 而那时候根本没有任何东西可停 —— 看上去就是「我完成的对话又在执行」
+  {
+    chatCol.innerHTML = "";
+    isReplaying = true;
+    const u = createTurnUI("帮我查一下", "research", "s_t");
+    u.handleEvent({ type: "ask_user", ask_id: "a1", question: "给谁看？",
+      options: [{ label: "投资决策参考" }, { label: "行业科普" }], timeout_ms: 300000 });
+    const card = chatCol.querySelector(".ask-card");
+    ok("回放里的提问卡不可点（别让人对着过期的问题按半天）", card.classList.contains("done"));
+    u.handleEvent({ type: "ask_answer", ask_id: "a1", answer: "投资决策参考" });
+    ok("答过的岔路显示成答过了", card.querySelector(".ask-lb").textContent.includes("定过了"), card.querySelector(".ask-lb").textContent);
+    ok("而且把当时选的那条写出来", card.querySelector(".ask-ans").textContent.includes("投资决策参考"), card.querySelector(".ask-ans").textContent);
+
+    // 反向对照：真没答过的那张，还是得说明白这是历史里的问题，不能假装有答案
+    u.handleEvent({ type: "ask_user", ask_id: "a2", question: "还有一个？", options: [{ label: "甲" }], timeout_ms: 0 });
+    const c2 = [...chatCol.querySelectorAll(".ask-card")][1];
+    ok("反向对照：没答过的那张不许编出个答案", c2.querySelector(".ask-ans").textContent.includes("历史记录里的提问"), c2.querySelector(".ask-ans").textContent);
+
+    // 跑到一半断掉的那一轮（没有收尾事件）：得有个终点，不能永远转圈
+    u.handleEvent({ type: "tool_use", id: "z", name: "read_file", purpose: "读" });
+    u.finish({ interrupted: true });
+    isReplaying = false;
+    ok("断掉的那一轮不再转圈", chatCol.querySelectorAll(".proc-wrap.running").length === 0 && chatCol.querySelectorAll(".spinner").length === 0);
+    const pt = chatCol.querySelector(".proc-head .pt").textContent;
+    ok("而且写明是断的，不冒充「已完成」", pt.includes("中断了") && !pt.includes("已完成"), pt);
+    ok("标题上挂出原因", (chatCol.querySelector(".proc-warn") || {}).textContent.includes("断的"));
+  }
+  {
+    // 反向对照：正常跑完的那一轮照旧说「已完成」，别被上面那条改坏
+    chatCol.innerHTML = "";
+    const u = createTurnUI("正常一轮", "research", "s_t");
+    u.handleEvent({ type: "tool_use", id: "n1", name: "read_file", purpose: "读" });
+    u.handleEvent({ type: "tool_result", id: "n1", name: "read_file", preview: "ok" });
+    u.finish();
+    const pt = chatCol.querySelector(".proc-head .pt").textContent;
+    ok("反向对照：正常收尾还是「已完成」", pt.includes("已完成") && !pt.includes("中断了"), pt);
   }
   return names;
 })()`;

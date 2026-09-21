@@ -1105,17 +1105,23 @@ async function openSession(id, opts) {
     if (lastUser >= 0) transcript = transcript.slice(0, lastUser);
   }
   let ui = null;
+  let 未收尾 = null;
   isReplaying = true;
   replayFeedback = new Map((data.feedback || []).filter(f => f && f.turn != null).map(f => [f.turn, f]));
   try {
     for (const entry of transcript) {
       if (entry.type === "user") {
         ui = createTurnUI(entry.text, entry.mode);
+        未收尾 = ui;
       } else if (entry.type === "assistant" && ui) {
         for (const ev of entry.events || []) ui.handleEvent(ev);
         ui.finish();
+        未收尾 = null;
       }
     }
+    // 最后一问没有对应的回答（跑到一半进程没了、服务重启了）：也得收尾。
+    // 不收的话这一轮会一直转着「运行中…」，而 runningSessions 里根本没有它，用户找不到任何能停的地方
+    if (未收尾) 未收尾.finish({ interrupted: true });
   } finally { isReplaying = false; replayFeedback = null; }
   if (live) {
     document.getElementById("empty")?.remove();
