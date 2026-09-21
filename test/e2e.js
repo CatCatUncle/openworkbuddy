@@ -9586,6 +9586,7 @@ async function testOnboardingWizardApi() {
     r.end();
   });
   let fakeOllama = null;
+  let fakeGw = null;
 
   try {
     assert(up, "真 server.js 没起来，这条测试作废：" + bootWhy);
@@ -9795,6 +9796,77 @@ async function testOnboardingWizardApi() {
     assert(made2.model && made2.model !== "bge-m3:latest", "不点名时该退回模板默认值：" + JSON.stringify(made2));
     assert(!/14b/.test(made2.model || ""), "本机模板的兜底型号又换回了 14b（约 9GB，16G 的机器拉不动，连不上 Ollama 时就是拿它当默认）：" + made2.model);
 
+    // 5-quater. ★自建网关（OpenAI 兼容）那条路★：地址和型号只有用户自己知道。
+    // 以前这一类在向导里根本没有入口——只能「先跳过向导」，再去 设置 → 模型 里手建一条渠道，
+    // 而「先跳过」正是新人最不该走的那条路。这一段拿一台假网关钉住：
+    // 清单里有这个入口、{kind,base_url,model_id} 真落成渠道 + 模型行、地址或型号缺一个就当场 400、
+    // 以及渠道行上手写的协议会压平到模型条目上（llm.js 就是照它选协议）。
+    const GW_MODELS = ["deepseek-chat", "qwen3-32b"];
+    let gwListHits = 0;
+    fakeGw = http.createServer((rq, rs) => {
+      const gwSend = (code, obj) => { rs.writeHead(code, { "Content-Type": "application/json" }); rs.end(JSON.stringify(obj)); };
+      if (rq.url === "/gw/v1/models") { gwListHits++; return gwSend(200, { object: "list", data: GW_MODELS.map((id) => ({ id, object: "model" })) }); }
+      gwSend(404, { error: "no" });
+    });
+    await new Promise((r) => fakeGw.listen(0, "127.0.0.1", r));
+    const GW_HOST = "127.0.0.1:" + fakeGw.address().port;
+    const GW_BASE = "http://" + GW_HOST + "/gw/v1";
+
+    const gwList = await req("POST", "/api/provider-models", { base_url: GW_BASE });
+    assert(gwList.code === 200 && gwList.json && gwList.json.ok === true
+      && (gwList.json.models || []).map((m) => m.id).join() === GW_MODELS.join(),
+      "问不到自建网关有哪些模型：HTTP " + gwList.code + " " + gwList.body.slice(0, 200));
+    const gwProvN = (cfgOnDisk().providers || []).length;
+    const gwModelN = (cfgOnDisk().models || []).length;
+    // 缺地址 / 缺型号各拦一次，两次都不许落盘：半成品渠道会在下一次对话时才炸
+    const noBase = await req("POST", "/api/onboarding", { kind: "custom", model_id: "deepseek-chat", skip_test: true });
+    assert(noBase.code === 400 && /地址/.test((noBase.json || {}).error || ""),
+      "自建网关没填地址应 400，而且要点名是地址的事：HTTP " + noBase.code + " " + noBase.body.slice(0, 200));
+    const noModel = await req("POST", "/api/onboarding", { kind: "custom", base_url: GW_BASE, skip_test: true });
+    assert(noModel.code === 400 && /模型名/.test((noModel.json || {}).error || ""),
+      "自建网关没点名型号应 400（那台机器上有哪些我们猜不出来）：HTTP " + noModel.code + " " + noModel.body.slice(0, 200));
+    assert((cfgOnDisk().providers || []).length === gwProvN && (cfgOnDisk().models || []).length === gwModelN,
+      "被拦下的那两趟不该往 config 里留半成品：" + JSON.stringify({ p: (cfgOnDisk().providers || []).length, m: (cfgOnDisk().models || []).length }));
+    // 不带 Key 也放行：内网的 vLLM / LM Studio 大多压根不鉴权
+    const gwOk = await req("POST", "/api/onboarding", { kind: "custom", base_url: GW_BASE, model_id: "qwen3-32b", api_key: "", skip_test: true });
+    assert(gwOk.code === 200 && gwOk.json && gwOk.json.ok === true,
+      "自建网关不带 Key 也该放行（要不要 Key 由那台网关决定）：HTTP " + gwOk.code + " " + gwOk.body.slice(0, 220));
+    const gwProv = (cfgOnDisk().providers || []).find((p) => p.base_url === GW_BASE);
+    assert(gwProv && gwProv.kind === "custom" && gwProv.api_key === "",
+      "★渠道没建出来（或建成了别的类型）★：" + JSON.stringify(gwProv));
+    assert(gwProv.name === GW_HOST,
+      "★渠道名该拿域名当★ 不是「OpenAI 兼容」这么一句类型说明——一台机器上接两台网关时，两张卡会长得一模一样：" + JSON.stringify(gwProv.name));
+    const gwRow = (cfgOnDisk().models || []).find((m) => m.channel === gwProv.id);
+    assert(gwRow && gwRow.model === "qwen3-32b" && gwRow.provider === "openai" && gwRow.base_url === GW_BASE,
+      "★向导点名的那个型号没落盘 / 协议没写对 / 地址没压平★：" + JSON.stringify(gwRow));
+    assert(gwOk.json.active_model === gwRow.name, "落完该把它设成当前模型：" + gwOk.json.active_model);
+    // 同一台网关同一型号再来一次：不分叉（不然卡片越攒越多）
+    const gwAgain = await req("POST", "/api/onboarding", { kind: "custom", base_url: GW_BASE, model_id: "qwen3-32b", api_key: "", skip_test: true });
+    assert(gwAgain.code === 200 && (cfgOnDisk().providers || []).filter((p) => p.base_url === GW_BASE).length === 1
+      && (cfgOnDisk().models || []).filter((m) => m.channel === gwProv.id).length === 1,
+      "同一台网关同一型号再来一次不该多出渠道或模型行：" + JSON.stringify({ p: (cfgOnDisk().providers || []).length, m: (cfgOnDisk().models || []).length }));
+
+    // ---- 渠道行上手写的协议：这台后面接的其实是 Claude ----
+    const gwSettings = await req("GET", "/api/settings");
+    const gwCfgProv = (gwSettings.json.providers || []).find((p) => p.id === gwProv.id) || {};
+    assert(gwCfgProv.protocol === "", "没写协议时这一栏该是空的（界面据此显示「按渠道类型」）：" + JSON.stringify(gwCfgProv.protocol));
+    const setProto = await req("POST", "/api/settings",
+      { providers: (gwSettings.json.providers || []).map((p) => (p.id === gwProv.id ? { ...p, protocol: "anthropic" } : p)) });
+    assert(setProto.code === 200, "改协议存不上：HTTP " + setProto.code + " " + setProto.body.slice(0, 200));
+    const afterProto = (cfgOnDisk().models || []).find((m) => m.channel === gwProv.id) || {};
+    assert(afterProto.provider === "anthropic",
+      "★渠道上写的协议没压平到模型条目上★ llm.js 就是照 provider 选 anthropicChat 还是 openaiChat：" + JSON.stringify(afterProto.provider));
+    // 反向对照：界面没带这一栏（老客户端 / 手改过 config.json 的人）不许被顺手抹掉
+    const keepProto = await req("POST", "/api/settings",
+      { providers: (gwSettings.json.providers || []).map((p) => { const { protocol, ...rest } = p; return rest; }) });
+    assert(keepProto.code === 200 && ((cfgOnDisk().providers || []).find((p) => p.id === gwProv.id) || {}).protocol === "anthropic",
+      "★不带 protocol 的那一次保存把它抹掉了★ 手改 config.json 的人会莫名其妙挨这一下：" + keepProto.body.slice(0, 200));
+    // 反过来的反向对照：明说「按渠道类型」时得真能清掉，不然这一栏就再也改不回来了
+    const clearProto = await req("POST", "/api/settings",
+      { providers: (cfgOnDisk().providers || []).map((p) => ({ ...p, protocol: "" })) });
+    assert(clearProto.code === 200 && ((cfgOnDisk().providers || []).find((p) => p.id === gwProv.id) || {}).protocol === undefined,
+      "明确改回「按渠道类型」时该真的清掉：HTTP " + clearProto.code + " " + clearProto.body.slice(0, 200));
+
     // 6. 未登录不给看（体检表里有渠道名、目录路径）
     const anon = await new Promise((resolve) => {
       http.get({ host: "127.0.0.1", port, path: "/api/onboarding" }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", () => resolve(0));
@@ -9828,9 +9900,11 @@ async function testOnboardingWizardApi() {
 
     console.log("✅ 首次开箱向导 API：新装体检表(不泄 Key)·大脑没接上 done 拒且不落盘·本机 CLI 算大脑·done 落 done_at+skipped 清洗+切工作目录·seen 留存 needs_setup 随大脑翻转·向导填 Key 落在渠道行不分叉、设置页当场认账·匿名 401 + 前端五步/关于页重开/README 命令行一节 静态闸门");
     console.log("✅ 本机 Ollama 选型号：问得到机器上装了哪些(3 个)·10 分钟走缓存(上游只打 1 次)·匿名打不到上游·没起来/地址没写全各报各的·点名的型号真拿去验并落盘·验不过不许改坏原来那条(盘上+内存都查)·模板那条也认 model_id、兜底不再是 14b");
+    console.log("✅ 自建网关（OpenAI 兼容）：向导能问到它有哪些模型·缺地址/缺型号各 400 且不留半成品·不带 Key 也放行并落成 custom 渠道(名字取域名)+模型行·同一台再来一次不分叉·手写 protocol 压平到模型条目、不带这一栏的保存不许抹掉、明说「按渠道类型」才清掉");
   } finally {
     child.kill("SIGKILL");
     try { if (fakeOllama) fakeOllama.close(); } catch {}
+    try { if (fakeGw) fakeGw.close(); } catch {}
     fs.rmSync(home, { recursive: true, force: true });
   }
 }
