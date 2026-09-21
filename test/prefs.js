@@ -448,7 +448,7 @@ function call(method, url, { body, cookie } = {}) {
   eq(prefs.agentCfg(CONFIG).engine, "builtin", "出了这段又回落");
 
   server.close();
-  runSourcePins();
+  await runSourcePins();
   runConfigGates();
   runSeedCopy();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
@@ -566,7 +566,7 @@ function runSeedCopy() {
   }
 }
 
-function runSourcePins() {
+async function runSourcePins() {
   const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
   const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
   const mainSrc = fs.readFileSync(path.join(ROOT, "electron-main.js"), "utf8");
@@ -637,8 +637,17 @@ function runSourcePins() {
   eq(exited, "EXIT:1", "壳没接住也得退回命令行行为，不能连报错都吞了");
   delete global.__wbBootFail;
 
+  // 壳自己那本字典（中英各一份）。下面这些断言量的是中文那本的措辞——
+  // 英文那本翻没翻全、有没有人又把界面上的字写死回代码里，归 e2e 的 testShellI18n 管。
+  const SHELL_TEXT = new Function(mainSrc.slice(
+    mainSrc.indexOf("const SHELL_TEXT = {"), mainSrc.indexOf("\nfunction osLang(")
+  ).replace("const SHELL_TEXT =", "return") + ";")();
+  const zhText = SHELL_TEXT.zh;
+  ok(zhText && zhText.hintMissingFiles, "electron-main.js 里抠不出 SHELL_TEXT.zh");
+
   // bootHint：这段文案是「什么都打不开」时用户手里唯一的线索
-  const bootHint = new Function(slice("electron-main.js", "bootHint") + "\nreturn bootHint;")();
+  const bootHintRaw = new Function(slice("electron-main.js", "bootHint") + "\nreturn bootHint;")();
+  const bootHint = (msg, port) => String(bootHintRaw(msg, port, zhText));
   ok(/重新下载/.test(bootHint("Cannot find module './engines/index.js'", 3800)),
      "装机包缺文件 → 让用户重下（v0.1.1 缺 engines/ 时用户看到的正是「双击没反应」）");
   const eacces = bootHint("listen EACCES: permission denied 0.0.0.0:3800", 3800);
@@ -664,15 +673,19 @@ function runSourcePins() {
   ok(/OPENWORKBUDDY_HOME/.test(bootHint("ENOSPC: no space left on device, mkdir '/x'", 3800)), "磁盘满了也归到这条");
   ok(/excludedportrange/.test(bootHint("listen EACCES: permission denied 0.0.0.0:3800", 3800)),
      "  └ 反向：listen EACCES 仍旧走端口那条，没被新分支抢走");
-  ok(mainSrc.indexOf("OPENWORKBUDDY_HOME") < mainSrc.indexOf("excludedportrange"),
+  // 顺序钉子得钉在分支上。措辞搬进字典之后，再拿 OPENWORKBUDDY_HOME / excludedportrange
+  // 在整份源码里比先后，量到的是字典里两条的排版顺序——跟哪个分支先判没有关系。
+  const hintBody = slice("electron-main.js", "bootHint");
+  ok(hintBody.indexOf("hintDataDir") < hintBody.indexOf("hintPortDenied"),
      "  └ 顺序钉子：数据目录那条写在端口 EACCES 前面（写后面就永远轮不到）");
 
   // bootAdvice：开机闸门已经查出病因的三种死法，页面上不许再去猜。
   // 闸门给的是中文人话（「依赖还没装…跑一次 npm install」），bootHint 认的是 Cannot find module、
   // EADDRINUSE 这些英文报错——一条都对不上，于是最知道该怎么修的三种情况，
   // 启动失败页的大标题全是「服务端启动时崩了，把这行贴到 issue 里」。
-  const bootAdvice = new Function("bootHint",
-    slice("electron-main.js", "bootAdvice") + "\nreturn bootAdvice;")(bootHint);
+  const bootAdviceRaw = new Function("bootHint",
+    slice("electron-main.js", "bootAdvice") + "\nreturn bootAdvice;")(bootHintRaw);
+  const bootAdvice = (err, msg, port) => String(bootAdviceRaw(err, msg, port, zhText));
   const bc = require(path.join(ROOT, "boot-check"));
   for (const [what, facts, want] of [
     ["Node 太老", { nodeVersion: "v16.20.2", missingDeps: [] }, /nodejs\.org|nvm/],
@@ -715,6 +728,7 @@ function runSourcePins() {
       showBootFailure: (e) => calls.failure.push(e),
       dialog: { showErrorBox: (t, b) => calls.box.push(t + "\n" + b) },
       bootHint: () => "照着这句做", bootAdvice: (e, m, p) => (e && e.bootProblem ? e.bootProblem.fix : "照着这句做"),
+      T: () => zhText, osLang: () => "zh",
       PORT: 3800, BOOT_LOG: "/tmp/ow.log",
       app: { isReady: () => true, whenReady: () => Promise.resolve(), exit: (c) => calls.exit.push(c) },
       ...over,
@@ -744,6 +758,7 @@ function runSourcePins() {
     const env = {
       bootAdvice: (e, m, p) => (e && e.bootProblem ? e.bootProblem.fix : "猜出来的那句"),
       bootHint: () => "猜出来的那句", PORT: 3800, BOOT_LOG: "/tmp/ow.log",
+      T: () => zhText, osLang: () => "zh",
       win: { isDestroyed: () => false, loadURL: (u) => { seen.url = u; }, show: () => {}, focus: () => {} },
       fatal: () => {}, FATAL_SHOWN: false,
       dataPath: (f) => "/家/OpenWorkBuddy/" + f,
@@ -817,25 +832,31 @@ function runSourcePins() {
       BrowserWindow: { fromWebContents: () => ({}) },
       clipboard: { writeText: () => {} },
       shell: { openExternal: () => {} },
+      // 菜单上的字出自哪本字典是 e2e testShellI18n 的事；这儿钉的是「右键到底弹不弹得出东西」
+      T: () => zhText,
+      uiLang: async () => "zh",
+      contextMenuItems: new Function("clipboard", "shell",
+        slice("electron-main.js", "contextMenuItems") + "\nreturn contextMenuItems;")({ writeText: () => {} }, { openExternal: () => {} }),
     };
     const keys = Object.keys(env);
     const attach = new Function(...keys,
       slice("electron-main.js", "attachContextMenu") + "\nreturn attachContextMenu;")(...keys.map((k) => env[k]));
     let fire = null;
-    attach({ on: (ev, fn) => { if (ev === "context-menu") fire = fn; }, copyImageAt: () => {} });
-    return (params) => { popped.length = 0; fire(null, params); return popped[0] || null; };
+    attach({ on: (ev, fn) => { if (ev === "context-menu") fire = fn; }, copyImageAt: () => {}, isDestroyed: () => false });
+    // 弹之前要先问一句界面语言，这一问是异步的——同步读 popped 永远是空的
+    return async (params) => { popped.length = 0; await fire(null, params); return popped[0] || null; };
   };
   {
     const fire = mkMenu();
-    const picked = fire({ selectionText: "依赖还没装（找不到 express）。" }) || [];
+    const picked = (await fire({ selectionText: "依赖还没装（找不到 express）。" })) || [];
     ok(picked.some((it) => it.role === "copy"),
        "★选中启动失败页上的字，右键弹得出「复制」★ 让一个刚被挡在门外的人手抄报错，等于没给出路",
        JSON.stringify(picked));
-    const link = fire({ selectionText: "", linkURL: "https://github.com/CatCatUncle/openworkbuddy/issues" }) || [];
+    const link = (await fire({ selectionText: "", linkURL: "https://github.com/CatCatUncle/openworkbuddy/issues" })) || [];
     ok(link.some((it) => /在浏览器里打开/.test(it.label || "")),
        "  └ 那一页上的「提 issue」右键能直接丢给系统浏览器（不是在应用里另开一个没地址栏的窗）",
        JSON.stringify(link));
-    eq(fire({ selectionText: "" }), null,
+    eq(await fire({ selectionText: "" }), null,
        "  └ 反向对照：什么都没选中时不弹一个空菜单（证明上面两条是真判出来的）");
   }
 
