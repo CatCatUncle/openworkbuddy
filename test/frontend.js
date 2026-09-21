@@ -9975,6 +9975,121 @@ const PANELVIS_CHECKS = `
 })()
 `;
 
+// 行里那几个「鼠标扫过才冒出来」的操作：移除项目、删掉任务、只整理这个任务、复制我发的话。
+// 之前它们是拿 visibility:hidden 藏的——而 visibility:hidden 同时把元素踢出 Tab 序，
+// 于是纯键盘的人这辈子够不着「移除项目」；.del/.hx 还是 <span>，连自己的焦点都没有。
+// 实测：四处行内操作，键盘一个都够不着。现在改成「透明 + 不吃点击」，焦点一落就显形。
+// 这一屏要同时管住两头，少一头都能装作没事：
+//   markup 退回 <span> —— CSS 再对也没用，没焦点就没有 :focus-visible；
+//   CSS 掉了 :focus-within/:focus-visible —— 标签再对也没用，Tab 到了人还是看不见它在哪。
+// 所以 markup 从 app-02.js / app-01.js 里原样切，CSS 用 index.html 的真 <style>。
+const ROWACT_MARKUP = (() => {
+  const lift = (src, cls, where, want) => {
+    const re = new RegExp('<button[^>]*class="' + cls + '"[^>]*>[\\s\\S]*?</button>', "g");
+    const hits = src.match(re) || [];
+    if (hits.length !== want) {
+      throw new Error(where + " 里 class=\"" + cls + "\" 的 <button> 有 " + hits.length + " 个，期望 " + want +
+        "——行内操作一旦退回 <span>，它就没有自己的焦点，键盘再也够不着");
+    }
+    return hits.map((h) => h.replace(/\$\{[^}]*\}/g, '<svg class="i" width="14" height="14"></svg>'));
+  };
+  const del = lift(APP02, "del", "app-02.js（侧栏项目行）", 1)[0];
+  const hx = lift(APP02, "hx", "app-02.js（任务历史行）", 1)[0];
+  const ops = lift(APP02X, "op", "app-01.js（整理面板）", 2);
+  const ucopy = lift(APP02X, "u-copy", "app-01.js（我发的那条消息）", 1)[0];
+  // 行本身的 tabindex 是 markActivatable 在运行时补的（见 app-00-ui.js），这里照它的结果摆。
+  // 那个函数还在不在，下面另有一条静态断言盯着，不靠这份 markup 替它作证。
+  return '<div class="side"><div id="proj-list">'
+    + '<div class="proj-item" data-name="甲项目" tabindex="0"><span class="pn">甲项目</span>' + del + '</div></div>'
+    + '<div id="history"><div class="hist-item" data-id="s1" tabindex="0"><span class="ht">第一件事</span>' + hx + '</div></div></div>'
+    + '<div class="sweep-panel"><div class="sw-tasks"><div class="sw-task" data-task="x">'
+    + '<span class="nm">任务甲</span><span class="sw-sz">1 MB</span><span class="cnt">3 个</span>' + ops.join("") + '</div></div></div>'
+    + '<div class="turn"><div class="u-msg">' + ucopy + '<div class="bubble" translate="no">帮我写个周报</div></div></div>';
+})();
+if (!/el\.tabIndex\s*=\s*0/.test(UI00_SRC) || !/dataset\.activate/.test(UI00_SRC)) {
+  throw new Error("app-00-ui.js 的 markActivatable 不再给行补 tabIndex/data-activate 了——" +
+    "那上面这份 markup 里的 tabindex=\"0\" 就是测试自己发的，:focus-within 那几条等于没验");
+}
+const rowActHtml = (css) => "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + css
+  + "\nhtml,body{height:100%}body{margin:0}</style><body>" + ROWACT_MARKUP + "</body>";
+const ROWACT_HTML = rowActHtml(INDEX_CSS);
+// ★反向对照★ 把真 CSS 里所有「, …:focus-within …」「, …:focus-visible …」的选择器片段摘掉，
+// 别的一个字不动。摘不掉 4 段以上就说明这个变异根本没咬到东西，先把自己判红。
+const ROWACT_CSS_NOFOCUS = (() => {
+  const cut = INDEX_CSS.replace(/,\s*[^,{}]*:focus-(?:within|visible)[^,{}]*(?=[,{])/g, "");
+  const gone = INDEX_CSS.length - cut.length;
+  const n = (INDEX_CSS.match(/,\s*[^,{}]*:focus-(?:within|visible)[^,{}]*(?=[,{])/g) || []).length;
+  if (n < 4 || gone <= 0) throw new Error("反向对照没咬住：只摘掉了 " + n + " 段 :focus-* 选择器，少于 4 段，这个变异证明不了什么");
+  return cut;
+})();
+const ROWACT_HTML_NOFOCUS = rowActHtml(ROWACT_CSS_NOFOCUS);
+const ROWACT_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (cond, msg) => { if (cond) names.push(msg); else fails.push(msg); };
+  const settle = () => new Promise((r) => setTimeout(r, 420));
+  const cs = (el) => getComputedStyle(el);
+  const op = (el) => Number(cs(el).opacity);
+  const tabbable = (el) => {
+    if (!el || el.disabled || !(el.tabIndex >= 0)) return false;
+    for (let p = el; p && p.nodeType === 1; p = p.parentElement) {
+      const c = cs(p);
+      if (c.display === "none" || c.visibility === "hidden" || p.hasAttribute("inert")) return false;
+    }
+    return true;
+  };
+  const CASES = [
+    ["项目行·移除项目", ".proj-item", ".del"],
+    ["任务历史行·删掉", ".hist-item", ".hx"],
+    ["整理面板·行内操作", ".sw-task", ".op"],
+    ["我发的消息·复制", ".u-msg", ".u-copy"],
+  ];
+  for (const [name, rowSel, actSel] of CASES) {
+    const row = document.querySelector(rowSel), act = row && row.querySelector(actSel);
+    if (!act) { fails.push(name + "：页面上找不着 " + rowSel + " " + actSel); continue; }
+    ok(act.tagName === "BUTTON", name + "：是个真 <button>（自己接得住焦点）");
+    ok(!!(act.getAttribute("aria-label") || act.title), name + "：说得出自己是干什么的");
+    document.body.focus(); await settle();
+    ok(op(act) === 0, name + "：平时看不见（透明度 0）");
+    ok(cs(act).pointerEvents === "none", name + "：看不见的时候也点不着（别误删）");
+    ok(tabbable(act) === true, name + "：Tab 还是走得到它");
+    act.focus(); await settle();
+    ok(document.activeElement === act && op(act) === 1 && cs(act).pointerEvents === "auto",
+       name + "：焦点落在它身上就显形、并且点得动");
+    act.blur(); document.body.focus(); await settle();
+    ok(op(act) === 0, name + "：焦点挪走就又收回去");
+    if (row.tabIndex >= 0) {
+      row.focus(); await settle();
+      ok(op(act) === 1, name + "：焦点才刚落在行上，这个操作就已经看得见了");
+      row.blur(); document.body.focus(); await settle();
+    }
+  }
+  // .sw-task 那一行本身不可聚焦（它不是个能点的东西），:focus-within 在那儿买到的是另一件事：
+  // 焦点落到第一个操作上，同一行的第二个也跟着显形——不然 Tab 到一半，下一站又是个透明的。
+  const swOps = document.querySelectorAll(".sw-task .op");
+  if (swOps.length >= 2) {
+    document.body.focus(); await settle();
+    swOps[0].focus(); await settle();
+    ok(op(swOps[1]) === 1, "整理面板·行内操作：焦点落在它身上，同一行的邻座也跟着显形（下一站不再是透明的）");
+    swOps[0].blur(); document.body.focus(); await settle();
+  } else {
+    fails.push("整理面板那一行只剩 " + swOps.length + " 个操作，「邻座跟着显形」这条没法验");
+  }
+  if (!window.__rowactMutant) {
+    // ★反向对照★ 把「透明 + 不吃点击」换回 visibility:hidden，四个操作必须当场全退出 Tab 序
+    const st = document.createElement("style");
+    st.textContent = ".proj-item .del, .hist-item .hx, .sw-task .op, .u-msg .u-copy { visibility: hidden; }";
+    document.head.appendChild(st);
+    await settle();
+    const stillTab = CASES.map(([n, r, a]) => [n, document.querySelector(r + " " + a)]).filter(([n, el]) => el && tabbable(el));
+    ok(stillTab.length === 0, "★反向对照★ 换回 visibility:hidden，四处行内操作全部退出 Tab 序（还剩 " + stillTab.length + " 个）");
+    st.remove(); await settle();
+    const backTab = CASES.map(([n, r, a]) => document.querySelector(r + " " + a)).filter((el) => el && tabbable(el));
+    ok(backTab.length === CASES.length, "★反向对照★ 摸回来，四处全部又回到 Tab 序里（现在 " + backTab.length + "/" + CASES.length + "）");
+  }
+  return { names, fails };
+})()`;
+
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
   RENDERER_LOG.length = 0;
@@ -10307,6 +10422,36 @@ app.whenReady().then(async () => {
         console.log(`✅ 前端：关着的侧滑面板不进 Tab 序（${label} ${w}×${h}·关着 0 个·打开全回来·熄灯等宽度收完·删掉那条当场变红）${namesPV.length} 项通过`);
       } finally { if (!winPV.isDestroyed()) winPV.destroy(); }
     }
+
+    // 行里那几个「鼠标扫过才冒出来」的操作。用户拿键盘走这一趟：Tab 停在行上 → 操作显形 →
+    // 再 Tab 就落到它身上。以前这一趟走不通——visibility:hidden 把它们全踢出了 Tab 序。
+    const winRA = mkWin({ show: false, width: 1100, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winRA.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ROWACT_HTML));
+      const ra = await winRA.webContents.executeJavaScript(ROWACT_CHECKS, true)
+        .catch((e) => { throw new Error("[行内操作·键盘够得着] " + ((e && (e.stack || e.message)) || String(e))); });
+      if (ra.fails.length) {
+        throw new Error("行内操作这一屏：" + ra.names.length + " 条过，挂了 " + ra.fails.length + " 条：\n" + ra.fails.join("\n"));
+      }
+      for (const n of ra.names) console.log("  ✓ " + n);
+      console.log(`✅ 前端：行里那几个操作键盘够得着（平时透明·看不见就点不着·Tab 走得到·焦点一落就显形·换回 visibility 当场退出 Tab 序）${ra.names.length} 项通过`);
+    } finally { if (!winRA.isDestroyed()) winRA.destroy(); }
+
+    // ★反向对照★ 单开一个窗口，喂的是「真 CSS 摘掉所有 :focus-within/:focus-visible」那一份。
+    // 「焦点一落就显形」那 7 条必须当场全红——红不了就说明上一屏根本没在验那几条 CSS，
+    // 而是靠 :hover 蒙混过关。红得不够也算变异没咬住，一样把自己判红。
+    const winRAM = mkWin({ show: false, width: 1100, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winRAM.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ROWACT_HTML_NOFOCUS));
+      const ram = await winRAM.webContents.executeJavaScript("window.__rowactMutant = 1;\n" + ROWACT_CHECKS, true)
+        .catch((e) => { throw new Error("[行内操作·反向对照] " + ((e && (e.stack || e.message)) || String(e))); });
+      const reveal = ram.fails.filter((f) => f.includes("焦点落在它身上") || f.includes("焦点才刚落在行上"));
+      if (reveal.length !== 7) {
+        throw new Error("★反向对照★ 真 CSS 摘掉 :focus-within/:focus-visible 之后，「焦点一落就显形」只红了 " +
+          reveal.length + " 条，期望 7 条——这一屏验的不是那几条 CSS。全部挂掉的是：\n" + ram.fails.join("\n"));
+      }
+      console.log(`✅ 前端：★反向对照★ 真 CSS 里摘掉 :focus-within/:focus-visible，「焦点一落就显形」当场红 ${reveal.length} 条（其余 ${ram.names.length} 条照过）`);
+    } finally { if (!winRAM.isDestroyed()) winRAM.destroy(); }
 
     const winLN = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
     try {

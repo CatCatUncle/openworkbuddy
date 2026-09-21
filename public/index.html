@@ -691,8 +691,11 @@
   .proj-item:hover { background: var(--owb-bg-hover); }
   .proj-item.active { background: var(--owb-brand-weak); color: var(--owb-text); font-weight: 600; box-shadow: inset 3px 0 0 var(--owb-brand); }
   .proj-item .pn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .proj-item .del { visibility: hidden; color: var(--owb-text-3); padding: 0 2px; }
-  .proj-item:hover .del { visibility: visible; }
+  /* 行内操作平时藏着，但不能拿 visibility:hidden 藏——那一藏它同时退出了 Tab 序，
+     纯键盘的人这辈子够不着「移除项目」。改成「透明 + 不吃点击」：它一直留在 Tab 序里，
+     焦点一落上来就显形（:focus-within 管整行，:focus-visible 管它自己），看不见的时候也点不着。 */
+  .proj-item .del { display: inline-flex; align-items: center; flex: none; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0 2px; border-radius: var(--radius-xs); }
+  .proj-item:hover .del, .proj-item:focus-within .del, .proj-item .del:focus-visible { opacity: 1; pointer-events: auto; }
   .proj-item .del:hover { color: var(--owb-err-text); }
   .im-row .m { font-size: 12px; color: var(--owb-text-3); margin-bottom: 2px; }
   #send.stop { background: var(--owb-err); font-size: 12px; }
@@ -705,8 +708,8 @@
   .hist-item .hsrc .i { width: 12px; height: 12px; }
   .hist-item:hover .hsrc, .hist-item.active .hsrc { color: var(--owb-text-2); }
   @keyframes hrun-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
-  .hist-item .hx { visibility: hidden; color: var(--owb-text-3); padding: 0 3px; border-radius: var(--radius-xs); flex: none; }
-  .hist-item:hover .hx { visibility: visible; }
+  .hist-item .hx { display: inline-flex; align-items: center; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0 3px; border-radius: var(--radius-xs); flex: none; }
+  .hist-item:hover .hx, .hist-item:focus-within .hx, .hist-item .hx:focus-visible { opacity: 1; pointer-events: auto; }
   .hist-item .hx:hover { color: var(--owb-err-text); }
   .hist-item .hx .i { width: 13px; height: 13px; display: block; }
   /* 工程线顶上那一撮：这台机器的终端此刻正在跑的活儿，跟存下来的历史分开列 */
@@ -1114,8 +1117,8 @@
   textarea#input { position: relative; z-index: 1; display: block; }
   .u-msg .bubble .tk-b { background: rgba(255,255,255,.24); border: 1px solid rgba(255,255,255,.3); border-radius: var(--radius-sm); padding: 0 4px; font-weight: 500; }
   .u-msg .bubble .tk-b-ref { background: rgba(255,255,255,.34); border-style: solid; }
-  .u-msg .u-copy { opacity: 0; align-self: flex-end; border: none; background: transparent; cursor: pointer; color: var(--owb-text-3); font-size: 14px; padding: 4px 6px; border-radius: var(--radius-sm); transition: opacity var(--owb-t-fast) var(--owb-ease); }
-  .u-msg:hover .u-copy { opacity: 1; }
+  .u-msg .u-copy { opacity: 0; pointer-events: none; align-self: flex-end; border: none; background: transparent; cursor: pointer; color: var(--owb-text-3); font-size: 14px; padding: 4px 6px; border-radius: var(--radius-sm); transition: opacity var(--owb-t-fast) var(--owb-ease); }
+  .u-msg:hover .u-copy, .u-msg:focus-within .u-copy, .u-msg .u-copy:focus-visible { opacity: 1; pointer-events: auto; }
   .u-msg .u-copy:hover { background: var(--owb-bg-hover); color: var(--owb-text); }
   /* ---------- 侧栏底部：头像行 + 设置齿轮 + 账号菜单 ---------- */
   /* 账号行是侧栏的页脚，得钉住：以前它紧贴历史最后一条，历史滚到底的时候两段糊在一起，
@@ -1629,8 +1632,8 @@
   .sweep-panel .sw-task .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sweep-panel .sw-task .sw-sz { width: 74px; text-align: right; }
   .sweep-panel .sw-task .cnt { width: 62px; text-align: right; color: var(--owb-text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .sweep-panel .sw-task .op { flex: 0 0 auto; border: 0; background: none; color: var(--owb-text-3); cursor: pointer; padding: 2px 4px; visibility: hidden; }
-  .sweep-panel .sw-task:hover .op { visibility: visible; }
+  .sweep-panel .sw-task .op { flex: 0 0 auto; border: 0; background: none; color: var(--owb-text-3); cursor: pointer; padding: 2px 4px; opacity: 0; pointer-events: none; }
+  .sweep-panel .sw-task:hover .op, .sweep-panel .sw-task:focus-within .op, .sweep-panel .sw-task .op:focus-visible { opacity: 1; pointer-events: auto; }
   .sweep-panel .sw-task .op:hover { color: var(--owb-brand-text); }
   .sweep-panel .sw-empty { padding: 14px 2px; color: var(--owb-text-3); }
   .sweep-panel.busy { opacity: .55; pointer-events: none; }
@@ -1923,13 +1926,13 @@
   /* 「跳到写出它的那一段对话」。平时只留一点淡影，鼠标扫过这一行才亮起来——
      一列文件后面挂一排实心图标，看着像每行都有个未读提醒 */
   .lib-it .lib-jump { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); color: var(--owb-text-3); opacity: .35; }
-  .lib-it:hover .lib-jump { opacity: 1; }
+  .lib-it:hover .lib-jump, .lib-it .lib-jump:focus-visible { opacity: 1; }
   .lib-it .lib-jump:hover { background: var(--owb-brand-weak); color: var(--owb-brand-text); }
   .lib-it .lib-jump .i { width: 14px; height: 14px; }
   .lib-list.as-icon .lib-it .lib-jump { display: none; } /* 图标视图是用来认脸的，一格里塞不下操作 */
   /* 删除跟「跳回那段对话」并排，长相一致、只有颜色不一样：一个是去处，一个是撤不回来的事 */
   .lib-it .lib-del { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); color: var(--owb-text-3); opacity: .55; }
-  .lib-it:hover .lib-del { opacity: 1; }
+  .lib-it:hover .lib-del, .lib-it .lib-del:focus-visible { opacity: 1; }
   .lib-it .lib-del:hover { background: var(--owb-err-bg); color: var(--owb-err-text); }
   .lib-it .lib-del .i { width: 14px; height: 14px; }
   /* 图标／画廊：一格里排不下「名字 + 操作」两列，那就把这颗钮浮到格子右上角。

@@ -972,7 +972,7 @@ function renderHistory() {
   // 而它占掉的正是标题行里最显眼的位置。
   if (cnt) cnt.textContent = (!all.length || list.length === all.length) ? "" : list.length + "/" + all.length;
   const rows = list.map(s =>
-    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<span class="hx" title="删除该任务">${ic("x")}</span></div>`);
+    `<div class="hist-item ${s.id === sessionId ? "active" : ""}" data-id="${s.id}" title="${esc(stripSceneTag(s.title))}"><span class="ht">${esc(stripSceneTag(s.title))}</span>${runningSessions.has(s.id) ? '<span class="hrun" title="任务运行中"></span>' : ""}<button type="button" class="hx" title="删除该任务" aria-label="删除该任务">${ic("x")}</button></div>`);
   // 终端里正在跑的那几条，直接排在同一张列表的最上面，不再单开一撮。
   // 以前这里是「任务历史 → 10 → 终端里（openworkbuddy 命令行） → 才轮到内容」，三行铺垫才见着第一条任务。
   // Claude Cowork 和 Codex 的做法是一张扁平列表：来路和状态用行内的小图标表示，
@@ -1184,10 +1184,10 @@ function renderProjects() {
   box.style.display = projectsLocked ? "none" : "";
   if (projectsLocked) { box.innerHTML = ""; return; }
   box.innerHTML = projects.map(p =>
-    `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">${ic("folder-open")}<span class="pn">${esc(p.name)}</span>${projects.length > 1 ? `<span class="del" title="移除项目（不删文件）">${ic("x")}</span>` : ""}</div>`).join("");
+    `<div class="proj-item ${p.name === activeProject ? "active" : ""}" data-name="${esc(p.name)}" title="${esc(p.dir)}">${ic("folder-open")}<span class="pn">${esc(p.name)}</span>${projects.length > 1 ? `<button type="button" class="del" title="移除项目（不删文件）" aria-label="移除项目（不删文件）">${ic("x")}</button>` : ""}</div>`).join("");
   box.querySelectorAll(".proj-item").forEach(el => el.onclick = async (e) => {
     const name = el.dataset.name;
-    if (e.target.classList.contains("del")) {
+    if (e.target.closest(".del")) {
       if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只是从这个列表里拿掉，硬盘上的目录和文件一个都不动。", ok: "移除" }))) return;
       await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" });
       refreshProjects().then(refreshSettingsCache);
