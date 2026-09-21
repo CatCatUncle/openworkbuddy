@@ -199,6 +199,10 @@ function canvasDefaultPayload(kind) {
     case "agent": return { title: "Agent任务", role: "导演 Agent", task: "根据上游剧本和素材生成可审核的短剧创作计划。", status: "待执行", approval: "先给方案，等我确认" };
     case "character": return { name: "新角色", role: "主角", description: "人物外形、性格、目标与关系…", reference: "", voice: "" };
     case "location": return { name: "新场景", description: "地点、时间、天气、光线与氛围…" };
+    // 卡面上那句「短剧分镜」是写死的，所以画布上看着没毛病；掉进 default 分支的是 payload。
+    // 于是这张卡在「连接到下游节点…」那个下拉里叫「新笔记」，交给 Agent 的正文也是
+    // 「记录灵感、任务或需要补充的内容…」——起手模板铺出来的那张就是这样
+    case "storyboard": return { board: "" };
     case "shot": return { id: "S1-01", title: "新镜头", shot_size: "中景", duration: "4", prompt: "镜头内容与运动…", motion_prompt: "", line: "对白或旁白…", speaker: "" };
     case "image": return { title: "参考图", url: "", role: "参考素材", tags: "", prompt: "这张图要保持的主体、风格与构图…" };
     case "video": return { title: "Video", url: "", role: "生成结果", tags: "", prompt: "描述你想生成的内容…", model: "", aspect_ratio: "16:9", resolution: "1080p", duration: "5s" };

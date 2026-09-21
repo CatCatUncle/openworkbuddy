@@ -14615,6 +14615,22 @@ async function testCanvasDataLoss() {
     assert(/function canvasStorageKey/.test(ui) && !/localStorage\.setItem\(CANVAS_STORAGE_KEY,/.test(ui),
       "本机副本还是所有画布共用一个键：切到还没内容的 B 画布会把 A 的节点铺上去，自动保存一次就写进 B 的文件了");
 
+    // 每种节点都得有自己那份初值。没写 case 的那种会掉进 default 分支，拿到的是笔记的 payload——
+    // 分镜表节点原来就是这样：卡面上那句「短剧分镜」是写死的，画布上看着没毛病，
+    // 可它 payload 里是 { title: "新笔记", … }，于是「连接到下游节点…」那个下拉里它叫「新笔记」，
+    // 交给 Agent 的正文也是「记录灵感、任务或需要补充的内容…」。
+    // 判据按**形状**来：类型表和 case 表是两份名单，对不上就报，别一个个手抄
+    const 节点类型 = [...ui.matchAll(/^  (\w+): \{ label: /gm)].map((m) => m[1]);
+    const 初值段 = ui.slice(ui.indexOf("function canvasDefaultPayload"), ui.indexOf("function canvasZoom"));
+    const 有初值 = new Set([...初值段.matchAll(/case "(\w+)":/g)].map((m) => m[1]));
+    assert(节点类型.length >= 12 && 初值段.length > 200,
+      "画布节点类型/初值段抓取异常：" + JSON.stringify(节点类型) + " / " + 初值段.length);
+    // note 是 default 分支本身，不算漏
+    const 没初值 = 节点类型.filter((k) => k !== "note" && !有初值.has(k));
+    assert(!没初值.length,
+      "这些节点类型没写自己的初值，掉进 default 分支之后会被当成笔记（下拉里叫「新笔记」，交给 Agent 的也是那句占位文字）："
+      + JSON.stringify(没初值));
+
     console.log("✅ 画布不丢数据：601 个节点原样往返 · 认不出的类型/用途照留 · 少了什么如实记账 · 坏文件报错不当空画布且原样备份 · 不带 force 绝不覆盖 · 列表标坏 · 前端不把 409 当白板");
   } finally {
     try { child.kill("SIGKILL"); } catch {}
