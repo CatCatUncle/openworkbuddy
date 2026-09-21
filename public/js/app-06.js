@@ -100,6 +100,7 @@ function renderSecurityPane(pane, s) {
   // 这个得在 renderPairBox() 之前声明：函数声明会提升，let 不会——
   // 摆在下面「远程访问」那一节里的话，第一次调用当场就是 TDZ 报错
   let pairTimer = null;
+  let pairAddrIdx = 0;   // 一台机器可能有好几个能落地的地址，记住人翻到了哪一个
   renderModes();
   renderSessAllow();
   renderDevices();
@@ -210,28 +211,57 @@ function renderSecurityPane(pane, s) {
           box.innerHTML = `<div style="font-size:13px;color:var(--owb-text-2);line-height:1.7">远程设备接入是关着的（<b>默认就是关的</b>）。要在手机上用，先去 <b>企业管理后台 → 客户端安全 → 远程访问与远程操控</b> 打开「允许远程设备接入」。</div>`;
           return;
         }
-        if (!d || !d.pretty) { e.target.disabled = false; return toast("生成失败，刷新页面再试", "err"); }
+        if (!d || !d.pretty) { e.target.disabled = false; return toast("生成失败，刷新页面再试", "circle-x"); }
+        pairAddrIdx = 0;
         renderPairBox(d);
       };
       return;
     }
+    // 地址这一块是用户最容易看懵的：屏幕上突然冒出一个 192.168.x.x，既没说它是什么，
+    // 也没说手机得跟这台电脑在同一个网里。所以下面把三件事分开写清楚：
+    // 这串码是干嘛的 / 这个地址是哪来的 / 它什么时候打不开。
+    const addrs = (Array.isArray(p.origins) && p.origins.length ? p.origins
+      : p.host || p.url ? [{ host: p.host || p.url, url: p.url, qr: p.qr }] : []);
+    const cur = addrs[Math.min(pairAddrIdx, addrs.length - 1)] || null;
     box.innerHTML = `
-      <div style="border:1px solid var(--owb-border);border-radius:10px;padding:14px;background:var(--owb-bg-hover);display:flex;gap:16px;align-items:center;flex-wrap:wrap">
-        ${p.qr ? `<img src="${esc(p.qr)}" width="150" height="150" alt="配对二维码"
-             style="border-radius:8px;background:#fff;padding:6px;image-rendering:pixelated;flex:none">` : ""}
-        <div style="flex:1;min-width:180px">
-          <div style="font-size: 13px;color:var(--owb-text-2)">${p.qr ? "拿手机扫它，" : ""}或者打开 <b>${esc(p.url || location.origin)}</b> 填这串码：</div>
-          <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:28px;letter-spacing:.14em;font-weight:600;margin:6px 0">${esc(p.pretty)}</div>
-          <div style="font-size: 13px">
+      <div style="border:1px solid var(--owb-border);border-radius:10px;padding:16px;background:var(--owb-bg-hover);display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+        ${cur && cur.qr ? `<img src="${esc(cur.qr)}" width="150" height="150" alt="配对二维码"
+             style="border-radius:8px;background:#fff;padding:8px;image-rendering:pixelated;flex:none">` : ""}
+        <div style="flex:1;min-width:220px">
+          <div style="font-size: 14px">${cur && cur.qr
+            ? "拿手机扫这个码，扫完那台手机就能用你的账号了。"
+            : "在手机上填下面这串码，填完那台手机就能用你的账号了。"}</div>
+          <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:28px;letter-spacing:.14em;font-weight:600;margin:8px 0">${esc(p.pretty)}</div>
+          ${cur ? `<div style="font-size: 13px;color:var(--owb-text-2);line-height:1.7">
+            手机要和这台电脑连<b>同一个 Wi-Fi</b>。${cur.qr ? "扫不了的话，" : ""}在手机浏览器里打开
+            <b style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${esc(cur.host)}</b>，填上面这串码。
+            <span style="color:var(--owb-text-3)">这是这台电脑在局域网里的地址，换个网络、或者用手机流量都打不开。</span>
+            ${addrs.length > 1 ? `<a href="#" class="link" id="dev-pair-addr">打不开？换一个地址（还有 ${addrs.length - 1} 个）</a>` : ""}
+          </div>` : `<div style="font-size: 13px;color:var(--owb-text-2);line-height:1.7">
+            这台电脑没翻到局域网地址 —— 多半是没连 Wi-Fi，或者网卡都被 VPN / Docker 占着。
+            手机得先和它连同一个网络，这串码才填得进去。
+          </div>`}
+          <div style="font-size: 13px;margin-top:12px">
             <span id="dev-pair-left" style="color:var(--owb-text-3)"></span>
-            · <a href="#" class="link" id="dev-pair-copy">复制</a>
+            · <a href="#" class="link" id="dev-pair-copy">复制码</a>
+            ${cur ? `· <a href="#" class="link" id="dev-pair-copyurl">复制链接</a>` : ""}
             · <a href="#" class="link danger" id="dev-pair-cancel">不配了</a>
           </div>
         </div>
       </div>`;
+    if (pane.querySelector("#dev-pair-addr")) pane.querySelector("#dev-pair-addr").onclick = (e) => {
+      e.preventDefault();
+      pairAddrIdx = (pairAddrIdx + 1) % addrs.length;   // 挑法再准也可能挑错，让人自己翻下一个
+      renderPairBox(p);
+    };
+    if (pane.querySelector("#dev-pair-copyurl")) pane.querySelector("#dev-pair-copyurl").onclick = (e) => {
+      e.preventDefault();
+      // 链接里已经带着码，粘到手机上直接就是填好的那一页，不用再敲一遍
+      navigator.clipboard.writeText(cur.url || "").then(() => toast("链接已复制，里面带着码，直接粘到手机浏览器"), () => toast("复制失败，照着上面抄一下", "circle-x"));
+    };
     pane.querySelector("#dev-pair-copy").onclick = (e) => {
       e.preventDefault();
-      navigator.clipboard.writeText(p.pretty).then(() => toast("配对码已复制"), () => toast("复制失败，手抄一下", "err"));
+      navigator.clipboard.writeText(p.pretty).then(() => toast("配对码已复制"), () => toast("复制失败，手抄一下", "circle-x"));
     };
     pane.querySelector("#dev-pair-cancel").onclick = async (e) => {
       e.preventDefault();
@@ -293,7 +323,7 @@ function renderSecurityPane(pane, s) {
         ? { title: "退出这台设备？", hint: "你现在就会被登出，得重新登录。", ok: "退出", danger: true }
         : { title: "踢掉这台设备？", hint: "它下次打开就得重新登录。", ok: "踢掉", danger: true }))) return;
       const r = await fetch("/api/devices/" + encodeURIComponent(a.dataset.kick), { method: "DELETE" }).catch(() => null);
-      if (!r || !r.ok) return toast("踢不掉，刷新页面再试", "err");
+      if (!r || !r.ok) return toast("踢不掉，刷新页面再试", "circle-x");
       if (self) return location.reload();
       toast("已踢掉");
       renderDevices();
@@ -434,7 +464,7 @@ async function renderTwoFactorBox(box, opts) {
     code.onkeydown = (e) => { if (e.key === "Enter") box.querySelector("#tfa-enable").click(); };
     box.querySelector("#tfa-copy-secret").onclick = (e) => {
       e.preventDefault();
-      navigator.clipboard.writeText(d.secret).then(() => toast("密钥已复制"), () => toast("复制失败，手抄一下", "err"));
+      navigator.clipboard.writeText(d.secret).then(() => toast("密钥已复制"), () => toast("复制失败，手抄一下", "circle-x"));
     };
     // 半路不干了：这时候 totp.secret 已经存进去了但没 enabled_at，下次再来 startEnroll 会重新生成一把，
     // 所以这儿不用清理什么，退回去就行
@@ -462,7 +492,7 @@ async function renderTwoFactorBox(box, opts) {
         <button class="btn-brand" id="tfa-rc-done">我存好了</button>
       </div>`;
     box.querySelector("#tfa-copy-rc").onclick = () =>
-      navigator.clipboard.writeText(codes.join("\n")).then(() => toast("恢复码已复制，找个安全地方存下来"), () => toast("复制失败，手抄一下", "err"));
+      navigator.clipboard.writeText(codes.join("\n")).then(() => toast("恢复码已复制，找个安全地方存下来"), () => toast("复制失败，手抄一下", "circle-x"));
     box.querySelector("#tfa-rc-done").onclick = () => (gate ? location.reload() : renderTwoFactorBox(box, opts));
   }
 
@@ -892,7 +922,7 @@ function renderAboutPane(pane) {
   pane.querySelector("#ab-up-cmd-copy").onclick = (e) => {
     e.preventDefault();
     navigator.clipboard.writeText(upCmdT.textContent)
-      .then(() => toast("命令已复制，粘到「终端」里回车就行"), () => toast("复制失败，手抄一下", "err"));
+      .then(() => toast("命令已复制，粘到「终端」里回车就行"), () => toast("复制失败，手抄一下", "circle-x"));
   };
   pane.querySelector("#ab-up-btn").onclick = () => loadUpdate(true);
   loadUpdate(false);

@@ -670,24 +670,55 @@ function pairStatus(username) {
   return { pairing: !!pending, expires_at: pending ? pending.expires_at : 0, claimed: c ? { name: c.name, id: c.id, at: c.at } : null };
 }
 /**
- * 扫码要用的地址。手机跟这台电脑不在同一个 localhost 上，所以 localhost 编进二维码
- * 等于编了个死链——扫出来手机只会去找它自己。这时候翻一个本机的局域网地址出来。
+ * 这台机器在局域网里能被手机够着的地址，好的排前面。
+ *
+ * 老写法是「翻到第一个私网 IPv4 就用」，而 os.networkInterfaces() 的顺序没有任何保证。
+ * 2026-09-21 在这台机器上量过：en0 是 192.168.1.84（真网卡），utun4 是 198.18.0.1（代理隧道），
+ * 默认路由还指着 utun4 —— 也就是说「按默认路由挑」同样是错的。真正的判据只有一条：
+ * 手机和这台电脑连同一个 Wi-Fi 时，能 ping 通的是物理网卡上的那个地址。
+ * 所以隧道口（utun/wg/zt）、Docker 网桥（docker0/br-/bridge*）、虚拟机口（vmnet/vboxnet）
+ * 一律排到最后 —— 它们上面的地址长得跟内网地址一模一样，扫出来却永远打不开。
+ */
+function lanCandidates() {
+  const 虚口 = /^(utun|ipsec|ppp\d|tun\d|tap\d|wg\d|zt|docker|br-|veth|vboxnet|vmnet|virbr|bridge|awdl|llw|anpi|ap\d)/i;
+  const out = [];
+  for (const [iface, list] of Object.entries(require("os").networkInterfaces())) {
+    for (const ni of list || []) {
+      if (ni.family !== "IPv4" || ni.internal) continue;
+      // 只认私网段：公网 IP 编进二维码，等于把入口贴墙上了
+      if (!/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(ni.address)) continue;
+      out.push({ iface, address: ni.address, virtual: 虚口.test(iface) });
+    }
+  }
+  // 物理口在前、虚拟口在后；同一档按名字排死，免得同一台机器每次刷新给的地址都不一样
+  const rank = (c) => (c.virtual ? 9 : /^en\d/i.test(c.iface) ? 0 : /^(eth|wlan|wl)\d/i.test(c.iface) ? 1 : 2);
+  return out.sort((a, b) => rank(a) - rank(b) || a.iface.localeCompare(b.iface));
+}
+
+/**
+ * 扫码要用的地址（取最靠谱的那一个）。手机跟这台电脑不在同一个 localhost 上，所以
+ * localhost 编进二维码等于编了个死链——扫出来手机只会去找它自己。
  * 翻不到就不猜，宁可让他手敲那 8 个字符，也别给一个扫了打不开的码。
  */
 function pairOrigin(req) {
+  const list = pairOrigins(req);
+  return list.length ? list[0].url : "";
+}
+
+/** 所有能落地的地址，好的排前面。界面上多给一个「换一个地址」的出口，猜错了人能自己纠 */
+function pairOrigins(req) {
   const proto = isHttps(req) ? "https" : "http";
   const host = String((req && req.headers && (req.headers["x-forwarded-host"] || req.headers.host)) || "");
-  if (host && !/^(localhost|127\.|\[::1\]|::1)/i.test(host)) return `${proto}://${host}`;
+  // 通过正经域名/反代进来的，那个域名本来就是能落地的地址，不用猜
+  if (host && !/^(localhost|127\.|\[::1\]|::1)/i.test(host)) return [{ host, url: `${proto}://${host}`, iface: "" }];
   const port = (host.split(":")[1] || "").replace(/[^0-9]/g, "");
-  for (const list of Object.values(require("os").networkInterfaces())) {
-    for (const ni of list || []) {
-      if (ni.family !== "IPv4" || ni.internal) continue;
-      // 只认私网段：公网 IP 直接编进二维码，等于把入口贴墙上了
-      if (!/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(ni.address)) continue;
-      return `${proto}://${ni.address}${port ? ":" + port : ""}`;
-    }
-  }
-  return host ? `${proto}://${host}` : "";
+  const out = lanCandidates().map((c) => ({
+    host: c.address + (port ? ":" + port : ""),
+    url: `${proto}://${c.address}${port ? ":" + port : ""}`,
+    iface: c.iface,
+  }));
+  if (out.length) return out;
+  return host ? [{ host, url: `${proto}://${host}`, iface: "" }] : [];
 }
 
 /** 从 UA 里猜一个人看得懂的设备名。猜不出就叫「未知设备」，不编 */
@@ -2129,16 +2160,25 @@ function createRouter(opts) {
     if (!user) return res.status(401).json({ error: "未登录" });
     if (!remoteAllowed("remote_devices", user)) return res.status(403).json({ error: "管理员没开「允许远程设备接入」，扫码连设备这件事现在是关着的", remote_off: true });
     const p = newPairCode(user.username);
-    const origin = pairOrigin(req);
     // 二维码里编的是「带码的登录地址」，手机扫完直接落在填好码的那一页，一个字都不用敲。
     // 码照样是一次性 + 3 分钟，所以它躺在地址栏里的那点时间是可接受的；
     // 真正兜底的是 Referrer-Policy: no-referrer，不然这一页上任何外链都会把码带出去
-    const url = origin ? `${origin}/?pair=${p.code}` : "";
-    let qr = "";
-    if (url) qr = await require("qrcode").toDataURL(url, { width: 320, margin: 1, errorCorrectionLevel: "M" }).catch(() => "");
+    //
+    // 一台机器可能有好几个能落地的地址（有线 + 无线、公司网 + 家里网）。挑法再准也可能挑错，
+    // 所以把候选一起发给前端，界面上留一个「换一个地址」——猜错了人自己就能纠，
+    // 不用对着一个扫不开的码猜是哪儿不对。最多三个，再多二维码的体积就压过用处了。
+    const cands = pairOrigins(req).slice(0, 3);
+    const origins = [];
+    for (const c of cands) {
+      const url = `${c.url}/?pair=${p.code}`;
+      const qr = await require("qrcode").toDataURL(url, { width: 320, margin: 1, errorCorrectionLevel: "M" }).catch(() => "");
+      origins.push({ host: c.host, url, qr, iface: c.iface });
+    }
+    const first = origins[0] || { host: "", url: "", qr: "" };
     res.json({
       code: p.code, pretty: p.code.slice(0, 4) + "-" + p.code.slice(4),
-      url, qr, expires_at: p.expires_at, expires_in: p.expires_in,
+      url: first.url, host: first.host, qr: first.qr, origins,
+      expires_at: p.expires_at, expires_in: p.expires_in,
     });
   });
   /** 连上没有？生成码那台机器轮询它，好把二维码换成「✓ 已连接」 */
@@ -2281,5 +2321,5 @@ module.exports = {
   // 下面这些只给测试用：账本读写和登录闸得能在临时目录里单独验，不然一跑测试就动到真账号
   _internals: { readStore, writeStoreAtomic, createLimiter, startEnroll, enableTOTP, consumeTwoFactor, regenRecovery, hashRecovery, makeRecoveryCodes, isHttps, clientIp, isPrivateAddr, normalizeAvatar, register, renameUser, loadUsers, saveUsers, loadUsage, saveUsage, verify, issueToken,
     // 设备配对：配对码的一次性、过期、限速这几条都得能单独验
-    newPairCode, dropPairCode, claimPair, pairStatus, pairOrigin, claimed, listDevices, revokeDevice, deviceId, deviceLabel, normalizePairCode, touchDevice, prunePairs, pairs, PAIR_LEN, PAIR_TTL_MS, PAIR_ALPHABET, MAX_DEVICES },
+    newPairCode, dropPairCode, claimPair, pairStatus, pairOrigin, pairOrigins, lanCandidates, claimed, listDevices, revokeDevice, deviceId, deviceLabel, normalizePairCode, touchDevice, prunePairs, pairs, PAIR_LEN, PAIR_TTL_MS, PAIR_ALPHABET, MAX_DEVICES },
 };
