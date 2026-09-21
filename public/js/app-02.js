@@ -2226,7 +2226,7 @@ function applyLook() {
 function setLook(k, v) { if (!LOOK_OPTS[k] || !LOOK_OPTS[k][v]) return; lookWrite("owb-look-" + k, v); applyLook(); }
 applyLook();
 
-// ---------- 头像菜单：设置 / 外观 / 帮助与反馈 / 检查更新 / 退出登录 ----------
+// ---------- 头像菜单：个人资料 / 修改密码 / 设置 / 外观 / 帮助与反馈 / 检查更新 / 退出登录 ----------
 const userMenu = document.getElementById("user-menu");
 function closeUserMenu() { userMenu.classList.remove("show"); }
 function toggleUserMenu() { userMenu.classList.contains("show") ? closeUserMenu() : openUserMenu(); }
@@ -2242,6 +2242,7 @@ function openUserMenu() {
       <div class="s">${creditsOn ? `${ic("sparkles")}${(+currentUser.credits).toLocaleString()} 积分 · ` : ""}账号与用量</div></div>
     </div>
     <div class="um-i" data-act="profile">${ic("id-card")}个人资料</div>
+    <div class="um-i" data-act="password">${ic("key-round")}修改密码</div>
     <div class="um-i" data-act="settings">${ic("settings")}设置</div>
     ${currentUser.can_admin
       ? `<div class="um-i" data-act="admin">${ic("building-2")}企业管理后台${currentUser.is_admin ? "" : ` <span class="hint">只读</span>`}</div>`
@@ -2268,6 +2269,7 @@ function openUserMenu() {
     if (act === "account") openModal("account");
     else if (act === "appearance") openModal("settings", "look");
     else if (act === "profile") { await openModal("account"); renderProfile(); }
+    else if (act === "password") { await openModal("account"); renderPassword(); }
     else if (act === "settings") openModal("settings");
     // 后台是独立一页，不是弹窗：它自己有一整套侧边导航，塞进设置弹窗里两层导航会打架
     else if (act === "admin") location.href = "/admin.html";

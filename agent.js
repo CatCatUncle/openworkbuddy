@@ -559,6 +559,27 @@ function pausedMediaBlock(now = Date.now()) {
   return `\n\n## 这几条媒体渠道现在是暂停的（本地熔断闸拦的，跟问法无关）\n${lines.join("\n")}\n这一趟把它们当不可用：不要调用对应的工具，需要它们的步骤如实告诉用户这一步没做成、该怎么修。`;
 }
 
+/**
+ * 反过来的那一句：上一轮还停着的渠道，这一轮闸放开了。
+ *
+ * 光把闸打开不够。上一轮 media-health 那句「别再调这个工具了」还原样躺在对话历史里，
+ * 模型读到的最新一条关于这条渠道的事实就是它——于是用户去把渠道修好、回来说一句
+ * 「我修好了，再试一次」，模型照着历史回一句「这条渠道用不了」，一个请求都不发。
+ * 用户看到的是「我说了修好了它也不肯重试」。
+ *
+ * 所以每次人重新开口（server.js 的网页对话、IM 的每条消息）都把放开的那几条写进提示词，
+ * 明说以历史里那句为准是错的。不许它替用户先下结论说还是坏的——试一次的成本是一个请求。
+ */
+function reopenedMediaBlock(reopened) {
+  const list = Array.isArray(reopened) ? reopened : [];
+  if (!list.length) return "";
+  const names = [...new Set(list.map((p) => `${CAP_CN[p.cap] || p.cap}（${p.model || "？"}）`))];
+  return `\n\n## 这几条媒体渠道刚刚被重新放开了：${names.join("、")}\n` +
+    `上一轮它们被本地熔断闸拦过，对话历史里还留着「这条渠道已暂停 / 别再调这个工具了」那几句。**那几句现在过期了**：\n` +
+    `用户这中间很可能已经去充值、续费、换 Key 或者把网弄通了——他再开口，闸就重新放开一次。\n` +
+    `所以这一轮该用就正常调一次，用结果说话。不许翻历史里那句话当结论、不许在一个请求都没发的情况下告诉用户「这条渠道用不了」。真再撞一次，再如实说。`;
+}
+
 function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = [], llmFactory }) {
   // 备用渠道换道要现造一个 LLM 客户端；懒 require 避免环形依赖，测试时可注入假工厂做零 token 验证
   const makeLLM = llmFactory || ((cfg) => require("./llm").createLLM(cfg));
@@ -1832,7 +1853,7 @@ function modePrompt(mode) {
    * @param maxSteps 只给这一次任务的步数上限，不传就用全局配置
    * @returns { finalText }
    */
-  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, lang, sessionId, traceNode, maxSteps: maxStepsOverride }) {
+  async function runTask({ history, emit = () => {}, systemPrompt, depth = 0, mode = "craft", deadline, stats, stopSignal, getInterject, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, engineSession, lang, sessionId, traceNode, mediaReopened, maxSteps: maxStepsOverride }) {
     // ── 执行追踪 ─────────────────────────────────────────────────────────
     // 顶层任务开一条 trace，这一趟里每次模型调用、每个工具都挂在它底下；专家子任务收到的是
     // 「委派」那次工具调用的 span，接着往下挂，层级跟界面上看到的一模一样。
@@ -1898,7 +1919,7 @@ function modePrompt(mode) {
     // 记忆召回的线索：用户最后一条消息的前 500 字。记忆超预算时按它挑相关条目
     const lastUserMsg = [...history].reverse().find((e) => e && e.role === "user" && typeof e.content === "string");
     const memHint = lastUserMsg ? lastUserMsg.content.slice(0, 500) : "";
-    const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + projBlock + langBlock(lang) + modePrompt(mode) + pausedMediaBlock();
+    const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + projBlock + langBlock(lang) + modePrompt(mode) + pausedMediaBlock() + reopenedMediaBlock(mediaReopened);
     const tools = toolList(depth, mode);
     // 按次覆盖步数上限：评测里的长任务题要 40 步以上，但不能因此把全局上限抬高——
     // 那等于给所有任务多开一倍预算，钱和基线可比性一起没了
@@ -2814,4 +2835,4 @@ function makeOwnership() {
   return { claimBaseDir, inForeignDir, mine, _dirOwners: dirOwners, _fileClaims: fileClaims };
 }
 
-module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, deadLoop, findCycle, pausedMediaBlock, stopNotice, DEAD_LOOP_LIMITS };
+module.exports = { createAgentRuntime, splitParallelRuns, toolHeadline, resultOutcome, missingDeliverables, unseenVisualClaims, unfinishedMilestones, UNFINISHED_RE, trimHistory, historyChars, collectSources, mapPool, PARALLEL_MAX, GEN_TOOLS, DIRECT_TOOLS, GEN_PARALLEL_MAX, makeOwnership, makeFilesEmitter, deadLoop, findCycle, pausedMediaBlock, reopenedMediaBlock, stopNotice, DEAD_LOOP_LIMITS };

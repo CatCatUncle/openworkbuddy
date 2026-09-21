@@ -11,6 +11,37 @@ function cacheTxt(x) {
   return ` · 缓存命中 ${Math.min(100, Math.round((x.cached || 0) / x.cachedOf * 100))}%`;
 }
 
+/**
+ * 改自己的密码。
+ *
+ * 单拎出来是因为用户根本没找着它：接口（POST /api/auth/password）和这一屏一直都在，
+ * 可入口是「账号 · 用量」那一屏里、跟「退出登录」挤在一行的一个 float:right 小按钮——
+ * 要先点头像、再点「账号与用量」、再在一堆用量图表里找那颗按钮。用户的原话是
+ * 「我要能修改自己的账户密码啊，每个账户能自己改密码啊」，这就是「开关存在但找不到＝没有」。
+ * 现在头像菜单里直接一行「修改密码」，跟「个人资料」挨着。
+ */
+function renderPassword() {
+  mTitle.textContent = "修改密码";
+  mBody.innerHTML = `<div class="card-item"><div class="t">修改密码</div>
+    <div class="d" style="margin-bottom:8px">改完这台机器还留着登录状态，其它设备上的登录会被踢下线，得重新登一次。</div>
+    <input id="pw-old" type="password" placeholder="原密码" autocomplete="current-password">
+    <input id="pw-new" type="password" placeholder="新密码" autocomplete="new-password">
+    <div style="margin-top:8px"><button class="btn-brand" id="pw-go">确认修改</button> <button id="pw-back" style="padding:6px 14px">返回账号</button> <span class="ok-msg" id="pw-msg"></span></div></div>`;
+  document.getElementById("pw-back").onclick = () => { mTitle.textContent = "账号 · 用量"; renderAccount(); };
+  document.getElementById("pw-go").onclick = async () => {
+    const msg = document.getElementById("pw-msg");
+    const resp = await fetch("/api/auth/password", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old_password: document.getElementById("pw-old").value, new_password: document.getElementById("pw-new").value }),
+    });
+    const r = await resp.json().catch(() => ({}));
+    // 密码要求（最短几位、要不要混大小写数字）是管理员在组织设置里定的，前端不猜也不抄一份：
+    // 服务端把那句话原样回过来，照着显示就行——抄一份的下场是管理员改完策略，这儿还写着「至少 6 位」
+    if (resp.ok) { setMsg(msg, "circle-check", "已修改", "ok"); setTimeout(() => { mTitle.textContent = "账号 · 用量"; renderAccount(); }, 800); }
+    else { setMsg(msg, "circle-x", r.error || "修改失败", "err"); }
+  };
+}
+
 async function renderAccount() {
   mBody.innerHTML = '<div class="ab-empty">加载中…</div>';
   const [d, authState] = await Promise.all([
@@ -81,23 +112,7 @@ async function renderAccount() {
     location.reload();
   };
   document.getElementById("acc-profile").onclick = () => renderProfile();
-  document.getElementById("acc-pass").onclick = async () => {
-    mBody.innerHTML = `<div class="card-item"><div class="t">修改密码</div>
-      <input id="pw-old" type="password" placeholder="原密码">
-      <input id="pw-new" type="password" placeholder="新密码（至少 6 位）">
-      <div style="margin-top:8px"><button class="btn-brand" id="pw-go">确认修改</button> <button id="pw-back" style="padding:6px 14px">返回</button> <span class="ok-msg" id="pw-msg"></span></div></div>`;
-    document.getElementById("pw-back").onclick = () => renderAccount();
-    document.getElementById("pw-go").onclick = async () => {
-      const resp = await fetch("/api/auth/password", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ old_password: document.getElementById("pw-old").value, new_password: document.getElementById("pw-new").value }),
-      });
-      const r = await resp.json().catch(() => ({}));
-      const msg = document.getElementById("pw-msg");
-      if (resp.ok) { setMsg(msg, "circle-check", "已修改", "ok"); setTimeout(() => renderAccount(), 800); }
-      else { setMsg(msg, "circle-x", r.error || "修改失败", "err"); }
-    };
-  };
+  document.getElementById("acc-pass").onclick = () => renderPassword();
   const credOn = document.getElementById("credits-on");
   if (credOn) credOn.onchange = async () => {
     const msg = document.getElementById("credits-on-msg");

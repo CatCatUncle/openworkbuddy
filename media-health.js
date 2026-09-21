@@ -19,10 +19,21 @@
  *   火山把「账号欠费」报成 400/403 带 AccountOverdue——这两种换一百次问法结果都一样，
  *   正文里只要说的是「没余额」或「没这个型号」，不管什么状态码都按硬错断。
  *
- * 自愈的路留了三条，缺一条都会变成「我明明充值了它还是不干活」：
+ * 自愈的路留了四条，缺一条都会变成「我明明充值了它还是不干活」：
  *   1. 配置动了（地址/型号/Key 任一变了）→ 指纹变了，自然是新的一格；
  *   2. 用户在设置页按了保存 → server.js 调 reset()，当他已经去处理了；
- *   3. 熬过冷却期 → 硬错也有 30 分钟的到期，充值不改配置的那种情况靠它。
+ *   3. 熬过冷却期 → 硬错也有 30 分钟的到期，充值不改配置的那种情况靠它；
+ *   4. **用户又开口了** → 每一句新的人话都调一次 reopen()，把闸整个放开。
+ *
+ * 第 4 条是被一句原话逼出来的：「渠道断了，我去修好了，我说了修复好了 AI 也不去自己重试一下，
+ * 还是给我说用不了」。前三条全都不管用——他修的是渠道那头（充值、续费、把网弄通），
+ * 设置页一个字没动，指纹也就没变；剩下只能干等 30 分钟。这道闸拦的本来就是**模型自己**
+ * 在一趟任务里一轮一轮地撞，而人重新开口就说明人回到环里了：他可能刚刚去修过。
+ * 代价是最多多发一次请求、最多多等一个超时——那正是这道闸当初允许的第一次。
+ *
+ * 光放开还不够：上一轮 gate() 那句「现在别再调这个工具了」还原样躺在对话历史里，
+ * 模型照着它继续拒绝，用户看见的还是「用不了」。所以 reopen() 把刚放开的那几条回给调用方，
+ * agent.js 会在这一轮的提示词里说明白：闸已经开了，需要就正常调一次。
  */
 
 const crypto = require("crypto");
@@ -94,7 +105,8 @@ function gate(cap, cfg, capCn) {
       `这不是这次问法/提示词的问题，重试还是同一个结果，所以这一次连请求都没发出去（省下的是你的时间和用户的钱）。\n` +
       `${b.hard ? "请用户去 设置 → 模型 里换一条渠道或把这条修好" : `等 ${mins} 分钟后会自动再试一次`}` +
       `，改完设置按一下保存即刻恢复。\n` +
-      `现在别再调这个工具了，也不许把没拿到的结果当拿到过写进结论——如实说这一步没做成。`,
+      `**这一轮**里别再调这个工具了，也不许把没拿到的结果当拿到过写进结论——如实说这一步没做成。\n` +
+      `（只管这一轮：用户下次开口时这道闸会重新放开一次，那时候该调就调，别拿这句话当以后的结论。）`,
     isError: true,
     mediaBreaker: true, // 给 agent.js / 测试认的标记：这条不是上游返回的，是本地闸拦的
   };
@@ -140,6 +152,19 @@ function reset(cap) {
   for (const k of [...bucket.keys()]) if (k.startsWith(cap + "|")) bucket.delete(k);
 }
 
+/**
+ * 新的一句人话：把闸整个放开，并把**刚才还停着**的那几条报回去。
+ *
+ * 跟 reset() 分成两个函数而不是加个参数：reset 是「用户明确去处理过了」（按了保存），
+ * reopen 是「用户又说话了，姑且再给一次机会」。返回值也只有 reopen 有用——
+ * 它要拿去写进这一轮的提示词，把历史里那句「别再调了」压过去。
+ */
+function reopen() {
+  const was = list();
+  bucket.clear();
+  return was;
+}
+
 /** 界面要显示「哪条渠道现在是停的」。只回 cap 和原因，指纹里那 8 位哈希不出门。 */
 function list() {
   const out = [];
@@ -151,4 +176,4 @@ function list() {
   return out;
 }
 
-module.exports = { gate, record, reset, list, statusOf, looksBroke, looksNoModel, fingerprint, HARD, IGNORE, SOFT_LIMIT, SOFT_COOL_MS, HARD_COOL_MS, _bucket: bucket };
+module.exports = { gate, record, reset, reopen, list, statusOf, looksBroke, looksNoModel, fingerprint, HARD, IGNORE, SOFT_LIMIT, SOFT_COOL_MS, HARD_COOL_MS, _bucket: bucket };

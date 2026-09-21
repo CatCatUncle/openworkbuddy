@@ -14287,7 +14287,7 @@ function testSessionCacheReload() {
  */
 async function testRunOwnership() {
   const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
-  const a = src.indexOf("function sessionAllowed(user, s) {");
+  const a = src.indexOf("let legacyOwner = {"); // 判据从「老会话归谁」那几行开始切，sessionAllowed 靠它
   const b = src.indexOf("let runtime;", a);
   if (a < 0 || b <= a) throw new Error("server.js 里的会话归属判据找不到了（改名/挪走？），测试没法定位真源码");
   const SLICE = src.slice(a, b);
@@ -14299,13 +14299,15 @@ async function testRunOwnership() {
     { username: "rivalBoss", role: "admin", org: "B" },
     { username: "rival", role: "member", org: "B" },
   ];
-  const account = { canAdmin: (u) => u.role === "admin", _internals: { loadUsers: () => ({ users: USERS }) } };
+  const account = { canAdmin: (u) => u.role === "admin", defaultUser: () => U0("boss"), _internals: { loadUsers: () => ({ users: USERS }) } };
+  const U0 = (n) => USERS.find((u) => u.username === n);
   const org = { orgIdOf: (u) => (u && u.org) || "" };
   const SESS = new Map([
     ["s_staff", { user: "staff" }],
     ["s_boss", { user: "boss" }],
     ["s_rival", { user: "rival" }],
-    ["s_legacy", {}],           // 升级上来的老会话：没记归属
+    ["s_legacy", {}],           // 前端先发 id 后发第一句话，这中间会话就是个空壳
+    ["s_legacy_full", { transcript: [{ role: "user" }] }], // 升级上来的老会话：有内容但没记归属
   ]);
   const getSession = (id) => SESS.get(id) || { history: [], transcript: [] }; // 没有的 id 跟真源码一样给空壳
   const M = new Function("account", "org", "getSession", "sessions",
@@ -14322,7 +14324,13 @@ async function testRunOwnership() {
   // ---- 判据本身 ----
   assert.ok(tryRun(U("staff"), "s_staff").allowed, "自己的任务被拦了");
   assert.ok(tryRun(U("boss"), "s_staff").allowed, "同组织管理员打不开下属的任务（企业后台要看得到）");
-  assert.ok(tryRun(U("staff"), "s_legacy").allowed, "升级上来的老会话（没记归属）被拦了——用户会以为任务丢了");
+  assert.ok(tryRun(U("staff"), "s_legacy").allowed, "空壳会话被拦了——前端是先发 id 再发第一句话的，拦了等于谁都开不了新任务");
+  // 有内容、却没记归属的会话 = 这台机器还没有账号体系那会儿留下的，它属于当初那个用的人，
+  // 也就是第一个注册、后来成了平台管理员的那位。以前这儿一律当「公共的」，于是新建一个账号
+  // 打开侧栏，满屏都是别人的任务——用户的原话是「这个 demo 账户我刚创建的怎么就有聊天记录了」
+  assert.ok(tryRun(U("boss"), "s_legacy_full").allowed, "老会话认到管理员名下之后，管理员自己反倒打不开了");
+  assert.ok(!tryRun(U("staff"), "s_legacy_full").allowed, "★没记归属的老会话对所有人敞开★ 新注册一个账号就能读到前任所有的对话");
+  assert.ok(!tryRun(U("rivalBoss"), "s_legacy_full").allowed, "老会话跨组织也能开——认到管理员名下之后仍要按组织挡");
   assert.ok(tryRun(null, "s_staff").allowed, "没开账号体系（单机一个人用）也被拦了");
 
   const cross = tryRun(U("rival"), "s_staff");
@@ -14384,7 +14392,7 @@ async function testRunOwnership() {
   assert.ok(/runtime\.runTool\(/.test(direct), "POST /api/tool/run 没走 runtime.runTool");
   assert.ok(!/executeTool\(/.test(direct), "★POST /api/tool/run 绕开 runtime 自己调了 executeTool★ 白名单就此形同虚设，HTTP 能直接扣动 run_shell");
 
-  console.log("✅ 跑着的任务防插手：插队/代答/停止/续流四条都查归属（本人·同组织管理员·老会话放行，跨组织连管理员也拒），/api/chat 归属先于 SSE 头，running 按侧栏窄口径，/api/tool/run 查归属且只走白名单");
+  console.log("✅ 跑着的任务防插手：插队/代答/停止/续流四条都查归属（本人·同组织管理员·空壳放行，没记归属的老会话归管理员，跨组织连管理员也拒），/api/chat 归属先于 SSE 头，running 按侧栏窄口径，/api/tool/run 查归属且只走白名单");
 }
 
 /**
@@ -14401,7 +14409,10 @@ async function testSessionIndex() {
   const a = src.indexOf("const sessMetaCache = new Map();");
   const b = src.indexOf("// 任务跑一半崩了", a);
   if (a < 0 || b <= a) throw new Error("server.js 里的会话清单段找不到了（函数被改名/挪走？），测试没法定位真源码");
-  const SLICE = src.slice(a, b);
+  // 「没记归属的老会话算谁的」那几行写在文件另一处（挨着 sessionAllowed），ownSession 靠它
+  const h0 = src.indexOf("let legacyOwner = {"), h1 = src.indexOf("function sessionAllowed(user, s) {", h0);
+  if (h0 < 0 || h1 <= h0) throw new Error("server.js 里「老会话归谁」那几行找不到了，测试没法定位真源码");
+  const SLICE = src.slice(h0, h1) + "\n" + src.slice(a, b);
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sessidx-"));
   try {
@@ -14414,8 +14425,10 @@ async function testSessionIndex() {
     const live = new Map();
     // lanes 注真模块，不给桩：「老会话该不该被替他填一条线」正是下面要验的事
     const lanesMod = require("../lanes");
-    const build = () => new Function("fs", "path", "store", "sessions", "SESS_DIR", "lanes",
-      SLICE + "\nreturn { listSessionsOnDisk, sessionRow, ownSession, sessMetaCache };")(fs, path, store, live, dir, lanesMod);
+    // account 只被「老会话算谁的」用到：这台机器上第一个注册的人（平台管理员）
+    const account = { defaultUser: () => ({ username: "boss" }) };
+    const build = () => new Function("fs", "path", "store", "sessions", "SESS_DIR", "lanes", "account",
+      SLICE + "\nreturn { listSessionsOnDisk, sessionRow, ownSession, sessMetaCache };")(fs, path, store, live, dir, lanesMod, account);
 
     const put = (id, o) => fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify(Object.assign({
       title: "任务 " + id, user: "boss", transcript: [{ role: "user" }], updated_at: "2026-09-01T00:00:00.000Z",
@@ -14448,13 +14461,18 @@ async function testSessionIndex() {
     assert.strictEqual(laneRows.find((r) => r.id === "s_10").lane, undefined, "认不出来的线名被原样放行了");
     for (const id of ["s_8", "s_9", "s_10"]) fs.rmSync(path.join(dir, id + ".json"));
 
-    // ★ 用户那句「历史全没了」的正主：登录了也要看得见自己的，外加升级上来那些没记归属的
+    // ★ 两句报障在这儿正面撞上：一句是「升级完历史全没了」，一句是「新建的 demo 账号
+    // 怎么一打开就有一堆聊天记录」。把没记归属的老会话认到平台管理员（这台机器上第一个
+    // 注册的人，也就是当年账号体系还没有时坐在这台机器前的那个人）名下，两句话同时成立：
+    // 他的历史一条不少，新账号的侧栏干干净净。
     const boss = { username: "boss" }, staff = { username: "staff" };
     const mine = (u) => rows.filter((r) => M.ownSession(u, r)).map((r) => r.id);
     assert.deepStrictEqual(mine(boss), ["s_2", "s_1", "s_4"], "老板的侧栏漏了：" + JSON.stringify(mine(boss)));
-    assert.deepStrictEqual(mine(staff), ["s_3", "s_4"], "同事的侧栏不对：" + JSON.stringify(mine(staff)));
-    assert.ok(mine(boss).includes("s_4") && mine(staff).includes("s_4"),
+    assert.deepStrictEqual(mine(staff), ["s_3"], "同事的侧栏不对：" + JSON.stringify(mine(staff)));
+    assert.ok(mine(boss).includes("s_4"),
       "★升级上来那些没记归属的老会话被藏了★ 「历史全没了」的报障就是这一批");
+    assert.ok(!mine(staff).includes("s_4"),
+      "★没记归属的老会话铺进了新账号的侧栏★ 「我刚创建的 demo 账号怎么就有聊天记录了」就是这一条");
     assert.deepStrictEqual(rows.filter((r) => M.ownSession(null, r)).map((r) => r.id), ["s_2", "s_3", "s_1", "s_4"],
       "没开账号体系（一个人用）时反倒过滤了");
 
@@ -14575,7 +14593,7 @@ async function testSessionIndex() {
     assert.ok(/locked: true/.test(projRoute) && /projects: \[\]/.test(projRoute),
       "/api/projects 没对没有全局工作目录的人如实回「你这儿没有项目这回事」——前端只好按一个对不上的名字过滤，历史又会空");
 
-    console.log("✅ 任务历史权威清单：按磁盘给（倒序·坏文件/空对话/.bak 不进）· 自己的和没记归属的老会话都在 · 比 sessionAllowed 窄 · mtime 增量缓存跟着改和删 · 内存优先 · 归属不回传 · 假项目不许回来");
+    console.log("✅ 任务历史权威清单：按磁盘给（倒序·坏文件/空对话/.bak 不进）· 自己的都在、没记归属的老会话认到管理员名下（新账号侧栏是干净的）· 比 sessionAllowed 窄 · mtime 增量缓存跟着改和删 · 内存优先 · 归属不回传 · 假项目不许回来");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

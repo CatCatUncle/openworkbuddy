@@ -71,7 +71,7 @@ const PLATFORM_WRITE = [
   // 会出现在所有人（包括平台管理员自己）的每一条任务里——而技能正文就是写给 agent 看的指令，
   // agent 手里有 shell。放开写等于让任何一个刚注册的同事给全公司的 agent 递指令。
   // 读（GET）不拦：装了什么谁都该看得见。
-  "/api/skills", "/api/memory", "/api/library",
+  "/api/skills", "/api/memory",
   // 「用系统程序打开」「在访达里显示」= 在**服务器那台机器**上起一个进程。
   // 按上面那条线，这是「配这台机器」，不是租户内动作：成员开在别人机器上的窗口他也看不见，
   // 而这条路径以前连表都不在，任何登录用户都能拿它拉起服务端进程。
@@ -83,11 +83,11 @@ const PLATFORM_READ = [
   "/api/schedules", "/api/backup", "/api/security/audit", "/api/memory",
   "/api/evolve", "/api/eval", "/api/feishu",
 ];
-// 读表里为什么没有 /api/library：拦它拦了个寂寞。资料库是**一份全局目录**（tools.js 的 LIB_DIR），
-// 每个人的 agent 都带着 library_list / library_read 这两个工具，一句「翻一下资料库」就能把文件清单、
-// 灵感笔记、乃至文件正文原样念出来——同样的字节，走 agent 拿得到，走界面反而 403。
-// 结果只有一个：资料库页面对普通成员写着「还没有参考资料」，一句瞎话。
-// 所以读放行、写照拦（上传/删除/记笔记全在 PLATFORM_WRITE 的 /api/library 前缀里）。
+// 两张表里为什么都没有 /api/library：资料库现在一人一份（server.js 的 libraryRootOf）。
+// 以前它是整台机器共用的一个目录，于是这儿只能按「谁的东西」拦：写拦住，读拦不住——
+// 每个人的 agent 都带着 library_list / library_read，一句「翻一下资料库」照样把别人的文件念出来。
+// 根分开之后这道题没了：上传、删除、记笔记都只落在调用者自己那个根里，跨不过去；
+// 再拦写就变成普通成员只能看着一个**自己的空目录**什么也放不进去，比原来还难用。
 /**
  * 上面那张写表按前缀拦，这几条是被顺带拦住的例外——它们只花调用者自己的钱、只改他自己那份：
  *   /api/engines/test  真跑一句话，走的是他本机那份 CLI 订阅，一个字节都不落盘
@@ -134,24 +134,47 @@ const PERSONAL_READ = new Set(["/api/memory"]);
  * 屏幕前只有一个人，他自己的机器、自己的 API Key、自己的桌面，却被自己的软件告知
  * 「这块是服务器级设置，归平台管理员管」——桌面宠物开不了，底层引擎切不动。
  *
- * 判据是两个都得成立，缺一不可：
+ * 判据是三个都得成立，缺一不可：
  *   ① 跑在 Electron 壳里（不是 node server.js，也不是 run_node 派生的子进程）；
- *   ② 服务端只监听回环地址（127.0.0.1 / ::1 / localhost）。
+ *   ② 服务端只监听回环地址（127.0.0.1 / ::1 / localhost）；
+ *   ③ 这台机器上最多只有一个账号。
  * ② 是关键的那半边：只要绑到 0.0.0.0 或某个网卡地址，别人就能连进来，闸必须留着。
  * Docker 部署走的正是 HOST=0.0.0.0，天然落在墙这一侧。
  *
+ * ③ 是后补的，补的是一条被用户当场撞见的洞：桌面版里建了第二个账号之后，「屏幕前只有一个人」
+ * 这个前提当场就不成立了，可这道闸还认着它——于是新建的号切进来，宠物开关、底层引擎、
+ * 快捷键、上次选的模型全写在同一份 config.json 上（ownPrefs 走的正是这个判据），
+ * 换个号登进来设置一个字都没变；更糟的是 platformGuard 第一行直接放行，
+ * 那个号连 API Key、MCP、插件都能改。建第二个账号 = 这台机器开始有「别人」了，墙就得立起来。
+ *
  * 同时也把凭证脱敏一起关掉。听起来吓人，其实相反：能连上回环地址的人，本来就能直接
  * 打开 config.json 看那些 Key。留着脱敏在这儿只有一个效果——界面把 Key 显示成空，
- * 用户随手一存就把真 Key 抹了。这是本次改动里唯一真会丢数据的坑，所以两个开关必须同生共死。
+ * 用户随手一存就把真 Key 抹了。这是那次改动里唯一真会丢数据的坑，所以两个开关必须同生共死。
+ * ③ 把这个坑绕开了：账号一多，脱敏是跟着开了，但**平台管理员本人始终豁免**
+ * （redactGuard 第二行的 ownsGlobalWorkspace），而别的成员根本过不了 platformGuard 那道写闸，
+ * 也就没人会拿着一份被抹空的 Key 去按保存。
  */
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"]);
-let soloDesktop = false;
+let desktopShell = false;   // ①②：装成什么形态、绑在哪个地址，起服务那一下就定死了
+// ③ 每个请求都要问一次，可它只会 0→1→2 地涨：数到 2 就再也不用回头问了，
+// 剩下的情况 2 秒内不重复读盘（platformGuard / redactGuard / tenantScope 每条请求都要问）
+let soloCount = { at: 0, solo: true };
+function soloAccounts() {
+  if (!soloCount.solo) return false;              // 已经不是一个人了，不会再变回去
+  const now = Date.now();
+  if (now - soloCount.at < 2000) return soloCount.solo;
+  let solo = true;
+  try { solo = account.userCount() <= 1; } catch {}
+  soloCount = { at: now, solo };
+  return solo;
+}
 function setDeployment({ host, shell } = {}) {
-  soloDesktop = !!shell && LOOPBACK.has(String(host || "").trim().replace(/^\[|\]$/g, ""));
-  return soloDesktop;
+  desktopShell = !!shell && LOOPBACK.has(String(host || "").trim().replace(/^\[|\]$/g, ""));
+  soloCount = { at: 0, solo: true };   // 换一次部署形态就把上面那个缓存清掉（测试里会来回切）
+  return isSoloDesktop();
 }
 function isSoloDesktop() {
-  return soloDesktop;
+  return desktopShell && soloAccounts();
 }
 
 /** 平台管理员 = 默认组织的管理员。全局工作目录、密钥、引擎这些只有他能动 */
@@ -159,7 +182,7 @@ function ownsGlobalWorkspace(user) {
   return !!user && org.orgIdOf(user) === org.DEFAULT_ORG && account.isAdmin(user);
 }
 function platformGuard(req, res, next) {
-  if (soloDesktop) return next(); // 个人桌面版：没有「平台」这回事，别拿服务器的规矩管一个人的机器
+  if (isSoloDesktop()) return next(); // 个人桌面版：没有「平台」这回事，别拿服务器的规矩管一个人的机器
   if (ownsGlobalWorkspace(req.user)) return next();
   // 小写化再查表：表里全是小写前缀，而 Express 路由大小写不敏感，
   // 普通成员发 POST /api/Settings 能命中处理器却不命中这张表——整张写表就绕过去了
@@ -200,7 +223,7 @@ function redactSecrets(v) {
   return v;
 }
 function redactGuard(req, res, next) {
-  if (soloDesktop) return next(); // 见 setDeployment：桌面版关了闸就必须一起关脱敏，否则会把真 Key 存成空
+  if (isSoloDesktop()) return next(); // 见 setDeployment：桌面版关了闸就必须一起关脱敏，否则会把真 Key 存成空
   if (req.method !== "GET" || req.path.toLowerCase().startsWith("/api/admin") || ownsGlobalWorkspace(req.user)) return next();
   const json = res.json.bind(res);
   res.json = (body) => json(redactSecrets(body));
@@ -214,12 +237,16 @@ function redactGuard(req, res, next) {
  * 打开/上传，还有任务本身写出去的每一个文件），漏判一个就是一个跨租户读文件的洞。
  * 默认组织返回空串 → withWorkspace 原样放行，单机个人版一行行为都没变。
  *
+ * 资料库的根（一人一份，见 server.js 的 libraryRootOf）也在这儿入栈，理由同上：读它的入口有
+ * 十来个（列表/上传/下载/预览/删除/新建文件夹/记笔记/全库搜索），再加上 agent 手里的
+ * library_list / library_read / library_import——漏判一个就是一个账号翻到另一个账号的资料。
+ *
  * 个人偏好（底层引擎 / 思考档 / 上次选的模型）也在这儿一并入栈，理由一模一样：
  * 「这一趟任务该用哪个引擎」的读取点散在 goalThink、/api/engines、/api/thinking、agent.js 里，
  * 每处各自去翻当前是谁，漏一处就是「设置页显示 Codex、实际还在烧 API」。
  * 没登录 / 没偏好文件 → 传 null → 不设 store → 全部回落到 config.json，老行为一字不差。
  */
-function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig }) {
+function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, withLibraryBase, libraryRootOf }) {
   return (req, res, next) => {
     let root = "";
     let policy = null;
@@ -259,12 +286,17 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig })
     let mine = null;
     try {
       // 个人桌面版从来不写偏好文件（那边一切照旧落 config.json），别为它每个请求白 stat 一次盘
-      const p = soloDesktop ? null : prefs.read(req.user);
+      const p = isSoloDesktop() ? null : prefs.read(req.user);
       if (p && Object.keys(p).length) mine = p;
     } catch (e) {
       console.warn("[个人偏好] 读取失败，本次按全局设置走：" + e.message);
     }
-    withWorkspace(root, () => withPolicy(policy, () => quota.withActor(actor, () => prefs.withPrefs(mine, next))));
+    // 资料库根算不出来（没传依赖 / 算错了）就传空串 → withLibraryBase 自己退回 data/library，老行为
+    let libBase = "";
+    try { if (libraryRootOf) libBase = libraryRootOf(req.user) || ""; } catch (e) { console.warn("[租户] 取资料库根失败：" + e.message); }
+    const inner = () => withWorkspace(root, () => withPolicy(policy, () => quota.withActor(actor, () => prefs.withPrefs(mine, next))));
+    if (withLibraryBase) withLibraryBase(libBase, inner);
+    else inner();
   };
 }
 

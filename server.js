@@ -25,7 +25,7 @@ const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder, anthropicBase } = require("./llm");
 const sessSearch = require("./session-search");
-const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
 const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const shotHistory = require("./shot-history"); // 一镜一镜的版本留底：改台词重跑之后，上一版首帧还拿得回来
@@ -651,12 +651,14 @@ function sessionRow(id, s) {
  * 侧栏只列「我自己的」，故意比 sessionAllowed 更窄：
  * 后者管的是「能不能打开」（管理员拿到同组织的链接可以打开），
  * 这里管的是「侧栏该不该出现」——把同事的任务铺进管理员的侧栏是另一种事故。
- * 没开账号体系（req.user 为空）本来就是一个人用；老会话没记归属的一律留着，别让升级上来的历史消失。
+ * 没开账号体系（req.user 为空）本来就是一个人用；没记归属的老会话归管理员（见 legacySessionOwner），
+ * 不再当公共的——那一条正是「新建的号一打开，侧栏里全是别人的对话」的出处。
+ * 这里的 row 是磁盘清单里的一行，不会是空壳，所以直接按 legacySessionOwner 兜底。
  */
 function ownSession(user, row) {
   if (!user) return true;
-  if (!row.user) return true;
-  return row.user === user.username;
+  const owner = (row && row.user) || legacySessionOwner();
+  return !owner || owner === user.username;
 }
 
 // 任务跑一半崩了 / 用户直接退出 App，这一轮的过程就全没了——中途也存，最多每 5 秒一次。
@@ -995,7 +997,7 @@ app.use(relay.createRouter({
 app.use(account.authGuard); // 其余 /api/* 与 /im/*（除外部回调）需要登录
 
 // 租户工作目录 → 服务器级接口的闸 → 凭证脱敏。三段的说明都在 admin.js 里
-app.use(admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config }));
+app.use(admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config, withLibraryBase, libraryRootOf: (u) => libraryRootOf(u) }));
 app.use(admin.platformGuard);
 app.use(admin.redactGuard);
 const ownsGlobalWorkspace = admin.ownsGlobalWorkspace;
@@ -1070,12 +1072,47 @@ if (enterprise && typeof enterprise.mount === "function") {
  * 猜中/拿到一个 id 就能读走整段对话（含产出文件名、模型原文）。这里补上归属判定：
  * 本人一定能看；管理员只能看**本组织**的；老会话没记 user 的按公共处理（不然升级上来全打不开）。
  */
+/**
+ * 没记归属的那些老会话算谁的。
+ *
+ * 以前一律按「公共」处理，本意是别让升级上来的历史消失。可账号体系上来之后，「公共」
+ * 的实际意思是：**每注册一个新账号，他一进来就看见前面所有人的任务历史**——刚建的 demo 号
+ * 打开侧栏，里头是管理员那几十条对话，标题、产出文件名、点开就是全文。
+ *
+ * 跟助理页上下文那次（local_assist，见下面那段迁移）是同一个判断：没记归属 = 账号体系之前
+ * 留下的，那会儿这台机器上就一个人在用，认到管理员名下即可。历史一条不丢，也不铺给别人。
+ *
+ * 不去改盘上的文件（那是 1500 个 JSON 的批量重写，写坏一个就是一段对话没了），只在读的时候
+ * 认这一笔。管理员是谁会变（改名、删号），所以每 30 秒回头问一次账号表。
+ */
+let legacyOwner = { at: 0, name: "" };
+function legacySessionOwner() {
+  const now = Date.now();
+  if (now - legacyOwner.at < 30000) return legacyOwner.name;
+  let name = "";
+  try { const boss = account.defaultUser(); name = boss ? boss.username : ""; } catch {}
+  legacyOwner = { at: now, name };
+  return name;
+}
+/**
+ * 一条会话（内存里的那份对象）现在算谁的。
+ *
+ * 空壳不算谁的：前端是先自己生成 id、再发第一句话，中间这一下 getSession 会凭空造一份空的出来。
+ * 把空壳认到管理员名下的话，别的账号连自己刚开的那条新对话都打不开（403）。
+ */
+function sessionOwner(s) {
+  if (!s) return "";
+  if (s.user) return s.user;
+  const 有内容 = (s.transcript && s.transcript.length) || (s.history && s.history.length);
+  return 有内容 ? legacySessionOwner() : "";
+}
 function sessionAllowed(user, s) {
-  if (!user || !s || !s.user) return true;
-  if (s.user === user.username) return true;
+  if (!user || !s) return true;
+  const owner = sessionOwner(s);
+  if (!owner || owner === user.username) return true;
   if (!account.canAdmin(user)) return false;
-  const owner = account._internals.loadUsers().users.find((u) => u.username === s.user);
-  return !owner || org.orgIdOf(owner) === org.orgIdOf(user);
+  const o = account._internals.loadUsers().users.find((u) => u.username === owner);
+  return !o || org.orgIdOf(o) === org.orgIdOf(user);
 }
 function guardSession(req, res) {
   const s = getSession(req.params.id);
@@ -3819,13 +3856,29 @@ app.delete("/api/projects/:name", (req, res) => {
 
 // ---------- 资料库·灵感（跨项目共享：参考文件 + 灵感笔记，agent 可用 library_* 工具读取） ----------
 const LIB_DIR = dataPath("data", "library");
-const NOTES_FILE = dataPath("data", "inspirations.json");
+/**
+ * 资料库的根：一人一个。
+ *
+ * 老库 data/library 原地不动，仍旧是「这台机器的主人」那一份——平台管理员、以及压根没开
+ * 账号体系的单机版。别人一人一个 data/library-users/<账号>/，头一次用的时候才建。
+ *
+ * 为什么非改不可：资料库以前是整台机器**共用的一份**，而且 admin.js 那张读表还特地把
+ * /api/library 放行了（理由是拦了也白拦，agent 的 library_list 照样念得出来）。两件事叠在一起，
+ * 结果就是新注册的号打开资料库，看见的是别人传进去的合同和素材——跟侧栏里那条会话历史
+ * 是同一个事故的两个面。
+ *
+ * 不搬文件：管理员那一份还躺在原地，路径一个字符没变；新号拿到的是一个空目录。
+ */
+function libraryRootOf(user) {
+  if (!user || ownsGlobalWorkspace(user)) return LIB_DIR;
+  return dataPath("data", "library-users", prefs.keyOf(user));
+}
 function readNotes() {
-  const list = store.readJson(NOTES_FILE, []);
+  const list = store.readJson(notesFileOf(libBase()), []);
   return Array.isArray(list) ? list : [];
 }
 function writeNotes(notes) {
-  store.writeJsonAtomic(NOTES_FILE, notes, { pretty: true });
+  store.writeJsonAtomic(notesFileOf(libBase()), notes, { pretty: true });
 }
 /**
  * 资料库里的相对路径 → 绝对路径。
@@ -3838,7 +3891,7 @@ function writeNotes(notes) {
  * 三道：段里不许有 `..`、不许以 `.` 开头（.git/.ssh 这类别被翻出来）、不许有 Windows 非法字符；
  * 拼完再让 safePathIn 按根复核一遍，两道都过才算数。
  */
-function libPath(rel, root = LIB_DIR) {
+function libPath(rel, root = libBase()) {
   const parts = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
   for (const seg of parts) {
     if (seg === ".." || seg.startsWith(".") || /[<>:"|?*\u0000-\u001f]/.test(seg)) throw new Error(`路径不合法：${seg}`);
@@ -3908,8 +3961,8 @@ app.post("/api/library/folder", (req, res) => {
   }
 });
 
-// 删空文件夹。非空的不给删：资料库是共享的一份，一条 rm -rf 下去别人的素材也跟着没了，
-// 而这个接口的调用方是一个「删除」小链接，点错的代价不该是不可逆的
+// 删空文件夹。非空的不给删：这个接口的调用方是一个「删除」小链接，
+// 点错的代价不该是一整个文件夹的东西不可逆地没了
 app.delete("/api/library/folder", (req, res) => {
   try {
     const rel = libRel((req.query || {}).dir || (req.body || {}).dir);
@@ -6318,6 +6371,19 @@ app.post("/api/chat", async (req, res) => {
     // 外层：目标轮（普通消息只走一轮；goal 模式没达标自动再跑，最多 GOAL_MAX_ROUNDS 轮）
     let lastFinal = "";
     let roundStopped = null; // 本目标轮里任务被强制收尾的原因（超时/上限/手停）；有它就不再自动开新轮
+    /**
+     * 用户又开口了：把上一轮熔断的媒体渠道整个放开一次（media-health.js 第 4 条自愈路）。
+     *
+     * 出处是一句原话：「渠道断了我去修好了，我说了修复好了 AI 也不去自己重试一下」。
+     * 他修的是渠道那头——充值、续费、把网弄通——设置页一个字没动，所以指纹没变、reset() 没人调，
+     * 只剩干等 30 分钟。这道闸拦的本来就是模型在**一趟任务里**反复撞，人重新开口就是新的一趟。
+     *
+     * 放开的那几条要告诉模型（reopenedMediaBlock）：历史里还躺着上一轮那句「别再调这个工具了」，
+     * 不说一声的话它照着历史继续拒绝，用户看到的还是「用不了」。只报第一轮——
+     * 后面那些是目标模式自己开的新轮和插队消息，不是人又说了一次话。
+     */
+    let mediaReopened = [];
+    try { mediaReopened = mediaHealth.reopen(); } catch {}
     for (let goalRound = 0; ; goalRound++) {
       roundStopped = null;
       // 进行中的目标注入任务上下文：agent 每一轮都对着验收标准干活，不跑偏
@@ -6327,6 +6393,7 @@ app.post("/api/chat", async (req, res) => {
         const r = await runtime.runTask({
           lang: lang === "en" ? "en" : "zh", // 界面语言：英文界面时让 AI 也用英文答，用户不用再在每句话里交代
           taskLabel: sess.title || String(message).slice(0, 24),
+          mediaReopened, // 刚放开的媒体渠道，写进这一轮的提示词（见上面那段）
           sessionId, // 追踪上按会话归堆：同一个对话问了十轮，在 Langfuse 上是一条会话线而不是十条散 trace
           baseDir: taskBaseDir,
           llmOverride: sessLLM,
@@ -6354,6 +6421,7 @@ app.post("/api/chat", async (req, res) => {
             runState.asks.set(askId, done);
           }),
         });
+        mediaReopened = [];   // 只报给这一轮：后面的目标轮/插队不是「人又说了一次话」
         addUsage(total, r && r.usage);
         if (r && r.provider) ranLLM = { model: r.model || r.provider, provider: r.provider };
         if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || laneEngine, r.sessionId);
@@ -7045,8 +7113,12 @@ function accountedRuntime(baseRuntime, source) {
       // 身份则听调用方的。助理页那边是真有登录态的，成员发的消息不能顶着管理员的身份跑；
       // 飞书 / 定时任务确实没有登录态，那才退回管理员。
       // 注意 user 必须从 rest 里摘出来单独判：留在 rest 里的话，调用方传了个 undefined 也会把兜底覆盖掉
+      // IM 里每一条消息都是真人敲的，跟网页对话同一个判据（定时任务不算：那是 cron 在说话，
+      // 一分钟一轮地把断掉的渠道重撞一遍，正是这道闸当初要拦的东西）
+      const reopened = source === "im" ? (() => { try { return mediaHealth.reopen(); } catch { return []; } })() : [];
       const r = await baseRuntime.runTask({
         user: caller || (owner ? owner.username : undefined),
+        ...(reopened.length ? { mediaReopened: reopened } : {}),
         taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
         // IM / 定时任务的产物也各归各的文件夹（仅默认工作空间；调用方可在 args 里覆盖）
         baseDir:

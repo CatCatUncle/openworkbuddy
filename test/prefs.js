@@ -320,6 +320,20 @@ function call(method, url, { body, cookie } = {}) {
   });
 }
 
+/**
+ * 把这台机器临时缩回「只有老板一个账号」，跑完原样放回去。
+ *
+ * 「个人桌面版」这个身份现在是三个条件与起来的：Electron 壳 + 只听本机 + 这台机器上只有一个账号。
+ * 前两个条件下面用 setDeployment 摆，第三个得真去动账号表——因为它判的就是账号表。
+ */
+function 只剩一个账号(fn) {
+  const st = account._internals.loadUsers();
+  const 全部 = st.users;
+  st.users = 全部.slice(0, 1);
+  account._internals.saveUsers(st);
+  try { return fn(); } finally { st.users = 全部; account._internals.saveUsers(st); }
+}
+
 (async () => {
   await listening;
 
@@ -383,14 +397,26 @@ function call(method, url, { body, cookie } = {}) {
   r = await call("GET", "/api/settings", { cookie: boss });
   eq(r.json.search.jina_key, "REAL-JINA-KEY", "反向对照：平台管理员读得到真值");
 
-  // 切成个人桌面版：两个开关必须一起松。只松一半的话，界面把 Key 显示成空，
-  // 用户随手点一下保存就把真 Key 抹了 —— 这是整套改动里唯一真会丢数据的坑
+  // 「个人桌面版」拆墙的前提是「屏幕前就这一个人」。壳装在本机、只听 127.0.0.1 —— 这两条
+  // 还不够：同一台 Mac 上开了两个账号，这话就不成立了，拆了墙等于小张能改老板的 Key 和 MCP。
+  // 用户的原话是「怎么切换账号了我的宠物设置还有什么通信渠道这些设置还是没有变的啊」——
+  // 就是这儿塌的：两个人共用一份 config.json。
   admin.setDeployment({ shell: true, host: "127.0.0.1" });
   r = await call("POST", "/api/settings", { cookie: zhang, body: { models: [{ name: "x", model: "y" }] } });
-  eq(r.status, 200, "桌面版：没有「平台管理员」这回事，服务器级设置也能改");
+  eq(r.status, 403, "壳 + 本机，但机器上有两个账号：墙不许拆（这是用户报的那个串台）");
   r = await call("GET", "/api/settings", { cookie: zhang });
-  eq(r.json.search.jina_key, "REAL-JINA-KEY", "同一趟里脱敏也必须跟着关（否则一存就把真 Key 抹成空）");
-  eq(r.json.models[0].api_key, "REAL-MODEL-KEY", "模型的 Key 同样是真值");
+  eq(r.json.search.jina_key, "", "  └ 脱敏也照旧，成员读不到别人的 Key");
+
+  // 缩回一个账号：这才是出厂就装一份、自己一个人用的那台机器，一切照旧
+  await 只剩一个账号(async () => {
+    admin.setDeployment({ shell: true, host: "127.0.0.1" }); // 重新判一次账号数
+    r = await call("POST", "/api/settings", { cookie: boss, body: { models: [{ name: "x", model: "y" }] } });
+    eq(r.status, 200, "桌面版（真就一个账号）：没有「平台管理员」这回事，服务器级设置也能改");
+    // 两个开关必须一起松。只松一半的话，界面把 Key 显示成空，用户随手点一下保存就把真 Key 抹了
+    r = await call("GET", "/api/settings", { cookie: boss });
+    eq(r.json.search.jina_key, "REAL-JINA-KEY", "同一趟里脱敏也必须跟着关（否则一存就把真 Key 抹成空）");
+    eq(r.json.models[0].api_key, "REAL-MODEL-KEY", "模型的 Key 同样是真值");
+  });
   admin.setDeployment({ shell: false, host: "0.0.0.0" });
   r = await call("POST", "/api/settings", { cookie: zhang, body: { models: [] } });
   eq(r.status, 403, "切回服务器形态：墙立刻回来（说明是每次请求现判，不是启动时烙死的）");
@@ -427,11 +453,19 @@ function call(method, url, { body, cookie } = {}) {
   eq(CONFIG.agent.engine, "builtin", "全程没有谁把成员的选择写回 config.agent");
   eq(CONFIG.agent.engine_options["claude-code"].model, "sonnet", "config 里那份 engine_options 也没被就地改（覆盖必须是复制一层）");
 
-  // 桌面版短路：那边一切照旧落 config.json，就算偏好文件在也不该被读
+  // 桌面版短路：只有一个账号时那边一切照旧落 config.json，就算偏好文件在也不该被读
   admin.setDeployment({ shell: true, host: "127.0.0.1" });
   r = await call("GET", "/api/prefs-probe", { cookie: zhang });
-  eq(r.json.engine, "builtin", "桌面版：不读偏好文件，一切照旧看 config（壳在任何人登录之前就靠 config 装宠物和快捷键）");
-  eq(r.json.sameObject, true, "  └ 也不白复制一份视图出来");
+  eq(r.json.engine, "claude-code", "壳 + 本机，但有两个账号：偏好照读，小张看到的还是他自己选的引擎");
+  eq(r.json.pet.scale, 1.5, "  └ 宠物缩放也是他自己的（用户报的「切换账号宠物设置没变」就是这条）");
+  r = await call("GET", "/api/prefs-probe", { cookie: boss });
+  eq(r.json.engine, "builtin", "  └ 同一台机器上老板看到的仍是他自己那份，没被小张的偏好带跑");
+  await 只剩一个账号(async () => {
+    admin.setDeployment({ shell: true, host: "127.0.0.1" });
+    r = await call("GET", "/api/prefs-probe", { cookie: boss });
+    eq(r.json.engine, "builtin", "桌面版（真就一个账号）：不读偏好文件，一切照旧看 config（壳在任何人登录之前就靠 config 装宠物和快捷键）");
+    eq(r.json.sameObject, true, "  └ 也不白复制一份视图出来");
+  });
   admin.setDeployment({ shell: false, host: "0.0.0.0" });
 
   console.log("\n【9】没有请求上下文的地方（定时任务 / IM / 命令行 openworkbuddy）必须回落到 config");

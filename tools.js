@@ -1761,7 +1761,7 @@ const NOTES_FILE = dataPath("data", "inspirations.json");
 /**
  * 当前项目挂载了资料库的哪一块（相对 LIB_DIR 的子目录，""=整个库）。
  *
- * 为什么要有：资料库是整台服务器**共用的一份**。人一多、素材一杂，做「客户 A 的合同」那个项目时
+ * 为什么要有：一个人的库也会摆得很杂。文件一多，做「客户 A 的合同」那个项目时
  * 把「短剧素材」「公司规章」一股脑塞进 library_list，模型就要在一堆不相干的文件名里挑——
  * 挑错了不会报错，只会安静地引用错资料。挂上子目录之后，这个项目的 agent 眼里的资料库就只有那一块。
  *
@@ -1770,6 +1770,28 @@ const NOTES_FILE = dataPath("data", "inspirations.json");
  */
 let defaultLibraryRel = "";
 const libStore = new AsyncLocalStorage();
+/**
+ * 资料库的**根**在哪。上面那个 ALS 管的是「挂载哪一块」（根底下的子目录），这个管根本身。
+ *
+ * 为什么要分两层：资料库本来是整台机器共用的一份 data/library。多账号一上来，这就是
+ * 「新注册的号打开资料库，看见的是管理员传进去的合同」——跟侧栏那条会话历史是同一个事故。
+ * 现在一人一个根（server.js 的 libraryRootOf 决定给谁哪个），挂载那一层原样不动。
+ *
+ * 跟工作目录一样走 ALS：租户请求各自跑在自己的异步链上，用模块级变量会串台。
+ * 没 run 过就是 LIB_DIR——单机个人版、命令行、定时任务全落在这一支，一行行为都没变。
+ */
+const libBaseStore = new AsyncLocalStorage();
+function withLibraryBase(dir, fn) {
+  return libBaseStore.run(String(dir || "") || LIB_DIR, fn);
+}
+function libBase() {
+  return libBaseStore.getStore() || LIB_DIR;
+}
+/** 灵感笔记落在哪。老库那一支还是原来的 data/inspirations.json，一个字节都不搬；
+ *  别人的根底下各放一份（点头开头，列资料库时本来就跳过） */
+function notesFileOf(base) {
+  return (base || LIB_DIR) === LIB_DIR ? NOTES_FILE : path.join(base, ".inspirations.json");
+}
 /** 把一段相对路径洗干净：统一正斜杠、去空段、拒绝 `..` 和以 `.` 开头的段（别让人翻到 .ssh 去） */
 function cleanLibRel(rel) {
   const parts = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
@@ -1788,11 +1810,12 @@ function withLibraryDir(rel, fn) {
 }
 /** agent 这一侧看得见的资料库根。挂载目录被人在磁盘上删掉了就退回整个库，别让工具整个哑掉 */
 function libRoot() {
+  const base = libBase();
   const rel = getLibraryDir();
-  if (!rel) return LIB_DIR;
-  const abs = path.join(LIB_DIR, rel);
+  if (!rel) return base;
+  const abs = path.join(base, rel);
   try { if (fs.statSync(abs).isDirectory()) return abs; } catch {}
-  return LIB_DIR;
+  return base;
 }
 /** 解析资料库里的相对路径，越界（../、绝对路径、软链跳出去）一律拒绝 */
 function libResolve(name) {
@@ -1835,10 +1858,10 @@ function libraryList() {
   files.sort();
   let notes = [];
   try {
-    notes = JSON.parse(fs.readFileSync(NOTES_FILE, "utf8"));
+    notes = JSON.parse(fs.readFileSync(notesFileOf(libBase()), "utf8"));
   } catch {}
   const parts = [];
-  const scope = getLibraryDir() && libRoot() !== LIB_DIR
+  const scope = getLibraryDir() && libRoot() !== libBase()
     ? `（本项目只挂载了资料库的「${getLibraryDir()}」这一块，下面的路径都相对它）`
     : "";
   parts.push(files.length
@@ -1891,10 +1914,10 @@ function libraryRead(name) {
  * 没有这个工具时模型唯一的出路是自己拼绝对路径去 run_shell cp，而那条路径落在 data 目录里，
  * 安全中心本来就该拦（也确实拦了），于是变成一条必然撞墙的死路。
  *
- * **只往一个方向复制：库 → 工作目录。** 反过来不做。资料库是整台服务器共用的一份，
- * 界面上写得明明白白「往里放东西归平台管理员」（非管理员那里挂的是「只读」角标）。
- * 给 agent 开一个写回的口子，等于任何一个租户用户都能借 agent 的手改公共素材架——
- * 这是权限绕过，不是便利。
+ * **只往一个方向复制：库 → 工作目录。** 反过来不做。资料库是人自己摆的那个架子：
+ * 哪份合同模板能留、分在哪个客户的文件夹里，都是他一次次决定的。任务跑出来的东西归工作目录，
+ * 要不要进架子他自己说了算。给 agent 开一个写回的口子，库里就会您您多出一堆没人要的中间产物，
+ * 而这些东西下一次任务又会被 library_list 读回去。
  */
 function libraryImport(name, dir) {
   const src = libResolve(name);
@@ -4269,4 +4292,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
