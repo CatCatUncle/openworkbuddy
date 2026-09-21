@@ -707,6 +707,93 @@ const TURNOUT_CHECKS = `
     }
   }
 
+  // ── 一整包东西被搬进来，不是一百件产出。
+  //    2026-09-21 真事故重演：软著登记任务把整个仓库拷进「登记用源码包_测试/」，
+  //    那一轮真落盘 124 个，122 个在这一个目录里。卡片只写文件名不写目录，于是用户在
+  //    对话里看到 cover_v2.png / README.en.md / 粘贴文本_0909_162900.txt 一排，
+  //    字节数还跟仓库根目录那几个一模一样（本来就是拷贝）——他的结论是「别的对话串进来了」。
+  {
+    const TD = "任务_0921_帮我写一个github开/";
+    const BD = TD + "登记用源码包_测试/";
+    // 这一包里够格上卡的那些（真存档里就是它们冒出来的），加上一堆源码凑满 122 个
+    const 眼熟的 = ["粘贴文本_0909_162900.txt","llms.txt","cover_v3.png","cover_v2.png","README.en.md",
+                   "LICENSE-ECOSYSTEM.md","NOTICE.md","CHANGELOG.md","COMMERCIAL-LICENSE.md",
+                   "CONTRIBUTING.md","CHANGELOG.en.md"];
+    const pack = 眼熟的.map((n) => F(BD + n, 2800));
+    for (let i = 0; i < 111; i++) pack.push(F(BD + "mod" + i + ".js", 900));
+    const 真成果 = [F(TD + "开源仓库版权授权与软著申请_行动方案.md", 19400), F(TD + "export_registration_source.js", 4600)];
+    const batch = [...真成果, ...pack];
+
+    // ★负向对照★ 先证明这批输入真的踩得中老路径：不装闸的话，光这一包里够格上卡的
+    // 就有 10 个以上，8 个卡位会被它们塞满，真成果一张都轮不上。
+    // 不做这条，下面「只有 1 张文件夹卡」有可能只是因为压根没文件够格上卡
+    const 够格的 = pack.filter((f) => cardWorthy(f.name));
+    ok("负向对照：这一包里够格上卡的有 " + 够格的.length + " 个，塞得满 8 个卡位（不装闸就是老样子）",
+      够格的.length > 8, JSON.stringify(够格的.map((f) => f.name)));
+    ok("  ← 其中就有用户眼熟的那三个（README.en.md 是脚手架，已经另外挡掉了）",
+      ["cover_v2.png","粘贴文本_0909_162900.txt","llms.txt"].every((n) => 够格的.some((f) => f.name === BD + n)));
+
+    const b = fresh();
+    renderTurnOutputs(b, batch, batch, { root: "r1" });
+    const cs = cards(b);
+    ok("★这一包只占一张卡★ 不再从里面挑 8 个摆成「本回合产出」",
+      cs.filter((n) => n.indexOf(BD.slice(0, -1)) === 0).length === 1 && cs.length === 2, JSON.stringify(cs));
+    const bc = b.querySelector(".out-card[data-bundle]");
+    ok("那张卡说清楚它是个文件夹、里头几个文件", !!bc &&
+      bc.querySelector(".out-name").textContent === "登记用源码包_测试/" &&
+      bc.querySelector(".out-meta").textContent === "122 个文件",
+      bc ? bc.querySelector(".out-info").textContent : "没有这张卡");
+    ok("文件夹卡不给预览、不给下载（一包东西没有「预览」可言）",
+      !bc.querySelector('[data-a="pv"]') && !bc.querySelector("a[download]") && !!bc.querySelector('[data-a="rv"]'));
+    ok("眼熟的那几个名字一个都没再单独摆卡",
+      !cs.some((n) => /cover_v2\.png|粘贴文本_0909|README\.en\.md|NOTICE\.md|llms\.txt/.test(n)), JSON.stringify(cs));
+    ok("这一轮真正做出来的东西反而摆上了卡（以前被那一包挤掉）",
+      cs.includes(TD + "开源仓库版权授权与软著申请_行动方案.md"));
+    ok("清单里一条都没少，122 个文件照旧查得到全路径",
+      b.querySelectorAll(".out-row").length === 124 &&
+      !!b.querySelector('.out-row[data-name="' + BD + 'mod7.js"]'),
+      b.querySelectorAll(".out-row").length + " 行");
+
+    // ★负向对照★ 一回合出 12 张成品图也在同一个目录里，条数同样过线——
+    // 要是只按「条数」折，这 12 张缩略图会被折成一个文件夹图标，那才是真产出没了
+    const 图 = [];
+    for (let i = 1; i <= 12; i++) 图.push(F("分镜/第" + i + "幕.png", 5000));
+    const bi = fresh();
+    renderTurnOutputs(bi, 图, 图, { root: "r1" });
+    ok("负向对照：同一目录 12 张成品图不折——它们是多数派，本来就是这一回合的产出",
+      !bi.querySelector(".out-card[data-bundle]") && cards(bi).length === 8, JSON.stringify(cards(bi)));
+
+    // ★负向对照★ 条数不到线的目录照旧一张张摆
+    const 少 = [F("小任务/图.png", 100), F("小任务/a.js", 10), F("小任务/b.js", 10),
+               F("小任务/c.js", 10), F("小任务/d.js", 10), F("小任务/e.js", 10), F("小任务/f.js", 10)];
+    const bs = fresh();
+    renderTurnOutputs(bs, 少, 少, { root: "r1" });
+    ok("负向对照：7 个文件的目录没到 " + OUT_BUNDLE_MIN + " 条，不当成一包",
+      !bs.querySelector(".out-card[data-bundle]") && cards(bs).includes("小任务/图.png"), JSON.stringify(cards(bs)));
+
+    // 包还在、只是又写了个别的文件：那张卡不能每来一条 files 事件就被撤一次
+    //（文件夹的名字永远不会出现在文件清单里，拿 alive.has() 判它就是这个下场）
+    const 又写了 = F(TD + "中间稿.md", 100);
+    renderTurnOutputs(b, [又写了], [...batch, 又写了], { root: "r1" });
+    ok("包还在的时候，文件夹卡不会被误当成「已删除」撤掉",
+      !!b.querySelector(".out-card[data-bundle]") &&
+      b.querySelector(".out-card[data-bundle] .out-meta").textContent === "122 个文件");
+
+    // 整包从盘上没了（用户/agent 删了中间产物），卡得跟着走
+    const 收尾 = F(TD + "收尾.md", 100);
+    renderTurnOutputs(b, [收尾], [...真成果, 又写了, 收尾], { root: "r1" });
+    ok("★整包从盘上没了，那张卡也跟着撤★ 不许对着空文件夹写「122 个文件」",
+      !b.querySelector(".out-card[data-bundle]"), JSON.stringify(cards(b)));
+    ok("但清单里那 122 行留着、打上「已删除」——中途造过什么是真发生过的事，不许抹掉",
+      b.querySelectorAll(".out-row.gone").length >= 122,
+      b.querySelectorAll(".out-row.gone").length + " 行被标成已删除");
+
+    // README.en.md：英文版 README 跟 README.md 是同一份东西，以前只挡后者
+    ok("带语种后缀的 README / PROGRESS 也算脚手架，不上产出卡",
+      !isDeliverable("README.en.md") && !isDeliverable("PROGRESS.zh-CN.md") && !isDeliverable("README.md"));
+    ok("  ← 别误伤真交付物", isDeliverable("方案.md") && isDeliverable("README_对外版.md") && isDeliverable("年报.en.md"));
+  }
+
   return names;
 })()
 `;
