@@ -9857,6 +9857,124 @@ const CANVASKEY_CHECKS = `(async () => {
 })()`;
 
 
+// ================= 关着的侧滑面板，不该还留在 Tab 序里 =================
+// 起因是拿 Tab 键把真界面从头走一遍：390×844 上 29 个能聚焦的元素里有 8 个整个在屏幕外，
+// 位置就排在「模式」按钮后面——预览面板的复制 / 系统提示 / 重看 / 下载 / 关闭，加上成果文件
+// 面板的「打开文件夹」「整理文件夹」「关闭」。1440×900 是 44 个里的 10 个（多两根拖宽的把手）。
+// 成果文件面板里再装 40 个文件，数字变成 85 里的 51：键盘用户一路 Tab 会掉进一片看不见的地方，
+// 焦点框停在屏幕外，按回车不知道按到了什么；读屏软件也照样念得出来。
+// 根因是这两块关着的时候只有 width:0 + overflow:hidden —— 人眼看不见，可访问性树里还在。
+// 补法是关着时整块 visibility:hidden（这一条浏览器认，被它藏起来的东西不进 Tab 序），
+// 但收起的动画不能因此变生硬，所以熄灯延迟到宽度收完那一刻：visibility 0s linear var(--owb-t-slow)。
+// 真 markup + 真 CSS 一起切进来：只验结构的话，把那两条 visibility 删掉这一屏照样全绿。
+const PANEL_MARKUP = (() => {
+  const one = (startTag) => {
+    const a = INDEX_SRC.indexOf(startTag);
+    if (a < 0) throw new Error("public/index.html 里找不到 " + startTag + "，面板这一屏没法用真 markup");
+    const re = /<(\/?)div\b[^>]*>/g;
+    re.lastIndex = a + startTag.length;
+    let depth = 1, m;
+    while ((m = re.exec(INDEX_SRC))) {
+      depth += m[1] ? -1 : 1;
+      if (depth === 0) return INDEX_SRC.slice(a, m.index + m[0].length);
+    }
+    throw new Error(startTag + " 没有配对的 </div>，切不出整块面板");
+  };
+  return one('<div class="preview-panel" id="preview-panel">') + "\n" + one('<div class="files-panel" id="files-panel">');
+})();
+const PANELVIS_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS
+  + "\nhtml,body{height:100%}body{margin:0;display:flex}</style><body>" + PANEL_MARKUP + "</body>";
+const PANELVIS_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) { names.push(name); return; } fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const PANELS = [["preview-panel", "预览"], ["files-panel", "成果文件"]];
+  const SEL = "a[href], button, input:not([type=hidden]), select, textarea, [tabindex]:not([tabindex='-1'])";
+  // 「能不能被 Tab 走到」照浏览器的规矩判：自己或任何一级祖先 display:none / visibility:hidden / inert，
+  // 就不在 Tab 序里。只看元素自己不够——面板正是靠祖先那一层把整片内容藏起来的
+  const tabbable = (el) => {
+    if (el.disabled) return false;
+    for (let p = el; p && p.nodeType === 1; p = p.parentElement) {
+      const c = getComputedStyle(p);
+      if (c.display === "none" || c.visibility === "hidden" || p.hasAttribute("inert")) return false;
+    }
+    return true;
+  };
+  const all = (id) => [...document.getElementById(id).querySelectorAll(SEL)];
+  const live = (id) => all(id).filter(tabbable).length;
+  const vis = (id) => getComputedStyle(document.getElementById(id)).visibility;
+  const tl = (cs, k) => String(cs[k]).split(",").map((s) => s.trim());
+  const visDelay = (cs) => {
+    const i = tl(cs, "transitionProperty").indexOf("visibility");
+    if (i < 0) return null;
+    const d = tl(cs, "transitionDelay");
+    return parseFloat(d[i % d.length]) || 0;
+  };
+  const slow = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--owb-t-slow")) || 0;
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // 熄灯是**延迟**发生的，所以每次改完 class / 样式都得真等一等再量。
+  // 不等就量，量到的是上一帧那个还亮着的值——第一版就是这么把自己骗过去的
+  const settle = () => new Promise((r) => setTimeout(r, Math.round(slow * 1000) + 150));
+
+  ok("先验料：--owb-t-slow 真有个值（熄灯延迟要跟它对齐，是 0 的话下面那条就白判了）", slow > 0, slow + "s");
+  for (const [id, cn] of PANELS) {
+    ok("先验料：" + cn + "面板里本来就装着能聚焦的东西（不然「0 个」只是这儿本来就空）", all(id).length >= 3, all(id).length + " 个");
+  }
+
+  // ---- 关着 ----
+  for (const [id, cn] of PANELS) {
+    const cs = getComputedStyle(document.getElementById(id));
+    ok("关着的" + cn + "面板：整块 visibility:hidden", cs.visibility === "hidden", cs.visibility);
+    ok("关着的" + cn + "面板：Tab 一个都走不进去", live(id) === 0, "还能走到 " + live(id) + " / " + all(id).length + " 个");
+    // 不许改成 display:none 了事：那样面板连布局盒子都没有了，宽度动画没得可动，
+    // 拖宽把手和「记住上次宽度」那几处量出来全是 0
+    ok("关着的" + cn + "面板：还是 flex 盒子，不是 display:none（宽度动画和量宽度都靠它）", cs.display === "flex", cs.display);
+    const d = visDelay(cs);
+    ok("关着的" + cn + "面板：熄灯排在宽度收完之后" + (reduce ? "（减弱动态效果这一档就该是 0）" : ""),
+      d !== null && Math.abs(d - (reduce ? 0 : slow)) < 0.001,
+      "visibility 延迟 " + d + "s，过渡表 " + cs.transitionProperty + " / " + cs.transitionDelay);
+  }
+
+  // ---- 打开 ----
+  for (const [id] of PANELS) document.getElementById(id).classList.add("show");
+  for (const [id, cn] of PANELS) {
+    const el = document.getElementById(id), cs = getComputedStyle(el);
+    ok("打开" + cn + "面板：同一帧就 visible，不许拖（拖一下等于刚划出来那会儿是块空白）", cs.visibility === "visible", cs.visibility);
+    ok("打开" + cn + "面板：里面的钮回到 Tab 序（面板宽 " + Math.round(el.getBoundingClientRect().width) + "px）",
+      live(id) >= 3, live(id) + " / " + all(id).length + " 个");
+    ok("打开" + cn + "面板：亮灯不带延迟", Math.abs(visDelay(cs) || 0) < 0.001, "visibility 延迟 " + visDelay(cs) + "s");
+  }
+
+  // ---- 收起：灯要等宽度收完才熄，不然收起动画就成了「啪」的一下 ----
+  for (const [id] of PANELS) document.getElementById(id).classList.remove("show");
+  const atOnce = PANELS.map(([id]) => vis(id));
+  ok(reduce ? "减弱动态效果这一档：点收起当场熄灯（本来就不该有动画）" : "刚点收起那一瞬间灯还亮着——宽度收完了才熄，收起动画才是滑出去不是闪没",
+    reduce ? atOnce.every((v) => v === "hidden") : atOnce.every((v) => v === "visible"), atOnce.join(" / "));
+  await settle();
+  ok("收完之后灯灭了，Tab 也再走不进去",
+    PANELS.every(([id]) => vis(id) === "hidden") && PANELS.every(([id]) => live(id) === 0),
+    PANELS.map(([id, cn]) => cn + "=" + vis(id) + "/" + live(id) + "个").join(" · "));
+
+  // ---- ★反向对照★ ----
+  // 把改之前 index.html 里真写着的那一版压回去：关着的面板没有 visibility 这一条，
+  // 就是从 body 继承来的 visible。同一把尺子必须当场变红——不红说明它量的根本不是这件事
+  const st = document.createElement("style");
+  st.textContent = "#preview-panel, #files-panel { visibility: visible; }";
+  document.head.appendChild(st);
+  await settle();
+  const back = PANELS.map(([id]) => live(id));
+  st.remove();
+  await settle();
+  const after = PANELS.map(([id]) => live(id));
+  ok("★反向对照★ 删掉 visibility:hidden，关着的面板立刻又能被 Tab 走进去",
+    back.every((n) => n > 0), "预览 " + back[0] + " 个 · 成果文件 " + back[1] + " 个");
+  ok("反向对照撤掉之后回到 0（那段临时样式没把尺子弄坏）", after.every((n) => n === 0), after.join(" / "));
+
+  if (fails.length) throw new Error("关着的侧滑面板：" + names.length + " 条过，挂了 " + fails.length + " 条：\\n" + fails.join("\\n"));
+  return names;
+})()
+`;
+
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
   RENDERER_LOG.length = 0;
@@ -10175,6 +10293,20 @@ app.whenReady().then(async () => {
         .catch((e) => { throw new Error("[侧栏·减弱动态效果] " + ((e && (e.stack || e.message)) || String(e))); });
       console.log(`✅ 前端：系统开了「减弱动态效果」之后，侧栏那套主次与拖拽照样准（全局过渡不许把「改完就读」拖成上一帧的旧值）${namesSBR.length} 项通过`);
     } finally { if (!winSBR.isDestroyed()) winSBR.destroy(); }
+
+    // 三档各跑一遍：常规宽度（默认那套规则）、开着「减弱动态效果」、手机宽度（面板变成盖在上面的浮层）。
+    // 手机那档不是凑数——用户最先撞上这件事就是在 390 宽：一路 Tab 走到第 21 站人就不见了
+    for (const [w, h, motion, label] of [[1280, 800, null, "常规宽度"], [1280, 800, "reduce", "减弱动态效果"], [390, 844, null, "手机宽度·浮层"]]) {
+      const winPV = mkWin({ show: false, width: w, height: h, webPreferences: { offscreen: true } });
+      try {
+        await winPV.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PANELVIS_HTML));
+        if (motion) winPV.__motion = motion;
+        const namesPV = await winPV.webContents.executeJavaScript(PANELVIS_CHECKS, true)
+          .catch((e) => { throw new Error("[关着的面板·" + label + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!motion && w > 900) for (const n of namesPV) console.log("  ✓ " + n);
+        console.log(`✅ 前端：关着的侧滑面板不进 Tab 序（${label} ${w}×${h}·关着 0 个·打开全回来·熄灯等宽度收完·删掉那条当场变红）${namesPV.length} 项通过`);
+      } finally { if (!winPV.isDestroyed()) winPV.destroy(); }
+    }
 
     const winLN = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
     try {

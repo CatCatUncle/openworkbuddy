@@ -899,8 +899,8 @@
     color: var(--owb-brand-text); font-size: 14px; font-weight: 500; pointer-events: none; z-index: 14; }
   /* ---------- 右侧预览面板（HTML/图片/文档实时预览） ---------- */
   .main { min-width: 460px; }
-  .preview-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-canvas); overflow: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out); display: flex; flex-direction: column; }
-  .preview-panel.show { width: var(--owb-pv-w, 44%); min-width: 360px; max-width: calc(100vw - 300px); }
+  .preview-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-canvas); overflow: hidden; visibility: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s linear var(--owb-t-slow); display: flex; flex-direction: column; }
+  .preview-panel.show { width: var(--owb-pv-w, 44%); min-width: 360px; max-width: calc(100vw - 300px); visibility: visible; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s; }
   .pv-head { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--owb-border); font-size: 14px; }
   .pv-head .pv-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* 几何统一到桥接层（这一排四颗都带 .icon-btn），这里只留颜色 */
@@ -1006,8 +1006,8 @@
   .pv-code-src .c-kw  { color: var(--owb-code-kw); }
   .pv-code-src .c-key { color: var(--owb-code-key); }
   /* ---------- 右侧成果面板 ---------- */
-  .files-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-shell); overflow: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out); display: flex; flex-direction: column; }
-  .files-panel.show { width: var(--owb-fp-w, clamp(230px, 20vw, 300px)); }
+  .files-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-shell); overflow: hidden; visibility: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s linear var(--owb-t-slow); display: flex; flex-direction: column; }
+  .files-panel.show { width: var(--owb-fp-w, clamp(230px, 20vw, 300px)); visibility: visible; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s; }
   /* 左右两栏拖着改宽：抓边上那条 7px 的缝，双击回默认，←/→ 也能推。
      宽度写在 :root 的变量里（JS 存 localStorage），CSS 里的默认值就是没拖过时的样子。
      拖的时候把 width 过渡关掉，否则手在动、栏在追，跟手感全没了 */

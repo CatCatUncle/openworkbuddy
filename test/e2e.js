@@ -662,9 +662,7 @@ function testMotionGate() {
   const files = [path.join(pub, "index.html"), path.join(pub, "css", "ui.css")];
   // 一条 transition 的每个「分段」都要自带曲线：靠 transition-timing-function 另写一行的
   // 本项目里一处都没有，真要出现，这里报出来再放行不迟。
-  const bare = [];
-  for (const f of files) {
-    const t = fs.readFileSync(f, "utf8");
+  const scanTransitions = (t, label, out) => {
     for (const m of t.matchAll(/transition:\s*([^;}]+)/g)) {
       // 按逗号切段，但要绕开括号里的逗号——var(--owb-ease, ease) 的那个回退逗号
       // 直接 split(",") 会把它劈成两半，于是「ease)」被当成一条没写曲线的过渡（假阳性）
@@ -683,12 +681,34 @@ function testMotionGate() {
         // transition: none 是刻意关掉过渡（拖着改栏宽时就不该有动画），根本不产生动画，
         // 不存在「吃默认 ease」一说，放行。
         if (v === "none") continue;
-        if (!/var\(\s*--owb-ease/.test(seg)) bare.push(path.basename(f) + ": " + v);
+        // 时长写死成 0 的那一段同理：没有「过程」就没有快慢，曲线写什么浏览器都看不出区别。
+        // 侧滑面板关着时那条 `visibility 0s linear var(--owb-t-slow)` 就是这一类——
+        // 它要的不是一段动画，是「宽度收完的那一刻把灯关掉」。
+        // 只放行写死的 0：时长是 var() 的一律照抓，谁也不知道那个令牌今天是多少。
+        const dur = v.split(/\s+/).find((x) => /^\d*\.?\d+m?s$/.test(x));
+        if (dur && parseFloat(dur) === 0) continue;
+        if (!/var\(\s*--owb-ease/.test(seg)) out.push(label + ": " + v);
       }
     }
-  }
+  };
+  const bare = [];
+  for (const f of files) scanTransitions(fs.readFileSync(f, "utf8"), path.basename(f), bare);
   assert(bare.length === 0,
     "这些过渡没写曲线，会吃浏览器默认的 ease：\n  " + bare.join("\n  "));
+  // 反向对照：放行「0 秒」这条口子不能把闸门捅漏。非零时长少了曲线，一种写法都不许漏网
+  const m1 = []; scanTransitions(".a { transition: width .28s; }", "假1", m1);
+  const m2 = []; scanTransitions(".b { transition: opacity 300ms; }", "假2", m2);
+  const m3 = []; scanTransitions(".c { transition: width var(--owb-t-slow); }", "假3", m3);
+  const m4 = []; scanTransitions(".d { transition: visibility 0s, width .3s; }", "假4", m4);
+  assert(m1.length === 1 && m2.length === 1 && m3.length === 1 && m4.length === 1,
+    `「0 秒放行」把闸门捅漏了：秒=${m1.length} 毫秒=${m2.length} 令牌时长=${m3.length} 混写=${m4.length}`);
+  // 正向对照：该放行的四种写法一个都不许误伤
+  const m0 = [];
+  scanTransitions(".e { transition: visibility 0s linear var(--owb-t-slow); }", "真1", m0);
+  scanTransitions(".f { transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s; }", "真2", m0);
+  scanTransitions(".g { transition: none; }", "真3", m0);
+  scanTransitions(".h { transition: transform .2s var(--owb-ease, ease); }", "真4", m0);
+  assert(m0.length === 0, "误伤了本来就该放行的过渡：" + m0.join("、"));
 
   const html = fs.readFileSync(files[0], "utf8");
   // 界面字体栈现在住在 --font-sans 令牌里（body 只写 font-family: var(--font-sans)，外观页的「衬线/等宽」靠改令牌切换），
