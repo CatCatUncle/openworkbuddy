@@ -1480,6 +1480,23 @@ function bindModels(pane, s, po) {
     pane.querySelector("#pf-key-src").innerHTML = kindKeyLink(kind, pane.querySelector("#pf-base").value.trim() || k.base_url || "");
   };
   let editP = -1;
+  // 名字这一栏是「自动填」和「人手打」共用的，改渠道类型时得知道现在这行字是谁写的：
+  // 上一次自动填进去的可以跟着新类型换掉，人自己打的字一个字都不能碰
+  let autoName = "";
+  /** 这个类型「自动该叫什么」：有官网名的用厂商短名；自建网关那两类没有，留空让人自己起 */
+  const autoNameOf = (k) => (/^https?:\/\//.test((k || {}).base_url || "") ? String((k || {}).label || "").replace(/（.*/, "") : "");
+  const setName = (v) => { pane.querySelector("#pf-name").value = v; autoName = v; };
+  const autoFillName = (k, addr) => {
+    const el = pane.querySelector("#pf-name");
+    if (el.value && el.value !== autoName) return;   // 人自己打的字：别动
+    const base = String(addr || "").trim();
+    // 自建网关那两类没有「这家叫啥」可言（名字就是一句类型说明），拿域名当名字：
+    // 「gw.mycorp.com」比「OpenAI 兼容」强——一条网关上接两台网关时，两张卡会长得一模一样
+    if (!autoNameOf(k) && /^https?:\/\//i.test(base)) {
+      try { setName(new URL(base).host); return; } catch {}
+    }
+    setName(autoNameOf(k));
+  };
   const showProvForm = (p) => {
     form.style.display = "";
     pane.querySelector("#pf-kind").value = (p && p.kind) || (kinds[0] || {}).kind || "custom";
@@ -1492,26 +1509,22 @@ function bindModels(pane, s, po) {
     keyEl.value = "";
     keyEl.placeholder = p && p.key_hint ? `已装 ${p.key_hint}，留空就不动它` : "API Key";
     pane.querySelector("#pf-models-tip").textContent = "";
+    // 编辑已有渠道时，这个名字是库里存的（可能是自动填的那份，也可能是人改过的），
+    // 只有当它正好等于这一类的自动名时才允许后面被换掉
+    autoName = autoNameOf(kinds.find((x) => x.kind === pane.querySelector("#pf-kind").value) || {});
     syncKindRows();
   };
   pane.querySelector("#pf-kind").onchange = (e) => {
     const k = kinds.find((x) => x.kind === e.target.value) || {};
-    pane.querySelector("#pf-base").value = k.base_url || "";
-    // 名字只在有官网名的那些类型上预填。自建网关那两类没有「这家叫啥」可言，
-    // 填个「OpenAI 兼容」当渠道名，一条网关上接两台时两张卡片会长得一模一样
-    if (!pane.querySelector("#pf-name").value && /^https?:\/\//.test(k.base_url || "")) {
-      pane.querySelector("#pf-name").value = String(k.label || "").replace(/（.*/, "");
-    }
+    const baseEl = pane.querySelector("#pf-base");
+    baseEl.value = k.base_url || "";
+    autoFillName(k, baseEl.value);
     syncKindRows();
   };
   pane.querySelector("#pf-base").onchange = () => {
     syncKindRows();
-    // 名字还空着就拿域名当名字：「gw.mycorp.com」比「自定义渠道」强，接了两台也分得清
-    const nameEl = pane.querySelector("#pf-name");
-    const base = pane.querySelector("#pf-base").value.trim();
-    if (!nameEl.value && /^https?:\/\//i.test(base)) {
-      try { nameEl.value = new URL(base).host; } catch {}
-    }
+    const baseEl = pane.querySelector("#pf-base");
+    autoFillName(kinds.find((x) => x.kind === pane.querySelector("#pf-kind").value) || {}, baseEl.value);
   };
   /**
    * 存之前先问一句「你这儿都有哪些模型」。

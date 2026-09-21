@@ -3714,6 +3714,7 @@ const GATE_CHECKS = `
         { kind: "ark", label: "火山方舟（豆包）", base_url: "https://ark.cn-beijing.volces.com/api/v3", key_url: "https://console.volcengine.com/ark" },
         { kind: "newapi", label: "自建网关（new-api / one-api）", base_url: "" },
         { kind: "ollama", label: "Ollama（本机）", base_url: "http://localhost:11434/v1" },
+        { kind: "custom", label: "OpenAI 兼容（自定义）", base_url: "" },
       ],
       catalog: { chat: [{ kind: "openrouter", id: "openai/gpt-5.2", label: "GPT-5.2" }] },
     });
@@ -3900,6 +3901,46 @@ const GATE_CHECKS = `
     && !mpoD.querySelector("#prov-list").textContent.includes("某家云")
     && /1 家/.test(mpoD.querySelector(".idle-head").textContent),
     (mpoD.querySelector(".idle-head") || {}).textContent);
+
+  // ②-quater 加渠道：自建网关（OpenAI 兼容）这一类。它没有默认地址、也没有默认型号，
+  // 全得人自己填——而「填到 /v1 那一层、别把完整路径抄进来」正是最常踩的一脚
+  {
+    await renderSettings("models");
+    const P = () => mBody.querySelector("#settings-pane");
+    P().querySelector("#pf-new").onclick();
+    const ks = P().querySelector("#pf-kind");
+    ok("渠道类型里有「OpenAI 兼容（自定义）」", [...ks.options].some((o) => o.value === "custom"),
+      [...ks.options].map((o) => o.value).join(","));
+    ks.value = "custom"; ks.onchange({ target: ks });
+    ok("选中它：地址那一栏当场说清填到哪一层",
+      /\/v1 那一层/.test(P().querySelector("#pf-base-tip").textContent), P().querySelector("#pf-base-tip").textContent);
+    ok("名字不被预填成「OpenAI 兼容」这么一句类型说明（一条网关上接两台，两张卡会长得一模一样）",
+      P().querySelector("#pf-name").value === "", P().querySelector("#pf-name").value);
+    const baseEl = P().querySelector("#pf-base");
+    baseEl.value = "https://gw.mycorp.com/v1"; baseEl.onchange();
+    ok("地址填完拿域名当名字", P().querySelector("#pf-name").value === "gw.mycorp.com", P().querySelector("#pf-name").value);
+    // 把接口的完整路径抄进来：程序还会再往后接一次 /chat/completions，请求打到
+    // .../chat/completions/chat/completions，上游回 404，而界面上从填 Key 到保存一路都是绿的
+    window.toasts.length = 0; posts.length = 0;
+    baseEl.value = "https://gw.mycorp.com/v1/chat/completions"; baseEl.onchange();
+    P().querySelector("#pf-save").onclick();
+    await new Promise((r) => setTimeout(r, 0));
+    ok("★地址抄到 /chat/completions 那一层：当场拦下、一条请求都不发★",
+      posts.length === 0 && window.toasts.some((t) => /\/v1 那一层/.test(t)),
+      JSON.stringify({ posts: posts.length, toasts: window.toasts }));
+    // 协议：自建网关后面接的其实是 Claude 时靠这一栏决定走哪条通道
+    baseEl.value = "https://gw.mycorp.com/v1"; baseEl.onchange();
+    posts.length = 0;
+    P().querySelector("#pf-proto").value = "anthropic";
+    P().querySelector("#pf-save").onclick();
+    await new Promise((r) => setTimeout(r, 0));
+    const saved = posts.find((p) => p.url === "/api/settings");
+    const entry = saved && (saved.body.providers || []).slice(-1)[0];
+    ok("★存的渠道带上了 protocol★ 没有它，这台「其实是 Claude」的网关就会被按 OpenAI 协议去打",
+      !!entry && entry.kind === "custom" && entry.protocol === "anthropic" && entry.base_url === "https://gw.mycorp.com/v1",
+      JSON.stringify(entry));
+  }
+
   // 编号只印在渠道卡上是不够的：真正要选的那两处（多媒体的渠道下拉、对话模型行的出处）
   // 以前照样并排两个「OpenRouter（聚合）」，选完存下去认不出配的是哪把 Key。
   // 三处必须是同一套编号——各编各的话，这儿的「第 2 个」到那儿成了「第 1 个」，比不编还糟
