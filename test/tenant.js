@@ -18,6 +18,12 @@ const os = require("os");
 const path = require("path");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "owb-tenant-"));
+// 两个口子得一起指过来，少一个就会写到仓库里去：
+//   OPENWORKBUDDY_DATA_DIR 只管 account / org / prefs 那一批模块（它们各自读这个变量）；
+//   tools.js 的资料库、灵感笔记走的是 paths.js 的 dataPath，它只认 OPENWORKBUDDY_HOME。
+// 以前资料库的桩子返的是固定 JSON，这条缝没显出来；现在真落盘了，少这一行就是
+// 把测试文件写进开发者自己的 data/library。
+process.env.OPENWORKBUDDY_HOME = TMP;
 process.env.OPENWORKBUDDY_DATA_DIR = path.join(TMP, "data");
 fs.mkdirSync(process.env.OPENWORKBUDDY_DATA_DIR, { recursive: true });
 
@@ -44,12 +50,30 @@ const ok = (cond, msg, extra) => {
 };
 const eq = (got, want, msg) => ok(got === want, msg, { got, want });
 
+// ---------- 资料库的根：直接把 server.js 里那一段拿过来跑 ----------
+/**
+ * 不拄一份。这一段正是「资料库怎么数据还是通用的吗」那条反馈的修法本体，
+ * 拄过来的副本只会在 server.js 改了之后继续给绿灯。按函数名切源码，切不到就当场报错。
+ */
+const SERVER_SRC = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+const prefs = require(path.join(ROOT, "prefs"));
+const { dataPath } = require(path.join(ROOT, "paths"));
+const libraryRootOf = (() => {
+  const i0 = SERVER_SRC.indexOf("function libraryRootOf(user) {");
+  const i1 = SERVER_SRC.indexOf("\n}\n", i0);
+  if (i0 < 0 || i1 < 0) throw new Error("server.js 里找不到 libraryRootOf（改名了就该在这儿挂）");
+  const src = SERVER_SRC.slice(i0, i1 + 2);
+  return new Function("LIB_DIR", "ownsGlobalWorkspace", "dataPath", "prefs",
+    src + "\nreturn libraryRootOf;")(dataPath("data", "library"), admin.ownsGlobalWorkspace, dataPath, prefs);
+})();
+
 // ---------- 一个跟 server.js 中间件顺序一模一样的最小应用 ----------
 const app = express();
 app.use(express.json());
 app.use(account.createRouter({}));
 app.use(account.authGuard);
-app.use(admin.tenantScope({ withWorkspace: tools.withWorkspace, withPolicy: tools.withPolicy, getWorkspaceDir: tools.getWorkspaceDir }));
+app.use(admin.tenantScope({ withWorkspace: tools.withWorkspace, withPolicy: tools.withPolicy, getWorkspaceDir: tools.getWorkspaceDir,
+                            withLibraryBase: tools.withLibraryBase, libraryRootOf }));
 app.use(admin.platformGuard);
 app.use(admin.redactGuard);
 app.use(admin.createAdminRouter({ orgUsage: () => ({ files: tools.outputFiles().length }) }));
@@ -108,17 +132,42 @@ const isPlatformOwner = (req) => admin.isSoloDesktop() || admin.platformAdmin(re
 app.get("/api/settings-probe", (req, res) => res.json({ platform_owner: isPlatformOwner(req) }));
 app.get("/api/security/modes", (req, res) =>
   res.json({ modes: { ask: { label: "每次问我" } }, current: "ask", can_switch: isPlatformOwner(req) }));
-// 资料库：读放行、写照拦。到不了这几个 handler 就说明 platformGuard 在前面拦下了。
-app.get("/api/library", (_req, res) => res.json({ files: [{ name: "手册.md" }], notes: [{ id: "n1", text: "老板喜欢短句" }] }));
-app.post("/api/library/upload", (_req, res) => res.json({ ok: true }));
-app.post("/api/library/note", (_req, res) => res.json({ ok: true }));
-app.delete("/api/library/file/:name", (_req, res) => res.json({ ok: true }));
-app.delete("/api/library/note/:id", (_req, res) => res.json({ ok: true }));
+// 资料库：一人一份。这几个桩子故意不返固定 JSON，而是真落到 tools.libBase() 指的那个根上——
+// 「张三传的文件会不会出现在李四的库里」这件事，只有真写进盘里才算验过。
+const libDir = () => { const d = tools.libBase(); fs.mkdirSync(d, { recursive: true }); return d; };
+const notesOf = () => { try { return JSON.parse(fs.readFileSync(tools.notesFileOf(tools.libBase()), "utf8")); } catch { return []; } };
+app.get("/api/library", (_req, res) => res.json({
+  files: fs.readdirSync(libDir()).filter((f) => f[0] !== ".").map((name) => ({ name })),
+  notes: notesOf(),
+}));
+app.post("/api/library/upload", (req, res) => {
+  const name = path.basename(String((req.body || {}).name || "x.md"));
+  fs.writeFileSync(path.join(libDir(), name), Buffer.from(String((req.body || {}).data_b64 || ""), "base64"));
+  res.json({ ok: true });
+});
+app.post("/api/library/note", (req, res) => {
+  const notes = notesOf();
+  notes.push({ id: "n" + (notes.length + 1), text: String((req.body || {}).text || "") });
+  fs.mkdirSync(libDir(), { recursive: true });
+  fs.writeFileSync(tools.notesFileOf(tools.libBase()), JSON.stringify(notes));
+  res.json({ ok: true });
+});
+app.delete("/api/library/file/:name", (req, res) => {
+  try { fs.unlinkSync(path.join(libDir(), path.basename(req.params.name))); } catch {}
+  res.json({ ok: true });
+});
+app.delete("/api/library/note/:id", (req, res) => {
+  fs.writeFileSync(tools.notesFileOf(tools.libBase()), JSON.stringify(notesOf().filter((n) => n.id !== req.params.id)));
+  res.json({ ok: true });
+});
 app.get("/api/schedules", (_req, res) => res.json([]));
 app.get("/api/eval", (_req, res) => res.json([]));
 // 探针：这条请求里 tools.orgPolicy() 看到的是什么。用来验「设置真的进了执行层」，
 // 而不是只躺在 org.json 里没人读——那种开关比没有这个开关更糟
 app.get("/api/policy-probe", (_req, res) => res.json({ policy: tools.orgPolicy(), ws: tools.getWorkspaceDir() }));
+// 一条什么都不做的接口。量「进门费」用：每一条请求在干正事之前，都要先走一遍
+// 登录闸 + 租户作用域，跟它自己要干什么没有半点关系。见【20】。
+app.get("/api/nothing", (_req, res) => res.json({ ok: true }));
 
 // 「用系统程序打开」「在访达里显示」：按下去是在**服务器那台机器**上起一个进程。
 // 成员在自己浏览器里点，窗口弹在管理员的显示器上——所以这是配机器，不是租户内动作。
@@ -150,7 +199,8 @@ function call(method, url, { body, cookie } = {}) {
           let json = null;
           try { json = JSON.parse(buf); } catch {}
           const sc = res.headers["set-cookie"];
-          resolve({ status: res.statusCode, json, cookie: sc ? String(sc[0]).split(";")[0] : null });
+          resolve({ status: res.statusCode, json, bytes: Buffer.byteLength(buf),
+                    cookie: sc ? String(sc[0]).split(";")[0] : null });
         });
       }
     );
@@ -405,11 +455,11 @@ async function login(username, password) {
   console.log("\n【15.5】账本查得到：时间范围 / 关键词 / 翻页，且不许越过组织墙");
   // 这三样以前一样都没有，界面只能给「最近 200 条」。财务问「上个月谁花了多少」答不上来。
   // 造够两页的量，才测得出 offset/limit 是真翻页还是每次都从头切。
-  // prompt 带上序号：这一批账除了**毫秒级**时间戳和模型名以外全都一样（同样 100 字输入、
-  // 同样 150 字输出、同一个用户），而下面那道闸门是按 [ts, model, prompt, user] 去重的。
-  // 追加赶得快、两条落进同一毫秒时（Linux 的 CI 上真发生了：100 条只认出 58 条），两笔真账
-  // 就被当成同一笔，闸门报「两页大面积重叠」——红的不是翻页坏了，是这批测试数据认不出自己。
-  // 序号只让每一笔可辨认，判分不依赖它的具体数值（150 与 100+i+50 都是 1 积分，token 合计没人断言）。
+  // 每条的 prompt 都不一样：120 条是一口气写进去的，时间戳全撞在同一毫秒上，
+  // 拿「时间+模型+条数+人」当身份的话，两页合起来会缩成几十个，看着就像翻页翻重了。
+  // （Linux 的 CI 上真发生过：100 条只认出 58 条。红的不是翻页坏了，是这批测试数据
+  //   认不出自己——加了序号后每一笔都可辨认，判分不依赖它的具体数值：
+  //   150 与 100+i+50 都是 1 积分，token 合计没有断言。）
   for (let i = 0; i < 120; i++) {
     account.chargeRun({ username: "xiaoyuan" },
       { prompt: 100 + i, completion: 50, model: i % 2 ? "mA" : "mB", provider: "p", source: i % 3 ? "web" : "feishu", elapsed_ms: 100 });
@@ -425,7 +475,7 @@ async function login(username, password) {
   ok(p1.detail[0].ts !== p2.detail[0].ts || JSON.stringify(p1.detail) !== JSON.stringify(p2.detail),
      "第二页不是第一页的复制品（offset 真的生效了，不是每次都从头 slice）");
   const ids = new Set([...p1.detail, ...p2.detail].map((e) => JSON.stringify([e.ts, e.model, e.prompt, e.user])));
-  ok(ids.size >= 60, "两页之间没有大面积重叠", ids.size);
+  ok(ids.size === 100, "两页之间一条都不重复（各 50 条，合起来正好 100 条）", ids.size);
 
   // 关键词
   r = await call("GET", "/api/admin/usage?limit=500&q=mA", { cookie: fen });
@@ -729,46 +779,78 @@ async function login(username, password) {
   r = await call("POST", "/api/security/mode", { cookie: yuan, body: { mode: "full" } });
   eq(r.status, 403, "闸没松：can_switch 只是给界面看的，后端照样拦得住直接打过来的请求");
 
-  console.log("\n【21】资料库：拦读拦了个寂寞——同样的字节走 agent 拿得到，走界面反而 403");
-  // 原来 /api/library 整个前缀（含 GET）都在平台管理员的表里。可资料库是**一份全局目录**
-  // （tools.js 的 LIB_DIR / NOTES_FILE），每个人的 agent 都带着 library_list / library_read，
-  // 一句「翻一下资料库」就把文件清单、灵感笔记、乃至正文原样念出来。拦住 HTTP GET 什么都没保住，
-  // 只保住了一句瞎话：页面对普通成员写「还没有参考资料」。所以读放行、写照拦。
+  console.log("\n【21】资料库：一人一份——新注册的号打开它，看不见别人传进去的东西");
+  // 「资料库怎么数据还是通用的吗，跟账号也没关系吗」——以前真就是通用的一份（tools.js 的 LIB_DIR），
+  // 而且读还特地放行了（拦也白拦：每个人的 agent 都带着 library_list / library_read，
+  // 一句「翻一下资料库」照样把别人的合同念出来）。现在按 server.js 的 libraryRootOf 一人一个根，
+  // 读写都放开，谁也够不着谁那份。下面这些断言全落在真盘上，不是看状态码。
+  const libRootOf = (name) => libraryRootOf({ username: name, org: name === "laoban" ? "default" : org2, role: name === "laoban" ? "owner" : "member" });
+  const LEGACY_LIB = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "library");
+  eq(path.resolve(libRootOf("laoban")), path.resolve(LEGACY_LIB), "平台管理员还是老库 data/library，一个字节都没搬（升级完他的资料得原样还在）");
+  ok(path.resolve(libRootOf("xiaoyuan")) !== path.resolve(LEGACY_LIB), "别人拿到的是另一个根", libRootOf("xiaoyuan"));
+  ok(path.resolve(libRootOf("xiaoyuan")) !== path.resolve(libRootOf("fenboss")), "两个非管理员之间也各是各的（不是「管理员 vs 所有人」两份）");
+
+  r = await call("POST", "/api/library/upload", { cookie: boss, body: { name: "老板的合同.md", data_b64: "aHE=" } });
+  eq(r.status, 200, "平台管理员往资料库里放一份合同");
+  r = await call("POST", "/api/library/note", { cookie: boss, body: { text: "老板喜欢短句" } });
+  eq(r.status, 200, "再记一条灵感笔记");
+  const bossSnap = () => fs.readdirSync(LEGACY_LIB).filter((f) => f[0] !== ".").sort().join("|") + "::" +
+    fs.readFileSync(path.join(LEGACY_LIB, "老板的合同.md"), "utf8");
+  const before = bossSnap();
+
   r = await call("GET", "/api/library", { cookie: yuan });
   eq(r.status, 200, "普通成员读得到资料库（他的 agent 本来就读得到，界面没有理由更严）");
-  ok(Array.isArray(r.json.files) && r.json.files.length > 0, "而且真拿到了内容，不是一个空壳", JSON.stringify(r.json).slice(0, 80));
-  r = await call("POST", "/api/library/upload", { cookie: yuan, body: { name: "x.md", data_b64: "eA==" } });
-  eq(r.status, 403, "但往这份全局目录里放东西，还是平台管理员的事");
-  r = await call("POST", "/api/library/note", { cookie: yuan, body: { text: "灵感" } });
-  eq(r.status, 403, "灵感笔记也是全局共用的一份，成员写不了");
-  r = await call("DELETE", "/api/library/file/x.md", { cookie: yuan });
-  eq(r.status, 403, "删别人传的资料更不行");
-  r = await call("DELETE", "/api/library/note/n1", { cookie: yuan });
-  eq(r.status, 403, "删笔记同理");
+  eq(r.json.files.length, 0, "★但他看见的是一个空库，不是老板那份合同★（这条一红就是那句「怎么就有别人的东西了」）");
+  eq(r.json.notes.length, 0, "灵感笔记同理，一条都不该串过来");
+
+  r = await call("POST", "/api/library/upload", { cookie: yuan, body: { name: "小袁的素材.md", data_b64: "eXU=" } });
+  eq(r.status, 200, "他往自己那份里放东西，不再是 403——根都分开了还拦写，等于给他一个自己的空目录什么也放不进去");
+  r = await call("POST", "/api/library/note", { cookie: yuan, body: { text: "小袁自己的灵感" } });
+  eq(r.status, 200, "记笔记同理");
+  r = await call("GET", "/api/library", { cookie: yuan });
+  eq(r.json.files.map((f) => f.name).join("|"), "小袁的素材.md", "他自己传的立刻看得见");
+  eq(r.json.notes.map((n) => n.text).join("|"), "小袁自己的灵感", "笔记也只有他自己那条");
+
   r = await call("GET", "/api/library", { cookie: fen });
-  eq(r.status, 200, "分公司的管理员一样读得到（他不是平台管理员，但读本来就不该拦）");
-  r = await call("POST", "/api/library/upload", { cookie: fen, body: {} });
-  eq(r.status, 403, "分公司的管理员照样写不了这份全局目录");
+  eq(r.json.files.length, 0, "分公司管理员那份也是空的——他不是平台管理员，也不共用小袁那份");
+  r = await call("POST", "/api/library/upload", { cookie: fen, body: { name: "分公司的价目表.md", data_b64: "ZmVu" } });
+  eq(r.status, 200, "他也写得进自己那份");
+  r = await call("GET", "/api/library", { cookie: yuan });
+  eq(r.json.files.map((f) => f.name).join("|"), "小袁的素材.md", "★同一个组织的两个人也不共库：分公司管理员刚传的那份，小袁看不见★");
+
+  r = await call("DELETE", "/api/library/file/" + encodeURIComponent("老板的合同.md"), { cookie: yuan });
+  eq(r.status, 200, "他删「老板的合同.md」这个请求本身不报错");
+  eq(bossSnap(), before, "★但老板那份原封不动：这一刀落在他自己的根里，够不着别人★");
+  r = await call("DELETE", "/api/library/note/n1", { cookie: yuan });
+  eq(r.status, 200, "删笔记同理，不报错");
   r = await call("GET", "/api/library", { cookie: boss });
-  eq(r.status, 200, "反向对照：平台管理员读得到");
-  r = await call("POST", "/api/library/upload", { cookie: boss, body: {} });
-  eq(r.status, 200, "反向对照：平台管理员写得进");
+  eq(r.json.files.map((f) => f.name).join("|"), "老板的合同.md", "老板的文件还在");
+  eq(r.json.notes.map((n) => n.text).join("|"), "老板喜欢短句", "老板的笔记也还在（n1 是他那份里的编号，被小袁那一刀删掉就说明根没分开）");
+
   r = await call("GET", "/api/schedules", { cookie: yuan });
-  eq(r.status, 403, "负向对照：定时任务照旧拦着（花的是这台服务器的额度，没有「读无害」这一说）");
+  eq(r.status, 403, "负向对照：定时任务照旧拦着（花的是这台服务器的额度，没有「各写各的」这一说）");
   r = await call("GET", "/api/eval", { cookie: yuan });
   eq(r.status, 403, "负向对照：评测也照旧拦着（一跑就是真金白银调模型）");
-  // 别让这条判断退回去：读表里不许再出现 /api/library，写表里必须还在
+  r = await call("POST", "/api/skills", { cookie: yuan, body: {} });
+  eq(r.status, 403, "负向对照：技能照旧拦着（skills/ 真是整台机器一份，装进去全公司的 agent 都吃）");
+
+  // 别让这条判断退回去：两张表里都不许再出现 /api/library
   const ADM = fs.readFileSync(path.join(ROOT, "admin.js"), "utf8");
   const readTbl = (ADM.match(/const PLATFORM_READ = \[([\s\S]*?)\];/) || [])[1] || "";
   const writeTbl = (ADM.match(/const PLATFORM_WRITE = \[([\s\S]*?)\];/) || [])[1] || "";
   ok(readTbl.length > 0 && writeTbl.length > 0, "admin.js 里的两张平台表都读得出来（改名了就该在这儿挂）");
-  ok(!readTbl.includes("/api/library"), "读表里没有 /api/library（拦它拦了个寂寞）");
-  ok(writeTbl.includes("/api/library"), "写表里还有 /api/library（上传/删除/记笔记照拦）");
+  ok(!readTbl.includes("/api/library"), "读表里没有 /api/library");
+  ok(!writeTbl.includes("/api/library"), "写表里也没有了（各写各的根，再拦就是拦他自己那份）");
+  ok(writeTbl.includes("/api/skills"), "反向对照：技能还在写表里（那个才是真共用的）");
   ok(readTbl.includes("/api/schedules") && readTbl.includes("/api/eval"), "读表里还留着真该拦的那两个");
-  // 为什么拦读没意义：资料库压根不是按人分的
+  // 光改表不改根就是把库直接敞开了。这两条钉住「根确实按人分」这件事本身
+  ok(/app\.use\(admin\.tenantScope\(\{[\s\S]{0,400}?withLibraryBase/.test(SERVER_SRC),
+     "server.js 真把资料库根接进了 tenantScope（不接就是所有人共用一个根，而写闸刚被拿掉）");
   const TL = fs.readFileSync(path.join(ROOT, "tools.js"), "utf8");
-  ok(/LIB_DIR = dataPath\("data", "library"\)/.test(TL), "资料库确实是一份全局目录，不按用户分（这就是拦读没意义的原因）");
-  ok(/name: "library_read"/.test(TL) && /name: "library_list"/.test(TL), "而每个人的 agent 都带着 library_list / library_read 这两个工具");
+  ok(/function libBase\(\)/.test(TL) && /libBaseStore\.getStore\(\) \|\| LIB_DIR/.test(TL),
+     "tools.js 里的库根走 ALS，没 run 过才退回 LIB_DIR（命令行、定时任务那一支行为不变）");
+  ok(/name: "library_read"/.test(TL) && /name: "library_list"/.test(TL),
+     "agent 手里那两个工具还在——它们读的也是 libBase()，跟界面同一个根");
 
   console.log("\n【22】大小写绕闸：Express 路由默认不认大小写，两道门禁却按原样 req.path 查表");
   // 这一段是照着真复现写的：改掉一个字母，/API/settings 命中处理器、不命中门禁表。
@@ -971,6 +1053,773 @@ async function login(username, password) {
      "accountedRuntime 透传调用方身份，没登录态（飞书/定时任务）才退回管理员");
   ok(/account\.chargeRun\(owner,/.test(SRV),
      "钱还是记在管理员头上：「记谁的账」和「用谁的记忆」是两件事，别一起改");
+
+
+  // ============================================================================
+  // 审计流水的保管。2026-09-20 之前这一段是坏的，而且坏得很安静：
+  // 全部组织的审计条目挤在 orgs.json 里同一个数组，存盘时 slice(0, 1000)。
+  // 于是 A 个忙组织正常运营一阵，B 个安静组织的合规记录会被**整个挤掉**，
+  // 界面上显示「0 条」——跟「这个组织从来没人动过」长得一模一样。
+  // 下面每条都带反向对照：光验「我的还在」是不够的，还得验「别人的没被我挤掉」。
+  // ============================================================================
+  console.log("\n【18】审计流水：邻居挤不掉你的记录，存满了要说出来");
+  {
+    const quiet = org.createOrg({ name: "安静公司" }).id;
+    const busy = org.createOrg({ name: "忙碌公司" }).id;
+    for (let i = 0; i < 20; i++) org.audit({ org: quiet, actor: "安静管理员", action: "改额度", target: "员工" + i });
+    // 建组织本身也记一条，所以是 20 + 1。别写死 20——写死的话这条断言测的是
+    // 「createOrg 记不记账」，不是「记录留不留得住」
+    const before = org.listAudit(quiet, { limit: 100 }).total;
+    eq(before, 21, "安静公司先记下 20 条改动 + 建组织那一条");
+
+    // 忙碌公司写到**超过**封顶。老实现在这里会把安静公司的 20 条全挤没
+    const CAP = org._internals.AUDIT_CAP;
+    for (let i = 0; i < CAP + 200; i++) org.audit({ org: busy, actor: "忙碌管理员", action: "放行命令", target: "任务" + i });
+
+    eq(org.listAudit(quiet, { limit: 100 }).total, before,
+       "★邻居写爆了，安静公司那些记录一条不少★ 这是多租户审计的底线");
+    const b = org.listAudit(busy, { limit: 10 });
+    ok(b.total >= CAP, "忙碌公司自己也留够了封顶那么多", { total: b.total, cap: CAP });
+    ok(b.total <= CAP + 256, "但也没无限长：超了要真裁掉最老的", { total: b.total, cap: CAP });
+    // 裁掉的必须是**最老的**那批。只验条数和「最新的在最前」是不够的：
+    // 把「留最新 CAP 条」改成「留最老 CAP 条」，那两条断言照样全绿，
+    // 而实际效果是新记录一条都留不住——审计表永远停在开服那几天
+    // 这里不能用 listAudit 取全集：它的 limit 被夹在 1000（后端不该为一个请求把整本读进内存）。
+    // 传 CAP+500 只会拿回最新 1000 条，看不见最老的那头——
+    // 而「裁掉的是最老的还是最新的」这件事，恰恰只有最老的那头能证明
+    const all = org._internals.readAudit(busy);
+    eq(org.listAudit(busy, { limit: CAP + 500 }).audit.length, 1000,
+       "反向对照：listAudit 的 limit 确实被夹在 1000，所以上面必须绕开它读文件");
+    const nums = all.map((x) => Number(String(x.target).replace("任务", ""))).filter((n) => !isNaN(n));
+    ok(nums.length > 0, "取到了忙碌公司的编号", nums.length);
+    eq(Math.max(...nums), CAP + 199, "★留下的里头有最后写的那条★");
+    ok(Math.min(...nums) > 0,
+       "★被裁掉的是最老的那头，不是最新的★ 留最老那批的话这里会是 0", { 最小: Math.min(...nums), 最大: Math.max(...nums) });
+
+    // 反向对照：两边真的是两本账，不是同一本被筛出来的
+    const qActors = new Set(org.listAudit(quiet, { limit: 100 }).audit.map((x) => x.actor));
+    ok(!qActors.has("忙碌管理员"), "反向对照：安静公司那本里没有邻居的操作人", [...qActors]);
+    ok(org.listAudit(busy, { limit: 5 }).audit.every((x) => x.org === busy), "忙碌公司那本里每条都是自己的");
+
+    // 最新的要在最前。文件是往后追加的，读回来必须反过来——顺序错了，
+    // 界面第一屏给的是一年前的事，而看这张表的人正是靠第一屏下判断的
+    const newest = org.listAudit(busy, { limit: 1 }).audit[0];
+    eq(newest.target, "任务" + (CAP + 199), "★最新一条排在最前★ 不是最老那条");
+
+    // 存满了得说出来。0 是「没记过」不是「没发生」——
+    // 合规的人搜不到，看见的必须是「超出保留条数」，不能是一片空白
+    const cap = org.listAudit(busy, { limit: 5 });
+    eq(cap.capped, true, "★到顶了要把 capped 报上去★ 界面靠它提示「更早的已被挤掉」");
+    eq(cap.cap, CAP, "封顶数也报上去，提示里要写清楚是多少条");
+    ok(cap.since && /^\d{4}-\d{2}-\d{2}T/.test(cap.since), "现存最早一条的时间报上去了", cap.since);
+    // 反向对照：没存满的组织不许瞎报
+    const q2 = org.listAudit(quiet, { limit: 5 });
+    eq(q2.capped, false, "反向对照：安静公司没存满，不许报 capped");
+    eq(q2.kept, before, "kept 是真实留下的条数");
+
+    // 组织 id 落成文件名。这个值一路从 user.org 带过来，
+    // 万一哪天能被外面写进来，`../` 就能把审计写到数据目录外面去
+    // 判据只能是「规范化之后还在不在 audit 目录里」。
+    // 不能写成 !file.includes("..")——path.join 早把 `../` 算掉了，字符串里本来就不剩 `..`，
+    // 那条断言永远是绿的，而文件已经写到 /tmp/etc 去了（这一条就是这么被变异测试抓出来的）
+    for (const bad of ["../../../etc/passwd", "..", "a/b", "o_x\u0000", "/absolute"]) {
+      const file = org._internals.auditFile(bad);
+      const inside = path.resolve(file).startsWith(path.resolve(org._internals.AUDIT_DIR) + path.sep);
+      ok(inside, "★怪 id 不许把审计写出 audit 目录：" + JSON.stringify(bad) + "★", file);
+    }
+    // 反向对照：正常 id 照常落在该落的地方，别把闸门修成谁都进不去
+    ok(path.basename(org._internals.auditFile(quiet)) === quiet + ".jsonl",
+       "反向对照：正常组织 id 原样当文件名", org._internals.auditFile(quiet));
+
+    // 审计里是「谁放行了哪条命令」，跟 users.json 一个待遇
+    const mode = fs.statSync(org._internals.auditFile(quiet)).mode & 0o777;
+    eq(mode, 0o600, "审计文件 0600：同机器上别的账号读不到");
+
+    // orgs.json 不该再背着审计——getOrg() 有 37 处调用，每次都要把它整个 parse 一遍。
+    // 实测一次 getOrg()：审计 0 条 0.02ms，1000 条 0.91ms，50000 条 45.57ms。
+    // 当年封顶只能定在 1000，就是被这条逼的；挤掉邻居记录和拖慢每个请求是同一个病
+    const rawOrgs = JSON.parse(fs.readFileSync(org._internals.ORGS_FILE, "utf8"));
+    ok(!("audit" in rawOrgs), "★orgs.json 里不许再有 audit 字段★ 它在热路径上，审计不该收这个税");
+    ok(rawOrgs.orgs.length >= 2 && Array.isArray(rawOrgs.invites), "反向对照：组织和邀请码还在这本里，没被一起搬走");
+  }
+
+  console.log("\n【18.1】老装机搬家：orgs.json 里那本合用的要原样搬出来，一条不丢");
+  {
+    // 单独开一个数据目录，摆成升级前的样子，再用子进程去读——
+    // 搬家是一次性的，在当前进程里已经跑过了，必须换个进程才试得到
+    const OLD = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mig-"));
+    const OLDD = path.join(OLD, "data");
+    fs.mkdirSync(OLDD, { recursive: true });
+    fs.writeFileSync(path.join(OLDD, "orgs.json"), JSON.stringify({
+      orgs: [{ id: "default", name: "默认" }, { id: "o_laoke", name: "老客户" }],
+      depts: [], invites: [{ code: "ABC", org: "default" }],
+      audit: [ // 老格式：新的在前
+        { ts: "2026-09-19T10:00:00.000Z", org: "o_laoke", actor: "老客户管理员", action: "改额度", target: "张三", detail: "" },
+        { ts: "2026-09-18T10:00:00.000Z", org: "default", actor: "老王", action: "放行命令", target: "rm -rf build", detail: "" },
+        { ts: "2026-09-17T10:00:00.000Z", org: "default", actor: "老王", action: "添加成员", target: "李四", detail: "" },
+      ],
+    }, null, 2));
+    const probe = `
+      process.env.OPENWORKBUDDY_DATA_DIR = ${JSON.stringify(OLDD)};
+      const org = require(${JSON.stringify(path.join(ROOT, "org"))});
+      const fs = require("fs");
+      const a = org.listAudit("default", { limit: 50 });
+      const b = org.listAudit("o_laoke", { limit: 50 });
+      const raw = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(OLDD, "orgs.json"))}, "utf8"));
+      // 同一个进程里再调一次是白调的——ensureMigrated 有进程内闸门。
+      // 幂等性得换个进程重跑才试得到，所以在下面单独起第二个子进程
+      const again = org.listAudit("default", { limit: 50 }).total;
+      console.log(JSON.stringify({
+        def: a.total, defNewest: a.audit[0] && a.audit[0].target,
+        lao: b.total, laoNewest: b.audit[0] && b.audit[0].target,
+        stillHasAudit: "audit" in raw, orgs: raw.orgs.length, invites: raw.invites.length,
+        again,
+      }));
+    `;
+    const out = require("child_process").spawnSync(process.execPath, ["-e", probe], { encoding: "utf8" });
+    let m = null;
+    try { m = JSON.parse(String(out.stdout).trim().split("\n").pop()); } catch {}
+    ok(m, "搬家探针跑起来了", (out.stderr || "").slice(0, 300));
+    if (m) {
+      eq(m.def, 2, "★default 那两条搬过来了★");
+      eq(m.lao, 1, "★老客户那一条也搬过来了，没跟 default 混在一起★");
+      eq(m.defNewest, "rm -rf build", "顺序没搬反：最新的还是最新的（文件里是往后追加，读回来要反过来）");
+      eq(m.laoNewest, "张三", "老客户那本的最新一条也对");
+      eq(m.stillHasAudit, false, "搬完 orgs.json 里的 audit 字段清掉了，不会搬第二次");
+      eq(m.orgs, 2, "反向对照：组织没被搬家弄丢");
+      eq(m.invites, 1, "反向对照：邀请码也没丢");
+      eq(m.again, 2, "★重复触发不会把同一批再写一遍★ 搬家是幂等的");
+    }
+
+    // 第二个进程，冲着同一份数据再跑一遍搬家。写重了这里就会翻倍
+    const out2 = require("child_process").spawnSync(process.execPath, ["-e", probe], { encoding: "utf8" });
+    let m2 = null;
+    try { m2 = JSON.parse(String(out2.stdout).trim().split("\n").pop()); } catch {}
+    ok(m2, "第二趟搬家探针也跑起来了", (out2.stderr || "").slice(0, 300));
+    if (m2) {
+      eq(m2.def, 2, "★换个进程重跑，default 还是 2 条★ 搬家是幂等的，不是每次都追加一遍");
+      eq(m2.lao, 1, "老客户那本也没翻倍");
+    }
+
+    // 闸门的顺序：老装机上如果**先发生一次写**（管理员点了个按钮），
+    // 新记录会先落到新文件；这时候才触发搬家的话，老记录会被追加到新记录**后面**，
+    // 文件里是新的在后，于是界面把一年前的事显示成刚刚发生
+    const OLD2 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mig2-"));
+    const OLDD2 = path.join(OLD2, "data");
+    fs.mkdirSync(OLDD2, { recursive: true });
+    // 重新摆一份升级前的样子，别去捡上面那份的 .bak——那是搬家自己留的，
+    // 拿它当输入等于让被测的东西自己准备考题
+    fs.writeFileSync(path.join(OLDD2, "orgs.json"), JSON.stringify({
+      orgs: [{ id: "default", name: "默认" }], depts: [], invites: [],
+      audit: [
+        { ts: "2026-09-18T10:00:00.000Z", org: "default", actor: "老王", action: "放行命令", target: "rm -rf build", detail: "" },
+        { ts: "2026-09-17T10:00:00.000Z", org: "default", actor: "老王", action: "添加成员", target: "李四", detail: "" },
+      ],
+    }, null, 2));
+    const probe2 = `
+      process.env.OPENWORKBUDDY_DATA_DIR = ${JSON.stringify(OLDD2)};
+      const org = require(${JSON.stringify(path.join(ROOT, "org"))});
+      org.audit({ org: "default", actor: "刚升级的管理员", action: "改额度", target: "王五" });
+      const a = org.listAudit("default", { limit: 50 });
+      console.log(JSON.stringify({ total: a.total, newest: a.audit[0] && a.audit[0].target }));
+    `;
+    const out3 = require("child_process").spawnSync(process.execPath, ["-e", probe2], { encoding: "utf8" });
+    let m3 = null;
+    try { m3 = JSON.parse(String(out3.stdout).trim().split("\n").pop()); } catch {}
+    ok(m3, "先写后搬的探针跑起来了", (out3.stderr || "").slice(0, 300));
+    if (m3) {
+      eq(m3.total, 3, "老的 2 条 + 刚写的 1 条，一条不多一条不少");
+      eq(m3.newest, "王五", "★刚写的那条排在最前★ 搬家排在写之后的话，这里会是一年前那条");
+    }
+    // 搬一半崩了的样子：jsonl 已经写出去了，orgs.json 还没改。
+    // 下次启动会照着 audit 字段再搬一遍——这一趟必须是覆盖，不是追加。
+    // 上面那个「换个进程重跑」试不出这条：那时 audit 字段已经删干净，搬家直接掉头就走
+    const OLD3 = fs.mkdtempSync(path.join(os.tmpdir(), "owb-mig3-"));
+    const OLDD3 = path.join(OLD3, "data");
+    fs.mkdirSync(path.join(OLDD3, "audit"), { recursive: true });
+    const twoRows = [
+      { ts: "2026-09-18T10:00:00.000Z", org: "default", actor: "老王", action: "放行命令", target: "rm -rf build", detail: "" },
+      { ts: "2026-09-17T10:00:00.000Z", org: "default", actor: "老王", action: "添加成员", target: "李四", detail: "" },
+    ];
+    fs.writeFileSync(path.join(OLDD3, "orgs.json"), JSON.stringify({
+      orgs: [{ id: "default", name: "默认" }], depts: [], invites: [], audit: twoRows,
+    }, null, 2));
+    // 上一趟的产物：文件里是新的在后，所以倒过来写
+    fs.writeFileSync(path.join(OLDD3, "audit", "default.jsonl"),
+      twoRows.slice().reverse().map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const probe3 = `
+      process.env.OPENWORKBUDDY_DATA_DIR = ${JSON.stringify(OLDD3)};
+      const org = require(${JSON.stringify(path.join(ROOT, "org"))});
+      const a = org.listAudit("default", { limit: 50 });
+      console.log(JSON.stringify({ total: a.total }));
+    `;
+    const out4 = require("child_process").spawnSync(process.execPath, ["-e", probe3], { encoding: "utf8" });
+    let m4 = null;
+    try { m4 = JSON.parse(String(out4.stdout).trim().split("\n").pop()); } catch {}
+    ok(m4, "搬一半崩了的探针跑起来了", (out4.stderr || "").slice(0, 300));
+    if (m4) eq(m4.total, 2, "★搬一半崩过，重来一趟还是 2 条★ 追加式的话这里会是 4，审计表里每件事凭空变两遍");
+    fs.rmSync(OLD3, { recursive: true, force: true });
+    fs.rmSync(OLD2, { recursive: true, force: true });
+    fs.rmSync(OLD, { recursive: true, force: true });
+  }
+
+  // ============================================================================
+  // 成员列表的开销不许跟「平台上开了几家公司」挂钩。
+  // publicUser 每个人身上要算三格（月额度 / 本月剩余 / 余额），2026-09-20 之前
+  // 这三格各自去 org.getOrg() 读一遍 orgs.json——一个人三遍，而 orgs.json 里装的是
+  // 平台上**所有**公司的数据。实测 50 个人的成员页：平台上 2 家公司 5.6ms，
+  // 501 家 365.6ms。慢的不是你自己的数据，是隔壁又来了几家。
+  // 判据用「读了几遍」不用「花了几毫秒」：毫秒在慢机器上会飘，次数不会。
+  // ============================================================================
+  console.log("\n【19】成员列表：隔壁开几家公司，不该拖慢你的后台");
+  {
+    const N19 = 120;
+    const nb19 = org.createOrg({ name: "隔壁十九号" }).id;
+    org.updateOrg(nb19, { settings: { member_monthly_credits: 777 } }, "平台");
+    const my19 = org.createOrg({ name: "本家十九号" }).id;
+    org.updateOrg(my19, { settings: { member_monthly_credits: 42 } }, "平台");
+
+    const st19 = account._internals.loadUsers();
+    const mk19 = (name, o) => ({ username: name, org: o, role: "member", status: "active",
+      created_at: new Date(Date.now() - 1000).toISOString(), pass: "x".repeat(60), salt: "y".repeat(32), credits: 0 });
+    for (let i = 0; i < N19; i++) st19.users.push(mk19("m19_" + i, my19));
+    st19.users.push(mk19("nb19_0", nb19));
+    account._internals.saveUsers(st19);
+
+    // 数 orgs.json 被读了几遍。这条 bug 真正的形状是「次数跟人数成正比」
+    const ORGS19 = org._internals.ORGS_FILE;
+    let reads19 = 0;
+    const rawRead19 = fs.readFileSync;
+    fs.readFileSync = function (f, ...rest) { if (String(f) === ORGS19) reads19++; return rawRead19.call(fs, f, ...rest); };
+    let list19;
+    try { list19 = account.listMembers(my19); } finally { fs.readFileSync = rawRead19; }
+
+    eq(list19.length, N19, "这家的人都列出来了");
+    ok(reads19 <= 2, "★列 " + N19 + " 个人，orgs.json 最多读两遍★ 每人各读各的话，这里会是 " + N19 * 3 + " 遍",
+       { 读了: reads19, 人数: N19 });
+
+    // 反向对照一：省下来的是读取，不是判断——设置必须还是**这个人自己组织**的那份
+    eq(list19[0].monthly_quota, 42, "本家的人按本家的月额度算");
+    eq(account.listMembers(nb19)[0].monthly_quota, 777, "★隔壁的人按隔壁的月额度算★ 把一份设置套到所有人头上的话，这里会是 42");
+
+    // 反向对照二：单独给某个人设过的额度，仍然盖得过组织默认值
+    const st19b = account._internals.loadUsers();
+    st19b.users.find((u) => u.username === "m19_0").monthly_quota = 999;
+    account._internals.saveUsers(st19b);
+    const again19 = account.listMembers(my19);
+    eq(again19.find((m) => m.username === "m19_0").monthly_quota, 999, "反向对照：单独设过额度的人，还是按他自己那份算");
+    eq(again19.find((m) => m.username === "m19_1").monthly_quota, 42, "反向对照：同一趟里没单独设过的人照旧按组织默认值");
+
+    // 反向对照三：单个用户的场合没有现成设置可传，publicUser 得自己去读，不能读出个空
+    eq(account.publicUser({ username: "m19_1", org: my19, role: "member" }).monthly_quota, 42,
+       "反向对照：不传设置时 publicUser 自己去读，读出来还是这家的 42");
+
+    // 把这一段造的人清掉，免得影响后面按人数算的断言
+    const st19c = account._internals.loadUsers();
+    st19c.users = st19c.users.filter((u) => !/^(m19_|nb19_)/.test(u.username));
+    account._internals.saveUsers(st19c);
+  }
+
+  console.log("\n【20】进门费：每条请求在干正事之前，先把整个平台的账本翻几遍");
+  {
+    // 这一段量的不是某一页，是**每一条**请求都要先走的那段路：
+    // 认人 → 判登录有效期 → 强制二次验证 → 远程设备开关 → 租户作用域。
+    // 它翻的两本账装的是整个平台的账号、所有还活着的登录令牌和全部公司表——
+    // 跟「这条请求要干什么」一点关系都没有。所以平台上多开几家公司、多几百人在线，
+    // 不该让任何一条请求变慢；而聊天页是几秒一次轮询的，慢下来是整个产品一起慢。
+    // 判据用「翻了几遍」不用「花了几毫秒」：毫秒在慢机器上会飘，次数不会。
+    const USERS20 = path.join(process.env.OPENWORKBUDDY_DATA_DIR, "users.json");
+    const ORGS20 = org._internals.ORGS_FILE;
+    const countReads = async (fn) => {
+      const c = { users: 0, orgs: 0 };
+      const raw = fs.readFileSync;
+      fs.readFileSync = function (f, ...rest) {
+        const s = String(f);
+        if (s === USERS20) c.users++;
+        else if (s === ORGS20) c.orgs++;
+        return raw.call(fs, f, ...rest);
+      };
+      try { c.res = await fn(); } finally { fs.readFileSync = raw; }
+      return c;
+    };
+
+    const c20 = await countReads(() => call("GET", "/api/nothing", { cookie: yuan }));
+    eq(c20.res.status, 200, "测试自检：这条什么都不做的接口本身是通的");
+    ok(c20.users >= 1 && c20.orgs >= 1, "测试自检：这两本账确实在认人这段被翻过（数得着，不是数了个 0）", c20);
+    ok(c20.users <= 1, "★一条请求，users.json 只翻一遍★ 以前是三遍：认人、判令牌类型、记活跃",
+       { 读了: c20.users });
+    ok(c20.orgs <= 1, "★一条请求，orgs.json 只翻一遍★ 以前是四遍：判有效期、强制二次验证、远程开关、租户作用域",
+       { 读了: c20.orgs });
+
+    // ---- 20.1 记活跃的 5 分钟节流：省的不能只是写，读也得省下 ----
+    const tk20 = String(yuan).split("=").slice(1).join("=");
+    const readUsers20 = () => JSON.parse(fs.readFileSync(USERS20, "utf8"));
+    const poke20 = (mut) => { const db = readUsers20(); mut(db); fs.writeFileSync(USERS20, JSON.stringify(db)); };
+    const seenOf20 = () => (readUsers20().tokens[tk20] || {}).seen || 0;
+
+    // 一分钟前露过面：还在 5 分钟窗口里。不写成「就是现在」是因为——万一没被节流住，
+    // 它会重写成 Date.now()，两个值可能落在同一毫秒上，这条断言就变成了空断言
+    poke20((db) => { db.tokens[tk20].seen = Date.now() - 60 * 1000; });
+    const seen20 = seenOf20();
+    await call("GET", "/api/nothing", { cookie: yuan });
+    eq(seenOf20(), seen20, "5 分钟内再来一条，不重写「最后活跃」（一次任务几十条轮询，写一次就够）");
+
+    poke20((db) => { db.tokens[tk20].seen = Date.now() - 6 * 60 * 1000; });
+    await call("GET", "/api/nothing", { cookie: yuan });
+    ok(seenOf20() > Date.now() - 60000, "反向对照：超过 5 分钟没露面的，这一趟就得把「最后活跃」补上",
+       { seen: seenOf20() });
+
+    // ---- 20.2 真要写的时候得重新读一遍：别拿请求开头那份盖回去 ----
+    // 故意在「请求开头读账本」之后插一笔别处的改动。省掉这次重读的话，
+    // 记一下最后活跃时间这件小事，会顺手把中间别人写的东西抹掉。
+    poke20((db) => {
+      db.tokens[tk20].seen = Date.now() - 6 * 60 * 1000;
+      db.users.find((u) => u.username === "xiaoyuan").credits = 1;
+    });
+    let poked20 = false;
+    const raw20 = fs.readFileSync;
+    fs.readFileSync = function (f, ...rest) {
+      const out = raw20.call(fs, f, ...rest);
+      if (!poked20 && String(f) === USERS20) {
+        poked20 = true;
+        const db = JSON.parse(raw20.call(fs, USERS20, "utf8"));
+        db.users.find((u) => u.username === "xiaoyuan").credits = 4242;
+        fs.writeFileSync(USERS20, JSON.stringify(db));
+      }
+      return out;
+    };
+    try { await call("GET", "/api/nothing", { cookie: yuan }); } finally { fs.readFileSync = raw20; }
+    ok(poked20, "测试自检：那一笔确实插在了「请求开头读账本」之后");
+    eq((readUsers20().users.find((u) => u.username === "xiaoyuan") || {}).credits, 4242,
+       "★记活跃要写之前重新读一遍★ 拿请求开头那份盖回去的话，别处刚写的这一笔就没了");
+    ok(seenOf20() > Date.now() - 60000,
+       "反向对照：该记的「最后活跃」也照样记上了（不是靠干脆不写来保住上面那一笔）", { seen: seenOf20() });
+
+    // ---- 20.3 挂不上的时候，租户作用域得自己去读 ----
+    // 登录闸把解析好的组织挂在请求上，tenantScope 优先用它。但这条路上不一定有人登录
+    // （单机桌面版就没有），少了那一挂不能把租户作用域一起丢了。
+    const mw20 = admin.tenantScope({ withWorkspace: tools.withWorkspace, withPolicy: tools.withPolicy, getWorkspaceDir: tools.getWorkspaceDir });
+    const uYuan20 = account._internals.loadUsers().users.find((u) => u.username === "xiaoyuan");
+    await new Promise((done) => {
+      mw20({ user: uYuan20, headers: {}, path: "/x" }, {}, () => {
+        eq(tools.getWorkspaceDir(), root2, "★请求上没挂组织时，tenantScope 自己去读，照样落在分公司的目录★");
+        ok((tools.orgPolicy() || {}).allow_shell === false,
+           "这时候那份组织设置也照样生效（不是只把目录找对了）", tools.orgPolicy());
+        done();
+      });
+    });
+  }
+
+
+  console.log("\n【21】平台的组织列表：多开几家公司，不该把整本用量账再翻几十遍");
+  {
+    // 这一页每家公司只显示两个数字：几个人、几个在用。以前是一家一家去查成员列表——
+    // 那个函数要算每个人的角色额度余额，还要为「最后活跃」翻一遍用量账本。
+    // 61 家公司换一张 38 KB 的表，要读 62 遍 users.json + 61 遍用量账本、35.6 MB 的盘、159ms；
+    // 121 家时 98.3 MB、388ms。判据还是「翻了几遍」，不是「花了几毫秒」。
+    const DATA21 = process.env.OPENWORKBUDDY_DATA_DIR;
+    const USERS21 = path.join(DATA21, "users.json");
+    const ORGS21 = org._internals.ORGS_FILE;
+    const USAGE21 = path.join(DATA21, "usage");
+
+    const a21 = org.createOrg({ name: "二十一号甲" }).id;
+    const b21 = org.createOrg({ name: "二十一号乙" }).id;
+    const z21 = org.createOrg({ name: "二十一号丙（一个人都还没进）" }).id;
+    const st21 = account._internals.loadUsers();
+    const mk21 = (name, o, status) => st21.users.push({
+      username: name, org: o, role: "member", created_at: new Date().toISOString(),
+      pass: "x".repeat(60), salt: "y".repeat(32), credits: 1,
+      ...(status === undefined ? {} : { status }),
+    });
+    mk21("a21_1", a21, "active");
+    mk21("a21_2", a21, "pending");    // 等审核
+    mk21("a21_3", a21, "disabled");   // 已停用
+    mk21("a21_4", a21, undefined);    // 老账号，根本没有 status 这一格
+    mk21("b21_1", b21, "active");
+    account._internals.saveUsers(st21);
+
+    const c21 = { users: 0, orgs: 0, usage: 0 };
+    const raw21 = fs.readFileSync;
+    fs.readFileSync = function (f, ...rest) {
+      const s = String(f);
+      if (s === USERS21) c21.users++;
+      else if (s === ORGS21) c21.orgs++;
+      else if (s.startsWith(USAGE21)) c21.usage++;
+      return raw21.call(fs, f, ...rest);
+    };
+    let r21;
+    try { r21 = await call("GET", "/api/admin/orgs", { cookie: boss }); } finally { fs.readFileSync = raw21; }
+    eq(r21.status, 200, "平台管理员列得出组织");
+    const by21 = new Map((r21.json.orgs || []).map((o) => [o.id, o]));
+    eq(by21.get(a21).members, 4, "甲家 4 个人（停用的也算人头——席位是按人头卖的）");
+    eq(by21.get(a21).active, 2, "★甲家 2 个在用★ 等审核的和停用的不算；老账号没有 status 那一格的，当在用算");
+    eq(by21.get(b21).members, 1, "反向对照：乙家那一个人没被算到甲家头上");
+    eq(by21.get(z21).members, 0, "反向对照：一个人都还没进的公司显示 0，不是空着也不是崩了");
+    eq(c21.usage, 0, "★这一页一遍用量账本都不用翻★ 它一个人名都不显示，只显示两个数字", { 翻了: c21.usage });
+    ok(c21.users <= 2, "★不管平台上开了几家公司，users.json 最多读两遍★ 一遍认人、一遍数人头",
+       { 读了: c21.users, 公司数: (r21.json.orgs || []).length });
+    ok(c21.orgs <= 2, "★orgs.json 也一样★ 以前是每家各读一遍", { 读了: c21.orgs });
+
+    // 反向对照：两处数出来的必须一样。对不上的话，同一家公司在成员页和组织列表上
+    // 会显示两个不同的在用人数，而谁也说不清哪个是真的
+    const mine21 = account.listMembers(a21);
+    eq(by21.get(a21).members, mine21.length, "组织列表和成员页数出来的人数一致");
+    eq(by21.get(a21).active, mine21.filter((m) => m.status === "active").length,
+       "在用人数也一致（两处对「没有 status 的老账号算什么」得是同一个默认值）");
+  }
+
+  console.log("\n【22】成员页：六百人的花名册，不能整份甩给浏览器");
+  {
+    // 以前这一页是「整份回去、前端自己筛」。3000 人的组织实测：一趟 1041 KB、
+    // 浏览器里 78098 个 DOM 节点、从点进来到表格画完 878ms，而一屏看得见十几行。
+    // 改成服务端筛 + 翻页之后：17 KB、1403 个节点、38ms。同一趟顺手砍了另外三处
+    // 「捎带整份花名册」：管理员角色页 1042 KB → 48 KB，用量明细页 682 KB → 200 KB。
+    //
+    // 这一段钉的是那几条「看不见、但一破就悄悄退回从前」的性质：
+    //   · 排序在切页之前——不然「第一页」取决于人在账本里的物理顺序，今天谁在前面
+    //     取决于谁昨天改过资料
+    //   · 算钱在切页之后——每个人都要算角色、额度、本月剩余、余额，还要为「最后活跃」
+    //     翻用量账本；六百个人算完只显示五十个，前面那些全是白算的
+    //   · HTTP 上要不来整份——?limit=99999 也只给一页，不然改了前端等于没改
+    const rbac22 = require(path.join(ROOT, "rbac"));
+    const usageStore22 = require(path.join(ROOT, "usage-store"));
+    const DEF22 = "default";
+    const MONTH22 = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
+
+    const st22 = account._internals.loadUsers();
+    const born = (y, i) => new Date(Date.UTC(y, 0, 1, 0, 0, i)).toISOString();
+    const mk22 = (name, extra) => st22.users.push({
+      username: name, org: DEF22, role: "member", created_at: born(2026, st22.users.length),
+      pass: "x".repeat(60), salt: "y".repeat(32), credits: 0, ...extra,
+    });
+    // 一个「元老」：比开服那个账号还早。它是排序那条断言的靶子——
+    // 超级管理员得排在他前面，而他得排在其余所有人前面
+    mk22("m22_yuanlao", { created_at: born(2000, 0), nickname: "元老" });
+    for (let i = 0; i < 600; i++) {
+      const n = String(i).padStart(3, "0");
+      mk22("m22_" + n, {
+        nickname: i % 137 === 3 ? "叫得出名字的那个" + n : "同事" + n,
+        dept: ["市场部", "研发部", "财务部"][i % 3],
+        role: i % 211 === 5 ? "auditor" : "member",
+        status: i % 97 === 7 ? "pending" : i % 89 === 11 ? "disabled" : "active",
+        // 每 53 个里有一个是「这个月的额度用光了」——首页那条待办要数的就是他们
+        ...(i % 53 === 9 ? { monthly_quota: 100, month_key: MONTH22, month_used: 100 } : {}),
+      });
+    }
+    account._internals.saveUsers(st22);
+
+    // 期望值一律从**整份**算出来，不写死数字：这一段前面十几段也往默认组织里放过人，
+    // 写死了就会变成「改一处前面的测试、后面莫名其妙红一片」
+    const all22 = account.listMembers(DEF22);
+    const LIMIT22 = 50;
+    const hay22 = (m) => [m.username, m.nickname, m.dept].join("\u0000").toLowerCase();
+
+    // 「最后活跃」那一趟是整段里最贵的动作（要翻用量账本），拿它当探针：
+    // 它被问了几个人名，就是这一趟真正算了几个人
+    const realLA22 = usageStore22.lastActive;
+    let la22 = [];
+    usageStore22.lastActive = function (names, ...rest) {
+      la22.push((names || []).length);
+      return realLA22.call(this, names, ...rest);
+    };
+    const asked = () => la22.reduce((a, b) => a + b, 0);
+    const watch = async (fn) => { la22 = []; const res = await fn(); return res; };
+
+    try {
+      ok(all22.length > 600, "先把人造起来：默认组织现在有六百多号人", { 人数: all22.length });
+
+      // ---------- 翻页 ----------
+      const p1 = await watch(() => call("GET", `/api/admin/members?limit=${LIMIT22}`, { cookie: boss }));
+      eq(p1.status, 200, "成员页拉得到");
+      eq(p1.json.members.length, LIMIT22, "★要一页就只给一页★ 六百多人的组织，回的是 50 个");
+      eq(p1.json.total, all22.length, "total 还是「这家公司一共几个人」——翻页不改变这个数");
+      eq(p1.json.matched, all22.length, "没筛的时候 matched = total");
+      eq(asked(), LIMIT22, "★只为这一页的 50 个人查『最后活跃』★ 算钱在切页之后，不是先把六百个人都算完再扔掉",
+         { 问了几个人: asked() });
+
+      const names1 = p1.json.members.map((m) => m.username);
+      eq(names1.join(","), all22.slice(0, LIMIT22).map((m) => m.username).join(","),
+         "★切的是排好序的那一份★ 第一页 = 整份排好序之后的前 50 个，一个不差、顺序一致");
+      eq(names1[0], "laoban", "★超级管理员永远在第一页第一个★ 不管他是第几个注册进来的");
+      eq(names1[1], "m22_yuanlao",
+         "★接下来按进公司的先后排★ 元老（造他的时候故意排在账本的最后一条）在第二个——"
+         + "排序要是在切页之后做的，他会掉到最后一页去");
+
+      const p2 = await call("GET", `/api/admin/members?limit=${LIMIT22}&offset=${LIMIT22}`, { cookie: boss });
+      const names2 = p2.json.members.map((m) => m.username);
+      eq(p2.json.offset, LIMIT22, "第二页把 offset 原样报回来（前端靠它画「第几页」）");
+      eq(new Set([...names1, ...names2]).size, LIMIT22 * 2,
+         "★两页之间不重不漏★ 一百个名字就是一百个人，没有谁在两页上各出现一次");
+
+      const over = await call("GET", `/api/admin/members?limit=${LIMIT22}&offset=999999`, { cookie: boss });
+      ok(over.json.members.length > 0,
+         "★翻过头了退回最后一页，不是给一张空表★ 空表在界面上跟「这家公司没有人」长得一模一样",
+         { 回了几个: over.json.members.length, offset: over.json.offset });
+      eq(over.json.offset, Math.floor((all22.length - 1) / LIMIT22) * LIMIT22, "退回来的正好是最后一页的起点");
+
+      const greedy = await call("GET", "/api/admin/members?limit=99999", { cookie: boss });
+      eq(greedy.json.members.length, account.MEMBER_PAGE_MAX,
+         "★HTTP 上要不来整份★ ?limit=99999 也只给 MEMBER_PAGE_MAX 个——不然前端改了等于没改，"
+         + "谁手改一下地址栏就把服务器拖回去");
+      ok(greedy.json.members.length < all22.length, "反向对照：确实截断了（造的人比上限多）",
+         { 上限: account.MEMBER_PAGE_MAX, 人数: all22.length });
+
+      // ---------- 筛在服务端做 ----------
+      const kw = "叫得出名字的那个";
+      const wantKw = all22.filter((m) => hay22(m).includes(kw.toLowerCase())).length;
+      ok(wantKw >= 2 && wantKw < 10, "测试自检：这个关键词确实只对得上少数几个人（不然下面是空断言）", { 命中: wantKw });
+      const sr = await call("GET", "/api/admin/members?q=" + encodeURIComponent(kw), { cookie: boss });
+      eq(sr.json.matched, wantKw, "★搜索是服务端做的★ 回来的 matched 就是命中数");
+      eq(sr.json.members.length, wantKw, "★而且只回命中的这几个人★ 不是整份回去让浏览器自己藏");
+      eq(sr.json.total, all22.length, "total 不受搜索影响——界面上那句「筛出 N / 共 M」要的就是这两个数");
+      ok(sr.json.members.every((m) => hay22(m).includes(kw.toLowerCase())), "回来的每一个都真的对得上");
+
+      const miss = await call("GET", "/api/admin/members?q=" + encodeURIComponent("这个人不存在zzz"), { cookie: boss });
+      eq(miss.json.matched, 0, "反向对照：搜一个谁也不叫的名字，matched 是 0");
+      eq(miss.json.members.length, 0, "而且不是「筛不着就把整份给你」");
+
+      for (const [k, v] of [["status", "disabled"], ["status", "pending"], ["role", "auditor"]]) {
+        const want = all22.filter((m) => m[k] === v).length;
+        ok(want > 0, `测试自检：${k}=${v} 的人确实造出来了`, { 有: want });
+        const rr = await call("GET", `/api/admin/members?${k}=${v}&limit=${account.MEMBER_PAGE_MAX}`, { cookie: boss });
+        eq(rr.json.matched, want, `按 ${k}=${v} 筛，数目跟整份里数出来的一致`);
+        ok(rr.json.members.every((m) => m[k] === v), `按 ${k}=${v} 筛，回来的每一个都对`);
+      }
+
+      // ---------- 回包真的小了 ----------
+      const full = await call("GET", `/api/admin/members?limit=${account.MEMBER_PAGE_MAX}`, { cookie: boss });
+      ok(p1.bytes * 3 < full.bytes,
+         "★一页的回包比一整份小一大截★ 这才是这趟改动要买的东西：手机上、会议室的网上，差的是这几百 KB",
+         { 一页: p1.bytes, 五百个: full.bytes });
+
+      const lite = await watch(() => call("GET", `/api/admin/members?fields=lite&limit=${LIMIT22}`, { cookie: boss }));
+      const one = lite.json.members[0] || {};
+      eq(Object.keys(one).sort().join(","), "dept,nickname,role,status,username",
+         "★下拉框那份只有名字这几格★ 交接给谁、归到谁名下——这种地方要的是名字，不是余额");
+      ok(!("balance" in one) && !("credits" in one) && !("monthly_quota" in one),
+         "★lite 里一个钱数都没有★ 少回一格就少一个能泄出去的地方", one);
+      eq(asked(), 0,
+         "★lite 一次『最后活跃』都不查★ 它一个时间都不显示，去翻用量账本纯属白翻", { 问了几个人: asked() });
+      ok(lite.bytes * 2 < p1.bytes, "同样 50 个人，lite 的回包不到全份的一半", { lite: lite.bytes, 全份: p1.bytes });
+
+      // ---------- 首页概览：一个人名都不回，也一本账都不翻 ----------
+      const ov = await watch(() => call("GET", "/api/admin/overview", { cookie: boss }));
+      eq(ov.status, 200, "概览拉得到");
+      ok(!("members" in ov.json), "★首页不捎带花名册★ 它一个人名都不显示，只显示几个数字");
+      eq(asked(), 0, "★首页一次『最后活跃』都不查★", { 问了几个人: asked() });
+      eq(ov.json.seats.used, all22.filter((m) => m.status !== "disabled").length,
+         "在用席位 = 没停用的人（停用的不占席位，但人还在花名册上）");
+      eq(ov.json.seats.pending, all22.filter((m) => m.status === "pending").length, "等审核的人数对得上");
+      eq(ov.json.monthly.granted, all22.reduce((a, m) => a + m.monthly_quota, 0),
+         "★这个月一共发下去多少，跟一个一个加起来的一样★ 两处口径要是不一致，"
+         + "同一家公司在首页和成员页会显示两个数，而谁也说不清哪个是真的");
+      const dryWant = all22.filter((m) => m.status === "active" && m.monthly_quota > 0 && m.monthly_left <= 0);
+      ok(dryWant.length > 0, "测试自检：确实有人这个月额度用光了（不然下面那条是空断言）", { 有: dryWant.length });
+      eq(ov.json.monthly.dry, dryWant.length, "★额度见底的人数对得上★ 首页那条待办就指着它");
+      ok(ov.json.monthly.dry_names.length <= 3 && ov.json.monthly.dry_names.length > 0,
+         "★待办里至多点三个人名★ 六百人的组织要是有两百个见底的，那条待办不能变成两百个名字",
+         ov.json.monthly.dry_names);
+
+      // ---------- 管理员角色页：要的是管理层，不是全体 ----------
+      const staffWant = all22.filter((m) => rbac22.ROLE_RANK[m.role] >= rbac22.ROLE_RANK.auditor);
+      const roles = await watch(() => call("GET", "/api/admin/roles", { cookie: boss }));
+      eq(roles.status, 200, "角色页拉得到");
+      ok(!("members" in roles.json), "★角色页不再回整份花名册★ 它画的是一张十来行的管理层名单");
+      eq(roles.json.staff.length, staffWant.length, "管理层名单 = 审计员起的那些人", { 有: staffWant.length });
+      ok(roles.json.staff.every((m) => rbac22.ROLE_RANK[m.role] >= rbac22.ROLE_RANK.auditor),
+         "名单里没混进普通成员");
+      eq(roles.json.owner, "laoban", "超级管理员那一格还是从管理层名单里挑出来的");
+      eq(asked(), staffWant.length,
+         "★只为管理层这十来个人查『最后活跃』★ 档位下限得在算钱之前筛，不是算完六百个再扔掉五百九",
+         { 问了几个人: asked(), 管理层: staffWant.length });
+      ok(roles.json.candidates.length === account.MEMBER_PAGE_MAX,
+         "提拔/转让的候选人下拉最多给 MEMBER_PAGE_MAX 个", { 给了: roles.json.candidates.length });
+      eq(roles.json.candidates_capped, true,
+         "★截断了就得说★ 不然界面上「下拉里找不到那个人」会被当成他不存在");
+      eq(roles.json.candidates_total, all22.filter((m) => m.status === "active").length,
+         "候选人总数照实报（前端拿它写「共 N 人，先显示前 500」）");
+      ok(roles.json.candidates.every((m) => m.status === "active"),
+         "候选人只列在职的——提拔一个已经停用的人是没有意义的操作");
+      ok(!("balance" in (roles.json.candidates[0] || {})), "候选人也是 lite 那五格");
+      ok(roles.bytes * 3 < full.bytes, "角色页回包比一整份花名册小一大截", { 角色页: roles.bytes, 五百个: full.bytes });
+
+      // ---------- 用量明细 / 成员用量 / 中转上限：三处都不再捎带花名册 ----------
+      // 先造靶子：三个花钱的大户（token 和钱都分得开），外加六十个只跑过一次的人——
+      // 六十个是为了让「按人分组截到前 20 / 前 50」这两条真的被截到，不然是空断言
+      const day22 = MONTH22 + "-" + String(new Date().getDate()).padStart(2, "0");
+      // 挑的这三个是**逆着花名册**的（008 / 004 / 000，进公司的先后正好相反）：
+      // 挑 000/001/002 的话，「按花销排」和「按花名册排」排出来一模一样，
+      // 下面那条断言就成了摆设——把排序整个换成花名册顺序它照样绿
+      const SPEND22 = [["m22_008", 900, 9], ["m22_004", 300, 3], ["m22_000", 100, 1]];
+      for (const [who, tokens, yuan] of SPEND22)
+        usageStore22.append({ ts: new Date().toISOString(), day: day22, kind: "run", user: who, org: DEF22,
+          model: "m22-model", source: "web", prompt: tokens, completion: 0, credits: 2, cost: yuan, elapsed_ms: 10 });
+      for (let i = 100; i < 160; i++)
+        usageStore22.append({ ts: new Date().toISOString(), day: day22, kind: "run", user: "m22_" + i, org: DEF22,
+          model: "m22-model", source: "web", prompt: 1, completion: 0, credits: 0, elapsed_ms: 1 });
+      // 给花得最多的那个人补一笔**充值**。充值不是花销——不补这一笔的话，
+      // 「充值算进花销里」这个坏法在账本上根本无从显形，下面那条断言就是空的
+      usageStore22.append({ ts: new Date().toISOString(), day: day22, kind: "topup", user: "m22_008", org: DEF22,
+        cost: 500, credits: 0, elapsed_ms: 0 });
+
+      // ---- 用量明细：这一页只要流水 ----
+      const u0 = await call("GET", "/api/admin/usage?limit=1", { cookie: boss });
+      ok(!("members" in u0.json),
+         "★用量明细一个人名都不捎带★ 以前每趟都带整份，于是 ?limit= 根本缩不小回包——"
+         + "实测 3000 人时 limit=20 是 682 KB、limit=1 还是 678 KB，那几百 KB 是名单不是流水");
+      const uw = await call("GET", "/api/admin/usage?limit=1&with=members", { cookie: boss });
+      ok(!("members" in uw.json),
+         "★老参数也要不出来★ 留个 with= 的后门，回包照样会按人头长，只是换个人来踩");
+      ok(uw.json.groups.users > 20, "测试自检：确实有二十个以上的人花过钱（不然下面那条是空断言）",
+         { 组数: uw.json.groups.users });
+      eq(uw.json.by_user.length, 20,
+         "★按人分组截到 20★ 跟 /api/admin/stats 一个口径。不截的话这一行是按人头长的");
+      ok(uw.json.by_user.every((r, i, a) => i === 0 || a[i - 1].tokens >= r.tokens),
+         "截的是花得最多的那 20 个，不是随手前 20 个");
+
+      // ---- 成员用量：一页 50 个人 ----
+      const um = await watch(() => call("GET", "/api/admin/usage/members?limit=10", { cookie: boss }));
+      eq(um.status, 200, "成员用量拉得到");
+      eq(um.json.rows.length, 10, "★要一页就只给一页★ 六百多人的组织，回的是 10 个");
+      eq(um.json.total, all22.length, "total 还是「这家公司一共几个人」——翻页不改变这个数");
+      eq(um.json.matched, all22.length, "没筛的时候 matched = total");
+      eq(asked(), 0, "★成员用量一次『最后活跃』都不查★ 这一页一个时间都不显示，去翻账本纯属白翻",
+         { 问了几个人: asked() });
+      const umBig = await call("GET", "/api/admin/usage/members?limit=500", { cookie: boss });
+      ok(um.bytes * 10 < umBig.bytes,
+         "★?limit= 真的缩得小回包★ 这条接口存在的全部理由：以前 limit=1 和 limit=20 一样大",
+         { 十个: um.bytes, 五百个: umBig.bytes });
+      ok(um.bytes * 10 < full.bytes, "一页十个人，比一份五百人的花名册小一个数量级",
+         { 十个: um.bytes, 五百个: full.bytes });
+
+      const sorted22 = await call("GET", "/api/admin/usage/members?limit=50&q=m22_00", { cookie: boss });
+      eq(sorted22.json.matched, 10, "测试自检：m22_00 这个前缀正好对上十个人");
+      eq(sorted22.json.rows.slice(0, 3).map((r) => r.username).join(","), "m22_008,m22_004,m22_000",
+         "★默认按累计 tokens 从多到少★ 这一页回答的是「钱花在谁身上了」；按花名册排的话，"
+         + "花得最多的那几个散在六十页中间，等于没答");
+      ok(sorted22.json.rows.every((r, i, a) => i === 0 || a[i - 1].tokens >= r.tokens),
+         "整页单调不增，不只是头三个碰巧对了");
+      eq(sorted22.json.rows[0].tokens, 900, "tokens 数对得上（prompt + completion）");
+      eq(sorted22.json.rows[0].runs, 1, "运行次数对得上");
+      eq(sorted22.json.rows[0].used_credits, 2, "消耗的积分对得上");
+      ok("balance" in sorted22.json.rows[0] && "monthly_left" in sorted22.json.rows[0],
+         "钱数这几格照旧有——这一页画的就是额度和余额", Object.keys(sorted22.json.rows[0]));
+
+      const byName22 = await call("GET", "/api/admin/usage/members?limit=50&q=m22_00&sort=name", { cookie: boss });
+      eq(byName22.json.rows.map((r) => r.username).join(","),
+         Array.from({ length: 10 }, (_, i) => "m22_00" + i).join(","),
+         "★sort=name 按进公司的先后排★ 跟成员页那张表对得上，两页之间不用重新找人");
+
+      const dry22 = await call("GET", "/api/admin/usage/members?dry=1&limit=500", { cookie: boss });
+      eq(dry22.json.matched, dryWant.length,
+         "★「只看额度见底」的口径跟首页那条待办一模一样★ 首页说三个人、点进来只剩一个的话，"
+         + "谁也说不清哪个是真的");
+      ok(dry22.json.rows.every((r) => r.dry), "回来的每一个都真的见底了");
+      ok(dry22.json.rows.every((r) => r.status === "active"), "停用的人不算见底——他本来就发不出请求");
+      eq(um.json.dry, dryWant.length,
+         "★不筛的时候 dry 报的是同一个数★ 界面上那颗钮写着这个数；跟着筛选变的话，"
+         + "一按下去它就只数筛出来的那些，钮上永远写着自己筛出来的结果");
+      ok(um.json.matched > dry22.json.matched, "反向对照：不筛的时候人多得多",
+         { 全部: um.json.matched, 见底: dry22.json.matched });
+      const dryNarrow = await call("GET", "/api/admin/usage/members?limit=10&q=m22_00", { cookie: boss });
+      eq(dryNarrow.json.matched, 10, "测试自检：这一筛只剩十个人");
+      eq(dryNarrow.json.dry, dryWant.length,
+         "★筛完了 dry 还是那个数★ 上面那条只在**不筛**的时候比过，而坏法恰恰只在筛的时候显形："
+         + "搜一个字，那颗「只看额度见底」的钮上就只剩筛出来的那几个，等于一打字它就自己归零",
+         { 筛出来的: dryNarrow.json.matched, 钮上写的: dryNarrow.json.dry, 全组织: dryWant.length });
+
+      const umOver = await call("GET", "/api/admin/usage/members?limit=10&offset=999999", { cookie: boss });
+      ok(umOver.json.rows.length > 0,
+         "★翻过头了退回最后一页，不是给一张空表★ 空表跟「这家公司没有人」长得一模一样",
+         { 回了几个: umOver.json.rows.length, offset: umOver.json.offset });
+      eq(umOver.json.offset, Math.floor((all22.length - 1) / 10) * 10, "退回来的正好是最后一页的起点");
+      eq((await call("GET", "/api/admin/usage/members?limit=99999", { cookie: boss })).json.rows.length,
+         account.MEMBER_PAGE_MAX,
+         "★HTTP 上要不来整份★ 手改地址栏也只给 MEMBER_PAGE_MAX 个");
+
+      // ---- 数据统计：要的是「几个人」这一个整数 ----
+      const stt22 = await watch(() => call("GET", "/api/admin/stats", { cookie: boss }));
+      eq(stt22.json.totals.members, all22.length,
+         "★成员数还是那个数★ 从「把全员算一遍再取 .length」换成「只数不算」，口径不能跟着变");
+      eq(asked(), 0,
+         "★数据统计一次『最后活跃』都不查★ 以前为了一个整数，把每个人的角色、额度、"
+         + "本月剩余、余额都算了一遍，还翻了一趟用量账本", { 问了几个人: asked() });
+
+      // ---- 中转 Key 页 ----
+      const rl22 = await call("GET", "/api/admin/relay", { cookie: boss });
+      eq(rl22.status, 200, "中转 Key 页拉得到");
+      ok(!("members" in rl22.json),
+         "★中转 Key 页不捎带花名册★ 3000 人时那份「跟随团队 · 本月 0 元」重复三千遍的表是 620 KB");
+      ok(rl22.json.spend.groups.users > 50, "测试自检：确实有五十个以上的人本月有账（不然下面是空断言）",
+         { 组数: rl22.json.spend.groups.users });
+      eq(rl22.json.spend.by_user.length, 50, "★账单按人那张也截到 50★ 界面上画的就是 50 行");
+      ok(rl22.bytes * 3 < full.bytes,
+         "★中转 Key 页的回包比一份花名册小一大截★ 六百人的组织里，以前那份名单占掉九成",
+         { 中转页: rl22.bytes, 五百个: full.bytes });
+
+      const cappedBefore22 = all22.filter((m) => m.status !== "disabled" && +m.budget_yuan > 0).length;
+      eq(+(all22.find((m) => m.username === "m22_005") || {}).budget_yuan || 0, 0,
+         "测试自检：m22_005 原本没有单独上限");
+      eq((await call("POST", "/api/admin/relay/members/m22_005", { cookie: boss, body: { budget_yuan: 42 } })).status,
+         200, "给 m22_005 单独设一档月上限");
+
+      const rm22 = await call("GET", "/api/admin/relay/members?limit=10", { cookie: boss });
+      eq(rm22.status, 200, "中转上限那张表拉得到");
+      eq(rm22.json.rows.length, 10, "★要一页就只给一页★");
+      eq(rm22.json.total, all22.filter((m) => m.status !== "disabled").length,
+         "★停用的人不在这张表里★ 他已经调不出去了，摆在这儿只会让「这页有多少人」对不上席位数");
+      eq(rm22.json.capped, cappedBefore22 + 1,
+         "★设过单独上限的人数★ 这个数不跟着筛选变，界面上那句话写的就是它");
+
+      const rmq22 = await call("GET", "/api/admin/relay/members?limit=50&q=m22_00", { cookie: boss });
+      eq(rmq22.json.matched, 10, "★搜索是服务端做的★");
+      eq(rmq22.json.total, all22.filter((m) => m.status !== "disabled").length, "total 不受搜索影响");
+      eq(rmq22.json.rows.map((r) => r.username).join(","),
+         "m22_008,m22_004,m22_000,m22_005,m22_001,m22_002,m22_003,m22_006,m22_007,m22_009",
+         "★该动闸子的排最前面★ 先是本月花过钱的（按花销倒序），再是设过单独上限但这个月没花的"
+         + "（那条上限会拦人，不该藏在第六十页），其余按进公司的先后");
+      eq(rmq22.json.rows[0].spent_month, 9,
+         "★本月已花对得上，而且不含充值★ 账本里给这个人补了一笔 500 的充值；"
+         + "把充值算成花销的话这儿是 509，跟中转账单、跟 budget.spentOf 三处就对不上了");
+      const rmq3 = await call("GET", "/api/admin/relay/members?limit=3&q=m22_00", { cookie: boss });
+      eq(rmq3.json.rows.map((r) => r.username).join(","), "m22_008,m22_004,m22_000",
+         "★排完整份再切页★ 上面那条要了 50 个、正好一页装得下，页内排和页外排排出来一模一样——"
+         + "把一页压到 3 个，边界才真被跨过去：先切后排的话这儿是花名册顺序的头三个",
+         { 第一页: rmq3.json.rows.map((r) => r.username) });
+      eq(rmq22.json.rows[3].budget_yuan, 42, "刚设的那档月上限回来了");
+      eq((await call("GET", "/api/admin/relay/members?limit=99999", { cookie: boss })).json.rows.length,
+         account.MEMBER_PAGE_MAX, "★这张表在 HTTP 上也要不来整份★");
+
+      // ---- 发 Key 时的归属校验：换成只读一遍 users.json 之后，拦的还是同一批 ----
+      const badKey22 = await watch(() => call("POST", "/api/admin/relay/keys",
+        { cookie: boss, body: { name: "k22-坏的", user: "根本没有这个人zzz" } }));
+      ok(badKey22.status >= 400,
+         "★挂给一个不存在的人要当场拦下★ 放过去的后果不是报错而是**静默**：那一档月预算成了摆设",
+         { status: badKey22.status });
+      eq(asked(), 0,
+         "★拦一个写错的名字，不该把全公司算一遍★ 这是个是非题：这个组织里有没有这个人。"
+         + "退回 listMembers().find() 的话，为了答这一个是非题要给六百个人算角色、额度、余额，"
+         + "还要翻一趟用量账本查「最后活跃」", { 问了几个人: asked() });
+      const okKey22 = await watch(() => call("POST", "/api/admin/relay/keys",
+        { cookie: boss, body: { name: "k22-好的", user: "m22_000" } }));
+      eq(asked(), 0, "认对了人的那条路也一样，一次都不查", { 问了几个人: asked() });
+      eq(okKey22.status, 200, "挂给本组织真有的人就放行");
+
+      // ---------- queryMembers 本身 ----------
+      const q1 = account.queryMembers(DEF22, { all: true });
+      eq(q1.members.length, all22.length, "all:true 还是整份——listMembers 和别的调用方靠它");
+      eq(q1.matched, q1.total, "整份的时候 matched = total");
+      const q2 = account.queryMembers(DEF22, { minRank: "auditor", all: true });
+      eq(q2.members.length, staffWant.length, "minRank 在算钱之前就把人筛掉了");
+      eq(account.queryMembers(DEF22, { limit: 0 }).members.length, 50, "limit=0 当没传（回默认的一页），不是回 0 个人");
+      eq(account.queryMembers(DEF22, { limit: -5 }).members.length, 50, "limit 是负数也当没传");
+      eq(account.queryMembers(DEF22, { limit: 99999 }).members.length, account.MEMBER_PAGE_MAX, "limit 夹在上限里");
+      eq(account.queryMembers(DEF22, { offset: -3, limit: 10 }).offset, 0, "offset 是负数就当 0");
+    } finally {
+      usageStore22.lastActive = realLA22;
+    }
+  }
+
 
   server.close();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);

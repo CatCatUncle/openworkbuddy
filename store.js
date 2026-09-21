@@ -90,12 +90,21 @@ function tighten(file, mode) {
  * @param {number}  [opt.mode]    文件权限。装着凭证的文件传 0o600——见下面那段
  */
 function writeJsonAtomic(file, data, { pretty = false, backup = true, mode = 0 } = {}) {
+  writeTextAtomic(file, JSON.stringify(data, null, pretty ? 2 : 0), { backup, mode });
+}
+
+/**
+ * 同样的写法，但内容是现成的字符串——审计流水那种一行一条的 jsonl 走这条。
+ * 原子替换、.bak、权限这三件事的分寸都在这儿，jsonl 那边不该再抄一份：
+ * 抄一份的代价是哪天改了这里的权限处理，另一份还是老样子，而那一份装着的是合规记录。
+ */
+function writeTextAtomic(file, text, { backup = true, mode = 0 } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   try {
     // mode 要在 writeFileSync 里给，不能等写完再 chmod：中间那一瞬文件是 0644，
     // 同机器上另一个用户 `cat` 得到的就是完整的一份 Key
-    fs.writeFileSync(tmp, JSON.stringify(data, null, pretty ? 2 : 0), { encoding: "utf8", ...(mode ? { mode } : {}) });
+    fs.writeFileSync(tmp, text, { encoding: "utf8", ...(mode ? { mode } : {}) });
     tighten(tmp, mode); // writeFileSync 的 mode 还要过一道 umask（022 会把 0640 削成 0600 以外的样子），chmod 不受它管
     if (backup) {
       try {
@@ -116,4 +125,4 @@ function writeJsonAtomic(file, data, { pretty = false, backup = true, mode = 0 }
 /** 装着凭证的文件：只有文件主人读得到。0600 */
 const SECRET_MODE = 0o600;
 
-module.exports = { readJson, writeJsonAtomic, tighten, SECRET_MODE };
+module.exports = { readJson, writeJsonAtomic, writeTextAtomic, tighten, SECRET_MODE };

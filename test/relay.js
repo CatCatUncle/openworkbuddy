@@ -406,7 +406,10 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
   r = await call("GET", "/api/admin/relay", { cookie: boss });
   const d = r.json;
   ok(r.status === 200, "后台那一页拉得出来", r.status);
-  for (const k of ["keys", "members", "channels", "orphans", "budget", "levels", "spend", "prices"]) {
+  // members 不在这一趟里：那张「每个人单独的上限」表是按人头长的，3000 人的组织捎带一次 620 KB，
+  // 而这一页上它一屏只看得见十几行。它走 /api/admin/relay/members，一页 50 个
+  ok(d.members === undefined, "★这一页不捎带花名册★ 捎带的话，回包会跟着公司人数长");
+  for (const k of ["keys", "channels", "orphans", "budget", "levels", "spend", "prices"]) {
     ok(d[k] !== undefined, `一趟就带回了 ${k}`);
   }
   const row = d.keys.find((k) => k.id === newKey.id);
@@ -476,9 +479,10 @@ console.log("\n【6】离职：停用账号关的是他本人的路，中转站�
   eq(r.json.price_discount, 0.85, "折扣是小数，存进去还是小数（走的是同一条 updateOrg）");
   r = await call("POST", "/api/admin/relay/members/xiaoyuan", { cookie: boss, body: { budget_yuan: 20 } });
   eq(r.json.member.budget_yuan, 20, "单个人的 API 月预算改得了");
-  r = await call("GET", "/api/admin/relay", { cookie: boss });
-  eq(r.json.members.find((m) => m.username === "xiaoyuan").budget_yuan, 20,
+  r = await call("GET", "/api/admin/relay/members", { cookie: boss });
+  eq(r.json.rows.find((m) => m.username === "xiaoyuan").budget_yuan, 20,
      "改完这一页立刻读得到新数——缓存不扔的话，管理员会以为没生效然后再改一次");
+  ok(r.json.capped >= 1, "「几个人设过单独上限」这个数也跟着变了", r.json.capped);
 
   // ---- 审计员：看得见，改不动 ----
   r = await call("POST", "/api/admin/members", { cookie: boss, body: { username: "kuaiji", role: "auditor" } });

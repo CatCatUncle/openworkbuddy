@@ -150,7 +150,9 @@ const mBody = document.getElementById("m-body");
  * 所以想靠判断类型绕开根本挡不住；异常当场把整个 onclick 打断，按钮点下去什么都不发生、
  * 界面上也不报错。资料库里「新建文件夹」失灵就是这么来的——用户原话「好像还是不能用哦」，
  * 因为从他那一侧看，那颗按钮是哑的，连个错都没有。
- * confirm() 不受影响（Electron 有原生实现），所以全站那些确认框不用动，只有要用户填字的地方得自己画。
+ * confirm() 是另一回事：实测它既不抛也不返回，而是**挂起**在一个原生模态框上（alert 同理）。
+ * 也就是说全站那些确认框对用户是好使的，不用跟着改；但它挂的是原生框，离屏测试里没人点得动，
+ * 所以新写的、撤不回来的操作走下面那个 askConfirm，要的是「测得了」和「框里说得出细节」。
  *
  * 自成一层浮在弹窗之上：资料库本身就开在弹窗里，借 #modal-box 会把它整个顶掉。
  */
@@ -221,6 +223,65 @@ function askText(opts) {
   });
 }
 
+/**
+ * 跟用户确认一件**做完就撤不回来**的事，返回 Promise<boolean>。
+ *
+ * 为什么不直接用 window.confirm：它在桌面版里能用（见上面那段实测），但有两处够不着——
+ *   · 它挂的是原生模态框，离屏测试点不动，于是每一条走 confirm 的删除路径都验不了；
+ *   · 框里只摆得下一句话，说不出「这个文件夹里还有 3 样东西，先清空」这种决定人要不要点的细节。
+ * 删东西是撤不回来的，这两样都不该缺。
+ *
+ * 后来把全站另外 31 处 confirm() 也都换到了这儿，压死骆驼的是第三条：
+ * **原生框里的字永远翻不了**。翻译是走 DOM 的（文本节点 + MutationObserver），
+ * 而 confirm(`删除模型「x」？`) 那句话从头到尾只是个 JS 字符串，一秒钟都没进过 DOM。
+ * 于是英文用户每删一样东西，弹出来的都是中文——31 处，一处没落下。
+ * 顺带还了另外两笔：浏览器那边用户一旦勾上「不再显示对话框」，confirm() 从此静默返回 false，
+ * 所有删除按钮就变成了哑巴（跟当初 prompt() 那个 bug 一模一样的长相）；
+ * 以及每一条删除路径终于都能在离屏测试里点得动了。
+ *
+ * opts：title 问题 / hint 后果 / items 清单（自带滚动）/ note 清单后的一句 /
+ *       ok 按钮上的动词 / cancel / danger 红钮。
+ */
+function askConfirm(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    // 同一时刻只留一个。前一个按「取消」收掉，不然它的 Promise 永远不 settle
+    if (askConfirm._close) askConfirm._close(false);
+    const prev = document.activeElement;
+    const wrap = document.createElement("div");
+    wrap.className = "ask-mask";
+    const title = o.title || "确认一下";
+    wrap.innerHTML =
+      `<div class="ask-box" role="alertdialog" aria-modal="true" aria-label="${esc(title)}">` +
+      `<div class="ask-t">${esc(title)}</div>` +
+      (o.hint ? `<div class="ask-h">${esc(o.hint)}</div>` : "") +
+      ((o.items || []).length ? `<ul class="ask-li">${o.items.map((x) => `<li title="${esc(x)}">${esc(x)}</li>`).join("")}</ul>` : "") +
+      (o.note ? `<div class="ask-h ask-note">${esc(o.note)}</div>` : "") +
+      `<div class="ask-ops"><button type="button" class="btn-plain ask-no">${esc(o.cancel || "算了")}</button>` +
+      `<button type="button" class="btn-brand ask-ok${o.danger ? " is-danger" : ""}">${esc(o.ok || "确定")}</button></div></div>`;
+    document.body.appendChild(wrap);
+    function done(val) {
+      if (askConfirm._close !== done) return;   // 已经收过了，别收第二遍
+      askConfirm._close = null;
+      document.removeEventListener("keydown", onKey, true);
+      wrap.remove();
+      try { if (prev && prev.isConnected && prev.focus) prev.focus(); } catch {}
+      resolve(!!val);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(false); }
+    }
+    wrap.querySelector(".ask-ok").onclick = () => done(true);
+    wrap.querySelector(".ask-no").onclick = () => done(false);
+    wrap.onmousedown = (e) => { if (e.target === wrap) done(false); };
+    document.addEventListener("keydown", onKey, true);
+    askConfirm._close = done;
+    // 焦点落在「算了」上，不落在「删掉」上：回车是这一步最容易被手快敲下去的键，
+    // 它该落在撤得回来的那一边。askText 那边焦点给输入框，是因为那儿本来就是要人打字
+    wrap.querySelector(".ask-no").focus();
+  });
+}
+
 // 本地只是缓存，权威列表在服务端 /api/sessions。留 300 条跟服务端一个量级，
 // 免得刚从服务端并回来的历史转头又被截成 50 条。
 function saveSessions() {
@@ -267,7 +328,10 @@ function prettyUrl(u) {
   }
   return t.replace(/[<>"']/g, (c) => ESC_MAP[c]);
 }
-const RE_AUTOLINK = /<code>[\s\S]*?<\/code>|<a\s[^>]*>[\s\S]*?<\/a>|(^|[^"'`(\[=\w/])(https?:\/\/[^\s<>"'`)\]、，。；！？]+)/g;
+const RE_AUTOLINK = /<code>[\s\S]*?<\/code>|<a\s[^>]*>[\s\S]*?<\/a>|<[a-zA-Z!/][^>]*>|(?<!["'`(\[=\w/])(https?:\/\/[^\s<>"'`\]、，。；！？：·…（）〈〉《》「」『』【】〔〕〖〗“”‘’—～]+)/g;
+// 网址末尾这些字符一律不算网址的一部分。正文是 esc 过的，所以 > " ' 这会儿长的是实体的样子，
+// 得整条实体一起剃——只剃掉那个分号会把查询串里的 &amp; 剃坏。右圆括号不在这儿，它另有算法（见下）
+const RE_URL_TAIL = /(?:&gt;|&lt;|&quot;|&#39;|[.,:!?*}\]）〉》」』】＞”’…])+$/;
 /**
  * 正文里裸写的网址变成能点的链接。
  *
@@ -280,16 +344,22 @@ const RE_AUTOLINK = /<code>[\s\S]*?<\/code>|<a\s[^>]*>[\s\S]*?<\/a>|(^|[^"'`(\[=
  * markdown 链接的 ( 和属性里的 =" 靠左边界一个字符挡掉。
  */
 function autoLinkUrls(s) {
-  return String(s).replace(RE_AUTOLINK, (all, lead, url) => {
-    // 前两个分支是「别碰」：行内代码里的网址是给人抄的，不是给人点的；
-    // 已经成形的 <a> 再套一层就成了嵌套链接，点下去谁也说不准跳哪
+  return String(s).replace(RE_AUTOLINK, (all, url) => {
+    // 前三个分支是「别碰」：行内代码里的网址是给人抄的，不是给人点的；已经成形的 <a> 再套一层
+    // 就成了嵌套链接，点下去谁也说不准跳哪；任何一个标签整个跳过，免得把 <img alt="见 https://…">
+    // 这种**属性里**的网址也变成链接——那会当场把属性撑破
     if (url === undefined) return all;
-    // 句末标点不算网址的一部分。分号故意不算在内：正文是 esc 过的，
-    // 查询串里的 & 这会儿长的是 &amp; 的样子，剃掉分号就把网址剃坏了
-    const punct = url.match(/[.,:!?)\]}]+$/);
-    const u = punct ? url.slice(0, -punct[0].length) : url;
+    let u = url, tail = "";
+    for (;;) {
+      const m = u.match(RE_URL_TAIL);
+      if (m) { tail = m[0] + tail; u = u.slice(0, -m[0].length); continue; }
+      // 末尾的右圆括号：成对的留着，落单的剃掉。维基、Confluence、飞书那类地址里
+      // .../Foo_(bar) 是正经路径的一部分，少剃一个字符就跳去另一个页面
+      if (u.endsWith(")") && (u.split("(").length) <= (u.split(")").length - 1)) { tail = ")" + tail; u = u.slice(0, -1); continue; }
+      break;
+    }
     if (!/^https?:\/\/[^/\s]/.test(u)) return all;
-    return lead + '<a href="' + u + '" target="_blank" rel="noopener" title="' + u + '">' + prettyUrl(u) + "</a>" + (punct ? punct[0] : "");
+    return '<a href="' + u + '" target="_blank" rel="noopener" title="' + u + '">' + prettyUrl(u) + "</a>" + tail;
   });
 }
 /**
@@ -571,7 +641,6 @@ function renderMd(src, base, live, root, opts) {
   // 未闭合围栏（流式输出中 / 模型忘了闭合）：从 ``` 到文末也按代码块渲染
   s = s.replace(/(^|\n)```(\w*)[^\S\n]*\n?([\s\S]*)$/, (_, pre, lang, code) => pre + pushCode(lang, code));
   s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  s = autoLinkUrls(s);
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => mdImg(alt, url, base, root));
@@ -581,6 +650,11 @@ function renderMd(src, base, live, root, opts) {
   if (!opts || opts.fileLinks !== false) {
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (all, label, url) => mdFileLink(label, url, base, root) || all);
   }
+  // 裸网址放**最后**转。以前它排在加粗前面，于是 `**https://…/abc**` 里收尾的两个星号
+  // 被当成网址的一部分吞进了 href，紧接着加粗那一遍又在 href 属性中间插进一个 </strong>——
+  // 屏幕上链接后面凭空多出「<strong>」几个字，点下去跳的还是个带标签的烂地址。
+  // 换个顺序这条路就断了：这会儿 **…** 早成了 <strong>…</strong>，网址两边干干净净
+  s = autoLinkUrls(s);
   const lines = s.split("\n");
   const out = [];
   let listType = null, inQuote = false, para = [], tableRows = null;
@@ -729,6 +803,7 @@ function sealStream(el) {
 // 气泡和任务历史标题里一律洗掉；原文照旧发给模型，「复制我的输入」复制的也还是原文
 // 侧栏标题只留用户自己那句话。委派标签那行也得摘：不摘的话历史列表整排都是
 // 「【交给专家团：…】把下面这件事整体委派给…」，24 个字全被同一句模板占满，谁是谁分不出来
+const BUBBLE_ATT_ICON = { "图片": "image", "视频": "film", "音频": "volume-2", "文本摘录": "file-text", "文件": "paperclip" };
 function stripSceneTag(t) {
   return String(t == null ? "" : t)
     .replace(/^\s*【任务类型：[^】]*】\s*/, "")
@@ -738,9 +813,13 @@ function stripSceneTag(t) {
 /**
  * 引用一条回复去追问。
  *
- * 为什么是「塞进输入框」而不是挂一枚标签：引用的内容要能改。真实用法几乎都是
- * 「它这段里有一句不对」——人会把那句留下、其余删掉，再在下面写自己的话。
- * 标签是不可编辑的身份（专家、技能），引用是正文的一部分，两码事。
+ * 引用**不落进输入框**。飞书、ChatGPT、Claude 三家都是同一种做法：输入框上面钉一张小卡片，
+ * 框里永远只有人自己要说的话。以前这里是把 400 字的 `> ` 块整段塞进 textarea——输入框当场
+ * 被顶成半屏，人得先翻过自己引的那一坨才能开始打字；编辑时手一滑还会把引用改成半句，
+ * 发出去的东西和他以为引的那段对不上。卡片是一件东西：要么整条在，要么整条不在。
+ *
+ * 发出去的协议一个字节没动，还是消息开头那个 `> ` 块——模型看到的还是原来那样，
+ * 老会话回放出来也还是原样，只是气泡里折成了一张卡（见 createTurnUI）。
  *
  * 选中了就只引选中的那截：一条回复常常好几屏，整段引过去等于什么都没指。
  */
@@ -757,21 +836,142 @@ function quoteTextOf(turn) {
 }
 // 再长就不是「引用」而是「复述」了，模型也会被这一大坨带偏。想引更多的人会自己先选中
 const QUOTE_MAX = 400;
+// 这一条消息引着谁：{ text, label, turn }。turn 是那条回复的 DOM，点卡片就滚回去找它
+let pendingQuote = null;
+const quoteBarEl = () => document.getElementById("quote-bar");
+/** 发给模型的样子：每行一个 `> `。漏一行，后面几行在 markdown 里就掉出引用块了 */
+function quoteBlock(text) {
+  return String(text).split("\n").map((l) => "> " + l).join("\n");
+}
+function clearQuote() {
+  pendingQuote = null;
+  renderQuoteBar();
+}
+/** 滚回某一条回合并让它亮一下。引用卡片、气泡上的引用都靠它带人回去看原文 */
+function flashTurn(el) {
+  if (!el || !el.isConnected) return false;
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  el.classList.remove("turn-jumped");
+  void el.offsetWidth; // 逼一次重排，否则连点两次第二下不会再亮
+  el.classList.add("turn-jumped");
+  clearTimeout(flashTurn._t);
+  flashTurn._t = setTimeout(() => el.classList.remove("turn-jumped"), 2600);
+  return true;
+}
+function renderQuoteBar() {
+  const bar = quoteBarEl();
+  if (typeof syncSendBtn === "function") syncSendBtn(); // 只挂了一条引用也算「有话要说」
+  if (!bar) return;
+  if (!pendingQuote) { bar.innerHTML = ""; bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.innerHTML = `<div class="quote-card">
+      <button type="button" class="quote-jump" title="回到被引用的那条回复">
+        <span class="quote-src">${ic("text-quote", "i-sm")}<b></b><span class="quote-hint">回到原文</span></span>
+        <span class="quote-text" data-i18n-skip></span>
+      </button>
+      <button type="button" class="quote-x" title="不引用了（Esc）" aria-label="不引用这一段了">${ic("x", "i-sm")}</button>
+    </div>`;
+  // 文本走 textContent：引用的是模型吐出来的内容，拼进 innerHTML 等于把它当代码执行
+  bar.querySelector(".quote-src b").textContent = pendingQuote.label;
+  bar.querySelector(".quote-text").textContent = pendingQuote.text;
+  bar.querySelector(".quote-jump").onclick = () => {
+    if (!flashTurn(pendingQuote && pendingQuote.turn)) toast("那条回复不在眼前这个对话里了（多半是换了会话）", "circle-x");
+  };
+  bar.querySelector(".quote-x").onclick = () => { clearQuote(); inputEl.focus(); };
+}
+/** 同一段再点一次「引用」：闪一下卡片告诉他「已经引着了」，而不是默默什么都不做 */
+function flashQuoteBar() {
+  const card = quoteBarEl() && quoteBarEl().querySelector(".quote-card");
+  if (!card) return;
+  card.classList.remove("quote-flash");
+  void card.offsetWidth;
+  card.classList.add("quote-flash");
+  setTimeout(() => card.classList.remove("quote-flash"), 700);
+}
 function quoteReply(turn) {
   let t = quoteTextOf(turn);
   if (!t) return toast("这条回复还没有可引用的正文", "circle-x");
   if (t.length > QUOTE_MAX) t = t.slice(0, QUOTE_MAX).trimEnd() + "…";
-  const block = t.split("\n").map((l) => "> " + l).join("\n");
-  const cur = inputEl.value;
-  if (cur.includes(block)) { inputEl.focus(); return toast("这段已经在输入框里了", "circle-check"); }
-  // 已经写了半句话就空一行接在后面，别把人写到一半的东西冲掉
-  inputEl.value = (cur.trim() ? cur.replace(/\s+$/, "") + "\n\n" : "") + block + "\n\n";
-  inputEl.dispatchEvent(new Event("input")); // 先让输入框按新内容撑高，否则下面的定位会被这次改高冲掉
+  const again = !!(pendingQuote && pendingQuote.text === t);
+  // 一条消息只引一段：再点别处就是改引那一段（飞书就是这个规矩）。
+  // 攒成一摞的话，人发出去之前根本不知道自己带了几段别人的话
+  pendingQuote = { text: t, label: (typeof assistant === "object" && assistant && assistant.name) || "助理", turn };
+  renderQuoteBar();
+  if (again) flashQuoteBar();
+  hideSelQuote();
   inputEl.focus();
   inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
-  inputEl.scrollTop = inputEl.scrollHeight; // 光标在末尾，视野也得跟过去
 }
 
+/**
+ * 在回复里拖选一段，就地冒出一颗「引用」——ChatGPT 和 Claude 都是这一下。
+ *
+ * 没有它的话，「只引这一句」这个能力等于不存在：按钮在回复最底下那条操作条上，
+ * 人得选中、再把鼠标挪到底下去找那颗按钮，中途在别处点一下选区就没了。
+ * 所以按钮要长在选区旁边，手不用走。
+ */
+const selQuoteBtn = (() => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "sel-quote";
+  b.hidden = true;
+  b.innerHTML = `${ic("text-quote", "i-sm")}<span>引用这段</span>`;
+  b.title = "只把选中的这段引过去追问";
+  // mousedown 里就得拦掉默认行为：不拦的话按下去的这一下先把选区清了，
+  // 等到 click 触发时 quoteTextOf 看到的是一个空选区，「只引这一段」当场退回整段引用
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+  document.body.appendChild(b);
+  return b;
+})();
+function hideSelQuote() {
+  selQuoteBtn.hidden = true;
+  selQuoteBtn._turn = null;
+}
+/** 选区在不在某条回复的正文里；在的话这颗按钮该摆哪儿 */
+function selQuoteSpot() {
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed || !sel.rangeCount || !String(sel).trim()) return null;
+  const node = sel.focusNode || sel.anchorNode;
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const text = el && el.closest && el.closest(".body .a-text");
+  const turn = text && text.closest(".turn");
+  // 只认回复正文：用户自己的气泡、过程卡片、代码块的工具条里选中了不冒这颗按钮
+  if (!turn || !turn.contains(text)) return null;
+  const rects = [...sel.getRangeAt(0).getClientRects()].filter((r) => r.width || r.height);
+  const last = rects[rects.length - 1];
+  if (!last) return null;
+  return { turn, x: last.right, y: last.bottom };
+}
+function showSelQuote() {
+  const spot = selQuoteSpot();
+  if (!spot) return hideSelQuote();
+  selQuoteBtn._turn = spot.turn;
+  selQuoteBtn.hidden = false;
+  // 先显形再量宽：hidden 的元素 offsetWidth 是 0，量出来会把按钮顶到窗口右边缘外面去
+  const w = selQuoteBtn.offsetWidth || 96, h = selQuoteBtn.offsetHeight || 30;
+  const x = Math.max(8, Math.min(spot.x - w / 2, window.innerWidth - w - 8));
+  // 选区在屏幕最底下时，按钮翻到选区上方去，否则它被挡在输入框底下点不着
+  const below = spot.y + 8 + h <= window.innerHeight - 8;
+  selQuoteBtn.style.left = x + "px";
+  selQuoteBtn.style.top = (below ? spot.y + 8 : spot.y - h - 24) + "px";
+}
+selQuoteBtn.onclick = () => { if (selQuoteBtn._turn) quoteReply(selQuoteBtn._turn); };
+// mouseup 而不是 selectionchange：后者在拖选过程中每动一个字符就触发一次，
+// 按钮跟着鼠标乱飞。松手才是「我选好了」这个意思
+document.addEventListener("mouseup", (e) => {
+  if (e.target === selQuoteBtn || selQuoteBtn.contains(e.target)) return;
+  setTimeout(showSelQuote, 0); // 等这一下的选区落定（Chromium 在 mouseup 之后才更新）
+});
+document.addEventListener("mousedown", (e) => {
+  if (e.target !== selQuoteBtn && !selQuoteBtn.contains(e.target)) hideSelQuote();
+});
+document.addEventListener("selectionchange", () => {
+  // 选区被清掉（在别处点了一下、按了方向键）就收起来；这里只做「收」，不做「摆位置」
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!selQuoteBtn.hidden && (!sel || sel.isCollapsed)) hideSelQuote();
+});
+// 按钮是 position:fixed 的：对话一滚，选中的字走了它还钉在原地，指着一句不相干的话
+(document.getElementById("chat-col") || document).addEventListener("scroll", hideSelQuote, { passive: true });
 // ================= 回合渲染（实时流式与历史回放共用） =================
 function createTurnUI(userText, turnMode, forSid) {
   const turnSid = forSid !== undefined ? forSid : sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
@@ -780,15 +980,48 @@ function createTurnUI(userText, turnMode, forSid) {
   const av = avatarBits(assistant.avatar, assistant.name);
   turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="bubble" translate="no"></div></div>
     <div class="a-msg"><div class="avatar${av.cls ? " " + av.cls : ""}">${av.html}</div><div class="body"></div></div>`;
-  // 「（已上传文件：×××）」是给模型看的附件标记，气泡里渲染成附件行，别按原文糊用户脸上（老会话的旧格式一并美化）
-  const attNames = [];
-  const bodyText = stripSceneTag(userText).replace(/（已上传文件：([^）]+)）/g, (_, names) => {
-    for (const n of String(names).split("、")) if (n.trim()) attNames.push(n.trim());
-    return "";
-  }).trim();
-  let bubbleHtml = hlTokens(bodyText, "tk-b");
-  if (attNames.length) bubbleHtml += `<div class="bubble-attach">${attNames.map(n => `<span>${ic("paperclip")}${esc(n)}</span>`).join("")}</div>`;
+  // 气泡里不许出现给模型看的协议原文。两样东西要折起来：
+  // ① 开头那一坨 `> `：那是「我引了它上一条里的哪句话」。原样糊出来，人得先翻过一屏
+  //    别人的话才看得见自己问了什么——飞书/ChatGPT 都是折成一张小卡压在气泡顶上，这里照做。
+  // ② `【图片 1：×××】`、「（已上传文件：×××）」：那是「这条消息带了哪几份素材」。
+  //    折成气泡底下那排附件，名字和类型都在，谁是第一张也还看得出来。
+  // 两样都只动**显示**：发给模型的原文一个字节没改，「复制我的输入」复制的也还是原文。
+  const attList = [];
+  const addAtt = (name, label) => {
+    const n = String(name || "").trim();
+    if (!n) return;
+    const had = attList.find((x) => x.name === n);
+    if (had) { if (label && !had.label) had.label = label; return; }
+    attList.push({ name: n, label: label || "" });
+  };
+  let bodyText = stripSceneTag(userText)
+    .replace(/（已上传文件：([^）]+)）/g, (_, names) => {
+      for (const n of String(names).split("、")) addAtt(n);
+      return "";
+    })
+    // 独占一行的素材锚点才折：写在句子中间的（「把【图片 1：a.png】放左边」）是人自己在指东西，
+    // 折掉的话那句话就成了「把放左边」
+    .replace(/^【(图片|视频|音频|文本摘录|文件)\s+\d+：([^】]+)】[ \t]*$/gm, (_, label, n) => { addAtt(n, label); return ""; })
+    .trim();
+  let quoteText = "";
+  const qm = bodyText.match(/^((?:>[^\n]*(?:\n|$))+)/);
+  if (qm) {
+    quoteText = qm[1].split("\n").map((l) => l.replace(/^>[ \t]?/, "")).join("\n").trim();
+    if (quoteText) bodyText = bodyText.slice(qm[1].length).replace(/^\s+/, "");
+  }
+  let bubbleHtml = quoteText ? `<div class="bubble-quote">${ic("text-quote", "i-sm")}<span></span></div>` : "";
+  bubbleHtml += hlTokens(bodyText, "tk-b");
+  if (attList.length) bubbleHtml += `<div class="bubble-attach">${attList.map((a) => `<span>${ic(BUBBLE_ATT_ICON[a.label] || "paperclip")}${esc(a.name)}</span>`).join("")}</div>`;
   turn.querySelector(".bubble").innerHTML = bubbleHtml;
+  // 引用的正文走 textContent：那是模型吐出来的内容，拼进 innerHTML 等于把它当代码执行
+  if (quoteText) {
+    const bq = turn.querySelector(".bubble-quote");
+    bq.querySelector("span").textContent = quoteText;
+    // 默认折三行。引用本来就是「我指的是这句」，不该在自己的问题上面占半屏；
+    // 但也不能把它藏死——点一下就整段摊开，原文一个字没少
+    bq.title = "点一下展开/收起这段引用";
+    bq.onclick = () => bq.classList.toggle("open");
+  }
   turn.querySelector(".u-copy").onclick = (e) => {
     navigator.clipboard?.writeText(userText).then(() => {
       e.target.innerHTML = ic("check"); setTimeout(() => { e.target.innerHTML = ic("copy"); }, 1200);
@@ -1319,8 +1552,11 @@ function createTurnUI(userText, turnMode, forSid) {
     if (turnSid === sessionId) scrollBottom(); // 已切走的会话在后台跑，别拽当前视图的滚动条
   }
 
-  function finish() {
-    endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读
+  // opts.interrupted：这一轮没有收尾事件（跑到一半进程没了、服务重启了）。
+  // 不给它一个终点的话，历史记录里这一轮会永远转着「运行中…」，而那时早就没有东西可停了
+  function finish(opts) {
+    endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读——这行必须留在最前面
+    const 断了 = !!(opts && opts.interrupted);
     body.querySelector(".thinking-hint")?.remove();
     // 回合结束后不允许再有任何转圈（含未收到结果的工具卡，统一标记中止）
     turn.querySelectorAll(".step-card .spinner").forEach(s => {
@@ -1345,13 +1581,14 @@ function createTurnUI(userText, turnMode, forSid) {
         const ms = (turn._usage && turn._usage.elapsed_ms) || Date.now() - t0;
         const n = procBody.querySelectorAll(".step-card").length;
         const pt = procWrap.querySelector(".pt");
-        pt.textContent = `已完成 ${fmtDur(ms)}` + (n ? ` · ${n} 步` : "") + (liveRound ? ` · 续跑 ${liveRound} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
+        pt.textContent = (断了 ? "中断了" : `已完成 ${fmtDur(ms)}`) + (n ? ` · ${n} 步` : "") + (liveRound ? ` · 续跑 ${liveRound} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
         // 出过错以前靠"保持展开"提示，结果一个四十步的任务只要中间错过一次就整片摊开，
         // 用户要往下滚半天才够得着结论。改成收起 + 标题挂红角标：信号一个字没少，点开就直达过程
         const marks = [];
         const nErr = procBody.querySelectorAll(".tag.err").length;
         if (nErr) marks.push(`${nErr} 步出错`);
         if (turn._limited) marks.push("未跑完");
+        if (断了) marks.push("没收到结束，这一轮是断的");
         if (marks.length) {
           const chip = document.createElement("span");
           chip.className = "proc-warn";
@@ -1935,9 +2172,14 @@ function renderSweepPanel(p, task) {
     const paths = [];
     for (const g of sel) for (const it of g.items || []) { if (it.paths) paths.push(...it.paths); else if (it.path) paths.push(it.path); }
     // 删是真删、不进回收站，所以这里必须拦一道。列出的是**组**不是每一条：
-    // 一百多条路径糊在 confirm 里等于没写，反倒让人闭着眼点确定
-    const lines = sel.map((g) => `· ${g.label || g.key}：${g.count} 个，${fmtSize(g.bytes)}`).join("\n");
-    if (!confirm(`这些会被直接删掉（不进回收站、找不回来）：\n\n${lines}\n\n一共腾出 ${fmtSize(sel.reduce((a, g) => a + g.bytes, 0))}。确定吗？`)) return;
+    // 一百多条路径糊在框里等于没写，反倒让人闭着眼点确定
+    if (!(await askConfirm({
+      title: "这些会被直接删掉",
+      hint: "不进回收站，也找不回来。",
+      items: sel.map((g) => `${g.label || g.key}：${g.count} 个，${fmtSize(g.bytes)}`),
+      note: `一共腾出 ${fmtSize(sel.reduce((a, g) => a + g.bytes, 0))}`,
+      ok: "删掉", danger: true,
+    }))) return;
     box.classList.add("busy");
     try {
       const r = await fetch("/api/files/sweep", {
@@ -2129,8 +2371,12 @@ function makeAskCard(ev, turnSid, submit, ctx) {
   let tick = null;
   const stopTick = () => { if (tick) { clearInterval(tick); tick = null; } timerEl.textContent = ""; };
 
+  // 「不能再点了」和「结论已经画上去了」是两件事，别共用 done 这一个类。
+  // 回放为了前一件事先给卡加了 done，再拿它拦这里，答过的岔路就永远停在「想让你定一下」——
+  // 一条早就跑完的对话，看上去像是正卡在那等人回答
   const markAnswered = (text, timeout) => {
-    if (card.classList.contains("done")) return;
+    if (card._answered) return;
+    card._answered = true;
     card.classList.add("done");
     document.removeEventListener("keydown", onKey);
     stopTick();
@@ -2477,11 +2723,16 @@ function renderFiles(files) {
   const tidyBtn = el.querySelector("#btn-tidy");
   if (tidyBtn) tidyBtn.onclick = async () => {
     const dupes = filesCache.filter(f => f.dup_of && !f.name.includes("/"));
-    // 确认框里把清单和去向都摆出来：用户得能在点头之前看清动的是哪几个、还捞不捞得回来
-    const list = dupes.slice(0, 10).map(f => "· " + f.name).join("\n") + (dupes.length > 10 ? `\n…共 ${dupes.length} 个` : "");
-    // 顺带会收掉空的成果文件夹（10 分钟内没动过的才算），所以确认框里得说出来——
+    // 确认框里把清单和去向都摆出来：用户得能在点头之前看清动的是哪几个、还捞不捞得回来。
+    // 顺带会收掉空的成果文件夹（10 分钟内没动过的才算），所以也得说出来——
     // 按钮做了什么就写什么，别让用户点完发现还动了别的东西
-    if (!confirm(`这 ${dupes.length} 个文件跟成果文件夹里的逐字节相同，原件不动，副本移到 .trash（可以捞回来）：\n\n${list}\n\n（同时会把一个文件都没有的空成果文件夹也移过去）`)) return;
+    if (!(await askConfirm({
+      title: `整理这 ${dupes.length} 个重复文件？`,
+      hint: "它们跟成果文件夹里的那份逐字节相同。原件不动，副本移到 .trash，随时捞得回来；一个文件都没有的空成果文件夹也一起移过去。",
+      items: dupes.slice(0, 10).map((f) => f.name),
+      note: dupes.length > 10 ? `…共 ${dupes.length} 个` : "",
+      ok: "整理",
+    }))) return;
     tidyBtn.disabled = true;
     try {
       const r = await fetch("/api/files/tidy", { method: "POST" }).then(x => x.json());
@@ -2719,11 +2970,16 @@ function bindPvMore(body, url) {
 }
 
 // ---- 拆出来的结构化数据 → HTML。服务端只给数据，转义全在这儿，只此一处 ----
+// 文档里的链接只认这三种协议。.docx 常常是外面发进来的，
+// 里头写一句 javascript:... 的超链接完全合法，照单渲染就等于给了它一个可点的入口。
+const SAFE_LINK = /^(https?:|mailto:)/i;
 const runsHtml = (runs) => (runs || []).map((r) => {
   let h = esc(r.s || "").replace(/\n/g, "<br>");
   if (r.b) h = "<b>" + h + "</b>";
   if (r.i) h = "<i>" + h + "</i>";
   if (r.u) h = "<u>" + h + "</u>";
+  const href = String(r.href || "").trim();
+  if (href && SAFE_LINK.test(href)) h = `<a class="ov-a" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${h}</a>`;
   return h;
 }).join("");
 
@@ -2733,16 +2989,27 @@ const gridHtml = (rows, cls) =>
 
 function docHtml(d) {
   const out = [];
+  if (d.header) out.push(`<div class="ov-chrome">页眉　${esc(d.header)}</div>`);
+  // 有序列表按层级各数各的，跟 docToText 里那套一样：进深一层清零，插了正文重新起
+  const counters = [];
   for (const b of d.blocks || []) {
+    if (b.t !== "li") counters.length = 0;
     if (b.t === "img") {
       // src 是服务端从 zip 里读出来现拼的 data URI；再确认一次前缀，别让别的协议混进来
       if (/^data:image\//.test(b.src || "")) out.push(`<img class="ov-img" src="${esc(b.src)}">`);
     } else if (b.t === "h") out.push(`<h${b.lvl} class="ov-h">${runsHtml(b.runs)}</h${b.lvl}>`);
-    else if (b.t === "li") out.push(`<div class="ov-li" style="margin-left:${(b.lvl || 0) * 22}px">${runsHtml(b.runs)}</div>`);
+    else if (b.t === "li") {
+      const lvl = b.lvl || 0;
+      counters.length = lvl + 1;
+      counters[lvl] = b.ord ? (counters[lvl] || 0) + 1 : 0;
+      const mark = b.ord ? counters[lvl] + "." : "•";
+      out.push(`<div class="ov-li" style="margin-left:${lvl * 22}px"><span class="ov-mark">${mark}</span>${runsHtml(b.runs)}</div>`);
+    }
     else if (b.t === "table") out.push(gridHtml(b.rows, "ov-table"));
     else out.push(`<p class="ov-p"${b.align === "center" ? ' style="text-align:center"' : b.align === "right" ? ' style="text-align:right"' : ""}>${runsHtml(b.runs)}</p>`);
   }
   if (!out.length) out.push('<p class="ov-p" style="color:var(--owb-text-3)">这个文档里没有可显示的正文。</p>');
+  if (d.footer) out.push(`<div class="ov-chrome">页脚　${esc(d.footer)}</div>`);
   if (d.truncated) out.push(`<div class="ov-note">文档太长，只显示了前 ${(d.blocks || []).length} 段。</div>`);
   return `<div class="ov-doc">${out.join("")}</div>`;
 }
@@ -3566,6 +3833,12 @@ function reapDeletedOutputs(block, live, ev) {
   const alive = new Set(live.map((f) => f.name));
   let n = 0;
   block.querySelectorAll(".out-card").forEach((c) => {
+    // 整包那张卡代表的是一个文件夹，文件夹的名字永远不会出现在文件清单里。
+    // 拿 alive.has() 判它等于每来一条 files 事件就把它撤一次——里面还有活着的文件就算它还在
+    if (c.dataset.bundle) {
+      if (![...alive].some((n2) => n2.startsWith(c.dataset.bundle))) { c.remove(); n++; }
+      return;
+    }
     if (!alive.has(c.dataset.name)) { c.remove(); n++; return; }
     // 卡还在，但挂在它身上的「另一种格式」没了：只摘那条链接，卡留着
     const altLink = c.querySelector(".oa-alt");
@@ -3610,13 +3883,14 @@ function renderTurnOutputs(body, changed, live, ev) {
   const blkRoot = block.dataset.root || (ev && ev.root) || "";
   // 顺序要紧：先撤掉已删的，再派卡。反过来的话上限还是被死掉的中间文件占着，成品照样进不来
   reapDeletedOutputs(block, live, ev);
+  const bundles = bundleDirs(block, changed);   // 这一回合被整包倒进东西的目录，见下面 OUT_BUNDLE_MIN
   for (const f of changed) {
     const isHtml = /\.html?$/i.test(f.name);
     const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name);
     // 网页/图有缩略图；PPT/Word/Excel/PDF 这些要交到用户手上的成果出图标卡。
     // 以前它们只在收起的「查看所有变更」里躺着一行，做完一个 PPT，用户在对话里压根看不见它，
     // 只能自己去右侧面板翻。途中的脚手架（脚本、日志、PROGRESS.md）仍然只进清单，别把对话挡成一屏方框
-    if (isHtml || isImg || isDeliverable(f.name)) {
+    if (!bundles.has(dirOf(f.name)) && (isHtml || isImg || isDeliverable(f.name))) {
       const base = f.name.split("/").pop();
       const same = grid.querySelector(`.out-card[data-name="${cssEsc(f.name)}"]`);
       // 同名同大小 = 同一件产出被拷成了两份（agent 常把任务子目录里的产出再往工作空间根目录复制一份）。
@@ -3657,6 +3931,7 @@ function renderTurnOutputs(body, changed, live, ev) {
     }
   }
   mergeFmtPairs(grid);
+  foldBundleCards(grid, bundles, blkRoot);
   markDupBasenames(grid);
   hideCardedRows(block);
   const nRows = list.querySelectorAll(".out-row").length;
@@ -3701,13 +3976,103 @@ function clipOutList(block) {
 
 // 「交到用户手上的成果」：点开就能用的东西，不包括干活途中的脚手架
 const DELIVER_RE = /\.(pdf|pptx?|docx?|xlsx?|csv|md|txt|mp4|mov|webm|m4v|zip)$/i;
-const SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)\.(md|txt)$/i;
+// 带语种后缀的同一份东西也算（README.en.md / PROGRESS.zh-CN.md）：
+// 以前只认 README.md，于是英文版 README 大摇大摆地上了产出卡
+const SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)(\.[a-z]{2}(-[A-Za-z]{2,4})?)?\.(md|txt)$/i;
 function isDeliverable(name) {
   const base = String(name || "").split("/").pop();
   return DELIVER_RE.test(base) && !SCAFFOLD_RE.test(base);
 }
 
 function pathDepth(n) { return String(n || "").split("/").length; }
+
+/* ---- 「一整包东西」不是「一百件产出」 ----
+ *
+ * 2026-09-21 的真事故，从会话存档里逐条数出来的：一条做软著登记的任务，第 3 轮跑了个导出
+ * 脚本，把整个仓库拷进任务目录下的「登记用源码包_测试/」。那一轮真落盘 124 个文件，其中
+ * **122 个都在这一个目录里**。卡片区按老规矩从里头挑出「像交付物的」前 8 个摆卡，而卡片上
+ * 只写文件名不写目录，于是用户看到的是 cover_v2.png / README.en.md / 粘贴文本_0909_162900.txt
+ * 这一排——全是他在别处见过的名字，字节数也跟仓库根目录那几个一模一样（本来就是拷贝），
+ * 于是他的结论是「别的对话的文件跑进我这一回合了」。文件没串台，是卡片把一包东西拆开摆了。
+ *
+ * 判据两条一起看，缺一条都会误伤：
+ *   ① 这个目录这一回合收了 OUT_BUNDLE_MIN 个以上的文件；
+ *   ② 里面够格上卡的是少数派（不到一半）。
+ * 只有 ① 的话，一回合出 12 张图的做图任务会被折成一个文件夹图标，缩略图全没了——
+ * 那 12 张恰恰是真产出。加上 ② 才分得开「倒进来一包源码、里面顺带夹着几张图」
+ * 和「这一目录里就是十几张成品图」。
+ */
+const OUT_BUNDLE_MIN = 8;
+const OUT_HTML_RE = /\.html?$/i;
+const OUT_IMG_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+function dirOf(n) { const i = String(n || "").lastIndexOf("/"); return i < 0 ? "" : String(n).slice(0, i + 1); }
+function cardWorthy(n) { return OUT_HTML_RE.test(n) || OUT_IMG_RE.test(n) || isDeliverable(n); }
+
+/** @returns {Map<string, number>} 目录（带尾斜杠）→ 这一回合它收了几个文件 */
+function bundleDirs(block, changed) {
+  // 已经摆出来的行 + 这一批新来的，合起来算：一次 files 事件就能带来一百多个名字，
+  // 只数 DOM 里的旧行的话，前 8 个在行插进去之前就已经摆上卡了
+  const names = new Set();
+  block.querySelectorAll(".out-row:not(.gone)").forEach((r) => names.add(r.dataset.name));
+  for (const f of changed || []) names.add(f.name);
+  const all = new Map(), worthy = new Map();
+  for (const n of names) {
+    const d = dirOf(n);
+    if (!d) continue;                                   // 工作目录根下的散件不算一包
+    all.set(d, (all.get(d) || 0) + 1);
+    if (cardWorthy(n)) worthy.set(d, (worthy.get(d) || 0) + 1);
+  }
+  const out = new Map();
+  for (const [d, c] of all) if (c >= OUT_BUNDLE_MIN && (worthy.get(d) || 0) * 2 < c) out.set(d, c);
+  return out;
+}
+
+/** 把已经摆出来的成员卡撤掉，一包换一张文件夹卡。重复调用是幂等的（每轮 files 事件都会走） */
+function foldBundleCards(grid, bundles, root) {
+  let n = 0;
+  // 先清算旧的：包里的东西被删掉之后它就不成其为一包了，这张卡得撤——
+  // 留着它等于对着一个空文件夹说「122 个文件」。剩下的那几个在下面的清单里本来就还在
+  grid.querySelectorAll(".out-card[data-bundle]").forEach((c) => {
+    if (!bundles || !bundles.has(c.dataset.bundle)) { c.remove(); n++; }
+  });
+  if (!bundles || !bundles.size) return n;
+  for (const [dir, count] of bundles) {
+    const members = [...grid.querySelectorAll(".out-card")]
+      .filter((c) => !c.dataset.bundle && dirOf(c.dataset.name) === dir);
+    let card = grid.querySelector(`.out-card[data-bundle="${cssEsc(dir)}"]`);
+    if (!card) {
+      card = makeBundleCard(dir, count, root);
+      // 插在第一张成员卡的位置上，别让它跑到队尾去——它本来就是那批东西的代表
+      if (members[0]) grid.insertBefore(card, members[0]); else grid.appendChild(card);
+    }
+    const meta = card.querySelector(".out-meta");
+    if (meta) meta.textContent = `${count} 个文件`;     // 后面还在往这个目录里写，数要跟着涨
+    card.title = dir + " · 这一回合往这个文件夹里写了 " + count + " 个文件";
+    for (const c of members) { c.remove(); n++; }
+  }
+  return n;
+}
+
+/**
+ * 整包那张卡：只说「这里头有 N 个文件」，给一个打开文件夹的入口。
+ * 不给预览、不给下载——一包东西没有「预览」可言，下载一个目录也不是这个接口能干的事。
+ */
+function makeBundleCard(dir, count, root) {
+  const card = document.createElement("div");
+  card.className = "out-card out-bundle";
+  card.dataset.bundle = dir;                            // 带尾斜杠，判生死时拿它当前缀
+  card.dataset.name = dir.replace(/\/+$/, "");
+  card.dataset.base = card.dataset.name.split("/").pop();
+  if (root) card.dataset.root = root;
+  card.tabIndex = 0;
+  card.innerHTML = `<div class="out-thumb"><span class="ph">${ic("folder")}</span></div>
+    <div class="out-info"><span class="out-name">${esc(card.dataset.base)}/</span><span class="out-meta">${count} 个文件</span></div>
+    <div class="out-acts">
+      <button class="oa-main" data-a="rv" title="打开所在位置">${ic("folder-open")}<span class="tx">打开文件夹</span></button></div>`;
+  onActivate(card, (e) => revealFile(card.dataset.name, e, root));
+  return card;
+}
+
 function extOf(n) { const m = String(n || "").match(/\.([^./]+)$/); return m ? m[1].toLowerCase() : ""; }
 
 // 卡片区里找「同一张图的另一种格式」那张卡：同目录、同主名，一个 svg 一个 png

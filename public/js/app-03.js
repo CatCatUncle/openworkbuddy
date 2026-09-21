@@ -11,6 +11,37 @@ function cacheTxt(x) {
   return ` · 缓存命中 ${Math.min(100, Math.round((x.cached || 0) / x.cachedOf * 100))}%`;
 }
 
+/**
+ * 改自己的密码。
+ *
+ * 单拎出来是因为用户根本没找着它：接口（POST /api/auth/password）和这一屏一直都在，
+ * 可入口是「账号 · 用量」那一屏里、跟「退出登录」挤在一行的一个 float:right 小按钮——
+ * 要先点头像、再点「账号与用量」、再在一堆用量图表里找那颗按钮。用户的原话是
+ * 「我要能修改自己的账户密码啊，每个账户能自己改密码啊」，这就是「开关存在但找不到＝没有」。
+ * 现在头像菜单里直接一行「修改密码」，跟「个人资料」挨着。
+ */
+function renderPassword() {
+  mTitle.textContent = "修改密码";
+  mBody.innerHTML = `<div class="card-item"><div class="t">修改密码</div>
+    <div class="d" style="margin-bottom:8px">改完这台机器还留着登录状态，其它设备上的登录会被踢下线，得重新登一次。</div>
+    <input id="pw-old" type="password" placeholder="原密码" autocomplete="current-password">
+    <input id="pw-new" type="password" placeholder="新密码" autocomplete="new-password">
+    <div style="margin-top:8px"><button class="btn-brand" id="pw-go">确认修改</button> <button id="pw-back" style="padding:6px 14px">返回账号</button> <span class="ok-msg" id="pw-msg"></span></div></div>`;
+  document.getElementById("pw-back").onclick = () => { mTitle.textContent = "账号 · 用量"; renderAccount(); };
+  document.getElementById("pw-go").onclick = async () => {
+    const msg = document.getElementById("pw-msg");
+    const resp = await fetch("/api/auth/password", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old_password: document.getElementById("pw-old").value, new_password: document.getElementById("pw-new").value }),
+    });
+    const r = await resp.json().catch(() => ({}));
+    // 密码要求（最短几位、要不要混大小写数字）是管理员在组织设置里定的，前端不猜也不抄一份：
+    // 服务端把那句话原样回过来，照着显示就行——抄一份的下场是管理员改完策略，这儿还写着「至少 6 位」
+    if (resp.ok) { setMsg(msg, "circle-check", "已修改", "ok"); setTimeout(() => { mTitle.textContent = "账号 · 用量"; renderAccount(); }, 800); }
+    else { setMsg(msg, "circle-x", r.error || "修改失败", "err"); }
+  };
+}
+
 async function renderAccount() {
   mBody.innerHTML = '<div class="ab-empty">加载中…</div>';
   const [d, authState] = await Promise.all([
@@ -81,23 +112,7 @@ async function renderAccount() {
     location.reload();
   };
   document.getElementById("acc-profile").onclick = () => renderProfile();
-  document.getElementById("acc-pass").onclick = async () => {
-    mBody.innerHTML = `<div class="card-item"><div class="t">修改密码</div>
-      <input id="pw-old" type="password" placeholder="原密码">
-      <input id="pw-new" type="password" placeholder="新密码（至少 6 位）">
-      <div style="margin-top:8px"><button class="btn-brand" id="pw-go">确认修改</button> <button id="pw-back" style="padding:6px 14px">返回</button> <span class="ok-msg" id="pw-msg"></span></div></div>`;
-    document.getElementById("pw-back").onclick = () => renderAccount();
-    document.getElementById("pw-go").onclick = async () => {
-      const resp = await fetch("/api/auth/password", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ old_password: document.getElementById("pw-old").value, new_password: document.getElementById("pw-new").value }),
-      });
-      const r = await resp.json().catch(() => ({}));
-      const msg = document.getElementById("pw-msg");
-      if (resp.ok) { setMsg(msg, "circle-check", "已修改", "ok"); setTimeout(() => renderAccount(), 800); }
-      else { setMsg(msg, "circle-x", r.error || "修改失败", "err"); }
-    };
-  };
+  document.getElementById("acc-pass").onclick = () => renderPassword();
   const credOn = document.getElementById("credits-on");
   if (credOn) credOn.onchange = async () => {
     const msg = document.getElementById("credits-on-msg");
@@ -534,7 +549,11 @@ const KEY_SOURCES = {
   "https://api.minimax.chat/v1": { url: "https://platform.minimaxi.com/user-center/basic-information/interface-key", name: "MiniMax 海螺" },
   "http://localhost:11434/v1": { url: "https://ollama.com/download", name: "Ollama", label: "装 Ollama" },
   // 联网搜索：按服务商 id
+  "bocha": { url: "https://open.bochaai.com/", name: "博查" },
+  "zhipu": { url: "https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys", name: "智谱" },
+  "qiniu": { url: "https://portal.qiniu.com/", name: "七牛云" },
   "tavily": { url: "https://app.tavily.com/home", name: "Tavily" },
+  "serper": { url: "https://serper.dev/api-key", name: "Serper" },
   "jina": { url: "https://jina.ai/api-dashboard/", name: "Jina" },
   "brave": { url: "https://api-dashboard.search.brave.com/app/keys", name: "Brave" },
   // IM：按通道 key
@@ -565,11 +584,21 @@ const ONB_TIPS = {
   "https://ark.cn-beijing.volces.com/api/v3": "火山方舟，豆包 / DeepSeek 都在里面。",
   "anthropic": "Anthropic 官方 Claude，国内需要网络代理。",
 };
-// 搜索服务商：[Key 占位符, 一句话推荐语]。顺序 = 推荐顺序，Tavily 不用绑卡、免费额度最实在
+// 搜索服务商：[Key 占位符, 一句话推荐语]。顺序 = 推荐顺序。
+// 国内几家排前面：这是个中文产品，开箱第一跳得是在国内连得上的那家，
+// 不然新用户第一次搜索就是一次超时，而他还以为是自己装错了
+const ONB_SEARCH_NAME = {
+  bocha: "博查", zhipu: "智谱", qiniu: "七牛云",
+  tavily: "Tavily", serper: "Serper", jina: "Jina", brave: "Brave Search",
+};
 const ONB_SEARCH = {
-  tavily: ["tvly-...", "推荐。专给 AI 用的搜索，注册就送每月免费额度，不用绑卡。"],
-  jina: ["jina_...", "国内可直连，注册送免费额度，结果带网页正文。"],
-  brave: ["BSA...", "独立索引、隐私友好；有免费档但要绑卡。"],
+  bocha: ["sk-...", "推荐。国内服务商，专做给大模型用的搜索，中文结果好，有免费额度。"],
+  zhipu: ["...", "智谱开放平台的 Web Search，国内直连，跟模型 Key 同一个账号。"],
+  qiniu: ["sk-...", "七牛云，封装百度搜索，新用户送额度。"],
+  tavily: ["tvly-...", "海外，专给 AI 用的搜索，注册就送每月免费额度，不用绑卡。"],
+  serper: ["...", "海外，拿 Google 的结果，中文收录一般。"],
+  jina: ["jina_...", "海外，注册送免费额度，结果带网页正文。"],
+  brave: ["BSA...", "海外，独立索引、隐私友好；有免费档但要绑卡。"],
 };
 // 多媒体四项的一键预设：[名字, 接口地址, 模型名, 默认音色]，点一下就填好，只剩粘 Key
 const ONB_MEDIA_PRESETS = {
@@ -891,14 +920,11 @@ function renderOnbSearch(body) {
   const { st } = onbState;
   const sc = st.search || {};
   body.innerHTML = `
-    ${onbHead("联网搜索", "让它能查资料、看新闻、核对事实。不填也能用免费的 DuckDuckGo，但结果一般、国内经常连不上。", "推荐")}
+    ${onbHead("联网搜索", "让它能查资料、看新闻、核对事实。不填也能搜（走不要 Key 的免费通道），但结果一般。", "推荐")}
     ${sc.has_key ? `<div class="onb-ok">${ic("circle-check")} 已配 <b>${esc(sc.provider)}</b></div>` : ""}
     <label class="onb-lb">搜索服务商</label>
-    <select id="onb-sp">
-      <option value="tavily">Tavily（推荐 · 免费额度 · 不用绑卡）</option>
-      <option value="jina">Jina（国内直连 · 免费额度）</option>
-      <option value="brave">Brave Search（要绑卡）</option>
-    </select>
+    <select id="onb-sp">${Object.entries(ONB_SEARCH).map(([id, [, tip]], i) =>
+      `<option value="${id}">${esc(ONB_SEARCH_NAME[id] || id)}${i === 0 ? "（推荐）" : ""}</option>`).join("")}</select>
     <div class="onb-tip" id="onb-sp-tip"></div>
     <label class="onb-lb">API Key</label>
     <input id="onb-sp-key" type="password" autocomplete="off" spellcheck="false">
@@ -909,7 +935,7 @@ function renderOnbSearch(body) {
   const tip = body.querySelector("#onb-sp-tip");
   const err = body.querySelector("#onb-err");
   const go = body.querySelector("#onb-go");
-  sel.value = sc.provider || "jina";
+  sel.value = sc.provider || Object.keys(ONB_SEARCH)[0];
   const sync = () => { const [ph, t] = ONB_SEARCH[sel.value] || ["", ""]; keyEl.placeholder = ph; tip.innerHTML = `${t} ${keyLink(sel.value)}`; };
   sel.onchange = sync;
   sync();
@@ -1372,7 +1398,7 @@ async function renderProjPage() {
     const proj = projects.find(p => p.name === name);
     if (act === "edit") return openProjEditor(proj);
     if (act === "del") {
-      if (!confirm(`把项目「${name}」从列表移除？（目录和文件不会删除）`)) return;
+      if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只是从这个列表里拿掉，硬盘上的目录和文件一个都不动。", ok: "移除" }))) return;
       await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" });
       refreshProjects().then(refreshSettingsCache);
       renderProjPage();
@@ -1612,9 +1638,9 @@ async function renderAutomPage() {
   });
   if (st.bulk) {
     page.querySelector("#bk-all").onclick = (e) => { e.preventDefault(); match.forEach(t => st.sel.add(t.id)); renderAutomPage(); };
-    const bulk = async (action, confirmText) => {
+    const bulk = async (action, ask) => {
       if (!st.sel.size) return toast("先勾选要操作的任务", "circle-x");
-      if (confirmText && !confirm(confirmText)) return;
+      if (ask && !(await askConfirm(ask))) return;
       const r = await fetch("/api/schedules/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [...st.sel], action }) }).then(r => r.json()).catch(() => ({}));
       toast(r.ok ? `已处理 ${r.count} 个` : r.error || "操作失败", r.ok ? "circle-check" : "circle-x");
       st.sel.clear();
@@ -1622,7 +1648,7 @@ async function renderAutomPage() {
     };
     page.querySelector("#bk-en").onclick = (e) => { e.preventDefault(); bulk("enable"); };
     page.querySelector("#bk-dis").onclick = (e) => { e.preventDefault(); bulk("disable"); };
-    page.querySelector("#bk-del").onclick = (e) => { e.preventDefault(); bulk("delete", `确认删除选中的 ${st.sel.size} 个自动化任务？运行记录会一并清掉`); };
+    page.querySelector("#bk-del").onclick = (e) => { e.preventDefault(); bulk("delete", { title: `删掉选中的 ${st.sel.size} 个自动化任务？`, hint: "它们的运行记录会一并清掉。", ok: "删掉", danger: true }); };
   }
   page.querySelectorAll(".at-row a[data-act]").forEach(a => a.onclick = async (e) => {
     e.preventDefault();
@@ -1631,7 +1657,7 @@ async function renderAutomPage() {
     const act = a.dataset.act;
     if (act === "edit") { st.editing = t; st.showForm = true; renderAutomForm(page.querySelector("#at-form-box")); window.scrollTo(0, 0); return; }
     if (act === "history") { st.runTaskId = id; st.tab = "runs"; return renderAutomPage(); }
-    if (act === "del") { if (!confirm(`确认删除「${t.name}」？`)) return; await fetch("/api/schedules/" + id, { method: "DELETE" }); }
+    if (act === "del") { if (!(await askConfirm({ title: `删掉「${t.name}」？`, hint: "这个自动化任务和它的运行记录一起没。", ok: "删掉", danger: true }))) return; await fetch("/api/schedules/" + id, { method: "DELETE" }); }
     else if (act === "toggle") await fetch(`/api/schedules/${id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !t.enabled }) });
     else if (act === "catchup") {
       const r = await fetch(`/api/schedules/${id}/catchup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ catch_up: t.catch_up === false }) }).then(r => r.json()).catch(() => ({}));

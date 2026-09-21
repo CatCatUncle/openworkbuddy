@@ -177,8 +177,8 @@ async function renderHubMcp(box) {
       more.onclick = toggle;
     }
     const del = card.querySelector(".mcp-del");
-    if (del) del.onclick = () => {
-      if (!confirm(`删除连接器「${sv.name}」？`)) return;
+    if (del) del.onclick = async () => {
+      if (!(await askConfirm({ title: `删掉连接器「${sv.name}」？`, hint: "模型手上就没有它带来的那些工具了。", ok: "删掉", danger: true }))) return;
       save(data.servers.filter(x => !x.plugin && x.name !== sv.name).map(keep));
     };
   });
@@ -678,8 +678,10 @@ function capCard(c, s, provName) {
             <span class="mrow-name">${esc(m.name)}</span>
             <span class="mrow-id">${esc(m.model)}</span>
             <span class="mrow-meta">${meta}</span>
+            ${modelTestBtn("media", m)}
             ${rowMenu([["mdel", i, "删除", "danger"]])}
-          </div>`;
+          </div>
+          ${modelTestNote("media", m)}`;
         }).join("") : `<div class="ch-note">还没配。加一个之后 agent 才用得了 ${esc(c.tool)}。</div>`}
         ${mine.length > 1 ? `<div class="ch-note">挂了多个：平时走「主用」那条；要指定别的，在对话里点名它的名字（例如「用${esc((mine.find((m) => !m.default) || mine[0]).name)}画」），agent 会按名字挑。</div>` : ""}
         <div class="mm-form" data-cap="${c.cap}" style="display:none;border-top:1px solid var(--owb-border);padding-top:8px;margin-top:6px">
@@ -711,6 +713,7 @@ function bindMedia(box, s) {
     repaintMedia(box, s);
   }));
   bindRowMenus(box);
+  bindModelTests(box, s, () => repaintMedia(box, s));
 
   box.querySelectorAll("input[data-def]").forEach((r) => (r.onchange = async () => {
     const t = s.media_models[+r.dataset.def];
@@ -1152,6 +1155,73 @@ function chanTestNote(p) {
     : `<div class="ch-res is-bad">${ic("triangle-alert")}<span>${esc(t.error)}</span></div>`;
 }
 
+/**
+ * 一行一测的结果。跟 chanTest 一样存在模块里，不存 DOM——这一页任何改动都整屏重画。
+ *
+ * key 用名字不用下标：下标一删行就全串位，绿勾会跑到隔壁那一行头上去，
+ * 而「隔壁那行也通」恰恰是最难看出错的一种错。
+ */
+const modelTest = new Map();
+const mtKey = (scope, m) => scope + ":" + (scope === "media" ? m.id || m.name : m.name);
+
+/**
+ * 行尾那颗结论。渠道测活那句话说的是「这条线通不通」，这句说的是「**这一行**能不能用」——
+ * 一条渠道下面挂五个模型，线是通的，模型名却可能错了三个，得等任务跑到一半才炸。
+ */
+function modelTestNote(scope, m) {
+  const t = modelTest.get(mtKey(scope, m));
+  if (!t) return "";
+  if (t.running) return `<div class="ch-res mrow-res"><span>正在测「${esc(m.model || m.name)}」…</span></div>`;
+  if (!t.ok) return `<div class="ch-res is-bad mrow-res">${ic("triangle-alert")}<span>${esc(t.error)}</span></div>`;
+  // 只验到一半的时候不给绿勾：拿模型清单证不了余额够不够。
+  // 一个含糊的 ✓ 比一个红叉更坑人——人会拿它当「已经能用」，然后在真任务里踩空
+  const half = t.partial || /没真生成|没法核对/.test(t.note || "");
+  return `<div class="ch-res ${half ? "is-half" : "is-ok"} mrow-res">${ic(half ? "circle-help" : "circle-check")}<span>${esc(t.note || "通了")}（${t.ms} 毫秒）</span></div>`;
+}
+
+/**
+ * 行里那颗「测」。带字不带纯图标：这一行右边本来就有个 ⋯，再放一颗光溜溜的图标，
+ * 人得挨个悬停才知道哪颗是干什么的——摆出来却认不出，等于没摆。
+ */
+function modelTestBtn(scope, m) {
+  const t = modelTest.get(mtKey(scope, m));
+  const run = !!(t && t.running);
+  return `<button type="button" class="mrow-test" data-mtscope="${scope}" data-mtkey="${esc(mtKey(scope, m))}"
+      title="拿这一行真验一次：Key 认不认、模型名在不在"${run ? " disabled" : ""}>${ic(run ? "loader-circle" : "flask-conical", "i-sm")}${run ? "测中" : "测"}</button>`;
+}
+
+/**
+ * 把「测」这颗按钮接上。对话卡和那五张能力卡共用一份：两边行长得一样，
+ * 差的只是重画哪一块，所以重画函数当参数传进来。
+ */
+function bindModelTests(root, s, repaint) {
+  root.querySelectorAll(".mrow-test").forEach((b) => (b.onclick = async (e) => {
+    e.stopPropagation(); // 行在折叠卡里，冒上去会把卡收起来，人就看不见刚测出来的那句话了
+    const scope = b.dataset.mtscope;
+    const key = b.dataset.mtkey;
+    const list = scope === "media" ? s.media_models : s.models;
+    const index = list.findIndex((m) => mtKey(scope, m) === key);
+    if (index < 0) return;
+    modelTest.set(key, { running: true });
+    repaint();
+    let d;
+    try {
+      const r = await fetch("/api/model-test", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope, index }),
+      });
+      d = await r.json();
+    } catch (err) {
+      d = { ok: false, error: "请求没发出去：" + String((err && err.message) || err) };
+    }
+    modelTest.set(key, {
+      ok: !!d.ok, ms: d.ms || 0, partial: !!d.partial,
+      note: d.note || "", error: d.error || "没说原因",
+    });
+    repaint();
+  }));
+}
+
 /** 一个渠道一张卡：头是一行摘要，展开才是它底下的模型 + 那把 Key */
 function chanCard(p, s, po, kindLabel, dupeTag) {
   const i = s.providers.indexOf(p);
@@ -1227,8 +1297,10 @@ function modelRow(m, s, po, withChan) {
       <span class="mrow-name">${esc(m.name)}</span>
       <span class="mrow-id">${esc(m.model)}</span>
       <span class="mrow-meta">${meta}</span>
+      ${!po ? "" : modelTestBtn("chat", m)}
       ${!po ? "" : rowMenu([["cedit", i, "编辑", ""], ["cdup", i, "复制一个", ""], ["cdel", i, "删除", "danger"]])}
-    </div>`;
+    </div>
+    ${!po ? "" : modelTestNote("chat", m)}`;
 }
 
 /** 行尾的 ⋯：三个链接平铺太占地方，收进来点开才有。参数是 [属性名, 下标, 文案, 样式] */
@@ -1298,6 +1370,7 @@ function bindModels(pane, s, po) {
     if (card) card.scrollIntoView({ block: "center", behavior: "smooth" });
   }));
   bindRowMenus(pane);
+  bindModelTests(pane, s, () => paintModels(pane, s));
   const idleBtn = pane.querySelector("#idle-toggle");
   if (idleBtn) idleBtn.onclick = () => { idleOpen = !idleOpen; paintModels(pane, s); };
   if (!po) return; // 下面全是平台管理员那套按钮，没画出来就别去 querySelector（null.onclick 会把整页炸掉）
@@ -1361,7 +1434,11 @@ function bindModels(pane, s, po) {
     e.preventDefault();
     const idx = +a.dataset.pclr;
     const p = s.providers[idx];
-    if (!confirm(`清空「${p.name}」的 API Key？挂在它下面的模型会立刻用不了，但配置都留着，重新填一把 Key 就恢复。`)) return;
+    if (!(await askConfirm({
+      title: `清空「${p.name}」的 API Key？`,
+      hint: "挂在它下面的模型会立刻用不了。配置都留着，重新填一把 Key 就恢复。",
+      ok: "清空", danger: true,
+    }))) return;
     s.providers[idx] = { ...p, api_key: "", has_key: false, key_hint: "" };
     chanTest.delete(p.id);
     liveModels.delete(p.id);
@@ -1411,12 +1488,18 @@ function bindModels(pane, s, po) {
     const media = s.media_models.filter((m) => m.provider === p.id);
     const hitsDefault = chat.some((m) => m.name === s.active_model);
     // 删渠道会连坐：挂在它下面的模型一起没。把数说清楚，别删完才发现画图不能用了
-    const lines = [chat.length + media.length
-      ? `删掉「${p.name}」的话，挂在它下面的 ${chat.length} 个对话模型和 ${media.length} 个媒体模型也会一起删掉。`
-      : `确认删除渠道「${p.name}」？`];
-    if (hitsDefault) lines.push("当前默认模型就在里面，删完会自动换成列表里的第一个。");
-    if (chat.length + media.length) lines.push("继续？");
-    if (!confirm(lines.join("\n"))) return;
+    // 连坐的那几样各自成一条，别拼成一个长句：拼出来的句子里嵌着已经插过值的片段，
+    // 词典按整句查，这种句子永远配不上——英文用户看到的就会是半句中文
+    const 连坐 = [];
+    if (chat.length) 连坐.push(`${chat.length} 个对话模型`);
+    if (media.length) 连坐.push(`${media.length} 个媒体模型`);
+    if (!(await askConfirm({
+      title: `删掉渠道「${p.name}」？`,
+      hint: 连坐.length ? "挂在它下面的这些会跟着一起删掉：" : "这条渠道下面还没挂模型。",
+      items: 连坐,
+      note: hitsDefault ? "当前默认模型就在里面，删完会自动换成列表里的第一个。" : "",
+      ok: "删掉", danger: true,
+    }))) return;
     s.providers.splice(idx, 1);
     s.models = s.models.filter((m) => m.channel !== p.id);
     s.media_models = s.media_models.filter((m) => m.provider !== p.id);
@@ -1492,7 +1575,7 @@ function bindModels(pane, s, po) {
     e.preventDefault();
     const idx = +a.dataset.cdel;
     const m = s.models[idx];
-    if (!confirm(`确认删除模型「${m.name}」？渠道和 Key 留着，别的模型不受影响。`)) return;
+    if (!(await askConfirm({ title: `删掉模型「${m.name}」？`, hint: "渠道和 Key 留着，别的模型不受影响。", ok: "删掉", danger: true }))) return;
     s.models.splice(idx, 1);
     const extra = m.name === s.active_model && s.models.length ? { active_model: s.models[0].name } : undefined;
     if (await saveAllModelTables(s, msg, extra)) paintModels(pane, s);
@@ -1592,36 +1675,93 @@ function injectLiveChat(sel, tip, d, local) {
   tip.textContent = `从渠道拉到 ${d.models.length} 个模型${d.cached ? "（缓存）" : ""}，挑不到就选「自己填…」。`;
 }
 
-// 联网搜索：provider 可切（Jina / Tavily / Brave），各自独立 key；没 key 自动退免费 DuckDuckGo
+// 联网搜索：八家服务商 + 自定义接口，各自独立 key。选中的那家没配好或调不通就往下顺延，
+// 最后退到不要 Key 的免费通道。Key 一次能填好几家——接力要靠它们。
+// 界面上只摊开当前这家，其余收进折叠里：八个密码框一字排开，人是找不到自己要填哪个的。
+const SEARCH_VENDORS = {
+  bocha:  ["博查",   "sk-...",   "国内", "专做给大模型用的搜索，中文结果好"],
+  zhipu:  ["智谱",   "",         "国内", "开放平台的 Web Search，跟模型 Key 同账号"],
+  qiniu:  ["七牛云", "sk-...",   "国内", "封装百度搜索"],
+  tavily: ["Tavily", "tvly-...", "海外", "有免费额度，不用绑卡"],
+  serper: ["Serper", "",         "海外", "拿 Google 的结果，中文收录一般"],
+  jina:   ["Jina",   "jina_...", "海外", "结果带网页正文"],
+  brave:  ["Brave",  "BSA...",   "海外", "独立索引，要绑卡"],
+  custom: ["自定义", "可留空",   "自建", "自己填地址：POST 一个 JSON、回一个结果数组就能接"],
+};
+const searchKeyField = (id) => id === "custom" ? "custom_key" : id + "_key";
+
 function renderSearchPane(pane, s) {
-  const sc = s.search || {};
+  const sc = { ...(s.search || {}) };
+  const ids = Object.keys(SEARCH_VENDORS);
+  const 一行 = (id, 展开) => {
+    const [名, 占位, , 说明] = SEARCH_VENDORS[id];
+    const custom = id === "custom";
+    return `<div class="f">${esc(名)} ${custom ? "接口" : "API"} Key ${keyLink(id)}</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="sr-k-${id}" type="password" placeholder="${esc(占位)}" value="${esc(sc[searchKeyField(id)] || "")}" style="flex:1;min-width:0">
+        <button type="button" class="btn-plain sr-one" data-p="${id}" style="flex:none">测这家</button>
+      </div>
+      <div class="d sr-one-msg" id="sr-r-${id}" style="margin-top:4px"></div>
+      ${展开 && custom ? `<div class="f">接口地址（POST）</div>
+        <input id="sr-custom-url" type="text" placeholder="https://……/search" value="${esc(sc.custom_url || "")}">
+        <div class="f">请求体里问题字段叫什么（默认 query）</div>
+        <input id="sr-custom-field" type="text" placeholder="query" value="${esc(sc.custom_query_field || "")}">` : ""}
+      ${展开 ? `<div class="d" style="margin-top:4px">${esc(说明)}</div>` : ""}`;
+  };
+  const paint = () => {
+    const cur = pane.querySelector("#sr-provider").value;
+    const 别家 = ids.filter((id) => id !== cur);
+    pane.querySelector("#sr-keys").innerHTML =
+      (cur ? 一行(cur, true) : `<div class="d">自动：从上往下挑第一个配好了的。下面填几家都行。</div>`)
+      + `<details class="sr-more"${cur ? "" : " open"}><summary>别家的 Key（顺延时用得上，可以多填几家）</summary>`
+      + 别家.map((id) => 一行(id, false)).join("") + `</details>`;
+    // 每一行后面都有自己的「测这家」。以前只有最下面一颗按钮、测的是「当前首选那家」——
+    // 填了四家 Key 的人想知道哪家能用，得把首选一家一家切过去再各测一次；
+    // 而顺延链上任何一家坏了，他在界面上永远看不出来是哪一家坏了
+    pane.querySelectorAll(".sr-one").forEach((b) => (b.onclick = async () => {
+      const id = b.dataset.p;
+      const slot = pane.querySelector("#sr-r-" + id);
+      b.disabled = true;
+      slot.textContent = "先存下来，再拿这家真搜一次…";
+      try {
+        Object.assign(sc, collect());
+        if (!(await saveSettings({ search: collect() }))) { slot.textContent = "✗ " + (lastSaveError || "保存失败"); return; }
+        const r = await fetch("/api/search/test?provider=" + encodeURIComponent(id))
+          .then((x) => x.json()).catch((e) => ({ error: "请求没发出去：" + String((e && e.message) || e) }));
+        slot.textContent = r.ok
+          ? `✓ 通了，${r.ms}ms，回了 ${r.n} 条，第一条是「${r.sample}」`
+          : "✗ " + (r.error || "测试失败");
+      } finally { b.disabled = false; }
+    }));
+  };
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">搜索服务商</div>
-      <div class="d" style="margin-bottom:6px">web_search 工具用哪家搜索 API。所选服务商没填 Key 或调用失败时，自动回退到免费 DuckDuckGo。</div>
+      <div class="d" style="margin-bottom:8px">web_search 用哪家。这家没配 Key 或调不通，会自动顺延到你填过的下一家，最后退到不要 Key 的免费通道。</div>
       <select id="sr-provider">
-        <option value="tavily">Tavily（推荐 · 免费额度 · 不用绑卡）</option>
-        <option value="jina">Jina（国内直连 · 免费额度）</option>
-        <option value="brave">Brave Search（要绑卡）</option>
+        <option value="">自动 · 按配好的顺延（国内优先）</option>
+        <optgroup label="国内服务商">${ids.filter((i) => SEARCH_VENDORS[i][2] === "国内").map((i) => `<option value="${i}">${esc(SEARCH_VENDORS[i][0])}</option>`).join("")}</optgroup>
+        <optgroup label="海外服务商（国内可能要梯子）">${ids.filter((i) => SEARCH_VENDORS[i][2] === "海外").map((i) => `<option value="${i}">${esc(SEARCH_VENDORS[i][0])}</option>`).join("")}</optgroup>
+        <optgroup label="自己接">${ids.filter((i) => SEARCH_VENDORS[i][2] === "自建").map((i) => `<option value="${i}">${esc(SEARCH_VENDORS[i][0])}</option>`).join("")}</optgroup>
       </select>
-      <div class="f">Tavily API Key ${keyLink("tavily")}</div>
-      <input id="sr-tavily" type="password" placeholder="tvly-..." value="${esc(sc.tavily_key || "")}">
-      <div class="f">Jina API Key ${keyLink("jina")}</div>
-      <input id="sr-jina" type="password" placeholder="jina_..." value="${esc(sc.jina_key || "")}">
-      <div class="f">Brave API Key ${keyLink("brave")}</div>
-      <input id="sr-brave" type="password" placeholder="BSA..." value="${esc(sc.brave_key || "")}">
+      <div id="sr-keys"></div>
     </div>
     <button class="btn-brand" id="sr-save">保存</button>
     <button class="btn-plain" id="sr-test">测试搜索</button>
     <span class="ok-msg" id="sr-msg"></span>`;
-  pane.querySelector("#sr-provider").value = sc.provider || "jina";
+  pane.querySelector("#sr-provider").value = sc.provider || "";
+  paint();
+  // 换一家之前先把已经敲进去的收走：重画会把 DOM 换掉，不收的话刚填的 Key 当场消失
+  pane.querySelector("#sr-provider").onchange = () => { Object.assign(sc, collect()); paint(); };
   const msg = pane.querySelector("#sr-msg");
-  const collect = () => ({
-    provider: pane.querySelector("#sr-provider").value,
-    jina_key: pane.querySelector("#sr-jina").value.trim(),
-    tavily_key: pane.querySelector("#sr-tavily").value.trim(),
-    brave_key: pane.querySelector("#sr-brave").value.trim(),
-  });
+  function collect() {
+    const v = (sel) => { const el = pane.querySelector(sel); return el ? el.value.trim() : ""; };
+    const out = { provider: pane.querySelector("#sr-provider").value };
+    for (const id of ids) out[searchKeyField(id)] = v("#sr-k-" + id);
+    out.custom_url = v("#sr-custom-url") || sc.custom_url || "";
+    out.custom_query_field = v("#sr-custom-field") || sc.custom_query_field || "";
+    return out;
+  }
   pane.querySelector("#sr-save").onclick = () => saveSettings({ search: collect() }, msg);
   pane.querySelector("#sr-test").onclick = async (e) => {
     e.target.disabled = true;
@@ -1811,7 +1951,7 @@ async function renderTracePage() {
   page.querySelector("#tp-bad").onchange = (e) => { traceOnlyBad = e.target.checked; paintTraceList(); };
   page.querySelector("#tp-refresh").onclick = () => loadTracePage();
   page.querySelector("#tp-clear").onclick = async (e) => {
-    if (!confirm("清空本机保存的执行记录？工作区文件和 Langfuse 上的副本都不受影响。")) return;
+    if (!(await askConfirm({ title: "清空本机保存的执行记录？", hint: "工作区文件和 Langfuse 上的副本都不受影响。", ok: "清空", danger: true }))) return;
     e.currentTarget.disabled = true;
     await fetch("/api/traces", { method: "DELETE" }).catch(() => {});
     traceSel = "";
@@ -2223,6 +2363,57 @@ async function renderThinkingCard(sel, note, msg) {
   show();
 }
 /**
+ * `2.1.278 (Claude Code)` → `2.1.278`；`codex-cli 0.154.0` → `0.154.0`。
+ *
+ * 各家 `--version` 输出的花样都不一样：一个把产品名括在后面，一个把包名顶在前面。
+ * 原样贴到徽章上，就成了「本机 Claude Code · 已装 2.1.278 (Claude Code)」——
+ * 产品名在同一行里说了两遍，两张卡还是两个形状。徽章上只留版本号；
+ * 原样那一行挪进展开区（「本机这一份」），谁要对包名谁去看。
+ */
+function engVer(v) {
+  const s = String(v || "").trim();
+  const m = s.match(/\bv?(\d+\.\d+\.\d+[^\s()]*)/) || s.match(/\bv?(\d+\.\d+[^\s()]*)/);
+  return m ? m[1] : s;
+}
+
+// 连接测试的结论按引擎记一份。这张卡会因为切引擎、保存设置、重新检测重画好几次，
+// 不留着的话刚测出来的「真跑通了」一眨眼就没了，用户只能再花一次 token 重测。
+// 只活在这一次打开设置页期间——机器状态随时会变，隔天还敢说"测过了"就是撒谎。
+const engTested = new Map();
+
+/**
+ * 徽章上只说说得出口的那部分。
+ *
+ * 旧版这里写的是「已装 ✓」，绿的。但它的依据只有 `--version` 跑通了——
+ * 那只证明**文件在**。装了没登录、订阅过期、被限流，在旧卡片上全长一个样：绿的。
+ * 所以没测过之前一律用中性措辞（「本机有 2.1.278」），绿色留给真跑通过的那一种。
+ */
+function engBadgeHtml(e, v) {
+  if (e.id === "builtin") return '<span class="eng-b">走 API Key</span>';
+  if (!e.installed) return '<span class="eng-b no">本机没找到</span>';
+  const ver = engVer(e.version);
+  const free = '<span class="eng-b free">不花 API 额度</span>';
+  if (v && v.ok) return `<span class="eng-b ok">${ic("circle-check")}真跑通了${ver ? " · " + esc(ver) : ""}</span>${free}`;
+  if (v) return `<span class="eng-b bad">${ic("circle-x")}连不上</span><span class="eng-b">本机有${ver ? " " + esc(ver) : ""}</span>`;
+  return `<span class="eng-b">本机有${ver ? " " + esc(ver) : ""}</span>${free}`;
+}
+
+/** 测出来的结论长什么样。重画卡片时也走这里，所以结论跟着卡片一起活 */
+function engVerdictHtml(v, on) {
+  if (!v) return "";
+  if (v.ok) {
+    return `<div class="eng-r ok">${ic("circle-check")} 真跑通了，用了 ${(v.ms / 1000).toFixed(1)} 秒。它回了「${esc(v.reply || "")}」`
+      + (v.model ? `，实际跑的模型是 <code>${esc(v.model)}</code>` : "")
+      + "。这一趟没花 API 额度，走的是你本机的订阅。"
+      + (on ? "" : "<br>想用它的话，点这张卡就切过去了。")
+      + `<br><span class="eng-p">${esc(v.path || "")}${v.version ? " · " + esc(v.version) : ""}</span></div>`;
+  }
+  return `<div class="eng-r bad">${ic("circle-x")} 连不上：${esc(v.why || "未知原因")}`
+    + (v.hint ? `<br>下一步：<code>${esc(v.hint)}</code>` : "")
+    + "</div>";
+}
+
+/**
  * 「底层引擎」卡片。
  *
  * 这张卡的职责不是"列个单子"，是**让用户真的用上本机那份订阅**。三件事必须做到：
@@ -2230,8 +2421,13 @@ async function renderThinkingCard(sel, note, msg) {
  *      claude/codex 装在 homebrew、nvm、~/.local/bin 里的一律看不见。这一层在
  *      engines/which.js 里补齐了，卡片这边把"从哪找到的"如实标出来。
  *   ② 说实话 —— `--version` 只证明文件在，不证明能用。装了没登录、订阅过期、
- *      被限流，在旧版卡片上全都显示"已装 ✓"。所以这里有一个真跑一句话的连接测试。
+ *      被限流，在旧版卡片上全都显示"已装 ✓"，绿的。所以没真跑过之前徽章只说
+ *      「本机有 2.1.278」，绿色留给连接测试真跑通的那一种；而那个测试挂在每一张
+ *      装了的卡上，不是只挂在选中的那张——不然就成了"想知道它行不行，先切过去用它"。
  *   ③ 出事有下一步 —— 失败时不只报错，要说清楚接下来敲哪条命令。
+ *
+ * 折叠状态下不摆命令行：`claude -p --output-format stream-json` 这种东西对着
+ * 「我想用我的订阅」的人说不出任何信息，挪到展开区跟可执行文件路径摆一块儿，就近。
  */
 async function renderEngineCard(box, force) {
   if (!box) return;
@@ -2243,20 +2439,23 @@ async function renderEngineCard(box, force) {
   const all = [d.builtin, ...(d.engines || [])];
   box.innerHTML = all.map((e) => {
     const on = cur === e.id, builtin = e.id === "builtin", ready = builtin || e.installed;
-    const badge = builtin
-      ? '<span class="eng-b">走 API Key</span>'
-      : e.installed
-        ? `<span class="eng-b ok">已装 ${esc(e.version || "")}</span><span class="eng-b free">不花 API 额度</span>`
-        : '<span class="eng-b no">本机没找到</span>';
+    const v = engTested.get(e.id);
     // 从补全的 PATH / 登录 shell 里找到的，说一声——用户要是纳闷"我明明装了它怎么现在才看见"，这就是答案
     const howNote = !builtin && e.installed && e.how && e.how !== "PATH"
       ? `<div class="eng-i">（${esc(e.how)}里找到的：<span class="eng-p">${esc(e.path || "")}</span>）</div>` : "";
-    return `<div class="eng${on ? " on" : ""}${ready ? "" : " off"}" data-eng="${esc(e.id)}" data-ready="${ready ? 1 : 0}">
-      <div class="eng-h"><span class="eng-dot">${on ? "●" : "○"}</span><b>${esc(e.label)}</b>${badge}</div>
+    // 「试一下能不能用」挂在每一张装了的卡上，不管选没选中。
+    // 以前它只长在展开区里，而展开区只对**已经选中的**引擎渲染——
+    // 等于「想知道它能不能用，得先切过去用它」。开关摆在只有切过去才看得见的地方，等于没有。
+    const tryRow = !builtin && e.installed
+      ? `<div class="eng-try"><button class="btn-plain" data-act="test">试一下能不能用</button>
+        <span class="eng-msg">${on ? "让它回一句话，几十个 token" : "让它回一句话，不用先切过来"}</span></div>
+        <div data-role="result">${engVerdictHtml(v, on)}</div>` : "";
+    return `<div class="eng${on ? " on" : ""}${ready ? "" : " off"}" data-eng="${esc(e.id)}" data-ready="${ready ? 1 : 0}" data-ver="${esc(engVer(e.version))}">
+      <div class="eng-h"><span class="eng-dot">${on ? "●" : "○"}</span><b>${esc(e.label)}</b><span class="eng-bs">${engBadgeHtml(e, v)}</span></div>
       <div class="eng-n">${esc(e.note || "")}</div>
-      <div class="eng-c">${esc(e.launchHeader || "")}</div>
       ${howNote}
       ${!builtin && !e.installed ? `<div class="eng-i">${esc(e.error || "没找到")}<br>装法：<code>${esc(e.install || "")}</code></div>` : ""}
+      ${tryRow}
       ${builtin || !on ? "" : engineExtraHtml(e)}
     </div>`;
   }).join("") + '<div class="eng-row" style="margin-top:4px"><button class="btn-plain" id="ag-eng-rescan">重新检测本机</button><span class="eng-msg" id="ag-eng-msg"></span></div>';
@@ -2267,8 +2466,11 @@ async function renderEngineCard(box, force) {
   box.querySelectorAll(".eng").forEach((el) => {
     const id = el.dataset.eng;
     if (el.classList.contains("on")) bindEngineExtra(el, id, box);
+    const tb = el.querySelector('[data-act="test"]');
+    if (tb) tb.onclick = (ev) => { ev.stopPropagation(); testEngineConnect(el, id); };
     el.onclick = async (ev) => {
-      if (ev.target.closest(".eng-x")) return; // 展开区里的输入框/按钮，不当成"切引擎"
+      // 展开区的输入框、试一试那一行、测出来的结论，点了都不算"切引擎"
+      if (ev.target.closest(".eng-x, .eng-try, .eng-r")) return;
       if (el.classList.contains("on")) return;
       if (el.dataset.ready !== "1") {
         // 没找到的那条：点了不切。静默切到一个跑不起来的引擎，用户会以为在用本机订阅，
@@ -2289,7 +2491,7 @@ async function renderEngineCard(box, force) {
   });
 }
 
-/** 选中的引擎才展开：可执行文件路径、模型、一键连接测试 */
+/** 选中的引擎才展开：可执行文件路径、模型、思考档 */
 // 思考/effort 档位（跟 thinking.js 的 LEVELS 同一张表；"" = 跟随全局档位）
 const ENGINE_THINK_LEVELS = [
   ["", "跟随全局思考模式"], ["auto", "跟随 CLI 默认"], ["off", "关闭思考"], ["low", "低"], ["medium", "中"], ["high", "高"],
@@ -2312,11 +2514,10 @@ function engineExtraHtml(e) {
     <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--owb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
       <select data-k="thinking">${ENGINE_THINK_LEVELS.map(([v, l]) => `<option value="${v}"${(o.thinking || "") === v ? " selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="eng-row">
-      <button class="btn-brand" data-act="test">测试连接</button>
       <button class="btn-plain" data-act="save">保存路径 / 模型 / 思考档</button>
       <span class="eng-msg" data-role="xmsg"></span>
     </div>
-    <div data-role="result"></div>
+    <div class="eng-c">跑起来是这条命令：${esc(e.launchHeader || "")}${e.version ? "　本机这一份：" + esc(e.version) : ""}</div>
   </div>`;
 }
 
@@ -2328,7 +2529,6 @@ function bindEngineExtra(card, id, box) {
     x.querySelectorAll("input[data-k],select[data-k]").forEach((i) => (o[i.dataset.k] = i.value.trim()));
     return o;
   };
-  x.querySelector('[data-act="test"]').onclick = () => testEngineConnect(card, id);
   x.querySelector('[data-act="save"]').onclick = async () => {
     const m = x.querySelector('[data-role="xmsg"]');
     m.textContent = "保存中…";
@@ -2341,32 +2541,37 @@ function bindEngineExtra(card, id, box) {
 /**
  * 真连一次。花几十个 token 跑一句"回复 ok"，把「能用 / 没登录 / 限流 / 装坏了」分开。
  * 结果要带上耗时和实际用的模型——用户下一个任务会看到同一个模型名，对得上才叫连通。
+ *
+ * 没选中的卡也测得了：展开区不在，就用**已经存下来**的那套设置去测，
+ * 而那正是切过去之后下一个任务会用的那一套。
  */
 async function testEngineConnect(card, id) {
-  const x = card.querySelector(".eng-x");
-  if (!x) return;
-  const btn = x.querySelector('[data-act="test"]');
-  const out = x.querySelector('[data-role="result"]');
+  const btn = card.querySelector('[data-act="test"]');
+  const out = card.querySelector('[data-role="result"]');
+  if (!btn || !out) return;
+  const on = card.classList.contains("on");
   const opts = {};
-  x.querySelectorAll("input[data-k]").forEach((i) => (opts[i.dataset.k] = i.value.trim()));
+  card.querySelectorAll(".eng-x input[data-k]").forEach((i) => (opts[i.dataset.k] = i.value.trim()));
   btn.disabled = true;
   const t0 = Date.now();
-  const tick = setInterval(() => { out.className = "eng-r"; out.textContent = `正在真连一次…已等 ${Math.round((Date.now() - t0) / 1000)} 秒（第一次会慢一点）`; }, 500);
+  const paint = () => { out.innerHTML = `<div class="eng-r">正在真连一次…已等 ${Math.round((Date.now() - t0) / 1000)} 秒（第一次会慢一点）</div>`; };
+  paint();
+  const tick = setInterval(paint, 500);
   let r;
   try { r = await fetch("/api/engines/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, options: opts }) }).then((v) => v.json()); }
   catch (e) { r = { ok: false, why: "请求失败：" + e.message }; }
   clearInterval(tick);
   btn.disabled = false;
-  if (r && r.ok) {
-    out.className = "eng-r ok";
-    out.innerHTML = `✓ 连通了，用了 ${(r.ms / 1000).toFixed(1)} 秒。它回了「${esc(r.reply || "")}」`
-      + (r.model ? `，实际跑的模型是 <code>${esc(r.model)}</code>` : "")
-      + `。这一趟没花 API 额度，走的是你本机的订阅。<br><span class="eng-p">${esc(r.path || "")}${r.version ? " · " + esc(r.version) : ""}</span>`;
-  } else {
-    out.className = "eng-r bad";
-    out.innerHTML = `✗ 连不上：${esc((r && (r.why || r.error)) || "未知原因")}`
-      + (r && r.hint ? `<br>下一步：<code>${esc(r.hint)}</code>` : "");
-  }
+  r = r || {};
+  const v = {
+    ok: !!r.ok, ms: r.ms || Date.now() - t0, reply: r.reply || "", model: r.model || "",
+    path: r.path || "", version: r.version || "", why: r.why || r.error || "", hint: r.hint || "",
+  };
+  engTested.set(id, v);
+  out.innerHTML = engVerdictHtml(v, on);
+  // 徽章跟着改口。不在这儿改的话，卡上会同时挂着「本机有 2.1.278」和一条"连不上"的红结论
+  const bs = card.querySelector(".eng-bs");
+  if (bs) bs.innerHTML = engBadgeHtml({ id, installed: true, version: card.dataset.ver }, v);
 }
 
 function renderPersonaPane(pane, s) {
@@ -2498,7 +2703,7 @@ function bindPetCard(pane, p) {
   };
   const drop = q("#pet-drop");
   if (drop) drop.onclick = async () => {
-    if (!confirm("删除已上传的照片，换回内置小猫？")) return;
+    if (!(await askConfirm({ title: "换回内置小猫？", hint: "你上传的那张照片会被删掉。", ok: "换回去", danger: true }))) return;
     await fetch("/api/pet/avatar", { method: "DELETE" });
     renderSettings("persona");
   };
@@ -2730,18 +2935,26 @@ function renderDataPane(pane, s) {
       </div>`).join("") : "还没有备份。";
     bkList.querySelectorAll("[data-bk-del]").forEach(a => a.onclick = async (e) => {
       e.preventDefault();
-      if (!confirm(`确认删除备份 ${a.dataset.bkDel}？`)) return;
+      if (!(await askConfirm({ title: `删掉备份「${a.dataset.bkDel}」？`, hint: "这一份存档从此没有了。", ok: "删掉", danger: true }))) return;
       await fetch("/api/backup/" + encodeURIComponent(a.dataset.bkDel), { method: "DELETE" });
       loadBackups();
     });
     bkList.querySelectorAll("[data-bk-restore]").forEach(a => a.onclick = async (e) => {
       e.preventDefault();
-      if (!confirm(`确认恢复到备份 ${a.dataset.bkRestore} 的状态？\n\n当前数据会先自动备份一份，恢复后需重启应用生效。`)) return;
+      if (!(await askConfirm({
+        title: `恢复到备份「${a.dataset.bkRestore}」？`,
+        hint: "现在这份数据会先自动备份一次，所以后悔了还能再翻回来。恢复完要重启应用才完全生效。",
+        ok: "恢复", danger: true,
+      }))) return;
       bkMsg.textContent = "恢复中…";
       const r = await fetch("/api/backup/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: a.dataset.bkRestore }) }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
       if (r.error) { setMsg(bkMsg, "circle-x", r.error, "err"); return; }
       bkMsg.textContent = "";
-      if (confirm("已恢复到磁盘（恢复前现状已自动备份）。\n\n现在重启应用让它完全生效？")) {
+      if (await askConfirm({
+        title: "已恢复到磁盘",
+        hint: "恢复前的现状已经自动备份了一份。还差最后一步：重启应用，这次恢复才完全生效。",
+        ok: "现在重启", cancel: "待会儿自己重启",
+      })) {
         const rr = await fetch("/api/backup/restart", { method: "POST" }).then(r => r.json()).catch(() => ({}));
         if (rr.error) toast(rr.error, "circle-x");
       } else {

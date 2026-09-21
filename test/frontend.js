@@ -198,7 +198,10 @@ function revealFile(name){ window.revealed = name; }
 function renderFiles(){ window.filesRerendered = true; }
 function toast(msg){ window.toasts = (window.toasts || []).concat(msg); }
 function openSweep(scope){ window.reopened = (window.reopened || []).concat(scope && scope.task || "（全部）"); }
-window.confirm = () => (window.confirmAnswer === undefined ? true : window.confirmAnswer);
+// 确认框是应用自绘的（askConfirm），返回 Promise。桩必须也返回 Promise：
+// 留着旧的 window.confirm 桩的话，源码里那句 askConfirm 是 ReferenceError，
+// 而它抛在 async 处理函数里没人接——「一条请求都没发」照样成立，断言绿得毫无意义。
+window.askConfirm = async () => (window.askAnswer === undefined ? true : window.askAnswer);
 window.posts = [];
 window.fetch = (url, opt) => {
   window.posts.push({ url, body: opt && opt.body ? JSON.parse(opt.body) : null });
@@ -304,10 +307,18 @@ const SWEEP_CHECKS = `
     [...panel.querySelectorAll(".sw-rows input")].map((b) => b.checked).join() === "true,true,false");
 
   // 删是真删，所以必须拦一道
-  window.confirmAnswer = false; window.posts.length = 0;
+  window.askAnswer = false; window.posts.length = 0;
   panel.querySelector(".sw-go").click(); await tick();
   ok("★确认框里点了取消就什么都不发★", window.posts.length === 0, JSON.stringify(window.posts));
-  window.confirmAnswer = true;
+  // 正向对照：上面那条「什么都不发」自己是立不住的——桩要是坏了（比如还停在旧的
+  // window.confirm，源码里那句 askConfirm 直接 ReferenceError），异常抛在 async 处理
+  // 函数里没人接，「一条都没发」照样成立。得有一次点「确定」真发出去，才说明拦住它的
+  // 是那个「取消」，不是这条路本来就断了
+  window.askAnswer = true;
+  panel.querySelector(".sw-go").click(); await tick();
+  ok("★正向对照★ 同一个按钮点「确定」就真发出去了（证明上一条拦住的是取消，不是路断了）",
+    window.posts.length === 1 && window.posts[0].url === "/api/files/sweep", JSON.stringify(window.posts));
+  panel.classList.remove("busy");
 
   // 真样式：特别长的任务名不许把面板顶宽
   modalBox.style.width = "640px";
@@ -696,6 +707,248 @@ const TURNOUT_CHECKS = `
     }
   }
 
+  // ── 一整包东西被搬进来，不是一百件产出。
+  //    2026-09-21 真事故重演：软著登记任务把整个仓库拷进「登记用源码包_测试/」，
+  //    那一轮真落盘 124 个，122 个在这一个目录里。卡片只写文件名不写目录，于是用户在
+  //    对话里看到 cover_v2.png / README.en.md / 粘贴文本_0909_162900.txt 一排，
+  //    字节数还跟仓库根目录那几个一模一样（本来就是拷贝）——他的结论是「别的对话串进来了」。
+  {
+    const TD = "任务_0921_帮我写一个github开/";
+    const BD = TD + "登记用源码包_测试/";
+    // 这一包里够格上卡的那些（真存档里就是它们冒出来的），加上一堆源码凑满 122 个
+    const 眼熟的 = ["粘贴文本_0909_162900.txt","llms.txt","cover_v3.png","cover_v2.png","README.en.md",
+                   "LICENSE-ECOSYSTEM.md","NOTICE.md","CHANGELOG.md","COMMERCIAL-LICENSE.md",
+                   "CONTRIBUTING.md","CHANGELOG.en.md"];
+    const pack = 眼熟的.map((n) => F(BD + n, 2800));
+    for (let i = 0; i < 111; i++) pack.push(F(BD + "mod" + i + ".js", 900));
+    const 真成果 = [F(TD + "开源仓库版权授权与软著申请_行动方案.md", 19400), F(TD + "export_registration_source.js", 4600)];
+    const batch = [...真成果, ...pack];
+
+    // ★负向对照★ 先证明这批输入真的踩得中老路径：不装闸的话，光这一包里够格上卡的
+    // 就有 10 个以上，8 个卡位会被它们塞满，真成果一张都轮不上。
+    // 不做这条，下面「只有 1 张文件夹卡」有可能只是因为压根没文件够格上卡
+    const 够格的 = pack.filter((f) => cardWorthy(f.name));
+    ok("负向对照：这一包里够格上卡的有 " + 够格的.length + " 个，塞得满 8 个卡位（不装闸就是老样子）",
+      够格的.length > 8, JSON.stringify(够格的.map((f) => f.name)));
+    ok("  ← 其中就有用户眼熟的那三个（README.en.md 是脚手架，已经另外挡掉了）",
+      ["cover_v2.png","粘贴文本_0909_162900.txt","llms.txt"].every((n) => 够格的.some((f) => f.name === BD + n)));
+
+    const b = fresh();
+    renderTurnOutputs(b, batch, batch, { root: "r1" });
+    const cs = cards(b);
+    ok("★这一包只占一张卡★ 不再从里面挑 8 个摆成「本回合产出」",
+      cs.filter((n) => n.indexOf(BD.slice(0, -1)) === 0).length === 1 && cs.length === 2, JSON.stringify(cs));
+    const bc = b.querySelector(".out-card[data-bundle]");
+    ok("那张卡说清楚它是个文件夹、里头几个文件", !!bc &&
+      bc.querySelector(".out-name").textContent === "登记用源码包_测试/" &&
+      bc.querySelector(".out-meta").textContent === "122 个文件",
+      bc ? bc.querySelector(".out-info").textContent : "没有这张卡");
+    ok("文件夹卡不给预览、不给下载（一包东西没有「预览」可言）",
+      !bc.querySelector('[data-a="pv"]') && !bc.querySelector("a[download]") && !!bc.querySelector('[data-a="rv"]'));
+    ok("眼熟的那几个名字一个都没再单独摆卡",
+      !cs.some((n) => /cover_v2\.png|粘贴文本_0909|README\.en\.md|NOTICE\.md|llms\.txt/.test(n)), JSON.stringify(cs));
+    ok("这一轮真正做出来的东西反而摆上了卡（以前被那一包挤掉）",
+      cs.includes(TD + "开源仓库版权授权与软著申请_行动方案.md"));
+    ok("清单里一条都没少，122 个文件照旧查得到全路径",
+      b.querySelectorAll(".out-row").length === 124 &&
+      !!b.querySelector('.out-row[data-name="' + BD + 'mod7.js"]'),
+      b.querySelectorAll(".out-row").length + " 行");
+
+    // ★负向对照★ 一回合出 12 张成品图也在同一个目录里，条数同样过线——
+    // 要是只按「条数」折，这 12 张缩略图会被折成一个文件夹图标，那才是真产出没了
+    const 图 = [];
+    for (let i = 1; i <= 12; i++) 图.push(F("分镜/第" + i + "幕.png", 5000));
+    const bi = fresh();
+    renderTurnOutputs(bi, 图, 图, { root: "r1" });
+    ok("负向对照：同一目录 12 张成品图不折——它们是多数派，本来就是这一回合的产出",
+      !bi.querySelector(".out-card[data-bundle]") && cards(bi).length === 8, JSON.stringify(cards(bi)));
+
+    // ★负向对照★ 条数不到线的目录照旧一张张摆
+    const 少 = [F("小任务/图.png", 100), F("小任务/a.js", 10), F("小任务/b.js", 10),
+               F("小任务/c.js", 10), F("小任务/d.js", 10), F("小任务/e.js", 10), F("小任务/f.js", 10)];
+    const bs = fresh();
+    renderTurnOutputs(bs, 少, 少, { root: "r1" });
+    ok("负向对照：7 个文件的目录没到 " + OUT_BUNDLE_MIN + " 条，不当成一包",
+      !bs.querySelector(".out-card[data-bundle]") && cards(bs).includes("小任务/图.png"), JSON.stringify(cards(bs)));
+
+    // 包还在、只是又写了个别的文件：那张卡不能每来一条 files 事件就被撤一次
+    //（文件夹的名字永远不会出现在文件清单里，拿 alive.has() 判它就是这个下场）
+    const 又写了 = F(TD + "中间稿.md", 100);
+    renderTurnOutputs(b, [又写了], [...batch, 又写了], { root: "r1" });
+    ok("包还在的时候，文件夹卡不会被误当成「已删除」撤掉",
+      !!b.querySelector(".out-card[data-bundle]") &&
+      b.querySelector(".out-card[data-bundle] .out-meta").textContent === "122 个文件");
+
+    // 整包从盘上没了（用户/agent 删了中间产物），卡得跟着走
+    const 收尾 = F(TD + "收尾.md", 100);
+    renderTurnOutputs(b, [收尾], [...真成果, 又写了, 收尾], { root: "r1" });
+    ok("★整包从盘上没了，那张卡也跟着撤★ 不许对着空文件夹写「122 个文件」",
+      !b.querySelector(".out-card[data-bundle]"), JSON.stringify(cards(b)));
+    ok("但清单里那 122 行留着、打上「已删除」——中途造过什么是真发生过的事，不许抹掉",
+      b.querySelectorAll(".out-row.gone").length >= 122,
+      b.querySelectorAll(".out-row.gone").length + " 行被标成已删除");
+
+    // README.en.md：英文版 README 跟 README.md 是同一份东西，以前只挡后者
+    ok("带语种后缀的 README / PROGRESS 也算脚手架，不上产出卡",
+      !isDeliverable("README.en.md") && !isDeliverable("PROGRESS.zh-CN.md") && !isDeliverable("README.md"));
+    ok("  ← 别误伤真交付物", isDeliverable("方案.md") && isDeliverable("README_对外版.md") && isDeliverable("年报.en.md"));
+  }
+
+  return names;
+})()
+`;
+
+// 设置页「底层引擎」那三张卡。装了 Claude Code / Codex 的人，得能在**切过去之前**
+// 知道它到底跑不跑得起来。旧版唯一一条说实话的通道（测试连接）长在展开区里，
+// 而展开区只对**已经选中**的引擎渲染——等于"想知道它行不行，先切过去用它"。
+// 徽章那边同样在替人下结论：`--version` 跑通就发一个绿的「已装 ✓」，
+// 可它只证明文件在，装了没登录 / 订阅过期 / 被限流，长的全是同一个绿。
+// 同样切 app-05.js 的真源码，不抄。
+const APP05E = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
+const EG0 = APP05E.indexOf("function engVer(");
+const EG1 = APP05E.indexOf("function renderPersonaPane(");
+if (EG0 < 0 || EG1 <= EG0) throw new Error("app-05.js 里的底层引擎卡片段找不到了（函数名被改过？），前端测试没法定位真源码");
+const ENG_SRC = APP05E.slice(EG0, EG1);
+// 颜色得连 ui.css 一起注：主题变量（--danger-text 那一套）长在那儿，只注 index.html 的内联样式
+// 的话 var(--owb-err-text) 解不出来，红的绿的全塌成黑色——这一屏要量颜色，两份都注
+const ENG_UI_CSS = fs.readFileSync(path.join(__dirname, "..", "public", "css", "ui.css"), "utf8");
+const ENG_HTML = "<!doctype html><meta charset='utf-8'><style>" + ENG_UI_CSS + "\n" + INDEX_CSS
+  + "</style><body><div class='eng-list' id='box' style='width:640px'></div></body>";
+// 只替掉渲染细节（转义、图标、存盘、网络），判据/徽章/折叠这些被测逻辑一律用真源码
+const ENG_STUBS = `
+function esc(s){ const d=document.createElement("div"); d.textContent = s==null?"":String(s); return d.innerHTML; }
+function ic(name){ return '<svg class="i" aria-hidden="true"><use href="#i-' + name + '"></use></svg>'; }
+var lastSaveError = "";
+window.SAVES = [];
+async function saveSettings(p){ window.SAVES.push(JSON.stringify(p)); return true; }
+`;
+
+const ENG_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + JSON.stringify(msg === undefined ? "断言失败" : msg)); names.push(name); };
+  const box = document.getElementById("box");
+  const PAY = (cur) => ({ current: cur,
+    builtin: { id: "builtin", label: "内置引擎", launchHeader: "OpenWorkBuddy 自己的 agent 循环", note: "用你在「模型」里配置的 API Key 跑" },
+    engines: [
+      { id: "claude-code", label: "本机 Claude Code", installed: true, version: "2.1.278 (Claude Code)", how: "PATH",
+        path: "/u/.local/bin/claude", launchHeader: "claude -p --output-format stream-json",
+        note: "用你电脑上已登录的 Claude Code 订阅跑", install: "npm i -g @anthropic-ai/claude-code", models: [], options: {} },
+      { id: "codex", label: "本机 Codex", installed: true, version: "codex-cli 0.154.0", how: "PATH",
+        path: "/opt/homebrew/bin/codex", launchHeader: "codex exec --json",
+        note: "用你电脑上已登录的 Codex 跑", install: "npm i -g @openai/codex", models: [], options: {} },
+      { id: "gemini", label: "本机 Gemini", installed: false, version: "", error: "PATH 里没有 gemini", install: "npm i -g 某个包", options: {} },
+    ] });
+  let reply = () => ({ ok: true });
+  window.fetch = async (u, o) => ({ json: async () => (o && o.body ? reply(JSON.parse(o.body).id) : window.__P) });
+  const render = async (cur) => { window.__P = PAY(cur); window.SAVES = []; await renderEngineCard(box); };
+  const card = (id) => box.querySelector('.eng[data-eng="' + id + '"]');
+  const badge = (id) => card(id).querySelector(".eng-bs").textContent.replace(/\\s+/g, " ").trim();
+  const tryOf = (id) => card(id).querySelectorAll('[data-act="test"]').length;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms || 120));
+
+  await render("builtin");
+  ok("四条引擎都渲染出来了（内置 + 两个装了的 + 一个没装的）", box.querySelectorAll(".eng").length === 4, box.querySelectorAll(".eng").length);
+
+  // ① 这次改的核心：试一试的钮挂在卡本身上，不挂在只有选中才渲染的展开区里
+  ok("★没选中的引擎也能当场试能不能用★ 不用先切过去用它一回才知道它行不行",
+    tryOf("claude-code") === 1 && tryOf("codex") === 1, [tryOf("claude-code"), tryOf("codex")]);
+  ok("内置引擎没这个钮（它走 API Key，没有「本机那份」可试）", tryOf("builtin") === 0);
+  ok("没装的那条也没有（先按装法装上再说）", tryOf("gemini") === 0);
+  ok("没装的那条仍旧写着装法", card("gemini").textContent.indexOf("npm i -g 某个包") >= 0);
+
+  await render("claude-code");
+  // ★反向对照★ 上面那两个 1，可能只是因为两张卡碰巧都有展开区。这条把"钮在不在展开区里"
+  // 单拎出来量：没选中的卡压根没有展开区，钮却还在；选中的卡有展开区，钮也不在里面
+  ok("★钮确实挂在卡上，不在展开区里★ 没选中的卡没有展开区，钮照样在",
+    card("codex").querySelectorAll(".eng-x").length === 0 && tryOf("codex") === 1);
+  ok("  ← 选中的那张有展开区，钮也不在里面（全卡就一个，不会点出两份）",
+    card("claude-code").querySelectorAll(".eng-x").length === 1
+    && card("claude-code").querySelectorAll('.eng-x [data-act="test"]').length === 0
+    && tryOf("claude-code") === 1);
+
+  // ② 徽章不替人下结论
+  ok("★没真跑过之前，徽章一个绿的都没有★ --version 只证明文件在，不证明能用",
+    box.querySelectorAll(".eng-b.ok").length === 0);
+  ok("  ← 措辞也不说「已装」，只说「本机有 2.1.278」",
+    /本机有 2\\.1\\.278/.test(badge("claude-code")) && badge("claude-code").indexOf("已装") < 0, badge("claude-code"));
+
+  // ③ 版本号削成一个形状，不把产品名说第二遍
+  ok("★徽章上不再把产品名重复一遍★ 标题已经写着「本机 Claude Code」了",
+    badge("claude-code").indexOf("Claude Code") < 0 && badge("codex").indexOf("codex-cli") < 0,
+    [badge("claude-code"), badge("codex")]);
+  ok("  ← 两家削出来是同一个形状（都只剩数字）", /本机有 0\\.154\\.0/.test(badge("codex")), badge("codex"));
+  ok("engVer 认得各家 --version 的花样",
+    engVer("2.1.278 (Claude Code)") === "2.1.278" && engVer("codex-cli 0.154.0") === "0.154.0"
+    && engVer("v1.2.3-beta.4") === "1.2.3-beta.4" && engVer("1.7") === "1.7",
+    [engVer("2.1.278 (Claude Code)"), engVer("codex-cli 0.154.0"), engVer("v1.2.3-beta.4"), engVer("1.7")]);
+  ok("  ← 反向对照：本来就没有版本号的原样端出来，不许凭空造一个",
+    engVer("") === "" && engVer("未知") === "未知" && engVer(null) === "" && engVer("nightly") === "nightly");
+
+  // ④ 折叠状态下不摆命令行
+  const CMD = "claude -p --output-format stream-json";
+  await render("builtin");
+  ok("★折叠的卡上不摆命令行★ 「" + CMD + "」对着想用订阅的人说不出任何信息",
+    box.textContent.indexOf(CMD) < 0 && box.querySelectorAll(".eng-c").length === 0);
+  await render("claude-code");
+  const xc = card("claude-code").querySelector(".eng-x .eng-c");
+  ok("  ← 反向对照：命令行没被删掉，只是挪进了展开区，跟可执行文件路径摆一块儿",
+    !!xc && xc.textContent.indexOf(CMD) >= 0);
+  ok("  ← --version 那行原样输出也在展开区里留着，谁要对包名谁去看",
+    !!xc && xc.textContent.indexOf("2.1.278 (Claude Code)") >= 0);
+
+  // ⑤ 真测过之后，徽章跟着结论改口
+  reply = () => ({ ok: true, ms: 2400, reply: "ok", model: "claude-sonnet-4-6", path: "/u/.local/bin/claude", version: "2.1.278 (Claude Code)" });
+  card("claude-code").querySelector('[data-act="test"]').click();
+  card("codex").querySelector('[data-act="test"]').click();
+  await wait();
+  ok("测通了徽章才发绿", card("claude-code").querySelectorAll(".eng-b.ok").length === 1
+    && /真跑通了 · 2\\.1\\.278/.test(badge("claude-code")), badge("claude-code"));
+  ok("  ← 「不花 API 额度」那条还在（测通了不等于开始烧钱）", badge("claude-code").indexOf("不花 API 额度") >= 0);
+  ok("★没选中的那张测通了，会顺口说一句怎么用上它★",
+    card("codex").querySelector(".eng-r.ok").textContent.indexOf("点这张卡") >= 0,
+    card("codex").querySelector(".eng-r.ok").textContent);
+  ok("  ← 选中的那张不重复这句废话（它本来就在用）",
+    card("claude-code").querySelector(".eng-r.ok").textContent.indexOf("点这张卡") < 0);
+
+  // ★反向对照★ 绿不是一去不回头的。同一张卡再测一次、这回没登录，徽章必须当场变红，
+  // 不能一边挂着绿徽章一边在下面写"连不上"
+  reply = () => ({ ok: false, why: "codex 没登录（本机没有凭据）", hint: "codex login" });
+  card("codex").querySelector('[data-act="test"]').click();
+  await wait();
+  ok("★测不通就改口：绿的收回去，换成红的★", card("codex").querySelectorAll(".eng-b.ok").length === 0
+    && card("codex").querySelectorAll(".eng-b.bad").length === 1, badge("codex"));
+  ok("  ← 红是真的红（量算出来的颜色，不是数类名）", (() => {
+    const bad = getComputedStyle(card("codex").querySelector(".eng-b.bad")).color;
+    const plain = getComputedStyle(card("codex").querySelector(".eng-b:not(.bad):not(.ok):not(.free)")).color;
+    return bad !== plain && bad !== "";
+  })(), [getComputedStyle(card("codex").querySelector(".eng-b.bad")).color]);
+  ok("失败时说清楚下一步敲哪条命令", card("codex").querySelector(".eng-r.bad").textContent.indexOf("codex login") >= 0);
+  ok("  ← 这时候版本号还在，别把「找到了」也一并否掉", badge("codex").indexOf("0.154.0") >= 0, badge("codex"));
+
+  // ⑥ 结论得活过一次重画：保存一下设置、重新检测一下，卡片就整块重画
+  await render("claude-code");
+  ok("★重画之后刚测出来的结论还在★ 不然点一下保存就得再花一次 token 重测",
+    !!card("claude-code").querySelector(".eng-r.ok") && card("claude-code").querySelectorAll(".eng-b.ok").length === 1);
+  ok("  ← 失败那张的红结论同样留着", !!card("codex").querySelector(".eng-r.bad"));
+
+  // ⑦ 试和用是两件事：点钮、点结论，都不许把引擎给切过去
+  window.SAVES = [];
+  card("codex").querySelector('[data-act="test"]').click();
+  await wait();
+  ok("★点「试一下」不会顺手把引擎切过去★ 试和用是两件事",
+    window.SAVES.length === 0 && !card("codex").classList.contains("on"), window.SAVES);
+  window.SAVES = [];
+  card("codex").querySelector(".eng-r code").click();
+  await wait(60);
+  ok("点结论里那条命令（想复制它）也不会切引擎", window.SAVES.length === 0, window.SAVES);
+  // ★反向对照★ 点卡片正文就是要切的。不做这条，上面两个 0 有可能只是因为整张卡被点死了
+  window.SAVES = [];
+  card("codex").querySelector(".eng-n").click();
+  await wait();
+  ok("反向对照：点卡片正文确实切得过去，不是把整张卡点死了",
+    window.SAVES.length >= 1 && window.SAVES[0].indexOf("codex") >= 0, window.SAVES);
+
   return names;
 })()
 `;
@@ -1047,7 +1300,14 @@ const ATTACH_CHECKS = `
     ok("剪贴板的通用名换成时间戳", /^粘贴图片_\\d{4}_\\d{6}\\.png$/.test(up.name), up.name);
     ok("图片二进制没被改坏", up.data_b64 === B64PNG);
     ok("chip 带缩略图", !!(await until(() => document.querySelector("#attach-chips img.attach-thumb"))));
-    ok("粘贴被接管并在光标处留下图片锚点", ev.defaultPrevented && /【图片 1：粘贴图片_\\d{4}_\\d{6}\\.png】/.test(inputEl.value), inputEl.value);
+    // 输入框里只能有人自己写的话。以前粘一张图，框里先多出一行看不懂的中括号——
+    // 人得绕开它打字，删一半就成了半截锚点。GPT/Claude/飞书都是「框里干净，图挂在上面」
+    ok("粘贴被接管，但输入框里没多出一行中括号", ev.defaultPrevented && !/【图片/.test(inputEl.value), JSON.stringify(inputEl.value));
+    ok("图片挂成缩略图方片（一排文件名认不出哪张是哪张）",
+       !!document.querySelector("#attach-chips .attach-chip.is-tile .attach-thumb"), document.getElementById("attach-chips").innerHTML.slice(0, 160));
+    ok("方片上还看得见「图片 1」（「第一张放左边」这句话得指得住）",
+       /图片\\s*1/.test(document.querySelector("#attach-chips .attach-chip.is-tile em").textContent),
+       document.querySelector("#attach-chips .attach-chip.is-tile em").textContent);
   }
 
   // ---- 2. 同一秒连贴两张：撞名要编号，不能悄悄覆盖掉第一张 ----
@@ -1086,7 +1346,11 @@ const ATTACH_CHECKS = `
     ok("大段文字落成 txt", !!up && /^粘贴文本_\\d{4}_\\d{6}\\.txt$/.test(up.name), String(up && up.name));
     const back = new TextDecoder().decode(bytes(up.data_b64));
     ok("中文原文一字不差", back === big, "长度 " + back.length + " vs " + big.length);
-    ok("输入框没被撑爆、留下可引用的文本摘录锚点", inputEl.value.startsWith("帮我看看这个") && /【文本摘录 1：粘贴文本_\\d{4}_\\d{6}\\.txt】/.test(inputEl.value) && ev.defaultPrevented, inputEl.value);
+    ok("输入框没被撑爆，人写了一半的话也没被动",
+       inputEl.value === "帮我看看这个" && ev.defaultPrevented, JSON.stringify(inputEl.value));
+    ok("锚点不落进输入框（那是给模型看的协议，发出去那一刻才补）",
+       !/【文本摘录/.test(inputEl.value), JSON.stringify(inputEl.value));
+    ok("这份摘录挂成了一枚看得见的 chip", /^粘贴文本_\\d{4}_\\d{6}\\.txt$/.test(chips().at(-1).querySelector(".attach-name").textContent), chips().at(-1).textContent);
     ok("chip 上能看见开头几个字", /第一行是报错/.test(chips().at(-1).title || ""));
   }
 
@@ -1138,6 +1402,48 @@ const ATTACH_CHECKS = `
     ok("兼容清单按输入里的锚点顺序排列", out.indexOf(imageRefs[1].name, noteAt) < out.indexOf(textRef.name, noteAt) && out.indexOf(textRef.name, noteAt) < out.indexOf(imageRefs[0].name, noteAt), out.slice(noteAt));
     ok("发完 chip 清空", chips().length === 0);
   }
+  // ---- 8b. 人一个字都不用打：锚点在发出去那一刻才补，输入框里始终干干净净 ----
+  // 这是拖进来之后的默认路径——框里只有他自己的话，锚点是发送那一刻才拼进正文的协议。
+  // 少补了：模型只收到「把这两张拼一下」，手里却没有「这两张」是谁；
+  // 补重了：同一张图在它眼里成了两张，它会老老实实地给你拼出四格。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0;
+    await dropFiles([png("左边.png"), png("右边.png")]);
+    try { await until(() => pendingAttach.length === 2 && pendingAttach.every((x) => x.state === "done"), 4000); } catch (e) {}
+    const m = pendingAttach.map((x) => x.marker);
+    ok("夹具自检：两份素材都挺到了（没挺住的话下面几条等于没测）",
+       m.length === 2 && m[0] !== m[1], JSON.stringify(pendingAttach.map((x) => [x.marker, x.state])));
+    inputEl.value = "把这两张拼成一张长图";
+    const out = composeOutgoing();
+    ok("他一个锚点都没打，发出去的时候补上了",
+       out.includes(m[0]) && out.includes(m[1]), JSON.stringify(out));
+    ok("一枚只补一次（补重了模型眼里就是两张图）",
+       out.split(m[0]).length === 2 && out.split(m[1]).length === 2, JSON.stringify(out));
+    ok("锚点按缩略图那一排的顺序排（他看见的顺序就是模型收到的顺序）",
+       out.indexOf(m[0]) < out.indexOf(m[1]), JSON.stringify(out));
+    ok("锚点排在他那句话前面（先交代手里有什么，再说要干嘛）",
+       out.indexOf(m[1]) < out.indexOf("把这两张"), JSON.stringify(out));
+    const lines = out.split("\\n");
+    ok("一行一枚，不跟他的话挤在同一行",
+       lines.includes(m[0]) && lines.includes(m[1]), JSON.stringify(lines.slice(0, 4)));
+    ok("话还是那句话，没被锚点切碎", out.includes("把这两张拼成一张长图"), JSON.stringify(out));
+  }
+
+  // ---- 8c. 他自己把锚点打进句子里：那个位置是他指的，不许在开头再补一遍 ----
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0;
+    await dropFiles([png("人物.png"), png("背景.png")]);
+    try { await until(() => pendingAttach.length === 2 && pendingAttach.every((x) => x.state === "done"), 4000); } catch (e) {}
+    const m = pendingAttach.map((x) => x.marker);
+    inputEl.value = "把" + m[0] + "放到左边";
+    const out = composeOutgoing();
+    ok("他自己写进句子里的那枚只出现一次（再补一遍，“这张”就变成了两张）",
+       out.split(m[0]).length === 2, JSON.stringify(out));
+    ok("而且还站在他摆的那个位置上", out.includes("把" + m[0] + "放到左边"), JSON.stringify(out));
+    ok("他没提的那张仍旧补了锚点，并且排在前面",
+       out.includes(m[1]) && out.indexOf(m[1]) < out.indexOf("把" + m[0]), JSON.stringify(out));
+  }
+
   // ---- 9. 删掉一枚再加一枚：编号不许复用 ----
   // 以前是 filter(同类).length + 1。加「图片 1」「图片 2」，删掉图片 1，再加一张——
   // 长度又是 1，新的还叫「图片 2」：界面上并排两个「图片 2」，发给模型的也是两个。
@@ -1161,7 +1467,8 @@ const ATTACH_CHECKS = `
     window.uploadDelay = 150;
     dropFiles([new File([new Uint8Array(1024)], "片子.mp4", { type: "video/mp4" })]);
     ok("松手当场就有 chip，不等服务器", chips().length === 1, "chip 数=" + chips().length);
-    ok("松手当场锚点就在输入里", /【视频 1：片子\\.mp4】/.test(inputEl.value), inputEl.value);
+    ok("松手当场输入框仍然是干净的（锚点是发出去那一刻才补的）", !/【视频/.test(inputEl.value), JSON.stringify(inputEl.value));
+    ok("非图片还是长条 chip：名字和体积才是它的身份", !chips()[0].classList.contains("is-tile") && /片子\\.mp4/.test(chips()[0].textContent), chips()[0].className);
     ok("传的过程里 chip 上转着圈", !!chips()[0].querySelector(".attach-state .spinner"), chips()[0].className);
     ok("没传完不许点开（点开只会 404）", chips()[0].querySelector(".attach-open").disabled);
     await until(() => pendingAttach[0] && pendingAttach[0].state === "done");
@@ -1200,7 +1507,7 @@ const ATTACH_CHECKS = `
     window.uploadFail = true;
     await dropFiles([new File([new TextEncoder().encode("x")], "传不上去.md", { type: "text/markdown" })]);
     await until(() => pendingAttach[0] && pendingAttach[0].state === "failed");
-    ok("失败的锚点从输入里撤掉了", !inputEl.value.includes("传不上去.md"), JSON.stringify(inputEl.value));
+    ok("传失败的文件名一个字都没漏进输入框", !inputEl.value.includes("传不上去.md"), JSON.stringify(inputEl.value));
     ok("chip 留着并且变红", chips().length === 1 && chips()[0].classList.contains("is-failed"), chips()[0].className);
     ok("红 chip 上有一颗重试键", !!chips()[0].querySelector(".attach-retry"));
     ok("失败的不进发给模型的清单", attachmentOrder(inputEl.value).length === 0);
@@ -1255,9 +1562,12 @@ const ATTACH_CHECKS = `
     await dropFiles([new File([blob], "大图.png", { type: "image/png" })]);
     const img = await until(() => document.querySelector("#attach-chips img.attach-thumb"));
     const raw = Math.ceil(blob.size / 3) * 4;  // 原来那版 img.src 就是整份文件的 base64
-    ok("缩略图没把整份文件挂到 DOM 上", img.src.length < raw / 4, img.src.length + " vs 整份 " + raw);
+    // 这里的余量看着不宽，是因为这张测试图是 300 块随机色方块——多小都压不动。
+    // 真正吃内存的是解码后的位图（1600×1200×4 = 7.7MB，而 192×144×4 = 110KB），
+    // 所以下面那条「解码出来多宽」才是判据；这一条只负责把「整份文件塞进去」挡在外面
+    ok("缩略图没把整份文件挂到 DOM 上", img.src.length < raw / 2, img.src.length + " vs 整份 " + raw);
     const px = await new Promise((r) => { const im = new Image(); im.onload = () => r(im.width); im.src = img.src; });
-    ok("解码的也是小图，不是 1600 宽的原图", px <= 96, "缩略图宽 " + px);
+    ok("解码的也是小图，不是 1600 宽的原图（方片 64 见方，3 倍屏也够清楚）", px <= 192, "缩略图宽 " + px);
   }
 
   return names;
@@ -1435,6 +1745,9 @@ const TRAIL_SRC = [
   // 流式正文的分段渲染是真源码（不是桩）：回合里那些 endText() 收尾点必须真的把两截合回去
   APP02X.slice(APP02X.indexOf("const BAL_TAG"), APP02X.indexOf("\n// 【任务类型：X】")),
   APP02X.slice(TR0, TR1),
+  // 提问卡（岔路/审批）在 createTurnUI 那段外面，但回放时是 handleEvent 调它画的，
+  // 不注真源就验不到「答过的岔路该显示成答过了」
+  APP02X.slice(APP02X.indexOf("function makeAskCard(ev, turnSid, submit, ctx)"), APP02X.indexOf("function fileIcon(name)")),
   // 收尾那两件事（正文文件名变可点链接、把成品摊开）的真源码也一起注进来。
   // ARRIVAL 那块验的是这几个纯函数本身；这里验的是另一条线：事件流真跑一遍，finish() 有没有接上它们
   TR_LINKIFY,
@@ -1766,6 +2079,8 @@ const ESC_STUBS = [
   "var SvgFig = { extractSvgFigures: (s) => ({ text: s, figs: [] }) };",
   "function fpath(n) { return String(n == null ? '' : n).split('/').map(encodeURIComponent).join('/'); }",
   srcBlock("function joinRel(base, rel) {"), // 真源：mdFileLink 靠它按文档目录解相对路径，假身会把这件事测没
+  srcBlock("function withRoot(url, root) {"),
+  srcBlock("function mdImg(alt, url, base, root) {"), // 真源：裸链转换现在排在它后面，得验 alt 属性里的网址没被塞进 <a>
   // 正文里的文件链接点不点得动，真源在 app-02.js 的事件委托那段——renderMd 是拼字符串出来的，
   // 挂不上 onclick，这段要是哪天被改回 onclick，历史回放里的链接会全哑掉而没人发现
   (() => {
@@ -1864,6 +2179,56 @@ const ESC_CHECKS = `
   ok("解完码也没执行任何注入", !window.__pwned);
   const already = "<a href=" + String.fromCharCode(34) + "https://a.com" + String.fromCharCode(34) + ">https://a.com</a>";
   ok("已经成形的 a 标签不会被再套一层", autoLinkUrls(already) === already, autoLinkUrls(already));
+
+  // ⑥.5 加粗 / 斜体包着的裸网址：href 必须是干净的网址，一个标点一个标签都不许粘进去。
+  //
+  // 用户撞见的原话：「怎么点击链接后面还有 <strong> 的啊，这链接跳转链接都搞错了啊」。
+  // 当时模型写的是两个星号包着一条 feishu.cn 的地址，裸链转换排在加粗前面，于是收尾那两个星号
+  // 被当成网址的一部分吞进了 href，紧接着加粗那一遍又在 href 属性正中间插进一个 </strong>：
+  //   <strong><a href="https://feishu.cn/docx/xxxx</strong>" title="...">
+  // 屏幕上链接后面凭空多出「<strong>」几个字，点下去跳的是个带标签的烂地址。
+  // 现在裸链转换排在最后。下面这一组按 **href 的值** 判，不按屏幕上的字判——
+  // 字看着对而地址是错的，正是这个 bug 当时的样子。
+  const HREF = (m) => { md.innerHTML = renderMd(m); const a = md.querySelector("a[href]"); return a ? a.getAttribute("href") : "(没生成链接)"; };
+  const 包一层 = [
+    ["加粗", "**", "**"], ["斜体", "*", "*"],
+    ["中文圆括号", "（", "）"], ["中文书名号", "《", "》"],
+    ["中文引号", "\\u201c", "\\u201d"], ["方头括号", "【", "】"], ["尖括号", "<", ">"],
+  ];
+  const U = "https://feishu.cn/docx/A2q8dIIuWoZbllxe1f8cQK5hnYc";
+  for (const [名, 左, 右] of 包一层)
+    ok("被「" + 名 + "」包着的裸网址，href 还是干干净净那一条", HREF("文档已建好：" + 左 + U + 右) === U, 名 + " → " + HREF("文档已建好：" + 左 + U + 右));
+  ok("网址后面紧跟一段加粗，两边各归各的", HREF("见 " + U + " **重要**") === U, HREF("见 " + U + " **重要**"));
+  ok("只有一个收尾星号也不许粘进 href", HREF(U + "*") === U, HREF(U + "*"));
+  ok("整条正文里一个 <strong> / <em> 字面都没漏到屏幕上",
+     (() => { md.innerHTML = renderMd("文档已建好：**" + U + "**"); return md.textContent.indexOf("<strong>") < 0 && md.textContent.indexOf("<em>") < 0; })(), md.textContent);
+  ok("加粗确实还是加粗（别为了修这个把粗体弄没了）",
+     (() => { md.innerHTML = renderMd("文档已建好：**" + U + "**"); return !!md.querySelector("strong a[href]"); })(), md.innerHTML);
+  ok("markdown 链接被加粗包着时也照旧",
+     HREF("**[文档](https://a.com/x)**") === "https://a.com/x", HREF("**[文档](https://a.com/x)**"));
+
+  // 成对的右括号是地址的一部分（维基 / Confluence 那种），落单的才剃
+  ok("地址里成对的圆括号留住（少剃一个字符就跳去另一个页面）",
+     HREF("见 https://zh.wikipedia.org/wiki/Foo_(bar) 完") === "https://zh.wikipedia.org/wiki/Foo_(bar)",
+     HREF("见 https://zh.wikipedia.org/wiki/Foo_(bar) 完"));
+  ok("落单的右括号剃掉", HREF("见 https://a.com/x) 完") === "https://a.com/x", HREF("见 https://a.com/x) 完"));
+  ok("路径里的中文字要留住（/wiki/中文 是正经地址）",
+     HREF("见 https://zh.wikipedia.org/wiki/中文 完") === "https://zh.wikipedia.org/wiki/中文", HREF("见 https://zh.wikipedia.org/wiki/中文 完"));
+  ok("查询串里的 & 没被吃掉也没被二次转义",
+     HREF("详见 https://ex.com/a?x=1&y=2 就这些") === "https://ex.com/a?x=1&y=2", HREF("详见 https://ex.com/a?x=1&y=2 就这些"));
+
+  // 换了顺序之后最容易砸的一处：属性值里的网址。裸链转换现在跑在 <img> 生成之后，
+  // 要是它不认标签，alt="见 https://…" 里那一条会被塞进一个 <a>，当场把属性撑破
+  md.innerHTML = renderMd("![见 https://a.com/x](pic.png)");
+  ok("图片 alt 属性里的网址不变链接，属性也没被撑破",
+     md.querySelectorAll("a").length === 0 && (md.querySelector("img") || {}).alt === "见 https://a.com/x",
+     md.innerHTML);
+  md.innerHTML = renderMd(BT + BT + BT + "\\nsee https://a.com/x\\n" + BT + BT + BT);
+  ok("代码块里的网址不变链接", md.querySelectorAll("a[href]").length === 0 && /see https:\\/\\/a\\.com\\/x/.test(md.textContent), md.innerHTML);
+
+  // 表格 / 标题 / 列表里也走同一条路，别只在段落里对
+  for (const [名, 原文] of [["表格单元格", "| 名 | 址 |\\n| --- | --- |\\n| 文档 | **" + U + "** |"], ["标题", "## **" + U + "**"], ["列表项", "- **" + U + "**"]])
+    ok(名 + "里的加粗裸网址，href 同样干净", HREF(原文) === U, 名 + " → " + HREF(原文));
 
   // ⑦ 指向工作区文件的 markdown 链接。以前这一路只认 https:——模型收尾写
   //    「详见 [调研报告](报告.md)」，屏幕上就原样印出一串方括号圆括号，点哪儿都没反应。
@@ -2338,10 +2703,14 @@ const DEAD_CHECKS = `
   window.toasts = [];
   // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
   window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
-  window.confirm = () => true;
+  window.askConfirm = async () => true;
 
   const FORBID = { error: "这块是服务器级设置，归平台管理员管", platform_only: true };
-  let owner = false, denyRead = false, denyOut = false, uploadResp = { ok: true, name: "a.md" };
+  // 资料库一人一份之后，写它不再看职位——但服务端依然会因別的原因拒（盘满、重名、名字非法）。
+  // writeOk 管的就是那一拒：页面得把服务端的原话抬出来，不能让东西凭空消失。
+  const LIB_ERR = { error: "资料库读不出来（服务器没回内容）" };
+  const LIB_DENY = { error: "存不下：磁盘写满了" };
+  let writeOk = true, denyRead = false, denyOut = false, uploadResp = { ok: true, name: "a.md" };
   // 预览一份产出时服务端回什么：404 = 东西没了，500 = 读不出来，200 = 正常
   let viewResp = { code: 200, body: "# 九月周报" };
   // docx/xlsx/pptx/zip 走的是另一条路：服务端先把压缩包拆成结构化数据，前端只管画。
@@ -2362,7 +2731,7 @@ const DEAD_CHECKS = `
     // 资料库带子目录之后接口带 ?dir=，回的也是「这一层」：面包屑 + 子文件夹 + 文件（文件带 path，
     // 因为下钻之后名字得是 "客户A/合同.md" 才取得到内容，显示时才截成 name）
     if (url === "/api/library" || url.startsWith("/api/library?")) {
-      if (denyRead) return j(FORBID, 403);
+      if (denyRead) return j(LIB_ERR, 500);
       const dir = decodeURIComponent((url.split("dir=")[1] || "").split("&")[0] || "");
       if (dir === "客户A") return j({
         dir: "客户A", crumbs: [{ name: "客户A", path: "客户A" }], dirs: [],
@@ -2436,12 +2805,12 @@ const DEAD_CHECKS = `
       return Promise.resolve({ ok: viewResp.code < 400, status: viewResp.code,
         json: () => Promise.resolve({}), text: () => Promise.resolve(viewResp.body) });
     }
-    if (url === "/api/library/upload") return owner ? j(uploadResp, uploadResp.ok ? 200 : 403) : j(FORBID, 403);
-    if (url.startsWith("/api/library/folder")) return owner ? j({ ok: true }) : j(FORBID, 403);
-    if (url.startsWith("/api/library/note")) return owner ? j({ ok: true }) : j(FORBID, 403);
+    if (url === "/api/library/upload") return writeOk ? j(uploadResp, uploadResp.ok ? 200 : 403) : j(LIB_DENY, 403);
+    if (url.startsWith("/api/library/folder")) return writeOk ? j({ ok: true }) : j(LIB_DENY, 403);
+    if (url.startsWith("/api/library/note")) return writeOk ? j({ ok: true }) : j(LIB_DENY, 403);
     if (url.startsWith("/api/library/file/")) {
       fileHits.push({ url: url.split("?")[0], method });
-      return owner ? j({ ok: true }) : j(FORBID, 403);
+      return writeOk ? j({ ok: true }) : j(LIB_DENY, 403);
     }
     return j({ ok: true });
   };
@@ -2482,49 +2851,55 @@ const DEAD_CHECKS = `
   ok("侧栏：成员看不到「自动化」", !shown("autom"));
   ok("侧栏：成员看不到「评测」（真金白银调模型）", !shown("eval"));
   ok("侧栏：成员看不到「执行追踪」（一本账记着整台服务器上每个人的提示词原文）", !shown("trace"));
-  ok("侧栏：「资料库」照留（他的 agent 本来就读得到，只是写不了）", shown("lib"));
+  ok("侧栏：「资料库」照留（一人一份，进去看见的是他自己那份）", shown("lib"));
   ok("侧栏：「专家」「参考模板库」一个没动", shown("hub") && shown("prompts"));
   window.settingsCache = { platform_owner: true };
   syncNavByRole();
   ok("反向对照：平台管理员六个入口一个不少", shown("autom") && shown("eval") && shown("trace") && shown("lib") && shown("hub") && shown("prompts"));
 
-  // ④ 资料库：成员只读
+  // ④ 资料库：一人一份，所以这一页对谁都是「我的文档」
+  // 以前普通成员看到的是「共享资料 · 只读」，里面还摆着别人传的合同——
+  // 那正是「资料库怎么数据还是通用的吗，跟账号也没关系吗」那句话的形状。
+  // 后端的根已经按人分开（server.js 的 libraryRootOf），前端再按职位画两副面孔就是在骗人：
+  // 他看见的本来就是自己那份，写也写得进去。
   window.settingsCache = { platform_owner: false };
   window.libState = { q: "", pick: null };
   await renderLibPage();
-  ok("资料库：成员照样看得到共享资料（读不该拦）", html().includes("手册.md"), html().slice(0, 200));
-  ok("资料库：不画「＋ 上传」", !page.querySelector("#lb-up"));
-  ok("资料库：写着「只读」，不装成他自己的文档", html().includes("只读") && html().includes("共享资料"));
+  ok("资料库：普通成员看得到自己那份", html().includes("手册.md"), html().slice(0, 200));
+  ok("★资料库：「＋ 上传」对普通成员照画★", !!page.querySelector("#lb-up"));
+  ok("资料库：「新建文件夹」也在", !!page.querySelector("#lb-mkdir"));
+  ok("★资料库：抬头写「我的文档」，不再是「共享资料 · 只读」★",
+     html().includes("我的文档") && !html().includes("共享资料") && !html().includes("只读"), html().slice(0, 200));
+  ok("资料库：文件夹后面的删除也在（删的是他自己那一份）", !!page.querySelector("[data-del-dir]"));
+  ok("反向对照：空库的文案不再说「归平台管理员放」",
+     !html().includes("这一块归平台管理员放"), html().slice(0, 200));
 
-  // 真读不成的时候（老服务器、或者以后又把读拦回去），别说「还没有参考资料」——那是句瞎话，
+  // 真读不成的时候（服务器出错、盘挂了），别说「还没有参考资料」——那是句瞎话，
   // 用户会当成自己没传过东西，而真相是这一趟根本没读成
   denyRead = true;
   window.libState = { q: "", pick: null };
   await renderLibPage();
-  ok("资料库：读不成就说读不成，不装成「还没有参考资料」",
-     html().includes("归平台管理员管") && !html().includes("还没有参考资料"), html().slice(0, 200));
+  ok("资料库：读不成就把服务端的原话抬出来，不装成「还没有参考资料」",
+     html().includes(LIB_ERR.error) && !html().includes("还没有参考资料"), html().slice(0, 200));
   denyRead = false;
   await renderLibPage(); // 错误页把 #lb-prev 也一起收了，下面还要用，先画回来
 
+  // ⑤ 灵感笔记：同理，输入框、「保存」、每条的「删除」对谁都在
+  window.settingsCache = { platform_owner: false };
   window.libState.pick = { src: "notes", name: "" };
   await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
-  ok("灵感笔记：成员不画输入框和「保存」", !page.querySelector("#lb-note") && !page.querySelector("#lb-note-save"));
-  ok("灵感笔记：成员不画每条后面的「删除」", !page.querySelector("a[data-nid]"));
+  ok("★灵感笔记：普通成员也有输入框和「保存」★",
+     !!page.querySelector("#lb-note") && !!page.querySelector("#lb-note-save"));
+  ok("灵感笔记：每条后面的「删除」也在", !!page.querySelector("a[data-nid]"));
   ok("灵感笔记：笔记内容照样看得到", html().includes("老板喜欢短句"));
-  window.modalCalls = [];
-  page.querySelector("#lb-to-mem").onclick({ preventDefault() {} });
-  ok("灵感笔记：给了一条他真能走的路（去记忆页）", window.modalCalls.join("|") === "settings:memory", window.modalCalls.join("|"));
-
-  // ⑤ 反向对照：平台管理员这一页，上传/记笔记/删除一样不少
+  ok("灵感笔记：不再把人支开去记忆页（这儿本来就是他自己的地方）", !page.querySelector("#lb-to-mem"));
   window.settingsCache = { platform_owner: true };
-  owner = true;
+  await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
+  ok("反向对照：平台管理员那一页一样不少",
+     !!page.querySelector("#lb-note") && !!page.querySelector("#lb-note-save") && !!page.querySelector("a[data-nid]"));
+  window.settingsCache = { platform_owner: false };
   window.libState = { q: "", pick: null };
   await renderLibPage();
-  ok("反向对照：「＋ 上传」在", !!page.querySelector("#lb-up"));
-  ok("反向对照：写的是「我的文档」不是「只读」", html().includes("我的文档") && !html().includes("共享资料"));
-  window.libState.pick = { src: "notes", name: "" };
-  await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
-  ok("反向对照：输入框、「保存」、每条的「删除」都在", !!page.querySelector("#lb-note") && !!page.querySelector("#lb-note-save") && !!page.querySelector("a[data-nid]"));
 
   // ⑤b 子目录：资料库以前是一层平铺，
   // 现在带 ?dir= 逐层进，进去之后文件名得是 "客户A/合同.md"（带前缀才取得到内容），显示的才是 "合同.md"
@@ -2943,7 +3318,7 @@ const DEAD_CHECKS = `
   // 「怎么摆」和「按什么分堆」各是各的控件，合成一个下拉就会出现「按类型 + 图标」选不出来的死角。
   try { localStorage.removeItem("owb_lib_mode"); localStorage.removeItem("owb_lib_group"); } catch {}
   window.settingsCache = { platform_owner: true };
-  owner = true;
+  writeOk = true;
   window.libState = { q: "", pick: null, dir: "", view: "dir", kind: "all", mode: "list", group: "none" };
   await renderLibPage();
   const pg = () => page.querySelector(".lib-page");
@@ -3096,16 +3471,16 @@ const DEAD_CHECKS = `
 
   // ⑦ 记笔记 / 删资料：拒了就说，别让东西凭空消失
   window.settingsCache = { platform_owner: true };
-  owner = false; // 后端这一趟拒
+  writeOk = false; // 后端这一趟拒（盘满之类）
   window.libState.pick = { src: "notes", name: "" };
   await renderLibPreview(page.querySelector("#lb-prev"), { notes: [{ id: "n1", text: "老板喜欢短句", at: "2026-09-01T00:00:00Z" }] });
   page.querySelector("#lb-note").value = "新灵感";
   window.toasts = [];
   await page.querySelector("#lb-note-save").onclick();
-  ok("记笔记被拒：说出来，不再是「输入框一清，笔记没了」", window.toasts.join("|").includes("归平台管理员管"), window.toasts.join("|"));
+  ok("记笔记被拒：说出来，不再是「输入框一清，笔记没了」", window.toasts.join("|").includes(LIB_DENY.error), window.toasts.join("|"));
   window.toasts = [];
   await page.querySelector("a[data-nid]").onclick({ preventDefault() {} });
-  ok("删笔记被拒：一样说出来", window.toasts.join("|").includes("归平台管理员管"), window.toasts.join("|"));
+  ok("删笔记被拒：一样说出来", window.toasts.join("|").includes(LIB_DENY.error), window.toasts.join("|"));
 
   return names;
 })()
@@ -3135,7 +3510,7 @@ const HUB_CHECKS = `
   // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
   window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
   window.startTaskWith = () => {};
-  window.confirm = () => true;
+  window.askConfirm = async () => true;
   window.refreshSettingsCache = async () => {};
   window.amPlatformOwner = () => !!(window.settingsCache && window.settingsCache.platform_owner);
 
@@ -3305,7 +3680,7 @@ const GATE_CHECKS = `
   window.toasts = [];
   // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
   window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
-  window.confirm = () => true;
+  window.askConfirm = async () => true;
 
   let owner = false, canSwitch = false, posts = [];
   // 渠道表在几组断言中间要换一批（验副标题和「第 N 个」），所以拎出来当变量
@@ -4216,7 +4591,7 @@ const ONB_STUBS = `
                 { kind: "ollama", label: "Ollama 本地", name: "Ollama本地", base_url: "http://localhost:11434/v1", key_url: "", model: "qwen3:14b", local: true }],
     engines: [{ id: "claude-code", label: "Claude Code", installed: false, version: "", install: "npm i -g @anthropic-ai/claude-code" },
               { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "" }],
-    engine: "builtin", search: { provider: "jina", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
+    engine: "builtin", search: { provider: "", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
   let ONB_POST_OK = true, ENGINE_TEST_OK = true, SEARCH_TEST_OK = true, DONE_OK = true, SETTINGS_OK = true;
   // 本机 Ollama 装了哪些模型：null = 它压根没跑起来
   let OLLAMA_LIST = ["llama3.2:3b", "qwen3:8b", "gemma3:12b"];
@@ -4369,10 +4744,16 @@ const ONB_CHECKS = `
   ok("负对照：还没走到的那几步不打勾，各是各的图标", stepIcon(1) !== "#i-check" && stepIcon(1).startsWith("#i-") && stepIcon(2) !== stepIcon(1));
 
   // ---- 第二步：搜索 ----
-  ok("搜索步标「推荐」、默认 jina、说清没填会怎样", q(".onb-tag.rec") && q("#onb-sp").value === "jina" && body.innerText.includes("DuckDuckGo"));
+  ok("搜索步标「推荐」、新装默认博查（国内那家排头）、说清没填会怎样", q(".onb-tag.rec") && q("#onb-sp").value === "bocha" && body.innerText.includes("免费通道"));
+  // 反向对照：用户自己挑过的那家不许被「国内优先」顶掉——换个默认值就把人家的选择改了，是另一种坑
+  onbState.st = { ...onbState.st, search: { provider: "brave", has_key: false } };
+  renderOnbSearch(body);
+  ok("反向对照：存过 provider 就按存的来，不被默认值顶掉", q("#onb-sp").value === "brave");
+  onbState.st = { ...onbState.st, search: { provider: "", has_key: false } };
+  renderOnbSearch(body);
   q("#onb-sp").value = "tavily"; q("#onb-sp").dispatchEvent(new Event("change"));
   ok("换服务商：占位符和提示跟着换", q("#onb-sp-key").placeholder === "tvly-..." && q("#onb-sp-tip").textContent.includes("不用绑卡"));
-  ok("搜索步：Tavily 排第一且标「推荐」，链接直达 app.tavily.com", q("#onb-sp option").value === "tavily" && q("#onb-sp option").textContent.includes("推荐") && q("#onb-sp-tip a.get-key") && q("#onb-sp-tip a.get-key").href.startsWith("https://app.tavily.com/") && q("#onb-sp-tip a.get-key").target === "_blank");
+  ok("搜索步：博查排第一且标「推荐」，国内三家排在海外那几家前面", q("#onb-sp option").value === "bocha" && q("#onb-sp option").textContent.includes("推荐") && [...q("#onb-sp").options].slice(0, 3).map(o => o.value).join() === "bocha,zhipu,qiniu" && q("#onb-sp-tip a.get-key"));
   q("#onb-sp").value = "brave"; q("#onb-sp").dispatchEvent(new Event("change"));
   ok("换到 Brave：链接跟着换、说清要绑卡", /brave\.com/.test(q("#onb-sp-tip a.get-key").href) && q("#onb-sp-tip").textContent.includes("绑卡"));
   q("#onb-sp").value = "tavily"; q("#onb-sp").dispatchEvent(new Event("change"));
@@ -5393,14 +5774,18 @@ const MENU_CHECKS = `
   const btn = (v) => menu.querySelector('.um-seg button[data-lang="' + v + '"]');
   I18N.setLang("zh");
   openUserMenu();
-  ok("打开：菜单显示，八行动作 = 个人资料/设置/企业后台/语言/外观/帮助/更新/退出", menu.classList.contains("show") && acts() === "profile,settings,admin,lang,appearance,help,update,logout");
+  ok("打开：菜单显示，九行动作 = 个人资料/修改密码/设置/企业后台/语言/外观/帮助/更新/退出", menu.classList.contains("show") && acts() === "profile,password,settings,admin,lang,appearance,help,update,logout", acts());
+  // 「改自己的密码」这条以前只藏在「账号 · 用量」那一屏里、跟退出登录挤在一行的 float:right 小按钮上。
+  // 接口一直都在、那一屏也一直都在，可用户翻遍了没找着，原话是「我要能修改自己的账户密码啊」——
+  // 开关存在但找不到就等于没有。所以这条钉在头像菜单里：点头像一眼就看得见
+  ok("头像菜单里有「修改密码」这一行，且是所有人都看得见（不是管理员专享）", /修改密码/.test(menu.textContent) && !!menu.querySelector('[data-act="password"]'), menu.textContent.slice(0, 120));
   const iconOf = (sel) => { const u = menu.querySelector(sel + " use"); return u ? u.getAttribute("href") : "(这行没画图标)"; };
   ok("企业后台这行只剩名字，不再把后台目录（成员 · 用量 · 安全）抄一遍", /企业管理后台/.test(menu.textContent) && !/成员 · 用量 · 安全/.test(menu.textContent) && !menu.querySelector('[data-act="admin"] .hint'));
-  // 八行动作每行都得有图标，而且是各自那一个——以前这里是 🏢🪪⚙️ 一串表情，翻译一过就被当正文
-  ok("八行动作用的是图标不是表情：每行一个 svg，图标各不相同", (() => {
+  // 九行动作每行都得有图标，而且是各自那一个——以前这里是 🏢🪪⚙️ 一串表情，翻译一过就被当正文
+  ok("九行动作用的是图标不是表情：每行一个 svg，图标各不相同", (() => {
     const rows = [...menu.querySelectorAll(".um-i")];
     const hrefs = rows.map((r) => { const u = r.querySelector("use"); return u ? u.getAttribute("href") : null; });
-    return rows.length === 8 && hrefs.every(Boolean) && new Set(hrefs).size === 8;
+    return rows.length === 9 && hrefs.every(Boolean) && new Set(hrefs).size === 9;
   })(), [...menu.querySelectorAll(".um-i")].map((r) => (r.querySelector("use") || {}).getAttribute && r.querySelector("use").getAttribute("href")).join(","));
   ok("负对照：这把尺子认得出图标不一样（企业后台=building-2，个人资料=id-card）", iconOf('[data-act="admin"]') === "#i-building-2" && iconOf('[data-act="profile"]') === "#i-id-card");
   ok("菜单里一个表情都不剩", !/[\u{1F300}-\u{1FAFF}\u{FE0F}\u{2699}\u{1F6E1}]/u.test(menu.textContent), menu.textContent.slice(0, 80));
@@ -5416,7 +5801,7 @@ const MENU_CHECKS = `
   ok("点 En：菜单文案原地变英文（Profile / Settings / Language / Appearance），En 选中", /Profile/.test(menu.textContent) && /Settings/.test(menu.textContent) && /Language/.test(menu.textContent) && /Appearance/.test(menu.textContent) && btn("en").classList.contains("on") && !btn("zh").classList.contains("on"));
   // 词条当年是按「🪪 个人资料」收的，图标换成 svg 之后文本节点只剩「个人资料」。
   // 这条钉的是那条自动补出来的无表情别名真的生效了——不生效就会中英混着显示。
-  ok("英文下图标一个没少、一个没混进文字里", menu.querySelectorAll(".um-i use").length === 8 && !/🪪|⚙️|🌐|🎨/.test(menu.textContent), menu.textContent.slice(0, 90));
+  ok("英文下图标一个没少、一个没混进文字里", menu.querySelectorAll(".um-i use").length === 9 && !/🪪|⚙️|🌐|🎨/.test(menu.textContent), menu.textContent.slice(0, 90));
   ok("点 En：菜单外的界面词也翻了（左栏「当前」→ Current）、<html lang=en>", $("#hia").textContent === "Current" && document.documentElement.lang === "en");
   ok("English 下「中 / En」本身原样", btn("zh").textContent === "中" && btn("en").textContent === "En");
   btn("en").click(); await tick();
@@ -5437,7 +5822,9 @@ const MENU_CHECKS = `
   currentUser = { username: "xiaoyuan", role: "member", role_label: "成员", can_admin: false, is_admin: false, avatar: "", credits: 0 };
   openUserMenu();
   ok("普通成员：菜单里根本没有企业后台这一行", !menu.querySelector('[data-act="admin"]') && !/企业管理后台/.test(menu.textContent));
-  ok("反向对照：普通成员的其它七行一个不少", acts() === "profile,settings,lang,appearance,help,update,logout");
+  ok("反向对照：普通成员的其它八行一个不少", acts() === "profile,password,settings,lang,appearance,help,update,logout", acts());
+  // 「修改密码」不是管理员专享：每个账号都得能改自己的密码（后端 POST /api/auth/password 本来就对所有人开着）
+  ok("普通成员一样看得见「修改密码」", !!menu.querySelector('[data-act="password"]'), acts());
   currentUser = { username: "kuaiji", role: "auditor", role_label: "审计员", can_admin: true, is_admin: false, avatar: "", credits: 0 };
   openUserMenu();
   ok("审计员：看得见入口，但标着「只读」（他进去只能查账改不动）", !!menu.querySelector('[data-act="admin"]') && /只读/.test(menu.querySelector('[data-act="admin"]').textContent));
@@ -5901,6 +6288,46 @@ const TRAIL_CHECKS = `
     ok("动作行里的字一律当字看，不当 HTML", live.querySelectorAll("img").length === 0 && live.textContent.includes("<img src=x"), live.innerHTML.slice(0, 120));
     u.finish();
     ok("跑完就撤掉这行：那时候该看的是「已完成 · 产出几件」，不是最后一句旁白", disp(live) === "none", disp(live));
+  }
+
+  // ---- 回放一条已经跑完的对话：不许看起来像正在跑 ----
+  // 用户报的就是这个：打开历史记录，一条早就答过的岔路还画成「想让你定一下」，
+  // 而那时候根本没有任何东西可停 —— 看上去就是「我完成的对话又在执行」
+  {
+    chatCol.innerHTML = "";
+    isReplaying = true;
+    const u = createTurnUI("帮我查一下", "research", "s_t");
+    u.handleEvent({ type: "ask_user", ask_id: "a1", question: "给谁看？",
+      options: [{ label: "投资决策参考" }, { label: "行业科普" }], timeout_ms: 300000 });
+    const card = chatCol.querySelector(".ask-card");
+    ok("回放里的提问卡不可点（别让人对着过期的问题按半天）", card.classList.contains("done"));
+    u.handleEvent({ type: "ask_answer", ask_id: "a1", answer: "投资决策参考" });
+    ok("答过的岔路显示成答过了", card.querySelector(".ask-lb").textContent.includes("定过了"), card.querySelector(".ask-lb").textContent);
+    ok("而且把当时选的那条写出来", card.querySelector(".ask-ans").textContent.includes("投资决策参考"), card.querySelector(".ask-ans").textContent);
+
+    // 反向对照：真没答过的那张，还是得说明白这是历史里的问题，不能假装有答案
+    u.handleEvent({ type: "ask_user", ask_id: "a2", question: "还有一个？", options: [{ label: "甲" }], timeout_ms: 0 });
+    const c2 = [...chatCol.querySelectorAll(".ask-card")][1];
+    ok("反向对照：没答过的那张不许编出个答案", c2.querySelector(".ask-ans").textContent.includes("历史记录里的提问"), c2.querySelector(".ask-ans").textContent);
+
+    // 跑到一半断掉的那一轮（没有收尾事件）：得有个终点，不能永远转圈
+    u.handleEvent({ type: "tool_use", id: "z", name: "read_file", purpose: "读" });
+    u.finish({ interrupted: true });
+    isReplaying = false;
+    ok("断掉的那一轮不再转圈", chatCol.querySelectorAll(".proc-wrap.running").length === 0 && chatCol.querySelectorAll(".spinner").length === 0);
+    const pt = chatCol.querySelector(".proc-head .pt").textContent;
+    ok("而且写明是断的，不冒充「已完成」", pt.includes("中断了") && !pt.includes("已完成"), pt);
+    ok("标题上挂出原因", (chatCol.querySelector(".proc-warn") || {}).textContent.includes("断的"));
+  }
+  {
+    // 反向对照：正常跑完的那一轮照旧说「已完成」，别被上面那条改坏
+    chatCol.innerHTML = "";
+    const u = createTurnUI("正常一轮", "research", "s_t");
+    u.handleEvent({ type: "tool_use", id: "n1", name: "read_file", purpose: "读" });
+    u.handleEvent({ type: "tool_result", id: "n1", name: "read_file", preview: "ok" });
+    u.finish();
+    const pt = chatCol.querySelector(".proc-head .pt").textContent;
+    ok("反向对照：正常收尾还是「已完成」", pt.includes("已完成") && !pt.includes("中断了"), pt);
   }
   return names;
 })()`;
@@ -6857,7 +7284,7 @@ var hubMatch = (q, ...fields) => !q || fields.filter(Boolean).join(" ").toLowerC
 // 这一组测的是平台管理员那一面（预设目录、接入、Key 只给键名），所以身份钉死成 true
 var amPlatformOwner = () => true;
 var renderHubBody = () => { RENDERS++; return renderHubMcp(document.getElementById("hub-body")); };
-window.confirm = () => true;
+window.askConfirm = async () => true;
 var SERVERS = [
   { name: "mysql", transport: "stdio", command: "npx", args: ["-y", "@benborla29/mcp-server-mysql"], env_keys: ["MYSQL_USER", "MYSQL_PASS"], connected: true, tools: [{ name: "query", description: "run sql" }] },
   { name: "deepwiki2", transport: "streamable-http", url: "https://mcp.deepwiki.com/mcp", header_keys: ["Authorization"], connected: false, error: "握手超时", tools: [] },
@@ -9174,7 +9601,8 @@ const OVF_CHECKS = `
 // ================= 引用一条回复 / 从资料库跳回那一轮 =================
 // 和
 // 这两件事都只在真 DOM 里才成立，所以放在同一屏里跑：
-// ① 引用取的是**渲染后的正文**（innerText），过程卡片、按钮条、token 统计一个字都不许带进去；
+// ① 引用是钉在输入框**上面**的一张卡，不是塞进框里的一段字（飞书/ChatGPT/Claude 都这样）。
+//    取的是**渲染后的正文**（innerText），过程卡片、按钮条、token 统计一个字都不许带进去；
 //    光标落在别的回复里时不许把那截字引到这条底下来——这是最容易写漏的一条，
 //    而且写漏了在界面上看着完全正常（你选了字、按了引用、确实引进来了，只是引错了人）。
 // ② 跳转跳不过去要**认输**（返回 false），让调用点退回「把对话滚到底」这个老行为。
@@ -9205,15 +9633,22 @@ const JUMP_SRC = APP02.slice(JP0, JP1);
   for (const n of ["text-quote", "message-square"]) {
     if (!sprite.includes('<symbol id="i-' + n + '"')) throw new Error("图标 " + n + " 不在 index.html 的雪碧图里：ic() 会画出一个空框框，界面上看不出报错");
   }
+  // 引用卡片钉在哪儿，是 index.html 里那个空 div 说了算。它要是没了，
+  // renderQuoteBar 会静默地什么都不画——按「引用」毫无反应，控制台一行报错都没有
+  if (!/id=["']quote-bar["']/.test(sprite)) throw new Error("index.html 里没有 #quote-bar 了：按「引用」会静默毫无反应");
+  const qi = sprite.indexOf('id="quote-bar"'), ai = sprite.indexOf('id="attach-chips"'), ci = sprite.indexOf('id="input-box"');
+  if (!(qi > 0 && ai > qi && ci > ai)) throw new Error("引用卡片得压在素材条和输入框上面（人先看见「我在回谁」，再看见自己带了什么，最后才是打字的地方）");
 }
 
 const QUOTE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
   + "<body style='margin:0;width:760px'>"
   + "<div id='chat-col' style='height:300px;overflow:auto'></div>"
+  + "<div class='quote-bar' id='quote-bar' hidden></div>"
   + "<textarea id='composer'></textarea></body>";
 const QUOTE_STUBS = `
 const chatCol = document.getElementById("chat-col");
 const inputEl = document.getElementById("composer");
+const assistant = { name: "小助手" };
 window.TOASTS = [];
 function toast(m) { window.TOASTS.push(String(m)); }
 `;
@@ -9241,86 +9676,172 @@ const QUOTE_CHECKS = `
     return t;
   };
 
-  // ---------- 引用 ----------
+  // ---------- 引用：钉在输入框上的一张卡，不是塞进框里的一段字 ----------
   const noise = "<div class='proc'>正在读取 周报.md</div><div class='turn-actions'><button>复制</button></div>";
   const t1 = mkTurn(["这一版周报分三块：", "第二块的数字我拿的是上周的，你确认下。"], noise);
+  const bar = () => document.getElementById("quote-bar");
+  const card = () => bar().querySelector(".quote-card");
+  const cardText = () => (bar().querySelector(".quote-text") || {}).textContent || "";
 
   inputEl.value = "";
   quoteReply(t1);
-  ok("引用塞进输入框（而不是挂一枚改不了的标签）", inputEl.value.includes("> 这一版周报分三块："), JSON.stringify(inputEl.value));
-  ok("整条正文都引进来了，不是只引第一段", inputEl.value.includes("> 第二块的数字我拿的是上周的，你确认下。"), JSON.stringify(inputEl.value));
-  ok("过程卡片和按钮条一个字都没带进来", !/正在读取|复制/.test(inputEl.value), JSON.stringify(inputEl.value));
-  ok("引用尾部留了空行，人接着往下写就行", /\\n\\n$/.test(inputEl.value), JSON.stringify(inputEl.value.slice(-6)));
-  ok("光标落在末尾（不是把人甩到开头去接着打字）", inputEl.selectionStart === inputEl.value.length);
+  ok("引用不落进输入框（框里只留人自己写的话）", inputEl.value === "", JSON.stringify(inputEl.value));
+  ok("而是钉成输入框上面那张卡", !!card() && !bar().hidden, bar().outerHTML.slice(0, 120));
+  ok("卡上写着这话是谁说的", bar().querySelector(".quote-src b").textContent === "小助手", bar().querySelector(".quote-src b").textContent);
+  ok("整条正文都引进来了，不是只引第一段",
+     cardText().includes("这一版周报分三块：") && cardText().includes("第二块的数字我拿的是上周的，你确认下。"), JSON.stringify(cardText()));
+  ok("过程卡片和按钮条一个字都没带进来", !/正在读取|复制/.test(cardText()), JSON.stringify(cardText()));
+  ok("光标回到输入框末尾，人接着打字就行", document.activeElement === inputEl && inputEl.selectionStart === inputEl.value.length);
 
-  // 已经写了半句话：接在后面，不许冲掉
+  // 发出去的协议没变：还是消息开头那一段「> 」。漏一行，后面几行在 markdown 里就掉出引用块了
+  ok("发给模型的仍是每行一个 >（协议一个字节没动）",
+     quoteBlock("第一行\\n第二行\\n第三行") === "> 第一行\\n> 第二行\\n> 第三行", JSON.stringify(quoteBlock("第一行\\n第二行")));
+
+  // 写了一半的话：引用挂在框外面，框里的字一个都不该动。
+  // 以前是把 400 字的「> 」块接在他写的话后面，人得先翻过自己引的那一坨才能接着写
   inputEl.value = "帮我改一下";
   quoteReply(t1);
-  ok("输入框里写了一半的话没被冲掉", inputEl.value.startsWith("帮我改一下"), JSON.stringify(inputEl.value));
-  ok("接在半句话后面时空了一行，不糊成一坨", inputEl.value.includes("帮我改一下\\n\\n> "), JSON.stringify(inputEl.value));
+  ok("输入框里写了一半的话一个字没被动", inputEl.value === "帮我改一下", JSON.stringify(inputEl.value));
 
-  // 连按两下：不许引两遍
-  const before = inputEl.value;
+  // 同一段再点一次：不许攒成两条
   window.TOASTS = [];
   quoteReply(t1);
-  ok("同一段不会被引进来两遍", inputEl.value === before, JSON.stringify(inputEl.value));
-  ok("重复引用要说一声，不是默默什么都不做", window.TOASTS.length === 1, JSON.stringify(window.TOASTS));
+  ok("同一段不会变成两张卡", bar().querySelectorAll(".quote-card").length === 1, bar().innerHTML.slice(0, 160));
+  // 闪这一下得量出来：只验 class 的话，把那条 CSS 删了这一条照样绿，用户那边则是毫无反应
+  ok("再点一次要闪一下，不是毫无反应（量到动画真挂上了）",
+     /attachflash/.test(getComputedStyle(card()).animationName), JSON.stringify(getComputedStyle(card()).animationName));
+  card().classList.remove("quote-flash");
+  ok("反向对照：摘掉 class 就不闪了（证明刚才量到的是这条规则，不是别的动画）",
+     !/attachflash/.test(getComputedStyle(card()).animationName), JSON.stringify(getComputedStyle(card()).animationName));
+
+  // 引另一条：换成新的那条（一条消息只引一段，攒一摞的话人发出去之前不知道自己带了几段别人的话）
+  const t2 = mkTurn(["前面这段没问题。", "但是这句数字不对。", "后面这段也没问题。"]);
+  quoteReply(t2);
+  ok("引别的一条就是换掉，不是又多一张卡", bar().querySelectorAll(".quote-card").length === 1);
+  ok("卡里换成了新引的那条", cardText().includes("前面这段没问题。") && !cardText().includes("这一版周报分三块："), JSON.stringify(cardText()));
 
   // 选中了一截：只引那一截。
   // 先 blur：真实顺序就是「在回复里拖选一段」（输入框因此失焦）→「按引用」。
   // 输入框还叼着焦点的时候，Chrome 的 document selection 归输入框管，外面这一段选不上——
   // 不 blur 的话这一条会静默退回「整段引用」，看着像功能坏了，其实是夹具没摆对
-  const t2 = mkTurn(["前面这段没问题。", "但是这句数字不对。", "后面这段也没问题。"]);
   const sel = window.getSelection();
   const target = t2.querySelectorAll(".a-text")[1];
-  const pick = () => {
+  const pick = (node) => {
     inputEl.blur();
     const r = document.createRange();
-    r.selectNodeContents(target);
+    r.selectNodeContents(node || target);
     sel.removeAllRanges();
     sel.addRange(r);
   };
   pick();
   ok("夹具自检：选区真的选上了（选不上的话下面两条等于什么都没测）",
      !sel.isCollapsed && String(sel).includes("但是这句数字不对。"), JSON.stringify([sel.isCollapsed, String(sel)]));
-  inputEl.value = "";
+  clearQuote();
   quoteReply(t2);
   ok("选中了就只引选中的那截（一条回复好几屏，整段引过去等于什么都没指）",
-     inputEl.value.includes("但是这句数字不对。") && !inputEl.value.includes("前面这段没问题。"), JSON.stringify(inputEl.value));
+     cardText().includes("但是这句数字不对。") && !cardText().includes("前面这段没问题。"), JSON.stringify(cardText()));
 
   // 反向对照：选区停在**别的**回复里。不加这道判断的话，
   // 在 t2 里选的字会被引到 t1 底下来——界面上看着完全正常，引的却是别人的话
   pick(); // 选区还在 t2 上，这一回按的却是 t1 的引用
-  inputEl.value = "";
+  clearQuote();
   quoteReply(t1);
   ok("在别处选中的字不会被引到这一条底下来（选区得落在这条回复里才算数）",
-     inputEl.value.includes("这一版周报分三块：") && !inputEl.value.includes("但是这句数字不对。"), JSON.stringify(inputEl.value));
+     cardText().includes("这一版周报分三块：") && !cardText().includes("但是这句数字不对。"), JSON.stringify(cardText()));
   sel.removeAllRanges();
 
   // 太长的截断。再长就不是「引用」而是「复述」，模型也会被这一大坨带偏
   const long = "很".repeat(900);
   const t3 = mkTurn([long]);
-  inputEl.value = "";
+  clearQuote();
   quoteReply(t3);
-  ok("超长回复会被截断，不是整屏搬进输入框", inputEl.value.length < 500, inputEl.value.length + " 字");
-  ok("截断了要留个省略号，别让人以为它就说了这么多", inputEl.value.includes("…"), JSON.stringify(inputEl.value.slice(-8)));
+  ok("超长回复会被截断，不是整屏搬进来", cardText().length < 500, cardText().length + " 字");
+  ok("截断了要留个省略号，别让人以为它就说了这么多", cardText().endsWith("…"), JSON.stringify(cardText().slice(-8)));
 
-  // 多行正文：每一行都得是引用行，否则第二行往后在 markdown 里会掉出引用块。
-  // 这里搭的是**渲染后**的样子（markdown 渲染出来是一串 <p>），不是塞一个带 \\n 的 textContent
-  // ——后者在普通 div 里根本不换行，测出来的是假的
-  inputEl.value = "";
+  // 多行正文：卡里得保住换行（markdown 渲染出来是一串 <p>，不是一个带 \\n 的 textContent）
+  clearQuote();
   const t4 = mkTurn([]);
   t4.querySelector(".body").innerHTML = "<div class='a-text'><p>第一行</p><p>第二行</p><p>第三行</p></div>";
   quoteReply(t4);
-  ok("多行正文每一行都带 >（漏一行，后面几行就掉出引用块了）",
-     (inputEl.value.match(/^> /gm) || []).length >= 3, JSON.stringify(inputEl.value));
+  ok("多行正文的行还在（引用要看得出原来分几行）", cardText().split("\\n").filter(Boolean).length >= 3, JSON.stringify(cardText()));
+  ok("卡片用 pre-wrap 把换行画出来（不然三行糊成一行）",
+     /pre-wrap/.test(getComputedStyle(bar().querySelector(".quote-text")).whiteSpace), getComputedStyle(bar().querySelector(".quote-text")).whiteSpace);
+  // 但卡片本身两行封顶：它是「我在回哪句」的提示，不是把原文再读一遍。
+  // 量高度差而不是认 display 关键字——flex 子项上 -webkit-box 的计算值是 flow-root，line-clamp 照样生效
+  {
+    const qt = bar().querySelector(".quote-text");
+    qt.textContent = Array.from({ length: 8 }, (_, i) => "第" + (i + 1) + "行很长很长很长很长很长很长很长很长很长很长").join("\\n");
+    ok("长引用在卡片里两行封顶（引用不该把输入框顶成半屏）",
+       qt.scrollHeight > qt.clientHeight + 1 && qt.clientHeight < 60, JSON.stringify({ ch: qt.clientHeight, sh: qt.scrollHeight }));
+  }
 
-  // 空回复：说一声，不许往输入框里塞一个空的 ">"
+  // 空回复：说一声，不许钉一张空卡
   const t5 = mkTurn([]);
-  inputEl.value = "";
+  clearQuote();
   window.TOASTS = [];
   quoteReply(t5);
-  ok("没有正文可引的时候说一声，不往输入框里塞一个空的 >", inputEl.value === "" && window.TOASTS.length === 1, JSON.stringify([inputEl.value, window.TOASTS]));
+  ok("没有正文可引的时候说一声，不钉一张空卡", !card() && window.TOASTS.length === 1, JSON.stringify([bar().innerHTML, window.TOASTS]));
+
+  // × 撤掉：卡没了，状态也得跟着没
+  quoteReply(t1);
+  bar().querySelector(".quote-x").click();
+  ok("× 之后卡没了", !card() && bar().hidden, bar().outerHTML.slice(0, 120));
+  ok("状态也跟着清了（不然下一条消息会悄悄带上它）", pendingQuote === null, JSON.stringify(pendingQuote));
+
+  // 点卡片跳回原文。高亮得是量出来的：只验 class 的话，把那条 CSS 删了测试照样全绿
+  quoteReply(t1);
+  bar().querySelector(".quote-jump").click();
+  ok("点卡片回到被引的那一条（它亮了）", /owbTurnFound/.test(getComputedStyle(t1).animationName), JSON.stringify(getComputedStyle(t1).animationName));
+  ok("别的回合没被一起点亮", !/owbTurnFound/.test(getComputedStyle(t2).animationName));
+
+  // 被引的那条已经不在眼前了（换了会话）：要说一句，不是静默什么都不发生
+  t1.remove();
+  window.TOASTS = [];
+  bar().querySelector(".quote-jump").click();
+  ok("原文不在这个对话里了要说一声", window.TOASTS.length === 1 && /不在/.test(window.TOASTS[0]), JSON.stringify(window.TOASTS));
+  chatCol.appendChild(t1);
+
+  // 引用的内容是模型吐出来的：拼进 innerHTML 等于把它当代码执行
+  clearQuote();
+  const tX = mkTurn(["<img src=x onerror=\\"window.__pwned=1\\">"]);
+  quoteReply(tX);
+  ok("引用走 textContent，模型吐的标签不会在界面上变成元素",
+     !bar().querySelector("img") && !window.__pwned && cardText().includes("onerror"), bar().innerHTML.slice(0, 160));
+  clearQuote();
+
+  // ---------- 拖选一段就地冒出来的那颗「引用」（ChatGPT/Claude 都是这一下） ----------
+  const selBtn = document.querySelector("button.sel-quote");
+  ok("这颗按钮真的建出来了", !!selBtn);
+  ok("默认不显形（没选字的时候不该有东西飘在页面上）", selBtn.hidden);
+  pick(t2.querySelectorAll(".a-text")[1]);
+  showSelQuote();
+  ok("在回复里选中一段，按钮就地冒出来", !selBtn.hidden, selBtn.outerHTML.slice(0, 120));
+  const r = t2.querySelectorAll(".a-text")[1].getBoundingClientRect();
+  const b = selBtn.getBoundingClientRect();
+  ok("按钮落在选中的那段附近（不是飘到页面角落里）",
+     b.top > r.top - 80 && b.top < r.bottom + 80 && b.left > r.left - 200 && b.left < r.right + 200,
+     JSON.stringify({ sel: [r.left, r.top, r.right, r.bottom], btn: [b.left, b.top] }));
+  ok("按钮没被顶出窗口（顶出去就等于点不着）", b.left >= 0 && b.right <= window.innerWidth + 1, JSON.stringify([b.left, b.right, window.innerWidth]));
+  clearQuote();
+  selBtn.click();
+  ok("按下去引的是选中的那一段", cardText().includes("但是这句数字不对。") && !cardText().includes("前面这段没问题。"), JSON.stringify(cardText()));
+  ok("引完按钮自己收起来", selBtn.hidden);
+  // 反向对照：选区落在用户自己的气泡里（或者别的什么地方）不该冒这颗按钮——
+  // 引自己刚说过的话没有意义，还会把「引用」这件事的意思搅浑
+  // 夹具照真实 DOM 摆：用户气泡也是包在一个 .turn 里的。
+  // 少包这一层的话，「只认回复正文」那道判断就算被放宽成「气泡也算」，
+  // 这条也照样绿——因为往上找 .turn 找了个空
+  const own = document.createElement("div");
+  own.className = "turn";
+  own.innerHTML = "<div class='u-msg'><div class='bubble'>我自己写的一句话</div></div>";
+  chatCol.appendChild(own);
+  ok("夹具自检：自己的气泡确实包在一个 .turn 里（不然下面那条反向对照等于没测）",
+     !!own.querySelector(".bubble").closest(".turn"), own.outerHTML.slice(0, 120));
+  pick(own.querySelector(".bubble"));
+  showSelQuote();
+  ok("反向对照：在自己的气泡里选中不冒这颗按钮", selBtn.hidden, selBtn.outerHTML.slice(0, 120));
+  sel.removeAllRanges();
+  clearQuote();
 
   // ---------- 从资料库跳回那一轮 ----------
   chatCol.innerHTML = "";
@@ -9361,6 +9882,148 @@ const QUOTE_CHECKS = `
   return names;
 })()
 `;
+// 气泡里那两样「折起来的协议原文」（引用块 / 素材锚点）——这一段长在 createTurnUI 的闭包里，
+// 切不出来单跑，所以把它从源码里整块切下来，用 new Function 注依赖跑。
+// 为什么非测不可：发给模型的原文一个字节没改（老会话回放出来还是原样），
+// 折不折全看这一段的两条正则。折错了有两种都很难看的死法——
+// ① `> ` 没折：人自己问的那句话被一屏别人的话压在最底下；
+// ② 折过头：写在句子中间的「把【图片 1：a.png】放左边」被折成「把放左边」，
+//    气泡里那句话当场变成病句，而他发出去的原文其实是好的。
+const BB0 = APP02X.indexOf("  // 气泡里不许出现给模型看的协议原文。");
+const BB1 = APP02X.indexOf('  turn.querySelector(".u-copy").onclick', BB0);
+if (BB0 < 0 || BB1 <= BB0) throw new Error("app-01.js 里气泡折叠那段找不到了（挪窝/改写了？），前端测试没法定位真源码");
+const BUBBLE_SRC = APP02X.slice(BB0, BB1);
+for (const k of ["bubble-quote", "bubble-attach", "BUBBLE_ATT_ICON"]) {
+  if (!BUBBLE_SRC.includes(k)) throw new Error("切出来的那段里没有 " + k + "：气泡折叠这一半没被测到");
+}
+// 图标映射用真的那一份：改名/删条目要在这儿当场变红，而不是等用户看见一排回形针
+const ICON_MAP = (() => {
+  const m = APP02X.match(/const BUBBLE_ATT_ICON = (\{[^}]*\});/);
+  if (!m) throw new Error("app-01.js 里的 BUBBLE_ATT_ICON 找不到了：气泡附件的图标没法核");
+  return m[1];
+})();
+const BUBBLE_BOOT = "window.__BUBBLE_SRC = " + JSON.stringify(BUBBLE_SRC) + ";\n"
+  + "window.__BUBBLE_ICONS = " + ICON_MAP + ";\n";
+
+const BUBBLE_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  // hlTokens / stripSceneTag 各自有自己的一屏测试，这儿只要它们不改变这段代码的分支
+  const hlTokens = (t) => esc(t);
+  const stripSceneTag = (t) => t;
+  const render = new Function("turn", "userText", "stripSceneTag", "ic", "hlTokens", "esc", "BUBBLE_ATT_ICON", window.__BUBBLE_SRC);
+  const stage = document.createElement("div");
+  stage.style.cssText = "width:520px";
+  document.body.appendChild(stage);
+  const bubbleOf = (text) => {
+    const turn = document.createElement("div");
+    turn.className = "turn";
+    turn.innerHTML = "<div class='u-msg'><div class='bubble'></div></div>";
+    stage.appendChild(turn);
+    render(turn, text, stripSceneTag, ic, hlTokens, esc, window.__BUBBLE_ICONS);
+    return turn.querySelector(".bubble");
+  };
+
+  // ---------- 开头那一坨 > 折成气泡顶上的引用卡 ----------
+  {
+    const b = bubbleOf("> 第二块的数字我拿的是上周的\\n> 你确认下\\n\\n这块改成 Q3 的口径");
+    const q = b.querySelector(".bubble-quote");
+    ok("开头那段 > 折成了一张卡，不是原样糊在气泡里", !!q, b.innerHTML.slice(0, 200));
+    ok("卡里是去掉 > 之后的原话", q.querySelector("span").textContent === "第二块的数字我拿的是上周的\\n你确认下", JSON.stringify(q.querySelector("span").textContent));
+    ok("多行引用的换行保住了（卡里得看得出原来分几行）",
+       /pre-wrap/.test(getComputedStyle(q.querySelector("span")).whiteSpace), getComputedStyle(q.querySelector("span")).whiteSpace);
+    ok("人自己问的那句话还在，而且不带 >", b.textContent.includes("这块改成 Q3 的口径") && !b.textContent.includes(">"), JSON.stringify(b.textContent));
+    ok("自己的话排在引用下面（不是被一屏别人的话压在最底下）",
+       b.innerHTML.indexOf("bubble-quote") < b.innerHTML.indexOf("这块改成 Q3 的口径"), b.innerHTML.slice(0, 200));
+    // 默认折三行：引用是「我指的是这句」，不该在自己的问题上面占半屏；但也不能藏死。
+    // 判据是量出来的高度差，不是 display 那个关键字——flex 子项上 -webkit-box 的计算值
+    // 在 Chromium 里序列化成 flow-root，认关键字的话这条会红，而 line-clamp 其实好好的
+    const qs = q.querySelector("span");
+    qs.textContent = Array.from({ length: 8 }, (_, i) => "第" + (i + 1) + "行很长很长很长很长很长很长很长很长很长很长").join("\\n");
+    const shut = { ch: qs.clientHeight, sh: qs.scrollHeight };
+    ok("长引用默认折起来（切掉了，不是整段摊在自己的问题上面）", shut.sh > shut.ch + 1, JSON.stringify(shut));
+    ok("折到三行左右，不是一行也不是半屏", shut.ch > 40 && shut.ch < 70, shut.ch + "px（三行约 56px）");
+    q.click();
+    ok("点一下整段摊开（原文一个字没少，只是默认不占半屏）",
+       qs.scrollHeight <= qs.clientHeight + 1 && qs.clientHeight > shut.ch + 20, JSON.stringify({ ch: qs.clientHeight, sh: qs.scrollHeight }));
+    q.click();
+    ok("再点一下收回去", qs.clientHeight === shut.ch && qs.scrollHeight > qs.clientHeight + 1, JSON.stringify({ ch: qs.clientHeight, sh: qs.scrollHeight }));
+    ok("有 title 说得清这一下能干嘛（不然没人知道它点得动）", /展开|收起/.test(q.title || ""), JSON.stringify(q.title));
+  }
+
+  // 只引了一段、一个字没写：气泡里也得立得住
+  {
+    const b = bubbleOf("> 就这一句");
+    ok("只有引用没有正文时，卡还在", !!b.querySelector(".bubble-quote"), b.innerHTML.slice(0, 160));
+    ok("不会冒出一个空的 > 行", !b.textContent.includes(">"), JSON.stringify(b.textContent));
+  }
+
+  // 反向对照：句子中间的 > 是人自己在写 markdown 引用，不许当协议折掉
+  {
+    const b = bubbleOf("这样写行不行：\\n> 引用块\\n后面这句呢？");
+    ok("反向对照：> 不在开头就不是协议，原样留着（那是他在问 markdown 怎么写）",
+       !b.querySelector(".bubble-quote") && b.textContent.includes("> 引用块"), JSON.stringify(b.textContent));
+  }
+
+  // ---------- 素材锚点折成气泡底下那排 ----------
+  {
+    const b = bubbleOf("【图片 1：主图.png】\\n【文件 2：报价单.pdf】\\n第一张放左边，把报价单里的数填进去\\n（已上传文件：主图.png、报价单.pdf）");
+    const pills = [...b.querySelectorAll(".bubble-attach span")];
+    ok("锚点折成了气泡底下那排素材", pills.length === 2, pills.map((p) => p.textContent).join(" | "));
+    ok("两份素材的名字都在（名字才是人认得出它的那一下）",
+       pills.map((p) => p.textContent).join("|") === "主图.png|报价单.pdf", pills.map((p) => p.textContent).join("|"));
+    ok("同一份不会被「（已上传文件：…）」再数一遍", b.querySelectorAll(".bubble-attach span").length === 2);
+    ok("协议原文一个字都没留在气泡里",
+       !/【图片|【文件|已上传文件/.test(b.textContent), JSON.stringify(b.textContent));
+    ok("人写的那句话完整地在", b.textContent.includes("第一张放左边，把报价单里的数填进去"), JSON.stringify(b.textContent));
+    ok("图片配图标、文件配回形针（一排全是回形针就等于没分类）",
+       /#i-image/.test(pills[0].innerHTML) && /#i-paperclip/.test(pills[1].innerHTML), pills[0].innerHTML + " / " + pills[1].innerHTML);
+  }
+
+  // 视频 / 音频 / 文本摘录也得各是各的图标
+  {
+    const b = bubbleOf("【视频 1：片头.mp4】\\n【音频 2：配音.mp3】\\n【文本摘录 3：粘贴文本.txt】\\n剪一下");
+    const html = [...b.querySelectorAll(".bubble-attach span")].map((p) => p.innerHTML).join(" ");
+    ok("视频/音频/摘录各画各的图标", /#i-film/.test(html) && /#i-volume-2/.test(html) && /#i-file-text/.test(html), html);
+  }
+
+  // ★最容易折过头的一条★：锚点写在句子中间，是人自己在指东西
+  {
+    const b = bubbleOf("把【图片 1：a.png】放到【图片 2：b.png】左边");
+    ok("★写在句子中间的锚点不折★（折掉的话这句话就成了「把放到左边」）",
+       b.textContent.includes("把【图片 1：a.png】放到【图片 2：b.png】左边"), JSON.stringify(b.textContent));
+    ok("也就没有那排素材（这条消息其实没带新素材）", !b.querySelector(".bubble-attach"), b.innerHTML.slice(0, 200));
+  }
+
+  // 只有「（已上传文件：…）」的老会话：一样折得动（这批历史占了绝大多数）
+  {
+    const b = bubbleOf("帮我看看这个（已上传文件：日志.txt）");
+    const pills = [...b.querySelectorAll(".bubble-attach span")];
+    ok("老会话里那句「（已上传文件：…）」也折得动", pills.length === 1 && pills[0].textContent === "日志.txt", pills.map((p) => p.textContent).join("|"));
+    ok("折完那句话读着还是通的", b.textContent.trim().startsWith("帮我看看这个"), JSON.stringify(b.textContent));
+  }
+
+  // 反向对照：什么协议都没有的普通一句话，一个字都不许被改
+  {
+    const b = bubbleOf("明天下午三点提醒我开会");
+    ok("反向对照：普通消息不折卡、不折素材条", !b.querySelector(".bubble-quote") && !b.querySelector(".bubble-attach"));
+    ok("反向对照：原话一个字没动", b.textContent === "明天下午三点提醒我开会", JSON.stringify(b.textContent));
+  }
+
+  // 引用的正文是模型吐出来的，文件名是人起的：两处都不许被当 HTML
+  {
+    const b = bubbleOf("> <img src=x onerror=1>\\n\\n【图片 1：<b>坏名字</b>.png】\\n看这个");
+    ok("引用里的标签没变成元素", !b.querySelector(".bubble-quote img") && b.querySelector(".bubble-quote span").textContent.includes("onerror"), b.querySelector(".bubble-quote").innerHTML.slice(0, 160));
+    ok("文件名里的标签也没变成元素", !b.querySelector(".bubble-attach b") && b.querySelector(".bubble-attach span").textContent.includes("坏名字"), b.querySelector(".bubble-attach").innerHTML.slice(0, 160));
+  }
+
+  stage.remove();
+  return names;
+})()
+`;
+
 // 再跑一小段，这次把系统的「减弱动态效果」打开。index.html 里有一条全局的
 // animation-duration:.01ms !important —— 它会让 owbTurnFound 瞬间走到最后一帧，
 // 而最后一帧是透明的。于是「跳过去之后高亮一下」在 reduce 档下等于什么都没发生，
@@ -9490,6 +10153,265 @@ const CANVASKEY_CHECKS = `(async () => {
 })()`;
 
 
+// ================= 关着的侧滑面板，不该还留在 Tab 序里 =================
+// 起因是拿 Tab 键把真界面从头走一遍：390×844 上 29 个能聚焦的元素里有 8 个整个在屏幕外，
+// 位置就排在「模式」按钮后面——预览面板的复制 / 系统提示 / 重看 / 下载 / 关闭，加上成果文件
+// 面板的「打开文件夹」「整理文件夹」「关闭」。1440×900 是 44 个里的 10 个（多两根拖宽的把手）。
+// 成果文件面板里再装 40 个文件，数字变成 85 里的 51：键盘用户一路 Tab 会掉进一片看不见的地方，
+// 焦点框停在屏幕外，按回车不知道按到了什么；读屏软件也照样念得出来。
+// 根因是这两块关着的时候只有 width:0 + overflow:hidden —— 人眼看不见，可访问性树里还在。
+// 补法是关着时整块 visibility:hidden（这一条浏览器认，被它藏起来的东西不进 Tab 序），
+// 但收起的动画不能因此变生硬，所以熄灯延迟到宽度收完那一刻：visibility 0s linear var(--owb-t-slow)。
+// 真 markup + 真 CSS 一起切进来：只验结构的话，把那两条 visibility 删掉这一屏照样全绿。
+const PANEL_MARKUP = (() => {
+  const one = (startTag) => {
+    const a = INDEX_SRC.indexOf(startTag);
+    if (a < 0) throw new Error("public/index.html 里找不到 " + startTag + "，面板这一屏没法用真 markup");
+    const re = /<(\/?)div\b[^>]*>/g;
+    re.lastIndex = a + startTag.length;
+    let depth = 1, m;
+    while ((m = re.exec(INDEX_SRC))) {
+      depth += m[1] ? -1 : 1;
+      if (depth === 0) return INDEX_SRC.slice(a, m.index + m[0].length);
+    }
+    throw new Error(startTag + " 没有配对的 </div>，切不出整块面板");
+  };
+  return one('<div class="preview-panel" id="preview-panel">') + "\n" + one('<div class="files-panel" id="files-panel">');
+})();
+const PANELVIS_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS
+  + "\nhtml,body{height:100%}body{margin:0;display:flex}</style><body>" + PANEL_MARKUP + "</body>";
+const PANELVIS_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (name, cond, extra) => { if (cond) { names.push(name); return; } fails.push("✗ " + name + (extra ? " ｜ " + extra : "")); };
+  const PANELS = [["preview-panel", "预览"], ["files-panel", "成果文件"]];
+  const SEL = "a[href], button, input:not([type=hidden]), select, textarea, [tabindex]:not([tabindex='-1'])";
+  // 「能不能被 Tab 走到」照浏览器的规矩判：自己或任何一级祖先 display:none / visibility:hidden / inert，
+  // 就不在 Tab 序里。只看元素自己不够——面板正是靠祖先那一层把整片内容藏起来的
+  const tabbable = (el) => {
+    if (el.disabled) return false;
+    for (let p = el; p && p.nodeType === 1; p = p.parentElement) {
+      const c = getComputedStyle(p);
+      if (c.display === "none" || c.visibility === "hidden" || p.hasAttribute("inert")) return false;
+    }
+    return true;
+  };
+  const all = (id) => [...document.getElementById(id).querySelectorAll(SEL)];
+  const live = (id) => all(id).filter(tabbable).length;
+  const vis = (id) => getComputedStyle(document.getElementById(id)).visibility;
+  const tl = (cs, k) => String(cs[k]).split(",").map((s) => s.trim());
+  const visDelay = (cs) => {
+    const i = tl(cs, "transitionProperty").indexOf("visibility");
+    if (i < 0) return null;
+    const d = tl(cs, "transitionDelay");
+    return parseFloat(d[i % d.length]) || 0;
+  };
+  const slow = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--owb-t-slow")) || 0;
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // 熄灯是**延迟**发生的，所以每次改完 class / 样式都得真等一等再量。
+  // 不等就量，量到的是上一帧那个还亮着的值——第一版就是这么把自己骗过去的
+  const settle = () => new Promise((r) => setTimeout(r, Math.round(slow * 1000) + 150));
+
+  ok("先验料：--owb-t-slow 真有个值（熄灯延迟要跟它对齐，是 0 的话下面那条就白判了）", slow > 0, slow + "s");
+  for (const [id, cn] of PANELS) {
+    ok("先验料：" + cn + "面板里本来就装着能聚焦的东西（不然「0 个」只是这儿本来就空）", all(id).length >= 3, all(id).length + " 个");
+  }
+
+  // ---- 关着 ----
+  for (const [id, cn] of PANELS) {
+    const cs = getComputedStyle(document.getElementById(id));
+    ok("关着的" + cn + "面板：整块 visibility:hidden", cs.visibility === "hidden", cs.visibility);
+    ok("关着的" + cn + "面板：Tab 一个都走不进去", live(id) === 0, "还能走到 " + live(id) + " / " + all(id).length + " 个");
+    // 不许改成 display:none 了事：那样面板连布局盒子都没有了，宽度动画没得可动，
+    // 拖宽把手和「记住上次宽度」那几处量出来全是 0
+    ok("关着的" + cn + "面板：还是 flex 盒子，不是 display:none（宽度动画和量宽度都靠它）", cs.display === "flex", cs.display);
+    const d = visDelay(cs);
+    ok("关着的" + cn + "面板：熄灯排在宽度收完之后" + (reduce ? "（减弱动态效果这一档就该是 0）" : ""),
+      d !== null && Math.abs(d - (reduce ? 0 : slow)) < 0.001,
+      "visibility 延迟 " + d + "s，过渡表 " + cs.transitionProperty + " / " + cs.transitionDelay);
+  }
+
+  // ---- 打开 ----
+  for (const [id] of PANELS) document.getElementById(id).classList.add("show");
+  for (const [id, cn] of PANELS) {
+    const el = document.getElementById(id), cs = getComputedStyle(el);
+    ok("打开" + cn + "面板：同一帧就 visible，不许拖（拖一下等于刚划出来那会儿是块空白）", cs.visibility === "visible", cs.visibility);
+    ok("打开" + cn + "面板：里面的钮回到 Tab 序（面板宽 " + Math.round(el.getBoundingClientRect().width) + "px）",
+      live(id) >= 3, live(id) + " / " + all(id).length + " 个");
+    ok("打开" + cn + "面板：亮灯不带延迟", Math.abs(visDelay(cs) || 0) < 0.001, "visibility 延迟 " + visDelay(cs) + "s");
+  }
+
+  // ---- 收起：灯要等宽度收完才熄，不然收起动画就成了「啪」的一下 ----
+  for (const [id] of PANELS) document.getElementById(id).classList.remove("show");
+  const atOnce = PANELS.map(([id]) => vis(id));
+  ok(reduce ? "减弱动态效果这一档：点收起当场熄灯（本来就不该有动画）" : "刚点收起那一瞬间灯还亮着——宽度收完了才熄，收起动画才是滑出去不是闪没",
+    reduce ? atOnce.every((v) => v === "hidden") : atOnce.every((v) => v === "visible"), atOnce.join(" / "));
+  await settle();
+  ok("收完之后灯灭了，Tab 也再走不进去",
+    PANELS.every(([id]) => vis(id) === "hidden") && PANELS.every(([id]) => live(id) === 0),
+    PANELS.map(([id, cn]) => cn + "=" + vis(id) + "/" + live(id) + "个").join(" · "));
+
+  // ---- ★反向对照★ ----
+  // 把改之前 index.html 里真写着的那一版压回去：关着的面板没有 visibility 这一条，
+  // 就是从 body 继承来的 visible。同一把尺子必须当场变红——不红说明它量的根本不是这件事
+  const st = document.createElement("style");
+  st.textContent = "#preview-panel, #files-panel { visibility: visible; }";
+  document.head.appendChild(st);
+  await settle();
+  const back = PANELS.map(([id]) => live(id));
+  st.remove();
+  await settle();
+  const after = PANELS.map(([id]) => live(id));
+  ok("★反向对照★ 删掉 visibility:hidden，关着的面板立刻又能被 Tab 走进去",
+    back.every((n) => n > 0), "预览 " + back[0] + " 个 · 成果文件 " + back[1] + " 个");
+  ok("反向对照撤掉之后回到 0（那段临时样式没把尺子弄坏）", after.every((n) => n === 0), after.join(" / "));
+
+  if (fails.length) throw new Error("关着的侧滑面板：" + names.length + " 条过，挂了 " + fails.length + " 条：\\n" + fails.join("\\n"));
+  return names;
+})()
+`;
+
+// 行里那几个「鼠标扫过才冒出来」的操作：移除项目、删掉任务、只整理这个任务、复制我发的话。
+// 之前它们是拿 visibility:hidden 藏的——而 visibility:hidden 同时把元素踢出 Tab 序，
+// 于是纯键盘的人这辈子够不着「移除项目」；.del/.hx 还是 <span>，连自己的焦点都没有。
+// 实测：四处行内操作，键盘一个都够不着。现在改成「透明 + 不吃点击」，焦点一落就显形。
+// 这一屏要同时管住两头，少一头都能装作没事：
+//   markup 退回 <span> —— CSS 再对也没用，没焦点就没有 :focus-visible；
+//   CSS 掉了 :focus-within/:focus-visible —— 标签再对也没用，Tab 到了人还是看不见它在哪。
+// 所以 markup 从 app-02.js / app-01.js 里原样切，CSS 用 index.html 的真 <style>。
+const ROWACT_MARKUP = (() => {
+  const lift = (src, cls, where, want) => {
+    const re = new RegExp('<button[^>]*class="' + cls + '"[^>]*>[\\s\\S]*?</button>', "g");
+    const hits = src.match(re) || [];
+    if (hits.length !== want) {
+      throw new Error(where + " 里 class=\"" + cls + "\" 的 <button> 有 " + hits.length + " 个，期望 " + want +
+        "——行内操作一旦退回 <span>，它就没有自己的焦点，键盘再也够不着");
+    }
+    return hits.map((h) => h.replace(/\$\{[^}]*\}/g, '<svg class="i" width="14" height="14"></svg>'));
+  };
+  const del = lift(APP02, "del", "app-02.js（侧栏项目行）", 1)[0];
+  const hx = lift(APP02, "hx", "app-02.js（任务历史行）", 1)[0];
+  const ops = lift(APP02X, "op", "app-01.js（整理面板）", 2);
+  const ucopy = lift(APP02X, "u-copy", "app-01.js（我发的那条消息）", 1)[0];
+  // 行本身的 tabindex 是 markActivatable 在运行时补的（见 app-00-ui.js），这里照它的结果摆。
+  // 那个函数还在不在，下面另有一条静态断言盯着，不靠这份 markup 替它作证。
+  return '<div class="side"><div id="proj-list">'
+    + '<div class="proj-item" data-name="甲项目" tabindex="0"><span class="pn">甲项目</span>' + del + '</div></div>'
+    + '<div id="history"><div class="hist-item" data-id="s1" tabindex="0"><span class="ht">第一件事</span>' + hx + '</div></div></div>'
+    + '<div class="sweep-panel"><div class="sw-tasks"><div class="sw-task" data-task="x">'
+    + '<span class="nm">任务甲</span><span class="sw-sz">1 MB</span><span class="cnt">3 个</span>' + ops.join("") + '</div></div></div>'
+    + '<div class="turn"><div class="u-msg">' + ucopy + '<div class="bubble" translate="no">帮我写个周报</div></div></div>';
+})();
+if (!/el\.tabIndex\s*=\s*0/.test(UI00_SRC) || !/dataset\.activate/.test(UI00_SRC)) {
+  throw new Error("app-00-ui.js 的 markActivatable 不再给行补 tabIndex/data-activate 了——" +
+    "那上面这份 markup 里的 tabindex=\"0\" 就是测试自己发的，:focus-within 那几条等于没验");
+}
+const rowActHtml = (css) => "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + css
+  + "\nhtml,body{height:100%}body{margin:0}</style><body>" + ROWACT_MARKUP + "</body>";
+const ROWACT_HTML = rowActHtml(INDEX_CSS);
+// ★反向对照★ 把真 CSS 里所有「, …:focus-within …」「, …:focus-visible …」的选择器片段摘掉，
+// 别的一个字不动。摘不掉 4 段以上就说明这个变异根本没咬到东西，先把自己判红。
+const ROWACT_CSS_NOFOCUS = (() => {
+  const cut = INDEX_CSS.replace(/,\s*[^,{}]*:focus-(?:within|visible)[^,{}]*(?=[,{])/g, "");
+  const gone = INDEX_CSS.length - cut.length;
+  const n = (INDEX_CSS.match(/,\s*[^,{}]*:focus-(?:within|visible)[^,{}]*(?=[,{])/g) || []).length;
+  if (n < 4 || gone <= 0) throw new Error("反向对照没咬住：只摘掉了 " + n + " 段 :focus-* 选择器，少于 4 段，这个变异证明不了什么");
+  return cut;
+})();
+const ROWACT_HTML_NOFOCUS = rowActHtml(ROWACT_CSS_NOFOCUS);
+const ROWACT_CHECKS = `
+(async () => {
+  const names = [], fails = [];
+  const ok = (cond, msg) => { if (cond) names.push(msg); else fails.push(msg); };
+  const settle = () => new Promise((r) => setTimeout(r, 420));
+  const cs = (el) => getComputedStyle(el);
+  const op = (el) => Number(cs(el).opacity);
+  const tabbable = (el) => {
+    if (!el || el.disabled || !(el.tabIndex >= 0)) return false;
+    for (let p = el; p && p.nodeType === 1; p = p.parentElement) {
+      const c = cs(p);
+      if (c.display === "none" || c.visibility === "hidden" || p.hasAttribute("inert")) return false;
+    }
+    return true;
+  };
+  const CASES = [
+    ["项目行·移除项目", ".proj-item", ".del"],
+    ["任务历史行·删掉", ".hist-item", ".hx"],
+    ["整理面板·行内操作", ".sw-task", ".op"],
+    ["我发的消息·复制", ".u-msg", ".u-copy"],
+  ];
+  for (const [name, rowSel, actSel] of CASES) {
+    const row = document.querySelector(rowSel), act = row && row.querySelector(actSel);
+    if (!act) { fails.push(name + "：页面上找不着 " + rowSel + " " + actSel); continue; }
+    ok(act.tagName === "BUTTON", name + "：是个真 <button>（自己接得住焦点）");
+    ok(!!(act.getAttribute("aria-label") || act.title), name + "：说得出自己是干什么的");
+    document.body.focus(); await settle();
+    ok(op(act) === 0, name + "：平时看不见（透明度 0）");
+    ok(cs(act).pointerEvents === "none", name + "：看不见的时候也点不着（别误删）");
+    ok(tabbable(act) === true, name + "：Tab 还是走得到它");
+    act.focus(); await settle();
+    ok(document.activeElement === act && op(act) === 1 && cs(act).pointerEvents === "auto",
+       name + "：焦点落在它身上就显形、并且点得动");
+    // 这一行钉的是「是哪条 CSS 在干活」。这四处以前都写着第三条子句「行 操作:focus-visible」，
+    // 而 Chromium 对着**程序**给的焦点根本不匹配 :focus-visible——所以那条子句在测试里
+    // 一次都没跑过；真删掉它，上面那条断言照样绿。它其实也永远跑不到：Y 一拿到焦点，
+    // 它外面那层 X 就已经 :focus-within 了，第二条子句先把事办了。那是四条死代码。
+    ok(!act.matches(":focus-visible"),
+       name + "：显形靠的是行上的 :focus-within —— 程序给的焦点压根不算「键盘聚焦」");
+    act.blur(); document.body.focus(); await settle();
+    ok(op(act) === 0, name + "：焦点挪走就又收回去");
+    if (row.tabIndex >= 0) {
+      row.focus(); await settle();
+      ok(op(act) === 1, name + "：焦点才刚落在行上，这个操作就已经看得见了");
+      row.blur(); document.body.focus(); await settle();
+    }
+  }
+  // .sw-task 那一行本身不可聚焦（它不是个能点的东西），:focus-within 在那儿买到的是另一件事：
+  // 焦点落到第一个操作上，同一行的第二个也跟着显形——不然 Tab 到一半，下一站又是个透明的。
+  const swOps = document.querySelectorAll(".sw-task .op");
+  if (swOps.length >= 2) {
+    document.body.focus(); await settle();
+    swOps[0].focus(); await settle();
+    ok(op(swOps[1]) === 1, "整理面板·行内操作：焦点落在它身上，同一行的邻座也跟着显形（下一站不再是透明的）");
+    swOps[0].blur(); document.body.focus(); await settle();
+  } else {
+    fails.push("整理面板那一行只剩 " + swOps.length + " 个操作，「邻座跟着显形」这条没法验");
+  }
+  {
+    // 静态闸门：别让那条死子句再长回来。判据是推导出来的，不是照抄这四行——
+    // 只要一条规则里同时有「X:focus-within Y」和「X … Y:focus-visible」，后者就一定是死的
+    const dead = [];
+    for (const sheet of document.styleSheets) {
+      let rules; try { rules = sheet.cssRules; } catch { continue; }
+      for (const r of rules || []) {
+        const sel = r.selectorText || "";
+        if (!sel.includes(":focus-within") || !sel.includes(":focus-visible")) continue;
+        const parts = sel.split(",").map((x) => x.trim());
+        const within = parts.filter((x) => x.includes(":focus-within")).map((x) => x.replace(":focus-within", ""));
+        const visible = parts.filter((x) => x.includes(":focus-visible")).map((x) => x.replace(":focus-visible", ""));
+        // 同一条规则里，「行 + 后代」和「行 后代」指的是同一批元素 → 后者被前者完全覆盖
+        const norm = (x) => x.replace(/\s+/g, " ").trim();
+        if (visible.some((v) => within.some((w) => norm(v) === norm(w)))) dead.push(sel);
+      }
+    }
+    ok(dead.length === 0, "没有被 :focus-within 完全盖住的 :focus-visible 死子句（还剩 " + dead.length + " 条）"
+       + (dead.length ? "：" + dead.join(" ｜ ").slice(0, 200) : ""));
+  }
+  if (!window.__rowactMutant) {
+    // ★反向对照★ 把「透明 + 不吃点击」换回 visibility:hidden，四个操作必须当场全退出 Tab 序
+    const st = document.createElement("style");
+    st.textContent = ".proj-item .del, .hist-item .hx, .sw-task .op, .u-msg .u-copy { visibility: hidden; }";
+    document.head.appendChild(st);
+    await settle();
+    const stillTab = CASES.map(([n, r, a]) => [n, document.querySelector(r + " " + a)]).filter(([n, el]) => el && tabbable(el));
+    ok(stillTab.length === 0, "★反向对照★ 换回 visibility:hidden，四处行内操作全部退出 Tab 序（还剩 " + stillTab.length + " 个）");
+    st.remove(); await settle();
+    const backTab = CASES.map(([n, r, a]) => document.querySelector(r + " " + a)).filter((el) => el && tabbable(el));
+    ok(backTab.length === CASES.length, "★反向对照★ 摸回来，四处全部又回到 Tab 序里（现在 " + backTab.length + "/" + CASES.length + "）");
+  }
+  return { names, fails };
+})()`;
+
 function mkWin(opts) {
   const w = new BrowserWindow(opts);
   RENDERER_LOG.length = 0;
@@ -9596,6 +10518,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接·整块可收起）${names7.length} 项通过`);
     } finally {
       if (!win7.isDestroyed()) win7.destroy();
+    }
+    const winEng = mkWin({ show: false, width: 760, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await winEng.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ENG_HTML));
+      const namesEng = await winEng.webContents.executeJavaScript(ENG_STUBS + "\n" + ENG_SRC + "\n" + ENG_CHECKS, true);
+      for (const n of namesEng) console.log("  ✓ " + n);
+      console.log(`✅ 前端：底层引擎卡片（没选中也能当场试·徽章不替人下结论·版本号削成一个形状·命令行挪进展开区）${namesEng.length} 项通过`);
+    } finally {
+      if (!winEng.isDestroyed()) winEng.destroy();
     }
     const win8 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
@@ -9800,6 +10731,50 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：系统开了「减弱动态效果」之后，侧栏那套主次与拖拽照样准（全局过渡不许把「改完就读」拖成上一帧的旧值）${namesSBR.length} 项通过`);
     } finally { if (!winSBR.isDestroyed()) winSBR.destroy(); }
 
+    // 三档各跑一遍：常规宽度（默认那套规则）、开着「减弱动态效果」、手机宽度（面板变成盖在上面的浮层）。
+    // 手机那档不是凑数——用户最先撞上这件事就是在 390 宽：一路 Tab 走到第 21 站人就不见了
+    for (const [w, h, motion, label] of [[1280, 800, null, "常规宽度"], [1280, 800, "reduce", "减弱动态效果"], [390, 844, null, "手机宽度·浮层"]]) {
+      const winPV = mkWin({ show: false, width: w, height: h, webPreferences: { offscreen: true } });
+      try {
+        await winPV.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PANELVIS_HTML));
+        if (motion) winPV.__motion = motion;
+        const namesPV = await winPV.webContents.executeJavaScript(PANELVIS_CHECKS, true)
+          .catch((e) => { throw new Error("[关着的面板·" + label + "] " + ((e && (e.stack || e.message)) || String(e))); });
+        if (!motion && w > 900) for (const n of namesPV) console.log("  ✓ " + n);
+        console.log(`✅ 前端：关着的侧滑面板不进 Tab 序（${label} ${w}×${h}·关着 0 个·打开全回来·熄灯等宽度收完·删掉那条当场变红）${namesPV.length} 项通过`);
+      } finally { if (!winPV.isDestroyed()) winPV.destroy(); }
+    }
+
+    // 行里那几个「鼠标扫过才冒出来」的操作。用户拿键盘走这一趟：Tab 停在行上 → 操作显形 →
+    // 再 Tab 就落到它身上。以前这一趟走不通——visibility:hidden 把它们全踢出了 Tab 序。
+    const winRA = mkWin({ show: false, width: 1100, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winRA.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ROWACT_HTML));
+      const ra = await winRA.webContents.executeJavaScript(ROWACT_CHECKS, true)
+        .catch((e) => { throw new Error("[行内操作·键盘够得着] " + ((e && (e.stack || e.message)) || String(e))); });
+      if (ra.fails.length) {
+        throw new Error("行内操作这一屏：" + ra.names.length + " 条过，挂了 " + ra.fails.length + " 条：\n" + ra.fails.join("\n"));
+      }
+      for (const n of ra.names) console.log("  ✓ " + n);
+      console.log(`✅ 前端：行里那几个操作键盘够得着（平时透明·看不见就点不着·Tab 走得到·焦点一落就显形·换回 visibility 当场退出 Tab 序）${ra.names.length} 项通过`);
+    } finally { if (!winRA.isDestroyed()) winRA.destroy(); }
+
+    // ★反向对照★ 单开一个窗口，喂的是「真 CSS 摘掉所有 :focus-within/:focus-visible」那一份。
+    // 「焦点一落就显形」那 7 条必须当场全红——红不了就说明上一屏根本没在验那几条 CSS，
+    // 而是靠 :hover 蒙混过关。红得不够也算变异没咬住，一样把自己判红。
+    const winRAM = mkWin({ show: false, width: 1100, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await winRAM.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ROWACT_HTML_NOFOCUS));
+      const ram = await winRAM.webContents.executeJavaScript("window.__rowactMutant = 1;\n" + ROWACT_CHECKS, true)
+        .catch((e) => { throw new Error("[行内操作·反向对照] " + ((e && (e.stack || e.message)) || String(e))); });
+      const reveal = ram.fails.filter((f) => f.includes("焦点落在它身上") || f.includes("焦点才刚落在行上"));
+      if (reveal.length !== 7) {
+        throw new Error("★反向对照★ 真 CSS 摘掉 :focus-within/:focus-visible 之后，「焦点一落就显形」只红了 " +
+          reveal.length + " 条，期望 7 条——这一屏验的不是那几条 CSS。全部挂掉的是：\n" + ram.fails.join("\n"));
+      }
+      console.log(`✅ 前端：★反向对照★ 真 CSS 里摘掉 :focus-within/:focus-visible，「焦点一落就显形」当场红 ${reveal.length} 条（其余 ${ram.names.length} 条照过）`);
+    } finally { if (!winRAM.isDestroyed()) winRAM.destroy(); }
+
     const winLN = mkWin({ show: false, width: 980, height: 600, webPreferences: { offscreen: true } });
     try {
       await winLN.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LANE_HTML));
@@ -9835,8 +10810,18 @@ app.whenReady().then(async () => {
       const namesQT = await winQT.webContents.executeJavaScript(IC_BOOT + QUOTE_STUBS + "\n" + QUOTE_SRC + "\n" + JUMP_SRC + "\n" + QUOTE_CHECKS, true)
         .catch((e) => { throw new Error("[引用回复 / 跳回那一轮] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesQT) console.log("  ✓ " + n);
-      console.log(`✅ 前端：引用一条回复 + 从资料库跳回那一轮（只引正文不带过程卡片·选中了就只引那截·别处选的字不许算在这条头上·连按不重复·跳不过去就认输）${namesQT.length} 项通过`);
+      console.log(`✅ 前端：引用一条回复 + 从资料库跳回那一轮（钉成输入框上的一张卡不落进框里·只引正文不带过程卡片·拖选就地冒出「引用这段」·别处选的字不许算在这条头上·点卡片回原文·跳不过去就认输）${namesQT.length} 项通过`);
     } finally { if (!winQT.isDestroyed()) winQT.destroy(); }
+
+    const winBB = mkWin({ show: false, width: 620, height: 500, webPreferences: { offscreen: true } });
+    try {
+      await winBB.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(
+        "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body style='margin:0;width:620px'></body>"));
+      const namesBB = await winBB.webContents.executeJavaScript(IC_BOOT + BUBBLE_BOOT + BUBBLE_CHECKS, true)
+        .catch((e) => { throw new Error("[气泡折协议原文] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesBB) console.log("  ✓ " + n);
+      console.log(`✅ 前端：气泡把给模型看的协议原文折起来（开头的 > 折成引用卡·素材锚点折成底下那排·句子中间的锚点一个字不动·标签不当代码）${namesBB.length} 项通过`);
+    } finally { if (!winBB.isDestroyed()) winBB.destroy(); }
 
     const winQTR = mkWin({ show: false, width: 760, height: 400, webPreferences: { offscreen: true } });
     try {
@@ -9908,7 +10893,7 @@ app.whenReady().then(async () => {
       const namesDEAD = await winDEAD.webContents.executeJavaScript(IC_BOOT + ESC_SRC + "\n" + DEAD_SRC + "\n" + DEAD_CHECKS, true)
         .catch((e) => { throw new Error("[自动化/资料库 403] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesDEAD) console.log("  ✓ " + n);
-      console.log(`✅ 前端：403 不该变成一片白也不该变成一句假成功（自动化整页有话说·侧栏藏掉必挂的入口·资料库只读但看得见·上传/记笔记失败照实说）${namesDEAD.length} 项通过`);
+      console.log(`✅ 前端：403 不该变成一片白也不该变成一句假成功（自动化整页有话说·侧栏藏掉必挂的入口·资料库一人一份、写也写得进·上传/记笔记失败照实说）${namesDEAD.length} 项通过`);
     } finally { if (!winDEAD.isDestroyed()) winDEAD.destroy(); }
 
     const winHUB = mkWin({ show: false, width: 1100, height: 900, webPreferences: { offscreen: true } });

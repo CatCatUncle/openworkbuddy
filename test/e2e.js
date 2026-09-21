@@ -662,9 +662,7 @@ function testMotionGate() {
   const files = [path.join(pub, "index.html"), path.join(pub, "css", "ui.css")];
   // 一条 transition 的每个「分段」都要自带曲线：靠 transition-timing-function 另写一行的
   // 本项目里一处都没有，真要出现，这里报出来再放行不迟。
-  const bare = [];
-  for (const f of files) {
-    const t = fs.readFileSync(f, "utf8");
+  const scanTransitions = (t, label, out) => {
     for (const m of t.matchAll(/transition:\s*([^;}]+)/g)) {
       // 按逗号切段，但要绕开括号里的逗号——var(--owb-ease, ease) 的那个回退逗号
       // 直接 split(",") 会把它劈成两半，于是「ease)」被当成一条没写曲线的过渡（假阳性）
@@ -683,12 +681,34 @@ function testMotionGate() {
         // transition: none 是刻意关掉过渡（拖着改栏宽时就不该有动画），根本不产生动画，
         // 不存在「吃默认 ease」一说，放行。
         if (v === "none") continue;
-        if (!/var\(\s*--owb-ease/.test(seg)) bare.push(path.basename(f) + ": " + v);
+        // 时长写死成 0 的那一段同理：没有「过程」就没有快慢，曲线写什么浏览器都看不出区别。
+        // 侧滑面板关着时那条 `visibility 0s linear var(--owb-t-slow)` 就是这一类——
+        // 它要的不是一段动画，是「宽度收完的那一刻把灯关掉」。
+        // 只放行写死的 0：时长是 var() 的一律照抓，谁也不知道那个令牌今天是多少。
+        const dur = v.split(/\s+/).find((x) => /^\d*\.?\d+m?s$/.test(x));
+        if (dur && parseFloat(dur) === 0) continue;
+        if (!/var\(\s*--owb-ease/.test(seg)) out.push(label + ": " + v);
       }
     }
-  }
+  };
+  const bare = [];
+  for (const f of files) scanTransitions(fs.readFileSync(f, "utf8"), path.basename(f), bare);
   assert(bare.length === 0,
     "这些过渡没写曲线，会吃浏览器默认的 ease：\n  " + bare.join("\n  "));
+  // 反向对照：放行「0 秒」这条口子不能把闸门捅漏。非零时长少了曲线，一种写法都不许漏网
+  const m1 = []; scanTransitions(".a { transition: width .28s; }", "假1", m1);
+  const m2 = []; scanTransitions(".b { transition: opacity 300ms; }", "假2", m2);
+  const m3 = []; scanTransitions(".c { transition: width var(--owb-t-slow); }", "假3", m3);
+  const m4 = []; scanTransitions(".d { transition: visibility 0s, width .3s; }", "假4", m4);
+  assert(m1.length === 1 && m2.length === 1 && m3.length === 1 && m4.length === 1,
+    `「0 秒放行」把闸门捅漏了：秒=${m1.length} 毫秒=${m2.length} 令牌时长=${m3.length} 混写=${m4.length}`);
+  // 正向对照：该放行的四种写法一个都不许误伤
+  const m0 = [];
+  scanTransitions(".e { transition: visibility 0s linear var(--owb-t-slow); }", "真1", m0);
+  scanTransitions(".f { transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s; }", "真2", m0);
+  scanTransitions(".g { transition: none; }", "真3", m0);
+  scanTransitions(".h { transition: transform .2s var(--owb-ease, ease); }", "真4", m0);
+  assert(m0.length === 0, "误伤了本来就该放行的过渡：" + m0.join("、"));
 
   const html = fs.readFileSync(files[0], "utf8");
   // 界面字体栈现在住在 --font-sans 令牌里（body 只写 font-family: var(--font-sans)，外观页的「衬线/等宽」靠改令牌切换），
@@ -7566,6 +7586,90 @@ async function testPortCollision() {
   console.log("✅ 端口被占的三条岔路：陌生程序占着就换口（换过去的确实是我们，也没挤掉人家）· 另一台 OWB 占着就不重复起并退出码 1（负对照）· 占着不吭声也不卡死");
 }
 
+/**
+ * 桌面壳自己那层字：右键菜单、启动失败页、两个系统报错框。
+ *
+ * 网页那套翻译是照着 DOM 走的——它认文本节点和属性，遇上就换掉。而这三处的字从头到尾
+ * 只是主进程里的 JS 字符串，一秒钟都没进过渲染进程的 DOM，网页那边翻得再全也够不着：
+ * 英文用户右键点一下弹出来的还是「复制图片」；而启动失败页更要命——看见它的人恰恰是
+ * 应用打不开的那个人（issue #1 那批），最需要看懂上面写的怎么修，给他的却是一整页中文。
+ *
+ * 数「屏幕上还剩几个汉字」的那种闸门看不见这一层（它根本不在 DOM 里），所以单开一条：
+ * 先按形状比两本字典，再把三处文案在沙箱里真跑一遍，最后反过来查有没有人又写死了一句。
+ */
+function testShellI18n() {
+  const src = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const CJK = /[一-鿿　-〿＀-￯]/;
+  const 抠 = (from, to) => {
+    const i = src.indexOf(from), j = src.indexOf(to, i + 1);
+    assert(i >= 0 && j > i, "抠不出这段代码（挪了位置或改了名，就把这条锚点一起改掉）：" + from);
+    return src.slice(i, j);
+  };
+
+  // ---- ① 两本字典按键比：漏一个键，那句话在英文下渲染出来是 undefined ----
+  const table = new Function(抠("const SHELL_TEXT = {", "\nfunction osLang(").replace("const SHELL_TEXT =", "return") + ";")();
+  const zh = table.zh, en = table.en;
+  const 中键 = Object.keys(zh).sort(), 英键 = Object.keys(en).sort();
+  assert(中键.length >= 20, "SHELL_TEXT 只抠出 " + 中键.length + " 个键，抠错地方了");
+  assert.deepStrictEqual(英键, 中键,
+    "两本字典对不上：只有中文的 " + JSON.stringify(中键.filter((k) => !(k in en))) +
+    "，只有英文的 " + JSON.stringify(英键.filter((k) => !(k in zh))));
+
+  // 有几条是带端口号的函数，渲染一遍再比，别只比类型
+  const 渲染 = (d, k) => (typeof d[k] === "function" ? String(d[k](3800)) : String(d[k]));
+  const 漏翻 = 中键.filter((k) => CJK.test(渲染(en, k)));
+  assert(!漏翻.length, "英文字典里这几条还是中文，英文用户会原样看见：" + JSON.stringify(漏翻));
+  const 照抄 = 中键.filter((k) => 渲染(zh, k) === 渲染(en, k));
+  assert(!照抄.length, "这几条两种语言一模一样，多半是复制过去忘了改：" + JSON.stringify(照抄));
+
+  // ---- ② 右键菜单真跑一遍：图片 + 选中 + 可编辑 + 链接，四种情况一次点全 ----
+  const 建菜单 = new Function("clipboard", "shell",
+    抠("function contextMenuItems(params, t, wc)", "\nasync function uiLang(") + "\nreturn contextMenuItems;"
+  )({ writeText() {} }, { openExternal() {} });
+  const 右键 = { mediaType: "image", srcURL: "http://127.0.0.1:3800/a.png", selectionText: "x", isEditable: true, linkURL: "https://example.com/a", x: 1, y: 2 };
+  for (const lang of ["zh", "en"]) {
+    const 字 = 建菜单(右键, table[lang], { copyImageAt() {} }).filter((i) => i.label).map((i) => i.label);
+    assert.strictEqual(字.length, 8, lang + " 下右键菜单条目对不上（拿到 " + 字.length + " 条）：" + JSON.stringify(字));
+    if (lang === "en") assert(!字.some((s) => CJK.test(s)), "英文界面下右键菜单还是中文：" + JSON.stringify(字.filter((s) => CJK.test(s))));
+    else assert(字.every((s) => CJK.test(s)), "中文界面下右键菜单里冒出了英文：" + JSON.stringify(字.filter((s) => !CJK.test(s))));
+  }
+
+  // ---- ③ 启动失败页那句「该怎么修」：六种死法，两种语言，一句都不许串 ----
+  const 出主意 = new Function(抠("function bootHint(msg, port, t)", "\n/**\n * 启动失败时") + "\nreturn bootHint;")();
+  const 死法 = ["Error: Cannot find module 'foo'", "数据目录建不起来：EACCES", "listen EACCES 0.0.0.0:3800", "listen EADDRINUSE 127.0.0.1:3800", "listen EADDRNOTAVAIL 192.168.1.9:3800", "TypeError: boom"];
+  for (const lang of ["zh", "en"]) {
+    const 话 = 死法.map((m) => String(出主意(m, 3800, table[lang])));
+    assert.strictEqual(new Set(话).size, 死法.length,
+      lang + " 下有两种死法给出了同一句修法（分支塌了，用户照着修治不好）：" + JSON.stringify(话));
+    if (lang === "en") assert(!话.some((s) => CJK.test(s)), "英文下启动失败页教人怎么修的话还是中文：" + JSON.stringify(话.filter((s) => CJK.test(s))));
+  }
+
+  // ---- ④ 反过来查：这几处不许再有一句界面上的字写死在代码里 ----
+  // 只挑字符串和模板串来看。注释里的中文不算（该写还得写），
+  // bootHint 里那几个正则也不算——它们认的是服务端吐出来的中文报错，跟界面语言无关。
+  const 报错框 = [...src.matchAll(/dialog\.showErrorBox\(([\s\S]*?)\n\s*\);/g)].map((m) => m[1]);
+  assert.strictEqual(报错框.length, 2, "系统报错框的数量变了（" + 报错框.length + " 个），这条闸门得跟着改");
+  const 界面段 = [
+    抠("function contextMenuItems(params, t, wc)", "\nasync function uiLang("),
+    抠("function bootHint(msg, port, t)", "\n/**\n * 启动失败时"),
+    抠("const html = `<!doctype html>", "\n  // 连窗口都没有"),
+    ...报错框,
+  ];
+  const 写死 = [];
+  for (const 段 of 界面段)
+    for (const m of 段.matchAll(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g))
+      if (CJK.test(m[0])) 写死.push(m[0].slice(0, 48));
+  assert(!写死.length, "这几句界面上的字写死在代码里、没进 SHELL_TEXT，英文用户永远看见中文：" + JSON.stringify(写死));
+
+  // ---- ⑤ 主进程问渲染进程要语言，问的得是网页那边真正存的那个键 ----
+  const 存的键 = (fs.readFileSync(path.join(__dirname, "..", "public", "js", "i18n.js"), "utf8").match(/const STORE_KEY = "([^"]+)"/) || [])[1];
+  assert(存的键, "i18n.js 里找不到 STORE_KEY 了");
+  assert(src.includes('localStorage.getItem("' + 存的键 + '")'),
+    "壳问的不是网页存语言的那个键（网页存的是 " + 存的键 + "）：右键菜单会跟着系统语言走，用户在界面里切过的那一下不算数");
+
+  console.log("✅ 桌面壳那层字：两本字典键对齐且英文里无汉字 · 右键菜单 8 条两种语言各跑一遍 · 启动失败页六种死法六句不同的修法 · 四处界面段里没有写死的中文 · 语言键跟网页对得上");
+}
+
 async function testLocalEngineConnect() {
   const os = require("os");
   const which = require("../engines/which");
@@ -8572,6 +8676,8 @@ async function main() {
   testStyleDirection();
   testShortDrama();
   testCanvasCreativeLineage();
+  testCanvasPristineBoard();
+testCanvasEdgeVersion();
   testCanvasThumb();
   await testCanvasMissingAssets();
   testReleasePipeline();
@@ -8644,6 +8750,7 @@ async function main() {
   await testLibraryOutputsTruth();
   await testLibraryTurnAnchor();
   await testPortCollision();
+  testShellI18n();
   await testSessionSearchLive();
   await testDecideLive();
   await testConfigExternalEdit();
@@ -8680,6 +8787,7 @@ async function main() {
   await testGoalOnLocalEngine();
   await testDetectCache();
   await testStreamRender();
+  testShortcutsAllLive();
   await testSessionIndex();
   await testRunOwnership();
   testSessionCacheReload();
@@ -8881,6 +8989,72 @@ async function testCanvasMissingAssets() {
  *   ① 把 canvasFileUrl 真切出来跑一遍（它只依赖 canvasState，切得动），看拼出来的地址对不对；
  *   ② 三处节点预览确实传了宽度、灯箱确实没传——这两件事只在调用处，函数本身看不出来。
  */
+/**
+ * 「还没人动过」和「动过之后是空的」，盘上必须分得出来。
+ *
+ * 界面靠这个决定要不要铺起手那两张卡（一句话概念 + 分镜表）。以前的判据是「现在是空的」，
+ * 于是用户把画布全清掉、再打开，两张卡原样长回来，还连着存回服务器——换台机器打开也是这两张。
+ * 分法：新建出来那一下 updatedAt 留 0，此后任何一次保存都盖上时间戳，清空也算保存。
+ */
+function testCanvasPristineBoard() {
+  const tools = require("../tools");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-canvas-pristine-"));
+  tools.withWorkspace(tmp, () => {
+    const fresh = tools.canvasWriteState({ version: 1, nodes: [], edges: [], updatedAt: 0 }, "新建的", { pristine: true });
+    assert.strictEqual(fresh.updatedAt, 0, "新建画布盖了时间戳：界面就分不出它和「用户自己清空的」了");
+    assert.strictEqual(tools.canvasReadState("新建的").updatedAt, 0, "再读出来时间戳不是 0，落盘那一步把它改了");
+    // 留 0 不能让新画布在切换列表里沉底——列表按时间排，取不到时间戳就退回文件时间
+    const listedFresh = tools.canvasList().find((item) => item.name === "新建的");
+    assert.ok(listedFresh && listedFresh.updatedAt > 0, "画布列表把 updatedAt 0 原样当排序键了，刚新建的画布会沉到最底下");
+
+    const written = tools.canvasWriteState({ version: 1, nodes: [
+      { id: "n1", kind: "note", payload: { title: "写点东西" }, position: { x: 0, y: 0 } }] }, "新建的");
+    assert.ok(written.updatedAt > 0, "正常保存没盖时间戳：另一个标签页就看不见这次改动");
+
+    // 清空也是一次保存。这一条是这次修复的要害：清空之后必须还是「动过」
+    const emptied = tools.canvasWriteState({ version: 1, nodes: [], edges: [] }, "新建的");
+    assert.ok(emptied.updatedAt > 0, "清空画布被当成了「还没人动过」，起手那两张卡下次打开又会长回来");
+    assert.strictEqual(tools.canvasReadState("新建的").nodes.length, 0, "清空没落盘");
+  });
+  // 路由那头得真把 pristine 传下去，否则上面几条全绿、用户那边照样每次长卡
+  const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const routeIdx = serverSrc.indexOf('app.post("/api/canvas/boards"');
+  const pristineIdx = serverSrc.indexOf("pristine: true", routeIdx);
+  assert.ok(routeIdx > 0 && pristineIdx > routeIdx && pristineIdx - routeIdx < 600,
+    "新建画布的路由没带 pristine：服务端照样盖时间戳，界面又分不出新建和清空了");
+  const canvasSrc = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  assert.ok(/Number\(remote\.updatedAt\) > 0/.test(canvasSrc), "界面那头没在看 updatedAt：服务端分得出来也没人用");
+  console.log("✅ 画布新建 vs 清空：新建的 updatedAt 留 0，清空算动过，列表排序不受影响");
+}
+
+function testCanvasEdgeVersion() {
+  const tools = require("../tools");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "owb-canvas-edgever-"));
+  tools.withWorkspace(tmp, () => {
+    // 版本 2 的意思是「这份画布把连线记全了」。落盘再读回来还得是 2——
+    // 在这儿被抹回 1，用户删掉的连线下次打开就会被当成「老文件缺了一段」补回来
+    const two = tools.canvasWriteState({ version: 2, nodes: [
+      { id: "a", kind: "shot", payload: { id: "S1-01" }, position: { x: 0, y: 0 } },
+      { id: "b", kind: "location", payload: { name: "江边码头" }, position: { x: 0, y: 0 } }], edges: [] }, "记全了");
+    assert.strictEqual(two.version, 2, "写下去的版本 2 被抹了");
+    assert.strictEqual(tools.canvasReadState("记全了").version, 2, "读回来不是版本 2：空连线会被当成老文件补线");
+    // 老画布照旧是 1：硬升上去的话，那些真的没存过连线的文件就再也补不上了
+    tools.canvasWriteState({ version: 1, nodes: [] }, "老的");
+    assert.strictEqual(tools.canvasReadState("老的").version, 1, "老画布被硬升成版本 2 了：真没存过连线的文件从此再也补不上");
+    assert.strictEqual(tools.canvasWriteState({ nodes: [] }, "没写版本").version, 1, "没写版本号的当成版本 2 了");
+  });
+  const serverSrc = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const routeIdx = serverSrc.indexOf('app.post("/api/canvas/boards"');
+  const verIdx = serverSrc.indexOf("version: 2", routeIdx);
+  assert.ok(routeIdx > 0 && verIdx > routeIdx && verIdx - routeIdx < 600,
+    "新建出来的画布还是版本 1：它明明是这一版建的，连线本来就记全了");
+  const canvasSrc = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-07-canvas.js"), "utf8");
+  assert.ok(/version: 2,/.test(canvasSrc), "界面存盘时没标版本 2：存下去的画布还是「连线可能没记全」");
+  assert.strictEqual((canvasSrc.match(/Number\(snapshot\.version\) >= 2/g) || []).length, 2,
+    "两处（补老画布的线、同步时沿用本机连线）少了一处在看版本，删掉的连线还是会回来");
+  console.log("✅ 画布连线版本位：版本 2 落盘读回来还是 2，老画布不硬升，新建即版本 2，界面两处都在看");
+}
+
 function testCanvasThumb() {
   const file = path.join(__dirname, "..", "public", "js", "app-07-canvas.js");
   const src = fs.readFileSync(file, "utf8");
@@ -9061,7 +9235,7 @@ async function testStreamRender() {
   const turn = app1.slice(app1.indexOf("function createTurnUI("), app1.indexOf("// ================= 空状态"));
   const decl = (turn.match(/currentText = null/g) || []).length;
   assert.strictEqual(decl, 2, `回合里还有 ${decl - 2} 处直接把 currentText 置空（绕过了 endText，那一段永远不合回整块）`);
-  assert(/function finish\(\) \{\s*\n\s*endText\(\);/.test(turn), "finish() 没先把最后一段合回整块，复制/存历史会读到分段的壳子");
+  assert(/function finish\(\w*\) \{\s*\n\s*endText\(\);/.test(turn), "finish() 没先把最后一段合回整块，复制/存历史会读到分段的壳子");
 
   const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
   assert(/\.a-text > \.md-done, \.a-text > \.md-live \{ display: contents; \}/.test(html),
@@ -10701,11 +10875,24 @@ function keySourcesCheck(app03, app05, toolsSrc, mmSrc) {
   const sp = toolsSrc.match(/const SEARCH_PROVIDERS = \{([^}]*)\}/);
   assert(sp, "tools.js 里没有 SEARCH_PROVIDERS");
   const searchIds = sp[1].split(",").map((x) => x.split(":")[0].trim()).filter(Boolean);
+  // 向导和设置面板的服务商清单都是从各自那张表渲出来的，所以钉表、不钉渲出来的 HTML：
+  // 钉 HTML 的话，改成动态渲染就算一家都没漏也会红，而真漏一家反倒可能看不出来
+  const onbSearch = vm.runInNewContext("(" + grab(app03, "const ONB_SEARCH = ", "\n};") + ")");
+  const vendors = vm.runInNewContext("(" + grab(app05, "const SEARCH_VENDORS = ", "\n};") + ")");
   for (const k of searchIds) {
+    // custom 指的是用户自己那台机器，没有官网可指，也不出现在向导里（向导只推现成的几家）
+    if (k === "custom") {
+      if (!vendors[k]) problems.push("设置 → 搜索面板少了「自定义」这一项");
+      continue;
+    }
     if (!KS[k]) problems.push(`搜索服务商 ${k} 没有取 Key 链接`);
-    if (!new RegExp('<option value="' + k + '"').test(app03)) problems.push(`向导搜索步没有 ${k} 这一项`);
-    if (!new RegExp('keyLink\\("' + k + '"\\)').test(app05)) problems.push(`设置 → 搜索面板的 ${k} 没挂链接`);
+    if (!onbSearch[k]) problems.push(`向导搜索步的 ONB_SEARCH 里没有 ${k}`);
+    if (!vendors[k]) problems.push(`设置 → 搜索面板的 SEARCH_VENDORS 里没有 ${k}`);
   }
+  // 两处的顺序都得是国内在前：这是个中文产品，开箱第一跳不该是一次超时
+  if (Object.keys(onbSearch).slice(0, 3).join() !== "bocha,zhipu,qiniu") problems.push("向导搜索步：国内三家没排在最前面");
+  if (Object.keys(vendors).slice(0, 3).join() !== "bocha,zhipu,qiniu") problems.push("设置 → 搜索面板：国内三家没排在最前面");
+  if (!/keyLink\(id\)/.test(app05)) problems.push("设置 → 搜索面板没给每一家挂取 Key 链接");
   const imSrcs = [...app05.matchAll(/\bsrc: "([a-z_]+)"/g)].map((m) => m[1]);
   for (const k of imSrcs) if (!KS[k]) problems.push(`IM 卡片 ${k} 指向了不存在的来源`);
   let mediaN = 0;
@@ -11960,6 +12147,25 @@ function testI18n() {
   assert(short.length >= 300, "JS 模板短文案抓取异常：" + short.length);
   assert(pct(shortMiss.length, short.length) >= 90, `JS 模板短文案（≤14字）英文覆盖 ${pct(shortMiss.length, short.length)}% < 90%：` + JSON.stringify(shortMiss.slice(0, 10)));
   assert(pct(allMiss.length, all.length) >= 80, `JS 模板文案（≤60字）英文覆盖 ${pct(allMiss.length, all.length)}% < 80%`);
+  // 3.5 开真页面的界面测试必须钉住语言。
+  //     Electron 的 navigator.language 随系统走：本机中文、CI 英文。照中文文案写的断言
+  //     在英文那台上比的是另一份界面——要么整套白跑，要么像 v0.7.0 那次一样，
+  //     一句文案进了词典，CI 立刻红，发版卡在 test 这一步。
+  const uiFiles = fs.readdirSync(__dirname).filter((f) => f.endsWith(".js"));
+  // 「哪些页算真页面」从 public/ 里现有的 .html 推出来，别写死 index.html——
+  // 企业后台开的是 admin.html，写死那个词就把它整个漏在闸门外面：
+  // v0.7.8 那次后台刚接上 i18n，CI 那台英文机器当场红在一条照中文写的断言上
+  const htmlPages = fs.readdirSync(pub).filter((f) => f.endsWith(".html"));
+  const opensPage = uiFiles.filter((f) => {
+    const src = fs.readFileSync(path.join(__dirname, f), "utf8");
+    return /loadURL\(/.test(src) && htmlPages.some((h) => src.includes("/" + h));
+  });
+  // 两种钉法都算：页面开出来之后 I18N.setLang()，或者开页之前先把 owb-lang 写进 localStorage
+  const noPin = opensPage.filter((f) => !/setLang\(|owb-lang/.test(fs.readFileSync(path.join(__dirname, f), "utf8")));
+  assert(htmlPages.length >= 2, "public/ 里抓不到几个页面：" + JSON.stringify(htmlPages));
+  assert(opensPage.length >= 4, "抓不到开真页面的测试文件：" + JSON.stringify(opensPage));
+  assert(!noPin.length, "这些测试开了真页面却没钉语言（CI 是英文机器）：" + JSON.stringify(noPin));
+
   // 4. 假 DOM：翻译 / 跳过 / 幂等 / 还原 / 改源文后重翻
   const mkText = (v) => ({ nodeType: 3, nodeValue: v, parentNode: null });
   const mkEl = (name, attrs = {}, kids = []) => {
@@ -14182,7 +14388,7 @@ function testSessionCacheReload() {
  */
 async function testRunOwnership() {
   const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
-  const a = src.indexOf("function sessionAllowed(user, s) {");
+  const a = src.indexOf("let legacyOwner = {"); // 判据从「老会话归谁」那几行开始切，sessionAllowed 靠它
   const b = src.indexOf("let runtime;", a);
   if (a < 0 || b <= a) throw new Error("server.js 里的会话归属判据找不到了（改名/挪走？），测试没法定位真源码");
   const SLICE = src.slice(a, b);
@@ -14194,13 +14400,15 @@ async function testRunOwnership() {
     { username: "rivalBoss", role: "admin", org: "B" },
     { username: "rival", role: "member", org: "B" },
   ];
-  const account = { canAdmin: (u) => u.role === "admin", _internals: { loadUsers: () => ({ users: USERS }) } };
+  const account = { canAdmin: (u) => u.role === "admin", defaultUser: () => U0("boss"), _internals: { loadUsers: () => ({ users: USERS }) } };
+  const U0 = (n) => USERS.find((u) => u.username === n);
   const org = { orgIdOf: (u) => (u && u.org) || "" };
   const SESS = new Map([
     ["s_staff", { user: "staff" }],
     ["s_boss", { user: "boss" }],
     ["s_rival", { user: "rival" }],
-    ["s_legacy", {}],           // 升级上来的老会话：没记归属
+    ["s_legacy", {}],           // 前端先发 id 后发第一句话，这中间会话就是个空壳
+    ["s_legacy_full", { transcript: [{ role: "user" }] }], // 升级上来的老会话：有内容但没记归属
   ]);
   const getSession = (id) => SESS.get(id) || { history: [], transcript: [] }; // 没有的 id 跟真源码一样给空壳
   const M = new Function("account", "org", "getSession", "sessions",
@@ -14217,7 +14425,13 @@ async function testRunOwnership() {
   // ---- 判据本身 ----
   assert.ok(tryRun(U("staff"), "s_staff").allowed, "自己的任务被拦了");
   assert.ok(tryRun(U("boss"), "s_staff").allowed, "同组织管理员打不开下属的任务（企业后台要看得到）");
-  assert.ok(tryRun(U("staff"), "s_legacy").allowed, "升级上来的老会话（没记归属）被拦了——用户会以为任务丢了");
+  assert.ok(tryRun(U("staff"), "s_legacy").allowed, "空壳会话被拦了——前端是先发 id 再发第一句话的，拦了等于谁都开不了新任务");
+  // 有内容、却没记归属的会话 = 这台机器还没有账号体系那会儿留下的，它属于当初那个用的人，
+  // 也就是第一个注册、后来成了平台管理员的那位。以前这儿一律当「公共的」，于是新建一个账号
+  // 打开侧栏，满屏都是别人的任务——用户的原话是「这个 demo 账户我刚创建的怎么就有聊天记录了」
+  assert.ok(tryRun(U("boss"), "s_legacy_full").allowed, "老会话认到管理员名下之后，管理员自己反倒打不开了");
+  assert.ok(!tryRun(U("staff"), "s_legacy_full").allowed, "★没记归属的老会话对所有人敞开★ 新注册一个账号就能读到前任所有的对话");
+  assert.ok(!tryRun(U("rivalBoss"), "s_legacy_full").allowed, "老会话跨组织也能开——认到管理员名下之后仍要按组织挡");
   assert.ok(tryRun(null, "s_staff").allowed, "没开账号体系（单机一个人用）也被拦了");
 
   const cross = tryRun(U("rival"), "s_staff");
@@ -14279,7 +14493,7 @@ async function testRunOwnership() {
   assert.ok(/runtime\.runTool\(/.test(direct), "POST /api/tool/run 没走 runtime.runTool");
   assert.ok(!/executeTool\(/.test(direct), "★POST /api/tool/run 绕开 runtime 自己调了 executeTool★ 白名单就此形同虚设，HTTP 能直接扣动 run_shell");
 
-  console.log("✅ 跑着的任务防插手：插队/代答/停止/续流四条都查归属（本人·同组织管理员·老会话放行，跨组织连管理员也拒），/api/chat 归属先于 SSE 头，running 按侧栏窄口径，/api/tool/run 查归属且只走白名单");
+  console.log("✅ 跑着的任务防插手：插队/代答/停止/续流四条都查归属（本人·同组织管理员·空壳放行，没记归属的老会话归管理员，跨组织连管理员也拒），/api/chat 归属先于 SSE 头，running 按侧栏窄口径，/api/tool/run 查归属且只走白名单");
 }
 
 /**
@@ -14291,12 +14505,116 @@ async function testRunOwnership() {
  * 这里切 server.js 的真源码在临时目录上跑：server.js 是 require 就监听的，
  * 起不了进程内 HTTP；但这三个函数是纯的，注入 fs/path/store/sessions/SESS_DIR 就能真读真磁盘。
  */
+// 设置页那张快捷键表是摆在用户面前的承诺：列出来的每一条，按下去都得真有事发生。
+// 2026-09-21 把 19 条挨个按了一遍，只有 ⌘D「语音录制开关」是假的——它整个身子就一句
+// toast("语音录制暂未支持")，而仓库里从头到尾没有录音界面（transcribe_audio 只处理已经
+// 存在的音频文件）。那一条已经删掉；这把尺子是防它换个名字长回来：
+// 表里非「固定」的每一条都必须落到一个既不空、也不是「暂未支持」占位的动作上。
+function auditShortcuts(app02, emain) {
+  const bad = [];
+  const BT = String.fromCharCode(96); // 反引号，下面判字符串起止要用
+  // 注释不算内容：动作后面跟一句 // 说明，按逗号切完那句说明会跟到下一条头上
+  const stripComments = (t) => {
+    let out = "", i = 0;
+    while (i < t.length) {
+      const c = t[i];
+      if (c === '"' || c === "'" || c === BT) {
+        const q = c; let j = i + 1;
+        while (j < t.length && t[j] !== q) { if (t[j] === "\\") j++; j++; }
+        out += t.slice(i, j + 1); i = j + 1;
+      } else if (c === "/" && t[i + 1] === "/") { while (i < t.length && t[i] !== "\n") i++; }
+      else if (c === "/" && t[i + 1] === "*") { i = t.indexOf("*/", i) + 2; }
+      else { out += c; i++; }
+    }
+    return out.trim();
+  };
+  // 一层对象字面量按顶层逗号切开；字符串、注释、嵌套括号一律跳过
+  const entriesOf = (src, from) => {
+    let i = src.indexOf("{", from) + 1, depth = 0, start = i;
+    const out = [], push = (end) => { const t = src.slice(start, end).trim(); if (t) out.push(t); };
+    while (i < src.length) {
+      const c = src[i];
+      if (c === '"' || c === "'" || c === BT) { const q = c; i++; while (i < src.length && src[i] !== q) { if (src[i] === "\\") i++; i++; } }
+      else if (c === "/" && src[i + 1] === "/") { while (i < src.length && src[i] !== "\n") i++; }
+      else if (c === "/" && src[i + 1] === "*") { i = src.indexOf("*/", i) + 1; }
+      else if ("{([".includes(c)) depth++;
+      else if (")]".includes(c)) depth--;
+      else if (c === "}") { if (depth === 0) { push(i); return out; } depth--; }
+      else if (c === "," && depth === 0) { push(i); start = i + 1; }
+      i++;
+    }
+    throw new Error("SHORTCUT_ACTIONS 这个对象字面量没闭合");
+  };
+
+  const d0 = app02.indexOf("const SHORTCUT_DEFS = [");
+  if (d0 < 0) return ["app-02.js 里找不到 SHORTCUT_DEFS 这张表"];
+  const defs = require("vm").runInNewContext(app02.slice(d0, app02.indexOf("];", d0) + 2) + "\nSHORTCUT_DEFS");
+  const a0 = app02.indexOf("const SHORTCUT_ACTIONS = {");
+  if (a0 < 0) return ["app-02.js 里找不到 SHORTCUT_ACTIONS 这张表"];
+  const acts = new Map();
+  for (const raw of entriesOf(app02, a0)) {
+    const e = stripComments(raw);
+    if (!e) continue;
+    const m = e.match(/^["']?([a-z-]+)["']?\s*:\s*([\s\S]*)$/);
+    if (!m) { bad.push("SHORTCUT_ACTIONS 里这条读不懂：" + e.slice(0, 40)); continue; }
+    acts.set(m[1], m[2].trim());
+  }
+  const 占位词 = /暂未|暂不|还不|敬请期待|待实现|尚未|TODO|not supported|coming soon/i;
+  const 只弹一句 = new RegExp("^toast\\(([\"'" + BT + "])([\\s\\S]*?)\\1[^)]*\\)$");
+  for (const [id, 名称, , 固定, 系统级] of defs) {
+    if (固定) {
+      if (acts.has(id)) bad.push("「" + 名称 + "」标了「固定」，却又在 SHORTCUT_ACTIONS 里挂了动作——派发器会跳过它，这条永远跑不到");
+      continue;
+    }
+    const body = acts.get(id);
+    if (body === undefined) { bad.push("「" + 名称 + "」(" + id + ") 摆在设置页上，SHORTCUT_ACTIONS 里却没有动作"); continue; }
+    const rhs = body.replace(/^[^=]*=>\s*/, "").trim();
+    const 空 = /^\{\s*\}$/.test(rhs);
+    // 系统级那条在网页端本来就该是空的，但主进程里得真注册了才算数
+    if (空 && !系统级) bad.push("「" + 名称 + "」(" + id + ") 的动作是空的：按下去什么都不会发生");
+    if (空 && 系统级 && !(emain.includes("globalShortcut.register") && emain.includes('"' + id + '"')))
+      bad.push("「" + 名称 + "」(" + id + ") 说是系统级，electron-main.js 里却没见到它的 globalShortcut 注册");
+    const t = rhs.match(只弹一句);
+    if (t && 占位词.test(t[2]))
+      bad.push("「" + 名称 + "」(" + id + ") 按下去只弹一句「" + t[2] + "」——不能用的功能不许摆在设置页上");
+  }
+  for (const id of acts.keys())
+    if (!defs.some((d) => d[0] === id)) bad.push("SHORTCUT_ACTIONS 里的「" + id + "」不在 SHORTCUT_DEFS 上，设置页看不见它，改不了也关不掉");
+  return bad;
+}
+
+function testShortcutsAllLive() {
+  const app02 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
+  const emain = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const bad = auditShortcuts(app02, emain);
+  assert.strictEqual(bad.length, 0, "设置页上摆着按不动的快捷键：\n    - " + bad.join("\n    - "));
+  const d0 = app02.indexOf("const SHORTCUT_DEFS = [");
+  const n = require("vm").runInNewContext(app02.slice(d0, app02.indexOf("];", d0) + 2) + "\nSHORTCUT_DEFS").length;
+
+  // ★反向对照★ 五种坏法，每一种都得当场变红，否则上面那个 0 是绿在「什么都没查」上
+  const 坏法 = [
+    ["占位动作长回来（删掉的 ⌘D 原样塞回去）", app02
+      .replace("const SHORTCUT_ACTIONS = {\n", 'const SHORTCUT_ACTIONS = {\n  "voice-record": () => toast("语音录制暂未支持"),\n')
+      .replace('  ["chat-search"', '  ["voice-record", "语音录制开关", "Meta+D"],\n  ["chat-search"'), emain],
+    ["设置页上摆着、却根本没有动作", app02.replace('  ["chat-search"', '  ["ghost", "幽灵功能", "Meta+G"],\n  ["chat-search"'), emain],
+    ["动作是空函数（非系统级）", app02.replace('"chat-search": () => openChatSearch(),', '"chat-search": () => {},'), emain],
+    ["动作表里混进设置页看不见的条目", app02.replace("const SHORTCUT_ACTIONS = {\n", 'const SHORTCUT_ACTIONS = {\n  "secret-thing": () => openModal("settings"),\n'), emain],
+    ["系统级那条主进程其实没注册", app02, emain.replace(/globalShortcut\.register/g, "noop")],
+  ];
+  for (const [why, a, e] of 坏法) assert(auditShortcuts(a, e).length > 0, "反向对照没红：" + why);
+
+  console.log("  ✓ 快捷键表上的 " + n + " 条按下去都真有事发生（占位 / 空动作 / 只在表上 / 只在代码里 / 系统级没注册，五种坏法反向对照全红）");
+}
+
 async function testSessionIndex() {
   const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
   const a = src.indexOf("const sessMetaCache = new Map();");
   const b = src.indexOf("// 任务跑一半崩了", a);
   if (a < 0 || b <= a) throw new Error("server.js 里的会话清单段找不到了（函数被改名/挪走？），测试没法定位真源码");
-  const SLICE = src.slice(a, b);
+  // 「没记归属的老会话算谁的」那几行写在文件另一处（挨着 sessionAllowed），ownSession 靠它
+  const h0 = src.indexOf("let legacyOwner = {"), h1 = src.indexOf("function sessionAllowed(user, s) {", h0);
+  if (h0 < 0 || h1 <= h0) throw new Error("server.js 里「老会话归谁」那几行找不到了，测试没法定位真源码");
+  const SLICE = src.slice(h0, h1) + "\n" + src.slice(a, b);
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "owb-sessidx-"));
   try {
@@ -14309,8 +14627,10 @@ async function testSessionIndex() {
     const live = new Map();
     // lanes 注真模块，不给桩：「老会话该不该被替他填一条线」正是下面要验的事
     const lanesMod = require("../lanes");
-    const build = () => new Function("fs", "path", "store", "sessions", "SESS_DIR", "lanes",
-      SLICE + "\nreturn { listSessionsOnDisk, sessionRow, ownSession, sessMetaCache };")(fs, path, store, live, dir, lanesMod);
+    // account 只被「老会话算谁的」用到：这台机器上第一个注册的人（平台管理员）
+    const account = { defaultUser: () => ({ username: "boss" }) };
+    const build = () => new Function("fs", "path", "store", "sessions", "SESS_DIR", "lanes", "account",
+      SLICE + "\nreturn { listSessionsOnDisk, sessionRow, ownSession, sessMetaCache };")(fs, path, store, live, dir, lanesMod, account);
 
     const put = (id, o) => fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify(Object.assign({
       title: "任务 " + id, user: "boss", transcript: [{ role: "user" }], updated_at: "2026-09-01T00:00:00.000Z",
@@ -14343,13 +14663,18 @@ async function testSessionIndex() {
     assert.strictEqual(laneRows.find((r) => r.id === "s_10").lane, undefined, "认不出来的线名被原样放行了");
     for (const id of ["s_8", "s_9", "s_10"]) fs.rmSync(path.join(dir, id + ".json"));
 
-    // ★ 用户那句「历史全没了」的正主：登录了也要看得见自己的，外加升级上来那些没记归属的
+    // ★ 两句报障在这儿正面撞上：一句是「升级完历史全没了」，一句是「新建的 demo 账号
+    // 怎么一打开就有一堆聊天记录」。把没记归属的老会话认到平台管理员（这台机器上第一个
+    // 注册的人，也就是当年账号体系还没有时坐在这台机器前的那个人）名下，两句话同时成立：
+    // 他的历史一条不少，新账号的侧栏干干净净。
     const boss = { username: "boss" }, staff = { username: "staff" };
     const mine = (u) => rows.filter((r) => M.ownSession(u, r)).map((r) => r.id);
     assert.deepStrictEqual(mine(boss), ["s_2", "s_1", "s_4"], "老板的侧栏漏了：" + JSON.stringify(mine(boss)));
-    assert.deepStrictEqual(mine(staff), ["s_3", "s_4"], "同事的侧栏不对：" + JSON.stringify(mine(staff)));
-    assert.ok(mine(boss).includes("s_4") && mine(staff).includes("s_4"),
+    assert.deepStrictEqual(mine(staff), ["s_3"], "同事的侧栏不对：" + JSON.stringify(mine(staff)));
+    assert.ok(mine(boss).includes("s_4"),
       "★升级上来那些没记归属的老会话被藏了★ 「历史全没了」的报障就是这一批");
+    assert.ok(!mine(staff).includes("s_4"),
+      "★没记归属的老会话铺进了新账号的侧栏★ 「我刚创建的 demo 账号怎么就有聊天记录了」就是这一条");
     assert.deepStrictEqual(rows.filter((r) => M.ownSession(null, r)).map((r) => r.id), ["s_2", "s_3", "s_1", "s_4"],
       "没开账号体系（一个人用）时反倒过滤了");
 
@@ -14470,7 +14795,7 @@ async function testSessionIndex() {
     assert.ok(/locked: true/.test(projRoute) && /projects: \[\]/.test(projRoute),
       "/api/projects 没对没有全局工作目录的人如实回「你这儿没有项目这回事」——前端只好按一个对不上的名字过滤，历史又会空");
 
-    console.log("✅ 任务历史权威清单：按磁盘给（倒序·坏文件/空对话/.bak 不进）· 自己的和没记归属的老会话都在 · 比 sessionAllowed 窄 · mtime 增量缓存跟着改和删 · 内存优先 · 归属不回传 · 假项目不许回来");
+    console.log("✅ 任务历史权威清单：按磁盘给（倒序·坏文件/空对话/.bak 不进）· 自己的都在、没记归属的老会话认到管理员名下（新账号侧栏是干净的）· 比 sessionAllowed 窄 · mtime 增量缓存跟着改和删 · 内存优先 · 归属不回传 · 假项目不许回来");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -14594,6 +14919,22 @@ async function testCanvasDataLoss() {
       "自动保存撞上 409 不吭声，用户会一直以为在存，关掉页面才发现白干了");
     assert(/function canvasStorageKey/.test(ui) && !/localStorage\.setItem\(CANVAS_STORAGE_KEY,/.test(ui),
       "本机副本还是所有画布共用一个键：切到还没内容的 B 画布会把 A 的节点铺上去，自动保存一次就写进 B 的文件了");
+
+    // 每种节点都得有自己那份初值。没写 case 的那种会掉进 default 分支，拿到的是笔记的 payload——
+    // 分镜表节点原来就是这样：卡面上那句「短剧分镜」是写死的，画布上看着没毛病，
+    // 可它 payload 里是 { title: "新笔记", … }，于是「连接到下游节点…」那个下拉里它叫「新笔记」，
+    // 交给 Agent 的正文也是「记录灵感、任务或需要补充的内容…」。
+    // 判据按**形状**来：类型表和 case 表是两份名单，对不上就报，别一个个手抄
+    const 节点类型 = [...ui.matchAll(/^  (\w+): \{ label: /gm)].map((m) => m[1]);
+    const 初值段 = ui.slice(ui.indexOf("function canvasDefaultPayload"), ui.indexOf("function canvasZoom"));
+    const 有初值 = new Set([...初值段.matchAll(/case "(\w+)":/g)].map((m) => m[1]));
+    assert(节点类型.length >= 12 && 初值段.length > 200,
+      "画布节点类型/初值段抓取异常：" + JSON.stringify(节点类型) + " / " + 初值段.length);
+    // note 是 default 分支本身，不算漏
+    const 没初值 = 节点类型.filter((k) => k !== "note" && !有初值.has(k));
+    assert(!没初值.length,
+      "这些节点类型没写自己的初值，掉进 default 分支之后会被当成笔记（下拉里叫「新笔记」，交给 Agent 的也是那句占位文字）："
+      + JSON.stringify(没初值));
 
     console.log("✅ 画布不丢数据：601 个节点原样往返 · 认不出的类型/用途照留 · 少了什么如实记账 · 坏文件报错不当空画布且原样备份 · 不带 force 绝不覆盖 · 列表标坏 · 前端不把 409 当白板");
   } finally {

@@ -1761,7 +1761,7 @@ const NOTES_FILE = dataPath("data", "inspirations.json");
 /**
  * 当前项目挂载了资料库的哪一块（相对 LIB_DIR 的子目录，""=整个库）。
  *
- * 为什么要有：资料库是整台服务器**共用的一份**。人一多、素材一杂，做「客户 A 的合同」那个项目时
+ * 为什么要有：一个人的库也会摆得很杂。文件一多，做「客户 A 的合同」那个项目时
  * 把「短剧素材」「公司规章」一股脑塞进 library_list，模型就要在一堆不相干的文件名里挑——
  * 挑错了不会报错，只会安静地引用错资料。挂上子目录之后，这个项目的 agent 眼里的资料库就只有那一块。
  *
@@ -1770,6 +1770,28 @@ const NOTES_FILE = dataPath("data", "inspirations.json");
  */
 let defaultLibraryRel = "";
 const libStore = new AsyncLocalStorage();
+/**
+ * 资料库的**根**在哪。上面那个 ALS 管的是「挂载哪一块」（根底下的子目录），这个管根本身。
+ *
+ * 为什么要分两层：资料库本来是整台机器共用的一份 data/library。多账号一上来，这就是
+ * 「新注册的号打开资料库，看见的是管理员传进去的合同」——跟侧栏那条会话历史是同一个事故。
+ * 现在一人一个根（server.js 的 libraryRootOf 决定给谁哪个），挂载那一层原样不动。
+ *
+ * 跟工作目录一样走 ALS：租户请求各自跑在自己的异步链上，用模块级变量会串台。
+ * 没 run 过就是 LIB_DIR——单机个人版、命令行、定时任务全落在这一支，一行行为都没变。
+ */
+const libBaseStore = new AsyncLocalStorage();
+function withLibraryBase(dir, fn) {
+  return libBaseStore.run(String(dir || "") || LIB_DIR, fn);
+}
+function libBase() {
+  return libBaseStore.getStore() || LIB_DIR;
+}
+/** 灵感笔记落在哪。老库那一支还是原来的 data/inspirations.json，一个字节都不搬；
+ *  别人的根底下各放一份（点头开头，列资料库时本来就跳过） */
+function notesFileOf(base) {
+  return (base || LIB_DIR) === LIB_DIR ? NOTES_FILE : path.join(base, ".inspirations.json");
+}
 /** 把一段相对路径洗干净：统一正斜杠、去空段、拒绝 `..` 和以 `.` 开头的段（别让人翻到 .ssh 去） */
 function cleanLibRel(rel) {
   const parts = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
@@ -1788,11 +1810,12 @@ function withLibraryDir(rel, fn) {
 }
 /** agent 这一侧看得见的资料库根。挂载目录被人在磁盘上删掉了就退回整个库，别让工具整个哑掉 */
 function libRoot() {
+  const base = libBase();
   const rel = getLibraryDir();
-  if (!rel) return LIB_DIR;
-  const abs = path.join(LIB_DIR, rel);
+  if (!rel) return base;
+  const abs = path.join(base, rel);
   try { if (fs.statSync(abs).isDirectory()) return abs; } catch {}
-  return LIB_DIR;
+  return base;
 }
 /** 解析资料库里的相对路径，越界（../、绝对路径、软链跳出去）一律拒绝 */
 function libResolve(name) {
@@ -1835,10 +1858,10 @@ function libraryList() {
   files.sort();
   let notes = [];
   try {
-    notes = JSON.parse(fs.readFileSync(NOTES_FILE, "utf8"));
+    notes = JSON.parse(fs.readFileSync(notesFileOf(libBase()), "utf8"));
   } catch {}
   const parts = [];
-  const scope = getLibraryDir() && libRoot() !== LIB_DIR
+  const scope = getLibraryDir() && libRoot() !== libBase()
     ? `（本项目只挂载了资料库的「${getLibraryDir()}」这一块，下面的路径都相对它）`
     : "";
   parts.push(files.length
@@ -1891,10 +1914,10 @@ function libraryRead(name) {
  * 没有这个工具时模型唯一的出路是自己拼绝对路径去 run_shell cp，而那条路径落在 data 目录里，
  * 安全中心本来就该拦（也确实拦了），于是变成一条必然撞墙的死路。
  *
- * **只往一个方向复制：库 → 工作目录。** 反过来不做。资料库是整台服务器共用的一份，
- * 界面上写得明明白白「往里放东西归平台管理员」（非管理员那里挂的是「只读」角标）。
- * 给 agent 开一个写回的口子，等于任何一个租户用户都能借 agent 的手改公共素材架——
- * 这是权限绕过，不是便利。
+ * **只往一个方向复制：库 → 工作目录。** 反过来不做。资料库是人自己摆的那个架子：
+ * 哪份合同模板能留、分在哪个客户的文件夹里，都是他一次次决定的。任务跑出来的东西归工作目录，
+ * 要不要进架子他自己说了算。给 agent 开一个写回的口子，库里就会您您多出一堆没人要的中间产物，
+ * 而这些东西下一次任务又会被 library_list 读回去。
  */
 function libraryImport(name, dir) {
   const src = libResolve(name);
@@ -1958,23 +1981,47 @@ function pdfHowTo(name) {
 }
 
 /** 一串 run 拼成纯文本。加粗/斜体这些格式对模型没意义，丢掉 */
-const runsText = (runs) => (runs || []).map((r) => String(r.s || "")).join("");
+// 链接的地址跟在文字后面用括号带出来。文档里写「详见这里」的时候，
+// 只给"这里"两个字等于没给——模型答不了「文中引用了哪些网址」。
+const runsText = (runs) => (runs || []).map((r) => {
+  const t = String(r.s || "");
+  return r.href && t.trim() ? t + "（" + r.href + "）" : t;
+}).join("");
 
 function docToText(d) {
   const out = [];
+  // 有序列表得真的数出「1. 2. 3.」来。以前不管有序无序一律打"-"，
+  // 于是「合同第 3 条是什么」这种最常见的问题，模型只能自己数横杠，数错不自知。
+  // 计数按层级走：进到深一层要清零，回到浅一层要接着上次数。
+  const counters = [];
   for (const b of d.blocks || []) {
     if (b.t === "img") { out.push("［图片］"); continue; } // 绝不把 data URI 拼进上下文
     if (b.t === "table") {
+      counters.length = 0;
       for (const row of b.rows || []) out.push("| " + row.map((c) => runsText(c.runs).replace(/\n/g, " ")).join(" | ") + " |");
       out.push("");
       continue;
     }
     const s = runsText(b.runs);
+    if (b.t !== "li") counters.length = 0;   // 中间插了正文，序号就该重新起
     if (!s.trim()) { out.push(""); continue; }
     if (b.t === "h") out.push("#".repeat(Math.min(6, Number(b.lvl) || 1)) + " " + s);
-    else if (b.t === "li") out.push("  ".repeat(Number(b.lvl) || 0) + "- " + s);
-    else out.push(s);
+    else if (b.t === "li") {
+      const lvl = Number(b.lvl) || 0;
+      counters.length = lvl + 1;
+      if (b.ord) {
+        counters[lvl] = (counters[lvl] || 0) + 1;
+        out.push("  ".repeat(lvl) + counters[lvl] + ". " + s);
+      } else {
+        counters[lvl] = 0;
+        out.push("  ".repeat(lvl) + "- " + s);
+      }
+    } else out.push(s);
   }
+  // 页眉页脚放最后，标清楚是页眉页脚——「内部资料 请勿外传」这种话只写在页眉里，
+  // 混进正文会被当成某一段的内容，单独一行才知道它管的是整份文档。
+  if (d.header) out.push("", "【页眉】" + d.header);
+  if (d.footer) out.push("【页脚】" + d.footer);
   return out.join("\n");
 }
 
@@ -3138,14 +3185,65 @@ function stripTags(s) {
   return s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#x?\w+;/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-// ---- 多 provider 搜索（Jina / Tavily / Brave），统一返回 [{title,url,desc}] ----
+// ---- 多 provider 搜索（八家 + 自定义），统一返回 [{title,url,desc}] ----
+
+/**
+ * HTTP 状态码翻成人话。
+ *
+ * 光甩一个「搜索失败（402）」出去，屏幕前的人得自己去查 402 是什么意思——
+ * 而这几个码对应的动作完全不同：401 是去换一把 Key，402 是去充值，429 是等一会儿。
+ * 不确定的码不硬编一个原因（乱猜的归因比没有归因还贵），直接把对方回的原文带出来。
+ */
+const SEARCH_HTTP_HINT = {
+  400: "请求被对方拒了，多半是参数对不上",
+  401: "Key 不对，或者还没生效",
+  402: "这把 Key 的额度/余额用完了，去它的控制台充一下",
+  403: "这把 Key 没开通这个接口的权限",
+  404: "接口地址不对（对方说没这个路径）",
+  429: "被限流了，缓一会儿再试",
+};
+async function searchHttpError(name, resp) {
+  const body = await resp.text().catch(() => "");
+  const hint = SEARCH_HTTP_HINT[resp.status];
+  // 对方原文放在后面而不是替换掉提示：提示是给人看的，原文是给排查用的，两个都不能少
+  return new Error(
+    `${name} 搜索失败（${resp.status}${hint ? "：" + hint : ""}）` + (body ? "｜对方原话：" + body.trim().slice(0, 160) : "")
+  );
+}
+
+/**
+ * HTTP 200 不等于搜到了。
+ *
+ * 国内这几家（博查/智谱/七牛）出错时照样回 200，把错情写在 body 的 code/msg 里。
+ * 不认这一层的话，界面上只会显示「返回 0 条结果」——一个 Key 填错的人会以为是没搜到，
+ * 去换关键词，换到天亮也还是 0 条。
+ */
+function searchBodyError(j) {
+  if (!j || typeof j !== "object") return "";
+  const err = j.error;
+  if (err && typeof err === "object" && (err.message || err.msg)) return String(err.message || err.msg);
+  if (typeof err === "string" && err) return err;
+  // code：0 / 200 / "0" / "200" 都算成功；别家用别的成功值时，有结果就不会走到这儿。
+  // 三个名字都得认：博查/智谱用 code，七牛用 status_code，Serper 用 statusCode——
+  // 少认一个，那家 Key 填错时就会一路走到「返回 0 条结果」，人以为是没搜到
+  const code = j.code !== undefined ? j.code : (j.status_code !== undefined ? j.status_code : j.statusCode);
+  const ok = code === undefined || code === null || code === 0 || code === 200 || code === "0" || code === "200";
+  const msg = j.msg || j.message || j.error_msg || "";
+  if (!ok) return (msg ? String(msg) : "对方返回 code=" + code);
+  if (j.success === false) return String(msg || "对方说这次请求没成功");
+  return "";
+}
+
 async function jinaSearch(key, query, n) {
   const resp = await fetch("https://s.jina.ai/?q=" + encodeURIComponent(query), {
     headers: { Authorization: `Bearer ${key}`, Accept: "application/json", "X-Respond-With": "no-content" },
     signal: AbortSignal.timeout(30000),
   });
-  if (!resp.ok) throw new Error(`Jina 搜索失败（${resp.status}）`);
-  const data = (await resp.json()).data || [];
+  if (!resp.ok) throw await searchHttpError("Jina", resp);
+  const j = await resp.json();
+  const bad = searchBodyError(j);
+  if (bad) throw new Error("Jina 搜索失败：" + bad.slice(0, 160));
+  const data = j.data || [];
   return data.slice(0, n).map((r) => ({ title: r.title, url: r.url, desc: r.description || "" }));
 }
 
@@ -3156,7 +3254,7 @@ async function tavilySearch(key, query, n) {
     body: JSON.stringify({ query, max_results: n, include_answer: false, search_depth: "basic" }),
     signal: AbortSignal.timeout(15000),
   });
-  if (!resp.ok) throw new Error(`Tavily 搜索失败（${resp.status}）: ${(await resp.text().catch(() => "")).slice(0, 120)}`);
+  if (!resp.ok) throw await searchHttpError("Tavily", resp);
   const data = (await resp.json()).results || [];
   return data.slice(0, n).map((r) => ({ title: r.title, url: r.url, desc: r.content || "" }));
 }
@@ -3167,25 +3265,138 @@ async function braveSearch(key, query, n) {
     headers: { Accept: "application/json", "Accept-Encoding": "gzip", "X-Subscription-Token": key },
     signal: AbortSignal.timeout(15000),
   });
-  if (!resp.ok) throw new Error(`Brave 搜索失败（${resp.status}）: ${(await resp.text().catch(() => "")).slice(0, 120)}`);
+  if (!resp.ok) throw await searchHttpError("Brave", resp);
   const data = ((await resp.json()).web || {}).results || [];
   return data.slice(0, n).map((r) => ({ title: r.title, url: r.url, desc: r.description || "" }));
 }
 
-const SEARCH_PROVIDERS = { jina: jinaSearch, tavily: tavilySearch, brave: braveSearch };
+// ---- 国内直连的几家（博查 / 智谱 / 七牛云）+ Serper ----
+// 这几家的返回各写各的字段名，但形状是同一个：一个数组，每项有标题、链接、摘要。
+// 所以统一走 pickHits 去「认」，不照某一家的文档把路径写死——写死的那版在对方多包一层之后
+// 会安安静静地返回空，界面上表现成「没搜到」，查起来要人命。
+const HIT_PATHS = [
+  (j) => j && j.data && j.data.webPages && j.data.webPages.value, // 博查（对齐 Bing 的形状）
+  (j) => j && j.search_result,                                    // 智谱 web_search
+  (j) => j && j.data && j.data.results,
+  (j) => j && j.results,
+  (j) => j && j.organic,                                          // Serper
+  (j) => j && Array.isArray(j.data) ? j.data : null,
+  (j) => Array.isArray(j) ? j : null,
+];
+const pickHits = (j) => {
+  for (const f of HIT_PATHS) { let a; try { a = f(j); } catch { a = null; } if (Array.isArray(a) && a.length) return a; }
+  return [];
+};
+const toItems = (j, n) => pickHits(j).slice(0, n).map((r) => ({
+  title: r.title || r.name || r.heading || "",
+  url: r.url || r.link || r.href || "",
+  desc: r.summary || r.snippet || r.description || r.content || r.desc || r.abstract || "",
+})).filter((r) => r.url);
+
+async function postSearch(name, url, headers, body, ms) {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(ms || 15000),
+  });
+  if (!resp.ok) throw await searchHttpError(name, resp);
+  const text = await resp.text();
+  let j;
+  // 200 却不是 JSON——最常见的是地址填成了网页版首页，或者中间挡了一层登录页。
+  // 让它在这儿炸出原文，比往下走一步变成「0 条结果」强
+  try { j = JSON.parse(text); } catch { throw new Error(`${name} 返回的不是 JSON（接口地址填对了吗）｜前 120 字：${text.trim().slice(0, 120)}`); }
+  const bad = searchBodyError(j);
+  if (bad) throw new Error(`${name} 搜索失败：${bad.slice(0, 160)}`);
+  return j;
+}
+
+async function bochaSearch(key, query, n) {
+  return toItems(await postSearch("博查", "https://api.bochaai.com/v1/web-search",
+    { Authorization: `Bearer ${key}` }, { query, count: n, summary: true }), n);
+}
+
+async function zhipuSearch(key, query, n) {
+  return toItems(await postSearch("智谱", "https://open.bigmodel.cn/api/paas/v4/web_search",
+    { Authorization: `Bearer ${key}` }, { search_engine: "search_std", search_query: query, count: n }), n);
+}
+
+/**
+ * 七牛云「全网搜索」。
+ *
+ * 两处跟别家不一样，都踩过：
+ *   ① 条数字段叫 max_results，不叫 count。名字对不上的时候对方不会报错，
+ *      它按自己的默认条数回——要 3 条回 10 条，看着像「能用」，实际参数一直没生效。
+ *   ② 域名在迁。老的推理域名 openai.qiniu.com 和新的 api.qnaigc.com 都在用，
+ *      手头没有这家的 Key，没法实测哪个还活着，所以两个都试：第一个不通就换第二个。
+ *      这不是猜——两个地址都写在他们自己的文档里；不通的那次会把对方原话带出来。
+ */
+async function qiniuSearch(key, query, n) {
+  const hosts = ["https://api.qnaigc.com/v1/search/web", "https://openai.qiniu.com/v1/search/web"];
+  let last;
+  for (const url of hosts) {
+    try {
+      return toItems(await postSearch("七牛云", url,
+        { Authorization: `Bearer ${key}` }, { query, max_results: n, search_type: "web" }), n);
+    } catch (e) {
+      last = e;
+      // 只有「这个地址不对」才换下一个。Key 错、限流、余额没了换个域名也是同样的结果，
+      // 换了只会让人等两倍的时间，还把真正的原因换成了第二个域名的原因
+      if (!/（404|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|不是 JSON/.test(String(e.message || e))) throw e;
+    }
+  }
+  throw last;
+}
+
+async function serperSearch(key, query, n) {
+  return toItems(await postSearch("Serper", "https://google.serper.dev/search",
+    { "X-API-KEY": key }, { q: query, num: n }), n);
+}
+
+// 自定义：上面没列到的那些（阿里云 IQS、秘塔、火山、自建 SearXNG…）不用等我加代码。
+// 只要对方是「POST 一个 JSON、回一个结果数组」，在设置里填个地址就能接上，
+// 字段名交给上面那套去认。请求体里问题字段叫什么也能改（默认 query）。
+async function customSearch(key, query, n, cfg) {
+  const c = cfg || {};
+  const url = c.custom_url || process.env.SEARCH_CUSTOM_URL || "";
+  if (!url) throw new Error("自定义搜索还没填接口地址");
+  const field = c.custom_query_field || process.env.SEARCH_CUSTOM_FIELD || "query";
+  return toItems(await postSearch("自定义", url,
+    key ? { Authorization: `Bearer ${key}` } : {}, { [field]: query, count: n }), n);
+}
+
+// 顺序就是接力顺序：配置里没指定首选时，从上往下找第一个配好了的。
+// 国内几家排在前面——这是个中文产品，默认那一跳应该是在国内能连上的那家。
+const SEARCH_PROVIDERS = {
+  bocha: bochaSearch, zhipu: zhipuSearch, qiniu: qiniuSearch,
+  tavily: tavilySearch, serper: serperSearch, jina: jinaSearch, brave: braveSearch,
+  custom: customSearch,
+};
 
 function searchProviderKey(cfg, provider) {
   // 每个 provider 独立 key；jina 兼容旧字段 api_key / 环境变量
   if (provider === "jina") return cfg.jina_key || cfg.api_key || process.env.JINA_API_KEY || "";
   if (provider === "tavily") return cfg.tavily_key || process.env.TAVILY_API_KEY || "";
   if (provider === "brave") return cfg.brave_key || process.env.BRAVE_API_KEY || "";
+  if (provider === "bocha") return cfg.bocha_key || process.env.BOCHA_API_KEY || "";
+  if (provider === "zhipu") return cfg.zhipu_key || process.env.ZHIPU_API_KEY || "";
+  if (provider === "qiniu") return cfg.qiniu_key || process.env.QINIU_API_KEY || "";
+  if (provider === "serper") return cfg.serper_key || process.env.SERPER_API_KEY || "";
+  if (provider === "custom") return cfg.custom_key || process.env.SEARCH_CUSTOM_KEY || "";
   return "";
+}
+
+// 「这家配好了没」跟「有没有 key」不是一回事：自定义那家认的是地址，
+// 有些自建接口本来就不要鉴权。只看 key 的话，填了地址的自定义会被整条跳过
+function searchProviderReady(cfg, provider, key) {
+  if (provider === "custom") return !!((cfg || {}).custom_url || process.env.SEARCH_CUSTOM_URL);
+  return !!key;
 }
 
 async function webSearch(query, count, searchCfg, hold) {
   const n = Math.min(Math.max(+count || 5, 1), 10);
   const cfg = searchCfg || {};
-  const provider = (cfg.provider || "jina").toLowerCase();
+  const provider = (cfg.provider || "").toLowerCase();
 
   // 多引擎接力：配置的 provider 打头，其余有 key 的引擎依次顶上（谁被限流换下一个），
   // 全军覆没才退 DuckDuckGo 免费档；每一步的失败原因都记下来带给 agent
@@ -3199,9 +3410,9 @@ async function webSearch(query, count, searchCfg, hold) {
   for (const p of chain) {
     const fn = SEARCH_PROVIDERS[p];
     const key = searchProviderKey(cfg, p);
-    if (!fn || !key) continue;
+    if (!fn || !searchProviderReady(cfg, p, key)) continue;
     try {
-      const items = await fn(key, query, n);
+      const items = await fn(key, query, n, cfg);
       if (items.length) {
         // 只有付费引擎真回了结果才记账。下面 DuckDuckGo / 百度那两条兜底不花钱，
         // 记进去会让管理员对着一个虚高的数字去砍额度。
@@ -3221,9 +3432,11 @@ async function webSearch(query, count, searchCfg, hold) {
   // 回退：DuckDuckGo HTML 版（免 key）
   let html = "";
   try {
+    // 8 秒不是 30 秒：这条在国内网络下通常是直接连不上，而它后面还排着百度那条真能用的。
+    // 等满 30 秒的结果是每次搜索都先白白卡半分钟，再去走本来就该走的那条
     const resp = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), {
       headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(8000),
     });
     html = await resp.text();
   } catch (e) {
@@ -3546,7 +3759,9 @@ function canvasNormalizeState(value, lost = null) {
     const relation = String(edge.relation || edge.role || "").slice(0, 40);
     return { source: { id: String(edge.source?.id || edge.source) }, target: { id: String(edge.target?.id || edge.target) }, ...(relation ? { relation } : {}) };
   });
-  return { version: 1, nodes, edges, updatedAt: Number(raw.updatedAt) || 0 };
+  // 版本号照原样留着：版本 2 说明这份文件把连线记全了，界面据此判断「没有连线」是真的没有，
+  // 还是这份文件老到没存过。在这儿统一抹成 1，用户删掉的连线会被当成「老文件缺了一段」补回来
+  return { version: Number(raw.version) >= 2 ? 2 : 1, nodes, edges, updatedAt: Number(raw.updatedAt) || 0 };
 }
 /** 把一份读不动的画布文件原样挪到一边，绝不在它上面写东西。返回备份路径。 */
 function canvasBackup(file, why) {
@@ -3575,8 +3790,10 @@ function canvasReadState(name = canvasCurrentName(), lost = null) {
       (bak ? `原文件已原样备份到 ${path.basename(bak)}，一个字节都没动。` : "备份也没做成，请先手动把这个文件复制一份再说。"));
   }
 }
-function canvasWriteState(value, name = canvasCurrentName()) {
-  const state = canvasNormalizeState(value); state.updatedAt = Date.now();
+function canvasWriteState(value, name = canvasCurrentName(), { pristine = false } = {}) {
+  // pristine：刚建出来的空画布，updatedAt 留 0，意思是「还没人动过」。界面靠这个决定要不要铺
+  // 起手那两张卡——这里要是盖上时间戳，用户自己清空的画布就跟新建的一模一样了
+  const state = canvasNormalizeState(value); state.updatedAt = pristine ? 0 : Date.now();
   const active = canvasSetCurrentName(name), file = canvasStatePath(active), dir = path.dirname(file), tmp = file + "." + process.pid + ".tmp";
   fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
   // 覆盖之前留一代。就一个文件、每次覆盖，不会越攒越多，但「刚才那一下把画布搞没了」
@@ -4046,7 +4263,7 @@ async function executeTool(name, input, opts = {}) {
       case "web_search": {
         // 预估拿「配置里排头的那家」算。真正答上来的可能是接力的下一家（首选被限流了），
         // 那不影响对错——结算那一步在 webSearch 里按**真答上来的那家**记。
-        const g = quotaGate("search", { provider: (opts.search && opts.search.provider) || "jina" });
+        const g = quotaGate("search", { provider: (opts.search && opts.search.provider) || "bocha" });
         if (g.bad) return g.bad;
         security.audit("网络访问", `联网搜索：${input.query}`, "放行");
         try {
@@ -4241,4 +4458,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

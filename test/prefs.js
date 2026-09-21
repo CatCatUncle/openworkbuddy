@@ -320,6 +320,20 @@ function call(method, url, { body, cookie } = {}) {
   });
 }
 
+/**
+ * 把这台机器临时缩回「只有老板一个账号」，跑完原样放回去。
+ *
+ * 「个人桌面版」这个身份现在是三个条件与起来的：Electron 壳 + 只听本机 + 这台机器上只有一个账号。
+ * 前两个条件下面用 setDeployment 摆，第三个得真去动账号表——因为它判的就是账号表。
+ */
+function 只剩一个账号(fn) {
+  const st = account._internals.loadUsers();
+  const 全部 = st.users;
+  st.users = 全部.slice(0, 1);
+  account._internals.saveUsers(st);
+  try { return fn(); } finally { st.users = 全部; account._internals.saveUsers(st); }
+}
+
 (async () => {
   await listening;
 
@@ -383,14 +397,26 @@ function call(method, url, { body, cookie } = {}) {
   r = await call("GET", "/api/settings", { cookie: boss });
   eq(r.json.search.jina_key, "REAL-JINA-KEY", "反向对照：平台管理员读得到真值");
 
-  // 切成个人桌面版：两个开关必须一起松。只松一半的话，界面把 Key 显示成空，
-  // 用户随手点一下保存就把真 Key 抹了 —— 这是整套改动里唯一真会丢数据的坑
+  // 「个人桌面版」拆墙的前提是「屏幕前就这一个人」。壳装在本机、只听 127.0.0.1 —— 这两条
+  // 还不够：同一台 Mac 上开了两个账号，这话就不成立了，拆了墙等于小张能改老板的 Key 和 MCP。
+  // 用户的原话是「怎么切换账号了我的宠物设置还有什么通信渠道这些设置还是没有变的啊」——
+  // 就是这儿塌的：两个人共用一份 config.json。
   admin.setDeployment({ shell: true, host: "127.0.0.1" });
   r = await call("POST", "/api/settings", { cookie: zhang, body: { models: [{ name: "x", model: "y" }] } });
-  eq(r.status, 200, "桌面版：没有「平台管理员」这回事，服务器级设置也能改");
+  eq(r.status, 403, "壳 + 本机，但机器上有两个账号：墙不许拆（这是用户报的那个串台）");
   r = await call("GET", "/api/settings", { cookie: zhang });
-  eq(r.json.search.jina_key, "REAL-JINA-KEY", "同一趟里脱敏也必须跟着关（否则一存就把真 Key 抹成空）");
-  eq(r.json.models[0].api_key, "REAL-MODEL-KEY", "模型的 Key 同样是真值");
+  eq(r.json.search.jina_key, "", "  └ 脱敏也照旧，成员读不到别人的 Key");
+
+  // 缩回一个账号：这才是出厂就装一份、自己一个人用的那台机器，一切照旧
+  await 只剩一个账号(async () => {
+    admin.setDeployment({ shell: true, host: "127.0.0.1" }); // 重新判一次账号数
+    r = await call("POST", "/api/settings", { cookie: boss, body: { models: [{ name: "x", model: "y" }] } });
+    eq(r.status, 200, "桌面版（真就一个账号）：没有「平台管理员」这回事，服务器级设置也能改");
+    // 两个开关必须一起松。只松一半的话，界面把 Key 显示成空，用户随手点一下保存就把真 Key 抹了
+    r = await call("GET", "/api/settings", { cookie: boss });
+    eq(r.json.search.jina_key, "REAL-JINA-KEY", "同一趟里脱敏也必须跟着关（否则一存就把真 Key 抹成空）");
+    eq(r.json.models[0].api_key, "REAL-MODEL-KEY", "模型的 Key 同样是真值");
+  });
   admin.setDeployment({ shell: false, host: "0.0.0.0" });
   r = await call("POST", "/api/settings", { cookie: zhang, body: { models: [] } });
   eq(r.status, 403, "切回服务器形态：墙立刻回来（说明是每次请求现判，不是启动时烙死的）");
@@ -427,11 +453,19 @@ function call(method, url, { body, cookie } = {}) {
   eq(CONFIG.agent.engine, "builtin", "全程没有谁把成员的选择写回 config.agent");
   eq(CONFIG.agent.engine_options["claude-code"].model, "sonnet", "config 里那份 engine_options 也没被就地改（覆盖必须是复制一层）");
 
-  // 桌面版短路：那边一切照旧落 config.json，就算偏好文件在也不该被读
+  // 桌面版短路：只有一个账号时那边一切照旧落 config.json，就算偏好文件在也不该被读
   admin.setDeployment({ shell: true, host: "127.0.0.1" });
   r = await call("GET", "/api/prefs-probe", { cookie: zhang });
-  eq(r.json.engine, "builtin", "桌面版：不读偏好文件，一切照旧看 config（壳在任何人登录之前就靠 config 装宠物和快捷键）");
-  eq(r.json.sameObject, true, "  └ 也不白复制一份视图出来");
+  eq(r.json.engine, "claude-code", "壳 + 本机，但有两个账号：偏好照读，小张看到的还是他自己选的引擎");
+  eq(r.json.pet.scale, 1.5, "  └ 宠物缩放也是他自己的（用户报的「切换账号宠物设置没变」就是这条）");
+  r = await call("GET", "/api/prefs-probe", { cookie: boss });
+  eq(r.json.engine, "builtin", "  └ 同一台机器上老板看到的仍是他自己那份，没被小张的偏好带跑");
+  await 只剩一个账号(async () => {
+    admin.setDeployment({ shell: true, host: "127.0.0.1" });
+    r = await call("GET", "/api/prefs-probe", { cookie: boss });
+    eq(r.json.engine, "builtin", "桌面版（真就一个账号）：不读偏好文件，一切照旧看 config（壳在任何人登录之前就靠 config 装宠物和快捷键）");
+    eq(r.json.sameObject, true, "  └ 也不白复制一份视图出来");
+  });
   admin.setDeployment({ shell: false, host: "0.0.0.0" });
 
   console.log("\n【9】没有请求上下文的地方（定时任务 / IM / 命令行 openworkbuddy）必须回落到 config");
@@ -448,7 +482,7 @@ function call(method, url, { body, cookie } = {}) {
   eq(prefs.agentCfg(CONFIG).engine, "builtin", "出了这段又回落");
 
   server.close();
-  runSourcePins();
+  await runSourcePins();
   runConfigGates();
   runSeedCopy();
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
@@ -566,7 +600,7 @@ function runSeedCopy() {
   }
 }
 
-function runSourcePins() {
+async function runSourcePins() {
   const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
   const agentSrc = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
   const mainSrc = fs.readFileSync(path.join(ROOT, "electron-main.js"), "utf8");
@@ -637,8 +671,17 @@ function runSourcePins() {
   eq(exited, "EXIT:1", "壳没接住也得退回命令行行为，不能连报错都吞了");
   delete global.__wbBootFail;
 
+  // 壳自己那本字典（中英各一份）。下面这些断言量的是中文那本的措辞——
+  // 英文那本翻没翻全、有没有人又把界面上的字写死回代码里，归 e2e 的 testShellI18n 管。
+  const SHELL_TEXT = new Function(mainSrc.slice(
+    mainSrc.indexOf("const SHELL_TEXT = {"), mainSrc.indexOf("\nfunction osLang(")
+  ).replace("const SHELL_TEXT =", "return") + ";")();
+  const zhText = SHELL_TEXT.zh;
+  ok(zhText && zhText.hintMissingFiles, "electron-main.js 里抠不出 SHELL_TEXT.zh");
+
   // bootHint：这段文案是「什么都打不开」时用户手里唯一的线索
-  const bootHint = new Function(slice("electron-main.js", "bootHint") + "\nreturn bootHint;")();
+  const bootHintRaw = new Function(slice("electron-main.js", "bootHint") + "\nreturn bootHint;")();
+  const bootHint = (msg, port) => String(bootHintRaw(msg, port, zhText));
   ok(/重新下载/.test(bootHint("Cannot find module './engines/index.js'", 3800)),
      "装机包缺文件 → 让用户重下（v0.1.1 缺 engines/ 时用户看到的正是「双击没反应」）");
   const eacces = bootHint("listen EACCES: permission denied 0.0.0.0:3800", 3800);
@@ -664,15 +707,19 @@ function runSourcePins() {
   ok(/OPENWORKBUDDY_HOME/.test(bootHint("ENOSPC: no space left on device, mkdir '/x'", 3800)), "磁盘满了也归到这条");
   ok(/excludedportrange/.test(bootHint("listen EACCES: permission denied 0.0.0.0:3800", 3800)),
      "  └ 反向：listen EACCES 仍旧走端口那条，没被新分支抢走");
-  ok(mainSrc.indexOf("OPENWORKBUDDY_HOME") < mainSrc.indexOf("excludedportrange"),
+  // 顺序钉子得钉在分支上。措辞搬进字典之后，再拿 OPENWORKBUDDY_HOME / excludedportrange
+  // 在整份源码里比先后，量到的是字典里两条的排版顺序——跟哪个分支先判没有关系。
+  const hintBody = slice("electron-main.js", "bootHint");
+  ok(hintBody.indexOf("hintDataDir") < hintBody.indexOf("hintPortDenied"),
      "  └ 顺序钉子：数据目录那条写在端口 EACCES 前面（写后面就永远轮不到）");
 
   // bootAdvice：开机闸门已经查出病因的三种死法，页面上不许再去猜。
   // 闸门给的是中文人话（「依赖还没装…跑一次 npm install」），bootHint 认的是 Cannot find module、
   // EADDRINUSE 这些英文报错——一条都对不上，于是最知道该怎么修的三种情况，
   // 启动失败页的大标题全是「服务端启动时崩了，把这行贴到 issue 里」。
-  const bootAdvice = new Function("bootHint",
-    slice("electron-main.js", "bootAdvice") + "\nreturn bootAdvice;")(bootHint);
+  const bootAdviceRaw = new Function("bootHint",
+    slice("electron-main.js", "bootAdvice") + "\nreturn bootAdvice;")(bootHintRaw);
+  const bootAdvice = (err, msg, port) => String(bootAdviceRaw(err, msg, port, zhText));
   const bc = require(path.join(ROOT, "boot-check"));
   for (const [what, facts, want] of [
     ["Node 太老", { nodeVersion: "v16.20.2", missingDeps: [] }, /nodejs\.org|nvm/],
@@ -715,6 +762,7 @@ function runSourcePins() {
       showBootFailure: (e) => calls.failure.push(e),
       dialog: { showErrorBox: (t, b) => calls.box.push(t + "\n" + b) },
       bootHint: () => "照着这句做", bootAdvice: (e, m, p) => (e && e.bootProblem ? e.bootProblem.fix : "照着这句做"),
+      T: () => zhText, osLang: () => "zh",
       PORT: 3800, BOOT_LOG: "/tmp/ow.log",
       app: { isReady: () => true, whenReady: () => Promise.resolve(), exit: (c) => calls.exit.push(c) },
       ...over,
@@ -744,6 +792,7 @@ function runSourcePins() {
     const env = {
       bootAdvice: (e, m, p) => (e && e.bootProblem ? e.bootProblem.fix : "猜出来的那句"),
       bootHint: () => "猜出来的那句", PORT: 3800, BOOT_LOG: "/tmp/ow.log",
+      T: () => zhText, osLang: () => "zh",
       win: { isDestroyed: () => false, loadURL: (u) => { seen.url = u; }, show: () => {}, focus: () => {} },
       fatal: () => {}, FATAL_SHOWN: false,
       dataPath: (f) => "/家/OpenWorkBuddy/" + f,
@@ -817,25 +866,31 @@ function runSourcePins() {
       BrowserWindow: { fromWebContents: () => ({}) },
       clipboard: { writeText: () => {} },
       shell: { openExternal: () => {} },
+      // 菜单上的字出自哪本字典是 e2e testShellI18n 的事；这儿钉的是「右键到底弹不弹得出东西」
+      T: () => zhText,
+      uiLang: async () => "zh",
+      contextMenuItems: new Function("clipboard", "shell",
+        slice("electron-main.js", "contextMenuItems") + "\nreturn contextMenuItems;")({ writeText: () => {} }, { openExternal: () => {} }),
     };
     const keys = Object.keys(env);
     const attach = new Function(...keys,
       slice("electron-main.js", "attachContextMenu") + "\nreturn attachContextMenu;")(...keys.map((k) => env[k]));
     let fire = null;
-    attach({ on: (ev, fn) => { if (ev === "context-menu") fire = fn; }, copyImageAt: () => {} });
-    return (params) => { popped.length = 0; fire(null, params); return popped[0] || null; };
+    attach({ on: (ev, fn) => { if (ev === "context-menu") fire = fn; }, copyImageAt: () => {}, isDestroyed: () => false });
+    // 弹之前要先问一句界面语言，这一问是异步的——同步读 popped 永远是空的
+    return async (params) => { popped.length = 0; await fire(null, params); return popped[0] || null; };
   };
   {
     const fire = mkMenu();
-    const picked = fire({ selectionText: "依赖还没装（找不到 express）。" }) || [];
+    const picked = (await fire({ selectionText: "依赖还没装（找不到 express）。" })) || [];
     ok(picked.some((it) => it.role === "copy"),
        "★选中启动失败页上的字，右键弹得出「复制」★ 让一个刚被挡在门外的人手抄报错，等于没给出路",
        JSON.stringify(picked));
-    const link = fire({ selectionText: "", linkURL: "https://github.com/CatCatUncle/openworkbuddy/issues" }) || [];
+    const link = (await fire({ selectionText: "", linkURL: "https://github.com/CatCatUncle/openworkbuddy/issues" })) || [];
     ok(link.some((it) => /在浏览器里打开/.test(it.label || "")),
        "  └ 那一页上的「提 issue」右键能直接丢给系统浏览器（不是在应用里另开一个没地址栏的窗）",
        JSON.stringify(link));
-    eq(fire({ selectionText: "" }), null,
+    eq(await fire({ selectionText: "" }), null,
        "  └ 反向对照：什么都没选中时不弹一个空菜单（证明上面两条是真判出来的）");
   }
 

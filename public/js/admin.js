@@ -20,10 +20,17 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) =>
   String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ic = (name, cls) => `<svg class="i${cls ? " " + cls : ""}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
-const num = (n) => (+n || 0).toLocaleString("zh-CN");
-/** tokens 这类大数走「万」，一屏里塞得下也读得出量级 */
+const EN = () => typeof I18N !== "undefined" && I18N.getLang() === "en";
+const num = (n) => (+n || 0).toLocaleString(EN() ? "en-US" : "zh-CN");
+/** tokens 这类大数走「万」，一屏里塞得下也读得出量级。英文没有「万」这一档，换成 k / M / B */
 const big = (n) => {
   n = +n || 0;
+  if (EN()) {
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+    if (n >= 1e4) return Math.round(n / 1e3) + "k";
+    return num(n);
+  }
   if (n >= 100000000) return (n / 100000000).toFixed(2) + " 亿";
   if (n >= 10000) return (n / 10000).toFixed(n >= 1000000 ? 0 : 1) + " 万";
   return num(n);
@@ -116,7 +123,12 @@ function modal(opts) {
     .map((f) => {
       const id = "mf-" + f.name;
       let ctl;
-      if (f.type === "select")
+      // 选人：人多的时候下拉框是不能用的（三千个 <option>，而且找一个人只能一路滚）。
+      // 换成打字搜——敲字的时候才去要二十个候选，选中之后框里留的是登录名，
+      // 后端拿它精确比对；打错了会被后端挡下并说清楚「不是这个组织的人」
+      if (f.type === "user")
+        ctl = `<input class="ui-input" id="${id}" list="${id}-l" value="${esc(f.value || "")}" placeholder="${esc(f.placeholder || "")}" autocomplete="off"><datalist id="${id}-l"></datalist>`;
+      else if (f.type === "select")
         ctl = `<select class="ui-input ui-select" id="${id}">${(f.options || [])
           .map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(f.value) ? " selected" : ""}>${esc(o.label)}</option>`)
           .join("")}</select>`;
@@ -143,6 +155,14 @@ function modal(opts) {
     </div>
   </div>`;
   document.body.appendChild(mask);
+  // 选人格：一打开就先给几个候选（别让人对着一个空框猜有谁），之后打字再换
+  mask.querySelectorAll("input[list]").forEach((box) => {
+    const list = mask.querySelector("#" + box.getAttribute("list"));
+    const fill = async () => { const { html } = await userOptions(box.value); if (list) list.innerHTML = html; };
+    let t = 0;
+    box.oninput = () => { clearTimeout(t); t = setTimeout(fill, 250); };
+    fill();
+  });
   // 勾选组 → 隐藏格。先同步一次，否则「没动过就点保存」会把原来勾着的全清掉
   mask.querySelectorAll("[data-checks]").forEach((box) => {
     const hid = box.querySelector('input[type="hidden"]');
@@ -307,13 +327,13 @@ function bindFilter(root, f, onChange) {
  * 翻页条。写「第 X-Y 条，共 N 条」而不是「第 3 页」——
  * 对账的人心里记的是条数，不是页码。
  */
-function pager(f, total, limit) {
+function pager(f, total, limit, unit = "条") {
   if (!total) return "";
   const from = f.offset + 1, to = Math.min(total, f.offset + limit);
   const more = f.offset + limit < total;
-  if (!more && f.offset === 0) return `<div class="ad-pager"><span class="ad-pager-n">共 ${num(total)} 条</span></div>`;
+  if (!more && f.offset === 0) return `<div class="ad-pager"><span class="ad-pager-n">共 ${num(total)} ${unit}</span></div>`;
   return `<div class="ad-pager">
-    <span class="ad-pager-n">第 ${num(from)}-${num(to)} 条，共 ${num(total)} 条</span>
+    <span class="ad-pager-n">第 ${num(from)}-${num(to)} ${unit}，共 ${num(total)} ${unit}</span>
     <span class="ad-row">
       <button class="ui-btn ui-btn--outline ui-btn--sm" data-prev${f.offset ? "" : " disabled"}>上一页</button>
       <button class="ui-btn ui-btn--outline ui-btn--sm" data-next${more ? "" : " disabled"}>下一页</button>
@@ -324,6 +344,59 @@ function bindPager(root, f, limit, onChange) {
   const p = root.querySelector("[data-prev]"), n = root.querySelector("[data-next]");
   if (p) p.onclick = () => onChange({ ...f, offset: Math.max(0, f.offset - limit) });
   if (n) n.onclick = () => onChange({ ...f, offset: f.offset + limit });
+}
+/**
+ * 「看谁的」这类选人框：打字才去问候选，不预先把花名册搬下来。
+ *
+ * 下拉框在人多的时候是不能用的——三千个 <option> 光这份清单就 491 KB，而且要在里面
+ * 找一个人只能一路滚。这里换成输入框 + <datalist>：敲字的时候才去要二十个候选，
+ * 原生下拉负责摆出来，键盘上下选也是浏览器自己的事。
+ *
+ * 框里留的是**登录名**（datalist 选中之后回填进输入框的就是 option 的 value），
+ * 所以拿去筛是精确的，不会因为两个人昵称一样而筛错人。
+ */
+async function userOptions(kw) {
+  try {
+    const r = await api("/api/admin/members?" + qs({ q: String(kw || "").trim(), fields: "lite", limit: 20 }));
+    const list = r.members || [];
+    return { list, html: list
+      .map((m) => `<option value="${esc(m.username)}">${esc(m.nickname || m.username)}${m.dept ? " · " + esc(m.dept) : ""}</option>`)
+      .join("") };
+  } catch {
+    // 候选拉不到就是没有下拉，框本身照样能用——别让一趟失败的补全把整张表卡住
+    return { list: [], html: "" };
+  }
+}
+function userPick(attr, value, placeholder = "全部成员") {
+  const id = "ad-pick-" + attr;
+  return `<input class="ui-input ad-search" list="${id}" data-${attr} value="${esc(value || "")}"
+    placeholder="${esc(placeholder)}" autocomplete="off" aria-label="${esc(placeholder)}"><datalist id="${id}"></datalist>`;
+}
+/**
+ * 把上面那个框接起来。onPick 收到的是登录名，清空了就是空串。
+ *
+ * 判「选好了没」看的是「这串是不是真有这么个人」，不是「按没按回车」——从原生下拉里
+ * 点一下是不按回车的。反过来，打了一半还没匹配上的时候不动表格：那会儿筛出来多半是空的，
+ * 而空表跟「这个人没有流水」长得一模一样。
+ */
+function bindUserPick(root, attr, current, onPick) {
+  const box = root.querySelector("[data-" + attr + "]");
+  if (!box) return;
+  const list = root.querySelector("#ad-pick-" + attr);
+  let t = 0, last = String(current || "");
+  const run = async () => {
+    const kw = box.value.trim();
+    const { list: found, html } = await userOptions(kw);
+    if (list) list.innerHTML = html;
+    if (kw === last) return;
+    if (!kw) { last = ""; onPick(""); return; }
+    const who = found.find((m) => m.username === kw);
+    if (!who) return;
+    last = who.username;
+    onPick(who.username);
+  };
+  box.oninput = () => { clearTimeout(t); t = setTimeout(run, 250); };
+  box.onchange = () => { clearTimeout(t); run(); };
 }
 /** 存成 CSV 下载。BOM 不能省，不然 Excel 打开中文表头是乱码 */
 function downloadCsv(name, head, rows) {
@@ -439,17 +512,14 @@ const PAGES = {};
  */
 PAGES.home = {
   load: async () => {
-    const [o, st, m] = await Promise.all([
-      api("/api/admin/overview"),
-      api("/api/admin/stats"),
-      api("/api/admin/members").catch(() => ({ members: [] })),
-    ]);
-    return { o, st, m };
+    // 「额度见底几个人」以前是把整份花名册拉过来前端自己数的——3000 人的组织，
+    // 为了首页上一行待办搬 1041 KB。现在概览那趟顺手把这个数一起带回来了
+    const [o, st] = await Promise.all([api("/api/admin/overview"), api("/api/admin/stats")]);
+    return { o, st };
   },
-  render: ({ o, st, m }) => {
+  render: ({ o, st }) => {
     const t = st.totals;
     const seatPct = o.seats.total ? (o.seats.used / o.seats.total) * 100 : 0;
-    const members = m.members || [];
 
     // ---- 待办：只列真的需要人动手的，凑数的条目会让人很快学会无视这一整块 ----
     const todo = [];
@@ -460,11 +530,8 @@ PAGES.home = {
     else if (seatPct >= 80)
       todo.push({ kind: "info", icon: "users", text: `席位用到 ${Math.round(seatPct)}%，还剩 ${o.seats.total - o.seats.used} 个。`, to: "sub", act: "看套餐" });
     // 额度见底的人：闸门开着才有意义，关着的时候额度只是记账，拦不住人
-    if (o.settings && o.settings.meter_on) {
-      const dry = members.filter((u) => u.status === "active" && (u.monthly_quota || 0) > 0 && (u.monthly_left || 0) <= 0);
-      if (dry.length)
-        todo.push({ kind: "warn", icon: "zap", text: `<b>${dry.length} 个人</b>本月固定额度已用完（${dry.slice(0, 3).map((u) => esc(u.nickname || u.username)).join("、")}${dry.length > 3 ? " 等" : ""}），他们现在发不出请求。`, to: "usage-member", act: "去充值" });
-    }
+    if (o.settings && o.settings.meter_on && o.monthly.dry)
+      todo.push({ kind: "warn", icon: "zap", text: `<b>${o.monthly.dry} 个人</b>本月固定额度已用完（${(o.monthly.dry_names || []).map(esc).join("、")}${o.monthly.dry > (o.monthly.dry_names || []).length ? " 等" : ""}），他们现在发不出请求。`, to: "usage-member?dry=1", act: "去充值" });
     if (!t.runs_month)
       todo.push({ kind: "info", icon: "info", text: "这个月还没有人跑过任务。新部署的话，先去「模型与 Key」确认渠道填好了。", to: PLATFORM ? "models" : "usage-org", act: "去看看" });
     const todoHtml = todo.length
@@ -632,36 +699,98 @@ PAGES.sub = {
 const inpO = (name, value, extra) => `<input class="ui-input" data-o="${esc(name)}" value="${esc(value == null ? "" : value)}" ${extra || ""}>`;
 
 /* ============ 成员用量 ============ */
+/**
+ * 这一页是按人头长的：一行一个人。所以筛、排、切全在服务端做，跟成员页一个规矩。
+ * 以前是一趟把整份花名册（连额度带余额）拉回来前端自己画——3000 人的组织一次回包
+ * 678 KB、服务端为它翻了 5.0 MB 的盘，而屏幕上看得见的是十几行。
+ *
+ * 默认按「累计 tokens」从多到少。这一页回答的是「钱花在谁身上了」；按花名册顺序排的话，
+ * 花得最多的那几个散在六十页中间，等于没答。
+ */
+const USAGE_PAGE = 50;
+let usageMQ = { q: "", dry: false, offset: 0 };
+let usageMQRaw = null; // 上次从地址栏里读进来的那串
+/**
+ * 首页那条待办点「去充值」过来是 #/usage-member?dry=1，得直接落在见底的那几个人身上。
+ *
+ * 只在地址栏**变了**的时候读：页内搜索和翻页走的是 route(true)，地址栏原样不动，
+ * 每次都读一遍的话，人刚敲进搜索框的字会被地址栏里那份旧的冲掉。
+ */
+function syncUsageMQ() {
+  const raw = location.hash.split("?")[1] || "";
+  if (raw === usageMQRaw) return;
+  usageMQRaw = raw;
+  const p = new URLSearchParams(raw);
+  usageMQ = { q: p.get("q") || "", dry: p.get("dry") === "1", offset: 0 };
+}
 PAGES["usage-member"] = {
-  load: () => api("/api/admin/usage?limit=1"),
+  load: async () => {
+    syncUsageMQ();
+    // dry 是个开关，关着的时候别往 URL 上拼 dry=false——qs 只滤空串和 null，false 会原样拼出去
+    const d = await api("/api/admin/usage/members?" + qs({
+      q: usageMQ.q, dry: usageMQ.dry ? 1 : "", offset: usageMQ.offset, limit: USAGE_PAGE,
+    }));
+    // 翻到第 5 页的时候别人删掉了几个人，服务端会把这一趟退回最后一页。
+    // 把它退回来的那个位置记下来，不然翻页条上写的还是第 5 页
+    usageMQ.offset = d.offset;
+    return d;
+  },
   render: (d) => {
-    const byUser = new Map(d.by_user.map((x) => [x.key, x]));
-    const rows = d.members.map((m) => {
-      const u = byUser.get(m.username) || { runs: 0, tokens: 0, credits: 0 };
-      return [
-        `<div style="font-weight:500">${esc(m.nickname || m.username)}</div><div class="fd ad-mono">${esc(m.username)}</div>`,
-        esc(m.dept || "—"),
-        badge(ROLE_LABEL[m.role] || m.role, m.role === "member" ? "outline" : "secondary"),
-        num(m.monthly_quota),
-        num(m.monthly_left),
-        num(m.credits),
-        `<b>${num(m.balance)}</b>`,
-        num(u.runs),
-        big(u.tokens),
-        RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--xs" data-topup="${esc(m.username)}">充加油包</button>`,
-      ];
-    });
+    const filtered = d.matched !== d.total;
+    const rows = d.rows.map((m) => [
+      `<div style="font-weight:500">${esc(m.nickname || m.username)}</div><div class="fd ad-mono">${esc(m.username)}</div>`,
+      esc(m.dept || "—"),
+      badge(ROLE_LABEL[m.role] || m.role, m.role === "member" ? "outline" : "secondary"),
+      num(m.monthly_quota),
+      // 见底的那几个人得一眼看出来——这一页多半就是为他们打开的
+      num(m.monthly_left) + (m.dry ? " " + badge("见底", "destructive") : ""),
+      num(m.credits),
+      `<b>${num(m.balance)}</b>`,
+      num(m.runs),
+      big(m.tokens),
+      RO ? "" : `<button class="ui-btn ui-btn--outline ui-btn--xs" data-topup="${esc(m.username)}">充加油包</button>`,
+    ]);
     const cols = [
       { t: "成员" }, { t: "部门" }, { t: "角色" },
       { t: "月额度", right: true }, { t: "本月剩余", right: true }, { t: "加油包", right: true }, { t: "可用合计", right: true },
       { t: "累计运行", right: true }, { t: "累计 tokens", right: true }, { t: "" },
     ];
+    // 人多的时候才出筛选条：三个人的团队顶一条筛选栏在头上，纯属添乱。
+    // 「只看额度见底」那颗钮上的数是**全组织**的总数，不跟着筛选变——跟着变的话，
+    // 一按下去它就只数筛出来的那些，钮上永远写着自己筛出来的结果
+    const bar = d.total < 8 ? "" : `<div class="ad-filter">
+      <div class="ad-chips">
+        <span class="ad-sub">${filtered ? `筛出 ${num(d.matched)} / ${num(d.total)} 人` : `共 ${num(d.total)} 人`}</span>
+        ${d.dry || usageMQ.dry ? `<button class="ad-chip${usageMQ.dry ? " is-on" : ""}" data-dry>只看额度见底（${num(d.dry)}）</button>` : ""}
+      </div>
+      <div class="ad-filter-r">
+        <input class="ui-input ad-search" data-uq value="${esc(usageMQ.q)}" placeholder="搜姓名 / 账号 / 部门">
+      </div>
+    </div>`;
     return `<div class="ad-wrap">
       ${note("「月额度 / 本月剩余 / 加油包」是当下的余额；右边两列<b>累计</b>是这个人从有记录以来的总消耗，不是本月。想看本月请去「组织用量」。")}
-      ${cardT(secT("成员用量", "扣费顺序：先扣本月固定额度，再扣加油包。"), table(cols, rows))}
+      ${cardT(
+        secT("成员用量", "按累计 tokens 从多到少排。扣费顺序：先扣本月固定额度，再扣加油包。"),
+        bar + (rows.length
+          ? table(cols, rows) + pager(usageMQ, d.matched, USAGE_PAGE, "人")
+          : empty(usageMQ.dry ? "没有人的本月固定额度见底" : filtered ? "没有符合条件的成员" : "还没有成员"))
+      )}
     </div>`;
   },
   bind: (root) => {
+    // 改了筛选条件就回到第一页：留在第 7 页搜一个字，多半是一张空表，
+    // 而人只会以为「没这个人」
+    const go = (f) => { usageMQ = f; route(true); };
+    const q = root.querySelector("[data-uq]");
+    if (q) {
+      // 防抖 250ms：搜的是**整个组织**，每个字发一趟请求，一个词打完就是六七趟
+      let t = 0;
+      q.oninput = () => { clearTimeout(t); t = setTimeout(() => go({ ...usageMQ, q: q.value, offset: 0 }), 250); };
+      q.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(t); go({ ...usageMQ, q: q.value, offset: 0 }); } };
+    }
+    const dry = root.querySelector("[data-dry]");
+    if (dry) dry.onclick = () => go({ ...usageMQ, dry: !usageMQ.dry, offset: 0 });
+    bindPager(root, usageMQ, USAGE_PAGE, go);
     root.querySelectorAll("[data-topup]").forEach((b) => {
       b.onclick = () =>
         modal({
@@ -737,6 +866,9 @@ let detailUser = "";
 let detailF = { from: "", to: "", q: "", offset: 0 };
 const DETAIL_PAGE = 50;
 PAGES["usage-detail"] = {
+  // 这一页只要流水，不要花名册。「看谁的」那个框是打字才去问候选的（见 userPick），
+  // 以前是把整份名单捎带回来画成下拉——于是 ?limit= 根本缩不小回包：3000 人时 limit=50 是 491 KB，
+  // 其中 430 KB 是那三千个 <option>
   load: () =>
     api("/api/admin/usage?" + qs({ limit: DETAIL_PAGE, offset: detailF.offset, user: detailUser, from: detailF.from, to: detailF.to, q: detailF.q })),
   render: (d) => {
@@ -751,9 +883,6 @@ PAGES["usage-detail"] = {
       num(e.credits),
       e.elapsed_ms ? Math.round(e.elapsed_ms / 1000) + " 秒" : "—",
     ]);
-    const opts = ['<option value="">全部成员</option>']
-      .concat(d.members.map((m) => `<option value="${esc(m.username)}"${m.username === detailUser ? " selected" : ""}>${esc(m.nickname || m.username)}</option>`))
-      .join("");
     const r = d.range || {};
     const filtered = !!(detailF.from || detailF.to || detailF.q || detailUser);
     return `<div class="ad-wrap ad-wrap--wide">
@@ -764,7 +893,7 @@ PAGES["usage-detail"] = {
         ),
         `${filterBar(detailF, {
           placeholder: "搜成员 / 模型 / 入口",
-          extra: `<select class="ui-input ui-select ad-pick" data-user>${opts}</select>`,
+          extra: userPick("user", detailUser, "全部成员"),
         })}
         ${kpi([
           { label: "命中条数", value: num(d.total || 0) },
@@ -785,7 +914,7 @@ PAGES["usage-detail"] = {
     const go = (f) => { detailF = f; route(true); };
     bindFilter(root, detailF, go);
     bindPager(root, detailF, DETAIL_PAGE, go);
-    root.querySelector("[data-user]").onchange = (e) => { detailUser = e.target.value; detailF = { ...detailF, offset: 0 }; route(true); };
+    bindUserPick(root, "user", detailUser, (name) => { detailUser = name; detailF = { ...detailF, offset: 0 }; route(true); });
     root.querySelector("[data-csv]").onclick = () =>
       downloadCsv(
         "用量明细",
@@ -825,24 +954,26 @@ PAGES.stats = {
 
 /* ============ 成员与部门 ============ */
 /**
- * 成员筛选是在**前端**做的：这份名单一次就全拉回来了，几百人也就几十 KB，
- * 打一个字往服务器跑一趟只会更慢。用量明细那边相反——那是几万条的账本，必须后端筛。
+ * 成员的筛选和翻页都在**服务端**做。以前是整份拉回来前端自己筛——二十个人的团队没问题，
+ * 三千人的时候是一次 1041 KB 的回包、浏览器里 78098 个 DOM 节点、点进来到表格出来 878ms，
+ * 而一屏看得见十几行。想找一个人，前提是先把三千人搬到浏览器里。
  */
-let memberQ = { q: "", role: "", status: "" };
+const MEMBER_PAGE = 50;
+let memberQ = { q: "", role: "", status: "", offset: 0 };
 PAGES.members = {
   load: async () => {
-    const [m, i] = await Promise.all([api("/api/admin/members"), api("/api/admin/invites")]);
+    const [m, i] = await Promise.all([
+      api("/api/admin/members?" + qs({ ...memberQ, limit: MEMBER_PAGE })),
+      api("/api/admin/invites"),
+    ]);
+    // 翻到第 5 页的时候别人删掉了几个人，服务端会把这一趟退回最后一页。
+    // 把它退回来的那个位置记下来，不然翻页条上写的还是第 5 页
+    memberQ.offset = m.offset;
     return { m, i };
   },
   render: ({ m, i }) => {
-    const needle = memberQ.q.trim().toLowerCase();
-    const shown = m.members.filter(
-      (u) =>
-        (!needle || [u.username, u.nickname, u.dept].some((x) => String(x || "").toLowerCase().includes(needle))) &&
-        (!memberQ.role || u.role === memberQ.role) &&
-        (!memberQ.status || u.status === memberQ.status)
-    );
-    const filtered = shown.length !== m.members.length;
+    const shown = m.members;                    // 筛完切完的这一页，服务端给的
+    const filtered = m.matched !== m.total;
     const rows = shown.map((u) => [
       `<div style="font-weight:500">${esc(u.nickname || u.username)}${u.owner ? " " + badge("所有者", "outline") : ""}</div><div class="fd ad-mono">${esc(u.username)}</div>`,
       badge(ROLE_LABEL[u.role] || u.role, u.role === "member" ? "outline" : "secondary"),
@@ -899,8 +1030,8 @@ PAGES.members = {
         .concat(list.map(([v, t]) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(t)}</option>`))
         .join("") + `</select>`;
     // 人多的时候才出筛选条：三个人的团队顶一条筛选栏在头上，纯属添乱
-    const bar = m.members.length < 8 ? "" : `<div class="ad-filter">
-      <div class="ad-chips"><span class="ad-sub">${filtered ? `筛出 ${shown.length} / ${m.members.length} 人` : `共 ${m.members.length} 人`}</span></div>
+    const bar = m.total < 8 ? "" : `<div class="ad-filter">
+      <div class="ad-chips"><span class="ad-sub">${filtered ? `筛出 ${num(m.matched)} / ${num(m.total)} 人` : `共 ${num(m.total)} 人`}</span></div>
       <div class="ad-filter-r">
         ${pick("role", memberQ.role, Object.entries(ROLE_LABEL), "全部角色")}
         ${pick("status", memberQ.status, [["active", "正常"], ["pending", "待审核"], ["disabled", "已停用"]], "全部状态")}
@@ -910,12 +1041,13 @@ PAGES.members = {
     return `<div class="ad-wrap ad-wrap--wide">
       ${cardT(
         headRow(
-          secT("成员", `共 ${m.members.length} 人。停用的成员不占席位，账号和他产出的文件都还在。`),
+          secT("成员", `共 ${num(m.total)} 人。停用的成员不占席位，账号和他产出的文件都还在。`),
           RO ? "" : `<button class="ui-btn ui-btn--default ui-btn--sm" data-add>${ic("plus")} 添加成员</button>`
         ),
         bar + (shown.length
           ? table([{ t: "成员" }, { t: "角色" }, { t: "部门" }, { t: "状态" }, { t: "可用余额", right: true }, { t: "最近活跃" }, { t: "" }], rows)
-          : empty("没有符合条件的成员"))
+            + pager(memberQ, m.matched, MEMBER_PAGE, "人")
+          : empty(filtered ? "没有符合条件的成员" : "还没有成员"))
       )}
 
       ${cardT(
@@ -938,16 +1070,21 @@ PAGES.members = {
     </div>`;
   },
   bind: (root, { m }) => {
-    // 筛选是纯前端的，所以重渲染走 route(true) 就行，不用回服务器拉
+    // 改了筛选条件就回到第一页：留在第 7 页搜一个字，多半是一张空表，
+    // 而人只会以为「没这个人」
+    const go = (f) => { memberQ = f; route(true); };
     const mq = root.querySelector("[data-mq]");
     if (mq) {
+      // 防抖 250ms：搜的是**整个组织**，每个字发一趟请求，一个词打完就是六七趟
       let t = 0;
-      mq.oninput = () => { clearTimeout(t); t = setTimeout(() => { memberQ = { ...memberQ, q: mq.value }; route(true); }, 250); };
+      mq.oninput = () => { clearTimeout(t); t = setTimeout(() => go({ ...memberQ, q: mq.value, offset: 0 }), 250); };
+      mq.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(t); go({ ...memberQ, q: mq.value, offset: 0 }); } };
     }
     for (const k of ["role", "status"]) {
       const el = root.querySelector("[data-m" + k + "]");
-      if (el) el.onchange = () => { memberQ = { ...memberQ, [k]: el.value }; route(true); };
+      if (el) el.onchange = () => go({ ...memberQ, [k]: el.value, offset: 0 });
     }
+    bindPager(root, memberQ, MEMBER_PAGE, go);
     const deptOpts = [{ value: "", label: "（不分部门）" }].concat(m.depts.map((d) => ({ value: d.name, label: d.name })));
     // 下拉里只放这个人**真发得出去**的角色：管理员发不出管理员，那一档得超管来。
     // 服务端给清单，前端不自己编——编一份迟早跟 rbac.js 那张表走散
@@ -1077,9 +1214,16 @@ PAGES.members = {
     // 他名下的定时任务照跑（花公司的钱、推到他自己的企业微信）、他发出去的邀请码照样能注册进来。
     // 整段缘由在 lifecycle.js 头上；这里把「交接给谁」一并问掉，因为问完这一次就再没人会回头补了
     root.querySelectorAll("[data-off]").forEach((b) => {
-      b.onclick = () => {
+      b.onclick = async () => {
         const who = b.dataset.off;
-        const mates = shown.filter((x) => x.username !== who && x.status === "active").map((x) => x.username);
+        // 交接对象是**全公司在职的人**，不是屏幕上这一页的五十个——所以单独去拉一趟名单，
+        // 只要名字那几格（fields=lite）。名单拉不到就只剩「不交接」这一个选项：
+        // 一个下拉框不该把整件事卡在这儿
+        let mates = [];
+        try {
+          const r = await api("/api/admin/members?" + qs({ status: "active", fields: "lite", limit: 500 }));
+          mates = (r.members || []).filter((x) => x.username !== who).map((x) => x.username);
+        } catch { /* 下面按「没有别的在职成员」画 */ }
         modal({
           title: "给「" + who + "」办离职",
           body: `<div class="fd" style="font-size:14px;color:var(--foreground)">会一次性关掉：
@@ -1284,7 +1428,9 @@ PAGES.roles = {
     const rank = (r) => d.ranks[r] || 0;
     const mine = rank(d.me.role);
     const meName = (ME || {}).username;
-    const staff = d.members.filter((u) => rank(u.role) >= rank("auditor"));
+    // 服务端只回两样：管理层（审计员起，这张表本来就短）和提拔/转让的候选人（只要名字）。
+    // 以前回的是整份花名册，3000 人时 1042 KB，为了画一张十来行的表
+    const staff = d.staff;
     const canManage = (u) => !RO && u.username !== meName && rank(u.role) < mine;
     const why = (u) =>
       u.username === meName ? "这是你自己"
@@ -1300,7 +1446,7 @@ PAGES.roles = {
         ? `<button class="ui-btn ui-btn--ghost ui-btn--xs" data-demote="${esc(u.username)}">降为成员</button>`
         : `<span class="fd">${esc(why(u))}</span>`,
     ]);
-    const others = d.members.filter((u) => rank(u.role) < mine && u.status === "active" && u.username !== meName);
+    const others = d.candidates.filter((u) => rank(u.role) < mine && u.username !== meName);
     const promotable = others.filter((u) => u.role === "member");
     const grants = (d.me.can_assign || []).filter((r) => r !== "member");
 
@@ -1335,7 +1481,7 @@ PAGES.roles = {
     const rank = (r) => d.ranks[r] || 0;
     const mine = rank(d.me.role);
     const meName = (ME || {}).username;
-    const promotable = d.members.filter((u) => u.role === "member" && u.status === "active");
+    const promotable = d.candidates.filter((u) => u.role === "member");
     const grants = (d.me.can_assign || []).filter((r) => r !== "member");
     const ROLE_HINT = { admin: "管理员 —— 能管成员、改设置；但改不了另一个管理员", auditor: "审计员 —— 能查账，改不动" };
 
@@ -1345,7 +1491,10 @@ PAGES.roles = {
         modal({
           title: "提升成员",
           fields: [
-            { name: "username", label: "选一个人", type: "select", options: promotable.map((u) => ({ value: u.username, label: (u.nickname || u.username) + "（" + u.username + "）" })) },
+            { name: "username", label: "选一个人", type: "select",
+              options: promotable.map((u) => ({ value: u.username, label: (u.nickname || u.username) + "（" + u.username + "）" })),
+              // 名单有上限。截断了就得说——「下拉里找不到那个人」很容易被当成他不在这个组织里
+              desc: d.candidates_capped ? `在职成员超过 ${promotable.length} 人，这里只列了前面这些。找不到人的话，先去<b>成员</b>页把他的角色改掉。` : "" },
             {
               name: "role", label: "提升为", type: "select", value: grants[grants.length - 1],
               // 下拉里出现的就是后端允许这个人授的那几个。管理员看不到「管理员」这一项，
@@ -1364,13 +1513,15 @@ PAGES.roles = {
     const t = root.querySelector("[data-transfer]");
     if (t)
       t.onclick = () => {
-        const to = d.members.filter((u) => u.status === "active" && u.username !== meName);
+        const to = d.candidates.filter((u) => u.username !== meName);
         if (!to.length) return toast("这个组织里还没有别人可以接手", true);
         modal({
           title: "转让超级管理员",
           body: `<div class="fd" style="margin-bottom:12px">交出去之后，<b>你会变成管理员</b>：还能管成员、改设置，但发不了管理员，也收不回这个位子——只有新的超管能再转回来。</div>`,
           fields: [
-            { name: "username", label: "转给谁", type: "select", options: to.map((u) => ({ value: u.username, label: (u.nickname || u.username) + "（" + u.username + "·" + (ROLE_LABEL[u.role] || u.role) + "）" })) },
+            { name: "username", label: "转给谁", type: "select",
+              options: to.map((u) => ({ value: u.username, label: (u.nickname || u.username) + "（" + u.username + "·" + (ROLE_LABEL[u.role] || u.role) + "）" })),
+              desc: d.candidates_capped ? "在职成员太多，这里只列了一部分。" : "" },
           ],
           ok: "确认转让",
           danger: true,
@@ -1383,7 +1534,7 @@ PAGES.roles = {
       };
 
     root.querySelectorAll("[data-demote]").forEach((b) => {
-      const u = d.members.find((x) => x.username === b.dataset.demote) || {};
+      const u = d.staff.find((x) => x.username === b.dataset.demote) || {};
       b.onclick = () =>
         confirmBox("把「" + b.dataset.demote + "」降为成员",
           "降完之后他<b>进不来这个后台</b>了，工作台照常用。" + (rank(u.role) >= rank("admin") ? "他手上的邀请码和部门模板不会跟着失效，需要的话去那两页各看一眼。" : ""),
@@ -1559,8 +1710,24 @@ const yuan = (n) => {
 /** 「不限」和「0 元」在这一页上差着一整个语义，绝不能都显示成 0 */
 const cap = (n) => (+n > 0 ? yuan(n) + " 元" : "不限");
 
+/**
+ * 「每个人单独的上限」那张表的筛选状态。跟这一页其余部分分开拉：那些数跟公司多少人没关系，
+ * 只有这张表是按人头长的。以前是一趟全带回来——3000 人的组织一次 631 KB，其中 620 KB 是
+ * 一张「跟随团队 · 本月 0 元」重复三千遍的表
+ */
+const RELAY_MEM_PAGE = 50;
+let relayMQ = { q: "", offset: 0 };
 PAGES.relay = {
-  load: () => api("/api/admin/relay"),
+  load: async () => {
+    const [d, mb] = await Promise.all([
+      api("/api/admin/relay"),
+      api("/api/admin/relay/members?" + qs({ ...relayMQ, limit: RELAY_MEM_PAGE })),
+    ]);
+    // 翻到第 5 页的时候别人办了离职，服务端会把这一趟退回最后一页；把位置记下来，
+    // 不然翻页条上写的还是第 5 页
+    relayMQ.offset = mb.offset;
+    return { ...d, mb };
+  },
   render: (d) => {
     const keys = d.keys || [];
     const live = keys.filter((k) => k.enabled);
@@ -1705,7 +1872,8 @@ PAGES.relay = {
       + spendTab("按型号", sp.by_model, "型号");
 
     /* ---- 上限 ---- */
-    const memRows = (d.members || []).filter((m) => m.status !== "disabled").map((m) => [
+    const mb = d.mb || { rows: [], total: 0, matched: 0, capped: 0 };
+    const memRows = mb.rows.map((m) => [
       `<b>${esc(m.nickname || m.username)}</b><div class="fd">${esc(m.username)}${m.dept ? " · " + esc(m.dept) : ""}</div>`,
       `<span class="ad-mono">${yuan(m.spent_month)} 元</span>`,
       m.budget_yuan ? `<span class="ad-mono">${yuan(m.budget_yuan)} 元</span>` : `<span class="fd">跟随团队（${cap(d.budget.default_user_yuan)}）</span>`,
@@ -1725,9 +1893,18 @@ PAGES.relay = {
         `<input class="ui-input ad-mono" type="number" min="0.01" max="1" step="0.01" style="width:140px" data-b="price_discount" value="${esc(disc)}"${RO ? " disabled" : ""}>`)}
       ${RO ? note("你是<b>审计员</b>：这页能看，改不了。", true)
            : `<div class="ad-actions"><button class="ui-btn ui-btn--default ui-btn--sm" id="rl-save-budget">保存上限</button></div>`}`);
+    // 人多的时候才出筛选条：三个人的团队顶一条筛选栏在头上，纯属添乱
+    const memBar = mb.total < 8 ? "" : `<div class="ad-filter">
+      <div class="ad-chips"><span class="ad-sub">${mb.matched !== mb.total ? `筛出 ${num(mb.matched)} / ${num(mb.total)} 人` : `共 ${num(mb.total)} 人`}${mb.capped ? `，${num(mb.capped)} 人设过单独上限` : ""}</span></div>
+      <div class="ad-filter-r"><input class="ui-input ad-search" data-rq value="${esc(relayMQ.q)}" placeholder="搜姓名 / 账号 / 部门"></div>
+    </div>`;
     const memCard = cardT(
-      headRow(secT("每个人单独的上限", "留空 = 跟随团队默认。这本账跟「成员用量」那页的积分是两回事：那边算的是界面上用了几次，这边算的是拿 Key 调 API 花了多少钱。")),
-      table([{ t: "成员" }, { t: "本月已花", right: false }, { t: "月上限" }, { t: "" }], memRows)
+      headRow(secT("每个人单独的上限", "设过单独上限的、本月花过钱的排在最前面，其余按进公司的先后。留空 = 跟随团队默认。"
+        + "这本账跟「成员用量」那页的积分是两回事：那边算的是界面上用了几次，这边算的是拿 Key 调 API 花了多少钱。")),
+      memBar + (memRows.length
+        ? table([{ t: "成员" }, { t: "本月已花", right: false }, { t: "月上限" }, { t: "" }], memRows)
+          + pager(relayMQ, mb.matched, RELAY_MEM_PAGE, "人")
+        : empty(relayMQ.q ? "没有符合条件的成员" : "还没有成员"))
     );
 
     /* ---- 价目（平台管理员） ---- */
@@ -1827,6 +2004,16 @@ PAGES.relay = {
   },
 
   bind: (root, d) => {
+    // 上限表的搜索和翻页是**只读**操作，审计员也该能用——下面那句 RO 早退是拦改东西的
+    const goMem = (f) => { relayMQ = f; route(true); };
+    const rq = root.querySelector("[data-rq]");
+    if (rq) {
+      // 防抖 250ms：搜的是整个组织，每个字发一趟，一个词打完就是六七趟
+      let rt = 0;
+      rq.oninput = () => { clearTimeout(rt); rt = setTimeout(() => goMem({ ...relayMQ, q: rq.value, offset: 0 }), 250); };
+      rq.onkeydown = (e) => { if (e.key === "Enter") { clearTimeout(rt); goMem({ ...relayMQ, q: rq.value, offset: 0 }); } };
+    }
+    bindPager(root, relayMQ, RELAY_MEM_PAGE, goMem);
     if (RO) return;
     const reload = () => route(true);
 
@@ -1834,8 +2021,7 @@ PAGES.relay = {
     const KEY_FIELDS = (k) => [
       { name: "name", label: "给它起个名字", value: (k && k.name) || "", placeholder: "小程序后台",
         desc: "出事的时候你是靠这个名字认出「该吊销哪一把」的，所以写用途，别写「key1」" },
-      { name: "user", label: "归到谁名下", type: "select", value: (k && k.user) || "",
-        options: [{ value: "", label: "（不挂人）" }].concat((d.members || []).map((m) => ({ value: m.username, label: `${m.nickname || m.username}（${m.username}）` }))),
+      { name: "user", label: "归到谁名下", type: "user", value: (k && k.user) || "", placeholder: "留空 = 不挂人",
         desc: "挂上人，账才算得清「谁花的」；而且<b>他离职的时候这把 Key 会跟着被吊销</b>——"
           + "躺在某个业务系统环境变量里的 Key，不会因为人走了就自己失效。" },
       { name: "budget_yuan", label: "这把 Key 每月最多花多少（元）", type: "number", value: (k && k.budget_yuan) || "",
@@ -2006,7 +2192,7 @@ PAGES.relay = {
       { name: "cap", label: "哪一路", type: "select", value: cap || "image",
         options: (d.unit_prices || []).map((g) => ({ value: g.cap, label: `${g.cn}（元 / ${g.unit}）` })) },
       { name: "model", label: "型号名", value: m || "", placeholder: "wanx2.1-t2i-turbo",
-        desc: "搜索那一路填的是<b>引擎名</b>（tavily / brave / jina），不是型号。" },
+        desc: "搜索那一路填的是<b>引擎名</b>（bocha / zhipu / qiniu / tavily / serper / jina / brave / custom），不是型号。" },
       { name: "price", label: "单价（元）", type: "number", value: price == null ? "" : price,
         desc: "单位看上面那一格选的是哪一路。填 0 是「确实不收钱」，跟「不知道多少钱」不是一回事。" },
       { name: "note", label: "备注", value: note || "", placeholder: "比如：按 720p 折算，分辨率一变就不准了",
@@ -2232,6 +2418,17 @@ PAGES.orgs = {
  */
 let auditF = { from: "", to: "", q: "", actor: "", action: "", offset: 0 };
 const AUDIT_PAGE = 50;
+/**
+ * 审计那一页的副标题。以前写死「这个组织建起来到现在的全部管理动作」——
+ * 而审计是有保留上限的，存满之后最老的会被挤掉，那句话就成了假话。
+ * 假话出现在审计页尤其贵：看这张表的人正是拿它当证据的人。
+ */
+function auditScope(d) {
+  const tail = "按时间倒序。";
+  if (!d || !d.kept) return "这个组织还没有管理动作记录。" + tail;
+  if (d.capped) return `最近 ${d.kept} 条（已到保留上限，更早的已被挤掉），` + tail;
+  return `这个组织建起来到现在的全部 ${d.kept} 条管理动作，` + tail;
+}
 PAGES.audit = {
   load: () => api("/api/admin/audit?" + qs({ limit: AUDIT_PAGE, offset: auditF.offset, from: auditF.from, to: auditF.to, q: auditF.q, actor: auditF.actor, action: auditF.action })),
   render: (d) => {
@@ -2250,10 +2447,11 @@ PAGES.audit = {
       `</select>`;
     return `<div class="ad-wrap ad-wrap--wide">
       ${note("记的是<b>管理动作</b>：谁加了人、谁改了额度、谁动了安全开关。任务本身跑了什么在「用量明细」里。密码、密钥这类东西<b>不会</b>进这张表。")}
+      ${d.capped ? note(`这个组织的审计已经存满 <b>${d.cap}</b> 条，再往里记会把最老的挤掉，现存最早的一条是 <b>${esc(fmtTs(d.since))}</b>。<br>要查更早的事，先按时间范围<b>导出存档</b>——挤掉之后没有第二个地方找得回来。`, "warn") : ""}
       ${cardT(
         headRow(
-          secT("操作审计", "这个组织建起来到现在的全部管理动作，按时间倒序。"),
-          `<button class="ui-btn ui-btn--outline ui-btn--sm" data-csv>${ic("download")} 导出本页</button>`
+          secT("操作审计", auditScope(d)),
+          `<button class="ui-btn ui-btn--outline ui-btn--sm" data-csv>${ic("download")} 导出${d.total > (d.audit || []).length ? "全部 " + d.total + " 条" : "本页"}</button>`
         ),
         `${filterBar(auditF, {
           placeholder: "搜操作人 / 对象 / 详情",
@@ -2271,9 +2469,32 @@ PAGES.audit = {
     const a = root.querySelector("[data-actor]"), k = root.querySelector("[data-action]");
     if (a) a.onchange = () => go({ ...auditF, actor: a.value, offset: 0 });
     if (k) k.onchange = () => go({ ...auditF, action: k.value, offset: 0 });
-    root.querySelector("[data-csv]").onclick = () =>
-      downloadCsv("操作审计", ["时间", "操作人", "动作", "对象", "详情"],
-        d.audit.map((x) => [x.ts, x.actor || "", x.action || "", x.target || "", x.detail || ""]));
+    root.querySelector("[data-csv]").onclick = async (ev) => {
+      const btn = ev.currentTarget;
+      // 一次能取多少由后端封着（listAudit 的 limit 上限）；条数多就分几趟，
+      // 别为了省事把上限调大——那是让后端一次把整本读进内存
+      const CHUNK = 1000;
+      const rows = [];
+      btn.disabled = true;
+      const label = btn.innerHTML;
+      try {
+        for (let off = 0; off < (d.total || 0); off += CHUNK) {
+          btn.textContent = rows.length ? `导出中 ${rows.length}/${d.total}` : "导出中…";
+          const part = await api("/api/admin/audit?" + qs({
+            limit: CHUNK, offset: off,
+            from: auditF.from, to: auditF.to, q: auditF.q, actor: auditF.actor, action: auditF.action,
+          }));
+          const got = (part && part.audit) || [];
+          if (!got.length) break; // 后端没东西给了就停，免得条数对不上时空转
+          for (const x of got) rows.push(x);
+        }
+        downloadCsv("操作审计", ["时间", "操作人", "动作", "对象", "详情"],
+          rows.map((x) => [x.ts, x.actor || "", x.action || "", x.target || "", x.detail || ""]));
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = label;
+      }
+    };
   },
 };
 
@@ -2332,12 +2553,16 @@ PAGES.models = {
       const media = medias.filter((m) => m.provider === p.id).length;
       const label = kindLabel(p.kind);
       // 预置渠道的名字本来就是这家的中文名，再把同一句话印一遍读起来就是同一个词写了两遍
-      const sub = [String(p.name || "").trim() === String(label).trim() ? "" : label, p.base_url].filter(Boolean).join(" · ");
+      const subLabel = String(p.name || "").trim() === String(label).trim() ? "" : label;
+      // 目录名和地址分成两个文本节点：目录名是界面文字（要翻），地址是数据（不能翻）。
+      // 拼成一句「火山方舟（…） · https://…」之后，翻译器只看得见整条，词典里对不上就整条漏翻
+      const sub = subLabel || p.base_url
+        ? `${subLabel ? `<span>${esc(subLabel)}</span>` : ""}${subLabel && p.base_url ? " \u00b7 " : ""}${esc(p.base_url || "")}` : "";
       const k = kindOf(p.kind);
       const link = k && k.key_url
         ? `<a class="ui-btn ui-btn--link" href="${esc(k.key_url)}" target="_blank" rel="noopener">去拿 Key</a>` : "";
       const cells = [
-        `<div><div>${esc(p.name)}</div>${sub ? `<div class="fd ad-mono" style="margin-top:2px">${esc(sub)}</div>` : ""}${
+        `<div><div>${esc(p.name)}</div>${sub ? `<div class="fd ad-mono" style="margin-top:2px">${sub}</div>` : ""}${
           dupN(p) ? `<div class="fd" style="margin-top:2px">同地址还有 ${dupN(p)} 条，各自一把 Key、各花各的账</div>` : ""}</div>`,
         rw
           ? `<div class="ad-row"><input class="ui-input ad-key" data-pk="${esc(p.id)}" type="password" autocomplete="off"
@@ -2651,6 +2876,33 @@ function navItem(id) {
 }
 
 let routeSeq = 0;
+/**
+ * 重渲染前记一下光标在哪。认的是 data-* 那个名字（data-q / data-mq / data-from…），
+ * 不是 DOM 节点本身——节点马上就没了，名字才是同一个框在两次渲染之间唯一稳的东西。
+ */
+function focusSnap(body) {
+  const el = document.activeElement;
+  if (!el || !body.contains(el)) return null;
+  if (!/^(INPUT|TEXTAREA)$/.test(el.tagName)) return null;
+  const key = Object.keys(el.dataset || {})[0];
+  if (!key) return null;
+  return { sel: "[data-" + key.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase()) + "]",
+           value: el.value, start: el.selectionStart, end: el.selectionEnd };
+}
+function focusRestore(body, keep) {
+  if (!keep) return;
+  // 这中间人要是去点了别处（比如左边导航），别把光标从他手里抢回来。
+  // 整块换掉之后 activeElement 一定是 body，所以「还是 body」就等于「他没动过」
+  if (document.activeElement && document.activeElement !== document.body) return;
+  const el = body.querySelector(keep.sel);
+  if (!el) return;
+  el.focus();
+  // 等数据的这几十毫秒里人可能又敲了几个字（敲进的是那个已经被摘下来的旧框）。
+  // 以手上这份为准，别拿服务端回来的旧值把人刚打的字盖掉
+  if (keep.value !== el.value) el.value = keep.value;
+  try { el.setSelectionRange(keep.start, keep.end); } catch { /* number 之类的框不支持选区，无所谓 */ }
+}
+
 async function route(keepScroll) {
   const id = (location.hash.replace(/^#\/?/, "") || "home").split("?")[0];
   const it = navItem(id) && PAGES[id] ? navItem(id) : navItem("home");
@@ -2659,6 +2911,12 @@ async function route(keepScroll) {
   const seq = ++routeSeq;
   const body = $("ad-body");
   const scroll = keepScroll ? body.scrollTop : 0;
+
+  // 重渲染是整块 innerHTML 换掉，正在打字的那个框会被连根扔掉——实测：在搜索框里
+  // 打一个字，250ms 防抖一到、数据回来、页面重画，光标落回 body，接着敲的字全打进了空气里。
+  // 于是「搜三个字」变成「打一个字、伸手去点框、再打一个字」。这里记下**现在**在哪个框里、
+  // 光标在第几个字，画完再放回去
+  const keep = focusSnap(body);
 
   renderNav(pid);
   $("ad-title").textContent = it.title;
@@ -2675,6 +2933,7 @@ async function route(keepScroll) {
     body.innerHTML = page.render(data);
     if (page.bind) await page.bind(body, data);
     body.scrollTop = scroll;
+    focusRestore(body, keep);
   } catch (e) {
     if (seq !== routeSeq) return;
     body.innerHTML = gate(e);
@@ -2704,14 +2963,33 @@ async function boot() {
     OWNER = !!d.platform_owner;
     MULTI = !!d.multi_tenant;
     RO = ME && ME.role === "auditor";
-    document.title = `${d.org.name} · 企业管理后台`;
+    setTitle(d.org.name);
   } catch (e) {
     $("ad-body").innerHTML = gate(e);
     $("ad-sub").textContent = "进不来";
     return;
   }
   bindNavSearch();
+  bindLang();
   addEventListener("hashchange", () => route(false));
   await route(false);
 }
+const T = (zh) => (typeof I18N === "undefined" ? zh : I18N.t(zh));
+let ORG_NAME = "";
+function setTitle(name) {
+  if (name != null) ORG_NAME = name;
+  document.title = `${ORG_NAME} \u00b7 ${T("企业管理后台")}`;
+}
+/** 中 / 英：跟工作台共用一份本机偏好（owb-lang），在哪边切另一边也跟着变 */
+function bindLang() {
+  const box = $("ad-lang");
+  if (!box || typeof I18N === "undefined") return box && box.remove();
+  const mark = () => box.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.lang === I18N.getLang()));
+  box.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { I18N.setLang(b.dataset.lang); mark(); }));
+  // 翻 DOM 翻不到渲染时算出来的东西：1.2 万 / 12k、日期、千分位。整页重画一遍，
+  // 滚动位置留着——切个语言页面跳回顶部，正在对的那张表就得重新找
+  document.addEventListener("owb-lang", () => { setTitle(); route(true); });
+  mark();
+}
+
 boot();

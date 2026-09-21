@@ -41,9 +41,13 @@ const TOKEN_TTL_MS = 90 * 86400 * 1000;
  * 是为了让**已经发出去的**那些 cookie 立刻作废（人离职了、电脑丢了），
  * 只影响新令牌等于这个开关根本没用。取不到组织就退回 90 天。
  */
-function ttlMsFor(user) {
+function ttlMsFor(user, s) {
   try {
-    const d = org.settingsOf(org.getOrg(org.orgIdOf(user))).session_days;
+    // s 可以是这个人所属组织的设置，也可以是「要用的时候再去解析」的函数——
+    // 解析那一下必须留在这个 try 里面：组织表读不出来时照旧退回默认有效期，
+    // 别把一次读盘失败变成整条请求 500
+    const st = (typeof s === "function" ? s(user) : s) || org.settingsOf(org.getOrg(org.orgIdOf(user)));
+    const d = st.session_days;
     const n = Math.max(1, Math.min(365, Math.floor(+d) || 0));
     return n * 86400 * 1000;
   } catch { return TOKEN_TTL_MS; }
@@ -218,8 +222,17 @@ function genPassword(orgId) {
   }
   throw new Error("生成密码失败：当前的密码策略太严，管理员先去企业设置里放宽一点");
 }
-function publicUser(u) {
+/**
+ * @param s 这个人所属组织的设置。不传就自己去读一次（单个用户的场合本来就只读一次）。
+ *   成员列表那种一次画几百个人的地方必须传：底下三格（月额度 / 本月剩余 / 余额）
+ *   各自都会去 org.getOrg() 拿一次设置，一个人三遍、五百个人一千五百遍，
+ *   读的还是同一份不会变的东西。实测 50 个人的成员页，平台上多 500 家公司之后
+ *   从 5.6ms 变成 365.6ms——慢的不是你自己的数据，是别人家的。
+ *   传进来的必须是**这个人自己组织**的设置，别拿调用方的设置套到别人头上。
+ */
+function publicUser(u, s) {
   if (!u) return null;
+  const st = s || org.settingsOf(org.getOrg(org.orgIdOf(u)));
   return {
     username: u.username,          // 登录名，不可改：改了就是换了个账号
     nickname: u.nickname || "",     // 昵称，界面上显示的名字
@@ -236,13 +249,13 @@ function publicUser(u) {
     dept: u.dept || "",
     status: u.status || "active",   // active | pending（等审核）| disabled（已停用）
     credits: u.credits,             // 加油包余额
-    monthly_quota: monthlyQuotaOf(u),   // 每月固定用量
+    monthly_quota: monthlyQuotaOf(u, st),   // 每月固定用量
     // 中转站上这个人每月封顶多少钱（元）。0 = 没单独设过，按部门模板、再按组织默认走（budget.js 的 limitsOf）。
     // 跟上面 credits / monthly_quota 那一套不是一回事：那套算的是**界面上用了几次**，
     // 这一格算的是**业务方拿虚拟 Key 调 API 花了多少钱**，两本账互不相干。
     budget_yuan: u.budget_yuan || 0,
-    monthly_left: monthlyLeft(u),       // 本月还剩多少固定用量
-    balance: balanceOf(u),              // 固定用量剩余 + 加油包，界面和闸门都看这个数
+    monthly_left: monthlyLeft(u, st),   // 本月还剩多少固定用量
+    balance: balanceOf(u, st),          // 固定用量剩余 + 加油包，界面和闸门都看这个数
     created_at: u.created_at,
     two_factor: twoFactorOn(u),     // 只给布尔，密钥和恢复码一个字都不出去
   };
@@ -271,10 +284,10 @@ function monthlyLeft(user, s) {
   const used = user.month_key === monthKey() ? user.month_used || 0 : 0;
   return Math.max(0, quota - used);
 }
-function balanceOf(user) {
+function balanceOf(user, s) {
   if (!user) return 0;
-  const s = org.settingsOf(org.getOrg(org.orgIdOf(user)));
-  return monthlyLeft(user, s) + Math.max(0, user.credits || 0);
+  const st = s || org.settingsOf(org.getOrg(org.orgIdOf(user)));
+  return monthlyLeft(user, st) + Math.max(0, user.credits || 0);
 }
 
 // 头像允许两种：emoji（存字符）和用户自己上传的小图（存 data URI）。
@@ -299,8 +312,12 @@ function normalizeAvatar(v) {
   if (chars > 2) throw new Error("头像最多两个字符");
   return s;
 }
-function hasUsers() {
-  return loadUsers().users.length > 0;
+function hasUsers(st) {
+  return (st || loadUsers()).users.length > 0;
+}
+/** 这台机器上一共几个账号。admin.js 用它判「这还算不算一个人的桌面」 */
+function userCount(st) {
+  return (st || loadUsers()).users.length;
 }
 // ---------- 二次验证（TOTP） ----------
 // 算术在 totp.js（对着 RFC 4226 / 6238 的标准向量测过），这儿只管「存在哪、怎么算数」。
@@ -653,24 +670,55 @@ function pairStatus(username) {
   return { pairing: !!pending, expires_at: pending ? pending.expires_at : 0, claimed: c ? { name: c.name, id: c.id, at: c.at } : null };
 }
 /**
- * 扫码要用的地址。手机跟这台电脑不在同一个 localhost 上，所以 localhost 编进二维码
- * 等于编了个死链——扫出来手机只会去找它自己。这时候翻一个本机的局域网地址出来。
+ * 这台机器在局域网里能被手机够着的地址，好的排前面。
+ *
+ * 老写法是「翻到第一个私网 IPv4 就用」，而 os.networkInterfaces() 的顺序没有任何保证。
+ * 2026-09-21 在这台机器上量过：en0 是 192.168.1.84（真网卡），utun4 是 198.18.0.1（代理隧道），
+ * 默认路由还指着 utun4 —— 也就是说「按默认路由挑」同样是错的。真正的判据只有一条：
+ * 手机和这台电脑连同一个 Wi-Fi 时，能 ping 通的是物理网卡上的那个地址。
+ * 所以隧道口（utun/wg/zt）、Docker 网桥（docker0/br-/bridge*）、虚拟机口（vmnet/vboxnet）
+ * 一律排到最后 —— 它们上面的地址长得跟内网地址一模一样，扫出来却永远打不开。
+ */
+function lanCandidates() {
+  const 虚口 = /^(utun|ipsec|ppp\d|tun\d|tap\d|wg\d|zt|docker|br-|veth|vboxnet|vmnet|virbr|bridge|awdl|llw|anpi|ap\d)/i;
+  const out = [];
+  for (const [iface, list] of Object.entries(require("os").networkInterfaces())) {
+    for (const ni of list || []) {
+      if (ni.family !== "IPv4" || ni.internal) continue;
+      // 只认私网段：公网 IP 编进二维码，等于把入口贴墙上了
+      if (!/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(ni.address)) continue;
+      out.push({ iface, address: ni.address, virtual: 虚口.test(iface) });
+    }
+  }
+  // 物理口在前、虚拟口在后；同一档按名字排死，免得同一台机器每次刷新给的地址都不一样
+  const rank = (c) => (c.virtual ? 9 : /^en\d/i.test(c.iface) ? 0 : /^(eth|wlan|wl)\d/i.test(c.iface) ? 1 : 2);
+  return out.sort((a, b) => rank(a) - rank(b) || a.iface.localeCompare(b.iface));
+}
+
+/**
+ * 扫码要用的地址（取最靠谱的那一个）。手机跟这台电脑不在同一个 localhost 上，所以
+ * localhost 编进二维码等于编了个死链——扫出来手机只会去找它自己。
  * 翻不到就不猜，宁可让他手敲那 8 个字符，也别给一个扫了打不开的码。
  */
 function pairOrigin(req) {
+  const list = pairOrigins(req);
+  return list.length ? list[0].url : "";
+}
+
+/** 所有能落地的地址，好的排前面。界面上多给一个「换一个地址」的出口，猜错了人能自己纠 */
+function pairOrigins(req) {
   const proto = isHttps(req) ? "https" : "http";
   const host = String((req && req.headers && (req.headers["x-forwarded-host"] || req.headers.host)) || "");
-  if (host && !/^(localhost|127\.|\[::1\]|::1)/i.test(host)) return `${proto}://${host}`;
+  // 通过正经域名/反代进来的，那个域名本来就是能落地的地址，不用猜
+  if (host && !/^(localhost|127\.|\[::1\]|::1)/i.test(host)) return [{ host, url: `${proto}://${host}`, iface: "" }];
   const port = (host.split(":")[1] || "").replace(/[^0-9]/g, "");
-  for (const list of Object.values(require("os").networkInterfaces())) {
-    for (const ni of list || []) {
-      if (ni.family !== "IPv4" || ni.internal) continue;
-      // 只认私网段：公网 IP 直接编进二维码，等于把入口贴墙上了
-      if (!/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(ni.address)) continue;
-      return `${proto}://${ni.address}${port ? ":" + port : ""}`;
-    }
-  }
-  return host ? `${proto}://${host}` : "";
+  const out = lanCandidates().map((c) => ({
+    host: c.address + (port ? ":" + port : ""),
+    url: `${proto}://${c.address}${port ? ":" + port : ""}`,
+    iface: c.iface,
+  }));
+  if (out.length) return out;
+  return host ? [{ host, url: `${proto}://${host}`, iface: "" }] : [];
 }
 
 /** 从 UA 里猜一个人看得懂的设备名。猜不出就叫「未知设备」，不编 */
@@ -726,13 +774,19 @@ function revokeDevice(username, id) {
  * 一次任务几十条轮询就是几十次全量重写 users.json——而「最后活跃」精确到分钟根本没人看。
  */
 const TOUCH_MS = 5 * 60 * 1000;
-function touchDevice(req) {
+function touchDevice(req, st0) {
   try {
     const token = tokenFromReq(req);
     if (!token) return;
+    // 先拿手上这份判节流。以前是无条件先把整本 users.json 读出来再判——
+    // 节流省下的只有写，没省读，而在这条路上读本身才是最贵的那一步
+    const seen = ((st0 || loadUsers()).tokens[token] || {}).seen || 0;
+    if (Date.now() - seen < TOUCH_MS) return;
+    // 真要写了才重新读一遍：上游那份是这趟请求开头读的，拿它盖回去等于把
+    // 这中间别人写的东西抹掉
     const st = loadUsers();
     const info = st.tokens[token];
-    if (!info || Date.now() - (info.seen || 0) < TOUCH_MS) return;
+    if (!info) return;
     info.seen = Date.now();
     info.ip = clientIp(req);
     if (!info.kind) info.kind = "session"; // 升级上来的老令牌补个类型，列表里才摆得下
@@ -746,21 +800,25 @@ function tokenFromReq(req) {
   return m ? m[1] : null;
 }
 /** 这一次请求用的是哪种令牌：扫码配对来的（paired）还是正常登录的（session）。认不出来当 session */
-function tokenKind(req) {
+function tokenKind(req, st) {
   const token = tokenFromReq(req);
   if (!token) return "";
-  const info = loadUsers().tokens[token];
+  const info = (st || loadUsers()).tokens[token];
   return info && info.kind === "paired" ? "paired" : info ? "session" : "";
 }
-function userFromReq(req) {
+/**
+ * @param st0       已经读出来的账本。一趟请求里这本不会变，读第二遍是白读。
+ * @param settings  这个人所属组织的设置（或解析它的函数），只为了判令牌过期。
+ */
+function userFromReq(req, st0, settings) {
   const token = tokenFromReq(req);
   if (!token) return null;
-  const st = loadUsers();
+  const st = st0 || loadUsers();
   const info = st.tokens[token];
   if (!info) return null;
   const u = st.users.find((x) => x.username === info.user) || null;
   if (!u) return null;
-  if (Date.now() - info.at > ttlMsFor(u)) return null;
+  if (Date.now() - info.at > ttlMsFor(u, settings)) return null;
   return u;
 }
 /** 是不是 https 进来的（部署时前面一般挂 nginx，真正的 TLS 在它那一层） */
@@ -1178,16 +1236,292 @@ function assertManageable(actor, username, what) {
   return u;
 }
 
-/** 本组织成员清单（不含密码字段）。管理后台的「成员与部门」直接渲染这个 */
-function listMembers(orgId) {
+/** 翻页最多一次给多少人。后台自己要 50 一页，别的调用方最多要到这儿为止 */
+const MEMBER_PAGE_MAX = 500;
+
+/**
+ * 从**已经排好序的**那一份里切出这一页。
+ *
+ * 必须排完再进来：先切后排的话，「第 1 页是谁」取决于这些人在账本里的物理顺序——
+ * 谁昨天改过资料谁就可能跑到前面来，而人只会以为名单乱了。
+ *
+ * 两个边界都是拿地址栏改出来的，各夹一次：
+ *   · limit=0 / limit=-5 当没传，回默认的一页。夹成 1 的话界面上是「一页一个人、六百页」
+ *   · offset 翻过了头退回最后一页，不给一张空表——空表跟「这里根本没有人」长得一模一样
+ *
+ * @param opts.all 要整份。只给**确实要每一个人**的内部调用方用，别从 HTTP 上直接接过来
+ */
+function pageOf(sorted, opts = {}, fallback = 50) {
+  const all = opts.all === true;
+  const asked = Math.floor(+opts.limit);
+  const limit = all ? Math.max(1, sorted.length) : Math.min(MEMBER_PAGE_MAX, asked > 0 ? asked : fallback);
+  const last = sorted.length ? Math.floor((sorted.length - 1) / limit) * limit : 0;
+  const offset = all ? 0 : Math.max(0, Math.min(Math.floor(+opts.offset || 0), last));
+  return { page: all ? sorted : sorted.slice(offset, offset + limit), offset, limit };
+}
+
+/**
+ * 本组织的成员：筛完、排完，只把**这一页**的人算出来。
+ *
+ * 为什么不是整份回去：实测 3000 人的组织，一次回包 1041 KB，浏览器里堆出 78098 个
+ * DOM 节点，从点进这一页到表格出来 878ms；1000 人时 346 KB / 26098 个节点 / 259ms。
+ * 而一屏看得见的是十几行。更别扭的是搜人——想找一个人，前提是先把三千人搬到浏览器里。
+ *
+ * 四步的顺序不能换：**先筛、再排、再切，最后才算**。
+ *   · 排在切前面：不然「第 1 页是谁」取决于这些人在账本里的物理顺序，来个新人就全乱
+ *   · 算在切后面：每个人要算角色、额度、本月剩余、余额，只有这一页的人值得算
+ *   · 「最后活跃」也只查这一页这几十个名字：usageStore.lastActive 是人齐了就停的，
+ *     查 50 个名字通常翻一个分片就够，查 3000 个要一路翻到底
+ *
+ * @param opts.q       搜昵称 / 登录名 / 部门，不分大小写
+ * @param opts.role    只看某一档角色
+ * @param opts.minRank 只看这一档**及以上**（给「管理员角色」那页用：它要的是管理层，不是全员）
+ * @param opts.status  active（在用）| pending（等审核）| disabled（已停用）
+ * @param opts.offset  从第几个开始；超出末尾会退回最后一页，不会给一张空表
+ * @param opts.limit   这一页要几个，最多 MEMBER_PAGE_MAX
+ * @param opts.all     要整份。只给**确实要每一个人**的内部调用方用，别从 HTTP 上直接接过来
+ * @param opts.lite    只要 username / nickname / dept / role / status —— 下拉框用得着的那几格。
+ *                     一个下拉框不需要知道每个人的余额，更不该为此翻一遍用量账本
+ * @returns { members, total, matched, offset, limit }
+ *          total = 这个组织一共多少人，matched = 筛完还剩多少（界面靠这两个数说「筛出 X / 共 Y」）
+ */
+function queryMembers(orgId, opts = {}) {
   const want = orgId || org.DEFAULT_ORG;
   const mine = loadUsers().users.filter((u) => org.orgIdOf(u) === want);
-  // 「最后活跃」只要每人最近的那一条。从新分片往老里翻、人齐了就停，
-  // 常见情况下只开一个文件——这个列表每进一次后台就查一次，不能让它跟账本一起变长
-  const lastAt = usageStore.lastActive(mine.map((u) => u.username));
-  return mine
-    .map((u) => ({ ...publicUser(u), last_active: lastAt.get(u.username) || "" }))
-    .sort((a, b) => (b.owner ? 1 : 0) - (a.owner ? 1 : 0) || String(a.created_at).localeCompare(String(b.created_at)));
+
+  const kw = String(opts.q || "").trim().toLowerCase();
+  const role = String(opts.role || "").trim();
+  const status = String(opts.status || "").trim();
+  // 档位下限得在这儿判，不能等算完再筛：算一个人要过 publicUser（角色、额度、
+  // 本月剩余、余额），三千个人算完只留下十来个管理员，那前面那些就是白算的
+  const minRank = opts.minRank ? rbac.ROLE_RANK[opts.minRank] : null;
+  const hit = mine.filter((u) => {
+    if (role && rbac.roleOf(u) !== role) return false;
+    if (minRank != null && !(rbac.ROLE_RANK[rbac.roleOf(u)] >= minRank)) return false;
+    // 老账号没有 status 这一格，当在用算——跟 publicUser 里那一格的默认值必须是同一个
+    if (status && (u.status || "active") !== status) return false;
+    if (!kw) return true;
+    return [u.username, u.nickname, u.dept].some((v) => String(v || "").toLowerCase().includes(kw));
+  });
+  // 超管排最前，其余按进来的先后。排序看的是原始账号，不是 publicUser 算出来的那份——
+  // 算是切完页之后的事，这里还没算
+  hit.sort((a, b) => (rbac.roleOf(b) === "owner" ? 1 : 0) - (rbac.roleOf(a) === "owner" ? 1 : 0)
+    || String(a.created_at).localeCompare(String(b.created_at)));
+
+  const { page, offset, limit } = pageOf(hit, opts);
+  const meta = { total: mine.length, matched: hit.length, offset, limit };
+
+  if (opts.lite)
+    return { members: page.map((u) => ({ username: u.username, nickname: u.nickname || "", dept: u.dept || "",
+      role: rbac.roleOf(u), status: u.status || "active" })), ...meta };
+
+  // 组织设置在这一趟里不会变，读一次就够。这里省掉的不是零头：
+  // publicUser 每个人要用三次，500 个人就是把 orgs.json 读 1500 遍、
+  // 搬 1302 KB 进内存——而 orgs.json 里装着平台上**所有**公司的数据，
+  // 于是你成员页的快慢取决于隔壁又来了几家（实测 50 人的页：2 家 5.6ms → 501 家 365.6ms）。
+  // 能这么传是因为 mine 已经按 want 筛过了，这份设置对这里每一个人都是他自己的那份
+  const s = org.settingsOf(org.getOrg(want));
+  // 「最后活跃」只要每人最近的那一条。从新分片往老里翻、人齐了就停
+  const lastAt = usageStore.lastActive(page.map((u) => u.username));
+  return { members: page.map((u) => ({ ...publicUser(u, s), last_active: lastAt.get(u.username) || "" })), ...meta };
+}
+
+/** 本组织成员清单（整份，不含密码字段）。界面上的列表请走 queryMembers 翻页 */
+function listMembers(orgId) {
+  return queryMembers(orgId, { all: true }).members;
+}
+
+/**
+ * 成员用量：每个人的额度、余额，和他从有记录以来一共花了多少。只算**这一页**的人。
+ *
+ * 规矩跟 queryMembers 一样——先筛、再排、再切，最后才算——中间只多一步：这一页要按
+ * 「一共花了多少」排，所以得先把账本数一遍，把数贴到人身上，再排、再切。账本只翻这
+ * 一遍，它的代价跟流水条数有关、跟公司多少人无关；真正按人头往上涨的是 publicUser
+ * （角色、额度、本月剩余、余额），所以该省的是后者。实测 3000 人的组织，这一页原来
+ * 一趟回包 678 KB、读盘 5.0 MB，而屏幕上看得见的是十几行。
+ *
+ * 为什么默认按花销倒序，而不是跟成员页一样按进公司的先后：这一页回答的是「钱花在谁
+ * 身上了」。按花名册顺序排的话，花得最多的那几个散在六十页中间，等于没答。
+ *
+ * @param opts.q     搜昵称 / 登录名 / 部门，不分大小写
+ * @param opts.dry   只看本月固定额度已经见底的人（首页那条待办点「去充值」过来就是这个）
+ * @param opts.sort  tokens（默认，花得多的在前）| name（按花名册顺序，跟成员页对得上）
+ * @returns { rows, total, matched, offset, limit, dry }
+ *          dry = 这个组织**一共**几个人额度见底，不跟着筛选变——界面上那颗筛选钮要显示这个数，
+ *          筛完再数的话，钮上写的永远是「筛出来的那些」，等于一进去就归零
+ */
+function memberUsage(orgId, opts = {}) {
+  const want = orgId || org.DEFAULT_ORG;
+  const s = org.settingsOf(org.getOrg(want));
+  const mine = loadUsers().users.filter((u) => org.orgIdOf(u) === want);
+
+  // 「额度见底」的口径跟首页那条待办、跟 memberStats 必须是同一个：
+  // 在用的人、确实发过额度、这个月用完了。三处对不上的话，首页说三个人、
+  // 点进来只剩一个，谁也说不清哪个是真的
+  const isDry = (u) => (u.status || "active") === "active" && monthlyQuotaOf(u, s) > 0 && monthlyLeft(u, s) <= 0;
+  const dryAll = mine.reduce((n, u) => n + (isDry(u) ? 1 : 0), 0);
+
+  const kw = String(opts.q || "").trim().toLowerCase();
+  const onlyDry = opts.dry === true || String(opts.dry) === "1";
+  const hit = mine.filter((u) => {
+    if (onlyDry && !isDry(u)) return false;
+    if (!kw) return true;
+    return [u.username, u.nickname, u.dept].some((v) => String(v || "").toLowerCase().includes(kw));
+  });
+
+  // 整本账数一遍就够。按人分组是在这儿一次算完的，不是一个人查一次
+  const tally = new Map();
+  for (const raw of usageStore.read({})) {
+    if (!raw || raw.kind !== "run" || !raw.user) continue;
+    const e = fixLegacyCache(raw);
+    let t = tally.get(e.user);
+    if (!t) tally.set(e.user, (t = { runs: 0, tokens: 0, credits: 0 }));
+    t.runs++;
+    t.tokens += (e.prompt || 0) + (e.completion || 0);
+    t.credits += e.credits || 0;
+  }
+  const NONE = { runs: 0, tokens: 0, credits: 0 };
+  const tallyOf = (u) => tally.get(u.username) || NONE;
+  // 并列时按花名册顺序兜底。不兜的话，一屋子 0 的新人每刷新一次换一个次序，
+  // 而人会以为名单在自己动
+  const byRoster = (a, b) => (rbac.roleOf(b) === "owner" ? 1 : 0) - (rbac.roleOf(a) === "owner" ? 1 : 0)
+    || String(a.created_at).localeCompare(String(b.created_at));
+  hit.sort(String(opts.sort || "") === "name"
+    ? byRoster
+    : (a, b) => tallyOf(b).tokens - tallyOf(a).tokens || byRoster(a, b));
+
+  const { page, offset, limit } = pageOf(hit, opts);
+  const rows = page.map((u) => {
+    const p = publicUser(u, s);
+    const t = tallyOf(u);
+    return {
+      username: p.username, nickname: p.nickname, dept: p.dept, role: p.role, status: p.status,
+      monthly_quota: p.monthly_quota, monthly_left: p.monthly_left, credits: p.credits, balance: p.balance,
+      runs: t.runs, tokens: t.tokens, used_credits: t.credits, dry: isDry(u),
+    };
+  });
+  return { rows, total: mine.length, matched: hit.length, offset, limit, dry: dryAll };
+}
+
+/**
+ * 「每个人单独的 API 月上限」那张表：一页 50 个人，该动闸子的排在最前面。
+ *
+ * 为什么不按花名册顺序翻：这张表回答的是「谁的闸子要动」。三千人的公司里两千九百个是
+ * 「跟随团队 · 本月 0 元」，按名册排的话头一页全是这种行，而真正设过单独上限、真正在
+ * 花钱的那几十个人散在六十页中间——翻六十页才找得到的信息，等于没有。
+ *
+ * 停用的人不在这张表里：他已经调不出去了，摆在这儿只会让「这页有多少人」对不上席位数。
+ *
+ * @param opts.spent Map<登录名, 本月花了多少元>。由调用方扫账本得出——这一页本来就要扫一遍，
+ *                   不传就当这个月谁都没花过，那样排序会退化成「设过上限的在前」，还是能用
+ * @returns { rows, total, matched, offset, limit, capped }
+ *          capped = 这个组织**一共**几个人设过单独上限，不跟着筛选变
+ */
+function memberBudgets(orgId, opts = {}) {
+  const want = orgId || org.DEFAULT_ORG;
+  const spent = opts.spent instanceof Map ? opts.spent : new Map();
+  const mine = loadUsers().users.filter((u) => org.orgIdOf(u) === want && (u.status || "active") !== "disabled");
+  const capped = mine.reduce((n, u) => n + (+u.budget_yuan > 0 ? 1 : 0), 0);
+
+  const kw = String(opts.q || "").trim().toLowerCase();
+  const hit = kw
+    ? mine.filter((u) => [u.username, u.nickname, u.dept].some((v) => String(v || "").toLowerCase().includes(kw)))
+    : mine;
+
+  const yuanOf = (u) => spent.get(u.username) || 0;
+  // 「要不要管他」优先于「花了多少」：设过单独上限的人哪怕这个月一分没花也得看得见，
+  // 那条上限是会拦人的，而拦人的东西不该藏在第六十页
+  const notable = (u) => (+u.budget_yuan > 0 || yuanOf(u) > 0 ? 1 : 0);
+  hit.sort((a, b) => notable(b) - notable(a) || yuanOf(b) - yuanOf(a)
+    || String(a.created_at).localeCompare(String(b.created_at)));
+
+  const { page, offset, limit } = pageOf(hit, opts);
+  return {
+    rows: page.map((u) => ({
+      username: u.username, nickname: u.nickname || "", dept: u.dept || "",
+      status: u.status || "active", budget_yuan: +u.budget_yuan || 0, spent_month: yuanOf(u),
+    })),
+    total: mine.length, matched: hit.length, offset, limit, capped,
+  };
+}
+
+/**
+ * 这个组织里有没有这个人。只读一遍 users.json——不算额度、不算余额、不翻用量账本。
+ *
+ * 为什么不是 listMembers().find()：那个函数是给成员页用的，会把全公司每个人的角色、
+ * 额度、本月剩余、余额全算出来，还要为「最后活跃」翻一遍账本——只为回答一个是非题。
+ */
+function findMember(orgId, username) {
+  const want = orgId || org.DEFAULT_ORG;
+  const name = String(username || "").trim();
+  if (!name) return null;
+  const u = loadUsers().users.find((x) => x.username === name && org.orgIdOf(x) === want);
+  return u
+    ? { username: u.username, nickname: u.nickname || "", dept: u.dept || "",
+        role: rbac.roleOf(u), status: u.status || "active" }
+    : null;
+}
+
+/**
+ * 概览页要的那几个数：几个人、几个占席位、几个等审核、这个月一共发下去多少额度、
+ * 几个人额度见底。一个人名都不用算。
+ *
+ * 为什么不拿 listMembers 数：概览是打开后台第一眼那一页，每次都要拉一次，
+ * 而那个函数会把每个人的角色、额度、本月剩余、余额全算出来，还要为「最后活跃」
+ * 翻一遍用量账本——3000 个人算一遍，换四个数字。这里只数数，加法都在内存里。
+ *
+ * 口径跟别处必须一致，两处各钉了断言：
+ *   · 停用的人**不占席位**，但**仍然在 total 里**（他账号还在，文件也还在）
+ *   · 等审核的人**占席位**——随时会被点头放进来，那时候席位不够就尴尬了
+ *   · 没有 status 那一格的老账号当在用算（跟 publicUser / memberCounts 同一个默认值）
+ */
+function memberStats(orgId) {
+  const want = orgId || org.DEFAULT_ORG;
+  const s = org.settingsOf(org.getOrg(want));
+  const out = { total: 0, used: 0, pending: 0, disabled: 0, granted: 0, dry: 0, dry_names: [] };
+  for (const u of loadUsers().users) {
+    if (org.orgIdOf(u) !== want) continue;
+    out.total++;
+    const status = u.status || "active";
+    if (status === "pending") out.pending++;
+    if (status === "disabled") out.disabled++;
+    else out.used++;
+    out.granted += monthlyQuotaOf(u, s);
+    // 额度见底：跟首页那条待办一个口径——在用的人、确实发过额度、这个月用完了。
+    // 停用的人不算（他本来就发不出请求），没发过额度的也不算（额度 0 = 不限，不是见底）
+    if (status === "active" && monthlyQuotaOf(u, s) > 0 && monthlyLeft(u, s) <= 0) {
+      out.dry++;
+      // 界面上只点得下三个名字，多带的一律不带。这一格是**至多三个**，不是全部——
+      // 谁要真名单，去成员页按「额度见底」筛
+      if (out.dry_names.length < 3) out.dry_names.push(u.nickname || u.username);
+    }
+  }
+  return out;
+}
+
+/**
+ * 每个组织有多少人、其中多少个还在用。平台那张组织列表要的就这两个数。
+ *
+ * 为什么不拿 listMembers 一家一家查：那个函数是给**一个**组织的成员页用的，
+ * 它会把这家公司每个人的角色、额度、本月剩余、余额全算出来，还要为「最后活跃」
+ * 翻一遍用量账本。平台上 61 家公司的时候，一张 38 KB 的表要读 62 遍 users.json、
+ * 61 遍用量账本，合计 **35.6 MB** 的盘，159ms；121 家时 98.3 MB、388ms——
+ * 而这一页上一个人名都不显示，只显示两个数字。整本账数一遍就够了。
+ *
+ * @returns Map<组织 id, { members, active }>
+ */
+function memberCounts() {
+  const out = new Map();
+  for (const u of loadUsers().users) {
+    const id = org.orgIdOf(u);
+    let c = out.get(id);
+    if (!c) out.set(id, (c = { members: 0, active: 0 }));
+    c.members++;
+    // 老账号没有 status 这一格，当 active 算——跟 publicUser 里那一格的默认值保持一致，
+    // 两处对不上的话，同一家公司在成员页和组织列表上会显示两个不同的在用人数
+    if ((u.status || "active") === "active") c.active++;
+  }
+  return out;
 }
 
 /**
@@ -1474,8 +1808,18 @@ function authGuard(req, res, next) {
     (p.startsWith("/api/") && !p.startsWith("/api/auth/") && !PUBLIC_API.has(p)) ||
     (p.startsWith("/im/") && !PUBLIC_IM.has(p));
   if (!needsAuth) return next();
-  const user = userFromReq(req);
-  if (!user) return res.status(401).json({ error: "未登录", setup: !hasUsers() });
+  // 这一趟请求里，users.json 和 orgs.json 各读一次就够。
+  // 改之前是 users 读 3 遍（认人 / 判令牌类型 / 记活跃）、orgs 读 4 遍
+  // （判令牌有效期 / 强制二次验证 / 远程开关 / 租户作用域），
+  // 而这两本装的是**整个平台**的账号、所有活着的登录令牌和全部公司表——
+  // 跟这个请求要干什么一点关系都没有。实测 1000 人 / 3000 个登录令牌的装机，
+  // 一个什么都不做的接口光进门就是 13.18ms、读盘 2.36 MB；3000 人时 39.12ms、7.1 MB。
+  // 聊天页几秒一次轮询，于是「公司人多了之后整个产品变慢」跟谁在用没关系。
+  const st = loadUsers();
+  let orgHit;
+  const orgOf = (u) => (orgHit !== undefined ? orgHit : (orgHit = org.getOrg(org.orgIdOf(u))));
+  const user = userFromReq(req, st, (u) => org.settingsOf(orgOf(u)));
+  if (!user) return res.status(401).json({ error: "未登录", setup: !hasUsers(st) });
   // 待审核 / 已停用的账号：cookie 还在，但一步也走不了。
   // 这道闸必须在这里（而不是只在登录时判）——不然停用一个人之后，他手上开着的那个页面还能接着跑任务
   const status = user.status || "active";
@@ -1484,19 +1828,24 @@ function authGuard(req, res, next) {
   // 组织开了「强制二次验证」而这个人还没绑：除了绑定本身，别的一步也走不了。
   // 这道闸也必须在这儿——只在登录时判的话，管理员今天打开开关，昨天已经登录的人
   // 手上那个页面还能照常用到 cookie 过期，强制就成了「对新登录的人强制」。
-  if (!twoFactorOn(user) && org.settingsOf(org.getOrg(org.orgIdOf(user))).require_2fa && !TWOFA_SETUP_PATHS.has(p)) {
+  const orgSettings = org.settingsOf(orgOf(user));
+  if (!twoFactorOn(user) && orgSettings.require_2fa && !TWOFA_SETUP_PATHS.has(p)) {
     return res.status(403).json({ error: "这个组织要求开启二次验证，先绑定验证器", need_2fa_setup: true });
   }
   // 「允许扫码连设备」关掉之后，**已经连上的那些也得断**。只拦新配对的话这个开关是假的：
   // 管理员在后台把它关了，以为丢在公司的那台手机已经进不来了，其实它手上的令牌还能用到过期。
   // 只踢 kind:"paired" 的令牌——正常在电脑上登录进来的（kind:"session"）跟这个开关无关。
-  if (!remoteAllowed("remote_devices", user) && tokenKind(req) === "paired") {
+  if (orgSettings.remote_devices !== true && tokenKind(req, st) === "paired") {
     return res.status(401).json({ error: "这台设备是扫码连上来的，而管理员已经关掉了「允许远程设备接入」", remote_off: true });
   }
   req.user = user;
+  // 组织和它的设置顺手挂在请求上：后面的 tenantScope 要的就是这两样，
+  // 不挂的话它会把 orgs.json 再读一遍，读出来的还是同一份
+  req.org = orgOf(user);
+  req.orgSettings = orgSettings;
   // 记一笔「这台设备刚才还在」。放在这儿而不是 userFromReq 里：那个函数一个请求里
   // 会被调好几次，而这件事一个请求记一次就够（里面还有 5 分钟的节流）
-  touchDevice(req);
+  touchDevice(req, st);
   next();
 }
 // 强制二次验证时唯一还放行的几条：绑定要用的三条，加上「我是谁」和登出。
@@ -1811,16 +2160,25 @@ function createRouter(opts) {
     if (!user) return res.status(401).json({ error: "未登录" });
     if (!remoteAllowed("remote_devices", user)) return res.status(403).json({ error: "管理员没开「允许远程设备接入」，扫码连设备这件事现在是关着的", remote_off: true });
     const p = newPairCode(user.username);
-    const origin = pairOrigin(req);
     // 二维码里编的是「带码的登录地址」，手机扫完直接落在填好码的那一页，一个字都不用敲。
     // 码照样是一次性 + 3 分钟，所以它躺在地址栏里的那点时间是可接受的；
     // 真正兜底的是 Referrer-Policy: no-referrer，不然这一页上任何外链都会把码带出去
-    const url = origin ? `${origin}/?pair=${p.code}` : "";
-    let qr = "";
-    if (url) qr = await require("qrcode").toDataURL(url, { width: 320, margin: 1, errorCorrectionLevel: "M" }).catch(() => "");
+    //
+    // 一台机器可能有好几个能落地的地址（有线 + 无线、公司网 + 家里网）。挑法再准也可能挑错，
+    // 所以把候选一起发给前端，界面上留一个「换一个地址」——猜错了人自己就能纠，
+    // 不用对着一个扫不开的码猜是哪儿不对。最多三个，再多二维码的体积就压过用处了。
+    const cands = pairOrigins(req).slice(0, 3);
+    const origins = [];
+    for (const c of cands) {
+      const url = `${c.url}/?pair=${p.code}`;
+      const qr = await require("qrcode").toDataURL(url, { width: 320, margin: 1, errorCorrectionLevel: "M" }).catch(() => "");
+      origins.push({ host: c.host, url, qr, iface: c.iface });
+    }
+    const first = origins[0] || { host: "", url: "", qr: "" };
     res.json({
       code: p.code, pretty: p.code.slice(0, 4) + "-" + p.code.slice(4),
-      url, qr, expires_at: p.expires_at, expires_in: p.expires_in,
+      url: first.url, host: first.host, qr: first.qr, origins,
+      expires_at: p.expires_at, expires_in: p.expires_in,
     });
   });
   /** 连上没有？生成码那台机器轮询它，好把二维码换成「✓ 已连接」 */
@@ -1905,6 +2263,7 @@ function createRouter(opts) {
 module.exports = {
   fixLegacyCache,
   hasUsers,
+  userCount,
   defaultUser,
   userFromReq,
   creditsFor,
@@ -1926,6 +2285,13 @@ module.exports = {
   monthlyQuotaOf,
   monthlyLeft,
   listMembers,
+  queryMembers,
+  memberUsage,
+  memberBudgets,
+  findMember,
+  memberStats,
+  MEMBER_PAGE_MAX,
+  memberCounts,
   billingUser,
   pendingMembers,
   setMember,
@@ -1955,5 +2321,5 @@ module.exports = {
   // 下面这些只给测试用：账本读写和登录闸得能在临时目录里单独验，不然一跑测试就动到真账号
   _internals: { readStore, writeStoreAtomic, createLimiter, startEnroll, enableTOTP, consumeTwoFactor, regenRecovery, hashRecovery, makeRecoveryCodes, isHttps, clientIp, isPrivateAddr, normalizeAvatar, register, renameUser, loadUsers, saveUsers, loadUsage, saveUsage, verify, issueToken,
     // 设备配对：配对码的一次性、过期、限速这几条都得能单独验
-    newPairCode, dropPairCode, claimPair, pairStatus, pairOrigin, claimed, listDevices, revokeDevice, deviceId, deviceLabel, normalizePairCode, touchDevice, prunePairs, pairs, PAIR_LEN, PAIR_TTL_MS, PAIR_ALPHABET, MAX_DEVICES },
+    newPairCode, dropPairCode, claimPair, pairStatus, pairOrigin, pairOrigins, lanCandidates, claimed, listDevices, revokeDevice, deviceId, deviceLabel, normalizePairCode, touchDevice, prunePairs, pairs, PAIR_LEN, PAIR_TTL_MS, PAIR_ALPHABET, MAX_DEVICES },
 };

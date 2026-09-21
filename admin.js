@@ -71,7 +71,7 @@ const PLATFORM_WRITE = [
   // 会出现在所有人（包括平台管理员自己）的每一条任务里——而技能正文就是写给 agent 看的指令，
   // agent 手里有 shell。放开写等于让任何一个刚注册的同事给全公司的 agent 递指令。
   // 读（GET）不拦：装了什么谁都该看得见。
-  "/api/skills", "/api/memory", "/api/library",
+  "/api/skills", "/api/memory",
   // 「用系统程序打开」「在访达里显示」= 在**服务器那台机器**上起一个进程。
   // 按上面那条线，这是「配这台机器」，不是租户内动作：成员开在别人机器上的窗口他也看不见，
   // 而这条路径以前连表都不在，任何登录用户都能拿它拉起服务端进程。
@@ -83,11 +83,11 @@ const PLATFORM_READ = [
   "/api/schedules", "/api/backup", "/api/security/audit", "/api/memory",
   "/api/evolve", "/api/eval", "/api/feishu",
 ];
-// 读表里为什么没有 /api/library：拦它拦了个寂寞。资料库是**一份全局目录**（tools.js 的 LIB_DIR），
-// 每个人的 agent 都带着 library_list / library_read 这两个工具，一句「翻一下资料库」就能把文件清单、
-// 灵感笔记、乃至文件正文原样念出来——同样的字节，走 agent 拿得到，走界面反而 403。
-// 结果只有一个：资料库页面对普通成员写着「还没有参考资料」，一句瞎话。
-// 所以读放行、写照拦（上传/删除/记笔记全在 PLATFORM_WRITE 的 /api/library 前缀里）。
+// 两张表里为什么都没有 /api/library：资料库现在一人一份（server.js 的 libraryRootOf）。
+// 以前它是整台机器共用的一个目录，于是这儿只能按「谁的东西」拦：写拦住，读拦不住——
+// 每个人的 agent 都带着 library_list / library_read，一句「翻一下资料库」照样把别人的文件念出来。
+// 根分开之后这道题没了：上传、删除、记笔记都只落在调用者自己那个根里，跨不过去；
+// 再拦写就变成普通成员只能看着一个**自己的空目录**什么也放不进去，比原来还难用。
 /**
  * 上面那张写表按前缀拦，这几条是被顺带拦住的例外——它们只花调用者自己的钱、只改他自己那份：
  *   /api/engines/test  真跑一句话，走的是他本机那份 CLI 订阅，一个字节都不落盘
@@ -134,24 +134,47 @@ const PERSONAL_READ = new Set(["/api/memory"]);
  * 屏幕前只有一个人，他自己的机器、自己的 API Key、自己的桌面，却被自己的软件告知
  * 「这块是服务器级设置，归平台管理员管」——桌面宠物开不了，底层引擎切不动。
  *
- * 判据是两个都得成立，缺一不可：
+ * 判据是三个都得成立，缺一不可：
  *   ① 跑在 Electron 壳里（不是 node server.js，也不是 run_node 派生的子进程）；
- *   ② 服务端只监听回环地址（127.0.0.1 / ::1 / localhost）。
+ *   ② 服务端只监听回环地址（127.0.0.1 / ::1 / localhost）；
+ *   ③ 这台机器上最多只有一个账号。
  * ② 是关键的那半边：只要绑到 0.0.0.0 或某个网卡地址，别人就能连进来，闸必须留着。
  * Docker 部署走的正是 HOST=0.0.0.0，天然落在墙这一侧。
  *
+ * ③ 是后补的，补的是一条被用户当场撞见的洞：桌面版里建了第二个账号之后，「屏幕前只有一个人」
+ * 这个前提当场就不成立了，可这道闸还认着它——于是新建的号切进来，宠物开关、底层引擎、
+ * 快捷键、上次选的模型全写在同一份 config.json 上（ownPrefs 走的正是这个判据），
+ * 换个号登进来设置一个字都没变；更糟的是 platformGuard 第一行直接放行，
+ * 那个号连 API Key、MCP、插件都能改。建第二个账号 = 这台机器开始有「别人」了，墙就得立起来。
+ *
  * 同时也把凭证脱敏一起关掉。听起来吓人，其实相反：能连上回环地址的人，本来就能直接
  * 打开 config.json 看那些 Key。留着脱敏在这儿只有一个效果——界面把 Key 显示成空，
- * 用户随手一存就把真 Key 抹了。这是本次改动里唯一真会丢数据的坑，所以两个开关必须同生共死。
+ * 用户随手一存就把真 Key 抹了。这是那次改动里唯一真会丢数据的坑，所以两个开关必须同生共死。
+ * ③ 把这个坑绕开了：账号一多，脱敏是跟着开了，但**平台管理员本人始终豁免**
+ * （redactGuard 第二行的 ownsGlobalWorkspace），而别的成员根本过不了 platformGuard 那道写闸，
+ * 也就没人会拿着一份被抹空的 Key 去按保存。
  */
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"]);
-let soloDesktop = false;
+let desktopShell = false;   // ①②：装成什么形态、绑在哪个地址，起服务那一下就定死了
+// ③ 每个请求都要问一次，可它只会 0→1→2 地涨：数到 2 就再也不用回头问了，
+// 剩下的情况 2 秒内不重复读盘（platformGuard / redactGuard / tenantScope 每条请求都要问）
+let soloCount = { at: 0, solo: true };
+function soloAccounts() {
+  if (!soloCount.solo) return false;              // 已经不是一个人了，不会再变回去
+  const now = Date.now();
+  if (now - soloCount.at < 2000) return soloCount.solo;
+  let solo = true;
+  try { solo = account.userCount() <= 1; } catch {}
+  soloCount = { at: now, solo };
+  return solo;
+}
 function setDeployment({ host, shell } = {}) {
-  soloDesktop = !!shell && LOOPBACK.has(String(host || "").trim().replace(/^\[|\]$/g, ""));
-  return soloDesktop;
+  desktopShell = !!shell && LOOPBACK.has(String(host || "").trim().replace(/^\[|\]$/g, ""));
+  soloCount = { at: 0, solo: true };   // 换一次部署形态就把上面那个缓存清掉（测试里会来回切）
+  return isSoloDesktop();
 }
 function isSoloDesktop() {
-  return soloDesktop;
+  return desktopShell && soloAccounts();
 }
 
 /** 平台管理员 = 默认组织的管理员。全局工作目录、密钥、引擎这些只有他能动 */
@@ -159,7 +182,7 @@ function ownsGlobalWorkspace(user) {
   return !!user && org.orgIdOf(user) === org.DEFAULT_ORG && account.isAdmin(user);
 }
 function platformGuard(req, res, next) {
-  if (soloDesktop) return next(); // 个人桌面版：没有「平台」这回事，别拿服务器的规矩管一个人的机器
+  if (isSoloDesktop()) return next(); // 个人桌面版：没有「平台」这回事，别拿服务器的规矩管一个人的机器
   if (ownsGlobalWorkspace(req.user)) return next();
   // 小写化再查表：表里全是小写前缀，而 Express 路由大小写不敏感，
   // 普通成员发 POST /api/Settings 能命中处理器却不命中这张表——整张写表就绕过去了
@@ -200,7 +223,7 @@ function redactSecrets(v) {
   return v;
 }
 function redactGuard(req, res, next) {
-  if (soloDesktop) return next(); // 见 setDeployment：桌面版关了闸就必须一起关脱敏，否则会把真 Key 存成空
+  if (isSoloDesktop()) return next(); // 见 setDeployment：桌面版关了闸就必须一起关脱敏，否则会把真 Key 存成空
   if (req.method !== "GET" || req.path.toLowerCase().startsWith("/api/admin") || ownsGlobalWorkspace(req.user)) return next();
   const json = res.json.bind(res);
   res.json = (body) => json(redactSecrets(body));
@@ -214,20 +237,26 @@ function redactGuard(req, res, next) {
  * 打开/上传，还有任务本身写出去的每一个文件），漏判一个就是一个跨租户读文件的洞。
  * 默认组织返回空串 → withWorkspace 原样放行，单机个人版一行行为都没变。
  *
+ * 资料库的根（一人一份，见 server.js 的 libraryRootOf）也在这儿入栈，理由同上：读它的入口有
+ * 十来个（列表/上传/下载/预览/删除/新建文件夹/记笔记/全库搜索），再加上 agent 手里的
+ * library_list / library_read / library_import——漏判一个就是一个账号翻到另一个账号的资料。
+ *
  * 个人偏好（底层引擎 / 思考档 / 上次选的模型）也在这儿一并入栈，理由一模一样：
  * 「这一趟任务该用哪个引擎」的读取点散在 goalThink、/api/engines、/api/thinking、agent.js 里，
  * 每处各自去翻当前是谁，漏一处就是「设置页显示 Codex、实际还在烧 API」。
  * 没登录 / 没偏好文件 → 传 null → 不设 store → 全部回落到 config.json，老行为一字不差。
  */
-function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig }) {
+function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig, withLibraryBase, libraryRootOf }) {
   return (req, res, next) => {
     let root = "";
     let policy = null;
     let actor = null;
     try {
-      const o = org.getOrg(org.orgIdOf(req.user));
+      // 登录闸刚刚解析过同一个组织，挂在请求上了；没有的话（比如单机桌面版
+      // 这条路上没人登录）才自己去读
+      const o = req.org || org.getOrg(org.orgIdOf(req.user));
       root = o.id === org.DEFAULT_ORG ? "" : org.rootDirOf(o, getWorkspaceDir());
-      const s = org.settingsOf(o);
+      const s = req.orgSettings || org.settingsOf(o);
       // 只在真配了限制时才进 ALS：默认组织默认值 = 不限 = 不设 store = 老行为一字不差
       if (s.allow_shell === false || (s.net_allow || []).length || (s.net_deny || []).length)
         policy = { allow_shell: s.allow_shell !== false, net_allow: s.net_allow || [], net_deny: s.net_deny || [] };
@@ -257,12 +286,17 @@ function tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig })
     let mine = null;
     try {
       // 个人桌面版从来不写偏好文件（那边一切照旧落 config.json），别为它每个请求白 stat 一次盘
-      const p = soloDesktop ? null : prefs.read(req.user);
+      const p = isSoloDesktop() ? null : prefs.read(req.user);
       if (p && Object.keys(p).length) mine = p;
     } catch (e) {
       console.warn("[个人偏好] 读取失败，本次按全局设置走：" + e.message);
     }
-    withWorkspace(root, () => withPolicy(policy, () => quota.withActor(actor, () => prefs.withPrefs(mine, next))));
+    // 资料库根算不出来（没传依赖 / 算错了）就传空串 → withLibraryBase 自己退回 data/library，老行为
+    let libBase = "";
+    try { if (libraryRootOf) libBase = libraryRootOf(req.user) || ""; } catch (e) { console.warn("[租户] 取资料库根失败：" + e.message); }
+    const inner = () => withWorkspace(root, () => withPolicy(policy, () => quota.withActor(actor, () => prefs.withPrefs(mine, next))));
+    if (withLibraryBase) withLibraryBase(libBase, inner);
+    else inner();
   };
 }
 
@@ -277,20 +311,27 @@ function createAdminRouter(deps = {}) {
     const orgId = org.orgIdOf(req.user);
     const o = org.getOrg(orgId);
     const plan = org.planInfo(o);
-    const members = account.listMembers(orgId);
+    // 这一页上一个人名都不显示，只显示「几个人 / 几个等审核 / 这个月发下去多少」。
+    // 以前是把整份花名册算一遍换这几个数字：每人算角色、额度、余额，还要为「最后活跃」
+    // 翻一遍用量账本。而这是打开后台第一眼的那一页，每次都要拉
+    const ms = account.memberStats(orgId);
     const usage = account.usageSummary(req.user);
     const s = org.settingsOf(o);
     return {
       org: { id: o.id, name: o.name, created_at: o.created_at, root_hint: o.id === org.DEFAULT_ORG ? "默认工作目录" : "独立工作目录" },
       plan,
-      seats: { total: plan.seats, used: members.filter((m) => m.status !== "disabled").length, pending: members.filter((m) => m.status === "pending").length },
+      seats: { total: plan.seats, used: ms.used, pending: ms.pending },
       settings: s,
       // 月固定用量：整个组织这个月发下去多少、用掉多少
       monthly: {
         per_member: s.member_monthly_credits,
-        granted: members.reduce((n, m) => n + (m.monthly_quota || 0), 0),
+        granted: ms.granted,
         used: usage.month.from_monthly || 0,
         credits_used: usage.month.credits || 0,
+        // 额度见底的人：首页那条待办要的就是这个。以前是前端把整份花名册拉过来自己数——
+        // 3000 人的组织为了一行待办搬 1041 KB。dry_names 至多三个，界面上也只点得下三个
+        dry: ms.dry,
+        dry_names: ms.dry_names,
       },
       today: usage.today,
       month: usage.month,
@@ -305,14 +346,24 @@ function createAdminRouter(deps = {}) {
   // ---------- 成员与部门 ----------
   // 部门模板跟着这一趟一起回去：成员页要拿它画「这个部门进来的人默认什么权限」，
   // 单开一趟请求等于让页面多等一个来回，还多一处能 403 的地方（审计员读得到模板，改不动）
-  router.get("/api/admin/members", guarded((req) => ({
-    members: account.listMembers(org.orgIdOf(req.user)),
-    depts: org.listDepts(org.orgIdOf(req.user)),
-    templates: lifecycle.listDeptTemplates(org.orgIdOf(req.user)),
-    // 建号和部门模板的角色下拉得照着**这个人**能发的角色画。少了这行，管理员那边
-    // 下拉里还挂着「管理员」，点下去后端一句「你没有授予…的权限」——看得见但会 403 的按钮
-    can_assign: rbac.assignableBy(req.user, { role: "member" }),
-  })));
+  router.get("/api/admin/members", guarded((req) => {
+    const q = req.query || {};
+    const orgId = org.orgIdOf(req.user);
+    // 筛和翻页都在服务端做。以前是整份回去、前端自己筛：3000 人的组织一次 1041 KB、
+    // 浏览器里 78098 个 DOM 节点、点进来到表格出来 878ms，而一屏看得见十几行。
+    // fields=lite 只回名字那几格，给下拉框用（交接给谁、归到谁名下……）
+    return {
+      ...account.queryMembers(orgId, {
+        q: q.q, role: q.role, status: q.status, offset: q.offset, limit: q.limit,
+        lite: q.fields === "lite",
+      }),
+      depts: org.listDepts(orgId),
+      templates: lifecycle.listDeptTemplates(orgId),
+      // 建号和部门模板的角色下拉得照着**这个人**能发的角色画。少了这行，管理员那边
+      // 下拉里还挂着「管理员」，点下去后端一句「你没有授予…的权限」——看得见但会 403 的按钮
+      can_assign: rbac.assignableBy(req.user, { role: "member" }),
+    };
+  }));
 
   router.post("/api/admin/members", account.adminOnly, guarded((req) => account.createMember(req.user, req.body || {})));
 
@@ -342,15 +393,26 @@ function createAdminRouter(deps = {}) {
    * 而不是界面上藏一藏、后端照旧放行。
    */
   router.get("/api/admin/roles", guarded((req) => {
-    const members = account.listMembers(org.orgIdOf(req.user));
+    const orgId = org.orgIdOf(req.user);
+    // 这一页要两样东西，都不是「全体成员」：
+    //   · 管理层名单（审计员起）——这张表本来就短，一家公司有三千个管理员的情况不存在
+    //   · 提拔 / 转让的候选人——只要名字，而且下拉框里塞三千个人本来就没法用
+    // 以前这里回的是整份花名册，3000 人时 1042 KB，为了画一张十来行的表
+    const staff = account.queryMembers(orgId, { all: true, minRank: "auditor" }).members;
+    const candidates = account.queryMembers(orgId, { status: "active", lite: true, limit: account.MEMBER_PAGE_MAX });
     return {
       ranks: rbac.ROLE_RANK,
       roles: rbac.ROLES.map((r) => ({ role: r, label: rbac.ROLE_LABEL[r], caps: rbac.CAPS[r] })),
       caps: rbac.CAP_LABEL,
       me: { role: rbac.roleOf(req.user), can_assign: rbac.assignableBy(req.user, { role: "member" }),
             can_transfer: rbac.can(req.user, "owner.transfer"), platform_owner: account.platformOwner(req.user) },
-      owner: (members.find((m) => m.role === "owner") || {}).username || "",
-      members,
+      owner: (staff.find((m) => m.role === "owner") || {}).username || "",
+      staff,
+      // 候选人可能被截断（超过 MEMBER_PAGE_MAX 就只回前 500 个）。截断了得说，
+      // 不然界面上「找不到那个人」会被当成他不存在
+      candidates: candidates.members,
+      candidates_total: candidates.matched,
+      candidates_capped: candidates.matched > candidates.members.length,
     };
   }));
 
@@ -424,13 +486,32 @@ function createAdminRouter(deps = {}) {
     });
     return {
       today: sum.today, month: sum.month, last7: sum.last7, range: sum.range,
-      by_user: sum.by_user, by_model: sum.by_model, by_source: sum.by_source,
+      // 分组只回前 20（花得最多的那些），跟 /api/admin/stats 一个口径。不截的话这三行
+      // 是按人头长的：3000 人的组织里，205 KB 的回包有 195 KB 是这张按人分组的表，
+      // 而这一页画的是流水，一行都没用到它。groups 把真实组数带上，免得二十当成全部
+      by_user: sum.by_user.slice(0, 20), by_model: sum.by_model.slice(0, 20), by_source: sum.by_source,
+      groups: { users: sum.by_user.length, models: sum.by_model.length, sources: sum.by_source.length },
       detail: sum.recent, total: sum.total, offset: sum.offset, limit: sum.limit,
-      members: account.listMembers(org.orgIdOf(req.user)).map((m) => ({
-        username: m.username, nickname: m.nickname, dept: m.dept, role: m.role, status: m.status,
-        monthly_quota: m.monthly_quota, monthly_left: m.monthly_left, credits: m.credits, balance: m.balance,
-      })),
     };
+    // 这里**不捎带花名册**。以前捎带过，于是 ?limit= 根本缩不小回包：3000 人的组织，
+    // limit=20 是 682 KB、limit=1 还是 678 KB——那几百 KB 是名单，不是流水。
+    // 两个要名单的地方各自有了去处：
+    //   · 「成员用量」那张按人头的表 → /api/admin/usage/members，一页 50 个
+    //   · 明细页那个「看谁的」→ /api/admin/members?fields=lite&q=，打字的时候才去问
+  }));
+
+  /**
+   * 成员用量：一页 50 个人，筛、排、切都在服务端。
+   *
+   * 为什么单开一条而不是挂在上面那个接口上：上面回的是**这个组织**的汇总和流水，
+   * 那份数据跟公司多少人没关系；这一页是按人头长的，得一页一页地要。挤在一起的结果
+   * 就是上面那条注释里写的事——明明只要一条流水，回包还是大半兆。
+   */
+  router.get("/api/admin/usage/members", guarded((req) => {
+    const q = req.query || {};
+    return account.memberUsage(org.orgIdOf(req.user), {
+      q: q.q, dry: q.dry, sort: q.sort, offset: q.offset, limit: q.limit,
+    });
   }));
 
   router.post("/api/admin/topup", account.adminOnly, guarded((req) => {
@@ -470,7 +551,8 @@ function createAdminRouter(deps = {}) {
     // 每一路「配没配」由服务端认：前端不该拿到 Key，也就没法自己判断
     const at = (obj, dotted) => dotted.split(".").reduce((x, k) => (x == null ? x : x[k]), obj);
     const configured = {
-      search: !!(cfg.search && (cfg.search.jina_key || cfg.search.api_key || cfg.search.tavily_key || cfg.search.brave_key)),
+      search: !!(cfg.search && (cfg.search.jina_key || cfg.search.api_key || cfg.search.tavily_key || cfg.search.brave_key
+        || cfg.search.bocha_key || cfg.search.zhipu_key || cfg.search.qiniu_key || cfg.search.serper_key || cfg.search.custom_url)),
       image: !!at(cfg, "media.image.model") || !!at(cfg, "media.image.provider"),
       video: !!at(cfg, "media.video.model") || !!at(cfg, "media.video.provider"),
       tts: !!at(cfg, "media.tts.model") || !!at(cfg, "media.tts.provider"),
@@ -506,6 +588,39 @@ function createAdminRouter(deps = {}) {
    * 本来就是并排的三格——分开取，必然出现三格来自三个时刻的情况，
    * 而这三个数之间的关系（剩余 = 上限 − 已花）正是管理员唯一会去核的东西。
    */
+  /**
+   * 本月这个组织每个人花掉的钱（元）。usageStore 按月分片，查「本月」只开本月那一个文件，
+   * 历史攒了多少年都不会让这一页变慢。
+   *
+   * 口径跟下面那一页、跟 budget.spentOf 三处一致：充值不算花销，中转出去的和公司内部
+   * 自己用的都算——它们花的是同一笔预算。三处对不上的话，同一屏上的两个数会互相矛盾。
+   */
+  function spentByUser(orgId) {
+    const mk = budget._internals.monthKey();
+    const m = new Map();
+    try {
+      for (const r of usageStore.read({ from: mk + "-01", to: mk + "-31" })) {
+        if ((r.org || org.DEFAULT_ORG) !== orgId || r.kind === "topup" || !r.user) continue;
+        m.set(r.user, (m.get(r.user) || 0) + (+r.cost || 0));
+      }
+    } catch {}
+    for (const [k, v] of m) m.set(k, Math.round(v * 1e4) / 1e4);
+    return m;
+  }
+
+  /**
+   * 「每个人单独的上限」那张表：一页 50 个，设过上限的和本月花过钱的排在最前面。
+   *
+   * 单开一条而不是挂在 /api/admin/relay 上，是因为那一页回的是**这个组织**的 Key、渠道、
+   * 价目和本月账单，那份数据跟公司多少人没关系；只有这张表是按人头长的。挤在一起的结果是
+   * 3000 人的组织一次回包 631 KB，其中 620 KB 是一张「跟随团队 · 本月 0 元」重复三千遍的表。
+   */
+  router.get("/api/admin/relay/members", guarded((req) => {
+    const q = req.query || {};
+    const orgId = org.orgIdOf(req.user);
+    return account.memberBudgets(orgId, { q: q.q, offset: q.offset, limit: q.limit, spent: spentByUser(orgId) });
+  }));
+
   router.get("/api/admin/relay", guarded((req) => {
     const orgId = org.orgIdOf(req.user);
     const o = org.getOrg(orgId);
@@ -564,11 +679,6 @@ function createAdminRouter(deps = {}) {
       return { ...k, caps: k.caps || [], spent_month: spent, left: k.budget_yuan ? Math.max(0, y4(k.budget_yuan - spent)) : null };
     });
 
-    const members = account.listMembers(orgId).map((m) => ({
-      username: m.username, nickname: m.nickname, dept: m.dept, status: m.status, budget_yuan: m.budget_yuan,
-      spent_month: y4((byUser.get(m.username) || {}).yuan || 0),
-    }));
-
     // 有哪些渠道转得出去。relay.js 认的是 config.models[i].channel，
     // 所以「登记了型号但没挂渠道」的那些在中转站上根本转不出去——这一页要直说，
     // 不然业务方拿着 Key 调一个界面上明明看得见的型号，收到的是一句「没有可用渠道」。
@@ -582,7 +692,8 @@ function createAdminRouter(deps = {}) {
     const out = {
       org: { id: o.id, name: o.name },
       keys: keyRows,
-      members,
+      // 这里**不捎带花名册**：「每个人单独的上限」那张表走 /api/admin/relay/members，一页 50 个。
+      // 捎带的时候 3000 人的组织一次 631 KB，而那张表一屏看得见十几行
       channels, orphans,
       month: mk,
       budget: { org_yuan: (st.budget || {}).org_yuan || 0, default_user_yuan: (st.budget || {}).default_user_yuan || 0, price_discount: pricing._internals.discountOf(st.price_discount) },
@@ -594,7 +705,11 @@ function createAdminRouter(deps = {}) {
         // 同一笔预算，但超支的时候该去拧哪一边完全不同。
         relay: y4(relayRows.reduce((a, r) => a + (+r.cost || 0), 0)),
         relay_calls: relayRows.length,
-        by_key: done(byKey), by_user: done(byUser), by_model: done(byModel),
+        // 三张表都只回前 50——界面上画的就是 50 行（多出来的在服务端就切掉，不占回包）。
+        // 不切的话「按人」这张是跟着公司人数长的：三千人全跑过任务，它就是三千行。
+        // groups 把真实组数带上，免得五十被当成全部
+        by_key: done(byKey).slice(0, 50), by_user: done(byUser).slice(0, 50), by_model: done(byModel).slice(0, 50),
+        groups: { keys: byKey.size, users: byUser.size, models: byModel.size },
         // 单位跟着数一起发。前端自己推的话，以后改了哪一路的计量口径
         // （比如语音合成从千字符改成万字符），页面会静静地多显示十倍。
         by_cap: done(byCap).map((c) => ({ ...c, unit: (pricing.UNITS[c.key] || {}).unit || "" })),
@@ -637,7 +752,7 @@ function createAdminRouter(deps = {}) {
     // billingUser 查不到人 → 个人预算那一档整个跳过 → 这把 Key 只受组织总额限制。
     // 「设了但没生效」的预算比没设更糟，所以在能拦住的地方拦住。
     if (b.user) {
-      const who = account.listMembers(orgId).find((m) => m.username === String(b.user).trim());
+      const who = account.findMember(orgId, b.user);
       if (!who) throw new Error(`这个组织里没有「${String(b.user).trim()}」这个人——归属写错了的话，他那一档月预算就成了摆设`);
       b.user = who.username;
     }
@@ -753,15 +868,17 @@ function createAdminRouter(deps = {}) {
 
   // ---------- 组织管理（平台管理员）----------
   router.get("/api/admin/orgs", platformOwnerOnly, guarded(() => {
-    const members = account.listMembers; // 每个组织各查一次，组织数量是个位数，不值得为它做索引
+    // 这一页每家公司只显示两个数字：几个人、几个在用。以前是一家一家去查成员列表，
+    // 那个函数要算每个人的额度余额、还要为「最后活跃」翻一遍用量账本——
+    // 61 家公司换一张 38 KB 的表，要读 62 遍 users.json、61 遍用量账本，
+    // 合计 35.6 MB 的盘、159ms；121 家时 98.3 MB、388ms。
+    // 这一页是平台管理员开后台第一眼看的东西，卖成多租户之后「组织数量是个位数」
+    // 这个前提就不成立了。现在整本账数一遍，剩下的都是内存里的加法。
+    const counts = account.memberCounts();
     return {
       orgs: org.listOrgs().map((o) => {
-        const ms = members(o.id);
-        return {
-          ...o, settings: org.settingsOf(o), ...org.planInfo(o),
-          members: ms.length,
-          active: ms.filter((m) => m.status === "active").length,
-        };
+        const c = counts.get(o.id) || { members: 0, active: 0 };
+        return { ...o, settings: org.settingsOf(o), ...org.planInfo(o), members: c.members, active: c.active };
       }),
       plans: org.PLANS, plan_order: org.PLAN_ORDER,
     };
@@ -782,12 +899,15 @@ function createAdminRouter(deps = {}) {
   // ---------- 数据统计 ----------
   router.get("/api/admin/stats", guarded((req) => {
     const sum = account.usageSummary(req.user, { limit: 500 });
-    const members = account.listMembers(org.orgIdOf(req.user));
+    // 这一页要的是「几个人」这一个数。以前是把全员算一遍再取 .length——每人算角色、
+    // 额度、本月剩余、余额，还要为「最后活跃」翻一遍用量账本，换一个整数。
+    // memberStats 只数不算，口径一样（停用的人照样算人头，他账号还在）
+    const memberCount = account.memberStats(org.orgIdOf(req.user)).total;
     const runs = sum.recent.filter((e) => e.kind === "run");
     const active = new Set(runs.filter((e) => e.day === sum.last7[6].day).map((e) => e.user));
     return {
       totals: {
-        members: members.length,
+        members: memberCount,
         active_today: active.size,
         runs_month: sum.month.runs,
         tokens_month: sum.month.tokens,

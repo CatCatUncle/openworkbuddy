@@ -25,7 +25,7 @@ const { mergeBuiltinExperts } = require("./experts-lib");
 const mcpCatalog = require("./mcp-catalog");
 const { createLLM, createEmbedder, anthropicBase } = require("./llm");
 const sessSearch = require("./session-search");
-const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, shellPath } = require("./tools");
+const { outputFiles, noteUserInput, moveUserInput, filesScope, safePath, safePathIn, workspaceKeyOf, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, setLibraryDir, withLibraryBase, libBase, notesFileOf, withWorkspace, enterWorkspace, withPolicy, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath } = require("./tools");
 const checkpoints = require("./checkpoints"); // 这条对话改过的文件：列出来、整步退回去
 const worktree = require("./worktree"); // 两条任务同时改一个仓库时，后来的那条进自己的 git worktree
 const shotHistory = require("./shot-history"); // 一镜一镜的版本留底：改台词重跑之后，上一版首帧还拿得回来
@@ -651,12 +651,14 @@ function sessionRow(id, s) {
  * 侧栏只列「我自己的」，故意比 sessionAllowed 更窄：
  * 后者管的是「能不能打开」（管理员拿到同组织的链接可以打开），
  * 这里管的是「侧栏该不该出现」——把同事的任务铺进管理员的侧栏是另一种事故。
- * 没开账号体系（req.user 为空）本来就是一个人用；老会话没记归属的一律留着，别让升级上来的历史消失。
+ * 没开账号体系（req.user 为空）本来就是一个人用；没记归属的老会话归管理员（见 legacySessionOwner），
+ * 不再当公共的——那一条正是「新建的号一打开，侧栏里全是别人的对话」的出处。
+ * 这里的 row 是磁盘清单里的一行，不会是空壳，所以直接按 legacySessionOwner 兜底。
  */
 function ownSession(user, row) {
   if (!user) return true;
-  if (!row.user) return true;
-  return row.user === user.username;
+  const owner = (row && row.user) || legacySessionOwner();
+  return !owner || owner === user.username;
 }
 
 // 任务跑一半崩了 / 用户直接退出 App，这一轮的过程就全没了——中途也存，最多每 5 秒一次。
@@ -995,7 +997,7 @@ app.use(relay.createRouter({
 app.use(account.authGuard); // 其余 /api/* 与 /im/*（除外部回调）需要登录
 
 // 租户工作目录 → 服务器级接口的闸 → 凭证脱敏。三段的说明都在 admin.js 里
-app.use(admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config }));
+app.use(admin.tenantScope({ withWorkspace, withPolicy, getWorkspaceDir, readConfig: () => config, withLibraryBase, libraryRootOf: (u) => libraryRootOf(u) }));
 app.use(admin.platformGuard);
 app.use(admin.redactGuard);
 const ownsGlobalWorkspace = admin.ownsGlobalWorkspace;
@@ -1070,12 +1072,47 @@ if (enterprise && typeof enterprise.mount === "function") {
  * 猜中/拿到一个 id 就能读走整段对话（含产出文件名、模型原文）。这里补上归属判定：
  * 本人一定能看；管理员只能看**本组织**的；老会话没记 user 的按公共处理（不然升级上来全打不开）。
  */
+/**
+ * 没记归属的那些老会话算谁的。
+ *
+ * 以前一律按「公共」处理，本意是别让升级上来的历史消失。可账号体系上来之后，「公共」
+ * 的实际意思是：**每注册一个新账号，他一进来就看见前面所有人的任务历史**——刚建的 demo 号
+ * 打开侧栏，里头是管理员那几十条对话，标题、产出文件名、点开就是全文。
+ *
+ * 跟助理页上下文那次（local_assist，见下面那段迁移）是同一个判断：没记归属 = 账号体系之前
+ * 留下的，那会儿这台机器上就一个人在用，认到管理员名下即可。历史一条不丢，也不铺给别人。
+ *
+ * 不去改盘上的文件（那是 1500 个 JSON 的批量重写，写坏一个就是一段对话没了），只在读的时候
+ * 认这一笔。管理员是谁会变（改名、删号），所以每 30 秒回头问一次账号表。
+ */
+let legacyOwner = { at: 0, name: "" };
+function legacySessionOwner() {
+  const now = Date.now();
+  if (now - legacyOwner.at < 30000) return legacyOwner.name;
+  let name = "";
+  try { const boss = account.defaultUser(); name = boss ? boss.username : ""; } catch {}
+  legacyOwner = { at: now, name };
+  return name;
+}
+/**
+ * 一条会话（内存里的那份对象）现在算谁的。
+ *
+ * 空壳不算谁的：前端是先自己生成 id、再发第一句话，中间这一下 getSession 会凭空造一份空的出来。
+ * 把空壳认到管理员名下的话，别的账号连自己刚开的那条新对话都打不开（403）。
+ */
+function sessionOwner(s) {
+  if (!s) return "";
+  if (s.user) return s.user;
+  const 有内容 = (s.transcript && s.transcript.length) || (s.history && s.history.length);
+  return 有内容 ? legacySessionOwner() : "";
+}
 function sessionAllowed(user, s) {
-  if (!user || !s || !s.user) return true;
-  if (s.user === user.username) return true;
+  if (!user || !s) return true;
+  const owner = sessionOwner(s);
+  if (!owner || owner === user.username) return true;
   if (!account.canAdmin(user)) return false;
-  const owner = account._internals.loadUsers().users.find((u) => u.username === s.user);
-  return !owner || org.orgIdOf(owner) === org.orgIdOf(user);
+  const o = account._internals.loadUsers().users.find((u) => u.username === owner);
+  return !o || org.orgIdOf(o) === org.orgIdOf(user);
 }
 function guardSession(req, res) {
   const s = getSession(req.params.id);
@@ -1584,7 +1621,7 @@ app.post("/api/canvas/boards", (req, res) => {
     const name = String(req.body && req.body.name || "").trim();
     if (!name || /[\\/\0]/.test(name) || name.length > 80) throw new Error("画布名称不合法");
     if (canvasList().some((item) => item.name === name)) throw new Error("已经有同名画布，请换一个名称");
-    const state = canvasWriteState({ version: 1, nodes: [], edges: [], updatedAt: 0 }, name);
+    const state = canvasWriteState({ version: 2, nodes: [], edges: [], updatedAt: 0 }, name, { pristine: true });
     res.json({ ok: true, name, state, canvases: canvasList() });
   } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
@@ -1983,11 +2020,102 @@ app.post("/api/provider-test", async (req, res) => {
     || (mine[0] || {}).model
     || ((mediaModels.catalogFor("chat", kind) || [])[0] || {}).id;
   if (!model) {
-    return res.json({ ok: false, error: "这个渠道下面还没有对话模型。加一个再测——测活要拿一个真模型去打一次招呼，瞎猜一个名字测出来的 404 会让人误以为 Key 坏了" });
+    // 专门挂生图 / 生视频的渠道底下本来就一个对话模型都没有。以前这儿直接甩一句
+    // 「还没有对话模型」，等于告诉人「你这条渠道没法测」——可它明明配好了、也在用。
+    // 这种渠道改走不花钱的清单测活：Key 认不认、模型名在不在，一样能测出来
+    const media = (config.media_models || []).filter((m) => m.provider === known.id);
+    if (media.length) {
+      const t = Date.now();
+      const hit = (mediaModels.resolve(config).list || []).find((x) => x.id === media[0].id) || {};
+      const capCn = mediaModels.CAP_CN[media[0].cap] || media[0].cap;
+      const r = await probeMediaModel({ base_url: hit.base_url || base, api_key: hit.api_key || key, model: media[0].model, capCn });
+      return res.json({ ok: !r.error, ms: Date.now() - t, model: media[0].model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
+    }
+    return res.json({ ok: false, error: "这个渠道下面还没挂任何模型。加一个再测——测活要拿一个真模型去打一次招呼，瞎猜一个名字测出来的 404 会让人误以为 Key 坏了" });
   }
   const t0 = Date.now();
   const why = await probeModel({ provider: mediaModels.protoOfKind(kind), base_url: base, api_key: key, model });
   res.json({ ok: !why, ms: Date.now() - t0, model, error: why || "" });
+});
+
+/**
+ * 生图 / 生视频 / 配音 / 转写这四路的测活：**不真生成**。
+ *
+ * 为什么不像对话那样真跑一次：生一次视频的钱够 ping 一千次，生一张图也不便宜。
+ * 一颗写着「测一下」的按钮，不该在人没预期的时候扣一笔——尤其它常常要连点好几次
+ * （改个模型名再测、换条渠道再测）。所以这儿只验两件不花钱的事：
+ *   ① 这把 Key 上游认不认（拿模型清单就知道，401/403 立刻现形）
+ *   ② 配的那个模型名在这家的清单里有没有（「模型不存在」是排第二常见的坑）
+ * 验不到的那件必须说出来，不许拿「✓ 通了」糊过去：余额够不够、这个模型让不让你调，
+ * 只有真生成一次才知道。含糊其辞的绿勾比红叉更坑人——人会拿它当「已经能用」。
+ */
+async function probeMediaModel({ base_url, api_key, model, capCn }) {
+  const base = String(base_url || "").trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(base)) return { error: "这条渠道的接口地址不是 http(s) 开头的完整地址" };
+  let r;
+  try {
+    r = await fetch(`${base}/models`, {
+      headers: api_key ? { Authorization: `Bearer ${api_key}` } : {},
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    if (/timeout|abort/i.test(msg)) return { error: "连不上（15 秒超时）。国外服务商在国内直连经常打不通，挂代理或换国产渠道" };
+    return { error: "连不上：" + msg.slice(0, 160) };
+  }
+  if (r.status === 401 || r.status === 403) return { error: `这个 Key 上游不认（HTTP ${r.status}），检查有没有复制全、是不是这家服务商的 Key` };
+  if (r.status === 429) return { error: "被限流了（429），等一会儿再试" };
+  // 给不出清单不等于坏了：不少专做生图/生视频的接口根本没有 /models 这条路。
+  // 这种情况老老实实说「只验到这儿」，不编一个绿勾出来
+  if (!r.ok) return { partial: true, note: `这条渠道不给模型清单（HTTP ${r.status}），只验到「地址是通的」。Key 对不对、${capCn}「${model}」在不在，得真生成一次才知道` };
+  const j = await r.json().catch(() => null);
+  const raw = (j && (Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : [])) || [];
+  const ids = raw.map((m) => (typeof m === "string" ? m : String((m || {}).id || (m || {}).name || ""))).filter(Boolean);
+  if (!ids.length) return { partial: true, note: `Key 这一关过了（清单接口没拒绝我们），但这条渠道一个模型都没列出来，没法核对${capCn}「${model}」这个名字` };
+  if (!ids.includes(model)) {
+    return { error: `Key 是好的，但这条渠道列出来的 ${ids.length} 个模型里没有「${model}」。去 设置 → 模型 把它改成清单里的名字（在模型下拉框里挑，别手打）` };
+  }
+  return { note: `Key 认了，「${model}」在这条渠道的清单里（一共 ${ids.length} 个）。这一步不花钱所以没真生成——余额够不够，得生成一次才知道` };
+}
+
+/**
+ * 一行一测：设置 → 模型 里每一行模型后面那颗「测」。
+ *
+ * 跟渠道那颗「测一下」的分工：渠道那颗问的是「这条线通不通」，这颗问的是「**这一行**能不能用」。
+ * 一条渠道下面挂五个模型，通的是渠道、挂的却可能有三个模型名是错的——
+ * 只有渠道级测活的话，那三个要等任务跑到一半才炸。
+ */
+app.post("/api/model-test", async (req, res) => {
+  // 出网请求 + 带着 Key，跟 /api/provider-test 同一条规矩
+  if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "渠道归平台管理员配", platform_only: true });
+  const t0 = Date.now();
+  try {
+    const b = req.body || {};
+    const isMedia = b.scope === "media";
+    const list = isMedia ? config.media_models || [] : config.models || [];
+    const m = list[Number(b.index)];
+    if (!m) return res.json({ ok: false, error: "这一行已经不在了（多半是刚删过或者别处改了配置），刷新一下再试" });
+    const chanId = isMedia ? m.provider : m.channel;
+    const p = (config.providers || []).find((x) => x.id === chanId);
+    if (!p) return res.json({ ok: false, error: chanId ? "这一行挂的渠道已经被删了，编辑它重新挑一条" : "这一行没挂渠道，编辑它挑一条渠道再测" });
+    const local = p.kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(p.base_url || "");
+    if (!p.api_key && !local) return res.json({ ok: false, error: `渠道「${p.name}」还没填 Key，先去下面那张渠道卡里填上` });
+    if (isMedia) {
+      // 走 resolve 而不是直接读 p.base_url：生图那几路的地址跟对话不一定是同一个前缀，
+      // 换算规则只有 media-models 那一份，这儿抄一遍迟早跟真跑的时候对不上
+      const hit = (mediaModels.resolve(config).list || []).find((x) => x.id === m.id) || {};
+      const capCn = mediaModels.CAP_CN[m.cap] || m.cap;
+      const r = await probeMediaModel({ base_url: hit.base_url || p.base_url, api_key: hit.api_key || p.api_key, model: m.model, capCn });
+      return res.json({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
+    }
+    const why = await probeModel({ provider: mediaModels.protoOfKind(p.kind), base_url: p.base_url, api_key: p.api_key, model: m.model });
+    res.json({
+      ok: !why, ms: Date.now() - t0, model: m.model, error: why || "",
+      note: why ? "" : `「${m.model}」在渠道「${p.name}」上答得上话`,
+    });
+  } catch (e) {
+    res.json({ ok: false, ms: Date.now() - t0, error: String((e && e.message) || e).slice(0, 200) });
+  }
 });
 
 /**
@@ -2134,10 +2262,17 @@ app.get("/api/settings", (req, res) => {
     persona: config.persona || "",
     assistant: config.assistant,
     search: {
-      provider: (config.search || {}).provider || "jina",
+      provider: (config.search || {}).provider || "",
       jina_key: (config.search || {}).jina_key || (config.search || {}).api_key || "",
       tavily_key: (config.search || {}).tavily_key || "",
       brave_key: (config.search || {}).brave_key || "",
+      bocha_key: (config.search || {}).bocha_key || "",
+      zhipu_key: (config.search || {}).zhipu_key || "",
+      qiniu_key: (config.search || {}).qiniu_key || "",
+      serper_key: (config.search || {}).serper_key || "",
+      custom_key: (config.search || {}).custom_key || "",
+      custom_url: (config.search || {}).custom_url || "",
+      custom_query_field: (config.search || {}).custom_query_field || "",
     },
     im: {
       feishu: (config.im || {}).feishu || { app_id: "", app_secret: "", verification_token: "", group_reply_mode: "mention" },
@@ -2401,12 +2536,25 @@ app.post("/api/settings", (req, res) => {
     }
     if (b.search) {
       config.search = config.search || {};
-      if (b.search.provider !== undefined) {
-        if (!["jina", "tavily", "brave"].includes(b.search.provider)) throw new Error("搜索 provider 仅支持 jina / tavily / brave");
-        config.search.provider = b.search.provider;
-      }
-      for (const k of ["jina_key", "tavily_key", "brave_key"]) {
+      // 先存 Key，再校验 provider。顺序反过来踩过一次大的：
+      // 选了一家这个进程还不认的服务商（程序更新了但没重开，内存里还是老名单），
+      // provider 那一句先 throw，整个保存被回滚——人刚一个一个敲进去的七八把 Key 一起没了，
+      // 而界面只说了句「provider 只认这几家」，谁也想不到自己的 Key 被顺手丢了。
+      for (const k of ["jina_key", "tavily_key", "brave_key", "bocha_key", "zhipu_key", "qiniu_key", "serper_key", "custom_key", "custom_url", "custom_query_field"]) {
         if (b.search[k] !== undefined) config.search[k] = String(b.search[k]).trim();
+      }
+      if (b.search.provider !== undefined) {
+        // 这张名单跟 tools.js 的 SEARCH_PROVIDERS 是同一份；加一家要两边一起加，
+        // 只加一边的后果是：设置里存得下，真搜的时候那家不存在，整条接力从第二家才开始
+        const 支持的 = Object.keys(SEARCH_PROVIDERS);
+        if (b.search.provider !== "" && !支持的.includes(b.search.provider)) {
+          saveConfig(); // Key 已经写进 config 了，先落盘再报错——别让人白填一遍
+          throw new Error(
+            `正在跑的这个程序还不认「${b.search.provider}」这一家（它认的是：${支持的.join(" / ")}）。` +
+            "多半是程序升级前就一直开着，退出重开一次就好。你刚填的 Key 已经存下来了，不用重填。"
+          );
+        }
+        config.search.provider = b.search.provider;
       }
     }
     if (b.workspace_dir !== undefined && b.workspace_dir !== getDefaultWorkspaceDir()) {
@@ -2802,7 +2950,10 @@ app.get("/api/onboarding", async (req, res) => {
     !!String(im.wecom_bot_webhook || "").trim(),
     !!String(im.dingtalk_webhook || "").trim(),
   ].filter(Boolean).length;
-  const sp = (config.search || {}).provider || "jina";
+  // 「自动」也要报得出实际会用哪家：报成写死的一家，体检页说「已配」而真跑的是另一家
+  const sc = config.search || {};
+  const sp = (sc.provider || "").toLowerCase()
+    || Object.keys(SEARCH_PROVIDERS).find((p) => searchProviderReady(sc, p, searchProviderKey(sc, p))) || "bocha";
   res.json({
     // 大脑没接上 = 一句话都发不出去，必须弹引导。接上了就不再自动弹了：
     // 用户在第一步填完 Key 就跳过是最常见的一条路，以前那种"没走完就再弹一次"每次开机都要拦他一遍。
@@ -2929,19 +3080,32 @@ app.post("/api/onboarding/done", (req, res) => {
 });
 
 // 直连所配搜索服务商测活（不走 DDG 回退，测的就是这家 key 能不能用）
-app.get("/api/search/test", async (_req, res) => {
+app.get("/api/search/test", async (req, res) => {
+  const t0 = Date.now();
   try {
     const cfg = config.search || {};
-    const provider = (cfg.provider || "jina").toLowerCase();
+    // ?provider=bocha 指名测某一家（设置页每一行后面那颗「测」按的就是这个）。
+    // 不指名就跟真搜的时候走同一个挑法：首选，没首选就从上往下第一个配好了的。
+    // 这里另外写死一家的话，测试按的是 A、实际搜的是 B，测出来的「可用」不算数
+    const asked = String(req.query.provider || "").trim().toLowerCase();
+    if (asked && !SEARCH_PROVIDERS[asked]) {
+      return res.json({ ok: false, error: `没有「${asked}」这家；这个版本认的是：${Object.keys(SEARCH_PROVIDERS).join(" / ")}` });
+    }
+    const provider = asked || (cfg.provider || "").toLowerCase()
+      || Object.keys(SEARCH_PROVIDERS).find((p) => searchProviderReady(cfg, p, searchProviderKey(cfg, p))) || "";
+    if (!provider) return res.json({ ok: false, error: "一家都还没配：先填一个服务商的 Key" });
     const fn = SEARCH_PROVIDERS[provider];
-    if (!fn) return res.json({ ok: false, error: `未知 provider: ${provider}` });
     const key = searchProviderKey(cfg, provider);
-    if (!key) return res.json({ ok: false, error: `${provider} 未填 API Key` });
-    const items = await fn(key, "OpenAI", 3);
-    if (!items.length) return res.json({ ok: false, error: `${provider} 返回 0 条结果` });
-    res.json({ ok: true, provider, sample: (items[0].title || items[0].url || "").slice(0, 60) });
+    if (!searchProviderReady(cfg, provider, key)) {
+      return res.json({ ok: false, provider, error: provider === "custom" ? "自定义搜索还没填接口地址" : "这家还没填 API Key" });
+    }
+    const items = await fn(key, "OpenAI", 3, cfg);
+    // 「0 条」单独说清楚：Key 是好的、接口也通了，就是这一趟没结果。
+    // 跟「Key 坏了」混成一句话的话，人会跑去重新申请一把本来好好的 Key
+    if (!items.length) return res.json({ ok: false, provider, ms: Date.now() - t0, error: "接口通了，但这次一条结果都没回。Key 应该是好的，多半是对方这趟没搜到" });
+    res.json({ ok: true, provider, ms: Date.now() - t0, n: items.length, sample: (items[0].title || items[0].url || "").slice(0, 60) });
   } catch (e) {
-    res.json({ ok: false, error: e.message });
+    res.json({ ok: false, provider: String(req.query.provider || "").trim().toLowerCase() || undefined, ms: Date.now() - t0, error: e.message });
   }
 });
 
@@ -3819,13 +3983,29 @@ app.delete("/api/projects/:name", (req, res) => {
 
 // ---------- 资料库·灵感（跨项目共享：参考文件 + 灵感笔记，agent 可用 library_* 工具读取） ----------
 const LIB_DIR = dataPath("data", "library");
-const NOTES_FILE = dataPath("data", "inspirations.json");
+/**
+ * 资料库的根：一人一个。
+ *
+ * 老库 data/library 原地不动，仍旧是「这台机器的主人」那一份——平台管理员、以及压根没开
+ * 账号体系的单机版。别人一人一个 data/library-users/<账号>/，头一次用的时候才建。
+ *
+ * 为什么非改不可：资料库以前是整台机器**共用的一份**，而且 admin.js 那张读表还特地把
+ * /api/library 放行了（理由是拦了也白拦，agent 的 library_list 照样念得出来）。两件事叠在一起，
+ * 结果就是新注册的号打开资料库，看见的是别人传进去的合同和素材——跟侧栏里那条会话历史
+ * 是同一个事故的两个面。
+ *
+ * 不搬文件：管理员那一份还躺在原地，路径一个字符没变；新号拿到的是一个空目录。
+ */
+function libraryRootOf(user) {
+  if (!user || ownsGlobalWorkspace(user)) return LIB_DIR;
+  return dataPath("data", "library-users", prefs.keyOf(user));
+}
 function readNotes() {
-  const list = store.readJson(NOTES_FILE, []);
+  const list = store.readJson(notesFileOf(libBase()), []);
   return Array.isArray(list) ? list : [];
 }
 function writeNotes(notes) {
-  store.writeJsonAtomic(NOTES_FILE, notes, { pretty: true });
+  store.writeJsonAtomic(notesFileOf(libBase()), notes, { pretty: true });
 }
 /**
  * 资料库里的相对路径 → 绝对路径。
@@ -3838,7 +4018,7 @@ function writeNotes(notes) {
  * 三道：段里不许有 `..`、不许以 `.` 开头（.git/.ssh 这类别被翻出来）、不许有 Windows 非法字符；
  * 拼完再让 safePathIn 按根复核一遍，两道都过才算数。
  */
-function libPath(rel, root = LIB_DIR) {
+function libPath(rel, root = libBase()) {
   const parts = String(rel || "").replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
   for (const seg of parts) {
     if (seg === ".." || seg.startsWith(".") || /[<>:"|?*\u0000-\u001f]/.test(seg)) throw new Error(`路径不合法：${seg}`);
@@ -3908,8 +4088,8 @@ app.post("/api/library/folder", (req, res) => {
   }
 });
 
-// 删空文件夹。非空的不给删：资料库是共享的一份，一条 rm -rf 下去别人的素材也跟着没了，
-// 而这个接口的调用方是一个「删除」小链接，点错的代价不该是不可逆的
+// 删空文件夹。非空的不给删：这个接口的调用方是一个「删除」小链接，
+// 点错的代价不该是一整个文件夹的东西不可逆地没了
 app.delete("/api/library/folder", (req, res) => {
   try {
     const rel = libRel((req.query || {}).dir || (req.body || {}).dir);
@@ -6318,6 +6498,19 @@ app.post("/api/chat", async (req, res) => {
     // 外层：目标轮（普通消息只走一轮；goal 模式没达标自动再跑，最多 GOAL_MAX_ROUNDS 轮）
     let lastFinal = "";
     let roundStopped = null; // 本目标轮里任务被强制收尾的原因（超时/上限/手停）；有它就不再自动开新轮
+    /**
+     * 用户又开口了：把上一轮熔断的媒体渠道整个放开一次（media-health.js 第 4 条自愈路）。
+     *
+     * 出处是一句原话：「渠道断了我去修好了，我说了修复好了 AI 也不去自己重试一下」。
+     * 他修的是渠道那头——充值、续费、把网弄通——设置页一个字没动，所以指纹没变、reset() 没人调，
+     * 只剩干等 30 分钟。这道闸拦的本来就是模型在**一趟任务里**反复撞，人重新开口就是新的一趟。
+     *
+     * 放开的那几条要告诉模型（reopenedMediaBlock）：历史里还躺着上一轮那句「别再调这个工具了」，
+     * 不说一声的话它照着历史继续拒绝，用户看到的还是「用不了」。只报第一轮——
+     * 后面那些是目标模式自己开的新轮和插队消息，不是人又说了一次话。
+     */
+    let mediaReopened = [];
+    try { mediaReopened = mediaHealth.reopen(); } catch {}
     for (let goalRound = 0; ; goalRound++) {
       roundStopped = null;
       // 进行中的目标注入任务上下文：agent 每一轮都对着验收标准干活，不跑偏
@@ -6327,6 +6520,7 @@ app.post("/api/chat", async (req, res) => {
         const r = await runtime.runTask({
           lang: lang === "en" ? "en" : "zh", // 界面语言：英文界面时让 AI 也用英文答，用户不用再在每句话里交代
           taskLabel: sess.title || String(message).slice(0, 24),
+          mediaReopened, // 刚放开的媒体渠道，写进这一轮的提示词（见上面那段）
           sessionId, // 追踪上按会话归堆：同一个对话问了十轮，在 Langfuse 上是一条会话线而不是十条散 trace
           baseDir: taskBaseDir,
           llmOverride: sessLLM,
@@ -6354,6 +6548,7 @@ app.post("/api/chat", async (req, res) => {
             runState.asks.set(askId, done);
           }),
         });
+        mediaReopened = [];   // 只报给这一轮：后面的目标轮/插队不是「人又说了一次话」
         addUsage(total, r && r.usage);
         if (r && r.provider) ranLLM = { model: r.model || r.provider, provider: r.provider };
         if (r && r.sessionId) lanes.rememberEngineSession(sess, r.engine || laneEngine, r.sessionId);
@@ -7045,8 +7240,12 @@ function accountedRuntime(baseRuntime, source) {
       // 身份则听调用方的。助理页那边是真有登录态的，成员发的消息不能顶着管理员的身份跑；
       // 飞书 / 定时任务确实没有登录态，那才退回管理员。
       // 注意 user 必须从 rest 里摘出来单独判：留在 rest 里的话，调用方传了个 undefined 也会把兜底覆盖掉
+      // IM 里每一条消息都是真人敲的，跟网页对话同一个判据（定时任务不算：那是 cron 在说话，
+      // 一分钟一轮地把断掉的渠道重撞一遍，正是这道闸当初要拦的东西）
+      const reopened = source === "im" ? (() => { try { return mediaHealth.reopen(); } catch { return []; } })() : [];
       const r = await baseRuntime.runTask({
         user: caller || (owner ? owner.username : undefined),
+        ...(reopened.length ? { mediaReopened: reopened } : {}),
         taskLabel: source === "im" ? "IM 对话" : source === "schedule" ? SCHEDULE_LABEL : source,
         // IM / 定时任务的产物也各归各的文件夹（仅默认工作空间；调用方可在 args 里覆盖）
         baseDir:

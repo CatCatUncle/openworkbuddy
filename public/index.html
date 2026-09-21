@@ -349,8 +349,18 @@
   }
   .u-msg { display: flex; justify-content: flex-end; }
   .u-msg .bubble { max-width: 78%; background: var(--owb-brand); color: #fff; border-radius: var(--radius-2xl) var(--radius-2xl) var(--radius-xs) var(--radius-2xl); padding: 10px 15px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+  /* 气泡顶上那张引用卡：紫底上再画一道浅色竖条 = 「这段是它说的，不是我说的」。
+     最多三行，长引用点一下展开——发出去的原文一个字没少，只是默认不占半屏 */
+  .u-msg .bubble .bubble-quote { display: flex; gap: 6px; margin: 0 0 6px; padding: 5px 8px; border-radius: var(--radius-md);
+    background: rgba(255,255,255,.16); border-left: 3px solid rgba(255,255,255,.6); font-size: 12.5px; line-height: 1.5; cursor: pointer; }
+  .u-msg .bubble .bubble-quote .i { flex: none; width: 12px; height: 12px; margin-top: 3px; opacity: .8; }
+  .u-msg .bubble .bubble-quote span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-width: 0;
+    white-space: pre-wrap; word-break: break-word; }
+  .u-msg .bubble .bubble-quote.open span { display: block; }
   .u-msg .bubble .bubble-attach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-  .u-msg .bubble .bubble-attach span { font-size: 12px; background: rgba(255,255,255,.18); border-radius: var(--radius-md); padding: 2px 8px; white-space: nowrap; }
+  .u-msg .bubble .bubble-attach span { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; font-size: 12px;
+    background: rgba(255,255,255,.18); border-radius: var(--radius-md); padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .u-msg .bubble .bubble-attach .i { flex: none; width: 12px; height: 12px; opacity: .85; }
   .a-msg { display: flex; gap: 10px; margin-top: 16px; }
   .a-msg .avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: var(--radius-lg); background: var(--owb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
   .a-msg .body { min-width: 0; flex: 1; }
@@ -691,8 +701,11 @@
   .proj-item:hover { background: var(--owb-bg-hover); }
   .proj-item.active { background: var(--owb-brand-weak); color: var(--owb-text); font-weight: 600; box-shadow: inset 3px 0 0 var(--owb-brand); }
   .proj-item .pn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .proj-item .del { visibility: hidden; color: var(--owb-text-3); padding: 0 2px; }
-  .proj-item:hover .del { visibility: visible; }
+  /* 行内操作平时藏着，但不能拿 visibility:hidden 藏——那一藏它同时退出了 Tab 序，
+     纯键盘的人这辈子够不着「移除项目」。改成「透明 + 不吃点击」：它一直留在 Tab 序里，
+     焦点一落上来就显形（:focus-within 管整行，:focus-visible 管它自己），看不见的时候也点不着。 */
+  .proj-item .del { display: inline-flex; align-items: center; flex: none; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0 2px; border-radius: var(--radius-xs); }
+  .proj-item:hover .del, .proj-item:focus-within .del { opacity: 1; pointer-events: auto; }
   .proj-item .del:hover { color: var(--owb-err-text); }
   .im-row .m { font-size: 12px; color: var(--owb-text-3); margin-bottom: 2px; }
   #send.stop { background: var(--owb-err); font-size: 12px; }
@@ -705,8 +718,8 @@
   .hist-item .hsrc .i { width: 12px; height: 12px; }
   .hist-item:hover .hsrc, .hist-item.active .hsrc { color: var(--owb-text-2); }
   @keyframes hrun-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
-  .hist-item .hx { visibility: hidden; color: var(--owb-text-3); padding: 0 3px; border-radius: var(--radius-xs); flex: none; }
-  .hist-item:hover .hx { visibility: visible; }
+  .hist-item .hx { display: inline-flex; align-items: center; border: 0; background: none; font: inherit; cursor: pointer; opacity: 0; pointer-events: none; color: var(--owb-text-3); padding: 0 3px; border-radius: var(--radius-xs); flex: none; }
+  .hist-item:hover .hx, .hist-item:focus-within .hx { opacity: 1; pointer-events: auto; }
   .hist-item .hx:hover { color: var(--owb-err-text); }
   .hist-item .hx .i { width: 13px; height: 13px; display: block; }
   /* 工程线顶上那一撮：这台机器的终端此刻正在跑的活儿，跟存下来的历史分开列 */
@@ -849,6 +862,38 @@
   .plan-list .pl-item input { margin-top: 3px; accent-color: var(--owb-brand-text); }
   .plan-list .pl-item input:checked + span { color: var(--owb-text-3); text-decoration: line-through; }
   .plan-list .pl-run { margin-top: 8px; border: none; background: var(--owb-brand); color: #fff; border-radius: var(--radius-md); padding: 6px 14px; font-size: 13px; cursor: pointer; }
+  /* ---------- 引用：输入框上钉的那张卡 ----------
+     和飞书/ChatGPT 一样，引用是压在输入框上方的一件东西，不是塞进框里的一段字。
+     左边一道品牌色竖条 = 「这是别人说的话」；正文最多两行，再多就该去看原文了，
+     所以整张卡自己就是一颗按钮：按下去滚回被引的那一条。× 单独靠右，是唯一会改动这条消息的动作。 */
+  .quote-bar[hidden] { display: none; }
+  .quote-bar { margin-bottom: 8px; }
+  .quote-card { display: flex; align-items: flex-start; gap: 4px; padding: 6px 6px 6px 9px;
+    border-radius: var(--radius-lg); background: var(--owb-bg-hover); border-left: 3px solid var(--owb-brand); }
+  .quote-jump { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+    padding: 0; border: none; background: none; font: inherit; text-align: left; color: inherit; cursor: pointer; }
+  .quote-src { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--owb-text-3); }
+  .quote-src .i { width: 12px; height: 12px; color: var(--owb-brand-text); }
+  .quote-src b { font-weight: 600; color: var(--owb-text-2); max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .quote-hint { color: var(--owb-text-3); }
+  .quote-hint::before { content: "·"; margin-right: 4px; }
+  .quote-jump:hover .quote-hint, .quote-jump:focus-visible .quote-hint { color: var(--owb-brand-text); }
+  .quote-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    font-size: 13px; line-height: 1.5; color: var(--owb-text-2); white-space: pre-wrap; word-break: break-word; }
+  .quote-x { flex: none; display: grid; place-items: center; width: 22px; height: 22px; padding: 0;
+    border: none; background: none; border-radius: var(--radius-sm); color: var(--owb-text-2); cursor: pointer; opacity: .6; }
+  .quote-x:hover { opacity: 1; background: var(--owb-bg-side); }
+  .quote-x:focus-visible, .quote-jump:focus-visible { outline: 2px solid var(--owb-brand-text); outline-offset: 1px; border-radius: var(--radius-sm); }
+  /* 同一段再点一次「引用」：闪一下，告诉他「已经引着了」，而不是看着毫无反应 */
+  .quote-card.quote-flash { animation: attachflash .7s var(--owb-ease); }
+  /* 在回复里拖选一段就地冒出来的那颗按钮（ChatGPT/Claude 都是这一下） */
+  .sel-quote { position: fixed; z-index: 60; display: inline-flex; align-items: center; gap: 4px;
+    padding: 5px 10px; border: 1px solid var(--owb-border); border-radius: var(--radius-full);
+    background: var(--owb-card); color: var(--owb-text); box-shadow: var(--shadow-menu);
+    font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; white-space: nowrap; }
+  .sel-quote[hidden] { display: none; }
+  .sel-quote:hover { border-color: var(--owb-brand); color: var(--owb-brand-text); background: var(--owb-brand-weak); }
+  .sel-quote .i { width: 12px; height: 12px; }
   /* ---------- 输入框上方的素材 chip ----------
      一枚 chip = [缩略图/图标] [图片 2] [文件名] [体积] [↺] [×]。
      缩略图那一格固定 28 见方，所有 chip 的文字因此落在同一条基线上；体积紧挨着文件名
@@ -891,6 +936,29 @@
   /* 同一个文件又拖了一次：闪一下已经在列的那枚。不闪的话界面上一动不动，人以为没拖进去 */
   .attach-chips .attach-chip.attach-flash { animation: attachflash .7s var(--owb-ease); }
   @keyframes attachflash { 0%, 100% { background: var(--owb-bg-hover); } 25%, 60% { background: var(--owb-brand-weak); } }
+  /* 图片走 64 见方的缩略图方片：一排文件名认不出哪张是哪张，缩略图一眼就认出来。
+     名字藏进 title 和 aria-label（GPT/Claude 同样处理），方片底下压一条「图片 N」——
+     「第一张放左边」这种话要指得住，编号就不能只活在发出去的正文里。 */
+  .attach-chips .attach-chip.is-tile { position: relative; width: 64px; height: 64px; max-width: 64px; padding: 0; overflow: hidden; border-radius: var(--radius-lg); }
+  .attach-chips .attach-chip.is-tile .attach-open { position: absolute; inset: 0; padding: 0; gap: 0; }
+  .attach-chips .attach-chip.is-tile .attach-ic { width: 100%; height: 100%; border-radius: 0; }
+  .attach-chips .attach-chip.is-tile .attach-thumb { width: 100%; height: 100%; border-radius: 0; }
+  .attach-chips .attach-chip.is-tile .attach-ic > .i { width: 22px; height: 22px; }
+  .attach-chips .attach-chip.is-tile .attach-name, .attach-chips .attach-chip.is-tile .attach-size { display: none; }
+  .attach-chips .attach-chip.is-tile em { position: absolute; left: 0; right: 0; bottom: 0; padding: 1px 4px; border-radius: 0;
+    background: rgba(0,0,0,.55); color: #fff; font-size: 11px; text-align: center; pointer-events: none; }
+  .attach-chips .attach-chip.is-tile .attach-x, .attach-chips .attach-chip.is-tile .attach-retry {
+    position: absolute; top: 2px; width: 18px; height: 18px; border-radius: var(--radius-full);
+    background: rgba(0,0,0,.55); color: #fff; opacity: 0; transition: opacity var(--owb-t-fast) var(--owb-ease); }
+  .attach-chips .attach-chip.is-tile .attach-x { right: 2px; }
+  .attach-chips .attach-chip.is-tile .attach-retry { right: 22px; }
+  /* 触屏上没有 hover，永远看不见那颗 ×：细指针才藏，粗指针一直显形 */
+  .attach-chips .attach-chip.is-tile:hover .attach-x, .attach-chips .attach-chip.is-tile:focus-within .attach-x,
+  .attach-chips .attach-chip.is-tile:hover .attach-retry, .attach-chips .attach-chip.is-tile:focus-within .attach-retry { opacity: 1; }
+  @media (pointer: coarse) {
+    .attach-chips .attach-chip.is-tile .attach-x, .attach-chips .attach-chip.is-tile .attach-retry { opacity: 1; }
+  }
+  .attach-chips .attach-chip.is-tile .attach-x:hover, .attach-chips .attach-chip.is-tile .attach-retry:hover { background: rgba(0,0,0,.78); }
   .input-card.dragging { outline: 2px dashed var(--owb-brand); outline-offset: -2px; }
   /* 拖到半空中时盖在输入框上的一句话。原来只有一圈虚线，没有一个字——松手会发生什么全靠猜 */
   .drop-hint { display: none; }
@@ -899,8 +967,8 @@
     color: var(--owb-brand-text); font-size: 14px; font-weight: 500; pointer-events: none; z-index: 14; }
   /* ---------- 右侧预览面板（HTML/图片/文档实时预览） ---------- */
   .main { min-width: 460px; }
-  .preview-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-canvas); overflow: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out); display: flex; flex-direction: column; }
-  .preview-panel.show { width: var(--owb-pv-w, 44%); min-width: 360px; max-width: calc(100vw - 300px); }
+  .preview-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-canvas); overflow: hidden; visibility: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s linear var(--owb-t-slow); display: flex; flex-direction: column; }
+  .preview-panel.show { width: var(--owb-pv-w, 44%); min-width: 360px; max-width: calc(100vw - 300px); visibility: visible; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s; }
   .pv-head { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--owb-border); font-size: 14px; }
   .pv-head .pv-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* 几何统一到桥接层（这一排四颗都带 .icon-btn），这里只留颜色 */
@@ -960,8 +1028,10 @@
   :is(#pv-body, .lib-prev) h1.ov-h { font-size: 22px; } :is(#pv-body, .lib-prev) h2.ov-h { font-size: 19px; } :is(#pv-body, .lib-prev) h3.ov-h { font-size: 16px; }
   :is(#pv-body, .lib-prev) h4.ov-h, :is(#pv-body, .lib-prev) h5.ov-h, :is(#pv-body, .lib-prev) h6.ov-h { font-size: 15px; }
   :is(#pv-body, .lib-prev) .ov-p { margin: 8px 0; overflow-wrap: anywhere; }
-  :is(#pv-body, .lib-prev) .ov-li { margin: 4px 0; padding-left: 16px; position: relative; overflow-wrap: anywhere; }
-  :is(#pv-body, .lib-prev) .ov-li::before { content: "·"; position: absolute; left: 4px; color: var(--owb-text-3); }
+  :is(#pv-body, .lib-prev) .ov-li { margin: 4px 0; padding-left: 28px; position: relative; overflow-wrap: anywhere; }
+  :is(#pv-body, .lib-prev) .ov-mark { position: absolute; left: 0; width: 24px; text-align: right; color: var(--owb-text-3); font-variant-numeric: tabular-nums; }
+  :is(#pv-body, .lib-prev) .ov-a { color: var(--owb-brand-text); text-decoration: underline; text-underline-offset: 2px; }
+  :is(#pv-body, .lib-prev) .ov-chrome { color: var(--owb-text-3); font-size: 12px; margin: 8px 0; padding: 4px 8px; border-left: 2px solid var(--owb-border); overflow-wrap: anywhere; }
   :is(#pv-body, .lib-prev) .ov-img { max-width: 100%; height: auto; max-height: 720px; object-fit: contain; object-position: center; display: block; margin: 12px 0; border-radius: var(--radius-sm); background: var(--owb-bg-side); }
   :is(#pv-body, .lib-prev) .ov-scroll { overflow-x: auto; margin: 12px 0; }
   :is(#pv-body, .lib-prev) .ov-table { border-collapse: collapse; font-size: 13px; }
@@ -1004,8 +1074,8 @@
   .pv-code-src .c-kw  { color: var(--owb-code-kw); }
   .pv-code-src .c-key { color: var(--owb-code-key); }
   /* ---------- 右侧成果面板 ---------- */
-  .files-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-shell); overflow: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out); display: flex; flex-direction: column; }
-  .files-panel.show { width: var(--owb-fp-w, clamp(230px, 20vw, 300px)); }
+  .files-panel { position: relative; width: 0; flex-shrink: 0; border-left: 1px solid var(--owb-border); background: var(--owb-shell); overflow: hidden; visibility: hidden; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s linear var(--owb-t-slow); display: flex; flex-direction: column; }
+  .files-panel.show { width: var(--owb-fp-w, clamp(230px, 20vw, 300px)); visibility: visible; transition: width var(--owb-t-slow) var(--owb-ease-out), visibility 0s; }
   /* 左右两栏拖着改宽：抓边上那条 7px 的缝，双击回默认，←/→ 也能推。
      宽度写在 :root 的变量里（JS 存 localStorage），CSS 里的默认值就是没拖过时的样子。
      拖的时候把 width 过渡关掉，否则手在动、栏在追，跟手感全没了 */
@@ -1112,8 +1182,8 @@
   textarea#input { position: relative; z-index: 1; display: block; }
   .u-msg .bubble .tk-b { background: rgba(255,255,255,.24); border: 1px solid rgba(255,255,255,.3); border-radius: var(--radius-sm); padding: 0 4px; font-weight: 500; }
   .u-msg .bubble .tk-b-ref { background: rgba(255,255,255,.34); border-style: solid; }
-  .u-msg .u-copy { opacity: 0; align-self: flex-end; border: none; background: transparent; cursor: pointer; color: var(--owb-text-3); font-size: 14px; padding: 4px 6px; border-radius: var(--radius-sm); transition: opacity var(--owb-t-fast) var(--owb-ease); }
-  .u-msg:hover .u-copy { opacity: 1; }
+  .u-msg .u-copy { opacity: 0; pointer-events: none; align-self: flex-end; border: none; background: transparent; cursor: pointer; color: var(--owb-text-3); font-size: 14px; padding: 4px 6px; border-radius: var(--radius-sm); transition: opacity var(--owb-t-fast) var(--owb-ease); }
+  .u-msg:hover .u-copy, .u-msg:focus-within .u-copy { opacity: 1; pointer-events: auto; }
   .u-msg .u-copy:hover { background: var(--owb-bg-hover); color: var(--owb-text); }
   /* ---------- 侧栏底部：头像行 + 设置齿轮 + 账号菜单 ---------- */
   /* 账号行是侧栏的页脚，得钉住：以前它紧贴历史最后一条，历史滚到底的时候两段糊在一起，
@@ -1216,6 +1286,12 @@
   .ask-box { width: 400px; max-width: 100%; box-sizing: border-box; background: var(--owb-bg); border-radius: var(--radius-2xl); box-shadow: var(--shadow-floating); padding: 20px; }
   .ask-box .ask-t { font-size: 15px; font-weight: 600; }
   .ask-box .ask-h { font-size: 13px; line-height: 1.6; color: var(--owb-text-3); margin-top: 4px; }
+  /* 确认框里的清单：要删的是哪几样，得在点头之前一条条看得见。
+     封了高度是因为清单可能有十几条——把对话框顶出屏幕的话，连「算了」都按不着，
+     那就成了比原生框更糟的一种「没有出路」 */
+  .ask-box .ask-li { margin: 8px 0 0; padding: 8px 12px; list-style: none; max-height: 168px; overflow: auto; font-size: 13px; line-height: 1.8; color: var(--owb-text-2); background: var(--owb-bg-hover); border-radius: var(--radius-md); }
+  .ask-box .ask-li li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ask-box .ask-note { margin-top: 8px; }
   .ask-box .ask-in { display: block; width: 100%; box-sizing: border-box; margin-top: 12px; height: var(--owb-ctl-h); padding: 0 10px; font-size: 14px; color: var(--owb-text); background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-md); outline: none; }
   .ask-box .ask-in:focus { border-color: var(--owb-brand-text); }
   .ask-box .ask-err { margin-top: 8px; font-size: 12px; line-height: 1.6; color: var(--owb-err-text); }
@@ -1223,6 +1299,8 @@
   /* 名字没填或者不合规时，「确定」不许是个能点的样子——点了也不会发生任何事，
      那就跟这次修的 bug 是同一种气人法 */
   .ask-box .ask-ok:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; filter: none; transform: none; }
+  /* 删除那颗钮不走品牌渐变：它跟「保存」「建好」长一个样的话，人是照着位置按的，不是照着字按的 */
+  .ask-box .ask-ok.is-danger { background: var(--owb-err); }
   .modal-mask { display: none; position: fixed; inset: 0; background: rgba(23,24,28,.35); backdrop-filter: saturate(150%) blur(6px); -webkit-backdrop-filter: saturate(150%) blur(6px); z-index: 50; align-items: center; justify-content: center; }
   .modal-mask.show { display: flex; }
   .modal { width: 640px; max-width: 94vw; max-height: min(900px, 90vh); background: var(--owb-bg); border-radius: var(--radius-2xl); display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow-floating); }
@@ -1305,6 +1383,19 @@
   .mrow-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .mrow-id { font-family: var(--font-mono); font-size: 12px; color: var(--owb-text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mrow-meta { margin-left: auto; color: var(--owb-text-3); font-size: 12px; white-space: nowrap; }
+  /* 行尾那颗「测」：一条渠道通，不代表挂在它下面的五个模型名都对。
+     摆在 ⋯ 左边而不是收进 ⋯ 里——收进去就没人会去点，等于没做 */
+  .mrow-test { display: inline-flex; flex: none; align-items: center; gap: 4px; margin-left: 8px; padding: 3px 9px;
+    border: 1px solid var(--owb-border); border-radius: var(--radius-full); background: var(--owb-card);
+    color: var(--owb-text-2); font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; white-space: nowrap; }
+  .mrow-test:hover:not(:disabled) { border-color: var(--owb-brand); color: var(--owb-brand-text); background: var(--owb-brand-weak); }
+  .mrow-test:disabled { cursor: default; opacity: .7; }
+  .mrow-test .i { width: 12px; height: 12px; }
+  /* 结论压在行**下面**，跟 .mrow-bad 一个道理：行里那几列是等宽对齐的，塞长句子会把整张表挤歪 */
+  .mrow-res { margin: 4px 0 8px; }
+  /* 只验到一半（Key 认了，但没真生成，余额没验着）既不是绿也不是红：
+     给它一个中性底色。拿绿勾糊过去，人会拿它当「已经能用」，然后在真任务里踩空 */
+  .ch-res.is-half { background: var(--owb-bg-side); color: var(--owb-text-2); }
   /* 行尾的 ⋯ 菜单：贴着行右边弹出来，点别处就收。手机上也点得到（悬停在触屏上不存在） */
   .row-acts { position: relative; flex: none; margin-left: 4px; }
   /* 实测 20×16，鼠标得瞄准才点得中。撑到 24 见方，图标本身不变大 */
@@ -1619,8 +1710,8 @@
   .sweep-panel .sw-task .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sweep-panel .sw-task .sw-sz { width: 74px; text-align: right; }
   .sweep-panel .sw-task .cnt { width: 62px; text-align: right; color: var(--owb-text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .sweep-panel .sw-task .op { flex: 0 0 auto; border: 0; background: none; color: var(--owb-text-3); cursor: pointer; padding: 2px 4px; visibility: hidden; }
-  .sweep-panel .sw-task:hover .op { visibility: visible; }
+  .sweep-panel .sw-task .op { flex: 0 0 auto; border: 0; background: none; color: var(--owb-text-3); cursor: pointer; padding: 2px 4px; opacity: 0; pointer-events: none; }
+  .sweep-panel .sw-task:hover .op, .sweep-panel .sw-task:focus-within .op { opacity: 1; pointer-events: auto; }
   .sweep-panel .sw-task .op:hover { color: var(--owb-brand-text); }
   .sweep-panel .sw-empty { padding: 14px 2px; color: var(--owb-text-3); }
   .sweep-panel.busy { opacity: .55; pointer-events: none; }
@@ -1913,10 +2004,29 @@
   /* 「跳到写出它的那一段对话」。平时只留一点淡影，鼠标扫过这一行才亮起来——
      一列文件后面挂一排实心图标，看着像每行都有个未读提醒 */
   .lib-it .lib-jump { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); color: var(--owb-text-3); opacity: .35; }
-  .lib-it:hover .lib-jump { opacity: 1; }
+  .lib-it:hover .lib-jump, .lib-it .lib-jump:focus-visible { opacity: 1; }
   .lib-it .lib-jump:hover { background: var(--owb-brand-weak); color: var(--owb-brand-text); }
   .lib-it .lib-jump .i { width: 14px; height: 14px; }
   .lib-list.as-icon .lib-it .lib-jump { display: none; } /* 图标视图是用来认脸的，一格里塞不下操作 */
+  /* 删除跟「跳回那段对话」并排，长相一致、只有颜色不一样：一个是去处，一个是撤不回来的事 */
+  .lib-it .lib-del { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); color: var(--owb-text-3); opacity: .55; }
+  .lib-it:hover .lib-del, .lib-it .lib-del:focus-visible { opacity: 1; }
+  .lib-it .lib-del:hover { background: var(--owb-err-bg); color: var(--owb-err-text); }
+  .lib-it .lib-del .i { width: 14px; height: 14px; }
+  /* 图标／画廊：一格里排不下「名字 + 操作」两列，那就把这颗钮浮到格子右上角。
+     原来这儿是 display:none——换个摆法就删不掉东西，等于这两种摆法是死路 */
+  .lib-list.as-icon .lib-it, .lib-list.as-gallery .lib-it { position: relative; }
+  .lib-list.as-icon .lib-it .lib-del, .lib-list.as-gallery .lib-it .lib-del {
+    position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
+    background: var(--owb-bg); box-shadow: 0 0 0 1px var(--owb-line); }
+  .lib-list.as-icon .lib-it .lib-del .i, .lib-list.as-gallery .lib-it .lib-del .i { width: 12px; height: 12px; }
+  /* 分段标题：左边「这段是什么 + 几样东西 + 一句人话」，右边是只对这一段生效的操作。
+     新建/上传原来挂在整页的工具条上，而这一页底下还摆着「本地产物」——
+     悬在最上面的两颗按钮看着就像是在给产出建目录，用户连问三遍「这儿建目录有啥用」 */
+  .lib-list .lib-sec .lib-sec-l { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .lib-list .lib-sec .lib-sec-l em { font-style: normal; font-size: 12px; color: var(--owb-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-list .lib-sec .lib-sec-acts { flex: none; display: flex; gap: 12px; font-size: 13px; }
+  .lib-list .lib-none b { font-weight: 600; color: var(--owb-text-2); }
 
   /* 图标视图：铺成网格，缩略图放大，名字在下面居中。auto-fill 让它跟着窗口宽度自己决定几列 */
   .lib-list.as-icon, .lib-list.as-icon .lib-fs { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 4px; align-content: start; }
@@ -2248,16 +2358,20 @@
   .eng-b.ok { border-color: color-mix(in srgb, var(--owb-ok) 34%, transparent); color: var(--owb-ok-text); }
   .eng-b.free { border-color: var(--owb-brand); color: var(--owb-brand-text); }
   .eng-b.no { border-color: var(--owb-border); color: var(--owb-text-3); }
+  /* 没测过 = 中性；测出来连不上 = 红。绿色只发给真跑通过的那一种，见 engBadgeHtml */
+  .eng-b.bad { border-color: color-mix(in srgb, var(--owb-err) 34%, transparent); color: var(--owb-err-text); }
   .eng-msg { font-size: 12.5px; color: var(--owb-text-2); min-height: 16px; }
   /* 展开区：只有选中的那条才展开，装法/路径/模型/连接测试都在里面，不选的时候别糊一屏 */
   .eng-x { margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--owb-border); display: grid; gap: 7px; }
   .eng-x label { font-size: 12px; color: var(--owb-text-2); display: grid; gap: 3px; }
   .eng-x input, .eng-x select { height: var(--owb-ctl-h-sm); font-size: 12.5px; }
   .eng-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .eng-r { font-size: 12.5px; line-height: 1.6; padding: 7px 9px; border-radius: var(--radius-md); border: 1px solid var(--owb-border); background: var(--owb-bg-hover); }
+  .eng-try { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .eng-r { margin-top: 8px; font-size: 12.5px; line-height: 1.6; padding: 7px 9px; border-radius: var(--radius-md); border: 1px solid var(--owb-border); background: var(--owb-bg-hover); }
   .eng-r.ok { border-color: color-mix(in srgb, var(--owb-ok) 34%, transparent); color: var(--owb-ok-text); background: color-mix(in srgb, var(--owb-ok) 6%, transparent); }
   .eng-r.bad { border-color: color-mix(in srgb, var(--owb-err) 34%, transparent); color: var(--owb-err-text); background: color-mix(in srgb, var(--owb-err) 6%, transparent); }
   .eng-r code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .eng-x .eng-c { margin-top: 0; }
   .eng-p { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--owb-text-3); word-break: break-all; }
 
   /* 链接 hover 给个反馈 */
@@ -2441,6 +2555,7 @@
 <symbol id="i-cloud-download" viewBox="0 0 24 24"><path d="M12 13v8l-4-4" /> <path d="m12 21 4-4" /> <path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284" /></symbol>
 <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3" /> <path d="M3 5V19A9 3 0 0 0 21 19V5" /> <path d="M3 12A9 3 0 0 0 21 12" /></symbol>
 <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></symbol>
+<symbol id="i-trash-2" viewBox="0 0 24 24"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M10 11v6" /><path d="M14 11v6" /></symbol>
 <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></symbol>
 <symbol id="i-blocks" viewBox="0 0 24 24"><path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2" /> <rect x="14" y="2" width="8" height="8" rx="1" /></symbol>
 <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="M12 6v6l4 2" /></symbol>
@@ -2674,6 +2789,7 @@
       <div class="input-card" style="position:relative">
         <div class="mention-menu" id="mention-menu"></div>
         <div id="scene-tag-box"></div>
+        <div class="quote-bar" id="quote-bar" hidden></div>
         <div class="attach-chips" id="attach-chips"></div>
         <div id="input-box"><div id="input-hl" aria-hidden="true"></div><textarea id="input" rows="2" placeholder="今天帮你做些什么？@ 引用文件，/ 调用技能与指令"></textarea></div>
         <div class="card-toolbar">
