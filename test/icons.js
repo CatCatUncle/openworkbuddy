@@ -298,6 +298,92 @@ console.log("\n④' 代码里写死的 ic(\"名字\") 也都查得到");
   console.log("    （另有 " + dyn + " 处是变量拼出来的名字，核不了——这道闸只管写死的那些）");
 }
 
+// ④'' toast(文字, "图标名") 的第二个参数也得是真图标名。
+// 上面那条闸门自己说了「变量拼出来的名字核不了」，而 toast 正是最大的一个：它把第二参
+// 原样丢给 ic()，源码里永远不会出现 ic("err") 这种写法，所以 ④' 一辈子看不见它。
+// 2026-09-21 在这儿逮到 6 处 toast(…, "err")——写的人多半是照着 setMsg(el, 图标, 文字, "err")
+// 的第四个参数抄的，那里的 "err" 是「红不红」的档位，toast 这里却是图标名。
+// 量过后果：<use href="#i-err"> 在 sprite 里查不到，浏览器不报错不警告，画一个 15×15、
+// 里面 0 个形状的空框；而且 app-02.js 里判红的那行只认 circle-x / triangle-alert，
+// 所以这六句「复制失败」「踢不掉」既没图标、也不是红的——看上去跟成功提示一模一样。
+console.log("\n④'' toast(文字, \"图标名\") 里写死的那个名字也都查得到");
+{
+  const spriteOf = (rel) => {
+    const set = new Set();
+    const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    let m; const re = /<symbol\s+id="i-([a-z0-9-]+)"/g;
+    while ((m = re.exec(src))) set.add(m[1]);
+    return set;
+  };
+  const ADMIN2 = spriteOf("public/admin.html");
+  const JS_DIR = path.join(ROOT, "public", "js");
+  // toast(……, "名字") —— 第一个参数可能是模板串、带括号的表达式，所以按括号深度切实参
+  const secondArg = (src, from) => {
+    let i = from, d = 0, s = "", q = null;
+    for (; i < src.length; i++) {
+      const c = src[i];
+      if (q) { s += c; if (c === "\\") { s += src[++i]; continue; } if (c === q) q = null; continue; }
+      if (c === '"' || c === "'" || c === "`") { q = c; s += c; continue; }
+      if ("([{".includes(c)) { d++; s += c; continue; }
+      if (")]}".includes(c)) { if (c === ")" && d === 0) break; d--; s += c; continue; }
+      s += c;
+    }
+    const parts = [""]; let depth = 0, qq = null;
+    for (let j = 0; j < s.length; j++) {
+      const c = s[j];
+      if (qq) { parts[parts.length - 1] += c; if (c === "\\") { parts[parts.length - 1] += s[++j]; continue; } if (c === qq) qq = null; continue; }
+      if (c === '"' || c === "'" || c === "`") { qq = c; parts[parts.length - 1] += c; continue; }
+      if ("([{".includes(c)) depth++;
+      if (")]}".includes(c)) depth--;
+      if (c === "," && depth === 0) { parts.push(""); continue; }
+      parts[parts.length - 1] += c;
+    }
+    return parts.length > 1 ? parts[1].trim() : null;
+  };
+  const litOf = (a) => {
+    if (!a) return null;
+    const m = a.match(/^"([^"]*)"$/) || a.match(/^'([^']*)'$/) || a.match(/^`([^`$]*)`$/);
+    return m ? m[1] : null;
+  };
+  const scan = (src, has) => {
+    const bad = []; let lits = 0, dyn = 0, re = /\btoast\(/g, m;
+    while ((m = re.exec(src))) {
+      const a = secondArg(src, m.index + m[0].length);
+      if (a === null) continue;                       // 只有一个参数：不画图标，随它
+      const n = litOf(a);
+      if (n === null) { dyn++; continue; }            // 变量拼出来的，核不了
+      lits++;
+      if (!has(n)) bad.push(src.slice(0, m.index).split("\n").length + " → " + JSON.stringify(n));
+    }
+    return { bad, lits, dyn };
+  };
+  let lits = 0, dyn = 0;
+  const bad = [];
+  for (const f of fs.readdirSync(JS_DIR).filter((n) => n.endsWith(".js"))) {
+    const set = f === "admin.js" ? ADMIN2 : names;
+    const r = scan(fs.readFileSync(path.join(JS_DIR, f), "utf8"), (n) => set.has(n));
+    lits += r.lits; dyn += r.dyn;
+    for (const b of r.bad) bad.push(f + ":" + b);
+  }
+  ok(lits > 30, "扫到 " + lits + " 处写死的提示条图标名（少于三十多半是切实参的那段被改坏了）", lits);
+  ok(bad.length === 0, "★每一处 toast(…, \"名字\") 都在 sprite 里查得到★ 查不到 = 一个 15×15 的空框，而且提示条不会变红", bad);
+  // ★反向对照★ 把当初那种写法塞回去，这套扫描必须当场逮住；不做这条，上面那个 0 有可能
+  // 只是因为切实参切错了、一个字面量都没匹配上
+  const probe = 'toast("复制失败，手抄一下", "err");\ntoast(`第 ${i} 个`, "circle-x");\ntoast("没图标的");\ntoast("变量拼的", kind);';
+  const pr = scan(probe, (n) => names.has(n));
+  ok(pr.bad.length === 1 && /"err"/.test(pr.bad[0]), "反向对照：toast(…, \"err\") 这种写法当场逮得住", pr.bad);
+  ok(pr.lits === 2, "  ← 模板串当第一参、只有一个参数、第二参是变量，这三种都没误伤", pr);
+  // 判红那行用的也得是真图标名，不然「失败」在界面上是灰的
+  const app02 = fs.readFileSync(path.join(JS_DIR, "app-02.js"), "utf8");
+  const mRed = app02.match(/classList\.toggle\("err",([^)]*)\)/);
+  ok(!!mRed, "app-02.js 里找得到提示条判红那一行");
+  if (mRed) {
+    const reds = (mRed[1].match(/"([a-z-]+)"/g) || []).map((s) => s.slice(1, -1));
+    ok(reds.length >= 2 && reds.every((n) => names.has(n)), "判红那行列的图标名全在 sprite 里", reds.filter((n) => !names.has(n)));
+  }
+  console.log("    （另有 " + dyn + " 处第二参是变量，核不了——跟 ④' 一样如实报数）");
+}
+
 // ⑤ 存盘与转换 ────────────────────────────────────────────────────────
 console.log("\n⑤ 存盘认图标名、提示条记号不漏给用户");
 const normalizeAvatar = require(path.join(ROOT, "account"))._internals.normalizeAvatar;
