@@ -8767,6 +8767,7 @@ testCanvasEdgeVersion();
   await testGoalOnLocalEngine();
   await testDetectCache();
   await testStreamRender();
+  testShortcutsAllLive();
   await testSessionIndex();
   await testRunOwnership();
   testSessionCacheReload();
@@ -14417,6 +14418,107 @@ async function testRunOwnership() {
  * 这里切 server.js 的真源码在临时目录上跑：server.js 是 require 就监听的，
  * 起不了进程内 HTTP；但这三个函数是纯的，注入 fs/path/store/sessions/SESS_DIR 就能真读真磁盘。
  */
+// 设置页那张快捷键表是摆在用户面前的承诺：列出来的每一条，按下去都得真有事发生。
+// 2026-09-21 把 19 条挨个按了一遍，只有 ⌘D「语音录制开关」是假的——它整个身子就一句
+// toast("语音录制暂未支持")，而仓库里从头到尾没有录音界面（transcribe_audio 只处理已经
+// 存在的音频文件）。那一条已经删掉；这把尺子是防它换个名字长回来：
+// 表里非「固定」的每一条都必须落到一个既不空、也不是「暂未支持」占位的动作上。
+function auditShortcuts(app02, emain) {
+  const bad = [];
+  const BT = String.fromCharCode(96); // 反引号，下面判字符串起止要用
+  // 注释不算内容：动作后面跟一句 // 说明，按逗号切完那句说明会跟到下一条头上
+  const stripComments = (t) => {
+    let out = "", i = 0;
+    while (i < t.length) {
+      const c = t[i];
+      if (c === '"' || c === "'" || c === BT) {
+        const q = c; let j = i + 1;
+        while (j < t.length && t[j] !== q) { if (t[j] === "\\") j++; j++; }
+        out += t.slice(i, j + 1); i = j + 1;
+      } else if (c === "/" && t[i + 1] === "/") { while (i < t.length && t[i] !== "\n") i++; }
+      else if (c === "/" && t[i + 1] === "*") { i = t.indexOf("*/", i) + 2; }
+      else { out += c; i++; }
+    }
+    return out.trim();
+  };
+  // 一层对象字面量按顶层逗号切开；字符串、注释、嵌套括号一律跳过
+  const entriesOf = (src, from) => {
+    let i = src.indexOf("{", from) + 1, depth = 0, start = i;
+    const out = [], push = (end) => { const t = src.slice(start, end).trim(); if (t) out.push(t); };
+    while (i < src.length) {
+      const c = src[i];
+      if (c === '"' || c === "'" || c === BT) { const q = c; i++; while (i < src.length && src[i] !== q) { if (src[i] === "\\") i++; i++; } }
+      else if (c === "/" && src[i + 1] === "/") { while (i < src.length && src[i] !== "\n") i++; }
+      else if (c === "/" && src[i + 1] === "*") { i = src.indexOf("*/", i) + 1; }
+      else if ("{([".includes(c)) depth++;
+      else if (")]".includes(c)) depth--;
+      else if (c === "}") { if (depth === 0) { push(i); return out; } depth--; }
+      else if (c === "," && depth === 0) { push(i); start = i + 1; }
+      i++;
+    }
+    throw new Error("SHORTCUT_ACTIONS 这个对象字面量没闭合");
+  };
+
+  const d0 = app02.indexOf("const SHORTCUT_DEFS = [");
+  if (d0 < 0) return ["app-02.js 里找不到 SHORTCUT_DEFS 这张表"];
+  const defs = require("vm").runInNewContext(app02.slice(d0, app02.indexOf("];", d0) + 2) + "\nSHORTCUT_DEFS");
+  const a0 = app02.indexOf("const SHORTCUT_ACTIONS = {");
+  if (a0 < 0) return ["app-02.js 里找不到 SHORTCUT_ACTIONS 这张表"];
+  const acts = new Map();
+  for (const raw of entriesOf(app02, a0)) {
+    const e = stripComments(raw);
+    if (!e) continue;
+    const m = e.match(/^["']?([a-z-]+)["']?\s*:\s*([\s\S]*)$/);
+    if (!m) { bad.push("SHORTCUT_ACTIONS 里这条读不懂：" + e.slice(0, 40)); continue; }
+    acts.set(m[1], m[2].trim());
+  }
+  const 占位词 = /暂未|暂不|还不|敬请期待|待实现|尚未|TODO|not supported|coming soon/i;
+  const 只弹一句 = new RegExp("^toast\\(([\"'" + BT + "])([\\s\\S]*?)\\1[^)]*\\)$");
+  for (const [id, 名称, , 固定, 系统级] of defs) {
+    if (固定) {
+      if (acts.has(id)) bad.push("「" + 名称 + "」标了「固定」，却又在 SHORTCUT_ACTIONS 里挂了动作——派发器会跳过它，这条永远跑不到");
+      continue;
+    }
+    const body = acts.get(id);
+    if (body === undefined) { bad.push("「" + 名称 + "」(" + id + ") 摆在设置页上，SHORTCUT_ACTIONS 里却没有动作"); continue; }
+    const rhs = body.replace(/^[^=]*=>\s*/, "").trim();
+    const 空 = /^\{\s*\}$/.test(rhs);
+    // 系统级那条在网页端本来就该是空的，但主进程里得真注册了才算数
+    if (空 && !系统级) bad.push("「" + 名称 + "」(" + id + ") 的动作是空的：按下去什么都不会发生");
+    if (空 && 系统级 && !(emain.includes("globalShortcut.register") && emain.includes('"' + id + '"')))
+      bad.push("「" + 名称 + "」(" + id + ") 说是系统级，electron-main.js 里却没见到它的 globalShortcut 注册");
+    const t = rhs.match(只弹一句);
+    if (t && 占位词.test(t[2]))
+      bad.push("「" + 名称 + "」(" + id + ") 按下去只弹一句「" + t[2] + "」——不能用的功能不许摆在设置页上");
+  }
+  for (const id of acts.keys())
+    if (!defs.some((d) => d[0] === id)) bad.push("SHORTCUT_ACTIONS 里的「" + id + "」不在 SHORTCUT_DEFS 上，设置页看不见它，改不了也关不掉");
+  return bad;
+}
+
+function testShortcutsAllLive() {
+  const app02 = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
+  const emain = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const bad = auditShortcuts(app02, emain);
+  assert.strictEqual(bad.length, 0, "设置页上摆着按不动的快捷键：\n    - " + bad.join("\n    - "));
+  const d0 = app02.indexOf("const SHORTCUT_DEFS = [");
+  const n = require("vm").runInNewContext(app02.slice(d0, app02.indexOf("];", d0) + 2) + "\nSHORTCUT_DEFS").length;
+
+  // ★反向对照★ 五种坏法，每一种都得当场变红，否则上面那个 0 是绿在「什么都没查」上
+  const 坏法 = [
+    ["占位动作长回来（删掉的 ⌘D 原样塞回去）", app02
+      .replace("const SHORTCUT_ACTIONS = {\n", 'const SHORTCUT_ACTIONS = {\n  "voice-record": () => toast("语音录制暂未支持"),\n')
+      .replace('  ["chat-search"', '  ["voice-record", "语音录制开关", "Meta+D"],\n  ["chat-search"'), emain],
+    ["设置页上摆着、却根本没有动作", app02.replace('  ["chat-search"', '  ["ghost", "幽灵功能", "Meta+G"],\n  ["chat-search"'), emain],
+    ["动作是空函数（非系统级）", app02.replace('"chat-search": () => openChatSearch(),', '"chat-search": () => {},'), emain],
+    ["动作表里混进设置页看不见的条目", app02.replace("const SHORTCUT_ACTIONS = {\n", 'const SHORTCUT_ACTIONS = {\n  "secret-thing": () => openModal("settings"),\n'), emain],
+    ["系统级那条主进程其实没注册", app02, emain.replace(/globalShortcut\.register/g, "noop")],
+  ];
+  for (const [why, a, e] of 坏法) assert(auditShortcuts(a, e).length > 0, "反向对照没红：" + why);
+
+  console.log("  ✓ 快捷键表上的 " + n + " 条按下去都真有事发生（占位 / 空动作 / 只在表上 / 只在代码里 / 系统级没注册，五种坏法反向对照全红）");
+}
+
 async function testSessionIndex() {
   const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
   const a = src.indexOf("const sessMetaCache = new Map();");
