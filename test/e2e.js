@@ -7566,6 +7566,90 @@ async function testPortCollision() {
   console.log("✅ 端口被占的三条岔路：陌生程序占着就换口（换过去的确实是我们，也没挤掉人家）· 另一台 OWB 占着就不重复起并退出码 1（负对照）· 占着不吭声也不卡死");
 }
 
+/**
+ * 桌面壳自己那层字：右键菜单、启动失败页、两个系统报错框。
+ *
+ * 网页那套翻译是照着 DOM 走的——它认文本节点和属性，遇上就换掉。而这三处的字从头到尾
+ * 只是主进程里的 JS 字符串，一秒钟都没进过渲染进程的 DOM，网页那边翻得再全也够不着：
+ * 英文用户右键点一下弹出来的还是「复制图片」；而启动失败页更要命——看见它的人恰恰是
+ * 应用打不开的那个人（issue #1 那批），最需要看懂上面写的怎么修，给他的却是一整页中文。
+ *
+ * 数「屏幕上还剩几个汉字」的那种闸门看不见这一层（它根本不在 DOM 里），所以单开一条：
+ * 先按形状比两本字典，再把三处文案在沙箱里真跑一遍，最后反过来查有没有人又写死了一句。
+ */
+function testShellI18n() {
+  const src = fs.readFileSync(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const CJK = /[一-鿿　-〿＀-￯]/;
+  const 抠 = (from, to) => {
+    const i = src.indexOf(from), j = src.indexOf(to, i + 1);
+    assert(i >= 0 && j > i, "抠不出这段代码（挪了位置或改了名，就把这条锚点一起改掉）：" + from);
+    return src.slice(i, j);
+  };
+
+  // ---- ① 两本字典按键比：漏一个键，那句话在英文下渲染出来是 undefined ----
+  const table = new Function(抠("const SHELL_TEXT = {", "\nfunction osLang(").replace("const SHELL_TEXT =", "return") + ";")();
+  const zh = table.zh, en = table.en;
+  const 中键 = Object.keys(zh).sort(), 英键 = Object.keys(en).sort();
+  assert(中键.length >= 20, "SHELL_TEXT 只抠出 " + 中键.length + " 个键，抠错地方了");
+  assert.deepStrictEqual(英键, 中键,
+    "两本字典对不上：只有中文的 " + JSON.stringify(中键.filter((k) => !(k in en))) +
+    "，只有英文的 " + JSON.stringify(英键.filter((k) => !(k in zh))));
+
+  // 有几条是带端口号的函数，渲染一遍再比，别只比类型
+  const 渲染 = (d, k) => (typeof d[k] === "function" ? String(d[k](3800)) : String(d[k]));
+  const 漏翻 = 中键.filter((k) => CJK.test(渲染(en, k)));
+  assert(!漏翻.length, "英文字典里这几条还是中文，英文用户会原样看见：" + JSON.stringify(漏翻));
+  const 照抄 = 中键.filter((k) => 渲染(zh, k) === 渲染(en, k));
+  assert(!照抄.length, "这几条两种语言一模一样，多半是复制过去忘了改：" + JSON.stringify(照抄));
+
+  // ---- ② 右键菜单真跑一遍：图片 + 选中 + 可编辑 + 链接，四种情况一次点全 ----
+  const 建菜单 = new Function("clipboard", "shell",
+    抠("function contextMenuItems(params, t, wc)", "\nasync function uiLang(") + "\nreturn contextMenuItems;"
+  )({ writeText() {} }, { openExternal() {} });
+  const 右键 = { mediaType: "image", srcURL: "http://127.0.0.1:3800/a.png", selectionText: "x", isEditable: true, linkURL: "https://example.com/a", x: 1, y: 2 };
+  for (const lang of ["zh", "en"]) {
+    const 字 = 建菜单(右键, table[lang], { copyImageAt() {} }).filter((i) => i.label).map((i) => i.label);
+    assert.strictEqual(字.length, 8, lang + " 下右键菜单条目对不上（拿到 " + 字.length + " 条）：" + JSON.stringify(字));
+    if (lang === "en") assert(!字.some((s) => CJK.test(s)), "英文界面下右键菜单还是中文：" + JSON.stringify(字.filter((s) => CJK.test(s))));
+    else assert(字.every((s) => CJK.test(s)), "中文界面下右键菜单里冒出了英文：" + JSON.stringify(字.filter((s) => !CJK.test(s))));
+  }
+
+  // ---- ③ 启动失败页那句「该怎么修」：六种死法，两种语言，一句都不许串 ----
+  const 出主意 = new Function(抠("function bootHint(msg, port, t)", "\n/**\n * 启动失败时") + "\nreturn bootHint;")();
+  const 死法 = ["Error: Cannot find module 'foo'", "数据目录建不起来：EACCES", "listen EACCES 0.0.0.0:3800", "listen EADDRINUSE 127.0.0.1:3800", "listen EADDRNOTAVAIL 192.168.1.9:3800", "TypeError: boom"];
+  for (const lang of ["zh", "en"]) {
+    const 话 = 死法.map((m) => String(出主意(m, 3800, table[lang])));
+    assert.strictEqual(new Set(话).size, 死法.length,
+      lang + " 下有两种死法给出了同一句修法（分支塌了，用户照着修治不好）：" + JSON.stringify(话));
+    if (lang === "en") assert(!话.some((s) => CJK.test(s)), "英文下启动失败页教人怎么修的话还是中文：" + JSON.stringify(话.filter((s) => CJK.test(s))));
+  }
+
+  // ---- ④ 反过来查：这几处不许再有一句界面上的字写死在代码里 ----
+  // 只挑字符串和模板串来看。注释里的中文不算（该写还得写），
+  // bootHint 里那几个正则也不算——它们认的是服务端吐出来的中文报错，跟界面语言无关。
+  const 报错框 = [...src.matchAll(/dialog\.showErrorBox\(([\s\S]*?)\n\s*\);/g)].map((m) => m[1]);
+  assert.strictEqual(报错框.length, 2, "系统报错框的数量变了（" + 报错框.length + " 个），这条闸门得跟着改");
+  const 界面段 = [
+    抠("function contextMenuItems(params, t, wc)", "\nasync function uiLang("),
+    抠("function bootHint(msg, port, t)", "\n/**\n * 启动失败时"),
+    抠("const html = `<!doctype html>", "\n  // 连窗口都没有"),
+    ...报错框,
+  ];
+  const 写死 = [];
+  for (const 段 of 界面段)
+    for (const m of 段.matchAll(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g))
+      if (CJK.test(m[0])) 写死.push(m[0].slice(0, 48));
+  assert(!写死.length, "这几句界面上的字写死在代码里、没进 SHELL_TEXT，英文用户永远看见中文：" + JSON.stringify(写死));
+
+  // ---- ⑤ 主进程问渲染进程要语言，问的得是网页那边真正存的那个键 ----
+  const 存的键 = (fs.readFileSync(path.join(__dirname, "..", "public", "js", "i18n.js"), "utf8").match(/const STORE_KEY = "([^"]+)"/) || [])[1];
+  assert(存的键, "i18n.js 里找不到 STORE_KEY 了");
+  assert(src.includes('localStorage.getItem("' + 存的键 + '")'),
+    "壳问的不是网页存语言的那个键（网页存的是 " + 存的键 + "）：右键菜单会跟着系统语言走，用户在界面里切过的那一下不算数");
+
+  console.log("✅ 桌面壳那层字：两本字典键对齐且英文里无汉字 · 右键菜单 8 条两种语言各跑一遍 · 启动失败页六种死法六句不同的修法 · 四处界面段里没有写死的中文 · 语言键跟网页对得上");
+}
+
 async function testLocalEngineConnect() {
   const os = require("os");
   const which = require("../engines/which");
@@ -8646,6 +8730,7 @@ testCanvasEdgeVersion();
   await testLibraryOutputsTruth();
   await testLibraryTurnAnchor();
   await testPortCollision();
+  testShellI18n();
   await testSessionSearchLive();
   await testDecideLive();
   await testConfigExternalEdit();

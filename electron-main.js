@@ -8,6 +8,73 @@ const fs = require("fs");
 const os = require("os");
 const { dataPath, seedDataDir, resolvePort } = require("./paths");
 
+// ---------- 桌面壳这一层的文案 ----------
+/**
+ * 网页那套翻译是照着 DOM 走的：它认的是文本节点和属性，遇上就换掉。
+ * 而原生右键菜单、系统报错框、启动失败页里的字，从头到尾只是主进程里的 JS 字符串——
+ * 一秒钟都没进过渲染进程的 DOM，所以网页那边翻得再全，右键点一下弹出来的还是中文。
+ * 这一层只能自己带一份小词表。条目不多，摊开写，别再套一层查词函数。
+ */
+const SHELL_TEXT = {
+  zh: {
+    copyImage: "复制图片", copyImageURL: "复制图片地址",
+    copy: "复制", cut: "剪切", paste: "粘贴", selectAll: "全选",
+    copyLink: "复制链接", openInBrowser: "在浏览器里打开",
+    unknownError: "未知错误",
+    failTitle: "OpenWorkBuddy 没能启动",
+    bootLogLabel: "启动日志：",
+    bootLogNone: "（日志文件写不出来）",
+    logUnwritable: "写不出来",
+    bootLogForIssue: "启动日志（贴 issue 时带上它）：",
+    cfgFallback: "用户目录下的 OpenWorkBuddy/config.json",
+    gpuTip1: "还可以试：窗口一直不出现、或者整片黑，多半是显卡驱动画不出来——加一行 ",
+    gpuTip2: "，写进 ", gpuTip3: " 的 ", gpuTip4: " 里，再打开。",
+    versionLabel: "版本", openIssue: "提 issue",
+    stuckTitle: "OpenWorkBuddy 已经在运行了，但窗口没出来",
+    stuckBody: "后台还留着一个卡住的 OpenWorkBuddy 进程，它占着单实例锁，所以新的一次启动被挡住了。\n\n先到任务管理器（macOS 活动监视器）里结束 OpenWorkBuddy 进程，再重新打开。",
+    hintMissingFiles: "安装包里少了文件。到 GitHub Releases 重新下载最新版本覆盖安装即可；如果最新版仍然这样，请把下面这行贴到 issue 里。",
+    hintDataDir: "放数据的文件夹建不起来（默认在用户目录下的 OpenWorkBuddy）。常见原因是公司电脑把用户目录重定向到了连不上的网络盘，或者磁盘满了。设一个环境变量 OPENWORKBUDDY_HOME 指向本机一个能写的文件夹（比如 D:\\OpenWorkBuddy）再打开。",
+    hintPortDenied: (port) => `没权限使用端口 ${port}。Windows 上多半是 Hyper-V / WSL 预留了这段端口（命令行跑 netsh interface ipv4 show excludedportrange protocol=tcp 能看到保留段），把用户目录下 OpenWorkBuddy/config.json 里的 server.port 换成一个没被预留的（比如 3810）再打开。`,
+    hintPortBusy: (port) => `端口 ${port} 被占了，往后连试十个也都被占着。关掉占用它们的程序，或者把用户目录下 OpenWorkBuddy/config.json 里的 server.port 换一个。`,
+    hintHostGone: "配置里的 server.host 在这台机器上不存在了（换过网络之后常见）。把用户目录下 OpenWorkBuddy/config.json 里的 server.host 改回 127.0.0.1 再打开。",
+    hintCrashed: "服务端启动时崩了。把下面这行贴到 GitHub issue 里，附上你的系统版本。",
+  },
+  en: {
+    copyImage: "Copy image", copyImageURL: "Copy image address",
+    copy: "Copy", cut: "Cut", paste: "Paste", selectAll: "Select all",
+    copyLink: "Copy link", openInBrowser: "Open in browser",
+    unknownError: "Unknown error",
+    failTitle: "OpenWorkBuddy failed to start",
+    bootLogLabel: "Startup log: ",
+    bootLogNone: "(the log file could not be written)",
+    logUnwritable: "could not be written",
+    bootLogForIssue: "Startup log (attach it to the issue): ",
+    cfgFallback: "OpenWorkBuddy/config.json in your home folder",
+    gpuTip1: "One more thing to try: if the window never appears, or is all black, the graphics driver probably cannot draw it — add ",
+    gpuTip2: " to ", gpuTip3: " under ", gpuTip4: ", and open it again.",
+    versionLabel: "Version", openIssue: "open an issue",
+    stuckTitle: "OpenWorkBuddy is already running, but its window never appeared",
+    stuckBody: "A stuck OpenWorkBuddy process is still in the background holding the single-instance lock, so this new launch was blocked.\n\nEnd the OpenWorkBuddy process in Task Manager (Activity Monitor on macOS), then open it again.",
+    hintMissingFiles: "Files are missing from the installer. Download the latest release from GitHub Releases and install over this one; if the latest still does this, paste the line below into an issue.",
+    hintDataDir: "The data folder cannot be created (by default OpenWorkBuddy under your home folder). Usually this is a work machine whose home folder is redirected to a network drive that is unreachable, or a full disk. Set the environment variable OPENWORKBUDDY_HOME to a writable folder on this machine (e.g. D:\\OpenWorkBuddy) and open it again.",
+    hintPortDenied: (port) => `No permission to use port ${port}. On Windows this is usually Hyper-V / WSL reserving that range (run netsh interface ipv4 show excludedportrange protocol=tcp to see the reserved ranges). Change server.port in OpenWorkBuddy/config.json under your home folder to one that is not reserved (3810, say) and open it again.`,
+    hintPortBusy: (port) => `Port ${port} is taken, and so are the ten after it. Close whatever is using them, or change server.port in OpenWorkBuddy/config.json under your home folder.`,
+    hintHostGone: "The server.host in your config no longer exists on this machine (common after switching networks). Set server.host back to 127.0.0.1 in OpenWorkBuddy/config.json under your home folder and open it again.",
+    hintCrashed: "The server crashed while starting. Paste the line below into a GitHub issue, along with your OS version.",
+  },
+};
+/**
+ * 窗口还没起来的时候，系统语言是唯一问得到的信号——启动失败页正是这种时候要画的东西。
+ * 口径跟网页那边的 detect() 一致：问不出来算中文，zh 开头算中文，其余算英文。
+ */
+function osLang() {
+  let loc = "";
+  try { loc = String(app.getLocale() || ""); } catch {}
+  if (!loc) return "zh";
+  return /^zh/i.test(loc) ? "zh" : "en";
+}
+const T = (lang) => SHELL_TEXT[lang === "en" ? "en" : "zh"];
+
 // ---------- 启动日志：出事时用户手里唯一的物证 ----------
 /**
  * 「任务管理器里有进程、屏幕上没窗口」这类报障（issue #1），没有日志就只能靠猜，
@@ -78,9 +145,10 @@ function fatal(stage, err) {
   if (win && !win.isDestroyed()) return showBootFailure(err);
   const show = () => {
     try {
+      const t = T(osLang()); // app.getLocale() 得等 ready，而这个函数正是 ready 之后才跑的
       dialog.showErrorBox(
-        "OpenWorkBuddy 没能启动",
-        `${bootAdvice(err, msg, PORT)}\n\n${((err && err.bootProblem && err.bootProblem.title) || msg).split("\n")[0]}\n\n启动日志：${BOOT_LOG || "（日志文件写不出来）"}`
+        t.failTitle,
+        `${bootAdvice(err, msg, PORT, t)}\n\n${((err && err.bootProblem && err.bootProblem.title) || msg).split("\n")[0]}\n\n${t.bootLogLabel}${BOOT_LOG || t.bootLogNone}`
       );
     } catch {}
     app.exit(1);
@@ -154,9 +222,10 @@ if (!app.requestSingleInstanceLock()) {
     if (!win || win.isDestroyed()) {
       bootLog("重复启动：锁被一个没有窗口的实例占着");
       try {
+        const t = T(osLang());
         dialog.showErrorBox(
-          "OpenWorkBuddy 已经在运行了，但窗口没出来",
-          `后台还留着一个卡住的 OpenWorkBuddy 进程，它占着单实例锁，所以新的一次启动被挡住了。\n\n先到任务管理器（macOS 活动监视器）里结束 OpenWorkBuddy 进程，再重新打开。\n\n启动日志：${BOOT_LOG || "（日志文件写不出来）"}`
+          t.stuckTitle,
+          `${t.stuckBody}\n\n${t.bootLogLabel}${BOOT_LOG || t.bootLogNone}`
         );
       } catch {}
       return;
@@ -381,29 +450,47 @@ app.whenReady().then(async () => {
  * copyImageAt 是 Electron 自带的：按坐标把那张图以**系统原生位图**写进剪贴板，
  * 不走网页那条 canvas 转码的路，所以不挑格式、不掉画质，粘到哪儿都认。
  */
+function contextMenuItems(params, t, wc) {
+  const items = [];
+  if (params.mediaType === "image" && params.srcURL) {
+    items.push({ label: t.copyImage, click: () => wc.copyImageAt(params.x, params.y) });
+    items.push({ label: t.copyImageURL, click: () => clipboard.writeText(params.srcURL) });
+    items.push({ type: "separator" });
+  }
+  if (params.selectionText) {
+    items.push({ label: t.copy, role: "copy" });
+    if (params.isEditable) items.push({ label: t.cut, role: "cut" });
+  }
+  if (params.isEditable) {
+    items.push({ label: t.paste, role: "paste" });
+    items.push({ label: t.selectAll, role: "selectAll" });
+  }
+  // 链接单独一条：模型写出来的汇报里全是链接，想存一条下来以前只能手抄
+  if (params.linkURL && /^https?:/i.test(params.linkURL)) {
+    if (items.length) items.push({ type: "separator" });
+    items.push({ label: t.copyLink, click: () => clipboard.writeText(params.linkURL) });
+    items.push({ label: t.openInBrowser, click: () => shell.openExternal(params.linkURL) });
+  }
+  return items;
+}
+
+/**
+ * 界面语言存在渲染进程的 localStorage 里（owb-lang），主进程读不到，所以张嘴问一句。
+ * 问不到就退回系统语言——右键菜单绝不能因为这一问失败就弹不出来。
+ */
+async function uiLang(wc) {
+  try {
+    const v = await wc.executeJavaScript('(function(){try{return localStorage.getItem("owb-lang")||""}catch(e){return ""}})()', true);
+    if (v === "en" || v === "zh") return v;
+  } catch {}
+  return osLang();
+}
+
 function attachContextMenu(wc) {
-  wc.on("context-menu", (_e, params) => {
-    const items = [];
-    if (params.mediaType === "image" && params.srcURL) {
-      items.push({ label: "复制图片", click: () => wc.copyImageAt(params.x, params.y) });
-      items.push({ label: "复制图片地址", click: () => clipboard.writeText(params.srcURL) });
-      items.push({ type: "separator" });
-    }
-    if (params.selectionText) {
-      items.push({ label: "复制", role: "copy" });
-      if (params.isEditable) items.push({ label: "剪切", role: "cut" });
-    }
-    if (params.isEditable) {
-      items.push({ label: "粘贴", role: "paste" });
-      items.push({ label: "全选", role: "selectAll" });
-    }
-    // 链接单独一条：模型写出来的汇报里全是链接，想存一条下来以前只能手抄
-    if (params.linkURL && /^https?:/i.test(params.linkURL)) {
-      if (items.length) items.push({ type: "separator" });
-      items.push({ label: "复制链接", click: () => clipboard.writeText(params.linkURL) });
-      items.push({ label: "在浏览器里打开", click: () => shell.openExternal(params.linkURL) });
-    }
+  wc.on("context-menu", async (_e, params) => {
+    const items = contextMenuItems(params, T(await uiLang(wc)), wc);
     if (!items.length) return;   // 没什么可做的就别弹一个空菜单
+    if (wc.isDestroyed()) return; // 问语言这一下是异步的，这中间窗口可能已经关了
     Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(wc) || undefined });
   });
 }
@@ -416,30 +503,30 @@ function attachContextMenu(wc) {
  * "Cannot find module"、"EADDRINUSE" 这些英文报错，而闸门给的是中文人话，一条都对不上，于是
  * 最知道该怎么修的三种情况，页面上写的全是「服务端启动时崩了，把这行贴到 issue 里」。
  */
-function bootAdvice(err, msg, port) {
+function bootAdvice(err, msg, port, t) {
   var bp = err && err.bootProblem;
-  return bp && bp.fix ? bp.fix : bootHint(msg, port);
+  return bp && bp.fix ? bp.fix : bootHint(msg, port, t);
 }
 
-function bootHint(msg, port) {
+function bootHint(msg, port, t) {
   msg = String(msg || "");
   if (/Cannot find module/.test(msg))
-    return "安装包里少了文件。到 GitHub Releases 重新下载最新版本覆盖安装即可；如果最新版仍然这样，请把下面这行贴到 issue 里。";
+    return t.hintMissingFiles;
   // 数据目录建不起来要排在下面两条端口分支前面：它报的也是 EACCES，但换端口一点用没有。
   // 用 mkdir/copyfile 这些系统调用名跟 listen EACCES 区分开——两者的解法完全不同。
   if (/数据目录|EROFS|ENOSPC|\b(mkdir|copyfile|scandir|unlink|rmdir)\b/.test(msg) && !/listen/.test(msg))
-    return "放数据的文件夹建不起来（默认在用户目录下的 OpenWorkBuddy）。常见原因是公司电脑把用户目录重定向到了连不上的网络盘，或者磁盘满了。设一个环境变量 OPENWORKBUDDY_HOME 指向本机一个能写的文件夹（比如 D:\\OpenWorkBuddy）再打开。";
+    return t.hintDataDir;
   // EACCES 要排在 EADDRINUSE 前面：两者都是「端口用不了」，但解法不同，
   // 前者换个端口就好，后者得去关掉占用的程序。
   if (/EACCES|EPERM/.test(msg))
-    return `没权限使用端口 ${port}。Windows 上多半是 Hyper-V / WSL 预留了这段端口（命令行跑 netsh interface ipv4 show excludedportrange protocol=tcp 能看到保留段），把用户目录下 OpenWorkBuddy/config.json 里的 server.port 换成一个没被预留的（比如 3810）再打开。`;
+    return t.hintPortDenied(port);
   // 走到这儿说明连着往后试十个口也全被占着——本机版一般不会有这一天，
   // 绑的不是本机地址时（Docker / 服务器）端口是运维定死的，压根不自动换。
   if (/EADDRINUSE|端口/.test(msg))
-    return `端口 ${port} 被占了，往后连试十个也都被占着。关掉占用它们的程序，或者把用户目录下 OpenWorkBuddy/config.json 里的 server.port 换一个。`;
+    return t.hintPortBusy(port);
   if (/EADDRNOTAVAIL/.test(msg))
-    return "配置里的 server.host 在这台机器上不存在了（换过网络之后常见）。把用户目录下 OpenWorkBuddy/config.json 里的 server.host 改回 127.0.0.1 再打开。";
-  return "服务端启动时崩了。把下面这行贴到 GitHub issue 里，附上你的系统版本。";
+    return t.hintHostGone;
+  return t.hintCrashed;
 }
 
 /**
@@ -448,15 +535,17 @@ function bootHint(msg, port) {
  * 页面用 data: URL 直接塞，因为这会儿 HTTP 服务端正是那个起不来的东西。
  */
 function showBootFailure(err) {
-  const msg = String((err && err.message) || err || "未知错误");
-  const hint = bootAdvice(err, msg, PORT);
+  const lang = osLang();
+  const t = T(lang);
+  const msg = String((err && err.message) || err || t.unknownError);
+  const hint = bootAdvice(err, msg, PORT, t);
   // 闸门查出来的病因，红框里只放那一句结论就够了；解法已经当大标题写在上面，重复一遍反而更长
   const detail = (err && err.bootProblem && err.bootProblem.title) || msg;
   // 这一页上所有要他动手的东西都得给出确切位置：写「用户目录的 OpenWorkBuddy/config.json」，
   // 等于让一个已经卡在门外的人自己去猜用户目录在哪，而 Windows 和 macOS 还不是一个地方
-  const CFG = (() => { try { return dataPath("config.json"); } catch (e) { return "用户目录下的 OpenWorkBuddy/config.json"; } })();
+  const CFG = (() => { try { return dataPath("config.json"); } catch (e) { return t.cfgFallback; } })();
   const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
-  const html = `<!doctype html><meta charset="utf-8"><title>OpenWorkBuddy 启动失败</title>
+  const html = `<!doctype html><html lang="${lang === "en" ? "en" : "zh-CN"}"><meta charset="utf-8"><title>${esc(t.failTitle)}</title>
 <style>
  body{margin:0;font:14px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#1f2328;background:#fff;
       display:flex;align-items:center;justify-content:center;height:100vh}
@@ -470,13 +559,12 @@ function showBootFailure(err) {
  code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:#f6f8fa;padding:1px 5px;border-radius:4px}
 </style>
 <div class=box>
- <h1>OpenWorkBuddy 没能启动</h1>
+ <h1>${esc(t.failTitle)}</h1>
  <p>${esc(hint)}</p>
  <pre>${esc(detail)}</pre>
- <p class=small>还可以试：窗口一直不出现、或者整片黑，多半是显卡驱动画不出来——
-   给 <code>${esc(CFG)}</code> 里的 <code>server</code> 加一行 <code>"disable_gpu": true</code> 再打开。</p>
- <p class=small>启动日志（贴 issue 时带上它）：<code>${esc(BOOT_LOG || "写不出来")}</code></p>
- <p>版本 ${esc(require("./package.json").version)} · <a href="https://github.com/CatCatUncle/openworkbuddy/issues" target="_blank">提 issue</a></p>
+ <p class=small>${esc(t.gpuTip1)}<code>"disable_gpu": true</code>${esc(t.gpuTip2)}<code>${esc(CFG)}</code>${esc(t.gpuTip3)}<code>server</code>${esc(t.gpuTip4)}</p>
+ <p class=small>${esc(t.bootLogForIssue)}<code>${esc(BOOT_LOG || t.logUnwritable)}</code></p>
+ <p>${esc(t.versionLabel)} ${esc(require("./package.json").version)} · <a href="https://github.com/CatCatUncle/openworkbuddy/issues" target="_blank">${esc(t.openIssue)}</a></p>
 </div>`;
   // 连窗口都没有，就退到系统级报错框，别把原因吞掉——「双击没反应」就是这么来的
   if (!win || win.isDestroyed()) return fatal("启动", err);
