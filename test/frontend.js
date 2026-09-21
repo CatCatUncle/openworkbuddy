@@ -798,6 +798,161 @@ const TURNOUT_CHECKS = `
 })()
 `;
 
+// 设置页「底层引擎」那三张卡。装了 Claude Code / Codex 的人，得能在**切过去之前**
+// 知道它到底跑不跑得起来。旧版唯一一条说实话的通道（测试连接）长在展开区里，
+// 而展开区只对**已经选中**的引擎渲染——等于"想知道它行不行，先切过去用它"。
+// 徽章那边同样在替人下结论：`--version` 跑通就发一个绿的「已装 ✓」，
+// 可它只证明文件在，装了没登录 / 订阅过期 / 被限流，长的全是同一个绿。
+// 同样切 app-05.js 的真源码，不抄。
+const APP05E = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-05.js"), "utf8");
+const EG0 = APP05E.indexOf("function engVer(");
+const EG1 = APP05E.indexOf("function renderPersonaPane(");
+if (EG0 < 0 || EG1 <= EG0) throw new Error("app-05.js 里的底层引擎卡片段找不到了（函数名被改过？），前端测试没法定位真源码");
+const ENG_SRC = APP05E.slice(EG0, EG1);
+// 颜色得连 ui.css 一起注：主题变量（--danger-text 那一套）长在那儿，只注 index.html 的内联样式
+// 的话 var(--owb-err-text) 解不出来，红的绿的全塌成黑色——这一屏要量颜色，两份都注
+const ENG_UI_CSS = fs.readFileSync(path.join(__dirname, "..", "public", "css", "ui.css"), "utf8");
+const ENG_HTML = "<!doctype html><meta charset='utf-8'><style>" + ENG_UI_CSS + "\n" + INDEX_CSS
+  + "</style><body><div class='eng-list' id='box' style='width:640px'></div></body>";
+// 只替掉渲染细节（转义、图标、存盘、网络），判据/徽章/折叠这些被测逻辑一律用真源码
+const ENG_STUBS = `
+function esc(s){ const d=document.createElement("div"); d.textContent = s==null?"":String(s); return d.innerHTML; }
+function ic(name){ return '<svg class="i" aria-hidden="true"><use href="#i-' + name + '"></use></svg>'; }
+var lastSaveError = "";
+window.SAVES = [];
+async function saveSettings(p){ window.SAVES.push(JSON.stringify(p)); return true; }
+`;
+
+const ENG_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + JSON.stringify(msg === undefined ? "断言失败" : msg)); names.push(name); };
+  const box = document.getElementById("box");
+  const PAY = (cur) => ({ current: cur,
+    builtin: { id: "builtin", label: "内置引擎", launchHeader: "OpenWorkBuddy 自己的 agent 循环", note: "用你在「模型」里配置的 API Key 跑" },
+    engines: [
+      { id: "claude-code", label: "本机 Claude Code", installed: true, version: "2.1.278 (Claude Code)", how: "PATH",
+        path: "/u/.local/bin/claude", launchHeader: "claude -p --output-format stream-json",
+        note: "用你电脑上已登录的 Claude Code 订阅跑", install: "npm i -g @anthropic-ai/claude-code", models: [], options: {} },
+      { id: "codex", label: "本机 Codex", installed: true, version: "codex-cli 0.154.0", how: "PATH",
+        path: "/opt/homebrew/bin/codex", launchHeader: "codex exec --json",
+        note: "用你电脑上已登录的 Codex 跑", install: "npm i -g @openai/codex", models: [], options: {} },
+      { id: "gemini", label: "本机 Gemini", installed: false, version: "", error: "PATH 里没有 gemini", install: "npm i -g 某个包", options: {} },
+    ] });
+  let reply = () => ({ ok: true });
+  window.fetch = async (u, o) => ({ json: async () => (o && o.body ? reply(JSON.parse(o.body).id) : window.__P) });
+  const render = async (cur) => { window.__P = PAY(cur); window.SAVES = []; await renderEngineCard(box); };
+  const card = (id) => box.querySelector('.eng[data-eng="' + id + '"]');
+  const badge = (id) => card(id).querySelector(".eng-bs").textContent.replace(/\\s+/g, " ").trim();
+  const tryOf = (id) => card(id).querySelectorAll('[data-act="test"]').length;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms || 120));
+
+  await render("builtin");
+  ok("四条引擎都渲染出来了（内置 + 两个装了的 + 一个没装的）", box.querySelectorAll(".eng").length === 4, box.querySelectorAll(".eng").length);
+
+  // ① 这次改的核心：试一试的钮挂在卡本身上，不挂在只有选中才渲染的展开区里
+  ok("★没选中的引擎也能当场试能不能用★ 不用先切过去用它一回才知道它行不行",
+    tryOf("claude-code") === 1 && tryOf("codex") === 1, [tryOf("claude-code"), tryOf("codex")]);
+  ok("内置引擎没这个钮（它走 API Key，没有「本机那份」可试）", tryOf("builtin") === 0);
+  ok("没装的那条也没有（先按装法装上再说）", tryOf("gemini") === 0);
+  ok("没装的那条仍旧写着装法", card("gemini").textContent.indexOf("npm i -g 某个包") >= 0);
+
+  await render("claude-code");
+  // ★反向对照★ 上面那两个 1，可能只是因为两张卡碰巧都有展开区。这条把"钮在不在展开区里"
+  // 单拎出来量：没选中的卡压根没有展开区，钮却还在；选中的卡有展开区，钮也不在里面
+  ok("★钮确实挂在卡上，不在展开区里★ 没选中的卡没有展开区，钮照样在",
+    card("codex").querySelectorAll(".eng-x").length === 0 && tryOf("codex") === 1);
+  ok("  ← 选中的那张有展开区，钮也不在里面（全卡就一个，不会点出两份）",
+    card("claude-code").querySelectorAll(".eng-x").length === 1
+    && card("claude-code").querySelectorAll('.eng-x [data-act="test"]').length === 0
+    && tryOf("claude-code") === 1);
+
+  // ② 徽章不替人下结论
+  ok("★没真跑过之前，徽章一个绿的都没有★ --version 只证明文件在，不证明能用",
+    box.querySelectorAll(".eng-b.ok").length === 0);
+  ok("  ← 措辞也不说「已装」，只说「本机有 2.1.278」",
+    /本机有 2\\.1\\.278/.test(badge("claude-code")) && badge("claude-code").indexOf("已装") < 0, badge("claude-code"));
+
+  // ③ 版本号削成一个形状，不把产品名说第二遍
+  ok("★徽章上不再把产品名重复一遍★ 标题已经写着「本机 Claude Code」了",
+    badge("claude-code").indexOf("Claude Code") < 0 && badge("codex").indexOf("codex-cli") < 0,
+    [badge("claude-code"), badge("codex")]);
+  ok("  ← 两家削出来是同一个形状（都只剩数字）", /本机有 0\\.154\\.0/.test(badge("codex")), badge("codex"));
+  ok("engVer 认得各家 --version 的花样",
+    engVer("2.1.278 (Claude Code)") === "2.1.278" && engVer("codex-cli 0.154.0") === "0.154.0"
+    && engVer("v1.2.3-beta.4") === "1.2.3-beta.4" && engVer("1.7") === "1.7",
+    [engVer("2.1.278 (Claude Code)"), engVer("codex-cli 0.154.0"), engVer("v1.2.3-beta.4"), engVer("1.7")]);
+  ok("  ← 反向对照：本来就没有版本号的原样端出来，不许凭空造一个",
+    engVer("") === "" && engVer("未知") === "未知" && engVer(null) === "" && engVer("nightly") === "nightly");
+
+  // ④ 折叠状态下不摆命令行
+  const CMD = "claude -p --output-format stream-json";
+  await render("builtin");
+  ok("★折叠的卡上不摆命令行★ 「" + CMD + "」对着想用订阅的人说不出任何信息",
+    box.textContent.indexOf(CMD) < 0 && box.querySelectorAll(".eng-c").length === 0);
+  await render("claude-code");
+  const xc = card("claude-code").querySelector(".eng-x .eng-c");
+  ok("  ← 反向对照：命令行没被删掉，只是挪进了展开区，跟可执行文件路径摆一块儿",
+    !!xc && xc.textContent.indexOf(CMD) >= 0);
+  ok("  ← --version 那行原样输出也在展开区里留着，谁要对包名谁去看",
+    !!xc && xc.textContent.indexOf("2.1.278 (Claude Code)") >= 0);
+
+  // ⑤ 真测过之后，徽章跟着结论改口
+  reply = () => ({ ok: true, ms: 2400, reply: "ok", model: "claude-sonnet-4-6", path: "/u/.local/bin/claude", version: "2.1.278 (Claude Code)" });
+  card("claude-code").querySelector('[data-act="test"]').click();
+  card("codex").querySelector('[data-act="test"]').click();
+  await wait();
+  ok("测通了徽章才发绿", card("claude-code").querySelectorAll(".eng-b.ok").length === 1
+    && /真跑通了 · 2\\.1\\.278/.test(badge("claude-code")), badge("claude-code"));
+  ok("  ← 「不花 API 额度」那条还在（测通了不等于开始烧钱）", badge("claude-code").indexOf("不花 API 额度") >= 0);
+  ok("★没选中的那张测通了，会顺口说一句怎么用上它★",
+    card("codex").querySelector(".eng-r.ok").textContent.indexOf("点这张卡") >= 0,
+    card("codex").querySelector(".eng-r.ok").textContent);
+  ok("  ← 选中的那张不重复这句废话（它本来就在用）",
+    card("claude-code").querySelector(".eng-r.ok").textContent.indexOf("点这张卡") < 0);
+
+  // ★反向对照★ 绿不是一去不回头的。同一张卡再测一次、这回没登录，徽章必须当场变红，
+  // 不能一边挂着绿徽章一边在下面写"连不上"
+  reply = () => ({ ok: false, why: "codex 没登录（本机没有凭据）", hint: "codex login" });
+  card("codex").querySelector('[data-act="test"]').click();
+  await wait();
+  ok("★测不通就改口：绿的收回去，换成红的★", card("codex").querySelectorAll(".eng-b.ok").length === 0
+    && card("codex").querySelectorAll(".eng-b.bad").length === 1, badge("codex"));
+  ok("  ← 红是真的红（量算出来的颜色，不是数类名）", (() => {
+    const bad = getComputedStyle(card("codex").querySelector(".eng-b.bad")).color;
+    const plain = getComputedStyle(card("codex").querySelector(".eng-b:not(.bad):not(.ok):not(.free)")).color;
+    return bad !== plain && bad !== "";
+  })(), [getComputedStyle(card("codex").querySelector(".eng-b.bad")).color]);
+  ok("失败时说清楚下一步敲哪条命令", card("codex").querySelector(".eng-r.bad").textContent.indexOf("codex login") >= 0);
+  ok("  ← 这时候版本号还在，别把「找到了」也一并否掉", badge("codex").indexOf("0.154.0") >= 0, badge("codex"));
+
+  // ⑥ 结论得活过一次重画：保存一下设置、重新检测一下，卡片就整块重画
+  await render("claude-code");
+  ok("★重画之后刚测出来的结论还在★ 不然点一下保存就得再花一次 token 重测",
+    !!card("claude-code").querySelector(".eng-r.ok") && card("claude-code").querySelectorAll(".eng-b.ok").length === 1);
+  ok("  ← 失败那张的红结论同样留着", !!card("codex").querySelector(".eng-r.bad"));
+
+  // ⑦ 试和用是两件事：点钮、点结论，都不许把引擎给切过去
+  window.SAVES = [];
+  card("codex").querySelector('[data-act="test"]').click();
+  await wait();
+  ok("★点「试一下」不会顺手把引擎切过去★ 试和用是两件事",
+    window.SAVES.length === 0 && !card("codex").classList.contains("on"), window.SAVES);
+  window.SAVES = [];
+  card("codex").querySelector(".eng-r code").click();
+  await wait(60);
+  ok("点结论里那条命令（想复制它）也不会切引擎", window.SAVES.length === 0, window.SAVES);
+  // ★反向对照★ 点卡片正文就是要切的。不做这条，上面两个 0 有可能只是因为整张卡被点死了
+  window.SAVES = [];
+  card("codex").querySelector(".eng-n").click();
+  await wait();
+  ok("反向对照：点卡片正文确实切得过去，不是把整张卡点死了",
+    window.SAVES.length >= 1 && window.SAVES[0].indexOf("codex") >= 0, window.SAVES);
+
+  return names;
+})()
+`;
+
 
 
 // 键盘可达：侧栏那几行、成果卡、折叠头本来都是 <div>，鼠标能点、Tab 走不到。
@@ -9808,6 +9963,15 @@ app.whenReady().then(async () => {
       console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接·整块可收起）${names7.length} 项通过`);
     } finally {
       if (!win7.isDestroyed()) win7.destroy();
+    }
+    const winEng = mkWin({ show: false, width: 760, height: 900, webPreferences: { offscreen: true } });
+    try {
+      await winEng.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(ENG_HTML));
+      const namesEng = await winEng.webContents.executeJavaScript(ENG_STUBS + "\n" + ENG_SRC + "\n" + ENG_CHECKS, true);
+      for (const n of namesEng) console.log("  ✓ " + n);
+      console.log(`✅ 前端：底层引擎卡片（没选中也能当场试·徽章不替人下结论·版本号削成一个形状·命令行挪进展开区）${namesEng.length} 项通过`);
+    } finally {
+      if (!winEng.isDestroyed()) winEng.destroy();
     }
     const win8 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {

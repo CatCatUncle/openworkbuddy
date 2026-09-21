@@ -2268,6 +2268,57 @@ async function renderThinkingCard(sel, note, msg) {
   show();
 }
 /**
+ * `2.1.278 (Claude Code)` → `2.1.278`；`codex-cli 0.154.0` → `0.154.0`。
+ *
+ * 各家 `--version` 输出的花样都不一样：一个把产品名括在后面，一个把包名顶在前面。
+ * 原样贴到徽章上，就成了「本机 Claude Code · 已装 2.1.278 (Claude Code)」——
+ * 产品名在同一行里说了两遍，两张卡还是两个形状。徽章上只留版本号；
+ * 原样那一行挪进展开区（「本机这一份」），谁要对包名谁去看。
+ */
+function engVer(v) {
+  const s = String(v || "").trim();
+  const m = s.match(/\bv?(\d+\.\d+\.\d+[^\s()]*)/) || s.match(/\bv?(\d+\.\d+[^\s()]*)/);
+  return m ? m[1] : s;
+}
+
+// 连接测试的结论按引擎记一份。这张卡会因为切引擎、保存设置、重新检测重画好几次，
+// 不留着的话刚测出来的「真跑通了」一眨眼就没了，用户只能再花一次 token 重测。
+// 只活在这一次打开设置页期间——机器状态随时会变，隔天还敢说"测过了"就是撒谎。
+const engTested = new Map();
+
+/**
+ * 徽章上只说说得出口的那部分。
+ *
+ * 旧版这里写的是「已装 ✓」，绿的。但它的依据只有 `--version` 跑通了——
+ * 那只证明**文件在**。装了没登录、订阅过期、被限流，在旧卡片上全长一个样：绿的。
+ * 所以没测过之前一律用中性措辞（「本机有 2.1.278」），绿色留给真跑通过的那一种。
+ */
+function engBadgeHtml(e, v) {
+  if (e.id === "builtin") return '<span class="eng-b">走 API Key</span>';
+  if (!e.installed) return '<span class="eng-b no">本机没找到</span>';
+  const ver = engVer(e.version);
+  const free = '<span class="eng-b free">不花 API 额度</span>';
+  if (v && v.ok) return `<span class="eng-b ok">${ic("circle-check")}真跑通了${ver ? " · " + esc(ver) : ""}</span>${free}`;
+  if (v) return `<span class="eng-b bad">${ic("circle-x")}连不上</span><span class="eng-b">本机有${ver ? " " + esc(ver) : ""}</span>`;
+  return `<span class="eng-b">本机有${ver ? " " + esc(ver) : ""}</span>${free}`;
+}
+
+/** 测出来的结论长什么样。重画卡片时也走这里，所以结论跟着卡片一起活 */
+function engVerdictHtml(v, on) {
+  if (!v) return "";
+  if (v.ok) {
+    return `<div class="eng-r ok">${ic("circle-check")} 真跑通了，用了 ${(v.ms / 1000).toFixed(1)} 秒。它回了「${esc(v.reply || "")}」`
+      + (v.model ? `，实际跑的模型是 <code>${esc(v.model)}</code>` : "")
+      + "。这一趟没花 API 额度，走的是你本机的订阅。"
+      + (on ? "" : "<br>想用它的话，点这张卡就切过去了。")
+      + `<br><span class="eng-p">${esc(v.path || "")}${v.version ? " · " + esc(v.version) : ""}</span></div>`;
+  }
+  return `<div class="eng-r bad">${ic("circle-x")} 连不上：${esc(v.why || "未知原因")}`
+    + (v.hint ? `<br>下一步：<code>${esc(v.hint)}</code>` : "")
+    + "</div>";
+}
+
+/**
  * 「底层引擎」卡片。
  *
  * 这张卡的职责不是"列个单子"，是**让用户真的用上本机那份订阅**。三件事必须做到：
@@ -2275,8 +2326,13 @@ async function renderThinkingCard(sel, note, msg) {
  *      claude/codex 装在 homebrew、nvm、~/.local/bin 里的一律看不见。这一层在
  *      engines/which.js 里补齐了，卡片这边把"从哪找到的"如实标出来。
  *   ② 说实话 —— `--version` 只证明文件在，不证明能用。装了没登录、订阅过期、
- *      被限流，在旧版卡片上全都显示"已装 ✓"。所以这里有一个真跑一句话的连接测试。
+ *      被限流，在旧版卡片上全都显示"已装 ✓"，绿的。所以没真跑过之前徽章只说
+ *      「本机有 2.1.278」，绿色留给连接测试真跑通的那一种；而那个测试挂在每一张
+ *      装了的卡上，不是只挂在选中的那张——不然就成了"想知道它行不行，先切过去用它"。
  *   ③ 出事有下一步 —— 失败时不只报错，要说清楚接下来敲哪条命令。
+ *
+ * 折叠状态下不摆命令行：`claude -p --output-format stream-json` 这种东西对着
+ * 「我想用我的订阅」的人说不出任何信息，挪到展开区跟可执行文件路径摆一块儿，就近。
  */
 async function renderEngineCard(box, force) {
   if (!box) return;
@@ -2288,20 +2344,23 @@ async function renderEngineCard(box, force) {
   const all = [d.builtin, ...(d.engines || [])];
   box.innerHTML = all.map((e) => {
     const on = cur === e.id, builtin = e.id === "builtin", ready = builtin || e.installed;
-    const badge = builtin
-      ? '<span class="eng-b">走 API Key</span>'
-      : e.installed
-        ? `<span class="eng-b ok">已装 ${esc(e.version || "")}</span><span class="eng-b free">不花 API 额度</span>`
-        : '<span class="eng-b no">本机没找到</span>';
+    const v = engTested.get(e.id);
     // 从补全的 PATH / 登录 shell 里找到的，说一声——用户要是纳闷"我明明装了它怎么现在才看见"，这就是答案
     const howNote = !builtin && e.installed && e.how && e.how !== "PATH"
       ? `<div class="eng-i">（${esc(e.how)}里找到的：<span class="eng-p">${esc(e.path || "")}</span>）</div>` : "";
-    return `<div class="eng${on ? " on" : ""}${ready ? "" : " off"}" data-eng="${esc(e.id)}" data-ready="${ready ? 1 : 0}">
-      <div class="eng-h"><span class="eng-dot">${on ? "●" : "○"}</span><b>${esc(e.label)}</b>${badge}</div>
+    // 「试一下能不能用」挂在每一张装了的卡上，不管选没选中。
+    // 以前它只长在展开区里，而展开区只对**已经选中的**引擎渲染——
+    // 等于「想知道它能不能用，得先切过去用它」。开关摆在只有切过去才看得见的地方，等于没有。
+    const tryRow = !builtin && e.installed
+      ? `<div class="eng-try"><button class="btn-plain" data-act="test">试一下能不能用</button>
+        <span class="eng-msg">${on ? "让它回一句话，几十个 token" : "让它回一句话，不用先切过来"}</span></div>
+        <div data-role="result">${engVerdictHtml(v, on)}</div>` : "";
+    return `<div class="eng${on ? " on" : ""}${ready ? "" : " off"}" data-eng="${esc(e.id)}" data-ready="${ready ? 1 : 0}" data-ver="${esc(engVer(e.version))}">
+      <div class="eng-h"><span class="eng-dot">${on ? "●" : "○"}</span><b>${esc(e.label)}</b><span class="eng-bs">${engBadgeHtml(e, v)}</span></div>
       <div class="eng-n">${esc(e.note || "")}</div>
-      <div class="eng-c">${esc(e.launchHeader || "")}</div>
       ${howNote}
       ${!builtin && !e.installed ? `<div class="eng-i">${esc(e.error || "没找到")}<br>装法：<code>${esc(e.install || "")}</code></div>` : ""}
+      ${tryRow}
       ${builtin || !on ? "" : engineExtraHtml(e)}
     </div>`;
   }).join("") + '<div class="eng-row" style="margin-top:4px"><button class="btn-plain" id="ag-eng-rescan">重新检测本机</button><span class="eng-msg" id="ag-eng-msg"></span></div>';
@@ -2312,8 +2371,11 @@ async function renderEngineCard(box, force) {
   box.querySelectorAll(".eng").forEach((el) => {
     const id = el.dataset.eng;
     if (el.classList.contains("on")) bindEngineExtra(el, id, box);
+    const tb = el.querySelector('[data-act="test"]');
+    if (tb) tb.onclick = (ev) => { ev.stopPropagation(); testEngineConnect(el, id); };
     el.onclick = async (ev) => {
-      if (ev.target.closest(".eng-x")) return; // 展开区里的输入框/按钮，不当成"切引擎"
+      // 展开区的输入框、试一试那一行、测出来的结论，点了都不算"切引擎"
+      if (ev.target.closest(".eng-x, .eng-try, .eng-r")) return;
       if (el.classList.contains("on")) return;
       if (el.dataset.ready !== "1") {
         // 没找到的那条：点了不切。静默切到一个跑不起来的引擎，用户会以为在用本机订阅，
@@ -2334,7 +2396,7 @@ async function renderEngineCard(box, force) {
   });
 }
 
-/** 选中的引擎才展开：可执行文件路径、模型、一键连接测试 */
+/** 选中的引擎才展开：可执行文件路径、模型、思考档 */
 // 思考/effort 档位（跟 thinking.js 的 LEVELS 同一张表；"" = 跟随全局档位）
 const ENGINE_THINK_LEVELS = [
   ["", "跟随全局思考模式"], ["auto", "跟随 CLI 默认"], ["off", "关闭思考"], ["low", "低"], ["medium", "中"], ["high", "高"],
@@ -2357,11 +2419,10 @@ function engineExtraHtml(e) {
     <label>${esc(e.thinkingLabel || "思考模式")}<span style="color:var(--owb-text-3)">（只对这个引擎生效；「跟随全局」= 用助理设置里的思考模式）</span>
       <select data-k="thinking">${ENGINE_THINK_LEVELS.map(([v, l]) => `<option value="${v}"${(o.thinking || "") === v ? " selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="eng-row">
-      <button class="btn-brand" data-act="test">测试连接</button>
       <button class="btn-plain" data-act="save">保存路径 / 模型 / 思考档</button>
       <span class="eng-msg" data-role="xmsg"></span>
     </div>
-    <div data-role="result"></div>
+    <div class="eng-c">跑起来是这条命令：${esc(e.launchHeader || "")}${e.version ? "　本机这一份：" + esc(e.version) : ""}</div>
   </div>`;
 }
 
@@ -2373,7 +2434,6 @@ function bindEngineExtra(card, id, box) {
     x.querySelectorAll("input[data-k],select[data-k]").forEach((i) => (o[i.dataset.k] = i.value.trim()));
     return o;
   };
-  x.querySelector('[data-act="test"]').onclick = () => testEngineConnect(card, id);
   x.querySelector('[data-act="save"]').onclick = async () => {
     const m = x.querySelector('[data-role="xmsg"]');
     m.textContent = "保存中…";
@@ -2386,32 +2446,37 @@ function bindEngineExtra(card, id, box) {
 /**
  * 真连一次。花几十个 token 跑一句"回复 ok"，把「能用 / 没登录 / 限流 / 装坏了」分开。
  * 结果要带上耗时和实际用的模型——用户下一个任务会看到同一个模型名，对得上才叫连通。
+ *
+ * 没选中的卡也测得了：展开区不在，就用**已经存下来**的那套设置去测，
+ * 而那正是切过去之后下一个任务会用的那一套。
  */
 async function testEngineConnect(card, id) {
-  const x = card.querySelector(".eng-x");
-  if (!x) return;
-  const btn = x.querySelector('[data-act="test"]');
-  const out = x.querySelector('[data-role="result"]');
+  const btn = card.querySelector('[data-act="test"]');
+  const out = card.querySelector('[data-role="result"]');
+  if (!btn || !out) return;
+  const on = card.classList.contains("on");
   const opts = {};
-  x.querySelectorAll("input[data-k]").forEach((i) => (opts[i.dataset.k] = i.value.trim()));
+  card.querySelectorAll(".eng-x input[data-k]").forEach((i) => (opts[i.dataset.k] = i.value.trim()));
   btn.disabled = true;
   const t0 = Date.now();
-  const tick = setInterval(() => { out.className = "eng-r"; out.textContent = `正在真连一次…已等 ${Math.round((Date.now() - t0) / 1000)} 秒（第一次会慢一点）`; }, 500);
+  const paint = () => { out.innerHTML = `<div class="eng-r">正在真连一次…已等 ${Math.round((Date.now() - t0) / 1000)} 秒（第一次会慢一点）</div>`; };
+  paint();
+  const tick = setInterval(paint, 500);
   let r;
   try { r = await fetch("/api/engines/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, options: opts }) }).then((v) => v.json()); }
   catch (e) { r = { ok: false, why: "请求失败：" + e.message }; }
   clearInterval(tick);
   btn.disabled = false;
-  if (r && r.ok) {
-    out.className = "eng-r ok";
-    out.innerHTML = `✓ 连通了，用了 ${(r.ms / 1000).toFixed(1)} 秒。它回了「${esc(r.reply || "")}」`
-      + (r.model ? `，实际跑的模型是 <code>${esc(r.model)}</code>` : "")
-      + `。这一趟没花 API 额度，走的是你本机的订阅。<br><span class="eng-p">${esc(r.path || "")}${r.version ? " · " + esc(r.version) : ""}</span>`;
-  } else {
-    out.className = "eng-r bad";
-    out.innerHTML = `✗ 连不上：${esc((r && (r.why || r.error)) || "未知原因")}`
-      + (r && r.hint ? `<br>下一步：<code>${esc(r.hint)}</code>` : "");
-  }
+  r = r || {};
+  const v = {
+    ok: !!r.ok, ms: r.ms || Date.now() - t0, reply: r.reply || "", model: r.model || "",
+    path: r.path || "", version: r.version || "", why: r.why || r.error || "", hint: r.hint || "",
+  };
+  engTested.set(id, v);
+  out.innerHTML = engVerdictHtml(v, on);
+  // 徽章跟着改口。不在这儿改的话，卡上会同时挂着「本机有 2.1.278」和一条"连不上"的红结论
+  const bs = card.querySelector(".eng-bs");
+  if (bs) bs.innerHTML = engBadgeHtml({ id, installed: true, version: card.dataset.ver }, v);
 }
 
 function renderPersonaPane(pane, s) {
