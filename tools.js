@@ -809,6 +809,52 @@ function imageDataUri(got) {
   return `data:${got.mime};base64,${got.b64}`;
 }
 
+/** 一条渠道算不算配齐了：地址和型号都有才算，缺一个都发不出请求 */
+const eyeReady = (c) => !!(c && String(c.base_url || "").trim() && String(c.model || "").trim());
+
+/**
+ * 主模型自己会不会看图。
+ *
+ * 先听配置里那张 caps 表——那是设置页上「能看图」那个勾，用户自己说的，比任何猜法都准；
+ * 老配置没有 caps 才退回按型号名猜（口径跟设置页下拉分组共用 capOfModel 那一份）。
+ */
+function mainCanSee(main) {
+  const caps = Array.isArray(main && main.caps) ? main.caps : null;
+  if (caps) return caps.includes("vision");
+  return mediaModels.capOfModel(String((main || {}).model || "")).cap === "vision";
+}
+
+/**
+ * 这张图交给谁看：主模型，还是「看图」那一路单配的模型。
+ *
+ * 规矩就是设置页上一直写着的那句话：**单配的看图模型，是给「主模型看不了图」的人预备的。**
+ * 代码以前不是这么走的——那个槽里只要填了东西，就一律绕开主模型。于是真实配置里出现了这一幕：
+ * 主模型和看图槽填的是同一个型号，同一个模型被硬拆成两条渠道走，多一把 key、多一份限流额度；
+ * 那条一路 429 和超时，主模型这边一次就过。用户的原话是
+ * 「文本模型我用多模态模型就没有必要用什么看图模型」。
+ *
+ * 也没把谁的配置吃掉：主模型当场回一句「我看不了图」时，backup 那条会自动接上（见下面 400 那段）。
+ *
+ * @returns {{cfg:object, backup:object|null, tell:string}}
+ *   cfg 这次用谁；backup 主模型当场说看不了图时改投的那条；tell 要不要在答案末尾交代一句
+ */
+function pickEye(v, main, named) {
+  const has = eyeReady(v), hasMain = eyeReady(main);
+  // look_at_image(model: "…") 点了名的一律照办：点名要哪个就是哪个
+  if (named && has) return { cfg: v, backup: null, tell: "", fromMain: false };
+  if (!hasMain) return { cfg: has ? v : {}, backup: null, tell: "", fromMain: false };
+  if (!has) return { cfg: main, backup: null, tell: "", fromMain: true };
+  // 同一个型号还分两条渠道走，白白多一把 key、多一份限流额度
+  if (String(v.model).trim().toLowerCase() === String(main.model).trim().toLowerCase()) {
+    return { cfg: main, backup: null, tell: "", fromMain: true };
+  }
+  if (mainCanSee(main)) {
+    // 绕过了用户单配的那条，就得说一声——不说的话，他在设置里配的模型等于凭空没了
+    return { cfg: main, backup: v, tell: `\n（主模型 ${main.model} 自己会看图，就没绕到单配的 ${v.model}）`, fromMain: true };
+  }
+  return { cfg: v, backup: null, tell: "", fromMain: false };
+}
+
 /**
  * 带着一个问题去看一张图，返回文字答案。
  *
@@ -825,97 +871,107 @@ async function lookAtImage(opts, input, timeoutMs, resolveFile) {
 
   let v;
   try { v = mediaModels.pick(opts.media, "vision", input.model); } catch (e) { return { content: e.message, isError: true }; }
-  const configured = !!(String(v.base_url || "").trim() && String(v.model || "").trim());
-  // 没单独配视觉渠道就拿主模型试一把：主模型本来就多模态的（GPT/Claude/Gemini/GLM 系）什么都不用配；
-  // 纯文本模型会明确报错，下面那段会把「去设置里配一个」这句话说清楚，而不是让模型在那儿反复重试。
-  const cfg = configured ? v : opts.visionFallback || {};
-  if (!cfg.base_url || !cfg.model) {
+  const main = opts.visionFallback || {};
+  const eye = pickEye(v, main, !!String(input.model || "").trim());
+  if (!eyeReady(eye.cfg)) {
     return { content: "没有能看图的模型：请用户去 设置 → 模型 → 视觉模型 填接口地址 / API Key / 模型名。这一步不用重试。", isError: true };
   }
 
   const got = readImageInput(rel, resolveFile, "图片");
   if (got.err) return { content: got.err, isError: true };
   const { b64, mime, note, abs: p } = got;
-  const base = String(cfg.base_url).trim().replace(/\/+$/, "");
   const signal = AbortSignal.timeout(Math.max(timeoutMs || 0, 120000));
-  const anthropic = cfg.provider === "anthropic";
-  // 地址算法跟主模型共用一份（llm.js 的 anthropicBase）。自己拼 `${base}/v1/messages` 的话，
-  // 用户照着设置页里其它渠道的样子把 base_url 填成 .../v1，就会拼出 /v1/v1/messages 吃 404
-  const url = anthropic ? require("./llm").anthropicBase(base).messagesUrl : `${base}/chat/completions`;
-  const key = mediaKey(cfg);
-  const headers = anthropic
-    ? { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" }
-    : { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
-  const mkBody = (maxTokens, extra) => (anthropic
-    ? { model: cfg.model, max_tokens: maxTokens, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: q }] }], ...extra }
-    : { model: cfg.model, max_tokens: maxTokens, messages: [{ role: "user", content: [{ type: "text", text: q }, { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }] }], ...extra });
 
-  const ask = async (bodyObj) => {
-    let r;
-    try {
-      r = await fetchRetry(url, { method: "POST", headers, signal, body: JSON.stringify(bodyObj) }, { label: "视觉模型" });
-    } catch (e) {
-      return { fail: `视觉模型请求失败：${e.message}` };
+  /** 拿某一条渠道去看一遍。两条渠道共用这一份，措辞和重试口径不会漂开 */
+  async function look(cfg, tell, backup, fromMain) {
+    const base = String(cfg.base_url).trim().replace(/\/+$/, "");
+    const anthropic = cfg.provider === "anthropic";
+    // 地址算法跟主模型共用一份（llm.js 的 anthropicBase）。自己拼 `${base}/v1/messages` 的话，
+    // 用户照着设置页里其它渠道的样子把 base_url 填成 .../v1，就会拼出 /v1/v1/messages 吃 404
+    const url = anthropic ? require("./llm").anthropicBase(base).messagesUrl : `${base}/chat/completions`;
+    const key = mediaKey(cfg);
+    const headers = anthropic
+      ? { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" }
+      : { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
+    const mkBody = (maxTokens, extra) => (anthropic
+      ? { model: cfg.model, max_tokens: maxTokens, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: q }] }], ...extra }
+      : { model: cfg.model, max_tokens: maxTokens, messages: [{ role: "user", content: [{ type: "text", text: q }, { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }] }], ...extra });
+
+    const ask = async (bodyObj) => {
+      let r;
+      try {
+        r = await fetchRetry(url, { method: "POST", headers, signal, body: JSON.stringify(bodyObj) }, { label: "视觉模型" });
+      } catch (e) {
+        return { fail: `视觉模型请求失败：${e.message}` };
+      }
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { r, j, http: r.status };
+      const ch = ((j.choices || [])[0] || {});
+      const msg = ch.message || {};
+      let text = anthropic
+        ? (j.content || []).map((c) => (c && c.type === "text" ? c.text : "")).join("")
+        : msg.content;
+      if (Array.isArray(text)) text = text.map((c) => (typeof c === "string" ? c : (c || {}).text || "")).join("");
+      // 「想了一堆但一个字没说」跟「被内容策略拦了」是两回事，得分得开
+      const reasoned = anthropic
+        ? (j.content || []).some((c) => c && (c.type === "thinking" || c.type === "redacted_thinking"))
+        : !!String(msg.reasoning_content || msg.reasoning || "").trim();
+      const capped = anthropic ? j.stop_reason === "max_tokens" : ch.finish_reason === "length";
+      return { r, j, text: String(text || "").trim(), reasoned, capped };
+    };
+
+    let out = await ask(mkBody(2000));
+    if (out.fail) return { content: out.fail, isError: true };
+    if (out.http) {
+      const msg = JSON.stringify(out.j).slice(0, 300);
+      // 上游直说「不支持图片」：换个问法重试多少次都是同一个 400，只会白烧几轮。
+      // 后面还有一条能看图的渠道就改投它，一条都没有才把「去配一个」这句话讲清楚。
+      if (/image|vision|multimodal|不支持/i.test(msg)) {
+        if (eyeReady(backup)) return { refused: true, msg };
+        // 单配的看图渠道自己报这句，那是这条渠道配错了（型号填成出图的、地址串了家），
+        // 不是「还没配」。再劝他去配一遍等于让人对着已经填好的表单发呆，所以只对主模型说这句
+        if (fromMain) return {
+          content: `当前主模型（${cfg.model}）看不了图：${msg}\n请用户去 设置 → 模型 → 视觉模型 配一个能看图的模型，配好后再调一次。不要重试，也别改用别的工具去猜图里是什么。`,
+          isError: true,
+        };
+      }
+      if (out.http === 402 || /insufficient|credit|余额|欠费/i.test(msg)) {
+        return { content: `视觉模型这条渠道没余额了（HTTP ${out.http}）：${msg}\n这不是问法的问题，重试多少次都一样。请用户去充值，或在 设置 → 模型 → 视觉模型 换一条渠道。别再调 look_at_image 了，也不许把没看到的内容当看过写进结论。`, isError: true };
+      }
+      return { content: `视觉模型错误 ${out.http}: ${msg}`, isError: true };
     }
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) return { r, j, http: r.status };
-    const ch = ((j.choices || [])[0] || {});
-    const msg = ch.message || {};
-    let text = anthropic
-      ? (j.content || []).map((c) => (c && c.type === "text" ? c.text : "")).join("")
-      : msg.content;
-    if (Array.isArray(text)) text = text.map((c) => (typeof c === "string" ? c : (c || {}).text || "")).join("");
-    // 「想了一堆但一个字没说」跟「被内容策略拦了」是两回事，得分得开
-    const reasoned = anthropic
-      ? (j.content || []).some((c) => c && (c.type === "thinking" || c.type === "redacted_thinking"))
-      : !!String(msg.reasoning_content || msg.reasoning || "").trim();
-    const capped = anthropic ? j.stop_reason === "max_tokens" : ch.finish_reason === "length";
-    return { r, j, text: String(text || "").trim(), reasoned, capped };
-  };
 
-  let out = await ask(mkBody(2000));
-  if (out.fail) return { content: out.fail, isError: true };
-  if (out.http) {
-    const msg = JSON.stringify(out.j).slice(0, 300);
-    // 主模型是纯文本模型时上游会直说「不支持图片」。这句话得原样转给用户去配视觉渠道——
-    // 模型自己怎么重试都是同一个 400，只会白烧几轮。
-    if (!configured && /image|vision|multimodal|不支持/i.test(msg)) {
+    // 空正文最常见的真因不是内容策略，而是**思考把额度吃光了**：
+    // GLM / OpenRouter 这类默认开思考的渠道，2000 的上限先被 reasoning 花完，
+    // content 就是个空字符串，finish_reason=length。真实会话里这一种出现了 40 次，
+    // 模型看到「换个问法再试一次」就一轮轮换措辞重试，最后干脆编一句「已核对」——
+    // 明明一眼没看见。所以这里自己关掉思考重来一次，再空才算真空。
+    if (!out.text && (out.capped || out.reasoned)) {
+      const off = require("./thinking").planFor(cfg, "off");
+      const retry = await ask(mkBody(4000, { ...off.params, ...(cfg.extra_body || {}) }));
+      if (!retry.fail && !retry.http && retry.text) {
+        return { content: `【看图】${path.basename(p)}${note}\n问：${q}\n答：${retry.text}\n（第一次它把 ${2000} token 全花在思考上没留下正文，已自动关思考重看一次）${tell}`, isError: false };
+      }
+      if (!retry.fail && !retry.http) out = retry;
+    }
+
+    if (!out.text) {
+      const why = out.capped || out.reasoned
+        ? `${cfg.model} 把额度全花在思考上、一个字正文都没吐（关掉思考重试过一次，还是这样）`
+        : `${cfg.model} 返回了空正文（多半被内容策略拦了）`;
       return {
-        content: `当前主模型（${cfg.model}）看不了图：${msg}\n请用户去 设置 → 模型 → 视觉模型 配一个能看图的模型，配好后再调一次。不要重试，也别改用别的工具去猜图里是什么。`,
+        content: `没看成这张图：${why}。\n别再换问法重试了——换措辞改不了这件事。如实说这张图没看成，`
+          + `或者换一条视觉渠道（设置 → 模型 → 视觉模型）。\n注意：绝对不许把没看到的内容当作看过写进结论或说明文档里。`,
         isError: true,
       };
     }
-    if (out.http === 402 || /insufficient|credit|余额|欠费/i.test(msg)) {
-      return { content: `视觉模型这条渠道没余额了（HTTP ${out.http}）：${msg}\n这不是问法的问题，重试多少次都一样。请用户去充值，或在 设置 → 模型 → 视觉模型 换一条渠道。别再调 look_at_image 了，也不许把没看到的内容当看过写进结论。`, isError: true };
-    }
-    return { content: `视觉模型错误 ${out.http}: ${msg}`, isError: true };
+    return { content: `【看图】${path.basename(p)}${note}\n问：${q}\n答：${out.text}${tell}`, isError: false };
   }
 
-  // 空正文最常见的真因不是内容策略，而是**思考把额度吃光了**：
-  // GLM / OpenRouter 这类默认开思考的渠道，2000 的上限先被 reasoning 花完，
-  // content 就是个空字符串，finish_reason=length。真实会话里这一种出现了 40 次，
-  // 模型看到「换个问法再试一次」就一轮轮换措辞重试，最后干脆编一句「已核对」——
-  // 明明一眼没看见。所以这里自己关掉思考重来一次，再空才算真空。
-  if (!out.text && (out.capped || out.reasoned)) {
-    const off = require("./thinking").planFor(cfg, "off");
-    const retry = await ask(mkBody(4000, { ...off.params, ...(cfg.extra_body || {}) }));
-    if (!retry.fail && !retry.http && retry.text) {
-      return { content: `【看图】${path.basename(p)}${note}\n问：${q}\n答：${retry.text}\n（第一次它把 ${2000} token 全花在思考上没留下正文，已自动关思考重看一次）`, isError: false };
-    }
-    if (!retry.fail && !retry.http) out = retry;
-  }
-
-  if (!out.text) {
-    const why = out.capped || out.reasoned
-      ? `${cfg.model} 把额度全花在思考上、一个字正文都没吐（关掉思考重试过一次，还是这样）`
-      : `${cfg.model} 返回了空正文（多半被内容策略拦了）`;
-    return {
-      content: `没看成这张图：${why}。\n别再换问法重试了——换措辞改不了这件事。如实说这张图没看成，`
-        + `或者换一条视觉渠道（设置 → 模型 → 视觉模型）。\n注意：绝对不许把没看到的内容当作看过写进结论或说明文档里。`,
-      isError: true,
-    };
-  }
-  return { content: `【看图】${path.basename(p)}${note}\n问：${q}\n答：${out.text}`, isError: false };
+  const first = await look(eye.cfg, eye.tell, eye.backup, eye.fromMain);
+  if (!first.refused) return first;
+  // 主模型当场说它看不了图（多半是 caps 那个勾勾错了）：单配的那条顶上，别让这张图白丢
+  return look(eye.backup, `\n（主模型 ${eye.cfg.model} 回了一句看不了图，已改用单配的 ${eye.backup.model}；想省这一次空跑，去 设置 → 模型 把它的「能看图」取消勾选）`, null, false);
 }
 
 /**
@@ -4458,4 +4514,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, pickEye, mainCanSee, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

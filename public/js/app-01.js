@@ -100,8 +100,30 @@ function procNote(icon, text, cls) {
   n.lastChild.textContent = text;
   return n;
 }
+
+/**
+ * 「正在压…已等 12 秒」。
+ *
+ * 压缩就是一次 LLM 调用，没有真进度可报——硬画一根匀速爬的进度条是骗人。能说的实话只有
+ * 「已经等了多久」和「在压什么」，所以这行报秒数。秒数由过程区那根 1 秒的总计时器带着走，
+ * 不另开一个 setInterval：那根本来就在，也在这一轮收尾时被停掉，不会留下一个转到天荒地老的定时器。
+ */
+const compactRunText = (n, ms) => `正在把早前 ${n} 条消息压成一份摘要…已等 ${Math.round(ms / 1000)} 秒（压完这一轮才开跑，原文归档不删）`;
+
+/** 「正在压」和「压完了」共用同一行：压完把这行的字换掉，而不是再摞一行。
+ *  摞两行的话，历史里会永远留着一句停在「正在压…」的话，看着像卡死在那儿 */
+function compactNote(proc) {
+  let note = proc.querySelector(".compact-note");
+  if (!note) { note = procNote("archive", "", "compact-note"); proc.appendChild(note); }
+  return note;
+}
+
 const runningSessions = new Map(); // sessionId -> { ui } 正在跑任务的会话（服务端锁按会话，跨会话可并行）
 const sessionDirs = new Map(); // sessionId -> 该对话在默认工作空间下的成果子文件夹（成果面板标「本对话」）
+// 附件原名 -> /api/upload 回的工作区相对路径。这是最准的一份：上传那一刻服务端亲口说了
+// 「我把它放这儿了」，不用再靠 sessionDirs 去猜。只活在这一次开着的窗口里，
+// 刷新之后老回合走 attachRel 里后面两档兜底
+const attachPaths = new Map();
 const sessionModels = new Map(); // sessionId -> 该对话指定的模型名（没有 = 跟随全局默认）
 const sessionGoals = new Map(); // sessionId -> 该对话的目标状态（Goal 模式的目标卡）
 let pendingModel; // 新对话还没发首条消息就选了模型：先记着，会话建好后再落到服务端
@@ -804,6 +826,27 @@ function sealStream(el) {
 // 侧栏标题只留用户自己那句话。委派标签那行也得摘：不摘的话历史列表整排都是
 // 「【交给专家团：…】把下面这件事整体委派给…」，24 个字全被同一句模板占满，谁是谁分不出来
 const BUBBLE_ATT_ICON = { "图片": "image", "视频": "film", "音频": "volume-2", "文本摘录": "file-text", "文件": "paperclip" };
+// 气泡上面那排缩略图只画图。视频不画：preload=metadata 会去拉每条片子的文件头，
+// 一屏历史里十几条就是十几个连接，而用户发视频本来就少
+const BUBBLE_PIC_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i;
+/**
+ * 用户发进来的那份素材，现在躺在工作区的哪个相对路径上。三档，越靠前越准：
+ * ① 这次开着的窗口里刚传的 —— 服务端回过确切路径，直接用；
+ * ② 老回合：这条对话有成果子文件夹，素材就在里面；
+ * ③ 连子文件夹都没有：那就是工作区根上。
+ *
+ * ② 还留了个 alt：**修好上传落点之前传的那批，人确实躺在工作区根上**
+ * （当时前端还没给会话 id，服务端没地方放，只能落根）。所以②读不出来时自动改试③，
+ * 老会话里那些图才不会整排变成灰方块。
+ */
+function attachRel(name, sid) {
+  const memo = attachPaths.get(name);
+  if (memo) return { rel: memo, alt: "" };
+  const dir = sessionDirs.get(sid);
+  return dir ? { rel: dir + "/" + name, alt: name } : { rel: name, alt: "" };
+}
+/** 缩略图地址。跟产出卡共用一套口径：一律 ?thumb=320，svg 除外（矢量栅格化反而更大更糊） */
+function attachThumb(rel) { return "/api/files/view/" + fpath(rel) + (/\.svg$/i.test(rel) ? "" : "?thumb=320"); }
 function stripSceneTag(t) {
   return String(t == null ? "" : t)
     .replace(/^\s*【任务类型：[^】]*】\s*/, "")
@@ -978,7 +1021,9 @@ function createTurnUI(userText, turnMode, forSid) {
   const turn = document.createElement("div");
   turn.className = "turn";
   const av = avatarBits(assistant.avatar, assistant.name);
-  turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="bubble" translate="no"></div></div>
+  // 气泡外面套一层 .u-stack：右对齐那一列里，除了气泡还要竖着摞「我发的图」那一排缩略图。
+  // 宽度限制（78%）从气泡挪到了这一列身上，气泡和缩略图排现在共用同一条右边线
+  turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="u-stack"><div class="bubble" translate="no"></div></div></div>
     <div class="a-msg"><div class="avatar${av.cls ? " " + av.cls : ""}">${av.html}</div><div class="body"></div></div>`;
   // 气泡里不许出现给模型看的协议原文。两样东西要折起来：
   // ① 开头那一坨 `> `：那是「我引了它上一条里的哪句话」。原样糊出来，人得先翻过一屏
@@ -1011,8 +1056,45 @@ function createTurnUI(userText, turnMode, forSid) {
   }
   let bubbleHtml = quoteText ? `<div class="bubble-quote">${ic("text-quote", "i-sm")}<span></span></div>` : "";
   bubbleHtml += hlTokens(bodyText, "tk-b");
-  if (attList.length) bubbleHtml += `<div class="bubble-attach">${attList.map((a) => `<span>${ic(BUBBLE_ATT_ICON[a.label] || "paperclip")}${esc(a.name)}</span>`).join("")}</div>`;
+  // 图单拎出来画成真缩略图，摞在气泡上面（其余素材还是气泡底下那排名字条）。
+  // 为什么图要特殊对待：用户发的就是这张图，气泡里却只有一行 `IMG_8037.JPG`——
+  // 他自己都认不出刚发的是哪张，更别说回头再找到那个文件。用户原话是
+  // 「输入图片…让我能找到输入图片文件啥的」。现在两种都点得开：走的是产出卡同一个预览面板，
+  // 里面就带着「下载」和「打开所在位置」
+  const picList = attList.filter((a) => BUBBLE_PIC_RE.test(a.name));
+  const docList = attList.filter((a) => !BUBBLE_PIC_RE.test(a.name));
+  const attSpot = (a) => attachRel(a.name, turnSid);
+  if (docList.length) {
+    bubbleHtml += `<div class="bubble-attach">${docList.map((a) => {
+      const sp = attSpot(a);
+      return `<button type="button" class="batt" data-rel="${esc(sp.rel)}" data-alt="${esc(sp.alt)}" title="${esc(a.name)} · 点击预览">${ic(BUBBLE_ATT_ICON[a.label] || "paperclip")}${esc(a.name)}</button>`;
+    }).join("")}</div>`;
+  }
   turn.querySelector(".bubble").innerHTML = bubbleHtml;
+  if (picList.length) {
+    const pics = picList.map((a) => {
+      const sp = attSpot(a);
+      // 名字条平时藏着，只在图读不出来的时候顶上来：一个空灰方框谁都看不出是哪份素材
+      return `<button type="button" class="bpic" data-rel="${esc(sp.rel)}" data-alt="${esc(sp.alt)}" title="${esc(a.name)} · 点击预览">`
+        + `<img src="${attachThumb(sp.rel)}" alt="${esc(a.name)}" loading="lazy" decoding="async">`
+        + `<span class="bpic-nm">${ic("image")}${esc(a.name)}</span></button>`;
+    }).join("");
+    turn.querySelector(".u-stack").insertAdjacentHTML("afterbegin", `<div class="bubble-pics">${pics}</div>`);
+    for (const img of turn.querySelectorAll(".bubble-pics .bpic img")) {
+      img.onerror = () => {
+        const btn = img.closest(".bpic");
+        const alt = btn.dataset.alt;
+        if (alt) { btn.dataset.rel = alt; btn.dataset.alt = ""; img.src = attachThumb(alt); return; } // 老会话：改试工作区根
+        btn.classList.add("gone");
+        btn.title = btn.title.replace(" · 点击预览", " · 这份素材读不出来了：可能已被改名、移走或删掉");
+      };
+    }
+  }
+  // 素材点开就是产出卡那个预览面板（带下载 / 打开所在位置）。root 留空 = 当前工作目录：
+  // 用户发的素材一直跟着他现在这个工作区走，不像产出那样要记住当年是在哪个根下生成的
+  for (const el of turn.querySelectorAll(".bubble-pics .bpic, .bubble-attach .batt")) {
+    el.onclick = () => previewFile(el.dataset.rel, "");
+  }
   // 引用的正文走 textContent：那是模型吐出来的内容，拼进 innerHTML 等于把它当代码执行
   if (quoteText) {
     const bq = turn.querySelector(".bubble-quote");
@@ -1094,6 +1176,9 @@ function createTurnUI(userText, turnMode, forSid) {
         // 还没回来的卡自己也走秒。一个 setInterval 管全部，不给每张卡各开一个；
         // 用 .spinner 筛「还在跑的」，跑完的卡早就写死了最终耗时，不会被这里改回去
         const now = Date.now();
+        // 压缩那行也跟着走秒：它卡在「按下发送」和「第一个字」中间，是全场最容易被当成卡死的一段
+        const cn = procWrap.querySelector(".compact-note.running");
+        if (cn) cn.lastChild.textContent = compactRunText(cn._n || 0, now - (cn._t0 || now));
         procWrap.querySelectorAll(".step-card .spinner").forEach((sp) => {
           const c = sp.closest(".step-card");
           const d = c && c._at && c.querySelector(".dur");
@@ -1417,10 +1502,23 @@ function createTurnUI(userText, turnMode, forSid) {
       let note = proc.querySelector(".trim-note");
       if (!note) { note = procNote("scissors", "", "trim-note"); proc.appendChild(note); }
       note.lastChild.textContent = `历史过长，已截短较早的工具输出（约 ${Math.round((ev.chars || 0) / 1000)} 千字符），最近几步保留原文。可在 设置→智能体设置 调大上下文预算`;
+    } else if (ev.type === "compact_start") {
+      // 压缩要跟模型说一次话，长会话十几秒是常事，而它正卡在「他按下发送」和「第一个字」中间。
+      // 只转圈不说话，他只能猜是模型卡了还是网断了——先把「在压什么、压多少、等了多久」摆出来
+      const note = compactNote(ensureProc());
+      note.classList.add("running");
+      note._n = ev.entries || 0;
+      note._t0 = Date.now();
+      note.lastChild.textContent = compactRunText(note._n, 0);
+      procWrap?.classList.add("open");
     } else if (ev.type === "compact") {
       // 会话超长时后端自动把早期轮次压成一条摘要，这里留一行告知，免得用户觉得"它忘了前面"
-      const proc = ensureProc();
-      proc.appendChild(procNote("archive", `会话较长，已把早前 ${ev.removed || 0} 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）`));
+      const note = compactNote(ensureProc());
+      note.classList.remove("running");
+      note.lastChild.textContent = ev.failed
+        ? `这一轮没压成：${ev.failed}。早前的内容一条没动，接着跑（上下文更紧了，可在 设置→智能体设置 调大预算）`
+        : `会话较长，已把早前 ${ev.removed || 0} 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）`;
+      if (ev.failed) note.classList.add("err");
     } else if (ev.type === "context") {
       // 后台并行会话的余量不许画到当前这条对话头上：这根条全界面就一根
       if (turnSid === sessionId) renderCtxMeter(ev);
@@ -1569,6 +1667,12 @@ function createTurnUI(userText, turnMode, forSid) {
       trailMark(card, "abort");
     });
     turn.querySelectorAll(".spinner").forEach(s => s.remove());
+    // 压到一半这一轮就断了（连接掉了、被停了）：这行不能永远停在「正在压…已等 8 秒」，
+    // 那看着像还在跑。后端每条早退路径都会补一条 compact，所以走到这儿基本只剩「断了」这一种
+    procWrap?.querySelectorAll(".compact-note.running").forEach((n) => {
+      n.classList.remove("running");
+      n.lastChild.textContent = `压缩没跑完这一轮就断了（早前的内容一条没动，原文也没删）`;
+    });
     // 过程折叠区收尾：停计时、写「已完成 Xs」、默认折叠（出错/被截断则保持展开）
     if (procTimer) { clearInterval(procTimer); procTimer = null; }
     if (procWrap) {
@@ -1844,7 +1948,10 @@ function liveActivity(ev, narr) {
     case "parallel": return say("zap", ev.kind === "gen" ? `${ev.count} 条生成任务一起跑` : `${ev.count} 个只读工具一起跑`);
     case "step_start": return (ev.depth || 0) > 0 ? keep : say("brain", `第 ${ev.step} 步 · 在想下一步怎么做`);
     case "expert_start": return say("users", `专家「${cut(ev.expert, 12)}」接手：` + cut(ev.task, 30));
-    case "compact": return say("archive", `会话太长，早前 ${ev.removed || 0} 条压成了摘要（要点保留）`);
+    // failed 的那条也是历史的一部分：回放时说成「压成了摘要」，等于把一次没成的事说成成了
+    case "compact": return ev.failed
+      ? say("archive", `这一轮没压成：${ev.failed}（早前的内容一条没动）`)
+      : say("archive", `会话太长，早前 ${ev.removed || 0} 条压成了摘要（要点保留）`);
     case "trim": return say("scissors", "历史太长，较早的工具输出已截短");
     case "failover": return say("shuffle", cut(ev.note || "主渠道不行，已切到备用渠道"));
     case "auto_continue": return say("refresh-cw", `没做完，自动续跑第 ${ev.round}/${ev.total} 轮`);

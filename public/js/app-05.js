@@ -481,7 +481,7 @@ async function saveSettings(patch, msgEl) {
  */
 const MEDIA_CAPS = [
   { cap: "vision", icon: "eye", title: "看图", tool: "look_at_image",
-    hint: "你粘贴（⌘V）或拖进来的截图，它带着问题去看，拿回文字。不配也能用——会直接拿上面选中的主模型看；主模型是纯文本的（如 deepseek-chat）会明确报错，那时在这儿加一个能看图的。" },
+    hint: "你粘贴（⌘V）或拖进来的截图，它带着问题去看，拿回文字。多数人这一路不用配：主模型自己会看图（多模态模型）就直接用主模型，省一把 Key、省一份限流额度。这儿配的是后备，只在主模型看不了图时顶上——主模型是纯文本的（如 deepseek-chat），才需要在这儿加一个能看图的。" },
   { cap: "image", icon: "image", title: "画图", tool: "generate_image",
     hint: "对话里说「画一张…」就会用它，成图存进工作空间。支持 OpenAI 兼容 /images/generations；地址含 dashscope 时自动走通义原生协议。" },
   { cap: "video", icon: "clapperboard", title: "视频", tool: "generate_video",
@@ -939,9 +939,10 @@ function paintModels(pane, s) {
    * 所以每格现在是三行：主用是谁、它的模型 id、以及还压着几个备选、散在几个渠道上。
    * 而且格子是能点的——点哪一路就展开哪一路的配置卡，不用自己在下面一张张找。
    */
-  const capTile = (key, icon, title, hint, main, sub, n, chans, empty) => {
+  const capTile = (key, icon, title, hint, main, sub, n, chans, empty, spareText) => {
     const has = !!main;
-    const spare = n > 1 ? `+${n - 1} 备选${chans > 1 ? ` · ${chans} 个渠道` : ""}` : has ? "只有这一个" : "";
+    const spare = spareText !== undefined ? spareText
+      : n > 1 ? `+${n - 1} 备选${chans > 1 ? ` · ${chans} 个渠道` : ""}` : has ? "只有这一个" : "";
     return `<button type="button" class="rt${key === "chat" ? " is-primary" : ""}${has ? "" : " is-empty"}" data-goto="${key}" title="${esc(hint)}">
       <span class="rt-k">${ic(icon)}${esc(title)}</span>
       <b>${esc(has ? main : empty)}</b>
@@ -949,6 +950,9 @@ function paintModels(pane, s) {
       <i>${esc(spare)}</i>
     </button>`;
   };
+  // 主模型自己会不会看图：只认它 caps 里那个勾（用户在设置页亲手勾的）。没 caps 的老配置在这儿
+  // 一律按「不会」算——猜错了格子就会当着用户的面撒谎；真发请求那一步 tools.js 再按型号名兜底
+  const mainSees = !!(active && Array.isArray(active.caps) && active.caps.includes("vision"));
   const chatChans = new Set(s.models.filter((m) => m.channel).map((m) => m.channel));
   const tiles = [capTile("chat", "message-circle", "对话", "正文、工具调用、写文件都走它",
     active ? active.name : s.active_model || "", active ? active.model : "全局默认",
@@ -957,6 +961,13 @@ function paintModels(pane, s) {
       const mine = s.media_models.filter((m) => m.cap === c.cap);
       const def = mine.find((m) => m.default) || mine[0];
       const chans = new Set(mine.map((m) => m.provider)).size;
+      // 看图这一路跟别的反过来：主模型自己会看图就直接用主模型，这儿挂的是**后备**，
+      // 只在主模型看不了图时才顶上（tools.js 的 pickEye）。格子里必须照实说是谁在看——
+      // 不说的话，在这儿挂了个模型的人会以为图都归它，而它其实一次请求都没接到过
+      if (c.cap === "vision" && mainSees) {
+        return capTile(c.cap, c.icon, c.title, c.tool, active.name, "主模型自己会看图，直接用它",
+          0, 0, "", def ? `${mine.length} 个备选待命` : "不用另配");
+      }
       // 看图是唯一一路「不配也能用」的：没配就拿当前对话模型去看。这跟「没配就用不了」
       // 是两件事，格子里必须分开说，不然纯文本主模型的人会以为看图已经能用了
       return capTile(c.cap, c.icon, c.title, c.tool, def ? def.name : "", def ? def.model : "",

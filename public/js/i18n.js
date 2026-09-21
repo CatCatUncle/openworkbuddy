@@ -1962,6 +1962,18 @@
       [/^上下文 (\d+)%（(\d+k) \/ (\d+k) 字符）$/, "Context $1% ($2 / $3 chars)"],
       [/^上下文 (\d+)%（(\d+k) \/ (\d+k) 字符）· 自动压缩关着，再长会被截断$/, "Context $1% ($2 / $3 chars) · auto-compact is off; anything longer gets truncated"],
       [/^上下文 (\d+)%（(\d+k) \/ (\d+k) 字符）· 下一轮开跑前会自动压一次，想留全文就另开会话$/, "Context $1% ($2 / $3 chars) · will auto-compact before the next turn; start a new session to keep the full text"],
+      // 上下文压缩那一行。「正在压」和「压完了」共用一行，秒数每秒变一次——
+      // 英文模式下那个 MutationObserver 每次都会重翻，所以整句匹配、把数字放回去
+      [/^正在把早前 (\d+) 条消息压成一份摘要…已等 (\d+) 秒（压完这一轮才开跑，原文归档不删）$/,
+        "Folding the earlier $1 messages into one summary\u2026 $2s so far (this turn starts once it's done; originals are archived, not deleted)"],
+      [/^会话较长，已把早前 (\d+) 条消息压缩成一条摘要（要点保留，原文在 data\/compact-archive 有归档）$/,
+        "Long session: the earlier $1 messages are now one summary (the substance is kept; originals are archived under data/compact-archive)"],
+      [/^会话太长，早前 (\d+) 条压成了摘要（要点保留）$/, "Session too long: the earlier $1 messages became a summary (substance kept)"],
+      [/^这一轮没压成：(.+)。早前的内容一条没动，接着跑（上下文更紧了，可在 设置→智能体设置 调大预算）$/,
+        "Compaction didn't go through this turn: $1. Nothing earlier was touched, carrying on (context is tighter \u2014 raise the budget in Settings \u2192 Agent)"],
+      [/^这一轮没压成：(.+)（早前的内容一条没动）$/, "Compaction didn't go through this turn: $1 (nothing earlier was touched)"],
+      [/^压缩没跑完这一轮就断了（早前的内容一条没动，原文也没删）$/,
+        "This turn was cut off before compaction finished (nothing earlier was touched, and nothing was deleted)"],
       [/^· (\d+) 积分$/, "· $1 credits"],
       [/^来自插件 (.+)$/, "From plugin $1"],
       [/^没找到 (.+)$/, "$1 not found"],
