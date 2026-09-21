@@ -2277,16 +2277,20 @@
   .eng-b.ok { border-color: color-mix(in srgb, var(--owb-ok) 34%, transparent); color: var(--owb-ok-text); }
   .eng-b.free { border-color: var(--owb-brand); color: var(--owb-brand-text); }
   .eng-b.no { border-color: var(--owb-border); color: var(--owb-text-3); }
+  /* 没测过 = 中性；测出来连不上 = 红。绿色只发给真跑通过的那一种，见 engBadgeHtml */
+  .eng-b.bad { border-color: color-mix(in srgb, var(--owb-err) 34%, transparent); color: var(--owb-err-text); }
   .eng-msg { font-size: 12.5px; color: var(--owb-text-2); min-height: 16px; }
   /* 展开区：只有选中的那条才展开，装法/路径/模型/连接测试都在里面，不选的时候别糊一屏 */
   .eng-x { margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--owb-border); display: grid; gap: 7px; }
   .eng-x label { font-size: 12px; color: var(--owb-text-2); display: grid; gap: 3px; }
   .eng-x input, .eng-x select { height: var(--owb-ctl-h-sm); font-size: 12.5px; }
   .eng-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .eng-r { font-size: 12.5px; line-height: 1.6; padding: 7px 9px; border-radius: var(--radius-md); border: 1px solid var(--owb-border); background: var(--owb-bg-hover); }
+  .eng-try { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .eng-r { margin-top: 8px; font-size: 12.5px; line-height: 1.6; padding: 7px 9px; border-radius: var(--radius-md); border: 1px solid var(--owb-border); background: var(--owb-bg-hover); }
   .eng-r.ok { border-color: color-mix(in srgb, var(--owb-ok) 34%, transparent); color: var(--owb-ok-text); background: color-mix(in srgb, var(--owb-ok) 6%, transparent); }
   .eng-r.bad { border-color: color-mix(in srgb, var(--owb-err) 34%, transparent); color: var(--owb-err-text); background: color-mix(in srgb, var(--owb-err) 6%, transparent); }
   .eng-r code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .eng-x .eng-c { margin-top: 0; }
   .eng-p { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--owb-text-3); word-break: break-all; }
 
   /* 链接 hover 给个反馈 */
