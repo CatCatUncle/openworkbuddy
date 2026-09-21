@@ -14,8 +14,13 @@
  * 所以这套断言分两头钉：
  *   正面 —— 点一下有对话框、填完真发得出去、取消真的什么都不做；
  *   反面 —— prompt 在这个环境里确实一调用就抛（证明老代码是死的，不是我瞎猜），
- *           confirm 却好好的（证明不该顺手把全站确认框也改了），
- *           而且 public/js 里再不许出现第二个 prompt( 调用。
+ *           confirm 却不抛，而且 public/js 里再不许出现第二个 prompt( 调用。
+ *
+ * 那条反向对照的**测量**到今天依然成立，但当初从它得出的**结论**是错的：
+ * 当时写的是「confirm 不抛，所以全站确认框不该顺手一起改」。后来发现原生框还有一处够不着的地方——
+ * 框里的字从头到尾只是个 JS 字符串，一秒钟都没进过 DOM，而翻译是走 DOM 的，
+ * 于是英文用户每删一样东西弹出来的都是中文，31 处一处没落下。所以全站最终还是都换成了
+ * askConfirm，那一头的判据在 test/confirm-dialogs.js。「点得动」和「没问题」不是一回事。
  *
  * 后来这一页又补了「删」：用户原话「资料库这里能创建目录也要能删除目录或者文件啊」。
  * 删是撤不回来的，所以它没走 native confirm——那玩意儿挂的是原生模态框，
@@ -284,8 +289,10 @@ app.whenReady().then(async () => {
     probe.destroy();
     ok(prompt判.startsWith("抛了") && !confirm判.startsWith("抛了"),
        "★反向对照：同一扇窗里各调一次——prompt 抛，confirm 不抛★ "
-       + "所以全站那些确认框对用户是好使的，不该顺手一起改；但离屏测试点不动那个框，"
-       + "新写的删除才自己画（askConfirm）", { prompt: prompt判, confirm: confirm判 });
+       + "这条钉的是环境，不是结论：confirm 不抛只说明它在桌面版点得动。"
+       + "当初据此判过「全站确认框不用改」，后来被推翻了——原生框里的字进不了 DOM 也就翻不了，"
+       + "英文用户看到的全是中文，现已全部换成 askConfirm（见 test/confirm-dialogs.js）",
+       { prompt: prompt判, confirm: confirm判 });
   }
   {
     const files = fs.readdirSync(path.join(PUB, "js")).filter((f) => f.endsWith(".js"));

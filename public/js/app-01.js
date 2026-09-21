@@ -229,7 +229,18 @@ function askText(opts) {
  * 为什么不直接用 window.confirm：它在桌面版里能用（见上面那段实测），但有两处够不着——
  *   · 它挂的是原生模态框，离屏测试点不动，于是每一条走 confirm 的删除路径都验不了；
  *   · 框里只摆得下一句话，说不出「这个文件夹里还有 3 样东西，先清空」这种决定人要不要点的细节。
- * 删东西是撤不回来的，这两样都不该缺。全站另外那些 confirm() 这次没跟着换，那是另一笔账。
+ * 删东西是撤不回来的，这两样都不该缺。
+ *
+ * 后来把全站另外 31 处 confirm() 也都换到了这儿，压死骆驼的是第三条：
+ * **原生框里的字永远翻不了**。翻译是走 DOM 的（文本节点 + MutationObserver），
+ * 而 confirm(`删除模型「x」？`) 那句话从头到尾只是个 JS 字符串，一秒钟都没进过 DOM。
+ * 于是英文用户每删一样东西，弹出来的都是中文——31 处，一处没落下。
+ * 顺带还了另外两笔：浏览器那边用户一旦勾上「不再显示对话框」，confirm() 从此静默返回 false，
+ * 所有删除按钮就变成了哑巴（跟当初 prompt() 那个 bug 一模一样的长相）；
+ * 以及每一条删除路径终于都能在离屏测试里点得动了。
+ *
+ * opts：title 问题 / hint 后果 / items 清单（自带滚动）/ note 清单后的一句 /
+ *       ok 按钮上的动词 / cancel / danger 红钮。
  */
 function askConfirm(opts) {
   const o = opts || {};
@@ -244,6 +255,8 @@ function askConfirm(opts) {
       `<div class="ask-box" role="alertdialog" aria-modal="true" aria-label="${esc(title)}">` +
       `<div class="ask-t">${esc(title)}</div>` +
       (o.hint ? `<div class="ask-h">${esc(o.hint)}</div>` : "") +
+      ((o.items || []).length ? `<ul class="ask-li">${o.items.map((x) => `<li title="${esc(x)}">${esc(x)}</li>`).join("")}</ul>` : "") +
+      (o.note ? `<div class="ask-h ask-note">${esc(o.note)}</div>` : "") +
       `<div class="ask-ops"><button type="button" class="btn-plain ask-no">${esc(o.cancel || "算了")}</button>` +
       `<button type="button" class="btn-brand ask-ok${o.danger ? " is-danger" : ""}">${esc(o.ok || "确定")}</button></div></div>`;
     document.body.appendChild(wrap);
@@ -1983,9 +1996,14 @@ function renderSweepPanel(p, task) {
     const paths = [];
     for (const g of sel) for (const it of g.items || []) { if (it.paths) paths.push(...it.paths); else if (it.path) paths.push(it.path); }
     // 删是真删、不进回收站，所以这里必须拦一道。列出的是**组**不是每一条：
-    // 一百多条路径糊在 confirm 里等于没写，反倒让人闭着眼点确定
-    const lines = sel.map((g) => `· ${g.label || g.key}：${g.count} 个，${fmtSize(g.bytes)}`).join("\n");
-    if (!confirm(`这些会被直接删掉（不进回收站、找不回来）：\n\n${lines}\n\n一共腾出 ${fmtSize(sel.reduce((a, g) => a + g.bytes, 0))}。确定吗？`)) return;
+    // 一百多条路径糊在框里等于没写，反倒让人闭着眼点确定
+    if (!(await askConfirm({
+      title: "这些会被直接删掉",
+      hint: "不进回收站，也找不回来。",
+      items: sel.map((g) => `${g.label || g.key}：${g.count} 个，${fmtSize(g.bytes)}`),
+      note: `一共腾出 ${fmtSize(sel.reduce((a, g) => a + g.bytes, 0))}`,
+      ok: "删掉", danger: true,
+    }))) return;
     box.classList.add("busy");
     try {
       const r = await fetch("/api/files/sweep", {
@@ -2525,11 +2543,16 @@ function renderFiles(files) {
   const tidyBtn = el.querySelector("#btn-tidy");
   if (tidyBtn) tidyBtn.onclick = async () => {
     const dupes = filesCache.filter(f => f.dup_of && !f.name.includes("/"));
-    // 确认框里把清单和去向都摆出来：用户得能在点头之前看清动的是哪几个、还捞不捞得回来
-    const list = dupes.slice(0, 10).map(f => "· " + f.name).join("\n") + (dupes.length > 10 ? `\n…共 ${dupes.length} 个` : "");
-    // 顺带会收掉空的成果文件夹（10 分钟内没动过的才算），所以确认框里得说出来——
+    // 确认框里把清单和去向都摆出来：用户得能在点头之前看清动的是哪几个、还捞不捞得回来。
+    // 顺带会收掉空的成果文件夹（10 分钟内没动过的才算），所以也得说出来——
     // 按钮做了什么就写什么，别让用户点完发现还动了别的东西
-    if (!confirm(`这 ${dupes.length} 个文件跟成果文件夹里的逐字节相同，原件不动，副本移到 .trash（可以捞回来）：\n\n${list}\n\n（同时会把一个文件都没有的空成果文件夹也移过去）`)) return;
+    if (!(await askConfirm({
+      title: `整理这 ${dupes.length} 个重复文件？`,
+      hint: "它们跟成果文件夹里的那份逐字节相同。原件不动，副本移到 .trash，随时捞得回来；一个文件都没有的空成果文件夹也一起移过去。",
+      items: dupes.slice(0, 10).map((f) => f.name),
+      note: dupes.length > 10 ? `…共 ${dupes.length} 个` : "",
+      ok: "整理",
+    }))) return;
     tidyBtn.disabled = true;
     try {
       const r = await fetch("/api/files/tidy", { method: "POST" }).then(x => x.json());

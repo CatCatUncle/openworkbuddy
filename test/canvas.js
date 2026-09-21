@@ -539,7 +539,7 @@ app.whenReady().then(async () => {
       window.__store.jia = { main: { version: 1, nodes: [], edges: [], updatedAt: 1000 } };
       window.__active = "jia";
       await window.__switchProject("jia");
-      window.confirm = () => true;                  // 删画布那句是原生确认框，离屏点不动
+      window.askConfirm = async () => true;         // 删画布那句是自绘确认框，离屏没人点，得替它点
       canvasAskNewBoardName = async () => "分镜";    // 新建时那个起名框同理
       await canvasCreateBoard();
       canvasApplySnapshot({ version: 1, updatedAt: Date.now(), edges: [], nodes: [
@@ -583,7 +583,7 @@ app.whenReady().then(async () => {
       // 再来一遍，这回是「我删掉、别人又建了一张同名的」：我从下拉里切回去，不走新建那条路
       canvasAddNode("note", { title: "删之前摆的" }, { x: 900, y: 300 });
       await new Promise((r) => setTimeout(r, 600));
-      window.confirm = () => true;
+      window.askConfirm = async () => true;
       await canvasDeleteBoard();
       await new Promise((r) => setTimeout(r, 500));
       window.__store.jia["外来"] = { version: 1, nodes: [], edges: [], updatedAt: 0 };   // 别人新建的，还没人动过

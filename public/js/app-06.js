@@ -289,7 +289,9 @@ function renderSecurityPane(pane, s) {
     box.querySelectorAll("[data-kick]").forEach(a => a.onclick = async (e) => {
       e.preventDefault();
       const self = list.find(x => x.id === a.dataset.kick && x.current);
-      if (!confirm(self ? "退出这台设备？你会被登出。" : "踢掉这台设备？它下次打开就得重新登录。")) return;
+      if (!(await askConfirm(self
+        ? { title: "退出这台设备？", hint: "你现在就会被登出，得重新登录。", ok: "退出", danger: true }
+        : { title: "踢掉这台设备？", hint: "它下次打开就得重新登录。", ok: "踢掉", danger: true }))) return;
       const r = await fetch("/api/devices/" + encodeURIComponent(a.dataset.kick), { method: "DELETE" }).catch(() => null);
       if (!r || !r.ok) return toast("踢不掉，刷新页面再试", "err");
       if (self) return location.reload();
@@ -312,7 +314,7 @@ function renderSecurityPane(pane, s) {
   pane.querySelector("#audit-all").onclick = (e) => { e.preventDefault(); auditLimit = 1000; renderAudit(); };
   pane.querySelector("#audit-clear").onclick = async (e) => {
     e.preventDefault();
-    if (!confirm("清空全部审计记录？")) return;
+    if (!(await askConfirm({ title: "清空全部审计记录？", hint: "以后的命令和联网还会照常记，但已经记下的这些找不回来了。", ok: "清空", danger: true }))) return;
     await fetch("/api/security/audit/clear", { method: "POST" });
     renderAudit();
   };
@@ -621,8 +623,8 @@ function renderShortcutsPane(pane, s) {
     });
   }
   pane.querySelector("#sc-search").oninput = (e) => draw(e.target.value.trim());
-  pane.querySelector("#sc-reset").onclick = () => {
-    if (!confirm("全部恢复默认快捷键？")) return;
+  pane.querySelector("#sc-reset").onclick = async () => {
+    if (!(await askConfirm({ title: "全部恢复默认快捷键？", hint: "你改过的每一组都会退回出厂的那一套。", ok: "恢复默认", danger: true }))) return;
     for (const key of Object.keys(cur)) delete cur[key];
     save();
   };
@@ -754,7 +756,7 @@ async function renderEvolvePane(pane) {
   pane.querySelectorAll("[data-retire]").forEach(a => a.onclick = async (e) => {
     e.preventDefault();
     // 下架是写服务端的：规则文件被挪进 retired/，界面上没有重新上架的入口，对用户就是单向的
-    if (!confirm("下架这条规则？往后的提示词里不再带它。")) return;
+    if (!(await askConfirm({ title: "下架这条规则？", hint: "往后的提示词里不再带它。界面上没有重新上架的入口，想要回来得去服务器的 retired/ 里捞。", ok: "下架", danger: true }))) return;
     const r = await fetch("/api/evolve/rule/" + encodeURIComponent(a.dataset.retire) + "/retire", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ why: "在设置里人工下架" }),
     }).then(r => r.json()).catch(() => ({ error: "网络错误" }));

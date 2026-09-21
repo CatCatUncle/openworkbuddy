@@ -547,12 +547,16 @@ function canvasPreviewRight(value) {
   if (/^https?:/i.test(path) || typeof previewFile !== "function") return canvasOpenImagePreview(path, "素材预览");
   previewFile(canvasResolvedFileName(path));
 }
-function canvasDeleteSelection(fallbackNode) {
+async function canvasDeleteSelection(fallbackNode) {
   const selected = canvasState.selectedIds.size ? [...canvasState.selectedIds] : fallbackNode ? [fallbackNode.id] : [];
   const nodes = selected.map((id) => canvasState.graph?.getCell(id)).filter((node) => node?.isElement?.());
   if (!nodes.length) return;
-  const label = nodes.length === 1 ? `节点「${canvasNodeLabel(nodes[0])}」` : `${nodes.length} 个节点`;
-  if (!confirm(`删除${label}？关联连线也会一起删除。`)) return;
+  // 一条和多条各写一句整话。原来是 `删掉${label}？` 把 label 拼进去的，
+  // 那种句子词典查不到——见 app-05 删渠道那儿同样的坑
+  if (!(await askConfirm({
+    title: nodes.length === 1 ? `删掉节点「${canvasNodeLabel(nodes[0])}」？` : `删掉这 ${nodes.length} 个节点？`,
+    hint: "挂在它身上的连线也会一起删掉。", ok: "删掉", danger: true,
+  }))) return;
   nodes.forEach((node) => node.remove()); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasRenderInspector(); canvasPersist();
 }
 function canvasOpenContextMenu(clientX, clientY, node = null) {
@@ -742,7 +746,7 @@ async function canvasCreateBoard() {
 }
 async function canvasDeleteBoard() {
   if (canvasState.canvasName === "main") return canvasToast("主画布不能删除。", "info");
-  if (!confirm("删除这张画布？画布节点会删除，素材文件不会删除。")) return;
+  if (!(await askConfirm({ title: `删掉画布「${canvasState.canvasName}」？`, hint: "画布上的节点和连线一起没。素材文件本身不动，还在工作区里。", ok: "删掉", danger: true }))) return;
   await canvasFlushRemoteWrite();   // 欠着的那一趟要么现在写给它自己，要么等会儿写到 main 上去
   const gone = canvasState.canvasName;
   const response = await fetch("/api/canvas/boards/" + encodeURIComponent(gone), { method: "DELETE" });
@@ -1643,7 +1647,7 @@ async function canvasGenerate(node, kind) {
 }
 
 function canvasBindNode(node, root) {
-  root.querySelector("[data-canvas-remove]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); if (!confirm(`删除节点「${canvasNodeLabel(node)}」？关联连线也会一起删除。`)) return; if (canvasState.selected === node.id) { canvasState.selected = null; canvasRenderInspector(); } node.remove(); canvasPersist(); });
+  root.querySelector("[data-canvas-remove]")?.addEventListener("click", async (evt) => { evt.preventDefault(); evt.stopPropagation(); if (!(await askConfirm({ title: `删掉节点「${canvasNodeLabel(node)}」？`, hint: "挂在它身上的连线也会一起删掉。", ok: "删掉", danger: true }))) return; if (canvasState.selected === node.id) { canvasState.selected = null; canvasRenderInspector(); } node.remove(); canvasPersist(); });
   root.querySelector("[data-canvas-settings]")?.addEventListener("click", (evt) => { evt.preventDefault(); evt.stopPropagation(); canvasState.selectedAll = false; canvasState.selectedIds = new Set([node.id]); canvasState.selected = node.id; canvasState.inspectorOpen = true; canvasRenderInspector(); });
   root.addEventListener("click", (evt) => {
     if (evt.target.closest("button,select,input,textarea,[contenteditable=true]")) return;
@@ -1845,7 +1849,7 @@ function canvasRenderInspector(focus = true) {
   });
   box.querySelector("[data-connect]")?.addEventListener("click", () => { const target = canvasState.graph.getCell(box.querySelector("[data-connect-target]")?.value); canvasConnect(node, target, box.querySelector("[data-connect-relation]")?.value); canvasRenderInspector(false); });
   box.querySelector("[data-inspect-close]")?.addEventListener("click", () => { canvasState.inspectorOpen = false; canvasRenderInspector(false); });
-  box.querySelector("[data-inspect-delete]")?.addEventListener("click", () => { if (!confirm("删除这个节点？关联连线也会一起删除。")) return; node.remove(); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(); canvasPersist(); });
+  box.querySelector("[data-inspect-delete]")?.addEventListener("click", async () => { if (!(await askConfirm({ title: `删掉节点「${canvasNodeLabel(node)}」？`, hint: "挂在它身上的连线也会一起删掉。", ok: "删掉", danger: true }))) return; node.remove(); canvasState.selected = null; canvasState.selectedIds = new Set(); canvasRenderInspector(); canvasPersist(); });
   box.querySelectorAll("[data-inspect-generate]").forEach((button) => button.addEventListener("click", () => canvasGenerate(node, button.dataset.inspectGenerate)));
   box.querySelector("[data-inspect-agent]")?.addEventListener("click", () => canvasRunInternal(node)); if (focus) box.querySelector("[data-inspect-key]")?.focus();
   if (要放回) {
@@ -2413,7 +2417,11 @@ function canvasRenderBroken(page, world) {
 /** 拿本机副本盖掉那份读不出来的文件。只有用户自己点了才会走到这儿，且原件已经备份过。 */
 async function canvasRestoreFromLocal(local) {
   if (!local || !local.nodes.length) return;
-  if (!confirm(`用本机这份（${local.nodes.length} 个节点）覆盖项目里那份读不出来的画布？\n\n原文件已经原样备份在 .openworkbuddy 目录里，随时能翻回去。`)) return;
+  if (!(await askConfirm({
+    title: `用本机这份覆盖项目里那份读不出来的画布？`,
+    hint: `本机这份有 ${local.nodes.length} 个节点。项目里那个原文件已经原样备份在 .openworkbuddy 目录里，随时翻得回去。`,
+    ok: "覆盖", danger: true,
+  }))) return;
   const state = { version: Number(local.version) >= 2 ? 2 : 1, nodes: local.nodes, edges: local.edges || [], updatedAt: Date.now() };
   const response = await fetch("/api/canvas", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: canvasState.canvasName, state, force: true }) }).catch(() => null);
   const result = response ? await response.json().catch(() => ({})) : {};
@@ -2503,7 +2511,7 @@ async function renderCanvasPage() {
   page.querySelector("[data-canvas-layout]").onclick = () => canvasAutoLayout(page);
   page.querySelectorAll("[data-canvas-history]").forEach((button) => button.addEventListener("click", () => button.dataset.canvasHistory === "undo" ? canvasUndo() : canvasRedo()));
   page.querySelector("[data-canvas-center]").onclick = () => canvasCenterSelected(page);
-  page.querySelector("[data-canvas-clear]").onclick = () => { if (!canvasState.graph.getElements().length || confirm("清空当前画布的全部节点和连线？素材文件不会删除。")) { canvasState.graph.clear(); canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasState.selected = null; canvasRenderInspector(); canvasPersist(); } };
+  page.querySelector("[data-canvas-clear]").onclick = async () => { if (!canvasState.graph.getElements().length || await askConfirm({ title: "清空这张画布？", hint: `画布上的 ${canvasState.graph.getElements().length} 个节点和全部连线都会没。素材文件本身不动，还在工作区里。`, ok: "清空", danger: true })) { canvasState.graph.clear(); canvasState.selectedIds = new Set(); canvasState.selectedAll = false; canvasState.selected = null; canvasRenderInspector(); canvasPersist(); } };
   page.querySelector("[data-canvas-save]").onclick = () => { canvasPersist(); canvasToast("画布已保存到本机", "save"); };
   page.querySelector("[data-canvas-board-select]").onchange = async (event) => { await canvasFlushRemoteWrite(); canvasState.canvasName = event.target.value || "main"; try { localStorage.setItem("openworkbuddy.canvas.name", canvasState.canvasName); } catch {} renderCanvasPage(); };
   page.querySelector("[data-canvas-workspace-select]")?.addEventListener("change", (event) => canvasSwitchWorkspace(event.target.value));

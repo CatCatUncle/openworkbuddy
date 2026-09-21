@@ -1026,7 +1026,7 @@ document.getElementById("history").addEventListener("click", async (e) => {
     return;
   }
   if (e.target.closest(".hx")) {
-    if (!confirm("删除该任务及其对话记录？")) return;
+    if (!(await askConfirm({ title: "删掉这个任务？", hint: "它的对话记录一起没，找不回来。", ok: "删掉", danger: true }))) return;
     const id = item.dataset.id;
     sessions = sessions.filter(s => s.id !== id);
     saveSessions();
@@ -1182,7 +1182,7 @@ function renderProjects() {
   box.querySelectorAll(".proj-item").forEach(el => el.onclick = async (e) => {
     const name = el.dataset.name;
     if (e.target.classList.contains("del")) {
-      if (!confirm(`把项目「${name}」从列表移除？（目录和文件不会删除）`)) return;
+      if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只是从这个列表里拿掉，硬盘上的目录和文件一个都不动。", ok: "移除" }))) return;
       await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" });
       refreshProjects().then(refreshSettingsCache);
       return;
