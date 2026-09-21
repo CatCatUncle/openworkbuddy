@@ -335,8 +335,16 @@ function assignSessionDir(sess, message) {
   // 【任务类型：X】是给模型看的前缀，起标题时早就洗掉了，文件夹名这儿漏了——
   // 于是真实数据里躺着一个「任务_0826_任务类型数据分析及可视化_3」，
   // 用户看到的是分类词，真正做的那件事（篮球减肥训练计划）一个字都没进名字。
-  const src = String(sess.title || message).replace(/^\s*【任务类型：[^】]*】\s*/, "");
-  const slug = src.replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12) || "对话";
+  // 素材锚点（【图片 1：IMG_8037.JPG】）是发送时自动补进正文的，不是用户写的字。
+  // 不洗掉就会得到「任务_0921_图片1IMG8037JP」——序号和被砍了一半的扩展名占满 12 个格，
+  // 用户真正问的那句「这是什么」一个字都没进去。
+  const ANCHOR = /【(?:图片|视频|音频|文本摘录|文件)\s*\d+：([^】]+)】/gu;
+  const raw = String(sess.title || message);
+  const src = raw.replace(/^\s*【任务类型：[^】]*】\s*/, "").replace(ANCHOR, " ");
+  const clean = (t) => String(t).replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12);
+  // 拖张图进来、一个字没写：拿文件名（去掉扩展名）兜底，比清一色的「对话」认得出来
+  const firstName = ((raw.match(/【(?:图片|视频|音频|文本摘录|文件)\s*\d+：([^】]+)】/u) || [])[1] || "").replace(/\.[^.]+$/, "");
+  const slug = clean(src) || clean(firstName) || "对话";
   let dir = `任务_${stamp}_${slug}`;
   for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)) || assignedDirs.has(dir); i++) dir = `任务_${stamp}_${slug}_${i}`;
   assignedDirs.add(dir);
