@@ -11703,7 +11703,29 @@ function releasePipelineDrift(src) {
   //    钉死这个值，省得哪天有人把 with: 那两行当冗余删掉。
   const deep = /checkout@v\d+\s*\n\s*with:\s*\n\s*fetch-depth:\s*0/;
   if (!deep.test(tst)) miss.push("test.yml 的 checkout 没写 fetch-depth: 0：默认浅克隆，README「最新动态」的日期核对会把每条都判成假的");
-  if (!deep.test(rel)) miss.push("release.yml 的 test job checkout 没写 fetch-depth: 0：发版前那趟 npm test 会栽在同一处");
+  // 按 job 切开各查各的：release.yml 现在有两处 checkout（test 跑测试、release 挖发版正文），
+  // 整份一起 regex 的话，一边退回浅克隆、另一边还是深的，这条照样绿——而红的会是另一件事
+  const jobOf = (y, name) => {
+    const a = y.indexOf("\n  " + name + ":");
+    if (a < 0) return "";
+    const b = y.slice(a + 1).search(/\n  [a-z-]+:\n/);
+    return b < 0 ? y.slice(a) : y.slice(a, a + 1 + b);
+  };
+  if (!deep.test(jobOf(rel, "test"))) miss.push("release.yml 的 test job checkout 没写 fetch-depth: 0：发版前那趟 npm test 会栽在同一处");
+
+  // —— Release 页最上面那段「这一版改了什么」。站在下载页前面的人只想知道值不值得现在更新，
+  //    而以前那一页只有安装指南加一条 compare 链接——要知道改了什么，得点进去翻二十个 commit。
+  //    这段是 scripts/release-notes.js 从 README「最新动态」按 tag 区间挖出来的，
+  //    三样东西缺一样它就变回空白：脚本没被调用、正文里没摆它、或者这趟 checkout 是浅的。
+  const notes = src["scripts/release-notes.js"] || "";
+  if (!notes.trim()) miss.push("scripts/release-notes.js 没了：Release 页会退回「只有安装指南」，改了什么得自己翻 commit");
+  if (!/scripts\/release-notes\.js/.test(rel)) miss.push("release.yml 不调 scripts/release-notes.js：Release 正文里不会有「这一版改了什么」");
+  if (!/steps\.notes\.outputs\.md/.test(rel)) miss.push("release.yml 算出了「这一版改了什么」却没摆进正文（body 里没有 steps.notes.outputs.md）");
+  // 那一步要 git 历史。release job 自己得 checkout 且是全深度——浅克隆下取不到上一个 tag，
+  // 脚本只好一个字不写，于是这段悄悄消失、没人会发现
+  const relJob = jobOf(rel, "release");
+  if (/release-notes/.test(rel) && !deep.test(relJob))
+    miss.push("release.yml 的 release job 没有全深度 checkout：取不到上一个 tag，「这一版改了什么」会悄悄变成空白");
 
   // —— GitHub 正在弃用 node20：停在老大版本上每趟 CI 都刷一条 deprecation 警告，
   //    到期就是硬失败——而这条链一红，build 被 skip、tag 一个安装包都不产（v0.5.1 就是这么空的）。
@@ -11810,6 +11832,7 @@ function testReleasePipeline() {
     "package.json",
     "electron-builder.config.js",
     "install.sh",
+    "scripts/release-notes.js",
   ];
   const src = {};
   for (const f of files) src[f] = fs.readFileSync(path.join(root, f), "utf8");
@@ -11834,7 +11857,7 @@ function testReleasePipeline() {
     ["action 退回跑 Node 20 的老大版本", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/checkout@v\d+/, "checkout@v4") }],
     ["发版那条链的 action 退回 Node 20", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/action-gh-release@v\d+/, "action-gh-release@v2") }],
     ["CI 的 checkout 退回默认浅克隆", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
-    ["发版那趟 checkout 退回默认浅克隆", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
+    ["发版前跑测试那趟 checkout 退回默认浅克隆", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
     ["发版前不跑测试了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/needs: test\n/, "") }],
     ["版本号和 tag 的绑定被删了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/GITHUB_REF_NAME/g, "X") }],
     ["版本号核对忘了守 tag（手动跑必红）", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("if: startsWith(github.ref, 'refs/tags/')\n        shell: bash", "shell: bash") }],
@@ -11847,10 +11870,37 @@ function testReleasePipeline() {
     ["curl 用法说明退回占位符", { "install.sh": src["install.sh"].replace("CatCatUncle/openworkbuddy/main/install.sh", "<你的仓库>/main/install.sh") }],
     ["pnpm 分支又吃 frozen-lockfile", { "install.sh": src["install.sh"].replace(" --no-frozen-lockfile", "") }],
     ["curl | bash 装完反而报失败", { "install.sh": src["install.sh"].replace("[ -t 0 ] && ", "") }],
+    ["「这一版改了什么」那个脚本没了", { "scripts/release-notes.js": "" }],
+    ["算出来了却没摆进正文", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("${{ steps.notes.outputs.md }}", "") }],
+    ["发正文那一步压根不调那个脚本", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/scripts\/release-notes\.js/g, "true") }],
+    ["release job 的 checkout 退回浅克隆，「这一版改了什么」悄悄变空白", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/fetch-depth: 0(?![\s\S]*fetch-depth: 0)/, "fetch-depth: 1") }],
   ];
   for (const [why, patch] of bad) {
     const got = releasePipelineDrift({ ...src, ...patch }).miss;
     assert(got.length > 0, "★闸门失效：" + why + "，居然没红★");
+  }
+
+  // 上面钉的是「接线在不在」，这里真跑一次抽取器。不跑的话，脚本写成 `process.exit(0)`
+  // 照样能过上面每一条——闸门守住了调用，没守住它到底吐不吐得出东西。
+  // 浅克隆下取不到上一个 tag，这条如实跳过（同 README 日期那条的处理）
+  const rnGit = (a) => require("child_process").execSync(a, { cwd: root, encoding: "utf8" });
+  if (rnGit("git rev-parse --is-shallow-repository").trim() !== "true") {
+    const { main: relNotes } = require("../scripts/release-notes");
+    const tags = rnGit("git tag --sort=-v:refname").split("\n").filter(Boolean);
+    if (tags.length >= 3) {
+      const a = relNotes(tags[0]), b = relNotes(tags[1]);
+      const bullets = (t) => (t.match(/^- \*\*\d\d-\d\d\*\* /gm) || []).length;
+      assert(bullets(a) >= 1, "最新那个 tag 挖不出「这一版改了什么」：" + JSON.stringify(a.slice(0, 120)));
+      assert(/这一版改了什么/.test(a), "挖出来了却没带标题");
+      // 正题：按 tag 区间挖，不是按日期抓。同一天发两版时，日期口径会把上一版的也算进来
+      const setA = new Set(a.split("\n").filter((l) => l.startsWith("- **")));
+      const dup = b.split("\n").filter((l) => l.startsWith("- **") && setA.has(l));
+      assert(dup.length === 0, "★两个 tag 的「这一版改了什么」有重复条目★ 上一版的改动又在这一版印了一遍："
+        + dup.map((l) => l.slice(0, 30)).join(" / "));
+      // 反向对照：最早那个 tag 前面没有别的 tag，这时候宁可一个字不写也别瞎猜
+      assert(relNotes(rnGit("git tag --sort=v:refname").split("\n")[0]) === "",
+        "最早那个 tag 也印了一段「这一版改了什么」——它前面根本没有可比的东西");
+    }
   }
 
   // 锁文件只留一份：两份长期手工对齐必然漂，上一份 pnpm-lock.yaml 过期五周、缺 7 个包
