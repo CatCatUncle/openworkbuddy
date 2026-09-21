@@ -3674,6 +3674,12 @@ function reapDeletedOutputs(block, live, ev) {
   const alive = new Set(live.map((f) => f.name));
   let n = 0;
   block.querySelectorAll(".out-card").forEach((c) => {
+    // 整包那张卡代表的是一个文件夹，文件夹的名字永远不会出现在文件清单里。
+    // 拿 alive.has() 判它等于每来一条 files 事件就把它撤一次——里面还有活着的文件就算它还在
+    if (c.dataset.bundle) {
+      if (![...alive].some((n2) => n2.startsWith(c.dataset.bundle))) { c.remove(); n++; }
+      return;
+    }
     if (!alive.has(c.dataset.name)) { c.remove(); n++; return; }
     // 卡还在，但挂在它身上的「另一种格式」没了：只摘那条链接，卡留着
     const altLink = c.querySelector(".oa-alt");
@@ -3718,13 +3724,14 @@ function renderTurnOutputs(body, changed, live, ev) {
   const blkRoot = block.dataset.root || (ev && ev.root) || "";
   // 顺序要紧：先撤掉已删的，再派卡。反过来的话上限还是被死掉的中间文件占着，成品照样进不来
   reapDeletedOutputs(block, live, ev);
+  const bundles = bundleDirs(block, changed);   // 这一回合被整包倒进东西的目录，见下面 OUT_BUNDLE_MIN
   for (const f of changed) {
     const isHtml = /\.html?$/i.test(f.name);
     const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(f.name);
     // 网页/图有缩略图；PPT/Word/Excel/PDF 这些要交到用户手上的成果出图标卡。
     // 以前它们只在收起的「查看所有变更」里躺着一行，做完一个 PPT，用户在对话里压根看不见它，
     // 只能自己去右侧面板翻。途中的脚手架（脚本、日志、PROGRESS.md）仍然只进清单，别把对话挡成一屏方框
-    if (isHtml || isImg || isDeliverable(f.name)) {
+    if (!bundles.has(dirOf(f.name)) && (isHtml || isImg || isDeliverable(f.name))) {
       const base = f.name.split("/").pop();
       const same = grid.querySelector(`.out-card[data-name="${cssEsc(f.name)}"]`);
       // 同名同大小 = 同一件产出被拷成了两份（agent 常把任务子目录里的产出再往工作空间根目录复制一份）。
@@ -3765,6 +3772,7 @@ function renderTurnOutputs(body, changed, live, ev) {
     }
   }
   mergeFmtPairs(grid);
+  foldBundleCards(grid, bundles, blkRoot);
   markDupBasenames(grid);
   hideCardedRows(block);
   const nRows = list.querySelectorAll(".out-row").length;
@@ -3809,13 +3817,103 @@ function clipOutList(block) {
 
 // 「交到用户手上的成果」：点开就能用的东西，不包括干活途中的脚手架
 const DELIVER_RE = /\.(pdf|pptx?|docx?|xlsx?|csv|md|txt|mp4|mov|webm|m4v|zip)$/i;
-const SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)\.(md|txt)$/i;
+// 带语种后缀的同一份东西也算（README.en.md / PROGRESS.zh-CN.md）：
+// 以前只认 README.md，于是英文版 README 大摇大摆地上了产出卡
+const SCAFFOLD_RE = /^(PROGRESS|TODO|NOTES?|README)(\.[a-z]{2}(-[A-Za-z]{2,4})?)?\.(md|txt)$/i;
 function isDeliverable(name) {
   const base = String(name || "").split("/").pop();
   return DELIVER_RE.test(base) && !SCAFFOLD_RE.test(base);
 }
 
 function pathDepth(n) { return String(n || "").split("/").length; }
+
+/* ---- 「一整包东西」不是「一百件产出」 ----
+ *
+ * 2026-09-21 的真事故，从会话存档里逐条数出来的：一条做软著登记的任务，第 3 轮跑了个导出
+ * 脚本，把整个仓库拷进任务目录下的「登记用源码包_测试/」。那一轮真落盘 124 个文件，其中
+ * **122 个都在这一个目录里**。卡片区按老规矩从里头挑出「像交付物的」前 8 个摆卡，而卡片上
+ * 只写文件名不写目录，于是用户看到的是 cover_v2.png / README.en.md / 粘贴文本_0909_162900.txt
+ * 这一排——全是他在别处见过的名字，字节数也跟仓库根目录那几个一模一样（本来就是拷贝），
+ * 于是他的结论是「别的对话的文件跑进我这一回合了」。文件没串台，是卡片把一包东西拆开摆了。
+ *
+ * 判据两条一起看，缺一条都会误伤：
+ *   ① 这个目录这一回合收了 OUT_BUNDLE_MIN 个以上的文件；
+ *   ② 里面够格上卡的是少数派（不到一半）。
+ * 只有 ① 的话，一回合出 12 张图的做图任务会被折成一个文件夹图标，缩略图全没了——
+ * 那 12 张恰恰是真产出。加上 ② 才分得开「倒进来一包源码、里面顺带夹着几张图」
+ * 和「这一目录里就是十几张成品图」。
+ */
+const OUT_BUNDLE_MIN = 8;
+const OUT_HTML_RE = /\.html?$/i;
+const OUT_IMG_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+function dirOf(n) { const i = String(n || "").lastIndexOf("/"); return i < 0 ? "" : String(n).slice(0, i + 1); }
+function cardWorthy(n) { return OUT_HTML_RE.test(n) || OUT_IMG_RE.test(n) || isDeliverable(n); }
+
+/** @returns {Map<string, number>} 目录（带尾斜杠）→ 这一回合它收了几个文件 */
+function bundleDirs(block, changed) {
+  // 已经摆出来的行 + 这一批新来的，合起来算：一次 files 事件就能带来一百多个名字，
+  // 只数 DOM 里的旧行的话，前 8 个在行插进去之前就已经摆上卡了
+  const names = new Set();
+  block.querySelectorAll(".out-row:not(.gone)").forEach((r) => names.add(r.dataset.name));
+  for (const f of changed || []) names.add(f.name);
+  const all = new Map(), worthy = new Map();
+  for (const n of names) {
+    const d = dirOf(n);
+    if (!d) continue;                                   // 工作目录根下的散件不算一包
+    all.set(d, (all.get(d) || 0) + 1);
+    if (cardWorthy(n)) worthy.set(d, (worthy.get(d) || 0) + 1);
+  }
+  const out = new Map();
+  for (const [d, c] of all) if (c >= OUT_BUNDLE_MIN && (worthy.get(d) || 0) * 2 < c) out.set(d, c);
+  return out;
+}
+
+/** 把已经摆出来的成员卡撤掉，一包换一张文件夹卡。重复调用是幂等的（每轮 files 事件都会走） */
+function foldBundleCards(grid, bundles, root) {
+  let n = 0;
+  // 先清算旧的：包里的东西被删掉之后它就不成其为一包了，这张卡得撤——
+  // 留着它等于对着一个空文件夹说「122 个文件」。剩下的那几个在下面的清单里本来就还在
+  grid.querySelectorAll(".out-card[data-bundle]").forEach((c) => {
+    if (!bundles || !bundles.has(c.dataset.bundle)) { c.remove(); n++; }
+  });
+  if (!bundles || !bundles.size) return n;
+  for (const [dir, count] of bundles) {
+    const members = [...grid.querySelectorAll(".out-card")]
+      .filter((c) => !c.dataset.bundle && dirOf(c.dataset.name) === dir);
+    let card = grid.querySelector(`.out-card[data-bundle="${cssEsc(dir)}"]`);
+    if (!card) {
+      card = makeBundleCard(dir, count, root);
+      // 插在第一张成员卡的位置上，别让它跑到队尾去——它本来就是那批东西的代表
+      if (members[0]) grid.insertBefore(card, members[0]); else grid.appendChild(card);
+    }
+    const meta = card.querySelector(".out-meta");
+    if (meta) meta.textContent = `${count} 个文件`;     // 后面还在往这个目录里写，数要跟着涨
+    card.title = dir + " · 这一回合往这个文件夹里写了 " + count + " 个文件";
+    for (const c of members) { c.remove(); n++; }
+  }
+  return n;
+}
+
+/**
+ * 整包那张卡：只说「这里头有 N 个文件」，给一个打开文件夹的入口。
+ * 不给预览、不给下载——一包东西没有「预览」可言，下载一个目录也不是这个接口能干的事。
+ */
+function makeBundleCard(dir, count, root) {
+  const card = document.createElement("div");
+  card.className = "out-card out-bundle";
+  card.dataset.bundle = dir;                            // 带尾斜杠，判生死时拿它当前缀
+  card.dataset.name = dir.replace(/\/+$/, "");
+  card.dataset.base = card.dataset.name.split("/").pop();
+  if (root) card.dataset.root = root;
+  card.tabIndex = 0;
+  card.innerHTML = `<div class="out-thumb"><span class="ph">${ic("folder")}</span></div>
+    <div class="out-info"><span class="out-name">${esc(card.dataset.base)}/</span><span class="out-meta">${count} 个文件</span></div>
+    <div class="out-acts">
+      <button class="oa-main" data-a="rv" title="打开所在位置">${ic("folder-open")}<span class="tx">打开文件夹</span></button></div>`;
+  onActivate(card, (e) => revealFile(card.dataset.name, e, root));
+  return card;
+}
+
 function extOf(n) { const m = String(n || "").match(/\.([^./]+)$/); return m ? m[1].toLowerCase() : ""; }
 
 // 卡片区里找「同一张图的另一种格式」那张卡：同目录、同主名，一个 svg 一个 png
