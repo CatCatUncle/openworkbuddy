@@ -1372,7 +1372,7 @@ async function renderProjPage() {
     const proj = projects.find(p => p.name === name);
     if (act === "edit") return openProjEditor(proj);
     if (act === "del") {
-      if (!confirm(`把项目「${name}」从列表移除？（目录和文件不会删除）`)) return;
+      if (!(await askConfirm({ title: `把项目「${name}」从列表移除？`, hint: "只是从这个列表里拿掉，硬盘上的目录和文件一个都不动。", ok: "移除" }))) return;
       await fetch("/api/projects/" + encodeURIComponent(name), { method: "DELETE" });
       refreshProjects().then(refreshSettingsCache);
       renderProjPage();
@@ -1612,9 +1612,9 @@ async function renderAutomPage() {
   });
   if (st.bulk) {
     page.querySelector("#bk-all").onclick = (e) => { e.preventDefault(); match.forEach(t => st.sel.add(t.id)); renderAutomPage(); };
-    const bulk = async (action, confirmText) => {
+    const bulk = async (action, ask) => {
       if (!st.sel.size) return toast("先勾选要操作的任务", "circle-x");
-      if (confirmText && !confirm(confirmText)) return;
+      if (ask && !(await askConfirm(ask))) return;
       const r = await fetch("/api/schedules/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [...st.sel], action }) }).then(r => r.json()).catch(() => ({}));
       toast(r.ok ? `已处理 ${r.count} 个` : r.error || "操作失败", r.ok ? "circle-check" : "circle-x");
       st.sel.clear();
@@ -1622,7 +1622,7 @@ async function renderAutomPage() {
     };
     page.querySelector("#bk-en").onclick = (e) => { e.preventDefault(); bulk("enable"); };
     page.querySelector("#bk-dis").onclick = (e) => { e.preventDefault(); bulk("disable"); };
-    page.querySelector("#bk-del").onclick = (e) => { e.preventDefault(); bulk("delete", `确认删除选中的 ${st.sel.size} 个自动化任务？运行记录会一并清掉`); };
+    page.querySelector("#bk-del").onclick = (e) => { e.preventDefault(); bulk("delete", { title: `删掉选中的 ${st.sel.size} 个自动化任务？`, hint: "它们的运行记录会一并清掉。", ok: "删掉", danger: true }); };
   }
   page.querySelectorAll(".at-row a[data-act]").forEach(a => a.onclick = async (e) => {
     e.preventDefault();
@@ -1631,7 +1631,7 @@ async function renderAutomPage() {
     const act = a.dataset.act;
     if (act === "edit") { st.editing = t; st.showForm = true; renderAutomForm(page.querySelector("#at-form-box")); window.scrollTo(0, 0); return; }
     if (act === "history") { st.runTaskId = id; st.tab = "runs"; return renderAutomPage(); }
-    if (act === "del") { if (!confirm(`确认删除「${t.name}」？`)) return; await fetch("/api/schedules/" + id, { method: "DELETE" }); }
+    if (act === "del") { if (!(await askConfirm({ title: `删掉「${t.name}」？`, hint: "这个自动化任务和它的运行记录一起没。", ok: "删掉", danger: true }))) return; await fetch("/api/schedules/" + id, { method: "DELETE" }); }
     else if (act === "toggle") await fetch(`/api/schedules/${id}/toggle`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !t.enabled }) });
     else if (act === "catchup") {
       const r = await fetch(`/api/schedules/${id}/catchup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ catch_up: t.catch_up === false }) }).then(r => r.json()).catch(() => ({}));

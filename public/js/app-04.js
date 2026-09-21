@@ -839,7 +839,7 @@ async function renderLibPreview(prev, lib) {
     const d = prev.querySelector("#lb-del");
     if (d) d.onclick = async (e) => {
       e.preventDefault();
-      if (!confirm(`删除资料「${name}」？`)) return;
+      if (!(await askConfirm({ title: `删掉「${name}」？`, hint: "从资料库里移走，撤不回来。", ok: "删掉", danger: true }))) return;
       const r = await fetch("/api/library/file/" + fpath(name), { method: "DELETE" })
         .then(x => x.json()).catch(() => ({ error: "网络异常" }));
       if (!r || !r.ok) return toast(((r && r.error) || "删不掉"), "circle-x");
@@ -1068,7 +1068,7 @@ function renderHubExperts(box) {
       if (!po) return;
       card.querySelector(".t-edit").onclick = () => { hubState.editing = { type: "team", data: t }; renderHubEditor(); };
       card.querySelector(".t-del").onclick = async () => {
-        if (!confirm(`解散专家团「${t.name}」？（团里的专家本身不受影响）`)) return;
+        if (!(await askConfirm({ title: `解散专家团「${t.name}」？`, hint: "只拆这个团，团里的专家本身一个不动。", ok: "解散", danger: true }))) return;
         // 以前这儿把返回值整个扔了，403 / 500 也照样重画一遍——那一条纹丝不动，
         // 用户只能得出「点了没反应」。删不掉就得说为什么。
         const resp = await fetch("/api/expert-teams/" + encodeURIComponent(t.name), { method: "DELETE" });
@@ -1104,7 +1104,11 @@ function renderHubExperts(box) {
       if (!po) return;
       card.querySelector(".e-edit").onclick = () => { hubState.editing = { type: "expert", data: e }; renderHubEditor(); };
       card.querySelector(".e-del").onclick = async () => {
-        if (!confirm(`删除专家「${e.name}」？${e.builtin ? "（这是内置专家，删了可以从 experts.json 恢复）" : ""}`)) return;
+        if (!(await askConfirm({
+          title: `删掉专家「${e.name}」？`,
+          hint: e.builtin ? "内置专家，删了还能从 experts.json 里恢复。" : "这是你自己建的，删了找不回来。",
+          ok: "删掉", danger: true,
+        }))) return;
         const resp = await fetch("/api/experts/" + encodeURIComponent(e.name), { method: "DELETE" });
         if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast((d.error || "删除失败"), "circle-x"); }
         renderHubPage();
@@ -1472,7 +1476,7 @@ async function renderHubSkills(box) {
     };
     const del = card.querySelector(".sk-del");
     if (del) del.onclick = async () => {
-      if (!confirm(`删除技能「${s.name}」？（会删掉整个技能目录）`)) return;
+      if (!(await askConfirm({ title: `删掉技能「${s.name}」？`, hint: "整个技能目录一起删掉，撤不回来。", ok: "删掉", danger: true }))) return;
       const resp = await fetch("/api/skills/" + encodeURIComponent(s.name), { method: "DELETE" });
       if (!resp.ok) { const d = await resp.json().catch(() => ({})); return toast((d.error || "删除失败"), "circle-x"); }
       renderHubPage();
@@ -1652,7 +1656,11 @@ async function renderHubPlugins(box) {
       } catch (e) { upd.disabled = false; upd.textContent = "更新"; toast(e.message, "circle-x"); }
     };
     card.querySelector(".pl-del").onclick = async () => {
-      if (!confirm(`卸载插件「${p.name}」？它带的技能和连接器会一起消失（插件产生的数据会保留，重装还在）`)) return;
+      if (!(await askConfirm({
+        title: `卸载插件「${p.name}」？`,
+        hint: "它带来的技能和连接器会一起消失。插件产生的数据保留着，重装回来还在。",
+        ok: "卸载", danger: true,
+      }))) return;
       const resp = await fetch("/api/plugins/" + encodeURIComponent(p.name), { method: "DELETE" });
       const d = await resp.json().catch(() => ({}));
       if (!resp.ok) return toast((d.error || "卸载失败"), "circle-x");

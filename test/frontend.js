@@ -198,7 +198,10 @@ function revealFile(name){ window.revealed = name; }
 function renderFiles(){ window.filesRerendered = true; }
 function toast(msg){ window.toasts = (window.toasts || []).concat(msg); }
 function openSweep(scope){ window.reopened = (window.reopened || []).concat(scope && scope.task || "（全部）"); }
-window.confirm = () => (window.confirmAnswer === undefined ? true : window.confirmAnswer);
+// 确认框是应用自绘的（askConfirm），返回 Promise。桩必须也返回 Promise：
+// 留着旧的 window.confirm 桩的话，源码里那句 askConfirm 是 ReferenceError，
+// 而它抛在 async 处理函数里没人接——「一条请求都没发」照样成立，断言绿得毫无意义。
+window.askConfirm = async () => (window.askAnswer === undefined ? true : window.askAnswer);
 window.posts = [];
 window.fetch = (url, opt) => {
   window.posts.push({ url, body: opt && opt.body ? JSON.parse(opt.body) : null });
@@ -304,10 +307,18 @@ const SWEEP_CHECKS = `
     [...panel.querySelectorAll(".sw-rows input")].map((b) => b.checked).join() === "true,true,false");
 
   // 删是真删，所以必须拦一道
-  window.confirmAnswer = false; window.posts.length = 0;
+  window.askAnswer = false; window.posts.length = 0;
   panel.querySelector(".sw-go").click(); await tick();
   ok("★确认框里点了取消就什么都不发★", window.posts.length === 0, JSON.stringify(window.posts));
-  window.confirmAnswer = true;
+  // 正向对照：上面那条「什么都不发」自己是立不住的——桩要是坏了（比如还停在旧的
+  // window.confirm，源码里那句 askConfirm 直接 ReferenceError），异常抛在 async 处理
+  // 函数里没人接，「一条都没发」照样成立。得有一次点「确定」真发出去，才说明拦住它的
+  // 是那个「取消」，不是这条路本来就断了
+  window.askAnswer = true;
+  panel.querySelector(".sw-go").click(); await tick();
+  ok("★正向对照★ 同一个按钮点「确定」就真发出去了（证明上一条拦住的是取消，不是路断了）",
+    window.posts.length === 1 && window.posts[0].url === "/api/files/sweep", JSON.stringify(window.posts));
+  panel.classList.remove("busy");
 
   // 真样式：特别长的任务名不许把面板顶宽
   modalBox.style.width = "640px";
@@ -2338,7 +2349,7 @@ const DEAD_CHECKS = `
   window.toasts = [];
   // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
   window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
-  window.confirm = () => true;
+  window.askConfirm = async () => true;
 
   const FORBID = { error: "这块是服务器级设置，归平台管理员管", platform_only: true };
   let owner = false, denyRead = false, denyOut = false, uploadResp = { ok: true, name: "a.md" };
@@ -3135,7 +3146,7 @@ const HUB_CHECKS = `
   // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
   window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
   window.startTaskWith = () => {};
-  window.confirm = () => true;
+  window.askConfirm = async () => true;
   window.refreshSettingsCache = async () => {};
   window.amPlatformOwner = () => !!(window.settingsCache && window.settingsCache.platform_owner);
 
@@ -3305,7 +3316,7 @@ const GATE_CHECKS = `
   window.toasts = [];
   // 记图标名：仓库里一律 toast(文字, "circle-x")，断言要验的是「配了哪个图标」
   window.toast = (m, i) => window.toasts.push((i ? "[" + i + "] " : "") + String(m));
-  window.confirm = () => true;
+  window.askConfirm = async () => true;
 
   let owner = false, canSwitch = false, posts = [];
   // 渠道表在几组断言中间要换一批（验副标题和「第 N 个」），所以拎出来当变量
@@ -6854,7 +6865,7 @@ var hubMatch = (q, ...fields) => !q || fields.filter(Boolean).join(" ").toLowerC
 // 这一组测的是平台管理员那一面（预设目录、接入、Key 只给键名），所以身份钉死成 true
 var amPlatformOwner = () => true;
 var renderHubBody = () => { RENDERS++; return renderHubMcp(document.getElementById("hub-body")); };
-window.confirm = () => true;
+window.askConfirm = async () => true;
 var SERVERS = [
   { name: "mysql", transport: "stdio", command: "npx", args: ["-y", "@benborla29/mcp-server-mysql"], env_keys: ["MYSQL_USER", "MYSQL_PASS"], connected: true, tools: [{ name: "query", description: "run sql" }] },
   { name: "deepwiki2", transport: "streamable-http", url: "https://mcp.deepwiki.com/mcp", header_keys: ["Authorization"], connected: false, error: "握手超时", tools: [] },

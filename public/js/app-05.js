@@ -177,8 +177,8 @@ async function renderHubMcp(box) {
       more.onclick = toggle;
     }
     const del = card.querySelector(".mcp-del");
-    if (del) del.onclick = () => {
-      if (!confirm(`删除连接器「${sv.name}」？`)) return;
+    if (del) del.onclick = async () => {
+      if (!(await askConfirm({ title: `删掉连接器「${sv.name}」？`, hint: "模型手上就没有它带来的那些工具了。", ok: "删掉", danger: true }))) return;
       save(data.servers.filter(x => !x.plugin && x.name !== sv.name).map(keep));
     };
   });
@@ -1361,7 +1361,11 @@ function bindModels(pane, s, po) {
     e.preventDefault();
     const idx = +a.dataset.pclr;
     const p = s.providers[idx];
-    if (!confirm(`清空「${p.name}」的 API Key？挂在它下面的模型会立刻用不了，但配置都留着，重新填一把 Key 就恢复。`)) return;
+    if (!(await askConfirm({
+      title: `清空「${p.name}」的 API Key？`,
+      hint: "挂在它下面的模型会立刻用不了。配置都留着，重新填一把 Key 就恢复。",
+      ok: "清空", danger: true,
+    }))) return;
     s.providers[idx] = { ...p, api_key: "", has_key: false, key_hint: "" };
     chanTest.delete(p.id);
     liveModels.delete(p.id);
@@ -1411,12 +1415,18 @@ function bindModels(pane, s, po) {
     const media = s.media_models.filter((m) => m.provider === p.id);
     const hitsDefault = chat.some((m) => m.name === s.active_model);
     // 删渠道会连坐：挂在它下面的模型一起没。把数说清楚，别删完才发现画图不能用了
-    const lines = [chat.length + media.length
-      ? `删掉「${p.name}」的话，挂在它下面的 ${chat.length} 个对话模型和 ${media.length} 个媒体模型也会一起删掉。`
-      : `确认删除渠道「${p.name}」？`];
-    if (hitsDefault) lines.push("当前默认模型就在里面，删完会自动换成列表里的第一个。");
-    if (chat.length + media.length) lines.push("继续？");
-    if (!confirm(lines.join("\n"))) return;
+    // 连坐的那几样各自成一条，别拼成一个长句：拼出来的句子里嵌着已经插过值的片段，
+    // 词典按整句查，这种句子永远配不上——英文用户看到的就会是半句中文
+    const 连坐 = [];
+    if (chat.length) 连坐.push(`${chat.length} 个对话模型`);
+    if (media.length) 连坐.push(`${media.length} 个媒体模型`);
+    if (!(await askConfirm({
+      title: `删掉渠道「${p.name}」？`,
+      hint: 连坐.length ? "挂在它下面的这些会跟着一起删掉：" : "这条渠道下面还没挂模型。",
+      items: 连坐,
+      note: hitsDefault ? "当前默认模型就在里面，删完会自动换成列表里的第一个。" : "",
+      ok: "删掉", danger: true,
+    }))) return;
     s.providers.splice(idx, 1);
     s.models = s.models.filter((m) => m.channel !== p.id);
     s.media_models = s.media_models.filter((m) => m.provider !== p.id);
@@ -1492,7 +1502,7 @@ function bindModels(pane, s, po) {
     e.preventDefault();
     const idx = +a.dataset.cdel;
     const m = s.models[idx];
-    if (!confirm(`确认删除模型「${m.name}」？渠道和 Key 留着，别的模型不受影响。`)) return;
+    if (!(await askConfirm({ title: `删掉模型「${m.name}」？`, hint: "渠道和 Key 留着，别的模型不受影响。", ok: "删掉", danger: true }))) return;
     s.models.splice(idx, 1);
     const extra = m.name === s.active_model && s.models.length ? { active_model: s.models[0].name } : undefined;
     if (await saveAllModelTables(s, msg, extra)) paintModels(pane, s);
@@ -1811,7 +1821,7 @@ async function renderTracePage() {
   page.querySelector("#tp-bad").onchange = (e) => { traceOnlyBad = e.target.checked; paintTraceList(); };
   page.querySelector("#tp-refresh").onclick = () => loadTracePage();
   page.querySelector("#tp-clear").onclick = async (e) => {
-    if (!confirm("清空本机保存的执行记录？工作区文件和 Langfuse 上的副本都不受影响。")) return;
+    if (!(await askConfirm({ title: "清空本机保存的执行记录？", hint: "工作区文件和 Langfuse 上的副本都不受影响。", ok: "清空", danger: true }))) return;
     e.currentTarget.disabled = true;
     await fetch("/api/traces", { method: "DELETE" }).catch(() => {});
     traceSel = "";
@@ -2498,7 +2508,7 @@ function bindPetCard(pane, p) {
   };
   const drop = q("#pet-drop");
   if (drop) drop.onclick = async () => {
-    if (!confirm("删除已上传的照片，换回内置小猫？")) return;
+    if (!(await askConfirm({ title: "换回内置小猫？", hint: "你上传的那张照片会被删掉。", ok: "换回去", danger: true }))) return;
     await fetch("/api/pet/avatar", { method: "DELETE" });
     renderSettings("persona");
   };
@@ -2730,18 +2740,26 @@ function renderDataPane(pane, s) {
       </div>`).join("") : "还没有备份。";
     bkList.querySelectorAll("[data-bk-del]").forEach(a => a.onclick = async (e) => {
       e.preventDefault();
-      if (!confirm(`确认删除备份 ${a.dataset.bkDel}？`)) return;
+      if (!(await askConfirm({ title: `删掉备份「${a.dataset.bkDel}」？`, hint: "这一份存档从此没有了。", ok: "删掉", danger: true }))) return;
       await fetch("/api/backup/" + encodeURIComponent(a.dataset.bkDel), { method: "DELETE" });
       loadBackups();
     });
     bkList.querySelectorAll("[data-bk-restore]").forEach(a => a.onclick = async (e) => {
       e.preventDefault();
-      if (!confirm(`确认恢复到备份 ${a.dataset.bkRestore} 的状态？\n\n当前数据会先自动备份一份，恢复后需重启应用生效。`)) return;
+      if (!(await askConfirm({
+        title: `恢复到备份「${a.dataset.bkRestore}」？`,
+        hint: "现在这份数据会先自动备份一次，所以后悔了还能再翻回来。恢复完要重启应用才完全生效。",
+        ok: "恢复", danger: true,
+      }))) return;
       bkMsg.textContent = "恢复中…";
       const r = await fetch("/api/backup/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: a.dataset.bkRestore }) }).then(r => r.json()).catch(() => ({ error: "网络错误" }));
       if (r.error) { setMsg(bkMsg, "circle-x", r.error, "err"); return; }
       bkMsg.textContent = "";
-      if (confirm("已恢复到磁盘（恢复前现状已自动备份）。\n\n现在重启应用让它完全生效？")) {
+      if (await askConfirm({
+        title: "已恢复到磁盘",
+        hint: "恢复前的现状已经自动备份了一份。还差最后一步：重启应用，这次恢复才完全生效。",
+        ok: "现在重启", cancel: "待会儿自己重启",
+      })) {
         const rr = await fetch("/api/backup/restart", { method: "POST" }).then(r => r.json()).catch(() => ({}));
         if (rr.error) toast(rr.error, "circle-x");
       } else {

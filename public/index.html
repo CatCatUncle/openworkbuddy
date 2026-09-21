@@ -1218,6 +1218,12 @@
   .ask-box { width: 400px; max-width: 100%; box-sizing: border-box; background: var(--owb-bg); border-radius: var(--radius-2xl); box-shadow: var(--shadow-floating); padding: 20px; }
   .ask-box .ask-t { font-size: 15px; font-weight: 600; }
   .ask-box .ask-h { font-size: 13px; line-height: 1.6; color: var(--owb-text-3); margin-top: 4px; }
+  /* 确认框里的清单：要删的是哪几样，得在点头之前一条条看得见。
+     封了高度是因为清单可能有十几条——把对话框顶出屏幕的话，连「算了」都按不着，
+     那就成了比原生框更糟的一种「没有出路」 */
+  .ask-box .ask-li { margin: 8px 0 0; padding: 8px 12px; list-style: none; max-height: 168px; overflow: auto; font-size: 13px; line-height: 1.8; color: var(--owb-text-2); background: var(--owb-bg-hover); border-radius: var(--radius-md); }
+  .ask-box .ask-li li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ask-box .ask-note { margin-top: 8px; }
   .ask-box .ask-in { display: block; width: 100%; box-sizing: border-box; margin-top: 12px; height: var(--owb-ctl-h); padding: 0 10px; font-size: 14px; color: var(--owb-text); background: var(--owb-bg); border: 1px solid var(--owb-border); border-radius: var(--radius-md); outline: none; }
   .ask-box .ask-in:focus { border-color: var(--owb-brand-text); }
   .ask-box .ask-err { margin-top: 8px; font-size: 12px; line-height: 1.6; color: var(--owb-err-text); }

@@ -579,6 +579,69 @@
       "建不了": "Couldn't create it",
       "删掉这个文件夹": "Delete this folder",
       "进去清空": "Open and empty it",
+      // askText 那个「手填工作区路径」的框，和批量删自动化任务那一处：
+      // 前者是 askText，后者的选项对象是转手递进去的——两处都不在 askConfirm( 的括号里，
+      // 第一版按「扫 askConfirm 括号」找词的判据就把它们漏了
+      "工作空间文件夹": "Workspace folder",
+      "这台机器弹不出系统的选择框，手填一个完整路径吧。": "This machine can't open a system file picker \u2014 type in a full path instead.",
+      "就用这个": "Use this one",
+      "/home/\u4f60\u7684\u7528\u6237\u540d/\u5de5\u4f5c\u7a7a\u95f4": "/home/yourname/workspace",
+      "它们的运行记录会一并清掉。": "Their run histories get cleared along with them.",
+      // ---- 确认框：这 31 处原来是原生 confirm()，字从没进过 DOM，所以一个也翻不了 ----
+      "这些会被直接删掉": "These will be deleted outright",
+      "不进回收站，也找不回来。": "They don't go to the trash, and they can't be recovered.",
+      "它们跟成果文件夹里的那份逐字节相同。原件不动，副本移到 .trash，随时捞得回来；一个文件都没有的空成果文件夹也一起移过去。": "They're byte-for-byte identical to the copies in the results folder. Originals stay put; the duplicates move to .trash, so you can pull them back any time. Empty results folders go along too.",
+      "整理": "Tidy up",
+      "删掉这个任务？": "Delete this task?",
+      "它的对话记录一起没，找不回来。": "Its conversation goes with it, and can't be recovered.",
+      "只是从这个列表里拿掉，硬盘上的目录和文件一个都不动。": "It only leaves this list — not one file or folder on disk is touched.",
+      "移除": "Remove",
+      "这个自动化任务和它的运行记录一起没。": "The automation and its run history both go.",
+      "从资料库里移走，撤不回来。": "Removed from the library for good.",
+      "只拆这个团，团里的专家本身一个不动。": "Only the team is dissolved — every expert in it stays.",
+      "解散": "Dissolve",
+      "内置专家，删了还能从 experts.json 里恢复。": "A built-in expert — you can restore it from experts.json later.",
+      "这是你自己建的，删了找不回来。": "You created this one yourself; it can't be recovered.",
+      "整个技能目录一起删掉，撤不回来。": "The whole skill folder goes with it, for good.",
+      "它带来的技能和连接器会一起消失。插件产生的数据保留着，重装回来还在。": "The skills and connectors it brought disappear with it. Data the plugin produced stays, and is still there if you reinstall.",
+      "卸载": "Uninstall",
+      "模型手上就没有它带来的那些工具了。": "The model loses every tool this connector provided.",
+      "挂在它下面的模型会立刻用不了。配置都留着，重新填一把 Key 就恢复。": "Models under it stop working right away. Their settings stay, so pasting a new key brings them back.",
+      "挂在它下面的这些会跟着一起删掉：": "These, which hang off it, get deleted too:",
+      "这条渠道下面还没挂模型。": "No model hangs off this channel yet.",
+      "当前默认模型就在里面，删完会自动换成列表里的第一个。": "Your current default model is among them — it will switch to the first one left in the list.",
+      "渠道和 Key 留着，别的模型不受影响。": "The channel and its key stay; no other model is affected.",
+      "清空本机保存的执行记录？": "Clear the run history stored on this machine?",
+      "工作区文件和 Langfuse 上的副本都不受影响。": "Workspace files and the copies on Langfuse are untouched.",
+      "换回内置小猫？": "Go back to the built-in cat?",
+      "你上传的那张照片会被删掉。": "The photo you uploaded gets deleted.",
+      "换回去": "Switch back",
+      "这一份存档从此没有了。": "This snapshot is gone for good.",
+      "现在这份数据会先自动备份一次，所以后悔了还能再翻回来。恢复完要重启应用才完全生效。": "Today's data is backed up first, so you can come back if you change your mind. Restart the app afterwards for the restore to fully take effect.",
+      "恢复": "Restore",
+      "已恢复到磁盘": "Restored to disk",
+      "恢复前的现状已经自动备份了一份。还差最后一步：重启应用，这次恢复才完全生效。": "What was there before the restore is already backed up. One step left: restart the app so the restore fully takes effect.",
+      "现在重启": "Restart now",
+      "待会儿自己重启": "I'll restart it myself",
+      "退出这台设备？": "Sign out on this device?",
+      "你现在就会被登出，得重新登录。": "You'll be signed out right now and will have to log in again.",
+      "退出": "Sign out",
+      "踢掉这台设备？": "Kick this device out?",
+      "它下次打开就得重新登录。": "It will have to log in again next time it opens.",
+      "踢掉": "Kick out",
+      "清空全部审计记录？": "Clear the whole audit log?",
+      "以后的命令和联网还会照常记，但已经记下的这些找不回来了。": "Commands and network access keep being logged from here on, but what's already logged can't be recovered.",
+      "全部恢复默认快捷键？": "Reset every shortcut?",
+      "你改过的每一组都会退回出厂的那一套。": "Every combination you changed goes back to the factory set.",
+      "恢复默认": "Reset",
+      "下架这条规则？": "Retire this rule?",
+      "往后的提示词里不再带它。界面上没有重新上架的入口，想要回来得去服务器的 retired/ 里捞。": "Later prompts won't carry it. There's no way back from the interface — you'd have to fish it out of retired/ on the server.",
+      "下架": "Retire",
+      "挂在它身上的连线也会一起删掉。": "The edges attached to it get deleted too.",
+      "画布上的节点和连线一起没。素材文件本身不动，还在工作区里。": "Its nodes and edges all go. The media files themselves stay in the workspace.",
+      "用本机这份覆盖项目里那份读不出来的画布？": "Overwrite the unreadable canvas in the project with this local copy?",
+      "覆盖": "Overwrite",
+      "清空这张画布？": "Clear this canvas?",
       "从资料库里删掉": "Delete from the library",
       "它现在是空的，删掉不影响别的东西。": "It's empty, so deleting it affects nothing else.",
       "从资料库里删掉，撤不回来。之后 AI 做任务也查不到它了。": "Deleted from the library for good — agents won't find it in later tasks either.",
@@ -2006,6 +2069,28 @@
     PATTERNS.en.push([new RegExp("^(.+?) " + zh + "已生成：(.+)$"), "$1 " + en + " generated: $2"]);
   }
   PATTERNS.en.push([/^(.+?) 重跑失败：(.+)$/, "$1 re-run failed: $2"]);
+
+  // ---- 确认框里带名字/数目的整句：词典按整句查，这些只能走正则 ----
+  for (const [zh, en] of [["专家", "expert"], ["技能", "skill"], ["连接器", "connector"], ["模型", "model"],
+                          ["渠道", "channel"], ["画布", "canvas"], ["节点", "node"], ["备份", "backup"]]) {
+    PATTERNS.en.push([new RegExp("^删掉" + zh + "「(.+)」？$"), "Delete the " + en + " \u201c$1\u201d?"]);
+  }
+  PATTERNS.en.push([/^解散专家团「(.+)」？$/, "Dissolve the expert team \u201c$1\u201d?"]);
+  PATTERNS.en.push([/^卸载插件「(.+)」？$/, "Uninstall the plugin \u201c$1\u201d?"]);
+  PATTERNS.en.push([/^清空「(.+)」的 API Key？$/, "Clear the API key for \u201c$1\u201d?"]);
+  PATTERNS.en.push([/^恢复到备份「(.+)」？$/, "Restore to the backup \u201c$1\u201d?"]);
+  PATTERNS.en.push([/^把项目「(.+)」从列表移除？$/, "Remove the project \u201c$1\u201d from the list?"]);
+  PATTERNS.en.push([/^删掉这 (\d+) 个节点？$/, "Delete these $1 nodes?"]);
+  PATTERNS.en.push([/^整理这 (\d+) 个重复文件？$/, "Tidy up these $1 duplicate files?"]);
+  PATTERNS.en.push([/^删掉选中的 (\d+) 个自动化任务？$/, "Delete the $1 selected automation(s)?"]);
+  PATTERNS.en.push([/^一共腾出 (.+)$/, "$1 freed in total"]);
+  PATTERNS.en.push([/^…共 (\d+) 个$/, "\u2026 $1 in all"]);
+  PATTERNS.en.push([/^(\d+) 个对话模型$/, "$1 chat model(s)"]);
+  PATTERNS.en.push([/^(\d+) 个媒体模型$/, "$1 media model(s)"]);
+  PATTERNS.en.push([/^本机这份有 (\d+) 个节点。项目里那个原文件已经原样备份在 \.openworkbuddy 目录里，随时翻得回去。$/,
+    "The local copy has $1 node(s). The project's original file is already backed up untouched under .openworkbuddy, so you can go back any time."]);
+  PATTERNS.en.push([/^画布上的 (\d+) 个节点和全部连线都会没。素材文件本身不动，还在工作区里。$/,
+    "All $1 node(s) and every edge on it go. The media files themselves stay in the workspace."]);
   PATTERNS.en.push([/^镜头 (.+?) 还没有首帧，先重跑首帧$/, "Shot $1 has no first frame yet — re-run the first frame first"]);
 
   // 连线改出场角色 → 回分镜表，这两句失败提示。带尾巴那条排在前面
