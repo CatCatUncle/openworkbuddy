@@ -10056,6 +10056,12 @@ const ROWACT_CHECKS = `
     act.focus(); await settle();
     ok(document.activeElement === act && op(act) === 1 && cs(act).pointerEvents === "auto",
        name + "：焦点落在它身上就显形、并且点得动");
+    // 这一行钉的是「是哪条 CSS 在干活」。这四处以前都写着第三条子句「行 操作:focus-visible」，
+    // 而 Chromium 对着**程序**给的焦点根本不匹配 :focus-visible——所以那条子句在测试里
+    // 一次都没跑过；真删掉它，上面那条断言照样绿。它其实也永远跑不到：Y 一拿到焦点，
+    // 它外面那层 X 就已经 :focus-within 了，第二条子句先把事办了。那是四条死代码。
+    ok(!act.matches(":focus-visible"),
+       name + "：显形靠的是行上的 :focus-within —— 程序给的焦点压根不算「键盘聚焦」");
     act.blur(); document.body.focus(); await settle();
     ok(op(act) === 0, name + "：焦点挪走就又收回去");
     if (row.tabIndex >= 0) {
@@ -10074,6 +10080,26 @@ const ROWACT_CHECKS = `
     swOps[0].blur(); document.body.focus(); await settle();
   } else {
     fails.push("整理面板那一行只剩 " + swOps.length + " 个操作，「邻座跟着显形」这条没法验");
+  }
+  {
+    // 静态闸门：别让那条死子句再长回来。判据是推导出来的，不是照抄这四行——
+    // 只要一条规则里同时有「X:focus-within Y」和「X … Y:focus-visible」，后者就一定是死的
+    const dead = [];
+    for (const sheet of document.styleSheets) {
+      let rules; try { rules = sheet.cssRules; } catch { continue; }
+      for (const r of rules || []) {
+        const sel = r.selectorText || "";
+        if (!sel.includes(":focus-within") || !sel.includes(":focus-visible")) continue;
+        const parts = sel.split(",").map((x) => x.trim());
+        const within = parts.filter((x) => x.includes(":focus-within")).map((x) => x.replace(":focus-within", ""));
+        const visible = parts.filter((x) => x.includes(":focus-visible")).map((x) => x.replace(":focus-visible", ""));
+        // 同一条规则里，「行 + 后代」和「行 后代」指的是同一批元素 → 后者被前者完全覆盖
+        const norm = (x) => x.replace(/\s+/g, " ").trim();
+        if (visible.some((v) => within.some((w) => norm(v) === norm(w)))) dead.push(sel);
+      }
+    }
+    ok(dead.length === 0, "没有被 :focus-within 完全盖住的 :focus-visible 死子句（还剩 " + dead.length + " 条）"
+       + (dead.length ? "：" + dead.join(" ｜ ").slice(0, 200) : ""));
   }
   if (!window.__rowactMutant) {
     // ★反向对照★ 把「透明 + 不吃点击」换回 visibility:hidden，四个操作必须当场全退出 Tab 序
