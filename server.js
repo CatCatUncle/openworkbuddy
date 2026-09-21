@@ -2437,6 +2437,13 @@ app.post("/api/settings", (req, res) => {
       const old = new Map((config.models || []).map((m) => [m.name, m]));
       for (const m of b.models) {
         if (!m.name || !m.model) throw new Error("每个模型需要 name 和 model 字段");
+        // 判断模型（Jev）挂到对话模型列表里：下拉按渠道种类挡住了，可模型名是个自由输入框，
+        // 手打一个照收——存得下、选得中，可它没有 /chat/completions，每一趟都是 400。
+        // 不在存的时候拦，人要等到真发一句话才知道，而那时候收到的是上游的 400，
+        // 根本看不出是「挂错了地方」。拦住也得指路，否则就成了第二种摸不着头脑。
+        if (systemOne.isDecisionModel(m.model)) {
+          throw new Error(`「${m.model}」是判断模型（Jev），它不产文字、没有 /chat/completions，挂在对话模型列表里每一趟都是 400。它走自己那条路：命令行 openworkbuddy jev、接口 /api/decide，或在渠道里加一条「TypeSafe Jev」再点那颗「测一下」`);
+        }
         m.provider = m.provider === "anthropic" ? "anthropic" : "openai";
         delete m.has_key;  // 读接口给界面加的，不进配置文件
         delete m.key_hint; // 同上：Key 的末四位只是给人看的，落盘就成了第二份 Key 副本

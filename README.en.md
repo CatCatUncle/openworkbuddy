@@ -216,6 +216,8 @@ Reverse proxy, upgrades, migration, security checklist → [部署](docs/部署.
 
 Image / speech / video models have their own table; video spans five protocols (Tongyi Wanxiang · Volcano Ark Seedance · GLM CogVideoX · MiniMax Hailuo · SiliconFlow), and if it cannot tell which vendor it is, **it does not send the request** — video bills per clip and a wasted call takes minutes to fail.
 
+There is also the **Jev decision model** (TypeSafe System One): it writes no prose, only yes/no, single-choice or score answers plus a confidence — which is why it is **not in the model dropdown** (it has no `/chat/completions`, so it would 400 every time). Reach it from the CLI (`openworkbuddy jev`), the `/api/decide` endpoint, or the “test” button on its provider card, which knows what it is. **If you already have an OpenRouter key there is nothing to fill in**; goal-mode acceptance already runs on it — every criterion becomes a yes/no question and only ticks at 70%+ confidence, at roughly $0.00005 per question.
+
 Per-provider table → [配置模型](docs/配置模型.md) (Chinese)
 
 > [!IMPORTANT]

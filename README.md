@@ -217,6 +217,8 @@ bash deploy.sh --domain buddy.example.com # 自动 HTTPS，起来就对外能用
 
 生图 / 配音 / 生视频另配一张表，视频认五家协议（通义万相 · 火山方舟 Seedance · 智谱 CogVideoX · MiniMax 海螺 · 硅基流动）；认不准是哪家就不发那一趟——视频按条计费，白发一趟得等好几分钟才看见错。
 
+还接了 **Jev 判断模型**（TypeSafe System One）：它不写字，只回是非 / 单选 / 打分，外加一个「有多确定」——所以它**不在模型下拉里**（它没有 `/chat/completions`，挂上去每趟都是 400），走命令行 `openworkbuddy jev`、接口 `/api/decide`，或渠道卡上那颗认得出它的「测一下」。**配过 OpenRouter 的人什么都不用填**，原来那把 Key 直接能用；目标模式的验收已经在用它——每条标准是一道是非题，确定度过 70% 才打勾，一道题约两万分之一美金。
+
 对照表 → [配置模型](docs/配置模型.md)
 
 > [!IMPORTANT]

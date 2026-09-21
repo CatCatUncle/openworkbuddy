@@ -54,9 +54,6 @@ PlantUML 渲染在本机没装 `plantuml` 命令时，会把图源发给用户�
 写下来是为了讲清楚边界——**看过、学过、没抄**：
 
 - [Toonflow-app](https://github.com/HBAI-Ltd/Toonflow-app)（Apache-2.0）：短剧技能包与分镜提示词的组织方式；
-- [LocalMiniDrama](https://github.com/xuanyustudio/LocalMiniDrama)（MIT）：分镜数据表结构与切分流程；
-- [OpenConnector](https://github.com/oomol-lab/open-connector)（Apache-2.0）：README 的组织方式（活数字徽章、
-  「协议管到哪儿为止」那段第三方权利声明、求 Star 与贡献者墙的收尾），以及「凭据留在网关一侧、
-  只把动作 schema 交给智能体」的边界划法。代码一行没拿；它作为连接器被收进了预设目录，走 MCP 接入。
+- [LocalMiniDrama](https://github.com/xuanyustudio/LocalMiniDrama)（MIT）：分镜数据表结构与切分流程。
 
 将来如果真的搬了它们的文件进来，会在上面第一节里按条登记，并保留原始许可头。
