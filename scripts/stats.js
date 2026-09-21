@@ -44,7 +44,14 @@ const stats = {
   updated: new Date().toISOString().slice(0, 10),
   version: JSON.parse(read("package.json")).version,
   skills,
-  tools: require(path.join(ROOT, "tools.js")).TOOL_DEFS.length,
+  // 工具不只 TOOL_DEFS 一处：委派、问用户、定时、发信这些定义在 agent.js，按会话条件挂上去。
+  // 只数 tools.js 那一份，徽章上写的是 27，可用户在设置页数得出 36——差的正好是「最像 agent 的那几个」。
+  // 按名字去重，免得哪天同一个工具两边都定义了被数两遍。
+  tools: (() => {
+    const base = require(path.join(ROOT, "tools.js")).TOOL_DEFS.map((t) => t.name);
+    const extra = [...read("agent.js").matchAll(/^  name: "([a-z_]+)",$/gm)].map((m) => m[1]);
+    return new Set([...base, ...extra]).size;
+  })(),
   connectors: require(path.join(ROOT, "mcp-catalog.js")).ITEMS.length,
   experts: (experts.experts || []).length,
   teams: (experts.teams || []).length,
