@@ -3185,14 +3185,65 @@ function stripTags(s) {
   return s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#x?\w+;/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-// ---- 多 provider 搜索（Jina / Tavily / Brave），统一返回 [{title,url,desc}] ----
+// ---- 多 provider 搜索（八家 + 自定义），统一返回 [{title,url,desc}] ----
+
+/**
+ * HTTP 状态码翻成人话。
+ *
+ * 光甩一个「搜索失败（402）」出去，屏幕前的人得自己去查 402 是什么意思——
+ * 而这几个码对应的动作完全不同：401 是去换一把 Key，402 是去充值，429 是等一会儿。
+ * 不确定的码不硬编一个原因（乱猜的归因比没有归因还贵），直接把对方回的原文带出来。
+ */
+const SEARCH_HTTP_HINT = {
+  400: "请求被对方拒了，多半是参数对不上",
+  401: "Key 不对，或者还没生效",
+  402: "这把 Key 的额度/余额用完了，去它的控制台充一下",
+  403: "这把 Key 没开通这个接口的权限",
+  404: "接口地址不对（对方说没这个路径）",
+  429: "被限流了，缓一会儿再试",
+};
+async function searchHttpError(name, resp) {
+  const body = await resp.text().catch(() => "");
+  const hint = SEARCH_HTTP_HINT[resp.status];
+  // 对方原文放在后面而不是替换掉提示：提示是给人看的，原文是给排查用的，两个都不能少
+  return new Error(
+    `${name} 搜索失败（${resp.status}${hint ? "：" + hint : ""}）` + (body ? "｜对方原话：" + body.trim().slice(0, 160) : "")
+  );
+}
+
+/**
+ * HTTP 200 不等于搜到了。
+ *
+ * 国内这几家（博查/智谱/七牛）出错时照样回 200，把错情写在 body 的 code/msg 里。
+ * 不认这一层的话，界面上只会显示「返回 0 条结果」——一个 Key 填错的人会以为是没搜到，
+ * 去换关键词，换到天亮也还是 0 条。
+ */
+function searchBodyError(j) {
+  if (!j || typeof j !== "object") return "";
+  const err = j.error;
+  if (err && typeof err === "object" && (err.message || err.msg)) return String(err.message || err.msg);
+  if (typeof err === "string" && err) return err;
+  // code：0 / 200 / "0" / "200" 都算成功；别家用别的成功值时，有结果就不会走到这儿。
+  // 三个名字都得认：博查/智谱用 code，七牛用 status_code，Serper 用 statusCode——
+  // 少认一个，那家 Key 填错时就会一路走到「返回 0 条结果」，人以为是没搜到
+  const code = j.code !== undefined ? j.code : (j.status_code !== undefined ? j.status_code : j.statusCode);
+  const ok = code === undefined || code === null || code === 0 || code === 200 || code === "0" || code === "200";
+  const msg = j.msg || j.message || j.error_msg || "";
+  if (!ok) return (msg ? String(msg) : "对方返回 code=" + code);
+  if (j.success === false) return String(msg || "对方说这次请求没成功");
+  return "";
+}
+
 async function jinaSearch(key, query, n) {
   const resp = await fetch("https://s.jina.ai/?q=" + encodeURIComponent(query), {
     headers: { Authorization: `Bearer ${key}`, Accept: "application/json", "X-Respond-With": "no-content" },
     signal: AbortSignal.timeout(30000),
   });
-  if (!resp.ok) throw new Error(`Jina 搜索失败（${resp.status}）`);
-  const data = (await resp.json()).data || [];
+  if (!resp.ok) throw await searchHttpError("Jina", resp);
+  const j = await resp.json();
+  const bad = searchBodyError(j);
+  if (bad) throw new Error("Jina 搜索失败：" + bad.slice(0, 160));
+  const data = j.data || [];
   return data.slice(0, n).map((r) => ({ title: r.title, url: r.url, desc: r.description || "" }));
 }
 
@@ -3203,7 +3254,7 @@ async function tavilySearch(key, query, n) {
     body: JSON.stringify({ query, max_results: n, include_answer: false, search_depth: "basic" }),
     signal: AbortSignal.timeout(15000),
   });
-  if (!resp.ok) throw new Error(`Tavily 搜索失败（${resp.status}）: ${(await resp.text().catch(() => "")).slice(0, 120)}`);
+  if (!resp.ok) throw await searchHttpError("Tavily", resp);
   const data = (await resp.json()).results || [];
   return data.slice(0, n).map((r) => ({ title: r.title, url: r.url, desc: r.content || "" }));
 }
@@ -3214,7 +3265,7 @@ async function braveSearch(key, query, n) {
     headers: { Accept: "application/json", "Accept-Encoding": "gzip", "X-Subscription-Token": key },
     signal: AbortSignal.timeout(15000),
   });
-  if (!resp.ok) throw new Error(`Brave 搜索失败（${resp.status}）: ${(await resp.text().catch(() => "")).slice(0, 120)}`);
+  if (!resp.ok) throw await searchHttpError("Brave", resp);
   const data = ((await resp.json()).web || {}).results || [];
   return data.slice(0, n).map((r) => ({ title: r.title, url: r.url, desc: r.description || "" }));
 }
@@ -3249,8 +3300,15 @@ async function postSearch(name, url, headers, body, ms) {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(ms || 15000),
   });
-  if (!resp.ok) throw new Error(`${name} 搜索失败（${resp.status}）: ${(await resp.text().catch(() => "")).slice(0, 120)}`);
-  return resp.json();
+  if (!resp.ok) throw await searchHttpError(name, resp);
+  const text = await resp.text();
+  let j;
+  // 200 却不是 JSON——最常见的是地址填成了网页版首页，或者中间挡了一层登录页。
+  // 让它在这儿炸出原文，比往下走一步变成「0 条结果」强
+  try { j = JSON.parse(text); } catch { throw new Error(`${name} 返回的不是 JSON（接口地址填对了吗）｜前 120 字：${text.trim().slice(0, 120)}`); }
+  const bad = searchBodyError(j);
+  if (bad) throw new Error(`${name} 搜索失败：${bad.slice(0, 160)}`);
+  return j;
 }
 
 async function bochaSearch(key, query, n) {
@@ -3263,9 +3321,31 @@ async function zhipuSearch(key, query, n) {
     { Authorization: `Bearer ${key}` }, { search_engine: "search_std", search_query: query, count: n }), n);
 }
 
+/**
+ * 七牛云「全网搜索」。
+ *
+ * 两处跟别家不一样，都踩过：
+ *   ① 条数字段叫 max_results，不叫 count。名字对不上的时候对方不会报错，
+ *      它按自己的默认条数回——要 3 条回 10 条，看着像「能用」，实际参数一直没生效。
+ *   ② 域名在迁。老的推理域名 openai.qiniu.com 和新的 api.qnaigc.com 都在用，
+ *      手头没有这家的 Key，没法实测哪个还活着，所以两个都试：第一个不通就换第二个。
+ *      这不是猜——两个地址都写在他们自己的文档里；不通的那次会把对方原话带出来。
+ */
 async function qiniuSearch(key, query, n) {
-  return toItems(await postSearch("七牛云", "https://openai.qiniu.com/v1/search/web",
-    { Authorization: `Bearer ${key}` }, { query, count: n }), n);
+  const hosts = ["https://api.qnaigc.com/v1/search/web", "https://openai.qiniu.com/v1/search/web"];
+  let last;
+  for (const url of hosts) {
+    try {
+      return toItems(await postSearch("七牛云", url,
+        { Authorization: `Bearer ${key}` }, { query, max_results: n, search_type: "web" }), n);
+    } catch (e) {
+      last = e;
+      // 只有「这个地址不对」才换下一个。Key 错、限流、余额没了换个域名也是同样的结果，
+      // 换了只会让人等两倍的时间，还把真正的原因换成了第二个域名的原因
+      if (!/（404|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|不是 JSON/.test(String(e.message || e))) throw e;
+    }
+  }
+  throw last;
 }
 
 async function serperSearch(key, query, n) {
@@ -4378,4 +4458,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchBodyError, searchHttpError, toItems, pickHits, SEARCH_HTTP_HINT, searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

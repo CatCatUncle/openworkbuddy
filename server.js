@@ -2020,11 +2020,102 @@ app.post("/api/provider-test", async (req, res) => {
     || (mine[0] || {}).model
     || ((mediaModels.catalogFor("chat", kind) || [])[0] || {}).id;
   if (!model) {
-    return res.json({ ok: false, error: "这个渠道下面还没有对话模型。加一个再测——测活要拿一个真模型去打一次招呼，瞎猜一个名字测出来的 404 会让人误以为 Key 坏了" });
+    // 专门挂生图 / 生视频的渠道底下本来就一个对话模型都没有。以前这儿直接甩一句
+    // 「还没有对话模型」，等于告诉人「你这条渠道没法测」——可它明明配好了、也在用。
+    // 这种渠道改走不花钱的清单测活：Key 认不认、模型名在不在，一样能测出来
+    const media = (config.media_models || []).filter((m) => m.provider === known.id);
+    if (media.length) {
+      const t = Date.now();
+      const hit = (mediaModels.resolve(config).list || []).find((x) => x.id === media[0].id) || {};
+      const capCn = mediaModels.CAP_CN[media[0].cap] || media[0].cap;
+      const r = await probeMediaModel({ base_url: hit.base_url || base, api_key: hit.api_key || key, model: media[0].model, capCn });
+      return res.json({ ok: !r.error, ms: Date.now() - t, model: media[0].model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
+    }
+    return res.json({ ok: false, error: "这个渠道下面还没挂任何模型。加一个再测——测活要拿一个真模型去打一次招呼，瞎猜一个名字测出来的 404 会让人误以为 Key 坏了" });
   }
   const t0 = Date.now();
   const why = await probeModel({ provider: mediaModels.protoOfKind(kind), base_url: base, api_key: key, model });
   res.json({ ok: !why, ms: Date.now() - t0, model, error: why || "" });
+});
+
+/**
+ * 生图 / 生视频 / 配音 / 转写这四路的测活：**不真生成**。
+ *
+ * 为什么不像对话那样真跑一次：生一次视频的钱够 ping 一千次，生一张图也不便宜。
+ * 一颗写着「测一下」的按钮，不该在人没预期的时候扣一笔——尤其它常常要连点好几次
+ * （改个模型名再测、换条渠道再测）。所以这儿只验两件不花钱的事：
+ *   ① 这把 Key 上游认不认（拿模型清单就知道，401/403 立刻现形）
+ *   ② 配的那个模型名在这家的清单里有没有（「模型不存在」是排第二常见的坑）
+ * 验不到的那件必须说出来，不许拿「✓ 通了」糊过去：余额够不够、这个模型让不让你调，
+ * 只有真生成一次才知道。含糊其辞的绿勾比红叉更坑人——人会拿它当「已经能用」。
+ */
+async function probeMediaModel({ base_url, api_key, model, capCn }) {
+  const base = String(base_url || "").trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(base)) return { error: "这条渠道的接口地址不是 http(s) 开头的完整地址" };
+  let r;
+  try {
+    r = await fetch(`${base}/models`, {
+      headers: api_key ? { Authorization: `Bearer ${api_key}` } : {},
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    if (/timeout|abort/i.test(msg)) return { error: "连不上（15 秒超时）。国外服务商在国内直连经常打不通，挂代理或换国产渠道" };
+    return { error: "连不上：" + msg.slice(0, 160) };
+  }
+  if (r.status === 401 || r.status === 403) return { error: `这个 Key 上游不认（HTTP ${r.status}），检查有没有复制全、是不是这家服务商的 Key` };
+  if (r.status === 429) return { error: "被限流了（429），等一会儿再试" };
+  // 给不出清单不等于坏了：不少专做生图/生视频的接口根本没有 /models 这条路。
+  // 这种情况老老实实说「只验到这儿」，不编一个绿勾出来
+  if (!r.ok) return { partial: true, note: `这条渠道不给模型清单（HTTP ${r.status}），只验到「地址是通的」。Key 对不对、${capCn}「${model}」在不在，得真生成一次才知道` };
+  const j = await r.json().catch(() => null);
+  const raw = (j && (Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : [])) || [];
+  const ids = raw.map((m) => (typeof m === "string" ? m : String((m || {}).id || (m || {}).name || ""))).filter(Boolean);
+  if (!ids.length) return { partial: true, note: `Key 这一关过了（清单接口没拒绝我们），但这条渠道一个模型都没列出来，没法核对${capCn}「${model}」这个名字` };
+  if (!ids.includes(model)) {
+    return { error: `Key 是好的，但这条渠道列出来的 ${ids.length} 个模型里没有「${model}」。去 设置 → 模型 把它改成清单里的名字（在模型下拉框里挑，别手打）` };
+  }
+  return { note: `Key 认了，「${model}」在这条渠道的清单里（一共 ${ids.length} 个）。这一步不花钱所以没真生成——余额够不够，得生成一次才知道` };
+}
+
+/**
+ * 一行一测：设置 → 模型 里每一行模型后面那颗「测」。
+ *
+ * 跟渠道那颗「测一下」的分工：渠道那颗问的是「这条线通不通」，这颗问的是「**这一行**能不能用」。
+ * 一条渠道下面挂五个模型，通的是渠道、挂的却可能有三个模型名是错的——
+ * 只有渠道级测活的话，那三个要等任务跑到一半才炸。
+ */
+app.post("/api/model-test", async (req, res) => {
+  // 出网请求 + 带着 Key，跟 /api/provider-test 同一条规矩
+  if (!isPlatformOwner(req)) return res.status(403).json({ ok: false, error: "渠道归平台管理员配", platform_only: true });
+  const t0 = Date.now();
+  try {
+    const b = req.body || {};
+    const isMedia = b.scope === "media";
+    const list = isMedia ? config.media_models || [] : config.models || [];
+    const m = list[Number(b.index)];
+    if (!m) return res.json({ ok: false, error: "这一行已经不在了（多半是刚删过或者别处改了配置），刷新一下再试" });
+    const chanId = isMedia ? m.provider : m.channel;
+    const p = (config.providers || []).find((x) => x.id === chanId);
+    if (!p) return res.json({ ok: false, error: chanId ? "这一行挂的渠道已经被删了，编辑它重新挑一条" : "这一行没挂渠道，编辑它挑一条渠道再测" });
+    const local = p.kind === "ollama" || /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(p.base_url || "");
+    if (!p.api_key && !local) return res.json({ ok: false, error: `渠道「${p.name}」还没填 Key，先去下面那张渠道卡里填上` });
+    if (isMedia) {
+      // 走 resolve 而不是直接读 p.base_url：生图那几路的地址跟对话不一定是同一个前缀，
+      // 换算规则只有 media-models 那一份，这儿抄一遍迟早跟真跑的时候对不上
+      const hit = (mediaModels.resolve(config).list || []).find((x) => x.id === m.id) || {};
+      const capCn = mediaModels.CAP_CN[m.cap] || m.cap;
+      const r = await probeMediaModel({ base_url: hit.base_url || p.base_url, api_key: hit.api_key || p.api_key, model: m.model, capCn });
+      return res.json({ ok: !r.error, ms: Date.now() - t0, model: m.model, partial: !!r.partial, note: r.note || "", error: r.error || "" });
+    }
+    const why = await probeModel({ provider: mediaModels.protoOfKind(p.kind), base_url: p.base_url, api_key: p.api_key, model: m.model });
+    res.json({
+      ok: !why, ms: Date.now() - t0, model: m.model, error: why || "",
+      note: why ? "" : `「${m.model}」在渠道「${p.name}」上答得上话`,
+    });
+  } catch (e) {
+    res.json({ ok: false, ms: Date.now() - t0, error: String((e && e.message) || e).slice(0, 200) });
+  }
 });
 
 /**
@@ -2445,17 +2536,25 @@ app.post("/api/settings", (req, res) => {
     }
     if (b.search) {
       config.search = config.search || {};
+      // 先存 Key，再校验 provider。顺序反过来踩过一次大的：
+      // 选了一家这个进程还不认的服务商（程序更新了但没重开，内存里还是老名单），
+      // provider 那一句先 throw，整个保存被回滚——人刚一个一个敲进去的七八把 Key 一起没了，
+      // 而界面只说了句「provider 只认这几家」，谁也想不到自己的 Key 被顺手丢了。
+      for (const k of ["jina_key", "tavily_key", "brave_key", "bocha_key", "zhipu_key", "qiniu_key", "serper_key", "custom_key", "custom_url", "custom_query_field"]) {
+        if (b.search[k] !== undefined) config.search[k] = String(b.search[k]).trim();
+      }
       if (b.search.provider !== undefined) {
         // 这张名单跟 tools.js 的 SEARCH_PROVIDERS 是同一份；加一家要两边一起加，
         // 只加一边的后果是：设置里存得下，真搜的时候那家不存在，整条接力从第二家才开始
         const 支持的 = Object.keys(SEARCH_PROVIDERS);
         if (b.search.provider !== "" && !支持的.includes(b.search.provider)) {
-          throw new Error("搜索 provider 只认这几家：" + 支持的.join(" / "));
+          saveConfig(); // Key 已经写进 config 了，先落盘再报错——别让人白填一遍
+          throw new Error(
+            `正在跑的这个程序还不认「${b.search.provider}」这一家（它认的是：${支持的.join(" / ")}）。` +
+            "多半是程序升级前就一直开着，退出重开一次就好。你刚填的 Key 已经存下来了，不用重填。"
+          );
         }
         config.search.provider = b.search.provider;
-      }
-      for (const k of ["jina_key", "tavily_key", "brave_key", "bocha_key", "zhipu_key", "qiniu_key", "serper_key", "custom_key", "custom_url", "custom_query_field"]) {
-        if (b.search[k] !== undefined) config.search[k] = String(b.search[k]).trim();
       }
     }
     if (b.workspace_dir !== undefined && b.workspace_dir !== getDefaultWorkspaceDir()) {
@@ -2981,25 +3080,32 @@ app.post("/api/onboarding/done", (req, res) => {
 });
 
 // 直连所配搜索服务商测活（不走 DDG 回退，测的就是这家 key 能不能用）
-app.get("/api/search/test", async (_req, res) => {
+app.get("/api/search/test", async (req, res) => {
+  const t0 = Date.now();
   try {
     const cfg = config.search || {};
-    // 选了「自动」就得跟真搜的时候走同一个挑法：从上往下第一个配好了的。
+    // ?provider=bocha 指名测某一家（设置页每一行后面那颗「测」按的就是这个）。
+    // 不指名就跟真搜的时候走同一个挑法：首选，没首选就从上往下第一个配好了的。
     // 这里另外写死一家的话，测试按的是 A、实际搜的是 B，测出来的「可用」不算数
-    const provider = (cfg.provider || "").toLowerCase()
+    const asked = String(req.query.provider || "").trim().toLowerCase();
+    if (asked && !SEARCH_PROVIDERS[asked]) {
+      return res.json({ ok: false, error: `没有「${asked}」这家；这个版本认的是：${Object.keys(SEARCH_PROVIDERS).join(" / ")}` });
+    }
+    const provider = asked || (cfg.provider || "").toLowerCase()
       || Object.keys(SEARCH_PROVIDERS).find((p) => searchProviderReady(cfg, p, searchProviderKey(cfg, p))) || "";
     if (!provider) return res.json({ ok: false, error: "一家都还没配：先填一个服务商的 Key" });
     const fn = SEARCH_PROVIDERS[provider];
-    if (!fn) return res.json({ ok: false, error: `未知 provider: ${provider}` });
     const key = searchProviderKey(cfg, provider);
     if (!searchProviderReady(cfg, provider, key)) {
-      return res.json({ ok: false, error: provider === "custom" ? "自定义搜索还没填接口地址" : `${provider} 未填 API Key` });
+      return res.json({ ok: false, provider, error: provider === "custom" ? "自定义搜索还没填接口地址" : "这家还没填 API Key" });
     }
     const items = await fn(key, "OpenAI", 3, cfg);
-    if (!items.length) return res.json({ ok: false, error: `${provider} 返回 0 条结果` });
-    res.json({ ok: true, provider, sample: (items[0].title || items[0].url || "").slice(0, 60) });
+    // 「0 条」单独说清楚：Key 是好的、接口也通了，就是这一趟没结果。
+    // 跟「Key 坏了」混成一句话的话，人会跑去重新申请一把本来好好的 Key
+    if (!items.length) return res.json({ ok: false, provider, ms: Date.now() - t0, error: "接口通了，但这次一条结果都没回。Key 应该是好的，多半是对方这趟没搜到" });
+    res.json({ ok: true, provider, ms: Date.now() - t0, n: items.length, sample: (items[0].title || items[0].url || "").slice(0, 60) });
   } catch (e) {
-    res.json({ ok: false, error: e.message });
+    res.json({ ok: false, provider: String(req.query.provider || "").trim().toLowerCase() || undefined, ms: Date.now() - t0, error: e.message });
   }
 });
 
