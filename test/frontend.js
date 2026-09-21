@@ -1300,7 +1300,14 @@ const ATTACH_CHECKS = `
     ok("剪贴板的通用名换成时间戳", /^粘贴图片_\\d{4}_\\d{6}\\.png$/.test(up.name), up.name);
     ok("图片二进制没被改坏", up.data_b64 === B64PNG);
     ok("chip 带缩略图", !!(await until(() => document.querySelector("#attach-chips img.attach-thumb"))));
-    ok("粘贴被接管并在光标处留下图片锚点", ev.defaultPrevented && /【图片 1：粘贴图片_\\d{4}_\\d{6}\\.png】/.test(inputEl.value), inputEl.value);
+    // 输入框里只能有人自己写的话。以前粘一张图，框里先多出一行看不懂的中括号——
+    // 人得绕开它打字，删一半就成了半截锚点。GPT/Claude/飞书都是「框里干净，图挂在上面」
+    ok("粘贴被接管，但输入框里没多出一行中括号", ev.defaultPrevented && !/【图片/.test(inputEl.value), JSON.stringify(inputEl.value));
+    ok("图片挂成缩略图方片（一排文件名认不出哪张是哪张）",
+       !!document.querySelector("#attach-chips .attach-chip.is-tile .attach-thumb"), document.getElementById("attach-chips").innerHTML.slice(0, 160));
+    ok("方片上还看得见「图片 1」（「第一张放左边」这句话得指得住）",
+       /图片\\s*1/.test(document.querySelector("#attach-chips .attach-chip.is-tile em").textContent),
+       document.querySelector("#attach-chips .attach-chip.is-tile em").textContent);
   }
 
   // ---- 2. 同一秒连贴两张：撞名要编号，不能悄悄覆盖掉第一张 ----
@@ -1339,7 +1346,11 @@ const ATTACH_CHECKS = `
     ok("大段文字落成 txt", !!up && /^粘贴文本_\\d{4}_\\d{6}\\.txt$/.test(up.name), String(up && up.name));
     const back = new TextDecoder().decode(bytes(up.data_b64));
     ok("中文原文一字不差", back === big, "长度 " + back.length + " vs " + big.length);
-    ok("输入框没被撑爆、留下可引用的文本摘录锚点", inputEl.value.startsWith("帮我看看这个") && /【文本摘录 1：粘贴文本_\\d{4}_\\d{6}\\.txt】/.test(inputEl.value) && ev.defaultPrevented, inputEl.value);
+    ok("输入框没被撑爆，人写了一半的话也没被动",
+       inputEl.value === "帮我看看这个" && ev.defaultPrevented, JSON.stringify(inputEl.value));
+    ok("锚点不落进输入框（那是给模型看的协议，发出去那一刻才补）",
+       !/【文本摘录/.test(inputEl.value), JSON.stringify(inputEl.value));
+    ok("这份摘录挂成了一枚看得见的 chip", /^粘贴文本_\\d{4}_\\d{6}\\.txt$/.test(chips().at(-1).querySelector(".attach-name").textContent), chips().at(-1).textContent);
     ok("chip 上能看见开头几个字", /第一行是报错/.test(chips().at(-1).title || ""));
   }
 
@@ -1391,6 +1402,48 @@ const ATTACH_CHECKS = `
     ok("兼容清单按输入里的锚点顺序排列", out.indexOf(imageRefs[1].name, noteAt) < out.indexOf(textRef.name, noteAt) && out.indexOf(textRef.name, noteAt) < out.indexOf(imageRefs[0].name, noteAt), out.slice(noteAt));
     ok("发完 chip 清空", chips().length === 0);
   }
+  // ---- 8b. 人一个字都不用打：锚点在发出去那一刻才补，输入框里始终干干净净 ----
+  // 这是拖进来之后的默认路径——框里只有他自己的话，锚点是发送那一刻才拼进正文的协议。
+  // 少补了：模型只收到「把这两张拼一下」，手里却没有「这两张」是谁；
+  // 补重了：同一张图在它眼里成了两张，它会老老实实地给你拼出四格。
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0;
+    await dropFiles([png("左边.png"), png("右边.png")]);
+    try { await until(() => pendingAttach.length === 2 && pendingAttach.every((x) => x.state === "done"), 4000); } catch (e) {}
+    const m = pendingAttach.map((x) => x.marker);
+    ok("夹具自检：两份素材都挺到了（没挺住的话下面几条等于没测）",
+       m.length === 2 && m[0] !== m[1], JSON.stringify(pendingAttach.map((x) => [x.marker, x.state])));
+    inputEl.value = "把这两张拼成一张长图";
+    const out = composeOutgoing();
+    ok("他一个锚点都没打，发出去的时候补上了",
+       out.includes(m[0]) && out.includes(m[1]), JSON.stringify(out));
+    ok("一枚只补一次（补重了模型眼里就是两张图）",
+       out.split(m[0]).length === 2 && out.split(m[1]).length === 2, JSON.stringify(out));
+    ok("锚点按缩略图那一排的顺序排（他看见的顺序就是模型收到的顺序）",
+       out.indexOf(m[0]) < out.indexOf(m[1]), JSON.stringify(out));
+    ok("锚点排在他那句话前面（先交代手里有什么，再说要干嘛）",
+       out.indexOf(m[1]) < out.indexOf("把这两张"), JSON.stringify(out));
+    const lines = out.split("\\n");
+    ok("一行一枚，不跟他的话挤在同一行",
+       lines.includes(m[0]) && lines.includes(m[1]), JSON.stringify(lines.slice(0, 4)));
+    ok("话还是那句话，没被锚点切碎", out.includes("把这两张拼成一张长图"), JSON.stringify(out));
+  }
+
+  // ---- 8c. 他自己把锚点打进句子里：那个位置是他指的，不许在开头再补一遍 ----
+  {
+    inputEl.value = ""; attachChips.innerHTML = ""; pendingAttach.length = 0;
+    await dropFiles([png("人物.png"), png("背景.png")]);
+    try { await until(() => pendingAttach.length === 2 && pendingAttach.every((x) => x.state === "done"), 4000); } catch (e) {}
+    const m = pendingAttach.map((x) => x.marker);
+    inputEl.value = "把" + m[0] + "放到左边";
+    const out = composeOutgoing();
+    ok("他自己写进句子里的那枚只出现一次（再补一遍，“这张”就变成了两张）",
+       out.split(m[0]).length === 2, JSON.stringify(out));
+    ok("而且还站在他摆的那个位置上", out.includes("把" + m[0] + "放到左边"), JSON.stringify(out));
+    ok("他没提的那张仍旧补了锚点，并且排在前面",
+       out.includes(m[1]) && out.indexOf(m[1]) < out.indexOf("把" + m[0]), JSON.stringify(out));
+  }
+
   // ---- 9. 删掉一枚再加一枚：编号不许复用 ----
   // 以前是 filter(同类).length + 1。加「图片 1」「图片 2」，删掉图片 1，再加一张——
   // 长度又是 1，新的还叫「图片 2」：界面上并排两个「图片 2」，发给模型的也是两个。
@@ -1414,7 +1467,8 @@ const ATTACH_CHECKS = `
     window.uploadDelay = 150;
     dropFiles([new File([new Uint8Array(1024)], "片子.mp4", { type: "video/mp4" })]);
     ok("松手当场就有 chip，不等服务器", chips().length === 1, "chip 数=" + chips().length);
-    ok("松手当场锚点就在输入里", /【视频 1：片子\\.mp4】/.test(inputEl.value), inputEl.value);
+    ok("松手当场输入框仍然是干净的（锚点是发出去那一刻才补的）", !/【视频/.test(inputEl.value), JSON.stringify(inputEl.value));
+    ok("非图片还是长条 chip：名字和体积才是它的身份", !chips()[0].classList.contains("is-tile") && /片子\\.mp4/.test(chips()[0].textContent), chips()[0].className);
     ok("传的过程里 chip 上转着圈", !!chips()[0].querySelector(".attach-state .spinner"), chips()[0].className);
     ok("没传完不许点开（点开只会 404）", chips()[0].querySelector(".attach-open").disabled);
     await until(() => pendingAttach[0] && pendingAttach[0].state === "done");
@@ -1453,7 +1507,7 @@ const ATTACH_CHECKS = `
     window.uploadFail = true;
     await dropFiles([new File([new TextEncoder().encode("x")], "传不上去.md", { type: "text/markdown" })]);
     await until(() => pendingAttach[0] && pendingAttach[0].state === "failed");
-    ok("失败的锚点从输入里撤掉了", !inputEl.value.includes("传不上去.md"), JSON.stringify(inputEl.value));
+    ok("传失败的文件名一个字都没漏进输入框", !inputEl.value.includes("传不上去.md"), JSON.stringify(inputEl.value));
     ok("chip 留着并且变红", chips().length === 1 && chips()[0].classList.contains("is-failed"), chips()[0].className);
     ok("红 chip 上有一颗重试键", !!chips()[0].querySelector(".attach-retry"));
     ok("失败的不进发给模型的清单", attachmentOrder(inputEl.value).length === 0);
@@ -1508,9 +1562,12 @@ const ATTACH_CHECKS = `
     await dropFiles([new File([blob], "大图.png", { type: "image/png" })]);
     const img = await until(() => document.querySelector("#attach-chips img.attach-thumb"));
     const raw = Math.ceil(blob.size / 3) * 4;  // 原来那版 img.src 就是整份文件的 base64
-    ok("缩略图没把整份文件挂到 DOM 上", img.src.length < raw / 4, img.src.length + " vs 整份 " + raw);
+    // 这里的余量看着不宽，是因为这张测试图是 300 块随机色方块——多小都压不动。
+    // 真正吃内存的是解码后的位图（1600×1200×4 = 7.7MB，而 192×144×4 = 110KB），
+    // 所以下面那条「解码出来多宽」才是判据；这一条只负责把「整份文件塞进去」挡在外面
+    ok("缩略图没把整份文件挂到 DOM 上", img.src.length < raw / 2, img.src.length + " vs 整份 " + raw);
     const px = await new Promise((r) => { const im = new Image(); im.onload = () => r(im.width); im.src = img.src; });
-    ok("解码的也是小图，不是 1600 宽的原图", px <= 96, "缩略图宽 " + px);
+    ok("解码的也是小图，不是 1600 宽的原图（方片 64 见方，3 倍屏也够清楚）", px <= 192, "缩略图宽 " + px);
   }
 
   return names;
@@ -9541,7 +9598,8 @@ const OVF_CHECKS = `
 // ================= 引用一条回复 / 从资料库跳回那一轮 =================
 // 和
 // 这两件事都只在真 DOM 里才成立，所以放在同一屏里跑：
-// ① 引用取的是**渲染后的正文**（innerText），过程卡片、按钮条、token 统计一个字都不许带进去；
+// ① 引用是钉在输入框**上面**的一张卡，不是塞进框里的一段字（飞书/ChatGPT/Claude 都这样）。
+//    取的是**渲染后的正文**（innerText），过程卡片、按钮条、token 统计一个字都不许带进去；
 //    光标落在别的回复里时不许把那截字引到这条底下来——这是最容易写漏的一条，
 //    而且写漏了在界面上看着完全正常（你选了字、按了引用、确实引进来了，只是引错了人）。
 // ② 跳转跳不过去要**认输**（返回 false），让调用点退回「把对话滚到底」这个老行为。
@@ -9572,15 +9630,22 @@ const JUMP_SRC = APP02.slice(JP0, JP1);
   for (const n of ["text-quote", "message-square"]) {
     if (!sprite.includes('<symbol id="i-' + n + '"')) throw new Error("图标 " + n + " 不在 index.html 的雪碧图里：ic() 会画出一个空框框，界面上看不出报错");
   }
+  // 引用卡片钉在哪儿，是 index.html 里那个空 div 说了算。它要是没了，
+  // renderQuoteBar 会静默地什么都不画——按「引用」毫无反应，控制台一行报错都没有
+  if (!/id=["']quote-bar["']/.test(sprite)) throw new Error("index.html 里没有 #quote-bar 了：按「引用」会静默毫无反应");
+  const qi = sprite.indexOf('id="quote-bar"'), ai = sprite.indexOf('id="attach-chips"'), ci = sprite.indexOf('id="input-box"');
+  if (!(qi > 0 && ai > qi && ci > ai)) throw new Error("引用卡片得压在素材条和输入框上面（人先看见「我在回谁」，再看见自己带了什么，最后才是打字的地方）");
 }
 
 const QUOTE_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style>"
   + "<body style='margin:0;width:760px'>"
   + "<div id='chat-col' style='height:300px;overflow:auto'></div>"
+  + "<div class='quote-bar' id='quote-bar' hidden></div>"
   + "<textarea id='composer'></textarea></body>";
 const QUOTE_STUBS = `
 const chatCol = document.getElementById("chat-col");
 const inputEl = document.getElementById("composer");
+const assistant = { name: "小助手" };
 window.TOASTS = [];
 function toast(m) { window.TOASTS.push(String(m)); }
 `;
@@ -9608,86 +9673,172 @@ const QUOTE_CHECKS = `
     return t;
   };
 
-  // ---------- 引用 ----------
+  // ---------- 引用：钉在输入框上的一张卡，不是塞进框里的一段字 ----------
   const noise = "<div class='proc'>正在读取 周报.md</div><div class='turn-actions'><button>复制</button></div>";
   const t1 = mkTurn(["这一版周报分三块：", "第二块的数字我拿的是上周的，你确认下。"], noise);
+  const bar = () => document.getElementById("quote-bar");
+  const card = () => bar().querySelector(".quote-card");
+  const cardText = () => (bar().querySelector(".quote-text") || {}).textContent || "";
 
   inputEl.value = "";
   quoteReply(t1);
-  ok("引用塞进输入框（而不是挂一枚改不了的标签）", inputEl.value.includes("> 这一版周报分三块："), JSON.stringify(inputEl.value));
-  ok("整条正文都引进来了，不是只引第一段", inputEl.value.includes("> 第二块的数字我拿的是上周的，你确认下。"), JSON.stringify(inputEl.value));
-  ok("过程卡片和按钮条一个字都没带进来", !/正在读取|复制/.test(inputEl.value), JSON.stringify(inputEl.value));
-  ok("引用尾部留了空行，人接着往下写就行", /\\n\\n$/.test(inputEl.value), JSON.stringify(inputEl.value.slice(-6)));
-  ok("光标落在末尾（不是把人甩到开头去接着打字）", inputEl.selectionStart === inputEl.value.length);
+  ok("引用不落进输入框（框里只留人自己写的话）", inputEl.value === "", JSON.stringify(inputEl.value));
+  ok("而是钉成输入框上面那张卡", !!card() && !bar().hidden, bar().outerHTML.slice(0, 120));
+  ok("卡上写着这话是谁说的", bar().querySelector(".quote-src b").textContent === "小助手", bar().querySelector(".quote-src b").textContent);
+  ok("整条正文都引进来了，不是只引第一段",
+     cardText().includes("这一版周报分三块：") && cardText().includes("第二块的数字我拿的是上周的，你确认下。"), JSON.stringify(cardText()));
+  ok("过程卡片和按钮条一个字都没带进来", !/正在读取|复制/.test(cardText()), JSON.stringify(cardText()));
+  ok("光标回到输入框末尾，人接着打字就行", document.activeElement === inputEl && inputEl.selectionStart === inputEl.value.length);
 
-  // 已经写了半句话：接在后面，不许冲掉
+  // 发出去的协议没变：还是消息开头那一段「> 」。漏一行，后面几行在 markdown 里就掉出引用块了
+  ok("发给模型的仍是每行一个 >（协议一个字节没动）",
+     quoteBlock("第一行\\n第二行\\n第三行") === "> 第一行\\n> 第二行\\n> 第三行", JSON.stringify(quoteBlock("第一行\\n第二行")));
+
+  // 写了一半的话：引用挂在框外面，框里的字一个都不该动。
+  // 以前是把 400 字的「> 」块接在他写的话后面，人得先翻过自己引的那一坨才能接着写
   inputEl.value = "帮我改一下";
   quoteReply(t1);
-  ok("输入框里写了一半的话没被冲掉", inputEl.value.startsWith("帮我改一下"), JSON.stringify(inputEl.value));
-  ok("接在半句话后面时空了一行，不糊成一坨", inputEl.value.includes("帮我改一下\\n\\n> "), JSON.stringify(inputEl.value));
+  ok("输入框里写了一半的话一个字没被动", inputEl.value === "帮我改一下", JSON.stringify(inputEl.value));
 
-  // 连按两下：不许引两遍
-  const before = inputEl.value;
+  // 同一段再点一次：不许攒成两条
   window.TOASTS = [];
   quoteReply(t1);
-  ok("同一段不会被引进来两遍", inputEl.value === before, JSON.stringify(inputEl.value));
-  ok("重复引用要说一声，不是默默什么都不做", window.TOASTS.length === 1, JSON.stringify(window.TOASTS));
+  ok("同一段不会变成两张卡", bar().querySelectorAll(".quote-card").length === 1, bar().innerHTML.slice(0, 160));
+  // 闪这一下得量出来：只验 class 的话，把那条 CSS 删了这一条照样绿，用户那边则是毫无反应
+  ok("再点一次要闪一下，不是毫无反应（量到动画真挂上了）",
+     /attachflash/.test(getComputedStyle(card()).animationName), JSON.stringify(getComputedStyle(card()).animationName));
+  card().classList.remove("quote-flash");
+  ok("反向对照：摘掉 class 就不闪了（证明刚才量到的是这条规则，不是别的动画）",
+     !/attachflash/.test(getComputedStyle(card()).animationName), JSON.stringify(getComputedStyle(card()).animationName));
+
+  // 引另一条：换成新的那条（一条消息只引一段，攒一摞的话人发出去之前不知道自己带了几段别人的话）
+  const t2 = mkTurn(["前面这段没问题。", "但是这句数字不对。", "后面这段也没问题。"]);
+  quoteReply(t2);
+  ok("引别的一条就是换掉，不是又多一张卡", bar().querySelectorAll(".quote-card").length === 1);
+  ok("卡里换成了新引的那条", cardText().includes("前面这段没问题。") && !cardText().includes("这一版周报分三块："), JSON.stringify(cardText()));
 
   // 选中了一截：只引那一截。
   // 先 blur：真实顺序就是「在回复里拖选一段」（输入框因此失焦）→「按引用」。
   // 输入框还叼着焦点的时候，Chrome 的 document selection 归输入框管，外面这一段选不上——
   // 不 blur 的话这一条会静默退回「整段引用」，看着像功能坏了，其实是夹具没摆对
-  const t2 = mkTurn(["前面这段没问题。", "但是这句数字不对。", "后面这段也没问题。"]);
   const sel = window.getSelection();
   const target = t2.querySelectorAll(".a-text")[1];
-  const pick = () => {
+  const pick = (node) => {
     inputEl.blur();
     const r = document.createRange();
-    r.selectNodeContents(target);
+    r.selectNodeContents(node || target);
     sel.removeAllRanges();
     sel.addRange(r);
   };
   pick();
   ok("夹具自检：选区真的选上了（选不上的话下面两条等于什么都没测）",
      !sel.isCollapsed && String(sel).includes("但是这句数字不对。"), JSON.stringify([sel.isCollapsed, String(sel)]));
-  inputEl.value = "";
+  clearQuote();
   quoteReply(t2);
   ok("选中了就只引选中的那截（一条回复好几屏，整段引过去等于什么都没指）",
-     inputEl.value.includes("但是这句数字不对。") && !inputEl.value.includes("前面这段没问题。"), JSON.stringify(inputEl.value));
+     cardText().includes("但是这句数字不对。") && !cardText().includes("前面这段没问题。"), JSON.stringify(cardText()));
 
   // 反向对照：选区停在**别的**回复里。不加这道判断的话，
   // 在 t2 里选的字会被引到 t1 底下来——界面上看着完全正常，引的却是别人的话
   pick(); // 选区还在 t2 上，这一回按的却是 t1 的引用
-  inputEl.value = "";
+  clearQuote();
   quoteReply(t1);
   ok("在别处选中的字不会被引到这一条底下来（选区得落在这条回复里才算数）",
-     inputEl.value.includes("这一版周报分三块：") && !inputEl.value.includes("但是这句数字不对。"), JSON.stringify(inputEl.value));
+     cardText().includes("这一版周报分三块：") && !cardText().includes("但是这句数字不对。"), JSON.stringify(cardText()));
   sel.removeAllRanges();
 
   // 太长的截断。再长就不是「引用」而是「复述」，模型也会被这一大坨带偏
   const long = "很".repeat(900);
   const t3 = mkTurn([long]);
-  inputEl.value = "";
+  clearQuote();
   quoteReply(t3);
-  ok("超长回复会被截断，不是整屏搬进输入框", inputEl.value.length < 500, inputEl.value.length + " 字");
-  ok("截断了要留个省略号，别让人以为它就说了这么多", inputEl.value.includes("…"), JSON.stringify(inputEl.value.slice(-8)));
+  ok("超长回复会被截断，不是整屏搬进来", cardText().length < 500, cardText().length + " 字");
+  ok("截断了要留个省略号，别让人以为它就说了这么多", cardText().endsWith("…"), JSON.stringify(cardText().slice(-8)));
 
-  // 多行正文：每一行都得是引用行，否则第二行往后在 markdown 里会掉出引用块。
-  // 这里搭的是**渲染后**的样子（markdown 渲染出来是一串 <p>），不是塞一个带 \\n 的 textContent
-  // ——后者在普通 div 里根本不换行，测出来的是假的
-  inputEl.value = "";
+  // 多行正文：卡里得保住换行（markdown 渲染出来是一串 <p>，不是一个带 \\n 的 textContent）
+  clearQuote();
   const t4 = mkTurn([]);
   t4.querySelector(".body").innerHTML = "<div class='a-text'><p>第一行</p><p>第二行</p><p>第三行</p></div>";
   quoteReply(t4);
-  ok("多行正文每一行都带 >（漏一行，后面几行就掉出引用块了）",
-     (inputEl.value.match(/^> /gm) || []).length >= 3, JSON.stringify(inputEl.value));
+  ok("多行正文的行还在（引用要看得出原来分几行）", cardText().split("\\n").filter(Boolean).length >= 3, JSON.stringify(cardText()));
+  ok("卡片用 pre-wrap 把换行画出来（不然三行糊成一行）",
+     /pre-wrap/.test(getComputedStyle(bar().querySelector(".quote-text")).whiteSpace), getComputedStyle(bar().querySelector(".quote-text")).whiteSpace);
+  // 但卡片本身两行封顶：它是「我在回哪句」的提示，不是把原文再读一遍。
+  // 量高度差而不是认 display 关键字——flex 子项上 -webkit-box 的计算值是 flow-root，line-clamp 照样生效
+  {
+    const qt = bar().querySelector(".quote-text");
+    qt.textContent = Array.from({ length: 8 }, (_, i) => "第" + (i + 1) + "行很长很长很长很长很长很长很长很长很长很长").join("\\n");
+    ok("长引用在卡片里两行封顶（引用不该把输入框顶成半屏）",
+       qt.scrollHeight > qt.clientHeight + 1 && qt.clientHeight < 60, JSON.stringify({ ch: qt.clientHeight, sh: qt.scrollHeight }));
+  }
 
-  // 空回复：说一声，不许往输入框里塞一个空的 ">"
+  // 空回复：说一声，不许钉一张空卡
   const t5 = mkTurn([]);
-  inputEl.value = "";
+  clearQuote();
   window.TOASTS = [];
   quoteReply(t5);
-  ok("没有正文可引的时候说一声，不往输入框里塞一个空的 >", inputEl.value === "" && window.TOASTS.length === 1, JSON.stringify([inputEl.value, window.TOASTS]));
+  ok("没有正文可引的时候说一声，不钉一张空卡", !card() && window.TOASTS.length === 1, JSON.stringify([bar().innerHTML, window.TOASTS]));
+
+  // × 撤掉：卡没了，状态也得跟着没
+  quoteReply(t1);
+  bar().querySelector(".quote-x").click();
+  ok("× 之后卡没了", !card() && bar().hidden, bar().outerHTML.slice(0, 120));
+  ok("状态也跟着清了（不然下一条消息会悄悄带上它）", pendingQuote === null, JSON.stringify(pendingQuote));
+
+  // 点卡片跳回原文。高亮得是量出来的：只验 class 的话，把那条 CSS 删了测试照样全绿
+  quoteReply(t1);
+  bar().querySelector(".quote-jump").click();
+  ok("点卡片回到被引的那一条（它亮了）", /owbTurnFound/.test(getComputedStyle(t1).animationName), JSON.stringify(getComputedStyle(t1).animationName));
+  ok("别的回合没被一起点亮", !/owbTurnFound/.test(getComputedStyle(t2).animationName));
+
+  // 被引的那条已经不在眼前了（换了会话）：要说一句，不是静默什么都不发生
+  t1.remove();
+  window.TOASTS = [];
+  bar().querySelector(".quote-jump").click();
+  ok("原文不在这个对话里了要说一声", window.TOASTS.length === 1 && /不在/.test(window.TOASTS[0]), JSON.stringify(window.TOASTS));
+  chatCol.appendChild(t1);
+
+  // 引用的内容是模型吐出来的：拼进 innerHTML 等于把它当代码执行
+  clearQuote();
+  const tX = mkTurn(["<img src=x onerror=\\"window.__pwned=1\\">"]);
+  quoteReply(tX);
+  ok("引用走 textContent，模型吐的标签不会在界面上变成元素",
+     !bar().querySelector("img") && !window.__pwned && cardText().includes("onerror"), bar().innerHTML.slice(0, 160));
+  clearQuote();
+
+  // ---------- 拖选一段就地冒出来的那颗「引用」（ChatGPT/Claude 都是这一下） ----------
+  const selBtn = document.querySelector("button.sel-quote");
+  ok("这颗按钮真的建出来了", !!selBtn);
+  ok("默认不显形（没选字的时候不该有东西飘在页面上）", selBtn.hidden);
+  pick(t2.querySelectorAll(".a-text")[1]);
+  showSelQuote();
+  ok("在回复里选中一段，按钮就地冒出来", !selBtn.hidden, selBtn.outerHTML.slice(0, 120));
+  const r = t2.querySelectorAll(".a-text")[1].getBoundingClientRect();
+  const b = selBtn.getBoundingClientRect();
+  ok("按钮落在选中的那段附近（不是飘到页面角落里）",
+     b.top > r.top - 80 && b.top < r.bottom + 80 && b.left > r.left - 200 && b.left < r.right + 200,
+     JSON.stringify({ sel: [r.left, r.top, r.right, r.bottom], btn: [b.left, b.top] }));
+  ok("按钮没被顶出窗口（顶出去就等于点不着）", b.left >= 0 && b.right <= window.innerWidth + 1, JSON.stringify([b.left, b.right, window.innerWidth]));
+  clearQuote();
+  selBtn.click();
+  ok("按下去引的是选中的那一段", cardText().includes("但是这句数字不对。") && !cardText().includes("前面这段没问题。"), JSON.stringify(cardText()));
+  ok("引完按钮自己收起来", selBtn.hidden);
+  // 反向对照：选区落在用户自己的气泡里（或者别的什么地方）不该冒这颗按钮——
+  // 引自己刚说过的话没有意义，还会把「引用」这件事的意思搅浑
+  // 夹具照真实 DOM 摆：用户气泡也是包在一个 .turn 里的。
+  // 少包这一层的话，「只认回复正文」那道判断就算被放宽成「气泡也算」，
+  // 这条也照样绿——因为往上找 .turn 找了个空
+  const own = document.createElement("div");
+  own.className = "turn";
+  own.innerHTML = "<div class='u-msg'><div class='bubble'>我自己写的一句话</div></div>";
+  chatCol.appendChild(own);
+  ok("夹具自检：自己的气泡确实包在一个 .turn 里（不然下面那条反向对照等于没测）",
+     !!own.querySelector(".bubble").closest(".turn"), own.outerHTML.slice(0, 120));
+  pick(own.querySelector(".bubble"));
+  showSelQuote();
+  ok("反向对照：在自己的气泡里选中不冒这颗按钮", selBtn.hidden, selBtn.outerHTML.slice(0, 120));
+  sel.removeAllRanges();
+  clearQuote();
 
   // ---------- 从资料库跳回那一轮 ----------
   chatCol.innerHTML = "";
@@ -9728,6 +9879,148 @@ const QUOTE_CHECKS = `
   return names;
 })()
 `;
+// 气泡里那两样「折起来的协议原文」（引用块 / 素材锚点）——这一段长在 createTurnUI 的闭包里，
+// 切不出来单跑，所以把它从源码里整块切下来，用 new Function 注依赖跑。
+// 为什么非测不可：发给模型的原文一个字节没改（老会话回放出来还是原样），
+// 折不折全看这一段的两条正则。折错了有两种都很难看的死法——
+// ① `> ` 没折：人自己问的那句话被一屏别人的话压在最底下；
+// ② 折过头：写在句子中间的「把【图片 1：a.png】放左边」被折成「把放左边」，
+//    气泡里那句话当场变成病句，而他发出去的原文其实是好的。
+const BB0 = APP02X.indexOf("  // 气泡里不许出现给模型看的协议原文。");
+const BB1 = APP02X.indexOf('  turn.querySelector(".u-copy").onclick', BB0);
+if (BB0 < 0 || BB1 <= BB0) throw new Error("app-01.js 里气泡折叠那段找不到了（挪窝/改写了？），前端测试没法定位真源码");
+const BUBBLE_SRC = APP02X.slice(BB0, BB1);
+for (const k of ["bubble-quote", "bubble-attach", "BUBBLE_ATT_ICON"]) {
+  if (!BUBBLE_SRC.includes(k)) throw new Error("切出来的那段里没有 " + k + "：气泡折叠这一半没被测到");
+}
+// 图标映射用真的那一份：改名/删条目要在这儿当场变红，而不是等用户看见一排回形针
+const ICON_MAP = (() => {
+  const m = APP02X.match(/const BUBBLE_ATT_ICON = (\{[^}]*\});/);
+  if (!m) throw new Error("app-01.js 里的 BUBBLE_ATT_ICON 找不到了：气泡附件的图标没法核");
+  return m[1];
+})();
+const BUBBLE_BOOT = "window.__BUBBLE_SRC = " + JSON.stringify(BUBBLE_SRC) + ";\n"
+  + "window.__BUBBLE_ICONS = " + ICON_MAP + ";\n";
+
+const BUBBLE_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  // hlTokens / stripSceneTag 各自有自己的一屏测试，这儿只要它们不改变这段代码的分支
+  const hlTokens = (t) => esc(t);
+  const stripSceneTag = (t) => t;
+  const render = new Function("turn", "userText", "stripSceneTag", "ic", "hlTokens", "esc", "BUBBLE_ATT_ICON", window.__BUBBLE_SRC);
+  const stage = document.createElement("div");
+  stage.style.cssText = "width:520px";
+  document.body.appendChild(stage);
+  const bubbleOf = (text) => {
+    const turn = document.createElement("div");
+    turn.className = "turn";
+    turn.innerHTML = "<div class='u-msg'><div class='bubble'></div></div>";
+    stage.appendChild(turn);
+    render(turn, text, stripSceneTag, ic, hlTokens, esc, window.__BUBBLE_ICONS);
+    return turn.querySelector(".bubble");
+  };
+
+  // ---------- 开头那一坨 > 折成气泡顶上的引用卡 ----------
+  {
+    const b = bubbleOf("> 第二块的数字我拿的是上周的\\n> 你确认下\\n\\n这块改成 Q3 的口径");
+    const q = b.querySelector(".bubble-quote");
+    ok("开头那段 > 折成了一张卡，不是原样糊在气泡里", !!q, b.innerHTML.slice(0, 200));
+    ok("卡里是去掉 > 之后的原话", q.querySelector("span").textContent === "第二块的数字我拿的是上周的\\n你确认下", JSON.stringify(q.querySelector("span").textContent));
+    ok("多行引用的换行保住了（卡里得看得出原来分几行）",
+       /pre-wrap/.test(getComputedStyle(q.querySelector("span")).whiteSpace), getComputedStyle(q.querySelector("span")).whiteSpace);
+    ok("人自己问的那句话还在，而且不带 >", b.textContent.includes("这块改成 Q3 的口径") && !b.textContent.includes(">"), JSON.stringify(b.textContent));
+    ok("自己的话排在引用下面（不是被一屏别人的话压在最底下）",
+       b.innerHTML.indexOf("bubble-quote") < b.innerHTML.indexOf("这块改成 Q3 的口径"), b.innerHTML.slice(0, 200));
+    // 默认折三行：引用是「我指的是这句」，不该在自己的问题上面占半屏；但也不能藏死。
+    // 判据是量出来的高度差，不是 display 那个关键字——flex 子项上 -webkit-box 的计算值
+    // 在 Chromium 里序列化成 flow-root，认关键字的话这条会红，而 line-clamp 其实好好的
+    const qs = q.querySelector("span");
+    qs.textContent = Array.from({ length: 8 }, (_, i) => "第" + (i + 1) + "行很长很长很长很长很长很长很长很长很长很长").join("\\n");
+    const shut = { ch: qs.clientHeight, sh: qs.scrollHeight };
+    ok("长引用默认折起来（切掉了，不是整段摊在自己的问题上面）", shut.sh > shut.ch + 1, JSON.stringify(shut));
+    ok("折到三行左右，不是一行也不是半屏", shut.ch > 40 && shut.ch < 70, shut.ch + "px（三行约 56px）");
+    q.click();
+    ok("点一下整段摊开（原文一个字没少，只是默认不占半屏）",
+       qs.scrollHeight <= qs.clientHeight + 1 && qs.clientHeight > shut.ch + 20, JSON.stringify({ ch: qs.clientHeight, sh: qs.scrollHeight }));
+    q.click();
+    ok("再点一下收回去", qs.clientHeight === shut.ch && qs.scrollHeight > qs.clientHeight + 1, JSON.stringify({ ch: qs.clientHeight, sh: qs.scrollHeight }));
+    ok("有 title 说得清这一下能干嘛（不然没人知道它点得动）", /展开|收起/.test(q.title || ""), JSON.stringify(q.title));
+  }
+
+  // 只引了一段、一个字没写：气泡里也得立得住
+  {
+    const b = bubbleOf("> 就这一句");
+    ok("只有引用没有正文时，卡还在", !!b.querySelector(".bubble-quote"), b.innerHTML.slice(0, 160));
+    ok("不会冒出一个空的 > 行", !b.textContent.includes(">"), JSON.stringify(b.textContent));
+  }
+
+  // 反向对照：句子中间的 > 是人自己在写 markdown 引用，不许当协议折掉
+  {
+    const b = bubbleOf("这样写行不行：\\n> 引用块\\n后面这句呢？");
+    ok("反向对照：> 不在开头就不是协议，原样留着（那是他在问 markdown 怎么写）",
+       !b.querySelector(".bubble-quote") && b.textContent.includes("> 引用块"), JSON.stringify(b.textContent));
+  }
+
+  // ---------- 素材锚点折成气泡底下那排 ----------
+  {
+    const b = bubbleOf("【图片 1：主图.png】\\n【文件 2：报价单.pdf】\\n第一张放左边，把报价单里的数填进去\\n（已上传文件：主图.png、报价单.pdf）");
+    const pills = [...b.querySelectorAll(".bubble-attach span")];
+    ok("锚点折成了气泡底下那排素材", pills.length === 2, pills.map((p) => p.textContent).join(" | "));
+    ok("两份素材的名字都在（名字才是人认得出它的那一下）",
+       pills.map((p) => p.textContent).join("|") === "主图.png|报价单.pdf", pills.map((p) => p.textContent).join("|"));
+    ok("同一份不会被「（已上传文件：…）」再数一遍", b.querySelectorAll(".bubble-attach span").length === 2);
+    ok("协议原文一个字都没留在气泡里",
+       !/【图片|【文件|已上传文件/.test(b.textContent), JSON.stringify(b.textContent));
+    ok("人写的那句话完整地在", b.textContent.includes("第一张放左边，把报价单里的数填进去"), JSON.stringify(b.textContent));
+    ok("图片配图标、文件配回形针（一排全是回形针就等于没分类）",
+       /#i-image/.test(pills[0].innerHTML) && /#i-paperclip/.test(pills[1].innerHTML), pills[0].innerHTML + " / " + pills[1].innerHTML);
+  }
+
+  // 视频 / 音频 / 文本摘录也得各是各的图标
+  {
+    const b = bubbleOf("【视频 1：片头.mp4】\\n【音频 2：配音.mp3】\\n【文本摘录 3：粘贴文本.txt】\\n剪一下");
+    const html = [...b.querySelectorAll(".bubble-attach span")].map((p) => p.innerHTML).join(" ");
+    ok("视频/音频/摘录各画各的图标", /#i-film/.test(html) && /#i-volume-2/.test(html) && /#i-file-text/.test(html), html);
+  }
+
+  // ★最容易折过头的一条★：锚点写在句子中间，是人自己在指东西
+  {
+    const b = bubbleOf("把【图片 1：a.png】放到【图片 2：b.png】左边");
+    ok("★写在句子中间的锚点不折★（折掉的话这句话就成了「把放到左边」）",
+       b.textContent.includes("把【图片 1：a.png】放到【图片 2：b.png】左边"), JSON.stringify(b.textContent));
+    ok("也就没有那排素材（这条消息其实没带新素材）", !b.querySelector(".bubble-attach"), b.innerHTML.slice(0, 200));
+  }
+
+  // 只有「（已上传文件：…）」的老会话：一样折得动（这批历史占了绝大多数）
+  {
+    const b = bubbleOf("帮我看看这个（已上传文件：日志.txt）");
+    const pills = [...b.querySelectorAll(".bubble-attach span")];
+    ok("老会话里那句「（已上传文件：…）」也折得动", pills.length === 1 && pills[0].textContent === "日志.txt", pills.map((p) => p.textContent).join("|"));
+    ok("折完那句话读着还是通的", b.textContent.trim().startsWith("帮我看看这个"), JSON.stringify(b.textContent));
+  }
+
+  // 反向对照：什么协议都没有的普通一句话，一个字都不许被改
+  {
+    const b = bubbleOf("明天下午三点提醒我开会");
+    ok("反向对照：普通消息不折卡、不折素材条", !b.querySelector(".bubble-quote") && !b.querySelector(".bubble-attach"));
+    ok("反向对照：原话一个字没动", b.textContent === "明天下午三点提醒我开会", JSON.stringify(b.textContent));
+  }
+
+  // 引用的正文是模型吐出来的，文件名是人起的：两处都不许被当 HTML
+  {
+    const b = bubbleOf("> <img src=x onerror=1>\\n\\n【图片 1：<b>坏名字</b>.png】\\n看这个");
+    ok("引用里的标签没变成元素", !b.querySelector(".bubble-quote img") && b.querySelector(".bubble-quote span").textContent.includes("onerror"), b.querySelector(".bubble-quote").innerHTML.slice(0, 160));
+    ok("文件名里的标签也没变成元素", !b.querySelector(".bubble-attach b") && b.querySelector(".bubble-attach span").textContent.includes("坏名字"), b.querySelector(".bubble-attach").innerHTML.slice(0, 160));
+  }
+
+  stage.remove();
+  return names;
+})()
+`;
+
 // 再跑一小段，这次把系统的「减弱动态效果」打开。index.html 里有一条全局的
 // animation-duration:.01ms !important —— 它会让 owbTurnFound 瞬间走到最后一帧，
 // 而最后一帧是透明的。于是「跳过去之后高亮一下」在 reduce 档下等于什么都没发生，
@@ -10514,8 +10807,18 @@ app.whenReady().then(async () => {
       const namesQT = await winQT.webContents.executeJavaScript(IC_BOOT + QUOTE_STUBS + "\n" + QUOTE_SRC + "\n" + JUMP_SRC + "\n" + QUOTE_CHECKS, true)
         .catch((e) => { throw new Error("[引用回复 / 跳回那一轮] " + ((e && (e.stack || e.message)) || String(e))); });
       for (const n of namesQT) console.log("  ✓ " + n);
-      console.log(`✅ 前端：引用一条回复 + 从资料库跳回那一轮（只引正文不带过程卡片·选中了就只引那截·别处选的字不许算在这条头上·连按不重复·跳不过去就认输）${namesQT.length} 项通过`);
+      console.log(`✅ 前端：引用一条回复 + 从资料库跳回那一轮（钉成输入框上的一张卡不落进框里·只引正文不带过程卡片·拖选就地冒出「引用这段」·别处选的字不许算在这条头上·点卡片回原文·跳不过去就认输）${namesQT.length} 项通过`);
     } finally { if (!winQT.isDestroyed()) winQT.destroy(); }
+
+    const winBB = mkWin({ show: false, width: 620, height: 500, webPreferences: { offscreen: true } });
+    try {
+      await winBB.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(
+        "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body style='margin:0;width:620px'></body>"));
+      const namesBB = await winBB.webContents.executeJavaScript(IC_BOOT + BUBBLE_BOOT + BUBBLE_CHECKS, true)
+        .catch((e) => { throw new Error("[气泡折协议原文] " + ((e && (e.stack || e.message)) || String(e))); });
+      for (const n of namesBB) console.log("  ✓ " + n);
+      console.log(`✅ 前端：气泡把给模型看的协议原文折起来（开头的 > 折成引用卡·素材锚点折成底下那排·句子中间的锚点一个字不动·标签不当代码）${namesBB.length} 项通过`);
+    } finally { if (!winBB.isDestroyed()) winBB.destroy(); }
 
     const winQTR = mkWin({ show: false, width: 760, height: 400, webPreferences: { offscreen: true } });
     try {

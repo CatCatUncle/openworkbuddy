@@ -803,6 +803,7 @@ function sealStream(el) {
 // 气泡和任务历史标题里一律洗掉；原文照旧发给模型，「复制我的输入」复制的也还是原文
 // 侧栏标题只留用户自己那句话。委派标签那行也得摘：不摘的话历史列表整排都是
 // 「【交给专家团：…】把下面这件事整体委派给…」，24 个字全被同一句模板占满，谁是谁分不出来
+const BUBBLE_ATT_ICON = { "图片": "image", "视频": "film", "音频": "volume-2", "文本摘录": "file-text", "文件": "paperclip" };
 function stripSceneTag(t) {
   return String(t == null ? "" : t)
     .replace(/^\s*【任务类型：[^】]*】\s*/, "")
@@ -812,9 +813,13 @@ function stripSceneTag(t) {
 /**
  * 引用一条回复去追问。
  *
- * 为什么是「塞进输入框」而不是挂一枚标签：引用的内容要能改。真实用法几乎都是
- * 「它这段里有一句不对」——人会把那句留下、其余删掉，再在下面写自己的话。
- * 标签是不可编辑的身份（专家、技能），引用是正文的一部分，两码事。
+ * 引用**不落进输入框**。飞书、ChatGPT、Claude 三家都是同一种做法：输入框上面钉一张小卡片，
+ * 框里永远只有人自己要说的话。以前这里是把 400 字的 `> ` 块整段塞进 textarea——输入框当场
+ * 被顶成半屏，人得先翻过自己引的那一坨才能开始打字；编辑时手一滑还会把引用改成半句，
+ * 发出去的东西和他以为引的那段对不上。卡片是一件东西：要么整条在，要么整条不在。
+ *
+ * 发出去的协议一个字节没动，还是消息开头那个 `> ` 块——模型看到的还是原来那样，
+ * 老会话回放出来也还是原样，只是气泡里折成了一张卡（见 createTurnUI）。
  *
  * 选中了就只引选中的那截：一条回复常常好几屏，整段引过去等于什么都没指。
  */
@@ -831,21 +836,142 @@ function quoteTextOf(turn) {
 }
 // 再长就不是「引用」而是「复述」了，模型也会被这一大坨带偏。想引更多的人会自己先选中
 const QUOTE_MAX = 400;
+// 这一条消息引着谁：{ text, label, turn }。turn 是那条回复的 DOM，点卡片就滚回去找它
+let pendingQuote = null;
+const quoteBarEl = () => document.getElementById("quote-bar");
+/** 发给模型的样子：每行一个 `> `。漏一行，后面几行在 markdown 里就掉出引用块了 */
+function quoteBlock(text) {
+  return String(text).split("\n").map((l) => "> " + l).join("\n");
+}
+function clearQuote() {
+  pendingQuote = null;
+  renderQuoteBar();
+}
+/** 滚回某一条回合并让它亮一下。引用卡片、气泡上的引用都靠它带人回去看原文 */
+function flashTurn(el) {
+  if (!el || !el.isConnected) return false;
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  el.classList.remove("turn-jumped");
+  void el.offsetWidth; // 逼一次重排，否则连点两次第二下不会再亮
+  el.classList.add("turn-jumped");
+  clearTimeout(flashTurn._t);
+  flashTurn._t = setTimeout(() => el.classList.remove("turn-jumped"), 2600);
+  return true;
+}
+function renderQuoteBar() {
+  const bar = quoteBarEl();
+  if (typeof syncSendBtn === "function") syncSendBtn(); // 只挂了一条引用也算「有话要说」
+  if (!bar) return;
+  if (!pendingQuote) { bar.innerHTML = ""; bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.innerHTML = `<div class="quote-card">
+      <button type="button" class="quote-jump" title="回到被引用的那条回复">
+        <span class="quote-src">${ic("text-quote", "i-sm")}<b></b><span class="quote-hint">回到原文</span></span>
+        <span class="quote-text" data-i18n-skip></span>
+      </button>
+      <button type="button" class="quote-x" title="不引用了（Esc）" aria-label="不引用这一段了">${ic("x", "i-sm")}</button>
+    </div>`;
+  // 文本走 textContent：引用的是模型吐出来的内容，拼进 innerHTML 等于把它当代码执行
+  bar.querySelector(".quote-src b").textContent = pendingQuote.label;
+  bar.querySelector(".quote-text").textContent = pendingQuote.text;
+  bar.querySelector(".quote-jump").onclick = () => {
+    if (!flashTurn(pendingQuote && pendingQuote.turn)) toast("那条回复不在眼前这个对话里了（多半是换了会话）", "circle-x");
+  };
+  bar.querySelector(".quote-x").onclick = () => { clearQuote(); inputEl.focus(); };
+}
+/** 同一段再点一次「引用」：闪一下卡片告诉他「已经引着了」，而不是默默什么都不做 */
+function flashQuoteBar() {
+  const card = quoteBarEl() && quoteBarEl().querySelector(".quote-card");
+  if (!card) return;
+  card.classList.remove("quote-flash");
+  void card.offsetWidth;
+  card.classList.add("quote-flash");
+  setTimeout(() => card.classList.remove("quote-flash"), 700);
+}
 function quoteReply(turn) {
   let t = quoteTextOf(turn);
   if (!t) return toast("这条回复还没有可引用的正文", "circle-x");
   if (t.length > QUOTE_MAX) t = t.slice(0, QUOTE_MAX).trimEnd() + "…";
-  const block = t.split("\n").map((l) => "> " + l).join("\n");
-  const cur = inputEl.value;
-  if (cur.includes(block)) { inputEl.focus(); return toast("这段已经在输入框里了", "circle-check"); }
-  // 已经写了半句话就空一行接在后面，别把人写到一半的东西冲掉
-  inputEl.value = (cur.trim() ? cur.replace(/\s+$/, "") + "\n\n" : "") + block + "\n\n";
-  inputEl.dispatchEvent(new Event("input")); // 先让输入框按新内容撑高，否则下面的定位会被这次改高冲掉
+  const again = !!(pendingQuote && pendingQuote.text === t);
+  // 一条消息只引一段：再点别处就是改引那一段（飞书就是这个规矩）。
+  // 攒成一摞的话，人发出去之前根本不知道自己带了几段别人的话
+  pendingQuote = { text: t, label: (typeof assistant === "object" && assistant && assistant.name) || "助理", turn };
+  renderQuoteBar();
+  if (again) flashQuoteBar();
+  hideSelQuote();
   inputEl.focus();
   inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
-  inputEl.scrollTop = inputEl.scrollHeight; // 光标在末尾，视野也得跟过去
 }
 
+/**
+ * 在回复里拖选一段，就地冒出一颗「引用」——ChatGPT 和 Claude 都是这一下。
+ *
+ * 没有它的话，「只引这一句」这个能力等于不存在：按钮在回复最底下那条操作条上，
+ * 人得选中、再把鼠标挪到底下去找那颗按钮，中途在别处点一下选区就没了。
+ * 所以按钮要长在选区旁边，手不用走。
+ */
+const selQuoteBtn = (() => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "sel-quote";
+  b.hidden = true;
+  b.innerHTML = `${ic("text-quote", "i-sm")}<span>引用这段</span>`;
+  b.title = "只把选中的这段引过去追问";
+  // mousedown 里就得拦掉默认行为：不拦的话按下去的这一下先把选区清了，
+  // 等到 click 触发时 quoteTextOf 看到的是一个空选区，「只引这一段」当场退回整段引用
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+  document.body.appendChild(b);
+  return b;
+})();
+function hideSelQuote() {
+  selQuoteBtn.hidden = true;
+  selQuoteBtn._turn = null;
+}
+/** 选区在不在某条回复的正文里；在的话这颗按钮该摆哪儿 */
+function selQuoteSpot() {
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed || !sel.rangeCount || !String(sel).trim()) return null;
+  const node = sel.focusNode || sel.anchorNode;
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const text = el && el.closest && el.closest(".body .a-text");
+  const turn = text && text.closest(".turn");
+  // 只认回复正文：用户自己的气泡、过程卡片、代码块的工具条里选中了不冒这颗按钮
+  if (!turn || !turn.contains(text)) return null;
+  const rects = [...sel.getRangeAt(0).getClientRects()].filter((r) => r.width || r.height);
+  const last = rects[rects.length - 1];
+  if (!last) return null;
+  return { turn, x: last.right, y: last.bottom };
+}
+function showSelQuote() {
+  const spot = selQuoteSpot();
+  if (!spot) return hideSelQuote();
+  selQuoteBtn._turn = spot.turn;
+  selQuoteBtn.hidden = false;
+  // 先显形再量宽：hidden 的元素 offsetWidth 是 0，量出来会把按钮顶到窗口右边缘外面去
+  const w = selQuoteBtn.offsetWidth || 96, h = selQuoteBtn.offsetHeight || 30;
+  const x = Math.max(8, Math.min(spot.x - w / 2, window.innerWidth - w - 8));
+  // 选区在屏幕最底下时，按钮翻到选区上方去，否则它被挡在输入框底下点不着
+  const below = spot.y + 8 + h <= window.innerHeight - 8;
+  selQuoteBtn.style.left = x + "px";
+  selQuoteBtn.style.top = (below ? spot.y + 8 : spot.y - h - 24) + "px";
+}
+selQuoteBtn.onclick = () => { if (selQuoteBtn._turn) quoteReply(selQuoteBtn._turn); };
+// mouseup 而不是 selectionchange：后者在拖选过程中每动一个字符就触发一次，
+// 按钮跟着鼠标乱飞。松手才是「我选好了」这个意思
+document.addEventListener("mouseup", (e) => {
+  if (e.target === selQuoteBtn || selQuoteBtn.contains(e.target)) return;
+  setTimeout(showSelQuote, 0); // 等这一下的选区落定（Chromium 在 mouseup 之后才更新）
+});
+document.addEventListener("mousedown", (e) => {
+  if (e.target !== selQuoteBtn && !selQuoteBtn.contains(e.target)) hideSelQuote();
+});
+document.addEventListener("selectionchange", () => {
+  // 选区被清掉（在别处点了一下、按了方向键）就收起来；这里只做「收」，不做「摆位置」
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!selQuoteBtn.hidden && (!sel || sel.isCollapsed)) hideSelQuote();
+});
+// 按钮是 position:fixed 的：对话一滚，选中的字走了它还钉在原地，指着一句不相干的话
+(document.getElementById("chat-col") || document).addEventListener("scroll", hideSelQuote, { passive: true });
 // ================= 回合渲染（实时流式与历史回放共用） =================
 function createTurnUI(userText, turnMode, forSid) {
   const turnSid = forSid !== undefined ? forSid : sessionId; // 本回合归属的会话：后台任务的事件不许影响用户已切走的界面
@@ -854,15 +980,48 @@ function createTurnUI(userText, turnMode, forSid) {
   const av = avatarBits(assistant.avatar, assistant.name);
   turn.innerHTML = `<div class="u-msg"><button class="u-copy" title="复制我的输入">⧉</button><div class="bubble" translate="no"></div></div>
     <div class="a-msg"><div class="avatar${av.cls ? " " + av.cls : ""}">${av.html}</div><div class="body"></div></div>`;
-  // 「（已上传文件：×××）」是给模型看的附件标记，气泡里渲染成附件行，别按原文糊用户脸上（老会话的旧格式一并美化）
-  const attNames = [];
-  const bodyText = stripSceneTag(userText).replace(/（已上传文件：([^）]+)）/g, (_, names) => {
-    for (const n of String(names).split("、")) if (n.trim()) attNames.push(n.trim());
-    return "";
-  }).trim();
-  let bubbleHtml = hlTokens(bodyText, "tk-b");
-  if (attNames.length) bubbleHtml += `<div class="bubble-attach">${attNames.map(n => `<span>${ic("paperclip")}${esc(n)}</span>`).join("")}</div>`;
+  // 气泡里不许出现给模型看的协议原文。两样东西要折起来：
+  // ① 开头那一坨 `> `：那是「我引了它上一条里的哪句话」。原样糊出来，人得先翻过一屏
+  //    别人的话才看得见自己问了什么——飞书/ChatGPT 都是折成一张小卡压在气泡顶上，这里照做。
+  // ② `【图片 1：×××】`、「（已上传文件：×××）」：那是「这条消息带了哪几份素材」。
+  //    折成气泡底下那排附件，名字和类型都在，谁是第一张也还看得出来。
+  // 两样都只动**显示**：发给模型的原文一个字节没改，「复制我的输入」复制的也还是原文。
+  const attList = [];
+  const addAtt = (name, label) => {
+    const n = String(name || "").trim();
+    if (!n) return;
+    const had = attList.find((x) => x.name === n);
+    if (had) { if (label && !had.label) had.label = label; return; }
+    attList.push({ name: n, label: label || "" });
+  };
+  let bodyText = stripSceneTag(userText)
+    .replace(/（已上传文件：([^）]+)）/g, (_, names) => {
+      for (const n of String(names).split("、")) addAtt(n);
+      return "";
+    })
+    // 独占一行的素材锚点才折：写在句子中间的（「把【图片 1：a.png】放左边」）是人自己在指东西，
+    // 折掉的话那句话就成了「把放左边」
+    .replace(/^【(图片|视频|音频|文本摘录|文件)\s+\d+：([^】]+)】[ \t]*$/gm, (_, label, n) => { addAtt(n, label); return ""; })
+    .trim();
+  let quoteText = "";
+  const qm = bodyText.match(/^((?:>[^\n]*(?:\n|$))+)/);
+  if (qm) {
+    quoteText = qm[1].split("\n").map((l) => l.replace(/^>[ \t]?/, "")).join("\n").trim();
+    if (quoteText) bodyText = bodyText.slice(qm[1].length).replace(/^\s+/, "");
+  }
+  let bubbleHtml = quoteText ? `<div class="bubble-quote">${ic("text-quote", "i-sm")}<span></span></div>` : "";
+  bubbleHtml += hlTokens(bodyText, "tk-b");
+  if (attList.length) bubbleHtml += `<div class="bubble-attach">${attList.map((a) => `<span>${ic(BUBBLE_ATT_ICON[a.label] || "paperclip")}${esc(a.name)}</span>`).join("")}</div>`;
   turn.querySelector(".bubble").innerHTML = bubbleHtml;
+  // 引用的正文走 textContent：那是模型吐出来的内容，拼进 innerHTML 等于把它当代码执行
+  if (quoteText) {
+    const bq = turn.querySelector(".bubble-quote");
+    bq.querySelector("span").textContent = quoteText;
+    // 默认折三行。引用本来就是「我指的是这句」，不该在自己的问题上面占半屏；
+    // 但也不能把它藏死——点一下就整段摊开，原文一个字没少
+    bq.title = "点一下展开/收起这段引用";
+    bq.onclick = () => bq.classList.toggle("open");
+  }
   turn.querySelector(".u-copy").onclick = (e) => {
     navigator.clipboard?.writeText(userText).then(() => {
       e.target.innerHTML = ic("check"); setTimeout(() => { e.target.innerHTML = ic("copy"); }, 1200);
