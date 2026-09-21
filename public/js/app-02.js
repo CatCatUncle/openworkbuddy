@@ -185,11 +185,13 @@ loadExecModes();
 // ================= ＋ 上传文件到工作空间（选择/拖拽共用） =================
 const attachChips = document.getElementById("attach-chips");
 /**
- * 一条待发素材不再只是文件名，而是输入框里一个可见的“素材锚点”。
+ * 一条待发素材 = 输入框上面一枚看得见的 chip，外加发出去时补在正文最前面的一行「素材锚点」。
  *
- * 以前所有附件都在 composeOutgoing() 的最后拼成一行，用户写「第一张是人物，第二张是背景」时，
- * 图片和文字的相对位置早已丢失；模型只能猜“第一张”是哪张。现在上传成功就在光标位置放
- * `【图片 1：xxx.png】`，输入顺序就是给模型的顺序，用户也能围着锚点直接写关系和动作。
+ * 锚点（`【图片 1：xxx.png】`）解决的是「第一张是人物，第二张是背景」这句话指谁——所有附件
+ * 挤成一行文件名的话，模型只能猜。但锚点**不再往输入框里塞**：GPT、Claude、飞书的输入框里
+ * 只有人自己写的话，附件是上面一排缩略图。以前拖三张图进来，框里先多出三行看不懂的中括号，
+ * 人还得绕开它们打字，删一半就成了半截锚点。现在框里干干净净，锚点在按下发送的那一刻
+ * 按 chip 的顺序补齐（见 composeOutgoing）；人要是自己在正文里摆过一枚，就以他摆的位置为准。
  */
 const pendingAttach = [];
 const ATTACH_KIND = {
@@ -237,10 +239,6 @@ function removeAttachmentMarker(marker) {
   inputEl.value = inputEl.value.slice(0, at) + inputEl.value.slice(end);
   inputEl.selectionStart = inputEl.selectionEnd = at;
   inputEl.dispatchEvent(new Event("input", { bubbles: true }));
-}
-function insertAttachmentMarker(item) {
-  const before = inputEl.value && !/\n$/.test(inputEl.value) ? "\n" : "";
-  insertAtCursor(inputEl, `${before}${item.marker}\n`);
 }
 /**
  * 这一类素材下一个没被占用的编号。
@@ -347,7 +345,11 @@ function addAttachChip(item, hint) {
   pendingAttach.push(item);
   syncSendBtn(); // 运行中光贴了个附件也算「有话要说」，按钮得从「停下」变回「发出」
   const chip = document.createElement("span");
-  chip.className = `attach-chip attach-${item.kind}`;
+  // 图片走缩略图方片，别的走长条 chip——GPT、Claude 都是这么分的，理由也很直白：
+  // 一排文件名里没人认得出哪张是哪张（手机相册导出来全是 IMG_4821 这种名字），缩略图一眼就认出来；
+  // 而一份 .xlsx 的缩略图是一张白纸，它的身份是名字和体积
+  const tile = item.kind === "image";
+  chip.className = `attach-chip attach-${item.kind}${tile ? " is-tile" : ""}`;
   chip.dataset.marker = item.marker;
 
   const open = document.createElement("button");
@@ -363,6 +365,8 @@ function addAttachChip(item, hint) {
   const size = document.createElement("span");
   size.className = "attach-size";
   open.append(slot, ref, name, size);
+  // 方片上文件名是藏起来的（悬停看 title），读屏得有个说法，不然念出来只有「图片 1」
+  open.setAttribute("aria-label", `打开 ${item.name}`);
   open.onclick = () => openAttach(item);
   chip.appendChild(open);
 
@@ -471,7 +475,7 @@ function looksLikeDir(file, dirs) {
  * 一片空白（实测 4MB 就有 124ms 的空窗，30MB 上手机网更久），用户以为没拖进去，又拖一次。
  * 现在松手那一瞬间 chip 就在，带个转圈，进度在哪一眼看得见。
  */
-async function uploadFiles(fileList, { rename, insertMarkers = true, dirs } = {}) {
+async function uploadFiles(fileList, { rename, dirs } = {}) {
   const jobs = [];
   for (const file of [...fileList]) {
     if (looksLikeDir(file, dirs)) {
@@ -497,8 +501,8 @@ async function uploadFiles(fileList, { rename, insertMarkers = true, dirs } = {}
     const item = makeAttachItem(name, { mime: file.type, size: file.size });
     item.blob = file;
     addAttachChip(item);
-    if (insertMarkers) insertAttachmentMarker(item);
-    if (/^image\//.test(file.type)) thumbDataUrl(file).then(u => setAttachThumb(item, u));
+    // 64 的方片在 2 倍屏上要 128 才不糊；给到 192，缩略图这点体积换的是「一眼认出是哪张」
+    if (/^image\//.test(file.type)) thumbDataUrl(file, 192).then(u => setAttachThumb(item, u));
     jobs.push(item);
   }
   const done = [];
@@ -526,16 +530,15 @@ function stampName(prefix, ext) {
  * 要看第几行看第几行。
  */
 const BIG_TEXT_CHARS = 2000;
-async function uploadText(text, { name, insertMarker = true } = {}) {
+async function uploadText(text, { name } = {}) {
   const fname = name || stampName("粘贴文本", "txt");
   const head = text.replace(/\s+/g, " ").trim().slice(0, 80);
   const blob = new Blob([text], { type: "text/plain" });
   const item = makeAttachItem(fname, { mime: "text/plain", kind: "text", size: blob.size });
   item.blob = blob;
   addAttachChip(item, head + (text.length > 80 ? "…" : ""));
-  if (insertMarker) insertAttachmentMarker(item);
   if (!(await sendAttach(item))) return false;
-  toast(`已加入 ${item.marker} · ${text.length.toLocaleString()} 字`, "circle-check");
+  toast(`这段 ${text.length.toLocaleString()} 字存成了 ${item.name}，挂在这条消息上`, "circle-check");
   fetch("/api/files").then(r => r.json()).then(renderFiles);
   return item;
 }
@@ -555,14 +558,20 @@ function composeOutgoing() {
   const attached = attachmentOrder(typed);
   const lost = pendingAttach.filter(x => x.state === "failed");
   const note = attached.length ? `（已上传文件：${attached.map(x => x.name).join("、")}）` : "";
-  if (!typed && !note) return "";
+  // 引用和素材锚点都是发出这一刻才拼进正文的：输入框里只留人自己写的话，
+  // 模型收到的仍是原来那套协议（开头一段 `> `，随后一行一个 `【图片 N：…】`）
+  const quoted = typeof pendingQuote === "object" && pendingQuote ? quoteBlock(pendingQuote.text) : "";
+  // 人自己在正文里摆过的那一枚不重复补，位置以他摆的为准
+  const anchors = attached.filter(x => !typed.includes(x.marker)).map(x => x.marker).join("\n");
+  if (!typed && !note && !quoted) return "";
   if (lost.length) toast(`${lost.map(x => x.name).join("、")} 没传上去，没跟着这条消息发出去`, "circle-alert");
   inputEl.value = "";
   syncInputHl();
   attachChips.innerHTML = "";
   pendingAttach.length = 0;
+  if (typeof clearQuote === "function") clearQuote(); // 引用是「这一条消息」的事，发出去就该消失
   syncSendBtn(); // 框清空了：任务还在跑的话按钮回到「停下」
-  return typed && note ? typed + "\n" + note : typed || note;
+  return [quoted, anchors, typed && note ? typed + "\n" + note : typed || note].filter(Boolean).join("\n\n");
 }
 // ＋ 按钮现在开的是菜单不是文件对话框（见本文件末尾「＋ 菜单」一节）；上传走菜单里的「添加文件」
 document.getElementById("file-input").addEventListener("change", async (e) => {
@@ -664,7 +673,7 @@ document.addEventListener("paste", async (e) => {
   }
   if (files.length) {
     await uploadFiles(files, { rename: pastedName });
-    toast(files.length > 1 ? `已加入 ${files.length} 个素材锚点` : "已加入素材锚点，可在输入里写它和文字/其他素材的关系", "circle-check");
+    toast(files.length > 1 ? `${files.length} 份素材挂在这条消息上了，直接说你要它做什么` : "挂上了，直接说你要它做什么", "circle-check");
   }
 });
 
@@ -1251,7 +1260,8 @@ function syncPlaceholder() {
     : (MODE_PLACEHOLDER[currentMode] || MODE_PLACEHOLDER.craft);
 }
 /** 框里有没有还没发出去的东西（文字或待发附件） */
-function hasDraft() { return !!(inputEl.value.trim() || pendingAttach.length); }
+// 只挂了一张图、或者只引了一段还没打字，也算「有话要说」：按钮得是「发出」，Enter 也得送得出去
+function hasDraft() { return !!(inputEl.value.trim() || pendingAttach.length || (typeof pendingQuote === "object" && pendingQuote)); }
 /**
  * 一颗键两种意思，看框里有没有字：任务在跑 + 框空着 → 「◼ 停下」；任务在跑 + 打了字 → 「↑ 插一句」（发出去就是插队）；
  * 闲着 → 普通发送。以前运行中不管框里有没有字点一下都是停止，用户打了半天字一点按钮任务没了。
@@ -1774,7 +1784,11 @@ const SHORTCUT_ACTIONS = {
     if (onb && onb.classList.contains("show")) onb.classList.remove("show");
     else if (mask.classList.contains("show")) closeModal();
     else if (cs && cs.style.display === "flex") closeChatSearch();
+    // 引用卡片钉在输入框上，Esc 先撤它——但只在光标真在框里的时候。
+    // 不加这个前提的话，任务跑着、人想按 Esc 叫停，结果只是把引用撤了，任务照跑
+    else if (pendingQuote && document.activeElement === inputEl) clearQuote();
     else if (curBusy()) stopTask();
+    else if (pendingQuote) clearQuote();
   },
   "prev-task": () => navTask(-1),
   "next-task": () => navTask(1),

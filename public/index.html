@@ -349,8 +349,18 @@
   }
   .u-msg { display: flex; justify-content: flex-end; }
   .u-msg .bubble { max-width: 78%; background: var(--owb-brand); color: #fff; border-radius: var(--radius-2xl) var(--radius-2xl) var(--radius-xs) var(--radius-2xl); padding: 10px 15px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+  /* 气泡顶上那张引用卡：紫底上再画一道浅色竖条 = 「这段是它说的，不是我说的」。
+     最多三行，长引用点一下展开——发出去的原文一个字没少，只是默认不占半屏 */
+  .u-msg .bubble .bubble-quote { display: flex; gap: 6px; margin: 0 0 6px; padding: 5px 8px; border-radius: var(--radius-md);
+    background: rgba(255,255,255,.16); border-left: 3px solid rgba(255,255,255,.6); font-size: 12.5px; line-height: 1.5; cursor: pointer; }
+  .u-msg .bubble .bubble-quote .i { flex: none; width: 12px; height: 12px; margin-top: 3px; opacity: .8; }
+  .u-msg .bubble .bubble-quote span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-width: 0;
+    white-space: pre-wrap; word-break: break-word; }
+  .u-msg .bubble .bubble-quote.open span { display: block; }
   .u-msg .bubble .bubble-attach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-  .u-msg .bubble .bubble-attach span { font-size: 12px; background: rgba(255,255,255,.18); border-radius: var(--radius-md); padding: 2px 8px; white-space: nowrap; }
+  .u-msg .bubble .bubble-attach span { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; font-size: 12px;
+    background: rgba(255,255,255,.18); border-radius: var(--radius-md); padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .u-msg .bubble .bubble-attach .i { flex: none; width: 12px; height: 12px; opacity: .85; }
   .a-msg { display: flex; gap: 10px; margin-top: 16px; }
   .a-msg .avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: var(--radius-lg); background: var(--owb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
   .a-msg .body { min-width: 0; flex: 1; }
@@ -852,6 +862,38 @@
   .plan-list .pl-item input { margin-top: 3px; accent-color: var(--owb-brand-text); }
   .plan-list .pl-item input:checked + span { color: var(--owb-text-3); text-decoration: line-through; }
   .plan-list .pl-run { margin-top: 8px; border: none; background: var(--owb-brand); color: #fff; border-radius: var(--radius-md); padding: 6px 14px; font-size: 13px; cursor: pointer; }
+  /* ---------- 引用：输入框上钉的那张卡 ----------
+     和飞书/ChatGPT 一样，引用是压在输入框上方的一件东西，不是塞进框里的一段字。
+     左边一道品牌色竖条 = 「这是别人说的话」；正文最多两行，再多就该去看原文了，
+     所以整张卡自己就是一颗按钮：按下去滚回被引的那一条。× 单独靠右，是唯一会改动这条消息的动作。 */
+  .quote-bar[hidden] { display: none; }
+  .quote-bar { margin-bottom: 8px; }
+  .quote-card { display: flex; align-items: flex-start; gap: 4px; padding: 6px 6px 6px 9px;
+    border-radius: var(--radius-lg); background: var(--owb-bg-hover); border-left: 3px solid var(--owb-brand); }
+  .quote-jump { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+    padding: 0; border: none; background: none; font: inherit; text-align: left; color: inherit; cursor: pointer; }
+  .quote-src { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--owb-text-3); }
+  .quote-src .i { width: 12px; height: 12px; color: var(--owb-brand-text); }
+  .quote-src b { font-weight: 600; color: var(--owb-text-2); max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .quote-hint { color: var(--owb-text-3); }
+  .quote-hint::before { content: "·"; margin-right: 4px; }
+  .quote-jump:hover .quote-hint, .quote-jump:focus-visible .quote-hint { color: var(--owb-brand-text); }
+  .quote-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    font-size: 13px; line-height: 1.5; color: var(--owb-text-2); white-space: pre-wrap; word-break: break-word; }
+  .quote-x { flex: none; display: grid; place-items: center; width: 22px; height: 22px; padding: 0;
+    border: none; background: none; border-radius: var(--radius-sm); color: var(--owb-text-2); cursor: pointer; opacity: .6; }
+  .quote-x:hover { opacity: 1; background: var(--owb-bg-side); }
+  .quote-x:focus-visible, .quote-jump:focus-visible { outline: 2px solid var(--owb-brand-text); outline-offset: 1px; border-radius: var(--radius-sm); }
+  /* 同一段再点一次「引用」：闪一下，告诉他「已经引着了」，而不是看着毫无反应 */
+  .quote-card.quote-flash { animation: attachflash .7s var(--owb-ease); }
+  /* 在回复里拖选一段就地冒出来的那颗按钮（ChatGPT/Claude 都是这一下） */
+  .sel-quote { position: fixed; z-index: 60; display: inline-flex; align-items: center; gap: 4px;
+    padding: 5px 10px; border: 1px solid var(--owb-border); border-radius: var(--radius-full);
+    background: var(--owb-card); color: var(--owb-text); box-shadow: var(--shadow-menu);
+    font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; white-space: nowrap; }
+  .sel-quote[hidden] { display: none; }
+  .sel-quote:hover { border-color: var(--owb-brand); color: var(--owb-brand-text); background: var(--owb-brand-weak); }
+  .sel-quote .i { width: 12px; height: 12px; }
   /* ---------- 输入框上方的素材 chip ----------
      一枚 chip = [缩略图/图标] [图片 2] [文件名] [体积] [↺] [×]。
      缩略图那一格固定 28 见方，所有 chip 的文字因此落在同一条基线上；体积紧挨着文件名
@@ -894,6 +936,29 @@
   /* 同一个文件又拖了一次：闪一下已经在列的那枚。不闪的话界面上一动不动，人以为没拖进去 */
   .attach-chips .attach-chip.attach-flash { animation: attachflash .7s var(--owb-ease); }
   @keyframes attachflash { 0%, 100% { background: var(--owb-bg-hover); } 25%, 60% { background: var(--owb-brand-weak); } }
+  /* 图片走 64 见方的缩略图方片：一排文件名认不出哪张是哪张，缩略图一眼就认出来。
+     名字藏进 title 和 aria-label（GPT/Claude 同样处理），方片底下压一条「图片 N」——
+     「第一张放左边」这种话要指得住，编号就不能只活在发出去的正文里。 */
+  .attach-chips .attach-chip.is-tile { position: relative; width: 64px; height: 64px; max-width: 64px; padding: 0; overflow: hidden; border-radius: var(--radius-lg); }
+  .attach-chips .attach-chip.is-tile .attach-open { position: absolute; inset: 0; padding: 0; gap: 0; }
+  .attach-chips .attach-chip.is-tile .attach-ic { width: 100%; height: 100%; border-radius: 0; }
+  .attach-chips .attach-chip.is-tile .attach-thumb { width: 100%; height: 100%; border-radius: 0; }
+  .attach-chips .attach-chip.is-tile .attach-ic > .i { width: 22px; height: 22px; }
+  .attach-chips .attach-chip.is-tile .attach-name, .attach-chips .attach-chip.is-tile .attach-size { display: none; }
+  .attach-chips .attach-chip.is-tile em { position: absolute; left: 0; right: 0; bottom: 0; padding: 1px 4px; border-radius: 0;
+    background: rgba(0,0,0,.55); color: #fff; font-size: 11px; text-align: center; pointer-events: none; }
+  .attach-chips .attach-chip.is-tile .attach-x, .attach-chips .attach-chip.is-tile .attach-retry {
+    position: absolute; top: 2px; width: 18px; height: 18px; border-radius: var(--radius-full);
+    background: rgba(0,0,0,.55); color: #fff; opacity: 0; transition: opacity var(--owb-t-fast) var(--owb-ease); }
+  .attach-chips .attach-chip.is-tile .attach-x { right: 2px; }
+  .attach-chips .attach-chip.is-tile .attach-retry { right: 22px; }
+  /* 触屏上没有 hover，永远看不见那颗 ×：细指针才藏，粗指针一直显形 */
+  .attach-chips .attach-chip.is-tile:hover .attach-x, .attach-chips .attach-chip.is-tile:focus-within .attach-x,
+  .attach-chips .attach-chip.is-tile:hover .attach-retry, .attach-chips .attach-chip.is-tile:focus-within .attach-retry { opacity: 1; }
+  @media (pointer: coarse) {
+    .attach-chips .attach-chip.is-tile .attach-x, .attach-chips .attach-chip.is-tile .attach-retry { opacity: 1; }
+  }
+  .attach-chips .attach-chip.is-tile .attach-x:hover, .attach-chips .attach-chip.is-tile .attach-retry:hover { background: rgba(0,0,0,.78); }
   .input-card.dragging { outline: 2px dashed var(--owb-brand); outline-offset: -2px; }
   /* 拖到半空中时盖在输入框上的一句话。原来只有一圈虚线，没有一个字——松手会发生什么全靠猜 */
   .drop-hint { display: none; }
@@ -2724,6 +2789,7 @@
       <div class="input-card" style="position:relative">
         <div class="mention-menu" id="mention-menu"></div>
         <div id="scene-tag-box"></div>
+        <div class="quote-bar" id="quote-bar" hidden></div>
         <div class="attach-chips" id="attach-chips"></div>
         <div id="input-box"><div id="input-hl" aria-hidden="true"></div><textarea id="input" rows="2" placeholder="今天帮你做些什么？@ 引用文件，/ 调用技能与指令"></textarea></div>
         <div class="card-toolbar">
