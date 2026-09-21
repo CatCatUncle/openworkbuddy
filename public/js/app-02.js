@@ -1674,7 +1674,6 @@ async function openModal(kind, subTab) {
 // [id, 名称, 默认键, 固定?, 系统级?]；用户改绑存 config.shortcuts（只存改过的项）
 const SHORTCUT_DEFS = [
   ["open-settings", "打开设置", "Meta+Comma"],
-  ["voice-record", "语音录制开关", "Meta+D"],
   ["chat-search", "对话内搜索", "Meta+F"],
   ["send", "发送消息", "Enter", true],
   ["newline", "输入时换行", "Shift+Enter", true],
@@ -1765,7 +1764,6 @@ function navTask(dir) {
 }
 const SHORTCUT_ACTIONS = {
   "open-settings": () => openModal("settings"),
-  "voice-record": () => toast("语音录制暂未支持"),
   "chat-search": () => openChatSearch(),
   "new-chat": () => document.getElementById("new-task").click(),
   "stop": () => {
