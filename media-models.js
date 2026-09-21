@@ -44,14 +44,24 @@ const PROVIDER_KINDS = [
   // relay：这两类是**中转**，后面接的是谁只有用户自己知道，所以别家的原始型号名在这儿是合法的
   // （new-api 正是按型号名路由到上游渠道的）。其余每一类都只认自己家的型号名，见下面的 brandOf / mismatch。
   { kind: "newapi", label: "new-api / one-api 自建网关", base_url: "", key_url: "", relay: true },
-  { kind: "custom", label: "其它 OpenAI 兼容接口", base_url: "", key_url: "", relay: true },
+  // 名字里带「OpenAI 兼容」是给用户看的：vLLM / LM Studio / one-api 这些自建的、
+  // 内网里的网关都走这一条。它跟别的渠道类型不一样的地方是**地址和型号都得自己填**——
+  // 没有默认地址可补，模型清单也只能现问它自己（见 chat-models.js 的 customTemplate）。
+  { kind: "custom", label: "OpenAI 兼容（自定义）", base_url: "", key_url: "", relay: true },
 ];
 
 /**
  * 这个渠道走哪家协议。渠道这一层定协议，不是模型那一层——一个接口地址只可能说一种话。
  * 老配置里协议记在模型条目上（config.models[i].provider），迁移时按这条规则收上来。
+ *
+ * 第二个参数是渠道行上手写的 protocol：自建网关后面接的是谁，从 kind 上看不出来
+ * （custom 的地址长得跟谁都一样），所以留一个地方能直说「我这台后面接的是 Claude」。
+ * 只在值合法时才认——写错一个词就把整条渠道换了协议太危险，宁可退回按 kind 的老规矩。
  */
-function protoOfKind(kind) {
+const PROTOCOLS = ["openai", "anthropic"];
+function protoOfKind(kind, protocol) {
+  const p = String(protocol || "").trim().toLowerCase();
+  if (PROTOCOLS.includes(p)) return p;
   return kind === "anthropic" ? "anthropic" : "openai";
 }
 
@@ -347,6 +357,11 @@ function normalizeProviders(providers) {
     p.kind = PROVIDER_KINDS.some((k) => k.kind === p.kind) ? p.kind : guessKind(p.base_url);
     p.base_url = String(p.base_url || "").trim() || baseOfKind(p.kind);
     p.api_key = String(p.api_key || "").trim();
+    // 手写的协议只在「跟这个 kind 的默认协议不一样」时才留在配置里。custom 底下写一个
+    // openai 是句废话，留着反倒会让「同一个地址、同一把 Key、两种协议」这个判据看不出差别
+    const proto = String(p.protocol || "").trim().toLowerCase();
+    if (PROTOCOLS.includes(proto) && proto !== protoOfKind(p.kind)) p.protocol = proto;
+    else delete p.protocol;
     p.id = p.id && !ids.has(String(p.id)) ? String(p.id) : uniqueId(p.name || p.kind, ids);
     ids.add(p.id);
   }
@@ -375,7 +390,9 @@ function normalizeProviders(providers) {
 function dedupeProviders(config) {
   const providers = Array.isArray(config.providers) ? config.providers.filter((p) => p && typeof p === "object") : [];
   if (providers.length < 2) return false;
-  const groupOf = (p) => `${p.kind} ${baseForUse(String(p.base_url || "").trim(), "media").replace(/\/+$/, "").toLowerCase()}`;
+  // 分组里带上协议：同一个地址、同一把 Key，一个说 OpenAI 一个说 Anthropic，是两条渠道。
+  // 不带的话它们会被并成一行，其中一半模型就会按错的协议去打（表现是「某几个模型一用就 400」）
+  const groupOf = (p) => `${p.kind} ${protoOfKind(p.kind, p.protocol)} ${baseForUse(String(p.base_url || "").trim(), "media").replace(/\/+$/, "").toLowerCase()}`;
   const groups = new Map();
   for (const p of providers) {
     const g = groupOf(p);
@@ -697,7 +714,7 @@ function rehomeMismatched(providers, models) {
 }
 
 module.exports = {
-  CAPS, CAP_CN, PROVIDER_KINDS, CATALOG,
+  CAPS, CAP_CN, PROVIDER_KINDS, CATALOG, PROTOCOLS,
   guessCap, capOfModel, guessKind, baseOfKind, catalogFor, protoOfKind, videoProtoOf, VIDEO_PROTOS, VIDEO_PROTO_CN,
   providerKeyOf, uniqueId, normalizeProviders, baseForUse, dedupeProviders,
   normalize, flatten, resolve, pick, MediaPickError,

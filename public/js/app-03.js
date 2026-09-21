@@ -744,8 +744,16 @@ function renderOnbBrain(body) {
         <select id="onb-model">${st.models.map(m =>
           `<option value="${esc(m.name)}" data-url="${esc(m.base_url)}" data-local="${m.local ? 1 : 0}" data-model="${esc(m.model)}">${esc(m.name)}${m.local ? "" : ` · ${esc(m.model)}`}${m.has_key ? "（已配）" : ""}</option>`).join("")}${
           (st.templates || []).length ? `<optgroup label="${st.models.length ? "新接一家" : "选一家服务商"}">${(st.templates || []).map(t =>
-          `<option value="tpl:${esc(t.kind)}" data-url="${esc(t.base_url)}" data-local="${t.local ? 1 : 0}" data-model="${esc(t.model)}">${esc(t.name)}${t.local ? "" : ` · ${esc(t.model)}`}</option>`).join("")}</optgroup>` : ""}</select>
+          `<option value="tpl:${esc(t.kind)}" data-url="${esc(t.base_url)}" data-local="${t.local ? 1 : 0}" data-model="${esc(t.model)}">${esc(t.name)}${t.local ? "" : ` · ${esc(t.model)}`}</option>`).join("")}</optgroup>` : ""}${
+          // 自建网关（公司内网那台、本机跑的 vLLM / LM Studio）单独列一组：它跟上面那几家不一样，
+          // 地址和型号都得当场填。以前这一类只能「先跳过向导」，去设置里绕一圈
+          st.custom ? `<optgroup label="自己接一个"><option value="tpl:${esc(st.custom.kind)}" data-custom="1" data-url="" data-local="0" data-model="">${esc(st.custom.label)} · 自己填地址</option></optgroup>` : ""}</select>
         <div class="onb-tip" id="onb-tip"></div>
+        <div id="onb-brow" hidden>
+          <label class="onb-lb">接口地址</label>
+          <input id="onb-base" placeholder="https://你的网关/v1" autocomplete="off" spellcheck="false">
+          <div class="onb-tip">填到 /v1 那一层就行——OpenAI 兼容的接口，后面那一截程序自己接。</div>
+        </div>
         <div id="onb-mrow" hidden>
           <label class="onb-lb">用哪个模型</label>
           <select id="onb-mdl"></select>
@@ -795,6 +803,8 @@ function renderOnbBrain(body) {
   // 之前这一屏把模板里那个 qwen3:14b 当成定局，等于逼所有人去下一个 9GB 的模型，
   // 手上明明跑着别的也用不上。所以选中本机那条时，现问一次它「你这儿都有啥」。
   const mrow = body.querySelector("#onb-mrow");
+  const brow = body.querySelector("#onb-brow");
+  const baseInp = body.querySelector("#onb-base");
   const mdl = body.querySelector("#onb-mdl");
   const mdlCustom = body.querySelector("#onb-mdl-custom");
   const mdlTip = body.querySelector("#onb-mdl-tip");
@@ -803,19 +813,26 @@ function renderOnbBrain(body) {
   const pickedModel = () => (mdl.value === CUSTOM ? mdlCustom.value.trim() : mdl.value.trim());
   const syncCustom = () => { mdlCustom.hidden = mdl.value !== CUSTOM; if (!mdlCustom.hidden) setTimeout(() => mdlCustom.focus(), 20); };
   mdl.onchange = syncCustom;
+  // 选中的这条是不是「自己接的那台」（自建网关 / 本机部署）。它和另外两种都不一样：
+  // 地址要人填、型号要现问它自己、Key 可有可无
+  const isSelfHosted = () => { const o = sel.selectedOptions[0]; return !!(o && o.dataset.custom === "1"); };
+  // 这一趟问的是谁的清单：自建网关问的是框里那个地址，别家问的是选项上带的地址。
+  // 回包落地之前要拿它核一遍——期间人可能已经改选别家了
+  const urlOf = (o) => (o && o.dataset.custom === "1" ? baseInp.value.trim() : (o ? o.dataset.url : ""));
   // 「重新问一次」：他照着提示去终端 ollama serve / ollama pull 之后，得有地方回来再问一遍。
   // 没有这颗，清单就永远停在他还没启动 Ollama 的那一刻——提示教他去做的事做完了却没处生效。
+  // 自建网关那边同理：网关刚起起来、或者刚在网关里加了个型号，也得有地方再问一遍
   const againLink = ` <a href="#" id="onb-mdl-again">重新问一次</a>`;
-  const fillModels = (url, fallback, refetch) => {
+  const fillModels = (url, fallback, refetch, self) => {
     const has = refetch ? undefined : listed.get(url);
     const opt = (id) => (id ? `<option value="${esc(id)}">${esc(id)}</option>` : "");
     const bindAgain = () => {
       const a = mdlTip.querySelector("#onb-mdl-again");
-      if (a) a.onclick = (e) => { e.preventDefault(); fillModels(url, fallback, true); };
+      if (a) a.onclick = (e) => { e.preventDefault(); fillModels(url, fallback, true, self); };
     };
     if (has === undefined) {
       mdl.innerHTML = opt(fallback) + `<option value="${CUSTOM}">自己填…</option>`;
-      mdlTip.textContent = "正在问本机 Ollama 装了哪些模型…";
+      mdlTip.textContent = self ? "正在问这台网关有哪些模型…" : "正在问本机 Ollama 装了哪些模型…";
       fetch("/api/provider-models", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: url }),
       }).then((r) => r.json()).catch(() => ({ ok: false }))
@@ -824,18 +841,23 @@ function renderOnbBrain(body) {
           // 空清单不进缓存：这一趟多半是 Ollama 还没起来，缓住了他起完再来也还是空的
           if (got.length) listed.set(url, got);
           else listed.delete(url);
-          // 期间他已经改选别家了，就别把 Ollama 的清单糊到人家头上
-          const cur = sel.selectedOptions[0];
-          if (!mdl.isConnected || !cur || cur.dataset.url !== url) return;
-          if (got.length) return fillModels(url, fallback);
+          // 期间他已经改选别家了（或者把地址改了），就别把这一家的清单糊到人家头上
+          if (!mdl.isConnected || urlOf(sel.selectedOptions[0]) !== url) return;
+          if (got.length) return fillModels(url, fallback, false, self);
           // 一个都没列出来，分两种，下一步要敲的命令不一样：连都没连上要先 ollama serve，
-          // 连上了只是一个模型都没拉过，叫他再去 serve 一遍纯属瞎指挥
+          // 连上了只是一个模型都没拉过，叫他再去 serve 一遍纯属瞎指挥。
+          // 自建网关那边又是另一回事：/models 有没有、里面有没有东西，全看那台机器装的是什么网关
           mdl.innerHTML = opt(fallback) + `<option value="${CUSTOM}">自己填…</option>`;
           const pull = `<code>ollama pull ${esc(fallback || "qwen3:8b")}</code>`;
-          mdlTip.innerHTML = d && d.ok
-            ? `本机 Ollama 连上了，但一个模型都还没装。在终端跑 ${pull} 拉一个（约 5GB），回来点「重新问一次」。${againLink}`
-            : `没连上本机 Ollama（${esc(url)}）。先在终端跑 <code>ollama serve</code> 把它起起来，`
-              + `再 ${pull} 拉一个；已经装了别的就选「自己填…」把名字写进去。${againLink}`;
+          mdlTip.innerHTML = self
+            ? (d && d.ok
+              ? `这台网关回了个空清单。有的网关没有 /models 这个接口，选「自己填…」把型号名写进去就行。${againLink}`
+              : `没问到模型列表（${esc((d && d.why) || "请求没发出去")}）。不少自建网关没有 /models 这个接口——`
+                + `选「自己填…」直接把型号名写进去。${againLink}`)
+            : (d && d.ok
+              ? `本机 Ollama 连上了，但一个模型都还没装。在终端跑 ${pull} 拉一个（约 5GB），回来点「重新问一次」。${againLink}`
+              : `没连上本机 Ollama（${esc(url)}）。先在终端跑 <code>ollama serve</code> 把它起起来，`
+                + `再 ${pull} 拉一个；已经装了别的就选「自己填…」把名字写进去。${againLink}`);
           bindAgain();
         });
       return;
@@ -843,15 +865,48 @@ function renderOnbBrain(body) {
     mdl.innerHTML = has.map(opt).join("") + `<option value="${CUSTOM}">自己填…</option>`;
     // 模板里那个默认值只在他确实装了的时候才选中——没装还默认选它，验活必然 404
     mdl.value = has.includes(fallback) ? fallback : has[0];
-    mdlTip.innerHTML = `这台机器上装了 ${has.length} 个模型。列表里没有想要的，选「自己填…」。${againLink}`;
+    mdlTip.innerHTML = self
+      ? `这台网关报了 ${has.length} 个模型。列表里没有想要的，选「自己填…」。${againLink}`
+      : `这台机器上装了 ${has.length} 个模型。列表里没有想要的，选「自己填…」。${againLink}`;
     bindAgain();
     syncCustom();
   };
+  // 地址填完（或者离开那一格）就去问一次：自建网关上有哪些型号只有它自己知道，
+  // 而以前这一步要等存完、在设置里的渠道卡上才发生——地址写错得先落一条坏配置才发现
+  let lastBase = "";
+  const askBase = () => {
+    if (!isSelfHosted()) return;
+    const url = baseInp.value.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      mdl.innerHTML = `<option value="${CUSTOM}">自己填…</option>`;
+      mdlTip.textContent = "先把上面那个接口地址填全（http(s)://…/v1），我再问它有哪些模型。";
+      return;
+    }
+    if (url === lastBase) return;
+    lastBase = url;
+    fillModels(url, "", false, true);
+  };
+  baseInp.onchange = askBase;
+  baseInp.onblur = askBase;
   const syncTip = () => {
     const opt = sel.selectedOptions[0];
     const local = !!opt && opt.dataset.local === "1";
+    const self = isSelfHosted();
     const url = opt ? opt.dataset.url : "";
     const srcId = KEY_SOURCES[url] ? url : (url ? "" : "anthropic");
+    brow.hidden = !self;
+    if (self) {
+      // 没有官网可指，也就没有「去拿 Key ↗」——要不要 Key 是那台网关自己定的。
+      // 整句写成一个文本节点（不夹 <b> / <code>）：翻译是按文本节点查的，夹了标签就只剩碎片
+      tipEl.textContent = "自己接的那台要说 OpenAI 兼容的接口：地址填到 /v1 那一层，"
+        + "别把 /chat/completions 也写进去（后面那一截程序自己会接）。"
+        + "要不要 Key 由它自己决定——不要 Key 的（内网的 vLLM、LM Studio）留空就行。";
+      keyEl.disabled = false;
+      keyEl.placeholder = "有 Key 就填，不要 Key 的留空";
+      mrow.hidden = false;
+      askBase();
+      return;
+    }
     tipEl.innerHTML = local
       ? `本地模型不需要 Key，确认 Ollama 已经在跑就行。${keyLink(url)}`
       : `${ONB_TIPS[srcId] || ONB_TIPS[url] || "去这家服务商的控制台拿 API Key。"} ${keyLink(srcId)}`;
@@ -872,16 +927,28 @@ function renderOnbBrain(body) {
     try {
       if (mode === "cloud") {
         go.textContent = "正在验活…（发一条真实请求，可能要十几秒）";
-        // model_id 只在本机那条路上带：云端用哪个型号是模板定好的，本机才需要他自己点名
+        const self = isSelfHosted();
+        const base = baseInp.value.trim();
+        // 地址和型号都得先有：地址空着发出去就是一个必然失败的请求，
+        // 报回来的错还会长得像「Key 不对」，人就在那两个框之间来回试
+        if (self && !/^https?:\/\//i.test(base)) {
+          err.textContent = "先填接口地址（http(s)://…，填到 /v1 那一层）";
+          return;
+        }
+        // model_id 只在本机那条路和自建网关那条路上带：云端用哪个型号是模板定好的
         const wantModel = mrow.hidden ? "" : pickedModel();
-        if (!mrow.hidden && !wantModel) { err.textContent = "先选一个模型——本机装了哪些只有你知道，我猜不出来"; return; }
+        if (!mrow.hidden && !wantModel) {
+          err.textContent = self ? "先选一个模型——你那台网关上有哪些，这我猜不出来" : "先选一个模型——本机装了哪些只有你知道，我猜不出来";
+          return;
+        }
         const r = await fetch("/api/onboarding", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(Object.assign(
             sel.value.startsWith("tpl:")
               ? { kind: sel.value.slice(4), api_key: keyEl.value.trim() }
               : { model: sel.value, api_key: keyEl.value.trim() },
-            wantModel ? { model_id: wantModel } : {})),
+            wantModel ? { model_id: wantModel } : {},
+            self ? { base_url: base } : {})),
         }).then(r => r.json()).catch(() => ({ ok: false, error: "请求失败，服务没起来？" }));
         if (!r.ok) { err.textContent = r.error || "验活没通过"; return; }
         toast(`已接上 ${r.active_model}`, "circle-check");

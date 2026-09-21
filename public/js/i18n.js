@@ -1905,7 +1905,33 @@
       "Ollama 本地（不要 Key）": "Ollama local (no key needed)",
       "TypeSafe Jev（判断模型，不产文字）": "TypeSafe Jev (decision model, no text output)",
       "new-api / one-api 自建网关": "new-api / one-api self-hosted gateway",
-      "其它 OpenAI 兼容接口": "Other OpenAI-compatible API",
+      "OpenAI 兼容（自定义）": "OpenAI-compatible (custom)",
+      "OpenAI 兼容（自定义） · 自己填地址": "OpenAI-compatible (custom) · enter your own URL",
+      "自己接一个": "Connect your own",
+      "接口地址": "API URL",
+      "接口协议：按渠道类型（默认）": "API protocol: follow the channel type (default)",
+      "接口协议：OpenAI 兼容（/chat/completions）": "API protocol: OpenAI-compatible (/chat/completions)",
+      "接口协议：Anthropic（/v1/messages）": "API protocol: Anthropic (/v1/messages)",
+      "问一下它有哪些模型": "Ask it which models it has",
+      "正在问…": "Asking…",
+      "有 Key 就填，不要 Key 的留空": "Fill it in if it needs a key, otherwise leave it empty",
+      "https://你的网关/v1": "https://your-gateway/v1",
+      "填到 /v1 那一层就行——OpenAI 兼容的接口，后面那一截程序自己接。": "Stop at the /v1 level — it's an OpenAI-compatible API, and the last part of the path is added for you.",
+      "自己接的那台要说 OpenAI 兼容的接口：地址填到 /v1 那一层，别把 /chat/completions 也写进去（后面那一截程序自己会接）。要不要 Key 由它自己决定——不要 Key 的（内网的 vLLM、LM Studio）留空就行。": "The server you're connecting has to speak the OpenAI-compatible API: fill the URL up to the /v1 level and don't include /chat/completions (that part is added for you). Whether it needs a key is up to it — leave the field empty for ones that don't (in-house vLLM, LM Studio).",
+      "先把上面那个接口地址填全（http(s)://…/v1），我再问它有哪些模型。": "Fill in the full API URL above (http(s)://…/v1), then I'll ask it which models it has.",
+      "先填接口地址（http(s)://…，填到 /v1 那一层）": "Fill in the API URL first (http(s)://…, up to the /v1 level)",
+      "先选一个模型——你那台网关上有哪些，这我猜不出来": "Pick a model first — only your gateway knows which ones it has",
+      "正在问这台网关有哪些模型…": "Asking this gateway which models it has…",
+      "这台网关回了个空清单。有的网关没有 /models 这个接口，选「自己填…」把型号名写进去就行。": "This gateway returned an empty list. Some gateways don't implement /models — pick \"Type it myself…\" and write the model name in.",
+      "它回了个空清单。有的网关没有这个接口，保存后直接把型号名写进去也一样。": "It returned an empty list. Some gateways don't implement this endpoint — after saving, just type the model name in.",
+      "没能问到（请求没发出去），先保存也行——渠道卡上还会再拉一次。": "Couldn't ask (the request never went out). You can save anyway — the channel card will try again.",
+      "先填接口地址，再问它有哪些模型": "Fill in the API URL first, then ask it which models it has",
+      "地址填到 /v1 那一层就行，后面那截（/chat/completions）程序自己会接": "Stop the URL at the /v1 level — the last part (/chat/completions) is added for you",
+      "自建网关 / 本机部署（vLLM、LM Studio、one-api 这些）：填到 /v1 那一层就行——OpenAI 兼容的接口，后面那一截程序自己接，别把 /chat/completions 也写进去。": "Self-hosted gateway / local deployment (vLLM, LM Studio, one-api…): stop at the /v1 level — it's an OpenAI-compatible API and the rest of the path is added for you, so don't include /chat/completions.",
+      "new-api / one-api：填网关自己的根地址（一般到 /v1 那一层），型号名照网关里登记的写。": "new-api / one-api: enter the gateway's own root URL (usually up to the /v1 level) and use the model names exactly as registered there.",
+      "Claude 官方留空即可（SDK 自带官方地址）；接中转就把中转的地址填上。": "Leave empty for Claude official (the SDK knows the official URL); if you route through a gateway, enter that gateway's URL.",
+      "自建网关要填完整的接口地址（http(s)://…）": "A self-hosted gateway needs a full API URL (http(s)://…)",
+      "自建网关要填一个模型名——你那台机器上有哪些，这我猜不出来": "A self-hosted gateway needs a model name — only your server knows which ones it has",
       "自定义": "Custom",
       "企业管理后台": "Admin console",
       "只读（审计员）": "Read-only (auditor)",
@@ -2106,6 +2132,15 @@
   PATTERNS.en.push([/^…共 (\d+) 个$/, "\u2026 $1 in all"]);
   PATTERNS.en.push([/^(\d+) 个对话模型$/, "$1 chat model(s)"]);
   PATTERNS.en.push([/^(\d+) 个媒体模型$/, "$1 media model(s)"]);
+  // 自建网关那条路的两句话都带着变量（清单多长、为什么没问到），整句查词典查不到，各配一条正则
+  PATTERNS.en.push([/^这台网关报了 (\d+) 个模型。列表里没有想要的，选「自己填…」。$/,
+    "This gateway listed $1 model(s). Not seeing what you want? Pick \u201cType it myself…\u201d."]);
+  PATTERNS.en.push([/^它报了 (\d+) 个模型：(.+)。保存后在这条渠道卡里「添加模型」就能挑。$/,
+    "It listed $1 model(s): $2. After saving, use \u201cAdd model\u201d on this channel's card to pick one."]);
+  PATTERNS.en.push([/^没问到（(.+?)）。有些网关没有 \/models 这个接口，保存后直接填型号名也一样。$/,
+    "No answer ($1). Some gateways don't implement /models \u2014 after saving, just type the model name in instead."]);
+  PATTERNS.en.push([/^没问到模型列表（(.+?)）。不少自建网关没有 \/models 这个接口——选「自己填…」直接把型号名写进去。$/,
+    "Couldn't get a model list ($1). Plenty of self-hosted gateways don't implement /models \u2014 pick \u201cType it myself…\u201d and write the model name in."]);
   PATTERNS.en.push([/^本机这份有 (\d+) 个节点。项目里那个原文件已经原样备份在 \.openworkbuddy 目录里，随时翻得回去。$/,
     "The local copy has $1 node(s). The project's original file is already backed up untouched under .openworkbuddy, so you can go back any time."]);
   PATTERNS.en.push([/^画布上的 (\d+) 个节点和全部连线都会没。素材文件本身不动，还在工作区里。$/,

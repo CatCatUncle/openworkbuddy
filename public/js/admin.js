@@ -2663,7 +2663,7 @@ PAGES.models = {
      */
     const kindOpts = d.kinds.length
       ? d.kinds.map((k) => ({ value: k.kind, label: k.label }))
-      : [{ value: "custom", label: "其它 OpenAI 兼容接口" }]; // 目录没拉到也得能建，别把人堵在这儿
+      : [{ value: "custom", label: "OpenAI 兼容（自定义）" }]; // 目录没拉到也得能建，别把人堵在这儿
     const provOf = (id) => (d.s.providers || []).find((x) => x.id === id);
     const provForm = (p) => {
       const m = modal({

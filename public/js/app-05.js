@@ -993,11 +993,21 @@ function paintModels(pane, s) {
     ${!po ? "" : `
     <div id="prov-form" style="display:none">
       <select id="pf-kind">${kinds.map((k) => `<option value="${esc(k.kind)}">${esc(k.label)}</option>`).join("")}</select>
+      <select id="pf-proto">
+        <option value="">接口协议：按渠道类型（默认）</option>
+        <option value="openai">接口协议：OpenAI 兼容（/chat/completions）</option>
+        <option value="anthropic">接口协议：Anthropic（/v1/messages）</option>
+      </select>
       <input id="pf-name" placeholder="给它起个名（如：我的火山方舟）">
       <input id="pf-base" placeholder="接口地址（选了类型会自动填）">
+      <div class="d" id="pf-base-tip" style="font-size:12px;margin:-2px 0 8px"></div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <input id="pf-key" type="password" placeholder="API Key" autocomplete="off" style="flex:1;min-width:0;margin:0">
         <span id="pf-key-src"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <button type="button" class="btn-plain" id="pf-models">问一下它有哪些模型</button>
+        <span class="d" id="pf-models-tip" style="font-size:12px;margin:0"></span>
       </div>
       <button class="btn-brand" id="pf-save">保存渠道</button>
       <button class="btn-plain" id="pf-cancel">取消</button>
@@ -1455,23 +1465,78 @@ function bindModels(pane, s, po) {
 
   const kinds = (mediaCatalog || {}).kinds || [];
   const form = pane.querySelector("#prov-form");
+  // 自建网关那几家没有默认地址，地址得人自己填，所以给它一句话说清填到哪一层
+  const ADDR_TIP = {
+    custom: "自建网关 / 本机部署（vLLM、LM Studio、one-api 这些）：填到 /v1 那一层就行——OpenAI 兼容的接口，后面那一截程序自己接，别把 /chat/completions 也写进去。",
+    newapi: "new-api / one-api：填网关自己的根地址（一般到 /v1 那一层），型号名照网关里登记的写。",
+    anthropic: "Claude 官方留空即可（SDK 自带官方地址）；接中转就把中转的地址填上。",
+  };
+  /** 换了渠道类型就把这一栏的说明和「去拿 Key」重画一遍：上一家的说明留在下面，人照着它填就填错了 */
+  const syncKindRows = () => {
+    const kind = pane.querySelector("#pf-kind").value;
+    const k = kinds.find((x) => x.kind === kind) || {};
+    pane.querySelector("#pf-base-tip").textContent = ADDR_TIP[kind] || "";
+    pane.querySelector("#pf-models-tip").textContent = "";
+    pane.querySelector("#pf-key-src").innerHTML = kindKeyLink(kind, pane.querySelector("#pf-base").value.trim() || k.base_url || "");
+  };
   let editP = -1;
   const showProvForm = (p) => {
     form.style.display = "";
     pane.querySelector("#pf-kind").value = (p && p.kind) || (kinds[0] || {}).kind || "custom";
     pane.querySelector("#pf-name").value = (p && p.name) || "";
     pane.querySelector("#pf-base").value = (p && p.base_url) || "";
+    // 手写协议：自建网关后面接的其实是 Claude 时选这个。老库里没这一栏，选中「按渠道类型」
+    pane.querySelector("#pf-proto").value = (p && p.protocol) || "";
     // Key 框永远是空的：服务端只回末四位，原文谁也拿不到。留空 = 不动它（见 pf-save）
     const keyEl = pane.querySelector("#pf-key");
     keyEl.value = "";
     keyEl.placeholder = p && p.key_hint ? `已装 ${p.key_hint}，留空就不动它` : "API Key";
-    pane.querySelector("#pf-key-src").innerHTML = kindKeyLink((p && p.kind) || "", (p && p.base_url) || "");
+    pane.querySelector("#pf-models-tip").textContent = "";
+    syncKindRows();
   };
   pane.querySelector("#pf-kind").onchange = (e) => {
     const k = kinds.find((x) => x.kind === e.target.value) || {};
     pane.querySelector("#pf-base").value = k.base_url || "";
-    pane.querySelector("#pf-key-src").innerHTML = kindKeyLink(k.kind || "", k.base_url || "");
-    if (!pane.querySelector("#pf-name").value) pane.querySelector("#pf-name").value = String(k.label || "").replace(/（.*/, "");
+    // 名字只在有官网名的那些类型上预填。自建网关那两类没有「这家叫啥」可言，
+    // 填个「OpenAI 兼容」当渠道名，一条网关上接两台时两张卡片会长得一模一样
+    if (!pane.querySelector("#pf-name").value && /^https?:\/\//.test(k.base_url || "")) {
+      pane.querySelector("#pf-name").value = String(k.label || "").replace(/（.*/, "");
+    }
+    syncKindRows();
+  };
+  pane.querySelector("#pf-base").onchange = () => {
+    syncKindRows();
+    // 名字还空着就拿域名当名字：「gw.mycorp.com」比「自定义渠道」强，接了两台也分得清
+    const nameEl = pane.querySelector("#pf-name");
+    const base = pane.querySelector("#pf-base").value.trim();
+    if (!nameEl.value && /^https?:\/\//i.test(base)) {
+      try { nameEl.value = new URL(base).host; } catch {}
+    }
+  };
+  /**
+   * 存之前先问一句「你这儿都有哪些模型」。
+   *
+   * 渠道卡上本来就会拉一次，但那是**存完**的事：地址写错、网关没起、Key 不对，
+   * 都是先落一条坏配置、再在卡片上看到一句「没问到」——而那句话跟「网关没有 /models 接口」
+   * 长得一模一样。摆在这一步，人还没提交就能分清是地址错了还是这网关本来就不报清单。
+   */
+  pane.querySelector("#pf-models").onclick = async () => {
+    const tipEl = pane.querySelector("#pf-models-tip");
+    const base = pane.querySelector("#pf-base").value.trim().replace(/\/+$/, "");
+    if (!/^https?:\/\//i.test(base)) return toast("先填接口地址，再问它有哪些模型");
+    tipEl.textContent = "正在问…";
+    const d = await fetch("/api/provider-models", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_url: base, api_key: pane.querySelector("#pf-key").value.trim() }),
+    }).then((r) => r.json()).catch(() => null);
+    if (!tipEl.isConnected) return;
+    if (!d) { tipEl.textContent = "没能问到（请求没发出去），先保存也行——渠道卡上还会再拉一次。"; return; }
+    const ids = (d.models || []).map((m) => m.id).filter(Boolean);
+    tipEl.textContent = !d.ok
+      ? `没问到（${d.why || "未知原因"}）。有些网关没有 /models 这个接口，保存后直接填型号名也一样。`
+      : (ids.length
+        ? `它报了 ${ids.length} 个模型：${ids.slice(0, 6).join("、")}${ids.length > 6 ? " 等" : ""}。保存后在这条渠道卡里「添加模型」就能挑。`
+        : "它回了个空清单。有的网关没有这个接口，保存后直接把型号名写进去也一样。");
   };
   pane.querySelector("#pf-new").onclick = () => { editP = -1; showProvForm(null); pane.querySelector("#pf-kind").onchange({ target: pane.querySelector("#pf-kind") }); };
   pane.querySelector("#pf-cancel").onclick = () => (form.style.display = "none");
@@ -1512,14 +1577,21 @@ function bindModels(pane, s, po) {
     const v = (id) => pane.querySelector("#" + id).value.trim();
     const kind = v("pf-kind");
     if (!v("pf-name")) return toast("给渠道起个名字，下面挑模型时要按名字认");
+    const base = v("pf-base");
     // Anthropic 官方不用填地址（SDK 自带），别的都得是完整的 http(s) 地址
-    if (kind !== "anthropic" && !/^https?:\/\//i.test(v("pf-base"))) return toast("接口地址要填完整的 http(s) 地址");
+    if (kind !== "anthropic" && !/^https?:\/\//i.test(base)) return toast("接口地址要填完整的 http(s) 地址");
+    // 最常见的一种填错：把接口的完整路径抄进来了。程序会再往后接一次 /chat/completions，
+    // 于是请求打到 .../chat/completions/chat/completions 或 .../v1/messages/chat/completions——
+    // 上游回 404，而界面上从填 Key 到保存一路都是绿的
+    if (/\/(chat\/completions|completions|messages|responses)\/?$/i.test(base)) {
+      return toast("地址填到 /v1 那一层就行，后面那截（/chat/completions）程序自己会接");
+    }
     // 改一个已有渠道时把 Key 框留空 = 「这次不动 Key」。八颗星是后端约定的暗号（/^\*+$/ 原样保留），
     // 直接送空串会把人家的 Key 抹掉——而「只是想改个地址」正是最常见的一次编辑
     const typed = v("pf-key");
     const had = editP >= 0 && s.providers[editP].has_key;
     const key = typed || (had ? "********" : "");
-    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, base_url: v("pf-base"), api_key: key, has_key: !!key };
+    const entry = { id: editP >= 0 ? s.providers[editP].id : "", name: v("pf-name"), kind, base_url: base, protocol: v("pf-proto"), api_key: key, has_key: !!key };
     if (editP >= 0) s.providers[editP] = { ...s.providers[editP], ...entry }; else s.providers.push(entry);
     liveModels.clear(); // 换了地址或 Key，之前拉回来的清单就不作数了
     if (await saveAllModelTables(s, msg)) { form.style.display = "none"; paintModels(pane, s); }

@@ -4589,12 +4589,16 @@ const ONB_STUBS = `
     // 服务商清单（从目录来）：config 里一行模型都没有时向导也得有东西可选
     templates: [{ kind: "ark", label: "火山方舟（豆包）", name: "火山方舟", base_url: "https://ark.cn-beijing.volces.com/api/v3", key_url: "", model: "doubao-seed-1-6-250615", local: false },
                 { kind: "ollama", label: "Ollama 本地", name: "Ollama本地", base_url: "http://localhost:11434/v1", key_url: "", model: "qwen3:14b", local: true }],
+    // 自建网关（OpenAI 兼容）：没有默认地址、也没有默认型号，全得当场填
+    custom: { kind: "custom", label: "OpenAI 兼容（自定义）", base_url: "", key_url: "", model: "", local: false, custom: true },
     engines: [{ id: "claude-code", label: "Claude Code", installed: false, version: "", install: "npm i -g @anthropic-ai/claude-code" },
               { id: "codex", label: "Codex", installed: true, version: "0.42.0", install: "" }],
     engine: "builtin", search: { provider: "", has_key: false }, media: { image: true, video: false, tts: false, vision: false }, im: { configured: 1 } };
   let ONB_POST_OK = true, ENGINE_TEST_OK = true, SEARCH_TEST_OK = true, DONE_OK = true, SETTINGS_OK = true;
   // 本机 Ollama 装了哪些模型：null = 它压根没跑起来
   let OLLAMA_LIST = ["llama3.2:3b", "qwen3:8b", "gemma3:12b"];
+  // 自建网关报了哪些模型：null = 那台网关没连上
+  let GW_LIST = ["deepseek-chat", "qwen3-32b"];
   const GETS = []; window.__GETS = GETS;
   async function saveSettings(patch) { POSTS.push(["settings", patch]); return SETTINGS_OK; }
   window.fetch = async (url, opt) => {
@@ -4604,9 +4608,18 @@ const ONB_STUBS = `
     // 带不带 ?probe=1 都是同一张体检表：probe 只决定服务端要不要去探本机 CLI，前端拿到的字段一样
     if (url.split("?")[0] === "/api/onboarding" && method === "GET") { GETS.push(url); return j(JSON.parse(JSON.stringify(ST))); }
     if (url === "/api/onboarding") { POSTS.push(["onboarding", body]); if (!ONB_POST_OK) return j({ ok: false, error: "这个 Key 上游不认（HTTP 401）" });
-      const nm = body.kind ? (ST.templates.find((t) => t.kind === body.kind) || {}).name : body.model;
+      // 自建网关那条路落的渠道名是域名（服务端 commitTemplate 就是这么起的），替身跟着来
+      const nm = body.kind
+        ? (body.kind === "custom"
+          ? String(body.base_url || "").replace(/^https?:\\/\\//, "").replace(/\\/.*$/, "")
+          : (ST.templates.find((t) => t.kind === body.kind) || {}).name)
+        : body.model;
       ST = { ...ST, needs_setup: false, brain: { ok: true, via: "api", name: nm, model: "deepseek-chat" } }; return j({ ok: true, active_model: nm }); }
-    if (url === "/api/provider-models") { POSTS.push(["provider-models", body]); return j(OLLAMA_LIST === null ? { ok: false, why: "connect ECONNREFUSED", models: [] } : { ok: true, models: OLLAMA_LIST.map((id) => ({ id })) }); }
+    if (url === "/api/provider-models") { POSTS.push(["provider-models", body]);
+      // 本机 Ollama 和自建网关是两台不同的机器，各自报各自的清单
+      const gw = body.base_url && body.base_url !== "http://localhost:11434/v1";
+      const list = gw ? GW_LIST : OLLAMA_LIST;
+      return j(list === null ? { ok: false, why: "connect ECONNREFUSED", models: [] } : { ok: true, models: list.map((id) => ({ id })) }); }
     if (url === "/api/engines/test") { POSTS.push(["engine-test", body]); return j(ENGINE_TEST_OK ? { ok: true, reply: "好" } : { ok: false, why: "没登录", hint: "先在终端跑 codex login" }); }
     if (url === "/api/settings" && method === "POST") { POSTS.push(["settings-raw", body]); if (body.agent && body.agent.engine) ST = { ...ST, needs_setup: false, engine: body.agent.engine, brain: { ok: true, via: "engine", name: body.agent.engine, model: "" } }; return j({ ok: true }); }
     if (url === "/api/search/test") { POSTS.push(["search-test"]); if (SEARCH_TEST_OK) ST = { ...ST, search: { provider: "tavily", has_key: true } }; return j(SEARCH_TEST_OK ? { ok: true, provider: "tavily", sample: "x" } : { ok: false, error: "tavily 返回 0 条结果" }); }
@@ -4727,6 +4740,49 @@ const ONB_CHECKS = `
   POSTS.length = 0;
   q("#onb-key").value = "sk-bad2"; q("#onb-go").click(); await tick(); await tick();
   ok("选模板验活：POST 的是 {kind, api_key}，没有 model", POSTS.some(([k, b]) => k === "onboarding" && b.kind === "ark" && b.api_key === "sk-bad2" && !("model" in b)), JSON.stringify(POSTS));
+  q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
+
+  // ---- 自建网关（OpenAI 兼容）：地址和型号都得当场填 ----
+  // 这一类以前只能「先跳过向导」，再去 设置 → 模型 里绕一圈。它跟上面那几家不是一回事：
+  // 地址是用户的、型号是那台机器自己的、Key 可有可无
+  const cGrp = [...q("#onb-model").querySelectorAll("optgroup")].find((g) => g.label.includes("自己接一个"));
+  ok("单独一组「自己接一个」，没混进「新接一家」那组",
+    !!cGrp && cGrp !== tplGrp && cGrp.querySelector("option").value === "tpl:custom", cGrp && cGrp.outerHTML);
+  POSTS.length = 0;
+  q("#onb-model").value = "tpl:custom"; q("#onb-model").dispatchEvent(new Event("change"));
+  ok("选中它：接口地址和「用哪个模型」两行都露出来", !q("#onb-brow").hidden && !q("#onb-mrow").hidden);
+  ok("Key 框可填也可空（内网的 vLLM / LM Studio 大多不鉴权）",
+    !q("#onb-key").disabled && /留空/.test(q("#onb-key").placeholder), q("#onb-key").placeholder);
+  ok("地址还空着就不发请求，只写一句「先把地址填全」",
+    !POSTS.some(([k]) => k === "provider-models") && /接口地址填全/.test(q("#onb-mdl-tip").textContent), q("#onb-mdl-tip").textContent);
+  ONB_POST_OK = false;
+  q("#onb-go").click(); await tick(); await tick();
+  ok("★地址空着就点：拦下来说人话，不拿空地址去打一趟必错的请求★",
+    !POSTS.some(([k]) => k === "onboarding") && /接口地址/.test(q("#onb-err").textContent), q("#onb-err").textContent);
+  // 地址填全 → 现问它有哪些模型（那台机器上有哪些，谁都猜不出来）
+  POSTS.length = 0;
+  q("#onb-base").value = "https://gw.mycorp.com/v1";
+  q("#onb-base").onchange(); await tick(); await tick();
+  ok("地址填完就去问它有哪些模型，问的是刚填的那个地址",
+    POSTS.some(([k, b]) => k === "provider-models" && b.base_url === "https://gw.mycorp.com/v1"), JSON.stringify(POSTS));
+  const gopts = [...mdl().querySelectorAll("option")].map((o) => o.value);
+  ok("列出来的是那台网关报的型号，外加「自己填…」",
+    JSON.stringify(gopts) === JSON.stringify(["deepseek-chat", "qwen3-32b", "__custom__"]), JSON.stringify(gopts));
+  ok("★默认停在网关自己报的第一条★（这类没有模板默认型号可停）", mdl().value === "deepseek-chat", mdl().value);
+  POSTS.length = 0;
+  q("#onb-key").value = ""; // 上面那几段留下的 Key 清掉：这一条要验的正是「不留 Key 也照发」
+  q("#onb-go").click(); await tick(); await tick();
+  ok("★提交带齐三样：kind=custom + base_url + model_id★，Key 空着也照发",
+    POSTS.some(([k, b]) => k === "onboarding" && b.kind === "custom" && b.base_url === "https://gw.mycorp.com/v1"
+      && b.model_id === "deepseek-chat" && b.api_key === ""), JSON.stringify(POSTS));
+  // 反向对照：预设那几家照旧不带 base_url（地址是官方的，轮不到向导指手画脚）
+  POSTS.length = 0;
+  q("#onb-model").value = "tpl:ark"; q("#onb-model").dispatchEvent(new Event("change"));
+  q("#onb-key").value = "sk-ark";
+  q("#onb-go").click(); await tick(); await tick();
+  ok("反向对照：预设那几家不带 base_url，地址那一行也收起来",
+    POSTS.some(([k, b]) => k === "onboarding" && b.kind === "ark" && !("base_url" in b)) && q("#onb-brow").hidden,
+    JSON.stringify(POSTS));
   q("#onb-model").value = "DeepSeek"; q("#onb-model").dispatchEvent(new Event("change"));
 
   // ---- 走本机 CLI：先真连再切引擎 ----

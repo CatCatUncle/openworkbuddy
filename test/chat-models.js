@@ -550,5 +550,78 @@ console.log("\n【15】0.2 之前的老配置：只搬填了 Key 的那家，不
   eq(both[0].provider, "anthropic", "provider 写着 anthropic 的，Claude 排前面当默认");
 }
 
+// ---------------------------------------------------------------- 16
+console.log("\n【16】自建网关（OpenAI 兼容）：地址和型号由向导带上来，Key 可以没有");
+{
+  const GW = "https://gw.mycorp.com/v1";
+  const t = cm.customTemplate();
+  ok(t && t.kind === "custom" && t.custom === true && !!t.label, "有「自己接一个」这个入口", t);
+  ok(!cm.templates().some((x) => x.kind === "custom" || x.kind === "newapi"),
+    "它不进预设清单——那张表的判据是「每家都带一个默认型号」，而这类的型号只有用户自己的机器知道");
+  const empty = () => ({ models: [], providers: [] });
+  eq(cm.planTemplate(empty(), "custom"), null, "没给地址 → null（不落一条必然 404 的渠道）");
+  eq(cm.planTemplate(empty(), "custom", "qwen3-32b"), null, "只给了型号、没给地址 → 也是 null");
+  eq(cm.planTemplate(empty(), "custom", "", GW), null, "给了地址但没点名型号 → null（省得落一条模型名为空的条目）");
+  eq(cm.planTemplate(empty(), "custom", "qwen3-32b", GW).row.model, "qwen3-32b", "地址和型号都对上了才算出这一行");
+
+  const c = empty();
+  const plan = cm.planTemplate(c, "custom", "qwen3-32b", GW);
+  eq(plan.row.provider, "openai", "自建网关默认说 OpenAI 兼容协议");
+  eq(plan.row.name, "gw.mycorp.com", "名字拿域名当——「gw.mycorp.com」比「自定义渠道」强，接两台也分得清");
+  eq(c.models.length + c.providers.length, 0, "planTemplate 不动 config（验活失败时不许留半成品）");
+  const row = cm.commitTemplate(c, plan, ""); // 不填 Key：内网的 vLLM / LM Studio 大多不鉴权
+  eq(c.providers.length, 1, "落下去：一个渠道");
+  eq(c.providers[0].base_url, GW, "渠道上存的是用户填的那个地址（不是空的）");
+  eq(c.providers[0].name, "gw.mycorp.com", "渠道名也是域名，不是「OpenAI 兼容」这么一句类型说明");
+  eq(row.channel, c.providers[0].id, "模型行挂在它下面");
+  eq(cm.normalize(c), false, "normalize 认它，而且不再改（没 Key 也不许被当成「还没填」的壳收掉）");
+  eq(c.providers.length, 1, "没 Key 也留住这条渠道");
+  eq(c.models[0].base_url, GW, "地址压平回模型条目（llm.js 读的是它）");
+  eq(c.models.length, 1, "同地址同型号再落一次不多一行");
+  cm.commitTemplate(c, cm.planTemplate(c, "custom", "qwen3-32b", GW), "");
+  eq(c.providers.length, 1, "同地址同型号再来一次：还是一个渠道、一行模型");
+  eq(c.models.length, 1, "同型号不再多一行");
+  cm.commitTemplate(c, cm.planTemplate(c, "custom", "qwen3-8b", GW), "");
+  eq(c.models.length, 2, "同网关换个型号：同渠道下的第二行");
+  eq(c.providers.length, 1, "渠道还是那一个");
+  // 反向对照：另一个地址是另一台网关（公司内网 + 自己电脑上那台），不许并
+  cm.commitTemplate(c, cm.planTemplate(c, "custom", "qwen3-32b", "http://127.0.0.1:8080/v1"), "");
+  eq(c.providers.length, 2, "反向对照：另一个地址另起一条渠道");
+
+  // 手写协议：自建网关后面接的其实是 Claude（claude-code-router 这类）
+  eq(mm.protoOfKind("custom"), "openai", "没写协议时按 kind 算：自定义 = OpenAI 兼容");
+  eq(mm.protoOfKind("custom", "anthropic"), "anthropic", "渠道行上手写 anthropic 时它说了算");
+  eq(mm.protoOfKind("anthropic", "openai"), "openai", "反过来也认（写死了就按它走）");
+  eq(mm.protoOfKind("custom", "瞎写的"), "openai", "反向对照：值不合法就退回按 kind 算，不许把一个错别字当协议");
+  const d = {
+    providers: [{ id: "gw", name: "网关", kind: "custom", base_url: GW, api_key: "k", protocol: "anthropic" }],
+    models: [{ name: "中转Claude", channel: "gw", model: "claude-sonnet-5" }],
+  };
+  cm.normalize(d);
+  eq(d.models[0].provider, "anthropic", "手写的协议会压平到模型条目上——llm.js 就是照它选 anthropicChat 还是 openaiChat");
+  eq(cm.normalize(d), false, "幂等");
+  // 同一个地址、同一把 Key、两种协议 = 两条渠道。并成一条的话，其中一半模型会按错的协议去打
+  const e = {
+    providers: [
+      { id: "g1", name: "网关", kind: "custom", base_url: GW, api_key: "k" },
+      { id: "g2", name: "网关（Claude）", kind: "custom", base_url: GW, api_key: "k", protocol: "anthropic" },
+    ],
+    models: [],
+  };
+  cm.normalize(e);
+  eq(e.providers.length, 2, "同地址同 Key、一个说 OpenAI 一个说 Anthropic → 两条渠道，不许合");
+  // 反向对照：两条都写着 anthropic 就是真的重复行，该合
+  const f = {
+    providers: [
+      { id: "g1", name: "网关", kind: "custom", base_url: GW, api_key: "k", protocol: "anthropic" },
+      { id: "g2", name: "网关", kind: "custom", base_url: GW, api_key: "k", protocol: "anthropic" },
+    ],
+    models: [],
+  };
+  cm.normalize(f);
+  eq(f.providers.length, 1, "反向对照：协议也一样的两行仍然要并掉（不然界面上两张一模一样的卡）");
+  eq(f.providers[0].protocol, "anthropic", "并完之后协议还在");
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1); // 少了这一行，这个套件挂了也是绿的——CI 看的是退出码，不是这段话
