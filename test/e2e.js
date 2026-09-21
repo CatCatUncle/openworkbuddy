@@ -9214,7 +9214,7 @@ async function testStreamRender() {
   const turn = app1.slice(app1.indexOf("function createTurnUI("), app1.indexOf("// ================= 空状态"));
   const decl = (turn.match(/currentText = null/g) || []).length;
   assert.strictEqual(decl, 2, `回合里还有 ${decl - 2} 处直接把 currentText 置空（绕过了 endText，那一段永远不合回整块）`);
-  assert(/function finish\(\) \{\s*\n\s*endText\(\);/.test(turn), "finish() 没先把最后一段合回整块，复制/存历史会读到分段的壳子");
+  assert(/function finish\(\w*\) \{\s*\n\s*endText\(\);/.test(turn), "finish() 没先把最后一段合回整块，复制/存历史会读到分段的壳子");
 
   const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
   assert(/\.a-text > \.md-done, \.a-text > \.md-live \{ display: contents; \}/.test(html),
@@ -10854,11 +10854,24 @@ function keySourcesCheck(app03, app05, toolsSrc, mmSrc) {
   const sp = toolsSrc.match(/const SEARCH_PROVIDERS = \{([^}]*)\}/);
   assert(sp, "tools.js 里没有 SEARCH_PROVIDERS");
   const searchIds = sp[1].split(",").map((x) => x.split(":")[0].trim()).filter(Boolean);
+  // 向导和设置面板的服务商清单都是从各自那张表渲出来的，所以钉表、不钉渲出来的 HTML：
+  // 钉 HTML 的话，改成动态渲染就算一家都没漏也会红，而真漏一家反倒可能看不出来
+  const onbSearch = vm.runInNewContext("(" + grab(app03, "const ONB_SEARCH = ", "\n};") + ")");
+  const vendors = vm.runInNewContext("(" + grab(app05, "const SEARCH_VENDORS = ", "\n};") + ")");
   for (const k of searchIds) {
+    // custom 指的是用户自己那台机器，没有官网可指，也不出现在向导里（向导只推现成的几家）
+    if (k === "custom") {
+      if (!vendors[k]) problems.push("设置 → 搜索面板少了「自定义」这一项");
+      continue;
+    }
     if (!KS[k]) problems.push(`搜索服务商 ${k} 没有取 Key 链接`);
-    if (!new RegExp('<option value="' + k + '"').test(app03)) problems.push(`向导搜索步没有 ${k} 这一项`);
-    if (!new RegExp('keyLink\\("' + k + '"\\)').test(app05)) problems.push(`设置 → 搜索面板的 ${k} 没挂链接`);
+    if (!onbSearch[k]) problems.push(`向导搜索步的 ONB_SEARCH 里没有 ${k}`);
+    if (!vendors[k]) problems.push(`设置 → 搜索面板的 SEARCH_VENDORS 里没有 ${k}`);
   }
+  // 两处的顺序都得是国内在前：这是个中文产品，开箱第一跳不该是一次超时
+  if (Object.keys(onbSearch).slice(0, 3).join() !== "bocha,zhipu,qiniu") problems.push("向导搜索步：国内三家没排在最前面");
+  if (Object.keys(vendors).slice(0, 3).join() !== "bocha,zhipu,qiniu") problems.push("设置 → 搜索面板：国内三家没排在最前面");
+  if (!/keyLink\(id\)/.test(app05)) problems.push("设置 → 搜索面板没给每一家挂取 Key 链接");
   const imSrcs = [...app05.matchAll(/\bsrc: "([a-z_]+)"/g)].map((m) => m[1]);
   for (const k of imSrcs) if (!KS[k]) problems.push(`IM 卡片 ${k} 指向了不存在的来源`);
   let mediaN = 0;

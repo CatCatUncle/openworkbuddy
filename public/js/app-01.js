@@ -1393,8 +1393,11 @@ function createTurnUI(userText, turnMode, forSid) {
     if (turnSid === sessionId) scrollBottom(); // 已切走的会话在后台跑，别拽当前视图的滚动条
   }
 
-  function finish() {
-    endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读
+  // opts.interrupted：这一轮没有收尾事件（跑到一半进程没了、服务重启了）。
+  // 不给它一个终点的话，历史记录里这一轮会永远转着「运行中…」，而那时早就没有东西可停了
+  function finish(opts) {
+    endText(); // 收尾前先把最后一段合回整块，下面挪 DOM、复制、存历史都按整块来读——这行必须留在最前面
+    const 断了 = !!(opts && opts.interrupted);
     body.querySelector(".thinking-hint")?.remove();
     // 回合结束后不允许再有任何转圈（含未收到结果的工具卡，统一标记中止）
     turn.querySelectorAll(".step-card .spinner").forEach(s => {
@@ -1419,13 +1422,14 @@ function createTurnUI(userText, turnMode, forSid) {
         const ms = (turn._usage && turn._usage.elapsed_ms) || Date.now() - t0;
         const n = procBody.querySelectorAll(".step-card").length;
         const pt = procWrap.querySelector(".pt");
-        pt.textContent = `已完成 ${fmtDur(ms)}` + (n ? ` · ${n} 步` : "") + (liveRound ? ` · 续跑 ${liveRound} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
+        pt.textContent = (断了 ? "中断了" : `已完成 ${fmtDur(ms)}`) + (n ? ` · ${n} 步` : "") + (liveRound ? ` · 续跑 ${liveRound} 轮` : "") + (liveOuts ? ` · 产出 ${liveOuts} 件` : "");
         // 出过错以前靠"保持展开"提示，结果一个四十步的任务只要中间错过一次就整片摊开，
         // 用户要往下滚半天才够得着结论。改成收起 + 标题挂红角标：信号一个字没少，点开就直达过程
         const marks = [];
         const nErr = procBody.querySelectorAll(".tag.err").length;
         if (nErr) marks.push(`${nErr} 步出错`);
         if (turn._limited) marks.push("未跑完");
+        if (断了) marks.push("没收到结束，这一轮是断的");
         if (marks.length) {
           const chip = document.createElement("span");
           chip.className = "proc-warn";
@@ -2208,8 +2212,12 @@ function makeAskCard(ev, turnSid, submit, ctx) {
   let tick = null;
   const stopTick = () => { if (tick) { clearInterval(tick); tick = null; } timerEl.textContent = ""; };
 
+  // 「不能再点了」和「结论已经画上去了」是两件事，别共用 done 这一个类。
+  // 回放为了前一件事先给卡加了 done，再拿它拦这里，答过的岔路就永远停在「想让你定一下」——
+  // 一条早就跑完的对话，看上去像是正卡在那等人回答
   const markAnswered = (text, timeout) => {
-    if (card.classList.contains("done")) return;
+    if (card._answered) return;
+    card._answered = true;
     card.classList.add("done");
     document.removeEventListener("keydown", onKey);
     stopTick();

@@ -549,7 +549,11 @@ const KEY_SOURCES = {
   "https://api.minimax.chat/v1": { url: "https://platform.minimaxi.com/user-center/basic-information/interface-key", name: "MiniMax 海螺" },
   "http://localhost:11434/v1": { url: "https://ollama.com/download", name: "Ollama", label: "装 Ollama" },
   // 联网搜索：按服务商 id
+  "bocha": { url: "https://open.bochaai.com/", name: "博查" },
+  "zhipu": { url: "https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys", name: "智谱" },
+  "qiniu": { url: "https://portal.qiniu.com/", name: "七牛云" },
   "tavily": { url: "https://app.tavily.com/home", name: "Tavily" },
+  "serper": { url: "https://serper.dev/api-key", name: "Serper" },
   "jina": { url: "https://jina.ai/api-dashboard/", name: "Jina" },
   "brave": { url: "https://api-dashboard.search.brave.com/app/keys", name: "Brave" },
   // IM：按通道 key
@@ -580,11 +584,21 @@ const ONB_TIPS = {
   "https://ark.cn-beijing.volces.com/api/v3": "火山方舟，豆包 / DeepSeek 都在里面。",
   "anthropic": "Anthropic 官方 Claude，国内需要网络代理。",
 };
-// 搜索服务商：[Key 占位符, 一句话推荐语]。顺序 = 推荐顺序，Tavily 不用绑卡、免费额度最实在
+// 搜索服务商：[Key 占位符, 一句话推荐语]。顺序 = 推荐顺序。
+// 国内几家排前面：这是个中文产品，开箱第一跳得是在国内连得上的那家，
+// 不然新用户第一次搜索就是一次超时，而他还以为是自己装错了
+const ONB_SEARCH_NAME = {
+  bocha: "博查", zhipu: "智谱", qiniu: "七牛云",
+  tavily: "Tavily", serper: "Serper", jina: "Jina", brave: "Brave Search",
+};
 const ONB_SEARCH = {
-  tavily: ["tvly-...", "推荐。专给 AI 用的搜索，注册就送每月免费额度，不用绑卡。"],
-  jina: ["jina_...", "国内可直连，注册送免费额度，结果带网页正文。"],
-  brave: ["BSA...", "独立索引、隐私友好；有免费档但要绑卡。"],
+  bocha: ["sk-...", "推荐。国内服务商，专做给大模型用的搜索，中文结果好，有免费额度。"],
+  zhipu: ["...", "智谱开放平台的 Web Search，国内直连，跟模型 Key 同一个账号。"],
+  qiniu: ["sk-...", "七牛云，封装百度搜索，新用户送额度。"],
+  tavily: ["tvly-...", "海外，专给 AI 用的搜索，注册就送每月免费额度，不用绑卡。"],
+  serper: ["...", "海外，拿 Google 的结果，中文收录一般。"],
+  jina: ["jina_...", "海外，注册送免费额度，结果带网页正文。"],
+  brave: ["BSA...", "海外，独立索引、隐私友好；有免费档但要绑卡。"],
 };
 // 多媒体四项的一键预设：[名字, 接口地址, 模型名, 默认音色]，点一下就填好，只剩粘 Key
 const ONB_MEDIA_PRESETS = {
@@ -906,14 +920,11 @@ function renderOnbSearch(body) {
   const { st } = onbState;
   const sc = st.search || {};
   body.innerHTML = `
-    ${onbHead("联网搜索", "让它能查资料、看新闻、核对事实。不填也能用免费的 DuckDuckGo，但结果一般、国内经常连不上。", "推荐")}
+    ${onbHead("联网搜索", "让它能查资料、看新闻、核对事实。不填也能搜（走不要 Key 的免费通道），但结果一般。", "推荐")}
     ${sc.has_key ? `<div class="onb-ok">${ic("circle-check")} 已配 <b>${esc(sc.provider)}</b></div>` : ""}
     <label class="onb-lb">搜索服务商</label>
-    <select id="onb-sp">
-      <option value="tavily">Tavily（推荐 · 免费额度 · 不用绑卡）</option>
-      <option value="jina">Jina（国内直连 · 免费额度）</option>
-      <option value="brave">Brave Search（要绑卡）</option>
-    </select>
+    <select id="onb-sp">${Object.entries(ONB_SEARCH).map(([id, [, tip]], i) =>
+      `<option value="${id}">${esc(ONB_SEARCH_NAME[id] || id)}${i === 0 ? "（推荐）" : ""}</option>`).join("")}</select>
     <div class="onb-tip" id="onb-sp-tip"></div>
     <label class="onb-lb">API Key</label>
     <input id="onb-sp-key" type="password" autocomplete="off" spellcheck="false">
@@ -924,7 +935,7 @@ function renderOnbSearch(body) {
   const tip = body.querySelector("#onb-sp-tip");
   const err = body.querySelector("#onb-err");
   const go = body.querySelector("#onb-go");
-  sel.value = sc.provider || "jina";
+  sel.value = sc.provider || Object.keys(ONB_SEARCH)[0];
   const sync = () => { const [ph, t] = ONB_SEARCH[sel.value] || ["", ""]; keyEl.placeholder = ph; tip.innerHTML = `${t} ${keyLink(sel.value)}`; };
   sel.onchange = sync;
   sync();

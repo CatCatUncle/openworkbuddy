@@ -551,7 +551,8 @@ function createAdminRouter(deps = {}) {
     // 每一路「配没配」由服务端认：前端不该拿到 Key，也就没法自己判断
     const at = (obj, dotted) => dotted.split(".").reduce((x, k) => (x == null ? x : x[k]), obj);
     const configured = {
-      search: !!(cfg.search && (cfg.search.jina_key || cfg.search.api_key || cfg.search.tavily_key || cfg.search.brave_key)),
+      search: !!(cfg.search && (cfg.search.jina_key || cfg.search.api_key || cfg.search.tavily_key || cfg.search.brave_key
+        || cfg.search.bocha_key || cfg.search.zhipu_key || cfg.search.qiniu_key || cfg.search.serper_key || cfg.search.custom_url)),
       image: !!at(cfg, "media.image.model") || !!at(cfg, "media.image.provider"),
       video: !!at(cfg, "media.video.model") || !!at(cfg, "media.video.provider"),
       tts: !!at(cfg, "media.tts.model") || !!at(cfg, "media.tts.provider"),

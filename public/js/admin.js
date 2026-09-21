@@ -2192,7 +2192,7 @@ PAGES.relay = {
       { name: "cap", label: "哪一路", type: "select", value: cap || "image",
         options: (d.unit_prices || []).map((g) => ({ value: g.cap, label: `${g.cn}（元 / ${g.unit}）` })) },
       { name: "model", label: "型号名", value: m || "", placeholder: "wanx2.1-t2i-turbo",
-        desc: "搜索那一路填的是<b>引擎名</b>（tavily / brave / jina），不是型号。" },
+        desc: "搜索那一路填的是<b>引擎名</b>（bocha / zhipu / qiniu / tavily / serper / jina / brave / custom），不是型号。" },
       { name: "price", label: "单价（元）", type: "number", value: price == null ? "" : price,
         desc: "单位看上面那一格选的是哪一路。填 0 是「确实不收钱」，跟「不知道多少钱」不是一回事。" },
       { name: "note", label: "备注", value: note || "", placeholder: "比如：按 720p 折算，分辨率一变就不准了",

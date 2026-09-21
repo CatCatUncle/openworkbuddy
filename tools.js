@@ -3219,20 +3219,104 @@ async function braveSearch(key, query, n) {
   return data.slice(0, n).map((r) => ({ title: r.title, url: r.url, desc: r.description || "" }));
 }
 
-const SEARCH_PROVIDERS = { jina: jinaSearch, tavily: tavilySearch, brave: braveSearch };
+// ---- 国内直连的几家（博查 / 智谱 / 七牛云）+ Serper ----
+// 这几家的返回各写各的字段名，但形状是同一个：一个数组，每项有标题、链接、摘要。
+// 所以统一走 pickHits 去「认」，不照某一家的文档把路径写死——写死的那版在对方多包一层之后
+// 会安安静静地返回空，界面上表现成「没搜到」，查起来要人命。
+const HIT_PATHS = [
+  (j) => j && j.data && j.data.webPages && j.data.webPages.value, // 博查（对齐 Bing 的形状）
+  (j) => j && j.search_result,                                    // 智谱 web_search
+  (j) => j && j.data && j.data.results,
+  (j) => j && j.results,
+  (j) => j && j.organic,                                          // Serper
+  (j) => j && Array.isArray(j.data) ? j.data : null,
+  (j) => Array.isArray(j) ? j : null,
+];
+const pickHits = (j) => {
+  for (const f of HIT_PATHS) { let a; try { a = f(j); } catch { a = null; } if (Array.isArray(a) && a.length) return a; }
+  return [];
+};
+const toItems = (j, n) => pickHits(j).slice(0, n).map((r) => ({
+  title: r.title || r.name || r.heading || "",
+  url: r.url || r.link || r.href || "",
+  desc: r.summary || r.snippet || r.description || r.content || r.desc || r.abstract || "",
+})).filter((r) => r.url);
+
+async function postSearch(name, url, headers, body, ms) {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(ms || 15000),
+  });
+  if (!resp.ok) throw new Error(`${name} 搜索失败（${resp.status}）: ${(await resp.text().catch(() => "")).slice(0, 120)}`);
+  return resp.json();
+}
+
+async function bochaSearch(key, query, n) {
+  return toItems(await postSearch("博查", "https://api.bochaai.com/v1/web-search",
+    { Authorization: `Bearer ${key}` }, { query, count: n, summary: true }), n);
+}
+
+async function zhipuSearch(key, query, n) {
+  return toItems(await postSearch("智谱", "https://open.bigmodel.cn/api/paas/v4/web_search",
+    { Authorization: `Bearer ${key}` }, { search_engine: "search_std", search_query: query, count: n }), n);
+}
+
+async function qiniuSearch(key, query, n) {
+  return toItems(await postSearch("七牛云", "https://openai.qiniu.com/v1/search/web",
+    { Authorization: `Bearer ${key}` }, { query, count: n }), n);
+}
+
+async function serperSearch(key, query, n) {
+  return toItems(await postSearch("Serper", "https://google.serper.dev/search",
+    { "X-API-KEY": key }, { q: query, num: n }), n);
+}
+
+// 自定义：上面没列到的那些（阿里云 IQS、秘塔、火山、自建 SearXNG…）不用等我加代码。
+// 只要对方是「POST 一个 JSON、回一个结果数组」，在设置里填个地址就能接上，
+// 字段名交给上面那套去认。请求体里问题字段叫什么也能改（默认 query）。
+async function customSearch(key, query, n, cfg) {
+  const c = cfg || {};
+  const url = c.custom_url || process.env.SEARCH_CUSTOM_URL || "";
+  if (!url) throw new Error("自定义搜索还没填接口地址");
+  const field = c.custom_query_field || process.env.SEARCH_CUSTOM_FIELD || "query";
+  return toItems(await postSearch("自定义", url,
+    key ? { Authorization: `Bearer ${key}` } : {}, { [field]: query, count: n }), n);
+}
+
+// 顺序就是接力顺序：配置里没指定首选时，从上往下找第一个配好了的。
+// 国内几家排在前面——这是个中文产品，默认那一跳应该是在国内能连上的那家。
+const SEARCH_PROVIDERS = {
+  bocha: bochaSearch, zhipu: zhipuSearch, qiniu: qiniuSearch,
+  tavily: tavilySearch, serper: serperSearch, jina: jinaSearch, brave: braveSearch,
+  custom: customSearch,
+};
 
 function searchProviderKey(cfg, provider) {
   // 每个 provider 独立 key；jina 兼容旧字段 api_key / 环境变量
   if (provider === "jina") return cfg.jina_key || cfg.api_key || process.env.JINA_API_KEY || "";
   if (provider === "tavily") return cfg.tavily_key || process.env.TAVILY_API_KEY || "";
   if (provider === "brave") return cfg.brave_key || process.env.BRAVE_API_KEY || "";
+  if (provider === "bocha") return cfg.bocha_key || process.env.BOCHA_API_KEY || "";
+  if (provider === "zhipu") return cfg.zhipu_key || process.env.ZHIPU_API_KEY || "";
+  if (provider === "qiniu") return cfg.qiniu_key || process.env.QINIU_API_KEY || "";
+  if (provider === "serper") return cfg.serper_key || process.env.SERPER_API_KEY || "";
+  if (provider === "custom") return cfg.custom_key || process.env.SEARCH_CUSTOM_KEY || "";
   return "";
+}
+
+// 「这家配好了没」跟「有没有 key」不是一回事：自定义那家认的是地址，
+// 有些自建接口本来就不要鉴权。只看 key 的话，填了地址的自定义会被整条跳过
+function searchProviderReady(cfg, provider, key) {
+  if (provider === "custom") return !!((cfg || {}).custom_url || process.env.SEARCH_CUSTOM_URL);
+  return !!key;
 }
 
 async function webSearch(query, count, searchCfg, hold) {
   const n = Math.min(Math.max(+count || 5, 1), 10);
   const cfg = searchCfg || {};
-  const provider = (cfg.provider || "jina").toLowerCase();
+  const provider = (cfg.provider || "").toLowerCase();
 
   // 多引擎接力：配置的 provider 打头，其余有 key 的引擎依次顶上（谁被限流换下一个），
   // 全军覆没才退 DuckDuckGo 免费档；每一步的失败原因都记下来带给 agent
@@ -3246,9 +3330,9 @@ async function webSearch(query, count, searchCfg, hold) {
   for (const p of chain) {
     const fn = SEARCH_PROVIDERS[p];
     const key = searchProviderKey(cfg, p);
-    if (!fn || !key) continue;
+    if (!fn || !searchProviderReady(cfg, p, key)) continue;
     try {
-      const items = await fn(key, query, n);
+      const items = await fn(key, query, n, cfg);
       if (items.length) {
         // 只有付费引擎真回了结果才记账。下面 DuckDuckGo / 百度那两条兜底不花钱，
         // 记进去会让管理员对着一个虚高的数字去砍额度。
@@ -3268,9 +3352,11 @@ async function webSearch(query, count, searchCfg, hold) {
   // 回退：DuckDuckGo HTML 版（免 key）
   let html = "";
   try {
+    // 8 秒不是 30 秒：这条在国内网络下通常是直接连不上，而它后面还排着百度那条真能用的。
+    // 等满 30 秒的结果是每次搜索都先白白卡半分钟，再去走本来就该走的那条
     const resp = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), {
       headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(8000),
     });
     html = await resp.text();
   } catch (e) {
@@ -4097,7 +4183,7 @@ async function executeTool(name, input, opts = {}) {
       case "web_search": {
         // 预估拿「配置里排头的那家」算。真正答上来的可能是接力的下一家（首选被限流了），
         // 那不影响对错——结算那一步在 webSearch 里按**真答上来的那家**记。
-        const g = quotaGate("search", { provider: (opts.search && opts.search.provider) || "jina" });
+        const g = quotaGate("search", { provider: (opts.search && opts.search.provider) || "bocha" });
         if (g.bad) return g.bad;
         security.audit("网络访问", `联网搜索：${input.query}`, "放行");
         try {
@@ -4292,4 +4378,4 @@ function markDuplicates(out) {
 }
 
 module.exports = {
-  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };
+  _internals: { searchFiles, readBigFile, SEARCH_BUDGET, SEARCH_SKIP, SEARCH_BIN_EXT, selfCheck, auditHtml, savedAt, markDuplicates, pickShell, fetchRetry, nearestTool, lookAtImage, shrinkForVision, readImageInput, refImageUris, I2V_RE, T2V_RE, isRuntimeNoise, readConsoleEvent, cleanConsoleText, generateImage, generateVideo, textToSpeech, mediaKey, editFile, planEdit, diffText, looseLineMatch, missHint, badToolArgs, safeOutName, OUT_EXT_ALIAS, missingBinHint, NOT_FOUND_RE, transcribeAudio, srtTime, AUDIO_EXT, ASR_MAX_BYTES, docToText, slidesToText, sheetsToText }, TOOL_DEFS, executeTool, badToolArgs, outputFiles, noteUserInput, moveUserInput, isUserInput, workspaceKey, workspaceKeyOf, filesScope, safePath, safePathIn, fetchUrl, renderPage, htmlToText, getWorkspaceDir, getDefaultWorkspaceDir, setWorkspaceDir, withWorkspace, enterWorkspace, setLibraryDir, getLibraryDir, withLibraryDir, libRoot, withLibraryBase, libBase, notesFileOf, LIB_DIR, withPolicy, orgPolicy, hostAllowed, SEARCH_PROVIDERS, searchProviderKey, searchProviderReady, shellPath, canvasReadState, canvasWriteState, canvasNormalizeState, canvasList, canvasSetCurrentName, canvasManage };

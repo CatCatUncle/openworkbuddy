@@ -1602,36 +1602,71 @@ function injectLiveChat(sel, tip, d, local) {
   tip.textContent = `从渠道拉到 ${d.models.length} 个模型${d.cached ? "（缓存）" : ""}，挑不到就选「自己填…」。`;
 }
 
-// 联网搜索：provider 可切（Jina / Tavily / Brave），各自独立 key；没 key 自动退免费 DuckDuckGo
+// 联网搜索：八家服务商 + 自定义接口，各自独立 key。选中的那家没配好或调不通就往下顺延，
+// 最后退到不要 Key 的免费通道。Key 一次能填好几家——接力要靠它们。
+// 界面上只摊开当前这家，其余收进折叠里：八个密码框一字排开，人是找不到自己要填哪个的。
+const SEARCH_VENDORS = {
+  bocha:  ["博查",   "sk-...",   "国内", "专做给大模型用的搜索，中文结果好"],
+  zhipu:  ["智谱",   "",         "国内", "开放平台的 Web Search，跟模型 Key 同账号"],
+  qiniu:  ["七牛云", "sk-...",   "国内", "封装百度搜索"],
+  tavily: ["Tavily", "tvly-...", "海外", "有免费额度，不用绑卡"],
+  serper: ["Serper", "",         "海外", "拿 Google 的结果，中文收录一般"],
+  jina:   ["Jina",   "jina_...", "海外", "结果带网页正文"],
+  brave:  ["Brave",  "BSA...",   "海外", "独立索引，要绑卡"],
+  custom: ["自定义", "可留空",   "自建", "自己填地址：POST 一个 JSON、回一个结果数组就能接"],
+};
+const searchKeyField = (id) => id === "custom" ? "custom_key" : id + "_key";
+
 function renderSearchPane(pane, s) {
-  const sc = s.search || {};
+  const sc = { ...(s.search || {}) };
+  const ids = Object.keys(SEARCH_VENDORS);
+  const 一行 = (id, 展开) => {
+    const [名, 占位, , 说明] = SEARCH_VENDORS[id];
+    const custom = id === "custom";
+    return `<div class="f">${esc(名)} ${custom ? "接口" : "API"} Key ${keyLink(id)}</div>
+      <input id="sr-k-${id}" type="password" placeholder="${esc(占位)}" value="${esc(sc[searchKeyField(id)] || "")}">
+      ${展开 && custom ? `<div class="f">接口地址（POST）</div>
+        <input id="sr-custom-url" type="text" placeholder="https://……/search" value="${esc(sc.custom_url || "")}">
+        <div class="f">请求体里问题字段叫什么（默认 query）</div>
+        <input id="sr-custom-field" type="text" placeholder="query" value="${esc(sc.custom_query_field || "")}">` : ""}
+      ${展开 ? `<div class="d" style="margin-top:4px">${esc(说明)}</div>` : ""}`;
+  };
+  const paint = () => {
+    const cur = pane.querySelector("#sr-provider").value;
+    const 别家 = ids.filter((id) => id !== cur);
+    pane.querySelector("#sr-keys").innerHTML =
+      (cur ? 一行(cur, true) : `<div class="d">自动：从上往下挑第一个配好了的。下面填几家都行。</div>`)
+      + `<details class="sr-more"${cur ? "" : " open"}><summary>别家的 Key（顺延时用得上，可以多填几家）</summary>`
+      + 别家.map((id) => 一行(id, false)).join("") + `</details>`;
+  };
   pane.innerHTML = `
     <div class="card-item">
       <div class="t">搜索服务商</div>
-      <div class="d" style="margin-bottom:6px">web_search 工具用哪家搜索 API。所选服务商没填 Key 或调用失败时，自动回退到免费 DuckDuckGo。</div>
+      <div class="d" style="margin-bottom:8px">web_search 用哪家。这家没配 Key 或调不通，会自动顺延到你填过的下一家，最后退到不要 Key 的免费通道。</div>
       <select id="sr-provider">
-        <option value="tavily">Tavily（推荐 · 免费额度 · 不用绑卡）</option>
-        <option value="jina">Jina（国内直连 · 免费额度）</option>
-        <option value="brave">Brave Search（要绑卡）</option>
+        <option value="">自动 · 按配好的顺延（国内优先）</option>
+        <optgroup label="国内服务商">${ids.filter((i) => SEARCH_VENDORS[i][2] === "国内").map((i) => `<option value="${i}">${esc(SEARCH_VENDORS[i][0])}</option>`).join("")}</optgroup>
+        <optgroup label="海外服务商（国内可能要梯子）">${ids.filter((i) => SEARCH_VENDORS[i][2] === "海外").map((i) => `<option value="${i}">${esc(SEARCH_VENDORS[i][0])}</option>`).join("")}</optgroup>
+        <optgroup label="自己接">${ids.filter((i) => SEARCH_VENDORS[i][2] === "自建").map((i) => `<option value="${i}">${esc(SEARCH_VENDORS[i][0])}</option>`).join("")}</optgroup>
       </select>
-      <div class="f">Tavily API Key ${keyLink("tavily")}</div>
-      <input id="sr-tavily" type="password" placeholder="tvly-..." value="${esc(sc.tavily_key || "")}">
-      <div class="f">Jina API Key ${keyLink("jina")}</div>
-      <input id="sr-jina" type="password" placeholder="jina_..." value="${esc(sc.jina_key || "")}">
-      <div class="f">Brave API Key ${keyLink("brave")}</div>
-      <input id="sr-brave" type="password" placeholder="BSA..." value="${esc(sc.brave_key || "")}">
+      <div id="sr-keys"></div>
     </div>
     <button class="btn-brand" id="sr-save">保存</button>
     <button class="btn-plain" id="sr-test">测试搜索</button>
     <span class="ok-msg" id="sr-msg"></span>`;
-  pane.querySelector("#sr-provider").value = sc.provider || "jina";
+  pane.querySelector("#sr-provider").value = sc.provider || "";
+  paint();
+  // 换一家之前先把已经敲进去的收走：重画会把 DOM 换掉，不收的话刚填的 Key 当场消失
+  pane.querySelector("#sr-provider").onchange = () => { Object.assign(sc, collect()); paint(); };
   const msg = pane.querySelector("#sr-msg");
-  const collect = () => ({
-    provider: pane.querySelector("#sr-provider").value,
-    jina_key: pane.querySelector("#sr-jina").value.trim(),
-    tavily_key: pane.querySelector("#sr-tavily").value.trim(),
-    brave_key: pane.querySelector("#sr-brave").value.trim(),
-  });
+  function collect() {
+    const v = (sel) => { const el = pane.querySelector(sel); return el ? el.value.trim() : ""; };
+    const out = { provider: pane.querySelector("#sr-provider").value };
+    for (const id of ids) out[searchKeyField(id)] = v("#sr-k-" + id);
+    out.custom_url = v("#sr-custom-url") || sc.custom_url || "";
+    out.custom_query_field = v("#sr-custom-field") || sc.custom_query_field || "";
+    return out;
+  }
   pane.querySelector("#sr-save").onclick = () => saveSettings({ search: collect() }, msg);
   pane.querySelector("#sr-test").onclick = async (e) => {
     e.target.disabled = true;
