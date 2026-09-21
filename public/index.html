@@ -1922,11 +1922,17 @@
   .lib-it .lib-jump .i { width: 14px; height: 14px; }
   .lib-list.as-icon .lib-it .lib-jump { display: none; } /* 图标视图是用来认脸的，一格里塞不下操作 */
   /* 删除跟「跳回那段对话」并排，长相一致、只有颜色不一样：一个是去处，一个是撤不回来的事 */
-  .lib-it .lib-del { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); color: var(--owb-text-3); opacity: .35; }
+  .lib-it .lib-del { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); color: var(--owb-text-3); opacity: .55; }
   .lib-it:hover .lib-del { opacity: 1; }
   .lib-it .lib-del:hover { background: var(--owb-err-bg); color: var(--owb-err-text); }
   .lib-it .lib-del .i { width: 14px; height: 14px; }
-  .lib-list.as-icon .lib-it .lib-del, .lib-list.as-gallery .lib-it .lib-del { display: none; }
+  /* 图标／画廊：一格里排不下「名字 + 操作」两列，那就把这颗钮浮到格子右上角。
+     原来这儿是 display:none——换个摆法就删不掉东西，等于这两种摆法是死路 */
+  .lib-list.as-icon .lib-it, .lib-list.as-gallery .lib-it { position: relative; }
+  .lib-list.as-icon .lib-it .lib-del, .lib-list.as-gallery .lib-it .lib-del {
+    position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
+    background: var(--owb-bg); box-shadow: 0 0 0 1px var(--owb-line); }
+  .lib-list.as-icon .lib-it .lib-del .i, .lib-list.as-gallery .lib-it .lib-del .i { width: 12px; height: 12px; }
   /* 分段标题：左边「这段是什么 + 几样东西 + 一句人话」，右边是只对这一段生效的操作。
      新建/上传原来挂在整页的工具条上，而这一页底下还摆着「本地产物」——
      悬在最上面的两颗按钮看着就像是在给产出建目录，用户连问三遍「这儿建目录有啥用」 */

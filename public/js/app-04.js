@@ -448,7 +448,7 @@ async function renderLibPage() {
   else body = `
     <div class="sec lib-sec">
       <span class="lib-sec-l">参考资料<span class="n">${(lib.dirs || []).length + libFiles.length}</span><em>你放进来的 · 做任务时 AI 自己会来查</em></span>
-      ${po && libState.view === "dir" ? `<span class="lib-sec-acts"><a href="#" id="lb-mkdir" class="link">${ic("folder")}新建文件夹</a><a href="#" id="lb-up" class="link">${ic("plus")}上传</a><input type="file" id="lb-file" multiple style="display:none"></span>` : ""}
+      ${po && libState.view === "dir" ? `<span class="lib-sec-acts"><a href="#" id="lb-mkdir" class="link">${ic("folder")}新建文件夹</a><a href="#" id="lb-up" class="link">${ic("plus")}上传</a>${libState.dir ? `<a href="#" class="link danger" data-del-dir="${esc(libState.dir)}" data-n="${(lib.dirs || []).length + (lib.files || []).length}">${ic("trash-2")}删掉这个文件夹</a>` : ""}<input type="file" id="lb-file" multiple style="display:none"></span>` : ""}
     </div>
     ${(lib.dirs || []).map(folder).join("")}
     ${libFiles.length
@@ -590,13 +590,19 @@ async function renderLibPage() {
       title: `删掉文件夹「${dir.split("/").pop()}」？`,
       hint: n ? `它里面还有 ${n} 样东西。资料库是整台服务器共用的一份，非空的文件夹删不了——先把里面清空。`
               : "它现在是空的，删掉不影响别的东西。",
-      ok: n ? "知道了" : "删掉",
+      // 非空时那颗钮原来叫「知道了」——一句正确的废话：人知道了，然后呢？
+      // 现在它是一条出路，按下去就进到那一层里，清空的活在那儿干
+      ok: n ? "进去清空" : "删掉",
       danger: !n,
     });
-    if (!yes || n) return;
+    if (!yes) return;
+    if (n) { libState.dir = dir; libState.pick = null; return renderLibPage(); }
     const r = await fetch("/api/library/folder?dir=" + encodeURIComponent(dir), { method: "DELETE" })
       .then(x => x.json()).catch(() => ({ error: "网络异常" }));
     if (!r || !r.ok) return toast((r && r.error) || "删不掉", "circle-x");
+    // 删的可能就是脚下这一层（操作条上那颗）。不退出去的话，下一次 renderLibPage
+    // 还拿着这个已经没了的路径去问服务端，人看到的是一页空白外加一句「这个文件夹还是空的」
+    if (libState.dir === dir) libState.dir = dir.split("/").slice(0, -1).join("/");
     toast("文件夹已删掉", "circle-check");
     renderLibPage();
   });
@@ -742,7 +748,11 @@ function libSearchHtml(data, q, recents) {
   // 名字一列只放文件名本身、目录用小字挂在后面（工作区那边 name 是
   // 「任务_0916_xxx/配音文案.md」这样的相对路径，不切开的话目录会在一行里出现两遍）——
   // 这件事 libRowHtml 已经做好了。搜索这儿只多一样东西：命中的那几行正文。
-  const fileRow = (src, f) => libRowHtml(src, f, { q })
+  // 删：搜出来的这一份跟在文件夹里看到的是同一份东西，那儿能删这儿就得能删。
+  // 少了这颗钮的后果不是「少个快捷方式」——搜索一开口就接管整块列表，
+  // 用搜索找到的人根本回不到那个列表，等于这份文件删不掉了
+  const po = amPlatformOwner();
+  const fileRow = (src, f) => libRowHtml(src, f, { q, del: src === "lib" && po ? (f.path || f.name) : "" })
     + ((f.lines || []).length ? `<div class="lib-hits">${f.lines.map((l) => `<div><em>${l.line}</em>${libMark(l.text, q)}</div>`).join("")}</div>` : "");
   return `
     ${tasks.length ? `<div class="sec">任务 <span style="font-weight:400;color:var(--owb-text-3)">${tasks.length}</span></div>
