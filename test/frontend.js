@@ -3912,8 +3912,11 @@ const GATE_CHECKS = `
     ok("渠道类型里有「OpenAI 兼容（自定义）」", [...ks.options].some((o) => o.value === "custom"),
       [...ks.options].map((o) => o.value).join(","));
     ks.value = "custom"; ks.onchange({ target: ks });
+    // 注意：这一段是模板字符串里的代码，别用「反斜杠转义斜杠」的正则写法：
+    // 模板字面量会把那两个字符还原成两个斜杠，紧跟前面那个斜杠就成了注释，
+    // 于是注入到页面里报「missing ) after argument list」——而本机 node --check 看不见
     ok("选中它：地址那一栏当场说清填到哪一层",
-      /\/v1 那一层/.test(P().querySelector("#pf-base-tip").textContent), P().querySelector("#pf-base-tip").textContent);
+      P().querySelector("#pf-base-tip").textContent.includes("/v1 那一层"), P().querySelector("#pf-base-tip").textContent);
     ok("名字不被预填成「OpenAI 兼容」这么一句类型说明（一条网关上接两台，两张卡会长得一模一样）",
       P().querySelector("#pf-name").value === "", P().querySelector("#pf-name").value);
     const baseEl = P().querySelector("#pf-base");
@@ -3926,7 +3929,7 @@ const GATE_CHECKS = `
     P().querySelector("#pf-save").onclick();
     await new Promise((r) => setTimeout(r, 0));
     ok("★地址抄到 /chat/completions 那一层：当场拦下、一条请求都不发★",
-      posts.length === 0 && window.toasts.some((t) => /\/v1 那一层/.test(t)),
+      posts.length === 0 && window.toasts.some((t) => t.includes("/v1 那一层")),
       JSON.stringify({ posts: posts.length, toasts: window.toasts }));
     // 协议：自建网关后面接的其实是 Claude 时靠这一栏决定走哪条通道
     baseEl.value = "https://gw.mycorp.com/v1"; baseEl.onchange();
