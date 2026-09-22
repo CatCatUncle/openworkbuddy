@@ -327,7 +327,10 @@
   .mention-menu .mi:hover, .mention-menu .mi.sel { background: var(--owb-bg-hover); }
   .mention-menu .mi .sub { grid-column: 2; margin-left: 0; font-size: 12px; color: var(--owb-text-3);
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mention-menu .mh { font-size: 12px; color: var(--owb-text-3); padding: 4px 12px; }
+  .mention-menu .mh { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--owb-text-3); padding: 4px 12px; }
+  /* 键盘提示只在真有能挑的行时出现：一屏「没有匹配的技能」的时候上下键和回车都没有落点，
+     那会儿还写着「↑↓ 挑」是在指一条走不通的路 */
+  .mention-menu .mh-k { flex: none; white-space: nowrap; }
   .turn { margin-bottom: 22px; }
   /* 从资料库跳过来落在哪一轮，得让人一眼看见。滚过去不标记的话，
      人只知道「页面动了一下」，不知道该看哪儿——尤其那一轮正好在屏幕中间时 */

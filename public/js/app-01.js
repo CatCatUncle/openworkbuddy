@@ -2071,7 +2071,10 @@ function refreshSkillsCache(force) {
   if (!force && Date.now() - skillsFetchAt < 3000) return;
   skillsFetchAt = Date.now();
   return fetch("/api/skills").then(r => r.json()).then(l => {
-    skillsCache = Array.isArray(l) ? l : [];
+    const next = Array.isArray(l) ? l : [];
+    const changed = next.map((s) => s.name).join("\u0000") !== skillsCache.map((s) => s.name).join("\u0000");
+    skillsCache = next;
+    if (!changed) return; // 名单跟刚才一样就别动屏幕：人正挑着行，白闪一下比不刷还糟
     if (mentionState && mentionState.trigger === "/") renderMentionMenu();
     syncInputHl(); // 高亮那层认技能名，新装的也该当场变色
   }).catch(() => {});
@@ -2100,6 +2103,12 @@ function refreshFilesCache() {
 }
 function renderMentionMenu() {
   const { trigger, query } = mentionState;
+  // 记下人现在挑的是哪一行。技能名单是异步对回来的，对回来就得重画；
+  // 不记的话，人刚按了两下 ↓，名单一落地选中被拽回第一行，上下键等于白按。
+  // 只在菜单正开着的时候算：关掉了的那一次挑到哪儿，下一次再打 / 不该还认——
+  // 那是人看不见的旧状态，带过来就成了“回车没拿第一个”
+  const selNow = mentionMenu.classList.contains("show") ? mentionMenu.querySelector(".mi.sel") : null;
+  const keep = selNow ? selNow.dataset.insert : "";
   let items = [];
   if (trigger === "@") {
     // 名字只显示最后一段，目录名让给说明那一行——插进正文的仍然是完整相对路径。
@@ -2121,8 +2130,13 @@ function renderMentionMenu() {
   // 名字必须自己包一层 .mi-name：裸文本节点在 grid 里是匿名盒子，拿不到 text-overflow，
   // 长文件名只能硬折。CSS 那边 .mention-menu .mi 是两行的 grid，见 index.html 里那段注释。
   // 图标一律给（取不到就用通用的那个）：有的行有图标有的没有，名字的左边缘会错开一截。
-  mentionMenu.innerHTML = `<div class="mh">${trigger === "@" ? "引用工作空间文件" : "调用技能"}</div>` +
-    items.map((it, i) => `<div class="mi ${i === 0 && it.insert ? "sel" : ""}" data-insert="${esc(it.insert || "")}" title="${esc(it.label + (it.sub ? " — " + it.sub : ""))}">${ic(it.icon || "file-text")}<span class="mi-name">${esc(it.label)}</span>${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ""}</div>`).join("");
+  // 上下键和「回车是填进去不是发出去」都是看不见的规矩，不写在这儿没人猜得到；
+  // 一行都挑不了的时候不写，免得指一条走不通的路。
+  const kept = items.findIndex((it) => it.insert && it.insert === keep);
+  const selIdx = kept >= 0 ? kept : items.findIndex((it) => it.insert);
+  const hint = selIdx >= 0 ? `<span class="mh-k">↑↓ 挑 · 回车填进输入框 · Esc 关掉</span>` : "";
+  mentionMenu.innerHTML = `<div class="mh"><span>${trigger === "@" ? "引用工作空间文件" : "调用技能"}</span>${hint}</div>` +
+    items.map((it, i) => `<div class="mi ${i === selIdx ? "sel" : ""}" data-insert="${esc(it.insert || "")}" title="${esc(it.label + (it.sub ? " — " + it.sub : ""))}">${ic(it.icon || "file-text")}<span class="mi-name">${esc(it.label)}</span>${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ""}</div>`).join("");
   mentionMenu.classList.add("show");
   mentionMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => applyMention(mi.dataset.insert));
 }
