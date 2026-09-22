@@ -194,6 +194,8 @@ function resolvePathWithPolicy(sec, rel, workspaceDir, base) {
 const WRAPPERS = new Set(["nohup", "command", "builtin", "exec", "env", "time", "nice", "ionice", "xargs", "then", "else", "do", "{", "("]);
 /** 会真的把文件弄没的命令 */
 const DELETE_CMDS = new Set(["rm", "rmdir", "srm", "unlink", "shred", "del", "erase", "rd"]);
+/** 会在用户桌面上弹出东西的命令（macOS open、Linux xdg-open、Windows start/explorer），见 checkCommand 里那段 */
+const DESKTOP_OPEN_CMDS = new Set(["open", "xdg-open", "start", "explorer"]);
 
 // P5 软护栏：不可逆、毁数据的命令形态。任何权限档位（含全自动）都要用户点头，
 // 永久放行名单也盖不住——这不是沙箱，只是把「一条命令毁掉一晚上工作」换成一次审批。
@@ -387,6 +389,14 @@ function checkCommand(sec, command) {
     if (mode === "ask") return { action: "ask", rule: `每步都问模式`, seg, ruleKey: ruleFor(seg) };
     const hitAsk = (sec.cmd_ask || []).find((p) => p && (seg.startsWith(p.trim()) || env.startsWith(p.trim()) || bare.startsWith(p.trim())));
     if (hitAsk) return { action: "ask", rule: `命令询问名单「${hitAsk.trim()}」`, seg, ruleKey: ruleFor(seg) };
+    // 弹到用户桌面的命令：open / xdg-open / start 会在用户眼前弹出窗口或浏览器标签。
+    // 它不毁数据，所以四张名单一张都不管它——而它恰恰是最招人烦的那类：任务收尾「顺手」把
+    // 推文、封面、HTML 各开一个，用户桌面被刷一排窗口。真踩过，而且长期记忆里明明写着「别开」，
+    // 记忆超预算按相关度一挑就把这条规矩挑掉了。提示词和记忆都是建议，这儿才是闸：
+    // 用户没点头就不开，他要真想看，批一次「本会话一直允许」就够了；永久放行写 cmd_allow
+    if (DESKTOP_OPEN_CMDS.has(tok)) {
+      return { action: "ask", rule: "要在你桌面上打开文件或网页（用户没要求就别替他开，交付只报路径）", seg, ruleKey: ruleFor(seg) };
+    }
     if (sec.delete_protect) {
       const findDeletes = tok === "find" && /(\s-delete\b|-exec\s+(\S*\/)?rm\b)/.test(bare);
       if (DELETE_CMDS.has(tok) || findDeletes) return { action: "ask", rule: "删除保护（rm 类命令需审批）", seg, ruleKey: ruleFor(seg) };
@@ -604,6 +614,7 @@ function openPrefPane(pane) {
 module.exports = {
   getSecurity,
   DEFAULTS,
+  DESKTOP_OPEN_CMDS,
   audit,
   auditList,
   auditClear,

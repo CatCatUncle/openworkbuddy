@@ -563,18 +563,36 @@ function runSeedCopy() {
     const BUF = Buffer.alloc(8 * 1024 * 1024, 7);
     for (let i = 0; i < 6; i++) fs.writeFileSync(path.join(big, "f" + i + ".bin"), BUF); // 48M
     try { cp.execFileSync("sync"); } catch {}
-    const a = free();
-    copyTree(big, path.join(root, "big-clone"));
-    const b = free();
-    fs.cpSync(big, path.join(root, "big-plain"), { recursive: true }); // 负向对照
-    const c = free();
-    const cloneMB = (a - b) / 1024, plainMB = (b - c) / 1024;
+    // 量三次取最好的一次。df 量的是整块盘的空闲，不是这棵树的占用——同一台机器上别的进程
+    // （前一个用例留下的 Electron 还在往缓存里写、系统自己的日志）随时会在这几十毫秒的窗口里
+    // 写进几十 M。一次量出来 50M，分不清是「clone 没生效」还是「别人在写」；连量三次回回超标，
+    // 才是真没生效——噪声不会三次都恰好落在这个窗口里，而退回了 cpSync 的 clone 三次都是 48M。
+    // v0.9.0 就是这么在标签流水线上挂的：同一个 commit、同一种机器，push 那条绿、标签那条红，
+    // 量出来 clone 50.1M 比普通拷贝 48M 还大——多出来那 2M 是别人的字节，那 48M 也是。
+    const tries = [];
+    let best = null;
+    for (let i = 0; i < 3; i++) {
+      const a = free();
+      copyTree(big, path.join(root, "big-clone-" + i));
+      const b = free();
+      fs.cpSync(big, path.join(root, "big-plain-" + i), { recursive: true }); // 负向对照
+      const c = free();
+      const t = { cloneMB: (a - b) / 1024, plainMB: (b - c) / 1024 };
+      tries.push(t);
+      // 两条都站住才算量准了：普通拷贝量得出实打实的占用，clone 又明显比它小
+      if (t.plainMB > 24 && t.cloneMB < t.plainMB / 4) { best = t; break; }
+      // 两次量之间让盘歇一下：刚才那个写 50M 的家伙，多半几百毫秒就写完了
+      try { cp.execFileSync("sync"); } catch {}
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+    }
+    const { cloneMB, plainMB } = best || tries[tries.length - 1];
     // 负向对照先站住：普通拷贝必须量得出实打实的占用，否则下面那条是靠「量法坏了」变绿的
     ok(plainMB > 24, "负向对照：普通拷贝 48M 真占掉了 " + plainMB.toFixed(1) + "M（量法看得见占盘）",
-      { cloneMB, plainMB });
+      { tries });
     if (process.platform === "darwin") {
-      ok(cloneMB < plainMB / 4, "clone 只占 " + cloneMB.toFixed(1) + "M，不到普通拷贝的四分之一",
-        { cloneMB, plainMB });
+      ok(cloneMB < plainMB / 4, "clone 只占 " + cloneMB.toFixed(1) + "M，不到普通拷贝的四分之一"
+        + (tries.length > 1 ? "（量了 " + tries.length + " 次才量准，前几次有别的进程在写盘）" : ""),
+        { tries });
     } else {
       console.log("  - 跳过省盘那条：clonefile 是 APFS 的本事，这台不是 macOS");
     }

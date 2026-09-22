@@ -22,7 +22,7 @@ jobs:
         include:
           - os: ubuntu-latest
             label: 快跑（除 e2e 外全跑）
-            cmd: node test/all.js --only repo-hygiene,icons,lanes,md-tty,doctor,cli-args,cli-attach,cli-live,cli-ask,cli-approve,repl-commands,session-search,systemone,decide-tool,task-doubt,continue-gate,cmd-risk,memory-gate,push-gate,prefs,chat-models,media-models,media-health,gen-cache,sweep,quota,relay,totp,auth-2fa,skill-guard,toolward,rbac,tenant,lifecycle,ops,deploy,trace,term-image,office-tools,remote,checkpoints,shot-history,cdp,agent-loop,worktree,eval,stop,memory,search-providers,model-probe
+            cmd: node test/all.js --only repo-hygiene,icons,lanes,md-tty,doctor,cli-args,cli-attach,cli-live,cli-ask,cli-approve,repl-commands,session-search,systemone,decide-tool,task-doubt,continue-gate,cmd-risk,memory-gate,push-gate,ask-gate,skill-gate,memory-rules,prefs,chat-models,media-models,media-health,gen-cache,sweep,quota,relay,totp,auth-2fa,skill-guard,toolward,rbac,tenant,lifecycle,ops,deploy,trace,term-image,office-tools,remote,checkpoints,shot-history,cdp,agent-loop,worktree,eval,stop,memory,search-providers,model-probe
           - os: macos-latest
             label: 全套（含 e2e）
             cmd: npm test

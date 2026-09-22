@@ -1231,30 +1231,15 @@ function renderProjects() {
     fetch("/api/files").then(r => r.json()).then(renderFiles);
   });
 }
+// 这颗 ＋ 长在「项目」那一行里面，而整行是「打开项目管理页」。不拦住冒泡的话，
+// 点 ＋ 会被 .side-nav 上那个委托监听当成点了整行：主区切到项目页、顺手把 #proj-list
+// 整个重画一遍——刚插进去的东西当场被抹掉，屏幕上就是「闪了一下什么也没有」。
+// 新建走的是项目页上那颗「新建项目」同一个编辑器：只填个名字的话，工作目录、项目指令、
+// 挂哪块资料库这些当场都配不了，事后还得再进去补一趟。
 document.getElementById("proj-add").onclick = (e) => {
   e.preventDefault();
-  const box = document.getElementById("proj-list");
-  if (box.querySelector("#proj-new")) { box.querySelector("#proj-new").focus(); return; }
-  const row = document.createElement("div");
-  row.style.cssText = "padding:4px 6px";
-  row.innerHTML = '<input id="proj-new" placeholder="项目名，回车创建" style="width:100%;font-size: 13px;padding:5px 8px">';
-  box.prepend(row);
-  const inp = row.querySelector("#proj-new");
-  inp.focus();
-  inp.onkeydown = async (ev) => {
-    if (ev.key === "Escape") { row.remove(); return; }
-    if (ev.key !== "Enter") return;
-    const name = inp.value.trim();
-    if (!name) return;
-    const resp = await fetch("/api/projects", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) { toast((data.error || "创建失败"), "circle-x"); return; }
-    document.getElementById("new-task").click();
-    refreshProjects().then(refreshSettingsCache);
-  };
+  e.stopPropagation();
+  openProjEditor(null);
 };
 refreshProjects();
 
@@ -2744,10 +2729,8 @@ const PLUS_RENDER = {
 
   // ---------- 技能：带搜索框。技能多起来之后，不给搜就只能一屏屏翻 ----------
   async skill(sub) {
-    if (!skillsCache.length) {
-      skillsCache = await fetch("/api/skills").then((r) => r.json()).catch(() => []);
-      if (!Array.isArray(skillsCache)) skillsCache = [];
-    }
+    // 空了就必须拉（不然这一屏是空的），不空就走节流：刚装完就来翻菜单的人得看得见新的
+    await refreshSkillsCache(!skillsCache.length);
     const q = plusSkillQ.trim().toLowerCase();
     const list = skillsCache.filter((s) =>
       !q || String(s.name).toLowerCase().includes(q) || String(s.description || "").toLowerCase().includes(q));

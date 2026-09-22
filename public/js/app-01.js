@@ -466,12 +466,36 @@ function joinRel(base, rel) {
  * 报告本身还打得开（那条链接带了 root），报告**里面**的插图却全裂——因为图走的是另一条
  * 没带根的 URL，服务端只好按当前目录去找。用户看到的是「打开了但是图没了」，比整个打不开更费解。
  */
+/**
+ * 一个文件**现在**这一版的版本号（右侧文件清单里记的 mtime），拿不到就返回空串。
+ *
+ * 对话里的图和右侧面板看的必须是同一份字节。面板每次点开都带 ?t=当前时间，永远是最新的；
+ * 对话里的卡片和 Markdown 内嵌图要是拿「事件里记的那一版」或者干脆不带版本号，
+ * 文件被 agent 原地改写一次之后，浏览器就把七天前那张缓存图一直摆在对话里——
+ * 用户看到的就是「对话里预览的图和右边打开的不一样」。所以版本号一律先问当前清单，
+ * 清单里没有（历史回放、清单还没拉到）才退回事件里那份。
+ *
+ * 只在这张卡的根就是当前清单的根时才问（root 空 = 老记录没记根，服务端本来也按当前根解析它）：
+ * 换过工作目录的话，同名文件在另一个根下是另一份东西，版本号不能串。
+ * typeof 那一道是给前端测试留的：它按段切真源码，切到这一段时清单变量可能还没声明。
+ */
+function curStamp(name, root) {
+  if (typeof filesCache === "undefined" || !Array.isArray(filesCache)) return "";
+  const fr = typeof filesRoot === "undefined" ? "" : String(filesRoot || "");
+  const r = String(root || "");
+  if (r && fr && r !== fr) return "";
+  const f = filesCache.find((x) => x && x.name === name);
+  return f ? String(f.mtime || f.size || "") : "";
+}
+/** 文件接口链接上的版本参数：当前清单优先，退回事件里记的 mtime / 大小 */
+function fileVer(f, root) { return curStamp(f.name, root) || String(f.mtime || f.size || ""); }
 function mdImg(alt, url, base, root) {
   const u = String(url || "").trim();
   if (!u || /["'<>\s\\]/.test(u)) return "";
+  const rel = joinRel(base, u), stamp = curStamp(rel, root);
   const src = /^(https?:)?\/\//.test(u) || /^data:image\//.test(u) ? u
     : /^[a-zA-Z][\w+.-]*:/.test(u) ? ""
-    : withRoot("/api/files/view/" + fpath(joinRel(base, u)), root);
+    : withRoot("/api/files/view/" + fpath(rel) + (stamp ? "?v=" + encodeURIComponent(stamp) : ""), root);
   if (!src) return "";
   return `<img class="md-img" src="${src}" alt="${String(alt || "").replace(/"/g, "")}" loading="lazy">`;
 }
@@ -846,7 +870,11 @@ function attachRel(name, sid) {
   return dir ? { rel: dir + "/" + name, alt: name } : { rel: name, alt: "" };
 }
 /** 缩略图地址。跟产出卡共用一套口径：一律 ?thumb=320，svg 除外（矢量栅格化反而更大更糊） */
-function attachThumb(rel) { return "/api/files/view/" + fpath(rel) + (/\.svg$/i.test(rel) ? "" : "?thumb=320"); }
+function attachThumb(rel) {
+  const stamp = curStamp(rel, "");
+  const q = [/\.svg$/i.test(rel) ? "" : "thumb=320", stamp ? "v=" + encodeURIComponent(stamp) : ""].filter(Boolean).join("&");
+  return "/api/files/view/" + fpath(rel) + (q ? "?" + q : "");
+}
 function stripSceneTag(t) {
   return String(t == null ? "" : t)
     .replace(/^\s*【任务类型：[^】]*】\s*/, "")
@@ -1599,7 +1627,7 @@ function createTurnUI(userText, turnMode, forSid) {
       for (const f of turnOut) if (!liveOutFiles.some((x) => x.name === f.name)) liveOutFiles.push(f);
       renderTurnOutputs(body, turnOut, ev.files, ev); // 先算差异，快照要等 applyOutputArrival 才推进
       // 回放历史任务时这些是当时的文件列表：拿它去刷右侧面板会把现在的状态盖成旧的。产出 chip 照摆，其余一律不动
-      if (!isReplaying) renderFiles(ev.files);
+      if (!isReplaying) { if (ev.root) filesRoot = ev.root; renderFiles(ev.files); }
       // 产出到了不抢版面：以前是「有产出就把右侧预览 / 成果文件面板弹出来」，又抢版面又难看。
       // 现在结论在正文里、产出是一排 chip，右侧只在用户本来就开着预览看这个文件时原地刷新。
       // 该做什么由 outputArrivalPlan 这个纯函数决定，前端 harness 直接验它的输入输出
@@ -2061,7 +2089,28 @@ chatCol.appendChild(buildEmpty());
 
 // ================= @ 引用文件 / 调用技能 自动补全 =================
 let filesCache = [], skillsCache = [];
-fetch("/api/skills").then(r => r.json()).then(l => skillsCache = l).catch(() => {});
+// filesCache 属于哪个工作目录（服务端 workspaceKey 指纹）。产出卡拿它判断「这张卡说的文件，
+// 是不是就在当前清单里」——同名文件在别的目录里有另一份，不能拿那份的版本号盖这张卡
+let filesRoot = "";
+let skillsFetchAt = 0;
+// 装完一个技能要刷新页面才在 / 里看得见，是因为这份名单只在开页面那一下拉过一次。
+// 不能只在「本机点了安装」那一下去补：技能进来的路有好几条——技能中心装的、
+// 插件一包带进来的、命令行直接往目录里扔的、别人在同一台服务器上装的。
+// 所以改成「要用的时候顺手对一遍」，哪条路进来的都算。
+// 节流 3 秒：/ 后面每敲一个字都会走一趟这儿，不拦的话一个词能打十几次接口。
+function refreshSkillsCache(force) {
+  if (!force && Date.now() - skillsFetchAt < 3000) return;
+  skillsFetchAt = Date.now();
+  return fetch("/api/skills").then(r => r.json()).then(l => {
+    const next = Array.isArray(l) ? l : [];
+    const changed = next.map((s) => s.name).join("\u0000") !== skillsCache.map((s) => s.name).join("\u0000");
+    skillsCache = next;
+    if (!changed) return; // 名单跟刚才一样就别动屏幕：人正挑着行，白闪一下比不刷还糟
+    if (mentionState && mentionState.trigger === "/") renderMentionMenu();
+    syncInputHl(); // 高亮那层认技能名，新装的也该当场变色
+  }).catch(() => {});
+}
+refreshSkillsCache(true);
 const mentionMenu = document.getElementById("mention-menu");
 let mentionState = null; // {trigger:'@'|'/', start, query}
 
@@ -2071,7 +2120,7 @@ function detectMention() {
   const m = before.match(/(?:^|[\s（(])([@/])([^\s@/]*)$/);
   if (!m) { mentionState = null; mentionMenu.classList.remove("show"); return; }
   mentionState = { trigger: m[1], query: m[2], start: pos - m[2].length - 1 };
-  if (m[1] === "@") refreshFilesCache();
+  if (m[1] === "@") refreshFilesCache(); else refreshSkillsCache();
   renderMentionMenu();
 }
 let filesFetchAt = 0;
@@ -2085,6 +2134,12 @@ function refreshFilesCache() {
 }
 function renderMentionMenu() {
   const { trigger, query } = mentionState;
+  // 记下人现在挑的是哪一行。技能名单是异步对回来的，对回来就得重画；
+  // 不记的话，人刚按了两下 ↓，名单一落地选中被拽回第一行，上下键等于白按。
+  // 只在菜单正开着的时候算：关掉了的那一次挑到哪儿，下一次再打 / 不该还认——
+  // 那是人看不见的旧状态，带过来就成了“回车没拿第一个”
+  const selNow = mentionMenu.classList.contains("show") ? mentionMenu.querySelector(".mi.sel") : null;
+  const keep = selNow ? selNow.dataset.insert : "";
   let items = [];
   if (trigger === "@") {
     // 名字只显示最后一段，目录名让给说明那一行——插进正文的仍然是完整相对路径。
@@ -2106,8 +2161,13 @@ function renderMentionMenu() {
   // 名字必须自己包一层 .mi-name：裸文本节点在 grid 里是匿名盒子，拿不到 text-overflow，
   // 长文件名只能硬折。CSS 那边 .mention-menu .mi 是两行的 grid，见 index.html 里那段注释。
   // 图标一律给（取不到就用通用的那个）：有的行有图标有的没有，名字的左边缘会错开一截。
-  mentionMenu.innerHTML = `<div class="mh">${trigger === "@" ? "引用工作空间文件" : "调用技能"}</div>` +
-    items.map((it, i) => `<div class="mi ${i === 0 && it.insert ? "sel" : ""}" data-insert="${esc(it.insert || "")}" title="${esc(it.label + (it.sub ? " — " + it.sub : ""))}">${ic(it.icon || "file-text")}<span class="mi-name">${esc(it.label)}</span>${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ""}</div>`).join("");
+  // 上下键和「回车是填进去不是发出去」都是看不见的规矩，不写在这儿没人猜得到；
+  // 一行都挑不了的时候不写，免得指一条走不通的路。
+  const kept = items.findIndex((it) => it.insert && it.insert === keep);
+  const selIdx = kept >= 0 ? kept : items.findIndex((it) => it.insert);
+  const hint = selIdx >= 0 ? `<span class="mh-k">↑↓ 挑 · 回车填进输入框 · Esc 关掉</span>` : "";
+  mentionMenu.innerHTML = `<div class="mh"><span>${trigger === "@" ? "引用工作空间文件" : "调用技能"}</span>${hint}</div>` +
+    items.map((it, i) => `<div class="mi ${i === selIdx ? "sel" : ""}" data-insert="${esc(it.insert || "")}" title="${esc(it.label + (it.sub ? " — " + it.sub : ""))}">${ic(it.icon || "file-text")}<span class="mi-name">${esc(it.label)}</span>${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ""}</div>`).join("");
   mentionMenu.classList.add("show");
   mentionMenu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => applyMention(mi.dataset.insert));
 }
@@ -2146,14 +2206,36 @@ inputEl.addEventListener("scroll", () => { inputHl.scrollTop = inputEl.scrollTop
 inputEl.addEventListener("input", detectMention);
 inputEl.addEventListener("click", detectMention);
 inputEl.addEventListener("keydown", (e) => {
-  if (mentionMenu.classList.contains("show")) {
-    if (e.key === "Enter" || e.key === "Tab") {
-      e.preventDefault();
-      const sel = mentionMenu.querySelector(".mi.sel") || mentionMenu.querySelector(".mi[data-insert]:not([data-insert=''])");
-      applyMention(sel ? sel.dataset.insert : null);
-      return;
-    }
-    if (e.key === "Escape") { mentionMenu.classList.remove("show"); mentionState = null; }
+  if (!mentionMenu.classList.contains("show")) return;
+  const items = [...mentionMenu.querySelectorAll(".mi")].filter(el => el.dataset.insert);
+  // 上下键挑人。以前根本没这一段：选中那一行全靠 renderMentionMenu 给第一行钉个 .sel，
+  // 回车永远只能拿到第一个——想要第二个只能伸手去点，键盘上挑不动
+  if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const down = e.key === "ArrowDown";
+    const cur = items.findIndex(el => el.classList.contains("sel"));
+    const next = cur < 0 ? (down ? 0 : items.length - 1) : (cur + (down ? 1 : items.length - 1)) % items.length;
+    items.forEach(el => el.classList.remove("sel"));
+    items[next].classList.add("sel");
+    items[next].scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (e.key === "Enter" || e.key === "Tab") {
+    e.preventDefault();
+    // 这一下是「把技能填进输入框」，不是「把话发出去」。光 preventDefault 拦不住：
+    // 同一个 textarea 上还挂着一个冒泡阶段的回车监听（bindComposer 里那个），紧跟着就 send()。
+    // 挑完技能整条消息当场飞出去，而人还没来得及写要它做什么。
+    e.stopImmediatePropagation();
+    const sel = mentionMenu.querySelector(".mi.sel") || items[0];
+    applyMention(sel ? sel.dataset.insert : null);
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopImmediatePropagation(); // 菜单开着的时候，Esc 先管关菜单，不该顺手把别的面板也关了
+    mentionMenu.classList.remove("show");
+    mentionState = null;
   }
 }, true);
 
@@ -2701,6 +2783,7 @@ function renderFileFilter() {
 
 function renderFiles(files) {
   filesCache = files || [];
+  syncOutCards(filesCache); // 对话里的产出卡落后于盘上文件的，按这份清单重画（细账见 syncOutCards）
   const el = document.getElementById("file-list");
   renderFileFilter();
   // 「只看成果」是个视图开关，不是删除：藏了多少条要如实写在底下，别让人以为文件没了
@@ -3999,7 +4082,17 @@ function renderTurnOutputs(body, changed, live, ev) {
     // 只能自己去右侧面板翻。途中的脚手架（脚本、日志、PROGRESS.md）仍然只进清单，别把对话挡成一屏方框
     if (!bundles.has(dirOf(f.name)) && (isHtml || isImg || isDeliverable(f.name))) {
       const base = f.name.split("/").pop();
-      const same = grid.querySelector(`.out-card[data-name="${cssEsc(f.name)}"]`);
+      let same = grid.querySelector(`.out-card[data-name="${cssEsc(f.name)}"]`);
+      // 同一个文件在这一回合里被改写了第二次（先出 v1、看不顺眼又原地重画成 v2）：
+      // 以前这一支什么都不做，卡片留着 v1 的地址，浏览器把缓存的旧图一直摆着，
+      // 右侧面板打开的却是 v2——用户那句「对话里预览的图和右边的不一样」就是这儿来的。
+      // 版本号变了就整张重画（挂在旧卡上的「另一种格式」跟着搬过去）
+      if (same && same.dataset.v !== fileVer(f, blkRoot)) {
+        const c = makeOutCard(f, isHtml, blkRoot);
+        if (same.dataset.alt) attachAltFmt(c, same.dataset.alt, blkRoot);
+        same.replaceWith(c);
+        same = c;
+      }
       // 同名同大小 = 同一件产出被拷成了两份（agent 常把任务子目录里的产出再往工作空间根目录复制一份）。
       // 卡片区只摆一张，否则用户看到的就是「同一张图显示了两遍」；两个路径在下面的变更清单里都还留着，信息不丢
       const twin = same || (f.size ? grid.querySelector(`.out-card[data-base="${cssEsc(base)}"][data-size="${f.size}"]`) : null);
@@ -4236,12 +4329,38 @@ function mergeFmtPairs(grid) {
   }
 }
 
+/**
+ * 右侧清单刷新之后，把对话里那些已经落后于盘上文件的产出卡重画一遍。
+ * 卡片是文件事件来的那一刻画的；用户后来自己改了文件、或者 agent 在下一回合又改写了它，
+ * 这张卡的地址还停在旧版本上。清单是「现在」，卡是「当时」，两者对不上就以清单为准。
+ * 只动根对得上的卡（curStamp 会拦），只动版本真变了的卡——其余一张都不碰，浏览器缓存照用。
+ * @returns {number} 重画了几张
+ */
+function syncOutCards(files) {
+  const cards = document.querySelectorAll(".out-card[data-name]");
+  let n = 0;
+  for (const card of cards) {
+    const name = card.dataset.name, root = card.dataset.root || "";
+    const now = curStamp(name, root);
+    if (!now || now === card.dataset.v) continue;
+    const f = (files || []).find((x) => x && x.name === name) || { name, mtime: now };
+    const c = makeOutCard(f, /\.html?$/i.test(name), root);
+    if (card.dataset.alt) attachAltFmt(c, card.dataset.alt, root);
+    card.replaceWith(c);
+    n++;
+  }
+  return n;
+}
+
 function makeOutCard(f, isHtml, root) {
   // 缓存键用「这一版文件」本身（mtime/大小），不是 Date.now()。
   // 以前每来一个文件事件，整片卡都带着新时间戳重建一次：七张图 = 每次重新下 2.7MB，
   // 屏幕上那一格先白一下再慢慢长出来——用户看到的就是「图怎么不渲染」。
   // 文件真被改写时 mtime 会变，缓存照样失效，该刷新的一次不少。
-  const url = withRoot("/api/files/view/" + fpath(f.name) + "?v=" + encodeURIComponent(f.mtime || f.size || ""), root);
+  // 版本号先问当前清单（curStamp）：事件里那份是「当时」，清单里那份是「现在」，两者不一样时
+  // 说明文件后来又被改过，卡片必须跟着现在这一版走，不然对话里摆的就是一张过期的缓存图
+  const ver = fileVer(f, root);
+  const url = withRoot("/api/files/view/" + fpath(f.name) + "?v=" + encodeURIComponent(ver), root);
   // 产出卡：缩略图在上、文件名和大小在下、三个图标钮收在底边。
   // 交付物看得见长什么样才叫产出；只有一行文件名的话，用户还得点开才知道自己拿到了什么
   // 图（含 svg）直接出缩略图——：
@@ -4265,6 +4384,7 @@ function makeOutCard(f, isHtml, root) {
   const card = document.createElement("div");
   card.className = "out-card";
   card.dataset.name = f.name;
+  card.dataset.v = ver;                              // 这张卡画的是哪一版：同名文件再改一次就按它判要不要重画
   card.dataset.base = f.name.split("/").pop();      // 判重按「文件名 + 大小」，光看全路径认不出复制出来的副本
   card.dataset.stem = f.name.replace(/\.[^./]+$/, ""); // 去掉扩展名的全路径：认 svg / png 是同一张图用
   if (root) card.dataset.root = root;                  // 卡片被挪走/换掉时根跟着走，见 attachAltFmt

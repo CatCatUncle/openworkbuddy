@@ -455,6 +455,14 @@ async function openaiChat(cfg, { system, history, tools, onTextDelta, onActivity
 
   if (!resp.ok) {
     const body = await resp.text();
+    // 把判断模型（Jev）填成了对话模型：它只会在选项里挑一个，不会写字。上游回的那句
+    // "is a decisions model" 落到界面上没人看得懂，翻成「去哪儿改」
+    if (resp.status === 400 && /is a decisions model/i.test(body)) {
+      throw new Error(
+        `渠道「${cfg.name || cfg.model}」填的是判断模型（Jev）——它只会在选项里挑一个，不会写字，不能当对话模型用。` +
+          `去 设置 → 模型 把默认对话模型换成别的；判断模型在 设置 → 智能体设置 里单独配。\n原始报错：${body.slice(0, 200)}`
+      );
+    }
     // 上下文超限是最常见的 400，原文是一坨英文 JSON，翻成用户能照着做的话
     if (resp.status === 400 && /context length|context_length|maximum context|too many tokens|reduce the length/i.test(body)) {
       throw new Error(
