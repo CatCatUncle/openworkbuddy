@@ -18,6 +18,7 @@ const mediaHealth = require("./media-health"); // 媒体渠道熔断闸：开跑
 const { CAP_CN } = require("./media-models");
 const jev = require("./jev");            // 判断模型（Jev）：不产文字，只回选项 + 一个「有多确定」
 const systemOne = require("./systemone"); // 判断模型的纯逻辑：排版、确定度闸、算钱
+const continueGate = require("./continue-gate"); // 续跑之前那道闸的纯判据（只出题、读答案，一个字的网络不发）
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -552,6 +553,11 @@ function activeChannel(config) {
 function stopNotice(note) {
   const resume = "要接着做就跟我说「接着上次进度做」，进度档在工作目录的 PROGRESS.md";
   if (String(note).startsWith("已手动停止")) return `注意：${note}。${resume}。`;
+  // 这一停是判断模型下的结论，不是撞上限。叫人去调大上限是答非所问，他要知道的只有两件：
+  // 判错了怎么接着干、不想让它把这道关怎么关掉
+  if (String(note).startsWith(continueGate.GATE_STOP_PREFIX)) {
+    return `注意：${note}。要是它判错了、活儿其实还有剩，跟我说「接着上次进度做」就接着干；不想让它把这道关，去「设置 → 智能体设置」关掉「续跑之前先判一句」。`;
+  }
   // 死循环停下来的，劝人去调大上限是反的——上限再大它也只是多转几圈
   if (String(note).startsWith("陷入死循环")) return `注意：${note}，已经停下来不再烧时间和额度，这种停不会自动续跑。先把它撞墙的那条路修好（渠道、文件或命令），或者把要求说得更具体，再跟我说「接着上次进度做」。`;
   return `注意：${note}，任务强制收尾。${resume}；想让它一口气跑更久，去「设置 → 执行上限」调大上限、或把「自动续跑轮数」设成 1 以上（这页归平台管理员）。`;
@@ -2122,6 +2128,36 @@ function modePrompt(mode) {
     // 自动续跑：撞「最大步数/最大运行时间」后自动开下一轮接着干（仅顶层任务；手动停止、模型挂死不续跑）。
     // 外层 for(;;) 只负责续跑判定，内层步循环保持原缩进不动。
     const autoRounds = depth === 0 ? Math.min(20, Math.max(0, Number(config.agent.auto_continue_rounds) || 0)) : 0;
+    /**
+     * 自动续跑之前那道闸：真去问判断模型之前，先过三道白不花钱的门——
+     * 开关没开不问、结构尺子够得着（进度档里还有没打勾的）不问、没配判断模型不问。
+     *
+     * 返回一句 stopNote 就表示「别再续了」，返回空串表示「照老样子续」。
+     * 任何一步出岔子都算空串：这道闸是来省一轮钱的，它自己坏了不能把活儿卡住。
+     * 不另加超时——jev.ask 自带 20 秒的 AbortSignal，这儿是它唯一的调用路径。
+     */
+    const askContinueGate = async (note, tail) => {
+      if (!(config.agent || {}).continue_gate) return "";
+      if (!continueGate.needsGate({ stopNote: note, milestones: unfinishedMilestones(progressDir()) })) return "";
+      if (!jev.status(config).ready) return "";
+      let progress = "";
+      try { progress = fs.readFileSync(path.join(progressDir(), "PROGRESS.md"), "utf8"); } catch {}
+      const asked = (history.find((h) => h.role === "user") || {}).content || taskLabel || "";
+      try {
+        const out = await jev.askMetered(
+          config,
+          { state: continueGate.gateState({ task: asked, progress, tail }), questions: continueGate.doneQuestions() },
+          { meta: "续跑之前先判一句" }
+        );
+        if (!out.ok) throw new Error(out.error || "判断模型没回应");
+        const d = continueGate.readDone(out);
+        return d ? continueGate.skipNote(d) : "";
+      } catch (e) {
+        // 问不成不影响这一轮：照旧续跑。但必须留一句——静悄悄没生效的开关，比没有这个开关更糟
+        console.warn(`[自动续跑] 续跑前那一问没问成（照旧续跑）：${e.message}`);
+        return "";
+      }
+    };
     let roundsUsed = 0;
     for (;;) {
     for (let step = 0; step < maxSteps; step++) {
@@ -2478,6 +2514,10 @@ function modePrompt(mode) {
     // 「没做完就收摊」和撞上限一样值得续：都属于活儿还在、只是这一轮跑不动了
     const continuable = stopNote.startsWith("已达最大步数") || stopNote.startsWith("已达最大运行时间") || stopNote.startsWith("任务还有");
     if (!(continuable && roundsUsed < autoRounds && !(stopSignal && stopSignal.aborted))) break;
+    // 续之前先判一句：是真没干完，还是已经干完了、只是被上限掐在这儿。判据在 continue-gate.js，
+    // 这儿只管发那一趟请求。它只会做一件事——把这一轮之后的续跑停掉；停不了就照老样子续。
+    const gateNote = await askContinueGate(stopNote, finalText);
+    if (gateNote) { stopNote = gateNote; break; }
     roundsUsed++;
     deadline = Date.now() + (config.agent.max_runtime_ms || 1800000); // 新一轮把时间预算重新拉满
     emit({ type: "auto_continue", round: roundsUsed, total: autoRounds, note: stopNote, depth });
