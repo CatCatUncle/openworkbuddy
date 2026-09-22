@@ -2652,7 +2652,10 @@ function renderPersonaPane(pane, s) {
 }
 // ================= 桌面宠物 =================
 function petCardHtml(p) {
-  const on = p.enabled !== false;
+  // 默认关。后端三处都是这个口径（server.js 的 `enabled === true`、pet.js 的初始值、
+  // electron-main 读不到配置时的兜底），这儿要是写成 `!== false`，没配过的人一打开设置
+  // 就看见一个勾上的「显示桌面宠物」——而桌面上什么都没有。界面替状态撒谎，比状态本身错更难查。
+  const on = p.enabled === true;
   return `
     <div class="card-item">
       <div class="t">${ic("cat")} 桌面宠物</div>
