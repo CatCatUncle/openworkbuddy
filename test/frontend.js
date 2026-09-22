@@ -11868,7 +11868,10 @@ app.whenReady().then(async () => {
       const MN_N5 = "\u2605\u53cd\u5411\u5bf9\u7167\u2605 \u628a\u300c\u6390\u65ad\u4f20\u64ad\u300d\u90a3\u4e00\u53e5\u62b9\u5e73\uff0c\u540c\u4e00\u4e0b\u56de\u8f66\u5f53\u573a\u628a\u8bdd\u53d1\u51fa\u53bb\u2014\u2014\u8fd9\u5c31\u662f\u539f\u6765\u7684\u6bdb\u75c5";
       const MN_N6 = "\u670d\u52a1\u5668\u4e0a\u65b0\u88c5\u4e86\u4e00\u4e2a\u6280\u80fd\uff1a\u9875\u9762\u6ca1\u91cd\u8f7d\uff0c\u9694\u4e00\u4f1a\u513f\u518d\u6253 / \uff0c\u5b83\u81ea\u5df1\u5c31\u5728\u540d\u5355\u91cc\u4e86";
       const MN_N7 = "\u2605\u53cd\u5411\u5bf9\u7167\u2605 \u628a\u300c\u7528\u7684\u65f6\u5019\u987a\u624b\u5bf9\u4e00\u904d\u540d\u5355\u300d\u6458\u6389\uff0c\u65b0\u88c5\u7684\u5c31\u6c38\u8fdc\u770b\u4e0d\u89c1\u2014\u2014\u8fd9\u5c31\u662f\u300c\u88c5\u5b8c\u5f97\u5237\u65b0\u4e00\u4e0b\u300d";
-      const MN_TITLE = "\u524d\u7aef\uff1a\u8f93\u5165\u6846\u7684 / \u83dc\u5355\uff08\u56de\u8f66\u53ea\u586b\u4e0d\u53d1\u00b7\u4e0a\u4e0b\u952e\u80fd\u6311\u00b7\u65b0\u88c5\u7684\u6280\u80fd\u81ea\u5df1\u5c31\u6765\u4e86\u00b7\u4e24\u6761\u90fd\u6709\u53cd\u5411\u5bf9\u7167\uff09";
+      const MN_N8 = "\u8868\u5934\u4e0a\u5199\u7740\u952e\u76d8\u600e\u4e48\u7528\uff08\u2191\u2193 \u6311 \u00b7 \u56de\u8f66\u586b\u8fdb\u8f93\u5165\u6846 \u00b7 Esc \u5173\u6389\uff09\uff1b\u4e00\u884c\u90fd\u6311\u4e0d\u4e86\u7684\u65f6\u5019\u8fd9\u53e5\u4e0d\u51fa\u73b0";
+      const MN_N9 = "\u540d\u5355\u5f02\u6b65\u5bf9\u56de\u6765\u65f6\uff0c\u9009\u4e2d\u8fd8\u505c\u5728\u4eba\u521a\u6311\u7684\u90a3\u4e00\u884c\u2014\u2014\u4e0d\u88ab\u62fd\u56de\u7b2c\u4e00\u884c";
+      const MN_N10 = "\u540d\u5355\u8ddf\u521a\u624d\u4e00\u6a21\u4e00\u6837\u5c31\u4e00\u6b21\u90fd\u4e0d\u91cd\u753b\uff08\u83dc\u5355\u91cc\u63d2\u7684\u8bb0\u53f7\u8fd8\u5728\uff09";
+      const MN_TITLE = "\u524d\u7aef\uff1a\u8f93\u5165\u6846\u7684 / \u83dc\u5355\uff08\u56de\u8f66\u53ea\u586b\u4e0d\u53d1\u00b7\u4e0a\u4e0b\u952e\u80fd\u6311\u00b7\u952e\u76d8\u63d0\u793a\u5199\u5728\u8868\u5934\u00b7\u540d\u5355\u5bf9\u56de\u6765\u9009\u4e2d\u4e0d\u8dd1\u00b7\u65b0\u88c5\u7684\u6280\u80fd\u81ea\u5df1\u5c31\u6765\u4e86\u00b7\u4e24\u6761\u90fd\u6709\u53cd\u5411\u5bf9\u7167\uff09";
 
       // ---- 输入框里那个 / 菜单 ----
       // 两件事都只有在真页面上才看得出来：认 / 的那个监听（capture）和管回车发送的那个监听
@@ -11941,6 +11944,42 @@ app.whenReady().then(async () => {
           v = await look();
           okMN(MN_N7, v.items.indexOf("/ppt-outline") < 0 && v.items.indexOf("/pdf-split") >= 0, v);
           await jx('window.refreshSkillsCache = window.__rsc; window.send = window.__realSend; 1');
+
+
+          // \u952e\u76d8\u63d0\u793a\u4e0e\u201c\u91cd\u753b\u4e0d\u62fd\u8d70\u9009\u4e2d\u201d
+          await jx('window.refreshSkillsCache(true)');
+          await settle(700);
+          const hintOn = () => jx('(() => { const h = document.querySelector("#mention-menu .mh-k"); const m = document.getElementById("mention-menu"); return { hint: h ? h.textContent.trim() : null, items: [...m.querySelectorAll(".mi")].map((e) => e.dataset.insert).filter(Boolean).length, probe: !!document.getElementById("mn-probe"), sel: (m.querySelector(".mi.sel") || {}).dataset ? m.querySelector(".mi.sel").dataset.insert : null }; })()');
+
+          await jset("/");
+          await settle(700);
+          let h = await hintOn();
+          const hintOk = h.hint === "\u2191\u2193 \u6311 \u00b7 \u56de\u8f66\u586b\u8fdb\u8f93\u5165\u6846 \u00b7 Esc \u5173\u6389" && h.items >= 3;
+          await jset("/zzzzz-\u6ca1\u8fd9\u4e2a");
+          await settle(450);
+          const h2 = await hintOn();
+          okMN(MN_N8, hintOk && h2.hint === null, { on: h, off: h2 });
+
+          // \u540d\u5355\u662f\u5f02\u6b65\u5bf9\u56de\u6765\u7684\uff0c\u5bf9\u56de\u6765\u5c31\u5f97\u91cd\u753b\u3002
+          // \u4eba\u521a\u6309\u4e86\u4e24\u4e0b \u2193\uff0c\u8fd9\u4e00\u4e0b\u91cd\u753b\u4e0d\u80fd\u628a\u9009\u4e2d\u62fd\u56de\u7b2c\u4e00\u884c
+          await jset("/");
+          await settle(700);
+          await key("ArrowDown");
+          await key("ArrowDown");
+          const before = (await look()).sel;
+          apiSkills.push({ name: "csv-merge", description: "\u51e0\u5f20\u8868\u62fc\u6210\u4e00\u5f20" });
+          await jx('window.refreshSkillsCache(true)');
+          await settle(700);
+          let v9 = await look();
+          okMN(MN_N9, before === "/meeting-notes" && v9.sel === before && v9.items.indexOf("/csv-merge") >= 0, { before, after: v9 });
+
+          // \u540d\u5355\u6ca1\u53d8\u5c31\u522b\u52a8\u5c4f\u5e55\uff1a\u5f80\u83dc\u5355\u91cc\u63d2\u4e2a\u8bb0\u53f7\uff0c\u91cd\u753b\u8fc7\u7684\u8bdd\u8fd9\u4e2a\u8bb0\u53f7\u5c31\u6ca1\u4e86
+          await jx('(() => { const i = document.createElement("i"); i.id = "mn-probe"; document.getElementById("mention-menu").appendChild(i); return 1; })()');
+          await jx('window.refreshSkillsCache(true)');
+          await settle(700);
+          const h3 = await hintOn();
+          okMN(MN_N10, h3.probe === true && h3.sel === "/meeting-notes", h3);
+          await jx('(() => { const i = document.getElementById("mn-probe"); if (i) i.remove(); return 1; })()');
 
           for (const n of namesMN) console.log("  \u2713 " + n);
           console.log("\u2705 " + MN_TITLE + namesMN.length + " \u9879\u901a\u8fc7");
