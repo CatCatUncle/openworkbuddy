@@ -47,7 +47,9 @@
     "_gen_parallel_max_说明": "出图 / 出片 / 配音 这类生成工具，一轮里最多同时跑几条。范围 1-4，默认 2：一集短剧十几个镜头，一条条排队最坏要等一两个小时；但这类每条都花钱（视频按条计费），所以比只读工具那档保守得多。设成 1 就是回到老样子，全部排队。",
     "gen_parallel_max": 2,
     "_thinking_说明": "思考模式档位：auto=跟随模型自己的默认（什么参数都不发）/ off=关闭 / low / medium / high。各家参数名不同，映射表在 thinking.js",
-    "thinking": "auto"
+    "thinking": "auto",
+    "_second_opinion_说明": "定时任务跑绿之后，再拿判断模型看一眼：这一轮真办完了吗。只问那些裁定判据主动让路的绿（汇报正文超过 400 字的那一段），而且只挂疑问、不改判。默认关：每一条这样的绿都要多发一道题（约两万分之一美金），花不花这笔钱由你定。开关在 设置 → 智能体设置。",
+    "second_opinion": false
   },
   "search": {
     "_说明": "web_search 工具的搜索 API。provider=jina 时用 s.jina.ai（去 jina.ai 免费领 key）；api_key 留空则自动回退免费 DuckDuckGo",

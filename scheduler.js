@@ -7,7 +7,7 @@
 const path = require("path");
 const { dataPath } = require("./paths");
 const jsonStore = require("./store");
-const { judgeRun, explainRunError, verdictMessage } = require("./task-verdict");
+const { judgeRun, explainRunError, verdictMessage, needsSecondOpinion } = require("./task-verdict");
 
 const STORE = dataPath("schedules.json");
 
@@ -17,6 +17,8 @@ const MAX_CATCHUP_MS = 24 * 3600 * 1000;
 const GAP_MS = 90 * 1000;
 /** 运行记录留多少条。留太多每次存盘都要重写一大坨，留太少查不了昨天 */
 const MAX_RUNS = 300;
+/** 第二意见最多等多久。比 jev 自己那道 20 秒稍宽一点，它是兜底闸，不是真正的超时口径——上游挂着不出声时，不能把整条任务锁在那里。 */
+const DOUBT_TIMEOUT_MS = 30000;
 /**
  * 定时任务跑起来时挂在 runTask 上的任务标签。
  * agent 那边靠它认出「我现在就是被定时任务叫起来的」，从而不许再动排期表——
@@ -233,7 +235,39 @@ function cronMatches(cron, date) {
  *   - done 在这一趟收尾时调一次，成败都调，负责把会话落盘
  *   没插 recorder（CLI、测试）就跟以前一模一样：不录、不留 session_id、不影响执行本身。
  */
-function createScheduler({ runtime, onResult, storePath, recorder }) {
+function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion, doubtTimeoutMs }) {
+  /**
+   * 「跑绿之后再看一眼」。给的是一个函数，不是一份配置——scheduler 不认 config、不发请求，
+   * 要不要问、拿什么模型问、花不花钱，全归调用方（server.js）决定。测试里塞个假的就能跑。
+   *
+   * 三条铁律，写在这儿是因为它们比实现重要：
+   *   · 它**不改判**。绿还是绿，只是多挂一句疑问——模型没资格替人把绿改成红。
+   *   · 它**不许把任务跑挂**。问出任何毛病都只当没问过，照原样交差。包括**不许拖住**：
+   *     这一问是 await 在一轮执行里的，而这一轮没回来之前这条任务是锁着的——上游要是挂在那里不出声，
+   *     比报错更难查：任务不是红了，是从此再也不跑了。所以这儿自带一道闸，不指望注入的人记得加超时。
+   *   · 但不许**悄悄**没问成：吞掉的异常要在运行记录上留个字段，不然这个功能哪天整个失灵，
+   *     表现是「再也没有疑问了」——跟「一切正常」长得一模一样。
+   */
+  const doubtMs = Number(doubtTimeoutMs) > 0 ? Number(doubtTimeoutMs) : DOUBT_TIMEOUT_MS;
+  const askDoubt = async (item, text) => {
+    if (typeof secondOpinion !== "function") return null;
+    if (!needsSecondOpinion({ result: text })) return null;
+    let timer = null;
+    try {
+      const capped = new Promise((_, rej) => {
+        // 不能 unref：unref 过的计时器拦不住 Node 退出。上游挂死时它本来就是唯一还活着的那个句柄，
+        // unref 一下进程就当没事干了直接退（还是 0）——超时永远不会到。
+        // 不 unref 也不会赖着不走：下面 finally 里的 clearTimeout 两条路都走得到。
+        timer = setTimeout(() => rej(new Error(`第二意见超时（${Math.max(1, Math.round(doubtMs / 1000))} 秒没回话）`)), doubtMs);
+      });
+      return await Promise.race([secondOpinion(item, text), capped]);
+    } catch (e) {
+      console.warn(`[定时任务] ${item.name} 的第二意见没问成（不影响这一轮的结果）：${e.message}`);
+      return { failed: String(e.message || e).slice(0, 200) };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   // 测试要能指到别处去，不然一跑测试就把用户真的任务表洗了
   const file = storePath || STORE;
   const store = loadStore(file);
@@ -471,11 +505,17 @@ function createScheduler({ runtime, onResult, storePath, recorder }) {
       const { finalText, stopped } = await runtime.runTask({ history, ...((rec && rec.opts) || {}) });
       const v = judgeRun({ result: finalText, stopped });
       if (v.ok) {
+        // 判据放行了，但它从来没回答过「这件事到底办了没有」——正文一长它就主动让路。
+        // 这一问只挂疑问不改判：run.ok 还是 true，通知里多一句「这条你自己看一眼」。
+        const doubt = await askDoubt(item, finalText);
+        if (doubt && doubt.msg) { run.doubt = doubt.msg; run.doubt_sure = doubt.sure; }
+        else if (doubt && doubt.failed) run.doubt_failed = doubt.failed;
         item.last_result = (finalText || "完成").slice(0, 500);
         finish(true, finalText || "完成");
         closeRec(true, finalText || "完成");
         saveStore(store, file);
-        if (onResult) await onResult(item, finalText);
+        // 通知里把疑问缀在后面。缀在后面而不是替换掉正文：用户要的是结果，疑问是加注
+        if (onResult) await onResult(item, run.doubt ? (finalText || "完成") + "\n\n" + run.doubt : finalText);
         return finalText;
       }
       // 把「看起来成功」翻译成「到底成不成」：判据和下一步动作单独存字段，
