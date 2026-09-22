@@ -282,8 +282,12 @@ console.log("\n⑫ 挂在了该挂的地方：渠道目录、两个下拉、额�
 
   const srv = src("server.js");
   ok(/app\.get\("\/api\/decide"/.test(srv) && /app\.post\("\/api\/decide"/.test(srv), "接口挂上了：GET 看状态、POST 真问");
-  ok(/quota\.gate\("decide", \{ n,/.test(srv), "★额度按题数算，不按请求数★ 一次请求塞 30 道题，按请求记的话那道闸拦不住任何东西");
-  ok(/quota\.undo\(g\.hold\)/.test(srv), "没发出去要把占的额度还回去");
+  // “先看配没配 → 过额度闸 → 发 → 发不出去退款”这四步收在 jev.askMetered 一处，
+  // 所以尺子要釘在它身上：再添一个调用点也走它，釘在某条路由里的那把下一次就量不到了。
+  const jsrc = src("jev.js");
+  ok(/quota\.gate\("decide", \{ n,/.test(jsrc), "★额度按题数算，不按请求数★ 一次请求塞 30 道题，按请求记的话那道闸拦不住任何东西");
+  ok(/quota\.undo\(g\.hold\)/.test(jsrc), "没发出去要把占的额度还回去");
+  ok(/jev\.askMetered\(config,/.test(srv), "★接口也走同一条★ 路由里另手抄一遍计费，抄漏一处不报错，只是额度静悄悄地不准");
   ok(/decide_only/.test(srv), "渠道测活认得出它，不拿 /chat/completions 去 ping");
 
   const subs = require(path.join(ROOT, "cli-args")).SUBS;

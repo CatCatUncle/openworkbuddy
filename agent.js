@@ -1437,6 +1437,8 @@ function modePrompt(mode) {
       visionFallback: activeChannel(config), // 主模型自己会看图就直接用它，单配的看图模型是给「主模型看不了图」的人预备的（见 tools.js pickEye）
       // IM/定时等无人值守场景可传 sec 覆盖权限档位（没人守着屏幕点审批）
       security: sec || config.security,
+      // 判断模型那条路。只带它认路要用的两样，不把整份 config（连着所有 Key）递进工具层
+      decideConfig: { decide: config.decide, providers: config.providers },
       deadline,
       stopSignal,
       taskLabel, // 审批卡片上标明发起任务，多任务并行时才分得清是谁在求批

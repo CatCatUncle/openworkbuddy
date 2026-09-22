@@ -68,6 +68,9 @@ function renderSecurityPane(pane, s) {
         ${listCol("放行名单（直接执行）", "sec-cal", joinLines(sec.cmd_allow))}
         ${listCol("询问名单（需批准）", "sec-cak", joinLines(sec.cmd_ask))}
       </div>
+      ${chk("sec-crisk", sec.cmd_risk_gate === true, "名单外先判一句",
+        "两张名单都没命中的命令，在「自动」档是一声不吭直接跑的——<code>git reset --hard</code>、<code>docker volume rm</code>、<code>npm publish</code> 都从这儿过去。名单再加也补不完，每加一条都得先有人被坑过。打开之后，这类命令跑之前先花一道题问判断模型：撤不撤得回来。它说撤不回来、而且自己拿得准，就弹一张审批卡给你，批不批还是你说了算；说不准、答不上、问不成，一律照旧跑。run_node 里的代码同样过这一道。<b>命令原文会发给判断模型</b>，每条约两万分之一美金，同一条命令一次运行里只问一遍。放行名单也盖不住它——名单是按前缀放行的，写一条 git 就把整套子命令都放了。"
+        + (s.agent && s.agent.judge_ready ? "" : "<br><b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key。"))}
     </div>
     <div class="card-item">
       <div class="t">${ic("globe")} 沙箱安全 · 网络</div>
@@ -113,6 +116,7 @@ function renderSecurityPane(pane, s) {
     security: {
       gateway: pane.querySelector("#sec-gateway").checked,
       delete_protect: pane.querySelector("#sec-delprot").checked,
+      cmd_risk_gate: pane.querySelector("#sec-crisk").checked,
       batch_delete_threshold: +pane.querySelector("#sec-batch").value || 50,
       approval_timeout_s: +pane.querySelector("#sec-aptimeout").value || 120,
       file_whitelist: linesOf("#sec-fwl"),
