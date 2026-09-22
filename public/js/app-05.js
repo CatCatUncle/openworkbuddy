@@ -2339,6 +2339,12 @@ async function renderAgentPane(pane, s) {
         <input type="checkbox" id="ag-second" style="margin:0" ${s.agent.second_opinion ? "checked" : ""}>
         跑绿的长汇报，多花一道题确认它真办完了
       </label>
+      <div class="f">定时任务没变化就不推</div>
+      <div class="d" style="margin-bottom:6px">一条每天跑的任务一年推 365 条，其中 350 条是「今天没有更新」——第三天起就没人看了，第十天群机器人被静音，然后在真有更新的那天，通知照样发出去、照样没人看。去重这件事正则做不了：两条「今天没有更新」中间夹着日期和耗时，字节上永远不一样；而「12.3 涨到 12.4」只差一个字符，却正是该响的那种。打开之后，推之前先花一道题问：跟上一次推给你的那条比，有没有新东西。说没有、而且拿得准，这一条就不响铃——<b>运行记录里一个字不少</b>，点进去看得到全文，旁边写明它为什么没推。红的、出错的、挂了疑问的一律照推，这道闸碰都不碰。比的是<b>上一次真推出去的那条</b>，不是上一次跑的那条：万一判错了，攒下的变化下一次会一起推给你。每条约两万分之一美金，跟上次一字不差的那种不花这个钱。默认关${s.agent.judge_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer">
+        <input type="checkbox" id="ag-pgate" style="margin:0" ${s.agent.push_gate ? "checked" : ""}>
+        推之前先花一道题问：这一条跟上次比有没有新东西
+      </label>
     </div>
     <button class="btn-brand" id="ag-save">保存</button><span class="ok-msg" id="ag-msg"></span>` : `
     <div class="card-item">
@@ -2359,6 +2365,7 @@ async function renderAgentPane(pane, s) {
       gen_parallel_max: +pane.querySelector("#ag-genpar").value,
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
       second_opinion: pane.querySelector("#ag-second").checked,
+      push_gate: pane.querySelector("#ag-pgate").checked,
       continue_gate: pane.querySelector("#ag-cgate").checked,
       memory_gate: pane.querySelector("#ag-mgate").checked,
       // 下拉挪走了，但这一单还是得把它原样带上：整个 agent 对象是一起存的，
