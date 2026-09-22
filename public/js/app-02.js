@@ -2264,10 +2264,26 @@ function applyLook() {
 function setLook(k, v) { if (!LOOK_OPTS[k] || !LOOK_OPTS[k][v]) return; lookWrite("owb-look-" + k, v); applyLook(); }
 applyLook();
 
-// ---------- 头像菜单：个人资料 / 修改密码 / 设置 / 外观 / 帮助与反馈 / 检查更新 / 退出登录 ----------
+// ---------- 头像菜单：个人资料 / 修改密码 / 设置 / 语言 / 桌面宠物 / 外观 / 帮助与反馈 / 检查更新 / 退出登录 ----------
 const userMenu = document.getElementById("user-menu");
 function closeUserMenu() { userMenu.classList.remove("show"); }
 function toggleUserMenu() { userMenu.classList.contains("show") ? closeUserMenu() : openUserMenu(); }
+/**
+ * 头像菜单里的桌面宠物快切。
+ *
+ * 这只宠物默认是关着的，而原来唯一的开关埋在 设置 → 助理 那一屏往下滚的一张卡里：
+ * 想让它出来陪一会儿、或者开会前让它消失，都得翻三层。开关存在但找不到，等于没有。
+ *
+ * 纯服务端模式（npm start）压根没有桌面窗口，这一行整个不画——开了也不会有东西出现，
+ * 一个点了没反应的开关比没有更伤人。那种情况下设置页那张卡照旧在，那儿写得下为什么。
+ */
+function petMenuRowHtml(lang) {
+  const p = (settingsCache && settingsCache.pet) || null;
+  if (!p || p.available !== true) return "";
+  const on = p.enabled === true; // 默认关：拿不准的时候按「没有宠物」画，不许画一个反的
+  return `<div class="um-i um-pet" data-act="pet" title="桌面角落那只，点一下就出现 / 消失"><span>${ic("cat")}显示桌面宠物</span><span class="um-seg" data-i18n-skip role="group" aria-label="桌面宠物">${[["1", on, lang === "zh" ? "开" : "On"], ["0", !on, lang === "zh" ? "关" : "Off"]].map(([v, sel, txt]) =>
+    `<button type="button" data-pet="${v}" class="${sel ? "on" : ""}" aria-pressed="${sel}">${txt}</button>`).join("")}</span></div>`;
+}
 function openUserMenu() {
   if (!currentUser) return;
   const av = avatarBits(currentUser.avatar, currentUser.username);
@@ -2287,6 +2303,7 @@ function openUserMenu() {
       : ""}
     ${i18n ? `<div class="um-i um-lang" data-act="lang" title="点一下就切换界面语言，AI 回复也跟着换"><span>${ic("globe")}语言</span><span class="um-seg" data-i18n-skip role="group" aria-label="界面语言">${Object.keys(i18n.LANGS).map((v) =>
       `<button type="button" data-lang="${v}" class="${lang === v ? "on" : ""}" aria-pressed="${lang === v}">${v === "zh" ? "中" : "En"}</button>`).join("")}</span></div>` : ""}
+    ${petMenuRowHtml(lang)}
     <div class="um-i" data-act="appearance">${ic("palette")}外观</div>
     <div class="um-i" data-act="help">${ic("message-circle")}帮助与反馈</div>
     <div class="um-i" data-act="update">${ic("refresh-cw")}检查更新</div>
@@ -2294,6 +2311,23 @@ function openUserMenu() {
   userMenu.querySelectorAll("[data-act]").forEach(el => el.onclick = async (e) => {
     e.stopPropagation();
     const act = el.dataset.act;
+    if (act === "pet") {
+      // 跟语言行一样不关菜单：点「开 / 关」按钮选定，点行的其它地方就在两者间翻
+      const p = (settingsCache && settingsCache.pet) || null;
+      if (!p) return;
+      const b = e.target.closest("button[data-pet]");
+      const cur = p.enabled === true;
+      const next = b ? b.dataset.pet === "1" : !cur;
+      if (next === cur) return; // 已经是这一档了，别白跑一趟服务端
+      p.enabled = next; // 先把界面翻过去：这一下要立刻有反馈，存盘那一趟慢一点没关系
+      openUserMenu();
+      const saved = typeof saveSettings === "function" && await saveSettings({ pet: { enabled: next } });
+      // 存不下就翻回来。界面上停着一个服务端并不认的状态，比当场报错更糟：
+      // 他以为关掉了，下次开机那只还在桌面上。（saveSettings 自己会弹红字，这儿不重复喊）
+      if (!saved && settingsCache && settingsCache.pet) settingsCache.pet.enabled = cur;
+      if (userMenu.classList.contains("show")) openUserMenu();
+      return;
+    }
     if (act === "lang") {
       // 语言行不关菜单：点「中 / En」按钮选定，点行的其它地方就在两者间翻；切完原地重画，菜单文字立刻跟着变
       if (!i18n) return;

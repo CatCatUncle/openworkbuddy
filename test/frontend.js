@@ -5975,6 +5975,14 @@ const MENU_SRC = (() => {
   if (a0 < 0 || a1 < 0) throw new Error("头像菜单切片锚点丢了");
   return APP02.slice(a0, a1);
 })();
+// 设置页那张宠物卡也切真源码：同一个「宠物开没开」，头像菜单画一遍、设置页又画一遍，
+// 两处必须说同一句话。以前设置页写的是 `p.enabled !== false`——没配过的人打开设置看见一个
+// 勾上的「显示桌面宠物」，桌面上却什么都没有
+const PET_CARD_SRC = (() => {
+  const p0 = APP05.indexOf("function petCardHtml("), p1 = APP05.indexOf("function bindPetCard(");
+  if (p0 < 0 || p1 < 0) throw new Error("宠物卡切片锚点丢了");
+  return APP05.slice(p0, p1);
+})();
 const MENU_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS + "</style><body>"
   + "<div class='hist-item active' id='hia'>当前</div>"
   + "<div id='user-row' style='position:relative;width:260px;margin-top:320px'><div class='user-menu' id='user-menu'></div></div></body>";
@@ -5988,6 +5996,20 @@ const MENU_STUBS = `
   // 这几格照着 account.js 的 publicUser 摆。少一格 can_admin，替身就跟真界面分了叉，
   // 分叉之后这一整块测的是一个线上不存在的界面
   let currentUser = { username: "demo", role: "admin", role_label: "管理员", can_admin: true, is_admin: true, avatar: "", credits: 0 }; const creditsOn = false;
+  // 真界面上这是 app-01.js 里的一个 let，头像菜单从它读「这台有没有桌面窗口 / 宠物开没开」。
+  // null ＝ 设置还没拉回来，这时候一行都不该画
+  let settingsCache = null;
+  const SAVES = [], TOASTS = []; let saveOk = true, saveGate = null;
+  function toast(m) { TOASTS.push(String(m)); }
+  async function saveSettings(patch) {
+    SAVES.push(JSON.parse(JSON.stringify(patch)));
+    if (saveGate) await saveGate; // 夹具专用：把这一趟卡在半路，好让断言看一眼「还没存完」那一帧
+    if (!saveOk) { toast("保存失败（HTTP 500）"); return false; }
+    // 真的 saveSettings 存完会 refreshSettingsCache()，把整个 settingsCache 换成服务端那份。
+    // 这儿照做：不换的话，测的是一个「存完之后缓存还是同一个旧对象」的假界面
+    settingsCache = { pet: { available: true, enabled: patch.pet.enabled } };
+    return true;
+  }
 `;
 const MENU_CHECKS = `
   const names = []; window.__menuNames = 0;
@@ -6043,6 +6065,79 @@ const MENU_CHECKS = `
   openUserMenu(); await tick();
   ok("English 下重开菜单：直接是英文，En 选中", /Settings/.test(menu.textContent) && btn("en").classList.contains("on"));
   closeUserMenu(); I18N.setLang("zh");
+
+  // ── 桌面宠物：默认关着，而且开关得摆在看得见的地方 ────────────────────────────
+  // 原来唯一的开关埋在 设置 → 助理 那一屏往下滚的第三张卡里。想让它出来陪一会儿、
+  // 或者开会前让它消失，都得翻三层——开关存在但找不到，等于没有
+  const petRow = () => menu.querySelector(".um-pet");
+  const pbtn = (v) => menu.querySelector('.um-seg button[data-pet="' + v + '"]');
+  const petPill = () => pbtn("1").classList.contains("on") + "/" + pbtn("1").getAttribute("aria-pressed")
+    + " " + pbtn("0").classList.contains("on") + "/" + pbtn("0").getAttribute("aria-pressed");
+  const petOn = () => petPill() === "true/true false/false";
+  const petOff = () => petPill() === "false/false true/true";
+  const NINE = "profile,password,settings,admin,lang,appearance,help,update,logout";
+  const TEN = "profile,password,settings,admin,lang,pet,appearance,help,update,logout";
+
+  openUserMenu();
+  ok("纯服务端模式（没有桌面窗口）：宠物这一行整个不画，不摆一个点了没反应的开关", !petRow() && acts() === NINE, acts());
+  settingsCache = { pet: { available: false, enabled: true } };
+  openUserMenu();
+  ok("负对照：available=false 时哪怕 enabled 是真也不画（这一行的门是「有没有桌面窗口」）", !petRow() && acts() === NINE, acts());
+
+  settingsCache = { pet: { available: true } };
+  openUserMenu();
+  ok("桌面版：宠物行紧挨着语言行出现，一共十行", !!petRow() && acts() === TEN, acts());
+  ok("★没配过就是关着★ 后端三处都默认不给宠物（server.js / pet.js / electron-main），界面不许反着画", petOff(), petPill());
+  ok("宠物行有自己的图标，十行图标各不相同", (() => {
+    const rows = [...menu.querySelectorAll(".um-i")];
+    const hrefs = rows.map((r) => { const u = r.querySelector("use"); return u ? u.getAttribute("href") : null; });
+    return rows.length === 10 && hrefs.every(Boolean) && new Set(hrefs).size === 10 && petRow().querySelector("use").getAttribute("href") === "#i-cat";
+  })(), [...menu.querySelectorAll(".um-i")].map((r) => { const u = r.querySelector("use"); return u ? u.getAttribute("href") : "(无)"; }).join(","));
+  ok("胶囊组标了 data-i18n-skip，「开 / 关」不会被翻译器动", petRow().querySelector(".um-seg").hasAttribute("data-i18n-skip") && pbtn("1").textContent === "开" && pbtn("0").textContent === "关");
+
+  // 点下去那一下要立刻有反馈：存盘那一趟慢一点没关系，但胶囊不能等它回来才翻。
+  // 这一段把存盘卡在半路，量的就是这一帧——不这么量的话，少写一句 p.enabled = next、
+  // 或者存完之前压根不重画，都照样绿：存成之后整个 settingsCache 会被服务端那份换掉，
+  // 最后一帧看着一模一样。（这两条变异当初就是这么漏过去的）
+  let releaseSave;
+  saveGate = new Promise((r) => { releaseSave = r; });
+  SAVES.length = 0;
+  pbtn("1").click(); await tick();
+  ok("★存盘还没回来，胶囊已经翻过去了★ 不让人对着一个没反应的开关连点",
+    SAVES.length === 1 && petOn(), JSON.stringify(SAVES) + " ｜ " + petPill());
+  releaseSave(); await tick(); saveGate = null;
+  ok("存成之后还是开着（这一帧是服务端那份说了算）", petOn(), petPill());
+  settingsCache = { pet: { available: true } }; openUserMenu(); // 回到「没配过」那一档，下面接着走常规路径
+
+  const mBefore = MODALS.length;
+  SAVES.length = 0;
+  pbtn("1").click(); await tick();
+  ok("点「开」：存的正是 pet.enabled=true，菜单没关，胶囊翻到开",
+    JSON.stringify(SAVES) === '[{"pet":{"enabled":true}}]' && menu.classList.contains("show") && petOn(), JSON.stringify(SAVES) + " | " + petPill());
+  ok("点宠物开关没误开弹窗（它不是个跳转入口）", MODALS.length === mBefore, MODALS.join());
+  pbtn("1").click(); await tick();
+  ok("再点一次「开」：已经是这一档了，不白跑一趟服务端", SAVES.length === 1 && petOn(), JSON.stringify(SAVES));
+  petRow().click(); await tick();
+  ok("点行空白处：在开 / 关之间翻，这次存的是 false", SAVES.length === 2 && SAVES[1].pet.enabled === false && petOff(), JSON.stringify(SAVES) + " | " + petPill());
+
+  // 存不下的时候界面必须跟着退回去。屏幕上停着一个服务端并不认的状态，比当场报错更糟：
+  // 他以为关掉了，下次开机那只还在桌面角上
+  saveOk = false; TOASTS.length = 0;
+  pbtn("1").click(); await tick();
+  ok("★存不下就把胶囊翻回来★ 退回关，红字弹了，菜单还开着", petOff() && TOASTS.length === 1 && menu.classList.contains("show"), TOASTS.join() + " ｜ " + petPill());
+  saveOk = true;
+
+  I18N.setLang("en"); openUserMenu(); await tick();
+  ok("英文下这一行也是英文（Show desktop pet），胶囊是 On / Off",
+    /Show desktop pet/.test(petRow().textContent) && pbtn("1").textContent === "On" && pbtn("0").textContent === "Off", petRow().textContent);
+  I18N.setLang("zh"); await tick();
+
+  // 同一个「宠物开没开」，头像菜单画一遍、设置页那张卡又画一遍——两处必须说同一句话
+  const petBox = (p) => { const d = document.createElement("div"); d.innerHTML = petCardHtml(p); return d.querySelector("#pet-on"); };
+  ok("★设置页那张卡：没配过也是没勾的★ 跟菜单、跟后端（server.js 的 enabled === true）同一个口径", !petBox({}).checked && !petBox({ available: true, sprites: [] }).checked);
+  ok("负对照：真开着的时候它勾着", petBox({ enabled: true }).checked === true);
+  ok("负对照：明写 false 也是没勾的", petBox({ enabled: false }).checked === false);
+  settingsCache = null; closeUserMenu();
 
   // 企业后台入口是按角色发的。这行要是对普通成员也冒出来，他点进去只会连吃 403——
   // 一个点了就报错的入口，比没有这个入口更伤人
@@ -10980,10 +11075,10 @@ app.whenReady().then(async () => {
     const win18 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win18.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MENU_HTML));
-      const names18 = await win18.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n(async function(){\n" + MENU_STUBS + "\n" + LOOK_SRC + "\n" + MENU_SRC + "\n" + MENU_CHECKS + "\n})()", true)
+      const names18 = await win18.webContents.executeJavaScript(IC_BOOT + I18N_SRC + "\n(async function(){\n" + MENU_STUBS + "\n" + LOOK_SRC + "\n" + MENU_SRC + "\n" + PET_CARD_SRC + "\n" + MENU_CHECKS + "\n})()", true)
         .catch(async (e) => { throw new Error("[头像菜单] " + ((e && (e.stack || e.message)) || String(e)) + " | 已过 " + (await win18.webContents.executeJavaScript("window.__menuNames||0").catch(() => "?"))); });
       for (const n of names18) console.log("  ✓ " + n);
-      console.log(`✅ 前端：头像菜单语言快切（中/En 胶囊点即切·菜单不关原地翻·点行空白也翻·尾注已删·其它行不受影响）${names18.length} 项通过`);
+      console.log(`✅ 前端：头像菜单（中/En 胶囊点即切·桌面宠物就地开关且默认关·存不下就翻回来·服务端模式整行不画）${names18.length} 项通过`);
     } finally {
       if (!win18.isDestroyed()) win18.destroy();
     }
