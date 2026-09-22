@@ -2232,8 +2232,9 @@ app.get("/api/settings", (req, res) => {
       max_context_chars: config.agent.max_context_chars || 120000,
       max_tokens_budget: config.agent.max_tokens_budget || 0,
       second_opinion: !!config.agent.second_opinion,
-      // 界面靠它说实话：没配判断模型的时候，这个开关打开也不会生效，那就别让它假装能开
-      second_opinion_ready: jev.status(config).ready,
+      continue_gate: !!config.agent.continue_gate,
+      // 上面这两个开关共用一面旗子：没配判断模型的时候，它们打开也不会生效，别让界面假装能开
+      judge_ready: jev.status(config).ready,
       failover_model: config.agent.failover_model || "",
       thinking: thinking.norm(myAgent.thinking), // 思考模式档位，默认 auto=跟随模型自己的默认
       engine: myAgent.engine || "builtin",
@@ -2466,6 +2467,7 @@ app.post("/api/settings", (req, res) => {
       if (b.agent.max_tokens_budget !== undefined) config.agent.max_tokens_budget = Math.max(0, Math.round(+b.agent.max_tokens_budget) || 0);
       // 定时任务跑绿之后再让判断模型看一眼。默认关，因为它每条绿都要花一道题的钱
       if (b.agent.second_opinion !== undefined) config.agent.second_opinion = !!b.agent.second_opinion;
+      if (b.agent.continue_gate !== undefined) config.agent.continue_gate = !!b.agent.continue_gate;
       if (b.agent.thinking !== undefined) {
         const lv = String(b.agent.thinking || "").trim().toLowerCase();
         // 写错档位当场拒绝，不悄悄退回 auto：用户以为关掉了思考、账单却照着思考的量涨

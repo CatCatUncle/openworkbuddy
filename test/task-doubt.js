@@ -298,13 +298,13 @@ const padTo = (base, n) => base + "。".repeat(Math.max(0, n - base.length));
     ok(/second_opinion/.test(srv), "server 里有这个开关");
     ok(/if \(!\(config\.agent \|\| \{\}\)\.second_opinion\) return null;/.test(srv), "★默认关★ 没打开就一分钱不花（它花的是后台的钱，没人点确认）");
     ok(/jev\.status\(config\)\.ready/.test(srv), "  └ 没配判断模型也不发请求");
-    ok(/second_opinion_ready/.test(srv), "  └ 界面能知道「配没配」，好说实话");
+    ok(/judge_ready/.test(srv), "  └ 界面能知道「配没配」，好说实话");
     ok(/deliveryQuestions/.test(srv) && /readDelivery/.test(srv), "  └ 用的是这一层的纯函数，没在 server 里另抄一份判据");
 
     const ui = fs.readFileSync(path.join(ROOT, "public", "js", "app-05.js"), "utf8");
     ok(/id="ag-second"/.test(ui), "★设置里摆得出来★ 开关存在但找不到＝没有");
     ok(/second_opinion: pane\.querySelector\("#ag-second"\)\.checked/.test(ui), "  └ 勾了真存得下去");
-    ok(/second_opinion_ready/.test(ui), "  └ 没配判断模型时界面明说，别让它假装能开");
+    ok(/judge_ready/.test(ui), "  └ 没配判断模型时界面明说，别让它假装能开");
     ok(/两万分之一美金|美金|花钱|费/.test(ui), "  └ 说清楚它花钱（后台自己花的钱，必须先讲明白）");
 
     const i18n = fs.readFileSync(path.join(ROOT, "public", "js", "i18n.js"), "utf8");

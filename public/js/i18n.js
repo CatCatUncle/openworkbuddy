@@ -994,6 +994,8 @@
       "执行权限模式": "Permission mode",
       "最大执行步数": "Max steps",
       "自动续跑轮数": "Auto-continue rounds",
+      "续跑之前先判一句": "Ask before auto-continuing",
+      "续下一轮之前，先花一道题问问是不是已经干完了": "Spend one question asking whether the work is already done before continuing",
       "定时任务跑绿之后再看一眼": "Second opinion on green scheduled runs",
       "跑绿的长汇报，多花一道题确认它真办完了": "Spend one extra question confirming long green reports really delivered",
       "重新检测本机": "Rescan this machine",
