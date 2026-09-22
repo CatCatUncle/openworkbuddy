@@ -997,6 +997,7 @@
       "名单外先判一句": "Judge commands no list covers",
       "命令原文会发给判断模型": "The full command text goes to the judge model",
       "现在还没配判断模型，勾上也不会生效": "No judge model configured yet, so ticking this does nothing",
+      "记之前先判一句": "Judge before writing to memory",
       "续跑之前先判一句": "Ask before auto-continuing",
       "续下一轮之前，先花一道题问问是不是已经干完了": "Spend one question asking whether the work is already done before continuing",
       "定时任务跑绿之后再看一眼": "Second opinion on green scheduled runs",
