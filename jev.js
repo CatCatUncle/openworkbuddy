@@ -17,6 +17,7 @@
 
 const so = require("./systemone");
 const { cleanKey, _internals } = require("./llm");
+const quota = require("./quota"); // 额度记在这一层：发请求的就这一份，谁调都走同一本账
 const channelEnvName = _internals.channelEnvName;
 
 /** 这个渠道类型能不能干判断这活儿。目录里加一家新的，改这儿一处 */
@@ -145,6 +146,31 @@ async function ask(config, { state, questions, model, timeoutMs, signal } = {}) 
   };
 }
 
+/**
+ * 问一趟，并且把额度算进去。
+ *
+ * 这套四步——先看配没配 → 过额度闸 → 发 → 发不出去要退款——原先在目标验收、
+ * /api/decide 两个调用点各手抄了一遍。抄漏一处的后果不是报错，是额度静悄悄不准：
+ * 占了没退，或者花了没记。再添一个调用点就是第三份，所以收成一处。
+ *
+ * 额度按**题数**算，不按请求数：一趟能带 32 道题，按请求数记账等于发了一张三十二倍的白条。
+ *
+ * 失败分三种，因为调用点要按这三种分头：没配（notReady，退老路）、额度满（quota，等明天）、
+ * 真出错（改参数或重试）。全归成一句「失败」的话，上面只能猜。
+ */
+async function askMetered(config, args, opts) {
+  const { meta = "" } = opts || {};
+  const n = Object.keys((args && args.questions) || {}).length;
+  const st = status(config);
+  if (!st.ready) return { ok: false, error: st.why, how: st.how, notReady: true };
+  const g = quota.gate("decide", { n, model: st.model, provider: st.route });
+  if (!g.ok) return { ok: false, error: g.why, quota: true };
+  const out = await ask(config, args || {});
+  if (!out.ok) { quota.undo(g.hold); return out; }   // 没发出去 / 上游没认，不该占着额度
+  quota.record("decide", { n, provider: st.route, model: out.model || st.model, meta: trim(meta).slice(0, 80), hold: g.hold });
+  return out;
+}
+
 /** 按名字取一条回答，取不到返回 null（而不是抛）——调用点大多是「取到就用，取不到走老路」 */
 function pick(out, key) {
   if (!out || !out.ok || !Array.isArray(out.answers)) return null;
@@ -172,4 +198,4 @@ async function selftest(config, opts) {
   return { ...out, state };
 }
 
-module.exports = { pickRoute, status, ask, pick, selftest, ROUTE_OF_KIND, keyOfProvider };
+module.exports = { pickRoute, status, ask, askMetered, pick, selftest, ROUTE_OF_KIND, keyOfProvider };

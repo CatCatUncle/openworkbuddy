@@ -16,6 +16,8 @@ const mailer = require("./mailer"); // 发信：配没配、地址合不合法�
 const tracing = require("./trace"); // 执行追踪：整趟任务的模型调用/工具调用发去 Langfuse，默认关
 const mediaHealth = require("./media-health"); // 媒体渠道熔断闸：开跑前先把暂停中的渠道写进提示词
 const { CAP_CN } = require("./media-models");
+const jev = require("./jev");            // 判断模型（Jev）：不产文字，只回选项 + 一个「有多确定」
+const systemOne = require("./systemone"); // 判断模型的纯逻辑：排版、确定度闸、算钱
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -102,6 +104,48 @@ const FEISHU_DOC_TOOL = {
 // 自进化复盘推一条、IM 里那条链路推一条——全是 notify.pushBots 的固定调用点。
 // agent 手上一个入口都没有。于是「跑完发群里」这种最普通的办公请求，它只能在回复里
 // 写一句「已为你准备好，请手动发送」。webhook 明明就配在 设置 → 通知 里。
+// 一件 agent 天天在做、而且做得很贵的事：对着一堆东西做同一类判断。
+// 一百封邮件分不分派、三十份简历过不过初筛、一批文案有没有越线——主模型一条条读着判，
+// 每条都要吐一段思考，慢、贵，判完还说不出哪几条是拿不准的。判断模型一趟吃 32 道题，
+// 一道约两万分之一美金，每条自带确定度：高的直接往下走，低的挑出来给人看。
+//
+// 没配渠道就不摆这个工具（见 toolList）：摆出来只会让它先想一个方案、调一次、
+// 吃一条「没配」、再重想，白烧一轮，用户还以为是自己哪里填错了。
+const DECIDE_TOOL = {
+  name: "decide",
+  description:
+    "把一批「是非 / 单选 / 打分」的判断一次问完，每条回答都带一个「有多确定」。走的是专门的判断模型（Jev），不是你自己。\n" +
+    "什么时候用：要对一批东西做同一类判断（工单分派、简历初筛、文案合不合规、哪些需要人工复核），或者你自己要在岔路口拿一个带把握的判断。一份材料一趟，最多 32 道题；多份材料就调多趟。\n" +
+    "什么时候别用：要写字、要解释、要一步步推——它不产文字，只回选项和概率。只有一两条要判、你自己顺手就判了的，也别绕这一趟。\n" +
+    "最值钱的是确定度：低于门槛的那几条别当定论往下走，挑出来交代给用户，或者把判准写细一点重问。",
+  input_schema: {
+    type: "object",
+    properties: {
+      state: { type: "string", description: "要判断的材料，一次一份（最多约 20000 字，超了会被截并告诉你）。所有题都对着这一份问" },
+      questions: {
+        type: "array",
+        description: "这份材料上要问的题，最多 32 道",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "这道题的名字，回答按它取回来。同一批里不能重名" },
+            type: { type: "string", enum: ["noul", "choice", "score"], description: "noul=是非（回一个 0~1 的概率）；choice=单选；score=打分" },
+            instructions: { type: "string", description: "要判断什么，把判准写清楚。含糊的题问出来的是含糊的答案" },
+            criteria: {
+              type: "array",
+              items: { type: "string" },
+              description: "choice 的选项（至少两个）；score 的档位（**从低到高**排，顺序就是分数 0、1、2…）。noul 不用填",
+            },
+          },
+          required: ["name", "type", "instructions"],
+        },
+      },
+      sure_min: { type: "number", description: "确定度门槛（0~1，不填默认 0.7）。低于它的回答会被单独挑出来提醒你" },
+    },
+    required: ["state", "questions"],
+  },
+};
+
 const NOTIFY_TOOL = {
   name: "notify_user",
   description:
@@ -807,6 +851,8 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         ...(gui ? readOnly : dropRendererParams(readOnly)),
         // 只看不动的档位里也该答得上「我都定了些什么」——list_schedules 只读，schedule_task 不给
         ...(scheduler.activeScheduler() ? [LIST_SCHEDULES_TOOL] : []),
+        // 判断不动任何东西，只看不动的档位里照样该能用——「这一批里哪几条要人工看」本来就是个只读问题
+        ...(jev.status(config).ready ? [DECIDE_TOOL] : []),
         USE_SKILL_TOOL,
       ];
     }
@@ -829,6 +875,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     // 没配发信通道就别摆这个工具：摆出来模型会先写一封信、调一次、吃一条「没配」、再重想，
     // 白烧一轮不说，用户还以为自己哪里填错了
     if (mailer.configured((config.im || {}).smtp)) tools.push(SEND_EMAIL_TOOL);
+    if (jev.status(config).ready) tools.push(DECIDE_TOOL);
     if (depth === 0 && experts.length) tools.push(DELEGATE_TOOL);
     // 团委派只给主协调者：专家在团里接力时 depth 已经 >0，再让它组团会套娃
     if (depth === 0 && expertTeams.some((t) => teamMembers(t).length >= 2)) tools.push(DELEGATE_TEAM_TOOL);
@@ -947,6 +994,44 @@ function modePrompt(mode) {
         return { content: "一个通道都没推成（webhook 可能填错了或已失效）。去 设置 → 通知 里核对企业微信/钉钉的地址。", isError: true };
       }
       return { content: `已推送到：${sent.map((s) => ({ wecom: "企业微信", dingtalk: "钉钉" }[s] || s)).join("、")}（${text.length} 字）`, isError: false };
+    }
+    if (tc.name === "decide") {
+      const state = String(tc.input.state == null ? "" : tc.input.state);
+      const raw = Array.isArray(tc.input.questions) ? tc.input.questions : [];
+      if (!state.trim()) return { content: "decide 要带上 state（要判断的材料）。题问得再清楚，没材料它也判断不了。", isError: true };
+      if (!raw.length) return { content: "decide 要带上 questions，至少一道题。", isError: true };
+      // 名字是取回答的凭据。数组里重名看不出来，转成 { 名字: … } 的时候后一道直接
+      // 把前一道盖掉——少问了一道题，回来还少一条答案，而这一路一个错都不报。
+      const questions = {};
+      const dup = [];
+      const noName = [];
+      for (const q of raw) {
+        const name = String((q && q.name) || "").trim();
+        if (!name) { noName.push(String((q && q.instructions) || "").slice(0, 20) || "（空）"); continue; }
+        if (Object.prototype.hasOwnProperty.call(questions, name)) { dup.push(name); continue; }
+        const item = { type: String((q && q.type) || "").trim().toLowerCase(), instructions: String((q && q.instructions) || "").trim() };
+        if (Array.isArray(q && q.criteria) && q.criteria.length) item.criteria = q.criteria;
+        questions[name] = item;
+      }
+      if (noName.length) return { content: `这 ${noName.length} 道题没写 name：${noName.join("、")}。回答是按名字取回来的，没名字就对不上号。`, isError: true };
+      if (dup.length) return { content: `这几道题重名了：${[...new Set(dup)].join("、")}。重名会让后一道盖掉前一道，各起一个不一样的名字再问一遍。`, isError: true };
+
+      const out = await jev.askMetered(config, { state, questions }, { meta: taskLabel || "agent" });
+      if (!out.ok) {
+        if (out.notReady) return { content: `判断模型还没接上：${out.error}${out.how ? "。" + out.how : ""}。这一步你自己判，别重试。`, isError: true };
+        if (out.quota) return { content: `判断模型的额度用完了：${out.error}。剩下的你自己判，或者告诉用户这儿卡住了。`, isError: true };
+        return { content: `判断没做成：${out.error}`, isError: true };
+      }
+      const bar = Number(tc.input.sure_min);
+      const min = bar > 0 && bar <= 1 ? bar : systemOne.SURE_MIN;
+      const shaky = out.answers.filter((x) => !systemOne.gate(x, min).act);
+      const head =
+        `${out.asked} · ${out.answers.length} 道 · ${out.ms}ms · ${systemOne.costText(out.usage)}` +
+        (out.truncated ? `　· 材料太长，只判了前 ${out.state_chars} 字` : "");
+      const tail = shaky.length
+        ? `\n\n拿不准的（确定度不到 ${systemOne.pct(min)}）：${shaky.map((x) => x.key).join("、")}。这几条别当定论往下走——要么交代给用户确认，要么把判准写细一点重问。`
+        : `\n\n${out.answers.length} 条都过了 ${systemOne.pct(min)} 的确定度。`;
+      return { content: head + "\n" + out.answers.map((x) => systemOne.lineOf(x)).join("\n") + tail, isError: false };
     }
     if (tc.name === "list_schedules" || tc.name === "schedule_task") {
       const sch = scheduler.activeScheduler();

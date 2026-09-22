@@ -700,17 +700,7 @@ try {
  * 自动补跑几轮、每轮几条标准，一晚上能问出很多道。限的是失控的量，不是钱。
  * 没配渠道 / 被闸拦了都返回 ok:false，goal.js 会安静地退回对话模型那条老路。
  */
-async function decideForGoal(args) {
-  const n = Object.keys((args && args.questions) || {}).length;
-  const st = jev.status(config);
-  if (!st.ready) return { ok: false, error: st.why, notReady: true };
-  const g = quota.gate("decide", { n, model: st.model, provider: st.route });
-  if (!g.ok) return { ok: false, error: g.why };
-  const out = await jev.ask(config, args);
-  if (!out.ok) { quota.undo(g.hold); return out; }
-  quota.record("decide", { n, provider: st.route, model: out.model || st.model, meta: "目标验收", hold: g.hold });
-  return out;
-}
+const decideForGoal = (args) => jev.askMetered(config, args, { meta: "目标验收" });
 const goalKit = require("./goal").createGoalEngine({ workspaceDir: getWorkspaceDir, decide: decideForGoal });
 const GOAL_MAX_ROUNDS = goalKit.MAX_ROUNDS;
 
@@ -2160,21 +2150,16 @@ app.post("/api/decide", async (req, res) => {
   if (!stateText || (typeof stateText === "object" && !Object.keys(stateText).length)) {
     return res.status(400).json({ ok: false, error: "没给它要判断的东西（state）——问题问得再清楚，没有材料它也判断不了" });
   }
-  const n = Object.keys(questions).length;
-  const st = jev.status(config);
-  if (!st.ready) return res.status(503).json({ ok: false, error: st.why + "。" + st.how, not_ready: true });
-
-  const g = quota.gate("decide", { n, model: st.model, provider: st.route });
-  if (!g.ok) {
-    security.audit("额度拦截", "判断模型：" + g.why, "拦截");
-    return res.status(429).json({ ok: false, error: g.why, quota: true });
-  }
-  const out = await jev.ask(config, { state: b.state, questions, model: b.model, timeoutMs: Number(b.timeout_ms) || 0 });
+  const out = await jev.askMetered(config, { state: b.state, questions, model: b.model, timeoutMs: Number(b.timeout_ms) || 0 }, { meta: Object.keys(questions).join("、") });
   if (!out.ok) {
-    quota.undo(g.hold);   // 没发出去 / 上游没认，不该占着额度
-    return res.status(out.notReady ? 503 : out.badRequest ? 400 : 502).json({ ok: false, error: out.error, ms: out.ms || 0 });
+    if (out.quota) {
+      security.audit("额度拦截", "判断模型：" + out.error, "拦截");
+      return res.status(429).json({ ok: false, error: out.error, quota: true });
+    }
+    // 「没配」这一类必须带上 how：界面上就这一句话，只说「还没有能用的渠道」等于没说
+    return res.status(out.notReady ? 503 : out.badRequest ? 400 : 502)
+      .json({ ok: false, error: out.error + (out.how ? "。" + out.how : ""), ms: out.ms || 0, not_ready: !!out.notReady });
   }
-  quota.record("decide", { n, provider: st.route, model: out.model || st.model, meta: Object.keys(questions).join("、").slice(0, 80), hold: g.hold });
   res.json({
     ...out,
     lines: out.answers.map((a) => systemOne.lineOf(a)),
