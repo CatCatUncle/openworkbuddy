@@ -2061,7 +2061,22 @@ chatCol.appendChild(buildEmpty());
 
 // ================= @ 引用文件 / 调用技能 自动补全 =================
 let filesCache = [], skillsCache = [];
-fetch("/api/skills").then(r => r.json()).then(l => skillsCache = l).catch(() => {});
+let skillsFetchAt = 0;
+// 装完一个技能要刷新页面才在 / 里看得见，是因为这份名单只在开页面那一下拉过一次。
+// 不能只在「本机点了安装」那一下去补：技能进来的路有好几条——技能中心装的、
+// 插件一包带进来的、命令行直接往目录里扔的、别人在同一台服务器上装的。
+// 所以改成「要用的时候顺手对一遍」，哪条路进来的都算。
+// 节流 3 秒：/ 后面每敲一个字都会走一趟这儿，不拦的话一个词能打十几次接口。
+function refreshSkillsCache(force) {
+  if (!force && Date.now() - skillsFetchAt < 3000) return;
+  skillsFetchAt = Date.now();
+  return fetch("/api/skills").then(r => r.json()).then(l => {
+    skillsCache = Array.isArray(l) ? l : [];
+    if (mentionState && mentionState.trigger === "/") renderMentionMenu();
+    syncInputHl(); // 高亮那层认技能名，新装的也该当场变色
+  }).catch(() => {});
+}
+refreshSkillsCache(true);
 const mentionMenu = document.getElementById("mention-menu");
 let mentionState = null; // {trigger:'@'|'/', start, query}
 
@@ -2071,7 +2086,7 @@ function detectMention() {
   const m = before.match(/(?:^|[\s（(])([@/])([^\s@/]*)$/);
   if (!m) { mentionState = null; mentionMenu.classList.remove("show"); return; }
   mentionState = { trigger: m[1], query: m[2], start: pos - m[2].length - 1 };
-  if (m[1] === "@") refreshFilesCache();
+  if (m[1] === "@") refreshFilesCache(); else refreshSkillsCache();
   renderMentionMenu();
 }
 let filesFetchAt = 0;
@@ -2146,14 +2161,36 @@ inputEl.addEventListener("scroll", () => { inputHl.scrollTop = inputEl.scrollTop
 inputEl.addEventListener("input", detectMention);
 inputEl.addEventListener("click", detectMention);
 inputEl.addEventListener("keydown", (e) => {
-  if (mentionMenu.classList.contains("show")) {
-    if (e.key === "Enter" || e.key === "Tab") {
-      e.preventDefault();
-      const sel = mentionMenu.querySelector(".mi.sel") || mentionMenu.querySelector(".mi[data-insert]:not([data-insert=''])");
-      applyMention(sel ? sel.dataset.insert : null);
-      return;
-    }
-    if (e.key === "Escape") { mentionMenu.classList.remove("show"); mentionState = null; }
+  if (!mentionMenu.classList.contains("show")) return;
+  const items = [...mentionMenu.querySelectorAll(".mi")].filter(el => el.dataset.insert);
+  // 上下键挑人。以前根本没这一段：选中那一行全靠 renderMentionMenu 给第一行钉个 .sel，
+  // 回车永远只能拿到第一个——想要第二个只能伸手去点，键盘上挑不动
+  if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const down = e.key === "ArrowDown";
+    const cur = items.findIndex(el => el.classList.contains("sel"));
+    const next = cur < 0 ? (down ? 0 : items.length - 1) : (cur + (down ? 1 : items.length - 1)) % items.length;
+    items.forEach(el => el.classList.remove("sel"));
+    items[next].classList.add("sel");
+    items[next].scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (e.key === "Enter" || e.key === "Tab") {
+    e.preventDefault();
+    // 这一下是「把技能填进输入框」，不是「把话发出去」。光 preventDefault 拦不住：
+    // 同一个 textarea 上还挂着一个冒泡阶段的回车监听（bindComposer 里那个），紧跟着就 send()。
+    // 挑完技能整条消息当场飞出去，而人还没来得及写要它做什么。
+    e.stopImmediatePropagation();
+    const sel = mentionMenu.querySelector(".mi.sel") || items[0];
+    applyMention(sel ? sel.dataset.insert : null);
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopImmediatePropagation(); // 菜单开着的时候，Esc 先管关菜单，不该顺手把别的面板也关了
+    mentionMenu.classList.remove("show");
+    mentionState = null;
   }
 }, true);
 
