@@ -17,6 +17,8 @@ const cdp = require("./cdp"); // 可选的本机 Chrome CDP：不捆绑浏览器
 const quota = require("./quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
 const mediaHealth = require("./media-health"); // 连不通的渠道熔断：撞过的硬错下次连请求都不发
 const checkpoints = require("./checkpoints"); // 改文件前留检查点：整步能退回去，审批卡上先看 diff
+const cmdRisk = require("./cmd-risk"); // 名单外那条命令跑之前先判一句（纯判据，不发请求）
+const jev = require("./jev"); // 判断模型：上面那一问就是它答的
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
 let workspaceDir = dataPath("workspace");
@@ -4005,6 +4007,48 @@ async function executeTool(name, input, opts = {}) {
       isError: true,
     };
   };
+  /**
+   * 名单外那条命令/那段代码，跑之前先判一句。
+   *
+   * 只做一件事：把 allow 抬成 ask。抬错了顶多多弹一张卡，人点一下就过；
+   * 不抬的后果是 `git reset --hard` 一声不吭地把今天的活儿冲了——四张名单谁也拦不住它。
+   * 所以每一条失败的路（没开、没配、粗筛说没事、问不成、说不准）都退回今天的样子：照跑。
+   */
+  const judgeRisk = async (verdict, kind, text) => {
+    const seg = cmdRisk.needsJudge({ verdict, sec, text, kind });
+    if (!seg) return verdict;
+    const hit = cmdRisk.recall(text);
+    if (hit.hit) return hit.verdict || verdict; // 判过了：危险的照样弹卡，没事的不再花第二遍钱
+    const cfg = opts.decideConfig;
+    if (!cfg || !jev.status(cfg).ready) return verdict;
+    try {
+      const out = await jev.askMetered(
+        cfg,
+        {
+          state: cmdRisk.riskState({
+            text, seg, kind,
+            // 绝对路径里带着用户名和家目录，这段是要发到上游去的：判这条命令危不危险，用不着知道它跑在谁的电脑上
+            where: path.relative(ws(), fileBase) || "工作空间根目录",
+            mode: security.PERMISSION_MODES[security.permissionMode(sec)].label,
+          }),
+          questions: cmdRisk.riskQuestions(kind),
+          timeoutMs: 8000, // 挡在一条命令前面，等不起默认那 20 秒
+        },
+        { meta: "名单外先判一句" }
+      );
+      if (!out.ok) {
+        console.warn(`[命令风险] 名单外那一问没问成（照旧执行）：${out.error}`);
+        return verdict;
+      }
+      const d = cmdRisk.readRisk(out);
+      const up = d ? cmdRisk.upgrade(seg, d, kind) : null;
+      cmdRisk.remember(text, up);
+      return up || verdict;
+    } catch (e) {
+      console.warn(`[命令风险] 名单外那一问没问成（照旧执行）：${e.message}`);
+      return verdict;
+    }
+  };
   try {
     ensureDirs();
     // 参数压根不是合法 JSON（llm.js 解析失败时会塞一个 _raw 进来）。
@@ -4023,14 +4067,14 @@ async function executeTool(name, input, opts = {}) {
           return { content: "内置 Node.js 运行时已在 设置 → 安全中心 停用，无法执行代码。", isError: true };
         }
         const code = String(input.code || "");
-        const blocked = await passGate(security.checkCode(sec, code), "代码", code.slice(0, 500));
+        const blocked = await passGate(await judgeRisk(security.checkCode(sec, code), "代码", code), "代码", code.slice(0, 500));
         if (blocked) return blocked;
         return await runNode(code, timeoutMs, fileBase, opts.stopSignal);
       }
       case "run_shell": {
         if (orgBlocksShell()) return shellBlocked("run_shell");
         const cmd = String(input.command || "");
-        const blocked = await passGate(security.checkCommand(sec, cmd), "命令", cmd);
+        const blocked = await passGate(await judgeRisk(security.checkCommand(sec, cmd), "命令", cmd), "命令", cmd);
         if (blocked) return blocked;
         security.audit("命令执行", cmd, "放行");
         return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal);

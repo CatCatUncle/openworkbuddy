@@ -57,6 +57,7 @@ const mediaModels = require("./media-models");
 const mediaHealth = require("./media-health"); // 连不通的媒体渠道熔断表：设置页要显示，保存时要清空 // 图/视频/语音/视觉：渠道表 + 每路多模型
 const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
 const systemOne = require("./systemone"); // 判断模型（Jev）的纯逻辑：请求怎么拼、回答怎么读
+const taskVerdict = require("./task-verdict"); // 定时任务裁定层的纯函数（这一轮办完没有 / 怎么问 / 怎么读）
 const jev = require("./jev"); // 判断模型的调用路：挑渠道、取 Key、发请求
 const quota = require("./quota"); // 按次计费的外部 API：调之前问一句额度，调完记一笔
 const tracing = require("./trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
@@ -700,17 +701,7 @@ try {
  * 自动补跑几轮、每轮几条标准，一晚上能问出很多道。限的是失控的量，不是钱。
  * 没配渠道 / 被闸拦了都返回 ok:false，goal.js 会安静地退回对话模型那条老路。
  */
-async function decideForGoal(args) {
-  const n = Object.keys((args && args.questions) || {}).length;
-  const st = jev.status(config);
-  if (!st.ready) return { ok: false, error: st.why, notReady: true };
-  const g = quota.gate("decide", { n, model: st.model, provider: st.route });
-  if (!g.ok) return { ok: false, error: g.why };
-  const out = await jev.ask(config, args);
-  if (!out.ok) { quota.undo(g.hold); return out; }
-  quota.record("decide", { n, provider: st.route, model: out.model || st.model, meta: "目标验收", hold: g.hold });
-  return out;
-}
+const decideForGoal = (args) => jev.askMetered(config, args, { meta: "目标验收" });
 const goalKit = require("./goal").createGoalEngine({ workspaceDir: getWorkspaceDir, decide: decideForGoal });
 const GOAL_MAX_ROUNDS = goalKit.MAX_ROUNDS;
 
@@ -2164,21 +2155,16 @@ app.post("/api/decide", async (req, res) => {
   if (!stateText || (typeof stateText === "object" && !Object.keys(stateText).length)) {
     return res.status(400).json({ ok: false, error: "没给它要判断的东西（state）——问题问得再清楚，没有材料它也判断不了" });
   }
-  const n = Object.keys(questions).length;
-  const st = jev.status(config);
-  if (!st.ready) return res.status(503).json({ ok: false, error: st.why + "。" + st.how, not_ready: true });
-
-  const g = quota.gate("decide", { n, model: st.model, provider: st.route });
-  if (!g.ok) {
-    security.audit("额度拦截", "判断模型：" + g.why, "拦截");
-    return res.status(429).json({ ok: false, error: g.why, quota: true });
-  }
-  const out = await jev.ask(config, { state: b.state, questions, model: b.model, timeoutMs: Number(b.timeout_ms) || 0 });
+  const out = await jev.askMetered(config, { state: b.state, questions, model: b.model, timeoutMs: Number(b.timeout_ms) || 0 }, { meta: Object.keys(questions).join("、") });
   if (!out.ok) {
-    quota.undo(g.hold);   // 没发出去 / 上游没认，不该占着额度
-    return res.status(out.notReady ? 503 : out.badRequest ? 400 : 502).json({ ok: false, error: out.error, ms: out.ms || 0 });
+    if (out.quota) {
+      security.audit("额度拦截", "判断模型：" + out.error, "拦截");
+      return res.status(429).json({ ok: false, error: out.error, quota: true });
+    }
+    // 「没配」这一类必须带上 how：界面上就这一句话，只说「还没有能用的渠道」等于没说
+    return res.status(out.notReady ? 503 : out.badRequest ? 400 : 502)
+      .json({ ok: false, error: out.error + (out.how ? "。" + out.how : ""), ms: out.ms || 0, not_ready: !!out.notReady });
   }
-  quota.record("decide", { n, provider: st.route, model: out.model || st.model, meta: Object.keys(questions).join("、").slice(0, 80), hold: g.hold });
   res.json({
     ...out,
     lines: out.answers.map((a) => systemOne.lineOf(a)),
@@ -2249,6 +2235,10 @@ app.get("/api/settings", (req, res) => {
       llm_timeout_ms: config.agent.llm_timeout_ms || 300000,
       max_context_chars: config.agent.max_context_chars || 120000,
       max_tokens_budget: config.agent.max_tokens_budget || 0,
+      second_opinion: !!config.agent.second_opinion,
+      continue_gate: !!config.agent.continue_gate,
+      // 上面这两个开关共用一面旗子：没配判断模型的时候，它们打开也不会生效，别让界面假装能开
+      judge_ready: jev.status(config).ready,
       failover_model: config.agent.failover_model || "",
       thinking: thinking.norm(myAgent.thinking), // 思考模式档位，默认 auto=跟随模型自己的默认
       engine: myAgent.engine || "builtin",
@@ -2481,6 +2471,9 @@ app.post("/api/settings", (req, res) => {
       // 下限 2 万字符：再小连最近几步的工具原文都留不住，agent 会失忆式反复重做
       if (b.agent.max_context_chars) config.agent.max_context_chars = Math.max(20000, Math.min(2000000, +b.agent.max_context_chars));
       if (b.agent.max_tokens_budget !== undefined) config.agent.max_tokens_budget = Math.max(0, Math.round(+b.agent.max_tokens_budget) || 0);
+      // 定时任务跑绿之后再让判断模型看一眼。默认关，因为它每条绿都要花一道题的钱
+      if (b.agent.second_opinion !== undefined) config.agent.second_opinion = !!b.agent.second_opinion;
+      if (b.agent.continue_gate !== undefined) config.agent.continue_gate = !!b.agent.continue_gate;
       if (b.agent.thinking !== undefined) {
         const lv = String(b.agent.thinking || "").trim().toLowerCase();
         // 写错档位当场拒绝，不悄悄退回 auto：用户以为关掉了思考、账单却照着思考的量涨
@@ -2679,7 +2672,7 @@ app.post("/api/settings", (req, res) => {
     if (b.models || b.providers) chatModels.normalize(config);
     if (b.security) {
       const sec = security.getSecurity(config);
-      for (const k of ["gateway", "delete_protect", "runtime_node", "runtime_python"]) {
+      for (const k of ["gateway", "delete_protect", "cmd_risk_gate", "runtime_node", "runtime_python"]) {
         if (typeof b.security[k] === "boolean") sec[k] = b.security[k];
       }
       for (const k of ["batch_delete_threshold", "approval_timeout_s"]) {
@@ -7389,9 +7382,34 @@ async function main() {
     }
   };
 
+  /**
+   * 「跑绿之后再看一眼」：拿判断模型问一道是非题——这一轮到底办完了没有。
+   *
+   * 默认关。理由是它花钱：每一条**判据主动让路的绿**都要多发一道题（约两万分之一美金）。
+   * 这种花法很小，但它发生在后台、没人点确认，所以由用户自己在设置里打开，不替他挑。
+   *
+   * 开了也走三道门：没配判断模型不走、开关没开不走、判据已经查过的短正文不走
+   * （needsSecondOpinion 在 scheduler 里把最后一道守着）。
+   * 任何一步出岔子都返回 null 当没问过——定时任务的结果不许被这一问带挂。
+   */
+  const secondOpinion = async (item, text) => {
+    if (!(config.agent || {}).second_opinion) return null;
+    if (!jev.status(config).ready) return null;
+    const out = await jev.askMetered(
+      config,
+      { state: String(text || ""), questions: taskVerdict.deliveryQuestions(item.task) },
+      { meta: "定时任务第二意见" }
+    );
+    // 额度满 / 没配 / 上游挂：如实往上抛一句，由 scheduler 记在运行记录上，别装作问过了
+    if (!out.ok) throw new Error(out.error || "判断模型没回应");
+    const d = taskVerdict.readDelivery(out);
+    return d ? { msg: taskVerdict.doubtMessage(d), sure: d.sure } : null;
+  };
+
   scheduler = createScheduler({
     runtime: accountedRuntime(runtime, "schedule"),
     recorder: scheduleRecorder,
+    secondOpinion,
     onResult: (item, text) =>
       // 机器人那头不渲染 markdown，正文里的提示条记号先换成文字标签
       notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`),

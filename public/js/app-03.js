@@ -1843,7 +1843,15 @@ async function renderAutomRuns(page) {
   // 只印一句被截断的正文，等于让人自己去猜——而这正是「面板一片绿/一片红都看不出所以然」的来源。
   const runCell = (r) => {
     const raw = String(r.result || "");
-    if (!r.label) return esc(raw.slice(0, 90)) + (raw.length > 90 ? "…" : "");
+    // 绿的那一条上挂的疑问：判断模型说这轮多半没真办完。它不改判，所以记录还是绿的——
+    // 但不能只印在 IM 通知里，运行记录才是事后回头翻的地方。没问成也照说，
+    // 不然这条链哪天整个失灵，表现是「再也没有疑问了」，跟一切正常长得一模一样。
+    const doubt = r.doubt
+      ? `<div class="at-hint">${bold(r.doubt)}</div>`
+      : r.doubt_failed
+        ? `<div class="at-hint">这一条没问成第二意见：${esc(r.doubt_failed)}</div>`
+        : "";
+    if (!r.label) return esc(raw.slice(0, 90)) + (raw.length > 90 ? "…" : "") + doubt;
     const i = raw.indexOf("上游原话：");
     const quoted = i >= 0 ? raw.slice(i) : "";
     return `<b>${esc(r.label)}</b>`

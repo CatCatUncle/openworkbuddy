@@ -260,4 +260,96 @@ function verdictMessage(v, result) {
   return `${v.label}——${v.hint}${raw ? "\n上游原话：" + raw.slice(0, 300) : ""}`;
 }
 
-module.exports = { judgeRun, explainRunError, verdictMessage, UPSTREAM_FAILURES };
+/* ══════════════════ 第二意见：跑绿之后再看一眼 ══════════════════
+ *
+ * 上面那套判据回答的是「是不是**明显**失败」，从来没回答过「这件事到底办了没有」。
+ * 而且它对长正文是主动让路的：正文一过 ERROR_ONLY_MAX_CHARS，三条文本判据全部跳过，
+ * 注释里写得很直白——「就认为 agent 真干活了」。那是一个**假设**，不是一次检查。
+ *
+ * 于是这一段绿是没人验过的：agent 洋洋洒洒写两千字解释它怎么试、怎么没成、下次打算怎么办，
+ * 一个失败关键词都不带，运行记录照样一个勾，通知照样说「完成」。定时任务最怕的就是这种——
+ * 它每天都绿，你每天都不看，直到某天发现它已经空跑了三个星期。
+ *
+ * 这件事正好是判断模型的形状：一道是非题，要的是「办了没有」加一个「我有多确定」，
+ * 不要它写字。所以这里只出三个纯函数——什么时候该问、问什么、答案怎么读——
+ * 真正发请求的那一步留在 scheduler 的调用方，这个文件继续不联网。
+ *
+ * 三条边界是刻意的：
+ *
+ * 1. **只在正则主动让路的那一段问**。短正文那一段它已经查过了，再花一道题没有新信息。
+ * 2. **只在它说「没办成」且够确定时才出声**。说办成了、或者拿不准，一律当没问过——
+ *    跟上面整层一个脾气：宁可漏判也不误判。一条真绿被冤枉成红，比一条假绿更快让人
+ *    把整个面板关掉。
+ * 3. **只挂疑问，不改判**。运行记录还是绿的，通知里多一句「判断模型觉得这轮多半没真做完」。
+ *    模型没有资格替人把绿改成红，它只有资格说「这条你自己看一眼」。
+ */
+
+/** 这道题的名字。回答是按名字取回来的，所以它得跟问的时候一模一样。 */
+const DELIVERY_KEY = "这一轮真干完了吗";
+
+/**
+ * 把绿挂上疑问的门槛，比一般的 0.7 高。
+ * 这里错的代价是不对称的：漏掉一条假绿，用户第二天照样能翻运行记录；
+ * 冤枉一条真绿，用户会开始不信这个提示，然后连真的那条也一起略过。
+ */
+const SECOND_OPINION_MIN = 0.75;
+
+/**
+ * 这一轮该不该再问一道。
+ * 只在「结构信号沉默 + 上面那套判据放行 + 正文长到判据主动让路」三条全中时才为真。
+ */
+function needsSecondOpinion({ result, error, stopped } = {}) {
+  if (error) return false;                                       // 已经红了，轮不到挂疑问
+  // 结构信号说了话就不猜。这一句是写给人看的：变异测试证过它和末尾那句 judgeRun 等价
+  // （stopped 非空时 judgeRun 本就判红）——留着是为了把优先级写在脸上，不是因为少了它会错。
+  if (String(stopped == null ? "" : stopped).trim()) return false;
+  const text = String(result == null ? "" : result).trim();
+  if (text.length <= ERROR_ONLY_MAX_CHARS) return false;         // 这一段正则查过了，别重复花钱
+  return judgeRun({ result, error, stopped }).ok;                // 只给绿的挂疑问
+}
+
+/**
+ * 问题本身。一道是非题，判断模型不产文字，所以「怎么算办完」得写死在题面里。
+ * 任务描述截到 1000 字：状态那一栏要留给汇报正文，题面挤太多会把它顶出去。
+ */
+function deliveryQuestions(task) {
+  return {
+    [DELIVERY_KEY]: {
+      type: "noul",
+      instructions:
+        "下面是一条定时任务这一轮交上来的汇报。判断：任务要求的那件事，这一轮真的办完了吗？\n" +
+        "算办完：拿到了结果、做出了东西、或者明确说清楚了为什么办不成（「今日休市，跳过」也算办完）。\n" +
+        "算没办完：只复述了要求、只给了计划、说丢给后台稍后再说、话说到一半没了、" +
+        "或者通篇在说遇到的困难却没给结论。\n" +
+        "任务要求：" + String(task == null ? "" : task).trim().slice(0, 1000),
+    },
+  };
+}
+
+/**
+ * 读那道题的答案。
+ * @returns {null|{sure:number, p:number, bar:number}} null = 这一轮不必出声
+ */
+function readDelivery(out, min) {
+  const bar = Number.isFinite(Number(min)) ? Number(min) : SECOND_OPINION_MIN;
+  const a = ((out && out.answers) || []).find((x) => x && x.key === DELIVERY_KEY);
+  if (!a || a.value == null) return null;   // 没答上来：当没问过，绝不拿「读不懂」当「没干完」
+  if (a.value >= 0.5) return null;          // 它说办完了
+  const sure = Number(a.sure) || 0;
+  if (sure < bar) return null;              // 它说没办完，但自己也拿不准
+  return { sure, p: Number(a.value), bar };
+}
+
+/** 挂在运行记录和通知上的那句话。说清楚是谁说的、记录还是绿的、以及怎么关掉。 */
+function doubtMessage(d) {
+  const { pct } = require("./systemone");
+  return "判断模型看过这一轮的汇报，觉得任务多半没真办完（确定度 " + pct(d && d.sure) + "）。"
+    + "运行记录仍然记绿——这是第二意见，不是裁定。打开这一条的执行过程看它停在哪；"
+    + "要是它判错了，在 设置 → 智能体设置 里关掉「跑绿之后再看一眼」。";
+}
+
+module.exports = {
+  judgeRun, explainRunError, verdictMessage, UPSTREAM_FAILURES,
+  needsSecondOpinion, deliveryQuestions, readDelivery, doubtMessage,
+  DELIVERY_KEY, SECOND_OPINION_MIN,
+};

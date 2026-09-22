@@ -16,6 +16,9 @@ const mailer = require("./mailer"); // 发信：配没配、地址合不合法�
 const tracing = require("./trace"); // 执行追踪：整趟任务的模型调用/工具调用发去 Langfuse，默认关
 const mediaHealth = require("./media-health"); // 媒体渠道熔断闸：开跑前先把暂停中的渠道写进提示词
 const { CAP_CN } = require("./media-models");
+const jev = require("./jev");            // 判断模型（Jev）：不产文字，只回选项 + 一个「有多确定」
+const systemOne = require("./systemone"); // 判断模型的纯逻辑：排版、确定度闸、算钱
+const continueGate = require("./continue-gate"); // 续跑之前那道闸的纯判据（只出题、读答案，一个字的网络不发）
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -102,6 +105,48 @@ const FEISHU_DOC_TOOL = {
 // 自进化复盘推一条、IM 里那条链路推一条——全是 notify.pushBots 的固定调用点。
 // agent 手上一个入口都没有。于是「跑完发群里」这种最普通的办公请求，它只能在回复里
 // 写一句「已为你准备好，请手动发送」。webhook 明明就配在 设置 → 通知 里。
+// 一件 agent 天天在做、而且做得很贵的事：对着一堆东西做同一类判断。
+// 一百封邮件分不分派、三十份简历过不过初筛、一批文案有没有越线——主模型一条条读着判，
+// 每条都要吐一段思考，慢、贵，判完还说不出哪几条是拿不准的。判断模型一趟吃 32 道题，
+// 一道约两万分之一美金，每条自带确定度：高的直接往下走，低的挑出来给人看。
+//
+// 没配渠道就不摆这个工具（见 toolList）：摆出来只会让它先想一个方案、调一次、
+// 吃一条「没配」、再重想，白烧一轮，用户还以为是自己哪里填错了。
+const DECIDE_TOOL = {
+  name: "decide",
+  description:
+    "把一批「是非 / 单选 / 打分」的判断一次问完，每条回答都带一个「有多确定」。走的是专门的判断模型（Jev），不是你自己。\n" +
+    "什么时候用：要对一批东西做同一类判断（工单分派、简历初筛、文案合不合规、哪些需要人工复核），或者你自己要在岔路口拿一个带把握的判断。一份材料一趟，最多 32 道题；多份材料就调多趟。\n" +
+    "什么时候别用：要写字、要解释、要一步步推——它不产文字，只回选项和概率。只有一两条要判、你自己顺手就判了的，也别绕这一趟。\n" +
+    "最值钱的是确定度：低于门槛的那几条别当定论往下走，挑出来交代给用户，或者把判准写细一点重问。",
+  input_schema: {
+    type: "object",
+    properties: {
+      state: { type: "string", description: "要判断的材料，一次一份（最多约 20000 字，超了会被截并告诉你）。所有题都对着这一份问" },
+      questions: {
+        type: "array",
+        description: "这份材料上要问的题，最多 32 道",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "这道题的名字，回答按它取回来。同一批里不能重名" },
+            type: { type: "string", enum: ["noul", "choice", "score"], description: "noul=是非（回一个 0~1 的概率）；choice=单选；score=打分" },
+            instructions: { type: "string", description: "要判断什么，把判准写清楚。含糊的题问出来的是含糊的答案" },
+            criteria: {
+              type: "array",
+              items: { type: "string" },
+              description: "choice 的选项（至少两个）；score 的档位（**从低到高**排，顺序就是分数 0、1、2…）。noul 不用填",
+            },
+          },
+          required: ["name", "type", "instructions"],
+        },
+      },
+      sure_min: { type: "number", description: "确定度门槛（0~1，不填默认 0.7）。低于它的回答会被单独挑出来提醒你" },
+    },
+    required: ["state", "questions"],
+  },
+};
+
 const NOTIFY_TOOL = {
   name: "notify_user",
   description:
@@ -508,6 +553,11 @@ function activeChannel(config) {
 function stopNotice(note) {
   const resume = "要接着做就跟我说「接着上次进度做」，进度档在工作目录的 PROGRESS.md";
   if (String(note).startsWith("已手动停止")) return `注意：${note}。${resume}。`;
+  // 这一停是判断模型下的结论，不是撞上限。叫人去调大上限是答非所问，他要知道的只有两件：
+  // 判错了怎么接着干、不想让它把这道关怎么关掉
+  if (String(note).startsWith(continueGate.GATE_STOP_PREFIX)) {
+    return `注意：${note}。要是它判错了、活儿其实还有剩，跟我说「接着上次进度做」就接着干；不想让它把这道关，去「设置 → 智能体设置」关掉「续跑之前先判一句」。`;
+  }
   // 死循环停下来的，劝人去调大上限是反的——上限再大它也只是多转几圈
   if (String(note).startsWith("陷入死循环")) return `注意：${note}，已经停下来不再烧时间和额度，这种停不会自动续跑。先把它撞墙的那条路修好（渠道、文件或命令），或者把要求说得更具体，再跟我说「接着上次进度做」。`;
   return `注意：${note}，任务强制收尾。${resume}；想让它一口气跑更久，去「设置 → 执行上限」调大上限、或把「自动续跑轮数」设成 1 以上（这页归平台管理员）。`;
@@ -807,6 +857,8 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
         ...(gui ? readOnly : dropRendererParams(readOnly)),
         // 只看不动的档位里也该答得上「我都定了些什么」——list_schedules 只读，schedule_task 不给
         ...(scheduler.activeScheduler() ? [LIST_SCHEDULES_TOOL] : []),
+        // 判断不动任何东西，只看不动的档位里照样该能用——「这一批里哪几条要人工看」本来就是个只读问题
+        ...(jev.status(config).ready ? [DECIDE_TOOL] : []),
         USE_SKILL_TOOL,
       ];
     }
@@ -829,6 +881,7 @@ mermaid 每次渲染的 id 本来就是随机数，根本不会撞，不需要�
     // 没配发信通道就别摆这个工具：摆出来模型会先写一封信、调一次、吃一条「没配」、再重想，
     // 白烧一轮不说，用户还以为自己哪里填错了
     if (mailer.configured((config.im || {}).smtp)) tools.push(SEND_EMAIL_TOOL);
+    if (jev.status(config).ready) tools.push(DECIDE_TOOL);
     if (depth === 0 && experts.length) tools.push(DELEGATE_TOOL);
     // 团委派只给主协调者：专家在团里接力时 depth 已经 >0，再让它组团会套娃
     if (depth === 0 && expertTeams.some((t) => teamMembers(t).length >= 2)) tools.push(DELEGATE_TEAM_TOOL);
@@ -947,6 +1000,44 @@ function modePrompt(mode) {
         return { content: "一个通道都没推成（webhook 可能填错了或已失效）。去 设置 → 通知 里核对企业微信/钉钉的地址。", isError: true };
       }
       return { content: `已推送到：${sent.map((s) => ({ wecom: "企业微信", dingtalk: "钉钉" }[s] || s)).join("、")}（${text.length} 字）`, isError: false };
+    }
+    if (tc.name === "decide") {
+      const state = String(tc.input.state == null ? "" : tc.input.state);
+      const raw = Array.isArray(tc.input.questions) ? tc.input.questions : [];
+      if (!state.trim()) return { content: "decide 要带上 state（要判断的材料）。题问得再清楚，没材料它也判断不了。", isError: true };
+      if (!raw.length) return { content: "decide 要带上 questions，至少一道题。", isError: true };
+      // 名字是取回答的凭据。数组里重名看不出来，转成 { 名字: … } 的时候后一道直接
+      // 把前一道盖掉——少问了一道题，回来还少一条答案，而这一路一个错都不报。
+      const questions = {};
+      const dup = [];
+      const noName = [];
+      for (const q of raw) {
+        const name = String((q && q.name) || "").trim();
+        if (!name) { noName.push(String((q && q.instructions) || "").slice(0, 20) || "（空）"); continue; }
+        if (Object.prototype.hasOwnProperty.call(questions, name)) { dup.push(name); continue; }
+        const item = { type: String((q && q.type) || "").trim().toLowerCase(), instructions: String((q && q.instructions) || "").trim() };
+        if (Array.isArray(q && q.criteria) && q.criteria.length) item.criteria = q.criteria;
+        questions[name] = item;
+      }
+      if (noName.length) return { content: `这 ${noName.length} 道题没写 name：${noName.join("、")}。回答是按名字取回来的，没名字就对不上号。`, isError: true };
+      if (dup.length) return { content: `这几道题重名了：${[...new Set(dup)].join("、")}。重名会让后一道盖掉前一道，各起一个不一样的名字再问一遍。`, isError: true };
+
+      const out = await jev.askMetered(config, { state, questions }, { meta: taskLabel || "agent" });
+      if (!out.ok) {
+        if (out.notReady) return { content: `判断模型还没接上：${out.error}${out.how ? "。" + out.how : ""}。这一步你自己判，别重试。`, isError: true };
+        if (out.quota) return { content: `判断模型的额度用完了：${out.error}。剩下的你自己判，或者告诉用户这儿卡住了。`, isError: true };
+        return { content: `判断没做成：${out.error}`, isError: true };
+      }
+      const bar = Number(tc.input.sure_min);
+      const min = bar > 0 && bar <= 1 ? bar : systemOne.SURE_MIN;
+      const shaky = out.answers.filter((x) => !systemOne.gate(x, min).act);
+      const head =
+        `${out.asked} · ${out.answers.length} 道 · ${out.ms}ms · ${systemOne.costText(out.usage)}` +
+        (out.truncated ? `　· 材料太长，只判了前 ${out.state_chars} 字` : "");
+      const tail = shaky.length
+        ? `\n\n拿不准的（确定度不到 ${systemOne.pct(min)}）：${shaky.map((x) => x.key).join("、")}。这几条别当定论往下走——要么交代给用户确认，要么把判准写细一点重问。`
+        : `\n\n${out.answers.length} 条都过了 ${systemOne.pct(min)} 的确定度。`;
+      return { content: head + "\n" + out.answers.map((x) => systemOne.lineOf(x)).join("\n") + tail, isError: false };
     }
     if (tc.name === "list_schedules" || tc.name === "schedule_task") {
       const sch = scheduler.activeScheduler();
@@ -1346,6 +1437,8 @@ function modePrompt(mode) {
       visionFallback: activeChannel(config), // 主模型自己会看图就直接用它，单配的看图模型是给「主模型看不了图」的人预备的（见 tools.js pickEye）
       // IM/定时等无人值守场景可传 sec 覆盖权限档位（没人守着屏幕点审批）
       security: sec || config.security,
+      // 判断模型那条路。只带它认路要用的两样，不把整份 config（连着所有 Key）递进工具层
+      decideConfig: { decide: config.decide, providers: config.providers },
       deadline,
       stopSignal,
       taskLabel, // 审批卡片上标明发起任务，多任务并行时才分得清是谁在求批
@@ -2037,6 +2130,36 @@ function modePrompt(mode) {
     // 自动续跑：撞「最大步数/最大运行时间」后自动开下一轮接着干（仅顶层任务；手动停止、模型挂死不续跑）。
     // 外层 for(;;) 只负责续跑判定，内层步循环保持原缩进不动。
     const autoRounds = depth === 0 ? Math.min(20, Math.max(0, Number(config.agent.auto_continue_rounds) || 0)) : 0;
+    /**
+     * 自动续跑之前那道闸：真去问判断模型之前，先过三道白不花钱的门——
+     * 开关没开不问、结构尺子够得着（进度档里还有没打勾的）不问、没配判断模型不问。
+     *
+     * 返回一句 stopNote 就表示「别再续了」，返回空串表示「照老样子续」。
+     * 任何一步出岔子都算空串：这道闸是来省一轮钱的，它自己坏了不能把活儿卡住。
+     * 不另加超时——jev.ask 自带 20 秒的 AbortSignal，这儿是它唯一的调用路径。
+     */
+    const askContinueGate = async (note, tail) => {
+      if (!(config.agent || {}).continue_gate) return "";
+      if (!continueGate.needsGate({ stopNote: note, milestones: unfinishedMilestones(progressDir()) })) return "";
+      if (!jev.status(config).ready) return "";
+      let progress = "";
+      try { progress = fs.readFileSync(path.join(progressDir(), "PROGRESS.md"), "utf8"); } catch {}
+      const asked = (history.find((h) => h.role === "user") || {}).content || taskLabel || "";
+      try {
+        const out = await jev.askMetered(
+          config,
+          { state: continueGate.gateState({ task: asked, progress, tail }), questions: continueGate.doneQuestions() },
+          { meta: "续跑之前先判一句" }
+        );
+        if (!out.ok) throw new Error(out.error || "判断模型没回应");
+        const d = continueGate.readDone(out);
+        return d ? continueGate.skipNote(d) : "";
+      } catch (e) {
+        // 问不成不影响这一轮：照旧续跑。但必须留一句——静悄悄没生效的开关，比没有这个开关更糟
+        console.warn(`[自动续跑] 续跑前那一问没问成（照旧续跑）：${e.message}`);
+        return "";
+      }
+    };
     let roundsUsed = 0;
     for (;;) {
     for (let step = 0; step < maxSteps; step++) {
@@ -2393,6 +2516,10 @@ function modePrompt(mode) {
     // 「没做完就收摊」和撞上限一样值得续：都属于活儿还在、只是这一轮跑不动了
     const continuable = stopNote.startsWith("已达最大步数") || stopNote.startsWith("已达最大运行时间") || stopNote.startsWith("任务还有");
     if (!(continuable && roundsUsed < autoRounds && !(stopSignal && stopSignal.aborted))) break;
+    // 续之前先判一句：是真没干完，还是已经干完了、只是被上限掐在这儿。判据在 continue-gate.js，
+    // 这儿只管发那一趟请求。它只会做一件事——把这一轮之后的续跑停掉；停不了就照老样子续。
+    const gateNote = await askContinueGate(stopNote, finalText);
+    if (gateNote) { stopNote = gateNote; break; }
     roundsUsed++;
     deadline = Date.now() + (config.agent.max_runtime_ms || 1800000); // 新一轮把时间预算重新拉满
     emit({ type: "auto_continue", round: roundsUsed, total: autoRounds, note: stopNote, depth });
