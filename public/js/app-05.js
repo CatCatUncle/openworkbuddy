@@ -2316,6 +2316,12 @@ async function renderAgentPane(pane, s) {
         <input type="checkbox" id="ag-mgate" style="margin:0" ${s.agent.memory_gate ? "checked" : ""}>
         agent 想记一条之前，先花一道题问问它下个月还用不用得上
       </label>
+      <div class="f">打断你之前先判一句</div>
+      <div class="d" style="margin-bottom:6px">ask_user 是整套工具里唯一会把你拽回电脑前的那个，也是唯一一个不受转圈守卫管的——同一个工具连调四次的硬停不算它，循环侦测也不算它（问你的每次答案都不一样，算进去会误伤）。豁免是对的，可豁免完，拦连环追问的就只剩系统提示词里那一句「不许连环追问」了。提示词是建议不是闸：第一步好好的，跑到第十几步、上下文压过两轮之后就开始漏——「我已经写完前三节了，要继续吗」（这是汇报不是问题）、「抓数据用 axios 还是 node-fetch」（技术路线，它自己该定）、「封面还是按你选的排版截图吧？」（换个说法又问一遍）。每一次你都得停下手里的活。打开之后，<b>一轮里的头一问永远放行、一分钱不花</b>（开工前问一题本来就是对的），往后每一问才花一道是非题：非得你本人答不可吗。说「不必」并且确定度到 80% 才不弹，回执里让它自己挑个最合理的默认往下做、在汇报里注明替你做了什么假设。<b>选错了整件事白做的岔路不拦，拿不准也不拦</b>——它只会少问，绝不会多问。每问约两万分之一美金。默认关${s.agent.judge_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px">
+        <input type="checkbox" id="ag-agate" style="margin:0" ${s.agent.ask_gate ? "checked" : ""}>
+        第二问起，弹给你之前先花一道题问问是不是非问你不可
+      </label>
       <div class="f">模型卡壳超时（秒）</div>
       <div class="d" style="margin-bottom:6px">连续这么久收不到模型的任何输出（正文/思考/写文件的参数流都算）才判定连接挂死、强制收尾；只要还在逐字输出就不会掐断（默认 300）</div>
       <input id="ag-llm-timeout" type="number" min="30" value="${Math.round((s.agent.llm_timeout_ms || 300000) / 1000)}">
@@ -2368,6 +2374,7 @@ async function renderAgentPane(pane, s) {
       push_gate: pane.querySelector("#ag-pgate").checked,
       continue_gate: pane.querySelector("#ag-cgate").checked,
       memory_gate: pane.querySelector("#ag-mgate").checked,
+      ask_gate: pane.querySelector("#ag-agate").checked,
       // 下拉挪走了，但这一单还是得把它原样带上：整个 agent 对象是一起存的，
       // 漏掉这个字段不会报错，只会在某次「改了下步数上限」之后悄悄把备用渠道关掉
       failover_model: (s.agent || {}).failover_model || "",

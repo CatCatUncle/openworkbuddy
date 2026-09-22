@@ -2236,6 +2236,7 @@ app.get("/api/settings", (req, res) => {
       push_gate: !!config.agent.push_gate,
       continue_gate: !!config.agent.continue_gate,
       memory_gate: !!config.agent.memory_gate,
+      ask_gate: !!config.agent.ask_gate,
       // 上面这两个开关共用一面旗子：没配判断模型的时候，它们打开也不会生效，别让界面假装能开
       judge_ready: jev.status(config).ready,
       failover_model: config.agent.failover_model || "",
@@ -2475,6 +2476,7 @@ app.post("/api/settings", (req, res) => {
       if (b.agent.continue_gate !== undefined) config.agent.continue_gate = !!b.agent.continue_gate;
       // 往长期记忆里写之前先判一句。默认关：它拒错一条，用户只会觉得「说过的事它又忘了」
       if (b.agent.memory_gate !== undefined) config.agent.memory_gate = !!b.agent.memory_gate;
+      if (b.agent.ask_gate !== undefined) config.agent.ask_gate = !!b.agent.ask_gate;
       if (b.agent.thinking !== undefined) {
         const lv = String(b.agent.thinking || "").trim().toLowerCase();
         // 写错档位当场拒绝，不悄悄退回 auto：用户以为关掉了思考、账单却照着思考的量涨
