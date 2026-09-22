@@ -2456,6 +2456,25 @@
      选择器原来只写内边距不写高度，量出来 30.0 对 32.0 差 2px。这里一起钉到同一档。 */
   .picker-btn { height: var(--owb-ctl-h-sm); padding: 0 10px; }
 
+  /* 手指不是鼠标。同一颗键，鼠标能瞄准 30×30；手指的接触面直径大约 8–10mm，落到 390 宽的屏幕上
+     就是 40px 上下——输入区那一排原来全是 30 高（发送键 32 见方），在手机上得贴着连点几次才中。
+     分档按 pointer 走而不是按窗口宽度：桌面浏览器拉窄了仍然是鼠标在点，没必要为它牺牲密度；
+     真正需要大热区的是触屏，而这件事只有 pointer 说得准。几何照旧全挂在那两个控件高度令牌上，
+     所以这儿改两行，整套键一起长大，不用一处处追。 */
+  @media (pointer: coarse) {
+    :root { --owb-ctl-h: 44px; --owb-ctl-h-sm: 44px; }
+    #send { width: 44px; height: 44px; }
+    #toggle-files, #interject-btn { min-height: 44px; }
+    /* 密集档那两颗（列表行尾的「更多」、分组头那颗 ＋）也跟着长：它们夹在行里，
+       给不到 44，40 是行高允许的上限 */
+    .side-nav .nav-head #proj-add, .row-more { width: 40px; height: 40px; }
+    /* chip 上的 × 原来 18 见方，是整屏最小的一颗。chip 本身只有 26 高，撑不到 44，
+       用负外边距把热区从 chip 里「溢出来」——看着还是 18，点得着 32 */
+    .chip .icon-btn { width: 32px; height: 32px; margin: -7px -7px -7px 0; }
+    /* 空屏上那两排（场景页签 36 高、下面的建议 40 高）是手机用户落地后第一个伸手去点的东西 */
+    .scene-tabs button, .chips button { min-height: 44px; }
+  }
+
   /* 图标尺寸：跟 shadcn 一样，按钮里的图标一律 16，密集处 14 */
   /* 尺寸不在这儿定：ui.css 里 .i 是 1em，图标自动跟着它所在那行的字号走。
      真要改大小就去改那处的 font-size，或者像下面几条一样按元素单独钉死，

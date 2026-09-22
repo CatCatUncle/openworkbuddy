@@ -975,6 +975,10 @@ async function renderHubPage() {
     fetch("/api/skills").then(r => r.json()).catch(() => []),
   ]);
   hubState._experts = experts; hubState._teams = teams; hubState._skills = skills;
+  // 这一趟本来就拉了技能名单，顺手喂给输入框那份缓存：安装/保存/删除之后都会重画这一页，
+  // 等于每次改完技能都对了一遍，而且一次接口都没多打
+  skillsCache = Array.isArray(skills) ? skills : [];
+  skillsFetchAt = Date.now();
   hubState._defaults = null; // 整页重载才丢缓存；搜索框敲字只走 renderHubBody，不重复打接口
   // 「只看我的」只在有真实依据的 Tab 上出现：专家有 builtin 标记、连接器有 connected 状态，技能两者都没有就不画。
   const mineLabel = { experts: "我创建的", mcp: "只看已连接" }[hubState.tab];
@@ -1626,6 +1630,7 @@ async function renderHubPlugins(box) {
       if ((it.mcp_servers || []).length) parts.push(`MCP ${it.mcp_servers.length} 个，已连上 ${(d.mcp_started || []).length} 个`);
       if ((it.warnings || []).length) parts.push(`${it.warnings.length} 个零件被跳过（见卡片）`);
       setMsg(msg, "circle-check", parts.join(" · "), "ok");
+      refreshSkillsCache(true); // 插件一包带进来的技能，输入框那个 / 菜单得当场认得
       setTimeout(renderHubBody, 800);
     } catch (e) { setMsg(msg, "circle-x", e.message, "err"); }
   };
@@ -1643,6 +1648,7 @@ async function renderHubPlugins(box) {
         toast(u.from_version && u.from_version !== u.version
           ? `${u.name} 已从 v${u.from_version} 更到 v${u.version || "?"}`
           : `${u.name} 已是最新（v${u.version || "?"}，重新拉了一遍）`, "circle-check");
+        refreshSkillsCache(true);
         renderHubBody();
       } catch (e) { upd.disabled = false; upd.textContent = "更新"; toast(e.message, "circle-x"); }
     };
@@ -1656,6 +1662,7 @@ async function renderHubPlugins(box) {
       const d = await resp.json().catch(() => ({}));
       if (!resp.ok) return toast((d.error || "卸载失败"), "circle-x");
       if (d.note) toast(d.note);
+      refreshSkillsCache(true); // 卸掉的插件带走的技能也要从 / 里消失，否则挑了一个已经不在的
       renderHubBody();
     };
   });

@@ -10917,6 +10917,52 @@ function mkWin(opts) {
   };
   return w;
 }
+// ---- 手机上点得着：这把尺子量的是真几何 ----
+// 写成真函数再 .toString() 递进渲染进程：拼字符串的话里面那条 /\s+/ 得手动转义，
+// 少一个反斜杠就静静变成另一条规则，还照样跑得通。
+const TAP_PROBE = function (min) {
+  const SEL = "button, a[href], input[type=checkbox], input[type=radio], [role=button], [role=switch], [role=tab], summary, label[for], select, .um-i, .chip";
+  const seen = new Set(), small = [];
+  for (const el of document.querySelectorAll(SEL)) {
+    if (seen.has(el)) continue;
+    seen.add(el);
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) continue;
+    const w = Math.round(r.width), h = Math.round(r.height);
+    if (w >= min && h >= min) continue;
+    const txt = (el.textContent || el.getAttribute("title") || "").replace(/\s+/g, " ").trim().slice(0, 12);
+    small.push((el.id ? "#" + el.id : el.tagName.toLowerCase()) + " " + w + "\u00d7" + h + "\u300c" + txt + "\u300d");
+  }
+  const bx = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; };
+  const box = (q) => bx(document.querySelector(q));
+  const de = document.documentElement;
+  const rcs = getComputedStyle(de);
+  // 行里那几颗密集档的键：这一屏上侧栏是收起来的、chip 也还没有，量不到就等于没测。
+  // 把真选择器要的那层壳搭出来、摆到屏幕外面量——样式表是真的，命中的还是那条规则。
+  const pen = document.createElement("div");
+  pen.style.cssText = "position:fixed;left:-99999px;top:0;width:900px";
+  pen.innerHTML = '<div class="row-more">\u00b7</div><span class="chip">f<button class="icon-btn">\u00d7</button></span>';
+  document.body.appendChild(pen);
+  const pa = document.querySelector(".side-nav .nav-head #proj-add");
+  const pacs = pa && getComputedStyle(pa);
+  const dense = {
+    more: bx(pen.querySelector(".row-more")),
+    chipx: bx(pen.querySelector(".chip .icon-btn")),
+    // 侧栏收起来的时候它的 rect 是 0，改读它自己算出来的那一档
+    projAdd: pacs ? [pacs.width, pacs.height] : null,
+  };
+  pen.remove();
+  return {
+    total: seen.size, small: small, dense: dense,
+    tok: [rcs.getPropertyValue("--owb-ctl-h").trim(), rcs.getPropertyValue("--owb-ctl-h-sm").trim()],
+    ovf: de.scrollWidth - de.clientWidth,
+    coarse: matchMedia("(pointer: coarse)").matches,
+    send: box("#send"), attach: box("#attach-btn"), side: box("#toggle-side"), model: box("#model-btn"),
+  };
+}.toString();
+
 app.whenReady().then(async () => {
   READY = true;
   const win = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
@@ -11675,6 +11721,235 @@ app.whenReady().then(async () => {
       for (const n of namesCK) console.log("  ✓ " + n);
       console.log(`✅ 前端：无限画布多选的键盘出口（点一下就收焦点·Escape 退框选·⌘A 全选·Delete 批量删并落盘·打字时一概不抢）${namesCK.length} 项通过`);
     } finally { if (!winCK.isDestroyed()) winCK.destroy(); }
+    // ---- 手机上点得着：真页面、真 CSS、pointer 两档各量一遍 ----
+    // 前面那些用例量的都是切出来的片段。这一组不同：起一个只喂 public/ 的临时静态服务器
+    // （端口交给系统随机分，绝不碰用户正在用的 3800），在 390\u00d7844 里加载**真的** index.html。
+    // 外网全断、没有 /api，屏幕上不可能出现任何真数据——量的是整屏能点的东西各有多大。
+    //
+    // 分档按 pointer 走，不按窗口宽度：桌面浏览器拉窄了仍然是鼠标在点，没必要为它牺牲密度。
+    // 所以两档都要跑——只跑触屏那档，测不出这套规则有没有顺手漏到桌面上去。
+    // 量之前先各自报一句「我现在是哪一档」：模拟要是没生效，这一组会绿在一个假前提上。
+    {
+      const httpMod = require("http");
+      const MIME_T = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".woff2": "font/woff2", ".json": "application/json; charset=utf-8" };
+      const pubDir = path.join(__dirname, "..", "public");
+      // 只补这一个接口：/ 菜单的技能名单从这儿来。往这个数组里加一条，等于在服务器上装了一个技能，
+      // 然后看页面那边不重载认不认得
+      const apiSkills = [
+        { name: "daily-report", description: "\u628a\u4e00\u5929\u7684\u6d3b\u513f\u5199\u6210\u65e5\u62a5" },
+        { name: "excel-clean", description: "\u8868\u683c\u53bb\u91cd\u3001\u5bf9\u9f50\u3001\u8865\u7f3a\u503c" },
+        { name: "meeting-notes", description: "\u4f1a\u8bae\u5f55\u97f3\u8f6c\u7eaa\u8981" },
+      ];
+      const srvT = await new Promise((resolve) => {
+        const sv = httpMod.createServer((req, res) => {
+          const rel = decodeURIComponent(String(req.url || "/").split("?")[0]);
+          if (rel === "/api/skills") { res.setHeader("Content-Type", "application/json; charset=utf-8"); return res.end(JSON.stringify(apiSkills)); }
+          const f = path.join(pubDir, path.normalize(rel).replace(/^([/\\.]+)/, ""));
+          if (!f.startsWith(pubDir) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.statusCode = 404; return res.end("nope"); }
+          res.setHeader("Content-Type", MIME_T[path.extname(f).toLowerCase()] || "application/octet-stream");
+          res.end(fs.readFileSync(f));
+        });
+        sv.listen(0, "127.0.0.1", () => resolve(sv));
+      });
+      const portT = srvT.address().port;
+      const namesTP = [];
+      const okTP = (n, cond, extra) => { if (cond) { namesTP.push(n); return; } throw new Error("[\u624b\u673a\u70ed\u533a] " + n + (extra !== undefined ? " \uff5c " + JSON.stringify(extra) : "")); };
+      const openReal = async (coarse, wide) => {
+        const w = mkWin({ show: false, width: wide ? 1280 : 390, height: wide ? 860 : 844, backgroundColor: "#ffffff", webPreferences: { contextIsolation: false, nodeIntegration: false, offscreen: true } });
+        w.webContents.session.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] }, (d, cb) => cb({ cancel: !d.url.startsWith("http://127.0.0.1:" + portT + "/") }));
+        await w.loadURL("http://127.0.0.1:" + portT + "/index.html");
+        if (coarse) {
+          // pointer 这一档 setEmulatedMedia 管不着（它只认 prefers-* 那几个），
+          // 要靠「这是台触屏设备」整套模拟才翻得过来
+          if (!w.webContents.debugger.isAttached()) w.webContents.debugger.attach("1.3");
+          await w.webContents.debugger.sendCommand("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+          await w.webContents.debugger.sendCommand("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+        }
+        await new Promise((r) => setTimeout(r, 1200)); // 等首屏脚本把 DOM 铺完
+        return w;
+      };
+      const measure = (w, min) => w.webContents.executeJavaScript("(" + TAP_PROBE + ")(" + min + ")", true);
+
+      const winTC = await openReal(true);
+      try {
+        const m = await measure(winTC, 44);
+        okTP("\u5148\u9a8c\u6599\uff1a\u8fd9\u4e00\u6863\u771f\u7684\u662f\u89e6\u5c4f\uff08pointer: coarse\uff09\uff0c\u5426\u5219\u4e0b\u9762\u5168\u7ed3\u5728\u4e00\u4e2a\u5047\u524d\u63d0\u4e0a", m.coarse === true, m.coarse);
+        okTP("\u5148\u9a8c\u6599\uff1a\u771f\u9875\u9762\u771f\u7684\u94fa\u5f00\u4e86\uff08" + m.total + " \u4e2a\u80fd\u70b9\u7684\u4e1c\u897f\uff09", m.total >= 30, m.total);
+        okTP("\u2605\u89e6\u5c4f\u4e0a\u6bcf\u4e00\u9897\u90fd\u2265 44\u00d744\u2605 \u624b\u6307\u63a5\u89e6\u9762 8\u201310mm\uff0c390 \u5bbd\u5c4f\u5e55\u4e0a\u5c31\u662f 40px \u4e0a\u4e0b", m.small.length === 0, m.small);
+        okTP("\u952e\u957f\u5927\u4e86\u4e5f\u6ca1\u628a 390 \u5bbd\u7684\u7248\u9762\u6491\u51fa\u6a2a\u5411\u6eda\u52a8", m.ovf === 0, m.ovf);
+        okTP("\u53d1\u9001\u952e 44\u00d744\uff08\u539f\u672c 32 \u89c1\u65b9\uff0c\u662f\u6574\u5c4f\u6700\u5e38\u6309\u7684\u90a3\u4e00\u9897\uff09", String(m.send) === "44,44", m.send);
+        okTP("\u9644\u4ef6\u952e / \u4fa7\u680f\u952e / \u6a21\u578b\u9009\u62e9\u5668\u4e09\u9897\u540c\u65f6\u957f\u5230 44 \u9ad8",
+          m.attach[1] === 44 && m.side[1] === 44 && m.model[1] === 44, [m.attach, m.side, m.model]);
+        okTP("\u2605\u4e24\u4e2a\u63a7\u4ef6\u9ad8\u5ea6\u4ee4\u724c\u4e00\u8d77\u957f\u5230 44\u2605 \u4e3b\u6b21\u6309\u94ae\u3001\u5f39\u7a97\u8f93\u5165\u6846\u8fd9\u4e9b\u6ca1\u6446\u5728\u8fd9\u4e00\u5c4f\u4e0a\u7684\u4e5f\u8ddf\u7740\u8d70",
+          m.tok[0] === "44px" && m.tok[1] === "44px", m.tok.join(" / "));
+        okTP("\u884c\u91cc\u90a3\u51e0\u9897\u5bc6\u96c6\u952e\u4e5f\u957f\u4e86\uff1a\u884c\u5c3e\u300c\u66f4\u591a\u300d40\u3001\u5206\u7ec4\u5934\u90a3\u9897 \uff0b 40\u3001chip \u4e0a\u7684 \u00d7 \u70ed\u533a 32",
+          m.dense.more[1] === 40 && m.dense.projAdd[1] === "40px" && m.dense.chipx[0] >= 32 && m.dense.chipx[1] >= 32,
+          JSON.stringify(m.dense));
+
+        // \u2605\u53cd\u5411\u5bf9\u7167\u2605 \u628a\u90a3\u6bb5 @media (pointer: coarse) \u6539\u56de\u4fee\u4e4b\u524d\u7684\u503c\uff0c\u8fd8\u5728\u89e6\u5c4f\u6863\u91cc\uff0c
+        // \u5fc5\u987b\u5f53\u573a\u8dcc\u56de\u53bb\u3002\u4e0d\u52a0\u8fd9\u4e00\u6761\u7684\u8bdd\uff0c\u4e0a\u9762\u90a3\u51e0\u6761\u5230\u5e95\u662f\u65b0\u89c4\u5219\u5728\u6491\u7740\u3001
+        // \u8fd8\u662f\u672c\u6765\u5c31\u591f\u5927\uff0c\u8bf4\u4e0d\u6e05\u695a
+        await winTC.webContents.executeJavaScript(
+          'var u=document.createElement("style");u.textContent="@media (pointer: coarse){:root{--owb-ctl-h:36px;--owb-ctl-h-sm:30px}#send{width:32px;height:32px}#toggle-files,#interject-btn{min-height:0}.scene-tabs button,.chips button{min-height:0}}";document.head.appendChild(u);u.id="undo-tap";1', true);
+        const m2 = await measure(winTC, 44);
+        okTP("\u2605\u53cd\u5411\u5bf9\u7167\u2605 \u628a\u89e6\u5c4f\u90a3\u6bb5\u6539\u56de\u4fee\u4e4b\u524d\u7684\u5c3a\u5bf8\uff0c\u5f53\u573a\u8dcc\u56de\u53bb\u4e00\u5927\u7247",
+          m2.small.length >= 8 && String(m2.send) === "32,32", [m2.small.length, m2.send]);
+        await winTC.webContents.executeJavaScript('document.getElementById("undo-tap").remove();1', true);
+      } finally { if (!winTC.isDestroyed()) winTC.destroy(); }
+
+      const winTF = await openReal(false);
+      try {
+        const m = await measure(winTF, 24);
+        okTP("\u5148\u9a8c\u6599\uff1a\u8fd9\u4e00\u6863\u662f\u9f20\u6807\uff08pointer \u4e0d\u662f coarse\uff09", m.coarse === false, m.coarse);
+        okTP("\u9f20\u6807\u6863\u4e0b\u6ca1\u6709\u4efb\u4f55\u4e00\u9897\u5c0f\u4e8e 24\u00d724\uff08WCAG 2.5.8 \u90a3\u6761\u5e95\u7ebf\uff09", m.small.length === 0, m.small);
+        okTP("\u2605\u89e6\u5c4f\u90a3\u5957\u5c3a\u5bf8\u6ca1\u6f0f\u5230\u684c\u9762\u4e0a\u2605 \u53d1\u9001\u952e\u8fd8\u662f 32 \u89c1\u65b9\u3001\u9644\u4ef6\u952e\u8fd8\u662f 30",
+          String(m.send) === "32,32" && String(m.attach) === "30,30", [m.send, m.attach]);
+        okTP("\u2605\u4ee4\u724c\u4e5f\u6ca1\u6f0f\u5230\u684c\u9762\u4e0a\u2605 \u8fd8\u662f 36 / 30\uff0c\u6574\u5957\u952e\u7684\u5bc6\u5ea6\u4e00\u70b9\u6ca1\u52a8",
+          m.tok[0] === "36px" && m.tok[1] === "30px", m.tok.join(" / "));
+        okTP("\u5bc6\u96c6\u952e\u5728\u684c\u9762\u4e0a\u4e5f\u539f\u6837\uff08\u884c\u5c3e\u300c\u66f4\u591a\u300d24\u3001chip \u4e0a\u7684 \u00d7 18\uff09",
+          m.dense.more[1] === 24 && m.dense.projAdd[1] === "24px" && m.dense.chipx[1] === 18, JSON.stringify(m.dense));
+        okTP("\u9f20\u6807\u6863\u4e5f\u6ca1\u6a2a\u5411\u6eda\u52a8", m.ovf === 0, m.ovf);
+      } finally { if (!winTF.isDestroyed()) winTF.destroy(); }
+      const PJ_N1 = "\u5148\u9a8c\u6599\uff1a\u8fd9\u9897 \uff0b \u786e\u5b9e\u957f\u5728\u300c\u9879\u76ee\u300d\u90a3\u4e00\u884c\u91cc\u9762\uff08\u884c\u81ea\u5df1\u662f\u300c\u6253\u5f00\u9879\u76ee\u7ba1\u7406\u9875\u300d\uff09";
+      const PJ_N2 = "\u5148\u9a8c\u6599\uff1a\u8d77\u624b\u5f39\u7a97\u6ca1\u5f00\u3001\u4e3b\u533a\u4e5f\u6ca1\u5728\u9879\u76ee\u9875";
+      const PJ_N3 = "\u70b9 \uff0b \u5f00\u7684\u662f\u300c\u65b0\u5efa\u9879\u76ee\u300d\u90a3\u4e2a\u7f16\u8f91\u5668\uff08\u540d\u5b57 / \u5de5\u4f5c\u76ee\u5f55 / \u9879\u76ee\u6307\u4ee4 / \u6302\u54ea\u5757\u8d44\u6599\u5e93\u90fd\u5728\u91cc\u9762\uff09";
+      const PJ_N4 = "\u2605\u6ca1\u987a\u624b\u628a\u4e3b\u533a\u5207\u8d70\u2605 \u5192\u6ce1\u88ab\u62e6\u4f4f\u4e86\uff0c\u4e0d\u7136\u70b9\u4e00\u4e0b \uff0b \u7b49\u4e8e\u70b9\u4e86\u6574\u884c";
+      const PJ_N5 = "\u2605\u53cd\u5411\u5bf9\u7167\u2605 \u6458\u6389\u62e6\u5192\u6ce1\u90a3\u53e5\uff0c\u5c31\u5730\u63d2\u7684\u8f93\u5165\u6846\u5f53\u573a\u88ab\u62b9\u6389\u2014\u2014\u8fd9\u5c31\u662f\u300c\u95ea\u4e86\u4e00\u4e0b\u300d";
+      const PJ_N6 = "\u62e6\u5192\u6ce1\u6ca1\u628a\u6574\u884c\u62e6\u54d1\uff1a\u70b9\u884c\u672c\u8eab\u7167\u6837\u8fdb\u9879\u76ee\u7ba1\u7406\u9875";
+      const PJ_TITLE = "\u524d\u7aef\uff1a\u4fa7\u680f\u300c\u9879\u76ee\u300d\u90a3\u9897 \uff0b\uff08\u771f\u9875\u9762\u91cc\u70b9\u00b7\u5f00\u7684\u662f\u5b8c\u6574\u7f16\u8f91\u5668\u00b7\u6ca1\u987a\u624b\u5207\u8d70\u4e3b\u533a\u00b7\u6458\u6389\u62e6\u622a\u5f53\u573a\u590d\u73b0\u95ea\u4e00\u4e0b\uff09";
+
+      // ---- 侧栏「项目」那一行上的那颗 ＋ ----
+      // 它是整个侧栏里唯一一颗「长在另一个可点行里面」的控件：行自己负责打开项目管理页，
+      // 而 .side-nav 上那个委托监听只认 closest(".item")——不拦住冒泡的话，点 ＋ 等于点整行。
+      // 这一组故意用桌面尺寸开：390 宽的时候侧栏是收起来的，那颗 ＋ 压根儿点不到。
+      {
+        const winPJ = await openReal(false, true);
+        try {
+          const jx = (c) => winPJ.webContents.executeJavaScript(c, true);
+          const namesPJ = [];
+          const okPJ = (n, cond, extra) => { if (cond) { namesPJ.push(n); return; } throw new Error("[\u4fa7\u680f\uff0b] " + n + (extra !== undefined ? " \uff5c " + JSON.stringify(extra) : "")); };
+          const settle = () => new Promise((r) => setTimeout(r, 700));
+          const state = () => jx('({ open: document.getElementById("modal-mask").classList.contains("show"), title: document.getElementById("m-title").textContent, onProj: document.querySelector(\'.side-nav [data-view="proj"]\').classList.contains("active"), page: !!document.getElementById("assist-page"), inp: !!document.getElementById("proj-new") })');
+
+          okPJ(PJ_N1, await jx('(document.getElementById("proj-add").closest(".item") || {}).dataset.view') === "proj");
+          let st = await state();
+          okPJ(PJ_N2, st.open === false && st.onProj === false, st);
+
+          await jx('document.getElementById("proj-add").click(); 1');
+          await settle();
+          st = await state();
+          okPJ(PJ_N3, st.open === true && st.title === "\u65b0\u5efa\u9879\u76ee", st);
+          okPJ(PJ_N4, st.onProj === false && st.page === false, st);
+
+          await jx('document.getElementById("pj-cancel").click(); 1');
+          await settle();
+
+          // ★反向对照★ 把拦冒泡那句摘了，换回修之前那个写法（就地插一个输入框）。
+          // 必须当场复现「闪一下就没了」：否则上面那两条只能证明「现在好使」，
+          // 证不了「当初真的坏在这儿」，也就拦不住它再坏一次
+          await jx('document.getElementById("proj-add").onclick = (e) => { e.preventDefault(); const b = document.getElementById("proj-list"); const r = document.createElement("div"); r.innerHTML = \'<input id="proj-new">\'; b.prepend(r); }; document.getElementById("proj-add").click(); document.getElementById("proj-new") ? 1 : 0');
+          await settle();
+          st = await state();
+          okPJ(PJ_N5, st.inp === false && st.onProj === true, st);
+
+          await jx('document.querySelector(\'.side-nav [data-view="proj"]\').click(); 1');
+          await settle();
+          st = await state();
+          okPJ(PJ_N6, st.onProj === true && st.page === true, st);
+
+          for (const n of namesPJ) console.log("  \u2713 " + n);
+          console.log("\u2705 " + PJ_TITLE + namesPJ.length + " \u9879\u901a\u8fc7");
+        } finally { if (!winPJ.isDestroyed()) winPJ.destroy(); }
+      }
+      const MN_N1 = "\u5148\u9a8c\u6599\uff1a\u771f\u9875\u9762\u91cc\u6253\u4e00\u4e2a / \uff0c\u83dc\u5355\u5217\u51fa\u4e86\u670d\u52a1\u5668\u4e0a\u90a3\u4e24\u4e2a\u6280\u80fd\uff0c\u7b2c\u4e00\u884c\u9ed8\u8ba4\u9009\u4e2d";
+      const MN_N2 = "\u4e0a\u4e0b\u952e\u80fd\u6311\u4eba\uff0c\u8d70\u5230\u5934\u7ed5\u56de\u6765\uff08\u4ee5\u524d\u6839\u672c\u6ca1\u6709\u4e0a\u4e0b\u952e\u8fd9\u56de\u4e8b\uff0c\u9009\u4e2d\u6c38\u8fdc\u9489\u5728\u7b2c\u4e00\u884c\uff0c\u56de\u8f66\u53ea\u62ff\u5f97\u5230\u5b83\uff09";
+      const MN_N3 = "\u2605\u56de\u8f66\u662f\u300c\u586b\u8fdb\u8f93\u5165\u6846\u300d\u4e0d\u662f\u300c\u628a\u8bdd\u53d1\u51fa\u53bb\u300d\u2605 \u6280\u80fd\u540d\u8fdb\u4e86\u8f93\u5165\u6846\uff0c\u4e00\u6761\u6d88\u606f\u90fd\u6ca1\u98de\u51fa\u53bb";
+      const MN_N4 = "\u62e6\u622a\u53ea\u5728\u83dc\u5355\u5f00\u7740\u7684\u65f6\u5019\u7b97\u6570\uff1a\u63a5\u7740\u628a\u8bdd\u5199\u5b8c\uff0c\u83dc\u5355\u5df2\u7ecf\u5173\u4e86\uff0c\u8fd9\u4e00\u4e0b\u56de\u8f66\u7167\u6837\u53d1\u5f97\u51fa\u53bb";
+      const MN_N5 = "\u2605\u53cd\u5411\u5bf9\u7167\u2605 \u628a\u300c\u6390\u65ad\u4f20\u64ad\u300d\u90a3\u4e00\u53e5\u62b9\u5e73\uff0c\u540c\u4e00\u4e0b\u56de\u8f66\u5f53\u573a\u628a\u8bdd\u53d1\u51fa\u53bb\u2014\u2014\u8fd9\u5c31\u662f\u539f\u6765\u7684\u6bdb\u75c5";
+      const MN_N6 = "\u670d\u52a1\u5668\u4e0a\u65b0\u88c5\u4e86\u4e00\u4e2a\u6280\u80fd\uff1a\u9875\u9762\u6ca1\u91cd\u8f7d\uff0c\u9694\u4e00\u4f1a\u513f\u518d\u6253 / \uff0c\u5b83\u81ea\u5df1\u5c31\u5728\u540d\u5355\u91cc\u4e86";
+      const MN_N7 = "\u2605\u53cd\u5411\u5bf9\u7167\u2605 \u628a\u300c\u7528\u7684\u65f6\u5019\u987a\u624b\u5bf9\u4e00\u904d\u540d\u5355\u300d\u6458\u6389\uff0c\u65b0\u88c5\u7684\u5c31\u6c38\u8fdc\u770b\u4e0d\u89c1\u2014\u2014\u8fd9\u5c31\u662f\u300c\u88c5\u5b8c\u5f97\u5237\u65b0\u4e00\u4e0b\u300d";
+      const MN_TITLE = "\u524d\u7aef\uff1a\u8f93\u5165\u6846\u7684 / \u83dc\u5355\uff08\u56de\u8f66\u53ea\u586b\u4e0d\u53d1\u00b7\u4e0a\u4e0b\u952e\u80fd\u6311\u00b7\u65b0\u88c5\u7684\u6280\u80fd\u81ea\u5df1\u5c31\u6765\u4e86\u00b7\u4e24\u6761\u90fd\u6709\u53cd\u5411\u5bf9\u7167\uff09";
+
+      // ---- 输入框里那个 / 菜单 ----
+      // 两件事都只有在真页面上才看得出来：认 / 的那个监听（capture）和管回车发送的那个监听
+      // （bindComposer 里的，bubble）挂在同一个 textarea 上，谁先跑、谁拦得住谁，
+      // 全看这两个 js 文件谁先被 <script> 拉进来——拆出来单独测就什么也证明不了。
+      {
+        const winMN = await openReal(false, true);
+        try {
+          const jx = (c) => winMN.webContents.executeJavaScript(c, true);
+          const namesMN = [];
+          const okMN = (n, cond, extra) => { if (cond) { namesMN.push(n); return; } throw new Error("[/ \u83dc\u5355] " + n + (extra !== undefined ? " \uff5c " + JSON.stringify(extra) : "")); };
+          const settle = (ms) => new Promise((r) => setTimeout(r, ms || 450));
+          // \u53d1\u6ca1\u53d1\u51fa\u53bb\uff0c\u770b\u8fd9\u4e2a\u6570\uff1asend \u6362\u6210\u8ba1\u6570\u5668\uff0c\u771f\u7684\u63a5\u53e3\u4e00\u6b21\u4e5f\u4e0d\u6253
+          await jx('window.__sent = 0; window.__mark = 1; window.__realSend = window.send; window.send = function () { window.__sent++; }; 1');
+          const jset = (v) => jx('(() => { const i = document.getElementById("input"); i.focus(); i.value = ' + JSON.stringify(v) + '; i.setSelectionRange(i.value.length, i.value.length); i.dispatchEvent(new Event("input", { bubbles: true })); return 1; })()');
+          const key = (k) => jx('(() => { document.getElementById("input").dispatchEvent(new KeyboardEvent("keydown", { key: ' + JSON.stringify(k) + ', bubbles: true, cancelable: true })); return 1; })()');
+          const look = () => jx('(() => { const m = document.getElementById("mention-menu"); const sel = m.querySelector(".mi.sel"); return { show: m.classList.contains("show"), items: [...m.querySelectorAll(".mi")].map((e) => e.dataset.insert).filter(Boolean), sel: sel ? sel.dataset.insert : null, val: document.getElementById("input").value, sent: window.__sent, mark: window.__mark }; })()');
+
+          await jset("/");
+          await settle();
+          let v = await look();
+          okMN(MN_N1, v.show === true && String(v.items) === "/daily-report,/excel-clean,/meeting-notes" && v.sel === "/daily-report", v);
+
+          // \u4e09\u4e2a\u624d\u5206\u5f97\u51fa\u4e0a\u548c\u4e0b\uff1a\u53ea\u6709\u4e24\u4e2a\u7684\u8bdd\uff0c\u300c\u5f80\u4e0b\u4e00\u683c\u300d\u548c\u300c\u5f80\u4e0a\u7ed5\u4e00\u5708\u300d\u843d\u5728\u540c\u4e00\u884c\uff0c
+          // \u65b9\u5411\u5199\u53cd\u4e86\u4e5f\u662f\u7eff\u7684\u3002\u6700\u540e\u4e00\u4e0b\u56de\u5230\u7b2c\u4e8c\u884c\uff0c\u4e0b\u9762\u90a3\u6761\u56de\u8f66\u63a5\u7740\u7528
+          const seq = [];
+          for (const k of ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowUp", "ArrowUp"]) { await key(k); seq.push((await look()).sel); }
+          okMN(MN_N2, String(seq) === "/excel-clean,/meeting-notes,/daily-report,/meeting-notes,/excel-clean", seq);
+
+          await key("Enter");
+          await settle(250);
+          v = await look();
+          okMN(MN_N3, v.val === "/excel-clean " && v.sent === 0 && v.show === false, v);
+
+          // \u62e6\u622a\u53ea\u5728\u83dc\u5355\u5f00\u7740\u7684\u65f6\u5019\u7b97\u6570\uff1a\u83dc\u5355\u5173\u4e86\u4e4b\u540e\u56de\u8f66\u8fd8\u5f97\u662f\u53d1\u9001\u3002
+          // \u6ca1\u8fd9\u4e00\u6761\u7684\u8bdd\uff0c\u628a send \u6574\u4e2a\u62e6\u6b7b\u4e5f\u80fd\u8ba9\u4e0a\u9762\u90a3\u6761\u7eff\u7740
+          await jset("/excel-clean \u628a\u4e0a\u5468\u7684\u8868\u6574\u4e00\u4e0b");
+          await settle(250);
+          await key("Enter");
+          await settle(250);
+          v = await look();
+          okMN(MN_N4, v.val === "/excel-clean \u628a\u4e0a\u5468\u7684\u8868\u6574\u4e00\u4e0b" && v.show === false && v.sent === 1, v);
+
+          // \u2605\u53cd\u5411\u5bf9\u7167\u2605 \u53ea\u628a\u4fee\u597d\u7684\u90a3\u4e00\u53e5\u62b9\u5e73\uff08\u628a Event \u4e0a\u7684 stopImmediatePropagation \u6362\u6210\u7a7a\u51fd\u6570\uff09\uff0c
+          // \u522b\u7684\u4e00\u5b57\u4e0d\u52a8\u3002\u6ca1\u8fd9\u4e00\u6761\u7684\u8bdd\uff0c\u4e0a\u9762\u90a3\u51e0\u6761\u53ea\u80fd\u8bc1\u660e\u300c\u73b0\u5728\u4e0d\u53d1\u4e86\u300d\uff0c
+          // \u8bc1\u4e0d\u4e86\u300c\u5f53\u521d\u5c31\u574f\u5728\u8fd9\u4e00\u53e5\u4e0a\u300d\uff0c\u4e5f\u62e6\u4e0d\u4f4f\u8c01\u628a\u5b83\u6539\u56de preventDefault
+          await jx('window.__sip = Event.prototype.stopImmediatePropagation; Event.prototype.stopImmediatePropagation = function () {}; window.__sent = 0; 1');
+          await jset("/");
+          await settle();
+          await key("Enter");
+          await settle(250);
+          v = await look();
+          okMN(MN_N5, v.sent === 1 && v.val === "/daily-report ", v);
+          await jx('Event.prototype.stopImmediatePropagation = window.__sip; window.__sent = 0; 1');
+
+          // \u670d\u52a1\u5668\u4e0a\u88c5\u4e86\u4e2a\u65b0\u6280\u80fd\uff08\u6765\u8def\u4e0d\u9650\uff1a\u6280\u80fd\u4e2d\u5fc3\u3001\u63d2\u4ef6\u3001\u547d\u4ee4\u884c\u3001\u522b\u4eba\u88c5\u7684\u90fd\u7b97\uff09
+          apiSkills.push({ name: "pdf-split", description: "\u62c6 PDF" });
+          await settle(3500); // \u8282\u6d41\u662f 3 \u79d2\uff0c\u7b49\u5b83\u8fc7\u53bb\u2014\u2014\u4eba\u771f\u5b9e\u7684\u8282\u594f\u6bd4\u8fd9\u6162\u5f97\u591a
+          await jset("/");
+          await settle(700);
+          v = await look();
+          okMN(MN_N6, v.items.indexOf("/pdf-split") >= 0 && v.mark === 1, v); // mark \u8fd8\u5728\uff1d\u786e\u5b9e\u6ca1\u91cd\u8f7d\u8fc7\u9875\u9762
+
+          // \u2605\u53cd\u5411\u5bf9\u7167\u2605 \u628a\u300c\u8981\u7528\u7684\u65f6\u5019\u987a\u624b\u5bf9\u4e00\u904d\u300d\u6362\u6210\u7a7a\u51fd\u6570\uff0c\u5c31\u662f\u4fee\u4e4b\u524d\u90a3\u4e2a\u6837\u5b50
+          await jx('window.__rsc = window.refreshSkillsCache; window.refreshSkillsCache = function () {}; 1');
+          apiSkills.push({ name: "ppt-outline", description: "\u5217 PPT \u5927\u7eb2" });
+          await settle(3500);
+          await jset("/");
+          await settle(700);
+          v = await look();
+          okMN(MN_N7, v.items.indexOf("/ppt-outline") < 0 && v.items.indexOf("/pdf-split") >= 0, v);
+          await jx('window.refreshSkillsCache = window.__rsc; window.send = window.__realSend; 1');
+
+          for (const n of namesMN) console.log("  \u2713 " + n);
+          console.log("\u2705 " + MN_TITLE + namesMN.length + " \u9879\u901a\u8fc7");
+        } finally { if (!winMN.isDestroyed()) winMN.destroy(); }
+      }
+      srvT.close();
+      for (const n of namesTP) console.log("  \u2713 " + n);
+      console.log("\u2705 \u524d\u7aef\uff1a\u624b\u673a\u4e0a\u70b9\u5f97\u7740\uff08390\u00d7844 \u91cc\u52a0\u8f7d\u771f\u9875\u9762\u00b7\u89e6\u5c4f\u6863\u6bcf\u9897\u2265 44\u00b7\u9f20\u6807\u6863\u5bc6\u5ea6\u4e00\u70b9\u6ca1\u53d8\u00b7\u6539\u56de\u65e7\u5c3a\u5bf8\u5f53\u573a\u53d8\u7ea2\uff09" + namesTP.length + " \u9879\u901a\u8fc7");
+    }
   } catch (e) {
     console.error("❌ 前端测试失败:", e && e.message ? e.message : e);
     const errs = RENDERER_LOG.filter((m) => m.level === "error" || m.level === "3");
