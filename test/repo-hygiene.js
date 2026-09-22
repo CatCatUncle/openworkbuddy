@@ -671,5 +671,37 @@ console.log("\n【8】仓库里不许有作者本人的痕迹，也不许有真 
     "反向对照：长得像但不够长的普通词不误报");
   ok(keyHits([...FAKE_KEYS].join("\n")).length === 0, "反向对照：名单里那六个假 Key 全部放行");
 }
+
+console.log("\n【9】README 第一屏那排徽章，数字得是真的");
+{
+  // 徽章读的是 docs/stats.json，而这份文件只有人记得跑 `npm run stats` 才重算。
+  // v0.9.0 就栽在这儿：技能已经 36 个，徽章上写着 35，版本号还停在上一版——
+  // 这不是内部文件，是新来的人看到的第一屏，而且是谁都能自己数一遍拆穿的那种假。
+  // 「记得跑一下」靠不住，所以改成机器每次都数一遍。
+  const S = require("../scripts/stats.js");
+  const now = S.compute();
+  let saved = null;
+  try { saved = JSON.parse(fs.readFileSync(S.OUT, "utf8")); } catch {}
+  ok(saved !== null, "docs/stats.json 读得出来也解得开", "读不出来的话下面那条等于没测");
+  const diff = (a, b) => S.CHECKED.filter((k) => String((a || {})[k]) !== String(b[k]));
+  const bad = diff(saved, now);
+  ok(bad.length === 0, "徽章里的数字跟现在数出来的一致（含版本号）",
+    bad.map((k) => `${k}：文件里写着 ${(saved || {})[k]}，现在数出来是 ${now[k]}`).join("、")
+      + "\n      跑一遍 `npm run stats` 再提交（发版抬了版本号的话也要跑）");
+  ok(S.CHECKED.indexOf("updated") < 0, "updated 那一栏故意不比（它每天都变，比它等于要求每天重跑一遍）");
+
+  // 反向对照：上面那条现在是绿的，得先证明它真会红。
+  // 没这几条的话，把 diff 写成 `return []` 也一样全绿
+  ok(diff({ ...now, skills: now.skills + 1 }, now).length === 1, "反向对照：技能数差一个就抓得到（v0.9.0 那次就差这一个）");
+  ok(diff({ ...now, version: "0.0.1" }, now).length === 1, "反向对照：版本号没跟上也抓得到（发版忘了重跑就是这样）");
+  ok(diff({ ...now, updated: "1999-01-01" }, now).length === 0, "反向对照：只有日期不同不算红（不然每天一早全红）");
+  ok(diff(null, now).length === S.CHECKED.length, "反向对照：文件整个读不出来算每一栏都不对（不是静悄悄放行）");
+
+  // 数出来的东西本身也得像话：全 0 的话上面那条只要文件里也是 0 就绿了
+  ok(S.COUNTED.every((k) => Number(now[k]) > 0), "每一栏都数得出东西来",
+    S.COUNTED.map((k) => `${k}=${now[k]}`).join(" "));
+  ok(String(now.version) === String(require("../package.json").version),
+    "compute() 读的版本号就是 package.json 那一个");
+}
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

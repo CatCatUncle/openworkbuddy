@@ -11758,6 +11758,16 @@ app.whenReady().then(async () => {
         const w = mkWin({ show: false, width: wide ? 1280 : 390, height: wide ? 860 : 844, backgroundColor: "#ffffff", webPreferences: { contextIsolation: false, nodeIntegration: false, offscreen: true } });
         w.webContents.session.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] }, (d, cb) => cb({ cancel: !d.url.startsWith("http://127.0.0.1:" + portT + "/") }));
         await w.loadURL("http://127.0.0.1:" + portT + "/index.html");
+        // 界面语言默认跟系统走（i18n.js 读 navigator.language）。这套断言里有几条要对文案，
+        // 开发机是中文、流水线上的机器是英文——同一份断言，在两台机器上量的是两个字符串。
+        // v0.9.0 就是这么挂的：本地全绿，流水线上弹窗标题量出来是 "New project"，
+        // 测试红了，包一个都没打出来。所以进门先把语言钉死，再重新加载一遍——
+        // 让脚本从头就按这个语言渲染，而不是先画一遍再翻
+        await w.webContents.executeJavaScript('try { localStorage.setItem("owb-lang", "zh"); } catch {} 1', true);
+        await new Promise((r) => { w.webContents.once("did-finish-load", r); w.webContents.reload(); });
+        // 钉没钉住得当场验一下：静悄悄没生效的话，下面那几条又回到「看开发机心情」了
+        const lang = await w.webContents.executeJavaScript('window.I18N ? I18N.getLang() : "?"', true);
+        if (lang !== "zh") throw new Error("[真页面] 界面语言没钉住（量到 " + lang + "）：这套断言里有几条要对文案，语言不定等于判据不定");
         if (coarse) {
           // pointer 这一档 setEmulatedMedia 管不着（它只认 prefers-* 那几个），
           // 要靠「这是台触屏设备」整套模拟才翻得过来
@@ -11829,7 +11839,10 @@ app.whenReady().then(async () => {
           const namesPJ = [];
           const okPJ = (n, cond, extra) => { if (cond) { namesPJ.push(n); return; } throw new Error("[\u4fa7\u680f\uff0b] " + n + (extra !== undefined ? " \uff5c " + JSON.stringify(extra) : "")); };
           const settle = () => new Promise((r) => setTimeout(r, 700));
-          const state = () => jx('({ open: document.getElementById("modal-mask").classList.contains("show"), title: document.getElementById("m-title").textContent, onProj: document.querySelector(\'.side-nav [data-view="proj"]\').classList.contains("active"), page: !!document.getElementById("assist-page"), inp: !!document.getElementById("proj-new") })');
+          // 量的是「那四栏在不在」，不是标题上写着什么。「新建项目编辑器」跟旧的就地插输入框，
+          // 差的不是标题而是工作目录 / 项目指令 / 挂哪块资料库都配不配得了。
+          // 按标题判还把断言钉在翻译上：同一句话换个语言就是另一串字
+          const state = () => jx('({ open: document.getElementById("modal-mask").classList.contains("show"), title: document.getElementById("m-title").textContent.trim(), fields: ["pj-name", "pj-dir", "pj-ins", "pj-lib"].filter((i) => document.getElementById(i)), onProj: document.querySelector(\'.side-nav [data-view="proj"]\').classList.contains("active"), page: !!document.getElementById("assist-page"), inp: !!document.getElementById("proj-new") })');
 
           okPJ(PJ_N1, await jx('(document.getElementById("proj-add").closest(".item") || {}).dataset.view') === "proj");
           let st = await state();
@@ -11838,7 +11851,7 @@ app.whenReady().then(async () => {
           await jx('document.getElementById("proj-add").click(); 1');
           await settle();
           st = await state();
-          okPJ(PJ_N3, st.open === true && st.title === "\u65b0\u5efa\u9879\u76ee", st);
+          okPJ(PJ_N3, st.open === true && st.fields.length === 4 && st.title.length > 0, st);
           okPJ(PJ_N4, st.onProj === false && st.page === false, st);
 
           await jx('document.getElementById("pj-cancel").click(); 1');
@@ -11954,7 +11967,10 @@ app.whenReady().then(async () => {
           await jset("/");
           await settle(700);
           let h = await hintOn();
-          const hintOk = h.hint === "\u2191\u2193 \u6311 \u00b7 \u56de\u8f66\u586b\u8fdb\u8f93\u5165\u6846 \u00b7 Esc \u5173\u6389" && h.items >= 3;
+          // 量的是「这条提示有没有告诉你按哪几个键」，不是「它逐字写着什么」。
+          // 整句话写进断言里，文案改一个字、或者换台语言不同的机器，这条就红了——
+          // 而功能其实好好的。↑↓ 和 Esc 是键名，哪个语言都不翻
+          const hintOk = !!h.hint && h.hint.indexOf("\u2191\u2193") >= 0 && h.hint.indexOf("Esc") >= 0 && h.items >= 3;
           await jset("/zzzzz-\u6ca1\u8fd9\u4e2a");
           await settle(450);
           const h2 = await hintOn();
