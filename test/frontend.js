@@ -236,6 +236,7 @@ let previewSrv = {};
 function toast(){}
 const OFFICE_RE = /\.(doc|ppt|xls)$/i; // 和 app-01 里的一致：桩子只认 .ppt 不认 .pptx 的话，Office 文件的提示文案就验不到
 function onActivate(el, fn){ el.addEventListener("click", fn); }
+let filesCache = [], filesRoot = ""; // 右侧清单（curStamp 要问它）：默认空，下面有几条会往里放东西
 `;
 
 // 「整理文件夹 · 腾出空间」那一屏。
@@ -859,6 +860,64 @@ const TURNOUT_CHECKS = `
     ok("  ← 别误伤真交付物", isDeliverable("方案.md") && isDeliverable("README_对外版.md") && isDeliverable("年报.en.md"));
   }
 
+  // ── 对话里的图和右侧面板必须是同一份字节（用户：「对话里预览的图和右边打开的不一样」）。
+  // 事故：agent 先出封面 v1、又原地改写成 v2。同名卡片已经在了，以前这一支什么都不做，
+  // 卡片留着 v1 的地址，浏览器把缓存的旧图一直摆着；右侧面板每次带当前时间，开的是 v2
+  {
+    const b = fresh();
+    const v1 = { name: "封面.png", size: 100, mtime: "2026-09-20T01:00:00.000Z" };
+    const v2 = { name: "封面.png", size: 120, mtime: "2026-09-20T01:05:00.000Z" };
+    renderTurnOutputs(b, [v1], [v1]);
+    const c1 = b.querySelector('.out-card[data-name="封面.png"]');
+    const s1 = c1.querySelector(".out-thumb img").getAttribute("src");
+    ok("卡片记下了自己画的是哪一版", c1.dataset.v === v1.mtime, c1.dataset.v);
+    renderTurnOutputs(b, [v1], [v1]);
+    ok("负向对照：同一版再来一次，卡片还是原来那个元素（不是每来一个事件就重画）", b.querySelector('.out-card[data-name="封面.png"]') === c1);
+    renderTurnOutputs(b, [v2], [v2]);
+    const c2 = b.querySelector('.out-card[data-name="封面.png"]');
+    const s2 = c2.querySelector(".out-thumb img").getAttribute("src");
+    ok("★同名文件原地改写一次，卡片重画、地址换成新版本★", c2 !== c1 && s2 !== s1 && s2.includes(encodeURIComponent(v2.mtime)), s2);
+    ok("  ← 还是只有一张卡、清单还是一行（改一次不多一张）",
+      b.querySelectorAll('.out-card[data-name="封面.png"]').length === 1 && b.querySelectorAll('.out-row[data-name="封面.png"]').length === 1);
+    ok("  ← 卡上的大小也是新的", c2.dataset.size === "120", c2.dataset.size);
+    b.remove();
+  }
+  // ── 卡片以盘上「现在」这一版为准：历史回放、清单刷新、Markdown 内嵌图三处一个口径
+  {
+    const old = { name: "封面.png", size: 100, mtime: "2026-09-20T01:00:00.000Z" };
+    const NOW = "2026-09-21T00:00:00.000Z";
+    filesCache = [{ name: "封面.png", size: 130, mtime: NOW }]; filesRoot = "";
+    const b = fresh();
+    renderTurnOutputs(b, [old], [old]);
+    const src = b.querySelector('.out-card[data-name="封面.png"] .out-thumb img').getAttribute("src");
+    ok("回放老记录时，卡片地址带的是盘上现在这一版，不是当年事件里那一版",
+      src.includes(encodeURIComponent(NOW)) && !src.includes(encodeURIComponent(old.mtime)), src);
+    b.remove();
+    filesRoot = "r9";
+    const b2 = fresh();
+    renderTurnOutputs(b2, [old], [old], { root: "r1" });
+    const src2 = b2.querySelector('.out-card[data-name="封面.png"] .out-thumb img').getAttribute("src");
+    ok("负向对照：换过工作目录的老卡片，不拿当前目录同名文件的版本号去盖", src2.includes(encodeURIComponent(old.mtime)), src2);
+    b2.remove();
+    // 用户在盘上又改了一次 → 右侧清单刷新 → 落后的卡片跟着重画，其余一张不动
+    filesCache = []; filesRoot = "";
+    const b3 = fresh();
+    renderTurnOutputs(b3, [old, F("别的.png")], [old, F("别的.png")]);
+    const c3 = b3.querySelector('.out-card[data-name="封面.png"]'), other = b3.querySelector('.out-card[data-name="别的.png"]');
+    const NEWER = "2026-09-22T00:00:00.000Z";
+    filesCache = [{ name: "封面.png", size: 140, mtime: NEWER }, F("别的.png")];
+    const n = syncOutCards(filesCache);
+    const c4 = b3.querySelector('.out-card[data-name="封面.png"]');
+    ok("右侧清单刷新后，落后的那张卡重画成新版本（重画 1 张）", n === 1 && c4 !== c3 && c4.dataset.v === NEWER, n + " / " + (c4 && c4.dataset.v));
+    ok("  ← 版本没变的那张原封不动", b3.querySelector('.out-card[data-name="别的.png"]') === other);
+    ok("负向对照：清单没再变，再同步一次一张都不动", syncOutCards(filesCache) === 0 && b3.querySelector('.out-card[data-name="封面.png"]') === c4);
+    const im = mdImg("封面", "封面.png", "", "");
+    ok("Markdown 内嵌图的地址也带盘上现在这一版（三处一个口径）", im.includes("v=" + encodeURIComponent(NEWER)), im);
+    ok("  ← 清单里没有的图不硬编版本号（服务端 no-cache 兜底）", !mdImg("x", "没这张.png", "", "").includes("v="), mdImg("x", "没这张.png", "", ""));
+    b3.remove();
+    filesCache = []; filesRoot = "";
+  }
+
   return names;
 })()
 `;
@@ -1079,6 +1138,7 @@ const KBD_CHECKS = `
 const FILELIST_STUBS = [
   IC_STUB,
   "window.filesCache = [];",
+  "window.syncOutCards = () => 0;", // 产出卡那一段不在这屏里；renderFiles 顺手同步卡片的事在本回合产出那屏验
   "window.esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');",
   "window.toast = () => {};",
   "window.snapshotFiles = () => {};",
@@ -2273,6 +2333,7 @@ const ESC_STUBS = [
   "function fpath(n) { return String(n == null ? '' : n).split('/').map(encodeURIComponent).join('/'); }",
   srcBlock("function joinRel(base, rel) {"), // 真源：mdFileLink 靠它按文档目录解相对路径，假身会把这件事测没
   srcBlock("function withRoot(url, root) {"),
+  srcBlock("function curStamp(name, root) {"), // 真源：mdImg 要问它盘上现在是哪一版；这一屏没有右侧清单，它得自己认出来并回空串
   srcBlock("function mdImg(alt, url, base, root) {"), // 真源：裸链转换现在排在它后面，得验 alt 属性里的网址没被塞进 <a>
   // 正文里的文件链接点不点得动，真源在 app-02.js 的事件委托那段——renderMd 是拼字符串出来的，
   // 挂不上 onclick，这段要是哪天被改回 onclick，历史回放里的链接会全哑掉而没人发现
@@ -10232,7 +10293,7 @@ for (const k of ["bubble-quote", "bubble-attach", "bubble-pics", "BUBBLE_ATT_ICO
 if (!APP02X.includes('<div class="u-stack">')) throw new Error("app-01.js 的回合骨架里没有 .u-stack 了：气泡上面那排缩略图没地方挂，测试搭的壳子已经不是线上那个");
 // 「这份素材躺在工作区哪儿」那三档也按真源码跑：拼错一档，用户看到的就是一整排灰方块
 const RS0 = APP02X.indexOf("function attachRel(name, sid) {");
-const RS1 = APP02X.indexOf("\n", APP02X.indexOf("function attachThumb(rel) {"));
+const RS1 = APP02X.indexOf("\n}\n", APP02X.indexOf("function attachThumb(rel) {")) + 3; // 切到 attachThumb 的收尾大括号：它现在是多行的（缩略图地址带盘上那一版的时间戳）
 if (RS0 < 0 || RS1 <= RS0) throw new Error("app-01.js 里的 attachRel / attachThumb 找不到了（改名/挪窝？），素材路径这一半没法核");
 const ATTACH_RESOLVE_SRC = APP02X.slice(RS0, RS1);
 // 认哪些扩展名画缩略图，也用真的那一份
@@ -10265,8 +10326,8 @@ const BUBBLE_CHECKS = `
   // 「这份素材躺在哪儿」那三档用真源码，不用测试自己编一份：编一份的话，线上拼错了这儿照样绿
   const attachPaths = new Map(), sessionDirs = new Map();
   const fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
-  const RESOLVE = new Function("attachPaths", "sessionDirs", "fpath",
-    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb };")(attachPaths, sessionDirs, fpath);
+  const RESOLVE = new Function("attachPaths", "sessionDirs", "fpath", "curStamp",
+    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb };")(attachPaths, sessionDirs, fpath, () => "");
   let pvOpened = [];
   const previewFile = (rel, root) => { pvOpened.push(rel); };
   const stage = document.createElement("div");
@@ -11039,7 +11100,7 @@ app.whenReady().then(async () => {
       await win7.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(TURNOUT_HTML));
       const names7 = await win7.webContents.executeJavaScript(IC_BOOT + TURNOUT_STUBS + "\n" + PATHHELP_SRC + "\n" + TURNOUT_SRC + "\n" + TURNOUT_CHECKS, true);
       for (const n of names7) console.log("  ✓ " + n);
-      console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接·整块可收起）${names7.length} 项通过`);
+      console.log(`✅ 前端：本回合产出（删掉的中间文件跟着撤·成品不被挤掉·截断不误杀·并卡只摘链接·整块可收起·同名改写卡片重画·卡片认盘上现在这一版）${names7.length} 项通过`);
     } finally {
       if (!win7.isDestroyed()) win7.destroy();
     }

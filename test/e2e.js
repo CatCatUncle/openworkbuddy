@@ -130,7 +130,7 @@ function makeFakeLLM() {
   return {
     provider: "mock",
     model: "scripted",
-    async chat({ history, tools, onTextDelta }) {
+    async chat({ system, history, tools, onTextDelta }) {
       const firstUser = history.find((h) => h.role === "user");
       const isExpert = firstUser && firstUser.content.startsWith("【子任务】");
       const toolNames = tools.map((t) => t.name);
@@ -167,16 +167,22 @@ function makeFakeLLM() {
         };
       }
       if (coordStep === 2) {
-        // 验证上一步 use_skill 返回了技能内容
+        // 验证上一步 use_skill 把技能加载进来了。全文不在工具结果里——在系统提示词「已加载技能」一节
+        // （历史压缩、截短都碰不到它），工具结果只回一句回执，说清全文挂在哪儿
         const lastTool = history[history.length - 1];
-        assert(lastTool.role === "tool" && lastTool.results[0].content.includes("exceljs"), "use_skill 未返回技能内容");
+        assert(lastTool.role === "tool" && /已加载技能「excel-report」/.test(lastTool.results[0].content), "use_skill 没回加载回执：" + String(lastTool.results && lastTool.results[0] && lastTool.results[0].content).slice(0, 80));
+        assert(!/exceljs/.test(lastTool.results[0].content), "★技能全文不该再塞进工具结果里★（进了历史就会被压缩/截短第一个牺牲）");
+        const sysX = String(system || "");
+        const xlAt = sysX.indexOf("### 技能：excel-report"), pgAt = sysX.indexOf("### 技能：html-page");
+        assert(xlAt > 0 && pgAt > xlAt && /exceljs/.test(sysX.slice(xlAt, pgAt)), "excel-report 的全文没挂到系统提示词「已加载技能」一节里");
         const pageSkill = lastTool.results.find((r) => r.id === "tc_1b");
-        assert(pageSkill, "两个 use_skill 的结果没按调用 ID 配对回来");
+        assert(pageSkill && /已加载技能「html-page」/.test(pageSkill.content), "两个 use_skill 的结果没按调用 ID 配对回来");
         // 认「【配套】」这个只有提示才有的标记：html-page 技能正文自己也提 web-styles，
         // 光按技能名匹配会被正文喂饱，闸门看着绿其实什么都没查
-        assert(/【配套】/.test(pageSkill.content) && /web-styles|frontend-design/.test(pageSkill.content),
+        const pageText = sysX.slice(pgAt);
+        assert(/【配套】/.test(pageText) && /web-styles|frontend-design/.test(pageText),
           "加载 html-page 时没带出「先挑视觉方向」的提示，网页又会长成同一张脸");
-        assert(!/【配套】/.test(lastTool.results[0].content), "★这句提示不该跟着 excel-report 一起发★");
+        assert(!/【配套】/.test(sysX.slice(xlAt, pgAt)), "★这句提示不该跟着 excel-report 一起发★");
         const code = `
 const ExcelJS = require("exceljs");
 (async () => {
@@ -6579,7 +6585,7 @@ async function testFilePathRouting() {
       res.on("data", (c) => parts.push(c));
       res.on("end", () => {
         const buf = Buffer.concat(parts);
-        resolve({ code: res.statusCode, body: buf.toString("utf8"), buf });
+        resolve({ code: res.statusCode, body: buf.toString("utf8"), buf, headers: res.headers || {} });
       });
     });
     req.on("error", (e) => resolve({ code: 0, body: e.message, buf: Buffer.alloc(0) }));
@@ -6615,6 +6621,26 @@ async function testFilePathRouting() {
     const esc2 = await get("/api/files/view/..%2F..%2Fconfig.json");
     assert(esc1.code >= 400 && esc2.code >= 400, "通配路由能读到工作区外面去（" + esc1.code + " / " + esc2.code + "）");
     assert(!/机密/.test(esc1.body + esc2.body), "越界请求把工作区外的内容吐出来了");
+
+    // ⑤b 缓存头：对话里的图和右侧面板看的必须是同一份字节（用户：「对话里预览的图和右边打开的不一样」）。
+    // 以前缩略图不看版本号一律留七天：产出卡带着旧 ?v=、文件被 agent 原地改写一次，对话里那张图七天不换。
+    // 规矩：?v= 跟盘上这一版对得上才许浏览器留七天；没带 / 带旧的一律 no-cache（回来核对 ETag，没变 304）
+    const figP = path.join(ws, "fig hero.jpg");
+    const iso = fs.statSync(figP).mtime.toISOString();
+    const cc = (r) => String((r.headers && r.headers["cache-control"]) || "");
+    const hit = await get(enc(DIR + "/fig hero.jpg") + "?thumb=320&v=" + encodeURIComponent(iso));
+    assert(hit.code === 200 && /max-age=604800/.test(cc(hit)) && /private/.test(cc(hit)), "版本号对得上的链接没让浏览器留着（会每次重下）：" + cc(hit));
+    const stale = await get(enc(DIR + "/fig hero.jpg") + "?thumb=320&v=" + encodeURIComponent("2020-01-01T00:00:00.000Z"));
+    assert(stale.code === 200 && /no-cache/.test(cc(stale)) && !/max-age=6/.test(cc(stale)), "带旧版本号的链接还在让浏览器留七天——文件改写后对话里的图七天不换：" + cc(stale));
+    const bare = await get(enc(DIR + "/fig hero.jpg"));
+    assert(bare.code === 200 && /no-cache/.test(cc(bare)), "不带版本号的原图链接没有 no-cache：" + cc(bare));
+    assert(bare.headers.etag || bare.headers["last-modified"], "no-cache 却没给 ETag / Last-Modified，浏览器没法核对，每次都得整张重下");
+    // 负向对照：文件真被改写之后，刚才「对得上」的版本号就成了旧的，同一条链接必须改口 no-cache 且发新字节
+    fs.writeFileSync(figP, Buffer.from("JPEGDATA2"));
+    fs.utimesSync(figP, new Date(), new Date(Date.parse(iso) + 5000));
+    const after = await get(enc(DIR + "/fig hero.jpg") + "?thumb=320&v=" + encodeURIComponent(iso));
+    assert(/no-cache/.test(cc(after)) && after.body === "JPEGDATA2", "文件改写后，旧版本号的链接还被当成新的：" + cc(after) + " / " + after.body);
+    fs.writeFileSync(figP, Buffer.from("JPEGDATA")); // 复原
 
     // ⑥ ?thumb=320 的退路：**文件缩不动的时候必须原样发原图**。
     // 大图.png 里装的是 "THUMBFALLBACK" 重复填的字节，扩展名是 .png 但根本不是 PNG
@@ -6677,7 +6703,7 @@ async function testFilePathRouting() {
     assert(libRoute.indexOf("thumbFileAsync(") < libRoute.indexOf("res.download(p)"),
       "资料库那条路由把 ?thumb= 写在 res.download 后面了——永远走不到，资料库还是一屏原图");
 
-    console.log("✅ 成果预览路径：会话子目录里的网页和它相对路径引的图都取得到（压平写法负对照 404，%2F 老链接不断，越界仍拦得住，纯 node 下真 PNG 真缩出 320、坏文件原样发原图，资料库共用同一段缩略图）");
+    console.log("✅ 成果预览路径：会话子目录里的网页和它相对路径引的图都取得到（压平写法负对照 404，%2F 老链接不断，越界仍拦得住，缓存头只认对得上的 ?v= 否则 no-cache，纯 node 下真 PNG 真缩出 320、坏文件原样发原图，资料库共用同一段缩略图）");
   } finally {
     try { child.kill("SIGKILL"); } catch {}
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}

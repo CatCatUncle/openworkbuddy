@@ -474,6 +474,19 @@ function saveManual(content) {
  * 而不是从尾巴上盲切——盲切吃掉的恰好是最新记的那些。挑没挑、挑了多少，都明说。
  * @param hint 本次任务的线索（通常是用户最后一条消息的前几百字），用来算相关度
  */
+/**
+ * 这一条是「规矩」还是「事实」。
+ *
+ * 记忆超预算时条目按跟本次任务的相关度挑，这对事实是对的（做公众号推文时用不着「公司报销走飞书」），
+ * 对规矩是错的：「交付时别用 open 替我打开文件」跟「写公众号推文」一个关键词都不重合，
+ * 相关度算出来是零，于是被挤掉——而它恰恰是任何任务都得守的那种。真踩过：用户被弹了一桌面窗口，
+ * agent 自己翻记忆才发现「我明明记着这条规矩」。规矩不看相关度，一律先放；相关度只用来挑事实。
+ *
+ * 认的是祈使措辞，宁多认不少认：多认一条只是让一条事实提前进了提示词，少认一条就是一条规矩被静默丢掉。
+ */
+const RULE_RE = /(不要|不许|不准|不得|不能|禁止|一律|必须|绝不|永远|从不|勿|别再|别用|别帮|别替|别自|别在|别把|别往|别给|每次都|任何时候|never|always|don'?t|do not|must|should not|shouldn'?t)/i;
+function isRule(text) { return RULE_RE.test(String(text || "")); }
+
 async function promptBlock(user, hint) {
   let md = manual();
   const all = list(user);
@@ -523,17 +536,25 @@ async function promptBlock(user, hint) {
       }
       const budget = MAX_PROMPT_CHARS - md.length;
       const picked = [];
-      let used = 0;
-      for (const { x } of ranked) {
+      let usedChars = 0; // 别跟外面那个 used 重名：重名过一回，命中回写记到了没进提示词的条目头上
+      const take = (x) => {
         const l = line(x);
-        if (used + l.length + 1 > budget) continue; // 这条装不下，试试后面更短的
+        if (usedChars + l.length + 1 > budget) return false; // 这条装不下，试试后面更短的
         picked.push(x);
-        used += l.length + 1;
-      }
+        usedChars += l.length + 1;
+        return true;
+      };
+      // 规矩先进门、不看相关度（见 isRule）；剩下的预算再按相关度挑事实
+      const rules = items.filter((x) => isRule(x.text)).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      let rulesDropped = 0;
+      for (const x of rules) if (!take(x)) rulesDropped++;
+      const isRuleId = new Set(rules.map((x) => x.id));
+      for (const { x } of ranked) if (!isRuleId.has(x.id)) take(x);
       // 展示按记入时间排，读起来稳定；挑选才按相关度
       picked.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
       body = (md ? md + "\n\n" : "") + picked.map(line).join("\n");
-      note = `\n（记忆条目共 ${items.length} 条装不下，这里按${hint ? "与本次任务的相关度" : "新旧"}挑了 ${picked.length} 条；要看全部请去设置 → 记忆）`;
+      const ruleNote = rules.length ? `规矩类的 ${rules.length - rulesDropped} 条${rulesDropped ? `（还有 ${rulesDropped} 条规矩也装不下，去设置 → 记忆里精简）` : "全"}放进来了，其余` : "";
+      note = `\n（记忆条目共 ${items.length} 条装不下，这里${ruleNote}按${hint ? "与本次任务的相关度" : "新旧"}挑了 ${picked.length - (rules.length - rulesDropped)} 条；要看全部请去设置 → 记忆）`;
       used = picked;
     }
   }
@@ -561,5 +582,5 @@ module.exports = {
   vectorStatus,
   ensureVectors,
   flushHits,
-  _internals: { normalize, looksSecret, looksStaleClaim, load, save, ITEMS_FILE, MANUAL_FILE, VEC_FILE, bigrams, keywordScore, cosine, vecLoad, mostSimilar, keepScore, dedupeForPrompt, judgeableGrams, noteUsed },
+  _internals: { normalize, looksSecret, looksStaleClaim, load, save, ITEMS_FILE, MANUAL_FILE, VEC_FILE, bigrams, keywordScore, cosine, vecLoad, mostSimilar, keepScore, dedupeForPrompt, judgeableGrams, noteUsed, isRule, MAX_PROMPT_CHARS, pendingHits: () => pendingHits },
 };

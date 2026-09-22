@@ -2237,6 +2237,7 @@ app.get("/api/settings", (req, res) => {
       continue_gate: !!config.agent.continue_gate,
       memory_gate: !!config.agent.memory_gate,
       ask_gate: !!config.agent.ask_gate,
+      skill_gate: !!config.agent.skill_gate,
       // 上面这两个开关共用一面旗子：没配判断模型的时候，它们打开也不会生效，别让界面假装能开
       judge_ready: jev.status(config).ready,
       failover_model: config.agent.failover_model || "",
@@ -2477,6 +2478,7 @@ app.post("/api/settings", (req, res) => {
       // 往长期记忆里写之前先判一句。默认关：它拒错一条，用户只会觉得「说过的事它又忘了」
       if (b.agent.memory_gate !== undefined) config.agent.memory_gate = !!b.agent.memory_gate;
       if (b.agent.ask_gate !== undefined) config.agent.ask_gate = !!b.agent.ask_gate;
+      if (b.agent.skill_gate !== undefined) config.agent.skill_gate = !!b.agent.skill_gate;
       if (b.agent.thinking !== undefined) {
         const lv = String(b.agent.thinking || "").trim().toLowerCase();
         // 写错档位当场拒绝，不悄悄退回 auto：用户以为关掉了思考、账单却照着思考的量涨
@@ -4144,10 +4146,10 @@ app.get("/api/library/file/*", async (req, res) => {
     if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).send("文件不存在");
     // ?thumb=160：资料库那一页的图框最大 64px，一屏摆 120 张。缩不动就照旧发原件，
     // 跟 /api/files/view/ 走的是同一段（thumb.js），缓存键带绝对路径所以两处不会串
+    res.set("Cache-Control", viewCacheHeader(req, p)); // 跟 /api/files/view/ 一个规矩：换过图不许再摆七天旧缩略图
     const thumb = await thumbFileAsync(p, parseInt(req.query.thumb, 10), path.join(dataPath("data"), "thumbs"));
     if (thumb) {
       res.set("Content-Type", "image/png");
-      res.set("Cache-Control", "private, max-age=604800");
       return res.sendFile(thumb);
     }
     // 默认内联发。以前这里一律 res.download，带上 Content-Disposition: attachment 之后
@@ -6050,6 +6052,22 @@ app.post("/api/files/exists", (req, res) => {
 });
 
 /**
+ * 文件接口的缓存头。对话里的图、右侧面板、画布三处看的必须是同一份字节。
+ *
+ * 链接带了 ?v=<mtime ISO> 且跟盘上这一版对得上 → 内容跟着版本号走，让浏览器留七天（private）；
+ * 没带 v、或者带的是旧版本号 → no-cache：每次都回来核对一次 ETag / Last-Modified（send 自带），
+ * 没变就 304 不传正文，变了当场换新。老链接（历史回放、画布节点、Markdown 内嵌图）就不会
+ * 把过期的图一直摆着。
+ * 拆成纯函数是为了能测：给它一个 req 和一条路径，它只回一个字符串。
+ */
+function viewCacheHeader(req, p) {
+  let st = null;
+  try { st = fs.statSync(p); } catch { return "private, no-cache"; }
+  const v = String((req.query && req.query.v) || "");
+  return v && (v === st.mtime.toISOString() || v === String(st.mtimeMs)) ? "private, max-age=604800" : "private, no-cache";
+}
+
+/**
  * 应用内预览：按正确 Content-Type 内联返回（HTML/图片/PDF 可直接在 iframe/img 中显示）。
  *
  * 这里必须是通配路由，不能是 :name —— 这就是「预览的时候图片都不正常显示」的真身：
@@ -6072,11 +6090,13 @@ app.get("/api/files/view/*", async (req, res) => {
     // 任何一步不顺（尺寸不在档位里、图太小、不是 PNG、解码失败、缓存目录写不进去）
     // 都返回 null，落回下面原样发原图——缩略图是锦上添花，绝不许因为它让一张图显示不出来。
     // 细账和理由在 thumb.js 开头
+    // 缓存策略看链接上的 ?v= 对不对得上盘上这一版（见 viewCacheHeader）：对得上才让浏览器长期留着。
+    // 以前不看 v、缩略图一律留七天：产出卡带着旧版本号、文件又被 agent 原地改写一次，
+    // 对话里那张图就七天不换——用户看到的是「对话里预览的图和右边打开的不一样」
+    res.set("Cache-Control", viewCacheHeader(req, p));
     const thumb = await thumbFileAsync(p, parseInt(req.query.thumb, 10), path.join(dataPath("data"), "thumbs"));
     if (thumb) {
       res.set("Content-Type", "image/png");
-      // URL 里已经带了 ?v=<mtime>，内容跟着文件走，可以放心让浏览器长期留着
-      res.set("Cache-Control", "private, max-age=604800");
       return res.sendFile(thumb);
     }
     const mm = mediaMime(p);
