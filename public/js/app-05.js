@@ -2321,6 +2321,12 @@ async function renderAgentPane(pane, s) {
       <div class="f">生成类并发条数</div>
       <div class="d" style="margin-bottom:6px">出图 / 出片 / 配音这三类，一轮里最多同时跑几条（1-4，默认 2）。一集短剧十几个镜头，一条条排队最坏要等一两个小时；但这类每条都真花钱（视频按条计费），所以给得比只读工具保守。填 1 就是全部排队，回到老样子</div>
       <input id="ag-genpar" type="number" min="1" max="4" value="${s.agent.gen_parallel_max || 2}">
+      <div class="f">定时任务跑绿之后再看一眼</div>
+      <div class="d" style="margin-bottom:6px">定时任务判成功，只说明它没有明显失败：正文一长，裁定那几条判据就主动让路了——agent 洋洋洒洒写两千字解释它没办成，运行记录照样一个勾。打开之后，这一类绿会多问判断模型一道是非题：这一轮到底办完没有。<b>它只挂疑问、不改判——绿还是绿</b>，通知末尾多一句「这条你自己看一眼」；它自己拿不准就不出声。每条约两万分之一美金。默认关${s.agent.second_opinion_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer">
+        <input type="checkbox" id="ag-second" style="margin:0" ${s.agent.second_opinion ? "checked" : ""}>
+        跑绿的长汇报，多花一道题确认它真办完了
+      </label>
     </div>
     <button class="btn-brand" id="ag-save">保存</button><span class="ok-msg" id="ag-msg"></span>` : `
     <div class="card-item">
@@ -2340,6 +2346,7 @@ async function renderAgentPane(pane, s) {
       max_context_chars: +pane.querySelector("#ag-ctx").value * 1000,
       gen_parallel_max: +pane.querySelector("#ag-genpar").value,
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
+      second_opinion: pane.querySelector("#ag-second").checked,
       // 下拉挪走了，但这一单还是得把它原样带上：整个 agent 对象是一起存的，
       // 漏掉这个字段不会报错，只会在某次「改了下步数上限」之后悄悄把备用渠道关掉
       failover_model: (s.agent || {}).failover_model || "",
