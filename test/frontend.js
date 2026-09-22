@@ -7136,10 +7136,19 @@ const SCROLLGUIDE_CHECKS = `
   ok("看历史时不被拽到底", sc.scrollTop === before, "scrollTop " + before + " → " + sc.scrollTop);
   ok("新内容到了红点亮起、提示语换掉", tb.classList.contains("new") && /新内容/.test(tb.title));
   ok("红点是真画出来的（伪元素）", getComputedStyle(tb, "::after").width === "10px", getComputedStyle(tb, "::after").width);
-  // 点「回到最新」：真到底，红点灭，按钮收
+  // 点「回到最新」：真到底，红点灭，按钮收。
+  // 这里原先是「点完睡 80ms 再读」，本机常绿、偶尔红成「剩 1500」——看着像按钮没接上事件，
+  // 其实是没等到那一帧：scrollBottom 把真正的赋值放进 requestAnimationFrame，而离屏窗口的帧
+  // 是按 setFrameRate 挤出来的、间隔并不均匀，80ms 里可能一帧都没轮到，读到的还是点击前的位置。
+  // 定时等的是时间，要等的是那一帧。所以跟上面 waitLayout、下面「回到最前」一样改成盯着实测值等，
+  // 并把真用掉的毫秒数带进断言——余量还剩多少，一眼看得见，不用等它下次红了再猜。
+  const T0 = Date.now();
   tb.click();
-  await sleep(80); fire();
-  ok("点「回到最新」真到底", sc.scrollHeight - sc.scrollTop - sc.clientHeight < 2, "剩 " + (sc.scrollHeight - sc.scrollTop - sc.clientHeight));
+  const gapNow = () => sc.scrollHeight - sc.scrollTop - sc.clientHeight;
+  for (let i = 0; i < 100 && gapNow() >= 2; i++) await sleep(20); // 上限 2 秒，等到就走
+  const landMs = Date.now() - T0, gap = gapNow();
+  fire();
+  ok("点「回到最新」真到底", gap < 2, "剩 " + gap + "，等了 " + landMs + "ms（老的固定等待只给 80ms）");
   ok("到底后红点灭、「回到最新」收", !tb.classList.contains("new") && !shown("to-bottom"));
   // 点「回到最前」：往上走（平滑滚动在离屏窗口里可能一步到位，也可能分几帧，只认方向和终点）
   sc.scrollTop = 2000; fire();
