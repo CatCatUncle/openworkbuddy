@@ -40,7 +40,9 @@ const skills = [...trackedSkillDirs]
 const experts = JSON.parse(read("experts.json"));
 const stats = {
   _说明: "README 徽章读的就是这个文件；改完代码跑 `npm run stats` 再提交。别手改。",
-  updated: new Date().toISOString().slice(0, 10),
+  // toISOString() 是 UTC。东八区晚上八点之后跑一遍，徽章上的日期就比人眼里的今天早一天，
+  // 而更新日志里的日期是本机算的——同一次提交，两个地方写着两个日子
+  updated: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10),
   version: JSON.parse(read("package.json")).version,
   skills,
   // 工具不只 TOOL_DEFS 一处：委派、问用户、定时、发信这些定义在 agent.js，按会话条件挂上去。
