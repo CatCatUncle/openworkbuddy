@@ -20,6 +20,7 @@ const jev = require("./jev");            // 判断模型（Jev）：不产文字
 const systemOne = require("./systemone"); // 判断模型的纯逻辑：排版、确定度闸、算钱
 const continueGate = require("./continue-gate"); // 续跑之前那道闸的纯判据（只出题、读答案，一个字的网络不发）
 const askGate = require("./ask-gate");   // 弹给用户那一问之前那道闸的纯判据（同上，不发网络）
+const skillGate = require("./skill-gate"); // 开工之前「该照哪个技能做」的纯判据，以及已加载技能挂进系统提示词那一段（同上，不发网络）
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -693,6 +694,7 @@ function createAgentRuntime({ config, llm, mcpManager, experts, expertTeams = []
       // 第三方技能爱写整段英文简介，不截的话光这份清单就吃掉小一千 tokens、每一步都重复计费
       const brief = (d) => { const t = String(d || "").replace(/\s+/g, " ").trim(); return t.length > 80 ? t.slice(0, 80) + "…" : t; };
       p += `\n\n## 可用技能\n` + skills.map((s) => `- ${s.name}：${brief(s.description)}`).join("\n");
+      p += `\n\n用户提到某个技能名、或这活儿明显对口上面某个技能（写公众号推文有公众号技能、做网页有网页技能），**动手前先 use_skill 把它加载进来照着做**，别凭印象做个大概再回头补。用户装技能就是为了这类活按他那套规矩来。`;
     }
     p += `
 
@@ -723,6 +725,7 @@ ${hasRenderer() ? "   - fetch_url 拿回来是空壳 → 原样再发一次 fetc
 9. 工具能做到的事必须自己调工具真正执行，严禁把命令贴在回复里让用户代跑（除非确实需要用户本人登录/授权才能做的事）。
 10. 严禁虚构执行结果（红线）：没有真实调用工具，绝不能声称「已生成/已保存/生成成功」，不能编造文件大小、页数、命令输出或下载链接（sandbox: 开头的链接是假的，禁止输出）。做不到就如实说做不到。系统会自动核验你声称生成的文件是否真实存在，虚构会被当场打回重做。
 11. 严禁虚构事实（红线）：数字、日期、人名、机构、政策条款、引用链接，只能来自工具真实拿到的内容。查不到就写「未查到公开信息」，不许用"大约""据业内估算"糊过去，更不许编造看起来很像的 URL。交付物里每个关键数字都要能指回来源。
+12. 交付只报文件路径（对话里会自动出预览卡，用户点一下就能看），**不要用 open / xdg-open / start 替用户打开文件或网页**——用户明确说「打开」才开。
 
 ## 改代码（改用户已有的项目时按这个来）
 1. 先看清楚再动手：search_files 找到要改的位置 → read_file 把那一段（含上下文）读出来。别只看文件名和函数名就下笔。
@@ -915,7 +918,32 @@ function modePrompt(mode) {
 - **时间盒**：调研、比价、找方案这类活儿，动手前先给自己定个量（查几个来源、看几家、试几种），够了就收手写结论。信息永远查不完，"再多查一点"是最贵的拖延；没查到的写进"待验证"一节交出去，比继续查划算得多。`;
   }
 
-  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, lang, sessionId, traceNode }) {
+  /**
+   * 一份技能加载出来长什么样：目录说明 + 正文 + 配套提示。use_skill 和「开工前自动加载」共用这一份，
+   * 免得两条路加载出来的技能不一样。
+   */
+  function loadSkillText(name) {
+    const skills = getSkills();
+    const skill = skills.find((s) => s.name === name);
+    if (!skill) return { skill: null, text: "", skills };
+    // folder 型技能自带 scripts/templates 等资源，动态告知 agent 技能目录的绝对路径
+    const dirNote = skill.hasAssets
+      ? `【技能目录】${skill.dir}\n该技能自带 scripts/templates 等资源文件（在上述目录内，不在工作目录）。技能文档里的相对路径都相对这个目录；运行其脚本用 run_shell 先 cd 进该目录，但产出的成果文件仍要写到工作目录。\n\n`
+      : "";
+    // 加载 html-page 时顺带提一句还能换风格。不是所有人都装了 frontend-design
+    // （它是推荐技能，从上游拉，不随包分发），装了就告诉模型去用，没装就退回内置的 web-styles——
+    // 不提这一句，模型会拿 html-page 里的默认骨架一路做到底，十个页面一张脸。
+    const styleHint = name === "html-page"
+      ? (skills.some((s) => s.name === "frontend-design")
+          ? `\n\n【配套】先 use_skill frontend-design 定一个视觉方向，再回来按本技能的骨架写。\n`
+          : (skills.some((s) => s.name === "web-styles")
+              ? `\n\n【配套】先 use_skill web-styles 从八个方向里挑一个，再回来按本技能的骨架写——直接用默认样式，做出来的页面会跟上一个长得一样。\n`
+              : ""))
+      : "";
+    return { skill, text: dirNote + skill.content + styleHint, skills };
+  }
+
+  async function runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride, askUser, lang, sessionId, traceNode, skillSink }) {
     // 参数压根不是合法 JSON（llm.js 救不回来时塞了个 _raw 进来）。tools.executeTool 里早有这道闸，
     // 可 ask_user / use_skill / MCP / 委派专家这几个是在这儿就地接住的，根本走不到那儿——
     // 于是一路掉进各自的必填校验，报出来的是「question 不能为空」。模型看了以为是自己漏填了字段，
@@ -1003,25 +1031,18 @@ function modePrompt(mode) {
       };
     }
     if (tc.name === "use_skill") {
-      const skills = getSkills();
-      const skill = skills.find((s) => s.name === (tc.input.name || "").trim());
-      // folder 型技能自带 scripts/templates 等资源，动态告知 agent 技能目录的绝对路径
-      const dirNote = skill && skill.hasAssets
-        ? `【技能目录】${skill.dir}\n该技能自带 scripts/templates 等资源文件（在上述目录内，不在工作目录）。技能文档里的相对路径都相对这个目录；运行其脚本用 run_shell 先 cd 进该目录，但产出的成果文件仍要写到工作目录。\n\n`
-        : "";
-      // 加载 html-page 时顺带提一句还能换风格。不是所有人都装了 frontend-design
-      // （它是推荐技能，从上游拉，不随包分发），装了就告诉模型去用，没装就退回内置的 web-styles——
-      // 不提这一句，模型会拿 html-page 里的默认骨架一路做到底，十个页面一张脸。
-      const styleHint = (tc.input.name || "").trim() === "html-page"
-        ? (skills.some((s) => s.name === "frontend-design")
-            ? `\n\n【配套】先 use_skill frontend-design 定一个视觉方向，再回来按本技能的骨架写。\n`
-            : (skills.some((s) => s.name === "web-styles")
-                ? `\n\n【配套】先 use_skill web-styles 从八个方向里挑一个，再回来按本技能的骨架写——直接用默认样式，做出来的页面会跟上一个长得一样。\n`
-                : ""))
-        : "";
-      return skill
-        ? { content: dirNote + skill.content + styleHint, isError: false }
-        : { content: `技能不存在: ${tc.input.name}。可用: ${skills.map((s) => s.name).join(", ")}`, isError: true };
+      const name = (tc.input.name || "").trim();
+      const { skill, text, skills } = loadSkillText(name);
+      if (!skill) return { content: `技能不存在: ${tc.input.name}。可用: ${skills.map((s) => s.name).join(", ")}`, isError: true };
+      // 有「篮子」（顶层任务传进来的 loadedSkills）就把全文放进篮子、挂到系统提示词里，
+      // 工具结果只回一张回执。以前全文是作为工具结果进历史的：压缩一次就没了、trimHistory
+      // 一截就成空壳，模型跑到第十几步「忘了技能」，其实是技能真的不在它眼前了。
+      if (skillSink instanceof Map) {
+        skillSink.delete(name); // 重新加载的排到最后：块里按「最近加载」留三份
+        skillSink.set(name, text);
+        return { content: skillGate.loadedNote(name, text), isError: false };
+      }
+      return { content: text, isError: false };
     }
     if (mcpManager.isMcpTool(tc.name)) {
       return await mcpManager.call(tc.name, tc.input);
@@ -1598,7 +1619,11 @@ function modePrompt(mode) {
 
   // force=true 是人手动敲 /compact：这时候不看阈值也不看「关了自动压缩」这个设置——
   // 那个设置管的是「别自作主张」，不是「不许我自己压」。
-  async function compactHistory(history, { emit = () => {}, stats, traceNode, force = false } = {}) {
+  async function compactHistory(history, { emit = () => {}, stats, traceNode, force = false, llm: useLlm = null, skills = [] } = {}) {
+    // 压缩用的模型跟这一趟对话选的那条走（llmOverride）。以前写死全局 llm：用户在「模型」里把默认
+    // 渠道填成了判断模型（Jev），对话本身走的是按对话选的另一条，压缩那一下却撞到 Jev 的 400
+    // 「is a decisions model」——整趟任务因此报错，而用户根本没在那条渠道上跑过任何东西。
+    const lm = useLlm || llm;
     if (!force && (config.agent || {}).compact === false) return;
     const budget = config.agent.max_context_chars || 120000;
     const threshold = config.agent.compact_threshold_chars || Math.floor(budget * 0.6);
@@ -1673,13 +1698,13 @@ function modePrompt(mode) {
     emit({ type: "compact_start", entries: old.length, chars: historyChars(old) });
     const gen = (traceNode || tracing.noop).generation({
       name: "压缩历史",
-      model: llm.model,
+      model: lm.model,
       input: [{ role: "user", content: tracing._internals.capText(transcript, 4000) }],
       metadata: { chars_before: historyChars(history), cut_at: cut },
     });
     let result;
     try {
-      result = await llm.chat({
+      result = await lm.chat({
         system:
           "你是会话压缩器。把用户给你的对话转写压成一份接手备忘录，严格按以下结构写（没内容的小节写「无」）：\n" +
           "## 目标\n## 已完成\n## 进行中 / 卡住\n## 关键决定（附原因）\n## 下一步\n## 关键上下文\n" +
@@ -1708,6 +1733,9 @@ function modePrompt(mode) {
       content:
         `${COMPACT_MARK}以下是本会话更早内容的自动摘要（原文已归档）：\n${summary}\n` +
         (lastInstr ? `【最近的用户指令原文】${lastInstr}\n` : "") +
+        // 机械地记一行已加载的技能名：下一趟开跑时按这行把技能全文重新挂回系统提示词。
+        // 不记的话，use_skill 那条工具调用被压掉，技能就悄悄丢了，而摘要多半只写「按公众号规范写」
+        (skills.length ? `【已加载技能】${skills.join("、")}\n` : "") +
         `【读过的文件】${fileOps.read}\n【改过的文件】${fileOps.wrote}\n` +
         `（摘要结束。把以上当作既定事实继续，不必向用户复述；若与用户最新要求冲突，以最新要求为准。）`,
     });
@@ -2077,6 +2105,62 @@ function modePrompt(mode) {
     const memHint = lastUserMsg ? lastUserMsg.content.slice(0, 500) : "";
     const system = (systemPrompt || (await coordinatorSystemPrompt(user, memHint, baseDir))) + projBlock + langBlock(lang) + modePrompt(mode) + pausedMediaBlock() + reopenedMediaBlock(mediaReopened);
     const tools = toolList(depth, mode);
+    // ── 已加载的技能：挂在系统提示词里，不进历史 ───────────────────────────
+    // 名字 → 全文。use_skill 往这儿放（见 runToolCall），每一步的 system 都带上它（见下面 skillBlock）。
+    // 开跑前先把上一趟加载过的捡回来：历史里 use_skill 那条工具调用、以及压缩摘要里
+    // 那行【已加载技能】。不捡的话，用户第二句话一来，上一句加载的技能就不在了。
+    const loadedSkills = new Map();
+    if (depth === 0) {
+      const seen = [];
+      for (const e of history) {
+        if (e && e.role === "assistant" && Array.isArray(e.toolCalls)) {
+          for (const c of e.toolCalls) if (c && c.name === "use_skill" && c.input && c.input.name) seen.push(String(c.input.name).trim());
+        } else if (e && e.role === "user" && typeof e.content === "string" && e.content.startsWith(COMPACT_MARK)) {
+          const m = /【已加载技能】([^\n]*)/.exec(e.content);
+          if (m) for (const n of m[1].split("、")) if (n.trim()) seen.push(n.trim());
+        }
+      }
+      for (const n of seen) {
+        const { skill, text } = loadSkillText(n);
+        if (!skill) continue;
+        loadedSkills.delete(n);
+        loadedSkills.set(n, text);
+      }
+      // 开工之前那道闸：用户点了名就直接加载（一分钱不花）；没点名、开关开着，问判断模型一道单选
+      try {
+        const rt = skillGate.route({
+          on: !!(config.agent || {}).skill_gate,
+          ready: jev.status(config).ready,
+          message: memHint,
+          skills: getSkills(),
+          loaded: loadedSkills.size,
+          depth,
+        });
+        let pick = null;
+        if (rt.route === "named") pick = { name: rt.name, why: "你点了名" };
+        else if (rt.route === "judge") {
+          const skills = getSkills();
+          const out = await jev.askMetered(
+            config,
+            { state: skillGate.pickState({ message: memHint, skills }), questions: skillGate.pickQuestions(skills) },
+            { meta: "开工前先判该照哪个技能做" }
+          );
+          if (!out.ok) throw new Error(out.error || "判断模型没回应");
+          const d = skillGate.readPick(out, skills);
+          if (d) pick = { name: d.name, why: `判断模型挑的，确定度 ${systemOne.pct(d.sure)}` };
+        }
+        if (pick) {
+          const { skill, text } = loadSkillText(pick.name);
+          if (skill) {
+            loadedSkills.set(pick.name, text);
+            emit({ type: "status", text: `先照技能「${pick.name}」做（${pick.why}），已挂到系统提示词里`, depth });
+          }
+        }
+      } catch (e) {
+        // 判不成不影响这一趟：照旧交给模型自己想。但必须留一句——静悄悄没生效的开关，比没有这个开关更糟
+        console.warn(`[技能] 开工前那一问没问成（照旧让模型自己挑）：${e.message}`);
+      }
+    }
     // 按次覆盖步数上限：评测里的长任务题要 40 步以上，但不能因此把全局上限抬高——
     // 那等于给所有任务多开一倍预算，钱和基线可比性一起没了
     const maxSteps = maxStepsOverride || config.agent.max_steps || 25;
@@ -2170,7 +2254,7 @@ function modePrompt(mode) {
     // 长会话先压缩再开跑：只在顶层任务做（专家子任务的 history 是临时的，压不着）
     const ctxState = { lastCtxPct: -1 };
     if (depth === 0) {
-      try { await compactHistory(history, { emit, stats, traceNode: tr }); }
+      try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()] }); }
       catch (e) { console.warn("[agent] 上下文压缩失败，本次跳过:", e.message); }
       // 压完再播：让界面上那根条直接落到压缩后的真实位置，而不是先闪一下旧数字
       emitContext(history, emit, ctxState);
@@ -2246,7 +2330,7 @@ function modePrompt(mode) {
       // 发请求前先把老工具结果压进上下文预算，宁可丢细节也不能让整个任务撞 400 全丢
       // 超阈值时先智能压缩（老步骤浓缩成接手摘要），压不动再盲截。没有这一步，
       // 跑到几十步的长任务只能靠 trimHistory 把早期工具输出截成空壳，模型越跑越失忆
-      try { await compactHistory(history, { emit, stats, traceNode: tr }); }
+      try { await compactHistory(history, { emit, stats, traceNode: tr, llm: L, skills: [...loadedSkills.keys()] }); }
       catch (e) { console.warn("[agent] 任务中压缩失败，本步跳过:", e.message); }
       if (depth === 0) emitContext(history, emit, ctxState);
       const trimmed = trimHistory(history, config.agent.max_context_chars || 120000);
@@ -2280,17 +2364,19 @@ function modePrompt(mode) {
       const signal = AbortSignal.any
         ? AbortSignal.any([stallCtl.signal, budgetSignal, ...(stopSignal ? [stopSignal] : [])])
         : stallCtl.signal;
+      // 每一步现拼：技能可能在上一步刚 use_skill 进来
+      const sys = system + skillGate.skillBlock(loadedSkills);
       const gen = tr.generation({
         name: `第 ${step + 1} 步`,
         model: L.model,
-        input: tracing._internals.messagesOf(system, history),
+        input: tracing._internals.messagesOf(sys, history),
         modelParameters: { provider: L.provider || "", tools: tools.length, mode },
         metadata: { depth, step: step + 1, failed_over: failedOver },
       });
       let result;
       try {
         result = await L.chat({
-          system,
+          system: sys,
           history,
           tools,
           signal,
@@ -2446,7 +2532,7 @@ function modePrompt(mode) {
             metadata: { depth, tool: tc.name, title: toolHeadline(tc.name, tc.input) },
           });
           try {
-            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser, lang, sessionId, traceNode: sp });
+            r = await runToolCall(tc, { emit, depth, deadline, stats, stopSignal, user, projectContext, sec, taskLabel, runToken, baseDir, llmOverride: L, askUser, lang, sessionId, traceNode: sp, skillSink: loadedSkills });
           } catch (e) {
             // 工具抛出来的异常在这里就地变成一条工具结果。让它往上冒的话，下面那条
             // history.push({role:"tool"}) 就跑不到，历史里留下一条配不上对的 assistant——

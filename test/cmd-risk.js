@@ -416,6 +416,28 @@ const SEC = { ...security.DEFAULTS, gateway: true, cmd_risk_gate: true, permissi
       "  └ 挡在一条命令前头，等不起默认那 20 秒");
   }
 
+  // ─────────────────────────────────────────────────────────────
+  console.log("\n⑧ 替用户在桌面上打开文件：不判，直接问");
+  // ─────────────────────────────────────────────────────────────
+  {
+    // 用户每次交付完都被弹一个 Finder / 浏览器窗口，记忆里明明记着「别替我打开」。提示词和记忆都是建议，
+    // 这一条改成闸：open / xdg-open / start / explorer 一律先问。它不是「撤不回来」那种风险（判断模型管的），
+    // 是「用户没要求就别替他做」那种——四张名单外、判断模型再准也不该放行，所以写死在名单里
+    const base = { ...security.DEFAULTS };
+    const chk = (c) => security.checkCommand(base, c);
+    for (const c of ["open 封面.png", "open -a Safari https://example.com", "xdg-open 报告.pdf", "start out.html", "explorer ."]) {
+      const r = chk(c);
+      ok(r.action === "ask" && /打开文件或网页/.test(r.rule), `★${c.split(" ")[0]} 先问★ ${c}`, r);
+    }
+    ok(chk("cat readme.md && open 封面.png").action === "ask", "  └ 藏在 && 后面也认");
+    ok(chk("echo open the door").action === "allow", "（对照）open 当参数出现不算");
+    ok(chk("node open.js").action === "allow", "（对照）文件名里带 open 不算");
+    ok(chk("ls -la").action === "allow", "（对照）平常命令照旧放行");
+    ok(security.DESKTOP_OPEN_CMDS instanceof Set && security.DESKTOP_OPEN_CMDS.has("open"), "  └ 名单导出来，别处能查");
+    const ag = fs.readFileSync(path.join(ROOT, "agent.js"), "utf8");
+    ok(/不要用 open \/ xdg-open \/ start 替用户打开文件或网页/.test(ag), "★提示词里也写明了★ 闸拦的是动作，提示词省的是那一问");
+  }
+
   finished = true;
   console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
   process.exit(fail === 0 ? 0 : 1);
