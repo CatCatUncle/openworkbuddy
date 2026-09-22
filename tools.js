@@ -17,7 +17,8 @@ const cdp = require("./cdp"); // 可选的本机 Chrome CDP：不捆绑浏览器
 const quota = require("./quota"); // 按次计费的第三方 API：调之前问一句额度，调完记一笔
 const mediaHealth = require("./media-health"); // 连不通的渠道熔断：撞过的硬错下次连请求都不发
 const checkpoints = require("./checkpoints"); // 改文件前留检查点：整步能退回去，审批卡上先看 diff
-const cmdRisk = require("./cmd-risk"); // 名单外那条命令跑之前先判一句（纯判据，不发请求）
+const cmdRisk = require("./cmd-risk");
+const memGate = require("./memory-gate"); // 名单外那条命令跑之前先判一句（纯判据，不发请求）
 const jev = require("./jev"); // 判断模型：上面那一问就是它答的
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
@@ -4049,6 +4050,37 @@ async function executeTool(name, input, opts = {}) {
       return verdict;
     }
   };
+  /**
+   * 往长期记忆里写之前，先判一句：这句话下个月还用得上吗。
+   * 只能把「记」变成「不记」；说不准、答不上、问不成，一律照旧记下。
+   * @returns 拒收的回执（非空字符串）；空字符串 = 照旧记
+   */
+  const judgeMemory = async (text) => {
+    const mem = opts.memory || {};
+    const cfg = opts.decideConfig;
+    const ready = !!(cfg && jev.status(cfg).ready);
+    if (!memGate.needsJudge({ text, source: "agent", on: mem.gate, ready })) return "";
+    try {
+      const out = await jev.askMetered(
+        cfg,
+        {
+          state: memGate.keepState({ text, task: mem.task }),
+          questions: memGate.keepQuestions(),
+          timeoutMs: 8000, // 人在等这一步的回执，等不起默认那 20 秒
+        },
+        { meta: "记之前先判一句" }
+      );
+      if (!out.ok) {
+        console.warn(`[长期记忆] 写之前那一问没问成（照旧记下）：${out.error}`);
+        return "";
+      }
+      const d = memGate.readKeep(out);
+      return d ? memGate.dropNote(d) : "";
+    } catch (e) {
+      console.warn(`[长期记忆] 写之前那一问没问成（照旧记下）：${e.message}`);
+      return "";
+    }
+  };
   try {
     ensureDirs();
     // 参数压根不是合法 JSON（llm.js 解析失败时会塞一个 _raw 进来）。
@@ -4255,6 +4287,12 @@ async function executeTool(name, input, opts = {}) {
         return { content: JSON.stringify(r, null, 2), isError: false };
       }
       case "remember": {
+        // 先跑现成的那几道尺子（空/太长/像凭据/像能力断言）：本来就拒的，不必再花一道题的钱
+        const pre = memory.preflight({ text: input.text, source: "agent" });
+        if (pre.ok) {
+          const drop = await judgeMemory(pre.text);
+          if (drop) return { content: drop, isError: true };
+        }
         const r = memory.add({ text: input.text, user: opts.memory && opts.memory.user, shared: !!input.shared });
         return { content: r.note, isError: !r.ok };
       }

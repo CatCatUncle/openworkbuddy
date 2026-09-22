@@ -1444,7 +1444,8 @@ function modePrompt(mode) {
       taskLabel, // 审批卡片上标明发起任务，多任务并行时才分得清是谁在求批
       actor: user, // 审批归谁：多人共用一台服务器时，别人不该看见、更不该替他点「允许」
       baseDir, // 相对路径读写、脚本 cwd、产物落点全在本对话的成果子目录
-      memory: { user },
+      // 记之前先判一句：开关 + 这一趟在干什么（判一句话是不是只在这一趟里成立，得知道这一趟是什么活）
+      memory: { user, gate: (config.agent || {}).memory_gate === true, task: taskLabel },
       sessionId, // 文件检查点记在哪个会话名下：回退只认自己这个会话动过的文件
       callId, // 这一步的工具调用 id，检查点账本上和过程卡对得上号
     };
