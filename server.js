@@ -335,8 +335,16 @@ function assignSessionDir(sess, message) {
   // 【任务类型：X】是给模型看的前缀，起标题时早就洗掉了，文件夹名这儿漏了——
   // 于是真实数据里躺着一个「任务_0826_任务类型数据分析及可视化_3」，
   // 用户看到的是分类词，真正做的那件事（篮球减肥训练计划）一个字都没进名字。
-  const src = String(sess.title || message).replace(/^\s*【任务类型：[^】]*】\s*/, "");
-  const slug = src.replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12) || "对话";
+  // 素材锚点（【图片 1：IMG_8037.JPG】）是发送时自动补进正文的，不是用户写的字。
+  // 不洗掉就会得到「任务_0921_图片1IMG8037JP」——序号和被砍了一半的扩展名占满 12 个格，
+  // 用户真正问的那句「这是什么」一个字都没进去。
+  const ANCHOR = /【(?:图片|视频|音频|文本摘录|文件)\s*\d+：([^】]+)】/gu;
+  const raw = String(sess.title || message);
+  const src = raw.replace(/^\s*【任务类型：[^】]*】\s*/, "").replace(ANCHOR, " ");
+  const clean = (t) => String(t).replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 12);
+  // 拖张图进来、一个字没写：拿文件名（去掉扩展名）兜底，比清一色的「对话」认得出来
+  const firstName = ((raw.match(/【(?:图片|视频|音频|文本摘录|文件)\s*\d+：([^】]+)】/u) || [])[1] || "").replace(/\.[^.]+$/, "");
+  const slug = clean(src) || clean(firstName) || "对话";
   let dir = `任务_${stamp}_${slug}`;
   for (let i = 2; fs.existsSync(path.join(getWorkspaceDir(), dir)) || assignedDirs.has(dir); i++) dir = `任务_${stamp}_${slug}_${i}`;
   assignedDirs.add(dir);
@@ -2435,6 +2443,13 @@ app.post("/api/settings", (req, res) => {
       const old = new Map((config.models || []).map((m) => [m.name, m]));
       for (const m of b.models) {
         if (!m.name || !m.model) throw new Error("每个模型需要 name 和 model 字段");
+        // 判断模型（Jev）挂到对话模型列表里：下拉按渠道种类挡住了，可模型名是个自由输入框，
+        // 手打一个照收——存得下、选得中，可它没有 /chat/completions，每一趟都是 400。
+        // 不在存的时候拦，人要等到真发一句话才知道，而那时候收到的是上游的 400，
+        // 根本看不出是「挂错了地方」。拦住也得指路，否则就成了第二种摸不着头脑。
+        if (systemOne.isDecisionModel(m.model)) {
+          throw new Error(`「${m.model}」是判断模型（Jev），它不产文字、没有 /chat/completions，挂在对话模型列表里每一趟都是 400。它走自己那条路：命令行 openworkbuddy jev、接口 /api/decide，或在渠道里加一条「TypeSafe Jev」再点那颗「测一下」`);
+        }
         m.provider = m.provider === "anthropic" ? "anthropic" : "openai";
         delete m.has_key;  // 读接口给界面加的，不进配置文件
         delete m.key_hint; // 同上：Key 的末四位只是给人看的，落盘就成了第二份 Key 副本

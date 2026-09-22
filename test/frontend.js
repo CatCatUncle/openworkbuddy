@@ -78,6 +78,71 @@ const A1 = APP02.indexOf("// ================= 两条工作线"); // 附件段�
 if (A0 < 0 || A1 <= A0) throw new Error("app-02.js 里的附件段找不到了（段标题被改过？），前端测试没法定位真源码");
 const ATTACH_SRC = APP02.slice(A0, A1);
 
+// 「先传附件再发第一条消息」这条路上，会话 id 是在**上传之前**就取好的（ensureSessionId），
+// 发送那一步得认这个 id、别另起一个——另起一个的话，刚传上去的文件就留在别人的文件夹里。
+// 两头都切真源码：一头在附件段（取 id），一头在发送段（建行 + 跑这一轮）。
+const SID0 = APP02.indexOf("/**\n * 这条对话的 id，没有就现取一个。");
+const SID1 = APP02.indexOf("/** 把 chip 对应的内容真的送上去");
+if (SID0 < 0 || SID1 <= SID0) throw new Error("app-02.js 里的 ensureSessionId 找不到了（被改名/挪走？），前端测试没法定位真源码");
+const ENSURE_SID_SRC = APP02.slice(SID0, SID1);
+const S0 = APP02.indexOf("/** 左边历史列表里有没有这条对话那一行");
+const S1 = APP02.indexOf("// 真正执行一轮任务：绑定 sid 而不是全局 sessionId");
+if (S0 < 0 || S1 <= S0) throw new Error("app-02.js 里的 doSend 段找不到了（段标题被改过？），前端测试没法定位真源码");
+const SEND_SRC = APP02.slice(S0, S1);
+
+const SEND_HTML = "<!doctype html><meta charset='utf-8'><body><div id='session-title'></div></body>";
+const SEND_STUBS = [
+  "let sessions = []; let sessionId = null;",
+  "let activeProject = 'p1', activeLane = 'office';",
+  "let pendingModel = undefined;",
+  "window.saved = 0; function saveSessions() { window.saved++; }",
+  "function curBusy() { return false; }",
+  "function closeAssistView() {}",
+  "function stripSceneTag(t) { return String(t).replace(/^【[^】]*】/, ''); }",
+  "window.modelSet = null; async function setSessionModel(m) { window.modelSet = m; }",
+  "window.turns = []; async function runTurn(sid, text, mode, regen) { window.turns.push({ sid: sid, text: text, mode: mode, regen: regen }); }",
+].join("\n");
+
+const SEND_CHECKS = `
+(async () => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+
+  // ---- 1. 附件是先传后发的：上传那一刻就得有 id，服务端才知道该把文件放进谁的成果文件夹 ----
+  const sid = ensureSessionId();
+  ok("发消息之前就能现取一个会话 id", typeof sid === "string" && /^s_/.test(sid), JSON.stringify(sid));
+  ok("现取之后全局那个也跟着定了", sessionId === sid, String(sessionId));
+  ok("再取一次还是同一个（每传一份换一个 id，一条对话的素材就散到好几个文件夹里去了）", ensureSessionId() === sid, String(sessionId));
+  ok("光取 id 不等于历史列表里已经有这条对话了", sessions.length === 0, JSON.stringify(sessions));
+
+  // ---- 2. 然后才发第一条：列表要建行，而且必须沿用上传时那个 id ----
+  await doSend("【任务类型：数据分析】把这张图里的表整理成 csv", "auto");
+  ok("第一条消息给历史列表建了一行", sessions.length === 1, JSON.stringify(sessions));
+  ok("★沿用上传时那个 id★（另起一个的话，刚传上去的图就留在别人的文件夹里了）", sessions[0].id === sid, sessions[0].id + " vs " + sid);
+  ok("这一轮也是拿这个 id 跑的", turns.length === 1 && turns[0].sid === sid, JSON.stringify(turns));
+  ok("标题洗掉了场景标签（否则历史列表整排都是「【任务类型：…」）", sessions[0].title.indexOf("【") < 0, sessions[0].title);
+  ok("标题挂到界面上了", document.getElementById("session-title").textContent === sessions[0].title, document.getElementById("session-title").textContent);
+
+  // ---- 3. 同一条对话再发一句：不许又多出一行 ----
+  await doSend("再来一张", "auto");
+  ok("同一条对话发第二句不会又多出一行", sessions.length === 1, JSON.stringify(sessions));
+  ok("第二轮走的还是同一个 id", turns.length === 2 && turns[1].sid === sid, JSON.stringify(turns));
+
+  // ---- 4. ★反向对照★ 一个附件都没传、直接发第一条：照样得建行 ----
+  sessionId = null; sessions = []; turns.length = 0;
+  await doSend("直接开一条新的", "auto");
+  ok("★反向对照★ 没传过附件也照样建行", sessions.length === 1 && /^s_/.test(sessions[0].id), JSON.stringify(sessions));
+  ok("★反向对照★ 这一轮跑的就是新建那条的 id", turns.length === 1 && turns[0].sid === sessions[0].id, JSON.stringify(turns));
+
+  // ---- 5. 打开一条旧对话再发言：它早就在列表里了，不许当新的再建一行 ----
+  sessions = [{ id: "s_old", title: "上周那条", at: 1 }]; sessionId = "s_old"; turns.length = 0;
+  await doSend("接着上次说", "auto");
+  ok("打开旧对话发言不会在列表里多出一行", sessions.length === 1 && sessions[0].id === "s_old", JSON.stringify(sessions));
+  ok("旧对话的标题没被这句话顶掉", sessions[0].title === "上周那条", sessions[0].title);
+  return names;
+})()
+`;
+
 // 文件预览同理：路由（这个后缀走 iframe 还是 <audio> 还是当文本）必须验真源码那一份。
 // 段落靠标题定位，标题被改了当场报错，不许静默跳过。
 const P0 = APP02X.indexOf("// ---------------- 文件预览 ----------------");
@@ -1212,6 +1277,9 @@ const ATTACH_HTML =
 const ATTACH_STUBS = [
   IC_STUB,
   "window.uploads = []; window.toasts = []; window.previewed = []; window.sessionId = 's_test_1';",
+  // 传完要把「服务端说它放哪儿了」记进来，气泡上面那排缩略图按这个取图。
+  // 用真的 Map，下面才断言得动它到底记没记
+  "window.attachPaths = new Map();",
   // 慢和失败都得能造出来：这一段里「没传完就点发送」「传挂了怎么救回来」两条，
   // 靠真实网络的快慢去撞是撞不出来的
   "window.uploadDelay = 0; window.uploadFail = false;",
@@ -1308,6 +1376,28 @@ const ATTACH_CHECKS = `
     ok("方片上还看得见「图片 1」（「第一张放左边」这句话得指得住）",
        /图片\\s*1/.test(document.querySelector("#attach-chips .attach-chip.is-tile em").textContent),
        document.querySelector("#attach-chips .attach-chip.is-tile em").textContent);
+  }
+
+  // ---- 1b. 全新一条对话（还没有会话 id）：现取一个再传，别把文件扔到任务目录的上一级 ----
+  {
+    const keep = sessionId;
+    sessionId = null; // 点完「新建任务」、第一条消息还没发出去，就是这个状态
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes(B64PNG)], "新对话第一张.png", { type: "image/png" }));
+    const n0 = uploads.length;
+    fire(document.body, "paste", "clipboardData", dt);
+    const up = await nextUpload(n0);
+    // 服务端拿不到 id，就只能把文件落在工作空间根目录，连「待搬进成果文件夹」那笔账都记不上。
+    // 于是 agent 在自己的工作目录里翻不到这张图，只好 cp 一份进来——那份副本是这一轮新写的文件，
+    // 用户传进去的**输入**图就这么出现在「本回合产出」里
+    ok("全新对话也带着会话 id 上传", typeof up.session === "string" && /^s_/.test(up.session), JSON.stringify(up.session));
+    ok("现取的这个 id 就留着用，等下发消息不会再换一个", sessionId === up.session, sessionId + " vs " + up.session);
+    sessionId = keep;
+    // 这一段自己多挂了一枚 chip，收走：后面几段是按 chip 数数的
+    const mine = pendingAttach[pendingAttach.length - 1];
+    const before = chips().length;
+    removeAttach(mine);
+    ok("夹具自检：这一段的 chip 收干净了（不然后面数 chip 那几条会连坐）", chips().length === before - 1, "还剩 " + chips().length + " 枚");
   }
 
   // ---- 2. 同一秒连贴两张：撞名要编号，不能悄悄覆盖掉第一张 ----
@@ -1548,6 +1638,11 @@ const ATTACH_CHECKS = `
     ok("点名字就把这份素材打开看", window.previewed.length === 1, JSON.stringify(window.previewed));
     ok("打开的是它在工作目录里的真实路径，不是光一个文件名",
        window.previewed[0] === "out/季度汇报.pdf", JSON.stringify(window.previewed));
+    // 消息发出去之后，气泡上面那排缩略图要按这条路径取图。这儿不记，
+    // 那边只能拿成果文件夹去拼一个——拼错就是一整排灰方块
+    ok("服务端说它放哪儿了，当场记下来给气泡用",
+       window.attachPaths.get("季度汇报.pdf") === "out/季度汇报.pdf",
+       JSON.stringify([...window.attachPaths]));
   }
 
   // ---- 16. 缩略图是缩过的，不是把整份文件塞进 img.src ----
@@ -2045,6 +2140,104 @@ const CTX_CHECKS = `
   return names;
 })()
 `;
+
+// ================= 压缩这一步得让人看见它在动 =================
+// 压缩是一次真的 LLM 调用，长会话十几秒是常事，而它正卡在「他按下发送」和「第一个字」中间。
+// 一声不吭的话屏幕上只有一个转不完的圈，人只能猜是模型卡了还是网断了——OWB 自己的 issue 里
+// 就有人这么问过。这一屏验的是：**开跑就有一行字**、这行字**跟着秒数走**（不是画一根假进度条）、
+// 压完/压崩**换掉同一行**而不是再摞一行（摞一行的话，历史里会永远留着一句停在「正在压…」）。
+// 真源码切 app-01.js 里 procNote…runningSessions 那段，一个字都不重抄。
+const CMP0 = APP02X.indexOf("function procNote(");
+const CMP1 = APP02X.indexOf("\nconst runningSessions");
+if (CMP0 < 0 || CMP1 <= CMP0) throw new Error("app-01.js 里 procNote…runningSessions 那段找不到了，前端测试没法定位真源码");
+const CMP_SRC = APP02X.slice(CMP0, CMP1);
+if (!/const compactRunText = /.test(CMP_SRC) || !/function compactNote\(/.test(CMP_SRC))
+  throw new Error("切出来的那段里没有 compactRunText / compactNote——「正在压…」那行没被测到");
+const CMP_HTML = "<!doctype html><meta charset='utf-8'><style>" + UI_CSS + "\n" + INDEX_CSS
+  + "</style><body style='margin:0;width:760px'><div id='proc'></div></body>";
+const CMP_CHECKS = `
+(() => {
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+  const proc = document.getElementById("proc");
+  const rows = () => proc.querySelectorAll(".compact-note");
+  const txt = () => proc.querySelector(".compact-note").lastChild.textContent;
+
+  // ① 开跑：得真有一行字落在过程区里，而且说清在压什么
+  const note = compactNote(proc);
+  note.classList.add("running");
+  note._n = 20; note._t0 = Date.now();
+  note.lastChild.textContent = compactRunText(20, 0);
+  ok("压缩开跑就有一行字，不是一个不知道在干什么的转圈", rows().length === 1 && txt().length > 0, txt());
+  ok("这行字说清在压什么（多少条）", /20 条/.test(txt()), txt());
+  ok("这行字说清压完还会接着跑，不是任务挂了", /压完这一轮才开跑/.test(txt()), txt());
+  ok("这行字说清原文不会丢（压缩只搬家不销毁）", /原文归档不删/.test(txt()), txt());
+
+  // ② 走秒：没有真进度可报，能说的实话只有「已经等了多久」。这里量的是**文本真的变了**，
+  //    不是「那个函数被调用过」——只验调用的话，把里头的秒数写死成 0 测试照样全绿
+  const t0 = txt();
+  note.lastChild.textContent = compactRunText(note._n, 8400);
+  ok("等着的时候秒数真往上走（不然看着就是卡死）", txt() !== t0 && /已等 8 秒/.test(txt()), t0 + " → " + txt());
+  ok("秒数是整秒，不甩小数", !/\\d\\.\\d/.test(txt()), txt());
+
+  // ③ 压完：换掉同一行，不许再摞一行
+  const same = compactNote(proc);
+  ok("压完拿到的还是那一行（同一个节点，不是新建的）", same === note);
+  same.classList.remove("running");
+  same.lastChild.textContent = "会话较长，已把早前 20 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）";
+  ok("★压完只有一行★ 摞两行的话，历史里永远留着一句停在「正在压…」，看着像卡死", rows().length === 1, rows().length + " 行");
+  ok("压完那行不再是「正在压」", !/正在把早前/.test(txt()) && !same.classList.contains("running"), txt());
+  ok("压完报的是结果（压掉多少、原文在哪）", /20 条/.test(txt()) && /compact-archive/.test(txt()), txt());
+
+  // ④ 反向对照：没开跑的时候过程区里不该凭空冒出这一行。
+  //    这条守的是「短对话也弹一句正在压缩」——比不说更糟
+  const proc2 = document.createElement("div");
+  ok("反向对照：没人报开跑，过程区里就没有这一行", proc2.querySelectorAll(".compact-note").length === 0);
+  return names;
+})()
+`;
+
+// 上面那一屏跑的是两个小函数；「谁来调它们」在事件分支和收尾扫尾里，跑不起来，只能钉源码。
+// 少任何一条，屏幕上的表现都是同一个：那行字停在「正在压…已等 8 秒」不动了。
+function testCompactWiring() {
+  const src = APP02X;
+  const names = [];
+  const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
+
+  ok("秒数由过程区那根 1 秒总计时器带着走（不另开一个可能漏掉的 setInterval）",
+    /\.compact-note\.running"\);\s*\n\s*if \(cn\) cn\.lastChild\.textContent = compactRunText\(/.test(src),
+    "app-01.js 的 procTimer 里没有给「正在压」那行续秒的那两行");
+  const st = /ev\.type === "compact_start"\)\s*\{([\s\S]{0,600}?)\}\s*else if/.exec(src);
+  ok("后端一报开跑，前端就把那行摆出来并开始计时", !!st && /classList\.add\("running"\)/.test(st[1])
+    && /_t0 = Date\.now\(\)/.test(st[1]) && /_n = /.test(st[1]), "compact_start 分支缺了 running/_t0/_n");
+  ok("摆出来还得把过程区展开，不然那行藏在折叠里等于没说", !!st && /classList\.add\("open"\)/.test(st[1]), st && st[1]);
+  const fin = /ev\.type === "compact"\)\s*\{([\s\S]{0,900}?)\}\s*else if/.exec(src);
+  ok("压完/压崩换掉同一行（compactNote 复用，不新建）", !!fin && /compactNote\(/.test(fin[1]), fin && fin[1]);
+  ok("★压崩了也得如实说，不许假装压成了★", !!fin && /ev\.failed/.test(fin[1]), fin && fin[1]);
+  ok("压崩的话得给条出路（去哪调预算）", !!fin && /智能体设置/.test(fin[1]), fin && fin[1]);
+  ok("★这一轮收尾时扫一遍：还挂着「正在压」的行一律收掉★ 后端漏了收尾也不会转到天荒地老",
+    /querySelectorAll\("\.compact-note\.running"\)\.forEach/.test(src)
+    && /压缩没跑完这一轮就断了/.test(src), "app-01.js 的回合收尾里没有扫尾那一段");
+  ok("收尾那句话得说清「没压成不等于内容丢了」", /压缩没跑完这一轮就断了（早前的内容一条没动，原文也没删）/.test(src), "扫尾那句话改过？");
+
+  // 英文界面：这几句是一秒一变的活字，i18n 靠 MutationObserver 重扫，整句正则对不上就一个字不翻。
+  // 所以按**真源码拼出来的串**去比，不是照着 i18n.js 里的正则抄一遍——抄一遍等于自己跟自己对答案
+  const i18n = fs.readFileSync(path.join(__dirname, "..", "public", "js", "i18n.js"), "utf8");
+  const pats = [...i18n.matchAll(/\[\/\^([^\n]+?)\$\/,/g)].map((m) => {
+    try { return new RegExp("^" + m[1] + "$"); } catch { return null; }
+  }).filter(Boolean);
+  const built = [
+    "正在把早前 20 条消息压成一份摘要…已等 8 秒（压完这一轮才开跑，原文归档不删）",
+    "会话较长，已把早前 20 条消息压缩成一条摘要（要点保留，原文在 data/compact-archive 有归档）",
+    "会话太长，早前 20 条压成了摘要（要点保留）",
+    "这一轮没压成：HTTP 429 太快了。早前的内容一条没动，接着跑（上下文更紧了，可在 设置→智能体设置 调大预算）",
+    "这一轮没压成：HTTP 429 太快了（早前的内容一条没动）",
+    "压缩没跑完这一轮就断了（早前的内容一条没动，原文也没删）",
+  ];
+  for (const b of built) ok("英文界面翻得动：" + b.slice(0, 14) + "…",
+    pats.some((r) => r.test(b)), "i18n.js 里没有能整句吃下它的规则，英文界面会露一句中文：" + b);
+  return names;
+}
 
 // ================= 助理设置页：分区 + 双栏卡片 + 连接/取消连接 =================
 // 这里验的是行为不是措辞：连上的卡真收起（display:none）、
@@ -3968,6 +4161,43 @@ const GATE_CHECKS = `
     provOpts.filter((t) => /第 [12] 个/.test(t)).length === 2, provOpts.join(" | "));
   ok("编号跟渠道卡是同一套：卡上第 1 个在下拉里也得是第 1 个",
     provOpts[0].includes("第 1 个") && provOpts[1].includes("第 2 个"), provOpts.join(" | "));
+  mods = [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or" }, { name: "备用", model: "claude-sonnet-5", api_key: "y", channel: "or" }];
+  medias = [];
+
+  // ---- 路由图里「看图」那一格：到底是谁在看图，得写实话 ----
+  // 这一路跟别的反过来：主模型自己会看图就直接用主模型，这儿挂的是**后备**，只在主模型
+  // 看不了图时顶上（tools.js 的 pickEye）。格子不照实说的话，在这儿挂了个模型的人会以为
+  // 图都归它看，而它其实一次请求都没接到过——用户原话是「文本模型我用多模态模型就没有
+  // 必要用什么看图模型」。
+  const eyeTile = () => mBody.querySelector('#settings-pane .model-route-grid .rt[data-goto="vision"]');
+  const eyeText = () => eyeTile().textContent.replace(/\s+/g, " ").trim();
+  const paneText = () => mBody.querySelector("#settings-pane").textContent;
+  mods = [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or", caps: ["tools", "vision"] }];
+  medias = [{ cap: "vision", name: "备用眼睛", provider: "or", model: "qwen-vl-max", default: true }];
+  await renderSettings("models");
+  ok("★主模型自己会看图：格子里写的就是主模型★，不是这儿挂的那个",
+    eyeText().includes("主力") && eyeText().includes("主模型自己会看图") && !eyeText().includes("qwen-vl-max"), eyeText());
+  ok("挂着的那个也没被吞掉：写明它是待命的备选", eyeText().includes("备选待命"), eyeText());
+  ok("这时候不该再冒「会拿主模型去看而它看不了图」那条警告", !paneText().includes("而它标了不会看图"), eyeText());
+
+  mods = [{ name: "主力", model: "deepseek-chat", api_key: "x", channel: "or", caps: ["tools"] }];
+  await renderSettings("models");
+  ok("★反向对照★ 主模型标了看不了图：格子回到写这儿挂的那个",
+    eyeText().includes("qwen-vl-max") && !eyeText().includes("主模型自己会看图"), eyeText());
+
+  medias = [];
+  await renderSettings("models");
+  ok("★反向对照★ 主模型看不了图、这一路又空着：格子写「跟随对话模型」并且把警告冒出来",
+    eyeText().includes("跟随对话模型") && paneText().includes("而它标了不会看图"), eyeText());
+
+  // 没勾过 caps 的老配置在这一屏一律按「不会看图」算：猜错了格子就会当着用户的面撒谎，
+  // 真发请求那一步 tools.js 才按型号名兜底（同一个理由见 media-models.js 的 capOfModel）
+  mods = [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or" }];
+  medias = [{ cap: "vision", name: "备用眼睛", provider: "or", model: "qwen-vl-max", default: true }];
+  await renderSettings("models");
+  ok("★反向对照★ 老配置没勾过「能看图」：这一屏不替它猜，照旧写挂着的那个",
+    eyeText().includes("qwen-vl-max") && !eyeText().includes("主模型自己会看图"), eyeText());
+
   mods = [{ name: "主力", model: "gpt-5.2", api_key: "x", channel: "or" }, { name: "备用", model: "claude-sonnet-5", api_key: "y", channel: "or" }];
   medias = [];
 
@@ -9993,9 +10223,23 @@ const BB0 = APP02X.indexOf("  // 气泡里不许出现给模型看的协议原�
 const BB1 = APP02X.indexOf('  turn.querySelector(".u-copy").onclick', BB0);
 if (BB0 < 0 || BB1 <= BB0) throw new Error("app-01.js 里气泡折叠那段找不到了（挪窝/改写了？），前端测试没法定位真源码");
 const BUBBLE_SRC = APP02X.slice(BB0, BB1);
-for (const k of ["bubble-quote", "bubble-attach", "BUBBLE_ATT_ICON"]) {
+for (const k of ["bubble-quote", "bubble-attach", "bubble-pics", "BUBBLE_ATT_ICON"]) {
   if (!BUBBLE_SRC.includes(k)) throw new Error("切出来的那段里没有 " + k + "：气泡折叠这一半没被测到");
 }
+// 缩略图挂在 .u-stack 里，而下面那个壳子是测试自己搭的。真骨架哪天把这层去掉，
+// 这儿要当场红——不然测试会在一个线上根本不存在的结构里一路绿下去
+if (!APP02X.includes('<div class="u-stack">')) throw new Error("app-01.js 的回合骨架里没有 .u-stack 了：气泡上面那排缩略图没地方挂，测试搭的壳子已经不是线上那个");
+// 「这份素材躺在工作区哪儿」那三档也按真源码跑：拼错一档，用户看到的就是一整排灰方块
+const RS0 = APP02X.indexOf("function attachRel(name, sid) {");
+const RS1 = APP02X.indexOf("\n", APP02X.indexOf("function attachThumb(rel) {"));
+if (RS0 < 0 || RS1 <= RS0) throw new Error("app-01.js 里的 attachRel / attachThumb 找不到了（改名/挪窝？），素材路径这一半没法核");
+const ATTACH_RESOLVE_SRC = APP02X.slice(RS0, RS1);
+// 认哪些扩展名画缩略图，也用真的那一份
+const PIC_RE_SRC = (() => {
+  const m = APP02X.match(/const BUBBLE_PIC_RE = (\/[^\n]+\/i);/);
+  if (!m) throw new Error("app-01.js 里的 BUBBLE_PIC_RE 找不到了：哪些素材该画成图没法核");
+  return m[1];
+})();
 // 图标映射用真的那一份：改名/删条目要在这儿当场变红，而不是等用户看见一排回形针
 const ICON_MAP = (() => {
   const m = APP02X.match(/const BUBBLE_ATT_ICON = (\{[^}]*\});/);
@@ -10003,28 +10247,41 @@ const ICON_MAP = (() => {
   return m[1];
 })();
 const BUBBLE_BOOT = "window.__BUBBLE_SRC = " + JSON.stringify(BUBBLE_SRC) + ";\n"
-  + "window.__BUBBLE_ICONS = " + ICON_MAP + ";\n";
+  + "window.__BUBBLE_ICONS = " + ICON_MAP + ";\n"
+  + "window.__RESOLVE_SRC = " + JSON.stringify(ATTACH_RESOLVE_SRC) + ";\n"
+  + "window.__PIC_RE = " + PIC_RE_SRC + ";\n";
 
 const BUBBLE_CHECKS = `
-(() => {
+(async () => {
   const names = [];
   const ok = (name, cond, msg) => { if (!cond) throw new Error(name + "：" + (msg || "断言失败")); names.push(name); };
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   // hlTokens / stripSceneTag 各自有自己的一屏测试，这儿只要它们不改变这段代码的分支
   const hlTokens = (t) => esc(t);
   const stripSceneTag = (t) => t;
-  const render = new Function("turn", "userText", "stripSceneTag", "ic", "hlTokens", "esc", "BUBBLE_ATT_ICON", window.__BUBBLE_SRC);
+  const render = new Function("turn", "userText", "stripSceneTag", "ic", "hlTokens", "esc", "BUBBLE_ATT_ICON",
+    "turnSid", "attachRel", "attachThumb", "previewFile", "BUBBLE_PIC_RE", window.__BUBBLE_SRC);
+  // 「这份素材躺在哪儿」那三档用真源码，不用测试自己编一份：编一份的话，线上拼错了这儿照样绿
+  const attachPaths = new Map(), sessionDirs = new Map();
+  const fpath = (n) => String(n == null ? "" : n).split("/").map(encodeURIComponent).join("/");
+  const RESOLVE = new Function("attachPaths", "sessionDirs", "fpath",
+    window.__RESOLVE_SRC + "; return { attachRel: attachRel, attachThumb: attachThumb };")(attachPaths, sessionDirs, fpath);
+  let pvOpened = [];
+  const previewFile = (rel, root) => { pvOpened.push(rel); };
   const stage = document.createElement("div");
   stage.style.cssText = "width:520px";
   document.body.appendChild(stage);
-  const bubbleOf = (text) => {
+  const turnOf = (text, sid) => {
     const turn = document.createElement("div");
     turn.className = "turn";
-    turn.innerHTML = "<div class='u-msg'><div class='bubble'></div></div>";
+    // 壳子照抄 app-01.js 里那句真骨架（上面有静态闸门盯着它别漂）
+    turn.innerHTML = "<div class='u-msg'><div class='u-stack'><div class='bubble'></div></div></div>";
     stage.appendChild(turn);
-    render(turn, text, stripSceneTag, ic, hlTokens, esc, window.__BUBBLE_ICONS);
-    return turn.querySelector(".bubble");
+    render(turn, text, stripSceneTag, ic, hlTokens, esc, window.__BUBBLE_ICONS,
+      sid === undefined ? "sid-0" : sid, RESOLVE.attachRel, RESOLVE.attachThumb, previewFile, window.__PIC_RE);
+    return turn;
   };
+  const bubbleOf = (text, sid) => turnOf(text, sid).querySelector(".bubble");
 
   // ---------- 开头那一坨 > 折成气泡顶上的引用卡 ----------
   {
@@ -10067,26 +10324,94 @@ const BUBBLE_CHECKS = `
        !b.querySelector(".bubble-quote") && b.textContent.includes("> 引用块"), JSON.stringify(b.textContent));
   }
 
-  // ---------- 素材锚点折成气泡底下那排 ----------
+  // ---------- 素材锚点：图画成缩略图摞在气泡上面，其余折成气泡底下那排 ----------
   {
-    const b = bubbleOf("【图片 1：主图.png】\\n【文件 2：报价单.pdf】\\n第一张放左边，把报价单里的数填进去\\n（已上传文件：主图.png、报价单.pdf）");
-    const pills = [...b.querySelectorAll(".bubble-attach span")];
-    ok("锚点折成了气泡底下那排素材", pills.length === 2, pills.map((p) => p.textContent).join(" | "));
-    ok("两份素材的名字都在（名字才是人认得出它的那一下）",
-       pills.map((p) => p.textContent).join("|") === "主图.png|报价单.pdf", pills.map((p) => p.textContent).join("|"));
-    ok("同一份不会被「（已上传文件：…）」再数一遍", b.querySelectorAll(".bubble-attach span").length === 2);
+    attachPaths.clear(); sessionDirs.clear();
+    attachPaths.set("主图.png", "报价单/主图.png");
+    const t = turnOf("【图片 1：主图.png】\\n【文件 2：报价单.pdf】\\n第一张放左边，把报价单里的数填进去\\n（已上传文件：主图.png、报价单.pdf）");
+    const b = t.querySelector(".bubble");
+    const pics = [...t.querySelectorAll(".bubble-pics .bpic")];
+    const pills = [...b.querySelectorAll(".bubble-attach .batt")];
+    ok("★他发的图就画成图★（以前这儿只有一行 IMG_xxxx.JPG，他自己都认不出刚发的是哪张）",
+       !!pics[0] && pics[0].dataset.rel.endsWith("主图.png") && !!pics[0].querySelector("img"), t.innerHTML.slice(0, 240));
+    ok("缩略图摞在气泡上面（跟他自己那条消息一伙，不是混进产出里）",
+       t.querySelector(".u-stack").firstElementChild.className === "bubble-pics", t.querySelector(".u-stack").innerHTML.slice(0, 120));
+    // 这条只说「pdf 还在」。「图不许也混进这排」是下一条的事，「视频音频不许画缩略图」是下一组的事——
+    // 一条断言夹三件事，将来红的那句话就指不准是哪件坏了（前一轮变异里它抢在正主前面红了两回）
+    ok("不是图的素材还在气泡底下那排", pills.some((p) => p.textContent === "报价单.pdf"), pills.map((p) => p.textContent).join("|"));
+    ok("同一份素材不会画两处（上面一张图、下面又一行名字）", !b.textContent.includes("主图.png"), JSON.stringify(b.textContent));
+    ok("图的名字没丢：鼠标停上去、读屏、图裂了都还认得出是哪张",
+       pics[0].title.includes("主图.png") && pics[0].querySelector("img").alt === "主图.png"
+       && pics[0].querySelector(".bpic-nm").textContent.includes("主图.png"), pics[0].outerHTML.slice(0, 200));
     ok("协议原文一个字都没留在气泡里",
        !/【图片|【文件|已上传文件/.test(b.textContent), JSON.stringify(b.textContent));
     ok("人写的那句话完整地在", b.textContent.includes("第一张放左边，把报价单里的数填进去"), JSON.stringify(b.textContent));
-    ok("图片配图标、文件配回形针（一排全是回形针就等于没分类）",
-       /#i-image/.test(pills[0].innerHTML) && /#i-paperclip/.test(pills[1].innerHTML), pills[0].innerHTML + " / " + pills[1].innerHTML);
+    ok("文件配回形针（一排全是回形针就等于没分类）", /#i-paperclip/.test(pills[0].innerHTML), pills[0].innerHTML);
   }
 
-  // 视频 / 音频 / 文本摘录也得各是各的图标
+  // 视频 / 音频 / 文本摘录：不画缩略图（preload=metadata 会去拉每条片子的文件头，
+  // 一屏历史就是十几个连接），但各是各的图标
   {
-    const b = bubbleOf("【视频 1：片头.mp4】\\n【音频 2：配音.mp3】\\n【文本摘录 3：粘贴文本.txt】\\n剪一下");
-    const html = [...b.querySelectorAll(".bubble-attach span")].map((p) => p.innerHTML).join(" ");
+    const t = turnOf("【视频 1：片头.mp4】\\n【音频 2：配音.mp3】\\n【文本摘录 3：粘贴文本.txt】\\n剪一下");
+    const html = [...t.querySelectorAll(".bubble-attach .batt")].map((p) => p.innerHTML).join(" ");
     ok("视频/音频/摘录各画各的图标", /#i-film/.test(html) && /#i-volume-2/.test(html) && /#i-file-text/.test(html), html);
+    ok("反向对照：只有图才画缩略图，视频音频不画", !t.querySelector(".bubble-pics"), t.innerHTML.slice(0, 200));
+  }
+
+  // ---------- 这份素材躺在工作区哪儿：三档，越靠前越准 ----------
+  {
+    attachPaths.clear(); sessionDirs.clear();
+    attachPaths.set("截图.png", "01_看图/截图.png");
+    sessionDirs.set("s9", "别的文件夹");
+    const btn = turnOf("【图片 1：截图.png】\\n这是在哪", "s9").querySelector(".bpic");
+    ok("这次刚传的：按服务端亲口说的那条路径取，不拿成果文件夹去拼",
+       btn.dataset.rel === "01_看图/截图.png", btn.dataset.rel);
+  }
+  {
+    attachPaths.clear(); sessionDirs.clear();
+    sessionDirs.set("s9", "这是在哪");
+    const btn = turnOf("【图片 1：截图.png】\\n这是在哪", "s9").querySelector(".bpic");
+    const img = btn.querySelector("img");
+    ok("刷新过之后的老回合：按这条对话的成果文件夹找", btn.dataset.rel === "这是在哪/截图.png", btn.dataset.rel);
+    ok("同时留一档工作区根当备用（修好落点之前传的那批，人确实躺在根上）",
+       btn.dataset.alt === "截图.png", btn.dataset.alt);
+    ok("缩略图走 ?thumb=320（拿原图当缩略图 = 让浏览器解码几十 MB 位图去画一个指甲盖）",
+       img.getAttribute("src") === "/api/files/view/" + fpath("这是在哪/截图.png") + "?thumb=320", img.getAttribute("src"));
+    img.onerror();
+    ok("第一档读不出来，自动改试工作区根（老会话那批图才不会整排变灰方块）",
+       btn.dataset.rel === "截图.png" && img.getAttribute("src") === "/api/files/view/" + fpath("截图.png") + "?thumb=320",
+       btn.dataset.rel + " / " + img.getAttribute("src"));
+    ok("备用只试一次，不会两档之间来回抽", btn.dataset.alt === "");
+    img.onerror();
+    ok("两档都读不出来才退成名字条（空灰方框谁也认不出那是哪份素材）",
+       btn.classList.contains("gone") && btn.querySelector(".bpic-nm").textContent.includes("截图.png"), btn.outerHTML.slice(0, 200));
+    ok("退成名字条时把话说清楚，别让人以为整个功能坏了",
+       /改名|移走|删掉/.test(btn.title) && !btn.title.includes("点击预览"), btn.title);
+  }
+  {
+    attachPaths.clear(); sessionDirs.clear();
+    const btn = turnOf("【图片 1：截图.png】\\n看看", "没建过文件夹的会话").querySelector(".bpic");
+    ok("连成果文件夹都没有：那就是工作区根，也不用再留备用", btn.dataset.rel === "截图.png" && btn.dataset.alt === "");
+  }
+  {
+    attachPaths.clear(); sessionDirs.clear();
+    const src = turnOf("【图片 1：图标.svg】\\n看看").querySelector(".bpic img").getAttribute("src");
+    ok("svg 不走缩略图（矢量本来就小，栅格化反而更大更糊）",
+       src === "/api/files/view/" + fpath("图标.svg"), src);
+  }
+
+  // ---------- 点得开：他要的是「找到那个文件」，不是「看一眼」 ----------
+  {
+    attachPaths.clear(); sessionDirs.clear();
+    attachPaths.set("主图.png", "d/主图.png"); attachPaths.set("报价单.pdf", "d/报价单.pdf");
+    const t = turnOf("【图片 1：主图.png】\\n【文件 2：报价单.pdf】\\n看这个");
+    pvOpened = [];
+    t.querySelector(".bpic").onclick();
+    t.querySelector(".batt").onclick();
+    ok("★图和文件都点得开★（点开的是产出卡那个预览面板，下载 / 打开所在位置都在里面）",
+       pvOpened.length === 2, JSON.stringify(pvOpened)); // 点得开是一件事，传过去的是不是全路径是下一条的事
+    ok("点开传的是工作区相对路径，不是光秃秃一个文件名",
+       pvOpened.every((p) => p.includes("/")), JSON.stringify(pvOpened));
   }
 
   // ★最容易折过头的一条★：锚点写在句子中间，是人自己在指东西
@@ -10099,8 +10424,9 @@ const BUBBLE_CHECKS = `
 
   // 只有「（已上传文件：…）」的老会话：一样折得动（这批历史占了绝大多数）
   {
+    attachPaths.clear(); sessionDirs.clear();
     const b = bubbleOf("帮我看看这个（已上传文件：日志.txt）");
-    const pills = [...b.querySelectorAll(".bubble-attach span")];
+    const pills = [...b.querySelectorAll(".bubble-attach .batt")];
     ok("老会话里那句「（已上传文件：…）」也折得动", pills.length === 1 && pills[0].textContent === "日志.txt", pills.map((p) => p.textContent).join("|"));
     ok("折完那句话读着还是通的", b.textContent.trim().startsWith("帮我看看这个"), JSON.stringify(b.textContent));
   }
@@ -10116,7 +10442,47 @@ const BUBBLE_CHECKS = `
   {
     const b = bubbleOf("> <img src=x onerror=1>\\n\\n【图片 1：<b>坏名字</b>.png】\\n看这个");
     ok("引用里的标签没变成元素", !b.querySelector(".bubble-quote img") && b.querySelector(".bubble-quote span").textContent.includes("onerror"), b.querySelector(".bubble-quote").innerHTML.slice(0, 160));
-    ok("文件名里的标签也没变成元素", !b.querySelector(".bubble-attach b") && b.querySelector(".bubble-attach span").textContent.includes("坏名字"), b.querySelector(".bubble-attach").innerHTML.slice(0, 160));
+    const bad = b.closest(".turn").querySelector(".bubble-pics .bpic");
+    ok("文件名里的标签也没变成元素（名字是人起的，拼进 innerHTML 等于当代码执行）",
+       !bad.querySelector("b") && bad.querySelector(".bpic-nm").textContent.includes("坏名字")
+       && bad.dataset.rel.includes("<b>"), bad.outerHTML.slice(0, 200));
+  }
+
+  // ---------- 版式：真在屏幕上量一遍（"写了 state 没渲染" 这类事，纯断言看不见）----------
+  {
+    attachPaths.clear(); sessionDirs.clear();
+    attachPaths.set("大图.png", "d/大图.png");
+    const t = turnOf("【图片 1：大图.png】\\n这是在哪");
+    const img = t.querySelector(".bpic img");
+    // 这页后面没有服务端，真去取那张图只会 404。塞一张 600×400 的进去量版式——
+    // 量的是 CSS，跟图是从哪儿来的无关
+    const SVG = "data:image/svg+xml;utf8," + encodeURIComponent(
+      "<svg xmlns='http://www.w3.org/2000/svg' width='600' height='400'><rect width='600' height='400' fill='#5b5ff7'/></svg>");
+    img.onerror = null;
+    await new Promise((r) => { img.onload = r; img.onerror = r; img.src = SVG; setTimeout(r, 2000); });
+    const pics = t.querySelector(".bubble-pics").getBoundingClientRect();
+    const bub = t.querySelector(".bubble").getBoundingClientRect();
+    const iw = img.getBoundingClientRect();
+    ok("图真画出来了，不是一个 0 高的空盒子", iw.width > 20 && iw.height > 20, JSON.stringify(iw));
+    ok("图摞在气泡上面（参考图里就是这样：图在上，蓝气泡在下）", pics.bottom <= bub.top + 1, pics.bottom + " vs " + bub.top);
+    ok("图和气泡右边线对齐（对齐原则：两样东西同属一条消息，就该共用一条边）",
+       Math.abs(pics.right - bub.right) <= 1, pics.right + " vs " + bub.right);
+    ok("大图按 220 封顶，不许把整条消息撑到满屏", iw.width <= 221, String(iw.width));
+    ok("按原比例缩，没被压扁（600×400 缩完还得是 3:2）",
+       Math.abs(iw.width / iw.height - 1.5) < 0.02, iw.width + "×" + iw.height);
+  }
+
+  // 图裂了那一下，名字条得真的出现在屏幕上。光断言 textContent 是不够的——
+  // 它藏在 display:none 底下照样"有内容"，而用户看见的是一个谁也认不出的空盒子
+  {
+    attachPaths.clear(); sessionDirs.clear();
+    const t = turnOf("【图片 1：早就没了.png】\\n看看");
+    const btn = t.querySelector(".bpic");
+    const img = btn.querySelector("img");
+    img.onerror();
+    const r = btn.getBoundingClientRect();
+    ok("图读不出来时，名字条真的显在屏幕上（不是一个看不见的空盒子）", r.width > 40 && r.height > 12, JSON.stringify(r));
+    ok("这时候那张裂图不再占地方", btn.querySelector("img").getBoundingClientRect().height === 0, JSON.stringify(img.getBoundingClientRect()));
   }
 
   stage.remove();
@@ -10573,6 +10939,17 @@ app.whenReady().then(async () => {
       if (!win2.isDestroyed()) win2.destroy();
     }
 
+    // 「取 id」和「建行」隔着两段源码，这一屏把它们拼回一条路上跑：先传附件再发第一条
+    const win2b = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
+    try {
+      await win2b.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(SEND_HTML));
+      const names2b = await win2b.webContents.executeJavaScript(SEND_STUBS + "\n" + ENSURE_SID_SRC + "\n" + SEND_SRC + "\n" + SEND_CHECKS, true);
+      for (const n of names2b) console.log("  ✓ " + n);
+      console.log(`✅ 前端：会话 id 接力（先传附件后发消息·沿用同一个 id·历史列表不重复建行）${names2b.length} 项通过`);
+    } finally {
+      if (!win2b.isDestroyed()) win2b.destroy();
+    }
+
     const win3 = mkWin({ show: false, width: 900, height: 700, webPreferences: { offscreen: true } });
     try {
       await win3.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(PREVIEW_HTML));
@@ -10941,6 +11318,16 @@ app.whenReady().then(async () => {
       for (const n of namesCTX) console.log("  ✓ " + n);
       console.log(`✅ 前端：上下文余量条（过半才露面·到线变黄·换会话收回去·收完还能重新填）${namesCTX.length} 项通过`);
     } finally { if (!winCTX.isDestroyed()) winCTX.destroy(); }
+
+    const winCMP = mkWin({ show: false, width: 760, height: 300, webPreferences: { offscreen: true } });
+    try {
+      await winCMP.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(CMP_HTML));
+      const namesCMP = await winCMP.webContents.executeJavaScript(IC_BOOT + CMP_SRC + "\n" + CMP_CHECKS, true)
+        .catch((e) => { throw new Error("[压缩进度] " + ((e && (e.stack || e.message)) || String(e))); });
+      const namesCMW = testCompactWiring();
+      for (const n of namesCMP.concat(namesCMW)) console.log("  ✓ " + n);
+      console.log(`✅ 前端：压缩这一步让人看得见它在动（开跑就有一行字·跟着秒数走·压完换掉同一行不摞·压崩如实说·这一轮收尾一律收干净·英文界面翻得动）${namesCMP.length + namesCMW.length} 项通过`);
+    } finally { if (!winCMP.isDestroyed()) winCMP.destroy(); }
 
     const winESC = mkWin({ show: false, width: 600, height: 400, webPreferences: { offscreen: true } });
     try {

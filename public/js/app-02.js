@@ -420,6 +420,19 @@ async function thumbDataUrl(blob, px = 96) {
     return ""; // 认不出的图（坏文件、某些 SVG）就退回类型图标，不是错误
   }
 }
+/**
+ * 这条对话的 id，没有就现取一个。
+ *
+ * 为什么不能拖到「按下发送」那一刻才取：附件是**先传后发**的。上传接口拿这个 id 去认领本对话的
+ * 成果文件夹——id 是 null 的话，服务端既没处放，也记不上「待搬进去」那笔账（server.js /api/upload）。
+ * 于是新开一条对话拖张图进来，图就永远躺在任务目录的**上一级**：agent 在自己的工作目录里翻不到，
+ * 只好 find 一圈再 cp 一份进来。那份 cp 出来的副本是这一轮新写的文件，
+ * 于是用户传进去的**输入**图，转头出现在「本回合产出」里。
+ */
+function ensureSessionId() {
+  if (!sessionId) sessionId = "s_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+  return sessionId;
+}
 /** 把 chip 对应的内容真的送上去。重试走的也是这条 */
 async function sendAttach(item) {
   if (!item.blob) return false;
@@ -428,12 +441,16 @@ async function sendAttach(item) {
     const b64 = await blobToB64(item.blob);
     const resp = await fetch("/api/upload", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      // 带上会话 id：服务端好把文件直接放进本对话的成果文件夹，别再堆到工作空间根目录
-      body: JSON.stringify({ name: item.name, data_b64: b64, session: sessionId }),
+      // 带上会话 id：服务端好把文件直接放进本对话的成果文件夹，别再堆到工作空间根目录。
+      // ensureSessionId 而不是裸 sessionId——新开一条对话时它还是 null，那就等于没带（见上面那段注释）
+      body: JSON.stringify({ name: item.name, data_b64: b64, session: ensureSessionId() }),
     });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const data = await resp.json().catch(() => ({}));
     item.path = data.path || item.name; // 预览要按工作目录下的相对路径找它
+    // 顺手记进 attachPaths：一会儿这条消息发出去，气泡上面那排缩略图要按这个路径去取图。
+    // 服务端刚亲口说了它放哪儿，比事后拿 sessionDirs 去拼准得多
+    attachPaths.set(item.name, item.path);
     item.blob = null;                   // 传完就松手，别攥着 30MB 不放
     setAttachState(item, "done");
     return true;
@@ -1423,12 +1440,15 @@ async function send() {
   await doSend(text, currentMode);
 }
 
+/** 左边历史列表里有没有这条对话那一行。取过 id 不等于列过——先传附件时 id 就已经有了，但人还没发出去 */
+const sessionListed = () => !!sessionId && sessions.some((s) => s.id === sessionId);
+
 // regen=true 表示「重新生成」：服务端回滚最后一轮再重跑同一条消息
 async function doSend(text, mode, regen) {
   if (curBusy()) return;
   closeAssistView();
-  if (!sessionId) {
-    sessionId = "s_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+  if (!sessionListed()) {
+    ensureSessionId();
     const shortTitle = stripSceneTag(text).slice(0, 24); // 标题里不留场景标签，否则历史列表整排都是「【任务类型：…」
     sessions.unshift({ id: sessionId, title: shortTitle, at: Date.now(), project: activeProject, lane: activeLane });
     saveSessions();

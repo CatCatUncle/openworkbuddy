@@ -212,6 +212,85 @@ const ExcelJS = require("exceljs");
   };
 }
 
+/**
+ * 压缩这一步卡在「他按下发送」和「第一个字」中间：它自己要跟模型说一次话，长会话十几秒是常事。
+ * 一声不吭的话，界面上只有一个转不完的圈，他只能猜是模型卡了还是网断了。
+ *
+ * 所以这一路的合同有两条：**开跑先报一声**，以及**报了开头就必须有收尾**——压成了、压崩了、
+ * 模型回了个空，三种都得带一条 compact 出去。少一条，界面那行就永远停在「正在压…已等 8 秒」。
+ */
+async function testCompactProgress() {
+  const { dataPath } = require("../paths");
+  const archive = dataPath("data", "compact-archive");
+  const before = new Set(fs.existsSync(archive) ? fs.readdirSync(archive) : []);
+  try {
+    const longHistory = () => {
+      const h = [];
+      for (let i = 0; i < 12; i++) {
+        h.push({ role: "user", content: `第 ${i} 轮：` + "内容".repeat(900) });
+        h.push({ role: "assistant", text: "好的。" + "回答".repeat(900), toolCalls: [] });
+      }
+      return h;
+    };
+    const mk = (chat) => createAgentRuntime({
+      config: { agent: { ...config.agent, compact_threshold_chars: 8000, compact_keep_turns: 2 } },
+      llm: { model: "假压缩器", chat },
+      mcpManager: new McpManager(), experts,
+    });
+
+    // ① 顺利压完：先报「在压什么」，压完了才报结果，顺序不许反
+    let ev = [];
+    await mk(async () => ({ text: "## 目标\n跑通\n## 已完成\n无", usage: { prompt: 10, completion: 10 } }))
+      .compactHistory(longHistory(), { emit: (e) => ev.push(e) });
+    let types = ev.map((e) => e.type);
+    assert(types.includes("compact_start"),
+      "★压缩开跑时一个字都没说★ 界面上就只剩一个不知道在干什么的转圈：" + JSON.stringify(types));
+    assert(types.indexOf("compact_start") < types.lastIndexOf("compact"), "「开始」得排在「结果」前面：" + JSON.stringify(types));
+    const st = ev.find((e) => e.type === "compact_start");
+    assert(st.entries > 0 && st.chars > 0, "开跑那条得说清在压多少（条数 / 字符数），空着就只能干等：" + JSON.stringify(st));
+    let done = ev.filter((e) => e.type === "compact");
+    assert(done.length === 1 && done[0].removed === st.entries && !done[0].failed,
+      "压成了就该如实报条数：" + JSON.stringify(done));
+
+    // ② 模型这一发挂了：也得有收尾，不然界面那行会一直转下去
+    ev = [];
+    await mk(async () => { throw new Error("HTTP 429 太快了"); })
+      .compactHistory(longHistory(), { emit: (e) => ev.push(e) }).catch(() => {});
+    assert(ev.some((e) => e.type === "compact_start"), "压崩的这一路连开场都没报：" + JSON.stringify(ev.map((e) => e.type)));
+    const bad = ev.find((e) => e.type === "compact" && e.failed);
+    assert(bad && /429/.test(bad.failed),
+      "★压崩了也得收尾★ 不收尾的话界面那行永远停在「正在压…」：" + JSON.stringify(ev.map((e) => e.type)));
+    assert(bad.removed === 0, "没压成就不许报「压掉了几条」：" + JSON.stringify(bad));
+
+    // ③ 模型回了个空：同样算没压成，别假装压了
+    ev = [];
+    await mk(async () => ({ text: "   ", usage: null })).compactHistory(longHistory(), { emit: (e) => ev.push(e) });
+    const empty = ev.find((e) => e.type === "compact");
+    assert(empty && empty.failed && empty.removed === 0,
+      "模型回了个空也得说一声没压成：" + JSON.stringify(ev.map((e) => e.type)));
+
+    // ④ 反向对照：没到阈值压不着，这时候一个字都不该说——短对话也弹一行「正在压缩」比不说更糟
+    ev = [];
+    await mk(async () => ({ text: "不该被调用" })).compactHistory([{ role: "user", content: "短" }], { emit: (e) => ev.push(e) });
+    assert(ev.length === 0, "★没压就别吱声★：" + JSON.stringify(ev));
+
+    // ⑤ compact_start 是转瞬即逝的，不进存盘清单：进了的话，回放老会话会重放一行「正在压…」，
+    //    而那一刻根本没人在压。两份清单（server.js 记录 / app-02.js 数事件）必须同时不认它，
+    //    差一个字，断流重连算出来的续传位置就偏一格
+    const rec = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+    const cnt = fs.readFileSync(path.join(__dirname, "..", "public", "js", "app-02.js"), "utf8");
+    assert(!/"compact_start"/.test(rec), "compact_start 混进了 server.js 的存盘清单：回放会重演一行「正在压…」");
+    assert(!/"compact_start"/.test(cnt), "compact_start 混进了 app-02.js 的记账清单：断流重连的续传位置会算偏");
+
+    console.log("✅ 上下文压缩：开跑先报一声 · 压完/压崩/空摘要都有收尾 · 没压就不吱声 · 这条事件不进存盘 10 项通过");
+  } finally {
+    // 归档是真写盘的，别把测试跑出来的那几份留在用户的 data/compact-archive 里
+    for (const f of (fs.existsSync(archive) ? fs.readdirSync(archive) : [])) {
+      if (!before.has(f)) fs.rmSync(path.join(archive, f), { force: true });
+    }
+  }
+}
+
 // ---------- 用例 ----------
 async function testAgentPipeline() {
   for (const f of [XLSX_NAME, MD_NAME]) fs.rmSync(path.join(WORKSPACE, f), { force: true });
@@ -2222,7 +2301,7 @@ function testCheckPageConsole() {
 
 async function testLookAtImage() {
   const tools = require("../tools");
-  const { lookAtImage } = tools._internals;
+  const { lookAtImage, pickEye, mainCanSee } = tools._internals;
   const os = require("os");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-vision-"));
   const PNG_1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -2319,6 +2398,68 @@ async function testLookAtImage() {
     global.fetch = async () => ({ ok: false, status: 402, json: async () => ({ error: { message: "Insufficient credits" } }) });
     r = await lookAtImage({ media }, { path: "截图.png", question: "?" }, 30000, resolveFile);
     assert.ok(r.isError && /没余额/.test(r.content) && /重试多少次都一样/.test(r.content), "402 没说清是余额：" + r.content);
+
+    // ---------- 这张图到底交给谁看 ----------
+    // 规矩就是设置页上一直写着的那句：单配的「视觉模型」是给**主模型看不了图的人**预备的。
+    // 代码以前不是这么走的——那个槽里只要填了字，就一律绕开主模型。于是真实配置里出现了这一幕：
+    // 主模型和视觉槽填的是同一个型号，同一个模型被硬拆成两条渠道，多一把 key、多一份限流额度；
+    // 那条一路 429 和超时，主模型这边一次就过。用户原话：「文本模型我用多模态模型就没有必要用什么看图模型」。
+    const V = { base_url: "https://vision.example/v1", api_key: "k", model: "vision-model" };
+    const MAIN_SEES = { base_url: "https://main/v1", api_key: "k", model: "some-vl", caps: ["tools", "vision"] };
+    const MAIN_BLIND = { base_url: "https://main/v1", api_key: "k", model: "deepseek-chat", caps: ["tools"] };
+
+    // 纯函数那一层：谁被选中、有没有后备、要不要交代一句
+    assert.strictEqual(pickEye({}, MAIN_SEES, false).cfg.model, "some-vl", "没单配视觉模型时该直接用主模型");
+    assert.strictEqual(pickEye(V, MAIN_BLIND, false).cfg.model, "vision-model", "主模型标了不会看图，就该走单配的那条");
+    assert.strictEqual(pickEye(V, MAIN_SEES, false).cfg.model, "some-vl", "主模型自己会看图，不该再绕到单配的那条");
+    assert.strictEqual((pickEye(V, MAIN_SEES, false).backup || {}).model, "vision-model", "绕过去的那条要留着当后备（主模型万一看不了图，它得能顶上）");
+    assert.ok(/没绕到单配的 vision-model/.test(pickEye(V, MAIN_SEES, false).tell), "绕过用户亲手配的渠道必须说一声");
+    assert.strictEqual(pickEye(V, MAIN_SEES, true).cfg.model, "vision-model", "look_at_image(model) 点了名还被改道");
+    // 同一个型号拆成两条渠道：走主模型那条，什么都不用交代（本来就是同一个模型）
+    const SAME = { base_url: "https://other/v1", api_key: "k2", model: "SOME-VL" };
+    assert.strictEqual(pickEye(SAME, MAIN_SEES, false).cfg.base_url, "https://main/v1", "同一个型号没合并到主模型那条渠道");
+    assert.strictEqual(pickEye(SAME, MAIN_SEES, false).backup, null, "同一个型号不用留后备：顶上来的还是它自己，白跑一趟");
+    assert.strictEqual(pickEye(SAME, MAIN_SEES, false).tell, "", "同一个型号没什么可交代的");
+    assert.strictEqual(pickEye(V, {}, false).cfg.model, "vision-model", "主模型没配全时还得靠单配的那条");
+    assert.deepStrictEqual(pickEye({}, {}, false).cfg, {}, "两边都没有就是没有");
+    // caps 是设置页上「能看图」那个勾，用户自己说的，比按名字猜准；老配置没这张表才退回去猜
+    assert.strictEqual(pickEye(V, { base_url: "https://main/v1", model: "gpt-5" }, false).cfg.model, "gpt-5", "老配置没 caps：按型号名也该认出 gpt-5 会看图");
+    assert.strictEqual(pickEye(V, { base_url: "https://main/v1", model: "deepseek-chat" }, false).cfg.model, "vision-model", "老配置没 caps：deepseek-chat 按名字就是不会看图");
+    assert.strictEqual(mainCanSee({ model: "gpt-5", caps: [] }), false, "caps 明说了不会看图，就不许再按名字猜一个「会」出来");
+    assert.strictEqual(mainCanSee({ model: "deepseek-chat", caps: ["vision"] }), true, "caps 明说了会看图，就不许按名字否掉");
+
+    // 端到端：真发出去的那一发，打的是哪条渠道
+    let hits = [];
+    global.fetch = async (url, init) => {
+      hits.push({ url, model: JSON.parse(init.body).model });
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: "一张红图" } }] }) };
+    };
+    r = await lookAtImage({ media: { vision: SAME }, visionFallback: MAIN_SEES }, { path: "截图.png", question: "什么颜色？" }, 30000, resolveFile);
+    assert.strictEqual(r.isError, false, r.content);
+    assert.strictEqual(hits[0].url, "https://main/v1/chat/completions", "同一个型号该走主模型那条渠道，实际打了 " + hits[0].url);
+
+    hits = [];
+    r = await lookAtImage({ media: { vision: V }, visionFallback: MAIN_SEES }, { path: "截图.png", question: "什么颜色？" }, 30000, resolveFile);
+    assert.strictEqual(hits[0].model, "some-vl", "主模型会看图时不该绕道");
+    assert.ok(/没绕到单配的 vision-model/.test(r.content), "绕过用户的配置却一个字没交代：" + r.content);
+
+    hits = [];
+    r = await lookAtImage({ media: { vision: V }, visionFallback: MAIN_BLIND }, { path: "截图.png", question: "?" }, 30000, resolveFile);
+    assert.strictEqual(hits[0].model, "vision-model", "主模型不会看图时没走单配的那条");
+    assert.ok(!/没绕到/.test(r.content), "这一路没绕过谁，不该多这句话：" + r.content);
+
+    // 「能看图」那个勾勾错了：主模型当场回一句不支持图片，单配的那条自动顶上，别让这张图白丢
+    hits = [];
+    global.fetch = async (url, init) => {
+      const m = JSON.parse(init.body).model;
+      hits.push({ url, model: m });
+      if (m === "some-vl") return { ok: false, status: 400, json: async () => ({ error: { message: "This model does not support image" } }) };
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: "顶上了" } }] }) };
+    };
+    r = await lookAtImage({ media: { vision: V }, visionFallback: MAIN_SEES }, { path: "截图.png", question: "?" }, 30000, resolveFile);
+    assert.strictEqual(r.isError, false, "主模型看不了图时后备没顶上：" + r.content);
+    assert.deepStrictEqual(hits.map((x) => x.model), ["some-vl", "vision-model"], "顶上的顺序不对：" + JSON.stringify(hits));
+    assert.ok(/已改用单配的 vision-model/.test(r.content), "换了只眼睛却不吭声：" + r.content);
   } finally {
     global.fetch = realFetch;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -2333,7 +2474,7 @@ async function testLookAtImage() {
   } finally {
     fs.rmSync(imgInWs, { force: true });
   }
-  console.log("✅ 看图：带问题才给看 · 图只随请求发不进历史 · OpenAI/Anthropic 两种协议 · 主模型看不了图时指路去配 · 思考吃光额度自动关思考重看一次（正常回话不重试）· 真空了就叫停并禁止编造看过");
+  console.log("✅ 看图：带问题才给看 · 图只随请求发不进历史 · OpenAI/Anthropic 两种协议 · 主模型自己会看图就不绕道（绕过了要交代、勾错了有后备顶上）· 主模型看不了图时指路去配 · 思考吃光额度自动关思考重看一次（正常回话不重试）· 真空了就叫停并禁止编造看过");
 }
 
 // ---------- Claude 渠道：验活打哪儿，真跑就得打哪儿 ----------
@@ -3750,8 +3891,8 @@ function testTaskDirLifecycle() {
   const srv = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
   // ── 一、文件夹名从哪儿来 ──────────────────────────────────────
-  const sm = /const src = String\(sess\.title \|\| message\)[\s\S]*?const slug = [^\n]*\n/.exec(srv);
-  assert.ok(sm, "server.js 里找不到取文件夹名的那两行（assignSessionDir 被改过？）");
+  const sm = /const ANCHOR = [\s\S]*?const slug = [^\n]*\n/.exec(srv);
+  assert.ok(sm, "server.js 里找不到取文件夹名的那几行（assignSessionDir 被改过？）");
   const slugOf = new Function("sess", "message", sm[0] + "; return slug;");
 
   // 【任务类型：X】是喂给模型的前缀，起标题时早就洗掉了，文件夹名这儿漏过一次——
@@ -3765,6 +3906,16 @@ function testTaskDirLifecycle() {
   assert.strictEqual(slugOf({ title: "【任务类型：数据分析】篮球减肥计划" }, ""), "篮球减肥计划", "标题里的前缀没洗");
   assert.strictEqual(slugOf({}, "！！！？？？"), "对话", "全是标点时没退回兜底名");
   assert.ok(slugOf({}, "看看 https://example.com/a/b 这个页面").indexOf("https") < 0, "网址被塞进文件夹名了");
+  // 素材锚点是发送时自动补进正文的，不是用户写的字。漏洗一次就得到「图片1IMG8037JP」——
+  // 序号加被砍了一半的扩展名占满 12 个格，用户真正问的那句「这是什么」一个字都没进去
+  assert.strictEqual(slugOf({}, "【图片 1：IMG_8037.JPG】\n这是什么"), "这是什么", "图片锚点没洗掉：" + slugOf({}, "【图片 1：IMG_8037.JPG】\n这是什么"));
+  assert.strictEqual(slugOf({ title: "【图片 1：报表.png】把这张表整理成 csv" }, ""), "把这张表整理成csv", "标题里的图片锚点没洗掉");
+  assert.strictEqual(slugOf({}, "【文件 2：合同.pdf】【图片 1：印章.png】念给我听"), "念给我听", "多个锚点只洗掉了一个");
+  // 拖张图进来一个字没写：拿文件名兜底，比清一色的「对话」认得出来
+  assert.strictEqual(slugOf({}, "【图片 1：年报截图.png】"), "年报截图", "只有一张图时没拿文件名兜底：" + slugOf({}, "【图片 1：年报截图.png】"));
+  assert.strictEqual(slugOf({}, "【图片 1：IMG_8037.JPG】"), "IMG8037", "文件名兜底时扩展名没去掉：" + slugOf({}, "【图片 1：IMG_8037.JPG】"));
+  // 反向对照：长得像锚点但不是的，别顺手吃掉用户写的字
+  assert.strictEqual(slugOf({}, "【重要】把图片 1 发我"), "重要把图片1发我", "误伤了不是素材锚点的方括号：" + slugOf({}, "【重要】把图片 1 发我"));
 
   // ── 二、什么算"空文件夹" ──────────────────────────────────────
   const em = /function listEmptyTaskDirs\([\s\S]*?\n}/.exec(srv);
@@ -8719,6 +8870,7 @@ testCanvasEdgeVersion();
   await testDeliverableQuality();
   testDiagramRepair();
   await testAgentPipeline();
+  await testCompactProgress();
   await testForcedWrapUp();
   await testAskUser();
   await testPromptNoAskContradiction();
@@ -11669,7 +11821,29 @@ function releasePipelineDrift(src) {
   //    钉死这个值，省得哪天有人把 with: 那两行当冗余删掉。
   const deep = /checkout@v\d+\s*\n\s*with:\s*\n\s*fetch-depth:\s*0/;
   if (!deep.test(tst)) miss.push("test.yml 的 checkout 没写 fetch-depth: 0：默认浅克隆，README「最新动态」的日期核对会把每条都判成假的");
-  if (!deep.test(rel)) miss.push("release.yml 的 test job checkout 没写 fetch-depth: 0：发版前那趟 npm test 会栽在同一处");
+  // 按 job 切开各查各的：release.yml 现在有两处 checkout（test 跑测试、release 挖发版正文），
+  // 整份一起 regex 的话，一边退回浅克隆、另一边还是深的，这条照样绿——而红的会是另一件事
+  const jobOf = (y, name) => {
+    const a = y.indexOf("\n  " + name + ":");
+    if (a < 0) return "";
+    const b = y.slice(a + 1).search(/\n  [a-z-]+:\n/);
+    return b < 0 ? y.slice(a) : y.slice(a, a + 1 + b);
+  };
+  if (!deep.test(jobOf(rel, "test"))) miss.push("release.yml 的 test job checkout 没写 fetch-depth: 0：发版前那趟 npm test 会栽在同一处");
+
+  // —— Release 页最上面那段「这一版改了什么」。站在下载页前面的人只想知道值不值得现在更新，
+  //    而以前那一页只有安装指南加一条 compare 链接——要知道改了什么，得点进去翻二十个 commit。
+  //    这段是 scripts/release-notes.js 从 README「最新动态」按 tag 区间挖出来的，
+  //    三样东西缺一样它就变回空白：脚本没被调用、正文里没摆它、或者这趟 checkout 是浅的。
+  const notes = src["scripts/release-notes.js"] || "";
+  if (!notes.trim()) miss.push("scripts/release-notes.js 没了：Release 页会退回「只有安装指南」，改了什么得自己翻 commit");
+  if (!/scripts\/release-notes\.js/.test(rel)) miss.push("release.yml 不调 scripts/release-notes.js：Release 正文里不会有「这一版改了什么」");
+  if (!/steps\.notes\.outputs\.md/.test(rel)) miss.push("release.yml 算出了「这一版改了什么」却没摆进正文（body 里没有 steps.notes.outputs.md）");
+  // 那一步要 git 历史。release job 自己得 checkout 且是全深度——浅克隆下取不到上一个 tag，
+  // 脚本只好一个字不写，于是这段悄悄消失、没人会发现
+  const relJob = jobOf(rel, "release");
+  if (/release-notes/.test(rel) && !deep.test(relJob))
+    miss.push("release.yml 的 release job 没有全深度 checkout：取不到上一个 tag，「这一版改了什么」会悄悄变成空白");
 
   // —— GitHub 正在弃用 node20：停在老大版本上每趟 CI 都刷一条 deprecation 警告，
   //    到期就是硬失败——而这条链一红，build 被 skip、tag 一个安装包都不产（v0.5.1 就是这么空的）。
@@ -11793,6 +11967,7 @@ function testReleasePipeline() {
     "package.json",
     "electron-builder.config.js",
     "install.sh",
+    "scripts/release-notes.js",
   ];
   const src = {};
   for (const f of files) src[f] = fs.readFileSync(path.join(root, f), "utf8");
@@ -11817,7 +11992,7 @@ function testReleasePipeline() {
     ["action 退回跑 Node 20 的老大版本", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace(/checkout@v\d+/, "checkout@v4") }],
     ["发版那条链的 action 退回 Node 20", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/action-gh-release@v\d+/, "action-gh-release@v2") }],
     ["CI 的 checkout 退回默认浅克隆", { ".github/workflows/test.yml": src[".github/workflows/test.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
-    ["发版那趟 checkout 退回默认浅克隆", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
+    ["发版前跑测试那趟 checkout 退回默认浅克隆", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("fetch-depth: 0", "fetch-depth: 1") }],
     ["发版前不跑测试了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/needs: test\n/, "") }],
     ["版本号和 tag 的绑定被删了", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/GITHUB_REF_NAME/g, "X") }],
     ["版本号核对忘了守 tag（手动跑必红）", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("if: startsWith(github.ref, 'refs/tags/')\n        shell: bash", "shell: bash") }],
@@ -11836,10 +12011,37 @@ function testReleasePipeline() {
     ["curl 用法说明退回占位符", { "install.sh": src["install.sh"].replace("CatCatUncle/openworkbuddy/main/install.sh", "<你的仓库>/main/install.sh") }],
     ["pnpm 分支又吃 frozen-lockfile", { "install.sh": src["install.sh"].replace(" --no-frozen-lockfile", "") }],
     ["curl | bash 装完反而报失败", { "install.sh": src["install.sh"].replace("[ -t 0 ] && ", "") }],
+    ["「这一版改了什么」那个脚本没了", { "scripts/release-notes.js": "" }],
+    ["算出来了却没摆进正文", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace("${{ steps.notes.outputs.md }}", "") }],
+    ["发正文那一步压根不调那个脚本", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/scripts\/release-notes\.js/g, "true") }],
+    ["release job 的 checkout 退回浅克隆，「这一版改了什么」悄悄变空白", { ".github/workflows/release.yml": src[".github/workflows/release.yml"].replace(/fetch-depth: 0(?![\s\S]*fetch-depth: 0)/, "fetch-depth: 1") }],
   ];
   for (const [why, patch] of bad) {
     const got = releasePipelineDrift({ ...src, ...patch }).miss;
     assert(got.length > 0, "★闸门失效：" + why + "，居然没红★");
+  }
+
+  // 上面钉的是「接线在不在」，这里真跑一次抽取器。不跑的话，脚本写成 `process.exit(0)`
+  // 照样能过上面每一条——闸门守住了调用，没守住它到底吐不吐得出东西。
+  // 浅克隆下取不到上一个 tag，这条如实跳过（同 README 日期那条的处理）
+  const rnGit = (a) => require("child_process").execSync(a, { cwd: root, encoding: "utf8" });
+  if (rnGit("git rev-parse --is-shallow-repository").trim() !== "true") {
+    const { main: relNotes } = require("../scripts/release-notes");
+    const tags = rnGit("git tag --sort=-v:refname").split("\n").filter(Boolean);
+    if (tags.length >= 3) {
+      const a = relNotes(tags[0]), b = relNotes(tags[1]);
+      const bullets = (t) => (t.match(/^- \*\*\d\d-\d\d\*\* /gm) || []).length;
+      assert(bullets(a) >= 1, "最新那个 tag 挖不出「这一版改了什么」：" + JSON.stringify(a.slice(0, 120)));
+      assert(/这一版改了什么/.test(a), "挖出来了却没带标题");
+      // 正题：按 tag 区间挖，不是按日期抓。同一天发两版时，日期口径会把上一版的也算进来
+      const setA = new Set(a.split("\n").filter((l) => l.startsWith("- **")));
+      const dup = b.split("\n").filter((l) => l.startsWith("- **") && setA.has(l));
+      assert(dup.length === 0, "★两个 tag 的「这一版改了什么」有重复条目★ 上一版的改动又在这一版印了一遍："
+        + dup.map((l) => l.slice(0, 30)).join(" / "));
+      // 反向对照：最早那个 tag 前面没有别的 tag，这时候宁可一个字不写也别瞎猜
+      assert(relNotes(rnGit("git tag --sort=v:refname").split("\n")[0]) === "",
+        "最早那个 tag 也印了一段「这一版改了什么」——它前面根本没有可比的东西");
+    }
   }
 
   // 锁文件只留一份：两份长期手工对齐必然漂，上一份 pnpm-lock.yaml 过期五周、缺 7 个包

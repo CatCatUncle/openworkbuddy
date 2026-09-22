@@ -348,7 +348,10 @@
     .turn.turn-jumped { animation: none; background-color: var(--owb-brand-weak); box-shadow: 0 0 0 10px var(--owb-brand-weak); }
   }
   .u-msg { display: flex; justify-content: flex-end; }
-  .u-msg .bubble { max-width: 78%; background: var(--owb-brand); color: #fff; border-radius: var(--radius-2xl) var(--radius-2xl) var(--radius-xs) var(--radius-2xl); padding: 10px 15px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+  /* 右对齐那一列：我发的图摞在上面，气泡在下面。78% 的宽度限制长在这一层，
+     两样东西才对得齐右边线——限制留在气泡身上的话，缩略图排会自己顶到最右 */
+  .u-msg .u-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 78%; min-width: 0; }
+  .u-msg .bubble { max-width: 100%; background: var(--owb-brand); color: #fff; border-radius: var(--radius-2xl) var(--radius-2xl) var(--radius-xs) var(--radius-2xl); padding: 10px 15px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
   /* 气泡顶上那张引用卡：紫底上再画一道浅色竖条 = 「这段是它说的，不是我说的」。
      最多三行，长引用点一下展开——发出去的原文一个字没少，只是默认不占半屏 */
   .u-msg .bubble .bubble-quote { display: flex; gap: 6px; margin: 0 0 6px; padding: 5px 8px; border-radius: var(--radius-md);
@@ -358,9 +361,25 @@
     white-space: pre-wrap; word-break: break-word; }
   .u-msg .bubble .bubble-quote.open span { display: block; }
   .u-msg .bubble .bubble-attach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-  .u-msg .bubble .bubble-attach span { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; font-size: 12px;
+  .u-msg .bubble .bubble-attach .batt { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; font: inherit; font-size: 12px;
+    border: 0; color: inherit; cursor: pointer; transition: background-color var(--owb-t-fast) var(--owb-ease);
     background: rgba(255,255,255,.18); border-radius: var(--radius-md); padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .u-msg .bubble .bubble-attach .batt:hover, .u-msg .bubble .bubble-attach .batt:focus-visible { background: rgba(255,255,255,.32); }
   .u-msg .bubble .bubble-attach .i { flex: none; width: 12px; height: 12px; opacity: .85; }
+  /* 我发出去的图，就画成图。以前这儿只有一行 `IMG_8037.JPG`，人回头认不出自己发的是哪张，
+     也没法再点回那个文件；现在缩略图和名字条都点得开同一个预览面板（带下载 / 打开所在位置） */
+  .u-msg .bubble-pics { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 100%; }
+  .u-msg .bpic { padding: 0; border: 1px solid var(--owb-border); border-radius: var(--radius-lg); background: var(--owb-bg-side);
+    overflow: hidden; line-height: 0; cursor: pointer; max-width: 100%; transition: border-color var(--owb-t-fast) var(--owb-ease); }
+  .u-msg .bpic:hover, .u-msg .bpic:focus-visible { border-color: var(--owb-brand); }
+  .u-msg .bpic img { display: block; width: auto; height: auto; max-width: 220px; max-height: 220px; }
+  /* 名字条平时藏着：图读不出来（改名/移走/删了）时才顶上来，别留一个谁也认不出的空灰方框 */
+  .u-msg .bpic .bpic-nm { display: none; }
+  .u-msg .bpic.gone img { display: none; }
+  .u-msg .bpic.gone { line-height: 1.5; padding: 4px 8px; }
+  .u-msg .bpic.gone .bpic-nm { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; font-size: 12px; color: var(--owb-text-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .u-msg .bpic.gone .i { flex: none; width: 12px; height: 12px; }
   .a-msg { display: flex; gap: 10px; margin-top: 16px; }
   .a-msg .avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: var(--radius-lg); background: var(--owb-brand-grad); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
   .a-msg .body { min-width: 0; flex: 1; }

@@ -8,9 +8,8 @@
  * shields.io 能直接读一个公开 JSON 里的字段（dynamic/json），所以把数字放这儿，
  * 徽章自己去读：改了代码、跑一次 `npm run stats`、提交，徽章就跟着变。
  *
- * 这个法子是从 oomol-lab/open-connector 的 README 学来的——它那两颗 Providers / Actions
- * 徽章是从自家线上目录接口实时读的。我们没有那样的公开接口，就退一步读仓库里的静态文件，
- * 效果一样，还少一个会挂的外部依赖。
+ * 也有把徽章接到自家线上目录接口、实时读数的做法；我们没有那样的公开接口，
+ * 就退一步读仓库里的静态文件——效果一样，还少一个会挂的外部依赖。
  */
 const fs = require("fs");
 const path = require("path");

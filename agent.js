@@ -484,11 +484,17 @@ function worktreeLine() {
   } catch { return ""; }
 }
 
-/** 当前生效的模型渠道（base_url / api_key / model / provider），给「没配视觉模型时拿主模型看图」兜底用。 */
+/**
+ * 当前生效的模型渠道（base_url / api_key / model / provider / caps），给「拿主模型看图」用。
+ *
+ * caps 必须带上：那是设置页里「能看图」那个勾，用户自己勾的。tools.js 的 pickEye 就靠它
+ * 判断这张图该不该绕开单配的看图模型——丢了它就只能按型号名猜，
+ * 而名字是一层很薄的伪装（同一个理由见 media-models.js capOfModel 那段）。
+ */
 function activeChannel(config) {
   const list = Array.isArray(config.models) ? config.models : [];
   const e = list.find((m) => m.name === config.active_model) || list[0];
-  if (e && e.base_url && e.model) return { base_url: e.base_url, api_key: e.api_key, model: e.model, provider: e.provider };
+  if (e && e.base_url && e.model) return { base_url: e.base_url, api_key: e.api_key, model: e.model, provider: e.provider, caps: Array.isArray(e.caps) ? e.caps : null };
   const legacy = config.provider === "anthropic" ? config.anthropic : config.openai;
   return legacy && legacy.model ? { ...legacy, provider: config.provider } : {};
 }
@@ -1337,7 +1343,7 @@ function modePrompt(mode) {
       timeoutMs: config.agent.tool_timeout_ms,
       search: config.search,
       media: mediaModels.resolve(config), // 带上全表，generate_image 这些才能按名字点名用哪个模型
-      visionFallback: activeChannel(config), // 没配视觉渠道时先拿主模型试试（主模型本来就多模态的，用户什么都不用配）
+      visionFallback: activeChannel(config), // 主模型自己会看图就直接用它，单配的看图模型是给「主模型看不了图」的人预备的（见 tools.js pickEye）
       // IM/定时等无人值守场景可传 sec 覆盖权限档位（没人守着屏幕点审批）
       security: sec || config.security,
       deadline,
@@ -1521,26 +1527,38 @@ function modePrompt(mode) {
         }
       }
     }
+    // 压缩自己也要跟模型说一次话，长会话十几秒都算快的——而这一步正卡在「他按下发送」和
+    // 「第一个字出来」中间。一声不吭的话，他看到的就是一个不知道在干什么的转圈，
+    // 只能猜是模型卡了还是网断了。所以先报一声在压什么、压多少，压完那条 compact 再把
+    // 同一行换成结果（两条共用一行，见 app-01.js 的 .compact-note）。
+    // 报了开头就必须有收尾：下面每一条早退路径都得带一条 compact 出去，不然那行会一直转下去
+    emit({ type: "compact_start", entries: old.length, chars: historyChars(old) });
     const gen = (traceNode || tracing.noop).generation({
       name: "压缩历史",
       model: llm.model,
       input: [{ role: "user", content: tracing._internals.capText(transcript, 4000) }],
       metadata: { chars_before: historyChars(history), cut_at: cut },
     });
-    const result = await llm.chat({
-      system:
-        "你是会话压缩器。把用户给你的对话转写压成一份接手备忘录，严格按以下结构写（没内容的小节写「无」）：\n" +
-        "## 目标\n## 已完成\n## 进行中 / 卡住\n## 关键决定（附原因）\n## 下一步\n## 关键上下文\n" +
-        "「关键上下文」放继续干活必需的硬事实：路径、命令、报错原文、用户表达过的偏好与纠正。\n" +
-        "只写事实不评论，文件名和关键数字一个都别丢。800 字以内，中文。",
-      history: [{ role: "user", content: "以下是需要压缩的对话转写：\n\n" + transcript }],
-      tools: [],
-      signal: AbortSignal.timeout(60000),
-    });
+    let result;
+    try {
+      result = await llm.chat({
+        system:
+          "你是会话压缩器。把用户给你的对话转写压成一份接手备忘录，严格按以下结构写（没内容的小节写「无」）：\n" +
+          "## 目标\n## 已完成\n## 进行中 / 卡住\n## 关键决定（附原因）\n## 下一步\n## 关键上下文\n" +
+          "「关键上下文」放继续干活必需的硬事实：路径、命令、报错原文、用户表达过的偏好与纠正。\n" +
+          "只写事实不评论，文件名和关键数字一个都别丢。800 字以内，中文。",
+        history: [{ role: "user", content: "以下是需要压缩的对话转写：\n\n" + transcript }],
+        tools: [],
+        signal: AbortSignal.timeout(60000),
+      });
+    } catch (e) {
+      emit({ type: "compact", removed: 0, failed: e.message || "压缩没跑成" });
+      throw e;
+    }
     gen.end({ output: result.text || "", usage: result.usage });
     if (result.usage && stats) { stats.prompt += result.usage.prompt; stats.completion += result.usage.completion; stats.cached = (stats.cached || 0) + (result.usage.cached || 0); stats.calls++; }
     const summary = String(result.text || "").trim();
-    if (!summary) return;
+    if (!summary) { emit({ type: "compact", removed: 0, failed: "模型没吐出摘要，这一次没压成" }); return; }
     // 先归档再动刀：压缩只做搬家不做销毁，真要翻旧账去 data/compact-archive 找
     try {
       const dir = dataPath("data", "compact-archive");

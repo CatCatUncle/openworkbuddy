@@ -99,6 +99,19 @@ jobs:
     steps:
       # 不写 name，一次把两条腿的产物都拉下来摊成 dist/mac、dist/win——
       # 下面 files: dist/**/* 正是按这个形状 glob 的，换大版本时先确认这个行为没变
+      # 要 git 历史：正文最上面那段「这一版改了什么」是拿上一个 tag 到这个 tag
+      # README 里**新增的**那几行凑的（scripts/release-notes.js）。浅克隆下取不到上一个 tag，
+      # 脚本会一个字都不写——Release 页于是退回只有安装指南，跟以前一样，不会印错东西
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: notes
+        run: |
+          {
+            echo 'md<<OWB_NOTES_EOF'
+            node scripts/release-notes.js "${GITHUB_REF_NAME}"
+            echo OWB_NOTES_EOF
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v5
         # 两条腿全挂时这一步会报 "Unable to find any artifacts"。download-artifact 没有
         # 「允许缺失」这种输入项，只能靠 continue-on-error 兜，别让它把整个 release 拖红
@@ -112,6 +125,7 @@ jobs:
           files: dist/**/*
           generate_release_notes: true
           body: |
+            ${{ steps.notes.outputs.md }}
             ## 安装
 
             **macOS 一句话装好**（下载 → 装进「应用程序」→ 摘掉隔离标记 → 打开，不会被 Gatekeeper 拦）：

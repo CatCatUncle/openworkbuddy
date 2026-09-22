@@ -57,6 +57,23 @@ const ROUTES = {
 };
 const ROUTE_IDS = Object.keys(ROUTES);
 
+/**
+ * 这个模型名是不是判断模型。
+ *
+ * 用在「别把它挂进对话模型列表」那道闸上。下拉里按**渠道种类**已经挡住了（decide_only），
+ * 可模型名是一个自由输入框——手打一个 `typesafe/jev-latest` 照收，存得下、选得中，
+ * 而它没有 /chat/completions，每一趟都是 400。列表里它跟别的条目长得一模一样，
+ * 这正是 test/systemone.js 开头列的第一类静默失败。
+ *
+ * 只认有把握的两种写法，认不准就放行：拦错一个能用的模型，比漏掉一个坏的更惹人。
+ * 开头那些 `~` 是粘贴时常带进来的，先削掉再判。
+ */
+function isDecisionModel(name) {
+  const s = String(name == null ? "" : name).trim().toLowerCase().replace(/^[~\s]+/, "");
+  if (!s) return false;
+  return /^typesafe\//.test(s) || /(^|\/)jev(-[a-z0-9.]+)?$/.test(s);
+}
+
 /** 三种问法。加第四种要等上游先支持，这儿写死是故意的——写了上游不认，错要到线上才看得见 */
 const KINDS = ["noul", "choice", "score"];
 const KIND_CN = { noul: "是非", choice: "单选", score: "打分" };
@@ -372,6 +389,7 @@ function costText(usage) {
 
 module.exports = {
   ROUTES, ROUTE_IDS, KINDS, KIND_CN, MAX_STATE, MAX_QUESTIONS, SURE_MIN, PRICE_PER_MTOK,
+  isDecisionModel,
   noul, choice, score,
   normalizeQuestions, stateOf, buildBody, urlFromBase, readAnswers, lineOf, gate, errorOf, zodSpot,
   costOf, costText, probsOf, pct, sureOfNoul,
