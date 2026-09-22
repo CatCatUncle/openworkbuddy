@@ -19,6 +19,7 @@ const { CAP_CN } = require("./media-models");
 const jev = require("./jev");            // 判断模型（Jev）：不产文字，只回选项 + 一个「有多确定」
 const systemOne = require("./systemone"); // 判断模型的纯逻辑：排版、确定度闸、算钱
 const continueGate = require("./continue-gate"); // 续跑之前那道闸的纯判据（只出题、读答案，一个字的网络不发）
+const askGate = require("./ask-gate");   // 弹给用户那一问之前那道闸的纯判据（同上，不发网络）
 
 const DELEGATE_TOOL = {
   name: "delegate_to_expert",
@@ -939,12 +940,55 @@ function modePrompt(mode) {
         // IM/定时任务/评测这类无人值守场景没有回答通道，别傻等
         return { content: "当前是无人值守运行，没人在线回答。按你判断的最合理默认继续做，并在最终汇报里注明你替用户做了什么假设。", isError: false };
       }
+      // 弹出去之前那道闸：这一轮的头一问白放行，往后每一问先判一句「非得用户答不可吗」。
+      // 问过的那几问挂在 stats 上——整棵任务树共享同一份（budgetWarned 已经是这么挂的），
+      // 也就是专家子代理问的也算进同一轮。连环追问本来就常常是「主代理问一句、
+      // 派出去的专家再问一句」凑出来的，分开记等于白记。
+      const asks = (stats.asks = Array.isArray(stats.asks) ? stats.asks : []);
+      const rt = askGate.route({
+        on: !!(config.agent || {}).ask_gate,
+        ready: jev.status(config).ready,
+        question,
+        prior: asks,
+      });
+      if (rt.route === "dup") {
+        asks.push({ q: question, a: "", skipped: true });
+        emit({ type: "status", text: `这一问你这一轮问过了（「${rt.dup.q}」），没有再弹一次`, depth });
+        return { content: askGate.dupNote(rt.dup), isError: false };
+      }
+      if (rt.route === "judge") {
+        let d = null;
+        try {
+          const out = await jev.askMetered(
+            config,
+            {
+              state: askGate.askState({ task: stats.asked || taskLabel || "", question, options, prior: asks }),
+              questions: askGate.needQuestions(),
+            },
+            { meta: "问你一句之前先判一句" }
+          );
+          if (!out.ok) throw new Error(out.error || "判断模型没回应");
+          d = askGate.readNeed(out);
+        } catch (e) {
+          // 判不成不影响这一轮：照旧弹给用户。但必须留一句——
+          // 静悄悄没生效的开关，比没有这个开关更糟
+          console.warn(`[问你一句] 弹之前那一问没问成（照旧弹出去）：${e.message}`);
+        }
+        if (d) {
+          asks.push({ q: question, a: "", skipped: true });
+          emit({ type: "status", text: `这一问没有弹给你：看着是${d.label || "不必非问不可的那种"}（判断模型确定度 ${systemOne.pct(d.sure)}）`, depth });
+          return { content: askGate.skipNote(d), isError: false };
+        }
+      }
       const askId = "ask_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       const timeoutMs = Math.max(30000, Number(config.agent.ask_user_timeout_ms) || 300000);
       emit({ type: "ask_user", ask_id: askId, question, options, timeout_ms: timeoutMs, depth });
       const t0 = Date.now();
       const answer = await askUser({ askId, question, options, timeoutMs });
       const waited = Date.now() - t0;
+      // 真弹出去过的也记一笔（超时没人答也记）：下一问才判得出「这个你刚问过」。
+      // 只记拦下的那些，等于只让这道闸看见自己拦过什么，看不见用户已经答过什么
+      asks.push({ q: question, a: answer == null ? "" : String(answer), skipped: false });
       if (answer == null) {
         emit({ type: "ask_answer", ask_id: askId, timeout: true, depth });
         return { content: `等了 ${Math.round(waited / 1000)} 秒，用户没有回应。按你判断的最合理默认继续做，并在最终汇报里注明你替用户做了什么假设，别再重复问。`, isError: false, extendMs: waited };
@@ -2040,6 +2084,10 @@ function modePrompt(mode) {
     if (!deadline) deadline = Date.now() + (config.agent.max_runtime_ms || 1800000);
     // 整个任务（含专家）共享一份 token 账本，任务结束时汇总上报
     if (!stats) stats = { prompt: 0, completion: 0, cached: 0, calls: 0, startedAt: Date.now() };
+    // 用户原话记一份在账本上：弹给用户那道闸在 runToolCall 里，够不着 history，
+    // 而「这一问该不该打断人」离了「他本来让你干什么」判不了。只在顶层记，
+    // 专家子任务的 history 是临时的，记下来反而把真正的那句话盖掉
+    if (depth === 0 && !stats.asked) stats.asked = String((history.find((h) => h.role === "user") || {}).content || taskLabel || "").slice(0, 400);
     let finalText = "";
     let stopNote = "";
     let honestyRetries = 0;
