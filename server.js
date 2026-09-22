@@ -2659,7 +2659,7 @@ app.post("/api/settings", (req, res) => {
     if (b.models || b.providers) chatModels.normalize(config);
     if (b.security) {
       const sec = security.getSecurity(config);
-      for (const k of ["gateway", "delete_protect", "runtime_node", "runtime_python"]) {
+      for (const k of ["gateway", "delete_protect", "cmd_risk_gate", "runtime_node", "runtime_python"]) {
         if (typeof b.security[k] === "boolean") sec[k] = b.security[k];
       }
       for (const k of ["batch_delete_threshold", "approval_timeout_s"]) {

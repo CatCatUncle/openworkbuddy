@@ -102,6 +102,9 @@ const DEFAULTS = {
   permission_mode: DEFAULT_MODE, // plan / ask / auto / full，见 PERMISSION_MODES
   gateway: true, // 安全网关总开关：关闭后黑名单/审批闸不再拦截（审计照记）
   delete_protect: true, // 删除保护：rm 类命令需要审批
+  // 名单外先判一句：四张名单都没命中、本来要一声不吭直接跑的那条，先花一道题问问撤不撤得回来。
+  // 只会把「直接跑」抬成「弹审批卡」，抬不动别的。默认关——它要把命令原文发给判断模型，这事得用户自己点头。
+  cmd_risk_gate: false,
   batch_delete_threshold: 50,
   file_whitelist: ["<app>/skills"], // workspace 外允许访问的路径前缀（绝对路径或 ~ 开头）；技能自带资源默认放行
   file_blacklist: ["~/.ssh", "~/Library/Keychains", "<app>/config.json", "<app>/data/users.json"],
