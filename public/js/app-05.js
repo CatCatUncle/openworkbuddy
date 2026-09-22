@@ -2395,6 +2395,12 @@ async function renderAgentPane(pane, s) {
         <input type="checkbox" id="ag-cgate" style="margin:0" ${s.agent.continue_gate ? "checked" : ""}>
         续下一轮之前，先花一道题问问是不是已经干完了
       </label>
+      <div class="f">记之前先判一句</div>
+      <div class="d" style="margin-bottom:6px">agent 自己调 remember 记下的每一条，都会跟着<b>往后每一趟任务</b>进系统提示词，你为它付一遍 token、模型照着它走一次路。现在拦它的只有两条正则：像凭据的不收、「某功能已修复」这类断言不收——正则认的是措辞，换一种说法就拦不住，而「这次把第 3 行改成了 8081」这种过程细节压根没固定措辞。打开之后，写之前先问一道是非题：这句话下个月还用得上吗。说用不上、而且确定度到 80%，这一条就不收，并告诉 agent 该改成怎么记。<b>你在这个页面里亲手敲的那份记忆不归它管</b>，你说记就是记；说不准、答不上、问不成，一律照旧记下。每条约两万分之一美金，本来就会被拒的那几类不花这个钱。默认关${s.agent.judge_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer;margin-bottom:10px">
+        <input type="checkbox" id="ag-mgate" style="margin:0" ${s.agent.memory_gate ? "checked" : ""}>
+        agent 想记一条之前，先花一道题问问它下个月还用不用得上
+      </label>
       <div class="f">模型卡壳超时（秒）</div>
       <div class="d" style="margin-bottom:6px">连续这么久收不到模型的任何输出（正文/思考/写文件的参数流都算）才判定连接挂死、强制收尾；只要还在逐字输出就不会掐断（默认 300）</div>
       <input id="ag-llm-timeout" type="number" min="30" value="${Math.round((s.agent.llm_timeout_ms || 300000) / 1000)}">
@@ -2418,6 +2424,12 @@ async function renderAgentPane(pane, s) {
         <input type="checkbox" id="ag-second" style="margin:0" ${s.agent.second_opinion ? "checked" : ""}>
         跑绿的长汇报，多花一道题确认它真办完了
       </label>
+      <div class="f">定时任务没变化就不推</div>
+      <div class="d" style="margin-bottom:6px">一条每天跑的任务一年推 365 条，其中 350 条是「今天没有更新」——第三天起就没人看了，第十天群机器人被静音，然后在真有更新的那天，通知照样发出去、照样没人看。去重这件事正则做不了：两条「今天没有更新」中间夹着日期和耗时，字节上永远不一样；而「12.3 涨到 12.4」只差一个字符，却正是该响的那种。打开之后，推之前先花一道题问：跟上一次推给你的那条比，有没有新东西。说没有、而且拿得准，这一条就不响铃——<b>运行记录里一个字不少</b>，点进去看得到全文，旁边写明它为什么没推。红的、出错的、挂了疑问的一律照推，这道闸碰都不碰。比的是<b>上一次真推出去的那条</b>，不是上一次跑的那条：万一判错了，攒下的变化下一次会一起推给你。每条约两万分之一美金，跟上次一字不差的那种不花这个钱。默认关${s.agent.judge_ready ? "" : "。<b>现在还没配判断模型，勾上也不会生效</b>——去 设置 → 模型 填一条 OpenRouter 或 TypeSafe 的 Key"}</div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--owb-text-2);cursor:pointer">
+        <input type="checkbox" id="ag-pgate" style="margin:0" ${s.agent.push_gate ? "checked" : ""}>
+        推之前先花一道题问：这一条跟上次比有没有新东西
+      </label>
     </div>
     <button class="btn-brand" id="ag-save">保存</button><span class="ok-msg" id="ag-msg"></span>` : `
     <div class="card-item">
@@ -2438,7 +2450,9 @@ async function renderAgentPane(pane, s) {
       gen_parallel_max: +pane.querySelector("#ag-genpar").value,
       max_tokens_budget: Math.round(+pane.querySelector("#ag-tokbudget").value * 10000) || 0,
       second_opinion: pane.querySelector("#ag-second").checked,
+      push_gate: pane.querySelector("#ag-pgate").checked,
       continue_gate: pane.querySelector("#ag-cgate").checked,
+      memory_gate: pane.querySelector("#ag-mgate").checked,
       // 下拉挪走了，但这一单还是得把它原样带上：整个 agent 对象是一起存的，
       // 漏掉这个字段不会报错，只会在某次「改了下步数上限」之后悄悄把备用渠道关掉
       failover_model: (s.agent || {}).failover_model || "",
@@ -2723,7 +2737,10 @@ function renderPersonaPane(pane, s) {
 }
 // ================= 桌面宠物 =================
 function petCardHtml(p) {
-  const on = p.enabled !== false;
+  // 默认关。后端三处都是这个口径（server.js 的 `enabled === true`、pet.js 的初始值、
+  // electron-main 读不到配置时的兜底），这儿要是写成 `!== false`，没配过的人一打开设置
+  // 就看见一个勾上的「显示桌面宠物」——而桌面上什么都没有。界面替状态撒谎，比状态本身错更难查。
+  const on = p.enabled === true;
   return `
     <div class="card-item">
       <div class="t">${ic("cat")} 桌面宠物</div>

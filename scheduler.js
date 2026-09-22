@@ -8,6 +8,7 @@ const path = require("path");
 const { dataPath } = require("./paths");
 const jsonStore = require("./store");
 const { judgeRun, explainRunError, verdictMessage, needsSecondOpinion } = require("./task-verdict");
+const pushGate = require("./push-gate");
 
 const STORE = dataPath("schedules.json");
 
@@ -235,7 +236,7 @@ function cronMatches(cron, date) {
  *   - done 在这一趟收尾时调一次，成败都调，负责把会话落盘
  *   没插 recorder（CLI、测试）就跟以前一模一样：不录、不留 session_id、不影响执行本身。
  */
-function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion, doubtTimeoutMs }) {
+function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion, newsGate, doubtTimeoutMs }) {
   /**
    * 「跑绿之后再看一眼」。给的是一个函数，不是一份配置——scheduler 不认 config、不发请求，
    * 要不要问、拿什么模型问、花不花钱，全归调用方（server.js）决定。测试里塞个假的就能跑。
@@ -249,24 +250,48 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
    *     表现是「再也没有疑问了」——跟「一切正常」长得一模一样。
    */
   const doubtMs = Number(doubtTimeoutMs) > 0 ? Number(doubtTimeoutMs) : DOUBT_TIMEOUT_MS;
-  const askDoubt = async (item, text) => {
-    if (typeof secondOpinion !== "function") return null;
-    if (!needsSecondOpinion({ result: text })) return null;
+  /**
+   * 问一句，但不许它拖住这一轮。
+   * @param label 出岔子时写进日志和运行记录的名字
+   * @param run   真去问的那一下（异步）
+   */
+  const askCapped = async (item, label, run) => {
     let timer = null;
     try {
       const capped = new Promise((_, rej) => {
         // 不能 unref：unref 过的计时器拦不住 Node 退出。上游挂死时它本来就是唯一还活着的那个句柄，
         // unref 一下进程就当没事干了直接退（还是 0）——超时永远不会到。
         // 不 unref 也不会赖着不走：下面 finally 里的 clearTimeout 两条路都走得到。
-        timer = setTimeout(() => rej(new Error(`第二意见超时（${Math.max(1, Math.round(doubtMs / 1000))} 秒没回话）`)), doubtMs);
+        timer = setTimeout(() => rej(new Error(`${label}超时（${Math.max(1, Math.round(doubtMs / 1000))} 秒没回话）`)), doubtMs);
       });
-      return await Promise.race([secondOpinion(item, text), capped]);
+      return await Promise.race([run(), capped]);
     } catch (e) {
-      console.warn(`[定时任务] ${item.name} 的第二意见没问成（不影响这一轮的结果）：${e.message}`);
+      console.warn(`[定时任务] ${item.name} 的${label}没问成（不影响这一轮的结果）：${e.message}`);
       return { failed: String(e.message || e).slice(0, 200) };
     } finally {
       clearTimeout(timer);
     }
+  };
+  const askDoubt = async (item, text) => {
+    if (typeof secondOpinion !== "function") return null;
+    if (!needsSecondOpinion({ result: text })) return null;
+    return askCapped(item, "第二意见", () => secondOpinion(item, text));
+  };
+
+  /**
+   * 「没变化就不推」。跟第二意见一样，给的是一个函数而不是一份配置：
+   * scheduler 不认 config、不发请求，开没开全看调用方给不给这个函数。
+   *
+   * 它只能把「推」变成「不推」：红的、出错的、挂了疑问的都在 screen 里直接走了 push，
+   * 根本轮不到它。问不成、拿不准、没配判断模型，一律照旧推。
+   */
+  const askNews = async (item, text, doubt) => {
+    if (typeof newsGate !== "function") return null;
+    const road = pushGate.screen({ prev: item.last_push, text, ok: true, doubt });
+    if (road === "push") return null;
+    // 一字不差：这就是「没变化」本身，不必花一道题的钱去买一个已经确定的答案
+    if (road === "same") return { msg: pushGate.sameNote() };
+    return askCapped(item, "变没变化那一问", () => newsGate(item, { prev: item.last_push, text }));
   };
   // 测试要能指到别处去，不然一跑测试就把用户真的任务表洗了
   const file = storePath || STORE;
@@ -466,6 +491,16 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
     store.runs.push(run);
     if (store.runs.length > MAX_RUNS) forgetRuns(store.runs.splice(0, store.runs.length - MAX_RUNS));
     saveStore(store, file);
+    /**
+     * 真推出去了的那一条留个底：下一次拿它当基线。
+     *
+     * 存的是「真推出去的那条」而不是「上一次跑的那条」——这一句是整道闸里最要紧的：
+     * 某一轮被误判成没变化的话，攒下来的新东西下一次照样比得出来，不会跟那次误判一起沉掉。
+     */
+    const rebase = (text) => {
+      item.last_push = String(text == null ? "" : text).slice(0, pushGate.BASE_CHARS);
+      saveStore(store, file);
+    };
     const finish = (ok, text) => {
       run.ok = ok;
       run.ended_at = new Date().toISOString();
@@ -513,9 +548,17 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
         item.last_result = (finalText || "完成").slice(0, 500);
         finish(true, finalText || "完成");
         closeRec(true, finalText || "完成");
+        // 推之前那一问：跟上一次真推出去的那条比，这一轮有没有新东西。
+        // 判出来没有就不响这一声——但运行记录一字不少照存，并且留一句话说清为什么没推
+        const news = await askNews(item, finalText || "完成", run.doubt);
+        if (news && news.msg) { run.push_skipped = news.msg; run.push_sure = news.sure; }
+        else if (news && news.failed) run.push_gate_failed = news.failed;
         saveStore(store, file);
         // 通知里把疑问缀在后面。缀在后面而不是替换掉正文：用户要的是结果，疑问是加注
-        if (onResult) await onResult(item, run.doubt ? (finalText || "完成") + "\n\n" + run.doubt : finalText);
+        if (onResult && !run.push_skipped) {
+          await onResult(item, run.doubt ? (finalText || "完成") + "\n\n" + run.doubt : finalText);
+          rebase(finalText || "完成");
+        }
         return finalText;
       }
       // 把「看起来成功」翻译成「到底成不成」：判据和下一步动作单独存字段，
@@ -529,7 +572,7 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       finish(false, msg);
       closeRec(false, msg);
       saveStore(store, file);
-      if (onResult) await onResult(item, msg);
+      if (onResult) { await onResult(item, msg); rebase(msg); }
       verdictErr = Object.assign(new Error(msg), { verdict: v });
     } catch (e) {
       // 同一个根因从 error 这个口子上来时也得有药方。不然「连不上上游」这类坑
@@ -539,7 +582,7 @@ function createScheduler({ runtime, onResult, storePath, recorder, secondOpinion
       finish(false, "出错: " + why);
       closeRec(false, "出错: " + why);
       saveStore(store, file);
-      if (onResult) await onResult(item, "执行出错: " + why);
+      if (onResult) { await onResult(item, "执行出错: " + why); rebase("出错: " + why); }
       throw e;
     } finally {
       running.delete(item.id);

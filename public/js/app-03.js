@@ -1851,7 +1851,14 @@ async function renderAutomRuns(page) {
       : r.doubt_failed
         ? `<div class="at-hint">这一条没问成第二意见：${esc(r.doubt_failed)}</div>`
         : "";
-    if (!r.label) return esc(raw.slice(0, 90)) + (raw.length > 90 ? "…" : "") + doubt;
+    // 「这一条没推」必须印在这儿。通知没响，运行记录就是唯一能看见它跑过的地方——
+    // 不印的话，一道少发通知的闸和「它坏了不跑了」在界面上长得一模一样。
+    const skipped = r.push_skipped
+      ? `<div class="at-hint">${bold(r.push_skipped)}</div>`
+      : r.push_gate_failed
+        ? `<div class="at-hint">这一条没问成变没变化（照旧推了）：${esc(r.push_gate_failed)}</div>`
+        : "";
+    if (!r.label) return esc(raw.slice(0, 90)) + (raw.length > 90 ? "…" : "") + doubt + skipped;
     const i = raw.indexOf("上游原话：");
     const quoted = i >= 0 ? raw.slice(i) : "";
     return `<b>${esc(r.label)}</b>`

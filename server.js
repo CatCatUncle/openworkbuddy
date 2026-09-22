@@ -58,6 +58,7 @@ const mediaHealth = require("./media-health"); // 连不通的媒体渠道熔断
 const chatModels = require("./chat-models"); // 对话模型：渠道共用一把 Key（跟上面共用 config.providers）
 const systemOne = require("./systemone"); // 判断模型（Jev）的纯逻辑：请求怎么拼、回答怎么读
 const taskVerdict = require("./task-verdict"); // 定时任务裁定层的纯函数（这一轮办完没有 / 怎么问 / 怎么读）
+const pushGate = require("./push-gate"); // 推之前那一问：跟上一次真推出去的那条比，有没有新东西
 const jev = require("./jev"); // 判断模型的调用路：挑渠道、取 Key、发请求
 const quota = require("./quota"); // 按次计费的外部 API：调之前问一句额度，调完记一笔
 const tracing = require("./trace"); // 执行追踪（Langfuse），默认关；跟 agent.js 共用同一个追踪器
@@ -2236,7 +2237,9 @@ app.get("/api/settings", (req, res) => {
       max_context_chars: config.agent.max_context_chars || 120000,
       max_tokens_budget: config.agent.max_tokens_budget || 0,
       second_opinion: !!config.agent.second_opinion,
+      push_gate: !!config.agent.push_gate,
       continue_gate: !!config.agent.continue_gate,
+      memory_gate: !!config.agent.memory_gate,
       // 上面这两个开关共用一面旗子：没配判断模型的时候，它们打开也不会生效，别让界面假装能开
       judge_ready: jev.status(config).ready,
       failover_model: config.agent.failover_model || "",
@@ -2473,7 +2476,11 @@ app.post("/api/settings", (req, res) => {
       if (b.agent.max_tokens_budget !== undefined) config.agent.max_tokens_budget = Math.max(0, Math.round(+b.agent.max_tokens_budget) || 0);
       // 定时任务跑绿之后再让判断模型看一眼。默认关，因为它每条绿都要花一道题的钱
       if (b.agent.second_opinion !== undefined) config.agent.second_opinion = !!b.agent.second_opinion;
+      // 没变化就不推。默认关：它少响一声铃，而「少响的那一声」用户看不见，得他自己点头
+      if (b.agent.push_gate !== undefined) config.agent.push_gate = !!b.agent.push_gate;
       if (b.agent.continue_gate !== undefined) config.agent.continue_gate = !!b.agent.continue_gate;
+      // 往长期记忆里写之前先判一句。默认关：它拒错一条，用户只会觉得「说过的事它又忘了」
+      if (b.agent.memory_gate !== undefined) config.agent.memory_gate = !!b.agent.memory_gate;
       if (b.agent.thinking !== undefined) {
         const lv = String(b.agent.thinking || "").trim().toLowerCase();
         // 写错档位当场拒绝，不悄悄退回 auto：用户以为关掉了思考、账单却照着思考的量涨
@@ -7406,10 +7413,35 @@ async function main() {
     return d ? { msg: taskVerdict.doubtMessage(d), sure: d.sure } : null;
   };
 
+  /**
+   * 「没变化就不推」：拿判断模型问一道是非题——这一轮跟上一次真推出去的那条比，有没有新东西。
+   *
+   * 默认关。跟第二意见一样，它花钱（约两万分之一美金一条），而且这钱花在后台、没人点确认；
+   * 更要紧的是它会「少发一条通知」，而少发的那一条用户是看不见的——这种开关得他自己点头。
+   *
+   * 一路上四道门：开关没开不走、没配判断模型不走、screen 里红的/挂了疑问的/没基线的不走
+   * （scheduler 里守着）、拿不准不走。任何一步出岁子都抹回去当没问过——结果不许被这一问带挂，
+   * 也不许被这一问吞掉。
+   */
+  const newsGate = async (item, { prev, text }) => {
+    if (!(config.agent || {}).push_gate) return null;
+    if (!jev.status(config).ready) return null;
+    const out = await jev.askMetered(
+      config,
+      { state: pushGate.newsState({ task: item.task, prev, text }), questions: pushGate.newsQuestions(item.task) },
+      { meta: "定时任务没变化就不推" }
+    );
+    // 额度满 / 没配 / 上游挂：如实往上抛一句，由 scheduler 记在运行记录上，别装作问过了
+    if (!out.ok) throw new Error(out.error || "判断模型没回应");
+    const d = pushGate.readNews(out);
+    return d ? { msg: pushGate.skipNote(d), sure: d.sure } : null;
+  };
+
   scheduler = createScheduler({
     runtime: accountedRuntime(runtime, "schedule"),
     recorder: scheduleRecorder,
     secondOpinion,
+    newsGate,
     onResult: (item, text) =>
       // 机器人那头不渲染 markdown，正文里的提示条记号先换成文字标签
       notify.pushBots(config, `【OpenWorkBuddy·定时任务】${item.name}\n${callout.strip(text || "").slice(0, 800)}`),

@@ -243,7 +243,13 @@ function scopeOf(user, shared) {
  * @returns { ok, id?, note, dropped? }  note 是给 agent 看的一句话回执——
  *   去重了、超量丢了旧的、被拒了，都要在这句话里说清楚，不能让它以为记住了其实没有。
  */
-function add({ text, user, shared = false, source = "agent" }) {
+/**
+ * 写之前那几道现成的尺子（空的 / 太长 / 像凭据 / 像能力断言）。
+ * 抽出来是为了让外面那道闸能先问一句「这条本来就会被拒吗」——
+ * 本来就拒的，用不着再花一道题的钱。两边必须走同一份判据，所以 add() 自己也调它。
+ * @returns { ok:false, note } 或 { ok:true, text }
+ */
+function preflight({ text, source = "agent" } = {}) {
   const t = String(text || "").trim().replace(/\s+/g, " ");
   if (!t) return { ok: false, note: "记忆内容是空的" };
   if (t.length > MAX_TEXT) return { ok: false, note: `一条记忆最多 ${MAX_TEXT} 字，这条 ${t.length} 字。记结论，别记过程。` };
@@ -257,6 +263,13 @@ function add({ text, user, shared = false, source = "agent" }) {
         + "记下来只会在它变了之后继续骗你自己。要记就记用户的偏好本身（比如「交付物一律不要水印」），偏好不会因为代码改了失效。",
     };
   }
+  return { ok: true, text: t };
+}
+
+function add({ text, user, shared = false, source = "agent" }) {
+  const pre = preflight({ text, source });
+  if (!pre.ok) return pre;
+  const t = pre.text;
   const scope = scopeOf(user, shared);
   flushHits(); // 先把攒着的命中写下去，不然下面这次 save 会把它们原样盖掉
   const items = load();
@@ -536,6 +549,7 @@ module.exports = {
   MAX_TEXT,
   MAX_PER_SCOPE,
   add,
+  preflight,
   remove,
   forget,
   list,
