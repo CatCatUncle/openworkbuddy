@@ -903,6 +903,29 @@ console.log("\n㉑ 文档里的命令表");
   ok(!/\|\s*`\/nosuchcmd[ `]/.test(doc), "★（反向对照）文档里当然找不到一条不存在的命令★");
 }
 
+console.log("\n【会话花了多少：/status /cost】");
+{
+  const P = require(path.join(ROOT, "pricing"));
+  const costOf = (u) => P.costOf(u, { local: !!u.local });
+  const u = (x) => ({ type: "assistant", events: [{ type: "text", delta: "…" }, { type: "usage", ...x }] });
+  const tr = [{ type: "user", text: "a" }, u({ model: "deepseek-chat", prompt: 12000, completion: 800, cached: 9000, calls: 3 }), { type: "user", text: "b" }, u({ model: "deepseek-chat", prompt: 5000, completion: 200, calls: 1 })];
+  const s = R.sessionUsageText(tr, costOf);
+  ok(/一共 18,000 tokens/.test(s) && /输入 17,000/.test(s) && /缓存命中 9,000/.test(s) && /输出 1,000/.test(s) && /4 次调用/.test(s), "★每一轮的用量加起来★", s);
+  const want = tr.filter((t) => t.type === "assistant").reduce((n, t) => n + costOf(t.events[1]).yuan, 0);
+  ok(want > 0 && s.includes("¥" + (want < 0.01 ? want.toFixed(4) : want.toFixed(2))), "钱数跟价目表逐轮算出来的一致", { s, want });
+  const miss = R.sessionUsageText(tr.concat([u({ model: "no-such-model-zz", prompt: 10, completion: 10, calls: 1 })]), costOf);
+  ok(/1 轮的模型查不到价/.test(miss) && !/¥/.test(miss), "★有一轮查不到价就不报钱数★ 少算一截的「约 ¥」比不报更误导", miss);
+  const local = R.sessionUsageText([u({ model: "本机 Claude Code", local: true, prompt: 500, completion: 5, calls: 1 })], costOf);
+  ok(/505 tokens/.test(local) && !/查不到价/.test(local) && !/¥/.test(local), "本机引擎：报 token、不报钱、也不说查不到价", local);
+  eq(R.sessionUsageText([{ type: "user", text: "x" }], costOf), "这个会话还没花过 token", "还没跑过：直说");
+  eq(R.sessionUsageText(null, costOf), "这个会话还没花过 token", "没有记录也不崩");
+  ok(tag("/cost") === "cmd:status" && tag("/usage") === "cmd:status", "/cost /usage 都落到 /status", [tag("/cost"), tag("/usage")]);
+  ok(/\/cost/.test(R.helpText()), "/help 里写着能敲 /cost");
+  const src = fs.readFileSync(path.join(ROOT, "cli.js"), "utf8");
+  const blk = src.slice(src.indexOf('if (v.name === "status")'), src.indexOf('if (v.name === "cd")'));
+  ok(/repl\.sessionUsageText\(sess\.transcript/.test(blk) && /local: !!u\.local/.test(blk), "/status 真把这一行打出来，本机引擎按不花钱算", blk.slice(0, 300));
+}
+
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 过 / ${fail} 挂`);
 process.exit(fail === 0 ? 0 : 1);
 }

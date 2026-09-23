@@ -2091,6 +2091,9 @@ function splitFiles(text) {
       const who = eng ? `底层 ${eng.label}` + green("（不花 API 额度）") : `模型 ${llm.provider}（${llm.model}）`;
       const turns = (sess.transcript || []).filter((t) => t.type === "user").length;
       prog(dim(`模式 ${opts.mode} · ${who}\n工作目录 ${getWorkspaceDir()}\n会话 ${sessionId} · 跑过 ${turns} 轮\n`));
+      let costOf = null;
+      try { const pr = require("./pricing"); costOf = (u) => pr.costOf(u, { local: !!u.local }); } catch {}
+      prog(dim(repl.sessionUsageText(sess.transcript, costOf) + "\n"));
       prog(dim(contextLine() + "\n"));
       if (pending.length) prog(dim(`还带着没发出去的文件：${pending.join("、")}\n`));
       return;

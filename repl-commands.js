@@ -38,7 +38,7 @@ const COMMANDS = [
   { name: "new", desc: "开一个新会话；刚才那段不会丢，还能翻回去" },
   { name: "resume", aliases: ["r"], arg: "[序号或会话id]", desc: "接着之前那段往下聊；不给值就弹选择器，↑↓ 挑、打字搜" },
   { name: "session", desc: "当前会话的 id 和存盘位置" },
-  { name: "status", desc: "模式、底层引擎、工作目录、这个会话跑了几轮" },
+  { name: "status", aliases: ["cost", "usage"], desc: "模式、底层引擎、工作目录、这个会话跑了几轮、一共花了多少 token" },
   { name: "init", desc: "让它把这个目录看一遍，写一份 AGENTS.md，以后每趟活儿都照着它来" },
   { name: "compact", desc: "把前面聊过的压成一段摘要腾地方；原文照样归档，不删" },
   { name: "review", arg: "[基准分支]", desc: "把改动当别人的代码挑一遍毛病，只审不改；不给基准就审还没提交的，给了就审这条分支从分叉起改的" },
@@ -628,6 +628,36 @@ function compactedText(before, after, removed) {
     `${save ? "，省了 " + save + "%" : ""}。原文归档在 data/compact-archive，没删。\n`;
 }
 
+/**
+ * 这个会话一共花了多少：把会话记录里每一轮的用量加起来。
+ * costOf 由调用方给（pricing.costOf），这里不去读价目表；有一轮查不到价就不报钱数，
+ * 只报 token——少算一部分再报出来的「约 ¥」比不报更误导人。
+ */
+function sessionUsageText(transcript, costOf) {
+  const sum = { prompt: 0, completion: 0, cached: 0, calls: 0, yuan: 0, unpriced: 0, rounds: 0 };
+  for (const t of transcript || []) {
+    if (!t || t.type !== "assistant") continue;
+    for (const ev of t.events || []) {
+      if (!ev || ev.type !== "usage") continue;
+      sum.rounds++;
+      sum.prompt += +ev.prompt || 0;
+      sum.completion += +ev.completion || 0;
+      sum.cached += +ev.cached || 0;
+      sum.calls += +ev.calls || 0;
+      const c = costOf ? costOf(ev) : { unknown: true };
+      if (!c || c.unknown) sum.unpriced++;
+      else sum.yuan += +c.yuan || 0;
+    }
+  }
+  if (!sum.rounds) return "这个会话还没花过 token";
+  const n = (x) => x.toLocaleString("en-US");
+  let s = `这个会话一共 ${n(sum.prompt + sum.completion)} tokens（输入 ${n(sum.prompt)}` +
+    (sum.cached ? `，其中缓存命中 ${n(sum.cached)}` : "") + ` / 输出 ${n(sum.completion)}）· ${sum.calls} 次调用`;
+  if (!sum.unpriced) s += sum.yuan > 0 ? ` · 约 ¥${sum.yuan < 0.01 ? sum.yuan.toFixed(4) : sum.yuan.toFixed(2)}` : "";
+  else s += ` · 有 ${sum.unpriced} 轮的模型查不到价，钱数不报`;
+  return s;
+}
+
 function helpText(opt) {
   const rows = COMMANDS.map((c) => ({
     left: `/${c.name}${c.arg ? " " + c.arg : ""}`,
@@ -751,6 +781,6 @@ module.exports = {
   modelRows, modelListText, pickModelRow,
   RESUME_MAX, ago, sessionRows, sessionListText, pickSessionRow,
   PICKER_ROWS, pickerRowsOf, filterPickerRows, pickerWindow, pickerView, sessionPickerRows, modelPickerRows,
-  sizeText, changedFilesText, checkpointListText, pickCheckpoint, rewindResultText, mcpText, compactedText, initTask,
+  sizeText, sessionUsageText, changedFilesText, checkpointListText, pickCheckpoint, rewindResultText, mcpText, compactedText, initTask,
   sanitizeHistory, nearest, find,
 };
