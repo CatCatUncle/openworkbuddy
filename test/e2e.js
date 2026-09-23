@@ -3808,7 +3808,8 @@ function testAgentPromptDrift() {
   // 长得像工具名、其实是参数名/配置键/例子文件名的，列在这儿。名单短是好事：
   // 短到一眼能看完，才说明"下划线命名 = 工具名"这个判据还成立
   const NOT_TOOLS = new Set(["old_text", "new_text", "start_line", "end_line", "with_timestamps",
-    "allow_shell", "app_id", "doc_app_id", "dingtalk_webhook", "wecom_bot_webhook", "voice_01", "voice_02"]);
+    "allow_shell", "app_id", "doc_app_id", "dingtalk_webhook", "wecom_bot_webhook", "voice_01", "voice_02",
+    "in_progress"]);   // todo_write 的状态值
   const named = [...new Set(whole.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) || [])];
   assert.ok(named.length >= 30, "提示词里的工具名抓取异常，只抓到 " + named.length + " 个");
   const ghost = named.filter((n) => !real.has(n) && !NOT_TOOLS.has(n));
@@ -10945,16 +10946,21 @@ function testReadmeFrontGate() {
   if (shallow) console.log("  ⚠️  浅克隆仓库，「最新动态」的日期真实性这条跳过了（git log 只有 HEAD 那一天）");
   const gitDays = new Set(git("git log --date=format:%m-%d --format=%ad").split("\n").filter(Boolean));
   const news = (zh.split(/^## 最新动态\s*$/m)[1] || "").split(/^## /m)[0];
+  const NEWS_MAX_ZH = 80, NEWS_MAX_EN = 240;
   const items = [...news.matchAll(/^- \*\*(\d\d-\d\d)\*\* (.+)$/gm)];
   assert(items.length >= 6, "「最新动态」至少 6 条带日期的条目，现在 " + items.length);
   for (const [, d, txt] of items) {
     assert(shallow || gitDays.has(d), "「最新动态」写了 " + d + "，git 里那天没有提交");
     assert(txt.trim().length >= 8, "「最新动态」有条目太短：" + txt);
+    // 上限同样要钉：README 是门面，一条一句话；来龙去脉写进 CHANGELOG 和 commit
+    assert(txt.trim().length <= NEWS_MAX_ZH, "「最新动态」有条目太长（" + txt.trim().length + " 字，上限 " + NEWS_MAX_ZH + "）：" + txt.slice(0, 30) + "…");
   }
   const dates = items.map((m) => m[1]);
   assert(dates.every((d, i) => i === 0 || d <= dates[i - 1]), "「最新动态」要按时间倒序");
   const newsEn = (en.split(/^## What's new\s*$/m)[1] || "").split(/^## /m)[0];
   assert([...newsEn.matchAll(/^- \*\*[A-Z][a-z]{2} \d{1,2}\*\* /gm)].length >= 6, "英文 What's new 至少 6 条带日期条目");
+  const longEn = [...newsEn.matchAll(/^- \*\*[A-Z][a-z]{2} \d{1,2}\*\* (.+)$/gm)].filter((m) => m[1].length > NEWS_MAX_EN);
+  assert(longEn.length === 0, "英文 What's new 有条目太长（上限 " + NEWS_MAX_EN + "）：" + longEn.map((m) => m[1].slice(0, 30)).join(" / "));
   // 交流群二维码
   const qrRel = "docs/images/feishu-group.png";
   assert(zh.includes('src="' + qrRel + '"') && /^## 交流群\s*$/m.test(zh), "README 缺「交流群」一节或二维码引用");
