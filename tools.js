@@ -20,6 +20,7 @@ const checkpoints = require("./checkpoints"); // 改文件前留检查点：整�
 const cmdRisk = require("./cmd-risk");
 const memGate = require("./memory-gate"); // 名单外那条命令跑之前先判一句（纯判据，不发请求）
 const jev = require("./jev"); // 判断模型：上面那一问就是它答的
+const HK = require("./hooks"); // config.json 里 agent.hooks 配的命令：跑命令前、改完文件后
 const CT = require("./code-tools"); // 写代码那几样：按名找文件、后台命令、进度清单、改前查有没有被动过
 
 // 工作空间可切换（默认项目内 workspace/；可在设置里改成任意文件夹）
@@ -2378,7 +2379,7 @@ function diffText(rel, before, after) {
 function noteChange(result, { root, abs, rel, before, after, tool, session, call, record = true }) {
   const diff = diffText(rel, before, after);
   const entry = record ? checkpoints.record(root, { session, call, tool, abs, before, after }) : null;
-  return { ...result, ...(diff ? { diff } : {}), ...(entry ? { ckpt: entry.id } : {}) };
+  return { ...result, editedFile: abs, ...(diff ? { diff } : {}), ...(entry ? { ckpt: entry.id } : {}) };
 }
 
 function countAll(hay, needle) {
@@ -4071,7 +4072,17 @@ function canvasManage(input = {}) {
   return { content: `不支持的画布操作：${op}`, isError: true };
 }
 
+/** 工具跑完之后：改了文件就跑 after_edit 钩子，输出接在回执后面（钩子见 hooks.js） */
 async function executeTool(name, input, opts = {}) {
+  const r = await executeToolCore(name, input, opts);
+  if (r && r.editedFile && !r.isError && opts.hooks) {
+    const said = await HK.afterEdit(opts.hooks, r.editedFile, { cwd: ws(), stopSignal: opts.stopSignal });
+    if (said) return { ...r, content: String(r.content) + said };
+  }
+  return r;
+}
+
+async function executeToolCore(name, input, opts = {}) {
   const timeoutMs = opts.timeoutMs || 120000;
   // 安全中心策略（settings 里配置）；未传时用纯默认值（等价于旧行为 + 默认黑名单）
   const sec = opts.security || { ...security.DEFAULTS };
@@ -4257,6 +4268,8 @@ async function executeTool(name, input, opts = {}) {
         const cmd = String(input.command || "");
         const blocked = await passGate(await judgeRisk(security.checkCommand(sec, cmd), "命令", cmd), "命令", cmd);
         if (blocked) return blocked;
+        const hookSays = await HK.beforeShell(opts.hooks, cmd, { cwd: fileBase, stopSignal: opts.stopSignal });
+        if (hookSays) { security.audit("命令执行", cmd, "钩子拦截"); return { content: hookSays, isError: true }; }
         security.audit("命令执行", cmd, "放行");
         if (input.background) return startBackground(cmd, fileBase, opts);
         return await runShell(cmd, timeoutMs, fileBase, opts.stopSignal);

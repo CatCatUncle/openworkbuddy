@@ -97,60 +97,37 @@ Model routing, tool calls, file acceptance, memory, permissions and local traces
 
 ## Run it in three minutes
 
-All three routes are the full product; none of them is a cut-down edition.
-
-**macOS, one line** (downloads, installs into `/Applications`, strips the quarantine flag, opens it):
+**macOS** (no dialogs at all):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CatCatUncle/openworkbuddy/main/install-mac.sh | bash
 ```
 
-> ⚠️ **If you download the dmg by hand, the first launch will be blocked**: *"OpenWorkBuddy" Not Opened — Apple could not verify …*, with only **Done** and **Move to Trash** on the dialog.
-> That is Apple's blanket block on apps without a paid certificate, not a verdict about this build — the certificate is being applied for, and this step disappears once it comes through.
-> **Click Done → System Settings → Privacy & Security → scroll to the bottom → Open Anyway → enter your login password.** Once, and never again.
-> The `curl` line above has no dialog at all. Full three-route walkthrough below, under "Your OS blocks the first launch".
+**Windows**: grab `-win-setup.exe` from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases) (x64 and ARM); on a locked-down machine use the portable `-win-x64-portable.exe`.
 
-**Windows / manual download**: grab `-win-setup.exe` from [Releases](https://github.com/CatCatUncle/openworkbuddy/releases) (one installer for x64 and ARM64) and double-click; on a locked-down work machine take the portable build, `-win-x64-portable.exe` (`arm64` on ARM).
-
-**From source** (Node.js 18+, no build step, no framework — edit, refresh, done):
+**From source** (Node.js 18+, no build step):
 
 ```bash
 git clone https://github.com/CatCatUncle/openworkbuddy.git
 cd openworkbuddy && npm install
-npm run app # desktop app; or `npm start` and open http://localhost:3800
+npm run app # desktop app; or npm start → http://localhost:3800
 ```
 
-Paste a model API key on first launch, then type something like "make a slide deck introducing OpenWorkBuddy".
-Everything you own lives in `~/OpenWorkBuddy` — config, sessions, output files, skills. **Uninstalling doesn't delete it**; moving machines is a folder copy.
-
-Text too small, or want a different skin? Avatar menu, top right → **Appearance**: four text sizes, five themes and UI density all live on that page.
+Paste a model key, then just say what you want. Your data lives in `~/OpenWorkBuddy` and survives uninstalls. Text size and themes: avatar menu → **Appearance**.
 
 <details open>
-<summary><b>Your OS blocks the first launch · double-clicked and nothing happened</b></summary>
+<summary><b>Your OS blocks the first launch</b></summary>
 
 <br>
 
-The code-signing certificate is still being applied for (Apple charges $99/year, Windows a few thousand), so today's builds are ad-hoc signed. What the OS blocks is *"I have never seen this developer"* — **not** *"this file is malware"*. The signature inside the build is intact; `codesign --verify --deep --strict` confirms it.
+The signing certificate is still pending, so builds are ad-hoc signed: the OS is blocking an unknown developer, not malware.
 
-**macOS — pick one of three**
-
-1. **Without touching a terminal (recommended)**: double-click → click **Done** on the dialog (*not* Move to Trash) → open **System Settings → Privacy & Security** → scroll all the way down to the **Security** section, where it says *"OpenWorkBuddy" was blocked to protect your Mac* → click **Open Anyway** → enter your login password → confirm with **Open**. Once, and never again.
-2. **One command**: **first drag the .app out of the dmg into Applications** (the dmg is a read-only volume, so running this inside it fails), then
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app
-   ```
-3. **No dialog at all**: use the `curl` line at the top. A browser-downloaded file gets tagged `com.apple.quarantine`; a curl-fetched one doesn't, so Gatekeeper never enters the picture.
-
-> **Don't follow the old "right-click → Open" tutorials.** That route only works on macOS 14 and earlier — Apple removed it in macOS 15 (Sequoia), and the right-click dialog no longer has a second **Open** button, which is exactly why it reads as "it just won't open".
->
-> If the message says **"is damaged and can't be opened"** rather than *could not be verified*, the signature really was corrupted — cloud drives, sync folders and some unzip tools all do this. Download again, or re-sign in place with `codesign --force --deep --sign - /Applications/OpenWorkBuddy.app`.
-
-**Windows**: in the SmartScreen dialog click the small grey "More info" → "Run anyway".
-- **Nothing happened**: the boot log is at `~/OpenWorkBuddy/logs/boot.log` — wherever it stops is the problem. Running from source, try `node cli.js doctor` first. Walk-through → [安装与启动](docs/安装与启动.md#双击了没反应) (Chinese)
+- **macOS, "could not be verified"**: click Done → System Settings → Privacy & Security → scroll down → **Open Anyway**. Or drag the .app into Applications and run `xattr -dr com.apple.quarantine /Applications/OpenWorkBuddy.app`. The old "right-click → Open" trick only works on macOS 14 and earlier.
+- **macOS, "is damaged"**: a cloud drive or unzip tool broke the signature — download again.
+- **Windows**: "More info" → "Run anyway".
+- **Nothing happens**: check `~/OpenWorkBuddy/logs/boot.log` → [安装与启动](docs/安装与启动.md#双击了没反应) (Chinese)
 
 </details>
-
-Mirrors, port conflicts, moving the data directory → [安装与启动](docs/安装与启动.md)　|　moving machines → [数据同步与搬家](docs/数据同步与搬家.md) (Chinese)
 
 ## What it looks like
 
@@ -192,38 +169,20 @@ Open "Infinite canvas" in the left sidebar. Drag empty space to pan, `Shift`+dra
 
 ## Put it on a server for your team
 
-One command on a clean VPS that already has Docker:
-
 ```bash
 git clone https://github.com/CatCatUncle/openworkbuddy.git && cd openworkbuddy
-bash deploy.sh --domain buddy.example.com # automatic HTTPS, reachable from outside
+bash deploy.sh --domain buddy.example.com # Docker + automatic HTTPS
 ```
 
-It **waits for the health check to actually pass** before claiming success; if it won't start you get the logs. All data sits in `./openworkbuddy-data`.
-
-> [!IMPORTANT]
-> **Register the admin account first thing.** The first account to register becomes the super admin (one per org, transferable but never issuable), and self-registration closes right after. An empty instance on a public IP means whoever gets there first owns it.
-
-One process serves several companies, invisible to each other. Avatar menu → **Admin console**: orgs, seats, usage, security policy. New hires are created from a department template (role and monthly credits in one go); when someone leaves, one click closes five doors at once — paired devices, **their scheduled jobs** (the scheduler doesn't go through the login gate, so disabling the account alone leaves them running on the company's credits), unused invite codes, 2FA, and tasks still running. **Revoke access, keep the data**, and you get a receipt you can paste into the handover doc.
-
-One metrics snapshot per minute, threshold breaches pushed to WeCom / DingTalk, and `/api/ops/metrics.prom` for your existing monitoring — behind the platform-owner check like every other endpoint.
-
-Reverse proxy, upgrades, migration, security checklist → [部署](docs/部署.md)　|　[deploy/README.md](deploy/README.md)　|　[多人协作](docs/多人协作.md) (Chinese)
+Multi-tenant, with seats, quotas and one-click offboarding. **Register the admin first** — the first account becomes super admin.
+→ [部署](docs/部署.md) · [ops handbook](deploy/README.md) · [多人协作](docs/多人协作.md) (Chinese)
 
 ## Models
 
-**Settings → Models**: pick a provider preset (OpenAI / Anthropic / OpenRouter / Volcano Ark / Bailian / DeepSeek / GLM / Kimi / Ollama), the base URL and protocol are filled in, paste a key, save — hot reload, no restart. A mispasted key is caught on save and it tells you which character is wrong, instead of handing you an unreadable 401 later. Reasoning models can have thinking turned off or dialed down from the UI.
-
-Image / speech / video models have their own table; video spans five protocols (Tongyi Wanxiang · Volcano Ark Seedance · GLM CogVideoX · MiniMax Hailuo · SiliconFlow), and if it cannot tell which vendor it is, **it does not send the request** — video bills per clip and a wasted call takes minutes to fail.
-
-There is also the **Jev decision model** (TypeSafe System One): it writes no prose, only yes/no, single-choice or score answers plus a confidence — which is why it is **not in the model dropdown** (it has no `/chat/completions`, so it would 400 every time). **If you already have an OpenRouter key there is nothing to fill in.**
-
-Four ways in: the CLI (`openworkbuddy jev`), `/api/decide`, the “test” button on its provider card, and **the agent’s own `decide` tool** — up to 32 questions per round trip, and anything below the confidence threshold gets handed back to you rather than treated as settled. Nine things already run on it: goal-mode acceptance (each criterion is a yes/no question, ticked only at 70%+); the **triage skill** for batch sorting (ticket routing, résumé screening, feedback categorisation) — calibrate on a dozen items, run the batch, deliver two lists: what can proceed, and what a human needs to see; and a **second opinion on green scheduled runs** — the success check stops looking once a report runs long, so an agent can spend two thousand words explaining that it failed and still get a tick. This asks one yes/no question about exactly that band, and only ever adds a note: the run stays green. And a **gate before auto-continue** — hitting the step or time limit is treated as "not finished yet", so a fresh full budget is spent on another round, even when the run only spent its last steps tidying up. One yes/no question first: is anything the user asked for still undone? A confident "no" ends it there (off by default, same settings page; never asked when PROGRESS.md still has unticked items, since that answer is already known); and a **judge on commands no list covers** — the command gate stops things with four lists (file blacklist, six danger patterns, the ask list, delete protection); miss all four and on `auto` it just runs, silently — `git reset --hard`, `cat template > config`, `docker volume rm` all go through there, and no list ever finishes (each entry gets added after someone has already been burned). Switched on, those commands first cost one question: can this be undone? A confident "no" raises an approval card — you still decide — while unsure, unanswered or unreachable all run as before (off by default, Settings → Security; read-only commands cost nothing, and code in `run_node` goes through the same door); and a **judge before anything enters long-term memory** — every line the agent stores with `remember` rides along in the system prompt of *every later run*, and the only thing filtering them today is two regexes that match wording, so a rephrasing slips through, and a run-specific detail (“changed line 3 to 8081 this time”) has no fixed wording to match at all. Switched on, one yes/no question comes first: will this still be useful next month? A “no” at 80%+ confidence drops it and tells the agent how to write it instead. Memories you type yourself are never judged; unsure, unanswered or unreachable all store as before (off by default, Settings → Agent). And **scheduled runs that changed nothing don't ring** — a daily task pushes 365 notifications a year, three hundred of which say “nothing new today”; by day ten the group bot is muted, and on the day something *did* change the notification goes out and nobody reads it either. This feature doesn't break, it gets muted — and muted is indistinguishable from broken. Regex can't dedupe it: two “nothing new” lines carry different timestamps and run times, while “12.3 → 12.4” differs by one character and is exactly the one worth ringing for. Switched on, one question comes first: compared with the last message actually pushed to you, is there anything new? A confident “no” skips the bell — the run record still keeps every word, with a line saying why it wasn't pushed. Failures, errors and runs carrying a second-opinion doubt always push. The baseline is the last message *actually pushed*, not the last run, so a wrong call only costs you a day: the accumulated change ships with the next one (off by default, same settings page). And a **judge before interrupting you** — `ask_user` is the only tool exempt from the loop guards, so it can ask four times in a row, and the right reason to stop it was never “how many times” but “is this worth interrupting the user”. Switched on, the first question always goes through; from the second on, a question already asked verbatim this run gets the previous answer, and a new one is classified first — key information, forks and your-call questions pop up as before; only “progress report / technical route / could look it up / asking again” are held, and only at 80%+ confidence, with a receipt telling the agent to proceed on the most reasonable default, note it in the final report, and ask again if the call was wrong. No classification, no answer, or the two answers disagreeing all fall through to a popup — it can only ask less, never pick an answer for you (off by default, same settings page). And a **skill pick before starting** — you install a skill so that kind of job gets done its way, but in the prompt a skill is just a name and a one-line blurb, and whether it gets loaded depends on the model remembering at step one; miss it and the whole piece is done its own way before anyone notices. Naming a skill (`/wechat-article`, "write it with wechat-article") now loads it for free, switch or no switch; only an unnamed job costs one multiple-choice question — which skill should this follow, the options being the skill names plus "none fits" — and a pick at 70%+ confidence gets loaded before the first step. Loaded skills sit in the system prompt rather than the history, so compaction and trimming never touch them and the next turn brings them back. It can only load one skill more, never one fewer; "none fits", unsure or unreachable all leave things as they were (off by default, same settings page). Roughly $0.00005 per question.
-
-Per-provider table → [配置模型](docs/配置模型.md) (Chinese)
+**Settings → Models**: pick a preset (OpenAI / Anthropic / OpenRouter / DeepSeek / Qwen / Zhipu / Kimi / Volcengine Ark / Ollama), paste the key, save — it applies immediately. Image, voice and video models have their own table. Reference → [配置模型](docs/配置模型.md) (Chinese)
 
 > [!IMPORTANT]
-> `config.json` is the only file holding API keys and is already in `.gitignore`. Don't commit it.
+> Keys live only in `config.json`, which is already in `.gitignore`. Don't commit it.
 
 ## Command line
 
@@ -266,7 +225,7 @@ The diagram doubles as a reading order: start at `server.js`, then see how `agen
 
 ## What's new
 
-- **Sep 23** CLI gets `/review` for your changes, custom slash commands, and `--model` `--max-steps` `--append-system`
+- **Sep 23** CLI gets `/review`, custom slash commands and `--model` & co.; hooks can block wrap-up until tests pass
 - **Sep 23** Better at code: find files by name, several edits to one file at once, edits blocked if the file changed since it was read, background shell commands, and a todo list it must tick off before finishing
 - **Sep 23** The preview card in the chat and the right-hand preview panel now open the same version of an image
 - **Sep 23** No more running `open` on files once done — only when you ask; a delivery just reports the path
@@ -279,15 +238,8 @@ Older entries → **[Changelog](CHANGELOG.en.md)**.
 
 ## ⚠️ This agent has a shell
 
-> [!WARNING]
-> It runs commands, reads and writes files and reaches the network — so the gates are real: command approval, a file blacklist, a URL allowlist, audit logs and four permission tiers.
-> **Read [安全](docs/安全.md) (Chinese) before exposing it to the internet**; the defaults are tuned for local use only.
-
-**Skills get screened before they're installed.** A skill is a set of instructions written for an agent, handed to something that can run commands on your machine — unlike `npm install`, where a package only runs when you `require` it; a skill is read and followed on its own. So an install runs 34 static rules first and shows you what it found, in three buckets: install / look first / don't install by default (no score — a score just teaches people that "42 looks fine"). Ten of the rules actually block (reverse shells, `curl | bash`, reading SSH private keys, wiping disks, erasing traces); an admin can force past them, and that goes into `.install.json`.
-
-**It is not antivirus.** On a public labelled set, pure static rules catch about three quarters — one in four gets through. Install [toolward](https://github.com/CatCatUncle/toolward) and it's used as a second ruler automatically, merging in a direction that only ever tightens. And the one that matters more than every rule above: **read the `skill.md` yourself before installing.** It's Markdown, not a binary.
-
-How the call is made, and why the force-install hatch stays → [安全](docs/安全.md)　|　[安全基线](docs/安全基线.md) (Chinese)
+It runs commands, edits files and goes online, so there are command approvals, file blocklists, a URL allowlist, an audit log and four permission levels. Third-party skills get a static check before install and risky ones are refused by default — but it isn't antivirus; read the `skill.md` yourself.
+**Read [安全](docs/安全.md) before exposing it to the internet** — defaults are tuned for local use.
 
 ## Contributing
 
@@ -318,24 +270,14 @@ Most docs are in Chinese; the code and comments are the source of truth.
 
 ## License
 
-In one sentence: **personal, learning and non-profit use is free; making money with it (including internal productivity at a company) needs a commercial license from the author.**
-The license is [PolyForm Noncommercial 1.0.0](LICENSE); what counts as commercial and how to talk about it is in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
-
-**A license does not unlock features.** There is one codebase — this repo — and you are looking at all of it: the agent loop, 40+ tools, the drama canvas, IM remote control, execution traces, self-evolution and memory, multi-tenancy and the admin console included. No feature flags, no trial countdown, no greyed-out buttons. A license buys three other things: the right to make money with it, trademark and white-label room, and someone to reach → [开源与商业版边界](docs/开源与商业版边界.md) (Chinese)
-
-**Some of it isn't even non-commercial.** Deployment configs, CI pipelines, scripts, the eval set, skill templates and sample code in the docs are additionally released under MIT → [LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md). And **skills, plugins and connector configs you write are your own work**, not derivatives of this project.
-
-This license grants **no** rights to any third-party product, trademark, logo, brand asset or screenshot; those belong to their respective owners.
+**Free for personal, learning and non-profit use; making money with it (including internal company use) needs a commercial license.**
+[PolyForm Noncommercial 1.0.0](LICENSE); commercial terms in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). A license unlocks no features — there is only this one codebase. Deploy configs, scripts and skill templates are also MIT ([LICENSE-ECOSYSTEM.md](LICENSE-ECOSYSTEM.md)).
 
 Copyright (c) 2026 开发者猫叔
 
 ## Disclaimer
 
-**What this is.** OpenWorkBuddy (repo `CatCatUncle/openworkbuddy`) is an independent open-source project written from scratch by 开发者猫叔; all source is in this repo. Architecture, tool protocol, permission model, memory and self-evolution are original work; projects studied along the way are listed one by one in section 4 of [NOTICE.md](NOTICE.md). The name is `Work` + `Buddy` — two ordinary English words — with the `Open-` prefix common to open-source projects.
-
-**Relationship with third parties: none.** This project is not affiliated with, authorised, sponsored or endorsed by Tencent or its WorkBuddy product, and contains none of its code, assets, UI resources or non-public information. If "WorkBuddy" is someone's registered trademark, the rights belong to its owner; third-party names appear here only to describe compatibility or draw a factual distinction (nominative use). Feishu, WeCom, QQ and the rest are integrated through their own **publicly published** open APIs; no reverse engineering is involved.
-
-**If a rights holder thinks something here is wrong**, reach me through [Issues](https://github.com/CatCatUncle/openworkbuddy/issues) or the contact in [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) and it will be fixed once verified.
+An independent open-source project, not affiliated with Tencent or its WorkBuddy product, containing none of its code or assets; IM integrations use public APIs only. Borrowed ideas are credited in [NOTICE.md](NOTICE.md). Concerns → [Issues](https://github.com/CatCatUncle/openworkbuddy/issues).
 
 ## Support this project
 

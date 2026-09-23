@@ -9,6 +9,7 @@ English: [CHANGELOG.en.md](CHANGELOG.en.md)
 
 ## 2026
 
+- **09-23** 钩子：`config.json` 的 `agent.hooks` 里写命令——`before_shell` 拦命令、`after_edit` 改完文件自动跑（格式化/lint）、`done` 没过不许收尾（最多打回两次）
 - **09-23** 命令行：`/review`（和 `openworkbuddy review [基准]`）把改动取好交给它审，只看不动；`.openworkbuddy/commands/*.md` 自己写斜杠命令，`$ARGUMENTS` `$1` 填参数；新开关 `--model` `--max-steps` `--append-system` 只管这一次
 - **09-23** 写代码更顺手：`find_files` 按名找文件、`multi_edit` 一个文件改多处（全成或全不动）、读后被改就拦（改前先重读）、`run_shell` 可放后台（`shell_output` / `shell_kill`）、`todo_write` 进度清单——没打勾就收工会被打回
 - **09-23** **开工之前先挑技能：用户点名一分钱不花直接加载，没点名才问判断模型一道单选（默认关，设置 → 智能体设置）。** 用户装了技能是指望干那类活时照着做，可技能在提示词里只是一份名字清单，模型第一步想不起来，整篇就按自己的路子做完了。「/wechat-article」「用 wechat-article 写」现在机械地加载，开关关着也照做（整词匹配，`html-page` 不会被 `html-pages-v2` 蒙混）；没点名、开了闸，问一道「该先照哪个技能做」，选项是技能名加「都不对口」，挑中且确定度到 70% 才替它加载。只在顶层任务问、已加载过不再问；只会多加载不会少加载；挑「都不对口」、拿不准、问不成一律照旧并留一行警告。67 条断言，换回旧 agent.js 18 条红

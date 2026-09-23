@@ -84,6 +84,7 @@ const SUITES = [
   ["shot-history", "分镜留底：改台词重跑之后，上一版首帧还拿得回来"],
   ["agent-loop", "死循环硬停：五种卡法都停得下来，没卡住的一个字不说"],
   ["code-tools", "写代码那几样：按名找文件 / 一个文件改多处 / 读后被改就拦 / 后台命令 / 进度清单"],
+  ["hooks", "钩子：before_shell 拦命令 / after_edit 接回执 / done 没过不许收尾"],
   ["slash-review", "自定义斜杠命令 / /review 取对改动 / --model --max-steps --append-system"],
   ["stop", "「让我停下」：正在跑的命令要真停得下来，连孙子进程一起收"],
   ["preview-layout", "右边成果预览：每种格式在面板里摆得对不对（量面板/内容/位置，不看截图）"],

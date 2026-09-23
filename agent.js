@@ -10,6 +10,7 @@ const awake = require("./awake"); // 睡眠治理：任务期间防睡 + 睡了�
 const engines = require("./engines"); // 底层引擎：内置循环 / 本机 Claude Code / 本机 Codex
 const bridge = require("./engines/bridge"); // 把本项目的工具借给那两个 CLI（MCP）
 const prefs = require("./prefs"); // 底层引擎 / 思考档是按账号存的，跑任务时得看**发起人**的那份
+const HK = require("./hooks"); // 用户配的钩子：done 没过不许收尾
 const callout = require("./callout"); // 正文里的提示条：网页画图标，终端/IM 换文字标签
 const security = require("./security"); // 审计中心：对外推送这种「出了门就收不回来」的动作必须留痕
 const mailer = require("./mailer"); // 发信：配没配、地址合不合法、白名单放不放行，判据只有这一份
@@ -1518,7 +1519,19 @@ function modePrompt(mode) {
       memory: { user, gate: (config.agent || {}).memory_gate === true, task: taskLabel },
       sessionId, // 文件检查点记在哪个会话名下：回退只认自己这个会话动过的文件
       callId, // 这一步的工具调用 id，检查点账本上和过程卡对得上号
+      hooks: hooksCfg(), // 用户在 config.json 里配的钩子（hooks.js）
     };
+  }
+
+  // 钩子配置按 config 对象缓存：设置页保存会换一个新对象，换了才重新整理。写错的那几条只喊一次
+  let hooksMemo = { raw: undefined, val: null };
+  function hooksCfg() {
+    const raw = (config.agent || {}).hooks;
+    if (hooksMemo.raw === raw && hooksMemo.val) return hooksMemo.val;
+    const val = HK.normalize(raw);
+    for (const p of val.problems) console.warn("[钩子] " + p + "，这一条不生效");
+    hooksMemo = { raw, val };
+    return val;
   }
 
 
@@ -2180,6 +2193,8 @@ function modePrompt(mode) {
     let finalText = "";
     let stopNote = "";
     let honestyRetries = 0;
+    let hookRetries = 0; // done 钩子没过被打回的次数
+    let edited = false; // 这一趟真改过文件没有：没改过就不跑 done 钩子
     let finishRetries = 0; // 「没做完就收摊」被打回的次数（整个任务累计，不按轮重置）
     let openLeft = [];
     let todoItems = null;  // todo_write 最新那张表：收尾时还有没标 done 的，同样打回     // 收尾时进度档里仍未打勾的条目，用来如实告诉用户还差什么
@@ -2515,6 +2530,23 @@ function modePrompt(mode) {
           });
           continue;
         }
+        // done 钩子：用户配的「交差前必须过」的命令（跑测试、类型检查）。没过就打回去接着改，最多两次
+        if (depth === 0 && mode === "craft" && edited && !left.open.length && !(stopSignal && stopSignal.aborted)) {
+          const hk = hooksCfg();
+          if (hk.done.length) {
+            const bad = await HK.beforeDone(hk, { cwd: progressDir(), stopSignal });
+            if (bad && hookRetries < 2 && Date.now() < deadline - 30000) {
+              hookRetries++;
+              history.push({ role: "user", content: bad.text });
+              emit({ type: "text", delta: callout.line("wait", `**done 钩子没过，已打回接着改**：\`${bad.hook.run}\` ${bad.why}。`), depth });
+              continue;
+            }
+            if (bad) {
+              stopNote = `收尾钩子没过：${bad.hook.run} ${bad.why}`;
+              emit({ type: "text", delta: callout.line("warn", `**钩子没过就收尾了**：\`${bad.hook.run}\` ${bad.why}，打回两次还是没过，交给你看。`), depth });
+            }
+          }
+        }
         // 打回额度用完还没做完 → 交给外层自动续跑：新一轮有新的步数和时间预算，比在这儿硬磨划算
         if (left.open.length) stopNote = `任务还有 ${left.open.length} 项没做完`;
         break;
@@ -2580,6 +2612,7 @@ function modePrompt(mode) {
           callSeq.push(loopKey + "\u0001" + String(r.content).slice(0, 2000));
           if (callSeq.length > 12) callSeq.shift();
         }
+        if (!r.isError && (tc.name === "write_file" || tc.name === "edit_file" || tc.name === "multi_edit")) edited = true;
         if (tc.name === "look_at_image" && !r.isError) sawImage = true; // 真看成过一次，收尾就不替它复核
         emit({
           type: "tool_result",
